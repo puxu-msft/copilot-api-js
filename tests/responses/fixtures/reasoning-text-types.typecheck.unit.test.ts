@@ -1,9 +1,11 @@
 import { describe, expect, test } from "bun:test"
 import type {
   ContentPartAddedEvent,
+  OutputTextAnnotationAddedEvent,
   ReasoningTextDeltaEvent,
   ReasoningTextDoneEvent,
   ResponsesReasoningOutput,
+  ResponsesStreamEvent,
 } from "~/types/api/openai-responses"
 
 describe("reasoning_text independent track types (typecheck oracle: bun run typecheck)", () => {
@@ -41,5 +43,22 @@ describe("reasoning_text independent track types (typecheck oracle: bun run type
     expect(done.type).toBe("response.reasoning_text.done")
     expect(item.content?.[0].text).toBe("thinking...")
     expect(contentPart.part.type).toBe("reasoning_text")
+  })
+})
+
+describe("output_text.annotation.added event type (typecheck oracle: bun run typecheck)", () => {
+  test("OutputTextAnnotationAddedEvent compiles and narrows via ResponsesStreamEvent union", () => {
+    const event: OutputTextAnnotationAddedEvent = {
+      type: "response.output_text.annotation.added",
+      item_id: "msg_1",
+      output_index: 0,
+      content_index: 0,
+      annotation_index: 0,
+      annotation: { type: "url_citation", start_index: 0, end_index: 5, url: "https://example.com", title: "Example" },
+      sequence_number: 1,
+    }
+    const asStreamEvent: ResponsesStreamEvent = event
+    expect(event.type).toBe("response.output_text.annotation.added")
+    expect(asStreamEvent.type).toBe("response.output_text.annotation.added")
   })
 })

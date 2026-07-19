@@ -349,6 +349,21 @@ export interface ContentPartDoneEvent {
   sequence_number: number
 }
 
+/** Emitted when a citation/file/container-file annotation is attached to an output_text content
+ *  part while streaming (e.g. gpt-5.5 web_search_preview native citations). Same minefield shape
+ *  as `output_text.done`: the SDK accumulator calls getContent(content_index) and throws when
+ *  `.added` for that part was dropped (confirmed against
+ *  node_modules/openai/lib/responses/ResponseAccumulator.js, `annotation.added` case ~97-107). */
+export interface OutputTextAnnotationAddedEvent {
+  type: "response.output_text.annotation.added"
+  item_id: string
+  output_index: number
+  content_index: number
+  annotation_index: number
+  annotation: unknown
+  sequence_number: number
+}
+
 /** Text delta events */
 export interface OutputTextDeltaEvent {
   type: "response.output_text.delta"
@@ -485,6 +500,7 @@ export type ResponsesStreamEvent =
   // Text streaming
   | OutputTextDeltaEvent
   | OutputTextDoneEvent
+  | OutputTextAnnotationAddedEvent
   // Function call streaming
   | FunctionCallArgumentsDeltaEvent
   | FunctionCallArgumentsDoneEvent
