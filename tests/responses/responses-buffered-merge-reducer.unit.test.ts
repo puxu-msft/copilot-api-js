@@ -155,3 +155,72 @@ describe("completed_output: rebuild", () => {
     expect(JSON.parse(last.data!).response.output).toEqual([finalItem])
   })
 })
+
+describe("diagnostics()", () => {
+  test("accumulates dropped-event stats across flushes within one reducer instance", () => {
+    const reducer = createResponsesBufferedMergeReducer({ eventCompaction: "drop-delta", completedOutput: "repair-if-incomplete" })
+    const { frames } = functionCallBlock(0, "fc_1")
+    for (const f of frames) reducer.observe(f)
+    reducer.transformFlush(frames, { cause: "boundary", boundaryFrame: frames[frames.length - 1] })
+    const diag1 = reducer.diagnostics()
+    expect(diag1.eventCompaction).toBe("drop-delta")
+    expect(diag1.droppedEventCount).toBe(2)
+    expect(diag1.droppedEventTypes).toEqual(["response.function_call_arguments.delta"])
+  })
+
+  test("a FRESH reducer instance starts with zeroed diagnostics — no cross-attempt leak possible by construction", () => {
+    const stale = createResponsesBufferedMergeReducer({ eventCompaction: "drop-delta", completedOutput: "repair-if-incomplete" })
+    const { frames } = functionCallBlock(0, "fc_1")
+    for (const f of frames) stale.observe(f)
+    stale.transformFlush(frames, { cause: "boundary", boundaryFrame: frames[frames.length - 1] })
+    expect(stale.diagnostics().droppedEventCount).toBe(2)
+
+    const fresh = createResponsesBufferedMergeReducer({ eventCompaction: "drop-delta", completedOutput: "repair-if-incomplete" })
+    expect(fresh.diagnostics().droppedEventCount).toBe(0)
+    expect(fresh.diagnostics().droppedEventTypes).toEqual([])
+  })
+
+  test("records repairedItemCount + repairReasons only for repair-if-incomplete (not rebuild)", () => {
+    const reducer = createResponsesBufferedMergeReducer({ eventCompaction: "drop-delta", completedOutput: "repair-if-incomplete" })
+    const { frames: fcFrames } = functionCallBlock(0, "fc_1")
+    for (const f of fcFrames) reducer.observe(f)
+    const terminal = completedFrame([])
+    reducer.transformFlush([...fcFrames, terminal], { cause: "boundary", boundaryFrame: terminal })
+    const diag = reducer.diagnostics()
+    expect(diag.repairedItemCount).toBe(1)
+    expect(diag.repairReasons).toEqual(["empty-output"])
+  })
+
+  test("rebuild mode does NOT push a repairReason (unconditional replace is not a defect diagnosis)", () => {
+    const reducer = createResponsesBufferedMergeReducer({ eventCompaction: "drop-delta", completedOutput: "rebuild" })
+    const { frames: fcFrames, finalItem } = functionCallBlock(0, "fc_1")
+    for (const f of fcFrames) reducer.observe(f)
+    const terminal = completedFrame([finalItem])
+    reducer.transformFlush([...fcFrames, terminal], { cause: "boundary", boundaryFrame: terminal })
+    const diag = reducer.diagnostics()
+    expect(diag.repairedItemCount).toBe(1)
+    expect(diag.repairReasons).toEqual([])
+  })
+
+  test("droppedEventBytes counts BOTH event-name length and data length — aligns with driver's bufferedBytes calc (driver.ts:1138, GPT-audit suggestion)", () => {
+    const reducer = createResponsesBufferedMergeReducer({ eventCompaction: "drop-delta", completedOutput: "upstream" })
+    const { frames } = functionCallBlock(0, "fc_1")
+    for (const f of frames) reducer.observe(f)
+    reducer.transformFlush(frames, { cause: "boundary", boundaryFrame: frames[frames.length - 1] })
+    const diag = reducer.diagnostics()
+    const droppedFrames = frames.filter((f) => f.event === "response.function_call_arguments.delta")
+    const expectedBytes = droppedFrames.reduce((sum, f) => sum + (f.data?.length ?? 0) + (f.event?.length ?? 0), 0)
+    expect(diag.droppedEventBytes).toBe(expectedBytes)
+    expect(diag.droppedEventBytes).toBeGreaterThan(droppedFrames.reduce((sum, f) => sum + (f.data?.length ?? 0), 0))
+  })
+})
+
+describe("次序不变量（spec §4）: observe 先于 drop 生效", () => {
+  test("a frame observed AFTER its own output_item.done in the same batch is still correctly recognized as closed at flush time", () => {
+    const reducer = createResponsesBufferedMergeReducer({ eventCompaction: "drop-delta", completedOutput: "upstream" })
+    const { frames } = functionCallBlock(0, "fc_1")
+    for (const f of frames) reducer.observe(f)
+    const out = reducer.transformFlush(frames, { cause: "boundary", boundaryFrame: frames[frames.length - 1] })
+    expect(types(out)).not.toContain("response.function_call_arguments.delta")
+  })
+})

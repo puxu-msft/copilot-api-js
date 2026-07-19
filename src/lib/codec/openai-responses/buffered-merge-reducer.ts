@@ -1,4 +1,8 @@
-import type { BufferedFlushContext, ClientFrame } from "~/lib/pipeline/types"
+import type {
+  //
+  BufferedFlushContext,
+  ClientFrame,
+} from "~/lib/pipeline/types"
 import type { ResponsesOutputItem } from "~/types/api/openai-responses"
 
 import { tagFrameSynthetic } from "~/lib/pipeline/frame-origin"
@@ -81,7 +85,8 @@ function itemsEquivalent(a: ResponsesOutputItem, b: ResponsesOutputItem): boolea
   if (a.type !== b.type) return false
   if (a.type === "function_call" && b.type === "function_call") return a.arguments === b.arguments && a.call_id === b.call_id
   if (a.type === "message" && b.type === "message") return JSON.stringify(a.content) === JSON.stringify(b.content)
-  if (a.type === "reasoning" && b.type === "reasoning") return JSON.stringify(a.summary) === JSON.stringify(b.summary) && a.encrypted_content === b.encrypted_content
+  if (a.type === "reasoning" && b.type === "reasoning")
+    return JSON.stringify(a.summary) === JSON.stringify(b.summary) && a.encrypted_content === b.encrypted_content
   return false
 }
 
@@ -92,14 +97,31 @@ export interface ResponsesBufferedMergeOpts {
 
 export interface ResponsesBufferedMergeReducer {
   observe(frame: ClientFrame): void
-  transformFlush(frames: readonly ClientFrame[], ctx: BufferedFlushContext): readonly ClientFrame[]
+  transformFlush(frames: ReadonlyArray<ClientFrame>, ctx: BufferedFlushContext): ReadonlyArray<ClientFrame>
 }
 
-export function createResponsesBufferedMergeReducer(opts: ResponsesBufferedMergeOpts): ResponsesBufferedMergeReducer {
+export interface BufferedMergeDiag {
+  eventCompaction: "verbatim" | "drop-delta" | "item-summary"
+  completedOutput: "upstream" | "repair-if-incomplete" | "rebuild"
+  droppedEventCount: number
+  droppedEventBytes: number
+  droppedEventTypes: Array<string>
+  repairedItemCount: number
+  repairReasons: Array<TerminalRepairReason>
+  verbatimFallbacks: Array<"retreat" | "open-item-at-terminal-failure">
+}
+
+export function createResponsesBufferedMergeReducer(opts: ResponsesBufferedMergeOpts): ResponsesBufferedMergeReducer & { diagnostics(): BufferedMergeDiag } {
   // NOTE: no resetAttempt — candidate-hosted (spec §4 2026-07-19 重接地): a fresh candidate session
   // per retry/recovery means a fresh closure over `collected`, so per-attempt state is fresh by
   // construction. The driver has no lifecycle hook to reset THIS closure — there is nothing to reset.
   const collected = new Map<number, ResponsesOutputItem>()
+  let droppedEventCount = 0
+  let droppedEventBytes = 0
+  const droppedEventTypes: Array<string> = []
+  let repairedItemCount = 0
+  const repairReasons: Array<TerminalRepairReason> = []
+  const verbatimFallbacks: Array<"retreat" | "open-item-at-terminal-failure"> = []
 
   return {
     observe(frame: ClientFrame) {
@@ -108,8 +130,11 @@ export function createResponsesBufferedMergeReducer(opts: ResponsesBufferedMerge
         collected.set(parsed.data.output_index, parsed.data.item as ResponsesOutputItem)
       }
     },
-    transformFlush(frames: readonly ClientFrame[], ctx: BufferedFlushContext): readonly ClientFrame[] {
-      if (ctx.cause === "retreat") return frames
+    transformFlush(frames: ReadonlyArray<ClientFrame>, ctx: BufferedFlushContext): ReadonlyArray<ClientFrame> {
+      if (ctx.cause === "retreat") {
+        verbatimFallbacks.push("retreat")
+        return frames
+      }
       if (opts.eventCompaction === "verbatim") return frames
       const working: Array<ClientFrame> = []
       for (const f of frames) {
@@ -122,7 +147,15 @@ export function createResponsesBufferedMergeReducer(opts: ResponsesBufferedMerge
         const closed = outputIndex !== undefined && collected.has(outputIndex)
         const dropAsDelta = closed && DROPPABLE_DELTA_TYPES.has(parsed.type)
         const dropAsItemSummarySubframe = closed && opts.eventCompaction === "item-summary" && ITEM_SUMMARY_ONLY_SUBFRAME_TYPES.has(parsed.type)
-        if (dropAsDelta || dropAsItemSummarySubframe) continue
+        if (dropAsDelta || dropAsItemSummarySubframe) {
+          droppedEventCount++
+          // GPT-audit suggestion: align byte accounting with the driver's own bufferedBytes calc
+          // (driver.ts:1138 — `(toWrite.data?.length ?? 0) + (toWrite.event?.length ?? 0)`), so the
+          // diagnostic number is comparable to the buffer-cap accounting the driver already does.
+          droppedEventBytes += (f.data?.length ?? 0) + (f.event?.length ?? 0)
+          if (!droppedEventTypes.includes(parsed.type)) droppedEventTypes.push(parsed.type)
+          continue
+        }
         working.push(f)
       }
       // Terminal-snapshot reconciliation (completed_output). `upstream` (or no terminal in this batch)
@@ -137,16 +170,33 @@ export function createResponsesBufferedMergeReducer(opts: ResponsesBufferedMerge
       if (opts.completedOutput === "repair-if-incomplete") {
         const verdict = isTerminalSnapshotComplete(response.output, collected)
         shouldRebuild = !verdict.complete
+        if (!verdict.complete) repairReasons.push(verdict.reason)
       }
       if (!shouldRebuild) return working
       const rebuiltOutput = Array.from(collected.entries())
         .sort((a, b) => a[0] - b[0])
         .map(([, item]) => item)
+      repairedItemCount = rebuiltOutput.length
       const newResponse = { ...response, output: rebuiltOutput }
-      const newFrame = tagFrameSynthetic({ ...working[terminal.index], data: JSON.stringify({ ...terminal.parsed.data, response: newResponse }) }, "buffered-terminal-repair")
+      const newFrame = tagFrameSynthetic(
+        { ...working[terminal.index], data: JSON.stringify({ ...terminal.parsed.data, response: newResponse }) },
+        "buffered-terminal-repair",
+      )
       const result = working.slice()
       result[terminal.index] = newFrame
       return result
+    },
+    diagnostics(): BufferedMergeDiag {
+      return {
+        eventCompaction: opts.eventCompaction,
+        completedOutput: opts.completedOutput,
+        droppedEventCount,
+        droppedEventBytes,
+        droppedEventTypes: [...droppedEventTypes],
+        repairedItemCount,
+        repairReasons: [...repairReasons],
+        verbatimFallbacks: [...verbatimFallbacks],
+      }
     },
   }
 }
