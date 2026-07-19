@@ -54,6 +54,7 @@ import type {
   RetryStrategy,
   RouteDecision,
   RunBufferedOpts,
+  BufferedFlushContext,
   RunResponseOpts,
   Transport,
   TransportDispatchOptions,
@@ -1057,7 +1058,12 @@ export async function runResponseBufferedSink(
   // heartbeat BEFORE snapshotting `injected` + flushing so a mid-flush timer tick can't inject a
   // second anchor start(0).
   type FlushResult = { kind: "ok" } | { kind: "client-abort" } | { kind: "write-error"; error: unknown }
-  const flushBufferedFrames = async (frames: Array<ClientFrame>, isTerminalFlush: boolean): Promise<FlushResult> => {
+  const flushBufferedFrames = async (
+    frames: Array<ClientFrame>,
+    isTerminalFlush: boolean,
+    mergeCtx: BufferedFlushContext,
+    transformBufferedFlush?: RunBufferedOpts["transformBufferedFlush"],
+  ): Promise<FlushResult> => {
     sink.freezeHeartbeat?.()
     const injected = anchorState.injected
     const anchorBlockOpen = anchorState.anchorBlockOpen
@@ -1073,7 +1079,10 @@ export async function runResponseBufferedSink(
         anchorState.anchorClosed = true
         await (sink.writeAnchor ?? sink.write)(anchor.stopFrame) // "anchor" marker
       }
-      for (const frame of frames) {
+      // Candidate-hosted buffered-merge seam (spec §4): the reducer's transform replaces the raw buffer
+      // with its (possibly compacted / repaired) frames just before write. Undefined = verbatim (R1).
+      const toFlush = transformBufferedFlush ? transformBufferedFlush(frames, mergeCtx) : frames
+      for (const frame of toFlush) {
         // H1: the anchor already forwarded message_start ahead of the anchor block — skip the buffered
         // copy so the client sees exactly one message_start (re-sending it would corrupt the stream).
         if (anchor && anchorState.messageStartForwarded && anchor.isMessageStart(frame)) continue
@@ -1152,7 +1161,7 @@ export async function runResponseBufferedSink(
             // empty delta on the live-open block, or a ping). `flushBufferedFrames`' internal freeze clears the
             // timer; resume re-arms a fresh interval so the heartbeat recovers for the live continuation.
             sink.suspendHeartbeat?.()
-            const res = await flushBufferedFrames(buffer, true)
+            const res = await flushBufferedFrames(buffer, true, { cause: "retreat" }, candidateOpts.transformBufferedFlush)
             sink.resumeHeartbeat?.()
             buffer.length = 0
             if (res.kind === "client-abort") return { kind: "settled-abort" }
@@ -1190,7 +1199,7 @@ export async function runResponseBufferedSink(
             // from the failed parent BEFORE that block, matching the pre-runtime whole-response
             // recovery wire. Primary block-level commits keep the anchor open between blocks.
             const closesInheritedAnchor = attempt > 0 || (opts.sawUpstreamError?.() ?? false)
-            const res = await flushBufferedFrames(buffer, closesInheritedAnchor)
+            const res = await flushBufferedFrames(buffer, closesInheritedAnchor, { cause: "boundary", boundaryFrame: toWrite }, candidateOpts.transformBufferedFlush)
             sink.resumeHeartbeat?.()
             buffer.length = 0
             committedAny = true
@@ -1247,7 +1256,7 @@ export async function runResponseBufferedSink(
         // here (defect (b): it stayed OPEN across every earlier block boundary; now it closes at the end —
         // and unconditionally, even when this tail buffer is EMPTY because the terminal frame was itself a
         // boundary). On the whole-response path this is the single flush → still terminal (R1 byte-identical).
-        const res = await flushBufferedFrames(buffer, true)
+        const res = await flushBufferedFrames(buffer, true, { cause: "terminal-drain" }, candidateOpts.transformBufferedFlush)
         if (res.kind === "client-abort") return { kind: "settled-abort" }
         if (res.kind === "write-error") {
           // Client gone mid-flush. L2 produced a COMPLETE generation (reached the terminal frame) — the

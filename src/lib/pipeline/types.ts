@@ -435,6 +435,12 @@ export type ProtectStreamingOutcome = "success" | "exhausted" | "retreated" | "p
  * (the buffered drain still feeds `onUpstreamFrame` / applies `onRenderedFrame` per
  * attempt) with the buffered-retry control surface.
  */
+/** The flush-triggering cause + (for boundary flushes) the frame that closed the block (spec §4). */
+export interface BufferedFlushContext {
+  cause: "boundary" | "terminal-drain" | "retreat"
+  boundaryFrame?: ClientFrame
+}
+
 export interface RunBufferedOpts extends RunResponseOpts {
   /**
    * Anthropic synthetic-prelude keepalive anchor hooks (spec 2026-07-08-buffered-keepalive-empty-text-anchor).
@@ -522,6 +528,18 @@ export interface RunBufferedOpts extends RunResponseOpts {
    * commit paths all unchanged).
    */
   commitBoundaries?: (frame: ClientFrame) => boolean
+  /**
+   * Candidate-hosted buffered-flush transform seam (spec 2026-07-14-responses-buffered-block-merge §4,
+   * 2026-07-19 重接地). Same shape/lifecycle as {@link commitBoundaries} — a candidate-supplied option the
+   * driver merges in via `currentCandidateResponseOpts` and calls at EVERY flush (block-boundary,
+   * terminal-drain, and retreat) immediately before writing, with its RETURN VALUE replacing the raw
+   * buffer. The driver interprets no format semantics — it only orchestrates the call + the `cause`
+   * discriminant. UNDEFINED (default) = every flush writes the raw buffer verbatim, byte-identical to
+   * before this seam existed (R1 landing gate) — CC/Anthropic never populate this, so they are unaffected.
+   * Per-attempt state lives entirely on the candidate side (a fresh candidate session per retry/recovery
+   * gives a fresh closure) — the driver has no reset hook to call for this seam.
+   */
+  transformBufferedFlush?: (frames: readonly ClientFrame[], ctx: BufferedFlushContext) => readonly ClientFrame[]
   /**
    * Vendor label the driver injects into {@link onBufferedResolve}'s `meta.vendor` (e.g.
    * `"anthropic"` / `"responses"` / `"chat_completions"` / `"responses_ws"`). Lets the handlers
