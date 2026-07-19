@@ -129,14 +129,15 @@ function ccStreamFrames(model: string): Array<string> {
   ]
 }
 
-/** A clean function_call generation for the WS buffered-merge case: created → the block fixture
- *  (added/delta×2/done/output_item.done) → response.completed carrying the complete finalItem. */
-function functionCallCompleteFrames(model: string): Array<string> {
+/** A function_call generation for the WS buffered-merge case: created → the block fixture
+ *  (added/delta×2/done/output_item.done) → response.completed. When `defective`, the terminal snapshot
+ *  carries an empty output despite the collected output_item.done (drives repair-if-incomplete). */
+function functionCallCompleteFrames(model: string, defective = false): Array<string> {
   const { frames, finalItem } = functionCallBlock(0, "fc_ws")
   return [
     `event: response.created\ndata: ${JSON.stringify({ type: "response.created", sequence_number: 0, response: { id: "resp_ws_fc", object: "response", status: "in_progress", model, output: [] } })}\n\n`,
     ...frames.map((f) => `event: ${f.event}\ndata: ${f.data}\n\n`),
-    `event: response.completed\ndata: ${JSON.stringify({ type: "response.completed", sequence_number: 99, response: { id: "resp_ws_fc", object: "response", status: "completed", model, output: [finalItem], usage: { input_tokens: 10, output_tokens: 5 } } })}\n\n`,
+    `event: response.completed\ndata: ${JSON.stringify({ type: "response.completed", sequence_number: 99, response: { id: "resp_ws_fc", object: "response", status: "completed", model, output: defective ? [] : [finalItem], usage: { input_tokens: 10, output_tokens: 5 } } })}\n\n`,
   ]
 }
 
@@ -152,6 +153,9 @@ let rstPastItemDone = false
 /** When true, the upstream returns the clean function_call generation ({@link functionCallCompleteFrames})
  * for the WS buffered-merge dual-track case (Task 3.5). */
 let functionCall = false
+/** When true (with `functionCall`), the terminal snapshot is defective (empty output) → repair-if-incomplete
+ * rebuilds it on the forwarded track (Task 5.3). */
+let functionCallDefective = false
 
 const upstreamFetchMock = mock((input: string | URL | Request, init?: RequestInit) => {
   const url =
@@ -167,7 +171,7 @@ const upstreamFetchMock = mock((input: string | URL | Request, init?: RequestIni
   }
   if (url.endsWith("/responses")) {
     upstreamCalls += 1
-    if (functionCall) return Promise.resolve(createSseResponse(functionCallCompleteFrames(model)))
+    if (functionCall) return Promise.resolve(createSseResponse(functionCallCompleteFrames(model, functionCallDefective)))
     const rst = upstreamCalls <= rstBeforeComplete
     if (rst) {
       const frames = rstPastItemDone ? partialFramesPastItemDone(model) : partialFrames(model)
@@ -275,6 +279,7 @@ describe("Responses WS buffered retry (P4 Task 1)", () => {
     rstBeforeComplete = 0
     rstPastItemDone = false
     functionCall = false
+    functionCallDefective = false
     upstreamFetchMock.mockClear()
     setStateForTests({
       accountType: "individual",
@@ -377,6 +382,40 @@ describe("Responses WS buffered retry (P4 Task 1)", () => {
     expect(entry.clientResponse!.sseEvents!.filter((e) => e.type === "response.function_call_arguments.delta").length).toBe(0)
     expect(entry.pipelineInfo?.bufferedMerge?.eventCompaction).toBe("drop-delta")
     expect(entry.pipelineInfo?.bufferedMerge?.droppedEventCount).toBe(2)
+  })
+
+  test("Task 5.3: WS terminal-only defective completed → forwarded track repaired + tagged synthetic; upstream track keeps the defective original", async () => {
+    setModels({
+      object: "list",
+      data: [mockModel(MODEL, { vendor: "OpenAI", supported_endpoints: ["/responses"] })],
+    })
+    setStateForTests({
+      responsesBufferedRetry: true,
+      bufferedRetryShared: { maxRetries: 2, bufferCapBytes: 16_777_216, heartbeatSec: 15 },
+      streamKeepalivePingSec: 20,
+    })
+    functionCall = true
+    functionCallDefective = true
+
+    server = startWsServer()
+    const ws = new WebSocket(`${server.url}/responses`)
+    const closePromise = waitForSocketClose(ws)
+    await waitForOpen(ws)
+    ws.send(JSON.stringify({ type: "response.create", response: { model: MODEL, input: "hi" } }))
+    const result = await closePromise
+    expect(result.code).toBe(1000)
+
+    const entry = getHistory({ endpoint: "openai-responses", limit: 5 }).entries[0]
+    expect(entry?.state).toBe("completed")
+    const { finalItem } = functionCallBlock(0, "fc_ws")
+    const upstreamCompleted = finalUpstreamResponse(entry)!.sseEvents!.find((e) => e.type === "response.completed")
+    const forwardedCompleted = entry.clientResponse!.sseEvents!.find((e) => e.type === "response.completed")
+    // WS flushes ONCE at the terminal drain; the reverse-scan terminal locate still finds the completed
+    // frame in that single batch, so repair-if-incomplete rebuilds the defective output on the forwarded
+    // track while the upstream track keeps the defective original (richest-data-flow).
+    expect(JSON.parse(upstreamCompleted!.raw).response.output).toEqual([])
+    expect(JSON.parse(forwardedCompleted!.raw).response.output).toEqual([finalItem])
+    expect(forwardedCompleted!.synthetic).toBe("buffered-terminal-repair")
   })
 
   test("buffered ON: mid-stream upstream drop AFTER a non-terminal response.output_item.done → still retried & recovered (terminal-only, not block-level)", async () => {
