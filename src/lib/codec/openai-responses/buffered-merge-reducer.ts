@@ -56,6 +56,33 @@ function locateTerminal(frames: ReadonlyArray<ClientFrame>): { index: number; pa
   return undefined
 }
 
+export type TerminalRepairReason = "empty-output" | "missing-item" | "inconsistent-item"
+
+/** Defect oracle for the `repair-if-incomplete` gate: does the upstream terminal snapshot's `output`
+ *  faithfully cover every item we collected from `output_item.done`? Complete → keep upstream verbatim
+ *  (never dethrone the authoritative snapshot); incomplete → the reason drives a rebuild. */
+export function isTerminalSnapshotComplete(
+  output: ReadonlyArray<ResponsesOutputItem>,
+  collected: ReadonlyMap<number, ResponsesOutputItem>,
+): { complete: true } | { complete: false; reason: TerminalRepairReason } {
+  if (output.length === 0 && collected.size > 0) return { complete: false, reason: "empty-output" }
+  const byId = new Map(output.map((item) => [item.id, item] as const))
+  for (const collectedItem of collected.values()) {
+    const match = byId.get(collectedItem.id)
+    if (!match) return { complete: false, reason: "missing-item" }
+    if (!itemsEquivalent(match, collectedItem)) return { complete: false, reason: "inconsistent-item" }
+  }
+  return { complete: true }
+}
+
+function itemsEquivalent(a: ResponsesOutputItem, b: ResponsesOutputItem): boolean {
+  if (a.type !== b.type) return false
+  if (a.type === "function_call" && b.type === "function_call") return a.arguments === b.arguments && a.call_id === b.call_id
+  if (a.type === "message" && b.type === "message") return JSON.stringify(a.content) === JSON.stringify(b.content)
+  if (a.type === "reasoning" && b.type === "reasoning") return JSON.stringify(a.summary) === JSON.stringify(b.summary) && a.encrypted_content === b.encrypted_content
+  return false
+}
+
 export interface ResponsesBufferedMergeOpts {
   eventCompaction: "verbatim" | "drop-delta" | "item-summary"
   completedOutput: "upstream" | "repair-if-incomplete" | "rebuild"
