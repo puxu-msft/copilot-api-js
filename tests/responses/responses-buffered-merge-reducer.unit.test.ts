@@ -100,3 +100,19 @@ describe("verbatim + 三档正交性", () => {
     }
   })
 })
+
+function completedFrame(output: Array<unknown>): ClientFrame {
+  return { event: "response.completed", data: JSON.stringify({ type: "response.completed", response: { id: "r1", object: "response", status: "completed", output, usage: null } }) }
+}
+
+describe("completed_output: upstream", () => {
+  test("terminal response.completed passes through as the same reference (upstream must not replace it)", () => {
+    const reducer = createResponsesBufferedMergeReducer({ eventCompaction: "drop-delta", completedOutput: "upstream" })
+    const { frames: fcFrames } = functionCallBlock(0, "fc_1")
+    for (const f of fcFrames) reducer.observe(f)
+    const terminal = completedFrame([]) // deliberately empty/defective — upstream mode must NOT repair it
+    const out = reducer.transformFlush([...fcFrames, terminal], { cause: "boundary", boundaryFrame: terminal })
+    const last = out[out.length - 1]
+    expect(last).toBe(terminal) // same reference — upstream mode must not replace the terminal frame at all
+  })
+})

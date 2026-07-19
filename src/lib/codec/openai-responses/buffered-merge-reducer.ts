@@ -44,6 +44,18 @@ function parseResponsesFrame(frame: ClientFrame): ParsedFrame | undefined {
   }
 }
 
+const TERMINAL_TYPES: ReadonlySet<string> = new Set(["response.completed", "response.failed", "response.incomplete"])
+
+/** Reverse-scan for the terminal frame in a flush batch. Terminal frames are themselves commit
+ *  boundaries, so if one is present in this batch it is the batch's own trigger (near the end). */
+function locateTerminal(frames: ReadonlyArray<ClientFrame>): { index: number; parsed: ParsedFrame } | undefined {
+  for (let i = frames.length - 1; i >= 0; i--) {
+    const parsed = parseResponsesFrame(frames[i])
+    if (parsed && TERMINAL_TYPES.has(parsed.type)) return { index: i, parsed }
+  }
+  return undefined
+}
+
 export interface ResponsesBufferedMergeOpts {
   eventCompaction: "verbatim" | "drop-delta" | "item-summary"
   completedOutput: "upstream" | "repair-if-incomplete" | "rebuild"
@@ -84,6 +96,10 @@ export function createResponsesBufferedMergeReducer(opts: ResponsesBufferedMerge
         if (dropAsDelta || dropAsItemSummarySubframe) continue
         working.push(f)
       }
+      // Terminal-snapshot reconciliation (completed_output). Task 2.5 wires only the locate + the
+      // upstream no-op; Task 2.7/2.8 replace the final return with repair-if-incomplete / rebuild.
+      const terminal = locateTerminal(working)
+      if (!terminal || opts.completedOutput === "upstream") return working
       return working
     },
   }
