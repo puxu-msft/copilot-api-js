@@ -1,7 +1,7 @@
 # Responses buffered 块级语义压缩 + 终结对账（buffered block merge）
 
-- 状态：spec 定稿待用户审阅（brainstorming → 四方跨模型对抗审查 → live-GHC 实测 gating 已完成）
-- 日期：2026-07-14
+- 状态：spec 定稿（brainstorming → 四方跨模型对抗审查 → live-GHC 实测 gating → **2026-07-19 对 master +523 提交 / generation runtime / History V3 重接地修订**）；待 plan 修订 + 复核后执行
+- 日期：2026-07-14（重接地 2026-07-19）
 - 归属：`docs/spec/`。关联 ADR [richest-data-flow](../decisions/2026-07-05-richest-data-flow.md)、[block-level-buffered-retry](../decisions/2026-07-11-block-level-buffered-retry.md)；DESIGN.md「活的架构现状」buffered 行。
 - 前置探针：[tests/e2e-client/responses-nodelta.probe.it.test.ts](../../tests/e2e-client/responses-nodelta.probe.it.test.ts)（客户端容忍，8 用例）+ 本文 §9 live-GHC 实测。
 
@@ -48,29 +48,31 @@ responses:
 
 **默认值的实证依据**（§9）：live-GHC 实测 GHC 直连 completed **携带完整 output**，故正常态 `drop-delta` 已足够、`repair` 不触发。repair 是罕见缺陷的安全网，非承重。
 
-## 4. 落点：codec 拥有的有状态 reducer + driver 咽喉调用
+## 4. 落点：reducer 托管进 candidate-response-session，transformFlush 由 driver 咽喉调用
 
-**[承重] 变换必须放进 `flushBufferedFrames` 内部**（[driver.ts](../../src/lib/pipeline/driver.ts) 单一咽喉，现约 801 行），在 anchor close-off/write 循环之前对 `frames` 施加一次。理由（细节评审 BLOCKER 坐实）：`response.completed` 本身在 commit 边界集（[commit-boundaries.ts:20](../../src/lib/codec/openai-responses/commit-boundaries.ts)），HTTP 直连路径上它在**块级 flush**（driver.ts:858）就被送走、终结尾巴 flush（:907）的 buffer 是**空的**——若变换只挂终结 flush，backfill 在 HTTP 直连**恒不触发**。咽喉点同时覆盖块级 / 终结 / retreat 三处。
+> **[2026-07-19 重接地修订]** master 前进 523 提交、引入 generation runtime（候选竞速/对冲）+ History V3。原设计把 reducer 挂顶层 `RunBufferedOpts.bufferedMerge` + `resetAttempt` 与新的候选会话运行时**阻抗失配**（每次 recovery 换全新候选+新 acc → 顶层持久 reducer 会带陈旧状态、`resetAttempt` 是为此打的补丁）。据只读勘探（B6）改为**托管进 candidate-response-session**——这更忠实于原意「codec 拥有的有状态 reducer」，且对未来 buffered/hedge 融合（driver.ts P7-T3）更稳。
 
-**reducer 接口（格式无关注入缝）**：
+**托管点 = candidate-response-session 的候选本地状态**（[candidate-response-session.ts](../../src/lib/pipeline/generation/candidate-response-session.ts)，Responses 工厂在 [routes/responses/candidate-response-session.ts](../../src/routes/responses/candidate-response-session.ts)）。Responses 每候选 `state = { acc, diag, ... }`，reducer 状态（收集槽）与 `acc` **并列**同址：
+- `observe(frame)` = 现成的候选 `onRenderedFrame(state, frame)` 回调（正是 `accumulateResponsesStreamEvent(event, state.acc)` 被喂的同一回调）→ **「observe 先于 drop」自动满足、无需另接线**。
+- **无 `resetAttempt`**：每次 retry/recovery 经 coordinator 拿全新候选 → 全新 session → 全新 acc + 全新收集槽，per-attempt **天生 fresh**。删掉原设计的 `resetAttempt`（它是顶层持久 reducer 的补丁、现在多余）。
+
+**transformFlush 作候选 responseOpt、由 driver 咽喉调用**（与既有 `commitBoundaries` 完全同构——后者也是候选 responseOpt、driver 在 buffered loop 消费）：
 
 ```ts
-interface BufferedFlushReducer {
-  observe(frame: ClientFrame): void
-  transformFlush(frames: readonly ClientFrame[], ctx: BufferedFlushContext): readonly ClientFrame[]
-  resetAttempt(): void
-}
+// 挂 CandidateResponseSessionOptions（与 commitBoundaries 并列）：
+transformBufferedFlush?(frames: readonly ClientFrame[], ctx: BufferedFlushContext): readonly ClientFrame[]
+
 interface BufferedFlushContext {
   cause: "boundary" | "terminal-drain" | "retreat"
-  boundaryFrame?: ClientFrame   // reducer 检查触发帧区分 output_item.done / completed / failed / error
+  boundaryFrame?: ClientFrame   // 区分 output_item.done / completed / failed / error
 }
 ```
 
-- codec/handler 创建有状态实例、经 `RunBufferedOpts.bufferedMerge?` 注入（类比现有 `commitBoundaries` opt）。
-- driver 只编排：render 帧进 `observe`、每次 flush 前调 `transformFlush(frames, ctx)`、重试前调 `resetAttempt`；**driver 不理解任何格式事件语义**。
-- CC/Anthropic 不传 reducer → 咽喉点 `if (reducer) frames = reducer.transformFlush(...)` 逐帧原样，零影响。
+- driver 在 `flushBufferedFrames` 咽喉（现 [driver.ts:1060](../../src/lib/pipeline/driver.ts)，三 flush 点 retreat@1155 / 块级@1193 / 终结@1250）经 `currentCandidateResponseOpts` 调 `candidateOpts.transformBufferedFlush?.(frames, ctx)`；未提供即逐帧原样、CC/Anthropic 零影响。
+- **`cause` 须另传**：`flushBufferedFrames` 现第二参是 `isTerminalFlush: boolean`（gate anchor 收尾、与 `cause` 语义**正交**，不可复用）——在三调用点各自另传 `cause`（retreat / boundary / terminal-drain）。
+- 咽喉施加在 anchor close-off/write 循环之前。理由（原 BLOCKER 仍成立）：`response.completed` 在 commit 边界集（[commit-boundaries.ts:20](../../src/lib/codec/openai-responses/commit-boundaries.ts)），HTTP 直连它在**块级 flush**就送走、终结尾巴 buffer 为空——变换须每次 flush 都跑、不能只挂终结。
 
-**[承重不变量] acc 喂养先于 merge drop 的次序**：reducer 的 `observe` 在帧入 buffer 前被喂（对齐现有 [handler-v4.ts:383](../../src/routes/responses/handler-v4.ts) 的 `onRenderedFrame` 喂 acc 时序），故 flush 时 reducer 已含到该点为止全部 item 状态。实现者若把 drop 前移到 observe 之前，rebuild 会读到被抽空的状态 → 加显式 invariant 测试锁死。
+**rebuild 源同址取得**：repair/rebuild 要读的终结快照，就是候选本地 `acc` 收集的各块 `output_item.done` 的 `item`（不是 `acc` 的拼接纯文本——它丢 message 多 part/reasoning/refusal/annotations）。reducer 在候选 state 里新增 `Array<ResponsesOutputItem>` 收集槽、与 `acc` 并列。
 
 **[HIGH] rebuild 源 = 收集到的各块 `output_item.done` 的 `item` 对象**（每个自带该块完整内容），**不是**现有 [responses-stream-accumulator.ts](../../src/lib/openai/responses-stream-accumulator.ts)（它只存拼接纯文本 + function_call，丢 message 多 part / reasoning / refusal / annotations，用它 rebuild 会把好数据降级）。reducer 新建一个 `Array<ResponsesOutputItem>` 收集槽。
 
@@ -81,16 +83,22 @@ interface BufferedFlushContext {
 1. **地雷不变量（泛化到「任何依赖 `content[contentIndex]` 已存在的事件」，不止 `.done`）**：openai SDK accumulator 中 `output_text.done` / `refusal.done` / `reasoning_text.done` / `reasoning_summary_text.done` **以及 `output_text.annotation.added`** 都走 `getContent(content_index)`，缺对应 `.added`（`content_part.added` / `reasoning_summary_part.added`）会**流式中途抛 `missing content`**（早于 completed、救不回）。仅 `function_call_arguments.done` 不走 getContent。故判据是**「任何依赖 content part 已存在的事件（含各 `.done` 与 `annotation.added`），其 `.added` 必须保留」**；`item-summary` 塌缩到纯 item 级时必须**一并丢弃 `output_text.annotation.added`**（否则它成孤儿引用、客户端抛 `missing content`——annotation 已完整落在 `output_item.done` 的 `item.content[].annotations`，丢流式 annotation 与丢 content_part.done 是同一等价性）。计划复核（GPT）发现：真实 gpt-5.5 `web_search_preview` 原生透传 citation annotation，此路径真实存在、当前项目类型 union 未建模 `output_text.annotation.added` → 须补建模。
 2. **drop-delta 只丢有绝对值 `.done` 重设的 delta**：`output_text.delta`（done 是 `=` 绝对值）、`function_call_arguments.delta`、`refusal.delta`、`reasoning_text.delta`、`reasoning_summary_text.delta` 可证安全丢。**绝不丢 payload 型 delta**（`response.audio.delta` / `image_generation_call.partial_image`）——其 `.done` 在 accumulator 是 no-op、completed.output 不含，丢了不可恢复。
 3. **retreat + 失败/不完整终结 + 未知事件 → 一律 verbatim**（硬不变量，不是某模式的偶然实现）：
-   - `cause: "retreat"`（[driver.ts:818-843](../../src/lib/pipeline/driver.ts) buffer-cap 退避）→ `transformFlush` no-op 原样 flush（否则「前缀归并 + 后缀 live delta」混合 wire 造成客户端不可恢复的内容缺口）。
+   - `cause: "retreat"`（driver.ts buffer-cap 退避）→ `transformFlush` no-op 原样 flush（否则「前缀归并 + 后缀 live delta」混合 wire 造成客户端不可恢复的内容缺口）。
    - `error` / `response.failed` / `response.incomplete` 终结且当前 item 未形成完整 snapshot → 保留 delta（richest-data-flow：失败不是丢 partial 诊断信息的理由）。
    - 未知/新增事件类型 → 默认原样保留、禁止半归并。
+4. **[2026-07-19 重接地新增] buffered ⊥ hedge 互斥 + winner-only 交付**：generation runtime 的对冲在 buffered 路径**被短路禁用**（[driver.ts:768](../../src/lib/pipeline/driver.ts)：`if (outerOpts && "retryCap" in outerOpts) return undefined`——buffered 永远传 `retryCap`）。故 reducer **永不**与并发多候选共存；竞速也只交付**单一 winner** 的帧（`writeWinnerFrames`），每候选持隔离 acc + 隔离收集槽。per-candidate reducer 模型因此不仅成立、反被强化。**须显式声明为不变量 + 加守卫测试**（若未来 P7-T3 融合 buffered/hedge 打破此互斥，候选本地托管仍是正确形状，而顶层 reducer 会崩——这也是 §4 选候选托管的理由之一）。
 
 ## 6. History 双轨 + 合成标记（仅生成帧）
 
 - **upstream 轨**（`response`/`sseEvents`/per-attempt `_sseEvents`）：永远原样保留全部 delta（richest-data-flow 铁律）。归并在咽喉点作用于 client 帧、在 upstream 快照点之后，天然不污染。
 - **forwarded 轨**（`clientResponse.sseEvents`）：记客户端真收到的归并后 wire。
 - **[承重] 合成标记只打在生成帧上**：`drop-delta`（减法）**不需要标记**——丢 delta 是「帧的缺席」，上游轨保 verbatim delta、forwarded 轨省略它们，**两轨 diff 本身即归并记录**、可完整重建。给原样透传的幸存帧（output_item.added/done 逐字节未改）打标记会与 [frame-origin.ts](../../src/lib/pipeline/frame-origin.ts)「只有被改写/注入的帧属于 synthetic」契约冲突。**只有 `repair`/`rebuild` 重建的 completed** 才标（forwarded 内容 ≠ 上游内容）。
-- 复用**单一** `SseEventRecord.synthetic` 字段，新增值 `"buffered-terminal-repair"`（generative completed）。新 union 值须同步 **4 处类型站点**：[frame-origin.ts:29](../../src/lib/pipeline/frame-origin.ts) `SyntheticOriginKind` + [client-sink.ts:171/498](../../src/lib/pipeline/client-sink.ts)（HTTP/WS 各一份）+ [history/types.ts:191](../../src/lib/history/types.ts) + ui-v4 穷尽 Record 消费端（[[methodology-route-variant-to-existing-outcome-and-exhaustive-record-audit]]：漏一处打爆 ui-v4）。
+- 复用**单一** `SseEventRecord.synthetic` 字段，新增值 `"buffered-terminal-repair"`（generative completed）。**[2026-07-19 重接地修订]** 打标机制：repair 后的 `response.completed` 帧经 `flushBufferedFrames → sink.write → sampleForwarded(frame, readSyntheticKind(frame))` 落库，故用 `tagFrameSynthetic`（[frame-origin.ts:32](../../src/lib/pipeline/frame-origin.ts)）。当前实际须改的站点（**非原稿的 4 文件**——History V3 已把 union 集中）：
+  1. `SyntheticOriginKind` @ [frame-origin.ts:29](../../src/lib/pipeline/frame-origin.ts)（让 tagFrameSynthetic/readSyntheticKind 接受）
+  2. `OperationSyntheticKind` @ [model-operation-record.ts:28](../../src/lib/context/model-operation-record.ts)（记录层超集，`SseEventRecord.synthetic` 现 import 它、不再自建 union）
+  3. `sampleForwarded` 参数 union @ [client-sink.ts:194](../../src/lib/pipeline/client-sink.ts)（HTTP）
+  4. `sampleForwarded` 参数 union @ [client-sink.ts:588](../../src/lib/pipeline/client-sink.ts)（WS）
+  - `history/types.ts` 自建 union **已消失**（改 import `OperationSyntheticKind`）；ui-v4 **疑似无穷尽 Record**（`SseEventsSegment.tsx` 只用泛化 `f.n` 标志渲染、不 switch over kinds）→ 大概率无需改 ui-v4，但**须读码坐实**（残余项）。
 - **聚合诊断入 `pipelineInfo`**：mode、dropped event count/bytes、dropped event types、repaired item count、repair reason（`empty-output | missing-item | inconsistent-item`）、flush cause、reducer fallback-to-verbatim 原因。
 
 ## 7. 配置纪律（配置不享代码的「无向后兼容负担」）
@@ -134,9 +142,21 @@ GPT×Claude × 细节×形状 四份评审，高度收敛。采纳要点：正�
 
 ## 11. 实现阶段（交 writing-plans 细化）
 
-- Phase 0：装 `@ai-sdk/openai` dev 依赖 + 前置探针转正（现有 openai 探针扩块型）。
-- Phase 1：reducer 接口 + 格式无关注入缝（driver 咽喉调用 + RunBufferedOpts opt）。
-- Phase 2：Responses reducer（收集槽 + drop-delta + item-summary + isTerminalSnapshotComplete + repair/rebuild）。
-- Phase 3：History synthetic 标记 4 站点 + pipelineInfo 诊断。
+- Phase 0：装 `@ai-sdk/openai` dev 依赖 + 前置探针转正（现有 openai 探针扩块型）+ 类型缺口修正（`annotation.added` + `reasoning_text` 建模）。
+- Phase 1：transformBufferedFlush 候选 responseOpt + driver 咽喉调用（**候选托管**，非顶层 `bufferedMerge`）+ cause 三点另传 + buffered⊥hedge 守卫。
+- Phase 2：Responses 候选 reducer（收集槽与 acc 并列 + drop-delta + item-summary + isTerminalSnapshotComplete + repair/rebuild）。
+- Phase 3：History synthetic 标记（4 站点：frame-origin + model-operation-record + client-sink×2）+ pipelineInfo 诊断。
 - Phase 4：配置两旋钮 + capability 约束 + 校验回落。
 - Phase 5：测试三层 + 变异纪律 + Codex oracle。
+
+## 12. 2026-07-19 重接地：漂移处置与残余核实
+
+对 master +523 提交（generation runtime + History V3）只读勘探后：
+
+**实质修订（已入 §4/§5.4/§6）**：① reducer 从顶层 `RunBufferedOpts.bufferedMerge` 迁到 **candidate-response-session 候选托管**（observe=onRenderedFrame、per-attempt 天生 fresh、删 `resetAttempt`）；② `transformBufferedFlush` 作候选 responseOpt、driver 咽喉调用（与 `commitBoundaries` 同构）；③ `cause` 须在三 flush 点另传（`flushBufferedFrames` 第二参 `isTerminalFlush` 与 cause 正交）；④ synthetic 标记站点更新（4 处：frame-origin:29 + model-operation-record:28 + client-sink:194/588，history/types 自建 union 已消失）；⑤ 新增 buffered⊥hedge 互斥不变量。
+
+**机械重定位（交 plan）**：全部行号、`runResponseBufferedSink(deps,…,generation?)` 签名、flush 三点行号。
+
+**不变（勘探坐实仍成立）**：commit-boundaries、History V3 双轨分离、pipelineInfo 仍是聚合诊断通道、类型缺口 Phase 0 原样、地雷不变量、默认值 live-GHC 依据。
+
+**残余核实项（plan 执行前坐实）**：① ui-v4 对 `f.n`/synthetic 的渲染是否真无穷尽 Record（大概率无需改 ui-v4）；② `makeBufferedHarness` 现签名与测试的契合；③ winner-only 聚合诊断只覆盖交付候选是否合 §6 意图。
