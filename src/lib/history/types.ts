@@ -18,6 +18,7 @@ import type {
   SendMessageNormalizationDiag,
 } from "~/lib/anthropic/decode-tool-input-core"
 import type { DestackStats } from "~/lib/anthropic/sanitize/destack-adjacent-thinking"
+import type { BufferedMergeDiag } from "~/lib/codec/openai-responses/buffered-merge-reducer"
 import type { OperationSyntheticKind } from "~/lib/context/model-operation-record"
 import type { ProcessIdentity } from "~/lib/process-identity"
 import type { CopilotAnnotations } from "~/types/api/anthropic"
@@ -236,6 +237,9 @@ export interface PipelineInfo {
   askUserQuestionNormalization?: AskNormalizationDiag
   /** SendMessage 收件人抢救诊断：把错名的 `agentId` 别名重命名回必填的 `to`（客户端否则报 `to is missing`）。落 history 供全人群审计。 */
   sendMessageNormalization?: SendMessageNormalizationDiag
+  /** Responses buffered-merge 诊断（spec 2026-07-14-responses-buffered-block-merge §6）：event_compaction/completed_output
+   *  实际生效值 + 丢弃/修复统计。落 history 供运维审计归并行为。 */
+  bufferedMerge?: BufferedMergeDiag
 }
 
 export interface WarningMessage {
