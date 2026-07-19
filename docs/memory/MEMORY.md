@@ -47,6 +47,7 @@
 - [微改动别反射式派 subagent 评审](feedback-tier-subagent-review-skip-for-mechanical-micro-changes.md) — 与 user-rule 41 `tiered-review-by-risk` 合读;机械低风险走 TDD、微改攒批合并态审
 - [agent 后台连挂也绝不自作主张换模型](feedback-never-unilaterally-switch-agent-model-on-flakiness.md) — API 错误连挂也永远 resume 原 agent、绝不擅换模型家族(破坏异模型对抗、是用户决策)
 - [eslint --cache 假绿](tooling-eslint-cache-false-pass.md) — `--cache` 对过期文件假绿;`lint:all` 已去 cache、核单文件 `bunx eslint <path>`
+- [eslint --fix 的 .at() autofix 破类型](tooling-eslint-fix-at-autofix-breaks-types.md) — `prefer-at` 把 `arr[len-1]`→`.at(-1)`(返 T|undefined);--fix 后**必重跑 typecheck**、测试照绿会漏
 - [node_modules 存在 ≠ 锁文件事实](reference-node-modules-presence-not-lockfile-truth.md) — 可能是 prune 的 orphan;选依赖前 `grep '"<pkg>@' bun.lock`
 - [worktree bun add 后主树须补 install](reference-worktree-bun-add-needs-main-tree-install-after-merge.md) — 隔离 worktree `bun add` 只进该树;FF 合并后主树须 `bun install`
 - [server.ts 与 test-app.ts 双份 notFound 镜像](reference-server-vs-test-app-dual-notfound-mirror.md) — 改 server 中间件/notFound 须用真实 createServer 测(createFullTestApp 无中间件镜像);config 中间件每请求覆盖 state→level 测须 config 文件驱动
@@ -81,6 +82,7 @@
 - [恢复 agent 永远 SendMessage 绝不 Agent tool 重派](feedback-resume-agent-always-sendmessage-never-agent-tool.md) — 已终止/已完成 subagent 接续永远 `SendMessage`、绝不 `Agent` 重派(丢上下文);唯一 Agent 新派=真全新独立任务
 
 ## project 现状 stub（权威看正式归属；「全 landed」项细节在 docs/git）
+- [Responses buffered-merge（全 36 task landed 分支，待合并 master）](project-responses-buffered-merge-landed.md) — 候选托管 reducer + 两正交旋钮(drop-delta/repair-if-incomplete 默认);承重=buffered 默认 ON 致 drop-delta 作用于所有 Responses 流、纯 delta 累加者拿空文本;bare-driver harness 不可行须 HTTP e2e;@ai-sdk 比官方 openai 更宽容;权威 DESIGN 活的架构现状行 + spec/plan 2026-07-14
 - [transport 配置三轴归位（P1-P5 全 landed master 2c19c7cf）](project-transport-config-three-axis-reorg.md) — timeouts 看门狗/upstream_transport egress/server.responses_ws ingress;0 语义统一+SOCKS 诚实拒 0;WS 无 keepalive 键;热重载 generation retire-and-replace;每相位 TDD 逼出真 bug(Bun pre-header bare-close·集合字段损坏·WS never-throw 半实现·dead export);权威 ADR/spec 2026-07-14 + DESIGN 活的架构现状
 - [History 三层降温归档（已合并 master，lifecycle follow-up `27b65b89`）](project-history-tiered-archive.md) — HOT→tier-1→不可变 session-generation sealed units；move 永不真删；Archive worker 以 durable unit 协作停/续跑、并发 sibling 全 settle 后关 DB；同 session 增量不覆盖；用户重启实例已实证加载
 - [对称四点 hook 架构重构（已实施合并 master 2a77bf7c）](project-symmetric-four-point-hooks.md) — client/upstream×in/out+exchange;四格式 async 入站下沉 driver S1b translateInbound;client.inbound 剥 TodoWrite;7 phase 全绿+verifier 验收;实测教训=data-URL 不解析别名·config-freshness 须 parse 前;权威 RFC docs/rfc/2026-07-14-symmetric-four-point-hooks
