@@ -48,6 +48,7 @@ import type { ResponsesResponse } from "~/types/api/openai-responses"
 
 import { getProtectStreamingStats } from "~/lib/anthropic/protect-streaming-stats"
 import { getHistory } from "~/lib/history"
+import { finalUpstreamResponse } from "~/lib/history/entry-view"
 import {
   //
   setModels,
@@ -63,6 +64,7 @@ import {
   createSseResponse,
   createSseResponseThenError,
 } from "../helpers/sse"
+import { functionCallBlock } from "./fixtures/buffered-merge-blocks"
 
 const MODEL = "gpt-5-ws"
 
@@ -127,6 +129,17 @@ function ccStreamFrames(model: string): Array<string> {
   ]
 }
 
+/** A clean function_call generation for the WS buffered-merge case: created → the block fixture
+ *  (added/delta×2/done/output_item.done) → response.completed carrying the complete finalItem. */
+function functionCallCompleteFrames(model: string): Array<string> {
+  const { frames, finalItem } = functionCallBlock(0, "fc_ws")
+  return [
+    `event: response.created\ndata: ${JSON.stringify({ type: "response.created", sequence_number: 0, response: { id: "resp_ws_fc", object: "response", status: "in_progress", model, output: [] } })}\n\n`,
+    ...frames.map((f) => `event: ${f.event}\ndata: ${f.data}\n\n`),
+    `event: response.completed\ndata: ${JSON.stringify({ type: "response.completed", sequence_number: 99, response: { id: "resp_ws_fc", object: "response", status: "completed", model, output: [finalItem], usage: { input_tokens: 10, output_tokens: 5 } } })}\n\n`,
+  ]
+}
+
 const RST_ERROR = new Error("Stream closed with error code NGHTTP2_CANCEL")
 
 let upstreamCalls = 0
@@ -136,6 +149,9 @@ let rstBeforeComplete = 0
  * `response.output_item.done`) instead of the plain `partialFrames` (RST before ANY output item
  * completes). Discriminates the terminal-only vs block-level commit-boundary predicate. */
 let rstPastItemDone = false
+/** When true, the upstream returns the clean function_call generation ({@link functionCallCompleteFrames})
+ * for the WS buffered-merge dual-track case (Task 3.5). */
+let functionCall = false
 
 const upstreamFetchMock = mock((input: string | URL | Request, init?: RequestInit) => {
   const url =
@@ -151,6 +167,7 @@ const upstreamFetchMock = mock((input: string | URL | Request, init?: RequestIni
   }
   if (url.endsWith("/responses")) {
     upstreamCalls += 1
+    if (functionCall) return Promise.resolve(createSseResponse(functionCallCompleteFrames(model)))
     const rst = upstreamCalls <= rstBeforeComplete
     if (rst) {
       const frames = rstPastItemDone ? partialFramesPastItemDone(model) : partialFrames(model)
@@ -257,6 +274,7 @@ describe("Responses WS buffered retry (P4 Task 1)", () => {
     upstreamCalls = 0
     rstBeforeComplete = 0
     rstPastItemDone = false
+    functionCall = false
     upstreamFetchMock.mockClear()
     setStateForTests({
       accountType: "individual",
@@ -322,6 +340,43 @@ describe("Responses WS buffered retry (P4 Task 1)", () => {
       totalRetries: 1,
       retriesBeforeDegrade: 0,
     })
+  })
+
+  test("Task 3.5: buffered WS drop-delta — forwarded messages omit function_call_arguments.delta, upstream track keeps them, pipelineInfo.bufferedMerge recorded", async () => {
+    setModels({
+      object: "list",
+      data: [mockModel(MODEL, { vendor: "OpenAI", supported_endpoints: ["/responses"] })],
+    })
+    setStateForTests({
+      responsesBufferedRetry: true,
+      bufferedRetryShared: { maxRetries: 2, bufferCapBytes: 16_777_216, heartbeatSec: 15 },
+      streamKeepalivePingSec: 20,
+    })
+    functionCall = true
+
+    server = startWsServer()
+    const ws = new WebSocket(`${server.url}/responses`)
+    const closePromise = waitForSocketClose(ws)
+    await waitForOpen(ws)
+    ws.send(JSON.stringify({ type: "response.create", response: { model: MODEL, input: "hi" } }))
+    const result = await closePromise
+
+    const forwardedTypes = result.messages.map((m) => m.type)
+    // WS flushes ONCE at the terminal drain (no block-level commit) — the reducer still drops the closed
+    // item's deltas while keeping the absolute-value .done + the terminal.
+    expect(forwardedTypes).not.toContain("response.function_call_arguments.delta")
+    expect(forwardedTypes).toContain("response.function_call_arguments.done")
+    expect(forwardedTypes).toContain("response.completed")
+    expect(result.code).toBe(1000)
+
+    const entry = getHistory({ endpoint: "openai-responses", limit: 5 }).entries[0]
+    expect(entry?.state).toBe("completed")
+    // Upstream track keeps both raw deltas verbatim (richest-data-flow).
+    expect(finalUpstreamResponse(entry)!.sseEvents!.filter((e) => e.type === "response.function_call_arguments.delta").length).toBe(2)
+    // Forwarded track omits them + no synthetic repair (clean complete generation).
+    expect(entry.clientResponse!.sseEvents!.filter((e) => e.type === "response.function_call_arguments.delta").length).toBe(0)
+    expect(entry.pipelineInfo?.bufferedMerge?.eventCompaction).toBe("drop-delta")
+    expect(entry.pipelineInfo?.bufferedMerge?.droppedEventCount).toBe(2)
   })
 
   test("buffered ON: mid-stream upstream drop AFTER a non-terminal response.output_item.done → still retried & recovered (terminal-only, not block-level)", async () => {
