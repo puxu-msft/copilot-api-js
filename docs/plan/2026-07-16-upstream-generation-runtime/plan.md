@@ -1,6 +1,6 @@
 # 上游生成运行时重构——分阶段 TDD 实施计划
 
-日期：2026-07-16｜状态：**Phase 0-9 后端完成；终局 merged-state review PASS，待 P10 client/真实 GHC 验证**｜权威规格：[RFC](../../rfc/2026-07-16-upstream-generation-runtime.md)
+日期：2026-07-16｜状态：**Phase 0-10 完成；终局 merged-state review、真实SDK E2E与真实GHC靶向验证均PASS**｜权威规格：[RFC](../../rfc/2026-07-16-upstream-generation-runtime.md)
 
 ## 0. 目标与红线
 

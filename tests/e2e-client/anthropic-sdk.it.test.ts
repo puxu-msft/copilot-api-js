@@ -55,6 +55,7 @@ import {
   createSseResponse,
   httpErrorResponse,
   jsonResponse,
+  sequencedUpstream,
   scriptedUpstream,
 } from "./harness/upstream-script"
 
@@ -87,6 +88,37 @@ function happyTurn(text: string): Array<string> {
     ev("message_stop", { type: "message_stop" }),
     DONE,
   ]
+}
+
+function stalledPartialTurn(text: string): Response {
+  const encoder = new TextEncoder()
+  const preBoundary = [
+    ev("message_start", {
+      type: "message_start",
+      message: {
+        id: "msg_primary_stalled",
+        type: "message",
+        role: "assistant",
+        model: MODEL,
+        content: [],
+        stop_reason: null,
+        stop_sequence: null,
+        usage: { input_tokens: 5, output_tokens: 0 },
+      },
+    }),
+    ev("content_block_start", { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } }),
+    ev("content_block_delta", { type: "content_block_delta", index: 0, delta: { type: "text_delta", text } }),
+  ].join("")
+  return new Response(
+    new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encoder.encode(preBoundary))
+        // Intentionally never close: fast-retry must start the secondary before this candidate
+        // completes its first semantic block. Loser cancellation owns stream disposal.
+      },
+    }),
+    { status: 200, headers: { "content-type": "text/event-stream" } },
+  )
 }
 
 /** thinking-only refusal: a thinking block (empty text + signature) then stop_reason:refusal. */
@@ -585,6 +617,25 @@ describe("client↔proxy SDK e2e (Anthropic, upstream shielded)", () => {
     const final = await client.messages.stream({ model: MODEL, max_tokens: 16, messages: [{ role: "user", content: "x" }] }).finalMessage()
     const thinking = final.content.find((b) => b.type === "thinking") as { signature?: string } | undefined
     expect(thinking?.signature).toBe("SIG-COMPAT") // accepted despite event!==type (event ∈ accept-set)
+  })
+
+  test("fast-retry: stalled primary partial block is hidden; secondary complete block becomes one coherent SDK message", async () => {
+    setStateForTests({
+      responseHeaderTimeout: 1,
+      generationHedgeEnabled: true,
+      generationHedgeThresholdSec: 0,
+      protectStreamingGeneration: false,
+    })
+    const up = sequencedUpstream([() => stalledPartialTurn("PRIMARY-HALF-MUST-NOT-LEAK"), () => createSseResponse(happyTurn("secondary complete"))])
+    setUpstreamFetchForTests(up.handler)
+
+    const stream = client.messages.stream({ model: MODEL, max_tokens: 16, messages: [{ role: "user", content: "hedge" }] })
+    const final = await stream.finalMessage()
+
+    expect(final.content).toEqual([{ type: "text", text: "secondary complete" }] as never)
+    expect(JSON.stringify(final.content)).not.toContain("PRIMARY-HALF-MUST-NOT-LEAK")
+    expect(final.stop_reason).toBe("end_turn")
+    expect(up.callCount()).toBe(2)
   })
 })
 
