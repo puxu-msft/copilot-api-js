@@ -845,6 +845,14 @@ export interface State {
   readonly fixResponsesStreamIds: boolean
 
   /**
+   * Responses buffered-merge two orthogonal knobs (spec 2026-07-14-responses-buffered-block-merge §3).
+   * Lazy: only in effect on the buffered path (`responsesBufferedRetry`). `event_compaction` controls
+   * mid-block delta compaction; `completed_output` controls terminal-snapshot reconciliation.
+   */
+  readonly responsesBufferedMergeEventCompaction: "verbatim" | "drop-delta" | "item-summary"
+  readonly responsesBufferedMergeCompletedOutput: "upstream" | "repair-if-incomplete" | "rebuild"
+
+  /**
    * Strip the `image_generation` builtin tool from inbound Responses requests.
    * The Copilot upstream rejects it (failing the whole request); some clients
    * (e.g. Codex CLI) auto-inject it. Default false; enable with config
@@ -1576,7 +1584,16 @@ export function onUpstreamTransportChange(listener: () => void): () => void {
 
 export function setResponsesConfig(
   patch: Partial<
-    Pick<MutableState, "normalizeResponsesCallIds" | "upstreamWebSocket" | "responsesBufferedRetry" | "fixResponsesStreamIds" | "stripImageGenerationTool">
+    Pick<
+      MutableState,
+      | "normalizeResponsesCallIds"
+      | "upstreamWebSocket"
+      | "responsesBufferedRetry"
+      | "fixResponsesStreamIds"
+      | "stripImageGenerationTool"
+      | "responsesBufferedMergeEventCompaction"
+      | "responsesBufferedMergeCompletedOutput"
+    >
   >,
 ): void {
   updateState(patch)
@@ -1841,6 +1858,8 @@ export const CONFIG_MANAGED_DEFAULTS = {
   // — block-level anchor-coexist shape is CLI-unsafe (tests/e2e-client/anthropic-coexist-cli.e2e.test.ts).
   responsesBufferedRetry: true,
   fixResponsesStreamIds: true,
+  responsesBufferedMergeEventCompaction: "drop-delta" as "verbatim" | "drop-delta" | "item-summary",
+  responsesBufferedMergeCompletedOutput: "repair-if-incomplete" as "upstream" | "repair-if-incomplete" | "rebuild",
   stripImageGenerationTool: false,
   clientWebsocketKeepOpen: false,
   maxWsFrameBytes: 0,
@@ -2002,6 +2021,8 @@ export function resetConfigManagedState(): void {
     upstreamWebSocket: CONFIG_MANAGED_DEFAULTS.upstreamWebSocket,
     responsesBufferedRetry: CONFIG_MANAGED_DEFAULTS.responsesBufferedRetry,
     fixResponsesStreamIds: CONFIG_MANAGED_DEFAULTS.fixResponsesStreamIds,
+    responsesBufferedMergeEventCompaction: CONFIG_MANAGED_DEFAULTS.responsesBufferedMergeEventCompaction,
+    responsesBufferedMergeCompletedOutput: CONFIG_MANAGED_DEFAULTS.responsesBufferedMergeCompletedOutput,
     stripImageGenerationTool: CONFIG_MANAGED_DEFAULTS.stripImageGenerationTool,
   })
   setResponsesWsIngressConfig({
@@ -2152,6 +2173,8 @@ const mutableState: MutableState = {
   upstreamWebSocket: CONFIG_MANAGED_DEFAULTS.upstreamWebSocket,
   responsesBufferedRetry: CONFIG_MANAGED_DEFAULTS.responsesBufferedRetry,
   fixResponsesStreamIds: CONFIG_MANAGED_DEFAULTS.fixResponsesStreamIds,
+  responsesBufferedMergeEventCompaction: CONFIG_MANAGED_DEFAULTS.responsesBufferedMergeEventCompaction,
+  responsesBufferedMergeCompletedOutput: CONFIG_MANAGED_DEFAULTS.responsesBufferedMergeCompletedOutput,
   stripImageGenerationTool: CONFIG_MANAGED_DEFAULTS.stripImageGenerationTool,
   clientWebsocketKeepOpen: CONFIG_MANAGED_DEFAULTS.clientWebsocketKeepOpen,
   maxWsFrameBytes: CONFIG_MANAGED_DEFAULTS.maxWsFrameBytes,
