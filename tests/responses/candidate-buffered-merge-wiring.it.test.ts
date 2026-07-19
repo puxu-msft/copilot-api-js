@@ -19,6 +19,8 @@ import {
   test,
 } from "bun:test"
 
+import { finalUpstreamResponse } from "~/lib/history/entry-view"
+import { getHistory } from "~/lib/history/store"
 import {
   //
   setDisabledModels,
@@ -95,5 +97,24 @@ describe("candidate-hosted reducer wiring (Task 2.10)", () => {
     expect(sse).not.toContain("response.function_call_arguments.delta")
     expect(sse).toContain("response.function_call_arguments.done")
     expect(sse).toContain("response.completed")
+  })
+
+  test("Task 3.4: dual-track history — upstream keeps every delta, forwarded omits them, pipelineInfo.bufferedMerge recorded", async () => {
+    await (await streamRequest()).text()
+
+    const entry = getHistory({ endpoint: "openai-responses", limit: 5 }).entries[0]
+    expect(entry?.state).toBe("completed")
+    // Upstream-original track keeps the raw generation verbatim (richest-data-flow): both deltas survive.
+    const upstreamDeltas = finalUpstreamResponse(entry)!.sseEvents!.filter((e) => e.type === "response.function_call_arguments.delta")
+    expect(upstreamDeltas.length).toBe(2)
+    // Forwarded track (what the client received) has the deltas dropped by the default drop-delta reducer.
+    const forwardedDeltas = entry.clientResponse!.sseEvents!.filter((e) => e.type === "response.function_call_arguments.delta")
+    expect(forwardedDeltas.length).toBe(0)
+    // A clean complete generation needs no repair, so no synthetic terminal-repair tag on the forwarded track.
+    expect(entry.clientResponse!.sseEvents!.some((e) => e.synthetic === "buffered-terminal-repair")).toBe(false)
+    // The merge diagnostics reached history via recordBufferedMergeInfo() → mergedPipelineInfo() (Task 3.3).
+    expect(entry?.pipelineInfo?.bufferedMerge?.eventCompaction).toBe("drop-delta")
+    expect(entry?.pipelineInfo?.bufferedMerge?.completedOutput).toBe("repair-if-incomplete")
+    expect(entry?.pipelineInfo?.bufferedMerge?.droppedEventCount).toBe(2)
   })
 })
