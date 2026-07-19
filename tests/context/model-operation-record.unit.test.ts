@@ -231,6 +231,52 @@ describe("ModelOperationRecord canonical shape", () => {
     expect(record.attempts[2]?.diagnostics[0]?.data).toEqual({ input_tokens: 42, output_tokens: 7 })
   })
 
+  it("records candidates and physical dispatches by branded handles without positional joins", () => {
+    const recorder = makeRecorder()
+    const primary = recorder.beginCandidate({ role: "primary" })
+    const hedge = recorder.beginCandidate({ role: "hedge" })
+    const primaryFirst = recorder.beginDispatch({ candidate: primary, strategy: "initial", transport: "http" })
+    const hedgeFirst = recorder.beginDispatch({ candidate: hedge, strategy: "initial", transport: "upstream-ws" })
+    const primaryRetry = recorder.beginDispatch({ candidate: primary, strategy: "network-retry", transport: "http" })
+
+    recorder.settleDispatch(primaryFirst, { verdict: "discarded", reason: "transport cut" })
+    recorder.settleDispatch(hedgeFirst, { verdict: "failed", reason: "hedge failed" })
+    recorder.settleDispatch(primaryRetry, { verdict: "committed" })
+    recorder.settleCandidate(hedge, { verdict: "failed" })
+    recorder.settleCandidate(primary, { verdict: "winner" })
+    const record = recorder.commitTerminal({ outcome: "completed", winnerCandidate: primary, committedDispatch: primaryRetry })
+
+    expect(record.candidates).toEqual([
+      expect.objectContaining({ handle: primary, role: "primary", dispatches: [primaryFirst, primaryRetry], verdict: "winner" }),
+      expect.objectContaining({ handle: hedge, role: "hedge", dispatches: [hedgeFirst], verdict: "failed" }),
+    ])
+    expect(record.dispatches.map(({ handle, candidate }) => ({ handle, candidate }))).toEqual([
+      { handle: primaryFirst, candidate: primary },
+      { handle: hedgeFirst, candidate: hedge },
+      { handle: primaryRetry, candidate: primary },
+    ])
+    expect(record.terminal).toMatchObject({ winnerCandidate: primary, committedDispatch: primaryRetry })
+    expect(record.attempts).toBe(record.dispatches)
+    // JSON wire is the oracle: the runtime compatibility getter must be non-enumerable.
+    // eslint-disable-next-line unicorn/prefer-structured-clone
+    expect(JSON.parse(JSON.stringify(record))).not.toHaveProperty("attempts")
+
+    const byHandle = new Map(record.dispatches.map((dispatch) => [dispatch.handle, dispatch]))
+    const reordered = [...record.dispatches].reverse()
+    expect(record.candidates[0]?.dispatches.map((handle) => byHandle.get(handle)?.strategy)).toEqual(["initial", "network-retry"])
+    expect(reordered.find((dispatch) => dispatch.handle === primaryRetry)?.candidate).toBe(primary)
+  })
+
+  it("rejects candidate settlement with an open dispatch and terminal seal with an open candidate", () => {
+    const recorder = makeRecorder()
+    const primary = recorder.beginCandidate({ role: "primary" })
+    const dispatch = recorder.beginDispatch({ candidate: primary })
+
+    expect(() => recorder.settleCandidate(primary, { verdict: "winner" })).toThrow(/open dispatch/i)
+    recorder.settleDispatch(dispatch, { verdict: "committed" })
+    expect(() => recorder.commitTerminal({ outcome: "completed", committedDispatch: dispatch })).toThrow(/open candidate/i)
+  })
+
   it("assigns one globally monotonic sequence across arena and recorder events", () => {
     const recorder = makeRecorder()
     const payload = recorder.registerPayload({ prompt: "hello" }, { origin: clientIngress })
@@ -340,7 +386,7 @@ describe("ModelOperationRecord canonical shape", () => {
     const recorder = makeRecorder()
     recorder.beginAttempt({})
 
-    expect(() => recorder.commitTerminal({ outcome: "failed" })).toThrow(/open attempt/i)
+    expect(() => recorder.commitTerminal({ outcome: "failed" })).toThrow(/open dispatch/i)
   })
 
   it("round-trips unknown extension payloads without filtering their fields", () => {
@@ -406,7 +452,7 @@ describe("ModelOperationRecord canonical shape", () => {
     ).toThrow(/unknown frame/i)
     const failed = recorder.beginAttempt({})
     recorder.settleAttempt(failed, { verdict: "failed" })
-    expect(() => recorder.commitTerminal({ outcome: "failed", committedAttempt: failed })).toThrow(/must reference a committed attempt/i)
+    expect(() => recorder.commitTerminal({ outcome: "failed", committedAttempt: failed })).toThrow(/must reference a committed dispatch/i)
   })
 })
 

@@ -239,6 +239,7 @@ describe("responses client", () => {
       handshakeHeaders: {},
       rescheduleIdleTimeout: () => {},
       close: () => {},
+      dispose: async () => {},
     }))
     setStateForTests({ upstreamWebSocket: true })
 
@@ -288,6 +289,7 @@ describe("responses client", () => {
       handshakeHeaders: {},
       rescheduleIdleTimeout: () => {},
       close: () => {},
+      dispose: async () => {},
     }))
     setStateForTests({ upstreamWebSocket: true })
 
@@ -361,6 +363,7 @@ describe("responses client", () => {
       handshakeHeaders: {},
       rescheduleIdleTimeout: () => {},
       close: () => {},
+      dispose: async () => {},
     }))
 
     // HTTP fallback target — should be hit after WS aborts pre-first-event
@@ -478,6 +481,7 @@ describe("responses client", () => {
       handshakeHeaders: {},
       rescheduleIdleTimeout: () => {},
       close: () => {},
+      dispose: async () => {},
     }))
 
     setStateForTests({ upstreamWebSocket: true })

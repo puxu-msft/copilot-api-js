@@ -33,10 +33,11 @@ import { publishModelOperationTerminal } from "~/lib/history/v3/terminal-bus"
 import { normalizeModelId } from "~/lib/models/resolver"
 import { getProcessIdentity } from "~/lib/process-identity"
 import { state as appState } from "~/lib/state"
+import { withRejectionObserver } from "~/lib/transport/crash-safety"
 
 import type {
   //
-  AttemptHandle,
+  DispatchHandle,
   FrameNodeHandle,
   ModelOperationRecord,
   OperationFrameObservation,
@@ -345,9 +346,19 @@ export function createRequestContext(opts: {
         attribution?: { category?: "client" | "upstream" | "proxy" | "timeout" | "shutdown" | "reaper"; code?: string; detail?: string }
       }
     | undefined
+  let generationFinalizerPromise: Promise<ModelOperationRecord> | undefined
+  let resolveModelOperationFinalized!: (record: ModelOperationRecord) => void
+  let rejectModelOperationFinalized!: (error: unknown) => void
+  const modelOperationFinalized = withRejectionObserver(
+    new Promise<ModelOperationRecord>((resolve, reject) => {
+      resolveModelOperationFinalized = resolve
+      rejectModelOperationFinalized = reject
+    }),
+  )
 
   interface GenerationAttemptCapture {
-    handle: AttemptHandle
+    handle: DispatchHandle
+    v2Index: number
     effectivePayload?: PayloadNodeHandle
     wirePayload?: PayloadNodeHandle
     responsePayload?: PayloadNodeHandle
@@ -355,13 +366,27 @@ export function createRequestContext(opts: {
     sourceBodyPayload?: PayloadNodeHandle
     upstreamFrames: Array<FrameNodeHandle>
     upstreamFrameObservations: Array<OperationFrameObservation>
+    sseEvents?: Array<SseEventRecord>
     settled: boolean
   }
   const generationAttempts: Array<GenerationAttemptCapture> = []
+  const generationAttemptByHandle = new Map<DispatchHandle, GenerationAttemptCapture>()
+  let activeGenerationDispatch: DispatchHandle | undefined
+  let selectedGenerationDispatch: DispatchHandle | undefined
+  let primaryGenerationCandidate: import("./model-operation-record").CandidateHandle | undefined
   const clientFrameHandles: Array<FrameNodeHandle> = []
   const clientFrameObservations: Array<OperationFrameObservation> = []
 
-  const currentGenerationAttempt = (): GenerationAttemptCapture | undefined => generationAttempts.at(-1)
+  const currentGenerationAttempt = (): GenerationAttemptCapture | undefined =>
+    (activeGenerationDispatch === undefined ? undefined : generationAttemptByHandle.get(activeGenerationDispatch)) ?? generationAttempts.at(-1)
+  const selectGenerationAttempt = (handle: DispatchHandle): GenerationAttemptCapture => {
+    const attempt = generationAttemptByHandle.get(handle)
+    if (!attempt) throw new Error(`[request-context] unknown generation dispatch ${handle}`)
+    activeGenerationDispatch = handle
+    return attempt
+  }
+  const ensurePrimaryGenerationCandidate = (): import("./model-operation-record").CandidateHandle =>
+    (primaryGenerationCandidate ??= modelOperationRecorder.beginCandidate({ role: "primary" }))
 
   function snapshotForRecorder<T>(value: T): T | Readonly<Record<string, unknown>> {
     const seen = new WeakMap<object, unknown>()
@@ -498,7 +523,7 @@ export function createRequestContext(opts: {
     input: {
       stage: string
       track: "client" | "upstream" | "proxy" | "internal"
-      attempt?: AttemptHandle
+      dispatch?: DispatchHandle
       derivedFrom?: PayloadNodeHandle
       transformId?: string
     },
@@ -507,7 +532,7 @@ export function createRequestContext(opts: {
       const known = payloadHandleByObject.get(value)
       if (known !== undefined) return known
     }
-    const origin = { stage: input.stage, track: input.track, ...(input.attempt !== undefined && { attempt: input.attempt }) }
+    const origin = { stage: input.stage, track: input.track, ...(input.dispatch !== undefined && { dispatch: input.dispatch }) }
     const handle =
       input.derivedFrom !== undefined && input.transformId !== undefined ?
         modelOperationRecorder.derivePayload(snapshotForRecorder(value), {
@@ -521,11 +546,17 @@ export function createRequestContext(opts: {
     return handle
   }
 
-  function recordAttemptDiagnostic(kind: string, severity: "info" | "warning" | "error", data?: unknown, message?: string): void {
+  function recordAttemptDiagnostic(
+    kind: string,
+    severity: "info" | "warning" | "error",
+    data?: unknown,
+    message?: string,
+    explicitAttempt?: GenerationAttemptCapture,
+  ): void {
     if (modelOperationRecorder.sealed) return
-    const attempt = currentGenerationAttempt()
+    const attempt = explicitAttempt ?? currentGenerationAttempt()
     if (!attempt || attempt.settled) return
-    modelOperationRecorder.recordAttemptDiagnostic(attempt.handle, {
+    modelOperationRecorder.recordDispatchDiagnostic(attempt.handle, {
       kind,
       severity,
       ...(message !== undefined && { message }),
@@ -533,9 +564,112 @@ export function createRequestContext(opts: {
     })
   }
 
-  function settleGenerationAttempt(attempt: GenerationAttemptCapture, verdict: "committed" | "discarded" | "failed", reason?: string, error?: unknown): void {
+  function captureUpstreamFrameFor(attempt: GenerationAttemptCapture | undefined, frame: unknown, record: SseEventRecord): void {
+    if (modelOperationRecorder.sealed) return
+    const handle = modelOperationRecorder.registerFrame(canonicalFrameValue(frame), {
+      origin: { stage: "upstream-capture", track: "upstream", ...(attempt !== undefined && { dispatch: attempt.handle }) },
+      mediaType: "text/event-stream",
+    })
+    rememberFrame(frame, handle)
+    if (attempt) {
+      attempt.upstreamFrames.push(handle)
+      attempt.upstreamFrameObservations.push({
+        handle,
+        offsetMs: record.offsetMs,
+        observedAt: modelOperationRecorder.now(),
+        type: record.type,
+        ...(record.synthetic !== undefined && { synthetic: record.synthetic }),
+      })
+    }
+    captureRawFrame(frame, modelOperationRecorder.snapshot().lastSequence, "upstream-frame")
+  }
+
+  function captureFrameTransformFor(
+    attempt: GenerationAttemptCapture | undefined,
+    inputFrame: unknown,
+    outputFrame: unknown,
+    transform: { stage: string; transformId: string; forceDerived?: boolean },
+  ): void {
+    if (modelOperationRecorder.sealed) return
+    const parent = knownFrame(inputFrame)
+    if (!parent && !transform.forceDerived) return
+    const sameBytes = frameWireKey(inputFrame) === frameWireKey(outputFrame)
+    if (parent && !transform.forceDerived && sameBytes) {
+      rememberFrame(outputFrame, parent.handle)
+      return
+    }
+    const parentHandle = parent?.handle ?? transformRoot()
+    const output = modelOperationRecorder.deriveFrame(canonicalFrameValue(outputFrame), {
+      derivedFrom: parentHandle,
+      transformId: transform.transformId,
+      origin: { stage: transform.stage, track: "client", ...(attempt !== undefined && { dispatch: attempt.handle }) },
+      mediaType: "text/event-stream",
+    })
+    modelOperationRecorder.recordTransform({
+      transformId: transform.transformId,
+      stage: transform.stage,
+      inputs: [{ kind: "frame", handle: parentHandle }],
+      outputs: [{ kind: "frame", handle: output }],
+    })
+    rememberFrame(outputFrame, output)
+  }
+
+  function captureFrameActionFor(
+    attempt: GenerationAttemptCapture | undefined,
+    inputFrames: ReadonlyArray<unknown>,
+    outputFrames: ReadonlyArray<unknown>,
+    transform: { stage: string; transformId: string; action: "emit" | "suppress" | "buffer" | "flush" | "drop"; forceDerived?: boolean },
+  ): void {
+    if (modelOperationRecorder.sealed) return
+    const knownInputs = inputFrames.flatMap((frame) => {
+      const known = knownFrame(frame)
+      return known === undefined ? [] : [{ frame, handle: known.handle }]
+    })
+    if (
+      transform.action === "emit"
+      && !transform.forceDerived
+      && inputFrames.length === 1
+      && outputFrames.length === 1
+      && frameWireKey(inputFrames[0]) === frameWireKey(outputFrames[0])
+    ) {
+      if (knownInputs[0]) rememberFrame(outputFrames[0], knownInputs[0].handle)
+      return
+    }
+    const parent = knownInputs.at(-1)?.handle ?? transformRoot()
+    const outputHandles = outputFrames.map((outputFrame) => {
+      const exact = knownFrame(outputFrame)
+      if (exact && !exact.bytesChanged && !transform.forceDerived) return exact.handle
+      const handle = modelOperationRecorder.deriveFrame(canonicalFrameValue(outputFrame), {
+        derivedFrom: parent,
+        transformId: transform.transformId,
+        origin: { stage: transform.stage, track: "client", ...(attempt !== undefined && { dispatch: attempt.handle }) },
+        mediaType: "text/event-stream",
+      })
+      rememberFrame(outputFrame, handle)
+      return handle
+    })
+    modelOperationRecorder.recordTransform({
+      transformId: transform.transformId,
+      stage: transform.stage,
+      inputs: knownInputs.length > 0 ? knownInputs.map(({ handle }) => ({ kind: "frame" as const, handle })) : [{ kind: "frame", handle: parent }],
+      outputs: outputHandles.map((handle) => ({ kind: "frame" as const, handle })),
+      metadata: {
+        action: transform.action,
+        ...(transform.action === "emit" && inputFrames.length > 1 && { bufferedInputCount: inputFrames.length - 1 }),
+        ...(inputFrames.length !== knownInputs.length && { unresolvedInputCount: inputFrames.length - knownInputs.length }),
+      },
+    })
+  }
+
+  function settleGenerationAttempt(
+    attempt: GenerationAttemptCapture,
+    verdict: "committed" | "discarded" | "failed" | "cancelled",
+    reason?: string,
+    error?: unknown,
+  ): void {
     if (modelOperationRecorder.sealed || attempt.settled) return
-    const v2 = _attempts[generationAttempts.indexOf(attempt)]
+    const v2 = _attempts[attempt.v2Index]
+    if (verdict !== "committed" && attempt.sseEvents !== undefined) v2.sseEvents = [...attempt.sseEvents]
     const response = v2.response
     const attemptError = v2.error
     const primaryResponsePayload = attempt.rawResponsePayload ?? attempt.sourceBodyPayload ?? attempt.responsePayload
@@ -548,7 +682,7 @@ export function createRequestContext(opts: {
     let responseStatus: number | undefined
     if (response?.status !== undefined) responseStatus = response.status
     else if (attemptError?.status !== undefined) responseStatus = attemptError.status
-    modelOperationRecorder.settleAttempt(attempt.handle, {
+    modelOperationRecorder.settleDispatch(attempt.handle, {
       verdict,
       ...(hasUpstreamResponse && {
         upstreamResponse: {
@@ -636,16 +770,40 @@ export function createRequestContext(opts: {
       ...(error !== undefined && { error: snapshotForRecorder(error) }),
       ...(attribution !== undefined && { attribution }),
     }
-    if (deliveryFinalizationRequested) finalizeGenerationDelivery(pendingDeliveryClientPayload)
+    // A logical terminal is the operation-scope fence: no new child may start after this point.
+    // The generation finalizer itself is deliberately NOT a child of this scope because it awaits
+    // quiescence; tracking it here would create a root self-join deadlock.
+    operationScope.seal()
+    startGenerationFinalizerIfReady()
   }
 
   function finalizeGenerationDelivery(clientPayload?: unknown): void {
-    if (modelOperationRecorder.sealed) return
-    if (pendingGenerationTerminal === undefined) {
-      deliveryFinalizationRequested = true
-      if (clientPayload !== undefined) pendingDeliveryClientPayload = snapshotForRecorder(clientPayload)
-      return
-    }
+    if (modelOperationRecorder.sealed || generationFinalizerPromise !== undefined) return
+    deliveryFinalizationRequested = true
+    if (clientPayload !== undefined) pendingDeliveryClientPayload = snapshotForRecorder(clientPayload)
+    startGenerationFinalizerIfReady()
+  }
+
+  function startGenerationFinalizerIfReady(): void {
+    if (generationFinalizerPromise !== undefined || pendingGenerationTerminal === undefined || !deliveryFinalizationRequested) return
+    const clientPayload = pendingDeliveryClientPayload
+    const finalizer = withRejectionObserver(
+      (async (): Promise<ModelOperationRecord> => {
+        await operationScope.whenOperationQuiesced()
+        try {
+          return commitGenerationObservabilityTerminal(clientPayload)
+        } finally {
+          rawCaptureLease.release()
+        }
+      })(),
+    )
+    generationFinalizerPromise = finalizer
+    void finalizer.then(resolveModelOperationFinalized, rejectModelOperationFinalized)
+  }
+
+  function commitGenerationObservabilityTerminal(clientPayload?: unknown): ModelOperationRecord {
+    const terminal = pendingGenerationTerminal
+    if (terminal === undefined) throw new Error("[request-context] generation finalizer started without a logical terminal")
     const finalAttempt = currentGenerationAttempt()
     const primaryUpstreamPayload = finalAttempt?.rawResponsePayload ?? finalAttempt?.sourceBodyPayload ?? finalAttempt?.responsePayload
     if (clientPayload !== undefined) {
@@ -681,14 +839,28 @@ export function createRequestContext(opts: {
         rawCapture: semanticCaptureGap,
       },
     })
+    const operationBeforeTerminal = modelOperationRecorder.snapshot()
+    const terminalCandidate =
+      finalAttempt === undefined ? undefined : operationBeforeTerminal.dispatches.find((dispatch) => dispatch.handle === finalAttempt.handle)?.candidate
+    if (terminalCandidate !== undefined) {
+      const candidate = operationBeforeTerminal.candidates.find((entry) => entry.handle === terminalCandidate)
+      if (candidate?.verdict === undefined) {
+        modelOperationRecorder.settleCandidate(terminalCandidate, {
+          verdict: terminal.outcome === "completed" ? "winner" : "failed",
+          reason: `terminal:${terminal.outcome}`,
+        })
+      }
+    }
     modelOperationTerminalRecord = modelOperationRecorder.commitTerminal({
-      outcome: pendingGenerationTerminal.outcome,
-      ...(pendingGenerationTerminal.error !== undefined && { error: pendingGenerationTerminal.error }),
+      outcome: terminal.outcome,
+      ...(terminal.outcome === "completed" && terminalCandidate !== undefined && { winnerCandidate: terminalCandidate }),
+      ...(terminal.outcome === "completed" && finalAttempt !== undefined && { committedDispatch: finalAttempt.handle }),
+      ...(terminal.error !== undefined && { error: terminal.error }),
       ...(operationUsage(_response) !== undefined && { usage: operationUsage(_response) }),
-      ...(pendingGenerationTerminal.attribution !== undefined && { attribution: pendingGenerationTerminal.attribution }),
+      ...(terminal.attribution !== undefined && { attribution: terminal.attribution }),
     })
     publishModelOperationTerminal(modelOperationTerminalRecord)
-    rawCaptureLease.release()
+    return modelOperationTerminalRecord
   }
 
   /** Guard: once complete() or fail() is called, subsequent calls are no-ops */
@@ -696,9 +868,9 @@ export function createRequestContext(opts: {
   /** Lifecycle abort — fired by the reaper (reapInFlight) to cancel in-flight upstream work (缺陷④). */
   const lifecycleAbort = new AbortController()
   /**
-   * C5 operation tracking (RFC §3.3). Tracks the request's settle-BEFORE async work so shutdown
-   * drain / bounded-grace can wait for it to quiesce. NEW API — no production callers yet
-   * (behavior-preserving until C5 wires the handlers/manager/shutdown). See operation-scope.ts.
+   * Operation tracking (RFC §3.3/§8.4). The driver registers exchange and complete response pumps
+   * as settle-before children; logical terminal seals the scope, and the generation finalizer waits
+   * outside it to avoid root self-join. See operation-scope.ts.
    */
   const operationScope = createOperationScope()
   let _cancelled = false
@@ -736,6 +908,22 @@ export function createRequestContext(opts: {
       ...(billing?.multiplier !== undefined && { multiplier: billing.multiplier }),
       ...(currentAttempt?.startTime !== undefined && { currentAttemptStartedAt: currentAttempt.startTime }),
       ...(_attempts.length > 0 && { attemptCount: _attempts.length }),
+    }
+  }
+
+  function generationTopologyForV2(index: number): Partial<NonNullable<HistoryEntryData["attempts"]>[number]> {
+    const capture = generationAttempts[index]
+    const operation = modelOperationRecorder.snapshot()
+    const dispatch = operation.dispatches.find((entry) => entry.handle === capture.handle)
+    const candidate = dispatch === undefined ? undefined : operation.candidates.find((entry) => entry.handle === dispatch.candidate)
+    return {
+      candidateId: dispatch?.candidate,
+      candidateRole: candidate?.role,
+      parentCandidateId: candidate?.parentCandidate,
+      candidateVerdict: candidate?.verdict,
+      dispatchId: dispatch?.handle,
+      dispatchVerdict: dispatch?.verdict,
+      dispatchReason: dispatch?.reason,
     }
   }
 
@@ -873,6 +1061,10 @@ export function createRequestContext(opts: {
       return _attempts
     },
     get currentAttempt() {
+      if (activeGenerationDispatch !== undefined) {
+        const generationAttempt = generationAttemptByHandle.get(activeGenerationDispatch)
+        if (generationAttempt) return _attempts[generationAttempt.v2Index] ?? null
+      }
       return _attempts.at(-1) ?? null
     },
     get initialSanitizationInfo() {
@@ -925,6 +1117,10 @@ export function createRequestContext(opts: {
 
     finalizeModelOperationDelivery(input) {
       finalizeGenerationDelivery(input?.clientPayload)
+    },
+
+    whenModelOperationFinalized() {
+      return modelOperationFinalized
     },
 
     setToolNameMapper(mapper: ToolNameMapper | null) {
@@ -1010,36 +1206,138 @@ export function createRequestContext(opts: {
       publisher?.publish({ kind: "request.context_updated", ctx: snapshotWithSummary(ctx), field: "warningMessages", contextRef: ctx })
     },
 
-    beginAttempt(attemptOpts: { strategy?: string; waitMs?: number; truncation?: TruncationInfo; transport?: Attempt["transport"] }) {
-      const previous = currentGenerationAttempt()
-      if (previous && !previous.settled) settleGenerationAttempt(previous, "discarded", "superseded by next attempt")
+    beginGenerationCandidate(input) {
+      if (modelOperationRecorder.sealed) throw new Error("[request-context] cannot begin candidate after terminal seal")
+      const handle = modelOperationRecorder.beginCandidate(input)
+      if (input.role === "primary" && primaryGenerationCandidate === undefined) primaryGenerationCandidate = handle
+      return handle
+    },
+
+    settleGenerationCandidate(candidate, input) {
+      if (modelOperationRecorder.sealed) return
+      const row = modelOperationRecorder.snapshot().candidates.find((entry) => entry.handle === candidate)
+      if (row?.verdict === undefined) modelOperationRecorder.settleCandidate(candidate, input)
+    },
+
+    beginGenerationDispatch(input) {
+      if (modelOperationRecorder.sealed) throw new Error("[request-context] cannot begin dispatch after terminal seal")
       const attempt: Attempt = {
         index: _attempts.length,
-        effectiveRequest: null, // Set later via setAttemptEffectiveRequest
-        wireRequest: null, // Set later via setAttemptWireRequest
+        effectiveRequest: null,
+        wireRequest: null,
         response: null,
         error: null,
-        transport: attemptOpts.transport ?? "http",
-        strategy: attemptOpts.strategy,
-        truncation: attemptOpts.truncation,
-        waitMs: attemptOpts.waitMs,
+        transport: input.transport ?? "http",
+        strategy: input.strategy,
+        truncation: input.truncation,
+        waitMs: input.waitMs,
         startTime: Date.now(),
         durationMs: 0,
       }
       _attempts.push(attempt)
-      if (!modelOperationRecorder.sealed) {
-        const handle = modelOperationRecorder.beginAttempt({
-          ...(attemptOpts.strategy !== undefined && { strategy: attemptOpts.strategy }),
-          transport: attempt.transport,
-          metadata: {
-            ...(attemptOpts.waitMs !== undefined && { waitMs: attemptOpts.waitMs }),
-            ...(attemptOpts.truncation !== undefined && { truncation: attemptOpts.truncation }),
-            startedAt: attempt.startTime,
-          },
-        })
-        generationAttempts.push({ handle, upstreamFrames: [], upstreamFrameObservations: [], settled: false })
+      const handle = modelOperationRecorder.beginDispatch({
+        candidate: input.candidate,
+        ...(input.strategy !== undefined && { strategy: input.strategy }),
+        transport: attempt.transport,
+        metadata: {
+          ...(input.waitMs !== undefined && { waitMs: input.waitMs }),
+          ...(input.truncation !== undefined && { truncation: input.truncation }),
+          startedAt: attempt.startTime,
+        },
+      })
+      const capture: GenerationAttemptCapture = {
+        handle,
+        v2Index: attempt.index,
+        upstreamFrames: [],
+        upstreamFrameObservations: [],
+        settled: false,
       }
+      generationAttempts.push(capture)
+      generationAttemptByHandle.set(handle, capture)
+      activeGenerationDispatch = handle
       publisher?.publish({ kind: "request.context_updated", ctx: snapshotWithSummary(ctx), field: "attempts", contextRef: ctx })
+      return handle
+    },
+
+    setGenerationDispatchEffectiveRequest(dispatch, request) {
+      selectGenerationAttempt(dispatch)
+      ctx.setAttemptEffectiveRequest(request)
+    },
+
+    setGenerationDispatchWireRequest(dispatch, request) {
+      selectGenerationAttempt(dispatch)
+      ctx.setAttemptWireRequest(request)
+    },
+
+    setGenerationDispatchTransport(dispatch, transport) {
+      selectGenerationAttempt(dispatch)
+      ctx.setAttemptTransport(transport)
+    },
+
+    setGenerationDispatchResponseHeaders(dispatch, headers) {
+      selectGenerationAttempt(dispatch)
+      ctx.setAttemptResponseHeaders(headers)
+    },
+
+    setGenerationDispatchTimingEpoch(dispatch, kind, epoch, mode) {
+      const generationAttempt = generationAttemptByHandle.get(dispatch)
+      if (!generationAttempt) throw new Error(`[request-context] unknown generation dispatch ${dispatch}`)
+      const attempt = _attempts[generationAttempt.v2Index]
+      if (mode === "once" && attempt[kind] !== undefined) return
+      attempt[kind] = epoch
+      recordAttemptDiagnostic(`timing.${kind}`, "info", { epoch, mode }, undefined, generationAttempt)
+    },
+
+    setGenerationDispatchError(dispatch, error) {
+      selectGenerationAttempt(dispatch)
+      ctx.setAttemptError(error)
+    },
+
+    setGenerationDispatchSseEvents(dispatch, events, projectToLegacy = false) {
+      const generationAttempt = generationAttemptByHandle.get(dispatch)
+      if (!generationAttempt) throw new Error(`[request-context] unknown generation dispatch ${dispatch}`)
+      generationAttempt.sseEvents = events.length > 0 ? events : undefined
+      if (projectToLegacy || selectedGenerationDispatch === dispatch) ctx.setSseEvents(events)
+    },
+
+    captureUpstreamGenerationDispatchFrame(dispatch, frame, record) {
+      const attempt = generationAttemptByHandle.get(dispatch)
+      if (!attempt) throw new Error(`[request-context] unknown generation dispatch ${dispatch}`)
+      captureUpstreamFrameFor(attempt, frame, record)
+    },
+
+    captureGenerationDispatchFrameTransform(dispatch, inputFrame, outputFrame, transform) {
+      const attempt = generationAttemptByHandle.get(dispatch)
+      if (!attempt) throw new Error(`[request-context] unknown generation dispatch ${dispatch}`)
+      captureFrameTransformFor(attempt, inputFrame, outputFrame, transform)
+    },
+
+    captureGenerationDispatchFrameAction(dispatch, inputFrames, outputFrames, transform) {
+      const attempt = generationAttemptByHandle.get(dispatch)
+      if (!attempt) throw new Error(`[request-context] unknown generation dispatch ${dispatch}`)
+      captureFrameActionFor(attempt, inputFrames, outputFrames, transform)
+    },
+
+    selectGenerationWinner(candidate, dispatch) {
+      const operation = modelOperationRecorder.snapshot()
+      const row = operation.dispatches.find((entry) => entry.handle === dispatch)
+      if (!row) throw new Error(`[request-context] unknown generation dispatch ${dispatch}`)
+      if (row.candidate !== candidate) throw new Error(`[request-context] dispatch ${dispatch} does not belong to candidate ${candidate}`)
+      activeGenerationDispatch = dispatch
+      selectedGenerationDispatch = dispatch
+      const generationAttempt = generationAttemptByHandle.get(dispatch)
+      if (generationAttempt?.sseEvents !== undefined) ctx.setSseEvents(generationAttempt.sseEvents)
+    },
+
+    settleGenerationDispatch(dispatch, input) {
+      const attempt = selectGenerationAttempt(dispatch)
+      settleGenerationAttempt(attempt, input.verdict, input.reason, input.error)
+    },
+
+    beginAttempt(attemptOpts: { strategy?: string; waitMs?: number; truncation?: TruncationInfo; transport?: Attempt["transport"] }) {
+      const previous = currentGenerationAttempt()
+      if (previous && !previous.settled) settleGenerationAttempt(previous, "discarded", "superseded by next attempt")
+      ctx.beginGenerationDispatch({ candidate: ensurePrimaryGenerationCandidate(), ...attemptOpts })
     },
 
     setAttemptSanitization(info: SanitizationInfo) {
@@ -1071,10 +1369,10 @@ export function createRequestContext(opts: {
           generationAttempt.effectivePayload = capturePayload(req.payload, {
             stage: "effective-request",
             track: "proxy",
-            attempt: generationAttempt.handle,
+            dispatch: generationAttempt.handle,
             ...(ingressPayloadHandle !== undefined && { derivedFrom: ingressPayloadHandle, transformId: "request:effective" }),
           })
-          modelOperationRecorder.setAttemptEffectiveRequest(generationAttempt.handle, {
+          modelOperationRecorder.setDispatchEffectiveRequest(generationAttempt.handle, {
             payload: generationAttempt.effectivePayload,
             rawCapture: semanticCaptureGap,
             metadata: requestMetadata(req),
@@ -1093,10 +1391,10 @@ export function createRequestContext(opts: {
           generationAttempt.wirePayload = capturePayload(req.payload, {
             stage: "wire-request",
             track: "upstream",
-            attempt: generationAttempt.handle,
+            dispatch: generationAttempt.handle,
             ...(generationAttempt.effectivePayload !== undefined && { derivedFrom: generationAttempt.effectivePayload, transformId: "request:prepare-wire" }),
           })
-          modelOperationRecorder.setAttemptUpstreamRequest(generationAttempt.handle, {
+          modelOperationRecorder.setDispatchUpstreamRequest(generationAttempt.handle, {
             payload: generationAttempt.wirePayload,
             headers: orderedHeaders(req.headers),
             rawCapture: semanticCaptureGap,
@@ -1113,7 +1411,7 @@ export function createRequestContext(opts: {
         attempt.transport = transport
         const generationAttempt = currentGenerationAttempt()
         if (generationAttempt && !generationAttempt.settled && !modelOperationRecorder.sealed) {
-          modelOperationRecorder.setAttemptTransport(generationAttempt.handle, transport)
+          modelOperationRecorder.setDispatchTransport(generationAttempt.handle, transport)
         }
         recordAttemptDiagnostic("transport.selected", "info", { transport })
         publisher?.publish({ kind: "request.context_updated", ctx: snapshotWithSummary(ctx), field: "attempts", contextRef: ctx })
@@ -1130,20 +1428,20 @@ export function createRequestContext(opts: {
           generationAttempt.responsePayload = capturePayload(response.content, {
             stage: "upstream-response-projection",
             track: "upstream",
-            attempt: generationAttempt.handle,
+            dispatch: generationAttempt.handle,
           })
           if (response.sourceBody !== undefined) {
             generationAttempt.sourceBodyPayload = capturePayload(response.sourceBody, {
               stage: "upstream-response-envelope",
               track: "upstream",
-              attempt: generationAttempt.handle,
+              dispatch: generationAttempt.handle,
             })
           } else if (response.responseText !== undefined) {
             try {
               generationAttempt.sourceBodyPayload = capturePayload(JSON.parse(response.responseText), {
                 stage: "upstream-response-envelope",
                 track: "upstream",
-                attempt: generationAttempt.handle,
+                dispatch: generationAttempt.handle,
               })
             } catch {
               // Non-JSON error bodies are retained verbatim by rawResponsePayload/responseText.
@@ -1190,94 +1488,15 @@ export function createRequestContext(opts: {
     },
 
     captureUpstreamGenerationFrame(frame, record) {
-      if (modelOperationRecorder.sealed) return
-      const attempt = currentGenerationAttempt()
-      const handle = modelOperationRecorder.registerFrame(canonicalFrameValue(frame), {
-        origin: { stage: "upstream-capture", track: "upstream", ...(attempt !== undefined && { attempt: attempt.handle }) },
-        mediaType: "text/event-stream",
-      })
-      rememberFrame(frame, handle)
-      if (attempt) {
-        attempt.upstreamFrames.push(handle)
-        attempt.upstreamFrameObservations.push({
-          handle,
-          offsetMs: record.offsetMs,
-          observedAt: modelOperationRecorder.now(),
-          type: record.type,
-          ...(record.synthetic !== undefined && { synthetic: record.synthetic }),
-        })
-      }
-      captureRawFrame(frame, modelOperationRecorder.snapshot().lastSequence, "upstream-frame")
+      captureUpstreamFrameFor(currentGenerationAttempt(), frame, record)
     },
 
     captureGenerationFrameTransform(inputFrame, outputFrame, transform) {
-      if (modelOperationRecorder.sealed) return
-      const parent = knownFrame(inputFrame)
-      if (!parent && !transform.forceDerived) return
-      const sameBytes = frameWireKey(inputFrame) === frameWireKey(outputFrame)
-      if (parent && !transform.forceDerived && sameBytes) {
-        rememberFrame(outputFrame, parent.handle)
-        return
-      }
-      const parentHandle = parent?.handle ?? transformRoot()
-      const attempt = currentGenerationAttempt()
-      const output = modelOperationRecorder.deriveFrame(canonicalFrameValue(outputFrame), {
-        derivedFrom: parentHandle,
-        transformId: transform.transformId,
-        origin: { stage: transform.stage, track: "client", ...(attempt !== undefined && { attempt: attempt.handle }) },
-        mediaType: "text/event-stream",
-      })
-      modelOperationRecorder.recordTransform({
-        transformId: transform.transformId,
-        stage: transform.stage,
-        inputs: [{ kind: "frame", handle: parentHandle }],
-        outputs: [{ kind: "frame", handle: output }],
-      })
-      rememberFrame(outputFrame, output)
+      captureFrameTransformFor(currentGenerationAttempt(), inputFrame, outputFrame, transform)
     },
 
     captureGenerationFrameAction(inputFrames, outputFrames, transform) {
-      if (modelOperationRecorder.sealed) return
-      const knownInputs = inputFrames.flatMap((frame) => {
-        const known = knownFrame(frame)
-        return known === undefined ? [] : [{ frame, handle: known.handle }]
-      })
-      // Pure 1→1 byte-preserving pass-through is sharing, not a transform event.
-      if (
-        transform.action === "emit"
-        && !transform.forceDerived
-        && inputFrames.length === 1
-        && outputFrames.length === 1
-        && frameWireKey(inputFrames[0]) === frameWireKey(outputFrames[0])
-      ) {
-        if (knownInputs[0]) rememberFrame(outputFrames[0], knownInputs[0].handle)
-        return
-      }
-      const parent = knownInputs.at(-1)?.handle ?? transformRoot()
-      const attempt = currentGenerationAttempt()
-      const outputHandles = outputFrames.map((outputFrame) => {
-        const exact = knownFrame(outputFrame)
-        if (exact && !exact.bytesChanged && !transform.forceDerived) return exact.handle
-        const handle = modelOperationRecorder.deriveFrame(canonicalFrameValue(outputFrame), {
-          derivedFrom: parent,
-          transformId: transform.transformId,
-          origin: { stage: transform.stage, track: "client", ...(attempt !== undefined && { attempt: attempt.handle }) },
-          mediaType: "text/event-stream",
-        })
-        rememberFrame(outputFrame, handle)
-        return handle
-      })
-      modelOperationRecorder.recordTransform({
-        transformId: transform.transformId,
-        stage: transform.stage,
-        inputs: knownInputs.length > 0 ? knownInputs.map(({ handle }) => ({ kind: "frame" as const, handle })) : [{ kind: "frame", handle: parent }],
-        outputs: outputHandles.map((handle) => ({ kind: "frame" as const, handle })),
-        metadata: {
-          action: transform.action,
-          ...(transform.action === "emit" && inputFrames.length > 1 && { bufferedInputCount: inputFrames.length - 1 }),
-          ...(inputFrames.length !== knownInputs.length && { unresolvedInputCount: inputFrames.length - knownInputs.length }),
-        },
-      })
+      captureFrameActionFor(currentGenerationAttempt(), inputFrames, outputFrames, transform)
     },
 
     captureForwardedGenerationFrame(frame, record, syntheticKind) {
@@ -1330,7 +1549,7 @@ export function createRequestContext(opts: {
           generationAttempt.rawResponsePayload = capturePayload(error.raw.responseText, {
             stage: "upstream-error-response",
             track: "upstream",
-            attempt: generationAttempt.handle,
+            dispatch: generationAttempt.handle,
           })
         }
         recordAttemptDiagnostic("upstream_error", "error", error, error.message)
@@ -1346,7 +1565,7 @@ export function createRequestContext(opts: {
      */
     commitAttemptSseEvents() {
       const attempt = ctx.currentAttempt
-      if (attempt) attempt.sseEvents = _sseEvents ? [..._sseEvents] : undefined
+      if (attempt && attempt.sseEvents === undefined) attempt.sseEvents = _sseEvents ? [..._sseEvents] : undefined
     },
 
     /**
@@ -1682,6 +1901,7 @@ export function createRequestContext(opts: {
             : undefined
           return {
             index: a.index,
+            ...generationTopologyForV2(i),
             strategy: a.strategy,
             durationMs: a.durationMs,
             transport: a.transport,

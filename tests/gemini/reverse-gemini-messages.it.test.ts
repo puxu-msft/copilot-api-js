@@ -10,14 +10,14 @@
  *   response: upstream Anthropic SSE ─► renderResponse (Anthropic→CC→Gemini per-frame) + flushResponse ─► Gemini frames
  */
 
+import type { ServerSentEventMessage } from "fetch-event-stream"
+
 import {
   //
   describe,
   expect,
   test,
 } from "bun:test"
-
-import type { ServerSentEventMessage } from "fetch-event-stream"
 
 import type {
   //
@@ -34,7 +34,11 @@ import {
   //
   createReverseAnthropicMapperHolder,
 } from "~/lib/codec/openai-cc/reverse-anthropic-rewrite"
-import { withCapturingManager, withCapturingManagerAsync } from "~/lib/context/manager"
+import {
+  //
+  withCapturingManager,
+  withCapturingManagerAsync,
+} from "~/lib/context/manager"
 import { ENDPOINT } from "~/lib/models/endpoint"
 import { makeArraySink } from "~/lib/pipeline/client-sink"
 import { createPipelineDriver } from "~/lib/pipeline/driver"
@@ -74,7 +78,13 @@ const anthropicEvent = (obj: unknown): ServerSentEventMessage => ({ data: JSON.s
 function rawFor(geminiBody: unknown, stream: boolean, _nonStreamModel = "claude-x@messages"): RawHttpRequest {
   // RFC 2026-07-14 §4: the gemini codec's parse now takes the client-NATIVE Gemini body (the
   // Gemini→CC translation moved into S1b `translateInbound`); the route no longer pre-translates.
-  return { body: geminiBody, stream, headers: new Headers(), path: "/v1beta/models/claude-x:streamGenerateContent", method: "POST" } as unknown as RawHttpRequest
+  return {
+    body: geminiBody,
+    stream,
+    headers: new Headers(),
+    path: "/v1beta/models/claude-x:streamGenerateContent",
+    method: "POST",
+  } as unknown as RawHttpRequest
 }
 
 /** Collect the text + functionCall names from forwarded Gemini frames (independent consumer oracle). */
@@ -103,7 +113,8 @@ function geminiConsume(frames: Array<ClientFrame>): { text: string; toolNames: A
 
 describe("T5.4 — REVERSE gemini→messages request wire (dry-run inspectRequest)", () => {
   useIsolatedRuntime()
-  const seed = () => setModels({ object: "list", data: [mockModel("claude-x", { vendor: "Anthropic", supported_endpoints: [ENDPOINT.MESSAGES, ENDPOINT.CHAT_COMPLETIONS] })] })
+  const seed = () =>
+    setModels({ object: "list", data: [mockModel("claude-x", { vendor: "Anthropic", supported_endpoints: [ENDPOINT.MESSAGES, ENDPOINT.CHAT_COMPLETIONS] })] })
 
   test("@messages leg → prepare-wire yields an Anthropic-shaped wire at /v1/messages (Gemini→CC→Anthropic reached the wire)", async () => {
     seed()
@@ -126,12 +137,25 @@ describe("T5.4 — REVERSE gemini→messages request wire (dry-run inspectReques
 
 describe("T5.4 — REVERSE gemini→messages streaming leg end-to-end (mock Anthropic SSE → forwarded Gemini frames)", () => {
   useIsolatedRuntime()
-  const seed = () => setModels({ object: "list", data: [mockModel("claude-x", { vendor: "Anthropic", supported_endpoints: [ENDPOINT.MESSAGES, ENDPOINT.CHAT_COMPLETIONS] })] })
+  const seed = () =>
+    setModels({ object: "list", data: [mockModel("claude-x", { vendor: "Anthropic", supported_endpoints: [ENDPOINT.MESSAGES, ENDPOINT.CHAT_COMPLETIONS] })] })
 
   test("text + tool_use Anthropic stream → forwarded Gemini frames rebuild text + functionCall (longest chain)", async () => {
     seed()
     const upstream = sseStream([
-      anthropicEvent({ type: "message_start", message: { id: "msg_r", type: "message", role: "assistant", model: "claude-x", content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 20, output_tokens: 0 } } }),
+      anthropicEvent({
+        type: "message_start",
+        message: {
+          id: "msg_r",
+          type: "message",
+          role: "assistant",
+          model: "claude-x",
+          content: [],
+          stop_reason: null,
+          stop_sequence: null,
+          usage: { input_tokens: 20, output_tokens: 0 },
+        },
+      }),
       anthropicEvent({ type: "content_block_start", index: 0, content_block: { type: "text", text: "" } }),
       anthropicEvent({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "Let me check." } }),
       anthropicEvent({ type: "content_block_stop", index: 0 }),
@@ -141,7 +165,7 @@ describe("T5.4 — REVERSE gemini→messages streaming leg end-to-end (mock Anth
       anthropicEvent({ type: "message_delta", delta: { stop_reason: "tool_use", stop_sequence: null }, usage: { output_tokens: 6 } }),
       anthropicEvent({ type: "message_stop" }),
     ])
-    const { codec, driver } = makeReverseDriver(upstream)
+    const { driver } = makeReverseDriver(upstream)
     const raw = rawFor({ contents: [{ role: "user", parts: [{ text: "weather?" }] }] }, true)
 
     const frames = await withCapturingManager(async () => {
@@ -151,7 +175,6 @@ describe("T5.4 — REVERSE gemini→messages streaming leg end-to-end (mock Anth
       const outcome = await driver.runResponseSink(result.upstream, result.env, sink, {})
       expect(outcome.kind).toBe("complete")
       // The geminiTranslator's terminal frame is drained by flushResponse (疑点 7b).
-      for (const f of codec.flushResponse(result.env)) frames.push(f)
       return frames
     }).result
 

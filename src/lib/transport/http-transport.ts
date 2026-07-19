@@ -28,15 +28,22 @@ import type { RequestEnvelope } from "~/lib/pipeline/envelope"
 import type {
   //
   PreparedRequest,
+  PhysicalTransport,
   Transport,
+  TransportDispatchOptions,
   UpstreamFrame,
   UpstreamStream,
 } from "~/lib/pipeline/types"
 
-import { executeWithAdaptiveRateLimit } from "~/lib/adaptive-rate-limiter"
 import { ENDPOINT } from "~/lib/models/endpoint"
 import { getShutdownSignal } from "~/lib/shutdown"
-import { guardSseIterable } from "~/lib/stream"
+import {
+  //
+  combineAbortSignals,
+  guardSseIterable,
+} from "~/lib/stream"
+import { createDispatchLifecycle } from "~/lib/transport/dispatch-lifecycle"
+import { physicalTransportFromSend } from "~/lib/transport/physical-transport"
 import { sendUpstreamHttp } from "~/lib/transport/send"
 
 export interface UpstreamHttpTransportDeps {
@@ -54,64 +61,68 @@ export interface UpstreamHttpTransportDeps {
 }
 
 /** Build an HTTP {@link Transport} for one request. */
-export function createUpstreamHttpTransport(deps: UpstreamHttpTransportDeps): Transport {
-  return {
-    async send(wire: PreparedRequest, env: RequestEnvelope): Promise<UpstreamStream> {
-      const headers = Object.fromEntries(wire.headers.entries())
-      const body = wire.body as { model?: unknown; tools?: unknown }
-      // Transport-local capture: sendUpstreamHttp fills `.response` (via
-      // captureHttpHeaders) so we can surface the upstream response headers as
-      // `UpstreamStream.headers`. RFC Phase 2: no longer a handler-threaded bag —
-      // the driver owns writing the outbound legs to ctx from `UpstreamStream.headers`
-      // (success) / `apiError.responseHeaders` (failure).
-      const headersCapture: HeadersCapture = {}
+export function createUpstreamHttpTransport(deps: UpstreamHttpTransportDeps): Transport & PhysicalTransport {
+  const send: Transport["send"] = async (wire: PreparedRequest, env: RequestEnvelope, options?: TransportDispatchOptions): Promise<UpstreamStream> => {
+    const lifecycle = createDispatchLifecycle(combineAbortSignals(options?.signal, deps.clientAbortSignal, env.ctx.lifecycleSignal, getShutdownSignal()))
+    const headers = Object.fromEntries(wire.headers.entries())
+    const body = wire.body as { model?: unknown; tools?: unknown }
+    // Transport-local capture: sendUpstreamHttp fills `.response` (via
+    // captureHttpHeaders) so we can surface the upstream response headers as
+    // `UpstreamStream.headers`. RFC Phase 2: no longer a handler-threaded bag —
+    // the driver owns writing the outbound legs to ctx from `UpstreamStream.headers`
+    // (success) / `apiError.responseHeaders` (failure).
+    const headersCapture: HeadersCapture = {}
 
-      const { result, queueWaitMs } = await executeWithAdaptiveRateLimit(() =>
-        sendUpstreamHttp({
-          endpointPath: wire.url,
-          headers,
-          body: wire.body,
-          stream: wire.stream,
-          errorLabel: errorLabelFor(wire.url),
-          modelId: typeof body.model === "string" ? body.model : (env.model as Model | undefined)?.id,
-          diagnosticsTools: body.tools,
-          headersCapture,
-          clientAbortSignal: deps.clientAbortSignal,
-          reaperSignal: env.ctx.lifecycleSignal,
-          // Best-effort h2 response-trailers capture → ctx leg (richest-data-flow).
-          // node:http2 fires `trailers` before stream `end`, so it lands before the handler settles.
-          onTrailers: (trailers) => env.ctx.setOutboundResponseTrailers(trailers),
-          ...(deps.rewriteShutdownAbort && { rewriteShutdownAbort: true }),
-        }),
-      )
-      // P2.3-S: record rate-limiter queue wait on the ctx (legacy parity —
-      // pipeline.ts `addQueueWaitMs`).
-      env.ctx.addQueueWaitMs(queueWaitMs)
-
-      // `UpstreamStream.headers` = the captured upstream response headers, read by
-      // the driver to write ctx.httpHeaders.outboundResponse (RFC Phase 2).
-      const responseHeaders = new Headers(headersCapture.response ?? {})
-
-      if (!wire.stream) {
-        return { frames: emptyFrames(), nonStream: result, headers: responseHeaders }
-      }
-
-      // Streaming: wrap the raw SSE source in the idle/shutdown/client-abort guard
-      // (the guard owns shutdown for the streamed body; the non-stream fetch folds
-      // shutdown into its own signal inside sendUpstreamHttp). `reaperSignal`
-      // (ctx.lifecycleSignal) is a DISTINCT provenance from `clientSignal` so a
-      // mid-stream reaper-cancel reaches a still-connected client as an error frame
-      // (StreamReaperCancelError → stream-error), never a silent client-abort (缺陷④).
-      const frames = guardSseIterable(result as AsyncIterable<ServerSentEventMessage>, {
-        idleTimeoutMs: deps.idleTimeoutMs,
-        shutdownSignal: getShutdownSignal(),
-        clientSignal: deps.clientAbortSignal,
+    let result: unknown
+    try {
+      result = await sendUpstreamHttp({
+        endpointPath: wire.url,
+        headers,
+        body: wire.body,
+        stream: wire.stream,
+        errorLabel: errorLabelFor(wire.url),
+        modelId: typeof body.model === "string" ? body.model : (env.model as Model | undefined)?.id,
+        diagnosticsTools: body.tools,
+        headersCapture,
+        clientAbortSignal: deps.clientAbortSignal,
         reaperSignal: env.ctx.lifecycleSignal,
-      }) as AsyncIterable<UpstreamFrame>
+        dispatchSignal: lifecycle.signal,
+        // Best-effort h2 response-trailers capture → ctx leg (richest-data-flow).
+        // node:http2 fires `trailers` before stream `end`, so it lands before the handler settles.
+        onTrailers: (trailers) => env.ctx.setOutboundResponseTrailers(trailers),
+        ...(deps.rewriteShutdownAbort && { rewriteShutdownAbort: true }),
+      })
+    } catch (error) {
+      lifecycle.complete()
+      throw error
+    }
 
-      return { frames, headers: responseHeaders }
-    },
+    // `UpstreamStream.headers` = the captured upstream response headers, read by
+    // the driver to write ctx.httpHeaders.outboundResponse (RFC Phase 2).
+    const responseHeaders = new Headers(headersCapture.response ?? {})
+
+    if (!wire.stream) {
+      lifecycle.complete()
+      return { frames: emptyFrames(), nonStream: result, headers: responseHeaders, lifecycle }
+    }
+
+    // Streaming: wrap the raw SSE source in the idle/shutdown/client-abort guard
+    // (the guard owns shutdown for the streamed body; the non-stream fetch folds
+    // shutdown into its own signal inside sendUpstreamHttp). `reaperSignal`
+    // (ctx.lifecycleSignal) is a DISTINCT provenance from `clientSignal` so a
+    // mid-stream reaper-cancel reaches a still-connected client as an error frame
+    // (StreamReaperCancelError → stream-error), never a silent client-abort (缺陷④).
+    const frames = guardSseIterable(result as AsyncIterable<ServerSentEventMessage>, {
+      idleTimeoutMs: deps.idleTimeoutMs,
+      shutdownSignal: getShutdownSignal(),
+      clientSignal: deps.clientAbortSignal,
+      reaperSignal: env.ctx.lifecycleSignal,
+      dispatchSignal: lifecycle.signal,
+    }) as AsyncIterable<UpstreamFrame>
+
+    return { frames: lifecycle.ownFrames(frames), headers: responseHeaders, lifecycle }
   }
+  return { send, ...physicalTransportFromSend(send) }
 }
 
 /**

@@ -38,7 +38,7 @@ import type {
   RetryAction,
   RetryContext,
   RetryStrategy,
-} from "../pipeline"
+} from "../retry-types"
 
 /**
  * Match the adaptive-not-supported rejection. The upstream phrasing is stable

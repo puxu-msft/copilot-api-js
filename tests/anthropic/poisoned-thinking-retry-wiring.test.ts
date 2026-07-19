@@ -24,7 +24,7 @@ import {
 } from "bun:test"
 
 import type { RequestEnvelope } from "~/lib/pipeline/envelope"
-import type { SanitizeResult } from "~/lib/request/pipeline"
+import type { SanitizeResult } from "~/lib/request/retry-types"
 import type {
   //
   MessageParam,
@@ -121,4 +121,3 @@ describe("poisoned-thinking-retry wiring — v4 active path", () => {
     expect(action.learning).toBe(true)
   })
 })
-

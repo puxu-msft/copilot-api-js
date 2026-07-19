@@ -637,6 +637,14 @@ async function runHttp2Fetch(u: URL, init: UpstreamFetchInit): Promise<Response>
 
     const req = session.request(headers)
 
+    // Physical-dispatch teardown barrier. Cancelling one response owns only this h2 stream;
+    // the pooled session remains available to siblings. Resolve cancellation/rejection only
+    // after the stream's close event confirms teardown.
+    let resolveRequestClosed!: () => void
+    const requestClosed = new Promise<void>((resolve) => {
+      resolveRequestClosed = resolve
+    })
+
     // activeStreamCount bookkeeping (P4): Node guarantees `close` fires exactly
     // once per h2 stream regardless of outcome (normal end / RST / abort before or
     // after headers) — using this single platform-guaranteed event, instead of
@@ -649,14 +657,29 @@ async function runHttp2Fetch(u: URL, init: UpstreamFetchInit): Promise<Response>
       req.once("close", () => {
         streamEntry.activeStreamCount -= 1
         maybeReclaimRetiringSession(streamEntry)
+        init.onStreamClosed?.()
+        resolveRequestClosed()
       })
+    } else {
+      req.once("close", () => {
+        init.onStreamClosed?.()
+        resolveRequestClosed()
+      })
+    }
+
+    let responseResolved = false
+    let rejectionScheduled = false
+    const rejectAfterRequestClosed = (error: Error): void => {
+      if (responseResolved || rejectionScheduled) return
+      rejectionScheduled = true
+      void requestClosed.then(() => reject(error))
     }
 
     // Pre-response abort → reject; the post-response abort (cancel the body
     // stream) is wired inside the `response` handler below.
     const onPreResponseAbort = (): void => {
       req.close(http2.constants.NGHTTP2_CANCEL)
-      reject(abortError())
+      rejectAfterRequestClosed(abortError())
     }
     signal?.addEventListener("abort", onPreResponseAbort, { once: true })
 
@@ -665,6 +688,8 @@ async function runHttp2Fetch(u: URL, init: UpstreamFetchInit): Promise<Response>
     req.once("response", (h) => {
       headersReceived = true
       signal?.removeEventListener("abort", onPreResponseAbort)
+      if (rejectionScheduled) return
+      responseResolved = true
 
       const status = h[":status"] ?? 0
       const responseHeaders = new Headers()
@@ -733,8 +758,9 @@ async function runHttp2Fetch(u: URL, init: UpstreamFetchInit): Promise<Response>
             }
           })
         },
-        cancel() {
+        async cancel() {
           req.close(http2.constants.NGHTTP2_CANCEL)
+          await requestClosed
         },
       })
 
@@ -746,7 +772,7 @@ async function runHttp2Fetch(u: URL, init: UpstreamFetchInit): Promise<Response>
     // Error before headers (connect failure, RST before response) → reject.
     req.once("error", (err: Error) => {
       signal?.removeEventListener("abort", onPreResponseAbort)
-      reject(err)
+      rejectAfterRequestClosed(err)
     })
 
     // Backstop (P4, empirically verified against Bun's node:http2): a whole-session
@@ -762,7 +788,7 @@ async function runHttp2Fetch(u: URL, init: UpstreamFetchInit): Promise<Response>
     req.once("close", () => {
       if (!headersReceived) {
         signal?.removeEventListener("abort", onPreResponseAbort)
-        reject(new Error(`[http2] upstream stream closed before any response (rstCode=${String(req.rstCode)})`))
+        rejectAfterRequestClosed(new Error(`[http2] upstream stream closed before any response (rstCode=${String(req.rstCode)})`))
       }
     })
 

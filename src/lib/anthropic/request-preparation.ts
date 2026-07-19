@@ -121,7 +121,7 @@ interface PrepareAnthropicRequestOptions {
   clientRequestHeaders?: Record<string, string>
   /**
    * Per-attempt overrides supplied by retry strategies (see PrepareHints in
-   * lib/request/pipeline.ts). These are unioned with the persistent
+   * lib/request/retry-types.ts). These are unioned with the persistent
    * negotiation cache results during filtering, so the retry caller gets
    * deterministic exclusion of THIS attempt without depending on the cache
    * having been written by a prior strategy.

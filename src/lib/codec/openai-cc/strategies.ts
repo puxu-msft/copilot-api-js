@@ -1,13 +1,11 @@
 /**
  * v4 pipeline — openai-cc env-based retry strategies.
  *
- * Mirrors the legacy `createChatCompletionsStrategies` (routes/chat-completions/
- * handler.ts) but yields driver-shaped env strategies, by wrapping the unchanged
- * legacy strategies (network-retry → token-refresh) in {@link adaptLegacyStrategy}.
+ * Preserves the pre-driver Chat Completions strategy order but yields driver-shaped env strategies, by wrapping the unchanged
+ * payload strategies (network-retry → token-refresh) in {@link adaptPayloadStrategy}.
  * **v4-only addition**: `server-error-retry` (bounded backoff for upstream 5xx) is
- * inserted right after `network-retry`, absent from the legacy pipeline. Effective
- * order: network → server-error → token-refresh (per-strategy logic of the legacy
- * ones stays byte-identical, 02 §1.2).
+ * inserted right after `network-retry`, absent from the pre-driver executor. Effective
+ * order: network → server-error → token-refresh (the payload strategy logic stays byte-identical, 02 §1.2).
  *
  * Per-request factory: the route builds these once per request, closing over the
  * **retry baseline** (`originalPayload` — the un-sanitized, post-tool-rename payload
@@ -18,7 +16,7 @@ import type { Model } from "~/lib/models/client"
 import type { RetryStrategy as EnvRetryStrategy } from "~/lib/pipeline/types"
 import type { ChatCompletionsPayload } from "~/types/api/openai-chat-completions"
 
-import { adaptLegacyStrategy } from "~/lib/pipeline/legacy-strategy-adapter"
+import { adaptPayloadStrategy } from "~/lib/pipeline/payload-strategy-adapter"
 import { createNetworkRetryStrategy } from "~/lib/request/strategies/network-retry"
 import { createServerErrorRetryStrategy } from "~/lib/request/strategies/server-error-retry"
 import { createTokenRefreshStrategy } from "~/lib/request/strategies/token-refresh"
@@ -37,8 +35,8 @@ export interface OpenAiCcStrategiesDeps {
 /** Build the ordered env-based CC retry strategies for one request. */
 export function buildOpenAiCcStrategies(deps: OpenAiCcStrategiesDeps): ReadonlyArray<EnvRetryStrategy> {
   const attemptRef = { value: 0 }
-  const adapt = <T>(legacy: Parameters<typeof adaptLegacyStrategy<T>>[0]): EnvRetryStrategy =>
-    adaptLegacyStrategy(legacy, { attemptRef, originalPayload: deps.originalPayload as T, model: deps.model, maxRetries: deps.maxRetries })
+  const adapt = <T>(payloadStrategy: Parameters<typeof adaptPayloadStrategy<T>>[0]): EnvRetryStrategy =>
+    adaptPayloadStrategy(payloadStrategy, { attemptRef, originalPayload: deps.originalPayload as T, model: deps.model, maxRetries: deps.maxRetries })
 
   return [
     adapt(createNetworkRetryStrategy<ChatCompletionsPayload>()),

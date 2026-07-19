@@ -123,7 +123,8 @@ export function recordToHistoryEntry(
   const clientBody = payload(values, record.ingress?.request)
   const clientBodyMeta = metadata(clientBody)
   const clientProjection = metadata(clientBodyMeta?.payload) ?? clientBodyMeta ?? metadata(ingressMeta?.payload) ?? ingressMeta
-  const attempts = record.attempts.map((attempt, index) => {
+  const attempts = record.dispatches.map((attempt, index) => {
+    const candidate = record.candidates.find((entry) => entry.handle === attempt.candidate)
     const attemptMeta = metadata(attempt.metadata)
     const effectiveMeta = metadata(attempt.effectiveRequest?.metadata)
     const requestMeta = metadata(attempt.upstreamRequest?.metadata)
@@ -141,7 +142,7 @@ export function recordToHistoryEntry(
       | undefined
     const response = responseMeta?.response
     const startedAt = attempt.occurredAt ?? (typeof attemptMeta?.startedAt === "number" ? attemptMeta.startedAt : undefined)
-    const nextAttempt = record.attempts.at(index + 1)
+    const nextAttempt = record.dispatches.at(index + 1)
     const nextAttemptMeta = metadata(nextAttempt?.metadata)
     const nextStartedAt = nextAttempt?.occurredAt ?? (typeof nextAttemptMeta?.startedAt === "number" ? nextAttemptMeta.startedAt : undefined)
     let durationMs = 0
@@ -161,6 +162,13 @@ export function recordToHistoryEntry(
     }
     return {
       index,
+      candidateId: attempt.candidate,
+      candidateRole: candidate?.role,
+      parentCandidateId: candidate?.parentCandidate,
+      candidateVerdict: candidate?.verdict,
+      dispatchId: attempt.handle,
+      dispatchVerdict: attempt.verdict,
+      dispatchReason: attempt.reason,
       strategy: attempt.strategy,
       durationMs,
       timing: { source: attemptTimingSource },
@@ -196,7 +204,7 @@ export function recordToHistoryEntry(
         usage: projectUsage(
           response?.usage
             ?? responseMeta?.usage
-            ?? (index === record.attempts.length - 1 ? (record.terminal?.usage as Record<string, unknown> | undefined) : undefined),
+            ?? (index === record.dispatches.length - 1 ? (record.terminal?.usage as Record<string, unknown> | undefined) : undefined),
         ),
         stopReason: response?.stop_reason,
         model: response?.model ?? record.routing?.resolvedModel,

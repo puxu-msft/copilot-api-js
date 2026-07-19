@@ -101,6 +101,7 @@ describe("getTransportStatusSnapshot", () => {
       conversationId: undefined,
       handshakeHeaders: {},
       rescheduleIdleTimeout: () => {},
+      dispose: () => Promise.resolve(),
       close: () => {},
     })
     setUpstreamWsConnectionFactoryForTests(fakeConnection)
@@ -129,6 +130,7 @@ describe("getTransportStatusSnapshot", () => {
       rescheduleIdleTimeout: () => {
         throw new Error("simulated rescheduleIdleTimeout failure")
       },
+      dispose: () => Promise.resolve(),
       close: () => {},
     })
     setUpstreamWsConnectionFactoryForTests(fakeConnection)

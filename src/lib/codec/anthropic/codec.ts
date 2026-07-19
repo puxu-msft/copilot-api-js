@@ -58,13 +58,14 @@ import type { RequestState } from "~/lib/pipeline/request-state"
 import type { RequestRewrite } from "~/lib/pipeline/rewrite-registry"
 import type {
   //
+  CandidateResponseRenderer,
   ClassifiedStreamError,
   ClientFrame,
   FormatCodec,
   RawHttpRequest,
   ResponseAccumulator,
 } from "~/lib/pipeline/types"
-import type { PrepareHints } from "~/lib/request/pipeline"
+import type { PrepareHints } from "~/lib/request/retry-types"
 import type {
   //
   MessageParam,
@@ -72,6 +73,7 @@ import type {
 } from "~/types/api/anthropic"
 
 import { runAnthropicPayloadRewrites } from "~/lib/anthropic/payload-rewrites"
+import { createBetaProbe } from "~/lib/anthropic/pipeline"
 import {
   //
   toSanitizationInfo,
@@ -79,8 +81,12 @@ import {
 import { buildAnthropicToolNameMapper } from "~/lib/anthropic/sanitize/tool-name-sanitize"
 import { createAnthropicStreamAccumulator } from "~/lib/anthropic/stream-accumulator"
 import { createQuarantineProactiveFilter } from "~/lib/anthropic/thinking-quarantine/proactive-filter"
+import {
+  //
+  modelIdFor,
+  stripThinkingSignatureFor,
+} from "~/lib/config/model-translation"
 import { getRequestContextManager } from "~/lib/context/manager"
-import { modelIdFor, stripThinkingSignatureFor } from "~/lib/config/model-translation"
 import {
   //
   captureInboundHeaders,
@@ -98,6 +104,7 @@ import {
 } from "~/lib/models/resolver"
 import { createResponsesStreamAccumulator } from "~/lib/openai/responses-stream-accumulator"
 import { createOpenAIStreamAccumulator } from "~/lib/openai/stream-accumulator"
+import { createCandidateStateFactory } from "~/lib/pipeline/generation/candidate-state"
 import {
   //
   createForwardStreamTranslator,
@@ -168,15 +175,27 @@ export function createAnthropicCodec(args: CreateAnthropicCodecArgs): AnthropicC
   let initialSanitizationInfo: SanitizationInfo | undefined
   let resanitize: AnthropicSanitizeFn | undefined
 
-  // FORWARD translate-leg STREAMING translator (Phase 4), built lazily on the first streaming
-  // `renderResponse` for a translate leg. The cc leg drives it single-hop (CC→Anthropic); the responses
-  // leg drives it two-hop inside the hub (Responses→CC→Anthropic). A direct `/v1/messages` request never
-  // builds it (render is identity). `flushResponse` / `getStreamMeta` read the SAME instance.
-  let streamTranslator: ForwardStreamTranslator | undefined
-  const ensureStreamTranslator = (env: RequestEnvelope): ForwardStreamTranslator => {
-    const modelId = modelIdFor(env.model as Model | undefined, (env.body as { model?: string }).model) ?? ""
-    return (streamTranslator ??= createForwardStreamTranslator(env.targetEndpoint, modelId, reasoningRoundTripOpts(env)))
+  const createRenderer = (): CandidateResponseRenderer => {
+    let streamTranslator: ForwardStreamTranslator | undefined
+    const ensureStreamTranslator = (env: RequestEnvelope): ForwardStreamTranslator => {
+      const modelId = modelIdFor(env.model as Model | undefined, (env.body as { model?: string }).model) ?? ""
+      return (streamTranslator ??= createForwardStreamTranslator(env.targetEndpoint, modelId, reasoningRoundTripOpts(env)))
+    }
+    return {
+      renderResponse(frame, env) {
+        if (!isForwardTranslateLeg(env.targetEndpoint)) return frame
+        return ensureStreamTranslator(env).renderFrame(frame)
+      },
+      flushResponse(env) {
+        if (!isForwardTranslateLeg(env.targetEndpoint)) return []
+        return ensureStreamTranslator(env).flush()
+      },
+      getStreamMeta() {
+        return streamTranslator?.getMeta()
+      },
+    }
   }
+  const defaultRenderer = createRenderer()
 
   // The S3 request rewrite chain, built once per request. Execution order is by
   // the sorted `.order` key (NOT array position — assembleRequestRewrites sorts):
@@ -266,8 +285,19 @@ export function createAnthropicCodec(args: CreateAnthropicCodecArgs): AnthropicC
     // message_delta + message_stop are drained by `flushResponse` (the per-frame render has no stream-end
     // hook, mirroring the gemini/responses codecs). The REVERSE `→ messages` streaming leg is Phase 5.
     renderResponse(frame, env) {
-      if (!isForwardTranslateLeg(env.targetEndpoint)) return frame
-      return ensureStreamTranslator(env).renderFrame(frame)
+      return defaultRenderer.renderResponse(frame, env)
+    },
+    createCandidateRenderer() {
+      return createRenderer()
+    },
+    createCandidateStateFactory(env) {
+      return createCandidateStateFactory(env, {
+        createBetaProbe,
+        createResanitize:
+          ({ source }) =>
+          (payload) =>
+            source(payload),
+      })
     },
     // S6 render (non-streaming): the direct path is identity. A FORWARD translate leg (Phase 3, T3.3)
     // delegates to the hub's CC→Anthropic response translator (`renderResponseNonStreamingVia`), turning
@@ -289,14 +319,13 @@ export function createAnthropicCodec(args: CreateAnthropicCodecArgs): AnthropicC
     // frames (message_delta + message_stop); the direct leg has none (Anthropic upstream carries its own
     // message_stop → []). The handler writes these after the driver loop.
     flushResponse(env) {
-      if (!isForwardTranslateLeg(env.targetEndpoint)) return []
-      return ensureStreamTranslator(env).flush()
+      return defaultRenderer.flushResponse(env)
     },
 
     // S6 streaming terminal meta (Phase 4): the translate leg's out-of-band stop_reason + net usage; the
     // direct leg reads its own Anthropic accumulator → undefined here.
     getStreamMeta() {
-      return streamTranslator?.getMeta()
+      return defaultRenderer.getStreamMeta?.() as CcToAnthropicStreamMeta | undefined
     },
 
     // observability (S4 per-attempt): the OUTBOUND-leg accumulator (RFC §4.1 — accumulator is a
@@ -457,6 +486,7 @@ const STREAM_ERROR_MESSAGES: Record<ClassifiedStreamError, string> = {
   shutdown: "Server is shutting down",
   "client-abort": "Client disconnected",
   "reaper-cancel": "Request cancelled by stale-request reaper",
+  "dispatch-cancel": "Upstream dispatch cancelled",
   other: "Stream error",
 }
 

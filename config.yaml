@@ -918,6 +918,29 @@ openai_responses:
   fix_stream_ids: true
 
 # ============================================================================
+# Generation runtime / 生成运行时
+# ============================================================================
+generation:
+  hedge:
+    # Start one secondary request after this many seconds without a complete real client block. Synthetic keepalive scaffold does not close the window.
+    # 首个物理请求在此秒数后仍无真实完整客户端 block 时启动一个 secondary。合成 keepalive 脚手架不关闭窗口。
+    # The conservative 300s default targets the Claude Code no-real-content watchdog tail; this is not an ordinary low-latency hedge.
+    # 保守默认 300 秒用于兜住 Claude Code 的 no-real-content watchdog 尾部，不是普通低延迟竞速。
+    enabled: true
+    threshold_sec: 300
+    max_secondary_candidates: 1
+    # Server-executed tools may run twice and consume duplicate quota; keep disabled unless explicitly accepted.
+    # server-side tool 可能重复执行并消耗双份额度；仅在明确接受风险时开启。
+    allow_server_tools: false
+  recovery:
+    max_candidates: 3
+  max_active_candidates: 2
+  max_active_dispatches: 2
+  max_total_candidates: 5
+  max_total_dispatches: 16
+  cleanup_grace_sec: 10
+
+# ============================================================================
 # Server / inbound ingress / 服务端·入站
 # ============================================================================
 # Client-facing inbound limits — distinct from upstream_transport.* (outbound to GHC).

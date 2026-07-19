@@ -6,13 +6,9 @@
  * (env-based — see docs/v4/03-spec/retry-transport.md §2), and the pure transport
  * send contract.
  *
- * P0.1 defines the interfaces only — **no consumers yet**. The driver (P2) and
- * transport (P0.2/P2) consume them later.
- *
- * Note on naming: the env-based {@link RetryStrategy} here intentionally shares
- * the name with the legacy generic `RetryStrategy<TPayload>` in
- * `~/lib/request/pipeline`. They live in different modules and never collide;
- * the legacy one is replaced by this one as formats migrate (P2 / P0.4).
+ * Note on naming: the envelope-based {@link RetryStrategy} here is the orchestration
+ * contract. Format-native payload strategies own their generic contract in
+ * `~/lib/request/retry-types` and enter the driver through the payload adapter.
  */
 
 import type { OperationKind } from "~/lib/context/model-operation-record"
@@ -56,6 +52,22 @@ export type UpstreamFrame = SseFrame
 /** One SSE frame flowing to the client, post-rewrite/translate (S5→S7). */
 export type ClientFrame = SseFrame
 
+export interface DispatchDisposalResult {
+  quiesced: true
+  connectionReusable: boolean
+  detail?: string
+}
+
+/** Lifecycle owner for one physical upstream dispatch. */
+export interface UpstreamDispatchLifecycle {
+  /** Cooperative cancellation; returns immediately. */
+  cancel(reason?: string): void
+  /** Idempotent force-disposal barrier; no local frame/header callback can fire after resolve. */
+  dispose(reason?: string): Promise<DispatchDisposalResult>
+  /** Resolves on natural completion or disposal. */
+  quiesced: Promise<void>
+}
+
 /**
  * The result of a single upstream exchange (S4 output). Streaming responses
  * expose `frames`; non-streaming responses expose `nonStream`. `headers`
@@ -66,6 +78,8 @@ export interface UpstreamStream {
   /** Parsed JSON body for non-streaming responses (undefined when streaming). */
   nonStream?: unknown
   headers: Headers
+  /** Real transports always provide this; hook mocks may omit it during the migration. */
+  lifecycle?: UpstreamDispatchLifecycle
 }
 
 // ============================================================================
@@ -99,6 +113,14 @@ export interface PreparedRequest {
   stream: boolean
 }
 
+/** Scheduler-owned controls for ONE physical transport dispatch. */
+export interface TransportDispatchOptions {
+  /** Skip the Responses WS-first choice for an explicit `ws-fallback` HTTP dispatch. */
+  forceHttp?: boolean
+  /** Candidate/dispatch-local cancellation, independent from request-level lifecycle signals. */
+  signal?: AbortSignal
+}
+
 /**
  * Pure send/receive, format-agnostic. Extracted from the three clients' shared
  * skeleton (docs/v4/02-current-state.md §6.1): token check → combine signals →
@@ -107,7 +129,18 @@ export interface PreparedRequest {
  * wraps this at the call site (kept, see retry-transport.md §5).
  */
 export interface Transport {
-  send(wire: PreparedRequest, env: RequestEnvelope): Promise<UpstreamStream>
+  send(wire: PreparedRequest, env: RequestEnvelope, options?: TransportDispatchOptions): Promise<UpstreamStream>
+}
+
+export type PhysicalTransportResponse =
+  | { kind: "stream"; upstream: UpstreamStream & { lifecycle: UpstreamDispatchLifecycle }; lifecycle: UpstreamDispatchLifecycle }
+  | { kind: "json"; body: unknown; headers: Headers; lifecycle: UpstreamDispatchLifecycle }
+  | { kind: "fallback-before-first-event"; error: unknown; lifecycle: UpstreamDispatchLifecycle }
+  | { kind: "failed-open"; error: unknown; lifecycle: UpstreamDispatchLifecycle }
+
+/** Mandatory physical ownership contract consumed by the generation dispatch scheduler. */
+export interface PhysicalTransport {
+  open(wire: PreparedRequest, env: RequestEnvelope, options?: TransportDispatchOptions): Promise<PhysicalTransportResponse>
 }
 
 // ============================================================================
@@ -115,7 +148,7 @@ export interface Transport {
 // ============================================================================
 
 /**
- * An error-driven retry strategy. Unlike the legacy `RetryStrategy<TPayload>`,
+ * An error-driven retry strategy. Unlike the payload-oriented `RetryStrategy<TPayload>`,
  * `handle` receives and returns the **envelope** — it mutates one layer of env
  * (prepareHints / body / target), and the next loop turn re-derives the wire via
  * `prepareWire(env)`. This unifies "what to fix + where to re-enter" (see
@@ -132,7 +165,7 @@ export interface RetryStrategy {
    * `meta` is the `RetryAction.meta` carried by the **budget-accepted** retry that
    * produced the successful env (the driver threads it post-gate, so a
    * budget-rejected retry's meta never reaches here — C0-② / RFC §11.2). The
-   * adapter forwards it into the legacy `ResolvedContext.meta`, where
+   * adapter forwards it into the payload strategy `ResolvedContext.meta`, where
    * `unsupported-beta-retry.onResolved` reads `meta.probedBetas` to fixate the
    * located betas into the negotiation cache.
    */
@@ -142,10 +175,10 @@ export interface RetryStrategy {
 /**
  * The outcome of a strategy's `handle`. `retry` carries the modified envelope
  * for the next attempt; `learning` retries draw from a separate budget (see
- * retry-transport.md §2 / pipeline.ts `MAX_LEARNING_RETRIES`).
+ * retry-transport.md §2 / the driver learning-retry budget).
  *
- * `meta` is opaque per-retry diagnostic data (the legacy `RetryAction.meta` — e.g.
- * `truncateResult` / `sanitization` / `probedBetas` / `strippedBetas`). The driver
+ * `meta` is opaque per-retry diagnostic data (the payload strategy `RetryAction.meta` — e.g.
+ * `sanitization` / `probedBetas` / `strippedBetas`). The driver
  * captures it loop-local **only after the budget gate accepts the retry**, then
  * routes it to the handler's `onMeta` sink and to the owning strategy's
  * `onResolved` — so a budget-rejected retry never emits phantom pipeline-info
@@ -301,7 +334,23 @@ export interface RunResponseOpts {
    * actions; the flushed frames are reported separately by the inspector).
    */
   onRewriteAction?: (rewriteName: string, frameIndex: number, action: FrameAction) => void
+  /**
+   * Branch-local protocol finish callback, invoked only after a natural upstream drain and after
+   * S5 rewrite buffers flush. It returns already client-shaped closing frames plus the protocol
+   * completeness verdict. The processor yields `frames` through the normal post-render/sink path;
+   * thrown upstream errors do not invoke it.
+   */
+  finishResponse?: (rendererFrames: ReadonlyArray<ClientFrame>) => ResponseFinishResult
+  /** Internal observer used by the sink driver to return the processor verdict without re-running finish. */
+  onFinishResolved?: (result: ResponseFinishResult) => void
 }
+
+/** Protocol completion classification produced at the response processor's single finish boundary. */
+export type ResponseFinishResult =
+  | { kind: "complete"; frames: ReadonlyArray<ClientFrame> }
+  | { kind: "valid-terminal-without-boundary"; frames: ReadonlyArray<ClientFrame>; terminal: string }
+  | { kind: "truncated"; frames: ReadonlyArray<ClientFrame>; reason: string }
+  | { kind: "terminal-failure"; frames: ReadonlyArray<ClientFrame>; error: unknown }
 
 /**
  * Anthropic-supplied hooks for the buffered empty-text keepalive ANCHOR (spec
@@ -410,7 +459,7 @@ export interface RunBufferedOpts extends RunResponseOpts {
    * undetectable; transport/http2-client.ts:169-175). A clean drain WITHOUT message_stop
    * is a truncation → retryable.
    */
-  sawMessageStop: () => boolean
+  sawMessageStop?: () => boolean
   /**
    * Reads the handler's accumulator: did THIS attempt see a TERMINAL upstream `error` frame
    * (H2 — e.g. `overloaded_error`)? Such a frame is a clean drain WITHOUT `message_stop`, so
@@ -619,12 +668,14 @@ export interface ClientSink {
  *     "client-abort"`). The downstream stream is dead, so the handler writes ZERO further
  *     bytes and settles `ctx.abort` (B0-d "abort → zero bytes").
  */
-export type ResponseOutcome = { kind: "complete"; headers: Headers } | { kind: "stream-error"; error: unknown; truncated?: boolean } | { kind: "settled-abort" }
+export type ResponseOutcome =
+  | { kind: "complete"; headers: Headers; finish?: ResponseFinishResult }
+  | { kind: "stream-error"; error: unknown; truncated?: boolean }
+  | { kind: "settled-abort" }
 
 /**
  * Orchestrates the stage sequence, publishing events + sampling raw data at
- * each stage boundary. Lifted+merged from the current `executeRequestPipeline`
- * retry loop and the handlers' orchestration skeleton (docs/v4/01-architecture.md §1.3).
+ * each stage boundary. Owned by the generation driver after retiring the pre-driver request executor (docs/v4/01-architecture.md §1.3).
  */
 export interface PipelineDriver {
   /** Request side: run S1→S4 (S4 contains error-driven retry). */
@@ -703,6 +754,13 @@ export type ResponseAccumulator = BaseStreamAccumulator
  */
 export type ClassifiedStreamError = StreamErrorKind
 
+/** Candidate-local S6 renderer. Stateful translators must create one instance per candidate. */
+export interface CandidateResponseRenderer {
+  renderResponse(frame: UpstreamFrame, env: RequestEnvelope): ClientFrame | Array<ClientFrame>
+  flushResponse(env: RequestEnvelope): Array<ClientFrame>
+  getStreamMeta?(): unknown
+}
+
 /**
  * One format's codec — encapsulates all "this format vs inbound/upstream"
  * differences (docs/v4/03-spec/codec.md §1). The driver consumes it at the
@@ -756,6 +814,17 @@ export interface FormatCodec {
 
   /** S6: translate one upstream frame back to the client protocol (passthrough = identity). */
   renderResponse(frame: UpstreamFrame, env: RequestEnvelope): ClientFrame | Array<ClientFrame>
+
+  /**
+   * Create an isolated response-side renderer for one generation candidate. Codecs whose S6
+   * translation is stateful MUST implement this so hedge siblings never share translator ids,
+   * block indexes, accumulators, or flush state. Stateless codecs may omit it; the driver then
+   * wraps the legacy render method with an empty flush.
+   */
+  createCandidateRenderer?(env: RequestEnvelope): CandidateResponseRenderer
+
+  /** Fork opaque request-side state for one candidate; real codecs with mutable requestState implement this. */
+  createCandidateStateFactory?(env: RequestEnvelope): import("./generation/candidate-state").CandidateStateFactory
 
   /** S6 non-streaming: translate the whole upstream response back to the client. */
   renderResponseNonStreaming(upstream: unknown, env: RequestEnvelope): unknown

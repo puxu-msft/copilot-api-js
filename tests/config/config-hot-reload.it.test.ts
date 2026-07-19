@@ -1086,6 +1086,20 @@ const EXEMPT: ReadonlyArray<ExemptField> = [
     configKey: "chat_completions.buffered_retry",
     reason: "bool|map mode switch + caps → chatCompletionsBufferedRetry + bufferedRetryOverrides.chat_completions; see buffered-retry-keys.test.ts",
   },
+  // Generation runtime is an object-shaped, relation-validated patch (total >= active,
+  // primary + secondary <= active), so it cannot use the scalar FieldSpec registry.
+  // Parsing, frozen per-request snapshots, disabled-timeout fallback, and state reset are
+  // covered by generation-runtime-config.unit.test.ts.
+  { configKey: "generation.hedge.enabled", reason: "object-shaped generation runtime; see generation-runtime-config.unit.test.ts" },
+  { configKey: "generation.hedge.threshold_sec", reason: "object-shaped generation runtime; see generation-runtime-config.unit.test.ts" },
+  { configKey: "generation.hedge.max_secondary_candidates", reason: "object-shaped generation runtime; see generation-runtime-config.unit.test.ts" },
+  { configKey: "generation.hedge.allow_server_tools", reason: "object-shaped generation runtime; see generation-runtime-config.unit.test.ts" },
+  { configKey: "generation.recovery.max_candidates", reason: "object-shaped generation runtime; see generation-runtime-config.unit.test.ts" },
+  { configKey: "generation.max_active_candidates", reason: "relation-validated generation budget; see generation-runtime-config.unit.test.ts" },
+  { configKey: "generation.max_active_dispatches", reason: "relation-validated generation budget; see generation-runtime-config.unit.test.ts" },
+  { configKey: "generation.max_total_candidates", reason: "relation-validated generation budget; see generation-runtime-config.unit.test.ts" },
+  { configKey: "generation.max_total_dispatches", reason: "relation-validated generation budget; see generation-runtime-config.unit.test.ts" },
+  { configKey: "generation.cleanup_grace_sec", reason: "object-shaped generation runtime; see generation-runtime-config.unit.test.ts" },
 ]
 
 // ============================================================================

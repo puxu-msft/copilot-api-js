@@ -26,6 +26,7 @@ import {
   test,
 } from "bun:test"
 
+import { getHistory } from "~/lib/history/store"
 import {
   //
   setModels,
@@ -69,6 +70,7 @@ describe("keepalive buffered-anchor e2e — pre-commit thinking stall injects em
   useIsolatedRuntime()
   const clock = new FakeClock()
   let ctrl: ReadableStreamDefaultController<Uint8Array> | undefined
+  const controllers: Array<ReadableStreamDefaultController<Uint8Array>> = []
 
   const fetchMock = mock((input: string | URL | Request) => {
     const url =
@@ -79,6 +81,7 @@ describe("keepalive buffered-anchor e2e — pre-commit thinking stall injects em
     const body = new ReadableStream<Uint8Array>({
       start(c) {
         ctrl = c
+        controllers.push(c)
       },
     })
     return Promise.resolve(new Response(body, { status: 200, headers: { "content-type": "text/event-stream" } }))
@@ -87,6 +90,7 @@ describe("keepalive buffered-anchor e2e — pre-commit thinking stall injects em
   beforeEach(() => {
     clock.install()
     ctrl = undefined
+    controllers.length = 0
     fetchMock.mockClear()
     setStateForTests({
       copilotToken: "test-token",
@@ -172,6 +176,148 @@ describe("keepalive buffered-anchor e2e — pre-commit thinking stall injects em
 
     // (7) the real terminator survived.
     expect(types).toContain("message_stop")
+  })
+
+  test("heartbeat cadence and synthetic markers survive a buffered recovery; recovered real block closes anchor and remaps +1", async () => {
+    setStateForTests({ bufferedRetryShared: { maxRetries: 1, bufferCapBytes: 16_777_216, heartbeatSec: 15 } })
+    const { createFullTestApp } = await import("../helpers/test-app")
+    const app = createFullTestApp()
+    const resP = app.request("/v1/messages", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-session-id": "keepalive-buffered-anchor-recovery" },
+      body: JSON.stringify({ model: MODEL, messages: [{ role: "user", content: "recover" }], max_tokens: 256, stream: true }),
+    })
+    await drain()
+    if (!controllers[0]) throw new Error("first upstream body controller was not captured")
+
+    // Attempt 1 exposes only message_start, then stalls. This starts the real buffered pump while no
+    // semantic block can commit; the generation-owned heartbeat forwards that envelope + anchor.
+    controllers[0].enqueue(enc.encode(messageStartFrame({ id: "msg_attempt_1", model: MODEL })))
+    await drain(120)
+    const res = await resP
+    expect(res.status).toBe(200)
+    const textP = res.text() // actively drain the client body so each heartbeat write settles at its fake-clock deadline
+    await clock.advance(2_500)
+    await drain(100)
+    controllers[0].error(new Error("Stream closed with error code NGHTTP2_CANCEL"))
+    for (let i = 0; i < 200 && controllers.length < 2; i++) await Promise.resolve()
+    if (!controllers[1]) throw new Error("buffered recovery did not open a second upstream body")
+
+    // Attempt 2 starts, but the same downstream sink/cadence remains alive. A second heartbeat lands
+    // at the next 2s deadline, proving the retry did not rebuild the sink or reset forwarded markers.
+    controllers[1].enqueue(enc.encode(messageStartFrame({ id: "msg_recovered", model: MODEL })))
+    await drain(100)
+    await clock.advance(2_000)
+    await drain(100)
+
+    controllers[1].enqueue(
+      enc.encode(anthropicSseFrame("content_block_start", { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } })),
+    )
+    controllers[1].enqueue(
+      enc.encode(anthropicSseFrame("content_block_delta", { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "recovered" } })),
+    )
+    controllers[1].enqueue(enc.encode(blockStop(0)))
+    controllers[1].enqueue(enc.encode(messageDelta()))
+    controllers[1].enqueue(enc.encode(messageStop()))
+    controllers[1].close()
+
+    const text = await textP
+    const sse = (event: string, data: unknown): string => `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`
+    const expected = [
+      sse("message_start", {
+        type: "message_start",
+        message: {
+          id: "msg_attempt_1",
+          type: "message",
+          role: "assistant",
+          model: MODEL,
+          content: [],
+          stop_reason: null,
+          stop_sequence: null,
+          usage: { input_tokens: 100, output_tokens: 0 },
+        },
+      }),
+      sse("content_block_start", { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } }),
+      sse("content_block_delta", { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "" } }),
+      sse("content_block_delta", { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "" } }),
+      sse("content_block_stop", { type: "content_block_stop", index: 0 }),
+      sse("content_block_start", { type: "content_block_start", index: 1, content_block: { type: "text", text: "" } }),
+      sse("content_block_delta", { type: "content_block_delta", index: 1, delta: { type: "text_delta", text: "recovered" } }),
+      sse("content_block_stop", { type: "content_block_stop", index: 1 }),
+      sse("message_delta", { type: "message_delta", delta: { stop_reason: "end_turn", stop_sequence: null }, usage: { output_tokens: 5 } }),
+      sse("message_stop", { type: "message_stop" }),
+    ].join("")
+    expect(text).toBe(expected)
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+
+    const forwarded =
+      getHistory({ endpoint: "anthropic-messages", sessionId: "keepalive-buffered-anchor-recovery", limit: 1 }).entries[0]?.clientResponse?.sseEvents ?? []
+    expect(forwarded.filter((frame) => frame.synthetic).map((frame) => frame.synthetic)).toEqual(["anchor", "keepalive", "keepalive", "anchor"])
+    const keepaliveOffsets = forwarded.filter((frame) => frame.synthetic === "keepalive").map((frame) => frame.offsetMs)
+    expect(keepaliveOffsets).toHaveLength(2)
+    expect(keepaliveOffsets[1] - keepaliveOffsets[0]).toBe(2_000)
+  })
+
+  test("buffered retries exhausted after heartbeats → scaffold closes exactly once before the terminal error", async () => {
+    setStateForTests({ bufferedRetryShared: { maxRetries: 1, bufferCapBytes: 16_777_216, heartbeatSec: 15 } })
+    const { createFullTestApp } = await import("../helpers/test-app")
+    const app = createFullTestApp()
+    const resP = app.request("/v1/messages", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-session-id": "keepalive-buffered-anchor-exhausted" },
+      body: JSON.stringify({ model: MODEL, messages: [{ role: "user", content: "exhaust" }], max_tokens: 256, stream: true }),
+    })
+    await drain()
+    if (!controllers[0]) throw new Error("first upstream body controller was not captured")
+    controllers[0].enqueue(enc.encode(messageStartFrame({ id: "msg_exhausted_1", model: MODEL })))
+    await drain(120)
+    const res = await resP
+    expect(res.status).toBe(200)
+    const textP = res.text()
+
+    await clock.advance(2_500)
+    await drain(100)
+    controllers[0].error(new Error("Stream closed with error code NGHTTP2_CANCEL"))
+    for (let i = 0; i < 200 && controllers.length < 2; i++) await Promise.resolve()
+    if (!controllers[1]) throw new Error("buffered retry did not open a second upstream body")
+
+    await clock.advance(2_000)
+    await drain(100)
+    controllers[1].error(new Error("Stream closed with error code NGHTTP2_CANCEL"))
+    const text = await textP
+
+    const sse = (event: string, data: unknown): string => `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`
+    const expected = [
+      sse("message_start", {
+        type: "message_start",
+        message: {
+          id: "msg_exhausted_1",
+          type: "message",
+          role: "assistant",
+          model: MODEL,
+          content: [],
+          stop_reason: null,
+          stop_sequence: null,
+          usage: { input_tokens: 100, output_tokens: 0 },
+        },
+      }),
+      sse("content_block_start", { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } }),
+      sse("content_block_delta", { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "" } }),
+      sse("content_block_delta", { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "" } }),
+      sse("content_block_stop", { type: "content_block_stop", index: 0 }),
+      sse("error", { type: "error", error: { type: "api_error", message: "Stream closed with error code NGHTTP2_CANCEL" } }),
+    ].join("")
+    expect(text).toBe(expected)
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+
+    const entry = getHistory({ endpoint: "anthropic-messages", sessionId: "keepalive-buffered-anchor-exhausted", limit: 1 }).entries[0]
+    expect(entry?.state).toBe("failed")
+    expect(entry?.clientResponse?.sseEvents?.filter((frame) => frame.synthetic).map((frame) => frame.synthetic)).toEqual([
+      "anchor",
+      "keepalive",
+      "keepalive",
+      "anchor",
+    ])
   })
 
   test("byte-equivalence control: a FAST buffered response (no stall) injects NO anchor — real block stays at index 0", async () => {

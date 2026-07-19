@@ -1,7 +1,7 @@
 import consola from "consola"
 
 import type { SanitizationInfo } from "~/lib/history/types"
-import type { SanitizeResult } from "~/lib/request/pipeline"
+import type { SanitizeResult } from "~/lib/request/retry-types"
 import type { MessagesPayload } from "~/types/api/anthropic"
 
 import { state } from "~/lib/state"

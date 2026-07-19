@@ -18,7 +18,7 @@ import type {
   RetryAction,
   RetryContext,
   RetryStrategy,
-} from "../pipeline"
+} from "../retry-types"
 
 /** Max server-error retries per pipeline execution */
 const SERVER_ERROR_MAX_RETRIES = 2

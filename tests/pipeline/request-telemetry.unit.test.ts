@@ -338,6 +338,39 @@ async function persistedDimensions(): Promise<Record<string, { buckets: Record<s
 }
 
 describe("dimension/measure framework", () => {
+  test("accumulates generation candidate and physical dispatch counters", async () => {
+    const now = Date.now()
+    const bucketTs = Math.floor(now / (5 * 60 * 1000)) * (5 * 60 * 1000)
+    recordSettledRequest(
+      { model: "claude-opus-4.8" },
+      {
+        startedAt: now,
+        endedAt: now + 1,
+        success: true,
+        generation: {
+          candidates: 2,
+          dispatches: 3,
+          hedgeCandidates: 1,
+          hedgeWins: 1,
+          recoveryCandidates: 0,
+          cancelledDispatches: 1,
+          unknownUsageDispatches: 1,
+        },
+      },
+    )
+
+    const dimensions = await persistedDimensions()
+    expect(dimensions.model?.buckets[String(bucketTs)]?.["claude-opus-4.8"]).toMatchObject({
+      generationCandidates: 2,
+      upstreamDispatches: 3,
+      hedgeCandidates: 1,
+      hedgeWins: 1,
+      recoveryCandidates: 0,
+      cancelledDispatches: 1,
+      unknownUsageDispatches: 1,
+    })
+  })
+
   test("accumulates multiple dimensions for one request (model + endpoint + agentKind)", async () => {
     const now = Date.now()
     const bucketTs = Math.floor(now / (5 * 60 * 1000)) * (5 * 60 * 1000)

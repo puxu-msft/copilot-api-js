@@ -30,7 +30,11 @@ import { recordReaperTick } from "~/lib/observability/reaper-diagnostics"
 import { recordAcceptedRequest } from "~/lib/request-telemetry"
 import { state } from "~/lib/state"
 
-import type { OperationKind } from "./model-operation-record"
+import type {
+  //
+  ModelOperationRecord,
+  OperationKind,
+} from "./model-operation-record"
 import type {
   //
   RequestContext,
@@ -75,13 +79,14 @@ export interface RequestContextManager {
   readonly activeCount: number
 
   /**
-   * C5: OPERATION registry — a ctx stays tracked here until its operation body QUIESCES
-   * (settle-before work done), not merely until settle. Serves the shutdown drain so orphan
-   * settle-before work is waited on. For an unwired ctx (no `trackOperationBody`) this empties at
-   * settle, same as the visible registry (behavior-preserving).
+   * OPERATION/finalization registry — a ctx stays tracked until its operation body quiesces AND
+   * its generation finalizer publishes canonical observability, not merely until logical settle.
+   * Serves shutdown drain so orphan settle-before work and pending immutable seals are both waited on.
    */
   getTrackedOperations(): Array<RequestContext>
   readonly trackedOperationCount: number
+  /** Drain every generation finalizer and surface any canonical-finalization rejection. */
+  drainModelOperationFinalizations(): Promise<void>
 
   /** Start periodic cleanup of stale active contexts */
   startReaper(): void
@@ -125,6 +130,11 @@ export function initRequestContextManager(options?: RequestContextManagerOptions
 
 export function getRequestContextManager(): RequestContextManager {
   if (!_manager) throw new Error("RequestContextManager not initialized — call initRequestContextManager() first")
+  return _manager
+}
+
+/** Optional lifecycle lookup for shutdown harnesses/processes that never initialize request serving. */
+export function peekRequestContextManager(): RequestContextManager | null {
   return _manager
 }
 
@@ -200,11 +210,12 @@ export async function withCapturingManagerAsync<T>(fn: () => Promise<T>): Promis
 
 export function createRequestContextManager(options?: RequestContextManagerOptions): RequestContextManager {
   const activeContexts = new Map<string, RequestContext>()
-  // C5 operation registry: a ctx stays here until its operation body QUIESCES (not merely settle).
-  // Populated on create alongside activeContexts; on settle the scope is SEALED and the ctx is
-  // removed once `whenOperationQuiesced()` resolves. Unwired ctx (childCount 0) quiesces on the
-  // next microtask ⇒ empties at settle like the visible registry (behavior-preserving).
+  // Operation/finalization registry: populated alongside activeContexts, sealed at logical settle,
+  // and retained until the unique generation finalizer has awaited scope quiescence and published
+  // canonical observability. It therefore covers both operation-body orphan work and immutable seal.
   const operationScopes = new Map<string, RequestContext>()
+  const pendingModelOperationFinalizations = new Set<Promise<ModelOperationRecord>>()
+  const modelOperationFinalizationFailures: Array<unknown> = []
   const publisher = options?.publisher
   const armDeadlineTimers = options?.armDeadlineTimers ?? true
   // Per-request hard-deadline timers (RFC C4b). Unlike the periodic reaper scan (which fires
@@ -359,16 +370,27 @@ export function createRequestContextManager(options?: RequestContextManagerOptio
         onSettled: (id) => {
           clearDeadlineTimer(id)
           activeContexts.delete(id)
-          // C5: settle ⇒ no new operations start ⇒ seal the scope, then leave the OPERATION
-          // registry once the body quiesces. Fire-and-forget is safe: `whenOperationQuiesced`
-          // only ever RESOLVES (never rejects — see operation-scope.ts), so no unhandled
-          // rejection. Unwired ctx quiesces on the next microtask (childCount 0).
+          // Logical settle seals the operation scope. The context remains in the shutdown
+          // registry through BOTH operation quiescence and the generation finalizer, whose join
+          // waits for delivery notification and canonical publish. This is intentionally separate
+          // from the post-terminal FinalizationCoordinator.
           const tracked = operationScopes.get(id)
           if (tracked) {
             tracked.sealOperationScope()
-            void tracked.whenOperationQuiesced().then(() => {
-              operationScopes.delete(id)
-            })
+            const finalization = tracked.whenModelOperationFinalized()
+            pendingModelOperationFinalizations.add(finalization)
+            void finalization.then(
+              () => {
+                pendingModelOperationFinalizations.delete(finalization)
+                operationScopes.delete(id)
+              },
+              (error: unknown) => {
+                pendingModelOperationFinalizations.delete(finalization)
+                operationScopes.delete(id)
+                modelOperationFinalizationFailures.push(error)
+                consola.error(`[context] Generation finalization failed for ${id}:`, error)
+              },
+            )
           }
         },
         publisher,
@@ -420,6 +442,16 @@ export function createRequestContextManager(options?: RequestContextManagerOptio
 
     get trackedOperationCount() {
       return operationScopes.size
+    },
+
+    async drainModelOperationFinalizations() {
+      while (pendingModelOperationFinalizations.size > 0) {
+        await Promise.allSettled(pendingModelOperationFinalizations)
+      }
+      if (modelOperationFinalizationFailures.length > 0) {
+        const failures = modelOperationFinalizationFailures.splice(0)
+        throw new AggregateError(failures, "Generation finalization failed")
+      }
     },
 
     startReaper,

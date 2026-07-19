@@ -14,7 +14,11 @@ import type {
   UpstreamWsConnection,
   WebSocketLike,
 } from "~/lib/openai/upstream-ws-connection"
-import type { ResponsesPayload } from "~/types/api/openai-responses"
+import type {
+  //
+  ResponsesPayload,
+  ResponsesStreamEvent,
+} from "~/types/api/openai-responses"
 
 import {
   //
@@ -46,6 +50,7 @@ function createConnection(overrides: Partial<UpstreamWsConnection> = {}): Upstre
     handshakeHeaders: {},
     rescheduleIdleTimeout: () => {},
     close: () => {},
+    dispose: async () => {},
     ...overrides,
   }
 }
@@ -606,6 +611,7 @@ class StrictAttemptSocket extends EventTarget implements WebSocketLike {
   readyState = 0
   readonly OPEN = 1
   readonly CONNECTING = 0
+  readonly CLOSING = 2
   readonly CLOSED = 3
   sent: Array<string> = []
   closeCalls: Array<{ code?: number; reason?: string }> = []
@@ -629,6 +635,10 @@ class StrictAttemptSocket extends EventTarget implements WebSocketLike {
     this.onSend()
   }
 
+  emitMessage(value: unknown): void {
+    this.dispatchEvent(new MessageEvent("message", { data: JSON.stringify(value) }))
+  }
+
   close(code?: number, reason?: string): void {
     if (code !== undefined && code !== 1000 && (code < 3000 || code > 4999)) {
       throw new DOMException("invalid code", "InvalidAccessError")
@@ -636,6 +646,18 @@ class StrictAttemptSocket extends EventTarget implements WebSocketLike {
     this.closeCalls.push({ code, reason })
     this.readyState = this.CLOSED
     this.dispatchEvent(new CloseEvent("close", { code: code ?? 1000, reason: reason ?? "" }))
+  }
+}
+
+class DelayedAttemptCloseSocket extends StrictAttemptSocket {
+  override close(code?: number, reason?: string): void {
+    this.closeCalls.push({ code, reason })
+    this.readyState = this.CLOSING
+  }
+
+  finishClose(): void {
+    this.readyState = this.CLOSED
+    this.dispatchEvent(new CloseEvent("close", { code: 1000, reason: "closed" }))
   }
 }
 
@@ -709,11 +731,195 @@ describe("attemptUpstreamResponsesWs — §1.1 before-first-event fallback", () 
     const attempt = await attemptUpstreamResponsesWs(prepared, { clientAbortSignal: clientAbort.signal })
 
     expect(attempt.kind).toBe("fallback")
+    if (attempt.kind === "fallback") expect(attempt.error).toBeInstanceOf(Error)
     // Load-bearing regression guard: the strict socket only records a close for a
     // WHATWG-legal code. Recording exactly { code: 1000 } proves the fallback-catch
     // close used the legal code — a 1001 regression throws before recording, so
     // this array would be empty and this assertion fails.
-    expect(socket.closeCalls).toEqual([{ code: 1000, reason: "Going away" }])
+    expect(socket.closeCalls).toEqual([{ code: 1000, reason: "Request aborted" }])
+  })
+
+  test("dispose after first-event prefetch prevents the cached frame from escaping after the barrier", async () => {
+    let disposed = false
+    let returnStarted = false
+    let releaseReturn!: () => void
+    const returnGate = new Promise<void>((resolve) => {
+      releaseReturn = resolve
+    })
+    setUpstreamWsConnectionFactoryForTests(() => ({
+      connect: async () => {},
+      sendRequest: () => ({
+        [Symbol.asyncIterator]() {
+          let first = true
+          return {
+            async next(): Promise<IteratorResult<ResponsesStreamEvent>> {
+              if (first) {
+                first = false
+                return { done: false, value: { type: "response.created", response: { id: "resp_prefetched" } } as ResponsesStreamEvent }
+              }
+              return new Promise(() => {})
+            },
+            async return(): Promise<IteratorResult<ResponsesStreamEvent>> {
+              returnStarted = true
+              await returnGate
+              return { done: true, value: undefined }
+            },
+          }
+        },
+      }),
+      isOpen: true,
+      isBusy: false,
+      statefulMarker: undefined,
+      model: "gpt-5.2",
+      conversationId: undefined,
+      handshakeHeaders: {},
+      rescheduleIdleTimeout: () => {},
+      close: () => {},
+      async dispose() {
+        disposed = true
+      },
+    }))
+    const prepared: PreparedOpenAIRequest<ResponsesPayload> = {
+      wire: { model: "gpt-5.2", input: "hello", stream: true },
+      headers: {},
+    }
+
+    const attempt = await attemptUpstreamResponsesWs(prepared)
+    expect(attempt.kind).toBe("ok")
+    if (attempt.kind !== "ok") throw new Error("expected WS success")
+
+    let lifecycleDisposed = false
+    const disposal = attempt.lifecycle.dispose("hedged loser").then(() => {
+      lifecycleDisposed = true
+    })
+    await Promise.resolve()
+    expect(disposed).toBe(true)
+    expect(returnStarted).toBe(true)
+    expect(lifecycleDisposed).toBe(false)
+    releaseReturn()
+    await disposal
+    expect(lifecycleDisposed).toBe(true)
+    await expect(attempt.lifecycle.quiesced).resolves.toBeUndefined()
+    expect(await attempt.generator.next()).toMatchObject({ done: true })
+  })
+
+  test("external dispatch cancellation after first-event prefetch automatically completes the disposal barrier", async () => {
+    let disposed = false
+    const dispatchAbort = new AbortController()
+    setUpstreamWsConnectionFactoryForTests(() => ({
+      connect: async () => {},
+      sendRequest: async function* () {
+        yield { type: "response.created", response: { id: "resp_prefetched" } } as ResponsesStreamEvent
+      },
+      isOpen: true,
+      isBusy: false,
+      statefulMarker: undefined,
+      model: "gpt-5.2",
+      conversationId: undefined,
+      handshakeHeaders: {},
+      rescheduleIdleTimeout: () => {},
+      close: () => {},
+      async dispose() {
+        disposed = true
+      },
+    }))
+    const prepared: PreparedOpenAIRequest<ResponsesPayload> = {
+      wire: { model: "gpt-5.2", input: "hello", stream: true },
+      headers: {},
+    }
+
+    const attempt = await attemptUpstreamResponsesWs(prepared, { dispatchSignal: dispatchAbort.signal })
+    expect(attempt.kind).toBe("ok")
+    if (attempt.kind !== "ok") throw new Error("expected WS success")
+    dispatchAbort.abort(new Error("candidate lost"))
+
+    await expect(attempt.lifecycle.quiesced).resolves.toBeUndefined()
+    expect(disposed).toBe(true)
+    expect(await attempt.generator.next()).toMatchObject({ done: true })
+  })
+
+  test("client abort after first-event prefetch quiesces even when the consumer never starts", async () => {
+    let disposed = false
+    const clientAbort = new AbortController()
+    let removeCalls = 0
+    const nativeRemove = clientAbort.signal.removeEventListener.bind(clientAbort.signal)
+    clientAbort.signal.removeEventListener = ((...args: Parameters<AbortSignal["removeEventListener"]>) => {
+      removeCalls++
+      return nativeRemove(...args)
+    }) as AbortSignal["removeEventListener"]
+    setUpstreamWsConnectionFactoryForTests(() => ({
+      connect: async () => {},
+      sendRequest: async function* () {
+        yield { type: "response.created", response: { id: "resp_prefetched" } } as ResponsesStreamEvent
+      },
+      isOpen: true,
+      isBusy: false,
+      statefulMarker: undefined,
+      model: "gpt-5.2",
+      conversationId: undefined,
+      handshakeHeaders: {},
+      rescheduleIdleTimeout: () => {},
+      close: () => {},
+      async dispose() {
+        disposed = true
+      },
+    }))
+    const prepared: PreparedOpenAIRequest<ResponsesPayload> = {
+      wire: { model: "gpt-5.2", input: "hello", stream: true },
+      headers: {},
+    }
+
+    const attempt = await attemptUpstreamResponsesWs(prepared, { clientAbortSignal: clientAbort.signal })
+    expect(attempt.kind).toBe("ok")
+    if (attempt.kind !== "ok") throw new Error("expected WS success")
+    clientAbort.abort()
+
+    await expect(attempt.lifecycle.quiesced).resolves.toBeUndefined()
+    expect(disposed).toBe(true)
+    expect(removeCalls).toBeGreaterThan(0)
+    expect(await attempt.generator.next()).toMatchObject({ done: true })
+  })
+
+  test("consumer return resolves quiesced only after the real WS socket close barrier", async () => {
+    let socket!: DelayedAttemptCloseSocket
+    setUpstreamWsConnectionFactoryForTests((opts) => {
+      socket = new DelayedAttemptCloseSocket(() => {
+        queueMicrotask(() => socket.emitMessage({ type: "response.created", response: { id: "resp_1" } }))
+      })
+      return createUpstreamWsConnection({
+        headers: opts.headers,
+        model: opts.model,
+        conversationId: opts.conversationId,
+        onClose: opts.onClose,
+        idleTimeoutMs: 0,
+        createSocket: () => {
+          socket.scheduleOpen()
+          return socket
+        },
+      })
+    })
+    const prepared: PreparedOpenAIRequest<ResponsesPayload> = {
+      wire: { model: "gpt-5.2", input: "hello", stream: true },
+      headers: {},
+    }
+    const attempt = await attemptUpstreamResponsesWs(prepared)
+    expect(attempt.kind).toBe("ok")
+    if (attempt.kind !== "ok") throw new Error("expected WS success")
+    expect((await attempt.generator.next()).done).toBe(false)
+    let quiesced = false
+    void attempt.lifecycle.quiesced.then(() => {
+      quiesced = true
+    })
+
+    const returning = attempt.generator.return(undefined)
+    await Promise.resolve()
+
+    expect(socket.readyState).toBe(socket.CLOSING)
+    expect(quiesced).toBe(false)
+    socket.finishClose()
+    await returning
+    await attempt.lifecycle.quiesced
+    expect(quiesced).toBe(true)
   })
 })
 
@@ -730,6 +936,7 @@ describe("reconcileForConfigChange / statusSnapshot (P4 hot-reload)", () => {
       conversationId: undefined,
       handshakeHeaders: {},
       rescheduleIdleTimeout: (ms) => rescheduleCalls.push(ms),
+      dispose: () => Promise.resolve(),
       close: () => {},
     })
     setUpstreamWsConnectionFactoryForTests(() => fakeConnection("gpt-5.2"))
@@ -759,6 +966,7 @@ describe("reconcileForConfigChange / statusSnapshot (P4 hot-reload)", () => {
       conversationId: undefined,
       handshakeHeaders: {},
       rescheduleIdleTimeout: () => {},
+      dispose: () => Promise.resolve(),
       close: () => {},
     })
     let toggle = false
@@ -804,6 +1012,7 @@ describe("reconcileForConfigChange / statusSnapshot (P4 hot-reload)", () => {
         conversationId: undefined,
         handshakeHeaders: {},
         rescheduleIdleTimeout: () => {},
+        dispose: () => Promise.resolve(),
         close: () => {
           if (closed) return
           closed = true
@@ -862,6 +1071,7 @@ describe("reconcileForConfigChange / statusSnapshot (P4 hot-reload)", () => {
         conversationId: undefined,
         handshakeHeaders: {},
         rescheduleIdleTimeout: () => {},
+        dispose: () => Promise.resolve(),
         close: () => {
           closed = true
           opts.onClose?.()
@@ -891,6 +1101,7 @@ describe("reconcileForConfigChange / statusSnapshot (P4 hot-reload)", () => {
       conversationId: undefined,
       handshakeHeaders: {},
       rescheduleIdleTimeout: () => {},
+      dispose: () => Promise.resolve(),
       close: () => {},
     })
     setUpstreamWsConnectionFactoryForTests(() => fakeConnection("gpt-5.2"))
@@ -931,6 +1142,7 @@ describe("reconcileForConfigChange / statusSnapshot (P4 hot-reload)", () => {
           throw new Error("simulated rescheduleIdleTimeout failure")
         }
       },
+      dispose: () => Promise.resolve(),
       close: () => {},
     })
     let created = 0
@@ -977,6 +1189,7 @@ describe("reconcileForConfigChange / statusSnapshot (P4 hot-reload)", () => {
       rescheduleIdleTimeout: () => {
         throw new Error("simulated failure")
       },
+      dispose: () => Promise.resolve(),
       close: () => {},
     })
     setUpstreamWsConnectionFactoryForTests(() => fakeConnection())

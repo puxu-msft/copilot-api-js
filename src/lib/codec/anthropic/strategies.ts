@@ -1,14 +1,14 @@
 /**
  * v4 pipeline — anthropic-messages env-based retry strategies (P2.6 / C2).
  *
- * Mirrors the legacy `buildAnthropicStrategies` (anthropic/pipeline.ts) by wrapping
- * the unchanged legacy strategies in {@link adaptLegacyStrategy}. The legacy
+ * Mirrors the pre-driver `buildAnthropicStrategies` (anthropic/pipeline.ts) by wrapping
+ * the unchanged payload strategies in {@link adaptPayloadStrategy}. The payload
  * strategies keep their exact order + per-strategy logic (RFC §12.9):
  *
  *   network → token-refresh → effort-learning → body-field → legacy-thinking →
  *   adaptive-thinking-rejection → unsupported-beta → deferred-tool
  *
- * **v4-only additions** — strategies absent from the legacy pipeline
+ * **v4-only additions** — strategies absent from the pre-driver executor
  * (intentional divergence, 16 strategies total):
  *   - `server-error-retry` — bounded backoff for upstream 5xx, inserted right
  *     after `network-retry` (before `token-refresh`).
@@ -51,7 +51,7 @@ import type { Model } from "~/lib/models/client"
 import type { RetryStrategy as EnvRetryStrategy } from "~/lib/pipeline/types"
 import type { MessagesPayload } from "~/types/api/anthropic"
 
-import { adaptLegacyStrategy } from "~/lib/pipeline/legacy-strategy-adapter"
+import { adaptPayloadStrategy } from "~/lib/pipeline/payload-strategy-adapter"
 import { createAdaptiveThinkingRejectionRetryStrategy } from "~/lib/request/strategies/adaptive-thinking-rejection-retry"
 import { createCacheControlSubfieldRejectionStrategy } from "~/lib/request/strategies/cache-control-subfield-rejection-retry"
 import { createBodyFieldRejectionStrategy } from "~/lib/request/strategies/context-management-retry"
@@ -86,8 +86,8 @@ export interface AnthropicStrategiesDeps {
 /** Build the ordered env-based Anthropic retry strategies for one request. */
 export function buildAnthropicStrategies(deps: AnthropicStrategiesDeps): ReadonlyArray<EnvRetryStrategy> {
   const attemptRef = { value: 0 }
-  const adapt = <T>(legacy: Parameters<typeof adaptLegacyStrategy<T>>[0]): EnvRetryStrategy =>
-    adaptLegacyStrategy(legacy, { attemptRef, originalPayload: deps.originalPayload as T, model: deps.model, maxRetries: deps.maxRetries })
+  const adapt = <T>(payloadStrategy: Parameters<typeof adaptPayloadStrategy<T>>[0]): EnvRetryStrategy =>
+    adaptPayloadStrategy(payloadStrategy, { attemptRef, originalPayload: deps.originalPayload as T, model: deps.model, maxRetries: deps.maxRetries })
 
   return [
     adapt(createNetworkRetryStrategy<MessagesPayload>()),
@@ -110,7 +110,7 @@ export function buildAnthropicStrategies(deps: AnthropicStrategiesDeps): Readonl
     // legacy-thinking's `thinking.type.enabled`, so this position is order-safe.
     adapt(createAdaptiveThinkingRejectionRetryStrategy<MessagesPayload>()),
     // L2 poisoned-thinking strip-all retry — NATIVE env-strategy, deliberately NOT
-    // adapt()-wrapped: L3 (Task 10) reads `env.ctx` in onResolved, which the legacy
+    // adapt()-wrapped: L3 (Task 10) reads `env.ctx` in onResolved, which the payload
     // adapter drops. Its matcher requires "cannot be modified" (disjoint from
     // legacy-thinking's "thinking.type.enabled"), so this position among the
     // 400-class handlers is order-safe.

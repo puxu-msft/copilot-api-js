@@ -58,13 +58,14 @@ import type {
 import type { RequestState } from "~/lib/pipeline/request-state"
 import type {
   //
+  CandidateResponseRenderer,
   ClassifiedStreamError,
   ClientFrame,
   FormatCodec,
   RawHttpRequest,
   ResponseAccumulator,
 } from "~/lib/pipeline/types"
-import type { PrepareHints } from "~/lib/request/pipeline"
+import type { PrepareHints } from "~/lib/request/retry-types"
 import type {
   //
   ChatCompletionsPayload,
@@ -75,6 +76,7 @@ import type {
   ResponsesResponse,
 } from "~/types/api/openai-responses"
 
+import { createBetaProbe } from "~/lib/anthropic/pipeline"
 import { createAnthropicStreamAccumulator } from "~/lib/anthropic/stream-accumulator"
 import { getRequestContextManager } from "~/lib/context/manager"
 import {
@@ -107,6 +109,7 @@ import {
   //
   translateResponsesResponseToCC,
 } from "~/lib/openai/translate"
+import { createCandidateStateFactory } from "~/lib/pipeline/generation/candidate-state"
 import {
   //
   type ResponsesToCcFrameRenderer,
@@ -118,7 +121,12 @@ import {
 import { state } from "~/lib/state"
 import { processOpenAIMessages } from "~/lib/system-prompt"
 
-import type { ReverseAnthropicMapperHolder } from "./reverse-anthropic-rewrite"
+import {
+  //
+  buildReverseResanitize,
+  createReverseAnthropicMapperHolder,
+  type ReverseAnthropicMapperHolder,
+} from "./reverse-anthropic-rewrite"
 
 const CLIENT_FORMAT: ClientFormat = "openai-cc"
 const ENDPOINT_TYPE: EndpointType = "openai-chat-completions"
@@ -180,20 +188,34 @@ export interface CreateOpenAiCcCodecArgs {
  * module docstring).
  */
 export function createOpenAiCcCodec(args?: CreateOpenAiCcCodecArgs): OpenAiCcCodec {
-  // Lazily created on the first via-responses frame; persists across frames so
-  // its cross-frame state (tool-call index map, response id) survives.
-  let responsesRenderer: ResponsesToCcFrameRenderer | null = null
   // The auto-truncate baseline, captured by parse (see OpenAiCcCodec).
   let truncateBaseline: ChatCompletionsPayload | undefined
   // The RequestContext created by parse (for route-side c.set + failure settle).
   let requestContext: RequestContext | undefined
-  // REVERSE `@messages` leg (Phase 5): the per-request Anthropic→CC stream translator, built lazily on
-  // the first reverse streaming `renderResponse`. `flushResponse` / `getStreamMeta` read the SAME instance.
-  let reverseTranslator: ReverseStreamTranslator | undefined
-  const ensureReverseTranslator = (env: RequestEnvelope): ReverseStreamTranslator => {
-    const modelId = (env.model as Model | undefined)?.id ?? (env.body as { model?: string }).model ?? ""
-    return (reverseTranslator ??= createReverseStreamTranslator(CLIENT_FORMAT, modelId))
+  const createRenderer = (): CandidateResponseRenderer => {
+    let responsesRenderer: ResponsesToCcFrameRenderer | null = null
+    let reverseTranslator: ReverseStreamTranslator | undefined
+    const ensureReverseTranslator = (env: RequestEnvelope): ReverseStreamTranslator => {
+      const modelId = (env.model as Model | undefined)?.id ?? (env.body as { model?: string }).model ?? ""
+      return (reverseTranslator ??= createReverseStreamTranslator(CLIENT_FORMAT, modelId))
+    }
+    return {
+      renderResponse(frame, env) {
+        if (env.targetEndpoint === ENDPOINT.CHAT_COMPLETIONS) return frame
+        if (env.targetEndpoint === ENDPOINT.MESSAGES) return ensureReverseTranslator(env).renderFrame(frame)
+        responsesRenderer ??= createResponsesToCcFrameRenderer()
+        return responsesRenderer.renderFrame(frame)
+      },
+      flushResponse(env) {
+        if (env.targetEndpoint !== ENDPOINT.MESSAGES) return []
+        return ensureReverseTranslator(env).flush()
+      },
+      getStreamMeta() {
+        return reverseTranslator?.getMeta()
+      },
+    }
   }
+  const defaultRenderer = createRenderer()
 
   return {
     format: CLIENT_FORMAT,
@@ -245,15 +267,20 @@ export function createOpenAiCcCodec(args?: CreateOpenAiCcCodecArgs): OpenAiCcCod
     // longer implements them. The RESPONSE-side render below stays here (InboundCodec).
 
     renderResponse(frame, env) {
-      // Passthrough (/chat/completions): forward the upstream CC frame verbatim.
-      if (env.targetEndpoint === ENDPOINT.CHAT_COMPLETIONS) return frame
-      // REVERSE `@messages` leg (Phase 5): the upstream is Anthropic → translate each frame to CC via the
-      // per-request Anthropic→CC translator (getStreamMeta/flushResponse read the SAME instance).
-      if (env.targetEndpoint === ENDPOINT.MESSAGES) return ensureReverseTranslator(env).renderFrame(frame)
-      // via-responses (/responses): translate each Responses SSE frame → CC chunk(s) via the hub's
-      // per-request Responses→CC frame renderer (created lazily on the first via-responses frame).
-      responsesRenderer ??= createResponsesToCcFrameRenderer()
-      return responsesRenderer.renderFrame(frame)
+      return defaultRenderer.renderResponse(frame, env)
+    },
+    createCandidateRenderer() {
+      return createRenderer()
+    },
+    createCandidateStateFactory(env) {
+      return createCandidateStateFactory(env, {
+        createBetaProbe,
+        createReverseMapperHolder: () => createReverseAnthropicMapperHolder(env.model.id, env.model.vendor),
+        createResanitize: ({ source, reverseMapperHolder }) =>
+          reverseMapperHolder ?
+            (payload) => buildReverseResanitize(reverseMapperHolder as ReverseAnthropicMapperHolder)(payload as never)
+          : (payload) => source(payload),
+      })
     },
 
     renderResponseNonStreaming(upstream, env) {
@@ -266,14 +293,13 @@ export function createOpenAiCcCodec(args?: CreateOpenAiCcCodecArgs): OpenAiCcCod
     // REVERSE `@messages` leg streaming drain (Phase 5): the Anthropic→CC translator's terminal frames
     // (`[]` for the CC leg — finish/usage are inline). `[]` for the forward/direct legs.
     flushResponse(env) {
-      if (env.targetEndpoint !== ENDPOINT.MESSAGES) return []
-      return ensureReverseTranslator(env).flush()
+      return defaultRenderer.flushResponse(env)
     },
 
     // REVERSE `@messages` leg terminal meta (Phase 5): the CC finish_reason + net usage the translator
     // accumulated (undefined finish ⇒ truncation, F2). Undefined until a reverse renderResponse has run.
     getStreamMeta() {
-      return reverseTranslator?.getMeta()
+      return defaultRenderer.getStreamMeta?.() as AnthropicToCcStreamMeta | undefined
     },
 
     formatError(err, _env) {
@@ -417,6 +443,7 @@ const STREAM_ERROR_MESSAGES: Record<ClassifiedStreamError, string> = {
   shutdown: "Server is shutting down",
   "client-abort": "Client disconnected",
   "reaper-cancel": "Request cancelled by stale-request reaper",
+  "dispatch-cancel": "Upstream dispatch cancelled",
   other: "Stream error",
 }
 

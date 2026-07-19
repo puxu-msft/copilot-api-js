@@ -72,6 +72,7 @@ describe("generation recorder v4 driver integration", () => {
     expect(frames).toHaveLength(1)
     ctx.complete({ success: true, model: "gpt-5.5", usage: { input_tokens: 1, output_tokens: 1 }, content: "HELLO", stop_reason: "stop" })
     ctx.finalizeModelOperationDelivery()
+    await ctx.whenModelOperationFinalized()
 
     const record = ctx.modelOperationTerminalRecord!
     expect(record.routing).toMatchObject({ clientFormat: "openai-cc", upstreamEndpoint: "/chat/completions" })
@@ -153,6 +154,7 @@ describe("generation recorder v4 driver integration", () => {
     await driver.runResponseSink(request.upstream, request.env, sink)
     ctx.complete({ success: true, model: "m", usage: { input_tokens: 1, output_tokens: 1 }, content: "ok" })
     ctx.finalizeModelOperationDelivery()
+    await ctx.whenModelOperationFinalized()
 
     const record = ctx.modelOperationTerminalRecord!
     expect(record.arena.frames.find((node) => (node.value as { id?: string }).id === "evt-1")?.value).toEqual({

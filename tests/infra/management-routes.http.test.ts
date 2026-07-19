@@ -446,6 +446,7 @@ describe("management and history HTTP routes", () => {
       conversationId: undefined,
       handshakeHeaders: {},
       rescheduleIdleTimeout: () => {},
+      dispose: () => Promise.resolve(),
       close: () => {},
     })
     setUpstreamWsConnectionFactoryForTests(fakeConnection)
@@ -480,6 +481,7 @@ describe("management and history HTTP routes", () => {
       rescheduleIdleTimeout: () => {
         throw new Error("simulated rescheduleIdleTimeout failure")
       },
+      dispose: () => Promise.resolve(),
       close: () => {},
     })
     setUpstreamWsConnectionFactoryForTests(fakeConnection)

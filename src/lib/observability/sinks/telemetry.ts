@@ -53,8 +53,12 @@ export class TelemetrySink {
     const entry = event.entry
     // The settled verdict/usage live on the final attempt's `upstreamResponse` leg
     // (`_index.derived.responseSuccess` when the producer wires it).
-    const committedAttempt = entry.attempts?.at(-1)
+    const attempts = entry.attempts ?? []
+    const committedAttempt = attempts.find((attempt) => attempt.dispatchVerdict === "committed") ?? attempts.at(-1)
     const finalUpstream = committedAttempt?.upstreamResponse
+    const candidateIds = new Set(attempts.flatMap((attempt) => (attempt.candidateId ? [attempt.candidateId] : [])))
+    const hedgeIds = new Set(attempts.flatMap((attempt) => (attempt.candidateRole === "hedge" && attempt.candidateId ? [attempt.candidateId] : [])))
+    const recoveryIds = new Set(attempts.flatMap((attempt) => (attempt.candidateRole === "recovery" && attempt.candidateId ? [attempt.candidateId] : [])))
     recordSettledRequest(
       extractTelemetryKeys(entry, event.ctx),
       {
@@ -76,6 +80,15 @@ export class TelemetrySink {
         ...(entry.timing?.client?.firstRealMs !== undefined && { clientFirstRealMs: entry.timing.client.firstRealMs }),
         ...(entry.timing?.client?.firstRealMs !== undefined
           && entry.timing.client.bufferHoldStartMs !== undefined && { bufferHoldMs: entry.timing.client.firstRealMs - entry.timing.client.bufferHoldStartMs }),
+        generation: {
+          candidates: candidateIds.size,
+          dispatches: attempts.length,
+          hedgeCandidates: hedgeIds.size,
+          hedgeWins: attempts.some((attempt) => attempt.candidateRole === "hedge" && attempt.candidateVerdict === "winner") ? 1 : 0,
+          recoveryCandidates: recoveryIds.size,
+          cancelledDispatches: attempts.filter((attempt) => attempt.dispatchVerdict === "cancelled").length,
+          unknownUsageDispatches: attempts.filter((attempt) => attempt.dispatchVerdict !== "committed" && attempt.upstreamResponse?.usage === undefined).length,
+        },
       },
       CAPPED_DIMENSION_NAMES,
     )

@@ -22,7 +22,15 @@ import type { FeatureKind } from "~/lib/observability"
 import type { ToolNameMapper } from "~/lib/tool-name-mapper"
 import type { CopilotAnnotations } from "~/types/api/anthropic"
 
-import type { ModelOperationRecord } from "./model-operation-record"
+import type {
+  //
+  CandidateHandle,
+  CandidateRole,
+  CandidateVerdict,
+  DispatchHandle,
+  DispatchVerdict,
+  ModelOperationRecord,
+} from "./model-operation-record"
 
 // ─── Request State Machine ───
 
@@ -322,6 +330,13 @@ export interface HistoryEntryData {
   pipelineInfo?: PipelineInfo
   attempts?: Array<{
     index: number
+    candidateId?: string
+    candidateRole?: "primary" | "hedge" | "recovery"
+    parentCandidateId?: string
+    candidateVerdict?: "winner" | "loser" | "failed" | "cancelled"
+    dispatchId?: string
+    dispatchVerdict?: "committed" | "discarded" | "failed" | "cancelled"
+    dispatchReason?: string
     strategy?: string
     durationMs: number
     transport?: RequestTransport
@@ -426,7 +441,7 @@ export interface RequestContext {
   readonly settled: boolean
   /** Immutable point-in-time History V3 generation record. The mutable recorder is never exposed. */
   readonly modelOperationSnapshot: ModelOperationRecord
-  /** Canonical terminal record after settle, otherwise null. */
+  /** Canonical terminal record after observability finalization, otherwise null. */
   readonly modelOperationTerminalRecord: ModelOperationRecord | null
 
   readonly originalRequest: OriginalRequest | null
@@ -466,8 +481,10 @@ export interface RequestContext {
   setOriginalRequest(req: OriginalRequest): void
   /** Record canonical ingress once both the V2 body and inbound headers are available. */
   recordModelOperationIngress(): void
-  /** Seal the canonical operation only after client delivery is fully constructed/drained. */
+  /** Notify that client delivery is fully constructed/drained; this does not synchronously seal canonical observability. */
   finalizeModelOperationDelivery(input?: { clientPayload?: unknown }): void
+  /** Join the unique generation finalizer; rejects when canonical observability finalization fails. */
+  whenModelOperationFinalized(): Promise<ModelOperationRecord>
   setToolNameMapper(mapper: ToolNameMapper | null): void
   setPipelineInfo(info: PipelineInfo): void
   /** Record the per-model effective timeouts for this request (merged into `pipelineInfo`, survives the gated `setPipelineInfo` full-replace calls). */
@@ -483,6 +500,42 @@ export interface RequestContext {
   /** Record upstream HTTP/2 response trailers (best-effort; the h2 transport fires this before stream end). */
   setOutboundResponseTrailers(trailers: Record<string, string>): void
   addWarningMessage(warning: WarningMessage): void
+  /** Begin one explicit generation candidate in the canonical History V3 topology. */
+  beginGenerationCandidate(input: { role: CandidateRole; parentCandidate?: CandidateHandle }): CandidateHandle
+  /** Settle one explicit candidate without relying on array position. */
+  settleGenerationCandidate(candidate: CandidateHandle, input: { verdict: CandidateVerdict; reason?: string }): void
+  /** Begin one physical dispatch and return its canonical branded handle. */
+  beginGenerationDispatch(input: {
+    candidate: CandidateHandle
+    strategy?: string
+    waitMs?: number
+    truncation?: TruncationInfo
+    transport?: RequestTransport
+  }): DispatchHandle
+  setGenerationDispatchEffectiveRequest(dispatch: DispatchHandle, request: EffectiveRequest): void
+  setGenerationDispatchWireRequest(dispatch: DispatchHandle, request: WireRequest): void
+  setGenerationDispatchTransport(dispatch: DispatchHandle, transport: RequestTransport): void
+  setGenerationDispatchResponseHeaders(dispatch: DispatchHandle, headers: Record<string, string>): void
+  setGenerationDispatchTimingEpoch(dispatch: DispatchHandle, kind: AttemptTimingKind, epoch: number, mode: "once" | "latest"): void
+  setGenerationDispatchError(dispatch: DispatchHandle, error: ApiError): void
+  setGenerationDispatchSseEvents(dispatch: DispatchHandle, events: Array<SseEventRecord>, projectToLegacy?: boolean): void
+  captureUpstreamGenerationDispatchFrame(dispatch: DispatchHandle, frame: unknown, record: SseEventRecord): void
+  captureGenerationDispatchFrameTransform(
+    dispatch: DispatchHandle,
+    inputFrame: unknown,
+    outputFrame: unknown,
+    transform: { stage: string; transformId: string; forceDerived?: boolean },
+  ): void
+  captureGenerationDispatchFrameAction(
+    dispatch: DispatchHandle,
+    inputFrames: ReadonlyArray<unknown>,
+    outputFrames: ReadonlyArray<unknown>,
+    transform: { stage: string; transformId: string; action: "emit" | "suppress" | "buffer" | "flush" | "drop"; forceDerived?: boolean },
+  ): void
+  /** Select the generation winner for V2 compatibility projection and terminal settlement. */
+  selectGenerationWinner(candidate: CandidateHandle, dispatch: DispatchHandle): void
+  settleGenerationDispatch(dispatch: DispatchHandle, input: { verdict: DispatchVerdict; reason?: string; error?: unknown }): void
+  /** @deprecated Serial compatibility adapter. New production dispatches use beginGenerationDispatch. */
   beginAttempt(opts: { strategy?: string; waitMs?: number; truncation?: TruncationInfo; transport?: RequestTransport }): void
   setAttemptSanitization(info: SanitizationInfo): void
   /** Record the initial (attempt-0) sanitization-info envelope (request-lifecycle-stable; retry rebuild reads it via {@link initialSanitizationInfo}). */
@@ -657,7 +710,7 @@ export interface RequestContext {
    * Record that an attempt failed and the pipeline decided whether to retry.
    * Publishes `request.attempt_failed` carrying the AttemptSnapshot, the
    * retry decision, and the strategy / backoff details. Replaces the
-   * `tuiLogger.logRetry` call site in `lib/request/pipeline.ts:346`.
+   * `RequestContext.recordAttemptFailure` publication path.
    */
   recordAttemptFailure(args: { willRetry: boolean; nextStrategy?: string; waitMs?: number; learning?: boolean }): void
   /**

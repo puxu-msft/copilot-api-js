@@ -6,7 +6,7 @@ import {
 } from "bun:test"
 
 import type { ApiError } from "~/lib/error"
-import type { RetryContext } from "~/lib/request/pipeline"
+import type { RetryContext } from "~/lib/request/retry-types"
 
 import { createAdaptiveThinkingRejectionRetryStrategy } from "~/lib/request/strategies/adaptive-thinking-rejection-retry"
 

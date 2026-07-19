@@ -332,6 +332,25 @@ function refs(track: OperationTrack | undefined): string {
   return JSON.stringify(track ?? { frames: [] })
 }
 
+function dispatchesOf(record: ModelOperationRecord): ModelOperationRecord["dispatches"] {
+  const compatible = record as unknown as {
+    readonly dispatches?: ModelOperationRecord["dispatches"]
+    readonly attempts?: ModelOperationRecord["dispatches"]
+  }
+  return compatible.dispatches ?? compatible.attempts ?? []
+}
+
+function candidatesOf(record: ModelOperationRecord): ModelOperationRecord["candidates"] {
+  return (record as unknown as { readonly candidates?: ModelOperationRecord["candidates"] }).candidates ?? []
+}
+
+function withDispatchAlias(record: ModelOperationRecord): ModelOperationRecord {
+  const dispatches = dispatchesOf(record)
+  const normalized = { ...record, candidates: candidatesOf(record), dispatches } as ModelOperationRecord
+  Object.defineProperty(normalized, "attempts", { enumerable: false, configurable: false, get: () => dispatches })
+  return normalized
+}
+
 function collectTracks(record: ModelOperationRecord): PreparedOperation["tracks"] {
   const out: PreparedOperation["tracks"] = []
   const push = (name: string, attemptIndex: number, track: Parameters<typeof refs>[0]): void => {
@@ -339,10 +358,10 @@ function collectTracks(record: ModelOperationRecord): PreparedOperation["tracks"
     out.push({ name, attemptIndex, refs: "{}", compressed: compressBytes(encoder.encode(json)) })
   }
   if (record.ingress) push("client-ingress", -1, record.ingress.request)
-  for (const [index, attempt] of record.attempts.entries()) {
-    push("effective-request", index, attempt.effectiveRequest)
-    push("upstream-request", index, attempt.upstreamRequest)
-    push("upstream-response", index, attempt.upstreamResponse)
+  for (const [index, dispatch] of dispatchesOf(record).entries()) {
+    push("effective-request", index, dispatch.effectiveRequest)
+    push("upstream-request", index, dispatch.upstreamRequest)
+    push("upstream-response", index, dispatch.upstreamResponse)
   }
   if (record.egress) {
     push("upstream-egress", -1, record.egress.upstream)
@@ -352,17 +371,18 @@ function collectTracks(record: ModelOperationRecord): PreparedOperation["tracks"
 }
 
 function recordWithoutTracks(record: ModelOperationRecord): ModelOperationRecord {
-  return {
+  return withDispatchAlias({
     ...record,
+    candidates: candidatesOf(record),
     ingress: record.ingress === null ? null : { ...record.ingress, request: { frames: [] } },
-    attempts: record.attempts.map((attempt) => ({
-      ...attempt,
-      effectiveRequest: attempt.effectiveRequest === undefined ? undefined : { frames: [] },
-      upstreamRequest: attempt.upstreamRequest === undefined ? undefined : { frames: [] },
-      upstreamResponse: attempt.upstreamResponse === undefined ? undefined : { frames: [] },
+    dispatches: dispatchesOf(record).map((dispatch) => ({
+      ...dispatch,
+      effectiveRequest: dispatch.effectiveRequest === undefined ? undefined : { frames: [] },
+      upstreamRequest: dispatch.upstreamRequest === undefined ? undefined : { frames: [] },
+      upstreamResponse: dispatch.upstreamResponse === undefined ? undefined : { frames: [] },
     })),
     egress: record.egress === null ? null : { ...record.egress, upstream: { frames: [] }, client: { frames: [] } },
-  }
+  })
 }
 
 function legacyV1Digest(record: ModelOperationRecord): string {
@@ -433,11 +453,52 @@ export function prepareModelOperation(
     ...(record.ingress ? [{ sequence: record.ingress.sequence, occurredAt: record.ingress.occurredAt, type: "ingress" }] : []),
     ...(record.routing ? [{ sequence: record.routing.sequence, occurredAt: record.routing.occurredAt, type: "routing" }] : []),
     ...record.transforms.map((event) => ({ sequence: event.sequence, occurredAt: event.occurredAt, type: "transform", value: event })),
-    ...record.attempts.flatMap((attempt) => [
-      { sequence: attempt.sequence, occurredAt: attempt.occurredAt, type: "attempt", handle: attempt.handle },
-      ...attempt.diagnostics.map((diagnostic) => ({ sequence: diagnostic.sequence, type: "diagnostic", value: diagnostic })),
-      ...(attempt.settledSequence ?
-        [{ sequence: attempt.settledSequence, occurredAt: attempt.settledAt, type: "attempt-settled", handle: attempt.handle, verdict: attempt.verdict }]
+    ...candidatesOf(record).flatMap((candidate) => [
+      {
+        sequence: candidate.sequence,
+        occurredAt: candidate.occurredAt,
+        type: "candidate",
+        handle: candidate.handle,
+        role: candidate.role,
+        parentCandidate: candidate.parentCandidate,
+      },
+      ...(candidate.settledSequence ?
+        [
+          {
+            sequence: candidate.settledSequence,
+            occurredAt: candidate.settledAt,
+            type: "candidate-settled",
+            handle: candidate.handle,
+            verdict: candidate.verdict,
+          },
+        ]
+      : []),
+    ]),
+    ...dispatchesOf(record).flatMap((dispatch) => [
+      {
+        sequence: dispatch.sequence,
+        occurredAt: dispatch.occurredAt,
+        type: "dispatch",
+        handle: dispatch.handle,
+        candidate: dispatch.candidate,
+      },
+      ...dispatch.diagnostics.map((diagnostic) => ({
+        sequence: diagnostic.sequence,
+        occurredAt: diagnostic.occurredAt,
+        type: "diagnostic",
+        value: diagnostic,
+      })),
+      ...(dispatch.settledSequence ?
+        [
+          {
+            sequence: dispatch.settledSequence,
+            occurredAt: dispatch.settledAt,
+            type: "dispatch-settled",
+            handle: dispatch.handle,
+            candidate: dispatch.candidate,
+            verdict: dispatch.verdict,
+          },
+        ]
       : []),
     ]),
     ...(record.egress ? [{ sequence: record.egress.sequence, occurredAt: record.egress.occurredAt, type: "egress" }] : []),
@@ -902,7 +963,7 @@ function hydrateManifest(db: Database, manifestBlob: Uint8Array): ModelOperation
     }
     return value
   }
-  let record = {
+  let record = withDispatchAlias({
     ...manifest.record,
     arena: {
       payloads: manifest.record.arena.payloads.map((node) => ({
@@ -911,7 +972,7 @@ function hydrateManifest(db: Database, manifestBlob: Uint8Array): ModelOperation
       })) as ModelOperationRecord["arena"]["payloads"],
       frames: manifest.record.arena.frames.map((node) => ({ ...node, value: valueFor(node.handle, "frame") })) as ModelOperationRecord["arena"]["frames"],
     },
-  } as ModelOperationRecord
+  } as ModelOperationRecord)
   if (manifest.tracksExternal) {
     const rows = db
       .prepare("SELECT track_name,attempt_index,refs_json,track_gz FROM v3_tracks WHERE operation_id=?")
@@ -928,11 +989,12 @@ function hydrateManifest(db: Database, manifestBlob: Uint8Array): ModelOperation
       ]),
     )
     const track = (name: string, attemptIndex: number): OperationTrack | undefined => tracks.get(`${name}:${attemptIndex}`)
-    record = {
+    record = withDispatchAlias({
       ...record,
+      candidates: candidatesOf(record),
       ingress: record.ingress === null ? null : { ...record.ingress, request: track("client-ingress", -1) ?? { frames: [] } },
-      attempts: record.attempts.map((attempt, index) => ({
-        ...attempt,
+      dispatches: dispatchesOf(record).map((dispatch, index) => ({
+        ...dispatch,
         ...(track("effective-request", index) === undefined ? {} : { effectiveRequest: track("effective-request", index) }),
         ...(track("upstream-request", index) === undefined ? {} : { upstreamRequest: track("upstream-request", index) }),
         ...(track("upstream-response", index) === undefined ? {} : { upstreamResponse: track("upstream-response", index) }),
@@ -945,7 +1007,7 @@ function hydrateManifest(db: Database, manifestBlob: Uint8Array): ModelOperation
             upstream: track("upstream-egress", -1) ?? { frames: [] },
             client: track("client-egress", -1) ?? { frames: [] },
           },
-    }
+    })
   }
   return record
 }

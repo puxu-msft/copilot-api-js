@@ -9,7 +9,6 @@
  * WebSocket message → extract payload → pipeline → SSE events → WS JSON frames.
  */
 
-import type { ServerSentEventMessage } from "fetch-event-stream"
 import type { Hono } from "hono"
 import type {
   //
@@ -23,17 +22,13 @@ import type { RequestContext } from "~/lib/context/request"
 import type { SseEventRecord } from "~/lib/history/store"
 import type {
   //
-  ClientFrame,
   DriverRequestResult,
-  UpstreamFrame,
 } from "~/lib/pipeline/types"
 import type {
   //
   ResponsesPayload,
-  ResponsesStreamEvent,
 } from "~/types/api/openai-responses"
 
-import { recordProtectStreamingOutcome } from "~/lib/anthropic/protect-streaming-stats"
 import { createOpenAiResponsesCodec } from "~/lib/codec/openai-responses/codec"
 import { responsesKeepaliveFrame } from "~/lib/codec/openai-responses/keepalive"
 import {
@@ -43,18 +38,10 @@ import {
 import { resolveModelTarget } from "~/lib/models/resolver"
 import { resolveStreamIdleTimeoutMs } from "~/lib/models/timeout-resolver"
 import { registerResponseSession } from "~/lib/openai/response-session-store"
-import {
-  //
-  accumulateResponsesStreamEvent,
-  createResponsesStreamAccumulator,
-} from "~/lib/openai/responses-stream-accumulator"
 import { streamErrorToOpenAIErrorType } from "~/lib/openai/stream-error"
-import {
-  //
-  restoreResponsesStreamFrameToolNames,
-} from "~/lib/openai/tool-name-sanitize"
-import { makeWsSink } from "~/lib/pipeline/client-sink"
+import { makeDeliveryWsSink } from "~/lib/pipeline/client-sink"
 import { createPipelineDriver } from "~/lib/pipeline/driver"
+import { createRuntimeHedgePolicy } from "~/lib/pipeline/generation/runtime-policy"
 import { clientFirstRealSinkOpts } from "~/lib/pipeline/request-timing"
 import { buildResponsesResponseData } from "~/lib/request/recording"
 import { usageFromTotalInput } from "~/lib/request/usage-normalize"
@@ -67,19 +54,22 @@ import { processResponsesInstructions } from "~/lib/system-prompt"
 import { createUpstreamResponsesTransport } from "~/lib/transport/responses-transport"
 import {
   //
-  createUpstreamFrameDiagnostics,
   logUpstreamStreamOutcomeError,
   logUpstreamStreamTruncation,
 } from "~/lib/upstream-stream-diagnostics"
 
 import { resolveResponsesBufferedAndHeartbeat } from "./buffered-config"
+import {
+  //
+  createResponsesCandidateResponseSessionFactory,
+  responsesCandidateSnapshot,
+} from "./candidate-response-session"
 
 // ============================================================================
 // Constants
 // ============================================================================
 
 /** Terminal event types that signal the end of a response */
-const TERMINAL_EVENTS = new Set(["response.completed", "response.failed", "response.incomplete", "error"])
 
 /**
  * Default client-side WebSocket frame cap (1 MiB) is enforced via
@@ -288,6 +278,8 @@ async function handleResponseCreateV4(ws: WSContext, rawPayload: ResponsesPayloa
   const driver = createPipelineDriver({
     codec,
     transport,
+    hedgePolicy: createRuntimeHedgePolicy(resolvedModel),
+    candidateResponseSessionFactory: createResponsesCandidateResponseSessionFactory("ws"),
     // S5 response-rewrites + the S4 retry stack come from the CellAssembly now (C5 — the openai-responses
     // direct/fallback cells are migrated; RETRY_SEMANTICS encodes the R1 corner auto-truncate OFF / maxRetries 1).
     maxRetries: 1,
@@ -335,28 +327,17 @@ async function handleResponseCreateV4(ws: WSContext, rawPayload: ResponsesPayloa
 
   // Fallback registers the session eagerly so a mid-stream follow-up resolves it.
   if (viaFallback) {
-    const respId = codec.getFallbackResponseId()
+    const candidate = responsesCandidateSnapshot(driver, upstream)
+    const respId = candidate.kind === "responses" ? candidate.fallbackResponseId : undefined
     if (respId) {
       if (!env.ctx.sessionId) env.ctx.setSessionId(respId)
       registerResponseSession(respId, env.ctx.sessionId)
     }
   }
 
-  // `let` (not `const`) so the buffered `onAttemptReset` can rebind a FRESH accumulator between
-  // retries — mirrors the HTTP handler's `let acc` (handler-v4.ts:277). A discarded attempt's
-  // text/tool-call/usage never leaks into the committed generation's history record.
-  let acc = createResponsesStreamAccumulator()
-  const mapper = env.ctx.toolNameMapper
   const forwardedSseEvents: Array<SseEventRecord> = []
   const streamStartMs = Date.now()
   env.ctx.setClientTimingEpoch("streamOpen", streamStartMs) // 首包埋点（spec 2026-07-14 §3.2）
-  let eventsReceived = 0
-
-  // Upstream-frame diagnostics (disconnect-log blind-spot fix): the WS leg also emits the disconnect
-  // diagnostic on a stream-error now, so observe the RAW upstream frames for real frames/bytes/last-frame.
-  // `let` so `onAttemptReset` rebinds a fresh collector per buffered attempt (last-failing-attempt frames).
-  let diag = createUpstreamFrameDiagnostics(streamStartMs)
-  const onUpstreamFrame = (frame: UpstreamFrame): void => diag.observe(frame as ServerSentEventMessage)
 
   // The driver-owned WS sink: ws.send write-out + forwarded sampling + a forward-idle keepalive
   // (Phase 2 Task 2.2 / R3.5). EMPIRICAL DECISION — app-layer frame, NOT protocol ping:
@@ -371,7 +352,7 @@ async function handleResponseCreateV4(ws: WSContext, rawPayload: ResponsesPayloa
   //     `streamKeepalivePingSec` of forward silence, marked `synthetic:"keepalive"` in the forwarded
   //     track (never the upstream track). Reuses the keepalive INTERVAL only — not `streamKeepaliveMode`.
   const keepaliveSec = state.streamKeepalivePingSec
-  const sink = makeWsSink(ws, {
+  const sink = makeDeliveryWsSink(ws, {
     onForwarded: (record) => forwardedSseEvents.push(record),
     streamStartMs,
     ...clientFirstRealSinkOpts(env),
@@ -385,47 +366,6 @@ async function handleResponseCreateV4(ws: WSContext, rawPayload: ResponsesPayloa
   })
   const recordForwarded = (): void => env.ctx.setForwardedResponse({ sseEvents: [...forwardedSseEvents] })
 
-  /**
-   * Accumulate one rendered Responses frame + restore function_call names (forwarded-only) + count.
-   * Returns the restored `{data}`-only frame (WS frames carry no event line), or `undefined` to skip
-   * (empty / unparseable — the legacy loop's `!frame.data` guard + `forwardWsFrame`'s parse-fail
-   * early return; neither counted). Shared by the driver loop (via `onRenderedFrame`) AND the
-   * fallback closing drain — WS counts BOTH (legacy `forwardWsFrame` ran for loop + drain alike,
-   * unlike the HTTP pump which only counted the loop). fix-stream-ids (direct) was already applied
-   * in the driver's S5 chain.
-   */
-  const restoreAccumulateCount = (frame: ClientFrame): ClientFrame | undefined => {
-    if (!frame.data) return undefined
-    let event: ResponsesStreamEvent
-    try {
-      event = JSON.parse(frame.data) as ResponsesStreamEvent
-    } catch {
-      consola.debug("[WS] Skipping unparseable SSE event")
-      return undefined
-    }
-    accumulateResponsesStreamEvent(event, acc)
-    eventsReceived++
-    env.ctx.recordStreamProgress({ eventsIn: eventsReceived })
-    return { data: restoreResponsesStreamFrameToolNames(frame.data, event.type, mapper) }
-  }
-
-  // Terminal early-stop (driver `stopAfterFrame`): the direct path must not read past
-  // response.completed/failed/incomplete/error (legacy WS break — an upstream that emits trailing
-  // frames or stalls without closing would otherwise hang to idle-timeout). The fallback's terminal
-  // (response.completed) comes from `flushResponse` below, not the loop, so this never fires there.
-  // NOTE: `stopAfterFrame` is inert on the BUFFERED path below — only `runResponseSink` (the LIVE
-  // branch) reads it; `runResponseBufferedSink` drains the upstream loop to its natural EOF/RST and
-  // decides retry-vs-commit from that, not from an early stop. It is passed here only because the
-  // fallback branch (`viaFallback`, always LIVE) and the non-buffered branch both need it.
-  const isTerminal = (frame: ClientFrame): boolean => {
-    if (!frame.data) return false
-    try {
-      return TERMINAL_EVENTS.has((JSON.parse(frame.data) as ResponsesStreamEvent).type)
-    } catch {
-      return false
-    }
-  }
-
   // P4 Task 1 — terminal-only buffered-retry selrouting (block-level-buffered-retry spec §7.3).
   // Reuses the SAME `responses.buffered_retry` config key the HTTP handlers use, but `commitBoundaries`
   // is DELIBERATELY OMITTED: per `RunBufferedOpts.commitBoundaries`'s doc (types.ts), UNDEFINED means
@@ -438,25 +378,18 @@ async function handleResponseCreateV4(ws: WSContext, rawPayload: ResponsesPayloa
   // instead of retrying, delivering a half generation to the client (P4 Task 1 review finding). WS has
   // no mid-stream block/anchor needs, so terminal-only (byte-identical in spirit to the HTTP handler's
   // pre-block-level whole-response buffered predecessor) is the correct — and only — shape here.
-  // `buffered && !viaFallback`: the via-chat-completions fallback synthesizes its terminal lifecycle
-  // (output_item.done → response.completed) POST-loop via `codec.flushResponse` (see the `viaFallback`
-  // branch below), invisible to the driver's in-loop commit/sawMessageStop gate — same structural root
-  // cause as the HTTP handler's fallback exclusion (P2 Task 3 / handler-v4.ts:301-307). Fallback stays LIVE.
+  // Fallback closing frames now flow through the response processor finish boundary, so terminal-only
+  // buffering observes response.completed instead of relying on a handler post-loop bypass.
   const { buffered: bufferedConfigured } = resolveResponsesBufferedAndHeartbeat()
-  const buffered = bufferedConfigured && !viaFallback
+  const buffered = bufferedConfigured
   const outcome =
     buffered ?
       await driver.runResponseBufferedSink(upstream, env, sink, {
-        onRenderedFrame: restoreAccumulateCount,
-        onUpstreamFrame,
-        stopAfterFrame: isTerminal,
         // commitBoundaries intentionally OMITTED — see the comment above. Terminal-only: the driver's
         // own `sawMessageStop` gate below is the ONLY commit trigger.
-        sawMessageStop: () => acc.status !== "",
         // H2 — a terminal upstream `error` frame (clean drain, no response.completed/.failed/.incomplete).
         // Committing it (rather than retrying as a truncation) lets the handler fail via the REAL
         // `acc.streamError` below, mirroring the HTTP handler.
-        sawUpstreamError: () => acc.streamError !== undefined,
         // Distinct vendor dimension from "responses" (HTTP) so WS vs HTTP buffered-retry telemetry is
         // separable in `/api/status.protect_streaming.by_vendor` (P0's counters bag is an open
         // `Record<vendor, stats>` — no allowlist — confirmed by protect-streaming-stats.ts:57 and the
@@ -466,24 +399,12 @@ async function handleResponseCreateV4(ws: WSContext, rawPayload: ResponsesPayloa
         telemetryVendor: "responses_ws",
         retryCap: resolveBufferedCaps("responses").maxRetries,
         bufferCapBytes: resolveBufferedCaps("responses").bufferCapBytes,
-        onBufferedResolve: (o, retries, meta) => {
-          if (o === "success" && retries === 0) return
-          recordProtectStreamingOutcome(o, retries, meta)
-          env.ctx.recordFeature("protect-streaming-retry", { outcome: o, retries, vendor: meta.vendor })
-          consola.debug(`[protect-stream:responses_ws] ${o} for ${acc.model || resolvedModel} after ${retries} retr${retries === 1 ? "y" : "ies"}`)
-        },
-        // Per-attempt isolation: rebind a FRESH accumulator + zero the progress counter before each
-        // re-exchange so a discarded attempt's text/tool-calls/usage/eventsReceived never fold into
-        // the committed generation's history record (mirrors handler-v4.ts's onAttemptReset).
-        onAttemptReset: () => {
-          acc = createResponsesStreamAccumulator()
-          eventsReceived = 0
-          // MEDIUM-2: anchor the fresh collector at THIS attempt's start (not the original request time) so
-          // a zero-frame final attempt reports `silence` relative to the attempt, not the whole request.
-          diag = createUpstreamFrameDiagnostics(Date.now())
-        },
       })
-    : await driver.runResponseSink(upstream, env, sink, { onRenderedFrame: restoreAccumulateCount, onUpstreamFrame, stopAfterFrame: isTerminal })
+    : await driver.runResponseSink(upstream, env, sink)
+
+  const candidate = responsesCandidateSnapshot(driver, upstream)
+  if (candidate.kind !== "responses") throw new Error("[WS] wrong candidate response session kind")
+  const { acc, diag } = candidate
 
   if (outcome.kind === "settled-abort") {
     recordForwarded()
@@ -538,18 +459,7 @@ async function handleResponseCreateV4(ws: WSContext, rawPayload: ResponsesPayloa
   }
 
   // outcome.kind === "complete" — the upstream drained cleanly (or stopped at the terminal frame).
-  if (viaFallback) {
-    // Drain the CC→Responses translator's closing lifecycle (output_text.done … response.completed),
-    // counted + forward-sampled like loop frames (WS parity). (Kept handler-side: the "move this into
-    // a driver S6 flush" idea was evaluated and rejected — besides the truncation-detection entanglement,
-    // the WS sink's error terminator is the transport-coupled `sendErrorAndClose`+1011 (it must CLOSE the
-    // socket, which `sink.writeSynthetic` does not), which a uniform driver finalize cannot model. See
-    // docs/archive/2606-landed-rfcs/response-pipeline/finalize-stream-redesign.md.)
-    for (const closing of codec.flushResponse(env)) {
-      const out = restoreAccumulateCount(closing)
-      if (out) await sink.write(out)
-    }
-  } else {
+  if (!viaFallback) {
     if (!env.ctx.sessionId && acc.responseId) env.ctx.setSessionId(acc.responseId)
     registerResponseSession(acc.responseId, env.ctx.sessionId)
   }

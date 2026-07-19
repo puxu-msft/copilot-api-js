@@ -20,7 +20,7 @@ import type {
   ClassifiedStreamError,
   UpstreamFrame,
 } from "~/lib/pipeline/types"
-import type { SanitizeResult } from "~/lib/request/pipeline"
+import type { SanitizeResult } from "~/lib/request/retry-types"
 import type { MessagesPayload } from "~/types/api/anthropic"
 
 import { createBetaProbe } from "~/lib/anthropic/pipeline"

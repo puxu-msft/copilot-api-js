@@ -52,7 +52,11 @@ import {
 } from "~/lib/openai/responses-stream-accumulator"
 import { makeArraySink } from "~/lib/pipeline/client-sink"
 import { createPipelineDriver } from "~/lib/pipeline/driver"
-import { setModelTranslation, setModels } from "~/lib/state"
+import {
+  //
+  setModelTranslation,
+  setModels,
+} from "~/lib/state"
 
 import { mockModel } from "../helpers/factories"
 import { useIsolatedRuntime } from "../helpers/isolated-fixture"
@@ -156,7 +160,7 @@ describe("T5.3 — REVERSE responses→messages streaming leg end-to-end (mock A
       anthropicEvent({ type: "message_delta", delta: { stop_reason: "end_turn", stop_sequence: null }, usage: { output_tokens: 4 } }),
       anthropicEvent({ type: "message_stop" }),
     ])
-    const { codec, driver } = makeReverseDriver(upstream)
+    const { driver } = makeReverseDriver(upstream)
     const raw = {
       body: { model: "claude-x@messages", input: [{ type: "message", role: "user", content: [{ type: "input_text", text: "weather?" }] }], stream: true },
       headers: new Headers(),
@@ -171,8 +175,8 @@ describe("T5.3 — REVERSE responses→messages streaming leg end-to-end (mock A
       const outcome = await driver.runResponseSink(result.upstream, result.env, sink, {})
       expect(outcome.kind).toBe("complete")
       // The reverse translator's Responses `response.completed` terminal is drained by flushResponse (疑点 7b).
-      for (const f of codec.flushResponse(result.env)) frames.push(f)
-      return { frames, meta: codec.getStreamMeta() }
+      const session = driver.getCandidateResponseSession(result.upstream)
+      return { frames, meta: session?.renderer.getStreamMeta?.() as ReturnType<ReturnType<typeof createOpenAiResponsesCodec>["getStreamMeta"]> }
     }).result
 
     const events = frames.map((f) => f.event)
@@ -197,7 +201,19 @@ describe("T5.3 — REVERSE responses→messages streaming leg end-to-end (mock A
     // — this rule matches that exact axis (getting ingress/format backwards would NOT match → no strip).
     setModelTranslation({ "openai-responses": [{ match: "claude-x@anthropic-messages", features: ["strip-thinking-signature"] }] })
     const upstream = sseStream([
-      anthropicEvent({ type: "message_start", message: { id: "msg_r", type: "message", role: "assistant", model: "claude-x", content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 5, output_tokens: 0 } } }),
+      anthropicEvent({
+        type: "message_start",
+        message: {
+          id: "msg_r",
+          type: "message",
+          role: "assistant",
+          model: "claude-x",
+          content: [],
+          stop_reason: null,
+          stop_sequence: null,
+          usage: { input_tokens: 5, output_tokens: 0 },
+        },
+      }),
       anthropicEvent({ type: "content_block_start", index: 0, content_block: { type: "thinking", thinking: "", signature: "" } }),
       anthropicEvent({ type: "content_block_delta", index: 0, delta: { type: "thinking_delta", thinking: "let me reason" } }),
       anthropicEvent({ type: "content_block_delta", index: 0, delta: { type: "signature_delta", signature: "REAL-CLAUDE-SIGNATURE-xyz" } }),
@@ -208,7 +224,7 @@ describe("T5.3 — REVERSE responses→messages streaming leg end-to-end (mock A
       anthropicEvent({ type: "message_delta", delta: { stop_reason: "end_turn", stop_sequence: null }, usage: { output_tokens: 3 } }),
       anthropicEvent({ type: "message_stop" }),
     ])
-    const { codec, driver } = makeReverseDriver(upstream)
+    const { driver } = makeReverseDriver(upstream)
     const raw = {
       body: { model: "claude-x@messages", input: [{ type: "message", role: "user", content: [{ type: "input_text", text: "x" }] }], stream: true },
       headers: new Headers(),
@@ -221,7 +237,6 @@ describe("T5.3 — REVERSE responses→messages streaming leg end-to-end (mock A
       if (!result.ok) throw new Error(`runRequest rejected: ${result.rejection.reason}`)
       const { sink, frames } = makeArraySink()
       await driver.runResponseSink(result.upstream, result.env, sink, {})
-      for (const f of codec.flushResponse(result.env)) frames.push(f)
       return { frames }
     }).result
 

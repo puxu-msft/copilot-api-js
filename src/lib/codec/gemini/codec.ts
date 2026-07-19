@@ -52,13 +52,14 @@ import type {
 import type { RequestState } from "~/lib/pipeline/request-state"
 import type {
   //
+  CandidateResponseRenderer,
   ClassifiedStreamError,
   ClientFrame,
   FormatCodec,
   RawHttpRequest,
   ResponseAccumulator,
 } from "~/lib/pipeline/types"
-import type { PrepareHints } from "~/lib/request/pipeline"
+import type { PrepareHints } from "~/lib/request/retry-types"
 import type {
   //
   Content as GeminiContent,
@@ -67,11 +68,18 @@ import type {
 } from "~/types/api/gemini"
 import type { ChatCompletionsPayload } from "~/types/api/openai-chat-completions"
 
+import { createBetaProbe } from "~/lib/anthropic/pipeline"
 import {
   //
   createOpenAiCcCodec,
   type OpenAiCcCodec,
 } from "~/lib/codec/openai-cc/codec"
+import {
+  //
+  buildReverseResanitize,
+  createReverseAnthropicMapperHolder,
+  type ReverseAnthropicMapperHolder,
+} from "~/lib/codec/openai-cc/reverse-anthropic-rewrite"
 import { getRequestContextManager } from "~/lib/context/manager"
 import { captureInboundHeaders } from "~/lib/fetch-utils"
 import {
@@ -92,6 +100,7 @@ import {
 } from "~/lib/models/resolver"
 import { fillMaxCompletionTokens } from "~/lib/openai/request-preparation"
 import { sanitizeOpenAIMessages } from "~/lib/openai/sanitize"
+import { createCandidateStateFactory } from "~/lib/pipeline/generation/candidate-state"
 import { state } from "~/lib/state"
 import { processOpenAIMessages } from "~/lib/system-prompt"
 
@@ -149,10 +158,33 @@ export function createGeminiCodec(modelId: string, opts?: CreateGeminiCodecArgs)
   // to it too: the cc delegate's MESSAGES-leg wiring (T5.2) gives gemini Anthropic→CC
   // for free (hub-and-spoke), and gemini adds the CC→Gemini second hop in renderResponse.
   const cc: OpenAiCcCodec = createOpenAiCcCodec(opts?.reverseBetaProbe ? { reverseBetaProbe: opts.reverseBetaProbe } : undefined)
-  // Per-request CC→Gemini stream translator (B5): renderResponse drives it per-frame, flushResponse
-  // drains the stream-end frames, getStreamMeta exposes the terminal usage/finishReason. Eager (cheap;
-  // holds the CC accumulator + tool-flush bookkeeping) — only the streaming path touches it.
-  const geminiTranslator = createGeminiStreamTranslator(modelId)
+  const createRenderer = (candidateEnv?: RequestEnvelope): CandidateResponseRenderer => {
+    const ccRenderer = candidateEnv === undefined ? undefined : cc.createCandidateRenderer?.(candidateEnv)
+    const geminiTranslator = createGeminiStreamTranslator(modelId)
+    return {
+      renderResponse(frame, env) {
+        const rendered = ccRenderer?.renderResponse(frame, env) ?? cc.renderResponse(frame, env)
+        const ccFrames = Array.isArray(rendered) ? rendered : [rendered]
+        const output: Array<ClientFrame> = []
+        for (const ccFrame of ccFrames) {
+          for (const step of geminiTranslator.renderFrame(ccFrame as ServerSentEventMessage)) output.push(step.frame)
+        }
+        return output
+      },
+      flushResponse(env) {
+        const output: Array<ClientFrame> = []
+        for (const ccFrame of ccRenderer?.flushResponse(env) ?? []) {
+          for (const step of geminiTranslator.renderFrame(ccFrame as ServerSentEventMessage)) output.push(step.frame)
+        }
+        output.push(...geminiTranslator.flush().map((step) => step.frame))
+        return output
+      },
+      getStreamMeta() {
+        return geminiTranslator.getMeta()
+      },
+    }
+  }
+  const defaultRenderer = createRenderer()
   let requestContext: RequestContext | undefined
   let truncateBaseline: ChatCompletionsPayload | undefined
 
@@ -217,23 +249,28 @@ export function createGeminiCodec(modelId: string, opts?: CreateGeminiCodecArgs)
     // writes Gemini frames directly. renderResponseNonStreaming stays CC (the non-streaming handler
     // does its own `convertOpenAIResponseToGemini`).
     renderResponse(frame, env) {
-      const ccRendered = cc.renderResponse(frame, env)
-      const ccFrames = Array.isArray(ccRendered) ? ccRendered : [ccRendered]
-      const out: Array<ClientFrame> = []
-      for (const ccFrame of ccFrames) {
-        for (const step of geminiTranslator.renderFrame(ccFrame as ServerSentEventMessage)) {
-          out.push(step.frame)
-        }
-      }
-      return out
+      return defaultRenderer.renderResponse(frame, env)
+    },
+    createCandidateRenderer(env) {
+      return createRenderer(env)
+    },
+    createCandidateStateFactory(env) {
+      return createCandidateStateFactory(env, {
+        createBetaProbe,
+        createReverseMapperHolder: () => createReverseAnthropicMapperHolder(env.model.id, env.model.vendor),
+        createResanitize: ({ source, reverseMapperHolder }) =>
+          reverseMapperHolder ?
+            (payload) => buildReverseResanitize(reverseMapperHolder as ReverseAnthropicMapperHolder)(payload as never)
+          : (payload) => source(payload),
+      })
     },
 
     flushResponse(_env) {
-      return geminiTranslator.flush().map((step) => step.frame)
+      return defaultRenderer.flushResponse(_env)
     },
 
     getStreamMeta() {
-      return geminiTranslator.getMeta()
+      return defaultRenderer.getStreamMeta?.() as GeminiStreamMeta
     },
 
     renderResponseNonStreaming(upstream, env) {
@@ -358,6 +395,7 @@ const STREAM_ERROR_STATUS: Record<ClassifiedStreamError, string> = {
   shutdown: "UNAVAILABLE",
   "client-abort": "CANCELLED",
   "reaper-cancel": "UNAVAILABLE",
+  "dispatch-cancel": "CANCELLED",
   other: "INTERNAL",
 }
 const STREAM_ERROR_MESSAGES: Record<ClassifiedStreamError, string> = {
@@ -365,6 +403,7 @@ const STREAM_ERROR_MESSAGES: Record<ClassifiedStreamError, string> = {
   shutdown: "Server is shutting down",
   "client-abort": "Client disconnected",
   "reaper-cancel": "Request cancelled by stale-request reaper",
+  "dispatch-cancel": "Upstream dispatch cancelled",
   other: "Stream error",
 }
 

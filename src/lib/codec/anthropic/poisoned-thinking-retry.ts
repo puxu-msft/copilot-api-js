@@ -10,7 +10,7 @@
  * `(session, agent)` conversation so a later turn is stripped proactively (Task 11).
  *
  * Implemented as a NATIVE env-based strategy (not wrapped by
- * `adaptLegacyStrategy`): L3's `onResolved` reads `env.ctx.{sessionId,agentId}`,
+ * `adaptPayloadStrategy`): L3's `onResolved` reads `env.ctx.{sessionId,agentId}`,
  * which the legacy adapter drops. The remediation itself is payload-only (strip-all
  * thinking) so it needs no ctx here.
  *

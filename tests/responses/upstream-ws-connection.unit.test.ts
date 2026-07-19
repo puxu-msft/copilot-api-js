@@ -7,8 +7,17 @@ import {
   test,
 } from "bun:test"
 
-import type { WebSocketLike } from "~/lib/openai/upstream-ws-connection"
+import type {
+  //
+  UpstreamWsConnection,
+  WebSocketLike,
+} from "~/lib/openai/upstream-ws-connection"
 
+import {
+  //
+  createUpstreamWsManager,
+  setUpstreamWsConnectionFactoryForTests,
+} from "~/lib/openai/upstream-ws"
 import {
   //
   createUpstreamWsConnection,
@@ -52,6 +61,18 @@ class StrictFakeSocket extends FakeSocket {
       throw new DOMException("invalid code", "InvalidAccessError")
     }
     super.close(code, reason)
+  }
+}
+
+class DelayedCloseSocket extends FakeSocket {
+  override close(code?: number, reason?: string): void {
+    this.closeCalls.push({ code, reason })
+    this.readyState = this.CLOSING
+  }
+
+  finishClose(): void {
+    this.readyState = this.CLOSED
+    this.dispatchEvent(new CloseEvent("close", { code: 1000, reason: "closed" }))
   }
 }
 
@@ -143,6 +164,58 @@ describe("upstream websocket connection", () => {
     expect(connection.isOpen).toBe(true)
 
     connection.close()
+    expect(connection.isOpen).toBe(false)
+  })
+
+  test("dispose stays pending until the socket close barrier removes the connection owner", async () => {
+    const delayed = new DelayedCloseSocket()
+    const connection = createUpstreamWsConnection({
+      headers: {},
+      model: "gpt-5.2",
+      idleTimeoutMs: 0,
+      createSocket: () => delayed,
+    })
+    const connecting = connection.connect()
+    delayed.open()
+    await connecting
+
+    let disposed = false
+    const barrier = connection.dispose("hedged loser").then(() => {
+      disposed = true
+    })
+    await flushMicrotasks()
+
+    expect(connection.isOpen).toBe(false)
+    expect(disposed).toBe(false)
+    delayed.finishClose()
+    await barrier
+    expect(disposed).toBe(true)
+  })
+
+  test("dispose during handshake rejects the connect and cannot leak a late-open socket", async () => {
+    const delayed = new DelayedCloseSocket()
+    const connection = createUpstreamWsConnection({
+      headers: {},
+      model: "gpt-5.2",
+      idleTimeoutMs: 0,
+      createSocket: () => delayed,
+    })
+    const connecting = connection.connect()
+    let disposed = false
+    const barrier = connection.dispose("hedged loser").then(() => {
+      disposed = true
+    })
+    await flushMicrotasks()
+
+    await expect(connecting).rejects.toThrow(/hedged loser/i)
+    expect(disposed).toBe(false)
+    // The open listener was detached synchronously; a late open cannot promote this socket.
+    delayed.open()
+    expect(connection.isOpen).toBe(false)
+    expect(disposed).toBe(false)
+    delayed.finishClose()
+    await barrier
+    expect(disposed).toBe(true)
     expect(connection.isOpen).toBe(false)
   })
 
@@ -301,6 +374,32 @@ describe("upstream websocket connection", () => {
     // was absorbed by the guard, leaving the connection cleanly torn down.
     expect(onCloseCalled).toBe(true)
     expect(connection.isOpen).toBe(false)
+  })
+
+  test("a throwing onClose cannot wedge the dispose barrier", async () => {
+    const delayed = new DelayedCloseSocket()
+    const connection = createUpstreamWsConnection({
+      headers: {},
+      model: "gpt-5.5",
+      createSocket: () => delayed,
+      onClose: () => {
+        throw new Error("onClose boom")
+      },
+    })
+    const connecting = connection.connect()
+    delayed.open()
+    await connecting
+
+    let settled = false
+    const disposal = connection.dispose("test disposal").then(() => {
+      settled = true
+    })
+    await flushMicrotasks()
+    expect(settled).toBe(false)
+    delayed.finishClose()
+
+    await expect(disposal).resolves.toBeUndefined()
+    expect(settled).toBe(true)
   })
 
   test("closes socket when send throws synchronously", async () => {
@@ -701,5 +800,189 @@ describe("upstream websocket connection", () => {
 
       expect(onIdleCalls).toHaveLength(2) // finishRequest() transitioned back to idle
     })
+  })
+})
+
+function responseCreated(id: string): Record<string, unknown> {
+  return {
+    type: "response.created",
+    sequence_number: 0,
+    response: {
+      id,
+      object: "response",
+      created_at: 1,
+      status: "in_progress",
+      model: "gpt-5.2",
+      output: [],
+      usage: null,
+      tools: [],
+      tool_choice: "auto",
+      parallel_tool_calls: false,
+      store: false,
+    },
+  }
+}
+
+function responseEventId(input: unknown): string | undefined {
+  if (!input || typeof input !== "object" || !("response" in input)) return undefined
+  const response = input.response
+  if (!response || typeof response !== "object" || !("id" in response)) return undefined
+  return typeof response.id === "string" ? response.id : undefined
+}
+
+async function flushMicrotasks(): Promise<void> {
+  for (let index = 0; index < 4; index += 1) await Promise.resolve()
+}
+
+async function openConnection(connection: UpstreamWsConnection, socket: FakeSocket): Promise<void> {
+  const connected = connection.connect()
+  socket.open()
+  await connected
+}
+
+describe("P0-T3 pending-first-event and stale-queue cleanup oracle", () => {
+  test("oracle positive control: an abort not wired to sendRequest leaves first-event next pending", async () => {
+    const socket = new FakeSocket()
+    const connection = createUpstreamWsConnection({
+      headers: { authorization: "Bearer test" },
+      model: "gpt-5.2",
+      conversationId: "conv-cleanup",
+      idleTimeoutMs: 0,
+      createSocket: () => socket,
+    })
+    await openConnection(connection, socket)
+
+    const ignoredAbort = new AbortController()
+    const iterator = connection.sendRequest({ model: "gpt-5.2", input: "loser", stream: true })[Symbol.asyncIterator]()
+    const pending = iterator.next()
+    let settled = false
+    void pending.then(
+      () => {
+        settled = true
+      },
+      () => {
+        settled = true
+      },
+    )
+
+    ignoredAbort.abort()
+    await flushMicrotasks()
+
+    expect(settled).toBe(false)
+    expect(connection.isBusy).toBe(true)
+
+    connection.close()
+    await pending.catch(() => {})
+  })
+
+  test("sendRequest abort wakes pending first event and quarantines the connection", async () => {
+    const socket = new FakeSocket()
+    const connection = createUpstreamWsConnection({
+      headers: { authorization: "Bearer test" },
+      model: "gpt-5.2",
+      conversationId: "conv-cleanup",
+      idleTimeoutMs: 0,
+      createSocket: () => socket,
+    })
+    await openConnection(connection, socket)
+
+    const abort = new AbortController()
+    const iterator = connection.sendRequest({ model: "gpt-5.2", input: "loser", stream: true }, { abortSignal: abort.signal })[Symbol.asyncIterator]()
+    const pending = iterator.next()
+    await flushMicrotasks()
+
+    abort.abort()
+
+    await expect(pending).rejects.toThrow("Upstream WebSocket request aborted")
+    expect(connection.isBusy).toBe(false)
+    expect(connection.isOpen).toBe(false)
+    // Defensive cleanup — onAbort already closed the socket.
+    connection.close()
+  })
+
+  test("oracle positive control: queue exposes the exact remote frame identity", async () => {
+    const socket = new FakeSocket()
+    const connection = createUpstreamWsConnection({
+      headers: { authorization: "Bearer test" },
+      model: "gpt-5.2",
+      conversationId: "conv-cleanup",
+      idleTimeoutMs: 0,
+      createSocket: () => socket,
+    })
+    await openConnection(connection, socket)
+
+    const iterator = connection.sendRequest({ model: "gpt-5.2", input: "probe", stream: true })[Symbol.asyncIterator]()
+    const pending = iterator.next()
+    socket.emitMessage(responseCreated("resp_oracle_control"))
+
+    const observed = await pending
+    expect(responseEventId(observed.value)).toBe("resp_oracle_control")
+    connection.close()
+  })
+
+  test("P5 contract: aborting a loser quarantines its connection so late frames cannot poison the next same-conversation request", async () => {
+    const sockets: Array<FakeSocket> = []
+    setUpstreamWsConnectionFactoryForTests((opts) =>
+      createUpstreamWsConnection({
+        headers: opts.headers,
+        model: opts.model,
+        conversationId: opts.conversationId,
+        onClose: opts.onClose,
+        idleTimeoutMs: 0,
+        createSocket: () => {
+          const socket = new FakeSocket()
+          sockets.push(socket)
+          return socket
+        },
+      }),
+    )
+    const manager = createUpstreamWsManager()
+
+    try {
+      const loser = await manager.create({
+        headers: { authorization: "Bearer test" },
+        model: "gpt-5.2",
+        conversationId: "conv-cleanup",
+      })
+      const loserConnect = loser.connect()
+      sockets[0]?.open()
+      await loserConnect
+
+      const loserAbort = new AbortController()
+      const loserIterator = loser.sendRequest({ model: "gpt-5.2", input: "loser", stream: true }, { abortSignal: loserAbort.signal })[Symbol.asyncIterator]()
+      const loserPending = loserIterator.next()
+      await flushMicrotasks()
+      loserAbort.abort()
+      await expect(loserPending).rejects.toThrow("Upstream WebSocket request aborted")
+
+      const nextConnection =
+        manager.findReusable({ conversationId: "conv-cleanup", model: "gpt-5.2" })
+        ?? (await manager.create({
+          headers: { authorization: "Bearer test" },
+          model: "gpt-5.2",
+          conversationId: "conv-cleanup",
+        }))
+
+      if (!nextConnection.isOpen) {
+        const nextConnect = nextConnection.connect()
+        sockets.at(-1)?.open()
+        await nextConnect
+      }
+
+      const nextIterator = nextConnection.sendRequest({ model: "gpt-5.2", input: "winner", stream: true })[Symbol.asyncIterator]()
+      const nextPending = nextIterator.next()
+
+      // The cancelled loser's remote peer races a late frame against the new same-conversation request. P5 must have detached/closed the old owner, so only resp_new can enter the new request queue.
+      sockets[0]?.emitMessage(responseCreated("resp_late_from_loser"))
+      const nextSocket = nextConnection === loser ? sockets[0] : sockets.at(-1)
+      nextSocket?.emitMessage(responseCreated("resp_new"))
+
+      const observed = await nextPending
+      expect(responseEventId(observed.value)).toBe("resp_new")
+      expect(nextConnection).not.toBe(loser)
+    } finally {
+      manager.closeAll()
+      setUpstreamWsConnectionFactoryForTests(null)
+    }
   })
 })

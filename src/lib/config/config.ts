@@ -26,6 +26,7 @@ import {
   setChatCompletionsConfig,
   setDisabledModels,
   setHistoryConfig,
+  setGenerationRuntimeConfig,
   setHooksConfig,
   setLoggingConfig,
   setModelMappings,
@@ -794,6 +795,32 @@ export async function applyConfigToState(): Promise<Config> {
   // Shared reactive-retry budget (was auto_truncate.max_retries).
   if (config.retry?.max_reactive_retries !== undefined) {
     setReactiveRetryConfig({ maxReactiveRetries: config.retry.max_reactive_retries })
+  }
+  const generation = config.generation
+  if (generation) {
+    const patch = {
+      ...(generation.hedge?.enabled !== undefined && { generationHedgeEnabled: generation.hedge.enabled }),
+      ...(generation.hedge?.threshold_sec !== undefined && { generationHedgeThresholdSec: generation.hedge.threshold_sec }),
+      ...(generation.hedge?.max_secondary_candidates !== undefined && { generationHedgeMaxSecondaryCandidates: generation.hedge.max_secondary_candidates }),
+      ...(generation.hedge?.allow_server_tools !== undefined && { generationHedgeAllowServerTools: generation.hedge.allow_server_tools }),
+      ...(generation.recovery?.max_candidates !== undefined && { generationRecoveryMaxCandidates: generation.recovery.max_candidates }),
+      ...(generation.max_active_candidates !== undefined && { generationMaxActiveCandidates: generation.max_active_candidates }),
+      ...(generation.max_active_dispatches !== undefined && { generationMaxActiveDispatches: generation.max_active_dispatches }),
+      ...(generation.max_total_candidates !== undefined && { generationMaxTotalCandidates: generation.max_total_candidates }),
+      ...(generation.max_total_dispatches !== undefined && { generationMaxTotalDispatches: generation.max_total_dispatches }),
+      ...(generation.cleanup_grace_sec !== undefined && { generationCleanupGraceSec: generation.cleanup_grace_sec }),
+    }
+    const next = { ...state, ...patch }
+    if (next.generationMaxTotalCandidates < next.generationMaxActiveCandidates) {
+      throw new Error("generation.max_total_candidates must be >= generation.max_active_candidates")
+    }
+    if (next.generationMaxTotalDispatches < next.generationMaxActiveDispatches) {
+      throw new Error("generation.max_total_dispatches must be >= generation.max_active_dispatches")
+    }
+    if (next.generationMaxActiveCandidates < 1 + next.generationHedgeMaxSecondaryCandidates) {
+      throw new Error("generation.max_active_candidates must allow the primary plus max_secondary_candidates")
+    }
+    setGenerationRuntimeConfig(patch)
   }
 
   // Tool-name sanitization (cross-protocol top-level toggle; scalar override)

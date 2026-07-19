@@ -55,6 +55,13 @@ export interface SettledMeasures {
   thinking_nonempty?: number
   thinking_empty_signed?: number
   thinking_empty_unsigned?: number
+  generation_candidates?: number
+  upstream_dispatches?: number
+  hedge_candidates?: number
+  hedge_wins?: number
+  recovery_candidates?: number
+  cancelled_dispatches?: number
+  unknown_usage_dispatches?: number
 }
 
 /** 全部可加度量列名（tel_* 表共用；DRY 生成 UPSERT SQL）。 */
@@ -77,6 +84,13 @@ export const SETTLED_MEASURE_COLUMN_NAMES: ReadonlyArray<keyof SettledMeasures> 
   "thinking_nonempty",
   "thinking_empty_signed",
   "thinking_empty_unsigned",
+  "generation_candidates",
+  "upstream_dispatches",
+  "hedge_candidates",
+  "hedge_wins",
+  "recovery_candidates",
+  "cancelled_dispatches",
+  "unknown_usage_dispatches",
 ]
 
 const COLS = SETTLED_MEASURE_COLUMN_NAMES

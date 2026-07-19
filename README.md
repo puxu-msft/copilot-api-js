@@ -158,6 +158,8 @@ The proxy exposes OpenAI, Azure OpenAI, Anthropic, and Google Gemini compatible 
 
 Any client SDK can drive any GHC model via an `@cc` / `@responses` / `@messages` model-name suffix (the universal translation matrix) — e.g. an OpenAI client can call `claude-opus-4.8@messages`. Details in [`docs/API.md`](docs/API.md#调用基础).
 
+Streaming requests use an explicit upstream generation runtime. By default, if the primary physical request has produced no complete real client-protocol block after 300 seconds, one secondary candidate starts while the primary continues; the first complete block wins and the loser is cancelled and fully quiesced. Synthetic keepalive scaffolding does not count as model progress. Requests declaring server-executed tools are excluded unless explicitly opted in. Configure this under `generation.*`; downstream heartbeat, upstream retry/competition, and transport connection keepalive are independent mechanisms.
+
 ---
 
 ## Config and Data Storage
@@ -172,6 +174,8 @@ The GitHub token, learned negotiation state and the SQLite history database live
 - Honors `XDG_DATA_HOME` if set: `$XDG_DATA_HOME/copilot-api/`
 
 Most fields hot-reload at runtime (the file is watched). Hot-reload semantics are *retain-on-absence*: missing keys keep the previous value; explicit empty values (`disabled_models: []`, `model_overrides: {}`) clear the field.
+
+`generation.hedge.*` controls live fast-retry (`enabled`, `threshold_sec`, `max_secondary_candidates`, `allow_server_tools`); the sibling generation fields bound active/total candidates and dispatches. Values are snapshotted when a request starts, so a hot reload affects new generations only.
 
 ### Data directory layout
 

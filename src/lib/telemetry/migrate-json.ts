@@ -96,6 +96,13 @@ const COUNTER_TO_COLUMN: ReadonlyArray<{ counterName: string; sqlCol: keyof Sett
   { counterName: "thinkingBlocksNonEmpty", sqlCol: "thinking_nonempty", cost: false },
   { counterName: "thinkingBlocksEmptySigned", sqlCol: "thinking_empty_signed", cost: false },
   { counterName: "thinkingBlocksEmptyUnsigned", sqlCol: "thinking_empty_unsigned", cost: false },
+  { counterName: "generationCandidates", sqlCol: "generation_candidates", cost: false },
+  { counterName: "upstreamDispatches", sqlCol: "upstream_dispatches", cost: false },
+  { counterName: "hedgeCandidates", sqlCol: "hedge_candidates", cost: false },
+  { counterName: "hedgeWins", sqlCol: "hedge_wins", cost: false },
+  { counterName: "recoveryCandidates", sqlCol: "recovery_candidates", cost: false },
+  { counterName: "cancelledDispatches", sqlCol: "cancelled_dispatches", cost: false },
+  { counterName: "unknownUsageDispatches", sqlCol: "unknown_usage_dispatches", cost: false },
 ]
 
 /**

@@ -69,6 +69,16 @@ function nullablePositiveNumber() {
     .optional()
 }
 
+function nullablePositiveInt() {
+  return z
+    .number({ error: POSITIVE_NUMBER_MSG })
+    .int(POSITIVE_NUMBER_MSG)
+    .positive(POSITIVE_NUMBER_MSG)
+    .nullable()
+    .transform((v): number | undefined => v ?? undefined)
+    .optional()
+}
+
 function nullableString() {
   return z
     .string({ error: STRING_MSG })
@@ -827,6 +837,33 @@ export const RetryConfigSchema = z
   })
   .strict()
 
+const GenerationHedgeConfigSchema = z
+  .object({
+    enabled: nullableBoolean(),
+    threshold_sec: nullableNonnegativeInt(),
+    max_secondary_candidates: nullableNonnegativeInt(),
+    allow_server_tools: nullableBoolean(),
+  })
+  .strict()
+
+const GenerationRecoveryConfigSchema = z
+  .object({
+    max_candidates: nullableNonnegativeInt(),
+  })
+  .strict()
+
+export const GenerationConfigSchema = z
+  .object({
+    hedge: nullableSection(GenerationHedgeConfigSchema),
+    recovery: nullableSection(GenerationRecoveryConfigSchema),
+    max_active_candidates: nullablePositiveInt(),
+    max_active_dispatches: nullablePositiveInt(),
+    max_total_candidates: nullablePositiveInt(),
+    max_total_dispatches: nullablePositiveInt(),
+    cleanup_grace_sec: nullableNonnegativeInt(),
+  })
+  .strict()
+
 /**
  * Per-model timeout override maps (seconds). Named const so the base `ZodRecord`
  * reference is stable for `RECORD_MERGE_STRATEGIES` (WeakMap key) — an inline
@@ -1166,6 +1203,7 @@ export const ConfigSchema = z
      * hoisted out because it never was truncation-specific.
      */
     retry: nullableSection(RetryConfigSchema),
+    generation: nullableSection(GenerationConfigSchema),
     /**
      * Sanitize tool names that violate the target model's constraints (illegal
      * characters like dots, over-length, collisions) into legal names before
@@ -1287,6 +1325,7 @@ export type HistoryConfig = z.infer<typeof HistoryConfigSchema>
 export type TelemetryConfig = z.infer<typeof TelemetryConfigSchema>
 export type TimeoutsConfig = z.infer<typeof TimeoutsConfigSchema>
 export type RetryConfigSection = z.infer<typeof RetryConfigSchema>
+export type GenerationConfigSection = z.infer<typeof GenerationConfigSchema>
 export type ModelTranslationIngress = (typeof MODEL_TRANSLATION_INGRESS_VALUES)[number]
 export type ModelTranslationFeature = (typeof MODEL_TRANSLATION_FEATURE_VALUES)[number]
 export type ModelTranslationRule = z.infer<typeof ModelTranslationRuleSchema>

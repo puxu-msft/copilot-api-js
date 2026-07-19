@@ -30,7 +30,11 @@ import type { ServerInstance } from "./serve"
 
 import { getAdaptiveRateLimiter } from "./adaptive-rate-limiter"
 import { flushAndFreezePersistence as freezeNegotiation } from "./anthropic/feature-negotiation"
-import { getRequestContextManager } from "./context/manager"
+import {
+  //
+  getRequestContextManager,
+  peekRequestContextManager,
+} from "./context/manager"
 import { getDiagnosticLogger } from "./diagnostics"
 import { shutdownStructuredFileSink } from "./diagnostics/file"
 import {
@@ -267,6 +271,8 @@ export interface ShutdownDeps {
   getClientCountFn?: () => number
   /** Request context manager (for stopping stale reaper during shutdown) */
   contextManager?: { stopReaper: () => void }
+  /** Generation observability finalization barrier. Production uses the request manager registry. */
+  drainModelOperationFinalizationsFn?: () => Promise<void>
   /** Persistence seams used by lifecycle tests. Production uses the real stores. */
   shutdownHistoryFn?: () => Promise<void>
   shutdownRequestTelemetryFn?: () => Promise<void>
@@ -381,12 +387,10 @@ export async function gracefulShutdown(signal: string, deps?: ShutdownDeps): Pro
   if (shutdownPhase !== "idle" && shutdownPhase !== "stopping") return shutdownCompletion.promise
 
   const tracker: ShutdownDrainSource = deps?.tracker ?? {
-    // C5: drain waits on the OPERATION registry (quiesce), not just the visible registry (settle).
-    // A settled-but-not-quiesced request keeps orphan settle-before work (fetch/backoff) that must
-    // be drained. For an unwired ctx this equals getAll() (empties at settle), so current behavior
-    // is preserved; it becomes meaningful once C4a wires `trackOperationBody` at the work sites.
-    // Bounded by the existing Phase 2/3/4 timeouts (never waits forever); reaper/deadline still
-    // settle immediately (cancel is decoupled from quiesce), so this never blocks settle.
+    // Drain waits on the OPERATION/finalization registry, not the visible logical-settle registry.
+    // A settled request remains here through orphan settle-before work (fetch/backoff/response pump),
+    // delivery notification, immutable canonical seal, and terminal publish. Phase 2/3 remain bounded;
+    // the explicit finalization barrier below surfaces seal rejection before History closes.
     getActive: () => getRequestContextManager().getTrackedOperations(),
   }
   const server = deps?.server ?? serverInstance
@@ -394,6 +398,8 @@ export async function gracefulShutdown(signal: string, deps?: ShutdownDeps): Pro
   const stopRefresh = deps?.stopTokenRefreshFn ?? stopTokenRefresh
   const closeWsClients = deps?.closeAllClientsFn ?? closeAllClients
   const getWsClientCount = deps?.getClientCountFn ?? getClientCount
+  const drainModelOperationFinalizations =
+    deps?.drainModelOperationFinalizationsFn ?? (() => peekRequestContextManager()?.drainModelOperationFinalizations() ?? Promise.resolve())
   const closeHistory = deps?.shutdownHistoryFn ?? shutdownHistory
   const closeTelemetry = deps?.shutdownRequestTelemetryFn ?? shutdownRequestTelemetry
   const closeDiagnostics = deps?.shutdownDiagnosticLoggingFn ?? shutdownStructuredFileSink
@@ -503,7 +509,7 @@ export async function gracefulShutdown(signal: string, deps?: ShutdownDeps): Pro
       })
       if (phase2Result === "drained") {
         consola.info("All requests completed naturally")
-        await finalize({ closeWsClients, getWsClientCount, closeHistory, closeTelemetry, closeDiagnostics, publishStopped })
+        await finalize({ closeWsClients, getWsClientCount, drainModelOperationFinalizations, closeHistory, closeTelemetry, closeDiagnostics, publishStopped })
         return
       }
     } catch (error) {
@@ -525,7 +531,7 @@ export async function gracefulShutdown(signal: string, deps?: ShutdownDeps): Pro
       })
       if (phase3Result === "drained") {
         consola.info("All requests completed after abort signal")
-        await finalize({ closeWsClients, getWsClientCount, closeHistory, closeTelemetry, closeDiagnostics, publishStopped })
+        await finalize({ closeWsClients, getWsClientCount, drainModelOperationFinalizations, closeHistory, closeTelemetry, closeDiagnostics, publishStopped })
         return
       }
     } catch (error) {
@@ -569,12 +575,13 @@ export async function gracefulShutdown(signal: string, deps?: ShutdownDeps): Pro
     }
   }
 
-  await finalize({ closeWsClients, getWsClientCount, closeHistory, closeTelemetry, closeDiagnostics, publishStopped })
+  await finalize({ closeWsClients, getWsClientCount, drainModelOperationFinalizations, closeHistory, closeTelemetry, closeDiagnostics, publishStopped })
 }
 
 interface FinalizeDeps {
   closeWsClients: () => void
   getWsClientCount: () => number
+  drainModelOperationFinalizations: () => Promise<void>
   closeHistory: () => Promise<void>
   closeTelemetry: () => Promise<void>
   closeDiagnostics: () => Promise<void>
@@ -588,6 +595,16 @@ async function finalize(deps: FinalizeDeps): Promise<void> {
   writeEmergencyNoThrow("[shutdown] Requests settled; flushing History and Telemetry. Press Ctrl+C again to exit immediately")
 
   const failures: Array<unknown> = []
+
+  // Canonical terminal creation/publish is a pre-History durability barrier. The normal request
+  // drain retains contexts until this settles, while this explicit join surfaces any rejection
+  // instead of letting shutdown report success after a failed immutable seal.
+  try {
+    await deps.drainModelOperationFinalizations()
+  } catch (error) {
+    failures.push(error)
+    consola.error("Generation finalization shutdown barrier failed:", error)
+  }
 
   // Drain in-flight async finalizes, then close History (I4). This runs after
   // request drain on every normal exit path. The second-signal escape hatch can

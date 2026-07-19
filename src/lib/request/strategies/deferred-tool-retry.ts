@@ -32,7 +32,7 @@ import type {
   RetryAction,
   RetryContext,
   RetryStrategy,
-} from "../pipeline"
+} from "../retry-types"
 
 // ============================================================================
 // Error parsing

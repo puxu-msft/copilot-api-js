@@ -67,8 +67,16 @@ export class StreamReaperCancelError extends Error {
   }
 }
 
+/** Candidate/dispatch-local cancellation (e.g. a hedged loser), not a request verdict. */
+export class StreamDispatchCancelError extends Error {
+  constructor() {
+    super("Upstream dispatch cancelled")
+    this.name = "StreamDispatchCancelError"
+  }
+}
+
 /** Coarse classification of a stream lifecycle error, protocol-agnostic. */
-export type StreamErrorKind = "idle-timeout" | "shutdown" | "client-abort" | "reaper-cancel" | "other"
+export type StreamErrorKind = "idle-timeout" | "shutdown" | "client-abort" | "reaper-cancel" | "dispatch-cancel" | "other"
 
 /**
  * Classify a streaming error into a protocol-agnostic kind. Every SSE handler
@@ -87,6 +95,7 @@ export function classifyStreamError(error: unknown): StreamErrorKind {
   if (error instanceof StreamShutdownError) return "shutdown"
   if (error instanceof StreamClientAbortError) return "client-abort"
   if (error instanceof StreamReaperCancelError) return "reaper-cancel"
+  if (error instanceof StreamDispatchCancelError) return "dispatch-cancel"
   return "other"
 }
 
@@ -247,9 +256,10 @@ export function guardSseIterable<T>(
     shutdownSignal?: AbortSignal
     clientSignal?: AbortSignal
     reaperSignal?: AbortSignal
+    dispatchSignal?: AbortSignal
   },
 ): AsyncIterable<T> {
-  const { idleTimeoutMs, shutdownSignal, clientSignal, reaperSignal } = opts
+  const { idleTimeoutMs, shutdownSignal, clientSignal, reaperSignal, dispatchSignal } = opts
   return {
     [Symbol.asyncIterator](): AsyncIterator<T> {
       const inner = source[Symbol.asyncIterator]()
@@ -259,8 +269,9 @@ export function guardSseIterable<T>(
       shutdownSignal?.addEventListener("abort", onAbort, { once: true })
       clientSignal?.addEventListener("abort", onAbort, { once: true })
       reaperSignal?.addEventListener("abort", onAbort, { once: true })
+      dispatchSignal?.addEventListener("abort", onAbort, { once: true })
       // Fast-path: a source was already aborted before the first next().
-      if (shutdownSignal?.aborted || clientSignal?.aborted || reaperSignal?.aborted) local.abort()
+      if (shutdownSignal?.aborted || clientSignal?.aborted || reaperSignal?.aborted || dispatchSignal?.aborted) local.abort()
 
       let detached = false
       const detach = () => {
@@ -269,6 +280,7 @@ export function guardSseIterable<T>(
         shutdownSignal?.removeEventListener("abort", onAbort)
         clientSignal?.removeEventListener("abort", onAbort)
         reaperSignal?.removeEventListener("abort", onAbort)
+        dispatchSignal?.removeEventListener("abort", onAbort)
       }
 
       // Close the underlying source. `for await` does NOT call our `return()`
@@ -283,16 +295,17 @@ export function guardSseIterable<T>(
       // early-`break` path (consumer-driven `return()`) has no pending next(), so
       // there it is awaited to preserve return-value forwarding. Idempotent so the
       // two callers can't double-close.
-      let innerClosed = false
+      let closePromise: Promise<IteratorResult<T> | undefined> | undefined
       const closeInner = async (value?: T): Promise<IteratorResult<T> | undefined> => {
-        if (innerClosed) return undefined
-        innerClosed = true
-        try {
-          return await inner.return?.(value)
-        } catch {
-          // Source cleanup failed (already torn down) — nothing to recover.
-          return undefined
-        }
+        closePromise ??= (async () => {
+          try {
+            return await inner.return?.(value)
+          } catch {
+            // Source cleanup failed (already torn down) — nothing to recover.
+            return undefined
+          }
+        })()
+        return closePromise
       }
 
       return {
@@ -320,6 +333,7 @@ export function guardSseIterable<T>(
             if (shutdownSignal?.aborted) throw new StreamShutdownError()
             if (clientSignal?.aborted) throw new StreamClientAbortError()
             if (reaperSignal?.aborted) throw new StreamReaperCancelError()
+            if (dispatchSignal?.aborted) throw new StreamDispatchCancelError()
             return { value: undefined as unknown as T, done: true }
           }
           if (result.done) detach() // natural completion — inner already ended, no close needed

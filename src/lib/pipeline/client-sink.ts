@@ -34,6 +34,7 @@ import type { WSContext } from "hono/ws"
 
 import type { SseEventRecord } from "~/lib/history"
 
+import { createDownstreamDeliverySession } from "~/lib/pipeline/delivery/session"
 import { readSyntheticKind } from "~/lib/pipeline/frame-origin"
 
 import type { ClientFrame } from "./types"
@@ -454,6 +455,33 @@ export function makeSseSink(stream: SSEStreamingApi, opts: SseSinkOptions = {}):
   return { write, writeSynthetic, writeKeepalive, writeSyntheticEnvelope, writeAnchor, close, finalize, freezeHeartbeat, suspendHeartbeat, resumeHeartbeat }
 }
 
+/**
+ * Production generation-owned SSE delivery. The raw sink retains transport serialization,
+ * forwarded/V3 sampling, and first-real timing, while {@link createDownstreamDeliverySession}
+ * exclusively owns the heartbeat timer and post-wire block ledger across upstream retries.
+ */
+export function makeDeliverySseSink(stream: SSEStreamingApi, opts: SseSinkOptions = {}): ClientSink {
+  const { heartbeat, ...rawOptions } = opts
+  const rawSink = makeSseSink(stream, rawOptions)
+  const delivery = createDownstreamDeliverySession({
+    sink: rawSink,
+    monotonicNow: Date.now,
+    ...(heartbeat
+      && heartbeat.intervalSec > 0 && {
+        heartbeat: {
+          intervalMs: heartbeat.intervalSec * 1000,
+          ...(heartbeat.clientAbortSignal && { clientAbortSignal: heartbeat.clientAbortSignal }),
+          frame: (ledger) => {
+            const open = ledger.openBlocks.at(-1)
+            return typeof heartbeat.pingFrame === "function" ? heartbeat.pingFrame(open) : heartbeat.pingFrame
+          },
+          ...(heartbeat.injectAnchor && { injectScaffold: heartbeat.injectAnchor }),
+        },
+      }),
+  })
+  return delivery.clientSink
+}
+
 /** {@link makeWsSink} options — forwarded-track sampling (optional) + forward-idle heartbeat (optional). */
 export interface WsSinkOptions {
   /**
@@ -619,6 +647,25 @@ export function makeWsSink(ws: WSContext, opts: WsSinkOptions = {}): ClientSink 
     onDeliveryFinalized?.()
   }
   return hb ? { write, writeSynthetic, close: hb.stop, finalize } : { write, writeSynthetic, finalize }
+}
+
+/** Generation-owned WS delivery with an application-frame heartbeat independent from upstream attempts. */
+export function makeDeliveryWsSink(ws: WSContext, opts: WsSinkOptions = {}): ClientSink {
+  const { heartbeat, ...rawOptions } = opts
+  const rawSink = makeWsSink(ws, rawOptions)
+  const delivery = createDownstreamDeliverySession({
+    sink: rawSink,
+    monotonicNow: Date.now,
+    ...(heartbeat
+      && heartbeat.intervalSec > 0 && {
+        heartbeat: {
+          intervalMs: heartbeat.intervalSec * 1000,
+          ...(heartbeat.clientAbortSignal && { clientAbortSignal: heartbeat.clientAbortSignal }),
+          frame: () => heartbeat.pingFrame,
+        },
+      }),
+  })
+  return delivery.clientSink
 }
 
 /**

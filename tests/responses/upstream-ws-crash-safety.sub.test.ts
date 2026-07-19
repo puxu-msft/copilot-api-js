@@ -54,10 +54,8 @@ describe("upstream-ws crash safety (subprocess)", () => {
     // absorb it (warn + mark unusable + fail request) so no uncaughtException fires.
     const { exitCode, stderr } = await runProbe("guarded")
     expect(exitCode).toBe(0)
-    // Exit 0 alone is vacuity-prone: a future refactor that leaves handleClose
-    // unbound (or never invokes onClose) would ALSO exit 0 and pass green. Assert
-    // the onCallbackEscape WARN so the guard is PROVABLY exercised — the throw was
-    // actually caught by guardCallback, not silently skipped.
-    expect(stderr).toMatch(/\[upstream-ws\] callback threw; failing request/)
+    // Exit 0 alone is vacuity-prone: assert the current onClose ownership-boundary WARN and
+    // injected fault text so the callback guard is provably exercised rather than silently skipped.
+    expect(stderr).toMatch(/\[upstream-ws\] onClose callback threw .*onClose-boom/)
   })
 })

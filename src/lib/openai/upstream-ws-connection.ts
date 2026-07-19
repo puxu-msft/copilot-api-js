@@ -80,6 +80,8 @@ export interface UpstreamWsConnection {
    */
   rescheduleIdleTimeout(newIdleTimeoutMs: number): void
   close(): void
+  /** Quarantine + close barrier. Resolves after close handling detached listeners and released the request queue. */
+  dispose(reason?: string): Promise<void>
 }
 
 interface AsyncQueue<T> {
@@ -151,6 +153,24 @@ export function createUpstreamWsConnection(opts: CreateUpstreamWsConnectionOptio
    * "did the handshake finish?" question deserves the same answer.
    */
   let connectingPromise: Promise<void> | null = null
+  let pendingSocket: WebSocketLike | null = null
+  let rejectConnecting: ((error: Error) => void) | null = null
+  let cleanupConnecting: (() => void) | null = null
+  let resolveDisposed!: () => void
+  const disposed = new Promise<void>((resolve) => {
+    resolveDisposed = resolve
+  })
+
+  const notifyClosed = (): void => {
+    try {
+      opts.onClose?.()
+    } catch (error) {
+      // Pool-owner cleanup must never wedge the physical-dispatch disposal barrier.
+      consola.warn(`[upstream-ws] onClose callback threw (model=${opts.model}): ${toError(error).message}`)
+    } finally {
+      resolveDisposed()
+    }
+  }
 
   const markUnusable = () => {
     unusable = true
@@ -280,7 +300,7 @@ export function createUpstreamWsConnection(opts: CreateUpstreamWsConnectionOptio
     socket?.removeEventListener("error", handleError)
     socket?.removeEventListener("close", handleClose)
     socket = null
-    opts.onClose?.()
+    notifyClosed()
 
     if (!busy || !currentQueue) return
 
@@ -300,20 +320,31 @@ export function createUpstreamWsConnection(opts: CreateUpstreamWsConnectionOptio
       // races the shared promise against its own signal locally below.
       if (!connectingPromise) {
         const ws = createSocket(copilotWsUrl(state), opts.headers)
+        pendingSocket = ws
 
         connectingPromise = new Promise<void>((resolve, reject) => {
+          rejectConnecting = reject
           const cleanup = () => {
             ws.removeEventListener("open", onOpen)
             ws.removeEventListener("error", onOpenError)
+            cleanupConnecting = null
           }
+          cleanupConnecting = cleanup
 
           const onOpen = guardCallback(
             () => {
               cleanup()
+              if (unusable) {
+                pendingSocket = null
+                closeUpstreamWs(ws, "Disposed during handshake")
+                reject(new Error("Upstream WebSocket disposed during handshake"))
+                return
+              }
               // Only after a successful handshake do we (a) bind the long-lived
               // lifecycle listeners and (b) promote `ws` to the module-level
               // `socket`. A failed handshake leaves no shared state behind.
               socket = ws
+              pendingSocket = null
               ws.addEventListener("message", handleMessage)
               ws.addEventListener("error", handleError)
               ws.addEventListener("close", handleClose)
@@ -330,6 +361,7 @@ export function createUpstreamWsConnection(opts: CreateUpstreamWsConnectionOptio
           const onOpenError = guardCallback(
             () => {
               cleanup()
+              pendingSocket = null
               closeUpstreamWs(ws, "Handshake failed")
               reject(new Error("Upstream WebSocket handshake failed"))
             },
@@ -344,6 +376,8 @@ export function createUpstreamWsConnection(opts: CreateUpstreamWsConnectionOptio
           ws.addEventListener("error", onOpenError, { once: true })
         }).finally(() => {
           connectingPromise = null
+          rejectConnecting = null
+          cleanupConnecting = null
         })
       }
 
@@ -400,7 +434,13 @@ export function createUpstreamWsConnection(opts: CreateUpstreamWsConnectionOptio
 
       const abortSignal = requestOpts?.abortSignal
       const onAbort = guardCallback(() => {
+        // The Responses WS wire has no request-local cancel frame. Releasing `busy` while
+        // keeping this socket reusable lets the old remote generation's late frames enter the
+        // next same-conversation request queue. Quarantine synchronously, fail the owned queue,
+        // then close the socket; its close event lets the pool owner remove it.
+        markUnusable()
         failRequest(new Error("Upstream WebSocket request aborted"))
+        closeUpstreamWs(socket, "Request aborted")
       }, onCallbackEscape)
 
       currentAbortCleanup = () => {
@@ -480,6 +520,24 @@ export function createUpstreamWsConnection(opts: CreateUpstreamWsConnectionOptio
         // Has a live or closing socket — close it; handleClose will fire the
         // onClose callback so the manager removes us from the pool.
         closeUpstreamWs(socket, "Going away")
+      } else if (pendingSocket) {
+        // A handshake-owned socket is not yet promoted to `socket`; quarantine and close it
+        // explicitly so a late open cannot escape after the pool removed this placeholder.
+        markUnusable()
+        cleanupConnecting?.()
+        rejectConnecting?.(new Error("Upstream WebSocket closed during handshake"))
+        const ws = pendingSocket
+        pendingSocket = null
+        ws.addEventListener(
+          "close",
+          () => {
+            if (closeHandled) return
+            closeHandled = true
+            notifyClosed()
+          },
+          { once: true },
+        )
+        closeUpstreamWs(ws, "Going away")
       } else if (!closeHandled) {
         // No socket yet (handshake either in progress or never started) — we
         // still need to inform the manager so a placeholder created via
@@ -487,8 +545,34 @@ export function createUpstreamWsConnection(opts: CreateUpstreamWsConnectionOptio
         // unusable so any racing reuse lookup skips us.
         closeHandled = true
         markUnusable()
-        opts.onClose?.()
+        notifyClosed()
       }
+    },
+
+    async dispose(reason = "Disposed") {
+      markUnusable()
+      if (busy && currentQueue) failRequest(new Error(`Upstream WebSocket ${reason}`))
+      if (socket) closeUpstreamWs(socket, reason)
+      else if (pendingSocket) {
+        cleanupConnecting?.()
+        rejectConnecting?.(new Error(`Upstream WebSocket ${reason}`))
+        const ws = pendingSocket
+        pendingSocket = null
+        ws.addEventListener(
+          "close",
+          () => {
+            if (closeHandled) return
+            closeHandled = true
+            notifyClosed()
+          },
+          { once: true },
+        )
+        closeUpstreamWs(ws, reason)
+      } else if (!closeHandled) {
+        closeHandled = true
+        notifyClosed()
+      }
+      await disposed
     },
   }
 }

@@ -82,7 +82,7 @@ import type {
   RetryAction,
   RetryContext,
   RetryStrategy,
-} from "../pipeline"
+} from "../retry-types"
 
 /** Guard: the Vertex org-policy class for partner-model feature gating. */
 const PARTNER_FEATURE_VIOLATION = /allowedPartnerModelFeatures/i

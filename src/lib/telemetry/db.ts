@@ -42,6 +42,13 @@ const SETTLED_MEASURE_COLUMNS = `
   thinking_nonempty        INTEGER NOT NULL DEFAULT 0,
   thinking_empty_signed    INTEGER NOT NULL DEFAULT 0,
   thinking_empty_unsigned  INTEGER NOT NULL DEFAULT 0,
+  generation_candidates    INTEGER NOT NULL DEFAULT 0,
+  upstream_dispatches      INTEGER NOT NULL DEFAULT 0,
+  hedge_candidates         INTEGER NOT NULL DEFAULT 0,
+  hedge_wins               INTEGER NOT NULL DEFAULT 0,
+  recovery_candidates      INTEGER NOT NULL DEFAULT 0,
+  cancelled_dispatches     INTEGER NOT NULL DEFAULT 0,
+  unknown_usage_dispatches INTEGER NOT NULL DEFAULT 0,
   hist_blob                BLOB`
 
 /** 幂等地板 schema：全部表 + 索引。可重复 exec 无害。 */
@@ -104,7 +111,31 @@ export function openTelemetryDb(dbPath: string = PATHS.TELEMETRY_DB): TelemetryD
   db.exec(`PRAGMA busy_timeout = ${BUSY_TIMEOUT_MS};`)
   db.exec("PRAGMA foreign_keys = ON;")
   db.exec(SCHEMA_SQL)
+  ensureGenerationMeasureColumns(db)
   return db
+}
+
+function ensureGenerationMeasureColumns(db: TelemetryDatabase): void {
+  const columns = [
+    "generation_candidates",
+    "upstream_dispatches",
+    "hedge_candidates",
+    "hedge_wins",
+    "recovery_candidates",
+    "cancelled_dispatches",
+    "unknown_usage_dispatches",
+  ] as const
+  for (const table of ["tel_raw", "tel_hourly", "tel_daily", "tel_cumulative"] as const) {
+    const existing = new Set((db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map((row) => row.name))
+    for (const column of columns) {
+      if (existing.has(column)) continue
+      try {
+        db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} INTEGER NOT NULL DEFAULT 0`)
+      } catch (error) {
+        if (!(error instanceof Error) || !/duplicate column name/i.test(error.message)) throw error
+      }
+    }
+  }
 }
 
 /** 全部 settled 层表名（rollup / 裁剪 / 查询路由遍历用）。 */

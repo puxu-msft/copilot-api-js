@@ -66,7 +66,7 @@ import type {
   RetryAction,
   RetryContext,
   RetryStrategy,
-} from "../pipeline"
+} from "../retry-types"
 
 /**
  * Capture EACH `tools.N.<variant>.<field>: Extra inputs are not permitted`. The
