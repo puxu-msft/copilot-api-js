@@ -13,6 +13,8 @@
   - Task 0.2b `output_text.annotation.added` 类型（`edc79a8d`）
   - Task 0.3 块型 fixture 模块 `tests/responses/fixtures/buffered-merge-blocks.ts`（typecheck 过；含漂移注记）
   - + plan 进度标注提交
+- **Phase 1 完成**（Task 1.1-1.4，`f3af7e1c`..`fc9ba0b4` 之后）：候选托管 `transformBufferedFlush` 缝接入 driver `flushBufferedFrames` 咽喉（types.ts + candidate-response-session.ts + driver.ts 三 flush 点各传 cause）、R1 字节等价显式锁、buffered⊥hedge 特征化测试。**R1 回归绿**：anthropic/responses buffered 20 pass/0 fail、tests/pipeline 721 pass（3 pre-existing）。
+- **backlog（执行期发现，低优先）**：Task 1.4 的 buffered⊥hedge 测试是 characterization、**不隔离** retryCap 短路（`makeBufferedHarness` 不建 generation binding → `!binding` 前置守卫先短路、retryCap 那行不被触达、mutation 不咬）。真正 teeth-ful 的隔离测试需 binding-present harness。不变量本身由 binding-absence + retryCap 双重防御保证。见 `methodology-plan-red-green-mutation-prediction-can-be-wrong-verify` 记忆。
 - **typecheck 绿**。
 - **基线（零代码改动时）**：`5606 pass / 8 pre-existing fail`。8 个失败**全是 master 既有缺陷**（无关区域：History V3 store/semantic ×4、reactive-retry e2e、offline-replay e2e、keepalive buffered-anchor e2e、P0-T1 generation runtime baseline）。执行期**只把新增失败当自己的**；改动后重跑确认没让这 8 个变更糟（尤其后 2 个靠近本特性区域）。
 

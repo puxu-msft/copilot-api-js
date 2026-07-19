@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL — 若你被派去执行本计划，先读 `superpowers:executing-plans`（或等价的 TDD 执行纪律：写失败测试 → 跑证失败 → 最小实现 → 跑证通过 → commit，逐 task 严格走完再进下一个）。本计划裁判轴是**长远正确 + 完整**（`long-term-wins` + `against-yagni-on-feature`），不是 ROI/最小可交付；spec 已定稿、四方跨模型对抗审查 + live-GHC 实测通过，本计划必须**逐条覆盖** spec §3-§9，不得以"暂不需要"为由静默砍范围。发现任何与本计划冲突的新事实，先停下核实，不要沉默地绕过。
 
-- 状态：**执行中**（worktree `.worktrees/responses-buffered-block-merge`，分支 `feat/responses-buffered-block-merge`，从 master `65bf6714` 切）。**Phase 0 进度：Task 0.1（@ai-sdk dep）/ 0.2（reasoning_text 类型）/ 0.2b（annotation.added 类型）已完成并逐 task 提交、typecheck 绿；剩 Task 0.3（块型 fixture）/ 0.4（探针扩 refusal/reasoning）+ Phase 1-5**。基线（零代码改动时）：`5606 pass / 8 pre-existing fail`（8 个全在无关区域：History V3 store/semantic、reactive-retry e2e、offline-replay e2e、keepalive buffered-anchor、P0-T1 generation baseline——执行期只把**新增**失败当自己的）。
+- 状态：**执行中**（worktree `.worktrees/responses-buffered-block-merge`，分支 `feat/responses-buffered-block-merge`）。**Phase 0 完成**（Task 0.1-0.4）+ **Phase 1 完成**（Task 1.1-1.4：候选托管 `transformBufferedFlush` 缝接入 driver 咽喉、R1 字节等价锁、buffered⊥hedge 特征化）。typecheck 绿；对 driver 改动最敏感的 anthropic/responses buffered 回归 20 pass/0 fail、tests/pipeline 721 pass（3 pre-existing）。**剩 Phase 2-5**。基线 pre-existing 失败 8 个（见 handover）。执行期发现：① Task 0.4 harness 需 ClientFrame→SSE 适配器（已处理）；② Task 1.4 mutation 预测不咬、改诚实 characterization + backlog（见 handover）。
 - 计划定稿：2026-07-19 二次重接地对齐 HEAD + GPT 复核 0 blocker（1 major+2 minor 文本已修 `65bf6714`）
 - 日期：2026-07-14（一次重接地 2026-07-19 上午；二次重接地 2026-07-19，对齐 HEAD `98a41c03`）
 - 归属：`docs/plan/`（本项目约定单文件，非 `docs/superpowers/plans/`）
