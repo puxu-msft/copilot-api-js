@@ -2,6 +2,8 @@ import { describe, expect, test } from "bun:test"
 
 import type { ClientFrame } from "~/lib/pipeline/types"
 
+import { readSyntheticKind } from "~/lib/pipeline/frame-origin"
+
 import { createResponsesBufferedMergeReducer } from "~/lib/codec/openai-responses/buffered-merge-reducer"
 
 import { functionCallBlock, messageMultiPartBlock, messageWithAnnotationBlock, reasoningContentBlock, reasoningSummaryBlock, refusalBlock } from "./fixtures/buffered-merge-blocks"
@@ -114,5 +116,29 @@ describe("completed_output: upstream", () => {
     const out = reducer.transformFlush([...fcFrames, terminal], { cause: "boundary", boundaryFrame: terminal })
     const last = out[out.length - 1]
     expect(last).toBe(terminal) // same reference — upstream mode must not replace the terminal frame at all
+  })
+})
+
+describe("completed_output: repair-if-incomplete", () => {
+  test("defective terminal (empty output) gets rebuilt from collected items + tagged synthetic", () => {
+    const reducer = createResponsesBufferedMergeReducer({ eventCompaction: "drop-delta", completedOutput: "repair-if-incomplete" })
+    const { frames: fcFrames, finalItem } = functionCallBlock(0, "fc_1")
+    for (const f of fcFrames) reducer.observe(f)
+    const terminal = completedFrame([]) // defective: empty despite 1 collected item
+    const out = reducer.transformFlush([...fcFrames, terminal], { cause: "boundary", boundaryFrame: terminal })
+    const last = out[out.length - 1]
+    expect(JSON.parse(last.data!).response.output).toEqual([finalItem])
+    expect(readSyntheticKind(last)).toBe("buffered-terminal-repair")
+  })
+
+  test("complete terminal is left untouched (not re-tagged, same reference)", () => {
+    const reducer = createResponsesBufferedMergeReducer({ eventCompaction: "drop-delta", completedOutput: "repair-if-incomplete" })
+    const { frames: fcFrames, finalItem } = functionCallBlock(0, "fc_1")
+    for (const f of fcFrames) reducer.observe(f)
+    const terminal = completedFrame([finalItem]) // already complete
+    const out = reducer.transformFlush([...fcFrames, terminal], { cause: "boundary", boundaryFrame: terminal })
+    const last = out[out.length - 1]
+    expect(last).toBe(terminal)
+    expect(readSyntheticKind(last)).toBeUndefined()
   })
 })

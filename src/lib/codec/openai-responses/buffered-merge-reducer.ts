@@ -1,6 +1,8 @@
 import type { BufferedFlushContext, ClientFrame } from "~/lib/pipeline/types"
 import type { ResponsesOutputItem } from "~/types/api/openai-responses"
 
+import { tagFrameSynthetic } from "~/lib/pipeline/frame-origin"
+
 const DROPPABLE_DELTA_TYPES: ReadonlySet<string> = new Set([
   "response.output_text.delta",
   "response.function_call_arguments.delta",
@@ -123,11 +125,28 @@ export function createResponsesBufferedMergeReducer(opts: ResponsesBufferedMerge
         if (dropAsDelta || dropAsItemSummarySubframe) continue
         working.push(f)
       }
-      // Terminal-snapshot reconciliation (completed_output). Task 2.5 wires only the locate + the
-      // upstream no-op; Task 2.7/2.8 replace the final return with repair-if-incomplete / rebuild.
+      // Terminal-snapshot reconciliation (completed_output). `upstream` (or no terminal in this batch)
+      // is a no-op — never dethrone the authoritative upstream snapshot. `repair-if-incomplete` rebuilds
+      // ONLY when isTerminalSnapshotComplete() finds a defect; `rebuild` always rebuilds. The rebuilt
+      // terminal frame is tagged synthetic "buffered-terminal-repair" (spec §6: only generative frames
+      // are marked — a subtractive drop is the absence of a frame, recoverable from the two-track diff).
       const terminal = locateTerminal(working)
       if (!terminal || opts.completedOutput === "upstream") return working
-      return working
+      const response = terminal.parsed.data.response as { output: Array<ResponsesOutputItem> } & Record<string, unknown>
+      let shouldRebuild = opts.completedOutput === "rebuild"
+      if (opts.completedOutput === "repair-if-incomplete") {
+        const verdict = isTerminalSnapshotComplete(response.output, collected)
+        shouldRebuild = !verdict.complete
+      }
+      if (!shouldRebuild) return working
+      const rebuiltOutput = Array.from(collected.entries())
+        .sort((a, b) => a[0] - b[0])
+        .map(([, item]) => item)
+      const newResponse = { ...response, output: rebuiltOutput }
+      const newFrame = tagFrameSynthetic({ ...working[terminal.index], data: JSON.stringify({ ...terminal.parsed.data, response: newResponse }) }, "buffered-terminal-repair")
+      const result = working.slice()
+      result[terminal.index] = newFrame
+      return result
     },
   }
 }
