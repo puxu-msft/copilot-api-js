@@ -376,20 +376,20 @@ describe("Responses v4 driver path", () => {
 
     // Byte-lock on the CC→Responses stream translation: the FULL lifecycle event
     // sequence (the translator synthesizes created→item→content_part→delta→done→
-    // completed) + the streamed text. (A literal whole-string golden is impractical
-    // for 8 events; the ordered event list + content is the translation contract.)
+    // completed) + the streamed text. The mid-block output_text.delta is DROPPED from
+    // the forwarded wire by the default drop-delta event_compaction (spec §3; buffered_retry
+    // is default ON) — the surviving output_text.done carries the finalized text, so the
+    // translation contract is verified via the done frame (the upstream track keeps the delta).
     const eventTypes = [...v4Text.matchAll(/^event: (.+)$/gm)].map((m) => m[1])
     expect(eventTypes).toEqual([
       "response.created",
       "response.output_item.added",
       "response.content_part.added",
-      "response.output_text.delta",
       "response.output_text.done",
       "response.content_part.done",
       "response.output_item.done",
       "response.completed",
     ])
-    expect(v4Text).toContain('"delta":"Hello"')
     expect(v4Text).toContain('"type":"output_text","text":"Hello"')
   })
 

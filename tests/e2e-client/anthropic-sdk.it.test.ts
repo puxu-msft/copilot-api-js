@@ -787,8 +787,13 @@ describe("client↔proxy SDK e2e (OpenAI Responses vendor, upstream shielded, P2
 
     const final = await client.responses.create({ model: RESP_MODEL, input: "hi", stream: true }).then(async (stream) => {
       let assembled = ""
+      // Default drop-delta (spec §3) filters output_text.delta off the forwarded wire once the item is
+      // closed by output_item.done; the finalized text survives in output_item.done's item.content (and
+      // the repaired completed.output). Reconstruct from output_item.done — the delta-free merged shape.
       for await (const event of stream) {
-        if (event.type === "response.output_text.delta") assembled += event.delta
+        if (event.type === "response.output_item.done" && event.item?.type === "message") {
+          for (const part of event.item.content ?? []) if (part.type === "output_text") assembled += part.text ?? ""
+        }
       }
       return assembled
     })
@@ -829,8 +834,12 @@ describe("client↔proxy SDK e2e (OpenAI Responses vendor, upstream shielded, P2
     let thrown: unknown
     try {
       const stream = await client.responses.create({ model: RESP_MODEL, input: "hi", stream: true })
+      // Default drop-delta: the committed block's output_text.delta is filtered off the forwarded wire
+      // (item closed by output_item.done at the boundary flush); reconstruct from output_item.done.
       for await (const event of stream) {
-        if (event.type === "response.output_text.delta") assembled += event.delta
+        if (event.type === "response.output_item.done" && event.item?.type === "message") {
+          for (const part of event.item.content ?? []) if (part.type === "output_text") assembled += part.text ?? ""
+        }
       }
     } catch (e) {
       thrown = e
