@@ -107,6 +107,12 @@ describe("validateConfig — type errors", () => {
     expect(warnedMessages().some((m) => m.includes("anthropic.cache_control"))).toBe(true)
   })
 
+  test("openai_responses.buffered_merge.event_compaction: invalid value is stripped + warned, config falls back to default", () => {
+    const result = validateConfig({ openai_responses: { buffered_merge: { event_compaction: "not-a-real-mode" } } })
+    expect(result.openai_responses?.buffered_merge?.event_compaction).toBeUndefined()
+    expect(warnedMessages().some((m) => m.includes("buffered_merge"))).toBe(true)
+  })
+
   test("response_tool_use_fix.malformed_input: comma-separated item set parsed (dedup + canonical order); invalid stripped", () => {
     const parse = (v: unknown) =>
       validateConfig({ anthropic: { response_tool_use_fix: { malformed_input: v } } }).anthropic?.response_tool_use_fix?.malformed_input
