@@ -26,9 +26,11 @@ import {
   closeDatabase,
   getDatabase,
 } from "~/lib/history/sqlite/connection"
+import { recordToHistoryEntry } from "~/lib/history/v3/projection"
 import {
   //
   commitPreparedOperation,
+  getV3StoredOperation,
   prepareModelOperation,
   resetV3WriterForTests,
 } from "~/lib/history/v3/store"
@@ -97,6 +99,45 @@ describe("History V3 read cutover", () => {
       clientRequest: { model: "m" },
       clientResponse: { status: 200 },
     })
+  })
+
+  test("projects canonical operation and frame timing without interpreting sequence numbers as milliseconds", () => {
+    const times = [1_010, 1_020, 1_030, 1_040, 1_050, 1_060, 1_070]
+    const recorder = createModelOperationRecorder({
+      identity: { operationId: "timed-generation", kind: "generation", createdAt: 1_000 },
+      now: () => times.shift() ?? 2_000,
+    })
+    const request = recorder.registerPayload({ model: "m", messages: [] }, { origin: { stage: "ingress", track: "client" } })
+    const frame = recorder.registerFrame({ event: "message", data: "hello" }, { origin: { stage: "upstream", track: "upstream" } })
+    recorder.recordIngress({ format: "anthropic-messages", request: { payload: request, metadata: { model: "m", messages: [] } } })
+    const attempt = recorder.beginAttempt({ upstreamRequest: { payload: request } })
+    recorder.settleAttempt(attempt, {
+      verdict: "committed",
+      upstreamResponse: { frames: [frame], frameObservations: [{ handle: frame, offsetMs: 321, type: "message", raw: "hello", observedAt: 1_341 }] },
+    })
+    recorder.recordEgress({
+      upstream: { frames: [frame], frameObservations: [{ handle: frame, offsetMs: 321, type: "message", raw: "hello", observedAt: 1_341 }] },
+      client: {
+        frames: [frame],
+        frameObservations: [{ handle: frame, offsetMs: 654, type: "message", raw: "hello", synthetic: "keepalive", observedAt: 1_674 }],
+      },
+    })
+    const operation = recorder.commitTerminal({ outcome: "completed", committedAttempt: attempt })
+    commitPreparedOperation(getDatabase(), prepareModelOperation(operation))
+
+    const stored = getV3StoredOperation("timed-generation")!
+    const entry = recordToHistoryEntry(stored.record, stored)
+    expect(entry).toMatchObject({
+      startedAt: 1_000,
+      endedAt: 1_070,
+      durationMs: 70,
+      lastUpdatedAt: 1_070,
+      timing: { operation: { source: "canonical" } },
+      clientResponse: {
+        sseEvents: [{ offsetMs: 654, offsetSource: "observed", type: "message", raw: "hello", synthetic: "keepalive" }],
+      },
+    })
+    expect(entry.attempts?.[0]).toMatchObject({ startedAt: 1_040, durationMs: 10 })
   })
 
   test("builds session summaries and chronological detail solely from V3 records", () => {

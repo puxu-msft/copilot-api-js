@@ -15,7 +15,7 @@ describe("History V3 read-consumer cutover guard", () => {
     const text = source("src/lib/history/sessions.ts")
     expect(text).not.toMatch(/sqlite\/(read|sessions-agg|stats|write)/)
     expect(text).not.toMatch(/\b(queryEntries|querySessionSummaries|computeStats|deleteSession)\b/)
-    expect(text).toContain("listV3StoredOperations")
+    expect(text).toContain("visitV3StoredOperations")
     expect(text).toContain("recordToHistoryEntry")
   })
 

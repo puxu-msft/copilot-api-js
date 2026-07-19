@@ -69,14 +69,25 @@ if ! command -v "$NODE_BIN" >/dev/null 2>&1; then
 fi
 
 # Start the mock upstream (a test double, not the project server — safe to launch here).
-MOCK_UPSTREAM_MODE="silent:$SILENCE" MOCK_UPSTREAM_PORT="$MOCK_UPSTREAM_PORT" MOCK_MODEL_ID="$MODEL" \
-  "$NODE_BIN" "$DIR/mock-upstream.ts" > "$MOCKLOG" 2>&1 &
-MOCKPID=$!
-sleep 1
+#
+# ORDERING NOTE (fixed 2026-07-14, same as the responses sibling): the copilot-api PROXY hard-fails
+# at boot if it cannot fetch `/models` from ghc_api_base_url (start.ts:468-474 → process.exit(1)),
+# which points at THIS mock's port — so the mock must ALREADY be listening before the proxy starts,
+# but this script runs AFTER the proxy. Set MOCK_UPSTREAM_EXTERNAL=1 to REUSE a long-lived
+# user-started mock (started before the proxy) instead of launching/killing our own.
+if [ "${MOCK_UPSTREAM_EXTERNAL:-0}" = "1" ]; then
+  MOCKPID=""
+  echo "[$LABEL] REUSING external mock on :$MOCK_UPSTREAM_PORT (MOCK_UPSTREAM_EXTERNAL=1 — not launching/killing our own)"
+else
+  MOCK_UPSTREAM_MODE="silent:$SILENCE" MOCK_UPSTREAM_PORT="$MOCK_UPSTREAM_PORT" MOCK_MODEL_ID="$MODEL" \
+    "$NODE_BIN" "$DIR/mock-upstream.ts" > "$MOCKLOG" 2>&1 &
+  MOCKPID=$!
+  sleep 1
+fi
 
 # Preflight: is the mock actually listening? (best-effort — a health probe over h2/TLS.)
 if ! curl -sk --http2 -m 3 "https://localhost:$MOCK_UPSTREAM_PORT/models" -o /dev/null 2>/dev/null; then
-  echo "[$LABEL] WARNING: mock at https://localhost:$MOCK_UPSTREAM_PORT not responding — check $MOCKLOG"
+  echo "[$LABEL] WARNING: mock at https://localhost:$MOCK_UPSTREAM_PORT not responding — check $MOCKLOG (or, with MOCK_UPSTREAM_EXTERNAL=1, that your long-lived mock is up)"
 fi
 
 # Preflight: is the proxy up? (best-effort — a health probe; don't hard-fail if the route 404s.)
@@ -94,7 +105,7 @@ END=$(date +%s.%N)
 WALL=$(echo "$END - $START" | bc)
 echo "[$LABEL] DONE oracle-client rc=$CLIENTRC wall=${WALL}s"
 
-kill "$MOCKPID" 2>/dev/null; wait "$MOCKPID" 2>/dev/null
+if [ -n "${MOCKPID:-}" ]; then kill "$MOCKPID" 2>/dev/null; wait "$MOCKPID" 2>/dev/null; fi
 
 # Extract the oracle verdict from oracle-client.mjs's single trailing JSON line (stdout, captured
 # in CLIENTLOG — it interleaves per-chunk stderr diagnostics with ONE final stdout JSON line, so grep

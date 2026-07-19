@@ -2,10 +2,9 @@
 
 import { defineCommand } from "citty"
 import consola from "consola"
-import pc from "picocolors"
+import path from "node:path"
 import { getProxyForUrl } from "proxy-from-env"
 
-import type { Model } from "./lib/models/client"
 import type { PidfileContent } from "./lib/restart/pidfile"
 
 import packageJson from "../package.json"
@@ -30,6 +29,13 @@ import {
 import { snapshotWithSummary } from "./lib/context/activity-summary"
 import { initRequestContextManager } from "./lib/context/manager"
 import { cacheVSCodeVersion } from "./lib/copilot-api"
+import { initDiagnosticLogger } from "./lib/diagnostics"
+import {
+  //
+  attachBootstrapDiagnosticSpool,
+  attachStructuredFileSink,
+  disableStructuredFileLogging,
+} from "./lib/diagnostics/file"
 import {
   //
   initHistory,
@@ -42,11 +48,9 @@ import { normalizeForMatching } from "./lib/models/model-name"
 import { startModelRefreshLoop } from "./lib/models/refresh-loop"
 import { initBus } from "./lib/observability"
 import { toActiveRequestWire } from "./lib/observability/active-request-wire"
-import { formatBillingLabel } from "./lib/observability/projections/format"
 import { installConsolaRepublish } from "./lib/observability/republish"
 import { attachCalibrationSink } from "./lib/observability/sinks/calibration"
 import { attachCalibrationFailureSink } from "./lib/observability/sinks/calibration-failure"
-import { attachFileSink } from "./lib/observability/sinks/file"
 import { attachTelemetrySink } from "./lib/observability/sinks/telemetry"
 import { attachWsSink } from "./lib/observability/sinks/ws"
 import { setRequestLinePublisher } from "./lib/observability/synthetic-request-line"
@@ -101,33 +105,6 @@ import {
 import { registerWsRoutes } from "./routes"
 import { normalizeExternalUiUrl } from "./routes/ui/route"
 import { createServer } from "./server"
-
-/** Format limit values as "Xk" or "?" if not available */
-function formatLimit(value?: number): string {
-  return value ? `${Math.round(value / 1000)}k` : "?"
-}
-
-/**
- * Format a model as a single line of main info.
- *
- * Example output:
- *   - claude-opus-4.6-1m (3x) (Anthropic)          ctx:1000k prp: 936k out:  64k
- */
-function formatModelInfo(model: Model, disabled = false): string {
-  const limits = model.capabilities?.limits
-
-  const contextK = formatLimit(limits?.max_context_window_tokens)
-  const promptK = formatLimit(limits?.max_prompt_tokens)
-  const outputK = formatLimit(limits?.max_output_tokens)
-  const billingPart = formatBillingLabel(model.billing?.multiplier)
-
-  const disabledTag = disabled ? " [disabled]" : ""
-  const label = `${model.id}${billingPart} (${model.vendor})${disabledTag}`
-  const padded = label.length > 45 ? `${label.slice(0, 42)}...` : label.padEnd(45)
-  const mainLineRaw = `  - ${padded} ` + `ctx:${contextK.padStart(5)} ` + `prp:${promptK.padStart(5)} ` + `out:${outputK.padStart(5)}`
-
-  return disabled ? pc.red(pc.dim(mainLineRaw)) : mainLineRaw
-}
 
 /** Parse an integer from a string, returning a default if the result is NaN. */
 function parseIntOrDefault(value: string, defaultValue: number): number {
@@ -200,6 +177,8 @@ interface RunServerOptions {
   mockRateLimiterThrottled: boolean
   githubToken?: string
   showGitHubToken: boolean
+  /** Enable interactive raw-mode TUI; false forces the plain log renderer. */
+  tui: boolean
   /** Explicit proxy URL (CLI --proxy). Takes precedence over env vars and config.yaml. */
   proxy?: string
   httpProxyFromEnv: boolean
@@ -252,40 +231,26 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   }
 
   // ===========================================================================
-  // Phase 1.5: Observability bootstrap (console + file capture of the WHOLE boot)
+  // Phase 1.5: Observability bootstrap (terminal + secure file WAL for the WHOLE boot)
   // ===========================================================================
-  // Stand up the bus + ConsoleSink + FileSink + the single consola hijack BEFORE
-  // the boot banner so every info-level-and-above startup line (version, process
-  // identity, data dir, rate limiter init, config-parse errors) is captured to the
-  // rotating copilot-api.log — not just request-time logs. Previously this block
-  // lived in Phase 3 (after the banner + rate limiter init), so those early lines
-  // reached stdout via the raw consola reporter but never the file sink; a hang or
-  // crash during early boot left no on-disk trace of how far startup got. (consola
-  // gates by level before the reporter runs, so debug-level lines — e.g. proxy init
-  // — are still file-captured only under --verbose, same as before this change.)
-  //
-  // Only the two log-stream sinks (Console, File) + the system publisher are wired
-  // here — they have no backing-store dependency (FileSink self-creates its dir and
-  // PATHS.COPILOT_LOG is a module constant). The request/history sinks (History,
-  // Telemetry, Ws) need their stores initialized first and so attach in Phase 3;
-  // the only ordering invariant that matters is HistorySink-before-WsSink (history
-  // persists before WS broadcasts), which Phase 3 still preserves. ConsoleSink
-  // subscribing first is harmless: it renders from the event payload and never
-  // queries history. FileSink uses synchronous appendFileSync, so even a line
-  // emitted immediately before process.exit() is flushed to disk.
-  //
-  // ensurePaths() moves up from Phase 2.5: FileSink needs APP_DIR to exist, and it
-  // must still precede loadRawConfigFile() (which reads CONFIG_YAML under APP_DIR).
+  // The permanent terminal owner sees every event once. A secure O_EXCL spool is
+  // the full-process file WAL: after config/identity freeze it replays boot records
+  // into the detached-ready structured sink, then remains the sole bus owner and
+  // WAL-first mirrors each live record into that sink with a stable delivery ID.
+  // It is never re-published to the bus, so terminal output is not duplicated.
+  // Clean shutdown deletes it only after the structured durability barrier; a
+  // crash or cutover failure leaves it for idempotent recovery.
   await ensurePaths()
   const bus = initBus()
   const systemPublisher = bus.scope("system")
   setShutdownPublisher(systemPublisher)
   setRateLimitPublisher(systemPublisher)
   setRequestLinePublisher(systemPublisher)
+  initDiagnosticLogger(systemPublisher)
   // Explicitly pass process.stdin so the interactive raw-mode panel gates on
   // (evaluator §3): tests that omit stdin stay on the non-interactive P0 path.
-  attachTerminalUi(bus, { stdin: process.stdin })
-  attachFileSink(bus, { path: PATHS.COPILOT_LOG })
+  let detachTerminalUi = attachTerminalUi(bus, { isTTY: false, diagnosticLevel: () => state.logging.terminalLevel })
+  attachBootstrapDiagnosticSpool(bus, PATHS.DIAGNOSTIC_LOG_DIR)
   installConsolaRepublish(systemPublisher)
 
   // ===========================================================================
@@ -333,6 +298,39 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   }
 
   const config = await applyConfigToState()
+
+  // Boot diagnostics were shown once through the plain owner. Acquire raw-mode
+  // TUI only after config is frozen; the synchronous swap has no publish gap.
+  detachTerminalUi()
+  detachTerminalUi = attachTerminalUi(
+    bus,
+    options.tui && state.tuiEnabled ?
+      { stdin: process.stdin, diagnosticLevel: () => state.logging.terminalLevel }
+    : {
+        isTTY: false,
+        diagnosticLevel: () => state.logging.terminalLevel,
+      },
+  )
+
+  if (state.logging.fileEnabled) {
+    try {
+      const directory = state.logging.fileDirectory ? path.resolve(state.logging.fileDirectory) : PATHS.DIAGNOSTIC_LOG_DIR
+      const sink = await attachStructuredFileSink(bus, {
+        directory,
+        maxSizeBytes: state.logging.fileMaxSizeMb * 1024 * 1024,
+        maxFilesPerProcess: state.logging.fileMaxFilesPerProcess,
+        retentionDays: state.logging.retentionDays,
+        level: () => state.logging.fileLevel,
+      })
+      consola.info(`Structured diagnostics: ${sink.health.activePath}`)
+    } catch (error) {
+      // The secure per-boot spool remains crash-recoverable. Never fall back to
+      // the retired shared rotating file, which is unsafe during process overlap.
+      consola.error("Structured diagnostic file initialization failed; retaining secure bootstrap spool:", error)
+    }
+  } else {
+    await disableStructuredFileLogging()
+  }
 
   // Deprecation: ANTHROPIC_API_KEY previously routed count_tokens for Claude
   // models to api.anthropic.com. That path is retired — count_tokens now
@@ -508,7 +506,12 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   // ones have been filtered out by config.disabled_models.
   const rawList = getRawModels()?.data ?? state.models?.data ?? []
   const disabledSet = new Set(state.disabledModels.map((id) => normalizeForMatching(id)))
-  consola.info(`Available models:\n${rawList.map((m) => formatModelInfo(m, disabledSet.has(normalizeForMatching(m.id)))).join("\n")}`)
+  systemPublisher.publish({
+    kind: "system.model_catalog",
+    models: rawList.map((model) => ({ model, disabled: disabledSet.has(normalizeForMatching(model.id)) })),
+    tokenBasedBilling: state.tokenBasedBilling,
+    timeUnixMs: Date.now(),
+  })
   const stopModelRefreshLoop = startModelRefreshLoop()
 
   // Load the persisted per-model token-count calibration (factor model + seed).
@@ -622,6 +625,7 @@ export async function runServer(options: RunServerOptions): Promise<void> {
     // process.exit(0) in main.ts (needed for one-shot commands).
     await waitForShutdown()
   } finally {
+    detachTerminalUi()
     stopModelRefreshLoop()
     // Bare-metal pidfile cleanup — compare-and-delete (B2): a takeover already
     // overwrote this same path with the successor's pid, so an unconditional
@@ -702,6 +706,11 @@ export const start = defineCommand({
       default: false,
       description: "Show GitHub token in logs (use --verbose for Copilot token refresh logs)",
     },
+    tui: {
+      type: "boolean",
+      default: true,
+      description: "Interactive terminal UI (disable with --no-tui)",
+    },
     proxy: {
       type: "string",
       description: "Proxy URL for all outgoing requests (http://, https://, socks5://, socks5h://). Overrides env vars and config.yaml.",
@@ -757,6 +766,7 @@ export const start = defineCommand({
       // show-github-token
       "show-github-token",
       "showGithubToken",
+      "tui",
       // proxy
       "proxy",
       // http-proxy-from-env (citty handles --no-http-proxy-from-env via built-in negation)
@@ -786,6 +796,7 @@ export const start = defineCommand({
       mockRateLimiterThrottled: args["mock-rate-limiter-throttled"],
       githubToken: args["github-token"],
       showGitHubToken: args["show-github-token"],
+      tui: args.tui,
       proxy: args.proxy,
       httpProxyFromEnv: args["http-proxy-from-env"],
       externalUiUrl: args["external-ui-url"],

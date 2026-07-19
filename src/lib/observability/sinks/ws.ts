@@ -59,6 +59,7 @@ export class WsSink {
       (event) => this.handle(event),
       // WS cares about every namespace.
       (event) => event.kind.startsWith("request.") || event.kind.startsWith("history.") || event.kind.startsWith("system."),
+      { name: "ws-sink" },
     )
   }
 
@@ -139,12 +140,14 @@ export class WsSink {
       // signals that the current WS protocol does not surface. Reserved
       // for future use; intentionally silent today.
       //
-      // system.log is for stdout/file sinks only — not broadcast to WS clients.
+      // system.diagnostic is for terminal/file sinks only — not broadcast to WS clients.
       // system.request_line is likewise a display-only (stdout/file) synthetic line.
+      // system.model_catalog carries complete boot metadata for terminal/file consumers only.
       case "request.model_resolved":
       case "request.attempt_started":
       case "request.stream_progress":
-      case "system.log":
+      case "system.diagnostic":
+      case "system.model_catalog":
       case "system.request_line": {
         return
       }
@@ -191,9 +194,8 @@ export class WsSink {
               timestamp: Date.now(),
             },
             "status",
-          ).then(() => {
-            /* discard stillBuffering — bus's pendingWsBuffer is a fixed-shape
-               placeholder; shutdown only cares that the drain wait happened. */
+          ).then(({ stillBuffering }) => {
+            if (stillBuffering > 0) throw new Error(`${stillBuffering} WebSocket client(s) still buffering the shutdown phase after deadline`)
           })
         }
         notifyShutdownPhaseChanged({
@@ -204,8 +206,12 @@ export class WsSink {
         return
       }
       case "system.shutdown_completed": {
-        notifyShutdownPhaseChanged({ phase: "finalized", previousPhase: null, needsFlush: false })
         return
+      }
+      case "system.shutdown_failed": {
+        return broadcastAndFlush({ type: "shutdown_failed", data: { errors: event.errors }, timestamp: Date.now() }, "status").then(({ stillBuffering }) => {
+          if (stillBuffering > 0) throw new Error(`${stillBuffering} WebSocket client(s) still buffering the shutdown failure after deadline`)
+        })
       }
       default: {
         // Exhaustiveness check.

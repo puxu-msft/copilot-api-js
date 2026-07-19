@@ -1,47 +1,28 @@
 import type {
   //
   CursorResult,
+  EntrySummary,
   EndpointType,
   HistoryEntry,
   SessionSummary,
 } from "./types"
 
-import { resolveResponseUsage } from "./entry-view"
 import { recordToHistoryEntry } from "./v3/projection"
-import { listV3StoredOperations } from "./v3/store"
-
-function userPreview(entry: HistoryEntry, edge: "first" | "last"): string {
-  const messages = entry.clientRequest?.messages ?? []
-  const ordered = edge === "first" ? messages : [...messages].reverse()
-  for (const message of ordered) {
-    if (message.role !== "user") continue
-    let text = ""
-    if (typeof message.content === "string") text = message.content
-    else if (Array.isArray(message.content)) text = message.content.map((block) => (block?.type === "text" ? block.text : "")).join(" ")
-    let cleaned = text
-    for (let previous = ""; previous !== cleaned; ) {
-      previous = cleaned
-      cleaned = cleaned.replaceAll(/<system-reminder>[\s\S]*?<\/system-reminder>/g, "").replaceAll(/<ide_[^>]*>[\s\S]*?<\/ide_[^>]*>/g, "")
-    }
-    cleaned = cleaned
-      .replaceAll(/The TodoWrite tool hasn't been used[\s\S]*/g, "")
-      .replaceAll(/The following skills are available[\s\S]*/g, "")
-      .trim()
-    if (cleaned) return cleaned.slice(0, 100)
-  }
-  return ""
-}
+import {
+  //
+  visitV3StoredOperations,
+  visitV3Summaries,
+} from "./v3/store"
 
 /** Per-session aggregate projected exclusively from terminal V3 generation records. */
 export function getSessionSummaries(limit = 200): Array<SessionSummary> {
-  const entries = listV3StoredOperations("generation", 1_000_000).map((stored) => recordToHistoryEntry(stored.record, stored))
-  const grouped = new Map<string, Array<HistoryEntry>>()
-  for (const entry of entries) {
-    if (!entry.sessionId) continue
-    const group = grouped.get(entry.sessionId) ?? []
-    group.push(entry)
-    grouped.set(entry.sessionId, group)
-  }
+  const grouped = new Map<string, Array<EntrySummary>>()
+  visitV3Summaries((summary) => {
+    if (!summary.sessionId) return
+    const group = grouped.get(summary.sessionId) ?? []
+    group.push(summary)
+    grouped.set(summary.sessionId, group)
+  }, "generation")
 
   return [...grouped.entries()]
     .map(([sessionId, sessionEntries]) => {
@@ -55,10 +36,10 @@ export function getSessionSummaries(limit = 200): Array<SessionSummary> {
       const agents = new Set<string>()
       for (const entry of sessionEntries) {
         if (entry.agentId) agents.add(entry.agentId)
-        const usage = resolveResponseUsage(entry)
+        const usage = entry.usage
         inputTokens += (usage?.input_tokens ?? 0) + (usage?.cache_read_input_tokens ?? 0) + (usage?.cache_creation_input_tokens ?? 0)
         outputTokens += usage?.output_tokens ?? 0
-        const model = entry.attempts?.at(-1)?.upstreamResponse?.model ?? entry.model?.resolved ?? entry.model?.requested
+        const model = entry.responseModel ?? entry.requestModel
         if (model) models.add(model)
         switch (entry.state) {
           case "completed": {
@@ -95,8 +76,8 @@ export function getSessionSummaries(limit = 200): Array<SessionSummary> {
         failed,
         aborted,
         models: [...models],
-        firstPreview: userPreview(first, "first"),
-        preview: userPreview(last, "last"),
+        firstPreview: first.previewText,
+        preview: last.previewText,
       }
     })
     .sort((a, b) => b.lastStartedAt - a.lastStartedAt || b.sessionId.localeCompare(a.sessionId))
@@ -152,10 +133,11 @@ export function getCurrentSession(_endpoint: EndpointType, sessionId?: string): 
 
 export function getSessionEntries(sessionId: string, options: { cursor?: string; limit?: number } = {}): CursorResult<HistoryEntry> {
   const { cursor, limit = 50 } = options
-  const all = listV3StoredOperations("generation", 1_000_000)
-    .filter(({ record }) => record.identity.sessionId === sessionId)
-    .map((stored) => recordToHistoryEntry(stored.record, stored))
-    .sort((a, b) => a.startedAt - b.startedAt || a.id.localeCompare(b.id))
+  const all: Array<HistoryEntry> = []
+  visitV3StoredOperations((stored) => {
+    if (stored.record.identity.sessionId === sessionId) all.push(recordToHistoryEntry(stored.record, stored))
+  }, "generation")
+  all.sort((a, b) => a.startedAt - b.startedAt || a.id.localeCompare(b.id))
 
   const total = all.length
   let startIdx = 0

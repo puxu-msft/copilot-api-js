@@ -47,6 +47,7 @@ import type {
 
 import { SessionPaletteSelect } from "@/components/requests/SessionPaletteSelect"
 import { useHistoryInfinite } from "@/hooks/useHistoryInfinite"
+import { api } from "@/lib/api"
 import {
   //
   DEFAULT_COLUMN_VISIBILITY,

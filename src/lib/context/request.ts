@@ -28,10 +28,10 @@ import type { ToolNameMapper } from "~/lib/tool-name-mapper"
 
 import { getErrorMessage } from "~/lib/error"
 import { HTTPError } from "~/lib/error"
+import { acquireRawCaptureLease } from "~/lib/history/raw/manager"
+import { publishModelOperationTerminal } from "~/lib/history/v3/terminal-bus"
 import { normalizeModelId } from "~/lib/models/resolver"
 import { getProcessIdentity } from "~/lib/process-identity"
-import { publishModelOperationTerminal } from "~/lib/history/v3/terminal-bus"
-import { acquireRawCaptureLease } from "~/lib/history/raw/manager"
 import { state as appState } from "~/lib/state"
 
 import type {
@@ -39,6 +39,7 @@ import type {
   AttemptHandle,
   FrameNodeHandle,
   ModelOperationRecord,
+  OperationFrameObservation,
   OperationKind,
   PayloadNodeHandle,
 } from "./model-operation-record"
@@ -353,10 +354,12 @@ export function createRequestContext(opts: {
     rawResponsePayload?: PayloadNodeHandle
     sourceBodyPayload?: PayloadNodeHandle
     upstreamFrames: Array<FrameNodeHandle>
+    upstreamFrameObservations: Array<OperationFrameObservation>
     settled: boolean
   }
   const generationAttempts: Array<GenerationAttemptCapture> = []
   const clientFrameHandles: Array<FrameNodeHandle> = []
+  const clientFrameObservations: Array<OperationFrameObservation> = []
 
   const currentGenerationAttempt = (): GenerationAttemptCapture | undefined => generationAttempts.at(-1)
 
@@ -568,11 +571,12 @@ export function createRequestContext(opts: {
         upstreamResponse: {
           ...(primaryResponsePayload !== undefined && { payload: primaryResponsePayload }),
           frames: attempt.upstreamFrames,
+          frameObservations: attempt.upstreamFrameObservations,
           ...(responseStatus !== undefined && { status: responseStatus }),
           ...(v2.responseHeaders !== undefined && { headers: orderedHeaders(v2.responseHeaders) }),
           ...(_httpHeaders?.outboundResponseTrailers !== undefined && { trailers: orderedHeaders(_httpHeaders.outboundResponseTrailers) }),
           rawCapture: semanticCaptureGap,
-          metadata: snapshotForRecorder({ response, error: attemptError }),
+          ...(responseMetadata(response, attemptError) === undefined ? {} : { metadata: responseMetadata(response, attemptError) }),
         },
       }),
       ...(reason !== undefined && { reason }),
@@ -602,6 +606,37 @@ export function createRequestContext(opts: {
       ...(response.toolSearchRequests !== undefined && { toolSearchRequests: response.toolSearchRequests }),
       details: response.usage,
     }
+  }
+
+  function requestMetadata(request: OriginalRequest | EffectiveRequest | WireRequest): Readonly<Record<string, unknown>> {
+    return Object.freeze({
+      model: request.model,
+      messageCount: request.messages.length,
+      ...("format" in request ? { format: request.format } : {}),
+      ...("stream" in request ? { stream: request.stream } : {}),
+    })
+  }
+
+  function responseMetadata(response: ResponseData | null, error?: ApiError | null): Readonly<Record<string, unknown>> | undefined {
+    if (response === null && (error === null || error === undefined)) return undefined
+    return Object.freeze({
+      ...(response === null ?
+        {}
+      : {
+          response: {
+            success: response.success,
+            model: response.model,
+            usage: response.usage,
+            ...(response.stop_reason === undefined ? {} : { stop_reason: response.stop_reason }),
+            ...(response.status === undefined ? {} : { status: response.status }),
+            ...(response.error === undefined ? {} : { error: response.error }),
+            ...(response.responseId === undefined ? {} : { responseId: response.responseId }),
+            ...(response.toolSearchRequests === undefined ? {} : { toolSearchRequests: response.toolSearchRequests }),
+            ...(response.copilotAnnotations === undefined ? {} : { copilotAnnotations: response.copilotAnnotations }),
+          },
+        }),
+      ...(error === null || error === undefined ? {} : { error: { type: error.type, status: error.status, message: error.message } }),
+    })
   }
 
   function recordGenerationLogicalTerminal(
@@ -647,19 +682,20 @@ export function createRequestContext(opts: {
       upstream: {
         ...(primaryUpstreamPayload !== undefined && { payload: primaryUpstreamPayload }),
         frames: finalAttempt?.upstreamFrames ?? [],
+        frameObservations: finalAttempt?.upstreamFrameObservations ?? [],
         ...(_response?.status !== undefined && { status: _response.status }),
         ...(_httpHeaders?.outboundResponse !== undefined && { headers: orderedHeaders(_httpHeaders.outboundResponse) }),
         ...(_httpHeaders?.outboundResponseTrailers !== undefined && { trailers: orderedHeaders(_httpHeaders.outboundResponseTrailers) }),
         rawCapture: semanticCaptureGap,
-        metadata: snapshotForRecorder(_response),
+        ...(responseMetadata(_response) === undefined ? {} : { metadata: responseMetadata(_response) }),
       },
       client: {
         ...(clientPayloadHandle !== undefined && { payload: clientPayloadHandle }),
         frames: clientFrameHandles,
+        frameObservations: clientFrameObservations,
         ...(_clientResponseStatus !== undefined && { status: _clientResponseStatus }),
         ...(_httpHeaders?.inboundResponse !== undefined && { headers: orderedHeaders(_httpHeaders.inboundResponse) }),
         rawCapture: semanticCaptureGap,
-        metadata: snapshotForRecorder(_forwardedResponse),
       },
     })
     // Reuses the terminal.metadata channel (previously unused) as the minimal producer surface
@@ -916,7 +952,7 @@ export function createRequestContext(opts: {
           payload: ingressPayloadHandle,
           headers: orderedHeaders(_httpHeaders.inboundRequest),
           rawCapture: semanticCaptureGap,
-          metadata: snapshotForRecorder(_originalRequest),
+          metadata: requestMetadata(_originalRequest),
         },
         format: opts.endpoint,
         method,
@@ -1026,7 +1062,7 @@ export function createRequestContext(opts: {
             startedAt: attempt.startTime,
           },
         })
-        generationAttempts.push({ handle, upstreamFrames: [], settled: false })
+        generationAttempts.push({ handle, upstreamFrames: [], upstreamFrameObservations: [], settled: false })
       }
     },
 
@@ -1065,7 +1101,7 @@ export function createRequestContext(opts: {
           modelOperationRecorder.setAttemptEffectiveRequest(generationAttempt.handle, {
             payload: generationAttempt.effectivePayload,
             rawCapture: semanticCaptureGap,
-            metadata: snapshotForRecorder(req),
+            metadata: requestMetadata(req),
           })
         }
       }
@@ -1087,7 +1123,7 @@ export function createRequestContext(opts: {
             payload: generationAttempt.wirePayload,
             headers: orderedHeaders(req.headers),
             rawCapture: semanticCaptureGap,
-            metadata: snapshotForRecorder(req),
+            metadata: requestMetadata(req),
           })
         }
       }
@@ -1134,7 +1170,7 @@ export function createRequestContext(opts: {
               // Non-JSON error bodies are retained verbatim by rawResponsePayload/responseText.
             }
           }
-          recordAttemptDiagnostic("response.settled", response.success ? "info" : "error", response)
+          recordAttemptDiagnostic("response.settled", response.success ? "info" : "error", responseMetadata(response))
           settleGenerationAttempt(
             generationAttempt,
             response.success ? "committed" : "failed",
@@ -1182,7 +1218,16 @@ export function createRequestContext(opts: {
         mediaType: "text/event-stream",
       })
       rememberFrame(frame, handle)
-      attempt?.upstreamFrames.push(handle)
+      if (attempt) {
+        attempt.upstreamFrames.push(handle)
+        attempt.upstreamFrameObservations.push({
+          handle,
+          offsetMs: record.offsetMs,
+          observedAt: modelOperationRecorder.now(),
+          type: record.type,
+          ...(record.synthetic !== undefined && { synthetic: record.synthetic }),
+        })
+      }
       captureRawFrame(frame, modelOperationRecorder.snapshot().lastSequence, "upstream-frame")
     },
 
@@ -1286,6 +1331,13 @@ export function createRequestContext(opts: {
         rememberFrame(frame, handle)
       }
       clientFrameHandles.push(handle)
+      clientFrameObservations.push({
+        handle,
+        offsetMs: record.offsetMs,
+        observedAt: modelOperationRecorder.now(),
+        type: record.type,
+        ...((record.synthetic ?? syntheticKind) !== undefined && { synthetic: record.synthetic ?? syntheticKind }),
+      })
       captureRawFrame(frame, modelOperationRecorder.snapshot().lastSequence, "client-frame")
     },
 

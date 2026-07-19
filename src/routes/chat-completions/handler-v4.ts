@@ -109,7 +109,7 @@ import { createUpstreamHttpTransport } from "~/lib/transport/http-transport"
 import {
   //
   createUpstreamFrameDiagnostics,
-  logUpstreamStreamError,
+  logUpstreamStreamOutcomeError,
   logUpstreamStreamTruncation,
 } from "~/lib/upstream-stream-diagnostics"
 import {
@@ -526,7 +526,7 @@ async function pumpStreamingV4(opts: PumpStreamingV4Options): Promise<void> {
     // ctx.fail() freeze inboundResponse — a post-fail snapshot would miss the client-received frame.
     const error = outcome.error
     consola.error("[ChatCompletions:v4] Stream error:", error)
-    logUpstreamStreamError(error, {
+    logUpstreamStreamOutcomeError(outcome, {
       model: acc.model || model,
       streamState: { streamStartMs: diag.startedAtMs, bytesIn: diag.bytesIn, currentBlockType: "" },
       acc: { inputTokens: acc.inputTokens, outputTokens: acc.outputTokens },
@@ -728,7 +728,7 @@ async function pumpReverseAnthropicLegV4(opts: PumpReverseAnthropicLegOptions): 
     // snapshots → fail freezes inboundResponse).
     const error = outcome.error
     consola.error("[ChatCompletions:v4:reverse] Stream error:", error)
-    logUpstreamStreamError(error, {
+    logUpstreamStreamOutcomeError(outcome, {
       model: anthropicAcc.model || model,
       streamState: { streamStartMs: diag.startedAtMs, bytesIn: diag.bytesIn, currentBlockType: "" },
       acc: { inputTokens: anthropicAcc.inputTokens, outputTokens: anthropicAcc.outputTokens },

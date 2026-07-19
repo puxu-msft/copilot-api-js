@@ -21,7 +21,7 @@
  * `setRenderer`-style singleton mutation.
  */
 
-import consola from "consola"
+import { writeEmergencyFallback } from "~/lib/diagnostics/emergency-output"
 
 import type {
   //
@@ -35,7 +35,20 @@ import type {
 
 export type EventFilter = (event: ObservabilityEvent) => boolean
 
-export type EventHandler = (event: ObservabilityEvent) => void | Promise<void>
+export type EventHandler = (event: ObservabilityEvent) => void | PromiseLike<void>
+
+export type SubscriberFailurePhase = "filter" | "handler" | "async-handler"
+
+export interface SubscriberFailure {
+  subscriber: string
+  phase: SubscriberFailurePhase
+  eventKind: ObservabilityEvent["kind"]
+  error: unknown
+}
+
+export interface BusOptions {
+  onSubscriberError?: (failure: SubscriberFailure) => void
+}
 
 /**
  * Outcome of `publishAndFlush`. `pendingWsBuffer` is the count of WebSocket
@@ -45,6 +58,7 @@ export type EventHandler = (event: ObservabilityEvent) => void | Promise<void>
  */
 export interface FlushResult {
   pendingWsBuffer: number
+  failures?: ReadonlyArray<SubscriberFailure>
 }
 
 /**
@@ -72,7 +86,7 @@ export interface ObservabilityBus {
    * to the remaining handlers. Async handlers' promises are NOT awaited by
    * `publish` (use `publishAndFlush` when settling matters).
    */
-  subscribe(handler: EventHandler, filter?: EventFilter): () => void
+  subscribe(handler: EventHandler, filter?: EventFilter, options?: { name?: string }): () => void
 
   /** Drain pending in-flight async handler promises. For tests and shutdown. */
   flush(): Promise<void>
@@ -83,35 +97,58 @@ export interface ObservabilityBus {
 // ============================================================================
 
 interface Registration {
+  name: string
   handler: EventHandler
   filter: EventFilter | undefined
   /** Promises returned by async handler invocations, awaited by `flush()`. */
   inFlight: Set<Promise<void>>
 }
 
-export function createBus(): ObservabilityBus {
+export function createBus(options?: BusOptions): ObservabilityBus {
   const registrations = new Set<Registration>()
+  let anonymousSubscriber = 0
 
-  function publishSync(event: ObservabilityEvent): Array<Promise<void>> {
+  function reportSubscriberError(reg: Registration, phase: SubscriberFailurePhase, event: ObservabilityEvent, error: unknown): void {
+    const failure: SubscriberFailure = { subscriber: reg.name, phase, eventKind: event.kind, error }
+    try {
+      if (options?.onSubscriberError) options.onSubscriberError(failure)
+      else
+        writeEmergencyFallback(`[observability/bus] ${reg.name} ${phase} failed for ${event.kind}: ${error instanceof Error ? error.message : String(error)}`)
+    } catch {
+      // A diagnostics failure must never affect event fan-out.
+    }
+  }
+
+  function publishSync(event: ObservabilityEvent, flushFailures?: Array<SubscriberFailure>): Array<Promise<void>> {
     const pending: Array<Promise<void>> = []
     for (const reg of registrations) {
-      // Local alias avoids unicorn/no-array-callback-reference flagging
-      // `reg.filter(event)` as if `event` were a callback identifier.
-      const predicate = reg.filter
-      if (predicate && !predicate(event)) continue
       try {
+        const predicate = reg.filter
+        if (predicate) {
+          let accepted = false
+          try {
+            accepted = predicate(event)
+          } catch (error) {
+            flushFailures?.push({ subscriber: reg.name, phase: "filter", eventKind: event.kind, error })
+            reportSubscriberError(reg, "filter", event, error)
+            continue
+          }
+          if (!accepted) continue
+        }
         const ret = reg.handler(event)
-        if (ret instanceof Promise) {
-          const tracked = ret.catch((err: unknown) => {
-            consola.warn(`[observability/bus] async handler rejected for ${event.kind}:`, err instanceof Error ? err.message : err)
+        if (ret && typeof ret.then === "function") {
+          const tracked = Promise.resolve(ret).catch((error: unknown) => {
+            flushFailures?.push({ subscriber: reg.name, phase: "async-handler", eventKind: event.kind, error })
+            reportSubscriberError(reg, "async-handler", event, error)
           })
           reg.inFlight.add(tracked)
           void tracked.finally(() => reg.inFlight.delete(tracked))
           pending.push(tracked)
         }
-      } catch (err: unknown) {
+      } catch (error: unknown) {
         // Isolate handler failures — one bad sink must not stop fan-out.
-        consola.warn(`[observability/bus] handler threw for ${event.kind}:`, err instanceof Error ? err.message : err)
+        flushFailures?.push({ subscriber: reg.name, phase: "handler", eventKind: event.kind, error })
+        reportSubscriberError(reg, "handler", event, error)
       }
     }
     return pending
@@ -129,12 +166,23 @@ export function createBus(): ObservabilityBus {
         void publishSync(event)
       },
       async publishAndFlush(event, opts) {
-        const pending = publishSync(event)
+        const failures: Array<SubscriberFailure> = []
+        const pending = publishSync(event, failures)
         const deadlineMs = opts?.deadlineMs
 
         if (pending.length > 0) {
           if (deadlineMs && deadlineMs > 0) {
-            await Promise.race([Promise.allSettled(pending), new Promise((resolve) => setTimeout(resolve, deadlineMs))])
+            const completed = await Promise.race([
+              Promise.allSettled(pending).then(() => true),
+              new Promise<false>((resolve) => setTimeout(() => resolve(false), deadlineMs)),
+            ])
+            if (!completed)
+              failures.push({
+                subscriber: "publishAndFlush",
+                phase: "async-handler",
+                eventKind: event.kind,
+                error: new Error(`Observability flush deadline exceeded after ${deadlineMs}ms`),
+              })
           } else {
             await Promise.allSettled(pending)
           }
@@ -144,15 +192,16 @@ export function createBus(): ObservabilityBus {
         // sinks that want to report a deadline-exceeded count attach a
         // sentinel on the promise; today we return 0 as a placeholder
         // and let WsSink override this when it lands in commit 2.
-        return { pendingWsBuffer: 0 }
+        return { pendingWsBuffer: 0, ...(failures.length > 0 && { failures }) }
       },
     }
   }
 
   return {
     scope: makeScope,
-    subscribe(handler, filter) {
-      const reg: Registration = { handler, filter, inFlight: new Set() }
+    subscribe(handler, filter, subscribeOptions) {
+      const name = subscribeOptions?.name ?? `anonymous-${++anonymousSubscriber}`
+      const reg: Registration = { name, handler, filter, inFlight: new Set() }
       registrations.add(reg)
       return () => {
         registrations.delete(reg)

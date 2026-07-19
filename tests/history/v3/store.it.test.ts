@@ -10,21 +10,31 @@ import {
 import { createModelOperationRecorder } from "~/lib/context/model-operation-record"
 import {
   //
+  compressBytes,
+  decompressBytes,
+} from "~/lib/sqlite/compression"
+import {
+  //
   closeDatabase,
   getDatabase,
   openInMemoryDatabase,
 } from "~/lib/history/sqlite/connection"
 import {
   //
+  clearV3Store,
   commitPreparedOperation,
   drainV3Writer,
   enqueueModelOperation,
   getV3Operation,
+  getV3StoredOperation,
   getV3StoreStatus,
+  ensureV3Schema,
   listV3Operations,
   prepareModelOperation,
   recoverV3Journal,
   resetV3WriterForTests,
+  startV3SummaryBackfill,
+  drainV3SummaryBackfill,
   V3_SCHEMA_SQL,
 } from "~/lib/history/v3/store"
 
@@ -52,14 +62,110 @@ afterEach(async () => {
 })
 
 describe("History V3 semantic store", () => {
+  test("accepts JSON-compatible shared references instead of misclassifying them as cycles", () => {
+    const shared = { type: "text", text: "same block" }
+    const recorder = createModelOperationRecorder({ identity: { operationId: "shared-dag", kind: "generation", createdAt: 100 } })
+    const payload = recorder.registerPayload({ content: [shared], mirrored: shared }, { origin: { stage: "ingress", track: "client" } })
+    recorder.recordIngress({ request: { payload } })
+    const operation = recorder.commitTerminal({ outcome: "completed" })
+
+    const prepared = prepareModelOperation(operation)
+    commitPreparedOperation(getDatabase(), prepared)
+    expect(getV3Operation("shared-dag")?.arena.payloads[0]?.value).toEqual({
+      content: [{ type: "text", text: "same block" }],
+      mirrored: { type: "text", text: "same block" },
+    })
+  })
+
+  test("migrates legacy operation rows to an explicitly marked storage-commit upper bound", () => {
+    closeDatabase()
+    openInMemoryDatabase()
+    const db = getDatabase()
+    db.exec(`
+      CREATE TABLE v3_operations (
+        operation_id TEXT PRIMARY KEY,
+        revision INTEGER NOT NULL,
+        digest TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        terminal_sequence INTEGER NOT NULL,
+        manifest_gz BLOB NOT NULL,
+        pinned INTEGER NOT NULL DEFAULT 0,
+        committed_at INTEGER NOT NULL
+      );
+    `)
+    db.prepare("INSERT INTO v3_operations VALUES(?,?,?,?,?,?,?,?,?)").run("legacy", 1, "digest", "generation", 1_000, 4, new Uint8Array([1]), 0, 9_000)
+
+    ensureV3Schema(db)
+    ensureV3Schema(db)
+
+    expect(db.prepare("SELECT ended_at,timing_source FROM v3_operations WHERE operation_id='legacy'").get()).toEqual({
+      ended_at: 9_000,
+      timing_source: "storage-commit-upper-bound",
+    })
+    db.prepare("UPDATE v3_operations SET ended_at=NULL WHERE operation_id='legacy'").run()
+    ensureV3Schema(db)
+    expect(db.prepare("SELECT ended_at FROM v3_operations WHERE operation_id='legacy'").get()).toEqual({ ended_at: null })
+  })
+
+  test("keeps newly imported records without canonical terminal time explicitly unavailable", () => {
+    const current = terminalRecord("legacy-terminal-time")
+    // Intentionally model an already-persisted JSON record from before canonical event clocks.
+    // eslint-disable-next-line unicorn/prefer-structured-clone
+    const legacy = JSON.parse(JSON.stringify(current)) as typeof current
+    if (legacy.terminal) delete (legacy.terminal as { occurredAt?: number }).occurredAt
+    const prepared = prepareModelOperation(legacy)
+    commitPreparedOperation(getDatabase(), prepared)
+
+    const stored = getV3StoredOperation("legacy-terminal-time")!
+    expect(stored.timingSource).toBe("unavailable")
+    expect(stored.endedAt).toBeUndefined()
+  })
+
   test("round-trips the canonical record and keeps unknown extensions", async () => {
     const record = terminalRecord("op-roundtrip")
     await enqueueModelOperation(record)
     await drainV3Writer()
 
+    // Persistence-neutral JSON wire oracle: stored records are JSON semantic documents.
+    // eslint-disable-next-line unicorn/prefer-structured-clone
     expect(getV3Operation(record.identity.operationId)).toEqual(JSON.parse(JSON.stringify(record)))
     expect(listV3Operations("generation").map((item) => item.identity.operationId)).toEqual(["op-roundtrip"])
     expect(getV3StoreStatus()).toMatchObject({ persistedOperations: 1, failedOperations: 0, pendingOperations: 0 })
+  })
+
+  test("rejects unsupported future manifest formats instead of guessing their layout", () => {
+    const prepared = prepareModelOperation(terminalRecord("future-format"))
+    commitPreparedOperation(getDatabase(), prepared)
+    const row = getDatabase().prepare("SELECT manifest_gz FROM v3_operations WHERE operation_id=?").get(prepared.id) as { manifest_gz: Uint8Array }
+    const manifest = JSON.parse(new TextDecoder().decode(decompressBytes(row.manifest_gz))) as { formatVersion: number }
+    manifest.formatVersion = 999
+    getDatabase()
+      .prepare("UPDATE v3_operations SET manifest_gz=? WHERE operation_id=?")
+      .run(compressBytes(new TextEncoder().encode(JSON.stringify(manifest))), prepared.id)
+
+    expect(() => getV3Operation(prepared.id)).toThrow(/unsupported manifest format version: 999/i)
+  })
+
+  test("persists lightweight summaries and backfills pre-summary V3 rows without touching canonical data", async () => {
+    const record = terminalRecord("summary-backfill")
+    commitPreparedOperation(getDatabase(), prepareModelOperation(record))
+    const before = getDatabase().prepare("SELECT digest,summary_json FROM v3_operations WHERE operation_id=?").get(record.identity.operationId) as {
+      digest: string
+      summary_json: string | null
+    }
+    expect(before.summary_json).not.toBeNull()
+    getDatabase().prepare("UPDATE v3_operations SET summary_json=NULL WHERE operation_id=?").run(record.identity.operationId)
+
+    startV3SummaryBackfill(getDatabase(), 1)
+    await drainV3SummaryBackfill()
+    const after = getDatabase().prepare("SELECT digest,summary_json FROM v3_operations WHERE operation_id=?").get(record.identity.operationId) as {
+      digest: string
+      summary_json: string | null
+    }
+    expect(after.digest).toBe(before.digest)
+    expect(JSON.parse(after.summary_json ?? "null")).toMatchObject({ id: record.identity.operationId, operationKind: "generation" })
+    expect(getV3StoreStatus().summaryBacklog).toBe(0)
   })
 
   test("deduplicates canonical semantic objects across operations", async () => {
@@ -70,6 +176,104 @@ describe("History V3 semantic store", () => {
     const objectCount = (getDatabase().prepare("SELECT COUNT(*) AS n FROM v3_objects").get() as { n: number }).n
     expect(objectCount).toBe(3) // one shared request + two distinct frames
     expect((getDatabase().prepare("SELECT COUNT(*) AS n FROM v3_operations").get() as { n: number }).n).toBe(2)
+  })
+
+  test("clears every V3 data table while retaining schema metadata", () => {
+    commitPreparedOperation(getDatabase(), prepareModelOperation(terminalRecord("op-clear")))
+    const db = getDatabase()
+    db.prepare("INSERT INTO v3_search_backlog(operation_id,reason,attempts,updated_at) VALUES(?,?,?,?)").run("search-poison", "test", 1, 100)
+    db.prepare("INSERT INTO v3_summary_backlog(operation_id,reason,updated_at) VALUES(?,?,?)").run("summary-poison", "test", 100)
+    db.prepare("INSERT INTO v3_journal(operation_id,revision,digest,phase,payload_gz,created_at) VALUES(?,?,?,?,?,?)").run(
+      "journal-only",
+      1,
+      "digest",
+      "terminal",
+      new Uint8Array([1]),
+      100,
+    )
+
+    clearV3Store(db)
+
+    for (const table of [
+      "v3_search_membership",
+      "v3_search_objects",
+      "v3_search_backlog",
+      "v3_summary_backlog",
+      "v3_timeline_chunks",
+      "v3_tracks",
+      "v3_operations",
+      "v3_sequence_nodes",
+      "v3_objects",
+      "v3_journal",
+    ]) {
+      expect((db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get() as { n: number }).n, table).toBe(0)
+    }
+    expect((db.prepare("SELECT COUNT(*) AS n FROM v3_meta").get() as { n: number }).n).toBeGreaterThan(0)
+  })
+
+  test("keeps large semantic values out of the operation manifest and externalizes ordered tracks", () => {
+    const body = {
+      model: "claude-opus-4.8",
+      messages: Array.from({ length: 64 }, (_, index) => ({
+        role: index % 2 === 0 ? "user" : "assistant",
+        content: `turn-${index}-` + "payload ".repeat(2048),
+      })),
+    }
+    const recorder = createModelOperationRecorder({ identity: { operationId: "value-free-manifest", kind: "generation", createdAt: 100 } })
+    const payload = recorder.registerPayload(body, { origin: { stage: "ingress", track: "client" } })
+    recorder.recordIngress({ request: { payload, metadata: { ...body, payload: body } } })
+    const attempt = recorder.beginAttempt({
+      effectiveRequest: { payload, metadata: { ...body, payload: body } },
+      upstreamRequest: { payload, metadata: { ...body, payload: body } },
+    })
+    recorder.settleAttempt(attempt, { verdict: "committed" })
+    recorder.recordEgress({ client: { payload, metadata: { content: body } } })
+    const prepared = prepareModelOperation(recorder.commitTerminal({ outcome: "completed", committedAttempt: attempt }))
+    commitPreparedOperation(getDatabase(), prepared)
+
+    const row = getDatabase().prepare("SELECT manifest_gz FROM v3_operations WHERE operation_id=?").get("value-free-manifest") as { manifest_gz: Uint8Array }
+    const manifest = JSON.parse(new TextDecoder().decode(decompressBytes(row.manifest_gz))) as {
+      formatVersion: number
+      record: Record<string, unknown>
+      tracksExternal?: boolean
+    }
+    const semanticBytes = Buffer.byteLength(JSON.stringify(body))
+    const manifestBytes = Buffer.byteLength(JSON.stringify(manifest))
+    expect(manifest.formatVersion).toBeGreaterThanOrEqual(2)
+    expect(manifest.tracksExternal).toBe(true)
+    expect(manifestBytes).toBeLessThan(semanticBytes / 4)
+    expect(getV3Operation("value-free-manifest")?.ingress?.request.metadata).toEqual({ ...body, payload: body })
+  })
+
+  test("shares clean sequence prefixes while restoring per-occurrence volatile overlays", () => {
+    const firstBody = {
+      model: "claude-opus-4.8",
+      messages: [
+        { role: "user", content: [{ type: "text", text: "same first", cache_control: { type: "ephemeral" } }] },
+        { role: "assistant", content: [{ type: "text", text: "same second" }] },
+      ],
+    }
+    const secondBody = {
+      model: "claude-opus-4.8",
+      messages: [
+        { role: "user", content: [{ type: "text", text: "same first" }] },
+        { role: "assistant", content: [{ type: "text", text: "same second", cache_control: { type: "ephemeral", ttl: "5m" } }] },
+        { role: "user", content: [{ type: "text", text: "fork tail" }] },
+      ],
+    }
+    const make = (id: string, body: unknown) => {
+      const recorder = createModelOperationRecorder({ identity: { operationId: id, kind: "generation", createdAt: 100 } })
+      const payload = recorder.registerPayload(body, { origin: { stage: "ingress", track: "client" } })
+      recorder.recordIngress({ request: { payload } })
+      return recorder.commitTerminal({ outcome: "completed" })
+    }
+    commitPreparedOperation(getDatabase(), prepareModelOperation(make("overlay-a", firstBody)))
+    commitPreparedOperation(getDatabase(), prepareModelOperation(make("overlay-b", secondBody)))
+
+    expect(getV3Operation("overlay-a")?.arena.payloads[0]?.value).toEqual(firstBody)
+    expect(getV3Operation("overlay-b")?.arena.payloads[0]?.value).toEqual(secondBody)
+    expect((getDatabase().prepare("SELECT COUNT(*) AS n FROM v3_sequence_nodes").get() as { n: number }).n).toBe(3)
+    expect((getDatabase().prepare("SELECT COUNT(*) AS n FROM v3_objects WHERE kind='sequence-item'").get() as { n: number }).n).toBe(3)
   })
 
   test("is idempotent for the same revision and rejects a conflicting digest", () => {

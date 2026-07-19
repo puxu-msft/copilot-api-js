@@ -66,10 +66,6 @@ const EXEMPT: Record<string, string> = {
   // tests that arm it directly (db-health.it.test.ts) tear it down themselves
   // via stopV3Maintenance() in their own afterEach.
   isV3MaintenanceRunningForTests: "read-only assertion hook — no state to reset",
-  // Action hook (wipes every V3 table on demand), not a per-test-leak reset —
-  // called explicitly by `clearHistory()` (History V2 removal Phase 3), not by
-  // the fixture's afterEach loop. No module-global singleton state of its own.
-  clearAllV3ForTests: "action hook (wipes V3 tables) — invoked via clearHistory(), no leak state",
   // telemetry injectors: per-test opt-in; their effect is undone by _resetRequestTelemetryForTests
   // (registered), which closes the injected db handle + restores OUTBOX_SOFT_CAP.
   _setTelemetryDbForTests: "db injector — reset via _resetRequestTelemetryForTests",

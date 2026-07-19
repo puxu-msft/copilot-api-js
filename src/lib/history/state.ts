@@ -28,9 +28,12 @@ import {
 import {
   //
   drainV3Writer,
+  drainV3SummaryBackfill,
   enqueueModelOperation,
+  ensureV3Schema,
   recoverV3Journal,
-  V3_SCHEMA_SQL,
+  startV3SummaryBackfill,
+  stopV3SummaryBackfill,
 } from "./v3/store"
 import {
   //
@@ -94,7 +97,7 @@ export async function initHistory(enable: boolean, _legacyMaxEntries?: number): 
   // separate V3 artifact, so opening History never mutates legacy history.db.
   const dbPath = state.historyDbPath || PATHS.HISTORY_V3_DB
   openDatabase(dbPath)
-  getDatabase().exec(V3_SCHEMA_SQL)
+  ensureV3Schema(getDatabase())
   // Umzug forward-migration pipe (History V2 removal Phase 4d): `MIGRATIONS`
   // (migrations/index.ts) is intentionally empty today — this call's value is
   // wiring the pipe end-to-end (storage construction, ledger read/write,
@@ -139,6 +142,7 @@ export function stopHistoryBackgroundWork(): void {
   unsubscribeRawCapture?.()
   unsubscribeRawCapture = undefined
   stopV3Maintenance()
+  stopV3SummaryBackfill()
   // Signal the background backfills to stop BEFORE the DB closes (each saves its
   // cursor per batch and resumes on next start — a post-close prepare would throw).
 }
@@ -166,6 +170,7 @@ export async function shutdownHistory(): Promise<void> {
   unsubscribeV3Terminal = undefined
   await drainModelOperationTerminalSubscribers()
   await drainV3Writer()
+  await drainV3SummaryBackfill()
   shutdownRawCapture()
   closeDatabase()
   enabled = false
@@ -173,5 +178,8 @@ export async function shutdownHistory(): Promise<void> {
 
 /** History V3 does not run V2 backfills or migrate a legacy history database. */
 export function startHistoryBackfills(): void {
-  // Intentionally empty: V3 starts as a separate canonical store with no legacy migration.
+  if (!enabled) return
+  // Additive V3 projection maintenance only. This never opens or reads legacy
+  // history.db/archive artifacts and never rewrites canonical V3 records.
+  startV3SummaryBackfill(getDatabase())
 }

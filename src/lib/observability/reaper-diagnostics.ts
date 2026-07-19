@@ -12,7 +12,11 @@
 //
 // 纯观测、零生产行为变化。event-loop delay histogram 常驻(RFC §8.4)。
 
-import { monitorEventLoopDelay, type IntervalHistogram } from "node:perf_hooks"
+import {
+  //
+  monitorEventLoopDelay,
+  type IntervalHistogram,
+} from "node:perf_hooks"
 
 export interface ReaperTickInput {
   /** 期望触发时刻(上次 tick + interval),Date.now() 基。 */

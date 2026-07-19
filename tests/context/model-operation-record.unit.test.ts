@@ -31,6 +31,43 @@ function makeRecorder(kind: OperationKind = "generation") {
 }
 
 describe("ModelOperationRecord canonical shape", () => {
+  it("records wall-clock instants independently from the global sequence", () => {
+    const instants = [1_000, 1_010, 1_020, 1_030, 1_040, 1_050, 1_060, 1_070, 1_080]
+    const recorder = createModelOperationRecorder({
+      identity: { operationId: "op-timing", kind: "generation", createdAt: 990 },
+      now: () => instants.shift() ?? 1_999,
+    })
+    const payload = recorder.registerPayload({ prompt: "hello" }, { origin: clientIngress })
+    const frame = recorder.registerFrame({ data: "hello" }, { origin: upstreamEgress })
+    recorder.recordIngress({ request: { payload } })
+    recorder.recordRouting({ requestedModel: "m", resolvedModel: "m" })
+    const attempt = recorder.beginAttempt({ effectiveRequest: { payload } })
+    recorder.recordAttemptDiagnostic(attempt, { kind: "probe", severity: "info" })
+    recorder.settleAttempt(attempt, {
+      verdict: "committed",
+      upstreamResponse: {
+        frames: [frame],
+        frameObservations: [{ handle: frame, offsetMs: 17, observedAt: 1_017, type: "message", synthetic: "keepalive" }],
+      },
+    })
+    recorder.recordEgress({
+      upstream: { frames: [frame], frameObservations: [{ handle: frame, offsetMs: 17, observedAt: 1_017, type: "message" }] },
+      client: { frames: [frame], frameObservations: [{ handle: frame, offsetMs: 23, observedAt: 1_023, type: "message", synthetic: "keepalive" }] },
+    })
+    const record = recorder.commitTerminal({ outcome: "completed", committedAttempt: attempt })
+
+    expect(record.arena.payloads[0]?.occurredAt).toBe(1_000)
+    expect(record.arena.frames[0]?.occurredAt).toBe(1_010)
+    expect(record.ingress?.occurredAt).toBe(1_020)
+    expect(record.routing?.occurredAt).toBe(1_030)
+    expect(record.attempts[0]).toMatchObject({ occurredAt: 1_040, settledAt: 1_060 })
+    expect(record.attempts[0]?.diagnostics[0]?.occurredAt).toBe(1_050)
+    expect(record.egress?.occurredAt).toBe(1_070)
+    expect(record.terminal?.occurredAt).toBe(1_080)
+    expect(record.egress?.upstream.frameObservations).toEqual([{ handle: frame, offsetMs: 17, observedAt: 1_017, type: "message" }])
+    expect(record.egress?.client.frameObservations).toEqual([{ handle: frame, offsetMs: 23, observedAt: 1_023, type: "message", synthetic: "keepalive" }])
+  })
+
   it.each(["generation", "count_tokens", "embeddings", "responses_ws"] satisfies ReadonlyArray<OperationKind>)("represents the %s operation kind", (kind) => {
     const record = makeRecorder(kind).snapshot()
 

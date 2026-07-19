@@ -23,7 +23,23 @@
 
 /** A normalized key press decoded from a raw-mode stdin chunk. */
 export type KeyEvent = {
-  kind: "up" | "down" | "enter" | "escape" | "space" | "tab" | "help" | "ctrl-c" | "char"
+  kind:
+    | "up"
+    | "down"
+    | "page-up"
+    | "page-down"
+    | "home"
+    | "end"
+    | "enter"
+    | "escape"
+    | "space"
+    | "tab"
+    | "help"
+    | "quit"
+    | "ctrl-c"
+    | "ctrl-d"
+    | "suspend"
+    | "char"
   /** Present only for `kind: "char"` — the literal single character. */
   char?: string
 }
@@ -78,9 +94,12 @@ export function parseKeys(chunk: Buffer): Array<KeyEvent> {
     }
 
     switch (byte) {
-      case CTRL_C:
-      case CTRL_D: {
+      case CTRL_C: {
         events.push({ kind: "ctrl-c" })
+        continue
+      }
+      case CTRL_D: {
+        events.push({ kind: "ctrl-d" })
         continue
       }
       case CARRIAGE_RETURN:
@@ -117,6 +136,11 @@ export function parseKeys(chunk: Buffer): Array<KeyEvent> {
         }
         case "?": {
           events.push({ kind: "help" })
+
+          break
+        }
+        case "q": {
+          events.push({ kind: "quit" })
 
           break
         }

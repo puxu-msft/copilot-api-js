@@ -584,6 +584,32 @@ describe("getHistorySummaries", () => {
     expect(terminal.total).toBe(1)
   })
 
+  test("V3 summaries ignore a retired V2 eager streaming head row", async () => {
+    // V3 list reads only canonical terminal operations. The legacy eager-row
+    // helper remains a test seam during cutover but must not leak into V3 list.
+    const done = insertHistoryEntry("anthropic-messages", {
+      model: "done-model",
+      messages: [{ role: "user", content: "done" }],
+    })
+    const streamingRow: HistoryEntry = {
+      id: generateId(),
+      startedAt: Date.now() + 1,
+      endpoint: "anthropic-messages",
+      state: "streaming",
+      active: true,
+      model: { requested: "live-model" },
+      clientRequest: { format: "anthropic-messages", model: "live-model", messages: [{ role: "user", content: "live" }], stream: true },
+    }
+    insertEntry(streamingRow)
+
+    const all = getHistorySummaries()
+    expect(all.entries.map((e) => e.id).sort()).toEqual([done.id, streamingRow.id].sort())
+
+    const terminal = getHistorySummaries({ terminalOnly: true })
+    expect(terminal.entries.map((e) => e.id)).toEqual([done.id])
+    expect(terminal.total).toBe(1)
+  })
+
   test("filters by success status", async () => {
     const e1 = insertHistoryEntry("anthropic-messages", {
       model: "test",

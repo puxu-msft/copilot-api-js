@@ -45,7 +45,9 @@ function makeEntry(content: unknown): HistoryEntryData {
     queueWaitMs: 0,
     durationMs: 10,
     model: { resolved: "claude-opus-4.8" },
-    attempts: [{ index: 0, durationMs: 10, upstreamResponse: { success: true, model: "claude-opus-4.8", usage: { input_tokens: 5, output_tokens: 3 }, body: content } }],
+    attempts: [
+      { index: 0, durationMs: 10, upstreamResponse: { success: true, model: "claude-opus-4.8", usage: { input_tokens: 5, output_tokens: 3 }, body: content } },
+    ],
   }
 }
 

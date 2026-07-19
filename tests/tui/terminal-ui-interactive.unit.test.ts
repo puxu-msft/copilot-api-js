@@ -39,10 +39,18 @@ import { EventEmitter } from "node:events"
 
 import type { RequestContextSnapshot } from "~/lib/observability"
 
+import { createDiagnosticEvent } from "~/lib/diagnostics"
 import { createBus } from "~/lib/observability"
 import { TerminalUi } from "~/lib/tui"
 
 const NOW = 1_700_000_000_000
+
+function diagnostic(message: string) {
+  return {
+    kind: "system.diagnostic" as const,
+    diagnostic: createDiagnosticEvent({ level: "info", event: "test.interactive", message, timeUnixMs: NOW, origin: "native" }),
+  }
+}
 
 // DECSTBM set-scroll-region sequence `\x1b[1;<N>r` — the Region's tell that it
 // established a sticky bottom panel (absent on the P0 footer path).
@@ -102,6 +110,85 @@ beforeEach(() => setSystemTime(new Date(NOW)))
 afterEach(() => setSystemTime())
 
 describe("TerminalUi — P1 interactive integration", () => {
+  test("multi-line diagnostics retain physical rows while an interactive panel is active", () => {
+    const stdin = new FakeStdin()
+    const { stdout, chunks } = makeStdout()
+    const bus = createBus()
+    const ui = new TerminalUi(bus, {
+      stdout,
+      isTTY: true,
+      columns: 80,
+      rows: 10,
+      stdin: stdin.asReadStream(),
+      registerExitHook: () => {},
+    })
+    bus.scope("request").publish({ kind: "request.created", ctx: makeCtx("aaaaaaaa", "claude-opus-4-8", 1000) })
+    stdin.emit("data", Buffer.from(" ")) // collapsed → panel
+    chunks.length = 0
+
+    bus.scope("system").publish(diagnostic("Available models:\n  - claude-opus-4.8\n  - gpt-5.6-sol"))
+
+    const out = chunks.join("")
+    expect(out).toContain("Available models:\n  - claude-opus-4.8\n  - gpt-5.6-sol\n")
+    expect(out).not.toContain("Available models:   - claude-opus-4.8")
+    expect(out).toContain("\x1b[1;7r") // panel is repainted once after all diagnostic lines.
+    ui.destroy()
+  })
+
+  test("multi-line diagnostics queue by physical line in detail and replay in order", () => {
+    const stdin = new FakeStdin()
+    const { stdout, chunks } = makeStdout()
+    const bus = createBus()
+    const ui = new TerminalUi(bus, {
+      stdout,
+      isTTY: true,
+      columns: 80,
+      rows: 10,
+      stdin: stdin.asReadStream(),
+      registerExitHook: () => {},
+    })
+    bus.scope("request").publish({ kind: "request.created", ctx: makeCtx("aaaaaaaa", "claude-opus-4-8", 1000) })
+    stdin.emit("data", Buffer.from(" "))
+    stdin.emit("data", Buffer.from("\r")) // panel → detail
+    chunks.length = 0
+
+    bus.scope("system").publish(diagnostic("Available models:\n  - claude-opus-4.8\n  - gpt-5.6-sol"))
+    expect(chunks.join("")).not.toContain("Available models")
+
+    stdin.emit("data", Buffer.from("\x1bx")) // escape detail; trailing x is inert in panel
+    expect(chunks.join("")).toContain("Available models:\n  - claude-opus-4.8\n  - gpt-5.6-sol\n")
+    ui.destroy()
+  })
+
+  test("default column source re-reads stdout.columns after a horizontal resize", () => {
+    const chunks: Array<string> = []
+    const stdoutState = {
+      write: (value: string) => (chunks.push(value), true),
+      isTTY: true,
+      columns: 30,
+      rows: 8,
+    }
+    const stdin = new FakeStdin()
+    const bus = createBus()
+    const ui = new TerminalUi(bus, {
+      stdout: stdoutState as unknown as NodeJS.WritableStream,
+      isTTY: true,
+      stdin: stdin.asReadStream(),
+      registerExitHook: () => {},
+    })
+    bus.scope("request").publish({ kind: "request.created", ctx: makeCtx("req_🇨🇳x", "模型-🇨🇳", 1000) })
+    stdin.emit("data", Buffer.from(" ")) // collapsed → panel at 30 columns
+
+    chunks.length = 0
+    stdoutState.columns = 7
+    bus.scope("system").publish(diagnostic("resize-redraw"))
+
+    const out = chunks.join("")
+    expect(out).toContain("\x1b[7mreq_…\x1b[27m")
+    expect(out).not.toContain("🇨…")
+    ui.destroy()
+  })
+
   test("raw-mode lifecycle + collapsed↔panel↔detail navigation via injected stdin", () => {
     const bus = createBus()
     const { stdout, chunks } = makeStdout()
@@ -163,15 +250,18 @@ describe("TerminalUi — P1 interactive integration", () => {
     //    are tolerated; the grow direction is what must never eat a log line
     //    (Region scroll-before-grow — see the dedicated tests below + the
     //    pty+pyte oracle `exp/tui-rawmode/pty_grid_test.py`).
-    stdin.emit("data", Buffer.from([0x1b])) // escape → panel
+    stdin.emit("data", Buffer.from("\x1bx")) // escape → panel; x is an inert trailing char
     mark = since()
-    stdin.emit("data", Buffer.from([0x1b])) // escape → collapsed (3→1 shrink, re-anchors)
+    stdin.emit("data", Buffer.from("\x1bx")) // escape → collapsed (3→1 shrink, re-anchors)
     const collapseOut = sliceFrom(mark)
     expect(collapseOut).toContain(SCROLL_RESET) // DECSTBM reset re-issued — geometry shrank
 
     // ⑥ ctrl-c → injected shutdown signal.
     stdin.emit("data", Buffer.from([0x03]))
     expect(onShutdownSignal).toHaveBeenCalledWith("SIGINT")
+    stdin.emit("data", Buffer.from("q"))
+    stdin.emit("data", Buffer.from([0x04]))
+    expect(onShutdownSignal).toHaveBeenCalledTimes(3)
 
     // ⑦ destroy → restore terminal: raw mode off, listener detached, paused.
     ui.destroy()
@@ -208,6 +298,48 @@ describe("TerminalUi — P1 interactive integration", () => {
     expect(out).toContain("[ OK ]") // P0 log line still rendered
   })
 
+  test("TERM=dumb forces the plain non-interactive renderer", () => {
+    const previous = process.env.TERM
+    process.env.TERM = "dumb"
+    try {
+      const stdin = new FakeStdin()
+      const { stdout, chunks } = makeStdout()
+      const bus = createBus()
+      const ui = new TerminalUi(bus, { stdout, isTTY: true, stdin: stdin.asReadStream(), registerExitHook: () => {} })
+      bus.scope("request").publish({ kind: "request.created", ctx: makeCtx("plain", "model", 1000) })
+      expect(stdin.setRawMode).not.toHaveBeenCalled()
+      expect(chunks.join("")).not.toContain("\x1b[1;")
+      ui.destroy()
+    } finally {
+      if (previous === undefined) delete process.env.TERM
+      else process.env.TERM = previous
+    }
+  })
+
+  test("selected last request settling before enter reconciles to a surviving row instead of a blank pseudo-detail", () => {
+    const stdin = new FakeStdin()
+    const { stdout, chunks } = makeStdout()
+    const bus = createBus()
+    const ui = new TerminalUi(bus, { stdout, isTTY: true, columns: 80, rows: 24, stdin: stdin.asReadStream(), registerExitHook: () => {} })
+    const req = bus.scope("request")
+    req.publish({ kind: "request.created", ctx: makeCtx("r1", "m1", 3000) })
+    req.publish({ kind: "request.created", ctx: makeCtx("r2", "m2", 2000) })
+    req.publish({ kind: "request.created", ctx: makeCtx("r3", "m3", 1000) })
+    stdin.emit("data", Buffer.from(" "))
+    stdin.emit("data", Buffer.from("\x1b[B\x1b[B"))
+    req.publish({
+      kind: "request.completed",
+      ctx: { ...makeCtx("r3", "m3", 1000), state: "completed" },
+      entry: { id: "r3", endpoint: "anthropic-messages", state: "completed" },
+    } as never)
+    chunks.length = 0
+    stdin.emit("data", Buffer.from("\r"))
+    const out = chunks.join("")
+    expect(out).toContain("\x1b[?1049h")
+    expect(out).toContain("req_id: r2")
+    ui.destroy()
+  })
+
   test("collapsed default is a single row (N=1), not padded to the panel height", () => {
     const stdin = new FakeStdin()
     const { stdout, chunks } = makeStdout()
@@ -222,7 +354,7 @@ describe("TerminalUi — P1 interactive integration", () => {
     })
     bus.scope("request").publish({ kind: "request.created", ctx: makeCtx("r1", "claude-opus-4-8", 1000) })
     chunks.length = 0
-    bus.scope("system").publish({ kind: "system.log", logType: "info", message: "x", time: Date.now() } as never)
+    bus.scope("system").publish(diagnostic("x"))
     // Collapsed with a single in-flight request: the DECSTBM region reserves
     // exactly ONE bottom row (rows-1 = 23) — user 2026-07-11 wants the default
     // view to occupy one row, not the padded MAX_PANEL_ROWS.
@@ -247,7 +379,7 @@ describe("TerminalUi — P1 interactive integration", () => {
       registerExitHook: () => {},
     })
     bus.scope("request").publish({ kind: "request.created", ctx: makeCtx("r1", "claude-opus-4-8", 1000) })
-    bus.scope("system").publish({ kind: "system.log", logType: "info", message: "x", time: Date.now() } as never)
+    bus.scope("system").publish(diagnostic("x"))
     chunks.length = 0
     stdin.emit("data", Buffer.from(" ")) // collapsed (N=1) → panel (N=3): region grows by 2
     const out = chunks.join("")
@@ -311,7 +443,7 @@ describe("TerminalUi — P1 interactive integration", () => {
     // `detailActive` guard, call `renderRegion` → `region.clear()`, which
     // writes `RESET_SCROLL_REGION` + `ERASE_TO_END` + `SHOW_CURSOR` straight
     // into the alt screen and wipes the detail paint.
-    bus.scope("system").publish({ kind: "system.log", logType: "info", message: "concurrent", time: Date.now() } as never)
+    bus.scope("system").publish(diagnostic("concurrent"))
     req.publish({ kind: "request.created", ctx: makeCtx("bbbbbbbb", "gpt-5", 500) })
     req.publish({
       kind: "request.completed",
@@ -350,7 +482,7 @@ describe("TerminalUi — P1 interactive integration", () => {
     stdin.emit("data", Buffer.from(" ")) // collapsed → panel
     stdin.emit("data", Buffer.from("\r")) // panel → detail (enter)
     chunks.length = 0
-    stdin.emit("data", Buffer.from("\x1b")) // detail → panel (esc)
+    stdin.emit("data", Buffer.from("\x1bx")) // detail → panel (esc)
     const out = chunks.join("")
     const iOff = out.indexOf("\x1b[?1049l")
     const iRegion = out.indexOf("\x1b[1;", iOff) // retreat off the alt screen, then rebuild DECSTBM
@@ -388,10 +520,10 @@ describe("TerminalUi — P1 interactive integration", () => {
     stdin.emit("data", Buffer.from("\r")) // panel → detail (enter)
     chunks.length = 0
 
-    bus.scope("system").publish({ kind: "system.log", logType: "info", message: "DURING-DETAIL", time: Date.now() } as never)
+    bus.scope("system").publish(diagnostic("DURING-DETAIL"))
     expect(chunks.join("")).not.toContain("DURING-DETAIL") // queued, not written to the alt screen
 
-    stdin.emit("data", Buffer.from("\x1b")) // esc → exit detail + replay
+    stdin.emit("data", Buffer.from("\x1bx")) // esc → exit detail + replay
     expect(chunks.join("")).toContain("DURING-DETAIL") // replayed into the scrollback on exit
     ui.destroy()
   })
@@ -421,10 +553,10 @@ describe("TerminalUi — P1 interactive integration", () => {
     // otherwise false-positive-match inside "LOG-90"/"LOG-99"/…).
     const label = (i: number) => `LOG-${String(i).padStart(4, "0")}`
     for (let i = 0; i < REPLAY_CAP + overflow; i++) {
-      system.publish({ kind: "system.log", logType: "info", message: label(i), time: Date.now() } as never)
+      system.publish(diagnostic(label(i)))
     }
 
-    stdin.emit("data", Buffer.from("\x1b")) // esc → exit detail + replay
+    stdin.emit("data", Buffer.from("\x1bx")) // esc → exit detail + replay
     const out = chunks.join("")
     // Oldest entries (dropped by the bound) must not survive the replay.
     expect(out).not.toContain(label(0))
@@ -510,7 +642,7 @@ describe("TerminalUi — P1 interactive integration", () => {
       registerExitHook: () => {},
     })
     bus.scope("request").publish({ kind: "request.created", ctx: makeCtx("r1", "claude-opus-4-8", 1000) })
-    bus.scope("system").publish({ kind: "system.log", logType: "info", message: "SENTINEL", time: Date.now() } as never)
+    bus.scope("system").publish(diagnostic("SENTINEL"))
     chunks.length = 0
     stdin.emit("data", Buffer.from(" ")) // collapsed (N=1) → panel (N=3): GROW
     const growOut = chunks.join("")

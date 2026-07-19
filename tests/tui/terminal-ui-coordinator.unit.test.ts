@@ -25,11 +25,19 @@ import { EventEmitter } from "node:events"
 
 import type { RequestContextSnapshot } from "~/lib/observability"
 
+import { createDiagnosticEvent } from "~/lib/diagnostics"
 import { createBus } from "~/lib/observability"
 import { TerminalUi } from "~/lib/tui"
 import { emergencyWrite } from "~/lib/tui/terminal-coordinator"
 
 const NOW = 1_700_000_000_000
+
+function diagnostic(message: string) {
+  return {
+    kind: "system.diagnostic" as const,
+    diagnostic: createDiagnosticEvent({ level: "info", event: "test.coordinator", message, timeUnixMs: NOW, origin: "native" }),
+  }
+}
 
 // eslint-disable-next-line unicorn/prefer-event-target -- Node stream API surface
 class FakeStdin extends EventEmitter {
@@ -133,7 +141,7 @@ describe("TerminalUi ↔ terminal-coordinator registration (P2.2)", () => {
 
     bus.scope("request").publish({ kind: "request.created", ctx: makeCtx("aaaaaaaa", "gpt-5", 1000) })
     // Trigger a footer render synchronously (avoids the 100ms timer).
-    bus.scope("system").publish({ kind: "system.log", logType: "info", message: "tick", time: Date.now() })
+    bus.scope("system").publish(diagnostic("tick"))
     expect(chunks.join("")).toContain("[<-->]") // footer is now visible
 
     const mark = chunks.length
@@ -199,11 +207,11 @@ describe("TerminalUi ↔ terminal-coordinator registration (P2.2)", () => {
     stdin.emit("data", Buffer.from(" ")) // panel established
 
     const unsub = bus.subscribe((e) => {
-      if (e.kind === "system.log") emergencyWrite("REENTRANT EMERGENCY")
+      if (e.kind === "system.diagnostic") emergencyWrite("REENTRANT EMERGENCY")
     })
 
     const mark = chunks.length
-    bus.scope("system").publish({ kind: "system.log", logType: "info", message: "trigger", time: Date.now() })
+    bus.scope("system").publish(diagnostic("trigger"))
     const out = chunks.slice(mark).join("")
 
     expect(out).toContain("REENTRANT EMERGENCY")
@@ -260,7 +268,7 @@ describe("TerminalUi ↔ terminal-coordinator registration (P2.2)", () => {
     // A `system.log` line's `printLog` → `renderRegion` re-renders the
     // already-established panel (unchanged geometry ⇒ the SAVE_CURSOR-prefixed
     // branch the hook above is watching for).
-    bus.scope("system").publish({ kind: "system.log", logType: "info", message: "trigger", time: Date.now() })
+    bus.scope("system").publish(diagnostic("trigger"))
     const out = chunks.slice(mark).join("")
 
     // The reentrant emergency line must actually reach stdout from inside the

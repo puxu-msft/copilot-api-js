@@ -82,10 +82,10 @@ describe("persistence writers land inside the sandbox (end-to-end, not just PATH
     expect(Object.keys(parsed.limits ?? {})).toContain("claude-guard-probe")
   })
 
-  test("the COPILOT_LOG and CODEX_CONFIG_TOML targets are sandboxed too", () => {
-    // FileSink and the codex setup command write to these defaults; assert their
-    // resolved targets are floored (COPILOT_LOG via XDG, CODEX via CODEX_HOME).
-    assertSandboxed(PATHS.COPILOT_LOG)
+  test("the DIAGNOSTIC_LOG_DIR and CODEX_CONFIG_TOML targets are sandboxed too", () => {
+    // Structured diagnostics and the codex setup command write to these defaults;
+    // assert their resolved targets are floored via XDG/CODEX_HOME.
+    assertSandboxed(PATHS.DIAGNOSTIC_LOG_DIR)
     assertSandboxed(PATHS.CODEX_CONFIG_TOML)
   })
 })

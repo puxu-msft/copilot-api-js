@@ -36,13 +36,13 @@ import type {
 import { recordProtectStreamingOutcome } from "~/lib/anthropic/protect-streaming-stats"
 import { createOpenAiResponsesCodec } from "~/lib/codec/openai-responses/codec"
 import { responsesKeepaliveFrame } from "~/lib/codec/openai-responses/keepalive"
-import { registerResponseSession } from "~/lib/openai/response-session-store"
 import {
   //
   ENDPOINT,
 } from "~/lib/models/endpoint"
 import { resolveModelTarget } from "~/lib/models/resolver"
 import { resolveStreamIdleTimeoutMs } from "~/lib/models/timeout-resolver"
+import { registerResponseSession } from "~/lib/openai/response-session-store"
 import {
   //
   accumulateResponsesStreamEvent,
@@ -68,7 +68,7 @@ import { createUpstreamResponsesTransport } from "~/lib/transport/responses-tran
 import {
   //
   createUpstreamFrameDiagnostics,
-  logUpstreamStreamError,
+  logUpstreamStreamOutcomeError,
   logUpstreamStreamTruncation,
 } from "~/lib/upstream-stream-diagnostics"
 
@@ -150,7 +150,7 @@ function sendErrorAndClose(
   forwarded?: {
     events: Array<SseEventRecord>
     streamStartMs: number
-    captureGenerationFrame?: (frame: unknown, record: SseEventRecord, syntheticKind?: string) => void
+    captureGenerationFrame?: (frame: unknown, record: SseEventRecord, syntheticKind?: SseEventRecord["synthetic"]) => void
   },
   deliveryCtx?: RequestContext,
 ): void {
@@ -516,7 +516,7 @@ async function handleResponseCreateV4(ws: WSContext, rawPayload: ResponsesPayloa
     const error = outcome.error
     const message = error instanceof Error ? error.message : String(error)
     consola.error(`[WS] Responses API error: ${message}`)
-    logUpstreamStreamError(error, {
+    logUpstreamStreamOutcomeError(outcome, {
       model: acc.model || resolvedModel,
       streamState: { streamStartMs: diag.startedAtMs, bytesIn: diag.bytesIn, currentBlockType: "" },
       acc: { inputTokens: acc.inputTokens, outputTokens: acc.outputTokens },

@@ -14,7 +14,7 @@
 
 信号契约只有两层：
 
-1. 第一次 SIGINT/SIGTERM 启动完整关闭流水线，并立即通过独立于 observability、FileSink、History 的终端紧急通道反馈“正在优雅关闭；再次 Ctrl+C 将立即退出”。
+1. 第一次 SIGINT/SIGTERM 启动完整关闭流水线，并立即通过独立于 observability、StructuredFileSink、History 的终端紧急通道反馈“正在优雅关闭；再次 Ctrl+C 将立即退出”。
 2. 第二次 SIGINT/SIGTERM 是全局逃生舱：只要生命周期尚未进入 `stopped`，无论当前在停止入口、等待请求、发送 abort、强关连接、History 落盘还是 Telemetry flush，均直接 `process.exit(128 + signal)`；SIGINT 为 130，SIGTERM 为 143。第二次信号不再用于把流水线逐步推进一格。
 
 ### Step 1: Setup（立即）
@@ -59,14 +59,15 @@
 1. `shutdownHistory()` 排空异步 terminal finalization、重试暂存写入并关闭 History 数据库。
 2. Archive **不在 shutdown 中继续搬迁、压缩或封存**；只等待首信号前已领取的 durable unit 完成，随后关闭 archive DB。每个 unit 都是 session 或迁移 batch，完成后已持久化 cursor/manifest/locator；下次启动重新查询剩余 backlog 继续。
 3. `shutdownRequestTelemetry()` 先封闭 config 订阅与周期 timer 的生产端，再排空 pending delta、关闭 telemetry 数据库。
-4. 持久化 barrier 完成后，向仍在线的观察者发布 bus `finalized`，再关闭观察者连接。
-5. 所有进程资源成功关闭后，内部状态才进入 `stopped`，`waitForShutdown()` 的 completion latch 才 resolve；History 或 Telemetry barrier 失败则进入 `failed` 并以非零状态退出，不谎报完成。
+4. `shutdownStructuredFileSink()` 先 seal/fsync 全会话 bootstrap WAL producer，再经独立 `DurableFileWriter` 排空镜像到长期 NDJSON 的普通诊断记录并 fsync，写唯一 sealing marker、再次排空并 fsync，最后 end/close；只有 sink barrier 成功后才删除并 directory-fsync WAL。任一 flush 无进展、drop、I/O 或 fsync 失败均显式失败，不能卡成永不返回的成功路径。
+5. 三个 durability barrier 全部完成后，向仍在线的观察者发布 bus `finalized`，再关闭观察者连接。
+6. 所有进程资源成功关闭后，内部状态才进入 `stopped`，`waitForShutdown()` 的 completion latch 才 resolve；History、Telemetry 或 Diagnostic barrier 失败则进入 `failed` 并以非零状态退出，不谎报完成。
 
 因此 `finalizing` 不等于完成；该阶段的第二次 Ctrl+C 仍立即强退。`waitForShutdown()` 是真正的 latch：多个并发 waiter 都会被唤醒，关闭完成后才注册的 waiter 也会立即 resolve。
 
 ### 用户可见反馈不依赖持久化
 
-第一次和第二次信号的关键反馈经 `terminal-coordinator.emergencyWrite()` 直接写当前终端 owner；无 TUI owner 时直接写 stderr。它不经过 consola republish、observability bus、FileSink、History 或 Telemetry，避免“History 正在落盘，所以 Ctrl+C 看起来没有响应”的依赖环。普通阶段进度日志仍走标准 observability 日志管线。
+第一次和第二次信号的关键反馈经 `terminal-coordinator.emergencyWrite()` 直接写当前终端 owner；无 TUI owner 时由 `EmergencyOutput` best-effort 写 stderr。它不经过 consola adapter、observability bus、StructuredFileSink、History 或 Telemetry，避免“History 正在落盘，所以 Ctrl+C 看起来没有响应”的依赖环。普通阶段进度日志走 canonical `system.diagnostic` 管线。finalize 聚合 History/Telemetry/diagnostic 三个 barrier：writer drop/error 是 sticky failure，发布 `system.shutdown_failed` 且不 resolve 成功 latch；只有全部 durability barrier 成功才发布唯一 finalized wire 终态并进入 stopped。
 
 纯 JavaScript 信号回调只能在事件循环获得调度时运行。主树 History finalize 已把 zstd 放到 libuv，并分片搜索索引，但大型 `JSON.stringify` 与短同步 SQLite transaction 仍可能造成有界延迟；第二信号一旦进入 JS handler，绝不再等待这些 barrier。若未来实测同步块重新增长，必须继续把 CPU prepare 移出主线程，而不是削弱两信号契约。
 

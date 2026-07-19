@@ -1,11 +1,32 @@
-import { describe, expect, test } from "bun:test"
 import { Terminal } from "@xterm/headless"
+import {
+  //
+  describe,
+  expect,
+  test,
+} from "bun:test"
+import fs from "node:fs"
+import path from "node:path"
 
-import { collectGrid, missingNumbers, writeXterm } from "./harness"
+import {
+  //
+  collectGrid,
+  collectGridRows,
+  missingNumbers,
+  PROJECT_ROOT,
+  writeXterm,
+} from "./harness"
 
 describe("pty harness 管线自证", () => {
   test("Bun.Terminal 存在（缺依赖硬 fail 前提）", () => {
     expect(typeof Bun.Terminal).toBe("function")
+  })
+
+  test("driver root follows the current checkout instead of a developer-specific cwd", () => {
+    expect(fs.existsSync(path.join(PROJECT_ROOT, "package.json"))).toBe(true)
+    expect(PROJECT_ROOT).toBe(path.resolve(import.meta.dir, "../../.."))
+    const harnessSource = fs.readFileSync(new URL("./harness.ts", import.meta.url), "utf8")
+    expect(harnessSource).not.toContain("/home/xp/src/copilot-api-js")
   })
 
   test("scrollback oracle 红绿：满编号绿、缺号精确报出", async () => {
@@ -22,5 +43,20 @@ describe("pty harness 管线自证", () => {
     }
     expect(missingNumbers(await mk(new Set()), "PROBE-LOG", 40)).toEqual([])
     expect(missingNumbers(await mk(new Set([7, 19, 33])), "PROBE-LOG", 40)).toEqual([7, 19, 33])
+  })
+
+  test("horizontal oracle 红绿：适配行不标 wrap，超一列精确标记下一行为 wrapped", async () => {
+    const term = new Terminal({ cols: 7, rows: 3, allowProposedApi: true })
+    await writeXterm(term, "123456")
+    expect(
+      collectGridRows(term)
+        .filter((row) => row.text)
+        .some((row) => row.isWrapped),
+    ).toBe(false)
+    await writeXterm(term, "78")
+    const rows = collectGridRows(term).filter((row) => row.text)
+    expect(rows[0]?.occupiedColumns).toBe(7)
+    expect(rows[1]?.isWrapped).toBe(true)
+    term.dispose()
   })
 })

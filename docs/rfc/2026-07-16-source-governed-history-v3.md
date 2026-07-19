@@ -1,6 +1,6 @@
 # Source-governed History V3
 
-Status: **LANDED 2026-07-16**
+Status: **LANDED 2026-07-16; FORMAT-V2 CORRECTION 2026-07-18**
 
 ## Decisions
 
@@ -16,21 +16,24 @@ Status: **LANDED 2026-07-16**
 ## Storage
 
 - `v3_objects`: versioned semantic CAS with full-byte collision verification.
-- `v3_operations`: compressed value-free manifest and terminal identity.
-- `v3_tracks`: compact ordered operation-local references.
+- `v3_operations`: compressed value-free manifest, terminal identity, and lightweight product summary.
+- `v3_sequence_nodes`: persistent prefix DAG for object-array sequences; occurrence overlays restore volatile cache hints.
+- `v3_tracks`: format-v2 compressed full tracks (`track_gz`) plus legacy compact-reference fallback.
 - `v3_timeline_chunks`: bounded lifecycle chunks.
 - `v3_journal`: self-contained uncommitted terminal records for crash recovery; deleted after authoritative commit.
-- `v3_search_objects` + membership: compressed unique payload search projection, rebuildable and non-authoritative.
+- `v3_search_objects` + membership: rebuildable unique payload projection; format-v2 reuses semantic CAS instead of duplicating document bytes.
 - `v3_search_backlog`: derived projection failure ledger.
+- `v3_summary_backlog`: poison ledger for V3-only summary backfill.
 
 ## Lifecycle invariants
 
 1. Delivery finalization and logical outcome form a two-boundary join; the terminal sequence is after the final client frame.
 2. Every attempt settles independently as committed, discarded, or failed; retry diagnostics are never reset out of History.
-3. CPU preparation and compression run outside SQLite transactions; transactions remain synchronous and short.
+3. CPU preparation and compression run outside SQLite transactions; transactions remain synchronous and short. This does **not** imply worker-thread isolation: preparation currently remains synchronous on the main JS thread.
 4. Terminal subscriber and writer queues drain before database close.
 5. Raw capture policy and codec bind to the acquired generation, never live config.
 6. Search/raw/WS detail may degrade before semantic authority; any gap is explicit.
+7. Format-v1 operations remain readable and are never rewritten online; format-v2 only governs new writes and uses a distinct hash domain.
 
 ## Verification
 

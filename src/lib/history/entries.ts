@@ -20,7 +20,7 @@ import { historyState } from "./state"
 import { getStats } from "./stats"
 import {
   //
-  clearAllV3ForTests,
+  clearV3Store,
   setV3OperationPinned,
 } from "./v3/store"
 import { clearRecentModelOperationTerminalsForTests } from "./v3/terminal-bus"
@@ -113,20 +113,19 @@ export function updateEntry(
  * primitive** (spec §3.6): the HTTP delete surface is removed — this stays
  * only as the isolation-reset used by resetTestRuntime + integration tests.
  * Logs LOUDLY (a silent full wipe is indistinguishable from a persistence
- * bug). `clearAllV3ForTests` replaces the deleted V2 `clearAllEntries`
+ * bug). `clearV3Store` replaces the deleted V2 `clearAllEntries`
  * (History V2 removal Phase 3) as the persisted-store wipe primitive.
  */
 export function clearHistory(): void {
   const inFlightCount = listInFlight().length
   clearInFlight()
   clearRecentModelOperationTerminalsForTests()
-  if (historyState.enabled) {
-    try {
-      clearAllV3ForTests()
-      consola.warn(`[history] CLEARED test store (${inFlightCount} in-flight entries); this primitive is test-only`)
-    } catch (err: unknown) {
-      consola.error("[history] failed to clear test sqlite entries", err)
-    }
+  if (!historyState.enabled) return
+  try {
+    clearV3Store()
+    consola.warn(`[history] CLEARED test store (${inFlightCount} in-flight entries); this primitive is test-only`)
+  } catch (err: unknown) {
+    consola.error("[history] failed to clear test sqlite entries", err)
   }
   publishHistoryCleared()
   publishStatsChanged()

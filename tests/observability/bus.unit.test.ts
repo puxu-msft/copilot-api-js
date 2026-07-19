@@ -41,6 +41,40 @@ function makeCtx(): RequestContextSnapshot {
 }
 
 describe("createBus", () => {
+  test("a throwing filter is isolated and later subscribers still receive the event", () => {
+    const failures: Array<string> = []
+    const bus = createBus({ onSubscriberError: ({ subscriber, phase }) => failures.push(`${subscriber}:${phase}`) })
+    const received: Array<string> = []
+    bus.subscribe(
+      () => {},
+      () => {
+        throw new Error("filter boom")
+      },
+      { name: "bad-filter" },
+    )
+    bus.subscribe((event) => void received.push(event.kind), undefined, { name: "healthy" })
+
+    expect(() => bus.scope("request").publish({ kind: "request.created", ctx: makeCtx() })).not.toThrow()
+    expect(received).toEqual(["request.created"])
+    expect(failures).toEqual(["bad-filter:filter"])
+  })
+
+  test("a rejecting thenable is tracked and reported without blocking later subscribers", async () => {
+    const failures: Array<string> = []
+    const bus = createBus({ onSubscriberError: ({ subscriber, phase }) => failures.push(`${subscriber}:${phase}`) })
+    const received: Array<string> = []
+    const rejectingThenable = Promise.resolve().then(() => {
+      throw new Error("thenable boom")
+    })
+    bus.subscribe(() => rejectingThenable, undefined, { name: "thenable" })
+    bus.subscribe((event) => void received.push(event.kind), undefined, { name: "healthy" })
+
+    bus.scope("request").publish({ kind: "request.created", ctx: makeCtx() })
+    await bus.flush()
+    expect(received).toEqual(["request.created"])
+    expect(failures).toEqual(["thenable:async-handler"])
+  })
+
   test("subscribe → publish → handler receives event", () => {
     const bus = createBus()
     const received: Array<ObservabilityEvent> = []

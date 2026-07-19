@@ -88,12 +88,34 @@ function buildPartialFrames(model: string): Array<string> {
   ]
 }
 
+/**
+ * Block-level golden fixture (P1 Task 6 — the req_484 analog for the "post-commit degrade" side): block@0
+ * (text) completes NORMALLY — its own `content_block_stop@0` is a commit boundary, so it flushes LIVE and
+ * closes the retry window (`committedAny`) — then block@1 (tool_use) opens with a partial delta and the
+ * upstream RSTs BEFORE its own `content_block_stop`/`message_stop` ever arrive. Without `commitBoundaries`
+ * wired, this whole generation would be treated as one big pre-commit truncation and RETRIED (the old
+ * whole-response shape); WITH it wired, block@0 already reached the client — re-exchanging would double-send
+ * it — so this is un-retryable and must degrade to `partial-degrade`.
+ */
+function buildBlockCommittedThenRstFrames(model: string): Array<string> {
+  return [
+    messageStartFrame({ id: "msg_degrade", model }),
+    textBlockStartFrame(0),
+    textDeltaFrame(0, "Committed."),
+    blockStopFrame(0), // commits LIVE — closes the retry window (committedAny = true)
+    toolBlockStartFrame(1, "toolu_degrade", "Write"),
+    jsonDeltaFrame(1, '{"file_path": "/tmp/degrade.md", "content": "# partial'),
+  ]
+}
+
 const RST_ERROR = new Error("Stream closed with error code NGHTTP2_CANCEL")
 
 /** Number of leading upstream attempts that RST before the upstream finally completes. */
 let rstBeforeComplete = 0
 /** When true, EVERY attempt RSTs (retries exhausted scenario). */
 let alwaysRst = false
+/** When true, the upstream commits block@0 live then RSTs before block@1/message_stop (golden below). */
+let blockCommittedThenRst = false
 let upstreamCalls = 0
 /** Captured upstream wire bodies (parsed) per exchange — for asserting per-retry escalation. */
 const capturedBodies: Array<Record<string, unknown>> = []
@@ -108,6 +130,7 @@ const upstreamFetchMock = mock((input: string | URL | Request, init?: RequestIni
   if (url.endsWith("/v1/messages")) {
     if (typeof init?.body === "string") capturedBodies.push(JSON.parse(init.body) as Record<string, unknown>)
     upstreamCalls += 1
+    if (blockCommittedThenRst) return Promise.resolve(createSseResponseThenError(buildBlockCommittedThenRstFrames(model), RST_ERROR))
     const rst = alwaysRst || upstreamCalls <= rstBeforeComplete
     return Promise.resolve(rst ? createSseResponseThenError(buildPartialFrames(model), RST_ERROR) : createSseResponse(buildCompleteFrames(model)))
   }
@@ -142,6 +165,7 @@ describe("L2 buffered retry — Anthropic streaming handler wiring (protect_stre
     upstreamCalls = 0
     rstBeforeComplete = 0
     alwaysRst = false
+    blockCommittedThenRst = false
     capturedBodies.length = 0
     setStateForTests({
       copilotToken: "test-token",
@@ -307,6 +331,88 @@ describe("L2 buffered retry — Anthropic streaming handler wiring (protect_stre
     // Attempt 1 (first retry) carries an aggressive clear_tool_uses: trigger halved (100000→50000), keep 3→2.
     expect(capturedBodies[1]?.context_management).toEqual({
       edits: [{ type: "clear_tool_uses_20250919", trigger: { type: "input_tokens", value: 50000 }, keep: { type: "tool_uses", value: 2 } }],
+    })
+  })
+
+  // ── Golden fixtures: block-level commit boundary (P1 Task 6, spec §3.1/§5) ──
+  // Locks the two terminals the block-level commit predicate (`anthropicCommitBoundaries`) implies —
+  // req_484's original shape (a single large tool_use truncated mid-block, no `content_block_stop` yet
+  // reached) stays fully retryable; a truncation AFTER a block's own `content_block_stop` has already
+  // committed it live is un-retryable (`partial-degrade`) because the committed prefix is already on the
+  // wire. Both goldens are LOAD-BEARING for the `commitBoundaries` wire (verified by the counterfactual
+  // below — see the report for the red/green transcript).
+
+  test("req_484 shape: truncation BEFORE any content_block_stop (mid-block) → retried & recovered → ONE complete generation", async () => {
+    // buildPartialFrames never reaches a content_block_stop (the tool_use block is still open when the
+    // RST hits) — under the block-level predicate this is NOT a commit boundary, so `committedAny` never
+    // sets and the retry gate is UNCHANGED from the terminal-only path (R1-style neutrality for this shape).
+    rstBeforeComplete = 1
+    const sse = await streamRequest("l2-buf-block-pre-commit-retry")
+
+    expect(frameTypesInOrder(sse)).toContain("message_stop")
+    expect(frameTypesInOrder(sse)).not.toContain("error")
+    // The COMPLETE Write tool_use (attempt 2's fixture), not attempt 1's partial, reached the client.
+    const toolDelta = sse
+      .split("\n")
+      .filter((l) => l.startsWith("data: "))
+      .map((l) => {
+        try {
+          return JSON.parse(l.slice(6)) as { type?: string; delta?: { partial_json?: string } }
+        } catch {
+          return undefined
+        }
+      })
+      .find((o) => o?.type === "content_block_delta" && o.delta?.partial_json !== undefined)
+    expect(toolDelta?.delta?.partial_json).toBe('{"file_path": "/tmp/x.md", "content": "# hi"}')
+    expect(upstreamCalls).toBe(2) // retried once
+
+    const entry = getHistory({ endpoint: "anthropic-messages", sessionId: "l2-buf-block-pre-commit-retry", limit: 5 }).entries[0]
+    expect(entry?.state).toBe("completed")
+    // Saved after 1 retry (pre-commit truncation is retryable) — mirrors the Responses P2 golden.
+    expect(getProtectStreamingStats().anthropic).toEqual({
+      success: 1,
+      exhausted: 0,
+      retreated: 0,
+      partialDegrade: 0,
+      totalRetries: 1,
+      retriesBeforeDegrade: 0,
+    })
+  })
+
+  test("golden: a block committed live (its own content_block_stop reached), THEN the upstream RSTs before message_stop → un-retryable partial-degrade — committed block STAYS on the wire, uncommitted tail does not", async () => {
+    // block@0 (text) reaches ITS OWN content_block_stop — a commit boundary — so it flushes LIVE and
+    // closes the retry window (`committedAny`); block@1 (tool_use) then opens with a partial delta and
+    // the upstream RSTs before block@1's own content_block_stop / message_stop ever arrive. Re-exchanging
+    // would double-send the already-committed block@0 to the client — so this MUST degrade, not retry.
+    blockCommittedThenRst = true
+    const sse = await streamRequest("l2-buf-block-partial-degrade")
+
+    // The committed block@0's content IS on the wire (it was flushed live at its own boundary)…
+    expect(sse).toContain("Committed.")
+    // …the uncommitted block@1 (tool_use partial) never reached the client...
+    expect(sse).not.toContain("/tmp/degrade.md")
+    // …and a synthetic Anthropic error frame terminates the stream (NOT a silent drop, NOT a retry).
+    expect(frameTypesInOrder(sse)).toContain("error")
+    expect(frameTypesInOrder(sse)).not.toContain("message_stop")
+    // No retry: the boundary commit closed the retry window on the FIRST (and only) upstream exchange.
+    expect(upstreamCalls).toBe(1)
+
+    const entry = getHistory({ endpoint: "anthropic-messages", sessionId: "l2-buf-block-partial-degrade", limit: 5 }).entries[0]
+    expect(entry?.state).toBe("failed")
+    expect(entry?.attempts?.at(-1)?.upstreamResponse?.success).toBe(false)
+    expect(entry?._index?.derived?.attemptCount).toBe(1)
+    // History clientResponse.sseEvents holds the committed block + the failure tail (richest-data-flow).
+    const forwarded = JSON.stringify(entry?.attempts?.at(-1))
+    expect(forwarded).toContain("Committed.")
+    // Telemetry now ACTUALLY RECORDS `partial-degrade` (this is the whole point of wiring `commitBoundaries`
+    // here — before this change the outcome was structurally unreachable; see the report's counterfactual).
+    expect(getProtectStreamingStats().anthropic).toEqual({
+      success: 0,
+      exhausted: 0,
+      retreated: 0,
+      partialDegrade: 1,
+      totalRetries: 0,
+      retriesBeforeDegrade: 0,
     })
   })
 })

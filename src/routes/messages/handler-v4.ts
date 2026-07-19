@@ -105,6 +105,7 @@ import {
   isWarmupRequest,
 } from "~/lib/anthropic/warmup"
 import { createAnthropicCodec } from "~/lib/codec/anthropic/codec"
+import { anthropicCommitBoundaries } from "~/lib/codec/anthropic/commit-boundaries"
 import { applyConfigToState } from "~/lib/config/config"
 import {
   //
@@ -148,6 +149,7 @@ import { createUpstreamHttpTransport } from "~/lib/transport/http-transport"
 import {
   //
   createUpstreamFrameDiagnostics,
+  logUpstreamStreamOutcomeError,
   logUpstreamStreamTruncation,
 } from "~/lib/upstream-stream-diagnostics"
 
@@ -167,7 +169,6 @@ import { retryMetaFeature } from "./retry-meta-feature"
 import {
   //
   anthropicStreamErrorType,
-  logUpstreamStreamError,
   recordUpstreamFrame,
   type StreamPumpState,
 } from "./streaming-pump"
@@ -862,7 +863,7 @@ function makeAnchoredSseSink(
     // 首包埋点（spec 2026-07-14 §3.2）：客户端首个真实内容帧 → ctx firstReal（透传给 makeSseSink）。
     isRealContentFrame?: (frame: ClientFrame) => boolean
     onFirstRealContent?: () => void
-    onGenerationFrame?: (frame: ClientFrame, record: SseEventRecord, syntheticKind?: string) => void
+    onGenerationFrame?: (frame: ClientFrame, record: SseEventRecord, syntheticKind?: SseEventRecord["synthetic"]) => void
     onDeliveryFinalized?: () => void
   },
 ): { sink: ClientSink; anchorState: AnchorState; anchorHooks: AnchorHooks | undefined } {
@@ -1133,6 +1134,12 @@ async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): 
           // shape as an RST-truncation. This lets the buffered sink COMMIT it (the handler then fails
           // via acc.streamError, mirroring live) instead of wastefully retrying it as a truncation.
           sawUpstreamError: () => acc.streamError !== undefined,
+          // Block-level commit boundary (P1 Task 6, spec §3.1): flush at each block's `content_block_stop`
+          // (+ the terminal `message_stop` + the in-band upstream `error` frame, spec §5.3 M1) instead of
+          // once at the terminal drain. A boundary block committed live closes the retry window (driver
+          // `committedAny`) — a later truncation degrades to `partial-degrade` instead of retrying (the
+          // committed prefix is already on the wire). Mirrors the Responses handler's wiring (P2 Task 2).
+          commitBoundaries: anthropicCommitBoundaries,
           onAttemptReset,
           retryCap: resolveBufferedCaps("anthropic").maxRetries,
           bufferCapBytes: resolveBufferedCaps("anthropic").bufferCapBytes,
@@ -1162,10 +1169,12 @@ async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): 
           // block-level commit-then-truncate). A clean first-try commit (retries === 0, no RST) is the
           // silent buffered happy path — tagging/counting it would put `protect-streaming-retry` on
           // essentially every 200 and inflate the "success" hit-rate with requests L2 never engaged on.
-          // `partial-degrade` is runtime-UNREACHABLE here today (this handler does not yet pass
-          // `commitBoundaries`, so `committedAny` never sets) — but the accounting is wired verbatim so
-          // P1 flipping on the Anthropic block-level predicate records it with zero further change; the
-          // driver-injected `meta` (vendor) is forwarded as-is (no vendor re-hardcoding).
+          // `partial-degrade` IS reachable now that `commitBoundaries` is wired above (P1 Task 6): a
+          // boundary block committed live, then a later truncation, is ALWAYS an L2 engagement, so it
+          // is recorded even at retries === 0 (spec §9.2 M-1) — only the clean first-try `success`
+          // short-circuits. The driver-injected `meta` (vendor) is forwarded as-is (no vendor
+          // re-hardcoding, no re-deriving `retriesBeforeDegrade` — the stats module folds it from the
+          // `retries` formal param).
           onBufferedResolve: (outcome, retries, meta) => {
             if (outcome === "success" && retries === 0) return
             recordProtectStreamingOutcome(outcome, retries, meta)
@@ -1197,7 +1206,7 @@ async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): 
       // writeSynthetic samples the frame into `forwardedSseEvents`, recordForwarded snapshots it,
       // and only then does ctx.fail() freeze `inboundResponse` — a post-fail snapshot would miss it.
       const error = outcome.error
-      logUpstreamStreamError(error, { model: acc.model || model, streamState, acc, sseEvents })
+      logUpstreamStreamOutcomeError(outcome, { model: acc.model || model, streamState, acc, sseEvents })
       const errorMessage = error instanceof Error ? error.message : String(error)
       const errorType = anthropicStreamErrorType(error)
       // §10.5 gap (whole-branch review I-1): the live pump can stream-error BEFORE the first real
@@ -1478,7 +1487,7 @@ async function pumpTranslateLegStreamingV4(opts: PumpAnthropicStreamingDispatchO
       // freezes inboundResponse; a post-fail snapshot misses the error frame).
       const error = outcome.error
       const errUsage = codec.getStreamMeta()?.usage
-      logUpstreamStreamError(error, {
+      logUpstreamStreamOutcomeError(outcome, {
         model,
         streamState: { streamStartMs: diag.startedAtMs, bytesIn: diag.bytesIn, currentBlockType: "" },
         acc: { inputTokens: errUsage?.input_tokens ?? 0, outputTokens: errUsage?.output_tokens ?? 0 },

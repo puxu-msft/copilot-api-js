@@ -112,15 +112,13 @@ git commit -m "test(responses-ws): lock 1011 close-code timing against buffered 
 
 ---
 
-### Task 3: 默认随 responses 翻 true + 关 backlog
+### Task 3: 默认随 responses 翻 true + 关 backlog（**complete 2026-07-14**——随 P2 Task 6 同一 `state.responsesBufferedRetry` 键一并翻转，WS 无独立开关天然继承；用户明确决策越过原定 R4 keepalive 探针顺序直接翻转，探针结论降级为 merge-to-master 前置确认项）
 
 **Files:** `src/lib/state.ts`（WS 无独立键——`responses.buffered_retry` 默认已在 P2 翻 true，WS 自动继承）、`docs/todo/deferred-backlog.md`（关 :300-306）、`docs/DESIGN.md`（WS 行同步）。
 
-- [ ] **Step 1: 核实 WS 继承 responses 默认 + keepalive（R4）**
+- [x] **Step 1: 核实 WS 继承 responses 默认 + keepalive（R4）** —— 完成于 2026-07-14；WS 复用 `resolveResponsesBufferedAndHeartbeat()`（读同一 `state.responsesBufferedRetry`），已在 `src/routes/responses/ws.ts` 逐行核实（见 task 报告）；真代理 300s 探针（`exp/cc-keepalive-idle-oracle`/`exp/responses-keepalive-idle-oracle`）留待 merge-to-master 前用户跑
 
-WS 已有 `responsesKeepaliveFrame`（`ws.ts:296-307` forward-idle heartbeat）——核其在 buffered 窗口内重置客户端 idle（按需探针 `exp/`，或复用 P2 的 Responses keepalive oracle 结论，因 WS 客户端同 Codex 语义）。R4。
-
-- [ ] **Step 2: 关 backlog + doc-sync + 提交**
+- [x] **Step 2: 关 backlog + doc-sync + 提交** —— 2026-07-14 完成（backlog:325 P4 已关闭条目本次仅追加「默认值随本次翻转」注记，非重开；DESIGN.md「Codex/Responses tier-1」行④ + 「block 级缓冲重试」行已同步）
 
 ```bash
 git add docs/todo/deferred-backlog.md docs/DESIGN.md

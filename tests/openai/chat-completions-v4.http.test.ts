@@ -194,7 +194,11 @@ describe("CC v4 driver path", () => {
     throwOnce = false
     throwAlways = false
     applyFetchMock(upstreamFetchMock)
-    setStateForTests({ copilotToken: "tok" })
+    // This describe locks the OWNS-SINK (plain, non-buffered) streaming path's byte output + outcome→ctx
+    // mapping (Stage B / B4). Since `chatCompletionsBufferedRetry` defaults to true (2026-07-14 flip),
+    // pin it OFF here so these tests exercise `runResponseSink`, not `runResponseBufferedSink` — the
+    // buffered path has its own coverage in tests/chat-completions/cc-buffered.integration.test.ts.
+    setStateForTests({ copilotToken: "tok", chatCompletionsBufferedRetry: false })
   })
 
   afterEach(() => {

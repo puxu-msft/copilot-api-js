@@ -26,6 +26,8 @@ export type {
   EventKind,
   EventNamespace,
   FeatureKind,
+  ModelCatalogData,
+  ModelCatalogEntry,
   ObservabilityEvent,
   RateLimitMode,
   RequestActivitySnapshot,

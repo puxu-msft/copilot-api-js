@@ -33,6 +33,19 @@ describe("DiagnosticBar", () => {
     // Base token text (no cache) — net input ↑ and output ↓.
     expect(screen.getByText(/↑100 ↓50 tok/)).toBeDefined()
   })
+  it("marks a storage-commit upper-bound duration as approximate", () => {
+    const entry = {
+      id: "legacy-v3",
+      startedAt: 0,
+      endpoint: "anthropic-messages",
+      state: "completed",
+      durationMs: 1200,
+      timing: { operation: { source: "storage-commit-upper-bound" } },
+      clientRequest: {},
+    } as HistoryEntry
+    render(<DiagnosticBar entry={entry} />)
+    expect(screen.getByText("≈1.2s").getAttribute("title")).toBe("历史记录仅保留持久化提交时间；该时长是真实终态时长的上界")
+  })
   it("renders the disjoint cache/reasoning breakdown when present", () => {
     const entry = {
       id: "rc",

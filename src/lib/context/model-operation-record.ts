@@ -22,6 +22,19 @@ export type CaptureCapability = "available" | "unavailable" | "not-requested"
 /** Concrete transport selected for one generation attempt. */
 export type OperationTransport = "http" | "upstream-ws" | "upstream-ws-fallback"
 
+/** Known provenance labels for proxy- or hook-synthesized frames. */
+export type OperationSyntheticKind =
+  | "keepalive"
+  | "anchor"
+  | "synthetic-message-start"
+  | "hook-mock"
+  | "hook-rewrite"
+  | "hook-replay"
+  | "refusal-recovery"
+  | "error-shaping-canonical"
+  | "error-shaping-auq"
+  | "synthetic"
+
 /** Cross-vendor usage with typed canonical counters and an open details bag. */
 export interface OperationUsage {
   readonly inputTokens?: number
@@ -63,6 +76,8 @@ export type ArenaNodeReference = Readonly<{ kind: "payload"; handle: PayloadNode
 export interface ArenaNodeBase<Handle extends PayloadNodeHandle | FrameNodeHandle> {
   readonly handle: Handle
   readonly sequence: number
+  /** Wall-clock epoch when this semantic node was captured. Independent from sequence ordering. */
+  readonly occurredAt?: number
   readonly value: unknown
   readonly origin: Readonly<ArenaNodeOrigin>
   readonly mediaType?: string
@@ -96,6 +111,7 @@ export interface ModelOperationArena {
 /** Input accepted when registering an original payload or frame. */
 export interface SourceNodeInput {
   readonly origin: ArenaNodeOrigin
+  readonly occurredAt?: number
   readonly mediaType?: string
   readonly extensions?: Readonly<Record<string, unknown>>
 }
@@ -116,6 +132,7 @@ export interface DerivedFrameInput extends SourceNodeInput {
 export interface OperationTrackInput {
   readonly payload?: PayloadNodeHandle
   readonly frames?: ReadonlyArray<FrameNodeHandle>
+  readonly frameObservations?: ReadonlyArray<OperationFrameObservation>
   readonly status?: number
   readonly headers?: ReadonlyArray<OperationHeaderField>
   readonly trailers?: ReadonlyArray<OperationHeaderField>
@@ -128,11 +145,24 @@ export interface OperationTrackInput {
 export interface OperationTrack {
   readonly payload?: PayloadNodeHandle
   readonly frames: ReadonlyArray<FrameNodeHandle>
+  /** Per-track timing/provenance for frame occurrences. Kept outside CAS semantic values. */
+  readonly frameObservations?: ReadonlyArray<OperationFrameObservation>
   readonly status?: number
   readonly headers?: ReadonlyArray<OperationHeaderField>
   readonly trailers?: ReadonlyArray<OperationHeaderField>
   readonly rawCapture?: Readonly<{ capability: CaptureCapability; ref?: string; byteLength?: number; gap?: string }>
   readonly metadata?: unknown
+  readonly extensions?: OperationExtensions
+}
+
+/** One occurrence of a semantic frame on a specific track. */
+export interface OperationFrameObservation {
+  readonly handle: FrameNodeHandle
+  readonly offsetMs?: number
+  readonly observedAt?: number
+  readonly type?: string
+  readonly raw?: string
+  readonly synthetic?: OperationSyntheticKind
   readonly extensions?: OperationExtensions
 }
 
@@ -155,6 +185,7 @@ export interface ModelOperationIdentity {
 /** Client-to-proxy ingress capture. */
 export interface ModelOperationIngress {
   readonly sequence: number
+  readonly occurredAt?: number
   readonly request: OperationTrack
   readonly format?: string
   readonly method?: string
@@ -166,6 +197,7 @@ export interface ModelOperationIngress {
 /** Model and transport routing decision. */
 export interface ModelOperationRouting {
   readonly sequence: number
+  readonly occurredAt?: number
   readonly requestedModel?: string
   readonly resolvedModel?: string
   readonly clientFormat?: string
@@ -179,6 +211,7 @@ export interface ModelOperationRouting {
 /** One named transformation over arena nodes. */
 export interface ModelOperationTransform {
   readonly sequence: number
+  readonly occurredAt?: number
   readonly transformId: string
   readonly stage: string
   readonly inputs: ReadonlyArray<ArenaNodeReference>
@@ -193,6 +226,7 @@ export type AttemptVerdict = "committed" | "discarded" | "failed"
 /** Diagnostic retained on the attempt that produced it. */
 export interface AttemptDiagnostic {
   readonly sequence: number
+  readonly occurredAt?: number
   readonly kind: string
   readonly severity: "info" | "warning" | "error"
   readonly message?: string
@@ -204,6 +238,7 @@ export interface AttemptDiagnostic {
 export interface ModelOperationAttempt {
   readonly handle: AttemptHandle
   readonly sequence: number
+  readonly occurredAt?: number
   readonly strategy?: string
   readonly transport?: OperationTransport
   readonly effectiveRequest?: OperationTrack
@@ -212,6 +247,7 @@ export interface ModelOperationAttempt {
   readonly diagnostics: ReadonlyArray<AttemptDiagnostic>
   readonly verdict?: AttemptVerdict
   readonly settledSequence?: number
+  readonly settledAt?: number
   readonly reason?: string
   readonly error?: unknown
   readonly metadata?: unknown
@@ -222,6 +258,7 @@ export interface ModelOperationAttempt {
 /** Independent upstream and client egress tracks. */
 export interface ModelOperationEgress {
   readonly sequence: number
+  readonly occurredAt?: number
   readonly upstream: OperationTrack
   readonly client: OperationTrack
   readonly metadata?: unknown
@@ -234,6 +271,8 @@ export type TerminalOutcome = "completed" | "failed" | "cancelled" | "aborted" |
 /** Immutable terminal commit. */
 export interface ModelOperationTerminal {
   readonly sequence: number
+  /** Canonical operation terminal wall-clock epoch. */
+  readonly occurredAt?: number
   readonly outcome: TerminalOutcome
   readonly committedAttempt?: AttemptHandle
   readonly error?: unknown
@@ -278,11 +317,16 @@ export interface CreateModelOperationRecorderInput {
     readonly extensions?: Readonly<Record<string, unknown>>
   }
   readonly extensions?: Readonly<Record<string, unknown>>
+  /** Deterministic clock seam. Production callers omit it and use Date.now. */
+  readonly now?: () => number
+  /** Recovery seam for legacy records whose event wall clocks were never captured. */
+  readonly captureTimestamps?: boolean
 }
 
 /** Ingress recording input. */
 export interface RecordIngressInput {
   readonly request: OperationTrackInput
+  readonly occurredAt?: number
   readonly format?: string
   readonly method?: string
   readonly path?: string
@@ -292,6 +336,7 @@ export interface RecordIngressInput {
 
 /** Routing recording input. */
 export interface RecordRoutingInput {
+  readonly occurredAt?: number
   readonly requestedModel?: string
   readonly resolvedModel?: string
   readonly clientFormat?: string
@@ -308,12 +353,14 @@ export interface RecordTransformInput {
   readonly stage: string
   readonly inputs: ReadonlyArray<ArenaNodeReference>
   readonly outputs: ReadonlyArray<ArenaNodeReference>
+  readonly occurredAt?: number
   readonly metadata?: unknown
   readonly extensions?: Readonly<Record<string, unknown>>
 }
 
 /** Attempt start input. */
 export interface BeginAttemptInput {
+  readonly occurredAt?: number
   readonly strategy?: string
   readonly transport?: OperationTransport
   readonly effectiveRequest?: OperationTrackInput
@@ -326,6 +373,7 @@ export interface BeginAttemptInput {
 export interface RecordAttemptDiagnosticInput {
   readonly kind: string
   readonly severity: "info" | "warning" | "error"
+  readonly occurredAt?: number
   readonly message?: string
   readonly data?: unknown
   readonly extensions?: Readonly<Record<string, unknown>>
@@ -334,6 +382,7 @@ export interface RecordAttemptDiagnosticInput {
 /** Attempt settlement input. */
 export interface SettleAttemptInput {
   readonly verdict: AttemptVerdict
+  readonly occurredAt?: number
   readonly upstreamResponse?: OperationTrackInput
   readonly reason?: string
   readonly error?: unknown
@@ -343,6 +392,7 @@ export interface SettleAttemptInput {
 
 /** Egress recording input. */
 export interface RecordEgressInput {
+  readonly occurredAt?: number
   readonly upstream?: OperationTrackInput
   readonly client?: OperationTrackInput
   readonly metadata?: unknown
@@ -352,6 +402,7 @@ export interface RecordEgressInput {
 /** Terminal commit input. */
 export interface CommitTerminalInput {
   readonly outcome: TerminalOutcome
+  readonly occurredAt?: number
   readonly committedAttempt?: AttemptHandle
   readonly error?: unknown
   readonly usage?: OperationUsage
@@ -363,6 +414,7 @@ export interface CommitTerminalInput {
 /** Typed, append-only recorder for a ModelOperationRecord. */
 export interface ModelOperationRecorder {
   readonly sealed: boolean
+  now(): number
   setIdentityContext(input: { readonly sessionId?: string; readonly agentId?: string }): void
   registerPayload(value: unknown, input: SourceNodeInput): PayloadNodeHandle
   derivePayload(value: unknown, input: DerivedPayloadInput): PayloadNodeHandle
@@ -386,6 +438,7 @@ export interface ModelOperationRecorder {
 interface MutableAttempt {
   handle: AttemptHandle
   sequence: number
+  occurredAt?: number
   strategy?: string
   transport?: OperationTransport
   effectiveRequest?: OperationTrack
@@ -394,6 +447,7 @@ interface MutableAttempt {
   diagnostics: Array<AttemptDiagnostic>
   verdict?: AttemptVerdict
   settledSequence?: number
+  settledAt?: number
   reason?: string
   error?: unknown
   metadata?: unknown
@@ -447,6 +501,8 @@ export function createModelOperationRecorder(input: CreateModelOperationRecorder
   let egress: ModelOperationEgress | null = null
   let terminal: ModelOperationTerminal | null = null
   let committedAttempt: AttemptHandle | undefined
+  const now = input.now ?? Date.now
+  const captureTimestamps = input.captureTimestamps ?? true
 
   const payloads: Array<PayloadArenaNode> = []
   const frames: Array<FrameArenaNode> = []
@@ -486,6 +542,16 @@ export function createModelOperationRecorder(input: CreateModelOperationRecorder
     return sequence
   }
 
+  function nextEvent(occurredAt?: number): { sequence: number; occurredAt?: number } {
+    let timestamp: number | undefined
+    if (occurredAt !== undefined) timestamp = occurredAt
+    else if (captureTimestamps) timestamp = now()
+    return {
+      sequence: nextSequence(),
+      ...(timestamp === undefined ? {} : { occurredAt: timestamp }),
+    }
+  }
+
   function assertPayloadHandle(handle: PayloadNodeHandle): void {
     if (!payloadHandles.has(handle)) throw new Error(`[model-operation-record] unknown payload node handle: ${handle}`)
   }
@@ -498,9 +564,24 @@ export function createModelOperationRecorder(input: CreateModelOperationRecorder
     const source = track ?? {}
     if (source.payload !== undefined) assertPayloadHandle(source.payload)
     for (const frame of source.frames ?? []) assertFrameHandle(frame)
+    const frameObservations = source.frameObservations?.map((observation) => {
+      assertFrameHandle(observation.handle)
+      return Object.freeze({
+        ...observation,
+        ...(observation.extensions === undefined ? {} : { extensions: freezeExtensions(observation.extensions) }),
+      })
+    })
+    if (frameObservations !== undefined) {
+      const frames = source.frames ?? []
+      if (frameObservations.length !== frames.length) throw new Error("[model-operation-record] frameObservations must align one-to-one with frames")
+      for (const [index, observation] of frameObservations.entries()) {
+        if (observation.handle !== frames[index]) throw new Error(`[model-operation-record] frame observation handle mismatch at index ${index}`)
+      }
+    }
     return Object.freeze({
       ...(source.payload === undefined ? {} : { payload: source.payload }),
       frames: Object.freeze([...(source.frames ?? [])]),
+      ...(frameObservations === undefined ? {} : { frameObservations: Object.freeze(frameObservations) }),
       ...(source.status === undefined ? {} : { status: source.status }),
       ...(source.headers === undefined ? {} : { headers: freezeHeaders(source.headers) }),
       ...(source.trailers === undefined ? {} : { trailers: freezeHeaders(source.trailers) }),
@@ -526,6 +607,7 @@ export function createModelOperationRecorder(input: CreateModelOperationRecorder
     return Object.freeze({
       handle: attempt.handle,
       sequence: attempt.sequence,
+      ...(attempt.occurredAt === undefined ? {} : { occurredAt: attempt.occurredAt }),
       ...(attempt.strategy === undefined ? {} : { strategy: attempt.strategy }),
       ...(attempt.transport === undefined ? {} : { transport: attempt.transport }),
       ...(attempt.effectiveRequest === undefined ? {} : { effectiveRequest: attempt.effectiveRequest }),
@@ -534,6 +616,7 @@ export function createModelOperationRecorder(input: CreateModelOperationRecorder
       diagnostics: Object.freeze([...attempt.diagnostics]),
       ...(attempt.verdict === undefined ? {} : { verdict: attempt.verdict }),
       ...(attempt.settledSequence === undefined ? {} : { settledSequence: attempt.settledSequence }),
+      ...(attempt.settledAt === undefined ? {} : { settledAt: attempt.settledAt }),
       ...(attempt.reason === undefined ? {} : { reason: attempt.reason }),
       ...(attempt.error === undefined ? {} : { error: attempt.error }),
       ...(attempt.metadata === undefined ? {} : { metadata: attempt.metadata }),
@@ -563,6 +646,10 @@ export function createModelOperationRecorder(input: CreateModelOperationRecorder
       return sealed
     },
 
+    now(): number {
+      return now()
+    },
+
     setIdentityContext(context): void {
       assertWritable()
       if (context.sessionId !== undefined) {
@@ -584,7 +671,7 @@ export function createModelOperationRecorder(input: CreateModelOperationRecorder
       const handle = `payload:${payloads.length}` as PayloadNodeHandle
       const node: SourceArenaNode<PayloadNodeHandle> = Object.freeze({
         handle,
-        sequence: nextSequence(),
+        ...nextEvent(nodeInput.occurredAt),
         value: freezeCapturedValue(value),
         origin: freezeOrigin(nodeInput.origin),
         provenance: "source",
@@ -603,7 +690,7 @@ export function createModelOperationRecorder(input: CreateModelOperationRecorder
       const handle = `payload:${payloads.length}` as PayloadNodeHandle
       const node: DerivedArenaNode<PayloadNodeHandle> = Object.freeze({
         handle,
-        sequence: nextSequence(),
+        ...nextEvent(nodeInput.occurredAt),
         value: freezeCapturedValue(value),
         origin: freezeOrigin(nodeInput.origin),
         provenance: "derived",
@@ -622,7 +709,7 @@ export function createModelOperationRecorder(input: CreateModelOperationRecorder
       const handle = `frame:${frames.length}` as FrameNodeHandle
       const node: SourceArenaNode<FrameNodeHandle> = Object.freeze({
         handle,
-        sequence: nextSequence(),
+        ...nextEvent(nodeInput.occurredAt),
         value: freezeCapturedValue(value),
         origin: freezeOrigin(nodeInput.origin),
         provenance: "source",
@@ -641,7 +728,7 @@ export function createModelOperationRecorder(input: CreateModelOperationRecorder
       const handle = `frame:${frames.length}` as FrameNodeHandle
       const node: DerivedArenaNode<FrameNodeHandle> = Object.freeze({
         handle,
-        sequence: nextSequence(),
+        ...nextEvent(nodeInput.occurredAt),
         value: freezeCapturedValue(value),
         origin: freezeOrigin(nodeInput.origin),
         provenance: "derived",
@@ -659,7 +746,7 @@ export function createModelOperationRecorder(input: CreateModelOperationRecorder
       assertWritable()
       if (ingress) throw new Error("[model-operation-record] ingress already recorded")
       ingress = Object.freeze({
-        sequence: nextSequence(),
+        ...nextEvent(recordInput.occurredAt),
         request: freezeTrack(recordInput.request),
         ...(recordInput.format === undefined ? {} : { format: recordInput.format }),
         ...(recordInput.method === undefined ? {} : { method: recordInput.method }),
@@ -673,7 +760,7 @@ export function createModelOperationRecorder(input: CreateModelOperationRecorder
       assertWritable()
       if (routing) throw new Error("[model-operation-record] routing already recorded")
       routing = Object.freeze({
-        sequence: nextSequence(),
+        ...nextEvent(recordInput.occurredAt),
         ...(recordInput.requestedModel === undefined ? {} : { requestedModel: recordInput.requestedModel }),
         ...(recordInput.resolvedModel === undefined ? {} : { resolvedModel: recordInput.resolvedModel }),
         ...(recordInput.clientFormat === undefined ? {} : { clientFormat: recordInput.clientFormat }),
@@ -691,7 +778,7 @@ export function createModelOperationRecorder(input: CreateModelOperationRecorder
       requireNonEmpty(recordInput.stage, "transform.stage")
       transforms.push(
         Object.freeze({
-          sequence: nextSequence(),
+          ...nextEvent(recordInput.occurredAt),
           transformId: recordInput.transformId,
           stage: recordInput.stage,
           inputs: Object.freeze(recordInput.inputs.map((reference) => freezeReference(reference))),
@@ -707,7 +794,7 @@ export function createModelOperationRecorder(input: CreateModelOperationRecorder
       const handle = `attempt:${attempts.length}` as AttemptHandle
       const attempt: MutableAttempt = {
         handle,
-        sequence: nextSequence(),
+        ...nextEvent(attemptInput.occurredAt),
         diagnostics: [],
         ...(attemptInput.strategy === undefined ? {} : { strategy: attemptInput.strategy }),
         ...(attemptInput.transport === undefined ? {} : { transport: attemptInput.transport }),
@@ -751,7 +838,7 @@ export function createModelOperationRecorder(input: CreateModelOperationRecorder
       requireNonEmpty(diagnosticInput.kind, "diagnostic.kind")
       attempt.diagnostics.push(
         Object.freeze({
-          sequence: nextSequence(),
+          ...nextEvent(diagnosticInput.occurredAt),
           kind: diagnosticInput.kind,
           severity: diagnosticInput.severity,
           ...(diagnosticInput.message === undefined ? {} : { message: diagnosticInput.message }),
@@ -769,7 +856,9 @@ export function createModelOperationRecorder(input: CreateModelOperationRecorder
         throw new Error(`[model-operation-record] attempt ${handle} cannot be committed: attempt ${committedAttempt} is already committed`)
       }
       attempt.verdict = settlement.verdict
-      attempt.settledSequence = nextSequence()
+      const settled = nextEvent(settlement.occurredAt)
+      attempt.settledSequence = settled.sequence
+      attempt.settledAt = settled.occurredAt
       if (settlement.upstreamResponse !== undefined) attempt.upstreamResponse = freezeTrack(settlement.upstreamResponse)
       if (settlement.reason !== undefined) attempt.reason = settlement.reason
       if (settlement.error !== undefined) attempt.error = freezeCapturedValue(settlement.error)
@@ -784,7 +873,7 @@ export function createModelOperationRecorder(input: CreateModelOperationRecorder
       assertWritable()
       if (egress) throw new Error("[model-operation-record] egress already recorded")
       egress = Object.freeze({
-        sequence: nextSequence(),
+        ...nextEvent(recordInput.occurredAt),
         upstream: freezeTrack(recordInput.upstream),
         client: freezeTrack(recordInput.client),
         ...(recordInput.metadata === undefined ? {} : { metadata: freezeCapturedValue(recordInput.metadata) }),
@@ -810,7 +899,7 @@ export function createModelOperationRecorder(input: CreateModelOperationRecorder
       }
       const terminalCommittedAttempt = terminalInput.committedAttempt ?? committedAttempt
       terminal = Object.freeze({
-        sequence: nextSequence(),
+        ...nextEvent(terminalInput.occurredAt),
         outcome: terminalInput.outcome,
         ...(terminalCommittedAttempt === undefined ? {} : { committedAttempt: terminalCommittedAttempt }),
         ...(terminalInput.error === undefined ? {} : { error: freezeCapturedValue(terminalInput.error) }),

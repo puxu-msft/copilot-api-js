@@ -213,6 +213,8 @@ DESIGN 已承认 Ctrl-Z 在 raw mode 失效。当前 interactive gate 只检查 
 
 #### P2-4：时间、进程身份和 multi-line 格式不利于事后分析
 
+> **2026-07-18 后续状态：部分解决。** Terminal 已用 `renderSystemLogLines` 保留 diagnostic 的物理行/空行结构、仅首行加 badge+time、每行独立净化；启动模型目录进一步拆为 richest `system.model_catalog`，Terminal 做灰色/黄色字段投影，StructuredFile 保存完整 catalog，不再把目录压平。下述逐续行重复 timestamp/level、File 时间/进程身份仍是未完成的事后分析增强。
+
 Terminal 用本地 HH:MM:SS，File 用无时区的本地秒级时间；Error stack 多行只有首行有 timestamp/level；republish 忽略 `logObj.date` 而重采 `Date.now()`。graceful overlap 时两个进程写同文件，只有启动 banner 能间接区分来源。
 
 目标：structured file 使用 RFC3339/UTC 毫秒时间并逐记录带 pid/boot-id；terminal 可继续短本地时间。multi-line stack 在 JSON 中保持单字段，human renderer 每 continuation line 显式 indent。优先使用原始 `logObj.date`，缺失时才采 now。

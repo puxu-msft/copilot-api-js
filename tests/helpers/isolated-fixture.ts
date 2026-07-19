@@ -41,6 +41,9 @@ import { _resetConfigValidationWarnTrackingForTests } from "~/lib/config/validat
 import { resetModelOperationTerminalRegistryForTests } from "~/lib/context/lightweight-model-operation"
 import { resetHistoryPersistErrorStats } from "~/lib/history/persist-guard"
 import { resetRawCaptureManagerForTests } from "~/lib/history/raw/manager"
+import { resetDiagnosticLoggerForTests } from "~/lib/diagnostics"
+import { resetStructuredFileSinkForTests } from "~/lib/diagnostics/file"
+import { resetBootstrapSpoolForTests } from "~/lib/diagnostics/file/bootstrap-spool"
 import {
   //
   drainV3Writer,
@@ -77,6 +80,7 @@ import {
   setHttp2SessionFactoryForTests,
 } from "~/lib/transport/http2-client"
 import { setUpstreamFetchForTests } from "~/lib/transport/upstream-fetch"
+import { resetSensitiveOutputForTests } from "~/lib/tui/sensitive-output"
 import { resetTerminalCoordinatorForTests } from "~/lib/tui/terminal-coordinator"
 
 import { restoreFetch } from "./mock-fetch"
@@ -126,6 +130,10 @@ export const RESETTERS: ReadonlyArray<{ name: string; reset: () => void | Promis
   // a test that constructs a non-`silent` TerminalUi and forgets `destroy()`
   // would otherwise leak its registration into the next test file.
   { name: "resetTerminalCoordinatorForTests", reset: resetTerminalCoordinatorForTests },
+  { name: "resetSensitiveOutputForTests", reset: resetSensitiveOutputForTests },
+  { name: "resetStructuredFileSinkForTests", reset: resetStructuredFileSinkForTests },
+  { name: "resetBootstrapSpoolForTests", reset: resetBootstrapSpoolForTests },
+  { name: "resetDiagnosticLoggerForTests", reset: resetDiagnosticLoggerForTests },
   // Upstream-hook DI seam (module-global `hookState`, read at driver-suite level
   // via `getUpstreamHook()`): a test file that loads/injects a hook and forgets
   // its own afterEach would otherwise leak the mounted hook into any later test —

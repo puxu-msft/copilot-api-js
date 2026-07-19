@@ -1,5 +1,5 @@
-import { getProcessIdentity } from "~/lib/process-identity"
 import { publishModelOperationTerminal as publishTerminalToBus } from "~/lib/history/v3/terminal-bus"
+import { getProcessIdentity } from "~/lib/process-identity"
 
 import type {
   //
@@ -190,7 +190,6 @@ export function createLightweightModelOperation(input: CreateLightweightModelOpe
       payload: ingressPayload,
       headers: headersToFields(input.request.headers),
       rawCapture: rawCaptureGap(),
-      metadata: input.semanticRequest,
     },
     format: input.format,
     method: input.request.method,
@@ -229,7 +228,7 @@ export function createLightweightModelOperation(input: CreateLightweightModelOpe
     const startedAt = performance.now()
     const handle = recorder.beginAttempt({
       ...(attemptInput.source === "upstream" ? { transport: "http" as const } : {}),
-      effectiveRequest: { payload: effectivePayload, metadata: attemptInput.effectiveRequest },
+      effectiveRequest: { payload: effectivePayload },
       upstreamRequest: {
         payload: wirePayload,
         ...(attemptInput.wireHeaders === undefined ? {} : { headers: headersToFields(attemptInput.wireHeaders) }),
@@ -313,7 +312,6 @@ export function createLightweightModelOperation(input: CreateLightweightModelOpe
         status: response.status,
         headers: headersToFields(response.headers),
         rawCapture: rawCaptureGap(),
-        metadata: clientEnvelope,
       },
     })
     terminalRecord = recorder.commitTerminal({

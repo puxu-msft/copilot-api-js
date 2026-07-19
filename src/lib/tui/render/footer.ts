@@ -22,8 +22,10 @@ import {
   formatDuration,
   formatDurationField,
   formatStreamInfo,
-  truncateToWidth,
 } from "~/lib/observability/projections/format"
+
+import { sanitizeTerminalText } from "./sanitize"
+import { truncateToWidth } from "./width"
 
 /**
  * Read-only view of a single active request as the footer needs it. A projection
@@ -56,7 +58,7 @@ export function buildActiveFooter(args: { active: ReadonlyArray<ActiveRequestVie
     const entry = active[0]
     // 有重试时 elapsed 展开为 last/total(N)：last = 当前 attempt 已跑时长、total = 整请求墙钟、
     // N = 已发生的重试次数。顶层标量由 Task 4 的轻量 snapshot 保证（读 ctx 顶层、非 .summary）。
-    // 纯文本不着色——整行会喂 truncateToWidth，嵌入 ANSI 会被按显示宽切断。
+    // 纯文本不着色——整行会先净化，再按完整字素簇喂给 truncateToWidth。
     const totalMs = now - entry.ctx.startTime
     const retries = (entry.ctx.attemptCount ?? 1) - 1
     const lastMs = entry.ctx.currentAttemptStartedAt !== undefined ? now - entry.ctx.currentAttemptStartedAt : undefined
@@ -164,12 +166,12 @@ function buildModelGroupSegments(active: ReadonlyArray<ActiveRequestView>, now: 
  *     last-column auto-wrap some terminals do);
  *  3. apply the single `pc.dim` wrap (zero-width ANSI, does not affect
  *     display width).
- * `inner` must be plain text — truncation slices on code points.
+ * `inner` must be plain text — truncation segments it on grapheme boundaries.
  */
 function finalizeFooter(inner: string, columns: number): string {
   // Strip all C0 control chars (\n, \r, \t, …) — any of them would force a
   // second physical line and break the single-line invariant.
-  // eslint-disable-next-line no-control-regex -- intentional C0 range
-  const oneLine = inner.replaceAll(/[\x00-\x1f]+/g, " ")
+
+  const oneLine = sanitizeTerminalText(inner)
   return pc.dim(truncateToWidth(oneLine, columns - 1))
 }

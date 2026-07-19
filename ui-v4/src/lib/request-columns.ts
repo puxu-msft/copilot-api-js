@@ -156,9 +156,15 @@ export const REQUEST_COLUMNS: Array<ColumnDef<EntrySummary>> = [
     cell: ({ row }) => {
       const e = row.original
       const anomaly = rowAnomaly(e)
+      const timingSource = e.timing?.operation?.source
+      const approximate = timingSource === "storage-commit-upper-bound" || timingSource === "terminal-log-rounded"
       const className = anomaly.slow ? "row-anomaly text-[var(--signal-warn)]" : "text-[var(--content-dim)]"
-      return span(className, e.durationMs === undefined ? "" : formatElapsed(e.durationMs), {
-        title: anomaly.slow ? "slow request (>60s)" : undefined,
+      let title: string | undefined
+      if (timingSource === "storage-commit-upper-bound") title = "历史时长上界（以持久化提交时间估算）"
+      else if (timingSource === "terminal-log-rounded") title = "终端舍入日志恢复时长"
+      else if (anomaly.slow) title = "slow request (>60s)"
+      return span(className, e.durationMs === undefined ? "" : `${approximate ? "≈" : ""}${formatElapsed(e.durationMs)}`, {
+        title,
       })
     },
     size: 64,

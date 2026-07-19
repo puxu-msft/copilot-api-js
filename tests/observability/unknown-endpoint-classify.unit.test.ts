@@ -63,7 +63,12 @@ describe("formatUnknownEndpointLine", () => {
   })
 
   test("405 line with allow", () => {
-    const line = formatUnknownEndpointLine({ classification: { kind: "method-not-allowed", status: 405, allow: ["GET", "POST"] }, method: "DELETE", path: "/y", ua: "-" })
+    const line = formatUnknownEndpointLine({
+      classification: { kind: "method-not-allowed", status: 405, allow: ["GET", "POST"] },
+      method: "DELETE",
+      path: "/y",
+      ua: "-",
+    })
     expect(line).toBe("[405] DELETE /y  allow=GET,POST  ua=-")
   })
 })

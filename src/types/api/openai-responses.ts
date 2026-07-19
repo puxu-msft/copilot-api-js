@@ -350,7 +350,8 @@ export interface OutputTextDeltaEvent {
   type: "response.output_text.delta"
   output_index: number
   content_index: number
-  /** Present on native Responses streams; optional for internally translated compatibility frames. */
+  /** Present on real upstream frames (correlates the delta to its output item); omitted by the proxy's
+   *  reverse CC→responses synthesis (`responses-to-cc-request.ts`), which has no natural item id. */
   item_id?: string
   delta: string
   sequence_number: number
