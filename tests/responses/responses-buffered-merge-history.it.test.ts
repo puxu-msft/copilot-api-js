@@ -31,10 +31,16 @@ import {
 import { mockModel } from "../helpers/factories"
 import { useIsolatedRuntime } from "../helpers/isolated-fixture"
 import { applyFetchMock } from "../helpers/mock-fetch"
-import { createSseResponse } from "../helpers/sse"
+import {
+  //
+  createSseResponse,
+  createSseResponseThenError,
+} from "../helpers/sse"
 import { functionCallBlock } from "./fixtures/buffered-merge-blocks"
 
 const MODEL = "gpt-5"
+
+const RST_ERROR = new Error("Stream closed with error code NGHTTP2_CANCEL")
 
 /** created → the function_call block fixture → response.completed carrying `completedOutput`. */
 function generationSse(completedOutput: Array<unknown>): Array<string> {
@@ -107,5 +113,60 @@ describe("Responses buffered-merge: HTTP block-level flush + History dual-track"
     expect(JSON.parse(upstreamCompleted!.raw).response.output).toEqual([]) // upstream track keeps the defective original
     expect(JSON.parse(forwardedCompleted!.raw).response.output).toEqual([finalItem]) // forwarded track is repaired
     expect(forwardedCompleted!.synthetic).toBe("buffered-terminal-repair")
+  })
+
+  test("retry-reset: attempt 1's pre-commit RST is discarded, attempt 2 recovers cleanly, drop-delta still applies + no attempt-1 leak", async () => {
+    // attempt 1: created + added + a partial delta (NO output_item.done → no commit) then RST → retryable.
+    const attempt1 = [
+      `event: response.created\ndata: ${JSON.stringify({ type: "response.created", sequence_number: 0, response: { id: "resp_a1", object: "response", status: "in_progress", model: MODEL, output: [] } })}\n\n`,
+      `event: response.output_item.added\ndata: ${JSON.stringify({ type: "response.output_item.added", sequence_number: 1, output_index: 0, item: { type: "function_call", id: "fc_1", call_id: "call_fc_1", name: "get_weather", arguments: "", status: "in_progress" } })}\n\n`,
+      `event: response.function_call_arguments.delta\ndata: ${JSON.stringify({ type: "response.function_call_arguments.delta", sequence_number: 2, output_index: 0, item_id: "fc_1", delta: "LEAK_ATTEMPT1" })}\n\n`,
+    ]
+    const { finalItem } = functionCallBlock(0, "fc_1")
+    let call = 0
+    applyFetchMock(
+      mock(() => {
+        call++
+        return Promise.resolve(call === 1 ? createSseResponseThenError(attempt1, RST_ERROR) : createSseResponse(generationSse([finalItem])))
+      }),
+    )
+
+    const sse = await (await streamRequest()).text()
+    expect(sse).not.toContain("LEAK_ATTEMPT1") // attempt-1 partial never reaches the client
+    expect(sse).toContain("response.completed")
+    expect(call).toBe(2) // one RST + one recovery
+
+    const entry = getHistory({ endpoint: "openai-responses", limit: 5 }).entries[0]
+    expect(entry?.state).toBe("completed")
+    // drop-delta still applied to the recovered attempt 2 (fresh candidate → fresh reducer), no leak.
+    expect(entry.clientResponse!.sseEvents!.filter((e) => e.type === "response.function_call_arguments.delta").length).toBe(0)
+    const forwardedCompleted = entry.clientResponse!.sseEvents!.find((e) => e.type === "response.completed")
+    expect(JSON.parse(forwardedCompleted!.raw).response.output).toEqual([finalItem])
+  })
+
+  test("partial-degrade: a block committed live at its output_item.done stays merged; the later un-terminated RST degrades to failed (not retried)", async () => {
+    // The block commits at output_item.done (a commit boundary) → committedAny closes the retry window;
+    // the subsequent RST (no response.completed) is un-retryable → partial-degrade → history `failed`.
+    const { frames } = functionCallBlock(0, "fc_1")
+    const committedThenRst = [
+      `event: response.created\ndata: ${JSON.stringify({ type: "response.created", sequence_number: 0, response: { id: "resp_pd", object: "response", status: "in_progress", model: MODEL, output: [] } })}\n\n`,
+      ...frames.map((f) => `event: ${f.event}\ndata: ${f.data}\n\n`),
+    ]
+    let call = 0
+    applyFetchMock(
+      mock(() => {
+        call++
+        return Promise.resolve(createSseResponseThenError(committedThenRst, RST_ERROR))
+      }),
+    )
+
+    await (await streamRequest()).text()
+    expect(call).toBe(1) // committed prefix is un-retryable → no re-exchange
+
+    const entry = getHistory({ endpoint: "openai-responses", limit: 5 }).entries[0]
+    expect(entry?.state).toBe("failed")
+    // The committed block's deltas were still merged away (item closed by output_item.done before flush).
+    expect(entry.clientResponse!.sseEvents!.filter((e) => e.type === "response.function_call_arguments.delta").length).toBe(0)
+    expect(entry.clientResponse!.sseEvents!.some((e) => e.type === "response.output_item.done")).toBe(true)
   })
 })

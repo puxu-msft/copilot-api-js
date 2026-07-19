@@ -203,6 +203,18 @@ describe("completed_output: rebuild", () => {
 })
 
 describe("diagnostics()", () => {
+  test("retreat (buffer-cap forfeit): the flush is VERBATIM even under drop-delta — a hard invariant (spec §5.3.1)", () => {
+    const reducer = createResponsesBufferedMergeReducer({ eventCompaction: "drop-delta", completedOutput: "rebuild" })
+    const { frames } = functionCallBlock(0, "fc_1")
+    for (const f of frames) reducer.observe(f)
+    // cause "retreat" short-circuits ALL compaction + terminal reconciliation: the buffered prefix is
+    // about to be handed off to live write-through, so it must reach the client byte-for-byte.
+    const out = reducer.transformFlush(frames, { cause: "retreat" })
+    expect(out).toEqual(frames) // no deltas dropped, no terminal rebuilt
+    expect(reducer.diagnostics().verbatimFallbacks).toEqual(["retreat"])
+    expect(reducer.diagnostics().droppedEventCount).toBe(0)
+  })
+
   test("accumulates dropped-event stats across flushes within one reducer instance", () => {
     const reducer = createResponsesBufferedMergeReducer({ eventCompaction: "drop-delta", completedOutput: "repair-if-incomplete" })
     const { frames } = functionCallBlock(0, "fc_1")
