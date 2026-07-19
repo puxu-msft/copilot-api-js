@@ -198,6 +198,10 @@ export interface ResponsesReasoningOutput {
   type: "reasoning"
   id: string
   summary: Array<{ type: "summary_text"; text: string }>
+  /** The reasoning item's own content track (independent from `summary`) — populated when the
+   *  upstream streams `response.reasoning_text.delta`/`.done` for this item (distinct protocol
+   *  family from `reasoning_summary_text`; confirmed against node_modules/openai's ResponseAccumulator.js). */
+  content?: Array<{ type: "reasoning_text"; text: string }>
   encrypted_content?: string
   status?: string
 }
@@ -333,7 +337,7 @@ export interface ContentPartAddedEvent {
   type: "response.content_part.added"
   output_index: number
   content_index: number
-  part: ResponsesOutputTextContent | ResponsesOutputRefusalContent
+  part: ResponsesOutputTextContent | ResponsesOutputRefusalContent | { type: "reasoning_text"; text: string }
   sequence_number: number
 }
 
@@ -341,7 +345,7 @@ export interface ContentPartDoneEvent {
   type: "response.content_part.done"
   output_index: number
   content_index: number
-  part: ResponsesOutputTextContent | ResponsesOutputRefusalContent
+  part: ResponsesOutputTextContent | ResponsesOutputRefusalContent | { type: "reasoning_text"; text: string }
   sequence_number: number
 }
 
@@ -396,6 +400,26 @@ export interface RefusalDoneEvent {
   output_index: number
   content_index: number
   refusal: string
+  sequence_number: number
+}
+
+/** Reasoning content-text events (independent track from `reasoning_summary_text` — the reasoning
+ *  item's own `content` array, not its `summary` array; see ResponsesReasoningOutput.content doc). */
+export interface ReasoningTextDeltaEvent {
+  type: "response.reasoning_text.delta"
+  item_id: string
+  output_index: number
+  content_index: number
+  delta: string
+  sequence_number: number
+}
+
+export interface ReasoningTextDoneEvent {
+  type: "response.reasoning_text.done"
+  item_id: string
+  output_index: number
+  content_index: number
+  text: string
   sequence_number: number
 }
 
@@ -467,6 +491,9 @@ export type ResponsesStreamEvent =
   // Refusal streaming
   | RefusalDeltaEvent
   | RefusalDoneEvent
+  // Reasoning content-text streaming (independent track from reasoning_summary_text)
+  | ReasoningTextDeltaEvent
+  | ReasoningTextDoneEvent
   // Reasoning summary streaming
   | ReasoningSummaryPartAddedEvent
   | ReasoningSummaryTextDeltaEvent
