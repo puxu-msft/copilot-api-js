@@ -142,3 +142,16 @@ describe("completed_output: repair-if-incomplete", () => {
     expect(readSyntheticKind(last)).toBeUndefined()
   })
 })
+
+describe("completed_output: rebuild", () => {
+  test("rebuild unconditionally replaces the output even when the upstream terminal was already complete", () => {
+    const reducer = createResponsesBufferedMergeReducer({ eventCompaction: "drop-delta", completedOutput: "rebuild" })
+    const { frames: fcFrames, finalItem } = functionCallBlock(0, "fc_1")
+    for (const f of fcFrames) reducer.observe(f)
+    const terminal = completedFrame([finalItem]) // already complete — rebuild still replaces it
+    const out = reducer.transformFlush([...fcFrames, terminal], { cause: "boundary", boundaryFrame: terminal })
+    const last = out[out.length - 1]
+    expect(readSyntheticKind(last)).toBe("buffered-terminal-repair")
+    expect(JSON.parse(last.data!).response.output).toEqual([finalItem])
+  })
+})
