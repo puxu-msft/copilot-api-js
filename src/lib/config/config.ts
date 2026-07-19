@@ -1003,6 +1003,11 @@ export async function applyConfigToState(): Promise<Config> {
   if (responsesConfig && responsesConfig.fix_stream_ids !== undefined) setResponsesConfig({ fixResponsesStreamIds: responsesConfig.fix_stream_ids })
   if (responsesConfig && responsesConfig.strip_image_generation_tool !== undefined)
     setResponsesConfig({ stripImageGenerationTool: responsesConfig.strip_image_generation_tool })
+  if (responsesConfig && responsesConfig.buffered_merge) {
+    const bm = responsesConfig.buffered_merge
+    if (bm.event_compaction !== undefined) setResponsesConfig({ responsesBufferedMergeEventCompaction: bm.event_compaction })
+    if (bm.completed_output !== undefined) setResponsesConfig({ responsesBufferedMergeCompletedOutput: bm.completed_output })
+  }
 
   // Client-facing Responses WS ingress limits (scalar: override only when present).
   const responsesWsIngress = config.server?.responses_ws

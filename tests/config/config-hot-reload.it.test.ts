@@ -929,6 +929,20 @@ const FIELDS: ReadonlyArray<FieldSpec> = [
     defaultStateValue: CONFIG_MANAGED_DEFAULTS.stripImageGenerationTool,
   },
   {
+    configKey: "openai_responses.buffered_merge.event_compaction",
+    stateKey: "responsesBufferedMergeEventCompaction",
+    sampleYamlValue: "item-summary",
+    expectedStateValue: "item-summary",
+    defaultStateValue: CONFIG_MANAGED_DEFAULTS.responsesBufferedMergeEventCompaction,
+  },
+  {
+    configKey: "openai_responses.buffered_merge.completed_output",
+    stateKey: "responsesBufferedMergeCompletedOutput",
+    sampleYamlValue: "rebuild",
+    expectedStateValue: "rebuild",
+    defaultStateValue: CONFIG_MANAGED_DEFAULTS.responsesBufferedMergeCompletedOutput,
+  },
+  {
     configKey: "server.responses_ws.keep_open",
     stateKey: "clientWebsocketKeepOpen",
     sampleYamlValue: "true",
