@@ -840,3 +840,10 @@
 - **当前行为**：不现实的饥饿——每次迭代含一次完整 TLS/proxy 建连（数十~数百 ms），且 reconcile 由人工 config 编辑驱动（非高频），自然被建连延迟限流。P4 合并态审查 reviewer 亲验判定「非必须修」。
 - **理想架构 / 若做需改什么**：加一个宽松迭代上限（如 8 次）后 reject 一个可诊断错误，避免病态配置下的无限循环。注意会引入新失败模式（病态 config → reject vs 现在的无限 retry），需权衡。
 - **为何暂缓**：饥饿不现实（被建连延迟自然限流）、reviewer 判非必须；引入迭代上限会新增「N 次后 reject」的失败语义。**触发条件（值得做）**：出现高频 config reload 或自动化 config 编辑场景使 reconcile storm 变现实。发现方：transport 三轴重组 P4 热重载 reconcile 合并态审查 nit-2（2026-07-14）。
+
+## buffered-merge 的 open-item-at-terminal-failure verbatim 埋点未接（LOW，2026-07-19，buffered-merge 合并态审查记）
+
+- **根因 / 现状**：`buffered-merge-reducer.ts` 的 `BufferedMergeDiag.verbatimFallbacks` 曾在类型里声明 `"open-item-at-terminal-failure"` 但全仓零 push（只 push `"retreat"`）。合并态审查（gpt reviewer）标为 LOW 死类型成员，已删除该未产出成员使类型诚实（`verbatimFallbacks: Array<"retreat">`）。
+- **当前行为（正确、不缺失）**：终结失败态下**未闭合 item 的 delta 本就被保留 verbatim**——由构造保证：未闭合 item 从不进 `collected`，故 drop-delta 的 `closed` 判据永远 false、绝不碰它（spec §5.3.2 不变量天然成立）。缺的**只是这个 case 的独立诊断记录**，非行为缺陷。
+- **理想架构 / 若做需改什么**：若要把「终结失败态保留了开放 item 的 delta」记成独立诊断值，需在 `BufferedFlushContext` 增一个失败态信号（现 `cause` 只有 `retreat`/`boundary`/`terminal-drain`，无 terminal-failure），并在 driver 失败 flush 点传入、reducer 据此 push。
+- **为何暂缓**：纯观测增补、行为已正确；接线牵动 `BufferedFlushContext` 契约（跨 driver↔reducer）。**触发条件（值得做）**：运维需要按「失败态是否保留了半截 open item」审计归并行为时。发现方：buffered-merge 合并态审查 LOW-2（2026-07-19）。

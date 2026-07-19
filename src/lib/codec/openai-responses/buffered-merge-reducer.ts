@@ -108,7 +108,11 @@ export interface BufferedMergeDiag {
   droppedEventTypes: Array<string>
   repairedItemCount: number
   repairReasons: Array<TerminalRepairReason>
-  verbatimFallbacks: Array<"retreat" | "open-item-at-terminal-failure">
+  /** Flushes returned verbatim (compaction bypassed). Currently only `"retreat"` (buffer-cap forfeit) is
+   *  recorded; an open-item-at-terminal-failure keeps its deltas verbatim BY CONSTRUCTION (an unclosed item
+   *  is never in `collected`, so drop-delta never touches it) — no explicit fallback push is needed for
+   *  correctness. Recording that case as its own diagnostic is deferred (docs/todo/deferred-backlog.md). */
+  verbatimFallbacks: Array<"retreat">
 }
 
 export function createResponsesBufferedMergeReducer(opts: ResponsesBufferedMergeOpts): ResponsesBufferedMergeReducer & { diagnostics(): BufferedMergeDiag } {
@@ -121,7 +125,7 @@ export function createResponsesBufferedMergeReducer(opts: ResponsesBufferedMerge
   const droppedEventTypes: Array<string> = []
   let repairedItemCount = 0
   const repairReasons: Array<TerminalRepairReason> = []
-  const verbatimFallbacks: Array<"retreat" | "open-item-at-terminal-failure"> = []
+  const verbatimFallbacks: Array<"retreat"> = []
 
   return {
     observe(frame: ClientFrame) {

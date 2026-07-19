@@ -1,7 +1,8 @@
 # Responses buffered-merge — Codex real-consumer oracle (FINDINGS)
 
-> **NON-BLOCKING manual verification.** This oracle does NOT gate the feature. `buffered_retry` stays
-> default OFF; the two merge knobs (`event_compaction` / `completed_output`) ride on it. This harness
+> **NON-BLOCKING manual verification.** This oracle does NOT gate the feature. `buffered_retry` is
+> currently default **ON** (flipped in commit `1d318976`, before this branch), and `event_compaction`
+> default `drop-delta` therefore rides on it for every Responses stream. This harness
 > only gives a one-hand data point on whether a REAL Codex consumer reconstructs the **drop-delta merged**
 > forwarded wire identically to the **verbatim** wire — evidence for a FUTURE "default-on" decision, not a
 > prerequisite for landing the feature. Automated coverage (official `openai` SDK + `@ai-sdk/openai` +
