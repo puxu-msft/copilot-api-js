@@ -38,6 +38,8 @@ import { createCandidateResponseSession } from "~/lib/pipeline/generation/candid
 import { classifyReverseAnthropicTerminal } from "~/lib/pipeline/reverse-terminal"
 import { createUpstreamFrameDiagnostics } from "~/lib/upstream-stream-diagnostics"
 
+import { resolveResponsesBufferedMerge } from "./buffered-config"
+
 export type ResponsesCandidateResponseSnapshot =
   | Readonly<{
       kind: "responses"
@@ -108,8 +110,9 @@ export function createResponsesCandidateResponseSessionFactory(transport: "http"
         diag: createUpstreamFrameDiagnostics(startedAtMs),
         bytesIn: 0,
         eventsIn: 0,
-        // Phase 4.5 replaces this literal with the resolved config knobs.
-        bufferedMerge: createResponsesBufferedMergeReducer({ eventCompaction: "drop-delta", completedOutput: "repair-if-incomplete" }),
+        // Resolved from config (spec §3 knobs; defaults drop-delta/repair-if-incomplete). Read at
+        // candidate-construction time so a hot config reload takes effect on the next generation.
+        bufferedMerge: createResponsesBufferedMergeReducer(resolveResponsesBufferedMerge()),
       }),
       onUpstreamFrame: (state, frame) => state.diag.observe(frame as ServerSentEventMessage),
       onRenderedFrame(state, frame) {

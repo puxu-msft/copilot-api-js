@@ -26,3 +26,11 @@ export function resolveResponsesBufferedAndHeartbeat(): { buffered: boolean; hea
   const heartbeatSec = buffered ? forcedHeartbeatSec : state.streamKeepalivePingSec
   return { buffered, heartbeatSec }
 }
+
+/** Resolve the two orthogonal buffered-merge knobs (spec 2026-07-14-responses-buffered-block-merge §3). */
+export function resolveResponsesBufferedMerge(): {
+  eventCompaction: "verbatim" | "drop-delta" | "item-summary"
+  completedOutput: "upstream" | "repair-if-incomplete" | "rebuild"
+} {
+  return { eventCompaction: state.responsesBufferedMergeEventCompaction, completedOutput: state.responsesBufferedMergeCompletedOutput }
+}
