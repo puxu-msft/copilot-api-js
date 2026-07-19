@@ -25,6 +25,7 @@ import {
   accumulateAnthropicStreamEvent,
   createAnthropicStreamAccumulator,
 } from "~/lib/anthropic/stream-accumulator"
+import { createResponsesBufferedMergeReducer } from "~/lib/codec/openai-responses/buffered-merge-reducer"
 import { isResponsesCommitBoundary } from "~/lib/codec/openai-responses/commit-boundaries"
 import { ENDPOINT } from "~/lib/models/endpoint"
 import {
@@ -107,6 +108,8 @@ export function createResponsesCandidateResponseSessionFactory(transport: "http"
         diag: createUpstreamFrameDiagnostics(startedAtMs),
         bytesIn: 0,
         eventsIn: 0,
+        // Phase 4.5 replaces this literal with the resolved config knobs.
+        bufferedMerge: createResponsesBufferedMergeReducer({ eventCompaction: "drop-delta", completedOutput: "repair-if-incomplete" }),
       }),
       onUpstreamFrame: (state, frame) => state.diag.observe(frame as ServerSentEventMessage),
       onRenderedFrame(state, frame) {
@@ -123,7 +126,11 @@ export function createResponsesCandidateResponseSessionFactory(transport: "http"
           state.eventsIn++
           input.env.ctx.recordStreamProgress({ eventsIn: state.eventsIn })
         }
-        return responseFrame(transport, frame, event, mapper)
+        // Feed the buffered-merge reducer the RENDERED frame (post tool-name restore) so its
+        // output_item.done collection matches exactly what the flush later transforms.
+        const rendered = responseFrame(transport, frame, event, mapper)
+        state.bufferedMerge.observe(rendered)
+        return rendered
       },
       sawMessageStop: (state) => state.acc.status !== "",
       sawUpstreamError: (state) => state.acc.streamError !== undefined,
@@ -134,7 +141,16 @@ export function createResponsesCandidateResponseSessionFactory(transport: "http"
           return event ? TERMINAL_EVENTS.has(event.type) : false
         },
       }),
+      // Candidate-hosted buffered-merge seam (spec §4 2026-07-19 重接地). Mounted for BOTH transports:
+      // HTTP flushes block-by-block (cause "boundary") + at the terminal drain; WS has no block-level
+      // commit (no commitBoundaries) so it flushes ONCE at the terminal drain — the reducer's
+      // reverse-scan terminal locate is correct in both cases.
+      transformBufferedFlush: (state, frames, ctx) => state.bufferedMerge.transformFlush(frames, ctx),
       onBufferedResolve(state, outcome, retries, meta) {
+        // Always record the merge diagnostics: the reducer ran on EVERY buffered generation (including a
+        // clean first-attempt success, whose dropped/repaired counts are audit-worthy per spec §6). Placed
+        // BEFORE the no-retry early return, which only skips the protect-streaming RETRY telemetry.
+        input.env.ctx.recordBufferedMergeInfo(state.bufferedMerge.diagnostics())
         if (outcome === "success" && retries === 0) return
         recordProtectStreamingOutcome(outcome, retries, meta)
         input.env.ctx.recordFeature("protect-streaming-retry", { outcome, retries, vendor: meta.vendor })
