@@ -2,6 +2,13 @@
 
 从记忆库降为引用层（2026-07-05）时归位的活 backlog。每条：现状 / 暂缓原因 / 若做需改什么。
 
+## Pre-existing e2e 缺陷（History V2 removal 合并 review 2026-07-19 surfaced，非本合并引入）
+
+在纯 `a387a6da`/`952c831f`（合并前 master）复现相同失败 → 确证 pre-existing、非 History V2 removal 引入。二者均 `.e2e.test.ts`、**不进 `test:backend` 默认门**（`bun test .unit.test .it.test .http.test` 显式排除 `.e2e.test.ts`），故全量 `bun test` 才暴露。
+
+- **`tests/e2e/handover.e2e.test.ts:259`（handover run 1-5/5 全挂）**：`expect(historyRes.status).toBe(200)` 实收 **400**。**现状**：graceful-restart bare-metal takeover e2e 调 history API 得 400。**疑因**：config 默认值 / history endpoint 在 takeover 场景下的 400（待复现根因——是 history handler 拒绝、还是 config gate）。**若做**：起真实 takeover 场景抓 400 响应体定位是哪个 history 路由 + 为何 400。
+- **`tests/e2e-client/anthropic-coexist-cli.e2e.test.ts:70`**：hook 模块缺具名导出（`anchor-coexist wire ... assembles as ONE complete turn` 失败）。**现状**：CLI e2e 的 hook-mock 模块导出契约不匹配。**若做**：核对 hook 模块的具名导出 vs 加载方期望（参考记忆 [[reference-cli-e2e-spawn-and-hook-load-gotchas]] 的 data-URL 丢具名导出坑）。
+
 ## 首包/时序埋点的观测→治理跟进项（2026-07-14 落地首包埋点后）
 
 首包埋点（ADR `docs/decisions/2026-07-14-request-timing-instrumentation.md`）只**观测**、不治理。以下四项经 spec §9 明确推迟:
