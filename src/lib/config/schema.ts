@@ -718,6 +718,17 @@ export const ResponsesConfigSchema = z
      * and some clients (e.g. Codex CLI) auto-inject it. Default false.
      */
     strip_image_generation_tool: nullableBoolean(),
+    /**
+     * Responses buffered flush 语义压缩 + 终结对账两个正交旋钮（spec 2026-07-14-responses-buffered-block-merge §3）。
+     * 惰性：`buffered_retry` OFF 时本键无效（无 buffer 可归并）。
+     */
+    buffered_merge: z
+      .object({
+        event_compaction: nullableEnum(["verbatim", "drop-delta", "item-summary"] as const),
+        completed_output: nullableEnum(["upstream", "repair-if-incomplete", "rebuild"] as const),
+      })
+      .strict()
+      .optional(),
   })
   .strict()
 
