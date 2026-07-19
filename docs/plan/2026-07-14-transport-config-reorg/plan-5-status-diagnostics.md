@@ -1,5 +1,7 @@
 # Plan 5 — Status/diagnostics 接入 + ui-v4 SSOT re-export
 
+> **实施状态：已实施**（`feat/transport-config-reorg` 分支）。Task 1 `0ba9b32b` / Task 2 `bf5e994c` / Task 3 `0cc7cb6d` / Task 4 `65be50cf`。Task 5（跨 Task 回归 + Self-Review）已完成，结果见文末「实施结果」小节——本计划是整个 `2026-07-14-transport-config-reorg` 特性的最后一相，P1-P5 全部落地。
+
 ## Goal
 
 把 D7 HIGH-7 规定的可判定 transport 诊断字段——configured generation + values／h2 sessions／upstream WS 池／reconcile 状态／runtime capability——接入 `/api/status`，并让 ui-v4 经 SSOT re-export 消费展示。目标不是"新增一个字段让 schema 好看"，而是让 P2-P4 已经真实生效的热重载/连接池行为，运维和后续 debug 时**真的能看见**（否则代码正确但无人能验证，等于没做）。spec 明确写了"禁止只返回一个 generation 数字就形式满足"——本计划的每一步都以此为验收标准，而不是"typecheck 过了就算数"。
@@ -987,3 +989,28 @@ grep -n "H2SessionStatusRow\|getH2SessionStatusSnapshot\|getH2ReconcileStatus\|U
 - `ui-v4/src/components/overview/OverviewLegacy.tsx`（Transport StatCard）
 - `ui-v4/src/components/overview/OverviewShadcn.tsx`（Transport StatCard + Transport diagnostics 深度 Card）
 - `ui-v4/tests/OverviewPage.vitest.test.tsx`（两 fork 断言更新）
+
+## 实施结果（Task 5 回归 + 验收对照，2026-07-18 执行）
+
+**HIGH-7 可判定字段清单核对**（`GET /api/status` 的 `transport` 字段，实测响应形状）：
+- ✅ configured generation + values——`transport.configured.{tcpKeepaliveProbeDelayMs, h2PingIntervalMs, sessionConnectTimeoutMs, pooledConnectionIdleTimeoutMs, softMaxUpstreamWsConnections}`（各自 0/undefined→`null` 归一化，非单一 generation 标量）。
+- ✅ h2 sessions 逐会话——`transport.h2Sessions: Array<{origin, generation, lifecycle, activeStreamCount, effectivePingIntervalMs, effectiveKeepAliveMs}>`。
+- ✅ upstream WS 池逐连接——`transport.upstreamWsPool: Array<{key, model, state, generation}>`。
+- ✅ reconcile 状态（两个 transport 独立）——`transport.h2Reconcile` 与 `transport.upstreamWsReconcile`（经 manager `reconcileStatus()`/`getUpstreamWsReconcileStatus()`）各自 `{state: idle|running|failed, lastCompletedGeneration, lastError}`。**合并态审查修正（2026-07-18 追加）**：初次实现遗漏了 `upstreamWsReconcile` 字段——聚合器只暴露了 `h2Reconcile`，`getUpstreamWsReconcileStatus()`（P4 major-fix 导出）曾是零消费者的 dead export，WS reconcile 失败态在 `/api/status`/UI 完全不可见，本节当时的表述也误写成 `transport.upstreamWsPool`（连接池快照，非 reconcile 状态）。已修复：`status-snapshot.ts` 新增 `upstreamWsReconcile` 字段（无 manager 时默认 `{state:"idle", lastCompletedGeneration:0, lastError:null}`，对称 `h2Reconcile` 的模块级默认）；`/api/status` 集成测试 + `OverviewShadcn.tsx` 的 Transport diagnostics Card 均已对称渲染两个 transport 的 reconcile 状态（含失败态 `lastError` 可见）。见提交 `63dd108c`/`de07b354`/`da277907`。
+- ✅ runtime capability——`transport.runtimeCapability: {runtime: "bun"|"node", wsApplicationKeepalive: "unavailable"}`。
+- **结论：不满足"只返回一个 generation 数字"的反模式，逐字段可判定**（spec §4 D7 HIGH-7 验收通过）。
+
+**回归命令与结果**：
+- `bunx tsc --noEmit`：仅剩 baseline 2 条 `tests/responses/responses-to-cc-stream.unit.test.ts` 的 `item_id` TS2353（并发会话债务，与本计划无关，不修）；P5 新增代码 0 类型错误。
+- `bun run typecheck:ui-v4`：`Exited with code 0`。
+- `bun run build:ui-v4`：`vite build` 成功，bundle `index-*.js` 从 1,105.63kB 增至 1,109.81kB（+~4KB，与新增 UI 逻辑体量相符），证明 `~backend/*` 的 `import type`/`export type` 被 rollup 完全擦除、后端运行时依赖（`~/lib/state`/`node:http2`/consola）未泄漏进前端 bundle。
+- `bun test .unit.test .it.test .http.test`（`test:backend` 覆盖的三层）：`5166 pass / 4 fail / 5179 total`；4 个失败逐一核对为 kick-off 已列明的 baseline 债务（`ConsoleSink — thinking terminal dimension` ×3 + `RESETTERS table is complete` ×1），非本计划引入。
+- `bunx vitest run`（ui-v4 全量）：`91 files / 559 tests all pass`。`bun run test:ui-v4` 的 `test:bun` 子命令因 `ui-v4/tests/model-telemetry.bun.test.ts` 一条既有失败（`git stash` 隔离验证：临时移除本计划全部 ui-v4 改动后该测试仍以相同方式失败，确认与 P5 无关）而短路、未跑到 `test:vitest`，因此本次单独执行 `bunx vitest run` 验证 vitest 部分（含本计划新增的 `OverviewPage.vitest.test.tsx` 断言）。
+- `bun run lint:all`：366 个既有问题（108 个文件，全部在 `tests/tui/*`、`src/lib/{anthropic,codec,pipeline,history,openai,observability}/*`、`ui/*` 等本计划未触碰的文件），grep 确认本计划 8 个改动文件零命中；核对方式：`git stash`/`git diff 478beb42 --stat` 双重验证问题清单与本计划文件交集为空。
+- 单测（Task 1 聚合器 + Task 2 集成 + Task 4 UI）：`bun test tests/transport/transport-status-snapshot.unit.test.ts tests/infra/management-routes.http.test.ts` → `15 pass / 0 fail`；`bunx vitest run ui-v4/tests/OverviewPage.vitest.test.tsx` → `2 pass`。
+
+**SSOT-types 核实**：`ui-v4/src/types/status.ts` 仅 `import type`/`export type { TransportStatusSnapshot } from "~backend/lib/transport/status-snapshot"`，无重复定义；`bun run build:ui-v4` 通过即是独立 oracle（rollup 真实打包，非仅 typecheck）。
+
+**README 签名核对**：`grep -n "H2SessionStatusRow\|getH2SessionStatusSnapshot\|getH2ReconcileStatus\|UpstreamWsStatusRow\|getUpstreamWsStatusSnapshot" README.md src/lib/transport/http2-client.ts src/lib/openai/upstream-ws.ts src/lib/transport/status-snapshot.ts` 逐字一致；`UpstreamWsStatusRow.state` 的 `"connecting"`（非 `"active"`）强制改名在 P5 mock/断言/Badge 渲染中零残留 `"active"` 作为 WS 状态字面量（唯一 `"active"` 断言对应 `h2Sessions[0].lifecycle`，与 WS 状态语义无关，已核实不混淆）。
+
+**Self-Review 5 条待裁决分叉**（见上一节原文）：均为非阻断项，本次实施未额外处理，按原记录交主会话裁决。

@@ -6,7 +6,7 @@
  * per process per path), and the rest of the config is applied as usual.
  *
  * Pipeline (each request via applyConfigToState):
- *   raw YAML → extractAndTranslateDeprecated() → ConfigSchema.safeParse()
+ *   raw YAML → extractAndTranslateDeprecatedWithOps() → ConfigSchema.safeParse()
  *     ↓                                              ↓
  *     warn legacy key once + apply translation       warn each issue once
  *                                                    cleanInvalidPaths(raw, issues)
@@ -19,7 +19,12 @@ import consola from "consola"
 
 import type { Config } from "./schema"
 
-import { CONFIG_MIGRATIONS } from "./compat"
+import {
+  //
+  _resetDeprecatedKeyWarnTrackingForTests,
+  extractAndTranslateDeprecatedWithOps,
+  navigate,
+} from "./compat"
 import {
   //
   ConfigSchema,
@@ -29,14 +34,7 @@ import {
 // Warn-once tracking (per-process, reset only via test helpers)
 // ============================================================================
 
-const warnedDeprecatedKeys = new Set<string>()
 const warnedIssueKeys = new Set<string>()
-
-function warnDeprecatedKeyOnce(key: string, message: string): void {
-  if (warnedDeprecatedKeys.has(key)) return
-  warnedDeprecatedKeys.add(key)
-  consola.warn(`[Config] ${message}`)
-}
 
 function warnIssueOnce(key: string, message: string): void {
   if (warnedIssueKeys.has(key)) return
@@ -45,8 +43,8 @@ function warnIssueOnce(key: string, message: string): void {
 }
 
 export function _resetConfigValidationWarnTrackingForTests(): void {
-  warnedDeprecatedKeys.clear()
   warnedIssueKeys.clear()
+  _resetDeprecatedKeyWarnTrackingForTests()
 }
 
 /**
@@ -71,71 +69,12 @@ export function warnProtectStreamingHeartbeatOnce(opts: {
 }
 
 // ============================================================================
-// Step 1 — pull deprecated keys out of the raw payload, translate them,
-//           and warn the user once per key.
+// Step 2 — strip invalid paths so the second parse can succeed
 // ============================================================================
-
-function extractAndTranslateDeprecated(raw: Record<string, unknown>): Record<string, unknown> {
-  const out: Record<string, unknown> = deepCloneJsonSafe(raw)
-
-  for (const dep of CONFIG_MIGRATIONS) {
-    const parent = dep.parentPath === "" ? out : navigate(out, dep.parentPath.split("."))
-    if (!parent || typeof parent !== "object") continue
-    const parentObj = parent as Record<string, unknown>
-    if (!(dep.key in parentObj)) continue
-
-    const legacyValue = parentObj[dep.key]
-    // Value-gated migrations (migrateValue) fire only for legacy values; an
-    // already-valid value must pass through WITHOUT delete or warn. Migrations
-    // without a gate (renameLeaf/removeKey/renameSection) treat key-presence as
-    // legacy, so this is a no-op for them.
-    if (dep.isLegacyValue && !dep.isLegacyValue(legacyValue)) continue
-    // eslint-disable-next-line @typescript-eslint/no-dynamic-delete -- key comes from DEPRECATED_KEYS constant
-    delete parentObj[dep.key]
-    warnDeprecatedKeyOnce(dep.path, dep.message)
-
-    if (!dep.translate) continue
-    const patch = dep.translate(legacyValue)
-    if (!patch) continue
-    deepMergeMissingOnly(out, patch)
-  }
-
-  return out
-}
-
-/** Deep-merge `patch` into `target` ONLY for keys not already present (user-set value wins) */
-function deepMergeMissingOnly(target: Record<string, unknown>, patch: Record<string, unknown>): void {
-  for (const [key, value] of Object.entries(patch)) {
-    const existing = target[key]
-    if (value && typeof value === "object" && !Array.isArray(value)) {
-      if (existing && typeof existing === "object" && !Array.isArray(existing)) {
-        deepMergeMissingOnly(existing as Record<string, unknown>, value as Record<string, unknown>)
-      } else if (existing === undefined) {
-        target[key] = deepCloneJsonSafe(value)
-      }
-      // else: user already provided a primitive at this path; do not override.
-    } else if (existing === undefined) {
-      target[key] = value
-    }
-  }
-}
-
-function navigate(obj: unknown, path: ReadonlyArray<PropertyKey>): unknown {
-  let current: unknown = obj
-  for (const segment of path) {
-    if (!current || typeof current !== "object") return undefined
-    current = (current as Record<PropertyKey, unknown>)[segment]
-  }
-  return current
-}
 
 function deepCloneJsonSafe<T>(value: T): T {
   return structuredClone(value)
 }
-
-// ============================================================================
-// Step 2 — strip invalid paths so the second parse can succeed
-// ============================================================================
 
 function cleanInvalidPaths(raw: Record<string, unknown>, issues: ReadonlyArray<z.core.$ZodIssue>): Record<string, unknown> {
   const clone = deepCloneJsonSafe(raw)
@@ -192,7 +131,7 @@ function formatIssue(issue: z.core.$ZodIssue): { dedupKey: string; message: stri
 export function validateConfig(raw: unknown): Config {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {}
 
-  const processed = extractAndTranslateDeprecated(raw as Record<string, unknown>)
+  const { value: processed } = extractAndTranslateDeprecatedWithOps(raw as Record<string, unknown>)
   const result = ConfigSchema.safeParse(processed)
   if (result.success) return result.data
 
@@ -231,7 +170,9 @@ export interface ConfigValidationDetail {
   value?: unknown
 }
 
-export type ConfigValidationResult = { valid: true; value: Config } | { valid: false; details: Array<ConfigValidationDetail> }
+export type ConfigValidationResult =
+  | { valid: true; value: Config; legacyPathsRemoved: ReadonlyArray<string> }
+  | { valid: false; details: Array<ConfigValidationDetail> }
 
 /**
  * Validate an HTTP PUT body against ConfigSchema. Unlike `validateConfig`,
@@ -249,9 +190,9 @@ export function validateConfigInput(input: unknown): ConfigValidationResult {
   // Normalize legacy key names first (same migration as file load), so PUT
   // bodies carrying old keys are migrated rather than 400'd. Remaining invalid
   // fields still hard-fail with structured details.
-  const processed = extractAndTranslateDeprecated(input as Record<string, unknown>)
+  const { value: processed, legacyPathsRemoved } = extractAndTranslateDeprecatedWithOps(input as Record<string, unknown>)
   const result = ConfigSchema.safeParse(processed)
-  if (result.success) return { valid: true, value: result.data }
+  if (result.success) return { valid: true, value: result.data, legacyPathsRemoved }
 
   const details = result.error.issues.flatMap((issue) => zodIssueToDetails(issue, processed))
   return { valid: false, details }

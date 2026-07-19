@@ -38,7 +38,7 @@ export interface ProxiedSocketOptions {
   targetPort: number
   /** Proxy URL — `http`, `https`, `socks5`, or `socks5h` scheme. */
   proxyUrl: string
-  /** Tunnel-establishment deadline in milliseconds. */
+  /** Tunnel-establishment deadline in milliseconds. `0` (or negative) = no deadline — never fails due to a connect timeout (D5: absence=default handled by the caller; `0`=disabled here). */
   timeoutMs: number
 }
 
@@ -141,7 +141,13 @@ function connectViaHttpConnect(url: URL, opts: ProxiedSocketOptions): Promise<ne
       socket.destroy()
       reject(err)
     }
-    const timer = setTimeout(() => fail(new Error(`[http2] proxy CONNECT to ${target} timed out after ${opts.timeoutMs}ms`)), opts.timeoutMs)
+    // A raw `setTimeout(fn, 0)` fires on the NEXT macrotask (JS timer semantics),
+    // which is the OPPOSITE of this project's `0`=disabled convention (D5) — so
+    // `timeoutMs<=0` must skip arming the timer entirely, not pass 0 straight through.
+    const timer: NodeJS.Timeout | undefined =
+      opts.timeoutMs > 0 ?
+        setTimeout(() => fail(new Error(`[http2] proxy CONNECT to ${target} timed out after ${opts.timeoutMs}ms`)), opts.timeoutMs)
+      : undefined
     socket.once("error", fail)
 
     // Send the CONNECT request once connected (after the TLS handshake for an https proxy).

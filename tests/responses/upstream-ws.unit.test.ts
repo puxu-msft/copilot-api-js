@@ -19,6 +19,9 @@ import type { ResponsesPayload } from "~/types/api/openai-responses"
 import {
   //
   createUpstreamWsManager,
+  getUpstreamWsManager,
+  getUpstreamWsReconcileStatus,
+  getUpstreamWsStatusSnapshot,
   resetUpstreamWsManagerForTests,
   setUpstreamWsConnectionFactoryForTests,
 } from "~/lib/openai/upstream-ws"
@@ -41,6 +44,7 @@ function createConnection(overrides: Partial<UpstreamWsConnection> = {}): Upstre
     model: "gpt-5.2",
     conversationId: undefined,
     handshakeHeaders: {},
+    rescheduleIdleTimeout: () => {},
     close: () => {},
     ...overrides,
   }
@@ -525,6 +529,68 @@ describe("upstream websocket manager", () => {
       Date.now = realNow
     }
   })
+
+  test("create() passes idleTimeoutMs derived from state.pooledConnectionIdleTimeout to the connection factory", async () => {
+    const snapshot = snapshotStateForTests()
+    try {
+      setStateForTests({ pooledConnectionIdleTimeout: 42 })
+      const received: Array<number | undefined> = []
+      setUpstreamWsConnectionFactoryForTests((opts) => {
+        received.push(opts.idleTimeoutMs)
+        return createConnection({ model: opts.model, conversationId: opts.conversationId })
+      })
+
+      const manager = createUpstreamWsManager()
+      await manager.create({ headers: {}, model: "gpt-5.2" })
+      expect(received).toEqual([42_000])
+
+      // Hot-reload semantics: the value is re-read on every create() call, not
+      // cached at manager-construction time.
+      setStateForTests({ pooledConnectionIdleTimeout: 7 })
+      await manager.create({ headers: {}, model: "gpt-5.4" })
+      expect(received).toEqual([42_000, 7_000])
+    } finally {
+      restoreStateForTests(snapshot)
+    }
+  })
+
+  test("create() passes idleTimeoutMs of 0 when pooledConnectionIdleTimeout is disabled", async () => {
+    const snapshot = snapshotStateForTests()
+    try {
+      setStateForTests({ pooledConnectionIdleTimeout: 0 })
+      const received: Array<number | undefined> = []
+      setUpstreamWsConnectionFactoryForTests((opts) => {
+        received.push(opts.idleTimeoutMs)
+        return createConnection({ model: opts.model, conversationId: opts.conversationId })
+      })
+
+      const manager = createUpstreamWsManager()
+      await manager.create({ headers: {}, model: "gpt-5.2" })
+      expect(received).toEqual([0])
+    } finally {
+      restoreStateForTests(snapshot)
+    }
+  })
+
+  test("getUpstreamWsManager() singleton wires idleTimeoutMs from state.pooledConnectionIdleTimeout", async () => {
+    const snapshot = snapshotStateForTests()
+    try {
+      setStateForTests({ pooledConnectionIdleTimeout: 55 })
+      const received: Array<number | undefined> = []
+      setUpstreamWsConnectionFactoryForTests((opts) => {
+        received.push(opts.idleTimeoutMs)
+        return createConnection({ model: opts.model, conversationId: opts.conversationId })
+      })
+      resetUpstreamWsManagerForTests()
+
+      const manager = getUpstreamWsManager()
+      await manager.create({ headers: {}, model: "gpt-5.2" })
+      expect(received).toEqual([55_000])
+    } finally {
+      resetUpstreamWsManagerForTests()
+      restoreStateForTests(snapshot)
+    }
+  })
 })
 
 /**
@@ -648,5 +714,285 @@ describe("attemptUpstreamResponsesWs — §1.1 before-first-event fallback", () 
     // close used the legal code — a 1001 regression throws before recording, so
     // this array would be empty and this assertion fails.
     expect(socket.closeCalls).toEqual([{ code: 1000, reason: "Going away" }])
+  })
+})
+
+describe("reconcileForConfigChange / statusSnapshot (P4 hot-reload)", () => {
+  test("reconcileForConfigChange reschedules every connection's idle timeout and bumps its generation", async () => {
+    const rescheduleCalls: Array<number> = []
+    const fakeConnection = (model: string): UpstreamWsConnection => ({
+      connect: () => Promise.resolve(),
+      sendRequest: () => (async function* () {})(),
+      isOpen: true,
+      isBusy: false,
+      statefulMarker: undefined,
+      model,
+      conversationId: undefined,
+      handshakeHeaders: {},
+      rescheduleIdleTimeout: (ms) => rescheduleCalls.push(ms),
+      close: () => {},
+    })
+    setUpstreamWsConnectionFactoryForTests(() => fakeConnection("gpt-5.2"))
+    const manager = createUpstreamWsManager()
+    await manager.create({ headers: {}, model: "gpt-5.2" })
+    await manager.create({ headers: {}, model: "gpt-5.3" })
+
+    const before = manager.statusSnapshot()
+    expect(before.every((row) => row.generation === 0)).toBe(true)
+
+    manager.reconcileForConfigChange(120_000)
+
+    expect(rescheduleCalls).toEqual([120_000, 120_000])
+    const after = manager.statusSnapshot()
+    expect(after.every((row) => row.generation === 1)).toBe(true)
+    setUpstreamWsConnectionFactoryForTests(null)
+  })
+
+  test("statusSnapshot reflects busy/idle/model per connection; getUpstreamWsStatusSnapshot delegates to it", async () => {
+    const fakeConnection = (model: string, busy: boolean): UpstreamWsConnection => ({
+      connect: () => Promise.resolve(),
+      sendRequest: () => (async function* () {})(),
+      isOpen: true,
+      isBusy: busy,
+      statefulMarker: undefined,
+      model,
+      conversationId: undefined,
+      handshakeHeaders: {},
+      rescheduleIdleTimeout: () => {},
+      close: () => {},
+    })
+    let toggle = false
+    setUpstreamWsConnectionFactoryForTests(() => fakeConnection("gpt-5.2", (toggle = !toggle)))
+    const manager = createUpstreamWsManager()
+    await manager.create({ headers: {}, model: "gpt-5.2" }) // busy=true
+    await manager.create({ headers: {}, model: "gpt-5.2" }) // busy=false
+
+    const rows = getUpstreamWsStatusSnapshot(manager)
+    expect(rows).toHaveLength(2)
+    expect(rows.filter((r) => r.state === "busy")).toHaveLength(1)
+    expect(rows.filter((r) => r.state === "idle")).toHaveLength(1)
+    expect(rows.every((r) => r.model === "gpt-5.2")).toBe(true)
+    setUpstreamWsConnectionFactoryForTests(null)
+  })
+
+  test("reconcileForConfigChange evicts excess IDLE connections down to a shrunk soft-max cap; busy connections are left alone", async () => {
+    // This fake's close() deliberately notifies the manager's onClose
+    // ASYNCHRONOUSLY (via queueMicrotask), mirroring the real connection: a
+    // real close() flips `isOpen` to false synchronously (the underlying
+    // socket's readyState moves out of OPEN as soon as `.close()` is called)
+    // but the manager only learns about it — and deletes the entry from its
+    // `connections` Map — when the WS "close" event fires on a later tick.
+    // A naive eviction loop that re-reads `connections.size` after each
+    // `victim.close()` call would see the size UNCHANGED and either loop
+    // forever or (if bounded by a `while (size > cap)` check) stop after the
+    // first eviction because it can't tell the difference between "still
+    // over cap" and "already scheduled, just not reflected yet". The fix
+    // under test computes the excess ONCE and evicts that many connections
+    // by count, which is exactly what this test is designed to catch a
+    // regression on.
+    const fakeIdleConnection = (opts: CreateUpstreamWsConnectionOptions): UpstreamWsConnection => {
+      let closed = false
+      return {
+        connect: () => Promise.resolve(),
+        sendRequest: () => (async function* () {})(),
+        get isOpen() {
+          return !closed
+        },
+        isBusy: false,
+        statefulMarker: undefined,
+        model: opts.model,
+        conversationId: undefined,
+        handshakeHeaders: {},
+        rescheduleIdleTimeout: () => {},
+        close: () => {
+          if (closed) return
+          closed = true
+          queueMicrotask(() => opts.onClose?.())
+        },
+      }
+    }
+    let cap = 4
+    setUpstreamWsConnectionFactoryForTests((opts) => fakeIdleConnection(opts))
+    const manager = createUpstreamWsManager({ maxConnections: () => cap })
+    for (let i = 0; i < 4; i++) await manager.create({ headers: {}, model: "gpt-5.2" })
+    expect(manager.statusSnapshot()).toHaveLength(4)
+
+    // Config hot-reload shrinks the cap from 4 to 2 — reconcile must evict two
+    // idle connections down to the new cap, observed via `.close()` really
+    // being called (not just a count on an internal array).
+    cap = 2
+    manager.reconcileForConfigChange(300_000)
+
+    // Flush the queueMicrotask-deferred onClose notifications before
+    // asserting — a macrotask boundary (setTimeout) guarantees every
+    // already-queued microtask has run.
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    expect(manager.statusSnapshot()).toHaveLength(2)
+    setUpstreamWsConnectionFactoryForTests(null)
+  })
+
+  test("create() wires onIdle so a busy→idle transition alone re-checks the soft-max cap, with no intervening create()/reconcile call (HIGH-5)", async () => {
+    // Both connections start BUSY (as if created to immediately carry a
+    // request) so `create()`'s own `evictOneIdleIfNeeded()` call finds no
+    // idle victim and the pool is allowed to sit at 2 connections against a
+    // cap of 1 — the "temporarily exceeded" case `evictOneIdleIfNeeded()`
+    // already tolerates. The ONLY subsequent trigger is connection #1
+    // flipping to idle via its own onIdle callback — there is no further
+    // create()/reconcile call in this test.
+    const idleTriggers: Array<() => void> = []
+    const fakeConnection = (opts: CreateUpstreamWsConnectionOptions): UpstreamWsConnection => {
+      let busy = true
+      let closed = false
+      idleTriggers.push(() => {
+        busy = false
+        opts.onIdle?.()
+      })
+      return {
+        connect: () => Promise.resolve(),
+        sendRequest: () => (async function* () {})(),
+        get isOpen() {
+          return !closed
+        },
+        get isBusy() {
+          return busy
+        },
+        statefulMarker: undefined,
+        model: opts.model,
+        conversationId: undefined,
+        handshakeHeaders: {},
+        rescheduleIdleTimeout: () => {},
+        close: () => {
+          closed = true
+          opts.onClose?.()
+        },
+      }
+    }
+    setUpstreamWsConnectionFactoryForTests((opts) => fakeConnection(opts))
+    const manager = createUpstreamWsManager({ maxConnections: () => 1 })
+    await manager.create({ headers: {}, model: "gpt-5.2" })
+    await manager.create({ headers: {}, model: "gpt-5.2" })
+    expect(manager.statusSnapshot()).toHaveLength(2)
+
+    idleTriggers[0]?.()
+
+    expect(manager.statusSnapshot()).toHaveLength(1)
+    setUpstreamWsConnectionFactoryForTests(null)
+  })
+
+  test("reconcileStatus() reflects idle -> running -> idle with a bumped lastCompletedGeneration; getUpstreamWsReconcileStatus delegates to it", async () => {
+    const fakeConnection = (model: string): UpstreamWsConnection => ({
+      connect: () => Promise.resolve(),
+      sendRequest: () => (async function* () {})(),
+      isOpen: true,
+      isBusy: false,
+      statefulMarker: undefined,
+      model,
+      conversationId: undefined,
+      handshakeHeaders: {},
+      rescheduleIdleTimeout: () => {},
+      close: () => {},
+    })
+    setUpstreamWsConnectionFactoryForTests(() => fakeConnection("gpt-5.2"))
+    const manager = createUpstreamWsManager()
+    await manager.create({ headers: {}, model: "gpt-5.2" })
+
+    const before = manager.reconcileStatus()
+    expect(before).toEqual({ state: "idle", lastCompletedGeneration: 0, lastError: null })
+
+    manager.reconcileForConfigChange(120_000)
+
+    const after = getUpstreamWsReconcileStatus(manager)
+    expect(after).toEqual({ state: "idle", lastCompletedGeneration: 1, lastError: null })
+    setUpstreamWsConnectionFactoryForTests(null)
+  })
+
+  test("never-throw guard (major fix, spec §4 D7 HIGH-3): a connection's rescheduleIdleTimeout throwing does NOT propagate out of reconcileForConfigChange, and the failure is recorded observably", async () => {
+    // Two connections; the SECOND one's rescheduleIdleTimeout throws. This
+    // proves the guard doesn't just swallow-and-stop (which could look like a
+    // pass if only the throwing connection were exercised) — it must not
+    // itself re-throw so a caller iterating multiple listeners (state.ts's
+    // unprotected transportUpstreamListeners loop) never sees an exception
+    // from THIS listener, regardless of whether other pooled connections
+    // would have succeeded.
+    let secondRescheduleCalled = false
+    const fakeConnection = (model: string, throwing: boolean): UpstreamWsConnection => ({
+      connect: () => Promise.resolve(),
+      sendRequest: () => (async function* () {})(),
+      isOpen: true,
+      isBusy: false,
+      statefulMarker: undefined,
+      model,
+      conversationId: undefined,
+      handshakeHeaders: {},
+      rescheduleIdleTimeout: () => {
+        if (throwing) {
+          secondRescheduleCalled = true
+          throw new Error("simulated rescheduleIdleTimeout failure")
+        }
+      },
+      close: () => {},
+    })
+    let created = 0
+    setUpstreamWsConnectionFactoryForTests(() => {
+      created += 1
+      return fakeConnection("gpt-5.2", created === 2)
+    })
+    const manager = createUpstreamWsManager()
+    await manager.create({ headers: {}, model: "gpt-5.2" })
+    await manager.create({ headers: {}, model: "gpt-5.2" })
+
+    // The call itself must not throw — this is the load-bearing assertion:
+    // if the guard were absent, this expression would throw synchronously and
+    // the test would fail right here (not at a later .toEqual assertion).
+    expect(() => manager.reconcileForConfigChange(90_000)).not.toThrow()
+    expect(secondRescheduleCalled).toBe(true) // proves the throwing path was actually exercised
+
+    const status = manager.reconcileStatus()
+    expect(status.state).toBe("failed")
+    expect(status.lastError).toContain("simulated rescheduleIdleTimeout failure")
+    // lastCompletedGeneration must NOT have been bumped by a failed reconcile —
+    // only a reconcile that ran to completion updates it.
+    expect(status.lastCompletedGeneration).toBe(0)
+    setUpstreamWsConnectionFactoryForTests(null)
+  })
+
+  test("never-throw guard: a later state.ts listener still runs after this reconcile listener throws (the exact HIGH-3 failure mode — 'silently skip later subscribers')", async () => {
+    // Simulates state.ts's unprotected `for (const listener of
+    // transportUpstreamListeners) listener()` loop directly (rather than
+    // routing through the real onUpstreamTransportChange subscription, which
+    // would require getUpstreamWsManager()'s process-wide singleton and
+    // pollute other tests) — the guard under test is INSIDE
+    // reconcileForConfigChange itself, so exercising it as one of several
+    // listeners in a bare loop is a faithful proxy for that shared loop.
+    const fakeConnection = (): UpstreamWsConnection => ({
+      connect: () => Promise.resolve(),
+      sendRequest: () => (async function* () {})(),
+      isOpen: true,
+      isBusy: false,
+      statefulMarker: undefined,
+      model: "gpt-5.2",
+      conversationId: undefined,
+      handshakeHeaders: {},
+      rescheduleIdleTimeout: () => {
+        throw new Error("simulated failure")
+      },
+      close: () => {},
+    })
+    setUpstreamWsConnectionFactoryForTests(() => fakeConnection())
+    const manager = createUpstreamWsManager()
+    await manager.create({ headers: {}, model: "gpt-5.2" })
+
+    let laterListenerRan = false
+    const listeners: Array<() => void> = [() => manager.reconcileForConfigChange(90_000), () => (laterListenerRan = true)]
+
+    // Faithful reproduction of state.ts's actual loop shape (no try/catch at
+    // the loop level) — if reconcileForConfigChange's OWN guard were missing,
+    // this loop itself would throw and laterListenerRan would stay false.
+    for (const listener of listeners) listener()
+
+    expect(laterListenerRan).toBe(true)
+    expect(manager.reconcileStatus().state).toBe("failed")
+    setUpstreamWsConnectionFactoryForTests(null)
   })
 })

@@ -51,9 +51,9 @@ Session header 候选（按优先级）：`x-session-id` → `x-conversation-id`
 **per-attempt 上游轨**（proxy ↔ upstream，`attempts[]` 逐次保留——~13 重试策略各产生独立上游往返，常见长度 =1）：
 
 - `effectiveSource` — 本轮 pipeline 工作载荷：`body` = `env.body` 本尊（SoT，逐字保留、不归一 IR）；`{ format, model, messageCount, messages, system }` 是 `body` 的非权威投影；`pipeline` 载本轮 truncation/sanitization/messageMapping。**注**：`env.body` 未必等于客户端端点格式——Gemini 在 route/parse 就 Gemini→CC，故其 `effectiveSource.format='cc'`、原始 Gemini 体只在 `clientRequest.body`
-- `upstreamRequest` — proxy → upstream：发往上游的最终 wire 请求，`{ format, model, messages, system, headers, body }`（**带 messages 投影**——搜索 facet 读这条腿的 `messages`）
-- `upstreamResponse` — upstream → proxy：**每个已 settled 的 attempt 恒载一条**（成功=真实响应；失败=合成裁决，`fail()`/`abort()` 与 `complete()` 对称写入）。`success` = 上游返回完整 2xx 且协议正常终止；`{ success, status?, headers, trailers?, body?, rawBody?, sseEvents?, usage?, stopReason?, model?, responseId?, copilotAnnotations?, toolSearchRequests? }`
-- `responseHeaders` — 逐 attempt 上游响应头
+- `upstreamRequest` — proxy → upstream：发往上游的最终 wire 请求，`{ format, model, messages, system, headers, body }`（带 messages 投影，供详情／debug replay 忠实还原）
+- `upstreamResponse` — upstream → proxy：**每个已 settled 的 attempt 恒载一条**（成功=真实响应；失败=合成裁决，`fail()`/`abort()` 与 `complete()` 对称写入）。`success` = 上游返回完整 2xx 且协议正常终止；`{ success, status?, headers, trailers?, body?, rawBody?, sseEvents?, usage?, stopReason?, model?, responseId?, copilotAnnotations?, toolSearchRequests? }`。成功流上游帧统一进 `upstreamResponse.sseEvents`；失败（非最终）attempt 的帧在 `attempts[].sseEvents`（L2 buffered-retry D1，仅失败 attempt 落 per-attempt 行）
+- `responseHeaders` — 逐 attempt 上游响应头（driver 每 attempt 写）
 
 **派生投影层** `_index`：
 
@@ -118,11 +118,11 @@ History 产品读面经 V3 canonical store facade：列表、详情、session �
 | `GET /history/api/stats` | V3 persisted + in-flight 去重合并视图统计。 |
 | `GET /history/api/entries/:id/export` | V3 entry 投影的 `.json.zst` 下载。 |
 | `GET /history/api/export` | V3 全量 JSON / CSV 导出。 |
-| `GET /history/api/search`、`GET /history/api/search/contains` | V3 unique semantic object 搜索与 object→operation companion。 |
+| `GET /history/api/search`、`GET /history/api/search/contains` | 兼容端点；当前固定返回空 rows／reqIds，绝不读取 History SQLite 或 Tantivy。 |
 
 字段级端点契约（含参数）见 [API.md](API.md)「History REST」。
 
-## 进行中 vs 持久化
+以下 `msg_blob`／`req_msg` 子系统只描述保留的 V2 `history.db` schema 与 characterization code，**当前在线服务不打开它，产品搜索也不读取它**。旧 artifact 按“不迁移、不修改”约束保留；新搜索架构见 [History search Tantivy sidecar v1](history-search-tantivy.md)。旧设计见 [spec/search-index-content-addressed.md](spec/search-index-content-addressed.md)。
 
 - **进行中请求** —— 存在于内存 in-flight 映射（`src/lib/history/in-flight.ts` + `entries.ts` in-flight facade），通过 WebSocket 推送 `entry_added`/`entry_updated` 给前端。**in-flight 是前端实时视图的权威源**。
 - **持久化** —— V3 只在请求**终结**时经终端总线落一条不可变 operation record。读取透明合并两源：REST 查询在前拼 in-flight、在后拼 V3 持久，按 `startedAt` DESC 排序、按 id 去重；`getEntry` 优先 in-flight，故 active 请求恒读内存全量。

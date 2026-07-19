@@ -10,13 +10,17 @@
  * ~backend/*; for now frontend-loose is acceptable.
  */
 
-// SSOT: the request-telemetry snapshot is OWNED by the backend (single-source-of-truth-types). The FE
-// re-exports the backend definition via `~backend/*` rather than re-declaring it. `import type` +
-// `export type` keep this a pure type reference — the build (esbuild/rollup) elides it entirely, so it
-// never pulls the backend module's value imports (`~/lib/state`, sqlite, consola) into the FE bundle.
+// SSOT: the request-telemetry snapshot and the transport diagnostics snapshot are
+// OWNED by the backend (single-source-of-truth-types). The FE re-exports the backend
+// definitions via `~backend/*` rather than re-declaring them. `import type` + `export
+// type` keep this a pure type reference — the build (esbuild/rollup) elides it
+// entirely, so it never pulls the backend modules' value imports (`~/lib/state`,
+// `node:http2`, consola, ...) into the FE bundle.
 import type { RequestTelemetrySnapshot } from "~backend/lib/request-telemetry"
+import type { TransportStatusSnapshot } from "~backend/lib/transport/status-snapshot"
 
 export type { RequestTelemetrySnapshot } from "~backend/lib/request-telemetry"
+export type { TransportStatusSnapshot } from "~backend/lib/transport/status-snapshot"
 
 /** GET /api/status — aggregated server status. Top-level keys mirror the handler. */
 export interface ServerStatus {
@@ -31,6 +35,7 @@ export interface ServerStatus {
   shutdown?: Record<string, unknown>
   models?: Record<string, unknown>
   upstream_ws?: Record<string, unknown>
+  transport?: TransportStatusSnapshot
   protect_streaming?: Record<string, unknown>
   [key: string]: unknown
 }

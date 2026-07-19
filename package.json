@@ -35,8 +35,9 @@
     "ui-v4"
   ],
   "scripts": {
-    "build": "bun run build:ui && bun run build:ui-v4 && bun run build:backend",
+    "build": "bun run build:ui && bun run build:ui-v4 && bun run build:backend && bun run build:history-search",
     "build:backend": "bun x tsdown",
+    "build:history-search": "bun run scripts/build-history-search.ts",
     "build:ui": "bun run --filter copilot-api-ui build",
     "build:ui-v4": "bun run --filter copilot-api-ui-v4 build",
     "dev": "bun run --watch ./src/main.ts",
@@ -54,7 +55,7 @@
     "test": "bun run test:backend",
     "test:acceptance": "bun run test:backend && bun run test:ui && bun run test:e2e-ui",
     "test:all": "bun run test:backend && bun run test:ui",
-    "test:backend": "bun test .unit.test .it.test .http.test",
+    "test:backend": "bun run build:history-search && bun test .unit.test .it.test .http.test",
     "test:ci": "bun run test:backend && bun run test:pty",
     "test:pty": "bun test .pty.test",
     "test:cov": "bun test --coverage .unit.test .it.test .http.test",

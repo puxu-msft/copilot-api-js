@@ -45,7 +45,7 @@ P1 (config reorg + read-path + state split)
  └──> P3 (PUT 文档级迁移写回)
 ```
 
-- P2、P3 都只依赖 P1（可并行执行，无共享文件交集：P2 动 `http2-client.ts`/`upstream-ws-connection.ts`/`upstream-ws.ts`/`proxy.ts`；P3 动 `compat.ts`（新增函数，非改已有签名）/`validation.ts`/`routes/config/route.ts`）。
+- P2、P3 都只依赖 P1（可并行执行，无共享文件交集：P2 动 `http2-client.ts`/`upstream-ws-connection.ts`/`upstream-ws.ts`/`proxy.ts`/`transport/proxy-connect.ts`（仅 `connectViaHttpConnect`——D5 的 `0`=禁用语义要在 HTTP CONNECT 代理隧道路径下真正成立，见 plan-2 Task 1 Step 3；`connectViaSocks` 不在此列，其 `0` 处理走 P1 Task 3 附加范围 B8 的配置校验层拒绝）；P3 动 `compat.ts`（新增函数，非改已有签名）/`validation.ts`/`routes/config/route.ts`）。
 - P4 依赖 P2（要 reconcile 的旋钮必须先真实接线），不依赖 P3。
 - P5 依赖 P4（状态面板要展示 reconcile 观测量）。
 - 是否让 P2/P3 由同一 executor 顺序做、还是拆两个并行 worktree，由主会话按当前编排资源决定；本计划不代为指派执行主体。
@@ -57,8 +57,8 @@ P1 (config reorg + read-path + state split)
 | P1 | schema 新增三个 section + 6 条 legacy 迁移 + state.ts setter 拆分改名 + config.yaml/schema.json 重写 + 误导性 "Node-only" 注释修正 | legacy 键仍可加载(迁移+告警一次)，新键在 schema 里，运行时语义等价(除 D5 批准的 undici 0→15 例外) | [plan-1-config-reorg.md](./plan-1-config-reorg.md) |
 | P2 | `session_connect_timeout`/`pooled_connection_idle_timeout` 真实接线到新连接；undici keepalive 0-语义修真（`keepAlive:false` 而非"省略 connect 选项让 undici 60s 默认生效"） | 新旋钮对新连接可观测生效 + 独立 oracle 验证 | [plan-2-new-knobs-wiring.md](./plan-2-new-knobs-wiring.md) |
 | P3 | compat 层暴露"本次迁移了哪些 legacy 路径"；PUT 写回时先删旧路径、再按新路径写规范化值、`0→absence` 只删不写、清空后的空 section 一并删除、保留未涉节点的注释 | 管理 API 写回新键，二次加载/PUT 不再告警 | [plan-3-put-migration.md](./plan-3-put-migration.md) |
-| P4 | 基于 generation 的 h2 session retire-and-replace；WS 池按 `idleSince` 重新调度空闲计时器；upstream WS 软上限（忙态转空闲再驱逐）与 client 硬上限分离处理 | 热更新对已存在连接生效，且不破坏 in-flight 长思考流 | [plan-4-hot-reload-reconcile.md](./plan-4-hot-reload-reconcile.md) |
-| P5 | D7 HIGH-7 可判定字段（configured generation+values / h2 sessions / upstream WS / reconcile 状态 / runtime capability）接入 `/api/status`；SSOT-types 经 `~backend/*` re-export 给 ui-v4 | 诊断可观测，`typecheck:ui-v4` 绿 | [plan-5-status-diagnostics.md](./plan-5-status-diagnostics.md) |
+| P4 | 基于 generation 的 h2 session retire-and-replace；WS 池按 `idleSince` 重新调度空闲计时器；upstream WS 软上限（忙态转空闲再驱逐）与 client 硬上限分离处理 | 热更新对已存在连接生效，且不破坏 in-flight 长思考流 | [plan-4-hot-reload-reconcile.md](./plan-4-hot-reload-reconcile.md)（**已实施**，`feat/transport-config-reorg` 分支 `f17f2b1b`/`71839a43`） |
+| P5 | D7 HIGH-7 可判定字段（configured generation+values / h2 sessions / upstream WS / reconcile 状态 / runtime capability）接入 `/api/status`；SSOT-types 经 `~backend/*` re-export 给 ui-v4 | 诊断可观测，`typecheck:ui-v4` 绿 | [plan-5-status-diagnostics.md](./plan-5-status-diagnostics.md)（**已实施**，`feat/transport-config-reorg` 分支 `0ba9b32b`/`bf5e994c`/`0cc7cb6d`/`65be50cf`；合并态审查 HIGH 修复 `63dd108c`/`de07b354`/`da277907`（补 `upstreamWsReconcile` 字段，两个 transport reconcile 状态对称可见）——**本计划最后一相，P1-P5 全部落地**） |
 
 ## 承重不变量（跨阶段，任何阶段都不得违反）
 
@@ -155,7 +155,14 @@ export const ServerConfigSchema = z.object({
     generation: number
   }
   export function getUpstreamWsStatusSnapshot(manager: UpstreamWsManager): ReadonlyArray<UpstreamWsStatusRow>
+  export interface UpstreamWsReconcileStatus {
+    state: "idle" | "running" | "failed"
+    lastCompletedGeneration: number
+    lastError: string | null
+  }
+  export function getUpstreamWsReconcileStatus(manager: UpstreamWsManager): UpstreamWsReconcileStatus
   ```
+  `UpstreamWsReconcileStatus` 是合并态审查 major 修复后追加的对称契约——`getH2ReconcileStatus()` 早已给 h2 侧提供 reconcile-run 可观测性（`idle`/`running`/`failed`），但 WS 侧最初只有 `reconcileForConfigChange()` 本身且**无 never-throw 守卫**，违反 spec §4 D7 HIGH-3（三个 transport 订阅者共享 state.ts 同一个无 try/catch 的 listener 循环，任一订阅者抛错会静默跳过其后注册的订阅者）。修复把 `reconcileForConfigChange()` 主体包 try/catch（catch 记录失败状态 + `consola.error`、绝不 re-throw，逐字镜像 h2 侧既有实现），并新增 `UpstreamWsManager.reconcileStatus()` 方法 + `getUpstreamWsReconcileStatus(manager)` 自由函数暴露该状态，供 P5 与 `getH2ReconcileStatus()` 对称渲染两个 transport 的 reconcile 健康度。
 
 以上签名在各阶段计划文档中保持逐字一致；如某阶段执行中发现必须偏离，须先回来更新本节，不得在单阶段文档里私自改名。
 

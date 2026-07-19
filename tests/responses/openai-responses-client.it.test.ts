@@ -237,6 +237,7 @@ describe("responses client", () => {
       model: "gpt-4o",
       conversationId: undefined,
       handshakeHeaders: {},
+      rescheduleIdleTimeout: () => {},
       close: () => {},
     }))
     setStateForTests({ upstreamWebSocket: true })
@@ -285,6 +286,7 @@ describe("responses client", () => {
       model: "gpt-4o",
       conversationId: undefined,
       handshakeHeaders: {},
+      rescheduleIdleTimeout: () => {},
       close: () => {},
     }))
     setStateForTests({ upstreamWebSocket: true })
@@ -357,6 +359,7 @@ describe("responses client", () => {
       model: "gpt-4o",
       conversationId: undefined,
       handshakeHeaders: {},
+      rescheduleIdleTimeout: () => {},
       close: () => {},
     }))
 
@@ -473,6 +476,7 @@ describe("responses client", () => {
       model: "gpt-4o",
       conversationId: undefined,
       handshakeHeaders: {},
+      rescheduleIdleTimeout: () => {},
       close: () => {},
     }))
 

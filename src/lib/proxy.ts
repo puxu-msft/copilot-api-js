@@ -30,7 +30,8 @@ import {
 
 import {
   //
-  onTransportTimeoutChange,
+  onRequestWatchdogChange,
+  onUpstreamTransportChange,
   state,
 } from "./state"
 import { buildSocksProxy } from "./transport/proxy-connect"
@@ -57,15 +58,13 @@ function scaleTimeout(seconds: number): number {
 }
 
 /**
- * Upstream TCP keepalive initial-probe delay in milliseconds.
- *
- * Derived from `state.upstreamKeepaliveDelay` (seconds). Returns `undefined`
- * when 0 (use undici's built-in default of 60s). Lowering this below the path's
- * idle-reaper window (NAT/firewall/LB, commonly ~30s) keeps the GHC connection
- * alive through long upstream silences — e.g. opus adaptive thinking that goes
- * quiet for tens of seconds after `content_block_start`. undici's 60s default
- * is too long: the first probe never fires before a ~30s reaper culls the idle
- * socket, surfacing as `terminated (cause: other side closed)`.
+ * Upstream TCP keepalive initial-probe delay in milliseconds, derived from
+ * `state.upstreamKeepaliveDelay` (seconds). Returns `undefined` when the
+ * configured value is `0` — callers MUST treat `undefined` as "explicitly
+ * disabled: do not call `.setKeepAlive(true, ...)` at all", not as "fall back
+ * to some other default". (Historically some callers read `undefined` as
+ * "use a hardcoded/third-party default" — that was the bug P2 fixed; see
+ * docs/decisions/2026-07-14-transport-config-three-axis-organization.md D5.)
  */
 export function getUpstreamKeepAliveDelayMs(): number | undefined {
   const sec = state.upstreamKeepaliveDelay
@@ -83,8 +82,9 @@ export function getUpstreamKeepAliveDelayMs(): number | undefined {
  * stream was closed WITHOUT `message_stop`). TCP keepalive keeps L4 alive
  * through NAT but does not defeat a connection-idle reaper (middlebox or GHC
  * edge) counting application-layer silence — periodic h2 PING puts real frames
- * on the wire. Consumed by http2-client.ts:scheduleH2KeepalivePing. Node-only
- * (the node:http2 transport); the plaintext undici path has no long silences.
+ * on the wire. Consumed by http2-client.ts:scheduleH2KeepalivePing. Works on
+ * both Bun and Node (node:http2 transport is runtime-neutral); the plaintext
+ * undici path has no long silences.
  */
 export function getUpstreamH2PingIntervalMs(): number {
   const sec = state.upstreamH2PingInterval
@@ -98,12 +98,12 @@ export function getUpstreamH2PingIntervalMs(): number {
  * - `bodyTimeout`    follows `streamIdleTimeout` (gap between body chunks)
  * - `connect.keepAliveInitialDelay` follows `upstreamKeepaliveDelay` (TCP probe)
  */
-function getUndiciAgentOptions(): Agent.Options {
+export function getUndiciAgentOptions(): Agent.Options {
   const keepAliveInitialDelay = getUpstreamKeepAliveDelayMs()
   return {
     headersTimeout: scaleTimeout(state.responseHeaderTimeout),
     bodyTimeout: scaleTimeout(state.streamIdleTimeout),
-    ...(keepAliveInitialDelay !== undefined && { connect: { keepAlive: true, keepAliveInitialDelay } }),
+    connect: keepAliveInitialDelay !== undefined ? { keepAlive: true, keepAliveInitialDelay } : { keepAlive: false },
   }
 }
 
@@ -227,7 +227,8 @@ function logDispatcherInstalled(options: ProxyOptions): void {
 /** Subscribe once to timeout/keepalive hot-reload, rebuilding the cached dispatcher. */
 function ensureTimeoutSubscription(): void {
   if (timeoutSubscriptionInstalled) return
-  onTransportTimeoutChange(rebuildUpstreamDispatcher)
+  onRequestWatchdogChange(rebuildUpstreamDispatcher)
+  onUpstreamTransportChange(rebuildUpstreamDispatcher)
   timeoutSubscriptionInstalled = true
 }
 
@@ -309,7 +310,16 @@ function createSocksAgent(proxyUrl: URL): Agent {
           // (below) wraps this same underlying socket, so setting it here covers
           // both HTTP and HTTPS destinations.
           const keepAliveDelayMs = getUpstreamKeepAliveDelayMs()
-          if (keepAliveDelayMs !== undefined) socket.setKeepAlive(true, keepAliveDelayMs)
+          if (keepAliveDelayMs !== undefined) {
+            socket.setKeepAlive(true, keepAliveDelayMs)
+          } else {
+            // Explicit disable — matches the other two consumers' now-uniform
+            // contract instead of relying on "never call it" == Node's
+            // keepalive-off default. Also gives P4's reconcile a symmetric,
+            // independently-testable call path if it ever needs to flip an
+            // ALREADY-open SOCKS-tunneled socket's keepalive state.
+            socket.setKeepAlive(false)
+          }
 
           if (opts.protocol === "https:") {
             // Upgrade to TLS for HTTPS destinations

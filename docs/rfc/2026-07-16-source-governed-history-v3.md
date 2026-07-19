@@ -21,8 +21,8 @@ Status: **LANDED 2026-07-16; FORMAT-V2 CORRECTION 2026-07-18**
 - `v3_tracks`: format-v2 compressed full tracks (`track_gz`) plus legacy compact-reference fallback.
 - `v3_timeline_chunks`: bounded lifecycle chunks.
 - `v3_journal`: self-contained uncommitted terminal records for crash recovery; deleted after authoritative commit.
-- `v3_search_objects` + membership: rebuildable unique payload projection; format-v2 reuses semantic CAS instead of duplicating document bytes.
-- `v3_search_backlog`: derived projection failure ledger.
+- History schema v5 drops all `v3_search_*` tables; authoritative commits contain no full-text projection.
+- `history-search/`: independent Tantivy v1 sidecar fed by canonical terminal records; disposable and never part of the History transaction.
 - `v3_summary_backlog`: poison ledger for V3-only summary backfill.
 
 ## Lifecycle invariants
@@ -32,7 +32,7 @@ Status: **LANDED 2026-07-16; FORMAT-V2 CORRECTION 2026-07-18**
 3. CPU preparation and compression run outside SQLite transactions; transactions remain synchronous and short. This does **not** imply worker-thread isolation: preparation currently remains synchronous on the main JS thread.
 4. Terminal subscriber and writer queues drain before database close.
 5. Raw capture policy and codec bind to the acquired generation, never live config.
-6. Search/raw/WS detail may degrade before semantic authority; any gap is explicit.
+6. Tantivy/raw/WS detail may degrade before semantic authority; any gap is explicit. Search API does not fall back to SQLite.
 7. Format-v1 operations remain readable and are never rewritten online; format-v2 only governs new writes and uses a distinct hash domain.
 
 ## Verification

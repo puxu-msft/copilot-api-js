@@ -273,25 +273,6 @@ timeouts:
   stream_idle_overrides:
     gpt-5.5: 600
 
-  # *实验性* 主动向上游发送 TCP keepalive 探针的间隔秒数（0 = 用 undici 内置默认 60s）。
-  # *Experimental* Upstream TCP keepalive probe interval seconds (0 = use undici's 60s default).
-  # Upstream TCP keepalive initial-probe delay in seconds (0 = use undici's 60s default).
-  #
-  # 观察到长时间的静默期，无上/下行流量，上行连接被掐断。故尝试性引入 L4 维持不被 NAT 回收。
-  # Observed long silent periods with no send/recv traffic, resulting in upstream connection termination.
-  # Hence, experimentally keeps L4 alive through NAT.
-  #
-  # TODO: rename upstream_keepalive as upstream_tcp_keepalive
-  upstream_keepalive: 15
-
-  # *实验性* 主动向上游 HTTP/2 PING 保活的间隔秒数（0 = 禁用）。
-  # *Experimental* Upstream HTTP/2 PING keepalive interval seconds (0 = disabled).
-  #
-  # 经过网络代理时，TCP keepalive 只覆盖 this <-> proxy，到不了上游。H2 ping 帧则仍能透过代理发往上游。
-  # TCP keepalive only covers this <-> proxy when a network proxy is set; H2 ping can still a H2 ping puts a real frame on the wire.
-  #
-  upstream_h2_ping: 15
-
   # 单次尝试上游，最大存活秒数（0 = 禁用）。
   # Max seconds an active upstream request can live (0 = disabled).
   #
@@ -303,6 +284,47 @@ timeouts:
   #
   # TODO: rename request_deadline as client_request_deadline
   request_deadline: 1200
+
+# ============================================================================
+# Upstream transport (GHC) / 上游传输
+# ============================================================================
+# 面向 GHC 上游的出站连接行为，按协议组织；区别于 timeouts.*（协议无关的请求生命周期看门狗）。
+# Outbound connection behavior toward the GHC upstream, organized by protocol; distinct from timeouts.* (protocol-agnostic request-lifecycle watchdogs).
+
+upstream_transport:
+  # *实验性* 上游 TCP keepalive 首探针延迟秒数（0 = 禁用探针；键不写 = 默认 15）。
+  # *Experimental* Upstream TCP keepalive initial-probe delay in seconds (0 = disable probing; key absent = default 15).
+  #
+  # 观察到长时间的静默期（无上/下行流量），上行连接被 NAT/防火墙的空闲回收掐断（"terminated (cause: other side closed)"）。故引入 L4 探针维持不被回收。
+  # Observed long silent periods (no send/recv traffic) where NAT/firewall idle reapers sever the upstream connection; the L4 probe keeps it alive.
+  #
+  # Bun 与 Node 均生效——h2 socket 路径（node:tls）与运行时无关。
+  # Effective on BOTH Bun and Node — the h2 socket path (node:tls) is runtime-neutral.
+  tcp_keepalive_probe_delay: 15
+  http2:
+    # *实验性* 上游 HTTP/2 PING 保活间隔秒数（0 = 禁用）。
+    # *Experimental* Upstream HTTP/2 PING keepalive interval in seconds (0 = disabled).
+    #
+    # tcp_keepalive_probe_delay 的应用层补充：经网络代理时 TCP keepalive 只覆盖 this <-> proxy，到不了上游；H2 PING 帧仍能透过代理把真实帧发往上游。GHC 的 CAPI 代理不透传 Anthropic 的 SSE `event: ping`，故长思考静默期是一条真正空闲的流。
+    # Application-layer complement to tcp_keepalive_probe_delay: with a network proxy the TCP keepalive only covers this <-> proxy, not the upstream; an H2 PING still puts a real frame on the wire through the proxy. GHC's CAPI proxy does NOT forward Anthropic's SSE `event: ping`, so a long thinking silence is a truly idle stream.
+    #
+    # Bun 与 Node 均生效（node:http2 传输与运行时无关）。
+    # Works on both Bun and Node (node:http2 transport is runtime-neutral).
+    ping_interval: 15
+    # 单次 h2 会话建立尝试的 TCP 连接 + TLS 握手期限（秒，0 = 无超时）。
+    # TCP connect + TLS handshake deadline (seconds) for a single h2 session establishment attempt (0 = no timeout).
+    #
+    # 单次尝试的连接上限，非总请求期限——见 ADR D3。配 SOCKS 代理时 0 被拒绝（socks 库地板 30s，无法真禁用，宁可报错也不冒充禁用）。
+    # Per-attempt connect ceiling, NOT a total request deadline — see ADR D3. Rejected as 0 when a SOCKS proxy is set (the socks library floors at 30s and cannot truly disable it — fail-fast rather than fake a disable).
+    session_connect_timeout: 10
+  websocket:
+    # 池中空闲（未使用）上游 Responses WS 连接被主动关闭前的空闲超时秒数（0 = 永不空闲关闭）。
+    # Idle timeout in seconds for a pooled (not-in-use) upstream Responses WS connection before it is proactively closed (0 = never idle-close).
+    pooled_connection_idle_timeout: 300
+    # 上游 WS 池大小软上限（0 = 无限）。软 = 全忙时允许溢出，之后逐个空闲驱逐回落。
+    # Soft cap on upstream WS pool size (0 = unlimited). Soft = overflow allowed when all busy, then evicted back down as connections go idle.
+    soft_max_connections: 32
+
 
 # 反应式速率限制仅在上游返回 HTTP 429 / 502 时触发；不影响上游返回 503/504 的重试行为。不支持热重载（需重启）。
 # Reactive rate limiting is only triggered on upstream HTTP 429 / 502; does not affect upstream 503/504 retry behavior. Not hot-reloadable (requires restart).
@@ -895,10 +917,22 @@ openai_responses:
   # 修复 Copilot 上游流在 `output_item.added` / `output_item.done` 间不一致的 item ID。`@ai-sdk/openai` 校验 ID 连续性需要。默认 true。
   fix_stream_ids: true
 
-  # Keep the client-side WebSocket open after `response.completed` so the client can issue follow-up `response.create` frames on the same socket. When false (default), the socket closes with code 1000 after each request (HTTP-like one-shot semantics).
-  # 在 `response.completed` 后保持客户端侧 WebSocket 打开，让客户端在同一 socket 上发后续 `response.create`。false（默认）时每次请求后以 code 1000 关闭（HTTP 式一次性语义）。
-  # Concurrent `response.create` on the same socket is rejected with an error frame. / 同 socket 上并发 `response.create` 会被 error 帧拒绝。
-  client_ws_keep_open: false
+# ============================================================================
+# Server / inbound ingress / 服务端·入站
+# ============================================================================
+# Client-facing inbound limits — distinct from upstream_transport.* (outbound to GHC).
+# 面向客户端的入站限制——区别于 upstream_transport.*（出站到 GHC）。
+
+server:
+  responses_ws:
+    # Keep the client-side WebSocket open after `response.completed` so the client can issue follow-up `response.create` frames on the same socket. When false (default), the socket closes with code 1000 after each request (HTTP-like one-shot semantics).
+    # 在 `response.completed` 后保持客户端侧 WebSocket 打开，让客户端在同一 socket 上发后续 `response.create`。false（默认）时每次请求后以 code 1000 关闭（HTTP 式一次性语义）。
+    # Concurrent `response.create` on the same socket is rejected with an error frame. / 同 socket 上并发 `response.create` 会被 error 帧拒绝。
+    keep_open: false
+    # Max inbound client WS frame bytes (0 = unlimited). / 客户端入站 WS 帧字节上限（0 = 无限）。
+    # max_frame_bytes: 0
+    # Max concurrent client WS connections (0 = unlimited). / 客户端并发 WS 连接数上限（0 = 无限）。
+    # max_connections: 256
 
 
 # ============================================================================

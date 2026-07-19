@@ -1054,4 +1054,283 @@ system_prompt_overrides:
     expect(state.systemPromptOverrides).toEqual([])
     expect(await readConfig()).not.toContain("system_prompt_overrides:")
   })
+
+  test("PUT /api/config/yaml deletes a legacy top-level key from disk after migrating it", async () => {
+    await writeConfig(`
+fetch_timeout: 45
+model_refresh_interval: 600
+`)
+
+    const res = await app.request("/api/config/yaml", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model_refresh_interval: 601 }),
+    })
+
+    expect(res.status).toBe(200)
+    const written = await readConfig()
+    expect(written).not.toContain("fetch_timeout")
+    expect(written).toContain("response_header: 45")
+    expect(written).toContain("model_refresh_interval: 601")
+  })
+
+  test("PUT /api/config/yaml prunes a legacy section that becomes empty after its only key is removed", async () => {
+    await writeConfig(`
+timeouts:
+  upstream_keepalive: 0
+  stream_idle: 300
+`)
+
+    const res = await app.request("/api/config/yaml", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({}),
+    })
+
+    expect(res.status).toBe(200)
+    const written = await readConfig()
+    expect(written).not.toContain("upstream_keepalive")
+    expect(written).toContain("stream_idle: 300")
+  })
+
+  test("PUT /api/config/yaml deleting the last legacy key inside openai_responses removes the section but keeps siblings", async () => {
+    await writeConfig(`
+openai_responses:
+  client_ws_keep_open: true
+  max_ws_frame_bytes: 0
+  max_client_ws_connections: 128
+  max_upstream_ws_connections: 64
+  upstream_ws: false
+`)
+
+    const res = await app.request("/api/config/yaml", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({}),
+    })
+
+    expect(res.status).toBe(200)
+    const written = await readConfig()
+    expect(written).not.toContain("client_ws_keep_open")
+    expect(written).not.toContain("max_ws_frame_bytes")
+    expect(written).not.toContain("max_client_ws_connections")
+    expect(written).not.toContain("max_upstream_ws_connections")
+    expect(written).toContain("openai_responses:")
+    expect(written).toContain("upstream_ws: false")
+  })
+
+  test("PUT /api/config/yaml writes upstream_transport and server sections when present in the body", async () => {
+    const res = await app.request("/api/config/yaml", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        upstream_transport: { tcp_keepalive_probe_delay: 20, http2: { ping_interval: 25, session_connect_timeout: 8 } },
+        server: { responses_ws: { keep_open: true, max_frame_bytes: 65536, max_connections: 64 } },
+      }),
+    })
+
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({
+      upstream_transport: { tcp_keepalive_probe_delay: 20, http2: { ping_interval: 25, session_connect_timeout: 8 } },
+      server: { responses_ws: { keep_open: true, max_frame_bytes: 65536, max_connections: 64 } },
+    })
+
+    const written = await readConfig()
+    expect(written).toContain("upstream_transport:")
+    expect(written).toContain("tcp_keepalive_probe_delay: 20")
+    expect(written).toContain("session_connect_timeout: 8")
+    expect(written).toContain("server:")
+    expect(written).toContain("keep_open: true")
+  })
+
+  test("PUT /api/config/yaml migrating a legacy key into upstream_transport does not clobber an already-written sibling", async () => {
+    await writeConfig(`
+upstream_transport:
+  http2:
+    session_connect_timeout: 8
+timeouts:
+  upstream_h2_ping: 40
+`)
+
+    const res = await app.request("/api/config/yaml", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({}),
+    })
+
+    expect(res.status).toBe(200)
+    const written = await readConfig()
+    expect(written).not.toContain("upstream_h2_ping")
+    expect(written).toContain("ping_interval: 40")
+  })
+
+  test("PUT /api/config/yaml in-place value migration (thinking_block_sanitize) does not touch legacy-path deletion machinery", async () => {
+    await writeConfig(`
+anthropic:
+  thinking_block_sanitize: empty_thinking
+  tool_dedup_calls: result
+`)
+
+    const res = await app.request("/api/config/yaml", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({}),
+    })
+
+    expect(res.status).toBe(200)
+    const written = await readConfig()
+    expect(written).toContain("thinking_block_sanitize: all_empty")
+    expect(written).toContain("tool_dedup_calls: result")
+  })
+
+  test("PUT /api/config/yaml deep-merges upstream_transport.http2 instead of whole-replacing the section (B9)", async () => {
+    await writeConfig(`
+upstream_transport:
+  http2:
+    ping_interval: 30
+    session_connect_timeout: 5
+`)
+
+    const res = await app.request("/api/config/yaml", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        upstream_transport: { http2: { session_connect_timeout: 8 } },
+      }),
+    })
+
+    expect(res.status).toBe(200)
+    const written = await readConfig()
+    expect(written).toContain("ping_interval: 30")
+    expect(written).toContain("session_connect_timeout: 8")
+  })
+
+  test("PUT /api/config/yaml null-deletes a single leaf inside upstream_transport.http2 while preserving its sibling (B9)", async () => {
+    await writeConfig(`
+upstream_transport:
+  http2:
+    ping_interval: 30
+    session_connect_timeout: 5
+`)
+
+    const res = await app.request("/api/config/yaml", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        upstream_transport: { http2: { ping_interval: null } },
+      }),
+    })
+
+    expect(res.status).toBe(200)
+    const written = await readConfig()
+    expect(written).not.toContain("ping_interval")
+    expect(written).toContain("session_connect_timeout: 5")
+  })
+
+  test("PUT /api/config/yaml anthropic.buffered_retry deep-merges instead of whole-replacing (B9, existing field switched to new semantics)", async () => {
+    await writeConfig(`
+anthropic:
+  buffered_retry:
+    max_retries: 5
+    heartbeat_sec: 20
+`)
+
+    const res = await app.request("/api/config/yaml", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        anthropic: { buffered_retry: { max_retries: 9 } },
+      }),
+    })
+
+    expect(res.status).toBe(200)
+    const written = await readConfig()
+    expect(written).toContain("heartbeat_sec: 20")
+    expect(written).toContain("max_retries: 9")
+  })
+
+  test("PUT /api/config/yaml sending null for a whole nested sub-object still deletes it entirely (regression, any depth)", async () => {
+    await writeConfig(`
+anthropic:
+  buffered_retry:
+    max_retries: 5
+    heartbeat_sec: 20
+  tool_strip_read_result_tags: true
+`)
+
+    const res = await app.request("/api/config/yaml", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        anthropic: { buffered_retry: null },
+      }),
+    })
+
+    expect(res.status).toBe(200)
+    const written = await readConfig()
+    expect(written).not.toContain("buffered_retry")
+    expect(written).not.toContain("max_retries")
+    expect(written).not.toContain("heartbeat_sec")
+    expect(written).toContain("tool_strip_read_result_tags: true")
+  })
+
+  test("PUT /api/config/yaml with an empty body migrates a disk-only legacy key WITHOUT relocating an untouched collection (scoped-patch regression guard)", async () => {
+    // This is the ONLY reason the disk-only migration fix (extractDiskOnlyMigrationPatch,
+    // see plan-3-put-migration.md "偏离与根因") returns a SPARSE patch instead of the full
+    // migrated disk payload: a naive full-payload merge would hand model_mappings back to
+    // mergeConfigIntoDocument even though the PUT body never mentioned it, and
+    // replaceCollection (deleteIn + setIn) would silently relocate it to the END of the
+    // document, destroying its original position and comment. The empty `{}` body here is
+    // deliberate — it proves the disk-only legacy key (timeouts.upstream_keepalive) still
+    // gets migrated even when nothing in the request body triggers it.
+    // NOTE: uses model_mappings (the current canonical collection name post the master
+    // model_overrides→model_mappings rename) so the collection under test is itself NOT a
+    // migratable legacy key — otherwise it would legitimately relocate on migration.
+    const original = `# model mappings comment
+model_mappings:
+  sonnet: claude-sonnet-4.7
+  haiku: claude-haiku-4.6
+timeouts:
+  upstream_keepalive: 30
+  stream_idle: 300
+`
+    await writeConfig(original)
+
+    const res = await app.request("/api/config/yaml", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({}),
+    })
+
+    expect(res.status).toBe(200)
+    const written = await readConfig()
+
+    // The legacy key was migrated (disk-only — the PUT body never touched it).
+    expect(written).not.toContain("upstream_keepalive")
+    expect(written).toContain("tcp_keepalive_probe_delay: 30")
+
+    // The untouched collection's comment, keys, and — crucially — its ORIGINAL POSITION
+    // (before `timeouts`, not moved to the end after the newly-appended
+    // `upstream_transport` section) are preserved byte-for-byte.
+    const modelMappingsLines = written
+      .split("\n")
+      .slice(
+        0,
+        written.split("\n").findIndex((line) => line.startsWith("timeouts:")),
+      )
+      .join("\n")
+    expect(modelMappingsLines).toBe(`# model mappings comment
+model_mappings:
+  sonnet: claude-sonnet-4.7
+  haiku: claude-haiku-4.6`)
+
+    // Sanity: upstream_transport (the newly-migrated section) was appended AFTER
+    // timeouts/model_mappings, not interleaved with or ahead of them.
+    const modelOverridesIndex = written.indexOf("model_mappings:")
+    const timeoutsIndex = written.indexOf("timeouts:")
+    const upstreamTransportIndex = written.indexOf("upstream_transport:")
+    expect(modelOverridesIndex).toBeGreaterThanOrEqual(0)
+    expect(timeoutsIndex).toBeGreaterThan(modelOverridesIndex)
+    expect(upstreamTransportIndex).toBeGreaterThan(timeoutsIndex)
+  })
 })

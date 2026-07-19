@@ -9,7 +9,7 @@ Status: **format-v2 passes the deterministic offline capacity gate**.
 `tests/history/v3/store-performance.it.test.ts` builds 48 long-conversation operations with repeated prefixes and large semantic payloads. It writes:
 
 - a V2-equivalent baseline using the same compression codec for head and stage blobs;
-- format-v2 V3 with value-free manifests, compressed external tracks, sequence-prefix DAG nodes, volatile occurrence overlays, and search membership that reuses semantic CAS.
+- format-v2 V3 with value-free manifests, compressed external tracks, sequence-prefix DAG nodes, and volatile occurrence overlays. The later schema-v5 measurement excludes embedded search because those tables are retired.
 
 The test measures both SQLite page growth and the sum of live V3 blobs. This distinguishes physical allocation from logically live data.
 
@@ -17,14 +17,13 @@ The test measures both SQLite page growth and the sum of live V3 blobs. This dis
 
 | Metric | Result |
 |---|---:|
-| Compressed V2 equivalent | 50,380,617 bytes |
-| V3 SQLite page delta | 3,596,288 bytes |
-| V3 live blobs | 1,710,236 bytes |
-| V2 / V3 physical page ratio | **about 14.0×** |
-| V2 / V3 live-blob ratio | **about 29.5×** |
-| Search p95, 256-operation synthetic corpus | about **0.59 ms** |
+| Compressed V2 equivalent | 50,380,624 bytes |
+| V3 SQLite page delta | 2,506,752 bytes |
+| V3 live blobs | 1,281,725 bytes |
+| V2 / V3 physical page ratio | **about 20.1×** |
+| V2 / V3 live-blob ratio | **about 39.3×** |
 
-Both capacity ratios exceed the frozen 10× gate in this deterministic fixture. Exact page deltas can vary slightly with SQLite allocation/runtime details; the test enforces the 10× bound rather than one captured decimal. Search processes CAS objects in bounded pages of 128 rather than loading all search rows at once.
+Both capacity ratios exceed the frozen 10× gate in this deterministic fixture. Exact page deltas can vary slightly with SQLite allocation/runtime details; the test enforces the 10× bound rather than one captured decimal. The former SQLite-search latency result is historical and no longer a product gate.
 
 ## Production format-v1 observation
 
@@ -43,7 +42,7 @@ The largest compressed manifest was about 6.53 MB (about 18.35 MB decoded). This
 
 - It does not shrink existing format-v1 rows; no online rewrite is performed.
 - It does not prove event-loop isolation. `prepareModelOperation()` still performs canonicalization, hashing, and compression synchronously on the JS thread even though queue draining crosses Promise boundaries.
-- Search remains a linear scan over distinct CAS objects; paging bounds peak result memory but is not a full-text index.
+- Tantivy v1 performance/backfill/product-query gates are separate work; this benchmark covers authoritative History storage only.
 - Ratios are fixture-specific and should be tracked for regression, not generalized as universal production compression factors.
 
 ## Reproduction

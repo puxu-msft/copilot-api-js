@@ -25,7 +25,7 @@ Responses API 的 WebSocket transport，分两个**相互独立**的方向：
 代理是否走**上游** WS 的判定（[`canUseUpstreamWebSocket`](../src/lib/openai/upstream-ws-attempt.ts)）：
 
 ```
-state.upstreamWebSocket === true          （config openai_responses.upstream_ws，默认关）
+state.upstreamWebSocket === true          （config openai_responses.upstream_ws，默认关；endpoint 路由开关，仍留 openai_responses 域）
   && !manager.temporarilyDisabled          （半开熔断未触发）
   && !manager.stopped                       （未进入 shutdown）
   && isWsResponsesSupported(model)          （模型声明 ws:/responses）
@@ -84,9 +84,9 @@ state.upstreamWebSocket === true          （config openai_responses.upstream_ws
 |------|------|
 | **客户端 abort → 上游拆除** | 每 socket 一个 `wsClientAborts`（WeakMap）中的 `AbortController`，在**任何 await 之前**注册；`onClose` / `onError` 触发 `abort()`，让上游 fetch / WS sendRequest 立即拆除。防止被遗弃的长响应把上游连接 + 完整 accumulator + `forwardedSseEvents` buffer 一直挂到上游自然完成（曾观测到 4GB OOM 的堆驻留模式）。 |
 | **并发串行化** | 同一 socket 的 `response.create` 用 `inFlight`（WeakMap）串行化；in-flight 时再来一个 `response.create` 直接回 `invalid_request_error`（不打断前一个）。Bun WS adapter 本就串行化 `onMessage`，这是给非 Bun runtime（`@hono/node-ws`）+ 未来 adapter 变化的防御。 |
-| **帧大小上限** | `state.maxWsFrameBytes`（config `max_ws_frame_bytes`）。**默认 `0` = 无限**；正值为上限，超限 `invalid_request_error` + close。 |
-| **最大客户端连接数** | `state.maxClientWsConnections`（config `max_client_ws_connections`，默认 `256`）。`onOpen` 超限时发 `server_overloaded` + close 1013（Try again later），不计入 live 计数。`releaseConnection` 用 `decremented` WeakSet 保证幂等——`onError`/`onClose` 任一或两者都触发都只 decrement 一次。 |
-| **keep-open + idle 超时** | `state.clientWebsocketKeepOpen`（config `client_ws_keep_open`，默认 `false`）。false = HTTP-like 一次性语义（`response.completed` 后 1000 关闭）；true = 保持连接接受后续 `response.create`。keep-open 时挂 `CLIENT_KEEP_OPEN_IDLE_MS`（5 min）idle timer，无新帧则 1000 关闭，避免客户端开了连接又走开时永久占 FD + WSContext。timer `unref()` 不阻塞 event loop / shutdown。 |
+| **帧大小上限** | `state.maxWsFrameBytes`（config `server.responses_ws.max_frame_bytes`）。**默认 `0` = 无限**；正值为上限，超限 `invalid_request_error` + close。 |
+| **最大客户端连接数** | `state.maxClientWsConnections`（config `server.responses_ws.max_connections`，默认 `256`）。`onOpen` 超限时发 `server_overloaded` + close 1013（Try again later），不计入 live 计数。`releaseConnection` 用 `decremented` WeakSet 保证幂等——`onError`/`onClose` 任一或两者都触发都只 decrement 一次。 |
+| **keep-open + idle 超时** | `state.clientWebsocketKeepOpen`（config `server.responses_ws.keep_open`，默认 `false`）。false = HTTP-like 一次性语义（`response.completed` 后 1000 关闭）；true = 保持连接接受后续 `response.create`。keep-open 时挂 `CLIENT_KEEP_OPEN_IDLE_MS`（5 min）idle timer，无新帧则 1000 关闭，避免客户端开了连接又走开时永久占 FD + WSContext。timer `unref()` 不阻塞 event loop / shutdown。 |
 
 ---
 
@@ -105,7 +105,7 @@ state.upstreamWebSocket === true          （config openai_responses.upstream_ws
 
 ### 连接管理器（连接池）
 
-[`src/lib/openai/upstream-ws.ts`](../src/lib/openai/upstream-ws.ts) 的 `UpstreamWsManager`，单例经 `getUpstreamWsManager()`（pool cap 从 `state.maxUpstreamWsConnections` 每次读，支持热重载）。
+[`src/lib/openai/upstream-ws.ts`](../src/lib/openai/upstream-ws.ts) 的 `UpstreamWsManager`，单例经 `getUpstreamWsManager()`（pool cap 从 `state.softMaxUpstreamWsConnections` 每次读，支持热重载）。
 
 - **复用键（`findReusable`）**：
   1. 主键 `previousResponseId`——匹配持有该 `statefulMarker` 的连接（最强，上游状态已链式）。
@@ -122,7 +122,7 @@ state.upstreamWebSocket === true          （config openai_responses.upstream_ws
 - **发送（`sendRequest`）**：`{ type: "response.create", ...wire }`（剥 `stream`）。同一连接同一时刻只允许一个 active request（`busy` 标志 + `manager.findReusable` 的 `!isBusy` 保证）。用内部 `AsyncQueue` 承载事件流 + abort listener 中断等待。
 - **stateful marker**：收到 `response.completed` → 保存 `response.id` 为 marker（供后续请求复用查找）；`response.failed` / `response.incomplete` / `error` **不更新** marker。
 - **`unusable` 同步标志**：parse error / send 失败 / socket error 时**同步**置 `unusable` 并主动 close，让同一 tick 的 `findReusable` 立即跳过——不等异步 close 事件（那个延迟窗口正是 stale 连接漏进复用、造成额外 fallback hop 的来源）。`isOpen = !unusable && socket !== null && readyState === OPEN`。
-- **idle 超时**：`DEFAULT_IDLE_TIMEOUT_MS`（5 min）无新请求自动 close 1001。
+- **idle 超时**：`state.pooledConnectionIdleTimeout`（config `upstream_transport.websocket.pooled_connection_idle_timeout`，默认 300s）无新请求自动 close 1001。2026-07-14 传输三轴重组从硬编码 `DEFAULT_IDLE_TIMEOUT_MS`（5 min）提升为可配；热重载重调基于原 `idleSince` 起点（非 `Date.now()`），避免每次 reload 无意延长老连接寿命。
 - **close 幂等**：`handleClose` 有 `closeHandled` 重入守卫（某些 WS 实现会重复 dispatch close）；无 socket 的占位被 `close()` 时也调 `onClose` 让管理器清理。
 
 ### CAPI 错误格式
@@ -167,16 +167,24 @@ state.upstreamWebSocket === true          （config openai_responses.upstream_ws
 
 ## 配置
 
-`config.yaml` 的 `openai_responses` 段（均 `CONFIG_MANAGED_DEFAULTS` 兜底、热重载）：
+`config.yaml` 的 `openai_responses` 段（endpoint 路由开关 + Responses payload 相关键，均 `CONFIG_MANAGED_DEFAULTS` 兜底、热重载）：
 
 | 键 | state 字段 | 类型 | 默认 | 说明 |
 |----|-----------|------|------|------|
 | `upstream_ws` | `upstreamWebSocket` | bool | `false` | 启用代理↔上游 WS（仅模型声明 `ws:/responses` 时） |
-| `client_ws_keep_open` | `clientWebsocketKeepOpen` | bool | `false` | 客户端 WS 在 `response.completed` 后保持连接接受后续 `response.create`；false = 1000 关闭 |
-| `max_ws_frame_bytes` | `maxWsFrameBytes` | number | `0` | 客户端入站帧上限；`0` = 无限 |
-| `max_client_ws_connections` | `maxClientWsConnections` | number | `256` | 客户端 WS 并发连接上限（每进程）；超限 1013 拒绝 |
-| `max_upstream_ws_connections` | `maxUpstreamWsConnections` | number | `32` | 上游 WS 连接池软上限；达到后驱逐 idle，`0` = 无限 |
 | `fix_stream_ids` | `fixResponsesStreamIds` | bool | `true` | 修复 `@ai-sdk/openai` 期望的跨帧 id 一致性（HTTP + WS 共享 S5 rewrite） |
+
+2026-07-14 传输三轴重组把 client-facing ingress 与 upstream egress 键分别迁出 `openai_responses` 段（不再是「按 wire technology 归类」，而是按方向/职责归位）：
+
+| 键 | state 字段 | 类型 | 默认 | 说明 |
+|----|-----------|------|------|------|
+| `server.responses_ws.keep_open` | `clientWebsocketKeepOpen` | bool | `false` | 客户端 WS 在 `response.completed` 后保持连接接受后续 `response.create`；false = 1000 关闭。旧键 `openai_responses.client_ws_keep_open` |
+| `server.responses_ws.max_frame_bytes` | `maxWsFrameBytes` | number | `0` | 客户端入站帧上限；`0` = 无限。旧键 `openai_responses.max_ws_frame_bytes` |
+| `server.responses_ws.max_connections` | `maxClientWsConnections` | number | `256` | 客户端 WS 并发连接上限（每进程）；超限 1013 拒绝。旧键 `openai_responses.max_client_ws_connections` |
+| `upstream_transport.websocket.soft_max_connections` | `softMaxUpstreamWsConnections` | number | `32` | 上游 WS 连接池软上限；达到后驱逐 idle，`0` = 无限。旧键 `openai_responses.max_upstream_ws_connections`（字段同时改名 `maxUpstreamWsConnections`→`softMaxUpstreamWsConnections`） |
+| `upstream_transport.websocket.pooled_connection_idle_timeout` | `pooledConnectionIdleTimeout` | number | `300` | 池中空闲上游 WS 连接被主动关闭前的空闲超时秒数；`0` = 永不因空闲关闭。原硬编码 `DEFAULT_IDLE_TIMEOUT_MS`（5 min），新增旋钮（无旧键） |
+
+详细语义、`0` 语义统一、热重载 reconcile 策略见 ADR [decisions/2026-07-14-transport-config-three-axis-organization.md](decisions/2026-07-14-transport-config-three-axis-organization.md) + spec [spec/2026-07-14-upstream-transport-config-reorg.md](spec/2026-07-14-upstream-transport-config-reorg.md)。
 
 ---
 

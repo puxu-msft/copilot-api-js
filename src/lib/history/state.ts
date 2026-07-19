@@ -15,6 +15,12 @@ import {
 } from "./raw/manager"
 import {
   //
+  configureTantivySearch,
+  drainTantivySearch,
+  enqueueTantivyOperation,
+} from "./search-tantivy"
+import {
+  //
   closeDatabase,
   getDatabase,
   openDatabase,
@@ -44,6 +50,7 @@ import {
 
 let enabled = false
 let unsubscribeV3Terminal: (() => void) | undefined
+let unsubscribeTantivyTerminal: (() => void) | undefined
 let unsubscribeRawCapture: (() => void) | undefined
 let _publisher: ScopedPublisher<"history"> | undefined
 
@@ -85,6 +92,9 @@ export async function initHistory(enable: boolean, _legacyMaxEntries?: number): 
   if (!enable) {
     unsubscribeV3Terminal?.()
     unsubscribeV3Terminal = undefined
+    unsubscribeTantivyTerminal?.()
+    unsubscribeTantivyTerminal = undefined
+    configureTantivySearch({ enabled: false, path: PATHS.HISTORY_SEARCH_DIR })
     unsubscribeRawCapture?.()
     unsubscribeRawCapture = undefined
     stopV3Maintenance()
@@ -109,6 +119,13 @@ export async function initHistory(enable: boolean, _legacyMaxEntries?: number): 
   recoverV3Journal(getDatabase())
   unsubscribeV3Terminal?.()
   unsubscribeV3Terminal = subscribeModelOperationTerminals(enqueueModelOperation)
+  unsubscribeTantivyTerminal?.()
+  // In-memory History fixtures must never spill a native sidecar onto the host.
+  // On-disk injected test stores get a sibling directory; production uses the
+  // stable application-owned artifact path.
+  const searchPath = state.historyDbPath ? `${dbPath}.tantivy` : PATHS.HISTORY_SEARCH_DIR
+  configureTantivySearch({ enabled: dbPath !== ":memory:", path: searchPath })
+  unsubscribeTantivyTerminal = subscribeModelOperationTerminals(enqueueTantivyOperation)
   unsubscribeRawCapture?.()
   unsubscribeRawCapture = onHistoryRawCaptureChange(() => {
     configureRawCapture({
@@ -168,8 +185,11 @@ export async function shutdownHistory(): Promise<void> {
   // detach after no more requests can settle, then drain terminal work to disk.
   unsubscribeV3Terminal?.()
   unsubscribeV3Terminal = undefined
+  unsubscribeTantivyTerminal?.()
+  unsubscribeTantivyTerminal = undefined
   await drainModelOperationTerminalSubscribers()
   await drainV3Writer()
+  await drainTantivySearch()
   await drainV3SummaryBackfill()
   shutdownRawCapture()
   closeDatabase()

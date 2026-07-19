@@ -702,21 +702,40 @@ export const ResponsesConfigSchema = z
      */
     buffered_retry: nullableBufferedRetry(),
     fix_stream_ids: nullableBoolean(),
-    client_ws_keep_open: nullableBoolean(),
     /**
      * Strip the `image_generation` builtin tool from inbound Responses
      * requests. The Copilot upstream rejects it (failing the whole request),
      * and some clients (e.g. Codex CLI) auto-inject it. Default false.
      */
     strip_image_generation_tool: nullableBoolean(),
-    /** Optional cap on inbound WS frame bytes (default 0 = unlimited; set positive to opt into a hard cap). */
-    max_ws_frame_bytes: nullableNonnegativeInt(),
-    /** Max concurrent client WS connections (default 256; 0 = unlimited). */
-    max_client_ws_connections: nullableNonnegativeInt(),
-    /** Soft cap on upstream WS pool size (default 32; 0 = unlimited). */
-    max_upstream_ws_connections: nullableNonnegativeInt(),
   })
   .strict()
+
+/**
+ * `server.responses_ws.*` — inbound client-facing Responses WebSocket ingress
+ * limits (D6: moved out of `openai_responses.*` as a whole group, since these
+ * govern the DOWNSTREAM client connection, not the upstream GHC connection —
+ * distinct axis from `upstream_transport.websocket.*`).
+ */
+export const ResponsesWsIngressConfigSchema = z
+  .object({
+    /** Keep the client WS connection open across turns instead of closing after each response. Was `openai_responses.client_ws_keep_open`. Default false. */
+    keep_open: nullableBoolean(),
+    /** Optional cap on inbound WS frame bytes (default 0 = unlimited; set positive to opt into a hard cap). Was `openai_responses.max_ws_frame_bytes`. */
+    max_frame_bytes: nullableNonnegativeInt(),
+    /** Max concurrent client WS connections (default 256; 0 = unlimited). Was `openai_responses.max_client_ws_connections`. */
+    max_connections: nullableNonnegativeInt(),
+  })
+  .strict()
+export type ResponsesWsIngressConfig = z.infer<typeof ResponsesWsIngressConfigSchema>
+
+/** `server.*` — inbound/ingress-facing server configuration (currently just `responses_ws`). */
+export const ServerConfigSchema = z
+  .object({
+    responses_ws: nullableSection(ResponsesWsIngressConfigSchema),
+  })
+  .strict()
+export type ServerConfig = z.infer<typeof ServerConfigSchema>
 
 /**
  * `chat_completions` top-level section. Currently holds only the buffered-retry
@@ -841,10 +860,6 @@ export const TimeoutsConfigSchema = z
     response_header_overrides: ResponseHeaderOverridesSchema.nullable()
       .transform((v): z.infer<typeof ResponseHeaderOverridesSchema> | undefined => v ?? undefined)
       .optional(),
-    /** Upstream TCP keepalive initial-probe delay in seconds (0 = use undici default 60s). Keeps GHC connection alive through long opus thinking silences so NAT/firewall idle reapers don't sever it. Node-only. */
-    upstream_keepalive: nullableNonnegativeInt(),
-    /** Upstream HTTP/2 PING keepalive interval in seconds (0 = disabled). Application-layer complement to `upstream_keepalive`: GHC does NOT forward Anthropic's SSE `ping` frames, so a long thinking silence is a truly idle stream a connection-idle reaper (middlebox/GHC edge) severs WITHOUT `message_stop` (a real cut fired at ~112s) — a periodic PING puts a real frame on the wire. Default 15. Node-only (node:http2 transport). */
-    upstream_h2_ping: nullableNonnegativeInt(),
     /** Max seconds an active request may live before the stale reaper forces failure (0 = disabled). Was top-level `stale_request_max_age`. */
     stale_request_max_age: nullableNonnegativeInt(),
     /**
@@ -857,6 +872,65 @@ export const TimeoutsConfigSchema = z
     request_deadline: nullableNonnegativeInt(),
   })
   .strict()
+
+export const UpstreamTransportHttp2ConfigSchema = z
+  .object({
+    /** Upstream HTTP/2 PING keepalive interval in seconds (0 = disabled). Same semantics as the migrated `timeouts.upstream_h2_ping`. Default 15. Works on both Bun and Node (node:http2 transport is runtime-neutral). */
+    ping_interval: nullableNonnegativeInt(),
+    /**
+     * TCP connect + TLS handshake deadline in seconds for a single h2 session
+     * establishment attempt (0 = no timeout). This is a per-attempt connect
+     * ceiling, NOT a total request deadline — a proxied connection tunnels a
+     * pre-TLS socket then layers TLS, so the worst case is up to 2x this value
+     * (connect-to-proxy + TLS-through-tunnel). See
+     * docs/decisions/2026-07-14-transport-config-three-axis-organization.md D3.
+     * Default 10 (mirrors the previous hardcoded CONNECT_TIMEOUT_MS).
+     *
+     * `0` genuinely disables the deadline for direct connections and HTTP
+     * CONNECT proxies (see plan-2 Step 3). It CANNOT be honestly disabled
+     * when the configured proxy is SOCKS — the `socks` package floors its
+     * own connect timeout at 30s regardless (`this.options.timeout ||
+     * DEFAULT_TIMEOUT`, `DEFAULT_TIMEOUT = 30_000`; verified by reading
+     * `node_modules/socks` source). `ConfigSchema`'s top-level
+     * `.superRefine()` (see Task 3 Step 6+ below) rejects `0` here whenever
+     * `proxy` resolves to a `socks5:`/`socks5h:` URL, rather than silently
+     * accepting `0` and getting the library's 30s default instead of the
+     * disabled behavior the user asked for (D3/D5 "诚实表达能力边界").
+     */
+    session_connect_timeout: nullableNonnegativeInt(),
+  })
+  .strict()
+export type UpstreamTransportHttp2Config = z.infer<typeof UpstreamTransportHttp2ConfigSchema>
+
+export const UpstreamTransportWebsocketConfigSchema = z
+  .object({
+    /**
+     * Idle timeout in seconds for a pooled (not-in-use) upstream Responses WS
+     * connection before it is proactively closed (0 = never idle-close).
+     * Default 300 (mirrors the previous hardcoded DEFAULT_IDLE_TIMEOUT_MS = 5min).
+     */
+    pooled_connection_idle_timeout: nullableNonnegativeInt(),
+    /** Soft cap on upstream WS pool size (default 32; 0 = unlimited). Was `openai_responses.max_upstream_ws_connections`. */
+    soft_max_connections: nullableNonnegativeInt(),
+  })
+  .strict()
+export type UpstreamTransportWebsocketConfig = z.infer<typeof UpstreamTransportWebsocketConfigSchema>
+
+/**
+ * `upstream_transport.*` — outbound connection behavior toward the GHC upstream,
+ * organized by protocol (D1 three-axis reorg). Distinct from `timeouts.*`
+ * (protocol-agnostic request-lifecycle watchdogs) and `server.responses_ws.*`
+ * (inbound client-facing WS ingress limits).
+ */
+export const UpstreamTransportConfigSchema = z
+  .object({
+    /** Upstream TCP keepalive initial-probe delay in seconds (0 = use undici/Node default, NOT "disabled" — see compat.ts migration for the legacy 0→absence special case). Was `timeouts.upstream_keepalive`. Default 15. Works on both Bun and Node. */
+    tcp_keepalive_probe_delay: nullableNonnegativeInt(),
+    http2: nullableSection(UpstreamTransportHttp2ConfigSchema),
+    websocket: nullableSection(UpstreamTransportWebsocketConfigSchema),
+  })
+  .strict()
+export type UpstreamTransportConfig = z.infer<typeof UpstreamTransportConfigSchema>
 
 // ============================================================================
 // Top-level Config schema
@@ -1104,6 +1178,8 @@ export const ConfigSchema = z
     hooks: nullableSection(HooksConfigSchema),
     shutdown: nullableSection(ShutdownConfigSchema),
     timeouts: nullableSection(TimeoutsConfigSchema),
+    upstream_transport: nullableSection(UpstreamTransportConfigSchema),
+    server: nullableSection(ServerConfigSchema),
     telemetry: nullableSection(TelemetryConfigSchema),
     model_refresh_interval: nullableNonnegativeInt(),
     /**
@@ -1134,6 +1210,24 @@ export const ConfigSchema = z
     pidfile: nullableString(),
   })
   .strict()
+  .superRefine((cfg, ctx) => {
+    const sessionConnectTimeout = cfg.upstream_transport?.http2?.session_connect_timeout
+    if (sessionConnectTimeout !== 0 || !cfg.proxy) return
+    let scheme: string
+    try {
+      scheme = new URL(cfg.proxy).protocol
+    } catch {
+      return // malformed proxy URL is already flagged by ProxySchema's own superRefine; don't double-report
+    }
+    if (scheme !== "socks5:" && scheme !== "socks5h:") return
+    ctx.addIssue({
+      code: "custom",
+      path: ["upstream_transport", "http2", "session_connect_timeout"],
+      message:
+        "session_connect_timeout: 0 (disable connect deadline) cannot be honored with a SOCKS proxy — the socks library floors the connect timeout at its own 30s default regardless (node_modules/socks source verified). Set an explicit positive value, or use a direct connection / HTTP CONNECT proxy where 0 genuinely disables the deadline.",
+      params: { rejectedValue: sessionConnectTimeout },
+    })
+  })
 
 // ============================================================================
 // Legacy key migrations (renames / relocations / removals) live in ./compat.ts

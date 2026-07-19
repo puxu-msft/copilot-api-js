@@ -16,6 +16,7 @@ import {
 } from "bun:test"
 import consola from "consola"
 
+import { extractAndTranslateDeprecatedWithOps } from "~/lib/config/compat"
 import {
   //
   _resetConfigValidationWarnTrackingForTests,
@@ -73,7 +74,11 @@ describe("config compat — legacy key migration (file load)", () => {
       },
     })
     expect(result.openai_responses?.upstream_ws).toBe(true)
-    expect(result.openai_responses?.client_ws_keep_open).toBe(true)
+    // client_websocket_keep_open → (renameSection) openai_responses.client_ws_keep_open →
+    // (three-axis reorg renameLeaf, same migration pass) server.responses_ws.keep_open —
+    // migrations chain within a single extractAndTranslateDeprecated() pass because
+    // CONFIG_MIGRATIONS is evaluated top-down and this renameLeaf sits after renameSection.
+    expect(result.server?.responses_ws?.keep_open).toBe(true)
     // un-renamed inner field preserved verbatim
     expect(result.openai_responses?.normalize_call_ids).toBe(false)
     expect((result as Record<string, unknown>)["openai-responses"]).toBeUndefined()
@@ -244,6 +249,54 @@ describe("config compat — legacy key migration (file load)", () => {
     // null → undefined via schema transform; no NaN from null*60
     expect(result.rate_limiter?.recovery_interval).toBeUndefined()
   })
+
+  test("timeouts.upstream_keepalive → upstream_transport.tcp_keepalive_probe_delay", () => {
+    const result = validateConfig({ timeouts: { upstream_keepalive: 20 } })
+    expect(result.upstream_transport?.tcp_keepalive_probe_delay).toBe(20)
+    expect((result.timeouts as Record<string, unknown> | undefined)?.upstream_keepalive).toBeUndefined()
+    expect(warnedMessages().some((m) => m.includes("upstream_keepalive"))).toBe(true)
+  })
+
+  test("timeouts.upstream_keepalive: 0 migrates to absence (not tcp_keepalive_probe_delay: 0) so the new default (15) applies", () => {
+    const result = validateConfig({ timeouts: { upstream_keepalive: 0 } })
+    expect(result.upstream_transport?.tcp_keepalive_probe_delay).toBeUndefined()
+    expect((result.timeouts as Record<string, unknown> | undefined)?.upstream_keepalive).toBeUndefined()
+    expect(warnedMessages().some((m) => m.includes("upstream_keepalive"))).toBe(true)
+  })
+
+  test("timeouts.upstream_h2_ping → upstream_transport.http2.ping_interval", () => {
+    const result = validateConfig({ timeouts: { upstream_h2_ping: 30 } })
+    expect(result.upstream_transport?.http2?.ping_interval).toBe(30)
+    expect((result.timeouts as Record<string, unknown> | undefined)?.upstream_h2_ping).toBeUndefined()
+  })
+
+  test("openai_responses.client_ws_keep_open → server.responses_ws.keep_open", () => {
+    const result = validateConfig({ openai_responses: { client_ws_keep_open: true } })
+    expect(result.server?.responses_ws?.keep_open).toBe(true)
+    expect((result.openai_responses as Record<string, unknown> | undefined)?.client_ws_keep_open).toBeUndefined()
+  })
+
+  test("openai_responses.max_ws_frame_bytes → server.responses_ws.max_frame_bytes", () => {
+    const result = validateConfig({ openai_responses: { max_ws_frame_bytes: 65536 } })
+    expect(result.server?.responses_ws?.max_frame_bytes).toBe(65536)
+  })
+
+  test("openai_responses.max_client_ws_connections → server.responses_ws.max_connections", () => {
+    const result = validateConfig({ openai_responses: { max_client_ws_connections: 128 } })
+    expect(result.server?.responses_ws?.max_connections).toBe(128)
+  })
+
+  test("openai_responses.max_upstream_ws_connections → upstream_transport.websocket.soft_max_connections", () => {
+    const result = validateConfig({ openai_responses: { max_upstream_ws_connections: 64 } })
+    expect(result.upstream_transport?.websocket?.soft_max_connections).toBe(64)
+    expect((result.openai_responses as Record<string, unknown> | undefined)?.max_upstream_ws_connections).toBeUndefined()
+  })
+
+  test("multiple upstream_transport.http2 legacy leaves accumulate into one sub-section", () => {
+    const result = validateConfig({ timeouts: { upstream_keepalive: 12, upstream_h2_ping: 8 } })
+    expect(result.upstream_transport?.tcp_keepalive_probe_delay).toBe(12)
+    expect(result.upstream_transport?.http2?.ping_interval).toBe(8)
+  })
 })
 
 describe("config compat — validateConfigInput (PUT) also migrates (C3)", () => {
@@ -275,5 +328,95 @@ describe("config compat — validateConfigInput (PUT) also migrates (C3)", () =>
     const r = validateConfigInput({ fetch_timeout: -1 })
     expect(r.valid).toBe(false)
     if (!r.valid) expect(r.details[0].field).toBe("timeouts.response_header")
+  })
+
+  test("PUT legacyPathsRemoved reports the migrated legacy path", () => {
+    const r = validateConfigInput({ fetch_timeout: 30 })
+    expect(r.valid).toBe(true)
+    if (r.valid) expect(r.legacyPathsRemoved).toContain("fetch_timeout")
+  })
+
+  test("PUT legacyPathsRemoved is empty when no legacy keys are present", () => {
+    const r = validateConfigInput({ model_refresh_interval: 300 })
+    expect(r.valid).toBe(true)
+    if (r.valid) expect(r.legacyPathsRemoved).toEqual([])
+  })
+
+  test("PUT legacyPathsRemoved excludes in-place value migrations (anthropic.thinking_block_sanitize)", () => {
+    const r = validateConfigInput({ anthropic: { thinking_block_sanitize: "empty_thinking" } })
+    expect(r.valid).toBe(true)
+    if (r.valid) {
+      expect(r.value.anthropic?.thinking_block_sanitize).toBe("all_empty")
+      expect(r.legacyPathsRemoved).not.toContain("anthropic.thinking_block_sanitize")
+    }
+  })
+})
+
+describe("validateConfigInput (PUT) — SOCKS session_connect_timeout=0 hard-rejects (D3 exception)", () => {
+  test("rejects with structured detail naming the SOCKS caveat", () => {
+    const r = validateConfigInput({
+      proxy: "socks5://proxy.example:1080",
+      upstream_transport: { http2: { session_connect_timeout: 0 } },
+    })
+    expect(r.valid).toBe(false)
+    if (r.valid) return
+    const detail = r.details.find((d) => d.field === "upstream_transport.http2.session_connect_timeout")
+    expect(detail).toBeDefined()
+    expect(detail?.message).toContain("SOCKS")
+    expect(detail?.value).toBe(0)
+  })
+
+  test("accepts a positive session_connect_timeout with the same SOCKS proxy", () => {
+    const r = validateConfigInput({
+      proxy: "socks5://proxy.example:1080",
+      upstream_transport: { http2: { session_connect_timeout: 5 } },
+    })
+    expect(r.valid).toBe(true)
+  })
+})
+
+describe("config compat — extractAndTranslateDeprecatedWithOps (legacyPathsRemoved tracking)", () => {
+  test("renameLeaf migration reports the legacy dot-path in legacyPathsRemoved", () => {
+    const { value, legacyPathsRemoved } = extractAndTranslateDeprecatedWithOps({ fetch_timeout: 200 })
+    expect((value.timeouts as Record<string, unknown> | undefined)?.response_header).toBe(200)
+    expect(legacyPathsRemoved).toContain("fetch_timeout")
+  })
+
+  test("removeKey migration (pure removal, no replacement) reports the legacy path too", () => {
+    const { legacyPathsRemoved } = extractAndTranslateDeprecatedWithOps({ history: { min_entries: 5 } })
+    expect(legacyPathsRemoved).toContain("history.min_entries")
+  })
+
+  test("renameSection migration reports the legacy section path", () => {
+    const { value, legacyPathsRemoved } = extractAndTranslateDeprecatedWithOps({ "openai-responses": { upstream_websocket: true } })
+    expect((value.openai_responses as Record<string, unknown> | undefined)?.upstream_ws).toBe(true)
+    expect(legacyPathsRemoved).toContain("openai-responses")
+  })
+
+  test("migrateValue (in-place value consolidation, SAME key) does NOT report a legacy path", () => {
+    const { value, legacyPathsRemoved } = extractAndTranslateDeprecatedWithOps({ anthropic: { thinking_block_sanitize: "empty_thinking" } })
+    expect((value.anthropic as Record<string, unknown> | undefined)?.thinking_block_sanitize).toBe("all_empty")
+    // The key never relocates — deleting it from the on-disk YAML would only
+    // drop the user's comment/position for no reason (see plan-3 §Architecture).
+    expect(legacyPathsRemoved).not.toContain("anthropic.thinking_block_sanitize")
+  })
+
+  test("already-valid migrateValue-gated value passes through with no legacyPathsRemoved entry", () => {
+    const { legacyPathsRemoved } = extractAndTranslateDeprecatedWithOps({ anthropic: { thinking_block_sanitize: "all_empty" } })
+    expect(legacyPathsRemoved).toEqual([])
+  })
+
+  test("legacy value of 0 on a transform-gated renameLeaf (0→absence) still reports the legacy path, even though no new value is written", () => {
+    const { value, legacyPathsRemoved } = extractAndTranslateDeprecatedWithOps({ timeouts: { upstream_keepalive: 0 } })
+    expect((value.upstream_transport as Record<string, unknown> | undefined)?.tcp_keepalive_probe_delay).toBeUndefined()
+    expect(legacyPathsRemoved).toContain("timeouts.upstream_keepalive")
+  })
+
+  test("no legacy keys present → empty legacyPathsRemoved, value unchanged (deep-cloned)", () => {
+    const input = { proxy: "http://x" }
+    const { value, legacyPathsRemoved } = extractAndTranslateDeprecatedWithOps(input)
+    expect(legacyPathsRemoved).toEqual([])
+    expect(value).toEqual(input)
+    expect(value).not.toBe(input)
   })
 })

@@ -7,8 +7,17 @@ import {
   z,
 } from "@hono/zod-openapi"
 import fs from "node:fs/promises"
-import { parseDocument } from "yaml"
+import {
+  //
+  isMap,
+  parseDocument,
+} from "yaml"
 
+import {
+  //
+  deepMergeMissingOnly,
+  extractDiskOnlyMigrationPatch,
+} from "~/lib/config/compat"
 import {
   //
   applyConfigToState,
@@ -122,7 +131,24 @@ configRoutes.openapi(putConfigYamlRoute, async (c) => {
   }
 
   const doc = await loadEditableConfigDocument()
-  mergeConfigIntoDocument(doc, validation.value)
+
+  // The PUT body only migrates whatever fields the CALLER sent (validation.value/
+  // validation.legacyPathsRemoved) — a legacy key can sit on disk untouched by an
+  // otherwise-unrelated PUT (even an empty `{}` body) and must still be migrated,
+  // or "PUT never fully finishes migrating" (this phase's whole reason to exist)
+  // would persist. Compute that disk-only delta separately (sparse patch, NOT a
+  // full merged payload — see extractDiskOnlyMigrationPatch's doc comment for why
+  // a full-payload merge would corrupt untouched collections like
+  // model_overrides) and fold it in before writing.
+  const diskRaw = doc.toJSON() as Record<string, unknown> | null
+  const { patch: diskOnlyPatch, legacyPathsRemoved: diskOnlyLegacyPaths } =
+    diskRaw && typeof diskRaw === "object" && !Array.isArray(diskRaw) ? extractDiskOnlyMigrationPatch(diskRaw) : { patch: {}, legacyPathsRemoved: [] }
+  const mergedValue = structuredClone(validation.value) as Record<string, unknown>
+  deepMergeMissingOnly(mergedValue, diskOnlyPatch)
+  const allLegacyPaths = [...new Set([...validation.legacyPathsRemoved, ...diskOnlyLegacyPaths])]
+
+  deleteLegacyPathsAndPruneEmptyParents(doc, allLegacyPaths)
+  mergeConfigIntoDocument(doc, mergedValue as Config)
 
   await fs.mkdir(PATHS.APP_DIR, { recursive: true })
   await fs.writeFile(PATHS.CONFIG_YAML, doc.toString(), "utf8")
@@ -273,6 +299,8 @@ function mergeConfigIntoDocument(doc: ConfigDocument, body: Config): void {
   if (hasOwn(body, "history")) setNestedScalarContainer(doc, ["history"], body.history)
   if (hasOwn(body, "hooks")) setNestedScalarContainer(doc, ["hooks"], body.hooks)
   if (hasOwn(body, "openai_responses")) setNestedScalarContainer(doc, ["openai_responses"], body.openai_responses)
+  if (hasOwn(body, "upstream_transport")) setNestedScalarContainer(doc, ["upstream_transport"], body.upstream_transport)
+  if (hasOwn(body, "server")) setNestedScalarContainer(doc, ["server"], body.server)
 
   if (hasOwn(body, "negotiation_learning")) {
     const nl = body.negotiation_learning
@@ -315,6 +343,25 @@ function setScalar(doc: ConfigDocument, path: Array<string>, value: unknown): vo
   doc.setIn(path, value)
 }
 
+/**
+ * Recursively merge `value`'s keys into `doc` at `path`. A nested plain-object
+ * child recurses into a fresh merge at the child path (so untouched sibling
+ * keys survive at EVERY nesting depth, not just the top one); `null`/
+ * `undefined` deletes that exact key at any depth (`setScalar` already
+ * handles this); any other value (scalar, array) is written wholesale.
+ *
+ * Used to stop recursing after the first level: a nested-object CHILD value
+ * (e.g. `anthropic.buffered_retry`, `upstream_transport.http2`) was handed to
+ * `setScalar`, which does `doc.setIn(childPath, wholeObject)` — silently
+ * replacing the entire child node and erasing sibling fields the PUT body
+ * didn't mention (`ping_interval` disappearing when a PUT only sent
+ * `session_connect_timeout`). Recursing keeps every already-existing sibling
+ * untouched at any depth, matching this API's "sparse override" PUT
+ * semantics (`docs/spec/2026-07-14-upstream-transport-config-reorg.md` §5 —
+ * user decision; `anthropic.buffered_retry`, the one existing field that hit
+ * this bug, switches to the same semantics too — no back-compat burden for a
+ * config PUT behavior change).
+ */
 function setNestedScalarContainer(doc: ConfigDocument, path: Array<string>, value: unknown, options?: { excludeKeys?: Set<string> }): void {
   if (value === null || value === undefined) {
     doc.deleteIn(path)
@@ -324,7 +371,9 @@ function setNestedScalarContainer(doc: ConfigDocument, path: Array<string>, valu
 
   for (const [key, child] of Object.entries(value)) {
     if (options?.excludeKeys?.has(key)) continue
-    setScalar(doc, [...path, key], child)
+    const childPath = [...path, key]
+    if (isPlainObject(child)) setNestedScalarContainer(doc, childPath, child)
+    else setScalar(doc, childPath, child)
   }
 }
 
@@ -336,4 +385,31 @@ function replaceCollection(doc: ConfigDocument, path: Array<string>, value: unkn
 
   doc.deleteIn(path)
   doc.setIn(path, value)
+}
+
+/**
+ * Delete every legacy dot-path reported by `ConfigValidationResult.legacyPathsRemoved`
+ * from the on-disk YAML document, then walk upward pruning any ancestor Map
+ * that became empty as a result (so a fully-migrated section disappears
+ * entirely instead of leaving a dangling `section: {}`). Stops climbing as
+ * soon as an ancestor still has at least one sibling key — untouched
+ * sibling fields and their comments are never disturbed.
+ *
+ * Must run BEFORE mergeConfigIntoDocument, which writes the migrated new
+ * value at its (possibly different) new path.
+ */
+function deleteLegacyPathsAndPruneEmptyParents(doc: ConfigDocument, legacyPaths: ReadonlyArray<string>): void {
+  for (const dotPath of legacyPaths) {
+    const parts = dotPath.split(".")
+    doc.deleteIn(parts)
+    for (let depth = parts.length - 1; depth > 0; depth--) {
+      const ancestorPath = parts.slice(0, depth)
+      const node = doc.getIn(ancestorPath, true)
+      if (isMap(node) && node.items.length === 0) {
+        doc.deleteIn(ancestorPath)
+      } else {
+        break
+      }
+    }
+  }
 }

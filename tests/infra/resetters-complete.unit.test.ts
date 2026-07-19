@@ -70,6 +70,10 @@ const EXEMPT: Record<string, string> = {
   // (registered), which closes the injected db handle + restores OUTBOX_SOFT_CAP.
   _setTelemetryDbForTests: "db injector — reset via _resetRequestTelemetryForTests",
   _setOutboxSoftCapForTests: "soft-cap injector — reset via _resetRequestTelemetryForTests",
+  // compat.ts's own warn-once tracking is drained by the ALREADY-registered
+  // _resetConfigValidationWarnTrackingForTests (validation.ts), which calls this
+  // internally — registering both would double-reset the same Set.
+  _resetDeprecatedKeyWarnTrackingForTests: "covered by _resetConfigValidationWarnTrackingForTests, which calls it internally",
 }
 
 function enumerateForTestExports(dir: string): Set<string> {

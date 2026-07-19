@@ -50,6 +50,15 @@ new Headers({ authorization: "Bearer A", Authorization: "Bearer B" })
 
 > PTY 整屏测试的通用方法论（正样本红绿对照、连跑证时序确定性、pyte/xterm 网格解释）见 user-level skill `pty-terminal-ui-testing`；本节是它在 Bun.Terminal 上的落地限制。
 
+## node:http2 client：服务端 pre-header 销毁会话时 Bun 只发裸 `close`(rstCode=0)、不发 `error`
+
+`http2Fetch`（`transport/http2-client.ts`）等**从 `req` 事件手搭响应**的 h2 客户端，若不为「headers 到达前连接就断」这一路装 backstop，会在 Bun 下**永久挂起**（不是漏记数、是真 hang）。实测两 runtime 事件序列相反（transport 三轴重组 P4 逼出、reviewer 亲写 `exp/` 探针独立复现）：
+
+- **Bun 1.3.14**：服务端响应头前 `session.destroy(err)` → client `req` 只触发 **`close`（rstCode=0）**，`response` 与 `error` **从不触发**。若逻辑只在 `error`/`response` 里 reject/settle，promise 永挂。
+- **Node v24**：同场景 `req` 先触发 **`error`（`ERR_HTTP2_SESSION_ERROR`）** 再 `close`（rstCode=2）——`error` 先到、正常 reject。
+
+修法：pre-header 阶段挂一个 `req.once("close")` backstop，`!headersReceived` 时 reject（headers 已到的正常 close 是 no-op、不误 reject）。注意与 active-stream 记账的 `req.once("close")` 归因点**互相独立**（一个 reject fetch promise、一个做计数），别混用同一个 handler 双触发。另注：Bun 对**干净** server RST_STREAM（`stream.close(code)`）投递为普通 `end` + `rstCode=0`（实测），故「干净 RST」在 Bun 下这一路不可辨——依赖 rstCode 判错误类型的逻辑对 Bun 要留退路。
+
 ## 通用手法
 
 - 任何「Bun 能跑 Node 挂 / 两 runtime 分歧」怀疑：写最小 `bun -e` / node 探针**两 runtime 各跑一遍**实测（放 `exp/`），别信「bun test 绿」——它单跑 Bun 掩盖 Node 分歧。见 skill `empirical-verification`、`verifying-authoritative-claims`。

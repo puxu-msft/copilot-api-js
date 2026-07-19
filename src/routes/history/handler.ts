@@ -209,10 +209,9 @@ export function handleExport(c: Context) {
 const SEARCH_SOURCES: ReadonlySet<SearchSource> = new Set<SearchSource>(["inbound", "rewrites-req", "rewrites-resp", "req-headers", "resp-headers"])
 
 /**
- * GET /history/api/search — dedicated full-text search over the content-addressed
- * index. `?source=` selects one of the five facets (default `inbound`), `?q=` the
- * needle, plus the same structural filters as the list. While the backfill runs,
- * `inbound` results carry `{ partial: true, builtPct }`.
+ * GET /history/api/search — compatibility surface for the retired embedded
+ * search. Returns an empty result until the independent Tantivy sidecar serves
+ * this contract; it never falls back to History SQLite.
  */
 export function handleSearch(c: Context) {
   if (!isHistoryEnabled()) {
@@ -247,9 +246,8 @@ export function handleSearch(c: Context) {
 }
 
 /**
- * GET /history/api/search/contains?hash= — lazy companion to the `inbound` search:
- * every request id that references a given message hash (can be hundreds, so it is
- * NOT inlined into the search result rows).
+ * GET /history/api/search/contains?hash= — compatibility surface. Embedded
+ * object membership was removed with the SQLite search projection.
  */
 export function handleSearchContains(c: Context) {
   if (!isHistoryEnabled()) {

@@ -75,7 +75,7 @@
 |------|------|------|
 | `/api/models` | GET | 模型列表（内部格式：**全量未过滤** Copilot 目录——含被 `config.disabled_models` 禁用的模型，供 UI 可见）+ envelope 顶层 `disabled: string[]`（config-disabled 的实际目录 id，`getConfigDisabledIds()` 归一化匹配）。**与 vendor 端点（`/v1/models`、`/anthropic/v1/models`）正交**：那些仍返 `state.models`（过滤后可用集）；仅内部管理视图看全量。合成标记 `disabled` 只在 envelope，不污染 Model 形状。类型 `InternalModelsResponse`（`src/lib/models/client.ts`，前端 `~backend` re-export）。见 [spec/2026-07-08-models-drawer-and-disabled-visibility.md](spec/2026-07-08-models-drawer-and-disabled-visibility.md) |
 | `/api/models/:model` | GET | 单个模型详情（内部格式）；对**全量目录**解析（`modelIndex.get` 命中可用集，未命中回退 raw 全量 find）→ 禁用模型详情也返 200 |
-| `/api/status` | GET | 服务器状态（含 `requestTelemetry` 的 **model 维度摘要**——运营 stats 的其余维度故意不塞此 health-poll，见 `/api/stats`；另含 feature-specific 计数器 `protect_streaming`、`tool_input_repair`〔strip/jsonrepair/unrepairable〕；另含 `thinking_blocks`〔thinking 块空/非空三桶〕——**注：这是 telemetry `agentKind` 维度 sum 的投影（`getThinkingBlockTotals`），非独立 module-global 计数器**） |
+| `/api/status` | GET | 服务器状态（含 `requestTelemetry` 的 **model 维度摘要**——运营 stats 的其余维度故意不塞此 health-poll，见 `/api/stats`；另含 feature-specific 计数器 `protect_streaming`、`tool_input_repair`〔strip/jsonrepair/unrepairable〕；另含 `thinking_blocks`〔thinking 块空/非空三桶〕——**注：这是 telemetry `agentKind` 维度 sum 的投影（`getThinkingBlockTotals`），非独立 module-global 计数器**；另含 `transport`〔上游传输诊断：`configured` 生效值〔0/undefined→`null` 归一化〕+ `h2Sessions`/`upstreamWsPool` 逐条目 + 两个 transport **各自独立**的 reconcile 状态（`h2Reconcile` + `upstreamWsReconcile`，均 `{state, lastCompletedGeneration, lastError}`）+ `runtimeCapability`——D7 HIGH-7，聚合器 `src/lib/transport/status-snapshot.ts`，SSOT-types 经 `~backend/*` 供 ui-v4 消费〕） |
 | `/api/stats` | GET | 运营 stats：`?dimension=<model\|endpoint\|client\|agentKind\|tool\|…>&window=<sinceStart\|7d\|30d\|90d\|lifetime>&limit=<N>` 返回任意注册维度的泛型 breakdown（server-side top-N + `"other"`）。**window 层路由**：`sinceStart`/`7d` 读进程内内存（counters + series，**7d histograms 已退役出空 `{}`**——old `ui/` 专用能力、当前 ui-v4 不用）；`30d`/`90d` 读 SQLite 分层（≤hourly.retention→`tel_hourly`、更长→`tel_daily`）、`lifetime`→`tel_cumulative`——这三个长窗附 **`distributions`**（每 key 每分布度量 DDSketch 分位 p50/p90/p99+count/sum/min/max）+ **`preMigrationSketchGap`**（迁移前时段无 sketch 精度标注）。持久 telemetry registry（`lib/request-telemetry.ts` + `lib/telemetry/`）的唯一泛型读出口。设计见 [spec/2026-07-13-telemetry-tiered-storage.md](spec/2026-07-13-telemetry-tiered-storage.md) + [spec/operational-stats-and-lineage-removal.md](spec/operational-stats-and-lineage-removal.md) |
 | `/api/tokens` | GET | GitHub + Copilot Token 信息（masked，除非 `--show-github-token`） |
 | `/api/config` | GET | 有效运行时配置 |
@@ -130,7 +130,7 @@
 | `/history/api/entries/:id/pin`、`.../unpin` | POST | 更新 `v3_operations.pinned` 专列；详情和 summary 均立即反映。 |
 | `/history/api/stats` | GET | 从 V3 列表与 in-flight 合并视图聚合计数、token 与 model breakdown。 |
 | `/history/api/sessions` | GET | 从 V3 generation records 聚合 Session 列表；不读 `entries_v2`。 |
-| `/history/api/search`、`/history/api/search/contains` | GET | V3 unique semantic payload 搜索与 object→operation companion；绝不回读 V2 `search_index`。 |
+| `/history/api/search`、`/history/api/search/contains` | GET | 兼容端点；当前返回空 rows／reqIds，不读 History SQLite 或 Tantivy。 |
 | `/history/api/export` | GET | 从 V3 facade 导出 JSON / CSV。 |
 
 

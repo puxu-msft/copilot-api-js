@@ -714,7 +714,10 @@ export interface State {
    * `content_block_start`). undici's default is 60s — too long for ~30s idle
    * reapers, so the first probe never fires before the connection is culled.
    * 0 = use undici's default (do not override). Default: 15.
-   * Node-only (undici dispatcher); Bun's fetch is unaffected.
+   * Also drives `node:tls`' `setKeepAlive` on the h2 socket (http2-client.ts) —
+   * the primary GHC connection path — which works on both Bun and Node (the
+   * undici Agent path above is Node-only, since Bun's global fetch does not
+   * consume the undici dispatcher; see proxy.ts module docstring).
    */
   readonly upstreamKeepaliveDelay: number
 
@@ -727,9 +730,23 @@ export interface State {
    * alive through NAT but does not defeat a connection-idle reaper (middlebox or
    * GHC edge) counting application-layer silence; a periodic h2 PING puts a real
    * frame on the wire. Kept WELL below observed idle-reaper windows (a real cut
-   * fired at ~112s). Default: 15. Node-only (the node:http2 transport).
+   * fired at ~112s). Default: 15. Works on both Bun and Node (the node:http2
+   * transport is runtime-neutral).
    */
   readonly upstreamH2PingInterval: number
+
+  /**
+   * TCP connect + TLS handshake deadline (seconds) for a single h2 session
+   * establishment attempt. Was the hardcoded `CONNECT_TIMEOUT_MS` in
+   * http2-client.ts; wired to real connection attempts in Plan 2. Default 10.
+   */
+  readonly sessionConnectTimeout: number
+  /**
+   * Idle timeout (seconds) for a pooled upstream Responses WS connection
+   * before proactive close. Was the hardcoded `DEFAULT_IDLE_TIMEOUT_MS` in
+   * upstream-ws-connection.ts; wired to real connections in Plan 2. Default 300.
+   */
+  readonly pooledConnectionIdleTimeout: number
 
   /**
    * Shutdown Phase 2 timeout in seconds.
@@ -805,7 +822,7 @@ export interface State {
    * terminates, allowing the client to send a follow-up `response.create` on the
    * same socket (Phase 2 long-lived client WS). When false (default), the
    * socket is closed with code 1000 after each request, mirroring HTTP semantics.
-   * Enable with config openai_responses.client_ws_keep_open: true.
+   * Enable with config server.responses_ws.keep_open: true.
    */
   readonly clientWebsocketKeepOpen: boolean
 
@@ -836,7 +853,7 @@ export interface State {
   /**
    * Max concurrent client WebSocket connections to the proxy. Default 256;
    * set to 0 to disable. Bounds file-descriptor usage when
-   * `client_ws_keep_open` is true.
+   * `server.responses_ws.keep_open` is true.
    */
   readonly maxClientWsConnections: number
 
@@ -845,7 +862,7 @@ export interface State {
    * When reached and an idle connection exists, the oldest idle is evicted.
    * When all connections are busy, an overflow connection is allocated with a warn log.
    */
-  readonly maxUpstreamWsConnections: number
+  readonly softMaxUpstreamWsConnections: number
 
   /**
    * Policy for handling Claude Code "Warmup" requests.
@@ -1368,7 +1385,7 @@ export function setModelTranslation(modelTranslation: ModelTranslation): void {
  * Replace the per-model stream-idle / response-header timeout override maps.
  * Replace semantics per field (the maps are already per-key merged with the
  * bundled defaults upstream in `mergeConfigs`). Deliberately does NOT fire
- * `transportTimeoutListeners` — these are app-guard-only knobs with no bearing
+ * `requestWatchdogListeners` — these are app-guard-only knobs with no bearing
  * on the undici dispatcher (which serves plaintext SearXNG on the scalar
  * `streamIdleTimeout`; GHC rides node:http2 with no transport body-idle). See
  * ADR 2026-07-12-per-model-idle-timeout-is-app-guard-only.
@@ -1475,49 +1492,83 @@ export function setTimeoutConfig(
       | "staleRequestMaxAge"
       | "requestDeadline"
       | "modelRefreshInterval"
-      | "upstreamKeepaliveDelay"
-      | "upstreamH2PingInterval"
     >
   >,
 ): void {
   const transportChanged =
     (patch.responseHeaderTimeout !== undefined && patch.responseHeaderTimeout !== mutableState.responseHeaderTimeout)
     || (patch.streamIdleTimeout !== undefined && patch.streamIdleTimeout !== mutableState.streamIdleTimeout)
-    || (patch.upstreamKeepaliveDelay !== undefined && patch.upstreamKeepaliveDelay !== mutableState.upstreamKeepaliveDelay)
   updateState(patch)
   if (transportChanged) {
-    for (const listener of transportTimeoutListeners) listener()
+    for (const listener of requestWatchdogListeners) listener()
   }
 }
 
 /**
- * Listeners notified when `responseHeaderTimeout`, `streamIdleTimeout`, or
- * `upstreamKeepaliveDelay` change.
+ * Listeners notified when `responseHeaderTimeout` or `streamIdleTimeout` change.
  * Used by transport layer (undici dispatcher) to rebuild with new options.
  */
-const transportTimeoutListeners = new Set<() => void>()
+const requestWatchdogListeners = new Set<() => void>()
 
-/** Subscribe to transport-relevant timeout changes (responseHeaderTimeout, streamIdleTimeout). */
-export function onTransportTimeoutChange(listener: () => void): () => void {
-  transportTimeoutListeners.add(listener)
-  return () => transportTimeoutListeners.delete(listener)
+/** Subscribe to request-watchdog-relevant timeout changes (responseHeaderTimeout, streamIdleTimeout). */
+export function onRequestWatchdogChange(listener: () => void): () => void {
+  requestWatchdogListeners.add(listener)
+  return () => requestWatchdogListeners.delete(listener)
+}
+
+/**
+ * Upstream-transport-axis config setter — the outbound-connection counterpart
+ * to `setTimeoutConfig` (protocol-agnostic request watchdogs) and
+ * `setResponsesWsIngressConfig` (inbound client-facing WS limits). Notifies
+ * `onUpstreamTransportChange` listeners on ANY tracked field change, including
+ * `upstreamH2PingInterval` — a pre-existing gap in the old combined
+ * `setTimeoutConfig` (upstreamH2PingInterval changes never notified
+ * `requestWatchdogListeners`) that this split fixes as a side effect.
+ */
+export function setUpstreamTransportConfig(
+  patch: Partial<
+    Pick<
+      MutableState,
+      "upstreamKeepaliveDelay" | "upstreamH2PingInterval" | "sessionConnectTimeout" | "pooledConnectionIdleTimeout" | "softMaxUpstreamWsConnections"
+    >
+  >,
+): void {
+  const changed =
+    (patch.upstreamKeepaliveDelay !== undefined && patch.upstreamKeepaliveDelay !== mutableState.upstreamKeepaliveDelay)
+    || (patch.upstreamH2PingInterval !== undefined && patch.upstreamH2PingInterval !== mutableState.upstreamH2PingInterval)
+    || (patch.sessionConnectTimeout !== undefined && patch.sessionConnectTimeout !== mutableState.sessionConnectTimeout)
+    || (patch.pooledConnectionIdleTimeout !== undefined && patch.pooledConnectionIdleTimeout !== mutableState.pooledConnectionIdleTimeout)
+    || (patch.softMaxUpstreamWsConnections !== undefined && patch.softMaxUpstreamWsConnections !== mutableState.softMaxUpstreamWsConnections)
+  updateState(patch)
+  if (changed) {
+    for (const listener of transportUpstreamListeners) listener()
+  }
+}
+
+/** Subscribers notified after a hot-reload changes any `setUpstreamTransportConfig` field. Plan 2/4 (proxy.ts, http2-client.ts, upstream-ws*.ts) subscribe here to rebuild connections/reschedule timers. */
+const transportUpstreamListeners = new Set<() => void>()
+
+export function onUpstreamTransportChange(listener: () => void): () => void {
+  transportUpstreamListeners.add(listener)
+  return () => transportUpstreamListeners.delete(listener)
 }
 
 export function setResponsesConfig(
   patch: Partial<
-    Pick<
-      MutableState,
-      | "normalizeResponsesCallIds"
-      | "upstreamWebSocket"
-      | "responsesBufferedRetry"
-      | "fixResponsesStreamIds"
-      | "stripImageGenerationTool"
-      | "clientWebsocketKeepOpen"
-      | "maxWsFrameBytes"
-      | "maxClientWsConnections"
-      | "maxUpstreamWsConnections"
-    >
+    Pick<MutableState, "normalizeResponsesCallIds" | "upstreamWebSocket" | "responsesBufferedRetry" | "fixResponsesStreamIds" | "stripImageGenerationTool">
   >,
+): void {
+  updateState(patch)
+}
+
+/**
+ * Client-facing Responses WS ingress config — split out of `setResponsesConfig`
+ * (server.responses_ws.* three-axis reorg). Distinct from `setUpstreamTransportConfig`'s
+ * `softMaxUpstreamWsConnections` (that governs the OUTBOUND upstream WS pool cap;
+ * this governs INBOUND client connection limits).
+ */
+export function setResponsesWsIngressConfig(
+  patch: Partial<Pick<MutableState, "clientWebsocketKeepOpen" | "maxWsFrameBytes" | "maxClientWsConnections">>,
 ): void {
   updateState(patch)
 }
@@ -1728,6 +1779,8 @@ export const CONFIG_MANAGED_DEFAULTS = {
   streamIdleTimeout: 300,
   upstreamKeepaliveDelay: 15,
   upstreamH2PingInterval: 15,
+  sessionConnectTimeout: 10,
+  pooledConnectionIdleTimeout: 300,
   staleRequestMaxAge: 600,
   requestDeadline: 0,
   modelRefreshInterval: 600,
@@ -1761,7 +1814,7 @@ export const CONFIG_MANAGED_DEFAULTS = {
   clientWebsocketKeepOpen: false,
   maxWsFrameBytes: 0,
   maxClientWsConnections: 256,
-  maxUpstreamWsConnections: 32,
+  softMaxUpstreamWsConnections: 32,
   warmupPolicy: "allow" as WarmupPolicy,
   effortsOverrides: {} as Record<string, Array<string>>,
   // Empty by design — the bundled `gpt-5.5: 600` product default lives in
@@ -1871,11 +1924,16 @@ export function resetConfigManagedState(): void {
   setTimeoutConfig({
     responseHeaderTimeout: CONFIG_MANAGED_DEFAULTS.responseHeaderTimeout,
     streamIdleTimeout: CONFIG_MANAGED_DEFAULTS.streamIdleTimeout,
-    upstreamKeepaliveDelay: CONFIG_MANAGED_DEFAULTS.upstreamKeepaliveDelay,
-    upstreamH2PingInterval: CONFIG_MANAGED_DEFAULTS.upstreamH2PingInterval,
     staleRequestMaxAge: CONFIG_MANAGED_DEFAULTS.staleRequestMaxAge,
     requestDeadline: CONFIG_MANAGED_DEFAULTS.requestDeadline,
     modelRefreshInterval: CONFIG_MANAGED_DEFAULTS.modelRefreshInterval,
+  })
+  setUpstreamTransportConfig({
+    upstreamKeepaliveDelay: CONFIG_MANAGED_DEFAULTS.upstreamKeepaliveDelay,
+    upstreamH2PingInterval: CONFIG_MANAGED_DEFAULTS.upstreamH2PingInterval,
+    sessionConnectTimeout: CONFIG_MANAGED_DEFAULTS.sessionConnectTimeout,
+    pooledConnectionIdleTimeout: CONFIG_MANAGED_DEFAULTS.pooledConnectionIdleTimeout,
+    softMaxUpstreamWsConnections: CONFIG_MANAGED_DEFAULTS.softMaxUpstreamWsConnections,
   })
   setShutdownConfig({
     shutdownGracefulWait: CONFIG_MANAGED_DEFAULTS.shutdownGracefulWait,
@@ -1914,10 +1972,11 @@ export function resetConfigManagedState(): void {
     responsesBufferedRetry: CONFIG_MANAGED_DEFAULTS.responsesBufferedRetry,
     fixResponsesStreamIds: CONFIG_MANAGED_DEFAULTS.fixResponsesStreamIds,
     stripImageGenerationTool: CONFIG_MANAGED_DEFAULTS.stripImageGenerationTool,
+  })
+  setResponsesWsIngressConfig({
     clientWebsocketKeepOpen: CONFIG_MANAGED_DEFAULTS.clientWebsocketKeepOpen,
     maxWsFrameBytes: CONFIG_MANAGED_DEFAULTS.maxWsFrameBytes,
     maxClientWsConnections: CONFIG_MANAGED_DEFAULTS.maxClientWsConnections,
-    maxUpstreamWsConnections: CONFIG_MANAGED_DEFAULTS.maxUpstreamWsConnections,
   })
   // Buffered-retry caps (vendor-neutral shared + per-vendor overrides) + the
   // chat_completions mode switch. Reset via updateState (whole-object replace of
@@ -2030,6 +2089,8 @@ const mutableState: MutableState = {
   streamIdleTimeout: CONFIG_MANAGED_DEFAULTS.streamIdleTimeout,
   upstreamKeepaliveDelay: CONFIG_MANAGED_DEFAULTS.upstreamKeepaliveDelay,
   upstreamH2PingInterval: CONFIG_MANAGED_DEFAULTS.upstreamH2PingInterval,
+  sessionConnectTimeout: CONFIG_MANAGED_DEFAULTS.sessionConnectTimeout,
+  pooledConnectionIdleTimeout: CONFIG_MANAGED_DEFAULTS.pooledConnectionIdleTimeout,
   systemPromptOverrides: [...CONFIG_MANAGED_DEFAULTS.systemPromptOverrides],
   systemPromptPrepend: [...CONFIG_MANAGED_DEFAULTS.systemPromptPrepend],
   systemPromptAppend: [...CONFIG_MANAGED_DEFAULTS.systemPromptAppend],
@@ -2042,7 +2103,7 @@ const mutableState: MutableState = {
   clientWebsocketKeepOpen: CONFIG_MANAGED_DEFAULTS.clientWebsocketKeepOpen,
   maxWsFrameBytes: CONFIG_MANAGED_DEFAULTS.maxWsFrameBytes,
   maxClientWsConnections: CONFIG_MANAGED_DEFAULTS.maxClientWsConnections,
-  maxUpstreamWsConnections: CONFIG_MANAGED_DEFAULTS.maxUpstreamWsConnections,
+  softMaxUpstreamWsConnections: CONFIG_MANAGED_DEFAULTS.softMaxUpstreamWsConnections,
   warmupPolicy: CONFIG_MANAGED_DEFAULTS.warmupPolicy,
   effortsOverrides: { ...CONFIG_MANAGED_DEFAULTS.effortsOverrides },
   streamIdleTimeoutOverrides: { ...CONFIG_MANAGED_DEFAULTS.streamIdleTimeoutOverrides },

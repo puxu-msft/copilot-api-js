@@ -249,7 +249,7 @@ export function logUpstreamStreamDisconnect(info: UpstreamStreamDisconnectInfo):
     info.kindLabel === "transport-close" && silence >= MIDDLEBOX_RECLAIM_SILENCE_MS && info.frames <= MIDDLEBOX_RECLAIM_MAX_FRAMES && isThinkingStall
   const likely =
     looksLikeReclaim ?
-      ` | likely=middlebox-idle-reclaim-during-thinking-stall (hint: the connection path's idle window may be below upstream_keepalive=${keepalive}; try lowering timeouts.upstream_keepalive)`
+      ` | likely=middlebox-idle-reclaim-during-thinking-stall (hint: the connection path's idle window may be below tcp_keepalive_probe_delay=${keepalive}; try lowering upstream_transport.tcp_keepalive_probe_delay)`
     : ""
 
   consola.error(

@@ -256,6 +256,39 @@ describe("validateConfig — warn-once semantics", () => {
   })
 })
 
+describe("validateConfig — SOCKS session_connect_timeout=0 rejection (D3 exception)", () => {
+  test("SOCKS proxy + session_connect_timeout: 0 is stripped (falls back to default 10) + warns", () => {
+    const result = validateConfig({
+      proxy: "socks5://proxy.example:1080",
+      upstream_transport: { http2: { session_connect_timeout: 0 } },
+    })
+    expect(result.upstream_transport?.http2?.session_connect_timeout).toBeUndefined() // stripped → schema default (10) applies downstream
+    expect(warnedMessages().some((m) => m.includes("upstream_transport.http2.session_connect_timeout") && m.includes("SOCKS"))).toBe(true)
+  })
+
+  test("SOCKS proxy + session_connect_timeout: 5 (positive) passes through unchanged", () => {
+    const result = validateConfig({
+      proxy: "socks5://proxy.example:1080",
+      upstream_transport: { http2: { session_connect_timeout: 5 } },
+    })
+    expect(result.upstream_transport?.http2?.session_connect_timeout).toBe(5)
+    expect(warnedMessages().some((m) => m.includes("session_connect_timeout"))).toBe(false)
+  })
+
+  test("HTTP CONNECT proxy (non-SOCKS) + session_connect_timeout: 0 passes through unchanged (real disable)", () => {
+    const result = validateConfig({
+      proxy: "http://proxy.example:8080",
+      upstream_transport: { http2: { session_connect_timeout: 0 } },
+    })
+    expect(result.upstream_transport?.http2?.session_connect_timeout).toBe(0)
+  })
+
+  test("no proxy configured + session_connect_timeout: 0 passes through unchanged (direct connection, real disable)", () => {
+    const result = validateConfig({ upstream_transport: { http2: { session_connect_timeout: 0 } } })
+    expect(result.upstream_transport?.http2?.session_connect_timeout).toBe(0)
+  })
+})
+
 describe("warnProtectStreamingHeartbeatOnce — L2 buffered keepalive cross-field guard", () => {
   test("buffered ON + both heartbeats 0 → warns", () => {
     warnProtectStreamingHeartbeatOnce({ protectStreamingGeneration: "on", fakeHeartbeat: 0, protectHeartbeat: 0 })

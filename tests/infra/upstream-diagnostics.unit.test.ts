@@ -282,7 +282,7 @@ describe("logUpstreamStreamDisconnect", () => {
       // signature (transport-close, long silence, few frames, thinking stall).
       expect(line).toContain("keepalive=")
       expect(line).toContain("likely=middlebox-idle-reclaim-during-thinking-stall")
-      expect(line).toContain("timeouts.upstream_keepalive")
+      expect(line).toContain("upstream_transport.tcp_keepalive_probe_delay")
     } finally {
       spy.mockRestore()
     }

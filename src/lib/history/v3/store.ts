@@ -3,7 +3,6 @@ import { createHash } from "node:crypto"
 
 import type {
   //
-  ArenaNodeReference,
   ModelOperationRecord,
   OperationTrack,
 } from "~/lib/context/model-operation-record"
@@ -26,8 +25,7 @@ import { getDatabase } from "../sqlite/connection"
 import { recordToEntrySummary } from "./projection"
 
 const FORMAT_VERSION = 2
-const SEARCH_VERSION = 2
-const SCHEMA_VERSION = "4"
+const SCHEMA_VERSION = "5"
 const encoder = new TextEncoder()
 const decoder = new TextDecoder()
 
@@ -57,7 +55,6 @@ export interface V3StoreStatus {
   persistedOperations: number
   failedOperations: number
   conflicts: number
-  searchBacklog: number
   summaryBacklog: number
   lastError?: string
 }
@@ -108,7 +105,6 @@ interface PreparedPayloadValue {
   sequences: Array<PreparedSequenceRef>
   objects: Array<PreparedObject>
   sequenceNodes: Array<PreparedSequenceNode>
-  searchObjects: Array<{ hash: string; document: string }>
 }
 
 interface PreparedOperation {
@@ -128,7 +124,6 @@ interface PreparedOperation {
   sequenceNodes: Array<PreparedSequenceNode>
   tracks: Array<{ name: string; attemptIndex: number; refs: string; compressed: Uint8Array }>
   timeline: Array<{ chunkIndex: number; firstSequence: number; lastSequence: number; payload: Uint8Array; compressed: Uint8Array }>
-  searchObjects: Array<{ hash: string; document: string }>
   byteLength: number
 }
 
@@ -150,7 +145,6 @@ let status: V3StoreStatus = {
   persistedOperations: 0,
   failedOperations: 0,
   conflicts: 0,
-  searchBacklog: 0,
   summaryBacklog: 0,
 }
 
@@ -214,22 +208,6 @@ CREATE TABLE IF NOT EXISTS v3_journal (
   error TEXT,
   PRIMARY KEY(operation_id, revision)
 );
-CREATE TABLE IF NOT EXISTS v3_search_objects (
-  object_hash TEXT PRIMARY KEY,
-  document_gz BLOB NOT NULL,
-  version INTEGER NOT NULL
-);
-CREATE TABLE IF NOT EXISTS v3_search_membership (
-  operation_id TEXT NOT NULL REFERENCES v3_operations(operation_id) ON DELETE CASCADE,
-  object_hash TEXT NOT NULL,
-  PRIMARY KEY(operation_id, object_hash)
-);
-CREATE TABLE IF NOT EXISTS v3_search_backlog (
-  operation_id TEXT PRIMARY KEY,
-  reason TEXT NOT NULL,
-  attempts INTEGER NOT NULL DEFAULT 0,
-  updated_at INTEGER NOT NULL
-);
 CREATE TABLE IF NOT EXISTS v3_summary_backlog (
   operation_id TEXT PRIMARY KEY,
   reason TEXT NOT NULL,
@@ -246,7 +224,10 @@ CREATE TABLE IF NOT EXISTS v3_summary_backlog (
 export function ensureV3Schema(db: Database = getDatabase()): void {
   db.exec(V3_SCHEMA_SQL)
   const version = db.prepare("SELECT value FROM v3_meta WHERE key='schema_version'").get() as { value: string } | undefined
-  if (version?.value === SCHEMA_VERSION) return
+  const embeddedSearchPresent = db
+    .prepare("SELECT 1 FROM sqlite_schema WHERE type='table' AND name IN ('v3_search_membership','v3_search_objects','v3_search_backlog') LIMIT 1")
+    .get()
+  if (version?.value === SCHEMA_VERSION && !embeddedSearchPresent) return
   const columns = new Set((db.prepare("PRAGMA table_info(v3_operations)").all() as Array<{ name: string }>).map((column) => column.name))
   const trackColumns = new Set((db.prepare("PRAGMA table_info(v3_tracks)").all() as Array<{ name: string }>).map((column) => column.name))
   const migrate = db.transaction(() => {
@@ -254,6 +235,11 @@ export function ensureV3Schema(db: Database = getDatabase()): void {
     if (!columns.has("timing_source")) db.exec("ALTER TABLE v3_operations ADD COLUMN timing_source TEXT NOT NULL DEFAULT 'storage-commit-upper-bound'")
     if (!columns.has("summary_json")) db.exec("ALTER TABLE v3_operations ADD COLUMN summary_json TEXT")
     if (!trackColumns.has("track_gz")) db.exec("ALTER TABLE v3_tracks ADD COLUMN track_gz BLOB")
+    // Search is a disposable, independently versioned Tantivy sidecar. Drop the
+    // former embedded projection without touching authoritative operations/CAS.
+    db.exec("DROP TABLE IF EXISTS v3_search_membership")
+    db.exec("DROP TABLE IF EXISTS v3_search_objects")
+    db.exec("DROP TABLE IF EXISTS v3_search_backlog")
     db.prepare("UPDATE v3_operations SET ended_at=committed_at WHERE ended_at IS NULL AND timing_source='storage-commit-upper-bound'").run()
     db.prepare("INSERT OR REPLACE INTO v3_meta(key,value) VALUES('schema_version',?)").run(SCHEMA_VERSION)
   })
@@ -334,7 +320,6 @@ function preparePayloadValue(value: unknown): PreparedPayloadValue {
   const objects = new Map<string, PreparedObject>()
   const sequenceNodes = new Map<string, PreparedSequenceNode>()
   const sequences: Array<PreparedSequenceRef> = []
-  const searchObjects = new Map<string, string>()
   const addObject = (object: PreparedObject): PreparedObject => {
     objects.set(object.hash, object)
     return object
@@ -347,7 +332,6 @@ function preparePayloadValue(value: unknown): PreparedPayloadValue {
         const stripped = stripVolatile(item)
         for (const overlay of stripped.overlays) overlays.push({ index, path: overlay.path, value: overlay.value })
         const itemObject = addObject(objectHash("sequence-item", stripped.clean))
-        searchObjects.set(itemObject.hash, canonicalize(stripped.clean))
         const nodeBytes = encoder.encode(`${parentHash ?? ""}\0${itemObject.hash}`)
         const hash = digestBytes("sequence-node", nodeBytes)
         const node: PreparedSequenceNode = { hash, parentHash, itemHash: itemObject.hash, depth: index + 1 }
@@ -367,13 +351,11 @@ function preparePayloadValue(value: unknown): PreparedPayloadValue {
   }
   const skeleton = walk(value, [])
   const object = addObject(objectHash(sequences.length > 0 ? "payload-skeleton" : "payload", skeleton))
-  searchObjects.set(object.hash, canonicalize(skeleton))
   return {
     object,
     sequences,
     objects: [...objects.values()],
     sequenceNodes: [...sequenceNodes.values()],
-    searchObjects: [...searchObjects].map(([hash, document]) => ({ hash, document })),
   }
 }
 
@@ -398,30 +380,6 @@ function collectTracks(record: ModelOperationRecord): PreparedOperation["tracks"
     push("client-egress", -1, record.egress.client)
   }
   return out
-}
-
-function references(record: ModelOperationRecord): Set<string> {
-  const handles = new Set<string>()
-  const add = (reference: ArenaNodeReference): void => void handles.add(reference.handle)
-  for (const transform of record.transforms) {
-    for (const reference of transform.inputs) add(reference)
-    for (const reference of transform.outputs) add(reference)
-  }
-  const addTrack = (track: { payload?: string; frames: ReadonlyArray<string> } | undefined): void => {
-    if (track?.payload) handles.add(track.payload)
-    for (const handle of track?.frames ?? []) handles.add(handle)
-  }
-  if (record.ingress) addTrack(record.ingress.request)
-  for (const attempt of record.attempts) {
-    addTrack(attempt.effectiveRequest)
-    addTrack(attempt.upstreamRequest)
-    addTrack(attempt.upstreamResponse)
-  }
-  if (record.egress) {
-    addTrack(record.egress.upstream)
-    addTrack(record.egress.client)
-  }
-  return handles
 }
 
 function recordWithoutTracks(record: ModelOperationRecord): ModelOperationRecord {
@@ -468,15 +426,12 @@ export function prepareModelOperation(
   const sequenceNodesByHash = new Map<string, PreparedSequenceNode>()
   const objectHashes = new Map<string, string>()
   const payloadSequences = new Map<string, Array<PreparedSequenceRef>>()
-  const searchDocuments = new Map<string, string>()
-  const usedHandles = references(record)
   for (const node of record.arena.payloads) {
     const prepared = preparePayloadValue(node.value)
     objectHashes.set(node.handle, prepared.object.hash)
     if (prepared.sequences.length > 0) payloadSequences.set(node.handle, prepared.sequences)
     for (const object of prepared.objects) objectsByHash.set(object.hash, object)
     for (const sequenceNode of prepared.sequenceNodes) sequenceNodesByHash.set(sequenceNode.hash, sequenceNode)
-    if (usedHandles.has(node.handle)) for (const document of prepared.searchObjects) searchDocuments.set(document.hash, document.document)
   }
   for (const node of record.arena.frames) {
     const object = objectHash("frame", node.value)
@@ -553,7 +508,6 @@ export function prepareModelOperation(
     sequenceNodes: [...sequenceNodesByHash.values()],
     tracks,
     timeline,
-    searchObjects: [...searchDocuments].map(([hash, document]) => ({ hash, document })),
     byteLength: manifest.byteLength + [...objectsByHash.values()].reduce((sum, object) => sum + object.canonical.byteLength, 0),
   }
 }
@@ -642,19 +596,6 @@ export function commitPreparedOperation(db: Database, prepared: PreparedOperatio
         for (const track of prepared.tracks) trackStmt.run(prepared.id, track.name, track.attemptIndex, track.refs, track.compressed)
         const timelineStmt = db.prepare("INSERT INTO v3_timeline_chunks(operation_id,chunk_index,first_sequence,last_sequence,payload_gz) VALUES(?,?,?,?,?)")
         for (const chunk of prepared.timeline) timelineStmt.run(prepared.id, chunk.chunkIndex, chunk.firstSequence, chunk.lastSequence, chunk.compressed)
-        try {
-          const existingSearch = db.prepare("SELECT 1 FROM v3_search_objects WHERE object_hash=?")
-          const insertSearch = db.prepare("INSERT INTO v3_search_objects(object_hash,document_gz,version) VALUES(?,?,?)")
-          const insertMembership = db.prepare("INSERT INTO v3_search_membership(operation_id,object_hash) VALUES(?,?)")
-          for (const object of prepared.searchObjects) {
-            if (!existingSearch.get(object.hash)) insertSearch.run(object.hash, new Uint8Array(), SEARCH_VERSION)
-            insertMembership.run(prepared.id, object.hash)
-          }
-        } catch (error) {
-          db.prepare(
-            "INSERT OR REPLACE INTO v3_search_backlog(operation_id,reason,attempts,updated_at) VALUES(?,?,COALESCE((SELECT attempts FROM v3_search_backlog WHERE operation_id=?),0)+1,?)",
-          ).run(prepared.id, error instanceof Error ? error.message : String(error), prepared.id, Date.now())
-        }
         // Once the operation transaction commits, the durable manifest + CAS objects are the
         // recovery source. Keeping the self-contained journal payload after this point would
         // duplicate every semantic value forever and defeat content-addressed storage.
@@ -766,9 +707,8 @@ export async function drainV3Writer(): Promise<void> {
 export function getV3StoreStatus(): V3StoreStatus {
   const db = getDatabase()
   ensureV3Schema(db)
-  const searchBacklog = (db.prepare("SELECT COUNT(*) AS n FROM v3_search_backlog").get() as { n: number }).n
   const summaryBacklog = (db.prepare("SELECT COUNT(*) AS n FROM v3_summary_backlog").get() as { n: number }).n
-  return { ...status, pendingOperations: pending.length, pendingBytes, searchBacklog, summaryBacklog }
+  return { ...status, pendingOperations: pending.length, pendingBytes, summaryBacklog }
 }
 
 export function getV3StoredOperation(operationId: string): V3StoredOperation | undefined {
@@ -950,65 +890,6 @@ export function setV3OperationPinned(operationId: string, pinned: boolean): bool
   return true
 }
 
-export function searchV3OperationIds(query: string, kind: string | undefined, limit: number): Array<string> {
-  if (limit <= 0 || query.length === 0) return []
-  const db = getDatabase()
-  ensureV3Schema(db)
-  const needle = query.toLowerCase()
-  const matched = new Set<string>()
-  const pageSize = 128
-  let offset = 0
-  while (matched.size < limit) {
-    const rows = db
-      .prepare(
-        `SELECT s.object_hash,s.version,s.document_gz,o.canonical_gz
-         FROM v3_search_objects s LEFT JOIN v3_objects o ON o.hash=s.object_hash
-         ORDER BY s.object_hash LIMIT ? OFFSET ?`,
-      )
-      .all(pageSize, offset) as Array<{ object_hash: string; version: number; document_gz: Uint8Array; canonical_gz: Uint8Array | null }>
-    if (rows.length === 0) break
-    offset += rows.length
-    for (const row of rows) {
-      const source = row.version >= SEARCH_VERSION ? row.canonical_gz : row.document_gz
-      if (!source) continue
-      if (!decoder.decode(decompressBytes(source)).toLowerCase().includes(needle)) continue
-      const operations =
-        kind ?
-          db
-            .prepare(
-              "SELECT o.operation_id FROM v3_search_membership m JOIN v3_operations o ON o.operation_id=m.operation_id WHERE m.object_hash=? AND o.kind=? ORDER BY o.created_at DESC,o.operation_id DESC LIMIT ?",
-            )
-            .all(row.object_hash, kind, limit)
-        : db
-            .prepare(
-              "SELECT o.operation_id FROM v3_search_membership m JOIN v3_operations o ON o.operation_id=m.operation_id WHERE m.object_hash=? ORDER BY o.created_at DESC,o.operation_id DESC LIMIT ?",
-            )
-            .all(row.object_hash, limit)
-      for (const operation of operations as Array<{ operation_id: string }>) {
-        matched.add(operation.operation_id)
-        if (matched.size >= limit) break
-      }
-      if (matched.size >= limit) break
-    }
-  }
-  if (matched.size === 0) return []
-  const ids = [...matched]
-  const placeholders = ids.map(() => "?").join(",")
-  return (
-    db
-      .prepare(`SELECT operation_id FROM v3_operations WHERE operation_id IN (${placeholders}) ORDER BY created_at DESC,operation_id DESC LIMIT ?`)
-      .all(...ids, limit) as Array<{ operation_id: string }>
-  ).map((row) => row.operation_id)
-}
-
-export function containingV3OperationIds(objectHash: string): Array<string> {
-  return (
-    getDatabase().prepare("SELECT operation_id FROM v3_search_membership WHERE object_hash=? ORDER BY operation_id").all(objectHash) as Array<{
-      operation_id: string
-    }>
-  ).map((row) => row.operation_id)
-}
-
 /**
  * Delete every persisted V3 history row while retaining schema metadata.
  * This is the storage primitive behind the test-only `clearHistory()` reset;
@@ -1017,9 +898,6 @@ export function containingV3OperationIds(objectHash: string): Array<string> {
 export function clearV3Store(db: Database = getDatabase()): void {
   ensureV3Schema(db)
   const clear = db.transaction(() => {
-    db.prepare("DELETE FROM v3_search_membership").run()
-    db.prepare("DELETE FROM v3_search_objects").run()
-    db.prepare("DELETE FROM v3_search_backlog").run()
     db.prepare("DELETE FROM v3_summary_backlog").run()
     db.prepare("DELETE FROM v3_timeline_chunks").run()
     db.prepare("DELETE FROM v3_tracks").run()
@@ -1198,5 +1076,5 @@ export function resetV3WriterForTests(): void {
   draining = false
   summaryBackfillStop = true
   summaryBackfill = null
-  status = { pendingOperations: 0, pendingBytes: 0, persistedOperations: 0, failedOperations: 0, conflicts: 0, searchBacklog: 0, summaryBacklog: 0 }
+  status = { pendingOperations: 0, pendingBytes: 0, persistedOperations: 0, failedOperations: 0, conflicts: 0, summaryBacklog: 0 }
 }

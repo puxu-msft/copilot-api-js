@@ -49,6 +49,8 @@ import {
   drainV3Writer,
   resetV3WriterForTests,
 } from "~/lib/history/v3/store"
+import { setNativeHistorySearchForTests } from "~/lib/history/search-native"
+import { resetTantivySearchForTests } from "~/lib/history/search-tantivy"
 import { resetModelOperationTerminalBusForTests } from "~/lib/history/v3/terminal-bus"
 import { clearRecentModelOperationTerminalsForTests } from "~/lib/history/v3/terminal-bus"
 import { resetAllLimitsForTesting } from "~/lib/models/calibration/engine"
@@ -106,6 +108,8 @@ export const RESETTERS: ReadonlyArray<{ name: string; reset: () => void | Promis
   { name: "clearRecentModelOperationTerminalsForTests", reset: clearRecentModelOperationTerminalsForTests },
   { name: "resetV3WriterForTests", reset: resetV3WriterForTests },
   { name: "resetRawCaptureManagerForTests", reset: resetRawCaptureManagerForTests },
+  { name: "resetTantivySearchForTests", reset: resetTantivySearchForTests },
+  { name: "setNativeHistorySearchForTests", reset: () => setNativeHistorySearchForTests(undefined) },
   { name: "resetResponseSessionStoreForTests", reset: resetResponseSessionStoreForTests },
   { name: "resetProtectStreamingStatsForTests", reset: resetProtectStreamingStatsForTests },
   { name: "resetToolInputRepairStatsForTests", reset: resetToolInputRepairStatsForTests },
