@@ -285,13 +285,15 @@ export function createRequestContext(opts: {
   let _streamTimeouts: { streamIdleTimeoutMs?: number; responseHeaderTimeoutMs?: number } | null = null
   let _askNormalization: PipelineInfo["askUserQuestionNormalization"] | null = null
   let _sendMessageNormalization: PipelineInfo["sendMessageNormalization"] | null = null
+  let _bufferedMergeInfo: PipelineInfo["bufferedMerge"] | null = null
   const mergedPipelineInfo = (): PipelineInfo | null => {
-    if (!_pipelineInfo && !_streamTimeouts && !_askNormalization && !_sendMessageNormalization) return null
+    if (!_pipelineInfo && !_streamTimeouts && !_askNormalization && !_sendMessageNormalization && !_bufferedMergeInfo) return null
     return {
       ..._pipelineInfo,
       ..._streamTimeouts,
       ...(_askNormalization && { askUserQuestionNormalization: _askNormalization }),
       ...(_sendMessageNormalization && { sendMessageNormalization: _sendMessageNormalization }),
+      ...(_bufferedMergeInfo && { bufferedMerge: _bufferedMergeInfo }),
     }
   }
   let _sseEvents: Array<SseEventRecord> | null = null
@@ -1028,6 +1030,14 @@ export function createRequestContext(opts: {
       // (under buffered-retry may reflect a discarded attempt; forwarded-wire correctness unaffected).
       _sendMessageNormalization = { ..._sendMessageNormalization, ...diag }
       recordAttemptDiagnostic("repair.send_message_normalization", "warning", diag)
+    },
+    recordBufferedMergeInfo(diag) {
+      // Mirrors recordSendMessageNormalization's real shape (request.context_updated was removed in
+      // 9853e768 — pipelineInfo now reaches SQLite solely via mergedPipelineInfo() → commitTerminal's
+      // metadata projection at the terminal, NOT via a per-write bus publish). This diagnostic log is
+      // an EXTRA per-attempt trace, not the persistence path.
+      _bufferedMergeInfo = diag
+      recordAttemptDiagnostic("responses.buffered_merge", "info", diag)
     },
     get repairOutcomes() {
       return _repairOutcomes

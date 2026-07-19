@@ -3,6 +3,7 @@ import type {
   AskNormalizationDiag,
   SendMessageNormalizationDiag,
 } from "~/lib/anthropic/decode-tool-input-core"
+import type { BufferedMergeDiag } from "~/lib/codec/openai-responses/buffered-merge-reducer"
 import type { ApiError } from "~/lib/error"
 import type {
   //
@@ -487,6 +488,8 @@ export interface RequestContext {
   whenModelOperationFinalized(): Promise<ModelOperationRecord>
   setToolNameMapper(mapper: ToolNameMapper | null): void
   setPipelineInfo(info: PipelineInfo): void
+  /** Merge Responses buffered-merge diagnostics into `pipelineInfo` (independent slot — survives the gated `setPipelineInfo` full-replace calls, mirrors the existing `_streamTimeouts`/`_sendMessageNormalization` pattern). */
+  recordBufferedMergeInfo(diag: BufferedMergeDiag): void
   /** Record the per-model effective timeouts for this request (merged into `pipelineInfo`, survives the gated `setPipelineInfo` full-replace calls). */
   setStreamTimeouts(patch: { streamIdleTimeoutMs?: number; responseHeaderTimeoutMs?: number }): void
   setSseEvents(events: Array<SseEventRecord>): void
