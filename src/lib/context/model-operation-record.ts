@@ -36,6 +36,7 @@ export type OperationSyntheticKind =
   | "error-shaping-canonical"
   | "error-shaping-auq"
   | "synthetic"
+  | "buffered-terminal-repair"
 
 /** Cross-vendor usage with typed canonical counters and an open details bag. */
 export interface OperationUsage {

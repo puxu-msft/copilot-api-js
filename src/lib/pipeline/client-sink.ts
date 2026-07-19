@@ -191,7 +191,7 @@ export function makeSseSink(stream: SSEStreamingApi, opts: SseSinkOptions = {}):
 
   const sampleForwarded = (
     frame: ClientFrame,
-    synthetic?: "keepalive" | "anchor" | "synthetic-message-start" | "hook-rewrite" | "refusal-recovery" | "error-shaping-canonical" | "error-shaping-auq",
+    synthetic?: "keepalive" | "anchor" | "synthetic-message-start" | "hook-rewrite" | "refusal-recovery" | "error-shaping-canonical" | "error-shaping-auq" | "buffered-terminal-repair",
     generationSynthetic: SseEventRecord["synthetic"] = synthetic,
   ): void => {
     const record: SseEventRecord = {
@@ -585,7 +585,7 @@ export function makeWsSink(ws: WSContext, opts: WsSinkOptions = {}): ClientSink 
   // unaltered upstream content.
   const sampleForwarded = (
     frame: ClientFrame,
-    synthetic?: "keepalive" | "hook-rewrite" | "refusal-recovery" | "error-shaping-canonical" | "error-shaping-auq",
+    synthetic?: "keepalive" | "hook-rewrite" | "refusal-recovery" | "error-shaping-canonical" | "error-shaping-auq" | "buffered-terminal-repair",
     generationSynthetic: SseEventRecord["synthetic"] = synthetic,
   ): void => {
     const record: SseEventRecord = { offsetMs: Date.now() - streamStartMs, type: frameType(frame), raw: frame.data ?? "", ...(synthetic ? { synthetic } : {}) }
