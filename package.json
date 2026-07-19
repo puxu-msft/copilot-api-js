@@ -104,6 +104,7 @@
     "zod": "^4.4.3"
   },
   "devDependencies": {
+    "@ai-sdk/openai": "^4.0.13",
     "@anthropic-ai/sdk": "0.106.0",
     "@echristian/eslint-config": "^0.0.54",
     "@playwright/test": "^1.61.1",
