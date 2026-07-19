@@ -16,7 +16,7 @@ import {
   //
   createDatabase,
   type SqliteDatabase,
-} from "~/lib/history/sqlite/driver"
+} from "~/lib/sqlite/driver"
 
 export type TelemetryDatabase = SqliteDatabase
 

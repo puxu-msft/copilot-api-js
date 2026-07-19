@@ -132,9 +132,6 @@ export class ActiveRequestStore {
         effects.push({ kind: "terminal", entry, outcome, error, statusCode, historyEntry })
         break
       }
-      case "request.context_updated": {
-        break
-      }
       default: {
         assertNever(event)
       }

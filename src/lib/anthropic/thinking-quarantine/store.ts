@@ -6,7 +6,7 @@ import {
   //
   createDatabase,
   type SqliteDatabase,
-} from "~/lib/history/sqlite/driver" // runtime-agnostic factory, NO singleton
+} from "~/lib/sqlite/driver" // runtime-agnostic factory, NO singleton
 
 import {
   //

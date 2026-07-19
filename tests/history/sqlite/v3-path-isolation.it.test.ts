@@ -15,12 +15,12 @@ import {
   getDatabase,
   openInMemoryDatabase,
 } from "~/lib/history/sqlite/connection"
-import { createDatabase } from "~/lib/history/sqlite/driver"
 import {
   //
   initHistory,
   shutdownHistory,
 } from "~/lib/history/state"
+import { createDatabase } from "~/lib/sqlite/driver"
 import { setHistoryConfig } from "~/lib/state"
 
 const originalLegacyPath = PATHS.HISTORY_DB
@@ -37,7 +37,7 @@ afterEach(async () => {
 })
 
 describe("History V3 physical isolation", () => {
-  test("default initialization opens history-v3.db without reading or mutating legacy history.db", () => {
+  test("default initialization opens history-v3.db without reading or mutating legacy history.db", async () => {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), "history-v3-path-"))
     PATHS.HISTORY_DB = path.join(dir, "history.db")
     PATHS.HISTORY_V3_DB = path.join(dir, "history-v3.db")
@@ -46,7 +46,7 @@ describe("History V3 physical isolation", () => {
     const legacyStat = fs.statSync(PATHS.HISTORY_DB)
 
     setHistoryConfig({ historyDbPath: "" })
-    initHistory(true)
+    await initHistory(true)
 
     const databases = getDatabase().prepare("PRAGMA database_list").all() as Array<{ name: string; file: string }>
     expect(databases.find((database) => database.name === "main")?.file).toBe(PATHS.HISTORY_V3_DB)
@@ -55,7 +55,7 @@ describe("History V3 physical isolation", () => {
     expect(fs.existsSync(PATHS.HISTORY_V3_DB)).toBe(true)
   })
 
-  test("refuses an existing unowned database before schema reconciliation", () => {
+  test("refuses an existing unowned database before schema reconciliation", async () => {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), "history-v3-owner-"))
     const unowned = path.join(dir, "history.db")
     const legacy = createDatabase(unowned)
@@ -64,7 +64,10 @@ describe("History V3 physical isolation", () => {
     const sentinel = fs.readFileSync(unowned)
     setHistoryConfig({ historyDbPath: unowned })
 
-    expect(() => initHistory(true)).toThrow("refusing to open unowned existing database")
+    // initHistory is async — a synchronous throw inside it (assertV3Owner, called
+    // from openDatabase before any `await`) becomes a REJECTED promise, not a sync
+    // throw, so this must assert via `.rejects`, not `expect(() => …).toThrow()`.
+    await expect(initHistory(true)).rejects.toThrow("refusing to open unowned existing database")
     expect(fs.readFileSync(unowned)).toEqual(sentinel)
     // Keep teardown idempotent after the expected init failure.
     openInMemoryDatabase()

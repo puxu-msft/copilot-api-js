@@ -297,25 +297,12 @@ describe("RequestContextSnapshot fields", () => {
 })
 
 describe("RequestContext.recordAskUserQuestionNormalization", () => {
-  test("merges into pipelineInfo AND publishes context_updated(pipelineInfo)", () => {
-    const { ctx, events } = setup()
+  test("merges into pipelineInfo", () => {
+    const { ctx } = setup()
     ctx.recordAskUserQuestionNormalization({ salvaged: true, strippedKeys: ["question"] })
-    // ① merged into pipelineInfo getter
+    // Merged into the pipelineInfo getter; persisted at terminal via toHistoryEntry()'s
+    // mergedPipelineInfo() projection (NOT via any per-field bus event).
     expect(ctx.pipelineInfo?.askUserQuestionNormalization).toEqual({ salvaged: true, strippedKeys: ["question"] })
-    // ② published context_updated(pipelineInfo) — the persistence precondition (BLOCKER: pipelineInfo
-    //    reaches SQLite ONLY via the in-flight context_updated handler, not onTerminal projection).
-    expect(events).toHaveLength(1)
-    expect(events[0].kind).toBe("request.context_updated")
-    if (events[0].kind === "request.context_updated") {
-      expect(events[0].field).toBe("pipelineInfo")
-    }
-  })
-
-  test("when publisher is undefined, merges but does NOT publish", () => {
-    const { ctx, events } = setup({ publisher: false })
-    ctx.recordAskUserQuestionNormalization({ salvaged: true })
-    expect(ctx.pipelineInfo?.askUserQuestionNormalization).toEqual({ salvaged: true })
-    expect(events).toHaveLength(0)
   })
 
   test("merge semantics: two calls accumulate per-field, surviving no setPipelineInfo", () => {

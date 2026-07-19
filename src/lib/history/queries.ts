@@ -7,6 +7,7 @@ import type {
   SummaryResult,
 } from "./types"
 
+import { formatFromEndpoint } from "./endpoint-format"
 import { resolveResponseModel } from "./entry-view"
 import {
   //
@@ -16,7 +17,6 @@ import {
 } from "./in-flight"
 import { isActiveState } from "./lifecycle-state"
 import { extractInboundSearchText } from "./normalize-message"
-import { formatFromEndpoint } from "./sqlite/search-index-write"
 import {
   //
   recordMatchesQuery,

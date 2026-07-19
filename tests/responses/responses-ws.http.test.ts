@@ -391,7 +391,15 @@ describe("Responses WebSocket transport", () => {
     expect(String(entry?._index?.derived?.failureReason)).toContain("truncated")
     // The error frame the client received (via sendErrorAndClose) is recorded in the forwarded
     // (proxy→client) track — asserts the WS sendErrorAndClose→recordForwarded→fail ordering.
-    expect((entry?.clientResponse?.sseEvents ?? []).some((e) => e.raw.includes('"error"'))).toBe(true)
+    const errRecord = (entry?.clientResponse?.sseEvents ?? []).find((e) => e.raw.includes('"error"'))
+    expect(errRecord).toBeDefined()
+    // Cross-model review Major (producer-oracle): the POST-COMMIT terminal `event: error` frame
+    // (this is the WS H3-analog terminus `sendErrorAndClose` sends, REPLACING the upstream
+    // terminator) must carry `synthetic:"error-shaping-canonical"` on the RECORD itself — the 3rd
+    // `syntheticKind` param passed to `captureForwardedGenerationFrame` only drives arena
+    // origin/transformId, not what projection.ts's `frames()` reads back (`node.value.synthetic`).
+    // Independent oracle: reads the SAME persisted history entry a real request populates.
+    expect(errRecord?.synthetic).toBe("error-shaping-canonical")
   })
 
   test("keeps socket open after response.completed when clientWebsocketKeepOpen is true", async () => {

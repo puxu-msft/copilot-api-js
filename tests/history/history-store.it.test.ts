@@ -37,9 +37,7 @@ import {
   listInFlightEntries,
   shutdownHistory,
   updateEntry,
-  finalizeEntry,
 } from "~/lib/history"
-import { queryEntryCount } from "~/lib/history/sqlite/read"
 import {
   //
   setStateForTests,
@@ -48,40 +46,19 @@ import {
 import { generateId } from "~/lib/utils"
 
 import { insertHistoryEntry } from "../helpers/history-fixtures"
+import { commitV3HistoryEntry } from "../helpers/history-v3-fixtures"
 import { autoRestoreState } from "../helpers/state-fixture"
 
-/** Mark an entry as completed so session stats are persisted to SQLite. */
-async function completeEntry(entryId: string, overrides: Partial<Parameters<typeof updateEntry>[1]> = {}): Promise<void> {
-  updateEntry(entryId, {
-    state: "completed",
-    attempts: [
-      {
-        index: 0,
-        strategy: "primary",
-        durationMs: 0,
-        upstreamResponse: {
-          success: true,
-          model: "test-model",
-          usage: { input_tokens: 0, output_tokens: 0 },
-          body: null,
-        },
-      },
-    ],
-    _index: { derived: { responseSuccess: true, attemptCount: 1, currentStrategy: "primary" } },
-    ...overrides,
-  })
-  // updateEntry no longer auto-persists on terminal state — the explicit
-  // finalizeEntry call mirrors the consumer pipeline behavior.
-  await finalizeEntry(entryId)
-}
-
-/** Count persisted + in-flight entries. */
+/**
+ * Count entries visible through the public read API (in-flight map merged
+ * with V3-persisted terminal records — see `getHistory` in `queries.ts`).
+ * `sqlite/read.ts`'s `queryEntryCount` (V2) was deleted in Phase 2 of the V2
+ * removal, and the V2 write chain itself (`finalizeEntry`/`entries_v2`) was
+ * deleted in Phase 3 — `getHistory({}).total` is the V3-era equivalent,
+ * reading through the same merge `insertEntry`/`clearHistory` observe.
+ */
 function totalEntryCount(): number {
-  try {
-    return queryEntryCount() + listInFlightEntries().length
-  } catch {
-    return listInFlightEntries().length
-  }
+  return getHistory({}).total
 }
 
 // Snapshot global state once and restore after every test so per-test mutations
@@ -91,7 +68,7 @@ autoRestoreState()
 // Reset history state before each test
 beforeEach(async () => {
   setStateForTests({ historyDbPath: ":memory:" })
-  initHistory(true, 200)
+  await initHistory(true, 200)
 })
 afterEach(async () => {
   clearHistory()
@@ -103,18 +80,18 @@ afterEach(async () => {
 
 describe("initHistory", () => {
   test("enables history when enabled=true", async () => {
-    initHistory(true, 100)
+    await initHistory(true, 100)
     expect(isHistoryEnabled()).toBe(true)
   })
 
   test("disables history when enabled=false", async () => {
-    initHistory(false, 100)
+    await initHistory(false, 100)
     expect(isHistoryEnabled()).toBe(false)
   })
 
   test("tracks history limit from state", async () => {
     setStateForTests({ historyRawCaptureMaxObjectBytes: 50 })
-    initHistory(true, 50)
+    await initHistory(true, 50)
     expect(state.historyRawCaptureMaxObjectBytes).toBe(50)
   })
 
@@ -146,7 +123,7 @@ describe("insertEntry", () => {
   })
 
   test("does not insert when disabled", async () => {
-    initHistory(false, 100)
+    await initHistory(false, 100)
     const sessionId = "test-session"
     const entry: HistoryEntry = {
       id: generateId(),
@@ -319,7 +296,7 @@ describe("updateEntry (response)", () => {
   })
 
   test("does nothing when disabled", async () => {
-    initHistory(false, 100)
+    await initHistory(false, 100)
     updateEntry("nonexistent", {
       attempts: [
         {
@@ -741,11 +718,17 @@ describe("updateEntry stores sseEvents", () => {
 
 describe("clearHistory", () => {
   test("removes all entries", async () => {
-    const entry = insertHistoryEntry("anthropic-messages", {
-      model: "test",
-      messages: [{ role: "user", content: "hello" }],
+    // A persisted (terminal, V3) entry — clearHistory must wipe V3 too, not just in-flight.
+    commitV3HistoryEntry({
+      id: generateId(),
+      startedAt: Date.now(),
+      endpoint: "anthropic-messages",
+      state: "completed",
+      clientRequest: { format: "anthropic-messages", model: "test", messages: [{ role: "user", content: "hello" }], stream: true },
+      attempts: [
+        { index: 0, durationMs: 0, upstreamResponse: { success: true, model: "test-model", usage: { input_tokens: 0, output_tokens: 0 }, body: null } },
+      ],
     })
-    await completeEntry(entry.id)
 
     expect(totalEntryCount()).toBe(1)
 

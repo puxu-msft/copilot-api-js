@@ -310,8 +310,8 @@ describe("createRequestContext - data setters", () => {
     expect(ctx.queueWaitMs).toBe(150)
   })
 
-  test("setOriginalRequest stores and emits", () => {
-    const { ctx, events } = makeContext()
+  test("setOriginalRequest stores the request", () => {
+    const { ctx } = makeContext()
     const req = {
       model: "gpt-4",
       messages: [{ role: "user", content: "hi" }],
@@ -320,23 +320,19 @@ describe("createRequestContext - data setters", () => {
     }
     ctx.setOriginalRequest(req)
     expect(ctx.originalRequest).toBe(req)
-    const last = events.at(-1)!
-    expect(last.kind === "request.context_updated" && last.field).toBe("originalRequest")
   })
 
-  test("setPipelineInfo stores and emits", () => {
-    const { ctx, events } = makeContext()
+  test("setPipelineInfo stores the pipeline info", () => {
+    const { ctx } = makeContext()
     const pipeInfo = {
       messageMapping: [0],
     }
     ctx.setPipelineInfo(pipeInfo)
     expect(ctx.pipelineInfo).toEqual(pipeInfo)
-    const last = events.at(-1)!
-    expect(last.kind === "request.context_updated" && last.field).toBe("pipelineInfo")
   })
 
-  test("addWarningMessage deduplicates and emits", () => {
-    const { ctx, events } = makeContext()
+  test("addWarningMessage deduplicates", () => {
+    const { ctx } = makeContext()
     const warning = {
       code: "cc_to_responses_dropped_params",
       message: "Dropped unsupported params: stop, seed",
@@ -346,8 +342,6 @@ describe("createRequestContext - data setters", () => {
     ctx.addWarningMessage(warning)
 
     expect(ctx.warningMessages).toEqual([warning])
-    const last = events.at(-1)!
-    expect(last.kind === "request.context_updated" && last.field).toBe("warningMessages")
   })
 })
 
@@ -1014,12 +1008,5 @@ describe("setStreamTimeouts merges into pipelineInfo without clobbering", () => 
     ctx.setStreamTimeouts({ streamIdleTimeoutMs: 600_000 })
     ctx.complete({ success: true, model: "m", usage: { input_tokens: 1, output_tokens: 1 }, content: null, stop_reason: "end_turn" })
     expect(ctx.toHistoryEntry().pipelineInfo?.streamIdleTimeoutMs).toBe(600_000)
-  })
-
-  test("setStreamTimeouts publishes a pipelineInfo context_updated event", () => {
-    const { ctx, events } = makeContext()
-    ctx.setStreamTimeouts({ streamIdleTimeoutMs: 600_000 })
-    const updated = events.filter((e) => e.kind === "request.context_updated" && e.field === "pipelineInfo")
-    expect(updated.length).toBeGreaterThanOrEqual(1)
   })
 })

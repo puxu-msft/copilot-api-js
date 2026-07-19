@@ -13,7 +13,7 @@ import {
   decompress,
   decompressBytes,
   gzipJsonLegacy,
-} from "~/lib/history/sqlite/compression"
+} from "~/lib/sqlite/compression"
 
 describe("sqlite/compression", () => {
   test("roundtrips arbitrary JSON through zstd", () => {

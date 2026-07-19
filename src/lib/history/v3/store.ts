@@ -8,13 +8,19 @@ import type {
 } from "~/lib/context/model-operation-record"
 import type { EntrySummary } from "~/lib/history/types"
 
-import type { Database } from "../sqlite/connection"
-
+import {
+  //
+  runHistoryWrite,
+  runHistoryWriteAsync,
+} from "~/lib/history/persist-guard"
 import {
   //
   compressBytes,
   decompressBytes,
-} from "../sqlite/compression"
+} from "~/lib/sqlite/compression"
+
+import type { Database } from "../sqlite/connection"
+
 import { getDatabase } from "../sqlite/connection"
 import { recordToEntrySummary } from "./projection"
 
@@ -22,6 +28,17 @@ const FORMAT_VERSION = 2
 const SCHEMA_VERSION = "5"
 const encoder = new TextEncoder()
 const decoder = new TextDecoder()
+
+/**
+ * Captured at module load — BEFORE any test can monkey-patch `globalThis.setTimeout`
+ * (e.g. `tests/helpers/fake-clock.ts`, used by streaming-cadence/keepalive tests to
+ * fake-drive application-level heartbeat timers). `runDrain`'s per-item yield below
+ * is an internal event-loop-courtesy mechanism, not a timer any caller should be able
+ * to fake/freeze — a faked global `setTimeout` that never auto-fires would otherwise
+ * hang `drainV3Writer()` forever (surfaced as a `useIsolatedRuntime()` afterEach
+ * timeout once its teardown started awaiting the real V3 writer drain).
+ */
+const realSetTimeout = globalThis.setTimeout
 
 export interface V3StoredOperation {
   record: ModelOperationRecord
@@ -41,6 +58,20 @@ export interface V3StoreStatus {
   summaryBacklog: number
   lastError?: string
 }
+
+/**
+ * A programming-error signal: the same `operationId` was submitted twice with
+ * DIFFERING revision/digest — i.e. the caller violated the "an operation is
+ * only ever committed with a monotonically increasing revision" contract.
+ * This is NOT a persistence failure (SQLite worked fine; the DATA was wrong),
+ * so it is deliberately kept OUTSIDE the persist-guard's never-throw
+ * transient/permanent classification (History V2 removal Phase 4c) — a
+ * `V3OperationConflictError` must propagate all the way to the caller
+ * (`runDrain` classifies it into `status.conflicts` FIRST, before any
+ * persist-guard wrapping), never get silently downgraded to
+ * `{ ok: false, transient: false }`.
+ */
+export class V3OperationConflictError extends Error {}
 
 interface PreparedObject {
   hash: string
@@ -577,44 +608,67 @@ export function commitPreparedOperation(db: Database, prepared: PreparedOperatio
     | undefined
   if (existing) {
     if (existing.revision === prepared.revision && existing.digest === prepared.digest) return "idempotent"
+    // Programming-error signal (duplicate operationId, differing revision/digest)
+    // — NOT a persistence failure, so this branch deliberately does NOT go
+    // through persist-guard (History V2 removal Phase 4c, plan §4c). It must
+    // propagate as a real throw so `status.conflicts` (below) stays the sole,
+    // un-absorbed signal for this condition; a caller (`runDrain`) that wants
+    // to swallow it does so explicitly via `instanceof V3OperationConflictError`.
     status = { ...status, conflicts: status.conflicts + 1, lastError: `operation conflict: ${prepared.id}` }
-    throw new Error(`[history/v3] operation conflict: ${prepared.id}`)
+    throw new V3OperationConflictError(`[history/v3] operation conflict: ${prepared.id}`)
   }
-  // Journal is self-contained: operation tx rollback may remove every CAS object,
-  // so recovery cannot depend on value-stripped manifest + v3_objects.
-  const journalPayload = prepared.compressedJournalRecord
-  db.prepare(
-    "INSERT OR REPLACE INTO v3_journal(operation_id,revision,digest,phase,payload_gz,created_at,committed_at,error) VALUES(?,?,?,?,?,?,NULL,NULL)",
-  ).run(prepared.id, prepared.revision, prepared.digest, "terminal", journalPayload, Date.now())
-  const committedAt = Date.now()
-  const tx = db.transaction(() => {
-    for (const object of prepared.objects) insertObject(db, object)
-    for (const node of prepared.sequenceNodes) insertSequenceNode(db, node)
-    db.prepare(
-      "INSERT INTO v3_operations(operation_id,revision,digest,kind,created_at,terminal_sequence,ended_at,timing_source,manifest_gz,summary_json,committed_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
-    ).run(
-      prepared.id,
-      prepared.revision,
-      prepared.digest,
-      prepared.kind,
-      prepared.createdAt,
-      prepared.terminalSequence,
-      prepared.endedAt ?? null,
-      prepared.timingSource,
-      prepared.compressedManifest,
-      prepared.summaryJson,
-      committedAt,
-    )
-    const trackStmt = db.prepare("INSERT INTO v3_tracks(operation_id,track_name,attempt_index,refs_json,track_gz) VALUES(?,?,?,?,?)")
-    for (const track of prepared.tracks) trackStmt.run(prepared.id, track.name, track.attemptIndex, track.refs, track.compressed)
-    const timelineStmt = db.prepare("INSERT INTO v3_timeline_chunks(operation_id,chunk_index,first_sequence,last_sequence,payload_gz) VALUES(?,?,?,?,?)")
-    for (const chunk of prepared.timeline) timelineStmt.run(prepared.id, chunk.chunkIndex, chunk.firstSequence, chunk.lastSequence, chunk.compressed)
-    // Once the operation transaction commits, the durable manifest + CAS objects are the
-    // recovery source. Keeping the self-contained journal payload after this point would
-    // duplicate every semantic value forever and defeat content-addressed storage.
-    db.prepare("DELETE FROM v3_journal WHERE operation_id=? AND revision=?").run(prepared.id, prepared.revision)
+  // The actual persistence write (journal insert + operation transaction) is
+  // the part that can fail for genuinely transient/permanent SQLite reasons
+  // (BUSY/LOCKED/IOERR/disk full) — guarded by persist-guard so such a failure
+  // is classified, ERROR-logged, and counted instead of an unclassified throw.
+  // `thrown` captures the original error so this function can still RETHROW
+  // it after classification — preserving the pre-4c throw contract that
+  // `recoverV3Journal` and direct callers (tests) depend on, while still
+  // getting persist-guard's classify/log/count side effect.
+  let thrown: unknown
+  const result = runHistoryWrite("v3-commit", () => {
+    try {
+      // Journal is self-contained: operation tx rollback may remove every CAS object,
+      // so recovery cannot depend on value-stripped manifest + v3_objects.
+      const journalPayload = prepared.compressedJournalRecord
+      db.prepare(
+        "INSERT OR REPLACE INTO v3_journal(operation_id,revision,digest,phase,payload_gz,created_at,committed_at,error) VALUES(?,?,?,?,?,?,NULL,NULL)",
+      ).run(prepared.id, prepared.revision, prepared.digest, "terminal", journalPayload, Date.now())
+      const committedAt = Date.now()
+      const tx = db.transaction(() => {
+        for (const object of prepared.objects) insertObject(db, object)
+        for (const node of prepared.sequenceNodes) insertSequenceNode(db, node)
+        db.prepare(
+          "INSERT INTO v3_operations(operation_id,revision,digest,kind,created_at,terminal_sequence,ended_at,timing_source,manifest_gz,summary_json,committed_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+        ).run(
+          prepared.id,
+          prepared.revision,
+          prepared.digest,
+          prepared.kind,
+          prepared.createdAt,
+          prepared.terminalSequence,
+          prepared.endedAt ?? null,
+          prepared.timingSource,
+          prepared.compressedManifest,
+          prepared.summaryJson,
+          committedAt,
+        )
+        const trackStmt = db.prepare("INSERT INTO v3_tracks(operation_id,track_name,attempt_index,refs_json,track_gz) VALUES(?,?,?,?,?)")
+        for (const track of prepared.tracks) trackStmt.run(prepared.id, track.name, track.attemptIndex, track.refs, track.compressed)
+        const timelineStmt = db.prepare("INSERT INTO v3_timeline_chunks(operation_id,chunk_index,first_sequence,last_sequence,payload_gz) VALUES(?,?,?,?,?)")
+        for (const chunk of prepared.timeline) timelineStmt.run(prepared.id, chunk.chunkIndex, chunk.firstSequence, chunk.lastSequence, chunk.compressed)
+        // Once the operation transaction commits, the durable manifest + CAS objects are the
+        // recovery source. Keeping the self-contained journal payload after this point would
+        // duplicate every semantic value forever and defeat content-addressed storage.
+        db.prepare("DELETE FROM v3_journal WHERE operation_id=? AND revision=?").run(prepared.id, prepared.revision)
+      })
+      tx()
+    } catch (error) {
+      thrown = error
+      throw error
+    }
   })
-  tx()
+  if (!result.ok) throw thrown
   return "inserted"
 }
 
@@ -637,9 +691,39 @@ async function runDrain(): Promise<void> {
       status = { ...status, pendingOperations: pending.length, pendingBytes }
       try {
         const prepared = await Promise.resolve().then(() => prepareModelOperation(item.record))
-        const result = commitPreparedOperation(getDatabase(), prepared)
-        if (result === "inserted") status = { ...status, persistedOperations: status.persistedOperations + 1 }
+        // Captures a non-conflict thrown error so `lastError` still carries its
+        // message after persist-guard's classify/log/count (which only returns
+        // `{ ok, transient }`, no message) — mirrors the same pattern used
+        // inside `commitPreparedOperation` itself.
+        let nonConflictError: unknown
+        const result = await runHistoryWriteAsync("v3-drain", async () => {
+          try {
+            const commitResult = commitPreparedOperation(getDatabase(), prepared)
+            if (commitResult === "inserted") status = { ...status, persistedOperations: status.persistedOperations + 1 }
+          } catch (error) {
+            if (error instanceof V3OperationConflictError) {
+              // A conflict is a data-contract violation (duplicate operationId,
+              // differing revision/digest), not a SQLite persistence failure —
+              // `commitPreparedOperation` already bumped `status.conflicts`
+              // above. Swallow it HERE (before it reaches persist-guard's own
+              // catch) so the transient/permanent classification — scoped to
+              // genuine DB failures — never double-counts a conflict as a
+              // "v3-drain" persistence failure.
+              return
+            }
+            nonConflictError = error
+            throw error
+          }
+        })
+        if (!result.ok) {
+          status = {
+            ...status,
+            failedOperations: status.failedOperations + 1,
+            lastError: nonConflictError instanceof Error ? nonConflictError.message : String(nonConflictError),
+          }
+        }
       } catch (error) {
+        // `prepareModelOperation` itself threw (before any persist-guard wrapping applies).
         consola.error(`[history/v3] failed to persist operation ${item.record.identity.operationId}`, error)
         status = {
           ...status,
@@ -649,7 +733,7 @@ async function runDrain(): Promise<void> {
       } finally {
         item.resolve()
       }
-      await new Promise<void>((resolve) => setTimeout(resolve, 0))
+      await new Promise<void>((resolve) => realSetTimeout(resolve, 0))
     }
   } finally {
     draining = false

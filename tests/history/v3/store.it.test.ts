@@ -12,7 +12,7 @@ import {
   //
   compressBytes,
   decompressBytes,
-} from "~/lib/history/sqlite/compression"
+} from "~/lib/sqlite/compression"
 import {
   //
   closeDatabase,

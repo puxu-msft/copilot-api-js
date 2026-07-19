@@ -2,10 +2,10 @@ import { createHash, randomUUID } from "node:crypto"
 import fs from "node:fs"
 import path from "node:path"
 
-import type { SqliteDatabase } from "~/lib/history/sqlite/driver"
+import type { SqliteDatabase } from "~/lib/sqlite/driver"
 
-import { compressBytes, decompressBytes } from "~/lib/history/sqlite/compression"
-import { createDatabase } from "~/lib/history/sqlite/driver"
+import { compressBytes, decompressBytes } from "~/lib/sqlite/compression"
+import { createDatabase } from "~/lib/sqlite/driver"
 
 const RAW_SCHEMA_VERSION = 1
 

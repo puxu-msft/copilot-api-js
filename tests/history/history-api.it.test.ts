@@ -107,7 +107,7 @@ async function json<T = unknown>(res: Response): Promise<T> {
 
 beforeEach(async () => {
   setStateForTests({ historyDbPath: ":memory:" })
-  initHistory(true, 200)
+  await initHistory(true, 200)
 })
 
 afterEach(async () => {

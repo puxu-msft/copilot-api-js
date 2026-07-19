@@ -21,7 +21,7 @@
  */
 import consola from "consola"
 
-import { decompressBytes } from "~/lib/history/sqlite/compression"
+import { decompressBytes } from "~/lib/sqlite/compression"
 
 import type { TelemetryDatabase } from "./db"
 import type { Sketch } from "./sketch"

@@ -57,9 +57,9 @@ import { autoRestoreState } from "../../helpers/state-fixture"
 // established isolation pattern (tests/history/history-store.it.test.ts).
 autoRestoreState()
 
-beforeEach(() => {
+beforeEach(async () => {
   setStateForTests({ historyDbPath: ":memory:" })
-  initHistory(true, 200)
+  await initHistory(true, 200)
 })
 
 afterEach(async () => {

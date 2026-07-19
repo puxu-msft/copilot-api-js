@@ -15,7 +15,7 @@ import {
   type QueryOptions,
   type SearchSource,
 } from "~/lib/history"
-import { compressAsync } from "~/lib/history/sqlite/compression"
+import { compressAsync } from "~/lib/sqlite/compression"
 
 /**
  * 从查询串解析 list / scoped-delete / search 三处共享的结构化 filter 维（11 个）：
@@ -71,8 +71,8 @@ export function handleGetEntries(c: Context) {
 }
 
 /**
- * GET /history/api/sessions — per-session aggregate view (GROUP BY session_id over
- * terminal entries_v2 rows). `?limit=N` caps the number of sessions returned
+ * GET /history/api/sessions — per-session aggregate view (grouped by session_id over
+ * terminal V3 operation records). `?limit=N` caps the number of sessions returned
  * (defaults to the store's internal cap when absent). Returns `{ sessions: [...] }`.
  */
 export function handleGetSessions(c: Context) {

@@ -7,14 +7,6 @@ import {
   state,
 } from "~/lib/state"
 
-// Function-only cyclic import (state ↔ entries): used solely inside
-// `shutdownHistory` at call time, never at module eval, so it is safe — by then
-// both modules are fully initialized (these are hoisted function declarations).
-import {
-  //
-  drainPendingFinalizations,
-  retryPendingFinalizations,
-} from "./entries"
 import { clearInFlight } from "./in-flight"
 import {
   //
@@ -33,6 +25,12 @@ import {
   getDatabase,
   openDatabase,
 } from "./sqlite/connection"
+import { applyForwardMigrations } from "./sqlite/migrations/run"
+import {
+  //
+  startV3Maintenance,
+  stopV3Maintenance,
+} from "./v3/maintenance"
 import {
   //
   drainV3Writer,
@@ -87,7 +85,7 @@ export function isHistoryEnabled(): boolean {
   return enabled
 }
 
-export function initHistory(enable: boolean, _legacyMaxEntries?: number): void {
+export async function initHistory(enable: boolean, _legacyMaxEntries?: number): Promise<void> {
   clearInFlight()
   clearRecentModelOperationTerminalsForTests()
   enabled = enable
@@ -99,6 +97,7 @@ export function initHistory(enable: boolean, _legacyMaxEntries?: number): void {
     configureTantivySearch({ enabled: false, path: PATHS.HISTORY_SEARCH_DIR })
     unsubscribeRawCapture?.()
     unsubscribeRawCapture = undefined
+    stopV3Maintenance()
     shutdownRawCapture()
     closeDatabase()
     return
@@ -109,6 +108,14 @@ export function initHistory(enable: boolean, _legacyMaxEntries?: number): void {
   const dbPath = state.historyDbPath || PATHS.HISTORY_V3_DB
   openDatabase(dbPath)
   ensureV3Schema(getDatabase())
+  // Umzug forward-migration pipe (History V2 removal Phase 4d): `MIGRATIONS`
+  // (migrations/index.ts) is intentionally empty today — this call's value is
+  // wiring the pipe end-to-end (storage construction, ledger read/write,
+  // logger adapter) against the REAL V3 db, so the first real 001+ migration
+  // has a proven-working runner to land into, rather than adding one now.
+  // RETHROWS on failure (see migrations/run.ts) — a half-applied schema
+  // migration must refuse to start, not silently continue.
+  await applyForwardMigrations(getDatabase())
   recoverV3Journal(getDatabase())
   unsubscribeV3Terminal?.()
   unsubscribeV3Terminal = subscribeModelOperationTerminals(enqueueModelOperation)
@@ -127,6 +134,12 @@ export function initHistory(enable: boolean, _legacyMaxEntries?: number): void {
       maxObjectBytes: state.historyRawCaptureMaxObjectBytes,
     })
   })
+  // DB-health (Phase 4b): periodic checkpoint/incremental-vacuum/optimize tick,
+  // adopted from the retired V2 reaper tick's maintenance half (see
+  // v3/maintenance.ts doc comment for what was and wasn't carried over).
+  // Idempotent restart — reopening History (e.g. a config reload) restarts the
+  // timer at a fresh interval rather than stacking a second one.
+  startV3Maintenance()
 }
 
 /**
@@ -145,28 +158,29 @@ export function initHistory(enable: boolean, _legacyMaxEntries?: number): void {
 export function stopHistoryBackgroundWork(): void {
   unsubscribeRawCapture?.()
   unsubscribeRawCapture = undefined
+  stopV3Maintenance()
   stopV3SummaryBackfill()
   // Signal the background backfills to stop BEFORE the DB closes (each saves its
   // cursor per batch and resumes on next start — a post-close prepare would throw).
 }
 
 /**
- * Final history teardown (graceful `finalize()` step, AFTER request drain): await
- * every in-flight async finalize, run a last-chance retry for transient-deferred
- * entries (the reaper is stopped, so a re-failure tombstones instead of leaking),
- * drain once more in case the retry kicked new finalizes, THEN close the DB. This
- * is the I4 drain that makes async finalize lossless at shutdown. Async; awaited
- * by the shutdown sequence before process exit.
+ * Final history teardown (graceful `finalize()` step, AFTER request drain):
+ * drain the canonical V3 terminal-write pipeline, THEN close the DB. The V2
+ * async-finalize drain (`drainPendingFinalizations`/`retryPendingFinalizations`)
+ * was removed with the V2 write chain (History V2 removal Phase 3) — its
+ * mechanism (transient-retain/tombstone-degrade on a failed `finalizeEntry`)
+ * had no production caller (the deleted `HistorySink` was the only one). The
+ * V3 terminal-bus subscriber (`subscribeModelOperationTerminals`, wired in
+ * `initHistory` below) is the sole production persistence path and drains via
+ * `drainModelOperationTerminalSubscribers` + `drainV3Writer` — unsubscribe
+ * FIRST (stop accepting new terminal records), then drain the subscriber
+ * queue, then drain the writer's own pending/in-flight commits, THEN close.
+ * Async; awaited by the shutdown sequence before process exit.
  */
 export async function shutdownHistory(): Promise<void> {
   // Idempotent: a direct call (tests / non-graceful paths) must also stop background work.
   stopHistoryBackgroundWork()
-  await drainPendingFinalizations()
-  // Deferred terminal finalizations are already-accepted durability work, not
-  // background maintenance. Give them one last bounded-by-entry retry, then
-  // drain the resulting writes before closing the canonical History DB.
-  await retryPendingFinalizations()
-  await drainPendingFinalizations()
   // Keep the canonical terminal subscriber alive through request drain. Only
   // detach after no more requests can settle, then drain terminal work to disk.
   unsubscribeV3Terminal?.()

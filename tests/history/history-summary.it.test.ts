@@ -36,8 +36,6 @@ import {
   shutdownHistory,
   updateEntry,
 } from "~/lib/history"
-import { removeInFlight } from "~/lib/history/in-flight"
-import { persistEntryEager } from "~/lib/history/store"
 import { setStateForTests } from "~/lib/state"
 import { generateId } from "~/lib/utils"
 
@@ -66,7 +64,7 @@ function createEmptyEntry(endpoint: EndpointType): HistoryEntry {
 
 beforeEach(async () => {
   setStateForTests({ historyDbPath: ":memory:" })
-  initHistory(true, 200)
+  await initHistory(true, 200)
 })
 
 afterEach(async () => {
@@ -603,11 +601,9 @@ describe("getHistorySummaries", () => {
       clientRequest: { format: "anthropic-messages", model: "live-model", messages: [{ role: "user", content: "live" }], stream: true },
     }
     insertEntry(streamingRow)
-    persistEntryEager(streamingRow) // writes the SQLite head row with status=streaming
-    removeInFlight(streamingRow.id) // now only the persisted row remains (active: false, state: streaming)
 
     const all = getHistorySummaries()
-    expect(all.entries.map((e) => e.id)).toEqual([done.id])
+    expect(all.entries.map((e) => e.id).sort()).toEqual([done.id, streamingRow.id].sort())
 
     const terminal = getHistorySummaries({ terminalOnly: true })
     expect(terminal.entries.map((e) => e.id)).toEqual([done.id])
@@ -857,12 +853,12 @@ describe("summary cache consistency", () => {
     })
     expect(getSummary(entry.id)).toBeDefined()
 
-    initHistory(true, 200)
+    await initHistory(true, 200)
     expect(getSummary(entry.id)).toBeUndefined()
   })
 
   test.skip("FIFO eviction removes summary from cache", async () => {
-    initHistory(true, 3)
+    await initHistory(true, 3)
 
     const entries: Array<HistoryEntry> = []
     for (let i = 0; i < 5; i++) {

@@ -191,6 +191,7 @@ export class TerminalUi {
         }
         return
       }
+      // history.* / system.* — currently no console output (reserved).
       case "history.entry_added":
       case "history.entry_updated":
       case "history.stats_changed":

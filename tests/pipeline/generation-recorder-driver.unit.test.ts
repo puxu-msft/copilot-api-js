@@ -81,7 +81,7 @@ describe("generation recorder v4 driver integration", () => {
     expect(record.attempts[0]?.upstreamRequest?.payload).toMatch(/^payload:/)
     const upstreamNode = record.arena.frames.find((node) => node.origin.track === "upstream")
     const renderedNode = record.arena.frames.find((node) => node.provenance === "derived" && node.transformId === "render:openai-cc")
-    expect(upstreamNode?.value).toEqual({ data: upstreamFrame.data })
+    expect(upstreamNode?.value).toEqual({ data: upstreamFrame.data, type: "message" })
     expect(renderedNode).toMatchObject({ provenance: "derived", derivedFrom: upstreamNode?.handle, origin: { stage: "render", track: "client" } })
   })
 
@@ -162,6 +162,7 @@ describe("generation recorder v4 driver integration", () => {
       data: "one",
       id: "evt-1",
       retry: 2500,
+      type: "message",
     })
     expect(record.transforms).toEqual(
       expect.arrayContaining([

@@ -32,7 +32,7 @@ describe("history session resolution", () => {
   beforeEach(async () => {
     setStateForTests({ historyDbPath: ":memory:" })
     openInMemoryDatabase()
-    initHistory(true, 200)
+    await initHistory(true, 200)
   })
 
   afterEach(async () => {

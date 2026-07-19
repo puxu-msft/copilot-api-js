@@ -89,8 +89,8 @@ function createEntry(endpoint: EndpointType, clientRequest: Partial<ClientReques
 
 let detachWsSink: (() => void) | undefined
 
-beforeEach(() => {
-  initHistory(true, 200)
+beforeEach(async () => {
+  await initHistory(true, 200)
   // Wire the bus chain that ws/broadcast.ts depends on after commit 3b:
   // entries.ts publishes history.* via historyState.publisher → WsSink
   // subscribes → calls notifyEntryAdded/etc → broadcasts to addClient'd WSes.
@@ -517,8 +517,8 @@ describe("full request lifecycle", () => {
 // ─── History disabled ───
 
 describe("history disabled", () => {
-  test("no WS notifications when history is disabled", () => {
-    initHistory(false, 200)
+  test("no WS notifications when history is disabled", async () => {
+    await initHistory(false, 200)
 
     const ws = createMockWebSocket()
     addClient(ws)

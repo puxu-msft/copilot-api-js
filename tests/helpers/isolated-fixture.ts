@@ -39,26 +39,18 @@ import { resetToolInputRepairStatsForTests } from "~/lib/anthropic/tool-input-re
 import { resetBundledConfigCacheForTests } from "~/lib/config/config"
 import { _resetConfigValidationWarnTrackingForTests } from "~/lib/config/validation"
 import { resetModelOperationTerminalRegistryForTests } from "~/lib/context/lightweight-model-operation"
+import { resetHistoryPersistErrorStats } from "~/lib/history/persist-guard"
+import { resetRawCaptureManagerForTests } from "~/lib/history/raw/manager"
 import { resetDiagnosticLoggerForTests } from "~/lib/diagnostics"
 import { resetStructuredFileSinkForTests } from "~/lib/diagnostics/file"
 import { resetBootstrapSpoolForTests } from "~/lib/diagnostics/file/bootstrap-spool"
 import {
   //
-  __setTerminalWriterForTests,
-  drainPendingFinalizations,
-} from "~/lib/history/entries"
-import { resetHistoryPersistErrorStats } from "~/lib/history/persist-guard"
-import { resetRawCaptureManagerForTests } from "~/lib/history/raw/manager"
+  drainV3Writer,
+  resetV3WriterForTests,
+} from "~/lib/history/v3/store"
 import { setNativeHistorySearchForTests } from "~/lib/history/search-native"
 import { resetTantivySearchForTests } from "~/lib/history/search-tantivy"
-import { resetArchiveWorkerForTests } from "~/lib/history/sqlite/archive-worker"
-import { resetCacheWriteBackfillForTests } from "~/lib/history/sqlite/cache-write-backfill"
-import { resetCalibrationBackfillForTests } from "~/lib/history/sqlite/calibration-backfill"
-import { resetLegacyStageBackfillForTests } from "~/lib/history/sqlite/legacy-stage-backfill"
-import { resetResponsePreviewBackfillForTests } from "~/lib/history/sqlite/response-preview-backfill"
-import { resetSearchIndexBackfillForTests } from "~/lib/history/sqlite/search-index-backfill"
-import { resetUsageNormalizeBackfillForTests } from "~/lib/history/sqlite/usage-normalize-backfill"
-import { resetV3WriterForTests } from "~/lib/history/v3/store"
 import { resetModelOperationTerminalBusForTests } from "~/lib/history/v3/terminal-bus"
 import { clearRecentModelOperationTerminalsForTests } from "~/lib/history/v3/terminal-bus"
 import { resetAllLimitsForTesting } from "~/lib/models/calibration/engine"
@@ -135,18 +127,9 @@ export const RESETTERS: ReadonlyArray<{ name: string; reset: () => void | Promis
   { name: "setUpstreamWsConnectionFactoryForTests", reset: () => setUpstreamWsConnectionFactoryForTests(null) },
   { name: "setHttp2SessionFactoryForTests", reset: () => setHttp2SessionFactoryForTests(undefined) },
   { name: "setConnectTimeoutForTests", reset: () => setConnectTimeoutForTests(undefined) },
-  { name: "__setTerminalWriterForTests", reset: () => __setTerminalWriterForTests(undefined) },
   // Not `*ForTests`-named (a production reset) but a module-global counter that
   // leaks across tests, so reset it here too.
   { name: "resetHistoryPersistErrorStats", reset: resetHistoryPersistErrorStats },
-  // search_index backfill module-global stop/running flags.
-  { name: "resetSearchIndexBackfillForTests", reset: resetSearchIndexBackfillForTests },
-  { name: "resetLegacyStageBackfillForTests", reset: resetLegacyStageBackfillForTests },
-  { name: "resetUsageNormalizeBackfillForTests", reset: resetUsageNormalizeBackfillForTests },
-  { name: "resetCacheWriteBackfillForTests", reset: resetCacheWriteBackfillForTests },
-  { name: "resetResponsePreviewBackfillForTests", reset: resetResponsePreviewBackfillForTests },
-  { name: "resetCalibrationBackfillForTests", reset: resetCalibrationBackfillForTests },
-  { name: "resetArchiveWorkerForTests", reset: resetArchiveWorkerForTests },
   // TUI terminal-coordinator module-level singleton (whole-branch review I3):
   // a test that constructs a non-`silent` TerminalUi and forgets `destroy()`
   // would otherwise leak its registration into the next test file.
@@ -217,8 +200,8 @@ export function useIsolatedRuntime(opts: IsolatedRuntimeOptions = {}): void {
   const network = opts.network ?? "guard"
   let snapshot: StateSnapshot
 
-  beforeAll(() => {
-    bootstrapTestRuntime()
+  beforeAll(async () => {
+    await bootstrapTestRuntime()
     // Full runtime re-wire ONCE per describe, in case the PREVIOUS test file did NOT use
     // this fixture (e.g. a history `.it` test with its own real-DB lifecycle that closed
     // the DB and/or left a stale bus + request-context manager). bootstrapTestRuntime's
@@ -228,7 +211,7 @@ export function useIsolatedRuntime(opts: IsolatedRuntimeOptions = {}): void {
     // initialized", or a dead bus → request events never reach the history sink → no
     // persisted entry). resetTestRuntime reopens `:memory:`, swaps in a fresh bus + sinks,
     // and re-wires the manager; it is the same call afterEach uses, so this is idempotent.
-    resetTestRuntime()
+    await resetTestRuntime()
   })
 
   beforeEach(() => {
@@ -237,14 +220,15 @@ export function useIsolatedRuntime(opts: IsolatedRuntimeOptions = {}): void {
   })
 
   afterEach(async () => {
-    // Drain any fire-and-forget async finalize (a request that settled during the
-    // test kicks one via the history sink) BEFORE resetTestRuntime swaps/closes the
-    // DB — otherwise the in-flight finalize lands on a closed handle ("Cannot use a
-    // closed database") or leaks into the next test. Mirrors the production shutdown
-    // drain (RFC history-finalize-async-offload I4).
-    await drainPendingFinalizations()
+    // Drain any fire-and-forget async V3 terminal write (a request that settled
+    // during the test kicks one via `subscribeModelOperationTerminals`, see
+    // state.ts) BEFORE resetTestRuntime swaps/closes the DB — otherwise the
+    // in-flight write lands on a closed handle ("Cannot use a closed database")
+    // or leaks into the next test. Mirrors the production shutdown drain
+    // (`shutdownHistory`'s `drainV3Writer` call).
+    await drainV3Writer()
     restoreStateForTests(snapshot)
-    resetTestRuntime()
+    await resetTestRuntime()
     // Serial await: a resetter may be async (future-proofing) — fire-and-forget
     // would let an enqueued write land in the next test (the exact class of leak
     // this fixture exists to kill).

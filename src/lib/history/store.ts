@@ -1,37 +1,8 @@
-export {
-  __setTerminalWriterForTests,
-  clearHistory,
-  drainPendingFinalizations,
-  finalizeEntry,
-  getInFlightEntry,
-  insertEntry,
-  listInFlightEntries,
-  listInFlightSummaries,
-  persistEntryEager,
-  persistEntryStages,
-  persistEntryStatus,
-  retryPendingFinalizations,
-  setPinned,
-  updateEntry,
-} from "./entries"
+export { clearHistory, getInFlightEntry, insertEntry, listInFlightEntries, listInFlightSummaries, setPinned, updateEntry } from "./entries"
 export { getEntry, getHistory, getHistorySummaries, getSummary } from "./queries"
 export { searchContains, searchHistory } from "./search"
-export {
-  getAgentIdFromHeaders,
-  getCurrentSession,
-  getSessionEntries,
-  getSessionIdFromHeaders,
-  getSessionSummaries,
-} from "./sessions"
-export {
-  historyState,
-  initHistory,
-  isHistoryEnabled,
-  setHistoryPublisher,
-  shutdownHistory,
-  startHistoryBackfills,
-  stopHistoryBackgroundWork,
-} from "./state"
+export { getAgentIdFromHeaders, getCurrentSession, getSessionEntries, getSessionIdFromHeaders, getSessionSummaries } from "./sessions"
+export { historyState, initHistory, isHistoryEnabled, setHistoryPublisher, shutdownHistory, startHistoryBackfills, stopHistoryBackgroundWork } from "./state"
 export { exportHistory, getStats } from "./stats"
 
 export type {

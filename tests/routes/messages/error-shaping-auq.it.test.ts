@@ -23,7 +23,7 @@ import {
 } from "bun:test"
 
 import { getHistory } from "~/lib/history"
-import { drainPendingFinalizations } from "~/lib/history/entries"
+import { drainV3Writer } from "~/lib/history/v3/store"
 import {
   //
   setModels,
@@ -167,7 +167,7 @@ describe("AUQ synthesis — history recording (Task 4.3 sentinel / D-1)", () => 
     const res = await postMessages({ stream: false })
     expect(res.status).toBe(200)
     await res.json()
-    await drainPendingFinalizations()
+    await drainV3Writer()
 
     const entry = getHistory({ endpoint: "anthropic-messages" }).entries[0]
     expect(entry).toBeDefined()
@@ -179,5 +179,38 @@ describe("AUQ synthesis — history recording (Task 4.3 sentinel / D-1)", () => 
 
     expect(entry?.clientResponse?.status).toBe(200)
     expect(entry?.clientResponse?.body).toBeDefined()
+  })
+})
+
+// ============================================================================
+// Producer-oracle: synthetic marking on the AUQ streaming path (cross-model review Major)
+// ============================================================================
+//
+// `captureForwardedGenerationFrame`'s 3rd `syntheticKind` param only drives arena
+// origin/transformId — projection.ts's `frames()` reads `node.value.synthetic`, so the
+// FORWARDED-track `SseEventRecord` itself must carry `synthetic` too, or a 100%
+// proxy-fabricated AUQ turn stays indistinguishable from real content (richest-data-flow /
+// ADR 2026-07-05 "合成帧必打可辨识标记"). Independent oracle: reads back the SAME persisted
+// history entry a real request populates (`getHistory()`), not the route's return value.
+describe("AUQ synthesis — forwarded-track synthetic marking (streaming, producer-oracle)", () => {
+  useIsolatedRuntime()
+
+  test("every clientResponse.sseEvents frame is tagged synthetic:'error-shaping-auq'", async () => {
+    setupCommonState()
+    setStateForTests({ errorShapingEnabled: true, errorAskUserQuestion: true })
+    mockUpstreamStatus(403, "token expired")
+
+    const res = await postMessages({ stream: true })
+    expect(res.status).toBe(200)
+    await res.text()
+    await drainV3Writer()
+
+    const entry = getHistory({ endpoint: "anthropic-messages" }).entries[0]
+    const forwarded = entry?.clientResponse?.sseEvents ?? []
+    expect(forwarded.length).toBeGreaterThan(0)
+    expect(forwarded.every((e) => e.synthetic === "error-shaping-auq")).toBe(true)
+    // The upstream track never carries it — no real upstream response for a pre-commit AUQ (the
+    // upstream 403 lives in attempts[].upstreamResponse, not sseEvents, for this non-streaming
+    // upstream call), so this stays a pure forwarded-track assertion.
   })
 })

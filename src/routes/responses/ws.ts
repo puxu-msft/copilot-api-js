@@ -148,13 +148,19 @@ function sendErrorAndClose(
     type: "error",
     error: { type: code ?? "server_error", message },
   })
+  // Cross-model review Major: `synthetic` must be set ON THE RECORD (projection.ts's `frames()`
+  // reads `node.value.synthetic` — the 3rd `syntheticKind` param passed below only drives the
+  // arena origin/transformId, not the projected field). This is the WS analog of the HTTP
+  // `writeSynthetic` POST-COMMIT terminal `event: error` frame that REPLACES the upstream
+  // terminator (both H3 stream-error at :519 and truncation at :574 route through this one
+  // function) — exactly `"error-shaping-canonical"`'s documented semantics (types.ts:188).
   if (forwarded) {
-    const record: SseEventRecord = { offsetMs: Date.now() - forwarded.streamStartMs, type: "error", raw: data }
+    const record: SseEventRecord = { offsetMs: Date.now() - forwarded.streamStartMs, type: "error", raw: data, synthetic: "error-shaping-canonical" }
     forwarded.events.push(record)
     forwarded.captureGenerationFrame?.({ data }, record, "synthetic")
   }
   if (deliveryCtx) {
-    const record: SseEventRecord = { offsetMs: Date.now() - deliveryCtx.startTime, type: "error", raw: data }
+    const record: SseEventRecord = { offsetMs: Date.now() - deliveryCtx.startTime, type: "error", raw: data, synthetic: "error-shaping-canonical" }
     deliveryCtx.captureForwardedGenerationFrame?.({ data }, record, "synthetic")
     deliveryCtx.setForwardedResponse({ content: JSON.parse(data), sseEvents: [record] })
   }

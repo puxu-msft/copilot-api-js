@@ -124,10 +124,7 @@ function summarizeMessage(msg: MessageContent): string {
  * nothing is summarizable.
  *
  * Reads ONLY `clientRequest.messages`. The `Pick<…, "clientRequest">` param
- * keeps that contract explicit. (The search_index backfill —
- * `sqlite/search-index-backfill.ts` — decodes the FULL entry via
- * `assembleFullEntry` to build the index, so preview recompute rides along with
- * the full object available; no special inbound-only loading is needed there.)
+ * keeps that contract explicit.
  */
 export function extractPreviewText(entry: Pick<HistoryEntry, "clientRequest">): string {
   const messages = entry.clientRequest?.messages

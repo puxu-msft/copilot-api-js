@@ -472,8 +472,14 @@ export function createRequestContext(opts: {
     rawCaptureLease.appendRef(id, sequence, track, result)
   }
 
-  function canonicalFrameValue(frame: unknown): Readonly<Record<string, unknown>> {
-    if (typeof frame !== "object" || frame === null) return Object.freeze({ data: typeof frame === "string" ? frame : String(frame) })
+  function canonicalFrameValue(frame: unknown, record?: SseEventRecord): Readonly<Record<string, unknown>> {
+    if (typeof frame !== "object" || frame === null) {
+      return Object.freeze({
+        data: typeof frame === "string" ? frame : String(frame),
+        ...(record?.type !== undefined && { type: record.type }),
+        ...(record?.synthetic !== undefined && { synthetic: record.synthetic }),
+      })
+    }
     const candidate = frame as { event?: unknown; data?: unknown; id?: unknown; retry?: unknown; raw?: unknown }
     return Object.freeze({
       ...(candidate.event !== undefined && { event: candidate.event }),
@@ -481,6 +487,17 @@ export function createRequestContext(opts: {
       ...(candidate.id !== undefined && { id: candidate.id }),
       ...(candidate.retry !== undefined && { retry: candidate.retry }),
       ...(candidate.data === undefined && candidate.raw !== undefined && { data: candidate.raw }),
+      // Preserve the caller-computed `type` (the SSE event type / synthesized "message"/"keepalive"
+      // sentinel, driver.ts/client-sink.ts) and `synthetic`-origin classification (hook-mock/hook-replay
+      // from the driver's upstream-track sampling; hook-rewrite/refusal-recovery/error-shaping-*/
+      // keepalive/anchor/synthetic-message-start from the client-sink's forwarded-track sampling).
+      // Without this the arena node's `value` — what projection.ts's `frames()` reads back for
+      // `SseEventRecord.type`/`.synthetic` — silently drops declared, richest-data-flow-mandated
+      // fields (V3 projection gap audit root cause #2: this function used to keep ONLY the raw wire
+      // fields, so `type` always fell back to the generic "message" default and `synthetic` was
+      // always undefined, even for a real Anthropic `event:` line or a genuine hook-replay frame).
+      ...(record?.type !== undefined && { type: record.type }),
+      ...(record?.synthetic !== undefined && { synthetic: record.synthetic }),
     })
   }
 
@@ -566,7 +583,7 @@ export function createRequestContext(opts: {
 
   function captureUpstreamFrameFor(attempt: GenerationAttemptCapture | undefined, frame: unknown, record: SseEventRecord): void {
     if (modelOperationRecorder.sealed) return
-    const handle = modelOperationRecorder.registerFrame(canonicalFrameValue(frame), {
+    const handle = modelOperationRecorder.registerFrame(canonicalFrameValue(frame, record), {
       origin: { stage: "upstream-capture", track: "upstream", ...(attempt !== undefined && { dispatch: attempt.handle }) },
       mediaType: "text/event-stream",
     })
@@ -851,6 +868,32 @@ export function createRequestContext(opts: {
         })
       }
     }
+    // Reuses the terminal.metadata channel (previously unused) as the minimal producer surface
+    // for entry-level fields that have no other natural home in the V3 record shape — mirrors the
+    // legacy V2 toHistoryEntry() producer (request.ts:1499+) so V3 doesn't silently drop them
+    // (V3 projection gap audit §C step 5). `durationMs` was ALREADY read back by projection.ts
+    // (`:` metadata(record.terminal?.metadata)?.durationMs) — this is what actually populates it;
+    // queueWaitMs/warningMessages/pipelineInfo/preprocessing/timing/rawPath/multiplier are new.
+    const finalEndTime = _endTime ?? Date.now()
+    const off = (epoch: number | undefined): number | undefined => (epoch === undefined ? undefined : epoch - startTime)
+    const clientTiming = {
+      ...(off(_clientTimingEpochs.streamOpen) !== undefined && { streamOpenMs: off(_clientTimingEpochs.streamOpen) }),
+      ...(off(_clientTimingEpochs.firstReal) !== undefined && { firstRealMs: off(_clientTimingEpochs.firstReal) }),
+      ...(off(_clientTimingEpochs.bufferHoldStart) !== undefined && { bufferHoldStartMs: off(_clientTimingEpochs.bufferHoldStart) }),
+    }
+    const mergedInfo = mergedPipelineInfo()
+    const resolvedForBilling = _resolvedModel ?? undefined
+    const billing = resolvedForBilling ? appState.modelIndex.get(resolvedForBilling)?.billing : undefined
+    const terminalMetadata = {
+      durationMs: finalEndTime - startTime,
+      queueWaitMs: _queueWaitMs,
+      ...(_warningMessages.length > 0 && { warningMessages: [..._warningMessages] }),
+      ...(mergedInfo && { pipelineInfo: mergedInfo }),
+      ...(mergedInfo?.preprocessing && { preprocessing: mergedInfo.preprocessing }),
+      ...(Object.keys(clientTiming).length > 0 && { timing: { client: clientTiming } }),
+      ...(opts.rawPath !== undefined && { rawPath: opts.rawPath }),
+      ...(billing?.multiplier !== undefined && { multiplier: billing.multiplier }),
+    }
     modelOperationTerminalRecord = modelOperationRecorder.commitTerminal({
       outcome: terminal.outcome,
       ...(terminal.outcome === "completed" && terminalCandidate !== undefined && { winnerCandidate: terminalCandidate }),
@@ -858,6 +901,7 @@ export function createRequestContext(opts: {
       ...(terminal.error !== undefined && { error: terminal.error }),
       ...(operationUsage(_response) !== undefined && { usage: operationUsage(_response) }),
       ...(terminal.attribution !== undefined && { attribution: terminal.attribution }),
+      metadata: terminalMetadata,
     })
     publishModelOperationTerminal(modelOperationTerminalRecord)
     return modelOperationTerminalRecord
@@ -978,18 +1022,12 @@ export function createRequestContext(opts: {
       // buffered-retry being enabled). Forwarded-wire correctness is unaffected either way.
       _askNormalization = { ..._askNormalization, ...diag }
       recordAttemptDiagnostic("repair.ask_user_question_normalization", "warning", diag)
-      // MUST publish — pipelineInfo reaches SQLite only via the in-flight context_updated handler
-      // (history sink); onTerminal's projection allowlist does NOT include pipelineInfo. Mirrors
-      // setStreamTimeouts exactly.
-      publisher?.publish({ kind: "request.context_updated", ctx: snapshotWithSummary(ctx), field: "pipelineInfo", contextRef: ctx })
     },
     recordSendMessageNormalization(diag) {
       // Same shape/lifecycle as recordAskUserQuestionNormalization: request-level, NOT per-attempt-reset
-      // (under buffered-retry may reflect a discarded attempt; forwarded-wire correctness unaffected). MUST
-      // publish — pipelineInfo reaches SQLite only via the in-flight context_updated handler.
+      // (under buffered-retry may reflect a discarded attempt; forwarded-wire correctness unaffected).
       _sendMessageNormalization = { ..._sendMessageNormalization, ...diag }
       recordAttemptDiagnostic("repair.send_message_normalization", "warning", diag)
-      publisher?.publish({ kind: "request.context_updated", ctx: snapshotWithSummary(ctx), field: "pipelineInfo", contextRef: ctx })
     },
     get repairOutcomes() {
       return _repairOutcomes
@@ -1095,7 +1133,6 @@ export function createRequestContext(opts: {
     setOriginalRequest(req: OriginalRequest) {
       if (_originalRequest !== null) throw new Error("[RequestContext] original request already registered")
       _originalRequest = req
-      publisher?.publish({ kind: "request.context_updated", ctx: snapshotWithSummary(ctx), field: "originalRequest", contextRef: ctx })
     },
 
     recordModelOperationIngress() {
@@ -1131,15 +1168,12 @@ export function createRequestContext(opts: {
       // Direct assignment — caller assembles the complete PipelineInfo
       _pipelineInfo = info
       recordAttemptDiagnostic("pipeline.info", "info", info)
-      publisher?.publish({ kind: "request.context_updated", ctx: snapshotWithSummary(ctx), field: "pipelineInfo", contextRef: ctx })
     },
 
     setStreamTimeouts(patch: { streamIdleTimeoutMs?: number; responseHeaderTimeoutMs?: number }) {
       // Merge (the two fields are independent). Kept separate from `_pipelineInfo`
       // so the 4 gated `setPipelineInfo` full-replace call sites never clobber it.
-      // Reuses the `pipelineInfo` context_updated event kind (no new event type).
       _streamTimeouts = { ..._streamTimeouts, ...patch }
-      publisher?.publish({ kind: "request.context_updated", ctx: snapshotWithSummary(ctx), field: "pipelineInfo", contextRef: ctx })
     },
 
     setSseEvents(events: Array<SseEventRecord>) {
@@ -1160,16 +1194,11 @@ export function createRequestContext(opts: {
           ...(capture.request && { outboundRequest: capture.request }),
           ...(capture.response && { outboundResponse: capture.response }),
         }
-        // RFC Phase 5: surface httpHeaders to in-flight observers (history sink's
-        // onContextUpdated reads live ctx.httpHeaders). Not in the lightweight
-        // snapshot — kept lean; the sink reads the full headers off the ctx ref.
-        publisher?.publish({ kind: "request.context_updated", ctx: snapshotWithSummary(ctx), field: "httpHeaders", contextRef: ctx })
       }
     },
 
     setInboundRequestHeaders(headers: Record<string, string>) {
       _httpHeaders = { ..._httpHeaders, inboundRequest: headers }
-      publisher?.publish({ kind: "request.context_updated", ctx: snapshotWithSummary(ctx), field: "httpHeaders", contextRef: ctx })
     },
 
     setInboundResponseHeaders(headers: Record<string, string>) {
@@ -1177,7 +1206,6 @@ export function createRequestContext(opts: {
       // sends to the client), captured at the handler write-out point. Completes the
       // four-leg model. Publishes for in-flight visibility (Phase 5).
       _httpHeaders = { ..._httpHeaders, inboundResponse: headers }
-      publisher?.publish({ kind: "request.context_updated", ctx: snapshotWithSummary(ctx), field: "httpHeaders", contextRef: ctx })
     },
 
     setClientResponseStatus(status: number) {
@@ -1187,14 +1215,12 @@ export function createRequestContext(opts: {
       // MUST land before complete()/fail()/abort() snapshots the entry (mirrors the header
       // capture ordering). Lands on the first-class `clientResponse` leg in toHistoryEntry.
       _clientResponseStatus = status
-      publisher?.publish({ kind: "request.context_updated", ctx: snapshotWithSummary(ctx), field: "httpHeaders", contextRef: ctx })
     },
 
     setOutboundResponseTrailers(trailers: Record<string, string>) {
       // Best-effort h2 response-trailers leg (richest-data-flow). The transport fires
       // this before stream end, so it lands before complete()/fail() snapshots the entry.
       _httpHeaders = { ..._httpHeaders, outboundResponseTrailers: trailers }
-      publisher?.publish({ kind: "request.context_updated", ctx: snapshotWithSummary(ctx), field: "httpHeaders", contextRef: ctx })
     },
 
     addWarningMessage(warning: WarningMessage) {
@@ -1203,7 +1229,6 @@ export function createRequestContext(opts: {
 
       _warningMessages.push(warning)
       recordAttemptDiagnostic(`warning.${warning.code}`, "warning", warning, warning.message)
-      publisher?.publish({ kind: "request.context_updated", ctx: snapshotWithSummary(ctx), field: "warningMessages", contextRef: ctx })
     },
 
     beginGenerationCandidate(input) {
@@ -1255,7 +1280,6 @@ export function createRequestContext(opts: {
       generationAttempts.push(capture)
       generationAttemptByHandle.set(handle, capture)
       activeGenerationDispatch = handle
-      publisher?.publish({ kind: "request.context_updated", ctx: snapshotWithSummary(ctx), field: "attempts", contextRef: ctx })
       return handle
     },
 
@@ -1378,7 +1402,6 @@ export function createRequestContext(opts: {
             metadata: requestMetadata(req),
           })
         }
-        publisher?.publish({ kind: "request.context_updated", ctx: snapshotWithSummary(ctx), field: "attempts", contextRef: ctx })
       }
     },
 
@@ -1401,7 +1424,6 @@ export function createRequestContext(opts: {
             metadata: requestMetadata(req),
           })
         }
-        publisher?.publish({ kind: "request.context_updated", ctx: snapshotWithSummary(ctx), field: "attempts", contextRef: ctx })
       }
     },
 
@@ -1414,7 +1436,6 @@ export function createRequestContext(opts: {
           modelOperationRecorder.setDispatchTransport(generationAttempt.handle, transport)
         }
         recordAttemptDiagnostic("transport.selected", "info", { transport })
-        publisher?.publish({ kind: "request.context_updated", ctx: snapshotWithSummary(ctx), field: "attempts", contextRef: ctx })
       }
     },
 
@@ -1506,7 +1527,7 @@ export function createRequestContext(opts: {
       if (syntheticKind !== undefined || known?.bytesChanged) {
         const parent = known?.handle ?? syntheticRoot()
         const transformId = `client-sink:${syntheticKind ?? "mutation"}`
-        handle = modelOperationRecorder.deriveFrame(canonicalFrameValue(frame), {
+        handle = modelOperationRecorder.deriveFrame(canonicalFrameValue(frame, record), {
           derivedFrom: parent,
           transformId,
           origin: { stage: "client-sink", track: "proxy", detail: syntheticKind ?? "mutation" },
@@ -1522,7 +1543,7 @@ export function createRequestContext(opts: {
       } else if (known) {
         handle = known.handle
       } else {
-        handle = modelOperationRecorder.registerFrame(canonicalFrameValue(frame), {
+        handle = modelOperationRecorder.registerFrame(canonicalFrameValue(frame, record), {
           origin: { stage: "client-sink", track: "client" },
           mediaType: "text/event-stream",
         })
@@ -1593,7 +1614,6 @@ export function createRequestContext(opts: {
 
     addQueueWaitMs(ms: number) {
       _queueWaitMs += ms
-      publisher?.publish({ kind: "request.context_updated", ctx: snapshotWithSummary(ctx), field: "queueWaitMs", contextRef: ctx })
     },
 
     transition(newState: RequestState, meta?: Record<string, unknown>) {

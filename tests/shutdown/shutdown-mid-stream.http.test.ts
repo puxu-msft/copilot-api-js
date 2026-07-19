@@ -165,8 +165,8 @@ async function drainUntilClosed(body: ReadableStream<Uint8Array>, timeoutMs: num
 
 let snapshot: StateSnapshot
 
-beforeAll(() => {
-  bootstrapTestRuntime()
+beforeAll(async () => {
+  await bootstrapTestRuntime()
 })
 
 beforeEach(() => {
@@ -188,7 +188,7 @@ afterEach(async () => {
   restoreStateForTests(snapshot)
   // Always reset shutdown state even if a test failed mid-shutdown — leaving
   // _isShuttingDown=true would poison every later test in the suite.
-  resetTestRuntime()
+  await resetTestRuntime()
   // Give any pending shutdown timers one tick to settle.
   await new Promise<void>((resolve) => setTimeout(resolve, 0))
 })

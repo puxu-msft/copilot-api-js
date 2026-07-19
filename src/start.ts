@@ -401,7 +401,7 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   // Initialized" line is captured by the file sink and the --mock-rate-limiter-
   // throttled forced state transition actually reaches the bus).
   const historyEnabled = options.history ?? state.historyEnabled
-  initHistory(historyEnabled)
+  await initHistory(historyEnabled)
   await initRequestTelemetry()
 
   // Canonical V3 terminal persistence is installed by initHistory. The legacy

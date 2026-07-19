@@ -60,6 +60,12 @@ const EXEMPT: Record<string, string> = {
   _isTelemetryShutdownSealedForTests: "read-only assertion hook — no state to reset",
   _runRollupTickForTests: "action hook (drives one rollup tick) — no state to reset",
   resetReaperDiagnosticsForTests: "diagnostic snapshot reset — exercised by its owning tests",
+  // Read-only assertion hook (is the V3 maintenance timer currently armed?) —
+  // no module-global state of its own to reset; the timer itself is
+  // start/stopped by production code paths (initHistory/shutdownHistory), and
+  // tests that arm it directly (db-health.it.test.ts) tear it down themselves
+  // via stopV3Maintenance() in their own afterEach.
+  isV3MaintenanceRunningForTests: "read-only assertion hook — no state to reset",
   // telemetry injectors: per-test opt-in; their effect is undone by _resetRequestTelemetryForTests
   // (registered), which closes the injected db handle + restores OUTBOX_SOFT_CAP.
   _setTelemetryDbForTests: "db injector — reset via _resetRequestTelemetryForTests",

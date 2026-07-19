@@ -2,6 +2,13 @@
 
 从记忆库降为引用层（2026-07-05）时归位的活 backlog。每条：现状 / 暂缓原因 / 若做需改什么。
 
+## Pre-existing e2e 缺陷（History V2 removal 合并 review 2026-07-19 surfaced，非本合并引入）
+
+在纯 `a387a6da`/`952c831f`（合并前 master）复现相同失败 → 确证 pre-existing、非 History V2 removal 引入。二者均 `.e2e.test.ts`、**不进 `test:backend` 默认门**（`bun test .unit.test .it.test .http.test` 显式排除 `.e2e.test.ts`），故全量 `bun test` 才暴露。
+
+- **`tests/e2e/handover.e2e.test.ts:259`（handover run 1-5/5 全挂）**：`expect(historyRes.status).toBe(200)` 实收 **400**。**现状**：graceful-restart bare-metal takeover e2e 调 history API 得 400。**疑因**：config 默认值 / history endpoint 在 takeover 场景下的 400（待复现根因——是 history handler 拒绝、还是 config gate）。**若做**：起真实 takeover 场景抓 400 响应体定位是哪个 history 路由 + 为何 400。
+- **`tests/e2e-client/anthropic-coexist-cli.e2e.test.ts:70`**：hook 模块缺具名导出（`anchor-coexist wire ... assembles as ONE complete turn` 失败）。**现状**：CLI e2e 的 hook-mock 模块导出契约不匹配。**若做**：核对 hook 模块的具名导出 vs 加载方期望（参考记忆 [[reference-cli-e2e-spawn-and-hook-load-gotchas]] 的 data-URL 丢具名导出坑）。
+
 ## 首包/时序埋点的观测→治理跟进项（2026-07-14 落地首包埋点后）
 
 首包埋点（ADR `docs/decisions/2026-07-14-request-timing-instrumentation.md`）只**观测**、不治理。以下四项经 spec §9 明确推迟:
@@ -133,13 +140,33 @@
 
 ## Group-B 运营标量迁移 `_index.aux` / `model.multiplier`（P4c-3 未做，正交于 leg 重构）
 
+> **⚠️ 修复路径已随 History V2 removal（2026-07-18）过时** —— 本条描述的 V2 修法（`serialize.ts` META_KEYS / `deserializeEntry` 列往返 / `buildHeadRow`）已随 V2 写链整体删除。在 V3 下，这批字段的产出方是 `v3/projection.ts::recordToHistoryEntry`，与下一节「History V3 projection 字段缺口」是同一问题域——以下节为准，本条仅作 leg 重构历史裁决记录保留。
+
 - **根因**：history 数据模型重构（RFC 2026-07-07）§4 规划把 `requestBytes`/`responseBytes`/`warningMessages` 归入 `_index.aux.*`、`multiplier` 归入 `model.multiplier`（自由投影层）。但 P4c-3（删 legacy leg 写路径）**只删了 leg 字段 + `_index.derived`-已支撑的标量**（`attemptCount`/`currentStrategy`/`failureReason`），Group-B 这 4 个**列支撑/扁平运营字段原样保留**——因其迁移前置条件在 P4a–P4c-2 期间**从未搭建**。
 - **当前行为**：`HistoryEntry.{requestBytes,responseBytes,multiplier,warningMessages}` 仍是顶层扁平字段。`requestBytes`/`responseBytes`/`multiplier` 由 SQL 列往返（`serialize.ts` META_KEYS → `buildHeadRow` 写列 + `deserializeEntry` 从列恢复），喂 `EntrySummary`（`in-flight.ts:toEntrySummary`）+ `ui-v4/RequestRow.tsx`；`warningMessages` 由 producer（`request.ts` `toHistoryEntry`）+ sink（`history.ts onTerminal`）写扁平字段、UI（`ui/MetaInfo.vue`、`ui-v4/MetaSegment.tsx`）直读扁平字段。`_index.aux` **全仓零 producer / 零 adapter / 零 consumer**（`grep '_index.aux'` 仅命中类型定义）。
 - **理想架构**：RFC §4 目标形状——`requestBytes`/`responseBytes`/`previewText`/`warningMessages` → `_index.aux.*`；`multiplier` → `model.multiplier`（`model{}` 已由 P4c-1 填充、adapter `adaptModel` 已产 `model.multiplier`，故 multiplier 迁移比 aux 更接近就绪）。
 - **为何暂缓**：删 Group-B 需**净新增架构**（填 `_index.aux`：serialize 派生的 bytes 要写进 aux；列往返改指 aux；`toEntrySummary` + `EntrySummary` 类型 + 2 个前端文件改读 aux/model.multiplier），**无任何前置阶段搭建**，且直接删会造成 UI/EntrySummary 回归（丢数据）+ golden EntryRow/列漂移。属独立工作单元而非「因范围大降级」——coordinator 决策为 option 1（prepared-only），理由已代码钉死（非偏好）。leg 重构核心不依赖这层标量 reorg。
 - **若做需改什么**：① `serialize.ts` `deriveRequestBytes`/`deriveResponseBytes` 结果写进 `_index.aux.{requestBytes,responseBytes}`（或保留列 + 反序列化时投影进 aux）；② `deserializeEntry` 列往返改填 `_index.aux` / `model.multiplier`（当前填顶层扁平）；③ `buildHeadRow` `multiplier: entry.multiplier` 改读 `entry.model?.multiplier`；④ `toEntrySummary`（`in-flight.ts`）读 `_index.aux.*` / `model.multiplier` 代替扁平字段；⑤ `warningMessages`：producer/sink 写 `_index.aux.warningMessages`、UI（`MetaInfo.vue`/`MetaSegment.tsx`）改读、`updateEntry` allowlist 调整；⑥ golden `entryRowSnapshot` 列值应逐字节不变（bytes/multiplier 是列支撑、迁移只改**内存投影位置**非列内容）；⑦ 删 `HistoryEntry`/`HistoryEntryData` 的 4 个顶层扁平字段。发现方：P4c-3 删 vs 留裁决（coordinator，2026-07-07），报告 `/tmp/hdm-P4c3-report.md`。P6 backfill 或独立跟进。
 
-## proxy-connect.ts 传输层 0% 测试覆盖（含新增 withErrorSink 应用点）
+## History V3 缺口（History V2 removal 2026-07-18 暴露/收敛）
+
+### D-2 —— 生产 History list 只显示已终结请求（in-flight 不落库）
+
+- **根因**：History V3 由**终端总线单写者**驱动——只在请求 terminal（completed/failed/aborted）时经 `subscribeModelOperationTerminals` → `enqueueModelOperation` 落一条不可变 operation record，**无 ingress/中间态写入**。这与已移除的 V2 不同：V2 请求一进来即 eager 写 `entries_v2` head 行（`status=pending`）+ 逐 attempt 增量 stage，故进行中请求与崩溃残留都在 SQLite 可发现（崩溃行经 `reclaimOrphanedActiveRows` 标 `interrupted`）。
+- **当前行为**：进行中请求仅经 in-flight 内存映射 + WebSocket 实时可见；REST `GET /history/api/entries` 合并 in-flight（在前）+ V3 持久（在后）故**在线时**列表完整，但**进程崩溃/被 SIGKILL 时进行中请求零落盘、不留可发现记录**（V2 会留 `pending`/`interrupted` 半截行）。诊断「卡住/被杀的在途请求」的能力较 V2 退化。
+- **理想架构**：若要恢复 V2 的「崩溃可发现」保证，V3 需引入 ingress/中间态 operation 写入（非终态 record）+ 启动期孤儿回收——但这与 V3「只落终态、内容寻址、无中间态行」的设计收敛冲突，需权衡：是否值得为「崩溃诊断」重新引入 V2 那类 active-row 模型 + 其并发风险维度（reclaim 误杀、startup VACUUM 撞在途写），还是接受「进行中只在 WS 实时可见、崩溃不留痕」作为可接受降级（内部工具、崩溃罕见）。
+- **为何暂缓**：是**设计收敛的已知取舍**而非缺陷——用户批准的 V2 移除本就以「V3 只落终态」为前提。恢复中间态可见性是独立的产品决策 + 结构性新增，非本次范围。
+- **若做需改什么**：① V3 store 加 ingress-time draft operation 写入（terminal 前的 pending record）+ terminal 时 upsert 为终态；② 启动期孤儿扫描把非本进程的 draft record 标 interrupted（重引 pid/bootTime 存活性判据，注意 skill `history-sqlite-schema` DB-health 节记录的并发风险）；③ 或走轻量替代：崩溃前把 in-flight 快照落一个单独的 crash-journal（不进 canonical store）。发现方：History V2 removal Phase 3-4（2026-07-18），旧 V2 eager-write 语义随 `entries.ts` 写链删除时暴露。
+
+### step-6 —— V3 projection 非承重字段尚未产出
+
+- **根因**：`v3/projection.ts::recordToHistoryEntry` 把 `ModelOperationRecord` 投影为 `HistoryEntry` 时，一批字段已在 `HistoryEntry`（`src/lib/history/types.ts`）**类型声明**但 projection 尚未产出——V2 移除的 projection 审计（`docs/plan/2026-07-15-history-v2-removal/v3-projection-gap-audit.md`）把它们判为**非承重**（承重字段——transport / leg bodies / usage / model / timing / state / attempts——已在审计后补齐并有 producer-oracle 测试覆盖）。
+- **当前行为**：以下字段在 V3 投影出的 entry 里为 `undefined`：`requestBytes`/`responseBytes`（payload 字节计数）、`clientRequest` 结构化投影的 `max_tokens`/`temperature`/`thinking`、`effectiveSource.pipeline`（本轮 truncation/sanitization/messageMapping 元数据）、上游首包时序（upstream-first-packet-timing）。消费端（ui-v4 详情/列表、export）对这些字段取不到值时降级显示，不崩。
+- **理想架构**：projection 从 `ModelOperationRecord` 的 manifest/tracks 里恢复这些字段（多数在 record 里有原始数据、只是 projection 未接线读出）；`effectiveSource.pipeline` 与首包时序需确认 record 是否携带，未携带则是 record 写入侧的上游缺口而非 projection 缺口。
+- **为何暂缓**：审计判定非承重（不影响 History 核心可用性——请求内容/响应/失败原因/token/时序主干均在）；用户批准的 V2 移除以「先补承重字段、非承重进 backlog」为路径（「先审计出清单再修」）。
+- **若做需改什么**：① 逐字段核对 `ModelOperationRecord` 是否已携带原始数据（携带则 projection 加读出、未携带则先补 record 写入侧）；② 每补一个字段配 producer-oracle 测试（构造带该字段的真实 operation、断言 projection 输出——避免「测试与 projection 同源一起绿」，见 skill `verifying-authoritative-claims`）；③ `requestBytes`/`responseBytes` 与上文 Group-B 的 `_index.aux` 目标形状对齐（一并决定落顶层扁平还是 `_index.aux`）。权威清单见 `docs/plan/2026-07-15-history-v2-removal/v3-projection-gap-audit.md`。发现方：History V2 removal projection 审计（2026-07-18）。
+
+
 
 - **现状**：`src/lib/transport/proxy-connect.ts`（SOCKS5 + HTTP CONNECT 隧道原语）**整文件 0% 测试覆盖**（reviewer 2026-07-08 用 coverage 报告实测）。含 `connectViaSocks` / `connectViaHttpConnect` 的隧道握手、`fail` teardown（`socket.destroy()` 无 err + inert 语义）、CONNECT 响应解析、leftover unshift、以及本次崩溃修复新加的两处 `withErrorSink(socket)` 应用点。
 - **根因 / 当前行为**：该文件建立时无配套测试（pre-existing 缺口，非本次引入）。本次 class-elimination 重构在其两个 socket 创建点加了 `withErrorSink`，模式与已测的 http2-client 站点同构、原语本身已被 `tests/transport/crash-safety.unit.test.ts` 单元测试锁死，但「proxy-connect 确实在创建点应用了 sink」这一站点级不变量无回归保护。

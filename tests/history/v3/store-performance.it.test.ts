@@ -11,19 +11,12 @@ import { createHash } from "node:crypto"
 import type { ModelOperationRecord } from "~/lib/context/model-operation-record"
 import type { Database } from "~/lib/history/sqlite/connection"
 
-import { compress } from "~/lib/history/sqlite/compression"
 import {
   //
   closeDatabase,
   getDatabase,
   openInMemoryDatabase,
 } from "~/lib/history/sqlite/connection"
-import {
-  //
-  extractHeadMetaPayload,
-  extractStagePayloads,
-  partitionStagesForWrite,
-} from "~/lib/history/sqlite/serialize"
 import { recordToHistoryEntry } from "~/lib/history/v3/projection"
 import {
   //
@@ -78,11 +71,20 @@ function liveV3Bytes(db: Database): number {
   return row.bytes
 }
 
+/**
+ * Naive per-operation serialization estimate (mirrors the retired V2 write
+ * path's storage cost: one full uncompressed JSON copy of the projected entry
+ * per operation, no content-addressing/dedup across operations) — the
+ * baseline this test compares V3's CAS savings against. V2's
+ * `sqlite/serialize.ts` was deleted with the V2 write chain (History V2
+ * removal Phase 3); summing the uncompressed JSON byte length of the
+ * projected entry is an equivalent naive-serialization estimate for this
+ * comparison's purpose (V2 stored per-attempt/per-leg stage JSON uncompressed
+ * the same way, just split across separate rows instead of one object).
+ */
 function v2SerializedEstimate(record: ModelOperationRecord): number {
   const entry = recordToHistoryEntry(record)
-  const { groupRow, rest } = partitionStagesForWrite(extractStagePayloads(entry))
-  const stages = groupRow ? [...rest, groupRow] : rest
-  return compress(extractHeadMetaPayload(entry)).byteLength + stages.reduce((total, stage) => total + compress(stage.payload).byteLength, 0)
+  return Buffer.byteLength(JSON.stringify(entry))
 }
 
 function timedPrepare(record: ModelOperationRecord): number {

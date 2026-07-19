@@ -154,6 +154,11 @@ describe("Task 5.2 — offline replay end-to-end (replayFromHistory → zero rea
     expect(clientFrames.some((f) => typeof f.data === "string" && f.data.includes("hello from history"))).toBe(true)
 
     result.env.ctx.complete({ success: true, model: "claude-x", usage: { input_tokens: 1, output_tokens: 1 }, content: "hello from history" })
+    // V3 canonical persistence: complete() settles the logical context, but the canonical
+    // ModelOperationRecord only commits its terminal + publishes once delivery is finalized too
+    // (production driven by observabilityMiddleware / the handler's post-stream call) — a direct
+    // driver.runRequest()+ctx.complete() test must call it itself (History V2 removal step 2).
+    result.env.ctx.finalizeModelOperationDelivery()
 
     // ② — Independent oracle: the NEW request's OWN persisted history entry (not the seed's, not a
     // driver call log) carries the replayed frames on its upstream-original track, marked

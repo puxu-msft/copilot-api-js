@@ -9,9 +9,14 @@ import type {
   EntrySummary,
   HistoryEntry,
   HistoryState,
+  ModelInfo,
   QueryOptions,
   SseEventRecord,
 } from "~/lib/history/types"
+import type {
+  //
+  CopilotAnnotations,
+} from "~/types/api/anthropic"
 
 import type { V3TimingSource } from "./store"
 
@@ -25,11 +30,22 @@ function payload(values: Map<string, unknown>, track: OperationTrack | undefined
   return track?.payload ? values.get(track.payload) : undefined
 }
 
-function headers(track: OperationTrack | undefined): Record<string, string> | undefined {
-  if (!track?.headers) return undefined
+function foldHeaderFields(fields: ReadonlyArray<readonly [string, string]> | undefined): Record<string, string> | undefined {
+  if (!fields) return undefined
   const out: Record<string, string> = {}
-  for (const [name, value] of track.headers) out[name] = Object.hasOwn(out, name) ? `${out[name]}, ${value}` : value
+  for (const [name, value] of fields) out[name] = Object.hasOwn(out, name) ? `${out[name]}, ${value}` : value
   return out
+}
+
+function headers(track: OperationTrack | undefined): Record<string, string> | undefined {
+  return foldHeaderFields(track?.headers)
+}
+
+/** Attempt-level upstream response trailers (h2 trailer frame, RFC §4) — a SEPARATE captured field
+ *  from `.headers` (settleGenerationAttempt writes both independently, request.ts). Declared on
+ *  `UpstreamResponseData.trailers` (types.ts:423) but never projected until now. */
+function trailers(track: OperationTrack | undefined): Record<string, string> | undefined {
+  return foldHeaderFields(track?.trailers)
 }
 
 function frameRaw(value: { raw?: unknown; data?: unknown } | undefined): string {
@@ -67,8 +83,35 @@ function frames(values: Map<string, unknown>, track: OperationTrack | undefined)
   return track.frames.map((handle, index) => projectedFrame(values, handle, track.frameObservations?.[index]))
 }
 
+/** Per-attempt upstream-original frames for a FAILED (non-final) attempt (RFC §4 D1). The
+ *  successful (final) attempt's frames live on `upstreamResponse.sseEvents` (§S1, via `frames()`
+ *  above reading the SAME track) — this is a SEPARATE per-attempt array projected onto
+ *  `attempts[].sseEvents` only for non-final attempts, so a buffered-retry entry's earlier RST'd
+ *  attempts stay diagnosable without duplicating the final attempt's frames twice. */
+function attemptFrames(values: Map<string, unknown>, attempt: ModelOperationRecord["attempts"][number], isFinal: boolean): Array<SseEventRecord> | undefined {
+  if (isFinal) return undefined
+  return frames(values, attempt.upstreamResponse)
+}
+
 function metadata(value: unknown): Record<string, unknown> | undefined {
   return value && typeof value === "object" ? (value as Record<string, unknown>) : undefined
+}
+
+/**
+ * Recover the logical messages array from a content-addressed request payload,
+ * across wire formats. The `compact V3 semantic storage` change (peer, b1fba0f8)
+ * deliberately keeps request-leg metadata lean (`messageCount` only, no full
+ * `messages`) since the messages already live in the CAS payload — the projection
+ * reads them back from here. Chat-completions/anthropic payloads carry `messages`;
+ * Responses-format payloads carry `input` (same role — the ordered turn list), so
+ * fall back to it. Without this fallback a Responses-format `upstreamRequest` would
+ * project `messages: undefined` in the persisted record (richest-data-flow gap; the
+ * in-flight entry has them, so it only surfaces after the entry drains to SQLite).
+ */
+function projectedMessages(projection: Record<string, unknown> | undefined): Array<unknown> | undefined {
+  if (Array.isArray(projection?.messages)) return projection.messages as Array<unknown>
+  if (Array.isArray(projection?.input)) return projection.input as Array<unknown>
+  return undefined
 }
 
 function errorMessage(value: unknown): string | undefined {
@@ -132,15 +175,43 @@ export function recordToHistoryEntry(
     const requestBody = payload(values, attempt.upstreamRequest)
     const effectiveProjection = metadata(effectiveBody)
     const requestProjection = metadata(requestBody)
+    // Recover messages from the CAS payload (metadata is lean per compact-storage);
+    // format-aware so Responses-format `input` payloads project `messages` too.
+    const effectiveMessages = projectedMessages(effectiveProjection)
+    const requestMessages = projectedMessages(requestProjection)
     const responseMeta = metadata(attempt.upstreamResponse?.metadata) as
       | {
-          response?: { success?: boolean; model?: string; usage?: Record<string, unknown>; stop_reason?: string; responseId?: string; error?: string }
+          response?: {
+            success?: boolean
+            model?: string
+            usage?: Record<string, unknown>
+            stop_reason?: string
+            responseId?: string
+            error?: string
+            responseText?: string
+            copilotAnnotations?: Array<CopilotAnnotations>
+            toolSearchRequests?: number
+          }
+          error?: { raw?: { responseText?: string } }
           source?: string
           latencyMs?: number
           usage?: Record<string, unknown>
         }
       | undefined
     const response = responseMeta?.response
+    // A FAILED attempt has no `response` (it's null — see settleGenerationAttempt), so its raw
+    // upstream error body must be recovered elsewhere: legacy metadata carried it on
+    // `metadata.error.raw.responseText`, but compact-storage (peer, b1fba0f8) keeps error metadata
+    // lean (`{type,status,message}`, no `raw`) and instead stores the raw error body as the
+    // content-addressed upstreamResponse PAYLOAD. Fall back through both so `rawBody` is populated
+    // for failed attempts (not just successful ones) regardless of which producer wrote the record.
+    const upstreamResponseBody = payload(values, attempt.upstreamResponse)
+    const attemptRawBody =
+      response?.responseText
+      ?? responseMeta?.error?.raw?.responseText
+      ?? (responseMeta?.error !== undefined && typeof upstreamResponseBody === "string" ? upstreamResponseBody : undefined)
+    const attemptResponseHeaders = headers(attempt.upstreamResponse)
+    const isFinal = index === record.attempts.length - 1
     const startedAt = attempt.occurredAt ?? (typeof attemptMeta?.startedAt === "number" ? attemptMeta.startedAt : undefined)
     const nextAttempt = record.dispatches.at(index + 1)
     const nextAttemptMeta = metadata(nextAttempt?.metadata)
@@ -173,22 +244,31 @@ export function recordToHistoryEntry(
       durationMs,
       timing: { source: attemptTimingSource },
       ...(startedAt !== undefined && { startedAt }),
-      transport: metadata(attempt.metadata)?.transport as HistoryEntry["transport"] | undefined,
+      // `attempt.transport` is the first-class field written by beginAttempt/setAttemptTransport
+      // (model-operation-record.ts) — NOT `attempt.metadata.transport`, which is never set (that
+      // was a projection bug: reading the wrong source silently dropped every attempt's transport,
+      // V3 projection gap audit root cause #1).
+      transport: attempt.transport as HistoryEntry["transport"] | undefined,
+      ...(typeof attemptMeta?.waitMs === "number" && { waitMs: attemptMeta.waitMs }),
       ...(attempt.error ? { error: errorMessage(attempt.error) } : {}),
       effectiveSource: {
         ...effectiveMeta,
         ...(typeof effectiveProjection?.model === "string" && { model: effectiveProjection.model }),
-        ...(Array.isArray(effectiveProjection?.messages) && { messages: effectiveProjection.messages }),
+        ...(effectiveMessages !== undefined && {
+          messages: effectiveMessages as NonNullable<NonNullable<HistoryEntry["attempts"]>[number]["effectiveSource"]>["messages"],
+        }),
         ...((typeof effectiveProjection?.system === "string" || Array.isArray(effectiveProjection?.system)) && {
           system: effectiveProjection.system as NonNullable<NonNullable<HistoryEntry["attempts"]>[number]["effectiveSource"]>["system"],
         }),
-        ...(Array.isArray(effectiveProjection?.messages) && { messageCount: effectiveProjection.messages.length }),
+        ...(effectiveMessages !== undefined && { messageCount: effectiveMessages.length }),
         body: effectiveBody,
       },
       upstreamRequest: {
         ...requestMeta,
         ...(typeof requestProjection?.model === "string" && { model: requestProjection.model }),
-        ...(Array.isArray(requestProjection?.messages) && { messages: requestProjection.messages }),
+        ...(requestMessages !== undefined && {
+          messages: requestMessages as NonNullable<NonNullable<HistoryEntry["attempts"]>[number]["upstreamRequest"]>["messages"],
+        }),
         ...((typeof requestProjection?.system === "string" || Array.isArray(requestProjection?.system)) && {
           system: requestProjection.system as NonNullable<NonNullable<HistoryEntry["attempts"]>[number]["upstreamRequest"]>["system"],
         }),
@@ -198,8 +278,10 @@ export function recordToHistoryEntry(
       upstreamResponse: {
         success: response?.success ?? attempt.verdict === "committed",
         status: attempt.upstreamResponse?.status,
-        headers: headers(attempt.upstreamResponse),
-        body: payload(values, attempt.upstreamResponse) as NonNullable<NonNullable<HistoryEntry["attempts"]>[number]["upstreamResponse"]>["body"],
+        headers: attemptResponseHeaders,
+        trailers: trailers(attempt.upstreamResponse),
+        body: upstreamResponseBody as NonNullable<NonNullable<HistoryEntry["attempts"]>[number]["upstreamResponse"]>["body"],
+        ...(attemptRawBody !== undefined && { rawBody: attemptRawBody }),
         sseEvents: frames(values, attempt.upstreamResponse),
         usage: projectUsage(
           response?.usage
@@ -209,12 +291,39 @@ export function recordToHistoryEntry(
         stopReason: response?.stop_reason,
         model: response?.model ?? record.routing?.resolvedModel,
         responseId: response?.responseId,
+        ...(response?.copilotAnnotations && { copilotAnnotations: response.copilotAnnotations }),
+        ...(response?.toolSearchRequests !== undefined && { toolSearchRequests: response.toolSearchRequests }),
       },
+      // RFC Phase 3 ③: `attempts[].responseHeaders` — the driver writes this for EVERY attempt
+      // (success: UpstreamStream.headers; failure: apiError.responseHeaders), a SEPARATE capture
+      // from `upstreamResponse.headers` (both read the same captured header set today; declared as
+      // a distinct top-level attempt field per types.ts §551, so project it explicitly rather than
+      // relying on consumers to read the nested upstreamResponse.headers).
+      ...(attemptResponseHeaders !== undefined && { responseHeaders: attemptResponseHeaders }),
+      // D1: per-attempt upstream-original frames for a FAILED (non-final) attempt only — the final
+      // attempt's frames live on upstreamResponse.sseEvents (no duplication).
+      ...(attemptFrames(values, attempt, isFinal) !== undefined && { sseEvents: attemptFrames(values, attempt, isFinal) }),
     } satisfies NonNullable<HistoryEntry["attempts"]>[number]
   })
   const state = lifecycleState(record)
   const lastAttempt = attempts.at(-1)
   const clientTrack = record.egress?.client
+  // The terminal.metadata channel (commitTerminal, request.ts finalizeGenerationDelivery) is the
+  // producer for entry-level fields that have no other natural home in the V3 record shape —
+  // queueWaitMs/warningMessages/pipelineInfo/preprocessing/timing/rawPath/multiplier (V3 projection
+  // gap audit §C step 5). `durationMs` was already wired; the rest are new.
+  const terminalMeta = metadata(record.terminal?.metadata) as
+    | {
+        durationMs?: number
+        queueWaitMs?: number
+        warningMessages?: HistoryEntry["warningMessages"]
+        pipelineInfo?: HistoryEntry["pipelineInfo"]
+        preprocessing?: HistoryEntry["preprocessing"]
+        timing?: HistoryEntry["timing"]
+        rawPath?: string
+        multiplier?: number
+      }
+    | undefined
   const clientPayload = payload(values, clientTrack)
   const clientMetadata = metadata(clientTrack?.metadata)
   return {
@@ -230,6 +339,15 @@ export function recordToHistoryEntry(
     active: false,
     pinned: stored.pinned ?? false,
     lastUpdatedAt: endedAt ?? record.identity.createdAt,
+    queueWaitMs: terminalMeta?.queueWaitMs,
+    ...(terminalMeta?.warningMessages && terminalMeta.warningMessages.length > 0 && { warningMessages: terminalMeta.warningMessages }),
+    ...(terminalMeta?.pipelineInfo && { pipelineInfo: terminalMeta.pipelineInfo }),
+    ...(terminalMeta?.preprocessing && { preprocessing: terminalMeta.preprocessing }),
+    ...(terminalMeta?.timing && { timing: terminalMeta.timing }),
+    ...(terminalMeta?.rawPath !== undefined && { rawPath: terminalMeta.rawPath }),
+    // Deprecated top-level scalar (dual-written alongside `model.multiplier`, mirrors the legacy
+    // V2 producer — kept until consumers fully migrate to reading `model.multiplier`, RFC §4).
+    ...(terminalMeta?.multiplier !== undefined && { multiplier: terminalMeta.multiplier }),
     process:
       record.identity.process?.bootTime !== undefined && record.identity.process.version !== undefined ?
         (record.identity.process as HistoryEntry["process"])
@@ -238,8 +356,13 @@ export function recordToHistoryEntry(
     model: {
       requested: record.routing?.requestedModel ?? (typeof clientProjection?.model === "string" ? clientProjection.model : undefined),
       resolved: record.routing?.resolvedModel,
+      ...(terminalMeta?.multiplier !== undefined && { multiplier: terminalMeta.multiplier }),
       outboundEndpoint: record.routing?.upstreamEndpoint,
       translated: metadata(record.routing?.metadata)?.translated as boolean | undefined,
+      // `routeOverride` (the client's explicit `@cc/@responses/@messages` leg pin) is already
+      // captured on `record.routing.metadata` by `setRouteInfo` (request.ts) — just never read
+      // back here (V3 projection gap audit).
+      routeOverride: metadata(record.routing?.metadata)?.routeOverride as ModelInfo["routeOverride"],
     },
     clientRequest: {
       method: record.ingress?.method,
