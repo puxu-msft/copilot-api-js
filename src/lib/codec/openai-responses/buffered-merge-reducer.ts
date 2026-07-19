@@ -9,6 +9,25 @@ const DROPPABLE_DELTA_TYPES: ReadonlySet<string> = new Set([
   "response.reasoning_summary_text.delta",
 ])
 
+/** item-summary collapses a closed item to just its `output_item.added` + `output_item.done`. Beyond
+ *  the deltas (dropped by DROPPABLE_DELTA_TYPES), these intermediate sub-frames are also dropped — the
+ *  terminal `output_item.done` carries the complete item, so they lose no final-state info. Includes
+ *  `output_text.annotation.added` (GPT-audit HIGH fix, Task 0.2b/2.3): it has the SAME minefield shape
+ *  as `output_text.done` (SDK accumulator getContent(content_index) throws when its content_part.added
+ *  was dropped), so it MUST be dropped together with content_part — never left an orphan reference. */
+const ITEM_SUMMARY_ONLY_SUBFRAME_TYPES: ReadonlySet<string> = new Set([
+  "response.content_part.added",
+  "response.content_part.done",
+  "response.output_text.done",
+  "response.output_text.annotation.added",
+  "response.refusal.done",
+  "response.reasoning_text.done",
+  "response.function_call_arguments.done",
+  "response.reasoning_summary_part.added",
+  "response.reasoning_summary_part.done",
+  "response.reasoning_summary_text.done",
+])
+
 interface ParsedFrame {
   type: string
   data: Record<string, unknown>
@@ -60,7 +79,9 @@ export function createResponsesBufferedMergeReducer(opts: ResponsesBufferedMerge
         }
         const outputIndex = typeof parsed.data.output_index === "number" ? parsed.data.output_index : undefined
         const closed = outputIndex !== undefined && collected.has(outputIndex)
-        if (closed && DROPPABLE_DELTA_TYPES.has(parsed.type)) continue
+        const dropAsDelta = closed && DROPPABLE_DELTA_TYPES.has(parsed.type)
+        const dropAsItemSummarySubframe = closed && opts.eventCompaction === "item-summary" && ITEM_SUMMARY_ONLY_SUBFRAME_TYPES.has(parsed.type)
+        if (dropAsDelta || dropAsItemSummarySubframe) continue
         working.push(f)
       }
       return working

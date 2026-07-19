@@ -252,7 +252,29 @@ describe("GATING: Responses no-delta block — openai SDK reconstruction (upstre
     expect(threw?.message).toContain("missing content")
   })
 
-  // ── completed dominance: finalResponse() is driven by response.completed ───
+  test("DANGER: output_text.annotation.added WITHOUT content_part.added → SDK stream THROWS mid-accumulation", async () => {
+    // Confirms item-summary MUST drop annotation.added together with content_part (never let one
+    // survive without the other) — this is the concrete defect the GPT audit caught (Task 0.2b/2.3).
+    const annotation = { type: "url_citation", start_index: 0, end_index: 5, url: "https://example.com", title: "Example" }
+    const annotationAddedWithoutContentPart: Array<string> = [
+      created(),
+      ev({ type: "response.output_item.added", sequence_number: 1, output_index: 0, item: MSG_OPEN }),
+      // NO content_part.added
+      ev({ type: "response.output_text.annotation.added", sequence_number: 2, output_index: 0, content_index: 0, item_id: "msg_1", annotation_index: 0, annotation }),
+      ev({ type: "response.output_text.done", sequence_number: 3, output_index: 0, content_index: 0, text: "Hello world" }),
+      ev({ type: "response.output_item.done", sequence_number: 4, output_index: 0, item: MSG_DONE }),
+      completedFull(5, [MSG_DONE]),
+      DONE,
+    ]
+    let threw: Error | undefined
+    try {
+      await finalOf(annotationAddedWithoutContentPart)
+    } catch (err) {
+      threw = err as Error
+    }
+    expect(threw).toBeInstanceOf(Error)
+    expect(threw?.message).toContain("missing content")
+  })
 
   test("completed dominance: created → completed(full output), NO item/delta events at all → SDK still reconstructs", async () => {
     // Proves WHY delta-dropping is safe for finalResponse: the accumulator replaces the whole snapshot

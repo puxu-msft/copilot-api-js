@@ -4,7 +4,7 @@ import type { ClientFrame } from "~/lib/pipeline/types"
 
 import { createResponsesBufferedMergeReducer } from "~/lib/codec/openai-responses/buffered-merge-reducer"
 
-import { functionCallBlock, messageMultiPartBlock, reasoningContentBlock, reasoningSummaryBlock, refusalBlock } from "./fixtures/buffered-merge-blocks"
+import { functionCallBlock, messageMultiPartBlock, messageWithAnnotationBlock, reasoningContentBlock, reasoningSummaryBlock, refusalBlock } from "./fixtures/buffered-merge-blocks"
 
 function types(frames: ReadonlyArray<ClientFrame>): Array<string> {
   return frames.map((f) => f.event ?? "")
@@ -46,5 +46,32 @@ describe("drop-delta — message/refusal/reasoning blocks", () => {
         expect(out).toContain(addedType)
       }
     }
+  })
+})
+
+describe("item-summary", () => {
+  test.each([
+    ["function_call", functionCallBlock],
+    ["message multi-part", messageMultiPartBlock],
+    ["refusal-only", refusalBlock],
+    ["reasoning summary", reasoningSummaryBlock],
+    ["reasoning content", reasoningContentBlock],
+    ["message with annotation", messageWithAnnotationBlock],
+  ])("%s: item-summary collapses to added + done only", (_label, blockFn) => {
+    const reducer = createResponsesBufferedMergeReducer({ eventCompaction: "item-summary", completedOutput: "upstream" })
+    const { frames } = blockFn(0, "item_1")
+    for (const f of frames) reducer.observe(f)
+    const out = types(reducer.transformFlush(frames, { cause: "boundary", boundaryFrame: frames[frames.length - 1] }))
+    expect(out).toEqual(["response.output_item.added", "response.output_item.done"])
+  })
+
+  test("annotation.added is dropped together with content_part.added — no orphan reference (GPT-audit HIGH fix)", () => {
+    const reducer = createResponsesBufferedMergeReducer({ eventCompaction: "item-summary", completedOutput: "upstream" })
+    const { frames } = messageWithAnnotationBlock(0, "msg_1")
+    for (const f of frames) reducer.observe(f)
+    const out = types(reducer.transformFlush(frames, { cause: "boundary", boundaryFrame: frames[frames.length - 1] }))
+    expect(out).not.toContain("response.output_text.annotation.added")
+    expect(out).not.toContain("response.content_part.added")
+    expect(out).toEqual(["response.output_item.added", "response.output_item.done"])
   })
 })
