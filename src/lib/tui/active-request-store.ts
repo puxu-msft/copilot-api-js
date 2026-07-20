@@ -213,6 +213,7 @@ function featureTag(feature: Exclude<FeatureKind, "thinking">, detail?: Record<s
     case "error-shaping-decided":
     case "error-shaping-auq-synthesized":
     case "error-shaping-selfheal-delegated":
+    case "error-shaping-raw-canonical":
     case "tool-input-decode-failed":
     case "protect-streaming-retry":
     case "context-edits-applied":

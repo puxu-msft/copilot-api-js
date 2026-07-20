@@ -46,6 +46,8 @@ import {
 } from "~/lib/error"
 import { state } from "~/lib/state"
 
+import { tagFrameSynthetic } from "~/lib/pipeline/frame-origin"
+
 /** Snapshot the 4 error-shaping config keys off `state` (Phase 0) into the pure `decide()` input. */
 export function errorShapingConfigFromState(): ErrorShapingConfig {
   return {
@@ -216,7 +218,21 @@ export function shapePostcommitErrorFrame(error: unknown, legacyFrame: ClientFra
  * ①/①' (and to make "off = the exact legacy bytes" a single, uniform contract across all six termini): the
  * caller passes the legacy frame and gets it back verbatim when `error_shaping_enabled` is false.
  */
-export function shapeRawStreamErrorFrame(errorType: string, message: string, legacyFrame: ClientFrame): ClientFrame {
+export function shapeRawStreamErrorFrame(
+  errorType: string,
+  message: string,
+  legacyFrame: ClientFrame,
+  ctx?: RequestContext,
+  meta?: { terminus: "stream-error" | "truncation"; leg: "direct" | "translate" },
+): ClientFrame {
   if (!state.errorShapingEnabled) return legacyFrame
-  return buildCanonicalErrorFrame({ kind: "canonical-error", errorType, message })
+  // Dedicated telemetry dimension (Unit 3 §B.3): recorded here (before writeSynthetic returns → before
+  // ctx.fail freezes the entry). `wireErrorType` is the wire string, NOT error-shaping-decided's
+  // ApiErrorType enum — same name would mix value domains across FeatureKinds in aggregation.
+  if (ctx && meta) ctx.recordFeature("error-shaping-raw-canonical", { wireErrorType: errorType, terminus: meta.terminus, leg: meta.leg })
+  // Tag the canonical frame so it stays distinguishable from a real upstream error frame on the
+  // forwarded history track (Unit 3 §B.2 — `writeSynthetic` reads this tag since §B.1). The WS analog
+  // (`ws.ts` sendErrorAndClose) already marks its record `"error-shaping-canonical"`; this brings the
+  // Anthropic messages HTTP `writeSynthetic` termini to parity. The tag is a Symbol → zero wire bytes.
+  return tagFrameSynthetic(buildCanonicalErrorFrame({ kind: "canonical-error", errorType, message }), "error-shaping-canonical")
 }

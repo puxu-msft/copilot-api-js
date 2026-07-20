@@ -144,6 +144,10 @@ export type FeatureKind =
   | "error-shaping-auq-synthesized"
   /** error-shaping D类自愈委派命中（策略被强制 canHandle=false）— detail: { strategyName: string } */
   | "error-shaping-selfheal-delegated"
+  /** raw-stream canonical error 终点整形命中（H3 stream-error / truncation × direct/translate 腿）——
+   * detail: { wireErrorType: string, terminus: "stream-error"|"truncation", leg: "direct"|"translate" }.
+   * `wireErrorType` 是 wire 级字符串（非 error-shaping-decided 的 ApiErrorType 枚举——同名会混值域）。 */
+  | "error-shaping-raw-canonical"
   /** a tool_use input field selected for decode couldn't be decoded — `detail: { tool, field?, reason }` */
   | "tool-input-decode-failed"
   /** L2 buffered-retry resolution — `detail: { outcome: "success"|"exhausted"|"retreated", retries: number }` */

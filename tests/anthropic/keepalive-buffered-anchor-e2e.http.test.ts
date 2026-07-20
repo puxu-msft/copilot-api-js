@@ -312,11 +312,15 @@ describe("keepalive buffered-anchor e2e — pre-commit thinking stall injects em
 
     const entry = getHistory({ endpoint: "anthropic-messages", sessionId: "keepalive-buffered-anchor-exhausted", limit: 1 }).entries[0]
     expect(entry?.state).toBe("failed")
+    // The terminal raw-stream error frame now carries `error-shaping-canonical` on the forwarded track
+    // (Unit 3 §B.2/B.3 — writeSynthetic reads the shapeRawStreamErrorFrame tag), so it is distinguishable
+    // from a real upstream error frame. Wire bytes are unchanged (the `text` assertion above still holds).
     expect(entry?.clientResponse?.sseEvents?.filter((frame) => frame.synthetic).map((frame) => frame.synthetic)).toEqual([
       "anchor",
       "keepalive",
       "keepalive",
       "anchor",
+      "error-shaping-canonical",
     ])
   })
 

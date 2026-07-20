@@ -1247,7 +1247,7 @@ async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): 
           shapeRawStreamErrorFrame(errorType, errorMessage, {
             event: "error",
             data: JSON.stringify({ type: "error", error: { type: errorType, message: errorMessage } }),
-          }),
+          }, env.ctx, { terminus: "stream-error", leg: "direct" }),
         )
         .catch(() => undefined)
       recordForwarded()
@@ -1366,7 +1366,7 @@ async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): 
           shapeRawStreamErrorFrame("api_error", "Upstream stream truncated before completion (no message_stop)", {
             event: "error",
             data: JSON.stringify({ type: "error", error: { type: "api_error", message: "Upstream stream truncated before completion (no message_stop)" } }),
-          }),
+          }, env.ctx, { terminus: "truncation", leg: "direct" }),
         )
         .catch(() => undefined)
       recordForwarded()
@@ -1505,7 +1505,7 @@ async function pumpTranslateLegStreamingV4(opts: PumpAnthropicStreamingDispatchO
               type: "error",
               error: { type: anthropicStreamErrorType(error), message: error instanceof Error ? error.message : String(error) },
             }),
-          }),
+          }, env.ctx, { terminus: "stream-error", leg: "translate" }),
         )
         .catch(() => undefined)
       recordForwarded()
@@ -1534,7 +1534,7 @@ async function pumpTranslateLegStreamingV4(opts: PumpAnthropicStreamingDispatchO
           shapeRawStreamErrorFrame("api_error", "Upstream stream truncated before completion (no finish_reason)", {
             event: "error",
             data: JSON.stringify({ type: "error", error: { type: "api_error", message: "Upstream stream truncated before completion (no finish_reason)" } }),
-          }),
+          }, env.ctx, { terminus: "truncation", leg: "translate" }),
         )
         .catch(() => undefined)
       recordForwarded()

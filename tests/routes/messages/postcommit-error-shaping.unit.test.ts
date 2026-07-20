@@ -17,6 +17,7 @@ import {
 import type { ClientFrame } from "~/lib/pipeline/types"
 
 import { HTTPError } from "~/lib/error"
+import { readSyntheticKind } from "~/lib/pipeline/frame-origin"
 import { setStateForTests } from "~/lib/state"
 
 import {
@@ -103,14 +104,17 @@ describe("shapeRawStreamErrorFrame — FIX-2 (H3 / truncation termini, direct pu
     // The former hand-built literal both pumps emitted for H3 / truncation.
     const legacy: ClientFrame = { event: "error", data: JSON.stringify({ type: "error", error: { type: "overloaded_error", message: "boom" } }) }
     const out = shapeRawStreamErrorFrame("overloaded_error", "boom", legacy)
-    expect(out).toEqual(legacy) // byte-identical field order {type, error:{type, message}}, no retry_after
+    // WIRE byte-identity (event + data) — the intentional Symbol provenance tag (§B.2) is NOT wire and
+    // is deliberately excluded (bun's toEqual would otherwise see the Symbol key; CF-2 locks wire bytes).
+    expect({ event: out.event, data: out.data }).toEqual({ event: legacy.event, data: legacy.data })
   })
 
   test("enabled → truncation frame byte-identical to the legacy literal (both pumps' truncation message)", () => {
     setStateForTests({ errorShapingEnabled: true })
     const msg = "Upstream stream truncated before completion (no message_stop)"
     const legacy: ClientFrame = { event: "error", data: JSON.stringify({ type: "error", error: { type: "api_error", message: msg } }) }
-    expect(shapeRawStreamErrorFrame("api_error", msg, legacy)).toEqual(legacy)
+    const out = shapeRawStreamErrorFrame("api_error", msg, legacy)
+    expect({ event: out.event, data: out.data }).toEqual({ event: legacy.event, data: legacy.data })
   })
 
   test("DISABLED → returns the caller's legacy frame verbatim (CF-2 golden lock, uniform with ①/①')", () => {
@@ -118,6 +122,56 @@ describe("shapeRawStreamErrorFrame — FIX-2 (H3 / truncation termini, direct pu
     const legacy: ClientFrame = { event: "error", data: JSON.stringify({ type: "error", error: { type: "timeout_error", message: "idle" } }) }
     const out = shapeRawStreamErrorFrame("timeout_error", "idle", legacy)
     expect(out).toBe(legacy) // same object reference — no rebuild at all when disabled
+  })
+
+  // Unit 3 §B.2: the canonical frame is tagged `synthetic:"error-shaping-canonical"` so it stays
+  // distinguishable from a real upstream error frame on the forwarded history track (via writeSynthetic
+  // now reading readSyntheticKind, §B.1). The tag is a Symbol — invisible to the byte-identical
+  // `toEqual` assertions above (which only compare enumerable string keys), so the wire is unchanged.
+  test("enabled → the canonical frame carries synthetic:'error-shaping-canonical' (forwarded-track distinguishability)", () => {
+    setStateForTests({ errorShapingEnabled: true })
+    const legacy: ClientFrame = { event: "error", data: JSON.stringify({ type: "error", error: { type: "api_error", message: "boom" } }) }
+    expect(readSyntheticKind(shapeRawStreamErrorFrame("api_error", "boom", legacy))).toBe("error-shaping-canonical")
+  })
+
+  test("DISABLED → legacy frame is NOT tagged (CF-2: off = exact legacy bytes, no marker)", () => {
+    setStateForTests({ errorShapingEnabled: false })
+    const legacy: ClientFrame = { event: "error", data: JSON.stringify({ type: "error", error: { type: "timeout_error", message: "idle" } }) }
+    expect(readSyntheticKind(shapeRawStreamErrorFrame("timeout_error", "idle", legacy))).toBeUndefined()
+  })
+
+  // Unit 3 §B.3: dedicated telemetry dimension for the 4 raw-stream canonical termini. `wireErrorType`
+  // is a wire string (NOT the ApiErrorType enum of error-shaping-decided — same name would mix value
+  // domains across FeatureKinds). Recorded INSIDE shapeRawStreamErrorFrame → before writeSynthetic
+  // returns → before ctx.fail freezes the entry (ordering satisfied by construction).
+  test("enabled + ctx + meta → records error-shaping-raw-canonical{wireErrorType, terminus, leg}", () => {
+    setStateForTests({ errorShapingEnabled: true })
+    const features: Array<{ feature: string; detail?: Record<string, unknown> }> = []
+    const ctx = { recordFeature: (feature: string, detail?: Record<string, unknown>) => features.push({ feature, detail }) }
+    const legacy: ClientFrame = { event: "error", data: "{}" }
+    shapeRawStreamErrorFrame("overloaded_error", "boom", legacy, ctx as never, { terminus: "stream-error", leg: "direct" })
+    expect(features).toEqual([{ feature: "error-shaping-raw-canonical", detail: { wireErrorType: "overloaded_error", terminus: "stream-error", leg: "direct" } }])
+  })
+
+  test("enabled + ctx + meta (translate truncation) → records leg=translate, terminus=truncation", () => {
+    setStateForTests({ errorShapingEnabled: true })
+    const features: Array<{ feature: string; detail?: Record<string, unknown> }> = []
+    const ctx = { recordFeature: (feature: string, detail?: Record<string, unknown>) => features.push({ feature, detail }) }
+    shapeRawStreamErrorFrame("api_error", "trunc", { event: "error", data: "{}" }, ctx as never, { terminus: "truncation", leg: "translate" })
+    expect(features).toEqual([{ feature: "error-shaping-raw-canonical", detail: { wireErrorType: "api_error", terminus: "truncation", leg: "translate" } }])
+  })
+
+  test("CF-2 disabled → error-shaping-raw-canonical NOT recorded even when ctx+meta passed (no canonical shaping happened)", () => {
+    setStateForTests({ errorShapingEnabled: false })
+    const features: Array<{ feature: string; detail?: Record<string, unknown> }> = []
+    const ctx = { recordFeature: (feature: string, detail?: Record<string, unknown>) => features.push({ feature, detail }) }
+    shapeRawStreamErrorFrame("timeout_error", "idle", { event: "error", data: "{}" }, ctx as never, { terminus: "stream-error", leg: "direct" })
+    expect(features).toEqual([])
+  })
+
+  test("ctx/meta omitted (backward-compat) → does not throw", () => {
+    setStateForTests({ errorShapingEnabled: true })
+    expect(() => shapeRawStreamErrorFrame("api_error", "x", { event: "error", data: "{}" })).not.toThrow()
   })
 })
 
