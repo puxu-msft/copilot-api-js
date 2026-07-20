@@ -875,3 +875,11 @@
 - **根因（两类，已修复）**：① Task 5.1/5.2 的 `getEntry` 返 undefined = V3 finalize 异步（deferred seal → generation finalizer → terminal-bus persist），测试 `finalizeModelOperationDelivery()` 后同步 `getEntry` 撞持久化 race → 补 `await ctx.whenModelOperationFinalized()`（对齐 `generation-recorder-lifecycle.unit` 既有模式）；② P0-T1 的 +3 `type` = `canonicalFrameValue` 对携 SseEventRecord 的 post-loop-flush 帧富化 derived `type`/`synthetic`（`request.ts:501-502`，`a4f4f20f`，V3 projection 消费），使 arena value 有意富于 wire，测试 `value==parseWire(wire)` oracle 过严 → 剥离非-wire 字段后比较。projection 读 `observation.type` 非 `value.type`，富化不影响真实输出（无功能 bug）。
 - **归属**：三者在三单元改动前已失败（双方独立基线对照 `64f4d01d`），与 forwarded-track 完整性无关；根因是 History V3 迁移（`a4f4f20f` 等 2026-07-18 V2-removal）后测试未同步。已随本次会话一并修复。
 
+
+## 测试分档遗留：2 个 flaky perf 测试 + fast 档若干真 SQLite 单元测试（LOW，2026-07-20，测试按速度分档 Task 4）
+
+- **flaky perf 测试（2 个）**：`tests/transport/h2-keepalive-ping.unit.test.ts`（「pings on the given cadence until cleared」）、`tests/history/v3/canonical-performance.unit.test.ts`（「capture cost follows new work rather than growing superlinearly」）。隔离连跑时好时坏（0/1/0、0/1/1 fail），时序/性能型、pre-existing 于 master、且落在活跃 peer 区（V3 有独立 worktree）。与分档正交、非本次引入。
+  - **为何暂缓**：属独立的 flaky 稳定化课题（fake timers + 放宽性能阈值/连跑取 median），硬修会与 peer 的 V3/transport worktree 冲突。**触发条件（值得做）**：这两块 landed 稳定后，单独一轮 flaky 稳定化（连跑 25 次确认确定性、fake timers 掉真 setTimeout、perf 阈值改相对 median）。验收 §10 因此改读「fast 档绿 modulo 这 2 个 backlogged flaky」。
+- **fast 档若干真 SQLite/fs 单元测试偏慢**：`tests/telemetry/{migrate-json,cumulative-cap-authority,dual-write,backfill-wiring}.unit.test.ts`、`tests/history/state-shutdown.unit.test.ts` 等做真 SQLite/临时文件 I/O（各 ~1.9-5s，但每测快 0.3-0.7s/test）。**未重分类为 .it**——它们是持久化原语的单元测试（临时 db 是被测单元本身，如 `atomic-fs.unit` 测的就是 fs），与全站既有约定一致；「只要慢就改 .it」会与既有 .unit telemetry 测试不一致、属过度应用（reviewer 明训）。
+  - **理想架构 / 若做需改什么**：若要进一步压 fast 档，可给「持久化原语单元测试」引入 in-memory SQLite（`:memory:`）替临时文件 db，或抽一个 `.unit` 内的 fake 持久化层。需全站统一（不能只改这几个）。**触发条件（值得做）**：fast 档整体耗时成为痛点、或决定持久化单元测试统一走 in-memory。发现方：测试按速度分档 Task 4 慢离群审查（2026-07-20）。
+- **rate-limiter/shutdown 用真 setTimeout**：`tests/shutdown/rate-limiter.unit.test.ts`（2.76s/28t）、`shutdown.unit.test.ts`（1.9s/50t）用真定时器等待。纯逻辑（非 I/O）→ 守真相域留 .unit。可用 fake timers 提速（根因修非症状），但牵动这些测试的时序假设、需谨慎。**触发条件**：同上 fast 档提速专项。
