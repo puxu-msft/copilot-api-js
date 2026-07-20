@@ -869,9 +869,9 @@
 - **为何暂缓**：durable history（getHistory）已完整（V3 generation recorder），仅 reaper-cancel 的**瞬态** `request.failed` 事件缺 error 帧——低频（仅超时被 reaper 收割）× 低价值（瞬态、立即被 durable projection 取代）。非数据丢失。
 - **若做需改什么**：manager 的 reaper 从「reapInFlight+同步 fail」改为「reapInFlight + 推迟 settle（等 handler 接管或超时兜底）」；handler catch 的 reaper-cancel 腿改为走 writeTerminalThenSettle 完成快照；加瞬态事件断言测试（getBus 订阅 request.failed，reaper 场景下 entry 含 error 帧）。发现方：spec 2026-07-20 §1.3 + Unit 1 缩减版实施（2026-07-20）。
 
-## 3 个既有测试失败（pre-existing，与 synthetic-frame forwarded-track 三单元无关，2026-07-20 记录）
+## ~~3 个既有测试失败（pre-existing）~~ ✅ 已修复（2026-07-20，`c6d3466e`）
 
-- **失败清单**：`tests/pipeline/generation-runtime-baseline.http.test.ts`（P0-T1「locks direct and translated frame order...」，收到 +3 content_block_stop 帧）、`tests/pipeline/hooks/reactive-retry-leg.it.test.ts`（Task 5.1 tool-field-rejection-retry）、`tests/pipeline/hooks/replay.it.test.ts`（Task 5.2 offline replay synthetic marking）。
-- **归属判定（双方独立实测，非自证）**：主会话用 `git checkout 3341efb4~1 -- <src>` 复跑 P0-T1 仍 fail；merged-state reviewer 用 `git worktree add --detach 64f4d01d`（三单元改动前最后一个 commit）复跑同 3 文件，**结果同样这 3 条 fail、字面失败信息一致**。即三者在三单元落地**之前**已失败，与本次改动无关。
-- **为何暂缓**：非本次引入的回归、与 forwarded-track 完整性无关联；根因未查（疑似 peer 并发落地或环境/时序）。记录在此避免后续会话把它们误判为本次三单元引入的回归。
-- **若做需改什么**：单独排查每条根因——P0-T1 的 +3 content_block_stop 疑似帧序/翻译路径变动；reactive-retry/replay 疑似 hook mock/replay 或隔离问题。基线对照 commit `64f4d01d`（三单元前）。发现方：synthetic-frame forwarded-track 三单元实施 + merged-state review（2026-07-20）。
+- **失败清单**：`tests/pipeline/generation-runtime-baseline.http.test.ts`（P0-T1）、`tests/pipeline/hooks/reactive-retry-leg.it.test.ts`（Task 5.1）、`tests/pipeline/hooks/replay.it.test.ts`（Task 5.2）。
+- **根因（两类，已修复）**：① Task 5.1/5.2 的 `getEntry` 返 undefined = V3 finalize 异步（deferred seal → generation finalizer → terminal-bus persist），测试 `finalizeModelOperationDelivery()` 后同步 `getEntry` 撞持久化 race → 补 `await ctx.whenModelOperationFinalized()`（对齐 `generation-recorder-lifecycle.unit` 既有模式）；② P0-T1 的 +3 `type` = `canonicalFrameValue` 对携 SseEventRecord 的 post-loop-flush 帧富化 derived `type`/`synthetic`（`request.ts:501-502`，`a4f4f20f`，V3 projection 消费），使 arena value 有意富于 wire，测试 `value==parseWire(wire)` oracle 过严 → 剥离非-wire 字段后比较。projection 读 `observation.type` 非 `value.type`，富化不影响真实输出（无功能 bug）。
+- **归属**：三者在三单元改动前已失败（双方独立基线对照 `64f4d01d`），与 forwarded-track 完整性无关；根因是 History V3 迁移（`a4f4f20f` 等 2026-07-18 V2-removal）后测试未同步。已随本次会话一并修复。
+
