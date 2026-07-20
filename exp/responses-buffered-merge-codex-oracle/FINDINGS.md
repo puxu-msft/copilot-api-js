@@ -57,15 +57,22 @@ curl -sk --http2 -N https://localhost:8788/responses -X POST -d '{}' | grep -c '
 
 ## 两臂结果对照 / Arm results
 
-> **NOT pre-filled** — populated only after the user runs `codex exec` for real (per `no-auto-server`:
-> the agent writes the harness, the user runs the proxy + Codex).
+Run 2026-07-20, merged master (`6d2eba3b`), isolated proxy on :4142 → mock :8788 (real `codex exec`
+0.144.1). Both arms carry the identical `response.completed` output (`MSG_DONE` = "The weather in Tokyo
+is sunny."); only the wire delta count differs.
 
-| Arm | codex rc | is_error | last agent message | notes |
-|-----|----------|----------|--------------------|-------|
-| verbatim | _tbd_ | _tbd_ | _tbd_ | |
-| merged   | _tbd_ | _tbd_ | _tbd_ | |
+| Arm | wire `output_text.delta` frames | codex rc | is_error | last agent message |
+|-----|--------------------------------|----------|----------|--------------------|
+| verbatim | 2 | 0 | false | The weather in Tokyo is sunny. |
+| merged (drop-delta) | 0 | 0 | false | The weather in Tokyo is sunny. |
 
 ## 结论 / Conclusion
 
-> _tbd — fill after both arms run. Expected: identical agent replies → the drop-delta merge is transparent
-> to a real Codex consumer, supporting (but not required for) a future default-on decision._
+**A real Codex consumer reconstructs the drop-delta merged wire IDENTICALLY to the verbatim wire.** Both
+arms returned the exact same agent message with a clean `turn.completed` (rc=0), despite the merged arm
+carrying ZERO `output_text.delta` frames. This confirms Codex reads the finalized text from the terminal
+`output_text.done` / `response.completed.output` (not raw `output_text.delta` accumulation), so the
+default drop-delta merge is **transparent to the real target client** — the pre-merge concern ("a pure
+delta accumulator would see empty text", plan §承重决策) does NOT apply to Codex. drop-delta is safe to
+run as the default for the Codex/Responses path.
+

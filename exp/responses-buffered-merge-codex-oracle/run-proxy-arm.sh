@@ -81,7 +81,7 @@ OPENAI_BASE_URL="$PROXY_URL/v1" OPENAI_API_KEY="dummy" \
     -c model_providers.oracle.preferred_auth_method=apikey \
     -c model="$MODEL" \
     -s read-only --skip-git-repo-check --ephemeral \
-    "What is the weather tool call you received? Reply with the city only." \
+    "Repeat back verbatim the single sentence the assistant message contains." \
     > "$CODEXLOG" 2>&1
 CODEXRC=$?
 END=$(date +%s.%N)

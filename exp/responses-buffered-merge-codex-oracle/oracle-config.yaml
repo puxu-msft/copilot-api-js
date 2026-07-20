@@ -1,0 +1,21 @@
+# Isolated proxy config for the Responses buffered-merge Codex oracle (plan Task 5.6).
+# Consumed by an INDEPENDENT copilot-api instance on :4142 (XDG_DATA_HOME isolated), NOT live :4141.
+# Only lists overrides vs bundled defaults; every other key deep-merges from bundled.
+#
+# ghc_api_base_url is HTTPS so the proxy routes upstream through its production node:http2 client
+# (a plaintext http:// mock forces the undici path which hangs under Bun on SSE). Also passable via
+# --ghc-api-base-url on the CLI; the proxy trusts the mock's self-signed cert via NODE_EXTRA_CA_CERTS.
+ghc_api_base_url: "https://localhost:8788"
+
+openai_responses:
+  # The buffered path (default ON post-2026-07-14 flip) — engages runResponseBufferedSink + the
+  # candidate-hosted buffered-merge reducer.
+  buffered_retry: true
+  # THE feature under test: drop-delta filters closed-item output_text/args deltas off the forwarded
+  # wire; the oracle checks a REAL Codex consumer reconstructs identically from the merged vs verbatim
+  # upstream (both arms carry the same completed output — semantically equivalent, wire count differs).
+  buffered_merge:
+    event_compaction: drop-delta
+    completed_output: repair-if-incomplete
+  # Force HTTP transport (the mock is HTTP SSE; its catalog does not advertise ws:/responses anyway).
+  upstream_ws: false

@@ -53,34 +53,44 @@ const enc = new TextEncoder()
 const sse = (event: string, data: unknown): Uint8Array => enc.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`)
 
 const RESPONSE_ID = "resp_buffered_merge_oracle"
-const FC_OPEN = { id: "fc_1", type: "function_call", call_id: "call_1", name: "get_weather", arguments: "", status: "in_progress" }
-const FC_DONE = { id: "fc_1", type: "function_call", call_id: "call_1", name: "get_weather", arguments: '{"city":"Tokyo"}', status: "completed" }
+// A TEXT message (NOT a tool call): codex-as-agent reads the assistant text and completes. A function_call
+// would make codex try to EXECUTE the tool ("unsupported call") and loop forever — wrong vehicle for a
+// content-reconstruction oracle. The reply text is the recognizable token the two arms must agree on.
+const REPLY_TEXT = "The weather in Tokyo is sunny."
+const MSG_OPEN = { id: "msg_1", type: "message", role: "assistant", status: "in_progress", content: [] as Array<unknown> }
+const MSG_DONE = { id: "msg_1", type: "message", role: "assistant", status: "completed", content: [{ type: "output_text", text: REPLY_TEXT, annotations: [] }] }
 
 const created = (): Uint8Array => sse("response.created", { type: "response.created", sequence_number: 0, response: { id: RESPONSE_ID, object: "response", status: "in_progress", model: MODEL_ID, output: [] } })
 const completed = (seq: number): Uint8Array =>
-  sse("response.completed", { type: "response.completed", sequence_number: seq, response: { id: RESPONSE_ID, object: "response", status: "completed", model: MODEL_ID, output: [FC_DONE], usage: { input_tokens: 5, output_tokens: 3, total_tokens: 8 } } })
+  sse("response.completed", { type: "response.completed", sequence_number: seq, response: { id: RESPONSE_ID, object: "response", status: "completed", model: MODEL_ID, output: [MSG_DONE], usage: { input_tokens: 5, output_tokens: 8, total_tokens: 13 } } })
 
-/** VERBATIM: created → added → args.delta×2 → args.done → output_item.done → completed. */
+/** VERBATIM: created → item.added → content_part.added → output_text.delta×2 → output_text.done →
+ *  content_part.done → output_item.done → completed. */
 function armVerbatimFrames(): Array<Uint8Array> {
   return [
     created(),
-    sse("response.output_item.added", { type: "response.output_item.added", sequence_number: 1, output_index: 0, item: FC_OPEN }),
-    sse("response.function_call_arguments.delta", { type: "response.function_call_arguments.delta", sequence_number: 2, output_index: 0, item_id: "fc_1", delta: '{"city":' }),
-    sse("response.function_call_arguments.delta", { type: "response.function_call_arguments.delta", sequence_number: 3, output_index: 0, item_id: "fc_1", delta: '"Tokyo"}' }),
-    sse("response.function_call_arguments.done", { type: "response.function_call_arguments.done", sequence_number: 4, output_index: 0, item_id: "fc_1", arguments: '{"city":"Tokyo"}' }),
-    sse("response.output_item.done", { type: "response.output_item.done", sequence_number: 5, output_index: 0, item: FC_DONE }),
-    completed(6),
+    sse("response.output_item.added", { type: "response.output_item.added", sequence_number: 1, output_index: 0, item: MSG_OPEN }),
+    sse("response.content_part.added", { type: "response.content_part.added", sequence_number: 2, output_index: 0, content_index: 0, part: { type: "output_text", text: "", annotations: [] } }),
+    sse("response.output_text.delta", { type: "response.output_text.delta", sequence_number: 3, output_index: 0, content_index: 0, delta: "The weather in " }),
+    sse("response.output_text.delta", { type: "response.output_text.delta", sequence_number: 4, output_index: 0, content_index: 0, delta: "Tokyo is sunny." }),
+    sse("response.output_text.done", { type: "response.output_text.done", sequence_number: 5, output_index: 0, content_index: 0, text: REPLY_TEXT }),
+    sse("response.content_part.done", { type: "response.content_part.done", sequence_number: 6, output_index: 0, content_index: 0, part: { type: "output_text", text: REPLY_TEXT, annotations: [] } }),
+    sse("response.output_item.done", { type: "response.output_item.done", sequence_number: 7, output_index: 0, item: MSG_DONE }),
+    completed(8),
   ]
 }
 
-/** MERGED (drop-delta): the SAME generation with the two `.delta` frames removed. */
+/** MERGED (drop-delta): the SAME generation with the two output_text.delta frames removed (item closed by
+ *  output_item.done, so the deltas carry no absolute value the .done/completed don't already have). */
 function armMergedFrames(): Array<Uint8Array> {
   return [
     created(),
-    sse("response.output_item.added", { type: "response.output_item.added", sequence_number: 1, output_index: 0, item: FC_OPEN }),
-    sse("response.function_call_arguments.done", { type: "response.function_call_arguments.done", sequence_number: 4, output_index: 0, item_id: "fc_1", arguments: '{"city":"Tokyo"}' }),
-    sse("response.output_item.done", { type: "response.output_item.done", sequence_number: 5, output_index: 0, item: FC_DONE }),
-    completed(6),
+    sse("response.output_item.added", { type: "response.output_item.added", sequence_number: 1, output_index: 0, item: MSG_OPEN }),
+    sse("response.content_part.added", { type: "response.content_part.added", sequence_number: 2, output_index: 0, content_index: 0, part: { type: "output_text", text: "", annotations: [] } }),
+    sse("response.output_text.done", { type: "response.output_text.done", sequence_number: 5, output_index: 0, content_index: 0, text: REPLY_TEXT }),
+    sse("response.content_part.done", { type: "response.content_part.done", sequence_number: 6, output_index: 0, content_index: 0, part: { type: "output_text", text: REPLY_TEXT, annotations: [] } }),
+    sse("response.output_item.done", { type: "response.output_item.done", sequence_number: 7, output_index: 0, item: MSG_DONE }),
+    completed(8),
   ]
 }
 
