@@ -82,6 +82,7 @@
 - [picocolors 在 bun test 塌缩成恒等](reference-picocolors-collapses-to-identity-in-bun-test.md) — 测退化文本;改测引用相等 + FORCE_COLOR 子进程 SGR
 - [迁移副作用旧路径仍被 eager 求值→双触发](methodology-migrate-side-effect-old-path-still-eager-evaluated.md) — driver eager 求值 `deps.strategies` 仍触发→双记;根因修=抽 lazy resolver
 - [无疑问改进当场做](feedback-slam-dunk-fixes-do-immediately.md) — 更好+无取舍+无分叉三条全中就立即改,别以超范围推迟
+- [自以为暂缓的任务先核实没被 peer 落地](feedback-verify-deferred-task-not-already-landed-before-designing.md) — 并发仓库「暂缓」是时间点声明;写设计/handoff 前 grep 现码+RFC 状态行核实;撞车先保留自己分析做对比、别急删(用户纠正:删了要找回)
 - [绝不推荐短期止血方案](feedback-never-propose-short-term-mitigation.md) — 有根因可修就只提根因;「打开 gated feature 绕过」也算短期将就、禁列选项
 - [现有代码无权威、别为将就它降格最佳方案](feedback-existing-code-has-no-authority-dont-accommodate.md) — 诡异症状=设计错的证据;别把「在现有架构里可行吗」的锚点写进 subagent prompt 让审查背书将就
 - [恢复 agent 永远 SendMessage 绝不 Agent tool 重派](feedback-resume-agent-always-sendmessage-never-agent-tool.md) — 已终止/已完成 subagent 接续永远 `SendMessage`、绝不 `Agent` 重派(丢上下文);唯一 Agent 新派=真全新独立任务
