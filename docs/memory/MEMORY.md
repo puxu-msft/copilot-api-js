@@ -33,6 +33,7 @@
 - [下完备性判断前先实测每个支撑事实](feedback-verify-facts-before-superlative-completeness-verdict.md) — 尤其 absence/negative 断言最易凭结构推断而错;别贬防御为「只治一半」
 - [诊断日志本身是会撒谎的权威声音](methodology-diagnostic-log-is-authoritative-voice-verify-against-ground-truth.md) — 计数器可能只接部分路径、恒打零;别信自报探 history 上游轨;收紧入参用类型逼全站点
 - [从日志断代码有缺陷前先核实运行进程含修复](methodology-verify-running-server-has-fix-before-diagnosing-from-log.md) — 生产日志可能陈旧进程打;ps lstart vs 提交时刻 + merge-base 核祖先
+- [V3 direct-driver 测试两 gotcha](methodology-v3-direct-driver-test-async-finalize-race-and-arena-enrichment-oracle.md) — getEntry 撞异步 finalize race(须 await whenModelOperationFinalized)·arena-value 富化于 wire 令 golden oracle 过严(projection 读 observation.type 非 value.type);V2→V3 迁移令旧测试同步假设失同步
 - [reasoned-safe≠tested / producer wire-oracle 必断全序](methodology-reasoned-safe-not-tested-producer-wire-oracle.md) — reviewer「推理安全」也错;client-facing wire 须 producer oracle 断完整帧序 + 真实产出
 - [client 源码 grep ≠ REST 上游能力](methodology-client-source-grep-not-rest-capability-probe-endpoint.md) — 代理型上游 REST 表面>client 子集;须 curl 打端点;实例=「GHC 无 count_tokens」被证伪
 - [从 primitive 推理别从流行 wrapper 泛化](methodology-reason-from-primitive-not-dominant-wrapper.md) — 干净 primitive vs 耦合全局 wrapper 并存,判风险从 primitive 实现推理
@@ -48,6 +49,7 @@
 - [agent 后台连挂也绝不自作主张换模型](feedback-never-unilaterally-switch-agent-model-on-flakiness.md) — API 错误连挂也永远 resume 原 agent、绝不擅换模型家族(破坏异模型对抗、是用户决策)
 - [eslint --cache 假绿](tooling-eslint-cache-false-pass.md) — `--cache` 对过期文件假绿;`lint:all` 已去 cache、核单文件 `bunx eslint <path>`
 - [eslint --fix 的 .at() autofix 破类型](tooling-eslint-fix-at-autofix-breaks-types.md) — `prefer-at` 把 `arr[len-1]`→`.at(-1)`(返 T|undefined);--fix 后**必重跑 typecheck**、测试照绿会漏
+- [测试跑 real codex 用 CODEX_HOME 隔离、--ephemeral 不够](reference-codex-ephemeral-insufficient-use-codex-home.md) — --ephemeral 只抑 rollout;memories/state 仍写真 ~/.codex;每次套 `CODEX_HOME=$(mktemp -d)`;代理侧对应物是 XDG_DATA_HOME
 - [node_modules 存在 ≠ 锁文件事实](reference-node-modules-presence-not-lockfile-truth.md) — 可能是 prune 的 orphan;选依赖前 `grep '"<pkg>@' bun.lock`
 - [worktree bun add 后主树须补 install](reference-worktree-bun-add-needs-main-tree-install-after-merge.md) — 隔离 worktree `bun add` 只进该树;FF 合并后主树须 `bun install`
 - [server.ts 与 test-app.ts 双份 notFound 镜像](reference-server-vs-test-app-dual-notfound-mirror.md) — 改 server 中间件/notFound 须用真实 createServer 测(createFullTestApp 无中间件镜像);config 中间件每请求覆盖 state→level 测须 config 文件驱动
@@ -63,7 +65,10 @@
 - [交用户前先 subagent review（含 in-chat 提案）](feedback-subagent-review-before-any-user-facing-proposal.md) — 审查门适用任何交付物含对话里直接呈现的设计
 - [用户对齐只证方向对、非细节最优](feedback-user-alignment-confirms-direction-not-detail-optimality.md) — brainstorming 逐节点头≠细节最优;落盘 spec 前仍须过异模型对抗审
 - [后端抖动挂的 Agent 必须只 SendMessage resume](feedback-backend-flakiness-must-sendmessage-resume-no-alternatives.md) — 失败→强制单一路径 resume 原 agent,不派替代/不换模型
+- [空闲等后台 agent 主动做 dead check](feedback-proactive-liveness-dead-check-on-background-agents.md) — 别被动干等;stat output mtime 判活;抖动/stall→resume、用户停止不可 resume→仅用户明确要求才起新
+- [计划的红绿 mutation 预测可能错、执行期真跑验证](methodology-plan-red-green-mutation-prediction-can-be-wrong-verify.md) — plan「注释 X 行→变红」可能不咬(更早前置条件遮蔽);真跑 mutation、不咬则别提交假绿、降 characterization+记 backlog
 - [git commit -- pathspec 取工作区非 index](git-commit-pathspec-commits-worktree-not-index.md) — 共享 worktree 最终提交一律 pathspec,免疫 peer 并发 `git add` 的 index race
+- [语义合并冲突暴露对方 timing 潜伏 bug](methodology-semantic-merge-conflict-exposes-latent-bug-via-timing.md) — 两边各自绿合并却坏;静态 diff 逐字节等一侧≠行为同,根因在运行时数据/时序→instrument 探针别死盯 diff;判归属纯父分支复现;修法补全对方设计非回退;`test:backend` 排除 `.e2e.test.ts`
 - [谁合并谁退让、但必须合并](feedback-merger-yields-but-merge-must-happen.md) — 并发落地不因主树 WIP 跳过合并;退让=行级共存两份都保+备份→选择性 stash 重叠文件→FF→pop 三方合并;对方改动依赖 untracked 时只作未提交叠回不吞其特性
 - [eslint --fix 宽扫入并发既有 dirt](tooling-eslint-fix-broad-sweeps-concurrent-dirt.md) — 宽集只 check 不 fix;显式 pathspec 只提交自己文件
 - [lint-staged 已移除](tooling-lint-staged-revert-blocks-edit.md) — 2026-06-29 起无 pre-commit 门禁;rollback 见 skill `git-preference:disarming-lint-staged-rollback`
@@ -82,6 +87,7 @@
 - [恢复 agent 永远 SendMessage 绝不 Agent tool 重派](feedback-resume-agent-always-sendmessage-never-agent-tool.md) — 已终止/已完成 subagent 接续永远 `SendMessage`、绝不 `Agent` 重派(丢上下文);唯一 Agent 新派=真全新独立任务
 
 ## project 现状 stub（权威看正式归属；「全 landed」项细节在 docs/git）
+- [合成/改写帧 forwarded 轨完整性（Unit2/3 全量+Unit1 缩减 landed master 2026-07-20）](project-synthetic-frame-forwarded-track-completeness-spec.md) — 三单元;Unit1 原前提被 History V3 实测推翻(durable 已完整、只治瞬态快照);Unit2 responseFrame 展开·Unit3 writeSynthetic 读 tag 根因修+raw-canonical FeatureKind;两轮异模型审 0 blocker;reaper 两阶段待 backlog
 - [Responses buffered-merge（全 36 task landed 分支，待合并 master）](project-responses-buffered-merge-landed.md) — 候选托管 reducer + 两正交旋钮(drop-delta/repair-if-incomplete 默认);承重=buffered 默认 ON 致 drop-delta 作用于所有 Responses 流、纯 delta 累加者拿空文本;bare-driver harness 不可行须 HTTP e2e;@ai-sdk 比官方 openai 更宽容;权威 DESIGN 活的架构现状行 + spec/plan 2026-07-14
 - [transport 配置三轴归位（P1-P5 全 landed master 2c19c7cf）](project-transport-config-three-axis-reorg.md) — timeouts 看门狗/upstream_transport egress/server.responses_ws ingress;0 语义统一+SOCKS 诚实拒 0;WS 无 keepalive 键;热重载 generation retire-and-replace;每相位 TDD 逼出真 bug(Bun pre-header bare-close·集合字段损坏·WS never-throw 半实现·dead export);权威 ADR/spec 2026-07-14 + DESIGN 活的架构现状
 - [History 三层降温归档（已合并 master，lifecycle follow-up `27b65b89`）](project-history-tiered-archive.md) — HOT→tier-1→不可变 session-generation sealed units；move 永不真删；Archive worker 以 durable unit 协作停/续跑、并发 sibling 全 settle 后关 DB；同 session 增量不覆盖；用户重启实例已实证加载
