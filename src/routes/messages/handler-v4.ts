@@ -610,6 +610,24 @@ async function runMessagesDriver(c: Context, args: RunMessagesDriverArgs): Promi
       if (state.streamCommitAfterSec > 0 && pingSec > 0) await (sink.writeKeepalive ?? sink.write)(ANTHROPIC_PING).catch(() => {})
       // POST-COMMIT: every exit settles ctx + (on failure) writes a rich error frame — the SSE
       // middleware does NOT finalize an event-stream, so a silent return would leak a dangling entry.
+      // Unit 1 (reduced) reorder: close anchor → writeSynthetic → setForwardedResponse → fail, so the
+      // TRANSIENT `request.failed` snapshot (toHistoryEntry reads `_forwardedResponse`) also includes the
+      // client-received error frame + anchor stop@0 (the durable V3 projection already captured them via
+      // the generation recorder). `finally` guarantees settle even if closeAnchor/writeSynthetic REJECT —
+      // a write reject must never skip fail (that would leak an unsettled request, worse than an
+      // incomplete snapshot). The terminal frame is already sampled into `forwardedSseEvents` at
+      // write-attempt time ("recorded == attempted-to-send"), so the snapshot is complete regardless.
+      const writeTerminalThenSettle = async (ctx: ReturnType<typeof codec.getContext>, frame: ClientFrame | undefined, settle: () => void): Promise<void> => {
+        try {
+          await closeAnchorIfOpen(sink, anchorHooks, anchorState) // balance an open pre-response anchor before the error terminus (§10.5)
+          if (frame) await sink.writeSynthetic?.(frame)
+        } catch {
+          // best-effort terminal write — fall through to snapshot + settle
+        } finally {
+          ctx?.setForwardedResponse({ sseEvents: [...forwardedSseEvents] })
+          settle()
+        }
+      }
       let result: DriverRequestResult
       try {
         result = await p
@@ -629,12 +647,15 @@ async function runMessagesDriver(c: Context, args: RunMessagesDriverArgs): Promi
             return
           }
           // (f) reaper-cancel (reaper already settled it; the `settled` guard dedups) / (d) timeout.
-          ctx?.fail(resolvedName, error)
-          await closeAnchorIfOpen(sink, anchorHooks, anchorState) // balance an open pre-response anchor before the error terminus (§10.5)
-          await sink.writeSynthetic?.(
+          // reaper-cancel's fail is a no-op (reaper pre-settled) so the reorder does NOT complete its
+          // transient snapshot — that needs a two-phase reaper protocol (spec §1.3, backlog). timeout is
+          // handler-settled and IS completed by the reorder.
+          await writeTerminalThenSettle(
+            ctx,
             kind === "reaper-cancel" ?
               anthropicErrorFrame("api_error", "Request cancelled by the stale-request reaper")
             : anthropicErrorFrame("api_error", "Upstream timed out before sending response headers"),
+            () => ctx?.fail(resolvedName, error),
           )
           return
         }
@@ -643,30 +664,29 @@ async function runMessagesDriver(c: Context, args: RunMessagesDriverArgs): Promi
           // error.type (+ retry_after) so the client SDK still branches correctly (Q2 §4.2.5).
           // G-3: delegated to the error-shaping builder (canonical ownership); disabled = the legacy
           // anthropicHttpErrorFrame verbatim (CF-2 golden lock).
-          ctx?.fail(resolvedName, error)
-          await closeAnchorIfOpen(sink, anchorHooks, anchorState) // balance an open pre-response anchor before the error terminus (§10.5)
-          await sink.writeSynthetic?.(shapePostcommitErrorFrame(error, anthropicHttpErrorFrame(error), ctx))
+          await writeTerminalThenSettle(ctx, shapePostcommitErrorFrame(error, anthropicHttpErrorFrame(error), ctx), () => ctx?.fail(resolvedName, error))
           return
         }
-        ctx?.fail(resolvedName, error) // unknown non-HTTP, non-abort
-        await closeAnchorIfOpen(sink, anchorHooks, anchorState) // balance an open pre-response anchor before the error terminus (§10.5)
         // (①' G-3, MEDIUM-1) classifyError maps this branch's errors (socket reset / HTTP2
         // REFUSED_STREAM / other non-HTTPError) to network_error / bad_request → decide() → canonical.
         // This is the ONLY path that produces post-commit network_error, so the Phase 1 truth table's
         // network_error→canonical-error promise is exercised here. Disabled = the legacy api_error frame
         // verbatim (CF-2 golden lock).
-        await sink.writeSynthetic?.(
+        await writeTerminalThenSettle(
+          ctx,
           shapePostcommitErrorFrame(error, anthropicErrorFrame("api_error", error instanceof Error ? error.message : String(error)), ctx),
+          () => ctx?.fail(resolvedName, error), // unknown non-HTTP, non-abort
         )
         return
       }
       if (!result.ok) {
         // (b) decideRoute reject — RESOLVE not throw (C2), the try/catch above can't catch it.
         const ctx = codec.getContext()
-        ctx?.setForwardedResponse({ sseEvents: [...forwardedSseEvents] }) // forwarded pings before settling (richest-data-flow)
-        ctx?.fail(resolvedName, new HTTPError(result.rejection.reason, result.rejection.status, result.rejection.reason))
-        await closeAnchorIfOpen(sink, anchorHooks, anchorState) // balance an open pre-response anchor before the error terminus (§10.5, M1 — was missing in the first plan)
-        await sink.writeSynthetic?.(anthropicRejectErrorFrame(result.rejection.status, result.rejection.reason))
+        await writeTerminalThenSettle(
+          ctx,
+          anthropicRejectErrorFrame(result.rejection.status, result.rejection.reason),
+          () => ctx?.fail(resolvedName, new HTTPError(result.rejection.reason, result.rejection.status, result.rejection.reason)),
+        )
         return
       }
       // (a) ok → hand the SAME sink to the pump (single-sink, no rebuild). The commit ping cadence
