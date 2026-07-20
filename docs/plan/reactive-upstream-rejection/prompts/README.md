@@ -15,7 +15,7 @@ P1 (primitive + A + B) ──┬── P2 (C)
 
 - **P1 必须先做**：抽出的 `createReactiveRejectionStrategy` primitive 被 P2（C）+ P3（D/E）复用；`systemRejectModels` 的持久化 + 有效模式解析模式被 C 镜像。
 - **P2 / P3 / P4 在 P1 落地后可并行**（不同会话 / worktree）。P3 内部 D/E/F/G 格式独立、可并行。
-- 各 phase 用 **isolated worktree + 独立分支**（放 `./.worktrees/`）或共享树同文件不重叠行 + 显式 pathspec commit（见 skill `git-preference:avoiding-shared-worktree-conflicts`）。注意 **P1/P2/C 都改 `feature-negotiation.ts` / `sanitize/index.ts` / `codec/anthropic/strategies.ts`**——若并行须行级共存、绝不整文件退让。
+- 各 phase 用 **isolated worktree + 独立分支**（放 `./.worktrees/`）或共享树同文件不重叠行 + 显式 pathspec commit（见 skill `git-preference:coordinating-a-shared-git-worktree`）。注意 **P1/P2/C 都改 `feature-negotiation.ts` / `sanitize/index.ts` / `codec/anthropic/strategies.ts`**——若并行须行级共存、绝不整文件退让。
 
 ## 集中红线（各 phase prompt 引用，逐条硬约束）
 

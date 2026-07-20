@@ -38,6 +38,7 @@
 - [client 源码 grep ≠ REST 上游能力](methodology-client-source-grep-not-rest-capability-probe-endpoint.md) — 代理型上游 REST 表面>client 子集;须 curl 打端点;实例=「GHC 无 count_tokens」被证伪
 - [从 primitive 推理别从流行 wrapper 泛化](methodology-reason-from-primitive-not-dominant-wrapper.md) — 干净 primitive vs 耦合全局 wrapper 并存,判风险从 primitive 实现推理
 - [归 config 还是归代码：先辨丢信息 vs 等价变换](methodology-classify-lost-info-vs-equivalence-before-config-migration.md) — 丢信息→config,拼写等价→回查 catalog;移隐式转换前追 resolvedName 定爆炸半径
+- [极度倾向全面 async/await、别围堵](feedback-prefer-async-await-uniform-over-sync-isolation.md) — 接口统一 async、async 爆炸半径主动铺开非规避;推翻旧「同步 parse+隔离 async」PoC 取向
 - [面向用户永久只用中文、禁日语](feedback-chinese-only-never-japanese.md) — 输出层自检语言=中文;内部推理无所谓
 - [闻到怪味永远大声报警绝不粉饰](feedback-never-paper-over-smells-warn-loudly.md) — 名实不符当场停下显眼报警;踩坑=扩内容留旧名 shutdown 糊过(已改 lifecycle.md)
 - [写 plan 引用现有接线须核实位置与桥接](methodology-plan-verify-interface-location-and-wiring-channel.md) — 同名 interface 核实确切文件;诊断落盘唯一通道=pipelineInfo(recordFeature 不落盘);新 union 打爆 ui-v4 穷尽 Record
@@ -48,6 +49,7 @@
 - [微改动别反射式派 subagent 评审](feedback-tier-subagent-review-skip-for-mechanical-micro-changes.md) — 与 user-rule 41 `tiered-review-by-risk` 合读;机械低风险走 TDD、微改攒批合并态审
 - [agent 后台连挂也绝不自作主张换模型](feedback-never-unilaterally-switch-agent-model-on-flakiness.md) — API 错误连挂也永远 resume 原 agent、绝不擅换模型家族(破坏异模型对抗、是用户决策)
 - [eslint --cache 假绿](tooling-eslint-cache-false-pass.md) — `--cache` 对过期文件假绿;`lint:all` 已去 cache、核单文件 `bunx eslint <path>`
+- [gpt-tokenizer 对重复字符病态慢](reference-gpt-tokenizer-pathological-on-repeated-chars.md) — 60KB `"x".repeat`=15s vs 真实词句 40ms;测试造大 payload 别用 repeat 单字符(踩坑=request-payload.unit 26s)
 - [eslint --fix 的 .at() autofix 破类型](tooling-eslint-fix-at-autofix-breaks-types.md) — `prefer-at` 把 `arr[len-1]`→`.at(-1)`(返 T|undefined);--fix 后**必重跑 typecheck**、测试照绿会漏
 - [测试跑 real codex 用 CODEX_HOME 隔离、--ephemeral 不够](reference-codex-ephemeral-insufficient-use-codex-home.md) — --ephemeral 只抑 rollout;memories/state 仍写真 ~/.codex;每次套 `CODEX_HOME=$(mktemp -d)`;代理侧对应物是 XDG_DATA_HOME
 - [node_modules 存在 ≠ 锁文件事实](reference-node-modules-presence-not-lockfile-truth.md) — 可能是 prune 的 orphan;选依赖前 `grep '"<pkg>@' bun.lock`
@@ -67,7 +69,7 @@
 - [后端抖动挂的 Agent 必须只 SendMessage resume](feedback-backend-flakiness-must-sendmessage-resume-no-alternatives.md) — 失败→强制单一路径 resume 原 agent,不派替代/不换模型
 - [空闲等后台 agent 主动做 dead check](feedback-proactive-liveness-dead-check-on-background-agents.md) — 别被动干等;stat output mtime 判活;抖动/stall→resume、用户停止不可 resume→仅用户明确要求才起新
 - [计划的红绿 mutation 预测可能错、执行期真跑验证](methodology-plan-red-green-mutation-prediction-can-be-wrong-verify.md) — plan「注释 X 行→变红」可能不咬(更早前置条件遮蔽);真跑 mutation、不咬则别提交假绿、降 characterization+记 backlog
-- [git commit -- pathspec 取工作区非 index](git-commit-pathspec-commits-worktree-not-index.md) — 共享 worktree 最终提交一律 pathspec,免疫 peer 并发 `git add` 的 index race
+- [git commit -- pathspec 取工作区非 index](git-commit-pathspec-commits-worktree-not-index.md) — 共享 worktree 最终提交一律 pathspec,免疫 peer 并发 `git add` 的 index race;姊妹坑=`git mv`+只列新路径漏提删除侧(HEAD 树留旧文件、扫盘守卫假绿)
 - [语义合并冲突暴露对方 timing 潜伏 bug](methodology-semantic-merge-conflict-exposes-latent-bug-via-timing.md) — 两边各自绿合并却坏;静态 diff 逐字节等一侧≠行为同,根因在运行时数据/时序→instrument 探针别死盯 diff;判归属纯父分支复现;修法补全对方设计非回退;`test:backend` 排除 `.e2e.test.ts`
 - [谁合并谁退让、但必须合并](feedback-merger-yields-but-merge-must-happen.md) — 并发落地不因主树 WIP 跳过合并;退让=行级共存两份都保+备份→选择性 stash 重叠文件→FF→pop 三方合并;对方改动依赖 untracked 时只作未提交叠回不吞其特性
 - [eslint --fix 宽扫入并发既有 dirt](tooling-eslint-fix-broad-sweeps-concurrent-dirt.md) — 宽集只 check 不 fix;显式 pathspec 只提交自己文件
@@ -82,7 +84,7 @@
 - [picocolors 在 bun test 塌缩成恒等](reference-picocolors-collapses-to-identity-in-bun-test.md) — 测退化文本;改测引用相等 + FORCE_COLOR 子进程 SGR
 - [迁移副作用旧路径仍被 eager 求值→双触发](methodology-migrate-side-effect-old-path-still-eager-evaluated.md) — driver eager 求值 `deps.strategies` 仍触发→双记;根因修=抽 lazy resolver
 - [无疑问改进当场做](feedback-slam-dunk-fixes-do-immediately.md) — 更好+无取舍+无分叉三条全中就立即改,别以超范围推迟
-- [自以为暂缓的任务先核实没被 peer 落地](feedback-verify-deferred-task-not-already-landed-before-designing.md) — 并发仓库「暂缓」是时间点声明;写设计/handoff 前 grep 现码+RFC 状态行核实;撞车先保留自己分析做对比、别急删(用户纠正:删了要找回)
+- [写设计前先核实功能没被 peer 落地](feedback-verify-deferred-task-not-already-landed-before-designing.md) — 不只「自以为暂缓」、连「用户要求实现 X」都先核实 X 是否已 landed(用户未必知现状);并发仓库状态是时间点声明,grep 现码+RFC/DESIGN 状态行核实;撞车先保留自己分析做对比、别急删
 - [绝不推荐短期止血方案](feedback-never-propose-short-term-mitigation.md) — 有根因可修就只提根因;「打开 gated feature 绕过」也算短期将就、禁列选项
 - [现有代码无权威、别为将就它降格最佳方案](feedback-existing-code-has-no-authority-dont-accommodate.md) — 诡异症状=设计错的证据;别把「在现有架构里可行吗」的锚点写进 subagent prompt 让审查背书将就
 - [恢复 agent 永远 SendMessage 绝不 Agent tool 重派](feedback-resume-agent-always-sendmessage-never-agent-tool.md) — 已终止/已完成 subagent 接续永远 `SendMessage`、绝不 `Agent` 重派(丢上下文);唯一 Agent 新派=真全新独立任务
