@@ -448,8 +448,6 @@ export interface IndexProjection {
     attemptCount?: number
   }
   aux?: {
-    requestBytes?: number
-    responseBytes?: number
     previewText?: string
     warningMessages?: Array<WarningMessage>
   }
@@ -481,19 +479,6 @@ export interface HistoryEntry {
   // / `failureReason` were REMOVED — they now live in `_index.derived` (recompute-only
   // projection), read via entry-view resolvers. Legacy DB rows still carry them at
   // runtime; the read adapter (serialize.ts) recomputes `_index.derived` from them.
-  /**
-   * Wire byte size of the request the proxy sent upstream (↑). DERIVED at
-   * serialize time from the best available stored payload (outbound → effective
-   * → inbound). Persisted in the `entries_v2.request_bytes` column for list
-   * display. Absent on old rows (column NULL → undefined).
-   */
-  requestBytes?: number
-  /**
-   * Byte size of the upstream response (↓): sum of SSE frame `raw` bytes for
-   * streaming, or the non-streaming raw/serialized body. DERIVED at serialize
-   * time; persisted in `entries_v2.response_bytes`. Absent on old rows.
-   */
-  responseBytes?: number
   /**
    * Billing multiplier resolved for this request (e.g. 3 for opus, 0.33 for
    * haiku). Captured at WRITE time off the request context (historical-pricing
@@ -707,9 +692,18 @@ export interface EntrySummary {
   }
   durationMs?: number
   timing?: { operation?: { source: "canonical" | "storage-commit-upper-bound" | "terminal-log-rounded" | "unavailable" } }
-  /** Wire byte size of the upstream request (↑). Derived at serialize time; column-backed. */
+  /**
+   * Wire byte size of the client→proxy request (↑). DERIVED ON READ in
+   * `toEntrySummary` via {@link deriveRequestBytes} from the stored `clientRequest.body`.
+   * NOT persisted — there is no `request_bytes` column. Absent when no body was captured.
+   */
   requestBytes?: number
-  /** Byte size of the upstream response (↓). Derived at serialize time; column-backed. */
+  /**
+   * Byte size of the proxy→client response (↓): Σ forwarded SSE frame `raw` bytes
+   * (streaming) or the serialized non-streaming body. DERIVED ON READ in
+   * `toEntrySummary` via {@link deriveResponseBytes} from `clientResponse`. NOT
+   * persisted — there is no `response_bytes` column. Absent when no forwarded content was captured.
+   */
   responseBytes?: number
   /** Billing multiplier (e.g. 3 for opus) captured at write time. Column-backed. */
   multiplier?: number

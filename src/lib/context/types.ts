@@ -288,8 +288,6 @@ export interface HistoryIndexProjection {
     attemptCount?: number
   }
   aux?: {
-    requestBytes?: number
-    responseBytes?: number
     previewText?: string
     warningMessages?: Array<WarningMessage>
   }

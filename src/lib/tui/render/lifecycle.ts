@@ -4,6 +4,7 @@ import type { LogLineParts } from "~/lib/observability/projections/log-line"
 
 import {
   //
+  deriveResponseBytes,
   responseThinkingFromBody,
   toolNamesFromResponseBody,
 } from "~/lib/history/entry-view"
@@ -117,7 +118,10 @@ function renderTerminal(effect: Extract<RequestDisplayEffect, { kind: "terminal"
         durationMs: resolveDurationColorMs({ lastMs, totalMs: durationMs, retries }),
         queueWait: ctx.queueWaitMs > 100 ? formatDuration(ctx.queueWaitMs) : undefined,
         requestBodySize: ctx.requestBodySize,
-        responseBodySize: entry.streamBytesIn,
+        // ↓ downstream bytes: the live stream accumulator stays authoritative for
+        // streaming rows; fall back to the authoritative forwarded content for
+        // non-streaming / short rows where no `stream_progress` ever fired.
+        responseBodySize: entry.streamBytesIn ?? deriveResponseBytes(historyEntry),
         inputTokens: final?.usage?.input_tokens,
         outputTokens: final?.usage?.output_tokens,
         cacheReadInputTokens: final?.usage?.cache_read_input_tokens,

@@ -7,6 +7,8 @@ import type {
 
 import {
   //
+  deriveRequestBytes,
+  deriveResponseBytes,
   extractResponsePreviewText,
   resolveAttemptCount,
   resolveCurrentStrategy,
@@ -170,8 +172,8 @@ export function toEntrySummary(entry: HistoryEntry): EntrySummary {
     responseError: resolveResponseError(entry) ?? entry._index?.derived?.failureReason,
     usage: resolveResponseUsage(entry),
     durationMs: entry.durationMs,
-    requestBytes: entry.requestBytes,
-    responseBytes: entry.responseBytes,
+    requestBytes: deriveRequestBytes(entry),
+    responseBytes: deriveResponseBytes(entry),
     multiplier: entry.multiplier,
     previewText: cached.preview,
     responsePreviewText: cached.responsePreview,

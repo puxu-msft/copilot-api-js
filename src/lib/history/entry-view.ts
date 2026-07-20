@@ -58,6 +58,48 @@ export function resolveResponseUsage(entry: Pick<HistoryEntry, "attempts">): Usa
   return finalUpstreamResponse(entry)?.usage
 }
 
+// ─── Byte accounting (↑ request / ↓ response wire size) ───
+//
+// Derived ON READ from the authoritative client-facing legs — NOT stored.
+// (Earlier `_index.aux.*Bytes` slots + owner fields claimed persistence in
+// `entries_v2.*_bytes`, but no producer computed them and no such column exists;
+// they were removed.) Both the TUI terminal line and the History summary read
+// these. For the TUI `↓`, the live stream accumulator (`streamBytesIn`) stays
+// authoritative for streaming rows; these fill the non-streaming gap where no
+// `stream_progress` ever fired.
+
+/** Minimal structural shape both the owner `HistoryEntry` and producer `HistoryEntryData` satisfy. */
+interface ClientLegBytesSource {
+  clientRequest?: { body?: unknown }
+  clientResponse?: { body?: unknown; sseEvents?: ReadonlyArray<{ raw: string }> }
+}
+
+/** UTF-8 byte length of a serialized leg body; `undefined` for an absent/unserializable body. */
+function serializedByteLength(body: unknown): number | undefined {
+  if (body === undefined || body === null) return undefined
+  try {
+    return Buffer.byteLength(typeof body === "string" ? body : JSON.stringify(body))
+  } catch {
+    // Non-serializable forwarded content (should not happen — it was already
+    // sent over the wire): omit the byte count rather than crash the renderer.
+    return undefined
+  }
+}
+
+/** ↓ response wire bytes: Σ forwarded SSE frame `raw` bytes (streaming) or the serialized body (non-streaming). */
+export function deriveResponseBytes(entry: ClientLegBytesSource): number | undefined {
+  const frames = entry.clientResponse?.sseEvents
+  if (frames && frames.length > 0) {
+    return frames.reduce((sum, f) => sum + Buffer.byteLength(f.raw), 0)
+  }
+  return serializedByteLength(entry.clientResponse?.body)
+}
+
+/** ↑ request wire bytes: the serialized inbound (client→proxy) body. */
+export function deriveRequestBytes(entry: ClientLegBytesSource): number | undefined {
+  return serializedByteLength(entry.clientRequest?.body)
+}
+
 /** Upstream response stop reason (final attempt's `upstreamResponse.stopReason`). */
 export function resolveStopReason(entry: Pick<HistoryEntry, "attempts">): string | undefined {
   return finalUpstreamResponse(entry)?.stopReason

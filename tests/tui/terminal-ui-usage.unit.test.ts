@@ -95,3 +95,59 @@ describe("TerminalUi — completion line usage threading", () => {
     expect(okLine).not.toContain("↑1.0k")
   })
 })
+
+describe("TerminalUi — completion line ↓ response-byte threading", () => {
+  function drive(entry: unknown): string {
+    const cap = makeCapture()
+    const bus = createBus()
+    const prevLevel = consola.level
+    consola.level = 5
+    const detach = attachTerminalUi(bus, { stdout: cap.stdout, isTTY: true, columns: 200 })
+    const ctx = {
+      id: "a",
+      endpoint: "anthropic-messages",
+      method: "POST",
+      path: "/v1/messages",
+      resolvedModel: "claude-opus-4-8",
+      state: "streaming",
+      startTime: NOW - 1200,
+      queueWaitMs: 0,
+    } satisfies RequestContextSnapshot
+    const req = bus.scope("request")
+    req.publish({ kind: "request.created", ctx })
+    req.publish({ kind: "request.completed", ctx, entry } as never)
+    detach()
+    consola.level = prevLevel
+    return cap.text()
+  }
+
+  test("non-streaming completion surfaces ↓ response bytes from clientResponse.body (no stream_progress fired)", () => {
+    const body = { hello: "world", n: 42 }
+    const expectedBytes = Buffer.byteLength(JSON.stringify(body)) // 24 → "24B"
+    const out = drive({
+      id: "a",
+      endpoint: "anthropic-messages",
+      state: "completed",
+      clientResponse: { body },
+      attempts: [{ index: 0, durationMs: 0, upstreamResponse: { success: true } }],
+    })
+    const okLine = out.split("\n").find((l) => l.includes("[ OK ]"))
+    expect(okLine).toBeDefined()
+    expect(okLine).toContain(`↓${expectedBytes}B`)
+  })
+
+  test("streaming completion with no progress derives ↓ from forwarded clientResponse.sseEvents raw", () => {
+    const frames = [{ raw: "chunk-one" }, { raw: "chunk-two-longer" }]
+    const expectedBytes = frames.reduce((sum, f) => sum + Buffer.byteLength(f.raw), 0)
+    const out = drive({
+      id: "a",
+      endpoint: "anthropic-messages",
+      state: "completed",
+      clientResponse: { sseEvents: frames },
+      attempts: [{ index: 0, durationMs: 0, upstreamResponse: { success: true } }],
+    })
+    const okLine = out.split("\n").find((l) => l.includes("[ OK ]"))
+    expect(okLine).toBeDefined()
+    expect(okLine).toContain(`↓${expectedBytes}B`)
+  })
+})
