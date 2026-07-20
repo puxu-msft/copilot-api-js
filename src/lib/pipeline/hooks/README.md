@@ -6,6 +6,10 @@ file path) exports a single `export const hooks = { ... }` object, grouped by tw
 
 ```ts
 export const hooks = {
+  client: {
+    inbound: (env) => env,            // client-native request rewrite, one-shot (S1a→S1b, before translate/sanitize)
+    outbound: (frame, env) => frame,  // per rendered client frame (rewrite / drop via undefined), S6 render→yield
+  },
   upstream: {
     inbound: (frame, env) => frame,   // per upstream response frame (rewrite / drop via undefined)
     outbound: (env) => env,           // upstream-bound request, one-shot (post-sanitize/pre-exchange)
@@ -14,12 +18,14 @@ export const hooks = {
 }
 ```
 
-`client.inbound` (client-native request rewrite, one-shot before translate/sanitize) lands in RFC
-Phase 4; `client.outbound` (per-client-frame response rewrite) is named but wiring is gated on
-sink-egress unification (RFC Phase 6). Any leaf may be omitted (= that boundary passes through);
-a rewrite returning `undefined` = observe (pass through after side effects). `~/lib/pipeline/hooks`
-(this barrel) is everything such a module imports to mock upstream, inject faults, and replay
-recorded history. Full design: `docs/spec/2026-07-12-upstream-hook-middleware.md`.
+All five mount points are wired (RFC Phases 4 + 6 landed). `client.outbound` covers the frames
+`codec.renderResponse` produces — NOT sink-layer synthetic/heartbeat/anchor frames (they don't flow
+through the render yield point; a full sink-egress unification to cover those is a deferred-backlog
+enhancement). Any leaf may be omitted (= that boundary passes through); a rewrite returning
+`undefined` on a request-shaping leaf = observe (pass through after side effects), on a frame leaf =
+drop the frame. `~/lib/pipeline/hooks` (this barrel) is everything such a module imports to mock
+upstream, inject faults, and replay recorded history. Full design:
+`docs/spec/2026-07-12-upstream-hook-middleware.md`.
 
 ## Toolkit (`toolkit.ts`)
 
@@ -46,8 +52,8 @@ buffered-retry sink). This is harmless for a hook that always returns the same f
 sequence) MUST account for being invoked multiple times within what looks like a single logical
 request. If your hook needs "only mock the first attempt" or "only the final settle" semantics,
 track that explicitly (e.g. a counter closed over in the hook module) rather than assuming
-one-call-per-request. (By contrast `upstream.outbound` and, in Phase 4, `client.inbound` are
-one-shot — invoked exactly once per logical request; `upstream.inbound` is per upstream frame.)
+one-call-per-request. (By contrast `client.inbound` and `upstream.outbound` are one-shot — invoked
+exactly once per logical request; `upstream.inbound` and `client.outbound` are per frame.)
 
 ### 2. A mock stream that never calls `next()` bypasses the transport's guards
 

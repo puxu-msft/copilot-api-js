@@ -883,3 +883,17 @@
 - **fast 档若干真 SQLite/fs 单元测试偏慢**：`tests/telemetry/{migrate-json,cumulative-cap-authority,dual-write,backfill-wiring}.unit.test.ts`、`tests/history/state-shutdown.unit.test.ts` 等做真 SQLite/临时文件 I/O（各 ~1.9-5s，但每测快 0.3-0.7s/test）。**未重分类为 .it**——它们是持久化原语的单元测试（临时 db 是被测单元本身，如 `atomic-fs.unit` 测的就是 fs），与全站既有约定一致；「只要慢就改 .it」会与既有 .unit telemetry 测试不一致、属过度应用（reviewer 明训）。
   - **理想架构 / 若做需改什么**：若要进一步压 fast 档，可给「持久化原语单元测试」引入 in-memory SQLite（`:memory:`）替临时文件 db，或抽一个 `.unit` 内的 fake 持久化层。需全站统一（不能只改这几个）。**触发条件（值得做）**：fast 档整体耗时成为痛点、或决定持久化单元测试统一走 in-memory。发现方：测试按速度分档 Task 4 慢离群审查（2026-07-20）。
 - **rate-limiter/shutdown 用真 setTimeout**：`tests/shutdown/rate-limiter.unit.test.ts`（2.76s/28t）、`shutdown.unit.test.ts`（1.9s/50t）用真定时器等待。纯逻辑（非 I/O）→ 守真相域留 .unit。可用 fake timers 提速（根因修非症状），但牵动这些测试的时序假设、需谨慎。**触发条件**：同上 fast 档提速专项。
+
+## 上游传输可观测子系统 — 子项目 2：连接/会话级可观测（2026-07-14，transport-observability 分解）
+
+- **根因 / 现状**：`src/lib/transport/` 全树结构化可观测 ≈ 0（仅 2 处 consola）。连接级信号——GOAWAY（lastStreamID/errorCode/debugData，判别「连接级 drain / GHC 边缘回收 A 类」的最强信号）、PING ack RTT / unack 计数（连接健康直接指标）、session 建关/pool 命中/存活时长——**全被丢弃**：`session.on("goaway", removeFromPool)` 不记日志不进 history，`scheduleH2KeepalivePing` 的 ack 是 `NOOP_PING_ACK`。
+- **当前行为**：截断/断流只能看到泛型日志，无法从信号判别是 A（连接级/中间设备回收，GOAWAY 在场）还是 B（单流应用层 idle，无 GOAWAY、连接仍活）。
+- **理想架构 / 若做需改什么**：把连接/会话生命周期做成一等结构化事件（进 observability bus + 结构化日志 + /metrics）。**承重难题＝多路复用池化 session 的 request 关联**（一条 h2 session 被多并发 request 共享，GOAWAY/PING/session-close 非 1:1 归属某 request）——候选解 A（correlation-id 穿透 + 连接级事件扇出到在途 request）/ B（两级模型读时关联）/ C（全事件上 bus + 投影分发），详见 [docs/todo/upstream-transport-observability.md](upstream-transport-observability.md) §5。
+- **为何暂缓**：子项目 1（跨端点流终止归因统一，流级、per-request、不碰关联难题）先行独立交付；本片需先攻克多路复用关联模型（最硬），范围大，用户 2026-07-14 决定拆后做。**触发条件（值得做）**：子项目 1 落地后、需在真实数据上区分 A/B 截断归因时。详细设计草案（范围/维度/关联模型/surface）已冻结在 [upstream-transport-observability.md](upstream-transport-observability.md)。
+
+## 上游传输可观测子系统 — 子项目 3：history transportTrace 字段 + /metrics 传输聚合 + ui-v4 Transport 段（2026-07-14，transport-observability 分解）
+
+- **根因 / 现状**：子项目 1/2 产出的传输事件目前无结构化落盘/聚合/展示宿主。history entry 无「传输因果链」字段（connect→session→stream→truncation→retry），/metrics 无传输维度（GOAWAY 速率 / PING RTT histogram / truncation A/B/success 计数 / per-origin session gauge），ui-v4 History 详情无 Transport 段。
+- **当前行为**：单请求事后取证只能读散落日志 + 解 blob 反推，无「打开一条 entry 看全传输因果链」。
+- **理想架构 / 若做需改什么**：history 新增结构化字段（顶层 `transportTrace` 或 `attempts[].transport`，与 sseEvents 并列、遵 richest-data-flow），新字段「三处必改」见 skill `persistence-async-invariants`、schema 迁移见 `history-sqlite-schema`；/metrics 走遥测 registry 三支柱（skill `telemetry-architecture`）；ui-v4 详情加 Transport 时间线段。**须与 request-timing-instrumentation（2026-07-14 spec，owns TTFB/7 刻时序）协调字段边界**，避免重复 per-attempt 时序存储。
+- **为何暂缓**：依赖子项目 1/2 先产出事件源；是「沉淀 + 展示」层，落在采集之后。用户 2026-07-14 决定拆后做。**触发条件（值得做）**：子项目 1/2 的事件已产出、需持久化因果链 + fleet 指标 + UI 展示时。详细 surface 设计见 [upstream-transport-observability.md](upstream-transport-observability.md) §6。

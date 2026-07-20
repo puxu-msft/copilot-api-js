@@ -21,8 +21,9 @@ import type {
  *
  * Migration (v3): `onRequest → upstream.outbound`, `onExchange → exchange`,
  * `rewriteUpstreamFrame → upstream.inbound`. `client.inbound` (client-native request rewrite,
- * one-shot) lands in RFC Phase 4; `client.outbound` (per-client-frame response rewrite) is
- * declared/named but its per-frame wiring is gated on sink-egress unification (RFC Phase 6).
+ * one-shot, RFC Phase 4) and `client.outbound` (per rendered client frame, RFC Phase 6) are both
+ * wired; `client.outbound` covers render-produced frames only — a full sink-egress unification to
+ * also cover sink-layer synthetic/heartbeat frames is deferred-backlog (§9).
  */
 export interface UpstreamHook {
   /** client-native format (client-original request in, response out). */

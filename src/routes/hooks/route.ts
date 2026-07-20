@@ -6,8 +6,11 @@
  * (`getUpstreamHookState()`) — a config change alone never touches the loaded
  * hook; only a successful `POST /reload` does (spec §6.5, review MEDIUM-1).
  *
- * `POST /reload` re-loads the declared module via the data-URL mechanism
- * (`loadUpstreamHookSafe`, review B1) and never throws: on failure the
+ * `POST /reload` re-loads the declared module via the unique-compiled-file
+ * mechanism (`loadUpstreamHookSafe`, review B1 as amended: transpile → write a
+ * unique file under `.hooks-cache/` → import — bypasses Bun's path-keyed ESM
+ * cache while still resolving `~/` aliases, unlike the superseded data-URL
+ * approach) and never throws: on failure the
  * previously-loaded hook stays effective and the error is reported at 200 with
  * `ok:false` — the project's "warn-continue" config philosophy (runtime
  * hot-reload never kills the process over a bad module).
@@ -75,9 +78,9 @@ const postReloadRoute = createRoute({
   method: "post",
   path: "/reload",
   tags: ["hooks"],
-  summary: "Reload the declared upstream-hook module (data-URL, warn-continue)",
+  summary: "Reload the declared upstream-hook module (unique compiled file, warn-continue)",
   description:
-    "Re-loads `hooks.upstream_module` via a data-URL import (bypasses Bun's path-keyed ESM cache). On failure the previously-loaded hook is kept effective and the error is reported here at 200, not thrown.",
+    "Re-loads `hooks.upstream_module` by transpiling it to a unique file under `.hooks-cache/` and importing that (bypasses Bun's path-keyed ESM cache while resolving `~/` aliases). On failure the previously-loaded hook is kept effective and the error is reported here at 200, not thrown.",
   responses: {
     200: {
       description: "Reload outcome — ok:true on success, ok:false (previous hook retained) on failure",

@@ -32,7 +32,8 @@ export function resetUpstreamHook(): void {
  * Leaf mount-point paths (dot-separated), mirroring the nested {@link UpstreamHook} shape
  * (RFC 2026-07-14-symmetric-four-point-hooks §3). A hook module exports `export const hooks =
  * { upstream: { inbound, outbound }, exchange, ... }`; the loader navigates each leaf path and
- * collects the ones that are functions. `client.inbound` lands in RFC Phase 4.
+ * collects the ones that are functions. All five leaves (`client.{inbound,outbound}`,
+ * `upstream.{inbound,outbound}`, `exchange`) are wired.
  */
 const HOOK_POINTS = ["client.inbound", "client.outbound", "upstream.inbound", "upstream.outbound", "exchange"] as const
 
