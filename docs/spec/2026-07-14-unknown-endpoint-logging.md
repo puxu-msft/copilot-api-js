@@ -27,7 +27,7 @@
 - 实现 405 拆分：把「路径存在但 method 不对」从 404 里区分出来，返回**正确的 405 + `Allow` 响应头 + `{ "error": "Method Not Allowed" }` body**（REST 正确性提升，非仅日志分类）。
 - 日志经现成的 consola → republish 链路自动进 **TUI + FileSink**，受 consola 全局 level gate 节制（标准日志语义）。
 - 日志内容按 richest-data-flow 尽量完整（归类状态码、method、path、405 的 allowed methods、User-Agent），单行文本。
-- 复用现有 config 校验 / 热重载 / `PUT /api/config/yaml` 管线 + config SSOT 表面（`CONFIG_MANAGED_DEFAULTS` / `resetConfigManagedState` / bundled `config.yaml` / `config.example.yaml` / 生成的 `config.schema.json`），零特殊处理。
+- 复用现有 config 校验 / 热重载 + config SSOT 表面（`CONFIG_MANAGED_DEFAULTS` / `resetConfigManagedState` / bundled `config.yaml` / `config.example.yaml` / 生成的 `config.schema.json`）。**注意**：`PUT /api/config/yaml` 写盘路径 `mergeConfigIntoDocument`（[src/routes/config/route.ts](../../src/routes/config/route.ts)）是**显式逐 section 列举**、**非**通用遍历——新 section 必须显式接线一行（`setNestedScalarContainer`），否则 PUT 校验通过但静默不写盘（合并态审查逮到的 Blocker，已修 + 回归测试）。
 
 **非目标（本轮不做，已落 backlog）**：
 
@@ -156,6 +156,7 @@ classifyUnknownEndpoint(shadow, methods, method, path):
 |---|---|
 | [src/lib/config/schema.ts](../../src/lib/config/schema.ts) | 新增 `unknown_endpoint_logging` section + `LogLevel` 枚举 |
 | [src/lib/config/config.ts](../../src/lib/config/config.ts) | `applyConfigToState` 映射；类型 re-export |
+| [src/routes/config/route.ts](../../src/routes/config/route.ts) | `mergeConfigIntoDocument` 接线 `unknown_endpoint_logging`（PUT 写盘生效；合并态审查 Blocker 修复） |
 | [src/lib/state.ts](../../src/lib/state.ts) | 新 state 字段 + setter；**加入 `CONFIG_MANAGED_DEFAULTS`**（初始化 + `resetConfigManagedState()` SSOT）+ mutable init |
 | `src/lib/observability/unknown-endpoint.ts`（新建） | `buildShadowRouter(server.routes)` + `classifyUnknownEndpoint`（三态、接收当前 method）+ 日志行格式化 + 级别分发（纯逻辑，独立可测；影子 router 按 server 实例缓存——闭包或 `WeakMap`，非模块级单例） |
 | [src/server.ts](../../src/server.ts) | `notFound` 改造：lazy 建/取影子 router → 三态分类 → route-owned 保持 404 / 404 / 405+Allow+body → 挂 classification 到 context；新增 `unknownEndpointFinalizer` middleware 注册在 `trimTrailingSlash` **外层**（紧随 `observabilityMiddleware`）：读最终 status + state 级别打日志；清理过时的 browserProbe 注释 |

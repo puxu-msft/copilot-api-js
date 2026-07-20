@@ -15,6 +15,7 @@
 - ✅ **Task 3**（commit `924bd0bc`）：server.ts notFound 405 拆分 + finalizer，9 集成 test 绿（真实 createServer）。
 - ✅ **Task 4**（commit `55b3d032` + `05aeecd2`）：`.all()` 守卫（红绿对照）+ config.example.yaml + docs/API.md + config.yaml bundled 默认 + docs/DESIGN.md 架构行 + config-hot-reload 完整性登记（两 leaf EXEMPT）。config.schema.json 已含定义（peer 生成时带上）。
 - 曾因并发 peer 会话重写 config.yaml/schema.ts（model_overrides→model_mappings）短暂推迟三项发布物，peer 提交后已全部补齐。
+- ✅ **合并态审查**（gpt-souls:reviewer，commit `2a4a5bdd`）：逮到 1 Blocker——`unknown_endpoint_logging` 未接入 `mergeConfigIntoDocument`（PUT 写盘显式逐 section 列举），PUT 校验通过但静默不写盘。已修（接线 + PUT 写入/null 删除回归测试，红绿对照验证）+ 2 Medium（EXEMPT 理由补 PUT 覆盖、`.all()` 守卫注释注明单行局限）。既有系统性缺口（chat_completions/telemetry 等同样漏接 PUT）记 [deferred-backlog](../todo/deferred-backlog.md)、非本轮阻塞。
 
 ## Global Constraints
 
