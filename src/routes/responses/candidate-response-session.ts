@@ -187,12 +187,16 @@ function parseResponsesEvent(frame: ClientFrame): ResponsesStreamEvent | undefin
   }
 }
 
-function responseFrame(
+export function responseFrame(
   transport: "http" | "ws",
   frame: ClientFrame,
   event: ResponsesStreamEvent,
   mapper: Parameters<typeof restoreResponsesStreamFrameToolNames>[2],
 ): ClientFrame {
   const data = restoreResponsesStreamFrameToolNames(frame.data ?? "", event.type, mapper)
-  return transport === "ws" ? { data } : { event: frame.event ?? event.type, data }
+  // Spread `...frame` so the Symbol-keyed `hook-rewrite` provenance tag (frame-origin.ts) + `id`/`retry`
+  // survive the re-render (Unit 2 — was a fresh literal that dropped both). HTTP keeps the explicit
+  // `event` fallback: viaFallback frames have `frame.event === undefined`, and a bare `{...frame, data}`
+  // would omit the `event:` line (client-sink.ts:186) and break the wire.
+  return transport === "ws" ? { ...frame, data } : { ...frame, event: frame.event ?? event.type, data }
 }

@@ -8,7 +8,7 @@ import {
 import type { ClientFrame } from "~/lib/pipeline/types"
 
 import { createResponsesBufferedMergeReducer } from "~/lib/codec/openai-responses/buffered-merge-reducer"
-import { readSyntheticKind } from "~/lib/pipeline/frame-origin"
+import { readSyntheticKind, tagFrameSynthetic } from "~/lib/pipeline/frame-origin"
 
 import {
   //
@@ -293,5 +293,32 @@ describe("变异纪律 MUTANT 示范", () => {
     // regression is observably different: verbatim keeps everything, drop-delta strips the deltas).
     expect(types(out)).not.toEqual(["response.output_item.added", "response.function_call_arguments.done", "response.output_item.done"])
     expect(out.length).toBe(frames.length) // verbatim keeps all 5 frames
+  })
+})
+
+describe("hook-rewrite provenance through the merge (Unit 2 §Phase A — two subtractive edge cases)", () => {
+  // Characterization: richest-data-flow ②b accepts that provenance on frames REMOVED/REBUILT by the
+  // merge is lost (recoverable via the upstream/forwarded two-track diff). These固化 the two boundaries.
+  test("identity pass-through: a hook-rewrite tag on a SURVIVING (non-dropped) frame is preserved", () => {
+    const reducer = createResponsesBufferedMergeReducer({ eventCompaction: "drop-delta", completedOutput: "upstream" })
+    const { frames } = functionCallBlock(0, "fc_1")
+    // Tag the structural output_item.added frame — it survives drop-delta (not a droppable delta).
+    const tagged = frames.map((f) => (f.event === "response.output_item.added" ? tagFrameSynthetic({ ...f }, "hook-rewrite") : f))
+    for (const f of tagged) reducer.observe(f)
+    const out = reducer.transformFlush(tagged, { cause: "boundary", boundaryFrame: tagged.at(-1) })
+    const survivor = out.find((f) => f.event === "response.output_item.added")
+    expect(survivor).toBeDefined()
+    expect(readSyntheticKind(survivor!)).toBe("hook-rewrite") // same object reference passed through → tag rides along
+  })
+
+  test("subtractive drop: a hook-rewrite tag on a DROPPED delta frame vanishes with the frame (acceptable, two-track recoverable)", () => {
+    const reducer = createResponsesBufferedMergeReducer({ eventCompaction: "drop-delta", completedOutput: "upstream" })
+    const { frames } = functionCallBlock(0, "fc_1")
+    const tagged = frames.map((f) => (f.event === "response.function_call_arguments.delta" ? tagFrameSynthetic({ ...f }, "hook-rewrite") : f))
+    for (const f of tagged) reducer.observe(f)
+    const out = reducer.transformFlush(tagged, { cause: "boundary", boundaryFrame: tagged.at(-1) })
+    // The dropped delta is gone entirely — no surviving frame carries hook-rewrite (subtraction, not corruption).
+    expect(out.some((f) => f.event === "response.function_call_arguments.delta")).toBe(false)
+    expect(out.some((f) => readSyntheticKind(f) === "hook-rewrite")).toBe(false)
   })
 })
