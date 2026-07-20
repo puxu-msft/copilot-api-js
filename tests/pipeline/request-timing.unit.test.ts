@@ -15,7 +15,7 @@ import {
   recordLatest,
   recordOnce,
   type AttemptTiming,
-} from "./request-timing"
+} from "~/lib/pipeline/request-timing"
 
 describe("recordTiming", () => {
   it("recordOnce keeps the FIRST write, ignores later", () => {

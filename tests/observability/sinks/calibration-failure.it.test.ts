@@ -26,7 +26,7 @@ import {
 import { createBus } from "~/lib/observability"
 import { setStateForTests } from "~/lib/state"
 
-import { attachCalibrationFailureSink } from "./calibration-failure"
+import { attachCalibrationFailureSink } from "~/lib/observability/sinks/calibration-failure"
 
 const MODEL = "claude-test-model"
 

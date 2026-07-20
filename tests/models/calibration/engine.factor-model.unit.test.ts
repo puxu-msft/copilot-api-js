@@ -14,7 +14,7 @@ import {
   learnCalibration,
   resetAllLimitsForTesting,
   WEIGHT_CAP,
-} from "./engine"
+} from "~/lib/models/calibration/engine"
 
 afterEach(() => resetAllLimitsForTesting())
 

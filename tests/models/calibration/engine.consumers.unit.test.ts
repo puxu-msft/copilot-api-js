@@ -12,7 +12,7 @@ import {
   getLearnedLimits,
   learnCalibration,
   resetAllLimitsForTesting,
-} from "./engine"
+} from "~/lib/models/calibration/engine"
 
 afterEach(() => resetAllLimitsForTesting())
 

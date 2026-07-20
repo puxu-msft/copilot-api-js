@@ -21,7 +21,7 @@ import {
   resetAllLimitsForTesting,
   seedFactorModel,
   setLearnedLimitsPathForTests,
-} from "./engine"
+} from "~/lib/models/calibration/engine"
 
 afterEach(() => {
   resetAllLimitsForTesting()
