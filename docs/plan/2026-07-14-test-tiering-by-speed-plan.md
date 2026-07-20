@@ -8,6 +8,7 @@
 > - **Task 5 doc-sync**：约定立在活文档（CLAUDE.md/coding-conventions/DESIGN），历史 plan/rfc/kickoff 叙事按反修正主义不逐个改写。
 > - **实测（本机、master 已增长至 unit 350+it 114+http 64 文件）**：默认 `test`(fast) 170s vs `test:backend`(全后端) 409s（**默认反馈 -58%**）。绝对值远高于计划期 ~38s——因 master 期间 unit 档从 265→350 文件膨胀（含大量真 SQLite 测试），非分档本身；进一步压缩（持久化单元测试走 in-memory SQLite）已记 backlog。
 > - **遗留失败均 pre-existing/flaky**（h2-keepalive 争用 flaky、V3 perf load 敏感、SIGINT 机器负载、V3 semantic peer 活跃区）——base 对照由 verifier 核验中，非本次引入（未改任何 src 逻辑）。
+> - **并行化 follow-up（2026-07-20，`36b4f9a0`）**：单进程 170s 不可接受——实测根因是**单进程串行跑 440 文件超线性退化**（逐模块单跑加起来仅 ~70s、一起跑 170s）。用 bun 原生 `--parallel`（隐含 `--isolate` 每文件独立 worker）加到 unit/it/http/backend/cov 脚本：**fast 档 170s→14.7s（0 fail，隔离顺带消除污染型 flaky）、backend 409s→71s**。pty（终端资源并发冲突 1 fail）/e2e（真 GHC 限流）不加。选 `battle-tested` 原生 flag 而非手搓 module 分片。
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
