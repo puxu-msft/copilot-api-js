@@ -1,6 +1,6 @@
 # Spec：测试按速度分档（tier 正交于 type）
 
-- 状态：草案 v2（已过两轮跨模型对抗 review → 待用户复审 → plan）
+- 状态：✅ 已实施（分支 `test-tiering-by-speed`，2026-07-20）——实施态与执行期调整见配套 [plan](../plan/2026-07-14-test-tiering-by-speed-plan.md) 头部注解。
 - 日期：2026-07-14
 - 归属：`docs/spec/`，配套 plan 落 `docs/plan/`
 - review：GPT reviewer（1 BLOCK/2 HIGH/2 MED）+ Claude reviewer（0 BLOCK/2 HIGH/4 MED），finding 已并入本 v2（§13 记录处理与不采纳项）。

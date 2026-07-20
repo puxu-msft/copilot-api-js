@@ -1,5 +1,14 @@
 # 测试按速度分档 Implementation Plan
 
+> **实施状态（2026-07-20，分支 `test-tiering-by-speed`）**：✅ 全部 landed（Task 1a→6）。执行期实证调整：
+> - **Task 0a/0b（P0 4 失败）跳过**——master 前进后 peer 已修好（console-thinking/resetters 全绿，实证）；执行期真实基线的失败换成了另一批（见下）。
+> - **孤儿实数 56**（tests 46 + src 10，master 变动致数字与计划的 55/60 有出入，L1 守卫动态无碍）。
+> - **Task 2b 降验证性**——e2e 早已 token-gated（`c1589b00`），干净环境 59 skip/0 fail，非新增。
+> - **Task 4**：`request-payload` 26s→2.2s（根因=`"x".repeat` 触发 gpt-tokenizer 病态级联，换真实词句，**保 .unit 真相域**）；`system-prompt-config-integration` 真 fs I/O 误配→`.it`；其余 telemetry SQLite 单元测试守约定不重分类、记 backlog。
+> - **Task 5 doc-sync**：约定立在活文档（CLAUDE.md/coding-conventions/DESIGN），历史 plan/rfc/kickoff 叙事按反修正主义不逐个改写。
+> - **实测（本机、master 已增长至 unit 350+it 114+http 64 文件）**：默认 `test`(fast) 170s vs `test:backend`(全后端) 409s（**默认反馈 -58%**）。绝对值远高于计划期 ~38s——因 master 期间 unit 档从 265→350 文件膨胀（含大量真 SQLite 测试），非分档本身；进一步压缩（持久化单元测试走 in-memory SQLite）已记 backlog。
+> - **遗留失败均 pre-existing/flaky**（h2-keepalive 争用 flaky、V3 perf load 敏感、SIGINT 机器负载、V3 semantic peer 活跃区）——base 对照由 verifier 核验中，非本次引入（未改任何 src 逻辑）。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 把后端测试按速度分档——默认 `test` 只跑快速档（unit+http，~38s），集成/pty/e2e 按需运行；同时修 4 个预存真失败、收编 55 个孤儿测试、统一 e2e 发现机制、立一道 L1 守卫永久防孤儿复发。
