@@ -1,6 +1,6 @@
 # Plan：proxy 合成/改写帧的 forwarded 轨 & 遥测完整性（TDD 实施计划）
 
-> 状态：**定稿（异模型对抗评审：GPT 独立复现探针 13 pass + 逐 Task 红绿核验，0 blocker，全 minor 已吸收）→ 可执行**。日期 2026-07-20。
+> 状态：**已实施 landed master（2026-07-20）**：Unit 2 `3341efb4` / Unit 3 `c2a28b20`+`0bd599fc` / Unit 1 缩减版 `301e63b2`。异模型对抗评审（GPT，独立复现探针 13 pass + 逐 Task 红绿核验，0 blocker）。**实施发现**：Unit 1 原前提被 History V3 实测推翻→缩减为瞬态快照修复（详见 §Phase C 与 spec §Unit 1 banner）。
 > 派生自 spec [docs/spec/2026-07-20-synthetic-frame-forwarded-track-completeness.md](../spec/2026-07-20-synthetic-frame-forwarded-track-completeness.md)（设计定稿，两轮异模型对抗评审 0 blocker）。
 > Unit 2 gatekeeper 已实测收敛（见 §0 探针结论）。
 

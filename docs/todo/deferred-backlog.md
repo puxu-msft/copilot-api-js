@@ -353,7 +353,7 @@
 
 ## POST-COMMIT 失败的 error 帧 + 锚点收口帧不进 history clientResponse.sseEvents
 
-> 📌 **已并入 spec [docs/spec/2026-07-20-synthetic-frame-forwarded-track-completeness.md](../spec/2026-07-20-synthetic-frame-forwarded-track-completeness.md) §Unit 1**，待其 plan 关闭本条。落点已随 request-lifecycle 重构迁到 `handler-v4.ts:614-671`（reaper-cancel 现内联处理），下文旧行号仅供参考。
+> ✅/⚠️ **前提部分失效 + 缩减修复（2026-07-20，landed `301e63b2`，spec/plan 2026-07-20 §Unit 1）**：本条「error 帧 + stop@0 不进 history clientResponse.sseEvents」在 **History V3**（landed 2026-07-18）下**已为假**——durable projection（`v3/projection.ts:383` clientTrack via generation recorder）在 `ctx.fail` 后仍捕获 writeSynthetic 帧（seal 延迟）。`getHistory` 已完整。**残留仅瞬态快照**（`request.failed` 事件的 `entry` 来自 `toHistoryEntry` 读 `_forwardedResponse`，catch 顶部只快照 pings）——缩减版重排 `writeTerminalThenSettle`（closeAnchor→writeSynthetic→setForwarded→fail + finally 兜底）已治，wire 不变。**未做（缩减 scope）**：write-reject 专项测试、4-腿-split 断言。**未治**：reaper-cancel 腿（见下方新条目「reaper-cancel history 两阶段协议」）。下文旧描述为 History-V2 时期历史记录。
 
 - **现状（2026-07-09 Phase 5 审查实证）**：delayed-commit 的 catch 块在 `setForwardedResponse({sseEvents:[...forwardedSseEvents]})` 快照**之后**才写 error 帧（`writeSynthetic`）——`git show` 父提交确认这是**既有** pattern（error 帧本就在快照后写、早已不进 history 轨）。这违反 `client-sink.ts:24-29` 明文契约（handler 应按 `writeSynthetic → recordForwarded → settle` 顺序，即先写 error 帧再快照）。
 - **本特性拓宽**：keepalive timeout-safety 的 Phase 5 终末收口新增的 `content_block_stop@0`（`closeAnchorIfOpen`→`writeAnchor`）同样落在快照之后 → 不进 `clientResponse.sseEvents`。wire 协议完整（客户端真收到收口帧 + error 帧、无残留 open 块，已测），仅 **history 轨**这一正交维度不完整。
@@ -481,7 +481,7 @@
 
 ## `hook-rewrite` forwarded 标记覆盖缺口：Responses(HTTP+WS) + 全部 translate 腿（2026-07-12，Task 2.3 实现后核实）
 
-> 📌 **已并入 spec [2026-07-20-synthetic-frame-forwarded-track-completeness.md](../spec/2026-07-20-synthetic-frame-forwarded-track-completeness.md) §Unit 2**，待其 plan 关闭本条。下文两函数 `restoreAndAccumulate`/`restoreAccumulateCount` 已随 buffered-merge 重构合并为单一 `candidate-response-session.ts` 的 `responseFrame`；WS forwarded provenance 落点为 delivery-session（`session.ts`），非旧 ws.ts 采样点。
+> ✅ **已解决（landed `3341efb4`，2026-07-20，spec/plan 2026-07-20-synthetic-frame-forwarded-track-completeness §Unit 2）**：`responseFrame`（`candidate-response-session.ts`，前 `restoreAndAccumulate`/`restoreAccumulateCount` 已合并）改 `...frame` 展开，单点覆盖 HTTP+WS（探针实测：buffered-merge 按引用透传 + delivery-session default 分支 + makeWsSink.write 读 readSyntheticKind）。**translate 腿 + 两处减法边界仍未覆盖**（drop-delta 丢 delta / repair 重建 terminal 覆盖 hook-rewrite / N:1 累加器 ill-defined）——已 characterization 固化为「可接受、两轨 diff 可还原」，非缺陷。
 
 - **背景**：Task 2.3（`docs/plan/2026-07-12-upstream-hook-middleware/plan-2-history-provenance.md`）给 `rewriteUpstreamFrame` 改写的帧接了 forwarded 轨 `synthetic:"hook-rewrite"` 标记——用一个 Symbol-keyed 属性打在改写后的帧对象上（`hooks/origin.ts` 的 `tagFrameRewritten`/`wasFrameRewritten`），靠对象引用/`{...frame}` 展开语义存活到 `client-sink.ts` 的 `write()`。
 - **实测覆盖矩阵**（读代码 + 单测锁定，非猜测）：
@@ -599,7 +599,7 @@
 
 ## error-shaping 观测：raw-stream 终点（H3/截断）无 `error-shaping-decided` 维度
 
-> 📌 **已并入 spec [2026-07-20-synthetic-frame-forwarded-track-completeness.md](../spec/2026-07-20-synthetic-frame-forwarded-track-completeness.md) §Unit 3**，待其 plan 关闭本条。⚠️ **下文「当前行为」段的前提已被实测证伪**：Anthropic messages HTTP `writeSynthetic` 路径 **不** 在 forwarded 轨打 `synthetic:"error-shaping-canonical"`（[client-sink.ts:302-305](../../src/lib/pipeline/client-sink.ts#L302) 传 `undefined`、不读帧 tag）——故该缺口不止缺 feature 维度，forwarded 轨帧级也不可辨识，spec §Unit 3 一并修。
+> ✅ **已解决（landed `0bd599fc`，2026-07-20，spec/plan 2026-07-20-synthetic-frame-forwarded-track-completeness §Unit 3）**：加专属 FeatureKind `error-shaping-raw-canonical{ wireErrorType, terminus, leg }`（4 canonical 终点接线）+ `shapeRawStreamErrorFrame` 打 `synthetic:"error-shaping-canonical"`（writeSynthetic 读帧 tag 根因修，`c2a28b20`）。⚠️ 下文「当前行为」段旧前提已被证伪并修复：Anthropic messages HTTP `writeSynthetic` 路径此前 forwarded 轨 synthetic 恒 undefined，现打标记与真实上游帧可辨识。
 
 - **根因**：`shapeRawStreamErrorFrame`（handler-v4 的 H3 + truncation 两个 raw-stream 终点 + translate 反向腿两点）从不调 `decide()`——调用方直传 wire 级 `errorType` 字符串（非 `ApiErrorType`），无类型正确的 `error-shaping-decided` payload 可报（该 FeatureKind 的 payload 含 `decision.kind`/`ApiErrorType`）。
 - **当前行为**：`error-shaping-decided` recordFeature 只在 glue 的 pre/post-commit `decide()` 路径产出（有 ApiError 分类）；raw-stream 透传路径的 canonical 化仍打 `synthetic:"error-shaping-canonical"`（帧级可辨识不丢），只是缺 feature 维度的「走了哪条整形分支」诊断。
@@ -860,3 +860,11 @@
 - **当前行为（正确、不缺失）**：终结失败态下**未闭合 item 的 delta 本就被保留 verbatim**——由构造保证：未闭合 item 从不进 `collected`，故 drop-delta 的 `closed` 判据永远 false、绝不碰它（spec §5.3.2 不变量天然成立）。缺的**只是这个 case 的独立诊断记录**，非行为缺陷。
 - **理想架构 / 若做需改什么**：若要把「终结失败态保留了开放 item 的 delta」记成独立诊断值，需在 `BufferedFlushContext` 增一个失败态信号（现 `cause` 只有 `retreat`/`boundary`/`terminal-drain`，无 terminal-failure），并在 driver 失败 flush 点传入、reducer 据此 push。
 - **为何暂缓**：纯观测增补、行为已正确；接线牵动 `BufferedFlushContext` 契约（跨 driver↔reducer）。**触发条件（值得做）**：运维需要按「失败态是否保留了半截 open item」审计归并行为时。发现方：buffered-merge 合并态审查 LOW-2（2026-07-19）。
+
+## reaper-cancel history 两阶段协议（2026-07-20，spec 2026-07-20-synthetic-frame-forwarded-track-completeness §1.3）
+
+- **现状（根因）**：reaper scan（`context/manager.ts:runReaperOnce`）对超时 ctx 先 `reapInFlight()` **再同步 `ctx.fail()`**——即 reaper 在 handler 的 delayed-commit catch 运行前已冻结 entry 并发布 `request.failed`。handler catch 的 reaper-cancel 腿（`handler-v4.ts:631-639`）里 `ctx.fail` 被 `settled` guard 去重成 no-op，其后 writeSynthetic 送上 wire 的 reaper error 帧**进不了那个已发布的瞬态 `request.failed` 事件**（durable V3 projection 仍会捕获，故仅瞬态视图缺）。
+- **为何 Unit 1 缩减版重排无效**：Unit 1（`301e63b2`）的 `writeTerminalThenSettle` 重排（writeSynthetic→setForwarded→fail）对 handler 自 settle 的 timeout/HTTPError/unknown/reject 腿有效，但 reaper 腿的 entry 早被 reaper 冻结、handler 侧 setForwarded/fail 皆 no-op → 重排不改其瞬态快照。
+- **理想架构（两阶段 reaper 协议）**：reaper 采「取消优先、settle 兜底」——reaper 只 `reapInFlight()`（触发取消信号），把 finalize/publish 推迟给 handler 的 catch（handler 收到取消后走正常 writeTerminalThenSettle 完成瞬态快照），仅当 handler 未接管（无 live consumer）时 reaper 才兜底 settle。触及 manager 的 settle 语义（cancel↔settle 解耦），属大重构。
+- **为何暂缓**：durable history（getHistory）已完整（V3 generation recorder），仅 reaper-cancel 的**瞬态** `request.failed` 事件缺 error 帧——低频（仅超时被 reaper 收割）× 低价值（瞬态、立即被 durable projection 取代）。非数据丢失。
+- **若做需改什么**：manager 的 reaper 从「reapInFlight+同步 fail」改为「reapInFlight + 推迟 settle（等 handler 接管或超时兜底）」；handler catch 的 reaper-cancel 腿改为走 writeTerminalThenSettle 完成快照；加瞬态事件断言测试（getBus 订阅 request.failed，reaper 场景下 entry 含 error 帧）。发现方：spec 2026-07-20 §1.3 + Unit 1 缩减版实施（2026-07-20）。

@@ -1,6 +1,6 @@
 # Spec：proxy 合成/改写帧的 forwarded 轨 & 遥测完整性（合并重写版）
 
-> 状态：**设计定稿（两轮异模型对抗评审：Claude 完整性 + GPT 代码级证伪，各 0 blocker；GPT 唯一 MAJOR「Unit 2 gatekeeper 靶点」+ 全部 minor 已修）→ 可进入 writing-plans**。日期 2026-07-20。
+> 状态：**已实施 landed master（2026-07-20）**——Unit 2/3 全量、Unit 1 缩减版（History V3 令原前提失效，见 §Unit 1 banner）。设计经两轮异模型对抗评审（Claude 完整性 + GPT 代码级证伪，各 0 blocker）。plan：[docs/plan/2026-07-20-synthetic-frame-forwarded-track-completeness.md](../plan/2026-07-20-synthetic-frame-forwarded-track-completeness.md)。日期 2026-07-20。
 > 取代 [docs/spec/2026-07-14-streaming-history-track-completeness.md](2026-07-14-streaming-history-track-completeness.md)（那份的 file:line 锚点已随三轮大重构全部失效，且三处前提已过时/不精确，见「§0 架构漂移」）。
 > 合并 `docs/todo/deferred-backlog.md` 三条已独立追踪的同族缺口（Unit 1 / 2 / 3 分别对应下述三条 backlog），把它们收敛回一份可实施的 spec；实施后这三条 backlog 由本 spec 的 plan 关闭。
 
@@ -25,6 +25,8 @@
 ---
 
 ## Unit 1 — delayed-commit catch：forwarded 轨补 error 帧 + 锚点收口帧
+
+> ⚠️ **实施发现（2026-07-20，landed `301e63b2`，缩减版）**：本单元原前提「error 帧 + 锚点 stop@0 **永不进** `clientResponse.sseEvents`」在 **History V3**（landed 2026-07-18，晚于本 spec 依据的 2026-07-09 premise）下**已实测为假**。durable projection（[v3/projection.ts:383](../../src/lib/history/v3/projection.ts#L383) `clientTrack`）经 generation recorder 在 `ctx.fail` 后仍捕获 writeSynthetic 帧（seal 延迟至 operation-scope quiesce，[request.ts:795](../../src/lib/context/request.ts#L795)）——`getHistory(...)` 返回的 `clientResponse.sseEvents` **已含** error 帧。**残留缺口仅是瞬态快照**：`ctx.fail` 发布的 `request.failed` 事件其 `entry` 来自 `toHistoryEntry` 读 `_forwardedResponse`（catch 顶部 622 只快照 pings），故 live TUI/WS 视图短暂缺 error 帧直到 durable projection 取代。**缩减版**只治此瞬态缺口（`writeTerminalThenSettle` 重排 + finally 兜底 settle + 契约对齐），并保留下方原分析作历史记录。write-reject 专项测试与 4-腿-split 按缩减 scope 未做（helper finally 结构自证 + 全套件绿）。
 
 **落点**：[src/routes/messages/handler-v4.ts:614-671](../../src/routes/messages/handler-v4.ts#L614)（COMMIT 后 `streamSSE` 回调内的 `try { result = await p } catch`）。
 
