@@ -37,7 +37,7 @@ description: 当 copilot-api-js 会话/阶段收尾时使用（交付/报告/Exi
 
 ## 5. 细粒度提交
 
-阶段完成即主动 commit（贯穿全程、不问“要我提交吗”），收尾把 2–4 产生的文档/plan/记忆改动一并提交。**严格细粒度暂存、绝不整仓暂存、提交前 stat 复核只含本次改动**——具体命令黑白名单（`git add -p`/pathspec vs 禁 `git add -A`/`-am`）与并发会话行级共存技法见 CLAUDE.md `fine-grained-staging-per-phase-commit`/`concurrent-sessions-line-coexistence`、user-level skill `git-preference:avoiding-shared-worktree-conflicts`（单一源，勿在此复述以免漂移）。conventional commits、不加 Claude 署名。战例：完成即提交、不问“要我提交吗”（原 memory `feedback-act-comprehensively-commit-on-done` 已并入本步 + user-rule 60）。
+阶段完成即主动 commit（贯穿全程、不问“要我提交吗”），收尾把 2–4 产生的文档/plan/记忆改动一并提交。**严格细粒度暂存、绝不整仓暂存、提交前 stat 复核只含本次改动**——具体命令黑白名单（`git add -p`/pathspec vs 禁 `git add -A`/`-am`）与并发会话行级共存技法见 CLAUDE.md `fine-grained-staging-per-phase-commit`/`concurrent-sessions-line-coexistence`、user-level skill `git-preference:coordinating-a-shared-git-worktree`（单一源，勿在此复述以免漂移）。conventional commits、不加 Claude 署名。战例：完成即提交、不问“要我提交吗”（原 memory `feedback-act-comprehensively-commit-on-done` 已并入本步 + user-rule 60）。
 
 ## 判定纪律（贯穿全步）
 

@@ -137,7 +137,7 @@ spec §5.3 全部 7 个 app-level 流式读点从 `state.streamIdleTimeout * 100
 
 ## Phase 3 — response_header 读点 threading（7 处 + 键空间一致性断言）
 
-> **并行提醒（LOW，评审补漏）**：Phase 2 与 Phase 3 共享 `src/lib/openai/upstream-ws-attempt.ts` 一个文件（Phase 2 读点 6 改 :211 附近的 `streamWsEvents`/`attemptUpstreamResponsesWs`；Phase 3 调用点改 :138 的 `createResponseHeaderTimeoutSignal()` 调用），且都会 `import` 同一个新文件 `timeout-resolver.ts`。若两阶段真的并行执行（不同会话/分支），须遵守 `git-preference:avoiding-shared-worktree-conflicts`（行级共存 + 显式 pathspec commit）或直接把该文件的两处改动串行化（谁先谁后不重要，但不要两边同时改同一文件不通气）。
+> **并行提醒（LOW，评审补漏）**：Phase 2 与 Phase 3 共享 `src/lib/openai/upstream-ws-attempt.ts` 一个文件（Phase 2 读点 6 改 :211 附近的 `streamWsEvents`/`attemptUpstreamResponsesWs`；Phase 3 调用点改 :138 的 `createResponseHeaderTimeoutSignal()` 调用），且都会 `import` 同一个新文件 `timeout-resolver.ts`。若两阶段真的并行执行（不同会话/分支），须遵守 `git-preference:coordinating-a-shared-git-worktree`（行级共存 + 显式 pathspec commit）或直接把该文件的两处改动串行化（谁先谁后不重要，但不要两边同时改同一文件不通气）。
 
 ### 目标
 
