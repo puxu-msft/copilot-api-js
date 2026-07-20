@@ -31,6 +31,7 @@ import {
 import { mockModel } from "../helpers/factories"
 import { useIsolatedRuntime } from "../helpers/isolated-fixture"
 import { applyFetchMock } from "../helpers/mock-fetch"
+import { resetUpstreamHook, setUpstreamHookForTests } from "~/lib/pipeline/hooks/loader"
 import {
   //
   createSseResponse,
@@ -168,5 +169,33 @@ describe("Responses buffered-merge: HTTP block-level flush + History dual-track"
     // The committed block's deltas were still merged away (item closed by output_item.done before flush).
     expect(entry.clientResponse!.sseEvents!.filter((e) => e.type === "response.function_call_arguments.delta").length).toBe(0)
     expect(entry.clientResponse!.sseEvents!.some((e) => e.type === "response.output_item.done")).toBe(true)
+  })
+
+  // MAJOR #1 (merged-state review): lock the DEFAULT buffered path (responsesBufferedRetry ON, drop-delta)
+  // end-to-end — a hook-rewrite tag on a SURVIVING (non-dropped) frame must reach the forwarded history
+  // track through responseFrame's `...frame` spread + buffered-merge's by-reference pass-through
+  // (buffered-merge-reducer.ts:147/163). Previously only static reasoning + a reducer unit test covered it.
+  test("Unit 2: a hook-rewritten SURVIVING frame keeps synthetic:'hook-rewrite' through the buffered path (HTTP)", async () => {
+    currentSse = generationSse([{ type: "function_call", id: "fc_1", call_id: "call_1", name: "get_weather", arguments: '{"city":"Tokyo"}', status: "completed" }])
+    // Rewrite the output_item.added frame (a non-delta → survives drop-delta). Returning a DIFFERENT
+    // object makes the driver tag it `hook-rewrite`.
+    setUpstreamHookForTests({
+      upstream: {
+        inbound: (frame) =>
+          typeof frame.data === "string" && frame.data.includes('"response.output_item.added"') ?
+            { ...frame, data: frame.data }
+          : frame,
+      },
+    })
+    try {
+      await (await streamRequest()).text()
+      const entry = getHistory({ endpoint: "openai-responses", limit: 5 }).entries[0]
+      expect(entry?.state).toBe("completed")
+      const marked = (entry.clientResponse?.sseEvents ?? []).filter((e) => e.synthetic === "hook-rewrite")
+      expect(marked.length).toBeGreaterThan(0) // the rewritten output_item.added survived to the forwarded track, tagged
+      expect(marked.some((e) => e.type === "response.output_item.added")).toBe(true)
+    } finally {
+      resetUpstreamHook()
+    }
   })
 })

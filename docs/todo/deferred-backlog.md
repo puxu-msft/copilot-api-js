@@ -868,3 +868,10 @@
 - **理想架构（两阶段 reaper 协议）**：reaper 采「取消优先、settle 兜底」——reaper 只 `reapInFlight()`（触发取消信号），把 finalize/publish 推迟给 handler 的 catch（handler 收到取消后走正常 writeTerminalThenSettle 完成瞬态快照），仅当 handler 未接管（无 live consumer）时 reaper 才兜底 settle。触及 manager 的 settle 语义（cancel↔settle 解耦），属大重构。
 - **为何暂缓**：durable history（getHistory）已完整（V3 generation recorder），仅 reaper-cancel 的**瞬态** `request.failed` 事件缺 error 帧——低频（仅超时被 reaper 收割）× 低价值（瞬态、立即被 durable projection 取代）。非数据丢失。
 - **若做需改什么**：manager 的 reaper 从「reapInFlight+同步 fail」改为「reapInFlight + 推迟 settle（等 handler 接管或超时兜底）」；handler catch 的 reaper-cancel 腿改为走 writeTerminalThenSettle 完成快照；加瞬态事件断言测试（getBus 订阅 request.failed，reaper 场景下 entry 含 error 帧）。发现方：spec 2026-07-20 §1.3 + Unit 1 缩减版实施（2026-07-20）。
+
+## 3 个既有测试失败（pre-existing，与 synthetic-frame forwarded-track 三单元无关，2026-07-20 记录）
+
+- **失败清单**：`tests/pipeline/generation-runtime-baseline.http.test.ts`（P0-T1「locks direct and translated frame order...」，收到 +3 content_block_stop 帧）、`tests/pipeline/hooks/reactive-retry-leg.it.test.ts`（Task 5.1 tool-field-rejection-retry）、`tests/pipeline/hooks/replay.it.test.ts`（Task 5.2 offline replay synthetic marking）。
+- **归属判定（双方独立实测，非自证）**：主会话用 `git checkout 3341efb4~1 -- <src>` 复跑 P0-T1 仍 fail；merged-state reviewer 用 `git worktree add --detach 64f4d01d`（三单元改动前最后一个 commit）复跑同 3 文件，**结果同样这 3 条 fail、字面失败信息一致**。即三者在三单元落地**之前**已失败，与本次改动无关。
+- **为何暂缓**：非本次引入的回归、与 forwarded-track 完整性无关联；根因未查（疑似 peer 并发落地或环境/时序）。记录在此避免后续会话把它们误判为本次三单元引入的回归。
+- **若做需改什么**：单独排查每条根因——P0-T1 的 +3 content_block_stop 疑似帧序/翻译路径变动；reactive-retry/replay 疑似 hook mock/replay 或隔离问题。基线对照 commit `64f4d01d`（三单元前）。发现方：synthetic-frame forwarded-track 三单元实施 + merged-state review（2026-07-20）。

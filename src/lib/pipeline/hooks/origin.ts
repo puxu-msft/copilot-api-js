@@ -49,12 +49,13 @@ export function readOrigin(s: UpstreamStream): HookOrigin | undefined {
  *   - a TRANSLATE-leg codec `renderResponse` (the CC→Anthropic / CC→Responses / CC→Gemini
  *     stream translators are STATEFUL N:1/1:N accumulators over MANY upstream frames — "which
  *     output frame(s) trace to THIS one rewritten input" is genuinely ill-defined there;
- *     docs/spec/2026-07-12-upstream-hook-middleware.md §3.4/§8).
- *   - Responses' `restoreAndAccumulate` (routes/responses/handler-v4.ts) and
- *     `restoreAccumulateCount` (routes/responses/ws.ts), which rebuild a fresh `{event, data}` /
- *     `{data}` literal even on the DIRECT leg (a pre-existing, hook-unrelated reconstruction
- *     pattern that also drops `id`/`retry`) — a documented, separately-tracked gap
- *     (docs/todo/deferred-backlog.md), not something this tagging mechanism can paper over.
+ *     docs/spec/2026-07-12-upstream-hook-middleware.md §3.4/§8). Still an open gap.
+ *   - (HISTORICAL, now FIXED) Responses' frame re-render used to rebuild a fresh `{event, data}` /
+ *     `{data}` literal that dropped the tag even on the DIRECT leg. That reconstruction is now the
+ *     single `responseFrame()` (routes/responses/candidate-response-session.ts), which spreads
+ *     `...frame` (+ preserves `id`/`retry`) since 2026-07-20 (`3341efb4`, spec/plan
+ *     2026-07-20-synthetic-frame-forwarded-track-completeness §Unit 2), so the tag now rides through
+ *     — including the default buffered path (buffered-merge passes surviving frames by reference).
  *
  * A hook that MUTATES `frame` in place and returns the SAME reference is also unmarked (there
  * is no way to observe "it changed" without a deep-equality check this module deliberately
