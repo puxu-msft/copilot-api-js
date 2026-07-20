@@ -79,6 +79,32 @@ export function createSseResponseThenAbort(chunks: Array<string>, clientAbort: A
 }
 
 /**
+ * Build a streaming `Response` that emits `chunks` verbatim, then — on the consumer's NEXT read —
+ * BLOCKS forever without ending or erroring the body. Unlike {@link createSseResponseThenAbort} it
+ * aborts NOTHING itself: the test drives the terminal event on its own schedule (e.g. abort a
+ * `ctx.lifecycleSignal` to simulate a stale-reaper / request-deadline force-fail mid-stream), then
+ * asserts the guard's next read throws the matching provenance error (`StreamReaperCancelError` /
+ * `StreamDispatchCancelError`). The forever-pending pull makes the reaper abort deterministically
+ * win the `raceIteratorNext`, with no timers.
+ */
+export function createSseResponseThenBlock(chunks: Array<string>): Response {
+  const encoder = new TextEncoder()
+  let i = 0
+  const stream = new ReadableStream({
+    pull(controller) {
+      if (i < chunks.length) {
+        controller.enqueue(encoder.encode(chunks[i]))
+        i += 1
+      } else {
+        // Block forever: the read never resolves, so a mid-stream abort deterministically wins.
+        return new Promise<void>(() => {})
+      }
+    },
+  })
+  return new Response(stream, { status: 200, headers: { "content-type": "text/event-stream" } })
+}
+
+/**
  * Parse a forwarded SSE string into the ordered list of frame `type` values (`message_start`,
  * `content_block_delta`, `ping`, `error`, …). A non-JSON `data: [DONE]` is reported as the literal
  * `"[DONE]"`; unparseable keepalive lines are skipped. The standard order-assertion helper for the

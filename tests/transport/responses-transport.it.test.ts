@@ -20,6 +20,7 @@ import {
   setUpstreamWsConnectionFactoryForTests,
 } from "~/lib/openai/upstream-ws"
 import { setStateForTests } from "~/lib/state"
+import { StreamReaperCancelError } from "~/lib/stream"
 import { UpstreamTransportFallbackError } from "~/lib/transport/fallback"
 import { createUpstreamResponsesTransport } from "~/lib/transport/responses-transport"
 
@@ -28,7 +29,11 @@ import {
   autoRestoreFetch,
   setFetchMock,
 } from "../helpers/mock-fetch"
-import { createSseResponse } from "../helpers/sse"
+import {
+  //
+  createSseResponse,
+  createSseResponseThenBlock,
+} from "../helpers/sse"
 import { autoRestoreState } from "../helpers/state-fixture"
 
 function makeWire(): PreparedRequest {
@@ -40,7 +45,7 @@ function makeWire(): PreparedRequest {
   }
 }
 
-function makeEnv(transports: Array<string>, clientAbortSignal?: AbortSignal): RequestEnvelope {
+function makeEnv(transports: Array<string>, clientAbortSignal?: AbortSignal, lifecycleSignal?: AbortSignal): RequestEnvelope {
   const model = {
     id: "gpt-5.2",
     name: "gpt-5.2",
@@ -50,7 +55,7 @@ function makeEnv(transports: Array<string>, clientAbortSignal?: AbortSignal): Re
   return {
     model,
     ctx: {
-      lifecycleSignal: new AbortController().signal,
+      lifecycleSignal: lifecycleSignal ?? new AbortController().signal,
       setAttemptTransport: (transport: string) => transports.push(transport),
     },
     clientAbortSignal,
@@ -151,6 +156,29 @@ describe("createUpstreamResponsesTransport — explicit WS fallback dispatch", (
     await expect(transport.send(makeWire(), env)).rejects.not.toBeInstanceOf(UpstreamTransportFallbackError)
     expect(httpCalls).toBe(0)
     expect(transports).toEqual(["upstream-ws"])
+  })
+
+  test("mid-stream reaper (ctx.lifecycleSignal) on the HTTP path → guarded frames throw StreamReaperCancelError (Responses-fallback false-`complete` guard)", async () => {
+    // responses-transport folds `env.ctx.lifecycleSignal` into `guardWsOrHttp`'s reaperSignal
+    // (responses-transport.ts:152). This is the acute case behind the whole reaper-teeth effort: a
+    // mid-stream reaper cancel on a Responses stream must throw `StreamReaperCancelError` (→ driver
+    // stream-error → client error frame + `failed`), NOT resolve `done:true`. If it clean-EOF'd, the
+    // handler's `viaFallback` branch synthesizes `response.completed`, sets `acc.status`, bypasses the
+    // truncation check, and false-settles `complete` — an [OK] recorded for a request the reaper killed.
+    // The `forceHttp` dispatch is the exact guarded source the fallback path consumes.
+    const reaper = new AbortController()
+    const transports: Array<string> = []
+    const env = makeEnv(transports, undefined, reaper.signal)
+    const transport = createUpstreamResponsesTransport({ idleTimeoutMs: 5000 })
+    setFetchMock(() => createSseResponseThenBlock(['event: response.created\ndata: {"type":"response.created"}\n\n']))
+
+    const upstream = await transport.send(makeWire(), env, { forceHttp: true })
+    const iterator = upstream.frames[Symbol.asyncIterator]()
+    expect((await iterator.next()).value?.event).toBe("response.created")
+
+    // Reaper force-fails mid-stream (upstream blocked past the last frame).
+    reaper.abort()
+    await expect(iterator.next()).rejects.toBeInstanceOf(StreamReaperCancelError)
   })
 
   test("dispatch-local loser cancellation never becomes an HTTP fallback dispatch", async () => {
