@@ -8,7 +8,7 @@
 
 项目同时支持 Bun 与 Node 两个运行时，但**优先级不对称**：
 
-- **Bun 是一等公民**——默认/推荐运行时。所有开发与运行命令（`dev` / `start` / `test:*`）都走 `bun`，`bun test` 是唯一被 CI 实测的后端套件。
+- **Bun 是一等公民**——默认/推荐运行时。所有开发与运行命令（`dev` / `start` / `test:*`）都走 `bun`；后端测试分档：默认 `test`=fast(unit+http)、`test:backend`=全后端(unit+it+http)、`test:ci`=backend+pty+e2e（后缀=真相域、tier=脚本组合，见 [coding-conventions.md](coding-conventions.md)「测试组织」）。
 - **Node 仅是有意维护的兼容目标**——分流路径靠运行时逻辑保证，但实测覆盖弱于 Bun（Node 专属分支在 `bun test` 下走不到，例如 driver.ts 的 `nodeFactory()`）。
 
 所有运行时差异都收敛到单一判别点 `typeof globalThis.Bun !== "undefined"`，分流出独立实现：
