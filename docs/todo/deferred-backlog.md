@@ -86,6 +86,13 @@
 - **O2(b) 收窄 CORS 使普通 OPTIONS 可诊断**：现状全局 `cors()` 对所有 OPTIONS 返 204（不要求 preflight header），unknown OPTIONS 不到 notFound、永远伪成功（诊断盲区）。用户裁决本轮**保留现状**。**若做**：收窄 `cors()` 只豁免 preflight-shaped 请求（带 `Origin` + 非空 `Access-Control-Request-Method` token——注意这只判「结构像 preflight」，不代表 CORS 策略允许该 method），普通 OPTIONS 落入 404/405 分类。**需改什么**：改 `cors()` 接线 + 回归验证既有 CORS 客户端。reviewer 与主会话原倾向做，用户选最小改动。
 - **ALL route-owned `c.notFound()` 精确识别**：现状三态分类器的 route-owned 识别只覆盖 method-specific route；若 `.all()` 业务 handler 主动调 `c.notFound()`，会因 shadow 排除 ALL route 而误判成 unknown-404/405。**当前无实际漏判**（项目现有 `.all()` handler 均不调 `c.notFound()`，有守卫测试锁死此前提）。**若做**：用执行时 provenance（`c.req.matchedRoutes` / `c.req.routeIndex`）区分「当前 handler 是 `.all()` 业务 handler」vs「middleware」vs「真 routing miss」——需先做小 PoC 实测 routing-miss 时的 `routeIndex` 值。守卫测试变红（新增 `.all()` fallback 调 `c.notFound()`）是启动此项的触发信号。
 
+## `PUT /api/config/yaml` 系统性缺口：多个 config section 未接入 mergeConfigIntoDocument（2026-07-14 合并态审查发现）
+
+- **现状/根因**：`src/routes/config/route.ts` 的 `mergeConfigIntoDocument` 是**显式逐 section 列举**（每个 `if (hasOwn(body, "X")) ...` 一行），schema 允许的顶层 section 若漏列，则 `PUT /api/config/yaml` 对该字段**schema 校验通过、但不写进 doc → 返回 200 但磁盘/state 静默不生效**，UI 配置页保存该项形同虚设。unknown-endpoint-logging 功能实现时也踩了同一坑（已修：接线 + 回归测试 config-yaml-routes.http.test.ts）。
+- **既有漏列 section（PUT 静默无效）**：经 grep 对比 `ConfigSchema` 顶层 keys vs merge 处理集，至少 **`chat_completions` / `telemetry` / `disabled_models` / `sanitize_tool_names` / `buffered_retry` / `ghc_api_base_url`** 未接入（可能还有，须逐个核）。这些是**既有缺陷**、非某次功能引入。
+- **为何暂缓**：跨多 section 的系统性接线 + 各自的 PUT 生效测试是独立清理任务，超出单功能范围；合并态审查（gpt-souls:reviewer 2026-07-14）建议另开 backlog、不阻塞当轮 PR。
+- **若做需改什么**：① 逐个把漏列 section 加进 `mergeConfigIntoDocument`（scalar→`setScalar`、嵌套 scalar→`setNestedScalarContainer`、集合→`replaceCollection`，按 section 结构选）；② 每个补一条 PUT 写入生效测试（`config-yaml-routes.http.test.ts` 模式：writeConfig→PUT→readConfig 断言写入 + 字段级 null 删除）；③ **更根本**：考虑把 merge 改为 schema-driven 遍历（从 ConfigSchema 结构自动派生 merge 策略），消除「加 section 忘接 PUT」这类反复复发的漏接——但需先评估各 section 的 scalar/collection/nested 差异能否统一映射（model_mappings 等 replace-semantics 与 timeouts 等 merge-semantics 不同，见 schema.ts `RECORD_MERGE_STRATEGIES`）。发现方=合并态对抗审查。
+
 ## context-edits 回执 telemetry（7d 分布）
 - **现状**：`applied_edits` 诊断回执已落地（commit f55fd93，`src/lib/anthropic/applied-context-edits.ts`，流式经 accumulator `message_delta` / 非流式经 handler 顶层，两路发 `recordFeature("context-edits-applied", {count, clearedInputTokens, types})`），进 observability feature 维度计数。
 - **暂缓**（用户 2026-06-29"暂时不做"）：接进 `request-telemetry` 做 7d 持久分布（现只 feature 维度计数，无 cleared token 量直方图）；实证开启 `protectStreamingEscalateContext` / `contextEditingMode` 后真有非空 `applied_edits`（当前样本 req_1782713407242_1 全空回执）。

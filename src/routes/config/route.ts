@@ -301,6 +301,7 @@ function mergeConfigIntoDocument(doc: ConfigDocument, body: Config): void {
   if (hasOwn(body, "openai_responses")) setNestedScalarContainer(doc, ["openai_responses"], body.openai_responses)
   if (hasOwn(body, "upstream_transport")) setNestedScalarContainer(doc, ["upstream_transport"], body.upstream_transport)
   if (hasOwn(body, "server")) setNestedScalarContainer(doc, ["server"], body.server)
+  if (hasOwn(body, "unknown_endpoint_logging")) setNestedScalarContainer(doc, ["unknown_endpoint_logging"], body.unknown_endpoint_logging)
 
   if (hasOwn(body, "negotiation_learning")) {
     const nl = body.negotiation_learning

@@ -291,6 +291,43 @@ shutdown:
     expect(written).toContain("graceful_wait: 30")
   })
 
+  test("PUT /api/config/yaml writes unknown_endpoint_logging (regression: was silently dropped by mergeConfigIntoDocument)", async () => {
+    await writeConfig("model_refresh_interval: 600\n")
+
+    const res = await app.request("/api/config/yaml", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ unknown_endpoint_logging: { not_found: "error", method_not_allowed: "silent" } }),
+    })
+
+    expect(res.status).toBe(200)
+    expect(((await res.json()) as { unknown_endpoint_logging?: unknown }).unknown_endpoint_logging).toEqual({
+      not_found: "error",
+      method_not_allowed: "silent",
+    })
+
+    // The bug: schema validated the field but mergeConfigIntoDocument never wrote it → 200 but no-op on disk.
+    const written = await readConfig()
+    expect(written).toContain("unknown_endpoint_logging:")
+    expect(written).toContain("not_found: error")
+    expect(written).toContain("method_not_allowed: silent")
+  })
+
+  test("PUT /api/config/yaml deletes a single unknown_endpoint_logging key with null (nullish contract through PUT)", async () => {
+    await writeConfig("unknown_endpoint_logging:\n  not_found: error\n  method_not_allowed: warn\n")
+
+    const res = await app.request("/api/config/yaml", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ unknown_endpoint_logging: { not_found: null } }),
+    })
+
+    expect(res.status).toBe(200)
+    const written = await readConfig()
+    expect(written).not.toContain("not_found:")
+    expect(written).toContain("method_not_allowed: warn")
+  })
+
   test("PUT /api/config/yaml deletes optional scalar keys instead of writing null", async () => {
     await writeConfig(`
 proxy: "http://127.0.0.1:7890"

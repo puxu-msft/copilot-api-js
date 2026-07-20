@@ -1023,11 +1023,11 @@ const EXEMPT: ReadonlyArray<ExemptField> = [
   {
     configKey: "unknown_endpoint_logging.not_found",
     reason:
-      "nested object sub-key → state.unknownEndpointLogging.notFound; config→state + null-delete + default(warn) + retain-on-absence covered in tests/config/unknown-endpoint-logging-config.unit.test.ts",
+      "nested object sub-key → state.unknownEndpointLogging.notFound; config→state + null-delete + default(warn) + retain-on-absence in unknown-endpoint-logging-config.unit.test.ts, PUT-write path in config-yaml-routes.http.test.ts",
   },
   {
     configKey: "unknown_endpoint_logging.method_not_allowed",
-    reason: "see unknown_endpoint_logging.not_found — same dedicated test file",
+    reason: "see unknown_endpoint_logging.not_found — same dedicated + PUT-write test files",
   },
   {
     configKey: "history.enabled",

@@ -100,6 +100,8 @@ describe(".all() route-owned boundary guard (spec §4 known boundary)", () => {
     // 现有 `.all()` 均不调 c.notFound()——此守卫锁死该前提；将来新增违反者变红，
     // 逼迫先扩展 provenance（c.req.matchedRoutes/routeIndex，记 deferred-backlog）。
     // 单行精确检测（项目 .all() 均为单行 arrow）：某行同时含 `.all(` 与 `c.notFound(`。
+    // 局限：`.all()` 与 `c.notFound()` 跨行写法会漏检（现状全项目 .all() 均单行、暂不构成
+    // 实际风险；将来若出现多行 .all() handler，改用按调用体切片的鲁棒检测或 AST）。
     // 正样本：把某 .all() 改成 `.all("/", (c) => c.notFound())` → 同行命中 → 变红。
     const glob = new Bun.Glob("src/routes/**/*.ts")
     const offenders: Array<string> = []
