@@ -159,6 +159,7 @@ describe("Task 5.2 — offline replay end-to-end (replayFromHistory → zero rea
     // (production driven by observabilityMiddleware / the handler's post-stream call) — a direct
     // driver.runRequest()+ctx.complete() test must call it itself (History V2 removal step 2).
     result.env.ctx.finalizeModelOperationDelivery()
+    await result.env.ctx.whenModelOperationFinalized() // V3 finalize is async (deferred seal → generation finalizer); await before getEntry to avoid the persist race
 
     // ② — Independent oracle: the NEW request's OWN persisted history entry (not the seed's, not a
     // driver call log) carries the replayed frames on its upstream-original track, marked

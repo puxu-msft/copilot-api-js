@@ -274,7 +274,16 @@ describe("P0-T1 generation runtime live route frame baselines", () => {
       const record = contexts.at(-1)?.modelOperationTerminalRecord
       if (!record?.terminal || !record.egress) throw new Error(`missing sealed generation record for ${name}`)
       const clientFrames = canonicalClientFrames(record)
-      expect(clientFrames.map(({ value }) => value)).toEqual(parseWire(rawWire))
+      // Compare only the WIRE fields (event/data/id/retry) against the actual wire. The arena node
+      // `value` is DELIBERATELY richer than the wire — `canonicalFrameValue` enriches frames that carry
+      // an SseEventRecord (the post-loop-flush termini) with derived `type`/`synthetic` for the V3
+      // projection (request.ts:501-502, a4f4f20f). Those non-wire fields are asserted separately below
+      // (frameOrigins) and are not part of this test's "frame order + wire content" intent.
+      const wireFieldsOf = (v: Record<string, unknown>): Record<string, unknown> => {
+        const { type: _type, synthetic: _synthetic, ...wire } = v
+        return wire
+      }
+      expect(clientFrames.map(({ value }) => wireFieldsOf(value as Record<string, unknown>))).toEqual(parseWire(rawWire))
       expect(clientFrames.every(({ sequence }) => sequence < record.terminal!.sequence)).toBe(true)
       results[name] = {
         wire,

@@ -90,6 +90,7 @@ describe("Task 5.1 — reactive retry leg end-to-end (mockUpstreamError.toolFiel
     // (RFC pre-response-abort-handling); a direct driver.runRequest()+ctx.complete() test must call
     // it itself or the entry never lands in the V3 store (History V2 removal Phase 1 audit step 2).
     result.env.ctx.finalizeModelOperationDelivery()
+    await result.env.ctx.whenModelOperationFinalized() // V3 finalize is async (deferred seal → generation finalizer); await before getEntry to avoid the persist race
 
     // ── Independent oracle: the REAL persisted history entry, not the hook / driver call log. ──
     const entry = getEntry(result.env.ctx.id)
