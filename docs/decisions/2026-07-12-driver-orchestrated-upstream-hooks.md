@@ -32,6 +32,8 @@
 
 ## 决策 2：热重载用 Bun data-URL 机制，而非 `?v=` cache-busting query
 
+> **SUPERSEDED（实施期实测修正，2026-07-14）**：本决策「拒绝 `?v=`」的核心结论**仍成立**，但落地机制已从 data-URL 改为**转译后写 `.hooks-cache/` 唯一编译文件再 import**。原因：**data-URL 模块不解析 `~/` 别名**（下方「仍解析 `~/` 别名」一句被后续实测证伪），带 toolkit import 的 hook 静默失败；唯一项目文件既绕 Bun path-keyed ESM 缓存（同 data-URL）、又经 tsconfig `paths` 解析别名。权威见 spec §5 头部修正注 + 记忆 `reference-bun-esm-cache-busting-query-fails-data-url-works`。下方原文保留作决策历史。
+
 **`POST /api/hooks/reload` 的重载机制：读磁盘源 → `new Bun.Transpiler({ loader: "ts" }).transformSync(src)` → `import("data:text/javascript," + encodeURIComponent(js))`。每次 data-URL specifier 唯一，绕过 Bun 按路径缓存的 ESM 模块缓存。**
 
 ### 备选：`?v=` cache-busting query（初稿假设，实测证伪）
