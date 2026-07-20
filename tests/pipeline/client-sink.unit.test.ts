@@ -29,6 +29,38 @@ import {
 
 import { FakeClock } from "../helpers/fake-clock"
 
+import { readSyntheticKind, tagFrameSynthetic } from "~/lib/pipeline/frame-origin"
+
+describe("writeSynthetic — reads the frame's synthetic tag onto the forwarded track (Unit 3 §Phase B.1)", () => {
+  // Root fix: writeSynthetic previously sampled the forwarded track with a hardcoded `undefined`
+  // synthetic kind (unlike write(), which reads readSyntheticKind(frame)). A handler-tagged terminal
+  // frame (e.g. shapeRawStreamErrorFrame's "error-shaping-canonical") was therefore INDISTINGUISHABLE
+  // from a real upstream frame on the forwarded history track. writeSynthetic now reads the tag.
+  test("SSE: a tagged frame surfaces synthetic on the forwarded record", async () => {
+    const records: Array<{ synthetic?: string }> = []
+    const sink = makeSseSink({ writeSSE: () => Promise.resolve() } as never, { onForwarded: (r) => records.push({ synthetic: r.synthetic }) })
+    await sink.writeSynthetic?.(tagFrameSynthetic({ event: "error", data: '{"type":"error"}' }, "error-shaping-canonical"))
+    expect(records).toEqual([{ synthetic: "error-shaping-canonical" }])
+  })
+
+  test("WS: a tagged frame surfaces synthetic on the forwarded record", async () => {
+    const records: Array<{ synthetic?: string }> = []
+    const sink = makeWsSink({ send: () => undefined } as never, { onForwarded: (r) => records.push({ synthetic: r.synthetic }) })
+    await sink.writeSynthetic?.(tagFrameSynthetic({ data: '{"type":"error"}' }, "hook-rewrite"))
+    expect(records).toEqual([{ synthetic: "hook-rewrite" }])
+  })
+
+  test("not-regression: an UNTAGGED synthetic frame still records synthetic:undefined (byte-equivalent to before)", async () => {
+    const sse: Array<{ synthetic?: string }> = []
+    const ws: Array<{ synthetic?: string }> = []
+    await makeSseSink({ writeSSE: () => Promise.resolve() } as never, { onForwarded: (r) => sse.push({ synthetic: r.synthetic }) }).writeSynthetic?.({ event: "error", data: "{}" })
+    await makeWsSink({ send: () => undefined } as never, { onForwarded: (r) => ws.push({ synthetic: r.synthetic }) }).writeSynthetic?.({ data: "{}" })
+    expect(readSyntheticKind({ data: "{}" })).toBeUndefined()
+    expect(sse).toEqual([{ synthetic: undefined }])
+    expect(ws).toEqual([{ synthetic: undefined }])
+  })
+})
+
 describe("makeArraySink", () => {
   test("collects written frames in order", async () => {
     const { sink, frames } = makeArraySink()

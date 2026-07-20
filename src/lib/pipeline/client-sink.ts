@@ -24,8 +24,12 @@
  *   - `writeSynthetic` (handler-injected terminal error frame) ALSO samples forwarded — the
  *     client receives it, so it belongs in the forwarded track. (This reverses the earlier
  *     Stage-B "H3-unsampled" B0-c choice, which dropped the client-received error frame from
- *     history — a data-loss bug under richest-data-flow.) The handler MUST call
- *     `recordForwarded()` AFTER `writeSynthetic` and BEFORE `ctx.fail/complete`, since the
+ *     history — a data-loss bug under richest-data-flow.) It READS the frame's own synthetic tag
+ *     via `readSyntheticKind(frame)` (Unit 3 §B.1 — mirroring `write`), so a handler-tagged
+ *     terminal frame (e.g. `shapeRawStreamErrorFrame`'s `"error-shaping-canonical"`) stays
+ *     distinguishable from a real upstream frame on the forwarded track; an untagged frame reads
+ *     `undefined` → byte-equivalent to the earlier hardcoded-`undefined` behaviour. The handler MUST
+ *     call `recordForwarded()` AFTER `writeSynthetic` and BEFORE `ctx.fail/complete`, since the
  *     settle snapshots `inboundResponse` synchronously (a trailing `finally` snapshot is too late).
  */
 
@@ -300,7 +304,7 @@ export function makeSseSink(stream: SSEStreamingApi, opts: SseSinkOptions = {}):
   // `ctx.fail/complete` — the settle snapshots `inboundResponse` synchronously, so a
   // post-settle snapshot (e.g. a trailing `finally`) would miss this frame.
   const writeSynthetic = (frame: ClientFrame): Promise<void> => {
-    sampleForwarded(frame, undefined, "synthetic")
+    sampleForwarded(frame, readSyntheticKind(frame), "synthetic")
     return writeSse(frame)
   }
 
@@ -633,7 +637,7 @@ export function makeWsSink(ws: WSContext, opts: WsSinkOptions = {}): ClientSink 
   // NOT note activity (it's terminal). The handler must `recordForwarded()` after this and before
   // `ctx.fail` (see makeSseSink).
   const writeSynthetic = (frame: ClientFrame): Promise<void> => {
-    sampleForwarded(frame, undefined, "synthetic")
+    sampleForwarded(frame, readSyntheticKind(frame), "synthetic")
     return sendRaw(frame)
   }
 
