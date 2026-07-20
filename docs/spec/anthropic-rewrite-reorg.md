@@ -2,8 +2,9 @@
 
 > 状态：ACCEPTED（2 轮对抗 review + 实测修订；OQ1-4 已裁决，见 §10）
 > 范围层级（用户 2026-06-22 拍板）：**命名+位置 coherence（请求侧 + 词汇 + config）**，不重写机制、不碰响应侧定义、不跨全格式统一。
-> 前置：v4 P0–P3 已落地；response-pipeline Stage A 出口达成、Stage B（driver-owned-writeout）GO 且 in-flight。
+> 前置：v4 P0–P3 已落地；response-pipeline Stage A 出口达成；Stage B（driver-owned-writeout）**已完成**（全 5 格式 owns-sink landed；R1 撰写时为 in-flight，此处 R2 校订为现状——以 DESIGN「活的架构现状」为准）。
 > 修订记录：R1（2026-06-22）据架构+回归两路对抗 review 实测修订——import 盘点补全（含测试，§5）、加 strategies 碰撞（§2 #8）、Phase-1 oracle 改正（§9）、§7 暂缓根因改正、Phase 4 成本据实重估（34 键×4 面，§6）、加 word-boundary/atomic-move/compat 往返防护（§8）。
+> R2（2026-07 追记，landed + 一处证误）：Phase 1-4 + Phase 3 全部 landed 且仍活（`payload-rewrites.ts` / `request-rewrite-adapter.ts` / `response-rewrite-adapters.ts` 均在，被后续 `codec/response-rewrite-registry.ts` 消费）。**§7「跨全格式统一」当时按 YAGNI 判"非真债、撤销"是错误判断**——跨格式统一是真实且有价值的工作，已由 **cell-assembly 重构 + 通用翻译矩阵**落地实现（形态比本 spec 设想更强）。详见 §7 修订。本 spec 关于**请求侧/命名/config** 的部分仍是这些改动的权威来源；**跨格式**部分以现行权威为准（`pipeline/cell-assembly.ts` + RFC 2026-07-13 §11 + [[project-universal-translation-matrix]] + DESIGN「活的架构现状」）。
 
 ## 1. 动机
 
@@ -17,7 +18,7 @@
 |---|---|---|---|
 | 1 | `request-rewrites.ts` ×2：[codec/anthropic](../../src/lib/codec/anthropic/request-rewrites.ts)（env 适配器）vs [anthropic](../../src/lib/anthropic/request-rewrites.ts)（payload 链）同名异层 | 真实 | **活证据**：`codec.ts` 同文件同时 import 两者（`./request-rewrites` 的 `createAnthropicSanitizeRewrite` + `~/lib/anthropic/request-rewrites` 的 `runAnthropicRequestRewrites`） |
 | 2 | `sanitize.ts` + `sanitize/` 目录同 stem；`sanitize.ts` ×2（anthropic + openai） | 真实 | `find src -name sanitize.ts` |
-| 3 | 两层类型 `AnthropicRequestRewrite`(payload) vs `RequestRewrite`(env) 概念重影 | 真实**但有理由** | payload 层被 web_search 旁路（`orchestrator.ts:52`、`web-search-direct.ts:65`）独立复用 → **不可 collapse**，只改名澄清 |
+| 3 | 两层类型 `AnthropicRequestRewrite`(payload) vs `RequestRewrite`(env) 概念重影 | 真实**但有理由** | payload 层被独立复用 → **不可 collapse**，只改名澄清。（R2 更正：R1 举的 web_search 双跳复用点已随双跳退役删除（ADR `2026-07-13-server-tool-positioning`）；但"不可 collapse"的现存理由是**多消费者**——`runAnthropicPayloadRewrites` 现被 `request-rewrite-adapter.ts:74`、`codec.ts:450`、`reverse-anthropic-rewrite.ts:74/96`、`count-tokens.ts:159` 四处消费。） |
 | 4 | module-global `REQUEST_REWRITES`/`RESPONSE_REWRITES` 故意为空数组，grep 陷阱 | 真实 | DESIGN 已需注"别去 registry 找改写" |
 | 5 | 改写散落 `codec/anthropic/`+`anthropic/`+`anthropic/sanitize/`+`request/strategies/`，无单一归宿 | 真实 | §1 盘点 |
 | 6 | 词汇 sanitize/rewrite/preprocess/prepare/transform/strategy 六词混用、不映射到阶段 | 半真实 | rewrite/prepareStep/strategy 是文档化的**不同概念**，问题是词不对阶段 |
@@ -74,12 +75,12 @@
 
 **silent-strip 防护仍强制**（[[feedback-pass-null-clean-not-self-validating]]）：扁平虽无嵌套放大，但漏一个 `renameLeaf` 仍会让旧键落入 `.strict()` 被静默丢弃。故每个改名键一条 **compat 往返测试**（旧 yaml in → 断言新 state 值 out），34 键全参数化。hot-reload 完整性守卫只证"新键在矩阵"、**不证 compat 映射存在**，故往返测试不可省。Phase 4 **不得**把跨 section 键（shutdown/openai_responses）误并进 anthropic。
 
-## 7. 暂缓项的最终处置（已落定，无遗留）
+## 7. 暂缓项的最终处置（已落定；跨格式项一处证误，见 R2）
 
 | 原暂缓项 | 处置 | 理由 |
 |---|---|---|
 | **响应侧改写重组**（#5 响应半边） | **DONE（Phase 3）**：`codec/anthropic/response-rewrites.ts` → `response-rewrite-adapters.ts`，镜像 `request-rewrite-adapter.ts`。Stage B 全 5 格式 owns-sink 落定后解锁。**实测响应侧无请求侧那种硬债**（无文件碰撞、无两层类型重影、footgun 已 Phase 2 修、算法核已良好命名），故 Phase 3 仅一处 cosmetic 对称 rename。 | 纯命名对称；2 功能消费者；逐字节等价 |
-| **跨全格式统一**（曾含 strategies ×3、`openai/sanitize.ts`、`codec/openai-responses/response-rewrites.ts`） | **撤销（非真债）** | **该统一的契约层早已统一**（`RequestRewrite`/`ResponseRewrite` 接口 + driver registry 装配 = format-agnostic 核心），**不该统一的逻辑层格式专属是正确的**（各格式改写操作各自协议帧，合并=假抽象）。同 stem 出现在**不同格式目录**（`codec/anthropic/strategies.ts` vs `codec/openai-cc/strategies.ts`）是**好的平行结构**（同角色不同格式），非碰撞——碰撞特指**同 dir 内**两同名文件（请求侧 `request-rewrites.ts ×2` 那种真陷阱，已 Phase 1 修）。强行跨目录起异名反破坏平行性。按 YAGNI + "纯主观无缺陷风格偏好跳过"撤销。 |
+| **跨全格式统一** | **⚠️ 本 spec 当时判"撤销（非真债）"是错误判断——实为真实、有价值的工作，已由后续 cell-assembly 重构 + 通用翻译矩阵落地实现**（形态比本 spec 设想更强：`pipeline/cell-assembly.ts` 把 `(clientFormat × targetEndpoint)` 做成**编译期穷尽的 2D Record**，缺 cell = 编译错误，强于本 spec 曾设想的"文档矩阵 + L1 守卫"；`codec/response-rewrite-registry.ts`（全格式 union、按 `targetEndpoint` gate）+ `codec/cc-family-strategies.ts` 完成共享核下沉）。 | **仍成立的判断**：契约层（`RequestRewrite`/`ResponseRewrite` 接口 + registry）确已 format-agnostic；逻辑层格式专属正确、未被合并；same-stem 跨目录（`strategies.ts ×3`）确非碰撞、未被改名——真正的结构是**另建 cell/leg**，非文件改名（碰撞仍特指同 dir 内两同名文件，如已修的请求侧 `request-rewrites.ts ×2`）。**被证误的部分**：由此外推"整个跨格式方向无真债、按 YAGNI 撤销"。**forcing function** 实为**翻译**（反向腿打不同 `targetEndpoint`，如 `(openai-responses, /v1/messages)` 反向腿），非本 spec 猜测的"横切特性累积"。权威见 `pipeline/cell-assembly.ts`、RFC 2026-07-13 §11、[[project-universal-translation-matrix]]、DESIGN「活的架构现状」。 |
 
 ## 8. Phase 拆分 + commit invariants
 
