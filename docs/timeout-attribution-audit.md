@@ -1,6 +1,7 @@
 # Timeout 归因日志覆盖审计（seed for spec ②）
 
-> **归属更新（2026-07-14）**：② 经对账**不作独立特性**——它是「上游传输可观测性子系统」（`docs/todo/upstream-transport-observability.md`，用户 2026-07-09 锁定范围）的子集。本审计的 G1-G5 已作为**子项目 1＝跨端点流终止归因统一**的输入，正走 brainstorming → 独立 spec；子项目 2/3 入 `docs/todo/deferred-backlog.md`。本文降为子项目 1 spec 的背景/证据来源。
+> **⚠️ G1 已解决更正（2026-07-14）**：下方「核心事实」称富归因行 **Anthropic 独占** —— **该结论已过期、勿采信**。并发工作（commits `c08fd91b`/`7da31d21`/`1fbf5e35`/`91c3a296`，新模块 `src/lib/upstream-stream-diagnostics.ts` 自述「SINGLE emission point used by EVERY non-native-Anthropic response pump」）已使 CC/Responses/Gemini + reverse + WS 的 stream-error/truncation 分支都发同一条 `[upstream-diagnostics] STREAM DISCONNECT`。**G1 不再是缺口**。子项目 1（spec `docs/spec/2026-07-14-upstream-disconnect-attribution.md` v2）范围缩为**仍 live 的 G2/G3/G4/G5**；bus 架构折入子项目 3。教训：过期审计须广口径 grep + git 时间线复核，窄 grep 会自证过期结论（异模型 reviewer 纠正）。
+> **归属更新（2026-07-14）**：② 经对账**不作独立特性**——它是「上游传输可观测性子系统」（`docs/todo/upstream-transport-observability.md`，用户 2026-07-09 锁定范围）的子集。本审计的 G1-G5 已作为**子项目 1** 的输入，正走 brainstorming → 独立 spec；子项目 2/3 入 `docs/todo/deferred-backlog.md`。本文降为子项目 1 spec 的背景/证据来源。
 > 状态：**审计发现，未实施**。本文件是「timeout 归因全面化」特性（下称 ②）的 brainstorming 起点。
 > 结论已亲手核实到 `file:line`。② 定稿后应产出 `docs/spec/*` + 可能的 ADR，届时本文件降为归档或并入 spec 背景。
 > 关联：重试时长显示 `docs/spec/retry-duration-display.md`（①，独立并行）——① 的 `[FAIL]`/`[RETRY]` 行若要带「哪个 timeout 触发」，依赖本特性把 `kind` 归因补全（G1/G3）。

@@ -1,6 +1,6 @@
 # 上游传输可观测性子系统（kickoff / 待专项会话继续）
 
-> **分解决策（2026-07-14）**：本子系统对单个 spec 过大，已拆三片。**子项目 1＝跨端点流终止归因统一**（流级、per-request、不碰多路复用关联难题；吸收 timeout 归因审计 G1-G5，见 `docs/timeout-attribution-audit.md`）**正在 brainstorming → 独立 spec**；**子项目 2**（连接/会话级可观测 + 多路复用关联模型，本文 §5）与**子项目 3**（history `transportTrace` + /metrics + ui-v4，本文 §6）**已入 backlog**（`docs/todo/deferred-backlog.md`），详细设计草案仍以本文为准。下文 §4-§9 是**全子系统**的原始草案，供三片共同参考；子项目 2/3 的范围即本文 §5/§6。
+> **分解决策（2026-07-14）**：本子系统对单个 spec 过大，已拆三片。**子项目 1＝上游超时归因剩余缺口补全**（spec `docs/spec/2026-07-14-upstream-disconnect-attribution.md` v2）——原定「跨端点流终止归因统一」的承重缺口 **G1 已被并发工作解决**（2026-07-14，见 `docs/timeout-attribution-audit.md` 更正），故缩为仍 live 的 **G2/G3/G4/G5** 加性补全（连接层超时归因 primitive 主）；**bus 事件化 / driver 单点重构折入子项目 3**（mid-stream 覆盖已工作，bus 化的受益方是 2/3 的订阅需求）。**子项目 2**（连接/会话级可观测 + 多路复用关联模型，本文 §5）与**子项目 3**（history `transportTrace` + /metrics + ui-v4 + **bus 化 disconnect 事件**，本文 §6）**已入 backlog**（`docs/todo/deferred-backlog.md`），详细设计草案仍以本文为准。下文 §4-§9 是**全子系统**的原始草案，供三片共同参考。
 >
 > 状态：**未开工，仅起头**。本文件由 2026-07-09 会话在诊断「上游流长思考静默截断」bug 时派生——诊断中发现 `src/lib/transport/` 几乎零结构化可观测性，无法把「A 中间设备/连接级空闲回收」与「B GHC 对单条空闲流的应用层超时」区分开。用户决定把它作为独立大特性交给后续专项会话，本文档尽量灌全已知信息 + 猜测，让新会话冷启动即可推进，**不需重新探查**。
 >
