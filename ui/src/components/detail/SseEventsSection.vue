@@ -113,7 +113,8 @@ function eventColor(type: string): string {
   }
 }
 
-const badge = computed(() => `${props.events.length} events`)
+const keepaliveCount = computed(() => props.events.filter((e) => e.synthetic === "keepalive").length)
+const badge = computed(() => (keepaliveCount.value > 0 ? `${props.events.length} events · ${keepaliveCount.value} keepalive` : `${props.events.length} events`))
 </script>
 
 <template>
@@ -129,12 +130,19 @@ const badge = computed(() => `${props.events.length} events`)
         v-for="(event, i) in events"
         :key="i"
         class="sse-event"
+        :class="{ 'sse-event-keepalive': event.synthetic === 'keepalive' }"
       >
         <span class="sse-offset">{{ formatOffset(event.offsetMs) }}</span>
         <span
           class="sse-type"
           :class="'sse-type-' + eventColor(event.type)"
           >{{ event.type }}</span
+        >
+        <span
+          v-if="event.synthetic === 'keepalive'"
+          class="sse-keepalive-tag"
+          title="Proxy-synthesized keepalive — not real upstream content"
+          >keepalive</span
         >
         <span
           v-if="eventSummary(event)"
@@ -201,5 +209,22 @@ const badge = computed(() => `${props.events.length} events`)
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* Synthetic keepalive rows are dimmed + tagged so a stalled-upstream heartbeat stream is never
+   mistaken for real content (an empty content_delta is otherwise indistinguishable from a real frame). */
+.sse-event-keepalive {
+  opacity: 0.5;
+}
+
+.sse-keepalive-tag {
+  flex-shrink: 0;
+  font-size: 0.7rem;
+  font-weight: 600;
+  color: var(--text-dim);
+  border: 1px solid var(--border);
+  padding: 0 4px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
 }
 </style>

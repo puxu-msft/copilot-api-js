@@ -18,12 +18,21 @@ const withFrames = {
   id: "r1",
   startedAt: 0,
   endpoint: "anthropic-messages",
-  inboundRequest: { messages: [] },
-  sseEvents: [
-    { offsetMs: 0, type: "message_start", raw: `{"type":"message_start"}` },
-    { offsetMs: 12, type: "content_block_delta", raw: `{"type":"content_block_delta","delta":{"type":"text_delta","text":"hi"}}` },
+  clientRequest: { messages: [] },
+  attempts: [
+    {
+      index: 0,
+      durationMs: 0,
+      upstreamResponse: {
+        success: true,
+        sseEvents: [
+          { offsetMs: 0, type: "message_start", raw: `{"type":"message_start"}` },
+          { offsetMs: 12, type: "content_block_delta", raw: `{"type":"content_block_delta","delta":{"type":"text_delta","text":"hi"}}` },
+        ],
+      },
+    },
   ],
-  inboundResponse: {
+  clientResponse: {
     sseEvents: [{ offsetMs: 0, type: "message_start", raw: `{"type":"message_start"}` }],
   },
 } as unknown as HistoryEntry
@@ -32,8 +41,30 @@ const noFrames = {
   id: "r2",
   startedAt: 0,
   endpoint: "anthropic-messages",
-  inboundRequest: { messages: [] },
-  outboundResponse: { success: true, model: "m", status: 200, content: { role: "assistant", content: "x" } },
+  clientRequest: { messages: [] },
+  attempts: [{ index: 0, durationMs: 0, upstreamResponse: { success: true, model: "m", status: 200, body: { role: "assistant", content: "x" } } }],
+} as unknown as HistoryEntry
+
+const withSyntheticFrames = {
+  id: "r3",
+  startedAt: 0,
+  endpoint: "anthropic-messages",
+  clientRequest: { messages: [] },
+  attempts: [
+    { index: 0, durationMs: 0, upstreamResponse: { success: true, sseEvents: [{ offsetMs: 0, type: "message_start", raw: `{"type":"message_start"}` }] } },
+  ],
+  clientResponse: {
+    sseEvents: [
+      { offsetMs: 0, type: "content_block_start", raw: `{"type":"content_block_start","index":0}`, synthetic: "anchor" },
+      {
+        offsetMs: 5,
+        type: "content_block_delta",
+        raw: `{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":""}}`,
+        synthetic: "keepalive",
+      },
+      { offsetMs: 9, type: "content_block_stop", raw: `{"type":"content_block_stop","index":0}`, synthetic: "anchor" },
+    ],
+  },
 } as unknown as HistoryEntry
 
 describe("SseEventsSegment", () => {
@@ -47,5 +78,33 @@ describe("SseEventsSegment", () => {
   it("renders the 无 SSE 帧 fallback for non-streaming responses", () => {
     render(<SseEventsSegment entry={noFrames} />)
     expect(screen.getByText(/无 SSE 帧/)).toBeDefined()
+  })
+
+  it("badges synthetic anchor + keepalive frames so proxy-injected frames are distinguishable", () => {
+    const { container } = render(<SseEventsSegment entry={withSyntheticFrames} />)
+    // Forwarded track carries the two anchor frames + one keepalive delta.
+    expect(screen.getAllByText("anchor").length).toBeGreaterThanOrEqual(2)
+    expect(screen.getAllByText("keepalive").length).toBeGreaterThanOrEqual(1)
+    // Each synthetic frame ROW is dimmed (opacity-60) so it visually recedes vs real content.
+    // r3 has 3 synthetic forwarded frames and 1 real upstream frame → exactly 3 dimmed rows.
+    expect(container.querySelectorAll(".opacity-60").length).toBe(3)
+  })
+
+  it("does NOT badge or dim real (non-synthetic) frames", () => {
+    const { container } = render(<SseEventsSegment entry={withFrames} />)
+    // withFrames carries only real frames (synthetic===undefined) on both tracks → no proxy badges…
+    expect(screen.queryByText("anchor")).toBeNull()
+    expect(screen.queryByText("keepalive")).toBeNull()
+    // …and no dimmed rows.
+    expect(container.querySelectorAll(".opacity-60").length).toBe(0)
+  })
+
+  it("shows unavailable instead of rendering a fabricated frame offset", () => {
+    const entry = {
+      ...withFrames,
+      clientResponse: { sseEvents: [{ offsetMs: 0, offsetSource: "unavailable", type: "message_start", raw: "{}" }] },
+    } as HistoryEntry
+    render(<SseEventsSegment entry={entry} />)
+    expect(screen.getByText("时间不可用")).toBeDefined()
   })
 })

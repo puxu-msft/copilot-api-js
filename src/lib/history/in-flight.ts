@@ -5,25 +5,40 @@ import type {
   MessageContent,
 } from "./types"
 
+import {
+  //
+  deriveRequestBytes,
+  deriveResponseBytes,
+  extractResponsePreviewText,
+  resolveAttemptCount,
+  resolveCurrentStrategy,
+  resolveResponseError,
+  resolveResponseModel,
+  resolveResponseSuccess,
+  resolveResponseUsage,
+} from "./entry-view"
+
 const entries = new Map<string, HistoryEntry>()
 
 /**
- * Memoized preview text per HistoryEntry instance.
+ * Memoized preview + response-preview text per HistoryEntry instance.
  *
  * `extractPreviewText` iterates the messages array and content blocks; for long
  * conversations with frequent SSE-driven `updateInFlight` calls the cost is
  * O(updates × messages × blocks) and the result was previously recomputed on
- * every WebSocket push. Cache keyed by HistoryEntry identity: each `putInFlight`
- * / `updateInFlight` produces a fresh entry object (due to `{ ...existing,
- * ...patch }`), so the WeakMap entry is naturally invalidated — we compute once
- * per entry instance and never again.
+ * every WebSocket push. `extractResponsePreviewText` likewise iterates the
+ * attempts / response content blocks, so it is memoized in the SAME WeakMap cell
+ * and shares the entry's invalidation fate. Cache keyed by HistoryEntry identity:
+ * each `putInFlight` / `updateInFlight` produces a fresh entry object (due to
+ * `{ ...existing, ...patch }`), so the WeakMap entry is naturally invalidated —
+ * we compute once per entry instance and never again.
  */
-const summaryTextCache = new WeakMap<HistoryEntry, { preview: string }>()
+const summaryTextCache = new WeakMap<HistoryEntry, { preview: string; responsePreview: string }>()
 
-function getCachedSummaryText(entry: HistoryEntry): { preview: string } {
+function getCachedSummaryText(entry: HistoryEntry): { preview: string; responsePreview: string } {
   const hit = summaryTextCache.get(entry)
   if (hit) return hit
-  const computed = { preview: extractPreviewText(entry) }
+  const computed = { preview: extractPreviewText(entry), responsePreview: extractResponsePreviewText(entry) }
   summaryTextCache.set(entry, computed)
   return computed
 }
@@ -110,14 +125,11 @@ function summarizeMessage(msg: MessageContent): string {
  * most recent non-empty summary so the list stays readable. "" only when
  * nothing is summarizable.
  *
- * Reads ONLY `inboundRequest.messages`. The `Pick<…, "inboundRequest">` param
- * keeps that contract explicit. (The search_index backfill —
- * `sqlite/search-index-backfill.ts` — decodes the FULL entry via
- * `assembleFullEntry` to build the index, so preview recompute rides along with
- * the full object available; no special inbound-only loading is needed there.)
+ * Reads ONLY `clientRequest.messages`. The `Pick<…, "clientRequest">` param
+ * keeps that contract explicit.
  */
-export function extractPreviewText(entry: Pick<HistoryEntry, "inboundRequest">): string {
-  const messages = entry.inboundRequest.messages
+export function extractPreviewText(entry: Pick<HistoryEntry, "clientRequest">): string {
+  const messages = entry.clientRequest?.messages
   if (!messages || messages.length === 0) return ""
 
   for (let i = messages.length - 1; i >= 0; i--) {
@@ -137,6 +149,7 @@ export function toEntrySummary(entry: HistoryEntry): EntrySummary {
   const cached = getCachedSummaryText(entry)
   return {
     id: entry.id,
+    operationKind: entry.operationKind,
     ...(entry.sessionId ? { sessionId: entry.sessionId } : {}),
     ...(entry.agentId ? { agentId: entry.agentId } : {}),
     rawPath: entry.rawPath,
@@ -148,20 +161,21 @@ export function toEntrySummary(entry: HistoryEntry): EntrySummary {
     pinned: entry.pinned,
     lastUpdatedAt: entry.lastUpdatedAt,
     queueWaitMs: entry.queueWaitMs,
-    attemptCount: entry.attemptCount,
-    currentStrategy: entry.currentStrategy,
+    attemptCount: resolveAttemptCount(entry),
+    currentStrategy: resolveCurrentStrategy(entry),
     pid: entry.process?.pid,
-    requestModel: entry.inboundRequest.model,
-    stream: entry.inboundRequest.stream,
-    messageCount: entry.inboundRequest.messages?.length ?? 0,
-    responseModel: entry.outboundResponse?.model,
-    responseSuccess: entry.outboundResponse?.success,
-    responseError: entry.outboundResponse?.error ?? entry.failureReason,
-    usage: entry.outboundResponse?.usage,
+    requestModel: entry.clientRequest?.model,
+    stream: entry.clientRequest?.stream,
+    messageCount: entry.clientRequest?.messages?.length ?? 0,
+    responseModel: resolveResponseModel(entry),
+    responseSuccess: resolveResponseSuccess(entry),
+    responseError: resolveResponseError(entry) ?? entry._index?.derived?.failureReason,
+    usage: resolveResponseUsage(entry),
     durationMs: entry.durationMs,
-    requestBytes: entry.requestBytes,
-    responseBytes: entry.responseBytes,
+    requestBytes: deriveRequestBytes(entry),
+    responseBytes: deriveResponseBytes(entry),
     multiplier: entry.multiplier,
     previewText: cached.preview,
+    responsePreviewText: cached.responsePreview,
   }
 }

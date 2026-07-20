@@ -8,18 +8,14 @@ v4 管线由 per-request driver 编排七阶段（S1–S7）。重试是错误�
 
 ## 重试策略
 
-S4 内首个匹配的 `RetryStrategy` 改写 env 重试。10 个策略在 `src/lib/request/strategies/`：network、server-error（5xx 瞬时网关错误 ≤2 次退避）、token-refresh、auto-truncate、effort-learning、legacy-thinking、unsupported-beta、deferred-tool、server-tool-rejection、structured-outputs-rejection。各格式经 `codec/*/strategies.ts` 组装，旧 strategy 经 `pipeline/legacy-strategy-adapter.ts` 适配进 driver。
+S4 内首个匹配的 `RetryStrategy` 改写 env 重试。策略在 `src/lib/request/strategies/`：network、server-error（5xx 瞬时网关错误 ≤2 次退避）、token-refresh、effort-learning、legacy-thinking、unsupported-beta、deferred-tool、tool-field-rejection（学习上游拒绝的未知 custom-tool 顶层字段如 `eager_input_streaming`，排在 body-field 前）、server-tool-rejection、structured-outputs-rejection。各格式经 `codec/*/strategies.ts` 组装（Anthropic 全表 16 条），payload strategy 经 `pipeline/payload-strategy-adapter.ts` 适配进 envelope driver；共享 payload 契约由 `request/retry-types.ts` 单独拥有。反应式重试的共享上限为 `state.maxReactiveRetries`（config `retry.max_reactive_retries`，喂给全部策略）。
 
 ## 错误分类与限速
 
-错误分类见 `src/lib/error/`（classify/forward）；流式错误见 `src/lib/stream.ts`。429 由 `src/lib/adaptive-rate-limiter.ts`（3 模式 stateful 单例）在 transport 内消化。
+错误分类见 `src/lib/error/`（classify/forward）；流式错误见 `src/lib/stream.ts`。429 由 generation dispatch scheduler 通过 `UpstreamAdmissionController` 显式 acquire/observe 后创建新的 rate-limit dispatch；`src/lib/adaptive-rate-limiter.ts` 只提供三模式 admission 状态机，不再在 transport 内隐藏重放。
 
-## auto-truncate
+## 编排所有权
 
-`src/lib/auto-truncate/engine.ts` + `request/strategies/auto-truncate.ts`：limit 错误时按 gpt-tokenizer 口径换算上游 limit 再截断重试。
+旧 `executeRequestPipeline` 已退役删除。所有 production 请求编排由 generation driver/candidate scheduler 拥有；`src/lib/request/` 仅保留 payload 工具、共享 retry contracts 与格式原生策略，不再拥有执行循环。
 
-## 旧管线
-
-`src/lib/request/pipeline.ts` 的 `executeRequestPipeline` 现仅 web_search 双跳消费，余皆退役。
-
-详见 DESIGN.md「请求流程」「活的架构现状」与运行时选项表 auto_truncate.* / rate_limiter.*。
+详见 DESIGN.md「请求流程」「活的架构现状」与运行时选项表 retry.* / rate_limiter.*。

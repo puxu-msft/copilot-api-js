@@ -1,5 +1,10 @@
 # Plan: 拦截清洗畸形 tool_use input —— 实现交接稿（plan-review 接线修正后）
 
+> **实施状态：已完成**
+> **落地**：—
+> **现状锚点**：运行时选项 `toolRepairMalformedInput`；spec/anthropic-malformed-tool-input-repair.md
+> **备注**：核心修复能力全落地；原三档枚举后被 tool-input-repair-composable-items 演进为可叠加项目集
+
 > 对应 spec：[docs/spec/anthropic-malformed-tool-input-repair.md](../spec/anthropic-malformed-tool-input-repair.md)（已过两轮对抗审查 + 主线核验，§7 记接线修正）。
 > 落地形态：扩展既有 `src/lib/anthropic/decode-tool-input.ts` 解码器 + handler fail 信号（**挂 ctx 非 acc**），配置 `anthropic.tool_repair_malformed_input: false|"tags"|"repair"`，默认关。
 > 范围：仅 Anthropic 路径。commit invariant：每个 phase 的 commit 都让系统**绿且不半坏**（`false` 时逐字节同前）。
@@ -96,7 +101,7 @@
 
 ## 纪律提示
 
-- **并发会话**：共享 index。提交严格 `git add -- <精确路径>` + `git diff --cached --stat` 复核，**绝不** `git add -A`。lint-staged lint 全 index 暂存的 .ts → index 里有 peer 坏 WIP 会挡你 commit；非 .ts（doc/spec）可 `git commit --no-verify -- <pathspec>` 精确只提自己且不扰 peer（skill `git-commit-discipline:avoiding-shared-worktree-conflicts`）。
+- **并发会话**：共享 index。提交严格 `git add -- <精确路径>` + `git diff --cached --stat` 复核，**绝不** `git add -A`。lint-staged lint 全 index 暂存的 .ts → index 里有 peer 坏 WIP 会挡你 commit；非 .ts（doc/spec）可 `git commit --no-verify -- <pathspec>` 精确只提自己且不扰 peer（skill `git-preference:avoiding-shared-worktree-conflicts`）。
 - **TDD**：每 phase 先 RED 再 GREEN 再重构。真实帧 fixture（1304/965 字节落 `tests/fixtures/`）优先于合成。
 - **不启服务器**：`bun run test:backend` 等（非 `npm run`）。
 - **off 即 byte-identical / on 是时序变化**：`false` 下逐字节同前（golden lock）；on 时合法块时序变（有意，同 recover/decode），内容仍 byte-identical。

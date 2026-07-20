@@ -17,11 +17,15 @@ import {
   describe,
   expect,
   mock,
+  spyOn,
   test,
 } from "bun:test"
+import consola from "consola"
 
+import type { RequestContext } from "~/lib/context/request"
 import type { ChatCompletionsPayload } from "~/types/api/openai-chat-completions"
 
+import { getRequestContextManager } from "~/lib/context/manager"
 import { getHistory } from "~/lib/history"
 import {
   //
@@ -175,7 +179,7 @@ describe("Gemini v4 driver path", () => {
     errorMidStream = false
     toolFinishOmitted = false
     applyFetchMock(upstreamFetchMock)
-    setStateForTests({ copilotToken: "tok", autoTruncate: false })
+    setStateForTests({ copilotToken: "tok" })
   })
 
   afterEach(() => {
@@ -184,6 +188,11 @@ describe("Gemini v4 driver path", () => {
 
   test("generateContent non-streaming: client Gemini json + CC wire", async () => {
     const body = { contents: [{ role: "user", parts: [{ text: "Hello Gemini" }] }] }
+
+    let capturedCtx: RequestContext | undefined
+    const manager = getRequestContextManager()
+    const originalCreate = manager.create.bind(manager)
+    manager.create = (opts) => (capturedCtx = originalCreate(opts))
 
     const v4 = (await (await post("gpt-4o:generateContent", body)).json()) as Record<string, unknown>
     const v4Wire = lastCcWire
@@ -201,6 +210,19 @@ describe("Gemini v4 driver path", () => {
       modelVersion: "gpt-4o",
       responseId: "chatcmpl-g",
     })
+    const operation = capturedCtx?.modelOperationTerminalRecord
+    const clientPayload = operation?.egress?.client.payload
+    const upstreamPayload = operation?.egress?.upstream.payload
+    expect(operation?.arena.payloads.find((node) => node.handle === clientPayload)?.value).toEqual(v4)
+    expect(operation?.arena.payloads.find((node) => node.handle === upstreamPayload)?.value).toEqual({
+      id: "chatcmpl-g",
+      object: "chat.completion",
+      created: 1,
+      model: "gpt-4o",
+      choices: [{ index: 0, message: { role: "assistant", content: "Mocked Gemini response" }, finish_reason: "stop", logprobs: null }],
+      usage: { prompt_tokens: 12, completion_tokens: 4, total_tokens: 16 },
+    })
+    expect(operation?.terminal?.outcome).toBe("completed")
     expect(v4Wire?.model).toBe("gpt-4o")
     expect(v4Wire?.messages).toEqual([{ role: "user", content: "Hello Gemini" }])
     // Gemini-shape sanity
@@ -265,7 +287,20 @@ describe("Gemini v4 driver path", () => {
     const body = { contents: [{ role: "user", parts: [{ text: "hi" }] }] }
 
     errorMidStream = true
-    const v4Text = await (await post("gpt-4o:streamGenerateContent", body)).text()
+    // The Gemini direct leg must ALSO emit the disconnect diagnostic with REAL signals (it previously
+    // emitted none — the blind spot this systematization closes across every non-native-Anthropic pump).
+    const diagSpy = spyOn(consola, "error").mockImplementation(Object.assign(() => {}, { raw: () => {} }))
+    let v4Text: string
+    try {
+      v4Text = await (await post("gpt-4o:streamGenerateContent", body)).text()
+    } finally {
+      const line = diagSpy.mock.calls.map((c) => String(c[0])).find((s) => s.includes("[upstream-diagnostics] STREAM DISCONNECT"))
+      diagSpy.mockRestore()
+      expect(line).toBeDefined()
+      expect(line).toContain("model=gpt-4o")
+      expect(line).not.toContain("frames=0")
+      expect(line).toContain("last-frame=chat.completion.chunk@")
+    }
 
     expect(v4Text).toContain("upstream blew up")
     expect(v4Text).toContain("INTERNAL")
@@ -311,9 +346,9 @@ describe("Gemini v4 driver path", () => {
     await post("gpt-4o:generateContent", body)
     const v4 = getHistory({ endpoint: "gemini-generate-content" }).entries[0]
 
-    expect(v4?.effectiveRequest?.format).toBe("openai-chat-completions")
-    expect(v4?.outboundRequest?.format).toBe("openai-chat-completions")
-    expect(v4?.outboundRequest?.messageCount).toBe(1)
+    expect(v4?.attempts?.at(-1)?.effectiveSource?.format).toBe("openai-chat-completions")
+    expect(v4?.attempts?.at(-1)?.upstreamRequest?.format).toBe("openai-chat-completions")
+    expect(v4?.attempts?.at(-1)?.upstreamRequest?.messages?.length).toBe(1)
     expect(typeof v4?.queueWaitMs).toBe("number")
   })
 

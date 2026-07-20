@@ -8,7 +8,8 @@
  *   1. Completeness — every CONFIG_MANAGED_DEFAULTS key is exposed (verbatim,
  *      renamed, or as a `<key>Set` boolean). A new field added there with no
  *      handling fails this test.
- *   2. Secrecy — secret values (anthropicApiKey) are never emitted verbatim.
+ *   2. Secrecy — any credential-named field is masked, never emitted verbatim
+ *      (structural guard, defends against a NEW secret bypassing SENSITIVE).
  *   3. Regression — the fields that were previously missing are now present.
  */
 
@@ -30,8 +31,6 @@ const app = createFullTestApp()
  * Keeping this explicit (rather than inferred) makes the contract auditable.
  */
 const RENAMED_KEYS: Record<string, string> = {
-  // Secret → boolean presence flag (value never emitted).
-  anthropicApiKey: "anthropicApiKeySet",
   // Compiled RegExp rules → count.
   systemPromptOverrides: "systemPromptOverridesCount",
 }
@@ -59,12 +58,6 @@ describe("GET /api/config — effective config snapshot", () => {
     expect(missing).toEqual([])
   })
 
-  test("secrecy: anthropicApiKey value is never emitted; exposed only as a boolean flag", async () => {
-    const body = await getConfig()
-    expect("anthropicApiKey" in body).toBe(false)
-    expect(typeof body.anthropicApiKeySet).toBe("boolean")
-  })
-
   test("secret-named guard: no credential-looking field is emitted verbatim (defends against a NEW secret bypassing SENSITIVE)", async () => {
     // The completeness test only checks a key is PRESENT, not that it is masked.
     // So a new secret added to CONFIG_MANAGED_DEFAULTS but forgotten in
@@ -79,6 +72,7 @@ describe("GET /api/config — effective config snapshot", () => {
     const NON_SECRET_DESPITE_NAME = new Set<string>([
       "tokenBasedBilling", // billing mode flag, not a credential
       "showGitHubToken", // whether to log the token, not the token itself
+      "useUpstreamCountTokens", // count_tokens upstream toggle, not a credential
     ])
     const leaked = Object.keys(body).filter((k) => SECRET_NAME.test(k) && !k.endsWith("Set") && !NON_SECRET_DESPITE_NAME.has(k))
     expect(leaked).toEqual([])
@@ -88,13 +82,10 @@ describe("GET /api/config — effective config snapshot", () => {
     const body = await getConfig()
     // These were silently missing from the old hand-maintained allowlist.
     for (const key of [
-      "webSearchEnabled",
-      "webSearchBackend",
       "thinkingSignatureCompat",
       "coerceAdaptiveThinking",
       "thinkingBlockSanitizeCheck",
-      "systemMessagesSanitize",
-      "rewriteHistoryServerTools",
+      "systemDefaultMode",
       "streamKeepalivePingSec",
       "sanitizeToolNames",
     ]) {
@@ -104,7 +95,7 @@ describe("GET /api/config — effective config snapshot", () => {
 
   test("startup-phase config fields (not hot-reloadable) are included", async () => {
     const body = await getConfig()
-    for (const key of ["accountType", "ghcApiBaseUrl", "verbose", "modelOverrides", "rateLimiter"]) {
+    for (const key of ["accountType", "ghcApiBaseUrl", "historyEnabled", "verbose", "modelMappings", "rateLimiter"]) {
       expect(key in body).toBe(true)
     }
   })

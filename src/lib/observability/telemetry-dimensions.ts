@@ -34,6 +34,14 @@ import type { RequestContextSnapshot } from "~/lib/observability/events"
 
 import { getHeaderCaseInsensitive } from "~/lib/fetch-utils"
 
+/**
+ * The upstream response content envelope for tool-name / thinking-block
+ * extraction: the final attempt's `upstreamResponse.body`.
+ */
+function resolveUpstreamContent(entry: HistoryEntryData): unknown {
+  return entry.attempts?.at(-1)?.upstreamResponse?.body
+}
+
 /** A registered telemetry dimension: a name + an entry/ctx → key extractor. */
 export interface StatDimension {
   name: string
@@ -69,7 +77,7 @@ export function normalizeClient(headers: Record<string, string> | undefined): st
  * caveat; with the default `sanitizeToolNames: false`, wire == client name).
  */
 export function extractToolNames(entry: HistoryEntryData): Array<string> {
-  const content = entry.outboundResponse?.content
+  const content = resolveUpstreamContent(entry)
   if (!content || typeof content !== "object") return []
   const names = new Set<string>()
 
@@ -95,6 +103,57 @@ export function extractToolNames(entry: HistoryEntryData): Array<string> {
 }
 
 /**
+ * Per-request tally of the assistant response's thinking blocks, split by content emptiness +
+ * signature presence. The measure-input shape (owned here — the extractor's output; re-used by
+ * `request-telemetry.ts`'s `SettledTelemetryInput.thinkingBlocks` via `import type`):
+ * - `nonEmpty`      — `thinking` is a non-blank string (real reasoning text).
+ * - `emptySigned`   — `thinking` blank but `signature` a non-empty string (normal encrypted /
+ *   compat block — Anthropic thinking is self-contained in the signature).
+ * - `emptyUnsigned` — `thinking` blank AND `signature` empty/missing/null (a corrupt double-empty
+ *   block — the upstream-corruption signal `thinkingBlockSanitizeCheck.all_empty` strips).
+ */
+export interface ThinkingBlockCounts {
+  nonEmpty: number
+  emptySigned: number
+  emptyUnsigned: number
+}
+
+/**
+ * Tally the assistant response's thinking blocks into {@link ThinkingBlockCounts}. Mirrors
+ * {@link extractToolNames}: reads the proxy-recorded `outboundResponse.content` envelope and
+ * defends against its `unknown` shape. Filters to `type === "thinking"` FIRST (so
+ * `redacted_thinking` — which has `data`, no `thinking` — and text/tool_use never mis-bucket),
+ * then classifies by `thinking` emptiness + `signature` presence. Non-Anthropic responses (CC's
+ * `content.content` is a string, not an array) yield all-zero — the `Array.isArray` guard skips them.
+ */
+export function extractThinkingBlockCounts(entry: HistoryEntryData): ThinkingBlockCounts {
+  const counts: ThinkingBlockCounts = { nonEmpty: 0, emptySigned: 0, emptyUnsigned: 0 }
+  const content = resolveUpstreamContent(entry)
+  if (!content || typeof content !== "object") return counts
+
+  const blocks = (content as { content?: unknown }).content
+  if (!Array.isArray(blocks)) return counts
+
+  for (const block of blocks) {
+    if (!block || typeof block !== "object") continue
+    if ((block as { type?: unknown }).type !== "thinking") continue
+
+    const thinking = (block as { thinking?: unknown }).thinking
+    if (typeof thinking === "string" && thinking.trim() !== "") {
+      counts.nonEmpty += 1
+      continue
+    }
+
+    // Empty thinking text — split by signature presence (the corruption discriminant).
+    const signature = (block as { signature?: unknown }).signature
+    if (typeof signature === "string" && signature !== "") counts.emptySigned += 1
+    else counts.emptyUnsigned += 1
+  }
+
+  return counts
+}
+
+/**
  * The registered dimensions. Order is irrelevant (keys are name-addressed).
  * `model` is the back-compat dimension projected to
  * `RequestTelemetrySnapshot.modelsSinceStart` / `modelsLast7d`.
@@ -107,9 +166,14 @@ export function extractToolNames(entry: HistoryEntryData): Array<string> {
  * `agentKind` (`main`/`subagent`) are genuinely `bounded` and skip the cap.
  */
 export const TELEMETRY_DIMENSIONS: ReadonlyArray<StatDimension> = [
-  { name: "model", cardinality: "capped", extract: (entry) => entry.outboundResponse?.model ?? entry.inboundRequest.model ?? "unknown" },
+  // Resolved/requested live under the `model` parent key (RFC §2.5).
+  {
+    name: "model",
+    cardinality: "capped",
+    extract: (entry) => entry.model?.resolved ?? entry.model?.requested ?? "unknown",
+  },
   { name: "endpoint", cardinality: "bounded", extract: (entry) => entry.endpoint },
-  { name: "client", cardinality: "capped", extract: (entry) => normalizeClient(entry.httpHeaders?.inboundRequest) },
+  { name: "client", cardinality: "capped", extract: (entry) => normalizeClient(entry.clientRequest?.headers) },
   { name: "agentKind", cardinality: "bounded", extract: (entry) => (entry.agentId ? "subagent" : "main") },
   { name: "tool", cardinality: "capped", extract: (entry) => extractToolNames(entry) },
 ]

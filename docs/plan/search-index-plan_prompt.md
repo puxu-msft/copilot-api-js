@@ -1,5 +1,7 @@
 # Prompts: search_index 内容寻址搜索 —— 每 phase kickoff
 
+> **类型**：kick-off prompt —— 非独立 plan，实施状态见父 plan [search-index-plan.md](search-index-plan.md)。
+
 > 配 [search-index-plan.md](search-index-plan.md)（HOW + factory-anchor）+ [search-index-content-addressed.md](search-index-content-addressed.md)（WHY + 契约）。每个 prompt **自包含**：控制者按 DAG 顺序贴给 implementer subagent（general-purpose、全量工具）；每 phase 收尾派 spec-review + quality-review subagent。
 >
 > **每个 prompt 必带的公共头**（控制者粘贴时附上）：
@@ -108,4 +110,4 @@
 
 ## 收尾（全 phase 后）
 
-整体 review subagent（spec 合规 + 质量 + 安全）跨全 5 phase;确认 commit invariants 链成立（每中间 commit 系统可用）;doc-sync 完成（[[feedback-completion-updates-docs]]:DESIGN/history/memory 回填、旧状态词清零、`grep` 扫描验证）。
+整体 review subagent（spec 合规 + 质量 + 安全）跨全 5 phase;确认 commit invariants 链成立（每中间 commit 系统可用）;doc-sync 完成（`completion-includes-doc-sync`:DESIGN/history/memory 回填、旧状态词清零、`grep` 扫描验证）。

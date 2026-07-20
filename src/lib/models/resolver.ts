@@ -1,9 +1,11 @@
 /**
  * Unified model name resolution and normalization.
  *
- * Handles short aliases (opus/sonnet/haiku), versioned names with date suffixes,
- * hyphenated versions (claude-opus-4-6 → claude-opus-4.6), model overrides,
- * and family-level fallbacks.
+ * Handles short aliases (opus/sonnet/haiku) — resolved ONLY via `model_mappings`,
+ * no built-in family fallback — plus catalog-driven spelling canonicalization
+ * (claude-opus-4-6 → claude-opus-4.6, data-driven off `/models`) and override
+ * chains. Date suffixes are NOT auto-stripped — mapping a dated snapshot name to a
+ * canonical id is a config-driven `model_mappings` decision.
  */
 
 import consola from "consola"
@@ -11,9 +13,16 @@ import consola from "consola"
 import { state } from "~/lib/state"
 
 import { normalizeForMatching } from "./model-name"
+import {
+  //
+  extractModifierSuffix,
+  type RouteOverride,
+  stripRouteSuffix,
+} from "./normalize-id"
 
 // Re-exported so existing importers keep using `~/lib/models/resolver`.
 export { normalizeForMatching } from "./model-name"
+export { normalizeModelId, type RouteOverride } from "./normalize-id"
 
 // ============================================================================
 // Types
@@ -39,12 +48,6 @@ export interface ToolNameRules {
 // ============================================================================
 // Normalization and Detection
 // ============================================================================
-
-/** Pre-compiled regex: claude-{family}-{major}-{minor}[-YYYYMMDD] */
-const VERSIONED_RE = /^(claude-(?:opus|sonnet|haiku))-(\d+)-(\d{1,2})(?:-\d{8,})?$/
-
-/** Pre-compiled regex: claude-{family}-{major}-YYYYMMDD (date-only suffix) */
-const DATE_ONLY_RE = /^(claude-(?:opus|sonnet|haiku)-\d+)-\d{8,}$/
 
 /**
  * True when two model names refer to the SAME model written differently —
@@ -108,28 +111,10 @@ export function normalizeModelNameList(list: ReadonlyArray<string>, configLabel:
  */
 function lookupModelOverride(name: string): string | undefined {
   const target = normalizeForMatching(name)
-  for (const [key, value] of Object.entries(state.modelOverrides)) {
+  for (const [key, value] of Object.entries(state.modelMappings)) {
     if (normalizeForMatching(key) === target) return value
   }
   return undefined
-}
-
-/**
- * Normalize a model ID to canonical dot-version form.
- * e.g. "claude-opus-4-6" → "claude-opus-4.6", "claude-opus-4-6-1m" → "claude-opus-4.6-1m"
- *
- * Handles modifier suffixes (-fast, -1m) and strips date suffixes (-YYYYMMDD).
- * Non-Claude models or unrecognized patterns are returned as-is.
- *
- * Used for normalizing API response model names to match `/models` endpoint IDs.
- */
-export function normalizeModelId(modelId: string): string {
-  const { base, suffix } = extractModifierSuffix(modelId)
-  const versionedMatch = base.match(VERSIONED_RE)
-  if (versionedMatch) {
-    return `${versionedMatch[1]}-${versionedMatch[2]}.${versionedMatch[3]}${suffix}`
-  }
-  return modelId
 }
 
 /** Extract the model family from a model ID. */
@@ -155,23 +140,6 @@ export function isOpusModel(modelId: string): boolean {
 // Model Resolution
 // ============================================================================
 
-/** Known model modifier suffixes (e.g., "-fast" for fast output mode, "-1m" for 1M context). */
-const KNOWN_MODIFIERS = ["-fast", "-1m"]
-
-/**
- * Extract known modifier suffix from a model name.
- * e.g. "claude-opus-4-6-fast" → { base: "claude-opus-4-6", suffix: "-fast" }
- */
-function extractModifierSuffix(model: string): { base: string; suffix: string } {
-  const lower = model.toLowerCase()
-  for (const modifier of KNOWN_MODIFIERS) {
-    if (lower.endsWith(modifier)) {
-      return { base: model.slice(0, -modifier.length), suffix: modifier }
-    }
-  }
-  return { base: model, suffix: "" }
-}
-
 /**
  * Normalize bracket notation to hyphen suffix.
  * Claude Code CLI sends model keys like "opus[1m]" or "claude-opus-4.6[1m]".
@@ -184,23 +152,64 @@ function normalizeBracketNotation(model: string): string {
 }
 
 /**
- * Resolve a model name to its canonical form, applying model_overrides.
+ * Resolve a model name to its canonical form, applying model_mappings.
+ *
+ * Thin wrapper over {@link resolveModelTarget} that discards the route-override
+ * suffix — the 13 legacy callers that only need the canonical NAME keep calling
+ * this unchanged (byte-identical: a name with no `@<route>` suffix strips to itself
+ * with no override, so the whole override / modifier / normalization pipeline below
+ * runs exactly as before).
+ */
+export function resolveModelName(model: string): string {
+  return resolveModelTarget(model).name
+}
+
+/**
+ * Resolve a model name to its canonical form PLUS any route-override suffix
+ * (`@cc` / `@responses` / `@messages`) the client (or an override target) pinned —
+ * the config-parse entry point for the translation matrix (RFC §5).
+ *
+ * Double-layer strip:
+ *   1. Peel the top-level client suffix ONCE at the entry (covers the direct-send path
+ *      `resolveModelNameCore`, where there is no override to strip through) — e.g. a
+ *      client sending `claude-opus-4.8@cc` with no override configured.
+ *   2. Each override-chain ring ({@link resolveOverrideTarget}) strips again BEFORE its
+ *      `state.modelIds` membership check, so an override TARGET carrying `@<route>`
+ *      (`"opus": "claude-opus-4.6@messages"`) does not punch the suffix through into the
+ *      resolved id (FAIL-1) — the discovered override rides back up with the value.
+ *
+ * Precedence: the client-typed top-level suffix is the primary intent and wins; an
+ * override-target suffix is the fallback when the client typed none. (Within the
+ * override chain, a deeper ring's suffix — closer to the final model — wins over a
+ * shallower one.)
+ */
+export function resolveModelTarget(model: string): { name: string; routeOverride?: RouteOverride } {
+  const { base: stripped, routeOverride: topOverride } = stripRouteSuffix(model)
+  const { name, routeOverride: chainOverride } = resolveNameWithOverride(stripped)
+  const routeOverride = topOverride ?? chainOverride
+  return routeOverride ? { name, routeOverride } : { name }
+}
+
+/**
+ * Resolve an already-suffix-stripped name to `{ name, routeOverride? }`, propagating
+ * any route-override discovered in the override chain. Mirrors the legacy
+ * `resolveModelName` body exactly (bracket → whole-name override → modifier-suffix
+ * redirect → core normalization + final override check); the only addition is
+ * threading the chain's `routeOverride` back out.
  *
  * Order:
  * 1. Whole-name override (normalized): "opus", "opus-1m", "claude-opus-4.6" …
- * 2. Modifier suffix ("-1m" / "-fast"): if the BASE has an override but the
- *    whole name doesn't, redirect the base and re-attach the suffix.
- *    e.g. "opus[1m]" → "opus-1m"; with no "opus-1m" override but an "opus"
- *    override → "<opus-target>-1m" (falls back to the bare target if the
- *    suffixed variant isn't available).
- * 3. Alias / hyphen-dot / date normalization (resolveModelNameCore), then a
- *    final override check on the normalized name.
+ * 2. Modifier suffix ("-1m" / "-fast"): if the BASE has an override but the whole
+ *    name doesn't, redirect the base and re-attach the suffix. The redirected base is
+ *    already suffix-stripped (so `@cc` cannot get buried mid-name).
+ * 3. Alias / hyphen-dot / date normalization (resolveModelNameCore), then a final
+ *    override check on the normalized name.
  *
- * No family-level propagation and no built-in defaults: short aliases resolve
- * only if model_overrides defines them, otherwise the name is returned as-is
- * and the upstream rejects it.
+ * No family-level propagation and no built-in defaults: short aliases resolve only if
+ * model_mappings defines them, otherwise the name is returned as-is and the upstream
+ * rejects it.
  */
-export function resolveModelName(model: string): string {
+function resolveNameWithOverride(model: string): { name: string; routeOverride?: RouteOverride } {
   // 0. Normalize bracket notation: "opus[1m]" → "opus-1m"
   const normalized = normalizeBracketNotation(model)
 
@@ -216,12 +225,12 @@ export function resolveModelName(model: string): string {
   if (suffix) {
     const baseOverride = lookupModelOverride(base)
     if (baseOverride) {
-      const resolvedBase = resolveOverrideTarget(base, baseOverride)
+      const { name: resolvedBase, routeOverride } = resolveOverrideTarget(base, baseOverride)
       const withSuffix = resolvedBase + suffix
       if (state.modelIds.size === 0 || state.modelIds.has(withSuffix)) {
-        return withSuffix
+        return routeOverride ? { name: withSuffix, routeOverride } : { name: withSuffix }
       }
-      return resolvedBase
+      return routeOverride ? { name: resolvedBase, routeOverride } : { name: resolvedBase }
     }
   }
 
@@ -234,41 +243,51 @@ export function resolveModelName(model: string): string {
     }
   }
 
-  // No family-level propagation: a short alias / family override only affects
-  // the exact keys defined in model_overrides (spelling variants are unified by
+  // No family-level propagation: a short alias / family override only affects the
+  // exact keys defined in model_mappings (spelling variants are unified by
   // normalization). To redirect a whole family, list each canonical name.
-  return resolved
+  return { name: resolved }
 }
 
 /**
- * Resolve override target: if target is directly available, use it;
- * otherwise check for chained overrides, then treat as alias.
- * If still unavailable, fall back to the best available model in the same family.
+ * Resolve override target: if target is directly available, use it; otherwise check
+ * for chained overrides, then treat as alias. If still unavailable, use the target
+ * as-is (the upstream rejects it — there is no family preference fallback).
+ *
+ * Each ring strips a trailing `@<route>` off the (config-supplied) target BEFORE the
+ * `state.modelIds` membership check, so `"opus": "claude-opus-4.6@cc"` matches the
+ * available id `claude-opus-4.6` and returns `routeOverride: "cc"` alongside it,
+ * instead of leaking `@cc` into the resolved name (FAIL-1).
  *
  * Uses `seen` set to prevent circular override chains.
  */
-function resolveOverrideTarget(source: string, target: string, seen?: Set<string>): string {
-  if (state.modelIds.size === 0 || state.modelIds.has(target)) {
-    return target
+function resolveOverrideTarget(source: string, target: string, seen?: Set<string>): { name: string; routeOverride?: RouteOverride } {
+  const { base: strippedTarget, routeOverride } = stripRouteSuffix(target)
+  const withOv = (name: string): { name: string; routeOverride?: RouteOverride } => (routeOverride ? { name, routeOverride } : { name })
+
+  if (state.modelIds.size === 0 || state.modelIds.has(strippedTarget)) {
+    return withOv(strippedTarget)
   }
 
-  // Check if target itself has an override (chained overrides: sonnet → opus → claude-opus-4.6-1m)
+  // Check if the target itself has an override (chained: sonnet → opus → claude-opus-4.6-1m)
   const visited = seen ?? new Set([source])
-  const targetOverride = lookupModelOverride(target)
-  if (targetOverride && !visited.has(target)) {
-    visited.add(target)
-    return resolveOverrideTarget(target, targetOverride, visited)
+  const targetOverride = lookupModelOverride(strippedTarget)
+  if (targetOverride && !visited.has(strippedTarget)) {
+    visited.add(strippedTarget)
+    const deeper = resolveOverrideTarget(strippedTarget, targetOverride, visited)
+    // A deeper ring's suffix wins (closer to the final model); fall back to this ring's.
+    if (deeper.routeOverride) return deeper
+    return routeOverride ? { name: deeper.name, routeOverride } : deeper
   }
 
-  // Target not directly available — might be an alias, resolve it
-  const resolved = resolveModelNameCore(target)
-  if (resolved !== target) {
-    return resolved
+  // Target not directly available — might be an alias, resolve it.
+  const resolved = resolveModelNameCore(strippedTarget)
+  if (resolved !== strippedTarget) {
+    return withOv(resolved)
   }
 
-  // Can't resolve further — use target as-is. The upstream rejects it if
-  // unavailable; there is no built-in family preference fallback.
-  return target
+  // Can't resolve further — use the (stripped) target as-is.
+  return withOv(strippedTarget)
 }
 
 /**
@@ -276,9 +295,13 @@ function resolveOverrideTarget(source: string, target: string, seen?: Set<string
  *
  * Handles:
  * 1. Modifier suffixes: "claude-opus-4-6-fast" → "claude-opus-4.6-fast"
- * 2. Short aliases: "opus" → best available opus
- * 3. Hyphenated versions: "claude-opus-4-6" → "claude-opus-4.6"
- * 4. Date suffixes: "claude-opus-4-20250514" → best opus
+ * 2. Short aliases ("opus"): resolved ONLY via model_mappings (this function has
+ *    no built-in family fallback — a bare alias with no override is returned as-is).
+ * 3. Spelling canonicalization via the live catalog: "claude-opus-4-6" →
+ *    "claude-opus-4.6" (data-driven off `/models`, not a hard-coded regex).
+ *
+ * Date suffixes are NOT stripped: "claude-opus-4-6-20250514" has no catalog twin
+ * and is returned as-is (only a matching `model_mappings` entry can remap it).
  */
 function resolveModelNameCore(model: string): string {
   // Extract modifier suffix (e.g., "-fast") before resolution
@@ -300,31 +323,49 @@ function resolveModelNameCore(model: string): string {
   return resolvedBase
 }
 
+/**
+ * Canonicalize a model name by spelling-insensitive lookup against the live
+ * `/models` catalog: if some available model's id matches `model` up to
+ * dot/hyphen/case normalization (`normalizeForMatching`), return that model's
+ * REAL id (the upstream's canonical spelling). Otherwise `undefined`.
+ *
+ * This replaces the old hard-coded `claude-{family}-{major}-{minor}` regex: the
+ * canonical form is now DATA-DRIVEN off `/models`, so it works for any model
+ * whose id contains dots (e.g. `gemini-3.1-pro-preview`), never invents a name
+ * absent from the catalog, and needs no per-model config. Spelling equivalence
+ * (hyphen↔dot) is a property of the same model, like case-insensitivity — not a
+ * policy decision, so it stays here rather than in `model_mappings`.
+ */
+function canonicalizeFromCatalog(model: string): string | undefined {
+  const target = normalizeForMatching(model)
+  for (const available of state.modelIndex.values()) {
+    if (normalizeForMatching(available.id) === target) return available.id
+  }
+  return undefined
+}
+
 /** Resolve a base model name (without modifier suffix) to its canonical form. */
 function resolveBase(model: string): string {
-  // 1. Hyphenated: claude-opus-4-6 or claude-opus-4-6-20250514 → claude-opus-4.6
-  // Pattern: claude-{family}-{major}-{minor}[-YYYYMMDD]
-  // Minor version is 1-2 digits; date suffix is 8+ digits
-  const versionedMatch = model.match(VERSIONED_RE)
-  if (versionedMatch) {
-    const dotModel = `${versionedMatch[1]}-${versionedMatch[2]}.${versionedMatch[3]}`
-    if (state.modelIds.size === 0 || state.modelIds.has(dotModel)) {
-      return dotModel
-    }
+  // Spelling normalization (hyphen→dot etc.) is data-driven off the live catalog:
+  // a client spelling like claude-opus-4-6 resolves to the upstream's real id
+  // claude-opus-4.6. Date suffixes are NOT stripped — a dated snapshot name has no
+  // catalog twin, so it falls through unchanged and only an explicit model_mappings
+  // entry can remap it (otherwise the upstream rejects it — failure stays visible).
+  //
+  // Unlike the modifier/override paths' `modelIds.size === 0` optimistic accept, base
+  // canonicalization is purely data-driven: an empty catalog means NO canonicalization
+  // (returns verbatim). This is production-unreachable — cacheModels() runs before the
+  // server serves — and the two paths never disagree because an empty catalog also
+  // leaves the base untransformed, so there is no "base dotted but suffix rejected" case.
+  const canonical = canonicalizeFromCatalog(model)
+  if (canonical !== undefined) {
+    return canonical
   }
 
-  // 2. Date-only suffix: claude-{family}-{major}-YYYYMMDD → base model (drop date).
-  // If the base isn't available, return it as-is and let the upstream reject —
-  // short aliases / families are resolved exclusively via model_overrides now.
-  const dateOnlyMatch = model.match(DATE_ONLY_RE)
-  if (dateOnlyMatch) {
-    return dateOnlyMatch[1]
-  }
-
-  // Short aliases (opus/sonnet/haiku) and anything else are returned verbatim;
-  // they only resolve if model_overrides defines them, otherwise the upstream
-  // rejects the unknown model (resolution intentionally fails — no built-in
-  // family preference fallback).
+  // Short aliases (opus/sonnet/haiku), dated snapshot names, and anything else are
+  // returned verbatim; they only resolve if model_mappings defines them, otherwise
+  // the upstream rejects the unknown model (resolution intentionally fails — no
+  // built-in family preference fallback and no date-suffix stripping).
   return model
 }
 

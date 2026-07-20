@@ -1,0 +1,15 @@
+/* PoC: Tailwind v4 与 antd CSS-in-JS 共存的层叠控制。
+ *
+ * antd 的 reset/组件样式经 @ant-design/cssinjs 注入，用 :where() 保持低优先级。
+ * Tailwind v4 的 preflight + utilities 走 @layer。为让 Tailwind utility 能稳定覆盖
+ * antd（而非相互打架），把 Tailwind 显式放进具名 layer——具名 @layer 优先级低于
+ * 无 layer 的规则，但 antd 的 :where() 本身零特异性，故 Tailwind utility（具名 layer
+ * 但有类特异性）可覆盖 antd 默认。真实层叠效果由 `vite build` 产出的 CSS 验证。 */
+@layer theme, base, antd, components, utilities;
+
+@import "tailwindcss";
+
+/* PoC 用：一个 Tailwind utility 场景，验证它能盖过 antd 组件的内边距等默认。 */
+.poc-tw-override {
+  padding: 0 !important;
+}

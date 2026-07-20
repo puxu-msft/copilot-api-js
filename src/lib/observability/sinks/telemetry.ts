@@ -26,6 +26,7 @@ import {
   //
   CAPPED_DIMENSION_NAMES,
   extractTelemetryKeys,
+  extractThinkingBlockCounts,
 } from "../telemetry-dimensions"
 
 export class TelemetrySink {
@@ -38,6 +39,7 @@ export class TelemetrySink {
       },
       // Only the two terminal kinds matter — aborted intentionally excluded.
       (event) => event.kind === "request.completed" || event.kind === "request.failed",
+      { name: "telemetry-sink" },
     )
   }
 
@@ -49,18 +51,44 @@ export class TelemetrySink {
     if (event.kind !== "request.completed" && event.kind !== "request.failed") return
 
     const entry = event.entry
+    // The settled verdict/usage live on the final attempt's `upstreamResponse` leg
+    // (`_index.derived.responseSuccess` when the producer wires it).
+    const attempts = entry.attempts ?? []
+    const committedAttempt = attempts.find((attempt) => attempt.dispatchVerdict === "committed") ?? attempts.at(-1)
+    const finalUpstream = committedAttempt?.upstreamResponse
+    const candidateIds = new Set(attempts.flatMap((attempt) => (attempt.candidateId ? [attempt.candidateId] : [])))
+    const hedgeIds = new Set(attempts.flatMap((attempt) => (attempt.candidateRole === "hedge" && attempt.candidateId ? [attempt.candidateId] : [])))
+    const recoveryIds = new Set(attempts.flatMap((attempt) => (attempt.candidateRole === "recovery" && attempt.candidateId ? [attempt.candidateId] : [])))
     recordSettledRequest(
       extractTelemetryKeys(entry, event.ctx),
       {
         startedAt: entry.startedAt,
         endedAt: entry.endedAt,
-        success: entry.outboundResponse?.success ?? event.kind === "request.completed",
-        usage: entry.outboundResponse?.usage,
+        success: entry._index?.derived?.responseSuccess ?? finalUpstream?.success ?? event.kind === "request.completed",
+        usage: finalUpstream?.usage,
         // Per-token cost: the billing multiplier rides on the ctx snapshot
         // (state.modelIndex-resolved), not the entry. Undefined for token-based accounts.
         multiplier: event.ctx.multiplier,
         // Queue-wait distribution: time spent queued by the rate limiter before dispatch.
         queueWaitMs: entry.queueWaitMs,
+        // Per-request thinking-block emptiness tally (single-point extraction from the recorded
+        // upstream leg; feeds the thinkingBlocks* feature measures across every dimension).
+        thinkingBlocks: extractThinkingBlockCounts(entry),
+        // 首包埋点（spec 2026-07-14 §6.1）：时序度量（ms，相对 started_at）喂 DDSketch 分布。
+        // committed attempt 的上游 epoch 减 started_at 得真 TTFT；client 3 刻已是 offset。
+        ...(committedAttempt?.upstreamFirstTokenAt !== undefined && { upstreamFirstTokenMs: committedAttempt.upstreamFirstTokenAt - entry.startedAt }),
+        ...(entry.timing?.client?.firstRealMs !== undefined && { clientFirstRealMs: entry.timing.client.firstRealMs }),
+        ...(entry.timing?.client?.firstRealMs !== undefined
+          && entry.timing.client.bufferHoldStartMs !== undefined && { bufferHoldMs: entry.timing.client.firstRealMs - entry.timing.client.bufferHoldStartMs }),
+        generation: {
+          candidates: candidateIds.size,
+          dispatches: attempts.length,
+          hedgeCandidates: hedgeIds.size,
+          hedgeWins: attempts.some((attempt) => attempt.candidateRole === "hedge" && attempt.candidateVerdict === "winner") ? 1 : 0,
+          recoveryCandidates: recoveryIds.size,
+          cancelledDispatches: attempts.filter((attempt) => attempt.dispatchVerdict === "cancelled").length,
+          unknownUsageDispatches: attempts.filter((attempt) => attempt.dispatchVerdict !== "committed" && attempt.upstreamResponse?.usage === undefined).length,
+        },
       },
       CAPPED_DIMENSION_NAMES,
     )

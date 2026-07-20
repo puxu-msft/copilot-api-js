@@ -1,0 +1,423 @@
+/**
+ * Integration tests for GitHub Copilot API compatibility.
+ *
+ * These tests use real GitHub tokens to verify the proxy works correctly
+ * with the actual GitHub Copilot API.
+ *
+ * Run with: bun test tests/integration/copilot-api.test.ts
+ */
+
+import {
+  //
+  describe,
+  test,
+  expect,
+  beforeAll,
+  afterAll,
+} from "bun:test"
+
+import type {
+  //
+  MessagesPayload,
+  Message as AnthropicResponse,
+} from "~/types/api/anthropic"
+import type {
+  //
+  ChatCompletionsPayload,
+  ChatCompletionResponse,
+} from "~/types/api/openai-chat-completions"
+
+import { createAnthropicMessages } from "~/lib/anthropic/client"
+import { supportsDirectAnthropicApi } from "~/lib/anthropic/features"
+import { getModels } from "~/lib/models/client"
+import { createChatCompletions } from "~/lib/openai/chat-completions-client"
+import {
+  //
+  restoreStateForTests,
+  setModels,
+  setStateForTests,
+  snapshotStateForTests,
+  state,
+} from "~/lib/state"
+import { getCopilotToken } from "~/lib/token/copilot-client"
+
+import {
+  //
+  getE2EMode,
+  getGitHubToken,
+} from "./config"
+
+// Helper to assert non-streaming response
+function assertNonStreamingResponse(response: ChatCompletionResponse | AsyncIterable<unknown>): ChatCompletionResponse {
+  if ("choices" in response) {
+    return response
+  }
+  throw new Error("Expected non-streaming response")
+}
+
+function assertAnthropicResponse(response: AnthropicResponse | AsyncIterable<unknown>): AnthropicResponse {
+  if ("content" in response) {
+    return response
+  }
+  throw new Error("Expected non-streaming Anthropic response")
+}
+
+// Skip all tests if no token available
+const describeWithToken = getE2EMode() !== "mock" ? describe : describe.skip
+
+describeWithToken("GitHub Copilot API Integration", () => {
+  // Restore global state after the whole block: this beforeAll mutates the shared
+  // `state` singleton (stripServerTools etc.) and bun runs the suite in one process,
+  // so without this the mutation leaks into later files (test-pollution). Snapshot is
+  // captured at the top of beforeAll (before any mutation), restored in afterAll.
+  let stateSnapshot: ReturnType<typeof snapshotStateForTests>
+  afterAll(() => {
+    if (stateSnapshot) restoreStateForTests(stateSnapshot)
+  })
+  // Cached after beforeAll; picked dynamically so the test doesn't lock onto
+  // a model ID that the account's GHC catalog or upstream rolls off later.
+  // Convention: prefer a recent gpt-5.x SKU that advertises /chat/completions
+  // upstream — older gpt-4o is acceptable as a final fallback.
+  let gptChatModel: string
+
+  function pickGptChatModel(): string {
+    const data = state.models?.data ?? []
+    const supportsChat = (id: string) => data.find((m) => m.id === id)?.supported_endpoints?.includes("/chat/completions") ?? false
+    const preferred = ["gpt-5.5", "gpt-5.4", "gpt-5.2", "gpt-5.1", "gpt-5", "gpt-4o", "gpt-4.1"]
+    for (const id of preferred) {
+      if (supportsChat(id)) return id
+    }
+    // Last resort: any GPT-family model with /chat/completions advertised.
+    const any = data.find((m) => m.id.startsWith("gpt-") && m.supported_endpoints?.includes("/chat/completions"))
+    return any?.id ?? "gpt-4o"
+  }
+
+  beforeAll(async () => {
+    stateSnapshot = snapshotStateForTests()
+    const githubToken = getGitHubToken()
+    if (!githubToken) {
+      // This shouldn't happen since describeWithToken should skip
+      throw new Error("GITHUB_TOKEN required but not found")
+    }
+
+    // Initialize state
+    setStateForTests({
+      githubToken,
+      accountType: "individual",
+    })
+
+    // Get Copilot token
+    const { token } = await getCopilotToken()
+    setStateForTests({ copilotToken: token })
+
+    // Cache models - getModels returns ModelsResponse which always has data
+    // but we add runtime check for robustness
+    const models = await getModels()
+
+    if (!models?.data) {
+      throw new Error("Failed to fetch models from GitHub Copilot API. " + "Check if your GITHUB_TOKEN has Copilot access.")
+    }
+    setModels(models)
+
+    gptChatModel = pickGptChatModel()
+    console.log(`[Setup] Loaded ${models.data.length} models; using GPT chat model: ${gptChatModel}`)
+  }, 30000) // 30 second timeout for setup
+
+  describe("Models API", () => {
+    test("should fetch available models", async () => {
+      const models = await getModels()
+
+      expect(models).toBeDefined()
+      if (!models?.data) throw new Error("Failed to fetch models")
+      expect(models.data).toBeInstanceOf(Array)
+      expect(models.data.length).toBeGreaterThan(0)
+
+      // Check model structure
+      const model = models.data[0]
+      expect(model.id).toBeDefined()
+      expect(typeof model.id).toBe("string")
+    })
+
+    test("should include Claude models", async () => {
+      const models = await getModels()
+      if (!models?.data) throw new Error("Failed to fetch models")
+      const claudeModels = models.data.filter((m) => m.id.includes("claude"))
+
+      expect(claudeModels.length).toBeGreaterThan(0)
+      console.log("[Models] Claude models:", claudeModels.map((m) => m.id).join(", "))
+    })
+
+    test("should include GPT models", async () => {
+      const models = await getModels()
+      if (!models?.data) throw new Error("Failed to fetch models")
+      const gptModels = models.data.filter((m) => m.id.includes("gpt"))
+
+      expect(gptModels.length).toBeGreaterThan(0)
+      console.log("[Models] GPT models:", gptModels.map((m) => m.id).join(", "))
+    })
+  })
+
+  describe("OpenAI Chat Completions API", () => {
+    test("should complete simple chat with GPT model", async () => {
+      const payload: ChatCompletionsPayload = {
+        model: gptChatModel,
+        messages: [{ role: "user", content: "Say 'hello' and nothing else." }],
+        max_tokens: 10,
+      }
+
+      const rawResponse = await createChatCompletions(payload)
+      const response = assertNonStreamingResponse(rawResponse)
+
+      expect(response).toBeDefined()
+      expect(response.id).toBeDefined()
+      expect(response.choices).toBeInstanceOf(Array)
+      expect(response.choices.length).toBeGreaterThan(0)
+      expect(response.choices[0].message.content).toBeDefined()
+      expect(response.usage).toBeDefined()
+
+      console.log("[OpenAI] Response:", response.choices[0].message.content)
+    })
+
+    test("should complete chat with Claude model via OpenAI endpoint", async () => {
+      // Prefer the project's default sonnet (claude-sonnet-4.6) which is
+      // known to work on /chat/completions for this account. The fallback
+      // string is only used when the model list lookup fails entirely.
+      const claudeModel =
+        state.models?.data.find((m) => m.id === "claude-sonnet-4.6")?.id
+        ?? state.models?.data.find((m) => m.id.startsWith("claude-sonnet-"))?.id
+        ?? state.models?.data.find((m) => m.id.includes("claude"))?.id
+        ?? "claude-sonnet-4.6"
+
+      const payload: ChatCompletionsPayload = {
+        model: claudeModel,
+        messages: [
+          {
+            role: "user",
+            content: "Respond with exactly: 'Hello from Claude'",
+          },
+        ],
+        max_tokens: 20,
+      }
+
+      const rawResponse = await createChatCompletions(payload)
+      const response = assertNonStreamingResponse(rawResponse)
+
+      expect(response).toBeDefined()
+      expect(response.id).toBeDefined()
+      // Some Claude SKUs on Copilot return empty `choices[]` when invoked
+      // via the OpenAI-shape /chat/completions endpoint (upstream quirk).
+      // Predicate-fail with a useful message instead of TypeError-ing on
+      // `choices[0].message` below.
+      expect(response.choices).toBeInstanceOf(Array)
+      expect(response.choices.length).toBeGreaterThan(0)
+      expect(response.choices[0].message.content).toBeDefined()
+
+      console.log(`[OpenAI+Claude] Model: ${claudeModel}, Response:`, response.choices[0].message.content)
+    })
+
+    test("should handle streaming response", async () => {
+      const payload: ChatCompletionsPayload = {
+        model: gptChatModel,
+        messages: [{ role: "user", content: "Count from 1 to 3." }],
+        max_tokens: 50,
+        stream: true,
+      }
+
+      const response = await createChatCompletions(payload)
+
+      // Streaming response returns an AsyncGenerator
+      expect(response).toBeDefined()
+      expect(Symbol.asyncIterator in Object(response)).toBe(true)
+
+      // Consume a few events to verify streaming works
+      let eventCount = 0
+      for await (const _event of response as AsyncIterable<unknown>) {
+        eventCount++
+        if (eventCount >= 3) break // Just verify we get some events
+      }
+      expect(eventCount).toBeGreaterThan(0)
+      console.log(`[OpenAI+Stream] Received ${eventCount}+ events`)
+    })
+
+    test("should handle system message", async () => {
+      const payload: ChatCompletionsPayload = {
+        model: gptChatModel,
+        messages: [
+          {
+            role: "system",
+            content: "You are a pirate. Respond in pirate speak.",
+          },
+          { role: "user", content: "Say hello." },
+        ],
+        max_tokens: 50,
+      }
+
+      const rawResponse = await createChatCompletions(payload)
+      const response = assertNonStreamingResponse(rawResponse)
+
+      expect(response).toBeDefined()
+      expect(response.choices[0].message.content).toBeDefined()
+      console.log("[OpenAI+System] Response:", response.choices[0].message.content)
+    })
+  })
+
+  describe("Anthropic Direct API", () => {
+    test("should detect Claude model as supporting direct API", () => {
+      const claudeModel = state.models?.data.find((m) => m.id.includes("claude"))?.id || "claude-sonnet-4.6"
+
+      const supports = supportsDirectAnthropicApi(claudeModel).supported
+      expect(supports).toBe(true)
+    })
+
+    test("should NOT support direct API for GPT models", () => {
+      const supports = supportsDirectAnthropicApi("gpt-5.5").supported
+      expect(supports).toBe(false)
+    })
+
+    test("should complete simple message via direct Anthropic API", async () => {
+      const claudeModel = state.models?.data.find((m) => m.id.includes("claude"))?.id || "claude-sonnet-4.6"
+
+      const payload: MessagesPayload = {
+        model: claudeModel,
+        messages: [
+          {
+            role: "user",
+            content: "Respond with exactly: 'Direct API works'",
+          },
+        ],
+        max_tokens: 20,
+      }
+
+      const rawResponse = await createAnthropicMessages(payload)
+      const response = assertAnthropicResponse(rawResponse)
+
+      // Non-streaming response returns JSON object directly
+      expect(response).toBeDefined()
+      expect(typeof response).toBe("object")
+
+      // Check response structure
+      expect(response.id).toBeDefined()
+      expect(response.type).toBe("message")
+      expect(response.content).toBeInstanceOf(Array)
+      console.log("[Anthropic Direct] Response:", JSON.stringify(response.content))
+    })
+
+    test("should handle system prompt in direct API", async () => {
+      const claudeModel = state.models?.data.find((m) => m.id.includes("claude"))?.id || "claude-sonnet-4.6"
+
+      const payload: MessagesPayload = {
+        model: claudeModel,
+        system: "You are a helpful coding assistant.",
+        messages: [{ role: "user", content: "What language is this: console.log('hi')" }],
+        max_tokens: 50,
+      }
+
+      const rawResponse = await createAnthropicMessages(payload)
+      const response = assertAnthropicResponse(rawResponse)
+
+      expect(response).toBeDefined()
+      expect(response.content).toBeInstanceOf(Array)
+      console.log("[Anthropic+System] Response:", JSON.stringify(response.content))
+    })
+  })
+
+  describe("Tool Calling", () => {
+    test("should handle tool definition in OpenAI format", async () => {
+      const payload: ChatCompletionsPayload = {
+        model: gptChatModel,
+        messages: [{ role: "user", content: "What's the weather in Tokyo?" }],
+        tools: [
+          {
+            type: "function",
+            function: {
+              name: "get_weather",
+              description: "Get current weather for a location",
+              parameters: {
+                type: "object",
+                properties: {
+                  location: { type: "string", description: "City name" },
+                },
+                required: ["location"],
+              },
+            },
+          },
+        ],
+        tool_choice: "auto",
+        max_tokens: 100,
+      }
+
+      const rawResponse = await createChatCompletions(payload)
+      const response = assertNonStreamingResponse(rawResponse)
+
+      expect(response).toBeDefined()
+      expect(response.choices).toBeInstanceOf(Array)
+
+      // Model may or may not call the tool
+      const choice = response.choices[0]
+      console.log("[OpenAI+Tools] Response:", JSON.stringify(choice.message))
+    })
+
+    test("should handle Anthropic tool format", async () => {
+      const claudeModel = state.models?.data.find((m) => m.id.includes("claude"))?.id || "claude-sonnet-4.6"
+
+      const payload: MessagesPayload = {
+        model: claudeModel,
+        messages: [{ role: "user", content: "What's the weather in Paris?" }],
+        tools: [
+          {
+            name: "get_weather",
+            description: "Get current weather for a location",
+            input_schema: {
+              type: "object",
+              properties: {
+                location: { type: "string", description: "City name" },
+              },
+              required: ["location"],
+            },
+          },
+        ],
+        max_tokens: 200,
+      }
+
+      const rawResponse = await createAnthropicMessages(payload)
+      const response = assertAnthropicResponse(rawResponse)
+
+      expect(response).toBeDefined()
+      expect(response.content).toBeInstanceOf(Array)
+      console.log("[Anthropic+Tools] Response:", JSON.stringify(response.content))
+    })
+  })
+
+  describe("Error Handling", () => {
+    test("should handle invalid model gracefully", async () => {
+      const payload: ChatCompletionsPayload = {
+        model: "non-existent-model-xyz",
+        messages: [{ role: "user", content: "Hello" }],
+        max_tokens: 10,
+      }
+
+      try {
+        await createChatCompletions(payload)
+        // If it doesn't throw, that's also acceptable (API may return error in response)
+      } catch (error) {
+        expect(error).toBeDefined()
+        console.log("[Error] Invalid model error:", error)
+      }
+    })
+
+    test("should handle empty messages gracefully", async () => {
+      const payload: ChatCompletionsPayload = {
+        model: gptChatModel,
+        messages: [],
+        max_tokens: 10,
+      }
+
+      try {
+        await createChatCompletions(payload)
+      } catch (error) {
+        expect(error).toBeDefined()
+        console.log("[Error] Empty messages error:", error)
+      }
+    })
+  })
+})

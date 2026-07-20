@@ -16,7 +16,7 @@ import type {
   RetryAction,
   RetryContext,
   RetryStrategy,
-} from "../pipeline"
+} from "../retry-types"
 
 /** Default delay before network retry (ms) */
 const NETWORK_RETRY_DELAY_MS = 1000

@@ -1,38 +1,261 @@
 import {
   //
+  fireEvent,
   render,
   screen,
-  fireEvent,
 } from "@testing-library/react"
+import userEvent from "@testing-library/user-event"
+import { MemoryRouter } from "react-router-dom"
 import {
   //
+  beforeEach,
   describe,
   expect,
   it,
   vi,
 } from "vitest"
 
+// `useModels` is a drivable mock (vi.hoisted so the fn exists before the hoisted
+// vi.mock factory runs) — most tests use the default two-model catalog set in
+// beforeEach, while the error-state test overrides it with an isError result.
+const { mockUseModels } = vi.hoisted(() => ({ mockUseModels: vi.fn() }))
+
 vi.mock("@/hooks/useModels", () => ({
-  useModels: () => ({
+  useModels: () => mockUseModels(),
+}))
+
+const DEFAULT_MODELS_RESULT = {
+  data: {
+    data: [
+      {
+        id: "claude-opus-4.8",
+        name: "Opus",
+        vendor: "Anthropic",
+        version: "4.8",
+        capabilities: { type: "chat", supports: { vision: true }, limits: { max_context_window_tokens: 1_000_000 } },
+        billing: { multiplier: 3 },
+      },
+      { id: "gpt-5.5", name: "GPT", vendor: "OpenAI", version: "5.5", capabilities: { type: "chat", supports: {}, limits: {} }, billing: { multiplier: 1 } },
+    ],
+  },
+  isLoading: false,
+  isError: false,
+  error: null,
+}
+
+vi.mock("@/hooks/useModelTelemetry", () => ({
+  useModelTelemetry: () => ({
     data: {
-      data: [
-        { id: "claude-opus-4.8", name: "Opus", vendor: "Anthropic", version: "4.8" },
-        { id: "gpt-5.5", name: "GPT", vendor: "OpenAI", version: "5.5" },
+      modelsSinceStart: [],
+      modelsLast7d: [
+        {
+          model: "claude-opus-4.8",
+          requestCount: 12,
+          successCount: 12,
+          failureCount: 0,
+          totalDurationMs: 0,
+          averageDurationMs: 0,
+          usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0, cacheReadInputTokens: 0, cacheCreationInputTokens: 0, reasoningTokens: 0 },
+        },
+        {
+          // A pure-alias failing request with no catalog match → surfaces in "Unmatched telemetry".
+          model: "ghost-alias",
+          requestCount: 3,
+          successCount: 0,
+          failureCount: 3,
+          totalDurationMs: 0,
+          averageDurationMs: 0,
+          usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0, cacheReadInputTokens: 0, cacheCreationInputTokens: 0, reasoningTokens: 0 },
+        },
       ],
     },
-    isLoading: false,
   }),
 }))
 
 const { ModelsPage } = await import("@/components/models/ModelsPage")
 
+/** ModelsPage now reads selection from the URL (`?model=`), so it needs a router. */
+function renderPage() {
+  return render(
+    <MemoryRouter initialEntries={["/models"]}>
+      <ModelsPage />
+    </MemoryRouter>,
+  )
+}
+
 describe("ModelsPage", () => {
-  it("renders model rows + raw toggle", () => {
-    render(<ModelsPage />)
+  // Column visibility persists to localStorage; clear it so one test's toggles
+  // don't leak into the next (jsdom localStorage is shared across a file's tests).
+  beforeEach(() => {
+    localStorage.clear()
+    mockUseModels.mockReturnValue(DEFAULT_MODELS_RESULT)
+  })
+
+  it("renders rows, count, and raw toggle", () => {
+    renderPage()
     expect(screen.getByText("claude-opus-4.8")).toBeDefined()
-    expect(screen.getByText("Anthropic")).toBeDefined()
-    expect(screen.getByText(/Models · 2/)).toBeDefined()
+    expect(screen.getByText("gpt-5.5")).toBeDefined()
+    expect(screen.getByText(/Models · 2\/2/)).toBeDefined()
+    expect(screen.getByRole("columnheader", { name: /Vendor/i })).toBeDefined()
     fireEvent.click(screen.getByText("raw JSON"))
-    expect(screen.getByText("table")).toBeDefined() // toggle flipped
+    expect(screen.getByText("table")).toBeDefined()
+  })
+
+  // The header count region summarizes the catalog's breadth: not just the
+  // visible/total row count but also the distinct vendor and endpoint counts
+  // (parity with the Vue /ui list header). Match header-specific fragments —
+  // `/vendors/`/`/endpoints/` alone would collide with the filter bar's
+  // "all vendors"/"all endpoints" select labels.
+  it("header shows vendors and endpoints counts", () => {
+    renderPage()
+    // Default two-model catalog: Anthropic + OpenAI = 2 vendors; both are
+    // type "chat" → the legacy endpoint map yields a single distinct endpoint.
+    expect(screen.getByText(/Models · 2\/2 · 2 vendors · 1 endpoints/)).toBeDefined()
+  })
+
+  it("filters by search (id/name)", () => {
+    renderPage()
+    fireEvent.change(screen.getByLabelText("Search models"), { target: { value: "gpt" } })
+    expect(screen.getByText("gpt-5.5")).toBeDefined()
+    expect(screen.queryByText("claude-opus-4.8")).toBeNull()
+    expect(screen.getByText(/Models · 1\/2/)).toBeDefined()
+  })
+
+  it("hides a column via the column menu", async () => {
+    const user = userEvent.setup()
+    renderPage()
+    expect(screen.getByRole("columnheader", { name: /Vendor/i })).toBeDefined()
+    await user.click(screen.getByRole("button", { name: "Columns" }))
+    await user.click(screen.getByRole("menuitemcheckbox", { name: /Vendor/i }))
+    expect(screen.queryByRole("columnheader", { name: /Vendor/i })).toBeNull()
+  })
+
+  it("shows the requests(7d) column when enabled and renders the joined count", async () => {
+    const user = userEvent.setup()
+    renderPage()
+    // requests7d is hidden by default; enable it via the column menu
+    await user.click(screen.getByRole("button", { name: "Columns" }))
+    await user.click(screen.getByRole("menuitemcheckbox", { name: /Req 7d/i }))
+    expect(screen.getByText("12")).toBeDefined()
+  })
+
+  it("opens the detail panel on row click and closes it via the × button", () => {
+    renderPage()
+    expect(screen.queryByRole("dialog")).toBeNull()
+    fireEvent.click(screen.getByText("claude-opus-4.8"))
+    // ModelDetail is a Radix Dialog (modal drawer) — role=dialog, named by its title (the model id).
+    const panel = screen.getByRole("dialog", { name: /claude-opus-4\.8/i })
+    expect(panel).toBeDefined()
+    // Overview tab is active by default — the vertical tab rail is present.
+    expect(screen.getByRole("tab", { name: "Capabilities" })).toBeDefined()
+    expect(screen.getByRole("tab", { name: "Raw JSON" })).toBeDefined()
+    fireEvent.click(screen.getByRole("button", { name: /Close model detail/i }))
+    expect(screen.queryByRole("dialog")).toBeNull()
+  })
+
+  it("makes each row's id a keyboard-reachable button that opens the panel", () => {
+    renderPage()
+    // The id is a real <button> (native keyboard operability), not a bare cell.
+    const trigger = screen.getByRole("button", { name: /Open details for claude-opus-4\.8/i })
+    expect(trigger).toBeDefined()
+    fireEvent.click(trigger)
+    expect(screen.getByRole("dialog", { name: /claude-opus-4\.8/i })).toBeDefined()
+  })
+
+  // Task B2 layout invariant: the detail is a modal Dialog drawer that OVERLAYS the
+  // full-width table (portal, not a co-planar flex sibling that squeezes it) — so
+  // selecting a model must yield a role=dialog while the list stays mounted in the
+  // same tree simultaneously. Radix marks the backdrop content aria-hidden while the
+  // modal is open, so include hidden nodes when asserting the list is still present
+  // (not unmounted). Two tables render (models list + UnmatchedTelemetry); scope to
+  // the models list via its Vendor columnheader, and confirm a non-selected row
+  // (gpt-5.5) is still there — proof the drawer overlays rather than replacing the list.
+  it("renders the model detail as a modal dialog overlaying (not squeezing/unmounting) the list", async () => {
+    renderPage()
+    fireEvent.click(screen.getByText("claude-opus-4.8"))
+    expect(await screen.findByRole("dialog", { name: /claude-opus-4\.8/i })).toBeDefined()
+    expect(screen.getAllByRole("table", { hidden: true }).length).toBeGreaterThanOrEqual(1)
+    expect(screen.getByRole("columnheader", { name: /Vendor/i, hidden: true })).toBeDefined()
+    expect(screen.getByText("gpt-5.5")).toBeDefined()
+  })
+
+  it("sortable headers are keyboard-operable and expose aria-sort", async () => {
+    const user = userEvent.setup()
+    renderPage()
+    const vendorHeader = screen.getByRole("columnheader", { name: /Vendor/i })
+    expect(vendorHeader.getAttribute("aria-sort")).toBe("none")
+    // The header's control is a real button (WCAG 2.1.1); clicking it drives
+    // TanStack's controlled sort (Vendor is a string column → ascending first).
+    await user.click(screen.getByRole("button", { name: /Vendor/i }))
+    expect(vendorHeader.getAttribute("aria-sort")).toBe("ascending")
+  })
+
+  it("surfaces unmatched telemetry (no catalog model) rather than dropping it", () => {
+    renderPage()
+    expect(screen.getByText(/Unmatched telemetry/i)).toBeDefined()
+    expect(screen.getByText("ghost-alias")).toBeDefined()
+  })
+
+  // Catalog-empty is distinct from filtered-empty: a genuinely empty catalog says
+  // "No models in the catalog." with NO relax-filters guidance (there is nothing to
+  // relax). This is also a positive control for the error tests' negative assertion —
+  // an empty catalog is not an error, so `failed to load` must be absent. getByText
+  // throws when absent; queryByText returns null (project convention — jest-dom
+  // matchers are not registered).
+  it("renders 'no models in the catalog' (no filter guidance) when the catalog resolves to zero models", () => {
+    mockUseModels.mockReturnValue({ data: { data: [] }, isLoading: false, isError: false, error: null })
+    renderPage()
+    expect(screen.getByText(/no models in the catalog/i)).toBeDefined()
+    // Nothing is filtered out — the relax-filters guidance and the filtered-empty
+    // message must NOT appear (paired negative control for the filtered-empty test).
+    expect(screen.queryByText(/relaxing your search or clearing/i)).toBeNull()
+    expect(screen.queryByText(/no models match/i)).toBeNull()
+    expect(screen.queryByText(/failed to load models/i)).toBeNull()
+  })
+
+  // Positive control for the catalog-empty test's negative assertions: a NON-empty
+  // catalog filtered down to zero shows the filter-specific message AND the
+  // relax-filters guidance sub-line (and NOT the catalog-empty text).
+  it("shows relax-filters guidance when a non-empty catalog filters to zero", () => {
+    renderPage() // default two-model catalog
+    fireEvent.change(screen.getByLabelText("Search models"), { target: { value: "zzzz-no-such-model" } })
+    expect(screen.getByText(/no models match the current filters/i)).toBeDefined()
+    expect(screen.getByText(/relaxing your search or clearing a filter/i)).toBeDefined()
+    expect(screen.queryByText(/no models in the catalog/i)).toBeNull()
+  })
+
+  // The raw view must render the FULL API response — the `{ data: [...] }` envelope,
+  // not just the bare models array (the pre-migration `<pre>` dumped only the array,
+  // dropping the envelope, a regression vs the Vue list). RawJsonView's source mode is
+  // the default; a top-level "data" key is the discriminator (model objects use
+  // id/name/vendor/… — the array dump contained no `"data"` key anywhere).
+  it("raw view shows the full API envelope (top-level data key), and can switch to tree", () => {
+    renderPage()
+    fireEvent.click(screen.getByText("raw JSON"))
+    const panel = screen.getByRole("tabpanel")
+    expect(panel.textContent).toContain('"data"')
+    // Positive control: the models themselves are still rendered inside the envelope,
+    // so a passing "data" assertion isn't matching an empty/omitted payload.
+    expect(panel.textContent).toContain("claude-opus-4.8")
+    // Dual view: switch to the tree tab — the envelope's `data` key surfaces as a node label.
+    fireEvent.click(screen.getByRole("tab", { name: "树" }))
+    expect(screen.getByText("data")).toBeDefined()
+  })
+
+  it("renders error state distinct from empty when query fails", () => {
+    mockUseModels.mockReturnValue({ data: undefined, isLoading: false, isError: true, error: new Error("boom") })
+    renderPage()
+    expect(screen.getByText(/failed to load models/i)).toBeDefined()
+    expect(screen.getByText(/boom/)).toBeDefined()
+    expect(screen.queryByText(/no models match/i)).toBeNull()
+  })
+
+  // Covers the `String(error)` fallback leg — react-query's `error` is `unknown`, so a
+  // non-Error rejection (e.g. a thrown string) must still surface a readable message.
+  it("stringifies a non-Error rejection in the error branch", () => {
+    mockUseModels.mockReturnValue({ data: undefined, isLoading: false, isError: true, error: "network down" })
+    renderPage()
+    expect(screen.getByText(/failed to load models/i)).toBeDefined()
+    expect(screen.getByText(/network down/)).toBeDefined()
   })
 })

@@ -1,9 +1,11 @@
 /**
  * v4 pipeline — anthropic-messages FormatCodec (P2.6 / C2).
  *
- * Anthropic /v1/messages is the "bypass direct" format: there is NO protocol
- * translation — `translateOut` / `renderResponse` / `renderResponseNonStreaming`
- * are all identity (the upstream IS the Anthropic Messages API). What makes it the
+ * Anthropic /v1/messages is the "bypass direct" format for the DIRECT leg: there is
+ * NO protocol translation — `translateOut` / `renderResponse` / `renderResponseNonStreaming`
+ * are all identity (the upstream IS the Anthropic Messages API). A FORWARD translate leg
+ * (`@cc`/`@responses`) instead delegates request + non-streaming-response translation to the
+ * hub (streaming response translation is still fail-fast until Phase 4). What makes it the
  * heaviest codec is the request side: the ordered sanitize chain (tool-preprocess
  * → tool-name → sanitize, B/A steps) and the B1-B12 wire preparation, plus the 8
  * retry strategies (anthropic-strategies.ts) and the beta-probe negotiation.
@@ -11,13 +13,15 @@
  * **Per-request stateful factory.** `createAnthropicCodec({ betaProbe, preprocessInfo })`
  * is built once per request. The closure holds: the RequestContext (parse-created),
  * the truncation/message-mapping baseline (preprocessed, pre-initial-sanitize), the
- * client `anthropic-beta` header, the initial sanitization info, the resanitize
- * closure, and the latest effective messages/thinking (updated by `sampleRequest`,
- * read by the route to rebuild retry pipeline-info — RFC §12.4/§12.5).
+ * initial sanitization info, and the resanitize closure — the per-request accessors the
+ * route reads to rebuild retry pipeline-info (RFC §12.4/§12.5). The OUTBOUND-side state
+ * (latest effective messages, stripped cache_control subfields, outbound betas) now lives
+ * on the CellAssembly leg → ctx side-channels, not this closure (RFC 2026-07-13 §11).
  *
  * **betaProbe is a cross-component handle** (RFC §2.4): the handler builds it once
- * and injects the SAME instance into both this codec (which records the outbound
- * betas in `prepareWire`) and the strategies (the unsupported-beta strategy reads
+ * and injects the SAME instance into both `parse` (which threads it onto `env.requestState`
+ * for the anthropic-cell's `prepareWire` to record the outbound betas) and the strategies
+ * (the unsupported-beta strategy reads
  * the candidates). The factory takes it as a parameter.
  *
  * Mirrors the deferred markers of openai-cc (P2.2-D*): system-prompt injection is
@@ -34,15 +38,11 @@ import type {
 import type { RequestContext } from "~/lib/context/request"
 import type {
   //
-  EffectiveRequest,
-  WireRequest,
-} from "~/lib/context/types"
-import type {
-  //
   EndpointType,
   PreprocessInfo,
 } from "~/lib/history/types"
 import type { Model } from "~/lib/models/client"
+import type { CcToAnthropicStreamMeta } from "~/lib/openai/translate"
 import type {
   //
   ClientFormat,
@@ -54,39 +54,42 @@ import type {
   ResolvedModel,
   UpstreamEndpoint,
 } from "~/lib/pipeline/envelope"
+import type { RequestState } from "~/lib/pipeline/request-state"
 import type { RequestRewrite } from "~/lib/pipeline/rewrite-registry"
 import type {
   //
+  CandidateResponseRenderer,
   ClassifiedStreamError,
   ClientFrame,
   FormatCodec,
-  PreparedRequest,
   RawHttpRequest,
-  RequestSample,
   ResponseAccumulator,
-  RouteDecision,
 } from "~/lib/pipeline/types"
-import type { PrepareHints } from "~/lib/request/pipeline"
+import type { PrepareHints } from "~/lib/request/retry-types"
 import type {
   //
   MessageParam,
   MessagesPayload,
 } from "~/types/api/anthropic"
 
-import { supportsDirectAnthropicApi } from "~/lib/anthropic/features"
 import { runAnthropicPayloadRewrites } from "~/lib/anthropic/payload-rewrites"
-import { prepareAnthropicRequest } from "~/lib/anthropic/request-preparation"
+import { createBetaProbe } from "~/lib/anthropic/pipeline"
 import {
   //
   toSanitizationInfo,
 } from "~/lib/anthropic/sanitize"
 import { buildAnthropicToolNameMapper } from "~/lib/anthropic/sanitize/tool-name-sanitize"
 import { createAnthropicStreamAccumulator } from "~/lib/anthropic/stream-accumulator"
+import { createQuarantineProactiveFilter } from "~/lib/anthropic/thinking-quarantine/proactive-filter"
+import {
+  //
+  modelIdFor,
+  stripThinkingSignatureFor,
+} from "~/lib/config/model-translation"
 import { getRequestContextManager } from "~/lib/context/manager"
 import {
   //
   captureInboundHeaders,
-  sanitizeHeadersForHistory,
 } from "~/lib/fetch-utils"
 import {
   //
@@ -94,8 +97,22 @@ import {
   getSessionIdFromHeaders,
 } from "~/lib/history/store"
 import { ENDPOINT } from "~/lib/models/endpoint"
-import { resolveModelName } from "~/lib/models/resolver"
+import {
+  //
+  resolveModelTarget,
+  type RouteOverride,
+} from "~/lib/models/resolver"
+import { createResponsesStreamAccumulator } from "~/lib/openai/responses-stream-accumulator"
+import { createOpenAIStreamAccumulator } from "~/lib/openai/stream-accumulator"
+import { createCandidateStateFactory } from "~/lib/pipeline/generation/candidate-state"
+import {
+  //
+  createForwardStreamTranslator,
+  type ForwardStreamTranslator,
+  renderResponseNonStreamingVia,
+} from "~/lib/pipeline/hub-translate"
 import { state } from "~/lib/state"
+import { processAnthropicSystem } from "~/lib/system-prompt"
 
 import { createAnthropicSanitizeRewrite } from "./request-rewrite-adapter"
 
@@ -121,10 +138,23 @@ export interface AnthropicCodec extends FormatCodec {
   getPreprocessInfo(): PreprocessInfo | undefined
   /** The resanitize closure (= the direct sanitize chain) the strategies reuse. */
   getResanitize(): AnthropicSanitizeFn | undefined
-  /** Latest attempt's effective `messages` (sampleRequest-captured; message-mapping rebuild). */
-  getLatestEffectiveMessages(): Array<unknown> | undefined
   /** The per-request request rewrites (driver S3): the sanitize chain + its side-channel recordings (RFC §4.A0). */
   getRequestRewrites(): ReadonlyArray<RequestRewrite>
+  /**
+   * FORWARD translate-leg STREAMING drain (Phase 4, T4.2): the CC→Anthropic stream translator's
+   * terminal frames (close the open block + message_delta + message_stop). Returns `[]` for the direct
+   * leg (Anthropic upstream needs no synthesized terminator — it carries its own message_stop). The
+   * owns-sink handler calls it after the `driver.runResponseSink` loop (the per-frame `renderResponse`
+   * has no stream-end hook), mirroring the gemini / responses codecs.
+   */
+  flushResponse(env: RequestEnvelope): Array<ClientFrame>
+  /**
+   * FORWARD translate-leg terminal stream meta (Phase 4): the Anthropic `stop_reason` (undefined ⇒
+   * truncation, F2) + net usage the CC→Anthropic translator accumulated while rendering. `renderResponse`
+   * returns only frames, so this exposes the out-of-band meta the handler needs for `ctx.complete` / a
+   * partial settle. Undefined for the direct leg (the direct pump reads its own Anthropic accumulator).
+   */
+  getStreamMeta(): CcToAnthropicStreamMeta | undefined
 }
 
 /** Args for {@link createAnthropicCodec}. */
@@ -142,17 +172,43 @@ export interface CreateAnthropicCodecArgs {
 export function createAnthropicCodec(args: CreateAnthropicCodecArgs): AnthropicCodec {
   let requestContext: RequestContext | undefined
   let truncateBaseline: MessagesPayload | undefined
-  let clientAnthropicBeta: string | undefined
-  let clientRequestHeaders: Record<string, string> | undefined
   let initialSanitizationInfo: SanitizationInfo | undefined
   let resanitize: AnthropicSanitizeFn | undefined
-  let latestEffectiveMessages: Array<unknown> | undefined
 
-  // The S3 request rewrite (sanitize chain + its recordings), built once per request.
-  // It closes over `preprocessInfo` (route-supplied, not on the env) and writes the
-  // initial sanitization-info back to the closure for the retry-rebuild reads. parse
-  // leaves env.body = pre-sanitize baseline; the driver's S3 runs this (RFC §4.A0).
+  const createRenderer = (): CandidateResponseRenderer => {
+    let streamTranslator: ForwardStreamTranslator | undefined
+    const ensureStreamTranslator = (env: RequestEnvelope): ForwardStreamTranslator => {
+      const modelId = modelIdFor(env.model as Model | undefined, (env.body as { model?: string }).model) ?? ""
+      return (streamTranslator ??= createForwardStreamTranslator(env.targetEndpoint, modelId, reasoningRoundTripOpts(env)))
+    }
+    return {
+      renderResponse(frame, env) {
+        if (!isForwardTranslateLeg(env.targetEndpoint)) return frame
+        return ensureStreamTranslator(env).renderFrame(frame)
+      },
+      flushResponse(env) {
+        if (!isForwardTranslateLeg(env.targetEndpoint)) return []
+        return ensureStreamTranslator(env).flush()
+      },
+      getStreamMeta() {
+        return streamTranslator?.getMeta()
+      },
+    }
+  }
+  const defaultRenderer = createRenderer()
+
+  // The S3 request rewrite chain, built once per request. Execution order is by
+  // the sorted `.order` key (NOT array position — assembleRequestRewrites sorts):
+  //   - thinking-quarantine-proactive (250): L3 strip-all for known-poisoned
+  //     conversations — MUST precede sanitize so a quarantined turn has no thinking
+  //     for L1 de-stack to orphan (proactive-filter.ts / RFC §3.4).
+  //   - anthropic-sanitize (300): the sanitize chain + its side-channel recordings.
+  // The sanitize rewrite closes over `preprocessInfo` (route-supplied, not on the env)
+  // and writes the initial sanitization-info back to the closure for the retry-rebuild
+  // reads. parse leaves env.body = pre-sanitize baseline; the driver's S3 runs these
+  // (RFC §4.A0).
   const requestRewrites: ReadonlyArray<RequestRewrite> = [
+    createQuarantineProactiveFilter(),
     createAnthropicSanitizeRewrite({
       preprocessInfo: args.preprocessInfo,
       onInitialSanitizationInfo: (info) => {
@@ -168,15 +224,39 @@ export function createAnthropicCodec(args: CreateAnthropicCodecArgs): AnthropicC
       const parsed = parseAnthropic(raw)
       requestContext = parsed.env.ctx
       truncateBaseline = parsed.baseline
-      clientAnthropicBeta = parsed.clientAnthropicBeta
-      clientRequestHeaders = parsed.clientRequestHeaders
       resanitize = parsed.resanitize
-      return parsed.env
+      // Attach the request-lifecycle-STABLE outbound-leg supply (RFC §11.2 / R2) so the direct
+      // `/v1/messages` CellAssembly reads it from `env.requestState` instead of this codec closure
+      // (C2a). Additive today: no reader until the driver's cell-keyed hybrid fork routes the direct
+      // cell through the assembly (C2a.2). `initialSanitizationInfo` is a side-channel written later by
+      // the sanitize rewrite → it lives on `ctx`, not here.
+      return parsed.env.with({
+        requestState: {
+          betaProbe: args.betaProbe,
+          truncateBaseline: parsed.baseline,
+          resanitize: parsed.resanitize as (payload: unknown) => unknown,
+          clientRequestHeaders: parsed.clientRequestHeaders,
+          preprocessInfo: args.preprocessInfo,
+          ...(parsed.clientAnthropicBeta !== undefined && { clientAnthropicBeta: parsed.clientAnthropicBeta }),
+        },
+      })
     },
 
     getContext() {
       return requestContext
     },
+
+    // S1b (RFC 2026-07-14 §4): async system-prompt injection over the top-level `system` field,
+    // moved off the route handler so `client.inbound` (Phase 4) sees the client-NATIVE system
+    // (pre-injection). Early-returns when there is no system (mirrors the legacy route's
+    // `if (wireBody.system)` guard). `env.body.model` is the resolved name (parse set it).
+    async translateInbound(env) {
+      const body = env.body as MessagesPayload
+      if (!body.system) return env
+      const system = await processAnthropicSystem(body.system, body.model, "anthropic")
+      return env.with({ body: { ...body, system } })
+    },
+
     getTruncateBaseline() {
       return truncateBaseline
     },
@@ -189,55 +269,100 @@ export function createAnthropicCodec(args: CreateAnthropicCodecArgs): AnthropicC
     getResanitize() {
       return resanitize
     },
-    getLatestEffectiveMessages() {
-      return latestEffectiveMessages
-    },
     getRequestRewrites() {
       return requestRewrites
     },
 
-    decideRoute(env) {
-      return decideAnthropicRoute(env)
-    },
+    // S2 translateOut / S4 prepareWire / S4-sample are owned by the CellAssembly's `OUTBOUND_LEGS` for
+    // every real request (direct `/v1/messages` via anthropic-cell, forward `@cc`/`@responses` via the CC
+    // leg); the codec no longer implements them. The RESPONSE-side render below stays here (InboundCodec):
+    // it dispatches the same `isForwardTranslateLeg` (a FORWARD leg drives the CC→Anthropic response
+    // translator; the direct leg is identity).
 
-    // S2/S6 are identity — Anthropic is a bypass-direct format (no translation).
-    translateOut(env) {
-      return env
+    // S6 render (streaming): the direct path is identity. A FORWARD translate leg drives the per-request
+    // CC→Anthropic STREAMING translator (Phase 4, T4.1/T4.2) — cc leg single-hop, responses leg two-hop
+    // (composed inside the hub). Returns 0+ Anthropic frames per upstream frame; the terminal
+    // message_delta + message_stop are drained by `flushResponse` (the per-frame render has no stream-end
+    // hook, mirroring the gemini/responses codecs). The REVERSE `→ messages` streaming leg is Phase 5.
+    renderResponse(frame, env) {
+      return defaultRenderer.renderResponse(frame, env)
     },
-    renderResponse(frame) {
-      return frame
+    createCandidateRenderer() {
+      return createRenderer()
     },
-    renderResponseNonStreaming(upstream) {
-      return upstream
-    },
-
-    prepareWire(env) {
-      return prepareAnthropicWire(env, {
-        betaProbe: args.betaProbe,
-        clientAnthropicBeta,
-        clientRequestHeaders,
-        requestContext,
-        // requested = the client's original thinking type, from the FIXED truncate
-        // baseline (never the per-attempt env.body, which legacy-thinking-retry
-        // mutates enabled→adaptive on retry).
-        requestedThinkingType: (truncateBaseline?.thinking as { type?: string } | undefined)?.type,
+    createCandidateStateFactory(env) {
+      return createCandidateStateFactory(env, {
+        createBetaProbe,
+        createResanitize:
+          ({ source }) =>
+          (payload) =>
+            source(payload),
       })
     },
-
-    sampleRequest(wire, env): RequestSample {
-      const sample = sampleAnthropicRequest(wire, env)
-      latestEffectiveMessages = sample.effectiveMessages
-      return sample.requestSample
+    // S6 render (non-streaming): the direct path is identity. A FORWARD translate leg (Phase 3, T3.3)
+    // delegates to the hub's CC→Anthropic response translator (`renderResponseNonStreamingVia`), turning
+    // the upstream CC / Responses completion back into the Anthropic Messages response the client expects
+    // — the leg is now end-to-end wired for non-streaming. A content_filter degradation (N3) is recorded
+    // as a ctx marker so the wire end_turn stays observably distinguishable (richest-data-flow).
+    renderResponseNonStreaming(upstream, env) {
+      if (!isForwardTranslateLeg(env.targetEndpoint)) return upstream
+      const { rendered, contentFiltered } = renderResponseNonStreamingVia(env.targetEndpoint, upstream, reasoningRoundTripOpts(env))
+      if (contentFiltered) env.ctx.recordFeature("translated-content-filter")
+      return rendered
     },
 
     formatError(err) {
       return formatAnthropicError(err)
     },
 
-    createResponseAccumulator(): ResponseAccumulator {
+    // S6 streaming drain (Phase 4): a FORWARD translate leg drains the CC→Anthropic translator's terminal
+    // frames (message_delta + message_stop); the direct leg has none (Anthropic upstream carries its own
+    // message_stop → []). The handler writes these after the driver loop.
+    flushResponse(env) {
+      return defaultRenderer.flushResponse(env)
+    },
+
+    // S6 streaming terminal meta (Phase 4): the translate leg's out-of-band stop_reason + net usage; the
+    // direct leg reads its own Anthropic accumulator → undefined here.
+    getStreamMeta() {
+      return defaultRenderer.getStreamMeta?.() as CcToAnthropicStreamMeta | undefined
+    },
+
+    // observability (S4 per-attempt): the OUTBOUND-leg accumulator (RFC §4.1 — accumulator is a
+    // targetEndpoint-axis concern, "上游腿形"). The direct leg's upstream is Anthropic → the Anthropic
+    // accumulator; a FORWARD cc leg's upstream is CC → the CC accumulator; a FORWARD responses leg's
+    // upstream is Responses → the Responses accumulator (feeding an accumulator the WRONG format's frames
+    // would produce a malformed/empty outboundResponse, violating richest-data-flow "后端存储必须完整").
+    // The `env` param was restored in Phase 4 (RFC §4.1); Phase 0/1 dropped it when the method had zero
+    // production consumers.
+    createResponseAccumulator(env): ResponseAccumulator {
+      if (env.targetEndpoint === ENDPOINT.CHAT_COMPLETIONS) return createOpenAIStreamAccumulator()
+      if (env.targetEndpoint === ENDPOINT.RESPONSES || env.targetEndpoint === ENDPOINT.WS_RESPONSES) return createResponsesStreamAccumulator()
       return createAnthropicStreamAccumulator()
     },
   }
+}
+
+/**
+ * Is the outbound leg a FORWARD translate leg (anthropic → CC / Responses)? The bypass-direct path
+ * uses `/v1/messages`; an unset leg (isolated unit-test envs, before the driver's S2 overwrite) is
+ * treated as direct too. Only an explicit CC / Responses leg takes the hub-delegated translate path.
+ */
+function isForwardTranslateLeg(targetEndpoint: UpstreamEndpoint | undefined): targetEndpoint is Exclude<UpstreamEndpoint, "/v1/messages"> {
+  return targetEndpoint === ENDPOINT.CHAT_COMPLETIONS || targetEndpoint === ENDPOINT.RESPONSES || targetEndpoint === ENDPOINT.WS_RESPONSES
+}
+
+/**
+ * RFC §4.3 scenario A/B (Phase 5): resolve `{ stripThinkingSignature }` for the FORWARD
+ * `(anthropic client, responses model)` reasoning round-trip. Only meaningful on the RESPONSES/
+ * WS_RESPONSES leg (the CC leg has no reasoning round-trip carrier concept) — the CC leg's
+ * `renderResponseNonStreamingVia`/`createForwardStreamTranslator` call sites simply ignore an
+ * always-`false` result, so passing it unconditionally on every forward leg is harmless (no
+ * conditional call-site duplication needed).
+ */
+function reasoningRoundTripOpts(env: RequestEnvelope): { stripThinkingSignature: boolean } {
+  const modelId = modelIdFor(env.model as Model | undefined, (env.body as { model?: string }).model)
+  return { stripThinkingSignature: stripThinkingSignatureFor("anthropic-messages", modelId, "openai-responses") }
 }
 
 // ============================================================================
@@ -271,7 +396,9 @@ function parseAnthropic(raw: RawHttpRequest): ParseAnthropicResult {
   const originalSnapshot = structuredClone(clientBody)
 
   const clientModel = raw.modelOverride ?? incoming.model
-  const resolvedName = raw.preResolved?.name ?? resolveModelName(clientModel)
+  const resolvedTarget = raw.preResolved ?? resolveModelTarget(clientModel)
+  const resolvedName = resolvedTarget.name
+  const routeOverride = resolvedTarget.routeOverride
   if (resolvedName !== clientModel) consola.debug(`Model name resolved: ${clientModel} → ${resolvedName}`)
   const selectedModel = raw.preResolved ? raw.preResolved.model : state.modelIndex.get(resolvedName)
   const clientModelName = clientModel !== resolvedName ? clientModel : undefined
@@ -302,6 +429,7 @@ function parseAnthropic(raw: RawHttpRequest): ParseAnthropicResult {
     payload: originalSnapshot,
   })
   ctx.setInboundRequestHeaders(captureInboundHeaders(raw.headers))
+  ctx.recordModelOperationIngress()
 
   // Tool-name mapper from the client's ORIGINAL tools (preprocess does not touch
   // tools, so `incoming.tools` is still the client's set). Stored on ctx so the
@@ -324,6 +452,7 @@ function parseAnthropic(raw: RawHttpRequest): ParseAnthropicResult {
 
   const env = makeEnvelope({
     targetEndpoint: ENDPOINT.MESSAGES,
+    ...(routeOverride && { routeOverride }),
     model: selectedModel as ResolvedModel,
     stream: anthropicPayload.stream ?? false,
     body: anthropicPayload,
@@ -349,131 +478,6 @@ function parseContentLength(header: string | null): number | undefined {
 }
 
 // ============================================================================
-// S2 — decideRoute
-// ============================================================================
-
-/**
- * S2: passthrough `/v1/messages` or reject 400 — NO translate/fallback (the
- * bypass-direct Anthropic endpoint has no downgrade path, RFC §2.2 / messages:167).
- */
-function decideAnthropicRoute(env: RequestEnvelope): RouteDecision {
-  const id = (env.model as Model | undefined)?.id ?? (env.body as MessagesPayload).model
-  const decision = supportsDirectAnthropicApi(id)
-  if (!decision.supported) {
-    return { kind: "reject", status: 400, reason: `Model "${id}" does not support /v1/messages: ${decision.reason}` }
-  }
-  return { kind: "passthrough", endpoint: ENDPOINT.MESSAGES }
-}
-
-// ============================================================================
-// S4 — prepareWire
-// ============================================================================
-
-interface PrepareWireDeps {
-  betaProbe: BetaProbe
-  clientAnthropicBeta: string | undefined
-  /** Client's raw inbound headers (lowercased) for optional upstream passthrough. */
-  clientRequestHeaders: Record<string, string> | undefined
-  requestContext: RequestContext | undefined
-  /**
-   * Client's original `thinking.type` (fixed across retries — from the truncate
-   * baseline, NOT `env.body` which retries mutate). Recorded as the `requested`
-   * half of the merged `thinking` feature alongside the effective wire value.
-   */
-  requestedThinkingType: string | undefined
-}
-
-/**
- * S4 last-mile: env → wire via `prepareAnthropicRequest` (B1-B12 — wire payload +
- * reject/server-tool strip + coerce-thinking + clamp-effort + cache-control +
- * headers). Records the outbound betas on the probe (replacing the legacy adapter's
- * `onPrepared`) + surfaces the actual wire `thinking` shape as a feature.
- *
- * Idempotent (RFC §3): `prepareAnthropicRequest` deep-clones and does not write
- * back to `env.body`, so the same env → the same wire.
- */
-function prepareAnthropicWire(env: RequestEnvelope, deps: PrepareWireDeps): PreparedRequest {
-  const model = env.model as Model | undefined
-  const prepared = prepareAnthropicRequest(env.body as MessagesPayload, {
-    ...(model && { resolvedModel: model }),
-    ...(deps.clientAnthropicBeta !== undefined && { clientAnthropicBeta: deps.clientAnthropicBeta }),
-    ...(deps.clientRequestHeaders !== undefined && { clientRequestHeaders: deps.clientRequestHeaders }),
-    ...(env.prepareHints.excludeBetas && { excludeBetas: env.prepareHints.excludeBetas }),
-    ...(env.prepareHints.rejectFields && { rejectFields: env.prepareHints.rejectFields }),
-    ...(env.prepareHints.excludeServerToolTypes && { excludeServerToolTypes: env.prepareHints.excludeServerToolTypes }),
-    ...(env.prepareHints.contextEscalation && { contextEscalation: env.prepareHints.contextEscalation }),
-  })
-
-  // Record the betas actually sent (sanitized headers — same value the legacy
-  // adapter's onPrepared received) so unsupported-beta can probe them.
-  deps.betaProbe.recordOutbound(sanitizeHeadersForHistory(prepared.headers))
-
-  // Record `thinking` as a per-request terminal dimension: `effective` = the
-  // ACTUAL outbound wire shape (post coerceAdaptiveThinking), `requested` = the
-  // client's original type (fixed baseline, supplied by the codec). The console
-  // overwrites `effective` per attempt and renders requested→effective once, so
-  // a coercion stays visible even when a retry rewrites the body.
-  const wireThinking = prepared.wire.thinking as { type?: string } | undefined
-  if (wireThinking?.type && wireThinking.type !== "disabled") {
-    deps.requestContext?.recordFeature("thinking", {
-      ...(deps.requestedThinkingType !== undefined && { requested: deps.requestedThinkingType }),
-      effective: wireThinking.type,
-    })
-  }
-
-  return {
-    url: ENDPOINT.MESSAGES,
-    headers: new Headers(prepared.headers),
-    body: prepared.wire,
-    stream: (prepared.wire.stream as boolean | undefined) ?? false,
-  }
-}
-
-// ============================================================================
-// S4 — sampleRequest (two-track observability)
-// ============================================================================
-
-interface SampleAnthropicResult {
-  requestSample: RequestSample
-  effectiveMessages: Array<unknown>
-}
-
-/**
- * S4 observability (P2.3-S): the two history tracks. Both are `anthropic-messages`
- * format (translateOut is identity, so env.body stays Anthropic-shaped):
- *   - `effective` = the post-rewrite logical request (`env.body`).
- *   - `wire` = the actual outbound bytes (`prepared.wire`, B1-B12 + sanitized headers).
- *
- * Captures the latest effective `messages` for the route to rebuild retry
- * message-mapping (RFC §12.4/§12.5). The §12.5 invariant
- * (`action.env.body === action.payload`) makes these the same objects the legacy
- * `recordRetryPipelineState` reads from `newPayload`.
- */
-function sampleAnthropicRequest(wire: PreparedRequest, env: RequestEnvelope): SampleAnthropicResult {
-  const effBody = env.body as MessagesPayload
-  const effectiveMessages: Array<unknown> = Array.isArray(effBody.messages) ? effBody.messages : []
-
-  const effective: EffectiveRequest = {
-    model: typeof effBody.model === "string" ? effBody.model : "",
-    resolvedModel: env.model as Model | undefined,
-    messages: effectiveMessages,
-    payload: env.body,
-    format: ENDPOINT_TYPE,
-  }
-
-  const wireBody = wire.body as { model?: unknown; messages?: unknown }
-  const wireRequest: WireRequest = {
-    model: typeof wireBody.model === "string" ? wireBody.model : "",
-    messages: Array.isArray(wireBody.messages) ? wireBody.messages : [],
-    payload: wire.body,
-    headers: Object.fromEntries(wire.headers.entries()),
-    format: ENDPOINT_TYPE,
-  }
-
-  return { requestSample: { effective, wire: wireRequest }, effectiveMessages }
-}
-
-// ============================================================================
 // S7 — formatError
 // ============================================================================
 
@@ -483,6 +487,7 @@ const STREAM_ERROR_MESSAGES: Record<ClassifiedStreamError, string> = {
   shutdown: "Server is shutting down",
   "client-abort": "Client disconnected",
   "reaper-cancel": "Request cancelled by stale-request reaper",
+  "dispatch-cancel": "Upstream dispatch cancelled",
   other: "Stream error",
 }
 
@@ -518,11 +523,13 @@ function formatAnthropicError(err: ClassifiedStreamError): ClientFrame {
 
 interface EnvelopeInit {
   targetEndpoint: UpstreamEndpoint
+  routeOverride?: RouteOverride
   model: ResolvedModel
   stream: boolean
   body: unknown
   ctx: RequestContext
   prepareHints?: PrepareHints
+  requestState?: RequestState
 }
 
 /** Build a {@link RequestEnvelope}; `with()` shallow-copies + patches, `view` is a lazy Anthropic projection. */
@@ -530,10 +537,12 @@ function makeEnvelope(init: EnvelopeInit): RequestEnvelope {
   const env: RequestEnvelope = {
     clientFormat: CLIENT_FORMAT,
     targetEndpoint: init.targetEndpoint,
+    ...(init.routeOverride && { routeOverride: init.routeOverride }),
     model: init.model,
     stream: init.stream,
     body: init.body,
     prepareHints: init.prepareHints ?? {},
+    ...(init.requestState !== undefined && { requestState: init.requestState }),
     ctx: init.ctx,
     get view(): LazyMessageView {
       return createAnthropicLazyView(env.body)
@@ -541,11 +550,13 @@ function makeEnvelope(init: EnvelopeInit): RequestEnvelope {
     with(patch) {
       return makeEnvelope({
         targetEndpoint: env.targetEndpoint,
+        routeOverride: env.routeOverride,
         model: env.model,
         stream: env.stream,
         body: env.body,
         ctx: env.ctx,
         prepareHints: env.prepareHints,
+        requestState: env.requestState,
         ...patch,
       })
     },

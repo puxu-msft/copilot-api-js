@@ -101,7 +101,7 @@ const scenarios: Array<Scenario> = [
   },
   {
     name: "corrupt (unsigned empty) thinking block stripped",
-    setup: () => setStateForTests({ thinkingBlockSanitizeCheck: "empty_thinking" }),
+    setup: () => setStateForTests({ thinkingBlockSanitizeCheck: "all_empty" }),
     payload: payload([
       assistant([
         { type: "thinking", thinking: "", signature: "" },
@@ -113,8 +113,7 @@ const scenarios: Array<Scenario> = [
     didWork: (s) => s.emptyThinkingBlocksRemoved > 0,
   },
   {
-    name: "server-tool history downgraded then validated",
-    setup: () => setStateForTests({ rewriteHistoryServerTools: "downgrade" }),
+    name: "prior-turn server-tool blocks (empty encrypted_content) downgraded by the always-on fallback then validated",
     payload: payload([
       assistant([
         { type: "server_tool_use", id: "srv1", name: "web_search", input: { query: "x" } },
@@ -130,7 +129,7 @@ const scenarios: Array<Scenario> = [
   },
   {
     name: "inline system message converted to user",
-    setup: () => setStateForTests({ systemMessagesSanitize: "as_user" }),
+    setup: () => setStateForTests({ systemDefaultMode: "as_user" }),
     payload: payload([{ role: "system", content: "inline sys" } as unknown as MessageParam, user("q")]),
     ctx: NO_MAPPER,
     didWork: (s) => s.inlineSystemConverted > 0,
@@ -148,7 +147,7 @@ const scenarios: Array<Scenario> = [
     // fire in one request — the strongest order-sensitivity assertion (the
     // intermediate payload must thread correctly through all three modules).
     name: "composite — tool-name + inline-system + orphan cleanup together",
-    setup: () => setStateForTests({ sanitizeToolNames: true, systemMessagesSanitize: "as_user" }),
+    setup: () => setStateForTests({ sanitizeToolNames: true, systemDefaultMode: "as_user" }),
     payload: payload(
       [
         { role: "system", content: "inline sys" } as unknown as MessageParam,

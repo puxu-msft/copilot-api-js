@@ -1,0 +1,33 @@
+---
+name: ghc-anthropic-upstream
+description: 当排查 copilot-api-js Anthropic 路径上游异常时使用——thinking signature "cannot be modified" 400、thinking 块真伪/毒化校准（空明文不等于毒化，须逐块结合 signature）、thinking-only refusal(stop_reason:refusal)、tool_use 降级成 antml 文本、server_tool_use 400、tool_use.id 格式。含经 history sseEvents 诊断与本地探针手法（通用实测见 empirical-verification）。
+---
+
+# Anthropic 上游调试
+
+## 探针手法（实证 > 推断）
+
+从常驻 `localhost:4141` 拉真实数据复现（`curl -s :4141/health` 确认在跑，**别自启/kill**）：`GET /history/api/entries?limit=N` 看列表 → `GET /history/api/entries/:id` 取全量（`clientRequest`/`clientResponse`/`attempts[].{upstreamRequest,upstreamResponse}`/per-attempt `sseEvents`；2026-07-07 重构后旧 `inboundRequest`/`outbound*` 腿名已迁 client/upstream），内含真实有效 thinking signature。jq 拼最小请求 `--slurpfile` 防转义、`max_tokens` 调小省 token → `curl -X POST :4141/v1/messages`。**无损取字节**（勿 `tr -d '\n'` 折叠，会误判间隔）。
+
+## 症状 → 根因 → 配置
+
+| 症状 | 根因 | 处理 |
+|---|---|---|
+| `thinking ... cannot be modified` 400 | **根因（PoC 实证订正）= 折叠后 latest-assistant 消息内两个 thinking 块相邻**（留任意 1 个→200 / 任意 2 相邻→400 / 用非 thinking 块交错分隔全保留→200；非签名对不上、非我方 sanitize，inbound==outbound 逐字节同）；客户端把本应交替的 thinking 累积成相邻块 baked 进历史每轮重败。旧说「个别块签名对不上=毒化」不精确 | **已落地三层修复**（`feat/thinking-quarantine`；spec `docs/spec/2026-07-07-thinking-signature-quarantine.md` + DESIGN 活的架构现状；PoC 复现在 `exp/thinking-signature-quarantine/`）：L1 always-on de-stack 交错分隔相邻 thinking **保全部**（分隔符须非空——空/空白 text 被上游 strip 掉无效；config `thinking_destack_strategy`）+ L2 reactive strip-all 重试（`strip_thinking_on_reject`）+ L3 (session,agent)/TTL quarantine（`poisoned_thinking_quarantine`+`ttl_hours`）。旧兜底 strip-all→200 / CC 自剥仍有效 |
+| 空轮/坏轮、`stop_reason:refusal` 仅 thinking | thinking-only refusal | `refusal_recover_text`。docs/refusal-recovery.md |
+| `call<invoke>…` 文本无 tool_use | GHC 偶发降级成 antml-strip 文本（`stop_reason` 仍 tool_use/或 end_turn 弱信号），标签间是 `\n` 非零间隔 | `tool_recover_call_text`（非本项目 bug，grep antml 零命中） |
+| `references web_search but not server tool` 400 | 历史残留 server_tool_use | `server_tool_rewrite:downgrade` + 开 web_search |
+| `Invalid encrypted_content in search_result block` 400 | web_search 双跳合成的 `web_search_tool_result` 结果项 `encrypted_content=""`（`synthesize.ts`，后端产不出真加密内容）回流历史，上游校验真实非空 string（空/null/占位全 400，error-shaped 反而 200） | **always-on 兜底自动降级**（`sanitize/empty-encrypted-search-result.ts`，无需配置）；开 `server_tool_rewrite:downgrade` 更宽清理。exp/encrypted-content-400 |
+| 双空块被拒 | shim 把 sig 嵌 start 无 signature_delta（web_search 双跳绕 shim 曾酿此） | `thinking_signature_compat` |
+| `tools.N.custom.<field>: Extra inputs are not permitted` 400 | 新版 CC 给每 tool 挂未知字段（首例 `eager_input_streaming`，官方 Anthropic 认、GHC 版本较旧拒）；`.custom.` 是 pydantic 判别标签、wire 上是 tool 顶层扁平键 | **always-on 内置默认预剥** `eager_input_streaming`（`message-tools.ts` `stripToolFields`，首发零 400）+ 反应式 `tool-field-rejection-retry` 学习任意未来未知字段（端点级账本、matchAll 多字段、LEGIT_TOOL_KEYS deny 守卫放行变体误路由）；config `tool_strip_fields`（加）/ `tool_keep_fields`（减可逆）。注：body-field 正则曾会抢先误认领此 tools 路径（已收紧 `(?<![.\w])`）|
+
+## 实测关键事实
+
+- **opus thinking 明文被 GHC 加密剥离**：wire 上正常形态是 `{type:"thinking", thinking:"", signature:"ErIE…"}`——**明文空 + signature 在 = 合法加密思考**（4141 实测：当前观测的带 thinking 真实 opus 请求 40/40 皆此形，`chars=0 sig=True`）。故判「是否真 thinking / 是否毒化」**绝不能只看明文空**——naive「明文空⇒毒化」会把当前观测的正常 opus 请求全部误判为毒。
+- **「空明文 thinking 毒化」的 canonical 判据**（对齐 `sanitize/content-blocks.ts` 的 `textEmpty && sigEmpty`）：**逐块**判、块类型**非** `redacted_thinking`（redacted 是合法不透明块、永不算毒）、明文 `trim` 空 **且** signature `trim` 空（whitespace-only 非真 seal，两字段都须 `.trim()`）。**逐块**是承重点——一个签名块只证自身合法、**不赦免**旁边真中毒的块；聚合语义「所有块都坏才算」会让健康块掩盖中毒块。注：此「毒化」是**观测/sanitizer 分类**概念，**不是**上表 `cannot be modified` 400 的根因（那是相邻块，见第 16 行）；它正解释了「旧说个别块签名对不上=毒化」为何不精确。
+- **消费方**：TUI 完成行 `think:enc(N)`（灰，加密合法）/ `think:poison(N)`（黄，毒化）token，派生器 entry-view `responseThinkingFromBody`（读**正常完成**请求最终累积的 `finalUpstreamResponse.body`）。附注：usage **无**独立 thinking/reasoning token 计数（`output_tokens` 含 thinking 但不可分离）。
+- thinking signature **自包含**（加密 thinking 内容本身、非上下文/位置）：跨对话/非首块/重写后均 200；约束=原样不改 + thinking 块**相对序**不变。**相邻性非约束**（PoC 订正）：把相邻 thinking 用非 thinking 块交错分隔（打破连续）反而 200，正是上游要求的——见 `cannot be modified` 行。
+- tool_use.id 上游不校验格式（`toolu_recovered_0` 也 200），只引用一致性要紧；仍合成 `toolu_`+24base62 防客户端 SDK。
+- 上游兼容矩阵/特性协商属 docs（anthropic-compat.md / refusal-recovery.md），本 skill 只管调试。
+
+> Claude Code **客户端**的连接/流式行为（CC 请求超时两层、keepalive 空 content-delta、合成帧 event: 行 + synthetic 标记、SDK 对 200+SSE-error 零重试）是**下游客户端**域，不在本 skill——见 skill `debugging-claude-client-connection`。上游**传输**（fetch/http2/proxy/keepalive）见 skill `debugging-ghc-api-upstream-transport`。

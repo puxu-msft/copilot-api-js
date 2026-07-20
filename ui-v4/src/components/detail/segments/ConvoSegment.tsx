@@ -1,40 +1,52 @@
-import { useState } from "react"
+import {
+  //
+  useMemo,
+  useState,
+} from "react"
 
 import type { HistoryEntry } from "@/types"
 
-import { SystemMessage } from "@/components/detail/blocks/SystemMessage"
-import { CodeBlock } from "@/components/detail/CodeBlock"
+import { RawJsonView } from "@/components/common/RawJsonView"
 import { ConversationView } from "@/components/detail/ConversationView"
 import { DetailTocTree } from "@/components/detail/toc/DetailTocTree"
 import { TocSidebar } from "@/components/detail/toc/TocSidebar"
+import { ToolPairingProvider } from "@/components/detail/ToolPairingContext"
 import { useAnchorScroll } from "@/hooks/useAnchorScroll"
 import { buildMessageTocNodes } from "@/lib/content/toc"
+import { buildToolPairing } from "@/lib/content/tool-pairing"
 
 const ANCHOR_PREFIX = "convo"
 
 type ConvoView = "rendered" | "raw"
 
-const TOGGLE_BASE = "mono border border-[var(--color-border)] px-2 py-0.5 text-[12px]"
+const TOGGLE_BASE = "mono border border-[var(--surface-border)] px-2 py-0.5 text-[12px]"
 
 function viewClass(active: boolean): string {
-  return `${TOGGLE_BASE} ${active ? "text-[var(--color-primary)]" : "text-[var(--color-muted)]"}`
+  return `${TOGGLE_BASE} ${active ? "text-[var(--content-accent)]" : "text-[var(--content-muted)]"}`
 }
 
 export function ConvoSegment({ entry }: { entry: HistoryEntry }) {
   const [view, setView] = useState<ConvoView>("rendered")
-  const system = entry.inboundRequest.system
-  const messages = entry.inboundRequest.messages ?? []
+  // `?? []` yields a fresh array each render; memoize so the derived-TOC useMemos
+  // below (deps [messages]) don't recompute every render.
+  const messages = useMemo(() => entry.clientRequest?.messages ?? [], [entry.clientRequest?.messages])
   const { scrollTo, activeAnchor } = useAnchorScroll()
-  const nodes = buildMessageTocNodes(messages, ANCHOR_PREFIX)
+  const nodes = useMemo(() => buildMessageTocNodes(messages, ANCHOR_PREFIX), [messages])
+  const pairing = useMemo(() => buildToolPairing(messages, ANCHOR_PREFIX), [messages])
 
   return (
     <div className="flex gap-2">
       {view === "rendered" && messages.length > 0 ?
         <TocSidebar>
           <DetailTocTree
+            // Reset expand/collapse state per request — otherwise the prior entry's
+            // collapsed anchors leak in and defeat the default-expanded intent.
+            key={entry.id}
             nodes={nodes}
             onSelect={scrollTo}
             activeAnchor={activeAnchor}
+            defaultExpanded
+            showExpandAllToggle
           />
         </TocSidebar>
       : null}
@@ -56,22 +68,18 @@ export function ConvoSegment({ entry }: { entry: HistoryEntry }) {
           </button>
         </div>
         {view === "raw" ?
-          <CodeBlock
-            code={JSON.stringify(entry.inboundRequest, null, 2)}
-            lang="json"
-          />
-        : <>
-            {system ?
-              <SystemMessage
-                system={system}
-                rewrittenSystem={entry.effectiveRequest?.system}
-              />
-            : null}
+          <>
+            <div className="mono mb-1.5 text-[11px] text-[var(--content-muted)]">
+              仅消息数组。完整请求 body（system · tools · 参数）见 Stages → Inbound → Raw。
+            </div>
+            <RawJsonView value={messages} />
+          </>
+        : <ToolPairingProvider value={{ pairing, scrollTo }}>
             <ConversationView
               messages={messages}
               anchorPrefix={ANCHOR_PREFIX}
             />
-          </>
+          </ToolPairingProvider>
         }
       </div>
     </div>

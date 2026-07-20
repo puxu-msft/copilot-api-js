@@ -12,24 +12,46 @@ import consola from "consola"
 import fs from "node:fs/promises"
 import { z } from "zod"
 
+import { recordConfigReloadTimeoutDiff } from "~/lib/observability/reaper-diagnostics"
 import {
   //
+  type BufferedRetryCaps,
   type CompiledRewriteRule,
-  DEFAULT_MODEL_OVERRIDES,
+  type CompiledSystemPromptEntry,
+  DEFAULT_MODEL_MAPPINGS,
+  resolveBufferedCaps,
   setAnthropicBehavior,
-  setAutoTruncateConfig,
+  setBufferedRetryOverride,
+  setBufferedRetryShared,
+  setChatCompletionsConfig,
   setDisabledModels,
   setForwardClientQuery,
   setHistoryConfig,
-  setModelOverrides,
+  setGenerationRuntimeConfig,
+  setHooksConfig,
+  setLoggingConfig,
+  setModelMappings,
+  setModelTranslation,
+  setNegotiationConfig,
   setResponsesConfig,
+  setResponsesWsIngressConfig,
   setShutdownConfig,
+  setReactiveRetryConfig,
+  setTelemetryConfig,
   setTimeoutConfig,
-  setWebSearchConfig,
+  setTimeoutOverridesConfig,
+  setTuiEnabled,
+  setUnknownEndpointLogging,
+  setUpstreamTransportConfig,
   state,
 } from "~/lib/state"
 
-import { loadPersistedLimits } from "../auto-truncate"
+import type {
+  //
+  EndpointScope,
+  SystemPromptEntry,
+} from "./schema"
+
 import { syncModelRefreshLoop } from "../models/refresh-loop"
 import {
   //
@@ -44,7 +66,17 @@ import {
 } from "./validation"
 
 // Re-export Zod-inferred types so existing imports of these names keep working.
-export type { AnthropicConfig, Config, HistoryConfig, RateLimiterConfig, ResponsesConfig, RewriteRule, ShutdownConfig } from "./schema"
+export type {
+  AnthropicConfig,
+  Config,
+  EndpointScope,
+  HistoryConfig,
+  RateLimiterConfig,
+  ResponsesConfig,
+  RewriteRule,
+  ShutdownConfig,
+  SystemPromptEntry,
+} from "./schema"
 
 export {
   AnthropicConfigSchema,
@@ -66,6 +98,7 @@ export {
 
 import type {
   //
+  BufferedRetryOverride,
   Config,
   RewriteRule,
 } from "./schema"
@@ -82,22 +115,43 @@ import {
 // shape).
 // ============================================================================
 
-/** Compile a raw rewrite rule into a CompiledRewriteRule. Returns null for invalid regex. */
-export function compileRewriteRule(raw: RewriteRule): CompiledRewriteRule | null {
-  const method = raw.method ?? "regex"
-
-  // Compile model filter regex (shared by both line and regex methods)
+/**
+ * Compile the shared model/endpoint scope carried by rewrite rules and
+ * system-prompt entries. Returns `null` if the model regex is invalid (caller
+ * skips the whole rule/entry). undefined axes = apply to all.
+ */
+export function compileScope(raw: { model?: string; endpoint?: EndpointScope | Array<EndpointScope> }): {
+  modelPattern?: RegExp
+  endpointSet?: ReadonlySet<string>
+} | null {
   let modelPattern: RegExp | undefined
   if (raw.model) {
     try {
       modelPattern = new RegExp(raw.model, "i")
     } catch (err) {
-      consola.warn(`[config] Invalid model regex in rewrite rule: "${raw.model}"`, err)
+      consola.warn(`[config] Invalid model regex in system-prompt scope: "${raw.model}"`, err)
       return null
     }
   }
 
-  if (method === "line") return { from: raw.from, to: raw.to, method, modelPattern }
+  let endpointSet: ReadonlySet<string> | undefined
+  if (raw.endpoint) {
+    endpointSet = new Set(Array.isArray(raw.endpoint) ? raw.endpoint : [raw.endpoint])
+  }
+
+  return { modelPattern, endpointSet }
+}
+
+/** Compile a raw rewrite rule into a CompiledRewriteRule. Returns null for invalid regex. */
+export function compileRewriteRule(raw: RewriteRule): CompiledRewriteRule | null {
+  const method = raw.method ?? "regex"
+
+  // Compile the shared model/endpoint scope (invalid model regex skips the rule).
+  const scope = compileScope(raw)
+  if (scope === null) return null
+  const { modelPattern, endpointSet } = scope
+
+  if (method === "line") return { from: raw.from, to: raw.to, method, modelPattern, endpointSet }
   try {
     // Strip leading inline flags (?flags) — merge with base gms flags
     // e.g. "(?i)pattern" → pattern "pattern", flags "gmsi"
@@ -112,7 +166,7 @@ export function compileRewriteRule(raw: RewriteRule): CompiledRewriteRule | null
         if (!flags.includes(f)) flags += f
       }
     }
-    return { from: new RegExp(pattern, flags), to: raw.to, method, modelPattern }
+    return { from: new RegExp(pattern, flags), to: raw.to, method, modelPattern, endpointSet }
   } catch (err) {
     consola.warn(`[config] Invalid regex in rewrite rule: "${raw.from}"`, err)
     return null
@@ -122,6 +176,28 @@ export function compileRewriteRule(raw: RewriteRule): CompiledRewriteRule | null
 /** Compile an array of raw rewrite rules, skipping invalid ones */
 export function compileRewriteRules(raws: Array<RewriteRule>): Array<CompiledRewriteRule> {
   return raws.map((r) => compileRewriteRule(r)).filter((r): r is CompiledRewriteRule => r !== null)
+}
+
+/**
+ * Compile the config `system_prompt_prepend` / `system_prompt_append` value
+ * (`string | Entry | Entry[] | undefined`) into scoped {@link CompiledSystemPromptEntry}
+ * list. A plain string becomes a single unscoped entry. Entries whose model regex
+ * fails to compile are skipped (warned by {@link compileScope}).
+ */
+export function compileSystemPromptEntries(raw: string | SystemPromptEntry | Array<SystemPromptEntry> | undefined): Array<CompiledSystemPromptEntry> {
+  if (raw === undefined) return []
+  let entries: Array<SystemPromptEntry>
+  if (typeof raw === "string") entries = [{ text: raw }]
+  else if (Array.isArray(raw)) entries = raw
+  else entries = [raw]
+
+  const compiled: Array<CompiledSystemPromptEntry> = []
+  for (const entry of entries) {
+    const scope = compileScope(entry)
+    if (scope === null) continue
+    compiled.push({ text: entry.text, modelPattern: scope.modelPattern, endpointSet: scope.endpointSet })
+  }
+  return compiled
 }
 
 // ============================================================================
@@ -156,6 +232,38 @@ function clampKeepaliveCadence(sec: number): number {
     )
   }
   return KEEPALIVE_CADENCE_MAX
+}
+
+/**
+ * Translate a validated `buffered_retry` map (snake_case config keys) into a
+ * partial {@link BufferedRetryCaps} state patch (camelCase). `heartbeat_sec` is
+ * clamped to stay under the client idle deadline (same clamp as the other
+ * keepalive cadences). `enabled` is a mode switch (handled by the caller), not a
+ * cap, so it is not mapped here. Only declared fields are included — an omitted
+ * field falls through to the shared caps / built-in default at resolve time.
+ */
+function mapBufferedCaps(m: BufferedRetryOverride): Partial<BufferedRetryCaps> {
+  const out: Partial<BufferedRetryCaps> = {}
+  if (m.max_retries !== undefined) out.maxRetries = m.max_retries
+  if (m.buffer_cap_bytes !== undefined) out.bufferCapBytes = m.buffer_cap_bytes
+  if (m.heartbeat_sec !== undefined) out.heartbeatSec = clampKeepaliveCadence(m.heartbeat_sec)
+  return out
+}
+
+/**
+ * Apply a per-vendor `buffered_retry` config value that carries an `enabled` mode
+ * switch (Responses / Chat Completions). A bare boolean is the `enabled` shorthand;
+ * a map sets `enabled` (when present) via `setEnabled` and routes its caps into the
+ * vendor's override (resolveBufferedCaps). Vendors WITHOUT a mode switch (anthropic,
+ * shared) don't use this — they map caps directly.
+ */
+function applyVendorBufferedRetry(value: boolean | BufferedRetryOverride, vendor: string, setEnabled: (enabled: boolean) => void): void {
+  if (typeof value === "boolean") {
+    setEnabled(value)
+    return
+  }
+  if (value.enabled !== undefined) setEnabled(value.enabled)
+  setBufferedRetryOverride(vendor, mapBufferedCaps(value))
 }
 
 /** Bundled defaults cache — file is immutable for the process lifetime. */
@@ -299,7 +407,7 @@ export class ConfigParseError extends Error {
  *     declared sub-field gets its own merge strategy based on its schema.
  *   - **ZodRecord (custom keys)** — two sub-variants distinguished by a
  *     `mergeStrategy` meta tag on the schema:
- *       · `"per-key"` (e.g. `model_overrides`): shallow merge at the key
+ *       · `"per-key"` (e.g. `model_mappings`): shallow merge at the key
  *         level — user keys add/replace, bundled keys without a user
  *         counterpart remain. Values are atomic (replaced wholesale).
  *       · `"replace"` (default — e.g. `anthropic.effort_overrides`,
@@ -386,7 +494,7 @@ function mergeBySchema(schema: z.ZodType, bundled: unknown, user: unknown): unkn
   }
 
   // ZodRecord — custom keys. Default: user table replaces bundled wholesale.
-  // Opt-in `mergeStrategy: "per-key"` for additive maps like `model_overrides`.
+  // Opt-in `mergeStrategy: "per-key"` for additive maps like `model_mappings`.
   if (inner instanceof z.ZodRecord) {
     if (!isRecord(bundled) || !isRecord(user)) return user
     const strategy = readMergeStrategy(schema) ?? readMergeStrategy(inner) ?? "replace"
@@ -491,7 +599,7 @@ export async function applyConfigToState(): Promise<Config> {
   // Anthropic settings (scalar: override only when present)
   if (config.anthropic) {
     const a = config.anthropic
-    if (a.tool_strip_server !== undefined) setAnthropicBehavior({ stripServerTools: a.tool_strip_server })
+    if (a.use_upstream_count_tokens !== undefined) setAnthropicBehavior({ useUpstreamCountTokens: a.use_upstream_count_tokens })
     if (a.strict_response_headers !== undefined) setAnthropicBehavior({ strictResponseHeaders: a.strict_response_headers })
     if (a.response_header_blacklist !== undefined) setAnthropicBehavior({ responseHeaderBlacklist: a.response_header_blacklist })
     if (a.response_header_whitelist !== undefined) setAnthropicBehavior({ responseHeaderWhitelist: a.response_header_whitelist })
@@ -500,19 +608,27 @@ export async function applyConfigToState(): Promise<Config> {
     if (a.request_header_whitelist !== undefined) setAnthropicBehavior({ requestHeaderWhitelist: a.request_header_whitelist })
     if (a.strip_attribution_header !== undefined) setAnthropicBehavior({ stripAttributionHeader: a.strip_attribution_header })
     if (a.stream_keepalive_ping_sec !== undefined) setAnthropicBehavior({ streamKeepalivePingSec: clampKeepaliveCadence(a.stream_keepalive_ping_sec) })
+    if (a.stream_keepalive_mode !== undefined) setAnthropicBehavior({ streamKeepaliveMode: a.stream_keepalive_mode })
     if (a.stream_commit_after_sec !== undefined) setAnthropicBehavior({ streamCommitAfterSec: clampKeepaliveCadence(a.stream_commit_after_sec) })
     if (a.protect_streaming_generation !== undefined) setAnthropicBehavior({ protectStreamingGeneration: a.protect_streaming_generation })
-    if (a.protect_streaming_max_retries !== undefined) setAnthropicBehavior({ protectStreamingMaxRetries: a.protect_streaming_max_retries })
-    if (a.protect_streaming_heartbeat !== undefined) setAnthropicBehavior({ protectStreamingHeartbeat: clampKeepaliveCadence(a.protect_streaming_heartbeat) })
-    if (a.protect_streaming_buffer_cap_bytes !== undefined) setAnthropicBehavior({ protectStreamingBufferCapBytes: a.protect_streaming_buffer_cap_bytes })
+    // Per-vendor buffered-retry cap override for Anthropic (legacy
+    // protect_streaming_{max_retries,heartbeat,buffer_cap_bytes} migrate here via
+    // CONFIG_MIGRATIONS). `enabled` is ignored — Anthropic's mode switch is
+    // protect_streaming_generation above.
+    if (a.buffered_retry) setBufferedRetryOverride("anthropic", mapBufferedCaps(a.buffered_retry))
     if (a.protect_streaming_escalate_context !== undefined) setAnthropicBehavior({ protectStreamingEscalateContext: a.protect_streaming_escalate_context })
     // Model-capability allowlists (retain-on-absence per sub-key; an explicit empty list clears).
     if (a.model_capabilities) {
       const mc = a.model_capabilities
       if (mc.context_editing !== undefined) setAnthropicBehavior({ contextEditingModels: mc.context_editing })
-      if (mc.tool_search !== undefined) setAnthropicBehavior({ toolSearchModels: mc.tool_search })
       if (mc.interleaved_thinking !== undefined) setAnthropicBehavior({ interleavedThinkingModels: mc.interleaved_thinking })
       if (mc.adaptive_thinking !== undefined) setAnthropicBehavior({ adaptiveThinkingModels: mc.adaptive_thinking })
+      if (mc.extended_cache_ttl !== undefined) setAnthropicBehavior({ extendedCacheTtlModels: mc.extended_cache_ttl })
+      if (mc.memory !== undefined) setAnthropicBehavior({ memoryModels: mc.memory })
+      if (mc.tool_search_overrides !== undefined)
+        setAnthropicBehavior({
+          toolSearchOverrides: normalizeModelKeyedRecord(mc.tool_search_overrides, "anthropic.model_capabilities.tool_search_overrides"),
+        })
     }
     if (a.tool_inject_claude_code !== undefined) {
       setAnthropicBehavior({ injectClaudeCodeOfficialTools: a.tool_inject_claude_code })
@@ -520,18 +636,29 @@ export async function applyConfigToState(): Promise<Config> {
     if (a.thinking_block_message_policy !== undefined) {
       setAnthropicBehavior({ thinkingBlockMessagePolicy: a.thinking_block_message_policy })
     }
+    if (a.thinking_destack_strategy !== undefined) {
+      setAnthropicBehavior({ thinkingDestackStrategy: a.thinking_destack_strategy })
+    }
+    if (a.strip_thinking_on_reject !== undefined) {
+      setAnthropicBehavior({ stripThinkingOnReject: a.strip_thinking_on_reject })
+    }
+    if (a.poisoned_thinking_quarantine !== undefined) {
+      setAnthropicBehavior({ poisonedThinkingQuarantine: a.poisoned_thinking_quarantine })
+    }
+    if (a.poisoned_thinking_ttl_hours !== undefined) {
+      setAnthropicBehavior({ poisonedThinkingTtlHours: a.poisoned_thinking_ttl_hours })
+    }
     if (a.thinking_block_sanitize !== undefined) {
       setAnthropicBehavior({ thinkingBlockSanitizeCheck: a.thinking_block_sanitize })
     }
     if (a.thinking_coerce_adaptive !== undefined) {
       setAnthropicBehavior({ coerceAdaptiveThinking: a.thinking_coerce_adaptive })
     }
-    if (a.system_messages_sanitize !== undefined) {
-      setAnthropicBehavior({ systemMessagesSanitize: a.system_messages_sanitize })
+    if (a.system_default_mode !== undefined) {
+      setAnthropicBehavior({ systemDefaultMode: a.system_default_mode })
     }
-    if (a.tool_rewrite_history_server !== undefined) {
-      setAnthropicBehavior({ rewriteHistoryServerTools: a.tool_rewrite_history_server })
-    }
+    if (a.system_reject_models !== undefined) setAnthropicBehavior({ systemRejectModels: a.system_reject_models })
+    if (a.system_reject_mode !== undefined) setAnthropicBehavior({ systemRejectMode: a.system_reject_mode })
     if (a.thinking_signature_compat !== undefined) {
       setAnthropicBehavior({ thinkingSignatureCompat: a.thinking_signature_compat })
     }
@@ -545,11 +672,17 @@ export async function applyConfigToState(): Promise<Config> {
     if (a.context_editing_keep_tools !== undefined) setAnthropicBehavior({ contextEditingKeepTools: a.context_editing_keep_tools })
     if (a.context_editing_keep_thinking !== undefined) setAnthropicBehavior({ contextEditingKeepThinking: a.context_editing_keep_thinking })
     if (a.tool_search !== undefined) setAnthropicBehavior({ toolSearchEnabled: a.tool_search })
+    if (a.server_tool_memory !== undefined) setAnthropicBehavior({ memoryToolEnabled: a.server_tool_memory })
     if (a.cache_control !== undefined) {
       setAnthropicBehavior({ cacheControlMode: a.cache_control })
     }
-    if (a.tool_non_deferred !== undefined) setAnthropicBehavior({ nonDeferredTools: a.tool_non_deferred })
-    if (a.api_key !== undefined) setAnthropicBehavior({ anthropicApiKey: a.api_key })
+    if (a.extended_cache_ttl) {
+      const ect = a.extended_cache_ttl
+      if (ect.enabled !== undefined) setAnthropicBehavior({ extendedCacheTtlEnabled: ect.enabled })
+      if (ect.tools_system_ttl !== undefined) setAnthropicBehavior({ extendedCacheTtlToolsSystem: ect.tools_system_ttl })
+      if (ect.messages_ttl !== undefined) setAnthropicBehavior({ extendedCacheTtlMessages: ect.messages_ttl })
+    }
+    if (a.tool_search_non_deferred !== undefined) setAnthropicBehavior({ nonDeferredTools: a.tool_search_non_deferred })
     if (a.warmup !== undefined) setAnthropicBehavior({ warmupPolicy: a.warmup })
     // Collection fields: retain-on-absence semantic — a missing key keeps the
     // current runtime value; an explicit `{}` overwrites with empty. To revert
@@ -562,9 +695,21 @@ export async function applyConfigToState(): Promise<Config> {
       setAnthropicBehavior({
         stripBetaHeaders: normalizeModelKeyedRecord(a.beta_strip_headers, "anthropic.beta_strip_headers"),
       })
+    if (a.cache_control_strip_subfields !== undefined)
+      setAnthropicBehavior({
+        stripCacheControlSubfields: normalizeModelKeyedRecord(a.cache_control_strip_subfields, "anthropic.cache_control_strip_subfields"),
+      })
     if (a.partner_strip_features !== undefined)
       setAnthropicBehavior({
         stripPartnerFeatures: normalizeModelKeyedRecord(a.partner_strip_features, "anthropic.partner_strip_features"),
+      })
+    if (a.tool_strip_fields !== undefined)
+      setAnthropicBehavior({
+        stripToolFields: normalizeModelKeyedRecord(a.tool_strip_fields, "anthropic.tool_strip_fields"),
+      })
+    if (a.tool_keep_fields !== undefined)
+      setAnthropicBehavior({
+        keepToolFields: normalizeModelKeyedRecord(a.tool_keep_fields, "anthropic.tool_keep_fields"),
       })
     if (a.retry_reject_body_fields !== undefined)
       setAnthropicBehavior({
@@ -573,12 +718,23 @@ export async function applyConfigToState(): Promise<Config> {
     // Tool-name-keyed: keys are tool names, matched verbatim. Do NOT normalize
     // (normalizeModelKeyedRecord folds case/separators and is model-specific).
     // cloneStatePatch deep-clones the record, so passing the parsed value is safe.
-    if (a.tool_decode_input_fields !== undefined) setAnthropicBehavior({ decodeToolInputFields: a.tool_decode_input_fields })
-    if (a.tool_decode_all_input_fields !== undefined) setAnthropicBehavior({ decodeAllToolInputFields: a.tool_decode_all_input_fields })
-    if (a.tool_recover_call_text !== undefined) setAnthropicBehavior({ recoverToolCallText: a.tool_recover_call_text })
-    if (a.tool_repair_malformed_input !== undefined) setAnthropicBehavior({ toolRepairMalformedInput: a.tool_repair_malformed_input })
+    // Response-wire fixes live under the `response_text_fix` / `response_tool_use_fix` sections.
+    const textFix = a.response_text_fix
+    const toolUseFix = a.response_tool_use_fix
+    if (textFix?.invoke_in_text !== undefined) setAnthropicBehavior({ recoverToolCallText: textFix.invoke_in_text })
+    if (toolUseFix?.decode_top_level_field !== undefined) setAnthropicBehavior({ decodeToolInputFields: toolUseFix.decode_top_level_field })
+    if (toolUseFix?.malformed_input !== undefined) setAnthropicBehavior({ toolRepairMalformedInput: toolUseFix.malformed_input })
+    if (toolUseFix?.send_message_to_missing !== undefined) setAnthropicBehavior({ fixSendMessageRecipient: toolUseFix.send_message_to_missing })
+    if (toolUseFix?.ask_user_question_question_missing !== undefined)
+      setAnthropicBehavior({ backfillQuestionFromHeader: toolUseFix.ask_user_question_question_missing })
     if (a.refusal_sse_rewrite !== undefined) setAnthropicBehavior({ refusalSseRewrite: a.refusal_sse_rewrite })
-    if (a.tool_backfill_question !== undefined) setAnthropicBehavior({ backfillQuestionFromHeader: a.tool_backfill_question })
+    if (a.refusal_end_turn_text !== undefined) setAnthropicBehavior({ refusalEndTurnText: a.refusal_end_turn_text })
+    if (a.refusal_error_message !== undefined) setAnthropicBehavior({ refusalErrorMessage: a.refusal_error_message })
+    if (a.refusal_error_type !== undefined) setAnthropicBehavior({ refusalErrorType: a.refusal_error_type })
+    if (a.error_shaping_enabled !== undefined) setAnthropicBehavior({ errorShapingEnabled: a.error_shaping_enabled })
+    if (a.error_ask_user_question !== undefined) setAnthropicBehavior({ errorAskUserQuestion: a.error_ask_user_question })
+    if (a.error_auq_template !== undefined) setAnthropicBehavior({ errorAuqTemplate: a.error_auq_template })
+    if (a.error_selfheal_delegate !== undefined) setAnthropicBehavior({ errorSelfhealDelegate: a.error_selfheal_delegate })
     if (a.system_rewrite_reminders !== undefined) {
       // Collection: entire replacement — deleted rules disappear
       if (typeof a.system_rewrite_reminders === "boolean") {
@@ -589,12 +745,17 @@ export async function applyConfigToState(): Promise<Config> {
     }
   }
 
+  // Shared (vendor-neutral) buffered-retry caps. Applied regardless of the
+  // anthropic section — it is the base layer every vendor's per-vendor override
+  // falls through to (resolveBufferedCaps). `enabled` is ignored (no shared mode switch).
+  if (config.buffered_retry) setBufferedRetryShared(mapBufferedCaps(config.buffered_retry))
+
   // L2 cross-field guard: buffered streaming with NO keepalive heartbeat = clients idle out.
   // Checked on the EFFECTIVE state (post-apply, so bundled defaults + hot-reload retain are reflected).
   warnProtectStreamingHeartbeatOnce({
     protectStreamingGeneration: state.protectStreamingGeneration,
     fakeHeartbeat: state.streamKeepalivePingSec,
-    protectHeartbeat: state.protectStreamingHeartbeat,
+    protectHeartbeat: resolveBufferedCaps("anthropic").heartbeatSec,
   })
 
   // System prompt overrides (collection: entire replacement)
@@ -604,11 +765,26 @@ export async function applyConfigToState(): Promise<Config> {
     })
   }
 
-  // Model overrides: retain-on-absence. An explicit `model_overrides: {}` (or
-  // any present map) replaces the live override map merged on top of defaults;
+  // System prompt prepend/append (scoped entries: entire replacement per key).
+  if (config.system_prompt_prepend !== undefined) {
+    setAnthropicBehavior({ systemPromptPrepend: compileSystemPromptEntries(config.system_prompt_prepend) })
+  }
+  if (config.system_prompt_append !== undefined) {
+    setAnthropicBehavior({ systemPromptAppend: compileSystemPromptEntries(config.system_prompt_append) })
+  }
+
+  // Model mapping: retain-on-absence. An explicit `model_mappings: {}` (or
+  // any present map) replaces the live mapping merged on top of defaults;
   // omitting the key keeps the prior runtime value.
-  if (config.model_overrides !== undefined) {
-    setModelOverrides(normalizeModelKeyedRecord({ ...DEFAULT_MODEL_OVERRIDES, ...config.model_overrides }, "model_overrides"))
+  if (config.model_mappings !== undefined) {
+    setModelMappings(normalizeModelKeyedRecord({ ...DEFAULT_MODEL_MAPPINGS, ...config.model_mappings }, "model_mappings"))
+  }
+
+  // model_translation: retain-on-absence (mirrors model_mappings). An explicit
+  // `model_translation: {}` clears to defaults (empty — every pair falls back to
+  // scenario A); missing key keeps the prior runtime value.
+  if (config.model_translation !== undefined) {
+    setModelTranslation(config.model_translation)
   }
 
   // Disabled models: retain-on-absence. An explicit empty list clears; missing
@@ -617,22 +793,35 @@ export async function applyConfigToState(): Promise<Config> {
     setDisabledModels(normalizeModelNameList(config.disabled_models, "disabled_models"))
   }
 
-  // Auto-truncate (nested section: override only fields that are present).
-  // When `enabled` flips off→on at runtime (hot-reload), lazily load persisted
-  // learned limits so the calibration cache is available — the boot-time load in
-  // start.ts only runs when the CLI flag enabled it at startup. The map merge is
-  // idempotent, so a double load (CLI + config) is harmless.
-  if (config.auto_truncate) {
-    const a = config.auto_truncate
-    if (a.enabled !== undefined) {
-      const wasEnabled = state.autoTruncate
-      setAutoTruncateConfig({ autoTruncate: a.enabled })
-      if (!wasEnabled && a.enabled) void loadPersistedLimits()
+  // Shared reactive-retry budget (was auto_truncate.max_retries).
+  if (config.retry?.max_reactive_retries !== undefined) {
+    setReactiveRetryConfig({ maxReactiveRetries: config.retry.max_reactive_retries })
+  }
+  const generation = config.generation
+  if (generation) {
+    const patch = {
+      ...(generation.hedge?.enabled !== undefined && { generationHedgeEnabled: generation.hedge.enabled }),
+      ...(generation.hedge?.threshold_sec !== undefined && { generationHedgeThresholdSec: generation.hedge.threshold_sec }),
+      ...(generation.hedge?.max_secondary_candidates !== undefined && { generationHedgeMaxSecondaryCandidates: generation.hedge.max_secondary_candidates }),
+      ...(generation.hedge?.allow_server_tools !== undefined && { generationHedgeAllowServerTools: generation.hedge.allow_server_tools }),
+      ...(generation.recovery?.max_candidates !== undefined && { generationRecoveryMaxCandidates: generation.recovery.max_candidates }),
+      ...(generation.max_active_candidates !== undefined && { generationMaxActiveCandidates: generation.max_active_candidates }),
+      ...(generation.max_active_dispatches !== undefined && { generationMaxActiveDispatches: generation.max_active_dispatches }),
+      ...(generation.max_total_candidates !== undefined && { generationMaxTotalCandidates: generation.max_total_candidates }),
+      ...(generation.max_total_dispatches !== undefined && { generationMaxTotalDispatches: generation.max_total_dispatches }),
+      ...(generation.cleanup_grace_sec !== undefined && { generationCleanupGraceSec: generation.cleanup_grace_sec }),
     }
-    if (a.target_factor !== undefined) setAutoTruncateConfig({ autoTruncateTargetFactor: a.target_factor })
-    if (a.max_retries !== undefined) setAutoTruncateConfig({ autoTruncateMaxRetries: a.max_retries })
-    if (a.compress_threshold !== undefined) setAutoTruncateConfig({ autoTruncateCompressThreshold: a.compress_threshold })
-    if (a.compress_tool_results !== undefined) setAnthropicBehavior({ compressToolResultsBeforeTruncate: a.compress_tool_results })
+    const next = { ...state, ...patch }
+    if (next.generationMaxTotalCandidates < next.generationMaxActiveCandidates) {
+      throw new Error("generation.max_total_candidates must be >= generation.max_active_candidates")
+    }
+    if (next.generationMaxTotalDispatches < next.generationMaxActiveDispatches) {
+      throw new Error("generation.max_total_dispatches must be >= generation.max_active_dispatches")
+    }
+    if (next.generationMaxActiveCandidates < 1 + next.generationHedgeMaxSecondaryCandidates) {
+      throw new Error("generation.max_active_candidates must allow the primary plus max_secondary_candidates")
+    }
+    setGenerationRuntimeConfig(patch)
   }
 
   // Tool-name sanitization (cross-protocol top-level toggle; scalar override)
@@ -645,24 +834,61 @@ export async function applyConfigToState(): Promise<Config> {
   // History settings (nested: override only when present)
   if (config.history) {
     const h = config.history
-    // Split success/failure limits; legacy `limit` is the fallback for either
-    // bucket when the dedicated key is absent (backward compat). Reading the
-    // deprecated key here is the whole point of the shim, so the rule is off.
-    /* eslint-disable @typescript-eslint/no-deprecated */
-    const successLimit = h.success_limit ?? h.limit
-    const failureLimit = h.failure_limit ?? h.limit
-    /* eslint-enable @typescript-eslint/no-deprecated */
-    if (successLimit !== undefined) setHistoryConfig({ historySuccessLimit: successLimit })
-    if (failureLimit !== undefined) setHistoryConfig({ historyFailureLimit: failureLimit })
-    if (h.reaper_interval !== undefined) setHistoryConfig({ historyReaperInterval: h.reaper_interval })
-    if (h.db_path !== undefined) setHistoryConfig({ historyDbPath: h.db_path })
+    if (h.enabled !== undefined) {
+      if (!hasApplied) {
+        setHistoryConfig({ historyEnabled: h.enabled })
+      } else if (h.enabled !== state.historyEnabled) {
+        consola.warn(
+          `[config] history.enabled=${h.enabled} requires a restart to take effect (running instance stays ${state.historyEnabled}); ignoring for now`,
+        )
+      }
+    }
+    if (h.raw_capture?.enabled !== undefined) setHistoryConfig({ historyRawCaptureEnabled: h.raw_capture.enabled })
+    if (h.raw_capture?.db_path !== undefined) setHistoryConfig({ historyRawCaptureDbPath: h.raw_capture.db_path })
+    if (h.raw_capture?.max_object_bytes !== undefined) setHistoryConfig({ historyRawCaptureMaxObjectBytes: h.raw_capture.max_object_bytes })
   }
 
-  // Web search settings (nested: override only when present)
-  if (config.web_search) {
-    const w = config.web_search
-    if (w.enabled !== undefined) setWebSearchConfig({ webSearchEnabled: w.enabled })
-    if (w.backend !== undefined) setWebSearchConfig({ webSearchBackend: w.backend })
+  // Telemetry settings (telemetry.*, nested: override only when present). Business-layer
+  // validation (T2.3) does warn-continue fallbacks — never fail-fast on hot-reload.
+  if (config.telemetry) {
+    const t = config.telemetry
+    if (t.enabled !== undefined) setTelemetryConfig({ telemetryEnabled: t.enabled })
+    if (t.db_path !== undefined) setTelemetryConfig({ telemetryDbPath: t.db_path })
+    if (t.persist_interval !== undefined) setTelemetryConfig({ telemetryPersistInterval: t.persist_interval })
+    if (t.rollup_interval !== undefined) setTelemetryConfig({ telemetryRollupInterval: t.rollup_interval })
+    if (t.cardinality_cap !== undefined) setTelemetryConfig({ telemetryCardinalityCap: t.cardinality_cap })
+    if (t.cumulative !== undefined) setTelemetryConfig({ telemetryCumulative: t.cumulative })
+    // γ 下限 ~0.005：更紧会触发 DDSketch bin 塌缩（PoC：0.001→6909 bin>2048）→ 警告回落 0.01。
+    if (t.sketch_gamma !== undefined) {
+      if (t.sketch_gamma < 0.005) {
+        consola.warn(`[config] telemetry.sketch_gamma=${t.sketch_gamma} 低于下限 0.005（会触发 DDSketch bin 塌缩）——回落到默认 0.01`)
+        setTelemetryConfig({ telemetrySketchGamma: 0.01 })
+      } else {
+        setTelemetryConfig({ telemetrySketchGamma: t.sketch_gamma })
+      }
+    }
+    if (t.tiers?.raw?.resolution_minutes !== undefined) {
+      // raw 分辨率须整除 60（hourly rollup 上卷前提）→ 非整除警告回落 5。
+      const res = t.tiers.raw.resolution_minutes
+      if (res <= 0 || 60 % res !== 0) {
+        consola.warn(`[config] telemetry.tiers.raw.resolution_minutes=${res} 非 60 的整除因子（hourly rollup 要求）——回落到默认 5`)
+        setTelemetryConfig({ telemetryRawResolutionMinutes: 5 })
+      } else {
+        setTelemetryConfig({ telemetryRawResolutionMinutes: res })
+      }
+    }
+    if (t.tiers?.raw?.retention_days !== undefined) setTelemetryConfig({ telemetryRawRetentionDays: t.tiers.raw.retention_days })
+    if (t.tiers?.hourly?.retention_days !== undefined) setTelemetryConfig({ telemetryHourlyRetentionDays: t.tiers.hourly.retention_days })
+    if (t.tiers?.daily?.retention_days !== undefined) setTelemetryConfig({ telemetryDailyRetentionDays: t.tiers.daily.retention_days })
+  }
+
+  // Upstream hook module (nested: override only when present). Declarative only — writes
+  // state so start.ts (and, in future phases, a reload API) can decide whether/what to load;
+  // never triggers the module load itself.
+  if (config.hooks) {
+    const hk = config.hooks
+    if (hk.upstream_module !== undefined) setHooksConfig({ hooksUpstreamModule: hk.upstream_module })
+    if (hk.enabled !== undefined) setHooksConfig({ hooksEnabled: hk.enabled })
   }
 
   // Shutdown timing (scalar: override only when present)
@@ -674,27 +900,137 @@ export async function applyConfigToState(): Promise<Config> {
 
   // Timeouts section (scalar: override only when present)
   if (config.timeouts) {
+    // RC2 diagnostics: snapshot timeout scalars before/after apply so a config reload that
+    // changes staleRequestMaxAge (while the reaper cadence stays frozen) is observable rather
+    // than inferred. Pure observation — reads state, records a diff, no behavior change.
+    const timeoutBefore = {
+      staleRequestMaxAge: state.staleRequestMaxAge,
+      responseHeaderTimeout: state.responseHeaderTimeout,
+      streamIdleTimeout: state.streamIdleTimeout,
+    }
     const t = config.timeouts
-    if (t.response_header !== undefined) setTimeoutConfig({ fetchTimeout: t.response_header })
+    if (t.response_header !== undefined) setTimeoutConfig({ responseHeaderTimeout: t.response_header })
     if (t.stream_idle !== undefined) setTimeoutConfig({ streamIdleTimeout: t.stream_idle })
-    if (t.upstream_keepalive !== undefined) setTimeoutConfig({ upstreamKeepaliveDelay: t.upstream_keepalive })
     if (t.stale_request_max_age !== undefined) setTimeoutConfig({ staleRequestMaxAge: t.stale_request_max_age })
+    if (t.request_deadline !== undefined) setTimeoutConfig({ requestDeadline: t.request_deadline })
+    // Per-model override maps (already bundled+user per-key merged upstream).
+    // Replace semantics per field; app-guard only (no dispatcher rebuild).
+    if (t.stream_idle_overrides !== undefined) {
+      setTimeoutOverridesConfig({ streamIdleTimeoutOverrides: normalizeModelKeyedRecord(t.stream_idle_overrides, "timeouts.stream_idle_overrides") })
+    }
+    if (t.response_header_overrides !== undefined) {
+      setTimeoutOverridesConfig({
+        responseHeaderTimeoutOverrides: normalizeModelKeyedRecord(t.response_header_overrides, "timeouts.response_header_overrides"),
+      })
+    }
+    recordConfigReloadTimeoutDiff(timeoutBefore, {
+      staleRequestMaxAge: state.staleRequestMaxAge,
+      responseHeaderTimeout: state.responseHeaderTimeout,
+      streamIdleTimeout: state.streamIdleTimeout,
+    })
   }
   if (config.model_refresh_interval !== undefined) setTimeoutConfig({ modelRefreshInterval: config.model_refresh_interval })
+
+  // Upstream transport (outbound to GHC): TCP keepalive / h2 ping+connect-timeout /
+  // WS pool idle-timeout+soft-cap (scalar: override only when present).
+  const upstreamTransport = config.upstream_transport
+  if (upstreamTransport) {
+    if (upstreamTransport.tcp_keepalive_probe_delay !== undefined)
+      setUpstreamTransportConfig({ upstreamKeepaliveDelay: upstreamTransport.tcp_keepalive_probe_delay })
+    if (upstreamTransport.http2?.ping_interval !== undefined) setUpstreamTransportConfig({ upstreamH2PingInterval: upstreamTransport.http2.ping_interval })
+    if (upstreamTransport.http2?.session_connect_timeout !== undefined)
+      setUpstreamTransportConfig({ sessionConnectTimeout: upstreamTransport.http2.session_connect_timeout })
+    if (upstreamTransport.websocket?.pooled_connection_idle_timeout !== undefined)
+      setUpstreamTransportConfig({ pooledConnectionIdleTimeout: upstreamTransport.websocket.pooled_connection_idle_timeout })
+    if (upstreamTransport.websocket?.soft_max_connections !== undefined)
+      setUpstreamTransportConfig({ softMaxUpstreamWsConnections: upstreamTransport.websocket.soft_max_connections })
+  }
+
+  // Reactive-learning TTL lifecycle (top-level section). Days → ms; 0/≤0 → never
+  // (Infinity). ttl_days is keyed by internal category id (camelCase). The whole
+  // overrides map is replaced when present (replace semantic); default is retained
+  // on absence, reset via resetConfigManagedState().
+  if (config.negotiation_learning) {
+    const nl = config.negotiation_learning
+    const toMs = (days: number): number => (days <= 0 ? Number.POSITIVE_INFINITY : days * 86_400_000)
+    if (typeof nl.default_ttl_days === "number") setNegotiationConfig({ negotiationDefaultTtlMs: toMs(nl.default_ttl_days) })
+    if (nl.ttl_days) {
+      const overrides: Record<string, number> = {}
+      for (const [cat, days] of Object.entries(nl.ttl_days)) overrides[cat] = toMs(days)
+      setNegotiationConfig({ negotiationTtlOverridesMs: overrides })
+    }
+  }
+
+  // unknown HTTP endpoint 日志级别（scalar: override only when present; retain-on-absence）。
+  if (config.unknown_endpoint_logging) {
+    const u = config.unknown_endpoint_logging
+    setUnknownEndpointLogging({
+      notFound: u.not_found ?? state.unknownEndpointLogging.notFound,
+      methodNotAllowed: u.method_not_allowed ?? state.unknownEndpointLogging.methodNotAllowed,
+    })
+  }
+
+  if (config.logging) {
+    const logging = config.logging
+    setLoggingConfig({
+      ...(logging.terminal_level !== undefined && { terminalLevel: logging.terminal_level }),
+      ...(logging.file_level !== undefined && { fileLevel: logging.file_level }),
+      ...(!hasApplied && logging.file?.enabled !== undefined && { fileEnabled: logging.file.enabled }),
+      ...(!hasApplied && logging.file?.directory !== undefined && { fileDirectory: logging.file.directory }),
+      ...(!hasApplied && logging.file?.max_size_mb !== undefined && { fileMaxSizeMb: logging.file.max_size_mb }),
+      ...(!hasApplied && logging.file?.max_files_per_process !== undefined && { fileMaxFilesPerProcess: logging.file.max_files_per_process }),
+      ...(!hasApplied && logging.file?.retention_days !== undefined && { retentionDays: logging.file.retention_days }),
+    })
+    if (hasApplied && logging.file) {
+      const differs =
+        (logging.file.enabled !== undefined && logging.file.enabled !== state.logging.fileEnabled)
+        || (logging.file.directory !== undefined && logging.file.directory !== state.logging.fileDirectory)
+        || (logging.file.max_size_mb !== undefined && logging.file.max_size_mb !== state.logging.fileMaxSizeMb)
+        || (logging.file.max_files_per_process !== undefined && logging.file.max_files_per_process !== state.logging.fileMaxFilesPerProcess)
+        || (logging.file.retention_days !== undefined && logging.file.retention_days !== state.logging.retentionDays)
+      if (differs) consola.warn("[config] logging.file.* changes require a restart; keeping the active writer configuration")
+    }
+  }
+  if (config.tui?.enabled !== undefined) {
+    if (!hasApplied) setTuiEnabled(config.tui.enabled)
+    else if (config.tui.enabled !== state.tuiEnabled) consola.warn("[config] tui.enabled changes require a restart; keeping the active terminal capability")
+  }
 
   // Responses API settings (scalar: override only when present)
   const responsesConfig = config.openai_responses
   if (responsesConfig && responsesConfig.normalize_call_ids !== undefined) setResponsesConfig({ normalizeResponsesCallIds: responsesConfig.normalize_call_ids })
   if (responsesConfig && responsesConfig.upstream_ws !== undefined) setResponsesConfig({ upstreamWebSocket: responsesConfig.upstream_ws })
+  // buffered_retry: boolean shorthand = `enabled`; map = `{ enabled, caps }` where
+  // caps override the shared buffered_retry.* for the `responses` vendor.
+  if (responsesConfig && responsesConfig.buffered_retry !== undefined) {
+    applyVendorBufferedRetry(responsesConfig.buffered_retry, "responses", (enabled) => setResponsesConfig({ responsesBufferedRetry: enabled }))
+  }
   if (responsesConfig && responsesConfig.fix_stream_ids !== undefined) setResponsesConfig({ fixResponsesStreamIds: responsesConfig.fix_stream_ids })
   if (responsesConfig && responsesConfig.strip_image_generation_tool !== undefined)
     setResponsesConfig({ stripImageGenerationTool: responsesConfig.strip_image_generation_tool })
-  if (responsesConfig && responsesConfig.client_ws_keep_open !== undefined) setResponsesConfig({ clientWebsocketKeepOpen: responsesConfig.client_ws_keep_open })
-  if (responsesConfig && responsesConfig.max_ws_frame_bytes !== undefined) setResponsesConfig({ maxWsFrameBytes: responsesConfig.max_ws_frame_bytes })
-  if (responsesConfig && responsesConfig.max_client_ws_connections !== undefined)
-    setResponsesConfig({ maxClientWsConnections: responsesConfig.max_client_ws_connections })
-  if (responsesConfig && responsesConfig.max_upstream_ws_connections !== undefined)
-    setResponsesConfig({ maxUpstreamWsConnections: responsesConfig.max_upstream_ws_connections })
+  if (responsesConfig && responsesConfig.buffered_merge) {
+    const bm = responsesConfig.buffered_merge
+    if (bm.event_compaction !== undefined) setResponsesConfig({ responsesBufferedMergeEventCompaction: bm.event_compaction })
+    if (bm.completed_output !== undefined) setResponsesConfig({ responsesBufferedMergeCompletedOutput: bm.completed_output })
+  }
+
+  // Client-facing Responses WS ingress limits (scalar: override only when present).
+  const responsesWsIngress = config.server?.responses_ws
+  if (responsesWsIngress) {
+    if (responsesWsIngress.keep_open !== undefined) setResponsesWsIngressConfig({ clientWebsocketKeepOpen: responsesWsIngress.keep_open })
+    if (responsesWsIngress.max_frame_bytes !== undefined) setResponsesWsIngressConfig({ maxWsFrameBytes: responsesWsIngress.max_frame_bytes })
+    if (responsesWsIngress.max_connections !== undefined) setResponsesWsIngressConfig({ maxClientWsConnections: responsesWsIngress.max_connections })
+  }
+
+  // Chat Completions settings. buffered_retry: boolean shorthand = `enabled`; map =
+  // `{ enabled, caps }` where caps override the shared buffered_retry.* for the
+  // `chat_completions` vendor. Default off (P3 flips the default to true).
+  const chatCompletionsConfig = config.chat_completions
+  if (chatCompletionsConfig && chatCompletionsConfig.buffered_retry !== undefined) {
+    applyVendorBufferedRetry(chatCompletionsConfig.buffered_retry, "chat_completions", (enabled) =>
+      setChatCompletionsConfig({ chatCompletionsBufferedRetry: enabled }),
+    )
+  }
 
   syncModelRefreshLoop()
 
@@ -703,6 +1039,28 @@ export async function applyConfigToState(): Promise<Config> {
   if (hasApplied && currentMtime !== lastAppliedMtimeMs) {
     consola.info("[config] Reloaded config.yaml")
   }
+
+  // Guardrail: an upstream silence-guard timeout explicitly set to 0 is DISABLED.
+  // With `response_header: 0` the TTFB abort signal is undefined, so a silently
+  // hung GHC upstream keeps a single streaming request pending for MINUTES until
+  // the upstream itself 502s (observed: a 691s pre-response hang; the timeout
+  // mechanism itself is sound — disabling it is the footgun, see
+  // exp/ttfb-timeout-queued/report.md). `stream_idle: 0` is the same class
+  // (mid-stream silence unbounded). Warn at first apply / on actual change only —
+  // gated like the reload log so the per-request hot-reload path never spams.
+  if (!hasApplied || currentMtime !== lastAppliedMtimeMs) {
+    const disabledGuards: Array<string> = []
+    if (config.timeouts?.response_header === 0) disabledGuards.push("response_header (TTFB / time-to-first-byte)")
+    if (config.timeouts?.stream_idle === 0) disabledGuards.push("stream_idle (mid-stream silence)")
+    if (disabledGuards.length > 0) {
+      consola.warn(
+        `[config] upstream silence guard(s) DISABLED: ${disabledGuards.join(", ")}. `
+          + `A hung upstream (e.g. GHC overload) will keep a request pending until the upstream itself responds/closes `
+          + `(observed hundreds of seconds). Set a positive timeout unless you are deliberately debugging long silences.`,
+      )
+    }
+  }
+
   hasApplied = true
   lastAppliedMtimeMs = currentMtime
 

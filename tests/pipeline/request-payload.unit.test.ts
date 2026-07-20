@@ -77,7 +77,11 @@ describe("request payload logging", () => {
         },
         {
           role: "assistant",
-          content: "x".repeat(60001),
+          // Realistic >50KB prose (~63KB). Avoid `"x".repeat(...)`: gpt-tokenizer's
+          // o200k_base BPE cascades pathologically on long repeated single chars
+          // (~15s for 60KB of "x" vs ~40ms for equivalent word content), which is a
+          // property of the degenerate input, not the code under test.
+          content: "the quick brown fox jumps over the lazy dog. ".repeat(1400),
         },
       ],
     }

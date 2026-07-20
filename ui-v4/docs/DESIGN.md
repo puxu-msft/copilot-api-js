@@ -35,6 +35,8 @@
 
 > **JSON 查看器修订**：早先选 `@uiw/react-json-view`，但请求内搜索（§6）要在折叠/未渲染 JSON 子树里计数+高亮+跳转定位，该库**无法被外部搜索驱动**展开/定位。故 JSON 段改用**可控渲染器**（CodeMirror 6 JSON + 可控 search/fold，或自建虚拟化树），全段走统一数据模型搜索。`@uiw/react-json-view` 不采用。
 
+> **UI 组件层现状勘误 + 迁移决策（2026-07-05）**：上表的 "shadcn/ui" 在实现中初期**未落地**（交互原语 Modal/Tabs/Menu/resize 全手写、零 Radix），导致 a11y 反复手补踩坑（P4 详情面板实证）。已**采用 `radix-ui` 统一包（headless）增量迁移并落地 P0–P3**："shadcn/ui" 精化为 "Radix Primitives"（弃成品样式、保留 Terminal Amber）。已迁：Modal→`Dialog`、两 tab 轨→`Tabs`、ColumnMenu→`DropdownMenu`、FilterBar 的 `<select>`→`Select`、JsonTreeView 折叠→`Collapsible`、splitter 键盘可操作（保留手写 + APG）。保留原生：`title=` 截断提示（浏览器原语、a11y 已合格，不套 Radix Tooltip）。→ ADR [decisions/2026-07-05-adopt-radix-primitives.md](decisions/2026-07-05-adopt-radix-primitives.md) + plan [plans/2026-07-05-radix-migration.md](plans/2026-07-05-radix-migration.md)（含 Radix 测试 gotchas [radix-styling.md](radix-styling.md)）。
+
 ### Workspace / 构建集成
 
 - ui-v4 = 新 bun workspace 成员（根 `workspaces:["ui","ui-v4"]`，单一根 `bun.lock`）。
@@ -56,7 +58,14 @@ HTTP `/history/api/*` + 根 `/api/*`，WS，类型经 `~backend/*` re-export（s
 
 ## 4. Requests 工作台（核心）
 
-> **落地态修订（Plan 08，用户定 2026-06-24）**：本节原设计的"主从一体（列表与详情同屏、不再是两个路由）"**已反转为两路由全屏分离**——`/requests` = 列表全屏、`/requests/:id` = 详情全屏（返回钮），点行/深链导航；`RequestsWorkbench` 已退役。深链（§4.1）、列表稳定性三件套（§4.2）、详情 C 布局分段（§4.3）均保留，只是列表与详情各占一整屏而非同屏。另：Convo/Stages 段加了左侧 TOC 树导航（消息→块 / leg→消息→块，点击滚动跳转 + 高亮）。详见 [README 现状](../README.md) 与 [plans/2026-06-23 ... 08-detail-page-split-toc-tree.md](plans/2026-06-24-08-detail-page-split-toc-tree.md)。下文为原始设计稿，保留作设计意图参考。
+> **落地态修订（Plan 08，用户定 2026-06-24）**：本节原设计的"主从一体（列表与详情同屏、不再是两个路由）"**已反转为两路由全屏分离**——`/requests` = 列表全屏、`/requests/:id` = 详情全屏（返回钮），点行/深链导航；`RequestsWorkbench` 已退役。深链（§4.1）、列表稳定性三件套（§4.2）、详情 C 布局分段（§4.3）均保留，只是列表与详情各占一整屏而非同屏。另：Convo/Stages 段加了左侧 TOC 树导航（消息→块 / leg→消息→块，点击滚动跳转 + 高亮）。详见 [演进史 evolution.md](evolution.md) 与 [plans/2026-06-24-08-detail-page-split-toc-tree.md](plans/2026-06-24-08-detail-page-split-toc-tree.md)。下文为原始设计稿，保留作设计意图参考。
+
+> **落地态增强（Requests 列表筛选层 + 虚拟化 + scoped delete，2026-07，plans [plans/requests-list-enhancement/](plans/requests-list-enhancement/)）**：Requests 列表页补齐并超越 `ui/` Activity 的筛选能力，全部落地为**活路径**——
+> - **URL-as-SSOT 七维筛选层**：search / model / endpoint / state / pid / sessionId + 时间范围（from/to），全部序列化进 query（`lib/request-filters.ts` = 纯 codec `toQueryString`/`parseFilters` + `matchesGating` + `hasAnyFilter` + chips；`hooks/useRequestFilters.ts` 直接读写 URL、无本地镜像 state）——刷新 / 复制链接 / 前进后退都还原筛选，是列表筛选的唯一真值源。筛选进 `useHistoryInfinite` 的 queryKey → server-side refetch（search 维走后端 FTS）；活动筛选 chips + 单个清除 + Clear all。
+> - **列表引擎换 TableVirtuoso + TanStack Table**：`components/requests/HistoryList.tsx` 用 `useReactTable` 列模型（`lib/request-columns.ts` = 列宽 / 可见性 / cell 的 SSOT）+ `react-virtuoso` 的 `TableVirtuoso` 虚拟渲染;`endReached` 触底加载旧页、`atTopStateChange` 离顶暂停 tail;列显隐齿轮菜单 + localStorage 持久化;键盘 ↑/↓/Enter/Esc roving 焦点导航（DOM 焦点跟随游标）。§4.2 的 tail / 缓冲横幅 / `?at=` 定位三件套保留不变。
+> - **时间范围筛选**：`components/requests/DateRangePopover.tsx` 用 `react-day-picker`。
+> - **后端 scoped delete**（Phase 0）：`DELETE /history/api/entries` 无 query = clear-all（清空整库）、带 query = scoped delete（`deleteEntries`，WHERE 经 `read.ts applyWhere` 与列表查询**严格同源**、绝不误删在飞 head 行），返回 `{ deleted: N }`;前端「清空历史」入口按筛选有无分流 + 确认 Modal。
+> - **paused 行内更新**（Phase 1 Task 1.3 门控顺序）：WS `entry_updated` 命中已加载行时**原地更新该行**（优先于终态 / buffer 门控，顺序互斥），paused 浏览下进行中请求的状态变化如实反映、且不误入缓冲横幅——端到端渲染层已锁（`tests/useHistoryInfinite.vitest.test.tsx`）。
 
 主从一体（DevTools/Network 范式）：左侧实时列表 + 右侧就地详情，**列表与详情不再是两个路由**。
 
@@ -101,6 +110,26 @@ HTTP `/history/api/*` + 根 `/api/*`，WS，类型经 `~backend/*` re-export（s
 - 窄屏退化成横向标签式（见 §8）。
 - 待定子项：Request stages 段间 diff 默认并排 vs 按需开（取决于 diff 高频程度）。
 
+### 4.4 Session 色带 + 多选对比高亮（已实施 2026-07-10）
+
+Requests 列表左侧一条按 `session_id` 稳定着色的色带（相邻同会话竖直贯通成链、段首圆顶段尾圆底；subagent 行 status 内容缩进 + 色带更深一档区分 main）。**默认**每行按会话色铺淡背景分组；点色带或键盘 `f` 把会话加入选择集（`Set`，多选）→ 选中会话铺强背景全彩、非选中行 `opacity-40` 变灰，直观对比多会话在时间线上如何交错；`Esc` 清空选择。全局时序不动、后端零改动。4 套可切换色板（`terminal-neon` 默认 / `oceanic-jewel` / `pastel-cool` / `slate-muted`，dataviz validator 实测、避开语义信号色），下拉切换 + `localStorage` 持久化。
+
+- 配色纯函数 leaf：[src/lib/session-color.ts](../../src/lib/session-color.ts)（色板注册表 + FNV-1a hash + tint + run 边界，bun 单测）。
+- 渲染：[HistoryList.tsx](../../src/components/requests/HistoryList.tsx) itemContent 对 session 列**特判**（经 Virtuoso `context` 第三参取 runs，非 TanStack `ColumnDef.cell`）；圆角走 theme.css 破例类 `.session-cap-*`（压过全局 `border-radius:0!important`）；色板选择器 [SessionPaletteSelect.tsx](../../src/components/requests/SessionPaletteSelect.tsx)。
+- 权威 spec：[docs/spec/2026-07-10-ui-v4-session-color-bar.md](spec/2026-07-10-ui-v4-session-color-bar.md)、计划 [docs/plans/2026-07-10-session-color-bar.md](plans/2026-07-10-session-color-bar.md)。
+
+### 4.5 列完全可配置 —— 策展 + resize + reorder（已实施 2026-07-11）
+
+Requests 列表列从「固定集/固定序/写死宽/仅显隐」升级为完全可配置：
+
+- **策展**：默认显示 session(gutter)·status·time·dur·model·**cache命中(新)**·bytes·preview·response；默认隐藏（菜单可开）endpoint·multiplier·tokens·attempts。新 cache 命中列 = `cache_read/(input+cache_read+cache_creation)` 百分比（`cacheHitCell`）。
+- **列宽 resize**：列宽从 Tailwind 类迁到 TanStack `columnSizing`（`ColumnDef.size/minSize/maxSize`），**仅固定列** emit inline width（弹性列 preview/response 保自适应充满、`enableResizing:false`）；表头右边界拖拽手柄（`columnResizeMode:"onChange"`）。
+- **列序 reorder**：TanStack `columnOrder` + dnd-kit（`@dnd-kit/core`+`sortable`+`modifiers`，`restrictToHorizontalAxis`、`PointerSensor{distance:4}`）拖表头改序；session gutter 锁首、不入 SortableContext、不可拖。resize 手柄 `onPointerDown stopPropagation` 与拖拽分区。
+- **持久化**：三态（visibility/sizing/order）经**版本化统一键** `ui-v4:requests:column-state:v1` 持久化（旧键 `ui-v4:requests:columns` 弃用、一次性重 seed），`useColumnState` hook 统一持有 + 一键 Reset。
+- 纯逻辑：[request-columns.ts](../../src/lib/request-columns.ts)（`DEFAULT_COLUMN_ORDER/SIZING` + `mergeColumnOrder/Sizing` + `reorderColumns`，bun 测）、[activity-row.ts](../../src/lib/activity-row.ts) `cacheHitCell`；hook [useColumnState.ts](../../src/hooks/useColumnState.ts)；`COLUMN_WIDTHS` 已退役。AgentLane/RequestRow（Session 详情泳道）保持自有固定宽、不加 cache 列。
+- 权威 spec：[docs/spec/2026-07-11-ui-v4-requests-column-config.md](spec/2026-07-11-ui-v4-requests-column-config.md)、计划 [docs/plans/2026-07-11-requests-column-config.md](plans/2026-07-11-requests-column-config.md)。
+- **待办**：列 reorder/resize 无键盘 a11y 路径（仅 PointerSensor），见 [docs/todo/deferred-backlog.md](../../../docs/todo/deferred-backlog.md)。
+
 ## 5. Sessions + Agent
 
 数据模型（实证 `src/lib/history/sessions.ts`）：
@@ -137,7 +166,14 @@ HTTP `/history/api/*` + 根 `/api/*`，WS，类型经 `~backend/*` re-export（s
 
 ### Models
 
-目录表：基线 + 扩展字段（vendor / ctx / vision / tools / reasoning / family）；工具栏过滤(vendor/能力) + 搜索 + raw JSON 切换。
+**全面增强已落地**（P1–P4，2026-07-05；规划见 [docs/plans/2026-07-05-06b-models-page-enhancement.md](plans/2026-07-05-06b-models-page-enhancement.md)、设计 WHAT/WHY 见 [spec/2026-07-05-ui-v4-models-enhancement.md](spec/2026-07-05-ui-v4-models-enhancement.md)）。
+
+- **密集目录表**：id/name/vendor/version/ctx/out/effort/能力矩阵(vision/tools/parallel/structured/streaming/thinking)/$×/req(7d)；表头点击排序；列显隐由齿轮菜单控制并 localStorage 持久化。能力矩阵同源后端 `deriveCapabilities`（`~backend`，前端不重实现）。
+- **过滤栏**：search(id/name) / vendor / type / capability(多选 AND) / premium / restricted-to plan(多选) / policy state / has-telemetry。纯谓词在 `lib/model-filters.ts`（bun 测）。
+- **运行遥测 join**：`/api/status.requestTelemetry` 经 `lib/model-telemetry.ts` 按 `normalizeModelId` 归一 join（成功腿=规范名 / 失败腿=客户端别名双侧归一），无轮询、重访即刷新（`useModelTelemetry` 独立 queryKey）。归一后仍无 catalog 匹配的遥测收进**「未关联遥测」小节**（表下方）显式呈现，不静默丢弃（richest-data-flow）。
+- **详情面板**：选中态由 URL 承载（`?model=<id>`，URL-as-truth、可深链），渲染为右侧可调宽 split 面板（`useResizableWidth` invert）。6 竖 tab（WAI-ARIA tabs：roving tabindex + 方向键 + tab↔panel 关联）：Overview（身份 + picker 标志 + 端点含 `(inferred)` 标注）/ Capabilities（派生矩阵 + **完整 raw supports map**）/ Limits+Vision（Vision 条件块）/ Billing+Policy / Telemetry（双窗口 + 全 6 token + 失败计数诚实标注）/ Raw JSON（完整对象含 `request_headers`）。Esc 关闭（isTyping 守卫）、开面板移焦、关闭还焦。
+- **Export CSV**：当前过滤/排序视图扁平导出（`lib/models-csv.ts`，RFC-4180）；遥测列同 join。
+- **后端**：`/api/models` 移除 `stripInternalFields` 对 `request_headers` 的剥离（ADR internal-tool-security-posture）；`src/lib/models/normalize-id.ts` 纯模块供前端 join 复用。
 
 ### Config
 

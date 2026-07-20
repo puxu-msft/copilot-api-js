@@ -4,7 +4,7 @@
  * Wraps the four existing, battle-tested Anthropic streaming response factories as
  * `ResponseRewrite`s so the driver's S5 chain drives them (RFC §4.A1), replacing the
  * handwritten closure nesting in `streaming-pump.ts` (`recover → thinking-compat →
- * decode → filter`, via `forwardToClient`). **Algorithm cores are NOT rewritten** —
+ * decode → filter`, formerly via streaming-pump's now-removed `forwardToClient`). **Algorithm cores are NOT rewritten** —
  * each adapter only maps the factory's existing per-frame function to a `FrameAction`
  * + adapts its finalize to `flush`:
  *
@@ -58,6 +58,7 @@ import {
   createRefusalErrorEmitter,
   createRefusalRecoverer,
   recoverRefusalInResponse,
+  renderRefusalTemplate,
   type RefusalRecoverer,
 } from "~/lib/anthropic/recover-refusal"
 import {
@@ -75,8 +76,11 @@ import {
   restoreToolNamesInResponse,
 } from "~/lib/anthropic/server-tool-filter"
 import { applyThinkingSignatureCompat } from "~/lib/anthropic/thinking-signature-compat"
+import { ENDPOINT } from "~/lib/models/endpoint"
 import { RESPONSE_REWRITE_ORDER } from "~/lib/pipeline/rewrite-registry"
 import { state } from "~/lib/state"
+
+import { errorFrameCanonicalRewrite } from "./error-frame-canonical-rewrite"
 
 /** Best-effort parse of an SSE data payload (undefined on failure / keepalive). */
 function parseFrame(data: string | undefined): StreamEvent | undefined {
@@ -93,7 +97,17 @@ function bufferOrEmit(out: Array<ServerSentEventMessage>): FrameAction {
   return out.length === 0 ? { kind: "buffer" } : { kind: "emit", frames: out as Array<UpstreamFrame> }
 }
 
-const ANTHROPIC = (env: RequestEnvelope): boolean => env.clientFormat === "anthropic"
+/**
+ * Two-axis gate (RFC 2026-07-11-anthropic-via-openai-translation §3.1 / §7.1): all six
+ * Anthropic rewrites process the UPSTREAM Anthropic `/v1/messages` wire, so they gate on the
+ * OUTBOUND leg (`targetEndpoint`), NOT the client-facing `clientFormat`. In Phase 1 the two
+ * axes are co-true for anthropic-direct (no translation leg exists yet, so
+ * `clientFormat==="anthropic" ⟺ targetEndpoint==="/v1/messages"`), so this switch is
+ * byte-identical to the previous `clientFormat`-keyed gate. Later phases wire the reverse
+ * leg (cc/responses/gemini → `/v1/messages`), where these must fire on the Anthropic wire
+ * regardless of the inbound client format — which the `targetEndpoint` axis expresses.
+ */
+const ANTHROPIC = (env: RequestEnvelope): boolean => env.targetEndpoint === ENDPOINT.MESSAGES
 
 // ============================================================================
 // recover-tool-call (order 100, buffer/flush)
@@ -127,19 +141,27 @@ const recoverRewrite: ResponseRewrite = {
   transform: (frame, st): FrameAction => {
     const s = st as RecoverState
     const out = s.recoverer.processEvent(parseFrame(frame.data), frame as ServerSentEventMessage)
-    // Record the recovered feature once, when a SYNTHESIZED tool_use start appears
-    // (a frame the recoverer produced, not the pass-through original) — mirrors
-    // streaming-pump.ts:200-209.
+    // Record the recovered feature once, when SYNTHESIZED tool_use start(s) appear
+    // (frames the recoverer produced, not the pass-through original) — mirrors
+    // streaming-pump.ts:200-209. All synthesized tool_use blocks for one downgraded
+    // turn are emitted in a SINGLE `out` (the COMMIT frame, stream.ts:145-154), so a
+    // single scan collects every recovered name. The names ride the feature detail so
+    // both the `[RECOVER]` line AND the completion line's `tool_use(<names>)` token can
+    // show them — the upstream-original track (what the completion line otherwise reads)
+    // keeps the raw downgraded TEXT with no tool_use block (Option A), so the names are
+    // ONLY knowable here at the recovery point.
     if (!s.featureLogged) {
-      for (const f of out) {
-        if (f === frame) continue
+      const recoveredNames = out.flatMap((f) => {
+        if (f === frame) return []
         const p = parseFrame(f.data)
-        if (p?.type === "content_block_start" && (p.content_block as { type?: string }).type === "tool_use") {
-          s.featureLogged = true
-          s.ctx.recordFeature("tool-call-recovered")
-          consola.info("[RECOVER] rebuilt tool_use from downgraded upstream text")
-          break
-        }
+        if (p?.type !== "content_block_start") return []
+        const cb = p.content_block as { type?: string; name?: string }
+        return cb.type === "tool_use" && typeof cb.name === "string" ? [cb.name] : []
+      })
+      if (recoveredNames.length > 0) {
+        s.featureLogged = true
+        s.ctx.recordFeature("tool-call-recovered", { tools: recoveredNames })
+        consola.info(`[RECOVER] rebuilt tool_use from downgraded upstream text: ${recoveredNames.join(", ")}`)
       }
     }
     return bufferOrEmit(out)
@@ -150,11 +172,25 @@ const recoverRewrite: ResponseRewrite = {
   // this rewrite entirely = byte-identical to the helper's `enabled:false` early-return).
   transformWhole: (response, env): unknown => {
     const tools = (env.body as MessagesPayload).tools
-    return recoverToolCallTextInResponse(response as AnthropicMessageResponse, {
+    const original = response as AnthropicMessageResponse
+    const recovered = recoverToolCallTextInResponse(original, {
       enabled: true,
       toolNames: new Set((tools ?? []).map((t) => t.name)),
       toolSchemas: extractToolParamTypes(tools),
     })
+    // Surface the recovery the SAME way the streaming leg does (feature detail + `[RECOVER]`
+    // log) — non-streaming was previously silent. The helper returns a NEW object only when it
+    // rebuilt something (else the same reference); a Tier-A rebuild requires NO pre-existing
+    // tool_use block (recover-tool-call/response.ts:24), so every tool_use in the recovered
+    // content is synthesized → its names are the recovered set.
+    if (recovered !== original) {
+      const recoveredNames = (recovered.content as ReadonlyArray<{ type: string; name?: string }>).flatMap((b) =>
+        b.type === "tool_use" && typeof b.name === "string" ? [b.name] : [],
+      )
+      env.ctx.recordFeature("tool-call-recovered", { tools: recoveredNames })
+      consola.info(`[RECOVER] rebuilt tool_use from downgraded upstream text: ${recoveredNames.join(", ")}`)
+    }
+    return recovered
   },
 }
 
@@ -194,7 +230,8 @@ interface DecodeState extends RewriteState {
  */
 function repairObservers(ctx: RequestContext): Pick<Parameters<typeof createToolInputStreamDecoder>[1] & object, "onRepair" | "onDecodeFailure"> {
   return {
-    onRepair: (info) => ctx.recordRepairOutcome({ outcome: info.layer, tool: info.tool, beforeLength: info.beforeLength, afterLength: info.afterLength }),
+    onRepair: (info) =>
+      ctx.recordRepairOutcome({ outcome: info.layer, tool: info.tool, beforeLength: info.beforeLength, afterLength: info.afterLength, field: info.field }),
     onDecodeFailure: (info: DecodeFailureInfo) => {
       reportDecodeFailure(info, ctx)
       if (info.reason === "input-unrepairable") ctx.recordRepairOutcome({ outcome: "unrepairable", tool: info.tool })
@@ -202,41 +239,76 @@ function repairObservers(ctx: RequestContext): Pick<Parameters<typeof createTool
   }
 }
 
+/**
+ * `onNormalize` sink for AskUserQuestion top-level-key salvage/strip (spec 2026-07-13 §3): persist the
+ * diagnostic to `pipelineInfo` (history-auditable — the setter publishes context_updated) and WARN when
+ * a non-empty top-level `question` was dropped (no-data-loss trace; multi-item drop surfaces its reason).
+ */
+function normalizationObserver(ctx: RequestContext): Pick<Parameters<typeof createToolInputStreamDecoder>[1] & object, "onNormalize"> {
+  return {
+    onNormalize: (diag) => {
+      ctx.recordAskUserQuestionNormalization(diag)
+      if (diag.droppedQuestionValue !== undefined) {
+        const why = diag.multiItemAmbiguous ? "ambiguous (>1 item), not hoisted" : "no salvage target"
+        consola.warn(
+          `[REWRITE] AskUserQuestion top-level question dropped — reason=${why} value=${JSON.stringify(diag.droppedQuestionValue)} requestId=${ctx.id}`,
+        )
+      }
+    },
+  }
+}
+
+/**
+ * `onSendMessageNormalize` sink: persist the SendMessage recipient-recovery diagnostic to `pipelineInfo`
+ * (history-auditable — the setter publishes context_updated). Parallel to `normalizationObserver`.
+ */
+function sendMessageNormalizationObserver(ctx: RequestContext): Pick<Parameters<typeof createToolInputStreamDecoder>[1] & object, "onSendMessageNormalize"> {
+  return {
+    onSendMessageNormalize: (diag) => ctx.recordSendMessageNormalization(diag),
+  }
+}
+
 const decodeRewrite: ResponseRewrite = {
   name: "tool-input-decode",
   order: RESPONSE_REWRITE_ORDER.toolInputDecode,
-  // Active when any decode rule could fire (field decode / decode-all / AskUserQuestion
-  // header backfill / malformed-input repair). When all are off the decoder is a pure
-  // passthrough, so skipping it is byte-identical.
+  // Active when any decode rule could fire (field decode / AskUserQuestion header backfill /
+  // SendMessage recipient recovery / malformed-input repair). When all are off the decoder is a
+  // pure passthrough, so skipping it is byte-identical.
   appliesTo: (env) =>
     ANTHROPIC(env)
     && (Object.keys(state.decodeToolInputFields).length > 0
-      || state.decodeAllToolInputFields
       || state.backfillQuestionFromHeader
-      || state.toolRepairMalformedInput !== false),
+      || state.fixSendMessageRecipient
+      || state.toolRepairMalformedInput.length > 0),
   createState: (env): DecodeState => ({
     decoder: createToolInputStreamDecoder(
-      { fields: state.decodeToolInputFields, all: state.decodeAllToolInputFields },
+      { fields: state.decodeToolInputFields },
       {
         backfillAskUserQuestionHeader: state.backfillQuestionFromHeader,
+        normalizeSendMessageRecipient: state.fixSendMessageRecipient,
         repairMalformedInput: state.toolRepairMalformedInput,
         ...repairObservers(env.ctx),
+        ...normalizationObserver(env.ctx),
+        ...sendMessageNormalizationObserver(env.ctx),
       },
     ),
   }),
   transform: (frame, st): FrameAction => bufferOrEmit((st as DecodeState).decoder.processEvent(parseFrame(frame.data), frame as ServerSentEventMessage)),
   flush: (st): Array<UpstreamFrame> => (st as DecodeState).decoder.flush() as Array<UpstreamFrame>,
-  // Non-streaming: decode stringified-JSON input fields + AskUserQuestion header backfill on
-  // the whole response (same config the streaming decoder reads). `appliesTo` gated that at
-  // least one decode rule could fire, so this never runs as a pure passthrough.
+  // Non-streaming: decode stringified-JSON input fields + AskUserQuestion header backfill + SendMessage
+  // recipient recovery on the whole response (same config the streaming decoder reads). `appliesTo` gated
+  // that at least one decode rule could fire, so this never runs as a pure passthrough.
   transformWhole: (response, env): unknown =>
     decodeToolInputBlocksInResponse(
       response as AnthropicMessageResponse,
-      { fields: state.decodeToolInputFields, all: state.decodeAllToolInputFields },
+      { fields: state.decodeToolInputFields },
       {
         backfillAskUserQuestionHeader: state.backfillQuestionFromHeader,
+        normalizeSendMessageRecipient: state.fixSendMessageRecipient,
         repairMalformedInput: state.toolRepairMalformedInput,
         ...repairObservers(env.ctx),
+        ...normalizationObserver(env.ctx),
+        ...sendMessageNormalizationObserver(env.ctx),
       },
     ),
 }
@@ -286,21 +358,28 @@ const refusalRewrite: ResponseRewrite = {
   // `refusal` mode = passthrough (skip the rewrite entirely, byte-identical). `end_turn` and
   // `error` both need the rewrite; createState branches on the mode for the right reshaper.
   appliesTo: (env) => ANTHROPIC(env) && state.refusalSseRewrite !== "refusal",
-  createState: (env): RefusalState => ({
-    // `end_turn` synthesizes a text completion and records the feature HERE (the handler does
-    // nothing special for a successful end_turn). `error` is a PURE stream reshape (emit error
-    // frame + suppress terminator); ALL of its observability (ctx.fail + feature + log) is owned by
-    // the handler's complete branch, so the emitter takes no callback.
-    recoverer:
-      state.refusalSseRewrite === "error" ?
-        createRefusalErrorEmitter()
-      : createRefusalRecoverer({
-          onRecover: () => {
-            env.ctx.recordFeature("refusal-recovered")
-            consola.info("[REFUSAL] synthesized a text completion over a thinking-only refusal")
-          },
-        }),
-  }),
+  createState: (env): RefusalState => {
+    // Static vars known at stream start (before any frame): resolved model + request id. The
+    // streaming factories self-supply `thinking_tokens` from the refusal message_delta's usage.
+    const staticVars = { model: (env.body as MessagesPayload).model, request_id: env.ctx.id }
+    return {
+      // `end_turn` synthesizes a text completion and records the feature HERE (the handler does
+      // nothing special for a successful end_turn). `error` is a PURE stream reshape (emit error
+      // frame + suppress terminator); ALL of its observability (ctx.fail + feature + log) is owned by
+      // the handler's complete branch, so the emitter takes no callback.
+      recoverer:
+        state.refusalSseRewrite === "error" ?
+          createRefusalErrorEmitter({ messageTemplate: state.refusalErrorMessage, errorType: state.refusalErrorType, staticVars })
+        : createRefusalRecoverer({
+            template: state.refusalEndTurnText,
+            staticVars,
+            onRecover: () => {
+              env.ctx.recordFeature("refusal-recovered")
+              consola.info("[REFUSAL] synthesized a text completion over a thinking-only refusal")
+            },
+          }),
+    }
+  },
   // Never buffers: emits the passthrough frame, or (at the refusal message_delta) the chosen reshape
   // — end_turn's synthetic text triplet + rewritten end_turn delta, OR error's single `event: error`
   // frame replacing the terminator.
@@ -309,15 +388,32 @@ const refusalRewrite: ResponseRewrite = {
     frames: (st as RefusalState).recoverer.processEvent(parseFrame(frame.data), frame as ServerSentEventMessage) as Array<UpstreamFrame>,
   }),
   // Non-streaming: `end_turn` appends a synthetic text block + flips stop_reason → end_turn (the
-  // helper self-guards on the thinking-only-refusal shape). `error` (and the skipped `refusal`)
-  // leave the body UNCHANGED here — error's non-streaming failure is handled in renderNonStreamingV4,
-  // which must see the upstream-original refusal, so transformWhole must NOT mutate it.
-  transformWhole: (response): unknown => (state.refusalSseRewrite === "end_turn" ? recoverRefusalInResponse(response as AnthropicMessageResponse) : response),
+  // helper self-guards on the thinking-only-refusal shape), with the recovery text rendered from
+  // config (whole response in hand → all vars incl. thinking_tokens available, pre-render). `error`
+  // (and the skipped `refusal`) leave the body UNCHANGED here — error's non-streaming failure is
+  // handled in renderNonStreamingV4, which must see the upstream-original refusal, so transformWhole
+  // must NOT mutate it.
+  transformWhole: (response, env): unknown => {
+    if (state.refusalSseRewrite !== "end_turn") return response
+    const resp = response as AnthropicMessageResponse
+    if (resp.stop_reason !== "refusal") return response
+    const vars = { model: resp.model, request_id: env.ctx.id, thinking_tokens: resp.usage.output_tokens }
+    return recoverRefusalInResponse(resp, renderRefusalTemplate(state.refusalEndTurnText, vars))
+  },
 }
 
 /**
  * The Anthropic streaming response rewrites, in registry form. Ordered by `order`
  * at assembly (the array order here is cosmetic). Passed to the driver via
- * `deps.responseRewrites` by the Anthropic handler.
+ * `deps.responseRewrites` by the Anthropic handler. `errorFrameCanonical` (order 50)
+ * runs first — it reshapes a raw upstream `event:error` frame into a canonical envelope
+ * before any other rewrite (and before the refusal rewrite could synthesize its own).
  */
-export const ANTHROPIC_RESPONSE_REWRITES: ReadonlyArray<ResponseRewrite> = [recoverRewrite, thinkingRewrite, decodeRewrite, filterRewrite, refusalRewrite]
+export const ANTHROPIC_RESPONSE_REWRITES: ReadonlyArray<ResponseRewrite> = [
+  errorFrameCanonicalRewrite,
+  recoverRewrite,
+  thinkingRewrite,
+  decodeRewrite,
+  filterRewrite,
+  refusalRewrite,
+]

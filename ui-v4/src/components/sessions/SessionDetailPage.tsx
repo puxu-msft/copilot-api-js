@@ -1,61 +1,17 @@
-import {
-  //
-  Link,
-  useParams,
-} from "react-router-dom"
+import { SessionDetailLegacy } from "@/components/sessions/SessionDetailLegacy"
+import { SessionDetailShadcn } from "@/components/sessions/SessionDetailShadcn"
+import { DesignFork } from "@/components/shell/DesignFork"
 
-import type { EntrySummary } from "@/types"
-
-import { AgentLane } from "@/components/sessions/AgentLane"
-import { useSessionEntries } from "@/hooks/useSessionEntries"
-
-function groupByAgent(entries: Array<EntrySummary>): Array<{ name: string; entries: Array<EntrySummary> }> {
-  const main: Array<EntrySummary> = []
-  const subs = new Map<string, Array<EntrySummary>>()
-  for (const e of entries) {
-    if (e.agentId === undefined) main.push(e)
-    else {
-      const list = subs.get(e.agentId) ?? []
-      list.push(e)
-      subs.set(e.agentId, list)
-    }
-  }
-  const lanes: Array<{ name: string; entries: Array<EntrySummary> }> = []
-  if (main.length > 0) lanes.push({ name: "main agent", entries: main })
-  for (const [agentId, list] of subs) lanes.push({ name: `subagent ${agentId.slice(0, 10)}`, entries: list })
-  return lanes
-}
-
+/**
+ * fork B · Session 详情 RoutePage。经 `DesignFork` 原语按设计版本(design version)互斥挂载
+ * legacy(`SessionDetailLegacy`,Terminal Amber,冻结)/ shadcn(`SessionDetailShadcn`,重设计)页元素。
+ * 本文件不含 store 字段标识符(唯一读取者是 DesignFork)→ sessions/ 域 grep 守卫零命中。
+ */
 export function SessionDetailPage() {
-  const { id } = useParams()
-  const { data, isLoading } = useSessionEntries(id)
-  if (!id) return <div className="mono p-4 text-[#666]">no session</div>
-  if (isLoading) return <div className="mono p-4 text-[#888]">loading…</div>
-  const entries = (data?.entries ?? []).slice().sort((a, b) => a.startedAt - b.startedAt)
-  const lanes = groupByAgent(entries)
   return (
-    <div className="mono flex flex-col gap-2 p-2">
-      <div className="flex items-center gap-2 text-[13px]">
-        <Link
-          to="/sessions"
-          className="text-[var(--color-primary)]"
-        >
-          ‹ Sessions
-        </Link>
-        <span className="text-[var(--color-muted)]">
-          {id.slice(0, 16)}… · {entries.length} req · {lanes.length} lanes
-        </span>
-      </div>
-      <div className="text-[11px] text-[#666]">
-        每个 agent 一组:表标题(名 · 计数 · token · failed)+ 请求列表;subagent 标签为不透明 agentId(无种类名,spec §5)
-      </div>
-      {lanes.map((lane) => (
-        <AgentLane
-          key={lane.name}
-          name={lane.name}
-          entries={lane.entries}
-        />
-      ))}
-    </div>
+    <DesignFork
+      legacy={<SessionDetailLegacy />}
+      shadcn={<SessionDetailShadcn />}
+    />
   )
 }

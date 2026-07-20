@@ -7,8 +7,17 @@ import {
   z,
 } from "@hono/zod-openapi"
 import fs from "node:fs/promises"
-import { parseDocument } from "yaml"
+import {
+  //
+  isMap,
+  parseDocument,
+} from "yaml"
 
+import {
+  //
+  deepMergeMissingOnly,
+  extractDiskOnlyMigrationPatch,
+} from "~/lib/config/compat"
 import {
   //
   applyConfigToState,
@@ -122,7 +131,24 @@ configRoutes.openapi(putConfigYamlRoute, async (c) => {
   }
 
   const doc = await loadEditableConfigDocument()
-  mergeConfigIntoDocument(doc, validation.value)
+
+  // The PUT body only migrates whatever fields the CALLER sent (validation.value/
+  // validation.legacyPathsRemoved) — a legacy key can sit on disk untouched by an
+  // otherwise-unrelated PUT (even an empty `{}` body) and must still be migrated,
+  // or "PUT never fully finishes migrating" (this phase's whole reason to exist)
+  // would persist. Compute that disk-only delta separately (sparse patch, NOT a
+  // full merged payload — see extractDiskOnlyMigrationPatch's doc comment for why
+  // a full-payload merge would corrupt untouched collections like
+  // model_overrides) and fold it in before writing.
+  const diskRaw = doc.toJSON() as Record<string, unknown> | null
+  const { patch: diskOnlyPatch, legacyPathsRemoved: diskOnlyLegacyPaths } =
+    diskRaw && typeof diskRaw === "object" && !Array.isArray(diskRaw) ? extractDiskOnlyMigrationPatch(diskRaw) : { patch: {}, legacyPathsRemoved: [] }
+  const mergedValue = structuredClone(validation.value) as Record<string, unknown>
+  deepMergeMissingOnly(mergedValue, diskOnlyPatch)
+  const allLegacyPaths = [...new Set([...validation.legacyPathsRemoved, ...diskOnlyLegacyPaths])]
+
+  deleteLegacyPathsAndPruneEmptyParents(doc, allLegacyPaths)
+  mergeConfigIntoDocument(doc, mergedValue as Config)
 
   await fs.mkdir(PATHS.APP_DIR, { recursive: true })
   await fs.writeFile(PATHS.CONFIG_YAML, doc.toString(), "utf8")
@@ -148,7 +174,7 @@ configRoutes.openapi(putConfigYamlRoute, async (c) => {
  * verbatim. That makes the secrecy contract machine-checkable rather than
  * dependent on remembering to sync two lists.
  */
-const SENSITIVE_CONFIG_KEYS = new Set<string>(["anthropicApiKey"])
+const SENSITIVE_CONFIG_KEYS = new Set<string>()
 
 /**
  * Build the effective runtime configuration snapshot.
@@ -185,10 +211,12 @@ function buildEffectiveConfig(): Record<string, unknown> {
   // ─── Startup-phase config fields (not hot-reloadable; not in CONFIG_MANAGED_DEFAULTS) ───
   out.accountType = state.accountType
   out.ghcApiBaseUrl = state.ghcApiBaseUrl
+  out.historyEnabled = state.historyEnabled
   out.verbose = state.verbose
   out.showGitHubToken = state.showGitHubToken
   out.tokenBasedBilling = state.tokenBasedBilling
-  out.modelOverrides = state.modelOverrides
+  out.modelMappings = state.modelMappings
+  out.modelTranslation = state.modelTranslation
   out.rateLimiter = state.adaptiveRateLimitConfig ?? null
 
   return out
@@ -222,7 +250,7 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 /** Anthropic section keys whose values are collections (arrays / booleans) and
  *  therefore must NOT be written by the generic scalar setter — they are
  *  handled explicitly by replaceCollection / setScalar below. */
-const ANTHROPIC_COLLECTION_KEYS = new Set(["system_rewrite_reminders", "tool_non_deferred"])
+const ANTHROPIC_COLLECTION_KEYS = new Set(["system_rewrite_reminders", "tool_search_non_deferred"])
 
 type ConfigDocument = ReturnType<typeof parseDocument>
 
@@ -258,17 +286,36 @@ function mergeConfigIntoDocument(doc: ConfigDocument, body: Config): void {
   if (hasOwn(body, "proxy")) setScalar(doc, ["proxy"], body.proxy)
   if (hasOwn(body, "timeouts")) setNestedScalarContainer(doc, ["timeouts"], body.timeouts)
   if (hasOwn(body, "model_refresh_interval")) setScalar(doc, ["model_refresh_interval"], body.model_refresh_interval)
-  if (hasOwn(body, "auto_truncate")) setNestedScalarContainer(doc, ["auto_truncate"], body.auto_truncate)
+  if (hasOwn(body, "retry")) setNestedScalarContainer(doc, ["retry"], body.retry)
   if (hasOwn(body, "system_prompt_prepend")) setScalar(doc, ["system_prompt_prepend"], body.system_prompt_prepend)
   if (hasOwn(body, "system_prompt_append")) setScalar(doc, ["system_prompt_append"], body.system_prompt_append)
-  if (hasOwn(body, "model_overrides")) replaceCollection(doc, ["model_overrides"], body.model_overrides)
+  if (hasOwn(body, "model_mappings")) replaceCollection(doc, ["model_mappings"], body.model_mappings)
+  if (hasOwn(body, "model_translation")) replaceCollection(doc, ["model_translation"], body.model_translation)
   if (hasOwn(body, "system_prompt_overrides")) {
     replaceCollection(doc, ["system_prompt_overrides"], body.system_prompt_overrides)
   }
   if (hasOwn(body, "rate_limiter")) setNestedScalarContainer(doc, ["rate_limiter"], body.rate_limiter)
   if (hasOwn(body, "shutdown")) setNestedScalarContainer(doc, ["shutdown"], body.shutdown)
   if (hasOwn(body, "history")) setNestedScalarContainer(doc, ["history"], body.history)
+  if (hasOwn(body, "hooks")) setNestedScalarContainer(doc, ["hooks"], body.hooks)
   if (hasOwn(body, "openai_responses")) setNestedScalarContainer(doc, ["openai_responses"], body.openai_responses)
+  if (hasOwn(body, "upstream_transport")) setNestedScalarContainer(doc, ["upstream_transport"], body.upstream_transport)
+  if (hasOwn(body, "server")) setNestedScalarContainer(doc, ["server"], body.server)
+  if (hasOwn(body, "unknown_endpoint_logging")) setNestedScalarContainer(doc, ["unknown_endpoint_logging"], body.unknown_endpoint_logging)
+
+  if (hasOwn(body, "negotiation_learning")) {
+    const nl = body.negotiation_learning
+    if (nl === null) {
+      doc.deleteIn(["negotiation_learning"])
+    } else if (nl) {
+      if (hasOwn(nl, "default_ttl_days")) setScalar(doc, ["negotiation_learning", "default_ttl_days"], nl.default_ttl_days)
+      if (hasOwn(nl, "ttl_days")) {
+        // nested map: replace the whole ttl_days node so removed categories drop
+        if (nl.ttl_days === null || nl.ttl_days === undefined) doc.deleteIn(["negotiation_learning", "ttl_days"])
+        else doc.setIn(["negotiation_learning", "ttl_days"], nl.ttl_days)
+      }
+    }
+  }
 
   if (hasOwn(body, "anthropic")) {
     const anthropic = body.anthropic as Config["anthropic"] | null
@@ -282,8 +329,8 @@ function mergeConfigIntoDocument(doc: ConfigDocument, body: Config): void {
         const normalized = Array.isArray(rewrite) && rewrite.length === 0 ? false : rewrite
         replaceCollection(doc, ["anthropic", "system_rewrite_reminders"], normalized)
       }
-      if (hasOwn(anthropic, "tool_non_deferred")) {
-        replaceCollection(doc, ["anthropic", "tool_non_deferred"], anthropic.tool_non_deferred)
+      if (hasOwn(anthropic, "tool_search_non_deferred")) {
+        replaceCollection(doc, ["anthropic", "tool_search_non_deferred"], anthropic.tool_search_non_deferred)
       }
     }
   }
@@ -297,6 +344,25 @@ function setScalar(doc: ConfigDocument, path: Array<string>, value: unknown): vo
   doc.setIn(path, value)
 }
 
+/**
+ * Recursively merge `value`'s keys into `doc` at `path`. A nested plain-object
+ * child recurses into a fresh merge at the child path (so untouched sibling
+ * keys survive at EVERY nesting depth, not just the top one); `null`/
+ * `undefined` deletes that exact key at any depth (`setScalar` already
+ * handles this); any other value (scalar, array) is written wholesale.
+ *
+ * Used to stop recursing after the first level: a nested-object CHILD value
+ * (e.g. `anthropic.buffered_retry`, `upstream_transport.http2`) was handed to
+ * `setScalar`, which does `doc.setIn(childPath, wholeObject)` — silently
+ * replacing the entire child node and erasing sibling fields the PUT body
+ * didn't mention (`ping_interval` disappearing when a PUT only sent
+ * `session_connect_timeout`). Recursing keeps every already-existing sibling
+ * untouched at any depth, matching this API's "sparse override" PUT
+ * semantics (`docs/spec/2026-07-14-upstream-transport-config-reorg.md` §5 —
+ * user decision; `anthropic.buffered_retry`, the one existing field that hit
+ * this bug, switches to the same semantics too — no back-compat burden for a
+ * config PUT behavior change).
+ */
 function setNestedScalarContainer(doc: ConfigDocument, path: Array<string>, value: unknown, options?: { excludeKeys?: Set<string> }): void {
   if (value === null || value === undefined) {
     doc.deleteIn(path)
@@ -306,7 +372,9 @@ function setNestedScalarContainer(doc: ConfigDocument, path: Array<string>, valu
 
   for (const [key, child] of Object.entries(value)) {
     if (options?.excludeKeys?.has(key)) continue
-    setScalar(doc, [...path, key], child)
+    const childPath = [...path, key]
+    if (isPlainObject(child)) setNestedScalarContainer(doc, childPath, child)
+    else setScalar(doc, childPath, child)
   }
 }
 
@@ -318,4 +386,31 @@ function replaceCollection(doc: ConfigDocument, path: Array<string>, value: unkn
 
   doc.deleteIn(path)
   doc.setIn(path, value)
+}
+
+/**
+ * Delete every legacy dot-path reported by `ConfigValidationResult.legacyPathsRemoved`
+ * from the on-disk YAML document, then walk upward pruning any ancestor Map
+ * that became empty as a result (so a fully-migrated section disappears
+ * entirely instead of leaving a dangling `section: {}`). Stops climbing as
+ * soon as an ancestor still has at least one sibling key — untouched
+ * sibling fields and their comments are never disturbed.
+ *
+ * Must run BEFORE mergeConfigIntoDocument, which writes the migrated new
+ * value at its (possibly different) new path.
+ */
+function deleteLegacyPathsAndPruneEmptyParents(doc: ConfigDocument, legacyPaths: ReadonlyArray<string>): void {
+  for (const dotPath of legacyPaths) {
+    const parts = dotPath.split(".")
+    doc.deleteIn(parts)
+    for (let depth = parts.length - 1; depth > 0; depth--) {
+      const ancestorPath = parts.slice(0, depth)
+      const node = doc.getIn(ancestorPath, true)
+      if (isMap(node) && node.items.length === 0) {
+        doc.deleteIn(ancestorPath)
+      } else {
+        break
+      }
+    }
+  }
 }

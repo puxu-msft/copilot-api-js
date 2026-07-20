@@ -1,6 +1,7 @@
 import consola from "consola"
 
 import type { Model } from "~/lib/models/client"
+import type { CacheTtl } from "~/lib/state"
 
 import { copilotHeaders } from "~/lib/copilot-api"
 import { state } from "~/lib/state"
@@ -17,12 +18,14 @@ import {
 import {
   //
   getSupportedEfforts,
+  getUnsupportedCacheControlSubfields,
   getUnsupportedFeatures,
   isAnthropicBetaUnsupported,
   isAnthropicFeatureUnsupported,
   isAnthropicPartnerFeatureUnsupported,
+  isEffortUnsupported,
+  markEffortUnsupported,
   setSupportedEfforts,
-  STRUCTURED_OUTPUTS_PARTNER_FEATURE,
 } from "./feature-negotiation"
 import {
   //
@@ -31,7 +34,10 @@ import {
   isContextEditingEnabled,
   mergeAnthropicBeta,
   modelHasAdaptiveThinking,
+  modelRequiresEnabledThinking,
   modelSupportsContextEditing,
+  modelSupportsExtendedCacheTtl,
+  modelSupportsMemory,
 } from "./features"
 import {
   //
@@ -39,16 +45,32 @@ import {
   pruneHeaders,
   selectPassthroughHeaders,
 } from "./header-policy"
-import { stripServerTools } from "./message-tools"
+import {
+  //
+  stripServerTools,
+  stripToolFields,
+} from "./message-tools"
+import {
+  //
+  PARTNER_FEATURE_STRIP_TARGETS,
+  stripPartnerFeatureFromWire,
+} from "./partner-feature-strip"
 import {
   //
   collectAllMatching,
   findMostSpecific,
 } from "./per-model-config"
+import {
+  //
+  adaptiveToEnabledThinking,
+  budgetToEffort,
+} from "./thinking-coercion"
 
 export interface PreparedAnthropicRequest {
   wire: Record<string, unknown>
   headers: Record<string, string>
+  /** passthrough 剥掉的 cache_control 子字段列表（供 codec recordFeature 记 history，spec §8）。 */
+  strippedCacheControlSubfields?: ReadonlyArray<string>
 }
 
 /**
@@ -60,6 +82,20 @@ export interface PrepareContext {
   wire: Record<string, unknown>
   headers: Record<string, string>
   opts: PrepareAnthropicRequestOptions
+  /**
+   * Set by the `cache-control` step: true iff the final wire carries a `cache_control` with
+   * `ttl:"1h"` (whether the proxy wrote it or a passthrough client sent it). Read by `build-headers`
+   * to emit `extended-cache-ttl-2025-04-11` exactly when the body needs it (header mirrors body).
+   */
+  wroteExtendedTtl?: boolean
+  /**
+   * Set by the `rewrite-memory-tool` step: true iff a client tool named `memory` was rewritten to the
+   * native `{name:"memory", type:"memory_20250818"}` typed CLIENT tool (client-executed). Read by `build-headers` to force the
+   * shared `context-management-2025-06-27` beta (memory rides it, GHC-style).
+   */
+  hasMemoryTool?: boolean
+  /** Set by the `cache-control` step (passthrough): cache_control 子字段被剥的列表；透出到 PreparedAnthropicRequest 供 history。 */
+  strippedCacheControlSubfields?: ReadonlyArray<string>
 }
 
 /** One named prepare step. Mutates `ctx.wire` and/or `ctx.headers` in place. */
@@ -85,7 +121,7 @@ interface PrepareAnthropicRequestOptions {
   clientRequestHeaders?: Record<string, string>
   /**
    * Per-attempt overrides supplied by retry strategies (see PrepareHints in
-   * lib/request/pipeline.ts). These are unioned with the persistent
+   * lib/request/retry-types.ts). These are unioned with the persistent
    * negotiation cache results during filtering, so the retry caller gets
    * deterministic exclusion of THIS attempt without depending on the cache
    * having been written by a prior strategy.
@@ -99,6 +135,18 @@ interface PrepareAnthropicRequestOptions {
    * `PrepareHints.excludeServerToolTypes`.
    */
   excludeServerToolTypes?: ReadonlyArray<string>
+  /**
+   * Custom-tool top-level field names to strip from every tool in the next wire
+   * payload, in addition to the built-in defaults / config / negotiation cache.
+   * Supplied by the tool-field-rejection retry strategy via
+   * `PrepareHints.excludeToolFields`.
+   */
+  excludeToolFields?: ReadonlyArray<string>
+  /**
+   * 源④ per-attempt：cache_control 子字段 rejection retry 腿注入，剥掉刚被上游拒的子字段。
+   * 供 `PrepareHints.excludeCacheControlSubfields` → codec 桥接 → 此入参 → passthrough 消费。
+   */
+  excludeCacheControlSubfields?: ReadonlyArray<string>
   /**
    * L2 buffered-retry escalation (RFC §8) from `PrepareHints.contextEscalation`: when set, FORCE
    * an aggressive native `clear_tool_uses` context_management edit on this attempt (independent of
@@ -114,7 +162,120 @@ interface PrepareAnthropicRequestOptions {
  */
 const BUILTIN_REJECTED_FIELDS: ReadonlyArray<string> = ["inference_geo"]
 const CACHE_CONTROL_BREAKPOINT_LIMIT = 4
-const EPHEMERAL_CACHE_CONTROL = { type: "ephemeral" } as const
+/** A prompt-cache breakpoint. `ttl:"1h"` marks the extended TTL; omitting `ttl` is Anthropic's 5m default. */
+type EphemeralCacheControl = { type: "ephemeral"; ttl?: "1h" }
+
+/** Resolve the concrete breakpoint object for a per-layer TTL (5m → bare ephemeral, 1h → +ttl). */
+function ephemeralFor(ttl: CacheTtl): EphemeralCacheControl {
+  return ttl === "1h" ? { type: "ephemeral", ttl: "1h" } : { type: "ephemeral" }
+}
+
+/** True when the request is agent-style (an assistant message is present) — the closest analog to GHC's
+ * `ChatLocation.Agent && !subagent` gate for extended cache TTL. */
+function isAgentCall(messages: MessagesPayload["messages"] | undefined): boolean {
+  return Array.isArray(messages) && messages.some((msg) => msg.role === "assistant")
+}
+
+let warnedExtendedTtlClamp = false
+
+/**
+ * Resolve the effective per-layer TTLs, clamping `messagesTtl` down to `toolsSystemTtl` (order 5m<1h).
+ * Anthropic requires longer TTLs to appear earlier in the tools→system→messages prefix order, so a
+ * messages breakpoint may not outlive the tools/system breakpoints. Warns once on clamp.
+ */
+function resolveExtendedTtls(): { toolsSystem: CacheTtl; messages: CacheTtl } {
+  const toolsSystem = state.extendedCacheTtlToolsSystem
+  let messages = state.extendedCacheTtlMessages
+  if (messages === "1h" && toolsSystem === "5m") {
+    if (!warnedExtendedTtlClamp) {
+      consola.warn(
+        `[config] anthropic.extended_cache_ttl.messages_ttl (1h) exceeds tools_system_ttl (5m); clamping messages to 5m (Anthropic requires longer TTLs earlier in the tools→system→messages order)`,
+      )
+      warnedExtendedTtlClamp = true
+    }
+    messages = "5m"
+  }
+  return { toolsSystem, messages }
+}
+
+export interface PerLayerClientTtls {
+  tools?: CacheTtl
+  system?: CacheTtl
+  messages?: CacheTtl
+}
+export interface SanitizedLayerTtls {
+  tools?: CacheTtl
+  system?: CacheTtl
+  messages?: CacheTtl
+}
+
+/** ttl 大小比较：5m < 1h。 */
+function maxTtl(a: CacheTtl, b: CacheTtl): CacheTtl {
+  return a === "1h" || b === "1h" ? "1h" : "5m"
+}
+function minTtl(a: CacheTtl, b: CacheTtl): CacheTtl {
+  return a === "5m" || b === "5m" ? "5m" : "1h"
+}
+
+/**
+ * sanitize 的 TTL 决策（规范化已有断点，NOT 注入）。对每个**有客户端断点**的层取
+ * max(客户端最大 ttl, extended floor)，再沿 tools→system→messages 单调化——后层 ≤ 最近的
+ * 前面有断点层（满足 Anthropic 前缀递减约束，spec §4.3）。**无断点层返回 undefined**：它不产生
+ * 断点，也不作为后层的上界约束（约束只对实际存在的断点成立）。
+ * extended 未激活时所有 floor = 5m。proxied 不用此函数（它自注入固定 floor，见 applyCacheControlMode）。
+ */
+export function resolveSanitizedTtls(
+  clientMax: PerLayerClientTtls,
+  extendedActive: boolean,
+  extendedTtls: { toolsSystem: CacheTtl; messages: CacheTtl },
+): SanitizedLayerTtls {
+  const floorTS: CacheTtl = extendedActive ? extendedTtls.toolsSystem : "5m"
+  const floorM: CacheTtl = extendedActive ? extendedTtls.messages : "5m"
+  const tools = clientMax.tools !== undefined ? maxTtl(clientMax.tools, floorTS) : undefined
+  const systemRaw = clientMax.system !== undefined ? maxTtl(clientMax.system, floorTS) : undefined
+  const system = systemRaw !== undefined && tools !== undefined ? minTtl(systemRaw, tools) : systemRaw
+  const msgCeil = system ?? tools // 最近的前面有断点层
+  const messagesRaw = clientMax.messages !== undefined ? maxTtl(clientMax.messages, floorM) : undefined
+  const messages = messagesRaw !== undefined && msgCeil !== undefined ? minTtl(messagesRaw, msgCeil) : messagesRaw
+  return { tools, system, messages }
+}
+
+/** 扫 wire 每层（system/messages/tools + 嵌套 content），返回该层出现的最大 cache_control ttl（缺则 undefined）。 */
+export function collectPerLayerClientTtls(wire: Record<string, unknown>): PerLayerClientTtls {
+  const result: PerLayerClientTtls = {}
+  for (const section of ["tools", "system", "messages"] as const) {
+    if (!Array.isArray(wire[section])) continue
+    let layerMax: CacheTtl | undefined
+    const visit = (items: Array<Record<string, unknown> | null | undefined>): void => {
+      for (const item of items) {
+        if (!item || typeof item !== "object") continue
+        const cc = item.cache_control as { ttl?: unknown } | undefined
+        if (cc) {
+          const ttl: CacheTtl = cc.ttl === "1h" ? "1h" : "5m"
+          layerMax = layerMax === undefined ? ttl : maxTtl(layerMax, ttl)
+        }
+        if (Array.isArray(item.content)) visit(item.content as Array<Record<string, unknown>>)
+      }
+    }
+    visit(wire[section] as Array<Record<string, unknown>>)
+    result[section] = layerMax
+  }
+  return result
+}
+
+/** True when any cache_control in the wire (system / messages / tools) carries `ttl:"1h"` — read-only. */
+function wireHasOneHourTtl(wire: Record<string, unknown>): boolean {
+  return ["system", "messages", "tools"].some((key) => hasOneHourTtlDeep(wire[key]))
+}
+
+function hasOneHourTtlDeep(value: unknown): boolean {
+  if (Array.isArray(value)) return value.some((item) => hasOneHourTtlDeep(item))
+  if (!value || typeof value !== "object") return false
+  const record = value as Record<string, unknown>
+  const cc = record.cache_control as { ttl?: unknown } | undefined
+  if (cc && cc.ttl === "1h") return true
+  return Object.values(record).some((nested) => nested !== record.cache_control && hasOneHourTtlDeep(nested))
+}
 
 /**
  * Collect the full set of body fields to strip for `modelName`:
@@ -132,6 +293,25 @@ function collectRejectedFields(modelName: string): Set<string> {
   }
   for (const field of getUnsupportedFeatures(modelName)) reject.add(field)
   return reject
+}
+
+/** GHC 上游不支持的 cache_control 子字段（内置地雷）。scope 由 prompt-caching-scope beta 引入，GHC 未启用。 */
+const BUILTIN_UNSUPPORTED_CACHE_CONTROL_SUBFIELDS: ReadonlyArray<string> = ["scope"]
+
+/**
+ * 收集应从 passthrough cache_control 剥除的子字段。四源 union（对齐 collectStripBetas）：
+ * ① 内置地雷 ② config anthropic.cache_control_strip_subfields（per-model + "*"）
+ * ③ negotiation 学习集（Phase 2 接入，本阶段缺席）④ per-attempt hint（Phase 2 注入）
+ */
+export function collectUnsupportedCacheControlSubfields(model: string, hints?: ReadonlyArray<string>): Set<string> {
+  const strip = new Set<string>(BUILTIN_UNSUPPORTED_CACHE_CONTROL_SUBFIELDS)
+  for (const fields of collectAllMatching(model, state.stripCacheControlSubfields)) {
+    for (const field of fields) strip.add(field)
+  }
+  // 源③ negotiation：reactive 腿学到的字段进入后续请求 proactive 预剥（对齐 tool-field 双层）。
+  for (const field of getUnsupportedCacheControlSubfields()) strip.add(field)
+  for (const field of hints ?? []) strip.add(field)
+  return strip
 }
 
 /**
@@ -213,7 +393,7 @@ function buildAnthropicHeaders(ctx: PrepareContext): void {
     return msg.content.some((block) => block.type === "image")
   })
 
-  const isAgentCall = messages.some((msg) => msg.role === "assistant")
+  const isAgent = isAgentCall(messages)
   const modelSupportsVision = opts.resolvedModel?.capabilities?.supports?.vision !== false
   // context_management body field is stripped by buildWirePayload when the negotiation
   // cache or rejectBodyFields config marks it unsupported. We also need to suppress
@@ -237,6 +417,8 @@ function buildAnthropicHeaders(ctx: PrepareContext): void {
   const localBeta = buildAnthropicBetaHeaders(model, opts.resolvedModel, {
     disableContextManagement: contextManagementDisabled,
     forceContextManagementBeta: willInjectEscalation,
+    emitExtendedCacheTtlBeta: ctx.wroteExtendedTtl,
+    forceMemoryContextBeta: ctx.hasMemoryTool,
   })
   const mergedBeta = mergeAnthropicBeta(opts.clientAnthropicBeta, localBeta["anthropic-beta"])
   const filteredBeta = filterUnsupportedBetas(model, mergedBeta, opts.excludeBetas)
@@ -248,9 +430,9 @@ function buildAnthropicHeaders(ctx: PrepareContext): void {
     ...copilotHeaders(state, {
       vision: enableVision && modelSupportsVision,
       modelRequestHeaders: opts.resolvedModel?.request_headers,
-      intent: isAgentCall ? "conversation-agent" : "conversation-panel",
+      intent: isAgent ? "conversation-agent" : "conversation-panel",
     }),
-    "X-Initiator": isAgentCall ? "agent" : "user",
+    "X-Initiator": isAgent ? "agent" : "user",
     "anthropic-version": "2023-06-01",
   }
   if (filteredBeta) core["anthropic-beta"] = filteredBeta
@@ -309,16 +491,19 @@ function buildAnthropicHeaders(ctx: PrepareContext): void {
  * initializer that creates the wire the steps mutate.
  *
  * Thinking transforms keep their fixed order (B3<B4<B5): coerce the SHAPE first
- * (enabled→adaptive for adaptive-only models), then clamp the budget (a no-op
- * once adaptive), then clamp the effort against the model whitelist — so an
- * out-of-range value coerceAdaptiveThinking maps can't reach upstream.
+ * (enabled→adaptive for adaptive-only models, else adaptive→enabled for
+ * enabled-only models), then clamp the budget (a no-op once adaptive), then clamp
+ * the effort against the model whitelist — so an out-of-range value the coerce
+ * steps map can't reach upstream.
  */
 export const ANTHROPIC_PREPARE_STEPS: ReadonlyArray<PrepareStep> = [
   { name: "coerce-thinking", apply: (ctx) => coerceAdaptiveThinking(ctx.wire, ctx.opts.resolvedModel) },
+  { name: "coerce-enabled-thinking", apply: (ctx) => coerceEnabledThinking(ctx.wire, ctx.opts.resolvedModel) },
   { name: "adjust-budget", apply: (ctx) => adjustThinkingBudget(ctx.wire, ctx.opts.resolvedModel) },
   { name: "clamp-effort", apply: (ctx) => clampEffortLevel(ctx.wire, ctx.opts.resolvedModel) },
-  { name: "strip-structured-outputs", apply: (ctx) => stripUnsupportedStructuredOutputs(ctx.wire) },
-  { name: "cache-control", apply: (ctx) => applyCacheControlMode(ctx.wire) },
+  { name: "strip-partner-features", apply: (ctx) => stripUnsupportedPartnerFeatures(ctx.wire) },
+  { name: "rewrite-memory-tool", apply: rewriteMemoryTool },
+  { name: "cache-control", apply: (ctx) => applyCacheControlMode(ctx) },
   { name: "build-headers", apply: buildAnthropicHeaders },
 ]
 
@@ -338,18 +523,23 @@ export function prepareAnthropicRequest(
   steps: ReadonlyArray<PrepareStep> = ANTHROPIC_PREPARE_STEPS,
 ): PreparedAnthropicRequest {
   const ctx: PrepareContext = {
-    wire: buildWirePayload(payload, opts?.rejectFields, opts?.excludeServerToolTypes),
+    wire: buildWirePayload(payload, opts?.rejectFields, opts?.excludeServerToolTypes, opts?.excludeToolFields),
     headers: {},
     opts: opts ?? {},
   }
   for (const step of steps) step.apply(ctx)
-  return { wire: ctx.wire, headers: ctx.headers }
+  return {
+    wire: ctx.wire,
+    headers: ctx.headers,
+    ...(ctx.strippedCacheControlSubfields && { strippedCacheControlSubfields: ctx.strippedCacheControlSubfields }),
+  }
 }
 
 function buildWirePayload(
   payload: MessagesPayload,
   rejectFields?: ReadonlyArray<string>,
   excludeServerToolTypes?: ReadonlyArray<string>,
+  excludeToolFields?: ReadonlyArray<string>,
 ): Record<string, unknown> {
   const wire: Record<string, unknown> = {}
   const rejected = collectRejectedFields(payload.model)
@@ -388,6 +578,9 @@ function buildWirePayload(
   if (wire.tools) {
     wire.tools = stripServerTools(wire.tools as Array<Tool>, payload.model, excludeServerToolTypes)
   }
+  if (wire.tools) {
+    wire.tools = stripToolFields(wire.tools as Array<Tool>, payload.model, excludeToolFields)
+  }
 
   return wire
 }
@@ -395,31 +588,6 @@ function buildWirePayload(
 // ============================================================================
 // Adaptive thinking coercion
 // ============================================================================
-
-/**
- * Heuristic mapping from a legacy `budget_tokens` to an effort level.
- *
- * GHC does NOT derive effort from budget (the two are independent dimensions);
- * this is a copilot-api enhancement to preserve the "thinking intensity" intent
- * of old clients that only had `budget_tokens` to express it. Thresholds carry
- * no semantic guarantee — they are an opt-in best effort (config
- * `anthropic.thinking_coerce_adaptive: best_effort`).
- *
- * Only low/medium/high are produced (GHC's construction side accepts only these
- * three); clampEffortLevel later fits the value to the model's actual whitelist.
- */
-const EFFORT_BUDGET_THRESHOLDS = [
-  { maxBudget: 8_192, effort: "low" },
-  { maxBudget: 24_576, effort: "medium" },
-] as const
-
-function budgetToEffort(budget?: number): "low" | "medium" | "high" | undefined {
-  if (typeof budget !== "number" || budget <= 0) return undefined
-  for (const threshold of EFFORT_BUDGET_THRESHOLDS) {
-    if (budget <= threshold.maxBudget) return threshold.effort
-  }
-  return "high"
-}
 
 /**
  * Coerce a legacy `thinking: { type: "enabled", budget_tokens }` to
@@ -462,6 +630,51 @@ function coerceAdaptiveThinking(wire: Record<string, unknown>, resolvedModel?: M
   consola.debug(`[DirectAnthropic] Coerced legacy thinking enabled→adaptive (model=${model})`)
 }
 
+/**
+ * Coerce `thinking: { type: "adaptive" }` to `{ type: "enabled", budget_tokens }`
+ * when the target model only accepts the budget-based (enabled) thinking shape.
+ *
+ * The mirror of {@link coerceAdaptiveThinking}: newer clients (e.g. Claude Code
+ * whose main model is an adaptive opus) reuse their `adaptive` thinking config
+ * for fast subagent calls routed to a NON-adaptive model (e.g. haiku-4.5), which
+ * rejects `adaptive` with HTTP 400 ("adaptive thinking is not supported on this
+ * model"). GHC constructs the enabled shape for these models, so coercing to it
+ * matches the upstream contract.
+ *
+ * - Only touches `type: "adaptive"`; enabled/disabled are left as-is (no-op).
+ * - Gated on a POSITIVE enabled-only signal ({@link modelRequiresEnabledThinking}
+ *   = `max_thinking_budget > 0` AND not adaptive). Predictive normalization must
+ *   never downgrade a model that might in fact be adaptive but whose metadata has
+ *   not loaded yet — that silent case is left to the reactive
+ *   `adaptive-thinking-rejection-retry` strategy (ground-truth 400).
+ * - Folds `output_config.effort` into `budget_tokens` (adjustThinkingBudget then
+ *   clamps it to the model window) and drops the now-redundant effort dimension.
+ * - Preserves the `display` field for multi-turn signature continuity.
+ */
+function coerceEnabledThinking(wire: Record<string, unknown>, resolvedModel?: Model): void {
+  if (state.coerceAdaptiveThinking === false) return
+
+  const thinking = wire.thinking as MessagesPayload["thinking"]
+  if (!thinking || thinking.type !== "adaptive") return
+
+  if (!modelRequiresEnabledThinking(resolvedModel)) return
+
+  const outputConfig = wire.output_config as OutputConfig | undefined
+  const display = (thinking as { display?: string }).display
+  wire.thinking = adaptiveToEnabledThinking(outputConfig?.effort, display)
+
+  // `effort` is the adaptive-only intensity dimension — now folded into
+  // budget_tokens, so drop it (keep any other output_config fields, e.g. format).
+  if (outputConfig?.effort !== undefined) {
+    const { effort: _effort, ...rest } = outputConfig
+    if (Object.keys(rest).length === 0) delete wire.output_config
+    else wire.output_config = rest
+  }
+
+  const model = wire.model as string
+  consola.debug(`[DirectAnthropic] Coerced adaptive thinking→enabled (model=${model})`)
+}
+
 function adjustThinkingBudget(wire: Record<string, unknown>, resolvedModel?: Model): void {
   const thinking = wire.thinking as MessagesPayload["thinking"]
   if (!thinking || thinking.type === "disabled" || thinking.type === "adaptive") return
@@ -484,6 +697,17 @@ function adjustThinkingBudget(wire: Record<string, unknown>, resolvedModel?: Mod
 
   if (typeof maxTokens === "number" && adjusted >= maxTokens) {
     adjusted = maxTokens - 1
+    // The max_tokens ceiling can force the budget below the model's min (the min
+    // clamp ran first). That combination is unsatisfiable — Anthropic requires
+    // both budget_tokens < max_tokens AND budget_tokens >= min — so upstream will
+    // reject. Surface it loudly rather than emitting a silently-invalid budget;
+    // the honest resolution (raise max_tokens vs disable thinking) is deferred —
+    // see docs/todo/deferred-backlog.md.
+    if (typeof minBudget === "number" && adjusted < minBudget) {
+      consola.warn(
+        `[DirectAnthropic] max_tokens=${maxTokens} cannot host min thinking budget=${minBudget} (model=${wire.model as string}); budget_tokens=${adjusted} is below the model minimum and will likely be rejected upstream`,
+      )
+    }
   }
 
   if (adjusted !== budgetTokens) {
@@ -524,6 +748,19 @@ export function parseInvalidEffortError(responseText: string): { modelName: stri
 }
 
 /**
+ * Parse the ZERO-support effort variant: `output_config.effort "X" was provided,
+ * but model <M> does not support reasoning effort` (code invalid_reasoning_effort,
+ * NO `supported values:[...]` list). Distinct from parseInvalidEffortError (which
+ * requires the supported list). Returns the model name, or null when not this variant.
+ */
+export function parseEffortUnsupportedError(responseText: string): string | null {
+  if (!responseText.includes("invalid_reasoning_effort")) return null
+  if (!/does not support reasoning effort/i.test(responseText)) return null
+  const m = /model ([^;"]+?) does not support reasoning effort/i.exec(responseText)
+  return m ? m[1].trim() : null
+}
+
+/**
  * Dynamically record per-model effort whitelists discovered from upstream
  * `invalid_reasoning_effort` errors. Persisted via the negotiation cache.
  * Config-sourced `effortsOverrides` remains untouched. Returns true if the
@@ -531,7 +768,17 @@ export function parseInvalidEffortError(responseText: string): { modelName: stri
  */
 export function learnEffortsFromError(responseText: string): boolean {
   const parsed = parseInvalidEffortError(responseText)
-  if (!parsed) return false
+  if (!parsed) {
+    // Zero-support variant (no supported list): learn "known-unsupported" so
+    // clampEffortLevel strips output_config.effort on the retried attempt.
+    const unsupportedModel = parseEffortUnsupportedError(responseText)
+    if (unsupportedModel) {
+      markEffortUnsupported(unsupportedModel)
+      consola.info(`[DirectAnthropic] Learned ${unsupportedModel} supports NO reasoning effort; will strip output_config.effort.`)
+      return true
+    }
+    return false
+  }
 
   const existing = getSupportedEfforts(parsed.modelName)
   const isFirstLearn = !existing
@@ -614,39 +861,36 @@ function reconcileWithMetadata(whitelist: Array<string>, metadataSet: Set<string
 }
 
 /**
- * Strip `output_config.format` (structured outputs) from the wire when the
- * resolved model's upstream is known to disallow the `structured_outputs`
- * partner feature — learned reactively (negotiation `partnerFeatures` cache) OR
- * declared by the operator (config `anthropic.partner_strip_features`). Same
- * config ∪ cache union as betas.
+ * Pre-emptively strip disallowed partner-model features from the wire, driven by
+ * the shared {@link PARTNER_FEATURE_STRIP_TARGETS} table (the same table the
+ * reactive `structured-outputs-rejection-retry` strategy consults). For each
+ * feature in the table, strip its wire field when the resolved model's upstream
+ * is known to disallow it — learned reactively (negotiation `partnerFeatures`
+ * cache) OR declared by the operator (config `anthropic.partner_strip_features`).
+ * Same config ∪ cache union as betas.
  *
- * Some GHC accounts route to Vertex AI where the org policy
+ * Today the table holds exactly `structured_outputs → output_config.format`:
+ * some GHC accounts route to Vertex AI where the org policy
  * `constraints/vertexai.allowedPartnerModelFeatures` blocks `structured_outputs`
- * for the partner Claude model, returning a 400. The
- * `structured-outputs-rejection-retry` strategy records the incompatibility in
- * the cache; declaring it in config makes the strip first-request-durable. Either
- * way this step pre-emptively strips the format so requests don't re-pay a failed
- * upstream round-trip. `effort` (and any other `output_config` key) is preserved;
- * an emptied `output_config` is dropped entirely.
+ * for the partner Claude model, returning a 400. The rejection strategy records
+ * the incompatibility in the cache; declaring it in config makes the strip
+ * first-request-durable. Either way this step pre-emptively strips the field so
+ * requests don't re-pay a failed upstream round-trip. Sibling `output_config`
+ * keys (e.g. `effort`) are preserved; an emptied `output_config` is dropped.
+ * Adding a partner feature is a table (data) change — this loop needs no edit.
  */
-function stripUnsupportedStructuredOutputs(wire: Record<string, unknown>): void {
-  const outputConfig = wire.output_config as OutputConfig | undefined
-  if (!outputConfig || outputConfig.format === undefined) return
-
+function stripUnsupportedPartnerFeatures(wire: Record<string, unknown>): void {
   const modelName = wire.model as string | undefined
   if (!modelName) return
-  const disallowed =
-    isAnthropicPartnerFeatureUnsupported(modelName, STRUCTURED_OUTPUTS_PARTNER_FEATURE)
-    || collectStripPartnerFeatures(modelName).has(STRUCTURED_OUTPUTS_PARTNER_FEATURE)
-  if (!disallowed) return
 
-  const { format: _format, ...rest } = outputConfig
-  if (Object.keys(rest).length > 0) {
-    wire.output_config = rest
-  } else {
-    delete wire.output_config
+  const declared = collectStripPartnerFeatures(modelName)
+  for (const feature of Object.keys(PARTNER_FEATURE_STRIP_TARGETS)) {
+    const disallowed = isAnthropicPartnerFeatureUnsupported(modelName, feature) || declared.has(feature)
+    if (!disallowed) continue
+    if (stripPartnerFeatureFromWire(wire, feature)) {
+      consola.debug(`[DirectAnthropic] Stripped partner feature "${feature}" wire field (disallowed, model=${modelName})`)
+    }
   }
-  consola.debug(`[DirectAnthropic] Stripped output_config.format (structured_outputs disallowed, model=${modelName})`)
 }
 
 /**
@@ -665,6 +909,20 @@ function clampEffortLevel(wire: Record<string, unknown>, resolvedModel?: Model):
 
   const modelName = resolvedModel?.id ?? (wire.model as string)
   if (!modelName) return
+
+  // Zero-support variant (learned from a `does not support reasoning effort` 400):
+  // the model supports NO reasoning effort at all. Strip the field entirely (drop
+  // output_config if it empties) BEFORE the whitelist/clamp logic below.
+  if (isEffortUnsupported(modelName)) {
+    const { effort: _effort, ...rest } = outputConfig
+    if (Object.keys(rest).length > 0) {
+      wire.output_config = rest
+    } else {
+      delete wire.output_config
+    }
+    consola.debug(`[DirectAnthropic] Stripped output_config.effort (model=${modelName} supports no reasoning effort)`)
+    return
+  }
 
   const supported = findSupportedEfforts(modelName, resolvedModel)
   if (!supported) return
@@ -696,6 +954,37 @@ function clampEffortLevel(wire: Record<string, unknown>, resolvedModel?: Model):
 }
 
 // ============================================================================
+// Memory tool
+// ============================================================================
+
+/**
+ * Rewrite a client tool named `memory` to Anthropic's native `{name:"memory", type:"memory_20250818"}`
+ * typed descriptor (a client-EXECUTED tool, NOT a server tool), mirroring GHC's BYOK path (anthropicProvider.ts). Gated by the `memoryToolEnabled` master
+ * switch (default off — CAPI acceptance unverified) AND model support. Drops the client tool's
+ * input_schema / description / cache_control (typed tools carry none). Sets `ctx.hasMemoryTool` so
+ * build-headers forces the shared context-management beta. Matched by NAME because an earlier stage
+ * (preprocessTools) may already have added an input_schema to the plain `{name:"memory"}` tool.
+ *
+ * Runs BEFORE the cache-control step so proxied/sanitize see the final server-tool shape — the
+ * server-tool is excluded from cache anchoring anyway (see addToolCacheControl), so it never carries a
+ * breakpoint.
+ */
+function rewriteMemoryTool(ctx: PrepareContext): void {
+  if (!state.memoryToolEnabled) return
+  const model = ctx.wire.model as string
+  if (!modelSupportsMemory(model, ctx.opts.resolvedModel)) return
+  const tools = ctx.wire.tools
+  if (!Array.isArray(tools)) return
+
+  const isMemoryClientTool = (tool: unknown): boolean =>
+    Boolean(tool) && typeof tool === "object" && (tool as { name?: unknown }).name === "memory" && (tool as { type?: unknown }).type === undefined
+
+  if (!tools.some((tool) => isMemoryClientTool(tool))) return
+  ctx.wire.tools = tools.map((tool) => (isMemoryClientTool(tool) ? { name: "memory", type: "memory_20250818" } : tool))
+  ctx.hasMemoryTool = true
+}
+
+// ============================================================================
 // Cache control
 // ============================================================================
 
@@ -709,17 +998,39 @@ function clampEffortLevel(wire: Record<string, unknown>, resolvedModel?: Model):
  *                strategy, caches the growing conversation), then tools+system
  *                with any spare slots.
  */
-function applyCacheControlMode(wire: Record<string, unknown>): void {
+function applyCacheControlMode(ctx: PrepareContext): void {
+  const { wire } = ctx
+  const model = wire.model as string
+  const messages = wire.messages as MessagesPayload["messages"] | undefined
+
+  // Extended TTL upgrades the breakpoints WE write (proxied/sanitize). Gated by the master switch,
+  // model support, and an agent-style request (GHC's Agent-location analog). When inactive, both
+  // layers stay at the 5m default — identical to the pre-feature behavior.
+  const extendedTtlActive = state.extendedCacheTtlEnabled && modelSupportsExtendedCacheTtl(model, ctx.opts.resolvedModel) && isAgentCall(messages)
+  const { toolsSystem, messages: messagesTtl } = extendedTtlActive ? resolveExtendedTtls() : { toolsSystem: "5m" as CacheTtl, messages: "5m" as CacheTtl }
+  const toolsSystemEphemeral = ephemeralFor(toolsSystem)
+  const messagesEphemeral = ephemeralFor(messagesTtl)
+
   switch (state.cacheControlMode) {
     case "disabled": {
       walkCacheControl(wire, () => undefined)
       break
     }
     case "passthrough": {
+      // 只挖已知地雷（GHC 未支持的 cache_control 子字段，如 scope），保留客户端精调断点。
+      const blacklist = collectUnsupportedCacheControlSubfields(model, ctx.opts.excludeCacheControlSubfields)
+      const stripped = filterCacheControlSubfields(wire, blacklist)
+      if (stripped.length > 0) ctx.strippedCacheControlSubfields = stripped
       break
     }
     case "sanitize": {
-      walkCacheControl(wire, () => EPHEMERAL_CACHE_CONTROL)
+      // 收窄语义（spec §4）：保留客户端合法 ttl（不再无条件降 5m），剥非白名单子字段（scope 等），
+      // 跨层单调化满足 Anthropic tools→system→messages 递减约束。TTL 决策归 resolveSanitizedTtls。
+      const clientMax = collectPerLayerClientTtls(wire)
+      const ttls = resolveSanitizedTtls(clientMax, extendedTtlActive, { toolsSystem, messages: messagesTtl })
+      // 同层统一为 effective ttl（规范化）；ephemeralFor 只产 {type,ttl?} → scope 等子字段自动剥除。
+      // handler 仅对有断点的 item 调用 → ttls[section] 必非 undefined（?? "5m" 仅防御性兜底）。
+      walkCacheControl(wire, (_current, section) => ephemeralFor(ttls[section] ?? "5m"))
       break
     }
     case "proxied": {
@@ -730,8 +1041,8 @@ function applyCacheControlMode(wire: Record<string, unknown>): void {
       // Message-level breakpoints (GHC's primary strategy) before tools+system
       // fallback; the latter recomputes its budget from existing breakpoints, so
       // message breakpoints injected here automatically reduce its spare slots.
-      addMessageCacheControl(wire.messages as Array<MessageParam> | undefined)
-      addToolsAndSystemCacheControl(wire)
+      addMessageCacheControl(wire.messages as Array<MessageParam> | undefined, messagesEphemeral)
+      addToolsAndSystemCacheControl(wire, toolsSystemEphemeral)
       break
     }
     default: {
@@ -741,13 +1052,17 @@ function applyCacheControlMode(wire: Record<string, unknown>): void {
       break
     }
   }
+
+  // Header mirrors body: emit the beta iff a 1h ttl actually landed in the wire (our write OR a
+  // passthrough client breakpoint). Independent of `extendedTtlActive` so passthrough 1h is covered.
+  ctx.wroteExtendedTtl = wireHasOneHourTtl(wire)
 }
 
-function addToolsAndSystemCacheControl(wire: Record<string, unknown>): void {
+function addToolsAndSystemCacheControl(wire: Record<string, unknown>, ephemeral: EphemeralCacheControl): void {
   let remaining = CACHE_CONTROL_BREAKPOINT_LIMIT - countExistingCacheBreakpoints(wire)
   if (remaining <= 0) return
 
-  const toolResult = addToolCacheControl(wire.tools as Array<Tool> | undefined, remaining)
+  const toolResult = addToolCacheControl(wire.tools as Array<Tool> | undefined, remaining, ephemeral)
   if (toolResult.changed) {
     wire.tools = toolResult.tools
     remaining = toolResult.remaining
@@ -755,7 +1070,7 @@ function addToolsAndSystemCacheControl(wire: Record<string, unknown>): void {
 
   if (remaining <= 0) return
 
-  const systemResult = addSystemCacheControl(wire.system as MessagesPayload["system"], remaining)
+  const systemResult = addSystemCacheControl(wire.system as MessagesPayload["system"], remaining, ephemeral)
   if (systemResult.changed) {
     wire.system = systemResult.system
   }
@@ -786,12 +1101,19 @@ function countCacheControlOccurrences(value: unknown): number {
   return count
 }
 
-function addToolCacheControl(tools: Array<Tool> | undefined, remaining: number): { tools: Array<Tool> | undefined; remaining: number; changed: boolean } {
+function addToolCacheControl(
+  tools: Array<Tool> | undefined,
+  remaining: number,
+  ephemeral: EphemeralCacheControl,
+): { tools: Array<Tool> | undefined; remaining: number; changed: boolean } {
   if (!tools || remaining <= 0) {
     return { tools, remaining, changed: false }
   }
 
-  const lastNonDeferredIndex = findLastIndex(tools, (tool) => tool.defer_loading !== true)
+  // Anchor on the last non-deferred FUNCTION tool. API-defined typed tools (those carrying a `type`, e.g.
+  // `tool_search_tool_regex` or the rewritten `memory_20250818`) are excluded — they don't accept a
+  // cache_control breakpoint and a 1h/5m marker on them would 400 upstream.
+  const lastNonDeferredIndex = findLastIndex(tools, (tool) => tool.defer_loading !== true && (tool as { type?: unknown }).type === undefined)
   if (lastNonDeferredIndex < 0 || tools[lastNonDeferredIndex].cache_control) {
     return { tools, remaining, changed: false }
   }
@@ -799,7 +1121,7 @@ function addToolCacheControl(tools: Array<Tool> | undefined, remaining: number):
   const updatedTools = [...tools]
   updatedTools[lastNonDeferredIndex] = {
     ...updatedTools[lastNonDeferredIndex],
-    cache_control: EPHEMERAL_CACHE_CONTROL,
+    cache_control: ephemeral,
   }
   return { tools: updatedTools, remaining: remaining - 1, changed: true }
 }
@@ -807,6 +1129,7 @@ function addToolCacheControl(tools: Array<Tool> | undefined, remaining: number):
 function addSystemCacheControl(
   system: MessagesPayload["system"] | undefined,
   remaining: number,
+  ephemeral: EphemeralCacheControl,
 ): { system: MessagesPayload["system"] | undefined; changed: boolean } {
   if (!Array.isArray(system) || remaining <= 0) {
     return { system, changed: false }
@@ -820,7 +1143,7 @@ function addSystemCacheControl(
   const updatedSystem = [...system]
   updatedSystem[lastSystemIndex] = {
     ...updatedSystem[lastSystemIndex],
-    cache_control: EPHEMERAL_CACHE_CONTROL,
+    cache_control: ephemeral,
   }
   return { system: updatedSystem, changed: true }
 }
@@ -851,7 +1174,7 @@ function findLastIndex<T>(items: Array<T>, predicate: (item: T) => boolean): num
  * tool_result blocks (`isToolResultMessage`); GHC's `User` role = a user message
  * WITHOUT tool_result (a real prompt); GHC's `Assistant` with no tool calls = an
  * assistant message with no tool_use block. Inline `role:"system"` messages (which
- * survive when `systemMessagesSanitize` is off) are skipped without flipping
+ * survive when `systemDefaultMode` is off) are skipped without flipping
  * `isBelowCurrentUserMessage`, mirroring GHC's first-pass handling of
  * `Raw.ChatRole.System`.
  *
@@ -860,7 +1183,7 @@ function findLastIndex<T>(items: Array<T>, predicate: (item: T) => boolean): num
  * user message — the per-round breakpoint count matches because merge collapses what
  * GHC's `isLastToolResultInRound` de-duplicates.
  */
-function addMessageCacheControl(messages: Array<MessageParam> | undefined): void {
+function addMessageCacheControl(messages: Array<MessageParam> | undefined, ephemeral: EphemeralCacheControl): void {
   if (!Array.isArray(messages) || messages.length === 0) return
   let remaining = CACHE_CONTROL_BREAKPOINT_LIMIT - countCacheControlOccurrences(messages)
   if (remaining <= 0) return
@@ -887,7 +1210,10 @@ function addMessageCacheControl(messages: Array<MessageParam> | undefined): void
     const isPlainUser = message.role === "user" && !isToolResultMsg
     const isAssistantWithoutToolUse = message.role === "assistant" && !messageHasToolUse(message)
 
-    if (((isBelowCurrentUserMessage && (isLastToolResultInRound || isPlainUser)) || isAssistantWithoutToolUse) && placeCacheControlOnLastBlock(message))
+    if (
+      ((isBelowCurrentUserMessage && (isLastToolResultInRound || isPlainUser)) || isAssistantWithoutToolUse)
+      && placeCacheControlOnLastBlock(message, ephemeral)
+    )
       remaining -= 1
 
     if (isPlainUser) isBelowCurrentUserMessage = false
@@ -921,12 +1247,12 @@ function messageHasCacheControl(message: MessageParam): boolean {
  * `{text:" "}` placeholder block to host its CacheBreakpoint part; we deliberately skip
  * to avoid injecting whitespace noise (such messages are vanishingly rare in proxied).
  */
-function placeCacheControlOnLastBlock(message: MessageParam): boolean {
+function placeCacheControlOnLastBlock(message: MessageParam, ephemeral: EphemeralCacheControl): boolean {
   // String content → a single text block carrying the breakpoint. GHC does the same
   // when merging (string → [{type:"text", text}]), so upstream treats them as equivalent.
   if (typeof message.content === "string") {
     if (message.content.length === 0) return false
-    message.content = [{ type: "text", text: message.content, cache_control: EPHEMERAL_CACHE_CONTROL }]
+    message.content = [{ type: "text", text: message.content, cache_control: ephemeral }]
     return true
   }
   if (!Array.isArray(message.content)) return false
@@ -934,22 +1260,48 @@ function placeCacheControlOnLastBlock(message: MessageParam): boolean {
   const index = findLastIndex(message.content, (block) => block.type !== "thinking" && block.type !== "redacted_thinking")
   if (index < 0) return false
 
-  const block = message.content[index] as { cache_control?: typeof EPHEMERAL_CACHE_CONTROL }
+  const block = message.content[index] as { cache_control?: EphemeralCacheControl }
   if (block.cache_control) return false
-  block.cache_control = EPHEMERAL_CACHE_CONTROL
+  block.cache_control = ephemeral
   return true
 }
 
 /**
  * Walk all cache_control occurrences in the wire payload (system, messages, tools)
- * and apply a handler. The handler receives the existing cache_control value and returns:
+ * and apply a handler. The handler receives the existing cache_control value AND the top-level
+ * section it belongs to (so sanitize can pick a per-layer TTL — nested tool_result blocks under a
+ * message stay in the "messages" section). It returns:
  * - undefined: delete the cache_control field
  * - an object: replace the cache_control field with this value
  */
-function walkCacheControl(wire: Record<string, unknown>, handler: (current: unknown) => { type: string } | undefined): void {
+type CacheControlSection = "system" | "messages" | "tools"
+
+/**
+ * 就地删除 wire 中所有 cache_control 的黑名单子字段，保留其余（红线1：正常态绝不返回 undefined，
+ * 那会删掉整个 cache_control 退化成 disabled）。返回实际剥掉的字段去重列表（供 history 标记）。
+ * L2 兜底：剥后 cc 若失去 type（畸形输入只含被剥字段），空/无 type 的 cache_control 会 400，
+ * 此时删掉整个 cc 更安全（回退 disabled）；真实 scope 场景 cc 恒含 type，此分支只为畸形兜底。
+ */
+export function filterCacheControlSubfields(wire: Record<string, unknown>, blacklist: Set<string>): Array<string> {
+  if (blacklist.size === 0) return []
+  const stripped = new Set<string>()
+  walkCacheControl(wire, (current) => {
+    const cc = current as Record<string, unknown>
+    for (const field of blacklist) {
+      if (field in cc) {
+        Reflect.deleteProperty(cc, field)
+        stripped.add(field)
+      }
+    }
+    return typeof cc.type === "string" ? (cc as { type: string }) : undefined
+  })
+  return [...stripped]
+}
+
+function walkCacheControl(wire: Record<string, unknown>, handler: (current: unknown, section: CacheControlSection) => { type: string } | undefined): void {
   for (const key of ["system", "messages", "tools"] as const) {
     if (Array.isArray(wire[key])) {
-      walkCacheControlArray(wire[key] as Array<Record<string, unknown>>, handler)
+      walkCacheControlArray(wire[key] as Array<Record<string, unknown>>, handler, key)
     }
   }
 }
@@ -958,13 +1310,14 @@ function walkCacheControlArray(
   // Runtime data: items may include null / non-objects coming from JSON.parse
   // even though our internal type narrows them, so accept `unknown`-ish entries.
   items: Array<Record<string, unknown> | null | undefined>,
-  handler: (current: unknown) => { type: string } | undefined,
+  handler: (current: unknown, section: CacheControlSection) => { type: string } | undefined,
+  section: CacheControlSection,
 ): void {
   for (const item of items) {
     if (!item || typeof item !== "object") continue
 
     if ("cache_control" in item && item.cache_control) {
-      const replacement = handler(item.cache_control)
+      const replacement = handler(item.cache_control, section)
       if (replacement === undefined) {
         delete item.cache_control
       } else {
@@ -972,9 +1325,10 @@ function walkCacheControlArray(
       }
     }
 
-    // Recurse into content arrays (message.content, tool_result.content)
+    // Recurse into content arrays (message.content, tool_result.content). These stay in the SAME
+    // section (a tool_result nested in a user message is still message-layer).
     if (Array.isArray(item.content)) {
-      walkCacheControlArray(item.content as Array<Record<string, unknown>>, handler)
+      walkCacheControlArray(item.content as Array<Record<string, unknown>>, handler, section)
     }
   }
 }

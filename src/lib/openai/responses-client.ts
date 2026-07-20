@@ -64,7 +64,7 @@ export const createResponses = async (
   const { wire } = prepared
   let usedFallback = false
 
-  if (wire.stream && canUseUpstreamWebSocket(opts?.resolvedModel)) {
+  if (wire.stream && canUseUpstreamWebSocket(opts?.resolvedModel, wire.model)) {
     const result = await attemptUpstreamResponsesWs(prepared, opts)
     if (result.kind === "ok") {
       opts?.onTransport?.("upstream-ws")

@@ -12,6 +12,12 @@ import type {
   HistoryEntry,
   HistoryStats,
 } from "~/lib/history"
+import type {
+  //
+  CreateUpstreamWsConnectionOptions,
+  UpstreamWsConnection,
+} from "~/lib/openai/upstream-ws-connection"
+import type { TransportStatusSnapshot } from "~/lib/transport/status-snapshot"
 
 import {
   //
@@ -20,6 +26,11 @@ import {
   initHistory,
   insertEntry,
 } from "~/lib/history"
+import {
+  //
+  resetUpstreamWsManagerForTests,
+  setUpstreamWsConnectionFactoryForTests,
+} from "~/lib/openai/upstream-ws"
 import {
   //
   _resetRequestTelemetryForTests,
@@ -164,21 +175,38 @@ interface StatusResponseBody {
       }>
     }>
   }
+  transport: TransportStatusSnapshot
 }
 
-function createHistoryEntry(overrides?: Partial<HistoryEntry>): HistoryEntry {
+function createHistoryEntry(overrides?: {
+  id?: string
+  sessionId?: string
+  startedAt?: number
+  endpoint?: HistoryEntry["endpoint"]
+  clientRequest?: HistoryEntry["clientRequest"]
+  upstreamResponse?: NonNullable<HistoryEntry["attempts"]>[number]["upstreamResponse"]
+  durationMs?: number
+  state?: HistoryEntry["state"]
+}): HistoryEntry {
   const endpoint = overrides?.endpoint ?? "anthropic-messages"
+  const upstreamResponse = overrides?.upstreamResponse
   return {
     id: overrides?.id ?? generateId(),
     sessionId: overrides?.sessionId ?? getCurrentSession(endpoint, generateId()),
     startedAt: overrides?.startedAt ?? Date.now(),
     endpoint,
-    inboundRequest: overrides?.inboundRequest ?? {
+    state: overrides?.state ?? (upstreamResponse ? "completed" : undefined),
+    model: { requested: "claude-sonnet-4.6", ...(upstreamResponse?.model && { resolved: upstreamResponse.model }) },
+    clientRequest: overrides?.clientRequest ?? {
+      format: endpoint,
       model: "claude-sonnet-4.6",
       messages: [{ role: "user", content: "Hello history" }],
       stream: false,
     },
-    outboundResponse: overrides?.outboundResponse,
+    ...(upstreamResponse && {
+      attempts: [{ index: 0, durationMs: overrides?.durationMs ?? 0, upstreamResponse }],
+      _index: { derived: { responseSuccess: upstreamResponse.success, attemptCount: 1 } },
+    }),
     durationMs: overrides?.durationMs,
   }
 }
@@ -186,13 +214,13 @@ function createHistoryEntry(overrides?: Partial<HistoryEntry>): HistoryEntry {
 describe("management and history HTTP routes", () => {
   useIsolatedRuntime()
 
-  beforeEach(() => {
+  beforeEach(async () => {
     copilotUsageHits = 0
     upstreamFetchMock.mockClear()
     // The real getCopilotUsage checks state.githubToken before issuing fetch.
-    setStateForTests({ githubToken: "gh-test-token", fetchTimeout: 0 })
+    setStateForTests({ githubToken: "gh-test-token", responseHeaderTimeout: 0 })
     applyFetchMock(upstreamFetchMock)
-    initHistory(true, 100)
+    await initHistory(true, 100)
     clearHistory()
     _resetRequestTelemetryForTests()
 
@@ -308,14 +336,14 @@ describe("management and history HTTP routes", () => {
   test("GET /history/api/stats returns history stats through the full app route", async () => {
     insertEntry(
       createHistoryEntry({
-        outboundResponse: {
+        upstreamResponse: {
           success: true,
           model: "claude-sonnet-4.6",
           usage: {
             input_tokens: 11,
             output_tokens: 7,
           },
-          content: { role: "assistant", content: "Hi" },
+          body: { role: "assistant", content: "Hi" },
         },
         durationMs: 25,
       }),
@@ -341,7 +369,7 @@ describe("management and history HTTP routes", () => {
     expect(res.status).toBe(200)
     expect(body.id).toBe(entry.id)
     expect(body.sessionId).toBe(entry.sessionId)
-    expect(body.inboundRequest.model).toBe("claude-sonnet-4.6")
+    expect(body.clientRequest?.model).toBe("claude-sonnet-4.6")
   })
 
   test("GET /api/stats returns a per-dimension breakdown for a registered dimension", async () => {
@@ -405,6 +433,68 @@ describe("management and history HTTP routes", () => {
     expect(body.requestTelemetry).not.toHaveProperty("dimensions")
     expect(body.requestTelemetry).not.toHaveProperty("agentKind")
     expect(body.requestTelemetry).not.toHaveProperty("endpoint")
+  })
+
+  test("GET /api/status carries transport diagnostics (D7 HIGH-7): configured values + runtime capability + per-row arrays, not a single generation scalar", async () => {
+    const fakeConnection = (opts: CreateUpstreamWsConnectionOptions): UpstreamWsConnection => ({
+      connect: () => Promise.resolve(),
+      sendRequest: () => (async function* () {})(),
+      isOpen: true,
+      isBusy: false,
+      statefulMarker: undefined,
+      model: opts.model,
+      conversationId: undefined,
+      handshakeHeaders: {},
+      rescheduleIdleTimeout: () => {},
+      dispose: () => Promise.resolve(),
+      close: () => {},
+    })
+    setUpstreamWsConnectionFactoryForTests(fakeConnection)
+    const manager = resetUpstreamWsManagerForTests()
+    await manager.create({ headers: {}, model: "gpt-5.5" })
+
+    const res = await app.request("/api/status")
+    const body = (await res.json()) as StatusResponseBody
+
+    expect(res.status).toBe(200)
+    expect(body.transport.configured).toHaveProperty("tcpKeepaliveProbeDelayMs")
+    expect(body.transport.configured).toHaveProperty("softMaxUpstreamWsConnections")
+    expect(Array.isArray(body.transport.h2Sessions)).toBe(true)
+    expect(Array.isArray(body.transport.upstreamWsPool)).toBe(true)
+    expect(body.transport.upstreamWsPool).toHaveLength(1)
+    expect(body.transport.upstreamWsPool[0]).toMatchObject({ model: "gpt-5.5", state: "idle" })
+    expect(["idle", "running", "failed"]).toContain(body.transport.h2Reconcile.state)
+    expect(["idle", "running", "failed"]).toContain(body.transport.upstreamWsReconcile.state)
+    expect(body.transport.runtimeCapability).toEqual({ runtime: "bun", wsApplicationKeepalive: "unavailable" })
+  })
+
+  test("GET /api/status surfaces a FAILED upstream WS reconcile (merged-state review fix, spec §4 D7 HIGH-3/HIGH-7 symmetry) — not just h2's", async () => {
+    const fakeConnection = (opts: CreateUpstreamWsConnectionOptions): UpstreamWsConnection => ({
+      connect: () => Promise.resolve(),
+      sendRequest: () => (async function* () {})(),
+      isOpen: true,
+      isBusy: false,
+      statefulMarker: undefined,
+      model: opts.model,
+      conversationId: undefined,
+      handshakeHeaders: {},
+      rescheduleIdleTimeout: () => {
+        throw new Error("simulated rescheduleIdleTimeout failure")
+      },
+      dispose: () => Promise.resolve(),
+      close: () => {},
+    })
+    setUpstreamWsConnectionFactoryForTests(fakeConnection)
+    const manager = resetUpstreamWsManagerForTests()
+    await manager.create({ headers: {}, model: "gpt-5.5" })
+    manager.reconcileForConfigChange(90_000)
+
+    const res = await app.request("/api/status")
+    const body = (await res.json()) as StatusResponseBody
+
+    expect(res.status).toBe(200)
+    expect(body.transport.upstreamWsReconcile.state).toBe("failed")
+    expect(body.transport.upstreamWsReconcile.lastError).toContain("simulated rescheduleIdleTimeout failure")
   })
 
   test("GET /metrics returns Prometheus exposition projecting the telemetry registry", async () => {

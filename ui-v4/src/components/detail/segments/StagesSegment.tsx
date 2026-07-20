@@ -1,5 +1,10 @@
 import {
   //
+  finalAttempt,
+  finalUpstreamRequest,
+} from "~backend/lib/history/entry-view"
+import {
+  //
   useEffect,
   useMemo,
   useState,
@@ -10,7 +15,7 @@ import type { MessageContent } from "@/lib/content/types"
 import type { RewriteMark } from "@/lib/diff/block-diff"
 import type { HistoryEntry } from "@/types"
 
-import { CodeBlock } from "@/components/detail/CodeBlock"
+import { RawJsonView } from "@/components/common/RawJsonView"
 import { ConversationView } from "@/components/detail/ConversationView"
 import { MessageDiffView } from "@/components/detail/diff/MessageDiffView"
 import { LegShell } from "@/components/detail/segments/LegShell"
@@ -45,8 +50,15 @@ export function StagesSegment({ entry }: { entry: HistoryEntry }) {
   const [showDiff, setShowDiff] = useState(false)
   const [rawMode, setRawMode] = useState(false)
 
-  const inboundMessages = entry.inboundRequest.messages
-  const effectiveMessages = entry.effectiveRequest?.messages
+  // Effective (post-rewrite) source + upstream wire request: new per-attempt legs (final attempt).
+  // Inbound (client) messages come from the `clientRequest` structured projection.
+  const newEff = finalAttempt(entry)?.effectiveSource
+  const newWire = finalUpstreamRequest(entry)
+  const effectiveLeg = newEff
+  const wireLeg = newWire
+
+  const inboundMessages = entry.clientRequest?.messages
+  const effectiveMessages = newEff?.messages
   const canDiff = inboundMessages !== undefined && effectiveMessages !== undefined
 
   const { inboundMarks, effectiveMarks } = useMemo(() => deriveRewriteMarks(inboundMessages, effectiveMessages), [inboundMessages, effectiveMessages])
@@ -57,32 +69,32 @@ export function StagesSegment({ entry }: { entry: HistoryEntry }) {
         key: "inbound",
         label: "Inbound (client → proxy)",
         shortLabel: "Inbound",
-        messages: entry.inboundRequest.messages ?? [],
-        rawPayload: entry.inboundRequest,
+        messages: entry.clientRequest?.messages ?? [],
+        rawPayload: entry.clientRequest,
         marks: inboundMarks,
       },
-      entry.effectiveRequest ?
+      effectiveLeg ?
         {
           key: "effective",
           label: "Effective (after rewrites)",
           shortLabel: "Effective",
-          messages: entry.effectiveRequest.messages ?? [],
-          rawPayload: entry.effectiveRequest.payload ?? entry.effectiveRequest,
+          messages: effectiveMessages ?? [],
+          rawPayload: newEff.body ?? effectiveLeg,
           marks: effectiveMarks,
         }
       : null,
-      entry.outboundRequest ?
+      wireLeg ?
         {
           key: "wire",
           label: "Wire (proxy → upstream)",
           shortLabel: "Wire",
-          messages: entry.outboundRequest.messages ?? [],
-          rawPayload: entry.outboundRequest.payload ?? entry.outboundRequest,
+          messages: newWire.messages ?? [],
+          rawPayload: newWire.body ?? wireLeg,
         }
       : null,
     ]
     return built.filter((leg): leg is Leg => leg !== null)
-  }, [entry, inboundMarks, effectiveMarks])
+  }, [entry, inboundMarks, effectiveMarks, effectiveLeg, wireLeg, newEff, newWire, effectiveMessages])
 
   const [selectedLeg, setSelectedLeg] = useState<LegKey>("inbound")
   const [pendingScroll, setPendingScroll] = useState<string | undefined>(undefined)
@@ -130,18 +142,18 @@ export function StagesSegment({ entry }: { entry: HistoryEntry }) {
       : null}
       <div className="min-w-0 flex-1">
         <div className="mb-2 flex flex-wrap items-center gap-2">
-          <span className="mono text-[11px] uppercase tracking-wider text-[var(--color-primary)]">{leg.label}</span>
+          <span className="mono text-[11px] uppercase tracking-wider text-[var(--content-accent)]">{leg.label}</span>
           <button
             type="button"
             onClick={() => setRawMode(false)}
-            className={`mono border border-[var(--color-border)] px-2 py-0.5 text-[12px] ${showRaw ? "" : "text-[var(--color-primary)]"}`}
+            className={`mono border border-[var(--surface-border)] px-2 py-0.5 text-[12px] ${showRaw ? "" : "text-[var(--content-accent)]"}`}
           >
             Rendered
           </button>
           <button
             type="button"
             onClick={() => setRawMode(true)}
-            className={`mono border border-[var(--color-border)] px-2 py-0.5 text-[12px] ${showRaw ? "text-[var(--color-primary)]" : ""}`}
+            className={`mono border border-[var(--surface-border)] px-2 py-0.5 text-[12px] ${showRaw ? "text-[var(--content-accent)]" : ""}`}
           >
             Raw
           </button>
@@ -149,7 +161,7 @@ export function StagesSegment({ entry }: { entry: HistoryEntry }) {
             <button
               type="button"
               onClick={() => setShowDiff((v) => !v)}
-              className={`mono border border-[var(--color-border)] px-2 py-0.5 text-[12px] ${showDiff ? "text-[var(--color-warn)]" : "text-[var(--color-primary)]"}`}
+              className={`mono border border-[var(--surface-border)] px-2 py-0.5 text-[12px] ${showDiff ? "text-[var(--signal-warn)]" : "text-[var(--content-accent)]"}`}
             >
               ↔ show full diff
             </button>
@@ -169,10 +181,7 @@ export function StagesSegment({ entry }: { entry: HistoryEntry }) {
         >
           <LegShell label={leg.label}>
             {showRaw ?
-              <CodeBlock
-                code={JSON.stringify(leg.rawPayload, null, 2)}
-                lang="json"
-              />
+              <RawJsonView value={leg.rawPayload} />
             : <ConversationView
                 messages={leg.messages}
                 anchorPrefix={`stage-${leg.key}`}

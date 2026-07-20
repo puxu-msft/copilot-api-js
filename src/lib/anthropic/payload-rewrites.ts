@@ -11,9 +11,8 @@
  *
  * Module boundaries follow the existing **cohesive functions**, not the §4
  * sub-step numbering, because:
- * - `sanitizeAnthropicMessages` (A3–A9) is a cohesive unit reused standalone by
- *   the web_search double-hop (it deliberately runs sanitize WITHOUT the tool
- *   preprocessing — see web-search/orchestrator.ts), and
+ * - `sanitizeAnthropicMessages` (A3–A9) is a cohesive unit (historically also reused
+ *   standalone by the web_search double-hop, retired 2026-07-13), and
  * - its `SanitizationStats` is a whole-pipeline-residual model
  *   (`emptyTextBlocksRemoved` is derived by subtraction in sanitize/result.ts),
  *   so the A6<A8 / A7<A8 step ordering must stay inside the function where the
@@ -28,14 +27,18 @@
  * whose `model`/`view` invariants are P2 driver guarantees not yet true here.
  */
 
-import type { SanitizeResult } from "~/lib/request/pipeline"
+import type { SanitizeResult } from "~/lib/request/retry-types"
 import type { ToolNameMapper } from "~/lib/tool-name-mapper"
 import type { MessagesPayload } from "~/types/api/anthropic"
 
 import type { SanitizationStats } from "./sanitize/result"
 
 import { preprocessTools } from "./message-tools"
-import { sanitizeAnthropicMessages } from "./sanitize"
+import {
+  //
+  destackActed,
+  sanitizeAnthropicMessages,
+} from "./sanitize"
 import { applyAnthropicToolNameSanitization } from "./sanitize/tool-name-sanitize"
 
 /** The full SanitizeResult the sanitize module produces (payload + breakdown). */
@@ -107,7 +110,7 @@ const toolNameSanitize: AnthropicPayloadRewrite = {
 
 /**
  * A3–A9 — message sanitization (system/messages reminder removal, inline-system
- * handling, server-tool-history downgrade, corrupt-thinking strip, tool-block
+ * handling, server-tool downgrade, corrupt-thinking strip, tool-block
  * processing, empty-block cleanup). Wraps the cohesive `sanitizeAnthropicMessages`
  * and surfaces its canonical SanitizeResult unchanged.
  */
@@ -118,7 +121,7 @@ const sanitizeMessages: AnthropicPayloadRewrite = {
   apply: (payload) => {
     const result = sanitizeAnthropicMessages(payload)
     const s = result.stats
-    const changed = s.totalBlocksRemoved > 0 || s.systemReminderRemovals > 0 || s.fixedNameCount > 0 || s.inlineSystemConverted > 0
+    const changed = s.totalBlocksRemoved > 0 || s.systemReminderRemovals > 0 || s.fixedNameCount > 0 || s.inlineSystemConverted > 0 || destackActed(s)
     return { payload: result.payload, changed, sanitizeResult: result }
   },
 }

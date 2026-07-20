@@ -23,10 +23,9 @@ export interface StreamTranslatorState {
   toolCallIndexMap: Map<number, number>
   nextToolCallIndex: number
   toolCallIds: Map<number, string>
-  includeUsage: boolean
 }
 
-export function createStreamTranslator(opts: { includeUsage: boolean }): {
+export function createStreamTranslator(): {
   translate(event: ResponsesStreamEvent): Array<ChatCompletionChunk>
   getState(): StreamTranslatorState
 } {
@@ -37,7 +36,6 @@ export function createStreamTranslator(opts: { includeUsage: boolean }): {
     toolCallIndexMap: new Map(),
     nextToolCallIndex: 0,
     toolCallIds: new Map(),
-    includeUsage: opts.includeUsage,
   }
 
   function translate(event: ResponsesStreamEvent): Array<ChatCompletionChunk> {
@@ -58,6 +56,14 @@ export function createStreamTranslator(opts: { includeUsage: boolean }): {
       }
 
       case "response.output_item.added": {
+        // Reasoning item — carries GHC's opaque `encrypted_content` (present before the summary deltas).
+        // Emit it on the proxy CC-intermediate `delta.reasoning_encrypted_content` so the downstream
+        // Anthropic renderer can embed it in the synthetic thinking block's labeled-envelope signature
+        // (cross-turn round-trip). No summary TEXT here — that streams via reasoning_summary_text.delta.
+        if (event.item.type === "reasoning") {
+          const enc = event.item.encrypted_content
+          return typeof enc === "string" && enc.length > 0 ? [buildReasoningChunk(state, { encrypted: enc })] : []
+        }
         if (event.item.type !== "function_call") return []
 
         const toolCallIndex = state.nextToolCallIndex++
@@ -79,6 +85,15 @@ export function createStreamTranslator(opts: { includeUsage: boolean }): {
         ]
       }
 
+      // Reasoning summary (thinking) text — GHC's DISPLAYABLE reasoning, streamed as plaintext deltas
+      // when the request asked for `reasoning.summary` AND the effort produced one (low effort emits
+      // none — verified probe exp/synthetic-reasoning-summary-shape). Forward each delta on the proxy
+      // CC-intermediate `delta.reasoning`; the downstream Anthropic renderer opens a synthetic thinking
+      // block. Absence is graceful (no reasoning chunk → no thinking block).
+      case "response.reasoning_summary_text.delta": {
+        return event.delta ? [buildReasoningChunk(state, { reasoning: event.delta })] : []
+      }
+
       case "response.function_call_arguments.delta": {
         const toolCallIndex = state.toolCallIndexMap.get(event.output_index)
         if (toolCallIndex === undefined) return []
@@ -98,7 +113,12 @@ export function createStreamTranslator(opts: { includeUsage: boolean }): {
       case "response.completed": {
         syncStateFromResponse(state, event.response)
         const chunks = [buildChunk(state, {}, state.nextToolCallIndex > 0 ? "tool_calls" : "stop")]
-        if (state.includeUsage && event.response.usage) {
+        // Always emit the usage chunk when the upstream carries usage — consistent
+        // with the direct-CC path (which unconditionally forwards GHC's usage chunk)
+        // and required so history/telemetry capture usage even when the client did
+        // not set stream_options.include_usage. Previously gated on `includeUsage`,
+        // which silently zeroed usage for CC→Responses streaming. See spec.
+        if (event.response.usage) {
           chunks.push(buildUsageChunk(state, event.response))
         }
         return chunks
@@ -181,6 +201,19 @@ function buildChunk(state: StreamTranslatorState, delta: StreamingDelta, finishR
   }
 }
 
+/**
+ * Build a CC chunk carrying the proxy reasoning-passthrough extension fields (`delta.reasoning` /
+ * `delta.reasoning_encrypted_content`). These are GHC/proxy extensions absent from the SDK `Delta` type,
+ * so the object is cast — mirrors how the accumulator + the Anthropic renderer read them via cast.
+ */
+function buildReasoningChunk(state: StreamTranslatorState, fields: { reasoning?: string; encrypted?: string }): ChatCompletionChunk {
+  const delta = {
+    ...(fields.reasoning !== undefined && { reasoning: fields.reasoning }),
+    ...(fields.encrypted !== undefined && { reasoning_encrypted_content: fields.encrypted }),
+  } as StreamingDelta
+  return buildChunk(state, delta)
+}
+
 function buildUsageChunk(state: StreamTranslatorState, response: ResponsesResponse): ChatCompletionChunk {
   const usage = response.usage
   return {
@@ -194,8 +227,12 @@ function buildUsageChunk(state: StreamTranslatorState, response: ResponsesRespon
         prompt_tokens: usage.input_tokens,
         completion_tokens: usage.output_tokens,
         total_tokens: usage.total_tokens,
-        ...(usage.input_tokens_details?.cached_tokens !== undefined && {
-          prompt_tokens_details: { cached_tokens: usage.input_tokens_details.cached_tokens },
+        ...((usage.input_tokens_details?.cached_tokens !== undefined || usage.input_tokens_details?.cache_write_tokens != null) && {
+          prompt_tokens_details: {
+            ...(usage.input_tokens_details?.cached_tokens !== undefined && { cached_tokens: usage.input_tokens_details.cached_tokens }),
+            // GHC extension: forward cache_write so the client sees it (spec §7).
+            ...(usage.input_tokens_details?.cache_write_tokens != null && { cache_write_tokens: usage.input_tokens_details.cache_write_tokens }),
+          },
         }),
         ...(usage.output_tokens_details?.reasoning_tokens !== undefined && {
           completion_tokens_details: { reasoning_tokens: usage.output_tokens_details.reasoning_tokens },

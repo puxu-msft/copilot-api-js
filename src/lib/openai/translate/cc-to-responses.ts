@@ -71,12 +71,23 @@ export function translateChatCompletionsToResponses(payload: ChatCompletionsPayl
     ...(payload.top_logprobs !== undefined && payload.top_logprobs !== null && { top_logprobs: payload.top_logprobs }),
     ...(payload.tools && { tools: translateTools(payload.tools) }),
     ...(payload.tool_choice && { tool_choice: translateToolChoice(payload.tool_choice) }),
+    // Reasoning config: forward the CC `reasoning_effort` (previously DROPPED on this hop — the F-1
+    // gap) into the Responses `reasoning.effort`, AND request a displayable reasoning `summary` so the
+    // model's reasoning can be forwarded to the client (GHC returns ONLY encrypted_content unless a
+    // summary is requested — verified probe exp/synthetic-reasoning-upstream-shape). Gated on
+    // reasoning_effort presence (the Anthropic `thinking`→effort signal), so non-reasoning requests
+    // stay clean.
+    ...(payload.reasoning_effort && { reasoning: { effort: payload.reasoning_effort, summary: "auto" } }),
     ...(payload.response_format && {
       text: {
         format: translateResponseFormat(payload.response_format),
       },
     }),
-    ...(payload.stream_options?.include_usage && { include: ["usage"] }),
+    // NOTE: we no longer translate `stream_options.include_usage` into a Responses
+    // `include: ["usage"]`. GHC's usage upgrade made `"usage"` an INVALID `include`
+    // value (the Responses API now 400s: "Invalid value: 'usage'"), and it emits
+    // `response.completed.usage` by DEFAULT — so the include is both rejected and
+    // unnecessary. See docs/spec/2026-07-12-cc-responses-streaming-usage.md.
   }
 
   return {

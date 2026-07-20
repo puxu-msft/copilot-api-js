@@ -51,6 +51,54 @@ describe("DetailTocTree", () => {
     expect(screen.queryByText("text: hello")).toBeNull()
   })
 
+  it("defaultExpanded reveals block children on first render", () => {
+    render(
+      <DetailTocTree
+        nodes={tree}
+        onSelect={() => {}}
+        defaultExpanded
+      />,
+    )
+
+    // All children visible up front, no manual expansion.
+    expect(screen.getByText("tool_use: Edit")).toBeDefined()
+    expect(screen.getByText("text: hello")).toBeDefined()
+    expect(screen.getByText("text: hi")).toBeDefined()
+  })
+
+  it("showExpandAllToggle offers a header button toggling all parents at once", () => {
+    render(
+      <DetailTocTree
+        nodes={tree}
+        onSelect={() => {}}
+        defaultExpanded
+        showExpandAllToggle
+      />,
+    )
+
+    // Expanded initially → children visible, button offers collapse-all.
+    expect(screen.getByText("text: hello")).toBeDefined()
+    fireEvent.click(screen.getByText(/全部收起/))
+    // All collapsed → children gone, button flips to expand-all.
+    expect(screen.queryByText("text: hello")).toBeNull()
+    expect(screen.queryByText("tool_use: Edit")).toBeNull()
+    // Expand-all restores every child in one click.
+    fireEvent.click(screen.getByText(/全部展开/))
+    expect(screen.getByText("text: hello")).toBeDefined()
+    expect(screen.getByText("tool_use: Edit")).toBeDefined()
+  })
+
+  it("has no expand-all button by default (Stages/System keep the plain tree)", () => {
+    render(
+      <DetailTocTree
+        nodes={tree}
+        onSelect={() => {}}
+      />,
+    )
+    expect(screen.queryByText(/全部展开/)).toBeNull()
+    expect(screen.queryByText(/全部收起/)).toBeNull()
+  })
+
   it("clicking a node's label calls onSelect with its anchorId", () => {
     const onSelect = vi.fn()
     render(
@@ -120,10 +168,10 @@ describe("DetailTocTree", () => {
     const inactiveRow = screen.getByText("user: hello").closest("div")
 
     // Active row: left accent bar + amber text; inactive row has neither.
-    expect(activeRow?.className).toContain("text-[var(--color-primary)]")
-    expect(activeRow?.className).toContain("border-l-[var(--color-primary)]")
-    expect(inactiveRow?.className).not.toContain("text-[var(--color-primary)]")
-    expect(inactiveRow?.className).not.toContain("border-l-[var(--color-primary)]")
+    expect(activeRow?.className).toContain("text-[var(--content-accent)]")
+    expect(activeRow?.className).toContain("border-l-[var(--content-accent)]")
+    expect(inactiveRow?.className).not.toContain("text-[var(--content-accent)]")
+    expect(inactiveRow?.className).not.toContain("border-l-[var(--content-accent)]")
   })
 
   it("numbers rows hierarchically (top-level 1/2, children 1.1, 1.2)", () => {
@@ -153,13 +201,13 @@ describe("DetailTocTree", () => {
     )
 
     // The kind color now tints the label button itself (no separate dot).
-    // user role → amber primary; assistant role → soft blue (#9ad) — mirrors
-    // MessageBlock's ROLE_COLOR so the two views stay consistent.
+    // user role → accent (--content-accent); assistant role → --content-role-assistant
+    // — mirrors MessageBlock's ROLE_COLOR so the two views stay consistent.
     const userLabel = screen.getByText("user: hello")
     const assistantLabel = screen.getByText("assistant: hi")
 
-    expect(userLabel.style.color).toBe("var(--color-primary)")
-    expect(assistantLabel.style.color).toBe("rgb(153, 170, 221)")
+    expect(userLabel.style.color).toBe("var(--content-accent)")
+    expect(assistantLabel.style.color).toBe("var(--content-role-assistant)")
 
     // Truncated rows reveal their full text on hover via `title`.
     expect(userLabel.getAttribute("title")).toBe("user: hello")

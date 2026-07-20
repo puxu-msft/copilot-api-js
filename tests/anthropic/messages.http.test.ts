@@ -9,7 +9,7 @@ import {
 
 import {
   //
-  setModelOverrides,
+  setModelMappings,
   setModels,
   setStateForTests,
 } from "~/lib/state"
@@ -178,26 +178,29 @@ describe("POST /v1/messages", () => {
       copilotToken: "test-token",
       accountType: "individual",
       vsCodeVersion: "1.100.0",
-      fetchTimeout: 0,
+      responseHeaderTimeout: 0,
     })
     applyFetchMock(upstreamFetchMock)
     setModels({
       object: "list",
       data: [
-        mockModel("gpt-4o", {
+        // OpenAI vendor advertising ONLY /v1/messages — no translatable /responses or
+        // /chat/completions leg, so the no-suffix anthropic route still rejects 400
+        // (a non-Anthropic model with cc/responses would now forward-translate instead).
+        mockModel("msg-only-openai", {
           vendor: "OpenAI",
-          supported_endpoints: ["/chat/completions", "/responses"],
+          supported_endpoints: ["/v1/messages"],
         }),
       ],
     })
   })
 
-  test("returns 400 when the selected model does not support /v1/messages", async () => {
+  test("returns 400 when the selected model has no direct-messages nor translatable leg", async () => {
     const res = await app.request("/v1/messages", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        model: "gpt-4o",
+        model: "msg-only-openai",
         messages: [{ role: "user", content: "Hello" }],
         max_tokens: 32,
       }),
@@ -208,7 +211,7 @@ describe("POST /v1/messages", () => {
     expect(res.status).toBe(400)
     expect(body).toEqual({
       error: {
-        message: 'Model "gpt-4o" does not support /v1/messages: vendor is "OpenAI", not Anthropic',
+        message: 'Model "msg-only-openai" cannot be served on /v1/messages (vendor is "OpenAI", not Anthropic) and supports no translatable /responses or /chat/completions leg',
         type: "error",
       },
     })
@@ -225,8 +228,8 @@ describe("POST /v1/messages", () => {
         }),
       ],
     })
-    // Short alias "opus" resolves only via model_overrides now.
-    setModelOverrides({ opus: "claude-opus-4.6" })
+    // Short alias "opus" resolves only via model_mappings now.
+    setModelMappings({ opus: "claude-opus-4.6" })
 
     const res = await app.request("/v1/messages", {
       method: "POST",

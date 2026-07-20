@@ -134,6 +134,7 @@ const inflightRows = computed<Array<EntrySummary>>(() => {
           currentStrategy: req.currentStrategy,
           queueWaitMs: req.queueWaitMs,
           previewText: "",
+          responsePreviewText: "",
         }) satisfies EntrySummary,
     )
 })

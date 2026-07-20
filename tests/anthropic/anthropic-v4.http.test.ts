@@ -27,7 +27,10 @@ import {
 } from "bun:test"
 import { Hono } from "hono"
 
+import type { RequestContext } from "~/lib/context/request"
+
 import { resetAnthropicFeatureNegotiationForTesting } from "~/lib/anthropic/feature-negotiation"
+import { getRequestContextManager } from "~/lib/context/manager"
 import { forwardError } from "~/lib/error"
 import {
   //
@@ -37,7 +40,7 @@ import {
 import { observabilityMiddleware } from "~/lib/observability/middleware"
 import {
   //
-  setModelOverrides,
+  setModelMappings,
   setModels,
   setStateForTests,
 } from "~/lib/state"
@@ -55,11 +58,11 @@ import {
   createSseResponseThenAbort,
 } from "../helpers/sse"
 
-type Scenario = "ok" | "thinking" | "errorFrame" | "midStreamThrow" | "deferredTool"
+type Scenario = "ok" | "thinking" | "errorFrame" | "errorFrameThinking" | "midStreamThrow" | "deferredTool"
 
 let messagesHits = 0
 let capturedWire: { model?: string; stream?: boolean; messages?: Array<unknown>; tools?: Array<{ name?: string }> } | undefined
-let throwOnce = false
+let throwOnceError: Error | null = null
 let scenario: Scenario = "ok"
 
 // ── upstream response factories ─────────────────────────────────────────────
@@ -116,6 +119,16 @@ function errorFrameStreamFrames(model: string): Array<string> {
   ]
 }
 
+/** H2 variant: emits a CORRUPT double-empty thinking block (thinking:"" + no signature) then a terminal error frame — exercises C1 partial-content preservation of the exact sample the thinking-block metrics targets. */
+function errorFrameThinkingFrames(model: string): Array<string> {
+  return [
+    `event: message_start\ndata: ${JSON.stringify({ type: "message_start", message: { id: "msg-err-think", type: "message", role: "assistant", model, content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 7, output_tokens: 0 } } })}\n\n`,
+    `event: content_block_start\ndata: ${JSON.stringify({ type: "content_block_start", index: 0, content_block: { type: "thinking", thinking: "" } })}\n\n`,
+    `event: content_block_stop\ndata: ${JSON.stringify({ type: "content_block_stop", index: 0 })}\n\n`,
+    `event: error\ndata: ${JSON.stringify({ type: "error", error: { type: "overloaded_error", message: "upstream overloaded" } })}\n\n`,
+  ]
+}
+
 /** A stream that enqueues a few frames then ERRORS the ReadableStream mid-flight (H3 — the for-await throws → pump's catch synthesizes an error frame). */
 function midStreamThrowResponse(model: string): Response {
   const frames = okStreamFrames(model).slice(0, 3) // message_start + content_block_start + first text delta
@@ -154,9 +167,10 @@ const upstreamFetchMock = mock((input: string | URL | Request, init?: RequestIni
   if (url.endsWith("/v1/messages")) {
     messagesHits += 1
     capturedWire = payload
-    if (throwOnce) {
-      throwOnce = false
-      throw new Error("ECONNRESET: upstream socket reset")
+    if (throwOnceError) {
+      const err = throwOnceError
+      throwOnceError = null
+      throw err
     }
     // deferred-tool: the FIRST hit of a run 400s with a tool-reference error;
     // the strategy undefers the tool and retries → the second hit succeeds.
@@ -169,6 +183,7 @@ const upstreamFetchMock = mock((input: string | URL | Request, init?: RequestIni
       const frames =
         scenario === "thinking" ? thinkingStreamFrames(model)
         : scenario === "errorFrame" ? errorFrameStreamFrames(model)
+        : scenario === "errorFrameThinking" ? errorFrameThinkingFrames(model)
         : okStreamFrames(model)
       return Promise.resolve(createSseResponse(frames))
     }
@@ -197,10 +212,13 @@ function injectModels(): void {
     data: [
       mockModel("claude-sonnet-4.6", { vendor: "Anthropic", supported_endpoints: ["/v1/messages"] }),
       mockModel("claude-opus-4.6", { vendor: "Anthropic", supported_endpoints: ["/v1/messages"] }),
-      mockModel("gpt-4o", { vendor: "OpenAI", supported_endpoints: ["/chat/completions"] }),
+      // OpenAI vendor advertising ONLY /v1/messages: no direct-anthropic gate (wrong vendor)
+      // AND no translatable /responses or /chat/completions leg → the no-suffix anthropic route
+      // still rejects 400 (a cc/responses-capable non-Anthropic model now forward-translates).
+      mockModel("msg-only-openai", { vendor: "OpenAI", supported_endpoints: ["/v1/messages"] }),
     ],
   })
-  setModelOverrides({ opus: "claude-opus-4.6" })
+  setModelMappings({ opus: "claude-opus-4.6" })
 }
 
 async function post(body: unknown, target: Hono = app): Promise<Response> {
@@ -214,10 +232,10 @@ describe("Anthropic v4 driver path", () => {
   beforeEach(() => {
     messagesHits = 0
     capturedWire = undefined
-    throwOnce = false
+    throwOnceError = null
     scenario = "ok"
     upstreamFetchMock.mockClear()
-    setStateForTests({ copilotToken: "tok", accountType: "individual", vsCodeVersion: "1.100.0", fetchTimeout: 0 })
+    setStateForTests({ copilotToken: "tok", accountType: "individual", vsCodeVersion: "1.100.0", responseHeaderTimeout: 0 })
     applyFetchMock(upstreamFetchMock)
   })
 
@@ -231,11 +249,22 @@ describe("Anthropic v4 driver path", () => {
   test("direct non-streaming: client json mirrors upstream + wire carries the request", async () => {
     const body = { model: "claude-sonnet-4.6", messages: [{ role: "user", content: "Hello" }], max_tokens: 64, stream: false }
 
+    let capturedCtx: RequestContext | undefined
+    const manager = getRequestContextManager()
+    const originalCreate = manager.create.bind(manager)
+    manager.create = (opts) => (capturedCtx = originalCreate(opts))
+
     const v4 = (await (await post(body)).json()) as Record<string, unknown>
 
     // Anthropic is bypass-direct (renderResponseNonStreaming = identity): the
     // client JSON is the upstream body verbatim.
     expect(v4).toEqual(JSON.parse(nonStreamingBody("claude-sonnet-4.6")) as Record<string, unknown>)
+    const operation = capturedCtx?.modelOperationTerminalRecord
+    const clientPayload = operation?.egress?.client.payload
+    const upstreamPayload = operation?.egress?.upstream.payload
+    expect(operation?.arena.payloads.find((node) => node.handle === clientPayload)?.value).toEqual(v4)
+    expect(operation?.arena.payloads.find((node) => node.handle === upstreamPayload)?.value).toEqual(v4)
+    expect(operation?.terminal?.outcome).toBe("completed")
     expect(capturedWire?.model).toBe("claude-sonnet-4.6")
     // Default mode is passthrough — no proxy cache_control injection; the request (which
     // carries none) reaches the wire verbatim.
@@ -280,7 +309,22 @@ describe("Anthropic v4 driver path", () => {
   test("network-retry: a transient upstream error retries once then succeeds (2 hits)", async () => {
     const body = { model: "claude-sonnet-4.6", messages: [{ role: "user", content: "Hello" }], max_tokens: 64, stream: false }
 
-    throwOnce = true
+    throwOnceError = new Error("ECONNRESET: upstream socket reset")
+    messagesHits = 0
+    const v4 = (await (await post(body)).json()) as Record<string, unknown>
+    expect(messagesHits).toBe(2)
+    expect(v4).toEqual(JSON.parse(nonStreamingBody("claude-sonnet-4.6")) as Record<string, unknown>)
+  })
+
+  // An upstream h2 REFUSED_STREAM (peer refused the stream pre-processing — GHC edge
+  // GOAWAY drain / MAX_CONCURRENT_STREAMS) is protocol-safe to retry (RFC 9113 §8.7).
+  // The message string is the EXACT wire form a Bun/Node h2 client surfaces
+  // (exp/http2-refused-retry/report.md); this locks the full chain
+  // classify → network-retry → fresh re-dispatch → success.
+  test("h2 REFUSED_STREAM retries once then succeeds (2 hits)", async () => {
+    const body = { model: "claude-sonnet-4.6", messages: [{ role: "user", content: "Hello" }], max_tokens: 64, stream: false }
+
+    throwOnceError = new Error("Stream closed with error code NGHTTP2_REFUSED_STREAM")
     messagesHits = 0
     const v4 = (await (await post(body)).json()) as Record<string, unknown>
     expect(messagesHits).toBe(2)
@@ -304,17 +348,17 @@ describe("Anthropic v4 driver path", () => {
     const v4 = getHistory({ endpoint: "anthropic-messages" }).entries[0]
 
     // Both tracks tagged anthropic-messages (bypass-direct = no format change).
-    expect(v4?.effectiveRequest?.format).toBe("anthropic-messages")
-    expect(v4?.effectiveRequest?.model).toBe("claude-sonnet-4.6")
-    expect(v4?.outboundRequest?.format).toBe("anthropic-messages")
-    expect(v4?.outboundRequest?.messageCount).toBe(1)
+    expect(v4?.attempts?.at(-1)?.effectiveSource?.format).toBe("anthropic-messages")
+    expect(v4?.attempts?.at(-1)?.effectiveSource?.model).toBe("claude-sonnet-4.6")
+    expect(v4?.attempts?.at(-1)?.upstreamRequest?.format).toBe("anthropic-messages")
+    expect(v4?.attempts?.at(-1)?.upstreamRequest?.messages?.length).toBe(1)
     expect(typeof v4?.queueWaitMs).toBe("number")
     // Byte-fidelity of the effective/outbound bodies (richest-data-flow). Golden = the
     // request body verbatim: passthrough (default) forwards client cache_control as-is, and
     // this request carries none, so prepare leaves the payload shape untouched.
     const goldenBody = { model: "claude-sonnet-4.6", messages: [{ role: "user", content: "Hello" }], max_tokens: 64, stream: false }
-    expect(v4?.effectiveRequest?.payload).toEqual(goldenBody)
-    expect(v4?.outboundRequest?.payload).toEqual(goldenBody)
+    expect(v4?.attempts?.at(-1)?.effectiveSource?.body).toEqual(goldenBody)
+    expect(v4?.attempts?.at(-1)?.upstreamRequest?.body).toEqual(goldenBody)
   })
 
   test("history records raw sseEvents (upstream) + forwarded sseEvents (inboundResponse) on the v4 streaming path", async () => {
@@ -328,14 +372,14 @@ describe("Anthropic v4 driver path", () => {
     const entry = getHistory({ endpoint: "anthropic-messages" }).entries[0]
 
     expect(entry?.state).toBe("completed")
-    expect(Array.isArray(entry?.sseEvents)).toBe(true)
-    expect(entry?.sseEvents?.length ?? 0).toBeGreaterThan(0)
-    expect(Array.isArray(entry?.inboundResponse?.sseEvents)).toBe(true)
-    expect(entry?.inboundResponse?.sseEvents?.length ?? 0).toBeGreaterThan(0)
+    expect(Array.isArray(entry?.attempts?.at(-1)?.upstreamResponse?.sseEvents)).toBe(true)
+    expect(entry?.attempts?.at(-1)?.upstreamResponse?.sseEvents?.length ?? 0).toBeGreaterThan(0)
+    expect(Array.isArray(entry?.clientResponse?.sseEvents)).toBe(true)
+    expect(entry?.clientResponse?.sseEvents?.length ?? 0).toBeGreaterThan(0)
   })
 
-  test("reject (non-Anthropic vendor) → 400, no upstream hit", async () => {
-    const body = { model: "gpt-4o", messages: [{ role: "user", content: "Hello" }], max_tokens: 32, stream: false }
+  test("reject (non-Anthropic vendor, no translatable leg) → 400, no upstream hit", async () => {
+    const body = { model: "msg-only-openai", messages: [{ role: "user", content: "Hello" }], max_tokens: 32, stream: false }
 
     messagesHits = 0
     expect((await post(body)).status).toBe(400)
@@ -343,7 +387,7 @@ describe("Anthropic v4 driver path", () => {
   })
 
   test("reject → history finalized as failed (production-faithful app with observabilityMiddleware)", async () => {
-    const body = { model: "gpt-4o", messages: [{ role: "user", content: "Hello" }], max_tokens: 32, stream: false }
+    const body = { model: "msg-only-openai", messages: [{ role: "user", content: "Hello" }], max_tokens: 32, stream: false }
 
     // The v4 codec.parse creates the ctx unconditionally, then decideRoute rejects
     // — under the middleware, that c.set ctx is finalized from the 400 status to
@@ -422,23 +466,55 @@ describe("Anthropic v4 driver path", () => {
   // a thrown mid-stream error) is written to the WIRE but NOT sampled. The owns-sink
   // flip (B4) auto-samples in `ClientSink.write`, so it MUST route the H3 synth error
   // through a non-sampling path or H3 newly appears in the forwarded track (silent diff).
-  test("Stage B B0: H2 error frame IS in forwarded track, H3 synth error is NOT", async () => {
+  test("Stage B B0: H2 error frame AND H3 synth error are BOTH in the forwarded track", async () => {
     const body = { model: "claude-sonnet-4.6", messages: [{ role: "user", content: "Hi" }], max_tokens: 64, stream: true }
 
     scenario = "errorFrame"
     clearHistory()
     await (await post(body, observableApp)).text()
-    const h2Forwarded = getHistory({ endpoint: "anthropic-messages" }).entries[0]?.inboundResponse?.sseEvents ?? []
+    const h2Forwarded = getHistory({ endpoint: "anthropic-messages" }).entries[0]?.clientResponse?.sseEvents ?? []
     // H2: the upstream error frame IS in the forwarded (client-actual) track.
     expect(h2Forwarded.some((e) => e.raw.includes("overloaded_error"))).toBe(true)
 
     scenario = "midStreamThrow"
     clearHistory()
     const h3Text = await (await post(body, observableApp)).text()
-    const h3Forwarded = getHistory({ endpoint: "anthropic-messages" }).entries[0]?.inboundResponse?.sseEvents ?? []
-    // H3: the synthesized error reaches the WIRE but is NOT in the forwarded track.
+    const h3Forwarded = getHistory({ endpoint: "anthropic-messages" }).entries[0]?.clientResponse?.sseEvents ?? []
+    // H3: the synthesized error reaches the WIRE and is ALSO recorded in the forwarded track — the
+    // client receives it, so `inboundResponse.sseEvents` must include it (richest-data-flow). Asserted
+    // against the PERSISTED history entry, the oracle that exposes the writeSynthetic→recordForwarded→
+    // fail ordering (a post-fail snapshot would miss it).
     expect(h3Text).toContain('"type":"error"')
-    expect(h3Forwarded.some((e) => e.raw.includes('"type":"error"'))).toBe(false)
+    expect(h3Forwarded.some((e) => e.raw.includes('"type":"error"'))).toBe(true)
+  })
+
+  // C1 (spec §4.0): the H2/H3 fail path MUST preserve the accumulated partial content on
+  // `outboundResponse.content` (mirroring the truncation/refusal branches) rather than drop it
+  // to null — otherwise content emitted before the abort (esp. corrupt double-empty thinking
+  // blocks, the thinking-block-metrics target) is lost. Asserted against the persisted entry.
+  test("C1 H2: terminal error preserves the accumulated (corrupt double-empty) thinking block on outboundResponse.content", async () => {
+    scenario = "errorFrameThinking"
+    const body = { model: "claude-sonnet-4.6", messages: [{ role: "user", content: "Hi" }], max_tokens: 64, stream: true }
+    clearHistory()
+    await (await post(body, observableApp)).text()
+    const entry = getHistory({ endpoint: "anthropic-messages" }).entries[0]
+    expect(entry?.state).toBe("failed")
+    const content = entry?.attempts?.at(-1)?.upstreamResponse?.body as { content?: Array<Record<string, unknown>> } | null
+    // The double-empty thinking block (thinking:"" + no signature) survives into the recorded
+    // upstream leg (not null) — the exact sample the metrics counts as emptyUnsigned.
+    expect(content?.content?.[0]).toEqual({ type: "thinking", thinking: "" })
+  })
+
+  test("C1 H3: mid-stream throw preserves the accumulated partial content on outboundResponse.content", async () => {
+    scenario = "midStreamThrow"
+    const body = { model: "claude-sonnet-4.6", messages: [{ role: "user", content: "Hi" }], max_tokens: 64, stream: true }
+    clearHistory()
+    await (await post(body, observableApp)).text()
+    const entry = getHistory({ endpoint: "anthropic-messages" }).entries[0]
+    expect(entry?.state).toBe("failed")
+    const content = entry?.attempts?.at(-1)?.upstreamResponse?.body as { content?: Array<Record<string, unknown>> } | null
+    // The partial text forwarded before the throw is preserved (not null).
+    expect(content?.content?.[0]).toEqual({ type: "text", text: "Hello from mocked stream" })
   })
 
   test("deferred-tool retry: a tool-reference 400 undefers the tool + retries (2 hits, undeferred on the wire)", async () => {

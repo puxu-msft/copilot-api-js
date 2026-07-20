@@ -12,13 +12,23 @@ import {
 } from "@hono/zod-openapi"
 
 import { getAdaptiveRateLimiter } from "~/lib/adaptive-rate-limiter"
-import { getProtectStreamingStats } from "~/lib/anthropic/protect-streaming-stats"
+import {
+  //
+  getProtectStreamingStats,
+  protectStreamingHitRate,
+} from "~/lib/anthropic/protect-streaming-stats"
 import { getToolInputRepairStats } from "~/lib/anthropic/tool-input-repair-stats"
 import { getRequestContextManager } from "~/lib/context/manager"
-import { queryEntryCount } from "~/lib/history/sqlite/read"
+import { getHistorySummaries } from "~/lib/history/queries"
+import { getRawCaptureStatus } from "~/lib/history/raw/manager"
+import { getTantivySearchStatus } from "~/lib/history/search-tantivy"
 import { listInFlightEntries } from "~/lib/history/store"
 import { peekUpstreamWsManager } from "~/lib/openai/upstream-ws"
-import { getRequestTelemetrySnapshot } from "~/lib/request-telemetry"
+import {
+  //
+  getRequestTelemetrySnapshot,
+  getThinkingBlockTotals,
+} from "~/lib/request-telemetry"
 import {
   //
   getIsShuttingDown,
@@ -34,6 +44,7 @@ import {
   getCopilotUsage,
   type QuotaDetail,
 } from "~/lib/token/copilot-client"
+import { getTransportStatusSnapshot } from "~/lib/transport/status-snapshot"
 
 import packageJson from "../../../package.json"
 
@@ -42,8 +53,9 @@ export const statusRoutes = new OpenAPIHono()
 /**
  * Aggregated server status. Top-level keys are documented; the nested objects
  * (auth / quota / rateLimiter / requestTelemetry / memory / upstream_ws /
- * protect_streaming) carry runtime-dynamic, evolving shapes and are described as
- * open objects to avoid schema drift — see the handler / DESIGN.md for fields.
+ * transport / protect_streaming) carry runtime-dynamic, evolving shapes and
+ * are described as open objects to avoid schema drift — see the handler /
+ * DESIGN.md for fields.
  */
 const ServerStatusSchema = z
   .object({
@@ -60,8 +72,13 @@ const ServerStatusSchema = z
     shutdown: z.object({ phase: z.unknown() }),
     models: z.object({ totalCount: z.number().int(), availableCount: z.number().int() }),
     upstream_ws: z.record(z.string(), z.unknown()),
+    transport: z.record(z.string(), z.unknown()),
+    responses: z.record(z.string(), z.unknown()),
     protect_streaming: z.record(z.string(), z.unknown()),
     tool_input_repair: z.record(z.string(), z.unknown()),
+    thinking_blocks: z.record(z.string(), z.unknown()),
+    history_raw_capture: z.record(z.string(), z.unknown()),
+    history_search: z.record(z.string(), z.unknown()),
   })
   .openapi("ServerStatus")
 
@@ -106,7 +123,7 @@ statusRoutes.openapi(getStatusRoute, async (c) => {
 
   let historyEntryCount = 0
   try {
-    historyEntryCount = queryEntryCount()
+    historyEntryCount = getHistorySummaries({ operationKind: "all", limit: 1 }).total
   } catch {
     // DB not opened yet
   }
@@ -192,11 +209,12 @@ statusRoutes.openapi(getStatusRoute, async (c) => {
 
       requestTelemetry,
 
+      history_raw_capture: getRawCaptureStatus(),
+      history_search: getTantivySearchStatus(),
+
       memory: {
         historyBackend: "sqlite",
         historyEntryCount,
-        historySuccessLimit: state.historySuccessLimit,
-        historyFailureLimit: state.historyFailureLimit,
         inFlightCount,
       },
 
@@ -209,30 +227,64 @@ statusRoutes.openapi(getStatusRoute, async (c) => {
         availableCount: state.modelIds.size,
       },
 
-      upstream_ws: {
-        enabled: state.upstreamWebSocket,
-        active_connections: upstreamWs?.activeCount ?? 0,
-        consecutive_fallbacks: upstreamWs?.consecutiveFallbacks ?? 0,
-        temporarily_disabled: upstreamWs?.temporarilyDisabled ?? false,
-        // Absolute deadline (epoch ms) for half-open recovery; 0 when not disabled.
-        // Operators can derive "recovers in N seconds" client-side instead of us
-        // hardcoding the recovery window in the response shape.
-        disabled_until_ms: upstreamWs?.disabledUntilMs ?? 0,
+      upstream_ws: (() => {
+        // Per-model circuit breaker: expose the full per-model rows (only models
+        // with a live entry appear) + a top-level aggregate rollup so existing
+        // summary consumers keep a scalar view (any-disabled / max-fallbacks /
+        // latest-recovery) without needing per-model logic. richest-data-flow.
+        const perModel = upstreamWs?.breakerSnapshot() ?? []
+        return {
+          enabled: state.upstreamWebSocket,
+          active_connections: upstreamWs?.activeCount ?? 0,
+          per_model: perModel,
+          // Aggregate rollup across all per-model breaker rows.
+          consecutive_fallbacks: perModel.reduce((max, r) => Math.max(max, r.consecutiveFallbacks), 0),
+          temporarily_disabled: perModel.some((r) => r.temporarilyDisabled),
+          // Latest half-open recovery deadline (epoch ms) across models; 0 when none disabled.
+          // Operators derive "recovers in N seconds" client-side.
+          disabled_until_ms: perModel.reduce((latest, r) => Math.max(latest, r.disabledUntilMs), 0),
+        }
+      })(),
+
+      // Responses (SSE/HTTP) path toggles. `buffered_retry` (opt-in `responsesBufferedRetry`)
+      // routes the pump through the driver's `runResponseBufferedSink` for mid-stream upstream-drop
+      // retry (default OFF — Codex mid-stream auto-retry is opt-in). Its hit-rate counters share the
+      // `protect_streaming` block below (the same driver primitive drives both endpoints).
+      responses: {
+        buffered_retry: state.responsesBufferedRetry,
       },
 
-      // L2 buffered-retry hit-rate counters (RFC §10): since-restart aggregate.
-      // hit rate ≈ success / (success + exhausted) when retries occurred.
+      // L2 buffered-retry hit-rate counters (RFC §10): since-restart aggregate, keyed PER VENDOR
+      // (anthropic / responses / chat_completions / responses_ws — the same driver primitive drives
+      // every endpoint). Each vendor bucket carries the raw counters plus a derived `hit_rate`
+      // (success / (success + exhausted + partialDegrade); null when no scoreable engagements yet).
       protect_streaming: {
         enabled: state.protectStreamingGeneration,
-        ...getProtectStreamingStats(),
+        by_vendor: Object.fromEntries(
+          Object.entries(getProtectStreamingStats()).map(([vendor, s]) => [vendor, { ...s, hit_rate: protectStreamingHitRate(s) }]),
+        ),
       },
 
       // Malformed tool-input repair outcome counters (P6): since-restart aggregate
-      // (strip = Layer 1 fixes, jsonrepair = Layer 2 fixes, unrepairable = both failed).
+      // (strip = tags-item fixes, jsonrepair = jsonrepair-item fixes, unrepairable = no item fixed).
+      // `enabled` is the active repair-item set (empty = off).
       tool_input_repair: {
-        enabled: state.toolRepairMalformedInput,
+        enabled: [...state.toolRepairMalformedInput],
         ...getToolInputRepairStats(),
       },
+
+      // Thinking-block emptiness totals since restart — a PROJECTION of the telemetry
+      // measures (summed across the agentKind dimension), NOT a separate counter like
+      // protect_streaming / tool_input_repair. { nonEmpty, emptySigned, emptyUnsigned }.
+      thinking_blocks: getThinkingBlockTotals(),
+
+      // Upstream transport diagnostics (D7 HIGH-7): configured effective values
+      // (normalized 0/undefined → null), h2 session pool + hot-reload reconcile
+      // status, upstream WS connection pool, and runtime capability flags. See
+      // src/lib/transport/status-snapshot.ts for the full shape — deliberately
+      // NOT collapsed to a single generation scalar (spec explicitly forbids
+      // that as a "form-only" implementation).
+      transport: getTransportStatusSnapshot(),
     },
     200,
   )

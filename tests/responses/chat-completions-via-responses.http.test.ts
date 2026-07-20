@@ -231,8 +231,8 @@ describe("POST /chat/completions via /responses translation", () => {
     })
 
     const historyEntry = getHistory({ endpoint: "openai-chat-completions" }).entries[0]
-    expect(historyEntry?.outboundRequest?.format).toBe("openai-responses")
-    expect(historyEntry?.outboundRequest?.messageCount).toBe(1)
+    expect(historyEntry?.attempts?.at(-1)?.upstreamRequest?.format).toBe("openai-responses")
+    expect(historyEntry?.attempts?.at(-1)?.upstreamRequest?.messages?.length).toBe(1)
     expect(historyEntry?.warningMessages).toEqual([
       {
         code: "cc_to_responses_dropped_params",
@@ -333,8 +333,8 @@ describe("POST /chat/completions via /responses translation", () => {
     expect(body).toContain('"choices":[]')
 
     const historyEntry = getHistory({ endpoint: "openai-chat-completions" }).entries[0]
-    expect(historyEntry?.outboundResponse?.success).toBe(true)
-    expect(historyEntry?.outboundResponse?.content).toMatchObject({
+    expect(historyEntry?.attempts?.at(-1)?.upstreamResponse?.success).toBe(true)
+    expect(historyEntry?.attempts?.at(-1)?.upstreamResponse?.body).toMatchObject({
       role: "assistant",
       content: "Hello via responses stream",
     })
@@ -395,7 +395,7 @@ describe("POST /chat/completions via /responses translation", () => {
     expect(body).toContain("Translated upstream failure")
 
     const historyEntry = getHistory({ endpoint: "openai-chat-completions" }).entries[0]
-    expect(historyEntry?.outboundResponse?.success).toBe(false)
-    expect(historyEntry?.outboundResponse?.error).toBe("Translated upstream failure")
+    expect(historyEntry?.attempts?.at(-1)?.upstreamResponse?.success).toBe(false)
+    expect(historyEntry?._index?.derived?.failureReason).toBe("Translated upstream failure")
   })
 })

@@ -6,7 +6,7 @@
  * - Applies tool_search / defer_loading based on model capabilities
  * - Ensures all custom tools have input_schema
  * - Injects stubs for tools referenced in message history
- * - Strips server-side tools (web_search, etc.) when configured
+ * - Strips API-defined typed tools reactively learned as upstream-unsupported
  *
  * Must be called BEFORE sanitize — processToolBlocks (in sanitize) uses
  * the tools array to validate tool_use references in messages.
@@ -25,8 +25,13 @@ import type {
 import { applyStickyUndeferredTools } from "~/lib/request/strategies/deferred-tool-retry"
 import { state } from "~/lib/state"
 
-import { getUnsupportedServerToolTypes } from "./feature-negotiation"
+import {
+  //
+  getUnsupportedServerToolTypes,
+  getUnsupportedToolFields,
+} from "./feature-negotiation"
 import { modelSupportsToolSearch } from "./features"
+import { collectAllMatching } from "./per-model-config"
 
 // ============================================================================
 // Constants
@@ -156,9 +161,14 @@ function processToolPipeline(tools: Array<Tool>, modelId: string, messages: Arra
   const existingNamesLower = new Set(tools.map((t) => t.name.toLowerCase()))
   const toolSearchEnabled = state.toolSearchEnabled && modelSupportsToolSearch(modelId, resolvedModel)
 
-  // Collect tool names already referenced in message history — these must
-  // stay non-deferred to avoid "Tool reference not found" errors
-  const historyToolNames = toolSearchEnabled ? collectHistoryToolNames(messages) : undefined
+  // Collect tool names already referenced in message history. Two independent
+  // consumers below:
+  //  - shouldDefer (tool_search only): these must stay non-deferred to avoid
+  //    "Tool reference not found" errors — gated by its own `toolSearchEnabled &&`.
+  //  - the history-stub safety net (Path 2 below): name-agnostic, applies regardless
+  //    of tool_search — an orphaned historical tool_use gets rejected by GHC whether
+  //    or not tool_search is on, so this must NOT be gated on toolSearchEnabled.
+  const historyToolNames = collectHistoryToolNames(messages)
 
   const nonDeferred: Array<Tool> = []
   const deferred: Array<Tool> = []
@@ -175,8 +185,8 @@ function processToolPipeline(tools: Array<Tool>, modelId: string, messages: Arra
 
   // Process existing tools: ensure input_schema, apply defer_loading
   for (const tool of tools) {
-    // Tools with a `type` field are API-defined (tool_search, memory, web_search) —
-    // schema is managed server-side, don't touch input_schema
+    // Tools with a `type` field are API-defined (tool_search, memory, etc.) —
+    // schema is predefined, don't touch input_schema
     const normalized = tool.type ? tool : ensureInputSchema(tool)
 
     // Respect explicit defer_loading: false from retry strategies (deferred-tool-retry
@@ -186,7 +196,7 @@ function processToolPipeline(tools: Array<Tool>, modelId: string, messages: Arra
       && tool.defer_loading !== false
       && !NON_DEFERRED_TOOL_NAMES.has(tool.name)
       && !state.nonDeferredTools.includes(tool.name)
-      && !historyToolNames?.has(tool.name)
+      && !historyToolNames.has(tool.name)
 
     if (shouldDefer) {
       deferred.push({ ...normalized, defer_loading: true })
@@ -225,7 +235,7 @@ function processToolPipeline(tools: Array<Tool>, modelId: string, messages: Arra
   // turns but not included in the current request. Without these stubs, the API
   // rejects the request because the historical tool_use references a tool that
   // doesn't exist in the tools list at all.
-  if (historyToolNames) {
+  if (historyToolNames.size > 0) {
     const allResultNames = new Set([...nonDeferred, ...deferred, ...result].map((t) => t.name))
     for (const name of historyToolNames) {
       if (!allResultNames.has(name)) {
@@ -279,7 +289,7 @@ export function preprocessTools(payload: MessagesPayload): MessagesPayload {
   let processed: MessagesPayload
   if (tools && tools.length > 0) {
     processed = { ...payload, tools: processToolPipeline(tools, model, messages, resolvedModel) }
-  } else if (modelSupportsToolSearch(model, resolvedModel)) {
+  } else if (state.toolSearchEnabled && modelSupportsToolSearch(model, resolvedModel)) {
     // No tools in request — but if tool search is enabled and history has tool_use
     // references, we need stubs to satisfy API validation
     const historyToolNames = collectHistoryToolNames(messages)
@@ -308,58 +318,70 @@ export function preprocessTools(payload: MessagesPayload): MessagesPayload {
 // ============================================================================
 
 /**
- * Server tool type prefixes recognized by the Anthropic API.
+ * API-defined typed-tool prefixes recognized by the Anthropic API.
  *
- * Server tools use a `type` field with a dated suffix (e.g., "web_search_20250305")
- * instead of `input_schema`. These are executed by Anthropic's servers, not by the client.
+ * These tools declare a `type` field with a dated suffix (e.g. "web_search_20250305")
+ * instead of `input_schema` — the schema is predefined by Anthropic. This is a
+ * distinct category from custom function tools (which carry `input_schema`).
+ *
+ * NOTE — being API-defined does NOT mean server-executed. Two sub-kinds share this
+ * prefix set: server-executed tools (web_search / web_fetch / code_execution, which
+ * emit `server_tool_use` and are run on Anthropic's servers) AND client-executed
+ * builtin tools (text_editor / computer / bash, which emit a plain `tool_use` +
+ * `caller:{type:"direct"}` and are run by the client — like `memory`). See ADR
+ * docs/decisions/2026-07-13-server-tool-positioning-and-web-search-retirement.md.
  *
  * Source: @anthropic-ai/sdk ContentBlock / Tool union types.
  */
 // prettier-ignore
-const SERVER_TOOL_TYPE_PREFIXES = [
+const API_DEFINED_TOOL_TYPE_PREFIXES = [
   "web_search_",
   "web_fetch_",
   "code_execution_",
   "text_editor_",
   "computer_",
   "bash_",
+  // CC 2.1.207 additions (F32) — server-tool `type` values seen in app.pretty.js.
+  "advisor_",
+  "agent_toolset_",
+  "memory_",
+  "tool_search_",
 ]
 
-/** Check if a tool's type field matches a known server tool prefix. */
-export function isServerToolType(type: string | undefined): boolean {
+/** Check whether a tool's `type` matches a known API-defined typed-tool prefix (NOT necessarily server-executed — see above). */
+export function isApiDefinedToolType(type: string | undefined): boolean {
   if (!type) return false
-  return SERVER_TOOL_TYPE_PREFIXES.some((prefix) => type.startsWith(prefix))
+  return API_DEFINED_TOOL_TYPE_PREFIXES.some((prefix) => type.startsWith(prefix))
 }
 
 /**
  * Strip server-side tools from the tools array, or pass them through unchanged.
  *
- * Three strip sources are unioned:
- *   1. `state.stripServerTools` — global config opt-in; removes EVERY server tool.
- *   2. learned cache (`getUnsupportedServerToolTypes(model)`) — per-(endpoint,
+ * Two reactive strip sources are unioned (the global `server_tool_strip` config
+ * opt-in was removed with the web_search retirement — 2026-07-13):
+ *   1. learned cache (`getUnsupportedServerToolTypes(model)`) — per-(endpoint,
  *      model) type prefixes the upstream reactively rejected (e.g. `web_search_`).
- *   3. `excludeTypes` — per-attempt hint from the server-tool-rejection retry
+ *   2. `excludeTypes` — per-attempt hint from the server-tool-rejection retry
  *      strategy (`PrepareHints.excludeServerToolTypes`), deterministic for THIS
  *      attempt independent of whether the cache was written yet.
  *
- * Sources 2 and 3 strip only the matching type prefixes; other server tools pass
- * through. When no source applies (default), all tools are forwarded unchanged
- * per the Anthropic protocol.
+ * Both strip only the matching type prefixes; other server tools pass through.
+ * When neither applies (default), all tools are forwarded unchanged per the
+ * Anthropic protocol.
  */
 export function stripServerTools(tools: Array<Tool> | undefined, model: string, excludeTypes?: ReadonlyArray<string>): Array<Tool> | undefined {
   if (!tools) return undefined
 
   const learned = new Set([...getUnsupportedServerToolTypes(model), ...(excludeTypes ?? [])])
-  const stripAll = state.stripServerTools
 
-  // No source strips anything — forward unchanged.
-  if (!stripAll && learned.size === 0) return tools
+  // No learned/hinted type strips anything — forward unchanged.
+  if (learned.size === 0) return tools
 
   const result: Array<Tool> = []
 
   for (const tool of tools) {
     const matchesLearned = [...learned].some((prefix) => (tool.type ?? "").startsWith(prefix))
-    if (isServerToolType(tool.type) && (stripAll || matchesLearned)) {
+    if (isApiDefinedToolType(tool.type) && matchesLearned) {
       consola.warn(`[DirectAnthropic] Stripping server tool: ${tool.name} (type: ${tool.type})`)
       continue
     }
@@ -367,4 +389,88 @@ export function stripServerTools(tools: Array<Tool> | undefined, model: string, 
   }
 
   return result.length > 0 ? result : undefined
+}
+
+// ============================================================================
+// Unknown Tool-Field Stripping
+// ============================================================================
+
+/**
+ * Custom-tool top-level fields ALWAYS stripped before sending upstream. Seeded
+ * with `eager_input_streaming` — a newer client-side tool-input streaming hint
+ * that newer Claude Code attaches to every tool, which GHC's upstream Anthropic
+ * API rejects with `tools.N.custom.eager_input_streaming: Extra inputs are not
+ * permitted`. Empirically verified inert (pure streaming optimization; output is
+ * identical when stripped). Additive with config `tool_strip_fields` and the
+ * reactive negotiation cache; reversible via config `tool_keep_fields`.
+ */
+export const BUILTIN_STRIP_TOOL_FIELDS: ReadonlyArray<string> = ["eager_input_streaming"]
+
+/**
+ * Tool keys GHC's upstream legitimately models. NEVER stripped: if the upstream
+ * ever reports one of these as "Extra inputs are not permitted", that signals a
+ * variant-misrouting bug (some transform corrupted the tool's discriminator so
+ * pydantic landed on the wrong union arm), which must surface as a loud 400 for
+ * investigation — NOT be silently swallowed by stripping a legitimate field.
+ */
+export const LEGIT_TOOL_KEYS: ReadonlySet<string> = new Set(["name", "description", "input_schema", "type", "defer_loading", "cache_control"])
+
+/**
+ * Strip unknown/rejected top-level fields from every custom tool. The strip set:
+ *
+ *   BUILTIN ∪ config `tool_strip_fields`(model) ∪ endpoint-learned cache ∪ excludeFields
+ *     − config `tool_keep_fields`(model) − LEGIT_TOOL_KEYS
+ *
+ * `excludeFields` is the per-attempt authoritative hint from the
+ * tool-field-rejection retry strategy (deterministic for THIS attempt,
+ * independent of whether the cache was written yet). Learned cache is
+ * endpoint-level (model-agnostic) — the rejection is an upstream-version
+ * property. Returns a new array; never mutates the input.
+ */
+export function stripToolFields(tools: Array<Tool> | undefined, model: string, excludeFields?: ReadonlyArray<string>): Array<Tool> | undefined {
+  if (!tools) return tools
+
+  const strip = new Set<string>(BUILTIN_STRIP_TOOL_FIELDS)
+  for (const fields of collectAllMatching(model, state.stripToolFields)) for (const f of fields) strip.add(f)
+  for (const f of getUnsupportedToolFields()) strip.add(f)
+  if (excludeFields) for (const f of excludeFields) strip.add(f)
+
+  // Subtract the reversibility keep-list, then the never-strip legit keys.
+  for (const fields of collectAllMatching(model, state.keepToolFields)) for (const f of fields) strip.delete(f)
+  for (const k of LEGIT_TOOL_KEYS) strip.delete(k)
+
+  if (strip.size === 0) return tools
+
+  const strippedFields = new Set<string>()
+  let affected = 0
+  const result = tools.map((tool) => {
+    // Copy only the non-stripped keys (avoids a dynamic `delete` on a computed key).
+    const next: Record<string, unknown> = {}
+    let toolChanged = false
+    for (const [key, value] of Object.entries(tool)) {
+      if (strip.has(key)) {
+        strippedFields.add(key)
+        toolChanged = true
+        continue
+      }
+      next[key] = value
+    }
+    if (toolChanged) affected++
+    return next as unknown as Tool
+  })
+
+  if (strippedFields.size > 0) {
+    // Observability with signal/noise balance: NOTABLE strips (config-declared,
+    // reactively learned, or a per-attempt hint — i.e. anything beyond the
+    // built-in baseline) warn; a strip consisting ONLY of the built-in default
+    // (`eager_input_streaming`, present on every Claude Code tool) logs at debug,
+    // since warning on every request would drown genuine alerts. Either way the
+    // proactive strip is recorded (not silent) — see richest-data-flow.
+    const builtin = new Set(BUILTIN_STRIP_TOOL_FIELDS)
+    const notable = [...strippedFields].some((field) => !builtin.has(field))
+    const log = notable ? consola.warn : consola.debug
+    log(`[DirectAnthropic] Stripped tool field(s) from ${affected}/${tools.length} tool(s): ${[...strippedFields].join(", ")}`)
+  }
+
+  return result
 }

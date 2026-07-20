@@ -33,6 +33,7 @@ import {
   notifyStatsUpdated,
 } from "~/lib/ws"
 
+import type { ActiveRequestWire } from "../active-request-wire"
 import type {
   //
   ObservabilityBus,
@@ -40,6 +41,7 @@ import type {
   RequestContextSnapshot,
 } from "../index"
 
+import { toActiveRequestWire } from "../active-request-wire"
 import { assertNever } from "../index"
 
 export class WsSink {
@@ -57,6 +59,7 @@ export class WsSink {
       (event) => this.handle(event),
       // WS cares about every namespace.
       (event) => event.kind.startsWith("request.") || event.kind.startsWith("history.") || event.kind.startsWith("system."),
+      { name: "ws-sink" },
     )
   }
 
@@ -94,7 +97,10 @@ export class WsSink {
       case "request.aborted": {
         this.activeCount = Math.max(0, this.activeCount - 1)
         notifyActiveRequestChanged({
-          action: event.kind.slice("request.".length),
+          // `event.kind` is narrowed to the three terminal kinds in this case
+          // block; `.slice` erases the literal type, so re-narrow to the wire
+          // union's `action` (runtime value is identical).
+          action: event.kind.slice("request.".length) as "completed" | "failed" | "aborted",
           requestId: event.ctx.id,
           activeCount: this.activeCount,
         })
@@ -111,7 +117,10 @@ export class WsSink {
           strategy: event.attempt.strategy,
           willRetry: event.willRetry,
           nextStrategy: event.nextStrategy,
-          waitMs: event.waitMs,
+          // The wire contract keeps `waitMs` a required number; the source
+          // event has it optional (no backoff on the terminal attempt), so
+          // default to 0 here rather than relaxing the wire type.
+          waitMs: event.waitMs ?? 0,
           learning: event.learning,
           error: event.attempt.error,
         })
@@ -131,15 +140,15 @@ export class WsSink {
       // signals that the current WS protocol does not surface. Reserved
       // for future use; intentionally silent today.
       //
-      // request.context_updated is HistorySink-only (see events.ts) —
-      // ignored here to avoid double-broadcasting; WS already sees the
-      // higher-fidelity lifecycle events.
-      // system.log is for stdout/file sinks only — not broadcast to WS clients.
+      // system.diagnostic is for terminal/file sinks only — not broadcast to WS clients.
+      // system.request_line is likewise a display-only (stdout/file) synthetic line.
+      // system.model_catalog carries complete boot metadata for terminal/file consumers only.
       case "request.model_resolved":
       case "request.attempt_started":
       case "request.stream_progress":
-      case "request.context_updated":
-      case "system.log": {
+      case "system.diagnostic":
+      case "system.model_catalog":
+      case "system.request_line": {
         return
       }
 
@@ -185,9 +194,8 @@ export class WsSink {
               timestamp: Date.now(),
             },
             "status",
-          ).then(() => {
-            /* discard stillBuffering — bus's pendingWsBuffer is a fixed-shape
-               placeholder; shutdown only cares that the drain wait happened. */
+          ).then(({ stillBuffering }) => {
+            if (stillBuffering > 0) throw new Error(`${stillBuffering} WebSocket client(s) still buffering the shutdown phase after deadline`)
           })
         }
         notifyShutdownPhaseChanged({
@@ -198,8 +206,12 @@ export class WsSink {
         return
       }
       case "system.shutdown_completed": {
-        notifyShutdownPhaseChanged({ phase: "finalized", previousPhase: null, needsFlush: false })
         return
+      }
+      case "system.shutdown_failed": {
+        return broadcastAndFlush({ type: "shutdown_failed", data: { errors: event.errors }, timestamp: Date.now() }, "status").then(({ stillBuffering }) => {
+          if (stillBuffering > 0) throw new Error(`${stillBuffering} WebSocket client(s) still buffering the shutdown failure after deadline`)
+        })
       }
       default: {
         // Exhaustiveness check.
@@ -214,37 +226,15 @@ export class WsSink {
 // ============================================================================
 
 /**
- * Build the WS `request` payload from a ctx snapshot. Prefers the full
- * activity `summary` populated by manager.ts at lifecycle-event publish
- * time — that mirror the legacy `summarizeRequestContext(ctx)` shape the
- * front-end's `ActiveRequestInfo` type expects (model/durationMs/
- * attemptCount/queueWaitMs/transport/etc). Falls back to a minimal
- * snapshot subset when `summary` is unavailable (defensive — shouldn't
- * happen for created/state_changed which always carry summary).
+ * Build the WS `request` payload. Projects the ctx snapshot through
+ * `toActiveRequestWire` (the single mapper) so this path and the
+ * `connected` snapshot factory in start.ts are field-identical — same
+ * summary scalars plus the top-level rich fields (method/path/clientModel/
+ * resolvedModel/requestBodySize/multiplier; the last two were missing here
+ * before). See `lib/observability/active-request-wire.ts`.
  */
-function requestPayload(ctx: RequestContextSnapshot): Record<string, unknown> {
-  if (ctx.summary) {
-    return {
-      ...ctx.summary,
-      // Carry through commit 3a's snapshot extensions so future front-end
-      // consumers (retry visualization etc) have direct access.
-      method: ctx.method,
-      path: ctx.path,
-      ...(ctx.clientModel !== undefined && { clientModel: ctx.clientModel }),
-      ...(ctx.resolvedModel !== undefined && { resolvedModel: ctx.resolvedModel }),
-    }
-  }
-  return {
-    id: ctx.id,
-    endpoint: ctx.endpoint,
-    ...(ctx.rawPath !== undefined && { rawPath: ctx.rawPath }),
-    state: ctx.state,
-    startTime: ctx.startTime,
-    method: ctx.method,
-    path: ctx.path,
-    ...(ctx.clientModel !== undefined && { clientModel: ctx.clientModel }),
-    ...(ctx.resolvedModel !== undefined && { resolvedModel: ctx.resolvedModel }),
-  }
+function requestPayload(ctx: RequestContextSnapshot): ActiveRequestWire {
+  return toActiveRequestWire(ctx)
 }
 
 // Re-export types for sink-internal use (helps with downstream consumer typing

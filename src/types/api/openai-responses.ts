@@ -130,6 +130,8 @@ export interface ResponsesContextManagement {
 
 /** Request payload for POST /responses */
 export interface ResponsesPayload {
+  /** Optional client identity for one Responses WebSocket response.create operation. */
+  id?: string
   model: string
   input: string | Array<ResponsesInputItem>
   instructions?: string | null
@@ -196,12 +198,31 @@ export interface ResponsesReasoningOutput {
   type: "reasoning"
   id: string
   summary: Array<{ type: "summary_text"; text: string }>
+  /** The reasoning item's own content track (independent from `summary`) — populated when the
+   *  upstream streams `response.reasoning_text.delta`/`.done` for this item (distinct protocol
+   *  family from `reasoning_summary_text`; confirmed against node_modules/openai's ResponseAccumulator.js). */
+  content?: Array<{ type: "reasoning_text"; text: string }>
   encrypted_content?: string
   status?: string
 }
 
+/**
+ * A web-search-call output item — the upstream's own native server-tool execution record (RFC
+ * 2026-07-14-anthropic-responses-direct-bridge §5, Phase 6). Confirmed shape (Phase 0 probe (c),
+ * `exp/anthropic-responses-direct/FINDINGS.md`): `action.query`/`action.queries` carry the search
+ * query text; there is NO `encrypted_content` field (unlike `ResponsesReasoningOutput`) — this is the
+ * physical constraint that forces R-NO-REVIVE's response-side degradation (no signed carrier to
+ * round-trip into an Anthropic `web_search_tool_result` block).
+ */
+export interface ResponsesWebSearchCallOutput {
+  type: "web_search_call"
+  id: string
+  status: string
+  action: { type: string; query?: string; queries?: Array<string>; [key: string]: unknown }
+}
+
 /** Union of all output item types */
-export type ResponsesOutputItem = ResponsesMessageOutput | ResponsesFunctionCallOutput | ResponsesReasoningOutput
+export type ResponsesOutputItem = ResponsesMessageOutput | ResponsesFunctionCallOutput | ResponsesReasoningOutput | ResponsesWebSearchCallOutput
 
 /** Usage statistics */
 export interface ResponsesUsage {
@@ -211,8 +232,15 @@ export interface ResponsesUsage {
   output_tokens_details?: {
     reasoning_tokens: number
   }
+  // GHC extension: cache_write + modality live here (Responses side), not in a
+  // prompt_tokens_details — see spec §5.2 M3. cached_tokens optional to align.
   input_tokens_details?: {
-    cached_tokens: number
+    cached_tokens?: number
+    cache_write_tokens?: number
+    text_tokens?: number
+    audio_tokens?: number
+    image_tokens?: number
+    video_tokens?: number
   }
 }
 
@@ -309,7 +337,7 @@ export interface ContentPartAddedEvent {
   type: "response.content_part.added"
   output_index: number
   content_index: number
-  part: ResponsesOutputTextContent | ResponsesOutputRefusalContent
+  part: ResponsesOutputTextContent | ResponsesOutputRefusalContent | { type: "reasoning_text"; text: string }
   sequence_number: number
 }
 
@@ -317,7 +345,22 @@ export interface ContentPartDoneEvent {
   type: "response.content_part.done"
   output_index: number
   content_index: number
-  part: ResponsesOutputTextContent | ResponsesOutputRefusalContent
+  part: ResponsesOutputTextContent | ResponsesOutputRefusalContent | { type: "reasoning_text"; text: string }
+  sequence_number: number
+}
+
+/** Emitted when a citation/file/container-file annotation is attached to an output_text content
+ *  part while streaming (e.g. gpt-5.5 web_search_preview native citations). Same minefield shape
+ *  as `output_text.done`: the SDK accumulator calls getContent(content_index) and throws when
+ *  `.added` for that part was dropped (confirmed against
+ *  node_modules/openai/lib/responses/ResponseAccumulator.js, `annotation.added` case ~97-107). */
+export interface OutputTextAnnotationAddedEvent {
+  type: "response.output_text.annotation.added"
+  item_id: string
+  output_index: number
+  content_index: number
+  annotation_index: number
+  annotation: unknown
   sequence_number: number
 }
 
@@ -326,6 +369,9 @@ export interface OutputTextDeltaEvent {
   type: "response.output_text.delta"
   output_index: number
   content_index: number
+  /** Present on real upstream frames (correlates the delta to its output item); omitted by the proxy's
+   *  reverse CC→responses synthesis (`responses-to-cc-request.ts`), which has no natural item id. */
+  item_id?: string
   delta: string
   sequence_number: number
 }
@@ -369,6 +415,26 @@ export interface RefusalDoneEvent {
   output_index: number
   content_index: number
   refusal: string
+  sequence_number: number
+}
+
+/** Reasoning content-text events (independent track from `reasoning_summary_text` — the reasoning
+ *  item's own `content` array, not its `summary` array; see ResponsesReasoningOutput.content doc). */
+export interface ReasoningTextDeltaEvent {
+  type: "response.reasoning_text.delta"
+  item_id: string
+  output_index: number
+  content_index: number
+  delta: string
+  sequence_number: number
+}
+
+export interface ReasoningTextDoneEvent {
+  type: "response.reasoning_text.done"
+  item_id: string
+  output_index: number
+  content_index: number
+  text: string
   sequence_number: number
 }
 
@@ -434,12 +500,16 @@ export type ResponsesStreamEvent =
   // Text streaming
   | OutputTextDeltaEvent
   | OutputTextDoneEvent
+  | OutputTextAnnotationAddedEvent
   // Function call streaming
   | FunctionCallArgumentsDeltaEvent
   | FunctionCallArgumentsDoneEvent
   // Refusal streaming
   | RefusalDeltaEvent
   | RefusalDoneEvent
+  // Reasoning content-text streaming (independent track from reasoning_summary_text)
+  | ReasoningTextDeltaEvent
+  | ReasoningTextDoneEvent
   // Reasoning summary streaming
   | ReasoningSummaryPartAddedEvent
   | ReasoningSummaryTextDeltaEvent

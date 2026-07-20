@@ -1,14 +1,18 @@
-import { HistoryList } from "@/components/requests/HistoryList"
-import { LiveLane } from "@/components/requests/LiveLane"
-import { useLiveRequests } from "@/hooks/useLiveRequests"
+import { DesignFork } from "@/components/shell/DesignFork"
 
-/** Requests 列表全屏页(Plan 08 §1):Live 泳道 + History 列表占满主内容区。 */
+import { RequestsListLegacy } from "./RequestsListLegacy"
+import { RequestsListShadcn } from "./RequestsListShadcn"
+
+/**
+ * fork B · Requests 列表 RoutePage。经 `DesignFork` 原语按设计版本(design version)互斥挂载
+ * legacy(`RequestsListLegacy`,Terminal Amber,冻结)/ shadcn(`RequestsListShadcn`,重设计)页元素。
+ * 本文件不含 store 字段标识符(唯一读取者是 DesignFork)→ requests/ 域 grep 守卫零命中。
+ */
 export function RequestsListPage() {
-  useLiveRequests() // 订阅 WS active 事件喂 live-store(挂一次)
   return (
-    <div className="flex h-full min-h-0 flex-col">
-      <LiveLane />
-      <HistoryList />
-    </div>
+    <DesignFork
+      legacy={<RequestsListLegacy />}
+      shadcn={<RequestsListShadcn />}
+    />
   )
 }

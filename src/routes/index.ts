@@ -16,6 +16,7 @@ import { embeddingsRoutes } from "./embeddings/route"
 import { eventLoggingRoutes } from "./event-logging/route"
 import { geminiRoutes } from "./gemini/route"
 import { historyRoutes } from "./history/route"
+import { hooksRoutes } from "./hooks/route"
 import { logsRoutes } from "./logs/route"
 import { messagesRoutes } from "./messages/route"
 import { metricsRoutes } from "./metrics/route"
@@ -25,6 +26,7 @@ import {
   internalModelsRoutes,
   modelsRoutes,
 } from "./models/route"
+import { negotiationRoutes } from "./negotiation/route"
 import { responsesRoutes } from "./responses/route"
 import { initResponsesWebSocket } from "./responses/ws"
 import { statsRoutes } from "./stats/route"
@@ -91,6 +93,8 @@ export function registerHttpRoutes(app: Hono, options: RegisterHttpRoutesOptions
   app.route("/api/logs", logsRoutes)
   app.route("/api/models", internalModelsRoutes)
   app.route("/api/debug", debugRoutes)
+  app.route("/api/negotiation", negotiationRoutes)
+  app.route("/api/hooks", hooksRoutes)
 
   // History API and standalone Web UI entry
   app.route("/history", historyRoutes)

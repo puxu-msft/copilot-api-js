@@ -142,8 +142,8 @@ async function readBody(body: ReadableStream<Uint8Array>, timeoutMs: number): Pr
 
 let snapshot: StateSnapshot
 
-beforeAll(() => {
-  bootstrapTestRuntime()
+beforeAll(async () => {
+  await bootstrapTestRuntime()
 })
 
 beforeEach(() => {
@@ -154,7 +154,7 @@ beforeEach(() => {
     copilotToken: "test-token",
     accountType: "individual",
     vsCodeVersion: "1.100.0",
-    fetchTimeout: 0,
+    responseHeaderTimeout: 0,
   })
   applyFetchMock(upstreamFetchMock)
   setModels({
@@ -166,7 +166,7 @@ beforeEach(() => {
 afterEach(async () => {
   restoreFetch()
   restoreStateForTests(snapshot)
-  resetTestRuntime()
+  await resetTestRuntime()
   await new Promise<void>((resolve) => setTimeout(resolve, 0))
 })
 

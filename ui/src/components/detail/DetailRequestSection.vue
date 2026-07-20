@@ -10,6 +10,7 @@ import type {
 import MessageBlock from "@/components/message/MessageBlock.vue"
 import SystemMessage from "@/components/message/SystemMessage.vue"
 import ErrorBoundary from "@/components/ui/ErrorBoundary.vue"
+import { resolveEffectiveSystem } from "@/composables/entry-legs"
 
 import SectionBlock from "./SectionBlock.vue"
 import TruncationDivider from "./TruncationDivider.vue"
@@ -45,6 +46,9 @@ const collapseThreshold = computed(() => {
   const total = props.filteredMessages.length
   return total > EXPAND_RECENT_COUNT ? total - EXPAND_RECENT_COUNT : 0
 })
+
+// Effective (post-rewrite) system: new final-attempt `effectiveSource.system`.
+const effectiveSystem = computed(() => resolveEffectiveSystem(props.entry))
 </script>
 
 <template>
@@ -52,15 +56,15 @@ const collapseThreshold = computed(() => {
     :title="title ?? 'Request'"
     anchor="request"
     :badge="requestBadge"
-    :raw-data="entry.inboundRequest"
+    :raw-data="entry.clientRequest"
     :rewritten-raw-data="rewrittenRequest"
     raw-title="Request"
   >
     <ErrorBoundary label="System prompt">
       <SystemMessage
-        v-if="entry.inboundRequest.system"
-        :system="entry.inboundRequest.system"
-        :rewritten-system="entry.effectiveRequest?.system"
+        v-if="entry.clientRequest?.system"
+        :system="entry.clientRequest.system"
+        :rewritten-system="effectiveSystem"
         :search-query="searchQuery"
         :global-view-mode="detailViewMode"
       />

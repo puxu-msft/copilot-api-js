@@ -529,6 +529,12 @@ function ccUsageToResponsesUsage(usage: ChatCompletionUsage): ResponsesResponse[
     input_tokens: usage.prompt_tokens,
     output_tokens: usage.completion_tokens,
     total_tokens: usage.total_tokens,
+    // Preserve the cached-read subset so downstream net-of-cache normalization
+    // (usage-normalize.ts) can recover the disjoint input/cache split — otherwise
+    // the via-responses fallback silently drops cache_read (richest-data-flow).
+    ...(usage.prompt_tokens_details?.cached_tokens !== undefined && {
+      input_tokens_details: { cached_tokens: usage.prompt_tokens_details.cached_tokens },
+    }),
   }
 }
 

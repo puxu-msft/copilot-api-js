@@ -132,7 +132,7 @@ describe("Azure OpenAI classic deployment format", () => {
     upstreamFetchMock.mockClear()
     // The real chat-completions / embeddings clients check state.copilotToken
     // before issuing fetch.
-    setStateForTests({ copilotToken: "test-token", fetchTimeout: 0 })
+    setStateForTests({ copilotToken: "test-token", responseHeaderTimeout: 0 })
     applyFetchMock(upstreamFetchMock)
     setupChatModel()
   })
@@ -237,7 +237,7 @@ describe("Azure OpenAI v1 format", () => {
     chatHits = 0
     embeddingsHits = 0
     upstreamFetchMock.mockClear()
-    setStateForTests({ copilotToken: "test-token", fetchTimeout: 0 })
+    setStateForTests({ copilotToken: "test-token", responseHeaderTimeout: 0 })
     applyFetchMock(upstreamFetchMock)
     setupChatModel()
   })

@@ -1,69 +1,123 @@
-- [v4 流水线重构](project-v4-pipeline-rearchitecture.md) — v4 P0-P3 已落地(driver+codec+transport 是活路径);response-pipeline RFC **Stage A 全 7 phase 完成**(registry 激活:请求迁 S3 / 流式+非流式响应迁 S5 / Responses fixIds HTTP+WS 共享) + **Stage B 全 5 格式 owns-sink 完成**(Anthropic cdca98e/CC 230c934/Responses-HTTP d35c1b5/Responses-WS deb8f07/Gemini 433c9ba:driver runResponseSink 持 ClientSink 写出、forwarded 采样/heartbeat/终态统一进 driver;Gemini B5 把 CC→Gemini 翻译迁进 codec);权威现状看 docs/DESIGN.md"活的架构现状"表 + docs/archive/2606-landed-rfcs/response-pipeline/
-- [范围歧义不擅自行动](feedback_no_unilateral_action.md) — 范围有歧义?先问(AskUserQuestion);绝不以"看似相关"/"顺手"扩大改动;但在已确认范围内,把所有真实问题都修掉
-- [先用证据自解再问](feedback-resolve-by-evidence-before-asking.md) — 歧义先用代码+invariant 自裁(自解就别问,仪式化提问浪费来回);只在答案真正取决于用户偏好/风险取舍时才问;spec 自身内部不一致=强"该问"信号
-- [golden fixture 预捕获](methodology-golden-fixture-pre-capture.md) — 流/输出行为保持重构:golden 测试先锁在改动前旧代码上跑通(只在改后才存在的 golden 证明不了);捕序列+判别字段、归一化易变字段;提升/上移=结果等价非机制等价
-- [绝不 git checkout 用户文件](feedback_never_git_checkout_user_files.md) — 唯一判据是**可恢复性**:会丢失 git 救不回的工作(未提交/未暂存修改、未追踪文件)的操作绝不做;**干净的已追踪文件可恢复、用户明确要求时可删**(优先 git rm,先确认无未暂存改动)。**别把纪律记成命令黑名单**——危险命令由 harness 权限在执行点把关,我守的是"可恢复吗"这个判断。两个同源错误:checkout 抹掉未暂存工作 + 过度推广成"绝不删任何文件"
-- [真实问题优先于风险](feedback_real_problems_over_risk.md) — 按"问题是否存在"分流,而非按风险/ROI;事后 subagent review;抓到的缺口=测试覆盖不足
-- [完整根因修复](feedback_complete_root_cause_fix.md) — 成本(工期/复杂度/改动量)无关紧要;选结构性修复而非小修;暂缓项要完整文档化供用户未来决策
-- [reviewer 也要批判核验](feedback_reviewer_verify_critically.md) — 交付/ExitPlanMode/报告/采信任何声音权威前主动派 subagent audit(不等用户提醒、连改记忆/翻译这种琐碎也审、看似简单的改动同样过一轮);subagent/reviewer/文档/记忆/自洽/自己都是声音权威都可能错——行动前读它引用的每个 file:line、用独立实测裁决而非判断谁更对、绝不未核验照搬;通用手法见 skill verifying-authoritative-claims、原则见 CLAUDE.md empirical-verification+subagent-explicit-rubric
-- [优化长期可维护性](feedback_optimize_long_term_maintainability.md) — 永远选最可维护的方案;绝不用用户从没要求的"严格零改动"自设约束去阻挡一个正确的重构
-- [测试绝不碰真实环境](feedback_tests_never_touch_real_env.md) — 测试写了真实 ~/.claude;用 DI 注入 fs 路径,别用 process.env.HOME(bun os.homedir 忽略它);mock.module 可作安全隔离;跑前先证明 sandbox
-- [绝不因 turn 长度而停](feedback_never_stop_for_turn_length.md) — 绝不以 turn 长度或预算为由延后/设检查点;完整做完;只在真正卡在用户决策或确实做完时才停
-- [不为列宽硬折行](feedback-raise-printwidth-dont-distort-code.md) — 用户厌恶 prettier 强制折行;解法是调高 printWidth(现 160),而非缩短代码去将就。本条只记代码/printWidth 半边;散文的语义换行规则在 CLAUDE.md prose-line-per-paragraph
-- [成熟库优先于手搓](feedback_prefer_mature_libs_for_scoped_components.md) — 良好封装/算法部分(行+词 diff 等)→ 用成熟库(jsdiff),别手搓 LCS;只自建库做不了的领域层;只丢渲染壳(diff2html),保留算法核(diff)
-- [绝不停在编译中间态](feedback_never_stop_at_compile_intermediate.md) — 重构中代码编译不过时绝不暂停(删了函数但调用方还引用等);推进到下一个 typecheck 绿的检查点;只为用户决策/环境阻塞/完成而停
-- [并行编辑不同文件](feedback_parallel_edit_different_files.md) — 重构时跨不同文件的 Edit/工具调用一律并行提交;同文件不重叠的编辑也放一条消息;绝不串行独立调用
-- [架构健康即用户需求](feedback-architecture-health-is-user-need.md) — 长远好架构本身就是用户驱动力,不是奢侈;绝不以"目前能用"/"还没具体触发点"/"成本高"否决结构性重写;唯一正当的不重写理由是债项虚假或实证无改善
-- [大重构先 RFC 再实现](feedback-rfc-then-implement-for-large-refactors.md) — ≥1000 行重构:brainstorm → 在 docs/rfc/ 写 RFC → 3+ 轮对抗 subagent review(每轮抓到真问题)→ 解决 open questions → 带 commit invariants 实现
-- [commit invariants 方法论](methodology-commit-invariants.md) — 多 commit 重构必须在 RFC 里编码"每个 commit 终于状态 X"的 invariant;中间 commit 绝不让系统半坏(如 sink 在 commit 2 就 idle 挂上,使可观测性贯穿到 commit 3b 切换)
-- [RFC 多 phase 文档结构](methodology-rfc-multi-phase-doc-structure.md) — RFC 要交给一组独立实现者并行做时:拆 design(WHY+契约)/plan(HOW+factory 锚点表)/prompts(每 phase 一个 self-contained kick-off)三层 + README 集中红线/DAG;活范例 docs/archive/2606-landed-rfcs/response-pipeline;是 rfc-then-implement 的产物组织维度
-- [挖"PASS with WARN"](feedback-mine-the-pass-with-warn.md) — subagent 报"PASS 但有个小 WARN"时,当黄灯不当绿灯;花 5-15 分钟顺 WARN 的因果链——常是真实回归的冰山一角(如死导出→迁到 bus 但 drain 语义被静默丢掉)
-- [Hono onError 吞掉 throw](hono-onerror-consumes-throws.md) — Hono 的 `server.onError` 在 middleware catch 之前就捕获 handler 的 throw;`next()` 外包 `try/catch + ...handle...` 是死代码;改用 next 之后的 `c.res.status >= 400`。防御性 primitive(failIfNotFinalized)对 WS/stdio 旁路仍有用
-- [过渡态需显式无害](feedback-transitional-states-need-explicit-no-harm.md) — 多 commit 重构:每个中间 commit 必须主动无害。新+旧同时写同一输出(stdout/WS/DB)的过渡窗口里,用 `silent: true`/`hijackConsola: false` flag,别指望"很快会被替换"
-- [type-only import 破除可见环](type-only-import-breaks-visual-cycle.md) — TypeScript `import type` 运行时擦除;当只有类型跨界时用它破除 A↔B import 环。优于 `unknown + as` cast(后者为躲一个不存在的运行时问题放弃类型安全)
-- [给用户决策数据而非推销](feedback-give-user-decision-data-not-pitch.md) — 范围/架构决策:摆出 3-4 个带量化影响的 OPTIONS(LOC、文件、对架构意图的契合、subagent 风险)。先 grep + 读现有约束注释。没数据的"A 还是 B?"不是决策
-- [大重构工具箱](large-refactor-toolkit-sed-grep-status.md) — `sed -i` 批量改名 + `grep -rn` 验证零残留 + `git status --short` 跟踪范围。循环:批量改→typecheck→grep→用 Edit 修漏网→test→lint-fix。**坑**:缩进敏感 perl/sed 替换跨平行块误匹配(给 state.ts 加字段时 2-space pattern 也中 4-space reset 行→错位重复;本会话踩 2 次)——平行块加字段用 Edit,加完 `grep -c 字段`=5 对账
-- [sed 碰过的文件会裹入在飞工作](sed-touched-files-bundle-inflight-work.md) — 机械 sed 后 `git add <file>` 会暂存该文件全部改动,连带别 phase 的在飞未提交工作(如 Stage B);per-file `git diff --cached --stat` 行数与"我改了几行"对账,数量级不符=污染,`git reset -q HEAD -- <file>` 只 unstage 不动工作区,整个排除出 commit。是 fine-grained-staging 的具体失败模式+tripwire
-- [git commit -- pathspec 取工作区非 index](git-commit-pathspec-commits-worktree-not-index.md) — `git commit -F msg -- <path>` 提交命名路径的**工作区**版本、无视 index,会绕过 `git apply --cached` 的 hunk 级过滤、把 peer 同文件在飞改动整文件扫进 commit(staged diff 干净≠pathspec commit 干净);用了 apply --cached/add -p 过滤后必须 **`git commit -F msg`(无 pathspec)** 提交 index;误提交后 `reset --soft HEAD^`(确认 HEAD 无 peer 叠加)→restore --staged→重 apply→无-pathspec commit 恢复。扩展 [[sed-touched-files-bundle-inflight-work]]
-- [git 暂存+本地提交默认允许](feedback-git-staging-and-local-commit-default-allowed.md) — 项目特异:2026-06-15 git add/commit/本地分支默认允许、settings.json ask 强制(旧"每次问"是管理混乱 workaround);通用 cadence/consent 边界已上行 git-commit-discipline skill
-- [通过/空/干净不自证](feedback-pass-null-clean-not-self-validating.md) — 否定性/通过性结果(测试绿、grep 空、"无问题"、diff 干净)不自证;先确认检查真触达了目标(空≠不存在、通过≠健全、子域0≠全域0);假阴性伪装成"已确认安全"
-- [自洽需独立 oracle](feedback-self-consistent-needs-independent-oracle.md) — wire/协议正确性不能用自己 encode↔decode 的自洽来判(两端可共享同一错误假设);用独立 oracle 裁决——协议规范、参考实现、或真实对端(GHC)。对三套兼容层至关重要
-- [方向明确就别停下来问](feedback-dont-stop-when-direction-clear.md) — 方向明确?别停下问"先做 A/B/C 哪个"——多数 A/B/C 只是执行顺序,不是授权岔路。只为以下而停:破坏性操作/真 either-or/上下文不足/选项有实质架构后果差异(→ 则用 give-user-decision)。是 no-unilateral-action 的反面
-- [知识归类:文档 vs 记忆](feedback-knowledge-routing-docs-vs-memory.md) — 已完成+项目特定→项目文档;未完成+可复用+通用→记忆;不两处重复。把 CLAUDE.md knowledge-routing 延伸到它未覆盖的记忆/文档轴
-- [完成时同步文档](feedback-completion-updates-docs.md) — doc-sync 是"完成"的一部分:删过时 pending 记忆 + 把已落地机制回填进活文档(DESIGN/README/模块文档/记忆)。**且"doc-sync 完成"本身是通过性结论、不能口头宣告**——收尾必做跨文档 `grep` 扫描验证(旧状态词暂缓/暂未/无源全清零 + 新端点/字段逐个核对),否则只改最显眼处必漏其余(2026-06-24 漏 5 处惨痛教训)。"代码改完文档没同步"=未完成;"以为同步完了"未扫描=未验证声称
-- [边界提炼经验+维护库](feedback-distill-lessons-at-boundaries.md) — 在 phase/会话/交接边界主动提炼可复用教训 + 维护既有记忆库(陈旧→修/近义→互链/冗余→删)。判断某记忆是否已覆盖时,读它正文——一行索引钩子会掩盖"写窄了"
-- [修全部比较点](feedback-fix-all-comparison-sites.md) — 归一化 bug(canonicalized 键/id、prefix 处理、call_/fc_)在多处比较点复发;grep 全仓逐处修,最好抽成单一共享 primitive——只修显眼那处会留其余复发。是 complete-root-cause-fix 在比较点场景的实例
-- [全面行动、完成即提交](feedback-act-comprehensively-commit-on-done.md) — 每完成一个阶段就主动提交(别问"要我提交吗");在已确认范围内全面思考行动——别逐句字面执行、别把显然正确的后续甩成一堆问题。只有真正不可逆/either-or/上下文不足的才交给用户
-- [主线实现、subagent 核验](feedback-main-thread-impl-subagent-verify.md) — 实现在主线做(紧控制、连续上下文);subagent 用作密集的独立核验层,而非外包实现。refine 旧的 executor→reviewer subagent 模型
-- [记忆用中文写](feedback-memories-in-chinese.md) — 本项目记忆一律中文:正文+description+索引钩子;保留 slug(kebab-ASCII)、code/file:line/wiki 链接/技术标识符、Why/How 英文结构标签
-- [依赖选型 bun-first](feedback-bun-first-dependency-selection.md) — 外部库选型必须能在 Bun 下原生工作;开发/运行命令 bun-only OK、Node 仅兼容目标(实测弱于 Bun);拒 node-gyp 原生绑定(better-sqlite3 已排除→bun:sqlite/node:sqlite);node-only 库(undici/@hono/node-*)仅作不进 bun 热路径的兼容依赖;审计=find binding.gyp 应空
-- [undici Response≠globalThis.Response](reference-undici-response-not-globalthis-response.md) — REFERENCE:Node 下 undici.Response 非 globalThis.Response 实例(Bun 下恰好相等会掩盖);别用 instanceof Response 跨 undici/lib.dom 判别(C2 bug:成功搜索误判失败);改 instanceof Error+as Response,成员访问兼容只 instanceof 坑
-- [实验放仓库 exp/ 不放 /tmp](feedback-experiments-in-repo-exp-dir.md) — 探测/实验的代码+报告+ss 输出放 exp/<exp-name>/,不放 /tmp;/tmp 别名不解析、易丢、清不掉;派探针 subagent 也告知放这里
-- [zstd字典无效用合并帧](reference-zstd-dict-ineffective-use-combined-frame.md) — 大 near-dup blob 的 dedup:zstd dictionary 选项无增益(node:zlib+Bun 实测),真有效是拼一个 buffer 同帧压(3224→231KB);落地为 JSON 数组单次压(非二进制framing/非剪JSON,逐字round-trip);node:zlib zstd 跨 Bun/Node 可用、L3 比 gzip 砍半;magic 1f8b/28b52ffd 判别新旧
-- [subagent 给全量工具](feedback-subagents-full-tool-access.md) — 派 subagent 一律全量工具权限,别用受限类型(ecc:architect 只 Read/Grep/Glob);要完整工具用 claude/general-purpose(tools=*);prompt 里写"只读"作行为约束但工具不设限,让它能自行实测验证
-- [逐字节等价是代理按消费者校准](feedback-byte-equivalence-is-proxy-calibrate-by-consumer.md) — 逐字节非目的;真 invariant=对在意的消费者无可观测行为变化。三层:转发响应SSE→外部SDK解析器(死磕)、上游wire→GHC独立oracle(逐字节是更严廉价代理)、history→自家UI(只是回归tripwire可覆盖)。默认逐字节(收益不对称),挡住更优架构就带文档覆盖(Phase2 reject路径);请求/history优先oracle/结构等价(effectiveRequest toEqual run...而非inline巨payload);inline-lock纯内部噪声大对象=该换oracle
-- [架构图优化Agent上下文经济](feedback-architecture-map-optimize-agent-context-economy.md) — 代码布局/架构图文档的价值轴=Agent 上下文经济(让模型一次读取掌握现状、跳过源码全文),非可推导性;不可信(漂移/死条目)=价值归负,可信度第一杠杆。逐文件叶子树=高churn+低密度+可派生=负债。落地:叶子树→目录级关系图(大域下沉子目录、叶子交 git ls-files/codemap 派生)+"现状/活的是哪条"小节(最高orientation-per-token)+L1 存在性守卫测试(挡死条目,把手维护从负债转资产)+字段级指针归专门表。同[[feedback-byte-equivalence-is-proxy-calibrate-by-consumer]]的"漂移会不会被抓"判据
-- [bun:sqlite get-null与触发器changes陷阱](reference-bun-sqlite-get-null-and-trigger-changes.md) — REFERENCE:bun:sqlite `.get()` 无匹配返 null(node 返 undefined)→破 `!== undefined`,判存在用 Boolean(row);触发器写入被 bun 计入 `.run().changes`→带触发器/级联的表用 SELECT COUNT 不读 changes;external-content FTS5 的 COUNT 穿透读 content 表(不能据此判 build)、对未 insert 内容发 'delete' 腐败、TEXT-PK 的 VACUUM renumber rowid 须 'rebuild';trigram MATCH=子串但全 Unicode 折叠
-- [pre-response abort RFC](project-pre-response-abort-rfc.md) — opus pre-response 静默被客户端断开的双日志排查;RFC docs/spec/pre-response-abort-handling.md:①forwardError 分类 abort(504/499)②client-abort 记 aborted③延迟-commit grace 保活——**RFC 主体全交付**:①②(ee4dd34/d4bced4)、④reaper 牙齿(d6eacf0/4bd6850/67b6eca)、⑤孤儿 fetch 崩防御、C3b-pre1(3e4b3cd)、**P1 Q2 GO**(CC 超时=idle 型 60s)、**P2 ③ C3b 延迟-commit**(C3a 6e04f69/C1 5239328/C2 08b2124/C3b 6dee399+e3ad9e6:race grace timer→COMMIT 开 200+ping、POST-COMMIT 错误降级富 SSE error 帧)、**P3 keepalive 命名重整**(afd2370:stream_keepalive_ping_sec 默认 45+stream_keepalive_grace_sec 40)、**P4 reaper 0-unhandled repro**(tests/transport/reaper-abort-unhandled.it.test.ts+exp/reaper-real-abort)全已落地,**RFC 100% 完成**;坑=并发 agentId 提交扫入在飞 C3b handler 体,见[[sed-touched-files-bundle-inflight-work]]、[[reference-claude-code-timeout-and-sse-error-oracle]]
-- [CC 超时+SSE-error oracle](reference-claude-code-timeout-and-sse-error-oracle.md) — REFERENCE 实测:Claude Code CLI 请求超时=idle 型≈60s+自动重试(非 total,每字节/帧含 message_start 前的 ping 重置;源码 db() watchdog 关 SDK 600s 总超时);Anthropic SDK 0.105.0 对 200+SSE-error 帧走裸 APIError status=undefined+零子类+零重试,CC 包装层 429 不重试但 401/400 等价(error.type 保真→显示正确);harness exp/q2-oracle(--settings 盖 base URL+受控 mock+prod-faithful 接线)
-- [孤儿 promise abort 崩服务器](orphaned-promise-abort-crashes-server.md) — 无 awaiter 的 promise reject→全局 unhandledRejection→exit(1) 崩整服务器(http2Fetch abort 在遗弃时);根因修在产生点挂防御性 no-op observer(p.catch 标记已观察不消费、真实 awaiter 仍收到),不依赖定位遗弃源;别放宽全局 handler(isAbortError 过宽会掩真 bug)
-- [TS6 被 @types/bun 阻塞](reference-ts6-blocked-by-bun-types.md) — REFERENCE:TS6 升级本 bun-first 项目唯一硬阻塞是 @types/bun/bun-types 在 TS6 下解析失败(TS2688 Cannot find type definition file for 'bun'),代码本身零 TS6 错;typescript-eslint 8.61.1 已支持 TS6(<6.1.0)+eslint10,旧"被 typescript-eslint 封顶"defer 理由作废;FE/BE 非按端拆 TS 版本(单一共享 root tsc),TS6 是 repo-wide 决策
-- [richest-data-flow 后端完整存、不裁剪数据模型](feedback-richest-data-flow-store-complete-no-pruning.md) — "无消费者"/"重复"/"与另一腿字节相同"都不是裁剪数据模型的理由;前端选择性展示≠后端可不存;reviewer(默认 YAGNI)说"无消费者→删"对数据模型一律拒绝;可收敛捕获机制(HOW/单一 owner)、不可裁剪数据字段(WHAT);"无数据源"常是没接线非真无源→该建而非该删。活案例 history-http-header-capture RFC v1-v5 裁剪→v6 完整四腿逆转
-- [审计其他 RFC 的数据模型裁剪](project-audit-rfcs-data-model-pruning.md) — **审计已执行(2026-06-24,4 subagent+主线核验)**:12 个优先 RFC 全清、零裁剪违规——header-capture 翻车后 richest-data-flow 已内化。**3 个 SHOULD-BUILD 已全部实现**(operator 指示"都做"):非流式语义残缺检测/顶层 failureReason 投影/h2 trailers 捕获(探针实证 Bun emit trailers→"无源"实为没接线),各带测试+对抗 audit(2 MEDIUM 修);未审=低信号 RFC+sinks filter
-- [可扩展遥测 registry 框架模式](pattern-extensible-telemetry-registry.md) — 三支柱:①提取下沉 sink 层(聚合叶子 type-light、只收 key-bag)②开放 counters bag + 泛型复制器=加维度/measure 零持久版本 bump(坑:无 noUncheckedIndexedAccess→靠 createAccumulator 全初始化而非 `?? 0`)③聚合后无法重算的 per-request 因子(成本 multiplier per-request 变)拆到最细分量存(per-token-type 非单 estCost)。配套基数 cap/golden 预捕获/全套件抓隐藏消费者
-- [变体路由既有outcome+穷尽Record站点审计](methodology-route-variant-to-existing-outcome-and-exhaustive-record-audit.md) — 给被多站点消费的分类联合加新变体:①路由到既有下游 outcome 复用全部 handler(reaper-cancel→既有 stream-error,全 6 站点零改);②穷尽 Record<Union,_> 让 tsc 编译报错枚举每个必改站点(类型即站点覆盖证明,零漏);是 fix-all-comparison-sites 的前置正向版
-- [Anthropic SDK丢event-less SSE帧](reference-anthropic-sdk-drops-eventless-sse-frames.md) — REFERENCE:SDK 流解码按 event 名分发,event-less 纯 data 帧→sse.event=null 被静默丢弃(连 SSE "message" 默认都不应用);合成 Anthropic SSE 帧必须带 event:行(=type,只需∈accept-set,thinking-compat event≠type 良性);自洽 golden(dat()锁 event-less)抓不到、须独立 SDK oracle 喂帧看幸存(exp/refusal-sse-event-verify);recover-tool-call 合成 tool_use 帧曾一直有此缺陷,抽 anthropic/sse-frame.ts 单一入口+assertEventLineInvariant 守卫根治
-- [测试跨高度/组合重叠是允许的](feedback-test-overlap-across-altitudes-is-allowed.md) — over-coverage 只有"同高度同范围纯子集"+"测副本/语言内建(false confidence)"两类;跨函数级/流程级/排列组合级(format×scenario)的重叠是测试金字塔核心价值、不算冗余(较小范围更早更准定位失败,per-format handler 各持自己那份分支拷贝)。我此前把"分支逐字相同+低层已lock"误判成 over-coverage(误flag CC settled-abort/driver buffer-flow、过激删 WS);判据=是否新增高度/能力/组合 OR 是否测生产代码,任一为是即保留
-- [派生列 backfill 须靶向+非阻塞](methodology-derived-column-backfill-targeted-and-nonblocking.md) — denormalized 派生列(preview_text)逻辑变更→旧行永久陈旧须 backfill;但两坑:①靠 assembleFullEntry 重建全对象只为读子集→解压整生命周期(含最大 sse_events)4.2G 库 653 条卡 3m53s,修=只解压需要的 stage(注意 finalized 把 inbound 打包进 B3 request_group 容器帧)+不 SELECT *;②同步跑 openDatabase 卡死启动,修=移出+start.ts 监听后 fire-and-forget async 分批 await sleep(0) 让出+批间不持事务+双重 never-throw 防 unhandledRejection 崩服务器;裁决哪步慢用日志时间戳实测别假设;靶向解压须等价性 oracle(storedPreview===extractPreviewText(getEntryById 走 assembleFullEntry))钉死≡全路径,非硬编码字面量
-- [可恢复 backfill 协作停+keyset](methodology-recoverable-backfill-cooperative-stop-and-keyset.md) — 可恢复后台 backfill 四方法论:①协作 stop 须匹配关资源的 shutdown phase（不订阅迟到 abort signal、本项目 DB 在 Phase 1 关）+ getter 读 flag 防 TS narrow + 每批存游标兜底硬关 ②compound (started_at,id) keyset 跨 ties 无损 + coarse cursor+skip-built resume 不漏不重 ③守卫用专属 history_meta flag 非 user_version ④内容寻址须 dedup-ratio tripwire（远低 ~40× 即 WARN）。扩展 [[methodology-derived-column-backfill-targeted-and-nonblocking]]
-- [内容寻址归一化边界剥离](methodology-content-addressed-normalization-boundary-strip.md) — 内容寻址哈希归一化三法:①config-无关 canonical 投影(哈希输入==存储文本、递归剥 cache_control 易变 key、绝不复用 config 驱动清洗) ②剥注入样板用 own-line 边界锚定正则非全局(inline 字面提及须存活、容 CRLF) ③易变清单靠真实数据同 session 连续两请求实测枚举非想象 ④测试独立 oracle 非自洽
-- [sync→async 持久化重构不变量](methodology-sync-to-async-persistence-refactor-invariants.md) — 同步持久化改异步必守清单:①shutdown drain-before-close 结构性前置(早期同步关 DB 会丢 drain 期 settle 的异步落盘)且别假设 drain 机制已存在(我初稿声称靠 bus drain 实测 bus.flush 零调用方=虚构)②自有 pending Set drain 非 bus③test fixture teardown 先 drain 再 reset(否则跨测试泄漏 Cannot use closed database)④re-entrancy Set 守卫⑤fire-and-forget 必 never-throw 防 unhandledRejection 崩进程⑥无损时点不变⑦全 test 调用方 await(typecheck 过≠正确,内联 for/map 调用易漏)。扩展 [[methodology-persistence-swallow-plus-lossy-fallback-loses-data]]
-- [改文档前先验 doc-vs-code 方向](feedback-verify-doc-vs-code-direction-before-acting.md) — 文档与代码不一致,动手前先用 git 确证方向:①文档陈旧(改文档配代码)②尚未实现(删行会掩盖缺口)③代码缺陷(改文档会把 bug 固化成规范),三者后果相反;定向工具=git log -S "<符号>" 看最近是加是删 / git log --oneline -- <file> 看文档多久没动 / grep 全树确认符号现存;提交非自己创建的内容须逐条核验,"部分准确"绝不外推"整体准确";陈旧文档不简单删行,加注解(删除 commit/日期)移入 docs/archive。本会话连犯两错(整体提交别人几月前的 shutdown.md 只验两点+发现不一致直接假设陈旧没验方向),方向赌对≠验证过。扩展 [[feedback-pass-null-clean-not-self-validating]]
-- [迁移框架 hybrid forward-runner](methodology-migration-framework-hybrid-forward-runner.md) — 命令式 schema reconcile 升级为迁移框架(Umzug,弃 drizzle-kit)的集成方法论:①hybrid——既有幂等地板(openDatabase reconcile)不动作 conceptual 000、独立 async forward-runner 只追 001+,避 init-改-async 的 ~20 文件 ripple + chicken-egg(Umzug 建账本表前就调 storage.executed())②storage 构造即建表 + executed() 表缺返[] 双 guard→与开库顺序解耦可隔离测,账本落既有 history_meta KV 表(统一账本)③spike 须复现真实接线别预建被测对象(bun spike line-5 预建 history_meta 掩盖 chicken-egg;node spike 不预建→复现→证 guard)④真实模块跨-runtime e2e 需 bundle(Node strict ESM 拒 src 无扩展名 import,bun build --target node 后真 Node 跑;bun test 永走不到 Node driver 腿)⑤schema-硬阻断(DDL 失败 rethrow→exit1)vs 数据-never-throw 二分。扩展 [[methodology-sync-to-async-persistence-refactor-invariants]]
-- [context-edits 回执 telemetry 暂缓](project-context-edits-receipt-telemetry-pending.md) — applied_edits 已接成 context-edits-applied feature(f55fd93);暂缓:7d telemetry 分布 + 实证开 escalation/context_editing 后真有非空回执(现样本全空)
-- [new Headers 异大小写键逗号拼接](reference-new-headers-comma-joins-case-variant-keys.md) — REFERENCE 实测:new Headers(record) 对异大小写同名键(authorization+Authorization)逗号拼接非覆盖;头合并"某组优先"绝不能靠 spread 顺序,必须 merge 前按 lowercased 剔除让位组里所有同名键使两组无交集;落地 strict_request_headers 透传护栏(buildAnthropicHeaders+selectPassthroughHeaders)
-- [当下内聚优先于 future-use·YAGNI 非否决票](feedback-present-cohesion-over-future-use-yagni-not-veto.md) — 用户纠正"将来可能用到有价值但非最强信号";重构决策按当下内聚/职责信号优先,future-use 作加权非否决;模块 docstring 自己警告"两半别混淆"=该拆的自证;present 信号(docstring 消歧/与已抽同类原语不一致/跨抽象层)够强就抽,即便当前单消费者
-- [编译错误:补符号 vs 删引用](methodology-broken-reference-supply-vs-delete.md) — 已提交代码引用缺失符号有两种相反修复:补符号(引用对、定义滞后)vs 删引用(引用 aspirational/违背契约);按消费者契约+独立 oracle 裁决别反射式"让它编译"。活案例:errorLabelFor 引用 ENDPOINT.GEMINI,我先补常量(留死分支)后经 via-responses 测试+legacy client oracle 证其违背"按上游路由标签"契约→改为删除
-- [lint-staged 已移除](tooling-lint-staged-revert-blocks-edit.md) — 本项目 2026-06-29 起**彻底移除** lint-staged/simple-git-hooks,现无任何 pre-commit 门禁(lint 靠手动 `bun run lint`+subagent review)。曾用 dc27883 的 `--no-stash` 消除 stash/revert 沙箱破坏,后被并发 grab-bag 误删一半、本次整理删净补残骸。通用 rollback 三失败模式+检测(sed 验证落盘)+取证已上行 user-level skill **git-commit-discipline:disarming-lint-staged-rollback**,将来重引入必读
-- [信号在 committed 点记录非 per-attempt](methodology-record-signals-at-committed-outcome-not-per-attempt.md) — L2 buffered-retry 逐 attempt 重跑 S5;闭包内 eager 记录的信号/遥测会被 discarded 尝试污染(set-once 标志只挂不清→污染成功 commit=audit C1;计数器被 retry 次数膨胀=H1)。正解镜像 protect-streaming onBufferedResolve:per-attempt 累积(ctx.repairOutcomes)+onAttemptReset 清空+committed settle 点一次 flush;派生量(unrepairableToolInput)现算。"不丢≠不清"
-- [新 config 键必须写进 bundled config.yaml](project-new-config-key-must-document-in-bundled-config-yaml.md) — bundled config.yaml 是默认 SSOT + 自文档清单(每个 anthropic.* 键含 opt-in 默认关的都列出+注释),CONFIG_MANAGED_DEFAULTS 只是兜底;新键收尾必须加进去,别因"兜底够用"(漏可发现性)或"peer 在改该文件"(退让)而漏;config.example.yaml 精简不强求;无守卫测试强制覆盖,靠纪律
+# 记忆库索引（话题 → 归属引用地图）
+
+纯引用层：实质在正式归属（skill / `docs/` / ADR / user-rule），下方每行 stub。合并/清理前 deep-read 正文，不只凭钩子。
+
+## 已下沉到项目 skill 的方法论（记忆文件 = stub 指向）
+
+- [审自己写的测试类型错配必派异模型 reviewer](methodology-audit-own-test-type-fit-via-cross-model-reviewer.md) → skill `choosing-test-type` — 真相域归位 + 试金石 + 错配四型 + stream≠non-stream 独立路径
+- [sync→async 持久化不变量](methodology-sync-to-async-persistence-refactor-invariants.md) → skill `persistence-async-invariants` §1 — drain-before-close / pending Set 不靠 bus / re-entrancy / never-throw / 全 await
+- [信号在 committed settle 点记录](methodology-record-signals-at-committed-outcome-not-per-attempt.md) → skill `persistence-async-invariants` §3 — per-attempt 累积 + onAttemptReset 清空 + committed flush
+- [settle 冻结 history entry 快照](reference-settle-freezes-history-entry-record-before-fail.md) → skill `persistence-async-invariants` §2 — client-facing 数据须 settle 前 record；新顶层字段三处必改
+- [可扩展遥测 registry 三支柱](pattern-extensible-telemetry-registry.md) → skill `telemetry-architecture` 一 — 下沉 sink 层 / 开放 counters bag / 不可重算因子拆最细
+- [遥测 model key 成功失败分裂](reference-telemetry-model-key-split-success-vs-failure.md) → skill `telemetry-architecture` 二 — 成功=规范名/失败=客户端别名；双侧 normalizeModelId
+- [迁移框架 Umzug hybrid](methodology-migration-framework-hybrid-forward-runner.md) → skill `history-sqlite-schema` — hybrid forward-runner / partial-DDL wedge / 跨-runtime e2e 需 bundle
+- [内容寻址归一化边界剥离](methodology-content-addressed-normalization-boundary-strip.md) → skill `history-sqlite-schema` — config-无关 canonical 投影 / 独立 oracle
+- [可恢复 backfill 协作停 + keyset](methodology-recoverable-backfill-cooperative-stop-and-keyset.md) → skill `history-backfill` — 协作 stop / (started_at,id) keyset / dedup tripwire
+- [派生列 backfill 靶向 + 非阻塞](methodology-derived-column-backfill-targeted-and-nonblocking.md) → skill `history-backfill` — 靶向解压别 `SELECT *` / 非阻塞 / 等价性 oracle
+- [逐字节等价是代理按消费者校准](feedback-byte-equivalence-is-proxy-calibrate-by-consumer.md) → skill `large-refactor` §7 — 真 invariant=对在意消费者无可观测变化；三层 oracle
+- [sed 碰过的文件裹入在飞工作](sed-touched-files-bundle-inflight-work.md) → skill `large-refactor` §6 — `git diff --cached --stat` 逐文件对账（1 行改 170 churn=红旗）
+- [声称完备前多维度自审](feedback-multidim-completeness-audit-before-claiming-done.md) → skill `empirical-verification` — 活路径/传输分层/可观测性/副作用四维
+- [UI 交付必跑 build:ui](feedback-verify-ui-with-build-not-just-typecheck.md) → skill `debugging-frontend-tests` — 根 typecheck 不覆盖 ui-v4;权威门 `typecheck:ui-v4`+rollup
+- [改共享 mock 契约打爆 sibling 测试](methodology-shared-mock-contract-change-breaks-sibling-test-files.md) → 拟下沉 `debugging-frontend-tests` — grep 全 `vi.mock` 逐改 + 每 task 跑全量
+- [动大工程前核实命名目标](feedback-verify-named-target-resolves-before-large-work.md) — 用户命名目标先 find/ls 核实;踩坑=Vue `ui/` vs React `ui-v4/`
+- [测试绝不碰真实环境](feedback_tests_never_touch_real_env.md) → skill `test-isolation` — DI 注入临时目录（Bun 忽略 `env.HOME`）；地板=bunfig preload 沙箱
+
+## 已下沉到 ADR（记忆文件 = stub 指向）
+
+- [richest-data-flow 后端完整存](feedback-richest-data-flow-store-complete-no-pruning.md) → ADR `2026-07-05-richest-data-flow` — 永不为 DRY/YAGNI 裁剪；"无数据源"常是没接线该建
+- [合成帧必打可辨识标记](feedback-synthetic-data-must-be-distinguishable-from-real.md) → ADR `2026-07-05-richest-data-flow`（对称面）— 上游轨绝不含合成物、合成物只进 forwarded 轨打标记
+- [读上游轨的投影看不到 forwarded-only rewrite 产物](methodology-upstream-original-projection-misses-forwarded-only-rewrite.md) — recover/filter 只进 forwarded 轨;side channel 旁路传名勿污上游轨;同类站点 grep
+
+## 精炼保留（verification 簇 / 独有教学价值）
+- [通过/空/干净/自洽/doc-vs-code 不自证](feedback-pass-null-clean-not-self-validating.md) — verification 簇根;通用手法 skill `verifying-authoritative-claims`
+- [下完备性判断前先实测每个支撑事实](feedback-verify-facts-before-superlative-completeness-verdict.md) — 尤其 absence/negative 断言最易凭结构推断而错;别贬防御为「只治一半」
+- [诊断日志本身是会撒谎的权威声音](methodology-diagnostic-log-is-authoritative-voice-verify-against-ground-truth.md) — 计数器可能只接部分路径、恒打零;别信自报探 history 上游轨;收紧入参用类型逼全站点
+- [从日志断代码有缺陷前先核实运行进程含修复](methodology-verify-running-server-has-fix-before-diagnosing-from-log.md) — 生产日志可能陈旧进程打;ps lstart vs 提交时刻 + merge-base 核祖先
+- [V3 direct-driver 测试两 gotcha](methodology-v3-direct-driver-test-async-finalize-race-and-arena-enrichment-oracle.md) — getEntry 撞异步 finalize race(须 await whenModelOperationFinalized)·arena-value 富化于 wire 令 golden oracle 过严(projection 读 observation.type 非 value.type);V2→V3 迁移令旧测试同步假设失同步
+- [reasoned-safe≠tested / producer wire-oracle 必断全序](methodology-reasoned-safe-not-tested-producer-wire-oracle.md) — reviewer「推理安全」也错;client-facing wire 须 producer oracle 断完整帧序 + 真实产出
+- [client 源码 grep ≠ REST 上游能力](methodology-client-source-grep-not-rest-capability-probe-endpoint.md) — 代理型上游 REST 表面>client 子集;须 curl 打端点;实例=「GHC 无 count_tokens」被证伪
+- [从 primitive 推理别从流行 wrapper 泛化](methodology-reason-from-primitive-not-dominant-wrapper.md) — 干净 primitive vs 耦合全局 wrapper 并存,判风险从 primitive 实现推理
+- [归 config 还是归代码：先辨丢信息 vs 等价变换](methodology-classify-lost-info-vs-equivalence-before-config-migration.md) — 丢信息→config,拼写等价→回查 catalog;移隐式转换前追 resolvedName 定爆炸半径
+- [面向用户永久只用中文、禁日语](feedback-chinese-only-never-japanese.md) — 输出层自检语言=中文;内部推理无所谓
+- [闻到怪味永远大声报警绝不粉饰](feedback-never-paper-over-smells-warn-loudly.md) — 名实不符当场停下显眼报警;踩坑=扩内容留旧名 shutdown 糊过(已改 lifecycle.md)
+- [写 plan 引用现有接线须核实位置与桥接](methodology-plan-verify-interface-location-and-wiring-channel.md) — 同名 interface 核实确切文件;诊断落盘唯一通道=pipelineInfo(recordFeature 不落盘);新 union 打爆 ui-v4 穷尽 Record
+- [畸形 tool_use 全人群扫描法](methodology-malformed-tooluse-full-population-scan.md) — 查全 decode error 别只看 error_message;分真缺陷 vs abort 伪畸形;实例=\uXXXX 击中 opus-4.8
+- [GHC Responses item.id 每事件重加密](reference-ghc-responses-item-id-reencrypted-per-event.md) → skill `ghc-api-reference` — 跨事件关联用 output_index/call_id 不用 item.id;曾致 tool_call 2× 翻倍;修=finalizedOutputIndexes
+- [exactly-one-message_start 须覆盖两条转发腿](reference-exactly-one-message-start-both-forward-legs.md) → spec §10.10 — keepalive 注入器漏 live 早转发腿;修=reconcileLiveFrame 置 messageStartForwarded flag;producer-oracle 断全序
+- [配置哲学独立：留兼容层 + 警告并继续](feedback-config-philosophy-separate-compat-and-warn-continue.md) — 配置不享代码「无向后兼容负担」;键重命名留旧键别名;热重载绝不因配置杀进程
+- [微改动别反射式派 subagent 评审](feedback-tier-subagent-review-skip-for-mechanical-micro-changes.md) — 与 user-rule 41 `tiered-review-by-risk` 合读;机械低风险走 TDD、微改攒批合并态审
+- [agent 后台连挂也绝不自作主张换模型](feedback-never-unilaterally-switch-agent-model-on-flakiness.md) — API 错误连挂也永远 resume 原 agent、绝不擅换模型家族(破坏异模型对抗、是用户决策)
+- [eslint --cache 假绿](tooling-eslint-cache-false-pass.md) — `--cache` 对过期文件假绿;`lint:all` 已去 cache、核单文件 `bunx eslint <path>`
+- [eslint --fix 的 .at() autofix 破类型](tooling-eslint-fix-at-autofix-breaks-types.md) — `prefer-at` 把 `arr[len-1]`→`.at(-1)`(返 T|undefined);--fix 后**必重跑 typecheck**、测试照绿会漏
+- [测试跑 real codex 用 CODEX_HOME 隔离、--ephemeral 不够](reference-codex-ephemeral-insufficient-use-codex-home.md) — --ephemeral 只抑 rollout;memories/state 仍写真 ~/.codex;每次套 `CODEX_HOME=$(mktemp -d)`;代理侧对应物是 XDG_DATA_HOME
+- [node_modules 存在 ≠ 锁文件事实](reference-node-modules-presence-not-lockfile-truth.md) — 可能是 prune 的 orphan;选依赖前 `grep '"<pkg>@' bun.lock`
+- [worktree bun add 后主树须补 install](reference-worktree-bun-add-needs-main-tree-install-after-merge.md) — 隔离 worktree `bun add` 只进该树;FF 合并后主树须 `bun install`
+- [server.ts 与 test-app.ts 双份 notFound 镜像](reference-server-vs-test-app-dual-notfound-mirror.md) — 改 server 中间件/notFound 须用真实 createServer 测(createFullTestApp 无中间件镜像);config 中间件每请求覆盖 state→level 测须 config 文件驱动
+- [起测试服务器端口被 peer 占用会静默打到 peer mock](reference-spawn-fails-silently-hits-peer-server-verify-port-ownership.md) — launcher 静默失败但 health 仍绿;spawn 后必验 server.log 无 port-in-use + ss 真监听 PID 是我的
+- [编译错误：补符号 vs 删引用](methodology-broken-reference-supply-vs-delete.md) — 按消费者契约 + 独立 oracle 裁决,别反射式"让它编译"
+- [复用共享原语选完整版非小版、否则静默丢字段+单测假绿](methodology-full-primitive-not-partial-else-silent-field-drop.md) — usageFromTotalInput vs netInputTokens 丢 reasoning_tokens;3 次复发、合并态审+coverage 才逮;映射测须构造每个非平凡字段
+- [「别继承退化」建议只在目标真有对应值时成立](methodology-degradation-advice-scoped-to-target-has-equivalent.md) — content_filter→refusal 过度改进;目标无对应值→诚实退化+marker;实现者采纳审计意见最易过度应用、orchestrator 亲手核实两侧类型才裁
+- [修全部比较点](feedback-fix-all-comparison-sites.md) — 归一化键/id bug 多点复发;grep 全仓逐处修+抽共享 primitive;盲区靠合并态审逮
+- [变体路由既有 outcome + 穷尽 Record 审计](methodology-route-variant-to-existing-outcome-and-exhaustive-record-audit.md) — 路由既有 outcome 复用全 handler + 类型系统逼出全站点
+- [新策略被更宽 matcher 首命中遮蔽](methodology-new-strategy-shadowed-by-broader-first-match.md) — 加 retry 策略前 grep 同错误子串既有 matcher;收紧旧正则+新策略排前
+- [全套件红先分类再套污染 playbook](methodology-full-suite-red-classify-before-pollution-playbook.md) — 单跑过+全套件挂才真污染;`git log -S` 定 peer commit
+- [架构图优化 Agent 上下文经济](feedback-architecture-map-optimize-agent-context-economy.md) — 价值轴=上下文经济+可信度;目录级关系图+现状小节+L1 存在性守卫测试
+- [交用户前先 subagent review（含 in-chat 提案）](feedback-subagent-review-before-any-user-facing-proposal.md) — 审查门适用任何交付物含对话里直接呈现的设计
+- [用户对齐只证方向对、非细节最优](feedback-user-alignment-confirms-direction-not-detail-optimality.md) — brainstorming 逐节点头≠细节最优;落盘 spec 前仍须过异模型对抗审
+- [后端抖动挂的 Agent 必须只 SendMessage resume](feedback-backend-flakiness-must-sendmessage-resume-no-alternatives.md) — 失败→强制单一路径 resume 原 agent,不派替代/不换模型
+- [空闲等后台 agent 主动做 dead check](feedback-proactive-liveness-dead-check-on-background-agents.md) — 别被动干等;stat output mtime 判活;抖动/stall→resume、用户停止不可 resume→仅用户明确要求才起新
+- [计划的红绿 mutation 预测可能错、执行期真跑验证](methodology-plan-red-green-mutation-prediction-can-be-wrong-verify.md) — plan「注释 X 行→变红」可能不咬(更早前置条件遮蔽);真跑 mutation、不咬则别提交假绿、降 characterization+记 backlog
+- [git commit -- pathspec 取工作区非 index](git-commit-pathspec-commits-worktree-not-index.md) — 共享 worktree 最终提交一律 pathspec,免疫 peer 并发 `git add` 的 index race
+- [语义合并冲突暴露对方 timing 潜伏 bug](methodology-semantic-merge-conflict-exposes-latent-bug-via-timing.md) — 两边各自绿合并却坏;静态 diff 逐字节等一侧≠行为同,根因在运行时数据/时序→instrument 探针别死盯 diff;判归属纯父分支复现;修法补全对方设计非回退;`test:backend` 排除 `.e2e.test.ts`
+- [谁合并谁退让、但必须合并](feedback-merger-yields-but-merge-must-happen.md) — 并发落地不因主树 WIP 跳过合并;退让=行级共存两份都保+备份→选择性 stash 重叠文件→FF→pop 三方合并;对方改动依赖 untracked 时只作未提交叠回不吞其特性
+- [eslint --fix 宽扫入并发既有 dirt](tooling-eslint-fix-broad-sweeps-concurrent-dirt.md) — 宽集只 check 不 fix;显式 pathspec 只提交自己文件
+- [lint-staged 已移除](tooling-lint-staged-revert-blocks-edit.md) — 2026-06-29 起无 pre-commit 门禁;rollback 见 skill `git-preference:disarming-lint-staged-rollback`
+- [覆写迁移前审计真实库原始字段](methodology-migration-audit-raw-fields-not-just-projection-oracle.md) — projection-等价 oracle 对已死字段是盲的;覆写前只读探针枚举真库字段
+- [一次性 connected 快照须常驻根订阅](methodology-one-shot-connected-snapshot-needs-root-subscriber.md) — WS `connected` 携初始快照无缓存;snapshot-then-delta 消费者须挂常驻宿主(AppShell)
+- [穷举可行方案面再择优](methodology-exhaust-then-choose-over-single-solution.md) — 并行 subagent 分层穷举→实测 supersede 源码推断→异模型审→exp/FINDINGS 择优
+- [跨 phase 集成缝只在合并态审能抓](methodology-cross-phase-integration-seam-only-caught-at-merged-state.md) — Phase A 契约被下游漏接线逐 task 审看不到、只 whole-branch 逮;死枚举是红旗
+- [并发分片的环境/路径分支缝 per-task+全量都证不了](methodology-merged-state-review-catches-env-branch-seam.md) — 合并态对抗审查须点名对每条路径(supervised vs bare-metal)第一人称走查;数据完整性判据须环境无关(存活性)非某路径记得填的外部名单;merge auto-合并无文本冲突≠语义正确(静默吞 peer 文件、先分类再信基线)
+- [CLI e2e spawn+hook 两机制](reference-cli-e2e-spawn-and-hook-load-gotchas.md) — hook 经 data-URL 加载丢具名导出→帧存 base64;`proc.kill()` 漏杀真 server;权威 `exp/cli-e2e-stall/FINDINGS.md`
+- [Bun 忽略 import ?v= query;热重载用项目内唯一文件(非 data-URL)](reference-bun-esm-cache-busting-query-fails-data-url-works.md) — Bun 按路径缓存 ESM、`?v=` 静默返旧;data-URL 绕缓存但**不解析 `~/` 别名**(实测证伪、带 import 的 hook 丢导出);可行=转译后写唯一项目文件再 import(绕缓存+解析别名两得)
+- [picocolors 在 bun test 塌缩成恒等](reference-picocolors-collapses-to-identity-in-bun-test.md) — 测退化文本;改测引用相等 + FORCE_COLOR 子进程 SGR
+- [迁移副作用旧路径仍被 eager 求值→双触发](methodology-migrate-side-effect-old-path-still-eager-evaluated.md) — driver eager 求值 `deps.strategies` 仍触发→双记;根因修=抽 lazy resolver
+- [无疑问改进当场做](feedback-slam-dunk-fixes-do-immediately.md) — 更好+无取舍+无分叉三条全中就立即改,别以超范围推迟
+- [自以为暂缓的任务先核实没被 peer 落地](feedback-verify-deferred-task-not-already-landed-before-designing.md) — 并发仓库「暂缓」是时间点声明;写设计/handoff 前 grep 现码+RFC 状态行核实;撞车先保留自己分析做对比、别急删(用户纠正:删了要找回)
+- [绝不推荐短期止血方案](feedback-never-propose-short-term-mitigation.md) — 有根因可修就只提根因;「打开 gated feature 绕过」也算短期将就、禁列选项
+- [现有代码无权威、别为将就它降格最佳方案](feedback-existing-code-has-no-authority-dont-accommodate.md) — 诡异症状=设计错的证据;别把「在现有架构里可行吗」的锚点写进 subagent prompt 让审查背书将就
+- [恢复 agent 永远 SendMessage 绝不 Agent tool 重派](feedback-resume-agent-always-sendmessage-never-agent-tool.md) — 已终止/已完成 subagent 接续永远 `SendMessage`、绝不 `Agent` 重派(丢上下文);唯一 Agent 新派=真全新独立任务
+
+## project 现状 stub（权威看正式归属；「全 landed」项细节在 docs/git）
+- [合成/改写帧 forwarded 轨完整性（Unit2/3 全量+Unit1 缩减 landed master 2026-07-20）](project-synthetic-frame-forwarded-track-completeness-spec.md) — 三单元;Unit1 原前提被 History V3 实测推翻(durable 已完整、只治瞬态快照);Unit2 responseFrame 展开·Unit3 writeSynthetic 读 tag 根因修+raw-canonical FeatureKind;两轮异模型审 0 blocker;reaper 两阶段待 backlog
+- [Responses buffered-merge（全 36 task landed 分支，待合并 master）](project-responses-buffered-merge-landed.md) — 候选托管 reducer + 两正交旋钮(drop-delta/repair-if-incomplete 默认);承重=buffered 默认 ON 致 drop-delta 作用于所有 Responses 流、纯 delta 累加者拿空文本;bare-driver harness 不可行须 HTTP e2e;@ai-sdk 比官方 openai 更宽容;权威 DESIGN 活的架构现状行 + spec/plan 2026-07-14
+- [transport 配置三轴归位（P1-P5 全 landed master 2c19c7cf）](project-transport-config-three-axis-reorg.md) — timeouts 看门狗/upstream_transport egress/server.responses_ws ingress;0 语义统一+SOCKS 诚实拒 0;WS 无 keepalive 键;热重载 generation retire-and-replace;每相位 TDD 逼出真 bug(Bun pre-header bare-close·集合字段损坏·WS never-throw 半实现·dead export);权威 ADR/spec 2026-07-14 + DESIGN 活的架构现状
+- [History 三层降温归档（已合并 master，lifecycle follow-up `27b65b89`）](project-history-tiered-archive.md) — HOT→tier-1→不可变 session-generation sealed units；move 永不真删；Archive worker 以 durable unit 协作停/续跑、并发 sibling 全 settle 后关 DB；同 session 增量不覆盖；用户重启实例已实证加载
+- [对称四点 hook 架构重构（已实施合并 master 2a77bf7c）](project-symmetric-four-point-hooks.md) — client/upstream×in/out+exchange;四格式 async 入站下沉 driver S1b translateInbound;client.inbound 剥 TodoWrite;7 phase 全绿+verifier 验收;实测教训=data-URL 不解析别名·config-freshness 须 parse 前;权威 RFC docs/rfc/2026-07-14-symmetric-four-point-hooks
+- [请求生命周期 cancel/settle/quiesce（四根因+C5 结构全合 master）](project-request-lifecycle-cancel-settle-quiesce.md) — 2800s 越超时多根因;RFC 6 轮对抗复核逼出 3 死锁/orphan 缺陷;RC1-4 治根+C5(operation 三态/双 registry/drain-等-operation/driver 追踪 exchange)全 landed master;承重=有界 grace+per-request 精确 timer>周期 scan;剩低频站点接线;并发合并纪律=等 peer 提交后 3-way 自动合不 force
+- [请求首包/时序埋点（landed master f982e0e3）](project-request-timing-instrumentation-landed.md) — 上游4刻/客户端3刻/fleet DDSketch;承重=两段显式投影+WS 剥 event 行+谓词收完整帧
+- [AskUserQuestion 顶层 question 键抢救（landed master）](methodology-plan-verify-interface-location-and-wiring-channel.md) — salvage→兜底 header→strip;诊断落盘唯一=pipelineInfo;权威 docs/spec+plan/2026-07-13-askuserquestion-toplevel-key-salvage
+- [block 级缓冲重试（P0-P4 landed,剩 gated 翻转）](project-block-level-buffered-retry-execution.md) — merge master c2012555(默认 OFF);P1 wire 缺陷被绿测放过→3轮修;翻默认前门=真 CLI+scenario-B
+- [上游错误→客户端形态整形（spec+plan 评审中）](project-upstream-error-client-shaping.md) — 按 commit 阶段分治;Phase 6 依赖 P1;权威 docs/spec+plan/2026-07-13-upstream-error-client-shaping
+- [anthropic↔responses 直接桥（Phase 0-7 全 landed + 4 次合并态审查 + 收官）](project-anthropic-responses-direct-bridge.md) — 推翻 CC-as-canonical、lossless-per-pair 为默认;per-pair 穷尽桥表 + 前向/反向六腿直连 + reasoning 全链路 round-trip 两向(claude-signature 载体 byte-exact、探针 e 背书)+ 两场景 model_translation + server-tool 透传/降级;`model_overrides`→`model_mappings`;权威 RFC + ADR 2026-07-14-lossless-per-pair-bridge + DESIGN 活的架构现状行
+- [unknown HTTP endpoint 可配置日志（Task1-3 landed，Task4 部分）](project-unknown-endpoint-logging.md) — 404/405 配日志级别;影子 TrieRouter 绕中间件污染+三态分类(route-owned 保 404);config.yaml/schema.json/DESIGN 待 peer model_mappings 后补;权威 docs/spec+plan/2026-07-14
+- [auto-truncate 移除 + calibration 重定位（实施未合并）](project-remove-auto-truncate-keep-calibration.md) — worktree rebase 风险;权威 RFC/plan 2026-07-13
+- [web_search 双跳退役（2026-07-13 landed）](project-web-search-double-hop-retired.md) — 双跳+config 键整套删;教训=称职实现≠有需求;权威 ADR 2026-07-13-server-tool-positioning
+- [上游 hook 中间件（spec v2 定稿，待用户审）](project-upstream-hook-middleware.md) — driver 三挂载点;承重=hook 帧进上游轨必打 synthetic 标记;权威 docs/spec/2026-07-12
+- [通用翻译矩阵（Phase 0-7 landed master）](project-universal-translation-matrix.md) — 4入站×3出站 hub-spoke;承重=反向绝不合成 thinking、三反向 pump 须 streamError 门;权威 RFC v5 + DESIGN.md
+- [GPT reasoning→Anthropic thinking 透传（landed master）](project-reasoning-passthrough-synthetic-thinking.md) — summary:auto/标签封装签名 round-trip;前向哨兵 thinking≠反向绝不合成;权威 DESIGN.md 矩阵行④
+- [codec cell-assembly 重构（C0-C6 landed + 清理完成）](project-inbound-outbound-cell-assembly-refactor.md) — (clientFormat×targetEndpoint) 双穷尽 Record;死码删+hub 提取+gemini 剥前缀;入口 docs/plan/inbound-outbound-split/
+- [遥测分层持久化（P0-P7 landed master）](project-telemetry-tiered-storage.md) — telemetry.db(三层 rollup+DDSketch);承重=cost防2^53·γ绑db·cumulative-cap DB-seeded;对抗审逼出2静默持久化缺陷;权威 spec+plan+DESIGN
+- [交互式 TUI live 面板（P0 merge，P1/P2 待做）](project-tui-interactive-live-panel.md) — 折叠 footer↔面板↔detail+行级动作;权威 RFC/ADR/plan 2026-07-10-*
+- [ui-v4 shadcn 重设计（讨论中/未实施）](project-ui-v4-shadcn-redesign-decisions.md) — new-york+锐角+Amber+布局 A;权威 ADR ui-v4/docs/decisions/2026-07-10;代码 agent 写 [[feedback-ui-v4-code-authored-by-agents]]
+- [ui-v4 代码由 agent 协作编写](feedback-ui-v4-code-authored-by-agents.md) — 措辞不用"手搓"贬义;重构自由度放宽(守可恢复性底线)
+- [Codex/Responses tier-1 硬化（landed master）](reference-undici-websocket-runtime-split-bun-vs-node.md) — 关闭码1000+guardCallback+下游保活+opt-in buffered(默认 OFF);权威 DESIGN.md
+- [runtime-split：undici WS Bun vs Node](reference-undici-websocket-runtime-split-bun-vs-node.md) — Bun→原生(有 ping、容忍 1001)/Node→真 undici(无 ping、抛 invalid);属 skill `bun-node-runtime-gotchas`
+- [keepalive 无条件 timeout-safety（landed）](project-keepalive-unconditional-timeout-safety-landed.md) — 分支 MERGE-READY 待 user-run oracle;权威 ADR 2026-07-09 + spec §10
+- [v4 流水线重构（landed）](project-v4-pipeline-rearchitecture.md) — v4 P0-P3 + response-pipeline Stage A/B;权威 DESIGN.md + archive/2606-landed-rfcs/
+- [GHC 三特性对齐（landed）](project-ghc-feature-alignment-landed.md) — tool-search default-allow / extended-cache-ttl / memory tool;现状 skill `ghc-api-reference`
+- [history client/upstream 双腿重构（landed 5db1aff6）](project-history-client-upstream-legs-landed.md) — clientRequest/clientResponse+model{}+attempts[];权威 DESIGN.md「类型架构」
+- [thinking「cannot be modified」400 三层修复（并 master）](reference-undici-websocket-runtime-split-bun-vs-node.md) — 权威 docs/spec/2026-07-07-thinking-signature-quarantine + skill `ghc-anthropic-upstream`(根因=相邻性;逐块 poison 判「空明文≠毒化」)
+- [反应式学习 TTL 生命周期 + Learned 页（landed 67afa1af）](project-negotiation-learning-lifecycle-landed.md) — per-entry TTL+pin,单一判据 `isEntryActive`;权威 docs/spec/2026-07-08
+
+## 已删除记忆的话题去向
+通用工作原则 → user-rule + CLAUDE.md + skill `session-closeout` / `git-preference`。已归档完成叙事 → `docs/archive/memory/`。散落调试参考收编为 on-demand skills：`bun-node-runtime-gotchas` / `debugging-{claude-client-connection,server-crashes,ghc-api-upstream-transport}` / `ghc-anthropic-upstream` / `ghc-api-reference`。

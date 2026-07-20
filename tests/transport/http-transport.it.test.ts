@@ -30,6 +30,7 @@ import {
   _resetShutdownState,
   gracefulShutdown,
 } from "~/lib/shutdown"
+import { StreamReaperCancelError } from "~/lib/stream"
 import { createUpstreamHttpTransport } from "~/lib/transport/http-transport"
 
 import {
@@ -39,11 +40,15 @@ import {
 } from "../helpers/mock-fetch"
 import { createMockServer } from "../helpers/mock-server"
 import { createMockTracker } from "../helpers/mock-tracker"
-import { createSseResponse } from "../helpers/sse"
+import {
+  //
+  createSseResponse,
+  createSseResponseThenBlock,
+} from "../helpers/sse"
 import { autoRestoreState } from "../helpers/state-fixture"
 
-function makeEnv(): RequestEnvelope {
-  const ctx = { addQueueWaitMs: () => {} }
+function makeEnv(over?: { lifecycleSignal?: AbortSignal }): RequestEnvelope {
+  const ctx = { addQueueWaitMs: () => {}, lifecycleSignal: over?.lifecycleSignal }
   return { model: { id: "gpt-4o" }, clientFormat: "openai-cc", ctx } as unknown as RequestEnvelope
 }
 
@@ -84,6 +89,61 @@ describe("createUpstreamHttpTransport", () => {
     expect(frames.map((f) => f.data)).toEqual(['{"choices":[{"delta":{"content":"hi"}}]}', "[DONE]"])
     expect(upstream.nonStream).toBeUndefined()
     expect(upstream.headers.get("x-upstream")).toBe("yes")
+    expect(upstream.lifecycle).toBeDefined()
+    await expect(upstream.lifecycle!.quiesced).resolves.toBeUndefined()
+    await expect(upstream.lifecycle!.dispose()).resolves.toEqual({ quiesced: true, connectionReusable: true })
+  })
+
+  test("physical open returns a mandatory stream lifecycle", async () => {
+    setFetchMock(() => createSseResponse(['data: {"choices":[]}\n\n']))
+    const transport = createUpstreamHttpTransport({ idleTimeoutMs: 5000 })
+
+    const result = await transport.open(makeWire({ stream: true }), makeEnv())
+
+    expect(result.kind).toBe("stream")
+    if (result.kind !== "stream") throw new Error("expected stream physical result")
+    expect(result.lifecycle).toBeDefined()
+    await result.lifecycle.dispose("test")
+  })
+
+  test("client abort disposes an unconsumed streaming body before quiesced resolves", async () => {
+    const clientAbort = new AbortController()
+    setFetchMock(() => createSseResponse(['data: {"choices":[]}\n\n']))
+    const transport = createUpstreamHttpTransport({ idleTimeoutMs: 5000, clientAbortSignal: clientAbort.signal })
+    const upstream = await transport.send(makeWire({ stream: true }), makeEnv())
+
+    clientAbort.abort()
+
+    await expect(upstream.lifecycle!.quiesced).resolves.toBeUndefined()
+    const iterator = upstream.frames[Symbol.asyncIterator]()
+    await expect(iterator.next()).rejects.toThrow(/abort|cancel/i)
+  })
+
+  test("mid-stream reaper (ctx.lifecycleSignal) → guarded frames throw StreamReaperCancelError (live client gets a frame, NOT clean-EOF/settled-abort)", async () => {
+    // The transport folds `env.ctx.lifecycleSignal` into the guard's `reaperSignal` (http-transport.ts:88/119).
+    // When the stale reaper / request-deadline force-fails an ACTIVELY STREAMING request, that signal fires
+    // mid-stream and the guard must throw `StreamReaperCancelError` — its OWN provenance, distinct from a
+    // client disconnect. That routes to the driver's `stream-error` outcome, so the handler delivers a
+    // terminal error frame to the STILL-CONNECTED client + settles `failed`. This is the regression guard for
+    // the wiring: if `reaperSignal: env.ctx.lifecycleSignal` were dropped, a mid-stream reap would only abort
+    // the fetch (post-response) → Bun delivers that local close as a clean `done:true` → the handler would
+    // false-settle `complete` (an [OK] observability LIE, acute on Responses-via-fallback whose synthesized
+    // `response.completed` masks the truncation). Unit-level guard/classify tests can't catch a dropped
+    // transport wire — this .it seam can.
+    const reaper = new AbortController()
+    setFetchMock(() => createSseResponseThenBlock(['data: {"choices":[{"delta":{"content":"hi"}}]}\n\n']))
+    const transport = createUpstreamHttpTransport({ idleTimeoutMs: 5000 })
+    const upstream = await transport.send(makeWire({ stream: true }), makeEnv({ lifecycleSignal: reaper.signal }))
+
+    const iterator = upstream.frames[Symbol.asyncIterator]()
+    // The first real frame flows through the guard normally.
+    const first = await iterator.next()
+    expect(first.done).toBe(false)
+    expect((first.value as UpstreamFrame).data).toBe('{"choices":[{"delta":{"content":"hi"}}]}')
+
+    // Reaper force-fails mid-stream (upstream is now blocked, past the last frame).
+    reaper.abort()
+    await expect(iterator.next()).rejects.toBeInstanceOf(StreamReaperCancelError)
   })
 
   test("non-streaming: returns nonStream JSON + empty frames", async () => {
@@ -93,6 +153,19 @@ describe("createUpstreamHttpTransport", () => {
     const upstream = await transport.send(makeWire({ stream: false, body: { model: "gpt-4o", messages: [], stream: false } }), makeEnv())
     expect(await collect(upstream.frames)).toEqual([])
     expect(upstream.nonStream).toEqual({ id: "cc-1", choices: [] })
+    await expect(upstream.lifecycle!.quiesced).resolves.toBeUndefined()
+  })
+
+  test("physical open returns json and typed failed-open variants", async () => {
+    const transport = createUpstreamHttpTransport({ idleTimeoutMs: 5000 })
+    setFetchMock(() => new Response(JSON.stringify({ id: "json" }), { status: 200, headers: { "content-type": "application/json" } }))
+    const success = await transport.open(makeWire({ stream: false }), makeEnv())
+    expect(success).toMatchObject({ kind: "json", body: { id: "json" } })
+
+    setFetchMock(() => new Response("bad", { status: 500 }))
+    const failed = await transport.open(makeWire({ stream: false }), makeEnv())
+    expect(failed.kind).toBe("failed-open")
+    await expect(failed.lifecycle.quiesced).resolves.toBeUndefined()
   })
 
   test("non-ok upstream → throws HTTPError with the endpoint's error label", async () => {

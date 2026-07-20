@@ -49,6 +49,8 @@ export interface UpstreamFetchInit {
    * The plain-`http` (undici) path does not surface trailers and never calls this.
    */
   onTrailers?: (trailers: Record<string, string>) => void
+  /** HTTP/2-only physical stream close notification, after all local req callbacks are detached/fired. */
+  onStreamClosed?: () => void
 }
 
 type UpstreamFetchFn = (url: string | URL, init: UpstreamFetchInit) => Promise<Response>

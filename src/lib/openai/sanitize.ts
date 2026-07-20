@@ -7,7 +7,7 @@
 
 import consola from "consola"
 
-import type { SanitizeResult } from "~/lib/request/pipeline"
+import type { SanitizeResult } from "~/lib/request/retry-types"
 import type {
   //
   ChatCompletionsPayload,

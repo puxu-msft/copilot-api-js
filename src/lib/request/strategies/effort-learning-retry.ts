@@ -30,7 +30,7 @@ import type {
   RetryAction,
   RetryContext,
   RetryStrategy,
-} from "../pipeline"
+} from "../retry-types"
 
 /** Pull the raw upstream response body — where the `invalid_reasoning_effort` code lives. */
 function responseBodyOf(error: ApiError): string | null {

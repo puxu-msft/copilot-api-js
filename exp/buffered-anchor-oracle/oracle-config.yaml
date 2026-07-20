@@ -1,0 +1,16 @@
+# Isolated proxy config for the buffered empty_text anchor oracle run.
+# Consumed by an INDEPENDENT copilot-api instance on :4142 (XDG_DATA_HOME isolated),
+# NOT the live :4141. Only lists overrides vs the bundled config.yaml defaults;
+# every other key deep-merges from bundled (mergeBySchema, ZodObject field-by-field).
+#
+# ghc_api_base_url is HTTPS so the proxy routes the upstream through its production
+# node:http2 client (upstream-fetch.ts: https → http2Fetch) — which works under Bun,
+# unlike the undici HTTP/1.1 path a plaintext http:// mock would force. start-proxy.sh
+# also passes this via --ghc-api-base-url (CLI > config); the proxy trusts the mock's
+# self-signed cert via NODE_EXTRA_CA_CERTS (see start-proxy.sh).
+ghc_api_base_url: "https://localhost:8890"   # → mock GHC upstream (h2; also passed via CLI)
+anthropic:
+  protect_streaming_generation: tool_use_only  # enter buffered path (CC always sends tools)
+  stream_keepalive_mode: empty_text            # the anchor mode under test (contrast arm flips to content_delta)
+  stream_commit_after_sec: 20                  # delayed-commit window
+  stream_keepalive_ping_sec: 20                # heartbeat cadence → ~20s anchor injection

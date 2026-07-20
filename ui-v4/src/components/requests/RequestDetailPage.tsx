@@ -1,22 +1,18 @@
-import { useNavigate } from "react-router-dom"
+import { DesignFork } from "@/components/shell/DesignFork"
 
-import { DetailPanel } from "@/components/detail/DetailPanel"
+import { RequestDetailLegacy } from "./RequestDetailLegacy"
+import { RequestDetailShadcn } from "./RequestDetailShadcn"
 
-/** Requests 详情全屏页(Plan 08 §2):返回列表按钮 + DetailPanel 占满主内容区。 */
+/**
+ * fork B · Requests 详情全屏页 RoutePage。经 `DesignFork` 原语按设计版本(design version)互斥挂载
+ * legacy(`RequestDetailLegacy`,Terminal Amber,竖排 sub-rail,冻结)/ shadcn(`RequestDetailShadcn`,
+ * 水平 Tabs 重设计)页元素。本文件不含 store 字段标识符(唯一读取者是 DesignFork)→ requests/ 域 grep 守卫零命中。
+ */
 export function RequestDetailPage() {
-  const navigate = useNavigate()
   return (
-    <div className="flex h-full min-h-0 flex-col">
-      <button
-        type="button"
-        onClick={() => navigate("/requests")}
-        className="mono shrink-0 border-b border-[var(--color-border)] px-2 py-1 text-left text-[12px] text-[var(--color-primary)]"
-      >
-        ‹ 返回列表
-      </button>
-      <div className="flex min-h-0 flex-1 flex-col">
-        <DetailPanel />
-      </div>
-    </div>
+    <DesignFork
+      legacy={<RequestDetailLegacy />}
+      shadcn={<RequestDetailShadcn />}
+    />
   )
 }

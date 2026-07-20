@@ -109,9 +109,7 @@ describe("POST /v1/messages — server-tool-rejection self-healing", () => {
       copilotToken: "test-token",
       accountType: "individual",
       vsCodeVersion: "1.100.0",
-      fetchTimeout: 0,
-      webSearchEnabled: false,
-      stripServerTools: false,
+      responseHeaderTimeout: 0,
     })
     applyFetchMock(upstreamFetchMock)
     setModels({

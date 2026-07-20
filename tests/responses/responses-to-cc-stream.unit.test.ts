@@ -14,8 +14,47 @@ import {
 } from "~/lib/openai/translate/responses-to-cc-stream"
 
 describe("createStreamTranslator", () => {
+  test("ALWAYS emits the usage chunk on completion (no include_usage needed) + carries cache_write", () => {
+    // Regression for the CC→Responses streaming usage loss: history/telemetry read
+    // the accumulated CC chunks, so usage MUST be emitted regardless of a client
+    // stream_options.include_usage signal (the translator no longer gates on it).
+    const translator = createStreamTranslator()
+    translator.translate({
+      type: "response.created",
+      sequence_number: 0,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      response: { id: "r1", object: "response", created_at: 1, status: "in_progress", model: "gpt-5", output: [], usage: null, tools: [], tool_choice: "auto", parallel_tool_calls: false, store: false } as any,
+    })
+    const completed = translator.translate({
+      type: "response.completed",
+      sequence_number: 1,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      response: {
+        id: "r1",
+        object: "response",
+        created_at: 1,
+        status: "completed",
+        model: "gpt-5",
+        output: [],
+        usage: { input_tokens: 1000, output_tokens: 50, total_tokens: 1050, input_tokens_details: { cached_tokens: 600, cache_write_tokens: 300 } },
+        tools: [],
+        tool_choice: "auto",
+        parallel_tool_calls: false,
+        store: false,
+      } as any,
+    })
+    // 2 chunks: the finish-reason chunk + the always-emitted usage chunk.
+    expect(completed).toHaveLength(2)
+    expect(completed[1]?.usage).toMatchObject({
+      prompt_tokens: 1000,
+      completion_tokens: 50,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      prompt_tokens_details: { cached_tokens: 600, cache_write_tokens: 300 } as any,
+    })
+  })
+
   test("translates text deltas and emits a usage chunk on completion", () => {
-    const translator = createStreamTranslator({ includeUsage: true })
+    const translator = createStreamTranslator()
 
     const created = translator.translate({
       type: "response.created",
@@ -39,6 +78,7 @@ describe("createStreamTranslator", () => {
       sequence_number: 1,
       output_index: 0,
       content_index: 0,
+      item_id: "msg_1",
       delta: "Hello",
     })
     const completed = translator.translate({
@@ -83,7 +123,7 @@ describe("createStreamTranslator", () => {
   })
 
   test("tracks tool call indexes and emits tool_calls finish_reason", () => {
-    const translator = createStreamTranslator({ includeUsage: false })
+    const translator = createStreamTranslator()
 
     translator.translate({
       type: "response.created",
@@ -159,7 +199,7 @@ describe("createStreamTranslator", () => {
   })
 
   test("emits refusal delta as a content delta chunk", () => {
-    const translator = createStreamTranslator({ includeUsage: false })
+    const translator = createStreamTranslator()
 
     translator.translate({
       type: "response.created",
@@ -193,7 +233,7 @@ describe("createStreamTranslator", () => {
   })
 
   test("tracks indexes for multiple parallel function_call items", () => {
-    const translator = createStreamTranslator({ includeUsage: false })
+    const translator = createStreamTranslator()
 
     translator.translate({
       type: "response.created",
@@ -278,7 +318,7 @@ describe("createStreamTranslator", () => {
   })
 
   test("ignores output_item.added when item type is not function_call", () => {
-    const translator = createStreamTranslator({ includeUsage: false })
+    const translator = createStreamTranslator()
 
     translator.translate({
       type: "response.created",
@@ -311,7 +351,7 @@ describe("createStreamTranslator", () => {
   })
 
   test("maps streaming incomplete with max_output_tokens reason to length finish_reason", () => {
-    const translator = createStreamTranslator({ includeUsage: false })
+    const translator = createStreamTranslator()
 
     translator.translate({
       type: "response.created",
@@ -354,7 +394,7 @@ describe("createStreamTranslator", () => {
   })
 
   test("returns empty for unhandled event types (default case)", () => {
-    const translator = createStreamTranslator({ includeUsage: false })
+    const translator = createStreamTranslator()
 
     translator.translate({
       type: "response.created",
@@ -383,7 +423,7 @@ describe("createStreamTranslator", () => {
   })
 
   test("maps incomplete content_filter and throws on failed or error events", async () => {
-    const translator = createStreamTranslator({ includeUsage: false })
+    const translator = createStreamTranslator()
 
     translator.translate({
       type: "response.created",
@@ -470,7 +510,7 @@ describe("createStreamTranslator", () => {
       }
     }
 
-    const translated = translateResponsesStream(failingUpstream(), createStreamTranslator({ includeUsage: false }))
+    const translated = translateResponsesStream(failingUpstream(), createStreamTranslator())
     await expect(async () => {
       for await (const _event of translated) {
         // exhaust
@@ -511,12 +551,13 @@ describe("createStreamTranslator", () => {
           sequence_number: 1,
           output_index: 0,
           content_index: 0,
+          item_id: "msg_1",
           delta: "after-malformed",
         }),
       }
     }
 
-    const translated = translateResponsesStream(mixedUpstream(), createStreamTranslator({ includeUsage: false }))
+    const translated = translateResponsesStream(mixedUpstream(), createStreamTranslator())
     const collected: Array<ServerSentEventMessage> = []
     for await (const event of translated) {
       collected.push(event)
@@ -529,5 +570,84 @@ describe("createStreamTranslator", () => {
       .map((e) => JSON.parse(e.data as string) as { choices: Array<{ delta: { content?: string } }> })
     const recoveredContent = deltaChunks.map((c) => c.choices[0]?.delta?.content).filter(Boolean)
     expect(recoveredContent).toContain("after-malformed")
+  })
+})
+
+describe("createStreamTranslator — reasoning summary bridge (probe exp/synthetic-reasoning-summary-shape)", () => {
+  test("reasoning_summary_text.delta → CC delta.reasoning; output_item.added(reasoning) → delta.reasoning_encrypted_content", () => {
+    const t = createStreamTranslator()
+    // Real GHC order: output_item.added(reasoning) carries encrypted_content, THEN summary text deltas.
+    const added = t.translate({
+      type: "response.output_item.added",
+      sequence_number: 1,
+      output_index: 0,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      item: { type: "reasoning", id: "rs_1", summary: [], encrypted_content: "OPAQUE-BLOB" } as any,
+    })
+    expect(added).toHaveLength(1)
+    expect((added[0]?.choices[0]?.delta as { reasoning_encrypted_content?: string }).reasoning_encrypted_content).toBe("OPAQUE-BLOB")
+
+    const d1 = t.translate({ type: "response.reasoning_summary_text.delta", sequence_number: 2, item_id: "rs_1", output_index: 0, summary_index: 0, delta: "**Calc**\n\n" })
+    const d2 = t.translate({ type: "response.reasoning_summary_text.delta", sequence_number: 3, item_id: "rs_1", output_index: 0, summary_index: 0, delta: "80 km/h" })
+    expect((d1[0]?.choices[0]?.delta as { reasoning?: string }).reasoning).toBe("**Calc**\n\n")
+    expect((d2[0]?.choices[0]?.delta as { reasoning?: string }).reasoning).toBe("80 km/h")
+  })
+
+  test("reasoning item with EMPTY encrypted_content emits nothing (graceful)", () => {
+    const t = createStreamTranslator()
+    const added = t.translate({
+      type: "response.output_item.added",
+      sequence_number: 1,
+      output_index: 0,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      item: { type: "reasoning", id: "rs_1", summary: [], encrypted_content: "" } as any,
+    })
+    expect(added).toHaveLength(0)
+  })
+
+  test("no summary deltas (low effort) → no reasoning chunks at all (absence is graceful)", () => {
+    const t = createStreamTranslator()
+    // Only a text output, no reasoning summary events — the bridge emits no reasoning chunk.
+    const chunk = t.translate({ type: "response.output_text.delta", sequence_number: 1, output_index: 0, content_index: 0, item_id: "m1", delta: "answer" })
+    expect((chunk[0]?.choices[0]?.delta as { reasoning?: string }).reasoning).toBeUndefined()
+  })
+})
+
+describe("END-TO-END two-hop: Responses reasoning events → CC → Anthropic thinking block", () => {
+  test("summary deltas + encrypted_content become an Anthropic thinking block with a labeled-envelope signature", async () => {
+    const { createCcToAnthropicStreamTranslator } = await import("~/lib/openai/translate/cc-to-anthropic-stream")
+    const { extractEncryptedReasoning } = await import("~/lib/anthropic/synthetic-reasoning")
+    const rt = createStreamTranslator()
+    const at = createCcToAnthropicStreamTranslator("gpt-5.4-mini")
+
+    // Feed CC chunks (from the Responses→CC hop) into the CC→Anthropic hop.
+    const anthropicFrames: Array<{ event?: string; data?: string }> = []
+    const feed = (ccChunks: ReadonlyArray<{ id: string }>) => {
+      for (const c of ccChunks) for (const s of at.renderFrame({ data: JSON.stringify(c), event: "message" })) anthropicFrames.push(s.frame)
+    }
+
+    // Real GHC event order (probe exp/synthetic-reasoning-summary-shape).
+    feed(rt.translate({ type: "response.created", sequence_number: 0, response: { id: "r1", object: "response", created_at: 1, status: "in_progress", model: "gpt-5.4-mini", output: [], usage: null, tools: [], tool_choice: "auto", parallel_tool_calls: false, store: false } as never }))
+    feed(rt.translate({ type: "response.output_item.added", sequence_number: 1, output_index: 0, item: { type: "reasoning", id: "rs_1", summary: [], encrypted_content: "ENC-1804" } as never }))
+    feed(rt.translate({ type: "response.reasoning_summary_text.delta", sequence_number: 2, item_id: "rs_1", output_index: 0, summary_index: 0, delta: "Calculating: " }))
+    feed(rt.translate({ type: "response.reasoning_summary_text.delta", sequence_number: 3, item_id: "rs_1", output_index: 0, summary_index: 0, delta: "80 km/h." }))
+    feed(rt.translate({ type: "response.output_text.delta", sequence_number: 4, output_index: 1, content_index: 0, item_id: "m1", delta: "The speed is 80 km/h." }))
+    feed(rt.translate({ type: "response.completed", sequence_number: 5, response: { id: "r1", object: "response", created_at: 1, status: "completed", model: "gpt-5.4-mini", output: [], usage: { input_tokens: 41, output_tokens: 64, total_tokens: 105 }, tools: [], tool_choice: "auto", parallel_tool_calls: false, store: false } as never }))
+    for (const s of at.flush()) anthropicFrames.push(s.frame)
+
+    const parse = (f: { data?: string }) => JSON.parse(f.data ?? "{}") as Record<string, unknown>
+    // A thinking block opened FIRST (index 0), then the text block.
+    const starts = anthropicFrames.filter((f) => parse(f).type === "content_block_start")
+    expect(starts.map((f) => (parse(f).content_block as { type: string }).type)).toEqual(["thinking", "text"])
+
+    // The thinking text = concatenated summary deltas.
+    const thinkingDeltas = anthropicFrames.filter((f) => parse(f).type === "content_block_delta" && (parse(f).delta as { type: string }).type === "thinking_delta")
+    expect(thinkingDeltas.map((f) => (parse(f).delta as { thinking: string }).thinking).join("")).toBe("Calculating: 80 km/h.")
+
+    // The signature is a labeled envelope whose payload decodes back to the encrypted_content (round-trip).
+    const sig = anthropicFrames.find((f) => parse(f).type === "content_block_delta" && (parse(f).delta as { type: string }).type === "signature_delta")!
+    const signature = (parse(sig).delta as { signature: string }).signature
+    expect(signature.startsWith("copilot-api:synthetic-reasoning:v1:")).toBe(true)
+    expect(extractEncryptedReasoning(signature)).toBe("ENC-1804")
   })
 })

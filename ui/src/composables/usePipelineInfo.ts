@@ -10,6 +10,13 @@ import type {
   MessageContent,
 } from "../types"
 
+import {
+  //
+  hasEffectiveLeg,
+  resolveEffectiveMessages,
+  resolveEffectiveSystem,
+} from "./entry-legs"
+
 export function usePipelineInfo(entry: Ref<HistoryEntry | null>) {
   const truncationPoint = computed(() => {
     const e = entry.value
@@ -38,8 +45,9 @@ export function usePipelineInfo(entry: Ref<HistoryEntry | null>) {
   const rewrittenMessageMap = computed(() => {
     const map = new Map<number, Array<MessageContent>>()
     const e = entry.value
-    if (!e?.effectiveRequest?.messages || !e.pipelineInfo?.messageMapping) return map
-    const rewrittenMessages = e.effectiveRequest.messages
+    // Effective (post-rewrite) messages: new final-attempt `effectiveSource`.
+    const rewrittenMessages = e ? resolveEffectiveMessages(e) : undefined
+    if (!rewrittenMessages || !e?.pipelineInfo?.messageMapping) return map
     const messageMapping = e.pipelineInfo.messageMapping
     for (const [i, originalIdx] of messageMapping.entries()) {
       const bucket = map.get(originalIdx)
@@ -53,8 +61,8 @@ export function usePipelineInfo(entry: Ref<HistoryEntry | null>) {
   const rewrittenIndices = computed(() => {
     const indices = new Set<number>()
     const e = entry.value
-    if (!e?.effectiveRequest?.messages) return indices
-    const messages = e.inboundRequest.messages ?? []
+    if (!e || !resolveEffectiveMessages(e)) return indices
+    const messages = e.clientRequest?.messages ?? []
     for (const [idx, rewrittenBucket] of rewrittenMessageMap.value) {
       const original = messages[idx]
       // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- defensive: array index access
@@ -74,16 +82,16 @@ export function usePipelineInfo(entry: Ref<HistoryEntry | null>) {
   /** Whether any rewriting occurred (messages or system prompt) */
   const hasRewrites = computed(() => {
     const e = entry.value
-    if (!e?.effectiveRequest) return false
-    return rewrittenIndices.value.size > 0 || Boolean(e.effectiveRequest.system)
+    if (!e || !hasEffectiveLeg(e)) return false
+    return rewrittenIndices.value.size > 0 || Boolean(resolveEffectiveSystem(e))
   })
 
   /** Whether the system prompt was rewritten */
   const isSystemRewritten = computed(() => {
     const e = entry.value
-    if (!e?.effectiveRequest?.system) return false
-    const origSystem = e.inboundRequest.system
-    const rwSystem = e.effectiveRequest.system
+    if (!e || !resolveEffectiveSystem(e)) return false
+    const origSystem = e.clientRequest?.system
+    const rwSystem = resolveEffectiveSystem(e)
     if (!origSystem || !rwSystem) return Boolean(rwSystem)
     return JSON.stringify(origSystem) !== JSON.stringify(rwSystem)
   })

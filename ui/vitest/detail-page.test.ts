@@ -38,14 +38,15 @@ function fullEntry(id: string): HistoryEntry {
     startedAt: 1,
     state: "completed",
     durationMs: 100,
-    inboundRequest: { model: "opus", messages: [{ role: "user", content: "hi" }] },
-    outboundResponse: { success: true, model: "opus", usage: { input_tokens: 1, output_tokens: 1 }, content: { role: "assistant", content: "ok" } },
+    clientRequest: { model: "opus", messages: [{ role: "user", content: "hi" }] },
+    model: { requested: "opus", resolved: "opus" },
+    attempts: [{ index: 0, durationMs: 100, upstreamResponse: { success: true, model: "opus", usage: { input_tokens: 1, output_tokens: 1 }, body: { role: "assistant", content: "ok" } } }],
   } as HistoryEntry
 }
 const summaries: Array<EntrySummary> = [
-  { id: "req_a", startedAt: 3, endpoint: "anthropic-messages", messageCount: 1, previewText: "" },
-  { id: "req_b", startedAt: 2, endpoint: "anthropic-messages", messageCount: 1, previewText: "" },
-  { id: "req_c", startedAt: 1, endpoint: "anthropic-messages", messageCount: 1, previewText: "" },
+  { id: "req_a", startedAt: 3, endpoint: "anthropic-messages", messageCount: 1, previewText: "", responsePreviewText: "" },
+  { id: "req_b", startedAt: 2, endpoint: "anthropic-messages", messageCount: 1, previewText: "", responsePreviewText: "" },
+  { id: "req_c", startedAt: 1, endpoint: "anthropic-messages", messageCount: 1, previewText: "", responsePreviewText: "" },
 ]
 
 // Mock the API (real store + real component tree exercise the actual integration).
@@ -99,7 +100,6 @@ async function mountDetail(router: Router) {
       stubs: {
         ContentRenderer: true,
         RawJsonModal: true,
-        JsonViewerSurface: true,
         SseEventsSection: true,
         AttemptsTimeline: true,
         TocTree: true,

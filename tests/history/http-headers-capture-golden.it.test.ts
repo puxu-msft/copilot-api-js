@@ -16,7 +16,7 @@ import type {
 import { getHistory } from "~/lib/history"
 import {
   //
-  setModelOverrides,
+  setModelMappings,
   setModels,
   setStateForTests,
 } from "~/lib/state"
@@ -38,16 +38,25 @@ import { createFullTestApp } from "../helpers/test-app"
 // 覆盖 4 格式 ×（完成 + HTTP-错误失败）。per-attempt 重试 golden 待 Phase 3（旧码无 per-attempt 槽）。
 // ============================================================================
 
-/** 稳定的 httpHeaders 形状摘要：腿集 + 第四腿缺失 + 敏感头脱敏现状 + 上游响应头未脱敏。 */
+/** Stable header-shape summary over the new client/upstream legs: leg set + fourth (clientResponse) leg presence + sensitive-header current state + upstream response headers unredacted. */
 function summarizeHttpHeaders(entry: HistoryEntry | undefined) {
-  const h = entry?.httpHeaders
+  const finalAttempt = entry?.attempts?.at(-1)
+  const inboundRequest = entry?.clientRequest?.headers
+  const outboundRequest = finalAttempt?.upstreamRequest?.headers
+  const outboundResponse = finalAttempt?.upstreamResponse?.headers
+  const inboundResponse = entry?.clientResponse?.headers
+  const legs: Array<string> = []
+  if (inboundRequest) legs.push("inboundRequest")
+  if (inboundResponse) legs.push("inboundResponse")
+  if (outboundRequest) legs.push("outboundRequest")
+  if (outboundResponse) legs.push("outboundResponse")
   return {
-    legs: h ? Object.keys(h).sort() : [],
-    hasInboundResponse: Boolean(h?.inboundResponse),
-    inboundAuth: h?.inboundRequest?.authorization,
-    outboundAuth: h?.outboundRequest?.authorization,
-    outboundRespUpstream: h?.outboundResponse?.["x-test-upstream"],
-    inboundRespContentType: h?.inboundResponse?.["content-type"],
+    legs: legs.sort(),
+    hasInboundResponse: Boolean(inboundResponse),
+    inboundAuth: inboundRequest?.authorization,
+    outboundAuth: outboundRequest?.authorization,
+    outboundRespUpstream: outboundResponse?.["x-test-upstream"],
+    inboundRespContentType: inboundResponse?.["content-type"],
   }
 }
 
@@ -141,7 +150,7 @@ const CLIENT_HEADERS = { "Content-Type": "application/json", authorization: "Bea
 
 function setModel(name: string, vendor: string, endpoints: Array<string>): void {
   setModels({ object: "list", data: [mockModel(name, { vendor, supported_endpoints: endpoints })] })
-  setModelOverrides({})
+  setModelMappings({})
 }
 
 // ── 通用断言：四腿齐(Phase 4 建 inboundResponse) / 请求头存原始(Phase 1) / 上游响应头真实 ──
@@ -165,7 +174,7 @@ describe("Phase 0 golden: httpHeaders 捕获现状（4 格式 × 完成/失败�
   beforeEach(() => {
     upstreamMock.mockClear()
     failNext = false
-    setStateForTests({ copilotToken: "tok", accountType: "individual", vsCodeVersion: "1.100.0", fetchTimeout: 0 })
+    setStateForTests({ copilotToken: "tok", accountType: "individual", vsCodeVersion: "1.100.0", responseHeaderTimeout: 0 })
     applyFetchMock(upstreamMock)
   })
 

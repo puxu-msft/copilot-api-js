@@ -1,3 +1,13 @@
+// No upstream WS application-layer keepalive here (unlike http2-client.ts's
+// socket.setKeepAlive + scheduleH2KeepalivePing). PoC-verified (Task 4.1,
+// exp/ws-upstream-keepalive/REPORT.md): `import {WebSocket} from "undici"` is
+// runtime-split — under Bun it is native globalThis.WebSocket WITH a working
+// .ping()/.pong(), under Node it is real undici with NO ping() and no socket
+// accessor. But even Bun's WS PING is a control frame that does NOT produce a
+// ResponsesStreamEvent, so it does NOT reset state.streamIdleTimeout (same as
+// h2 PING) — it is at most prevention, never recovery, and its real GHC benefit
+// is unproven. Do NOT "just add a WS ping": the recovery defense for WS long
+// silences is Phase 3 buffered retry (spec R5.1). See docs/todo/deferred-backlog.md.
 import consola from "consola"
 import { WebSocket } from "undici"
 
@@ -9,9 +19,9 @@ import type {
 
 import { copilotWsUrl } from "~/lib/copilot-api"
 import { state } from "~/lib/state"
+import { guardCallback } from "~/lib/transport/crash-safety"
 
-const DEFAULT_IDLE_TIMEOUT_MS = 5 * 60_000
-const CLOSE_CODE_GOING_AWAY = 1001
+const CLOSE_CODE_NORMAL = 1000
 const TERMINAL_EVENTS = new Set(["response.completed", "response.failed", "response.incomplete", "error"])
 
 export interface CreateUpstreamWsConnectionOptions {
@@ -27,6 +37,17 @@ export interface CreateUpstreamWsConnectionOptions {
   onClose?: () => void
   idleTimeoutMs?: number
   createSocket?: (url: string, headers: Record<string, string>) => WebSocketLike
+  /**
+   * Hot-reload (P4, HIGH-5): called every time this connection transitions
+   * (back) to idle — including the very first time, right after the
+   * handshake completes. `upstream-ws.ts` wires this to re-check the
+   * soft-max cap on every busy→idle transition, not only at `create()` time
+   * or when a config-change reconcile happens to run — without this, a pool
+   * that is fully busy at reload time would never shed its excess
+   * connections once they went idle later (spec-flagged permanent-overage
+   * scenario).
+   */
+  onIdle?: () => void
 }
 
 export interface WebSocketLike extends EventTarget {
@@ -47,7 +68,20 @@ export interface UpstreamWsConnection {
   readonly conversationId: string | undefined
   /** Headers captured at handshake time — used for reuse-diff diagnostics */
   readonly handshakeHeaders: Record<string, string>
+  /**
+   * Hot-reload (P4): update the idle-close deadline used by future/current
+   * idle windows (HIGH-6). The new deadline is computed from the connection's
+   * ORIGINAL idle-start time (`idleSince`), not from the moment this method is
+   * called — so shrinking the timeout below the elapsed idle duration closes
+   * the connection essentially immediately, and extending it does not reset
+   * an already-idle connection's clock back to zero. A no-op while busy or
+   * not yet open; the next transition to idle (`finishRequest`) computes its
+   * own deadline from the new value naturally.
+   */
+  rescheduleIdleTimeout(newIdleTimeoutMs: number): void
   close(): void
+  /** Quarantine + close barrier. Resolves after close handling detached listeners and released the request queue. */
+  dispose(reason?: string): Promise<void>
 }
 
 interface AsyncQueue<T> {
@@ -57,9 +91,46 @@ interface AsyncQueue<T> {
   iterate(): AsyncGenerator<T>
 }
 
+/** Close an upstream WS with the WHATWG-legal normal-closure code (1000).
+ *  RUNTIME-SPLIT (Task 4.1 PoC): `import { WebSocket } from "undici"` resolves to real undici
+ *  (WHATWG-strict) on Node, but to Bun's NATIVE WebSocket on Bun. Real undici throws
+ *  DOMException('invalid code') for any code outside {1000} ∪ [3000,4999] (e.g. the going-away /
+ *  server-error codes); Bun-native tolerates 1001 et al. `1000` is safe on BOTH runtimes — the
+ *  §1.1 incident ran on a real-undici/Node path where close(1001) threw and defeated the WS→HTTP
+ *  fallback. The try/catch is defense-in-depth so a close never escalates a callback throw. */
+function closeUpstreamWs(socket: WebSocketLike | null | undefined, reason: string): void {
+  try {
+    socket?.close(CLOSE_CODE_NORMAL, reason)
+  } catch (error) {
+    consola.warn(`[upstream-ws] close(${CLOSE_CODE_NORMAL}) threw (ignored): ${error instanceof Error ? error.message : String(error)}`)
+  }
+}
+
 export function createUpstreamWsConnection(opts: CreateUpstreamWsConnectionOptions): UpstreamWsConnection {
   const createSocket = opts.createSocket ?? ((url, headers) => new WebSocket(url, { headers }))
-  const idleTimeoutMs = opts.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS
+  /**
+   * Mutable — {@link rescheduleIdleTimeout} (P4 hot-reload) updates this in place.
+   * Default reads `state.pooledConnectionIdleTimeout` directly (seconds -> ms) —
+   * NOT a hardcoded module constant — so a direct construction (bypassing
+   * `upstream-ws.ts`'s `create()`, e.g. in a test) still honors the single
+   * runtime-configured default instead of silently drifting from it (spec §7,
+   * removes the stale `DEFAULT_IDLE_TIMEOUT_MS` constant this module used to
+   * carry alongside — and independently of — `CONFIG_MANAGED_DEFAULTS.pooledConnectionIdleTimeout`).
+   */
+  let effectiveIdleTimeoutMs = opts.idleTimeoutMs ?? state.pooledConnectionIdleTimeout * 1000
+  /**
+   * Wall-clock time this connection became idle (the initial handshake
+   * settling into idle, or a request finishing) — `undefined` while busy or
+   * not yet connected. `scheduleIdleClose()` computes its deadline as
+   * `idleSince + effectiveIdleTimeoutMs` (HIGH-6), NOT `Date.now() +
+   * effectiveIdleTimeoutMs` — a config-driven reschedule while already idle
+   * must extend/shrink from the ORIGINAL idle start, not from the reschedule
+   * call's own timestamp. Otherwise every hot-reload would silently add
+   * `effectiveIdleTimeoutMs` more wall-clock life to an already-idle
+   * connection, and a shrunk timeout would fail to close a connection that
+   * is already past the new deadline.
+   */
+  let idleSince: number | undefined
   let socket: WebSocketLike | null = null
   let busy = false
   /**
@@ -82,6 +153,24 @@ export function createUpstreamWsConnection(opts: CreateUpstreamWsConnectionOptio
    * "did the handshake finish?" question deserves the same answer.
    */
   let connectingPromise: Promise<void> | null = null
+  let pendingSocket: WebSocketLike | null = null
+  let rejectConnecting: ((error: Error) => void) | null = null
+  let cleanupConnecting: (() => void) | null = null
+  let resolveDisposed!: () => void
+  const disposed = new Promise<void>((resolve) => {
+    resolveDisposed = resolve
+  })
+
+  const notifyClosed = (): void => {
+    try {
+      opts.onClose?.()
+    } catch (error) {
+      // Pool-owner cleanup must never wedge the physical-dispatch disposal barrier.
+      consola.warn(`[upstream-ws] onClose callback threw (model=${opts.model}): ${toError(error).message}`)
+    } finally {
+      resolveDisposed()
+    }
+  }
 
   const markUnusable = () => {
     unusable = true
@@ -96,10 +185,34 @@ export function createUpstreamWsConnection(opts: CreateUpstreamWsConnectionOptio
 
   const scheduleIdleClose = () => {
     clearIdleTimer()
-    if (!socket || busy || socket.readyState !== socket.OPEN || idleTimeoutMs <= 0) return
-    idleTimer = setTimeout(() => {
-      socket?.close(CLOSE_CODE_GOING_AWAY, "Idle timeout")
-    }, idleTimeoutMs)
+    if (!socket || busy || socket.readyState !== socket.OPEN || effectiveIdleTimeoutMs <= 0) return
+    const deadlineMs = (idleSince ?? Date.now()) + effectiveIdleTimeoutMs
+    const delayMs = Math.max(0, deadlineMs - Date.now())
+    idleTimer = setTimeout(
+      guardCallback(
+        () => {
+          closeUpstreamWs(socket, "Idle timeout")
+        },
+        (error) => {
+          consola.warn(`[upstream-ws] idle-timer callback threw (model=${opts.model}): ${toError(error).message}`)
+          markUnusable()
+        },
+      ),
+      delayMs,
+    )
+  }
+
+  /**
+   * Single entry point for "this connection just became idle" (HIGH-5 / HIGH-6):
+   * stamps `idleSince` BEFORE scheduling so the deadline math above is correct,
+   * notifies the pool via `opts.onIdle` so a hot-reload-shrunk soft-max cap gets
+   * re-checked on every busy→idle transition (not just at `create()`/reconcile
+   * time — see Architecture), then arms the idle timer.
+   */
+  const markIdle = () => {
+    idleSince = Date.now()
+    opts.onIdle?.()
+    scheduleIdleClose()
   }
 
   const finishRequest = () => {
@@ -108,7 +221,7 @@ export function createUpstreamWsConnection(opts: CreateUpstreamWsConnectionOptio
     currentAbortCleanup = null
     currentQueue?.close()
     currentQueue = null
-    scheduleIdleClose()
+    markIdle()
   }
 
   const failRequest = (error: Error) => {
@@ -119,7 +232,21 @@ export function createUpstreamWsConnection(opts: CreateUpstreamWsConnectionOptio
     currentQueue = null
   }
 
-  const handleMessage = (event: Event) => {
+  const toError = (error: unknown): Error => (error instanceof Error ? error : new Error(String(error)))
+
+  /**
+   * Per-callback escape for the lifecycle / in-request listeners: a throw that
+   * would otherwise escalate to `uncaughtException → process.exit(1)` is downgraded
+   * to warn + mark the connection unusable + fail the in-flight request (Phase 3
+   * recoverable). Must itself be throw-free (only warn + set flags + failRequest).
+   */
+  const onCallbackEscape = (error: unknown): void => {
+    consola.warn(`[upstream-ws] callback threw; failing request + dropping connection (model=${opts.model}): ${toError(error).message}`)
+    markUnusable()
+    failRequest(toError(error))
+  }
+
+  const handleMessage = guardCallback((event: Event) => {
     if (!(event instanceof MessageEvent)) return
     if (!currentQueue) return
 
@@ -143,11 +270,11 @@ export function createUpstreamWsConnection(opts: CreateUpstreamWsConnectionOptio
       // is likely also malformed. Mark unusable synchronously so any same-tick
       // findReusable() lookup ignores this connection, then drop the socket.
       markUnusable()
-      socket?.close(CLOSE_CODE_GOING_AWAY, "Parse error")
+      closeUpstreamWs(socket, "Parse error")
     }
-  }
+  }, onCallbackEscape)
 
-  const handleError = () => {
+  const handleError = guardCallback(() => {
     if (busy && currentQueue) {
       consola.warn(`[upstream-ws] Socket error mid-request (model=${opts.model}); failing request and dropping connection`)
       failRequest(new Error("Upstream WebSocket error"))
@@ -157,11 +284,11 @@ export function createUpstreamWsConnection(opts: CreateUpstreamWsConnectionOptio
     // close event — that latency window is where stale connections leak into
     // findReusable() and cause an extra fallback hop.
     markUnusable()
-    socket?.close(CLOSE_CODE_GOING_AWAY, "Socket error")
-  }
+    closeUpstreamWs(socket, "Socket error")
+  }, onCallbackEscape)
 
   let closeHandled = false
-  const handleClose = (event: Event) => {
+  const handleClose = guardCallback((event: Event) => {
     // Defensive re-entry guard: some WS implementations dispatch close more than
     // once (e.g. after an error). Reuse-of-stale-event would re-fire failRequest
     // with a stale reason and re-trigger opts.onClose, masking the real cause.
@@ -173,14 +300,14 @@ export function createUpstreamWsConnection(opts: CreateUpstreamWsConnectionOptio
     socket?.removeEventListener("error", handleError)
     socket?.removeEventListener("close", handleClose)
     socket = null
-    opts.onClose?.()
+    notifyClosed()
 
     if (!busy || !currentQueue) return
 
     const closeEvent = event as CloseEvent
     consola.warn(`[upstream-ws] Connection closed mid-request (${closeEvent.code}: ${closeEvent.reason || "unknown"}, model=${opts.model})`)
     failRequest(new Error(`Upstream WebSocket closed (${closeEvent.code}: ${closeEvent.reason || "unknown"})`))
-  }
+  }, onCallbackEscape)
 
   return {
     connect(connectOpts) {
@@ -193,36 +320,64 @@ export function createUpstreamWsConnection(opts: CreateUpstreamWsConnectionOptio
       // races the shared promise against its own signal locally below.
       if (!connectingPromise) {
         const ws = createSocket(copilotWsUrl(state), opts.headers)
+        pendingSocket = ws
 
         connectingPromise = new Promise<void>((resolve, reject) => {
+          rejectConnecting = reject
           const cleanup = () => {
             ws.removeEventListener("open", onOpen)
             ws.removeEventListener("error", onOpenError)
+            cleanupConnecting = null
           }
+          cleanupConnecting = cleanup
 
-          const onOpen = () => {
-            cleanup()
-            // Only after a successful handshake do we (a) bind the long-lived
-            // lifecycle listeners and (b) promote `ws` to the module-level
-            // `socket`. A failed handshake leaves no shared state behind.
-            socket = ws
-            ws.addEventListener("message", handleMessage)
-            ws.addEventListener("error", handleError)
-            ws.addEventListener("close", handleClose)
-            scheduleIdleClose()
-            resolve()
-          }
+          const onOpen = guardCallback(
+            () => {
+              cleanup()
+              if (unusable) {
+                pendingSocket = null
+                closeUpstreamWs(ws, "Disposed during handshake")
+                reject(new Error("Upstream WebSocket disposed during handshake"))
+                return
+              }
+              // Only after a successful handshake do we (a) bind the long-lived
+              // lifecycle listeners and (b) promote `ws` to the module-level
+              // `socket`. A failed handshake leaves no shared state behind.
+              socket = ws
+              pendingSocket = null
+              ws.addEventListener("message", handleMessage)
+              ws.addEventListener("error", handleError)
+              ws.addEventListener("close", handleClose)
+              markIdle()
+              resolve()
+            },
+            (error) => {
+              consola.warn(`[upstream-ws] handshake callback threw (model=${opts.model}): ${toError(error).message}`)
+              cleanup()
+              reject(toError(error))
+            },
+          )
 
-          const onOpenError = () => {
-            cleanup()
-            ws.close(CLOSE_CODE_GOING_AWAY, "Handshake failed")
-            reject(new Error("Upstream WebSocket handshake failed"))
-          }
+          const onOpenError = guardCallback(
+            () => {
+              cleanup()
+              pendingSocket = null
+              closeUpstreamWs(ws, "Handshake failed")
+              reject(new Error("Upstream WebSocket handshake failed"))
+            },
+            (error) => {
+              consola.warn(`[upstream-ws] handshake callback threw (model=${opts.model}): ${toError(error).message}`)
+              cleanup()
+              reject(toError(error))
+            },
+          )
 
           ws.addEventListener("open", onOpen, { once: true })
           ws.addEventListener("error", onOpenError, { once: true })
         }).finally(() => {
           connectingPromise = null
+          rejectConnecting = null
+          cleanupConnecting = null
         })
       }
 
@@ -234,10 +389,17 @@ export function createUpstreamWsConnection(opts: CreateUpstreamWsConnectionOptio
       // rejection without affecting the shared handshake (other joined callers
       // continue waiting for the real outcome).
       return new Promise<void>((resolve, reject) => {
-        const onAbort = () => {
-          signal.removeEventListener("abort", onAbort)
-          reject(new Error("Upstream WebSocket connection aborted"))
-        }
+        const onAbort = guardCallback(
+          () => {
+            signal.removeEventListener("abort", onAbort)
+            reject(new Error("Upstream WebSocket connection aborted"))
+          },
+          (error) => {
+            consola.warn(`[upstream-ws] handshake callback threw (model=${opts.model}): ${toError(error).message}`)
+            signal.removeEventListener("abort", onAbort)
+            reject(toError(error))
+          },
+        )
         if (signal.aborted) {
           reject(new Error("Upstream WebSocket connection aborted"))
           return
@@ -267,12 +429,19 @@ export function createUpstreamWsConnection(opts: CreateUpstreamWsConnectionOptio
 
       clearIdleTimer()
       busy = true
+      idleSince = undefined
       currentQueue = createAsyncQueue<ResponsesStreamEvent>()
 
       const abortSignal = requestOpts?.abortSignal
-      const onAbort = () => {
+      const onAbort = guardCallback(() => {
+        // The Responses WS wire has no request-local cancel frame. Releasing `busy` while
+        // keeping this socket reusable lets the old remote generation's late frames enter the
+        // next same-conversation request queue. Quarantine synchronously, fail the owned queue,
+        // then close the socket; its close event lets the pool owner remove it.
+        markUnusable()
         failRequest(new Error("Upstream WebSocket request aborted"))
-      }
+        closeUpstreamWs(socket, "Request aborted")
+      }, onCallbackEscape)
 
       currentAbortCleanup = () => {
         abortSignal?.removeEventListener("abort", onAbort)
@@ -291,7 +460,7 @@ export function createUpstreamWsConnection(opts: CreateUpstreamWsConnectionOptio
         // the connection unusable synchronously so any same-tick reuse lookup
         // skips it, then tear down the socket.
         markUnusable()
-        socket.close(CLOSE_CODE_GOING_AWAY, "Send failed")
+        closeUpstreamWs(socket, "Send failed")
       }
 
       const queue = currentQueue
@@ -333,12 +502,42 @@ export function createUpstreamWsConnection(opts: CreateUpstreamWsConnectionOptio
       return opts.headers
     },
 
+    rescheduleIdleTimeout(newIdleTimeoutMs) {
+      effectiveIdleTimeoutMs = newIdleTimeoutMs
+      // scheduleIdleClose() itself bails out (no-op) when busy/not-open/disabled,
+      // and computes its deadline from `idleSince` (unchanged by this call) —
+      // so unconditionally calling it here is always safe and correct: while
+      // idle+open it re-arms against the SAME idleSince with the new value
+      // (closing immediately if that deadline has already passed); while busy
+      // it does nothing, deferring to the next `finishRequest()`/`markIdle()`,
+      // which will stamp a fresh `idleSince` and read this new value then.
+      scheduleIdleClose()
+    },
+
     close() {
       clearIdleTimer()
       if (socket) {
         // Has a live or closing socket — close it; handleClose will fire the
         // onClose callback so the manager removes us from the pool.
-        socket.close(CLOSE_CODE_GOING_AWAY, "Going away")
+        closeUpstreamWs(socket, "Going away")
+      } else if (pendingSocket) {
+        // A handshake-owned socket is not yet promoted to `socket`; quarantine and close it
+        // explicitly so a late open cannot escape after the pool removed this placeholder.
+        markUnusable()
+        cleanupConnecting?.()
+        rejectConnecting?.(new Error("Upstream WebSocket closed during handshake"))
+        const ws = pendingSocket
+        pendingSocket = null
+        ws.addEventListener(
+          "close",
+          () => {
+            if (closeHandled) return
+            closeHandled = true
+            notifyClosed()
+          },
+          { once: true },
+        )
+        closeUpstreamWs(ws, "Going away")
       } else if (!closeHandled) {
         // No socket yet (handshake either in progress or never started) — we
         // still need to inform the manager so a placeholder created via
@@ -346,8 +545,34 @@ export function createUpstreamWsConnection(opts: CreateUpstreamWsConnectionOptio
         // unusable so any racing reuse lookup skips us.
         closeHandled = true
         markUnusable()
-        opts.onClose?.()
+        notifyClosed()
       }
+    },
+
+    async dispose(reason = "Disposed") {
+      markUnusable()
+      if (busy && currentQueue) failRequest(new Error(`Upstream WebSocket ${reason}`))
+      if (socket) closeUpstreamWs(socket, reason)
+      else if (pendingSocket) {
+        cleanupConnecting?.()
+        rejectConnecting?.(new Error(`Upstream WebSocket ${reason}`))
+        const ws = pendingSocket
+        pendingSocket = null
+        ws.addEventListener(
+          "close",
+          () => {
+            if (closeHandled) return
+            closeHandled = true
+            notifyClosed()
+          },
+          { once: true },
+        )
+        closeUpstreamWs(ws, reason)
+      } else if (!closeHandled) {
+        closeHandled = true
+        notifyClosed()
+      }
+      await disposed
     },
   }
 }

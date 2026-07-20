@@ -38,35 +38,29 @@ import type {
 import type {
   //
   HistoryEntryData,
-  RequestContext,
   RequestState,
 } from "~/lib/context/types"
+import type { DiagnosticEvent } from "~/lib/diagnostics"
 import type {
   //
   EntrySummary,
   HistoryStats,
 } from "~/lib/history/store"
 import type { EndpointType } from "~/lib/history/types"
+import type { Model } from "~/lib/models/client"
+import type { LogLineParts } from "~/lib/observability/projections/log-line"
 
 // Re-export the single source of truth so consumers of the observability
 // barrel get the type without reaching into context internals.
 export type { RequestActivitySnapshot } from "~/lib/context/activity-summary"
-
-/**
- * Opaque reference to a live RequestContext. Used only by the
- * `request.context_updated` event for HistorySink (the only synchronous
- * field-update consumer). Typed via `import type` from `~/lib/context/types`
- * — TypeScript's type-only import does NOT create a runtime dependency, so
- * the apparent `context → observability → context` cycle is type-erased
- * at compile time and doesn't exist at runtime.
- */
-export type RequestContextLive = RequestContext
 
 /** Immutable snapshot of a RequestContext at the moment the event is emitted. */
 export interface RequestContextSnapshot {
   id: string
   endpoint: EndpointType
   sessionId?: string
+  /** Subagent id (`x-claude-code-agent-id`); absent for the main agent. Carried so display sinks can render the session-identity block. */
+  agentId?: string
   rawPath?: string
   /** HTTP method, or "WS" / "STDIO" for non-HTTP entry points. */
   method: string
@@ -79,6 +73,10 @@ export interface RequestContextSnapshot {
   requestBodySize?: number
   /** Pre-resolved billing multiplier (from state.modelIndex) for display. */
   multiplier?: number
+  /** 当前在途 attempt 的 startTime（footer/panel 用；轻量 snapshot() 每事件填充，故高频 stream_progress 也带）。 */
+  currentAttemptStartedAt?: number
+  /** 已发生的 attempt 数（_attempts.length）；footer/panel 算 retries=attemptCount-1。 */
+  attemptCount?: number
   /**
    * Activity summary (the `summarizeRequestContext(ctx)` shape used by the
    * front-end's WS activity view). Populated by the producer (manager.ts)
@@ -99,6 +97,8 @@ export interface RequestContextSnapshot {
  */
 export interface AttemptSnapshot {
   attemptIndex: number
+  /** 本次 attempt 自身的墙钟耗时（ms）——由 setAttemptError / setAttemptResponse 定稿。供 [RETRY] 行作 lastMs。 */
+  durationMs?: number
   strategy?: string
   transport?: TransportKind
   /** Exact payload sent upstream (post-sanitize/truncate). */
@@ -106,13 +106,11 @@ export interface AttemptSnapshot {
   effectiveRequest?: unknown
   /** Bytes/events received before failure (for streaming attempts). */
   partialResponse?: unknown
-  error?: { status: number; message: string; type: string }
+  error?: { status: number; message: string; type: string; rawBody?: string }
 }
 
 /** Feature kinds — replaces the legacy `tags: string[]` escape hatch. */
 export type FeatureKind =
-  /** auto-truncate ran */
-  | "truncated"
   /**
    * Thinking mode as a per-request terminal dimension —
    * `detail: { requested?: string, effective: string }`. `effective` is the
@@ -124,6 +122,8 @@ export type FeatureKind =
   | "thinking"
   /** unsupported-beta strategy stripped headers — `detail: { betas: string[] }` */
   | "beta-stripped"
+  /** passthrough 剥掉 GHC 未支持的 cache_control 子字段（如 scope）— `detail: { fields: string[] }` */
+  | "cache-control-stripped"
   /** responses → chat-completions fallback */
   | "via-chat-completions-fallback"
   /** chat-completions → responses (reverse fallback) */
@@ -132,12 +132,22 @@ export type FeatureKind =
   | "dropped-params"
   /** request used a non-default transport — `detail: { kind: TransportKind }` */
   | "transport"
-  /** streaming recoverer rebuilt a tool_use from downgraded upstream text */
+  /** recoverer rebuilt tool_use(s) from downgraded upstream text — `detail: { tools: string[] }` (the recovered tool names, in call order) */
   | "tool-call-recovered"
   /** recovered a thinking-only upstream refusal by synthesizing a text completion */
   | "refusal-recovered"
   /** error mode: surfaced a thinking-only upstream refusal as an `event: error` frame + ctx.fail */
   | "refusal-errored"
+  /** error-shaping 决策命中 — detail: { decision: "retry-signal"|"ask-user-question"|"canonical-error"|"defer-to-block-level", errorType: ApiErrorType, commitPhase: "pre-commit"|"post-commit" } */
+  | "error-shaping-decided"
+  /** error-shaping B类 AskUserQuestion 合成命中 — detail: { errorType: ApiErrorType } */
+  | "error-shaping-auq-synthesized"
+  /** error-shaping D类自愈委派命中（策略被强制 canHandle=false）— detail: { strategyName: string } */
+  | "error-shaping-selfheal-delegated"
+  /** raw-stream canonical error 终点整形命中（H3 stream-error / truncation × direct/translate 腿）——
+   * detail: { wireErrorType: string, terminus: "stream-error"|"truncation", leg: "direct"|"translate" }.
+   * `wireErrorType` 是 wire 级字符串（非 error-shaping-decided 的 ApiErrorType 枚举——同名会混值域）。 */
+  | "error-shaping-raw-canonical"
   /** a tool_use input field selected for decode couldn't be decoded — `detail: { tool, field?, reason }` */
   | "tool-input-decode-failed"
   /** L2 buffered-retry resolution — `detail: { outcome: "success"|"exhausted"|"retreated", retries: number }` */
@@ -158,12 +168,29 @@ export type FeatureKind =
   | "tool-input-repaired"
   /** a malformed tool_use input could not be repaired (strip + jsonrepair both failed) — `detail: { tool }` */
   | "tool-input-unrepairable"
+  /**
+   * translation matrix: a forward-leg (anthropic→cc/responses) upstream choice finished with
+   * `content_filter`, which has no Anthropic stop_reason and was mapped to `end_turn` on the client
+   * wire (N3) — this marker keeps the degradation observably distinguishable (richest-data-flow). `detail: {}`.
+   */
+  | "translated-content-filter"
 
 export type TransportKind = "http" | "upstream-ws" | "upstream-ws-fallback"
 
 export type ShutdownPhase = "draining" | "aborting" | "finalized"
 
 export type RateLimitMode = "normal" | "rate-limited" | "recovering"
+
+export interface ModelCatalogEntry {
+  model: Model
+  disabled: boolean
+}
+
+export interface ModelCatalogData {
+  models: ReadonlyArray<ModelCatalogEntry>
+  tokenBasedBilling: boolean
+  timeUnixMs: number
+}
 
 /**
  * The canonical event union. Every event has `kind: "<namespace>.<verb>"`
@@ -175,23 +202,6 @@ export type ObservabilityEvent =
   | { kind: "request.created"; ctx: RequestContextSnapshot }
   | { kind: "request.model_resolved"; ctx: RequestContextSnapshot }
   | { kind: "request.state_changed"; ctx: RequestContextSnapshot; previousState: RequestState; meta?: Record<string, unknown> }
-
-  // ── Internal field mutation signal for HistorySink (synchronous consumers only) ──
-  //
-  // This event is the bus equivalent of the legacy
-  // `RequestContextEvent.updated { field }` signal in `lib/context/manager.ts`.
-  // HistorySink consumes it synchronously to mirror originalRequest / attempts
-  // / queueWaitMs / pipelineInfo / warningMessages updates into SQLite. It
-  // carries the **live RequestContextRef** (not just the snapshot) because
-  // `buildHistoryActivityPatch(context)` and `collectAttemptStages(context)`
-  // need the full mutable shape.
-  //
-  // CONTRACT: subscribers MUST read `contextRef` synchronously and not retain
-  // the reference. Async sinks should ignore this event and subscribe to the
-  // strongly-typed signals (`feature_applied`, `attempt_started`,
-  // `state_changed`, etc.) instead. WsSink does not subscribe to this event.
-  // ConsoleSink does not subscribe to it. Only HistorySink does.
-  | { kind: "request.context_updated"; ctx: RequestContextSnapshot; field: string; contextRef: RequestContextLive }
 
   // ── Attempt-level (replaces pipeline.logRetry + consumers.attempts update) ──
   | { kind: "request.attempt_started"; ctx: RequestContextSnapshot; attempt: AttemptSnapshot }
@@ -227,6 +237,22 @@ export type ObservabilityEvent =
   | { kind: "system.rate_limit_state"; mode: RateLimitMode; queuedCount: number; detail?: Record<string, unknown> }
   | { kind: "system.shutdown_phase_changed"; phase: ShutdownPhase; previousPhase: ShutdownPhase | null; needsFlush: boolean }
   | { kind: "system.shutdown_completed" }
+  | { kind: "system.shutdown_failed"; errors: ReadonlyArray<{ name: string; message: string }> }
+
+  // ── Complete upstream model catalog. Consumers decide presentation: the
+  //    Terminal applies colors/alignment, while the structured file retains
+  //    full model metadata without parsing a pre-rendered text table. ──
+  | ({ kind: "system.model_catalog" } & ModelCatalogData)
+
+  // ── Synthetic request-style log line (out-of-observability helpers) ──
+  //    A pre-built request-line projection for routes that are deliberately
+  //    exempt from the full request lifecycle (count_tokens — see
+  //    observability/middleware.ts SYNTHETIC_PATHS) but still want to render a
+  //    request-shaped line instead of a `[INFO]` syslog line. Carries the same
+  //    `LogLineParts` a real `request.completed` renders, but creates NO
+  //    RequestContext and reaches ONLY the display sinks (TerminalUi stdout +
+  //    FileSink) — never history / telemetry / calibration / WS. ──
+  | { kind: "system.request_line"; parts: LogLineParts }
 
   // ── Non-HTTP console logs (republished from consola — the single hijack
   //    point lives in `observability/republish.ts`, installed by start.ts).
@@ -235,7 +261,7 @@ export type ObservabilityEvent =
   //    both sinks share one representation; `logType` is the consola level name
   //    ("info" | "warn" | "error" | "success" | "debug" | …) for prefix
   //    selection; `time` is the log timestamp in epoch ms. ──
-  | { kind: "system.log"; logType: string; message: string; time: number }
+  | { kind: "system.diagnostic"; diagnostic: DiagnosticEvent }
 
 /** Top-level namespace prefix of an event kind. */
 export type EventNamespace = "request" | "history" | "system"

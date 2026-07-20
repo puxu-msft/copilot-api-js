@@ -23,7 +23,7 @@ import {
 import { getHistory } from "~/lib/history"
 import {
   //
-  setModelOverrides,
+  setModelMappings,
   setModels,
   setStateForTests,
 } from "~/lib/state"
@@ -112,7 +112,7 @@ function injectModels(): void {
       mockModel("gpt-4o", { vendor: "OpenAI", supported_endpoints: ["/chat/completions", "/responses"] }),
     ],
   })
-  setModelOverrides({})
+  setModelMappings({})
 }
 
 const { createFullTestApp } = await import("../helpers/test-app")
@@ -135,7 +135,7 @@ describe("client query-string forwarding (e2e)", () => {
       copilotToken: "tok",
       accountType: "individual",
       vsCodeVersion: "1.100.0",
-      fetchTimeout: 0,
+      responseHeaderTimeout: 0,
       forwardClientQuery: true,
       forwardClientQueryExclude: [],
     })
@@ -210,7 +210,7 @@ describe("client query-string forwarding (e2e)", () => {
 
     const entry = getHistory({ endpoint: "anthropic-messages" }).entries[0]
     // inbound = client's raw query verbatim (floor key included); outbound = forwarded (stripped).
-    expect(entry?.inboundRequest.query).toBe("?beta=true&api-version=2024")
-    expect(entry?.outboundRequest?.query).toBe("?beta=true")
+    expect(entry?.clientRequest?.query).toBe("?beta=true&api-version=2024")
+    expect(entry?.attempts?.[0]?.upstreamRequest?.query).toBe("?beta=true")
   })
 })

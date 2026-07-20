@@ -109,7 +109,7 @@ function makeFullEntry(id: string): HistoryEntry {
     sessionId: "s1",
     startedAt: Date.now(),
     endpoint: "anthropic-messages",
-    inboundRequest: {
+    clientRequest: {
       model: "claude-sonnet-4.6",
       messages: [{ role: "user", content: "hello" }],
     },
@@ -363,7 +363,7 @@ describe("filter setters", () => {
     mockFetchEntries.mockImplementationOnce(() => stalePromise)
     mockFetchEntries.mockImplementationOnce(() =>
       Promise.resolve({
-        entries: [{ id: "NEW", startedAt: 1, endpoint: "anthropic-messages", messageCount: 0, previewText: "" }],
+        entries: [{ id: "NEW", startedAt: 1, endpoint: "anthropic-messages", messageCount: 0, previewText: "", responsePreviewText: "" }],
         total: 1,
         nextCursor: null,
         prevCursor: null,
@@ -375,7 +375,7 @@ describe("filter setters", () => {
     expect(store.entries.map((e) => e.id)).toEqual(["NEW"])
     // Now the stale seq=1 resolves LATE — it must be discarded, not applied.
     resolveStale?.({
-      entries: [{ id: "OLD", startedAt: 0, endpoint: "anthropic-messages", messageCount: 0, previewText: "" }],
+      entries: [{ id: "OLD", startedAt: 0, endpoint: "anthropic-messages", messageCount: 0, previewText: "", responsePreviewText: "" }],
       total: 99,
       nextCursor: null,
       prevCursor: null,

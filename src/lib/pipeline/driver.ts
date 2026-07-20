@@ -3,8 +3,7 @@
  *
  * The data-flow driver: pushes a request through the seven stages (S1→S7),
  * publishing events / sampling raw data at the stage boundaries. Lifted+merged
- * from the current `executeRequestPipeline` retry loop and the handlers'
- * orchestration skeleton (docs/v4/01-architecture.md §1.3, 03-spec/envelope-driver.md §3).
+ * from the pre-driver retry loops and handler orchestration skeletons (docs/v4/01-architecture.md §1.3, 03-spec/envelope-driver.md §3).
  *
  * P2.1 builds the format-agnostic skeleton; it consumes a {@link FormatCodec} +
  * {@link Transport} + retry strategies + the rewrite registry as opaque deps, so
@@ -14,10 +13,27 @@
 
 import consola from "consola"
 
-import type { SseEventRecord } from "~/lib/history"
+import type {
+  //
+  CandidateHandle,
+  CandidateRole,
+  DispatchHandle,
+} from "~/lib/context/model-operation-record"
+import type { RequestContext } from "~/lib/context/request"
+import type { FrozenHedgePolicy } from "~/lib/pipeline/generation/hedge-policy"
 
 import { classifyError } from "~/lib/error"
+import { getDownstreamDeliverySession } from "~/lib/pipeline/delivery/session"
+import { readSyntheticKind } from "~/lib/pipeline/frame-origin"
+import { createGenerationBudget } from "~/lib/pipeline/generation/generation-budget"
+import { getUpstreamHook } from "~/lib/pipeline/hooks/loader"
 import { classifyStreamError } from "~/lib/stream"
+import {
+  //
+  getUpstreamAdmissionController,
+  type UpstreamAdmissionController,
+} from "~/lib/transport/admission-controller"
+import { UpstreamTransportFallbackError } from "~/lib/transport/fallback"
 
 import type { RequestEnvelope } from "./envelope"
 import type {
@@ -26,46 +42,82 @@ import type {
   ClientSink,
   DriverRequestResult,
   FormatCodec,
+  PhysicalTransport,
+  PhysicalTransportResponse,
   PipelineDriver,
+  PreparedRequest,
   RawHttpRequest,
   RequestInspectStage,
   RequestInspection,
   ResponseOutcome,
   RetryAction,
   RetryStrategy,
+  RouteDecision,
   RunBufferedOpts,
+  BufferedFlushContext,
   RunResponseOpts,
   Transport,
-  UpstreamFrame,
+  TransportDispatchOptions,
   UpstreamStream,
 } from "./types"
 
+import {
+  //
+  type CellAssembly,
+  isCellMigrated,
+  resolveCellAssembly,
+} from "./cell-assembly"
+import {
+  //
+  createCandidateRuntime,
+  type CandidateRuntime,
+} from "./generation/candidate"
+import {
+  //
+  createDefaultCandidateResponseSession,
+  type CandidateResponseSession,
+  type CandidateResponseSessionFactory,
+  type CandidateResponseSessionOptions,
+} from "./generation/candidate-response-session"
+import { createCandidateStateFactory } from "./generation/candidate-state"
+import {
+  //
+  createGenerationCoordinator,
+  type CoordinatedCandidate,
+  type GenerationCoordinator,
+} from "./generation/coordinator"
+import {
+  //
+  createDispatchScheduler,
+  type DispatchRecordingPort,
+  type SemanticRetryDecision,
+} from "./generation/dispatch-scheduler"
 import {
   //
   assembleRequestRewrites,
   assembleResponseRewrites,
   BUILTIN_REQUEST_REWRITES,
   BUILTIN_RESPONSE_REWRITES,
-  type FrameAction,
   type RequestRewrite,
   type ResponseRewrite,
-  type RewriteState,
 } from "./rewrite-registry"
-
+import { decideRoute } from "./router"
 /**
  * Everything the driver needs to orchestrate one format. The route layer (P2.3+)
  * selects the codec by prefix and constructs a driver per request.
  */
 export interface DriverDeps {
   codec: FormatCodec
-  transport: Transport
+  transport: Transport & Partial<PhysicalTransport>
+  /** Transport-independent queue/backoff policy; defaults to the process-global adaptive limiter. */
+  admission?: UpstreamAdmissionController
   /**
-   * Ordered retry strategies (first `canHandle` wins — 02 §1.2 order semantics).
-   * Either a fixed array, or a per-request factory resolved with the parsed
-   * envelope (S4 input) — strategies that need parse outputs (e.g. the model,
-   * or the codec's truncation baseline) use the factory form.
+   * Ordered retry strategies for the LEGACY (non-migrated) path — a fixed array or a per-request factory.
+   * OPTIONAL since C5: every real handler's cell is migrated, so its exchange stack comes from the
+   * CellAssembly ({@link resolveExchangeStrategies}); this slot is only read for a mock/legacy codec that
+   * does not populate `env.requestState` (driver orchestration unit tests).
    */
-  strategies: ReadonlyArray<RetryStrategy> | ((env: RequestEnvelope) => ReadonlyArray<RetryStrategy>)
+  strategies?: ReadonlyArray<RetryStrategy> | ((env: RequestEnvelope) => ReadonlyArray<RetryStrategy>)
   /** Normal-budget retry cap (pipeline.ts default 3). */
   maxRetries: number
   /** Learning-budget retry cap (pipeline.ts MAX_LEARNING_RETRIES=32). */
@@ -74,6 +126,11 @@ export interface DriverDeps {
   requestRewrites?: ReadonlyArray<RequestRewrite>
   /** S5 response rewrites (codecs supply format rewrites; default = module registry). */
   responseRewrites?: ReadonlyArray<ResponseRewrite>
+  /** Format-specific candidate response state/accumulator factory. Omitted only by stateless mocks. */
+  candidateResponseSessionFactory?: CandidateResponseSessionFactory
+  /** Frozen per-generation fast-retry policy. Omitted means primary-only behavior. */
+  hedgePolicy?: FrozenHedgePolicy
+  monotonicNow?: () => number
   /**
    * Post-gate per-retry meta sink (C0-② / RFC §11.2). The driver invokes it with
    * the `RetryAction.meta` of a retry **only after the budget gate accepts it**,
@@ -83,6 +140,16 @@ export interface DriverDeps {
    * observability sinks. `env` is the post-retry env carrying that meta.
    */
   onMeta?: (meta: Record<string, unknown>, env: RequestEnvelope) => void
+  /**
+   * S2 route decision override — a test seam (DI-consistent with `transport` / `strategies`).
+   * Production omits it: the driver calls the free-function `router.decideRoute` (ADR
+   * 2026-07-11), which reads real upstream model capabilities. Driver ORCHESTRATION unit
+   * tests (which drive a mock codec through a fake model with no `state.modelIndex`) inject a
+   * fixed decision here so they exercise stage sequencing without needing a live model index;
+   * route-decision CORRECTNESS is covered by `tests/pipeline/router-golden.it.test.ts`, not the
+   * orchestration tests. When omitted the driver uses the free-function `router.decideRoute`.
+   */
+  decideRoute?: (env: RequestEnvelope) => RouteDecision
 }
 
 /** The driver with its non-streaming response variant (envelope-driver.md §3). */
@@ -110,62 +177,207 @@ export interface PipelineDriverWithNonStreaming extends PipelineDriver {
    * `sink`) ONLY on a clean drain that saw `message_stop`; on a transport-close RST (or a
    * truncation = clean drain without message_stop) re-runs the exchange for a fresh stream and
    * re-buffers, up to `opts.retryCap`. All-or-nothing: a partially-generated response is never
-   * forwarded (the client gets ONE complete generation, or the surfaced error). Default OFF
-   * (Phase 1: no consumer — every handler still uses `runResponseSink`).
+   * forwarded (the client gets ONE complete generation, or the surfaced error). The terminal is
+   * format-agnostic via the `sawMessageStop` opt (Anthropic `message_stop`; Responses
+   * `acc.status !== ""`). Opt-in per endpoint, default OFF: consumed by Anthropic
+   * (`protect_streaming_generation`) and Responses (`responsesBufferedRetry`) — every other
+   * handler still uses `runResponseSink`.
    */
   runResponseBufferedSink(upstream: UpstreamStream, env: RequestEnvelope, sink: ClientSink, opts: RunBufferedOpts): Promise<ResponseOutcome>
+  /** Current candidate response session; follows buffered recovery to its fresh child candidate. */
+  getCandidateResponseSession(upstream: UpstreamStream): CandidateResponseSession | undefined
+}
+
+interface GenerationBinding {
+  readonly coordinator: GenerationCoordinator<CandidateResponseSession>
+  readonly candidate: CoordinatedCandidate<CandidateResponseSession>
+}
+
+interface DriverGenerationRuntime {
+  readonly bindings: WeakMap<UpstreamStream, GenerationBinding>
+  bind(coordinator: GenerationCoordinator<CandidateResponseSession>, candidate: CoordinatedCandidate<CandidateResponseSession>): GenerationBinding
+  currentSession(upstream: UpstreamStream): CandidateResponseSession | undefined
+}
+
+function createDriverGenerationRuntime(): DriverGenerationRuntime {
+  const bindings = new WeakMap<UpstreamStream, GenerationBinding>()
+  const latestByCoordinator = new WeakMap<GenerationCoordinator<CandidateResponseSession>, CandidateResponseSession>()
+  return {
+    bindings,
+    bind(coordinator, candidate) {
+      const binding = { coordinator, candidate }
+      bindings.set(candidate.upstream, binding)
+      latestByCoordinator.set(coordinator, candidate.processor)
+      return binding
+    },
+    currentSession(upstream) {
+      const binding = bindings.get(upstream)
+      return binding ? latestByCoordinator.get(binding.coordinator) : undefined
+    },
+  }
 }
 
 export function createPipelineDriver(deps: DriverDeps): PipelineDriverWithNonStreaming {
+  const generation = createDriverGenerationRuntime()
   return {
-    runRequest: (raw) => runRequest(deps, raw),
-    runResponse: (upstream, env, opts) => runResponse(deps, upstream, env, opts),
+    runRequest: (raw) => runRequest(deps, raw, generation),
+    runResponse: (upstream, env, opts) => runResponse(deps, upstream, env, opts, generation),
     inspectRequest: (raw, stopAfter) => inspectRequest(deps, raw, stopAfter),
     runResponseNonStreaming: (upstream, env) => deps.codec.renderResponseNonStreaming(upstream.nonStream, env),
     runResponseWhole: (response, env) => runResponseWhole(deps, response, env),
-    runResponseSink: (upstream, env, sink, opts) => runResponseSink(deps, upstream, env, sink, opts),
-    runResponseBufferedSink: (upstream, env, sink, opts) => runResponseBufferedSink(deps, upstream, env, sink, opts),
+    runResponseSink: (upstream, env, sink, opts) => trackResponsePump(env, runResponseSink(deps, upstream, env, sink, opts, generation)),
+    runResponseBufferedSink: (upstream, env, sink, opts) => trackResponsePump(env, runResponseBufferedSink(deps, upstream, env, sink, opts, generation)),
+    getCandidateResponseSession: (upstream) => generation.currentSession(upstream),
   }
+}
+
+function trackResponsePump(env: RequestEnvelope, pump: Promise<ResponseOutcome>): Promise<ResponseOutcome> {
+  // Register the inner pump before returning it to the handler. Promise reactions run in
+  // registration order, so the scope child settles before the handler continuation records its
+  // logical terminal. The finalizer remains outside the scope and therefore cannot self-join.
+  // Runtime-optional for structural mock contexts used by driver-only tests.
+  // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
+  env.ctx.trackOperationBody?.(pump)
+  return pump
 }
 
 // ============================================================================
 // Request side (S1→S4)
 // ============================================================================
 
+/**
+ * S2 route decision. Prefers the `deps.decideRoute` test override; otherwise the
+ * free-function `router.decideRoute` (ADR 2026-07-11), the single reader of upstream model
+ * capabilities. Both driver call sites (`runRequest` S2, `inspectRequest` S2) go through
+ * here so the routing seam is single-sourced.
+ */
+function resolveRouteDecision(deps: DriverDeps, parsed: RequestEnvelope): RouteDecision {
+  return (deps.decideRoute ?? decideRoute)(parsed)
+}
+
+/**
+ * The CellAssembly this env's cell is dispatched through, or `null` for the legacy `deps.*` path
+ * (RFC 2026-07-13 §11.6 hybrid dispatch). CELL-keyed (clientFormat × targetEndpoint) so a partially
+ * migrated leg — e.g. `/v1/messages`, shared by anthropic-direct (migrated, C2a) + 3 reverse cells
+ * (legacy until C2b) — routes only the migrated cell through the assembly (no double-active). Resolved
+ * from the CURRENT env at each dispatch point (a retry strategy may re-target).
+ */
+function migratedCell(env: RequestEnvelope): CellAssembly | null {
+  // The assembly's methods REQUIRE the leg supply on `env.requestState` (the real InboundCodec's parse
+  // populates it — C2a.1). An env without it is not set up for the cell (a driver orchestration unit test
+  // with a mock codec, or a format whose parse hasn't populated it), so it stays on the legacy `deps.*`
+  // path — the codec's own direct branch is still byte-equivalent, so this is a safe fallback.
+  if (!env.requestState) return null
+  return isCellMigrated(env.clientFormat, env.targetEndpoint) ? resolveCellAssembly(env.clientFormat, env.targetEndpoint) : null
+}
+
+/**
+ * The exchange retry stack for this env: the MIGRATED cell's CellAssembly-composed stack, else the legacy
+ * `deps.strategies` (a per-route factory / fixed array). LAZY on purpose (RFC §11.6): the legacy factory is
+ * NEVER evaluated for a migrated cell, so its side effects — the handlers' `recordFeature("via-responses" /
+ * "via-chat-completions-fallback")` — do not double-fire alongside the leg's `translateOut` (which now owns
+ * that observability). Both the S4 exchange (runRequest) and the buffered-sink re-exchange resolve through here.
+ */
+function resolveExchangeStrategies(deps: DriverDeps, env: RequestEnvelope): ReadonlyArray<RetryStrategy> {
+  const cell = migratedCell(env)
+  if (cell) return cell.buildStrategies(env)
+  return typeof deps.strategies === "function" ? deps.strategies(env) : (deps.strategies ?? [])
+}
+
+/**
+ * S2 translateOut: the MIGRATED cell's leg owns it for every real request; a non-migrated env (a mock/legacy
+ * driver-orchestration test codec) falls back to `deps.codec.translateOut`, or identity if the codec omits it.
+ */
+function outboundTranslateOut(deps: DriverDeps, env: RequestEnvelope): RequestEnvelope {
+  const cell = migratedCell(env)
+  if (cell) return cell.translateOut(env)
+  return deps.codec.translateOut?.(env) ?? env
+}
+
+/**
+ * S4-pre prepareWire: the MIGRATED cell's leg owns it for every real request; a non-migrated env falls back
+ * to `deps.codec.prepareWire`. A non-migrated codec that omits it is a wiring bug (a mock must provide one).
+ */
+function outboundPrepareWire(deps: DriverDeps, env: RequestEnvelope): PreparedRequest {
+  const cell = migratedCell(env)
+  if (cell) return cell.prepareWire(env)
+  const wire = deps.codec.prepareWire?.(env)
+  if (!wire) throw new Error("[driver] prepareWire unavailable — a non-migrated codec must implement it (mock/legacy fallback)")
+  return wire
+}
+
 /** S1→S4: ingest → route/translate → rewrite-in → exchange (error-driven retry). */
-async function runRequest(deps: DriverDeps, raw: RawHttpRequest): Promise<DriverRequestResult> {
-  // S1 — Ingest: parse inbound → envelope (codec builds ctx + extracts body/model).
+async function runRequest(deps: DriverDeps, raw: RawHttpRequest, generation: DriverGenerationRuntime): Promise<DriverRequestResult> {
+  // S1a — Ingest: parse inbound → envelope (codec builds ctx + extracts body/model). SYNC.
   const parsed = deps.codec.parse(raw)
 
-  // S2 — Translate-in: decideRoute (passthrough / translate / reject) + translateOut.
-  const decision = deps.codec.decideRoute(parsed)
+  // Hook point: client.inbound — one-shot client-NATIVE request rewrite, at S1a→S1b (before
+  // translate/sanitize), the only point where every format's body is client-native (RFC §3/§3.5).
+  // Defensive body snapshot: the hook receives a clone-backed env so an in-place mutation can't穿透
+  // downstream (or into the frozen clientRequest history track); on `undefined` the driver keeps the
+  // ORIGINAL parsed env (immutable-return semantics). `snapshotBody` is the codec-agnostic tolerant
+  // structuredClone (falls back to the original for an unclonable body).
+  const inboundHook = getUpstreamHook()?.client?.inbound
+  const clientNative = inboundHook ? (inboundHook(parsed.with({ body: snapshotBody(parsed.body) })) ?? parsed) : parsed
+
+  // S1b — Translate-in (async, RFC 2026-07-14 §3): per-format async inbound processing —
+  // gemini `Gemini→CC` + each format's async system-prompt injection (awaits applyConfigToState).
+  // Runs ONCE, outside the retry loop, after parse + client.inbound. No-op unless the codec
+  // implements `translateInbound`.
+  const ingested = (await deps.codec.translateInbound?.(clientNative)) ?? clientNative
+
+  // S2 — Translate-out (route): decideRoute (passthrough / translate / reject) + translateOut.
+  // The route decision moved to the free-function `router.decideRoute` (ADR 2026-07-11),
+  // resolved via `resolveRouteDecision` (test override → router).
+  const decision = resolveRouteDecision(deps, ingested)
   if (decision.kind === "reject") {
     // No dangling history entry — reject before committing the request (aligns
     // with current messages:165 rejecting before context creation). Carry the
     // raw reason; the route/codec shapes the per-format error envelope.
-    return { ok: false, rejection: { status: decision.status, reason: decision.reason, format: parsed.clientFormat } }
+    return { ok: false, rejection: { status: decision.status, reason: decision.reason, format: ingested.clientFormat } }
   }
   const targetEndpoint = decision.kind === "passthrough" ? decision.endpoint : decision.to
-  const routed = deps.codec.translateOut(parsed.with({ targetEndpoint }))
+  // T1.6 route observability (RFC §10 / W6): record the leg pin + actual outbound leg +
+  // translate-vs-direct label on the ctx (projected into history `model{}`). Optional-chained so a
+  // mock/legacy ctx without the method is unaffected; direct requests record `translated:false`.
+  ingested.ctx.setRouteInfo?.({
+    ...(ingested.routeOverride && { routeOverride: ingested.routeOverride }),
+    outboundEndpoint: targetEndpoint,
+    translated: decision.kind === "translate",
+    clientFormat: parsed.clientFormat,
+  })
+  const routedEnv = ingested.with({ targetEndpoint })
+  const routed = outboundTranslateOut(deps, routedEnv)
 
   // S3 — Rewrite-in: assemble + run the request-rewrite chain.
   const rewritten = runRewriteIn(deps, routed)
 
-  // S4 — Exchange: error-driven retry loop (prepareWire → transport → strategy re-env).
-  // Resolve the strategy factory now that the envelope (model + codec state) exists.
-  const strategies = typeof deps.strategies === "function" ? deps.strategies(rewritten) : deps.strategies
-  // C0-① (RFC §11.1): runExchange returns the POST-retry env (the final attempt's
-  // env), not `rewritten` (pre-exchange). Consumers — e.g. the Anthropic pump
-  // building the tool-call recoverer from env.body.tools, which deferred-tool-retry
-  // mutates — must see what was actually sent on the successful attempt.
-  const { upstream, env: settled } = await runExchange(deps, rewritten, strategies)
-  return { ok: true, upstream, env: settled }
+  // Hook point: upstream.outbound (was onRequest) — one-shot upstream-bound request rewrite,
+  // OUTSIDE the retry loop (a per-attempt replay would clobber reactive strategies' env fixes
+  // — spec §3.2 H1 / RFC §3).
+  const hook = getUpstreamHook()
+  const afterHook = hook?.upstream?.outbound ? (hook.upstream.outbound(rewritten) ?? rewritten) : rewritten
+
+  // S4 — the primary-only GenerationCoordinator is now the sole production owner of
+  // prepare/admission/physical-open/reactive retry topology. No legacy retry loop runs beside it.
+  const preflight = await runGenerationPreflight(deps, afterHook)
+  const coordinator = createDriverCoordinator(deps, preflight)
+  const exchangePromise = coordinator.runPrimary()
+  // Runtime-optional for structural mock contexts, preserving the existing operation-scope seam.
+  // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
+  parsed.ctx.trackOperationBody?.(exchangePromise)
+  const candidate = await exchangePromise
+  generation.bind(coordinator, candidate)
+  return { ok: true, upstream: candidate.upstream, env: candidate.env }
 }
 
 /** S3: assemble the request-rewrite chain and apply each in declared order. */
 function runRewriteIn(deps: DriverDeps, env: RequestEnvelope): RequestEnvelope {
   let current = env
-  for (const rewrite of assembleRequestRewrites(current, deps.requestRewrites ?? BUILTIN_REQUEST_REWRITES)) {
+  // MIGRATED cell: the CellAssembly supplies the leg's request-rewrite chain; else the legacy deps array.
+  const cell = migratedCell(env)
+  const rewrites = cell ? cell.requestRewrites(env) : (deps.requestRewrites ?? BUILTIN_REQUEST_REWRITES)
+  for (const rewrite of assembleRequestRewrites(current, rewrites)) {
     const result = rewrite.apply(current)
     current = result.env
     // P3.2 wires `request.rewrite_applied`{name, changed, stats} here.
@@ -187,26 +399,37 @@ function snapshotBody(body: unknown): unknown {
  * (same codec calls + `runRewriteIn` logic) but snapshots each stage and stops early — the
  * driver stays the single authority on stage ordering (no duplicated chain in the endpoint).
  */
-function inspectRequest(deps: DriverDeps, raw: RawHttpRequest, stopAfter: RequestInspectStage): RequestInspection {
+async function inspectRequest(deps: DriverDeps, raw: RawHttpRequest, stopAfter: RequestInspectStage): Promise<RequestInspection> {
   const stages: RequestInspection["stages"] = {}
 
-  // S1 — parse.
+  // S1a — parse (sync).
   const parsed = deps.codec.parse(raw)
   stages.parse = { clientFormat: parsed.clientFormat, targetEndpoint: parsed.targetEndpoint, model: parsed.model, body: snapshotBody(parsed.body) }
   if (stopAfter === "parse") return { stoppedAt: "parse", stages }
 
-  // S2 — route / translate.
-  const decision = deps.codec.decideRoute(parsed)
+  // S1b — translate-inbound (async, RFC 2026-07-14 §3): per-format async inbound processing.
+  // No-op unless the codec implements `translateInbound` (then this stage's body == parse's).
+  const ingested = (await deps.codec.translateInbound?.(parsed)) ?? parsed
+  stages["translate-inbound"] = { body: snapshotBody(ingested.body) }
+  if (stopAfter === "translate-inbound") return { stoppedAt: "translate-inbound", stages }
+
+  // S2 — route / translate. Via `resolveRouteDecision` (test override → free-function router).
+  const decision = resolveRouteDecision(deps, ingested)
   if (decision.kind === "reject") return { stoppedAt: "reject", rejected: { status: decision.status, reason: decision.reason }, stages }
   const targetEndpoint = decision.kind === "passthrough" ? decision.endpoint : decision.to
-  const routed = deps.codec.translateOut(parsed.with({ targetEndpoint }))
+  // MIGRATED cell: the assembly owns S2 translateOut / S3 requestRewrites / S4-pre prepareWire (mirrors
+  // runRequest); a mock/legacy codec without requestState falls back to deps.codec / deps.requestRewrites.
+  const routedEnv = ingested.with({ targetEndpoint })
+  const routed = outboundTranslateOut(deps, routedEnv)
   stages.translate = { targetEndpoint: routed.targetEndpoint, body: snapshotBody(routed.body) }
   if (stopAfter === "translate") return { stoppedAt: "translate", stages }
 
   // S3 — rewrite-in (mirror runRewriteIn, capturing per-rewrite {name, changed}).
   const applied: Array<{ name: string; changed: boolean }> = []
   let current = routed
-  for (const rewrite of assembleRequestRewrites(current, deps.requestRewrites ?? BUILTIN_REQUEST_REWRITES)) {
+  const inspectCell = migratedCell(current)
+  const inspectRewrites = inspectCell ? inspectCell.requestRewrites(current) : (deps.requestRewrites ?? BUILTIN_REQUEST_REWRITES)
+  for (const rewrite of assembleRequestRewrites(current, inspectRewrites)) {
     const result = rewrite.apply(current)
     applied.push({ name: rewrite.name, changed: result.changed })
     current = result.env
@@ -219,7 +442,7 @@ function inspectRequest(deps: DriverDeps, raw: RawHttpRequest, stopAfter: Reques
   // (beta-strip / server-tool-strip — only triggered by an upstream error) are invisible;
   // `note` flags that. `prepareWire` is non-pure in real codecs (betaProbe.recordOutbound /
   // ctx.recordFeature) — the caller isolates those side effects (throwaway probe + capturing ctx).
-  const wire = deps.codec.prepareWire(current)
+  const wire = outboundPrepareWire(deps, current)
   stages["prepare-wire"] = {
     url: wire.url,
     headers: Object.fromEntries(wire.headers.entries()),
@@ -237,115 +460,235 @@ function inspectRequest(deps: DriverDeps, raw: RawHttpRequest, stopAfter: Reques
  * re-prepares from it. The adaptive rate-limiter (429) lives inside
  * `transport.send`, below this loop — it never bubbles up here.
  */
-async function runExchange(
-  deps: DriverDeps,
-  env: RequestEnvelope,
-  strategies: ReadonlyArray<RetryStrategy>,
-): Promise<{ upstream: UpstreamStream; env: RequestEnvelope }> {
-  let current = env
+async function runGenerationPreflight(deps: DriverDeps, env: RequestEnvelope): Promise<RequestEnvelope> {
+  const cell = migratedCell(env)
+  if (cell?.preSend) return cell.preSend(env)
+  if (deps.codec.preSend) return deps.codec.preSend(env)
+  return env
+}
+
+function createDriverCoordinator(deps: DriverDeps, initialEnv: RequestEnvelope): GenerationCoordinator<CandidateResponseSession> {
+  const recording = createDriverRecordingPort(deps, initialEnv.ctx)
+  const perCandidateDispatchBudget = Math.max(16, 1 + deps.maxRetries + deps.maxLearningRetries)
+  const maxTotalCandidates = deps.hedgePolicy?.maxTotalCandidates ?? 5
+  const generationBudget = createGenerationBudget({
+    maxActiveCandidates: deps.hedgePolicy?.maxActiveCandidates ?? 2,
+    maxTotalCandidates,
+    maxActiveDispatches: deps.hedgePolicy?.maxActiveDispatches ?? 2,
+    maxTotalDispatches: deps.hedgePolicy?.maxTotalDispatches ?? perCandidateDispatchBudget * maxTotalCandidates,
+  })
+  const candidateStateFactory = deps.codec.createCandidateStateFactory?.(initialEnv) ?? createCandidateStateFactory(initialEnv, {})
+  const createCandidate = ({
+    role,
+    parentCandidate,
+    env,
+  }: {
+    role: CandidateRole
+    parentCandidate?: CandidateHandle
+    env: RequestEnvelope
+  }): CandidateRuntime<CandidateResponseSession> => {
+    const retry = createSemanticRetryPolicy(deps)
+    const scheduler = createDispatchScheduler({
+      prepareWire: (current) => outboundPrepareWire(deps, current),
+      open: (wire, current, options) => openPhysicalDispatch(deps, wire, current, options),
+      admission: deps.admission ?? getUpstreamAdmissionController(),
+      recording,
+      decideRetry: retry,
+      maxDispatches: perCandidateDispatchBudget,
+      ...(deps.monotonicNow && { monotonicNow: deps.monotonicNow }),
+      generationBudget,
+    })
+    return createCandidateRuntime({
+      role,
+      ...(parentCandidate !== undefined && { parentCandidate }),
+      env,
+      forkEnv(candidate) {
+        const fork = candidateStateFactory.fork({ candidateId: String(candidate), role })
+        return env.with({
+          // The coordinator-provided env may carry accepted reactive/buffered-recovery copy-on-write
+          // changes. Fork only opaque requestState here; never rewind body/prepareHints to generation start.
+          body: env.body,
+          prepareHints: structuredClone(env.prepareHints),
+          requestState: fork.requestState,
+        })
+      },
+      recording,
+      scheduler,
+      createProcessor: ({ candidate, dispatch, env: processorEnv }) => {
+        const responseRewrites = migratedCell(processorEnv)?.responseRewrites(processorEnv) ?? deps.responseRewrites ?? BUILTIN_RESPONSE_REWRITES
+        const renderer = deps.codec.createCandidateRenderer?.(processorEnv) ?? {
+          renderResponse: (frame: import("./types").UpstreamFrame, requestEnv: RequestEnvelope) => deps.codec.renderResponse(frame, requestEnv),
+          flushResponse: () => [],
+        }
+        const createSession = deps.candidateResponseSessionFactory ?? createDefaultCandidateResponseSession
+        return createSession({ candidate, dispatch, env: processorEnv, responseRewrites, renderer })
+      },
+    })
+  }
+  return createGenerationCoordinator({ env: initialEnv, createCandidate, generationBudget })
+}
+
+function createSemanticRetryPolicy(deps: DriverDeps): (input: import("./generation/dispatch-scheduler").SemanticRetryInput) => Promise<SemanticRetryDecision> {
   let normalRetries = 0
   let learningRetries = 0
-  let activeStrategy: RetryStrategy | undefined
-  // The accepted retry's meta (post-gate), threaded to onMeta + onResolved (C0-②).
-  let activeMeta: Record<string, unknown> | undefined
-
-  for (;;) {
-    const wire = deps.codec.prepareWire(current)
-    current.ctx.beginAttempt({ ...(activeStrategy && { strategy: activeStrategy.name }) })
-    // S4 per-attempt sampling (P2.3-S): the codec derives the history effective +
-    // wire request descriptors from the prepared wire + env (format-specific). The
-    // attempt record exists (beginAttempt above); record both tracks on it.
-    const sample = deps.codec.sampleRequest?.(wire, current)
-    if (sample) {
-      current.ctx.setAttemptEffectiveRequest(sample.effective)
-      current.ctx.setAttemptWireRequest(sample.wire)
-    }
-    current.ctx.transition("executing")
+  let candidateStrategies: ReadonlyArray<RetryStrategy> | undefined
+  return async ({ env, error }) => {
+    // Resolve only after CandidateStateFactory forked env.requestState. Strategy closures (notably
+    // beta-probe and reverse resanitize) must bind this candidate's supplies, never generation-shared ones.
+    const strategy = (candidateStrategies ??= resolveExchangeStrategies(deps, env)).find((candidate) => candidate.canHandle(error))
+    if (!strategy) return { kind: "fail" }
+    let action: RetryAction
     try {
-      const upstream = await deps.transport.send(wire, current)
-      // RFC history-http-header-capture Phase 2: driver owns the outbound header
-      // capture (no handler-side HeadersCapture bag). ② outboundRequest = the wire
-      // headers in hand; ③ outboundResponse = the upstream response headers carried
-      // by UpstreamStream.headers (empty for the upstream-WS path → leg omitted).
-      // Written per-attempt via the merge setter → the FINAL attempt's values stick
-      // at the top-level legs; Phase 3 ALSO records them per-attempt (setAttempt*).
-      const upstreamRespHeaders = Object.fromEntries(upstream.headers.entries())
-      const wireReqHeaders = Object.fromEntries(wire.headers.entries())
-      current.ctx.setHttpHeaders({
-        request: wireReqHeaders,
-        ...(Object.keys(upstreamRespHeaders).length > 0 && { response: upstreamRespHeaders }),
-      })
-      if (Object.keys(upstreamRespHeaders).length > 0) current.ctx.setAttemptResponseHeaders(upstreamRespHeaders)
-      // onResolved threads the post-gate meta of the retry that produced this env
-      // (C0-② / RFC §11.2) so the owning strategy commits its learning from it
-      // (e.g. unsupported-beta fixates meta.probedBetas). undefined on first-attempt
-      // success (no retry produced this env).
-      await activeStrategy?.onResolved?.(current, activeMeta)
-      // C0-① (RFC §11.1): return the POST-retry env (the final attempt's `current`),
-      // not the caller's pre-exchange env — consumers read what was actually sent.
-      return { upstream, env: current }
-    } catch (error) {
-      const apiError = classifyError(error)
-      current.ctx.setAttemptError(apiError)
-      // RFC Phase 2: capture the outbound legs on the failure path too. ② from the
-      // wire; ③ from apiError.responseHeaders (classifyHTTPError now passes it through
-      // on ALL HTTP-error branches). Network/abort failures have no upstream response
-      // → response leg correctly absent. Final attempt wins at the top level.
-      current.ctx.setHttpHeaders({
-        request: Object.fromEntries(wire.headers.entries()),
-        ...(apiError.responseHeaders && { response: Object.fromEntries(apiError.responseHeaders.entries()) }),
-      })
-      if (apiError.responseHeaders) current.ctx.setAttemptResponseHeaders(Object.fromEntries(apiError.responseHeaders.entries()))
-
-      const strategy = strategies.find((s) => s.canHandle(apiError))
-      if (!strategy) throw error // no strategy → [FAIL]
-
-      // A strategy that itself throws degrades to failing the request with the
-      // ORIGINAL caught error (legacy parity — pipeline.ts:307-314 warns + breaks
-      // + re-throws the original error rather than the strategy's own failure).
-      let action: RetryAction
-      try {
-        action = await strategy.handle(apiError, current)
-      } catch (strategyError) {
-        consola.warn(
-          `[Driver] Strategy "${strategy.name}" threw while handling the error:`,
-          strategyError instanceof Error ? strategyError.message : strategyError,
-        )
-        throw error
-      }
-      // Abort → surface the ORIGINAL caught error (a proper Error/HTTPError with
-      // stack), matching the legacy pipeline (which breaks the loop and re-throws
-      // the original error, pipeline.ts:312). `apiError` (the classified form) is
-      // already recorded via setAttemptError; `action.error` reserves a future
-      // strategy-supplied override but is not surfaced here (the spec draft's
-      // `throw action.error` would throw a non-Error ApiError, losing the stack).
-      if (action.kind === "abort") throw error
-
-      // Budget gate (normal vs learning) — after handle, mirroring pipeline.ts.
-      const overBudget = action.learning ? learningRetries++ >= deps.maxLearningRetries : normalRetries++ >= deps.maxRetries
-      if (overBudget) throw error
-
-      current = action.env
-      activeStrategy = strategy
-      // Capture the accepted retry's meta post-gate (C0-② / RFC §11.2): a
-      // budget-rejected retry threw above (over-budget → throw), so its meta never
-      // reaches here. Route it to the handler's observability sink (only when
-      // present) and remember it for this strategy's onResolved.
-      activeMeta = action.meta
-      if (action.meta) deps.onMeta?.(action.meta, current)
-      current.ctx.recordAttemptFailure({
-        willRetry: true,
-        nextStrategy: strategy.name,
-        ...(action.waitMs !== undefined && { waitMs: action.waitMs }),
-        ...(action.learning && { learning: action.learning }),
-      })
-      // Count the retry backoff in queueWaitMs (legacy parity — pipeline.ts adds
-      // action.waitMs to queueWaitMs in addition to the rate-limiter wait).
-      if (action.waitMs) {
-        current.ctx.addQueueWaitMs(action.waitMs)
-        await delay(action.waitMs)
-      }
+      action = await strategy.handle(error, env)
+    } catch (strategyError) {
+      consola.warn(
+        `[Driver] Strategy "${strategy.name}" threw while handling the error:`,
+        strategyError instanceof Error ? strategyError.message : strategyError,
+      )
+      return { kind: "fail" }
     }
+    if (action.kind === "abort") return { kind: "fail" }
+    const overBudget = action.learning ? learningRetries++ >= deps.maxLearningRetries : normalRetries++ >= deps.maxRetries
+    if (overBudget) return { kind: "fail" }
+    if (action.meta) deps.onMeta?.(action.meta, action.env)
+    action.env.ctx.recordAttemptFailure({
+      willRetry: true,
+      nextStrategy: strategy.name,
+      ...(action.waitMs !== undefined && { waitMs: action.waitMs }),
+      ...(action.learning && { learning: true }),
+    })
+    if (action.waitMs) action.env.ctx.addQueueWaitMs(action.waitMs)
+    return {
+      kind: "retry",
+      env: action.env,
+      reason: strategy.name,
+      ...(action.waitMs !== undefined && { waitMs: action.waitMs }),
+      onResolved: (resolvedEnv) => strategy.onResolved?.(resolvedEnv, action.meta),
+    }
+  }
+}
+
+function createDriverRecordingPort(deps: DriverDeps, ctx: RequestContext): DispatchRecordingPort {
+  let candidateSequence = 0
+  let dispatchSequence = 0
+  const explicit =
+    typeof ctx.beginGenerationCandidate === "function"
+    && typeof ctx.beginGenerationDispatch === "function"
+    && typeof ctx.settleGenerationCandidate === "function"
+    && typeof ctx.settleGenerationDispatch === "function"
+  const fallbackCandidates = new Set<CandidateHandle>()
+
+  const selectSample = (wire: PreparedRequest, env: RequestEnvelope) => {
+    const cell = migratedCell(env)
+    return cell ? cell.sampleWireTrack(wire, env) : deps.codec.sampleRequest?.(wire, env)
+  }
+
+  return {
+    beginCandidate(input) {
+      if (explicit) return ctx.beginGenerationCandidate(input)
+      const handle = `compat-candidate:${++candidateSequence}` as CandidateHandle
+      fallbackCandidates.add(handle)
+      return handle
+    },
+
+    settleCandidate(candidate, settlement) {
+      if (explicit) ctx.settleGenerationCandidate(candidate, settlement)
+    },
+
+    beginDispatch({ candidate, reason, strategy: explicitStrategy, wire, env }) {
+      const strategy = explicitStrategy ?? (reason === "initial" ? undefined : reason)
+      const handle =
+        explicit ? ctx.beginGenerationDispatch({ candidate, ...(strategy && { strategy }) }) : (`compat-dispatch:${++dispatchSequence}` as DispatchHandle)
+      // eslint-disable-next-line @typescript-eslint/no-deprecated -- mock/legacy contexts intentionally exercise the temporary serial adapter until P9 removes it
+      if (!explicit) ctx.beginAttempt({ ...(strategy && { strategy }) })
+      const sample = selectSample(wire, env)
+      if (sample) {
+        if (explicit) {
+          ctx.setGenerationDispatchEffectiveRequest(handle, sample.effective)
+          ctx.setGenerationDispatchWireRequest(handle, sample.wire)
+        } else {
+          ctx.setAttemptEffectiveRequest(sample.effective)
+          ctx.setAttemptWireRequest(sample.wire)
+        }
+      }
+      ctx.setHttpHeaders({ request: Object.fromEntries(wire.headers.entries()) })
+      ctx.transition("executing")
+      return handle
+    },
+
+    recordAdmission(_dispatch, permit) {
+      ctx.addQueueWaitMs(permit.queueWaitMs)
+    },
+
+    recordOpened(dispatch, response) {
+      if (response.kind === "stream" || response.kind === "json") {
+        const headers = Object.fromEntries((response.kind === "stream" ? response.upstream.headers : response.headers).entries())
+        if (Object.keys(headers).length > 0) {
+          ctx.setHttpHeaders({ response: headers })
+          if (explicit) ctx.setGenerationDispatchResponseHeaders(dispatch, headers)
+          else ctx.setAttemptResponseHeaders(headers)
+        }
+        if (explicit) ctx.setGenerationDispatchTimingEpoch(dispatch, "upstreamHeadersAt", Date.now(), "once")
+        else ctx.setAttemptTimingEpoch?.("upstreamHeadersAt", Date.now(), "once")
+        return
+      }
+      const error = classifyError(response.error)
+      if (explicit) ctx.setGenerationDispatchError(dispatch, error)
+      else ctx.setAttemptError(error)
+      if (error.responseHeaders) {
+        const headers = Object.fromEntries(error.responseHeaders.entries())
+        ctx.setHttpHeaders({ response: headers })
+        if (explicit) ctx.setGenerationDispatchResponseHeaders(dispatch, headers)
+        else ctx.setAttemptResponseHeaders(headers)
+      }
+    },
+
+    settleDispatch(dispatch, settlement) {
+      if (settlement.verdict === "discarded" && settlement.retryNextStrategy)
+        ctx.recordAttemptFailure({
+          willRetry: true,
+          nextStrategy: settlement.retryNextStrategy,
+          ...(settlement.waitMs !== undefined && { waitMs: settlement.waitMs }),
+        })
+      if (explicit) ctx.settleGenerationDispatch(dispatch, settlement)
+    },
+  }
+}
+
+async function openPhysicalDispatch(
+  deps: DriverDeps,
+  wire: PreparedRequest,
+  env: RequestEnvelope,
+  options?: TransportDispatchOptions,
+): Promise<PhysicalTransportResponse> {
+  const exchange = getUpstreamHook()?.exchange
+  if (!exchange && deps.transport.open) return (deps.transport as PhysicalTransport).open(wire, env, options)
+  try {
+    const upstream = exchange ? await exchange(wire, env, () => deps.transport.send(wire, env, options)) : await deps.transport.send(wire, env, options)
+    const lifecycle = upstream.lifecycle ?? settledDispatchLifecycle()
+    // Preserve the producer's UpstreamStream identity: hook origin/provenance and callers use the
+    // object itself as the dispatch artifact. Adding the migration lifecycle in place avoids a
+    // semantically lossy wrapper while keeping hook mocks compatible.
+    const ownedUpstream = Object.assign(upstream, { lifecycle })
+    // A hook may deliberately replay a recorded stream for a request whose original body did not
+    // set `stream`. Its returned artifact is authoritative at this boundary; non-stream responses
+    // are distinguished by an explicit `nonStream` body.
+    if (wire.stream || (exchange !== undefined && upstream.nonStream === undefined)) return { kind: "stream", upstream: ownedUpstream, lifecycle }
+    return { kind: "json", body: upstream.nonStream, headers: upstream.headers, lifecycle }
+  } catch (error) {
+    const lifecycle = settledDispatchLifecycle()
+    if (error instanceof UpstreamTransportFallbackError) return { kind: "fallback-before-first-event", error: error.dispatchError, lifecycle }
+    return { kind: "failed-open", error, lifecycle }
+  }
+}
+
+function settledDispatchLifecycle(): import("./types").UpstreamDispatchLifecycle {
+  return {
+    cancel() {},
+    async dispose() {
+      return { quiesced: true, connectionReusable: false }
+    },
+    quiesced: Promise.resolve(),
   }
 }
 
@@ -353,87 +696,176 @@ async function runExchange(
 // Response side (S5→S7)
 // ============================================================================
 
-/** S5→S7: rewrite-out (per-frame chain + flush) → renderResponse → yield. */
-async function* runResponse(deps: DriverDeps, upstream: UpstreamStream, env: RequestEnvelope, opts?: RunResponseOpts): AsyncIterable<ClientFrame> {
-  // S5 — Rewrite-out: assemble the response-rewrite chain (per-request state, seeded from env).
-  const rewrites = assembleResponseRewrites(env, deps.responseRewrites ?? BUILTIN_RESPONSE_REWRITES)
-  const states: Array<RewriteState> = rewrites.map((r) => r.createState?.(env) ?? {})
-
-  // S4-exit sampling (P3.2b, envelope-driver.md §4): record each upstream-ORIGINAL
-  // frame (raw verbatim) BEFORE the rewrite/render chain. The `outboundResponse`
-  // track must capture the upstream bytes PRE-translation — CC via-responses /
-  // Responses fallback `renderResponse` is NOT identity (only Anthropic/direct
-  // is), so the yield point is the wrong place for the upstream track. Universal
-  // across every format that drives runResponse (CC / Responses / Gemini / Anthropic
-  // HTTP + client WS), closing the "sseEvents recorded only on Anthropic" gap (§4
-  // "关键改进", D8 原始记录完整性). `frame.event` is the SSE event type — for
-  // Anthropic it equals the `parsed.type` the legacy pump recorded (Anthropic always
-  // sends an event line), so this stays byte-equivalent there; the fallback only
-  // applies to formats whose chunks carry no event line (CC).
-  //
-  // Pushed per-frame and aliased onto ctx on the first frame (setSseEvents stores
-  // the array reference): a consumer that breaks early (the Anthropic pump breaks
-  // on [DONE]/error) abandons this generator, so code AFTER the loop never runs —
-  // but the aliased array already holds every frame consumed up to the break.
-  const upstreamSse: Array<SseEventRecord> = []
-  const streamStartMs = Date.now()
-  // T2 (dry-run): the upstream-frame ordinal threaded to `onRewriteAction`. Increments
-  // per upstream frame iterated (the sampler closure reads the live value).
-  let frameIndex = 0
-  const onRewriteAction = opts?.onRewriteAction
-  const sampleAction = onRewriteAction ? (name: string, action: FrameAction) => onRewriteAction(name, frameIndex, action) : undefined
-
-  try {
-    for await (const frame of upstream.frames) {
-      // Skip the `[DONE]` sentinel — it's a gateway-injected transport terminator
-      // (OpenAI convention, NOT part of the Anthropic protocol; anthropic/stream.ts:104),
-      // not a content frame. The accumulators skip it and the legacy Anthropic pump
-      // broke before recording it, so excluding it keeps the upstream-original track to
-      // real content frames (no mislabeled `type:"message"` sentinel) + matches the
-      // pre-P3.2b Anthropic baseline. Forwarded never carried it either (pump breaks).
-      if (frame.data !== "[DONE]") {
-        upstreamSse.push({ offsetMs: Date.now() - streamStartMs, type: frame.event ?? (frame.data ? "message" : "keepalive"), raw: frame.data ?? "" })
-        if (upstreamSse.length === 1) env.ctx.setSseEvents(upstreamSse)
-        // Hand the raw upstream frame to the handler's upstream-side work (accumulate
-        // → outboundResponse, repetition, progress, diagnostics) BEFORE the rewrite
-        // chain (RFC §4.A1 — keeps those on the upstream-original, not the rewritten
-        // frames the loop yields below). Same skip-[DONE] condition as upstreamSse.
-        opts?.onUpstreamFrame?.(frame)
-      }
-      // S5: thread the upstream frame through the rewrite chain (emit/suppress/buffer).
-      for (const rewritten of passThrough([frame], rewrites, states, 0, sampleAction)) {
-        // S6 — Translate-out: render the (target-endpoint) frame to the client protocol.
-        // skipRender (dry-run T1) yields the S5 frame verbatim — the consumer wants the
-        // rewrite-chain output BEFORE the S6 render translation.
-        if (opts?.skipRender) yield rewritten
-        else yield* renderFrames(deps, rewritten, env)
-      }
-      frameIndex++
-    }
-  } finally {
-    // S5 flush: drain buffered frames at stream end. In `finally` (RFC §4.0.5, H3
-    // pre-step) so `flushChain` RUNS on every generator exit — normal completion, an
-    // upstream throw, AND a consumer-triggered `.return()` (`break`) / `.throw()`.
-    //
-    // Frame DELIVERY differs by exit, though (ECMAScript IteratorClose):
-    //   - normal completion / upstream throw → the `yield*` below delivers flushed
-    //     frames to the consumer (on a throw, BEFORE the error re-propagates — the
-    //     generator unwinds through finally), so nothing is dropped.
-    //   - consumer `break` → `.return()` → the finally still RUNS (buffer state /
-    //     side effects clear), but IteratorClose DISCARDS values yielded here, so a
-    //     breaking consumer does NOT receive them.
-    //
-    // With `BUILTIN_RESPONSE_REWRITES` empty this is a no-op (flushChain → []), so it is
-    // behavior-preserving today — the live Anthropic pump always `break`s on
-    // [DONE]/error and is unaffected. Phase 4 (migrating a buffering decode/recover
-    // rewrite into the registry) MUST NOT rely on this finally to deliver flushed
-    // frames to an early-breaking consumer — that path needs an explicit flush
-    // before the break (cf. the handler's post-loop flush, handler-v4.ts:655-663).
-    for (const flushed of flushChain(rewrites, states)) {
-      if (opts?.skipRender) yield flushed
-      else yield* renderFrames(deps, flushed, env)
-    }
+/** S5→S7: construct and return the branch-local processor iterable without an extra async-generator delegation layer. */
+function runResponse(
+  deps: DriverDeps,
+  upstream: UpstreamStream,
+  env: RequestEnvelope,
+  opts?: RunResponseOpts,
+  generation?: DriverGenerationRuntime,
+  applyPostRender = true,
+): AsyncIterable<ClientFrame> {
+  const coordinated = generation?.bindings.get(upstream)?.candidate.processor
+  if (coordinated) {
+    const effectiveOpts = mergeCandidateResponseOpts(coordinated.responseOpts, opts)
+    const frames = coordinated.processor.stream(upstream, effectiveOpts)
+    return applyPostRender && !effectiveOpts.skipRender ? applyResponsePostRender(frames, effectiveOpts) : frames
   }
+  // Direct response-only callers (dry-run and focused processor tests) have no S4 generation.
+  // This compatibility adapter still creates exactly one processor and owns no retry loop.
+  const responseRewrites = migratedCell(env)?.responseRewrites(env) ?? deps.responseRewrites ?? BUILTIN_RESPONSE_REWRITES
+  const renderer = deps.codec.createCandidateRenderer?.(env) ?? {
+    renderResponse: (frame: import("./types").UpstreamFrame, requestEnv: RequestEnvelope) => deps.codec.renderResponse(frame, requestEnv),
+    flushResponse: () => [],
+  }
+  const session = createDefaultCandidateResponseSession({
+    candidate: "compat-response-candidate" as CandidateHandle,
+    dispatch: "compat-response-dispatch" as DispatchHandle,
+    env,
+    responseRewrites,
+    renderer,
+  })
+  const effectiveOpts = mergeCandidateResponseOpts(session.responseOpts, opts)
+  const frames = session.processor.stream(upstream, effectiveOpts)
+  return applyPostRender && !effectiveOpts.skipRender ? applyResponsePostRender(frames, effectiveOpts) : frames
+}
+
+async function* applyResponsePostRender(frames: AsyncIterable<ClientFrame>, opts: RunResponseOpts): AsyncIterable<ClientFrame> {
+  for await (const frame of frames) {
+    const transformed = opts.onRenderedFrame ? opts.onRenderedFrame(frame) : frame
+    if (transformed) yield transformed
+  }
+}
+
+function mergeCandidateResponseOpts(candidate: CandidateResponseSessionOptions | undefined, outer: RunResponseOpts | undefined): RunResponseOpts {
+  if (!candidate) return outer ?? {}
+  return { ...outer, ...candidate }
+}
+
+function currentCandidateResponseOpts(
+  generation: DriverGenerationRuntime | undefined,
+  upstream: UpstreamStream,
+  outer: RunResponseOpts | RunBufferedOpts | undefined,
+): RunResponseOpts | RunBufferedOpts {
+  const candidate = generation?.currentSession(upstream)?.responseOpts
+  return candidate ? { ...outer, ...candidate } : (outer ?? {})
+}
+
+async function maybeRunHedgedResponseSink(
+  deps: DriverDeps,
+  upstream: UpstreamStream,
+  env: RequestEnvelope,
+  sink: ClientSink,
+  outerOpts: RunResponseOpts | RunBufferedOpts | undefined,
+  generation: DriverGenerationRuntime | undefined,
+): Promise<ResponseOutcome | undefined> {
+  const policy = deps.hedgePolicy
+  const runtime = generation
+  const binding = runtime?.bindings.get(upstream)
+  if (!policy?.enabled || !runtime || !binding || !env.stream) return undefined
+  // Explicit buffered-recovery mode retains its sequential multi-candidate topology until P7-T3
+  // folds recovery and hedge budgets into one coordinator. Silently replacing N recoveries with
+  // one hedge would weaken an operator-enabled durability contract.
+  if (outerOpts && "retryCap" in outerOpts) return undefined
+
+  const snapshot = env.ctx.modelOperationSnapshot
+  const activeCandidates = snapshot.candidates.filter((candidate) => candidate.verdict === undefined).length
+  const activeDispatches = snapshot.dispatches.filter((dispatch) => dispatch.verdict === undefined).length
+  const thresholdAtMs = binding.candidate.dispatchedAtMonotonic + policy.thresholdMs
+  const future = policy.evaluate({
+    nowMs: thresholdAtMs,
+    primaryDispatchedAtMs: binding.candidate.dispatchedAtMonotonic,
+    wire: binding.candidate.wire,
+    semanticContentCommitted: false,
+    winnerSelected: false,
+    cancelled: env.ctx.cancelled,
+    settled: env.ctx.settled,
+    secondaryCandidates: snapshot.candidates.filter((candidate) => candidate.role === "hedge").length,
+    activeCandidates,
+    totalCandidates: snapshot.candidates.length,
+    activeDispatches,
+    totalDispatches: snapshot.dispatches.length,
+  })
+  if (!future.eligible) return undefined
+
+  const primary = withCandidateResponseOpts(binding.candidate, outerOpts)
+  const now = (deps.monotonicNow ?? performance.now.bind(performance))()
+  try {
+    const raced = await binding.coordinator.racePrimaryWithDelayedHedge({
+      primary,
+      delayMs: Math.max(0, thresholdAtMs - now),
+      startHedge: async () => {
+        const hedge = await binding.coordinator.runHedge(env)
+        runtime.bind(binding.coordinator, hedge)
+        return withCandidateResponseOpts(hedge, outerOpts)
+      },
+    })
+    if (raced.kind === "failure") {
+      binding.coordinator.releaseCandidate(binding.candidate.candidate)
+      if (classifyStreamError(raced.error) === "client-abort") return { kind: "settled-abort" }
+      return { kind: "stream-error", error: raced.error }
+    }
+
+    const selected = raced.candidate
+    runtime.bind(binding.coordinator, selected)
+    env.ctx.selectGenerationWinner(selected.candidate, selected.dispatch)
+    if (raced.kind === "terminal") {
+      await writeWinnerFrames(sink, selected.candidate, raced.bufferedFrames)
+      binding.coordinator.releaseCandidate(selected.candidate)
+      return { kind: "complete", headers: selected.upstream.headers, ...(selected.processor.finish && { finish: selected.processor.finish }) }
+    }
+
+    env.ctx.trackOperationBody(raced.loserCleanup)
+    await writeWinnerFrames(sink, selected.candidate, raced.bufferedFrames)
+    for await (const frame of raced.liveFrames) await writeWinnerFrame(sink, selected.candidate, frame)
+    binding.coordinator.releaseCandidate(selected.candidate)
+    return { kind: "complete", headers: selected.upstream.headers, ...(selected.processor.finish && { finish: selected.processor.finish }) }
+  } catch (error) {
+    binding.coordinator.releaseCandidate(binding.candidate.candidate)
+    if (classifyStreamError(error) === "client-abort") return { kind: "settled-abort" }
+    return { kind: "stream-error", error }
+  } finally {
+    sink.close?.()
+  }
+}
+
+function withCandidateResponseOpts(
+  candidate: CoordinatedCandidate<CandidateResponseSession>,
+  outer: RunResponseOpts | RunBufferedOpts | undefined,
+): CoordinatedCandidate<CandidateResponseSession> {
+  if (!outer) return candidate
+  const session = candidate.processor
+  return {
+    ...candidate,
+    processor: {
+      identity: session.identity,
+      candidate: session.candidate,
+      dispatch: session.dispatch,
+      renderer: session.renderer,
+      processor: session.processor,
+      responseOpts: mergeCandidateResponseOpts(session.responseOpts, outer),
+      boundary: session.boundary,
+      get finish() {
+        return session.finish
+      },
+      snapshot: () => session.snapshot(),
+    },
+  }
+}
+
+async function writeWinnerFrames(sink: ClientSink, candidate: CandidateHandle, frames: ReadonlyArray<ClientFrame>): Promise<void> {
+  const delivery = getDownstreamDeliverySession(sink)
+  if (delivery) {
+    await delivery.commitWinnerBlock(String(candidate), frames)
+    return
+  }
+  for (const frame of frames) await sink.write(frame)
+}
+
+async function writeWinnerFrame(sink: ClientSink, candidate: CandidateHandle, frame: ClientFrame): Promise<void> {
+  const delivery = getDownstreamDeliverySession(sink)
+  if (delivery) await delivery.writeWinnerFrame(String(candidate), frame)
+  else await sink.write(frame)
 }
 
 /**
@@ -468,9 +900,25 @@ async function runResponseSink(
   env: RequestEnvelope,
   sink: ClientSink,
   opts?: RunResponseOpts,
+  generation?: DriverGenerationRuntime,
 ): Promise<ResponseOutcome> {
+  const hedged = await maybeRunHedgedResponseSink(deps, upstream, env, sink, opts, generation)
+  if (hedged) return hedged
+  const unhedgedBinding = generation?.bindings.get(upstream)
+  if (unhedgedBinding) env.ctx.selectGenerationWinner(unhedgedBinding.candidate.candidate, unhedgedBinding.candidate.dispatch)
+  const effectiveOpts = currentCandidateResponseOpts(generation, upstream, opts) as RunResponseOpts
+  let finish: import("./types").ResponseFinishResult | undefined
+  const responseOpts: RunResponseOpts = {
+    ...effectiveOpts,
+    ...(effectiveOpts.finishResponse && {
+      onFinishResolved(result: import("./types").ResponseFinishResult) {
+        finish = result
+        effectiveOpts.onFinishResolved?.(result)
+      },
+    }),
+  }
   try {
-    for await (const frame of runResponse(deps, upstream, env, opts)) {
+    for await (const frame of runResponse(deps, upstream, env, responseOpts, generation, false)) {
       // Drop the `[DONE]` transport sentinel — never written to a sink (the format's
       // handler synthesizes its own trailing terminator; Anthropic emits none).
       if (frame.data === "[DONE]") continue
@@ -478,16 +926,21 @@ async function runResponseSink(
       // side effects); identity when the format doesn't supply one (Anthropic). Applied AFTER
       // the `[DONE]` drop so the hook never sees the sentinel. A `undefined` return SKIPS the
       // frame (Responses drops empty/unparseable frames the legacy loop never forwarded).
-      const toWrite = opts?.onRenderedFrame ? opts.onRenderedFrame(frame) : frame
+      const toWrite = effectiveOpts.onRenderedFrame ? effectiveOpts.onRenderedFrame(frame) : frame
       if (toWrite) {
+        env.ctx.captureGenerationFrameTransform?.(frame, toWrite, {
+          stage: "client-transform",
+          transformId: "client:on-rendered-frame",
+          forceDerived: toWrite !== frame || readSyntheticKind(toWrite) !== undefined,
+        })
         await sink.write(toWrite)
         // Early-stop after a terminal frame (Responses WS: don't read past response.completed —
         // a trailing frame or a stalled upstream would otherwise hang to idle-timeout). The break
         // runs the generator's `finally` (flushChain); empty for Responses, so nothing is lost.
-        if (opts?.stopAfterFrame?.(toWrite)) break
+        if (effectiveOpts.stopAfterFrame?.(toWrite)) break
       }
     }
-    return { kind: "complete", headers: upstream.headers }
+    return { kind: "complete", headers: upstream.headers, ...(finish && { finish }) }
   } catch (error) {
     // A client disconnect (the transport guard's StreamClientAbortError, or any error
     // classified client-abort) settles as abort — the handler writes nothing further.
@@ -518,36 +971,178 @@ async function runResponseSink(
  * each attempt's upstream-original frames onto its attempt record (D1) before the next attempt's
  * `runResponse` resets the top-level slot via `ctx.resetSseEvents()`.
  */
-async function runResponseBufferedSink(
+export async function runResponseBufferedSink(
   deps: DriverDeps,
   upstream: UpstreamStream,
   env: RequestEnvelope,
   sink: ClientSink,
   opts: RunBufferedOpts,
+  generation?: DriverGenerationRuntime,
 ): Promise<ResponseOutcome> {
+  const hedged = await maybeRunHedgedResponseSink(deps, upstream, env, sink, opts, generation)
+  if (hedged) return hedged
+  const unhedgedBinding = generation?.bindings.get(upstream)
+  if (unhedgedBinding) env.ctx.selectGenerationWinner(unhedgedBinding.candidate.candidate, unhedgedBinding.candidate.dispatch)
   const cap = opts.retryCap ?? 0
   const bufferCapBytes = opts.bufferCapBytes ?? 0
-  const strategies = typeof deps.strategies === "function" ? deps.strategies(env) : deps.strategies
+  const vendor = opts.telemetryVendor ?? "unknown"
   let current = upstream
   let currentEnv = env
   let attempt = 0
+  // Block-level commit tracking (P0 mechanism floor). Declared OUTSIDE the retry loop so it
+  // persists across attempts: once a block is committed live (`commitBoundaries` flush), the
+  // retry window is closed forever (a committed prefix is on the wire, un-retryable) and a later
+  // truncation degrades to `partial-degrade` instead of retrying. Stays FALSE the whole time on
+  // the terminal-only path (`commitBoundaries === undefined`) → the retry gate + terminal commit
+  // are byte-identical to the whole-response behaviour (R1).
+  let committedAny = false
+
+  // Buffered empty-text keepalive anchor (spec 2026-07-08-buffered-keepalive-empty-text-anchor §3.2 +
+  // §10.1.5 H1). The anchor STATE is now HANDLER-OWNED and threaded in via `opts.anchorState` so the
+  // handler's UNIQUE injector (attached to the sink's `heartbeat.injectAnchor`) and this buffered
+  // commit/close-off/remap observe ONE shared object — `injected`/`messageStartForwarded`/
+  // `capturedMessageStart` flip on the same instance. The driver only ORCHESTRATES the buffered commit
+  // side (freeze + close-off + +1 remap + message_start dedup); it no longer BUILDS an injector (that
+  // moved to the handler, subsumed by the single `heartbeat.injectAnchor` slot — spec §10.1.5 C1 / B1).
+  // The Anthropic handler supplies the format-specific frames + the message_start predicate via
+  // `opts.anchor` (H2). `anchor` is present for BOTH synthetic-prelude modes (`empty_text` +
+  // `enveloped_ping`) but undefined for `ping` / the live path; the commit branches read
+  // `anchorState.anchorBlockOpen` to remap+close-off (`empty_text`) vs only dedup the message_start
+  // (`enveloped_ping`). When `anchor` is undefined every anchor branch below is inert (byte-identical to
+  // before). `anchorState` falls back to a driver-local object when the caller does not thread one (e.g. a
+  // `ping`-mode buffered stream that never injects).
+  const anchor = opts.anchor
+  const anchorState = opts.anchorState ?? { injected: false, messageStartForwarded: false, anchorBlockOpen: false, anchorClosed: false }
+
+  // Terminal-failure close-off (spec §3.3 M1): when the request FAILS after the anchor was injected (a
+  // truncation/exhaustion, or a post-retreat truncation), the anchor's content_block_start@0 is still OPEN
+  // on the forwarded track. The driver returns `stream-error` and the handler writes its protocol error
+  // frame, but a dangling open block would leave the client's block structure unbalanced. Close it
+  // (empty-text content_block_stop@0 — known-benign) BEFORE the failure return. `freezeHeartbeat` first so
+  // no ping/anchor can fire between here and the stop write; the write is best-effort (the client may
+  // already be gone — a reject is swallowed, there is nothing left to do). NOT called on client-abort /
+  // settled-abort (the client is already gone → closing is meaningless). Idempotent — inert when the anchor
+  // was never injected (fast responses) OR already closed. Setting `anchorState.anchorClosed` is
+  // LOAD-BEARING for cross-site coordination (spec §10.5): after this returns `stream-error`, the pump's
+  // own terminal-branch `closeAnchorIfOpen` reads the SAME shared `anchorClosed` and short-circuits, so the
+  // buffered exhaustion path emits exactly ONE stop@0 (driver's), not a second from the pump.
+  const closeAnchorIfOpen = async (): Promise<void> => {
+    sink.freezeHeartbeat?.()
+    // Only `empty_text` (anchorBlockOpen) reserved a content_block@0 that needs balancing; `enveloped_ping`
+    // injected a message_start-only envelope (no block) → nothing to close off.
+    if (anchorState.injected && anchor && anchorState.anchorBlockOpen && !anchorState.anchorClosed) {
+      anchorState.anchorClosed = true
+      try {
+        await (sink.writeAnchor ?? sink.write)(anchor.stopFrame) // "anchor" marker (structural close-off)
+      } catch {
+        /* client gone mid-close — best-effort, nothing else to do */
+      }
+    }
+  }
+
+  // Shared buffered-frame flush (extracted so the terminal commit AND the block-level boundary
+  // commit apply IDENTICAL anchor-aware semantics: heartbeat freeze → one-time anchor close-off →
+  // H1 message_start dedup → +1 remap). Returns a discriminated result so the caller maps it to a
+  // ResponseOutcome (never throws out). `isTerminalFlush` gates the anchor close-off
+  // (`content_block_stop@0`): the anchor reserved index 0 and must stay OPEN across ALL block-level
+  // BOUNDARY flushes (defect (b) fix, spec §4.3) so an inter-block idle rides the still-open anchor
+  // with an empty `text_delta@0` (resets CC's 300s watchdog) instead of degrading to a bare ping. It
+  // closes ONLY on (i) the TERMINAL flush (success commit) or (ii) the one-shot RETREAT flush (which
+  // forfeits buffering and hands off to live write-through — the anchor is closed there so the live
+  // continuation's +1-remapped real blocks don't sit under a dangling anchor; locked by
+  // retreat-anchor-collision.test.ts). The OLD `firstFlush` gate closed it at the FIRST flush, which
+  // on the block-level path is block 0's boundary — WRONG (only the first inter-block gap kept the
+  // anchor; every later gap fell back to a bare ping → 300s disconnect). On the whole-response path
+  // (`commitBoundaries===undefined`) the SINGLE flush IS the terminal → `isTerminalFlush:true`,
+  // byte-identical to the previous inline whole-response commit (R1). C1 (spec §3.3): freeze the
+  // heartbeat BEFORE snapshotting `injected` + flushing so a mid-flush timer tick can't inject a
+  // second anchor start(0).
+  type FlushResult = { kind: "ok" } | { kind: "client-abort" } | { kind: "write-error"; error: unknown }
+  const flushBufferedFrames = async (
+    frames: Array<ClientFrame>,
+    isTerminalFlush: boolean,
+    mergeCtx: BufferedFlushContext,
+    transformBufferedFlush?: RunBufferedOpts["transformBufferedFlush"],
+  ): Promise<FlushResult> => {
+    sink.freezeHeartbeat?.()
+    const injected = anchorState.injected
+    const anchorBlockOpen = anchorState.anchorBlockOpen
+    try {
+      // M4: the anchor reserved index 0 → close it off (empty-text content_block_stop@0) at the TERMINAL
+      // (or retreat) flush, then shift every real content_block_* by +1. Sets the shared `anchorClosed`
+      // guard (spec §10.5) so a later error terminus never emits a second stop@0. Emitted BEFORE the frame
+      // loop and INDEPENDENT of `frames` being non-empty — on the block-level path the terminal frame is
+      // itself a commit boundary (flushed in-loop), so the terminal flush's `frames` is EMPTY, yet the
+      // anchor MUST still be closed here (defect (b): the close-off must never be dropped just because the
+      // post-last-boundary tail is empty).
+      if (isTerminalFlush && injected && anchor && anchorBlockOpen && !anchorState.anchorClosed) {
+        anchorState.anchorClosed = true
+        await (sink.writeAnchor ?? sink.write)(anchor.stopFrame) // "anchor" marker
+      }
+      // Candidate-hosted buffered-merge seam (spec §4): the reducer's transform replaces the raw buffer
+      // with its (possibly compacted / repaired) frames just before write. Undefined = verbatim (R1).
+      const toFlush = transformBufferedFlush ? transformBufferedFlush(frames, mergeCtx) : frames
+      for (const frame of toFlush) {
+        // H1: the anchor already forwarded message_start ahead of the anchor block — skip the buffered
+        // copy so the client sees exactly one message_start (re-sending it would corrupt the stream).
+        if (anchor && anchorState.messageStartForwarded && anchor.isMessageStart(frame)) continue
+        await sink.write(injected && anchor && anchorBlockOpen ? anchor.remap(frame, 1) : frame)
+      }
+      return { kind: "ok" }
+    } catch (error) {
+      // Client gone mid-flush (a `sink.write` reject) — map it so the buffered sink ALWAYS returns a
+      // ResponseOutcome, never a raw throw (mirrors runResponseSink's catch; the buffer is discarded).
+      if (classifyStreamError(error) === "client-abort") return { kind: "client-abort" }
+      return { kind: "write-error", error }
+    }
+  }
+
   try {
     for (;;) {
+      const candidateOpts = currentCandidateResponseOpts(generation, current, opts) as RunBufferedOpts
+      const notifyBufferedResolve = candidateOpts.onBufferedResolve ?? opts.onBufferedResolve
       const buffer: Array<ClientFrame> = []
       let bufferedBytes = 0
       let retreated = false
       let thrown: unknown
       let drained = false
+      let finish: import("./types").ResponseFinishResult | undefined
+      const responseOpts: RunBufferedOpts = {
+        ...candidateOpts,
+        ...(candidateOpts.finishResponse && {
+          onFinishResolved(result: import("./types").ResponseFinishResult) {
+            finish = result
+            candidateOpts.onFinishResolved?.(result)
+          },
+        }),
+      }
       try {
-        for await (const frame of runResponse(deps, current, currentEnv, opts)) {
+        for await (const frame of runResponse(deps, current, currentEnv, responseOpts, generation, false)) {
           if (frame.data === "[DONE]") continue
-          const toWrite = opts.onRenderedFrame ? opts.onRenderedFrame(frame) : frame
+          const toWrite = candidateOpts.onRenderedFrame ? candidateOpts.onRenderedFrame(frame) : frame
           if (!toWrite) continue
+          currentEnv.ctx.captureGenerationFrameTransform?.(frame, toWrite, {
+            stage: "client-transform",
+            transformId: "client:on-rendered-frame",
+            forceDerived: toWrite !== frame || readSyntheticKind(toWrite) !== undefined,
+          })
           if (retreated) {
-            // Buffer cap already exceeded → live write-through for the rest (no more buffering).
-            await sink.write(toWrite)
+            // Buffer cap already exceeded → live write-through for the rest (no more buffering). When an anchor
+            // was injected BEFORE the retreat, the live continuation must stay consistent with the retreat
+            // flush's +1 remap (spec §6.3): shift every real content_block_* by +1 (the anchor holds @0) and
+            // DROP a duplicate message_start (H1 — the injector already forwarded it). Inert (byte-identical to
+            // the raw forward) when no anchor was injected — `injected`/`anchorBlockOpen` stay false.
+            if (anchor && anchorState.messageStartForwarded && anchor.isMessageStart(toWrite)) continue // H1 dedup
+            await sink.write(anchorState.injected && anchor && anchorState.anchorBlockOpen ? anchor.remap(toWrite, 1) : toWrite)
             continue
           }
+          // Capture the FIRST message_start (before buffering it) into the SHARED anchorState so the
+          // handler's unique idle injector can forward it AHEAD of the anchor block. It is STILL buffered
+          // as normal — the commit flush skips the already-forwarded copy (H1 dedup below).
+          if (anchor && anchorState.capturedMessageStart === undefined && anchor.isMessageStart(toWrite)) anchorState.capturedMessageStart = toWrite
+          // 首包埋点（spec 2026-07-14 §3.2）：首帧被扣留进 buffer 的时刻（entry-level first hold，
+          // 跨失败 retry；once 语义保留全局最早）。protect_streaming_generation 与 L2 共用此函数。
+          if (buffer.length === 0) currentEnv.ctx.setClientTimingEpoch("bufferHoldStart", Date.now())
           buffer.push(toWrite)
           bufferedBytes += (toWrite.data?.length ?? 0) + (toWrite.event?.length ?? 0)
           if (bufferCapBytes > 0 && bufferedBytes > bufferCapBytes) {
@@ -556,8 +1151,65 @@ async function runResponseBufferedSink(
             // forwarded). Documented tradeoff (RFC §7 / §12 Q4) — pathological huge responses are rare.
             retreated = true
             opts.onRetreat?.()
-            for (const f of buffer) await sink.write(f)
+            // §6.3: flush the buffered prefix through the SAME anchor-aware transform as the terminal commit
+            // (one-time anchor close-off `stop@0` → H1 message_start dedup → +1 remap), so an anchor injected
+            // before the retreat can't collide the real @0 block with the anchor's @0 or re-send message_start.
+            // On the no-anchor path this is byte-identical to the previous raw `for (f of buffer) write(f)`
+            // (every anchor branch inert). SUSPEND/RESUME (recoverable) around the flush — NOT the terminal
+            // path's permanent freeze — because retreat is followed by MORE (live) streaming: a subsequent
+            // live stall must still get keepalives (the anchor is now closed, so the tick emits a block-aware
+            // empty delta on the live-open block, or a ping). `flushBufferedFrames`' internal freeze clears the
+            // timer; resume re-arms a fresh interval so the heartbeat recovers for the live continuation.
+            sink.suspendHeartbeat?.()
+            const res = await flushBufferedFrames(buffer, true, { cause: "retreat" }, candidateOpts.transformBufferedFlush)
+            sink.resumeHeartbeat?.()
             buffer.length = 0
+            if (res.kind === "client-abort") return { kind: "settled-abort" }
+            if (res.kind === "write-error") {
+              // Client gone mid-retreat-flush — the forwarded prefix is on the wire (un-retryable). Surface as a
+              // retreated resolution (never-swallow the write error). The `finally` closes the sink.
+              notifyBufferedResolve?.("retreated", attempt, { vendor })
+              return { kind: "stream-error", error: res.error }
+            }
+          } else if (candidateOpts.commitBoundaries?.(toWrite)) {
+            // Block-level commit (P0): this frame closes a block → flush the buffered frames up to and
+            // including it, COMMITTING the block live. Inverts the commit point from "once at terminal
+            // drain" to "at each boundary". `committedAny` closes the retry window (a committed prefix is
+            // on the wire, un-retryable) and routes a later truncation to `partial-degrade`. Skipped
+            // entirely when `commitBoundaries` is undefined → the terminal-only path is byte-identical (R1).
+            //
+            // §4.4 concurrency guard: SUSPEND the heartbeat around this per-block flush (recoverable), so a
+            // tick firing on one of the loop's `await sink.write` yields can't splice an empty keepalive
+            // delta into the middle of THIS real block's deltas. RESUME after — unlike the terminal path's
+            // permanent freeze, the block-level flush is followed by MORE streaming, so the inter-block idle
+            // must keep its keepalives. (`flushBufferedFrames`' internal freeze clears the timer; resume
+            // re-arms a fresh interval, so the heartbeat recovers for the next inter-block gap.)
+            sink.suspendHeartbeat?.()
+            // §5.3/§10.5 H2 ordering: `error` is BOTH a commit boundary AND the response terminus. When it
+            // commits in-loop it must flush as a TERMINAL flush so the anchor close-off `content_block_stop@0`
+            // is emitted BEFORE the buffered error frame (symmetry with the live-pump reconcile path,
+            // tests/anthropic/live-pump-terminal-anchor-closeoff.http.test.ts H2 branch, and the buffered
+            // success terminus). `sawUpstreamError()` is already true here — `onUpstreamFrame` (runResponse)
+            // ran before this frame reached the loop. A `content_block_stop` boundary is mid-stream (more
+            // blocks may follow) → NOT terminal → close-off stays deferred to the real terminus. The later
+            // terminal drain (`drained && sawUpstreamError()`) re-enters `flushBufferedFrames(_, true)` with an
+            // EMPTY buffer and the `anchorClosed` guard short-circuits the second stop@0 (idempotent).
+            // A recovery candidate starts a fresh semantic generation behind the same delivery
+            // session. Its first committed real block must close the synthetic anchor inherited
+            // from the failed parent BEFORE that block, matching the pre-runtime whole-response
+            // recovery wire. Primary block-level commits keep the anchor open between blocks.
+            const closesInheritedAnchor = attempt > 0 || (opts.sawUpstreamError?.() ?? false)
+            const res = await flushBufferedFrames(buffer, closesInheritedAnchor, { cause: "boundary", boundaryFrame: toWrite }, candidateOpts.transformBufferedFlush)
+            sink.resumeHeartbeat?.()
+            buffer.length = 0
+            committedAny = true
+            if (res.kind === "client-abort") return { kind: "settled-abort" }
+            if (res.kind === "write-error") {
+              // A block committed, then the client-side write failed mid-commit — the committed prefix is
+              // on the wire (un-retryable). Surface as a graceful degrade (never-swallow the write error).
+              notifyBufferedResolve?.("partial-degrade", attempt, { vendor })
+              return { kind: "stream-error", error: res.error }
+            }
           }
         }
         drained = true
@@ -571,9 +1223,16 @@ async function runResponseBufferedSink(
       // The outcome mirrors the live path: complete (handler decides success/fail via its acc) or
       // stream-error (the throw / truncation surfaces as today).
       if (retreated) {
-        opts.onBufferedResolve?.("retreated", attempt)
-        if (drained) return { kind: "complete", headers: current.headers }
-        return { kind: "stream-error", error: thrown ?? new Error("upstream stream truncated: closed without message_stop") }
+        notifyBufferedResolve?.("retreated", attempt, { vendor })
+        if (drained) return { kind: "complete", headers: current.headers, ...(finish && { finish }) }
+        // M1: a post-retreat truncation still leaves the anchor open (it was injected during an idle stall
+        // before the retreat) → close it before surfacing the stream-error.
+        await closeAnchorIfOpen()
+        return {
+          kind: "stream-error",
+          error: thrown ?? new Error("upstream stream truncated: closed without message_stop"),
+          truncated: thrown === null || thrown === undefined,
+        }
       }
 
       // COMMIT on a clean drain that reached a TERMINAL upstream state: `message_stop` (success)
@@ -585,28 +1244,37 @@ async function runResponseBufferedSink(
       // also relabel the real error as "truncated" on exhaustion). The committing attempt's frames
       // live at the top-level slot, so they are NOT snapshotted per-attempt here — only a FAILED
       // (retried) attempt gets a per-attempt `sseEvents` row (D1), set in the retry branch below.
-      if (drained && (opts.sawMessageStop() || opts.sawUpstreamError?.())) {
-        try {
-          for (const frame of buffer) await sink.write(frame)
-        } catch (error) {
-          // Client gone mid-flush (a `sink.write` reject) — map it like the drain path so the
-          // buffered sink ALWAYS returns a ResponseOutcome, never a raw throw (mirrors
-          // runResponseSink's catch; the buffer is discarded — the client got a partial flush).
-          if (classifyStreamError(error) === "client-abort") return { kind: "settled-abort" }
-          // L2 produced a COMPLETE generation (reached the terminal frame) — the flush failed at the
-          // transport, NOT the retry: count it as a `success` so the hit-rate denominator isn't a
-          // blind spot. The handler still settles the request as failed (delivery), independently.
-          opts.onBufferedResolve?.("success", attempt)
-          return { kind: "stream-error", error }
+      if (drained && (candidateOpts.sawMessageStop?.() || candidateOpts.sawUpstreamError?.())) {
+        // Flush the buffered TAIL (everything after the last committed block boundary). On the
+        // terminal-only path (`commitBoundaries===undefined`) `buffer` still holds the WHOLE
+        // generation and this is the ONE flush — byte-identical to before (R1). On the block-level
+        // path each boundary already flushed + emptied `buffer` in-loop, so this flushes only the
+        // post-last-boundary tail — and when the terminal frame is ITSELF a boundary, `buffer` is
+        // empty here, so the terminal is NOT re-flushed (M1 dedup: it reached the client exactly once
+        // in-loop). `flushBufferedFrames` owns the freeze + one-time anchor close-off + H1 dedup + remap.
+        // `isTerminalFlush:true` — this is the response terminus, so the anchor's reserved @0 is closed off
+        // here (defect (b): it stayed OPEN across every earlier block boundary; now it closes at the end —
+        // and unconditionally, even when this tail buffer is EMPTY because the terminal frame was itself a
+        // boundary). On the whole-response path this is the single flush → still terminal (R1 byte-identical).
+        const res = await flushBufferedFrames(buffer, true, { cause: "terminal-drain" }, candidateOpts.transformBufferedFlush)
+        if (res.kind === "client-abort") return { kind: "settled-abort" }
+        if (res.kind === "write-error") {
+          // Client gone mid-flush. L2 produced a COMPLETE generation (reached the terminal frame) — the
+          // flush failed at the transport, NOT the retry: count it as a `success` so the hit-rate
+          // denominator isn't a blind spot. The handler still settles the request as failed (delivery).
+          notifyBufferedResolve?.("success", attempt, { vendor })
+          return { kind: "stream-error", error: res.error }
         }
-        opts.onBufferedResolve?.("success", attempt)
-        return { kind: "complete", headers: current.headers }
+        notifyBufferedResolve?.("success", attempt, { vendor })
+        return { kind: "complete", headers: current.headers, ...(finish && { finish }) }
       }
 
       // Failure: a transport-close throw, OR a clean drain WITHOUT a terminal frame (truncation).
       // Retry ONLY a transport-close throw (`"other"`) or a truncation (no throw) — never a
-      // shutdown / idle-timeout throw.
-      const retryable = thrown ? classifyStreamError(thrown) === "other" : true
+      // shutdown / idle-timeout throw. `!committedAny` closes the retry window once a block was
+      // committed live (P0): a committed prefix is on the wire, so re-exchanging would double-send
+      // it. On the terminal-only path `committedAny` is always false → the gate is unchanged (R1).
+      const retryable = (thrown ? classifyStreamError(thrown) === "other" : true) && !committedAny
       if (retryable && attempt < cap) {
         attempt++
         // D1: snapshot THIS failed attempt's upstream-original frames onto the attempt BEFORE the
@@ -614,22 +1282,51 @@ async function runResponseBufferedSink(
         // (The final attempt — success-commit above OR exhaustion-return below — keeps its frames
         // at the top-level slot only, matching `extractStagePayloads`' finalIdx skip: no dup.)
         currentEnv.ctx.commitAttemptSseEvents()
+        // Finalize the failed response duration before the coordinator settles this dispatch and
+        // emits the single buffered-retry compatibility event through the recording port.
+        currentEnv.ctx.finalizeCurrentAttemptDuration()
         opts.onAttemptReset?.()
+        currentEnv.ctx.resetRepairOutcomesForAttempt()
         currentEnv.ctx.resetSseEvents()
         // L2 escalation (RFC §8): let the caller tighten this retry's env (e.g. force aggressive
         // context_management) so the regenerated response is smaller/faster. Format-agnostic — the
         // driver just threads the returned env into the next exchange.
         if (opts.escalate) currentEnv = opts.escalate(currentEnv, attempt)
-        const re = await runExchange(deps, currentEnv, strategies)
-        current = re.upstream
-        currentEnv = re.env
+        const parent = generation?.bindings.get(current)
+        // Direct response-helper tests do not have an S4 generation binding for the original
+        // upstream. Keep their temporary serial compatibility event until P9 removes this API;
+        // every production request has `parent` and emits exactly once through settleDispatch.
+        if (!parent) currentEnv.ctx.recordAttemptFailure({ willRetry: true, nextStrategy: "buffered-retry" })
+        const coordinator = parent?.coordinator ?? createDriverCoordinator(deps, currentEnv)
+        const recovered =
+          parent ?
+            await coordinator.runRecovery(parent.candidate, thrown ? "transport-close" : "truncated-before-terminal", currentEnv)
+          : await coordinator.runPrimary()
+        generation?.bind(coordinator, recovered)
+        currentEnv.ctx.selectGenerationWinner(recovered.candidate, recovered.dispatch)
+        current = recovered.upstream
+        currentEnv = recovered.env
         continue
       }
       // Exhausted / non-retryable → surface the error (truncation synthesizes one) for the
       // handler to classify + write its protocol error frame (unchanged from the live path). The
       // final failed attempt's frames stay at the top-level slot (no per-attempt snapshot).
-      opts.onBufferedResolve?.("exhausted", attempt)
-      return { kind: "stream-error", error: thrown ?? new Error("upstream stream truncated: closed without message_stop") }
+      // M1: close the still-open anchor (if injected) BEFORE the failure return so the client's block
+      // structure is balanced when the handler appends its error frame.
+      // 穷尽/非重试：最终失败 attempt 也 finalize duration，供终端汇总行 last（截断路径无 setter）。
+      currentEnv.ctx.finalizeCurrentAttemptDuration()
+      await closeAnchorIfOpen()
+      // Block-level degrade (P0): a boundary block was ALREADY committed live, then the stream
+      // truncated (the `!committedAny` gate above forced this branch, un-retryable). The committed
+      // prefix is on the wire, so this is a GRACEFUL degrade — `partial-degrade`, distinct from
+      // `exhausted` (which committed nothing). On the terminal-only path `committedAny` is always
+      // false → `exhausted`, unchanged (R1).
+      notifyBufferedResolve?.(committedAny ? "partial-degrade" : "exhausted", attempt, { vendor })
+      return {
+        kind: "stream-error",
+        error: thrown ?? new Error("upstream stream truncated: closed without message_stop"),
+        truncated: thrown === null || thrown === undefined,
+      }
     }
   } finally {
     sink.close?.()
@@ -646,80 +1343,8 @@ async function runResponseBufferedSink(
  */
 function runResponseWhole(deps: DriverDeps, response: unknown, env: RequestEnvelope): unknown {
   let current = response
-  for (const rewrite of assembleResponseRewrites(env, deps.responseRewrites ?? BUILTIN_RESPONSE_REWRITES)) {
+  for (const rewrite of assembleResponseRewrites(env, migratedCell(env)?.responseRewrites(env) ?? deps.responseRewrites ?? BUILTIN_RESPONSE_REWRITES)) {
     if (rewrite.transformWhole) current = rewrite.transformWhole(current, env)
   }
   return current
-}
-
-/** S6 + S7: render one upstream frame to client frame(s) and surface them. */
-function* renderFrames(deps: DriverDeps, frame: UpstreamFrame, env: RequestEnvelope): Generator<ClientFrame> {
-  const rendered = deps.codec.renderResponse(frame, env)
-  const frames = Array.isArray(rendered) ? rendered : [rendered]
-  for (const out of frames) {
-    // Forwarded-frame (`inboundResponse`) sampling stays handler-side (P3.2b /
-    // Option B): the TRUE client bytes are produced where the handler transforms
-    // (tool-name restore, fix-stream-ids, CC→Gemini whole-stream translation) and
-    // injects (verbose marker, via-responses [DONE], idle heartbeat). Two of those
-    // — Gemini's whole-stream translator (P2.5-D1) and Anthropic's timer-driven
-    // heartbeat (P1.5-OQ1) — do not flow through this yield point and cannot be
-    // expressed as per-frame rewrites, so the driver cannot own forwarded sampling
-    // without reintroducing the byte-critical risk those decisions deferred.
-    yield out
-  }
-}
-
-/**
- * Thread frames through `rewrites[startIdx..]` in order. Each rewrite's
- * `transform` may emit 0+ frames (fed to the next rewrite), suppress, or buffer
- * (held in its own state, drained at flush). Returns the frames surviving the
- * whole sub-chain.
- */
-function passThrough(
-  frames: Array<UpstreamFrame>,
-  rewrites: ReadonlyArray<ResponseRewrite>,
-  states: Array<RewriteState>,
-  startIdx: number,
-  sample?: (rewriteName: string, action: FrameAction) => void,
-): Array<UpstreamFrame> {
-  let current = frames
-  for (let i = startIdx; i < rewrites.length; i++) {
-    const next: Array<UpstreamFrame> = []
-    for (const frame of current) {
-      const action = rewrites[i].transform(frame, states[i])
-      sample?.(rewrites[i].name, action)
-      if (action.kind === "emit") next.push(...action.frames)
-      // suppress / buffer → emit nothing now (buffer is held in the rewrite's state)
-    }
-    current = next
-  }
-  return current
-}
-
-/**
- * Drain each rewrite's flush in ASCENDING order; each flushed frame threads the
- * rewrites AFTER it (`passThrough` startIdx = `i + 1`). This is a deterministic
- * multi-buffer cascade (§4.A1 — resolves the P2.1-M2 "single buffer" assumption),
- * locked by tests/pipeline/response-rewrite-contract.unit.test.ts:
- *
- *   for i in 0..n: rewrites[i].flush() → passThrough(flushed, rewrites, states, i+1)
- *
- * So an earlier buffer's flushed frames are re-threaded through every later rewrite
- * — including a later BUFFERING rewrite, which may itself buffer them and release
- * them at ITS flush turn. Concretely for recover-tool-call(100) + tool-input-decode(200):
- * recover.flush → decode.transform (may buffer) → … → decode.flush drains them
- * (= handler-v4.ts:655-663's two-pass stream-end flush). Ordering is fully defined:
- * frames released by rewrite[i] always precede frames released by rewrite[j] for j > i.
- */
-function flushChain(rewrites: ReadonlyArray<ResponseRewrite>, states: Array<RewriteState>): Array<UpstreamFrame> {
-  const out: Array<UpstreamFrame> = []
-  for (let i = 0; i < rewrites.length; i++) {
-    const flushed = rewrites[i].flush?.(states[i]) ?? []
-    if (flushed.length > 0) out.push(...passThrough(flushed, rewrites, states, i + 1))
-  }
-  return out
-}
-
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms))
 }

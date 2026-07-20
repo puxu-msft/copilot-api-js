@@ -2,14 +2,11 @@ import consola from "consola"
 import fs from "node:fs"
 import path from "node:path"
 
-import { getProcessIdentity } from "~/lib/process-identity"
-
 import {
   //
   createDatabase,
   type SqliteDatabase,
-} from "./driver"
-import { SCHEMA_SQL } from "./schema"
+} from "~/lib/sqlite/driver"
 
 /**
  * SQLite-backed history store. The driver layer abstracts over the runtime —
@@ -42,6 +39,7 @@ const BUSY_TIMEOUT_MS = 5000
 const VACUUM_FREELIST_RATIO = 0.25
 const VACUUM_MIN_FREE_BYTES = 64 * 1024 * 1024
 const VACUUM_WARN_BYTES = 1024 * 1024 * 1024
+const V3_OWNER_MARKER = "copilot-api-history-v3"
 
 let db: Database | null = null
 let openedPath: string | null = null
@@ -53,81 +51,61 @@ export function openDatabase(dbPath: string): Database {
   if (dbPath !== ":memory:") {
     fs.mkdirSync(path.dirname(dbPath), { recursive: true })
   }
+  const existed = dbPath !== ":memory:" && fs.existsSync(dbPath)
   db = createDatabase(dbPath)
   openedPath = dbPath
+  try {
+    assertV3Owner(db, existed, dbPath)
+  } catch (err) {
+    db.close()
+    db = null
+    openedPath = null
+    throw err
+  }
   // auto_vacuum MUST be set before ANY other write to the new file — switching
   // to WAL first initializes the DB header and locks auto_vacuum at mode 0
   // (verified empirically). Set on the still-empty file, it makes
-  // auto_vacuum=INCREMENTAL persistent with no VACUUM, so the reaper's
-  // incremental_vacuum reclaims from the first tick. On an existing DB this is
-  // a no-op until a full VACUUM runs (handled by maybeVacuumOnStartup).
+  // auto_vacuum=INCREMENTAL persistent with no VACUUM, so the periodic
+  // maintenance tick's incremental_vacuum reclaims from the first tick. On an
+  // existing DB this is a no-op until a full VACUUM runs (handled by
+  // maybeVacuumOnStartup).
   db.exec("PRAGMA auto_vacuum = INCREMENTAL;")
   db.exec("PRAGMA journal_mode = WAL;")
   db.exec("PRAGMA synchronous = NORMAL;")
   db.exec(`PRAGMA busy_timeout = ${BUSY_TIMEOUT_MS};`)
   db.exec("PRAGMA foreign_keys = ON;")
-  db.exec(SCHEMA_SQL)
-  // Lineage subsystem removed (dead: zero clustering on real traffic) — drop its
-  // orphan tables on existing DBs so they stop occupying space.
-  db.exec("DROP TABLE IF EXISTS entry_lineage")
-  db.exec("DROP TABLE IF EXISTS entry_produced_tool_ids")
-  // Sessions materialized aggregate table removed — operational stats are now
-  // telemetry-based; drop the orphan table on existing DBs.
-  db.exec("DROP TABLE IF EXISTS sessions")
-  // Decommission the legacy trigram FTS + its backing `search_text` column BEFORE
-  // any entries_v2 write below — the FTS triggers reference search_text, so a write
-  // (reclaimOrphanedActiveRows) would fire a trigger against a half-dropped schema.
-  // Must run before migrateEntriesColumns too is fine (it no longer wants search_text).
-  dropLegacyFtsAndSearchText(db)
-  migrateEntriesColumns(db)
-  reclaimOrphanedActiveRows(db)
+  // History V3 is the sole persistence implementation (History V2 removal
+  // Phase 4a) — there is now only ONE open path, unconditionally, for every
+  // dbPath including ":memory:" (this closes the old C3 trap where ":memory:"
+  // used to fall through to the V2 schema branch because it never matched the
+  // `history-v3.db` basename check).
+  //
+  // DB-health (Phase 4b): unlike the retired V2 open path, there is no
+  // "存活共享库跳过" liveness gate here — V3's `v3_operations` table only ever
+  // stores terminal (committed) rows, with no pending/executing/streaming
+  // concept, so there is no "another process may still be writing an in-flight
+  // row" risk VACUUM needs to defer around (see plan §6 / §4b: the liveness
+  // gate is deliberately NOT adopted from V2). Both run unconditionally.
   maybeVacuumOnStartup(db, dbPath)
-  // Seed planner statistics once so the (now several) candidate indexes per
-  // query get chosen on selectivity, not heuristics.
   seedAnalyzeIfNeeded(db)
-  // NOTE: the search_index + preview_text backfill is NO LONGER run here — it
-  // decompresses each entry's lifecycle and would block startup on a large DB. It
-  // runs async/chunked/resumable in the BACKGROUND after the server is listening
-  // (start.ts → startSearchIndexBackfill → runSearchIndexBackfill), guarded by
-  // history_meta(search_index_version).
-  if (dbPath !== ":memory:") consola.info(`[history/sqlite] opened ${dbPath}`)
+  if (dbPath !== ":memory:") consola.info(`[history/v3] opened ${dbPath}`)
   return db
 }
 
 /**
- * One-time decommission of the legacy trigram FTS (table + triggers) and its
- * backing `search_text` column — the search path now uses the content-addressed
- * search_index (msg_blob / req_msg / req_aux). Idempotent + never-throws:
- *   - Skips entirely when neither the FTS table nor the column is present (fresh
- *     DBs created post-decommission, or a DB already migrated).
- *   - STRICT order inside one tx: DROP the triggers FIRST, then the entries_fts
- *     table, THEN `ALTER TABLE … DROP COLUMN search_text` — the triggers reference
- *     the column, so dropping the column while they exist throws "no such column".
- *   - Verifies the column is actually gone afterwards (a silent BUSY would leave
- *     it; the next open retries).
+ * Refuse to reconcile an existing unowned SQLite artifact as V3. This closes the
+ * remaining escape hatch where a test seam or future caller could point the V3
+ * opener at legacy history.db and trigger DROP/ALTER/VACUUM before detection.
  */
-function dropLegacyFtsAndSearchText(database: Database): void {
-  try {
-    const columns = database.prepare("PRAGMA table_info(entries_v2)").all() as Array<{ name: string }>
-    const hasSearchText = columns.some((c) => c.name === "search_text")
-    const hasFts = Boolean(database.prepare("SELECT name FROM sqlite_schema WHERE type = 'table' AND name = 'entries_fts'").get())
-    if (!hasSearchText && !hasFts) return
-
-    const tx = database.transaction(() => {
-      database.exec("DROP TRIGGER IF EXISTS entries_v2_fts_ai")
-      database.exec("DROP TRIGGER IF EXISTS entries_v2_fts_ad")
-      database.exec("DROP TRIGGER IF EXISTS entries_v2_fts_au")
-      database.exec("DROP TABLE IF EXISTS entries_fts")
-      if (hasSearchText) database.exec("ALTER TABLE entries_v2 DROP COLUMN search_text")
-    })
-    tx()
-
-    const stillHas = (database.prepare("PRAGMA table_info(entries_v2)").all() as Array<{ name: string }>).some((c) => c.name === "search_text")
-    if (stillHas) consola.warn("[history/sqlite] search_text column still present after DROP (locked?) — will retry on next open")
-    else consola.info("[history/sqlite] decommissioned legacy FTS + search_text column")
-  } catch (err: unknown) {
-    consola.warn("[history/sqlite] FTS/search_text decommission skipped (error — startup continues)", err)
+function assertV3Owner(database: Database, existed: boolean, dbPath: string): void {
+  if (!existed || dbPath === ":memory:") {
+    database.exec("CREATE TABLE IF NOT EXISTS history_store_identity (owner TEXT PRIMARY KEY)")
+    database.prepare("INSERT OR IGNORE INTO history_store_identity (owner) VALUES (?)").run(V3_OWNER_MARKER)
+    return
   }
+  const identityTable = database.prepare("SELECT name FROM sqlite_schema WHERE type = 'table' AND name = 'history_store_identity'").get()
+  const owner = identityTable ? (database.prepare("SELECT owner FROM history_store_identity LIMIT 1").get() as { owner?: string } | undefined)?.owner : undefined
+  if (owner !== V3_OWNER_MARKER) throw new Error(`[history/v3] refusing to open unowned existing database: ${dbPath}`)
 }
 
 /** Read a single-value PRAGMA as an integer (0 if absent / non-numeric). */
@@ -148,7 +126,7 @@ function pragmaInt(database: Database, name: string): number {
  * a VACUUM that fails (e.g. SQLITE_BUSY from an overlapping connection during a
  * restart, or insufficient temp disk) logs a warning and startup continues.
  */
-function maybeVacuumOnStartup(database: Database, dbPath: string): void {
+export function maybeVacuumOnStartup(database: Database, dbPath: string): void {
   if (dbPath === ":memory:") return
   try {
     const pageCount = pragmaInt(database, "page_count")
@@ -171,6 +149,14 @@ function maybeVacuumOnStartup(database: Database, dbPath: string): void {
     database.exec("PRAGMA wal_checkpoint(TRUNCATE);")
     database.exec("PRAGMA auto_vacuum = INCREMENTAL;") // activated by the VACUUM below
     database.exec("VACUUM;")
+    // VACUUM rewrote the ENTIRE db into the -wal file (WAL mode), so the -wal now
+    // sits at a ~full-db high-water mark (observed: a 26 GB -wal after a 25 GB
+    // VACUUM). A PASSIVE checkpoint — all the reaper ever runs — NEVER ftruncates
+    // the -wal file; only TRUNCATE reclaims its bytes on disk. We are still
+    // single-connection at startup (server not yet listening) so TRUNCATE takes
+    // its exclusive moment uncontended and shrinks the -wal back to zero. Without
+    // this the multi-GB WAL persists on disk indefinitely.
+    database.exec("PRAGMA wal_checkpoint(TRUNCATE);")
     const afterBytes = pragmaInt(database, "page_count") * pageSize
     consola.info(
       `[history/sqlite] startup VACUUM reclaimed ${((totalBytes - afterBytes) / 1048576).toFixed(0)}MB (${(totalBytes / 1048576).toFixed(0)}MB → ${(afterBytes / 1048576).toFixed(0)}MB)`,
@@ -202,7 +188,7 @@ export function incrementalVacuum(database: Database): void {
  * `sqlite_stat1` exists and ongoing maintenance is handled by `runOptimize` on
  * the reaper tick. Cheap on a bounded table; never throws.
  */
-function seedAnalyzeIfNeeded(database: Database): void {
+export function seedAnalyzeIfNeeded(database: Database): void {
   try {
     const row = database.prepare("SELECT name FROM sqlite_schema WHERE type = 'table' AND name = 'sqlite_stat1'").get() as { name: string } | undefined
     if (row) return
@@ -224,99 +210,6 @@ export function runOptimize(database: Database): void {
   } catch (err: unknown) {
     consola.warn("[history/sqlite] PRAGMA optimize failed", err)
   }
-}
-
-/**
- * (pending/executing/streaming) that does NOT belong to the current process is
- * a leftover from a process that crashed before finalizing. Flip it to
- * `interrupted` so the request is discoverable (and reaper-eligible) rather than
- * stuck "active" forever. Matched by (pid, boot_time) — a restart that reuses a
- * pid is distinguished by boot_time.
- */
-function reclaimOrphanedActiveRows(database: Database): void {
-  const { pid, bootTime } = getProcessIdentity()
-  const where = "status IN ('pending','executing','streaming') AND NOT (pid = ? AND boot_time = ?)"
-  // Count directly rather than via `.run().changes` (kept defensive: any future
-  // AFTER-write trigger on entries_v2 would otherwise fold its writes into `changes`).
-  const { n } = database.prepare(`SELECT COUNT(*) AS n FROM entries_v2 WHERE ${where}`).get(pid, bootTime) as { n: number }
-  if (n === 0) return
-  // Backfill a failure reason (richest-data-flow) so the orphaned row surfaces WHY in the
-  // list view; COALESCE preserves any real reason already persisted before the crash.
-  database
-    .prepare(
-      `UPDATE entries_v2 SET status = 'interrupted', ended_at = COALESCE(ended_at, started_at), error_message = COALESCE(error_message, 'orphaned by a prior process — recovered on restart') WHERE ${where}`,
-    )
-    .run(pid, bootTime)
-  consola.info(`[history/sqlite] reclaimed ${n} orphaned active row(s) from a prior process → interrupted`)
-}
-
-/**
- * Add post-v2 columns to an existing `entries_v2` table when they are missing,
- * then ensure dependent indexes exist. Safe to run on every open: uses PRAGMA
- * table_info to detect existing columns before ALTER, and CREATE INDEX IF NOT
- * EXISTS for indexes.
- *
- * Columns covered:
- *   - summary columns (message_count, preview_text)
- *   - process-identity columns (pid, boot_time, git_sha)
- *
- * NOTE: `search_text` is deliberately NOT in `wanted` — the legacy FTS column is
- * decommissioned (dropLegacyFtsAndSearchText). Re-adding it here would resurrect
- * the column on every open.
- *
- * The pid index is created HERE rather than in SCHEMA_SQL: on a pre-pid
- * database, openDatabase runs SCHEMA_SQL before this migration, so an index on
- * the not-yet-added `pid` column there would fail. Creating it after the ALTER
- * (and unconditionally, guarded by IF NOT EXISTS) covers both fresh databases
- * — where the column came from SCHEMA_SQL's CREATE TABLE — and migrated ones.
- */
-function migrateEntriesColumns(database: Database): void {
-  const columns = database.prepare("PRAGMA table_info(entries_v2)").all() as Array<{ name: string }>
-  const existing = new Set(columns.map((c) => c.name))
-
-  const wanted: Array<{ name: string; type: string }> = [
-    { name: "message_count", type: "INTEGER" },
-    { name: "preview_text", type: "TEXT" },
-    { name: "pid", type: "INTEGER" },
-    { name: "boot_time", type: "INTEGER" },
-    { name: "git_sha", type: "TEXT" },
-    // Debug-pin flag. SQLite permits ALTER ADD COLUMN with a NOT NULL + constant
-    // DEFAULT, so existing rows backfill to 0 (unpinned) without a rewrite.
-    { name: "pinned", type: "INTEGER NOT NULL DEFAULT 0" },
-    { name: "agent_id", type: "TEXT" },
-    // Per-request byte sizes (↑request wire / ↓response) + billing multiplier.
-    // Additive nullable ALTER ADD COLUMN — old rows backfill NULL (→ undefined on
-    // read), no table rewrite. Bytes are DERIVED at serialize time from the stored
-    // payloads; multiplier is the write-time-resolved per-request value off the ctx.
-    { name: "request_bytes", type: "INTEGER" },
-    { name: "response_bytes", type: "INTEGER" },
-    { name: "multiplier", type: "REAL" },
-    // Best-effort conversation lineage (search_index RFC): the most-recent prior
-    // request in the same (session, agent) group. NOT in CREATE TABLE entries_v2
-    // — added here so fresh AND existing DBs get it via this single ALTER path.
-    // No FK (a dangling ref when the predecessor is reaped is harmless — threading
-    // UI handles it); deliberately decoupled from search (never read by search).
-    { name: "prev_req_id", type: "TEXT" },
-  ]
-
-  for (const col of wanted) {
-    if (!existing.has(col.name)) {
-      database.exec(`ALTER TABLE entries_v2 ADD COLUMN ${col.name} ${col.type}`)
-    }
-  }
-
-  database.exec("CREATE INDEX IF NOT EXISTS idx_entries_v2_pid ON entries_v2(pid, started_at DESC)")
-  // agent_id index created here (NOT in SCHEMA_SQL): on a pre-agent_id DB, SCHEMA_SQL
-  // runs before this migration adds the column, so a CREATE INDEX referencing it there
-  // would fail. Composite (session_id, agent_id) serves per-session agent breakdown.
-  database.exec("CREATE INDEX IF NOT EXISTS idx_entries_v2_session_agent ON entries_v2(session_id, agent_id, started_at DESC)")
-  // Partial index over ONLY the active (non-terminal) rows — a handful at any
-  // instant regardless of total retention. Makes the reclaim scans
-  // (reclaimStaleActiveRows / reclaimOrphanedActiveRows, both filtering on this
-  // exact status set) O(active) instead of O(table), and stays tiny + cheap to
-  // maintain. The WHERE must match those queries' status set verbatim for the
-  // planner to use it.
-  database.exec("CREATE INDEX IF NOT EXISTS idx_entries_v2_active ON entries_v2(pid, started_at) WHERE status IN ('pending','executing','streaming')")
 }
 
 /**

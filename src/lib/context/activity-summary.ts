@@ -25,6 +25,8 @@ export interface RequestActivitySnapshot {
   model?: string
   stream?: boolean
   attemptCount: number
+  /** 当前在途 attempt 的 startTime（无则 undefined）——footer/panel 算本次 attempt 已耗时。 */
+  currentAttemptStartedAt?: number
   currentStrategy?: string
   queueWaitMs: number
   transport?: RequestTransport
@@ -55,6 +57,7 @@ export function summarizeRequestContext(context: RequestContext): RequestActivit
     model: context.originalRequest?.model,
     stream: context.originalRequest?.stream,
     attemptCount: context.attempts?.length ?? 0,
+    ...(context.currentAttempt?.startTime !== undefined ? { currentAttemptStartedAt: context.currentAttempt.startTime } : {}),
     currentStrategy: context.currentAttempt?.strategy,
     queueWaitMs: context.queueWaitMs ?? 0,
     ...(context.transport ? { transport: context.transport } : {}),
@@ -72,8 +75,6 @@ export function buildHistoryActivityPatch(
   | "active"
   | "lastUpdatedAt"
   | "queueWaitMs"
-  | "attemptCount"
-  | "currentStrategy"
   | "durationMs"
   | "transport"
   | "multiplier"
@@ -93,8 +94,6 @@ export function buildHistoryActivityPatch(
     active: snapshot.active,
     lastUpdatedAt: snapshot.lastUpdatedAt,
     queueWaitMs: snapshot.queueWaitMs,
-    attemptCount: snapshot.attemptCount,
-    currentStrategy: snapshot.currentStrategy,
     durationMs: snapshot.durationMs,
     ...(snapshot.transport ? { transport: snapshot.transport } : {}),
     ...(billing?.multiplier !== undefined ? { multiplier: billing.multiplier } : {}),

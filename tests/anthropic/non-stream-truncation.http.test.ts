@@ -77,7 +77,7 @@ describe("POST /v1/messages — non-streaming semantic-truncation detection", ()
   beforeEach(() => {
     upstreamFetchMock.mockClear()
     stopReason = null
-    setStateForTests({ copilotToken: "test-token", accountType: "individual", vsCodeVersion: "1.100.0", fetchTimeout: 0 })
+    setStateForTests({ copilotToken: "test-token", accountType: "individual", vsCodeVersion: "1.100.0", responseHeaderTimeout: 0 })
     applyFetchMock(upstreamFetchMock)
     setModels({ object: "list", data: [mockModel(MODEL, { vendor: "Anthropic", supported_endpoints: ["/v1/messages"] })] })
   })
@@ -96,10 +96,10 @@ describe("POST /v1/messages — non-streaming semantic-truncation detection", ()
     expect(entry).toBeDefined()
     // NOT a silent success.
     expect(entry.state).toBe("failed")
-    expect(entry.outboundResponse?.success).toBe(false)
-    expect(String(entry.outboundResponse?.error)).toContain("stop_reason")
+    expect(entry.attempts?.at(-1)?.upstreamResponse?.success).toBe(false)
+    expect(String(entry._index?.derived?.failureReason)).toContain("stop_reason")
     // richest-data-flow: the partial body is preserved on the failed entry.
-    expect(entry.outboundResponse?.content).not.toBeNull()
+    expect(entry.attempts?.at(-1)?.upstreamResponse?.body).not.toBeNull()
   })
 
   test("200 with stop_reason (regression) → success", async () => {
@@ -111,6 +111,6 @@ describe("POST /v1/messages — non-streaming semantic-truncation detection", ()
     const entry = getHistory({ endpoint: "anthropic-messages", sessionId, limit: 5 }).entries[0]
     expect(entry).toBeDefined()
     expect(entry.state).toBe("completed")
-    expect(entry.outboundResponse?.success).toBe(true)
+    expect(entry.attempts?.at(-1)?.upstreamResponse?.success).toBe(true)
   })
 })

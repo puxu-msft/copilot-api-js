@@ -5,17 +5,16 @@ import {
   z,
 } from "@hono/zod-openapi"
 
-import type { Model } from "~/lib/models/client"
+import type { InternalModelsResponse } from "~/lib/models/client"
 
-import { state } from "~/lib/state"
+import {
+  //
+  getConfigDisabledIds,
+  getRawModels,
+  state,
+} from "~/lib/state"
 
 import { ensureModels } from "./shared"
-
-/** Strip internal fields that should not be exposed to external consumers. */
-export function stripInternalFields(model: Model): Omit<Model, "request_headers"> {
-  const { request_headers: _requestHeaders, ...rest } = model
-  return rest
-}
 
 // ============================================================================
 // Internal format (/api/models) — full Copilot model data
@@ -25,13 +24,15 @@ export const internalModelsRoutes = new OpenAPIHono()
 
 /** Full Copilot model object (internal format). The upstream shape is large and
  *  evolves with the Copilot catalog, so it is described as an open object rather
- *  than enumerated here (would drift). `request_headers` is stripped. */
+ *  than enumerated here (would drift). Served verbatim — no fields stripped
+ *  (ADR internal-tool-security-posture: this is an internal personal tool). */
 const ModelSchema = z.record(z.string(), z.unknown()).openapi("CopilotModel")
 
 const ModelListSchema = z
   .object({
     object: z.string(),
     data: z.array(ModelSchema),
+    disabled: z.array(z.string()),
   })
   .openapi("CopilotModelList")
 
@@ -71,11 +72,13 @@ const getModelRoute = createRoute({
 
 internalModelsRoutes.openapi(listModelsRoute, async (c) => {
   await ensureModels()
+  const raw = getRawModels()
   return c.json(
     {
-      object: state.models?.object ?? "list",
-      data: state.models?.data.map((model) => stripInternalFields(model)) ?? [],
-    },
+      object: raw?.object ?? "list",
+      data: raw?.data ?? [],
+      disabled: getConfigDisabledIds(),
+    } satisfies InternalModelsResponse,
     200,
   )
 })
@@ -84,7 +87,9 @@ internalModelsRoutes.openapi(getModelRoute, async (c) => {
   await ensureModels()
 
   const modelId = c.req.param("model")
-  const model = state.modelIndex.get(modelId)
+  // Enabled models: exact-id lookup on the (filtered) index. Config-disabled models
+  // are absent there → exact-id fallback on the full raw catalog.
+  const model = state.modelIndex.get(modelId) ?? getRawModels()?.data.find((m) => m.id === modelId)
 
   if (!model) {
     return c.json(
@@ -100,5 +105,5 @@ internalModelsRoutes.openapi(getModelRoute, async (c) => {
     )
   }
 
-  return c.json(stripInternalFields(model), 200)
+  return c.json(model, 200)
 })

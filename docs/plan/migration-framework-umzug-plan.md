@@ -1,5 +1,10 @@
 # Plan: 采纳 Umzug 迁移框架 —— 实现交接稿（hybrid,review 修正后）
 
+> **实施状态：已完成**
+> **落地**：—
+> **现状锚点**：DESIGN schema 迁移行；`src/lib/history/sqlite/migrations/`（Umzug hybrid forward-runner）；spec/migration-framework-umzug.md
+> **备注**：hybrid forward-runner 全落地；MIGRATIONS 初始空（地板=当前 schema），符合 plan
+
 > 配 [migration-framework-umzug.md](migration-framework-umzug.md)（RFC，WHY + 契约）。本文是 **HOW**：phase DAG + factory-anchor 表（精确 file:line，已逐条核实）+ 命名常量 + 每 phase commit invariant。执行用 subagent-driven-development。
 > **v2（对抗 review 修正）**:初稿的 "primary = initHistory 改 async + 重构 openDatabase" 经实测判不可行（async ripple ~20+ 文件 + chicken-and-egg:Umzug 在建 history_meta 表前就调 storage.executed()）。**正解 = hybrid**（openDatabase 地板不动 + 独立 async forward-runner），同时干净解掉这两个问题。
 > 硬约束：bun-first（`bun run typecheck`/`test:backend`，非 npm）、不分号、严格 TS **无 any**、`eslint --fix`、细粒度 pathspec、subagent 全量工具 + 显式裁判轴。

@@ -18,8 +18,10 @@ import {
   describe,
   expect,
   mock,
+  spyOn,
   test,
 } from "bun:test"
+import consola from "consola"
 
 import { getHistory } from "~/lib/history/store"
 import {
@@ -114,7 +116,7 @@ describe("POST /v1/messages — upstream stream truncation detection", () => {
       copilotToken: "test-token",
       accountType: "individual",
       vsCodeVersion: "1.100.0",
-      fetchTimeout: 0,
+      responseHeaderTimeout: 0,
       streamIdleTimeout: 0,
       streamKeepalivePingSec: 0,
     })
@@ -124,7 +126,20 @@ describe("POST /v1/messages — upstream stream truncation detection", () => {
 
   test("truncated stream → client receives the partial frames AND a synthetic error event", async () => {
     frameBuilder = buildTruncatedFrames
-    const sse = await streamRequest("trunc-client-error")
+    // HIGH-1: the native Anthropic pump's clean-EOF truncation also emits the rich diagnostic (kind=truncated).
+    const diagSpy = spyOn(consola, "error").mockImplementation(Object.assign(() => {}, { raw: () => {} }))
+    let sse: string
+    try {
+      sse = await streamRequest("trunc-client-error")
+    } finally {
+      const diagLine = diagSpy.mock.calls.map((c) => String(c[0])).find((s) => s.includes("[upstream-diagnostics] STREAM DISCONNECT"))
+      diagSpy.mockRestore()
+      expect(diagLine).toBeDefined()
+      expect(diagLine).toContain("kind=truncated")
+      expect(diagLine).toContain(`model=${MODEL}`)
+      expect(diagLine).not.toContain("frames=0")
+      expect(diagLine).not.toContain("last-frame=none@0ms")
+    }
 
     // The partial content the upstream did send is still forwarded (streaming can't unsend).
     expect(dataFramesOfType(sse, "message_start")).toHaveLength(1)
@@ -150,15 +165,15 @@ describe("POST /v1/messages — upstream stream truncation detection", () => {
 
     // No longer a silent success: the entry is FAILED with a truncation reason.
     expect(entry.state).toBe("failed")
-    expect(entry.outboundResponse?.success).toBe(false)
-    expect(String(entry.outboundResponse?.error)).toContain("truncated")
+    expect(entry.attempts?.at(-1)?.upstreamResponse?.success).toBe(false)
+    expect(String(entry._index?.derived?.failureReason)).toContain("truncated")
 
     // richest-data-flow: the accumulated partial (the half-streamed tool_use) is kept,
     // not nulled — the residual is observable diagnostic data.
-    expect(entry.outboundResponse?.content).not.toBeNull()
+    expect(entry.attempts?.at(-1)?.upstreamResponse?.body).not.toBeNull()
 
     // The raw upstream track is preserved verbatim (no synthesized terminator in it).
-    const upTypes = (entry.sseEvents ?? []).map((e) => safeParse(e.raw)?.type)
+    const upTypes = (entry.attempts?.at(-1)?.upstreamResponse?.sseEvents ?? []).map((e) => safeParse(e.raw)?.type)
     expect(upTypes).toContain("content_block_start")
     expect(upTypes).not.toContain("message_stop")
   })
@@ -175,7 +190,7 @@ describe("POST /v1/messages — upstream stream truncation detection", () => {
     const entry = getHistory({ endpoint: "anthropic-messages", sessionId, limit: 5 }).entries[0]
     expect(entry).toBeDefined()
     expect(entry.state).toBe("completed")
-    expect(entry.outboundResponse?.success).toBe(true)
+    expect(entry.attempts?.at(-1)?.upstreamResponse?.success).toBe(true)
   })
 })
 

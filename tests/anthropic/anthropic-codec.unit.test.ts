@@ -2,7 +2,7 @@
  * P2.6 / C2 — anthropic-messages codec + strategies unit tests.
  *
  * Pure-function surface (no manager/state runtime): identity translateOut /
- * renderResponse, the Anthropic-shaped error frame, and the 8-strategy ordered
+ * renderResponse, the Anthropic-shaped error frame, and the 15-strategy ordered
  * assembly (RFC §12.9). `parse` (which needs the runtime) is covered in the
  * sibling `.it.test`.
  */
@@ -20,12 +20,13 @@ import type {
   ClassifiedStreamError,
   UpstreamFrame,
 } from "~/lib/pipeline/types"
-import type { SanitizeResult } from "~/lib/request/pipeline"
+import type { SanitizeResult } from "~/lib/request/retry-types"
 import type { MessagesPayload } from "~/types/api/anthropic"
 
 import { createBetaProbe } from "~/lib/anthropic/pipeline"
 import { createAnthropicCodec } from "~/lib/codec/anthropic/codec"
 import { buildAnthropicStrategies } from "~/lib/codec/anthropic/strategies"
+import { resolveCellAssembly } from "~/lib/pipeline/cell-assembly"
 
 const NO_PREPROCESS = { strippedReadTagCount: 0, dedupedToolCallCount: 0 }
 
@@ -33,12 +34,12 @@ function makeCodec() {
   return createAnthropicCodec({ betaProbe: createBetaProbe(undefined), preprocessInfo: NO_PREPROCESS })
 }
 
-const fakeEnv = { body: { model: "claude-sonnet-4", messages: [] } } as unknown as RequestEnvelope
+const fakeEnv = { clientFormat: "anthropic", targetEndpoint: "/v1/messages", body: { model: "claude-sonnet-4", messages: [] } } as unknown as RequestEnvelope
 
 describe("anthropic codec — identity S2/S6", () => {
   test("translateOut is identity (bypass-direct, no translation)", () => {
-    const codec = makeCodec()
-    expect(codec.translateOut(fakeEnv)).toBe(fakeEnv)
+    // translateOut moved off the codec onto the (anthropic × /v1/messages) CELL; the direct leg is identity.
+    expect(resolveCellAssembly("anthropic", fakeEnv.targetEndpoint).translateOut(fakeEnv)).toBe(fakeEnv)
   })
 
   test("renderResponse forwards the upstream frame verbatim", () => {
@@ -73,20 +74,39 @@ describe("anthropic codec — formatError (Anthropic-shaped, double-typed)", () 
 })
 
 describe("anthropic codec — createResponseAccumulator", () => {
-  test("returns a fresh Anthropic stream accumulator (streamError control signal present in shape)", () => {
+  test("direct leg returns a fresh Anthropic stream accumulator (streamError control signal present in shape)", () => {
     const codec = makeCodec()
-    const acc = codec.createResponseAccumulator()
+    const acc = codec.createResponseAccumulator({ targetEndpoint: "/v1/messages" } as unknown as import("~/lib/pipeline/envelope").RequestEnvelope)
     expect(acc.model).toBe("")
     expect(acc.inputTokens).toBe(0)
     expect(acc.outputTokens).toBe(0)
+    // Anthropic accumulator has the Anthropic-specific `stopReason` field.
+    expect("stopReason" in acc).toBe(true)
+  })
+
+  test("FORWARD translate leg (@cc) returns a CC stream accumulator (RFC §4.1 per-leg dispatch)", () => {
+    const codec = makeCodec()
+    const acc = codec.createResponseAccumulator({ targetEndpoint: "/chat/completions" } as unknown as import("~/lib/pipeline/envelope").RequestEnvelope)
+    // CC accumulator has `toolCallMap`, the Anthropic one does not (proof it's the CC-leg accumulator).
+    expect("toolCallMap" in acc).toBe(true)
+    expect("stopReason" in acc).toBe(false)
   })
 })
+
+// NOTE — the anthropic prepareWire tool-field / cache_control subfield stripping (and the stripped-subfields
+// uplift) moved off the codec onto the (anthropic × /v1/messages) CELL → anthropic-leg's prepareAnthropicWire →
+// prepareAnthropicRequest. Its coverage now lives at the pure-core level:
+//   - tool-field strip (eager_input_streaming + per-attempt excludeToolFields): strip-tool-fields.it.test.ts
+//   - cache_control scope strip + strippedCacheControlSubfields uplift + 源④ excludeCacheControlSubfields
+//     hint→wire end-to-end: cache-control-subfield-strip.unit.test.ts
+// The codec's getLatestStrippedCacheControlSubfields accessor is dead (writer deleted); the live persistence
+// channel is anthropic-cell.sampleWireTrack → ctx.setAttemptCacheControlStripped → handler pipeline-info.
 
 describe("buildAnthropicStrategies", () => {
   const stubResanitize = (p: MessagesPayload): SanitizeResult<MessagesPayload> => ({ payload: p, blocksRemoved: 0, systemReminderRemovals: 0 })
   const baseline = { model: "claude-sonnet-4", messages: [], max_tokens: 100 } as unknown as MessagesPayload
 
-  test("yields the 11 strategies in order (8 legacy + v4-only server-error-retry + server-tool-rejection + structured-outputs-rejection, RFC §12.9)", () => {
+  test("yields the 16 strategies in order (incl. cache-control-subfield-rejection after body-field, RFC §12.9)", () => {
     const strategies = buildAnthropicStrategies({
       originalPayload: baseline,
       resanitize: stubResanitize,
@@ -99,13 +119,18 @@ describe("buildAnthropicStrategies", () => {
       "server-error-retry",
       "token-refresh",
       "effort-learning",
+      "tool-field-rejection-retry",
       "body-field-rejection-retry",
+      "cache-control-subfield-rejection-retry",
       "legacy-thinking-retry",
+      "adaptive-thinking-rejection-retry",
+      "poisoned-thinking-retry",
       "unsupported-beta-retry",
       "server-tool-rejection-retry",
       "structured-outputs-rejection-retry",
+      "system-reject-retry",
+      "web-search-not-found-retry",
       "deferred-tool-retry",
-      "auto-truncate",
     ])
   })
 

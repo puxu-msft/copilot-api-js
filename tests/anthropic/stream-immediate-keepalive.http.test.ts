@@ -16,6 +16,9 @@ import {
   test,
 } from "bun:test"
 
+import type { RequestContext } from "~/lib/context/request"
+
+import { getRequestContextManager } from "~/lib/context/manager"
 import { getHistory } from "~/lib/history/store"
 import {
   //
@@ -110,7 +113,7 @@ describe("immediate-keepalive — complete + pre-response error", () => {
       copilotToken: "test-token",
       accountType: "individual",
       vsCodeVersion: "1.100.0",
-      fetchTimeout: 0,
+      responseHeaderTimeout: 0,
       streamIdleTimeout: 0,
       // No synthetic heartbeat → the forwarded byte stream is fully deterministic.
       streamKeepalivePingSec: 0,
@@ -192,7 +195,7 @@ describe("immediate-keepalive — stall cadence ping", () => {
       copilotToken: "test-token",
       accountType: "individual",
       vsCodeVersion: "1.100.0",
-      fetchTimeout: 0,
+      responseHeaderTimeout: 0,
       streamIdleTimeout: 0,
       streamKeepalivePingSec: 2,
       streamCommitAfterSec: 2, // window fires at 2s → commit 200; heartbeat then pings every 2s
@@ -236,8 +239,12 @@ describe("immediate-keepalive — stall cadence ping", () => {
     expect(types).toContain("message_stop")
   })
 
-  test("upstream stalls → cadence ping, then upstream 401 → rich SSE error frame (HTTP status stays 200)", async () => {
+  test("upstream stalls → cadence ping, then upstream 401 → rich SSE error frame ordered before canonical terminal", async () => {
     commitMode = "error-401"
+    let capturedCtx: RequestContext | undefined
+    const manager = getRequestContextManager()
+    const originalCreate = manager.create.bind(manager)
+    manager.create = (opts) => (capturedCtx = originalCreate(opts))
     const resP = streamRequest("grace-commit-401")
     await gateReachedP
     await clock.advance(5_000) // cadence ping during the stall
@@ -256,7 +263,7 @@ describe("immediate-keepalive — stall cadence ping", () => {
     expect(entry?.state).toBe("failed")
     // richest-data-flow (L-2): the first ping the client genuinely received is persisted to history
     // even on a POST-COMMIT FAILURE entry (the COMMIT finally snapshots forwardedSseEvents).
-    const forwardedTypes = (entry?.inboundResponse?.sseEvents ?? []).map((e) => {
+    const forwardedTypes = (entry?.clientResponse?.sseEvents ?? []).map((e) => {
       try {
         return (JSON.parse(e.raw) as { type?: string }).type
       } catch {
@@ -264,5 +271,12 @@ describe("immediate-keepalive — stall cadence ping", () => {
       }
     })
     expect(forwardedTypes).toContain("ping")
+
+    const operation = capturedCtx?.modelOperationTerminalRecord
+    expect(operation?.terminal).toMatchObject({ outcome: "failed" })
+    const errorFrame = operation?.arena.frames.find((node) => (node.value as { event?: string }).event === "error")
+    expect(errorFrame?.value).toMatchObject({ event: "error" })
+    expect(errorFrame!.sequence).toBeLessThan(operation!.terminal!.sequence)
+    expect(operation?.egress?.client.frames).toContain(errorFrame?.handle)
   })
 })

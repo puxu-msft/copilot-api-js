@@ -1,37 +1,31 @@
 /**
- * `history_meta` key/value accessors + the search_index migration constants.
- *
- * `history_meta` (schema.ts) holds the search_index backfill's completion flag
- * and resumable progress cursor. Kept tiny and dependency-free so both the
- * backfill (writer) and the search-query read path (reader, for partial-result
- * gating) share one source of truth.
+ * `history_meta` key/value accessors + DDL — the Umzug forward-migration
+ * ledger (History V2 removal Phase 4a/4d). `history_meta` used to also carry
+ * a handful of V2-only backfill completion flags/cursors (search_index,
+ * usage-normalize, cache-write, legacy-stage, response-preview, calibration);
+ * those constants were deleted along with their (also-deleted) V2 backfill
+ * modules. What remains is the generic KV primitive + the migration ledger
+ * key, which `migrations/storage.ts` (`HistoryMetaStorage`) depends on.
  */
 
 import type { Database } from "./connection"
 
-/** Completion-flag value written once the backfill has indexed every entry. */
-export const SEARCH_INDEX_VERSION = "1"
-
-/** `history_meta` key: set to SEARCH_INDEX_VERSION only when the full backfill completes. */
-export const SEARCH_INDEX_VERSION_KEY = "search_index_version"
-
-/** `history_meta` key: resumable backfill progress (the last processed started_at). */
-export const SEARCH_BACKFILL_CURSOR_KEY = "search_index_backfill_cursor"
-
 /**
- * `history_meta` key: the dedup ratio (total req_msg references / distinct
- * msg_blob). A healthy index dedups ~40× (empirically measured 42.7×); a ratio
- * near 1 means cross-turn dedup failed — almost always an incomplete
- * volatile-key strip list re-hashing the same message every turn (the silent
- * bloat this feature exists to prevent). Observable tripwire, not load-bearing.
+ * Single-source DDL for the `history_meta` key/value table. Was previously
+ * defined in the (now-deleted) `schema.ts` and shared with `SCHEMA_SQL` (the
+ * V2 openDatabase floor); now lives here as the sole definition, consumed by
+ * `HistoryMetaStorage`'s bare-DB guard (the migration runner) via
+ * `applyForwardMigrations`.
  */
-export const SEARCH_INDEX_DEDUP_RATIO_KEY = "search_index_dedup_ratio"
+export const HISTORY_META_DDL = `CREATE TABLE IF NOT EXISTS history_meta (
+  key   TEXT PRIMARY KEY,
+  value TEXT
+)`
 
 /**
  * `history_meta` key: the Umzug forward-migration ledger — a JSON `string[]` of
  * applied migration names (see migrations/storage.ts). Kept in history_meta so
- * schema-migration provenance lives in the same single ledger as the search
- * index flags rather than a separate migrations table.
+ * schema-migration provenance lives in a single ledger.
  */
 export const MIGRATIONS_RUN_KEY = "schema_migrations"
 
@@ -51,9 +45,4 @@ export function setMeta(db: Database, key: string, value: string): void {
 /** Delete one history_meta key (no-op when absent). */
 export function deleteMeta(db: Database, key: string): void {
   db.prepare("DELETE FROM history_meta WHERE key = ?").run(key)
-}
-
-/** True once the full backfill has completed (search reads are then complete, not partial). */
-export function isSearchIndexComplete(db: Database): boolean {
-  return getMeta(db, SEARCH_INDEX_VERSION_KEY) === SEARCH_INDEX_VERSION
 }

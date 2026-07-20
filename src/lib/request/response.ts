@@ -13,16 +13,19 @@ export function isNonStreaming(response: ChatCompletionResponse | AsyncIterable<
  * Parse a JSON string to object, returning the value as-is if already an object.
  *
  * If parsing fails (e.g. a streamed tool_use was aborted mid-JSON or upstream
- * emitted malformed JSON), returns a marker object `{ _parseError: true,
- * _rawInput: <original> }` so downstream consumers (history, replay, UI) can
- * still see the raw fragment instead of silently losing the data.
+ * emitted malformed JSON), returns the raw string UNCHANGED. The upstream leg
+ * (`outboundResponse`) must faithfully reflect what upstream sent — upstream
+ * streams tool_use input as a JSON string, so an un-parseable fragment is kept
+ * as that exact string, never wrapped in a proxy-fabricated marker object. No
+ * data is lost, and downstream consumers (history, replay, UI) detect a
+ * string-typed tool_use input and render the raw fragment directly.
  */
-export function safeParseJson(input: string | Record<string, unknown>): Record<string, unknown> {
+export function safeParseJson(input: string | Record<string, unknown>): Record<string, unknown> | string {
   if (typeof input !== "string") return input
   try {
     return JSON.parse(input) as Record<string, unknown>
   } catch {
-    return { _parseError: true, _rawInput: input }
+    return input
   }
 }
 

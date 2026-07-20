@@ -12,7 +12,7 @@
  * `runHistoryWrite` instead:
  *   - classifies the error as transient (retryable later) vs permanent,
  *   - logs at ERROR (not warn) so it surfaces in the file sink / console / the
- *     `system.log` bus event,
+ *     canonical `system.diagnostic` event,
  *   - bumps a per-`stage:class` counter (queryable via
  *     `getHistoryPersistErrorStats`) so failures are countable, and
  *   - returns the outcome so the caller can decide whether to retain-and-retry
@@ -90,9 +90,9 @@ export function runHistoryWrite(stage: string, fn: () => void): PersistResult {
 }
 
 /**
- * Async twin of {@link runHistoryWrite} for the offloaded finalize path
- * (`insertCompletedEntry` is async — it compresses on the libuv threadpool
- * before its synchronous tx). Same classify/log/count/never-throw contract.
+ * Async twin of {@link runHistoryWrite} for offloaded write paths that await
+ * (e.g. the V3 drain writer, which compresses on the libuv threadpool before its
+ * synchronous tx). Same classify/log/count/never-throw contract.
  */
 export async function runHistoryWriteAsync(stage: string, fn: () => Promise<void>): Promise<PersistResult> {
   try {

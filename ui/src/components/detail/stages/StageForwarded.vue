@@ -1,13 +1,26 @@
 <script setup lang="ts">
+import { computed } from "vue"
+
 import type { HistoryEntry } from "@/types"
 
 import ErrorBoundary from "@/components/ui/ErrorBoundary.vue"
+import {
+  //
+  resolveForwardedContent,
+  resolveForwardedSse,
+  resolveUpstreamSse,
+} from "@/composables/entry-legs"
 
 import SectionBlock from "../SectionBlock.vue"
 import SseEventsSection from "../SseEventsSection.vue"
 import SseFrameDiff from "../SseFrameDiff.vue"
 
-defineProps<{ entry: HistoryEntry }>()
+const props = defineProps<{ entry: HistoryEntry }>()
+
+// New `clientResponse` / final-attempt `upstreamResponse` (legacy `inboundResponse`/`sseEvents` removed in P4c).
+const upstreamSse = computed(() => resolveUpstreamSse(props.entry))
+const forwardedSse = computed(() => resolveForwardedSse(props.entry))
+const forwardedContent = computed(() => resolveForwardedContent(props.entry))
 </script>
 
 <template>
@@ -15,29 +28,29 @@ defineProps<{ entry: HistoryEntry }>()
     <!-- Upstream-vs-client aligned frame diff (the actionable "what changed"). -->
     <ErrorBoundary label="SSE frame diff">
       <SseFrameDiff
-        v-if="entry.sseEvents?.length && entry.inboundResponse?.sseEvents?.length"
-        :upstream="entry.sseEvents"
-        :forwarded="entry.inboundResponse.sseEvents"
+        v-if="upstreamSse?.length && forwardedSse?.length"
+        :upstream="upstreamSse"
+        :forwarded="forwardedSse"
       />
     </ErrorBoundary>
 
     <ErrorBoundary label="Forwarded SSE events">
       <SseEventsSection
-        v-if="entry.inboundResponse?.sseEvents?.length"
-        :events="entry.inboundResponse.sseEvents"
+        v-if="forwardedSse?.length"
+        :events="forwardedSse"
         title="SSE Events (proxy → client)"
       />
     </ErrorBoundary>
 
     <ErrorBoundary label="Forwarded response">
       <SectionBlock
-        v-if="entry.inboundResponse?.content != null"
+        v-if="forwardedContent != null"
         title="Forwarded Response (proxy → client)"
         anchor="forwarded"
-        :raw-data="entry.inboundResponse.content"
+        :raw-data="forwardedContent"
         raw-title="Forwarded Response"
       >
-        <pre class="stage-json">{{ JSON.stringify(entry.inboundResponse.content, null, 2) }}</pre>
+        <pre class="stage-json">{{ JSON.stringify(forwardedContent, null, 2) }}</pre>
       </SectionBlock>
     </ErrorBoundary>
   </div>

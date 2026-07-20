@@ -20,29 +20,27 @@ import {
   //
   clearHistory,
   getCurrentSession,
-  finalizeEntry,
-  getEntry,
   initHistory,
   insertEntry,
   shutdownHistory,
-  updateEntry,
   type EndpointType,
   type HistoryEntry,
 } from "~/lib/history"
-import { persistEntryEager } from "~/lib/history/store"
 import { setStateForTests } from "~/lib/state"
 import { generateId } from "~/lib/utils"
 import {
   //
-  handleDeleteEntries,
-  handleDeleteSession,
   handleExport,
   handleGetEntries,
   handleGetEntry,
   handleGetStats,
   handlePinEntry,
+  handleSearch,
+  handleSearchContains,
   handleUnpinEntry,
 } from "~/routes/history/handler"
+
+import { commitV3HistoryEntry } from "../helpers/history-v3-fixtures"
 
 // ─── Test app ───
 
@@ -51,17 +49,17 @@ app.get("/api/entries", handleGetEntries)
 app.get("/api/entries/:id", handleGetEntry)
 app.post("/api/entries/:id/pin", handlePinEntry)
 app.post("/api/entries/:id/unpin", handleUnpinEntry)
-app.delete("/api/entries", handleDeleteEntries)
 app.get("/api/stats", handleGetStats)
 app.get("/api/export", handleExport)
-app.delete("/api/sessions/:id", handleDeleteSession)
+app.get("/api/search", handleSearch)
+app.get("/api/search/contains", handleSearchContains)
 
 // ─── Helpers ───
 
 async function createEntry(
   endpoint: EndpointType,
   model: string,
-  messages: HistoryEntry["inboundRequest"]["messages"],
+  messages: NonNullable<HistoryEntry["clientRequest"]>["messages"],
   extra?: Partial<HistoryEntry>,
 ): Promise<HistoryEntry> {
   const sessionId = getCurrentSession(endpoint, generateId())
@@ -70,29 +68,31 @@ async function createEntry(
     sessionId,
     startedAt: Date.now(),
     endpoint,
-    inboundRequest: { model, messages, stream: true },
+    model: { requested: model },
+    clientRequest: { format: endpoint, model, messages, stream: true },
     ...extra,
   }
-  insertEntry(entry)
-  updateEntry(entry.id, {
-    state: "completed",
-    outboundResponse: {
-      success: true,
-      model,
-      usage: { input_tokens: 0, output_tokens: 0 },
-      content: null,
+  // Complete with the caller-supplied attempts (carrying the effectiveSource /
+  // upstreamRequest legs under test) or a default single successful attempt.
+  const attempts = entry.attempts ?? [
+    {
+      index: 0,
+      durationMs: 0,
+      upstreamResponse: { success: true, model, usage: { input_tokens: 0, output_tokens: 0 }, body: null },
     },
-  })
-  await finalizeEntry(entry.id)
-  return entry
+  ]
+  const completed: HistoryEntry = {
+    ...entry,
+    state: "completed",
+    attempts,
+    _index: { derived: { responseSuccess: true, attemptCount: attempts.length } },
+  }
+  commitV3HistoryEntry(completed)
+  return completed
 }
 
 async function get(path: string) {
   return app.request(path)
-}
-
-async function del(path: string) {
-  return app.request(path, { method: "DELETE" })
 }
 
 async function post(path: string) {
@@ -107,7 +107,7 @@ async function json<T = unknown>(res: Response): Promise<T> {
 
 beforeEach(async () => {
   setStateForTests({ historyDbPath: ":memory:" })
-  initHistory(true, 200)
+  await initHistory(true, 200)
 })
 
 afterEach(async () => {
@@ -197,7 +197,8 @@ describe("GET /api/entries", () => {
       endpoint: "anthropic-messages",
       state: "streaming",
       active: true,
-      inboundRequest: { model: "test", messages: [{ role: "user", content: "live" }], stream: true },
+      model: { requested: "test" },
+      clientRequest: { format: "anthropic-messages", model: "test", messages: [{ role: "user", content: "live" }], stream: true },
     }
     insertEntry(live)
 
@@ -218,63 +219,73 @@ describe("GET /api/entries", () => {
 describe("GET /api/entries/:id", () => {
   test("returns full entry by id", async () => {
     const entry = await createEntry("anthropic-messages", "claude-sonnet-4-20250514", [{ role: "user", content: "hello" }], {
-      effectiveRequest: {
-        model: "claude-sonnet-4-20250514",
-        format: "anthropic-messages",
-        messageCount: 1,
-        messages: [{ role: "user", content: "hello" }],
-        payload: {
-          model: "claude-sonnet-4-20250514",
-          messages: [{ role: "user", content: "hello" }],
-          max_tokens: 4096,
+      attempts: [
+        {
+          index: 0,
+          durationMs: 0,
+          effectiveSource: {
+            model: "claude-sonnet-4-20250514",
+            format: "anthropic-messages",
+            messageCount: 1,
+            messages: [{ role: "user", content: "hello" }],
+            body: {
+              model: "claude-sonnet-4-20250514",
+              messages: [{ role: "user", content: "hello" }],
+              max_tokens: 4096,
+            },
+          },
+          upstreamRequest: {
+            model: "claude-sonnet-4-20250514",
+            format: "anthropic-messages",
+            messages: [{ role: "user", content: "hello" }],
+            headers: {
+              "anthropic-beta": "advanced-tool-use-2025-11-20",
+            },
+            body: {
+              model: "claude-sonnet-4-20250514",
+              messages: [{ role: "user", content: "hello" }],
+              max_tokens: 4096,
+              stream: true,
+            },
+          },
+          upstreamResponse: {
+            success: true,
+            model: "claude-sonnet-4-20250514",
+            usage: { input_tokens: 0, output_tokens: 0 },
+            body: null,
+          },
         },
-      },
-      outboundRequest: {
-        model: "claude-sonnet-4-20250514",
-        format: "anthropic-messages",
-        messageCount: 1,
-        messages: [{ role: "user", content: "hello" }],
-        payload: {
-          model: "claude-sonnet-4-20250514",
-          messages: [{ role: "user", content: "hello" }],
-          max_tokens: 4096,
-          stream: true,
-        },
-      },
-      httpHeaders: {
-        outboundRequest: {
-          "anthropic-beta": "advanced-tool-use-2025-11-20",
-        },
-      },
+      ],
     })
 
     const res = await get(`/api/entries/${entry.id}`)
     expect(res.status).toBe(200)
     const body = await json<HistoryEntry>(res)
     expect(body.id).toBe(entry.id)
-    expect(body.inboundRequest.model).toBe("claude-sonnet-4-20250514")
-    expect(body.inboundRequest.messages).toHaveLength(1)
-    expect(body.effectiveRequest?.payload).toEqual({
+    expect(body.clientRequest?.model).toBe("claude-sonnet-4-20250514")
+    expect(body.clientRequest?.messages).toHaveLength(1)
+    const attempt = body.attempts?.at(-1)
+    expect(attempt?.effectiveSource?.body).toEqual({
       model: "claude-sonnet-4-20250514",
       messages: [{ role: "user", content: "hello" }],
       max_tokens: 4096,
     })
-    expect(body.outboundRequest).toEqual({
+    expect(attempt?.upstreamRequest).toEqual({
       model: "claude-sonnet-4-20250514",
       format: "anthropic-messages",
-      messageCount: 1,
       messages: [{ role: "user", content: "hello" }],
-      payload: {
+      headers: {
+        "anthropic-beta": "advanced-tool-use-2025-11-20",
+      },
+      body: {
         model: "claude-sonnet-4-20250514",
         messages: [{ role: "user", content: "hello" }],
         max_tokens: 4096,
         stream: true,
       },
     })
-    expect(body.httpHeaders).toEqual({
-      outboundRequest: {
-        "anthropic-beta": "advanced-tool-use-2025-11-20",
-      },
+    expect(attempt?.upstreamRequest?.headers).toEqual({
+      "anthropic-beta": "advanced-tool-use-2025-11-20",
     })
   })
 
@@ -320,46 +331,16 @@ describe("POST /api/entries/:id/pin and /unpin", () => {
     expect(res.status).toBe(404)
     expect((await json<{ error: string }>(res)).error).toContain("not found")
   })
-
-  test("pinning an eager-persisted in-flight entry reflects pinned in the response (in-flight view synced)", async () => {
-    // An entry that is eager-persisted (sqlite head row) but still in-flight
-    // (not finalized). getEntry reads in-flight FIRST, so setPinned must sync the
-    // in-flight copy — otherwise the column says pinned=1 but the response says false.
-    const entry: HistoryEntry = {
-      id: generateId(),
-      startedAt: Date.now(),
-      endpoint: "anthropic-messages",
-      state: "streaming",
-      active: true,
-      inboundRequest: { model: "test", messages: [{ role: "user", content: "live" }], stream: true },
-    }
-    insertEntry(entry)
-    persistEntryEager(entry) // writes the sqlite head row (status=streaming) while still in-flight
-
-    const res = await post(`/api/entries/${entry.id}/pin`)
-    expect(res.status).toBe(200)
-    expect((await json<HistoryEntry>(res)).pinned).toBe(true)
-    // The in-flight read also reflects it now.
-    expect(getEntry(entry.id)?.pinned).toBe(true)
-  })
 })
 
-// ─── handleDeleteEntries ───
+describe("retired archive surface", () => {
+  test("archive mutation endpoints are not registered", async () => {
+    expect((await post("/api/archive-now")).status).toBe(404)
+    expect((await post("/api/archive-cooldown")).status).toBe(404)
+  })
 
-describe("DELETE /api/entries", () => {
-  test("clears all history", async () => {
-    await createEntry("anthropic-messages", "test", [{ role: "user", content: "hello" }])
-    await createEntry("anthropic-messages", "test", [{ role: "user", content: "world" }])
-
-    const res = await del("/api/entries")
-    expect(res.status).toBe(200)
-    const body = await json<{ success: boolean }>(res)
-    expect(body.success).toBe(true)
-
-    // Verify empty
-    const listRes = await get("/api/entries")
-    const listBody = await json<{ total: number }>(listRes)
-    expect(listBody.total).toBe(0)
+  test("tier=archive is rejected instead of silently reading HOT", async () => {
+    expect((await get("/api/entries?tier=archive")).status).toBe(400)
   })
 })
 
@@ -397,24 +378,16 @@ describe("GET /api/export", () => {
   })
 })
 
-// ─── handleDeleteSession ───
+describe("retired embedded search surface", () => {
+  test("keeps the compatibility contract but returns empty data", async () => {
+    const search = await get("/api/search?source=inbound&q=needle")
+    expect(search.status).toBe(200)
+    expect(await json<{ rows: Array<unknown>; partial: boolean }>(search)).toMatchObject({ rows: [], partial: false })
 
-describe("sessions API", () => {
-  test("DELETE /api/sessions/:id deletes session", async () => {
-    const entry = await createEntry("anthropic-messages", "test", [{ role: "user", content: "hello" }])
-    const sessionId = entry.sessionId
-
-    const res = await del(`/api/sessions/${sessionId}`)
-    expect(res.status).toBe(200)
-    const body = await json<{ success: boolean }>(res)
-    expect(body.success).toBe(true)
-
-    // Verify deleted
-    expect(getEntry(entry.id)).toBeUndefined()
-  })
-
-  test("DELETE /api/sessions/:id returns 404 for non-existent session", async () => {
-    const res = await del("/api/sessions/nonexistent")
-    expect(res.status).toBe(404)
+    const contains = await get("/api/search/contains?hash=deadbeef")
+    expect(contains.status).toBe(200)
+    expect(await json<{ hash: string; reqIds: Array<string> }>(contains)).toEqual({ hash: "deadbeef", reqIds: [] })
   })
 })
+
+// ─── sessions API ───

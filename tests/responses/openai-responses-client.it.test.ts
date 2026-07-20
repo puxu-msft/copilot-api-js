@@ -57,7 +57,7 @@ describe("responses client", () => {
       accountType: "individual",
       copilotToken: "copilot-test-token",
       vsCodeVersion: "1.100.0",
-      fetchTimeout: 0,
+      responseHeaderTimeout: 0,
       upstreamWebSocket: false,
     })
   })
@@ -237,7 +237,9 @@ describe("responses client", () => {
       model: "gpt-4o",
       conversationId: undefined,
       handshakeHeaders: {},
+      rescheduleIdleTimeout: () => {},
       close: () => {},
+      dispose: async () => {},
     }))
     setStateForTests({ upstreamWebSocket: true })
 
@@ -285,7 +287,9 @@ describe("responses client", () => {
       model: "gpt-4o",
       conversationId: undefined,
       handshakeHeaders: {},
+      rescheduleIdleTimeout: () => {},
       close: () => {},
+      dispose: async () => {},
     }))
     setStateForTests({ upstreamWebSocket: true })
 
@@ -357,7 +361,9 @@ describe("responses client", () => {
       model: "gpt-4o",
       conversationId: undefined,
       handshakeHeaders: {},
+      rescheduleIdleTimeout: () => {},
       close: () => {},
+      dispose: async () => {},
     }))
 
     // HTTP fallback target — should be hit after WS aborts pre-first-event
@@ -473,7 +479,9 @@ describe("responses client", () => {
       model: "gpt-4o",
       conversationId: undefined,
       handshakeHeaders: {},
+      rescheduleIdleTimeout: () => {},
       close: () => {},
+      dispose: async () => {},
     }))
 
     setStateForTests({ upstreamWebSocket: true })

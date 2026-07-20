@@ -16,8 +16,7 @@
  * (stream guard + boundary sampling move in then).
  */
 
-import consola from "consola"
-import { events } from "fetch-event-stream"
+import type { ServerSentEventMessage } from "fetch-event-stream"
 
 import type { HeadersCapture } from "~/lib/context/request"
 
@@ -30,7 +29,7 @@ import {
 import {
   //
   captureHttpHeaders,
-  createFetchSignal,
+  createResponseHeaderTimeoutSignal,
 } from "~/lib/fetch-utils"
 import { getShutdownSignal } from "~/lib/shutdown"
 import { state } from "~/lib/state"
@@ -38,6 +37,127 @@ import { combineAbortSignals } from "~/lib/stream"
 import { summarizeToolsForDiagnostics } from "~/lib/upstream-diagnostics"
 
 import { upstreamFetch } from "./upstream-fetch"
+
+/**
+ * SSE source with eager ownership of the raw Response body.
+ *
+ * `fetch-event-stream.events(response)` is a lazy async generator: calling its
+ * `return()` before the first `next()` does not enter the generator and therefore
+ * never cancels `response.body`. A physical dispatch may be cancelled in exactly
+ * that pre-consumer window. This wrapper closes the raw body directly until the
+ * decoder has started; afterwards it delegates to the decoder's own return path.
+ */
+export function ownedResponseEvents(response: Response): AsyncIterable<ServerSentEventMessage> {
+  type EventMessage = ServerSentEventMessage
+  const decoded = parseOwnedSse(response)[Symbol.asyncIterator]()
+  let started = false
+  let closePromise: Promise<IteratorResult<EventMessage>> | undefined
+
+  return {
+    [Symbol.asyncIterator](): AsyncIterator<EventMessage> {
+      return {
+        next(): Promise<IteratorResult<EventMessage>> {
+          started = true
+          return decoded.next()
+        },
+        return(value?: EventMessage): Promise<IteratorResult<EventMessage>> {
+          closePromise ??= (async () => {
+            if (started) {
+              await decoded.return(undefined)
+              return { done: true, value: value as EventMessage }
+            }
+            await response.body?.cancel("Upstream dispatch disposed before SSE consumption")
+            return { done: true, value: value as EventMessage }
+          })()
+          return closePromise
+        },
+      }
+    },
+  }
+}
+
+/** SSE decoder matching the previous fetch-event-stream field semantics while owning reader cleanup. */
+async function* parseOwnedSse(response: Response): AsyncGenerator<ServerSentEventMessage> {
+  if (!response.body) return
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let text = ""
+  let naturalEnd = false
+  let event: ServerSentEventMessage | undefined
+
+  const consumeLine = (line: string): ServerSentEventMessage | undefined => {
+    if (line.length === 0) {
+      const completed = event
+      event = undefined
+      return completed
+    }
+    const colon = line.indexOf(":")
+    // Match the prior parser: comments (`:...`) and colon-less lines are ignored.
+    if (colon <= 0) return undefined
+    const field = line.slice(0, colon)
+    const value = line.slice(colon + 1).replace(/^\s*/, "")
+    switch (field) {
+      case "data": {
+        event ??= {}
+        event.data = event.data ? `${event.data}\n${value}` : value
+        break
+      }
+      case "event": {
+        event ??= {}
+        event.event = value
+        break
+      }
+      case "id": {
+        event ??= {}
+        const numeric = Number(value)
+        event.id = String(numeric) === value ? numeric : value
+        break
+      }
+      case "retry": {
+        event ??= {}
+        event.retry = Number(value) || undefined
+        break
+      }
+      default: {
+        // Unknown SSE fields are ignored, matching the previous parser.
+        break
+      }
+    }
+    return undefined
+  }
+
+  try {
+    for (;;) {
+      const chunk = await reader.read()
+      if (chunk.done) {
+        naturalEnd = true
+        text += decoder.decode()
+      } else {
+        text += decoder.decode(chunk.value, { stream: true })
+      }
+
+      let start = 0
+      for (let index = 0; index < text.length; index++) {
+        const code = text.codePointAt(index)
+        if (code !== 10 && code !== 13) continue
+        // A trailing CR may be the first half of CRLF split across chunks.
+        if (code === 13 && index === text.length - 1 && !chunk.done) break
+        const completed = consumeLine(text.slice(start, index))
+        if (completed) yield completed
+        if (code === 13 && text.codePointAt(index + 1) === 10) index++
+        start = index + 1
+      }
+      text = text.slice(start)
+      if (chunk.done) return
+    }
+  } finally {
+    try {
+      if (!naturalEnd) await reader.cancel("Upstream dispatch disposed during SSE consumption")
+    } finally {
+      reader.releaseLock()
+    }
+  }
+}
 
 /** Inputs for {@link sendUpstreamHttp} — the per-call wire plus error-shaping context. */
 export interface SendUpstreamHttpParams {
@@ -50,8 +170,11 @@ export interface SendUpstreamHttpParams {
   /** Whether this is a streaming request (wire.stream) — truthy selects the SSE path. */
   stream: boolean | null | undefined
   /**
-   * Label reused for both the `consola.error` line and the thrown `HTTPError`
-   * message (e.g. "Failed to create chat completions").
+   * Label used as the thrown `HTTPError` message (e.g. "Failed to create chat
+   * completions"). Not logged here — the driver's retry loop owns per-attempt
+   * failure visibility (`[RETRY]` line via `recordAttemptFailure`) and the
+   * error-forwarding layer owns terminal-failure logging (`[FAIL]` + the raw
+   * upstream body), so a transport-level console line would only duplicate them.
    */
   errorLabel: string
   /** Model id attached to the thrown HTTPError (wire.model). */
@@ -74,6 +197,8 @@ export interface SendUpstreamHttpParams {
    * guard also receives it separately so a mid-stream reap reaches a live client.
    */
   reaperSignal?: AbortSignal
+  /** Candidate/dispatch-local cancellation signal (loser cancellation / force disposal). */
+  dispatchSignal?: AbortSignal
   /**
    * When true, a SHUTDOWN-caused fetch abort (`getShutdownSignal().aborted` && the
    * thrown error is an `AbortError`) is rewritten to a retryable `HTTPError` 529
@@ -98,17 +223,32 @@ export interface SendUpstreamHttpParams {
  * attached on opaque 400s.
  */
 export async function sendUpstreamHttp(params: SendUpstreamHttpParams): Promise<unknown> {
-  const { endpointPath, headers, body, stream, errorLabel, modelId, diagnosticsTools, headersCapture, clientAbortSignal, reaperSignal, rewriteShutdownAbort } =
-    params
+  const {
+    endpointPath,
+    headers,
+    body,
+    stream,
+    errorLabel,
+    modelId,
+    diagnosticsTools,
+    headersCapture,
+    clientAbortSignal,
+    reaperSignal,
+    dispatchSignal,
+    rewriteShutdownAbort,
+  } = params
 
-  // For non-streaming requests, fold the shutdown signal into the fetch signal so
-  // a Phase 3 abort interrupts the (long) header-wait; streaming omits it (the
-  // stream guard in the handler owns shutdown for the streamed body).
-  // `clientAbortSignal` (when supplied) is always folded in so a client cancel
-  // terminates both stream and non-stream paths. `reaperSignal` (ctx.lifecycleSignal)
-  // is always folded too so the stale reaper can cancel the (long) pre-response
-  // header-wait for BOTH stream and non-stream (缺陷④).
-  const fetchSignal = combineAbortSignals(createFetchSignal(), stream ? undefined : getShutdownSignal(), clientAbortSignal, reaperSignal)
+  // Fold the stable shutdown signal into the fetch signal for BOTH streaming and non-streaming
+  // requests so a Phase 3 abort interrupts the (long) header-wait (RFC RC1). The old
+  // `stream ? undefined` exclusion was WRONG for the delayed-commit pre-response window: a
+  // streaming request marked `streaming` can still be blocked in the pre-header fetch (`await p`)
+  // where the stream-body guard does NOT yet exist, so shutdown could not reach it — the request
+  // hung until Phase 4 force-close (observed 2026-07-12: Phase3 abort ineffective for 120s). The
+  // stream-body guard still folds shutdown for the streamed body post-header (both aborting on
+  // shutdown is idempotent). A shutdown-abort rewritten to a retryable 529 (below) is prevented
+  // from spawning a new attempt by the driver's attempt-boundary cancel gate (RC1+RC3 atomic).
+  // `clientAbortSignal` and `reaperSignal` (ctx.lifecycleSignal) are always folded too.
+  const fetchSignal = combineAbortSignals(createResponseHeaderTimeoutSignal(modelId), getShutdownSignal(), clientAbortSignal, reaperSignal, dispatchSignal)
 
   let response: Response
   try {
@@ -146,7 +286,11 @@ export async function sendUpstreamHttp(params: SendUpstreamHttpParams): Promise<
   }
 
   if (!response.ok) {
-    consola.error(errorLabel, response)
+    // No console line here: this transport layer cannot know whether the caller
+    // will retry (the driver decides that above, in runExchange's catch). Per-
+    // attempt failure visibility is the driver's `[RETRY]` line; terminal-failure
+    // logging is the error-forwarding layer's `[FAIL]` + raw-body line. Logging
+    // the bare `Response` object here only ever printed a useless `{}`.
     // On opaque 400s, scan the wire tools for schema keywords / names the
     // upstream commonly rejects, and attach hint-only diagnostics.
     const diagnostics = response.status === 400 ? summarizeToolsForDiagnostics(diagnosticsTools) : undefined
@@ -154,7 +298,7 @@ export async function sendUpstreamHttp(params: SendUpstreamHttpParams): Promise<
   }
 
   if (stream) {
-    return events(response)
+    return ownedResponseEvents(response)
   }
 
   return response.json()

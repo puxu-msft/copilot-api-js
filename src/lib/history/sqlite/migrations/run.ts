@@ -21,7 +21,7 @@
 import consola from "consola"
 import { Umzug } from "umzug"
 
-import type { SqliteDatabase } from "../driver"
+import type { SqliteDatabase } from "~/lib/sqlite/driver"
 
 import {
   //

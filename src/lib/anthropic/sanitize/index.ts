@@ -15,15 +15,20 @@ import type {
 
 import { state } from "~/lib/state"
 
+import { resolveServerToolMode } from "../server-tool-rewrite-mode"
+import { resolveSystemSanitizeMode } from "../system-reject-mode"
 import {
   //
   countAnthropicContentBlocks,
   filterEmptyThinkingBlocks,
+  stripSyntheticReasoningBlocks,
 } from "./content-blocks"
 import { deduplicateToolCalls } from "./deduplicate-tool-calls"
+import { destackAdjacentThinking } from "./destack-adjacent-thinking"
+import { downgradeEmptyEncryptedSearchResults } from "./empty-encrypted-search-result"
 import { stripReadToolResultTags } from "./read-tool-result-tags"
 import { finalizeAnthropicSanitization } from "./result"
-import { rewriteServerToolHistory } from "./rewrite-server-tool-history"
+import { rewriteServerToolBlocks } from "./rewrite-server-tool-blocks"
 import { sanitizeInlineSystemMessages } from "./system-messages"
 import { sanitizeAnthropicSystemPrompt } from "./system-prompt"
 import { removeAnthropicSystemReminders } from "./system-reminders"
@@ -83,7 +88,8 @@ export function sanitizeAnthropicMessages(payload: MessagesPayload): ReturnType<
   messages = reminderResult.messages
   const systemReminderRemovals = reminderResult.modifiedCount
 
-  // Handle inline `role:"system"` messages (illegal for the Anthropic API) AFTER
+  // Handle inline `role:"system"` messages (rejected by STRICT upstream backends,
+  // e.g. sonnet-4.6/haiku-4.5; accepted by others like Opus) AFTER
   // reminder stripping, so reminders are cleaned in their original system form
   // first. May rewrite messages and/or fold text into the top-level system.
   // Discount any content blocks the inline-system step removes (merge/drop) from
@@ -91,16 +97,30 @@ export function sanitizeAnthropicMessages(payload: MessagesPayload): ReturnType<
   // cleanup (orphan tool / empty text / corrupt thinking) — inline-system moves
   // are reported separately via `inlineSystemConverted`, not as removed blocks.
   const beforeInlineBlocks = countAnthropicContentBlocks(messages)
-  const inlineSystem = sanitizeInlineSystemMessages(messages, sanitizedSystem, state.systemMessagesSanitize)
+  const inlineSystem = sanitizeInlineSystemMessages(messages, sanitizedSystem, resolveSystemSanitizeMode(payload.model))
   messages = inlineSystem.messages
   const inlineBlocksRemoved = beforeInlineBlocks - countAnthropicContentBlocks(messages)
 
-  // Downgrade native server-tool blocks left in history by the web_search
+  // Downgrade native server-tool blocks left in prior turns by the web_search
   // double-hop (server_tool_use{web_search} + *_tool_result) into plain
   // tool_use + tool_result. MUST run BEFORE processToolBlocks so the tool
   // reference validation sees the already-downgraded (plain) blocks. No-op when
-  // disabled. See rewrite-server-tool-history.ts for the self-poisoning loop.
-  messages = rewriteServerToolHistory(messages, state.rewriteHistoryServerTools).messages
+  // disabled. See rewrite-server-tool-blocks.ts for the self-poisoning loop.
+  messages = rewriteServerToolBlocks(messages, resolveServerToolMode(payload.model)).messages
+
+  // Fallback (always-on): downgrade any synthesized web_search turn whose result
+  // `encrypted_content` is empty/missing — upstream rejects it with "Invalid
+  // encrypted_content in search_result block" and there is no valid value we can
+  // supply (empirically, even a non-empty placeholder is rejected). Runs AFTER
+  // the config-driven downgrade (which, when enabled, already removed all
+  // prior-turn server-tool blocks so this is a no-op) and narrowly targets only the
+  // proven-broken shape. See empty-encrypted-search-result.ts.
+  messages = downgradeEmptyEncryptedSearchResults(messages).messages
+
+  // Strip OUR synthetic-reasoning thinking blocks (sentinel-signed GPT-reasoning forwards) FIRST and
+  // UNCONDITIONALLY — a client echoing one back onto the direct Claude leg would 400 upstream with our
+  // unforgeable signature. This is a self-owned poison guard, NOT gated by thinkingBlockSanitizeCheck.
+  messages = stripSyntheticReasoningBlocks(messages)
 
   // Drop corrupt (unsigned) thinking blocks BEFORE processToolBlocks so its existing
   // empty-message cleanup (content.length === 0 → drop the whole message) handles any
@@ -108,17 +128,19 @@ export function sanitizeAnthropicMessages(payload: MessagesPayload): ReturnType<
   // adjacent same-role risk introduced beyond what processToolBlocks already produces.
   // Validity is decided by the SIGNATURE (see filterEmptyThinkingBlocks); a legitimate
   // encrypted thinking block has empty `thinking` text but a valid `signature` and is
-  // kept. Gated by `thinkingBlockSanitizeCheck` (off / empty_thinking / empty_any).
+  // kept. Gated by `thinkingBlockSanitizeCheck` (off / all_empty / signature_empty /
+  // thinking_empty / any_empty — the mode names WHICH empty field triggers the drop).
   const sanitizeCheck = state.thinkingBlockSanitizeCheck
   const beforeThinkingBlocks = countAnthropicContentBlocks(messages)
-  if (sanitizeCheck === "empty_thinking" || sanitizeCheck === "empty_any") {
+  if (sanitizeCheck !== false) {
     messages = filterEmptyThinkingBlocks(messages, sanitizeCheck)
   }
   const emptyThinkingBlocksRemoved = Math.max(0, beforeThinkingBlocks - countAnthropicContentBlocks(messages))
 
   const toolResult = processToolBlocks(messages, payload.tools)
   messages = toolResult.messages
-  return finalizeAnthropicSanitization(
+
+  const finalized = finalizeAnthropicSanitization(
     payload,
     messages,
     inlineSystem.system,
@@ -128,11 +150,26 @@ export function sanitizeAnthropicMessages(payload: MessagesPayload): ReturnType<
     inlineSystem.convertedCount,
     emptyThinkingBlocksRemoved,
   )
+
+  // TERMINAL pass (spec §3.1 / plan review #04 CRITICAL): de-stack adjacent thinking
+  // runs AFTER processToolBlocks AND finalize's `filterEmptyAnthropicTextBlocks`, so
+  // (a) no later pass can delete its synthetic separators (as orphan tool_use / empty
+  // text) and (b) it CATCHES adjacency newly created by orphan-tool deletion. It
+  // operates on the finalized messages (`.payload.messages` — there is NO top-level
+  // `.messages`) and writes the result back there. Its insert/reorder counters are
+  // attached SEPARATELY (`stats.destack`) from finalize's subtractive residual model,
+  // which assumes blocks only ever decrease — de-stack INSERTS.
+  const destacked = destackAdjacentThinking(finalized.payload.messages, state.thinkingDestackStrategy)
+  return {
+    ...finalized,
+    payload: { ...finalized.payload, messages: destacked.messages },
+    stats: { ...finalized.stats, destack: destacked.stats },
+  }
 }
 
 export { deduplicateToolCalls } from "./deduplicate-tool-calls"
 
 export { stripReadToolResultTags } from "./read-tool-result-tags"
-export { type SanitizationStats, toSanitizationInfo } from "./result"
+export { destackActed, type SanitizationStats, toSanitizationInfo } from "./result"
 export { removeAnthropicSystemReminders } from "./system-reminders"
 export { processToolBlocks } from "./tool-blocks"

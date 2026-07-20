@@ -1,11 +1,22 @@
 import type { HistoryStats } from "./types"
 
-import { listInFlight } from "./in-flight"
 import {
   //
-  queryEntries,
-} from "./sqlite/read"
-import { computeStats } from "./sqlite/stats"
+  resolveResponseError,
+  resolveResponseModel,
+  resolveResponseSuccess,
+  resolveResponseUsage,
+  resolveStopReason,
+} from "./entry-view"
+import {
+  //
+  listInFlight,
+  toEntrySummary,
+} from "./in-flight"
+import { getHistory } from "./queries"
+import { recordToEntrySummary } from "./v3/projection"
+import { visitV3Summaries } from "./v3/store"
+import { listRecentModelOperationTerminals } from "./v3/terminal-bus"
 
 function formatLocalTimestamp(ts: number): string {
   const date = new Date(ts)
@@ -28,41 +39,50 @@ function escapeCsvValue(value: unknown): string {
 }
 
 export function getStats(): HistoryStats {
-  const base = computeStats()
-  const inFlight = listInFlight()
-  if (inFlight.length === 0) return base
-
-  const modelDistribution = { ...base.modelDistribution }
-  const endpointDistribution = { ...base.endpointDistribution }
-  let totalInputTokens = base.totalInputTokens
-  let totalOutputTokens = base.totalOutputTokens
-  let successful = base.successfulRequests
-  let failed = base.failedRequests
-
-  for (const entry of inFlight) {
-    const model = entry.outboundResponse?.model ?? entry.inboundRequest.model
-    if (model) modelDistribution[model] = (modelDistribution[model] ?? 0) + 1
-    endpointDistribution[entry.endpoint] = (endpointDistribution[entry.endpoint] ?? 0) + 1
-    totalInputTokens += entry.outboundResponse?.usage.input_tokens ?? 0
-    totalOutputTokens += entry.outboundResponse?.usage.output_tokens ?? 0
-    if (entry.outboundResponse?.success === true) successful += 1
-    else if (entry.outboundResponse?.success === false) failed += 1
+  const stats: HistoryStats = {
+    totalRequests: 0,
+    successfulRequests: 0,
+    failedRequests: 0,
+    abortedRequests: 0,
+    interruptedRequests: 0,
+    totalInputTokens: 0,
+    totalOutputTokens: 0,
+    averageDurationMs: 0,
+    modelDistribution: {},
+    endpointDistribution: {},
+    recentActivity: [],
+    activeSessions: 0,
   }
-
-  return {
-    ...base,
-    totalRequests: base.totalRequests + inFlight.length,
-    successfulRequests: successful,
-    failedRequests: failed,
-    totalInputTokens,
-    totalOutputTokens,
-    modelDistribution,
-    endpointDistribution,
+  let totalDurationMs = 0
+  const sessions = new Set<string>()
+  const seen = new Set<string>()
+  const consume = (summary: ReturnType<typeof toEntrySummary>): void => {
+    if (seen.has(summary.id)) return
+    seen.add(summary.id)
+    stats.totalRequests++
+    if (summary.state === "completed" || summary.responseSuccess === true) stats.successfulRequests++
+    if (summary.state === "failed" || summary.responseSuccess === false) stats.failedRequests++
+    if (summary.state === "aborted") stats.abortedRequests++
+    if (summary.state === "interrupted") stats.interruptedRequests++
+    const usage = summary.usage
+    stats.totalInputTokens += usage?.input_tokens ?? 0
+    stats.totalOutputTokens += usage?.output_tokens ?? 0
+    totalDurationMs += summary.durationMs ?? 0
+    if (summary.sessionId) sessions.add(summary.sessionId)
+    const model = summary.responseModel ?? summary.requestModel
+    if (model) stats.modelDistribution[model] = (stats.modelDistribution[model] ?? 0) + 1
+    stats.endpointDistribution[summary.endpoint] = (stats.endpointDistribution[summary.endpoint] ?? 0) + 1
   }
+  for (const entry of listInFlight()) consume(toEntrySummary(entry))
+  for (const record of listRecentModelOperationTerminals()) consume(recordToEntrySummary(record))
+  visitV3Summaries(consume)
+  stats.averageDurationMs = stats.totalRequests === 0 ? 0 : totalDurationMs / stats.totalRequests
+  stats.activeSessions = sessions.size
+  return stats
 }
 
 export function exportHistory(format: "json" | "csv" = "json"): string {
-  const entries = queryEntries({ limit: 1_000_000 })
+  const entries = getHistory({ limit: 1_000_000, operationKind: "all" }).entries
 
   if (format === "json") {
     return JSON.stringify({ entries }, null, 2)
@@ -79,28 +99,37 @@ export function exportHistory(format: "json" | "csv" = "json"): string {
     "success",
     "response_model",
     "input_tokens",
+    "cache_read_input_tokens",
+    "cache_creation_input_tokens",
     "output_tokens",
+    "reasoning_tokens",
     "duration_ms",
     "stop_reason",
     "error",
   ]
 
-  const rows = entries.map((entry) => [
-    entry.id,
-    entry.sessionId ?? "",
-    formatLocalTimestamp(entry.startedAt),
-    entry.endpoint,
-    entry.inboundRequest.model,
-    entry.inboundRequest.messages?.length,
-    entry.inboundRequest.stream,
-    entry.outboundResponse?.success,
-    entry.outboundResponse?.model,
-    entry.outboundResponse?.usage.input_tokens,
-    entry.outboundResponse?.usage.output_tokens,
-    entry.durationMs,
-    entry.outboundResponse?.stop_reason,
-    entry.outboundResponse?.error,
-  ])
+  const rows = entries.map((entry) => {
+    const usage = resolveResponseUsage(entry)
+    return [
+      entry.id,
+      entry.sessionId ?? "",
+      formatLocalTimestamp(entry.startedAt),
+      entry.endpoint,
+      entry.clientRequest?.model,
+      entry.clientRequest?.messages?.length,
+      entry.clientRequest?.stream,
+      resolveResponseSuccess(entry),
+      resolveResponseModel(entry),
+      usage?.input_tokens,
+      usage?.cache_read_input_tokens,
+      usage?.cache_creation_input_tokens,
+      usage?.output_tokens,
+      usage?.output_tokens_details?.reasoning_tokens,
+      entry.durationMs,
+      resolveStopReason(entry),
+      resolveResponseError(entry),
+    ]
+  })
 
   return [headers.join(","), ...rows.map((row) => row.map((value) => escapeCsvValue(value)).join(","))].join("\n")
 }

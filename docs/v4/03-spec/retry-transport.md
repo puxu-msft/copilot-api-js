@@ -81,7 +81,7 @@ type RetryAction =
 | `effort-learning`（**新，提升自 client 内循环**） | bad_request ∧ invalid_reasoning_effort | `env.prepareHints` / negotiation effort | 重裁 effort |
 | `unsupported-beta` | bad_request ∧ unsupported beta | `env.prepareHints.excludeBetas`（含 laconic 子集枚举，learning） | 重裁 beta header |
 | `server-tool-rejection`（**v4-only，legacy 未注册**） | bad_request ∧ web search tool not supported | `env.prepareHints.excludeServerToolTypes` + negotiation serverTools 账本 | 剥 web_search 工具重发 |
-| `structured-outputs-rejection`（**v4-only，legacy 未注册**） | bad_request ∧ Vertex `allowedPartnerModelFeatures` 禁用 `structured_outputs` | `env.body.output_config.format` 删除 + negotiation partnerFeatures 账本（prepare `strip-structured-outputs` 步 pre-emptive 剥，**config `anthropic.partner_strip_features` ∪ 账本**——可主动声明首发即剥） | 剥 `output_config.format` 重发（降级为自由文本） |
+| `structured-outputs-rejection`（**v4-only，legacy 未注册**） | bad_request ∧ Vertex `allowedPartnerModelFeatures` 禁用 `structured_outputs` | `env.body.output_config.format` 删除 + negotiation partnerFeatures 账本（prepare `strip-partner-features` 步 pre-emptive 剥，**config `anthropic.partner_strip_features` ∪ 账本**——可主动声明首发即剥） | 剥 `output_config.format` 重发（降级为自由文本） |
 | `body-field-rejection` | bad_request ∧ Extra inputs not permitted | `env.prepareHints.rejectFields` | 重裁 body 字段 |
 | `legacy-thinking` | bad_request ∧ thinking.enabled 不支持 | `env.body.thinking`→adaptive | 重发改后 body |
 | `deferred-tool` | bad_request ∧ Tool reference not found | `env.body.tools[].defer_loading=false` | 重发改后 body |

@@ -26,9 +26,15 @@ import type {
   ScopedPublisher,
 } from "~/lib/observability"
 
+import { recordReaperTick } from "~/lib/observability/reaper-diagnostics"
 import { recordAcceptedRequest } from "~/lib/request-telemetry"
 import { state } from "~/lib/state"
 
+import type {
+  //
+  ModelOperationRecord,
+  OperationKind,
+} from "./model-operation-record"
 import type {
   //
   InboundQuery,
@@ -58,6 +64,12 @@ export interface RequestContextManager {
     query?: InboundQuery
     /** Inbound Content-Length header value, if present. */
     requestBodySize?: number
+    operationIdentity?: {
+      kind: OperationKind
+      connectionId?: string
+      responseCreateId?: string
+      previousResponseId?: string | null
+    }
   }): RequestContext
 
   /** Get an active request by ID */
@@ -68,6 +80,16 @@ export interface RequestContextManager {
 
   /** Number of active requests */
   readonly activeCount: number
+
+  /**
+   * OPERATION/finalization registry — a ctx stays tracked until its operation body quiesces AND
+   * its generation finalizer publishes canonical observability, not merely until logical settle.
+   * Serves shutdown drain so orphan settle-before work and pending immutable seals are both waited on.
+   */
+  getTrackedOperations(): Array<RequestContext>
+  readonly trackedOperationCount: number
+  /** Drain every generation finalizer and surface any canonical-finalization rejection. */
+  drainModelOperationFinalizations(): Promise<void>
 
   /** Start periodic cleanup of stale active contexts */
   startReaper(): void
@@ -95,6 +117,13 @@ export interface RequestContextManagerOptions {
    * start.ts for the real runtime.
    */
   publisher?: ScopedPublisher<"request">
+  /**
+   * Whether to arm a per-request hard-deadline timer (`state.requestDeadline`) on `create()`.
+   * Default true. The capturing manager (dry-run inspection) passes false so an inspected ctx
+   * never leaves a dangling deadline timer / force-fails a throwaway context (RFC C4b inspection
+   * exemption).
+   */
+  armDeadlineTimers?: boolean
 }
 
 export function initRequestContextManager(options?: RequestContextManagerOptions): RequestContextManager {
@@ -104,6 +133,11 @@ export function initRequestContextManager(options?: RequestContextManagerOptions
 
 export function getRequestContextManager(): RequestContextManager {
   if (!_manager) throw new Error("RequestContextManager not initialized — call initRequestContextManager() first")
+  return _manager
+}
+
+/** Optional lifecycle lookup for shutdown harnesses/processes that never initialize request serving. */
+export function peekRequestContextManager(): RequestContextManager | null {
   return _manager
 }
 
@@ -140,9 +174,36 @@ export function withCapturingManager<T>(fn: () => T): { result: T; events: Array
       return Promise.resolve({ delivered: true } as never)
     },
   } as unknown as ScopedPublisher<"request">
-  _manager = createRequestContextManager({ publisher })
+  _manager = createRequestContextManager({ publisher, armDeadlineTimers: false })
   try {
     return { result: fn(), events }
+  } finally {
+    _manager = saved
+  }
+}
+
+/**
+ * Async counterpart of {@link withCapturingManager}: `fn` is `await`ed **inside** the capture
+ * window, so a caller whose work is asynchronous (e.g. the driver's `inspectRequest`, which now
+ * runs an async S1b `translateInbound` stage — RFC 2026-07-14 §3 / review MEDIUM-1) keeps its
+ * `request.*` events captured for the whole duration. The sync {@link withCapturingManager}
+ * restores the manager the moment `fn()` returns a Promise — closing the window before the async
+ * body runs — which would let the async side effects escape to the real bus. Use THIS whenever
+ * `fn` returns a Promise; keep the sync one for sync `fn`s (e.g. `codec.parse`).
+ */
+export async function withCapturingManagerAsync<T>(fn: () => Promise<T>): Promise<{ result: T; events: Array<CapturedRequestEvent> }> {
+  const saved = _manager
+  const events: Array<CapturedRequestEvent> = []
+  const publisher = {
+    publish: (event: CapturedRequestEvent) => void events.push(event),
+    publishAndFlush: (event: CapturedRequestEvent) => {
+      events.push(event)
+      return Promise.resolve({ delivered: true } as never)
+    },
+  } as unknown as ScopedPublisher<"request">
+  _manager = createRequestContextManager({ publisher, armDeadlineTimers: false })
+  try {
+    return { result: await fn(), events }
   } finally {
     _manager = saved
   }
@@ -152,7 +213,28 @@ export function withCapturingManager<T>(fn: () => T): { result: T; events: Array
 
 export function createRequestContextManager(options?: RequestContextManagerOptions): RequestContextManager {
   const activeContexts = new Map<string, RequestContext>()
+  // Operation/finalization registry: populated alongside activeContexts, sealed at logical settle,
+  // and retained until the unique generation finalizer has awaited scope quiescence and published
+  // canonical observability. It therefore covers both operation-body orphan work and immutable seal.
+  const operationScopes = new Map<string, RequestContext>()
+  const pendingModelOperationFinalizations = new Set<Promise<ModelOperationRecord>>()
+  const modelOperationFinalizationFailures: Array<unknown> = []
   const publisher = options?.publisher
+  const armDeadlineTimers = options?.armDeadlineTimers ?? true
+  // Per-request hard-deadline timers (RFC C4b). Unlike the periodic reaper scan (which fires
+  // LATE — RC2), each request gets a precise monotonic timer armed at create() for
+  // `state.requestDeadline` seconds. On fire it applies the SAME cancel+settle as the reaper
+  // (reapInFlight → fail), but ON TIME regardless of scan cadence / config reload / suspend
+  // recovery jitter. Cleared on settle. 0 = disabled (byte-identical to the reaper-only path).
+  const deadlineTimers = new Map<string, ReturnType<typeof setTimeout>>()
+
+  function clearDeadlineTimer(id: string): void {
+    const t = deadlineTimers.get(id)
+    if (t) {
+      clearTimeout(t)
+      deadlineTimers.delete(id)
+    }
+  }
 
   // ─── Stale Request Reaper ───
 
@@ -184,11 +266,40 @@ export function createRequestContextManager(options?: RequestContextManagerOptio
   }
 
   let reaperTimer: ReturnType<typeof setInterval> | null = null
+  // Reaper tick timing (RC2 diagnostics — see reaper-diagnostics.ts). Frozen interval is
+  // captured at startReaper; last-tick wall + monotonic clocks let us distinguish a
+  // config-reload cadence mismatch / process-or-WSL suspend from event-loop blocking.
+  let reaperFrozenIntervalMs = 0
+  let lastTickWallMs: number | undefined
+  let lastTickMonoMs: number | undefined
 
   /** Single reaper scan — force-fail contexts exceeding maxAge */
   function runReaperOnce() {
+    // Tick diagnostics FIRST (records every scan, incl. disabled/empty ones, so drift is
+    // observable regardless of whether anything was reaped). Pure observation — no behavior change.
+    const actualAt = Date.now()
+    const nowMono = performance.now()
+    const scheduledAt = lastTickWallMs !== undefined ? lastTickWallMs + reaperFrozenIntervalMs : actualAt
+    const monotonicGapMs = lastTickMonoMs !== undefined ? nowMono - lastTickMonoMs : reaperFrozenIntervalMs
+    const wallGapMs = lastTickWallMs !== undefined ? actualAt - lastTickWallMs : reaperFrozenIntervalMs
+    lastTickWallMs = actualAt
+    lastTickMonoMs = nowMono
+    const scanStartMono = nowMono
+
     const maxAgeMs = state.staleRequestMaxAge * 1000
-    if (maxAgeMs <= 0) return // disabled
+    if (maxAgeMs <= 0) {
+      recordReaperTick({
+        scheduledAt,
+        actualAt,
+        scanDurationMs: performance.now() - scanStartMono,
+        activeCount: activeContexts.size,
+        liveMaxAgeSec: state.staleRequestMaxAge,
+        frozenIntervalMs: reaperFrozenIntervalMs,
+        monotonicGapMs,
+        wallGapMs,
+      })
+      return // disabled
+    }
 
     for (const [id, ctx] of activeContexts) {
       if (ctx.durationMs > maxAgeMs) {
@@ -208,15 +319,33 @@ export function createRequestContextManager(options?: RequestContextManagerOptio
         // stays as the terminal-state record + safety net for the no-active-consumer
         // edge; the `settled` guard dedups with the handler's own settle.
         ctx.reapInFlight()
-        ctx.fail(ctx.originalRequest?.model ?? "unknown", new Error(`Request exceeded maximum age of ${state.staleRequestMaxAge}s (stale context reaper)`))
+        ctx.fail(
+          ctx.originalRequest?.model ?? "unknown",
+          new Error(`Request exceeded maximum age of ${state.staleRequestMaxAge}s (stale context reaper)`),
+          undefined,
+          { attribution: { category: "reaper", code: "stale-context-reaper" } },
+        )
       }
     }
+    recordReaperTick({
+      scheduledAt,
+      actualAt,
+      scanDurationMs: performance.now() - scanStartMono,
+      activeCount: activeContexts.size,
+      liveMaxAgeSec: state.staleRequestMaxAge,
+      frozenIntervalMs: reaperFrozenIntervalMs,
+      monotonicGapMs,
+      wallGapMs,
+    })
   }
 
   function startReaper() {
     if (reaperTimer) return // idempotent
     if (state.staleRequestMaxAge <= 0) return // explicitly disabled — no timer at all
-    reaperTimer = setInterval(runReaperOnce, computeReaperIntervalMs())
+    reaperFrozenIntervalMs = computeReaperIntervalMs()
+    lastTickWallMs = undefined
+    lastTickMonoMs = undefined
+    reaperTimer = setInterval(runReaperOnce, reaperFrozenIntervalMs)
   }
 
   function stopReaper() {
@@ -237,17 +366,64 @@ export function createRequestContextManager(options?: RequestContextManagerOptio
         path: opts.path,
         query: opts.query,
         requestBodySize: opts.requestBodySize,
+        operationIdentity: opts.operationIdentity,
         // Pure resource-management hook — remove the context from the active
         // map when it settles. Lifecycle events reach the bus via the context's
         // own `publisher` (the single event channel since P0.3), not via a
         // manager bridge.
         onSettled: (id) => {
+          clearDeadlineTimer(id)
           activeContexts.delete(id)
+          // Logical settle seals the operation scope. The context remains in the shutdown
+          // registry through BOTH operation quiescence and the generation finalizer, whose join
+          // waits for delivery notification and canonical publish. This is intentionally separate
+          // from the post-terminal FinalizationCoordinator.
+          const tracked = operationScopes.get(id)
+          if (tracked) {
+            tracked.sealOperationScope()
+            const finalization = tracked.whenModelOperationFinalized()
+            pendingModelOperationFinalizations.add(finalization)
+            void finalization.then(
+              () => {
+                pendingModelOperationFinalizations.delete(finalization)
+                operationScopes.delete(id)
+              },
+              (error: unknown) => {
+                pendingModelOperationFinalizations.delete(finalization)
+                operationScopes.delete(id)
+                modelOperationFinalizationFailures.push(error)
+                consola.error(`[context] Generation finalization failed for ${id}:`, error)
+              },
+            )
+          }
         },
         publisher,
       })
       recordAcceptedRequest(ctx.startTime)
       activeContexts.set(ctx.id, ctx)
+      operationScopes.set(ctx.id, ctx)
+      // Arm the hard-deadline timer (C4b). It enters the unified cancellation provenance first
+      // (`cancelReason=request_deadline`, operationSignal abort), then records the timeout terminal.
+      // This fires ON TIME via a per-request timer (bypasses RC2's late scan); `unref` prevents it
+      // from keeping the process alive. fail records the terminal outcome (settled-guard dedups).
+      if (armDeadlineTimers && state.requestDeadline > 0) {
+        const timer = setTimeout(() => {
+          deadlineTimers.delete(ctx.id)
+          if (ctx.settled) return
+          consola.warn(
+            `[context] Request ${ctx.id} exceeded hard deadline ${state.requestDeadline}s (model: ${ctx.originalRequest?.model ?? "unknown"}, state: ${ctx.state}) — cancelling`,
+          )
+          ctx.cancel("request_deadline")
+          ctx.fail(
+            ctx.originalRequest?.model ?? "unknown",
+            new Error(`Request exceeded hard deadline of ${state.requestDeadline}s (request_deadline)`),
+            undefined,
+            { attribution: { category: "timeout", code: "request_deadline" } },
+          )
+        }, state.requestDeadline * 1000)
+        ;(timer as unknown as { unref?: () => void }).unref?.()
+        deadlineTimers.set(ctx.id, timer)
+      }
       publisher?.publish({ kind: "request.created", ctx: snapshotWithSummary(ctx) })
       return ctx
     },
@@ -262,6 +438,24 @@ export function createRequestContextManager(options?: RequestContextManagerOptio
 
     get activeCount() {
       return activeContexts.size
+    },
+
+    getTrackedOperations() {
+      return Array.from(operationScopes.values())
+    },
+
+    get trackedOperationCount() {
+      return operationScopes.size
+    },
+
+    async drainModelOperationFinalizations() {
+      while (pendingModelOperationFinalizations.size > 0) {
+        await Promise.allSettled(pendingModelOperationFinalizations)
+      }
+      if (modelOperationFinalizationFailures.length > 0) {
+        const failures = modelOperationFinalizationFailures.splice(0)
+        throw new AggregateError(failures, "Generation finalization failed")
+      }
     },
 
     startReaper,

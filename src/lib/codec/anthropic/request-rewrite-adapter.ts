@@ -29,7 +29,12 @@ import type { MessagesPayload } from "~/types/api/anthropic"
 
 import { buildMessageMapping } from "~/lib/anthropic/message-mapping"
 import { runAnthropicPayloadRewrites } from "~/lib/anthropic/payload-rewrites"
-import { toSanitizationInfo } from "~/lib/anthropic/sanitize"
+import {
+  //
+  destackActed,
+  toSanitizationInfo,
+} from "~/lib/anthropic/sanitize"
+import { ENDPOINT } from "~/lib/models/endpoint"
 
 /** The history-facing sanitization-info envelope (subset of SanitizationStats). */
 type SanitizationInfo = ReturnType<typeof toSanitizationInfo>
@@ -53,7 +58,11 @@ export function createAnthropicSanitizeRewrite(deps: AnthropicRequestRewriteDeps
   return {
     name: "anthropic-sanitize",
     order: ORDER_SANITIZE,
-    appliesTo: (env) => env.clientFormat === "anthropic",
+    // Two-axis gate (RFC §3.1 / §7.1): the sanitize chain produces the UPSTREAM Anthropic
+    // `/v1/messages` wire, so it gates on the OUTBOUND leg (`targetEndpoint`), not the inbound
+    // `clientFormat`. Byte-identical to the prior `clientFormat==="anthropic"` gate in Phase 1
+    // (anthropic-direct has both axes co-true; no translation leg exists yet).
+    appliesTo: (env) => env.targetEndpoint === ENDPOINT.MESSAGES,
     apply: (env) => applyAnthropicSanitize(env, deps),
   }
 }
@@ -67,11 +76,17 @@ function applyAnthropicSanitize(env: RequestEnvelope, deps: AnthropicRequestRewr
 
   const initialSanitizationInfo = toSanitizationInfo(stats)
   deps.onInitialSanitizationInfo(initialSanitizationInfo)
+  // Also record it as a ctx side-channel (RFC §11.2 re-homing) so the CellAssembly-routed direct leg's
+  // retry rebuild reads it from ctx (`ctx.initialSanitizationInfo`) instead of a codec accessor — the
+  // rewrite owns writing its own side-channel, regardless of who supplies it (codec or assembly).
+  ctx.setInitialSanitizationInfo(initialSanitizationInfo)
 
-  // Same gate + mapping the parse path used (RFC §12.9): the baseline is the
+  // Same gate + mapping the parse path used (RFC §12.9), PLUS the terminal de-stack
+  // (pure insertion — invisible to the block-removal counters, so OR'd in via
+  // destackActed so its telemetry is never dropped): the baseline is the
   // preprocessed, pre-initial-sanitize messages (= this rewrite's input body).
   const hasPreprocessing = deps.preprocessInfo.dedupedToolCallCount > 0 || deps.preprocessInfo.strippedReadTagCount > 0
-  if (stats.totalBlocksRemoved > 0 || stats.systemReminderRemovals > 0 || stats.fixedNameCount > 0 || hasPreprocessing) {
+  if (stats.totalBlocksRemoved > 0 || stats.systemReminderRemovals > 0 || stats.fixedNameCount > 0 || destackActed(stats) || hasPreprocessing) {
     const messageMapping = buildMessageMapping(baseline.messages, sanitized.messages)
     ctx.setPipelineInfo({
       preprocessing: deps.preprocessInfo,

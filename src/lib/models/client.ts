@@ -6,7 +6,7 @@ import {
   copilotHeaders,
 } from "~/lib/copilot-api"
 import { HTTPError } from "~/lib/error"
-import { createFetchSignal } from "~/lib/fetch-utils"
+import { createResponseHeaderTimeoutSignal } from "~/lib/fetch-utils"
 import {
   //
   state,
@@ -46,7 +46,8 @@ export const getModels = async (): Promise<ModelsResponse | undefined> => {
 
   const response = await upstreamFetch(`${copilotBaseUrl(state)}/models`, {
     headers,
-    signal: createFetchSignal(),
+    // Model-catalog fetch has no per-model concept — intentionally scalar (no model arg).
+    signal: createResponseHeaderTimeoutSignal(),
   })
 
   if (response.status === 304) {
@@ -65,6 +66,19 @@ export const getModels = async (): Promise<ModelsResponse | undefined> => {
 export interface ModelsResponse {
   data: Array<Model>
   object: string
+}
+
+/**
+ * Internal `/api/models` envelope: the FULL (unfiltered) upstream catalog plus
+ * `disabled` — the ids this project's `config.disabled_models` removed from the
+ * usable set. Distinct from the upstream {@link ModelsResponse}: `disabled` is a
+ * synthetic annotation (not an upstream field), kept at the envelope top level so
+ * the per-model shape stays verbatim (richest-data-flow ADR).
+ */
+export interface InternalModelsResponse {
+  object: string
+  data: Array<Model>
+  disabled: Array<string>
 }
 
 interface VisionLimits {

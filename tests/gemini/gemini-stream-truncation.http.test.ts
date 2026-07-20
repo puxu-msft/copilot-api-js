@@ -16,8 +16,10 @@ import {
   describe,
   expect,
   mock,
+  spyOn,
   test,
 } from "bun:test"
+import consola from "consola"
 
 import { getHistory } from "~/lib/history/store"
 import {
@@ -88,12 +90,24 @@ describe("Gemini v4 — upstream stream truncation detection", () => {
   beforeEach(() => {
     upstreamFetchMock.mockClear()
     truncatedToolCall = false
-    setStateForTests({ copilotToken: "test-token", accountType: "individual", vsCodeVersion: "1.100.0", fetchTimeout: 0, streamIdleTimeout: 0 })
+    setStateForTests({ copilotToken: "test-token", accountType: "individual", vsCodeVersion: "1.100.0", responseHeaderTimeout: 0, streamIdleTimeout: 0 })
     applyFetchMock(upstreamFetchMock)
   })
 
   test("truncated upstream → Gemini error frame, no UNSPECIFIED terminal, history FAILED", async () => {
-    const sse = await (await post()).text()
+    // HIGH-1: a clean-EOF truncation also emits the rich [upstream-diagnostics] line, kind=truncated.
+    const diagSpy = spyOn(consola, "error").mockImplementation(Object.assign(() => {}, { raw: () => {} }))
+    let sse: string
+    try {
+      sse = await (await post()).text()
+    } finally {
+      const diagLine = diagSpy.mock.calls.map((c) => String(c[0])).find((s) => s.includes("[upstream-diagnostics] STREAM DISCONNECT"))
+      diagSpy.mockRestore()
+      expect(diagLine).toBeDefined()
+      expect(diagLine).toContain("kind=truncated")
+      expect(diagLine).not.toContain("frames=0")
+      expect(diagLine).toContain("last-frame=chat.completion.chunk@")
+    }
 
     // A clean terminator: a Gemini-shape error frame, and NOT a misleading UNSPECIFIED terminal.
     expect(sse).toContain('"error"')
@@ -103,8 +117,11 @@ describe("Gemini v4 — upstream stream truncation detection", () => {
     const entry = getHistory({ endpoint: "gemini-generate-content", limit: 5 }).entries[0]
     expect(entry).toBeDefined()
     expect(entry.state).toBe("failed")
-    expect(entry.outboundResponse?.success).toBe(false)
-    expect(String(entry.outboundResponse?.error)).toContain("truncated")
+    expect(entry.attempts?.at(-1)?.upstreamResponse?.success).toBe(false)
+    expect(String(entry._index?.derived?.failureReason)).toContain("truncated")
+    // The synthesized Gemini error frame the client received is recorded in the forwarded
+    // (proxy→client) track — asserts the writeSynthetic→recordForwarded→fail ordering on the Gemini path.
+    expect((entry.clientResponse?.sseEvents ?? []).some((e) => e.raw.includes('"error"'))).toBe(true)
   })
 
   test("truncation with a complete buffered tool-call → the functionCall is still forwarded (no content drop)", async () => {

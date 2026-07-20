@@ -1,0 +1,56 @@
+# Isolated proxy config for the Responses `response.ping` keepalive M-2 idle oracle (Task 5).
+# Consumed by an INDEPENDENT copilot-api instance (e.g. :4142, XDG_DATA_HOME isolated),
+# NOT the live :4141. Only lists overrides vs the bundled config.yaml defaults; every other key
+# deep-merges from bundled (mergeBySchema, ZodObject field-by-field).
+#
+# ghc_api_base_url is HTTPS so the proxy routes the upstream through its production node:http2
+# client (transport/upstream-fetch.ts: https → http2Fetch) — which works under Bun. A plaintext
+# http:// mock forces the undici HTTP/1.1 path, which was EMPIRICALLY CONFIRMED (this task) to
+# abort the upstream fetch almost immediately under Bun instead of surviving the silence window
+# (see mock-upstream.ts header + REPORT.md §排障). Also passed via `--ghc-api-base-url` on the CLI
+# (CLI > config); the proxy trusts the mock's self-signed cert via NODE_EXTRA_CA_CERTS (see below).
+ghc_api_base_url: "https://localhost:8799"
+
+openai_responses:
+  # THE gate under test: enters the buffered path (`resolveResponsesBufferedAndHeartbeat` in
+  # src/routes/responses/buffered-config.ts), which FORCES a keepalive heartbeat during the
+  # pre-first-item window regardless of `stream_keepalive_ping_sec` (falls back to the shared
+  # `buffered_retry.heartbeat_sec`, default 15s, if the operator left the cadence knob at 0).
+  # Currently opt-in (default false) — Task 6 flips this default AFTER this M-2 oracle passes (R4).
+  buffered_retry: true
+  # MUST be false: upstream-WS (when the model supports `ws:/responses`, e.g. gpt-5.5) bypasses
+  # the HTTP buffered-heartbeat path entirely — force HTTP transport so buffered-config.ts's
+  # heartbeat is actually the mechanism under test, not WS's own (untested-here) keepalive.
+  upstream_ws: false
+
+# Client-proxy keepalive cadence (seconds) for streaming — shared knob also read by
+# `resolveResponsesBufferedAndHeartbeat` as the FORCED buffered-path heartbeat interval when > 0
+# (falls back to `buffered_retry.heartbeat_sec` only when this is 0). 20 matches the sibling
+# Anthropic-path harnesses' cadence and the spec's ~20s forced-heartbeat expectation.
+#
+#   armPing   (gate)    : leave this at 20 (default) → proxy emits `response.ping` every ~20s
+#                         during the silence window.
+#   armSilent (control) : set this to 0 AND set openai_responses.buffered_retry to a map that
+#                         zeroes heartbeat_sec too, so NO heartbeat is forced — see the two
+#                         override blocks below (uncomment the one matching your arm; do not
+#                         apply both at once).
+anthropic:
+  stream_keepalive_ping_sec: 20
+
+# ---- armPing (gate) — DEFAULT ABOVE ALREADY MATCHES THIS ARM, no further edits needed. ----
+#
+# ---- armSilent (control) — uncomment BOTH of the following overrides, run, then re-comment ----
+# anthropic:
+#   stream_keepalive_ping_sec: 0
+# openai_responses:
+#   buffered_retry:
+#     enabled: true
+#     heartbeat_sec: 0      # forces heartbeatSec to 0 too (no fallback) — see buffered-config.ts:25-26
+#   upstream_ws: false
+
+timeouts:
+  # MUST exceed SILENCE_SEC (default 330 in mock-upstream.ts / run-proxy-arm.sh) — otherwise the
+  # PROXY itself aborts the upstream fetch before the mock's silence window elapses, which would
+  # be a proxy-config false negative, not evidence against (or for) the keepalive mechanism.
+  response_header: 900
+  stream_idle: 900

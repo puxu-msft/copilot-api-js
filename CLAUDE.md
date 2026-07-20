@@ -1,94 +1,66 @@
-# CLAUDE.md
+# 项目级 agent 指令（与全局指令冲突时，以本文件为准）
 
-本文件只放**原则性、指导性**内容；项目描述、配置、架构等事实性内容见 @docs/DESIGN.md、@docs/coding-conventions.md 与各模块文档。原则用 ASCII slug 句柄标识（增删不错位），引用时用 slug 而非序号。
+`copilot-api-js` 把 GitHub Copilot（项目内简称 **GHC**）的模型能力，暴露为多种主流 AI API 兼容端点（OpenAI Chat Completions / Responses、Anthropic Messages、Google Gemini generateContent、Azure deployments），底层直连 Copilot 的 REST/WebSocket 上游；含 History Web UI 前端子项目（`ui-v4/`，经 `~backend/*` re-export 后端类型）。
 
-## 风格偏好
+本文件只写 user-level 规则之上的**项目增量**（项目定位、doc 归属、本项目特有纪律）；通用工作原则不重述，指向 user-level 规则（`~/.claude/rules/00-user/`）。
 
-- **对话语言** — 用中文回答并展示思考过程，中英夹杂可，**禁用日语**。中文句子里引号用 `“”` 或 `""`、冒号用 `：`、逗号用 `，`；代码、标识符、英文术语保持英文。
-- **prose-line-per-paragraph** — 散文（注释、`.md`/`.yaml` 文档、计划、commit body 等 prettier 不管辖的手写文本）一个逻辑段落写一行，**绝不**为任何固定列宽（80/100/120）把段落硬折成多行——软换行交给编辑器。保留有意义的换行：多个独立段落、枚举/列表项、分隔符各占其行。
-- **knowledge-routing** — CLAUDE.md 只放原则，事实性内容进 README/DESIGN.md/coding-conventions.md/模块文档。已完成且项目特定的知识→项目文档；未完成、可复用、通用的经验→memory；同一信息不在两处重复；无明显归处时先问，别擅自新建顶层文件。
-- **memory** — 记忆正文、description、索引钩子一律用**中文**（保留 slug 的 kebab-ASCII、code/`file:line`、wiki 链接、技术标识符，Why/How 等结构标签用英文）；记忆置于 `docs/memory/`（git 追踪，`~/.claude/.../memory` symlink 到此）。合并相近、清理陈旧/冗余记忆时 **deep-read 正文**比对，不只凭索引钩子判断。在 phase/会话/交接边界主动提炼可复用教训并维护既有记忆库（陈旧→修、近义→互链、冗余→删）。
+## 文本风格偏好
 
-## 开发原则
+- **多用中文、拒绝无意义硬折行、确保用词可解码。** → user-rule `20-text-formatting`。项目修正：中文句子里引号用 `“”` 或 `""` 皆可。
+- **记忆 / 文档语言约定。** 记忆文件正文 / frontmatter `description` / MEMORY.md 索引钩子一律中文；逐字保留 ASCII 的：文件名与 `name:`/slug、`file:line`、`[[slug]]` 内 slug、code/JSON/shell 与行内 code、技术标识符（tool_use、signature、printWidth、SSE 等）；结构标签 `**Why:**`/`**How to apply:**`/`**Related:**` 保留英文。
 
-- **architecture-health-first** — 判断该不该做、做到什么程度，唯一的轴是"问题是否真实存在"和"哪个方案最终质量最高"，而非风险/ROI/工期/改动量。架构健康、可维护性、可观测性 > 向后兼容、回归风险；真实风险（资源泄漏、静默数据丢失、竞态、可观测盲点）必须修，不归类为"等触发再说"。成本不是决策因素，最优修复存在时绝不选 workaround、绝不回退既有正确工作来规避副作用——找到耦合该副作用的根因去修它。不自设用户未要求的约束（"严格零改动""字节级等价"）再用它否决正确重构。暂缓项要完整文档化（根因/当前行为/理想架构/为何暂缓/若做需改什么）供用户日后决策。纯主观、不造成实际缺陷的风格偏好跳过。但"范围内彻底"不等于无中生有——守住 YAGNI，不为"将来也许会用到"的空想做投机性表面（speculative surface）。
-- **compat-fusion** — 默认增量演进，回归靠测试 + subagent review 兜底（改 config 字段名、函数签名、返回类型都可接受）。但本项目对旧版本无硬性兼容义务：当发现某个破坏性改动是长远正确的形状时，可强制迁移旧→新、允许短期报错/功能不可用，长远计划不留双轨包袱——绝不拿"迁移麻烦/向后兼容"把正确改进降级为"可选/保留遗留/等以后"。执行期为对照确认而临时双轨是合理的。
-- **empirical-verification** — 裁决依据是亲手实测，不盲信任何"声音权威"。可信度排序：亲手实测 > 文档推断 > 单方声称；executor 的"完成"、reviewer 的结论、文档与记忆的主张都可能错。flaky/时序测试连跑 10–25 次确认确定性；主张与观测冲突时写最小探针实测裁决（环境/工具能力主张永远用探针验证，文档可能过时或与当前版本不符）；依赖随机 + 真实时序的测试，fake timers + mock 随机源是正确的根因修复，不是症状掩盖。**否定性/通过性结果**（测试绿、grep 空、"无问题"、diff 干净）不自证，先用一个已知应命中的正样本证明检查触达了目标（空≠不存在、通过≠健全、子域 0≠全域 0）；**自洽不是判据**——wire/协议正确性须用独立 oracle（真上游/规范/官方 SDK）裁决，而非自己 encode↔decode 互逆（耦合双端会把同一误解放大成"全绿"，mock 上游太宽松会假绿）。判断任何"声音权威"（subagent/reviewer/文档/记忆/自洽）的详细裁决手法见 user-level skill `verifying-authoritative-claims`。
-- **richest-data-flow** — 数据以最丰富的形式流动，使用决策交给末端。生产者不做消费者的决策（handler 只发一次完整数据，消费者各取所需）；统一数据源、多端消费；History 记录请求/响应生命周期所有可观测原始数据（headers/payload/timing），后端存储必须完整，前端展示可选择性呈现。
-- **best-complete-solution** — 不走捷径、不用绕行方案，修根本原因而非表面症状，深入思考选最优实现。优选健壮可维护的方案；命名反映实际职责（累积 vs 处理、收集 vs 转换）；Lint 服务于可读性——无益于可读性的规则禁用它，而非扭曲代码迁就；编辑时保留已有的有意义注释（注释解释"为什么"，代码体现"怎么做"）；同函数/模块相似逻辑写法一致；同目录文件互相导入用相对路径 `./foo` 而非 `~/lib/...`。
-- **battle-tested-over-hand-rolled** — 模块/算法/机制（行+词 diff、压缩、解析等）有成熟、活跃维护的库时优先用库而非手搓，判据是清晰边界、可独立装载、广泛使用、行为可读一致；设计/实现前可先查询。用外部库别凭记忆猜版本号，除非有明确理由总是更新到最新稳定版。只自建库做不了的领域层、只丢渲染壳保留算法核。
-- **single-source-of-truth-types** — 类型定义只在产生/拥有方定义一次，消费端只 re-export（后端拥有的类型在后端定义、前端经 `~backend/*` re-export）。类型应覆盖已知的数据变体；内联类型多处引用时提取为命名导出；运行时数据可保持 `any` 同时额外导出具体联合类型供消费端按需使用；有示范价值的"死代码"（准确描述已知变体或为未来消费者提供模板）可保留，纯无用/过时/误导的死代码删除。
-- **dont-ignore-existing-errors** — 不把已有的测试失败、类型错误、导入缺失当"与我无关"，所有遇到的错误都必须修复——放任会掩盖新引入的问题、使回归测试失去意义。修复前先读实际代码和类型定义、确认根因后再修，不猜测原因。
+## 文档路由
 
-## 开发纪律
+`docs/` 是本项目架构与决策的**单一事实源**，新会话 / 接手先读 [docs/DESIGN.md](docs/DESIGN.md)（尤其「活的架构现状」表——**当前活/wip/bypass/退役路径以此为准**），再下到具体 spec / ADR。**同一事实只写一处** → user-rule `70-save-knowledge`。
 
-- **scope-ambiguity-then-ask** — 范围或意图有歧义（"去掉 X"是否含 Y、配置策略 replace vs per-key、命名、删除范围）先用 `AskUserQuestion` 确认，不做超出明确范围的改动，宁可多问一次。但**方向明确就别停下来问**：执行顺序不是岔路，代码改完→文档同步→提交都属直接做，只有矛盾/非此即彼/上下文不足、或破坏性不可逆操作才停。本条管"范围歧义"（范围外先问）；architecture-health-first 管"范围之内要彻底"（已确认范围内修掉所有真实问题，别拿"怕越界"当漏修借口）。
-- **no-auto-server-no-kill** — 不运行 `bun run dev`/`start` 或任何会启动服务器的命令，需验证服务器行为时让用户启动；可跑 `bun run typecheck`/`lint:all`/`bun test` 等非服务器命令。不用 `kill`/`pkill`/`killall` 终止本项目实例，需重启让用户手动操作。
-- **no-destructive-workspace-loss** — 唯一判据是**可恢复性**:任何可能销毁工作的操作前,只问"若这步错了还能否恢复"。**唯一硬约束**:会丢失 **git 救不回的工作**的操作绝不做——即**未提交/未暂存的修改**与**未追踪的文件**(从未进 git),一旦覆盖/丢弃不可逆、无备份。**不要把纪律记成一张命令黑名单**:真正危险的破坏性操作由 harness 权限系统在执行点把关、向用户征求批准;我守的是上一层判断——即便被权限允许,会丢失不可恢复工作的就不做,反之后果可恢复(已提交的干净状态、git 历史在)被允许时就正常做。所以重点始终在"可恢复吗",而非"是不是删除/某条命令"。落地:**可恢复→可做**——删一个干净(无未暂存改动)的已追踪文件 git 历史可完整恢复,用户**明确要求**时可做(先确认无未暂存改动);**不可恢复→绝不做**——覆盖/丢弃带未暂存改动的文件、销毁未追踪文件;撤销我自己刚做的编辑用**重新编辑**而非回退(回退分不清我的改动与用户的)。**绝不自作主张删**(以"清理死代码/无消费者"为名擅自删仍禁止——该先问、或改为指向生产/转换而非删)。详见 [[feedback_never_git_checkout_user_files]]。
-- **fine-grained-staging-per-phase-commit** — 完成一个可独立成立的工作阶段即**主动提交**（一阶段一 commit，conventional commits `feat/fix/refactor/test/chore/docs/perf: ...`，提交信息不加 Claude 署名），保持历史可读、每个 commit 自洽。严格细粒度暂存：用 `git add -p` 或显式 pathspec（`git add -- <精确路径>`）按文件+行范围精确暂存，**绝不** `git add -A`/`git add .`/`git commit -am`；提交前用 `git diff --cached --stat`（必要时 `git diff --cached`）复核暂存内容仅含本次改动，不裹入工作区里既有的无关改动。
-- **concurrent-sessions-line-coexistence** — 本仓库常有并发 agent 会话同时改动同一仓库，**核心立场：行级共存，绝不整文件退让**——同一文件只要双方改的行不重叠，两份改动都该落地，绝不以"别人也碰了这个文件/怕冲突"把本属自己的改动推给别的会话（退让本身是错误）。**并发只决定用哪种行级隔离技法落地我的改动，绝不决定改不改**——把"别会话正在重写此文件"当不改的借口，是退让伪装成尊重并发。两种隔离模式**并列可行**，区别只在谁做行级仲裁：① **isolated worktree + 独立分支**（仓库已有 `.worktrees/`）——各会话 HEAD/index 独立，按 `fine-grained-staging-per-phase-commit` 提交、未 merge/push 前 reset/rebase/amend 安全，集成靠 `git merge` 三方合并**自动合非冲突行**，只有真行重叠才人工协调；② **shared worktree**（多会话共享同一 checkout/index）——**主要高级技巧在此**：`git apply --cached` 按 hunk 只暂存自己那几行（手搓行级隔离，达成与 merge 同样的"非冲突行各自落地"）、`git commit -- <pathspec>` 无视 index 里别人塞入的文件，由此在共享 index 上安全提交自己那份。shared 模式下因 HEAD 在脚下移动，**绝不** reset/rebase/amend（会 clobber 他人在飞工作）。两模式都贯彻"绝不退让"。机制细节、踩坑与对账手法见 user-level skill `git-commit-discipline:avoiding-shared-worktree-conflicts`（isolated/shared 两模式、`git apply --cached` 按 hunk 过滤、pathspec commit、lint-staged 回滚两失败模式、分支集成的 merge-commit 陷阱与 `git branch -f` force-move 无损合并、按所有权 closeout 对账）。
-- **big-feature-pipeline** — 大特性走 **设计→计划→执行**：先定设计稿（spec，放 `docs/spec/` 或 `docs/v4/`），再按 phase 拆实现计划（改动锚点/验收标准/验证命令/提交指引），执行者照计划全面实现、会话收尾做一次 whole-domain audit。定范围以"有意义且完整"为目标而非"最小能交付"，可拆基础/高级多执行阶段、但每层都朝"真正能用"推进（"最小能交付"是执行阶段的合理判断，不是范围目标）。≥1000 行重构先写 RFC + 3+ 轮对抗 subagent review 再实现，并在 RFC 里编码 commit invariants（每个中间 commit 都不让系统半坏）。小改动直接主线：调研→subagent audit→实现→subagent audit→提交。
-- **subagent-explicit-rubric** — 审查/复审**永远派 subagent**、多视角对抗，不在主会话直接做；实现在主线做（紧控制、连续上下文），subagent 作密集的独立核验层。subagent（architect/reviewer/planner/*-resolver）默认持 ROI/YAGNI 价值观、与本项目冲突，派活时必须在 prompt 里**显式写明裁判轴**（长远正确 + 完整），引导按本项目原则审。吸收其报告的客观事实，对其判断结论按本项目原则谨慎取舍；reviewer 的"无消费者""无影响""可安全删除""已通过"等绝对断言要亲自对照代码/实测复核，行动前读它引用的每个 `file:line`。审查目标是**发现问题**（尤其结构/设计层面：协议契约、边界条件、错误处理、性能），而非给修复方案。subagent 给的低优先级建议不忽视：与正确性相关或影响后续步骤的当下处理，否则记入 plan 待核心改动完成后由用户定夺。判断任何声音权威主张（拆事实/判断、按场景独立裁决、误判形态、转发标注）的详细手法见 user-level skill `verifying-authoritative-claims`。
-- **completion-includes-doc-sync** — 任务完成 == 收尾完成：代码改完后依次同步 plan、项目文档（DESIGN/README/coding-conventions/模块文档）和 memory（删过时 pending 记忆、把已落地机制回填进活文档）。"代码跑通但文档没同步"= 未完成。
-- **verify-only-on-executable-changes** — 只在改了影响编译/运行的文件（`.ts`、`tsconfig.json`、`package.json`、`.yaml`）后才跑 `typecheck`/`test` 等验证；改 `.md`/`.txt`/普通 `.json` 不必验证。跑测试用 `bun run test:backend` 等（**不是 `npm run`**——本机 Volta 无默认 Node）。
+面向不同读者的三份始终生效文档：
+- [README.md](README.md) —— 面向用户：功能、安装、使用、示例。
+- CLAUDE.md（本文件）—— 面向 AI Agent 的 **always-on** 指令（中文）：项目定位、原则、纪律、风格。
+- [docs/memory/MEMORY.md](docs/memory/MEMORY.md) —— 面向 AI Agent 的战例**引用层**：话题 → 归属地图（每条教训实质已下沉 skill / docs / ADR，记忆只留 stub 或精炼实例）。
 
-## 代码风格
+各类知识的固定归属（都在 `docs/`）：
+- 架构总览、模块划分、分层、**类型架构（SSOT-types）** → [docs/DESIGN.md](docs/DESIGN.md)。
+- **对客户端暴露的 HTTP 端点（端点 SSOT）** → [docs/API.md](docs/API.md)（vendor 兼容 / 管理 API / 基础设施 / History REST / WebSocket，含字段级备注）。DESIGN.md「路由」节只留指针、深层路由架构在「活的架构现状」；活的全表面真相 = 运行实例 `GET /openapi.json`。
+- 关键设计决策 + 理由 → [docs/decisions/](docs/decisions/) ADR（一决策一文件）。
+- 模块契约 / 兼容行为 / 管线 → `docs/spec/*.md` 与 `docs/<topic>.md`（`anthropic-compat` / `streaming` / `tool-use` / `request-pipeline` 等）。
+- 设计 / 实现计划 → `docs/plan/`，**放仓库内、不放 `~/.claude/plans/`**（便于多会话版本控制、共享、审查）。
+- 暂缓项 / 结构性待办 → [docs/todo/deferred-backlog.md](docs/todo/deferred-backlog.md)（含根因 / 当前行为 / 理想架构 / 为何暂缓 / 若做需改什么）。
+- 操作性调试知识 → 项目 skill（`.claude/skills/`）；废弃文档 / 完成叙事 → `docs/archive/`。
 
-- 使用 `@echristian/eslint-config` + Prettier。运行 `eslint --fix` 自动格式化（不要直接使用 `prettier --write`）。
-- 不使用分号。三元运算符放在行首。
-- Prettier `printWidth` 设为 160。**不要为了迁就 prettier 换行而缩短或扭曲代码措辞**——长字符串/错误消息/注释超宽时，调整 `printWidth` 或对该处用 `// prettier-ignore`，而非改写内容（呼应 best-complete-solution "Lint 服务于可读性"）。
-- 严格 TypeScript（`strict: true`）。避免 `any`。
-- ESNext 模块，不用 CommonJS。
-- **依赖选型 bun-first**：Bun 是一等公民运行时（开发/运行/测试命令均走 bun），Node 仅是兼容目标。所选外部库本身必须能在 Bun 下原生工作——拒绝 node-gyp 原生绑定（如 `better-sqlite3`，Bun 直接拒载）；node-only 库（`undici`、`@hono/node-*`）只能作不进 Bun 热路径的兼容依赖。引入新依赖前 `find node_modules -name binding.gyp` 应为空。详见 @docs/DESIGN.md 的"运行时兼容（Bun-first / Node-compatible）"。
-- 路径别名：后端 `~/*` 映射到 `src/*`，前端 `@/*` 映射到 `src/*`，前端引用后端 `~backend/*` 映射到 `../../src/*`。
-- 测试：使用 Bun 内置测试运行器。后端测试在 `tests/`，**按功能域分目录**（镜像 `src/lib/`：`anthropic/`、`openai/`、`responses/`、`models/`、`history/`、`config/`、`pipeline/`、`shutdown/`、`infra/` 等）+ **隔离后缀**命名：`*.unit.test.ts`（纯函数）、`*.it.test.ts`（起 state/history runtime）、`*.http.test.ts`（起 Hono app/server）。`e2e/`（需 token）、`e2e-ui/`（Playwright）单列。前端测试在 `ui/tests/`。新增测试：归属看被测 `~/lib/<域>/` 路径，后缀看是否起 runtime/app。详见 @docs/DESIGN.md 的"测试组织"。
-- 测试隔离（bun 单进程跑全套件，全局单例会跨文件泄漏）：用 DI / fetch-mock，**不用 `mock.module`**（它进程级无 teardown）；带 fs I/O 的测试用注入的临时目录，**绝不写真实 `$HOME`/`~/.claude`/`~/.local/share/copilot-api`**（曾酿事故）。**默认隔离**：需 runtime 的 `.it`/`.http` 测试调 `tests/helpers/isolated-fixture.ts` 的 `useIsolatedRuntime()`（一处给出 history `:memory:` + per-test state 快照还原 + afterEach reset 全部 module-global 单例 `RESETTERS` + 未 mock 上游即 reject 的 network guard）；纯 unit 仍用轻量 `autoRestoreState()`/`autoRestoreFetch()`。新增 module-global 单例须提供 `reset*ForTests` 并登记进 `RESETTERS`（L1 守卫 `tests/infra/resetters-complete.unit.test.ts` 防漂移）。**地板防线**：`bunfig.toml` 的 `[test].preload`（`tests/helpers/sandbox-paths.ts`）把 `XDG_DATA_HOME` 与 `CODEX_HOME` 重定向到临时目录、兜住所有 APP_DIR 派生持久化及 `~/.codex`(只作用于 `bun test`、不碰生产)；双守卫 `sandbox-paths.unit`（静态 PATHS）+ `real-state-guard.it`（动态 writer 落点）。详见 @docs/DESIGN.md "测试组织" 与 @docs/spec/test-env-isolation.md（§11 落地态）。
-- 前端依赖与脚本由 `ui/package.json` 自有（bun workspace 成员，根 `package.json` 声明 `workspaces:["ui"]`）：`npm run build:ui`、`npm run dev:ui`、`npm run typecheck:ui`、`npm run test:ui` 仍是根入口（经 `bun run --filter copilot-api-ui …` 委派 ui workspace）。新增 FE 依赖装到 `ui/`（`bun add --filter copilot-api-ui <pkg>` 或在 `ui/` 下 `bun add`）；仓库级 dev 工具（typescript/eslint 及 FE eslint 插件/tsdown/playwright/lint-staged）仍在根——lint 是全树单一关注点。
-- 错误处理：使用显式错误类（参见 `src/lib/error.ts`）。避免静默失败。
+## 本项目的工作哲学（什么是好的？）
 
-### 注释规范
+- **长远、泛用优先于短期、将就。** → user-rule `10-core-principles` `long-term-wins` + `60-feat-dev-workflow` `against-yagni-on-feature`。项目增量：架构健康 / 可维护性 / 可观测性 **> 向后兼容、回归风险**；结构性重写**可接受的不做理由仅两种**——债项经查为虚，或重写实证不改善清晰/可扩展/可观测；用户没要求"零改动/字节等价"时**不自设约束**否决正确重构；暂缓项必须完整文档化进 `docs/todo/`。
+- **无向后兼容负担。** 本项目对旧版本无硬性兼容义务：破坏性改动是长远正确的形状时可**强制迁移旧→新**、允许短期报错 / 功能不可用，长远计划**不留双轨包袱**（执行期为对照确认临时双轨是合理的）——绝不拿"迁移麻烦"把正确改进降级为"可选/等以后"。
+- **有意义且完整 > 最小能交付。** 分基础/高级等多个执行阶段，但每层都朝真正能用推进（`think-proactively`）；"最小能交付"只在执行阶段是合理判断，不用于砍范围。
+- **best-complete-solution。** 修根本原因非表面症状（→ user-rule `root-cause-over-patch`）；命名反映实际职责（累积 vs 处理、收集 vs 转换）；Lint 服务于可读性——无益的规则禁用它而非扭曲代码；保留已有的有意义注释；同目录文件互相导入用相对路径 `./foo` 而非 `~/lib/...`。约定见 [docs/coding-conventions.md](docs/coding-conventions.md)。
+- **internal-tool-security-posture。** 本项目是开发用途、内部个人使用的工具，默认所有信息**全量暴露**（运维/诊断价值 > 假想泄露风险），绝不为"信息泄露/安全"顾虑阻塞任务或做多余处理；但**不豁免真实安全缺陷**（凭据硬编码、注入、密钥写日志、真实数据丢失）。→ ADR [docs/decisions/2026-07-05-internal-tool-security-posture.md](docs/decisions/2026-07-05-internal-tool-security-posture.md)。
+- **richest-data-flow。** 数据以最丰富形式流动、决策交给末端；后端存储必须完整（永不为 DRY/YAGNI/无消费者裁剪），前端可选择性呈现；注入真实流的合成帧必打可辨识标记。→ ADR [docs/decisions/2026-07-05-richest-data-flow.md](docs/decisions/2026-07-05-richest-data-flow.md)。
+- **single-source-of-truth-types。** 类型只在产生/拥有方定义一次、消费端 re-export（后端类型在后端定义、前端经 `~backend/*` re-export）。→ [docs/DESIGN.md](docs/DESIGN.md)「类型架构」节。
+- **empirical-verification。** 裁决依据是亲手实测（可信度：实测 > 文档推断 > 单方声称；executor/reviewer/文档/记忆都可能错）：flaky/时序测试连跑 10–25 次确认确定性、主张与观测冲突时写最小探针（4141 History API、`ss` 看内核 keepalive）、fake timers + mock 随机源是根因修复非症状掩盖；否定性/通过性/自洽/doc-vs-code 结论**不自证**（先用正样本证检查触达目标、wire 正确性用独立 oracle、文档与代码不一致先确证方向）。→ skill `empirical-verification` / `verifying-authoritative-claims`、实例 [pass-null](docs/memory/feedback-pass-null-clean-not-self-validating.md)。
 
-`/** */`（JSDoc）和 `//` 有不同用途，不可混用：
+## 本项目的工程纪律
 
-**使用 `/** */` 的场景（提供 IDE 悬停提示和文档生成）：**
-- 模块级描述（文件顶部说明模块用途）
-- 所有 `export` 声明前（function、interface、type、const、class、enum）
-- 接口/类型的属性文档（描述每个字段的含义）
-- 重要的非导出函数/类型/接口声明前
+- **protect-user-main-server。** **绝不**杀死用户已启动在 **4141 端口**的主服务器实例——不对它用 `kill`/`pkill`/`killall`，也不做任何会终止它的操作（它承载用户的实时使用、History、诊断，误杀不可接受）。**允许**在**其他端口**用默认或自定义配置启动新的测试服务器来验证行为（如 `bun run start --port <非4141>` 或配置 `--port`），用后自行清理**自己启动的**那个测试实例（按 PID 精确 kill，绝不 `pkill`/`killall` 泛杀以免误伤 4141 主服务器）。非服务器命令（`bun run typecheck`/`lint:all`/`bun test`）照常。→ 实测服务器行为见 skill `empirical-verification`（4141 History API 探针）。
+- **细粒度、每阶段提交。** 一律显式 pathspec（`git add -- <精确路径>`、`git commit -F <msgfile> -- <精确路径>`），每语义单元一提交、conventional commits、不加模型署名 → user-rule `50-git-workflow`。本项目 2026-06-29 起**无 pre-commit 门禁**（lint-staged/simple-git-hooks 已移除），lint 靠手动 + subagent review → [docs/memory/tooling-lint-staged-revert-blocks-edit.md](docs/memory/tooling-lint-staged-revert-blocks-edit.md)。
+- **测试分档：默认 `test`=快速档、非全后端验证。** `bun run test`（=`test:fast`）只跑 unit+http（~快速反馈）；**pre-push/交付前用 `bun run test:backend`**（unit+it+http 全后端）；`test:it`/`test:pty`/`test:e2e` 按需、`test:ci`=backend+pty+e2e。后缀 `{unit,it,http,pty,e2e}`=真相域**绝不按速度命名**、tier=脚本按后缀组合；改 `.unit→.it` 唯一充分条件是实测确认真集成。L1 守卫 `test-discovery-matrix` 防孤儿。约定见 [docs/coding-conventions.md](docs/coding-conventions.md)「测试组织」、设计见 [docs/spec/2026-07-14-test-tiering-by-speed.md](docs/spec/2026-07-14-test-tiering-by-speed.md)。
+- **concurrent-sessions 行级共存。** 本仓库常有并发 agent 会话同时改动，**核心立场：行级共存，绝不整文件退让**（功能不矛盾则两份改动都该落地）；优先 **isolated worktree + 独立分支**（放 `./.worktrees/`），共享树则同文件不重叠行 + 显式 pathspec commit（`git commit -- <路径>` 取工作区、免疫 peer 并发 `git add` 的 index race）。→ skill `git-preference:avoiding-shared-worktree-conflicts`、[docs/memory/git-commit-pathspec-commits-worktree-not-index.md](docs/memory/git-commit-pathspec-commits-worktree-not-index.md)。
+- **no-destructive-workspace-loss。** 唯一判据是**可恢复性**：会丢失 git 救不回的工作（未提交/未暂存改动、未追踪文件）的操作绝不做，后果可恢复（已提交、git 历史在）的被权限允许时正常做；撤销自己刚做的编辑用**重新编辑**而非回退；**绝不以"清理死代码/无消费者"为名擅自删**。→ 同上 skill。
+- **scope-ambiguity-then-ask。** 范围/意图歧义**先用代码+invariant 自解**（答案已被代码钉死就自己定并写推理、别仪式化提问）；确属用户偏好/风险取舍的真分叉才 `AskUserQuestion`，且摆 3-4 个带量化影响的选项而非 yes/no。**方向明确就别停**（执行顺序不是岔路；代码改完→文档同步→提交都直接做，只有矛盾/非此即彼/上下文不足/破坏性不可逆才停）→ user-rule `60` `dont-stop-if-clear`。
+- **no-premature-stop。** 不因 turn 长度/token 额度**或编译中间态**（删了函数但调用方还引用）停顿、设检查点或延后，推进到下一个 typecheck 绿或完成 checkpoint 再停；独立的跨文件 Edit/工具一律**消息内并行**，绝不串行。
+- **dont-ignore-existing-errors。** 不把已有的测试失败、类型错误、导入缺失当"与我无关"，所有遇到的错误都必须修（放任会掩盖新问题、使回归失去意义）；修前先读实际代码和类型定义确认根因，不猜测。
+- **subagent-explicit-rubric。** 审查/复审**永远派 subagent**、多视角对抗，不在主会话直接做（实现在主线、subagent 作独立核验层）；subagent 默认持 ROI/YAGNI 价值观与本项目冲突，派活必须 prompt 里**显式写裁判轴**（长远正确 + 完整），吸收其客观事实、对其判断谨慎取舍；reviewer 的"无消费者/可安全删除/已通过"等绝对断言**亲自对照代码/实测复核**，行动前读它引用的每个 `file:line`。→ user-rule `40-use-of-agents` + skill `verifying-authoritative-claims`。
+- **session-closeout。** 会话/阶段收尾（交付/报告/ExitPlanMode/提交前）是"完成"的一部分，按序做完无需提醒——① subagent audit ② doc-sync + 跨文档 grep 验证 ③ 归档 plan（迁 `docs/plan/` + 头部实施状态注解）④ 提炼教训 + 维护记忆库 ⑤ 细粒度阶段提交。→ skill `session-closeout`。
 
-```typescript
-/** Convert Anthropic message content to text for token counting */
-export function contentToText(content: MessageParam["content"]): string { ... }
+### 大特性的工作流角色
 
-export interface TuiLogEntry {
-  /** Billing multiplier for the model (e.g. 3 for opus, 0.33 for haiku) */
-  multiplier?: number
-  /** Cache read input tokens (prompt cache hits) */
-  cacheReadInputTokens?: number
-}
-```
+- 小改动（单语义单元）直接在主线调研 → 计划 → subagent review → 实现 → subagent review → 提交；大特性走**设计→计划→执行**三步流水线 → user-rule `60-feat-dev-workflow`（spec-driven）。
+- 本项目 doc 归属：spec → `docs/spec/`、plan → `docs/plan/`、ADR → `docs/decisions/`、执行者用 worktree → `.worktrees/`。大型（≥1000 行）结构性重构走 RFC-first + commit invariants → skill `large-refactor`。
 
-**使用 `//` 的场景（实现细节、不产生文档）：**
-- 分隔线 (`// ============================================================================`)
-- barrel re-export 文件中的分组标签 (`// Payload`, `// Streaming translation`)
-- 函数体内的实现逻辑说明
-- TODO / FIXME / HACK 标记
-- 行内短注释
+## 本项目的经验教训
 
-```typescript
-// ============================================================================
-// Event processing
-// ============================================================================
+战例库索引在 [docs/memory/MEMORY.md](docs/memory/MEMORY.md)（话题 → 归属地图，深层教训在各 skill/ADR 正文）。几条承重、常驻高价值：
 
-// Payload
-export { logPayloadSizeInfo } from "./payload"
-
-function process() {
-  // Check shutdown abort signal — break out of stream gracefully
-  if (getShutdownSignal()?.aborted) break
-}
-```
-
-## 项目参考
-
-架构设计详见 @docs/DESIGN.md
+- **通过/空/干净/自洽/doc-vs-code 结论不自证**——先用正样本证检查触达目标、wire 正确性用独立 oracle。→ [pass-null-clean-not-self-validating](docs/memory/feedback-pass-null-clean-not-self-validating.md)。
+- **引用缺失符号的编译错误有两种相反修复**——补符号（定义滞后）vs 删引用（aspirational 违契约），按消费者契约 + 独立 oracle 裁决，别反射式"让它编译"。→ [broken-reference-supply-vs-delete](docs/memory/methodology-broken-reference-supply-vs-delete.md)。
+- **归一化键/id bug 几乎总在多比较点复发**——grep 全仓逐处修 + 抽单一共享 primitive；正向版用类型系统前置逼出全站点。→ [fix-all-comparison-sites](docs/memory/feedback-fix-all-comparison-sites.md)、[route-variant-to-existing-outcome](docs/memory/methodology-route-variant-to-existing-outcome-and-exhaustive-record-audit.md)。
+- **架构图价值轴 = Agent 上下文经济 + 可信度**（非可推导性），逐文件叶子树是负债 → 目录级关系图 + 现状小节 + L1 存在性守卫测试。→ [architecture-map-optimize-agent-context-economy](docs/memory/feedback-architecture-map-optimize-agent-context-economy.md)。

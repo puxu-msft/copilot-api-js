@@ -50,6 +50,30 @@ const EXEMPT: Record<string, string> = {
   setLearnedLimitsPathForTests: "path setter — per-test opt-in",
   _setRequestTelemetryFilePathForTests: "path setter — per-test opt-in",
   setBundledConfigForTests: "config injector — reset via resetBundledConfigCacheForTests",
+  // telemetry.db assertion/inspection hooks (read-only getters) — no module-global state to reset.
+  _getTelemetryDbForTests: "read-only assertion hook — no state to reset",
+  _getOutboxSizeForTests: "read-only assertion hook — no state to reset",
+  _getEffectiveSketchGammaForTests: "read-only assertion hook — no state to reset",
+  _getCumulativeCapKeysForTests: "read-only assertion hook — no state to reset",
+  _projectDimBucketsForTests: "read-only projection hook — no state to reset",
+  _isRollupTimerArmedForTests: "read-only assertion hook — no state to reset",
+  _isTelemetryShutdownSealedForTests: "read-only assertion hook — no state to reset",
+  _runRollupTickForTests: "action hook (drives one rollup tick) — no state to reset",
+  resetReaperDiagnosticsForTests: "diagnostic snapshot reset — exercised by its owning tests",
+  // Read-only assertion hook (is the V3 maintenance timer currently armed?) —
+  // no module-global state of its own to reset; the timer itself is
+  // start/stopped by production code paths (initHistory/shutdownHistory), and
+  // tests that arm it directly (db-health.it.test.ts) tear it down themselves
+  // via stopV3Maintenance() in their own afterEach.
+  isV3MaintenanceRunningForTests: "read-only assertion hook — no state to reset",
+  // telemetry injectors: per-test opt-in; their effect is undone by _resetRequestTelemetryForTests
+  // (registered), which closes the injected db handle + restores OUTBOX_SOFT_CAP.
+  _setTelemetryDbForTests: "db injector — reset via _resetRequestTelemetryForTests",
+  _setOutboxSoftCapForTests: "soft-cap injector — reset via _resetRequestTelemetryForTests",
+  // compat.ts's own warn-once tracking is drained by the ALREADY-registered
+  // _resetConfigValidationWarnTrackingForTests (validation.ts), which calls this
+  // internally — registering both would double-reset the same Set.
+  _resetDeprecatedKeyWarnTrackingForTests: "covered by _resetConfigValidationWarnTrackingForTests, which calls it internally",
 }
 
 function enumerateForTestExports(dir: string): Set<string> {
@@ -86,10 +110,12 @@ describe("RESETTERS table is complete (no module-global reset drifts unregistere
   })
 
   test("no stale entries: every RESETTER name and every EXEMPT key still exists in src", () => {
+    // Names in the table that are not `*ForTest(s|ing)`-named (production resets,
+    // not test-only injectors) — the enumeration regex never finds these, so skip
+    // the existence check for them.
+    const NOT_FOR_TESTS_NAMED = new Set(["resetHistoryPersistErrorStats", "resetUpstreamHook"])
     for (const name of RESETTER_NAMES) {
-      // `resetHistoryPersistErrorStats` is in the table but not `*ForTests`-named,
-      // so it won't appear in `enumerated`; skip the existence check for it.
-      if (name === "resetHistoryPersistErrorStats") continue
+      if (NOT_FOR_TESTS_NAMED.has(name)) continue
       expect(enumerated.has(name)).toBe(true)
     }
     for (const name of Object.keys(EXEMPT)) {

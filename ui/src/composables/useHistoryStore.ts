@@ -45,7 +45,6 @@ export const useHistoryStore = defineStore("history", () => {
     selectEntry: data.selectEntry,
     selectAdjacentEntry: data.selectAdjacentEntry,
     clearSelection: data.clearSelection,
-    clearAll: data.clearAll,
     refresh: data.refresh,
     loadNext: data.loadNext,
     loadPrev: data.loadPrev,

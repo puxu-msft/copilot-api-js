@@ -1,5 +1,7 @@
 # pre-response abort RFC — 后续待跟进 Kick-off Prompts
 
+> **类型**：pre-response abort RFC 的多-phase kick-off prompt 集（P1–P4）—— 非独立 plan。RFC 实施状态：**已完成**（P1–P4 全落地，见 [spec/pre-response-abort-handling.md](../../spec/pre-response-abort-handling.md) 与父 plan [pre-response-delayed-commit-keepalive-rename.md](../pre-response-delayed-commit-keepalive-rename.md)）。
+
 每个文件是一个**可直接粘给新会话独立实现者的完整 kick-off prompt**（仿 [response-pipeline/prompts](../response-pipeline/prompts/) 结构）。设计稿见 [../pre-response-abort-handling.md](../pre-response-abort-handling.md)，权威进度看其 **§5 commit invariants 表**（哪些 ✅ 已落地）。
 
 ## 已落地（本系列之前，勿重做）

@@ -33,9 +33,16 @@ describe("bundled config.yaml", () => {
 
   test("bundled defaults declare alias model overrides (opus/sonnet/haiku)", async () => {
     const config = await loadBundledDefaultConfig()
-    const overrides = config.model_overrides ?? {}
+    const overrides = config.model_mappings ?? {}
     expect(overrides.opus).toBeDefined()
     expect(overrides.sonnet).toBeDefined()
     expect(overrides.haiku).toBeDefined()
+  })
+
+  test("bundled defaults declare gpt-5.5 stream-idle override (600s)", async () => {
+    // §4.2: the built-in per-model idle override lives in bundled config.yaml
+    // (per-key merged with the user table), NOT in CONFIG_MANAGED_DEFAULTS.
+    const config = await loadBundledDefaultConfig()
+    expect(config.timeouts?.stream_idle_overrides?.["gpt-5.5"]).toBe(600)
   })
 })

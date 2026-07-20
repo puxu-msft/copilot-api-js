@@ -1,9 +1,12 @@
 import consola from "consola"
 
-import type { SanitizeResult } from "~/lib/request/pipeline"
+import type { SanitizationInfo } from "~/lib/history/types"
+import type { SanitizeResult } from "~/lib/request/retry-types"
 import type { MessagesPayload } from "~/types/api/anthropic"
 
 import { state } from "~/lib/state"
+
+import type { DestackStats } from "./destack-adjacent-thinking"
 
 import {
   //
@@ -20,9 +23,16 @@ export interface SanitizationStats {
   /** Corrupt (unsigned) thinking blocks dropped by the thinking_block_sanitize pass */
   emptyThinkingBlocksRemoved: number
   systemReminderRemovals: number
-  /** Inline `role:"system"` messages converted/dropped by system_messages_sanitize (NOT a block-removal count) */
+  /** Inline `role:"system"` messages converted/dropped by system_default_mode (NOT a block-removal count) */
   inlineSystemConverted: number
   totalBlocksRemoved: number
+  /**
+   * Terminal de-stack pass counters (adjacent-thinking separation). PURE
+   * INSERT/reorder — deliberately kept OUT of the subtractive `totalBlocksRemoved`
+   * residual model (which assumes blocks only ever decrease). Absent when de-stack
+   * was a no-op / disabled (`passthrough`).
+   */
+  destack?: DestackStats
 }
 
 export function finalizeAnthropicSanitization(
@@ -60,7 +70,7 @@ export function finalizeAnthropicSanitization(
   }
 
   if (inlineSystemConverted > 0) {
-    consola.info(`[Sanitizer:Anthropic] Handled ${inlineSystemConverted} inline system message(s) [${state.systemMessagesSanitize}]`)
+    consola.info(`[Sanitizer:Anthropic] Handled ${inlineSystemConverted} inline system message(s) [${state.systemDefaultMode}]`)
   }
 
   return {
@@ -79,13 +89,27 @@ export function finalizeAnthropicSanitization(
 }
 
 /**
+ * Whether the terminal de-stack pass actually acted. De-stack is PURE INSERTION
+ * (0 removals), so it is invisible to the subtractive block-removal counters — this
+ * is the shared primitive every "did sanitization change anything worth recording?"
+ * gate must OR in, so de-stack telemetry is never silently dropped across the
+ * multiple gate sites (fix-all-comparison-sites).
+ */
+export function destackActed(stats: SanitizationStats): boolean {
+  const d = stats.destack
+  return d !== undefined && (d.destackedMessages > 0 || d.insertedMarkers > 0)
+}
+
+/**
  * Convert {@link SanitizationStats} to the history-facing `SanitizationInfo` shape
  * (drops `inlineSystemConverted`, which is a role-conversion count, not a block
  * removal). Shared by the legacy handler's `runInitialSanitizationAndRecord` and
- * the v4 Anthropic codec so both record the identical sanitization envelope.
+ * the v4 Anthropic codec so both record the identical sanitization envelope. The
+ * `destack` counters are surfaced only when de-stack acted (see {@link destackActed}),
+ * keeping the envelope byte-identical for the common no-op case.
  */
-export function toSanitizationInfo(stats: SanitizationStats) {
-  return {
+export function toSanitizationInfo(stats: SanitizationStats): SanitizationInfo {
+  const info: SanitizationInfo = {
     totalBlocksRemoved: stats.totalBlocksRemoved,
     orphanedToolUseCount: stats.orphanedToolUseCount,
     orphanedToolResultCount: stats.orphanedToolResultCount,
@@ -94,4 +118,6 @@ export function toSanitizationInfo(stats: SanitizationStats) {
     emptyThinkingBlocksRemoved: stats.emptyThinkingBlocksRemoved,
     systemReminderRemovals: stats.systemReminderRemovals,
   }
+  if (destackActed(stats)) info.destack = stats.destack
+  return info
 }

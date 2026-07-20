@@ -22,17 +22,49 @@
  *   not auto-decompress; SSE is uncompressed anyway).
  */
 
+import consola from "consola"
 import http2 from "node:http2"
 import tls from "node:tls"
 
-import { getUpstreamKeepAliveDelayMs } from "~/lib/proxy"
+import {
+  //
+  getProxyUrlForOrigin,
+  getUpstreamH2PingIntervalMs,
+  getUpstreamKeepAliveDelayMs,
+} from "~/lib/proxy"
+import {
+  //
+  onUpstreamTransportChange,
+  state,
+} from "~/lib/state"
 
 import type { UpstreamFetchInit } from "./upstream-fetch"
 
-/** TCP connect + TLS handshake deadline (mirrors undici's default connectTimeout). */
-const CONNECT_TIMEOUT_MS = 10_000
-/** Fallback keepalive delay when `upstreamKeepaliveDelay` is 0/unset. */
-const DEFAULT_KEEPALIVE_MS = 15_000
+import {
+  //
+  withErrorSink,
+  withRejectionObserver,
+} from "./crash-safety"
+import { connectProxiedSocket } from "./proxy-connect"
+
+/**
+ * Test-only override for the connect/handshake deadline. `undefined` (the
+ * default) means "read from `state.sessionConnectTimeout` on every call" — see
+ * {@link getSessionConnectTimeoutMs}. Set via {@link setConnectTimeoutForTests}.
+ */
+let connectTimeoutOverrideMs: number | undefined
+
+/**
+ * Effective TCP-connect + TLS-handshake deadline in milliseconds for the NEXT
+ * `createSession` call. `0` = disabled (no deadline — see D3/D5). Reads
+ * `state.sessionConnectTimeout` (seconds) fresh on every call, unless a test
+ * override is active — so a hot-reloaded value only affects the next
+ * connection attempt, never one already in flight (which captured its own
+ * snapshot via the local `connectTimeoutMs` const in {@link createSession}).
+ */
+export function getSessionConnectTimeoutMs(): number {
+  return connectTimeoutOverrideMs ?? Math.ceil(state.sessionConnectTimeout * 1000)
+}
 
 /** Headers illegal in HTTP/2 (connection-specific) — stripped before `session.request`. */
 const H2_ILLEGAL_HEADERS = new Set(["host", "connection", "transfer-encoding", "keep-alive", "upgrade", "proxy-connection"])
@@ -48,62 +80,465 @@ const H2_ILLEGAL_HEADERS = new Set(["host", "connection", "transfer-encoding", "
  */
 const TRANSPORT_OWNED_HEADERS = new Set(["accept-encoding"])
 
-/** One multiplexed h2 session per origin. */
-const sessions = new Map<string, http2.ClientHttp2Session>()
+/** Per-origin h2 session tracking, generation-based retire-and-replace (P4). Not exported — {@link getSession} keeps returning a bare session. */
+interface H2SessionEntry {
+  session: http2.ClientHttp2Session
+  origin: string
+  generation: number
+  lifecycle: "active" | "retiring"
+  activeStreamCount: number
+  pingTimer: NodeJS.Timeout | undefined
+  effectivePingIntervalMs: number
+  effectiveKeepAliveMs: number | undefined
+}
 
-function createSession(origin: string): http2.ClientHttp2Session {
-  const keepAliveMs = getUpstreamKeepAliveDelayMs() ?? DEFAULT_KEEPALIVE_MS
+/** One multiplexed h2 session per origin (resolved + live, routable for new requests). */
+const sessions = new Map<string, H2SessionEntry>()
+/**
+ * Entries that left the routable pool (config hot-reload OR upstream GOAWAY)
+ * but still have in-flight streams draining. Their `pingTimer` keeps running —
+ * see {@link getSession}'s `retire`/`dispose` split for why.
+ */
+const retiringSessions = new Set<H2SessionEntry>()
+/** Reverse lookup so {@link runHttp2Fetch} can track per-entry active stream count without threading the entry through the whole request path. */
+const sessionEntryByHttp2Session = new WeakMap<http2.ClientHttp2Session, H2SessionEntry>()
+/** In-flight session creations, so concurrent requests to one origin share a connect. */
+const pending = new Map<string, Promise<http2.ClientHttp2Session>>()
+/** Bumped by {@link closeHttp2Sessions}; lets an in-flight creation detect a shutdown that raced it. */
+let poolEpoch = 0
+/** Bumped by {@link reconcileH2SessionsForConfigChange}; stamped onto every entry created afterward. */
+let currentGeneration = 0
+let reconcileState: "idle" | "running" | "failed" = "idle"
+let lastCompletedGeneration = 0
+let lastReconcileError: string | null = null
 
-  return http2.connect(origin, {
-    createConnection: (authority) => {
-      const socket = tls.connect({
-        host: authority.hostname,
-        port: authority.port ? Number(authority.port) : 443,
-        servername: authority.hostname,
-        ALPNProtocols: ["h2"],
-      })
-      // TCP keepalive — keeps the idle connection alive through middleboxes
-      // during long upstream silences (opus adaptive thinking). Set HERE, not
-      // via client.socket (which throws ERR_HTTP2_NO_SOCKET_MANIPULATION).
-      socket.setKeepAlive(true, keepAliveMs)
-      // Connect/handshake deadline: socket idle timeout until secureConnect,
-      // then cleared so it does not interfere with a legitimately idle h2 conn.
-      socket.setTimeout(CONNECT_TIMEOUT_MS, () => {
-        if (!socket.authorized) socket.destroy(new Error(`[http2] TLS connect timeout after ${CONNECT_TIMEOUT_MS}ms`))
-      })
-      socket.once("secureConnect", () => socket.setTimeout(0))
-      return socket
-    },
+/**
+ * Build and TLS-handshake the ALPN-`h2` socket, then create the h2 session on it.
+ * When a proxy applies to `origin` ({@link getProxyUrlForOrigin}), the socket is
+ * tunneled through it (HTTP CONNECT / SOCKS5, proxy-connect.ts) before TLS — so
+ * https upstreams honor proxy config even though they bypass undici. With no proxy
+ * this is the direct path used before proxy support existed.
+ *
+ * The TLS handshake is awaited BEFORE the session is built so a handshake failure
+ * (cert error, RST mid-handshake, idle timeout, or a peer that does not negotiate
+ * h2) rejects this promise — surfacing as a prompt upstream-fetch rejection.
+ * Verified (exp/http2-proxy/): building the session on a still-handshaking socket
+ * and letting the handshake fail does NOT propagate to the h2 request, which then
+ * hangs until the app idle-timeout — true for BOTH the direct and proxy paths.
+ */
+async function createSession(origin: string): Promise<http2.ClientHttp2Session> {
+  const keepAliveMs = getUpstreamKeepAliveDelayMs()
+  const connectTimeoutMs = getSessionConnectTimeoutMs()
+  const u = new URL(origin)
+  const port = u.port ? Number(u.port) : 443
+  const proxyUrl = getProxyUrlForOrigin(u)
+
+  let tlsSocket: tls.TLSSocket
+  if (proxyUrl) {
+    // Tunnel a raw pre-TLS socket through the proxy, then layer the upstream's TLS.
+    // ALPN h2 MUST be set here — http2 needs the negotiated protocol, and the undici
+    // SOCKS connector (proxy.ts) omits it for its HTTP/1.x use.
+    const rawSocket = await connectProxiedSocket({ targetHost: u.hostname, targetPort: port, proxyUrl, timeoutMs: connectTimeoutMs })
+    if (keepAliveMs !== undefined) rawSocket.setKeepAlive(true, keepAliveMs)
+    // withErrorSink at creation: guards the WHOLE socket lifetime (handshake
+    // teardown, the handshake→http2.connect handoff gap) against an orphaned
+    // 'error' → uncaughtException → server crash. See crash-safety.ts.
+    tlsSocket = withErrorSink(tls.connect({ socket: rawSocket, servername: u.hostname, ALPNProtocols: ["h2"] }))
+  } else {
+    tlsSocket = withErrorSink(tls.connect({ host: u.hostname, port, servername: u.hostname, ALPNProtocols: ["h2"] }))
+    // TCP keepalive — keeps the idle connection alive through middleboxes during long
+    // upstream silences (opus adaptive thinking). Set on the socket, not via
+    // client.socket (which throws ERR_HTTP2_NO_SOCKET_MANIPULATION). `undefined`
+    // (keepalive disabled, D5) intentionally skips this call rather than falling
+    // back to any hardcoded delay.
+    if (keepAliveMs !== undefined) tlsSocket.setKeepAlive(true, keepAliveMs)
+  }
+
+  await awaitH2Handshake(tlsSocket, connectTimeoutMs)
+  // The returned session is deliberately NOT withErrorSink'd here: {@link getSession}
+  // is the ownership boundary for sessions (it decides pool-vs-discard), so it applies
+  // the sink to whatever the factory returns — covering this prod factory AND injected
+  // test factories uniformly. Do NOT call createSession outside getSession, or the
+  // session would enter the pool/teardown lifecycle unguarded. (The socket, by
+  // contrast, is fully owned HERE — hence its sink is applied at creation above.)
+  return http2.connect(origin, { createConnection: () => tlsSocket })
+}
+
+/**
+ * Resolve once `sock` finishes its TLS handshake AND negotiated ALPN `h2`; reject on
+ * a handshake error, an idle/connect timeout, or an ALPN downgrade (a TLS-terminating
+ * proxy offering http/1.1 → a diagnosable error instead of an opaque h2 framing
+ * failure). Destroys the socket on any failure. Removes its own listeners on settle so
+ * the subsequent `http2.connect` adopts a clean socket.
+ *
+ * Crash-safety (two independent layers): this removes onError, then tears the
+ * socket down — leaving it briefly unguarded. (1) destroy() drops the error arg
+ * (reject already delivers `err` to the awaiter), and destroy() WITHOUT an error
+ * does not re-emit `'error'` — so the classic `destroy(err)` re-emit crash cannot
+ * happen. (2) Independently, the caller creates every `sock` via
+ * {@link withErrorSink} (createSession), whose permanent inert 'error' sink also
+ * absorbs any LATE async socket error during teardown (e.g. an ECONNRESET trailing
+ * a connect timeout). Either layer alone prevents the "[http2] TLS connect timeout"
+ * whole-server crash; both are kept as defense-in-depth.
+ */
+function awaitH2Handshake(sock: tls.TLSSocket, timeoutMs: number): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const settle = (err?: Error): void => {
+      sock.removeListener("error", onError)
+      sock.removeListener("timeout", onTimeout)
+      sock.removeListener("secureConnect", onSecure)
+      if (err) {
+        sock.destroy()
+        reject(err)
+        return
+      }
+      sock.setTimeout(0) // clear the connect deadline — an established h2 conn may idle legitimately
+      resolve()
+    }
+    const onError = (err: Error): void => settle(err)
+    const onTimeout = (): void => settle(new Error(`[http2] TLS connect timeout after ${timeoutMs}ms`))
+    const onSecure = (): void => {
+      if (sock.alpnProtocol !== "h2") {
+        settle(new Error(`[http2] upstream did not negotiate HTTP/2 (alpn=${String(sock.alpnProtocol)}) — check for a TLS-terminating proxy`))
+        return
+      }
+      settle()
+    }
+    // `sock.setTimeout(0)` is Node's own "disable the timer" contract — a `0`
+    // deadline (D5: disabled) naturally means "never times out" here with no
+    // extra branching, matching `getSessionConnectTimeoutMs()`'s `0`=disabled.
+    sock.setTimeout(timeoutMs)
+    sock.once("error", onError)
+    sock.once("timeout", onTimeout)
+    sock.once("secureConnect", onSecure)
   })
 }
 
-function getSession(origin: string): http2.ClientHttp2Session {
-  const existing = sessions.get(origin)
-  if (existing && !existing.closed && !existing.destroyed) return existing
-  const session = sessionFactory(origin)
-  // The factory (test or prod) owns connection setup; pool management is shared.
-  const drop = (): void => {
-    if (sessions.get(origin) === session) sessions.delete(origin)
-  }
-  session.on("error", drop)
-  session.on("close", drop)
-  session.on("goaway", drop)
-  session.unref()
-  sessions.set(origin, session)
-  return session
+/** No-op ack for keepalive PINGs — see {@link scheduleH2KeepalivePing}. */
+const NOOP_PING_ACK = (): void => {}
+
+/**
+ * Periodic HTTP/2 PING keepalive for a pooled upstream session. The application-
+ * layer complement to the socket's TCP keepalive (createSession): GHC's CAPI
+ * proxy does NOT forward Anthropic's SSE `event: ping` frames, so a long thinking
+ * silence is a truly idle stream (verified via the upstream-original sseEvents
+ * track: content for ~3s, then 112s of total wire silence, then a close WITHOUT
+ * `message_stop`). TCP keepalive keeps L4 alive through NAT but does not defeat a
+ * connection-idle reaper (middlebox or GHC edge) that counts application-layer
+ * silence — a PING puts a real frame on the wire.
+ *
+ * Best-effort: the ack is ignored. A lost ack means the connection is dying, which
+ * the session `error`/`close`/`goaway` handlers already drop + fail the in-flight
+ * request. Unacked-ping liveness teardown (fast-fail a dead session before its
+ * own idle timeout) is a separate concern — see docs/todo/deferred-backlog.md.
+ *
+ * `intervalMs <= 0` disables it (returns undefined). The timer is `unref`'d so it
+ * never keeps the process alive at shutdown; the caller clears it on session end.
+ */
+export function scheduleH2KeepalivePing(session: Pick<http2.ClientHttp2Session, "ping">, intervalMs: number): NodeJS.Timeout | undefined {
+  if (intervalMs <= 0) return undefined
+  const timer = setInterval(() => {
+    try {
+      session.ping(NOOP_PING_ACK)
+    } catch {
+      // Session closed/destroyed between the timer firing and this call
+      // (ERR_HTTP2_INVALID_SESSION) — the session `close` handler clears this
+      // timer; swallow so a benign teardown race is not an unhandled throw.
+    }
+  }, intervalMs)
+  timer.unref()
+  return timer
 }
 
-/** Production session factory: real TLS + h2 + keepalive. Overridable in tests. */
-let sessionFactory: (origin: string) => http2.ClientHttp2Session = createSession
+/**
+ * Get (or create) the pooled h2 session for `origin`. Async because the proxy
+ * tunnel handshake (CONNECT / SOCKS5) is async, while node:http2's
+ * `createConnection` must return its Duplex synchronously — so the asynchrony
+ * lives at the session level. Concurrent callers for the same origin share one
+ * in-flight creation via {@link pending}.
+ *
+ * Abort note: a request aborted while its session is still being established has
+ * its WAIT cancelled promptly by `raceAbort` in {@link runHttp2Fetch} — but the
+ * shared creation promise keeps running for the other concurrent callers (the
+ * connect is shared, so cancelling it would wrongly fail them). It settles into
+ * the pool (or is observed if it rejects) regardless of who is still waiting.
+ */
+async function getSession(origin: string): Promise<http2.ClientHttp2Session> {
+  ensureH2ReconcileSubscription()
+
+  const live = sessions.get(origin)
+  if (live && !live.session.closed && !live.session.destroyed) return live.session
+
+  const inflight = pending.get(origin)
+  if (inflight) return inflight
+
+  const creation = (async (): Promise<http2.ClientHttp2Session> => {
+    // Loop (not recursion into getSession()) so a config-reload race (below)
+    // retries within the SAME creation frame/pending-map entry. Recursing into
+    // getSession() would open a second, independent pending.set/delete bracket;
+    // in the microtask window between the two frames, a third-party caller's
+    // freshly-inserted pending entry could be deleted by the OUTER frame's
+    // now-stale `finally` — a real race, not a hypothetical one. A single loop
+    // has exactly one pending.set/delete pair for the whole retry sequence.
+    for (;;) {
+      const epochAtStart = poolEpoch
+      // Captured BEFORE the (possibly slow) connect — compared after it
+      // resolves to detect a reconcile that raced this creation (HIGH-3).
+      const generationAtStart = currentGeneration
+      // withErrorSink at the point we take ownership of the session (works for the
+      // prod factory AND an injected test factory): guards every session teardown —
+      // the shutdown-race close below, an eventual socket RST — against an orphaned
+      // 'error' → uncaughtException → server crash. See crash-safety.ts.
+      const session = withErrorSink(await sessionFactory(origin))
+      // If closeHttp2Sessions() ran while this session was being established (shutdown
+      // drain racing a new tunnel handshake), don't re-insert it into the just-cleared
+      // pool — close it instead, so it doesn't leak as an orphaned open session.
+      if (poolEpoch !== epochAtStart) {
+        try {
+          session.close()
+        } catch {
+          /* best-effort */
+        }
+        return session
+      }
+      // A reconcile ran while sessionFactory's connect was in flight. The
+      // connection-level params (keepAliveMs/connectTimeoutMs) are fixed at
+      // sessionFactory's own entry point, BEFORE the socket/TLS handshake
+      // completes (P2) — so this session may already have been established
+      // with STALE config even though currentGeneration has since moved on.
+      // Admitting it as "generation = currentGeneration" would make
+      // H2SessionStatusRow lie about which config it actually used. Discard
+      // it and retry: the next loop iteration calls sessionFactory again,
+      // which reads the now-settled (post-reconcile) config from scratch.
+      if (currentGeneration !== generationAtStart) {
+        try {
+          session.close()
+        } catch {
+          /* best-effort */
+        }
+        continue
+      }
+      // Read fresh at entry-creation time (after the possibly-slow proxy/TLS
+      // handshake) so a config change that raced this creation is honored —
+      // same "no caching across calls" contract P2 already established for
+      // createSession's own reads of these functions.
+      const effectivePingIntervalMs = getUpstreamH2PingIntervalMs()
+      const effectiveKeepAliveMs = getUpstreamKeepAliveDelayMs()
+      // The factory (test or prod) owns connection setup; pool management is shared.
+      // Two distinct responsibilities, split by event: `retire` stops routing NEW
+      // requests to this session (goaway OR a config-hot-reload reconcile — a
+      // GOAWAY'd/retired session must not take new streams); `dispose` (error/close)
+      // is the only place that clears the keepalive PING timer. A GOAWAY/retire does
+      // NOT destroy the session — its already-in-flight streams keep running, so the
+      // keepalive must keep pinging them until `close` fires (guaranteed to follow,
+      // and clears the timer then). Clearing on retire would strand a draining
+      // long-thinking stream in exactly the silence this keepalive exists to defeat.
+      const pingTimer = scheduleH2KeepalivePing(session, effectivePingIntervalMs)
+      const entry: H2SessionEntry = {
+        session,
+        origin,
+        generation: currentGeneration, // === generationAtStart, confirmed above
+        lifecycle: "active",
+        activeStreamCount: 0,
+        pingTimer,
+        effectivePingIntervalMs,
+        effectiveKeepAliveMs,
+      }
+      sessionEntryByHttp2Session.set(session, entry)
+      const dispose = (): void => {
+        if (entry.pingTimer) clearInterval(entry.pingTimer)
+        if (sessions.get(origin) === entry) sessions.delete(origin)
+        retiringSessions.delete(entry)
+      }
+      const retire = (): void => {
+        if (sessions.get(origin) === entry) sessions.delete(origin)
+        if (entry.lifecycle === "active") {
+          entry.lifecycle = "retiring"
+          retiringSessions.add(entry)
+        }
+      }
+      session.on("error", dispose)
+      session.on("close", dispose)
+      session.on("goaway", retire)
+      session.unref()
+      sessions.set(origin, entry)
+      return session
+    }
+  })()
+
+  pending.set(origin, creation)
+  try {
+    return await creation
+  } finally {
+    pending.delete(origin)
+  }
+}
+
+/** Lazily subscribe (once) to `onUpstreamTransportChange`, mirroring proxy.ts's `ensureTimeoutSubscription()`. */
+let h2ReconcileSubscriptionInstalled = false
+function ensureH2ReconcileSubscription(): void {
+  if (h2ReconcileSubscriptionInstalled) return
+  onUpstreamTransportChange(reconcileH2SessionsForConfigChange)
+  h2ReconcileSubscriptionInstalled = true
+}
+
+/**
+ * If a retiring entry has no more in-flight streams, close it now instead of
+ * leaving it to linger indefinitely (a GOAWAY'd/retired h2 session with no new
+ * streams and no peer-initiated close can otherwise sit open forever).
+ */
+function maybeReclaimRetiringSession(entry: H2SessionEntry): void {
+  if (entry.lifecycle !== "retiring") return
+  if (entry.activeStreamCount > 0) return
+  try {
+    entry.session.close()
+  } catch {
+    /* best-effort — the session's own close/error handler still runs dispose() */
+  }
+}
+
+/**
+ * Replace an entry's keepalive PING timer with one at `intervalMs`, clearing
+ * whatever was running before (spec §7 addition, reviewer + user decision:
+ * a config-driven `ping_interval` change must reach RETIRING sessions too, not
+ * just sessions created after the reconcile). `intervalMs <= 0` cancels the
+ * timer (via {@link scheduleH2KeepalivePing}'s own `<= 0` guard) WITHOUT
+ * closing the session or touching `activeStreamCount` — an in-flight stream on
+ * a retiring session keeps draining exactly as before, it just stops being
+ * pinged. This is the one exception to "retire never clears pingTimer" (see
+ * the goaway/retiring invariant note above `getSession()`): that invariant is
+ * about NOT losing keepalive coverage silently on retire; this function is an
+ * explicit, observable, config-driven replacement of the cadence itself, not a
+ * silent loss of coverage — the new cadence (possibly 0, honestly reported)
+ * is what `effectivePingIntervalMs` on the status row reflects afterward.
+ */
+function reschedulePingTimer(entry: H2SessionEntry, intervalMs: number): void {
+  if (entry.pingTimer) clearInterval(entry.pingTimer)
+  entry.pingTimer = scheduleH2KeepalivePing(entry.session, intervalMs)
+  entry.effectivePingIntervalMs = intervalMs
+}
+
+/**
+ * Hot-reload reconcile (P4): move every currently-routable session to
+ * "retiring" and bump the generation counter, so the VERY NEXT request to each
+ * origin opens a brand-new session that reads fresh config (keepalive delay,
+ * h2 ping interval). Already-in-flight streams on the retired sessions are
+ * completely unaffected — they keep running on their original session until
+ * they finish naturally (drain), per global constraint #2 (retire-and-replace,
+ * never drain-then-replace). The one exception is the PING cadence itself:
+ * {@link reschedulePingTimer} applies the freshly configured
+ * `getUpstreamH2PingIntervalMs()` to every entry being retired here, so a
+ * `ping_interval` change is honored immediately even by sessions still
+ * draining — not deferred until their eventual replacement takes over.
+ *
+ * Must NEVER throw (HIGH-3): this function runs as one of possibly several
+ * synchronous listeners inside state.ts's `setTimeoutConfig()` listener loop
+ * (`for (const listener of requestWatchdogListeners) listener()` — no
+ * try/catch there). A thrown error here would abort that loop and silently
+ * skip every listener registered after this one (including the WS-side
+ * reconcile listener and proxy.ts's dispatcher-rebuild listener), even though
+ * the config change itself already applied successfully. So any failure is
+ * caught, recorded (state + a logged message — never silently swallowed), and
+ * NOT re-thrown; observability comes from `getH2ReconcileStatus()` (P5), not
+ * from an exception the config-apply path would have to handle.
+ */
+export function reconcileH2SessionsForConfigChange(): void {
+  reconcileState = "running"
+  try {
+    currentGeneration += 1
+    const freshPingIntervalMs = getUpstreamH2PingIntervalMs()
+    // Snapshot BEFORE the first loop mutates retiringSessions (nit-1, reviewer
+    // second pass): entries already retiring from an EARLIER event (a prior
+    // reconcile, or an upstream-initiated GOAWAY) need their own reschedule
+    // pass below — but if the second loop iterated the LIVE `retiringSessions`
+    // set, it would also re-visit every entry the FIRST loop just newly
+    // retired and reschedule its ping timer a second time in the same call
+    // (harmless — just a redundant clearInterval+setInterval churn — but
+    // needless work on every reconcile). Snapshotting the set's membership
+    // up front (Set iteration order is insertion order, so cloning captures
+    // exactly "what was already retiring before this call") lets the second
+    // loop visit each entry exactly once per reconcile.
+    const preexistingRetiring = new Set(retiringSessions)
+    for (const [origin, entry] of sessions) {
+      sessions.delete(origin)
+      if (entry.lifecycle === "active") {
+        entry.lifecycle = "retiring"
+        retiringSessions.add(entry)
+      }
+      reschedulePingTimer(entry, freshPingIntervalMs)
+      maybeReclaimRetiringSession(entry)
+    }
+    // Entries already retiring from an EARLIER event (a prior reconcile, or an
+    // upstream-initiated GOAWAY) are a config change's concern too — the fresh
+    // ping cadence must reach every draining session, not just the ones this
+    // particular reconcile call is newly retiring.
+    for (const entry of preexistingRetiring) reschedulePingTimer(entry, freshPingIntervalMs)
+    lastCompletedGeneration = currentGeneration
+    lastReconcileError = null
+    reconcileState = "idle"
+  } catch (err) {
+    reconcileState = "failed"
+    lastReconcileError = err instanceof Error ? err.message : String(err)
+    consola.error(`[http2-client] reconcileH2SessionsForConfigChange failed (generation=${currentGeneration}): ${lastReconcileError}`)
+    // Deliberately NOT re-thrown — see the doc comment above.
+  }
+}
+
+/** Per-origin h2 session status row for /api/status (P5). */
+export interface H2SessionStatusRow {
+  origin: string
+  generation: number
+  lifecycle: "active" | "retiring"
+  activeStreamCount: number
+  effectivePingIntervalMs: number
+  effectiveKeepAliveMs: number | undefined
+}
+
+function entryToStatusRow(entry: H2SessionEntry): H2SessionStatusRow {
+  return {
+    origin: entry.origin,
+    generation: entry.generation,
+    lifecycle: entry.lifecycle,
+    activeStreamCount: entry.activeStreamCount,
+    effectivePingIntervalMs: entry.effectivePingIntervalMs,
+    effectiveKeepAliveMs: entry.effectiveKeepAliveMs,
+  }
+}
+
+export function getH2SessionStatusSnapshot(): ReadonlyArray<H2SessionStatusRow> {
+  const rows: Array<H2SessionStatusRow> = []
+  for (const entry of sessions.values()) rows.push(entryToStatusRow(entry))
+  for (const entry of retiringSessions) rows.push(entryToStatusRow(entry))
+  return rows
+}
+
+export function getH2ReconcileStatus(): { state: "idle" | "running" | "failed"; lastCompletedGeneration: number; lastError: string | null } {
+  return { state: reconcileState, lastCompletedGeneration, lastError: lastReconcileError }
+}
+
+/** Production session factory: proxy-aware TLS + h2 + keepalive. Overridable in tests. */
+let sessionFactory: (origin: string) => http2.ClientHttp2Session | Promise<http2.ClientHttp2Session> = createSession
 
 /**
  * Test-only: inject a session factory (e.g. a cleartext h2c `http2.connect` to a
  * local test server), or restore the production TLS factory when `fn` is
  * undefined. Closes any pooled sessions so the next request uses the new factory.
  */
-export function setHttp2SessionFactoryForTests(fn: ((origin: string) => http2.ClientHttp2Session) | undefined): void {
+export function setHttp2SessionFactoryForTests(fn: ((origin: string) => http2.ClientHttp2Session | Promise<http2.ClientHttp2Session>) | undefined): void {
   closeHttp2Sessions()
   sessionFactory = fn ?? createSession
+}
+
+/**
+ * Test-only: shorten (or restore) the TLS connect/handshake deadline so the
+ * timeout→teardown path — the one that produced the "[http2] TLS connect timeout
+ * after 10000ms" whole-server crash — is fast and deterministic to exercise
+ * against a peer that accepts TCP but never completes TLS. `undefined` restores
+ * production behavior (read from {@link getSessionConnectTimeoutMs}, i.e.
+ * `state.sessionConnectTimeout`).
+ */
+export function setConnectTimeoutForTests(ms: number | undefined): void {
+  connectTimeoutOverrideMs = ms
 }
 
 /** An AbortError-named Error (the WHATWG abort convention consumers check via `err.name`). */
@@ -111,6 +546,41 @@ function abortError(): Error {
   const err = new Error("The operation was aborted.")
   err.name = "AbortError"
   return err
+}
+
+/**
+ * Resolve/reject with `p`, but reject early with an AbortError if `signal` aborts
+ * first. Crucially, this aborts only the CALLER'S WAIT — `p` (a shared
+ * session-creation promise) keeps running for other concurrent callers; cancelling
+ * it would wrongly fail them. When abort wins, `p`'s eventual rejection is still
+ * observed (via {@link withRejectionObserver}) so an orphaned rejection can't reach
+ * `process.unhandledRejection` and crash the server.
+ */
+function raceAbort<T>(p: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
+  if (!signal) return p
+  return new Promise<T>((resolve, reject) => {
+    const observe = (): void => void withRejectionObserver(p)
+    if (signal.aborted) {
+      observe()
+      reject(abortError())
+      return
+    }
+    const onAbort = (): void => {
+      observe()
+      reject(abortError())
+    }
+    signal.addEventListener("abort", onAbort, { once: true })
+    p.then(
+      (v) => {
+        signal.removeEventListener("abort", onAbort)
+        resolve(v)
+      },
+      (e: unknown) => {
+        signal.removeEventListener("abort", onAbort)
+        reject(e as Error)
+      },
+    )
+  })
 }
 
 /**
@@ -132,153 +602,231 @@ function abortError(): Error {
  */
 export function http2Fetch(url: string | URL, init: UpstreamFetchInit): Promise<Response> {
   const u = typeof url === "string" ? new URL(url) : url
-  const session = getSession(u.origin)
-
-  return withRejectionObserver(
-    new Promise<Response>((resolve, reject) => {
-      const signal = init.signal
-      if (signal?.aborted) {
-        reject(abortError())
-        return
-      }
-
-      const headers: Record<string, string> = {
-        ":method": init.method ?? "GET",
-        ":path": `${u.pathname}${u.search}`,
-        "accept-encoding": "identity",
-      }
-      for (const [key, value] of Object.entries(init.headers ?? {})) {
-        const lower = key.toLowerCase()
-        if (H2_ILLEGAL_HEADERS.has(lower) || TRANSPORT_OWNED_HEADERS.has(lower)) continue
-        headers[lower] = value
-      }
-
-      const req = session.request(headers)
-
-      // Pre-response abort → reject; the post-response abort (cancel the body
-      // stream) is wired inside the `response` handler below.
-      const onPreResponseAbort = (): void => {
-        req.close(http2.constants.NGHTTP2_CANCEL)
-        reject(abortError())
-      }
-      signal?.addEventListener("abort", onPreResponseAbort, { once: true })
-
-      req.once("response", (h) => {
-        signal?.removeEventListener("abort", onPreResponseAbort)
-
-        const status = h[":status"] ?? 0
-        const responseHeaders = new Headers()
-        for (const [key, value] of Object.entries(h)) {
-          if (key.startsWith(":")) continue
-          if (Array.isArray(value)) for (const v of value) responseHeaders.append(key, v)
-          else if (value !== undefined) responseHeaders.set(key, value)
-        }
-
-        // Best-effort response-trailers capture (richest-data-flow): node:http2 emits
-        // a `trailers` event (after the data frames, before `end`) when the upstream
-        // sends a trailing HEADERS frame. Currently rare from GHC, but the transport
-        // observes them, so capture-when-present instead of silently discarding.
-        if (init.onTrailers) {
-          req.once("trailers", (t: http2.IncomingHttpHeaders) => {
-            const record: Record<string, string> = {}
-            for (const [key, value] of Object.entries(t)) {
-              if (key.startsWith(":")) continue
-              if (Array.isArray(value)) record[key] = value.join(", ")
-              else if (value !== undefined) record[key] = value
-            }
-            if (Object.keys(record).length > 0) init.onTrailers?.(record)
-          })
-        }
-
-        const body = new ReadableStream<Uint8Array>({
-          start(controller) {
-            let ended = false
-            req.on("data", (chunk: Buffer) => controller.enqueue(new Uint8Array(chunk)))
-            req.once("end", () => {
-              ended = true
-              try {
-                controller.close()
-              } catch {
-                /* already closed (e.g. cancelled) */
-              }
-            })
-            // RST_STREAM / GOAWAY / transport drop mid-body → error the stream so
-            // the consumer (guardSseIterable) sees a failure, NOT a silent
-            // truncation read as success.
-            //
-            // Bun caveat: a *clean* server RST_STREAM (`stream.close(code)`) is
-            // delivered by Bun's node:http2 as a normal `end` with rstCode=0
-            // (verified), so that exact case is undetectable here under Bun. The
-            // dominant real failure — a dropped connection — emits `close` without
-            // `end` and IS caught by the backstop below. App-layer backstops
-            // (guardSseIterable idle-timeout, missing terminal SSE event) cover
-            // the residual.
-            req.once("error", (err) => {
-              try {
-                controller.error(err)
-              } catch {
-                /* already errored */
-              }
-            })
-            // Backstop: node:http2 may emit `close` (carrying a non-zero rstCode)
-            // WITHOUT an `error` on a server-initiated reset. A close before `end`
-            // is a truncated body — surface it as a stream error, never a clean done.
-            req.once("close", () => {
-              if (!ended) {
-                try {
-                  controller.error(new Error(`[http2] upstream stream closed before end (rstCode=${String(req.rstCode)})`))
-                } catch {
-                  /* already closed/errored */
-                }
-              }
-            })
-          },
-          cancel() {
-            req.close(http2.constants.NGHTTP2_CANCEL)
-          },
-        })
-
-        if (signal) signal.addEventListener("abort", () => req.close(http2.constants.NGHTTP2_CANCEL), { once: true })
-
-        resolve(new Response(body, { status, headers: responseHeaders }))
-      })
-
-      // Error before headers (connect failure, RST before response) → reject.
-      req.once("error", (err: Error) => {
-        signal?.removeEventListener("abort", onPreResponseAbort)
-        reject(err)
-      })
-
-      if (init.body !== undefined) req.write(init.body)
-      req.end()
-    }),
-  )
+  return withRejectionObserver(runHttp2Fetch(u, init))
 }
 
 /**
- * Attach a no-op rejection observer to `p` so an orphaned (no-awaiter) rejection
- * — specifically a pre-response abort that races past its caller — can never
- * surface as a process-level `unhandledRejection`. The observer does NOT consume
- * the rejection: `p` is returned unchanged, so a real `await`/`.then` consumer
- * still gets the rejection. `.catch` registers a SECOND reaction; both fire
- * independently. Returns the ORIGINAL `p` (not the `.catch` continuation) so the
- * caller's value/rejection semantics are identical to an un-observed promise.
+ * Async core of {@link http2Fetch}: await the (possibly proxy-tunneled) session,
+ * then issue the h2 request. Kept separate so the whole thing — including a
+ * session-connect failure or a pre-flight abort — flows through one promise that
+ * {@link withRejectionObserver} guards.
  */
-function withRejectionObserver<T>(p: Promise<T>): Promise<T> {
-  p.catch(() => {
-    /* observed: keep an orphaned abort/RST rejection off process.unhandledRejection */
+async function runHttp2Fetch(u: URL, init: UpstreamFetchInit): Promise<Response> {
+  const signal = init.signal
+  if (signal?.aborted) throw abortError()
+
+  // Race the (possibly slow proxy-tunneled) session creation against THIS request's
+  // abort, so an aborted request fails promptly instead of waiting out the shared
+  // connect. The session-creation promise keeps running for the other concurrent
+  // callers — we abort our wait, not their connect.
+  const session = await raceAbort(getSession(u.origin), signal)
+  // The proxy tunnel / TLS handshake may have taken a while; re-check abort.
+  if (signal?.aborted) throw abortError()
+
+  return new Promise<Response>((resolve, reject) => {
+    const headers: Record<string, string> = {
+      ":method": init.method ?? "GET",
+      ":path": `${u.pathname}${u.search}`,
+      "accept-encoding": "identity",
+    }
+    for (const [key, value] of Object.entries(init.headers ?? {})) {
+      const lower = key.toLowerCase()
+      if (H2_ILLEGAL_HEADERS.has(lower) || TRANSPORT_OWNED_HEADERS.has(lower)) continue
+      headers[lower] = value
+    }
+
+    const req = session.request(headers)
+
+    // Physical-dispatch teardown barrier. Cancelling one response owns only this h2 stream;
+    // the pooled session remains available to siblings. Resolve cancellation/rejection only
+    // after the stream's close event confirms teardown.
+    let resolveRequestClosed!: () => void
+    const requestClosed = new Promise<void>((resolve) => {
+      resolveRequestClosed = resolve
+    })
+
+    // activeStreamCount bookkeeping (P4): Node guarantees `close` fires exactly
+    // once per h2 stream regardless of outcome (normal end / RST / abort before or
+    // after headers) — using this single platform-guaranteed event, instead of
+    // hand-decrementing on every distinct termination path below, is what makes
+    // global constraint #3 ("exactly-once decrement, every path") hold without
+    // manually enumerating every path.
+    const streamEntry = sessionEntryByHttp2Session.get(session)
+    if (streamEntry) {
+      streamEntry.activeStreamCount += 1
+      req.once("close", () => {
+        streamEntry.activeStreamCount -= 1
+        maybeReclaimRetiringSession(streamEntry)
+        init.onStreamClosed?.()
+        resolveRequestClosed()
+      })
+    } else {
+      req.once("close", () => {
+        init.onStreamClosed?.()
+        resolveRequestClosed()
+      })
+    }
+
+    let responseResolved = false
+    let rejectionScheduled = false
+    const rejectAfterRequestClosed = (error: Error): void => {
+      if (responseResolved || rejectionScheduled) return
+      rejectionScheduled = true
+      void requestClosed.then(() => reject(error))
+    }
+
+    // Pre-response abort → reject; the post-response abort (cancel the body
+    // stream) is wired inside the `response` handler below.
+    const onPreResponseAbort = (): void => {
+      req.close(http2.constants.NGHTTP2_CANCEL)
+      rejectAfterRequestClosed(abortError())
+    }
+    signal?.addEventListener("abort", onPreResponseAbort, { once: true })
+
+    let headersReceived = false
+
+    req.once("response", (h) => {
+      headersReceived = true
+      signal?.removeEventListener("abort", onPreResponseAbort)
+      if (rejectionScheduled) return
+      responseResolved = true
+
+      const status = h[":status"] ?? 0
+      const responseHeaders = new Headers()
+      for (const [key, value] of Object.entries(h)) {
+        if (key.startsWith(":")) continue
+        if (Array.isArray(value)) for (const v of value) responseHeaders.append(key, v)
+        else if (value !== undefined) responseHeaders.set(key, value)
+      }
+
+      // Best-effort response-trailers capture (richest-data-flow): node:http2 emits
+      // a `trailers` event (after the data frames, before `end`) when the upstream
+      // sends a trailing HEADERS frame. Currently rare from GHC, but the transport
+      // observes them, so capture-when-present instead of silently discarding.
+      if (init.onTrailers) {
+        req.once("trailers", (t: http2.IncomingHttpHeaders) => {
+          const record: Record<string, string> = {}
+          for (const [key, value] of Object.entries(t)) {
+            if (key.startsWith(":")) continue
+            if (Array.isArray(value)) record[key] = value.join(", ")
+            else if (value !== undefined) record[key] = value
+          }
+          if (Object.keys(record).length > 0) init.onTrailers?.(record)
+        })
+      }
+
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          let ended = false
+          req.on("data", (chunk: Buffer) => controller.enqueue(new Uint8Array(chunk)))
+          req.once("end", () => {
+            ended = true
+            try {
+              controller.close()
+            } catch {
+              /* already closed (e.g. cancelled) */
+            }
+          })
+          // RST_STREAM / GOAWAY / transport drop mid-body → error the stream so
+          // the consumer (guardSseIterable) sees a failure, NOT a silent
+          // truncation read as success.
+          //
+          // Bun caveat: a *clean* server RST_STREAM (`stream.close(code)`) is
+          // delivered by Bun's node:http2 as a normal `end` with rstCode=0
+          // (verified), so that exact case is undetectable here under Bun. The
+          // dominant real failure — a dropped connection — emits `close` without
+          // `end` and IS caught by the backstop below. App-layer backstops
+          // (guardSseIterable idle-timeout, missing terminal SSE event) cover
+          // the residual.
+          req.once("error", (err) => {
+            try {
+              controller.error(err)
+            } catch {
+              /* already errored */
+            }
+          })
+          // Backstop: node:http2 may emit `close` (carrying a non-zero rstCode)
+          // WITHOUT an `error` on a server-initiated reset. A close before `end`
+          // is a truncated body — surface it as a stream error, never a clean done.
+          req.once("close", () => {
+            if (!ended) {
+              try {
+                controller.error(new Error(`[http2] upstream stream closed before end (rstCode=${String(req.rstCode)})`))
+              } catch {
+                /* already closed/errored */
+              }
+            }
+          })
+        },
+        async cancel() {
+          req.close(http2.constants.NGHTTP2_CANCEL)
+          await requestClosed
+        },
+      })
+
+      if (signal) signal.addEventListener("abort", () => req.close(http2.constants.NGHTTP2_CANCEL), { once: true })
+
+      resolve(new Response(body, { status, headers: responseHeaders }))
+    })
+
+    // Error before headers (connect failure, RST before response) → reject.
+    req.once("error", (err: Error) => {
+      signal?.removeEventListener("abort", onPreResponseAbort)
+      rejectAfterRequestClosed(err)
+    })
+
+    // Backstop (P4, empirically verified against Bun's node:http2): a whole-session
+    // teardown before any response headers arrive (e.g. the upstream session is
+    // destroyed) does NOT always reach this stream's `error` listener under Bun —
+    // it can surface as a BARE `close` (rstCode=0), with neither `response` nor
+    // `error` ever firing. Without this, the returned promise hangs forever (a
+    // genuine hang, not just an internal-counter miss — verified via a minimal
+    // reproduction: `session.destroy(err)` on the SERVER side produces a client
+    // `req` sequence of goaway → session close → stream close, with the stream's
+    // own `error` event never emitted). If headers were never received by the
+    // time `close` fires, this is a truncated pre-response failure — reject it.
+    req.once("close", () => {
+      if (!headersReceived) {
+        signal?.removeEventListener("abort", onPreResponseAbort)
+        rejectAfterRequestClosed(new Error(`[http2] upstream stream closed before any response (rstCode=${String(req.rstCode)})`))
+      }
+    })
+
+    if (init.body !== undefined) req.write(init.body)
+    req.end()
   })
-  return p
 }
 
-/** Close all pooled sessions. Called on graceful shutdown. */
+/** Close all pooled sessions (active + retiring). Called on graceful shutdown, and by `setHttp2SessionFactoryForTests` (test isolation). */
 export function closeHttp2Sessions(): void {
-  for (const session of sessions.values()) {
+  poolEpoch++ // signal in-flight creations to self-close instead of re-inserting
+  for (const entry of sessions.values()) {
     try {
-      session.close()
+      entry.session.close()
     } catch {
       /* best-effort */
     }
   }
   sessions.clear()
+  for (const entry of retiringSessions) {
+    try {
+      entry.session.close()
+    } catch {
+      /* best-effort */
+    }
+  }
+  retiringSessions.clear()
+  // Drop tracking of in-flight creations; their sessions are unref'd and will be
+  // closed by their own error handling / GC. Callers drain before close, so this
+  // is normally already empty.
+  pending.clear()
+  // Reset generation/reconcile bookkeeping — a fully-closed pool has no
+  // meaningful "in-progress reconcile" state, and per-test isolation (this
+  // function backs the `setHttp2SessionFactoryForTests` RESETTER) requires a
+  // fresh generation counter so absolute-generation assertions don't leak
+  // across test files sharing this module.
+  currentGeneration = 0
+  reconcileState = "idle"
+  lastCompletedGeneration = 0
+  lastReconcileError = null
 }

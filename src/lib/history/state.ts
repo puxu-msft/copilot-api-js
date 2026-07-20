@@ -1,43 +1,57 @@
-import consola from "consola"
-
 import type { ScopedPublisher } from "~/lib/observability"
 
 import { PATHS } from "~/lib/config/paths"
 import {
   //
-  onHistoryLimitChange,
+  onHistoryRawCaptureChange,
   state,
 } from "~/lib/state"
 
-// Function-only cyclic import (state ↔ entries): used solely inside
-// `shutdownHistory` at call time, never at module eval, so it is safe — by then
-// both modules are fully initialized (these are hoisted function declarations).
+import { clearInFlight } from "./in-flight"
 import {
   //
-  drainPendingFinalizations,
-  retryPendingFinalizations,
-} from "./entries"
-import { clearInFlight } from "./in-flight"
+  configureRawCapture,
+  shutdownRawCapture,
+} from "./raw/manager"
+import {
+  //
+  configureTantivySearch,
+  drainTantivySearch,
+  enqueueTantivyOperation,
+} from "./search-tantivy"
 import {
   //
   closeDatabase,
   getDatabase,
-  isDatabaseOpen,
   openDatabase,
 } from "./sqlite/connection"
+import { applyForwardMigrations } from "./sqlite/migrations/run"
 import {
   //
-  startReaper,
-  stopReaper,
-} from "./sqlite/reaper"
+  startV3Maintenance,
+  stopV3Maintenance,
+} from "./v3/maintenance"
 import {
   //
-  runSearchIndexBackfill,
-  stopSearchIndexBackfill,
-} from "./sqlite/search-index-backfill"
+  drainV3Writer,
+  drainV3SummaryBackfill,
+  enqueueModelOperation,
+  ensureV3Schema,
+  recoverV3Journal,
+  startV3SummaryBackfill,
+  stopV3SummaryBackfill,
+} from "./v3/store"
+import {
+  //
+  clearRecentModelOperationTerminalsForTests,
+  drainModelOperationTerminalSubscribers,
+  subscribeModelOperationTerminals,
+} from "./v3/terminal-bus"
 
 let enabled = false
-let unsubscribeHistoryLimit: (() => void) | undefined
+let unsubscribeV3Terminal: (() => void) | undefined
+let unsubscribeTantivyTerminal: (() => void) | undefined
+let unsubscribeRawCapture: (() => void) | undefined
 let _publisher: ScopedPublisher<"history"> | undefined
 
 export const historyState = {
@@ -71,18 +85,61 @@ export function isHistoryEnabled(): boolean {
   return enabled
 }
 
-export function initHistory(enable: boolean, _legacyMaxEntries?: number): void {
+export async function initHistory(enable: boolean, _legacyMaxEntries?: number): Promise<void> {
   clearInFlight()
+  clearRecentModelOperationTerminalsForTests()
   enabled = enable
-  if (!enable) return
-  const dbPath = state.historyDbPath || PATHS.HISTORY_DB
+  if (!enable) {
+    unsubscribeV3Terminal?.()
+    unsubscribeV3Terminal = undefined
+    unsubscribeTantivyTerminal?.()
+    unsubscribeTantivyTerminal = undefined
+    configureTantivySearch({ enabled: false, path: PATHS.HISTORY_SEARCH_DIR })
+    unsubscribeRawCapture?.()
+    unsubscribeRawCapture = undefined
+    stopV3Maintenance()
+    shutdownRawCapture()
+    closeDatabase()
+    return
+  }
+  // `historyDbPath` is retained only as an injected test seam during the V3
+  // cutover. Production config cannot set it; the default is a physically
+  // separate V3 artifact, so opening History never mutates legacy history.db.
+  const dbPath = state.historyDbPath || PATHS.HISTORY_V3_DB
   openDatabase(dbPath)
-  startReaper(state.historySuccessLimit, state.historyFailureLimit, state.historyReaperInterval)
-  // Subscribe to live limit changes from config hot-reload.
-  // `onHistoryLimitChange` invokes the listener synchronously once with the
-  // current value, so we don't miss any reset that happened before this point.
-  unsubscribeHistoryLimit?.()
-  unsubscribeHistoryLimit = onHistoryLimitChange(setHistoryMaxEntries)
+  ensureV3Schema(getDatabase())
+  // Umzug forward-migration pipe (History V2 removal Phase 4d): `MIGRATIONS`
+  // (migrations/index.ts) is intentionally empty today — this call's value is
+  // wiring the pipe end-to-end (storage construction, ledger read/write,
+  // logger adapter) against the REAL V3 db, so the first real 001+ migration
+  // has a proven-working runner to land into, rather than adding one now.
+  // RETHROWS on failure (see migrations/run.ts) — a half-applied schema
+  // migration must refuse to start, not silently continue.
+  await applyForwardMigrations(getDatabase())
+  recoverV3Journal(getDatabase())
+  unsubscribeV3Terminal?.()
+  unsubscribeV3Terminal = subscribeModelOperationTerminals(enqueueModelOperation)
+  unsubscribeTantivyTerminal?.()
+  // In-memory History fixtures must never spill a native sidecar onto the host.
+  // On-disk injected test stores get a sibling directory; production uses the
+  // stable application-owned artifact path.
+  const searchPath = state.historyDbPath ? `${dbPath}.tantivy` : PATHS.HISTORY_SEARCH_DIR
+  configureTantivySearch({ enabled: dbPath !== ":memory:", path: searchPath })
+  unsubscribeTantivyTerminal = subscribeModelOperationTerminals(enqueueTantivyOperation)
+  unsubscribeRawCapture?.()
+  unsubscribeRawCapture = onHistoryRawCaptureChange(() => {
+    configureRawCapture({
+      enabled: state.historyRawCaptureEnabled,
+      dbPath: state.historyRawCaptureDbPath || PATHS.HISTORY_RAW_DB,
+      maxObjectBytes: state.historyRawCaptureMaxObjectBytes,
+    })
+  })
+  // DB-health (Phase 4b): periodic checkpoint/incremental-vacuum/optimize tick,
+  // adopted from the retired V2 reaper tick's maintenance half (see
+  // v3/maintenance.ts doc comment for what was and wasn't carried over).
+  // Idempotent restart — reopening History (e.g. a config reload) restarts the
+  // timer at a fresh interval rather than stacking a second one.
+  startV3Maintenance()
 }
 
 /**
@@ -99,46 +156,50 @@ export function initHistory(enable: boolean, _legacyMaxEntries?: number): void {
  * `enabled` true so in-flight finalizes still persist.
  */
 export function stopHistoryBackgroundWork(): void {
-  unsubscribeHistoryLimit?.()
-  unsubscribeHistoryLimit = undefined
-  stopReaper()
-  // Signal the background backfill to stop BEFORE the DB closes (it saves its
+  unsubscribeRawCapture?.()
+  unsubscribeRawCapture = undefined
+  stopV3Maintenance()
+  stopV3SummaryBackfill()
+  // Signal the background backfills to stop BEFORE the DB closes (each saves its
   // cursor per batch and resumes on next start — a post-close prepare would throw).
-  stopSearchIndexBackfill()
 }
 
 /**
- * Final history teardown (graceful `finalize()` step, AFTER request drain): await
- * every in-flight async finalize, run a last-chance retry for transient-deferred
- * entries (the reaper is stopped, so a re-failure tombstones instead of leaking),
- * drain once more in case the retry kicked new finalizes, THEN close the DB. This
- * is the I4 drain that makes async finalize lossless at shutdown. Async; awaited
- * by the shutdown sequence before process exit.
+ * Final history teardown (graceful `finalize()` step, AFTER request drain):
+ * drain the canonical V3 terminal-write pipeline, THEN close the DB. The V2
+ * async-finalize drain (`drainPendingFinalizations`/`retryPendingFinalizations`)
+ * was removed with the V2 write chain (History V2 removal Phase 3) — its
+ * mechanism (transient-retain/tombstone-degrade on a failed `finalizeEntry`)
+ * had no production caller (the deleted `HistorySink` was the only one). The
+ * V3 terminal-bus subscriber (`subscribeModelOperationTerminals`, wired in
+ * `initHistory` below) is the sole production persistence path and drains via
+ * `drainModelOperationTerminalSubscribers` + `drainV3Writer` — unsubscribe
+ * FIRST (stop accepting new terminal records), then drain the subscriber
+ * queue, then drain the writer's own pending/in-flight commits, THEN close.
+ * Async; awaited by the shutdown sequence before process exit.
  */
 export async function shutdownHistory(): Promise<void> {
   // Idempotent: a direct call (tests / non-graceful paths) must also stop background work.
   stopHistoryBackgroundWork()
-  await drainPendingFinalizations()
-  await retryPendingFinalizations()
-  await drainPendingFinalizations()
+  // Keep the canonical terminal subscriber alive through request drain. Only
+  // detach after no more requests can settle, then drain terminal work to disk.
+  unsubscribeV3Terminal?.()
+  unsubscribeV3Terminal = undefined
+  unsubscribeTantivyTerminal?.()
+  unsubscribeTantivyTerminal = undefined
+  await drainModelOperationTerminalSubscribers()
+  await drainV3Writer()
+  await drainTantivySearch()
+  await drainV3SummaryBackfill()
+  shutdownRawCapture()
   closeDatabase()
   enabled = false
 }
 
-export function setHistoryMaxEntries(): void {
-  startReaper(state.historySuccessLimit, state.historyFailureLimit, state.historyReaperInterval)
-}
-
-/**
- * Fire-and-forget the recoverable search_index + preview backfill in the
- * BACKGROUND. Called once from start.ts AFTER the server is listening so it never
- * blocks startup — `runSearchIndexBackfill` is async/chunked/resumable and yields
- * between batches. No-op when history is disabled / the DB is not open. Returns
- * immediately; the work trickles in the background and never throws (it catches
- * internally; this `.catch` is a belt-and-suspenders guard against an
- * unhandledRejection crashing the process).
- */
-export function startSearchIndexBackfill(): void {
-  if (!enabled || !isDatabaseOpen()) return
-  void runSearchIndexBackfill(getDatabase()).catch((err: unknown) => consola.warn("[history] search-index backfill failed", err))
+/** History V3 does not run V2 backfills or migrate a legacy history database. */
+export function startHistoryBackfills(): void {
+  if (!enabled) return
+  // Additive V3 projection maintenance only. This never opens or reads legacy
+  // history.db/archive artifacts and never rewrites canonical V3 records.
+  startV3SummaryBackfill(getDatabase())
 }

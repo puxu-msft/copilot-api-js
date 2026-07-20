@@ -107,9 +107,12 @@ Hash 路由（`createWebHashHistory`），所有路由懒加载：
 | `/activity/:id` | VDetailPage — 请求详情 |
 | `/search` | VSearchPage — 内容寻址全文搜索（5 源单选切换，消费 `/history/api/search` + `/search/contains`；与 `/activity` 列表的轻量 preview 快筛分离） |
 | `/config` | VConfigPage — config.yaml 编辑器 |
-| `/models` | VModelsPage — 模型目录 |
 
 所有遗留路径（`/v/*`、`/history`、`/logs`、`/usage`）已重定向到新路径。
+
+> **模型视图已退役**（2026-07-10）：`/models` 页（VModelsPage + `components/models/` + `useModelsCatalog`/`useModelDetail`/`useModelColumns` 等）已删除，模型目录 UI 由 React `ui-v4/`（`/ui-v4`）承担并已超越旧版。`useModelTelemetry` 保留（Dashboard 共享）。
+>
+> **本 Vue `ui/` 正被逐页退役到 `ui-v4/`。** 退役哪些页、门控、可复用方法论、退役检查清单，见 [docs/vue-ui-retirement.md](../docs/vue-ui-retirement.md)（单一事实源）。剩余页 Dashboard/Activity/Detail/Config 的 parity **未审**（退役前须先做深度对比）；`/search` 是**门控**——ui-v4 尚无内容寻址搜索对应，须先建再退。
 
 ## 状态管理
 
@@ -165,9 +168,8 @@ DetailPanel → SectionBlock → MessageBlock → ContentRenderer
 - `useCopyToClipboard` → `useClipboard`（剪贴板 + `isSupported` 检测）
 - `useKeyboard` → `useEventListener`（document keydown 自动清理）
 - `useAppTheme` → `useLocalStorage`（主题持久化）
-- `SplitPane.vue` → `useLocalStorage`（面板宽度持久化）
 - `RequestList.vue` → `watchDebounced`（搜索 300ms 防抖）
-- `AppHeader.vue` → `onClickOutside` + `onKeyStroke`（下拉菜单交互）
+- `VDetailPage.vue` → `onKeyStroke`（j/k/Esc；用 `utils/keyboard.ts` 的 `isTyping` 守卫）
 
 **刻意保留手写实现的**：
 - `useSharedResizeObserver` — 共享单实例 + rAF 合并，VueUse 每次创建新实例

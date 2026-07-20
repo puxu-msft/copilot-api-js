@@ -31,18 +31,13 @@ import {
   getCurrentSession,
   getEntry,
   getHistory,
-  getSessionEntries,
-  getStats,
   initHistory,
   insertEntry,
   isHistoryEnabled,
   listInFlightEntries,
   shutdownHistory,
   updateEntry,
-  finalizeEntry,
 } from "~/lib/history"
-import { queryEntryCount } from "~/lib/history/sqlite/read"
-import { runReaperOnce } from "~/lib/history/sqlite/reaper"
 import {
   //
   setStateForTests,
@@ -51,67 +46,53 @@ import {
 import { generateId } from "~/lib/utils"
 
 import { insertHistoryEntry } from "../helpers/history-fixtures"
+import { commitV3HistoryEntry } from "../helpers/history-v3-fixtures"
 import { autoRestoreState } from "../helpers/state-fixture"
 
-/** Mark an entry as completed so session stats are persisted to SQLite. */
-async function completeEntry(entryId: string, overrides: Partial<Parameters<typeof updateEntry>[1]> = {}): Promise<void> {
-  updateEntry(entryId, {
-    state: "completed",
-    outboundResponse: {
-      success: true,
-      model: "test-model",
-      usage: { input_tokens: 0, output_tokens: 0 },
-      content: null,
-    },
-    ...overrides,
-  })
-  // updateEntry no longer auto-persists on terminal state — the explicit
-  // finalizeEntry call mirrors the consumer pipeline behavior.
-  await finalizeEntry(entryId)
-}
-
-/** Count persisted + in-flight entries. */
+/**
+ * Count entries visible through the public read API (in-flight map merged
+ * with V3-persisted terminal records — see `getHistory` in `queries.ts`).
+ * `sqlite/read.ts`'s `queryEntryCount` (V2) was deleted in Phase 2 of the V2
+ * removal, and the V2 write chain itself (`finalizeEntry`/`entries_v2`) was
+ * deleted in Phase 3 — `getHistory({}).total` is the V3-era equivalent,
+ * reading through the same merge `insertEntry`/`clearHistory` observe.
+ */
 function totalEntryCount(): number {
-  try {
-    return queryEntryCount() + listInFlightEntries().length
-  } catch {
-    return listInFlightEntries().length
-  }
+  return getHistory({}).total
 }
 
 // Snapshot global state once and restore after every test so per-test mutations
-// (e.g. setStateForTests({ historySuccessLimit: 50 })) can't leak into other test files.
+// (e.g. raw-capture config) can't leak into other test files.
 autoRestoreState()
 
 // Reset history state before each test
 beforeEach(async () => {
   setStateForTests({ historyDbPath: ":memory:" })
-  initHistory(true, 200)
+  await initHistory(true, 200)
 })
-
 afterEach(async () => {
   clearHistory()
   await shutdownHistory()
   setStateForTests({ historyDbPath: "" })
 })
-
+// End of History store integration coverage.
 // ─── initHistory ───
 
 describe("initHistory", () => {
   test("enables history when enabled=true", async () => {
-    initHistory(true, 100)
+    await initHistory(true, 100)
     expect(isHistoryEnabled()).toBe(true)
   })
 
   test("disables history when enabled=false", async () => {
-    initHistory(false, 100)
+    await initHistory(false, 100)
     expect(isHistoryEnabled()).toBe(false)
   })
 
   test("tracks history limit from state", async () => {
-    setStateForTests({ historySuccessLimit: 50 })
-    initHistory(true, 50)
-    expect(state.historySuccessLimit).toBe(50)
+    setStateForTests({ historyRawCaptureMaxObjectBytes: 50 })
+    await initHistory(true, 50)
+    expect(state.historyRawCaptureMaxObjectBytes).toBe(50)
   })
 
   test("resets entries and sessions", async () => {
@@ -127,7 +108,6 @@ describe("initHistory", () => {
     expect(totalEntryCount()).toBe(0)
   })
 })
-
 // ─── insertEntry ───
 
 describe("insertEntry", () => {
@@ -143,14 +123,16 @@ describe("insertEntry", () => {
   })
 
   test("does not insert when disabled", async () => {
-    initHistory(false, 100)
+    await initHistory(false, 100)
     const sessionId = "test-session"
     const entry: HistoryEntry = {
       id: generateId(),
       sessionId,
       startedAt: Date.now(),
       endpoint: "anthropic-messages",
-      inboundRequest: {
+      model: { requested: "claude-sonnet-4-20250514" },
+      clientRequest: {
+        format: "anthropic-messages",
         model: "claude-sonnet-4-20250514",
         messages: [{ role: "user", content: "hello" }],
         stream: true,
@@ -174,14 +156,14 @@ describe("insertEntry", () => {
     const stored = getEntry(entry.id)
     expect(stored).toBeDefined()
     expect(stored!.endpoint).toBe("anthropic-messages")
-    expect(stored!.inboundRequest.model).toBe("claude-sonnet-4-20250514")
-    expect(stored!.inboundRequest.messages).toHaveLength(1)
-    expect(stored!.inboundRequest.stream).toBe(true)
-    expect(stored!.inboundRequest.system).toBe("You are helpful")
-    expect(stored!.inboundRequest.max_tokens).toBe(1024)
-    expect(stored!.inboundRequest.temperature).toBe(0.5)
-    expect(stored!.inboundRequest.tools).toHaveLength(1)
-    expect(stored!.outboundResponse).toBeUndefined()
+    expect(stored!.clientRequest?.model).toBe("claude-sonnet-4-20250514")
+    expect(stored!.clientRequest?.messages).toHaveLength(1)
+    expect(stored!.clientRequest?.stream).toBe(true)
+    expect(stored!.clientRequest?.system).toBe("You are helpful")
+    expect(stored!.clientRequest?.max_tokens).toBe(1024)
+    expect(stored!.clientRequest?.temperature).toBe(0.5)
+    expect(stored!.clientRequest?.tools).toHaveLength(1)
+    expect(stored!.attempts).toBeUndefined()
   })
 
   test("keeps an explicit sessionId on the entry", async () => {
@@ -198,7 +180,9 @@ describe("insertEntry", () => {
       id: generateId(),
       startedAt: Date.now(),
       endpoint: "anthropic-messages",
-      inboundRequest: {
+      model: { requested: "claude-sonnet-4-20250514" },
+      clientRequest: {
+        format: "anthropic-messages",
         model: "claude-sonnet-4-20250514",
         messages: [{ role: "user", content: "no session" }],
         stream: true,
@@ -222,23 +206,30 @@ describe("updateEntry (response)", () => {
     })
 
     updateEntry(entry.id, {
-      outboundResponse: {
-        success: true,
-        model: "claude-sonnet-4-20250514",
-        usage: { input_tokens: 100, output_tokens: 50 },
-        stop_reason: "end_turn",
-        content: { role: "assistant", content: "Hi there" },
-      },
+      attempts: [
+        {
+          index: 0,
+          durationMs: 0,
+          upstreamResponse: {
+            success: true,
+            model: "claude-sonnet-4-20250514",
+            usage: { input_tokens: 100, output_tokens: 50 },
+            stopReason: "end_turn",
+            body: { role: "assistant", content: "Hi there" },
+          },
+        },
+      ],
       durationMs: 500,
     })
 
     const stored = getEntry(entry.id)
-    expect(stored!.outboundResponse).toBeDefined()
-    expect(stored!.outboundResponse!.success).toBe(true)
-    expect(stored!.outboundResponse!.model).toBe("claude-sonnet-4-20250514")
-    expect(stored!.outboundResponse!.usage.input_tokens).toBe(100)
-    expect(stored!.outboundResponse!.usage.output_tokens).toBe(50)
-    expect(stored!.outboundResponse!.stop_reason).toBe("end_turn")
+    const resp = stored!.attempts?.at(-1)?.upstreamResponse
+    expect(resp).toBeDefined()
+    expect(resp!.success).toBe(true)
+    expect(resp!.model).toBe("claude-sonnet-4-20250514")
+    expect(resp!.usage!.input_tokens).toBe(100)
+    expect(resp!.usage!.output_tokens).toBe(50)
+    expect(resp!.stopReason).toBe("end_turn")
     expect(stored!.durationMs).toBe(500)
   })
 
@@ -249,23 +240,30 @@ describe("updateEntry (response)", () => {
     })
 
     updateEntry(entry.id, {
-      outboundResponse: {
-        success: true,
-        model: "claude-sonnet-4-20250514",
-        usage: {
-          input_tokens: 100,
-          output_tokens: 50,
-          cache_read_input_tokens: 80,
-          cache_creation_input_tokens: 20,
+      attempts: [
+        {
+          index: 0,
+          durationMs: 0,
+          upstreamResponse: {
+            success: true,
+            model: "claude-sonnet-4-20250514",
+            usage: {
+              input_tokens: 100,
+              output_tokens: 50,
+              cache_read_input_tokens: 80,
+              cache_creation_input_tokens: 20,
+            },
+            stopReason: "end_turn",
+            body: null,
+          },
         },
-        stop_reason: "end_turn",
-        content: null,
-      },
+      ],
     })
 
     const stored = getEntry(entry.id)
-    expect(stored!.outboundResponse!.usage.cache_read_input_tokens).toBe(80)
-    expect(stored!.outboundResponse!.usage.cache_creation_input_tokens).toBe(20)
+    const usage = stored!.attempts?.at(-1)?.upstreamResponse?.usage
+    expect(usage!.cache_read_input_tokens).toBe(80)
+    expect(usage!.cache_creation_input_tokens).toBe(20)
   })
 
   test("records error response", async () => {
@@ -275,30 +273,43 @@ describe("updateEntry (response)", () => {
     })
 
     updateEntry(entry.id, {
-      outboundResponse: {
-        success: false,
-        model: "claude-sonnet-4-20250514",
-        usage: { input_tokens: 0, output_tokens: 0 },
-        error: "Rate limited",
-        content: null,
-      },
+      attempts: [
+        {
+          index: 0,
+          durationMs: 0,
+          error: "Rate limited",
+          upstreamResponse: {
+            success: false,
+            model: "claude-sonnet-4-20250514",
+            usage: { input_tokens: 0, output_tokens: 0 },
+            body: null,
+          },
+        },
+      ],
+      _index: { derived: { responseSuccess: false, failureReason: "Rate limited", attemptCount: 1 } },
       durationMs: 100,
     })
 
     const stored = getEntry(entry.id)
-    expect(stored!.outboundResponse!.success).toBe(false)
-    expect(stored!.outboundResponse!.error).toBe("Rate limited")
+    expect(stored!.attempts?.at(-1)?.upstreamResponse?.success).toBe(false)
+    expect(stored!.attempts?.at(-1)?.error).toBe("Rate limited")
   })
 
   test("does nothing when disabled", async () => {
-    initHistory(false, 100)
+    await initHistory(false, 100)
     updateEntry("nonexistent", {
-      outboundResponse: {
-        success: true,
-        model: "test",
-        usage: { input_tokens: 0, output_tokens: 0 },
-        content: null,
-      },
+      attempts: [
+        {
+          index: 0,
+          durationMs: 0,
+          upstreamResponse: {
+            success: true,
+            model: "test",
+            usage: { input_tokens: 0, output_tokens: 0 },
+            body: null,
+          },
+        },
+      ],
     })
     // Should not throw
   })
@@ -359,65 +370,67 @@ describe("updateEntry (rewrites)", () => {
     expect(stored!.pipelineInfo!.truncation!.removedMessageCount).toBe(3)
   })
 
-  test("stores effectiveRequest via updateEntry", async () => {
+  test("stores effectiveSource + upstreamRequest via updateEntry", async () => {
     const entry = insertHistoryEntry("anthropic-messages", {
       model: "claude-sonnet-4-20250514",
       messages: [{ role: "user", content: "hello" }],
     })
 
     updateEntry(entry.id, {
-      effectiveRequest: {
-        model: "claude-sonnet-4-20250514",
-        format: "anthropic-messages",
-        messageCount: 1,
-        messages: [{ role: "user", content: "truncated" }],
-        payload: {
-          model: "claude-sonnet-4-20250514",
-          messages: [{ role: "user", content: "truncated" }],
-          max_tokens: 4096,
+      attempts: [
+        {
+          index: 0,
+          durationMs: 0,
+          effectiveSource: {
+            model: "claude-sonnet-4-20250514",
+            format: "anthropic-messages",
+            messageCount: 1,
+            messages: [{ role: "user", content: "truncated" }],
+            body: {
+              model: "claude-sonnet-4-20250514",
+              messages: [{ role: "user", content: "truncated" }],
+              max_tokens: 4096,
+            },
+          },
+          upstreamRequest: {
+            model: "claude-sonnet-4-20250514",
+            format: "anthropic-messages",
+            messages: [{ role: "user", content: "truncated" }],
+            headers: { "x-request-id": "abc" },
+            body: {
+              model: "claude-sonnet-4-20250514",
+              messages: [{ role: "user", content: "truncated" }],
+              max_tokens: 4096,
+              stream: true,
+            },
+          },
         },
-      },
-      outboundRequest: {
-        model: "claude-sonnet-4-20250514",
-        format: "anthropic-messages",
-        messageCount: 1,
-        messages: [{ role: "user", content: "truncated" }],
-        payload: {
-          model: "claude-sonnet-4-20250514",
-          messages: [{ role: "user", content: "truncated" }],
-          max_tokens: 4096,
-          stream: true,
-        },
-      },
-      httpHeaders: {
-        outboundRequest: { "x-request-id": "abc" },
-      },
+      ],
     })
 
     const stored = getEntry(entry.id)
-    expect(stored!.effectiveRequest).toBeDefined()
-    expect(stored!.effectiveRequest!.model).toBe("claude-sonnet-4-20250514")
-    expect(stored!.effectiveRequest!.messageCount).toBe(1)
-    expect(stored!.effectiveRequest!.payload).toEqual({
+    const attempt = stored!.attempts?.at(-1)
+    expect(attempt?.effectiveSource).toBeDefined()
+    expect(attempt!.effectiveSource!.model).toBe("claude-sonnet-4-20250514")
+    expect(attempt!.effectiveSource!.messageCount).toBe(1)
+    expect(attempt!.effectiveSource!.body).toEqual({
       model: "claude-sonnet-4-20250514",
       messages: [{ role: "user", content: "truncated" }],
       max_tokens: 4096,
     })
-    expect(stored!.outboundRequest).toEqual({
+    expect(attempt!.upstreamRequest).toEqual({
       model: "claude-sonnet-4-20250514",
       format: "anthropic-messages",
-      messageCount: 1,
       messages: [{ role: "user", content: "truncated" }],
-      payload: {
+      headers: { "x-request-id": "abc" },
+      body: {
         model: "claude-sonnet-4-20250514",
         messages: [{ role: "user", content: "truncated" }],
         max_tokens: 4096,
         stream: true,
       },
     })
-    expect(stored!.httpHeaders).toEqual({
-      outboundRequest: { "x-request-id": "abc" },
-    })
+    expect(attempt!.upstreamRequest!.headers).toEqual({ "x-request-id": "abc" })
   })
 
   test("stores attempts via updateEntry", async () => {
@@ -425,15 +438,15 @@ describe("updateEntry (rewrites)", () => {
 
     updateEntry(entry.id, {
       attempts: [
-        { index: 0, durationMs: 100, effectiveMessageCount: 10 },
-        { index: 1, strategy: "auto-truncate", durationMs: 200, effectiveMessageCount: 5 },
+        { index: 0, durationMs: 100, effectiveSource: { messageCount: 10 } },
+        { index: 1, strategy: "auto-truncate", durationMs: 200, effectiveSource: { messageCount: 5 } },
       ],
     })
 
     const stored = getEntry(entry.id)
     expect(stored!.attempts).toHaveLength(2)
     expect(stored!.attempts![1].strategy).toBe("auto-truncate")
-    expect(stored!.attempts![1].effectiveMessageCount).toBe(5)
+    expect(stored!.attempts![1].effectiveSource!.messageCount).toBe(5)
   })
 
   test("stores transport via updateEntry", async () => {
@@ -478,24 +491,30 @@ describe("updateEntry (rewrites)", () => {
     const entry = insertHistoryEntry("anthropic-messages", { model: "m", messages: undefined })
 
     updateEntry(entry.id, {
-      outboundResponse: {
-        success: false,
-        model: "claude-sonnet-4",
-        usage: { input_tokens: 0, output_tokens: 0 },
-        error: "Bad request",
-        status: 400,
-        content: null,
-        rawBody: '{"error":"thinking blocks cannot be modified"}',
-      },
-      httpHeaders: {
-        outboundResponse: { "x-request-id": "xyz" },
-      },
+      attempts: [
+        {
+          index: 0,
+          durationMs: 0,
+          error: "Bad request",
+          upstreamResponse: {
+            success: false,
+            model: "claude-sonnet-4",
+            usage: { input_tokens: 0, output_tokens: 0 },
+            status: 400,
+            body: null,
+            rawBody: '{"error":"thinking blocks cannot be modified"}',
+            headers: { "x-request-id": "xyz" },
+          },
+        },
+      ],
+      _index: { derived: { responseSuccess: false, failureReason: "Bad request", attemptCount: 1 } },
     })
 
     const stored = getEntry(entry.id)
-    expect(stored!.outboundResponse!.status).toBe(400)
-    expect(stored!.outboundResponse!.rawBody).toBe('{"error":"thinking blocks cannot be modified"}')
-    expect(stored!.httpHeaders!.outboundResponse).toEqual({ "x-request-id": "xyz" })
+    const resp = stored!.attempts?.at(-1)?.upstreamResponse
+    expect(resp!.status).toBe(400)
+    expect(resp!.rawBody).toBe('{"error":"thinking blocks cannot be modified"}')
+    expect(resp!.headers).toEqual({ "x-request-id": "xyz" })
   })
 })
 
@@ -547,7 +566,7 @@ describe("getHistory", () => {
 
     const result = getHistory({ model: "claude" })
     expect(result.total).toBe(1)
-    expect(result.entries[0].inboundRequest.model).toContain("claude")
+    expect(result.entries[0].clientRequest?.model).toContain("claude")
   })
 
   test("filters by endpoint", async () => {
@@ -574,7 +593,8 @@ describe("getHistory", () => {
       sessionId,
       startedAt: now - 10000,
       endpoint: "anthropic-messages",
-      inboundRequest: { model: "test", messages: [{ role: "user", content: "old" }], stream: true },
+      model: { requested: "test" },
+      clientRequest: { format: "anthropic-messages", model: "test", messages: [{ role: "user", content: "old" }], stream: true },
     }
     insertEntry(old)
 
@@ -583,7 +603,8 @@ describe("getHistory", () => {
       sessionId,
       startedAt: now,
       endpoint: "anthropic-messages",
-      inboundRequest: { model: "test", messages: [{ role: "user", content: "new" }], stream: true },
+      model: { requested: "test" },
+      clientRequest: { format: "anthropic-messages", model: "test", messages: [{ role: "user", content: "new" }], stream: true },
     }
     insertEntry(recent)
 
@@ -601,7 +622,8 @@ describe("getHistory", () => {
       sessionId,
       startedAt: now - 20000,
       endpoint: "anthropic-messages",
-      inboundRequest: { model: "test", messages: [{ role: "user", content: "old" }], stream: true },
+      model: { requested: "test" },
+      clientRequest: { format: "anthropic-messages", model: "test", messages: [{ role: "user", content: "old" }], stream: true },
     }
     insertEntry(old)
 
@@ -610,7 +632,8 @@ describe("getHistory", () => {
       sessionId,
       startedAt: now - 10000,
       endpoint: "anthropic-messages",
-      inboundRequest: { model: "test", messages: [{ role: "user", content: "mid" }], stream: true },
+      model: { requested: "test" },
+      clientRequest: { format: "anthropic-messages", model: "test", messages: [{ role: "user", content: "mid" }], stream: true },
     }
     insertEntry(mid)
 
@@ -619,7 +642,8 @@ describe("getHistory", () => {
       sessionId,
       startedAt: now,
       endpoint: "anthropic-messages",
-      inboundRequest: { model: "test", messages: [{ role: "user", content: "new" }], stream: true },
+      model: { requested: "test" },
+      clientRequest: { format: "anthropic-messages", model: "test", messages: [{ role: "user", content: "new" }], stream: true },
     }
     insertEntry(recent)
 
@@ -644,11 +668,20 @@ describe("updateEntry stores sseEvents", () => {
       { offsetMs: 100, type: "message_stop", raw: JSON.stringify({ type: "message_stop" }) },
     ]
 
-    updateEntry(entry.id, { sseEvents })
+    updateEntry(entry.id, {
+      attempts: [
+        {
+          index: 0,
+          durationMs: 0,
+          upstreamResponse: { success: true, model: "test", usage: { input_tokens: 0, output_tokens: 0 }, body: null, sseEvents },
+        },
+      ],
+    })
 
     const updated = getEntry(entry.id)
-    expect(updated?.sseEvents).toEqual(sseEvents)
-    expect(updated?.sseEvents).toHaveLength(3)
+    const stored = updated?.attempts?.at(-1)?.upstreamResponse?.sseEvents
+    expect(stored).toEqual(sseEvents)
+    expect(stored).toHaveLength(3)
   })
 
   test("sseEvents can be set alongside response", async () => {
@@ -658,82 +691,26 @@ describe("updateEntry stores sseEvents", () => {
     })
 
     updateEntry(entry.id, {
-      outboundResponse: {
-        success: true,
-        model: "test",
-        usage: { input_tokens: 10, output_tokens: 5 },
-        content: null,
-      },
-      sseEvents: [{ offsetMs: 0, type: "message_start", raw: "{}" }],
+      attempts: [
+        {
+          index: 0,
+          durationMs: 0,
+          upstreamResponse: {
+            success: true,
+            model: "test",
+            usage: { input_tokens: 10, output_tokens: 5 },
+            body: null,
+            sseEvents: [{ offsetMs: 0, type: "message_start", raw: "{}" }],
+          },
+        },
+      ],
       durationMs: 100,
     })
 
     const updated = getEntry(entry.id)
-    expect(updated?.outboundResponse?.success).toBe(true)
-    expect(updated?.sseEvents).toHaveLength(1)
+    expect(updated?.attempts?.at(-1)?.upstreamResponse?.success).toBe(true)
+    expect(updated?.attempts?.at(-1)?.upstreamResponse?.sseEvents).toHaveLength(1)
     expect(updated?.durationMs).toBe(100)
-  })
-})
-
-// ─── getSessionEntries pagination ───
-
-describe("getSessionEntries pagination", () => {
-  test("returns paginated results with default limit", async () => {
-    const sessionId = getCurrentSession("anthropic-messages", generateId())!
-
-    for (let i = 0; i < 5; i++) {
-      const entry: HistoryEntry = {
-        id: generateId(),
-        sessionId,
-        startedAt: Date.now() + i,
-        endpoint: "anthropic-messages",
-        inboundRequest: { model: "test", messages: [{ role: "user", content: `msg ${i}` }] },
-      }
-      insertEntry(entry)
-      await completeEntry(entry.id)
-    }
-
-    const result = getSessionEntries(sessionId)
-    expect(result.total).toBe(5)
-    expect(result.entries).toHaveLength(5)
-    expect(result.prevCursor).toBeNull()
-  })
-
-  test("respects cursor and limit", async () => {
-    const sessionId = getCurrentSession("anthropic-messages", generateId())!
-
-    for (let i = 0; i < 10; i++) {
-      const entry: HistoryEntry = {
-        id: generateId(),
-        sessionId,
-        startedAt: Date.now() + i,
-        endpoint: "anthropic-messages",
-        inboundRequest: { model: "test", messages: [{ role: "user", content: `msg ${i}` }] },
-      }
-      insertEntry(entry)
-      await completeEntry(entry.id)
-    }
-
-    // First page: no cursor
-    const page1 = getSessionEntries(sessionId, { limit: 3 })
-    expect(page1.total).toBe(10)
-    expect(page1.entries).toHaveLength(3)
-    expect(page1.nextCursor).not.toBeNull()
-    expect(page1.prevCursor).toBeNull()
-
-    // Second page: use last entry ID from first page as cursor
-    const page2 = getSessionEntries(sessionId, { cursor: page1.entries.at(-1)!.id, limit: 3 })
-    expect(page2.entries).toHaveLength(3)
-    expect(page2.prevCursor).not.toBeNull()
-
-    // Different entries on different pages
-    expect(page1.entries[0].id).not.toBe(page2.entries[0].id)
-  })
-
-  test("returns empty for non-existent session", async () => {
-    const result = getSessionEntries("nonexistent")
-    expect(result.total).toBe(0)
-    expect(result.entries).toHaveLength(0)
   })
 })
 
@@ -741,11 +718,17 @@ describe("getSessionEntries pagination", () => {
 
 describe("clearHistory", () => {
   test("removes all entries", async () => {
-    const entry = insertHistoryEntry("anthropic-messages", {
-      model: "test",
-      messages: [{ role: "user", content: "hello" }],
+    // A persisted (terminal, V3) entry — clearHistory must wipe V3 too, not just in-flight.
+    commitV3HistoryEntry({
+      id: generateId(),
+      startedAt: Date.now(),
+      endpoint: "anthropic-messages",
+      state: "completed",
+      clientRequest: { format: "anthropic-messages", model: "test", messages: [{ role: "user", content: "hello" }], stream: true },
+      attempts: [
+        { index: 0, durationMs: 0, upstreamResponse: { success: true, model: "test-model", usage: { input_tokens: 0, output_tokens: 0 }, body: null } },
+      ],
     })
-    await completeEntry(entry.id)
 
     expect(totalEntryCount()).toBe(1)
 
@@ -762,75 +745,5 @@ describe("clearHistory", () => {
     expect(listInFlightEntries().length).toBe(1)
     clearHistory()
     expect(listInFlightEntries().length).toBe(0)
-  })
-})
-
-// ─── getStats ───
-
-describe("getStats", () => {
-  test("returns aggregate statistics", async () => {
-    const entry = insertHistoryEntry("anthropic-messages", {
-      model: "claude-sonnet-4-20250514",
-      messages: [{ role: "user", content: "hello" }],
-    })
-
-    updateEntry(entry.id, {
-      state: "completed",
-      outboundResponse: {
-        success: true,
-        model: "claude-sonnet-4-20250514",
-        usage: { input_tokens: 100, output_tokens: 50 },
-        content: null,
-      },
-      durationMs: 500,
-    })
-    await finalizeEntry(entry.id)
-
-    const stats = getStats()
-    expect(stats.totalRequests).toBe(1)
-    expect(stats.successfulRequests).toBe(1)
-    expect(stats.failedRequests).toBe(0)
-    expect(stats.totalInputTokens).toBe(100)
-    expect(stats.totalOutputTokens).toBe(50)
-    expect(stats.averageDurationMs).toBe(500)
-    expect(stats.modelDistribution["claude-sonnet-4-20250514"]).toBe(1)
-    expect(stats.endpointDistribution["anthropic-messages"]).toBe(1)
-  })
-})
-
-// ─── Max entries enforcement ───
-
-describe("Max entries enforcement", () => {
-  test("reaper removes oldest entries when exceeding limit", async () => {
-    const baseTime = Date.now()
-    const entries: Array<HistoryEntry> = []
-    for (let i = 0; i < 5; i++) {
-      const entry: HistoryEntry = {
-        id: generateId(),
-        sessionId: `session-${i}`,
-        startedAt: baseTime + i,
-        endpoint: "anthropic-messages",
-        inboundRequest: {
-          model: "test",
-          messages: [{ role: "user", content: `msg-${i}` }],
-          stream: true,
-        },
-      }
-      insertEntry(entry)
-      entries.push(entry)
-    }
-    // Complete all entries so they are persisted to SQLite
-    for (const entry of entries) await completeEntry(entry.id)
-
-    expect(queryEntryCount()).toBe(5)
-
-    // Run reaper with success-limit=3 — should evict 2 oldest successes
-    runReaperOnce(3, 0)
-
-    expect(queryEntryCount()).toBe(3)
-    // Oldest entries should be removed (FIFO by startedAt)
-    expect(getEntry(entries[0].id)).toBeUndefined()
-    expect(getEntry(entries[1].id)).toBeUndefined()
-    expect(getEntry(entries[2].id)).toBeDefined()
   })
 })

@@ -19,6 +19,8 @@ import {
   test,
 } from "bun:test"
 
+import type { ActiveRequestChangedWire } from "~/lib/observability/active-request-wire"
+
 import {
   //
   addClient,
@@ -26,6 +28,20 @@ import {
   getClientCount,
   notifyActiveRequestChanged,
 } from "~/lib/ws"
+
+/**
+ * A minimal valid `active_request_changed` payload. These backpressure tests
+ * only care that *some* broadcast frame is emitted — the exact wire content is
+ * irrelevant to the buffered-amount drop logic — so we build the smallest
+ * shape the union accepts (a `state_changed` carrying a bare `ActiveRequestWire`).
+ */
+function activeChange(state: "streaming" | "completed" = "streaming"): ActiveRequestChangedWire {
+  return {
+    action: "state_changed",
+    request: { id: "test", endpoint: "anthropic-messages", state, startTime: 0 },
+    activeCount: 1,
+  }
+}
 
 /**
  * Build a WebSocket-shaped mock whose `bufferedAmount` is fixed at the value
@@ -70,7 +86,7 @@ describe("broadcast backpressure", () => {
     // sanity: still registered before the broadcast attempts a send
     expect(getClientCount()).toBe(1)
 
-    notifyActiveRequestChanged({ id: "test", state: "streaming" })
+    notifyActiveRequestChanged(activeChange("streaming"))
 
     // The broadcast hit sendToEach, saw bufferedAmount > cap, and SKIPPED send()
     // (the backpressure check fires before the actual ws.send call). So total
@@ -96,8 +112,8 @@ describe("broadcast backpressure", () => {
     const healthyClient = createWebSocketWithBufferedAmount(1 * 1024 * 1024)
     addClient(healthyClient)
 
-    notifyActiveRequestChanged({ id: "test", state: "streaming" })
-    notifyActiveRequestChanged({ id: "test", state: "completed" })
+    notifyActiveRequestChanged(activeChange("streaming"))
+    notifyActiveRequestChanged(activeChange("completed"))
 
     // Both broadcasts delivered (plus the `connected` frame on addClient)
     const sendMock = healthyClient.send as ReturnType<typeof mock>
@@ -120,7 +136,7 @@ describe("broadcast backpressure", () => {
 
     expect(getClientCount()).toBe(2)
 
-    notifyActiveRequestChanged({ id: "test", state: "streaming" })
+    notifyActiveRequestChanged(activeChange("streaming"))
 
     // Healthy client received the connected frame + the broadcast = 2 sends
     const healthySendMock = healthyClient.send as ReturnType<typeof mock>
@@ -144,7 +160,7 @@ describe("broadcast backpressure", () => {
     })
     addClient(slowClient)
 
-    expect(() => notifyActiveRequestChanged({ id: "test", state: "streaming" })).not.toThrow()
+    expect(() => notifyActiveRequestChanged(activeChange("streaming"))).not.toThrow()
     expect(getClientCount()).toBe(0)
   })
 })

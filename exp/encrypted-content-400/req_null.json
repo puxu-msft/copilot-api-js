@@ -1,0 +1,13 @@
+{
+  "model": "claude-opus-4.8",
+  "max_tokens": 16,
+  "messages": [
+    {"role":"user","content":"search test"},
+    {"role":"assistant","content":[
+      {"type":"server_tool_use","id":"srvtoolu_n01","name":"web_search","input":{"query":"test"}},
+      {"type":"web_search_tool_result","tool_use_id":"srvtoolu_n01","content":[{"type":"web_search_result","title":"t","url":"https://example.com","encrypted_content":null,"page_age":null}]},
+      {"type":"text","text":"done"}
+    ]},
+    {"role":"user","content":"ok thanks"}
+  ]
+}

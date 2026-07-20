@@ -14,5 +14,5 @@ export default defineConfig({
     },
   },
   // 只跑 .vitest.test 文件;.bun.test 留给 `bun test`(它们 import bun:test,vitest 无法 bundle)。
-  test: { environment: "jsdom", globals: true, include: ["tests/**/*.vitest.test.{ts,tsx}"] },
+  test: { environment: "jsdom", globals: true, setupFiles: ["./tests/setup.ts"], include: ["tests/**/*.vitest.test.{ts,tsx}"] },
 })

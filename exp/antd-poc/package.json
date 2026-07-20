@@ -1,0 +1,33 @@
+{
+  "name": "antd-poc",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "PoC: 验证 antd v5 + React 19 + Tailwind v4 三者共存 + Amber 双主题切换 + antd 组件包进 react-virtuoso 行。结论见 CONCLUSION.md。",
+  "scripts": {
+    "build": "vite build",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@ant-design/cssinjs": "^2.1.2",
+    "antd": "^6.5.0",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "react-virtuoso": "^4.18.10"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.0.0",
+    "@testing-library/jest-dom": "^6.6.3",
+    "@testing-library/react": "^16.1.0",
+    "@testing-library/user-event": "^14.6.1",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "@vitejs/plugin-react": "^4",
+    "jsdom": "^25.0.0",
+    "tailwindcss": "^4.0.0",
+    "typescript": "^5.7.0",
+    "vite": "^7",
+    "vitest": "^4.0.0"
+  }
+}

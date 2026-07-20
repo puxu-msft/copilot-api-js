@@ -1,4 +1,8 @@
-import { useState } from "react"
+import {
+  //
+  useMemo,
+  useState,
+} from "react"
 
 import type { TocNode } from "@/lib/content/toc"
 
@@ -6,6 +10,10 @@ interface DetailTocTreeProps {
   nodes: Array<TocNode>
   onSelect: (anchorId: string) => void
   activeAnchor?: string
+  /** Start with all parent nodes expanded (default: collapsed — message-level first). */
+  defaultExpanded?: boolean
+  /** Show a header button that expands/collapses all parents at once. */
+  showExpandAllToggle?: boolean
 }
 
 /**
@@ -17,24 +25,24 @@ interface DetailTocTreeProps {
  */
 const KIND_COLOR: Record<string, string> = {
   // roles (mirror MessageBlock ROLE_COLOR)
-  user: "var(--color-primary)",
-  assistant: "#9ad",
-  system: "var(--color-muted)",
-  tool: "#4a6a4a",
+  user: "var(--content-accent)",
+  assistant: "var(--content-role-assistant)",
+  system: "var(--content-muted)",
+  tool: "var(--content-tool-dim)",
   // Stages leg
-  leg: "var(--color-primary)",
+  leg: "var(--content-accent)",
   // block types
-  text: "var(--color-muted)",
-  tool_use: "#7fae7f",
-  tool_result: "#7fae7f",
-  thinking: "#9a8ad0",
-  redacted_thinking: "#9a8ad0",
-  image: "#9ad",
+  text: "var(--content-muted)",
+  tool_use: "var(--content-tool)",
+  tool_result: "var(--content-tool)",
+  thinking: "var(--content-thinking-accent)",
+  redacted_thinking: "var(--content-thinking-accent)",
+  image: "var(--content-role-assistant)",
 }
 
 /** Resolve a kind's tint color, falling back to muted for unknown kinds. */
 function kindColor(kind: string): string {
-  return KIND_COLOR[kind] ?? "var(--color-muted)"
+  return KIND_COLOR[kind] ?? "var(--content-muted)"
 }
 
 /** Collect the anchorIds of every node that has children (for default-collapse). */
@@ -63,25 +71,28 @@ function TocRow({ node, number, collapsed, onToggle, onSelect, activeAnchor }: T
       <div
         data-active={isActive ? "" : undefined}
         className={`mono flex items-center border-l-2 text-[13px] leading-tight transition-colors ${
-          isActive ? "border-l-[var(--color-primary)] bg-[#221b0e] text-[var(--color-primary)]" : "border-l-transparent hover:bg-[#1c1a14]"
+          isActive ?
+            "border-l-[var(--content-accent)] bg-[var(--surface-toc-active)] text-[var(--content-accent)]"
+          : "border-l-transparent hover:bg-[var(--surface-toc-hover)]"
         }`}
       >
         {hasChildren ?
           <button
             type="button"
             aria-label={isCollapsed ? "expand" : "collapse"}
+            aria-expanded={!isCollapsed}
             onClick={(e) => {
               e.stopPropagation()
               onToggle(node.anchorId)
             }}
-            className="flex w-4 shrink-0 items-center justify-center text-[12px] font-bold text-[var(--color-muted)] hover:text-[var(--color-text)]"
+            className="flex w-4 shrink-0 items-center justify-center text-[12px] font-bold text-[var(--content-muted)] hover:text-[var(--content-text)]"
           >
             {isCollapsed ? "+" : "−"}
           </button>
         : <span className="w-4 shrink-0" />}
         <span
           aria-hidden="true"
-          className="mr-1.5 shrink-0 text-[12px] text-[var(--color-muted)] select-none"
+          className="mr-1.5 shrink-0 text-[12px] text-[var(--content-muted)] select-none"
         >
           {number}
         </span>
@@ -96,7 +107,7 @@ function TocRow({ node, number, collapsed, onToggle, onSelect, activeAnchor }: T
         </button>
       </div>
       {hasChildren && !isCollapsed ?
-        <div className="ml-2 border-l border-[var(--color-border)]/60 pl-1">
+        <div className="ml-2 border-l border-[var(--surface-border)]/60 pl-1">
           {children.map((child, j) => (
             <TocRow
               key={child.anchorId}
@@ -125,8 +136,9 @@ function TocRow({ node, number, collapsed, onToggle, onSelect, activeAnchor }: T
  * (the active row instead gets a left accent bar + soft amber tint). The label
  * gets a `title` so truncated rows reveal their full text on hover.
  */
-export function DetailTocTree({ nodes, onSelect, activeAnchor }: DetailTocTreeProps) {
-  const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set(collectParentAnchors(nodes)))
+export function DetailTocTree({ nodes, onSelect, activeAnchor, defaultExpanded = false, showExpandAllToggle = false }: DetailTocTreeProps) {
+  const allParents = useMemo(() => collectParentAnchors(nodes), [nodes])
+  const [collapsed, setCollapsed] = useState<Set<string>>(() => (defaultExpanded ? new Set<string>() : new Set(allParents)))
 
   function toggle(anchorId: string): void {
     setCollapsed((prev) => {
@@ -140,8 +152,25 @@ export function DetailTocTree({ nodes, onSelect, activeAnchor }: DetailTocTreePr
     })
   }
 
+  // "All expanded" means no parent is collapsed; the toggle flips between fully
+  // expanded and fully collapsed (a partially-collapsed tree reads as "not all
+  // expanded", so the button offers to expand all).
+  const allExpanded = collapsed.size === 0
+  function toggleAll(): void {
+    setCollapsed(allExpanded ? new Set(allParents) : new Set<string>())
+  }
+
   return (
     <div className="flex flex-col">
+      {showExpandAllToggle && allParents.length > 0 ?
+        <button
+          type="button"
+          onClick={toggleAll}
+          className="mono mb-0.5 self-start px-1 text-[11px] text-[var(--content-muted)] hover:text-[var(--content-text)]"
+        >
+          {allExpanded ? "− 全部收起" : "+ 全部展开"}
+        </button>
+      : null}
       {nodes.map((node, i) => (
         <TocRow
           key={node.anchorId}

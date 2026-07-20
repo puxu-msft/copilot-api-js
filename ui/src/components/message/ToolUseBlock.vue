@@ -27,24 +27,28 @@ const props = defineProps<{
 const { aggregateTools, toolResultMap, scrollToResult } = useContentContext()
 
 /**
- * Parse-error marker injected by backend `safeParseJson` when streamed tool_use
- * input could not be parsed as JSON (e.g. interrupted mid-stream).
+ * Raw unparsed tool input text, or null when the input is structured.
+ *
+ * Upstream streams tool_use input as JSON; when the stream is truncated or the
+ * JSON is malformed the accumulated string cannot be parsed. The backend keeps
+ * that raw string as-is (faithful to upstream), so a string-typed `input` means
+ * "unparsed raw fragment". We also tolerate two legacy marker shapes still found
+ * in older stored entries / other paths: the Anthropic `{ _parseError, _rawInput }`
+ * marker and the OpenAI `{ _raw }` marker — all funnel to the same raw rendering.
  */
-interface ParseErrorInput {
-  _parseError: true
-  _rawInput: string
-}
-
-const parseError = computed<ParseErrorInput | null>(() => {
+const rawUnparsed = computed<string | null>(() => {
   const input = props.block.input
-  if (input !== null && typeof input === "object" && (input as { _parseError?: unknown })._parseError === true) {
-    return input as ParseErrorInput
+  if (typeof input === "string") return input
+  if (input !== null && typeof input === "object") {
+    const marker = input as { _parseError?: unknown; _rawInput?: unknown; _raw?: unknown }
+    if (marker._parseError === true && typeof marker._rawInput === "string") return marker._rawInput
+    if (typeof marker._raw === "string") return marker._raw
   }
   return null
 })
 
 const inputJson = computed(() => {
-  if (parseError.value) return parseError.value._rawInput
+  if (rawUnparsed.value !== null) return rawUnparsed.value
   try {
     return JSON.stringify(props.block.input, null, 2)
   } catch {
@@ -57,17 +61,17 @@ const inputJson = computed(() => {
  * AskUserQuestion `questions`) into a JSON string. For readability we decode
  * ALL top-level string fields back to structured form for the JSON tree, while
  * leaving the store data and the copy text (`inputJson`) on the original form —
- * history stays faithful, only the rendering is friendlier. The parseError
- * branch is short-circuited so the `_rawInput` marker is never decoded.
+ * history stays faithful, only the rendering is friendlier. The raw-unparsed
+ * branch is short-circuited so a truncated fragment is never decoded.
  */
 const DISPLAY_DECODE_CONFIG: DecodeToolInputConfig = { fields: {}, all: true }
 const displayInput = computed(() => {
-  if (parseError.value) return props.block.input
+  if (rawUnparsed.value !== null) return props.block.input
   return decodeToolUseInput(props.block.name, props.block.input, DISPLAY_DECODE_CONFIG)
 })
 
 const isObjectInput = computed(() => {
-  if (parseError.value) return false
+  if (rawUnparsed.value !== null) return false
   return displayInput.value !== null && typeof displayInput.value === "object"
 })
 
@@ -102,9 +106,9 @@ const hasResult = computed(() => Boolean(resultBlock.value))
       :show-line-number="true"
       :collapsed-on-click-brackets="true"
     />
-    <template v-else-if="parseError">
+    <template v-else-if="rawUnparsed !== null">
       <div class="parse-error-banner">⚠ Failed to parse tool input as JSON — showing raw streamed text (may be truncated)</div>
-      <pre class="tool-input parse-error-raw">{{ parseError._rawInput }}</pre>
+      <pre class="tool-input parse-error-raw">{{ rawUnparsed }}</pre>
     </template>
     <pre
       v-else

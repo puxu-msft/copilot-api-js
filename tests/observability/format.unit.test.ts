@@ -1,0 +1,113 @@
+/** Pure observability formatting helper tests. */
+
+import {
+  //
+  describe,
+  expect,
+  test,
+} from "bun:test"
+import pc from "picocolors"
+
+import {
+  //
+  cacheHitColor,
+  durationColor,
+  formatCacheRate,
+  formatNumber,
+} from "~/lib/observability/projections/format"
+
+/** Strip SGR color codes so assertions target the plain rendered text. */
+// eslint-disable-next-line no-control-regex -- intentional ANSI escape range
+const stripAnsi = (s: string): string => s.replaceAll(/\x1b\[[0-9;]*m/g, "")
+
+describe("formatNumber (compact token unit)", () => {
+  test("sub-thousand values are shown verbatim", () => {
+    expect(formatNumber(0)).toBe("0")
+    expect(formatNumber(456)).toBe("456")
+    expect(formatNumber(999)).toBe("999")
+  })
+
+  test("thousands use a lowercase 'k' suffix with one decimal", () => {
+    expect(formatNumber(1000)).toBe("1.0k")
+    expect(formatNumber(8000)).toBe("8.0k")
+    expect(formatNumber(12_345)).toBe("12.3k")
+  })
+
+  test("millions use a lowercase 'm' suffix with one decimal", () => {
+    expect(formatNumber(1_000_000)).toBe("1.0m")
+    expect(formatNumber(1_500_000)).toBe("1.5m")
+  })
+})
+
+describe("formatCacheRate", () => {
+  test("no cache activity (read and creation both 0/undefined) renders empty", () => {
+    expect(formatCacheRate(1000, 0, 0)).toBe("")
+    expect(formatCacheRate(1000, undefined, undefined)).toBe("")
+    expect(formatCacheRate(undefined, undefined, undefined)).toBe("")
+  })
+
+  test("zero total (all fields 0) renders empty — no divide-by-zero", () => {
+    expect(formatCacheRate(0, 0, 0)).toBe("")
+  })
+
+  test("hit% = read/total; new% = creation/total over input+read+creation", () => {
+    // input=1000 (net fresh) + read=8000 (hit) + creation=1000 (first write) = 10000
+    expect(stripAnsi(formatCacheRate(1000, 8000, 1000))).toBe("↻80%+10%")
+  })
+
+  test("creation omitted when zero — only the hit marker is shown", () => {
+    // input=2000 + read=8000 = 10000 → 80% hit, no new-cache segment
+    expect(stripAnsi(formatCacheRate(2000, 8000, 0))).toBe("↻80%")
+  })
+
+  test("read=0 with creation>0 shows a 0% hit plus the new-cache segment", () => {
+    // input=9000 + creation=1000 = 10000 → 0% hit, 10% newly written
+    expect(stripAnsi(formatCacheRate(9000, 0, 1000))).toBe("↻0%+10%")
+  })
+
+  test("percentages are rounded to the nearest integer", () => {
+    // total = 3 → read 1/3 = 33.3% → 33
+    expect(stripAnsi(formatCacheRate(2, 1, 0))).toBe("↻33%")
+    // total = 1 → read 1/1 = 100%
+    expect(stripAnsi(formatCacheRate(0, 1, 0))).toBe("↻100%")
+  })
+
+  test("the new-cache segment text follows the hit segment", () => {
+    // Text shape only (color is asserted by reference below — under
+    // pc.isColorSupported === false every color collapses to identity, so
+    // comparing colored strings would prove nothing about the coloring).
+    expect(stripAnsi(formatCacheRate(1000, 8000, 1000))).toBe("↻80%+10%")
+  })
+})
+
+// In-process (bun test) has `pc.isColorSupported === false`, under which
+// picocolors collapses EVERY color to the SAME identity reference:
+// `pc.white === pc.yellow === pc.magenta === pc.red === pc.dim === String`
+// (verified). So a single-color band's `.toBe(pc.white)` is really
+// `.toBe(String)` here — it cannot distinguish bands nor catch an "always red"
+// mutation, so we do NOT assert it in-process. What IS observable in-process is
+// that a COMPOSITE band (e.g. cacheHitColor's `bold(red)`) is a fresh closure,
+// hence `!== String`; a mutation that flattens it to a single pc color makes it
+// collapse to `String` and the `.not.toBe` check fails. Every band's ACTUAL
+// color — all single-color bands and all threshold boundaries — is proven
+// authoritatively in the FORCE_COLOR integration test
+// (tests/tui/log-line-color.integration.test.ts). Both cacheHitColor and
+// durationColor share the yellow → red → bold-red escalation; only their
+// bold-red composite band is a fresh closure observable in-process.
+describe("cacheHitColor (severity by hit rate — in-process routing guard)", () => {
+  test("the <20 severe band is a distinct fresh closure, not collapsed to a named band", () => {
+    const fn = cacheHitColor(19)
+    expect(fn).not.toBe(pc.dim)
+    expect(fn).not.toBe(pc.yellow)
+    expect(fn).not.toBe(pc.red)
+  })
+})
+
+describe("durationColor (request-duration severity — in-process routing guard)", () => {
+  test("the >180s severe band is a distinct fresh closure (bold red), not collapsed to a named band", () => {
+    const fn = durationColor(180_001)
+    expect(fn).not.toBe(pc.white)
+    expect(fn).not.toBe(pc.yellow)
+    expect(fn).not.toBe(pc.red)
+  })
+})

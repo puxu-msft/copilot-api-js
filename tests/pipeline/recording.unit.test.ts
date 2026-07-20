@@ -49,7 +49,9 @@ function makeOpenAIAcc(overrides: Partial<OpenAIStreamAccumulator> = {}): OpenAI
     rawContent: "Hi there",
     finishReason: "stop",
     cachedTokens: 0,
+    cacheWriteTokens: 0,
     reasoningTokens: 0,
+    reasoningText: "",
     toolCalls: [],
     toolCallMap: new Map(),
     ...overrides,
@@ -339,7 +341,7 @@ describe("buildAnthropicResponseData", () => {
 
   // ── Task B: partial tool_use input preservation ──
 
-  test("preserves partial JSON for tool_use blocks when streaming was interrupted", () => {
+  test("preserves partial JSON as the raw string for tool_use blocks when streaming was interrupted", () => {
     const partialJson = '{"path": "/tmp/foo", "content": "hello wo'
     const acc = makeAnthropicAcc({
       stopReason: "tool_use",
@@ -355,11 +357,13 @@ describe("buildAnthropicResponseData", () => {
 
     const result = buildAnthropicResponseData(acc, "fallback")
     const content = result.content as { role: string; content: Array<unknown> }
+    // Upstream leg must stay faithful: the truncated input is kept as the raw
+    // string exactly as upstream streamed it — never a proxy-fabricated marker.
     expect(content.content[0]).toEqual({
       type: "tool_use",
       id: "toolu_abort",
       name: "write_file",
-      input: { _parseError: true, _rawInput: partialJson },
+      input: partialJson,
     })
   })
 })
@@ -395,6 +399,9 @@ describe("buildOpenAIResponseData", () => {
     const acc = makeOpenAIAcc({ cachedTokens: 25 })
     const result = buildOpenAIResponseData(acc, "fallback")
     expect(result.usage.cache_read_input_tokens).toBe(25)
+    // Net convention: acc.inputTokens (80, the OpenAI TOTAL incl cached) is net-of-cache
+    // to 80 - 25 = 55, disjoint from cache_read. See usage-normalize.ts.
+    expect(result.usage.input_tokens).toBe(55)
   })
 
   test("omits cached tokens when zero", () => {

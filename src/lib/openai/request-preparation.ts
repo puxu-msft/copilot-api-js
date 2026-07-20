@@ -38,11 +38,52 @@ export function fillMaxCompletionTokens(payload: ChatCompletionsPayload, selecte
   return filled
 }
 
+/**
+ * OpenAI's `user` field wire limit — the Responses / Chat-Completions endpoints reject any `user`
+ * string longer than 64 chars (`HTTP 400 invalid_request_body: Invalid 'user': string too long`).
+ */
+const OPENAI_USER_MAX_LENGTH = 64
+
+/**
+ * Fit the OpenAI `user` field within the upstream's 64-char wire limit.
+ *
+ * Claude Code sends a ~150-char JSON blob as `metadata.user_id`
+ * (`{"device_id":…,"account_uuid":…,"session_id":…}`) which the anthropic→cc translation maps onto
+ * `user`; the OpenAI-family endpoints then 400 on it. In this single-user proxy the `device_id` /
+ * `account_uuid` are constant, so the only discriminating (and semantically apt) part is the
+ * `session_id` — extract it so upstream gets a stable per-session identifier. Non-JSON over-length
+ * values fall back to truncation.
+ *
+ * The clamp lives at this OpenAI-family wire boundary rather than at the source mapping — the
+ * Anthropic `/v1/messages` leg has no such limit and does not funnel through here (richest-data-flow:
+ * trim only at the terminal that constrains the value; history keeps the full original user_id).
+ */
+function fitUserField<T extends { user?: string | null }>(payload: T): T {
+  const { user } = payload
+  if (typeof user !== "string" || user.length <= OPENAI_USER_MAX_LENGTH) return payload
+  const fitted = (extractSessionId(user) ?? user).slice(0, OPENAI_USER_MAX_LENGTH)
+  return { ...payload, user: fitted }
+}
+
+/** Pull a non-empty `session_id` out of Claude Code's JSON `user_id` blob; undefined if absent / not JSON. */
+function extractSessionId(user: string): string | undefined {
+  try {
+    const parsed: unknown = JSON.parse(user)
+    if (parsed !== null && typeof parsed === "object" && "session_id" in parsed) {
+      const sid = (parsed as { session_id: unknown }).session_id
+      if (typeof sid === "string" && sid.length > 0) return sid
+    }
+  } catch {
+    // Not JSON — fall through to truncation.
+  }
+  return undefined
+}
+
 export function prepareChatCompletionsRequest(
   payload: ChatCompletionsPayload,
   opts?: PrepareOpenAIRequestOptions,
 ): PreparedOpenAIRequest<ChatCompletionsPayload> {
-  const wire = shouldRemapMaxTokens(opts?.resolvedModel, payload.model) ? normalizeMaxTokens(payload) : payload
+  const wire = fitUserField(shouldRemapMaxTokens(opts?.resolvedModel, payload.model) ? normalizeMaxTokens(payload) : payload)
 
   const enableVision = wire.messages.some((message) => typeof message.content !== "string" && message.content?.some((part) => part.type === "image_url"))
 
@@ -62,7 +103,7 @@ export function prepareChatCompletionsRequest(
 }
 
 export function prepareResponsesRequest(payload: ResponsesPayload, opts?: PrepareOpenAIRequestOptions): PreparedOpenAIRequest<ResponsesPayload> {
-  const wire = payload
+  const wire = fitUserField(payload)
   const enableVision = hasVisionContent(wire.input)
   const isAgentCall =
     Array.isArray(wire.input) && wire.input.some((item) => item.role === "assistant" || item.type === "function_call" || item.type === "function_call_output")

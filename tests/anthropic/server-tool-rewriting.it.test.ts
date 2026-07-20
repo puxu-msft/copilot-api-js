@@ -1,6 +1,6 @@
 import {
   //
-  afterAll,
+  afterEach,
   describe,
   expect,
   test,
@@ -9,6 +9,11 @@ import {
 import type { Tool } from "~/types/api/anthropic"
 import type { StreamEvent } from "~/types/api/anthropic"
 
+import {
+  //
+  markAnthropicServerToolUnsupported,
+  resetAnthropicFeatureNegotiationForTesting,
+} from "~/lib/anthropic/feature-negotiation"
 import { stripServerTools } from "~/lib/anthropic/message-tools"
 import {
   //
@@ -16,11 +21,6 @@ import {
   filterServerToolBlocksFromResponse,
   isServerToolBlock,
 } from "~/lib/anthropic/server-tool-filter"
-import {
-  //
-  state,
-  setStateForTests,
-} from "~/lib/state"
 
 // Helper to build minimal StreamEvent objects for filter testing.
 // The filter only inspects .type, .index, and .content_block.type —
@@ -37,25 +37,22 @@ function blockStop(index: number): StreamEvent {
   return { type: "content_block_stop", index } as unknown as StreamEvent
 }
 
-const originalStripServerTools = state.stripServerTools
-
-afterAll(() => {
-  setStateForTests({ stripServerTools: originalStripServerTools })
+afterEach(async () => {
+  await resetAnthropicFeatureNegotiationForTesting()
 })
 
 // ============================================================================
-// Request-side: stripServerTools
+// Request-side: stripServerTools (learned-driven; the global config source was
+// removed with the web_search retirement 2026-07-13 — strip is now reactive-only).
 // ============================================================================
 
 describe("stripServerTools", () => {
-  describe("when stripping is disabled", () => {
+  describe("when no learned type applies", () => {
     test("should return undefined for undefined input", () => {
-      setStateForTests({ stripServerTools: false })
       expect(stripServerTools(undefined, "m")).toBeUndefined()
     })
 
     test("should return the same array reference (no allocation)", () => {
-      setStateForTests({ stripServerTools: false })
       const tools: Array<Tool> = [
         { name: "web_search", type: "web_search_20250305" },
         { name: "Bash", description: "Run bash", input_schema: { type: "object" } },
@@ -65,21 +62,21 @@ describe("stripServerTools", () => {
     })
   })
 
-  describe("when stripping is enabled", () => {
+  describe("when a learned type applies", () => {
     test("should strip web_search server tool", () => {
-      setStateForTests({ stripServerTools: true })
+      markAnthropicServerToolUnsupported("m", "web_search_")
       const tools: Array<Tool> = [{ name: "web_search", type: "web_search_20250305" }]
       expect(stripServerTools(tools, "m")).toBeUndefined()
     })
 
     test("should strip code_execution server tool", () => {
-      setStateForTests({ stripServerTools: true })
+      markAnthropicServerToolUnsupported("m", "code_execution_")
       const tools: Array<Tool> = [{ name: "code_execution", type: "code_execution_20250522" }]
       expect(stripServerTools(tools, "m")).toBeUndefined()
     })
 
     test("should not strip custom tools", () => {
-      setStateForTests({ stripServerTools: true })
+      markAnthropicServerToolUnsupported("m", "web_search_")
       const customTool: Tool = {
         name: "Bash",
         description: "Run bash commands",
@@ -91,7 +88,8 @@ describe("stripServerTools", () => {
     })
 
     test("should handle mixed server and custom tools", () => {
-      setStateForTests({ stripServerTools: true })
+      markAnthropicServerToolUnsupported("m", "web_search_")
+      markAnthropicServerToolUnsupported("m", "web_fetch_")
       const tools: Array<Tool> = [
         { name: "web_search", type: "web_search_20250305" },
         { name: "Bash", description: "Run bash", input_schema: { type: "object" } },
@@ -103,12 +101,12 @@ describe("stripServerTools", () => {
     })
 
     test("should return undefined for empty array", () => {
-      setStateForTests({ stripServerTools: true })
+      markAnthropicServerToolUnsupported("m", "web_search_")
       expect(stripServerTools([], "m")).toBeUndefined()
     })
 
     test("should match tools by type prefix, not exact match", () => {
-      setStateForTests({ stripServerTools: true })
+      markAnthropicServerToolUnsupported("m", "web_search_")
       // Different date versions should all match the same prefix
       const tools: Array<Tool> = [
         { name: "ws1", type: "web_search_20250101" },

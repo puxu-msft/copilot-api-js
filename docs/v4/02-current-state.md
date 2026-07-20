@@ -67,8 +67,8 @@ Retry-After：`extractRetryAfterFromBody`(parsing.ts:25) + `parseRetryAfterHeade
 **Phase 2 可重复清洗**（`sanitizeAnthropicMessages` sanitize.ts:76，顺序固定）：
 - **A3** system prompt 去 reminder — 始终 — `sanitize/system-prompt.ts:15`
 - **A4** messages 去 reminder — 始终（标签策略 `state.rewriteSystemReminders`） — `sanitize/system-reminders.ts:92`
-- **A5** 内联 `role:"system"` 消息处理 — `state.systemMessagesSanitize` — `sanitize/system-messages.ts:102`
-- **A6** 历史 server-tool 块降级 — `state.rewriteHistoryServerTools` — `sanitize/rewrite-server-tool-history.ts:123`（**必须先于 A8**）
+- **A5** 内联 `role:"system"` 消息处理 — `state.systemDefaultMode` — `sanitize/system-messages.ts:102`
+- **A6** 历史 server-tool 块降级 — `state.rewriteServerTools` — `sanitize/rewrite-server-tool-blocks.ts:123`（**必须先于 A8**）
 - **A7** 丢损坏 thinking 块 — `state.thinkingBlockSanitizeCheck` — `sanitize/content-blocks.ts:70`（**先于 A8**）
 - **A8** tool 块统一处理（名称修正 + input 解析 + 孤儿过滤 + 空消息丢弃） — 始终 — `sanitize/tool-blocks.ts:32`
 - **A9** 终末空 text 块清理 — 始终 — `sanitize/content-blocks.ts:11,30`
@@ -131,7 +131,7 @@ S1 processAnthropicSystem / S2 processOpenAIMessages / S3 processResponsesInstru
 ### 3.1 Anthropic（`messages/handler.ts`）
 
 - **A1** createServerToolBlockFilter（server-tool 过滤+工具名还原 A1b） — 逐帧 — 始终 — `server-tool-filter.ts:102` — **R**
-- **A2** createToolInputStreamDecoder — 整体累积后改写 — `state.decodeToolInputFields`/`decodeAllToolInputFields` — `decode-tool-input.ts:83` — **R**
+- **A2** createToolInputStreamDecoder — 整体累积后改写 — `state.decodeToolInputFields` — `decode-tool-input.ts:83` — **R**
 - **A3** applyThinkingSignatureCompat — 逐帧（单→多帧） — `state.thinkingSignatureCompat` — `thinking-signature-compat.ts:69`（短路 return） — **R**
 - **A4** startForwardedSseHeartbeat — 合成注入 — `state.anthropicFakeSseHeartbeat` — `handler.ts:873` — **R**
 

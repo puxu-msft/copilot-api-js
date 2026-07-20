@@ -7,7 +7,7 @@ import {
 } from "bun:test"
 
 import type { ApiError } from "~/lib/error"
-import type { RetryContext } from "~/lib/request/pipeline"
+import type { RetryContext } from "~/lib/request/retry-types"
 
 import {
   //
@@ -43,6 +43,24 @@ function toolReferenceError(toolName: string): ApiError {
     status: 400,
     message: msg,
     raw: new HTTPError(msg, 400, responseText),
+  } as unknown as ApiError
+}
+
+/**
+ * A "double-wrapped" 400 body where the tool-reference message does NOT live at
+ * `error.message` (that field is absent), but the raw response text still carries
+ * the "Tool reference '…' not found in available tools" string in a sibling field.
+ * The strategy must fall back to the raw text (mirrors legacy-thinking /
+ * context-management) rather than returning null.
+ */
+function doubleWrappedToolReferenceError(toolName: string): ApiError {
+  const msg = `Tool reference '${toolName}' not found in available tools`
+  const responseText = JSON.stringify({ error: { type: "invalid_request_error", detail: msg } })
+  return {
+    type: "bad_request",
+    status: 400,
+    message: "Bad request",
+    raw: new HTTPError("Bad request", 400, responseText),
   } as unknown as ApiError
 }
 
@@ -121,6 +139,26 @@ describe("createDeferredToolRetryStrategy", () => {
   test("canHandle returns true for tool reference error", () => {
     const strategy = createDeferredToolRetryStrategy<TestPayload>()
     expect(strategy.canHandle(toolReferenceError("get_weather"))).toBe(true)
+  })
+
+  test("canHandle returns true for double-wrapped body without error.message (raw-text fallback)", () => {
+    const strategy = createDeferredToolRetryStrategy<TestPayload>()
+    expect(strategy.canHandle(doubleWrappedToolReferenceError("web_search"))).toBe(true)
+  })
+
+  test("handle un-defers tool parsed from double-wrapped body raw text", async () => {
+    const strategy = createDeferredToolRetryStrategy<TestPayload>()
+    const payload: TestPayload = {
+      model: "test",
+      tools: [{ name: "web_search", description: "Search the web", defer_loading: true }],
+    }
+
+    const result = await strategy.handle(doubleWrappedToolReferenceError("web_search"), payload, retryContext)
+
+    expect(result.action).toBe("retry")
+    const modifiedTool = (result as any).payload.tools.find((t: any) => t.name === "web_search")
+    expect(modifiedTool?.defer_loading).toBe(false)
+    expect((result as any).meta).toEqual({ undeferredTool: "web_search" })
   })
 
   test("canHandle returns false for non-400 errors", () => {

@@ -6,14 +6,19 @@
  * changes, and removed keys. `schema.ts` owns the *current* valid shape; this
  * module owns *old→new* redirection.
  *
- * Consumed by `validation.ts`' `extractAndTranslateDeprecated()` on BOTH paths:
+ * Owns the migration-application logic itself (`extractAndTranslateDeprecatedWithOps`),
+ * consumed on BOTH validation paths:
  *   - file load (`validateConfig`)        — graceful migrate + warn
- *   - HTTP PUT (`validateConfigInput`)    — normalize old-key bodies before parse
+ *   - HTTP PUT (`validateConfigInput`)    — normalize old-key bodies before parse,
+ *                                            also threads `legacyPathsRemoved` through
+ *                                            to routes/config/route.ts for on-disk cleanup
  *
  * Each migration locates the legacy key via `parentPath`+`key`, deletes it,
  * warns once, then deep-merges `translate()`'s patch in *missing-only* (so a
  * user-set new key always wins over the migrated legacy value).
  */
+
+import consola from "consola"
 
 /** A single legacy→current config migration rule. */
 export interface ConfigMigration {
@@ -38,6 +43,17 @@ export interface ConfigMigration {
    * are not deleted/warned by the locator's otherwise-unconditional delete+warn.
    */
   isLegacyValue?: (value: unknown) => boolean
+  /**
+   * When true, this migration's `translate()` writes the new value back to
+   * the SAME dot-path as `path` (in-place value consolidation — see
+   * `migrateValue`). Such migrations must NOT be reported in
+   * `extractAndTranslateDeprecatedWithOps`'s `legacyPathsRemoved`: deleting
+   * then recreating the SAME YAML key would drop its position/comment for
+   * no reason, since `mergeConfigIntoDocument` already overwrites it in
+   * place. Relocations (`renameLeaf`/`renameSection`) and pure removals
+   * (`removeKey`) leave this undefined and ARE reported.
+   */
+  isInPlaceValueMigration?: boolean
 }
 
 // ============================================================================
@@ -141,6 +157,7 @@ export function migrateValue(oldPath: string, isLegacy: (value: unknown) => bool
     ...located,
     message,
     isLegacyValue: isLegacy,
+    isInPlaceValueMigration: true,
     translate: () => buildNested(parts, newValue),
   }
 }
@@ -148,6 +165,13 @@ export function migrateValue(oldPath: string, isLegacy: (value: unknown) => bool
 // ============================================================================
 // Migration registry — evaluated top-down by extractAndTranslateDeprecated()
 // ============================================================================
+
+/** Shared deprecation message for the server-tool config keys removed with the web_search retirement (2026-07-13). */
+const SERVER_TOOL_RETIRED_MSG =
+  "removed with the web_search double-hop retirement (2026-07-13): native server-tool stripping/rewriting is now reactive-only, and web_search is no longer synthesized. See docs/decisions/2026-07-13-server-tool-positioning-and-web-search-retirement.md"
+
+const TOOL_DECODE_ALL_REMOVED_MSG =
+  "the decode-ALL-tool-input-fields feature was removed; use anthropic.response_tool_use_fix.decode_top_level_field (per-tool field list) instead; ignoring"
 
 export const CONFIG_MIGRATIONS: ReadonlyArray<ConfigMigration> = [
   // ── Historical migrations (carried over from schema.ts) ───────────────────
@@ -184,9 +208,24 @@ export const CONFIG_MIGRATIONS: ReadonlyArray<ConfigMigration> = [
       if (typeof v !== "boolean") return undefined
       return v ? "end_turn" : "refusal"
     },
-    message: 'anthropic.refusal_recover_text is removed; use refusal_sse_rewrite ("refusal" | "end_turn" | "error")',
+    message:
+      'anthropic.refusal_recover_text is removed; use refusal_sse_rewrite ("refusal" | "end_turn" | "error"). To customize the injected text, see refusal_end_turn_text / refusal_error_message / refusal_error_type.',
   }),
   removeKey("history.min_entries", "history.min_entries is removed (was tied to the deleted in-memory history store); ignoring"),
+  // anthropic.api_key retired: count_tokens now forwards to GHC's upstream
+  // /v1/messages/count_tokens (uses the copilot token, no separate Anthropic key,
+  // and is more representative since the real completion also flows through GHC).
+  removeKey(
+    "anthropic.api_key",
+    "anthropic.api_key is no longer used — count_tokens now forwards to GHC's upstream /v1/messages/count_tokens (no separate Anthropic API key needed); remove it from config.yaml",
+  ),
+  // Tool-search moved from a manual allowlist to a default-allow matcher (Claude ≥4.5; Haiku + pre-4.5
+  // denied), so the old `model_capabilities.tool_search` list is gone. Per-model exceptions now live in
+  // `model_capabilities.tool_search_overrides` ({ <model-substring>: true|false }).
+  removeKey(
+    "anthropic.model_capabilities.tool_search",
+    "anthropic.model_capabilities.tool_search is removed — tool-search is now default-allow for Claude ≥4.5 (Haiku + pre-4.5 denied); use model_capabilities.tool_search_overrides { <model-substring>: true|false } to force-enable/disable specific models",
+  ),
 
   // ── Naming-cleanup batch ──────────────────────────────────────────────────
   // section rename + inner ws/websocket unification
@@ -196,21 +235,72 @@ export const CONFIG_MIGRATIONS: ReadonlyArray<ConfigMigration> = [
   // anthropic.* renames (consistency + name-vs-reality)
   renameLeaf("anthropic.efforts_overrides", "anthropic.effort_overrides"),
   renameLeaf("anthropic.thinking_block_sanitize_check", "anthropic.thinking_block_sanitize"),
+  // thinking_block_sanitize value rename: the enum is now named by WHICH empty field
+  // triggers the drop (empirically clearer — opus-4.8's normal encrypted thinking is
+  // exactly text-empty + signature-valid, which the old "empty_thinking" name wrongly
+  // implied it would strip). Legacy "empty_thinking" (text AND signature both empty) →
+  // "all_empty"; "empty_any" (signature empty, any text) → "signature_empty". Behavior
+  // unchanged — pure spelling. Value-gated so already-valid values pass silently; the
+  // NEW modes ("thinking_empty" / "any_empty") have no legacy predecessor. These fire
+  // on the current key (post the check→sanitize key rename above), so a config that set
+  // either the old key OR the new key to the legacy value is migrated.
+  migrateValue(
+    "anthropic.thinking_block_sanitize",
+    (v) => v === "empty_thinking",
+    "all_empty",
+    'anthropic.thinking_block_sanitize "empty_thinking" is renamed to "all_empty" (text AND signature both empty); update your config.yaml',
+  ),
+  migrateValue(
+    "anthropic.thinking_block_sanitize",
+    (v) => v === "empty_any",
+    "signature_empty",
+    'anthropic.thinking_block_sanitize "empty_any" is renamed to "signature_empty" (signature empty, any text); update your config.yaml',
+  ),
+  // system_messages_sanitize → system_default_mode: the key names the DEFAULT/fallback
+  // inline-`role:"system"` mode (applied to models NOT in system_reject_models), paired
+  // with system_reject_mode; the old "sanitize" spelling misleadingly read as a global
+  // switch and overlapped system_reject_mode's description. Same enum value, no transform.
+  renameLeaf("anthropic.system_messages_sanitize", "anthropic.system_default_mode"),
   // anthropic.* concern-prefix normalization (RFC anthropic-rewrite-reorg §6, Phase 4):
   // every key is concern-first (thinking_/tool_/system_/beta_/retry_/stream_). Behavior
   // unchanged — only the user-facing yaml key spelling. Already-grouped keys (thinking_block_*,
-  // context_editing*, tool_search, cache_control, system_messages_sanitize, …) keep their names.
+  // context_editing*, tool_search, cache_control, …) keep their names.
   renameLeaf("anthropic.coerce_adaptive_thinking", "anthropic.thinking_coerce_adaptive"),
-  renameLeaf("anthropic.strip_server_tools", "anthropic.tool_strip_server"),
+  // memory stays (client-executed tool passthrough): rename legacy → server_tool_memory.
+  renameLeaf("anthropic.memory_tool", "anthropic.server_tool_memory"),
+  // server_tool_strip / server_tool_rewrite + the top-level web_search (→ server_tool_web_search)
+  // section were RETIRED (2026-07-13). Native server-tool stripping/rewriting is now reactive-only
+  // (learned cache), and the web_search double-hop is gone. Every current + ancient-legacy spelling
+  // is dropped with a warn-and-continue deprecation (config-philosophy: never fail-load).
+  removeKey("anthropic.server_tool_strip", SERVER_TOOL_RETIRED_MSG),
+  removeKey("anthropic.strip_server_tools", SERVER_TOOL_RETIRED_MSG),
+  removeKey("anthropic.tool_strip_server", SERVER_TOOL_RETIRED_MSG),
+  removeKey("anthropic.server_tool_rewrite", SERVER_TOOL_RETIRED_MSG),
+  removeKey("anthropic.rewrite_history_server_tools", SERVER_TOOL_RETIRED_MSG),
+  removeKey("anthropic.tool_rewrite_history_server", SERVER_TOOL_RETIRED_MSG),
+  removeKey("server_tool_web_search", SERVER_TOOL_RETIRED_MSG),
+  removeKey("web_search", SERVER_TOOL_RETIRED_MSG),
   renameLeaf("anthropic.inject_claude_code_tools", "anthropic.tool_inject_claude_code"),
-  renameLeaf("anthropic.rewrite_history_server_tools", "anthropic.tool_rewrite_history_server"),
   renameLeaf("anthropic.dedup_tool_calls", "anthropic.tool_dedup_calls"),
   renameLeaf("anthropic.strip_read_tool_result_tags", "anthropic.tool_strip_read_result_tags"),
-  renameLeaf("anthropic.non_deferred_tools", "anthropic.tool_non_deferred"),
-  renameLeaf("anthropic.decode_tool_input_fields", "anthropic.tool_decode_input_fields"),
-  renameLeaf("anthropic.decode_all_tool_input_fields", "anthropic.tool_decode_all_input_fields"),
-  renameLeaf("anthropic.recover_tool_call_text", "anthropic.tool_recover_call_text"),
-  renameLeaf("anthropic.backfill_question_from_header", "anthropic.tool_backfill_question"),
+  renameLeaf("anthropic.non_deferred_tools", "anthropic.tool_search_non_deferred"),
+  // tool_non_deferred → tool_search_non_deferred: the non-defer allowlist only
+  // applies when tool_search is enabled, so it now carries the tool_search_ sub-concern
+  // prefix. Same string[]→string[] shape, no value transform.
+  renameLeaf("anthropic.tool_non_deferred", "anthropic.tool_search_non_deferred"),
+  // Response-wire fixes regrouped under `response_text_fix` (text blocks) /
+  // `response_tool_use_fix` (tool_use blocks). Migrations do NOT chain (each reads the
+  // raw payload), so BOTH the ancestral and the intermediate flat spellings map DIRECTLY
+  // to the final nested path. `*_decode_all_*` is removed outright (feature deleted).
+  renameLeaf("anthropic.decode_tool_input_fields", "anthropic.response_tool_use_fix.decode_top_level_field"),
+  renameLeaf("anthropic.tool_decode_input_fields", "anthropic.response_tool_use_fix.decode_top_level_field"),
+  removeKey("anthropic.decode_all_tool_input_fields", TOOL_DECODE_ALL_REMOVED_MSG),
+  removeKey("anthropic.tool_decode_all_input_fields", TOOL_DECODE_ALL_REMOVED_MSG),
+  renameLeaf("anthropic.recover_tool_call_text", "anthropic.response_text_fix.invoke_in_text"),
+  renameLeaf("anthropic.tool_recover_call_text", "anthropic.response_text_fix.invoke_in_text"),
+  renameLeaf("anthropic.backfill_question_from_header", "anthropic.response_tool_use_fix.ask_user_question_question_missing"),
+  renameLeaf("anthropic.tool_backfill_question", "anthropic.response_tool_use_fix.ask_user_question_question_missing"),
+  renameLeaf("anthropic.tool_repair_malformed_input", "anthropic.response_tool_use_fix.malformed_input"),
   renameLeaf("anthropic.rewrite_system_reminders", "anthropic.system_rewrite_reminders"),
   renameLeaf("anthropic.strip_beta_headers", "anthropic.beta_strip_headers"),
   // strip_request_headers → request_header_blacklist: the HTTP request-header strip is
@@ -220,6 +310,24 @@ export const CONFIG_MIGRATIONS: ReadonlyArray<ConfigMigration> = [
   renameLeaf("anthropic.reject_body_fields", "anthropic.retry_reject_body_fields"),
   renameLeaf("anthropic.fake_sse_heartbeat", "anthropic.stream_keepalive_ping_sec"),
   renameLeaf("anthropic.stream_fake_sse_heartbeat", "anthropic.stream_keepalive_ping_sec"),
+  // buffered-retry caps unified under the vendor-neutral `buffered_retry.*` map (P0
+  // Task 3): the three anthropic-only scalars move into `anthropic.buffered_retry.{max_retries,
+  // heartbeat_sec,buffer_cap_bytes}` — a per-vendor override of the new shared top-level
+  // `buffered_retry.*`. The three rules accumulate into the one `anthropic.buffered_retry`
+  // section via the missing-only merge; a user-set new key always wins. `protect_streaming_generation`
+  // (the tri-state mode switch) is UNCHANGED — only the caps moved.
+  renameLeaf("anthropic.protect_streaming_max_retries", "anthropic.buffered_retry.max_retries", {
+    message: "anthropic.protect_streaming_max_retries is renamed to anthropic.buffered_retry.max_retries; update your config.yaml",
+  }),
+  renameLeaf("anthropic.protect_streaming_heartbeat", "anthropic.buffered_retry.heartbeat_sec", {
+    message: "anthropic.protect_streaming_heartbeat is renamed to anthropic.buffered_retry.heartbeat_sec; update your config.yaml",
+  }),
+  renameLeaf("anthropic.protect_streaming_buffer_cap_bytes", "anthropic.buffered_retry.buffer_cap_bytes", {
+    message: "anthropic.protect_streaming_buffer_cap_bytes is renamed to anthropic.buffered_retry.buffer_cap_bytes; update your config.yaml",
+  }),
+  // model_overrides → model_mappings: top-level rename (anthropic↔responses direct-bridge
+  // RFC §6.2). Pure spelling change, no shape/value transform — the map itself is unchanged.
+  renameLeaf("model_overrides", "model_mappings"),
   // rate_limiter unit unification: minutes → seconds (value auto-converted ×60)
   renameLeaf("rate_limiter.recovery_timeout", "rate_limiter.recovery_interval", {
     transform: (v) => (typeof v === "number" ? v * 60 : v),
@@ -229,6 +337,210 @@ export const CONFIG_MIGRATIONS: ReadonlyArray<ConfigMigration> = [
   renameLeaf("stream_idle_timeout", "timeouts.stream_idle"),
   renameLeaf("fetch_timeout", "timeouts.response_header"),
   renameLeaf("stale_request_max_age", "timeouts.stale_request_max_age"),
-  // compress toggle joins its threshold under auto_truncate
-  renameLeaf("compress_tool_results_before_truncate", "auto_truncate.compress_tool_results"),
+  // max_retries was never truncation-specific — hoist to the shared retry budget section.
+  renameLeaf("auto_truncate.max_retries", "retry.max_reactive_retries"),
+  // stream_keepalive_mode "content_delta" → "empty_text": the keepalive reset is now
+  // unconditional (no pre-response gating that once distinguished a content-delta emit
+  // from an empty-text emit), so the two collapse into the timeout-safe empty_text frame.
+  // Value-gated so already-valid ping/enveloped_ping/empty_text pass through silently.
+  migrateValue(
+    "anthropic.stream_keepalive_mode",
+    (v) => v === "content_delta",
+    "empty_text",
+    "anthropic.stream_keepalive_mode: content_delta 在无条件重置下已并入 empty_text（无 pre-response 门控差异），自动迁移",
+  ),
+
+  // ── Transport config three-axis reorg (2026-07-14) ────────────────────────
+  // timeouts.upstream_keepalive → upstream_transport.tcp_keepalive_probe_delay.
+  // Special-cased 0→absence: the legacy field's 0 meant "let undici/Node pick
+  // its own default" (NOT "disable keepalive"), which is exactly what an absent
+  // new key means post-migration (schema default 15 applies only via absence;
+  // migrating literal 0 forward would collide with the NEW field's disable
+  // semantics established by D5). `transform` returning `undefined` skips the
+  // merge entirely while the locator still deletes+warns the legacy key.
+  renameLeaf("timeouts.upstream_keepalive", "upstream_transport.tcp_keepalive_probe_delay", {
+    transform: (v) => (typeof v === "number" && v > 0 ? v : undefined),
+    message:
+      'timeouts.upstream_keepalive is renamed to upstream_transport.tcp_keepalive_probe_delay; a legacy value of 0 is migrated to absence (falls back to the new default) since 0 previously meant "use the runtime default", not "disable"',
+  }),
+  renameLeaf("timeouts.upstream_h2_ping", "upstream_transport.http2.ping_interval", {
+    message: "timeouts.upstream_h2_ping is renamed to upstream_transport.http2.ping_interval",
+  }),
+  renameLeaf("openai_responses.client_ws_keep_open", "server.responses_ws.keep_open", {
+    message: "openai_responses.client_ws_keep_open is renamed to server.responses_ws.keep_open (client-facing WS ingress config moved under server.*)",
+  }),
+  renameLeaf("openai_responses.max_ws_frame_bytes", "server.responses_ws.max_frame_bytes", {
+    message: "openai_responses.max_ws_frame_bytes is renamed to server.responses_ws.max_frame_bytes",
+  }),
+  renameLeaf("openai_responses.max_client_ws_connections", "server.responses_ws.max_connections", {
+    message: "openai_responses.max_client_ws_connections is renamed to server.responses_ws.max_connections",
+  }),
+  renameLeaf("openai_responses.max_upstream_ws_connections", "upstream_transport.websocket.soft_max_connections", {
+    message:
+      "openai_responses.max_upstream_ws_connections is renamed to upstream_transport.websocket.soft_max_connections (upstream-facing pool cap moved under upstream_transport.*)",
+  }),
 ]
+
+// ============================================================================
+// Migration applier — walks CONFIG_MIGRATIONS top-down against a raw
+// payload, deleting/translating/warning as each rule's locator matches, and
+// tracking which legacy dot-paths were actually removed (so PUT-time YAML
+// rewrite can delete them from the on-disk document too — see
+// routes/config/route.ts's deleteLegacyPathsAndPruneEmptyParents).
+// ============================================================================
+
+const warnedDeprecatedKeys = new Set<string>()
+
+function warnDeprecatedKeyOnce(key: string, message: string): void {
+  if (warnedDeprecatedKeys.has(key)) return
+  warnedDeprecatedKeys.add(key)
+  consola.warn(`[Config] ${message}`)
+}
+
+/** Test-only reset for the warn-once tracking above (registered in tests/helpers/isolated-fixture.ts via validation.ts's _resetConfigValidationWarnTrackingForTests). */
+export function _resetDeprecatedKeyWarnTrackingForTests(): void {
+  warnedDeprecatedKeys.clear()
+}
+
+/**
+ * Walk a dot-path through nested plain objects. Returns `undefined` if any
+ * segment is missing or the value along the way is not an object.
+ *
+ * Shared by the migration applier below AND validation.ts's Zod-issue path
+ * lookups (`cleanInvalidPaths`/`zodIssueToDetails`) — those two call sites
+ * are unrelated to migration, just reuse the same "walk a dot-path" primitive.
+ */
+export function navigate(obj: unknown, path: ReadonlyArray<PropertyKey>): unknown {
+  let current: unknown = obj
+  for (const segment of path) {
+    if (!current || typeof current !== "object") return undefined
+    current = (current as Record<PropertyKey, unknown>)[segment]
+  }
+  return current
+}
+
+function deepCloneJsonSafe<T>(value: T): T {
+  return structuredClone(value)
+}
+
+/**
+ * Deep-merge `patch` into `target` ONLY for keys not already present (user-set
+ * value wins). Exported because it is ALSO used by `routes/config/route.ts` to
+ * missing-only-merge the disk-only migration patch (see
+ * `extractDiskOnlyMigrationPatch` below) into the PUT body's already-migrated
+ * value, without re-writing unrelated disk content (collections in
+ * particular — see that function's doc comment for why).
+ */
+export function deepMergeMissingOnly(target: Record<string, unknown>, patch: Record<string, unknown>): void {
+  for (const [key, value] of Object.entries(patch)) {
+    const existing = target[key]
+    if (value && typeof value === "object" && !Array.isArray(value)) {
+      if (existing && typeof existing === "object" && !Array.isArray(existing)) {
+        deepMergeMissingOnly(existing as Record<string, unknown>, value as Record<string, unknown>)
+      } else if (existing === undefined) {
+        target[key] = deepCloneJsonSafe(value)
+      }
+      // else: user already provided a primitive at this path; do not override.
+    } else if (existing === undefined) {
+      target[key] = value
+    }
+  }
+}
+
+export interface ConfigMigrationApplyResult {
+  value: Record<string, unknown>
+  legacyPathsRemoved: ReadonlyArray<string>
+}
+
+/**
+ * Shared migration-walk core for both `extractAndTranslateDeprecatedWithOps`
+ * (below) and `extractDiskOnlyMigrationPatch` (below). Walks CONFIG_MIGRATIONS
+ * top-down against a (mutated) working copy of `raw`, deleting/translating/
+ * warning as each rule's locator matches. When `patchAccumulator` is passed,
+ * every migration that actually translates a value ALSO missing-only-merges
+ * that SAME patch into it — giving callers a second, sparse view containing
+ * ONLY the new-path values migrations contributed (no passthrough of raw's
+ * untouched content), while `out`'s full-payload mutation still drives
+ * migration CHAINING (a `renameSection` can produce a flat key that a later
+ * `renameLeaf` rule then re-migrates within the same pass — see
+ * `config-compat.unit.test.ts`'s "openai-responses section..." test).
+ */
+function applyMigrations(raw: Record<string, unknown>, patchAccumulator?: Record<string, unknown>): ConfigMigrationApplyResult {
+  const out: Record<string, unknown> = deepCloneJsonSafe(raw)
+  const legacyPathsRemoved: Array<string> = []
+
+  for (const dep of CONFIG_MIGRATIONS) {
+    const parent = dep.parentPath === "" ? out : navigate(out, dep.parentPath.split("."))
+    if (!parent || typeof parent !== "object") continue
+    const parentObj = parent as Record<string, unknown>
+    if (!(dep.key in parentObj)) continue
+
+    const legacyValue = parentObj[dep.key]
+    // Value-gated migrations (migrateValue) fire only for legacy values; an
+    // already-valid value must pass through WITHOUT delete or warn.
+    if (dep.isLegacyValue && !dep.isLegacyValue(legacyValue)) continue
+    // eslint-disable-next-line @typescript-eslint/no-dynamic-delete -- key comes from CONFIG_MIGRATIONS
+    delete parentObj[dep.key]
+    warnDeprecatedKeyOnce(dep.path, dep.message)
+    if (!dep.isInPlaceValueMigration) legacyPathsRemoved.push(dep.path)
+
+    if (!dep.translate) continue
+    const patch = dep.translate(legacyValue)
+    if (!patch) continue
+    deepMergeMissingOnly(out, patch)
+    if (patchAccumulator) deepMergeMissingOnly(patchAccumulator, deepCloneJsonSafe(patch))
+  }
+
+  return { value: out, legacyPathsRemoved }
+}
+
+/**
+ * Apply every CONFIG_MIGRATIONS rule to `raw`, returning the migrated
+ * payload plus the list of legacy dot-paths that were actually present and
+ * removed (declaration order; a path appears at most once). `renameLeaf`/
+ * `renameSection`/`removeKey` migrations are reported; `migrateValue`
+ * in-place value consolidations (`isInPlaceValueMigration: true`) are not
+ * (see the field's doc comment on `ConfigMigration`).
+ *
+ * Consumed by BOTH validation paths: file load's `validateConfig` (only
+ * uses `.value`, unchanged behavior) and HTTP PUT's `validateConfigInput`
+ * (also threads `.legacyPathsRemoved` through `ConfigValidationResult` to
+ * `routes/config/route.ts`, which deletes those paths from the on-disk
+ * YAML document before writing the migrated value back).
+ */
+export function extractAndTranslateDeprecatedWithOps(raw: Record<string, unknown>): ConfigMigrationApplyResult {
+  return applyMigrations(raw)
+}
+
+/**
+ * PUT-only companion to `extractAndTranslateDeprecatedWithOps`: migrates the
+ * RAW ON-DISK config.yaml content (not the PUT body) and returns ONLY the
+ * sparse patch of new-path values migrations contributed, plus the legacy
+ * paths that fired.
+ *
+ * Why this exists (plan-3 correction, see plan-3-put-migration.md "偏离与根
+ * 因" note): the PUT handler only migrates the REQUEST BODY via
+ * `validateConfigInput`. A legacy key can sit on disk WITHOUT ever being
+ * echoed back in a PUT body — e.g. a PUT with an empty `{}` body (or one that
+ * edits an unrelated field) must still migrate a disk-resident legacy key,
+ * or the "PUT never fully finishes migrating" bug this whole phase exists to
+ * fix would persist. But recomputing the FULL migrated disk payload
+ * (`extractAndTranslateDeprecatedWithOps(diskRaw).value`) and merging THAT
+ * wholesale into the PUT body's value is unsafe: any disk-resident
+ * collection field with no migration target at all (e.g. `model_overrides`,
+ * `system_prompt_overrides`) would ALSO get merged back into the value
+ * handed to `mergeConfigIntoDocument`, which writes collections via
+ * `replaceCollection` (`deleteIn` + `setIn`) — silently repositioning that
+ * collection to the end of its parent map and destroying its original
+ * placement/comments, even though nothing about it changed. This function
+ * uses `applyMigrations`'s `patchAccumulator` so the returned `patch` is
+ * populated EXCLUSIVELY by fields migrations actually wrote (a strict
+ * subset of legacy-adjacent new paths), never by unrelated raw content —
+ * callers missing-only-merge `patch` into the PUT body's already-migrated
+ * value before writing, so unrelated collections are never touched.
+ */
+export function extractDiskOnlyMigrationPatch(diskRaw: Record<string, unknown>): { patch: Record<string, unknown>; legacyPathsRemoved: ReadonlyArray<string> } {
+  const patchAccumulator: Record<string, unknown> = {}
+  const { legacyPathsRemoved } = applyMigrations(diskRaw, patchAccumulator)
+  return { patch: patchAccumulator, legacyPathsRemoved }
+}

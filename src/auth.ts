@@ -16,6 +16,11 @@ import {
   DeviceAuthProvider,
   FileTokenProvider,
 } from "./lib/token"
+import {
+  //
+  registerSensitiveOutput,
+  writeSensitiveOnce,
+} from "./lib/tui/sensitive-output"
 
 interface RunAuthOptions {
   verbose: boolean
@@ -23,42 +28,61 @@ interface RunAuthOptions {
 }
 
 export async function runAuth(options: RunAuthOptions): Promise<void> {
-  if (options.verbose) {
-    consola.level = 5
-    consola.info("Verbose logging enabled")
-  }
+  const unregisterSensitiveOutput = registerSensitiveOutput({
+    isInteractive: () => process.stdout.isTTY,
+    write: (text) => {
+      try {
+        return process.stdout.write(text)
+      } catch {
+        return false
+      }
+    },
+  })
 
-  setCliState({ showGitHubToken: options.showGitHubToken })
+  try {
+    if (options.verbose) {
+      consola.level = 5
+      consola.info("Verbose logging enabled")
+    }
 
-  await ensurePaths()
+    setCliState({ showGitHubToken: options.showGitHubToken })
 
-  // Load config and initialize proxy before any network requests
-  const config = await applyConfigToState()
-  if (config.proxy) {
-    initProxy({ url: config.proxy, fromEnv: false })
-  } else {
-    initProxy({ url: undefined, fromEnv: true })
-  }
+    await ensurePaths()
 
-  // Use DeviceAuthProvider directly for force authentication
-  const deviceAuthProvider = new DeviceAuthProvider()
-  const tokenInfo = await deviceAuthProvider.getToken()
+    // Load config and initialize proxy before any network requests
+    const config = await applyConfigToState()
+    if (config.proxy) {
+      initProxy({ url: config.proxy, fromEnv: false })
+    } else {
+      initProxy({ url: undefined, fromEnv: true })
+    }
 
-  if (!tokenInfo) {
-    throw new Error("Failed to obtain GitHub token via device authorization")
-  }
+    // Use DeviceAuthProvider directly for force authentication
+    const deviceAuthProvider = new DeviceAuthProvider()
+    const tokenInfo = await deviceAuthProvider.getToken()
 
-  // Validate and show user info
-  const validation = await deviceAuthProvider.validate(tokenInfo.token)
-  if (validation.valid) {
-    consola.info(`Logged in as ${validation.username}`)
-  }
+    if (!tokenInfo) {
+      throw new Error("Failed to obtain GitHub token via device authorization")
+    }
 
-  // File provider will have already saved the token during device auth
-  // But we can verify the file exists
-  const fileProvider = new FileTokenProvider()
-  if (await fileProvider.isAvailable()) {
-    consola.success("GitHub token written to", PATHS.GITHUB_TOKEN_PATH)
+    if (options.showGitHubToken && !writeSensitiveOnce("github-token", "GitHub token", tokenInfo.token)) {
+      consola.warn("GitHub token display requested, but no healthy interactive terminal is available")
+    }
+
+    // Validate and show user info
+    const validation = await deviceAuthProvider.validate(tokenInfo.token)
+    if (validation.valid) {
+      consola.info(`Logged in as ${validation.username}`)
+    }
+
+    // File provider will have already saved the token during device auth
+    // But we can verify the file exists
+    const fileProvider = new FileTokenProvider()
+    if (await fileProvider.isAvailable()) {
+      consola.success("GitHub token written to", PATHS.GITHUB_TOKEN_PATH)
+    }
+  } finally {
+    unregisterSensitiveOutput()
   }
 }
 

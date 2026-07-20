@@ -247,7 +247,9 @@ describe("POST /responses — fallback dispatch decision", () => {
       "response.created",
       "response.output_item.added",
       "response.content_part.added",
-      "response.output_text.delta",
+      // response.output_text.delta is DROPPED by the default drop-delta event_compaction (spec §3):
+      // buffered_retry is default ON, so once output_item.done closes the item the mid-block text delta
+      // carries zero incremental value and is filtered from the forwarded wire (upstream track keeps it).
       "response.output_text.done", // ← closing lifecycle (flushResponse) begins here
       "response.content_part.done",
       "response.output_item.done",

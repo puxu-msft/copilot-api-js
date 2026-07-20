@@ -14,8 +14,10 @@ import {
   describe,
   expect,
   mock,
+  spyOn,
   test,
 } from "bun:test"
+import consola from "consola"
 
 import { getHistory } from "~/lib/history/store"
 import {
@@ -76,7 +78,7 @@ describe("Responses v4 — upstream stream truncation detection", () => {
       copilotToken: "test-token",
       accountType: "individual",
       vsCodeVersion: "1.100.0",
-      fetchTimeout: 0,
+      responseHeaderTimeout: 0,
       streamIdleTimeout: 0,
       upstreamWebSocket: false,
     })
@@ -84,7 +86,22 @@ describe("Responses v4 — upstream stream truncation detection", () => {
   })
 
   test("truncated Responses stream → error frame to client, history FAILED", async () => {
-    const sse = await (await post()).text()
+    // HIGH-1: a clean-EOF truncation must ALSO emit the rich [upstream-diagnostics] line — with a
+    // `kind=truncated` label (NOT transport-close) and real signals — so a truncation is as diagnosable
+    // as a thrown transport drop (previously this path emitted only the format-private log).
+    const diagSpy = spyOn(consola, "error").mockImplementation(Object.assign(() => {}, { raw: () => {} }))
+    let sse: string
+    try {
+      sse = await (await post()).text()
+    } finally {
+      const diagLine = diagSpy.mock.calls.map((c) => String(c[0])).find((s) => s.includes("[upstream-diagnostics] STREAM DISCONNECT"))
+      diagSpy.mockRestore()
+      expect(diagLine).toBeDefined()
+      expect(diagLine).toContain("kind=truncated")
+      expect(diagLine).toContain(`model=${MODEL}`)
+      expect(diagLine).not.toContain("frames=0")
+      expect(diagLine).toContain("last-frame=response.output_text.delta@")
+    }
 
     // A clean terminator: a Responses error frame.
     expect(sse).toContain('"error"')
@@ -93,7 +110,10 @@ describe("Responses v4 — upstream stream truncation detection", () => {
     const entry = getHistory({ endpoint: "openai-responses", limit: 5 }).entries[0]
     expect(entry).toBeDefined()
     expect(entry.state).toBe("failed")
-    expect(entry.outboundResponse?.success).toBe(false)
-    expect(String(entry.outboundResponse?.error)).toContain("truncated")
+    expect(entry.attempts?.at(-1)?.upstreamResponse?.success).toBe(false)
+    expect(String(entry._index?.derived?.failureReason)).toContain("truncated")
+    // The synthesized error frame the client received is recorded in the forwarded (proxy→client)
+    // track — asserts the writeSynthetic→recordForwarded→fail ordering on the Responses path.
+    expect((entry.clientResponse?.sseEvents ?? []).some((e) => e.raw.includes('"error"'))).toBe(true)
   })
 })

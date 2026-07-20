@@ -158,11 +158,12 @@ export function registerCompatPaths(registry: OpenAPIRegistry): void {
     responses: { ...ok200("Entry"), 404: { description: "Not found", ...jsonContent() } },
   })
   registry.registerPath({
-    method: "delete",
-    path: "/history/api/entries",
+    method: "get",
+    path: "/history/api/entries/{id}/export",
     tags: historyTag,
-    summary: "Clear history entries",
-    responses: ok200("Deletion result"),
+    summary: "Download one entry as a zstd-compressed .json.zst (full lifecycle)",
+    request: { params: z.object({ id: z.string() }) },
+    responses: { 200: { description: "zstd-compressed entry JSON" }, 404: { description: "Not found", ...jsonContent() } },
   })
   registry.registerPath({ method: "get", path: "/history/api/stats", tags: historyTag, summary: "History store statistics", responses: ok200("Stats") })
   registry.registerPath({
@@ -186,14 +187,6 @@ export function registerCompatPaths(registry: OpenAPIRegistry): void {
     tags: historyTag,
     summary: "Lazy companion: request ids referencing a given message hash",
     responses: ok200("Containing request ids"),
-  })
-  registry.registerPath({
-    method: "delete",
-    path: "/history/api/sessions/{id}",
-    tags: historyTag,
-    summary: "Delete a session",
-    request: { params: z.object({ id: z.string() }) },
-    responses: ok200("Deletion result"),
   })
   registry.registerPath({
     method: "post",
@@ -240,10 +233,28 @@ export function registerCompatPaths(registry: OpenAPIRegistry): void {
   })
   registry.registerPath({
     method: "get",
+    path: "/health/readiness",
+    tags: ["infra"],
+    summary: "Readiness probe (can serve traffic — tokens/models loaded)",
+    description:
+      "Kubernetes-style readiness probe, equivalent to /health: 200 when the Copilot/GitHub tokens and model catalogue are loaded, 503 otherwise. Orchestrators use it to withhold or drain traffic (use /health/liveness for restart-on-hung).",
+    responses: { ...ok200("Ready"), 503: { description: "Not ready", ...jsonContent() } },
+  })
+  registry.registerPath({
+    method: "get",
+    path: "/health/liveness",
+    tags: ["infra"],
+    summary: "Liveness probe (process responsiveness only)",
+    description:
+      'Cheap, dependency-free liveness probe — always 200 `{status:"alive"}` while the process can respond. Independent of upstream token/readiness state and of graceful shutdown (use /health for readiness/draining).',
+    responses: { ...ok200("Alive") },
+  })
+  registry.registerPath({
+    method: "get",
     path: "/",
     tags: ["infra"],
-    summary: 'Liveness probe (returns "Server running")',
-    responses: { 200: { description: "Server running", content: { "text/plain": { schema: z.string() } } } },
+    summary: "Root path — redirects to /openapi.json",
+    responses: { 302: { description: "Redirect to /openapi.json" } },
   })
   registry.registerPath({
     method: "get",

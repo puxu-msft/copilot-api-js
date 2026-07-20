@@ -6,6 +6,8 @@ const ITEMS = [
   { to: "/sessions", label: "Sessions" },
   { to: "/models", label: "Models" },
   { to: "/config", label: "Config" },
+  { to: "/learned", label: "Learned" },
+  { to: "/tools/json", label: "JSON decode" },
 ] as const
 
 export function NavRail() {

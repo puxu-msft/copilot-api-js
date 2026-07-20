@@ -17,7 +17,7 @@ import type {
   RetryAction,
   RetryContext,
   RetryStrategy,
-} from "../pipeline"
+} from "../retry-types"
 
 /**
  * Refresh the Copilot token via the global manager.

@@ -79,7 +79,6 @@ BROWSER=wslview npm dist-tag add @hsupu/copilot-api@0.8.3 latest
 |------|--------|------|
 | `--external-ui-url` |  | 把 `/ui` 反代到外部 Vite dev/build server |
 | `--verbose`, `-v` | `false` | 详细日志（包含 Copilot token 刷新日志） |
-| `--auto-truncate` | 默认禁用 | 在 context 超限错误时启用响应式 auto-truncate |
 | `--mock-rate-limiter-throttled` | `false` | 仅供测试：限速器超时后模拟上游 429 |
 
 ---
@@ -213,9 +212,10 @@ gemini -p "hello"
 - `disabled_models` — 在 `/models`、UI 选择器和回退解析中屏蔽已弃用/遗留模型。
 - `anthropic.*` — cache-control 模式、tool 去重、thinking-block 策略、剥离服务端工具、上下文编辑、`tool_search`、`efforts_overrides`、`strip_beta_headers`、`reject_body_fields`、warmup 策略、system-reminder 重写。
 - `openai-responses.*` — `normalize_call_ids`、`upstream_ws`、`fix_stream_ids`、`client_ws_keep_open`、`strip_image_generation_tool`、`max_ws_frame_bytes`、`max_client_ws_connections`、`max_upstream_ws_connections`。
+- `generation.hedge.*` — 流式 fast-retry，默认开启：primary 真实发上游后 300 秒仍无真实完整 client block 时启动一个 secondary，primary继续运行，首个完整 block 获胜并完整清理 loser；synthetic keepalive 不算模型进展。含 server-side tool 的请求默认不 hedge。相邻字段限制 active/total candidate 与 dispatch；配置热重载只影响新 generation。
 - `rate_limiter.*` — 重试间隔、请求间隔、恢复超时、连续成功阈值。**需要重启。**
 - `system_prompt_prepend` / `system_prompt_append` / `system_prompt_overrides` — 完整的 system prompt 修改管道（line 或 regex 替换，可选 `model` 过滤）。
-- `history.limit` / `history.reaper_interval` / `history.db_path` — SQLite history 保留策略。
+- `history.raw_capture.*` — 可选独立 raw CAS；默认关闭，可热重载 store generation。
 - `shutdown.graceful_wait` / `shutdown.abort_wait` — 关闭排空时长。
 - `stream_idle_timeout` / `fetch_timeout` / `model_refresh_interval` / `stale_request_max_age` — 网络相关旋钮。
 - `proxy` — 出站代理 URL。**需要重启。**
@@ -229,9 +229,12 @@ gemini -p "hello"
 ├── config.yaml                     # 用户配置（热重载）
 ├── github_token                    # GitHub Device Flow token
 ├── copilot-token.json              # 缓存的 Copilot bearer（含过期时间）
-├── history.db                      # SQLite history（payload 经 gzip 压缩）
+├── history.db                      # HOT SQLite History（payload 经 zstd 压缩）
+├── archive.db                      # TIER-1 归档索引/存储（启用时）
+├── archive-t1-*.db                 # 不可变温层 session-generation units
+├── archive-t2-*.db                 # 不可变冷层 session-generation units
 ├── negotiation-states.json         # 学习到的每模型禁用项（betas / body 字段 / efforts）
-├── auto-truncate-limits.json       # 学习到的每模型 context 上限
+├── auto-truncate-limits.json       # 学习到的每模型 token 计数 calibration 因子
 └── system-prompts/                 # 可选的 system prompt 转储（开启时）
 ```
 

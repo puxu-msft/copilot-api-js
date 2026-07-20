@@ -15,7 +15,7 @@ import type {
   ApiError,
   ApiErrorType,
 } from "~/lib/error"
-import type { RetryContext } from "~/lib/request/pipeline"
+import type { RetryContext } from "~/lib/request/retry-types"
 
 import { createTokenRefreshStrategy } from "~/lib/request/strategies/token-refresh"
 import * as tokenModule from "~/lib/token"

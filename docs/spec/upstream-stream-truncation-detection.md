@@ -12,7 +12,7 @@ Claude Code 报 `API Error: Stream ended without receiving any events`，但 pro
 - 上游 14 帧：`message_start` → `content_block_start`(tool_use `Agent`) → 12 个 `input_json_delta`，累积出**无效 JSON**：`{"description": "对抗review:正确性/竞态视角", "subagent_type": "general-purpose"`（缺 `prompt` 字段、缺闭合 `}`）。
 - 末帧 `offsetMs=502`，但 attempt `durationMs=11179`——上游发完残缺 tool_use 后**静默约 10.6s**，然后**干净 EOF**（非 RST：若 RST 会 throw 进 catch → `stream-error`，而本案 outcome 是 `complete`）。
 - **缺失**：`content_block_stop`、`message_delta`（含 stop_reason）、`message_stop`。即上游**未发送 Anthropic 协议终止序列**。
-- history 累积出的 response tool_use 自带 `_parseError: true`——proxy 自己也解析不了这段残缺 JSON。
+- history 累积出的 response tool_use `input` 是**无法解析的残缺 JSON 原始字符串**——proxy 自己也解析不了这段残缺 JSON，故忠实保留上游发来的原始字符串（不再包装成 `{ _parseError, _rawInput }` 代理合成标记，见 [safeParseJson](../../src/lib/request/response.ts)）。
 
 对照组：正常流末帧序列 `content_block_stop → message_delta → message_stop`（实测 req_1782111018205_713，73 帧）。截断签名 = 末帧非协议终止符。
 
@@ -58,7 +58,7 @@ Claude Code 报 `API Error: Stream ended without receiving any events`，但 pro
    - **下游影响（review 实测，正向）**：history reaper 把条目从 success 桶（limit 50）迁到 failure 桶（limit 200，保留更久）——利于诊断；lineage 只消费 request 侧、与 response status 正交、不受影响；dry-run 流式回放读 raw `sseEvents`（截断条目完整保留）、不受影响。
    - **content 投影取舍（review P1，必须显式声明）**：现 `ctx.fail` 硬置 `_response.content = null`（request.ts:417），`PartialResponseInfo` 无 content 通道。直接改判会让 `outboundResponse.content` 从"残缺内容投影"变 null。按 **richest-data-flow（后端存储必须完整）**：残缺内容是可观测诊断数据，应保留。**设计决定：扩展 `fail()` / `PartialResponseInfo` 增加可选 `content` 通道**，截断 fail 时传入 `buildAnthropicResponseData(acc,...)` 的累积内容，使失败条目仍在 outboundResponse 保留残缺投影。raw `sseEvents` 轨本就是 SSOT、始终完整。**注（audit LOW）**：`abort()`（client-abort 路径）**不接** content 通道、仍 `content:null`——这是显式决策：client-abort 非 upstream-truncation（截断走 `fail`），且 abort 一向 `content:null`（PR 前既存），raw `sseEvents` 仍完整。
 2. **客户端错误帧**：在 **complete-but-truncated 分支新增** 一条 `sink.writeSynthetic(...)`（**注意 review S3**：截断是 clean drain、走 `outcome==="complete"` 分支，与 H2 同分支；**不是**复用 stream-error 分支 handler-v4.ts:613 的 H3 调用——那在 throw 路径）。`writeSynthetic` 非采样（不污染 forwarded 轨），语义与 H3 一致。
-   - **终止符形态需实测裁决（review P4 / OQ3，spec 内部不能写死）**：客户端此刻已收到 `content_block_start`+12 个 delta、正等 `content_block_stop`，突然收到 `event:"error"`——Anthropic SDK 是否接受 open-block 中途的 error、是否触发干净重试，**未经验证**。按 [[feedback-self-consistent-needs-independent-oracle]] 须用真实 Claude Code 实测裁决，不能假设。候选：(a) 直接插 `event:"error"`；(b) 先补 `content_block_stop` 关闭开放块再插 error。本项目 `no-auto-server` 禁止自起服务器，故此项须**用户协助实测**（起服务器 + 触发截断观察客户端行为）后定夺，Phase 1 先实现可切换的终止符形态。
+   - **终止符形态需实测裁决（review P4 / OQ3，spec 内部不能写死）**：客户端此刻已收到 `content_block_start`+12 个 delta、正等 `content_block_stop`，突然收到 `event:"error"`——Anthropic SDK 是否接受 open-block 中途的 error、是否触发干净重试，**未经验证**。按 [[feedback-pass-null-clean-not-self-validating]] 须用真实 Claude Code 实测裁决，不能假设。候选：(a) 直接插 `event:"error"`；(b) 先补 `content_block_stop` 关闭开放块再插 error。本项目 `no-auto-server` 禁止自起服务器，故此项须**用户协助实测**（起服务器 + 触发截断观察客户端行为）后定夺，Phase 1 先实现可切换的终止符形态。
 
 **不合成"成功终止符"**：用 `message_delta{stop_reason}`+`message_stop` 把残缺消息补成"完整"是错的——残缺 tool_use 是无效 JSON，补全会把截断伪装成"合法但损坏"的成功响应。
 

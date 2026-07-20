@@ -16,6 +16,8 @@ import {
   test,
 } from "bun:test"
 
+import type { RepairItem } from "~/lib/anthropic/tool-input-repair"
+
 import { getHistory } from "~/lib/history/store"
 import {
   //
@@ -73,12 +75,12 @@ async function nonStreamRequest(sessionId: string): Promise<Response> {
   })
 }
 
-function configure(repair: "tags" | "repair" | false): void {
+function configure(repair: ReadonlyArray<RepairItem>): void {
   setStateForTests({
     copilotToken: "test-token",
     accountType: "individual",
     vsCodeVersion: "1.100.0",
-    fetchTimeout: 0,
+    responseHeaderTimeout: 0,
     toolRepairMalformedInput: repair,
   })
   applyFetchMock(upstreamFetchMock)
@@ -94,7 +96,7 @@ describe("POST /v1/messages (non-streaming) — unrepairable malformed tool-inpu
   })
 
   test("repair mode: unrepairable string input → history FAILED, partial preserved", async () => {
-    configure("repair")
+    configure(["tags", "jsonrepair"])
     toolInput = UNREPAIRABLE_INPUT
     const sessionId = "ns-unrep"
     const res = await nonStreamRequest(sessionId)
@@ -103,12 +105,16 @@ describe("POST /v1/messages (non-streaming) — unrepairable malformed tool-inpu
     const entry = getHistory({ endpoint: "anthropic-messages", sessionId, limit: 5 }).entries[0]
     expect(entry).toBeDefined()
     expect(entry.state).toBe("failed")
-    expect(entry.outboundResponse?.success).toBe(false)
-    expect(entry.outboundResponse?.content).not.toBeNull()
+    // Data-model: upstream delivered a complete 200 body the proxy rejected → outboundResponse stays
+    // honest (success:true, no error); the verdict is projected to failureReason.
+    expect(entry.attempts?.at(-1)?.upstreamResponse?.success).toBe(true)
+    expect(entry.attempts?.at(-1)?.error).toBeUndefined()
+    expect(entry._index?.derived?.failureReason?.toLowerCase()).toContain("unrepairable")
+    expect(entry.attempts?.at(-1)?.upstreamResponse?.body).not.toBeNull()
   })
 
   test("repair mode: a repairable antml-bleed string input → SUCCEEDS with a structured object on the wire", async () => {
-    configure("repair")
+    configure(["tags", "jsonrepair"])
     toolInput = REPAIRABLE_INPUT
     const sessionId = "ns-repairable"
     const res = await nonStreamRequest(sessionId)
@@ -123,7 +129,7 @@ describe("POST /v1/messages (non-streaming) — unrepairable malformed tool-inpu
   })
 
   test("repair off (default): unrepairable string input is forwarded as-is, request completes", async () => {
-    configure(false)
+    configure([])
     toolInput = UNREPAIRABLE_INPUT
     const sessionId = "ns-off"
     await nonStreamRequest(sessionId)

@@ -46,7 +46,7 @@ import {
 } from "~/lib/history"
 import {
   //
-  setModelOverrides,
+  setModelMappings,
   setModels,
   setStateForTests,
 } from "~/lib/state"
@@ -80,7 +80,7 @@ const app = createFullTestApp()
 
 function injectAnthropicModel(): void {
   setModels({ object: "list", data: [mockModel(MODEL, { vendor: "Anthropic", supported_endpoints: ["/v1/messages"] })] })
-  setModelOverrides({})
+  setModelMappings({})
 }
 
 function payload(messages: Array<unknown>, extra?: Partial<MessagesPayload>): MessagesPayload {
@@ -99,12 +99,26 @@ function oracleEffective(input: MessagesPayload): MessagesPayload {
   return runAnthropicPayloadRewrites(input, { toolNameMapper: mapper }).payload
 }
 
+/**
+ * Strip the orthogonal, always-on stream/header timeout diagnostics that the handler records into
+ * `pipelineInfo` for every real request (e8112c82 `mergedPipelineInfo`) so this golden asserts ONLY
+ * the request-REWRITE side-channel it locks (preprocessing/sanitization/messageMapping). A pipelineInfo
+ * carrying nothing but timeout fields collapses back to `undefined` (= "no rewrite recorded"), keeping
+ * the oracle immune to the resolved `streamIdleTimeout` default (300s) — the timeout recording itself
+ * is locked separately by tests/context/request-context.unit.test.ts.
+ */
+function rewriteDiag(pipelineInfo: Record<string, unknown> | undefined): Record<string, unknown> | undefined {
+  if (!pipelineInfo) return undefined
+  const { streamIdleTimeoutMs, responseHeaderTimeoutMs, ...rest } = pipelineInfo
+  return Object.keys(rest).length > 0 ? rest : undefined
+}
+
 async function postAndEntry(body: MessagesPayload): Promise<{ effective: unknown; pipelineInfo: unknown }> {
   injectAnthropicModel()
   clearHistory()
   await app.request("/v1/messages", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) })
   const entry = getHistory({ endpoint: "anthropic-messages" }).entries[0]
-  return { effective: entry?.effectiveRequest?.payload, pipelineInfo: entry?.pipelineInfo }
+  return { effective: entry?.attempts?.at(-1)?.effectiveSource?.body, pipelineInfo: rewriteDiag(entry?.pipelineInfo as Record<string, unknown> | undefined) }
 }
 
 describe("request-rewrite migration golden (codec.parse → driver S3)", () => {
@@ -112,7 +126,7 @@ describe("request-rewrite migration golden (codec.parse → driver S3)", () => {
 
   beforeEach(() => {
     upstreamMock.mockClear()
-    setStateForTests({ copilotToken: "tok", accountType: "individual", vsCodeVersion: "1.100.0", fetchTimeout: 0 })
+    setStateForTests({ copilotToken: "tok", accountType: "individual", vsCodeVersion: "1.100.0", responseHeaderTimeout: 0 })
     applyFetchMock(upstreamMock)
   })
 
@@ -148,7 +162,7 @@ describe("request-rewrite migration golden (codec.parse → driver S3)", () => {
   })
 
   test("inline-system convert: effectiveRequest reflects the convert, but NO pipelineInfo (gate excludes inlineSystemConverted)", async () => {
-    setStateForTests({ systemMessagesSanitize: "as_user" })
+    setStateForTests({ systemDefaultMode: "as_user" })
     const input = payload([
       { role: "system", content: "inline sys" },
       { role: "user", content: "q" },
@@ -168,17 +182,19 @@ describe("request-rewrite migration golden (codec.parse → driver S3)", () => {
     expect(pipelineInfo).toBeUndefined()
   })
 
-  test("reject (non-anthropic model): status 400, no effectiveRequest (reject precedes S4 sampling)", async () => {
+  test("reject (non-anthropic model, no translatable leg): status 400, no effectiveRequest (reject precedes S4 sampling)", async () => {
     injectAnthropicModel()
-    setModels({ object: "list", data: [mockModel("gpt-4o", { vendor: "OpenAI", supported_endpoints: ["/chat/completions"] })] })
+    // OpenAI vendor advertising ONLY /v1/messages → no direct-anthropic gate and no
+    // translatable /responses or /chat/completions leg, so the no-suffix anthropic route rejects.
+    setModels({ object: "list", data: [mockModel("msg-only-openai", { vendor: "OpenAI", supported_endpoints: ["/v1/messages"] })] })
     clearHistory()
     const res = await app.request("/v1/messages", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload([{ role: "user", content: "q" }], { model: "gpt-4o" })),
+      body: JSON.stringify(payload([{ role: "user", content: "q" }], { model: "msg-only-openai" })),
     })
     expect(res.status).toBe(400)
     const entry = getHistory({ endpoint: "anthropic-messages" }).entries[0]
-    expect(entry?.effectiveRequest?.payload).toBeUndefined()
+    expect(entry?.attempts?.at(-1)?.effectiveSource?.body).toBeUndefined()
   })
 })

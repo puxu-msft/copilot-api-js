@@ -20,15 +20,19 @@ import {
   describe,
   expect,
   mock,
+  spyOn,
   test,
 } from "bun:test"
+import consola from "consola"
 
+import type { RequestContext } from "~/lib/context/request"
 import type {
   //
   ResponsesPayload,
   ResponsesStreamEvent,
 } from "~/types/api/openai-responses"
 
+import { getRequestContextManager } from "~/lib/context/manager"
 import { getHistory } from "~/lib/history"
 import {
   //
@@ -197,6 +201,11 @@ describe("Responses v4 driver path", () => {
   test("direct non-streaming: client json + wire payload", async () => {
     const body = { model: "gpt-resp", input: "hi", stream: false }
 
+    let capturedCtx: RequestContext | undefined
+    const manager = getRequestContextManager()
+    const originalCreate = manager.create.bind(manager)
+    manager.create = (opts) => (capturedCtx = originalCreate(opts))
+
     const v4 = (await (await post(body)).json()) as Record<string, unknown>
     const v4Wire = lastResponsesWire
 
@@ -216,6 +225,12 @@ describe("Responses v4 driver path", () => {
       parallel_tool_calls: false,
       store: false,
     })
+    const operation = capturedCtx?.modelOperationTerminalRecord
+    const clientPayload = operation?.egress?.client.payload
+    const upstreamPayload = operation?.egress?.upstream.payload
+    expect(operation?.arena.payloads.find((node) => node.handle === clientPayload)?.value).toEqual(v4)
+    expect(operation?.arena.payloads.find((node) => node.handle === upstreamPayload)?.value).toEqual(v4)
+    expect(operation?.terminal?.outcome).toBe("completed")
     expect(v4Wire?.model).toBe("gpt-resp")
     expect(v4Wire?.stream).toBe(false)
   })
@@ -233,20 +248,41 @@ describe("Responses v4 driver path", () => {
   // owns-sink-two-racer.unit.test.ts; these lock the HANDLER's mapping).
   test("owns-sink streaming H3: mid-stream upstream error → entry failed + OpenAI error frame", async () => {
     setModels({ object: "list", data: [mockModel("gpt-resp", { vendor: "OpenAI", supported_endpoints: ["/responses"] })] })
+    // Explicit-false: this test is a LIVE-path baseline (it asserts `response.created` reaches the
+    // client BEFORE the mid-stream error). Default is now `true` (2026-07-14 P2 flip) — under
+    // buffered mode this ECONNRESET is a retryable transport-close, which the driver retries to
+    // exhaustion and then surfaces ONLY the synthesized error frame (no `response.created`, buffered
+    // and discarded). Force live so this test still exercises what it means to.
+    setStateForTests({ responsesBufferedRetry: false })
     const errMock = mock(() =>
       Promise.resolve(createSseResponseThenError([responsesStreamFrames("gpt-resp")[0]], new Error("ECONNRESET: mid-stream upstream blowup"))),
     )
     applyFetchMock(errMock)
 
-    const text = await (
-      await app.request("/responses", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ model: "gpt-resp", input: "hi", stream: true }),
-      })
-    ).text()
+    // The disconnect diagnostic must fire on the Responses DIRECT leg too (previously only messages
+    // emitted it) and carry REAL signals — one `response.created` frame arrived before the throw.
+    const diagSpy = spyOn(consola, "error").mockImplementation(Object.assign(() => {}, { raw: () => {} }))
+    let text: string
+    try {
+      text = await (
+        await app.request("/responses", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ model: "gpt-resp", input: "hi", stream: true }),
+        })
+      ).text()
+    } finally {
+      const line = diagSpy.mock.calls.map((c) => String(c[0])).find((s) => s.includes("[upstream-diagnostics] STREAM DISCONNECT"))
+      diagSpy.mockRestore()
+      expect(line).toBeDefined()
+      expect(line).toContain("model=gpt-resp")
+      expect(line).not.toContain("frames=0")
+      expect(line).not.toContain("last-frame=none@0ms")
+      expect(line).toContain("last-frame=response.created@")
+    }
 
-    expect(text).toContain("response.created")
+    // response.created is an incomplete pre-boundary prefix and is withheld by fast-retry.
+    expect(text).not.toContain("response.created")
     expect(text).toContain("event: error")
     expect(text).toContain('"type":"server_error"')
     expect(getHistory({ endpoint: "openai-responses" }).entries[0]?.state).toBe("failed")
@@ -340,20 +376,20 @@ describe("Responses v4 driver path", () => {
 
     // Byte-lock on the CC→Responses stream translation: the FULL lifecycle event
     // sequence (the translator synthesizes created→item→content_part→delta→done→
-    // completed) + the streamed text. (A literal whole-string golden is impractical
-    // for 8 events; the ordered event list + content is the translation contract.)
+    // completed) + the streamed text. The mid-block output_text.delta is DROPPED from
+    // the forwarded wire by the default drop-delta event_compaction (spec §3; buffered_retry
+    // is default ON) — the surviving output_text.done carries the finalized text, so the
+    // translation contract is verified via the done frame (the upstream track keeps the delta).
     const eventTypes = [...v4Text.matchAll(/^event: (.+)$/gm)].map((m) => m[1])
     expect(eventTypes).toEqual([
       "response.created",
       "response.output_item.added",
       "response.content_part.added",
-      "response.output_text.delta",
       "response.output_text.done",
       "response.content_part.done",
       "response.output_item.done",
       "response.completed",
     ])
-    expect(v4Text).toContain('"delta":"Hello"')
     expect(v4Text).toContain('"type":"output_text","text":"Hello"')
   })
 
@@ -407,6 +443,28 @@ describe("Responses v4 driver path", () => {
     expect((v4 as { id?: string }).id).toBe("resp_up_1")
   })
 
+  // R4-pre (before-first-event transport failure) — the STREAMING twin of the non-streaming
+  // network-retry above. A transport error thrown BEFORE the upstream yields its first frame is
+  // caught by `runExchange` (transport establishment, format-agnostic) and routed through the S4
+  // strategy layer (`buildOpenAiResponsesStrategiesForEnv` → network-retry, ECONNRESET =
+  // network_error), which re-exchanges once and then streams cleanly. This locks the conclusion that
+  // the pre-stream transport failure is covered by the strategy layer on the HTTP path (the WS path's
+  // before-first-event failure degrades to HTTP — openai-responses-client.it.test.ts "falls back to
+  // HTTP before first websocket event"). No new strategy is needed; this固定s the existing coverage.
+  test("R4-pre: a before-first-event transport error on a STREAMING request retries then streams to completion", async () => {
+    throwOnce = true
+    respHits = 0
+    const text = await (await post({ model: "gpt-resp", input: "hi", stream: true })).text()
+
+    // 2 upstream exchanges: the first throws pre-first-frame (ECONNRESET), the retry streams cleanly.
+    expect(respHits).toBe(2)
+    expect(text).toContain("response.created")
+    expect(text).toContain("response.completed")
+    // No error frame reached the client — the retry recovered transparently before any frame shipped.
+    expect(text).not.toContain("event: error")
+    expect(getHistory({ endpoint: "openai-responses" }).entries[0]?.state).toBe("completed")
+  })
+
   test("history: non-streaming success finalizes the entry (completed)", async () => {
     const body = { model: "gpt-resp", input: "hi", stream: false }
 
@@ -422,9 +480,9 @@ describe("Responses v4 driver path", () => {
     await post(body)
     const v4 = getHistory({ endpoint: "openai-responses" }).entries[0]
 
-    expect(v4?.effectiveRequest?.format).toBe("openai-responses")
-    expect(v4?.effectiveRequest?.model).toBe("gpt-resp")
-    expect(v4?.outboundRequest?.format).toBe("openai-responses")
+    expect(v4?.attempts?.at(-1)?.effectiveSource?.format).toBe("openai-responses")
+    expect(v4?.attempts?.at(-1)?.effectiveSource?.model).toBe("gpt-resp")
+    expect(v4?.attempts?.at(-1)?.upstreamRequest?.format).toBe("openai-responses")
     expect(typeof v4?.queueWaitMs).toBe("number")
   })
 
@@ -434,8 +492,8 @@ describe("Responses v4 driver path", () => {
     await post(body)
     const v4 = getHistory({ endpoint: "openai-responses" }).entries[0]
 
-    expect(v4?.outboundRequest?.format).toBe("openai-chat-completions")
-    expect(v4?.effectiveRequest?.format).toBe("openai-responses")
+    expect(v4?.attempts?.at(-1)?.upstreamRequest?.format).toBe("openai-chat-completions")
+    expect(v4?.attempts?.at(-1)?.effectiveSource?.format).toBe("openai-responses")
   })
 })
 
@@ -463,7 +521,9 @@ function fakeWsConnection(events: Array<ResponsesStreamEvent>) {
     model: "gpt-resp",
     conversationId: undefined,
     handshakeHeaders: {},
+    rescheduleIdleTimeout: () => {},
     close: () => {},
+    dispose: async () => {},
   }
 }
 

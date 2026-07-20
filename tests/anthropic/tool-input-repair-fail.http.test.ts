@@ -1,7 +1,7 @@
 /**
  * P4 — end-to-end fail channel for an UNREPAIRABLE malformed tool_use input.
  *
- * When `anthropic.tool_repair_malformed_input` is on and a `tool_use` input
+ * When `anthropic.response_tool_use_fix.malformed_input` is on and a `tool_use` input
  * survives both repair layers still malformed, the proxy must NOT forward a
  * silently-broken tool call as a success: the decoder reports `input-unrepairable`
  * → the S5 closure flags the ctx → the handler's complete-branch settles the
@@ -22,6 +22,8 @@ import {
   test,
 } from "bun:test"
 import consola from "consola"
+
+import type { RepairItem } from "~/lib/anthropic/tool-input-repair"
 
 import { getToolInputRepairStats } from "~/lib/anthropic/tool-input-repair-stats"
 import { getHistory } from "~/lib/history/store"
@@ -121,12 +123,12 @@ async function streamRequest(sessionId: string): Promise<string> {
   return res.text()
 }
 
-function configure(repair: "tags" | "repair" | false): void {
+function configure(repair: ReadonlyArray<RepairItem>): void {
   setStateForTests({
     copilotToken: "test-token",
     accountType: "individual",
     vsCodeVersion: "1.100.0",
-    fetchTimeout: 0,
+    responseHeaderTimeout: 0,
     streamIdleTimeout: 0,
     streamKeepalivePingSec: 0,
     toolRepairMalformedInput: repair,
@@ -144,7 +146,7 @@ describe("POST /v1/messages — unrepairable malformed tool-input fail channel (
   })
 
   test("repair mode: unrepairable input → synthetic error frame + FAILED history + partial preserved", async () => {
-    configure("repair")
+    configure(["tags", "jsonrepair"])
     frameBuilder = buildUnrepairableComplete
     const sessionId = "unrep-repair"
     const sse = await streamRequest(sessionId)
@@ -157,17 +159,24 @@ describe("POST /v1/messages — unrepairable malformed tool-input fail channel (
     const entry = getHistory({ endpoint: "anthropic-messages", sessionId, limit: 5 }).entries[0]
     expect(entry).toBeDefined()
     expect(entry.state).toBe("failed")
-    expect(entry.outboundResponse?.success).toBe(false)
+    // Data-model: the UPSTREAM leg succeeded (complete 200 stream) — the proxy rejected the
+    // malformed content. outboundResponse reflects the upstream leg HONESTLY (success:true, no
+    // error); the verdict lives in failureReason (not conflated into the upstream leg's error).
+    expect(entry.attempts?.at(-1)?.upstreamResponse?.success).toBe(true)
+    expect(entry.attempts?.at(-1)?.error).toBeUndefined()
+    expect(entry._index?.derived?.failureReason?.toLowerCase()).toContain("unrepairable")
     // richest-data-flow: the accumulated partial is kept, not nulled.
-    expect(entry.outboundResponse?.content).not.toBeNull()
+    expect(entry.attempts?.at(-1)?.upstreamResponse?.body).not.toBeNull()
+    // The synthetic error frame the client received is recorded in the forwarded (proxy→client) track.
+    expect((entry.clientResponse?.sseEvents ?? []).some((e) => e.raw.includes('"type":"error"'))).toBe(true)
     // The raw upstream track is preserved verbatim (original malformed deltas).
-    const rawConcat = (entry.sseEvents ?? []).map((e) => e.raw).join("")
+    const rawConcat = (entry.attempts?.at(-1)?.upstreamResponse?.sseEvents ?? []).map((e) => e.raw).join("")
     expect(rawConcat).toContain(",,,")
   })
 
   test("tags mode: a structural break jsonrepair could fix is unrepairable under tags-only → FAILED", async () => {
     // `{...,,,}` is unrepairable under tags too (strip is a no-op on tag-free garbage).
-    configure("tags")
+    configure(["tags"])
     frameBuilder = buildUnrepairableComplete
     const sessionId = "unrep-tags"
     const sse = await streamRequest(sessionId)
@@ -178,7 +187,7 @@ describe("POST /v1/messages — unrepairable malformed tool-input fail channel (
   })
 
   test("precedence: unrepairable AND truncated → fails with the unrepairable reason, not truncation", async () => {
-    configure("repair")
+    configure(["tags", "jsonrepair"])
     frameBuilder = buildUnrepairableTruncated
     const sessionId = "unrep-trunc"
     const sse = await streamRequest(sessionId)
@@ -195,20 +204,30 @@ describe("POST /v1/messages — unrepairable malformed tool-input fail channel (
   })
 
   test("regression: a repairable antml-bleed still SUCCEEDS (no error frame, completed)", async () => {
-    configure("repair")
+    configure(["tags", "jsonrepair"])
     frameBuilder = buildRepairableComplete
     const sessionId = "unrep-repairable-ok"
     const sse = await streamRequest(sessionId)
 
     expect(dataFramesOfType(sse, "error")).toHaveLength(0)
     expect(dataFramesOfType(sse, "message_stop")).toHaveLength(1)
+    // Byte-lock the FORWARDED repaired partial_json: the antml-bleed (`</parameter></invoke>`) is stripped so
+    // the client receives VALID JSON that parses to the intended object (not the broken upstream bytes).
+    // This is the success-forward oracle a client-e2e used to cover via the SDK's JSON.parse — asserted
+    // directly on the wire here (the SDK parsing valid JSON is baseline-trivial, so no e2e needed).
+    const forwardedJson = dataFramesOfType(sse, "content_block_delta")
+      .map((f) => (f.delta as { partial_json?: string } | undefined)?.partial_json)
+      .filter((s): s is string => typeof s === "string")
+      .join("")
+    expect(forwardedJson).not.toContain("</parameter>") // the antml-bleed never reaches the client
+    expect(JSON.parse(forwardedJson) as { todos: Array<unknown> }).toEqual({ todos: [{ content: "x", status: "pending", activeForm: "y" }] })
     const entry = getHistory({ endpoint: "anthropic-messages", sessionId, limit: 5 }).entries[0]
     expect(entry.state).toBe("completed")
-    expect(entry.outboundResponse?.success).toBe(true)
+    expect(entry.attempts?.at(-1)?.upstreamResponse?.success).toBe(true)
   })
 
   test("repair off (default): malformed input is forwarded as-is, request still completes", async () => {
-    configure(false)
+    configure([])
     frameBuilder = buildUnrepairableComplete
     const sessionId = "unrep-off"
     const sse = await streamRequest(sessionId)
@@ -225,7 +244,7 @@ describe("POST /v1/messages — unrepairable malformed tool-input fail channel (
     // accumulators via onAttemptReset. The fail flag lives on the ctx (not acc), so the
     // complete-branch still fails. If the flag were (wrongly) acc-hung, the buffered reset
     // would drop it and this would settle `completed` → RED.
-    configure("repair")
+    configure(["tags", "jsonrepair"])
     setStateForTests({ protectStreamingGeneration: "on" })
     frameBuilder = buildUnrepairableComplete
     const sessionId = "unrep-buffered"
@@ -237,12 +256,21 @@ describe("POST /v1/messages — unrepairable malformed tool-input fail channel (
   })
 
   test("audit C1: a DISCARDED buffered attempt's unrepairable signal must NOT fail the recovered commit", async () => {
-    // Attempt 1 emits an unrepairable tool block (sets a per-attempt repair outcome) then truncates
-    // (no message_stop) → buffer discarded + retried. Attempt 2 is clean + commits. The request MUST
+    // Attempt 1 emits an unrepairable tool block then truncates MID-BLOCK (no content_block_stop, no
+    // message_stop) → buffer discarded + retried. Attempt 2 is clean + commits. The request MUST
     // settle `completed`, with NO error frame and an UN-inflated counter — the per-attempt outcomes
     // are cleared in onAttemptReset, so the discarded attempt's signal can't poison the committed one.
-    configure("repair")
-    setStateForTests({ protectStreamingGeneration: "on", protectStreamingMaxRetries: 3 })
+    //
+    // Block-level note (P1 Task 6): attempt 1's tool_use block MUST NOT reach its own
+    // `content_block_stop` — under the block-level commit predicate (`anthropicCommitBoundaries`), a
+    // block that DOES reach `content_block_stop` commits live and closes the retry window
+    // (`committedAny`), so a subsequent truncation would degrade to `partial-degrade` (an error frame,
+    // no retry) instead of being discarded and retried — which would defeat this test's whole premise
+    // (a genuinely DISCARDED, pre-commit attempt). Previously (terminal-only mode) this distinction
+    // didn't matter — everything stayed buffered until the terminal `message_stop` regardless of
+    // per-block boundaries — so the original fixture safely included `blockStopFrame(0)`.
+    configure(["tags", "jsonrepair"])
+    setStateForTests({ protectStreamingGeneration: "on", bufferedRetryShared: { maxRetries: 3, bufferCapBytes: 16_777_216, heartbeatSec: 15 } })
     let attempt = 0
     frameBuilder = (model: string): Array<string> =>
       attempt++ === 0 ?
@@ -250,8 +278,8 @@ describe("POST /v1/messages — unrepairable malformed tool-input fail channel (
           messageStartFrame({ id: "msg_a1", model, inputTokens: 10 }),
           toolBlockStartFrame(0, "toolu_a1", "TodoWrite"),
           jsonDeltaFrame(0, UNREPAIRABLE_INPUT),
-          blockStopFrame(0),
-          // EOF — no message_stop → truncation → buffered discard + retry.
+          // EOF mid-block — no content_block_stop, no message_stop → truncation BEFORE any commit
+          // boundary → buffered discard + retry (committedAny stays false).
         ]
       : [
           messageStartFrame({ id: "msg_a2", model, inputTokens: 10 }),
@@ -287,6 +315,19 @@ function buildJsonrepairComplete(model: string): Array<string> {
   ]
 }
 
+// A whitespace-broken `\uXXXX` escape (`\u9 ed8` = 默) — fixed only by the `unicode` item.
+function buildBadUnicodeComplete(model: string): Array<string> {
+  return [
+    messageStartFrame({ id: "msg_uni", model, inputTokens: 10 }),
+    toolBlockStartFrame(0, "toolu_uni", "TodoWrite"),
+    jsonDeltaFrame(0, String.raw`{"todos":"\u9 ed8"}`),
+    blockStopFrame(0),
+    messageDeltaFrame({ stopReason: "tool_use", outputTokens: 8 }),
+    MESSAGE_STOP_FRAME,
+    DONE_FRAME,
+  ]
+}
+
 describe("POST /v1/messages — malformed tool-input repair telemetry (P6)", () => {
   useIsolatedRuntime()
 
@@ -297,7 +338,7 @@ describe("POST /v1/messages — malformed tool-input repair telemetry (P6)", () 
   test("Layer 1 (strip) repair increments the `strip` counter + logs [REWRITE]", async () => {
     const infoSpy = spyOn(consola, "info").mockImplementation(((..._args: Array<unknown>) => undefined) as unknown as typeof consola.info)
     try {
-      configure("tags")
+      configure(["tags"])
       frameBuilder = buildRepairableComplete
       await streamRequest("tele-strip")
       expect(getToolInputRepairStats().strip).toBe(1)
@@ -310,24 +351,40 @@ describe("POST /v1/messages — malformed tool-input repair telemetry (P6)", () 
   })
 
   test("Layer 2 (jsonrepair) repair increments the `jsonrepair` counter", async () => {
-    configure("repair")
+    configure(["tags", "jsonrepair"])
     frameBuilder = buildJsonrepairComplete
     await streamRequest("tele-jsonrepair")
     expect(getToolInputRepairStats().jsonrepair).toBe(1)
     expect(getToolInputRepairStats().strip).toBe(0)
   })
 
+  test("unicode-item repair increments the `unicode` counter + logs [REWRITE]", async () => {
+    const infoSpy = spyOn(consola, "info").mockImplementation(((..._args: Array<unknown>) => undefined) as unknown as typeof consola.info)
+    try {
+      configure(["unicode"])
+      frameBuilder = buildBadUnicodeComplete
+      await streamRequest("tele-unicode")
+      expect(getToolInputRepairStats().unicode).toBe(1)
+      expect(getToolInputRepairStats().strip).toBe(0)
+      expect(getToolInputRepairStats().jsonrepair).toBe(0)
+      const logged = infoSpy.mock.calls.map((c) => String(c[0]))
+      expect(logged.some((m) => m.includes("[REWRITE] tool-input-repair") && m.includes("layer=unicode"))).toBe(true)
+    } finally {
+      infoSpy.mockRestore()
+    }
+  })
+
   test("an unrepairable input increments the `unrepairable` counter", async () => {
-    configure("repair")
+    configure(["tags", "jsonrepair"])
     frameBuilder = buildUnrepairableComplete
     await streamRequest("tele-unrep")
     expect(getToolInputRepairStats().unrepairable).toBe(1)
   })
 
   test("repair off: no counter movement (default behavior)", async () => {
-    configure(false)
+    configure([])
     frameBuilder = buildUnrepairableComplete
     await streamRequest("tele-off")
-    expect(getToolInputRepairStats()).toEqual({ strip: 0, jsonrepair: 0, unrepairable: 0 })
+    expect(getToolInputRepairStats()).toEqual({ strip: 0, unicode: 0, jsonrepair: 0, "unicode-lossy": 0, unrepairable: 0 })
   })
 })

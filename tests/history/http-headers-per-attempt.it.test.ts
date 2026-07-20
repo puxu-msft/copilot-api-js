@@ -10,7 +10,7 @@ import {
 import { getHistory } from "~/lib/history"
 import {
   //
-  setModelOverrides,
+  setModelMappings,
   setModels,
   setStateForTests,
 } from "~/lib/state"
@@ -50,10 +50,10 @@ describe("Phase 3: per-attempt ②③ 头持久化", () => {
 
   beforeEach(() => {
     upstreamMock.mockClear()
-    setStateForTests({ copilotToken: "tok", accountType: "individual", vsCodeVersion: "1.100.0", fetchTimeout: 0 })
+    setStateForTests({ copilotToken: "tok", accountType: "individual", vsCodeVersion: "1.100.0", responseHeaderTimeout: 0 })
     applyFetchMock(upstreamMock)
     setModels({ object: "list", data: [mockModel("gpt-4o", { vendor: "OpenAI", supported_endpoints: ["/chat/completions"] })] })
-    setModelOverrides({})
+    setModelMappings({})
   })
 
   test("attempts[] 逐 attempt 带 ② wireRequest.headers + ③ responseHeaders;顶层 outboundRequest 腿带原始 headers", async () => {
@@ -66,15 +66,16 @@ describe("Phase 3: per-attempt ②③ 头持久化", () => {
 
     const entry = getHistory({ endpoint: "openai-chat-completions" }).entries[0]
 
-    // ② 顶层 outboundRequest 腿(RequestLegData)带原始 headers(此前被显式投影丢弃)
-    expect(entry.outboundRequest?.headers).toBeDefined()
-    expect(entry.outboundRequest?.headers?.authorization).toBeDefined()
-    expect(entry.outboundRequest?.headers?.authorization).not.toBe("***")
+    const finalAttempt = entry.attempts?.at(-1)
+    // ② final attempt's upstreamRequest leg carries the original headers (previously dropped by the explicit projection)
+    expect(finalAttempt?.upstreamRequest?.headers).toBeDefined()
+    expect(finalAttempt?.upstreamRequest?.headers?.authorization).toBeDefined()
+    expect(finalAttempt?.upstreamRequest?.headers?.authorization).not.toBe("***")
 
     expect(entry.attempts?.length ?? 0).toBeGreaterThanOrEqual(1)
     for (const a of entry.attempts ?? []) {
       // ② per-attempt 出站请求头
-      expect(a.wireRequest?.headers?.authorization).toBeDefined()
+      expect(a.upstreamRequest?.headers?.authorization).toBeDefined()
       // ③ per-attempt 上游响应头
       expect(a.responseHeaders).toBeDefined()
       expect(a.responseHeaders?.["x-upstream-marker"]).toBe("v")

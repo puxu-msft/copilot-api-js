@@ -18,62 +18,67 @@ import type {
 
 import consola from "consola"
 
+import type { RequestContext } from "~/lib/context/request"
 import type { SseEventRecord } from "~/lib/history/store"
 import type {
   //
-  ClientFrame,
   DriverRequestResult,
 } from "~/lib/pipeline/types"
 import type {
   //
   ResponsesPayload,
-  ResponsesStreamEvent,
 } from "~/types/api/openai-responses"
 
 import { createOpenAiResponsesCodec } from "~/lib/codec/openai-responses/codec"
-import { RESPONSES_RESPONSE_REWRITES } from "~/lib/codec/openai-responses/response-rewrites"
-import { buildOpenAiResponsesStrategiesForEnv } from "~/lib/codec/openai-responses/strategies"
-import {
-  //
-  registerResponseSession,
-} from "~/lib/history/store"
+import { responsesKeepaliveFrame } from "~/lib/codec/openai-responses/keepalive"
 import {
   //
   ENDPOINT,
 } from "~/lib/models/endpoint"
-import { resolveModelName } from "~/lib/models/resolver"
-import {
-  //
-  accumulateResponsesStreamEvent,
-  createResponsesStreamAccumulator,
-} from "~/lib/openai/responses-stream-accumulator"
+import { resolveModelTarget } from "~/lib/models/resolver"
+import { resolveStreamIdleTimeoutMs } from "~/lib/models/timeout-resolver"
+import { registerResponseSession } from "~/lib/openai/response-session-store"
 import { streamErrorToOpenAIErrorType } from "~/lib/openai/stream-error"
+import { makeDeliveryWsSink } from "~/lib/pipeline/client-sink"
+import { createPipelineDriver } from "~/lib/pipeline/driver"
+import { createRuntimeHedgePolicy } from "~/lib/pipeline/generation/runtime-policy"
+import { clientFirstRealSinkOpts } from "~/lib/pipeline/request-timing"
+import { buildResponsesResponseData } from "~/lib/request/recording"
+import { usageFromTotalInput } from "~/lib/request/usage-normalize"
 import {
   //
-  restoreResponsesStreamFrameToolNames,
-} from "~/lib/openai/tool-name-sanitize"
-import { makeWsSink } from "~/lib/pipeline/client-sink"
-import { createPipelineDriver } from "~/lib/pipeline/driver"
-import { buildResponsesResponseData } from "~/lib/request/recording"
-import { state } from "~/lib/state"
+  resolveBufferedCaps,
+  state,
+} from "~/lib/state"
 import { processResponsesInstructions } from "~/lib/system-prompt"
 import { createUpstreamResponsesTransport } from "~/lib/transport/responses-transport"
+import {
+  //
+  logUpstreamStreamOutcomeError,
+  logUpstreamStreamTruncation,
+} from "~/lib/upstream-stream-diagnostics"
+
+import { resolveResponsesBufferedAndHeartbeat } from "./buffered-config"
+import {
+  //
+  createResponsesCandidateResponseSessionFactory,
+  responsesCandidateSnapshot,
+} from "./candidate-response-session"
 
 // ============================================================================
 // Constants
 // ============================================================================
 
 /** Terminal event types that signal the end of a response */
-const TERMINAL_EVENTS = new Set(["response.completed", "response.failed", "response.incomplete", "error"])
 
 /**
  * Default client-side WebSocket frame cap (1 MiB) is enforced via
- * `state.maxWsFrameBytes` (config `openai_responses.max_ws_frame_bytes`).
+ * `state.maxWsFrameBytes` (config `server.responses_ws.max_frame_bytes`).
  * 0 means unlimited. See onMessage for enforcement.
  */
 
 /**
- * Client-side idle timeout when `client_ws_keep_open` is true (5 min).
+ * Client-side idle timeout when `server.responses_ws.keep_open` is true (5 min).
  * Without this, a client that opens the socket, sends one `response.create`,
  * and then walks away would pin a WSContext and file descriptor indefinitely.
  * Mirrors the 5-min idle close on the upstream side.
@@ -121,23 +126,59 @@ function extractPayload(message: unknown): ResponsesPayload | null {
 // Error helpers
 // ============================================================================
 
-/** Send an error frame and close the WebSocket */
-function sendErrorAndClose(ws: WSContext, message: string, code?: string): void {
+/**
+ * Send an error frame and close the WebSocket. When `forwarded` is supplied (the driver-loop error
+ * branches), the sent frame is ALSO sampled into the forwarded track — it is a proxy→client frame
+ * the client receives, so it must land in `inboundResponse.sseEvents` (richest-data-flow). The
+ * caller must `recordForwarded()` after this and before `ctx.fail` (fail freezes inboundResponse).
+ * Pre-driver rejections omit `forwarded` (no forwarded track exists yet).
+ */
+function sendErrorAndClose(
+  ws: WSContext,
+  message: string,
+  code?: string,
+  forwarded?: {
+    events: Array<SseEventRecord>
+    streamStartMs: number
+    captureGenerationFrame?: (frame: unknown, record: SseEventRecord, syntheticKind?: SseEventRecord["synthetic"]) => void
+  },
+  deliveryCtx?: RequestContext,
+): void {
+  const data = JSON.stringify({
+    type: "error",
+    error: { type: code ?? "server_error", message },
+  })
+  // Cross-model review Major: `synthetic` must be set ON THE RECORD (projection.ts's `frames()`
+  // reads `node.value.synthetic` — the 3rd `syntheticKind` param passed below only drives the
+  // arena origin/transformId, not the projected field). This is the WS analog of the HTTP
+  // `writeSynthetic` POST-COMMIT terminal `event: error` frame that REPLACES the upstream
+  // terminator (both H3 stream-error at :519 and truncation at :574 route through this one
+  // function) — exactly `"error-shaping-canonical"`'s documented semantics (types.ts:188).
+  if (forwarded) {
+    const record: SseEventRecord = { offsetMs: Date.now() - forwarded.streamStartMs, type: "error", raw: data, synthetic: "error-shaping-canonical" }
+    forwarded.events.push(record)
+    forwarded.captureGenerationFrame?.({ data }, record, "synthetic")
+  }
+  if (deliveryCtx) {
+    const record: SseEventRecord = { offsetMs: Date.now() - deliveryCtx.startTime, type: "error", raw: data, synthetic: "error-shaping-canonical" }
+    deliveryCtx.captureForwardedGenerationFrame?.({ data }, record, "synthetic")
+    deliveryCtx.setForwardedResponse({ content: JSON.parse(data), sseEvents: [record] })
+  }
   try {
-    ws.send(
-      JSON.stringify({
-        type: "error",
-        error: { type: code ?? "server_error", message },
-      }),
-    )
+    ws.send(data)
   } catch {
     // WebSocket might already be closed
   }
   try {
+    // 1011/1013 below are RFC-6455-legal SERVER close codes; Bun's WSContext
+    // tolerates them (audit Task 0.1, locked by server-ws-close-code-tolerance
+    // test). Do NOT "fix" these to 1000 by analogy with the undici CLIENT fix
+    // (upstream-ws-connection.ts) — that runtime is WHATWG-strict, this one is not.
     ws.close(1011, message.slice(0, 123)) // WS close reason max 123 bytes
   } catch {
     // Already closed
   }
+  if (deliveryCtx) deliveryCtx.finalizeModelOperationDelivery({ clientPayload: JSON.parse(data) })
 }
 
 // ============================================================================
@@ -163,6 +204,24 @@ function sendErrorAndClose(ws: WSContext, message: string, code?: string): void 
  * deterministically rather than waiting for finalization.
  */
 const wsClientAborts = new WeakMap<WSContext, AbortController>()
+const wsConnectionIds = new WeakMap<object, string>()
+
+function wsConnectionKey(ws: WSContext): object {
+  return typeof ws.raw === "object" && ws.raw !== null ? ws.raw : ws
+}
+
+function stableWsConnectionId(ws: WSContext): string {
+  const key = wsConnectionKey(ws)
+  const existing = wsConnectionIds.get(key)
+  if (existing !== undefined) return existing
+  const created = `wsconn_${crypto.randomUUID()}`
+  wsConnectionIds.set(key, created)
+  return created
+}
+
+function responseCreateId(payload: ResponsesPayload): string {
+  return typeof payload.id === "string" && payload.id.length > 0 ? payload.id : `wsresp_${crypto.randomUUID()}`
+}
 
 /** Handle a response.create message over WebSocket */
 async function handleResponseCreate(ws: WSContext, rawPayload: ResponsesPayload): Promise<void> {
@@ -190,41 +249,45 @@ async function handleResponseCreate(ws: WSContext, rawPayload: ResponsesPayload)
  * `stopAfterFrame` predicate so the driver stops after a terminal event (response.completed/…)
  * — the direct-path early-stop that never reads past the terminal (legacy WS break). Forwarded
  * sampling is in the sink (`onForwarded`); the H3 error path uses `sendErrorAndClose` (the WS
- * analog of the HTTP `writeSynthetic`, unsampled) + 1011 close; clean completion closes 1000
- * unless `clientWebsocketKeepOpen`.
+ * analog of the HTTP `writeSynthetic`, sampled into the forwarded track via its `forwarded` arg) +
+ * 1011 close; clean completion closes 1000 unless `clientWebsocketKeepOpen`.
  *
  * Unlike the legacy WS path (direct /responses only, rejecting unsupported models), the driver
  * also routes the Responses→CC fallback, so CC-only / Google models work over WS via fallback.
  * The direct path's `fixStreamEventIds` runs in the driver's S5 response-rewrite registry (A.C —
  * the SAME instance the HTTP pump uses); the fallback drains the codec's closing lifecycle via
- * `flushResponse`. Responses has no `[DONE]` / no H2 / no heartbeat.
+ * `flushResponse`. Responses has no `[DONE]` / no H2; the WS sink now runs a forward-idle app-layer
+ * keepalive (Task 2.2 / R3.5 — see the sink construction below for the protocol-ping-vs-app-frame decision).
  */
 async function handleResponseCreateV4(ws: WSContext, rawPayload: ResponsesPayload, clientAbort: AbortController): Promise<void> {
+  const operationIdentity = {
+    kind: "responses_ws" as const,
+    connectionId: stableWsConnectionId(ws),
+    responseCreateId: responseCreateId(rawPayload),
+    ...(rawPayload.previous_response_id !== undefined && { previousResponseId: rawPayload.previous_response_id }),
+  }
   const requestedModel = rawPayload.model
-  const resolvedModel = resolveModelName(requestedModel)
+  const { name: resolvedModel, routeOverride } = resolveModelTarget(requestedModel)
   const selectedModel = state.modelIndex.get(resolvedModel)
 
   // The system-prompt instructions injection is async + non-idempotent — apply it
   // before the sync codec.parse (the route's pre-step), passing the client raw
   // separately for the history snapshot.
-  const wireInstructions = await processResponsesInstructions(rawPayload.instructions, resolvedModel)
+  const wireInstructions = await processResponsesInstructions(rawPayload.instructions, resolvedModel, "openai-responses")
   const wireBody: ResponsesPayload = { ...rawPayload, instructions: wireInstructions }
 
   const codec = createOpenAiResponsesCodec()
   const transport = createUpstreamResponsesTransport({
     clientAbortSignal: clientAbort.signal,
-    idleTimeoutMs: state.streamIdleTimeout > 0 ? state.streamIdleTimeout * 1000 : 0,
+    idleTimeoutMs: resolveStreamIdleTimeoutMs(resolvedModel),
   })
   const driver = createPipelineDriver({
     codec,
     transport,
-    // S5 — the SAME Responses response-rewrite chain the HTTP handler uses (fix-stream-ids,
-    // DIRECT only): registering once makes HTTP + WS share one stateful rewrite instance (A.C).
-    responseRewrites: RESPONSES_RESPONSE_REWRITES,
-    strategies: (env) => {
-      if (env.targetEndpoint === ENDPOINT.CHAT_COMPLETIONS) env.ctx.recordFeature("via-chat-completions-fallback")
-      return buildOpenAiResponsesStrategiesForEnv(env)
-    },
+    hedgePolicy: createRuntimeHedgePolicy(resolvedModel),
+    candidateResponseSessionFactory: createResponsesCandidateResponseSessionFactory("ws"),
+    // S5 response-rewrites + the S4 retry stack come from the CellAssembly now (C5 — the openai-responses
+    // direct/fallback cells are migrated; RETRY_SEMANTICS encodes the R1 corner auto-truncate OFF / maxRetries 1).
     maxRetries: 1,
     maxLearningRetries: 32,
   })
@@ -237,7 +300,8 @@ async function handleResponseCreateV4(ws: WSContext, rawPayload: ResponsesPayloa
       headers: new Headers(), // WS transport: no inbound HTTP headers to capture
       method: "WS",
       path: "/v1/responses",
-      preResolved: { name: resolvedModel, model: selectedModel },
+      preResolved: { name: resolvedModel, model: selectedModel, ...(routeOverride && { routeOverride }) },
+      operationIdentity,
       clientAbortSignal: clientAbort.signal,
     })
   } catch (error) {
@@ -248,7 +312,7 @@ async function handleResponseCreateV4(ws: WSContext, rawPayload: ResponsesPayloa
     wsClientAborts.delete(ws)
     const message = error instanceof Error ? error.message : String(error)
     consola.error(`[WS] Responses API error: ${message}`)
-    sendErrorAndClose(ws, message, streamErrorToOpenAIErrorType(error))
+    sendErrorAndClose(ws, message, streamErrorToOpenAIErrorType(error), undefined, ctx)
     return
   }
 
@@ -258,125 +322,185 @@ async function handleResponseCreateV4(ws: WSContext, rawPayload: ResponsesPayloa
       ctx.fail(resolvedModel, new Error(result.rejection.reason))
     }
     wsClientAborts.delete(ws)
-    sendErrorAndClose(ws, result.rejection.reason, "invalid_request_error")
+    sendErrorAndClose(ws, result.rejection.reason, "invalid_request_error", undefined, ctx)
     return
   }
 
   const { upstream, env } = result
+  // D2 diagnostic: per-model effective frame-idle timeout (ctx live post-runRequest).
+  env.ctx.setStreamTimeouts({ streamIdleTimeoutMs: resolveStreamIdleTimeoutMs(resolvedModel) })
   const viaFallback = env.targetEndpoint === ENDPOINT.CHAT_COMPLETIONS
 
   // Fallback registers the session eagerly so a mid-stream follow-up resolves it.
   if (viaFallback) {
-    const respId = codec.getFallbackResponseId()
+    const candidate = responsesCandidateSnapshot(driver, upstream)
+    const respId = candidate.kind === "responses" ? candidate.fallbackResponseId : undefined
     if (respId) {
       if (!env.ctx.sessionId) env.ctx.setSessionId(respId)
       registerResponseSession(respId, env.ctx.sessionId)
     }
   }
 
-  const acc = createResponsesStreamAccumulator()
-  const mapper = env.ctx.toolNameMapper
   const forwardedSseEvents: Array<SseEventRecord> = []
   const streamStartMs = Date.now()
-  let eventsReceived = 0
+  env.ctx.setClientTimingEpoch("streamOpen", streamStartMs) // 首包埋点（spec 2026-07-14 §3.2）
 
-  // The driver-owned WS sink: ws.send write-out + forwarded sampling (no heartbeat for WS).
-  const sink = makeWsSink(ws, { onForwarded: (record) => forwardedSseEvents.push(record), streamStartMs })
+  // The driver-owned WS sink: ws.send write-out + forwarded sampling + a forward-idle keepalive
+  // (Phase 2 Task 2.2 / R3.5). EMPIRICAL DECISION — app-layer frame, NOT protocol ping:
+  //   - Bun.serve DOES auto-send protocol pings (`websocket.sendPings` defaults true) and keeps its
+  //     own 120s socket idle-timeout alive — a TRANSPORT-level keepalive that survives silence.
+  //   - BUT a protocol ping surfaces to a standard WS consumer as a (non-standard) `ping` EVENT,
+  //     never an application `message` (probed on a 127.0.0.1 Bun.serve loopback; 固化 in
+  //     responses-ws-keepalive.unit.test.ts). A Codex-style consumer that resets its idle deadline on
+  //     application events/messages is therefore NOT kept alive by the protocol ping — the exact WS
+  //     analog of "a bare SSE comment does not reset Codex's SSE idle clock" (Task 2.1, spec §4).
+  //   ⟹ the WS path injects the SAME app-layer `responsesKeepaliveFrame()` the SSE path does, every
+  //     `streamKeepalivePingSec` of forward silence, marked `synthetic:"keepalive"` in the forwarded
+  //     track (never the upstream track). Reuses the keepalive INTERVAL only — not `streamKeepaliveMode`.
+  const keepaliveSec = state.streamKeepalivePingSec
+  const sink = makeDeliveryWsSink(ws, {
+    onForwarded: (record) => forwardedSseEvents.push(record),
+    streamStartMs,
+    ...clientFirstRealSinkOpts(env),
+    ...(keepaliveSec > 0 && {
+      heartbeat: {
+        intervalSec: keepaliveSec,
+        pingFrame: responsesKeepaliveFrame(),
+        clientAbortSignal: clientAbort.signal, // client disconnect suppresses pings
+      },
+    }),
+  })
   const recordForwarded = (): void => env.ctx.setForwardedResponse({ sseEvents: [...forwardedSseEvents] })
 
-  /**
-   * Accumulate one rendered Responses frame + restore function_call names (forwarded-only) + count.
-   * Returns the restored `{data}`-only frame (WS frames carry no event line), or `undefined` to skip
-   * (empty / unparseable — the legacy loop's `!frame.data` guard + `forwardWsFrame`'s parse-fail
-   * early return; neither counted). Shared by the driver loop (via `onRenderedFrame`) AND the
-   * fallback closing drain — WS counts BOTH (legacy `forwardWsFrame` ran for loop + drain alike,
-   * unlike the HTTP pump which only counted the loop). fix-stream-ids (direct) was already applied
-   * in the driver's S5 chain.
-   */
-  const restoreAccumulateCount = (frame: ClientFrame): ClientFrame | undefined => {
-    if (!frame.data) return undefined
-    let event: ResponsesStreamEvent
-    try {
-      event = JSON.parse(frame.data) as ResponsesStreamEvent
-    } catch {
-      consola.debug("[WS] Skipping unparseable SSE event")
-      return undefined
-    }
-    accumulateResponsesStreamEvent(event, acc)
-    eventsReceived++
-    env.ctx.recordStreamProgress({ eventsIn: eventsReceived })
-    return { data: restoreResponsesStreamFrameToolNames(frame.data, event.type, mapper) }
-  }
+  // P4 Task 1 — terminal-only buffered-retry selrouting (block-level-buffered-retry spec §7.3).
+  // Reuses the SAME `responses.buffered_retry` config key the HTTP handlers use, but `commitBoundaries`
+  // is DELIBERATELY OMITTED: per `RunBufferedOpts.commitBoundaries`'s doc (types.ts), UNDEFINED means
+  // terminal-only — the buffer commits exactly once, at the terminal drain (`sawMessageStop` /
+  // `sawUpstreamError`), never mid-generation. WS must NOT reuse the HTTP block-level predicate
+  // (`isResponsesCommitBoundary`): that predicate treats `response.output_item.done` (an output ITEM
+  // finishing, not the whole response) as a commit boundary, which would commit a block live and close
+  // the retry window (`committedAny`) before the response actually reaches a terminal — a drop after
+  // `output_item.done` but before `response.completed` would then wrongly degrade to `partial-degrade`
+  // instead of retrying, delivering a half generation to the client (P4 Task 1 review finding). WS has
+  // no mid-stream block/anchor needs, so terminal-only (byte-identical in spirit to the HTTP handler's
+  // pre-block-level whole-response buffered predecessor) is the correct — and only — shape here.
+  // Fallback closing frames now flow through the response processor finish boundary, so terminal-only
+  // buffering observes response.completed instead of relying on a handler post-loop bypass.
+  const { buffered: bufferedConfigured } = resolveResponsesBufferedAndHeartbeat()
+  const buffered = bufferedConfigured
+  const outcome =
+    buffered ?
+      await driver.runResponseBufferedSink(upstream, env, sink, {
+        // commitBoundaries intentionally OMITTED — see the comment above. Terminal-only: the driver's
+        // own `sawMessageStop` gate below is the ONLY commit trigger.
+        // H2 — a terminal upstream `error` frame (clean drain, no response.completed/.failed/.incomplete).
+        // Committing it (rather than retrying as a truncation) lets the handler fail via the REAL
+        // `acc.streamError` below, mirroring the HTTP handler.
+        // Distinct vendor dimension from "responses" (HTTP) so WS vs HTTP buffered-retry telemetry is
+        // separable in `/api/status.protect_streaming.by_vendor` (P0's counters bag is an open
+        // `Record<vendor, stats>` — no allowlist — confirmed by protect-streaming-stats.ts:57 and the
+        // pre-existing `responses_ws` vendor label already documented in state.ts:323 / types.ts:460 /
+        // buffered-retry-keys.test.ts:105, though this task is its FIRST live producer). Caps still
+        // resolve from the SHARED "responses" vendor key (below) — only the telemetry bucket differs.
+        telemetryVendor: "responses_ws",
+        retryCap: resolveBufferedCaps("responses").maxRetries,
+        bufferCapBytes: resolveBufferedCaps("responses").bufferCapBytes,
+      })
+    : await driver.runResponseSink(upstream, env, sink)
 
-  // Terminal early-stop (driver `stopAfterFrame`): the direct path must not read past
-  // response.completed/failed/incomplete/error (legacy WS break — an upstream that emits trailing
-  // frames or stalls without closing would otherwise hang to idle-timeout). The fallback's terminal
-  // (response.completed) comes from `flushResponse` below, not the loop, so this never fires there.
-  const isTerminal = (frame: ClientFrame): boolean => {
-    if (!frame.data) return false
-    try {
-      return TERMINAL_EVENTS.has((JSON.parse(frame.data) as ResponsesStreamEvent).type)
-    } catch {
-      return false
-    }
-  }
-
-  const outcome = await driver.runResponseSink(upstream, env, sink, { onRenderedFrame: restoreAccumulateCount, stopAfterFrame: isTerminal })
+  const candidate = responsesCandidateSnapshot(driver, upstream)
+  if (candidate.kind !== "responses") throw new Error("[WS] wrong candidate response session kind")
+  const { acc, diag } = candidate
 
   if (outcome.kind === "settled-abort") {
     recordForwarded()
     consola.debug("[WS] Client disconnected mid-stream — recording aborted")
-    env.ctx.abort(acc.model || resolvedModel, { usage: { input_tokens: acc.inputTokens, output_tokens: acc.outputTokens } })
+    env.ctx.abort(acc.model || resolvedModel, {
+      usage: usageFromTotalInput({
+        totalInput: acc.inputTokens,
+        output: acc.outputTokens,
+        cacheRead: acc.cachedInputTokens,
+        cacheCreation: acc.cacheWriteInputTokens,
+        reasoning: acc.reasoningTokens,
+        inputDetails: acc.inputDetails,
+        outputDetails: acc.outputDetails,
+      }),
+    })
+    sink.finalize?.()
     return
   }
 
   if (outcome.kind === "stream-error") {
-    // H3 — settle as fail (partial usage) + send the OpenAI error frame and close (1011). The
-    // error frame is NOT forward-sampled (legacy never pushed it), so it goes via sendErrorAndClose
-    // (the WS analog of the HTTP writeSynthetic), not the sink.
-    recordForwarded()
+    // H3 — send the OpenAI error frame (recorded into the forwarded track via sendErrorAndClose's
+    // `forwarded` sampler) + close (1011), THEN snapshot + settle. Order is load-bearing:
+    // sample → recordForwarded → ctx.fail (fail freezes inboundResponse, so a post-fail snapshot misses it).
     const error = outcome.error
-    env.ctx.fail(acc.model || resolvedModel, error, { usage: { input_tokens: acc.inputTokens, output_tokens: acc.outputTokens } })
     const message = error instanceof Error ? error.message : String(error)
     consola.error(`[WS] Responses API error: ${message}`)
-    sendErrorAndClose(ws, message, streamErrorToOpenAIErrorType(error))
+    logUpstreamStreamOutcomeError(outcome, {
+      model: acc.model || resolvedModel,
+      streamState: { streamStartMs: diag.startedAtMs, bytesIn: diag.bytesIn, currentBlockType: "" },
+      acc: { inputTokens: acc.inputTokens, outputTokens: acc.outputTokens },
+      sseEvents: diag.sseEvents,
+    })
+    sendErrorAndClose(ws, message, streamErrorToOpenAIErrorType(error), {
+      events: forwardedSseEvents,
+      streamStartMs,
+      captureGenerationFrame: (frame, record, syntheticKind) => env.ctx.captureForwardedGenerationFrame?.(frame, record, syntheticKind),
+    })
+    recordForwarded()
+    env.ctx.fail(acc.model || resolvedModel, error, {
+      usage: usageFromTotalInput({
+        totalInput: acc.inputTokens,
+        output: acc.outputTokens,
+        cacheRead: acc.cachedInputTokens,
+        cacheCreation: acc.cacheWriteInputTokens,
+        reasoning: acc.reasoningTokens,
+        inputDetails: acc.inputDetails,
+        outputDetails: acc.outputDetails,
+      }),
+    })
+    sink.finalize?.()
     return
   }
 
   // outcome.kind === "complete" — the upstream drained cleanly (or stopped at the terminal frame).
-  if (viaFallback) {
-    // Drain the CC→Responses translator's closing lifecycle (output_text.done … response.completed),
-    // counted + forward-sampled like loop frames (WS parity). (Kept handler-side: the "move this into
-    // a driver S6 flush" idea was evaluated and rejected — besides the truncation-detection entanglement,
-    // the WS sink has no `writeSynthetic`/`close` and its error terminator is the transport-coupled
-    // `sendErrorAndClose`+1011, which a uniform driver finalize cannot model. See
-    // docs/archive/2606-landed-rfcs/response-pipeline/finalize-stream-redesign.md.)
-    for (const closing of codec.flushResponse(env)) {
-      const out = restoreAccumulateCount(closing)
-      if (out) await sink.write(out)
-    }
-  } else {
+  if (!viaFallback) {
     if (!env.ctx.sessionId && acc.responseId) env.ctx.setSessionId(acc.responseId)
     registerResponseSession(acc.responseId, env.ctx.sessionId)
   }
 
   // Truncation: a complete Responses stream carries a terminal response event (sets `acc.status`);
   // an empty `acc.status` after the drain means the upstream truncated before any terminal. Mirrors
-  // the HTTP handler, but the WS sink has NO `writeSynthetic` — use `sendErrorAndClose` (the WS H3
-  // analog, 1011) to emit the error + close. Checked AFTER the viaFallback drain (whose synthesized
-  // `response.completed` sets `acc.status`). See docs/spec/upstream-stream-truncation-detection.md.
+  // the HTTP handler, but `sink.writeSynthetic` only SENDS the frame — use `sendErrorAndClose` (the WS
+  // H3 analog) to emit the error AND close the socket 1011. Checked AFTER the viaFallback drain (whose
+  // synthesized `response.completed` sets `acc.status`). See docs/spec/upstream-stream-truncation-detection.md.
   if (acc.status === "") {
-    recordForwarded()
     const partial = buildResponsesResponseData(acc, resolvedModel)
     const truncErr = new Error("Upstream stream truncated before completion (no response.completed)")
     consola.error(`[WS] Upstream truncated for ${acc.model || resolvedModel}: drained without a terminal response event`)
+    logUpstreamStreamTruncation(truncErr.message, {
+      model: acc.model || resolvedModel,
+      streamState: { streamStartMs: diag.startedAtMs, bytesIn: diag.bytesIn, currentBlockType: "" },
+      acc: { inputTokens: acc.inputTokens, outputTokens: acc.outputTokens },
+      sseEvents: diag.sseEvents,
+    })
+    // Emit the error frame (recorded into forwarded) + close, THEN snapshot + settle (sample →
+    // recordForwarded → ctx.fail; fail freezes inboundResponse).
+    sendErrorAndClose(ws, truncErr.message, streamErrorToOpenAIErrorType(truncErr), {
+      events: forwardedSseEvents,
+      streamStartMs,
+      captureGenerationFrame: (frame, record, syntheticKind) => env.ctx.captureForwardedGenerationFrame?.(frame, record, syntheticKind),
+    })
+    recordForwarded()
     env.ctx.fail(acc.model || resolvedModel, truncErr, { usage: partial.usage, content: partial.content })
-    sendErrorAndClose(ws, truncErr.message, streamErrorToOpenAIErrorType(truncErr))
+    sink.finalize?.()
     return
   }
 
   recordForwarded()
   env.ctx.complete(buildResponsesResponseData(acc, resolvedModel))
+  sink.finalize?.()
 
   if (!state.clientWebsocketKeepOpen) ws.close(1000, "done")
 }
@@ -480,6 +604,8 @@ export function initResponsesWebSocket(rootApp: Hono, upgradeWs: UpgradeWebSocke
           // Best-effort
         }
         try {
+          // 1013 is an RFC-6455-legal SERVER close code Bun tolerates — do NOT
+          // rewrite to 1000 by analogy with the undici client fix (see :144).
           ws.close(1013, "Try again later")
         } catch {
           // Already closed
@@ -488,6 +614,7 @@ export function initResponsesWebSocket(rootApp: Hono, upgradeWs: UpgradeWebSocke
         return
       }
       liveConnectionCount += 1
+      stableWsConnectionId(ws)
       consola.debug(`[WS] Responses API WebSocket connected (active: ${liveConnectionCount})`)
       armIdleTimer(ws)
     },
@@ -579,6 +706,8 @@ export function initResponsesWebSocket(rootApp: Hono, upgradeWs: UpgradeWebSocke
       wsClientAborts.get(ws)?.abort()
       wsClientAborts.delete(ws)
       try {
+        // 1011 is an RFC-6455-legal SERVER close code Bun tolerates — do NOT
+        // rewrite to 1000 by analogy with the undici client fix (see :144).
         ws.close(1011, "Internal error")
       } catch {
         // Already closed

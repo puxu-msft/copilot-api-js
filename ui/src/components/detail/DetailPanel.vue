@@ -17,7 +17,7 @@ import { useDetailViewState } from "@/composables/useDetailViewState"
 import { useHistoryStore } from "@/composables/useHistoryStore"
 import { provideMessageActions } from "@/composables/useMessageActions"
 import { provideRawModal } from "@/composables/useRawModal"
-import { downloadEntryAsJson } from "@/utils/export-entry"
+import { downloadEntryAsZst } from "@/utils/export-entry"
 
 import DetailToolbar from "./DetailToolbar.vue"
 import StageAttempts from "./stages/StageAttempts.vue"
@@ -131,9 +131,9 @@ watch(entry, (e) => {
   }
 })
 
-/** Export full entry as downloadable JSON file */
+/** Export full entry as a downloadable zstd-compressed `.json.zst` file */
 function exportEntry() {
-  if (entry.value) downloadEntryAsJson(entry.value)
+  if (entry.value) void downloadEntryAsZst(entry.value)
 }
 </script>
 

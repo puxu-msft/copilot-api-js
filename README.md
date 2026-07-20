@@ -65,6 +65,7 @@ BROWSER=wslview npm dist-tag add @hsupu/copilot-api@0.8.3 latest
 | `--proxy` |  | Override outbound proxy URL (http/https/socks5/socks5h) |
 | `--no-http-proxy-from-env` | enabled | Ignore `HTTP_PROXY` / `HTTPS_PROXY` env vars |
 | `--no-rate-limit` | enabled | Disable the adaptive rate limiter |
+| `--no-history` | enabled | No-history mode: don't open/create the History database or record anything (overrides config `history.enabled`) |
 
 `--account-type` determines the upstream API base URL (unless `--ghc-api-base-url` overrides it):
 
@@ -80,7 +81,6 @@ Experimental options:
 |--------|---------|-------------|
 | `--external-ui-url` |  | Reverse-proxy `/ui` to an external Vite dev / build server |
 | `--verbose`, `-v` | `false` | Verbose logging (includes Copilot token refresh logs) |
-| `--auto-truncate` | disabled | Enable reactive auto-truncate on context-limit errors |
 | `--mock-rate-limiter-throttled` | `false` | Test-only: simulate upstream 429 after the limiter timeout |
 
 ---
@@ -152,44 +152,13 @@ gemini -p "hello"
 
 ### Using API Endpoints
 
-#### OpenAI compatible
+The proxy exposes OpenAI, Azure OpenAI, Anthropic, and Google Gemini compatible endpoints (each vendor family under its conventional prefixes — e.g. OpenAI routes are registered with no prefix, `/v1`, and `/openai/v1`), plus management, History, and health APIs.
 
-Each route is registered with no prefix, with `/v1`, and with `/openai/v1`.
+**See [`docs/API.md`](docs/API.md) for the complete endpoint reference** (all routes, prefix variants, and field-level notes). The live source of truth for a running instance is `GET /openapi.json` (with an interactive Scalar page at `/docs`).
 
-| Endpoint | Method |
-|----------|--------|
-| `/chat/completions` | POST |
-| `/responses` | POST (also WS GET) |
-| `/embeddings` | POST |
-| `/models` | GET |
-| `/models/:model` | GET |
+Any client SDK can drive any GHC model via an `@cc` / `@responses` / `@messages` model-name suffix (the universal translation matrix) — e.g. an OpenAI client can call `claude-opus-4.8@messages`. Details in [`docs/API.md`](docs/API.md#调用基础).
 
-#### Azure OpenAI compatible
-
-| Endpoint | Method |
-|----------|--------|
-| `/openai/deployments/:deployment/chat/completions` | POST |
-| `/openai/deployments/:deployment/embeddings` | POST |
-| `/openai/deployments/:deployment/responses` | POST |
-
-#### Anthropic compatible
-
-| Endpoint | Method |
-|----------|--------|
-| `/v1/messages`, `/anthropic/v1/messages` | POST |
-| `/v1/messages/count_tokens`, `/anthropic/v1/messages/count_tokens` | POST |
-| `/anthropic/v1/models` | GET |
-| `/anthropic/v1/models/:id` | GET |
-
-`/v1/messages` requires an Anthropic-vendor model — it talks to Copilot's native Anthropic endpoint.
-
-#### Google Gemini compatible
-
-| Endpoint | Method |
-|----------|--------|
-| `/v1beta/models/:model:generateContent` | POST |
-| `/v1beta/models/:model:streamGenerateContent` | POST (SSE) |
-| `/v1beta/models/:model:countTokens` | POST |
+Streaming requests use an explicit upstream generation runtime. By default, if the primary physical request has produced no complete real client-protocol block after 300 seconds, one secondary candidate starts while the primary continues; the first complete block wins and the loser is cancelled and fully quiesced. Synthetic keepalive scaffolding does not count as model progress. Requests declaring server-executed tools are excluded unless explicitly opted in. Configure this under `generation.*`; downstream heartbeat, upstream retry/competition, and transport connection keepalive are independent mechanisms.
 
 ---
 
@@ -206,13 +175,16 @@ The GitHub token, learned negotiation state and the SQLite history database live
 
 Most fields hot-reload at runtime (the file is watched). Hot-reload semantics are *retain-on-absence*: missing keys keep the previous value; explicit empty values (`disabled_models: []`, `model_overrides: {}`) clear the field.
 
+`generation.hedge.*` controls live fast-retry (`enabled`, `threshold_sec`, `max_secondary_candidates`, `allow_server_tools`); the sibling generation fields bound active/total candidates and dispatches. Values are snapshotted when a request starts, so a hot reload affects new generations only.
+
 ### Data directory layout
 
 ```
 ~/.local/share/copilot-api/         # or $XDG_DATA_HOME/copilot-api/
 ├── config.yaml                     # user config (hot-reloaded)
 ├── github_token                    # GitHub device-flow token
-├── history.db                      # SQLite history (gzip-compressed payloads)
+├── history-v3.db                   # Canonical semantic CAS + journal + search
+├── raw.db                          # Optional exact-byte CAS (disabled by default)
 ├── negotiation-states.json         # learned per-model bans (betas / body fields / efforts)
 ```
 
@@ -220,43 +192,9 @@ Most fields hot-reload at runtime (the file is watched). Hot-reload semantics ar
 
 ## Internal API Endpoints
 
-### Management & UI
+Management (`/api/*`), History REST (`/history/api/*`), metrics (`/metrics`), health probes (`/health`, `/health/readiness`, `/health/liveness`), the History WebSocket (`/ws`), and the Web UIs (`/ui/*`, `/ui-v4/*`) are all documented in **[`docs/API.md`](docs/API.md)** alongside the vendor-compatible endpoints.
 
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/api/status` | GET | Server status (uptime, account type, model count, in-flight, etc.) |
-| `/api/stats` | GET | Operational stats — per-dimension breakdown (`?dimension=model\|endpoint\|client\|agentKind\|tool&window=sinceStart\|7d&limit=N`) with token/cost counters + latency/queue/token percentiles |
-| `/api/tokens` | GET | GitHub + Copilot token info (masked unless `--show-github-token`) |
-| `/api/models` | GET | Internal model catalog (full Copilot data) |
-| `/api/models/:model` | GET | Single model (internal full shape) |
-| `/api/config` | GET | Effective runtime configuration |
-| `/api/config/yaml` | GET / PUT | Read / replace `config.yaml` (triggers full re-apply) |
-| `/api/logs` | GET | Recent request logs (in-memory ring buffer) |
-| `/api/event_logging/batch` | POST | Silently consumes Anthropic event-logging beacons |
-| `/metrics` | GET | Prometheus text exposition (v0.0.4) — `copilot_api_*_total{dimension,key}` counters + per-dimension histograms (duration/queue/token) |
-| `/health` | GET | Liveness probe (200 / 503) |
-| `/ui/*` | GET | Vuetify-based History Web UI (static SPA) |
-
-### History API
-
-REST under `/history/api/`:
-
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/history/api/entries` | GET | Paginated entry list (filter by model / endpoint / status / session / time) |
-| `/history/api/entries/:id` | GET | Single entry (decoded payload + response, headers, timing, billing) |
-| `/history/api/entries` | DELETE | Full clear of all history (destructive). Per-session delete is `DELETE /api/sessions/:id` |
-| `/history/api/stats` | GET | Aggregate counts, token totals, billing multipliers, model breakdown |
-| `/history/api/sessions` | GET | Session list (Claude Code / Codex sessions inferred from headers) |
-| `/history/api/sessions/:id` | DELETE | Delete all entries for a session |
-| `/history/api/export` | GET | Export history as JSON |
-
-WebSocket `/ws` is a topic-aware bus carrying:
-
-- `history` — new entries, updates, finalize, delete events
-- `status` — server status changes
-- `shutdown` — drain begin / phase transitions
-- (per-request) live SSE replay for in-flight requests
+History is persisted to a content-addressed SQLite store (`history-v3.db`): every request/response is recorded as an immutable canonical operation record via a single-writer terminal bus, with periodic DB maintenance (WAL checkpoint / incremental vacuum / analyze). There is no built-in tiered cold-format archiving — the `history.archive.*` config surface was retired together with History V2 (2026-07-18). See **[`docs/history.md`](docs/history.md)** and **[`docs/lifecycle.md`](docs/lifecycle.md)**.
 
 ---
 

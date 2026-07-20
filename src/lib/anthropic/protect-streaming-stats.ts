@@ -1,18 +1,27 @@
 /**
- * L2 buffered-retry hit-rate telemetry (RFC §10 / §8 decision data).
+ * L2 buffered-retry hit-rate telemetry (RFC §10 / §8 decision data), keyed PER VENDOR.
  *
- * A tiny in-memory aggregate counter of L2 ENGAGEMENTS (NOT every buffered request) — exposed via
- * `/api/status.protect_streaming`. The handler only records here when L2 actually did something:
- * a `success` AFTER ≥1 retry (a real save), an `exhausted` (all retries RST), or a `retreated`
- * (buffer cap). A clean first-try buffered commit (no RST, retries 0) is the silent happy path and
- * is NOT counted — otherwise every 200 would inflate `success`. So `success` here means "RST hit,
- * retry saved it", and the §8 hit rate is `success / (success + exhausted)`. Resets on restart (a
- * live-observation counter, not the durable 7-day usage history — per-entry detail already lives in
- * history's `attempts[]`). `recordFeature("protect-streaming-retry")` tags the same engagements.
+ * A tiny in-memory aggregate counter of L2 ENGAGEMENTS (NOT every buffered request) — exposed
+ * per-vendor via `/api/status.protect_streaming`. A handler only records here when L2 actually did
+ * something: a `success` AFTER ≥1 retry (a real save), an `exhausted` (all retries RST), a
+ * `retreated` (buffer cap), or a `partial-degrade` (block-level: a boundary block committed live,
+ * then the stream truncated). A clean first-try buffered commit (no RST, retries 0) is the silent
+ * happy path and is NOT counted — otherwise every 200 would inflate `success`.
+ *
+ * hit rate (§8, {@link protectStreamingHitRate}) folds `partialDegrade` into the DENOMINATOR:
+ * `success / (success + exhausted + partialDegrade)` — a partial-degrade is a partial success
+ * (some committed content reached the client), so it belongs alongside the fully-saved and the
+ * fully-lost engagements; `retreated` is excluded (it abandoned L2 protection entirely, not a
+ * generation outcome). Resets on restart (a live-observation counter, not the durable 7-day usage
+ * history — per-entry detail already lives in history's `attempts[]`).
+ * `recordFeature("protect-streaming-retry")` tags the same engagements.
  */
 
-/** Resolution outcome of a buffered-retry generation. */
-export type ProtectStreamingOutcome = "success" | "exhausted" | "retreated"
+// The outcome union is OWNED by the pipeline driver (its buffered sink produces these labels); this
+// telemetry consumer re-exports it so the counter's keys can never drift from the producer contract.
+export type { ProtectStreamingOutcome } from "~/lib/pipeline/types"
+
+import type { ProtectStreamingOutcome } from "~/lib/pipeline/types"
 
 export interface ProtectStreamingStats {
   /** Committed a complete generation AFTER ≥1 retry — an RST that L2 transparently saved. */
@@ -21,27 +30,64 @@ export interface ProtectStreamingStats {
   exhausted: number
   /** Buffer cap exceeded → retreated to live forwarding (lost L2 protection). */
   retreated: number
-  /** Total retries consumed across all engagements. */
+  /**
+   * Block-level path only: a boundary block was already committed live, then the stream truncated
+   * (un-retryable — the committed prefix is on the wire). A graceful degrade distinct from
+   * `exhausted` (which committed nothing).
+   */
+  partialDegrade: number
+  /** Total retries consumed across all engagements (every leg). */
   totalRetries: number
+  /**
+   * Retries consumed before a `partial-degrade` specifically — so the "the retry engine engaged
+   * (and produced a committed prefix)" signal is not lost inside `totalRetries` (spec §9.2 M-1).
+   */
+  retriesBeforeDegrade: number
 }
 
-const stats: ProtectStreamingStats = { success: 0, exhausted: 0, retreated: 0, totalRetries: 0 }
+const emptyStats = (): ProtectStreamingStats => ({
+  success: 0,
+  exhausted: 0,
+  retreated: 0,
+  partialDegrade: 0,
+  totalRetries: 0,
+  retriesBeforeDegrade: 0,
+})
 
-/** Record one buffered-retry resolution. `retries` = re-exchanges consumed for this generation. */
-export function recordProtectStreamingOutcome(outcome: ProtectStreamingOutcome, retries: number): void {
-  stats[outcome] += 1
-  stats.totalRetries += retries
+/** Per-vendor engagement counters (vendor = `anthropic` / `responses` / `chat_completions` / `responses_ws`). */
+let byVendor: Record<string, ProtectStreamingStats> = {}
+
+/** Map an outcome label to its counter field (only `partial-degrade` needs the camelCase remap). */
+const keyOf = (o: ProtectStreamingOutcome): keyof ProtectStreamingStats => (o === "partial-degrade" ? "partialDegrade" : o)
+
+/**
+ * Record one buffered-retry resolution under `meta.vendor`. `retries` = re-exchanges consumed for
+ * this generation (folded into `totalRetries`, and additionally into `retriesBeforeDegrade` for a
+ * `partial-degrade`).
+ */
+export function recordProtectStreamingOutcome(outcome: ProtectStreamingOutcome, retries: number, meta: { vendor: string }): void {
+  const s = (byVendor[meta.vendor] ??= emptyStats())
+  s[keyOf(outcome)] += 1
+  s.totalRetries += retries
+  if (outcome === "partial-degrade") s.retriesBeforeDegrade += retries
 }
 
-/** Snapshot the current counters (for `/api/status`). */
-export function getProtectStreamingStats(): ProtectStreamingStats {
-  return { ...stats }
+/**
+ * §8 hit rate for one vendor's bucket: `success / (success + exhausted + partialDegrade)`.
+ * `null` when the denominator is 0 (no scoreable engagements yet — e.g. only retreats), so callers
+ * can render "n/a" instead of a misleading 0.
+ */
+export function protectStreamingHitRate(s: ProtectStreamingStats): number | null {
+  const denom = s.success + s.exhausted + s.partialDegrade
+  return denom === 0 ? null : s.success / denom
 }
 
-/** Test seam: reset the counters. */
+/** Snapshot the current per-vendor counters (deep copy — for `/api/status`). */
+export function getProtectStreamingStats(): Record<string, ProtectStreamingStats> {
+  return Object.fromEntries(Object.entries(byVendor).map(([v, s]) => [v, { ...s }]))
+}
+
+/** Test seam: drop all vendor buckets. */
 export function resetProtectStreamingStatsForTests(): void {
-  stats.success = 0
-  stats.exhausted = 0
-  stats.retreated = 0
-  stats.totalRetries = 0
+  byVendor = {}
 }

@@ -14,8 +14,10 @@ import {
   describe,
   expect,
   mock,
+  spyOn,
   test,
 } from "bun:test"
+import consola from "consola"
 
 import { getHistory } from "~/lib/history/store"
 import {
@@ -72,12 +74,28 @@ describe("CC v4 — upstream stream truncation detection", () => {
 
   beforeEach(() => {
     upstreamFetchMock.mockClear()
-    setStateForTests({ copilotToken: "test-token", accountType: "individual", vsCodeVersion: "1.100.0", fetchTimeout: 0, streamIdleTimeout: 0 })
+    // Pin the PLAIN owns-sink path: this file locks the live-stream truncation detection (partial
+    // content forwarded + error frame + kind=truncated). `chatCompletionsBufferedRetry` defaults to
+    // true (2026-07-14 flip) → the buffered path is all-or-nothing (discards the partial on truncation),
+    // covered separately in tests/chat-completions/cc-buffered.integration.test.ts.
+    setStateForTests({ copilotToken: "test-token", accountType: "individual", vsCodeVersion: "1.100.0", responseHeaderTimeout: 0, streamIdleTimeout: 0, chatCompletionsBufferedRetry: false })
     applyFetchMock(upstreamFetchMock)
   })
 
   test("truncated CC stream → error frame to client, no [DONE], history FAILED", async () => {
-    const sse = await (await post()).text()
+    // HIGH-1: a clean-EOF truncation also emits the rich [upstream-diagnostics] line, kind=truncated.
+    const diagSpy = spyOn(consola, "error").mockImplementation(Object.assign(() => {}, { raw: () => {} }))
+    let sse: string
+    try {
+      sse = await (await post()).text()
+    } finally {
+      const diagLine = diagSpy.mock.calls.map((c) => String(c[0])).find((s) => s.includes("[upstream-diagnostics] STREAM DISCONNECT"))
+      diagSpy.mockRestore()
+      expect(diagLine).toBeDefined()
+      expect(diagLine).toContain("kind=truncated")
+      expect(diagLine).not.toContain("frames=0")
+      expect(diagLine).toContain("last-frame=chat.completion.chunk@")
+    }
 
     // The partial content the upstream did send is still forwarded.
     expect(sse).toContain("Hel")
@@ -89,7 +107,7 @@ describe("CC v4 — upstream stream truncation detection", () => {
     const entry = getHistory({ endpoint: "openai-chat-completions", limit: 5 }).entries[0]
     expect(entry).toBeDefined()
     expect(entry.state).toBe("failed")
-    expect(entry.outboundResponse?.success).toBe(false)
-    expect(String(entry.outboundResponse?.error)).toContain("truncated")
+    expect(entry.attempts?.at(-1)?.upstreamResponse?.success).toBe(false)
+    expect(String(entry._index?.derived?.failureReason)).toContain("truncated")
   })
 })

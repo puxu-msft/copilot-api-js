@@ -1,528 +1,3 @@
-# Copilot API Configuration
-# Copy this file to ~/.local/share/copilot-api/config.yaml and customize as needed.
-# All settings are hot-reloadable unless noted otherwise.
-
-# ============================================================================
-# Proxy
-# ============================================================================
-# Proxy URL for all outgoing requests to GitHub / Copilot APIs. Supports http://, https://, socks5://, socks5h://.
-# socks5h:// routes DNS through the proxy (recommended for privacy). Auth via URL: socks5h://user:pass@host:port
-# Lowest priority: HTTP_PROXY/HTTPS_PROXY env vars (when --http-proxy-from-env is on) and the CLI --proxy flag both take precedence over this setting. Priority: CLI --proxy > env vars > this.
-# NOT hot-reloadable (requires restart).
-
-# proxy: "http://127.0.0.1:7890"
-# proxy: "socks5h://127.0.0.1:1080"
-# proxy: "socks5h://user:pass@proxy.example.com:1080"
-
-# ============================================================================
-# GHC API base URL
-# ============================================================================
-# Explicit upstream GitHub Copilot API base URL. When set, this overrides the URL derived from --account-type. Useful for self-hosted GHC proxies or unusual deployments. Must be http:// or https://.
-# CLI --ghc-api-base-url takes precedence over this setting.
-# NOT hot-reloadable (requires restart).
-
-# ghc_api_base_url: "https://api.githubcopilot.com"
-
-# ============================================================================
-# Model
-# ============================================================================
-# Model name overrides: request model → target model.
-# This is the SOLE source of model-name mapping — there are no built-in defaults.
-# Short aliases (opus/sonnet/haiku) resolve ONLY if you map them here; an unmapped alias is sent upstream as-is and rejected.
-#
-# Override values can be full names ("claude-opus-4.6") or short aliases that are themselves mapped here.
-# Keys/values are spelling-insensitive: "4.6" and "4-6" (and case) match the same model; listing both keys → the later wins (with a warning).
-#
-# Matching order:
-#   1. Whole name (e.g. "opus", "opus-1m", "claude-opus-4.6").
-#   2. Modifier suffix: "opus[1m]" → "opus-1m"; if no "opus-1m" mapping exists but "opus" is mapped, the base is redirected and "-1m" is re-attached.
-#   3. Hyphen/dot + date-suffix normalization, then a final override check.
-#
-# Only the exact keys listed are affected — NO family-level propagation. To redirect a whole family, list each canonical name.
-# If a target isn't in the available models list it's treated as an alias and resolved again; if still unavailable it's passed through (the upstream then rejects it).
-
-model_overrides:
-
-  # Use latest opus
-  opus: claude-opus-4.8
-  opus-1m: claude-opus-4.8
-  claude-opus-4.5: claude-opus-4.8
-  claude-opus-4.6: claude-opus-4.8
-  claude-opus-4.7: claude-opus-4.8
-
-  # Use latest sonnet
-  sonnet: claude-sonnet-4.6
-  claude-sonnet-4.5: claude-sonnet-4.6
-
-  # Redirect all sonnet requests to best opus
-  # sonnet: claude-opus-4.6
-  # claude-sonnet-4.5: claude-opus-4.6
-  # claude-sonnet-4.6: claude-opus-4.6
-
-  # Upgrade haiku to sonnet
-  # haiku: claude-haiku-4.5
-  haiku: claude-sonnet-4.6
-  claude-haiku-4.5: claude-sonnet-4.6
-
-# ============================================================================
-# Disabled Models
-# ============================================================================
-# Hide specific models from the available list by ID, even when Copilot advertises them.
-# Use this to suppress deprecated/legacy models so they don't show up in `/models`, the UI picker, or model resolution fallbacks.
-# Match is exact against `Model.id`. Empty/omitted = nothing disabled.
-
-disabled_models:
-  - claude-opus-4.6-1m
-  - claude-opus-4.6
-  # - claude-opus-4.8
-  # - claude-opus-4.7-high
-  # - claude-opus-4.7-xhigh
-  # - claude-opus-4.7
-  # - claude-opus-4.8
-  # - clause-sonnet-4.6
-  # - gemini-3.1-pro-preview
-  # - gemini-3.5-flash
-  - gpt-5.2-codex
-  - gpt-5.3-codex
-  # - gpt-5.4-mini
-  # - gpt-5.4
-  # - gpt-5.5
-  # - mai-code-1-flash-internal
-  # - trajectory-compaction
-  - gpt-5-mini
-  - gpt-4o-mini-2024-07-18
-  - gpt-4o-2024-11-20
-  - gpt-4o-2024-08-06
-  # - text-embedding-3-small
-  # - text-embedding-3-small-inference
-  - claude-sonnet-4.5
-  - claude-opus-4.5
-  # - claude-haiku-4.5
-  - gemini-3-flash-preview
-  - gemini-2.5-pro
-  - gpt-4.1-2025-04-14
-  - gpt-5.2
-  - gpt-41-copilot
-  - gpt-3.5-turbo-0613
-  - gpt-4
-  - gpt-4-0613
-  - gpt-4-0125-preview
-  - gpt-4o-2024-05-13
-  - gpt-4-o-preview
-  - gpt-4.1
-  - gpt-3.5-turbo
-  - gpt-4o-mini
-  - gpt-4o
-  - text-embedding-ada-002
-
-# ============================================================================
-# Timeouts
-# ============================================================================
-# Timeout settings for upstream API connections. Apply to all streaming paths.
-
-# Max seconds between SSE events (0 = no timeout).
-# Applies to all streaming paths (Anthropic, Chat Completions, Responses).
-timeouts:
-  stream_idle: 300
-
-  # Max seconds from request start to receiving HTTP response headers (0 = no timeout).
-  # Applies to all upstream API clients.
-  response_header: 900
-
-  # Upstream TCP keepalive initial-probe delay in seconds (0 = use undici's 60s default).
-  # The kernel emits TCP keepalive probes after this much idle time (and every such
-  # interval while idle), keeping the GHC connection alive through long upstream
-  # silences — e.g. opus adaptive thinking that goes quiet for tens of seconds after
-  # content_block_start. undici's 60s default is too long for ~30s NAT/firewall idle
-  # reapers (the first probe never fires before the socket is culled, surfacing as
-  # "terminated (cause: other side closed)"). Node-only; Bun's fetch is unaffected.
-  upstream_keepalive: 15
-
-  # Max seconds an active request can live before the stale reaper forces it to fail (0 = disabled).
-  # Safety net for requests that never complete/fail normally.
-  stale_request_max_age: 300
-
-# Seconds between background model list refreshes (0 = disabled).
-# Keeps /models cache fresh for long-running instances without requiring a restart.
-# (Stays top-level — a refresh interval, not a timeout.)
-model_refresh_interval: 900
-
-# ============================================================================
-# Shutdown
-# ============================================================================
-# Control graceful shutdown timing.
-
-shutdown:
-  # Phase 2: seconds to wait for in-flight requests to complete naturally (default: 60)
-  graceful_wait: 300
-  # Phase 3: seconds to wait after abort signal for handlers to wrap up (default: 120)
-  abort_wait: 120
-
-# ============================================================================
-# History
-# ============================================================================
-# Control history recording behavior.
-
-history:
-  # Successful (non-failed) entries kept in SQLite (0 = unlimited, default: 50).
-  # The reaper trims each status bucket independently, so a burst of failures
-  # never evicts useful successful history (and vice versa).
-  success_limit: 50
-  # Failed entries kept in SQLite — larger by default since failures carry more
-  # diagnostic value (0 = unlimited, default: 200).
-  failure_limit: 200
-  # Seconds between reaper passes that trim each bucket (0 = disabled, default: 600).
-  reaper_interval: 600
-
-# ============================================================================
-# Web Search (double-hop)
-# ============================================================================
-# Real web_search server-tool implementation for the Anthropic/Claude path.
-# When enabled and a request carries a native web_search server tool (or Claude
-# Code's WebSearch tool), the proxy intercepts it, runs a real search, and feeds
-# the results back to the model for a second-pass answer (double-hop). Default off.
-
-web_search:
-  # Enable the double-hop web_search implementation (default: false)
-  enabled: false
-  # Search backend:
-  #   ""        — disabled / not configured (default)
-  #   "searxng" — local SearXNG instance at http://localhost:8080
-  #   other     — a Copilot Responses search model id (e.g. "gpt-5.5")
-  backend: ""
-
-# ============================================================================
-# Anthropic
-# ============================================================================
-# Settings for Anthropic API tool handling and timeouts.
-
-anthropic:
-  # Strip server-side tools (web_search, etc.) from requests
-  strip_server_tools: false
-
-  # Forward upstream (GitHub Copilot) response headers to the client. The proxy is
-  # otherwise fully isolating (it synthesizes its own response headers), so upstream
-  # request-id / anthropic-ratelimit-* / anthropic-organization-id never reach the client.
-  #   false (default): permissive — forward everything EXCEPT a proxy-controlled blacklist
-  #                    (content-length / content-type / content-encoding / transfer-encoding /
-  #                    connection / hop-by-hop / cache-control / date / set-cookie). The
-  #                    blacklist is mandatory in BOTH modes (a stale upstream content-length
-  #                    after the proxy re-serializes the body corrupts client parsing).
-  #   true:            strict — forward ONLY request-id / x-request-id / anthropic-ratelimit-* /
-  #                    anthropic-organization-id / retry-after.
-  # Only non-committed write-out paths forward (non-streaming + streaming settled within the
-  # commit window); a delayed-commit stream that already flushed its 200 forwards nothing.
-  strict_response_headers: false
-
-  # Synthetic SSE keepalive interval (seconds) for the client-facing stream.
-  # 0 = disabled (default). A positive integer N injects an Anthropic-protocol
-  # `event: ping` frame whenever no real upstream event has been forwarded for
-  # >= N seconds, preventing clients (e.g. Claude Code, which gives up around
-  # 258s) from disconnecting while upstream is silent — notably opus-4.8
-  # adaptive thinking that emits `content_block_start` then stalls. Heartbeats
-  # are PROXY-originated and DO NOT reset the upstream idle-timeout, so a
-  # genuinely dead upstream still fails via `timeouts.stream_idle`. Recorded
-  # only in `forwardedSseEvents`, never in the raw upstream `sseEvents`.
-  fake_sse_heartbeat: 0
-
-  # Dedup tool calls: false | "input" | "result" (true = "input" for compat)
-  # "input": dedup by (name, input); "result": also require identical result
-  dedup_tool_calls: false
-
-  # Policy for assistant messages containing thinking/redacted_thinking blocks.
-  # Thinking signatures are self-contained (encrypt the thinking content itself; no
-  # context/position binding — empirically verified), so block-level protection suffices.
-  #   preserve: keep thinking blocks verbatim + don't reorder consecutive thinking,
-  #             but allow all surrounding cleanup (default)
-  #   stripped: actively delete thinking blocks from old messages
-  thinking_block_message_policy: preserve
-
-  # Drop corrupt thinking blocks before sending upstream. Validity is decided by
-  # the SIGNATURE, not the thinking text — a legitimate *encrypted* thinking block
-  # has empty text but a valid signature, and must be kept. A client may echo back
-  # a `{thinking:"", signature:""}` block (e.g. after losing the upstream
-  # signature_delta); the upstream then rejects the whole request with
-  # "each thinking block must contain thinking".
-  #   empty_thinking: remove only double-empty blocks — text AND signature both empty (default)
-  #   empty_any:      remove any thinking block with an empty signature, regardless of text
-  #   false:          disable the pass (pass corrupt blocks through unchanged)
-  thinking_block_sanitize: empty_thinking
-
-  # Coerce legacy thinking params for adaptive-only models (opus 4.6/4.7/4.8).
-  # Old clients send thinking:{type:enabled,budget_tokens} which these models reject
-  # with a 400 demanding type:adaptive. This rewrites enabled→adaptive on the wire.
-  #   basic:       coerce to {type:adaptive}, drop budget_tokens (default, mirrors GHC)
-  #   best_effort: also map budget_tokens to output_config.effort (only if the client
-  #                didn't send an explicit effort) — heuristic, GHC doesn't do this
-  #   false:       disable — pass client thinking config through unchanged
-  coerce_adaptive_thinking: basic
-
-  # Handle role:"system" messages mixed into the `messages` array. The Anthropic
-  # Messages API rejects them with `Unexpected role "system"` — system must be the
-  # top-level `system` parameter. They come from OpenAI-habit clients, or from
-  # Claude Code injecting mid-conversation context (SessionStart hook output, rule
-  # files, "TodoWrite tool hasn't been used" reminders) as system-role messages.
-  #   as_user:      rewrite role to "user" — preserves the original conversation
-  #                 position; most faithful for position-bearing context (recommended)
-  #   merge:        pull the text out, append it to the top-level system, drop the
-  #                 messages. Loses positional ordering and bloats system, which
-  #                 significantly lowers prompt-cache hit rate — prefer as_user
-  #   drop_invalid: remove the inline system messages entirely (loses the context)
-  #   as_assistant: rewrite role to "assistant" — EXPERIMENTAL, not recommended:
-  #                 disguises injected context as the model's own output and may
-  #                 fold text into a tool-call turn
-  #   false:        passthrough unchanged (default — upstream will 400 if present)
-  system_messages_sanitize: false
-
-  # Rewrite native server-tool blocks left in message history before sending upstream.
-  # The web_search double-hop surfaces a synthesized server_tool_use{web_search} +
-  # web_search_tool_result pair to the client (so results are visible); the client
-  # echoes it back next turn, but the downgraded tools array no longer declares
-  # web_search as a server tool, so upstream returns 400. Recommended ON together
-  # with web_search.enabled.
-  #   downgrade: rewrite the pair into plain tool_use + tool_result (splits the
-  #              assistant turn so the tool_result lands in a user message)
-  #   false:     passthrough (default — will 400 upstream when a historical
-  #              server_tool_use survives without a matching server-tool definition)
-  rewrite_history_server_tools: false
-
-  # Client compatibility shim for the streaming thinking frame some Copilot upstreams emit:
-  # content_block_start {type:thinking, thinking:"", signature:S} with NO signature_delta.
-  # The upstream is the protocol authority; standard clients (Claude Code, Anthropic SDK)
-  # take a thinking block's signature ONLY from a signature_delta, so they drop the embedded
-  # signature and echo back a corrupt {thinking:"", signature:""} block that the upstream then
-  # rejects. This re-shapes the frame on the client-facing stream only (history keeps the raw
-  # upstream frames).
-  #   signature_delta:   emit an empty thinking start + a synthesized signature_delta (default, standard shape)
-  #   redacted_thinking: rewrite the block as redacted_thinking{data:S}
-  #   false:             passthrough (no compat shim)
-  thinking_signature_compat: signature_delta
-
-  # Strip <system-reminder> tags from Read tool results
-  strip_read_tool_result_tags: false
-
-  # Server-side context editing mode. Controls how Anthropic's context_management trims older context when input grows large.
-  #   off: disabled (default). No context_management sent.
-  #   clear-thinking: clear old thinking blocks.
-  #   clear-tooluse: clear old tool_use/result pairs.
-  #   clear-both: apply both clear-thinking and clear-tooluse.
-  # Only effective for models that support context editing.
-  context_editing: off
-
-  # Input token threshold that triggers clear_tool_uses when context_editing includes tool clearing.
-  context_editing_trigger: 100000
-
-  # Number of most recent tool_use pairs to keep after clear_tool_uses runs.
-  context_editing_keep_tools: 3
-
-  # Number of most recent thinking turns to keep after clear_thinking runs.
-  context_editing_keep_thinking: 1
-
-  # Inject Copilot tool_search helper when the model supports it.
-  tool_search: true
-
-  # Cache control mode for prompt caching.
-  #   disabled:    strip all cache_control fields (no caching)
-  #   passthrough: forward client cache_control as-is (default) — clients like Claude Code send
-  #                their own well-tuned conversation breakpoints; the proxy stays out of the way
-  #   sanitize:    forward but normalize to { type: "ephemeral" } (strip non-standard fields like scope)
-  #   proxied:     proxy controls injection — strip client breakpoints, then re-inject GHC-style:
-  #                message-level breakpoints (last tool_result per round + current user message +
-  #                terminal assistant) caching the growing conversation, then tools/system on
-  #                spare slots. Use for clients that don't send their own cache_control.
-  cache_control: passthrough
-
-  # Additional tool names that should never be deferred when tool_search is enabled.
-  # non_deferred_tools:
-  #   - my_custom_tool
-
-  # Rewrite system-reminder tags in messages. false = keep all (default), true = remove all.
-  # Or provide rewrite rules (first match wins, top-down).
-  # Note: `model` field is NOT supported here (only in system_prompt_overrides).
-  # rewrite_system_reminders: false
-  rewrite_system_reminders:
-    - from: "^Whenever you read a file, you should consider whether it would be considered malware"
-      to: ""                 # Empty = remove the tag
-    # - from: ".*"           # Catch-all: keep unchanged (gms flags are automatic)
-    #   to: "$0"             # $0 = original content
-
-  # Policy for Claude Code "Warmup" requests.
-  # Claude Code sends warmup requests on session start to pre-fill the prompt cache.
-  # Zombie processes may send these repeatedly, generating significant traffic.
-  #   allow:  pass through to upstream API (default)
-  #   reject: return HTTP 429 error
-  #   drop:   return minimal empty response without forwarding upstream
-  #   fake:   return realistic response with cache_creation_input_tokens (recommended)
-  warmup: fake
-
-  # Per-model supported effort levels (whitelist) for output_config.effort.
-  # Keys are model name substrings matched against the resolved model name.
-  # Values are arrays of supported efforts from: none, low, medium, high, xhigh, max.
-  # Requests outside the whitelist are clamped to the nearest supported value
-  # (above max → max supported; below min → min supported).
-  #
-  # Match semantics (whitelist — single source of truth):
-  #   - The MOST SPECIFIC (longest) key whose substring matches the model wins.
-  #     e.g. for model "claude-opus-4.7-high", the key "claude-opus-4.7-high"
-  #     beats "claude-opus-4.7"; only the winning key's values apply (no union).
-  #   - The pseudo-key "*" is a last-resort wildcard (used only when no other
-  #     key matches).
-  #
-  # Cross-validation: if a configured whitelist contains efforts the upstream
-  # model metadata does NOT declare, the out-of-range entries are dropped with
-  # a warn log. If the intersection is empty, the metadata wins (avoids
-  # guaranteed 400s from stale config).
-  #
-  # Runtime dynamically extends this (learned from invalid_reasoning_effort errors,
-  # persisted to negotiation-states.json). Config-sourced entries take precedence
-  # over runtime-learned, which in turn take precedence over model metadata.
-  # Default: no constraints (all effort levels declared by the model pass through).
-  # effort_overrides:
-  #   claude-opus-4.7: [medium]
-  #   claude-opus-4.7-1m-internal: [medium]
-
-  # ---------------------------------------------------------------------------
-  # anthropic-beta header pre-filter
-  # ---------------------------------------------------------------------------
-  # Strip the listed `anthropic-beta` tokens from outbound requests before they
-  # are forwarded upstream. Keys are model-name substrings matched against the
-  # resolved model name; the pseudo-key "*" applies to every model.
-  # Applies to both client-sent and locally-built betas, so use it for tokens
-  # the upstream rejects (e.g. `unsupported beta header(s): X`).
-  #
-  # Match semantics (strip-list — additive): every matching key contributes
-  # its tokens to the strip set, including "*". Use "*" to define a baseline
-  # and per-model keys to add to it.
-  #
-  # Runtime negotiation also populates a persistent cache (negotiation-states.json)
-  # when upstream returns "unsupported beta header(s)". Config entries are always
-  # applied; runtime-learned entries survive restarts.
-  #
-  # Default: none (no pre-filter; rely on runtime negotiation only).
-  beta_strip_headers:
-    claude-opus-4.7-1m-internal:
-      - context-1m-2025-08-07
-      - mid-conversation-system-2026-04-07
-
-  # ---------------------------------------------------------------------------
-  # Partner-model feature pre-filter
-  # ---------------------------------------------------------------------------
-  # Strip the payload for partner-model features the upstream org policy disallows.
-  # Keys are model-name substrings; "*" applies to every model. The value is the
-  # feature NAME (not an internal field path).
-  #
-  # Config twin of the runtime negotiation cache (partnerFeatures): declared
-  # features are stripped on the FIRST request — no reactive 400 + degrade-warn
-  # round-trip. Config ∪ runtime-learned, the same union as beta_strip_headers.
-  #
-  # Currently only `structured_outputs` has a wired strip action (→ drops the
-  # `output_config.format` field). Use case: GHC accounts routed to Vertex AI
-  # whose org policy `allowedPartnerModelFeatures` blocks structured_outputs
-  # while clients (e.g. Claude Code's title generator) send `output_config.format`.
-  #
-  # Default: none (rely on runtime negotiation only).
-  # partner_strip_features:
-  #   claude-sonnet-4.6:
-  #     - structured_outputs
-
-  # ---------------------------------------------------------------------------
-  # Body field pre-filter
-  # ---------------------------------------------------------------------------
-  # Strip top-level body fields from outbound Anthropic payloads per model.
-  # Keys are model-name substrings; "*" applies to every model.
-  # Match semantics (strip-list — additive): every matching key contributes
-  # its fields to the strip set, including "*".
-  # Always merged with the built-in default {"*": [inference_geo]} and with
-  # runtime-learned entries from upstream `<field>: Extra inputs are not
-  # permitted` 400 errors (persisted in negotiation-states.json).
-  #
-  # Default: none (only built-in inference_geo strip + runtime negotiation).
-  # retry_reject_body_fields:
-  #   "*": [some_global_field]
-  #   claude-opus-4.7: [model_specific_field]
-
-# ============================================================================
-# Responses API
-# ============================================================================
-# Settings for OpenAI Responses API (/v1/responses) endpoint.
-
-openai_responses:
-  # Convert `call_xxx` IDs to `fc_xxx` in input. Required when clients send conversation history with
-  # Chat Completions-format tool call IDs to the Responses API (which requires `fc_` prefix). Default: true.
-  normalize_call_ids: true
-
-  # Use upstream WebSocket transport for streaming /responses when the model supports it.
-  # Connections are reused across tool-call rounds via `previous_response_id` or session header.
-  # WS failures fall back to HTTP transparently; 3 consecutive fallbacks temporarily disable WS
-  # for 5 minutes (single half-open probe on expiry). Default: false.
-  upstream_ws: true
-
-  # Fix inconsistent item IDs across `output_item.added` / `output_item.done` events from Copilot's
-  # upstream stream. Required by `@ai-sdk/openai` which validates ID continuity. Default: true.
-  fix_stream_ids: true
-
-  # Strip the `image_generation` builtin tool from inbound /responses requests. The Copilot
-  # upstream rejects `image_generation` and fails the ENTIRE request; some clients (e.g. the
-  # OpenAI Codex CLI) auto-inject it. Enable to drop it so the rest of the request succeeds.
-  # Default: false.
-  strip_image_generation_tool: false
-
-  # Keep the client-side WebSocket open after `response.completed` so the client can issue
-  # follow-up `response.create` frames on the same socket. When false (default), the socket
-  # closes with code 1000 after each request (HTTP-like one-shot semantics).
-  # Concurrent `response.create` on the same socket is rejected with an error frame.
-  client_ws_keep_open: false
-
-# ============================================================================
-# Rate Limiter
-# ============================================================================
-# Fine-tune the adaptive rate limiter behavior. The rate limiter is enabled/disabled via --no-rate-limit CLI flag;
-# these settings control its parameters when enabled.
-
-rate_limiter:
-  # Seconds to wait before retrying after rate limit error
-  retry_interval: 10
-  # Seconds between requests in rate-limited mode
-  request_interval: 10
-  # Seconds before attempting recovery from rate-limited mode
-  recovery_interval: 600
-  # Consecutive successes needed to exit rate-limited mode
-  consecutive_successes: 5
-
-# ============================================================================
-# Auto-Truncate
-# ============================================================================
-# Control auto-truncation behavior when context limits are hit.
-
-# Reactive auto-truncate (nested section). When `enabled` and an upstream token-limit error (400/413) is
-# returned, retry with a truncated payload instead of surfacing the error. Spans both the Anthropic and Chat
-# Completions retry pipelines. Hot-reloadable. The CLI flag --auto-truncate / --no-auto-truncate overrides
-# `enabled` when passed. The tuning fields below are config-only.
-# auto_truncate:
-#   # Enable reactive auto-truncate. Default: false.
-#   enabled: true
-#   # Truncation target as a fraction of the upstream-reported limit (target = limit × factor). Range (0, 1];
-#   # smaller = safer / removes more, larger = leaner but closer to the limit. 0 is invalid. Default: 0.9.
-#   target_factor: 0.9
-#   # Max reactive auto-truncate retries per request. 0 = a single attempt, no retry. Default: 5.
-#   max_retries: 5
-#   # Character-length threshold (NOT tokens) above which a tool_result block is compressed. 0 = compress
-#   # everything. Default: 10000.
-#   compress_threshold: 10000
-
-# Compress old tool_result content before truncating messages. When enabled, large tool_result content blocks
-# are compressed to reduce context size before resorting to message removal. Default: true.
-# auto_truncate:
-#   compress_tool_results: false
-
-# ============================================================================
-# Tool Name Sanitization
-# ============================================================================
-# Sanitize tool names that violate the target model's constraints (illegal characters like dots, over-length,
-# or collisions) into legal names before sending upstream, then restore the client's original names in the
-# response. Deterministic and stateless (rebuilt per request). Spans Anthropic + Chat Completions + Responses
-# paths. Top-level (cross-protocol), not under anthropic.*. Default: false.
-# sanitize_tool_names: true
 
 # ============================================================================
 # System Prompt
@@ -704,3 +179,77 @@ rate_limiter:
 #   - from: "\\n\\s*\\n\\s*\\n"
 #     to: "\\n\\n"
 #     method: regex
+
+# ============================================================================
+# Buffered-retry caps + per-vendor switches
+# ============================================================================
+# Shared caps (max_retries / buffer_cap_bytes / heartbeat_sec) applied across
+# anthropic / responses / chat_completions, overridable per vendor. See
+# config.yaml's `buffered_retry:` section for the full field docs.
+
+# buffered_retry:
+#   max_retries: 5              # override the shared cap (built-in default: 3)
+#   buffer_cap_bytes: 33554432  # 32MiB (built-in default: 16MiB)
+#   heartbeat_sec: 10           # built-in default: 15
+
+# Responses (HTTP + WS — WS has no independent switch, it inherits this) and
+# Chat Completions default their `buffered_retry` switch to TRUE (2026-07-14
+# flip: buffering/generation-preservation was chosen over the downstream
+# streaming UX). Set to `false` to opt back into live (unbuffered) forwarding
+# for that vendor, or use the map form to also override caps.
+
+# openai_responses:
+#   buffered_retry: false                              # opt back into live forwarding (default: true)
+#   # buffered_merge — Responses-only protocol normalizer that rides on the buffered path (spec
+#   # 2026-07-14-responses-buffered-block-merge). Lazy: inert when buffered_retry is off.
+#   buffered_merge:
+#     event_compaction: drop-delta          # verbatim | drop-delta (default) | item-summary — how many
+#                                           # mid-block *.delta frames to filter off the FORWARDED wire.
+#                                           # drop-delta: drop the 5 text/args deltas whose .done resets the
+#                                           # absolute value (finalized text survives in output_item.done +
+#                                           # the completed snapshot; a pure output_text.delta accumulator
+#                                           # would see empty text — read .done / completed.output instead).
+#     completed_output: repair-if-incomplete # upstream | repair-if-incomplete (default) | rebuild — terminal
+#                                           # reconciliation; repair rebuilds only a DEFECTIVE completed
+#                                           # (empty/missing output) from the collected output_item.done items.
+# chat_completions:
+#   buffered_retry: { enabled: true, max_retries: 5 }   # keep buffered, override just the cap for this vendor
+
+# Anthropic's buffered-retry switch is a DIFFERENT key (`protect_streaming_generation`,
+# under `anthropic:` — see config.yaml) and defaults to `false`: the block-level
+# anchor-coexist wire shape was found to silently drop content in the real Claude
+# Code CLI (tests/e2e-client/anthropic-coexist-cli.e2e.test.ts), so it stays gated
+# pending a shape fix. `anthropic.buffered_retry` here only overrides caps.
+
+# anthropic:
+#   buffered_retry:
+#     max_retries: 5
+
+# ============================================================================
+# Unknown HTTP Endpoint Logging
+# ============================================================================
+# 打到代理但没匹配任何业务路由的请求（客户端打错 path / 用错 base URL / 用错 method）
+# 按归类状态码分别控制日志级别。日志经 consola → TUI + copilot-api.log。
+#   - not_found          → 404：真正未匹配的路径
+#   - method_not_allowed → 405：路径存在但 HTTP method 不对（返回 405 + Allow 头）
+# 级别：silent（不打） | debug | info | warn | error。默认 warn/warn。
+# 注意：debug/info 受 consola 全局 level gate 节制（默认 level 下可能不显示）。
+#
+# unknown_endpoint_logging:
+#   not_found: warn
+#   method_not_allowed: warn
+
+# ============================================================================
+# Structured diagnostics and terminal UI
+# ============================================================================
+# logging:
+#   terminal_level: info # hot-reloadable
+#   file_level: debug # hot-reloadable
+#   file:
+#     enabled: true # restart required
+#     directory: "" # empty = $APP_DIR/logs/diagnostic
+#     max_size_mb: 10 # 0 = no size rolling
+#     max_files_per_process: 7 # 0 = unlimited
+#     retention_days: 7 # 0 = no age retention
+# tui:
+#   enabled: true # restart required; CLI --no-tui wins

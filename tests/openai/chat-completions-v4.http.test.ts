@@ -17,11 +17,15 @@ import {
   describe,
   expect,
   mock,
+  spyOn,
   test,
 } from "bun:test"
+import consola from "consola"
 
+import type { RequestContext } from "~/lib/context/request"
 import type { ChatCompletionsPayload } from "~/types/api/openai-chat-completions"
 
+import { getRequestContextManager } from "~/lib/context/manager"
 import { getHistory } from "~/lib/history"
 import {
   //
@@ -48,7 +52,6 @@ let lastResponsesWire: { model?: string; input?: unknown } | undefined
 let ccHits = 0
 let throwOnce = false
 let throwAlways = false
-let truncate413Once = false
 
 function ccBody(model: string): string {
   return JSON.stringify({
@@ -125,14 +128,6 @@ const upstreamFetchMock = mock((input: string | URL | Request, init?: RequestIni
       throwOnce = false
       throw new Error("ECONNRESET: upstream socket reset")
     }
-    // Stage B B0: first hit returns 413 (payload_too_large) → auto-truncate fires +
-    // retries; the retry streams. With verbose on, the retry's stream is prefixed by
-    // the truncation marker chunk.
-    if (truncate413Once && ccHits === 1) {
-      return Promise.resolve(
-        new Response(JSON.stringify({ error: { message: "prompt is too long" } }), { status: 413, headers: { "content-type": "application/json" } }),
-      )
-    }
     if (payload.stream) {
       // Stage B B0: a streaming tool_call echoes the SANITIZED wire name the handler
       // sent (`payload.tools[0].function.name`) so the forwarded restore is exercised.
@@ -198,9 +193,12 @@ describe("CC v4 driver path", () => {
     ccHits = 0
     throwOnce = false
     throwAlways = false
-    truncate413Once = false
     applyFetchMock(upstreamFetchMock)
-    setStateForTests({ copilotToken: "tok", autoTruncate: false })
+    // This describe locks the OWNS-SINK (plain, non-buffered) streaming path's byte output + outcome→ctx
+    // mapping (Stage B / B4). Since `chatCompletionsBufferedRetry` defaults to true (2026-07-14 flip),
+    // pin it OFF here so these tests exercise `runResponseSink`, not `runResponseBufferedSink` — the
+    // buffered path has its own coverage in tests/chat-completions/cc-buffered.integration.test.ts.
+    setStateForTests({ copilotToken: "tok", chatCompletionsBufferedRetry: false })
   })
 
   afterEach(() => {
@@ -210,6 +208,11 @@ describe("CC v4 driver path", () => {
 
   test("non-streaming passthrough: client json + wire payload", async () => {
     const body = { model: "gpt-4o", messages: [{ role: "user", content: "hi" }], stream: false }
+
+    let capturedCtx: RequestContext | undefined
+    const manager = getRequestContextManager()
+    const originalCreate = manager.create.bind(manager)
+    manager.create = (opts) => (capturedCtx = originalCreate(opts))
 
     const v4 = (await (await post(body)).json()) as Record<string, unknown>
     const v4Wire = lastCcWire
@@ -222,6 +225,12 @@ describe("CC v4 driver path", () => {
       choices: [{ index: 0, message: { role: "assistant", content: "hi there" }, finish_reason: "stop", logprobs: null }],
       usage: { prompt_tokens: 5, completion_tokens: 3, total_tokens: 8 },
     })
+    const operation = capturedCtx?.modelOperationTerminalRecord
+    const clientPayload = operation?.egress?.client.payload
+    const upstreamPayload = operation?.egress?.upstream.payload
+    expect(operation?.arena.payloads.find((node) => node.handle === clientPayload)?.value).toEqual(v4)
+    expect(operation?.arena.payloads.find((node) => node.handle === upstreamPayload)?.value).toEqual(v4)
+    expect(operation?.terminal?.outcome).toBe("completed")
     expect(v4Wire?.model).toBe("gpt-4o")
     expect(v4Wire?.messages).toEqual([{ role: "user", content: "hi" }])
     expect(v4Wire?.stream).toBe(false)
@@ -297,55 +306,6 @@ describe("CC v4 driver path", () => {
   })
 
   // Stage B B0 baseline: the verbose TRUNCATION MARKER injected as the FIRST forwarded
-  // chunk (handler-v4 prepends it before the driver loop, `event: message`). The review's
-  // "biggest hole" — zero coverage. A 413 triggers auto-truncate; the retry's stream is
-  // prefixed by a synthetic marker chunk. The owns-sink flip (B4) must keep this injected
-  // marker as the first chunk with the same shape (id/created are per-run timestamps).
-  test("Stage B B0: verbose truncation marker is the FIRST forwarded chunk (streaming, event: message)", async () => {
-    setDisabledModels([])
-    setModels({
-      object: "list",
-      data: [
-        mockModel("gpt-4o", {
-          vendor: "OpenAI",
-          supported_endpoints: ["/chat/completions"],
-          capabilities: { family: "gpt-4", type: "chat", limits: { max_context_window_tokens: 200, max_output_tokens: 50, max_prompt_tokens: 150 } },
-        }),
-      ],
-    })
-    setStateForTests({ copilotToken: "tok", verbose: true, autoTruncate: true, autoTruncateMaxRetries: 5 })
-    truncate413Once = true
-    const messages = Array.from({ length: 30 }, (_, i) => ({
-      role: "user",
-      content: `message number ${i} the quick brown fox jumps over the lazy dog repeatedly and again`,
-    }))
-
-    const text = await (
-      await app.request("/chat/completions", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ model: "gpt-4o", messages, stream: true }),
-      })
-    ).text()
-
-    expect(ccHits).toBe(2) // first 413 → truncate → retry streams
-
-    const frame = text.split("\n\n").find(Boolean) ?? ""
-    // First forwarded frame = the synthetic marker chunk, carried on `event: message`.
-    expect(frame.startsWith("event: message\ndata: ")).toBe(true)
-    const marker = JSON.parse(frame.slice("event: message\ndata: ".length)) as {
-      object: string
-      choices: Array<{ delta: { content: string }; finish_reason: null }>
-    }
-    expect(marker.object).toBe("chat.completion.chunk")
-    expect(marker.choices[0].finish_reason).toBe(null)
-    // Marker content format (token counts deterministic-but-tokenizer-coupled → match shape).
-    expect(marker.choices[0].delta.content).toMatch(/^\n\n---\n\[Auto-truncated: \d+ messages removed, \d+ → \d+ tokens \(\d+% reduction\)\]$/)
-    // The marker PRECEDES the real upstream content (it is genuinely first).
-    expect(text.indexOf("Auto-truncated")).toBeLessThan(text.indexOf("Hello"))
-    expect(text).toContain("[DONE]")
-  })
-
   test("unsupported model → 400", async () => {
     const body = { model: "claude-only", messages: [{ role: "user", content: "hi" }], stream: false }
 
@@ -379,10 +339,15 @@ describe("CC v4 driver path", () => {
 
     const chunk = (over: string): string =>
       `event: message\ndata: {"id":"resp_1","object":"chat.completion.chunk","created":0,"model":"gpt-5","choices":[{"index":0,${over},"logprobs":null}]}\n\n`
+    // The translator now ALWAYS emits the usage chunk (no include_usage needed), so
+    // history/telemetry capture usage for CC→Responses streaming — matching the
+    // direct-CC path. See docs/spec/2026-07-12-cc-responses-streaming-usage.md.
+    const usageChunk = `event: message\ndata: {"id":"resp_1","object":"chat.completion.chunk","created":0,"model":"gpt-5","choices":[],"usage":{"prompt_tokens":4,"completion_tokens":2,"total_tokens":6}}\n\n`
     expect(v4Text).toBe(
       chunk('"delta":{"role":"assistant"},"finish_reason":null')
         + chunk('"delta":{"content":"Hi"},"finish_reason":null')
         + chunk('"delta":{},"finish_reason":"stop"')
+        + usageChunk
         + "data: [DONE]\n\n",
     )
   })
@@ -418,16 +383,30 @@ describe("CC v4 driver path", () => {
     const errMock = mock(() => Promise.resolve(createSseResponseThenError([ccStreamFrames("gpt-4o")[0]], new Error("ECONNRESET: mid-stream upstream blowup"))))
     applyFetchMock(errMock)
 
-    const text = await (
-      await app.request("/chat/completions", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ model: "gpt-4o", messages: [{ role: "user", content: "hi" }], stream: true }),
-      })
-    ).text()
+    // The CC direct leg must ALSO emit the disconnect diagnostic with REAL signals (it previously
+    // emitted none) — one `chat.completion.chunk` arrived before the throw.
+    const diagSpy = spyOn(consola, "error").mockImplementation(Object.assign(() => {}, { raw: () => {} }))
+    let text: string
+    try {
+      text = await (
+        await app.request("/chat/completions", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ model: "gpt-4o", messages: [{ role: "user", content: "hi" }], stream: true }),
+        })
+      ).text()
+    } finally {
+      const line = diagSpy.mock.calls.map((c) => String(c[0])).find((s) => s.includes("[upstream-diagnostics] STREAM DISCONNECT"))
+      diagSpy.mockRestore()
+      expect(line).toBeDefined()
+      expect(line).toContain("model=gpt-4o")
+      expect(line).not.toContain("frames=0")
+      expect(line).toContain("last-frame=chat.completion.chunk@")
+    }
 
-    // The first frame was forwarded, THEN the OpenAI-shape error frame (event: error).
-    expect(text).toContain("Hello")
+    // Fast-retry keeps the pre-boundary partial private. A failure before the first complete
+    // client block surfaces only the OpenAI error terminus; the raw partial remains in History.
+    expect(text).not.toContain("Hello")
     expect(text).toContain("event: error")
     expect(text).toContain('"type":"server_error"')
     expect(getHistory({ endpoint: "openai-chat-completions" }).entries[0]?.state).toBe("failed")
@@ -473,20 +452,20 @@ describe("CC v4 driver path", () => {
     await post(body)
     const v4 = getHistory({ endpoint: "openai-chat-completions" }).entries[0]
 
-    expect(v4?.effectiveRequest).toBeDefined()
-    expect(v4?.effectiveRequest?.format).toBe("openai-chat-completions")
-    expect(v4?.effectiveRequest?.model).toBe("gpt-4o")
-    expect(v4?.effectiveRequest?.messageCount).toBe(1)
-    expect(v4?.outboundRequest).toBeDefined()
-    expect(v4?.outboundRequest?.format).toBe("openai-chat-completions")
-    expect(v4?.outboundRequest?.model).toBe("gpt-4o")
-    expect(v4?.outboundRequest?.messageCount).toBe(1)
+    expect(v4?.attempts?.at(-1)?.effectiveSource).toBeDefined()
+    expect(v4?.attempts?.at(-1)?.effectiveSource?.format).toBe("openai-chat-completions")
+    expect(v4?.attempts?.at(-1)?.effectiveSource?.model).toBe("gpt-4o")
+    expect(v4?.attempts?.at(-1)?.effectiveSource?.messageCount).toBe(1)
+    expect(v4?.attempts?.at(-1)?.upstreamRequest).toBeDefined()
+    expect(v4?.attempts?.at(-1)?.upstreamRequest?.format).toBe("openai-chat-completions")
+    expect(v4?.attempts?.at(-1)?.upstreamRequest?.model).toBe("gpt-4o")
+    expect(v4?.attempts?.at(-1)?.upstreamRequest?.messages?.length).toBe(1)
     expect(typeof v4?.queueWaitMs).toBe("number") // recorded (0, no throttle)
 
     // Two-track (NOT byte-for-byte): O10 max_completion_tokens is a wire-trim — it
     // lands on the wire track only, never on effective.
-    const v4Eff = v4?.effectiveRequest?.payload as { max_completion_tokens?: number } | undefined
-    const v4Wire = v4?.outboundRequest?.payload as { max_completion_tokens?: number } | undefined
+    const v4Eff = v4?.attempts?.at(-1)?.effectiveSource?.body as { max_completion_tokens?: number } | undefined
+    const v4Wire = v4?.attempts?.at(-1)?.upstreamRequest?.body as { max_completion_tokens?: number } | undefined
     expect(v4Eff?.max_completion_tokens).toBeUndefined() // effective = logical request, no wire-trim
     expect(v4Wire?.max_completion_tokens).toBe(4096) // wire = final bytes, O10 filled
   })
@@ -498,9 +477,9 @@ describe("CC v4 driver path", () => {
     const v4 = getHistory({ endpoint: "openai-chat-completions" }).entries[0]
 
     // wire is the actual upstream endpoint (responses); effective stays the client CC request.
-    expect(v4?.outboundRequest?.format).toBe("openai-responses")
-    expect(v4?.effectiveRequest?.format).toBe("openai-chat-completions")
-    expect(v4?.outboundRequest?.messageCount).toBe(1)
-    expect(v4?.effectiveRequest?.messageCount).toBe(1)
+    expect(v4?.attempts?.at(-1)?.upstreamRequest?.format).toBe("openai-responses")
+    expect(v4?.attempts?.at(-1)?.effectiveSource?.format).toBe("openai-chat-completions")
+    expect(v4?.attempts?.at(-1)?.upstreamRequest?.messages?.length).toBe(1)
+    expect(v4?.attempts?.at(-1)?.effectiveSource?.messageCount).toBe(1)
   })
 })

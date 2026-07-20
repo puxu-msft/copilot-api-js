@@ -20,7 +20,11 @@ import {
   getUpstreamDispatcher,
   initProxy,
 } from "~/lib/proxy"
-import { setStateForTests } from "~/lib/state"
+import {
+  //
+  setStateForTests,
+  setUpstreamTransportConfig,
+} from "~/lib/state"
 import {
   //
   setUpstreamFetchForTests,
@@ -87,6 +91,16 @@ describe("upstream dispatcher — keepalive contract", () => {
     // dispatcher is built and reused (single instance) across calls.
     expect(dispatcher).toBeDefined()
     expect(getUpstreamDispatcher()).toBe(dispatcher)
+  })
+
+  test("setUpstreamTransportConfig change triggers dispatcher rebuild via onUpstreamTransportChange subscription", () => {
+    setStateForTests({ upstreamKeepaliveDelay: 15 })
+    initProxy({ fromEnv: false })
+    const before = getUpstreamDispatcher()
+
+    setUpstreamTransportConfig({ upstreamKeepaliveDelay: 45 })
+
+    expect(getUpstreamDispatcher()).not.toBe(before)
   })
 })
 

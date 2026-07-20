@@ -53,41 +53,41 @@ describe("validateConfig — happy paths", () => {
         thinking_block_message_policy: "preserve",
         effort_overrides: { "claude-opus-4.7": ["medium"] },
       },
-      history: { limit: 100, reaper_interval: 600 },
-      model_overrides: { foo: "bar" },
+      history: { raw_capture: { enabled: false, max_object_bytes: 100 } },
+      model_mappings: { foo: "bar" },
     }
     const result = validateConfig(input)
     expect(result.anthropic?.cache_control).toBe("proxied")
-    expect(result.history?.limit).toBe(100)
+    expect(result.history?.raw_capture?.max_object_bytes).toBe(100)
     expect(warnSpy).not.toHaveBeenCalled()
   })
 })
 
 describe("validateConfig — unknown keys", () => {
   test("unknown top-level key warns once + is stripped", () => {
-    const r1 = validateConfig({ unknown_top_key: 42, history: { limit: 10 } })
+    const r1 = validateConfig({ unknown_top_key: 42, history: { raw_capture: { max_object_bytes: 10 } } })
     validateConfig({ unknown_top_key: 42 })
     expect((r1 as Record<string, unknown>).unknown_top_key).toBeUndefined()
-    expect(r1.history?.limit).toBe(10) // valid neighbor survives
+    expect(r1.history?.raw_capture?.max_object_bytes).toBe(10)
     const calls = warnedMessages().filter((m) => m.includes("unknown_top_key"))
     expect(calls.length).toBe(1)
     expect(calls[0]).toContain("Unknown key")
   })
 
   test("unknown anthropic sub-key warns once + is stripped", () => {
-    const result = validateConfig({ anthropic: { cache_contro: "proxied", api_key: "k" } })
+    const result = validateConfig({ anthropic: { cache_contro: "proxied", warmup: "allow" } })
     expect((result.anthropic as Record<string, unknown> | undefined)?.cache_contro).toBeUndefined()
-    expect(result.anthropic?.api_key).toBe("k")
+    expect(result.anthropic?.warmup).toBe("allow")
     const calls = warnedMessages().filter((m) => m.includes("cache_contro"))
     expect(calls.length).toBe(1)
   })
 
   test("free-form Record fields accept arbitrary user-defined keys", () => {
     const result = validateConfig({
-      model_overrides: { "claude-3-opus": "claude-opus-4.7", "weird.dots": "x" },
+      model_mappings: { "claude-3-opus": "claude-opus-4.7", "weird.dots": "x" },
       anthropic: { effort_overrides: { "claude-opus-4.7-1m-internal": ["medium", "high"] } },
     })
-    expect(result.model_overrides?.["claude-3-opus"]).toBe("claude-opus-4.7")
+    expect(result.model_mappings?.["claude-3-opus"]).toBe("claude-opus-4.7")
     expect(result.anthropic?.effort_overrides?.["claude-opus-4.7-1m-internal"]).toEqual(["medium", "high"])
     expect(warnSpy).not.toHaveBeenCalled()
   })
@@ -95,10 +95,10 @@ describe("validateConfig — unknown keys", () => {
 
 describe("validateConfig — type errors", () => {
   test("wrong type for known field warns and strips it", () => {
-    const result = validateConfig({ history: { limit: "abc", reaper_interval: 600 } })
-    expect(result.history?.limit).toBeUndefined()
-    expect(result.history?.reaper_interval).toBe(600) // valid sibling survives
-    expect(warnedMessages().some((m) => m.includes("history.limit"))).toBe(true)
+    const result = validateConfig({ history: { raw_capture: { max_object_bytes: "abc", enabled: false } } })
+    expect(result.history?.raw_capture?.max_object_bytes).toBeUndefined()
+    expect(result.history?.raw_capture?.enabled).toBe(false)
+    expect(warnedMessages().some((m) => m.includes("max_object_bytes"))).toBe(true)
   })
 
   test("invalid enum value warns + strips", () => {
@@ -107,19 +107,34 @@ describe("validateConfig — type errors", () => {
     expect(warnedMessages().some((m) => m.includes("anthropic.cache_control"))).toBe(true)
   })
 
-  test("tool_repair_malformed_input: valid values accepted, invalid stripped", () => {
-    expect(validateConfig({ anthropic: { tool_repair_malformed_input: "tags" } }).anthropic?.tool_repair_malformed_input).toBe("tags")
-    expect(validateConfig({ anthropic: { tool_repair_malformed_input: "repair" } }).anthropic?.tool_repair_malformed_input).toBe("repair")
-    expect(validateConfig({ anthropic: { tool_repair_malformed_input: false } }).anthropic?.tool_repair_malformed_input).toBe(false)
-    const bad = validateConfig({ anthropic: { tool_repair_malformed_input: "bogus" } })
-    expect(bad.anthropic?.tool_repair_malformed_input).toBeUndefined()
-    expect(warnedMessages().some((m) => m.includes("anthropic.tool_repair_malformed_input"))).toBe(true)
+  test("openai_responses.buffered_merge.event_compaction: invalid value is stripped + warned, config falls back to default", () => {
+    const result = validateConfig({ openai_responses: { buffered_merge: { event_compaction: "not-a-real-mode" } } })
+    expect(result.openai_responses?.buffered_merge?.event_compaction).toBeUndefined()
+    expect(warnedMessages().some((m) => m.includes("buffered_merge"))).toBe(true)
+  })
+
+  test("response_tool_use_fix.malformed_input: comma-separated item set parsed (dedup + canonical order); invalid stripped", () => {
+    const parse = (v: unknown) =>
+      validateConfig({ anthropic: { response_tool_use_fix: { malformed_input: v } } }).anthropic?.response_tool_use_fix?.malformed_input
+    expect(parse("tags")).toEqual(["tags"])
+    expect(parse("tags,jsonrepair")).toEqual(["tags", "jsonrepair"])
+    // spelling order ignored → canonical order; duplicates collapsed
+    expect(parse("jsonrepair,tags,tags")).toEqual(["tags", "jsonrepair"])
+    // hyphenated `unicode-lossy` token accepted and lands LAST in canonical order regardless of spelling
+    expect(parse("unicode-lossy,jsonrepair,unicode")).toEqual(["unicode", "jsonrepair", "unicode-lossy"])
+    // empty string == off (empty set)
+    expect(parse("")).toEqual([])
+    // clean break (project unreleased): the legacy "repair" tier and boolean `false` are no longer valid → stripped + warn
+    expect(parse("repair")).toBeUndefined()
+    expect(parse(false)).toBeUndefined()
+    expect(parse("tags,bogus")).toBeUndefined()
+    expect(warnedMessages().some((m) => m.includes("malformed_input"))).toBe(true)
   })
 
   test("negative number rejected", () => {
-    const result = validateConfig({ history: { limit: -5 } })
-    expect(result.history?.limit).toBeUndefined()
-    expect(warnedMessages().some((m) => m.includes("history.limit"))).toBe(true)
+    const result = validateConfig({ history: { raw_capture: { max_object_bytes: -5 } } })
+    expect(result.history?.raw_capture?.max_object_bytes).toBeUndefined()
+    expect(warnedMessages().some((m) => m.includes("max_object_bytes"))).toBe(true)
   })
 })
 
@@ -200,10 +215,31 @@ describe("validateConfig — deprecated keys", () => {
   })
 
   test("history.min_entries → warn only, no translation", () => {
-    const result = validateConfig({ history: { min_entries: 20, limit: 100 } })
+    const result = validateConfig({ history: { min_entries: 20, raw_capture: { max_object_bytes: 100 } } })
     expect((result.history as Record<string, unknown> | undefined)?.min_entries).toBeUndefined()
-    expect(result.history?.limit).toBe(100)
+    expect(result.history?.raw_capture?.max_object_bytes).toBe(100)
     expect(warnedMessages().some((m) => m.includes("history.min_entries"))).toBe(true)
+  })
+
+  test("anthropic.model_capabilities.tool_search (removed list) → warn + drop, siblings preserved", () => {
+    const result = validateConfig({
+      anthropic: { model_capabilities: { tool_search: ["claude-opus-4.9"], context_editing: ["claude-opus-4.6"] } },
+    })
+    const mc = result.anthropic?.model_capabilities as Record<string, unknown> | undefined
+    expect(mc?.tool_search).toBeUndefined()
+    // A sibling capability list under the same section survives the removal.
+    expect(mc?.context_editing).toEqual(["claude-opus-4.6"])
+    expect(warnedMessages().some((m) => m.includes("anthropic.model_capabilities.tool_search"))).toBe(true)
+  })
+
+  test("anthropic.api_key (retired) → warn + drop, siblings preserved", () => {
+    const result = validateConfig({
+      anthropic: { api_key: "sk-test-123", warmup: "allow" },
+    })
+    expect((result.anthropic as Record<string, unknown> | undefined)?.api_key).toBeUndefined()
+    // A sibling anthropic key survives the removal.
+    expect(result.anthropic?.warmup).toBe("allow")
+    expect(warnedMessages().some((m) => m.includes("anthropic.api_key"))).toBe(true)
   })
 })
 
@@ -223,6 +259,39 @@ describe("validateConfig — warn-once semantics", () => {
     _resetConfigValidationWarnTrackingForTests()
     validateConfig({ foo: 1 })
     expect(warnedMessages().filter((m) => m.includes("foo")).length).toBe(2)
+  })
+})
+
+describe("validateConfig — SOCKS session_connect_timeout=0 rejection (D3 exception)", () => {
+  test("SOCKS proxy + session_connect_timeout: 0 is stripped (falls back to default 10) + warns", () => {
+    const result = validateConfig({
+      proxy: "socks5://proxy.example:1080",
+      upstream_transport: { http2: { session_connect_timeout: 0 } },
+    })
+    expect(result.upstream_transport?.http2?.session_connect_timeout).toBeUndefined() // stripped → schema default (10) applies downstream
+    expect(warnedMessages().some((m) => m.includes("upstream_transport.http2.session_connect_timeout") && m.includes("SOCKS"))).toBe(true)
+  })
+
+  test("SOCKS proxy + session_connect_timeout: 5 (positive) passes through unchanged", () => {
+    const result = validateConfig({
+      proxy: "socks5://proxy.example:1080",
+      upstream_transport: { http2: { session_connect_timeout: 5 } },
+    })
+    expect(result.upstream_transport?.http2?.session_connect_timeout).toBe(5)
+    expect(warnedMessages().some((m) => m.includes("session_connect_timeout"))).toBe(false)
+  })
+
+  test("HTTP CONNECT proxy (non-SOCKS) + session_connect_timeout: 0 passes through unchanged (real disable)", () => {
+    const result = validateConfig({
+      proxy: "http://proxy.example:8080",
+      upstream_transport: { http2: { session_connect_timeout: 0 } },
+    })
+    expect(result.upstream_transport?.http2?.session_connect_timeout).toBe(0)
+  })
+
+  test("no proxy configured + session_connect_timeout: 0 passes through unchanged (direct connection, real disable)", () => {
+    const result = validateConfig({ upstream_transport: { http2: { session_connect_timeout: 0 } } })
+    expect(result.upstream_transport?.http2?.session_connect_timeout).toBe(0)
   })
 })
 

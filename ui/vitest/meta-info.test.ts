@@ -16,19 +16,27 @@ function makeEntry(overrides: Partial<HistoryEntry> = {}): HistoryEntry {
     sessionId: "session-1",
     startedAt: Date.now(),
     endpoint: "openai-chat-completions",
-    inboundRequest: {
+    clientRequest: {
+      format: "openai-chat-completions",
       model: "gpt-5-resp",
       messages: [{ role: "user", content: "hello" }],
       stream: false,
     },
-    outboundResponse: {
-      success: true,
-      model: "gpt-5-resp",
-      usage: { input_tokens: 10, output_tokens: 5 },
-      content: null,
-    },
+    model: { requested: "gpt-5-resp", resolved: "gpt-5-resp" },
+    attempts: [
+      {
+        index: 0,
+        durationMs: 0,
+        upstreamResponse: {
+          success: true,
+          model: "gpt-5-resp",
+          usage: { input_tokens: 10, output_tokens: 5 },
+          body: null,
+        },
+      },
+    ],
     ...overrides,
-  }
+  } as HistoryEntry
 }
 
 describe("MetaInfo", () => {

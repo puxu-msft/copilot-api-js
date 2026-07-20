@@ -9,20 +9,14 @@
  * choice is INTERNAL to the transport — the driver and codec stay format-agnostic
  * and never see it (retry-transport.md §4.1):
  *
- *   send(wire, env):
- *     rate-limiter wraps:
- *       wire.stream && canUseUpstreamWebSocket(model)
- *         ? attemptUpstreamResponsesWs → ok: report "upstream-ws", frames
- *                                       fallback: report "upstream-ws-fallback", HTTP
- *         : report "http", HTTP (sendUpstreamHttp)
- *     → streaming ? guardSseIterable(frames) : { nonStream: json }
+ *   send(wire, env, opts):
+ *     wire.stream && canUseUpstreamWebSocket(model) && !opts.forceHttp
+ *       ? attemptUpstreamResponsesWs → ok: report "upstream-ws", frames
+ *                                     fallback: throw typed scheduler control flow
+ *       : report "http", one sendUpstreamHttp call
  *
- * Lifts the legacy `createResponses` selection (responses-client.ts) into the
- * driver's `Transport` contract. Byte-equivalent to legacy: the HTTP path omits
- * the client-abort signal from the upstream fetch (Responses-historical — the
- * stream guard owns client-abort for the streamed body), and the whole
- * select-and-send runs inside the adaptive rate-limiter exactly as legacy wrapped
- * `createResponses`.
+ * The driver turns the typed before-first-event fallback into a fresh, separately
+ * admitted HTTP dispatch. Legacy `createResponses` keeps its own fallback path.
  */
 
 import type { ServerSentEventMessage } from "fetch-event-stream"
@@ -34,20 +28,28 @@ import type { RequestEnvelope } from "~/lib/pipeline/envelope"
 import type {
   //
   PreparedRequest,
+  PhysicalTransport,
   Transport,
+  TransportDispatchOptions,
   UpstreamFrame,
   UpstreamStream,
 } from "~/lib/pipeline/types"
 import type { ResponsesPayload } from "~/types/api/openai-responses"
 
-import { executeWithAdaptiveRateLimit } from "~/lib/adaptive-rate-limiter"
 import {
   //
   attemptUpstreamResponsesWs,
   canUseUpstreamWebSocket,
 } from "~/lib/openai/upstream-ws-attempt"
 import { getShutdownSignal } from "~/lib/shutdown"
-import { guardSseIterable } from "~/lib/stream"
+import {
+  //
+  combineAbortSignals,
+  guardSseIterable,
+} from "~/lib/stream"
+import { createDispatchLifecycle } from "~/lib/transport/dispatch-lifecycle"
+import { UpstreamTransportFallbackError } from "~/lib/transport/fallback"
+import { physicalTransportFromSend } from "~/lib/transport/physical-transport"
 import { sendUpstreamHttp } from "~/lib/transport/send"
 
 export interface UpstreamResponsesTransportDeps {
@@ -60,21 +62,18 @@ export interface UpstreamResponsesTransportDeps {
 }
 
 /** Build a Responses {@link Transport} (HTTP + upstream-WS) for one request. */
-export function createUpstreamResponsesTransport(deps: UpstreamResponsesTransportDeps): Transport {
-  return {
-    async send(wire: PreparedRequest, env: RequestEnvelope): Promise<UpstreamStream> {
-      // The whole select-and-send runs inside the adaptive rate-limiter — legacy
-      // wrapped `createResponses` (which contains the same WS-or-HTTP selection)
-      // in `executeWithAdaptiveRateLimit`.
-      const { result, queueWaitMs } = await executeWithAdaptiveRateLimit(() => selectAndSend(wire, env, deps))
-      env.ctx.addQueueWaitMs(queueWaitMs)
-      return result
-    },
-  }
+export function createUpstreamResponsesTransport(deps: UpstreamResponsesTransportDeps): Transport & PhysicalTransport {
+  const send: Transport["send"] = (wire, env, options) => selectAndSend(wire, env, deps, options)
+  return { send, ...physicalTransportFromSend(send) }
 }
 
-/** Choose upstream WS or HTTP, report the chosen transport on ctx, and return the stream. */
-async function selectAndSend(wire: PreparedRequest, env: RequestEnvelope, deps: UpstreamResponsesTransportDeps): Promise<UpstreamStream> {
+/** Execute exactly one physical WS or HTTP dispatch. Fallback is surfaced to the driver. */
+async function selectAndSend(
+  wire: PreparedRequest,
+  env: RequestEnvelope,
+  deps: UpstreamResponsesTransportDeps,
+  options?: TransportDispatchOptions,
+): Promise<UpstreamStream> {
   const responsesPayload = wire.body as ResponsesPayload
   const headers = Object.fromEntries(wire.headers.entries())
   const model = env.model as Model | undefined
@@ -83,21 +82,28 @@ async function selectAndSend(wire: PreparedRequest, env: RequestEnvelope, deps: 
   // mid-stream reap reaches a live client as reaper-cancel → stream-error → error frame).
   const reaperSignal = env.ctx.lifecycleSignal
 
-  if (wire.stream && canUseUpstreamWebSocket(model)) {
+  if (!options?.forceHttp && wire.stream && canUseUpstreamWebSocket(model, responsesPayload.model)) {
+    reportTransport(env, "upstream-ws")
     const attempt = await attemptUpstreamResponsesWs(
       { wire: responsesPayload, headers },
-      { conversationId: deps.conversationId, clientAbortSignal: deps.clientAbortSignal, reaperSignal },
+      { conversationId: deps.conversationId, clientAbortSignal: deps.clientAbortSignal, reaperSignal, dispatchSignal: options?.signal },
     )
     if (attempt.kind === "ok") {
-      reportTransport(env, "upstream-ws")
-      return { frames: guardWsOrHttp(attempt.generator, deps, reaperSignal), headers: new Headers() }
+      return {
+        frames: guardWsOrHttp(attempt.generator, deps, reaperSignal, options?.signal),
+        headers: new Headers(),
+        lifecycle: attempt.lifecycle,
+      }
     }
-    reportTransport(env, "upstream-ws-fallback")
-  } else {
-    reportTransport(env, "http")
+    // Request-wide cancellation must never be converted into a fresh HTTP dispatch.
+    if (deps.clientAbortSignal?.aborted || reaperSignal.aborted || options?.signal?.aborted || getShutdownSignal().aborted) {
+      throw attempt.error instanceof Error ? attempt.error : new DOMException("The operation was aborted.", "AbortError")
+    }
+    throw new UpstreamTransportFallbackError("ws-before-first-event", attempt.error)
   }
 
-  return sendViaHttp(wire, deps, reaperSignal, env.ctx.query?.forwarded ?? "")
+  reportTransport(env, "http")
+  return sendViaHttp(wire, deps, reaperSignal, options?.signal, env.ctx.query?.forwarded ?? "")
 }
 
 /** Report the chosen transport on the ctx attempt (legacy `onTransport` → `setAttemptTransport`). */
@@ -110,33 +116,43 @@ async function sendViaHttp(
   wire: PreparedRequest,
   deps: UpstreamResponsesTransportDeps,
   reaperSignal?: AbortSignal,
+  dispatchSignal?: AbortSignal,
   forwardedQuery = "",
 ): Promise<UpstreamStream> {
+  const lifecycle = createDispatchLifecycle(combineAbortSignals(dispatchSignal, deps.clientAbortSignal, reaperSignal, getShutdownSignal()))
   // Transport-local capture (RFC Phase 2 — no handler-threaded bag); fills `.response`
   // so we can surface upstream response headers as `UpstreamStream.headers` (read by
   // the driver to write ctx.httpHeaders.outboundResponse).
   const headersCapture: HeadersCapture = {}
-  const result = await sendUpstreamHttp({
-    // Append the forwarded client query to the upstream URL ONLY (errorLabel stays
-    // the static literal; wire.url is not mutated).
-    endpointPath: wire.url + forwardedQuery,
-    headers: Object.fromEntries(wire.headers.entries()),
-    body: wire.body,
-    stream: wire.stream,
-    errorLabel: "Failed to create responses",
-    modelId: (wire.body as { model?: unknown }).model as string | undefined,
-    diagnosticsTools: (wire.body as { tools?: unknown }).tools,
-    headersCapture,
-    reaperSignal,
-  })
+  let result: unknown
+  try {
+    result = await sendUpstreamHttp({
+      // Append the forwarded client query to the upstream URL ONLY (wire.url untouched).
+      endpointPath: wire.url + forwardedQuery,
+      headers: Object.fromEntries(wire.headers.entries()),
+      body: wire.body,
+      stream: wire.stream,
+      errorLabel: "Failed to create responses",
+      modelId: (wire.body as { model?: unknown }).model as string | undefined,
+      diagnosticsTools: (wire.body as { tools?: unknown }).tools,
+      headersCapture,
+      reaperSignal,
+      dispatchSignal: lifecycle.signal,
+    })
+  } catch (error) {
+    lifecycle.complete()
+    throw error
+  }
 
   const responseHeaders = new Headers(headersCapture.response ?? {})
 
   if (!wire.stream) {
-    return { frames: emptyFrames(), nonStream: result, headers: responseHeaders }
+    lifecycle.complete()
+    return { frames: emptyFrames(), nonStream: result, headers: responseHeaders, lifecycle }
   }
 
-  return { frames: guardWsOrHttp(result as AsyncIterable<ServerSentEventMessage>, deps, reaperSignal), headers: responseHeaders }
+  const frames = guardWsOrHttp(result as AsyncIterable<ServerSentEventMessage>, deps, reaperSignal, lifecycle.signal)
+  return { frames: lifecycle.ownFrames(frames), headers: responseHeaders, lifecycle }
 }
 
 /** Wrap the raw upstream SSE source (WS generator or HTTP events) in the idle/shutdown/client/reaper guard. */
@@ -144,12 +160,14 @@ function guardWsOrHttp(
   source: AsyncIterable<ServerSentEventMessage>,
   deps: UpstreamResponsesTransportDeps,
   reaperSignal?: AbortSignal,
+  dispatchSignal?: AbortSignal,
 ): AsyncIterable<UpstreamFrame> {
   return guardSseIterable(source, {
     idleTimeoutMs: deps.idleTimeoutMs,
     shutdownSignal: getShutdownSignal(),
     clientSignal: deps.clientAbortSignal,
     reaperSignal,
+    dispatchSignal,
   }) as AsyncIterable<UpstreamFrame>
 }
 

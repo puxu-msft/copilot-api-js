@@ -21,6 +21,7 @@ const base = (over: Partial<EntrySummary>): EntrySummary => ({
   messageCount: 0,
   previewText: "",
   ...over,
+  responsePreviewText: over.responsePreviewText ?? "",
 })
 
 describe("RequestRow", () => {
@@ -120,16 +121,6 @@ describe("RequestRow", () => {
     // large input with no cache read → token cell flagged amber (no +Nc since no cache)
     const tokens = screen.getByText("↑30.0K ↓50")
     expect(tokens.className).toContain("row-anomaly")
-  })
-
-  it("live row is compact: state / model / duration, no tokens or preview", () => {
-    render(<RequestRow live={{ state: "streaming", model: "live-model", durationMs: 3400 }} />)
-    expect(screen.getByText(/streaming/)).toBeDefined()
-    expect(screen.getByText("live-model")).toBeDefined()
-    // LiveRow still uses formatDuration (3.4s), unchanged
-    expect(screen.getByText("3.4s")).toBeDefined()
-    expect(screen.queryByText(/↑/)).toBeNull()
-    expect(screen.queryByText(/↓/)).toBeNull()
   })
 
   it("groups cached input tokens into the up-token cell and shows bytes before tokens", () => {

@@ -111,4 +111,47 @@ describe("SystemMessage", () => {
     fireEvent.click(screen.getByText("Diff"))
     expect(screen.getByText(/Block count changed: 1 → 2/)).toBeDefined()
   })
+
+  it("shows a removed badge when an effective leg exists (hasEffective) but rewrittenSystem is absent", () => {
+    render(
+      <SystemMessage
+        system="inbound system body"
+        hasEffective
+        rewrittenSystem={undefined}
+      />,
+    )
+    expect(screen.getByText("removed")).toBeDefined()
+    // The removal is a rewrite, so the view toggle appears.
+    expect(screen.getByText("Diff")).toBeDefined()
+    expect(screen.queryByText("modified")).toBeNull()
+  })
+
+  it("shows an added badge and opens on Rewritten when original is absent but a rewrite injects a system", () => {
+    render(
+      <SystemMessage
+        system=""
+        hasEffective
+        originalPresent={false}
+        rewrittenSystem="injected system body"
+      />,
+    )
+    expect(screen.getByText("added")).toBeDefined()
+    // Added opens on Rewritten (the original is empty), so injected content shows immediately.
+    expect(screen.getByText(/injected system body/)).toBeDefined()
+  })
+
+  it("classifies a present-but-empty inbound removed by a rewrite as removed (presence over text)", () => {
+    // Both inbound "" and the dropped effective project to "" text, so a text-only
+    // check would call this 'unchanged'; presence flags make it 'removed'.
+    render(
+      <SystemMessage
+        system=""
+        hasEffective
+        originalPresent
+        rewrittenSystem={undefined}
+      />,
+    )
+    expect(screen.getByText("removed")).toBeDefined()
+    expect(screen.queryByText("rewritten")).toBeNull()
+  })
 })

@@ -24,7 +24,7 @@ const base = {
   id: "r1",
   startedAt: 0,
   endpoint: "anthropic-messages",
-  inboundRequest: { messages: [{ role: "user", content: "convo hello" }] },
+  clientRequest: { messages: [{ role: "user", content: "convo hello" }] },
 } as unknown as HistoryEntry
 
 describe("detail segments", () => {
@@ -47,8 +47,14 @@ describe("detail segments", () => {
   it("StagesSegment shows ONLY the first (Inbound) leg by default, not all three at once", () => {
     const e = {
       ...base,
-      effectiveRequest: { messages: [{ role: "user", content: "eff hello" }] },
-      outboundRequest: { messages: [{ role: "user", content: "wire hello" }] },
+      attempts: [
+        {
+          index: 0,
+          durationMs: 0,
+          effectiveSource: { messages: [{ role: "user", content: "eff hello" }] },
+          upstreamRequest: { messages: [{ role: "user", content: "wire hello" }] },
+        },
+      ],
     } as unknown as HistoryEntry
     render(<StagesSegment entry={e} />)
     // Inbound content rendered; Effective/Wire content NOT both rendered simultaneously.
@@ -63,8 +69,14 @@ describe("detail segments", () => {
   it("StagesSegment TOC has all three leg nodes + message anchors for the selected leg", () => {
     const e = {
       ...base,
-      effectiveRequest: { messages: [{ role: "user", content: "eff hello" }] },
-      outboundRequest: { messages: [{ role: "user", content: "wire hello" }] },
+      attempts: [
+        {
+          index: 0,
+          durationMs: 0,
+          effectiveSource: { messages: [{ role: "user", content: "eff hello" }] },
+          upstreamRequest: { messages: [{ role: "user", content: "wire hello" }] },
+        },
+      ],
     } as unknown as HistoryEntry
     render(<StagesSegment entry={e} />)
     // 3 leg nodes in the TOC (short labels).
@@ -78,8 +90,14 @@ describe("detail segments", () => {
   it("StagesSegment switches the content to the Effective leg when its TOC node is clicked", () => {
     const e = {
       ...base,
-      effectiveRequest: { messages: [{ role: "user", content: "eff hello" }] },
-      outboundRequest: { messages: [{ role: "user", content: "wire hello" }] },
+      attempts: [
+        {
+          index: 0,
+          durationMs: 0,
+          effectiveSource: { messages: [{ role: "user", content: "eff hello" }] },
+          upstreamRequest: { messages: [{ role: "user", content: "wire hello" }] },
+        },
+      ],
     } as unknown as HistoryEntry
     render(<StagesSegment entry={e} />)
     // Initially Inbound is shown.
@@ -95,7 +113,7 @@ describe("detail segments", () => {
   it("StagesSegment Rendered/Raw toggle shows the selected leg's raw JSON body", () => {
     const e = {
       ...base,
-      effectiveRequest: { messages: [{ role: "user", content: "eff hello" }] },
+      attempts: [{ index: 0, durationMs: 0, effectiveSource: { messages: [{ role: "user", content: "eff hello" }] } }],
     } as unknown as HistoryEntry
     render(<StagesSegment entry={e} />)
     // Rendered (default): conversation body.
@@ -109,18 +127,24 @@ describe("detail segments", () => {
   it("StagesSegment marks rewritten messages and leaves unchanged ones unmarked", () => {
     const e = {
       ...base,
-      inboundRequest: {
+      clientRequest: {
         messages: [
           { role: "user", content: "keep me" },
           { role: "assistant", content: "original text" },
         ],
       },
-      effectiveRequest: {
-        messages: [
-          { role: "user", content: "keep me" },
-          { role: "assistant", content: "rewritten text" },
-        ],
-      },
+      attempts: [
+        {
+          index: 0,
+          durationMs: 0,
+          effectiveSource: {
+            messages: [
+              { role: "user", content: "keep me" },
+              { role: "assistant", content: "rewritten text" },
+            ],
+          },
+        },
+      ],
     } as unknown as HistoryEntry
     render(<StagesSegment entry={e} />)
     // Switch to Effective leg where the modified mark lives.
@@ -129,12 +153,12 @@ describe("detail segments", () => {
     const badges = screen.getAllByText(/^rewritten$/)
     expect(badges.length).toBe(1)
     // Unchanged message ("keep me") is not marked — only one badge total.
-    expect(badges[0].style.color).toContain("--color-warn")
+    expect(badges[0].style.color).toContain("--signal-warn")
   })
   it("StagesSegment keeps the inbound↔effective full-diff toggle", () => {
     const e = {
       ...base,
-      effectiveRequest: { messages: [{ role: "user", content: "eff hello" }] },
+      attempts: [{ index: 0, durationMs: 0, effectiveSource: { messages: [{ role: "user", content: "eff hello" }] } }],
     } as unknown as HistoryEntry
     render(<StagesSegment entry={e} />)
     const diffBtn = screen.getByText(/show full diff/)
@@ -143,14 +167,41 @@ describe("detail segments", () => {
     expect(screen.getByText(/Inbound ↔ Effective diff/)).toBeDefined()
   })
   it("HeadersSegment shows a header key/leg", () => {
-    const e = { ...base, httpHeaders: { inboundRequest: { "x-test": "v1" } } } as HistoryEntry
+    const e = { ...base, clientRequest: { headers: { "x-test": "v1" } } } as HistoryEntry
     render(<HeadersSegment entry={e} />)
     expect(screen.getByText(/x-test/)).toBeDefined()
   })
   it("MetaSegment shows strategy + warnings", () => {
-    const e = { ...base, currentStrategy: "network-retry", warningMessages: [{ code: "W1", message: "careful" }] } as HistoryEntry
+    const e = {
+      ...base,
+      attempts: [{ index: 0, durationMs: 0, strategy: "network-retry" }],
+      warningMessages: [{ code: "W1", message: "careful" }],
+    } as HistoryEntry
     render(<MetaSegment entry={e} />)
     expect(screen.getByText(/network-retry/)).toBeDefined()
     expect(screen.getByText(/careful/)).toBeDefined()
+  })
+  it("MetaSegment shows derived timing (spec 2026-07-14 §6.4): TTFT / first pkt / keepalive gap / buffer hold", () => {
+    const e = {
+      ...base,
+      startedAt: 0,
+      attempts: [{ index: 0, durationMs: 0, upstreamFirstTokenAt: 6000 }],
+      timing: { client: { streamOpenMs: 20, firstRealMs: 79_000, bufferHoldStartMs: 100 } },
+    } as unknown as HistoryEntry
+    render(<MetaSegment entry={e} />)
+    expect(screen.getByText("upstream TTFT")).toBeDefined()
+    expect(screen.getByText("6000ms")).toBeDefined() // 6000 epoch - 0 startedAt
+    expect(screen.getByText("79000ms")).toBeDefined() // client first pkt
+    expect(screen.getByText("78980ms")).toBeDefined() // keepalive gap = 79000 - 20
+    expect(screen.getByText("78900ms")).toBeDefined() // buffer hold = 79000 - 100
+  })
+  it("MetaSegment marks passthrough (no buffer hold) when bufferHoldStartMs absent", () => {
+    const e = {
+      ...base,
+      startedAt: 0,
+      timing: { client: { streamOpenMs: 20, firstRealMs: 500 } },
+    } as unknown as HistoryEntry
+    render(<MetaSegment entry={e} />)
+    expect(screen.getByText("passthrough")).toBeDefined()
   })
 })

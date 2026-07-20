@@ -68,11 +68,11 @@ describe("basic HTTP routes", () => {
     })
   })
 
-  test("GET / returns 200 with server banner", async () => {
+  test("GET / redirects to /openapi.json", async () => {
     const res = await app.request("/")
 
-    expect(res.status).toBe(200)
-    expect(await res.text()).toBe("Server running")
+    expect(res.status).toBe(302)
+    expect(res.headers.get("Location")).toBe("/openapi.json")
   })
 
   test("GET /health returns 503 when tokens are missing", async () => {
@@ -105,6 +105,63 @@ describe("basic HTTP routes", () => {
       githubToken: true,
       models: true,
     })
+  })
+
+  test("GET /health/readiness mirrors /health when tokens are missing", async () => {
+    setStateForTests({ copilotToken: undefined, githubToken: undefined })
+
+    const res = await app.request("/health/readiness")
+    const body = (await res.json()) as HealthResponseBody
+
+    expect(res.status).toBe(503)
+    expect(body).toEqual({
+      status: "unhealthy",
+      checks: {
+        copilotToken: false,
+        githubToken: false,
+        models: true,
+      },
+    })
+  })
+
+  test("GET /health/readiness mirrors /health when tokens are present", async () => {
+    setStateForTests({ copilotToken: "copilot-test", githubToken: "ghp_test" })
+
+    const res = await app.request("/health/readiness")
+    const body = (await res.json()) as HealthResponseBody
+
+    expect(res.status).toBe(200)
+    expect(body).toEqual({
+      status: "healthy",
+      checks: {
+        copilotToken: true,
+        githubToken: true,
+        models: true,
+      },
+    })
+  })
+
+  test("GET /health/liveness returns 200 alive when tokens are present", async () => {
+    setStateForTests({ copilotToken: "copilot-test", githubToken: "ghp_test" })
+
+    const res = await app.request("/health/liveness")
+    const body = (await res.json()) as { status: string }
+
+    expect(res.status).toBe(200)
+    expect(body).toEqual({ status: "alive" })
+  })
+
+  test("GET /health/liveness stays 200 alive even when tokens are missing", async () => {
+    // Liveness reflects process responsiveness only — it must not depend on
+    // upstream readiness (token state), otherwise a down upstream would cause
+    // orchestrators to restart a perfectly alive process.
+    setStateForTests({ copilotToken: undefined, githubToken: undefined })
+
+    const res = await app.request("/health/liveness")
+    const body = (await res.json()) as { status: string }
+
+    expect(res.status).toBe(200)
+    expect(body).toEqual({ status: "alive" })
   })
 
   test("GET /models returns OpenAI-compatible format", async () => {

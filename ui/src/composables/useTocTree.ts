@@ -12,6 +12,13 @@ import type {
   MessageContent,
 } from "@/types"
 
+import {
+  //
+  resolveHeaders,
+  resolveUpstreamResponse,
+  resolveUpstreamSse,
+} from "./entry-legs"
+
 export interface TocNode {
   id: string
   label: string
@@ -81,10 +88,10 @@ export function useTocTree(entry: Ref<HistoryEntry | null> | ComputedRef<History
     const nodes: Array<TocNode> = []
 
     // ── request ──
-    const messages = entry.value.inboundRequest.messages ?? []
+    const messages = entry.value.clientRequest?.messages ?? []
     const requestChildren: Array<TocNode> = []
 
-    if (entry.value.inboundRequest.system) {
+    if (entry.value.clientRequest?.system) {
       requestChildren.push({ id: "request", label: "system", icon: "mdi-cog" })
     }
 
@@ -116,13 +123,14 @@ export function useTocTree(entry: Ref<HistoryEntry | null> | ComputedRef<History
     })
 
     // ── response ──
-    const hasResponse = entry.value.outboundResponse?.content || entry.value.outboundResponse?.error
+    const resp = resolveUpstreamResponse(entry.value)
+    const hasResponse = resp?.content || resp?.error
     if (hasResponse) {
       const responseChildren: Array<TocNode> = []
-      if (entry.value.outboundResponse?.error) {
+      if (resp.error) {
         responseChildren.push({ id: "response", label: "error", icon: "mdi-alert-circle" })
       }
-      if (entry.value.outboundResponse?.content) {
+      if (resp.content) {
         responseChildren.push({ id: "response.content", label: "content", icon: "mdi-robot" })
       }
       nodes.push({
@@ -134,10 +142,11 @@ export function useTocTree(entry: Ref<HistoryEntry | null> | ComputedRef<History
     }
 
     // ── sseEvents ──
-    if (entry.value.sseEvents?.length) {
+    const upstreamSse = resolveUpstreamSse(entry.value)
+    if (upstreamSse?.length) {
       nodes.push({
         id: "section-sse-events",
-        label: `sseEvents (${entry.value.sseEvents.length})`,
+        label: `sseEvents (${upstreamSse.length})`,
         icon: "mdi-broadcast",
       })
     }
@@ -145,7 +154,8 @@ export function useTocTree(entry: Ref<HistoryEntry | null> | ComputedRef<History
     // ── httpHeaders ──
     // Single node (no leg children): headers render per-stage as a single leg,
     // so the outline entry just links to that stage's headers section.
-    if (entry.value.httpHeaders) {
+    const headerLegs = resolveHeaders(entry.value)
+    if (Object.values(headerLegs).some((h) => h !== undefined)) {
       nodes.push({
         id: "httpHeaders",
         label: "http headers",

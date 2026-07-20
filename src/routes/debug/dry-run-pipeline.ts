@@ -64,20 +64,18 @@ import { createBetaProbe } from "~/lib/anthropic/pipeline"
 import { preprocessAnthropicMessages } from "~/lib/anthropic/sanitize"
 import { createAnthropicCodec } from "~/lib/codec/anthropic/codec"
 import { ANTHROPIC_RESPONSE_REWRITES } from "~/lib/codec/anthropic/response-rewrite-adapters"
+import { createGeminiCodec } from "~/lib/codec/gemini/codec"
 import { createOpenAiCcCodec } from "~/lib/codec/openai-cc/codec"
-import { createOpenAiGeminiCodec } from "~/lib/codec/openai-gemini/codec"
 import { createOpenAiResponsesCodec } from "~/lib/codec/openai-responses/codec"
 import { RESPONSES_RESPONSE_REWRITES } from "~/lib/codec/openai-responses/response-rewrites"
-import { withCapturingManager } from "~/lib/context/manager"
+import { withCapturingManagerAsync } from "~/lib/context/manager"
 import { createRequestContext } from "~/lib/context/request"
-import { convertGeminiRequestToOpenAI } from "~/lib/gemini"
 import { getEntry } from "~/lib/history"
-import { resolveModelName } from "~/lib/models/resolver"
 import { createPipelineDriver } from "~/lib/pipeline/driver"
 import { assembleResponseRewrites } from "~/lib/pipeline/rewrite-registry"
 
 /** RFC-facing format names (the `format` param + the `entryId`→format mapping). */
-type DryRunFormat = "anthropic" | "openai-cc" | "openai-responses" | "openai-gemini"
+type DryRunFormat = "anthropic" | "openai-cc" | "openai-responses" | "gemini"
 
 const REQUEST_STAGES = new Set<string>(["parse", "translate", "rewrite-in", "prepare-wire"])
 
@@ -86,12 +84,12 @@ const ENDPOINT_TO_FORMAT: Record<EndpointType, DryRunFormat> = {
   "anthropic-messages": "anthropic",
   "openai-chat-completions": "openai-cc",
   "openai-responses": "openai-responses",
-  "gemini-generate-content": "openai-gemini",
+  "gemini-generate-content": "gemini",
 }
 
 /** Per-format response-side wiring: the env discriminants, the real S5 rewrites, and the handler-side fidelity gaps. */
 interface ResponseFormatConfig {
-  /** Internal `env.clientFormat` (note: the `openai-gemini` param maps to `"gemini"`). */
+  /** Internal `env.clientFormat` (now identical to the dry-run `format` key — the labels are aligned on `"gemini"`). */
   clientFormat: ClientFormat
   /** Direct/passthrough target so the real rewrites' `appliesTo` + the identity render path match. */
   targetEndpoint: UpstreamEndpoint
@@ -120,7 +118,7 @@ const RESPONSE_FORMAT_CONFIG: Record<DryRunFormat, ResponseFormatConfig> = {
     responseRewrites: [],
     caveats: ["CC 响应侧无 driver 改写（rewritesAvailable:false）"],
   },
-  "openai-gemini": {
+  gemini: {
     clientFormat: "gemini",
     // Gemini's upstream is CC (the request is translated Gemini→CC); the driver's render
     // normalizes upstream→CC then translates CC→Gemini per-frame inside the codec (B5 owns-sink).
@@ -147,7 +145,7 @@ const DryRunPipelineSchema = z
     /** Inline synthetic upstream (streaming sseEvents or non-streaming response) — response side only. */
     upstream: InlineUpstreamSchema.optional(),
     /** Format. Derived from the entry's `endpoint` when `entryId` is given; defaults to `anthropic` for inline. */
-    format: z.enum(["anthropic", "openai-cc", "openai-responses", "openai-gemini"]).optional(),
+    format: z.enum(["anthropic", "openai-cc", "openai-responses", "gemini"]).optional(),
     /** Streaming vs non-streaming. Derived from entry/upstream when omitted. */
     stream: z.boolean().optional(),
     /** Stop stage. parse/translate/rewrite-in/prepare-wire = request side; rewrite-out/render = response side. */
@@ -255,20 +253,20 @@ function inspectFormatRequest(format: DryRunFormat, payload: Record<string, unkn
       requestRewrites: codec.getRequestRewrites(),
     })
     const raw = { body: { ...payload, messages: pre.messages }, headers: new Headers(), path: "/v1/messages", method: "POST" } as unknown as RawHttpRequest
-    return withCapturingManager(() => driver.inspectRequest(raw, stopAfter))
+    return withCapturingManagerAsync(() => driver.inspectRequest(raw, stopAfter))
   }
 
   const { codec, raw } = buildNonAnthropicRequest(format, payload)
   const driver = createPipelineDriver({ codec, transport: dryRunTransport, strategies: [], maxRetries: 0, maxLearningRetries: 0 })
-  return withCapturingManager(() => driver.inspectRequest(raw, stopAfter))
+  return withCapturingManagerAsync(() => driver.inspectRequest(raw, stopAfter))
 }
 
 /**
- * Build the CC / Responses / Gemini request-side codec + RawHttpRequest. CC/Responses parse
- * read `raw.body` as their native format directly; Gemini parse expects the ALREADY-translated
- * CC body as `raw.body` + the original Gemini snapshot as `originalBodyForHistory` (the route
- * translates Gemini→CC before parse), so we mirror that translation here (the handler's
- * system-prompt injection on the CC messages is NOT mirrored — caveat).
+ * Build the CC / Responses / Gemini request-side codec + RawHttpRequest. All three parse read
+ * `raw.body` as their NATIVE format directly (RFC 2026-07-14 §4: the gemini codec's parse now keeps
+ * the native `contents[]` body — the Gemini→CC translation + system-prompt injection moved into S1b
+ * `translateInbound`, which `inspectRequest` runs, so the `translate-inbound` stage's body is the CC
+ * projection and downstream stages see CC).
  */
 function buildNonAnthropicRequest(format: Exclude<DryRunFormat, "anthropic">, payload: Record<string, unknown>): { codec: FormatCodec; raw: RawHttpRequest } {
   if (format === "openai-cc") {
@@ -283,25 +281,25 @@ function buildNonAnthropicRequest(format: Exclude<DryRunFormat, "anthropic">, pa
       raw: { body: payload, headers: new Headers(), path: "/responses", method: "POST" } as unknown as RawHttpRequest,
     }
   }
-  // Gemini: model carried in the body for the dry-run (live path takes it from the URL).
+  // Gemini: model carried in the body for the dry-run (live path takes it from the URL). Parse now
+  // takes the NATIVE Gemini body (S1b translateInbound does the Gemini→CC hop).
   const modelId = typeof payload.model === "string" ? payload.model : ""
   const geminiBody = payload as unknown as GenerateContentRequest
-  const { payload: ccPayload } = convertGeminiRequestToOpenAI(geminiBody, { model: resolveModelName(modelId), stream: false })
   const raw = {
-    body: ccPayload,
-    originalBodyForHistory: geminiBody,
+    body: geminiBody,
+    stream: false,
     headers: new Headers(),
     path: `/v1beta/models/${modelId || "gemini"}:generateContent`,
     method: "POST",
   } as unknown as RawHttpRequest
-  return { codec: createOpenAiGeminiCodec(modelId), raw }
+  return { codec: createGeminiCodec(modelId), raw }
 }
 
 function requestSideCaveats(format: DryRunFormat): Array<string> {
   const base =
     format === "anthropic" ?
       "请求侧 = 用当前代码 + live 配置重跑 inboundRequest，非复现当时（preprocess 会重算；betaProbe 为 throwaway；prepare-wire 仅首个 attempt、反应式 retry 改写不可见）"
-    : `请求侧 = 用当前代码 + live 配置重跑 inboundRequest（非复现当时）；handler 的 system-prompt 预注入未镜像；model 重新解析（未用 route 的 preResolved）；${format} 无 S3 请求改写（rewrite-in 恒空）；反应式 retry 改写不可见${format === "openai-gemini" ? "；Gemini→CC 翻译按 stream=false" : ""}`
+    : `请求侧 = 用当前代码 + live 配置重跑 inboundRequest（非复现当时）；handler 的 system-prompt 预注入未镜像；model 重新解析（未用 route 的 preResolved）；${format} 无 S3 请求改写（rewrite-in 恒空）；反应式 retry 改写不可见${format === "gemini" ? "；Gemini→CC 翻译按 stream=false" : ""}`
   return [base]
 }
 
@@ -318,12 +316,12 @@ export async function handleDryRunPipeline(c: Context): Promise<Response> {
       const entry = getEntry(body.entryId)
       if (!entry) return c.json({ error: `History entry not found: ${body.entryId}` }, 404)
       entryEndpoint = entry.endpoint
-      payload = entry.inboundRequest as Record<string, unknown> | undefined
+      payload = (entry.clientRequest?.body as Record<string, unknown> | undefined) ?? (entry.clientRequest as Record<string, unknown> | undefined)
     }
     if (!payload) return c.json({ error: "Request-side stages need `request` (inline payload) or `entryId`" }, 400)
     const format = resolveFormat(body, entryEndpoint)
     try {
-      const { result: inspection, events } = inspectFormatRequest(format, payload, body.stopAfter as RequestInspectStage)
+      const { result: inspection, events } = await inspectFormatRequest(format, payload, body.stopAfter as RequestInspectStage)
       return c.json({
         stopAfter: body.stopAfter,
         format,
@@ -347,9 +345,9 @@ export async function handleDryRunPipeline(c: Context): Promise<Response> {
     const entry = getEntry(body.entryId)
     if (!entry) return c.json({ error: `History entry not found: ${body.entryId}` }, 404)
     entryEndpoint = entry.endpoint
-    const inbound = entry.inboundRequest as { tools?: unknown } | undefined
+    const inbound = entry.clientRequest as { tools?: unknown } | undefined
     tools = inbound?.tools
-    const sse = entry.sseEvents
+    const sse = entry.attempts?.at(-1)?.upstreamResponse?.sseEvents
     const isStream = body.stream ?? (Array.isArray(sse) && sse.length > 0)
     if (isStream) {
       if (!Array.isArray(sse) || sse.length === 0) return c.json({ error: "Entry has no sseEvents to replay (non-streaming? pass stream:false)" }, 400)
@@ -367,8 +365,19 @@ export async function handleDryRunPipeline(c: Context): Promise<Response> {
           400,
         )
       }
-      const outbound = entry.outboundResponse as Record<string, unknown> | undefined
-      if (!outbound) return c.json({ error: "Entry has no outboundResponse to replay" }, 400)
+      // Map the new-model `upstreamResponse` leg back to the legacy outbound
+      // response shape (content/stop_reason) that rebuildNonStreamingResponse reads.
+      const up = entry.attempts?.at(-1)?.upstreamResponse
+      if (!up) return c.json({ error: "Entry has no upstreamResponse to replay" }, 400)
+      const outbound: Record<string, unknown> = {
+        content: up.body,
+        model: up.model,
+        usage: up.usage,
+        stop_reason: up.stopReason,
+        success: up.success,
+        status: up.status,
+        rawBody: up.rawBody,
+      }
       nonStreamingResponse = rebuildNonStreamingResponse(outbound)
     }
   } else {

@@ -17,17 +17,23 @@ import DiagnosticSummary from "@/components/detail/DiagnosticSummary.vue"
 import StageTabs from "@/components/detail/StageTabs.vue"
 import TocTree from "@/components/detail/TocTree.vue"
 import ErrorBoundary from "@/components/ui/ErrorBoundary.vue"
+import {
+  //
+  resolveResponseModel,
+  resolveUpstreamResponse,
+} from "@/composables/entry-legs"
 import { useDetailStages } from "@/composables/useDetailStages"
 import { useDetailViewState } from "@/composables/useDetailViewState"
 import { useHistoryStore } from "@/composables/useHistoryStore"
 import { useTocTree } from "@/composables/useTocTree"
-import { downloadEntryAsJson } from "@/utils/export-entry"
+import { downloadEntryAsZst } from "@/utils/export-entry"
 import {
   //
   formatDate,
   formatDuration,
   formatNumber,
 } from "@/utils/formatters"
+import { isTyping } from "@/utils/keyboard"
 
 const route = useRoute()
 const router = useRouter()
@@ -44,7 +50,8 @@ const loadError = shallowRef<string | null>(null)
 
 const title = computed(() => {
   if (!entry.value) return "Loading..."
-  return entry.value.outboundResponse?.model || entry.value.inboundRequest.model || "Request"
+  // New legs (`upstreamResponse.model` / `model.requested` / `clientRequest.model`).
+  return resolveResponseModel(entry.value) || entry.value.model?.requested || entry.value.clientRequest?.model || "Request"
 })
 
 const subtitle = computed(() => {
@@ -52,7 +59,7 @@ const subtitle = computed(() => {
   const parts: Array<string> = []
   if (entry.value.startedAt) parts.push(formatDate(entry.value.startedAt))
   if (entry.value.durationMs) parts.push(formatDuration(entry.value.durationMs))
-  const usage = entry.value.outboundResponse?.usage
+  const usage = resolveUpstreamResponse(entry.value)?.usage
   if (usage) {
     parts.push(`${formatNumber(usage.input_tokens)} in / ${formatNumber(usage.output_tokens)} out`)
   }
@@ -103,7 +110,7 @@ function goBack(): void {
 }
 
 function exportEntry(): void {
-  if (entry.value) downloadEntryAsJson(entry.value)
+  if (entry.value) void downloadEntryAsZst(entry.value)
 }
 
 /**
@@ -162,13 +169,7 @@ async function goAdjacent(dir: "next" | "prev"): Promise<void> {
   }
 }
 
-/** Ignore keyboard shortcuts while typing in an input/textarea. */
-function isTyping(): boolean {
-  const el = document.activeElement
-  if (!el) return false
-  return el.tagName === "INPUT" || el.tagName === "TEXTAREA" || (el as HTMLElement).isContentEditable
-}
-
+/** Keyboard nav — ignored while typing in an input/textarea (isTyping). */
 onKeyStroke("j", () => {
   if (!isTyping()) void goAdjacent("next")
 })

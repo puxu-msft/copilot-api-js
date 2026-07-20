@@ -4,8 +4,10 @@ import type {
   ToolResultContentBlock,
 } from "@/lib/content/types"
 
-import { CodeBlock } from "@/components/detail/CodeBlock"
+import { RawJsonView } from "@/components/common/RawJsonView"
 import { ContentRenderer } from "@/components/detail/ContentRenderer"
+import { ToolJumpButton } from "@/components/detail/ToolJumpButton"
+import { useToolPairing } from "@/components/detail/ToolPairingContext"
 
 type ToolResultContent = ToolResultContentBlock["content"]
 type ToolResultBlockArray = Extract<ToolResultContent, Array<unknown>>
@@ -16,20 +18,27 @@ function isContentBlockArray(content: ToolResultContent): content is ToolResultB
 }
 
 function renderContent(content: ToolResultContent) {
-  if (typeof content === "string") return <pre className="whitespace-pre-wrap break-all text-[#9a9]">{content}</pre>
+  if (typeof content === "string") return <pre className="whitespace-pre-wrap break-all text-[var(--content-muted-cool)]">{content}</pre>
   if (isContentBlockArray(content)) return <ContentRenderer blocks={content as Array<ContentBlock>} />
-  return (
-    <CodeBlock
-      code={JSON.stringify(content, null, 2)}
-      lang="json"
-    />
-  )
+  // Non-string, non-content-block-array → a structured object/array → dual view.
+  return <RawJsonView value={content} />
 }
 
 export function ToolResultBlock({ block }: { block: ToolResultContentBlock }) {
+  const ctx = useToolPairing()
+  const useAnchor = ctx?.pairing.get(block.tool_use_id)?.useAnchor
   return (
-    <div className="mono border-l-2 border-[#4a6a4a] bg-[#141a14] px-2 py-1 text-[13px]">
-      <div className="text-[11px] uppercase tracking-wider text-[var(--color-muted)]">tool_result · {block.tool_use_id}</div>
+    <div className="mono border-l-2 border-[var(--content-tool-dim)] bg-[var(--surface-tool-result)] px-2 py-1 text-[13px]">
+      <div className="flex items-center gap-2">
+        <div className="text-[11px] uppercase tracking-wider text-[var(--content-muted)]">tool_result · {block.tool_use_id}</div>
+        {ctx && useAnchor ?
+          <ToolJumpButton
+            label="↑ call"
+            ariaLabel="Jump to tool call"
+            onJump={() => ctx.scrollTo(useAnchor)}
+          />
+        : null}
+      </div>
       {renderContent(block.content)}
     </div>
   )

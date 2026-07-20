@@ -106,7 +106,7 @@ describe("POST /v1/messages — thinking-signature compatibility shim", () => {
 
   beforeEach(() => {
     upstreamFetchMock.mockClear()
-    setStateForTests({ copilotToken: "test-token", accountType: "individual", vsCodeVersion: "1.100.0", fetchTimeout: 0 })
+    setStateForTests({ copilotToken: "test-token", accountType: "individual", vsCodeVersion: "1.100.0", responseHeaderTimeout: 0 })
     applyFetchMock(upstreamFetchMock)
     setModels({ object: "list", data: [mockModel("claude-opus-4.8", { vendor: "Anthropic", supported_endpoints: ["/v1/messages"] })] })
   })
@@ -167,19 +167,19 @@ describe("POST /v1/messages — thinking-signature compatibility shim", () => {
 
     // Upstream-original sseEvents: the raw non-standard frame (signature embedded
     // on content_block_start, NO signature_delta) is preserved for diagnostics.
-    const upThinkingStart = (entry.sseEvents ?? [])
+    const upThinkingStart = (entry.attempts?.at(-1)?.upstreamResponse?.sseEvents ?? [])
       .map((e) => safeParse(e.raw))
       .find((x) => x?.type === "content_block_start" && (x.content_block as Record<string, unknown> | undefined)?.type === "thinking")
     expect(upThinkingStart).toBeDefined()
     expect((upThinkingStart!.content_block as Record<string, unknown>).signature).toBe(EMBEDDED_SIG)
-    const upHasSigDelta = (entry.sseEvents ?? [])
+    const upHasSigDelta = (entry.attempts?.at(-1)?.upstreamResponse?.sseEvents ?? [])
       .map((e) => safeParse(e.raw))
       .some((x) => (x?.delta as Record<string, unknown> | undefined)?.type === "signature_delta")
     expect(upHasSigDelta).toBe(false)
 
     // Forwarded (proxy→client) record: the compat-shimmed frames — empty thinking
     // start + synthesized signature_delta.
-    const fwd = (entry.inboundResponse?.sseEvents ?? []).map((e) => safeParse(e.raw))
+    const fwd = (entry.clientResponse?.sseEvents ?? []).map((e) => safeParse(e.raw))
     const fwdThinkingStart = fwd.find((x) => x?.type === "content_block_start" && (x.content_block as Record<string, unknown> | undefined)?.type === "thinking")
     expect((fwdThinkingStart!.content_block as Record<string, unknown>).signature).toBe("")
     const fwdSigDelta = fwd.find((x) => (x?.delta as Record<string, unknown> | undefined)?.type === "signature_delta")

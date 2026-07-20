@@ -13,7 +13,7 @@
 > - **(H1/H2,CRITICAL)原 v1「全量替换 undici」over-scoped 且错误**:grep 实测 upstreamFetch 服务 `http://localhost:8080`(SearXNG,明文 HTTP 非 TLS 非 443 非 h2)、`api.anthropic.com`、github OAuth、VSCode release——全量替换会打挂它们。改为**仅 GHC h2 host 分流到 node:http2**,真实问题(GHC host 在 Bun-undici 挂)精准命中,其余零回归。
 > - **(B1,CRITICAL,已实测)`Readable.toWeb` 在 Bun 下消费 node:http2 流抛 `ERR_STREAM_PREMATURE_CLOSE`**。适配器 `.body` 必须**手搓 `new ReadableStream`**(从 `req.on('data'/'end'/'error')`),实测 25917 字符 + TextDecoderStream 在 Bun 下正常。**禁用 Readable.toWeb**。
 > - **(C2,CRITICAL,已 ss 实测)keepalive 长静默保活成立**:h2 socket idle 期 `ss -tno` 见 `timer:(keepalive,...)`(140.82.113.22:443)。原始目的满足。
-> - **(D1)删除 v1 自造的 fetchTimeout headers 定时器**——复用现有 `createFetchSignal()` 的 `AbortSignal.timeout`(消费端已传 `signal`),适配器只消费 `init.signal`,abort → `req.close(NGHTTP2_CANCEL)`。
+> - **(D1)删除 v1 自造的 responseHeaderTimeout headers 定时器**——复用现有 `createFetchSignal()` 的 `AbortSignal.timeout`(消费端已传 `signal`),适配器只消费 `init.signal`,abort → `req.close(NGHTTP2_CANCEL)`。
 > - **(E1)发 `accept-encoding: identity`**消除流式解压层(/models POC 已证常;SSE 本不压)。
 > - **(D2)补 connect/TLS 握手超时**(`tls.connect` + 握手 timeout → `network-retry`)。
 > - **(B3)上游 `RST_STREAM`(非 NO_ERROR)/GOAWAY 中断在途流 → ReadableStream error(reject reader)**,绝不静默 `{done:true}`(否则截断流被当 success,对齐 stream.ts Bug 2 防护)。
@@ -69,19 +69,20 @@
   - `body` ← `Readable.toWeb(req)`(ReadableStream,供 SSE 流式消费)
   - `json()/text()` ← 累积 body 后解析(node:http2 不自动解压——见 §2.5 Content-Encoding)
 - **超时映射**:
-  - `fetchTimeout`(response_header)→ 等到 `response` 事件的定时器;到点未收到 header → abort + reject(`HeadersTimeoutError`)。
+  - `responseHeaderTimeout`(response_header)→ 等到 `response` 事件的定时器;到点未收到 header → abort + reject(`HeadersTimeoutError`)。
   - `streamIdleTimeout` → `req.setTimeout(idleMs)`(data 间隔);触发 → abort(`StreamIdleTimeoutError`,复用现有错误类)。
   - 入站 `AbortSignal` → 监听 `abort` → `req.close(NGHTTP2_CANCEL)` → reject。
 
 ### 2.3 proxy.ts 改造
 `getUpstreamDispatcher()`(返回 undici `Dispatcher`)被 `getUpstreamConnector()`(返回 `createConnection` 工厂)替代。无代理:直接 `tls.connect`+keepalive。`setTimeoutConfig` 的热重载语义保留(改 keepalive 重建连接工厂/清 session 池)。
 
-### 2.4 代理(分期,登记防回归)
-现 ProxyAgent / EnvProxyDispatcher / SOCKS。node:http2 经 createConnection 做隧道:
-- HTTP(S) 代理:先 `net.connect` 到代理 → 发 `CONNECT host:443` → 收 200 → 在隧道上 `tls.connect`(ALPN h2)。
-- SOCKS:`socks` 库建隧道 socket → `tls.connect`。
-- **Phase 1(本 RFC)**:无代理直连(覆盖当前所有实际用户——已确认无 proxy 配置)。代理路径若配置了 proxy 则**启动期显式报错**"http2 transport 暂不支持 proxy,见 issue",不静默降级。
-- **Phase 2(backlog,完整文档化)**:实现 CONNECT/SOCKS 隧道 createConnection。
+### 2.4 代理(Phase 2 已落地)
+node:http2 经 createConnection 隧道,实现在 `transport/proxy-connect.ts` 的 `connectProxiedSocket`(返回裸 pre-TLS socket,http2-client 在其上 `tls.connect` ALPN h2):
+- HTTP(S) 代理:**手搓** CONNECT over raw `net`/`tls`(**不**用 `http.request({method:"CONNECT"})`——Bun 的 node:http CONNECT 坏:走 fetch 路由 `fetch() URL is invalid`,代理收不到请求,实测 exp/http2-proxy/)。`net.connect`(https 代理则 `tls.connect`)到代理 → 写 `CONNECT host:443 HTTP/1.1`(+ `Proxy-Authorization` 若有凭据) → 读 200 + CRLFCRLF(头缓冲有 64KiB 上限) → unshift 余字节 → 交回 caller TLS-wrap。
+- SOCKS:`socks` 库 `SocksClient.createConnection` 建隧道 socket → caller `tls.connect`(ALPN h2)。
+- **`getProxyUrlForOrigin(origin)`**(proxy.ts):按 url > env(NO_PROXY-aware via `getProxyForUrl`) > none 解析每 origin 的代理 URL;http2-client `createSession` 在建 session 前调它选路。
+- **Bun SOCKS5 已解除**:旧的 `initProxyBun` throw 是因 undici dispatcher 在 Bun 失效;新隧道走 `SocksClient`(纯 node:net)不经 undici,实测 Bun 下 socks→TLS→h2 GET=200。socks5 URL 在 Bun 不再 export 到 `HTTP_PROXY` env(Bun 原生 fetch 不识别)。
+- **握手 await(根因修)**:`createSession` 在建 h2 session **前** await TLS 握手(`awaitH2Handshake`:secureConnect + ALPN===h2 检测,否则 destroy+reject)——否则握手失败(RST/cert/idle)不传导到 h2 request → **挂到 app idle-timeout**(直连+代理两路皆中招,实测 exp/http2-proxy/,从 12s 挂改为 ~40ms reject)。
 
 ### 2.5 Content-Encoding
 undici 自动解压;node:http2 **不自动解压**。需在适配器按 `content-encoding`(gzip/br/deflate/zstd)用 `node:zlib` 解压(与 history codec 同模块,已验证 Bun 可用)。或请求时发 `accept-encoding: identity` 避免解压(/models POC 用 identity 正常;但 SSE 流不应 identity 强制——按响应头解压)。倾向:发 `accept-encoding: gzip, deflate, br`,适配器按响应头流式解压。
@@ -91,9 +92,9 @@ undici 自动解压;node:http2 **不自动解压**。需在适配器按 `content
 ## 3. Commit 顺序与 invariant
 
 1. **C1 — http2-client.ts 核心**:session 池 + Response 适配器 + 非流式请求。*Invariant:* GET /models 经新客户端返回等价 Response(status/json/headers),unit 测试(注入 mock h2 或对 httpbin-like)绿。
-2. **C2 — 流式 + 超时 + AbortSignal**:body ReadableStream、fetchTimeout/streamIdleTimeout 映射、signal→cancel。*Invariant:* SSE 流增量可读;超时触发对应错误类;abort 取消 stream。
+2. **C2 — 流式 + 超时 + AbortSignal**:body ReadableStream、responseHeaderTimeout/streamIdleTimeout 映射、signal→cancel。*Invariant:* SSE 流增量可读;超时触发对应错误类;abort 取消 stream。
 3. **C3 — 切换 productionUpstreamFetch + proxy.ts 连接工厂**:undici → http2-client;无代理直连;配 proxy 时启动报错(Phase 1)。*Invariant:* 11 消费端不改;`setUpstreamFetchForTests` 不变;全 offline 测试套件绿;Bun 下 /models 不再挂(对真实端点的 e2e 探针,门控)。
-4. **C4 — 清理**:删 undici 依赖路径(upstream 侧)/或保留作 Phase-2 代理参考;更新 DESIGN/skill bun-upstream-transport。
+4. **C4 — 清理**:删 undici 依赖路径(upstream 侧)/或保留作 Phase-2 代理参考;更新 DESIGN/skill debugging-ghc-api-upstream-transport。
 
 > 每个中间 commit 自洽:C1/C2 新客户端与旧 undici 并存(未切换),C3 才切换。回退靠 `setUpstreamFetchForTests` / 单点切换。
 

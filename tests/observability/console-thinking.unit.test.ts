@@ -28,15 +28,15 @@ import type {
 import { createBus } from "~/lib/observability"
 import {
   //
-  ConsoleSink,
   formatThinkingTag,
-} from "~/lib/observability/sinks/console"
+  TerminalUi,
+} from "~/lib/tui"
 
 /** Request-scoped events (what `bus.scope("request").publish` accepts). */
 type RequestEvent = Extract<ObservabilityEvent, { kind: `request.${string}` }>
 
 function makeCtx(id = "ctx-1"): RequestContextSnapshot {
-  return { id, endpoint: "anthropic-messages", method: "POST", path: "/v1/messages", state: "completed", startTime: Date.now() - 100, queueWaitMs: 0 }
+  return { id, endpoint: "anthropic-messages", method: "POST", path: "/v1/messages", state: "executing", startTime: Date.now() - 100, queueWaitMs: 0 }
 }
 
 function thinkingEvent(ctx: RequestContextSnapshot, detail: Record<string, unknown>): RequestEvent {
@@ -44,7 +44,8 @@ function thinkingEvent(ctx: RequestContextSnapshot, detail: Record<string, unkno
 }
 
 function completedEvent(ctx: RequestContextSnapshot): RequestEvent {
-  return { kind: "request.completed", ctx, entry: { id: ctx.id, endpoint: "anthropic-messages", state: "completed" } as never }
+  const completedCtx = { ...ctx, state: "completed" as const }
+  return { kind: "request.completed", ctx: completedCtx, entry: { id: ctx.id, endpoint: "anthropic-messages", state: "completed" } as never }
 }
 
 function makeCapture() {
@@ -62,7 +63,7 @@ afterEach(() => {
 function renderLine(events: Array<(ctx: RequestContextSnapshot) => RequestEvent>): string {
   const cap = makeCapture()
   const bus = createBus()
-  const sink = new ConsoleSink(bus, { stdout: cap.stdout, isTTY: false })
+  const sink = new TerminalUi(bus, { stdout: cap.stdout, isTTY: false })
   cleanups.push(() => sink.destroy())
   const ctx = makeCtx()
   const pub = bus.scope("request")

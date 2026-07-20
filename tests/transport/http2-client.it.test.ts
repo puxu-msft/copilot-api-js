@@ -18,11 +18,13 @@ import {
   test,
 } from "bun:test"
 import http2 from "node:http2"
+import net from "node:net"
 
 import {
   //
   closeHttp2Sessions,
   http2Fetch,
+  setConnectTimeoutForTests,
   setHttp2SessionFactoryForTests,
 } from "~/lib/transport/http2-client"
 
@@ -104,6 +106,30 @@ describe("http2-client", () => {
     expect(text).toBe("event: a\n\nevent: b\n\nevent: c\n\n")
   })
 
+  test("body cancel resolves after the owned h2 stream closes while a sibling keeps using the pooled session", async () => {
+    let localStreamClosed = false
+    handler = (stream, headers) => {
+      if (headers[":path"] === "/cancel") {
+        stream.respond({ ":status": 200, "content-type": "text/event-stream" })
+        stream.write("data: first\n\n")
+        return
+      }
+      stream.respond({ ":status": 200 })
+      stream.end("sibling-ok")
+    }
+
+    const cancelled = await http2Fetch(`${url}/cancel`, { onStreamClosed: () => (localStreamClosed = true) })
+    const sibling = await http2Fetch(`${url}/sibling`, {})
+    expect(await sibling.text()).toBe("sibling-ok")
+
+    await cancelled.body!.cancel("test disposal")
+
+    expect(localStreamClosed).toBe(true)
+    // A new sibling still succeeds on the pool after the owned stream was cancelled.
+    const after = await http2Fetch(`${url}/sibling`, {})
+    expect(await after.text()).toBe("sibling-ok")
+  })
+
   test("POST sends the request body", async () => {
     handler = (stream) => {
       let body = ""
@@ -146,6 +172,26 @@ describe("http2-client", () => {
     }
     const res = http2Fetch(`${url}/x`, { signal: AbortSignal.abort() })
     await expect(res).rejects.toThrow(/abort/i)
+  })
+
+  test("pre-response abort rejects only after the owned h2 stream close callback", async () => {
+    handler = () => {
+      // Accept the request but never send response headers.
+    }
+    const abort = new AbortController()
+    let localStreamClosed = false
+    const pending = http2Fetch(`${url}/pending-headers`, {
+      signal: abort.signal,
+      onStreamClosed: () => {
+        localStreamClosed = true
+      },
+    })
+    await new Promise((resolve) => setTimeout(resolve, 10))
+
+    abort.abort()
+
+    await expect(pending).rejects.toThrow(/abort/i)
+    expect(localStreamClosed).toBe(true)
   })
 
   // Crash-safety: a pre-response abort on an ORPHANED fetch promise (the caller
@@ -218,5 +264,103 @@ describe("http2-client", () => {
     await res.text()
     await new Promise((r) => setTimeout(r, 20))
     expect(called).toBe(false)
+  })
+
+  // Crash-safety: a TLS connect that TIMES OUT must reject the fetch promise
+  // WITHOUT crashing the process. awaitH2Handshake's onTimeout calls
+  // settle(new Error(...)): it removes its own 'error' listener, then tears the
+  // socket down. The timeout error is the socket's FIRST-EVER 'error' emission, so
+  // if teardown re-emits it with no listener attached, Node RE-THROWS it as an
+  // uncaughtException → main.ts process.exit(1) — one connect timeout crashes the
+  // whole server (production incident: "[http2] TLS connect timeout after
+  // 10000ms"). NB: the onError path canNOT reproduce this (its socket already
+  // emitted 'error', so destroy wouldn't re-emit) — only this timeout path (and the
+  // ALPN-downgrade path, which shares settle's fresh-error branch) does. The guard:
+  // createSession wraps every socket in withErrorSink (crash-safety.ts), whose
+  // permanent inert 'error' listener survives the teardown. This test drives the
+  // real createSession path so it exercises that guard; the primitive itself is
+  // unit-tested in crash-safety.unit.test.ts.
+  test("a TLS connect timeout rejects WITHOUT a process uncaughtException", async () => {
+    // A raw TCP server that accepts the connection but never speaks TLS — the
+    // upstream handshake stalls until the (shortened) connect deadline fires.
+    // Bind on `localhost` (not "127.0.0.1"): the client dials `https://localhost`
+    // below, and binding the server to the SAME hostname makes both resolve to the
+    // same address family — otherwise a `localhost`→::1 environment would dial ::1
+    // while the server listens on 127.0.0.1 → ECONNREFUSED → the onError path, not
+    // the timeout path we're locking (flaky red, not a false green).
+    const blackhole = net.createServer(() => {
+      /* accept, then never respond — no ServerHello, no RST */
+    })
+    await new Promise<void>((resolve) => blackhole.listen(0, "localhost", resolve))
+    const port = (blackhole.address() as AddressInfo).port
+
+    const seen: Array<unknown> = []
+    const onUncaught = (err: unknown): void => {
+      seen.push(err)
+    }
+    process.on("uncaughtException", onUncaught)
+    // Use the real prod TLS factory (createSession/awaitH2Handshake), NOT the
+    // injected h2c one which bypasses the handshake entirely; shorten the deadline.
+    setHttp2SessionFactoryForTests(undefined)
+    setConnectTimeoutForTests(150)
+    try {
+      // `localhost` (a hostname), not an IP literal — TLS SNI forbids IP servernames;
+      // the blackhole above binds the same hostname so the address family agrees.
+      await expect(http2Fetch(`https://localhost:${port}/x`, {})).rejects.toThrow(/connect timeout/)
+      // Let any orphaned socket 'error' re-emit flush before asserting.
+      await new Promise((r) => setTimeout(r, 80))
+      expect(seen).toHaveLength(0)
+    } finally {
+      process.off("uncaughtException", onUncaught)
+      setConnectTimeoutForTests(undefined)
+      closeHttp2Sessions()
+      await new Promise<void>((resolve) => blackhole.close(() => resolve()))
+    }
+  })
+
+  // Crash-safety, SESSION leg: a session discarded by the shutdown-drain race
+  // (closeHttp2Sessions() bumps poolEpoch while a session is being established) is
+  // closed WITHOUT the normal-branch `drop` 'error' listener — its ONLY 'error'
+  // listener is the withErrorSink getSession applies at the ownership point. If that
+  // sink is absent, a later session 'error' (a socket RST during/after close) is
+  // unheard → uncaughtException → process.exit(1). This is the site the first
+  // point-fix missed; here the sink is the SOLE guard, so this test locks it
+  // (positive control: drop getSession's withErrorSink → this test reds).
+  test("a session discarded by the shutdown-drain race is crash-safe (sink is sole guard)", async () => {
+    handler = (stream) => {
+      stream.respond({ ":status": 200 })
+      stream.end("ok")
+    }
+    // Gated factory: getSession awaits this, letting us bump poolEpoch mid-establish.
+    let releaseSession!: (s: http2.ClientHttp2Session) => void
+    const gate = new Promise<http2.ClientHttp2Session>((resolve) => {
+      releaseSession = resolve
+    })
+    setHttp2SessionFactoryForTests(() => gate)
+
+    const seen: Array<unknown> = []
+    const onUncaught = (err: unknown): void => void seen.push(err)
+    process.on("uncaughtException", onUncaught)
+    try {
+      const fetchP = http2Fetch(`${url}/race`, {})
+      fetchP.catch(() => {}) // it rejects (session discarded) — observe so it isn't unhandled
+      await new Promise((r) => setTimeout(r, 20)) // let getSession reach `await sessionFactory`
+      closeHttp2Sessions() // bump poolEpoch → the in-flight creation lands in the race branch
+      // Resolve the factory with a REAL session; getSession sinks it, then the race
+      // branch closes + returns it WITHOUT attaching `drop`.
+      const discarded = http2.connect(url)
+      releaseSession(discarded)
+      await new Promise((r) => setTimeout(r, 20))
+      // The discarded session's only 'error' listener is the withErrorSink. Emit an
+      // 'error' — without the sink this is unheard and crashes the process.
+      discarded.emit("error", new Error("late session RST"))
+      await new Promise((r) => setTimeout(r, 20))
+      expect(seen).toHaveLength(0)
+      await fetchP.catch(() => {})
+    } finally {
+      process.off("uncaughtException", onUncaught)
+      setHttp2SessionFactoryForTests(undefined)
+      closeHttp2Sessions()
+    }
   })
 })

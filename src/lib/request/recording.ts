@@ -10,6 +10,7 @@ import type { OpenAIStreamAccumulator } from "~/lib/openai/stream-accumulator"
 import { finalizeResponsesContent } from "~/lib/openai/responses-stream-accumulator"
 
 import { safeParseJson } from "./response"
+import { usageFromTotalInput } from "./usage-normalize"
 
 /**
  * Map Anthropic content blocks to history-friendly format.
@@ -132,14 +133,10 @@ export function buildOpenAIResponseData(acc: OpenAIStreamAccumulator, fallbackMo
   return {
     success: true,
     model: acc.model || fallbackModel,
-    usage: {
-      input_tokens: acc.inputTokens,
-      output_tokens: acc.outputTokens,
-      ...(acc.reasoningTokens > 0 && {
-        output_tokens_details: { reasoning_tokens: acc.reasoningTokens },
-      }),
-      ...(acc.cachedTokens > 0 && { cache_read_input_tokens: acc.cachedTokens }),
-    },
+    // acc.inputTokens is the OpenAI `prompt_tokens` (TOTAL incl cached); normalize
+    // to the canonical net convention. See usage-normalize.ts. cache_write (subset of
+    // prompt_tokens) → cache_creation; modality/prediction carried blob-only.
+    usage: usageFromTotalInput({ totalInput: acc.inputTokens, output: acc.outputTokens, cacheRead: acc.cachedTokens, cacheCreation: acc.cacheWriteTokens, reasoning: acc.reasoningTokens, inputDetails: acc.inputDetails, outputDetails: acc.outputDetails }),
     stop_reason: acc.finishReason || undefined,
     content: {
       role: "assistant",
@@ -154,10 +151,12 @@ export function buildOpenAIResponseData(acc: OpenAIStreamAccumulator, fallbackMo
  * Converts tool calls from Responses format (callId) to OpenAI Chat Completions format (id).
  */
 export function buildResponsesResponseData(acc: ResponsesStreamAccumulator, fallbackModel: string): ResponseData {
-  // Finalize tool calls from the accumulator map
-  for (const tcAcc of acc.toolCallMap.values()) {
-    const existing = acc.toolCalls.find((tc) => tc.id === tcAcc.id)
-    if (!existing && tcAcc.id && tcAcc.name) {
+  // Finalize any tool call that was `output_item.added` but never terminated by a `done` event
+  // (e.g. a stream truncated mid-flight). Dedup by `output_index` (the toolCallMap key) via the
+  // shared `finalizedOutputIndexes` set — NOT by `item.id`, which GHC re-encrypts per event.
+  for (const [outputIndex, tcAcc] of acc.toolCallMap.entries()) {
+    if (!acc.finalizedOutputIndexes.has(outputIndex) && tcAcc.id && tcAcc.name) {
+      acc.finalizedOutputIndexes.add(outputIndex)
       acc.toolCalls.push({
         id: tcAcc.id,
         callId: tcAcc.callId,
@@ -179,14 +178,10 @@ export function buildResponsesResponseData(acc: ResponsesStreamAccumulator, fall
     success: true,
     model: acc.model || fallbackModel,
     ...(acc.responseId && { responseId: acc.responseId }),
-    usage: {
-      input_tokens: acc.inputTokens,
-      output_tokens: acc.outputTokens,
-      ...(acc.reasoningTokens > 0 && {
-        output_tokens_details: { reasoning_tokens: acc.reasoningTokens },
-      }),
-      ...(acc.cachedInputTokens > 0 && { cache_read_input_tokens: acc.cachedInputTokens }),
-    },
+    // acc.inputTokens is the Responses `input_tokens` (TOTAL incl cached); normalize
+    // to the canonical net convention. See usage-normalize.ts. cache_write (subset)
+    // → cache_creation; modality/prediction carried blob-only.
+    usage: usageFromTotalInput({ totalInput: acc.inputTokens, output: acc.outputTokens, cacheRead: acc.cachedInputTokens, cacheCreation: acc.cacheWriteInputTokens, reasoning: acc.reasoningTokens, inputDetails: acc.inputDetails, outputDetails: acc.outputDetails }),
     stop_reason: acc.status || undefined,
     content:
       finalContent || toolCalls.length > 0 ?

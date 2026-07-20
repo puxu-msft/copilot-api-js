@@ -43,16 +43,29 @@ describe("ToolUseBlock display-only decode", () => {
     expect(vjp.props("data")).toEqual({ questions: [{ h: 1 }] })
   })
 
-  test("does not touch the _parseError marker (short-circuits decode)", () => {
+  test("renders a raw string input as raw text (faithful upstream truncation)", () => {
+    const w = mountBlock({
+      type: "tool_use",
+      id: "t1",
+      name: "X",
+      input: '{"a":', // truncated JSON kept as the raw string by the backend
+    })
+    // raw-unparsed branch renders raw text, never the JSON tree
+    expect(w.findComponent(VueJsonPretty).exists()).toBe(false)
+    expect(w.text()).toContain("Failed to parse")
+    expect(w.text()).toContain('{"a":')
+  })
+
+  test("tolerates the legacy _parseError marker in older stored entries", () => {
     const w = mountBlock({
       type: "tool_use",
       id: "t1",
       name: "X",
       input: { _parseError: true, _rawInput: '{"a":' },
     })
-    // parse-error branch renders raw text, never the JSON tree
     expect(w.findComponent(VueJsonPretty).exists()).toBe(false)
     expect(w.text()).toContain("Failed to parse")
+    expect(w.text()).toContain('{"a":')
   })
 
   test("leaves an already-structured input unchanged", () => {

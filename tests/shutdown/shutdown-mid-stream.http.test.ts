@@ -165,8 +165,8 @@ async function drainUntilClosed(body: ReadableStream<Uint8Array>, timeoutMs: num
 
 let snapshot: StateSnapshot
 
-beforeAll(() => {
-  bootstrapTestRuntime()
+beforeAll(async () => {
+  await bootstrapTestRuntime()
 })
 
 beforeEach(() => {
@@ -178,7 +178,7 @@ beforeEach(() => {
     copilotToken: "test-token",
     accountType: "individual",
     vsCodeVersion: "1.100.0",
-    fetchTimeout: 0,
+    responseHeaderTimeout: 0,
   })
   applyFetchMock(chatCompletionsFetchMock)
 })
@@ -188,7 +188,7 @@ afterEach(async () => {
   restoreStateForTests(snapshot)
   // Always reset shutdown state even if a test failed mid-shutdown — leaving
   // _isShuttingDown=true would poison every later test in the suite.
-  resetTestRuntime()
+  await resetTestRuntime()
   // Give any pending shutdown timers one tick to settle.
   await new Promise<void>((resolve) => setTimeout(resolve, 0))
 })

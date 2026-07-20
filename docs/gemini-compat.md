@@ -2,6 +2,8 @@
 
 本文档描述 copilot-api 的 Google Gemini 兼容端点。客户端（Gemini CLI、`@google/genai` SDK、langchain-google-genai 等）可以把 baseUrl 指向本服务，调用 GitHub Copilot 提供的模型。
 
+> **body 契约以官方为准**：request/response body 的字段级 schema **镜像 [Google Gemini 官方 API](https://ai.google.dev/api) 既有契约**，本文只记我们特有的偏差 / 转换。完整端点目录见 [API.md](API.md)；活的全表面真相 = 运行实例 `GET /openapi.json`（+ `/docs`）。其他 vendor 偏差见 [openai-compat.md](openai-compat.md)、[anthropic-compat.md](anthropic-compat.md)。
+
 ## 端点
 
 | 路由 | 方法 | 说明 |
@@ -10,7 +12,7 @@
 | `/v1beta/models/<model>:streamGenerateContent` | POST | 流式生成（Server-Sent Events） |
 | `/v1beta/models/<model>:countTokens` | POST | Token 计数（本地估算） |
 
-`<model>` 可以是任意 Copilot 模型 ID（如 `gpt-4o`、`claude-sonnet-4.6`、`gemini-2.5-pro`）。短别名（`opus`、`sonnet`、`haiku`）和 model_overrides 同样适用。
+`<model>` 可以是任意 Copilot 模型 ID（如 `gpt-4o`、`claude-sonnet-4.6`、`gemini-2.5-pro`）。短别名（`opus`、`sonnet`、`haiku`）和 model_mappings 同样适用。
 
 ## 架构
 
@@ -20,7 +22,7 @@
 Gemini Request
     ↓ convertGeminiRequestToOpenAI()
 ChatCompletionsPayload (内部 OpenAI 格式)
-    ↓ openai-gemini codec 委托内部 openai-cc codec
+    ↓ gemini codec 委托内部 openai-cc codec
     ↓ createPipelineDriver 七阶段 (S1–S7：sanitize/retry/history/rate-limit/model 解析)
 GitHub Copilot API
     ↓

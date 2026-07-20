@@ -3,7 +3,14 @@ import type {
   ContentBlock,
   MessageContent,
 } from "@/lib/content/types"
+import type { SystemBlock } from "@/types"
 
+import {
+  //
+  blockAnchorId,
+  messageAnchorId,
+  systemBlockAnchorId,
+} from "@/lib/content/anchors"
 import {
   //
   isImageBlock,
@@ -76,8 +83,12 @@ export function messagePreview(m: MessageContent): string {
   return truncate(collapseWhitespace(text))
 }
 
-/** Short label for a single content block (block-type aware). */
-export function blockLabel(block: ContentBlock): string {
+/**
+ * Short label for a single content block (block-type aware). `toolNames` maps
+ * every tool_use `id` → tool `name` so a `tool_result` can name the tool it
+ * answers (results carry only a `tool_use_id`; unresolved ones stay bare).
+ */
+export function blockLabel(block: ContentBlock, toolNames?: Map<string, string>): string {
   if (isTextBlock(block)) {
     return `text: ${truncateShort(collapseWhitespace(block.text))}`
   }
@@ -85,7 +96,8 @@ export function blockLabel(block: ContentBlock): string {
     return `tool_use: ${block.name}`
   }
   if (isToolResultBlock(block)) {
-    return "tool_result"
+    const name = block.tool_use_id ? toolNames?.get(block.tool_use_id) : undefined
+    return name ? `tool_result: ${name}` : "tool_result"
   }
   if (isRedactedThinkingBlock(block)) {
     return "thinking (redacted)"
@@ -100,10 +112,37 @@ export function blockLabel(block: ContentBlock): string {
 }
 
 /**
+ * Map every tool_use `id` → its tool `name`, scanning the whole conversation.
+ * A `tool_result`'s matching call may live in an earlier message, so this is
+ * built once over all messages before labeling any single one.
+ */
+function collectToolUseNames(messages: Array<MessageContent>): Map<string, string> {
+  // A later duplicate id wins (last write); real conversations have unique tool ids.
+  const names = new Map<string, string>()
+  for (const message of messages) {
+    for (const block of normalizeToContentBlocks(message)) {
+      // Guard id/name at runtime even though the SDK types mark them required —
+      // stored history payloads can be malformed (mirrors buildToolPairing).
+      if (isToolUseBlock(block) && block.id && block.name) {
+        names.set(block.id, block.name)
+      }
+    }
+  }
+  return names
+}
+
+/** Message-row label: text preview if any, else a tool_result count, else the bare role. */
+function messageNodeLabel(role: string, snippet: string, toolResultCount: number): string {
+  if (snippet.length > 0) return `${role}: ${snippet}`
+  if (toolResultCount > 0) return `${role}: ${toolResultCount} tool_result${toolResultCount === 1 ? "" : "s"}`
+  return role
+}
+
+/**
  * Build the TOC tree for a list of messages.
  *
- * Anchor id scheme (CONTRACT with Task 3/4's renderer — the renderer attaches
- * DOM elements carrying these exact ids):
+ * Anchor id scheme lives in the shared {@link blockAnchorId} / {@link messageAnchorId} (single
+ * source of truth with the renderer + tool-pairing):
  *   - message i: `${anchorPrefix}-msg-${i}`
  *   - block j of message i: `${anchorPrefix}-msg-${i}-blk-${j}`
  *
@@ -112,20 +151,38 @@ export function blockLabel(block: ContentBlock): string {
  * A message that normalizes to 0 blocks omits `children`.
  */
 export function buildMessageTocNodes(messages: Array<MessageContent>, anchorPrefix: string): Array<TocNode> {
+  const toolNames = collectToolUseNames(messages)
   return messages.map((message, i) => {
     const blocks = normalizeToContentBlocks(message)
     const children = blocks.map((block, j) => ({
-      label: blockLabel(block),
-      anchorId: `${anchorPrefix}-msg-${i}-blk-${j}`,
+      label: blockLabel(block, toolNames),
+      anchorId: blockAnchorId(anchorPrefix, i, j),
       kind: block.type,
     }))
 
     const snippet = messagePreview(message)
+    const toolResultCount = blocks.filter((b) => isToolResultBlock(b)).length
     const node: TocNode = {
-      label: snippet.length > 0 ? `${message.role}: ${snippet}` : message.role,
-      anchorId: `${anchorPrefix}-msg-${i}`,
+      label: messageNodeLabel(message.role, snippet, toolResultCount),
+      anchorId: messageAnchorId(anchorPrefix, i),
       kind: message.role,
     }
     return children.length > 0 ? { ...node, children } : node
   })
+}
+
+/**
+ * Build a flat TOC for a system payload's blocks — one node per block, no nesting
+ * (system has no message layer). Anchor scheme is {@link systemBlockAnchorId}
+ * (`${anchorPrefix}-blk-${i}`), matching the ids `SystemMessage` attaches to each
+ * rendered block. Labels lead with `text[i]` to mirror the block labels shown in
+ * the content pane. Callers gate on `blocks.length > 1` (single-block/string
+ * systems need no navigation).
+ */
+export function buildSystemTocNodes(blocks: Array<SystemBlock>, anchorPrefix: string): Array<TocNode> {
+  return blocks.map((block, i) => ({
+    label: `text[${i}]: ${truncateShort(collapseWhitespace(block.text))}`,
+    anchorId: systemBlockAnchorId(anchorPrefix, i),
+    kind: "system",
+  }))
 }

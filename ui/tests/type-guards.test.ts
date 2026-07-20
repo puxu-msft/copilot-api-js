@@ -208,7 +208,7 @@ describe("normalizeToContentBlocks", () => {
     expect((result[0] as any).content).toBe("result data")
   })
 
-  test("handles tool_calls with invalid JSON arguments", () => {
+  test("keeps invalid JSON tool_call arguments as the raw string (no fabricated marker)", () => {
     const msg = {
       role: "assistant",
       content: null,
@@ -216,7 +216,7 @@ describe("normalizeToContentBlocks", () => {
     } as unknown as MessageContent
     const result = normalizeToContentBlocks(msg)
     expect(result).toHaveLength(1)
-    expect((result[0] as any).input).toEqual({ _raw: "not json" })
+    expect((result[0] as any).input).toBe("not json")
   })
 
   test("converts non-string tool response content to JSON string", () => {

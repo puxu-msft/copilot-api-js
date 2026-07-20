@@ -20,6 +20,11 @@ import type {
   EntrySummary,
   HistoryStats,
 } from "../history/store"
+import type {
+  //
+  ActiveRequestChangedWire,
+  ActiveRequestWire,
+} from "../observability/active-request-wire"
 
 // ============================================================================
 // Types
@@ -39,6 +44,7 @@ export type WSMessageType =
   | "active_request_changed"
   | "rate_limiter_changed"
   | "shutdown_phase_changed"
+  | "shutdown_failed"
 
 /** A WebSocket message sent to connected clients */
 export interface WSMessage {
@@ -91,10 +97,10 @@ const MAX_BUFFERED_PER_CLIENT_BYTES = 4 * 1024 * 1024
  * Set by start.ts after RequestContextManager is initialized.
  * Returns active requests snapshot for the connected event.
  */
-let connectedDataFactory: (() => Array<unknown>) | null = null
+let connectedDataFactory: (() => Array<ActiveRequestWire>) | null = null
 
 /** Set the factory that provides active requests snapshot for connected events */
-export function setConnectedDataFactory(factory: () => Array<unknown>): void {
+export function setConnectedDataFactory(factory: () => Array<ActiveRequestWire>): void {
   connectedDataFactory = factory
 }
 
@@ -127,6 +133,11 @@ export function getClientCount(): number {
 export function closeAllClients(): void {
   for (const { ws } of clients.values()) {
     try {
+      // 1001 (going away) is an RFC-6455-legal SERVER close code; Bun's
+      // ServerWebSocket tolerates it (audit Task 0.1, locked by
+      // server-ws-close-code-tolerance test). Do NOT "fix" to 1000 by analogy
+      // with the undici CLIENT fix (upstream-ws-connection.ts) — that runtime
+      // is WHATWG-strict and throws on 1001; this server runtime does not.
       ws.close(1001, "Server shutting down")
     } catch {
       // Ignore errors during shutdown
@@ -381,7 +392,7 @@ export function notifySessionDeleted(sessionId: string): void {
 // ============================================================================
 
 /** Called when active request state changes (topic: "requests") */
-export function notifyActiveRequestChanged(data: unknown): void {
+export function notifyActiveRequestChanged(data: ActiveRequestChangedWire): void {
   if (clients.size === 0) return
 
   broadcast(

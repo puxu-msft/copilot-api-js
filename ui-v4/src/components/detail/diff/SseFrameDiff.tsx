@@ -30,7 +30,7 @@ export function SseFrameDiff({ upstream, forwarded }: SseFrameDiffProps) {
 
   if (oversized)
     return (
-      <div className="mono p-2 text-[13px] text-[var(--color-muted)]">
+      <div className="mono p-2 text-[13px] text-[var(--content-muted)]">
         Stream too large to diff inline ({upstream.length} + {forwarded.length} frames).
       </div>
     )
@@ -40,7 +40,7 @@ export function SseFrameDiff({ upstream, forwarded }: SseFrameDiffProps) {
 
   return (
     <div>
-      <div className="mono px-2 py-0.5 text-[11px] text-[var(--color-muted)]">
+      <div className="mono px-2 py-0.5 text-[11px] text-[var(--content-muted)]">
         {stats.modified}~ {stats.removed}− {stats.added}+
       </div>
       {visibleRows.map((row, i) => (
@@ -53,7 +53,7 @@ export function SseFrameDiff({ upstream, forwarded }: SseFrameDiffProps) {
         />
       ))}
       {hiddenCount > 0 ?
-        <div className="mono p-2 text-[13px] text-[var(--color-muted)]">+{hiddenCount} more frames.</div>
+        <div className="mono p-2 text-[13px] text-[var(--content-muted)]">+{hiddenCount} more frames.</div>
       : null}
     </div>
   )

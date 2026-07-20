@@ -16,7 +16,12 @@ import {
 } from "vitest"
 
 import { TocSidebar } from "@/components/detail/toc/TocSidebar"
-import { TOC_WIDTH_STORAGE_KEY } from "@/hooks/useResizableWidth"
+import {
+  //
+  TOC_WIDTH_MAX,
+  TOC_WIDTH_MIN,
+  TOC_WIDTH_STORAGE_KEY,
+} from "@/hooks/useResizableWidth"
 
 /** Pull the numeric px width off the sticky sidebar wrapper's inline style. */
 function widthOf(container: HTMLElement): number {
@@ -84,6 +89,39 @@ describe("TocSidebar", () => {
       </TocSidebar>,
     )
     expect(widthOf(container)).toBe(200)
+  })
+
+  it("resizes via keyboard (Arrow/Home/End) — WAI-ARIA Window Splitter", () => {
+    const { container } = render(
+      <TocSidebar>
+        <div>tree</div>
+      </TocSidebar>,
+    )
+    const handle = screen.getByRole("separator", { name: "resize toc" })
+    // Keyboard-focusable + exposes the resize range for AT.
+    expect(handle.getAttribute("tabindex")).toBe("0")
+    expect(handle.getAttribute("aria-valuemin")).toBe(String(TOC_WIDTH_MIN))
+    expect(handle.getAttribute("aria-valuemax")).toBe(String(TOC_WIDTH_MAX))
+
+    const start = widthOf(container) // 200 default
+    // Non-inverted (handle on the right edge): ArrowRight grows, ArrowLeft shrinks (16px step).
+    act(() => {
+      fireEvent.keyDown(handle, { key: "ArrowRight" })
+    })
+    expect(widthOf(container)).toBe(start + 16)
+    act(() => {
+      fireEvent.keyDown(handle, { key: "ArrowLeft" })
+    })
+    expect(widthOf(container)).toBe(start)
+    // Home / End jump to the bounds.
+    act(() => {
+      fireEvent.keyDown(handle, { key: "End" })
+    })
+    expect(widthOf(container)).toBe(TOC_WIDTH_MAX)
+    act(() => {
+      fireEvent.keyDown(handle, { key: "Home" })
+    })
+    expect(widthOf(container)).toBe(TOC_WIDTH_MIN)
   })
 
   it("defers the width change to drag-END (no live reflow), shows a preview line while dragging, persists on release", () => {

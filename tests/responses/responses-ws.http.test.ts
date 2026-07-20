@@ -5,8 +5,10 @@ import {
   describe,
   expect,
   mock,
+  spyOn,
   test,
 } from "bun:test"
+import consola from "consola"
 import { Hono } from "hono"
 import {
   //
@@ -14,12 +16,14 @@ import {
   websocket,
 } from "hono/bun"
 
+import type { RequestContext } from "~/lib/context/request"
 import type {
   //
   ResponsesPayload,
   ResponsesResponse,
 } from "~/types/api/openai-responses"
 
+import { getRequestContextManager } from "~/lib/context/manager"
 import { getHistory } from "~/lib/history"
 import { gracefulShutdown } from "~/lib/shutdown"
 import {
@@ -228,7 +232,7 @@ describe("Responses WebSocket transport", () => {
       accountType: "individual",
       copilotToken: "copilot-test-token",
       vsCodeVersion: "1.100.0",
-      fetchTimeout: 0,
+      responseHeaderTimeout: 0,
     })
     applyFetchMock(upstreamFetchMock)
   })
@@ -330,6 +334,13 @@ describe("Responses WebSocket transport", () => {
       data: [mockModel("gpt-4o", { vendor: "OpenAI", supported_endpoints: ["/chat/completions", "/responses"] })],
     })
     emitTrailingAfterCompleted = true
+    // Explicit-false: this test exercises the LIVE path's `stopAfterFrame` terminal early-stop —
+    // `runResponseBufferedSink` never reads `stopAfterFrame` (driver.ts:577 is the only reference,
+    // in `runResponseSink`; see docs/todo/deferred-backlog.md's "structurally MOOT" note), so under
+    // the new default-true buffered WS path (2026-07-14 P4 flip) this trailing frame would simply
+    // never get committed rather than being read-then-dropped. Force live so this test still
+    // exercises the early-stop mechanism it means to test.
+    setStateForTests({ responsesBufferedRetry: false })
 
     server = startWsServer()
     const ws = new WebSocket(`${server.url}/responses`)
@@ -352,6 +363,8 @@ describe("Responses WebSocket transport", () => {
     })
     emitTruncated = true
 
+    // HIGH-1: the WS clean-EOF truncation also emits the rich diagnostic (kind=truncated).
+    const diagSpy = spyOn(consola, "error").mockImplementation(Object.assign(() => {}, { raw: () => {} }))
     server = startWsServer()
     const ws = new WebSocket(`${server.url}/responses`)
     const closePromise = waitForSocketClose(ws)
@@ -359,6 +372,13 @@ describe("Responses WebSocket transport", () => {
     ws.send(JSON.stringify({ type: "response.create", response: { model: "gpt-4o", input: "hi" } }))
 
     const result = await closePromise
+
+    const diagLine = diagSpy.mock.calls.map((c) => String(c[0])).find((s) => s.includes("[upstream-diagnostics] STREAM DISCONNECT"))
+    diagSpy.mockRestore()
+    expect(diagLine).toBeDefined()
+    expect(diagLine).toContain("kind=truncated")
+    expect(diagLine).not.toContain("frames=0")
+    expect(diagLine).toContain("last-frame=response.output_text.delta@")
 
     // A clean terminator: an error frame + the WS H3 close code (1011), not a silent 1000.
     const errorFrame = result.messages.find((m) => m.type === "error") as { error?: { message?: string } } | undefined
@@ -368,7 +388,18 @@ describe("Responses WebSocket transport", () => {
 
     const entry = getHistory({ endpoint: "openai-responses", limit: 5 }).entries[0]
     expect(entry?.state).toBe("failed")
-    expect(String(entry?.outboundResponse?.error)).toContain("truncated")
+    expect(String(entry?._index?.derived?.failureReason)).toContain("truncated")
+    // The error frame the client received (via sendErrorAndClose) is recorded in the forwarded
+    // (proxy→client) track — asserts the WS sendErrorAndClose→recordForwarded→fail ordering.
+    const errRecord = (entry?.clientResponse?.sseEvents ?? []).find((e) => e.raw.includes('"error"'))
+    expect(errRecord).toBeDefined()
+    // Cross-model review Major (producer-oracle): the POST-COMMIT terminal `event: error` frame
+    // (this is the WS H3-analog terminus `sendErrorAndClose` sends, REPLACING the upstream
+    // terminator) must carry `synthetic:"error-shaping-canonical"` on the RECORD itself — the 3rd
+    // `syntheticKind` param passed to `captureForwardedGenerationFrame` only drives arena
+    // origin/transformId, not what projection.ts's `frames()` reads back (`node.value.synthetic`).
+    // Independent oracle: reads the SAME persisted history entry a real request populates.
+    expect(errRecord?.synthetic).toBe("error-shaping-canonical")
   })
 
   test("keeps socket open after response.completed when clientWebsocketKeepOpen is true", async () => {
@@ -383,6 +414,15 @@ describe("Responses WebSocket transport", () => {
       ],
     })
 
+    const capturedContexts: Array<RequestContext> = []
+    const manager = getRequestContextManager()
+    const originalCreate = manager.create.bind(manager)
+    manager.create = (opts) => {
+      const ctx = originalCreate(opts)
+      capturedContexts.push(ctx)
+      return ctx
+    }
+
     server = startWsServer()
     const ws = new WebSocket(`${server.url}/responses`)
     await waitForOpen(ws)
@@ -392,7 +432,9 @@ describe("Responses WebSocket transport", () => {
       messages.push(JSON.parse(String(event.data)) as Record<string, unknown>)
     })
 
-    ws.send(JSON.stringify({ type: "response.create", response: { model: "gpt-4o", input: "first" } }))
+    ws.send(
+      JSON.stringify({ type: "response.create", response: { id: "client-create-1", model: "gpt-4o", input: "first", previous_response_id: "prev-raw-1" } }),
+    )
 
     // Wait for the response.completed frame to arrive
     for (let i = 0; i < 50; i++) {
@@ -401,8 +443,24 @@ describe("Responses WebSocket transport", () => {
     }
     expect(messages.some((m) => m.type === "response.completed")).toBe(true)
 
-    // Socket must still be OPEN — server did not close after completed
+    // Socket must still be OPEN — server did not close after completed. Send a second independent
+    // operation on the same connection; omit its id so the server generates a stable identifier.
     expect(ws.readyState).toBe(WebSocket.OPEN)
+    ws.send(JSON.stringify({ type: "response.create", response: { model: "gpt-4o", input: "second", previous_response_id: null } }))
+    for (let i = 0; i < 50; i++) {
+      if (messages.filter((m) => m.type === "response.completed").length >= 2) break
+      await new Promise((r) => setTimeout(r, 50))
+    }
+    expect(messages.filter((m) => m.type === "response.completed")).toHaveLength(2)
+    expect(capturedContexts).toHaveLength(2)
+    const firstIdentity = capturedContexts[0].modelOperationTerminalRecord?.identity
+    const secondIdentity = capturedContexts[1].modelOperationTerminalRecord?.identity
+    expect(firstIdentity).toMatchObject({ kind: "responses_ws", responseCreateId: "client-create-1", previousResponseId: "prev-raw-1" })
+    expect(secondIdentity).toMatchObject({ kind: "responses_ws", previousResponseId: null })
+    expect(firstIdentity?.connectionId).toBeTruthy()
+    expect(secondIdentity?.connectionId).toBe(firstIdentity?.connectionId)
+    expect(secondIdentity?.responseCreateId).toBeTruthy()
+    expect(secondIdentity?.responseCreateId).not.toBe(firstIdentity?.responseCreateId)
 
     ws.close()
   })
@@ -491,6 +549,10 @@ describe("Responses WebSocket transport", () => {
     // stalled read — establishing the case-b precondition before shutdown starts.
     await new Promise((r) => setTimeout(r, 60))
 
+    // The WS leg must ALSO emit the [upstream-diagnostics] disconnect line with REAL signals (this leg
+    // previously emitted none). response.created arrived before the shutdown abort → frames>0, honest last-frame.
+    const diagSpy = spyOn(consola, "error").mockImplementation(Object.assign(() => {}, { raw: () => {} }))
+
     // Fire Phase 3 abort via a fast-timing graceful shutdown (mock tracker keeps
     // one "active" request so Phase 2 → Phase 3 transition runs).
     const shutdownPromise = gracefulShutdown("SIGTERM", {
@@ -513,6 +575,12 @@ describe("Responses WebSocket transport", () => {
     const errorFrame = result.messages.find((m) => m.type === "error") as { error: { type: string; message: string } } | undefined
     expect(errorFrame?.error.type).toBe("server_error")
     expect(result.code).toBe(1011)
+    const diagLine = diagSpy.mock.calls.map((c) => String(c[0])).find((s) => s.includes("[upstream-diagnostics] STREAM DISCONNECT"))
+    diagSpy.mockRestore()
+    expect(diagLine).toBeDefined()
+    expect(diagLine).toContain("model=gpt-4o")
+    expect(diagLine).not.toContain("frames=0")
+    expect(diagLine).toContain("last-frame=response.created@")
     await shutdownPromise
   })
 
@@ -631,7 +699,7 @@ describe("Responses WebSocket transport", () => {
 
     // History inboundRequest: client's original tools array intact.
     const historyEntry = getHistory({ endpoint: "openai-responses" }).entries[0]
-    const inboundToolTypes = (historyEntry?.inboundRequest?.tools ?? []).map((t) => (t as { type?: string }).type)
+    const inboundToolTypes = (historyEntry?.clientRequest?.tools ?? []).map((t) => (t as { type?: string }).type)
     expect(inboundToolTypes).toEqual(["function", "image_generation", "web_search"])
   })
 })

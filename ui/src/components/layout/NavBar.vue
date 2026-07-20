@@ -19,7 +19,6 @@ const appTheme = inject<AppThemeController | null>("appTheme", null)
 const navLinks = [
   { path: "/dashboard", label: "Dashboard" },
   { path: "/config", label: "Config" },
-  { path: "/models", label: "Models" },
   { path: "/activity", label: "Activity" },
   { path: "/search", label: "Search" },
 ]

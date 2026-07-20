@@ -1,10 +1,12 @@
 /**
  * P2.2 — openai-cc FormatCodec unit tests (pure / state-injected methods).
  *
- * Covers decideRoute / translateOut / prepareWire / renderResponse (incl. the
+ * Covers translateOut / prepareWire / renderResponse (incl. the
  * three loop-level behaviors the per-frame model must reproduce) /
  * renderResponseNonStreaming / formatError / createResponseAccumulator. `parse`
- * (needs the context-manager runtime) lives in the sibling `.it.test.ts`.
+ * (needs the context-manager runtime) lives in the sibling `.it.test.ts`. Route decision
+ * moved to the free-function `router.decideRoute` (ADR 2026-07-11) — covered by
+ * tests/pipeline/router-golden.it.test.ts + route-matrix.it.test.ts.
  */
 
 import {
@@ -29,6 +31,7 @@ import type {
 import type { ChatCompletionsPayload } from "~/types/api/openai-chat-completions"
 
 import { createOpenAiCcCodec } from "~/lib/codec/openai-cc/codec"
+import { resolveCellAssembly } from "~/lib/pipeline/cell-assembly"
 import { setStateForTests } from "~/lib/state"
 
 import { mockModel } from "../helpers/factories"
@@ -78,72 +81,39 @@ function parseFrames(frames: Array<ClientFrame>): Array<Record<string, unknown>>
   return frames.map((f) => JSON.parse(f.data ?? "") as Record<string, unknown>)
 }
 
+// The outbound methods (translateOut / prepareWire) moved off the codec onto the
+// (clientFormat × targetEndpoint) CELL (RFC 2026-07-13 inbound/outbound split). These
+// tests exercise the openai-cc cell for the env's targetEndpoint — the same object the
+// driver dispatches through.
+function outCell(env: RequestEnvelope) {
+  return resolveCellAssembly("openai-cc", env.targetEndpoint)
+}
+
 // ── decideRoute ──────────────────────────────────────────────────────────────
-
-describe("openai-cc codec — decideRoute", () => {
-  test("model supporting /chat/completions → passthrough", () => {
-    const codec = createOpenAiCcCodec()
-    const model = mockModel("gpt-4o", { supported_endpoints: ["/chat/completions"] })
-    expect(codec.decideRoute(makeEnv({ model }))).toEqual({ kind: "passthrough", endpoint: "/chat/completions" })
-  })
-
-  test("model supporting only /responses → translate /responses", () => {
-    const codec = createOpenAiCcCodec()
-    const model = mockModel("gpt-5", { supported_endpoints: ["/responses"] })
-    expect(codec.decideRoute(makeEnv({ model }))).toEqual({ kind: "translate", to: "/responses" })
-  })
-
-  test("model supporting only ws:/responses → translate /responses", () => {
-    const codec = createOpenAiCcCodec()
-    const model = mockModel("gpt-5", { supported_endpoints: ["ws:/responses"] })
-    expect(codec.decideRoute(makeEnv({ model }))).toEqual({ kind: "translate", to: "/responses" })
-  })
-
-  test("model supporting neither cc nor responses → reject 400", () => {
-    const codec = createOpenAiCcCodec()
-    const model = mockModel("claude-x", { supported_endpoints: ["/v1/messages"] })
-    const decision = codec.decideRoute(makeEnv({ model }))
-    expect(decision.kind).toBe("reject")
-    if (decision.kind === "reject") {
-      expect(decision.status).toBe(400)
-      expect(decision.reason).toContain("does not support the /chat/completions")
-    }
-  })
-
-  test("legacy default: model with no supported_endpoints → passthrough (assumes all)", () => {
-    const codec = createOpenAiCcCodec()
-    const model = mockModel("gpt-legacy", { supported_endpoints: undefined })
-    expect(codec.decideRoute(makeEnv({ model }))).toEqual({ kind: "passthrough", endpoint: "/chat/completions" })
-  })
-
-  test("undefined model (unknown gpt-*) → passthrough", () => {
-    const codec = createOpenAiCcCodec()
-    expect(codec.decideRoute(makeEnv({ model: undefined }))).toEqual({ kind: "passthrough", endpoint: "/chat/completions" })
-  })
-})
+// Route decision moved out of the codec into the free-function `router.decideRoute`
+// (ADR 2026-07-11); its openai-cc coverage now lives in tests/pipeline/router-golden.it.test.ts
+// + route-matrix.it.test.ts. No codec-level decideRoute tests remain here.
 
 // ── translateOut ─────────────────────────────────────────────────────────────
 
-describe("openai-cc codec — translateOut", () => {
+describe("openai-cc cell — translateOut", () => {
   test("is identity (returns the same envelope reference)", () => {
-    const codec = createOpenAiCcCodec()
     const env = makeEnv({})
-    expect(codec.translateOut(env)).toBe(env)
+    expect(outCell(env).translateOut(env)).toBe(env)
   })
 })
 
 // ── prepareWire ──────────────────────────────────────────────────────────────
 
-describe("openai-cc codec — prepareWire", () => {
+describe("openai-cc cell — prepareWire", () => {
   autoRestoreState()
 
   test("/chat/completions: url=path, body=wire, stream from body; fills O10 max_completion_tokens", () => {
     setStateForTests({ copilotToken: "tok" })
-    const codec = createOpenAiCcCodec()
     const model = mockModel("gpt-4o", { vendor: "OpenAI" })
     const env = makeEnv({ model, targetEndpoint: "/chat/completions", body: ccBody({ stream: false }) })
 
-    const wire = codec.prepareWire(env)
+    const wire = outCell(env).prepareWire(env)
     expect(wire.url).toBe("/chat/completions")
     expect(wire.stream).toBe(false)
     expect(wire.headers.get("Authorization")).toBe("Bearer tok")
@@ -154,21 +124,20 @@ describe("openai-cc codec — prepareWire", () => {
 
   test("/chat/completions: does NOT fill O10 when client already sent a token field", () => {
     setStateForTests({ copilotToken: "tok" })
-    const codec = createOpenAiCcCodec()
     const model = mockModel("gpt-4o", { vendor: "OpenAI" })
     const env = makeEnv({ model, body: ccBody({ max_completion_tokens: 99 }) })
-    const body = codec.prepareWire(env).body as ChatCompletionsPayload
+    const body = outCell(env).prepareWire(env).body as ChatCompletionsPayload
     expect(body.max_completion_tokens).toBe(99)
   })
 
   test("/responses: translates CC→Responses, url=/responses, records dropped params once", () => {
     setStateForTests({ copilotToken: "tok", normalizeResponsesCallIds: false })
-    const codec = createOpenAiCcCodec()
     const model = mockModel("gpt-5", { supported_endpoints: ["/responses"] })
     const ctx = makeCtxStub()
     const env = makeEnv({ model, targetEndpoint: "/responses", ctx, body: ccBody({ seed: 7, stop: ["x"], stream: false }) })
 
-    const wire = codec.prepareWire(env)
+    const cell = outCell(env)
+    const wire = cell.prepareWire(env)
     expect(wire.url).toBe("/responses")
     // CC→Responses output has `input`, not `messages`
     expect((wire.body as { input?: unknown }).input).toBeDefined()
@@ -178,13 +147,12 @@ describe("openai-cc codec — prepareWire", () => {
     expect(ctx.featuresRecorded).toContain("dropped-params")
 
     // per-attempt idempotent: a second prepareWire does NOT duplicate the warning
-    codec.prepareWire(env)
+    cell.prepareWire(env)
     expect(ctx.warningMessages).toHaveLength(1)
   })
 
   test("/responses: normalizeCallIds gated by state.normalizeResponsesCallIds", () => {
     setStateForTests({ copilotToken: "tok", normalizeResponsesCallIds: true })
-    const codec = createOpenAiCcCodec()
     const model = mockModel("gpt-5", { supported_endpoints: ["/responses"] })
     const body = ccBody({
       stream: false,
@@ -194,7 +162,7 @@ describe("openai-cc codec — prepareWire", () => {
       ],
     })
     const env = makeEnv({ model, targetEndpoint: "/responses", body })
-    const wire = codec.prepareWire(env)
+    const wire = outCell(env).prepareWire(env)
     const input = (wire.body as { input: Array<{ type?: string; call_id?: string; id?: string }> }).input
     // call_ → fc_ normalization applied
     const fnCall = input.find((i) => i.type === "function_call")
@@ -203,10 +171,9 @@ describe("openai-cc codec — prepareWire", () => {
 
   test("/responses streaming: wire.stream === true carried through the translation", () => {
     setStateForTests({ copilotToken: "tok", normalizeResponsesCallIds: false })
-    const codec = createOpenAiCcCodec()
     const model = mockModel("gpt-5", { supported_endpoints: ["/responses"] })
     const env = makeEnv({ model, targetEndpoint: "/responses", body: ccBody({ stream: true }) })
-    expect(codec.prepareWire(env).stream).toBe(true)
+    expect(outCell(env).prepareWire(env).stream).toBe(true)
   })
 })
 
@@ -257,7 +224,7 @@ describe("openai-cc codec — renderResponse via-responses (/responses)", () => 
     expect((chunks[0] as { choices: Array<{ delta: { role?: string } }> }).choices[0]?.delta.role).toBe("assistant")
   })
 
-  test("response.completed → finish + usage chunks (includeUsage), preserving order", () => {
+  test("response.completed → finish + usage chunks (always emitted), preserving order", () => {
     const codec = createOpenAiCcCodec()
     const env = viaEnv(true)
     // prime translator state with response id/model
@@ -355,7 +322,7 @@ describe("openai-cc codec — formatError", () => {
 describe("openai-cc codec — createResponseAccumulator", () => {
   test("returns a fresh OpenAI stream accumulator", () => {
     const codec = createOpenAiCcCodec()
-    const acc = codec.createResponseAccumulator()
+    const acc = codec.createResponseAccumulator({ targetEndpoint: "/chat/completions" } as unknown as import("~/lib/pipeline/envelope").RequestEnvelope)
     expect(acc).toMatchObject({ model: "", inputTokens: 0, outputTokens: 0, rawContent: "" })
   })
 })

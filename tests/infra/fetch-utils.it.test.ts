@@ -8,7 +8,7 @@ import {
 import {
   //
   captureHttpHeaders,
-  createFetchSignal,
+  createResponseHeaderTimeoutSignal,
   sanitizeHeadersForHistory,
 } from "~/lib/fetch-utils"
 import { setStateForTests } from "~/lib/state"
@@ -35,20 +35,41 @@ describe("sanitizeHeadersForHistory", () => {
   })
 })
 
-describe("createFetchSignal", () => {
+describe("createResponseHeaderTimeoutSignal", () => {
   test("returns undefined when fetch timeout is disabled", () => {
-    setStateForTests({ fetchTimeout: 0 })
+    setStateForTests({ responseHeaderTimeout: 0 })
 
-    expect(createFetchSignal()).toBeUndefined()
+    expect(createResponseHeaderTimeoutSignal()).toBeUndefined()
   })
 
   test("returns an abort signal when fetch timeout is configured", () => {
-    setStateForTests({ fetchTimeout: 1 })
+    setStateForTests({ responseHeaderTimeout: 1 })
 
-    const signal = createFetchSignal()
+    const signal = createResponseHeaderTimeoutSignal()
 
     expect(signal).toBeDefined()
     expect(signal?.aborted).toBe(false)
+  })
+
+  test("per-model override wins over a disabled scalar", () => {
+    // scalar disabled (0) but the model has an override → a signal is produced.
+    setStateForTests({ responseHeaderTimeout: 0, responseHeaderTimeoutOverrides: { "gpt-5.5": 5 } })
+
+    expect(createResponseHeaderTimeoutSignal("gpt-5.5")).toBeDefined()
+    // A non-matching model falls back to the (disabled) scalar → undefined.
+    expect(createResponseHeaderTimeoutSignal("gpt-4.1")).toBeUndefined()
+  })
+
+  test("per-model override of 0 disables even when the scalar is set", () => {
+    setStateForTests({ responseHeaderTimeout: 1, responseHeaderTimeoutOverrides: { "gpt-5.5": 0 } })
+
+    expect(createResponseHeaderTimeoutSignal("gpt-5.5")).toBeUndefined()
+  })
+
+  test("undefined model uses the scalar (no-arg behavior unchanged)", () => {
+    setStateForTests({ responseHeaderTimeout: 1, responseHeaderTimeoutOverrides: { "gpt-5.5": 5 } })
+
+    expect(createResponseHeaderTimeoutSignal()).toBeDefined()
   })
 })
 

@@ -34,7 +34,7 @@ const stubs = {
 }
 
 function entry(): HistoryEntry {
-  return { id: "e", endpoint: "anthropic-messages", startedAt: 0, inboundRequest: { model: "m" } } as HistoryEntry
+  return { id: "e", endpoint: "anthropic-messages", startedAt: 0, clientRequest: { model: "m" } } as HistoryEntry
 }
 
 function assistantHead(): MessageContent {

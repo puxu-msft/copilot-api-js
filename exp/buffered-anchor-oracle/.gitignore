@@ -1,0 +1,13 @@
+# Self-signed TLS material — regenerated idempotently by start-mock.sh (never commit a private key).
+mock-cert.pem
+mock-key.pem
+
+# Run artifacts (regenerated each run).
+*.log
+*.cli.log
+*.history.json
+*.request.json
+*.response.log
+settings.*.json
+entries.json
+proxy.log

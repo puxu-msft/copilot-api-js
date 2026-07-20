@@ -22,9 +22,11 @@ function entryWith(messages: Array<unknown>): HistoryEntry {
     id: "e",
     startedAt: Date.now(),
     endpoint: "anthropic-messages",
-    inboundRequest: {
+    model: { requested: "claude-sonnet-4.6" },
+    clientRequest: {
+      format: "anthropic-messages",
       model: "claude-sonnet-4.6",
-      messages: messages as unknown as HistoryEntry["inboundRequest"]["messages"],
+      messages: messages as unknown as NonNullable<HistoryEntry["clientRequest"]>["messages"],
     },
   }
 }

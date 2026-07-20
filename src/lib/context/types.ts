@@ -1,9 +1,16 @@
+import type {
+  //
+  AskNormalizationDiag,
+  SendMessageNormalizationDiag,
+} from "~/lib/anthropic/decode-tool-input-core"
+import type { BufferedMergeDiag } from "~/lib/codec/openai-responses/buffered-merge-reducer"
 import type { ApiError } from "~/lib/error"
 import type {
   //
   EndpointType,
   ForwardedResponse,
   PipelineInfo,
+  PreprocessInfo,
   RequestLifecycleState,
   RequestTransport,
   SanitizationInfo,
@@ -15,6 +22,16 @@ import type { Model } from "~/lib/models/client"
 import type { FeatureKind } from "~/lib/observability"
 import type { ToolNameMapper } from "~/lib/tool-name-mapper"
 import type { CopilotAnnotations } from "~/types/api/anthropic"
+
+import type {
+  //
+  CandidateHandle,
+  CandidateRole,
+  CandidateVerdict,
+  DispatchHandle,
+  DispatchVerdict,
+  ModelOperationRecord,
+} from "./model-operation-record"
 
 // ─── Request State Machine ───
 
@@ -55,20 +72,37 @@ export interface WireRequest {
 export interface ResponseData {
   success: boolean
   model: string
+  // usage: ONE of TWO lockstep owner points — the other is `UsageData` in
+  // `src/lib/history/types.ts`. NOT a shared reference (kept inline so context has
+  // no history-store type dependency), so this literal MUST stay field-for-field
+  // identical to UsageData. See docs/spec/2026-07-12-ghc-usage-details.md §5.1 (C1).
   usage: {
     input_tokens: number
     output_tokens: number
     cache_read_input_tokens?: number
     cache_creation_input_tokens?: number
-    output_tokens_details?: { reasoning_tokens: number }
+    input_tokens_details?: { text?: number; audio?: number; image?: number; video?: number }
+    output_tokens_details?: {
+      reasoning_tokens?: number
+      text?: number
+      audio?: number
+      image?: number
+      video?: number
+      accepted_prediction_tokens?: number
+      rejected_prediction_tokens?: number
+    }
   }
   content: unknown
   stop_reason?: string
   error?: string
   /** HTTP status code from upstream (only on error) */
   status?: number
-  /** Raw response body from upstream (only on error, for post-mortem debugging) */
+  /** Raw upstream response body. Set on error (post-mortem) AND, since G6, on the
+   * non-streaming success path (JSON.stringify of the pristine upstream response →
+   * rawBody), so non-streaming rows can re-derive usage fields. See spec §6.1. */
   responseText?: string
+  /** Complete parsed upstream response envelope for non-streaming success paths. */
+  sourceBody?: unknown
   /** Responses API: upstream response id (`resp_...`) from event.response.id */
   responseId?: string
   /** Copilot-specific: IP code citations collected from stream events (Anthropic path) */
@@ -85,6 +119,8 @@ export interface ResponseData {
 export interface PartialResponseInfo {
   usage?: ResponseData["usage"]
   stop_reason?: string
+  /** Complete upstream non-stream response envelope, retained independently of the proxy verdict. */
+  sourceBody?: unknown
   /**
    * Partial accumulated content to keep on the failed entry's `outboundResponse`
    * (richest-data-flow: the truncated content is observable diagnostic data). When
@@ -109,6 +145,8 @@ export interface Attempt {
   strategy?: string
   sanitization?: SanitizationInfo
   truncation?: TruncationInfo
+  /** passthrough 剥掉的 GHC 未支持 cache_control 子字段（如 scope）——每 attempt 记，经 pipelineFromAttempt 落 history（spec §8）。 */
+  cacheControlStripped?: Array<string>
   /** Wait time before this retry (rate-limit) */
   waitMs?: number
   startTime: number
@@ -124,6 +162,11 @@ export interface Attempt {
   sseEvents?: Array<SseEventRecord>
   /** RFC Phase 3: ③ per-attempt upstream response headers (driver writes for every attempt). */
   responseHeaders?: Record<string, string>
+  /** 首包埋点（spec 2026-07-14 §3.2）：上游 4 刻，绝对 epoch instant，每 attempt 各记自己的。once 除 last。 */
+  upstreamHeadersAt?: number
+  upstreamMessageStartAt?: number
+  upstreamFirstTokenAt?: number
+  upstreamLastTokenAt?: number
 }
 
 // ─── History Entry Data ───
@@ -132,6 +175,126 @@ export interface Attempt {
 export interface HeadersCapture {
   request?: Record<string, string>
   response?: Record<string, string>
+}
+
+// ─── New client/upstream leg DTOs (RFC 2026-07-07 §3) — producer-side (unknown-based) ───
+// Parallel to the history-store owner interfaces (ModelInfo/ClientRequestLeg/…), which use
+// the structured `MessageContent` type; these use `unknown` for messages/body/system to match
+// what the producer (context/request.ts) actually carries. Coexist with the legacy legs during
+// migration; producers/consumers switch over in later phases.
+
+/** Model identity + billing (parent key, RFC §3). */
+export interface HistoryModelInfo {
+  requested?: string
+  resolved?: string
+  multiplier?: number
+  /** Routing observability (translation-matrix RFC §10 / W6). Mirrors the owner `ModelInfo`. */
+  routeOverride?: "cc" | "responses" | "messages"
+  outboundEndpoint?: string
+  translated?: boolean
+}
+
+/**
+ * Client → Proxy request leg (RFC §3). `body` is the raw inbound payload.
+ *
+ * The structured projections (model/messages/system/max_tokens/temperature/tools/
+ * thinking) mirror the deprecated `inboundRequest` (R1-W7): a NON-authoritative
+ * index of `body` (§2.3) so consumers read the parsed request without re-parsing
+ * `body`. Producer-side (`unknown`-based) parallel of the owner `ClientRequestLeg`.
+ */
+export interface HistoryClientRequestLeg {
+  method?: string
+  path?: string
+  /** Client's raw inbound query string (verbatim, with leading `?`), when present. */
+  query?: string
+  format?: EndpointType
+  headers?: Record<string, string>
+  body?: unknown
+  stream?: boolean
+  // ─── Structured projections mirroring the deprecated inboundRequest (R1-W7) ───
+  model?: string
+  messages?: Array<unknown>
+  system?: unknown
+  max_tokens?: number
+  temperature?: number
+  tools?: Array<unknown>
+  thinking?: unknown
+}
+
+/** Proxy → Client response leg, first-class (RFC §2.1). `status?` new capture. */
+export interface HistoryClientResponseLeg {
+  status?: number
+  headers?: Record<string, string>
+  body?: unknown
+  sseEvents?: Array<SseEventRecord>
+}
+
+/**
+ * Per-attempt effective source leg (RFC §3). `body` = env.body verbatim (SoT); the
+ * structured projections index it non-authoritatively (§2.3). `pipeline` = this
+ * attempt's truncation/sanitization/messageMapping.
+ */
+export interface HistoryEffectiveSourceLeg {
+  format?: EndpointType
+  model?: string
+  messageCount?: number
+  messages?: Array<unknown>
+  system?: unknown
+  body?: unknown
+  pipeline?: PipelineInfo
+}
+
+/**
+ * Per-attempt upstream request leg (RFC §3, R4-FAIL-A): messages/model/system
+ * projection ALONGSIDE headers+body — `rewrites-req` search reads `messages` here.
+ */
+export interface HistoryUpstreamRequestLeg {
+  format?: EndpointType
+  model?: string
+  messages?: Array<unknown>
+  system?: unknown
+  headers?: Record<string, string>
+  body?: unknown
+  /** The filtered query string forwarded upstream (with leading `?`), when present. */
+  query?: string
+}
+
+/**
+ * Per-attempt upstream response leg (RFC §3). Every settled attempt carries one
+ * (success = real; failure = synthesized verdict via P2.5). `success` = complete
+ * 2xx with normal protocol termination; client-facing outcome is `entry.state`.
+ */
+export interface HistoryUpstreamResponseData {
+  success: boolean
+  status?: number
+  headers?: Record<string, string>
+  trailers?: Record<string, string>
+  body?: unknown
+  rawBody?: string
+  sseEvents?: Array<SseEventRecord>
+  usage?: ResponseData["usage"]
+  stopReason?: string
+  model?: string
+  responseId?: string
+  copilotAnnotations?: Array<CopilotAnnotations>
+  toolSearchRequests?: number
+}
+
+/**
+ * Derived (recompute-only) + auxiliary index projections (RFC §3, R4-WARN-E).
+ * `derived` recomputes from `attempts` (three-point sync invariant); `aux` free-evolving.
+ */
+export interface HistoryIndexProjection {
+  derived?: {
+    responseSuccess?: boolean
+    currentStrategy?: string
+    failureReason?: string
+    attemptCount?: number
+  }
+  aux?: {
+    previewText?: string
+    warningMessages?: Array<WarningMessage>
+  }
 }
 
 /** Serialized form of a completed request (decoupled from history store) */
@@ -145,123 +308,84 @@ export interface HistoryEntryData {
   active: boolean
   lastUpdatedAt: number
   queueWaitMs: number
-  attemptCount: number
-  currentStrategy?: string
   durationMs: number
-  /**
-   * Top-level failure reason for non-success terminal states (failed / aborted /
-   * interrupted), projected from the richest available source —
-   * `outboundResponse.error` else the last attempt's error. A convenience surface
-   * so triage need not crawl `outboundResponse` / `attempts[].error` (RFC
-   * pre-response-abort Q3; the per-leg data is unchanged — this is a projection,
-   * not a new capture). Absent for successful / non-terminal entries.
-   */
-  failureReason?: string
   sessionId?: string
   agentId?: string
   transport?: RequestTransport
   warningMessages?: Array<WarningMessage>
 
-  /** Client → Proxy: the client's raw inbound request. */
-  inboundRequest: {
-    model?: string
-    messages?: Array<unknown>
-    stream?: boolean
-    tools?: Array<unknown>
-    system?: unknown
-    max_tokens?: number
-    temperature?: number
-    thinking?: unknown
-    /** Client's raw inbound query string (verbatim, with leading `?`), when present. */
-    query?: string
-  }
+  // ─── New client/upstream leg model (RFC §3). The legacy top-level legs
+  //     (inboundRequest/effectiveRequest/outboundRequest/outboundResponse/
+  //     inboundResponse/sseEvents/httpHeaders/truncation) and the deprecated
+  //     scalars (attemptCount/currentStrategy/failureReason) were REMOVED in
+  //     P4c-3; the producer now emits ONLY the new legs + `_index.derived`. ───
+  /** Model identity + billing (parent key, RFC §3). */
+  model?: HistoryModelInfo
+  /** Client → Proxy request leg (RFC §3). */
+  clientRequest?: HistoryClientRequestLeg
+  /** Proxy → Client response leg, first-class (RFC §2.1). */
+  clientResponse?: HistoryClientResponseLeg
+  /** One-time inbound preprocessing hoisted to entry level (RFC §4). */
+  preprocessing?: PreprocessInfo
+  /** Derived (recompute-only) + auxiliary index projections (RFC §3). */
+  _index?: HistoryIndexProjection
 
-  effectiveRequest?: {
-    model?: string
-    format?: EndpointType
-    messageCount?: number
-    messages?: Array<unknown>
-    system?: unknown
-    payload?: unknown
-  }
-
-  /** Proxy → Upstream: the final wire request sent upstream. */
-  outboundRequest?: {
-    model?: string
-    format?: EndpointType
-    messageCount?: number
-    messages?: Array<unknown>
-    system?: unknown
-    payload?: unknown
-    /** RFC Phase 3: ② outbound/per-attempt request headers. */
-    headers?: Record<string, string>
-    /** The filtered query string forwarded upstream (with leading `?`), when present. */
-    query?: string
-  }
-
-  /** Upstream → Proxy: the upstream-original response. */
-  outboundResponse?: ResponseData
-  /** Proxy → Client: response as actually forwarded to the client, post-rewrite. */
-  inboundResponse?: ForwardedResponse
-  truncation?: TruncationInfo
   pipelineInfo?: PipelineInfo
-  sseEvents?: Array<SseEventRecord>
-  httpHeaders?: {
-    inboundRequest?: Record<string, string>
-    outboundRequest?: Record<string, string>
-    outboundResponse?: Record<string, string>
-    inboundResponse?: Record<string, string>
-    /** HTTP/2 response trailers (trailing HEADERS frame) from upstream, when present — rare from GHC, captured best-effort. */
-    outboundResponseTrailers?: Record<string, string>
-  }
   attempts?: Array<{
     index: number
+    candidateId?: string
+    candidateRole?: "primary" | "hedge" | "recovery"
+    parentCandidateId?: string
+    candidateVerdict?: "winner" | "loser" | "failed" | "cancelled"
+    dispatchId?: string
+    dispatchVerdict?: "committed" | "discarded" | "failed" | "cancelled"
+    dispatchReason?: string
     strategy?: string
     durationMs: number
     transport?: RequestTransport
     error?: string
-    truncation?: TruncationInfo
-    sanitization?: SanitizationInfo
-    effectiveMessageCount?: number
-    /** Full per-attempt bodies (Bug 3): preserved for every attempt, not just the final one. */
-    effectiveRequest?: {
-      model?: string
-      format?: EndpointType
-      messageCount?: number
-      messages?: Array<unknown>
-      system?: unknown
-      payload?: unknown
-    }
-    wireRequest?: {
-      model?: string
-      format?: EndpointType
-      messageCount?: number
-      messages?: Array<unknown>
-      system?: unknown
-      payload?: unknown
-      /** RFC Phase 3: ② per-attempt outbound request headers. */
-      headers?: Record<string, string>
-    }
-    response?: ResponseData
+    /** New capture (RFC §4): attempt wall-clock start; producer wires in P4. */
+    startedAt?: number
+    /** New capture (RFC §4): rate-limit wait before this attempt; producer wires in P4. */
+    waitMs?: number
+    // ─── New per-attempt legs (RFC §3). Legacy per-attempt legs removed in P4c-3. ───
+    /** Proxy-side effective source (env.body verbatim + this attempt's pipeline). */
+    effectiveSource?: HistoryEffectiveSourceLeg
+    /** Proxy → Upstream wire request (with messages/model/system projection, R4-FAIL-A). */
+    upstreamRequest?: HistoryUpstreamRequestLeg
+    /** Upstream → Proxy response (settled attempts recompute-safe verdict). */
+    upstreamResponse?: HistoryUpstreamResponseData
     /** Per-attempt upstream-original SSE frames (L2 buffered retry / D1) — present on FAILED attempts only. */
     sseEvents?: Array<SseEventRecord>
     /** RFC Phase 3: ③ per-attempt upstream response headers (driver writes for every attempt). */
     responseHeaders?: Record<string, string>
+    /** 首包埋点（spec 2026-07-14 §3.2）：上游 4 刻，绝对 epoch。producer 写、两段投影透传到 HistoryEntry。 */
+    upstreamHeadersAt?: number
+    upstreamMessageStartAt?: number
+    upstreamFirstTokenAt?: number
+    upstreamLastTokenAt?: number
   }>
+  /**
+   * 首包埋点（spec 2026-07-14 §3.2）：客户端 3 刻，offset ms 相对 started_at。
+   * `toHistoryEntry` 由 ctx 的 client-timing epoch 减 started_at 得出（Task 2.3）。
+   */
+  timing?: { client?: { streamOpenMs?: number; firstRealMs?: number; bufferHoldStartMs?: number } }
 }
 
 // ─── RequestContext Interface ───
 
 /** One malformed tool-input repair outcome for the current attempt (see `recordRepairOutcome`). */
 export interface RepairOutcomeRecord {
-  /** `strip` = fixed by Layer 1, `jsonrepair` = fixed by Layer 2, `unrepairable` = both layers failed. */
-  outcome: "strip" | "jsonrepair" | "unrepairable"
+  /** Repair-item layer that won (`strip`/`unicode`/`jsonrepair`/`unicode-lossy`), or `unrepairable` when no enabled item produced valid JSON. */
+  outcome: "strip" | "unicode" | "jsonrepair" | "unicode-lossy" | "unrepairable"
   /** The tool whose input was repaired / found unrepairable. */
   tool: string
   /** Raw malformed JSON length (repaired outcomes only; for the `[REWRITE]` log). */
   beforeLength?: number
   /** Repaired JSON length (repaired outcomes only). */
   afterLength?: number
+  /** Decode-target field whose stringified inner JSON was repaired (e.g. `questions`); absent for whole-input repair. */
+  field?: string
 }
 
 /**
@@ -276,6 +400,11 @@ export interface InboundQuery {
   readonly raw: string
   readonly forwarded: string
 }
+
+/** 首包埋点（spec 2026-07-14 §3.2）：客户端侧 3 个时刻的键。 */
+export type ClientTimingKind = "streamOpen" | "firstReal" | "bufferHoldStart"
+
+export type AttemptTimingKind = "upstreamHeadersAt" | "upstreamMessageStartAt" | "upstreamFirstTokenAt" | "upstreamLastTokenAt"
 
 export interface RequestContext {
   readonly id: string
@@ -332,6 +461,10 @@ export interface RequestContext {
   readonly durationMs: number
   /** Whether this context has been settled (completed or failed). Handler code can check this to detect reaper force-fail. */
   readonly settled: boolean
+  /** Immutable point-in-time History V3 generation record. The mutable recorder is never exposed. */
+  readonly modelOperationSnapshot: ModelOperationRecord
+  /** Canonical terminal record after observability finalization, otherwise null. */
+  readonly modelOperationTerminalRecord: ModelOperationRecord | null
 
   readonly originalRequest: OriginalRequest | null
   readonly response: ResponseData | null
@@ -350,6 +483,8 @@ export interface RequestContext {
 
   readonly attempts: ReadonlyArray<Attempt>
   readonly currentAttempt: Attempt | null
+  /** The initial (attempt-0) Anthropic sanitization-info envelope (re-homed from the codec closure — the retry pipeline-info rebuild reads it). */
+  readonly initialSanitizationInfo: SanitizationInfo | undefined
   readonly queueWaitMs: number
   readonly warningMessages: ReadonlyArray<WarningMessage>
 
@@ -366,27 +501,100 @@ export interface RequestContext {
   setSessionId(sessionId: string | undefined): void
   setAgentId(agentId: string | undefined): void
   setOriginalRequest(req: OriginalRequest): void
+  /** Record canonical ingress once both the V2 body and inbound headers are available. */
+  recordModelOperationIngress(): void
+  /** Notify that client delivery is fully constructed/drained; this does not synchronously seal canonical observability. */
+  finalizeModelOperationDelivery(input?: { clientPayload?: unknown }): void
+  /** Join the unique generation finalizer; rejects when canonical observability finalization fails. */
+  whenModelOperationFinalized(): Promise<ModelOperationRecord>
   setToolNameMapper(mapper: ToolNameMapper | null): void
   setPipelineInfo(info: PipelineInfo): void
+  /** Merge Responses buffered-merge diagnostics into `pipelineInfo` (independent slot — survives the gated `setPipelineInfo` full-replace calls, mirrors the existing `_streamTimeouts`/`_sendMessageNormalization` pattern). */
+  recordBufferedMergeInfo(diag: BufferedMergeDiag): void
+  /** Record the per-model effective timeouts for this request (merged into `pipelineInfo`, survives the gated `setPipelineInfo` full-replace calls). */
+  setStreamTimeouts(patch: { streamIdleTimeoutMs?: number; responseHeaderTimeoutMs?: number }): void
   setSseEvents(events: Array<SseEventRecord>): void
   /** Record the response as forwarded to the client (proxy→client). Must be called before complete()/fail(). */
   setForwardedResponse(forwarded: ForwardedResponse): void
   setHttpHeaders(capture: HeadersCapture): void
   setInboundRequestHeaders(headers: Record<string, string>): void
   setInboundResponseHeaders(headers: Record<string, string>): void
+  /** P3 (RFC §3): record the HTTP status forwarded to the client (proxy→client). Must be called before complete()/fail()/abort(). Lands on `clientResponse.status`. */
+  setClientResponseStatus(status: number): void
   /** Record upstream HTTP/2 response trailers (best-effort; the h2 transport fires this before stream end). */
   setOutboundResponseTrailers(trailers: Record<string, string>): void
   addWarningMessage(warning: WarningMessage): void
+  /** Begin one explicit generation candidate in the canonical History V3 topology. */
+  beginGenerationCandidate(input: { role: CandidateRole; parentCandidate?: CandidateHandle }): CandidateHandle
+  /** Settle one explicit candidate without relying on array position. */
+  settleGenerationCandidate(candidate: CandidateHandle, input: { verdict: CandidateVerdict; reason?: string }): void
+  /** Begin one physical dispatch and return its canonical branded handle. */
+  beginGenerationDispatch(input: {
+    candidate: CandidateHandle
+    strategy?: string
+    waitMs?: number
+    truncation?: TruncationInfo
+    transport?: RequestTransport
+  }): DispatchHandle
+  setGenerationDispatchEffectiveRequest(dispatch: DispatchHandle, request: EffectiveRequest): void
+  setGenerationDispatchWireRequest(dispatch: DispatchHandle, request: WireRequest): void
+  setGenerationDispatchTransport(dispatch: DispatchHandle, transport: RequestTransport): void
+  setGenerationDispatchResponseHeaders(dispatch: DispatchHandle, headers: Record<string, string>): void
+  setGenerationDispatchTimingEpoch(dispatch: DispatchHandle, kind: AttemptTimingKind, epoch: number, mode: "once" | "latest"): void
+  setGenerationDispatchError(dispatch: DispatchHandle, error: ApiError): void
+  setGenerationDispatchSseEvents(dispatch: DispatchHandle, events: Array<SseEventRecord>, projectToLegacy?: boolean): void
+  captureUpstreamGenerationDispatchFrame(dispatch: DispatchHandle, frame: unknown, record: SseEventRecord): void
+  captureGenerationDispatchFrameTransform(
+    dispatch: DispatchHandle,
+    inputFrame: unknown,
+    outputFrame: unknown,
+    transform: { stage: string; transformId: string; forceDerived?: boolean },
+  ): void
+  captureGenerationDispatchFrameAction(
+    dispatch: DispatchHandle,
+    inputFrames: ReadonlyArray<unknown>,
+    outputFrames: ReadonlyArray<unknown>,
+    transform: { stage: string; transformId: string; action: "emit" | "suppress" | "buffer" | "flush" | "drop"; forceDerived?: boolean },
+  ): void
+  /** Select the generation winner for V2 compatibility projection and terminal settlement. */
+  selectGenerationWinner(candidate: CandidateHandle, dispatch: DispatchHandle): void
+  settleGenerationDispatch(dispatch: DispatchHandle, input: { verdict: DispatchVerdict; reason?: string; error?: unknown }): void
+  /** @deprecated Serial compatibility adapter. New production dispatches use beginGenerationDispatch. */
   beginAttempt(opts: { strategy?: string; waitMs?: number; truncation?: TruncationInfo; transport?: RequestTransport }): void
   setAttemptSanitization(info: SanitizationInfo): void
+  /** Record the initial (attempt-0) sanitization-info envelope (request-lifecycle-stable; retry rebuild reads it via {@link initialSanitizationInfo}). */
+  setInitialSanitizationInfo(info: SanitizationInfo): void
+  /** 记录本 attempt passthrough 剥掉的 cache_control 子字段（→ pipelineFromAttempt → history）。 */
+  setAttemptCacheControlStripped(fields: ReadonlyArray<string>): void
   setAttemptEffectiveRequest(req: EffectiveRequest): void
   setAttemptWireRequest(req: WireRequest): void
   setAttemptTransport(transport: RequestTransport): void
   setAttemptResponse(response: ResponseData): void
   setAttemptResponseHeaders(headers: Record<string, string>): void
+  /**
+   * 首包埋点（spec 2026-07-14 §3.2）：记录客户端侧一个时刻的绝对 epoch（once 语义，首写为准）。
+   * `toHistoryEntry` 换算成相对 started_at 的 offset ms（`timing.client`）。驱动/handler/sink 调用。
+   */
+  setClientTimingEpoch(kind: ClientTimingKind, epoch: number): void
+  /** Record one upstream attempt timing instant through the same producer setter that updates the V2 carrier. */
+  setAttemptTimingEpoch?(kind: AttemptTimingKind, epoch: number, mode: "once" | "latest"): void
   setAttemptError(error: ApiError): void
+  /** Register a raw upstream SSE/WS frame in the generation arena and current-attempt track. */
+  captureUpstreamGenerationFrame?(frame: unknown, record: SseEventRecord): void
+  /** Register an explicit rewrite/render relationship before the output reaches ClientSink. */
+  captureGenerationFrameTransform?(inputFrame: unknown, outputFrame: unknown, transform: { stage: string; transformId: string; forceDerived?: boolean }): void
+  /** Record an N→M frame transform, including suppress/buffer/flush/drop actions. */
+  captureGenerationFrameAction?(
+    inputFrames: ReadonlyArray<unknown>,
+    outputFrames: ReadonlyArray<unknown>,
+    transform: { stage: string; transformId: string; action: "emit" | "suppress" | "buffer" | "flush" | "drop"; forceDerived?: boolean },
+  ): void
+  /** ClientSink producer hook: register the exact frame attempted on the client wire. */
+  captureForwardedGenerationFrame?(frame: unknown, record: SseEventRecord, syntheticKind?: SseEventRecord["synthetic"]): void
   /** L2 buffered retry / D1: snapshot the top-level upstream sseEvents onto the current attempt. */
   commitAttemptSseEvents(): void
+  /** 定稿当前 attempt 的 durationMs（截断路径无 error/response setter 时用）。见 request.ts。 */
+  finalizeCurrentAttemptDuration(): void
   /** L2 buffered retry: clear the top-level upstream sseEvents so the next attempt starts fresh. */
   resetSseEvents(): void
   addQueueWaitMs(ms: number): void
@@ -396,8 +604,22 @@ export interface RequestContext {
    * Fail the request with an error. Optional `partial` lets streaming handlers
    * preserve usage / stop_reason accumulated up to the failure point so that
    * history doesn't show all-zero diagnostics for partially-streamed requests.
+   *
+   * `opts.upstreamSucceeded` marks a PROXY-introduced failure that occurred AFTER a
+   * successful upstream leg (e.g. unrepairable malformed tool_use, thinking-only refusal):
+   * `outboundResponse` then records the upstream leg HONESTLY (success:true, no error) and the
+   * request verdict is projected to `failureReason` instead of being jammed into the upstream
+   * leg's `error`. Leave it unset for genuine upstream failures (HTTP errors, truncation, H3).
    */
-  fail(model: string, error: unknown, partial?: PartialResponseInfo): void
+  fail(
+    model: string,
+    error: unknown,
+    partial?: PartialResponseInfo,
+    opts?: {
+      upstreamSucceeded?: boolean
+      attribution?: { category?: "client" | "upstream" | "proxy" | "timeout" | "shutdown" | "reaper"; code?: string; detail?: string }
+    },
+  ): void
   /**
    * Settle the request as `aborted` — the downstream client disconnected
    * mid-stream. Distinct terminal state from complete/fail. `partial` preserves
@@ -420,6 +642,30 @@ export interface RequestContext {
    */
   reapInFlight(): void
   /**
+   * C5 operation lifecycle (RFC §3.3) — NEW API, no production callers until C5 wires
+   * handlers/manager/shutdown (behavior-preserving additions).
+   *
+   * `operationSignal` is the per-request cancel signal (reaper/deadline/`cancel` all abort it).
+   * Consumers that also need client-abort/shutdown combine those at the call site.
+   */
+  readonly operationSignal: AbortSignal
+  /** Whether `cancel()` (or the reaper via lifecycle) has requested cancellation. */
+  readonly cancelled: boolean
+  /** Reason recorded by the first `cancel(reason)` call, if any. */
+  readonly cancelReason: string | undefined
+  /**
+   * Request cancellation, decoupled from settle (RFC): abort `operationSignal` + record reason +
+   * forbid new attempts. Idempotent (first reason wins). Does NOT write a terminal state — the
+   * forced-termination path is `cancel → race(whenOperationQuiesced, grace) → settle`.
+   */
+  cancel(reason: string): void
+  /** Register a settle-BEFORE operation-body child (fetch/stream/backoff/hook/…) for quiescence tracking. */
+  trackOperationBody(p: Promise<unknown>): void
+  /** Seal the operation scope (root owner, in its single `finally`): no further children may register. */
+  sealOperationScope(): void
+  /** Resolves once the operation scope is sealed AND all tracked children have settled. */
+  whenOperationQuiesced(): Promise<void>
+  /**
    * Record one tool-input repair outcome for the CURRENT attempt (S5 decode). Accumulated on the
    * ctx and RESET per L2 buffered-retry attempt (`resetRepairOutcomesForAttempt`) so a discarded
    * attempt's outcomes never leak into the committed one. The handler flushes these at the committed
@@ -427,6 +673,20 @@ export interface RequestContext {
    * reflect per-request outcomes — NOT the buffered retry count.
    */
   recordRepairOutcome(record: RepairOutcomeRecord): void
+  /**
+   * Record AskUserQuestion top-level-key normalization diagnostics (salvage / strip / dropped-value
+   * trace). Merged into `pipelineInfo` and MUST publish `context_updated`(field:`pipelineInfo`) so it
+   * reaches SQLite via the in-flight handler — `onTerminal`'s projection allowlist does NOT include
+   * pipelineInfo. See spec 2026-07-13 §3. Request-level: reflects normalization on ANY attempt's stream
+   * (under buffered-retry, possibly a discarded one — a diagnostic-fidelity limitation, not a wire bug).
+   */
+  recordAskUserQuestionNormalization(diag: AskNormalizationDiag): void
+  /**
+   * Record the diagnostic when `normalizeSendMessageInput` recovered a SendMessage recipient by renaming a
+   * misnamed `agentId` alias → the required `to`. Merges into pipelineInfo (published via context_updated).
+   * Same request-level lifecycle caveat as `recordAskUserQuestionNormalization`.
+   */
+  recordSendMessageNormalization(diag: SendMessageNormalizationDiag): void
   /** The repair outcomes accumulated for the current (committed) attempt. */
   readonly repairOutcomes: ReadonlyArray<RepairOutcomeRecord>
   /** Derived: the first UNREPAIRABLE tool of the current attempt, or null (drives the handler fail-gate). */
@@ -444,6 +704,14 @@ export interface RequestContext {
    * tests that omit the publisher).
    */
   setResolvedModel(args: { resolved: string; client?: string }): void
+  /**
+   * Record the S2 routing decision for observability (translation-matrix RFC §10 / W6): the
+   * client's explicit leg pin (`routeOverride`), the actual outbound leg (`outboundEndpoint =
+   * env.targetEndpoint`), and whether that leg required a format translation (`translated`) vs a
+   * direct passthrough. Projected into the history `model{}`. Called by the driver right after
+   * the route decision (non-reject); optional so mock/legacy ctxs that omit it are unaffected.
+   */
+  setRouteInfo?(info: { routeOverride?: "cc" | "responses" | "messages"; outboundEndpoint: string; translated: boolean; clientFormat?: string }): void
   /**
    * Record an applied feature (truncate / thinking / beta-strip / transport /
    * via-X-fallback / dropped-params). Replaces the legacy `tags: string[]`
@@ -466,7 +734,7 @@ export interface RequestContext {
    * Record that an attempt failed and the pipeline decided whether to retry.
    * Publishes `request.attempt_failed` carrying the AttemptSnapshot, the
    * retry decision, and the strategy / backoff details. Replaces the
-   * `tuiLogger.logRetry` call site in `lib/request/pipeline.ts:346`.
+   * `RequestContext.recordAttemptFailure` publication path.
    */
   recordAttemptFailure(args: { willRetry: boolean; nextStrategy?: string; waitMs?: number; learning?: boolean }): void
   /**

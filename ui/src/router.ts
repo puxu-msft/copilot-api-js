@@ -38,18 +38,12 @@ export const routes: Array<RouteRecordRaw> = [
     name: "config",
     component: () => import("@/pages/vuetify/VConfigPage.vue"),
   },
-  {
-    path: "/models",
-    name: "models",
-    component: () => import("@/pages/vuetify/VModelsPage.vue"),
-  },
   // Legacy redirects (bookmarks, external links)
   { path: "/v/dashboard", redirect: "/dashboard" },
   { path: "/v/activity", redirect: "/activity" },
   { path: "/v/history", redirect: "/activity" },
   { path: "/v/history/:id", redirect: (to) => ({ name: "activity-detail", params: { id: String(to.params.id) }, query: to.query }) },
   { path: "/v/config", redirect: "/config" },
-  { path: "/v/models", redirect: "/models" },
   { path: "/v/usage", redirect: "/dashboard" },
   { path: "/v/logs", redirect: "/activity" },
   { path: "/history", redirect: "/activity" },

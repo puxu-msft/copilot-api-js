@@ -20,6 +20,8 @@ import {
 import { normalizeForMatching } from "~/lib/models/resolver"
 import { state } from "~/lib/state"
 
+import { findMostSpecific } from "./per-model-config"
+
 // ============================================================================
 // API routing
 // ============================================================================
@@ -51,20 +53,26 @@ export function supportsDirectAnthropicApi(modelId: string): ApiRoutingDecision 
 // ============================================================================
 
 /**
- * Match a model id against a config-driven capability allowlist of model-name "family" prefixes.
+ * Match a model against a config-driven capability allowlist of model-name "family" prefixes.
  *
- * A prefix `p` matches when `normalize(model) === normalize(p)` OR `normalize(model)` starts with
- * `normalize(p) + "-"`. The trailing-dash boundary is what makes `claude-opus-4` match the bare
- * `claude-opus-4` and the whole `claude-opus-4-x` family, WITHOUT matching the unrelated
- * `claude-opus-40`. Entries may be written dotted or dashed (both normalize the same). The lists
- * live in `state` (sourced from `anthropic.model_capabilities` in config.yaml — bundled defaults
- * mirror GHC's capability checks); editing config adds/removes models without a code change.
+ * A prefix `p` matches when `normalize(x) === normalize(p)` OR `normalize(x)` starts with
+ * `normalize(p) + "-"`, for `x` in {modelId, family}. The trailing-dash boundary is what makes
+ * `claude-opus-4` match the bare `claude-opus-4` and the whole `claude-opus-4-x` family, WITHOUT
+ * matching the unrelated `claude-opus-40`. Entries may be written dotted or dashed (both normalize
+ * the same). The lists live in `state` (sourced from `anthropic.model_capabilities` in config.yaml —
+ * bundled defaults mirror GHC's capability checks); editing config adds/removes models without a code change.
+ *
+ * The optional `family` mirrors GHC's `matches(id) || matches(family)` (chatModelCapabilities.ts /
+ * anthropic.ts): a model whose resolved id normalizes to a denied form but whose family is an allowed
+ * Claude family still lights the capability up. Our dash boundary is intentionally stricter than GHC's
+ * bare `startsWith` (GHC's `claude-opus-40` would match `claude-opus-4`; ours does not) — a deliberate,
+ * more-correct divergence that avoids prefix-accident false positives.
  */
-function matchModelCapability(modelId: string, prefixes: ReadonlyArray<string>): boolean {
-  const n = normalizeForMatching(modelId)
+function matchModelCapability(modelId: string, prefixes: ReadonlyArray<string>, family?: string): boolean {
+  const candidates = family ? [normalizeForMatching(modelId), normalizeForMatching(family)] : [normalizeForMatching(modelId)]
   return prefixes.some((p) => {
     const np = normalizeForMatching(p)
-    return n === np || n.startsWith(`${np}-`)
+    return candidates.some((n) => n === np || n.startsWith(`${np}-`))
   })
 }
 
@@ -94,8 +102,8 @@ function metadataCapability(resolvedModel: Model | undefined, key: string): bool
  *   modelHasAdaptiveThinking() for the runtime decision that drives the
  *   interleaved-thinking beta header.
  */
-export function modelSupportsInterleavedThinking(modelId: string): boolean {
-  return matchModelCapability(modelId, state.interleavedThinkingModels)
+export function modelSupportsInterleavedThinking(modelId: string, resolvedModel?: Model): boolean {
+  return matchModelCapability(modelId, state.interleavedThinkingModels, resolvedModel?.capabilities?.family)
 }
 
 /**
@@ -107,7 +115,7 @@ export function modelSupportsInterleavedThinking(modelId: string): boolean {
 export function modelSupportsContextEditing(modelId: string, resolvedModel?: Model): boolean {
   // Metadata-first (GHC-faithful): honor the model's declared `supports.context_editing`, else the
   // config-driven name allowlist. Mirrors chatEndpoint.ts `supports.context_editing ?? modelSupports…`.
-  return metadataCapability(resolvedModel, "context_editing") ?? matchModelCapability(modelId, state.contextEditingModels)
+  return metadataCapability(resolvedModel, "context_editing") ?? matchModelCapability(modelId, state.contextEditingModels, resolvedModel?.capabilities?.family)
 }
 
 /**
@@ -120,13 +128,74 @@ export function isContextEditingEnabled(modelId: string, resolvedModel?: Model):
 }
 
 /**
- * Tool search is supported by:
- * - Claude Sonnet 4.5/4.6
- * - Claude Opus 4.5/4.6/4.7/4.8
+ * Built-in default-allow tool-search matcher, mirroring GHC's `modelSupportsToolSearch`
+ * (chatModelCapabilities.ts): every current-generation Claude (4.5 and newer) supports tool search,
+ * so new/future Claude models are picked up automatically; Haiku (no support) and the pre-4.5
+ * generations are denied explicitly. GHC's OpenAI gpt-5.4/5.5 branch is intentionally NOT mirrored —
+ * this module only runs on the Anthropic path.
+ *
+ * Uses raw `startsWith` on the normalized name (matching GHC), so the pre-4.5 datestamped bases
+ * (`claude-sonnet-4-20250514` → normalizes to `…-4-2…`) are correctly denied, while `claude-opus-40`
+ * is ALLOWED (GHC parity: not `=== claude-opus-4`, not a `-4-1`/`-4-2` prefix). Checks id AND family.
+ */
+export function toolSearchDefaultAllow(modelId: string, family?: string): boolean {
+  const check = (raw: string): boolean => {
+    const n = normalizeForMatching(raw)
+    if (!n.startsWith("claude")) return false
+    // Haiku has no tool-search support — deny explicitly.
+    if (n.startsWith("claude-haiku")) return false
+    // Pre-4.5 Claude generations are unsupported; everything newer is allowed automatically. The
+    // `-4-2` prefixes also catch the datestamped 4.0 bases (e.g. `claude-sonnet-4-20250514`).
+    const isPre45 =
+      n.startsWith("claude-1")
+      || n.startsWith("claude-2")
+      || n.startsWith("claude-3")
+      || n.startsWith("claude-instant")
+      || n === "claude-sonnet-4"
+      || n.startsWith("claude-sonnet-4-2")
+      || n === "claude-opus-4"
+      || n.startsWith("claude-opus-4-1")
+      || n.startsWith("claude-opus-4-2")
+    return !isPre45
+  }
+  return check(modelId) || (family !== undefined && check(family))
+}
+
+/**
+ * Tool search is default-allow for Claude ≥4.5 (Haiku + pre-4.5 denied); see {@link toolSearchDefaultAllow}.
+ *
+ * Precedence (each layer is authoritative when it resolves): declared metadata `supports.tool_search`,
+ * then the config-driven per-model `tool_search_overrides` force-on/off map (most-specific / `"*"`
+ * wildcard), then the built-in default-allow matcher. A `false` at any layer force-disables. This is a
+ * PURE capability predicate — the `toolSearchEnabled` master switch gates CONSUMPTION at the call sites
+ * (beta header + tool-pipeline injection), not the predicate, so metadata-consistency holds.
  */
 export function modelSupportsToolSearch(modelId: string, resolvedModel?: Model): boolean {
-  // Metadata-first (GHC-faithful): `supports.tool_search ?? modelSupportsToolSearch(this)` upstream.
-  return metadataCapability(resolvedModel, "tool_search") ?? matchModelCapability(modelId, state.toolSearchModels)
+  return (
+    metadataCapability(resolvedModel, "tool_search")
+    ?? findMostSpecific(modelId, state.toolSearchOverrides)
+    ?? toolSearchDefaultAllow(modelId, resolvedModel?.capabilities?.family)
+  )
+}
+
+/**
+ * Extended prompt-cache TTL (`extended-cache-ttl-2025-04-11`) support. Mirrors GHC's
+ * `modelSupportsExtendedCacheTtl` (anthropic.ts) — a NARROWER set than context-editing/memory (no bare
+ * sonnet-4 / opus-4 / opus-4.1). Metadata-first, then the config-driven `extendedCacheTtlModels` list.
+ */
+export function modelSupportsExtendedCacheTtl(modelId: string, resolvedModel?: Model): boolean {
+  return (
+    metadataCapability(resolvedModel, "extended_cache_ttl") ?? matchModelCapability(modelId, state.extendedCacheTtlModels, resolvedModel?.capabilities?.family)
+  )
+}
+
+/**
+ * Memory tool support (native `memory_20250818`). Mirrors GHC's `modelSupportsMemory` (anthropic.ts) —
+ * a BROADER set than extended-cache-ttl (includes bare sonnet-4 / opus-4 / opus-4.1). Metadata-first,
+ * then the config-driven `memoryModels` list.
+ */
+export function modelSupportsMemory(modelId: string, resolvedModel?: Model): boolean {
+  return metadataCapability(resolvedModel, "memory") ?? matchModelCapability(modelId, state.memoryModels, resolvedModel?.capabilities?.family)
 }
 
 // ============================================================================
@@ -146,6 +215,21 @@ export interface AnthropicBetaHeaderOptions {
    * of mode — the body without its beta header would 400 upstream.
    */
   forceContextManagementBeta?: boolean
+  /**
+   * Emit the `extended-cache-ttl-2025-04-11` beta. Set by the cache-control step when it actually
+   * wrote a 1h `cache_control` ttl into the body (`ctx.wroteExtendedTtl`), so the header exactly
+   * mirrors the body — never sent when only 5m breakpoints exist.
+   */
+  emitExtendedCacheTtlBeta?: boolean
+  /**
+   * Force the `context-management-2025-06-27` beta because a native memory tool is present. Memory and
+   * context-management share this beta upstream (GHC: `hasMemoryTool || contextManagement`). UNLIKE
+   * `forceContextManagementBeta`, this bypasses `disableContextManagement` — that flag disables the
+   * context_management BODY field (a separate negotiation-cache signal), but the memory typed tool
+   * still needs the beta HEADER or it 400s. If the beta itself is genuinely unsupported, the downstream
+   * `filterUnsupportedBetas` + unsupported-beta-retry self-heal strips it.
+   */
+  forceMemoryContextBeta?: boolean
 }
 
 /**
@@ -177,7 +261,31 @@ export function modelHasAdaptiveThinking(modelId: string, resolvedModel?: Model)
   if (typeof supports?.max_thinking_budget === "number" && supports.max_thinking_budget > 0) return false
 
   const normalized = normalizeForMatching(modelId)
-  return matchModelCapability(normalized, state.adaptiveThinkingModels)
+  return matchModelCapability(normalized, state.adaptiveThinkingModels, resolvedModel?.capabilities?.family)
+}
+
+/**
+ * Check whether a model only accepts the budget-based (enabled) thinking shape.
+ *
+ * The strict inverse of the adaptive_thinking flag, used to gate PREDICTIVE
+ * adaptive→enabled coercion ({@link coerceEnabledThinking}). It fires ONLY on a
+ * positive enabled-only metadata signal — `supports.max_thinking_budget > 0` AND
+ * NOT `adaptive_thinking` — never on the silent-metadata fallthrough. This is
+ * deliberately narrower than `!modelHasAdaptiveThinking`: a genuinely-adaptive
+ * model whose `/models` metadata simply hasn't loaded (no thinking fields) would
+ * make `modelHasAdaptiveThinking` return false, but must NOT be downgraded
+ * predictively. That case is left to the reactive `adaptive-thinking-rejection-
+ * retry` strategy, which acts on the ground-truth upstream 400.
+ *
+ * Mirror asymmetry (intentional): the enabled→adaptive direction has a name
+ * allowlist fallback (adaptive models ship faster than metadata), but there is
+ * no enabled-model allowlist — enabled is the legacy default, so a positive
+ * budget signal is the only trustworthy predictive gate here.
+ */
+export function modelRequiresEnabledThinking(resolvedModel?: Model): boolean {
+  const supports = resolvedModel?.capabilities?.supports
+  if (!supports || supports.adaptive_thinking === true) return false
+  return typeof supports.max_thinking_budget === "number" && supports.max_thinking_budget > 0
 }
 
 /**
@@ -201,12 +309,25 @@ export function buildAnthropicBetaHeaders(modelId: string, resolvedModel?: Model
     betaFeatures.push("interleaved-thinking-2025-05-14")
   }
 
-  if (!opts?.disableContextManagement && (isContextEditingEnabled(modelId, resolvedModel) || opts?.forceContextManagementBeta)) {
+  // context-management-2025-06-27 is shared by context-editing AND the memory tool (GHC:
+  // `hasMemoryTool || contextManagement`). Memory forces it even when the context_management BODY field
+  // is disabled (forceMemoryContextBeta bypasses disableContextManagement). Single push = dedup.
+  const needsContextManagementBeta =
+    (!opts?.disableContextManagement && (isContextEditingEnabled(modelId, resolvedModel) || opts?.forceContextManagementBeta))
+    || Boolean(opts?.forceMemoryContextBeta)
+  if (needsContextManagementBeta) {
     betaFeatures.push("context-management-2025-06-27")
   }
 
-  if (modelSupportsToolSearch(modelId, resolvedModel)) {
+  // The `toolSearchEnabled` master switch is the single gate for tool-search (beta header AND the
+  // tool-pipeline injection in message-tools.ts), keeping the header consistent with the pipeline.
+  if (state.toolSearchEnabled && modelSupportsToolSearch(modelId, resolvedModel)) {
     betaFeatures.push("advanced-tool-use-2025-11-20")
+  }
+
+  // Header mirrors body: the cache-control step reports whether it actually wrote a 1h ttl.
+  if (opts?.emitExtendedCacheTtlBeta) {
+    betaFeatures.push("extended-cache-ttl-2025-04-11")
   }
 
   if (betaFeatures.length > 0) {

@@ -20,6 +20,7 @@ import {
 
 import type {
   //
+  ClientRequestLeg,
   EndpointType,
   EntrySummary,
   HistoryEntry,
@@ -30,7 +31,6 @@ import type { WSMessage } from "~/lib/ws"
 import {
   //
   clearHistory,
-  deleteSession,
   getCurrentSession,
   initHistory,
   insertEntry,
@@ -62,21 +62,23 @@ function getLastSentMessageOfType(ws: WebSocket, type: string): WSMessage {
 }
 
 /** Helper: create and insert a minimal history entry */
-function createEntry(endpoint: EndpointType, inboundRequest: Partial<HistoryEntry["inboundRequest"]> & { model: string }): HistoryEntry {
+function createEntry(endpoint: EndpointType, clientRequest: Partial<ClientRequestLeg> & { model: string }): HistoryEntry {
   const sessionId = getCurrentSession(endpoint, generateId())
   const entry: HistoryEntry = {
     id: generateId(),
     sessionId,
     startedAt: Date.now(),
     endpoint,
-    inboundRequest: {
-      model: inboundRequest.model,
-      messages: inboundRequest.messages ?? [{ role: "user", content: "Hello" }],
-      stream: inboundRequest.stream ?? false,
-      tools: inboundRequest.tools,
-      max_tokens: inboundRequest.max_tokens,
-      temperature: inboundRequest.temperature,
-      system: inboundRequest.system,
+    model: { requested: clientRequest.model },
+    clientRequest: {
+      format: endpoint,
+      model: clientRequest.model,
+      messages: clientRequest.messages ?? [{ role: "user", content: "Hello" }],
+      stream: clientRequest.stream ?? false,
+      tools: clientRequest.tools,
+      max_tokens: clientRequest.max_tokens,
+      temperature: clientRequest.temperature,
+      system: clientRequest.system,
     },
   }
   insertEntry(entry)
@@ -87,8 +89,8 @@ function createEntry(endpoint: EndpointType, inboundRequest: Partial<HistoryEntr
 
 let detachWsSink: (() => void) | undefined
 
-beforeEach(() => {
-  initHistory(true, 200)
+beforeEach(async () => {
+  await initHistory(true, 200)
   // Wire the bus chain that ws/broadcast.ts depends on after commit 3b:
   // entries.ts publishes history.* via historyState.publisher → WsSink
   // subscribes → calls notifyEntryAdded/etc → broadcasts to addClient'd WSes.
@@ -188,13 +190,20 @@ describe("updateEntry (response) triggers WS notification", () => {
 
     const entry = createEntry("anthropic-messages", { model: "claude-sonnet-4-20250514" })
     updateEntry(entry.id, {
-      outboundResponse: {
-        success: true,
-        model: "claude-sonnet-4-20250514",
-        usage: { input_tokens: 10, output_tokens: 20 },
-        stop_reason: "end_turn",
-        content: { role: "assistant", content: "Hi there!" },
-      },
+      attempts: [
+        {
+          index: 0,
+          durationMs: 0,
+          upstreamResponse: {
+            success: true,
+            model: "claude-sonnet-4-20250514",
+            usage: { input_tokens: 10, output_tokens: 20 },
+            stopReason: "end_turn",
+            body: { role: "assistant", content: "Hi there!" },
+          },
+        },
+      ],
+      _index: { derived: { responseSuccess: true, attemptCount: 1 } },
       durationMs: 150,
     })
 
@@ -214,12 +223,19 @@ describe("updateEntry (response) triggers WS notification", () => {
 
     const entry = createEntry("anthropic-messages", { model: "claude-sonnet-4-20250514" })
     updateEntry(entry.id, {
-      outboundResponse: {
-        success: true,
-        model: "claude-sonnet-4-20250514",
-        usage: { input_tokens: 10, output_tokens: 20 },
-        content: null,
-      },
+      attempts: [
+        {
+          index: 0,
+          durationMs: 0,
+          upstreamResponse: {
+            success: true,
+            model: "claude-sonnet-4-20250514",
+            usage: { input_tokens: 10, output_tokens: 20 },
+            body: null,
+          },
+        },
+      ],
+      _index: { derived: { responseSuccess: true, attemptCount: 1 } },
       durationMs: 200,
     })
 
@@ -240,8 +256,7 @@ describe("updateEntry (response) triggers WS notification", () => {
       state: "streaming",
       active: true,
       queueWaitMs: 320,
-      attemptCount: 2,
-      currentStrategy: "network-retry",
+      _index: { derived: { attemptCount: 2, currentStrategy: "network-retry" } },
       startedAt: entry.startedAt,
       lastUpdatedAt: entry.startedAt + 320,
       durationMs: 320,
@@ -262,13 +277,20 @@ describe("updateEntry (response) triggers WS notification", () => {
 
     const entry = createEntry("anthropic-messages", { model: "claude-sonnet-4-20250514" })
     updateEntry(entry.id, {
-      outboundResponse: {
-        success: false,
-        model: "claude-sonnet-4-20250514",
-        usage: { input_tokens: 10, output_tokens: 0 },
-        error: "Rate limited",
-        content: null,
-      },
+      attempts: [
+        {
+          index: 0,
+          durationMs: 0,
+          error: "Rate limited",
+          upstreamResponse: {
+            success: false,
+            model: "claude-sonnet-4-20250514",
+            usage: { input_tokens: 10, output_tokens: 0 },
+            body: null,
+          },
+        },
+      ],
+      _index: { derived: { responseSuccess: false, failureReason: "Rate limited", attemptCount: 1 } },
       durationMs: 50,
     })
 
@@ -344,13 +366,20 @@ describe("full request lifecycle", () => {
 
     // 3. Update with response
     updateEntry(entry.id, {
-      outboundResponse: {
-        success: true,
-        model: "claude-sonnet-4-20250514",
-        usage: { input_tokens: 10, output_tokens: 20 },
-        stop_reason: "end_turn",
-        content: { role: "assistant", content: "Hi there!" },
-      },
+      attempts: [
+        {
+          index: 0,
+          durationMs: 0,
+          upstreamResponse: {
+            success: true,
+            model: "claude-sonnet-4-20250514",
+            usage: { input_tokens: 10, output_tokens: 20 },
+            stopReason: "end_turn",
+            body: { role: "assistant", content: "Hi there!" },
+          },
+        },
+      ],
+      _index: { derived: { responseSuccess: true, attemptCount: 1 } },
       durationMs: 300,
     })
 
@@ -377,23 +406,37 @@ describe("full request lifecycle", () => {
 
     const entry1 = createEntry("anthropic-messages", { model: "claude-sonnet-4-20250514" })
     updateEntry(entry1.id, {
-      outboundResponse: {
-        success: true,
-        model: "claude-sonnet-4-20250514",
-        usage: { input_tokens: 10, output_tokens: 20 },
-        content: null,
-      },
+      attempts: [
+        {
+          index: 0,
+          durationMs: 0,
+          upstreamResponse: {
+            success: true,
+            model: "claude-sonnet-4-20250514",
+            usage: { input_tokens: 10, output_tokens: 20 },
+            body: null,
+          },
+        },
+      ],
+      _index: { derived: { responseSuccess: true, attemptCount: 1 } },
       durationMs: 100,
     })
 
     const entry2 = createEntry("openai-chat-completions", { model: "gpt-4o" })
     updateEntry(entry2.id, {
-      outboundResponse: {
-        success: true,
-        model: "gpt-4o",
-        usage: { input_tokens: 10, output_tokens: 20 },
-        content: null,
-      },
+      attempts: [
+        {
+          index: 0,
+          durationMs: 0,
+          upstreamResponse: {
+            success: true,
+            model: "gpt-4o",
+            usage: { input_tokens: 10, output_tokens: 20 },
+            body: null,
+          },
+        },
+      ],
+      _index: { derived: { responseSuccess: true, attemptCount: 1 } },
       durationMs: 200,
     })
 
@@ -417,12 +460,19 @@ describe("full request lifecycle", () => {
 
     // Update with response - client should only see this
     updateEntry(entry.id, {
-      outboundResponse: {
-        success: true,
-        model: "claude-sonnet-4-20250514",
-        usage: { input_tokens: 10, output_tokens: 20 },
-        content: null,
-      },
+      attempts: [
+        {
+          index: 0,
+          durationMs: 0,
+          upstreamResponse: {
+            success: true,
+            model: "claude-sonnet-4-20250514",
+            usage: { input_tokens: 10, output_tokens: 20 },
+            body: null,
+          },
+        },
+      ],
+      _index: { derived: { responseSuccess: true, attemptCount: 1 } },
       durationMs: 100,
     })
 
@@ -443,12 +493,19 @@ describe("full request lifecycle", () => {
     ;(ws as unknown as { readyState: number }).readyState = WebSocket.CLOSED
 
     updateEntry(entry.id, {
-      outboundResponse: {
-        success: true,
-        model: "claude-sonnet-4-20250514",
-        usage: { input_tokens: 10, output_tokens: 20 },
-        content: null,
-      },
+      attempts: [
+        {
+          index: 0,
+          durationMs: 0,
+          upstreamResponse: {
+            success: true,
+            model: "claude-sonnet-4-20250514",
+            usage: { input_tokens: 10, output_tokens: 20 },
+            body: null,
+          },
+        },
+      ],
+      _index: { derived: { responseSuccess: true, attemptCount: 1 } },
       durationMs: 100,
     })
 
@@ -460,8 +517,8 @@ describe("full request lifecycle", () => {
 // ─── History disabled ───
 
 describe("history disabled", () => {
-  test("no WS notifications when history is disabled", () => {
-    initHistory(false, 200)
+  test("no WS notifications when history is disabled", async () => {
+    await initHistory(false, 200)
 
     const ws = createMockWebSocket()
     addClient(ws)
@@ -473,7 +530,9 @@ describe("history disabled", () => {
       sessionId,
       startedAt: Date.now(),
       endpoint: "anthropic-messages",
-      inboundRequest: {
+      model: { requested: "claude-sonnet-4-20250514" },
+      clientRequest: {
+        format: "anthropic-messages",
         model: "claude-sonnet-4-20250514",
         messages: [{ role: "user", content: "Hello" }],
         stream: false,
@@ -488,42 +547,20 @@ describe("history disabled", () => {
   })
 })
 
-// ─── clearHistory / deleteSession → WS notifications ───
+// ─── clearHistory → WS notifications ───
 
-describe("clearHistory and deleteSession broadcast WS notifications", () => {
+describe("clearHistory broadcasts WS notifications", () => {
   test("clearHistory broadcasts history_cleared and stats_updated", () => {
     const ws = createMockWebSocket()
     addClient(ws)
 
     createEntry("anthropic-messages", { model: "test" })
-    // Clear sent messages to isolate clearHistory effects
     ;(ws.send as ReturnType<typeof mock>).mockClear()
 
     clearHistory()
 
-    const msgs = getSentMessages(ws)
-    const types = msgs.map((m) => m.type)
+    const types = getSentMessages(ws).map((message) => message.type)
     expect(types).toContain("history_cleared")
     expect(types).toContain("stats_updated")
-  })
-
-  test("deleteSession broadcasts session_deleted and stats_updated", () => {
-    const ws = createMockWebSocket()
-    addClient(ws)
-
-    const entry = createEntry("anthropic-messages", { model: "test" })
-    expect(entry.sessionId).toBeTruthy()
-    ;(ws.send as ReturnType<typeof mock>).mockClear()
-
-    deleteSession(entry.sessionId!)
-
-    const msgs = getSentMessages(ws)
-    const types = msgs.map((m) => m.type)
-    expect(types).toContain("session_deleted")
-    expect(types).toContain("stats_updated")
-
-    // session_deleted message includes sessionId
-    const sessionMsg = msgs.find((m) => m.type === "session_deleted")!
-    expect((sessionMsg.data as { sessionId: string }).sessionId).toBe(entry.sessionId!)
   })
 })

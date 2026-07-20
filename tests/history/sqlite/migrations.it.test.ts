@@ -26,11 +26,6 @@ import {
 
 import {
   //
-  createDatabase,
-  type SqliteDatabase,
-} from "~/lib/history/sqlite/driver"
-import {
-  //
   getMeta,
   MIGRATIONS_RUN_KEY,
   setMeta,
@@ -43,6 +38,11 @@ import {
 } from "~/lib/history/sqlite/migrations/index"
 import { applyForwardMigrations } from "~/lib/history/sqlite/migrations/run"
 import { HistoryMetaStorage } from "~/lib/history/sqlite/migrations/storage"
+import {
+  //
+  createDatabase,
+  type SqliteDatabase,
+} from "~/lib/sqlite/driver"
 
 let openDbs: Array<SqliteDatabase> = []
 

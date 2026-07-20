@@ -25,8 +25,6 @@ import {
   vi,
 } from "vitest"
 
-import type { ActiveRequestInfo } from "@/types/ws"
-
 import { useLiveStore } from "@/stores/live-store"
 
 vi.mock("@/hooks/useLiveRequests", () => ({
@@ -42,7 +40,7 @@ vi.mock("@/hooks/useEntry", () => ({
       startedAt: 0,
       endpoint: "anthropic-messages",
       state: "completed",
-      inboundRequest: { messages: [{ role: "user", content: "convo body text" }] },
+      clientRequest: { messages: [{ role: "user", content: "convo body text" }] },
     },
     isLoading: false,
     isError: false,
@@ -53,10 +51,15 @@ vi.mock("@/hooks/useEntry", () => ({
 const { RequestsListPage } = await import("@/components/requests/RequestsListPage")
 const { RequestDetailPage } = await import("@/components/requests/RequestDetailPage")
 
-/** Spy 当前 location.pathname,供导航断言。 */
+/** Spy 当前 location.pathname + search,供导航断言。 */
 function LocationProbe() {
   const loc = useLocation()
-  return <div data-testid="location">{loc.pathname}</div>
+  return (
+    <div data-testid="location">
+      {loc.pathname}
+      {loc.search}
+    </div>
+  )
 }
 
 function renderList() {
@@ -92,35 +95,13 @@ function renderDetail() {
 describe("RequestsListPage", () => {
   afterEach(() => useLiveStore.getState().reset())
 
-  it("renders the Live lane and History section, no detail placeholder", () => {
+  it("renders the filter bar + history list, no detail placeholder", () => {
+    // RequestsListPage 只渲染筛选条 + chips + HistoryList;在途 Live 泳道/LiveDock 已全局化到 AppShell
+    // (见 LiveDock.vitest / LiveGroup.vitest 覆盖 live 行点击导航)。此处只断列表页本体渲染,不含 detail 占位。
     renderList()
-    expect(screen.getByText(/● Live/)).toBeDefined()
-    expect(screen.getByText(/History/)).toBeDefined()
+    expect(screen.getByPlaceholderText("search text")).toBeDefined()
+    // "选一条请求看详情" 只属 DetailPanel,列表页绝不出现。
     expect(screen.queryByText(/选一条请求看详情/)).toBeNull()
-  })
-
-  it("navigates to /requests/:id when a live row is clicked", () => {
-    useLiveStore.getState().setSnapshot([{ id: "live1", model: "live-model" } as ActiveRequestInfo])
-    render(
-      <QueryClientProvider client={new QueryClient()}>
-        <MemoryRouter initialEntries={["/requests"]}>
-          <LocationProbe />
-          <Routes>
-            <Route
-              path="/requests"
-              element={<RequestsListPage />}
-            />
-            <Route
-              path="/requests/:id"
-              element={<div>detail landing</div>}
-            />
-          </Routes>
-        </MemoryRouter>
-      </QueryClientProvider>,
-    )
-    expect(screen.getByTestId("location").textContent).toBe("/requests")
-    fireEvent.click(screen.getByText(/live-model/))
-    expect(screen.getByTestId("location").textContent).toBe("/requests/live1")
   })
 })
 
@@ -132,10 +113,25 @@ describe("RequestDetailPage", () => {
     // "convo body text" appears in both the TOC label and the content body.
     expect(screen.getAllByText(/convo body text/).length).toBeGreaterThan(0)
   })
-  it("navigates back to /requests when the back button is clicked", () => {
+  it("back button returns to the list located at the entry (/requests?at=<id>)", () => {
     renderDetail()
     expect(screen.getByTestId("location").textContent).toBe("/requests/r1")
     fireEvent.click(screen.getByText(/‹ 返回列表/))
-    expect(screen.getByTestId("location").textContent).toBe("/requests")
+    expect(screen.getByTestId("location").textContent).toBe("/requests?at=r1")
+  })
+  it("Escape key also returns to the list located at the entry", () => {
+    renderDetail()
+    expect(screen.getByTestId("location").textContent).toBe("/requests/r1")
+    fireEvent.keyDown(document.body, { key: "Escape" })
+    expect(screen.getByTestId("location").textContent).toBe("/requests?at=r1")
+  })
+  it("Escape does nothing when a modal/dialog is open (the modal handles Esc first)", () => {
+    renderDetail()
+    const dialog = document.createElement("div")
+    dialog.setAttribute("role", "dialog")
+    document.body.append(dialog)
+    fireEvent.keyDown(document.body, { key: "Escape" })
+    expect(screen.getByTestId("location").textContent).toBe("/requests/r1")
+    dialog.remove()
   })
 })

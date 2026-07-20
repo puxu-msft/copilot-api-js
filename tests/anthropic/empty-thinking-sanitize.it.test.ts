@@ -26,13 +26,13 @@ function assistant(content: Array<Record<string, unknown>>): MessageParam {
 }
 
 describe("filterEmptyThinkingBlocks (pure)", () => {
-  describe("empty_thinking (conservative: only double-empty)", () => {
+  describe("all_empty (conservative: only double-empty)", () => {
     test("removes a double-empty thinking block (text AND signature empty)", () => {
       const msg = assistant([
         { type: "thinking", thinking: "", signature: "" },
         { type: "text", text: "hello" },
       ])
-      const [out] = filterEmptyThinkingBlocks([msg], "empty_thinking")
+      const [out] = filterEmptyThinkingBlocks([msg], "all_empty")
       expect((out.content as Array<unknown>).length).toBe(1)
       expect((out.content as Array<{ type: string }>)[0].type).toBe("text")
     })
@@ -43,7 +43,7 @@ describe("filterEmptyThinkingBlocks (pure)", () => {
         { type: "thinking", thinking: "", signature: "EoAQCmMIDhgC...validsig" },
         { type: "text", text: "answer" },
       ])
-      const [out] = filterEmptyThinkingBlocks([msg], "empty_thinking")
+      const [out] = filterEmptyThinkingBlocks([msg], "all_empty")
       expect(out).toBe(msg) // unchanged reference — nothing filtered
     })
 
@@ -52,27 +52,27 @@ describe("filterEmptyThinkingBlocks (pure)", () => {
         { type: "thinking", thinking: "real reasoning", signature: "sig123" },
         { type: "text", text: "hello" },
       ])
-      const [out] = filterEmptyThinkingBlocks([msg], "empty_thinking")
+      const [out] = filterEmptyThinkingBlocks([msg], "all_empty")
       expect(out).toBe(msg)
     })
 
-    test("keeps an unsigned-but-texted thinking block (text non-empty, sig empty) — only empty_any drops it", () => {
+    test("keeps an unsigned-but-texted thinking block (text non-empty, sig empty) — only sig-based/any modes drop it", () => {
       const msg = assistant([
         { type: "thinking", thinking: "reasoning", signature: "" },
         { type: "text", text: "x" },
       ])
-      const [out] = filterEmptyThinkingBlocks([msg], "empty_thinking")
+      const [out] = filterEmptyThinkingBlocks([msg], "all_empty")
       expect(out).toBe(msg)
     })
   })
 
-  describe("empty_any (aggressive: any unsigned thinking block)", () => {
+  describe("signature_empty (aggressive: any unsigned thinking block)", () => {
     test("removes a double-empty block", () => {
       const msg = assistant([
         { type: "thinking", thinking: "", signature: "" },
         { type: "text", text: "x" },
       ])
-      const [out] = filterEmptyThinkingBlocks([msg], "empty_any")
+      const [out] = filterEmptyThinkingBlocks([msg], "signature_empty")
       expect((out.content as Array<unknown>).length).toBe(1)
     })
 
@@ -81,7 +81,7 @@ describe("filterEmptyThinkingBlocks (pure)", () => {
         { type: "thinking", thinking: "reasoning", signature: "" },
         { type: "text", text: "x" },
       ])
-      const [out] = filterEmptyThinkingBlocks([msg], "empty_any")
+      const [out] = filterEmptyThinkingBlocks([msg], "signature_empty")
       const blocks = out.content as Array<{ type: string }>
       expect(blocks.some((b) => b.type === "thinking")).toBe(false)
     })
@@ -91,7 +91,88 @@ describe("filterEmptyThinkingBlocks (pure)", () => {
         { type: "thinking", thinking: "", signature: "validsig" },
         { type: "text", text: "x" },
       ])
-      const [out] = filterEmptyThinkingBlocks([msg], "empty_any")
+      const [out] = filterEmptyThinkingBlocks([msg], "signature_empty")
+      expect(out).toBe(msg)
+    })
+  })
+
+  describe("thinking_empty (aggressive: any empty-text thinking block, incl. legit encrypted)", () => {
+    test("removes a legitimate encrypted thinking block (empty text + valid signature)", () => {
+      // AGGRESSIVE mode: text-empty triggers the drop even with a valid signature.
+      const msg = assistant([
+        { type: "thinking", thinking: "", signature: "validsig" },
+        { type: "text", text: "x" },
+      ])
+      const [out] = filterEmptyThinkingBlocks([msg], "thinking_empty")
+      const blocks = out.content as Array<{ type: string }>
+      expect(blocks.some((b) => b.type === "thinking")).toBe(false)
+    })
+
+    test("removes a double-empty block", () => {
+      const msg = assistant([
+        { type: "thinking", thinking: "", signature: "" },
+        { type: "text", text: "x" },
+      ])
+      const [out] = filterEmptyThinkingBlocks([msg], "thinking_empty")
+      expect((out.content as Array<unknown>).length).toBe(1)
+    })
+
+    test("KEEPS an unsigned-but-texted thinking block (text non-empty, sig empty)", () => {
+      // text is non-empty, so thinking_empty (text-based) does not drop it.
+      const msg = assistant([
+        { type: "thinking", thinking: "reasoning", signature: "" },
+        { type: "text", text: "x" },
+      ])
+      const [out] = filterEmptyThinkingBlocks([msg], "thinking_empty")
+      expect(out).toBe(msg)
+    })
+
+    test("keeps a fully-populated thinking block (non-empty text + signature)", () => {
+      const msg = assistant([
+        { type: "thinking", thinking: "real reasoning", signature: "sig123" },
+        { type: "text", text: "x" },
+      ])
+      const [out] = filterEmptyThinkingBlocks([msg], "thinking_empty")
+      expect(out).toBe(msg)
+    })
+  })
+
+  describe("any_empty (most aggressive: either field empty)", () => {
+    test("removes a double-empty block", () => {
+      const msg = assistant([
+        { type: "thinking", thinking: "", signature: "" },
+        { type: "text", text: "x" },
+      ])
+      const [out] = filterEmptyThinkingBlocks([msg], "any_empty")
+      expect((out.content as Array<unknown>).length).toBe(1)
+    })
+
+    test("removes a legitimate encrypted thinking block (empty text + valid signature)", () => {
+      const msg = assistant([
+        { type: "thinking", thinking: "", signature: "validsig" },
+        { type: "text", text: "x" },
+      ])
+      const [out] = filterEmptyThinkingBlocks([msg], "any_empty")
+      const blocks = out.content as Array<{ type: string }>
+      expect(blocks.some((b) => b.type === "thinking")).toBe(false)
+    })
+
+    test("removes an unsigned-but-texted thinking block (text non-empty, sig empty)", () => {
+      const msg = assistant([
+        { type: "thinking", thinking: "reasoning", signature: "" },
+        { type: "text", text: "x" },
+      ])
+      const [out] = filterEmptyThinkingBlocks([msg], "any_empty")
+      const blocks = out.content as Array<{ type: string }>
+      expect(blocks.some((b) => b.type === "thinking")).toBe(false)
+    })
+
+    test("keeps a fully-populated thinking block (non-empty text + signature)", () => {
+      const msg = assistant([
+        { type: "thinking", thinking: "real reasoning", signature: "sig123" },
+        { type: "text", text: "x" },
+      ])
+      const [out] = filterEmptyThinkingBlocks([msg], "any_empty")
       expect(out).toBe(msg)
     })
   })
@@ -103,25 +184,27 @@ describe("filterEmptyThinkingBlocks (pure)", () => {
         { type: "thinking", thinking: "", signature: "validsig" }, // legit encrypted
         { type: "tool_use", id: "t1", name: "Bash", input: {} },
       ])
-      const [out] = filterEmptyThinkingBlocks([msg], "empty_thinking")
+      const [out] = filterEmptyThinkingBlocks([msg], "all_empty")
       const blocks = out.content as Array<{ type: string; signature?: string }>
       expect(blocks.length).toBe(2)
       expect(blocks.find((b) => b.type === "thinking")?.signature).toBe("validsig")
       expect(blocks.some((b) => b.type === "tool_use")).toBe(true)
     })
 
-    test("leaves redacted_thinking (carries data, not signature) untouched in both modes", () => {
+    test("leaves redacted_thinking (carries data, not signature) untouched in all modes", () => {
       const msg = assistant([
         { type: "redacted_thinking", data: "encrypted" },
         { type: "text", text: "x" },
       ])
-      expect(filterEmptyThinkingBlocks([msg], "empty_thinking")[0]).toBe(msg)
-      expect(filterEmptyThinkingBlocks([msg], "empty_any")[0]).toBe(msg)
+      expect(filterEmptyThinkingBlocks([msg], "all_empty")[0]).toBe(msg)
+      expect(filterEmptyThinkingBlocks([msg], "signature_empty")[0]).toBe(msg)
+      expect(filterEmptyThinkingBlocks([msg], "thinking_empty")[0]).toBe(msg)
+      expect(filterEmptyThinkingBlocks([msg], "any_empty")[0]).toBe(msg)
     })
 
     test("string content is passed through unchanged", () => {
       const msg = { role: "user", content: "plain" } as MessageParam
-      expect(filterEmptyThinkingBlocks([msg], "empty_thinking")[0]).toBe(msg)
+      expect(filterEmptyThinkingBlocks([msg], "all_empty")[0]).toBe(msg)
     })
   })
 })
@@ -135,8 +218,8 @@ describe("sanitizeAnthropicMessages thinking_block_sanitize gating", () => {
     } as unknown as MessagesPayload
   }
 
-  test("empty_thinking: double-empty block removed before upstream", () => {
-    setStateForTests({ thinkingBlockSanitizeCheck: "empty_thinking" })
+  test("all_empty: double-empty block removed before upstream", () => {
+    setStateForTests({ thinkingBlockSanitizeCheck: "all_empty" })
     const { payload } = sanitizeAnthropicMessages(
       payloadWithBlocks([
         { type: "thinking", thinking: "", signature: "" },
@@ -148,8 +231,8 @@ describe("sanitizeAnthropicMessages thinking_block_sanitize gating", () => {
     expect(blocks.some((b) => b.type === "text")).toBe(true)
   })
 
-  test("empty_thinking: legitimate encrypted thinking (empty text + signature) is KEPT", () => {
-    setStateForTests({ thinkingBlockSanitizeCheck: "empty_thinking" })
+  test("all_empty: legitimate encrypted thinking (empty text + signature) is KEPT", () => {
+    setStateForTests({ thinkingBlockSanitizeCheck: "all_empty" })
     const { payload } = sanitizeAnthropicMessages(
       payloadWithBlocks([
         { type: "thinking", thinking: "", signature: "validsig" },
@@ -170,5 +253,60 @@ describe("sanitizeAnthropicMessages thinking_block_sanitize gating", () => {
     )
     const blocks = payload.messages[1].content as Array<{ type: string; thinking?: string }>
     expect(blocks.find((b) => b.type === "thinking")?.thinking).toBe("")
+  })
+})
+
+describe("sanitizeAnthropicMessages — synthetic-reasoning sentinel strip (echo-back poison guard)", () => {
+  const SENTINEL = "copilot-api:synthetic-reasoning:v1"
+  function payloadWithBlocks(blocks: Array<Record<string, unknown>>): MessagesPayload {
+    return {
+      model: "claude-opus-4.8",
+      messages: [{ role: "user", content: "hi" }, assistant(blocks), { role: "user", content: "next" }],
+      max_tokens: 100,
+    } as unknown as MessagesPayload
+  }
+
+  test("sentinel-signed thinking block is stripped even when thinkingBlockSanitizeCheck is OFF (unconditional)", () => {
+    // The strongest gate: config OFF means the empty-thinking filter is disabled — a real corrupt block
+    // would pass through (see the test above). Our sentinel block (non-empty text + non-empty sentinel
+    // signature) MUST still be removed, proving the strip is unconditional, not config-gated.
+    setStateForTests({ thinkingBlockSanitizeCheck: false })
+    const { payload } = sanitizeAnthropicMessages(
+      payloadWithBlocks([
+        { type: "thinking", thinking: "forwarded gpt reasoning", signature: SENTINEL },
+        { type: "text", text: "answer" },
+      ]),
+    )
+    const blocks = payload.messages[1].content as Array<{ type: string }>
+    expect(blocks.some((b) => b.type === "thinking"), "sentinel thinking must be stripped").toBe(false)
+    expect(blocks.some((b) => b.type === "text"), "real text must survive").toBe(true)
+  })
+
+  test("labeled-envelope signature (prefix + encrypted payload) is ALSO stripped unconditionally", () => {
+    // The production form carries an opaque encrypted_content payload after the prefix. The strip keys on
+    // the PREFIX, so a block echoed back with an embedded payload must still be removed (never reach a
+    // signature-checking upstream).
+    setStateForTests({ thinkingBlockSanitizeCheck: false })
+    const { payload } = sanitizeAnthropicMessages(
+      payloadWithBlocks([
+        { type: "thinking", thinking: "summary", signature: `${SENTINEL}:${Buffer.from("enc").toString("base64url")}` },
+        { type: "text", text: "answer" },
+      ]),
+    )
+    const blocks = payload.messages[1].content as Array<{ type: string }>
+    expect(blocks.some((b) => b.type === "thinking"), "labeled-envelope thinking must be stripped").toBe(false)
+  })
+
+  test("a REAL signed thinking block (non-sentinel signature) is NOT stripped by the sentinel guard", () => {
+    // The sentinel strip must be surgical: a legitimate encrypted thinking block (real signature) is kept.
+    setStateForTests({ thinkingBlockSanitizeCheck: false })
+    const { payload } = sanitizeAnthropicMessages(
+      payloadWithBlocks([
+        { type: "thinking", thinking: "", signature: "real-upstream-signature" },
+        { type: "text", text: "answer" },
+      ]),
+    )
+    const blocks = payload.messages[1].content as Array<{ type: string; signature?: string }>
+    expect(blocks.find((b) => b.type === "thinking")?.signature).toBe("real-upstream-signature")
   })
 })

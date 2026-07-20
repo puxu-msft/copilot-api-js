@@ -1,9 +1,19 @@
+import type { ThinkingBlockSanitizeMode } from "~/lib/anthropic/sanitize/content-blocks"
+import type { ThinkingDestackStrategy } from "~/lib/anthropic/sanitize/destack-adjacent-thinking"
+import type { RepairItem } from "~/lib/anthropic/tool-input-repair"
+import type { ModelTranslation } from "~/lib/config/schema"
 import type {
   //
   Model,
   ModelsResponse,
 } from "~/lib/models/client"
 
+import {
+  //
+  DEFAULT_REFUSAL_END_TURN_TEXT,
+  DEFAULT_REFUSAL_ERROR_MESSAGE,
+  DEFAULT_REFUSAL_ERROR_TYPE,
+} from "~/lib/anthropic/recover-refusal"
 import { normalizeForMatching } from "~/lib/models/model-name"
 
 import type { AdaptiveRateLimiterConfig } from "./adaptive-rate-limiter"
@@ -27,6 +37,13 @@ export type ContextEditingMode = "off" | "clear-thinking" | "clear-tooluse" | "c
 export type CacheControlMode = "disabled" | "passthrough" | "sanitize" | "proxied"
 
 /**
+ * Per-layer prompt-cache TTL for the extended-cache-ttl feature. `"5m"` is Anthropic's default
+ * (emitted as a bare `{type:"ephemeral"}`); `"1h"` emits `{type:"ephemeral", ttl:"1h"}` and requires
+ * the `extended-cache-ttl-2025-04-11` beta. Mirrors GHC's per-layer 5m-vs-1h choice.
+ */
+export type CacheTtl = "5m" | "1h"
+
+/**
  * Policy for handling Claude Code "Warmup" requests.
  *
  * - `"allow"`  — pass through normally (default)
@@ -41,12 +58,16 @@ export type WarmupPolicy = "allow" | "reject" | "drop" | "fake"
  *
  * Empirically, Anthropic thinking `signature`s are self-contained — they encrypt the
  * thinking content itself (the upstream decrypts and rebuilds it) and do NOT bind to
- * surrounding context or array position. The only real constraint is that thinking blocks
- * must be echoed verbatim and consecutive thinking sequences must not be reordered.
+ * surrounding context or array position. The only real constraints are that thinking blocks
+ * must be echoed verbatim, kept in relative order, and never dropped (their adjacency,
+ * however, is not preserved — see `preserve` below).
  *
- * - `preserve` — Keep thinking blocks verbatim and don't reorder consecutive thinking, but
- *                allow all surrounding cleanup (drop orphan tools, downgrade server tools,
- *                edit/drop non-thinking blocks).
+ * - `preserve` — Keep thinking blocks verbatim, preserve their relative order, and never
+ *                drop them, but allow all surrounding cleanup (drop orphan tools, downgrade
+ *                server tools, edit/drop non-thinking blocks). Thinking *adjacency* is NOT
+ *                protected: the de-stack pass (sanitize/destack-adjacent-thinking.ts) may
+ *                insert non-thinking blocks between consecutive thinking blocks to satisfy
+ *                the upstream "no two thinking blocks adjacent" rule.
  * - `stripped` — Actively delete thinking blocks from old messages; delete the message if
  *                empty after stripping.
  */
@@ -62,9 +83,63 @@ export interface CompiledRewriteRule {
   method?: "regex" | "line"
   /** Compiled regex for model name filtering. undefined = apply to all models. */
   modelPattern?: RegExp
+  /** Endpoint-scope set (ClientFormat values). undefined = apply to all endpoints. */
+  endpointSet?: ReadonlySet<string>
+}
+
+/**
+ * A compiled system-prompt prepend/append entry: the literal `text` plus the
+ * pre-compiled model/endpoint scope (same two-axis AND semantics as
+ * {@link CompiledRewriteRule}). A plain-string config entry compiles to
+ * `{ text, modelPattern: undefined, endpointSet: undefined }` (unscoped).
+ */
+export interface CompiledSystemPromptEntry {
+  /** The prepend/append text. */
+  text: string
+  /** Compiled regex for model name filtering. undefined = apply to all models. */
+  modelPattern?: RegExp
+  /** Endpoint-scope set (ClientFormat values). undefined = apply to all endpoints. */
+  endpointSet?: ReadonlySet<string>
+}
+
+/**
+ * Resolved buffered-retry caps for one vendor (`resolveBufferedCaps` return
+ * shape). `maxRetries` = transport-close/truncation retry cap (loop/cost guard);
+ * `bufferCapBytes` = OOM guard before retreating to live forwarding (0 =
+ * unlimited); `heartbeatSec` = forced keepalive interval during the buffer window.
+ */
+export interface BufferedRetryCaps {
+  maxRetries: number
+  bufferCapBytes: number
+  heartbeatSec: number
+}
+
+/** unknown HTTP endpoint 日志级别（silent = 不打）。值须与 config/schema.ts 的 LOG_LEVELS 一致。 */
+export type LogLevel = "silent" | "debug" | "info" | "warn" | "error"
+
+/** unknown HTTP endpoint 按状态码分类的日志级别（404 = notFound / 405 = methodNotAllowed）。 */
+export interface UnknownEndpointLogging {
+  notFound: LogLevel
+  methodNotAllowed: LogLevel
+}
+
+export type DiagnosticLogLevel = "silent" | "trace" | "debug" | "info" | "warn" | "error" | "fatal"
+
+export interface LoggingConfigState {
+  terminalLevel: DiagnosticLogLevel
+  fileLevel: DiagnosticLogLevel
+  fileEnabled: boolean
+  fileDirectory: string
+  fileMaxSizeMb: number
+  fileMaxFilesPerProcess: number
+  retentionDays: number
 }
 
 export interface State {
+  /** unknown HTTP endpoint（未匹配任何业务路由）按状态码分类的日志级别。默认 warn/warn。 */
+  readonly unknownEndpointLogging: UnknownEndpointLogging
+  readonly logging: LoggingConfigState
+  readonly tuiEnabled: boolean
   readonly githubToken?: string
   readonly copilotToken?: string
 
@@ -96,26 +171,21 @@ export interface State {
   readonly adaptiveRateLimitConfig?: Partial<AdaptiveRateLimiterConfig>
 
   /**
-   * Auto-truncate: reactively truncate on limit errors and pre-check for known limits.
-   * Disabled by default; enable with --auto-truncate or `auto_truncate.enabled`.
+   * Shared reactive-retry budget: the per-request cap on ALL reactive retry
+   * strategies (network / server-error / token-refresh / 400-class negotiation
+   * etc.), not truncation-specific. Config `retry.max_reactive_retries`.
    */
-  readonly autoTruncate: boolean
-
-  /**
-   * Truncation target as a fraction of the upstream-reported token limit
-   * (target = reportedLimit × factor). In (0, 1]; smaller removes more / safer,
-   * larger is leaner but closer to the limit. Config `auto_truncate.target_factor`.
-   */
-  readonly autoTruncateTargetFactor: number
-
-  /** Max reactive auto-truncate retries per request. Config `auto_truncate.max_retries`. */
-  readonly autoTruncateMaxRetries: number
-
-  /**
-   * Character-length threshold (NOT tokens) above which a tool_result block is
-   * compressed during truncation. Config `auto_truncate.compress_threshold`.
-   */
-  readonly autoTruncateCompressThreshold: number
+  readonly maxReactiveRetries: number
+  readonly generationHedgeEnabled: boolean
+  readonly generationHedgeThresholdSec: number
+  readonly generationHedgeMaxSecondaryCandidates: number
+  readonly generationRecoveryMaxCandidates: number
+  readonly generationMaxActiveCandidates: number
+  readonly generationMaxTotalCandidates: number
+  readonly generationMaxActiveDispatches: number
+  readonly generationMaxTotalDispatches: number
+  readonly generationCleanupGraceSec: number
+  readonly generationHedgeAllowServerTools: boolean
 
   /**
    * Account is on token-based (PAYG) billing rather than premium-request
@@ -124,12 +194,6 @@ export interface State {
    * (every model is pay-as-you-go, so the badge would be uniform noise).
    */
   readonly tokenBasedBilling: boolean
-
-  /**
-   * Compress old tool results before truncating messages.
-   * When enabled, large tool_result content is compressed to reduce context size.
-   */
-  readonly compressToolResultsBeforeTruncate: boolean
 
   /**
    * Sanitize tool names that violate the target model's constraints (illegal
@@ -156,11 +220,27 @@ export interface State {
   /** 透明恢复上游 tool-call 文本降级（RFC tool-call-text-recovery）。默认 false。 */
   readonly recoverToolCallText: boolean
 
-  /** 修复上游发出的畸形 tool_use input（非法 JSON：antml 标签溢出 / 未转义片段），仅作用于 Anthropic 转发流。`tags`=结构感知剥 antml 标签、`repair`=再跑 jsonrepair（Layer 2）、`false`=关（默认）。history 保留上游原始字节。 */
-  readonly toolRepairMalformedInput: "tags" | "repair" | false
+  /** 修复上游发出的畸形 tool_use input（非法 JSON），仅作用于 Anthropic 转发流。可叠加的修复项目集（`tags`=结构感知剥 antml 标签、`jsonrepair`=jsonrepair 结构修复、`unicode`=修空白打断的 `\uXXXX` 转义），按固定规范顺序级联。空数组=关（默认）。history 保留上游原始字节。 */
+  readonly toolRepairMalformedInput: ReadonlyArray<RepairItem>
 
   /** 上游 thinking-only refusal（stop_reason:"refusal" 仅有 thinking 块）的处理策略：`refusal`=透传不改写、`end_turn`=合成 text 块改 end_turn、`error`=发 error SSE 帧并记请求失败（ctx.fail）。默认 `error`。 */
   readonly refusalSseRewrite: "refusal" | "end_turn" | "error"
+
+  /** `end_turn` 模式注入的 recovery text 模板（会被客户端 baked 进下一轮请求）。占位符 `{model}`/`{request_id}`/`{thinking_tokens}`，未知占位符原样保留；空串=不追加 text 块（仅改 end_turn）。默认见 `DEFAULT_REFUSAL_END_TURN_TEXT`。 */
+  readonly refusalEndTurnText: string
+  /** `error` 模式合成 error 帧的 message 模板（客户端 `APIError.message`）。占位符同上。默认见 `DEFAULT_REFUSAL_ERROR_MESSAGE`。 */
+  readonly refusalErrorMessage: string
+  /** `error` 帧的 `error.type`（纯字面、不做模板渲染）。空串回落 `api_error`。默认 `api_error`。 */
+  readonly refusalErrorType: string
+
+  /** 上游错误 → 客户端可行动形态整形总开关（`anthropic.error_shaping_enabled`）。关闭时逐字节回退现状。默认 true。 */
+  readonly errorShapingEnabled: boolean
+  /** B 类：content_filtered / 402 / 403(token-refresh 耗尽) 是否合成 AskUserQuestion 轮次而非拍平成错误帧（`anthropic.error_ask_user_question`）。仅交互式部署应开启。默认 false。 */
+  readonly errorAskUserQuestion: boolean
+  /** AUQ 问题文案模板（`anthropic.error_auq_template`），占位符 `{model}`/`{request_id}`/`{error_type}`/`{status}`。空串=内置默认。默认 `""`。 */
+  readonly errorAuqTemplate: string
+  /** D 类：按反应式策略名配置「proxy 自修 vs 透传委派 CC 自愈」（`anthropic.error_selfheal_delegate`）。键=策略 `.name`，值 `"proxy"|"delegate"`。未列=proxy。默认 `{}`。 */
+  readonly errorSelfhealDelegate: Readonly<Record<string, "proxy" | "delegate">>
 
   /**
    * Config-driven model-capability allowlists (`anthropic.model_capabilities`). Each is a list of
@@ -169,13 +249,32 @@ export interface State {
    * defaults mirror GHC's capability checks; editing config adds/removes models without code changes.
    */
   readonly contextEditingModels: ReadonlyArray<string>
-  readonly toolSearchModels: ReadonlyArray<string>
   readonly interleavedThinkingModels: ReadonlyArray<string>
   readonly adaptiveThinkingModels: ReadonlyArray<string>
 
-  /** Strip Anthropic server-side tools from requests when upstream doesn't support them */
-  readonly stripServerTools: boolean
+  /**
+   * Per-model tool-search OVERRIDE table (`anthropic.model_capabilities.tool_search_overrides`).
+   * Keys are model-name substrings (`"*"` = wildcard); values force-enable (`true`) or force-disable
+   * (`false`) tool-search capability for matching models. Checked AFTER declared metadata but BEFORE
+   * the built-in default-allow matcher (Claude ≥4.5, see `features.ts:toolSearchDefaultAllow`), so
+   * operators can pin an individual model without maintaining a whole allowlist. Empty by default —
+   * the default-allow matcher decides. Gated overall by the `toolSearchEnabled` master switch.
+   */
+  readonly toolSearchOverrides: Record<string, boolean>
 
+  /**
+   * Anthropic memory tool (native `memory_20250818` — a client-EXECUTED typed tool, NOT a server
+   * tool: the model drives view/create commands, the client runs `/memories` and feeds results back).
+   * When `memoryToolEnabled` (master switch, default OFF — CAPI acceptance of the typed descriptor is
+   * unverified) AND the model supports memory (`memoryModels`, mirrors GHC modelSupportsMemory), a
+   * client tool named `memory` is rewritten to `{name:"memory", type:"memory_20250818"}` and the
+   * `context-management-2025-06-27` beta is forced. Off → the tool passes through as an ordinary custom tool.
+   */
+  readonly memoryToolEnabled: boolean
+  readonly memoryModels: ReadonlyArray<string>
+
+  /** Forward `/v1/messages/count_tokens` to the GHC upstream (exact). When false, use the local calibrated estimate only. Config `anthropic.use_upstream_count_tokens`. Default true. */
+  readonly useUpstreamCountTokens: boolean
   /**
    * Upstream→client response-header forwarding MODE (Anthropic path). `false`
    * (default) = BLACKLIST mode: forward everything except `responseHeaderBlacklist`.
@@ -253,6 +352,16 @@ export interface State {
   readonly streamKeepalivePingSec: number
 
   /**
+   * Keepalive frame type for the client-facing Anthropic stream: `empty_text` (default) injects an
+   * empty content delta matching the open block, and in buffered mode with no open block yet lazily
+   * injects a synthetic empty text anchor block so an empty text_delta resets CC's 300s no-real-content
+   * deadline (spec 2026-07-08-buffered-keepalive-empty-text-anchor); `ping` restores the classic
+   * bare-ping (may time out — a ping is not a "chunk"); `enveloped_ping` (experimental, expected to time
+   * out) synthesizes an envelope then emits a bare ping. Default empty_text.
+   */
+  readonly streamKeepaliveMode: "ping" | "enveloped_ping" | "empty_text"
+
+  /**
    * Delayed-commit window (seconds) for streaming Anthropic requests. The proxy waits up to this long
    * for runRequest to settle BEFORE opening the 200 SSE stream: if the upstream returns/errors within
    * the window, the real HTTP status is forwarded (the client keeps its native retry/backoff). If the
@@ -270,12 +379,24 @@ export interface State {
    * `tools`. See docs/archive/2606-landed-rfcs/streaming-upstream-rst-buffered-retry.md.
    */
   readonly protectStreamingGeneration: false | "on" | "tool_use_only"
-  /** Max transport-close / truncation retries for the buffered-retry path (loop/cost guard; 0 = no retry). */
-  readonly protectStreamingMaxRetries: number
-  /** Forced heartbeat interval (seconds) for the buffered-retry path; falls back here when `streamKeepalivePingSec` is 0. */
-  readonly protectStreamingHeartbeat: number
-  /** Max bytes to buffer before retreating to live forwarding (OOM guard; 0 = unlimited). */
-  readonly protectStreamingBufferCapBytes: number
+  /**
+   * Vendor-neutral SHARED buffered-retry caps. Overridden per-vendor by
+   * {@link bufferedRetryOverrides}; resolve via `resolveBufferedCaps(vendor)`.
+   * Built-in default: `{ maxRetries: 3, bufferCapBytes: 16_777_216, heartbeatSec: 15 }`.
+   */
+  readonly bufferedRetryShared: BufferedRetryCaps
+  /**
+   * Per-vendor buffered-retry cap overrides (keyed by vendor: `anthropic` /
+   * `responses` / `chat_completions` / `responses_ws`). Each override sets only
+   * the fields it declares; unset fields fall through to {@link bufferedRetryShared}.
+   */
+  readonly bufferedRetryOverrides: Record<string, Partial<BufferedRetryCaps>>
+  /**
+   * Chat Completions buffered-retry mode switch (P3). `false` (default) keeps the
+   * live streaming path; `true` adopts the terminal-only buffered sink. Caps come
+   * from `resolveBufferedCaps("chat_completions")`.
+   */
+  readonly chatCompletionsBufferedRetry: boolean
   /** On each buffered retry, force progressively aggressive context_management compression (RFC §8). Default false. */
   readonly protectStreamingEscalateContext: boolean
 
@@ -296,8 +417,50 @@ export interface State {
    * cleanup. Set to `"stripped"` to aggressively remove thinking blocks from old messages.
    */
   readonly thinkingBlockMessagePolicy: ThinkingBlockMessagePolicy
-  /** Drop corrupt empty thinking blocks before sending upstream (see config `anthropic.thinking_block_sanitize`) */
-  readonly thinkingBlockSanitizeCheck: false | "empty_thinking" | "empty_any"
+  /** Drop corrupt empty thinking blocks before sending upstream (see config `anthropic.thinking_block_sanitize`); `false` disables. Mode names WHICH field being empty triggers the drop — see {@link ThinkingBlockSanitizeMode}. */
+  readonly thinkingBlockSanitizeCheck: false | ThinkingBlockSanitizeMode
+
+  /**
+   * De-stack strategy for adjacent `thinking`/`redacted_thinking` blocks (config
+   * `anthropic.thinking_destack_strategy`). Ensures no two thinking blocks are
+   * consecutive in an assistant message — GHC rejects an echoed history with
+   * stacked thinking with a "thinking blocks cannot be modified" 400.
+   *
+   * - `"passthrough"` — leave stacked thinking as-is.
+   * - `"insert_text"` — insert a synthetic text separator between adjacent thinking.
+   * - `"move_blocks"` — interleave thinking with real non-thinking blocks
+   *                     (order-preserving), synthetic marker only when insufficient (default).
+   */
+  readonly thinkingDestackStrategy: ThinkingDestackStrategy
+
+  /**
+   * Reactive strip-all fallback (L2) for the GHC "thinking ... cannot be
+   * modified" 400 that L1 de-stack ({@link thinkingDestackStrategy}) did not
+   * preempt (config `anthropic.strip_thinking_on_reject`). When `true` (default)
+   * the `poisoned-thinking-retry` strategy strips ALL thinking/redacted_thinking
+   * blocks from the echoed history and retries the turn once; `false` lets the
+   * 400 surface unmodified.
+   */
+  readonly stripThinkingOnReject: boolean
+
+  /**
+   * L3 durable quarantine master switch (config `anthropic.poisoned_thinking_quarantine`).
+   * When `true` (default), a successful L2 strip-all retry records the offending
+   * `(session, agent)` conversation in a sidecar store so later turns are stripped
+   * proactively; `false` keeps only the per-turn L2 reaction (no remembering).
+   */
+  readonly poisonedThinkingQuarantine: boolean
+
+  /**
+   * Sliding TTL (hours) of an L3 quarantine entry (config
+   * `anthropic.poisoned_thinking_ttl_hours`, default `72`). Read LIVE on every
+   * quarantine check: the store holds a `() => poisonedThinkingTtlHours * 3600_000`
+   * thunk evaluated per `isPoisoned` call (NOT captured when the quarantine store
+   * singleton is first built), so a hot-reloaded value takes effect immediately
+   * without a restart. A conversation quiet longer than this since its last
+   * poison hit drops out of the quarantine.
+   */
+  readonly poisonedThinkingTtlHours: number
 
   /**
    * Coerce legacy `thinking.type="enabled"` to `"adaptive"` when the target
@@ -318,29 +481,40 @@ export interface State {
   readonly coerceAdaptiveThinking: false | "basic" | "best_effort"
 
   /**
-   * Handle `role:"system"` messages mixed into the `messages` array (illegal for
-   * the Anthropic Messages API — system must be top-level). See config
-   * `anthropic.system_messages_sanitize`.
+   * DEFAULT inline-`role:"system"` handling mode — the fallback applied to every
+   * model NOT in `systemRejectModels` (rejecters use the `systemRejectMode`
+   * override instead; both share this mode enum, differing only by model bucket).
+   * Whether an inline system message needs handling is PER UPSTREAM BACKEND: STRICT
+   * backends (empirically claude-sonnet-4.6 / claude-haiku-4.5 here) 400 with
+   * `Unexpected role "system"`, while others (e.g. Opus) accept it. See config
+   * `anthropic.system_default_mode`.
    *
-   * - `false`         — passthrough (default; upstream will 400 if present).
+   * - `false`         — passthrough (default). Correct for accepters (Opus); a
+   *                     not-yet-known rejecter's first request 400s, then reactive
+   *                     learning marks it (permanent, no TTL) and retries.
    * - `"drop_invalid"`— remove every inline system message.
    * - `"merge"`       — append their text to the top-level `system`, drop the messages.
    * - `"as_user"`     — rewrite role to `"user"` (recommended; preserves position).
    * - `"as_assistant"`— rewrite role to `"assistant"` (experimental, not recommended).
    */
-  readonly systemMessagesSanitize: false | "drop_invalid" | "merge" | "as_user" | "as_assistant"
+  readonly systemDefaultMode: false | "drop_invalid" | "merge" | "as_user" | "as_assistant"
 
   /**
-   * Rewrite native server-tool blocks left in inbound message history before
-   * sending upstream. The web_search double-hop surfaces a synthesized
-   * `server_tool_use{web_search}` + `web_search_tool_result` pair to the client
-   * (so results are visible); the client echoes it back next turn, but the
-   * downgraded `tools` array no longer declares `web_search` as a server tool,
-   * so upstream 400s. `"downgrade"` rewrites the pair into a plain
-   * `tool_use` + `tool_result` (splitting the assistant turn so the tool_result
-   * lands in a user message, per protocol). `false` passes through (default).
+   * Config-declared set of models whose upstream STRICT backend rejects inline
+   * `role:"system"` messages (observed symptom — Vertex is the known cause on
+   * this account but NOT asserted). A substring set matched against the resolved
+   * outbound model name (normalized at match time, NOT here). A matched model
+   * uses `systemRejectMode`; unmatched models fall back to the global
+   * `systemDefaultMode`. Union'd at match time with the runtime-learned
+   * reject set. Default `["claude-sonnet-4.6", "claude-haiku-4.5"]`.
    */
-  readonly rewriteHistoryServerTools: false | "downgrade"
+  readonly systemRejectModels: Array<string>
+  /**
+   * Effective sanitize mode for models in `systemRejectModels` (∪ the learned
+   * reject set). Reuses the SystemMessagesSanitizeMode enum. Default `"as_user"`
+   * (keeps position — most prompt-cache-friendly).
+   */
+  readonly systemRejectMode: false | "drop_invalid" | "merge" | "as_user" | "as_assistant"
 
   /**
    * Client compatibility shim for the thinking frame some Copilot upstreams emit
@@ -358,13 +532,26 @@ export interface State {
   readonly thinkingSignatureCompat: false | "signature_delta" | "redacted_thinking"
 
   /**
-   * Model name overrides: request model → target model.
+   * Model name mappings: request model → target model.
    *
    * Override values can be full model names or short aliases (opus, sonnet, haiku).
    * If the target is not in available models, it's resolved as an alias.
-   * Defaults to DEFAULT_MODEL_OVERRIDES; config.yaml `model.model_overrides` replaces entirely.
+   * Defaults to DEFAULT_MODEL_MAPPINGS; config.yaml top-level `model_mappings` replaces entirely.
    */
-  readonly modelOverrides: Record<string, string>
+  readonly modelMappings: Record<string, string>
+
+  /**
+   * Per-pair (ingress format → match rule list) translation feature declarations
+   * (RFC 2026-07-14-anthropic-responses-direct-bridge §6.1, Phase 7). Consumed via
+   * `resolveTranslationFeatures()` (~/lib/config/model-translation) by the
+   * format-agnostic bridge-selection layer — NOT read per-cell `translateOut`, to
+   * keep the two round-trip scenarios (stable model vs mid-conversation model
+   * switch) from drifting out of sync across call sites (Phase 5 consumer).
+   * Defaults to `{}` (no declared pairs — every pair resolves to scenario A, full
+   * round-trip, no stripped features). Hot-reloadable: entirely replaced on config
+   * reload (including to `{}` on deletion), mirroring `modelMappings`.
+   */
+  readonly modelTranslation: ModelTranslation
 
   /**
    * Model IDs to hide from the available models list, even when Copilot
@@ -436,67 +623,72 @@ export interface State {
    * Default: "passthrough".
    */
   readonly cacheControlMode: CacheControlMode
+  /**
+   * Extended prompt-cache TTL (`extended-cache-ttl-2025-04-11`). Mirrors GHC: upgrade the
+   * cache_control breakpoints the proxy WRITES (proxied/sanitize modes) from the default 5m to 1h.
+   * Gated by `extendedCacheTtlEnabled` (master switch, default off) AND model support
+   * (`extendedCacheTtlModels`, mirrors GHC modelSupportsExtendedCacheTtl) AND an agent-style request
+   * (assistant message present — the closest analog to GHC's Agent-location gate). `toolsSystemTtl`
+   * applies to tool + system breakpoints, `messagesTtl` to rolling message breakpoints; `messagesTtl`
+   * is clamped ≤ `toolsSystemTtl` (Anthropic requires longer TTLs earlier in the tools→system→messages
+   * prefix order). The beta header is emitted iff a 1h ttl was actually written (mirrors the body).
+   */
+  readonly extendedCacheTtlEnabled: boolean
+  readonly extendedCacheTtlToolsSystem: CacheTtl
+  readonly extendedCacheTtlMessages: CacheTtl
+  readonly extendedCacheTtlModels: ReadonlyArray<string>
   /** Additional tool names that should never be deferred (merged with built-in list) */
   readonly nonDeferredTools: ReadonlyArray<string>
-
-  /**
-   * Anthropic API key for accurate Claude token counting.
-   * When set, `/v1/messages/count_tokens` for Claude models is forwarded to
-   * Anthropic's free token counting endpoint instead of using GPT tokenizer estimation.
-   * Also reads ANTHROPIC_API_KEY env var as fallback.
-   */
-  readonly anthropicApiKey: string
 
   /** Pre-compiled system prompt override rules from config.yaml */
   readonly systemPromptOverrides: Array<CompiledRewriteRule>
 
-  /**
-   * Maximum number of successful (non-failed) history entries to keep in SQLite.
-   * The reaper trims the success bucket (status != 'failed') to this size.
-   * 0 = unlimited. Default: 50.
-   */
-  readonly historySuccessLimit: number
+  /** Pre-compiled scoped `system_prompt_prepend` entries (top-down; matching ones concatenated). */
+  readonly systemPromptPrepend: Array<CompiledSystemPromptEntry>
+
+  /** Pre-compiled scoped `system_prompt_append` entries (top-down; matching ones concatenated). */
+  readonly systemPromptAppend: Array<CompiledSystemPromptEntry>
 
   /**
-   * Maximum number of failed history entries to keep in SQLite.
-   * The reaper trims the failure bucket (status = 'failed') to this size.
-   * Kept larger than the success limit by default — failures carry more
-   * diagnostic value. 0 = unlimited. Default: 200.
+   * Startup-only master switch for semantic V3 and optional raw capture.
+   * CLI --no-history overrides this config-backed value.
    */
-  readonly historyFailureLimit: number
+  readonly historyEnabled: boolean
 
   /**
-   * Interval in seconds between history reaper passes.
-   * The reaper periodically trims the SQLite history table to the per-status
-   * limits (`historySuccessLimit` / `historyFailureLimit`).
-   * Default: 600.
-   */
-  readonly historyReaperInterval: number
-
-  /**
-   * Filesystem path to the history SQLite database.
-   * Empty string means use the default path from PATHS.HISTORY_DB.
-   * Default: "".
+   * Injected History database path for tests. Production config cannot set it;
+   * an empty string selects PATHS.HISTORY_V3_DB so the online server never opens
+   * the legacy PATHS.HISTORY_DB artifact.
    */
   readonly historyDbPath: string
+  /** Optional raw capture is hot-reloadable through artifact generations. */
+  readonly historyRawCaptureEnabled: boolean
+  readonly historyRawCaptureDbPath: string
+  readonly historyRawCaptureMaxObjectBytes: number
 
-  /**
-   * Enable the double-hop web_search server-tool implementation.
-   * When true and a request carries a native Anthropic web_search server tool
-   * (or Claude Code's `WebSearch` tool), the Anthropic path intercepts the
-   * request, runs a real search via `webSearchBackend`, and synthesizes a
-   * standard Anthropic response. Default false (fully short-circuited when off).
-   */
-  readonly webSearchEnabled: boolean
-
-  /**
-   * Web search backend selector:
-   *   ""        — not configured / disabled
-   *   "searxng" — local SearXNG instance at http://localhost:8080
-   *   other     — treated as a Copilot Responses search model id (e.g. "gpt-5.5")
-   * Default "".
-   */
-  readonly webSearchBackend: string
+  // ── 分层遥测（telemetry.*，独立 telemetry.db）。近期/远期分辨率与保留可配。 ──
+  /** 遥测总开关（默认 true）。 */
+  readonly telemetryEnabled: boolean
+  /** telemetry.db 路径；空串=用 PATHS.TELEMETRY_DB 默认。 */
+  readonly telemetryDbPath: string
+  /** raw 落盘/flush 间隔秒（默认 60）。 */
+  readonly telemetryPersistInterval: number
+  /** rollup 上卷间隔秒（默认 3600，独立于 persist）。 */
+  readonly telemetryRollupInterval: number
+  /** capped 维度（client/tool）key 上限（默认 200）。 */
+  readonly telemetryCardinalityCap: number
+  /** DDSketch 相对误差 γ（默认 0.01；下限 ~0.005，apply 层校验回落）。 */
+  readonly telemetrySketchGamma: number
+  /** 终身累计层开关（默认 true）。 */
+  readonly telemetryCumulative: boolean
+  /** raw 层桶分辨率（分钟，默认 5；须整除 60，apply 层校验回落）。 */
+  readonly telemetryRawResolutionMinutes: number
+  /** raw 层保留天数（默认 7）。 */
+  readonly telemetryRawRetentionDays: number
+  /** hourly 层保留天数（默认 90）。 */
+  readonly telemetryHourlyRetentionDays: number
+  /** daily 层保留天数（默认 0=永久）。 */
+  readonly telemetryDailyRetentionDays: number
 
   /**
    * Fetch timeout in seconds.
@@ -504,7 +696,7 @@ export interface State {
    * Applies to both streaming and non-streaming requests.
    * 0 = no timeout (rely on upstream gateway timeout).
    */
-  readonly fetchTimeout: number
+  readonly responseHeaderTimeout: number
 
   /**
    * Stream idle timeout in seconds.
@@ -516,6 +708,26 @@ export interface State {
   readonly streamIdleTimeout: number
 
   /**
+   * Per-model stream-idle timeout override (seconds), keyed by model-name
+   * substring with `"*"` wildcard (same `findMostSpecific` semantics as
+   * `effortsOverrides`). A match wins over the `streamIdleTimeout` scalar; a
+   * value of 0 means disabled. Bundled default `{ "gpt-5.5": 600 }` (gpt-5.5's
+   * single 400s+ silent-reasoning gap exceeds the 300s scalar). App-guard only —
+   * does NOT touch the undici dispatcher. Hot-reloadable: per-key merged with
+   * bundled, entirely re-applied on config reload. Resolved via
+   * `resolveStreamIdleTimeout*` in `~/lib/models/timeout-resolver`.
+   */
+  readonly streamIdleTimeoutOverrides: Record<string, number>
+
+  /**
+   * Per-model response-header (first-byte) timeout override (seconds), same
+   * keying/merge semantics as `streamIdleTimeoutOverrides`. A match wins over
+   * the `responseHeaderTimeout` scalar; 0 = disabled. Bundled default `{}` (no
+   * built-in value). App-guard only. Resolved via `resolveResponseHeaderTimeout*`.
+   */
+  readonly responseHeaderTimeoutOverrides: Record<string, number>
+
+  /**
    * Upstream TCP keepalive initial-probe delay in seconds.
    * Sets `keepAliveInitialDelay` on the undici socket connecting to GHC, so the
    * kernel emits TCP keepalive probes after this much idle time (and every such
@@ -525,9 +737,39 @@ export interface State {
    * `content_block_start`). undici's default is 60s — too long for ~30s idle
    * reapers, so the first probe never fires before the connection is culled.
    * 0 = use undici's default (do not override). Default: 15.
-   * Node-only (undici dispatcher); Bun's fetch is unaffected.
+   * Also drives `node:tls`' `setKeepAlive` on the h2 socket (http2-client.ts) —
+   * the primary GHC connection path — which works on both Bun and Node (the
+   * undici Agent path above is Node-only, since Bun's global fetch does not
+   * consume the undici dispatcher; see proxy.ts module docstring).
    */
   readonly upstreamKeepaliveDelay: number
+
+  /**
+   * Upstream HTTP/2 PING keepalive interval in seconds (0 = disabled).
+   *
+   * The application-layer complement to `upstreamKeepaliveDelay` (TCP keepalive):
+   * GHC's CAPI proxy does NOT forward Anthropic's SSE `event: ping` frames, so a
+   * long thinking silence is a truly idle upstream stream. TCP keepalive keeps L4
+   * alive through NAT but does not defeat a connection-idle reaper (middlebox or
+   * GHC edge) counting application-layer silence; a periodic h2 PING puts a real
+   * frame on the wire. Kept WELL below observed idle-reaper windows (a real cut
+   * fired at ~112s). Default: 15. Works on both Bun and Node (the node:http2
+   * transport is runtime-neutral).
+   */
+  readonly upstreamH2PingInterval: number
+
+  /**
+   * TCP connect + TLS handshake deadline (seconds) for a single h2 session
+   * establishment attempt. Was the hardcoded `CONNECT_TIMEOUT_MS` in
+   * http2-client.ts; wired to real connection attempts in Plan 2. Default 10.
+   */
+  readonly sessionConnectTimeout: number
+  /**
+   * Idle timeout (seconds) for a pooled upstream Responses WS connection
+   * before proactive close. Was the hardcoded `DEFAULT_IDLE_TIMEOUT_MS` in
+   * upstream-ws-connection.ts; wired to real connections in Plan 2. Default 300.
+   */
+  readonly pooledConnectionIdleTimeout: number
 
   /**
    * Shutdown Phase 2 timeout in seconds.
@@ -549,6 +791,16 @@ export interface State {
    * 0 = disabled. Default: 600 (10 minutes).
    */
   readonly staleRequestMaxAge: number
+
+  /**
+   * Hard total-duration deadline (seconds) for a single request — the user-facing SLA that a
+   * request will be cancelled + settled by, enforced by a per-request monotonic timer (NOT the
+   * periodic stale reaper, which fires late — see reaper-diagnostics / RFC RC2). 0 = disabled,
+   * in which case behavior is byte-identical to the old stale-reaper-only path. Bundled config
+   * ships an explicit value (an intentional product default; the stale reaper stays as the
+   * leak safety-net for anomalies that outlive the deadline).
+   */
+  readonly requestDeadline: number
 
   /**
    * Interval in seconds for refreshing the cached model list from Copilot.
@@ -575,11 +827,25 @@ export interface State {
   readonly upstreamWebSocket: boolean
 
   /**
+   * Opt-in transactional buffered retry for the Responses (SSE/HTTP) streaming
+   * path — the Codex-tier analog of `protectStreamingGeneration`. When `true`,
+   * Responses adopts the driver's `runResponseBufferedSink`: every rendered
+   * frame is buffered until a terminal event and only committed on a clean
+   * drain, so a mid-stream upstream transport close/truncation re-runs the
+   * exchange up to the retry cap and delivers exactly one complete generation.
+   * `false` (default) keeps the live `runResponseSink` path (mid-stream drop →
+   * fail + preserved partial + truncation error frame). Buffering forces a
+   * client keepalive interval (see `resolveResponsesBufferedAndHeartbeat`).
+   * Enable with config openai_responses.buffered_retry: true.
+   */
+  readonly responsesBufferedRetry: boolean
+
+  /**
    * Keep the client-side Responses WebSocket connection open after a response
    * terminates, allowing the client to send a follow-up `response.create` on the
    * same socket (Phase 2 long-lived client WS). When false (default), the
    * socket is closed with code 1000 after each request, mirroring HTTP semantics.
-   * Enable with config openai_responses.client_ws_keep_open: true.
+   * Enable with config server.responses_ws.keep_open: true.
    */
   readonly clientWebsocketKeepOpen: boolean
 
@@ -590,6 +856,14 @@ export interface State {
    * Enabled by default; disable with config openai_responses.fix_stream_ids: false.
    */
   readonly fixResponsesStreamIds: boolean
+
+  /**
+   * Responses buffered-merge two orthogonal knobs (spec 2026-07-14-responses-buffered-block-merge §3).
+   * Lazy: only in effect on the buffered path (`responsesBufferedRetry`). `event_compaction` controls
+   * mid-block delta compaction; `completed_output` controls terminal-snapshot reconciliation.
+   */
+  readonly responsesBufferedMergeEventCompaction: "verbatim" | "drop-delta" | "item-summary"
+  readonly responsesBufferedMergeCompletedOutput: "upstream" | "repair-if-incomplete" | "rebuild"
 
   /**
    * Strip the `image_generation` builtin tool from inbound Responses requests.
@@ -610,7 +884,7 @@ export interface State {
   /**
    * Max concurrent client WebSocket connections to the proxy. Default 256;
    * set to 0 to disable. Bounds file-descriptor usage when
-   * `client_ws_keep_open` is true.
+   * `server.responses_ws.keep_open` is true.
    */
   readonly maxClientWsConnections: number
 
@@ -619,7 +893,7 @@ export interface State {
    * When reached and an idle connection exists, the oldest idle is evicted.
    * When all connections are busy, an overflow connection is allocated with a warn log.
    */
-  readonly maxUpstreamWsConnections: number
+  readonly softMaxUpstreamWsConnections: number
 
   /**
    * Policy for handling Claude Code "Warmup" requests.
@@ -654,6 +928,8 @@ export interface State {
    * Hot-reloadable: entirely replaced on config reload.
    */
   readonly stripBetaHeaders: Record<string, Array<string>>
+  /** GHC 未支持的 cache_control 子字段黑名单（per-model + 通配 "*"）。passthrough 模式下剥除。内置 {scope} 在读取端注入，此处仅 config 覆盖。 */
+  readonly stripCacheControlSubfields: Record<string, Array<string>>
 
   /**
    * Per-model partner-model feature names (e.g. `structured_outputs`) the upstream
@@ -663,6 +939,23 @@ export interface State {
    * `"*"` applies to all models. Hot-reloadable: entirely replaced on config reload.
    */
   readonly stripPartnerFeatures: Record<string, Array<string>>
+
+  /**
+   * Per-model custom-tool top-level field names to STRIP from every tool before
+   * sending upstream (e.g. `eager_input_streaming`). Keys are model-name
+   * substrings; `"*"` applies to all models. ADDITIVE — union'd with the built-in
+   * default (`eager_input_streaming`) and the runtime negotiation cache.
+   * Hot-reloadable: entirely replaced on config reload.
+   */
+  readonly stripToolFields: Record<string, Array<string>>
+
+  /**
+   * Per-model custom-tool field names to KEEP (never strip) — the reversibility
+   * escape hatch that subtracts from the strip set, e.g. to re-enable a field a
+   * future upstream starts supporting. Keys are model-name substrings; `"*"`
+   * applies to all models. Hot-reloadable: entirely replaced on config reload.
+   */
+  readonly keepToolFields: Record<string, Array<string>>
 
   /**
    * Per-model body fields to strip from outbound payloads before sending
@@ -686,18 +979,49 @@ export interface State {
   readonly decodeToolInputFields: Record<string, Array<string>>
 
   /**
-   * When true, decode ALL top-level string fields of every tool_use input
-   * (ignores `decodeToolInputFields`). Default false. server_tool_use is
-   * never affected.
-   */
-  readonly decodeAllToolInputFields: boolean
-
-  /**
    * When true, backfill a missing `AskUserQuestion` `questions[].question` from its `header` on the response wire (Claude Code rejects a question item that has a header but no question).
    * Only items missing the `question` key are touched; present-but-empty is left alone. History keeps the upstream-original form.
    * Default true. Runs after `decodeToolInputFields` (so a stringified `questions` array is structured first).
    */
   readonly backfillQuestionFromHeader: boolean
+
+  /**
+   * When true, recover a missing SendMessage `to` recipient from a misnamed `agentId` alias on the
+   * response wire (the client rejects a SendMessage call whose required `to` is absent). Only touched
+   * when `to` is absent and `agentId` is a non-empty string; History keeps the upstream-original form.
+   * Default true.
+   */
+  readonly fixSendMessageRecipient: boolean
+
+  /**
+   * Default TTL (ms) for reactive learning records (feature-negotiation cache).
+   * A learned entry auto-expires when `now > lastConfirmedAt + ttl`, unless it is
+   * pinned or its category has a per-category override. `Number.POSITIVE_INFINITY`
+   * = never auto-expire. Hot-reloadable. See `negotiation-lifecycle.ts`.
+   */
+  readonly negotiationDefaultTtlMs: number
+
+  /**
+   * Per-category TTL overrides (ms) for reactive learning records. Keys are
+   * `NegotiationCategory` ids (camelCase, e.g. `toolFields`); values are TTL in ms
+   * (`Number.POSITIVE_INFINITY` = never). A category absent here uses
+   * `negotiationDefaultTtlMs`. Hot-reloadable: entirely replaced on config reload.
+   */
+  readonly negotiationTtlOverridesMs: Record<string, number>
+
+  /**
+   * Path to an ad-hoc TS hook module for mocking/intercepting the upstream transport
+   * (dev/test only). Declarative: this field alone does not load anything — the module is
+   * loaded at startup (`start.ts`, when `hooksEnabled`) or via a future reload API. Empty
+   * string = no module configured. Config-managed (`hooks.upstream_module`).
+   */
+  readonly hooksUpstreamModule: string
+
+  /**
+   * Whether to load the upstream hook module named by `hooksUpstreamModule`. Default false —
+   * the feature is fully off unless explicitly true. Declarative only; see `hooksUpstreamModule`.
+   */
+  readonly hooksEnabled: boolean
 }
 
 type MutableState = {
@@ -734,6 +1058,24 @@ function cloneStripBetaHeaders(source: Record<string, Array<string>>): Record<st
   return out
 }
 
+/** Deep-clone the per-vendor buffered-retry override map (each vendor entry is its own object). */
+function cloneBufferedRetryOverrides(source: Record<string, Partial<BufferedRetryCaps>>): Record<string, Partial<BufferedRetryCaps>> {
+  const out: Record<string, Partial<BufferedRetryCaps>> = {}
+  for (const [vendor, caps] of Object.entries(source)) {
+    out[vendor] = { ...caps }
+  }
+  return out
+}
+
+/** Deep-clone `modelTranslation` (ingress → rule list, each rule its own object with its own `features` array). */
+function cloneModelTranslation(source: ModelTranslation): ModelTranslation {
+  const out: ModelTranslation = {}
+  for (const [ingress, rules] of Object.entries(source) as Array<[keyof ModelTranslation, NonNullable<ModelTranslation[keyof ModelTranslation]>]>) {
+    out[ingress] = rules.map((rule) => ({ ...rule, features: rule.features ? [...rule.features] : undefined }))
+  }
+  return out
+}
+
 function cloneState(source: MutableState): MutableState {
   return {
     ...source,
@@ -741,10 +1083,21 @@ function cloneState(source: MutableState): MutableState {
     copilotTokenInfo: source.copilotTokenInfo ? { ...source.copilotTokenInfo } : undefined,
     modelIds: new Set(source.modelIds),
     modelIndex: new Map(source.modelIndex),
-    modelOverrides: { ...source.modelOverrides },
+    modelMappings: { ...source.modelMappings },
+    modelTranslation: cloneModelTranslation(source.modelTranslation),
+    toolSearchOverrides: { ...source.toolSearchOverrides },
+    errorSelfhealDelegate: { ...source.errorSelfhealDelegate },
     effortsOverrides: { ...source.effortsOverrides },
+    streamIdleTimeoutOverrides: { ...source.streamIdleTimeoutOverrides },
+    responseHeaderTimeoutOverrides: { ...source.responseHeaderTimeoutOverrides },
+    negotiationTtlOverridesMs: { ...source.negotiationTtlOverridesMs },
+    bufferedRetryShared: { ...source.bufferedRetryShared },
+    bufferedRetryOverrides: cloneBufferedRetryOverrides(source.bufferedRetryOverrides),
     stripBetaHeaders: cloneStripBetaHeaders(source.stripBetaHeaders),
+    stripCacheControlSubfields: cloneStripBetaHeaders(source.stripCacheControlSubfields),
     stripPartnerFeatures: cloneStripBetaHeaders(source.stripPartnerFeatures),
+    stripToolFields: cloneStripBetaHeaders(source.stripToolFields),
+    keepToolFields: cloneStripBetaHeaders(source.keepToolFields),
     rejectBodyFields: cloneStripBetaHeaders(source.rejectBodyFields),
     decodeToolInputFields: cloneStripBetaHeaders(source.decodeToolInputFields),
     disabledModels: [...source.disabledModels],
@@ -755,6 +1108,8 @@ function cloneState(source: MutableState): MutableState {
     models: cloneModels(source.models),
     rewriteSystemReminders: cloneRewriteRules(source.rewriteSystemReminders),
     systemPromptOverrides: [...source.systemPromptOverrides],
+    systemPromptPrepend: [...source.systemPromptPrepend],
+    systemPromptAppend: [...source.systemPromptAppend],
     tokenInfo: source.tokenInfo ? { ...source.tokenInfo } : undefined,
   }
 }
@@ -774,8 +1129,17 @@ function cloneStatePatch(patch: Partial<MutableState>): Partial<MutableState> {
   if ("modelIndex" in patch) {
     cloned.modelIndex = patch.modelIndex ? new Map(patch.modelIndex) : undefined
   }
-  if ("modelOverrides" in patch) {
-    cloned.modelOverrides = patch.modelOverrides ? { ...patch.modelOverrides } : undefined
+  if ("modelMappings" in patch) {
+    cloned.modelMappings = patch.modelMappings ? { ...patch.modelMappings } : undefined
+  }
+  if ("modelTranslation" in patch) {
+    cloned.modelTranslation = patch.modelTranslation ? cloneModelTranslation(patch.modelTranslation) : undefined
+  }
+  if ("toolSearchOverrides" in patch) {
+    cloned.toolSearchOverrides = patch.toolSearchOverrides ? { ...patch.toolSearchOverrides } : undefined
+  }
+  if ("errorSelfhealDelegate" in patch) {
+    cloned.errorSelfhealDelegate = patch.errorSelfhealDelegate ? { ...patch.errorSelfhealDelegate } : undefined
   }
   if ("models" in patch) {
     cloned.models = cloneModels(patch.models)
@@ -786,17 +1150,47 @@ function cloneStatePatch(patch: Partial<MutableState>): Partial<MutableState> {
   if ("systemPromptOverrides" in patch) {
     cloned.systemPromptOverrides = patch.systemPromptOverrides ? [...patch.systemPromptOverrides] : undefined
   }
+  if ("systemPromptPrepend" in patch) {
+    cloned.systemPromptPrepend = patch.systemPromptPrepend ? [...patch.systemPromptPrepend] : undefined
+  }
+  if ("systemPromptAppend" in patch) {
+    cloned.systemPromptAppend = patch.systemPromptAppend ? [...patch.systemPromptAppend] : undefined
+  }
   if ("tokenInfo" in patch) {
     cloned.tokenInfo = patch.tokenInfo ? { ...patch.tokenInfo } : undefined
   }
   if ("effortsOverrides" in patch) {
     cloned.effortsOverrides = patch.effortsOverrides ? { ...patch.effortsOverrides } : undefined
   }
+  if ("streamIdleTimeoutOverrides" in patch) {
+    cloned.streamIdleTimeoutOverrides = patch.streamIdleTimeoutOverrides ? { ...patch.streamIdleTimeoutOverrides } : undefined
+  }
+  if ("responseHeaderTimeoutOverrides" in patch) {
+    cloned.responseHeaderTimeoutOverrides = patch.responseHeaderTimeoutOverrides ? { ...patch.responseHeaderTimeoutOverrides } : undefined
+  }
+  if ("negotiationTtlOverridesMs" in patch) {
+    cloned.negotiationTtlOverridesMs = patch.negotiationTtlOverridesMs ? { ...patch.negotiationTtlOverridesMs } : undefined
+  }
+  if ("bufferedRetryShared" in patch) {
+    cloned.bufferedRetryShared = patch.bufferedRetryShared ? { ...patch.bufferedRetryShared } : undefined
+  }
+  if ("bufferedRetryOverrides" in patch) {
+    cloned.bufferedRetryOverrides = patch.bufferedRetryOverrides ? cloneBufferedRetryOverrides(patch.bufferedRetryOverrides) : undefined
+  }
   if ("stripBetaHeaders" in patch) {
     cloned.stripBetaHeaders = patch.stripBetaHeaders ? cloneStripBetaHeaders(patch.stripBetaHeaders) : undefined
   }
+  if ("stripCacheControlSubfields" in patch) {
+    cloned.stripCacheControlSubfields = patch.stripCacheControlSubfields ? cloneStripBetaHeaders(patch.stripCacheControlSubfields) : undefined
+  }
   if ("stripPartnerFeatures" in patch) {
     cloned.stripPartnerFeatures = patch.stripPartnerFeatures ? cloneStripBetaHeaders(patch.stripPartnerFeatures) : undefined
+  }
+  if ("stripToolFields" in patch) {
+    cloned.stripToolFields = patch.stripToolFields ? cloneStripBetaHeaders(patch.stripToolFields) : undefined
+  }
+  if ("keepToolFields" in patch) {
+    cloned.keepToolFields = patch.keepToolFields ? cloneStripBetaHeaders(patch.keepToolFields) : undefined
   }
   if ("rejectBodyFields" in patch) {
     cloned.rejectBodyFields = patch.rejectBodyFields ? cloneStripBetaHeaders(patch.rejectBodyFields) : undefined
@@ -819,6 +1213,9 @@ function cloneStatePatch(patch: Partial<MutableState>): Partial<MutableState> {
   if ("responseHeaderWhitelist" in patch) {
     cloned.responseHeaderWhitelist = patch.responseHeaderWhitelist ? [...patch.responseHeaderWhitelist] : undefined
   }
+  if ("toolRepairMalformedInput" in patch) {
+    cloned.toolRepairMalformedInput = patch.toolRepairMalformedInput ? [...patch.toolRepairMalformedInput] : undefined
+  }
 
   return cloned
 }
@@ -835,7 +1232,7 @@ export function setTokenState(patch: Partial<Pick<MutableState, "tokenInfo" | "c
   updateState(patch)
 }
 
-export function setCliState(patch: Partial<Pick<MutableState, "accountType" | "ghcApiBaseUrl" | "showGitHubToken" | "autoTruncate" | "verbose">>): void {
+export function setCliState(patch: Partial<Pick<MutableState, "accountType" | "ghcApiBaseUrl" | "showGitHubToken" | "verbose">>): void {
   updateState(patch)
 }
 
@@ -877,6 +1274,22 @@ export function getRawModels(): ModelsResponse | undefined {
 }
 
 /**
+ * The upstream ids that `config.disabled_models` currently removes from the usable
+ * set — computed from the cached raw catalog with the SAME normalized match as
+ * {@link applyDisabledFilter} (so config `claude-opus-4-8` reports the actual
+ * catalog id `claude-opus-4.8`). Empty when nothing disabled / no catalog yet.
+ * Consumed by the internal `/api/models` route to annotate the full catalog.
+ */
+export function getConfigDisabledIds(): Array<string> {
+  const raw = rawModels
+  if (!raw) return []
+  const disabled = mutableState.disabledModels
+  if (disabled.length === 0) return []
+  const disabledSet = new Set(disabled.map((id) => normalizeForMatching(id)))
+  return raw.data.filter((m) => disabledSet.has(normalizeForMatching(m.id))).map((m) => m.id)
+}
+
+/**
  * Reset the module-scoped `rawModels` cache (for tests). `rawModels` lives
  * OUTSIDE `mutableState`, so `snapshotStateForTests`/`restoreStateForTests`
  * cannot reach it — without this, a `setModels()` in one test leaks its raw
@@ -897,11 +1310,23 @@ export function setDisabledModels(disabledModels: ReadonlyArray<string>): void {
   rebuildModelIndex()
 }
 
+export function setUnknownEndpointLogging(value: UnknownEndpointLogging): void {
+  mutableState.unknownEndpointLogging = value
+}
+
+export function setLoggingConfig(value: Partial<LoggingConfigState>): void {
+  mutableState.logging = { ...mutableState.logging, ...value }
+}
+
+export function setTuiEnabled(value: boolean): void {
+  mutableState.tuiEnabled = value
+}
+
 export function setAnthropicBehavior(
   patch: Partial<
     Pick<
       MutableState,
-      | "stripServerTools"
+      | "useUpstreamCountTokens"
       | "strictResponseHeaders"
       | "strictRequestHeaders"
       | "requestHeaderBlacklist"
@@ -910,18 +1335,21 @@ export function setAnthropicBehavior(
       | "responseHeaderWhitelist"
       | "stripAttributionHeader"
       | "streamKeepalivePingSec"
+      | "streamKeepaliveMode"
       | "streamCommitAfterSec"
       | "protectStreamingGeneration"
-      | "protectStreamingMaxRetries"
-      | "protectStreamingHeartbeat"
-      | "protectStreamingBufferCapBytes"
       | "protectStreamingEscalateContext"
       | "injectClaudeCodeOfficialTools"
       | "thinkingBlockMessagePolicy"
       | "thinkingBlockSanitizeCheck"
+      | "thinkingDestackStrategy"
+      | "stripThinkingOnReject"
+      | "poisonedThinkingQuarantine"
+      | "poisonedThinkingTtlHours"
       | "coerceAdaptiveThinking"
-      | "systemMessagesSanitize"
-      | "rewriteHistoryServerTools"
+      | "systemDefaultMode"
+      | "systemRejectModels"
+      | "systemRejectMode"
       | "thinkingSignatureCompat"
       | "dedupToolCalls"
       | "stripReadToolResultTags"
@@ -931,78 +1359,153 @@ export function setAnthropicBehavior(
       | "contextEditingKeepThinking"
       | "toolSearchEnabled"
       | "cacheControlMode"
+      | "extendedCacheTtlEnabled"
+      | "extendedCacheTtlToolsSystem"
+      | "extendedCacheTtlMessages"
+      | "extendedCacheTtlModels"
       | "nonDeferredTools"
       | "rewriteSystemReminders"
       | "systemPromptOverrides"
-      | "compressToolResultsBeforeTruncate"
+      | "systemPromptPrepend"
+      | "systemPromptAppend"
       | "sanitizeToolNames"
       | "recoverToolCallText"
       | "toolRepairMalformedInput"
       | "refusalSseRewrite"
+      | "refusalEndTurnText"
+      | "refusalErrorMessage"
+      | "refusalErrorType"
+      | "errorShapingEnabled"
+      | "errorAskUserQuestion"
+      | "errorAuqTemplate"
+      | "errorSelfhealDelegate"
       | "contextEditingModels"
-      | "toolSearchModels"
+      | "toolSearchOverrides"
+      | "memoryToolEnabled"
+      | "memoryModels"
       | "interleavedThinkingModels"
       | "adaptiveThinkingModels"
-      | "anthropicApiKey"
       | "warmupPolicy"
       | "effortsOverrides"
+      | "streamIdleTimeoutOverrides"
+      | "responseHeaderTimeoutOverrides"
       | "stripBetaHeaders"
+      | "stripCacheControlSubfields"
       | "stripPartnerFeatures"
+      | "stripToolFields"
+      | "keepToolFields"
       | "rejectBodyFields"
       | "decodeToolInputFields"
-      | "decodeAllToolInputFields"
       | "backfillQuestionFromHeader"
+      | "fixSendMessageRecipient"
     >
   >,
 ): void {
   updateState(patch)
 }
 
-export function setModelOverrides(modelOverrides: Record<string, string>): void {
-  updateState({ modelOverrides })
+export function setModelMappings(modelMappings: Record<string, string>): void {
+  updateState({ modelMappings })
+}
+
+export function setModelTranslation(modelTranslation: ModelTranslation): void {
+  updateState({ modelTranslation })
+}
+
+/**
+ * Replace the per-model stream-idle / response-header timeout override maps.
+ * Replace semantics per field (the maps are already per-key merged with the
+ * bundled defaults upstream in `mergeConfigs`). Deliberately does NOT fire
+ * `requestWatchdogListeners` — these are app-guard-only knobs with no bearing
+ * on the undici dispatcher (which serves plaintext SearXNG on the scalar
+ * `streamIdleTimeout`; GHC rides node:http2 with no transport body-idle). See
+ * ADR 2026-07-12-per-model-idle-timeout-is-app-guard-only.
+ */
+export function setTimeoutOverridesConfig(patch: Partial<Pick<MutableState, "streamIdleTimeoutOverrides" | "responseHeaderTimeoutOverrides">>): void {
+  updateState(patch)
 }
 
 export function setHistoryConfig(
-  patch: Partial<Pick<MutableState, "historySuccessLimit" | "historyFailureLimit" | "historyReaperInterval" | "historyDbPath">>,
+  patch: Partial<
+    Pick<MutableState, "historyEnabled" | "historyDbPath" | "historyRawCaptureEnabled" | "historyRawCaptureDbPath" | "historyRawCaptureMaxObjectBytes">
+  >,
 ): void {
-  // Any of the three reaper inputs (both limits + interval) must retune the
-  // running timer, else changing only reaper_interval on hot-reload would
-  // update state but leave the timer firing at the old cadence.
-  const reaperConfigChanged =
-    (patch.historySuccessLimit !== undefined && patch.historySuccessLimit !== mutableState.historySuccessLimit)
-    || (patch.historyFailureLimit !== undefined && patch.historyFailureLimit !== mutableState.historyFailureLimit)
-    || (patch.historyReaperInterval !== undefined && patch.historyReaperInterval !== mutableState.historyReaperInterval)
+  const rawCaptureChanged =
+    (patch.historyRawCaptureEnabled !== undefined && patch.historyRawCaptureEnabled !== mutableState.historyRawCaptureEnabled)
+    || (patch.historyRawCaptureDbPath !== undefined && patch.historyRawCaptureDbPath !== mutableState.historyRawCaptureDbPath)
+    || (patch.historyRawCaptureMaxObjectBytes !== undefined && patch.historyRawCaptureMaxObjectBytes !== mutableState.historyRawCaptureMaxObjectBytes)
   updateState(patch)
-  if (reaperConfigChanged) {
-    for (const listener of historyLimitListeners) listener()
+  if (rawCaptureChanged) for (const listener of historyRawCaptureListeners) listener()
+}
+
+const historyRawCaptureListeners = new Set<() => void>()
+
+export function onHistoryRawCaptureChange(listener: () => void): () => void {
+  historyRawCaptureListeners.add(listener)
+  listener()
+  return () => historyRawCaptureListeners.delete(listener)
+}
+
+/** 遥测 timer（persist/rollup 间隔）变更监听者——telemetry 模块用它热重载重调周期而不循环 import。 */
+const telemetryConfigListeners = new Set<() => void>()
+
+/**
+ * 应用 telemetry.* 配置补丁到 state。任何影响 persist/rollup timer 的键（间隔/enabled）
+ * 变更时通知监听者重调周期（对齐 setHistoryConfig 的 reaper retune 模式）。
+ */
+export function setTelemetryConfig(
+  patch: Partial<
+    Pick<
+      MutableState,
+      | "telemetryEnabled"
+      | "telemetryDbPath"
+      | "telemetryPersistInterval"
+      | "telemetryRollupInterval"
+      | "telemetryCardinalityCap"
+      | "telemetrySketchGamma"
+      | "telemetryCumulative"
+      | "telemetryRawResolutionMinutes"
+      | "telemetryRawRetentionDays"
+      | "telemetryHourlyRetentionDays"
+      | "telemetryDailyRetentionDays"
+    >
+  >,
+): void {
+  const timerConfigChanged =
+    (patch.telemetryPersistInterval !== undefined && patch.telemetryPersistInterval !== mutableState.telemetryPersistInterval)
+    || (patch.telemetryRollupInterval !== undefined && patch.telemetryRollupInterval !== mutableState.telemetryRollupInterval)
+    || (patch.telemetryEnabled !== undefined && patch.telemetryEnabled !== mutableState.telemetryEnabled)
+  updateState(patch)
+  if (timerConfigChanged) {
+    for (const listener of telemetryConfigListeners) listener()
   }
 }
 
-/**
- * Listeners notified when any reaper config (success/failure limit or interval)
- * changes. Used by the history module to retune its reaper without a circular
- * import. Invoked with no arguments — the listener re-reads state.
- */
-const historyLimitListeners = new Set<() => void>()
-
-/**
- * Subscribe to reaper config changes (success/failure limit or interval).
- *
- * The listener is invoked synchronously once on registration, so subscribers
- * that register after `resetConfigManagedState()` still pick up the initial
- * values. Returns an unsubscribe function.
- */
-export function onHistoryLimitChange(listener: () => void): () => void {
-  historyLimitListeners.add(listener)
-  listener()
-  return () => historyLimitListeners.delete(listener)
+/** 订阅 telemetry timer 配置变更（persist/rollup 间隔或 enabled）。返回退订函数。 */
+export function onTelemetryConfigChange(listener: () => void): () => void {
+  telemetryConfigListeners.add(listener)
+  return () => telemetryConfigListeners.delete(listener)
 }
 
 export function setShutdownConfig(patch: Partial<Pick<MutableState, "shutdownGracefulWait" | "shutdownAbortWait">>): void {
   updateState(patch)
 }
 
-export function setWebSearchConfig(patch: Partial<Pick<MutableState, "webSearchEnabled" | "webSearchBackend">>): void {
+/**
+ * Set the upstream-hook declarative config (`hooksUpstreamModule` / `hooksEnabled`). Declarative
+ * only — never triggers a module (re)load itself; that happens at startup (`start.ts`) or via a
+ * future reload API.
+ */
+export function setHooksConfig(patch: Partial<Pick<MutableState, "hooksUpstreamModule" | "hooksEnabled">>): void {
+  updateState(patch)
+}
+
+/**
+ * Set reactive-learning (feature-negotiation) TTL config. Hot-reloadable.
+ * `negotiationTtlOverridesMs` is replaced wholesale (whole-map replace semantic,
+ * like the other config-managed record fields).
+ */
+export function setNegotiationConfig(patch: Partial<Pick<MutableState, "negotiationDefaultTtlMs" | "negotiationTtlOverridesMs">>): void {
   updateState(patch)
 }
 
@@ -1014,36 +1517,90 @@ export function setForwardClientQuery(patch: Partial<Pick<MutableState, "forward
   updateState(patch)
 }
 
-export function setAutoTruncateConfig(
-  patch: Partial<Pick<MutableState, "autoTruncate" | "autoTruncateTargetFactor" | "autoTruncateMaxRetries" | "autoTruncateCompressThreshold">>,
+/** Set the shared reactive-retry budget (`retry.max_reactive_retries`). Hot-reloadable. */
+export function setReactiveRetryConfig(patch: Partial<Pick<MutableState, "maxReactiveRetries">>): void {
+  updateState(patch)
+}
+
+export function setGenerationRuntimeConfig(
+  patch: Partial<
+    Pick<
+      MutableState,
+      | "generationHedgeEnabled"
+      | "generationHedgeThresholdSec"
+      | "generationHedgeMaxSecondaryCandidates"
+      | "generationRecoveryMaxCandidates"
+      | "generationMaxActiveCandidates"
+      | "generationMaxTotalCandidates"
+      | "generationMaxActiveDispatches"
+      | "generationMaxTotalDispatches"
+      | "generationCleanupGraceSec"
+      | "generationHedgeAllowServerTools"
+    >
+  >,
 ): void {
   updateState(patch)
 }
 
 export function setTimeoutConfig(
-  patch: Partial<Pick<MutableState, "fetchTimeout" | "streamIdleTimeout" | "staleRequestMaxAge" | "modelRefreshInterval" | "upstreamKeepaliveDelay">>,
+  patch: Partial<Pick<MutableState, "responseHeaderTimeout" | "streamIdleTimeout" | "staleRequestMaxAge" | "requestDeadline" | "modelRefreshInterval">>,
 ): void {
   const transportChanged =
-    (patch.fetchTimeout !== undefined && patch.fetchTimeout !== mutableState.fetchTimeout)
+    (patch.responseHeaderTimeout !== undefined && patch.responseHeaderTimeout !== mutableState.responseHeaderTimeout)
     || (patch.streamIdleTimeout !== undefined && patch.streamIdleTimeout !== mutableState.streamIdleTimeout)
-    || (patch.upstreamKeepaliveDelay !== undefined && patch.upstreamKeepaliveDelay !== mutableState.upstreamKeepaliveDelay)
   updateState(patch)
   if (transportChanged) {
-    for (const listener of transportTimeoutListeners) listener()
+    for (const listener of requestWatchdogListeners) listener()
   }
 }
 
 /**
- * Listeners notified when `fetchTimeout`, `streamIdleTimeout`, or
- * `upstreamKeepaliveDelay` change.
+ * Listeners notified when `responseHeaderTimeout` or `streamIdleTimeout` change.
  * Used by transport layer (undici dispatcher) to rebuild with new options.
  */
-const transportTimeoutListeners = new Set<() => void>()
+const requestWatchdogListeners = new Set<() => void>()
 
-/** Subscribe to transport-relevant timeout changes (fetchTimeout, streamIdleTimeout). */
-export function onTransportTimeoutChange(listener: () => void): () => void {
-  transportTimeoutListeners.add(listener)
-  return () => transportTimeoutListeners.delete(listener)
+/** Subscribe to request-watchdog-relevant timeout changes (responseHeaderTimeout, streamIdleTimeout). */
+export function onRequestWatchdogChange(listener: () => void): () => void {
+  requestWatchdogListeners.add(listener)
+  return () => requestWatchdogListeners.delete(listener)
+}
+
+/**
+ * Upstream-transport-axis config setter — the outbound-connection counterpart
+ * to `setTimeoutConfig` (protocol-agnostic request watchdogs) and
+ * `setResponsesWsIngressConfig` (inbound client-facing WS limits). Notifies
+ * `onUpstreamTransportChange` listeners on ANY tracked field change, including
+ * `upstreamH2PingInterval` — a pre-existing gap in the old combined
+ * `setTimeoutConfig` (upstreamH2PingInterval changes never notified
+ * `requestWatchdogListeners`) that this split fixes as a side effect.
+ */
+export function setUpstreamTransportConfig(
+  patch: Partial<
+    Pick<
+      MutableState,
+      "upstreamKeepaliveDelay" | "upstreamH2PingInterval" | "sessionConnectTimeout" | "pooledConnectionIdleTimeout" | "softMaxUpstreamWsConnections"
+    >
+  >,
+): void {
+  const changed =
+    (patch.upstreamKeepaliveDelay !== undefined && patch.upstreamKeepaliveDelay !== mutableState.upstreamKeepaliveDelay)
+    || (patch.upstreamH2PingInterval !== undefined && patch.upstreamH2PingInterval !== mutableState.upstreamH2PingInterval)
+    || (patch.sessionConnectTimeout !== undefined && patch.sessionConnectTimeout !== mutableState.sessionConnectTimeout)
+    || (patch.pooledConnectionIdleTimeout !== undefined && patch.pooledConnectionIdleTimeout !== mutableState.pooledConnectionIdleTimeout)
+    || (patch.softMaxUpstreamWsConnections !== undefined && patch.softMaxUpstreamWsConnections !== mutableState.softMaxUpstreamWsConnections)
+  updateState(patch)
+  if (changed) {
+    for (const listener of transportUpstreamListeners) listener()
+  }
+}
+
+/** Subscribers notified after a hot-reload changes any `setUpstreamTransportConfig` field. Plan 2/4 (proxy.ts, http2-client.ts, upstream-ws*.ts) subscribe here to rebuild connections/reschedule timers. */
+const transportUpstreamListeners = new Set<() => void>()
+
+export function onUpstreamTransportChange(listener: () => void): () => void {
+  transportUpstreamListeners.add(listener)
+  return () => transportUpstreamListeners.delete(listener)
 }
 
 export function setResponsesConfig(
@@ -1052,16 +1609,69 @@ export function setResponsesConfig(
       MutableState,
       | "normalizeResponsesCallIds"
       | "upstreamWebSocket"
+      | "responsesBufferedRetry"
       | "fixResponsesStreamIds"
       | "stripImageGenerationTool"
-      | "clientWebsocketKeepOpen"
-      | "maxWsFrameBytes"
-      | "maxClientWsConnections"
-      | "maxUpstreamWsConnections"
+      | "responsesBufferedMergeEventCompaction"
+      | "responsesBufferedMergeCompletedOutput"
     >
   >,
 ): void {
   updateState(patch)
+}
+
+/**
+ * Client-facing Responses WS ingress config — split out of `setResponsesConfig`
+ * (server.responses_ws.* three-axis reorg). Distinct from `setUpstreamTransportConfig`'s
+ * `softMaxUpstreamWsConnections` (that governs the OUTBOUND upstream WS pool cap;
+ * this governs INBOUND client connection limits).
+ */
+export function setResponsesWsIngressConfig(
+  patch: Partial<Pick<MutableState, "clientWebsocketKeepOpen" | "maxWsFrameBytes" | "maxClientWsConnections">>,
+): void {
+  updateState(patch)
+}
+
+/** Chat Completions buffered-retry mode switch (P3). Hot-reloadable. */
+export function setChatCompletionsConfig(patch: Partial<Pick<MutableState, "chatCompletionsBufferedRetry">>): void {
+  updateState(patch)
+}
+
+/**
+ * Set the vendor-neutral SHARED buffered-retry caps (partial merge — only the
+ * declared fields are overwritten, the rest retain their prior value). Hot-reloadable.
+ */
+export function setBufferedRetryShared(patch: Partial<BufferedRetryCaps>): void {
+  updateState({ bufferedRetryShared: { ...state.bufferedRetryShared, ...patch } })
+}
+
+/**
+ * Set a per-vendor buffered-retry cap override (partial merge into that vendor's
+ * existing override). Fields NOT set here fall through to {@link setBufferedRetryShared}
+ * / the built-in default at resolve time. Hot-reloadable.
+ */
+export function setBufferedRetryOverride(vendor: string, patch: Partial<BufferedRetryCaps>): void {
+  const prev = state.bufferedRetryOverrides[vendor] ?? {}
+  updateState({
+    bufferedRetryOverrides: { ...state.bufferedRetryOverrides, [vendor]: { ...prev, ...patch } },
+  })
+}
+
+/**
+ * Resolve the effective buffered-retry caps for one vendor. Priority (highest
+ * first): per-vendor override ({@link State.bufferedRetryOverrides}) > shared
+ * caps ({@link State.bufferedRetryShared}) > built-in default. Every consumer of
+ * `maxRetries` / `bufferCapBytes` / `heartbeatSec` MUST route through this (no
+ * direct scalar-field reads — single resolution point).
+ */
+export function resolveBufferedCaps(vendor: string): BufferedRetryCaps {
+  const o = state.bufferedRetryOverrides[vendor] ?? {}
+  const s = state.bufferedRetryShared
+  return {
+    maxRetries: o.maxRetries ?? s.maxRetries,
+    bufferCapBytes: o.bufferCapBytes ?? s.bufferCapBytes,
+    heartbeatSec: o.heartbeatSec ?? s.heartbeatSec,
+  }
 }
 
 /**
@@ -1100,21 +1710,35 @@ export function rebuildModelIndex(): void {
   })
 }
 /**
- * Built-in model overrides. Intentionally EMPTY: model name mapping (short
+ * Built-in model mapping. Intentionally EMPTY: model name mapping (short
  * aliases like opus/sonnet/haiku, redirects) is owned exclusively by the
  * bundled `config.yaml`, the single source of truth. If config.yaml can't be
- * read, overrides stay empty and unknown aliases simply fail to resolve
+ * read, the mapping stays empty and unknown aliases simply fail to resolve
  * (the upstream rejects them) rather than falling back to hardcoded names.
  */
-export const DEFAULT_MODEL_OVERRIDES: Record<string, string> = {}
+export const DEFAULT_MODEL_MAPPINGS: Record<string, string> = {}
+
+/** Built-in `model_translation` mapping. Intentionally EMPTY — see {@link DEFAULT_MODEL_MAPPINGS} rationale. */
+export const DEFAULT_MODEL_TRANSLATION: ModelTranslation = {}
 
 /**
  * Default values for config-managed scalar/runtime fields.
  * Single source of truth for mutableState initialization and resetConfigManagedState().
- * Model overrides continue to use DEFAULT_MODEL_OVERRIDES.
+ * Model mapping continues to use DEFAULT_MODEL_MAPPINGS.
  */
 export const CONFIG_MANAGED_DEFAULTS = {
-  stripServerTools: false,
+  unknownEndpointLogging: { notFound: "warn", methodNotAllowed: "warn" } as UnknownEndpointLogging,
+  logging: {
+    terminalLevel: "info",
+    fileLevel: "debug",
+    fileEnabled: true,
+    fileDirectory: "",
+    fileMaxSizeMb: 10,
+    fileMaxFilesPerProcess: 7,
+    retentionDays: 7,
+  } as LoggingConfigState,
+  tuiEnabled: true,
+  useUpstreamCountTokens: true,
   strictResponseHeaders: false,
   strictRequestHeaders: false,
   requestHeaderBlacklist: ["x-anthropic-billing-header"] as ReadonlyArray<string>,
@@ -1123,18 +1747,26 @@ export const CONFIG_MANAGED_DEFAULTS = {
   responseHeaderWhitelist: ["request-id", "x-request-id", "anthropic-ratelimit-*", "anthropic-organization-id", "retry-after"] as ReadonlyArray<string>,
   stripAttributionHeader: true,
   streamKeepalivePingSec: 20,
+  streamKeepaliveMode: "empty_text" as "ping" | "enveloped_ping" | "empty_text",
   streamCommitAfterSec: 20,
   protectStreamingGeneration: false as false | "on" | "tool_use_only",
-  protectStreamingMaxRetries: 3,
-  protectStreamingHeartbeat: 15,
-  protectStreamingBufferCapBytes: 16_777_216,
+  bufferedRetryShared: { maxRetries: 3, bufferCapBytes: 16_777_216, heartbeatSec: 15 } as BufferedRetryCaps,
+  bufferedRetryOverrides: {} as Record<string, Partial<BufferedRetryCaps>>,
+  // Default ON (P3 flip, 2026-07-14): buffering/generation-preservation beats the
+  // downstream streaming UX for CC. See docs/decisions/ + plan README frozen contract.
+  chatCompletionsBufferedRetry: true,
   protectStreamingEscalateContext: false,
   injectClaudeCodeOfficialTools: true,
   thinkingBlockMessagePolicy: "preserve" as ThinkingBlockMessagePolicy,
-  thinkingBlockSanitizeCheck: "empty_thinking" as false | "empty_thinking" | "empty_any",
+  thinkingBlockSanitizeCheck: "all_empty" as false | ThinkingBlockSanitizeMode,
+  thinkingDestackStrategy: "move_blocks" as ThinkingDestackStrategy,
+  stripThinkingOnReject: true,
+  poisonedThinkingQuarantine: true,
+  poisonedThinkingTtlHours: 72,
   coerceAdaptiveThinking: "basic" as false | "basic" | "best_effort",
-  systemMessagesSanitize: false as false | "drop_invalid" | "merge" | "as_user" | "as_assistant",
-  rewriteHistoryServerTools: false as false | "downgrade",
+  systemDefaultMode: false as false | "drop_invalid" | "merge" | "as_user" | "as_assistant",
+  systemRejectMode: "as_user" as false | "drop_invalid" | "merge" | "as_user" | "as_assistant",
+  systemRejectModels: ["claude-sonnet-4.6", "claude-haiku-4.5"] as Array<string>,
   thinkingSignatureCompat: "signature_delta" as false | "signature_delta" | "redacted_thinking",
   dedupToolCalls: false as const,
   stripReadToolResultTags: false,
@@ -1144,28 +1776,69 @@ export const CONFIG_MANAGED_DEFAULTS = {
   contextEditingKeepThinking: 1,
   toolSearchEnabled: true,
   cacheControlMode: "passthrough" as CacheControlMode,
+  // Extended prompt-cache TTL (mirrors GHC extendedTtl / extendedTtlMessages). Off by default; when
+  // enabled, tools/system default to 1h and messages to 5m (GHC's parent-on / sub-toggle-off shape).
+  extendedCacheTtlEnabled: false,
+  extendedCacheTtlToolsSystem: "1h" as CacheTtl,
+  extendedCacheTtlMessages: "5m" as CacheTtl,
+  extendedCacheTtlModels: [
+    "claude-fable-5",
+    "claude-opus-4-5",
+    "claude-opus-4-6",
+    "claude-opus-4-7",
+    "claude-opus-4-8",
+    "claude-sonnet-4-5",
+    "claude-sonnet-4-6",
+    "claude-haiku-4-5",
+  ] as ReadonlyArray<string>,
   nonDeferredTools: [] as ReadonlyArray<string>,
   rewriteSystemReminders: false as const,
   systemPromptOverrides: [] as Array<CompiledRewriteRule>,
-  autoTruncate: false,
-  // Defaults mirror the engine constants AUTO_TRUNCATE_RETRY_FACTOR / MAX_AUTO_TRUNCATE_RETRIES /
-  // LARGE_TOOL_RESULT_THRESHOLD. Inlined (not imported) to avoid a state ↔ auto-truncate ↔
-  // system-prompt import cycle; kept in sync by a guard in auto-truncate-common.unit.test.ts.
-  autoTruncateTargetFactor: 0.9,
-  autoTruncateMaxRetries: 5,
-  autoTruncateCompressThreshold: 10000,
-  compressToolResultsBeforeTruncate: true,
+  systemPromptPrepend: [] as Array<CompiledSystemPromptEntry>,
+  systemPromptAppend: [] as Array<CompiledSystemPromptEntry>,
+  // Shared reactive-retry budget (was auto_truncate.max_retries). Inlined default 5.
+  maxReactiveRetries: 5,
+  generationHedgeEnabled: true,
+  generationHedgeThresholdSec: 300,
+  generationHedgeMaxSecondaryCandidates: 1,
+  generationRecoveryMaxCandidates: 3,
+  generationMaxActiveCandidates: 2,
+  generationMaxTotalCandidates: 5,
+  generationMaxActiveDispatches: 2,
+  generationMaxTotalDispatches: 16,
+  generationCleanupGraceSec: 10,
+  generationHedgeAllowServerTools: false,
   sanitizeToolNames: false,
   forwardClientQuery: true,
   forwardClientQueryExclude: [] as ReadonlyArray<string>,
   recoverToolCallText: false,
-  toolRepairMalformedInput: false as "tags" | "repair" | false,
+  toolRepairMalformedInput: [] as ReadonlyArray<RepairItem>,
   refusalSseRewrite: "error" as "refusal" | "end_turn" | "error",
+  refusalEndTurnText: DEFAULT_REFUSAL_END_TURN_TEXT,
+  refusalErrorMessage: DEFAULT_REFUSAL_ERROR_MESSAGE,
+  refusalErrorType: DEFAULT_REFUSAL_ERROR_TYPE,
+  errorShapingEnabled: true,
+  errorAskUserQuestion: false,
+  errorAuqTemplate: "",
+  errorSelfhealDelegate: {} as Readonly<Record<string, "proxy" | "delegate">>,
   // Model-capability allowlists (family prefixes; see features.ts:matchModelCapability). Mirror GHC.
   contextEditingModels: ["claude-haiku-4-5", "claude-sonnet-4", "claude-opus-4", "claude-opus-41"] as ReadonlyArray<string>,
-  toolSearchModels: [
+  // Tool-search is default-allow for Claude ≥4.5 (see features.ts:toolSearchDefaultAllow); this map
+  // only holds per-model force-on/off overrides. Empty by default.
+  toolSearchOverrides: {} as Record<string, boolean>,
+  // Memory tool: default OFF (CAPI acceptance of memory_20250818 unverified). memoryModels mirrors GHC
+  // modelSupportsMemory — the BARE `claude-sonnet-4` / `claude-opus-4` entries are load-bearing (they
+  // cover all sonnet-4.x / opus-4.x via the dash-boundary matcher); the specific entries are redundant
+  // but kept as self-documentation. Do NOT drop the bare entries.
+  memoryToolEnabled: false,
+  memoryModels: [
+    "claude-fable-5",
+    "claude-haiku-4-5",
+    "claude-sonnet-4",
     "claude-sonnet-4-5",
     "claude-sonnet-4-6",
+    "claude-opus-4",
+    "claude-opus-4-1",
     "claude-opus-4-5",
     "claude-opus-4-6",
     "claude-opus-4-7",
@@ -1173,42 +1846,79 @@ export const CONFIG_MANAGED_DEFAULTS = {
   ] as ReadonlyArray<string>,
   interleavedThinkingModels: ["claude-sonnet-4", "claude-haiku-4-5", "claude-opus-4-5"] as ReadonlyArray<string>,
   adaptiveThinkingModels: ["claude-opus-4-6", "claude-opus-4-7", "claude-opus-4-8"] as ReadonlyArray<string>,
-  fetchTimeout: 300,
+  responseHeaderTimeout: 300,
   streamIdleTimeout: 300,
   upstreamKeepaliveDelay: 15,
+  upstreamH2PingInterval: 15,
+  sessionConnectTimeout: 10,
+  pooledConnectionIdleTimeout: 300,
   staleRequestMaxAge: 600,
+  requestDeadline: 0,
   modelRefreshInterval: 600,
   shutdownGracefulWait: 60,
   shutdownAbortWait: 120,
-  historySuccessLimit: 50,
-  historyFailureLimit: 200,
-  historyReaperInterval: 600,
   historyDbPath: "",
-  webSearchEnabled: false,
-  webSearchBackend: "",
+  historyRawCaptureEnabled: false,
+  historyRawCaptureDbPath: "",
+  historyRawCaptureMaxObjectBytes: 16 * 1024 * 1024,
+  telemetryEnabled: true,
+  telemetryDbPath: "",
+  telemetryPersistInterval: 60,
+  telemetryRollupInterval: 3600,
+  telemetryCardinalityCap: 200,
+  telemetrySketchGamma: 0.01,
+  telemetryCumulative: true,
+  telemetryRawResolutionMinutes: 5,
+  telemetryRawRetentionDays: 7,
+  telemetryHourlyRetentionDays: 90,
+  telemetryDailyRetentionDays: 0,
   normalizeResponsesCallIds: true,
   upstreamWebSocket: false,
+  // Default ON (P2/P4 flip, 2026-07-14): covers BOTH Responses-HTTP (P2) and
+  // Responses-WS (P4, no independent key — ws.ts's resolveResponsesBufferedAndHeartbeat
+  // reads this same field). Buffering/generation-preservation beats the downstream
+  // streaming UX. P1 Anthropic stays default OFF (see protectStreamingGeneration above)
+  // — block-level anchor-coexist shape is CLI-unsafe (tests/e2e-client/anthropic-coexist-cli.e2e.test.ts).
+  responsesBufferedRetry: true,
   fixResponsesStreamIds: true,
+  responsesBufferedMergeEventCompaction: "drop-delta" as "verbatim" | "drop-delta" | "item-summary",
+  responsesBufferedMergeCompletedOutput: "repair-if-incomplete" as "upstream" | "repair-if-incomplete" | "rebuild",
   stripImageGenerationTool: false,
   clientWebsocketKeepOpen: false,
   maxWsFrameBytes: 0,
   maxClientWsConnections: 256,
-  maxUpstreamWsConnections: 32,
-  anthropicApiKey: "",
+  softMaxUpstreamWsConnections: 32,
   warmupPolicy: "allow" as WarmupPolicy,
   effortsOverrides: {} as Record<string, Array<string>>,
+  // Empty by design — the bundled `gpt-5.5: 600` product default lives in
+  // config.yaml (`timeouts.stream_idle_overrides`), NOT here, mirroring
+  // `model_mappings` (H1: BUILTIN code-constant + union would be wrong; this is
+  // per-key merge with the shippable config, degrading to scalar if config.yaml
+  // is absent). See docs/spec/2026-07-12-per-model-idle-timeout.md §4.2.
+  streamIdleTimeoutOverrides: {} as Record<string, number>,
+  responseHeaderTimeoutOverrides: {} as Record<string, number>,
   stripBetaHeaders: {} as Record<string, Array<string>>,
+  stripCacheControlSubfields: {} as Record<string, Array<string>>,
   stripPartnerFeatures: {} as Record<string, Array<string>>,
+  stripToolFields: {} as Record<string, Array<string>>,
+  keepToolFields: {} as Record<string, Array<string>>,
   rejectBodyFields: {} as Record<string, Array<string>>,
   decodeToolInputFields: { AskUserQuestion: ["questions"] } as Record<string, Array<string>>,
-  decodeAllToolInputFields: false,
   backfillQuestionFromHeader: true,
+  fixSendMessageRecipient: true,
+  negotiationDefaultTtlMs: 30 * 86_400_000,
+  negotiationTtlOverridesMs: { toolFields: 90 * 86_400_000, partnerFeatures: Number.POSITIVE_INFINITY } as Record<string, number>,
   disabledModels: [] as ReadonlyArray<string>,
+  hooksUpstreamModule: "",
+  hooksEnabled: false,
 }
 
 export function resetConfigManagedState(): void {
+  setUnknownEndpointLogging({ ...CONFIG_MANAGED_DEFAULTS.unknownEndpointLogging })
+  setLoggingConfig({ ...CONFIG_MANAGED_DEFAULTS.logging })
+  setTuiEnabled(CONFIG_MANAGED_DEFAULTS.tuiEnabled)
   setAnthropicBehavior({
-    stripServerTools: CONFIG_MANAGED_DEFAULTS.stripServerTools,
+    useUpstreamCountTokens: CONFIG_MANAGED_DEFAULTS.useUpstreamCountTokens,
     strictResponseHeaders: CONFIG_MANAGED_DEFAULTS.strictResponseHeaders,
     strictRequestHeaders: CONFIG_MANAGED_DEFAULTS.strictRequestHeaders,
     requestHeaderBlacklist: [...CONFIG_MANAGED_DEFAULTS.requestHeaderBlacklist],
@@ -1217,18 +1927,21 @@ export function resetConfigManagedState(): void {
     responseHeaderWhitelist: [...CONFIG_MANAGED_DEFAULTS.responseHeaderWhitelist],
     stripAttributionHeader: CONFIG_MANAGED_DEFAULTS.stripAttributionHeader,
     streamKeepalivePingSec: CONFIG_MANAGED_DEFAULTS.streamKeepalivePingSec,
+    streamKeepaliveMode: CONFIG_MANAGED_DEFAULTS.streamKeepaliveMode,
     streamCommitAfterSec: CONFIG_MANAGED_DEFAULTS.streamCommitAfterSec,
     protectStreamingGeneration: CONFIG_MANAGED_DEFAULTS.protectStreamingGeneration,
-    protectStreamingMaxRetries: CONFIG_MANAGED_DEFAULTS.protectStreamingMaxRetries,
-    protectStreamingHeartbeat: CONFIG_MANAGED_DEFAULTS.protectStreamingHeartbeat,
-    protectStreamingBufferCapBytes: CONFIG_MANAGED_DEFAULTS.protectStreamingBufferCapBytes,
     protectStreamingEscalateContext: CONFIG_MANAGED_DEFAULTS.protectStreamingEscalateContext,
     injectClaudeCodeOfficialTools: CONFIG_MANAGED_DEFAULTS.injectClaudeCodeOfficialTools,
     thinkingBlockMessagePolicy: CONFIG_MANAGED_DEFAULTS.thinkingBlockMessagePolicy,
     thinkingBlockSanitizeCheck: CONFIG_MANAGED_DEFAULTS.thinkingBlockSanitizeCheck,
+    thinkingDestackStrategy: CONFIG_MANAGED_DEFAULTS.thinkingDestackStrategy,
+    stripThinkingOnReject: CONFIG_MANAGED_DEFAULTS.stripThinkingOnReject,
+    poisonedThinkingQuarantine: CONFIG_MANAGED_DEFAULTS.poisonedThinkingQuarantine,
+    poisonedThinkingTtlHours: CONFIG_MANAGED_DEFAULTS.poisonedThinkingTtlHours,
     coerceAdaptiveThinking: CONFIG_MANAGED_DEFAULTS.coerceAdaptiveThinking,
-    systemMessagesSanitize: CONFIG_MANAGED_DEFAULTS.systemMessagesSanitize,
-    rewriteHistoryServerTools: CONFIG_MANAGED_DEFAULTS.rewriteHistoryServerTools,
+    systemDefaultMode: CONFIG_MANAGED_DEFAULTS.systemDefaultMode,
+    systemRejectMode: CONFIG_MANAGED_DEFAULTS.systemRejectMode,
+    systemRejectModels: [...CONFIG_MANAGED_DEFAULTS.systemRejectModels],
     thinkingSignatureCompat: CONFIG_MANAGED_DEFAULTS.thinkingSignatureCompat,
     dedupToolCalls: CONFIG_MANAGED_DEFAULTS.dedupToolCalls,
     stripReadToolResultTags: CONFIG_MANAGED_DEFAULTS.stripReadToolResultTags,
@@ -1238,50 +1951,93 @@ export function resetConfigManagedState(): void {
     contextEditingKeepThinking: CONFIG_MANAGED_DEFAULTS.contextEditingKeepThinking,
     toolSearchEnabled: CONFIG_MANAGED_DEFAULTS.toolSearchEnabled,
     cacheControlMode: CONFIG_MANAGED_DEFAULTS.cacheControlMode,
+    extendedCacheTtlEnabled: CONFIG_MANAGED_DEFAULTS.extendedCacheTtlEnabled,
+    extendedCacheTtlToolsSystem: CONFIG_MANAGED_DEFAULTS.extendedCacheTtlToolsSystem,
+    extendedCacheTtlMessages: CONFIG_MANAGED_DEFAULTS.extendedCacheTtlMessages,
+    extendedCacheTtlModels: [...CONFIG_MANAGED_DEFAULTS.extendedCacheTtlModels],
     nonDeferredTools: [...CONFIG_MANAGED_DEFAULTS.nonDeferredTools],
     rewriteSystemReminders: CONFIG_MANAGED_DEFAULTS.rewriteSystemReminders,
     systemPromptOverrides: [...CONFIG_MANAGED_DEFAULTS.systemPromptOverrides],
-    compressToolResultsBeforeTruncate: CONFIG_MANAGED_DEFAULTS.compressToolResultsBeforeTruncate,
+    systemPromptPrepend: [...CONFIG_MANAGED_DEFAULTS.systemPromptPrepend],
+    systemPromptAppend: [...CONFIG_MANAGED_DEFAULTS.systemPromptAppend],
     sanitizeToolNames: CONFIG_MANAGED_DEFAULTS.sanitizeToolNames,
     recoverToolCallText: CONFIG_MANAGED_DEFAULTS.recoverToolCallText,
-    toolRepairMalformedInput: CONFIG_MANAGED_DEFAULTS.toolRepairMalformedInput,
+    toolRepairMalformedInput: [...CONFIG_MANAGED_DEFAULTS.toolRepairMalformedInput],
     refusalSseRewrite: CONFIG_MANAGED_DEFAULTS.refusalSseRewrite,
+    refusalEndTurnText: CONFIG_MANAGED_DEFAULTS.refusalEndTurnText,
+    refusalErrorMessage: CONFIG_MANAGED_DEFAULTS.refusalErrorMessage,
+    refusalErrorType: CONFIG_MANAGED_DEFAULTS.refusalErrorType,
+    errorShapingEnabled: CONFIG_MANAGED_DEFAULTS.errorShapingEnabled,
+    errorAskUserQuestion: CONFIG_MANAGED_DEFAULTS.errorAskUserQuestion,
+    errorAuqTemplate: CONFIG_MANAGED_DEFAULTS.errorAuqTemplate,
+    errorSelfhealDelegate: { ...CONFIG_MANAGED_DEFAULTS.errorSelfhealDelegate },
     contextEditingModels: [...CONFIG_MANAGED_DEFAULTS.contextEditingModels],
-    toolSearchModels: [...CONFIG_MANAGED_DEFAULTS.toolSearchModels],
+    toolSearchOverrides: { ...CONFIG_MANAGED_DEFAULTS.toolSearchOverrides },
+    memoryToolEnabled: CONFIG_MANAGED_DEFAULTS.memoryToolEnabled,
+    memoryModels: [...CONFIG_MANAGED_DEFAULTS.memoryModels],
     interleavedThinkingModels: [...CONFIG_MANAGED_DEFAULTS.interleavedThinkingModels],
     adaptiveThinkingModels: [...CONFIG_MANAGED_DEFAULTS.adaptiveThinkingModels],
-    anthropicApiKey: CONFIG_MANAGED_DEFAULTS.anthropicApiKey,
     warmupPolicy: CONFIG_MANAGED_DEFAULTS.warmupPolicy,
     effortsOverrides: { ...CONFIG_MANAGED_DEFAULTS.effortsOverrides },
+    streamIdleTimeoutOverrides: { ...CONFIG_MANAGED_DEFAULTS.streamIdleTimeoutOverrides },
+    responseHeaderTimeoutOverrides: { ...CONFIG_MANAGED_DEFAULTS.responseHeaderTimeoutOverrides },
     stripBetaHeaders: cloneStripBetaHeaders(CONFIG_MANAGED_DEFAULTS.stripBetaHeaders),
+    stripCacheControlSubfields: cloneStripBetaHeaders(CONFIG_MANAGED_DEFAULTS.stripCacheControlSubfields),
     stripPartnerFeatures: cloneStripBetaHeaders(CONFIG_MANAGED_DEFAULTS.stripPartnerFeatures),
+    stripToolFields: cloneStripBetaHeaders(CONFIG_MANAGED_DEFAULTS.stripToolFields),
+    keepToolFields: cloneStripBetaHeaders(CONFIG_MANAGED_DEFAULTS.keepToolFields),
     rejectBodyFields: cloneStripBetaHeaders(CONFIG_MANAGED_DEFAULTS.rejectBodyFields),
     decodeToolInputFields: cloneStripBetaHeaders(CONFIG_MANAGED_DEFAULTS.decodeToolInputFields),
-    decodeAllToolInputFields: CONFIG_MANAGED_DEFAULTS.decodeAllToolInputFields,
     backfillQuestionFromHeader: CONFIG_MANAGED_DEFAULTS.backfillQuestionFromHeader,
+    fixSendMessageRecipient: CONFIG_MANAGED_DEFAULTS.fixSendMessageRecipient,
   })
-  setModelOverrides({ ...DEFAULT_MODEL_OVERRIDES })
+  setModelMappings({ ...DEFAULT_MODEL_MAPPINGS })
+  setModelTranslation(cloneModelTranslation(DEFAULT_MODEL_TRANSLATION))
   setDisabledModels([...CONFIG_MANAGED_DEFAULTS.disabledModels])
   setTimeoutConfig({
-    fetchTimeout: CONFIG_MANAGED_DEFAULTS.fetchTimeout,
+    responseHeaderTimeout: CONFIG_MANAGED_DEFAULTS.responseHeaderTimeout,
     streamIdleTimeout: CONFIG_MANAGED_DEFAULTS.streamIdleTimeout,
-    upstreamKeepaliveDelay: CONFIG_MANAGED_DEFAULTS.upstreamKeepaliveDelay,
     staleRequestMaxAge: CONFIG_MANAGED_DEFAULTS.staleRequestMaxAge,
+    requestDeadline: CONFIG_MANAGED_DEFAULTS.requestDeadline,
     modelRefreshInterval: CONFIG_MANAGED_DEFAULTS.modelRefreshInterval,
+  })
+  setUpstreamTransportConfig({
+    upstreamKeepaliveDelay: CONFIG_MANAGED_DEFAULTS.upstreamKeepaliveDelay,
+    upstreamH2PingInterval: CONFIG_MANAGED_DEFAULTS.upstreamH2PingInterval,
+    sessionConnectTimeout: CONFIG_MANAGED_DEFAULTS.sessionConnectTimeout,
+    pooledConnectionIdleTimeout: CONFIG_MANAGED_DEFAULTS.pooledConnectionIdleTimeout,
+    softMaxUpstreamWsConnections: CONFIG_MANAGED_DEFAULTS.softMaxUpstreamWsConnections,
   })
   setShutdownConfig({
     shutdownGracefulWait: CONFIG_MANAGED_DEFAULTS.shutdownGracefulWait,
     shutdownAbortWait: CONFIG_MANAGED_DEFAULTS.shutdownAbortWait,
   })
-  setHistoryConfig({
-    historySuccessLimit: CONFIG_MANAGED_DEFAULTS.historySuccessLimit,
-    historyFailureLimit: CONFIG_MANAGED_DEFAULTS.historyFailureLimit,
-    historyReaperInterval: CONFIG_MANAGED_DEFAULTS.historyReaperInterval,
-    historyDbPath: CONFIG_MANAGED_DEFAULTS.historyDbPath,
+  setHooksConfig({
+    hooksUpstreamModule: CONFIG_MANAGED_DEFAULTS.hooksUpstreamModule,
+    hooksEnabled: CONFIG_MANAGED_DEFAULTS.hooksEnabled,
   })
-  setWebSearchConfig({
-    webSearchEnabled: CONFIG_MANAGED_DEFAULTS.webSearchEnabled,
-    webSearchBackend: CONFIG_MANAGED_DEFAULTS.webSearchBackend,
+  setNegotiationConfig({
+    negotiationDefaultTtlMs: CONFIG_MANAGED_DEFAULTS.negotiationDefaultTtlMs,
+    negotiationTtlOverridesMs: { ...CONFIG_MANAGED_DEFAULTS.negotiationTtlOverridesMs },
+  })
+  setHistoryConfig({
+    historyDbPath: CONFIG_MANAGED_DEFAULTS.historyDbPath,
+    historyRawCaptureEnabled: CONFIG_MANAGED_DEFAULTS.historyRawCaptureEnabled,
+    historyRawCaptureDbPath: CONFIG_MANAGED_DEFAULTS.historyRawCaptureDbPath,
+    historyRawCaptureMaxObjectBytes: CONFIG_MANAGED_DEFAULTS.historyRawCaptureMaxObjectBytes,
+  })
+  setTelemetryConfig({
+    telemetryEnabled: CONFIG_MANAGED_DEFAULTS.telemetryEnabled,
+    telemetryDbPath: CONFIG_MANAGED_DEFAULTS.telemetryDbPath,
+    telemetryPersistInterval: CONFIG_MANAGED_DEFAULTS.telemetryPersistInterval,
+    telemetryRollupInterval: CONFIG_MANAGED_DEFAULTS.telemetryRollupInterval,
+    telemetryCardinalityCap: CONFIG_MANAGED_DEFAULTS.telemetryCardinalityCap,
+    telemetrySketchGamma: CONFIG_MANAGED_DEFAULTS.telemetrySketchGamma,
+    telemetryCumulative: CONFIG_MANAGED_DEFAULTS.telemetryCumulative,
+    telemetryRawResolutionMinutes: CONFIG_MANAGED_DEFAULTS.telemetryRawResolutionMinutes,
+    telemetryRawRetentionDays: CONFIG_MANAGED_DEFAULTS.telemetryRawRetentionDays,
+    telemetryHourlyRetentionDays: CONFIG_MANAGED_DEFAULTS.telemetryHourlyRetentionDays,
+    telemetryDailyRetentionDays: CONFIG_MANAGED_DEFAULTS.telemetryDailyRetentionDays,
   })
   setForwardClientQuery({
     forwardClientQuery: CONFIG_MANAGED_DEFAULTS.forwardClientQuery,
@@ -1290,40 +2046,80 @@ export function resetConfigManagedState(): void {
   setResponsesConfig({
     normalizeResponsesCallIds: CONFIG_MANAGED_DEFAULTS.normalizeResponsesCallIds,
     upstreamWebSocket: CONFIG_MANAGED_DEFAULTS.upstreamWebSocket,
+    responsesBufferedRetry: CONFIG_MANAGED_DEFAULTS.responsesBufferedRetry,
     fixResponsesStreamIds: CONFIG_MANAGED_DEFAULTS.fixResponsesStreamIds,
+    responsesBufferedMergeEventCompaction: CONFIG_MANAGED_DEFAULTS.responsesBufferedMergeEventCompaction,
+    responsesBufferedMergeCompletedOutput: CONFIG_MANAGED_DEFAULTS.responsesBufferedMergeCompletedOutput,
     stripImageGenerationTool: CONFIG_MANAGED_DEFAULTS.stripImageGenerationTool,
+  })
+  setResponsesWsIngressConfig({
     clientWebsocketKeepOpen: CONFIG_MANAGED_DEFAULTS.clientWebsocketKeepOpen,
     maxWsFrameBytes: CONFIG_MANAGED_DEFAULTS.maxWsFrameBytes,
     maxClientWsConnections: CONFIG_MANAGED_DEFAULTS.maxClientWsConnections,
-    maxUpstreamWsConnections: CONFIG_MANAGED_DEFAULTS.maxUpstreamWsConnections,
   })
-  // auto-truncate is a top-level toggle (CLI flag + config.yaml `auto_truncate.enabled`)
-  // plus three tuning fields, all reset via setAutoTruncateConfig.
-  setAutoTruncateConfig({
-    autoTruncate: CONFIG_MANAGED_DEFAULTS.autoTruncate,
-    autoTruncateTargetFactor: CONFIG_MANAGED_DEFAULTS.autoTruncateTargetFactor,
-    autoTruncateMaxRetries: CONFIG_MANAGED_DEFAULTS.autoTruncateMaxRetries,
-    autoTruncateCompressThreshold: CONFIG_MANAGED_DEFAULTS.autoTruncateCompressThreshold,
+  // Buffered-retry caps (vendor-neutral shared + per-vendor overrides) + the
+  // chat_completions mode switch. Reset via updateState (whole-object replace of
+  // the shared caps + overrides map, cloned off the frozen defaults).
+  updateState({
+    bufferedRetryShared: { ...CONFIG_MANAGED_DEFAULTS.bufferedRetryShared },
+    bufferedRetryOverrides: cloneBufferedRetryOverrides(CONFIG_MANAGED_DEFAULTS.bufferedRetryOverrides),
+    chatCompletionsBufferedRetry: CONFIG_MANAGED_DEFAULTS.chatCompletionsBufferedRetry,
+  })
+  // Shared reactive-retry budget (was auto_truncate.max_retries).
+  setReactiveRetryConfig({ maxReactiveRetries: CONFIG_MANAGED_DEFAULTS.maxReactiveRetries })
+  setGenerationRuntimeConfig({
+    generationHedgeEnabled: CONFIG_MANAGED_DEFAULTS.generationHedgeEnabled,
+    generationHedgeThresholdSec: CONFIG_MANAGED_DEFAULTS.generationHedgeThresholdSec,
+    generationHedgeMaxSecondaryCandidates: CONFIG_MANAGED_DEFAULTS.generationHedgeMaxSecondaryCandidates,
+    generationRecoveryMaxCandidates: CONFIG_MANAGED_DEFAULTS.generationRecoveryMaxCandidates,
+    generationMaxActiveCandidates: CONFIG_MANAGED_DEFAULTS.generationMaxActiveCandidates,
+    generationMaxTotalCandidates: CONFIG_MANAGED_DEFAULTS.generationMaxTotalCandidates,
+    generationMaxActiveDispatches: CONFIG_MANAGED_DEFAULTS.generationMaxActiveDispatches,
+    generationMaxTotalDispatches: CONFIG_MANAGED_DEFAULTS.generationMaxTotalDispatches,
+    generationCleanupGraceSec: CONFIG_MANAGED_DEFAULTS.generationCleanupGraceSec,
+    generationHedgeAllowServerTools: CONFIG_MANAGED_DEFAULTS.generationHedgeAllowServerTools,
   })
 }
 
 const mutableState: MutableState = {
+  unknownEndpointLogging: { ...CONFIG_MANAGED_DEFAULTS.unknownEndpointLogging },
+  logging: { ...CONFIG_MANAGED_DEFAULTS.logging },
+  tuiEnabled: CONFIG_MANAGED_DEFAULTS.tuiEnabled,
   accountType: "individual",
   ghcApiBaseUrl: "",
-  autoTruncate: CONFIG_MANAGED_DEFAULTS.autoTruncate,
-  autoTruncateTargetFactor: CONFIG_MANAGED_DEFAULTS.autoTruncateTargetFactor,
-  autoTruncateMaxRetries: CONFIG_MANAGED_DEFAULTS.autoTruncateMaxRetries,
-  autoTruncateCompressThreshold: CONFIG_MANAGED_DEFAULTS.autoTruncateCompressThreshold,
+  // History master switch (startup-phase; see the field doc). NOT in
+  // CONFIG_MANAGED_DEFAULTS so resetConfigManagedState leaves it at the boot
+  // value across hot-reloads.
+  historyEnabled: true,
+  maxReactiveRetries: CONFIG_MANAGED_DEFAULTS.maxReactiveRetries,
+  generationHedgeEnabled: CONFIG_MANAGED_DEFAULTS.generationHedgeEnabled,
+  generationHedgeThresholdSec: CONFIG_MANAGED_DEFAULTS.generationHedgeThresholdSec,
+  generationHedgeMaxSecondaryCandidates: CONFIG_MANAGED_DEFAULTS.generationHedgeMaxSecondaryCandidates,
+  generationRecoveryMaxCandidates: CONFIG_MANAGED_DEFAULTS.generationRecoveryMaxCandidates,
+  generationMaxActiveCandidates: CONFIG_MANAGED_DEFAULTS.generationMaxActiveCandidates,
+  generationMaxTotalCandidates: CONFIG_MANAGED_DEFAULTS.generationMaxTotalCandidates,
+  generationMaxActiveDispatches: CONFIG_MANAGED_DEFAULTS.generationMaxActiveDispatches,
+  generationMaxTotalDispatches: CONFIG_MANAGED_DEFAULTS.generationMaxTotalDispatches,
+  generationCleanupGraceSec: CONFIG_MANAGED_DEFAULTS.generationCleanupGraceSec,
+  generationHedgeAllowServerTools: CONFIG_MANAGED_DEFAULTS.generationHedgeAllowServerTools,
   tokenBasedBilling: false,
-  compressToolResultsBeforeTruncate: CONFIG_MANAGED_DEFAULTS.compressToolResultsBeforeTruncate,
   sanitizeToolNames: CONFIG_MANAGED_DEFAULTS.sanitizeToolNames,
   forwardClientQuery: CONFIG_MANAGED_DEFAULTS.forwardClientQuery,
   forwardClientQueryExclude: [...CONFIG_MANAGED_DEFAULTS.forwardClientQueryExclude],
   recoverToolCallText: CONFIG_MANAGED_DEFAULTS.recoverToolCallText,
-  toolRepairMalformedInput: CONFIG_MANAGED_DEFAULTS.toolRepairMalformedInput,
+  toolRepairMalformedInput: [...CONFIG_MANAGED_DEFAULTS.toolRepairMalformedInput],
   refusalSseRewrite: CONFIG_MANAGED_DEFAULTS.refusalSseRewrite,
+  refusalEndTurnText: CONFIG_MANAGED_DEFAULTS.refusalEndTurnText,
+  refusalErrorMessage: CONFIG_MANAGED_DEFAULTS.refusalErrorMessage,
+  refusalErrorType: CONFIG_MANAGED_DEFAULTS.refusalErrorType,
+  errorShapingEnabled: CONFIG_MANAGED_DEFAULTS.errorShapingEnabled,
+  errorAskUserQuestion: CONFIG_MANAGED_DEFAULTS.errorAskUserQuestion,
+  errorAuqTemplate: CONFIG_MANAGED_DEFAULTS.errorAuqTemplate,
+  errorSelfhealDelegate: { ...CONFIG_MANAGED_DEFAULTS.errorSelfhealDelegate },
   contextEditingModels: [...CONFIG_MANAGED_DEFAULTS.contextEditingModels],
-  toolSearchModels: [...CONFIG_MANAGED_DEFAULTS.toolSearchModels],
+  toolSearchOverrides: { ...CONFIG_MANAGED_DEFAULTS.toolSearchOverrides },
+  memoryToolEnabled: CONFIG_MANAGED_DEFAULTS.memoryToolEnabled,
+  memoryModels: [...CONFIG_MANAGED_DEFAULTS.memoryModels],
   interleavedThinkingModels: [...CONFIG_MANAGED_DEFAULTS.interleavedThinkingModels],
   adaptiveThinkingModels: [...CONFIG_MANAGED_DEFAULTS.adaptiveThinkingModels],
   contextEditingMode: CONFIG_MANAGED_DEFAULTS.contextEditingMode,
@@ -1332,8 +2128,12 @@ const mutableState: MutableState = {
   contextEditingKeepThinking: CONFIG_MANAGED_DEFAULTS.contextEditingKeepThinking,
   toolSearchEnabled: CONFIG_MANAGED_DEFAULTS.toolSearchEnabled,
   cacheControlMode: CONFIG_MANAGED_DEFAULTS.cacheControlMode,
+  extendedCacheTtlEnabled: CONFIG_MANAGED_DEFAULTS.extendedCacheTtlEnabled,
+  extendedCacheTtlToolsSystem: CONFIG_MANAGED_DEFAULTS.extendedCacheTtlToolsSystem,
+  extendedCacheTtlMessages: CONFIG_MANAGED_DEFAULTS.extendedCacheTtlMessages,
+  extendedCacheTtlModels: [...CONFIG_MANAGED_DEFAULTS.extendedCacheTtlModels],
   nonDeferredTools: [...CONFIG_MANAGED_DEFAULTS.nonDeferredTools],
-  stripServerTools: CONFIG_MANAGED_DEFAULTS.stripServerTools,
+  useUpstreamCountTokens: CONFIG_MANAGED_DEFAULTS.useUpstreamCountTokens,
   strictResponseHeaders: CONFIG_MANAGED_DEFAULTS.strictResponseHeaders,
   strictRequestHeaders: CONFIG_MANAGED_DEFAULTS.strictRequestHeaders,
   requestHeaderBlacklist: [...CONFIG_MANAGED_DEFAULTS.requestHeaderBlacklist],
@@ -1342,58 +2142,91 @@ const mutableState: MutableState = {
   responseHeaderWhitelist: [...CONFIG_MANAGED_DEFAULTS.responseHeaderWhitelist],
   stripAttributionHeader: CONFIG_MANAGED_DEFAULTS.stripAttributionHeader,
   streamKeepalivePingSec: CONFIG_MANAGED_DEFAULTS.streamKeepalivePingSec,
+  streamKeepaliveMode: CONFIG_MANAGED_DEFAULTS.streamKeepaliveMode,
   streamCommitAfterSec: CONFIG_MANAGED_DEFAULTS.streamCommitAfterSec,
   protectStreamingGeneration: CONFIG_MANAGED_DEFAULTS.protectStreamingGeneration,
-  protectStreamingMaxRetries: CONFIG_MANAGED_DEFAULTS.protectStreamingMaxRetries,
-  protectStreamingHeartbeat: CONFIG_MANAGED_DEFAULTS.protectStreamingHeartbeat,
-  protectStreamingBufferCapBytes: CONFIG_MANAGED_DEFAULTS.protectStreamingBufferCapBytes,
+  bufferedRetryShared: { ...CONFIG_MANAGED_DEFAULTS.bufferedRetryShared },
+  bufferedRetryOverrides: cloneBufferedRetryOverrides(CONFIG_MANAGED_DEFAULTS.bufferedRetryOverrides),
+  chatCompletionsBufferedRetry: CONFIG_MANAGED_DEFAULTS.chatCompletionsBufferedRetry,
   protectStreamingEscalateContext: CONFIG_MANAGED_DEFAULTS.protectStreamingEscalateContext,
   injectClaudeCodeOfficialTools: CONFIG_MANAGED_DEFAULTS.injectClaudeCodeOfficialTools,
   thinkingBlockMessagePolicy: CONFIG_MANAGED_DEFAULTS.thinkingBlockMessagePolicy,
   thinkingBlockSanitizeCheck: CONFIG_MANAGED_DEFAULTS.thinkingBlockSanitizeCheck,
+  thinkingDestackStrategy: CONFIG_MANAGED_DEFAULTS.thinkingDestackStrategy,
+  stripThinkingOnReject: CONFIG_MANAGED_DEFAULTS.stripThinkingOnReject,
+  poisonedThinkingQuarantine: CONFIG_MANAGED_DEFAULTS.poisonedThinkingQuarantine,
+  poisonedThinkingTtlHours: CONFIG_MANAGED_DEFAULTS.poisonedThinkingTtlHours,
   coerceAdaptiveThinking: CONFIG_MANAGED_DEFAULTS.coerceAdaptiveThinking,
-  systemMessagesSanitize: CONFIG_MANAGED_DEFAULTS.systemMessagesSanitize,
-  rewriteHistoryServerTools: CONFIG_MANAGED_DEFAULTS.rewriteHistoryServerTools,
+  systemDefaultMode: CONFIG_MANAGED_DEFAULTS.systemDefaultMode,
+  systemRejectMode: CONFIG_MANAGED_DEFAULTS.systemRejectMode,
+  systemRejectModels: [...CONFIG_MANAGED_DEFAULTS.systemRejectModels],
   thinkingSignatureCompat: CONFIG_MANAGED_DEFAULTS.thinkingSignatureCompat,
   dedupToolCalls: CONFIG_MANAGED_DEFAULTS.dedupToolCalls,
-  fetchTimeout: CONFIG_MANAGED_DEFAULTS.fetchTimeout,
-  historySuccessLimit: CONFIG_MANAGED_DEFAULTS.historySuccessLimit,
-  historyFailureLimit: CONFIG_MANAGED_DEFAULTS.historyFailureLimit,
-  historyReaperInterval: CONFIG_MANAGED_DEFAULTS.historyReaperInterval,
+  responseHeaderTimeout: CONFIG_MANAGED_DEFAULTS.responseHeaderTimeout,
   historyDbPath: CONFIG_MANAGED_DEFAULTS.historyDbPath,
-  webSearchEnabled: CONFIG_MANAGED_DEFAULTS.webSearchEnabled,
-  webSearchBackend: CONFIG_MANAGED_DEFAULTS.webSearchBackend,
+  historyRawCaptureEnabled: CONFIG_MANAGED_DEFAULTS.historyRawCaptureEnabled,
+  historyRawCaptureDbPath: CONFIG_MANAGED_DEFAULTS.historyRawCaptureDbPath,
+  historyRawCaptureMaxObjectBytes: CONFIG_MANAGED_DEFAULTS.historyRawCaptureMaxObjectBytes,
+  telemetryEnabled: CONFIG_MANAGED_DEFAULTS.telemetryEnabled,
+  telemetryDbPath: CONFIG_MANAGED_DEFAULTS.telemetryDbPath,
+  telemetryPersistInterval: CONFIG_MANAGED_DEFAULTS.telemetryPersistInterval,
+  telemetryRollupInterval: CONFIG_MANAGED_DEFAULTS.telemetryRollupInterval,
+  telemetryCardinalityCap: CONFIG_MANAGED_DEFAULTS.telemetryCardinalityCap,
+  telemetrySketchGamma: CONFIG_MANAGED_DEFAULTS.telemetrySketchGamma,
+  telemetryCumulative: CONFIG_MANAGED_DEFAULTS.telemetryCumulative,
+  telemetryRawResolutionMinutes: CONFIG_MANAGED_DEFAULTS.telemetryRawResolutionMinutes,
+  telemetryRawRetentionDays: CONFIG_MANAGED_DEFAULTS.telemetryRawRetentionDays,
+  telemetryHourlyRetentionDays: CONFIG_MANAGED_DEFAULTS.telemetryHourlyRetentionDays,
+  telemetryDailyRetentionDays: CONFIG_MANAGED_DEFAULTS.telemetryDailyRetentionDays,
   modelIds: new Set(),
   modelIndex: new Map(),
-  modelOverrides: { ...DEFAULT_MODEL_OVERRIDES },
+  modelMappings: { ...DEFAULT_MODEL_MAPPINGS },
+  modelTranslation: cloneModelTranslation(DEFAULT_MODEL_TRANSLATION),
   rewriteSystemReminders: CONFIG_MANAGED_DEFAULTS.rewriteSystemReminders,
   showGitHubToken: false,
   shutdownAbortWait: CONFIG_MANAGED_DEFAULTS.shutdownAbortWait,
   shutdownGracefulWait: CONFIG_MANAGED_DEFAULTS.shutdownGracefulWait,
   staleRequestMaxAge: CONFIG_MANAGED_DEFAULTS.staleRequestMaxAge,
+  requestDeadline: CONFIG_MANAGED_DEFAULTS.requestDeadline,
   modelRefreshInterval: CONFIG_MANAGED_DEFAULTS.modelRefreshInterval,
   streamIdleTimeout: CONFIG_MANAGED_DEFAULTS.streamIdleTimeout,
   upstreamKeepaliveDelay: CONFIG_MANAGED_DEFAULTS.upstreamKeepaliveDelay,
+  upstreamH2PingInterval: CONFIG_MANAGED_DEFAULTS.upstreamH2PingInterval,
+  sessionConnectTimeout: CONFIG_MANAGED_DEFAULTS.sessionConnectTimeout,
+  pooledConnectionIdleTimeout: CONFIG_MANAGED_DEFAULTS.pooledConnectionIdleTimeout,
   systemPromptOverrides: [...CONFIG_MANAGED_DEFAULTS.systemPromptOverrides],
+  systemPromptPrepend: [...CONFIG_MANAGED_DEFAULTS.systemPromptPrepend],
+  systemPromptAppend: [...CONFIG_MANAGED_DEFAULTS.systemPromptAppend],
   stripReadToolResultTags: CONFIG_MANAGED_DEFAULTS.stripReadToolResultTags,
   normalizeResponsesCallIds: CONFIG_MANAGED_DEFAULTS.normalizeResponsesCallIds,
   upstreamWebSocket: CONFIG_MANAGED_DEFAULTS.upstreamWebSocket,
+  responsesBufferedRetry: CONFIG_MANAGED_DEFAULTS.responsesBufferedRetry,
   fixResponsesStreamIds: CONFIG_MANAGED_DEFAULTS.fixResponsesStreamIds,
+  responsesBufferedMergeEventCompaction: CONFIG_MANAGED_DEFAULTS.responsesBufferedMergeEventCompaction,
+  responsesBufferedMergeCompletedOutput: CONFIG_MANAGED_DEFAULTS.responsesBufferedMergeCompletedOutput,
   stripImageGenerationTool: CONFIG_MANAGED_DEFAULTS.stripImageGenerationTool,
   clientWebsocketKeepOpen: CONFIG_MANAGED_DEFAULTS.clientWebsocketKeepOpen,
   maxWsFrameBytes: CONFIG_MANAGED_DEFAULTS.maxWsFrameBytes,
   maxClientWsConnections: CONFIG_MANAGED_DEFAULTS.maxClientWsConnections,
-  maxUpstreamWsConnections: CONFIG_MANAGED_DEFAULTS.maxUpstreamWsConnections,
-  anthropicApiKey: CONFIG_MANAGED_DEFAULTS.anthropicApiKey,
+  softMaxUpstreamWsConnections: CONFIG_MANAGED_DEFAULTS.softMaxUpstreamWsConnections,
   warmupPolicy: CONFIG_MANAGED_DEFAULTS.warmupPolicy,
   effortsOverrides: { ...CONFIG_MANAGED_DEFAULTS.effortsOverrides },
+  streamIdleTimeoutOverrides: { ...CONFIG_MANAGED_DEFAULTS.streamIdleTimeoutOverrides },
+  responseHeaderTimeoutOverrides: { ...CONFIG_MANAGED_DEFAULTS.responseHeaderTimeoutOverrides },
   stripBetaHeaders: cloneStripBetaHeaders(CONFIG_MANAGED_DEFAULTS.stripBetaHeaders),
+  stripCacheControlSubfields: cloneStripBetaHeaders(CONFIG_MANAGED_DEFAULTS.stripCacheControlSubfields),
   stripPartnerFeatures: cloneStripBetaHeaders(CONFIG_MANAGED_DEFAULTS.stripPartnerFeatures),
+  stripToolFields: cloneStripBetaHeaders(CONFIG_MANAGED_DEFAULTS.stripToolFields),
+  keepToolFields: cloneStripBetaHeaders(CONFIG_MANAGED_DEFAULTS.keepToolFields),
   rejectBodyFields: cloneStripBetaHeaders(CONFIG_MANAGED_DEFAULTS.rejectBodyFields),
   decodeToolInputFields: cloneStripBetaHeaders(CONFIG_MANAGED_DEFAULTS.decodeToolInputFields),
-  decodeAllToolInputFields: CONFIG_MANAGED_DEFAULTS.decodeAllToolInputFields,
   backfillQuestionFromHeader: CONFIG_MANAGED_DEFAULTS.backfillQuestionFromHeader,
+  fixSendMessageRecipient: CONFIG_MANAGED_DEFAULTS.fixSendMessageRecipient,
+  negotiationDefaultTtlMs: CONFIG_MANAGED_DEFAULTS.negotiationDefaultTtlMs,
+  negotiationTtlOverridesMs: { ...CONFIG_MANAGED_DEFAULTS.negotiationTtlOverridesMs },
   disabledModels: [...CONFIG_MANAGED_DEFAULTS.disabledModels],
+  hooksUpstreamModule: CONFIG_MANAGED_DEFAULTS.hooksUpstreamModule,
+  hooksEnabled: CONFIG_MANAGED_DEFAULTS.hooksEnabled,
   verbose: false,
 }
 

@@ -48,6 +48,32 @@
               },
               "model": {
                 "type": "string"
+              },
+              "endpoint": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "enum": [
+                      "anthropic",
+                      "openai-cc",
+                      "openai-responses",
+                      "gemini"
+                    ]
+                  },
+                  {
+                    "minItems": 1,
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "enum": [
+                        "anthropic",
+                        "openai-cc",
+                        "openai-responses",
+                        "gemini"
+                      ]
+                    }
+                  }
+                ]
               }
             },
             "required": [
@@ -65,7 +91,96 @@
     "system_prompt_prepend": {
       "anyOf": [
         {
-          "type": "string"
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "object",
+              "properties": {
+                "text": {
+                  "type": "string"
+                },
+                "model": {
+                  "type": "string"
+                },
+                "endpoint": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "enum": [
+                        "anthropic",
+                        "openai-cc",
+                        "openai-responses",
+                        "gemini"
+                      ]
+                    },
+                    {
+                      "minItems": 1,
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "enum": [
+                          "anthropic",
+                          "openai-cc",
+                          "openai-responses",
+                          "gemini"
+                        ]
+                      }
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "text"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "text": {
+                    "type": "string"
+                  },
+                  "model": {
+                    "type": "string"
+                  },
+                  "endpoint": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "enum": [
+                          "anthropic",
+                          "openai-cc",
+                          "openai-responses",
+                          "gemini"
+                        ]
+                      },
+                      {
+                        "minItems": 1,
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "enum": [
+                            "anthropic",
+                            "openai-cc",
+                            "openai-responses",
+                            "gemini"
+                          ]
+                        }
+                      }
+                    ]
+                  }
+                },
+                "required": [
+                  "text"
+                ],
+                "additionalProperties": false
+              }
+            }
+          ]
         },
         {
           "type": "null"
@@ -75,7 +190,96 @@
     "system_prompt_append": {
       "anyOf": [
         {
-          "type": "string"
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "object",
+              "properties": {
+                "text": {
+                  "type": "string"
+                },
+                "model": {
+                  "type": "string"
+                },
+                "endpoint": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "enum": [
+                        "anthropic",
+                        "openai-cc",
+                        "openai-responses",
+                        "gemini"
+                      ]
+                    },
+                    {
+                      "minItems": 1,
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "enum": [
+                          "anthropic",
+                          "openai-cc",
+                          "openai-responses",
+                          "gemini"
+                        ]
+                      }
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "text"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "text": {
+                    "type": "string"
+                  },
+                  "model": {
+                    "type": "string"
+                  },
+                  "endpoint": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "enum": [
+                          "anthropic",
+                          "openai-cc",
+                          "openai-responses",
+                          "gemini"
+                        ]
+                      },
+                      {
+                        "minItems": 1,
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "enum": [
+                            "anthropic",
+                            "openai-cc",
+                            "openai-responses",
+                            "gemini"
+                          ]
+                        }
+                      }
+                    ]
+                  }
+                },
+                "required": [
+                  "text"
+                ],
+                "additionalProperties": false
+              }
+            }
+          ]
         },
         {
           "type": "null"
@@ -148,7 +352,7 @@
         {
           "type": "object",
           "properties": {
-            "strip_server_tools": {
+            "use_upstream_count_tokens": {
               "anyOf": [
                 {
                   "type": "boolean"
@@ -158,7 +362,93 @@
                 }
               ]
             },
-            "inject_claude_code_tools": {
+            "strict_response_headers": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "response_header_blacklist": {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "response_header_whitelist": {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "strict_request_headers": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "request_header_blacklist": {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "request_header_whitelist": {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "strip_attribution_header": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "tool_inject_claude_code": {
               "anyOf": [
                 {
                   "type": "boolean"
@@ -182,6 +472,52 @@
                 }
               ]
             },
+            "thinking_destack_strategy": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "enum": [
+                    "passthrough",
+                    "insert_text",
+                    "move_blocks"
+                  ]
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "strip_thinking_on_reject": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "poisoned_thinking_quarantine": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "poisoned_thinking_ttl_hours": {
+              "anyOf": [
+                {
+                  "type": "number",
+                  "exclusiveMinimum": 0
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
             "thinking_block_sanitize": {
               "anyOf": [
                 {
@@ -190,18 +526,26 @@
                 },
                 {
                   "type": "string",
-                  "const": "empty_thinking"
+                  "const": "all_empty"
                 },
                 {
                   "type": "string",
-                  "const": "empty_any"
+                  "const": "signature_empty"
+                },
+                {
+                  "type": "string",
+                  "const": "thinking_empty"
+                },
+                {
+                  "type": "string",
+                  "const": "any_empty"
                 },
                 {
                   "type": "null"
                 }
               ]
             },
-            "coerce_adaptive_thinking": {
+            "thinking_coerce_adaptive": {
               "anyOf": [
                 {
                   "type": "boolean",
@@ -220,7 +564,48 @@
                 }
               ]
             },
-            "system_messages_sanitize": {
+            "system_default_mode": {
+              "anyOf": [
+                {
+                  "type": "boolean",
+                  "const": false
+                },
+                {
+                  "type": "string",
+                  "const": "drop_invalid"
+                },
+                {
+                  "type": "string",
+                  "const": "merge"
+                },
+                {
+                  "type": "string",
+                  "const": "as_user"
+                },
+                {
+                  "type": "string",
+                  "const": "as_assistant"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "system_reject_models": {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "system_reject_mode": {
               "anyOf": [
                 {
                   "type": "boolean",
@@ -266,22 +651,7 @@
                 }
               ]
             },
-            "rewrite_history_server_tools": {
-              "anyOf": [
-                {
-                  "type": "boolean",
-                  "const": false
-                },
-                {
-                  "type": "string",
-                  "const": "downgrade"
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            },
-            "dedup_tool_calls": {
+            "tool_dedup_calls": {
               "anyOf": [
                 {
                   "type": "boolean"
@@ -299,7 +669,7 @@
                 }
               ]
             },
-            "strip_read_tool_result_tags": {
+            "tool_strip_read_result_tags": {
               "anyOf": [
                 {
                   "type": "boolean"
@@ -309,7 +679,7 @@
                 }
               ]
             },
-            "rewrite_system_reminders": {
+            "system_rewrite_reminders": {
               "anyOf": [
                 {
                   "type": "boolean"
@@ -335,6 +705,32 @@
                       },
                       "model": {
                         "type": "string"
+                      },
+                      "endpoint": {
+                        "anyOf": [
+                          {
+                            "type": "string",
+                            "enum": [
+                              "anthropic",
+                              "openai-cc",
+                              "openai-responses",
+                              "gemini"
+                            ]
+                          },
+                          {
+                            "minItems": 1,
+                            "type": "array",
+                            "items": {
+                              "type": "string",
+                              "enum": [
+                                "anthropic",
+                                "openai-cc",
+                                "openai-responses",
+                                "gemini"
+                              ]
+                            }
+                          }
+                        ]
                       }
                     },
                     "required": [
@@ -411,6 +807,16 @@
                 }
               ]
             },
+            "server_tool_memory": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
             "cache_control": {
               "anyOf": [
                 {
@@ -427,7 +833,51 @@
                 }
               ]
             },
-            "non_deferred_tools": {
+            "extended_cache_ttl": {
+              "type": "object",
+              "properties": {
+                "enabled": {
+                  "anyOf": [
+                    {
+                      "type": "boolean"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "tools_system_ttl": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "enum": [
+                        "5m",
+                        "1h"
+                      ]
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "messages_ttl": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "enum": [
+                        "5m",
+                        "1h"
+                      ]
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "additionalProperties": false
+            },
+            "tool_search_non_deferred": {
               "anyOf": [
                 {
                   "type": "array",
@@ -435,16 +885,6 @@
                     "type": "string",
                     "minLength": 1
                   }
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            },
-            "api_key": {
-              "anyOf": [
-                {
-                  "type": "string"
                 },
                 {
                   "type": "null"
@@ -479,7 +919,7 @@
                 }
               }
             },
-            "strip_beta_headers": {
+            "beta_strip_headers": {
               "type": "object",
               "propertyNames": {
                 "type": "string"
@@ -491,7 +931,7 @@
                 }
               }
             },
-            "reject_body_fields": {
+            "cache_control_strip_subfields": {
               "type": "object",
               "propertyNames": {
                 "type": "string"
@@ -503,7 +943,7 @@
                 }
               }
             },
-            "decode_tool_input_fields": {
+            "partner_strip_features": {
               "type": "object",
               "propertyNames": {
                 "type": "string"
@@ -515,7 +955,166 @@
                 }
               }
             },
-            "decode_all_tool_input_fields": {
+            "tool_strip_fields": {
+              "type": "object",
+              "propertyNames": {
+                "type": "string"
+              },
+              "additionalProperties": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
+            "tool_keep_fields": {
+              "type": "object",
+              "propertyNames": {
+                "type": "string"
+              },
+              "additionalProperties": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
+            "retry_reject_body_fields": {
+              "type": "object",
+              "propertyNames": {
+                "type": "string"
+              },
+              "additionalProperties": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
+            "response_text_fix": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "invoke_in_text": {
+                      "anyOf": [
+                        {
+                          "type": "boolean"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "response_tool_use_fix": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "malformed_input": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "decode_top_level_field": {
+                      "type": "object",
+                      "propertyNames": {
+                        "type": "string"
+                      },
+                      "additionalProperties": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      }
+                    },
+                    "send_message_to_missing": {
+                      "anyOf": [
+                        {
+                          "type": "boolean"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "ask_user_question_question_missing": {
+                      "anyOf": [
+                        {
+                          "type": "boolean"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "refusal_sse_rewrite": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "enum": [
+                    "refusal",
+                    "end_turn",
+                    "error"
+                  ]
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "refusal_end_turn_text": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "refusal_error_message": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "refusal_error_type": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "error_shaping_enabled": {
               "anyOf": [
                 {
                   "type": "boolean"
@@ -525,7 +1124,40 @@
                 }
               ]
             },
-            "fake_sse_heartbeat": {
+            "error_ask_user_question": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "error_auq_template": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "error_selfheal_delegate": {
+              "type": "object",
+              "propertyNames": {
+                "type": "string"
+              },
+              "additionalProperties": {
+                "type": "string",
+                "enum": [
+                  "proxy",
+                  "delegate"
+                ]
+              }
+            },
+            "stream_keepalive_ping_sec": {
               "anyOf": [
                 {
                   "type": "integer",
@@ -536,6 +1168,206 @@
                   "type": "null"
                 }
               ]
+            },
+            "stream_keepalive_mode": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "enum": [
+                    "ping",
+                    "enveloped_ping",
+                    "empty_text"
+                  ]
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "stream_commit_after_sec": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "protect_streaming_generation": {
+              "anyOf": [
+                {
+                  "type": "boolean",
+                  "const": false
+                },
+                {
+                  "type": "string",
+                  "const": "on"
+                },
+                {
+                  "type": "string",
+                  "const": "tool_use_only"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "buffered_retry": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "enabled": {
+                      "anyOf": [
+                        {
+                          "type": "boolean"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "max_retries": {
+                      "anyOf": [
+                        {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 9007199254740991
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "buffer_cap_bytes": {
+                      "anyOf": [
+                        {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 9007199254740991
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "heartbeat_sec": {
+                      "anyOf": [
+                        {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 9007199254740991
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "protect_streaming_escalate_context": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "model_capabilities": {
+              "type": "object",
+              "properties": {
+                "context_editing": {
+                  "anyOf": [
+                    {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "minLength": 1
+                      }
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "interleaved_thinking": {
+                  "anyOf": [
+                    {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "minLength": 1
+                      }
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "adaptive_thinking": {
+                  "anyOf": [
+                    {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "minLength": 1
+                      }
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "extended_cache_ttl": {
+                  "anyOf": [
+                    {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "minLength": 1
+                      }
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "memory": {
+                  "anyOf": [
+                    {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "minLength": 1
+                      }
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "tool_search_overrides": {
+                  "type": "object",
+                  "propertyNames": {
+                    "type": "string"
+                  },
+                  "additionalProperties": {
+                    "type": "boolean"
+                  }
+                }
+              },
+              "additionalProperties": false
             }
           },
           "additionalProperties": false
@@ -570,17 +1402,73 @@
                 }
               ]
             },
-            "fix_stream_ids": {
+            "buffered_retry": {
               "anyOf": [
                 {
-                  "type": "boolean"
+                  "anyOf": [
+                    {
+                      "type": "boolean"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "enabled": {
+                          "anyOf": [
+                            {
+                              "type": "boolean"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "max_retries": {
+                          "anyOf": [
+                            {
+                              "type": "integer",
+                              "minimum": 0,
+                              "maximum": 9007199254740991
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "buffer_cap_bytes": {
+                          "anyOf": [
+                            {
+                              "type": "integer",
+                              "minimum": 0,
+                              "maximum": 9007199254740991
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "heartbeat_sec": {
+                          "anyOf": [
+                            {
+                              "type": "integer",
+                              "minimum": 0,
+                              "maximum": 9007199254740991
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "additionalProperties": false
+                    }
+                  ]
                 },
                 {
                   "type": "null"
                 }
               ]
             },
-            "client_ws_keep_open": {
+            "fix_stream_ids": {
               "anyOf": [
                 {
                   "type": "boolean"
@@ -600,7 +1488,145 @@
                 }
               ]
             },
-            "max_ws_frame_bytes": {
+            "buffered_merge": {
+              "type": "object",
+              "properties": {
+                "event_compaction": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "enum": [
+                        "verbatim",
+                        "drop-delta",
+                        "item-summary"
+                      ]
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "completed_output": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "enum": [
+                        "upstream",
+                        "repair-if-incomplete",
+                        "rebuild"
+                      ]
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "chat_completions": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "buffered_retry": {
+              "anyOf": [
+                {
+                  "anyOf": [
+                    {
+                      "type": "boolean"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "enabled": {
+                          "anyOf": [
+                            {
+                              "type": "boolean"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "max_retries": {
+                          "anyOf": [
+                            {
+                              "type": "integer",
+                              "minimum": 0,
+                              "maximum": 9007199254740991
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "buffer_cap_bytes": {
+                          "anyOf": [
+                            {
+                              "type": "integer",
+                              "minimum": 0,
+                              "maximum": 9007199254740991
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "heartbeat_sec": {
+                          "anyOf": [
+                            {
+                              "type": "integer",
+                              "minimum": 0,
+                              "maximum": 9007199254740991
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "additionalProperties": false
+                    }
+                  ]
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "buffered_retry": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "max_retries": {
               "anyOf": [
                 {
                   "type": "integer",
@@ -612,7 +1638,7 @@
                 }
               ]
             },
-            "max_client_ws_connections": {
+            "buffer_cap_bytes": {
               "anyOf": [
                 {
                   "type": "integer",
@@ -624,7 +1650,7 @@
                 }
               ]
             },
-            "max_upstream_ws_connections": {
+            "heartbeat_sec": {
               "anyOf": [
                 {
                   "type": "integer",
@@ -644,7 +1670,7 @@
         }
       ]
     },
-    "model_overrides": {
+    "model_mappings": {
       "anyOf": [
         {
           "type": "object",
@@ -653,6 +1679,50 @@
           },
           "additionalProperties": {
             "type": "string"
+          }
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "model_translation": {
+      "anyOf": [
+        {
+          "type": "object",
+          "propertyNames": {
+            "type": "string",
+            "enum": [
+              "anthropic-messages",
+              "openai-cc",
+              "openai-responses",
+              "gemini"
+            ]
+          },
+          "additionalProperties": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "match": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "features": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "enum": [
+                      "strip-thinking-signature"
+                    ]
+                  }
+                }
+              },
+              "required": [
+                "match"
+              ],
+              "additionalProperties": false
+            }
           }
         },
         {
@@ -674,34 +1744,12 @@
         }
       ]
     },
-    "auto_truncate": {
+    "retry": {
       "anyOf": [
         {
           "type": "object",
           "properties": {
-            "enabled": {
-              "anyOf": [
-                {
-                  "type": "boolean"
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            },
-            "target_factor": {
-              "anyOf": [
-                {
-                  "type": "number",
-                  "exclusiveMinimum": 0,
-                  "maximum": 1
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            },
-            "max_retries": {
+            "max_reactive_retries": {
               "anyOf": [
                 {
                   "type": "integer",
@@ -712,18 +1760,151 @@
                   "type": "null"
                 }
               ]
-            },
-            "compress_tool_results": {
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "generation": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "hedge": {
               "anyOf": [
                 {
-                  "type": "boolean"
+                  "type": "object",
+                  "properties": {
+                    "enabled": {
+                      "anyOf": [
+                        {
+                          "type": "boolean"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "threshold_sec": {
+                      "anyOf": [
+                        {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 9007199254740991
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "max_secondary_candidates": {
+                      "anyOf": [
+                        {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 9007199254740991
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "allow_server_tools": {
+                      "anyOf": [
+                        {
+                          "type": "boolean"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  },
+                  "additionalProperties": false
                 },
                 {
                   "type": "null"
                 }
               ]
             },
-            "compress_threshold": {
+            "recovery": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "max_candidates": {
+                      "anyOf": [
+                        {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 9007199254740991
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "max_active_candidates": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "exclusiveMinimum": 0,
+                  "maximum": 9007199254740991
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "max_active_dispatches": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "exclusiveMinimum": 0,
+                  "maximum": 9007199254740991
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "max_total_candidates": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "exclusiveMinimum": 0,
+                  "maximum": 9007199254740991
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "max_total_dispatches": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "exclusiveMinimum": 0,
+                  "maximum": 9007199254740991
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "cleanup_grace_sec": {
               "anyOf": [
                 {
                   "type": "integer",
@@ -758,58 +1939,55 @@
         {
           "type": "object",
           "properties": {
-            "limit": {
+            "enabled": {
               "anyOf": [
                 {
-                  "type": "integer",
-                  "minimum": 0,
-                  "maximum": 9007199254740991
+                  "type": "boolean"
                 },
                 {
                   "type": "null"
                 }
               ]
             },
-            "success_limit": {
+            "raw_capture": {
               "anyOf": [
                 {
-                  "type": "integer",
-                  "minimum": 0,
-                  "maximum": 9007199254740991
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            },
-            "failure_limit": {
-              "anyOf": [
-                {
-                  "type": "integer",
-                  "minimum": 0,
-                  "maximum": 9007199254740991
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            },
-            "reaper_interval": {
-              "anyOf": [
-                {
-                  "type": "integer",
-                  "minimum": 0,
-                  "maximum": 9007199254740991
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            },
-            "db_path": {
-              "anyOf": [
-                {
-                  "type": "string"
+                  "type": "object",
+                  "properties": {
+                    "enabled": {
+                      "anyOf": [
+                        {
+                          "type": "boolean"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "db_path": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "max_object_bytes": {
+                      "anyOf": [
+                        {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 9007199254740991
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  },
+                  "additionalProperties": false
                 },
                 {
                   "type": "null"
@@ -824,25 +2002,25 @@
         }
       ]
     },
-    "web_search": {
+    "hooks": {
       "anyOf": [
         {
           "type": "object",
           "properties": {
-            "enabled": {
+            "upstream_module": {
               "anyOf": [
                 {
-                  "type": "boolean"
+                  "type": "string"
                 },
                 {
                   "type": "null"
                 }
               ]
             },
-            "backend": {
+            "enabled": {
               "anyOf": [
                 {
-                  "type": "string"
+                  "type": "boolean"
                 },
                 {
                   "type": "null"
@@ -923,12 +2101,36 @@
                 }
               ]
             },
-            "upstream_keepalive": {
+            "stream_idle_overrides": {
               "anyOf": [
                 {
-                  "type": "integer",
-                  "minimum": 0,
-                  "maximum": 9007199254740991
+                  "type": "object",
+                  "propertyNames": {
+                    "type": "string"
+                  },
+                  "additionalProperties": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                  }
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "response_header_overrides": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "propertyNames": {
+                    "type": "string"
+                  },
+                  "additionalProperties": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                  }
                 },
                 {
                   "type": "null"
@@ -941,6 +2143,367 @@
                   "type": "integer",
                   "minimum": 0,
                   "maximum": 9007199254740991
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "request_deadline": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "upstream_transport": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "tcp_keepalive_probe_delay": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "http2": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "ping_interval": {
+                      "anyOf": [
+                        {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 9007199254740991
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "session_connect_timeout": {
+                      "anyOf": [
+                        {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 9007199254740991
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "websocket": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "pooled_connection_idle_timeout": {
+                      "anyOf": [
+                        {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 9007199254740991
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "soft_max_connections": {
+                      "anyOf": [
+                        {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 9007199254740991
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "server": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "responses_ws": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "keep_open": {
+                      "anyOf": [
+                        {
+                          "type": "boolean"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "max_frame_bytes": {
+                      "anyOf": [
+                        {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 9007199254740991
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "max_connections": {
+                      "anyOf": [
+                        {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 9007199254740991
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "telemetry": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "db_path": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "persist_interval": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "rollup_interval": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "cardinality_cap": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "sketch_gamma": {
+              "anyOf": [
+                {
+                  "type": "number",
+                  "exclusiveMinimum": 0
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "cumulative": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "tiers": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "raw": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "resolution_minutes": {
+                              "anyOf": [
+                                {
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 9007199254740991
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "retention_days": {
+                              "anyOf": [
+                                {
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 9007199254740991
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            }
+                          },
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "hourly": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "retention_days": {
+                              "anyOf": [
+                                {
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 9007199254740991
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            }
+                          },
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "daily": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "retention_days": {
+                              "anyOf": [
+                                {
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 9007199254740991
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            }
+                          },
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  },
+                  "additionalProperties": false
                 },
                 {
                   "type": "null"
@@ -961,6 +2524,249 @@
           "type": "integer",
           "minimum": 0,
           "maximum": 9007199254740991
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "negotiation_learning": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "default_ttl_days": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "ttl_days": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "propertyNames": {
+                    "type": "string"
+                  },
+                  "additionalProperties": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                  }
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "unknown_endpoint_logging": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "not_found": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "enum": [
+                    "silent",
+                    "debug",
+                    "info",
+                    "warn",
+                    "error"
+                  ]
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "method_not_allowed": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "enum": [
+                    "silent",
+                    "debug",
+                    "info",
+                    "warn",
+                    "error"
+                  ]
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "logging": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "terminal_level": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "enum": [
+                    "silent",
+                    "trace",
+                    "debug",
+                    "info",
+                    "warn",
+                    "error",
+                    "fatal"
+                  ]
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "file_level": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "enum": [
+                    "silent",
+                    "trace",
+                    "debug",
+                    "info",
+                    "warn",
+                    "error",
+                    "fatal"
+                  ]
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "file": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "enabled": {
+                      "anyOf": [
+                        {
+                          "type": "boolean"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "directory": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "max_size_mb": {
+                      "anyOf": [
+                        {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 9007199254740991
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "max_files_per_process": {
+                      "anyOf": [
+                        {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 9007199254740991
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "retention_days": {
+                      "anyOf": [
+                        {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 9007199254740991
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "tui": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "pidfile": {
+      "anyOf": [
+        {
+          "type": "string"
         },
         {
           "type": "null"

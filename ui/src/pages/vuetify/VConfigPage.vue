@@ -53,7 +53,6 @@ onMounted(() => {
 })
 
 const proxy = topLevelField("proxy", null)
-const compressToolResultsBeforeTruncate = nestedField("auto_truncate", "compress_tool_results", false)
 const fetchTimeout = nestedField("timeouts", "response_header", null)
 const streamIdleTimeout = nestedField("timeouts", "stream_idle", null)
 const staleRequestMaxAge = nestedField("timeouts", "stale_request_max_age", null)
@@ -148,7 +147,7 @@ function setTopLevel<K extends keyof EditableConfig>(key: K, value: EditableConf
 }
 
 function setNested<
-  P extends keyof Pick<EditableConfig, "anthropic" | "shutdown" | "history" | "openai_responses" | "rate_limiter" | "timeouts" | "auto_truncate">,
+  P extends keyof Pick<EditableConfig, "anthropic" | "shutdown" | "history" | "openai_responses" | "rate_limiter" | "timeouts">,
   K extends keyof NonNullable<EditableConfig[P]>,
 >(parent: P, key: K, value: NonNullable<EditableConfig[P]>[K]): void {
   const config = ensureConfig()
@@ -170,7 +169,7 @@ function topLevelField<K extends keyof EditableConfig>(key: K, fallback: NonNull
 }
 
 function nestedField<
-  P extends keyof Pick<EditableConfig, "anthropic" | "shutdown" | "history" | "openai_responses" | "rate_limiter" | "timeouts" | "auto_truncate">,
+  P extends keyof Pick<EditableConfig, "anthropic" | "shutdown" | "history" | "openai_responses" | "rate_limiter" | "timeouts">,
   K extends keyof NonNullable<EditableConfig[P]>,
 >(parent: P, key: K, fallback: NonNullable<EditableConfig[P]>[K]) {
   return computed({
@@ -239,11 +238,6 @@ function nestedField<
               label="Proxy"
               description="Supports http://, https://, socks5://, socks5h://."
               placeholder="http://127.0.0.1:7890"
-            />
-            <ConfigToggle
-              v-model="compressToolResultsBeforeTruncate"
-              label="Compress Tool Results Before Truncate"
-              description="Compress older tool_result content before dropping messages."
             />
           </ConfigSection>
 

@@ -9,9 +9,23 @@
 coverage/
 dist/
 node_modules/
+native/history-search/target/
+native/history-search/*.node
 
 .superpowers
 .env
 *.txt
+# ...but committed golden test fixtures are tracked oracle data, not scratch.
+!tests/**/__fixtures__/*.txt
 *.log
 .worktrees/
+
+# PoC / experiment scratch (see exp/ convention + eslint.config.js ignore).
+# Throwaway by design: distilled conclusions live in docs/ or .claude/skills/,
+# not the raw probe dirs. Already-committed conclusion files stay tracked (git
+# keeps tracking them); to commit a NEW conclusion doc, use `git add -f exp/...`.
+exp/
+
+# scaffold task scratch reports (worktree-local)
+.c*-report.md
+.hooks-cache/

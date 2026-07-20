@@ -35,6 +35,12 @@
  *   `server.onError` consumes the throw upstream of us, so the catch
  *   never fires. The post-next status-driven path covers the failure
  *   case correctly because `onError` always sets status >= 400.
+ *
+ *   The catch DOES still matter at entry points that bypass Hono's
+ *   routing/onError entirely — raw WebSocket upgrades (`responses/ws.ts`),
+ *   stdio / non-HTTP entries, or a stack with a different error handler.
+ *   That is why `ctx.failIfNotFinalized()` stays on the RequestContext API
+ *   as a defensive primitive for those callers.
  */
 
 import type {
@@ -67,9 +73,11 @@ export function observabilityMiddleware(): MiddlewareHandler {
 
     const path = c.req.path
 
-    // Synthetic routes: no observability, no finalize, no nothing.
-    // Handler runs unwrapped; the route's own `consola.info` lines are
-    // the sole operator signal.
+    // Synthetic routes: no RequestContext, no finalize, no `request.*` events,
+    // no history/telemetry. The handler runs unwrapped and renders its own
+    // outcome as a display-only request-shaped line (count_tokens →
+    // `publishRequestLine` / `system.request_line`, reaching only TerminalUi +
+    // FileSink — see synthetic-request-line.ts).
     if (SYNTHETIC_PATHS.has(path)) {
       await next()
       return
@@ -91,6 +99,21 @@ export function observabilityMiddleware(): MiddlewareHandler {
     // completeFromHttpStatus routes 2xx → complete(), 4xx+ → fail().
     // Already-settled ctx are no-op (settled guard in request.ts).
     const ctx = c.get("requestContext") as RequestContext | undefined
-    if (ctx) ctx.completeFromHttpStatus(c.res.status)
+    if (ctx) {
+      // P3: `c.res.status` is the status actually forwarded to the client — the authoritative
+      // proxy→client boundary for defer-settle paths (handler threw a rejection → onError built
+      // the error envelope → the ctx is still unsettled here). Capture it BEFORE
+      // completeFromHttpStatus snapshots the entry, so `clientResponse.status` records the
+      // forwarded status. Self-settled handlers already captured it at their own forward point;
+      // this write lands post-snapshot for them (harmless no-op on the frozen entry).
+      ctx.setInboundResponseHeaders(Object.fromEntries(c.res.headers.entries()))
+      ctx.setClientResponseStatus(c.res.status)
+      ctx.completeFromHttpStatus(c.res.status)
+      // Delivery finalization is independent from logical settle. A handler may already have
+      // called abort()/fail()/complete() and intentionally rely on this non-streaming boundary
+      // to seal the canonical operation (pre-response 499 is the critical case). Both methods
+      // are idempotent, so explicitly-finalized handlers remain no-ops here.
+      ctx.finalizeModelOperationDelivery()
+    }
   }
 }

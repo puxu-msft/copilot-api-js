@@ -36,22 +36,37 @@ import {
 import { clearAnthropicFeatureNegotiationForTests } from "~/lib/anthropic/feature-negotiation"
 import { resetProtectStreamingStatsForTests } from "~/lib/anthropic/protect-streaming-stats"
 import { resetToolInputRepairStatsForTests } from "~/lib/anthropic/tool-input-repair-stats"
-import { resetAllLimitsForTesting } from "~/lib/auto-truncate/engine"
 import { resetBundledConfigCacheForTests } from "~/lib/config/config"
 import { _resetConfigValidationWarnTrackingForTests } from "~/lib/config/validation"
+import { resetModelOperationTerminalRegistryForTests } from "~/lib/context/lightweight-model-operation"
+import { resetHistoryPersistErrorStats } from "~/lib/history/persist-guard"
+import { resetRawCaptureManagerForTests } from "~/lib/history/raw/manager"
+import { resetDiagnosticLoggerForTests } from "~/lib/diagnostics"
+import { resetStructuredFileSinkForTests } from "~/lib/diagnostics/file"
+import { resetBootstrapSpoolForTests } from "~/lib/diagnostics/file/bootstrap-spool"
 import {
   //
-  __setTerminalWriterForTests,
-  drainPendingFinalizations,
-} from "~/lib/history/entries"
-import { resetHistoryPersistErrorStats } from "~/lib/history/persist-guard"
-import { resetSearchIndexBackfillForTests } from "~/lib/history/sqlite/search-index-backfill"
+  drainV3Writer,
+  resetV3WriterForTests,
+} from "~/lib/history/v3/store"
+import { setNativeHistorySearchForTests } from "~/lib/history/search-native"
+import { resetTantivySearchForTests } from "~/lib/history/search-tantivy"
+import { resetModelOperationTerminalBusForTests } from "~/lib/history/v3/terminal-bus"
+import { clearRecentModelOperationTerminalsForTests } from "~/lib/history/v3/terminal-bus"
+import { resetAllLimitsForTesting } from "~/lib/models/calibration/engine"
 import { resetModelsEtagForTests } from "~/lib/models/client"
+import { resetReaperDiagnosticsForTests } from "~/lib/observability/reaper-diagnostics"
+import { resetResponseSessionStoreForTests } from "~/lib/openai/response-session-store"
 import {
   //
   resetUpstreamWsManagerForTests,
   setUpstreamWsConnectionFactoryForTests,
 } from "~/lib/openai/upstream-ws"
+import {
+  //
+  resetUpstreamHook,
+  setUpstreamHookForTests,
+} from "~/lib/pipeline/hooks/loader"
 import { resetProcessIdentityForTests } from "~/lib/process-identity"
 import { _resetRequestTelemetryForTests } from "~/lib/request-telemetry"
 import {
@@ -61,8 +76,14 @@ import {
   type StateSnapshot,
   snapshotStateForTests,
 } from "~/lib/state"
-import { setHttp2SessionFactoryForTests } from "~/lib/transport/http2-client"
+import {
+  //
+  setConnectTimeoutForTests,
+  setHttp2SessionFactoryForTests,
+} from "~/lib/transport/http2-client"
 import { setUpstreamFetchForTests } from "~/lib/transport/upstream-fetch"
+import { resetSensitiveOutputForTests } from "~/lib/tui/sensitive-output"
+import { resetTerminalCoordinatorForTests } from "~/lib/tui/terminal-coordinator"
 
 import { restoreFetch } from "./mock-fetch"
 import {
@@ -82,6 +103,14 @@ import {
  */
 export const RESETTERS: ReadonlyArray<{ name: string; reset: () => void | Promise<void> }> = [
   { name: "clearAnthropicFeatureNegotiationForTests", reset: clearAnthropicFeatureNegotiationForTests },
+  { name: "resetModelOperationTerminalRegistryForTests", reset: resetModelOperationTerminalRegistryForTests },
+  { name: "resetModelOperationTerminalBusForTests", reset: resetModelOperationTerminalBusForTests },
+  { name: "clearRecentModelOperationTerminalsForTests", reset: clearRecentModelOperationTerminalsForTests },
+  { name: "resetV3WriterForTests", reset: resetV3WriterForTests },
+  { name: "resetRawCaptureManagerForTests", reset: resetRawCaptureManagerForTests },
+  { name: "resetTantivySearchForTests", reset: resetTantivySearchForTests },
+  { name: "setNativeHistorySearchForTests", reset: () => setNativeHistorySearchForTests(undefined) },
+  { name: "resetResponseSessionStoreForTests", reset: resetResponseSessionStoreForTests },
   { name: "resetProtectStreamingStatsForTests", reset: resetProtectStreamingStatsForTests },
   { name: "resetToolInputRepairStatsForTests", reset: resetToolInputRepairStatsForTests },
   { name: "resetAllLimitsForTesting", reset: resetAllLimitsForTesting },
@@ -89,6 +118,7 @@ export const RESETTERS: ReadonlyArray<{ name: string; reset: () => void | Promis
   { name: "resetModelsEtagForTests", reset: resetModelsEtagForTests },
   { name: "resetRawModelsForTests", reset: resetRawModelsForTests },
   { name: "resetProcessIdentityForTests", reset: resetProcessIdentityForTests },
+  { name: "resetReaperDiagnosticsForTests", reset: resetReaperDiagnosticsForTests },
   { name: "_resetConfigValidationWarnTrackingForTests", reset: _resetConfigValidationWarnTrackingForTests },
   { name: "resetBundledConfigCacheForTests", reset: resetBundledConfigCacheForTests },
   { name: "resetUpstreamWsManagerForTests", reset: () => void resetUpstreamWsManagerForTests() },
@@ -96,12 +126,31 @@ export const RESETTERS: ReadonlyArray<{ name: string; reset: () => void | Promis
   // mock injected by one test never leaks into the next (RFC §11 R2).
   { name: "setUpstreamWsConnectionFactoryForTests", reset: () => setUpstreamWsConnectionFactoryForTests(null) },
   { name: "setHttp2SessionFactoryForTests", reset: () => setHttp2SessionFactoryForTests(undefined) },
-  { name: "__setTerminalWriterForTests", reset: () => __setTerminalWriterForTests(undefined) },
+  { name: "setConnectTimeoutForTests", reset: () => setConnectTimeoutForTests(undefined) },
   // Not `*ForTests`-named (a production reset) but a module-global counter that
   // leaks across tests, so reset it here too.
   { name: "resetHistoryPersistErrorStats", reset: resetHistoryPersistErrorStats },
-  // search_index backfill module-global stop/running flags.
-  { name: "resetSearchIndexBackfillForTests", reset: resetSearchIndexBackfillForTests },
+  // TUI terminal-coordinator module-level singleton (whole-branch review I3):
+  // a test that constructs a non-`silent` TerminalUi and forgets `destroy()`
+  // would otherwise leak its registration into the next test file.
+  { name: "resetTerminalCoordinatorForTests", reset: resetTerminalCoordinatorForTests },
+  { name: "resetSensitiveOutputForTests", reset: resetSensitiveOutputForTests },
+  { name: "resetStructuredFileSinkForTests", reset: resetStructuredFileSinkForTests },
+  { name: "resetBootstrapSpoolForTests", reset: resetBootstrapSpoolForTests },
+  { name: "resetDiagnosticLoggerForTests", reset: resetDiagnosticLoggerForTests },
+  // Upstream-hook DI seam (module-global `hookState`, read at driver-suite level
+  // via `getUpstreamHook()`): a test file that loads/injects a hook and forgets
+  // its own afterEach would otherwise leak the mounted hook into any later test —
+  // including files that never import the hooks module at all (whole-branch
+  // review I-1). Not `*ForTests`-named (a production reset), like
+  // `resetHistoryPersistErrorStats` above.
+  { name: "resetUpstreamHook", reset: resetUpstreamHook },
+  // The DI-seam setter itself: reset to its default (undefined) so an injected
+  // test hook never leaks, mirroring the other injected-seam entries above.
+  // Functionally redundant with `resetUpstreamHook` (both clear the same
+  // `hookState`), kept as its own entry for parity with the other `set*ForTests`
+  // seams in this table and so the L1 guard sees it registered, not exempted.
+  { name: "setUpstreamHookForTests", reset: () => setUpstreamHookForTests(undefined) },
 ]
 
 /** Names registered in RESETTERS — consumed by the L1 completeness guard. */
@@ -151,8 +200,8 @@ export function useIsolatedRuntime(opts: IsolatedRuntimeOptions = {}): void {
   const network = opts.network ?? "guard"
   let snapshot: StateSnapshot
 
-  beforeAll(() => {
-    bootstrapTestRuntime()
+  beforeAll(async () => {
+    await bootstrapTestRuntime()
     // Full runtime re-wire ONCE per describe, in case the PREVIOUS test file did NOT use
     // this fixture (e.g. a history `.it` test with its own real-DB lifecycle that closed
     // the DB and/or left a stale bus + request-context manager). bootstrapTestRuntime's
@@ -162,7 +211,7 @@ export function useIsolatedRuntime(opts: IsolatedRuntimeOptions = {}): void {
     // initialized", or a dead bus → request events never reach the history sink → no
     // persisted entry). resetTestRuntime reopens `:memory:`, swaps in a fresh bus + sinks,
     // and re-wires the manager; it is the same call afterEach uses, so this is idempotent.
-    resetTestRuntime()
+    await resetTestRuntime()
   })
 
   beforeEach(() => {
@@ -171,14 +220,15 @@ export function useIsolatedRuntime(opts: IsolatedRuntimeOptions = {}): void {
   })
 
   afterEach(async () => {
-    // Drain any fire-and-forget async finalize (a request that settled during the
-    // test kicks one via the history sink) BEFORE resetTestRuntime swaps/closes the
-    // DB — otherwise the in-flight finalize lands on a closed handle ("Cannot use a
-    // closed database") or leaks into the next test. Mirrors the production shutdown
-    // drain (RFC history-finalize-async-offload I4).
-    await drainPendingFinalizations()
+    // Drain any fire-and-forget async V3 terminal write (a request that settled
+    // during the test kicks one via `subscribeModelOperationTerminals`, see
+    // state.ts) BEFORE resetTestRuntime swaps/closes the DB — otherwise the
+    // in-flight write lands on a closed handle ("Cannot use a closed database")
+    // or leaks into the next test. Mirrors the production shutdown drain
+    // (`shutdownHistory`'s `drainV3Writer` call).
+    await drainV3Writer()
     restoreStateForTests(snapshot)
-    resetTestRuntime()
+    await resetTestRuntime()
     // Serial await: a resetter may be async (future-proofing) — fire-and-forget
     // would let an enqueued write land in the next test (the exact class of leak
     // this fixture exists to kill).

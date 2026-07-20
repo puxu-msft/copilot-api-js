@@ -67,7 +67,7 @@ describe("POST /chat/completions — non-streaming semantic-truncation detection
 
   beforeEach(() => {
     upstreamFetchMock.mockClear()
-    setStateForTests({ copilotToken: "test-token", accountType: "individual", vsCodeVersion: "1.100.0", fetchTimeout: 0 })
+    setStateForTests({ copilotToken: "test-token", accountType: "individual", vsCodeVersion: "1.100.0", responseHeaderTimeout: 0 })
     applyFetchMock(upstreamFetchMock)
     setModels({ object: "list", data: [mockModel(MODEL, { supported_endpoints: ["/chat/completions"] })] })
   })
@@ -78,7 +78,7 @@ describe("POST /chat/completions — non-streaming semantic-truncation detection
     expect(res.status).toBe(200) // NOT a 500 TypeError
     const entry = getHistory({ endpoint: "openai-chat-completions", limit: 1 }).entries[0]
     expect(entry.state).toBe("failed")
-    expect(String(entry.outboundResponse?.error)).toContain("finish_reason")
+    expect(String(entry._index?.derived?.failureReason)).toContain("finish_reason")
   })
 
   test("missing finish_reason → FAILED", async () => {
@@ -94,6 +94,6 @@ describe("POST /chat/completions — non-streaming semantic-truncation detection
     await request()
     const entry = getHistory({ endpoint: "openai-chat-completions", limit: 1 }).entries[0]
     expect(entry.state).toBe("completed")
-    expect(entry.outboundResponse?.success).toBe(true)
+    expect(entry.attempts?.at(-1)?.upstreamResponse?.success).toBe(true)
   })
 })

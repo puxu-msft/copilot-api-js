@@ -45,11 +45,16 @@ import {
 } from "bun:test"
 
 import { resetAnthropicFeatureNegotiationForTesting } from "~/lib/anthropic/feature-negotiation"
-import { REFUSAL_RECOVERY_TEXT } from "~/lib/anthropic/recover-refusal"
+import {
+  //
+  DEFAULT_REFUSAL_END_TURN_TEXT,
+  DEFAULT_REFUSAL_ERROR_MESSAGE,
+  DEFAULT_REFUSAL_ERROR_TYPE,
+} from "~/lib/anthropic/recover-refusal"
 import { getHistory } from "~/lib/history"
 import {
   //
-  setModelOverrides,
+  setModelMappings,
   setModels,
   setStateForTests,
 } from "~/lib/state"
@@ -457,7 +462,7 @@ const S8_GOLDEN = [
   ev("content_block_delta", { type: "content_block_delta", index: 0, delta: { type: "signature_delta", signature: "SIG-REF" } }),
   ev("content_block_stop", { type: "content_block_stop", index: 0 }),
   ev("content_block_start", { type: "content_block_start", index: 1, content_block: { type: "text", text: "" } }),
-  ev("content_block_delta", { type: "content_block_delta", index: 1, delta: { type: "text_delta", text: REFUSAL_RECOVERY_TEXT } }),
+  ev("content_block_delta", { type: "content_block_delta", index: 1, delta: { type: "text_delta", text: DEFAULT_REFUSAL_END_TURN_TEXT } }),
   ev("content_block_stop", { type: "content_block_stop", index: 1 }),
   ev("message_delta", { type: "message_delta", delta: { stop_reason: "end_turn", stop_details: null, stop_sequence: null }, usage: { output_tokens: 5 } }),
   messageStop(),
@@ -516,7 +521,7 @@ const app = createFullTestApp()
 
 function injectModels(): void {
   setModels({ object: "list", data: [mockModel("claude-sonnet-4.6", { vendor: "Anthropic", supported_endpoints: ["/v1/messages"] })] })
-  setModelOverrides({})
+  setModelMappings({})
 }
 
 async function postStream(extra?: Record<string, unknown>): Promise<string> {
@@ -549,9 +554,9 @@ async function postJsonRaw(extra?: Record<string, unknown>): Promise<Response> {
   })
 }
 
-/** The upstream-original accumulated assistant response (ctx.complete → entry.outboundResponse). */
+/** The upstream-original accumulated assistant response (ctx.complete → attempts[-1].upstreamResponse.body). */
 function lastOutboundContent(): unknown {
-  return getHistory({ endpoint: "anthropic-messages" }).entries[0]?.outboundResponse?.content
+  return getHistory({ endpoint: "anthropic-messages" }).entries[0]?.attempts?.at(-1)?.upstreamResponse?.body
 }
 
 // ── tests ────────────────────────────────────────────────────────────────────
@@ -561,7 +566,14 @@ describe("response-rewrite activated-state golden (handler-v4, byte-lock)", () =
 
   beforeEach(async () => {
     upstreamMock.mockClear()
-    setStateForTests({ copilotToken: "tok", accountType: "individual", vsCodeVersion: "1.100.0", fetchTimeout: 0 })
+    setStateForTests({ copilotToken: "tok", accountType: "individual", vsCodeVersion: "1.100.0", responseHeaderTimeout: 0 })
+    // setStateForTests MERGES (no reset) — restore the refusal text config each test so a custom
+    // template set by one test can't leak into another's DEFAULT-asserting golden.
+    setStateForTests({
+      refusalEndTurnText: DEFAULT_REFUSAL_END_TURN_TEXT,
+      refusalErrorMessage: DEFAULT_REFUSAL_ERROR_MESSAGE,
+      refusalErrorType: DEFAULT_REFUSAL_ERROR_TYPE,
+    })
     applyFetchMock(upstreamMock)
     await resetAnthropicFeatureNegotiationForTesting()
   })
@@ -657,7 +669,7 @@ describe("response-rewrite activated-state golden (handler-v4, byte-lock)", () =
     const text = await postStream()
     expect(text).toBe(S8_GOLDEN)
     // The empty thinking block is kept verbatim; a synthetic text block is appended.
-    expect(text).toContain(REFUSAL_RECOVERY_TEXT)
+    expect(text).toContain(DEFAULT_REFUSAL_END_TURN_TEXT)
     expect(text).toContain('"type":"signature_delta","signature":"SIG-REF"')
     // stop_reason rewritten away from refusal.
     expect(text).not.toContain('"refusal"')
@@ -672,7 +684,7 @@ describe("response-rewrite activated-state golden (handler-v4, byte-lock)", () =
     const text = await postStream()
     // refusal mode = no rewrite: the refusal delta + empty thinking block reach the client unchanged.
     expect(text).toContain('"stop_reason":"refusal"')
-    expect(text).not.toContain(REFUSAL_RECOVERY_TEXT)
+    expect(text).not.toContain(DEFAULT_REFUSAL_END_TURN_TEXT)
   })
 
   test("S8 error mode: thinking-only refusal → event:error frame + ctx.fail; history keeps upstream refusal", async () => {
@@ -683,15 +695,78 @@ describe("response-rewrite activated-state golden (handler-v4, byte-lock)", () =
     expect(text).toContain("event: error")
     expect(text).toContain('"type":"api_error"')
     // No end_turn synthesis; the original refusal terminator + message_stop are suppressed (not forwarded).
-    expect(text).not.toContain(REFUSAL_RECOVERY_TEXT)
+    expect(text).not.toContain(DEFAULT_REFUSAL_END_TURN_TEXT)
     expect(text).not.toContain('"stop_reason":"end_turn"')
     expect(text).not.toContain('"stop_reason":"refusal"')
     // Option A: history keeps the upstream-original thinking-only refusal (forwarded-only reshape).
     expect(lastOutboundContent()).toEqual(S8_OUTBOUND)
-    // Terminal state: recorded as FAILED (not a fake success) — aligns with the truncation invariant.
+    // Terminal state: the REQUEST is FAILED (state), but the UPSTREAM leg SUCCEEDED (delivered a
+    // complete refusal response) — the proxy introduced the error verdict. Data-model keeps
+    // outboundResponse honest (success:true, no error); the verdict lives in failureReason.
     const entry = getHistory({ endpoint: "anthropic-messages" }).entries[0]
     expect(entry.state).toBe("failed")
-    expect(entry.outboundResponse?.success).toBe(false)
+    expect(entry.attempts?.at(-1)?.upstreamResponse?.success).toBe(true)
+    expect(entry.attempts?.at(-1)?.error).toBeUndefined()
+    expect(entry._index?.derived?.failureReason?.toLowerCase()).toContain("refusal")
+  })
+
+  test("S8 end_turn custom template renders vars into the forwarded text block (streaming)", async () => {
+    scenario = "s8"
+    setStateForTests({ refusalSseRewrite: "end_turn", refusalEndTurnText: "REFUSED m={model} t={thinking_tokens}" })
+    const text = await postStream()
+    // model resolved into the injected text; thinking_tokens = REFUSAL_DELTA usage.output_tokens (5).
+    expect(text).toContain(`REFUSED m=${MODEL} t=5`)
+    // no leftover placeholders, no proxy wrapping around the configured bytes.
+    expect(text).not.toContain("{model}")
+    expect(text).not.toContain("{thinking_tokens}")
+    expect(text).not.toContain(DEFAULT_REFUSAL_END_TURN_TEXT)
+    expect(text).not.toContain('"stop_reason":"refusal"')
+  })
+
+  test("S8 end_turn empty template appends NO text block, still end_turn (streaming)", async () => {
+    scenario = "s8"
+    setStateForTests({ refusalSseRewrite: "end_turn", refusalEndTurnText: "" })
+    const text = await postStream()
+    // zero-wrapping: no synthetic text block at all (no content_block_start for a text block after
+    // the thinking block), only the stop_reason flip.
+    expect(text).not.toContain('"content_block":{"type":"text"')
+    expect(text).not.toContain(DEFAULT_REFUSAL_END_TURN_TEXT)
+    expect(text).toContain('"stop_reason":"end_turn"')
+    expect(text).not.toContain('"stop_reason":"refusal"')
+  })
+
+  test("S8 error mode custom message/type render into the forwarded error frame (streaming)", async () => {
+    scenario = "s8"
+    setStateForTests({ refusalSseRewrite: "error", refusalErrorMessage: "denied m={model} t={thinking_tokens}", refusalErrorType: "custom_type" })
+    const text = await postStream()
+    expect(text).toContain("event: error")
+    expect(text).toContain('"type":"custom_type"')
+    expect(text).toContain(`denied m=${MODEL} t=5`)
+    expect(text).not.toContain('"type":"api_error"')
+  })
+
+  test("S8 end_turn: forwarded refusal frames tagged synthetic:refusal-recovery; upstream track has none", async () => {
+    scenario = "s8"
+    setStateForTests({ refusalSseRewrite: "end_turn" })
+    await postStream()
+    const entry = getHistory({ endpoint: "anthropic-messages" }).entries[0]
+    // Forwarded track: the injected synthetic text triplet (3) + the rewritten end_turn delta (1) are marked.
+    const forwarded = entry.clientResponse?.sseEvents ?? []
+    expect(forwarded.filter((e) => e.synthetic === "refusal-recovery").length).toBeGreaterThanOrEqual(4)
+    // Upstream-original track keeps the genuine refusal — never any refusal-recovery synthetic frame.
+    const upstream = entry.attempts?.at(-1)?.upstreamResponse?.sseEvents ?? []
+    expect(upstream.every((e) => e.synthetic !== "refusal-recovery")).toBe(true)
+  })
+
+  test("S8 error: forwarded error frame tagged synthetic:refusal-recovery; upstream track has none", async () => {
+    scenario = "s8"
+    setStateForTests({ refusalSseRewrite: "error" })
+    await postStream()
+    const entry = getHistory({ endpoint: "anthropic-messages" }).entries[0]
+    const forwarded = entry.clientResponse?.sseEvents ?? []
+    expect(forwarded.some((e) => e.synthetic === "refusal-recovery")).toBe(true)
+    const upstream = entry.attempts?.at(-1)?.upstreamResponse?.sseEvents ?? []
+    expect(upstream.every((e) => e.synthetic !== "refusal-recovery")).toBe(true)
   })
 
   test("S6 error mode: non-streaming thinking-only refusal → 500 error body + ctx.fail", async () => {
@@ -700,10 +775,29 @@ describe("response-rewrite activated-state golden (handler-v4, byte-lock)", () =
     const res = await postJsonRaw()
     expect(res.status).toBe(500)
     expect(await res.json()).toEqual({ type: "error", error: { type: "api_error", message: expect.any(String) } })
-    // history FAILED, upstream-original refusal content preserved.
+    // history FAILED (request state); upstream leg succeeded → outboundResponse honest, verdict in failureReason.
     const entry = getHistory({ endpoint: "anthropic-messages" }).entries[0]
     expect(entry.state).toBe("failed")
-    expect(entry.outboundResponse?.success).toBe(false)
+    expect(entry.attempts?.at(-1)?.upstreamResponse?.success).toBe(true)
+    expect(entry.attempts?.at(-1)?.error).toBeUndefined()
+    expect(entry._index?.derived?.failureReason?.toLowerCase()).toContain("refusal")
+  })
+
+  test("S6 error mode custom message/type render into the non-streaming error body", async () => {
+    scenario = "s6Refusal"
+    setStateForTests({ refusalSseRewrite: "error", refusalErrorMessage: "denied m={model} t={thinking_tokens}", refusalErrorType: "custom_type" })
+    const res = await postJsonRaw()
+    expect(res.status).toBe(500)
+    // s6RefusalBody upstream usage.output_tokens = 6.
+    expect(await res.json()).toEqual({ type: "error", error: { type: "custom_type", message: `denied m=${MODEL} t=6` } })
+  })
+
+  test("S6 error mode empty error type falls back to api_error (non-streaming)", async () => {
+    scenario = "s6Refusal"
+    setStateForTests({ refusalSseRewrite: "error", refusalErrorType: "" })
+    const res = await postJsonRaw()
+    expect(res.status).toBe(500)
+    expect(((await res.json()) as { error: { type: string } }).error.type).toBe("api_error")
   })
 
   test("S6 non-streaming: server-tool blocks filtered from response", async () => {
@@ -767,7 +861,7 @@ describe("response-rewrite activated-state golden (handler-v4, byte-lock)", () =
       usage: { input_tokens: 5, output_tokens: 6 },
       content: [
         { type: "thinking", thinking: "", signature: "SIG-REF" },
-        { type: "text", text: REFUSAL_RECOVERY_TEXT },
+        { type: "text", text: DEFAULT_REFUSAL_END_TURN_TEXT },
       ],
     })
   })

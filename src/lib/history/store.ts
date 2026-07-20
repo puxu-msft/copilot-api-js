@@ -1,46 +1,16 @@
-export {
-  __setTerminalWriterForTests,
-  clearHistory,
-  drainPendingFinalizations,
-  finalizeEntry,
-  getInFlightEntry,
-  insertEntry,
-  listInFlightEntries,
-  listInFlightSummaries,
-  persistEntryEager,
-  persistEntryStages,
-  persistEntryStatus,
-  retryPendingFinalizations,
-  setPinned,
-  updateEntry,
-} from "./entries"
+export { clearHistory, getInFlightEntry, insertEntry, listInFlightEntries, listInFlightSummaries, setPinned, updateEntry } from "./entries"
 export { getEntry, getHistory, getHistorySummaries, getSummary } from "./queries"
 export { searchContains, searchHistory } from "./search"
-export {
-  deleteSession,
-  getAgentIdFromHeaders,
-  getCurrentSession,
-  getSessionEntries,
-  getSessionIdFromHeaders,
-  getSessionSummaries,
-  registerResponseSession,
-  resolveResponseSessionId,
-} from "./sessions"
-export {
-  historyState,
-  initHistory,
-  isHistoryEnabled,
-  setHistoryMaxEntries,
-  setHistoryPublisher,
-  shutdownHistory,
-  startSearchIndexBackfill,
-  stopHistoryBackgroundWork,
-} from "./state"
+export { getAgentIdFromHeaders, getCurrentSession, getSessionEntries, getSessionIdFromHeaders, getSessionSummaries } from "./sessions"
+export { historyState, initHistory, isHistoryEnabled, setHistoryPublisher, shutdownHistory, startHistoryBackfills, stopHistoryBackgroundWork } from "./state"
 export { exportHistory, getStats } from "./stats"
 
 export type {
+  ClientRequestLeg,
+  ClientResponseLeg,
   ContentBlock,
   CursorResult,
+  EffectiveSourceLeg,
   EndpointType,
   EntrySummary,
   ForwardedResponse,
@@ -50,7 +20,9 @@ export type {
   HistoryStats,
   ImageContentBlock,
   ImageSource,
+  IndexProjection,
   MessageContent,
+  ModelInfo,
   PipelineInfo,
   PreprocessInfo,
   QueryOptions,
@@ -75,6 +47,8 @@ export type {
   ToolResultTextBlock,
   ToolUseContentBlock,
   TruncationInfo,
+  UpstreamRequestLeg,
+  UpstreamResponseData,
   UsageData,
   WarningMessage,
   WebSearchToolResultContentBlock,

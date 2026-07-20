@@ -26,12 +26,20 @@ import type { AnthropicMessageResponse } from "./client"
 import {
   //
   ASK_USER_QUESTION_TOOL,
-  backfillAskUserQuestionHeaders,
   decodeToolUseInput,
+  normalizeAskUserQuestionInput,
+  normalizeSendMessageInput,
+  SEND_MESSAGE_TOOL,
   shouldDecodeToolInput,
+  type AskNormalizationDiag,
   type DecodeToolInputConfig,
+  type SendMessageNormalizationDiag,
 } from "./decode-tool-input-core"
-import { repairToolInput } from "./tool-input-repair"
+import {
+  //
+  repairToolInput,
+  type RepairItem,
+} from "./tool-input-repair"
 
 /** Diagnostic emitted when a tool_use input selected for decode couldn't be decoded. */
 export interface DecodeFailureInfo {
@@ -52,24 +60,49 @@ export interface ToolInputRewriteOptions {
    */
   backfillAskUserQuestionHeader?: boolean
   /**
-   * Repair a malformed tool_use input that fails to `JSON.parse` at the block's
-   * `content_block_stop`, before forwarding. `"tags"` strips antml tag bleed
-   * (Layer 1); `"repair"` additionally runs jsonrepair (Layer 2); `false`
-   * (default) leaves the existing replay-originals behavior. When enabled, the
-   * decoder buffers **every** `tool_use` block (not just decode-selected ones)
-   * so any malformed input is caught — `server_tool_use` stays excluded.
+   * Called with normalization diagnostics when `normalizeAskUserQuestionInput` salvaged a hoisted
+   * top-level `question` and/or stripped schema-invalid top-level keys from an AskUserQuestion input.
+   * Fires once per changed block. Runs only when `backfillAskUserQuestionHeader` is set (same gate).
    */
-  repairMalformedInput?: "tags" | "repair" | false
+  onNormalize?: (diag: AskNormalizationDiag) => void
+  /**
+   * When true, recover a missing SendMessage `to` recipient from a misnamed `agentId` alias on the
+   * forwarded wire (see `normalizeSendMessageInput`). Runs after AskUserQuestion normalize; each is a
+   * no-op for the other's tool. Default false.
+   */
+  normalizeSendMessageRecipient?: boolean
+  /**
+   * Called with the diagnostic when `normalizeSendMessageInput` recovered a SendMessage recipient by
+   * renaming `agentId` → `to`. Fires once per changed block. Runs only when `normalizeSendMessageRecipient`
+   * is set (same gate).
+   */
+  onSendMessageNormalize?: (diag: SendMessageNormalizationDiag) => void
+  /**
+   * Repair a malformed tool_use input that fails to `JSON.parse` at the block's
+   * `content_block_stop`, before forwarding. A set of repair items (`tags` strips
+   * antml tag bleed, `unicode` fixes whitespace-broken `\uXXXX` escapes, `jsonrepair`
+   * runs jsonrepair) cascaded in canonical order; empty/omitted = off (leaves the
+   * existing replay-originals behavior). When non-empty, the decoder buffers **every**
+   * `tool_use` block (not just decode-selected ones) so any malformed input is caught —
+   * `server_tool_use` stays excluded.
+   */
+  repairMalformedInput?: ReadonlyArray<RepairItem>
   /**
    * Called when a malformed tool_use input was successfully repaired before forwarding.
    * `layer` names the winning repair layer; `beforeLength`/`afterLength` are the raw-vs-repaired
    * JSON sizes (for the `[REWRITE]` log + outcome telemetry). Fires once per repaired block.
    */
-  onRepair?: (info: { tool: string; layer: "strip" | "jsonrepair"; beforeLength: number; afterLength: number }) => void
+  onRepair?: (info: {
+    tool: string
+    layer: "strip" | "unicode" | "jsonrepair" | "unicode-lossy"
+    beforeLength: number
+    afterLength: number
+    field?: string
+  }) => void
   /**
    * Called when a tool_use input the decoder buffered (selected for field decoding OR `AskUserQuestion` header backfill) couldn't be rewritten:
    *   - `input-parse-failed` — the whole buffered input JSON didn't parse (a COMPLETE block, not an abort). Fires for ANY buffered tool, including a backfill-only selection.
-   *   - `field-undecodable` — an explicitly-configured decode field stayed a string. Fires ONLY for fields named in `cfg.fields[tool]` (never for `cfg.all`-discovered plain strings).
+   *   - `field-undecodable` — a configured decode field stayed a string. Fires ONLY for fields named in `cfg.fields[tool]`.
    * NEVER fires on the interrupted-stream `flush()` path (a normal client abort, not a failure).
    * Deduped per `(tool, field, reason)` within one decoder / one non-streaming response, so high-frequency malformed upstreams don't storm the log.
    * Note: covers the malformed / non-decodable variant only; a value that is valid JSON decodes successfully and never reports here.
@@ -87,6 +120,42 @@ function isParseableJson(s: string): boolean {
   }
 }
 
+/**
+ * Repair malformed stringified decode-target FIELDS whose OUTER input parses but the field's inner
+ * JSON string is itself malformed — e.g. AskUserQuestion `questions: "[{…truncated}"` (the outer
+ * `{"questions":"…"}` is valid, so whole-input repair never fires; `tryDecodeJsonString` then leaves
+ * the broken string in place and it is forwarded unrepaired → client decode error). Runs the repair
+ * cascade per explicit decode field with the ARRAY-accepting gate (a field like `questions` is
+ * legitimately an array). Restricted to fields named in `cfg.fields[name]`. The array-or-object gate
+ * still rejects jsonrepair scalar fabrications, so a genuinely plain-string field is left untouched.
+ * Returns a NEW input object when any field was repaired, else the original reference.
+ */
+function repairStringifiedDecodeFields(
+  name: string,
+  input: unknown,
+  cfg: DecodeToolInputConfig,
+  repairItems: ReadonlyArray<RepairItem>,
+  onRepair: ToolInputRewriteOptions["onRepair"],
+): unknown {
+  if (typeof input !== "object" || input === null || Array.isArray(input)) return input
+  if (!Object.hasOwn(cfg.fields, name)) return input
+
+  const obj = input as Record<string, unknown>
+  let result: Record<string, unknown> | undefined
+  for (const field of cfg.fields[name]) {
+    const value = obj[field]
+    // Only a NON-empty string that FAILS to parse is a malformed encoded field. A valid stringified
+    // field decodes normally downstream; an empty string / non-string is not this repair's concern.
+    if (typeof value !== "string" || value === "" || isParseableJson(value)) continue
+    const repaired = repairToolInput(value, repairItems, { allowArrayResult: true })
+    if (!("repaired" in repaired)) continue // unrepairable → leave as string; reportUndecodedFields flags it
+    if (!result) result = { ...obj }
+    result[field] = repaired.repaired
+    onRepair?.({ tool: name, layer: repaired.layer, field, beforeLength: value.length, afterLength: JSON.stringify(repaired.repaired).length })
+  }
+  return result ?? input
+}
+
 /** Build a per-scope deduping reporter (`() => {}` when no sink). Dedup key = `tool:field:reason`. */
 function makeDecodeFailureReporter(onDecodeFailure?: (info: DecodeFailureInfo) => void): (info: DecodeFailureInfo) => void {
   if (!onDecodeFailure) return () => {}
@@ -100,12 +169,11 @@ function makeDecodeFailureReporter(onDecodeFailure?: (info: DecodeFailureInfo) =
 }
 
 /**
- * Report each EXPLICITLY-configured decode field of `name` whose value in `result` is still a
- * string — i.e. the config declared it should be JSON but it didn't decode. No-op under `cfg.all`
- * (plain strings legitimately don't decode there) or when `name` has no explicit field list.
+ * Report each configured decode field of `name` whose value in `result` is still a string — i.e. the
+ * config declared it should be JSON but it didn't decode. No-op when `name` has no field list.
  */
 function reportUndecodedFields(name: string, result: unknown, cfg: DecodeToolInputConfig, report: (info: DecodeFailureInfo) => void): void {
-  if (cfg.all || !Object.hasOwn(cfg.fields, name)) return
+  if (!Object.hasOwn(cfg.fields, name)) return
   if (typeof result !== "object" || result === null || Array.isArray(result)) return
   const obj = result as Record<string, unknown>
   for (const field of cfg.fields[name]) {
@@ -175,13 +243,14 @@ function buildInputJsonDelta(template: ServerSentEventMessage | undefined, index
 /**
  * Create a stateful decoder for an Anthropic SSE stream.
  *
- * Only `tool_use` blocks whose name is selected by `cfg` (or, when `opts.backfillAskUserQuestionHeader` is set, the `AskUserQuestion` block) are buffered; `server_tool_use` and every other block pass through untouched (the `block.type === "tool_use"` guard hard-excludes server tools even when `cfg.all` is set, avoiding conflicts with the server-tool filter).
+ * Only `tool_use` blocks whose name is selected by `cfg` (or, when `opts.backfillAskUserQuestionHeader` is set, the `AskUserQuestion` block; or, when `opts.normalizeSendMessageRecipient` is set, the `SendMessage` block) are buffered; `server_tool_use` and every other block pass through untouched (the `block.type === "tool_use"` guard hard-excludes server tools, avoiding conflicts with the server-tool filter).
  */
 export function createToolInputStreamDecoder(cfg: DecodeToolInputConfig, opts: ToolInputRewriteOptions = {}): ToolInputStreamDecoder {
   const buffering = new Map<number, BufferedToolUse>()
   const backfill = opts.backfillAskUserQuestionHeader === true
-  const repairMode = opts.repairMalformedInput ?? false
-  const repairEnabled = repairMode === "tags" || repairMode === "repair"
+  const fixSendMessage = opts.normalizeSendMessageRecipient === true
+  const repairItems = opts.repairMalformedInput ?? []
+  const repairEnabled = repairItems.length > 0
   const report = makeDecodeFailureReporter(opts.onDecodeFailure)
 
   function finalize(buf: BufferedToolUse, stopRaw: ServerSentEventMessage): Array<ServerSentEventMessage> {
@@ -207,7 +276,7 @@ export function createToolInputStreamDecoder(cfg: DecodeToolInputConfig, opts: T
       } catch {
         // Upstream sent malformed / truncated JSON for a COMPLETE block (content_block_stop,
         // not an abort). Try layered repair when enabled; otherwise replay originals losslessly.
-        const result = repairEnabled ? repairToolInput(full, repairMode) : ({ unrepairable: true } as const)
+        const result = repairEnabled ? repairToolInput(full, repairItems) : ({ unrepairable: true } as const)
         if ("repaired" in result) {
           inputObj = result.repaired
           wasRepaired = true
@@ -222,8 +291,19 @@ export function createToolInputStreamDecoder(cfg: DecodeToolInputConfig, opts: T
     }
 
     // Decode stringified fields first, then backfill — so a stringified `questions` array is structured before its items are inspected.
-    const decoded = decodeToolUseInput(buf.name, inputObj, cfg)
-    const normalized = backfill ? backfillAskUserQuestionHeaders(buf.name, decoded) : decoded
+    // Before decoding: repair any decode-target field whose OUTER-valid input carries a MALFORMED
+    // inner JSON string (e.g. a truncated `questions` array) — otherwise it stays a broken string.
+    let repairedInput = inputObj
+    if (repairEnabled) {
+      const afterFieldRepair = repairStringifiedDecodeFields(buf.name, inputObj, cfg, repairItems, opts.onRepair)
+      if (afterFieldRepair !== inputObj) {
+        repairedInput = afterFieldRepair
+        wasRepaired = true
+      }
+    }
+    const decoded = decodeToolUseInput(buf.name, repairedInput, cfg)
+    let normalized = backfill ? normalizeAskUserQuestionInput(buf.name, decoded, opts.onNormalize) : decoded
+    if (fixSendMessage) normalized = normalizeSendMessageInput(buf.name, normalized, opts.onSendMessageNormalize)
     reportUndecodedFields(buf.name, normalized, cfg, report)
     if (!wasRepaired && normalized === inputObj) {
       // Input was valid and nothing changed — zero-perturbation pass-through of the original bytes.
@@ -248,7 +328,10 @@ export function createToolInputStreamDecoder(cfg: DecodeToolInputConfig, opts: T
         if (
           block.type === "tool_use"
           && block.name !== undefined
-          && (repairEnabled || shouldDecodeToolInput(block.name, cfg) || (backfill && block.name === ASK_USER_QUESTION_TOOL))
+          && (repairEnabled
+            || shouldDecodeToolInput(block.name, cfg)
+            || (backfill && block.name === ASK_USER_QUESTION_TOOL)
+            || (fixSendMessage && block.name === SEND_MESSAGE_TOOL))
         ) {
           buffering.set(parsed.index, { name: block.name, index: parsed.index, chunks: [], rawDeltas: [] })
         }
@@ -300,8 +383,9 @@ export function decodeToolInputBlocksInResponse(
   opts: ToolInputRewriteOptions = {},
 ): AnthropicMessageResponse {
   const backfill = opts.backfillAskUserQuestionHeader === true
-  const repairMode = opts.repairMalformedInput ?? false
-  const repairEnabled = repairMode === "tags" || repairMode === "repair"
+  const fixSendMessage = opts.normalizeSendMessageRecipient === true
+  const repairItems = opts.repairMalformedInput ?? []
+  const repairEnabled = repairItems.length > 0
   const report = makeDecodeFailureReporter(opts.onDecodeFailure)
   const content = response.content.map((block) => {
     const b = block as { type?: string; name?: string; input?: unknown }
@@ -318,7 +402,7 @@ export function decodeToolInputBlocksInResponse(
         // `=== ""` (not `.trim()`): a whitespace-only string is genuinely malformed and falls through to repair.
         input = {}
       } else {
-        const result = repairToolInput(input, repairMode)
+        const result = repairToolInput(input, repairItems)
         if ("repaired" in result) {
           opts.onRepair?.({ tool: b.name, layer: result.layer, beforeLength: input.length, afterLength: JSON.stringify(result.repaired).length })
           input = result.repaired
@@ -328,8 +412,12 @@ export function decodeToolInputBlocksInResponse(
         }
       }
     }
+    // Repair a decode-target FIELD whose inner JSON string is malformed while the OUTER input is a
+    // valid object (e.g. `questions: "[{…truncated}"`). Mirrors the streaming finalize field-repair.
+    if (repairEnabled) input = repairStringifiedDecodeFields(b.name, input, cfg, repairItems, opts.onRepair)
     const decoded = decodeToolUseInput(b.name, input, cfg)
-    const normalized = backfill ? backfillAskUserQuestionHeaders(b.name, decoded) : decoded
+    let normalized = backfill ? normalizeAskUserQuestionInput(b.name, decoded, opts.onNormalize) : decoded
+    if (fixSendMessage) normalized = normalizeSendMessageInput(b.name, normalized, opts.onSendMessageNormalize)
     reportUndecodedFields(b.name, normalized, cfg, report)
     return normalized === b.input ? block : ({ ...b, input: normalized } as typeof block)
   })

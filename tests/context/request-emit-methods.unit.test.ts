@@ -31,6 +31,7 @@ import {
 import type { ObservabilityEvent } from "~/lib/observability"
 
 import { createRequestContext } from "~/lib/context/request"
+import { HTTPError } from "~/lib/error"
 import { createBus } from "~/lib/observability"
 
 /**
@@ -98,7 +99,7 @@ describe("RequestContext.recordFeature", () => {
 
   test("omits detail field when undefined", () => {
     const { ctx, events } = setup()
-    ctx.recordFeature("truncated")
+    ctx.recordFeature("via-responses")
     if (events[0].kind === "request.feature_applied") {
       // `detail` should be absent (not undefined) on the published object.
       expect("detail" in events[0]).toBe(false)
@@ -148,23 +149,51 @@ describe("RequestContext.recordAttemptFailure", () => {
 
     ctx.recordAttemptFailure({ willRetry: true, nextStrategy: "auto-truncate", waitMs: 1000 })
 
-    if (events[0].kind === "request.attempt_failed") {
-      expect(events[0].willRetry).toBe(true)
-      expect(events[0].nextStrategy).toBe("auto-truncate")
-      expect(events[0].waitMs).toBe(1000)
-      expect(events[0].attempt.attemptIndex).toBe(0)
-      expect(events[0].attempt.strategy).toBe("auto-truncate")
-      expect(events[0].attempt.error).toEqual({ status: 413, message: "Payload too large", type: "payload_too_large" })
+    // `beginAttempt` publishes a `request.context_updated` at index 0, so select
+    // the attempt_failed event robustly instead of assuming it lands at events[0].
+    const failed = events.find((e) => e.kind === "request.attempt_failed")
+    expect(failed).toBeDefined()
+    if (failed?.kind === "request.attempt_failed") {
+      expect(failed.willRetry).toBe(true)
+      expect(failed.nextStrategy).toBe("auto-truncate")
+      expect(failed.waitMs).toBe(1000)
+      expect(failed.attempt.attemptIndex).toBe(0)
+      expect(failed.attempt.strategy).toBe("auto-truncate")
+      // Non-HTTPError `raw` (null) yields an error object with NO `rawBody` — the
+      // negative-case guard for H1's rawBody field.
+      expect(failed.attempt.error).toEqual({ status: 413, message: "Payload too large", type: "payload_too_large" })
+    }
+  })
+
+  test("carries the upstream error rawBody from the attempt's HTTPError raw", () => {
+    const { ctx, events } = setup()
+    const body = '{"error":{"message":"upstream boom","type":"server_error"}}'
+    ctx.beginAttempt({ strategy: "server-error-retry" })
+    ctx.setAttemptError({
+      status: 500,
+      message: "HTTP 500",
+      type: "server_error",
+      raw: new HTTPError("HTTP 500", 500, body),
+    })
+
+    ctx.recordAttemptFailure({ willRetry: true })
+
+    const failed = events.find((e) => e.kind === "request.attempt_failed")
+    expect(failed).toBeDefined()
+    if (failed?.kind === "request.attempt_failed") {
+      expect(failed.attempt.error?.rawBody).toBe(body)
     }
   })
 
   test("works without any prior attempt (snapshot has index 0 + no error)", () => {
     const { ctx, events } = setup()
     ctx.recordAttemptFailure({ willRetry: false })
-    if (events[0].kind === "request.attempt_failed") {
-      expect(events[0].attempt.attemptIndex).toBe(0)
-      expect(events[0].attempt.error).toBeUndefined()
-      expect(events[0].willRetry).toBe(false)
+    const failed = events.find((e) => e.kind === "request.attempt_failed")
+    expect(failed).toBeDefined()
+    if (failed?.kind === "request.attempt_failed") {
+      expect(failed.attempt.attemptIndex).toBe(0)
+      expect(failed.attempt.error).toBeUndefined()
+      expect(failed.willRetry).toBe(false)
     }
   })
 })
@@ -264,5 +293,22 @@ describe("RequestContextSnapshot fields", () => {
     expect(ctx.method).toBe("UNKNOWN")
     expect(ctx.path).toBe("/")
     expect(ctx.requestBodySize).toBeUndefined()
+  })
+})
+
+describe("RequestContext.recordAskUserQuestionNormalization", () => {
+  test("merges into pipelineInfo", () => {
+    const { ctx } = setup()
+    ctx.recordAskUserQuestionNormalization({ salvaged: true, strippedKeys: ["question"] })
+    // Merged into the pipelineInfo getter; persisted at terminal via toHistoryEntry()'s
+    // mergedPipelineInfo() projection (NOT via any per-field bus event).
+    expect(ctx.pipelineInfo?.askUserQuestionNormalization).toEqual({ salvaged: true, strippedKeys: ["question"] })
+  })
+
+  test("merge semantics: two calls accumulate per-field, surviving no setPipelineInfo", () => {
+    const { ctx } = setup()
+    ctx.recordAskUserQuestionNormalization({ salvaged: true })
+    ctx.recordAskUserQuestionNormalization({ strippedKeys: ["question"] })
+    expect(ctx.pipelineInfo?.askUserQuestionNormalization).toEqual({ salvaged: true, strippedKeys: ["question"] })
   })
 })

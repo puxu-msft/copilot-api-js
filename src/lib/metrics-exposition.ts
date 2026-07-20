@@ -38,7 +38,7 @@ import {
 export const PROMETHEUS_CONTENT_TYPE = "text/plain; version=0.0.4; charset=utf-8"
 
 const METRIC_PREFIX = "copilot_api_"
-/** A high limit so the breakdown returns every key (no top-N folding); capped dims are already bounded at CARDINALITY_CAP+1. */
+/** A high limit so the breakdown returns every key (no top-N folding); capped dims are already bounded at the cardinality cap + 1. */
 const ALL_KEYS_LIMIT = 1_000_000
 
 /** camelCase measure name → snake_case (requestCount → request_count, totalDurationMs → total_duration_ms). */

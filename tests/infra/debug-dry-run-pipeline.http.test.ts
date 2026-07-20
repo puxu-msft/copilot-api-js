@@ -85,7 +85,7 @@ describe("POST /api/debug/dry-run-pipeline", () => {
   useIsolatedRuntime()
 
   beforeEach(() => {
-    setStateForTests({ decodeToolInputFields: { AskUserQuestion: ["questions"] }, decodeAllToolInputFields: false, backfillQuestionFromHeader: true })
+    setStateForTests({ decodeToolInputFields: { AskUserQuestion: ["questions"] }, backfillQuestionFromHeader: true })
     seedModel()
   })
 
@@ -156,7 +156,7 @@ describe("POST /api/debug/dry-run-pipeline", () => {
     // Test gap A (deferred-items §2 Step1 item3): the decode rewrite's `appliesTo` OFF-side was never
     // locked. With every gate off the rewrite must NOT be assembled → byte-verbatim passthrough. This
     // is the class the live symptom would fall into if decode silently stopped via state/gating.
-    setStateForTests({ decodeToolInputFields: {}, decodeAllToolInputFields: false, backfillQuestionFromHeader: false })
+    setStateForTests({ decodeToolInputFields: {}, backfillQuestionFromHeader: false })
     const stringified = JSON.stringify([{ header: "H", question: "Q" }])
     const res = await post({ upstream: { sseEvents: askUserQuestionUpstream(stringified) } })
     const body = (await res.json()) as { result: Array<{ data?: string }> }
@@ -230,13 +230,13 @@ describe("POST /api/debug/dry-run-pipeline", () => {
       expect(body.inspection.stages.parse?.clientFormat).toBe("openai-responses")
     })
 
-    test("request side: openai-gemini parse translates Gemini→CC under the real codec", async () => {
+    test("request side: gemini parse translates Gemini→CC under the real codec", async () => {
       // Gemini body carries `model` for the dry-run (the live path takes it from the URL).
       const request = { model: "gemini-2.5-pro", contents: [{ role: "user", parts: [{ text: "hi" }] }] }
-      const res = await post({ request, format: "openai-gemini", stopAfter: "parse" })
+      const res = await post({ request, format: "gemini", stopAfter: "parse" })
       expect(res.status).toBe(200)
       const body = (await res.json()) as { format: string; inspection: { stages: { parse?: { clientFormat?: string } } } }
-      expect(body.format).toBe("openai-gemini")
+      expect(body.format).toBe("gemini")
       expect(body.inspection.stages.parse?.clientFormat).toBe("gemini")
     })
 
@@ -294,9 +294,9 @@ describe("POST /api/debug/dry-run-pipeline", () => {
       expect(body.result[0]?.data).toBe(frame)
     })
 
-    test("response side: openai-gemini dry-run is CC-frame passthrough (identity codec) + the non-Gemini caveat", async () => {
+    test("response side: gemini dry-run is CC-frame passthrough (identity codec) + the non-Gemini caveat", async () => {
       const frame = JSON.stringify({ id: "c", object: "chat.completion.chunk", choices: [{ delta: { content: "hi" }, index: 0 }] })
-      const res = await post({ upstream: { sseEvents: [{ raw: frame, type: "" }] }, format: "openai-gemini", stopAfter: "render" })
+      const res = await post({ upstream: { sseEvents: [{ raw: frame, type: "" }] }, format: "gemini", stopAfter: "render" })
       expect(res.status).toBe(200)
       const body = (await res.json()) as {
         format: string
@@ -304,7 +304,7 @@ describe("POST /api/debug/dry-run-pipeline", () => {
         result: Array<{ data?: string }>
         fidelity: { caveats: Array<string> }
       }
-      expect(body.format).toBe("openai-gemini")
+      expect(body.format).toBe("gemini")
       expect(body.stages["rewrite-out"].rewritesAvailable).toBe(false)
       // The dry-run uses an identity codec (not the real Gemini codec), so the render output is
       // the CC frame VERBATIM — the real CC→Gemini translation (B5: codec.renderResponse) is not

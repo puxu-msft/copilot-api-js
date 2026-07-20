@@ -2,10 +2,10 @@
 
 import { defineCommand } from "citty"
 import consola from "consola"
-import pc from "picocolors"
+import path from "node:path"
 import { getProxyForUrl } from "proxy-from-env"
 
-import type { Model } from "./lib/models/client"
+import type { PidfileContent } from "./lib/restart/pidfile"
 
 import packageJson from "../package.json"
 import {
@@ -15,7 +15,6 @@ import {
   setRateLimitPublisher,
 } from "./lib/adaptive-rate-limiter"
 import { loadPersistedFeatureNegotiation } from "./lib/anthropic/feature-negotiation"
-import { loadPersistedLimits } from "./lib/auto-truncate"
 import {
   //
   applyConfigToState,
@@ -27,31 +26,58 @@ import {
   PATHS,
   ensurePaths,
 } from "./lib/config/paths"
+import { snapshotWithSummary } from "./lib/context/activity-summary"
 import { initRequestContextManager } from "./lib/context/manager"
 import { cacheVSCodeVersion } from "./lib/copilot-api"
+import { initDiagnosticLogger } from "./lib/diagnostics"
+import {
+  //
+  attachBootstrapDiagnosticSpool,
+  attachStructuredFileSink,
+  disableStructuredFileLogging,
+} from "./lib/diagnostics/file"
 import {
   //
   initHistory,
   setHistoryPublisher,
-  startSearchIndexBackfill,
+  startHistoryBackfills,
 } from "./lib/history"
-import { getDatabase } from "./lib/history/sqlite/connection"
-import { applyForwardMigrations } from "./lib/history/sqlite/migrations/run"
+import { loadPersistedLimits } from "./lib/models/calibration"
 import { cacheModels } from "./lib/models/client"
-import { getEffectiveEndpoints } from "./lib/models/endpoint"
 import { normalizeForMatching } from "./lib/models/model-name"
 import { startModelRefreshLoop } from "./lib/models/refresh-loop"
 import { initBus } from "./lib/observability"
-import { formatBillingLabel } from "./lib/observability/projections/format"
+import { toActiveRequestWire } from "./lib/observability/active-request-wire"
 import { installConsolaRepublish } from "./lib/observability/republish"
-import { attachConsoleSink } from "./lib/observability/sinks/console"
-import { attachFileSink } from "./lib/observability/sinks/file"
-import { attachHistorySink } from "./lib/observability/sinks/history"
+import { attachCalibrationSink } from "./lib/observability/sinks/calibration"
+import { attachCalibrationFailureSink } from "./lib/observability/sinks/calibration-failure"
 import { attachTelemetrySink } from "./lib/observability/sinks/telemetry"
 import { attachWsSink } from "./lib/observability/sinks/ws"
-import { initProcessIdentity } from "./lib/process-identity"
+import { setRequestLinePublisher } from "./lib/observability/synthetic-request-line"
+import { loadUpstreamHookSafe } from "./lib/pipeline/hooks/loader"
+import {
+  //
+  getProcessIdentity,
+  initProcessIdentity,
+} from "./lib/process-identity"
 import { initProxy } from "./lib/proxy"
-import { initRequestTelemetry } from "./lib/request-telemetry"
+import {
+  //
+  initRequestTelemetry,
+  runTelemetryJsonBackfill,
+} from "./lib/request-telemetry"
+import { notifyReady } from "./lib/restart/notify"
+import {
+  //
+  removePidfileIfOwnedBySelf,
+  writePidfile,
+} from "./lib/restart/pidfile"
+import { isSupervised } from "./lib/restart/supervisor-env"
+import {
+  //
+  resolveManualStartup,
+  signalPredecessorHandoff,
+} from "./lib/restart/takeover"
 import { startServer } from "./lib/serve"
 import {
   //
@@ -70,6 +96,7 @@ import {
 } from "./lib/state"
 import { initTokenManagers } from "./lib/token"
 import { getCopilotUsage } from "./lib/token/copilot-client"
+import { attachTerminalUi } from "./lib/tui"
 import {
   //
   createWebSocketAdapter,
@@ -78,55 +105,6 @@ import {
 import { registerWsRoutes } from "./routes"
 import { normalizeExternalUiUrl } from "./routes/ui/route"
 import { createServer } from "./server"
-
-/** Format limit values as "Xk" or "?" if not available */
-function formatLimit(value?: number): string {
-  return value ? `${Math.round(value / 1000)}k` : "?"
-}
-
-/**
- * Format a model as 3 lines: main info, features, and supported endpoints.
- *
- * Example output:
- *   - claude-opus-4.6-1m (3x) (Anthropic)          ctx:1000k prp: 936k out:  64k
- *       features:  adaptive-thinking, thinking, streaming, vision, tool-calls
- *       endpoints: /v1/messages, /chat/completions
- */
-function formatModelInfo(model: Model, disabled = false): string {
-  const limits = model.capabilities?.limits
-  const supports = model.capabilities?.supports
-
-  const contextK = formatLimit(limits?.max_context_window_tokens)
-  const promptK = formatLimit(limits?.max_prompt_tokens)
-  const outputK = formatLimit(limits?.max_output_tokens)
-  const billingPart = formatBillingLabel(model.billing?.multiplier)
-
-  const disabledTag = disabled ? " [disabled]" : ""
-  const label = `${model.id}${billingPart} (${model.vendor})${disabledTag}`
-  const padded = label.length > 45 ? `${label.slice(0, 42)}...` : label.padEnd(45)
-  const mainLineRaw = `  - ${padded} ` + `ctx:${contextK.padStart(5)} ` + `prp:${promptK.padStart(5)} ` + `out:${outputK.padStart(5)}`
-  // Only the main line is recolored when disabled — features/endpoints stay
-  // in their normal dim style so the disabled marker doesn't drown out the
-  // surrounding section.
-  const mainLine = disabled ? pc.red(pc.dim(mainLineRaw)) : mainLineRaw
-
-  const features = [
-    ...Object.entries(supports ?? {})
-      .filter(([, value]) => value === true)
-      .map(([key]) => key.replaceAll("_", "-")),
-    supports?.max_thinking_budget && "thinking",
-    model.capabilities?.type === "embeddings" && "embeddings",
-    model.preview && "preview",
-  ]
-    .filter(Boolean)
-    .join(", ")
-  const featLine = features ? pc.dim(`      features:  ${features}`) : ""
-
-  const endpoints = getEffectiveEndpoints(model)
-  const endpLine = pc.dim(`      endpoints: ${endpoints?.join(", ") ?? "(unknown)"}`)
-
-  return [mainLine, featLine, endpLine].filter(Boolean).join("\n")
-}
 
 /** Parse an integer from a string, returning a default if the result is NaN. */
 function parseIntOrDefault(value: string, defaultValue: number): number {
@@ -189,16 +167,28 @@ interface RunServerOptions {
   ghcApiBaseUrl?: string
   // Adaptive rate limiting (disabled if rateLimit is false)
   rateLimit: boolean
+  /**
+   * History recording master switch (CLI --history / --no-history). undefined =
+   * unset → fall back to config `history.enabled` (default true). false forces
+   * no-history mode: no History database is opened and nothing is recorded.
+   */
+  history?: boolean
   /** Mock rate limiter throttle: reject all requests with 429 */
   mockRateLimiterThrottled: boolean
   githubToken?: string
   showGitHubToken: boolean
+  /** Enable interactive raw-mode TUI; false forces the plain log renderer. */
+  tui: boolean
   /** Explicit proxy URL (CLI --proxy). Takes precedence over env vars and config.yaml. */
   proxy?: string
   httpProxyFromEnv: boolean
-  /** Reactive auto-truncate (CLI --auto-truncate / --no-auto-truncate). `undefined` when omitted → config.yaml `auto_truncate` stands. */
-  autoTruncate?: boolean
   externalUiUrl?: string
+  /**
+   * 零停机接管：若已有裸手动实例在跑（pidfile 活性检查检测到），绑定同端口
+   * （reusePort）并向其发 SIGUSR2 交接，待其 drain 完退出。仅裸手动路径生效；
+   * systemd/pm2 下由 supervisor 编排交接、本 flag 被忽略（lifecycle.md「优雅重启」）。
+   */
+  restart: boolean
 }
 
 export async function runServer(options: RunServerOptions): Promise<void> {
@@ -241,37 +231,26 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   }
 
   // ===========================================================================
-  // Phase 1.5: Observability bootstrap (console + file capture of the WHOLE boot)
+  // Phase 1.5: Observability bootstrap (terminal + secure file WAL for the WHOLE boot)
   // ===========================================================================
-  // Stand up the bus + ConsoleSink + FileSink + the single consola hijack BEFORE
-  // the boot banner so every info-level-and-above startup line (version, process
-  // identity, data dir, rate limiter init, config-parse errors) is captured to the
-  // rotating copilot-api.log — not just request-time logs. Previously this block
-  // lived in Phase 3 (after the banner + rate limiter init), so those early lines
-  // reached stdout via the raw consola reporter but never the file sink; a hang or
-  // crash during early boot left no on-disk trace of how far startup got. (consola
-  // gates by level before the reporter runs, so debug-level lines — e.g. proxy init
-  // — are still file-captured only under --verbose, same as before this change.)
-  //
-  // Only the two log-stream sinks (Console, File) + the system publisher are wired
-  // here — they have no backing-store dependency (FileSink self-creates its dir and
-  // PATHS.COPILOT_LOG is a module constant). The request/history sinks (History,
-  // Telemetry, Ws) need their stores initialized first and so attach in Phase 3;
-  // the only ordering invariant that matters is HistorySink-before-WsSink (history
-  // persists before WS broadcasts), which Phase 3 still preserves. ConsoleSink
-  // subscribing first is harmless: it renders from the event payload and never
-  // queries history. FileSink uses synchronous appendFileSync, so even a line
-  // emitted immediately before process.exit() is flushed to disk.
-  //
-  // ensurePaths() moves up from Phase 2.5: FileSink needs APP_DIR to exist, and it
-  // must still precede loadRawConfigFile() (which reads CONFIG_YAML under APP_DIR).
+  // The permanent terminal owner sees every event once. A secure O_EXCL spool is
+  // the full-process file WAL: after config/identity freeze it replays boot records
+  // into the detached-ready structured sink, then remains the sole bus owner and
+  // WAL-first mirrors each live record into that sink with a stable delivery ID.
+  // It is never re-published to the bus, so terminal output is not duplicated.
+  // Clean shutdown deletes it only after the structured durability barrier; a
+  // crash or cutover failure leaves it for idempotent recovery.
   await ensurePaths()
   const bus = initBus()
   const systemPublisher = bus.scope("system")
   setShutdownPublisher(systemPublisher)
   setRateLimitPublisher(systemPublisher)
-  attachConsoleSink(bus)
-  attachFileSink(bus, { path: PATHS.COPILOT_LOG })
+  setRequestLinePublisher(systemPublisher)
+  initDiagnosticLogger(systemPublisher)
+  // Explicitly pass process.stdin so the interactive raw-mode panel gates on
+  // (evaluator §3): tests that omit stdin stay on the non-interactive P0 path.
+  let detachTerminalUi = attachTerminalUi(bus, { isTTY: false, diagnosticLevel: () => state.logging.terminalLevel })
+  attachBootstrapDiagnosticSpool(bus, PATHS.DIAGNOSTIC_LOG_DIR)
   installConsolaRepublish(systemPublisher)
 
   // ===========================================================================
@@ -289,7 +268,7 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   // Set global state from CLI options. accountType is only set here when
   // the user passed it explicitly — otherwise we leave the state default
   // ("individual") in place until inference runs after authentication,
-  // which may override it. ghcApiBaseUrl and autoTruncate are applied below
+  // which may override it. ghcApiBaseUrl is applied below
   // (after config load) so CLI takes precedence over config.yaml.
   setCliState({
     ...(options.accountType !== undefined && { accountType: options.accountType }),
@@ -320,21 +299,63 @@ export async function runServer(options: RunServerOptions): Promise<void> {
 
   const config = await applyConfigToState()
 
+  // Boot diagnostics were shown once through the plain owner. Acquire raw-mode
+  // TUI only after config is frozen; the synchronous swap has no publish gap.
+  detachTerminalUi()
+  detachTerminalUi = attachTerminalUi(
+    bus,
+    options.tui && state.tuiEnabled ?
+      { stdin: process.stdin, diagnosticLevel: () => state.logging.terminalLevel }
+    : {
+        isTTY: false,
+        diagnosticLevel: () => state.logging.terminalLevel,
+      },
+  )
+
+  if (state.logging.fileEnabled) {
+    try {
+      const directory = state.logging.fileDirectory ? path.resolve(state.logging.fileDirectory) : PATHS.DIAGNOSTIC_LOG_DIR
+      const sink = await attachStructuredFileSink(bus, {
+        directory,
+        maxSizeBytes: state.logging.fileMaxSizeMb * 1024 * 1024,
+        maxFilesPerProcess: state.logging.fileMaxFilesPerProcess,
+        retentionDays: state.logging.retentionDays,
+        level: () => state.logging.fileLevel,
+      })
+      consola.info(`Structured diagnostics: ${sink.health.activePath}`)
+    } catch (error) {
+      // The secure per-boot spool remains crash-recoverable. Never fall back to
+      // the retired shared rotating file, which is unsafe during process overlap.
+      consola.error("Structured diagnostic file initialization failed; retaining secure bootstrap spool:", error)
+    }
+  } else {
+    await disableStructuredFileLogging()
+  }
+
+  // Deprecation: ANTHROPIC_API_KEY previously routed count_tokens for Claude
+  // models to api.anthropic.com. That path is retired — count_tokens now
+  // forwards to GHC's upstream /v1/messages/count_tokens (no separate key). Warn
+  // users who still set the env var so the silent channel change is visible.
+  // (The config key anthropic.api_key is warned separately via CONFIG_MIGRATIONS.)
+  if (process.env.ANTHROPIC_API_KEY) {
+    consola.warn(
+      "ANTHROPIC_API_KEY is set but no longer used — count_tokens now forwards to GHC's upstream /v1/messages/count_tokens (no separate Anthropic API key needed).",
+    )
+  }
+
+  // Upstream hook module (dev/test only) — declarative state was already set by
+  // applyConfigToState above; load it here if enabled. warn-continue: a bad/missing hook
+  // module must never block startup (see loadUpstreamHookSafe).
+  if (state.hooksEnabled && state.hooksUpstreamModule) {
+    await loadUpstreamHookSafe(state.hooksUpstreamModule)
+  }
+
   // GHC API base URL — CLI > config.yaml. Not hot-reloadable: changing
   // the upstream endpoint mid-flight would mis-route active requests.
   // Apply after applyConfigToState so the CLI value still wins.
   const resolvedBaseUrl = options.ghcApiBaseUrl ?? config.ghc_api_base_url
   if (resolvedBaseUrl) {
     setCliState({ ghcApiBaseUrl: resolvedBaseUrl })
-  }
-
-  // Auto-truncate — CLI > config.yaml, but unlike ghcApiBaseUrl this IS
-  // hot-reloadable (applyConfigToState sets it from config; a later reload can
-  // flip it). The CLI flag only overrides when explicitly passed
-  // (--auto-truncate / --no-auto-truncate); when omitted, options.autoTruncate
-  // is undefined and the config value (already applied above) stands.
-  if (options.autoTruncate !== undefined) {
-    setCliState({ autoTruncate: options.autoTruncate })
   }
 
   // ===========================================================================
@@ -350,6 +371,27 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   initProxy({ url: proxyUrl, fromEnv: !cliProxy && options.httpProxyFromEnv })
 
   // ===========================================================================
+  // Phase 2.7: Graceful-restart startup guard (bare-metal path only)
+  // ===========================================================================
+  // resolveManualStartup collapses the supervisor branch + decideStartup into
+  // one pure, unit-tested function (tests/restart/runserver-wiring.unit.test.ts);
+  // this call site only does the IO reaction (exit/log/record) on its result.
+  // Overlap-window data safety (reclaim exclusion / VACUUM skip) no longer
+  // depends on this decision — it's judged by process liveness directly in
+  // history/sqlite/connection.ts (lifecycle.md「overlap 共享状态安全 ①⑤」).
+  const pidfilePath = config.pidfile ?? PATHS.PIDFILE
+  const manualStartup = resolveManualStartup({ pidfilePath, restart: options.restart, supervised: isSupervised() })
+  let takeoverPredecessor: PidfileContent | null = null
+  if (manualStartup.kind === "refuse") {
+    consola.error(`已有实例在运行（pid=${manualStartup.predecessor.pid}, port=${manualStartup.predecessor.port}）。` + `用 --restart 接管，或先停旧实例。`)
+    process.exit(1)
+  }
+  if (manualStartup.kind === "takeover") {
+    takeoverPredecessor = manualStartup.predecessor
+    consola.info(`[restart] 接管模式：将在监听后向前任 pid=${takeoverPredecessor.pid} 发交接信号`)
+  }
+
+  // ===========================================================================
   // Phase 3: Initialize backing stores, their sinks, and the rate limiter
   // ===========================================================================
   // The log-stream sinks (Console, File) + system publisher were wired in
@@ -358,36 +400,17 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   // setRateLimitPublisher + installConsolaRepublish, so its "[RateLimiter]
   // Initialized" line is captured by the file sink and the --mock-rate-limiter-
   // throttled forced state transition actually reaches the bus).
-  initHistory(true)
-  // Apply forward (001+) schema migrations now that the DB is open (initHistory
-  // → openDatabase built the floor + history_meta) and BEFORE the server starts
-  // serving. A failure is a HARD refuse-to-start: schema DDL is foundational, so
-  // serving on a half-migrated schema is worse than not starting (mirrors the
-  // config-parse abort above; deliberately NOT left to global unhandledRejection).
-  // initHistory also armed the reaper, but that is only an unref'd setInterval
-  // (default 600s, no synchronous schema work) so its first tick lands long after
-  // migrations complete — the ordering is benign even when 001+ is non-empty.
-  try {
-    await applyForwardMigrations(getDatabase())
-  } catch (err: unknown) {
-    consola.error("[history/sqlite] schema migration failed; refusing to start (a half-migrated schema is more dangerous than not starting)", err)
-    process.exit(1)
-  }
+  const historyEnabled = options.history ?? state.historyEnabled
+  await initHistory(historyEnabled)
   await initRequestTelemetry()
 
-  // Sinks are AUTHORITATIVE (RFC docs/archive/2606-landed-rfcs/observability-rewrite.md §2.4-2.5) —
-  // manager.ts publishes request.* events; entries.ts/sessions.ts publish
-  // history.* events via the publisher installed by setHistoryPublisher. The
-  // one attach-order invariant that matters: HistorySink BEFORE WsSink, so a
-  // terminal entry is persisted before the history.entry_updated broadcast (a
-  // client receiving the WS notification and immediately querying
-  // GET /history/api/entries/:id must not find an empty row). ConsoleSink/
-  // FileSink already subscribed in Phase 1.5; they render/persist from the
-  // event payload and never query history, so their earlier position is benign.
+  // Canonical V3 terminal persistence is installed by initHistory. The legacy
+  // mutable-context HistorySink is deliberately not attached in production.
   const historyPublisher = bus.scope("history")
   setHistoryPublisher(historyPublisher)
-  attachHistorySink(bus, { publisher: historyPublisher })
   attachTelemetrySink(bus)
+  attachCalibrationSink(bus)
+  attachCalibrationFailureSink(bus)
   attachWsSink(bus)
 
   // Rate limiter — config-driven, constructed after observability is live so
@@ -414,24 +437,14 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   }
 
   // Initialize request context manager with the request.* publisher so
-  // every lifecycle / context_updated event reaches HistorySink + WsSink +
-  // ConsoleSink + TelemetrySink. consumers.ts is deleted as of commit 3b;
+  // every lifecycle event reaches WsSink + ConsoleSink + TelemetrySink.
+  // consumers.ts is deleted as of commit 3b;
   // the bus is the only path for these signals now.
   const contextManager = initRequestContextManager({ publisher: bus.scope("request") })
 
-  // Provide active requests snapshot for WS connected events
-  setConnectedDataFactory(() =>
-    contextManager.getAll().map((ctx) => ({
-      id: ctx.id,
-      endpoint: ctx.endpoint,
-      rawPath: ctx.rawPath,
-      state: ctx.state,
-      startTime: ctx.startTime,
-      durationMs: ctx.durationMs,
-      model: ctx.originalRequest?.model,
-      stream: ctx.originalRequest?.stream,
-    })),
-  )
+  // 在途快照:与 active_request_changed 同源(toActiveRequestWire ∘ snapshotWithSummary),
+  // 保证 WS 重连后已在飞行的行富字段立即非空(attemptCount/queueWaitMs/transport/models…)。
+  setConnectedDataFactory(() => contextManager.getAll().map((ctx) => toActiveRequestWire(snapshotWithSummary(ctx))))
 
   // Start stale request reaper (periodic cleanup of stuck active contexts)
   contextManager.startReaper()
@@ -493,18 +506,19 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   // ones have been filtered out by config.disabled_models.
   const rawList = getRawModels()?.data ?? state.models?.data ?? []
   const disabledSet = new Set(state.disabledModels.map((id) => normalizeForMatching(id)))
-  consola.info(`Available models:\n${rawList.map((m) => formatModelInfo(m, disabledSet.has(normalizeForMatching(m.id)))).join("\n")}`)
+  systemPublisher.publish({
+    kind: "system.model_catalog",
+    models: rawList.map((model) => ({ model, disabled: disabledSet.has(normalizeForMatching(model.id)) })),
+    tokenBasedBilling: state.tokenBasedBilling,
+    timeUnixMs: Date.now(),
+  })
   const stopModelRefreshLoop = startModelRefreshLoop()
 
-  // Load previously learned auto-truncate limits (calibration + token limits).
-  // Gated on the feature flag: every learnedLimits consumer is behind
-  // `state.autoTruncate`, so loading while disabled is pure dead weight. The flag
-  // can now be toggled at runtime via config.yaml hot-reload — applyConfigToState
-  // lazily calls loadPersistedLimits() on an off→on transition, so this boot-time
-  // load only covers the CLI-first path. Double load (CLI + config) is idempotent.
-  if (state.autoTruncate) {
-    await loadPersistedLimits()
-  }
+  // Load the persisted per-model token-count calibration (factor model + seed).
+  // Unconditional: calibration is always-on now (repurposed for honest local
+  // token counting — count-tokens fallback + debug probe), and this call also
+  // materializes the factory bake-in seed for fresh installs.
+  await loadPersistedLimits()
 
   // Load previously negotiated feature/beta-header support (states.json)
   await loadPersistedFeatureNegotiation()
@@ -557,12 +571,46 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   setServerInstance(serverInstance)
   setupShutdownHandlers()
 
-  // Fire-and-forget the recoverable search_index + preview_text backfill in the
-  // BACKGROUND now that the server is listening. It is async/chunked/resumable and
-  // yields between batches, so it never blocks startup or starves request serving;
-  // guarded by history_meta(search_index_version) → a no-op once already built.
+  // Bare-metal pidfile write (仅裸手动路径；supervisor 环境跳过整个 pidfile 机制) —
+  // must happen AFTER the server is actually listening (setServerInstance above),
+  // so a reader never observes a pidfile pointing at a process that isn't accepting
+  // connections yet.
+  if (!isSupervised()) {
+    const id = getProcessIdentity()
+    writePidfile(pidfilePath, { pid: id.pid, bootTime: id.bootTime, port: options.port })
+    // Best-effort fallback for non-graceful exits (e.g. an uncaught throw that
+    // bypasses the `finally` below): `process.on("exit")` handlers must be fully
+    // synchronous, so this is the same compare-and-delete primitive used there —
+    // never an unconditional delete (B2: would erase a takeover successor's live
+    // pidfile).
+    process.on("exit", () => removePidfileIfOwnedBySelf(pidfilePath, { pid: id.pid, bootTime: id.bootTime }))
+  }
+
+  // 就绪通知（三后端：sd_notify READY=1 / pm2 process.send('ready') / 裸手动 no-op，
+  // 各自按环境自动 no-op）——此刻服务器已在监听，对外通知「可以路由流量了」是准确的。
+  notifyReady()
+  // 裸手动接管：现在才向前任发交接信号（新进程已监听同端口，前任此刻停 accept 是安全的）。
+  if (takeoverPredecessor) signalPredecessorHandoff(takeoverPredecessor.pid)
+
+  // Fire-and-forget the recoverable background backfills now that the server is
+  // listening: the usage net-of-cache normalization first (fast, guarded by
+  // usage_normalized), then the heavier search_index + preview_text backfill.
+  // Both are async/chunked/resumable and yield between batches, so they never
+  // block startup or starve request serving; each is a no-op once already done.
   // Returns immediately (the work trickles in the background) and never throws.
-  startSearchIndexBackfill()
+  startHistoryBackfills()
+
+  // Run the one-shot legacy-JSON telemetry absorption backfill (P6) now the server is listening: absorb
+  // the FROZEN pre-startup `request-telemetry.json` snapshot (captured at init) into telemetry.db
+  // (tel_raw/tel_accepted/tel_cumulative + rollup seed) so the SQLite tiers carry the migration-era
+  // history. Guarded by `json_backfill_version` (a restart re-runs it as a no-op), consumes the init-time
+  // snapshot (never a fresh read — structural disjointness), and is itself never-throw. Synchronous DB
+  // work, wrapped defensively so nothing here can bubble into the startup path.
+  try {
+    runTelemetryJsonBackfill()
+  } catch (err: unknown) {
+    consola.warn("[telemetry] json backfill failed", err)
+  }
 
   // Inject the single shared WebSocket upgrade handler into each Node.js HTTP server (no-op under Bun)
   if (wsAdapter.injectWebSocket && serverInstance.nodeServers) {
@@ -577,7 +625,18 @@ export async function runServer(options: RunServerOptions): Promise<void> {
     // process.exit(0) in main.ts (needed for one-shot commands).
     await waitForShutdown()
   } finally {
+    detachTerminalUi()
     stopModelRefreshLoop()
+    // Bare-metal pidfile cleanup — compare-and-delete (B2): a takeover already
+    // overwrote this same path with the successor's pid, so an unconditional
+    // delete here would erase a LIVE successor's pidfile out from under it
+    // (permanently disabling the guard, silently allowing a third instance to
+    // stack on the next plain start). removePidfileIfOwnedBySelf only deletes
+    // when the on-disk pid still matches our own.
+    if (!isSupervised()) {
+      const id = getProcessIdentity()
+      removePidfileIfOwnedBySelf(pidfilePath, { pid: id.pid, bootTime: id.bootTime })
+    }
   }
 }
 
@@ -625,6 +684,13 @@ export const start = defineCommand({
       default: true,
       description: "Adaptive rate limiting (disable with --no-rate-limit)",
     },
+    history: {
+      type: "boolean",
+      // No default on purpose: unset → undefined → fall back to config
+      // `history.enabled` (default true). --no-history forces the no-history
+      // mode (no History database opened, nothing recorded) and wins over config.
+      description: "Record request history to SQLite (disable with --no-history)",
+    },
     "mock-rate-limiter-throttled": {
       type: "boolean",
       default: false,
@@ -640,6 +706,11 @@ export const start = defineCommand({
       default: false,
       description: "Show GitHub token in logs (use --verbose for Copilot token refresh logs)",
     },
+    tui: {
+      type: "boolean",
+      default: true,
+      description: "Interactive terminal UI (disable with --no-tui)",
+    },
     proxy: {
       type: "string",
       description: "Proxy URL for all outgoing requests (http://, https://, socks5://, socks5h://). Overrides env vars and config.yaml.",
@@ -649,14 +720,14 @@ export const start = defineCommand({
       default: true,
       description: "Use HTTP proxy from environment variables (disable with --no-http-proxy-from-env)",
     },
-    "auto-truncate": {
-      type: "boolean",
-      description:
-        "Reactive auto-truncate: retries with truncated payload on limit errors. Overrides config.yaml `auto_truncate` when passed; omit to use config (default off). Disable with --no-auto-truncate.",
-    },
     "external-ui-url": {
       type: "string",
       description: "Proxy /ui to an external frontend dev/build server (for example http://localhost:5173)",
+    },
+    restart: {
+      type: "boolean",
+      default: false,
+      description: "零停机接管：若已有实例在跑，绑定同端口并向其发 SIGUSR2 交接（仅裸手动路径；systemd/pm2 由 supervisor 编排）。",
     },
   },
   run({ args }) {
@@ -683,6 +754,8 @@ export const start = defineCommand({
       // rate-limit (citty handles --no-rate-limit via built-in negation)
       "rate-limit",
       "rateLimit",
+      // history (citty handles --no-history via built-in negation)
+      "history",
       // mock-rate-limiter-throttled
       "mock-rate-limiter-throttled",
       "mockRateLimiterThrottled",
@@ -693,17 +766,17 @@ export const start = defineCommand({
       // show-github-token
       "show-github-token",
       "showGithubToken",
+      "tui",
       // proxy
       "proxy",
       // http-proxy-from-env (citty handles --no-http-proxy-from-env via built-in negation)
       "http-proxy-from-env",
       "httpProxyFromEnv",
-      // auto-truncate (citty handles --no-auto-truncate via built-in negation)
-      "auto-truncate",
-      "autoTruncate",
       // external-ui-url
       "external-ui-url",
       "externalUiUrl",
+      // restart
+      "restart",
     ])
     const unknownArgs = Object.keys(args).filter((key) => !knownArgs.has(key))
     if (unknownArgs.length > 0) {
@@ -719,13 +792,15 @@ export const start = defineCommand({
       accountType: args["account-type"] as "individual" | "business" | "enterprise" | undefined,
       ghcApiBaseUrl: args["ghc-api-base-url"],
       rateLimit: args["rate-limit"],
+      history: args.history,
       mockRateLimiterThrottled: args["mock-rate-limiter-throttled"],
       githubToken: args["github-token"],
       showGitHubToken: args["show-github-token"],
+      tui: args.tui,
       proxy: args.proxy,
       httpProxyFromEnv: args["http-proxy-from-env"],
-      autoTruncate: args["auto-truncate"],
       externalUiUrl: args["external-ui-url"],
+      restart: args.restart,
     })
   },
 })

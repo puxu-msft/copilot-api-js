@@ -28,6 +28,7 @@ const base = (over: Partial<EntrySummary>): EntrySummary => ({
   messageCount: 0,
   previewText: "",
   ...over,
+  responsePreviewText: over.responsePreviewText ?? "",
 })
 
 function renderLane(name: string, entries: Array<EntrySummary>) {
@@ -80,6 +81,15 @@ describe("AgentLane", () => {
     expect(screen.getByText("10:06:07")).toBeDefined()
     // no colored block buttons remain (old h-3.5 w-6 squares)
     expect(container.querySelector(String.raw`.h-3\.5.w-6`)).toBeNull()
+  })
+
+  it("surfaces the summed cache tokens in the header (disjoint from net input)", () => {
+    renderLane("cached agent", [
+      base({ id: "c1", state: "completed", usage: { input_tokens: 600, output_tokens: 250, cache_read_input_tokens: 400 } }),
+      base({ id: "c2", state: "completed", usage: { input_tokens: 100, output_tokens: 50, cache_creation_input_tokens: 200 } }),
+    ])
+    // net input 600+100=700; cache 400+200=600 (shown separately, not folded into ↑).
+    expect(screen.getByText(/2 req · ↑700 ↓300 · cache 600/)).toBeDefined()
   })
 
   it("shows a red failed count in the header when entries failed, and rows deep-link to /requests/:id", () => {
