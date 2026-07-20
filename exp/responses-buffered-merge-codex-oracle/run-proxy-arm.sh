@@ -72,7 +72,12 @@ fi
 
 echo "[$ARM] START mock pid=$MOCKPID $(date -Is)"
 START=$(date +%s.%N)
-OPENAI_BASE_URL="$PROXY_URL/v1" OPENAI_API_KEY="dummy" \
+# Isolate codex's persistence + config into a throwaway CODEX_HOME. EMPIRICALLY CONFIRMED (2026-07-20):
+# `--ephemeral` alone only suppresses the SESSION ROLLOUT file — codex STILL writes memories/goals/state/
+# logs sqlite into the real ~/.codex and reads the user's config.toml/AGENTS.md/hooks. A per-run CODEX_HOME
+# redirects ALL of that to /tmp (and gives a clean, user-config-free base for a deterministic test).
+ISO_CODEX_HOME="$(mktemp -d /tmp/codex-oracle-home.XXXXXX)"
+OPENAI_BASE_URL="$PROXY_URL/v1" OPENAI_API_KEY="dummy" CODEX_HOME="$ISO_CODEX_HOME" \
   timeout "$CEIL" codex exec --json \
     -c model_provider=oracle \
     -c model_providers.oracle.name=oracle \
@@ -84,6 +89,7 @@ OPENAI_BASE_URL="$PROXY_URL/v1" OPENAI_API_KEY="dummy" \
     "Repeat back verbatim the single sentence the assistant message contains." \
     > "$CODEXLOG" 2>&1
 CODEXRC=$?
+rm -rf "$ISO_CODEX_HOME"  # throwaway — nothing here is worth keeping (isolated per-run)
 END=$(date +%s.%N)
 WALL=$(echo "$END - $START" | bc)
 echo "[$ARM] DONE codex exec rc=$CODEXRC wall=${WALL}s"
