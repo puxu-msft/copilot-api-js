@@ -353,6 +353,8 @@
 
 ## POST-COMMIT 失败的 error 帧 + 锚点收口帧不进 history clientResponse.sseEvents
 
+> 📌 **已并入 spec [docs/spec/2026-07-20-synthetic-frame-forwarded-track-completeness.md](../spec/2026-07-20-synthetic-frame-forwarded-track-completeness.md) §Unit 1**，待其 plan 关闭本条。落点已随 request-lifecycle 重构迁到 `handler-v4.ts:614-671`（reaper-cancel 现内联处理），下文旧行号仅供参考。
+
 - **现状（2026-07-09 Phase 5 审查实证）**：delayed-commit 的 catch 块在 `setForwardedResponse({sseEvents:[...forwardedSseEvents]})` 快照**之后**才写 error 帧（`writeSynthetic`）——`git show` 父提交确认这是**既有** pattern（error 帧本就在快照后写、早已不进 history 轨）。这违反 `client-sink.ts:24-29` 明文契约（handler 应按 `writeSynthetic → recordForwarded → settle` 顺序，即先写 error 帧再快照）。
 - **本特性拓宽**：keepalive timeout-safety 的 Phase 5 终末收口新增的 `content_block_stop@0`（`closeAnchorIfOpen`→`writeAnchor`）同样落在快照之后 → 不进 `clientResponse.sseEvents`。wire 协议完整（客户端真收到收口帧 + error 帧、无残留 open 块，已测），仅 **history 轨**这一正交维度不完整。
 - **理想架构（richest-data-flow）**：catch 块重排为 `closeAnchorIfOpen → writeSynthetic(errorFrame) → setForwardedResponse(snapshot) → ctx.fail`——与 client-sink 已文档化契约一致，一并闭合既有 error-帧缺口 + 新 stop@0。四个 POST-COMMIT 失败分支（reaper/timeout、HTTPError、unknown、reject）统一。
@@ -479,6 +481,8 @@
 
 ## `hook-rewrite` forwarded 标记覆盖缺口：Responses(HTTP+WS) + 全部 translate 腿（2026-07-12，Task 2.3 实现后核实）
 
+> 📌 **已并入 spec [2026-07-20-synthetic-frame-forwarded-track-completeness.md](../spec/2026-07-20-synthetic-frame-forwarded-track-completeness.md) §Unit 2**，待其 plan 关闭本条。下文两函数 `restoreAndAccumulate`/`restoreAccumulateCount` 已随 buffered-merge 重构合并为单一 `candidate-response-session.ts` 的 `responseFrame`；WS forwarded provenance 落点为 delivery-session（`session.ts`），非旧 ws.ts 采样点。
+
 - **背景**：Task 2.3（`docs/plan/2026-07-12-upstream-hook-middleware/plan-2-history-provenance.md`）给 `rewriteUpstreamFrame` 改写的帧接了 forwarded 轨 `synthetic:"hook-rewrite"` 标记——用一个 Symbol-keyed 属性打在改写后的帧对象上（`hooks/origin.ts` 的 `tagFrameRewritten`/`wasFrameRewritten`），靠对象引用/`{...frame}` 展开语义存活到 `client-sink.ts` 的 `write()`。
 - **实测覆盖矩阵**（读代码 + 单测锁定，非猜测）：
   - **可靠**：Anthropic `/v1/messages` 直连（`codec.ts:293` `renderResponse` 对非-translate leg `return frame` 逐字返回）、CC `/chat/completions` 直连（`openai-cc/codec.ts:207-209` 同样逐字返回 + `chat-completions/handler-v4.ts:384` 的 `onRenderedFrame` 用 `{...frame, data: X}` 展开——对象展开会复制 Symbol 键，亲手用 `bun -e` 实测确认）。
@@ -594,6 +598,8 @@
 - **若做需改什么**：统一 forward.ts 与 classify.ts 对 503-upstream-ratelimit 的 wire 视角——要么 forward.ts 保 503 status（与 classify 对齐），要么 classify 也视作 429；须跨 6 条路由回归（`forward.ts` 三格式 envelope + 各路由 golden）。
 
 ## error-shaping 观测：raw-stream 终点（H3/截断）无 `error-shaping-decided` 维度
+
+> 📌 **已并入 spec [2026-07-20-synthetic-frame-forwarded-track-completeness.md](../spec/2026-07-20-synthetic-frame-forwarded-track-completeness.md) §Unit 3**，待其 plan 关闭本条。⚠️ **下文「当前行为」段的前提已被实测证伪**：Anthropic messages HTTP `writeSynthetic` 路径 **不** 在 forwarded 轨打 `synthetic:"error-shaping-canonical"`（[client-sink.ts:302-305](../../src/lib/pipeline/client-sink.ts#L302) 传 `undefined`、不读帧 tag）——故该缺口不止缺 feature 维度，forwarded 轨帧级也不可辨识，spec §Unit 3 一并修。
 
 - **根因**：`shapeRawStreamErrorFrame`（handler-v4 的 H3 + truncation 两个 raw-stream 终点 + translate 反向腿两点）从不调 `decide()`——调用方直传 wire 级 `errorType` 字符串（非 `ApiErrorType`），无类型正确的 `error-shaping-decided` payload 可报（该 FeatureKind 的 payload 含 `decision.kind`/`ApiErrorType`）。
 - **当前行为**：`error-shaping-decided` recordFeature 只在 glue 的 pre/post-commit `decide()` 路径产出（有 ApiError 分类）；raw-stream 透传路径的 canonical 化仍打 `synthetic:"error-shaping-canonical"`（帧级可辨识不丢），只是缺 feature 维度的「走了哪条整形分支」诊断。

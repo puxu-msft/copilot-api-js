@@ -1,5 +1,8 @@
 # Spec：流式路径 history 轨 & 观测完整性（第二轮）
 
+> ⛔ **已被取代（SUPERSEDED，2026-07-20）** → [2026-07-20-synthetic-frame-forwarded-track-completeness.md](2026-07-20-synthetic-frame-forwarded-track-completeness.md)。
+> 三轮大重构（request-lifecycle cancel/settle/quiesce、upstream-error-client-shaping、buffered-merge/candidate-response-session）之后，本文所有 `file:line` 锚点已失效，且三处前提已过时或不精确：① reaper-cancel 从「排除、handler 不处理」变成 catch 块内联处理（结论不变但措辞已错）；② Unit 2 两函数已合并为单一 `responseFrame`；③ Unit 3「仅 tag frame」不足——`writeSynthetic` 不读 `readSyntheticKind(frame)`，且 backlog:592「仍打 error-shaping-canonical」经实测证伪。**新 spec 已合并三单元并纠正这些偏差，请以新 spec 为准。** 本文仅存档，勿据以实施。
+
 > 状态：**设计定稿（两轮异模型对抗审查 + 用户范围决策），待用户审 → writing-plans**。日期 2026-07-14。
 > 派生自 gpt-5.6-sol 断流事故第一轮修复后的 backlog 巡检（找与「诊断只从部分 pump 发」同构的完整性缺口）。
 > 评审：Claude `reviewer` + GPT `gpt-souls:reviewer` 各一轮（GPT 首轮因 NGHTTP2_CANCEL 中断、重派并交叉核验 Claude 发现）。两轮均 0 blocker、逐条 file:line 核实。
