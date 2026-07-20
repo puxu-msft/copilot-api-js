@@ -38,6 +38,7 @@
 - [client 源码 grep ≠ REST 上游能力](methodology-client-source-grep-not-rest-capability-probe-endpoint.md) — 代理型上游 REST 表面>client 子集;须 curl 打端点;实例=「GHC 无 count_tokens」被证伪
 - [从 primitive 推理别从流行 wrapper 泛化](methodology-reason-from-primitive-not-dominant-wrapper.md) — 干净 primitive vs 耦合全局 wrapper 并存,判风险从 primitive 实现推理
 - [归 config 还是归代码：先辨丢信息 vs 等价变换](methodology-classify-lost-info-vs-equivalence-before-config-migration.md) — 丢信息→config,拼写等价→回查 catalog;移隐式转换前追 resolvedName 定爆炸半径
+- [极度倾向全面 async/await、别围堵](feedback-prefer-async-await-uniform-over-sync-isolation.md) — 接口统一 async、async 爆炸半径主动铺开非规避;推翻旧「同步 parse+隔离 async」PoC 取向
 - [面向用户永久只用中文、禁日语](feedback-chinese-only-never-japanese.md) — 输出层自检语言=中文;内部推理无所谓
 - [闻到怪味永远大声报警绝不粉饰](feedback-never-paper-over-smells-warn-loudly.md) — 名实不符当场停下显眼报警;踩坑=扩内容留旧名 shutdown 糊过(已改 lifecycle.md)
 - [写 plan 引用现有接线须核实位置与桥接](methodology-plan-verify-interface-location-and-wiring-channel.md) — 同名 interface 核实确切文件;诊断落盘唯一通道=pipelineInfo(recordFeature 不落盘);新 union 打爆 ui-v4 穷尽 Record
