@@ -209,11 +209,15 @@ export function handleExport(c: Context) {
 const SEARCH_SOURCES: ReadonlySet<SearchSource> = new Set<SearchSource>(["inbound", "rewrites-req", "rewrites-resp", "req-headers", "resp-headers"])
 
 /**
- * GET /history/api/search — compatibility surface for the retired embedded
- * search. Returns an empty result until the independent Tantivy sidecar serves
- * this contract; it never falls back to History SQLite.
+ * GET /history/api/search — full-text search, forwarded to the independent
+ * history-search sidecar SERVICE over UDS (history-search-out-of-process plan
+ * Phase 4). Only `source=inbound` is served (the sidecar's Tantivy projection
+ * indexes just the client-facing conversation + response); every other facet
+ * value, and an absent/unreachable sidecar, both degrade to an empty result
+ * with `partial: true` (see `search.ts`'s module doc) — 200, never 500, and
+ * never a silent fallback to History SQLite.
  */
-export function handleSearch(c: Context) {
+export async function handleSearch(c: Context) {
   if (!isHistoryEnabled()) {
     return c.json({ error: "History recording is not enabled" }, 400)
   }
@@ -232,7 +236,7 @@ export function handleSearch(c: Context) {
   const { search: _search, ...filters } = parseListFilters(query)
 
   try {
-    const result = searchHistory({
+    const result = await searchHistory({
       source,
       q: query.q || "",
       limit: query.limit ? Number.parseInt(query.limit, 10) : undefined,
@@ -241,6 +245,10 @@ export function handleSearch(c: Context) {
     })
     return c.json(result)
   } catch (error) {
+    // `searchHistory` itself never throws (the sidecar client's never-throw
+    // contract, forwarded verbatim) — this catch is defense-in-depth against an
+    // unexpected failure in the History-facade lookups it also does (e.g.
+    // `getSummary`), not the sidecar path itself.
     return c.json({ error: error instanceof Error ? error.message : String(error) }, 501)
   }
 }
