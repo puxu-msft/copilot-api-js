@@ -1,6 +1,6 @@
 # Plan: History 全文搜索移出主进程（独立 sidecar 进程 + UDS）
 
-> 状态：**已签核，实现中**（隔离 worktree + implementer subagent 执行，主会话监督）。前置止血已落地（`d5e2309d`：in-process 批量提交消除段爆炸崩溃）。本计划在其上做进程隔离。Phase 0（readonly store 读取面）已完成，`cbe163c2`；Phase 1（sidecar 可独立运行）已完成，`d7c64d5d`+`064a1d55`；Phase 2+ 待续。
+> 状态：**已签核，实现中**（隔离 worktree + implementer subagent 执行，主会话监督）。前置止血已落地（`d5e2309d`：in-process 批量提交消除段爆炸崩溃）。本计划在其上做进程隔离。Phase 0（readonly store 读取面）已完成，`cbe163c2`；Phase 1（sidecar 可独立运行）已完成，`d7c64d5d`+`064a1d55`；Phase 2（UDS 传输层）已完成，`2222f5a4`+`3f2e07a0`；Phase 3+ 待续。
 > 用户签核决定：① 投影用重建法（不加 `search_text` 列）；② 分 Phase 0→P4 落地；③ sidecar 不可用降级返空；④ 游标用 `(committed_at, operation_id)` keyset；⑤ `source` 契约**收窄到 `inbound`**（其余 facet 返空 + OpenAPI 注明、扩展留 backlog）。
 
 ## Context（为什么做）
@@ -61,9 +61,14 @@
 - **实测发现**：native `.node` 在本 worktree 已存在且早于本次改动（`bun run build:history-search` 已在别处跑过），测试直接复用无需额外构建步骤；`append-once` 前提在测试里补了负面分支——同一 `operationId` 灌入不同内容会**抛 `V3OperationConflictError`**（而非静默覆写），补全了「幂等 no-op」与「冲突必抛」两侧，锁死 keyset tail 不会漏「内容变更的修订」这个假设的完整性。
 - **测试范围外确认**：`bun run typecheck`、`bunx eslint`（无 cache）全绿；`bun run test`（unit+http）4335 pass（较 Phase 0 后的 4329 净增 6，即新增用例）；全量 `.it` 分档（`bun run test:backend`）6008 pass / 4 fail——与 Phase 0 交付时确认的 4 个既有缺陷（`store.it.test.ts` 2 个 + `store-performance.it.test.ts` 2 个，根因 `record.attempts` undefined @ projection.ts:246）完全一致，未新增失败、未修复（超出 Phase 1 范围）。
 
-### Phase 2 — UDS 服务端 + 协议
+### Phase 2 — UDS 服务端 + 协议 ✅ **已完成**（2026-07-21，`2222f5a4`+`3f2e07a0`）
 - 新 `uds-server.ts`（`node:net` `createServer({path})`，长度前缀 JSON），daemon listen；`uds-client.ts`（主进程侧 `net.connect`，超时 + socket error 挂 listener + 连不上返空）。
 - 测试：daemon + client 往返；client 在 socket 不存在/超时/错误帧下**返空不抛**。
+- **协议**：4 字节大端长度前缀 + UTF-8 JSON body（`src/lib/history/search/protocol.ts`）。每请求一连接（非长连接复用）——理由：单次 search 往返成本足够低，per-call 连接开销可忽略，换来零「陈旧/半坏长连接污染后续请求」的状态管理负担。`FrameDecoder` 是纯状态 reducer，实测覆盖：帧被拆到逐字节级、长度头本身被拆分、20 万字符 payload 按 1500 字节（MTU 量级）分段投递均正确重组。
+- **server（`uds-server.ts`）**：接受一个纯 `search` 回调（非直接吃 `HistorySearchDaemon`），保持与 daemon 构造/生命周期解耦、便于独立测试；daemon 侧新增 `daemon.search(query, operationKind, limit)` 薄封装供 server 调用，server 绝不直接碰 `NativeHistoryIndex`。`listen()` 前调用 `unlinkStaleSocket`：只在 `fs.lstatSync(path).isSocket()` 为真时才 unlink（实测确认：陈旧 socket 文件在拥有进程被 `SIGKILL` 后 `isSocket()` 依然为 true，可安全清理；非 socket 的普通文件绝不触碰、`listen()` 让它自然抛 `EADDRINUSE`）。每个新连接 + server 本身都先挂 `withErrorSink`（`crash-safety.ts`）再挂任何其它 listener。
+- **client（`uds-client.ts`）**：`query()` **绝不抛**——path 不存在/连接被拒/畸形帧/`{error}` 响应/connect 或 query 超时，全部退化为空数组，对应 REST 层「sidecar 不可用返空 partial:true」契约。同样先同步挂 `withErrorSink` 再做任何其它操作。**实测撞上的运行时分歧**：peer 在 accept 后立即 `destroy()` 时，Bun 上只触发 `end` 事件（不触发 `error`/`close`），而 Node 上会触发 `EPIPE` 的 `error` 事件——client 原本只监听 `close` 导致 Bun 下测试真实挂到 5 秒 `queryTimeoutMs` 才返空（首次测试跑就抓到，非纸上谈兵）；修复：把「尚无响应时收到 `end`」和 hard close 同等处理。
+- **测试**：`protocol.unit.test.ts`（11 test，纯 reducer，覆盖分帧/超限）+ `uds-transport.it.test.ts`（12 test，真实磁盘 UDS，不 mock `node:net`）——server/client 往返、richest-data-flow 字段透传、真实 fork+SIGKILL 子进程模拟陈旧 socket、非 socket 文件不误删、`process.on('uncaughtException')` 探针逐一验证 never-throw 六种失败路径（path 不存在/peer 立即断开/畸形帧/wire error/query 挂起超时/connect 超时惰性）、50 行×30 万字符量级响应跨真实 socket 正确重组。`daemon.it.test.ts` 补一条 `daemon.search()` 直通验证。
+- **测试范围外确认**：`bun run typecheck`、`bunx eslint`（无 cache）全绿；`bun run test`（unit+http）4346 pass（较 Phase 1 净增 11，即 `protocol.unit.test.ts`）；`bun run test:backend`（全后端）6031 pass / 4 fail——与 Phase 0/1 交付时确认的同一 4 个既有缺陷完全一致，未新增失败。`uds-transport.it.test.ts` 连跑 5 次确认无 flaky。
 
 ### Phase 3 — 主进程监管器 + 拆 in-process 接线
 - 新 `supervisor.ts`：`process.execPath` + 显式入口路径 spawn 子命令、指数退避 + crash-loop 上限、关闭杀子进程；复用 `process-identity`/`isProcessAlive`；socket error 挂 listener。
