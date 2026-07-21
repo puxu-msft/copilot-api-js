@@ -7,14 +7,24 @@ export interface TantivySearchHit {
   score: number
 }
 
-interface NativeHistorySearch {
-  initialize(path: string): Promise<void>
-  upsertOperation(path: string, operationId: string, operationKind: string, createdAt: number, content: string): Promise<void>
-  searchOperations(path: string, query: string, operationKind: string | undefined, limit: number): Promise<Array<TantivySearchHit>>
+/** Stateful handle over one on-disk Tantivy index (napi class instance). */
+export interface NativeHistoryIndex {
+  /** Stage an upsert. Does NOT commit — call `flush` to persist a batch. */
+  upsert(operationId: string, operationKind: string, createdAt: number, content: string): Promise<void>
+  /** Commit all staged documents in a single segment and reload the reader. */
+  flush(): Promise<void>
+  search(query: string, operationKind: string | undefined, limit: number): Promise<Array<TantivySearchHit>>
+  /** Flush any staged documents before the handle is released. */
+  close(): Promise<void>
 }
 
-let nativeModule: Promise<NativeHistorySearch> | undefined
-let nativeOverride: NativeHistorySearch | undefined
+/** Native module surface: a constructor for the stateful index handle. */
+export interface NativeHistorySearchModule {
+  HistoryIndex: new (path: string) => NativeHistoryIndex
+}
+
+let nativeModule: Promise<NativeHistorySearchModule> | undefined
+let nativeOverride: NativeHistorySearchModule | undefined
 const require = createRequire(import.meta.url)
 
 function candidates(): Array<string> {
@@ -24,12 +34,12 @@ function candidates(): Array<string> {
   ]
 }
 
-async function loadNative(): Promise<NativeHistorySearch> {
+async function loadNative(): Promise<NativeHistorySearchModule> {
   if (nativeOverride) return nativeOverride
   const failures: Array<string> = []
   for (const candidate of candidates()) {
     try {
-      return require(candidate) as NativeHistorySearch
+      return require(candidate) as NativeHistorySearchModule
     } catch (error) {
       failures.push(`${candidate}: ${error instanceof Error ? error.message : String(error)}`)
     }
@@ -37,11 +47,11 @@ async function loadNative(): Promise<NativeHistorySearch> {
   throw new Error(`[history-search] native Tantivy module unavailable\n${failures.join("\n")}`)
 }
 
-export function getNativeHistorySearch(): Promise<NativeHistorySearch> {
+export function getNativeHistorySearch(): Promise<NativeHistorySearchModule> {
   return (nativeModule ??= loadNative())
 }
 
-export function setNativeHistorySearchForTests(value: NativeHistorySearch | undefined): void {
+export function setNativeHistorySearchForTests(value: NativeHistorySearchModule | undefined): void {
   nativeOverride = value
   nativeModule = undefined
 }

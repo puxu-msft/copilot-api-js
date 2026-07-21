@@ -50,6 +50,7 @@
 - [agent 后台连挂也绝不自作主张换模型](feedback-never-unilaterally-switch-agent-model-on-flakiness.md) — API 错误连挂也永远 resume 原 agent、绝不擅换模型家族(破坏异模型对抗、是用户决策)
 - [eslint --cache 假绿](tooling-eslint-cache-false-pass.md) — `--cache` 对过期文件假绿;`lint:all` 已去 cache、核单文件 `bunx eslint <path>`
 - [gpt-tokenizer 对重复字符病态慢](reference-gpt-tokenizer-pathological-on-repeated-chars.md) — 60KB `"x".repeat`=15s vs 真实词句 40ms;测试造大 payload 别用 repeat 单字符(踩坑=request-payload.unit 26s)
+- [bun test 单进程超线性退化用 --parallel 破](reference-bun-test-parallel-breaks-single-process-superlinear-degradation.md) — 逐模块加起来 70s、一起跑 170s;`bun test --parallel`(隐含 isolate 每文件独立 worker)170s→15s 且消除污染型 flaky;pty/e2e 不加
 - [eslint --fix 的 .at() autofix 破类型](tooling-eslint-fix-at-autofix-breaks-types.md) — `prefer-at` 把 `arr[len-1]`→`.at(-1)`(返 T|undefined);--fix 后**必重跑 typecheck**、测试照绿会漏
 - [测试跑 real codex 用 CODEX_HOME 隔离、--ephemeral 不够](reference-codex-ephemeral-insufficient-use-codex-home.md) — --ephemeral 只抑 rollout;memories/state 仍写真 ~/.codex;每次套 `CODEX_HOME=$(mktemp -d)`;代理侧对应物是 XDG_DATA_HOME
 - [node_modules 存在 ≠ 锁文件事实](reference-node-modules-presence-not-lockfile-truth.md) — 可能是 prune 的 orphan;选依赖前 `grep '"<pkg>@' bun.lock`
@@ -72,6 +73,7 @@
 - [git commit -- pathspec 取工作区非 index](git-commit-pathspec-commits-worktree-not-index.md) — 共享 worktree 最终提交一律 pathspec,免疫 peer 并发 `git add` 的 index race;姊妹坑=`git mv`+只列新路径漏提删除侧(HEAD 树留旧文件、扫盘守卫假绿)
 - [语义合并冲突暴露对方 timing 潜伏 bug](methodology-semantic-merge-conflict-exposes-latent-bug-via-timing.md) — 两边各自绿合并却坏;静态 diff 逐字节等一侧≠行为同,根因在运行时数据/时序→instrument 探针别死盯 diff;判归属纯父分支复现;修法补全对方设计非回退;`test:backend` 排除 `.e2e.test.ts`
 - [谁合并谁退让、但必须合并](feedback-merger-yields-but-merge-must-happen.md) — 并发落地不因主树 WIP 跳过合并;退让=行级共存两份都保+备份→选择性 stash 重叠文件→FF→pop 三方合并;对方改动依赖 untracked 时只作未提交叠回不吞其特性
+- [陈旧特性 re-merge 撞底座子系统重写](methodology-remerge-stale-feature-across-subsystem-rewrite.md) — 冲突处取 master 结构+重放我的 delta(非保双方);take-theirs 静默丢 delta 且 typecheck 不报→grep 逐点审计+e2e 当 oracle;字段 re-home 到新架构(query→V3 clientRequest/upstreamRequest leg+canonical record ingress/track-metadata→projection 显式枚举);测试失败先 clean-base worktree 连跑 3 次定归属再认领(214 崩点非我 268/371);无损 FF 前 `comm -12` 核 feat 改动∩主树脏=∅
 - [eslint --fix 宽扫入并发既有 dirt](tooling-eslint-fix-broad-sweeps-concurrent-dirt.md) — 宽集只 check 不 fix;显式 pathspec 只提交自己文件
 - [lint-staged 已移除](tooling-lint-staged-revert-blocks-edit.md) — 2026-06-29 起无 pre-commit 门禁;rollback 见 skill `git-preference:disarming-lint-staged-rollback`
 - [覆写迁移前审计真实库原始字段](methodology-migration-audit-raw-fields-not-just-projection-oracle.md) — projection-等价 oracle 对已死字段是盲的;覆写前只读探针枚举真库字段

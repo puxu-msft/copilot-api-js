@@ -83,6 +83,38 @@ function frames(values: Map<string, unknown>, track: OperationTrack | undefined)
   return track.frames.map((handle, index) => projectedFrame(values, handle, track.frameObservations?.[index]))
 }
 
+/** Upper bound on the derived Tantivy corpus per operation, so large payloads never
+ *  balloon positional indexing. Bytes, not chars (see `truncateUtf8`). */
+const SEARCHABLE_MAX_BYTES = 128 * 1024
+
+/** Byte-safe UTF-8 truncation (mirrors diagnostics/snapshot.ts `safeString`): never
+ *  splits a multi-byte sequence / surrogate pair mid-character — a raw `.slice` would
+ *  produce lone surrogates that behave unpredictably across the N-API String boundary. */
+function truncateUtf8(value: string, maxBytes: number): string {
+  if (Buffer.byteLength(value) <= maxBytes) return value
+  return Buffer.from(value).subarray(0, maxBytes).toString("utf8")
+}
+
+/**
+ * Derive the searchable full-text corpus for one operation: ONLY the client-facing
+ * conversation (`ingress.request`) and response (`egress.client` payload + frames).
+ * Upstream/intermediate tracks and per-retry frames are deliberately excluded — the
+ * Tantivy sidecar is a disposable DERIVED projection, not authoritative storage, so
+ * narrowing it does not violate richest-data-flow (that governs history-v3.db, which
+ * still stores everything). Bounded to `SEARCHABLE_MAX_BYTES`.
+ */
+export function projectSearchableText(record: ModelOperationRecord): string {
+  const values = nodeValues(record)
+  const parts: Array<string> = []
+  const conversation = payload(values, record.ingress?.request)
+  if (conversation !== undefined) parts.push(JSON.stringify(conversation))
+  const response = payload(values, record.egress?.client)
+  if (response !== undefined) parts.push(JSON.stringify(response))
+  const responseFrames = frames(values, record.egress?.client)
+  if (responseFrames) for (const frame of responseFrames) if (frame.raw) parts.push(frame.raw)
+  return truncateUtf8(parts.join("\n"), SEARCHABLE_MAX_BYTES)
+}
+
 /** Per-attempt upstream-original frames for a FAILED (non-final) attempt (RFC §4 D1). The
  *  successful (final) attempt's frames live on `upstreamResponse.sseEvents` (§S1, via `frames()`
  *  above reading the SAME track) — this is a SEPARATE per-attempt array projected onto
