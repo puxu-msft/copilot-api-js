@@ -18,6 +18,7 @@ import type { ChatCompletionsPayload } from "~/types/api/openai-chat-completions
 
 import { ENDPOINT } from "~/lib/models/endpoint"
 import { assembleRetryStrategies } from "~/lib/request/retry-registry"
+import { state } from "~/lib/state"
 
 export interface OpenAiCcStrategiesDeps {
   /** Retry baseline: the un-sanitized, post-tool-rename payload (stable across retries). */
@@ -38,8 +39,8 @@ export interface OpenAiCcStrategiesDeps {
  * populate them, and none of the 3 shared entries need them. `deps.label` is unused by any assembled entry
  * (unchanged from before this refactor — the CC console-label consumer, `createAutoTruncateStrategy`, was
  * removed 2026-07-13 alongside auto-truncate; the field stays on the interface for the caller's parity/log
- * lines outside this factory, see `cc-family-strategies.ts`). `config` is `undefined` (Task 4 wires
- * `retry.strategies` — not yet).
+ * lines outside this factory, see `cc-family-strategies.ts`). `config` is `state.retryStrategies` (Task 4 /
+ * RFC §3.4 — read fresh per request so hot-reload takes effect on the next request).
  */
 export function buildOpenAiCcStrategies(deps: OpenAiCcStrategiesDeps): ReadonlyArray<EnvRetryStrategy> {
   return assembleRetryStrategies(
@@ -52,6 +53,6 @@ export function buildOpenAiCcStrategies(deps: OpenAiCcStrategiesDeps): ReadonlyA
       betaProbe: undefined,
       resanitize: undefined,
     },
-    undefined,
+    state.retryStrategies,
   )
 }

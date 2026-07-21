@@ -243,6 +243,16 @@ export interface State {
   readonly errorSelfhealDelegate: Readonly<Record<string, "proxy" | "delegate">>
 
   /**
+   * 逐策略 retry registry 开关（`retry.strategies.<configKey>.enabled`，RFC 2026-07-21 §3.4 / plan Task 4）。
+   * 键 = registry `configKey`（短驼峰，如 `adaptiveThinkingRejection`——**不是**策略 `.name`，与上面的
+   * `errorSelfhealDelegate` 是正交的第二套开关面，见 RFC §3.4a：`enabled:false` 在 assembler `filter` 阶段
+   * **彻底移除** entry（跨全部 leg 生效），`errorSelfhealDelegate` 只在 direct anthropic + errorShapingEnabled
+   * 时把 `canHandle` 改写恒 false（透传给客户端自愈）。未列 = enabled（`isStrategyEnabled` 缺省 true，保
+   * 16-策略全开的字节等价现状）。默认 `{}`。
+   */
+  readonly retryStrategies: Readonly<Record<string, { enabled?: boolean }>>
+
+  /**
    * Config-driven model-capability allowlists (`anthropic.model_capabilities`). Each is a list of
    * normalized model-name "family" prefixes; a model has the capability when its normalized id
    * equals an entry or starts with `entry + "-"` (see `features.ts:matchModelCapability`). Bundled
@@ -1087,6 +1097,7 @@ function cloneState(source: MutableState): MutableState {
     modelTranslation: cloneModelTranslation(source.modelTranslation),
     toolSearchOverrides: { ...source.toolSearchOverrides },
     errorSelfhealDelegate: { ...source.errorSelfhealDelegate },
+    retryStrategies: { ...source.retryStrategies },
     effortsOverrides: { ...source.effortsOverrides },
     streamIdleTimeoutOverrides: { ...source.streamIdleTimeoutOverrides },
     responseHeaderTimeoutOverrides: { ...source.responseHeaderTimeoutOverrides },
@@ -1140,6 +1151,9 @@ function cloneStatePatch(patch: Partial<MutableState>): Partial<MutableState> {
   }
   if ("errorSelfhealDelegate" in patch) {
     cloned.errorSelfhealDelegate = patch.errorSelfhealDelegate ? { ...patch.errorSelfhealDelegate } : undefined
+  }
+  if ("retryStrategies" in patch) {
+    cloned.retryStrategies = patch.retryStrategies ? { ...patch.retryStrategies } : undefined
   }
   if ("models" in patch) {
     cloned.models = cloneModels(patch.models)
@@ -1517,8 +1531,11 @@ export function setForwardClientQuery(patch: Partial<Pick<MutableState, "forward
   updateState(patch)
 }
 
-/** Set the shared reactive-retry budget (`retry.max_reactive_retries`). Hot-reloadable. */
-export function setReactiveRetryConfig(patch: Partial<Pick<MutableState, "maxReactiveRetries">>): void {
+/** Set the shared reactive-retry budget (`retry.max_reactive_retries`) + per-strategy registry opt-out
+ *  (`retry.strategies`, RFC 2026-07-21 §3.4 / plan Task 4). Both hot-reloadable. `retryStrategies` is a
+ *  whole-map replace (like `errorSelfhealDelegate` and the other config-managed Record fields) — a fresh
+ *  config apply REPLACES the whole map, it does not merge key-by-key. */
+export function setReactiveRetryConfig(patch: Partial<Pick<MutableState, "maxReactiveRetries" | "retryStrategies">>): void {
   updateState(patch)
 }
 
@@ -1821,6 +1838,9 @@ export const CONFIG_MANAGED_DEFAULTS = {
   errorAskUserQuestion: false,
   errorAuqTemplate: "",
   errorSelfhealDelegate: {} as Readonly<Record<string, "proxy" | "delegate">>,
+  // Per-strategy retry-registry opt-out (`retry.strategies.<configKey>.enabled`, RFC §3.4). Empty by
+  // default = all 16 registry entries enabled (byte-equivalent to the pre-config-switch behavior).
+  retryStrategies: {} as Readonly<Record<string, { enabled?: boolean }>>,
   // Model-capability allowlists (family prefixes; see features.ts:matchModelCapability). Mirror GHC.
   contextEditingModels: ["claude-haiku-4-5", "claude-sonnet-4", "claude-opus-4", "claude-opus-41"] as ReadonlyArray<string>,
   // Tool-search is default-allow for Claude ≥4.5 (see features.ts:toolSearchDefaultAllow); this map
@@ -2065,8 +2085,11 @@ export function resetConfigManagedState(): void {
     bufferedRetryOverrides: cloneBufferedRetryOverrides(CONFIG_MANAGED_DEFAULTS.bufferedRetryOverrides),
     chatCompletionsBufferedRetry: CONFIG_MANAGED_DEFAULTS.chatCompletionsBufferedRetry,
   })
-  // Shared reactive-retry budget (was auto_truncate.max_retries).
-  setReactiveRetryConfig({ maxReactiveRetries: CONFIG_MANAGED_DEFAULTS.maxReactiveRetries })
+  // Shared reactive-retry budget (was auto_truncate.max_retries) + per-strategy registry opt-out.
+  setReactiveRetryConfig({
+    maxReactiveRetries: CONFIG_MANAGED_DEFAULTS.maxReactiveRetries,
+    retryStrategies: { ...CONFIG_MANAGED_DEFAULTS.retryStrategies },
+  })
   setGenerationRuntimeConfig({
     generationHedgeEnabled: CONFIG_MANAGED_DEFAULTS.generationHedgeEnabled,
     generationHedgeThresholdSec: CONFIG_MANAGED_DEFAULTS.generationHedgeThresholdSec,
@@ -2092,6 +2115,7 @@ const mutableState: MutableState = {
   // value across hot-reloads.
   historyEnabled: true,
   maxReactiveRetries: CONFIG_MANAGED_DEFAULTS.maxReactiveRetries,
+  retryStrategies: { ...CONFIG_MANAGED_DEFAULTS.retryStrategies },
   generationHedgeEnabled: CONFIG_MANAGED_DEFAULTS.generationHedgeEnabled,
   generationHedgeThresholdSec: CONFIG_MANAGED_DEFAULTS.generationHedgeThresholdSec,
   generationHedgeMaxSecondaryCandidates: CONFIG_MANAGED_DEFAULTS.generationHedgeMaxSecondaryCandidates,

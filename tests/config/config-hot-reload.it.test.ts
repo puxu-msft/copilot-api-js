@@ -1130,6 +1130,11 @@ const EXEMPT: ReadonlyArray<ExemptField> = [
   { configKey: "generation.max_total_candidates", reason: "relation-validated generation budget; see generation-runtime-config.unit.test.ts" },
   { configKey: "generation.max_total_dispatches", reason: "relation-validated generation budget; see generation-runtime-config.unit.test.ts" },
   { configKey: "generation.cleanup_grace_sec", reason: "object-shaped generation runtime; see generation-runtime-config.unit.test.ts" },
+  {
+    configKey: "retry.strategies",
+    reason:
+      "enum-keyed Record<configKey,{enabled}> (RFC 2026-07-21-retry-strategy-registry §3.4, plan Task 4) — apply/retain-on-absence/reset + typo'd-key schema rejection + allow-and-warn-on-shared-strategy-disable + end-to-end assembleRetryStrategies wiring all covered in tests/config/retry-strategies.it.test.ts",
+  },
 ]
 
 // ============================================================================

@@ -5,15 +5,28 @@
  * `assembleRetryStrategies`). Covers: filter(appliesTo ∧ enabled) → sort(order) → payload/env
  * instantiation branches — and cross-checks the 16-name @messages order against the Task 1 golden
  * (`tests/pipeline/retry-strategy-assembly.golden.it.test.ts`).
+ *
+ * Task 4 addendum (Commit 4, reviewer suggestion 2 from the Task 3 review): a behavioral regression test
+ * for the shared `attemptRef` — `assembleRetryStrategies` constructs ONE `{ value: 0 }` ref per call site
+ * (the three `buildXxxStrategies`, RFC §3.1/§6 "per-request deps + declarative create") and every payload
+ * entry it assembles is adapted with THAT SAME ref (`adaptPayloadStrategy`'s `deps.attemptRef`). This test
+ * fixes the Task 3 reviewer's manual probe into a permanent regression test guarding against a future
+ * refactor silently giving each entry its own fresh `{ value: 0 }` (which would desync the shared 0-based
+ * execution index every payload strategy's log lines / `RetryContext.attempt` depend on).
  */
 
 import {
   //
+  afterEach,
+  beforeEach,
   describe,
   expect,
+  spyOn,
   test,
 } from "bun:test"
+import consola from "consola"
 
+import type { RequestEnvelope } from "~/lib/pipeline/envelope"
 import type {
   //
   RetryStrategyContext,
@@ -188,5 +201,92 @@ describe("isStrategyEnabled", () => {
 
   test("enabled 省略（{}）→ true（只有显式 false 才禁用）", () => {
     expect(isStrategyEnabled({ network: {} }, "network")).toBe(true)
+  })
+})
+
+// ============================================================================
+// attemptRef sharing regression (Task 4, Task 3 reviewer suggestion 2)
+// ============================================================================
+
+/** Minimal fake `RequestEnvelope` — the shared-3 payload strategies only read `env.body`
+ *  (via the adapter's `env.body as TPayload`) and return `env.with(patch)`. */
+function makeFakeEnv(body: unknown): RequestEnvelope {
+  return {
+    body,
+    prepareHints: {},
+    with(patch: Partial<RequestEnvelope>): RequestEnvelope {
+      return { ...this, ...patch } as RequestEnvelope
+    },
+  } as unknown as RequestEnvelope
+}
+
+describe("attemptRef sharing across assembled payload strategies (behavioral regression)", () => {
+  let infoSpy: ReturnType<typeof spyOn>
+
+  beforeEach(() => {
+    const noop = Object.assign(() => undefined, { raw: () => undefined })
+    infoSpy = spyOn(consola, "info").mockImplementation(noop)
+  })
+
+  afterEach(() => {
+    infoSpy.mockRestore()
+  })
+
+  /** Extract the "Attempt N/M" number logged by network-retry / server-error-retry / token-refresh. */
+  function loggedAttemptNumbers(): Array<number> {
+    return (infoSpy.mock.calls as Array<Array<unknown>>)
+      .map((args) => String(args[0]))
+      .flatMap((line: string) => {
+        const m = /Attempt (\d+)\//.exec(line)
+        return m ? [Number(m[1])] : []
+      })
+  }
+
+  test("one assembleRetryStrategies() call shares ONE attemptRef across ALL assembled entries — driving network-retry's handle() advances the SAME counter server-error-retry observes next", async () => {
+    // A single assembleRetryStrategies() call (mirrors ONE call site inside a `buildXxxStrategies`, which
+    // constructs exactly one `{ value: 0 }` and passes it in `deps` — see anthropic/strategies.ts:88,
+    // openai-cc/strategies.ts:48, openai-responses/strategies.ts:47). ccDirectCtx assembles the 3 SHARED
+    // payload strategies (network / server-error / token-refresh), all adapted with the SAME attemptRef
+    // instance constructed for THIS call.
+    const strategies = assembleRetryStrategies(ccDirectCtx, stubDeps(), {})
+    const network = strategies.find((s) => s.name === "network-retry")
+    const serverError = strategies.find((s) => s.name === "server-error-retry")
+    expect(network).toBeDefined()
+    expect(serverError).toBeDefined()
+
+    // Attempt 1: drive network-retry's handle() — its adapter reads attemptRef.value (0), logs
+    // "Attempt 1/...", then increments attemptRef.value to 1 (payload-strategy-adapter.ts:79).
+    const networkError = { type: "network_error" as const, status: 0, message: "ECONNRESET", raw: undefined }
+    await network!.handle(networkError, makeFakeEnv({ v: 1 }))
+
+    // Attempt 2: drive server-error-retry's handle() on the SAME assembled stack — if attemptRef were NOT
+    // shared (e.g. a future refactor gives each entry its own fresh `{ value: 0 }`), this would observe
+    // attempt=0 and log "Attempt 1/...", identical to network-retry's own first attempt — the regression
+    // this test exists to catch.
+    const serverErr = { type: "server_error" as const, status: 502, message: "Bad Gateway", raw: undefined }
+    await serverError!.handle(serverErr, makeFakeEnv({ v: 1 }))
+
+    const attempts = loggedAttemptNumbers()
+    expect(attempts).toEqual([1, 2]) // network-retry saw attempt=0 (logs "1"), server-error-retry saw attempt=1 (logs "2") — SAME shared counter, advanced by the first handle()
+  })
+
+  test("two SEPARATE assembleRetryStrategies() calls each get their OWN fresh attemptRef (no cross-request leakage)", async () => {
+    const requestA = assembleRetryStrategies(ccDirectCtx, stubDeps(), {})
+    const requestB = assembleRetryStrategies(ccDirectCtx, stubDeps(), {})
+
+    const networkA = requestA.find((s) => s.name === "network-retry")!
+    const networkB = requestB.find((s) => s.name === "network-retry")!
+    const networkError = { type: "network_error" as const, status: 0, message: "ECONNRESET", raw: undefined }
+
+    // Advance request A's shared attemptRef twice (network-retry only handles once due to its own
+    // `hasRetried` one-shot guard, so use it once, then drive it again via a fresh assembly to prove
+    // independence — the key assertion is request B's counter starts back at 0 regardless of A's state).
+    await networkA.handle(networkError, makeFakeEnv({ v: 1 }))
+    await networkB.handle(networkError, makeFakeEnv({ v: 1 }))
+
+    const attempts = loggedAttemptNumbers()
+    // Both requests' network-retry independently observed attempt=0 on their FIRST handle (both log "1")
+    // — proving request B's attemptRef was NOT advanced by request A's prior handle().
+    expect(attempts).toEqual([1, 1])
   })
 })

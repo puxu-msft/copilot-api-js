@@ -53,6 +53,7 @@ import type { MessagesPayload } from "~/types/api/anthropic"
 
 import { ENDPOINT } from "~/lib/models/endpoint"
 import { assembleRetryStrategies } from "~/lib/request/retry-registry"
+import { state } from "~/lib/state"
 
 export interface AnthropicStrategiesDeps {
   /** Retry baseline: the preprocessed, pre-initial-sanitize payload (= codec.getTruncateBaseline()). */
@@ -77,9 +78,9 @@ export interface AnthropicStrategiesDeps {
  * strategies assemble for the reverse legs (golden `tests/pipeline/retry-strategy-assembly.golden.it.test.ts`
  * proves the 16-name order is identical for all 4 `@messages` callers).
  *
- * `config` is `undefined` (per-strategy `retry.strategies.<key>.enabled` opt-out is Task 4 / RFC §3.4 — not
- * wired here yet; `assembleRetryStrategies` treats a missing config the same as an all-default-true one,
- * so this stays the current all-16-on behavior byte-for-byte).
+ * `config` is `state.retryStrategies` (Task 4 / RFC §3.4 — per-strategy `retry.strategies.<configKey>.enabled`
+ * opt-out, read fresh per request so hot-reload takes effect on the next request; default `{}` = all 16 on,
+ * byte-equivalent to the pre-config-switch behavior).
  */
 export function buildAnthropicStrategies(deps: AnthropicStrategiesDeps): ReadonlyArray<EnvRetryStrategy> {
   return assembleRetryStrategies(
@@ -92,6 +93,6 @@ export function buildAnthropicStrategies(deps: AnthropicStrategiesDeps): Readonl
       betaProbe: deps.betaProbe,
       resanitize: deps.resanitize,
     },
-    undefined,
+    state.retryStrategies,
   )
 }

@@ -23,6 +23,7 @@ import type { ResponsesPayload } from "~/types/api/openai-responses"
 
 import { ENDPOINT } from "~/lib/models/endpoint"
 import { assembleRetryStrategies } from "~/lib/request/retry-registry"
+import { state } from "~/lib/state"
 
 export interface OpenAiResponsesStrategiesDeps {
   /** Stable baseline for the payload `RetryContext` (network/token-refresh ignore it). */
@@ -38,7 +39,8 @@ export interface OpenAiResponsesStrategiesDeps {
  * declarative {@link assembleRetryStrategies} (registry Task 3 / RFC §3.2). `targetEndpoint` is
  * `ENDPOINT.RESPONSES` (a non-`@messages` endpoint, HTTP construction path — see this test's golden entry
  * 3) so only the 3 shared entries assemble; `betaProbe`/`resanitize` are `undefined` (this leg never
- * populates them). `config` is `undefined` (Task 4 wires `retry.strategies` — not yet).
+ * populates them). `config` is `state.retryStrategies` (Task 4 / RFC §3.4 — read fresh per request so
+ * hot-reload takes effect on the next request).
  */
 export function buildOpenAiResponsesStrategies(deps: OpenAiResponsesStrategiesDeps): ReadonlyArray<EnvRetryStrategy> {
   return assembleRetryStrategies(
@@ -51,7 +53,7 @@ export function buildOpenAiResponsesStrategies(deps: OpenAiResponsesStrategiesDe
       betaProbe: undefined,
       resanitize: undefined,
     },
-    undefined,
+    state.retryStrategies,
   )
 }
 

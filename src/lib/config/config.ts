@@ -266,6 +266,27 @@ function applyVendorBufferedRetry(value: boolean | BufferedRetryOverride, vendor
   setBufferedRetryOverride(vendor, mapBufferedCaps(value))
 }
 
+/**
+ * `retry.strategies` "allow + warn" (RFC 2026-07-21-retry-strategy-registry §3.4 decision 2, plan Task 4):
+ * disabling a SHARED strategy (network / server-error / token-refresh — the 3 that gate `() => true`,
+ * applying across EVERY leg, not just `@messages`) is allowed (internal-tool posture — never block), but
+ * warns once per apply (startup + every hot-reload that carries the disabled key) since it removes a
+ * cross-cutting resilience net for ALL protocols, not just an Anthropic-only 400-class negotiation.
+ * Anthropic-only entries (400-class) get no such warning — disabling one is a narrower, more deliberate
+ * choice with no similar blast radius.
+ */
+const SHARED_RETRY_STRATEGY_CONFIG_KEYS: ReadonlySet<string> = new Set(["network", "serverError", "tokenRefresh"])
+
+function warnDisabledSharedRetryStrategies(strategies: Partial<Record<string, { enabled?: boolean }>>): void {
+  const disabled = Object.entries(strategies)
+    .filter(([key, sw]) => SHARED_RETRY_STRATEGY_CONFIG_KEYS.has(key) && sw?.enabled === false)
+    .map(([key]) => key)
+  if (disabled.length === 0) return
+  consola.warn(
+    `[config] retry.strategies disables shared retry strateg${disabled.length === 1 ? "y" : "ies"} (${disabled.join(", ")}) — this removes a cross-cutting resilience net (network/server-error/token-refresh recovery) for ALL protocols (Anthropic + Chat Completions + Responses), not just Anthropic 400-class negotiation. Proceeding (allow + warn).`,
+  )
+}
+
 /** Bundled defaults cache — file is immutable for the process lifetime. */
 let cachedBundledConfig: Config | null = null
 
@@ -793,10 +814,18 @@ export async function applyConfigToState(): Promise<Config> {
     setDisabledModels(normalizeModelNameList(config.disabled_models, "disabled_models"))
   }
 
-  // Shared reactive-retry budget (was auto_truncate.max_retries).
-  if (config.retry?.max_reactive_retries !== undefined) {
-    setReactiveRetryConfig({ maxReactiveRetries: config.retry.max_reactive_retries })
+  // Shared reactive-retry budget (was auto_truncate.max_retries) + per-strategy registry opt-out
+  // (RFC 2026-07-21-retry-strategy-registry §3.4 / plan Task 4). `strategies` is a whole-map REPLACE
+  // (retain-on-absence: an absent `retry.strategies` key on a later reload keeps the prior runtime
+  // value — resetConfigManagedState() is the only reset path, mirroring every other Record-typed
+  // config-managed field, e.g. anthropic.error_selfheal_delegate).
+  if (config.retry?.max_reactive_retries !== undefined || config.retry?.strategies !== undefined) {
+    setReactiveRetryConfig({
+      ...(config.retry.max_reactive_retries !== undefined && { maxReactiveRetries: config.retry.max_reactive_retries }),
+      ...(config.retry.strategies !== undefined && { retryStrategies: config.retry.strategies }),
+    })
   }
+  if (config.retry?.strategies !== undefined) warnDisabledSharedRetryStrategies(config.retry.strategies)
   const generation = config.generation
   if (generation) {
     const patch = {
