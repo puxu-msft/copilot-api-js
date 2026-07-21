@@ -1,5 +1,6 @@
 import {
   //
+  beforeAll,
   beforeEach,
   describe,
   expect,
@@ -50,6 +51,18 @@ import {
   //
   applyFetchMock,
 } from "../helpers/mock-fetch"
+import { primeUdsConnectForBunTest } from "../helpers/prime-uds-for-bun-test"
+
+// See prime-uds-for-bun-test.ts's doc comment: `GET /api/status` (exercised
+// below) calls `pingHistorySearchUdsClient`, a UDS connect against a path that
+// is normally absent in tests — exactly the `bun test`-only scenario that
+// needs priming (confirmed empirically NOT to be a production bug; this is
+// the only test file in the whole suite that genuinely dispatches a request
+// to `/api/status`, so a file-level `beforeAll` here is sufficient — no other
+// file needs it, and this file uses real timers throughout, so priming's own
+// (real, if brief) async I/O wait cannot race a fake-timer-driven microtask
+// budget the way it would in e.g. keepalive-buffered-anchor-e2e.http.test.ts).
+beforeAll(primeUdsConnectForBunTest)
 
 // ----- upstream wire mock -----
 //
@@ -176,6 +189,7 @@ interface StatusResponseBody {
     }>
   }
   transport: TransportStatusSnapshot
+  history_search: { enabled: boolean; reachable?: boolean; latencyMs?: number; error?: string }
 }
 
 function createHistoryEntry(overrides?: {
@@ -314,6 +328,15 @@ describe("management and history HTTP routes", () => {
       resetDate: "2026-04-01",
     })
     expect(body.activeRequests.count).toBe(0)
+    // history_search: the sidecar is an independently-started service (Phase 3′) --
+    // in this test environment nothing is listening on PATHS.HISTORY_SEARCH_SOCKET,
+    // so the main process's own lightweight reachability probe must honestly report
+    // "enabled but unreachable" (never throw, never report a fabricated alive/pid
+    // view of a process this side has no visibility into).
+    expect(body.history_search.enabled).toBe(true)
+    expect(body.history_search.reachable).toBe(false)
+    expect(typeof body.history_search.latencyMs).toBe("number")
+    expect(typeof body.history_search.error).toBe("string")
     expect(body.models.totalCount).toBe(1)
     expect(body.models.availableCount).toBe(1)
     expect(body.requestTelemetry.acceptedSinceStart).toBe(1)

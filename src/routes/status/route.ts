@@ -18,10 +18,12 @@ import {
   protectStreamingHitRate,
 } from "~/lib/anthropic/protect-streaming-stats"
 import { getToolInputRepairStats } from "~/lib/anthropic/tool-input-repair-stats"
+import { PATHS } from "~/lib/config/paths"
 import { getRequestContextManager } from "~/lib/context/manager"
 import { getHistorySummaries } from "~/lib/history/queries"
 import { getRawCaptureStatus } from "~/lib/history/raw/manager"
-import { getHistorySearchSupervisor } from "~/lib/history/state"
+import { pingHistorySearchUdsClient } from "~/lib/history/search/uds-client"
+import { getHistorySearchClient } from "~/lib/history/state"
 import { listInFlightEntries } from "~/lib/history/store"
 import { peekUpstreamWsManager } from "~/lib/openai/upstream-ws"
 import {
@@ -210,10 +212,17 @@ statusRoutes.openapi(getStatusRoute, async (c) => {
       requestTelemetry,
 
       history_raw_capture: getRawCaptureStatus(),
-      history_search: (() => {
-        const supervisor = getHistorySearchSupervisor()
-        if (!supervisor) return { enabled: false }
-        return { enabled: true, ...supervisor.getStatus() }
+      history_search: await (async () => {
+        const client = getHistorySearchClient()
+        if (!client) return { enabled: false }
+        // The main process has NO visibility into the sidecar's lifecycle (it is an
+        // independently-started, systemd-managed service, not something this process
+        // spawns/supervises — history-search-out-of-process plan Phase 3′) — the ONLY
+        // honest thing to report is "can we currently reach it", derived from an
+        // actual lightweight probe, never a persisted alive/pid/abandoned view of a
+        // process this side does not own.
+        const ping = await pingHistorySearchUdsClient(PATHS.HISTORY_SEARCH_SOCKET)
+        return { enabled: true, ...ping }
       })(),
 
       memory: {
