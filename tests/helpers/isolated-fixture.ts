@@ -68,6 +68,7 @@ import {
   setUpstreamHookForTests,
 } from "~/lib/pipeline/hooks/loader"
 import { resetProcessIdentityForTests } from "~/lib/process-identity"
+import { resetAbortableDelayScaleForTests, setAbortableDelayScaleForTests } from "~/lib/util/abortable-delay"
 import { _resetRequestTelemetryForTests } from "~/lib/request-telemetry"
 import {
   //
@@ -118,6 +119,7 @@ export const RESETTERS: ReadonlyArray<{ name: string; reset: () => void | Promis
   { name: "resetModelsEtagForTests", reset: resetModelsEtagForTests },
   { name: "resetRawModelsForTests", reset: resetRawModelsForTests },
   { name: "resetProcessIdentityForTests", reset: resetProcessIdentityForTests },
+  { name: "resetAbortableDelayScaleForTests", reset: resetAbortableDelayScaleForTests },
   { name: "resetReaperDiagnosticsForTests", reset: resetReaperDiagnosticsForTests },
   { name: "_resetConfigValidationWarnTrackingForTests", reset: _resetConfigValidationWarnTrackingForTests },
   { name: "resetBundledConfigCacheForTests", reset: resetBundledConfigCacheForTests },
@@ -216,6 +218,10 @@ export function useIsolatedRuntime(opts: IsolatedRuntimeOptions = {}): void {
 
   beforeEach(() => {
     snapshot = snapshotStateForTests()
+    // Retry-backoff waits (dispatch-scheduler `abortableDelay`) resolve instantly under
+    // the fixture — the declared waitMs/queueWaitMs accounting is untouched. Cuts seconds
+    // off any retry-triggering test (e.g. the v4 http golden files). Reset to 1 in afterEach.
+    setAbortableDelayScaleForTests(0)
     if (network === "guard") installUpstreamGuard()
   })
 

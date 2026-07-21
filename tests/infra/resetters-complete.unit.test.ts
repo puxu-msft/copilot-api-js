@@ -50,6 +50,7 @@ const EXEMPT: Record<string, string> = {
   setLearnedLimitsPathForTests: "path setter — per-test opt-in",
   _setRequestTelemetryFilePathForTests: "path setter — per-test opt-in",
   setBundledConfigForTests: "config injector — reset via resetBundledConfigCacheForTests",
+  setAbortableDelayScaleForTests: "delay-scale setter — reset via resetAbortableDelayScaleForTests (registered)",
   // telemetry.db assertion/inspection hooks (read-only getters) — no module-global state to reset.
   _getTelemetryDbForTests: "read-only assertion hook — no state to reset",
   _getOutboxSizeForTests: "read-only assertion hook — no state to reset",

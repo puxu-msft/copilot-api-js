@@ -18,11 +18,31 @@ export class OperationCancelledError extends Error {
 }
 
 /**
+ * Test seam: scale every {@link abortableDelay} duration by this factor. Production
+ * is always `1` (real ms). The isolated test fixture sets it to `0` so retry-backoff
+ * waits (the sole production caller, `dispatch-scheduler.ts`) resolve instantly —
+ * the declared `waitMs` / `queueWaitMs` accounting is untouched (that flows from
+ * `action.waitMs`, not from elapsed wall-clock), so timing assertions still hold.
+ * Tests that assert the primitive's *real* timing (abortable-delay.unit,
+ * driver-backoff-cancel) don't use the fixture, so they keep the production `1`.
+ */
+let delayScaleForTests = 1
+
+export function setAbortableDelayScaleForTests(scale: number): void {
+  delayScaleForTests = scale
+}
+
+export function resetAbortableDelayScaleForTests(): void {
+  delayScaleForTests = 1
+}
+
+/**
  * Sleep `ms`, but reject with {@link OperationCancelledError} the moment `signal` aborts
  * (or immediately if already aborted). Clears the timer on abort so no handle lingers.
  */
 export function abortableDelay(ms: number, signal?: AbortSignal): Promise<void> {
-  if (!signal) return new Promise((resolve) => setTimeout(resolve, ms))
+  const effectiveMs = ms * delayScaleForTests
+  if (!signal) return new Promise((resolve) => setTimeout(resolve, effectiveMs))
   if (signal.aborted) return Promise.reject(new OperationCancelledError())
 
   return new Promise<void>((resolve, reject) => {
@@ -33,7 +53,7 @@ export function abortableDelay(ms: number, signal?: AbortSignal): Promise<void> 
     const timer = setTimeout(() => {
       signal.removeEventListener("abort", onAbort)
       resolve()
-    }, ms)
+    }, effectiveMs)
     signal.addEventListener("abort", onAbort, { once: true })
   })
 }
