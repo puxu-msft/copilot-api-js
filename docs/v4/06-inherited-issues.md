@@ -3,7 +3,8 @@
 把 `docs/audits/` 的历史审查发现吸收进 v4 视野的统一台账。
 
 **来源**：[`archive/non-ws-module-audit-2026-06-03.md`](./archive/non-ws-module-audit-2026-06-03.md)（非 WS 审查）+ [`archive/deferred-engineering-items-2026-06-03.md`](./archive/deferred-engineering-items-2026-06-03.md)（DI-1~14），均为 **2026-06-03**；已被本台账全盘吸收后移入 `archive/` 归档。
-**复核**：2026-06-16 经 5 路 subagent **实测当前代码**逐项核对（不信旧 file:line），结论如下。原 audit 文档保留为历史归档，本台账是其活跃续档。
+**复核**：2026-06-16 经 5 路 subagent **实测当前代码**逐项核对（不信旧 file:line），结论如下（"真实未决"表的"复核结论/v4 落点"列即此轮，属 v4 **实施前的预期**）。
+**v4 后落地核对**：2026-07-21 v4 P0-P3 + Stage A/B 全部完成后，主线自查当前代码，把 A/B 类"预期 v4 会解决"裁决成实测状态——见下方「v4 后落地核对」段。原 audit 文档保留为历史归档，本台账是其活跃续档。
 
 ---
 
@@ -95,9 +96,31 @@
 
 ---
 
+## v4 后落地核对（2026-07-21，主线自查当前代码）
+
+v4 P0-P3 + Stage A/B 全部完成后，逐项实测 A/B 类"预期 v4 会解决"的真实状态。**总纲结论**：只有 DI-3 的症状随 v4 架构消除；DI-2/9/10/14 **未解决**、DI-8 **仍部分**——因为 v4 迁移的**字节等价铁律**（每 commit golden 逐字节等价）恰好把"改客户端可观测行为"的项挡在门外（改错误信息/消息结构/映射结果都不是等价重构，迁移期故意不碰）。印证 [[feedback-pass-null-clean-not-self-validating]]：预期≠已解决。
+
+| 项 | v4 后实测裁决 | 证据（当前 file:line） |
+|---|---|---|
+| **DI-3** | ⚠️ **症状闭合、理想架构未达成**：in-place mutate 已消除（全 src 无 `payload.model/.system/.messages=` 赋值；codec.parse 用 `{ ...incoming, model }` 不可变构造）；但手段是 **clone-based 隔离**非 immutable-transform——各 codec 仍 `structuredClone(clientBody)` 做 originalSnapshot、driver 还新增 per-stage envelope clone。DI-3 原文"完成后 snapshot 可删"**未达成**（snapshot 保留供 history 原始快照） | `codec/anthropic/codec.ts:396,408`（4 codec 同构）、`driver.ts:391`、`pipeline/types.ts:714` |
+| **DI-2** | ❌ **未解决、反加重**：无条件 clone 未随 immutable 消除，driver 每 stage clone envelope body + 各 codec parse 无条件 clone；仍无 vision（4-20MB）性能基线 | `driver.ts:391,511`、各 codec `parse` |
+| **DI-10** | ❌ **仍未统一**：`sanitize.ts:48,83` 走"删除"（`return null`）、cc-to-responses 走"注入占位保 turn"；Stage A registry 化未统一这两哲学（各在各路径） | `openai/sanitize.ts:48,83` vs `cc-to-responses.ts:190` |
+| **DI-9** | ❌ **未解决**：cc-to-responses 缺 tool_call_id 抛 400 仍无 message index | `cc-to-responses.ts:216-224` |
+| **DI-14** | ❌ **未解决**：message-mapping 仍 `slice(0,100)` prefix 比较；模块还在 `anthropic/` 老位置（P2.6 未迁进 codec） | `anthropic/message-mapping.ts:20` |
+| **DI-8** | ⚠️ **部分**：Azure deployment→model 注入 / URL override / 400 端点已测，但**仍未断言 history 双轨**（originalRequest.model==body 原值 vs effective==deployment），且**无 responses 路径覆盖** | `tests/openai/azure-openai-compat.http.test.ts:140,160,188`（仅 chat+embeddings） |
+
+**v4 后处置**（据实测重新归类，均不再依赖 v4）：
+- **DI-3** → 症状闭合，"snapshot 可删/immutable-transform 彻底化"降为**可选优化**（做了连带 DI-2）；非 bug、不紧急。
+- **DI-2/9/10/14** → v4 没碰，**转独立 backlog**：都是脱离等价约束后可单独做的小改进（DI-9 错误带 index、DI-14 改 hash/全比对、DI-10 定统一空消息契约、DI-2 性能基线 + 评估 driver per-stage clone 开销）。
+- **DI-8** → **小测试任务**：补 Azure history 双轨 model 断言 + responses 路径覆盖。
+
+---
+
 ## 处置落地
 
-- **A 类（DI-3/2/10/9/14）**：已在本台账标注 v4 阶段落点。实施对应 P 阶段时，prompts/ 提示词应引用本台账相应项（P1 → DI-10；P2.2/2.4 → DI-9/DI-8；P2.6 → DI-14；P2 各格式 → DI-3/2）。
+> ⚠️ **下列为 v4 实施前（2026-06-16）的规划语气；v4 已完成，A/B 类实测落地见上方「v4 后落地核对」——DI-3 症状闭合、DI-2/9/10/14 未随 v4 解决 + DI-8 仍部分、均转独立 backlog。**
+
+- **A 类（DI-3/2/10/9/14）**：（v4 前规划）已在本台账标注 v4 阶段落点。实施对应 P 阶段时，prompts/ 提示词应引用本台账相应项（P1 → DI-10；P2.2/2.4 → DI-9/DI-8；P2.6 → DI-14；P2 各格式 → DI-3/2）。
 - **B 类（DI-8）**：作为 P2.3/2.4 的 invariant 补充。
 - **DI-5**：方案已定（append-only recovery log，见上），升级为优先独立 backlog，可独立于 v4 实施。
 - **C 类（DI-4/7/13/1）**：v4 外独立维护，**继续保留完整上下文**于 [`archive/deferred-engineering-items-2026-06-03.md`](./archive/deferred-engineering-items-2026-06-03.md)（用户定夺：留文档，不单独排期）。
