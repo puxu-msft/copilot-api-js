@@ -39,18 +39,17 @@ import { resetToolInputRepairStatsForTests } from "~/lib/anthropic/tool-input-re
 import { resetBundledConfigCacheForTests } from "~/lib/config/config"
 import { _resetConfigValidationWarnTrackingForTests } from "~/lib/config/validation"
 import { resetModelOperationTerminalRegistryForTests } from "~/lib/context/lightweight-model-operation"
-import { resetHistoryPersistErrorStats } from "~/lib/history/persist-guard"
-import { resetRawCaptureManagerForTests } from "~/lib/history/raw/manager"
 import { resetDiagnosticLoggerForTests } from "~/lib/diagnostics"
 import { resetStructuredFileSinkForTests } from "~/lib/diagnostics/file"
 import { resetBootstrapSpoolForTests } from "~/lib/diagnostics/file/bootstrap-spool"
+import { resetHistoryPersistErrorStats } from "~/lib/history/persist-guard"
+import { resetRawCaptureManagerForTests } from "~/lib/history/raw/manager"
+import { setNativeHistorySearchForTests } from "~/lib/history/search-native"
 import {
   //
   drainV3Writer,
   resetV3WriterForTests,
 } from "~/lib/history/v3/store"
-import { setNativeHistorySearchForTests } from "~/lib/history/search-native"
-import { resetTantivySearchForTests } from "~/lib/history/search-tantivy"
 import { resetModelOperationTerminalBusForTests } from "~/lib/history/v3/terminal-bus"
 import { clearRecentModelOperationTerminalsForTests } from "~/lib/history/v3/terminal-bus"
 import { resetAllLimitsForTesting } from "~/lib/models/calibration/engine"
@@ -68,7 +67,6 @@ import {
   setUpstreamHookForTests,
 } from "~/lib/pipeline/hooks/loader"
 import { resetProcessIdentityForTests } from "~/lib/process-identity"
-import { resetAbortableDelayScaleForTests, setAbortableDelayScaleForTests } from "~/lib/util/abortable-delay"
 import { _resetRequestTelemetryForTests } from "~/lib/request-telemetry"
 import {
   //
@@ -85,6 +83,11 @@ import {
 import { setUpstreamFetchForTests } from "~/lib/transport/upstream-fetch"
 import { resetSensitiveOutputForTests } from "~/lib/tui/sensitive-output"
 import { resetTerminalCoordinatorForTests } from "~/lib/tui/terminal-coordinator"
+import {
+  //
+  resetAbortableDelayScaleForTests,
+  setAbortableDelayScaleForTests,
+} from "~/lib/util/abortable-delay"
 
 import { restoreFetch } from "./mock-fetch"
 import {
@@ -109,7 +112,6 @@ export const RESETTERS: ReadonlyArray<{ name: string; reset: () => void | Promis
   { name: "clearRecentModelOperationTerminalsForTests", reset: clearRecentModelOperationTerminalsForTests },
   { name: "resetV3WriterForTests", reset: resetV3WriterForTests },
   { name: "resetRawCaptureManagerForTests", reset: resetRawCaptureManagerForTests },
-  { name: "resetTantivySearchForTests", reset: resetTantivySearchForTests },
   { name: "setNativeHistorySearchForTests", reset: () => setNativeHistorySearchForTests(undefined) },
   { name: "resetResponseSessionStoreForTests", reset: resetResponseSessionStoreForTests },
   { name: "resetProtectStreamingStatsForTests", reset: resetProtectStreamingStatsForTests },

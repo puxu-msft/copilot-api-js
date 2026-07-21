@@ -69,8 +69,10 @@ export const PATHS = {
   HISTORY_DB: path.join(APP_DIR, "history.db"),
   /** Online History V3 store. Starts empty and never backfills from HISTORY_DB. */
   HISTORY_V3_DB: path.join(APP_DIR, "history-v3.db"),
-  /** Disposable Tantivy full-text index. Never authoritative and never stored inside History SQLite. */
+  /** Disposable Tantivy full-text index. Never authoritative and never stored inside History SQLite. Owned by the out-of-process history-search sidecar (history-search-out-of-process plan Phase 3), not the main process directly. */
   HISTORY_SEARCH_DIR: path.join(APP_DIR, "history-search"),
+  /** Unix domain socket the history-search sidecar listens on; the main process's supervisor-owned UDS client queries it. */
+  HISTORY_SEARCH_SOCKET: path.join(APP_DIR, "history-search.sock"),
   /** Optional exact-byte CAS, physically and lifecycle-isolated from semantic V3. */
   HISTORY_RAW_DB: path.join(APP_DIR, "raw.db"),
   /** Sidecar SQLite DB for the durable (session,agent) thinking-quarantine store (L3). */

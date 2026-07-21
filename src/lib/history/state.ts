@@ -15,10 +15,9 @@ import {
 } from "./raw/manager"
 import {
   //
-  configureTantivySearch,
-  drainTantivySearch,
-  enqueueTantivyOperation,
-} from "./search-tantivy"
+  createHistorySearchSupervisor,
+  type HistorySearchSupervisor,
+} from "./search/supervisor"
 import {
   //
   closeDatabase,
@@ -50,9 +49,23 @@ import {
 
 let enabled = false
 let unsubscribeV3Terminal: (() => void) | undefined
-let unsubscribeTantivyTerminal: (() => void) | undefined
 let unsubscribeRawCapture: (() => void) | undefined
 let _publisher: ScopedPublisher<"history"> | undefined
+/**
+ * Out-of-process history-search sidecar supervisor (history-search-out-of-
+ * process plan Phase 3). `undefined` whenever search is not running.
+ *
+ * Gated on the ABSENCE of `state.historyDbPath` (the injected test seam), not
+ * merely on-disk-vs-`:memory:` — see the gate in `initHistory` below for the
+ * full rationale (an earlier, narrower gate leaked a real spawned OS process
+ * from two on-disk-path test suites whose `afterEach` only closes the DB
+ * directly, confirmed empirically via `ps aux` during a full backend test
+ * run). Every `.unit`/`.it`/`.http` test — `:memory:` via `useIsolatedRuntime`
+ * AND the two real-file test suites that inject a temp `historyDbPath` — never
+ * spawns a sidecar process; only genuine production use (`start.ts`, no
+ * injected test seam) does.
+ */
+let historySearchSupervisor: HistorySearchSupervisor | undefined
 
 export const historyState = {
   get enabled(): boolean {
@@ -72,6 +85,16 @@ export const historyState = {
 }
 
 /**
+ * The out-of-process history-search sidecar's supervisor, when running (undefined
+ * when search is disabled — see `historySearchSupervisor`'s doc comment). Read by
+ * `status/route.ts` (`history_search` status) and (future Phase 4) the REST search
+ * handler for its UDS client.
+ */
+export function getHistorySearchSupervisor(): HistorySearchSupervisor | undefined {
+  return historySearchSupervisor
+}
+
+/**
  * Install the bus publisher used by the history subsystem to emit
  * `history.*` events. Called once at `start.ts` after `initBus()`.
  * Tests that need WS broadcast behavior call this themselves; tests
@@ -85,6 +108,15 @@ export function isHistoryEnabled(): boolean {
   return enabled
 }
 
+/** Stop and discard the current supervisor, if any. Never-throw: `stop()` itself
+ *  is a graceful SIGTERM/SIGKILL sequence that does not throw; this wrapper exists
+ *  so every caller doesn't need to null-check. */
+async function stopHistorySearchSupervisor(): Promise<void> {
+  const supervisor = historySearchSupervisor
+  historySearchSupervisor = undefined
+  if (supervisor) await supervisor.stop()
+}
+
 export async function initHistory(enable: boolean, _legacyMaxEntries?: number): Promise<void> {
   clearInFlight()
   clearRecentModelOperationTerminalsForTests()
@@ -92,9 +124,7 @@ export async function initHistory(enable: boolean, _legacyMaxEntries?: number): 
   if (!enable) {
     unsubscribeV3Terminal?.()
     unsubscribeV3Terminal = undefined
-    unsubscribeTantivyTerminal?.()
-    unsubscribeTantivyTerminal = undefined
-    configureTantivySearch({ enabled: false, path: PATHS.HISTORY_SEARCH_DIR })
+    await stopHistorySearchSupervisor()
     unsubscribeRawCapture?.()
     unsubscribeRawCapture = undefined
     stopV3Maintenance()
@@ -119,13 +149,29 @@ export async function initHistory(enable: boolean, _legacyMaxEntries?: number): 
   recoverV3Journal(getDatabase())
   unsubscribeV3Terminal?.()
   unsubscribeV3Terminal = subscribeModelOperationTerminals(enqueueModelOperation)
-  unsubscribeTantivyTerminal?.()
-  // In-memory History fixtures must never spill a native sidecar onto the host.
-  // On-disk injected test stores get a sibling directory; production uses the
-  // stable application-owned artifact path.
-  const searchPath = state.historyDbPath ? `${dbPath}.tantivy` : PATHS.HISTORY_SEARCH_DIR
-  configureTantivySearch({ enabled: dbPath !== ":memory:", path: searchPath })
-  unsubscribeTantivyTerminal = subscribeModelOperationTerminals(enqueueTantivyOperation)
+  // Out-of-process history-search sidecar (Phase 3): spawn a REAL child OS
+  // process ONLY for genuine production use (no injected `historyDbPath` test
+  // seam active) — NOT merely "on-disk vs :memory:". A test-injected on-disk
+  // path (the two real-file test suites: state-shutdown.unit.test.ts,
+  // migrations-wiring.it.test.ts) is still a test fixture whose `afterEach`
+  // only calls `closeDatabase()` directly (not `shutdownHistory()`), so any
+  // gate that spawned a subprocess for those paths would silently LEAK a real
+  // child process on every single test run (confirmed empirically: a `ps aux`
+  // during `bun run test:backend` showed an orphaned `history-search-daemon`
+  // still running after the whole suite finished). The retired in-process
+  // engine's `enabled: dbPath !== ":memory:"` gate was safe there because
+  // "enabled" only meant "write to an on-disk index directory" — no OS-level
+  // resource was ever left running past `closeDatabase()`. Spawning a real
+  // process is not equivalent risk and must not reuse that gate.
+  await stopHistorySearchSupervisor()
+  if (!state.historyDbPath) {
+    historySearchSupervisor = createHistorySearchSupervisor({
+      dbPath,
+      indexPath: PATHS.HISTORY_SEARCH_DIR,
+      socketPath: PATHS.HISTORY_SEARCH_SOCKET,
+    })
+    historySearchSupervisor.start()
+  }
   unsubscribeRawCapture?.()
   unsubscribeRawCapture = onHistoryRawCaptureChange(() => {
     configureRawCapture({
@@ -154,6 +200,12 @@ export async function initHistory(enable: boolean, _legacyMaxEntries?: number): 
  *
  * Stops the reaper + backfill so no new background writes start, but leaves
  * `enabled` true so in-flight finalizes still persist.
+ *
+ * Deliberately does NOT stop the history-search supervisor — the sidecar reads
+ * ALREADY-COMMITTED rows over its own readonly connection; unlike the retired
+ * in-process engine, there is no in-process search work here to drain, and a
+ * request settling during Phase 2/3 drain does not depend on the sidecar being
+ * up. The supervisor is stopped later, in `shutdownHistory`, alongside DB close.
  */
 export function stopHistoryBackgroundWork(): void {
   unsubscribeRawCapture?.()
@@ -177,6 +229,13 @@ export function stopHistoryBackgroundWork(): void {
  * FIRST (stop accepting new terminal records), then drain the subscriber
  * queue, then drain the writer's own pending/in-flight commits, THEN close.
  * Async; awaited by the shutdown sequence before process exit.
+ *
+ * The history-search supervisor is stopped (SIGTERM its sidecar, escalating to
+ * SIGKILL) AFTER the V3 writer has fully drained — the sidecar only ever reads
+ * already-committed rows over its own readonly connection, so there is no
+ * ordering dependency the other direction; stopping it here (not earlier, in
+ * `stopHistoryBackgroundWork`) simply keeps every teardown of history's own
+ * resources colocated in this one function.
  */
 export async function shutdownHistory(): Promise<void> {
   // Idempotent: a direct call (tests / non-graceful paths) must also stop background work.
@@ -185,11 +244,9 @@ export async function shutdownHistory(): Promise<void> {
   // detach after no more requests can settle, then drain terminal work to disk.
   unsubscribeV3Terminal?.()
   unsubscribeV3Terminal = undefined
-  unsubscribeTantivyTerminal?.()
-  unsubscribeTantivyTerminal = undefined
   await drainModelOperationTerminalSubscribers()
   await drainV3Writer()
-  await drainTantivySearch()
+  await stopHistorySearchSupervisor()
   await drainV3SummaryBackfill()
   shutdownRawCapture()
   closeDatabase()
