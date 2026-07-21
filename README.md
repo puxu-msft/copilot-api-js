@@ -183,10 +183,24 @@ Most fields hot-reload at runtime (the file is watched). Hot-reload semantics ar
 ~/.local/share/copilot-api/         # or $XDG_DATA_HOME/copilot-api/
 ├── config.yaml                     # user config (hot-reloaded)
 ├── github_token                    # GitHub device-flow token
-├── history-v3.db                   # Canonical semantic CAS + journal + search
+├── history-v3.db                   # Canonical semantic CAS + journal (search is a separate sidecar, see below)
+├── history-search/                 # Full-text search index (Tantivy) — only populated if the sidecar service is running
+├── history-search.sock             # Unix domain socket the search sidecar listens on, if running
 ├── raw.db                          # Optional exact-byte CAS (disabled by default)
 ├── negotiation-states.json         # learned per-model bans (betas / body fields / efforts)
 ```
+
+### Optional: full-text History search sidecar
+
+Full-text History search runs as an **independent, optional service** — `history-search-daemon`, a separate long-lived process the main server never spawns or supervises (a native full-text-index crash can then never take down the main server). Without it running, `GET /history/api/search` simply returns empty results.
+
+```bash
+# Start it directly (defaults already point at the same on-disk db/socket paths
+# the main server uses — no flags needed):
+copilot-api history-search-daemon
+```
+
+For a persistent, auto-restarting deployment, see the systemd unit template and notes in **[`docs/deploy/`](docs/deploy/)**.
 
 ---
 
