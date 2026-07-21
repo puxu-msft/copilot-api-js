@@ -48,6 +48,7 @@ export async function applyInboundSystemPrompt(env: RequestEnvelope): Promise<Re
 
 - anthropic/cc/responses 的 translateInbound 改为 `return applyInboundSystemPrompt(env)`（替换现在的内联直接调用），保持各自 early-return 语义（无 system/instructions 跳过）。
 - 分发 hook 是 anthropic/cc/responses 三格式的**单一 pluggable 锚点**——未来 config gate / 用户 hook 可在此集中挂载。
+- **实现 nit（复审 v3 提出，plan 阶段顺手处理）**：gemini 不调本函数（§3.2），故 `default` 分支是死代码。不要用 `default: return env` 静默兜底——改用项目惯例的穷尽性 guard（对齐 `assertExhaustiveEndpoint`/`cell-assembly.ts`），让未来 `ClientFormat` 新增第 5 个值时**编译期报错**而非静默吞;或显式删 `default` + 注释说明「gemini/未来格式不经此入口」。
 
 ### 3.2 gemini：记录在案的中段例外（保字节等价）
 
