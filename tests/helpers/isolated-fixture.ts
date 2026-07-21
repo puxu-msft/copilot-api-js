@@ -56,6 +56,7 @@ import { clearRecentModelOperationTerminalsForTests } from "~/lib/history/v3/ter
 import { resetAllLimitsForTesting } from "~/lib/models/calibration/engine"
 import { resetModelsEtagForTests } from "~/lib/models/client"
 import { resetReaperDiagnosticsForTests } from "~/lib/observability/reaper-diagnostics"
+import { resetRetryStrategyFiresForTests } from "~/lib/observability/retry-strategy-fires"
 import { resetResponseSessionStoreForTests } from "~/lib/openai/response-session-store"
 import {
   //
@@ -121,6 +122,7 @@ export const RESETTERS: ReadonlyArray<{ name: string; reset: () => void | Promis
   { name: "resetProcessIdentityForTests", reset: resetProcessIdentityForTests },
   { name: "resetAbortableDelayScaleForTests", reset: resetAbortableDelayScaleForTests },
   { name: "resetReaperDiagnosticsForTests", reset: resetReaperDiagnosticsForTests },
+  { name: "resetRetryStrategyFiresForTests", reset: resetRetryStrategyFiresForTests },
   { name: "_resetConfigValidationWarnTrackingForTests", reset: _resetConfigValidationWarnTrackingForTests },
   { name: "resetBundledConfigCacheForTests", reset: resetBundledConfigCacheForTests },
   { name: "resetUpstreamWsManagerForTests", reset: () => void resetUpstreamWsManagerForTests() },

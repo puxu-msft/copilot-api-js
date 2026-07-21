@@ -40,6 +40,7 @@ import { ENDPOINT } from "~/lib/models/endpoint"
 import {
   //
   assembleRetryStrategies,
+  getRetryStrategyRegistryDiagnostics,
   isStrategyEnabled,
   RETRY_STRATEGY_ORDER,
   RETRY_STRATEGY_REGISTRY,
@@ -201,6 +202,60 @@ describe("isStrategyEnabled", () => {
 
   test("enabled 省略（{}）→ true（只有显式 false 才禁用）", () => {
     expect(isStrategyEnabled({ network: {} }, "network")).toBe(true)
+  })
+})
+
+// ============================================================================
+// Registry diagnostics projection (Task 5 / RFC §3.5 — GET /api/config exposure)
+// ============================================================================
+
+describe("getRetryStrategyRegistryDiagnostics", () => {
+  test("returns exactly 16 entries, one per RETRY_STRATEGY_REGISTRY entry", () => {
+    const diag = getRetryStrategyRegistryDiagnostics(undefined)
+    expect(diag).toHaveLength(16)
+    expect(new Set(diag.map((d) => d.name))).toEqual(new Set(RETRY_STRATEGY_REGISTRY.map((e) => e.name)))
+  })
+
+  test("each entry projects name/configKey/order + a scope derived from appliesTo (not hardcoded)", () => {
+    const diag = getRetryStrategyRegistryDiagnostics(undefined)
+    const network = diag.find((d) => d.name === "network-retry")
+    expect(network).toEqual({ name: "network-retry", configKey: "network", order: RETRY_STRATEGY_ORDER.network, scope: "shared", enabled: true })
+
+    const serverToolRejection = diag.find((d) => d.name === "server-tool-rejection-retry")
+    expect(serverToolRejection).toEqual({
+      name: "server-tool-rejection-retry",
+      configKey: "serverToolRejection",
+      order: RETRY_STRATEGY_ORDER.serverToolRejection,
+      scope: "messages-only",
+      enabled: true,
+    })
+  })
+
+  test("scope is probed via appliesTo against representative contexts (messages vs cc-direct), not a hardcoded list — every anthropic-only entry reports messages-only, every shared entry reports shared", () => {
+    const diag = getRetryStrategyRegistryDiagnostics(undefined)
+    const sharedNames = new Set(["network-retry", "server-error-retry", "token-refresh"])
+    for (const entry of diag) {
+      if (sharedNames.has(entry.name)) expect(entry.scope).toBe("shared")
+      else expect(entry.scope).toBe("messages-only")
+    }
+  })
+
+  test("undefined config → every entry reports enabled:true (RFC §3.4 default-all-on)", () => {
+    const diag = getRetryStrategyRegistryDiagnostics(undefined)
+    expect(diag.every((d) => d.enabled)).toBe(true)
+  })
+
+  test("a disabled configKey reports enabled:false on that entry only", () => {
+    const diag = getRetryStrategyRegistryDiagnostics({ serverToolRejection: { enabled: false } })
+    const disabled = diag.find((d) => d.name === "server-tool-rejection-retry")
+    expect(disabled?.enabled).toBe(false)
+    expect(diag.filter((d) => !d.enabled)).toHaveLength(1)
+  })
+
+  test("results are ordered by declared assembly order (matches assembleRetryStrategies' sort)", () => {
+    const diag = getRetryStrategyRegistryDiagnostics(undefined)
+    const orders = diag.map((d) => d.order)
+    expect(orders).toEqual([...orders].sort((a, b) => a - b))
   })
 })
 

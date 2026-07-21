@@ -20,6 +20,11 @@ import {
 } from "~/lib/metrics-exposition"
 import {
   //
+  recordRetryStrategyFire,
+  resetRetryStrategyFiresForTests,
+} from "~/lib/observability/retry-strategy-fires"
+import {
+  //
   _resetRequestTelemetryForTests,
   _setRequestTelemetryFilePathForTests,
   recordAcceptedRequest,
@@ -120,10 +125,12 @@ describe("buildMetricsExposition (live registry)", () => {
     tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "metrics-test-"))
     _resetRequestTelemetryForTests()
     _setRequestTelemetryFilePathForTests(path.join(tempDir, "t.json"))
+    resetRetryStrategyFiresForTests()
   })
 
   afterEach(async () => {
     _resetRequestTelemetryForTests()
+    resetRetryStrategyFiresForTests()
     await fs.rm(tempDir, { recursive: true, force: true })
   })
 
@@ -158,6 +165,21 @@ describe("buildMetricsExposition (live registry)", () => {
 
   test("content-type is the Prometheus v0.0.4 exposition type", () => {
     expect(PROMETHEUS_CONTENT_TYPE).toBe("text/plain; version=0.0.4; charset=utf-8")
+  })
+
+  test("projects per-strategy retry-fire counts as a labelled counter family (RFC §3.5 / Task 5)", () => {
+    recordRetryStrategyFire("network-retry")
+    recordRetryStrategyFire("network-retry")
+    recordRetryStrategyFire("token-refresh")
+    const text = buildMetricsExposition()
+    expect(text).toContain("# TYPE copilot_api_retry_strategy_fires_total counter")
+    expect(text).toContain('copilot_api_retry_strategy_fires_total{strategy="network-retry"} 2')
+    expect(text).toContain('copilot_api_retry_strategy_fires_total{strategy="token-refresh"} 1')
+  })
+
+  test("retry-fire family is stably present (HELP/TYPE) even with zero fires", () => {
+    const text = buildMetricsExposition()
+    expect(text).toContain("# TYPE copilot_api_retry_strategy_fires_total counter")
   })
 
   test("emits standard Prometheus histograms (cumulative _bucket{le} + _sum + _count)", () => {

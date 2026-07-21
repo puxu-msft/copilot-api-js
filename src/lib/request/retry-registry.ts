@@ -339,3 +339,52 @@ export function assembleRetryStrategies(
       })
     })
 }
+
+// ============================================================================
+// Registry diagnostics (RFC §3.5 — "注册集（声明了哪些 + 各自 enabled 态）作诊断,
+// 经既有 pipelineInfo 通道或 GET /api/config 暴露声明态"; plan Task 5)
+// ============================================================================
+
+/** Representative `RetryStrategyContext` probes used to derive a declared entry's SCOPE from its
+ *  `appliesTo` gate rather than hardcoding a name→scope table (which would silently drift from the
+ *  registry — RFC §3.3's gate is the single source of truth for leg applicability). */
+const MESSAGES_PROBE_CTX: RetryStrategyContext = { clientFormat: "anthropic", targetEndpoint: ENDPOINT.MESSAGES }
+const CC_DIRECT_PROBE_CTX: RetryStrategyContext = { clientFormat: "openai-cc", targetEndpoint: ENDPOINT.CHAT_COMPLETIONS }
+
+/** One declared registry entry's diagnostic projection (name/configKey/order + derived scope + live enabled state). */
+export interface RetryStrategyDiagnosticEntry {
+  readonly name: string
+  readonly configKey: string
+  readonly order: number
+  /** Derived from `appliesTo` against the two representative probes above — `"shared"` = applies to
+   *  every leg (`appliesTo() === true` for both probes); `"messages-only"` = the 13 anthropic-only
+   *  400-class entries (RFC §3.3, gated `targetEndpoint===MESSAGES`, not `clientFormat`). */
+  readonly scope: "shared" | "messages-only"
+  /** Live `retry.strategies.<configKey>.enabled` state (RFC §3.4 — absent config/key ⇒ true). */
+  readonly enabled: boolean
+}
+
+/**
+ * Project the FULL declared registry (all 16 entries, regardless of `enabled` state) into a
+ * diagnostic view — "which strategies are declared + what's each one's live enabled state" (RFC
+ * §3.5's "注册集…作诊断"). Consumed by `GET /api/config` (`routes/config/route.ts`) as
+ * `retryStrategyRegistry`. Ordered by declared `order` (mirrors `assembleRetryStrategies`' sort) so a
+ * reader sees the same assembly-sort sequence the driver actually consumes.
+ *
+ * `scope` is PROBED via `appliesTo`, never hardcoded — a future entry whose `appliesTo` gate is wired
+ * wrong would otherwise silently mis-report here too (the same class of bug the golden guards against
+ * in the assembled stack).
+ */
+export function getRetryStrategyRegistryDiagnostics(
+  config: Record<string, { enabled?: boolean } | undefined> | undefined,
+): ReadonlyArray<RetryStrategyDiagnosticEntry> {
+  return [...RETRY_STRATEGY_REGISTRY]
+    .sort((a, b) => a.order - b.order)
+    .map((entry) => ({
+      name: entry.name,
+      configKey: entry.configKey,
+      order: entry.order,
+      scope: entry.appliesTo(MESSAGES_PROBE_CTX) && entry.appliesTo(CC_DIRECT_PROBE_CTX) ? "shared" : "messages-only",
+      enabled: isStrategyEnabled(config, entry.configKey),
+    }))
+}
