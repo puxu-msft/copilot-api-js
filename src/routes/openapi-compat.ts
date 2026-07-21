@@ -178,8 +178,15 @@ export function registerCompatPaths(registry: OpenAPIRegistry): void {
     method: "get",
     path: "/history/api/search",
     tags: historyTag,
-    summary: "Dedicated full-text search over the content-addressed index (5 facets: inbound / rewrites-req / rewrites-resp / req-headers / resp-headers)",
-    responses: ok200("Search results (partial while backfill runs)"),
+    summary: "Full-text search, forwarded to the independent history-search sidecar service (inbound facet only)",
+    description:
+      "Forwards to the out-of-process history-search sidecar (history-search-out-of-process plan) over a Unix domain socket. "
+      + "Only `source=inbound` (client-facing conversation + response) is currently served by the sidecar's Tantivy projection — "
+      + "the other 4 legacy facets (`rewrites-req`/`rewrites-resp`/`req-headers`/`resp-headers`) return `{rows:[],partial:true}` "
+      + "(unsupported, not zero matches; see docs/todo/deferred-backlog.md for what expanding them would require). "
+      + "The sidecar is an OPTIONAL, separately-started service (docs/deploy/history-search.service) — when it is not "
+      + "installed/running, `source=inbound` degrades the SAME way (`{rows:[],nextCursor:null,partial:true}`, HTTP 200, never a 500).",
+    responses: ok200("Search results ({partial:true} when the requested facet is unsupported or the sidecar is unreachable)"),
   })
   registry.registerPath({
     method: "get",

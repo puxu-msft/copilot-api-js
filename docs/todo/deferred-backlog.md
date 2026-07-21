@@ -2,6 +2,27 @@
 
 从记忆库降为引用层（2026-07-05）时归位的活 backlog。每条：现状 / 暂缓原因 / 若做需改什么。
 
+## history-search sidecar：其余 4 个 source facet 未接入（2026-07-21，history-search-out-of-process plan Phase 4 收窄）
+
+- **根因 / 现状**：REST `SearchSource` 有 5 facet（`inbound`/`rewrites-req`/`rewrites-resp`/`req-headers`/`resp-headers`，[types.ts:729](../../src/lib/history/types.ts#L729)），但独立 sidecar 的 Tantivy 投影（`projectSearchableText`，[v3/projection.ts](../../src/lib/history/v3/projection.ts)）**只索引客户端可见的对话 + 响应**（对应 `inbound`）——native schema（[lib.rs](../../native/history-search/src/lib.rs)）本身只有 `operation_id`/`operation_kind`/`content`/`created_at` 四个字段，没有 facet 维度，`rewrites-*`/`*-headers` 在退役前的嵌入式引擎里是**扁平的逐请求 SQL 列**（`req_aux` 表），从未进入 sidecar 的 schema。
+- **当前行为**：`GET /history/api/search?source=<非 inbound>` 一律返回 `{rows:[], nextCursor:null, partial:true}`——`partial` 在这里表示「该维度尚不支持」，不是「无匹配」也不是「sidecar 不可达」。
+- **理想架构 / 若做需改什么**：① 扩 Rust `schema()`（[lib.rs:33](../../native/history-search/src/lib.rs#L33)）新增至少一个额外 `TEXT` 字段承载扁平文本、或按 facet 建独立 Tantivy field 并在 `search_blocking` 加 facet 过滤子句；② sidecar 的 tail 投影（`daemon.ts`）需读取对应轨（`v3_tracks` 的 `effective-request`/`upstream-request`/`upstream-response` 等，见 [v3/store.ts:397](../../src/lib/history/v3/store.ts#L397) `collectTracks`）而非只读 `ingress`/`egress`；③ 客户端 wire `HistorySearchWireRequest`（[protocol.ts](../../src/lib/history/search/protocol.ts)）需带 `source`/facet 参数；④ 需要 bump Tantivy index 的 `FORMAT_MARKER`（[lib.rs:17](../../native/history-search/src/lib.rs#L17)）触发全量重建（schema 变更）。
+- **为何暂缓**：用户在 plan 制定阶段已明确签核「按既定‘只查对话和响应’收窄」（plan 文档「待用户签核的点」第 5 条），Phase 4 落地时只服务 `inbound`。**触发条件（值得做）**：出现「需要按 rewrites/headers 精确全文检索」的真实运维需求。发现方：history-search-out-of-process plan Phase 4 REST cutover（2026-07-21）。
+
+## history-search sidecar：/history/api/search 无分页（`nextCursor` 恒 `null`，2026-07-21，同上 plan Phase 4）
+
+- **根因 / 现状**：退役前的嵌入式搜索引擎用 `(started_at DESC, ownerKey ASC)` keyset 做稳定分页；独立 sidecar 的搜索是 Tantivy 的单次 `TopDocs::with_limit(limit).order_by_score()`（[lib.rs:118](../../native/history-search/src/lib.rs#L118)）——按 BM25 相关性打分排序，**没有可稳定翻页的游标**（分数不是单调递增的持久化键，两次调用间索引内容还可能变化）。
+- **当前行为**：`/history/api/search` 的响应恒 `nextCursor: null`——单页 top-N，`?limit=` 之外无法翻到「下一页」，只能调大 `limit` 重新查一次。
+- **理想架构 / 若做需改什么**：Tantivy 支持 `search_after`（游标式深分页，基于上一页最后一条的 `(score, doc_address)` 元组续查）——需要：① Rust 侧 `search_blocking` 增加一个可选的 `after` 参数并改用 `TopDocs::with_limit(limit).and_offset(...)` 或 `search_after` API；② wire 协议新增 cursor 字段的编解码；③ handler 侧把 `SearchResult.nextCursor` 编码这个 `(score, doc_address)` 元组（而非旧的 `(started_at, id)` 语义，两者不兼容，不能直接复用旧 cursor 编解码）。
+- **为何暂缓**：Phase 4 的验收标准只要求「单页 top-N 结果正确」，分页不是 gating 需求；相关性排序场景下，用户通常只关心排名前几的结果，深分页价值有限。**触发条件（值得做）**：出现「需要翻到搜索结果第 2/3 页」的真实使用场景。发现方：history-search-out-of-process plan Phase 4 REST cutover（2026-07-21）。
+
+## history-search sidecar：`searchContains`（hash→操作 id 反查）恒返回空（2026-07-21，同上 plan Phase 4）
+
+- **根因 / 现状**：`GET /history/api/search/contains?hash=` 是退役前嵌入式搜索的「懒加载 companion」——对 `v3_tracks.refs_json` 做 `LIKE '%hash%'` 反向扫描（提交 `8a67333b` 引入的 `containingV3OperationIds`，已随 sidecar 拆分退役），sidecar 的 Tantivy schema 完全没有携带这个反查所需的引用图数据。
+- **当前行为**：`searchContains()` 恒返回 `[]`，`/history/api/search/contains` 端点 200 但永远空数组。
+- **理想架构 / 若做需改什么**：若要恢复，需要 sidecar 侧单独维护一张 hash→operation_id 的反查索引（例如 SQLite 辅助表，随 tail 同步写入），或让主进程直接查 `v3_tracks` 表（该表在主进程侧仍可读，不需要经 sidecar——这条本质上不属于「全文搜索」范畴，更接近一个直接的 SQL 反查，可能不需要出 sidecar 就能做）。
+- **为何暂缓**：非 Phase 4 验收范围（plan 只要求 `handleSearch`/`handleSearchContains` 保持契约、`contains` 本就标注为 "compatibility surface"）；实现方式待定（sidecar vs 主进程直接查询）需要先决定架构方向。**触发条件（值得做）**：出现「需要反查某条消息内容被哪些请求引用」的真实使用场景。发现方：history-search-out-of-process plan Phase 4 REST cutover（2026-07-21）。
+
 ## Pre-existing e2e 缺陷（History V2 removal 合并 review 2026-07-19 surfaced，非本合并引入）
 
 在纯 `a387a6da`/`952c831f`（合并前 master）复现相同失败 → 确证 pre-existing、非 History V2 removal 引入。二者均 `.e2e.test.ts`、**不进 `test:backend` 默认门**（`bun test .unit.test .it.test .http.test` 显式排除 `.e2e.test.ts`），故全量 `bun test` 才暴露。
