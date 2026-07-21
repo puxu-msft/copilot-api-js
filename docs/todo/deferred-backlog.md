@@ -897,3 +897,15 @@
 - **当前行为**：单请求事后取证只能读散落日志 + 解 blob 反推，无「打开一条 entry 看全传输因果链」。
 - **理想架构 / 若做需改什么**：history 新增结构化字段（顶层 `transportTrace` 或 `attempts[].transport`，与 sseEvents 并列、遵 richest-data-flow），新字段「三处必改」见 skill `persistence-async-invariants`、schema 迁移见 `history-sqlite-schema`；/metrics 走遥测 registry 三支柱（skill `telemetry-architecture`）；ui-v4 详情加 Transport 时间线段。**须与 request-timing-instrumentation（2026-07-14 spec，owns TTFB/7 刻时序）协调字段边界**，避免重复 per-attempt 时序存储。**并入本片：把上游流终止归因从「各 pump 手动调共享 primitive」重构成「driver 单点发 `request.upstream_stream_disconnect` bus 事件 + sink」**——子项目 1 v1 曾拟的 C 架构，因 mid-stream 覆盖已工作、bus 化的真正受益方是本片的订阅需求（history/metrics 投影订阅同一事件），故折到这里、按真消费者设计事件 schema，而非在子项目 1 对可工作代码空转。
 - **为何暂缓**：依赖子项目 1/2 先产出事件源；是「沉淀 + 展示」层，落在采集之后。用户 2026-07-14 决定拆后做。**触发条件（值得做）**：子项目 1/2 的事件已产出、需持久化因果链 + fleet 指标 + UI 展示时。详细 surface 设计见 [upstream-transport-observability.md](upstream-transport-observability.md) §6。
+
+## retry 策略可插拔化 / 声明式 registry —— 入站侧剥离的下一独立项（2026-07-21 定为下一项）
+
+**背景**：「把更多功能从核心剥离成 hook/可插拔单元」的探索（spec `docs/spec/2026-07-20-async-request-rewrite-extraction.md`）盘点发现：请求/入站侧（system-prompt、preprocess）**本就基本已提取成 per-format 纯函数**、pipeline 响应侧已有 `rewrite-registry`；**真正「核心承担大量逻辑、尚未插件化」的最大一块是接缝② 的 16 个 reactive retry 策略**（`src/lib/request/strategies/*`：tool-field / server-tool / cache-control / unsupported-beta / context-management / adaptive-thinking / legacy-thinking / structured-outputs / deferred-tool / system-reject / web-search-not-found / effort-learning / network / server-error / token-refresh）。
+
+**根因（为何它不像 rewrite-registry 那样已插件化）**：retry 策略是**跨 attempt 决策**（判上游错误 → 改 body → 重试），与 `RequestRewrite`（单次 transform）/ `exchange` hook（包一次调用）形状根本不同；现由 codec cell `buildLegStrategies`（`cc-family-strategies.ts` 等）per-leg 组装，无统一声明式 registry / 无逐项开关 / 无统一可观测入口。
+
+**理想架构**：为 retry 策略引入声明式 registry（类似 `RESPONSE_REWRITE_ORDER` 的 named + order + appliesTo），或引入新的 retry-strategy hook 类型；须处理反应式学习状态（negotiation_learning TTL）、per-attempt 信号记录、body-shape baseline（Responses vs CC）等承重耦合。
+
+**为何暂缓**：用户 2026-07-21 决策 —— 先做入站侧薄增量（格式分发 hook），把 retry 可插拔化作为**下一个独立项**、另起 spec。这是最大价值、也最重（风险/工作量高）。
+
+**若做需改什么**：`src/lib/request/strategies/*`（16 策略）、`src/lib/codec/cc-family-strategies.ts` + 各 `*/strategies.ts` 的 `buildLegStrategies`、`src/lib/pipeline/cell-assembly.ts` 的 `n`/RetrySemanticsSpec、反应式学习生命周期（`negotiation_learning`）、per-attempt 信号记录（[[methodology-record-signals-at-committed-outcome-not-per-attempt]]）。先盘点 16 策略的共性接口再抽象，别过早统一。
