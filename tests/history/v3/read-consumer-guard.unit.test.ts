@@ -33,11 +33,17 @@ describe("History V3 read-consumer cutover guard", () => {
     }
   })
 
-  test("History search returns empty without reading embedded V2 or V3 indexes", () => {
+  test("History search forwards to the out-of-process sidecar, never reads embedded V2 or V3 indexes directly", () => {
     const search = source("src/lib/history/search.ts")
     expect(search).not.toMatch(/\.\/sqlite\/(?:search-query|meta|connection)/)
     expect(search).not.toMatch(/searchV3OperationIds|containingV3OperationIds|v3\/store/)
-    expect(search).toContain("return { rows: [], nextCursor: null, partial: false }")
+    // Phase 4 cutover (history-search-out-of-process plan): search now forwards
+    // through the sidecar's UDS client rather than returning a hardcoded empty
+    // result — but it still never reaches into an embedded V2/V3 search index
+    // directly (the two `not.toMatch` assertions above), only the sidecar's
+    // never-throw client + the standard `getSummary` History facade.
+    expect(search).toContain("getHistorySearchClient")
+    expect(search).toContain("getSummary")
 
     const state = source("src/lib/history/state.ts")
     expect(state).not.toMatch(/runCalibrationBackfill|runSearchIndexBackfill|runLegacyStageBackfill|runUsageNormalizeBackfill/)

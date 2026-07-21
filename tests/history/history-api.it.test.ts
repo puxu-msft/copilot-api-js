@@ -9,6 +9,7 @@
 import {
   //
   afterEach,
+  beforeAll,
   beforeEach,
   describe,
   expect,
@@ -41,6 +42,13 @@ import {
 } from "~/routes/history/handler"
 
 import { commitV3HistoryEntry } from "../helpers/history-v3-fixtures"
+import { primeUdsConnectForBunTest } from "../helpers/prime-uds-for-bun-test"
+
+// See prime-uds-for-bun-test.ts's doc comment: `handleSearch` (Phase 4 cutover)
+// now calls the sidecar's UDS client, whose FIRST-EVER connect attempt in this
+// file (against a socket path with no sidecar listening, the common case here)
+// is exactly the `bun test`-only scenario that needs priming.
+beforeAll(primeUdsConnectForBunTest)
 
 // ─── Test app ───
 
@@ -378,15 +386,27 @@ describe("GET /api/export", () => {
   })
 })
 
-describe("retired embedded search surface", () => {
-  test("keeps the compatibility contract but returns empty data", async () => {
+describe("search endpoint: sidecar-forwarded contract (no sidecar reachable in this test's environment)", () => {
+  test("degrades to an empty, partial result when the sidecar is unreachable — 200, never 500, never a crash", async () => {
+    // See tests/history/search/search-rest-cutover.it.test.ts for the REAL,
+    // end-to-end sidecar-reachable path (a genuine UDS server on a temp
+    // socket) — this file's fixture never points PATHS.HISTORY_SEARCH_SOCKET
+    // at a real listener, so this exercises the "sidecar not installed/
+    // running" degrade path, which is the common production case for an
+    // operator who has not set up the optional service (docs/deploy/).
     const search = await get("/api/search?source=inbound&q=needle")
     expect(search.status).toBe(200)
-    expect(await json<{ rows: Array<unknown>; partial: boolean }>(search)).toMatchObject({ rows: [], partial: false })
+    expect(await json<{ rows: Array<unknown>; partial: boolean }>(search)).toMatchObject({ rows: [], partial: true })
 
     const contains = await get("/api/search/contains?hash=deadbeef")
     expect(contains.status).toBe(200)
     expect(await json<{ hash: string; reqIds: Array<string> }>(contains)).toEqual({ hash: "deadbeef", reqIds: [] })
+  })
+
+  test("a facet other than inbound always returns empty + partial, even if it were reachable", async () => {
+    const search = await get("/api/search?source=rewrites-req&q=needle")
+    expect(search.status).toBe(200)
+    expect(await json<{ rows: Array<unknown>; partial: boolean }>(search)).toMatchObject({ rows: [], partial: true })
   })
 })
 
