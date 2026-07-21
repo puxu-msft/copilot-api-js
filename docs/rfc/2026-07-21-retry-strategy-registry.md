@@ -39,8 +39,17 @@ interface RetryStrategyEntry {
 }
 ```
 
-- **`RetryStrategyContext`**：`{ clientFormat, targetEndpoint }`（appliesTo 据此门控——shared 三个 return true 全 leg;anthropic-only return `targetEndpoint===MESSAGES`）。
-- **`RetryStrategyDeps`**：现有 per-request 闭包并集 `{ attemptRef, originalPayload, resanitize, model, maxRetries, betaProbe }`（现在散在三个 `buildXxxStrategies` 的 deps 里，统一成一个 bundle）。
+- **`RetryStrategyContext`**：`{ clientFormat, targetEndpoint }`（appliesTo 据此门控——shared 三个 return true 全 leg;anthropic-only return `targetEndpoint === ENDPOINT.MESSAGES`，**不是** `clientFormat === "anthropic"`，见 §3.3 承重说明）。
+- **`RetryStrategyDeps`**（评审 HIGH 修正——deps 现状**异构**，不能扁平必填并集）：现状 `AnthropicStrategiesDeps`（[anthropic/strategies.ts:73](../../src/lib/codec/anthropic/strategies.ts#L73)）**必填** `resanitize: AnthropicSanitizeFn` + `betaProbe: BetaProbe`;而 `OpenAiCcStrategiesDeps`/`OpenAiResponsesStrategiesDeps`（[openai-cc/strategies.ts:24](../../src/lib/codec/openai-cc/strategies.ts#L24)）**根本没有**这两字段（cc-family 装配入口零持有）。故 bundle 为：
+  ```ts
+  interface RetryStrategyDeps {
+    attemptRef: AttemptRef; originalPayload: unknown; model: Model | undefined; maxRetries: number
+    betaProbe?: BetaProbe          // 仅 @messages 腿 populate
+    resanitize?: AnthropicSanitizeFn  // 仅 @messages 腿 populate
+    label?: string                 // cc/responses 日志标签
+  }
+  ```
+  **承重不变量**（消除「optional 降级成静默运行时假设」的隐患）：需要 `betaProbe`/`resanitize` 的 entry **全部** `appliesTo: targetEndpoint===MESSAGES`，而这 4 个 @messages 腿（direct + 3 reverse，§3.3）的 `RequestState.betaProbe`/`resanitize` **恒被 populate**（[request-state.ts](../../src/lib/pipeline/request-state.ts)）——故「entry 需要 ⟺ appliesTo 门到 @messages ⟺ 该腿必有」三者同真。消费点用**显式 `throwMissing`**（对齐既有 [anthropic-cell.ts:64](../../src/lib/codec/anthropic/anthropic-cell.ts#L64) 的 `throwMissing` 模式）断言而非 `?? []` 静默兜底（守 `never-swallow-errors`）：`(deps.betaProbe ?? throwMissing("betaProbe")).getCandidates()`。这样 appliesTo/config 门控若写错，是**大声抛错**非静默失灵。（备选:按 entry 分组的可辨识 deps 类型保编译期不变量——更强类型安全但更复杂，本不变量成立故取 throwMissing 简洁式;若日后 betaProbe populate 条件与 appliesTo 脱钩再升级。）
 - **payload vs native**：`create` 返回二者之一;registry 元数据标 `kind: "payload" | "env"`（assembler 对 payload kind 套 `adaptPayloadStrategy`、native 直用）。承接现状（poisoned-thinking 是 native、读 `env.ctx`）。
 
 ### 3.2 assembler（替换三个 buildXxxStrategies）
@@ -58,26 +67,28 @@ function assembleRetryStrategies(ctx, deps, config): ReadonlyArray<EnvRetryStrat
 
 ### 3.3 声明 order（编码现状 defense-in-depth）
 
+**承重（评审 MEDIUM1）**：下表 `appliesTo` 列的谓词是 **`targetEndpoint === ENDPOINT.MESSAGES`**，**不是** `clientFormat === "anthropic"`。现状 `buildAnthropicStrategies`（16 策略全集）服务 **4 个 @messages cell**：anthropic direct + **cc/responses/gemini 三条 REVERSE `@messages` 腿**（[cell-assembly.ts:114/122/131/138](../../src/lib/pipeline/cell-assembly.ts#L114) + `MIGRATED_CELLS` [:253-256](../../src/lib/pipeline/cell-assembly.ts#L253)，均经 `anthropicMessagesLeg.buildLegStrategies`）。若实现照「anthropic」字面写成 `clientFormat==="anthropic"`，会让 cc→messages/responses→messages/gemini→messages 三腿**静默丢失全部 13 个 400-class 策略**——golden 只锁 direct 一条会放过它。故 **appliesTo 用 targetEndpoint、golden 覆盖全 4 个 @messages cell（§7）**。
+
 单一 `RETRY_STRATEGY_ORDER` 常量（仿 `RESPONSE_REWRITE_ORDER`）。按现状 anthropic 数组序赋值，shared 取最低段：
 
-| order | strategy | appliesTo | configKey |
+| order | strategy | appliesTo（谓词） | configKey |
 |---|---|---|---|
-| 100 | network-retry | all | network |
-| 200 | server-error-retry | all | serverError |
-| 300 | token-refresh | all | tokenRefresh |
-| 400 | effort-learning | anthropic | effortLearning |
-| 410 | tool-field-rejection | anthropic | toolFieldRejection |
-| 420 | body-field-rejection | anthropic | bodyFieldRejection |
-| 430 | cache-control-subfield-rejection | anthropic | cacheControlSubfield |
-| 440 | legacy-thinking | anthropic | legacyThinking |
-| 450 | adaptive-thinking-rejection | anthropic | adaptiveThinkingRejection |
-| 460 | poisoned-thinking（native） | anthropic | poisonedThinking |
-| 470 | unsupported-beta | anthropic | unsupportedBeta |
-| 480 | server-tool-rejection | anthropic | serverToolRejection |
-| 490 | structured-outputs-rejection | anthropic | structuredOutputsRejection |
-| 500 | system-reject | anthropic | systemReject |
-| 510 | web-search-not-found | anthropic | webSearchNotFound |
-| 520 | deferred-tool | anthropic | deferredTool |
+| 100 | network-retry | 全 leg | network |
+| 200 | server-error-retry | 全 leg | serverError |
+| 300 | token-refresh | 全 leg | tokenRefresh |
+| 400 | effort-learning | targetEndpoint===MESSAGES | effortLearning |
+| 410 | tool-field-rejection | targetEndpoint===MESSAGES | toolFieldRejection |
+| 420 | body-field-rejection | targetEndpoint===MESSAGES | bodyFieldRejection |
+| 430 | cache-control-subfield-rejection | targetEndpoint===MESSAGES | cacheControlSubfield |
+| 440 | legacy-thinking | targetEndpoint===MESSAGES | legacyThinking |
+| 450 | adaptive-thinking-rejection | targetEndpoint===MESSAGES | adaptiveThinkingRejection |
+| 460 | poisoned-thinking（native） | targetEndpoint===MESSAGES | poisonedThinking |
+| 470 | unsupported-beta | targetEndpoint===MESSAGES | unsupportedBeta |
+| 480 | server-tool-rejection | targetEndpoint===MESSAGES | serverToolRejection |
+| 490 | structured-outputs-rejection | targetEndpoint===MESSAGES | structuredOutputsRejection |
+| 500 | system-reject | targetEndpoint===MESSAGES | systemReject |
+| 510 | web-search-not-found | targetEndpoint===MESSAGES | webSearchNotFound |
+| 520 | deferred-tool | targetEndpoint===MESSAGES | deferredTool |
 
 410/420/430 的 10-step 间距 = defense-in-depth（tool-field < body-field < cache-control）显式编码。golden 锁每 leg 组装出的 `name[]` 顺序。
 
@@ -94,6 +105,20 @@ retry:
 - **默认全开**——`isStrategyEnabled` 缺省 true，保字节等价（未配 = 现状 16 策略全在）。
 - **allow + warn**（用户决策 2）——禁用被依赖的策略（如 token-refresh）允许,但启动/reload 时 `consola.warn` 提示潜在后果（internal-tool 姿态，绝不阻塞）。
 - schema：`retry.strategies` 是 `Record<configKey, {enabled?:boolean}>`,strict、未知键报错（防拼写静默失效）。
+
+#### 3.4a 与既有 `error_selfheal_delegate`（D-class）的关系（评审 MEDIUM2）
+
+**已存在第二套「按策略名关闭」开关**，本 RFC 必须显式记录二者关系（否则违背目标②④「统一开关/可观测」）：`state.errorSelfhealDelegate`（config `error_selfheal_delegate`，[schema.ts:596](../../src/lib/config/schema.ts#L596)，`Record<name, "proxy"|"delegate">`）经 `filterDelegatedStrategies`（[error-shaping.ts:461](../../src/lib/anthropic/error-shaping.ts#L461)，[anthropic-cell.ts:172](../../src/lib/codec/anthropic/anthropic-cell.ts#L172)）把标 `delegate` 的策略 `canHandle` 强制改写为恒 `false`（策略仍在数组、只是永不触发），**仅在 `errorShapingEnabled` 时对 direct anthropic `/v1/messages` 腿生效**。
+
+| 维度 | `retry.strategies.<configKey>.enabled=false`（本 RFC 新增） | `error_selfheal_delegate.<name>="delegate"`（既有 D-class） |
+|---|---|---|
+| 键 | `configKey`（短驼峰，如 `adaptiveThinkingRejection`） | 策略 `.name`（全称 kebab，如 `adaptive-thinking-rejection-retry`） |
+| 机制 | assembler `filter` 阶段**移除** entry（`create` 不调用） | 保留实例、`canHandle` 恒 false（透传给客户端自愈） |
+| 生效范围 | **全部 leg** | **仅 direct anthropic + errorShapingEnabled** |
+| 语义 | 彻底移除该反应式净 | 该策略「本会修的 400」透传给下游客户端自己处理 |
+
+**叠加顺序（显式定义，防隐式）**：`retry.strategies` 的 filter 在 assembler 内、**早于** `filterDelegatedStrategies`（后者在 `anthropic-cell.ts:172` 对已装配数组再过一道）。故若某策略两处都关，`retry.strategies` 先移除、`filterDelegatedStrategies` 根本看不到它——无冲突、幂等。**本 RFC 不合并两者**（D-class 的「透传自愈」语义 ≠ enabled 的「彻底移除」，是正交能力）;二者统一/收敛到单一开关面列 **§8 backlog**。可观测面（§3.5）须同时反映两套的生效态,避免用户「关了却没关掉」困惑。
+
 
 ### 3.5 可观测（history + metrics，用户决策 3）
 
@@ -112,7 +137,7 @@ shared 三策略在 registry 声明**一次**（`appliesTo: () => true`）;anthr
 
 **Commit invariant（全程）**：每 commit 结束时，三个 leg 经 `cell.n(env)` 产出的策略数组**与现状字节等价**（golden 锁），driver 消费契约不变。中间态绝不半坏。
 
-- **Commit 1**：golden 预捕——`tests/pipeline/retry-strategy-assembly.golden.it.test.ts` 锁三 leg（anthropic/cc/responses）当前组装出的 `name[]` 顺序 + 每策略 canHandle 对代表性 error 的判定。**在改动前的 HEAD 上跑通**（锁定现状）。
+- **Commit 1**：golden 预捕——`tests/pipeline/retry-strategy-assembly.golden.it.test.ts` 锁**全部 6 个 cell** 当前组装出的 `name[]` 顺序 + 每策略 canHandle 对代表性 error 的判定：`anthropic|MESSAGES`（direct，16）+ **3 条 reverse `@messages`**（`openai-cc|MESSAGES`/`openai-responses|MESSAGES`/`gemini|MESSAGES`，各 16，评审 MEDIUM1）+ `openai-cc|<direct>` + `openai-responses|<direct>`（各 3）。**在改动前的 HEAD 上跑通**（锁定现状）。若只锁 direct 会放过「reverse 腿丢 13 策略」的实现缺陷。
 - **Commit 2**：加 `retry-registry.ts`（契约 + order 常量 + 声明集 + assembler），**不接线**（纯新增、零消费者）。单测 assembler filter/sort/appliesTo。
 - **Commit 3**：三个 `buildXxxStrategies` 改为委托 `assembleRetryStrategies`（default config = 全开）。golden（commit 1）**必须仍逐字节通过** = 字节等价证明。
 - **Commit 4**：config `retry.strategies` schema + `isStrategyEnabled` + allow+warn。测试禁用某策略 → 组装集少它 + warn;默认全开 golden 仍过。
@@ -142,6 +167,7 @@ shared 三策略在 registry 声明**一次**（`appliesTo: () => true`）;anthr
 - **order 用户可调**（决策 1：只 enabled）。
 - **策略逻辑本身改动**（matcher/修法/学习）——纯搬装配层,策略实现零改。
 - **payload↔env adapter 重写**——复用现有 `adaptPayloadStrategy`。
+- **`error_selfheal_delegate`（D-class）与 `retry.strategies.enabled` 统一到单一开关面**（§3.4a 记二者并存 + 叠加顺序）→ backlog（正交能力，本次只并存 + 文档化，不收敛）。
 
 ## 9. Open Questions（用户已答，记录）
 
