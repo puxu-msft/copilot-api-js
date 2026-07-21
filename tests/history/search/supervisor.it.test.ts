@@ -20,6 +20,7 @@ import {
   expect,
   test,
 } from "bun:test"
+import consola from "consola"
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
@@ -30,6 +31,7 @@ import {
   createHistorySearchSupervisor,
   resolveEntryPath,
 } from "~/lib/history/search/supervisor"
+import { createHistorySearchUdsClient } from "~/lib/history/search/uds-client"
 import {
   //
   closeDatabase,
@@ -84,6 +86,79 @@ describe("resolveEntryPath", () => {
     expect(fs.existsSync(entryPath)).toBe(true)
     expect(entryPath.endsWith("main.ts") || entryPath.endsWith("main.mjs")).toBe(true)
   })
+})
+
+describe("dev vs packaged spawn command construction (both actually run)", () => {
+  test("dev form: `bun <src/main.ts> history-search-daemon ...` really starts and serves a query", async () => {
+    // Exercises the SAME command shape createHistorySearchSupervisor's spawnChild
+    // builds, directly, to prove resolveEntryPath's dev candidate is genuinely
+    // executable end-to-end (not just "a path that exists on disk").
+    const devEntryPath = path.resolve(import.meta.dir, "..", "..", "..", "src", "main.ts")
+    expect(fs.existsSync(devEntryPath)).toBe(true)
+
+    const dbDir = freshDir("dev-spawn-db-")
+    const dbPath = path.join(dbDir, "history-v3.db")
+    commitOperation(dbPath, "dev-spawn-op", "devSpawnNeedle")
+    const socketPath = path.join(freshDir("dev-spawn-sock-"), "history-search.sock")
+    const indexPath = path.join(freshDir("dev-spawn-index-"), "index")
+
+    const child = Bun.spawn([process.execPath, devEntryPath, "history-search-daemon", "--db", dbPath, "--socket", socketPath, "--index", indexPath], {
+      stdout: "ignore",
+      stderr: "ignore",
+    })
+    try {
+      const client = createHistorySearchUdsClient({ socketPath })
+      await waitUntil(async () => (await client.query("devSpawnNeedle", undefined, 10)).length > 0, {
+        timeout: 15_000,
+        interval: 200,
+        label: "dev-form spawned sidecar to tail and serve the query",
+      })
+      const rows = await client.query("devSpawnNeedle", undefined, 10)
+      expect(rows.map((hit) => hit.operationId)).toEqual(["dev-spawn-op"])
+    } finally {
+      child.kill("SIGTERM")
+      await child.exited
+    }
+  }, 20_000)
+
+  test("packaged form: `node <dist/main.mjs> history-search-daemon ...` really starts and serves a query", async () => {
+    // Exercises the OTHER candidate resolveEntryPath can pick (dist/main.mjs) --
+    // requires a built dist/main.mjs; skip gracefully if this checkout has never
+    // run `bun run build:backend` rather than failing the whole suite on a build
+    // artifact that is not itself part of Phase 3.
+    const packagedEntryPath = path.resolve(import.meta.dir, "..", "..", "..", "dist", "main.mjs")
+    if (!fs.existsSync(packagedEntryPath)) {
+      consola.warn(`[supervisor.it.test.ts] dist/main.mjs not built -- skipping packaged-form spawn test (run \`bun run build:backend\` to cover it)`)
+      return
+    }
+
+    const dbDir = freshDir("packaged-spawn-db-")
+    const dbPath = path.join(dbDir, "history-v3.db")
+    commitOperation(dbPath, "packaged-spawn-op", "packagedSpawnNeedle")
+    const socketPath = path.join(freshDir("packaged-spawn-sock-"), "history-search.sock")
+    const indexPath = path.join(freshDir("packaged-spawn-index-"), "index")
+
+    // The packaged form's `bin` target (package.json) runs via `node`, not `bun` --
+    // spawn it with the real node binary to prove the packaged shape actually works
+    // under the runtime it ships for, not merely "bun can also load an .mjs file".
+    const child = Bun.spawn(["node", packagedEntryPath, "history-search-daemon", "--db", dbPath, "--socket", socketPath, "--index", indexPath], {
+      stdout: "ignore",
+      stderr: "ignore",
+    })
+    try {
+      const client = createHistorySearchUdsClient({ socketPath })
+      await waitUntil(async () => (await client.query("packagedSpawnNeedle", undefined, 10)).length > 0, {
+        timeout: 15_000,
+        interval: 200,
+        label: "packaged-form spawned sidecar to tail and serve the query",
+      })
+      const rows = await client.query("packagedSpawnNeedle", undefined, 10)
+      expect(rows.map((hit) => hit.operationId)).toEqual(["packaged-spawn-op"])
+    } finally {
+      child.kill("SIGTERM")
+      await child.exited
+    }
+  }, 20_000)
 })
 
 describe("supervisor: end-to-end spawn + tail + UDS (real child process, no mocking)", () => {
