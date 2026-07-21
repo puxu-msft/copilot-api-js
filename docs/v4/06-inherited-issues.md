@@ -122,6 +122,19 @@ v4 P0-P3 + Stage A/B 全部完成后，逐项实测 A/B 类"预期 v4 会解决"
 - **DI-13** ✅ **修**：`clearInFlight` 一并重置 `summaryTextCache` WeakMap（`let` 化），测试隔离显式确定。
 - **DI-4** ✅ **被 History V3 顺带解决**（核对发现）：`finalizeEntry` 已不存在，被 `v3/store.ts:604 commitPreparedOperation` 取代——它显式返回 `"inserted" | "idempotent"`（内容寻址 revision+digest 比对），正是 DI-4 想要的**判别式幂等契约**，比原建议更强。又一个"预期≠实测"的正向例（V3 重构顺带闭合了它）。
 
+**剩余 backlog 决策（2026-07-21，用户拍板）**：
+- **DI-8** ✅ **补测**（commit `e97f535f`）：codec.parse 下 originalRequest.model=URL deployment（Azure 权威）+ body 原值保留在 payload snapshot（richest-data-flow 满足，**疑点证伪、非 bug**）；responses codec parse 同构（`openai-responses/codec.ts:422`），冗余不另测。
+- **DI-5** ▶ **做**（进行中）：唯一"真实缺陷+方案就绪"三合一——持久化失败 entry 永久丢失、方案已定（append-only NDJSON + 启动重放）；用户要求**加相关配置项**。
+- **DI-10** ▶ **做**（进行中）：用户方向 = **空消息 sanitize 移入 hook、由配置决定**（不硬编码删/保 turn），统一两管线哲学。
+- **DI-2** ⏸ 长期最优的观测前提：先加 vision payload（4-20MB）clone 性能基线，**数据证实是热点再优化**。
+- **DI-3** ⏸ **绑定 DI-2 之后**：immutable-transform 能省 driver per-stage clone（`driver.ts:391`），但 history originalSnapshot clone 是 richest-data-flow 硬需求省不掉；性能收益幅度未知、待 DI-2 基线数据，别盲目优化。
+- **DI-14** ⏹ **闭合·不修（刻意设计）**：prefix fingerprint 是刻意启发式（sanitize 改内容→完整比较反 false-negative）、仅诊断映射、错时安全 fallback；改 hash 收益极小还可能引 false-negative。
+- **DI-1** ⏹ **闭合·不修（锦上添花）**：clone 隔离已缓解 mutate 症状，DeepReadonly 成本高（几十处 cast 失败）收益低。
+
+---
+
+（下方为历史，2026-07-21 前）
+
 **剩余 backlog**（需决策或较大工程）：
 - **DI-14**：prefix fingerprint 是**刻意启发式**（sanitize 会改内容，完整比较反而 false-negative），且仅用于 history 诊断映射（错时 fallback，低危）——不能反射式改，需先懂 buildMessageMapping 消费者再定。
 - **DI-10**：空消息"删除 vs 保 turn"两哲学统一——**改客户端可观测行为**，需用户定夺方向。
