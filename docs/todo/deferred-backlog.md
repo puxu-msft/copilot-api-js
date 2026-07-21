@@ -909,3 +909,15 @@
 **为何暂缓**：用户 2026-07-21 决策 —— 先做入站侧薄增量（格式分发 hook），把 retry 可插拔化作为**下一个独立项**、另起 spec。这是最大价值、也最重（风险/工作量高）。
 
 **若做需改什么**：`src/lib/request/strategies/*`（16 策略）、`src/lib/codec/cc-family-strategies.ts` + 各 `*/strategies.ts` 的 `buildLegStrategies`、`src/lib/pipeline/cell-assembly.ts` 的 `n`/RetrySemanticsSpec、反应式学习生命周期（`negotiation_learning`）、per-attempt 信号记录（[[methodology-record-signals-at-committed-outcome-not-per-attempt]]）。先盘点 16 策略的共性接口再抽象，别过早统一。
+
+## anthropic route 无条件 config reload（sanitizeToolNames 新鲜度对齐 CC）—— 实测后延后（2026-07-21）
+
+**根因**：`src/routes/messages/handler-v4.ts` 的 config reload 是 `if(payload.system) await applyConfigToState()`——**system-less anthropic 请求永不 reload**，parse 阶段读的 `state.sanitizeToolNames`（`codec.ts` → `tool-name-sanitize.ts:41`）可能陈旧一拍。CC 路由（`chat-completions/handler-v4.ts:169`）是**无条件** reload，无此不对称。
+
+**当前行为**：system-less anthropic 请求的 tool-name sanitize 用上一拍 config 态（实践中 config 极少热改，影响小；但语义上是既有 freshness 隐患）。
+
+**理想架构**：route reload 改无条件、对齐 CC。
+
+**实测爆炸半径（为何延后）**：改无条件后 `bun test tests/anthropic tests/config tests/routes` **打爆 20+ 测试**（immediate-keepalive / keepalive buffered-anchor / L2 buffered-retry / live-pump 等），revert 后同套件 2150 pass/0 fail、归因确证。根因：大量 keepalive/buffered-retry 测试**直接设 `state`（非 config 文件）**，每请求无条件 reload 冲掉其 setup。硬修需把这 20+ 测试逐个迁成 config-file-driven（对齐 CC 路由做法）——与「入站 system-prompt 分发 hook」主体不成比例、tangential 高风险。该不对称是**既有状况**、非分发 hook 引入，故独立延后。
+
+**若做需改什么**：`handler-v4.ts:341` 去 `if(payload.system)` 条件；把受影响的 ~20 个 keepalive/buffered-retry/live-pump 测试从「直接改 `state`」迁成「config 文件驱动」（`useIsolatedRuntime` + config fixture，对齐 CC 路由既有测试）。先枚举全受影响测试再动。关联 spec `docs/spec/2026-07-20-inbound-system-prompt-dispatch-hook.md` §3.3。

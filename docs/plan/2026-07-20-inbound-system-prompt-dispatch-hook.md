@@ -220,7 +220,9 @@ git commit -m "refactor(codec): route anthropic/cc/responses translateInbound th
 
 ---
 
-### Task 3: config-freshness — route reload 改无条件（修既有隐患）
+### Task 3: config-freshness — route reload 改无条件（修既有隐患）—— ⏸ **DEFER（实施期实测）**
+
+> **实施状态（2026-07-21）**：**已延后，未实施**。实测改无条件 reload 打爆 20+ keepalive/buffered-retry/live-pump 测试（它们直接设 `state` 非 config 文件），revert 后 2150 pass/0 fail 归因确证。该 freshness 不对称是既有状况、非分发 hook 引入,爆炸半径与主体不成比例——按 spec §3.3 逃生口独立延后，记 `docs/todo/deferred-backlog.md`「anthropic route 无条件 config reload」节。下方原步骤保留作未来独立项参考。
 
 > 独立于分发 hook（spec §3.3）。现状 `if(payload.system) await applyConfigToState()` 顺带保 parse 阶段 `sanitizeToolNames` 新鲜度；改无条件对齐 CC 路由。
 
