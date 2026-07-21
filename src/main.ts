@@ -9,6 +9,7 @@ import consola from "consola"
 
 import { login } from "./auth"
 import { debug } from "./debug"
+import { historySearchDaemonCommand } from "./lib/history/search/daemon-entry"
 import { listClaudeCode } from "./list-claude-code"
 import { logout } from "./logout"
 import { setupClaudeCode } from "./setup-claude-code"
@@ -44,6 +45,12 @@ const main = defineCommand({
     "list-claude-code": listClaudeCode,
     "setup-claude-code": setupClaudeCode,
     "setup-codex": setupCodex,
+    // Hidden — no `meta.description`, so it never appears in --help's rendered
+    // command list. This is the history-search sidecar's own process entry
+    // point (history-search-out-of-process plan Phase 3); it exists solely as
+    // src/lib/history/search/supervisor.ts's spawn target, not for direct
+    // operator invocation.
+    "history-search-daemon": historySearchDaemonCommand,
   },
 })
 
