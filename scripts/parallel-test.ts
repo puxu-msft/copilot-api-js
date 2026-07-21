@@ -119,10 +119,10 @@ const buckets = balance(files, timings, n)
 const start = performance.now()
 const procs = buckets.map((b) => Bun.spawn(["bun", "test", ...b], { cwd: REPO_ROOT, stdout: "pipe", stderr: "pipe" }))
 const results = await Promise.all(
-  procs.map(async (p) => ({
+  procs.map(async (p, i) => ({
+    bucket: buckets[i],
     code: await p.exited,
-    out: await new Response(p.stdout).text(),
-    err: await new Response(p.stderr).text(),
+    err: (await new Response(p.stderr).text()) + (await new Response(p.stdout).text()),
   })),
 )
 const wall = ((performance.now() - start) / 1000).toFixed(2)
@@ -130,6 +130,20 @@ const wall = ((performance.now() - start) / 1000).toFixed(2)
 // Surface failures verbatim (bun writes the summary + failing assertions to stderr).
 const failed = results.filter((r) => r.code !== 0)
 for (const r of failed) process.stderr.write(r.err)
+
+// A shard that exited nonzero but printed no `N fail` summary died mid-run (crash / OOM /
+// process.exit / a load-time throw) — its bucket-mates' real pass/fail were never reported,
+// so a genuine assertion failure could hide behind a "crash". Re-run each crashed bucket
+// with `--isolate` (one process per file) to pinpoint the culprit and recover the rest —
+// closes the diagnosability gap without slowing the happy path (only runs on a crash).
+const crashed = results.filter((r) => r.code !== 0 && !/\d+ fail\b/.test(r.err))
+for (const r of crashed) {
+  process.stderr.write(
+    `\n[parallel-test] shard crashed (exit ${r.code}) mid-bucket — re-running its ${r.bucket.length} files isolated to pinpoint:\n  ${r.bucket.join("\n  ")}\n`,
+  )
+  const rerun = Bun.spawnSync(["bun", "test", "--isolate", ...r.bucket], { cwd: REPO_ROOT, stdout: "inherit", stderr: "inherit" })
+  if (rerun.exitCode !== 0) process.stderr.write(`[parallel-test] isolated re-run of crashed bucket exited ${rerun.exitCode}\n`)
+}
 
 // Aggregate the per-shard pass/fail tallies. `tests` is derived from pass+fail so it
 // can never disagree with them (bun prints pass/fail on their own lines per shard).
@@ -140,12 +154,8 @@ for (const r of results) {
   for (const m of r.err.matchAll(/^\s*(\d+) fail\b/gm)) failSum += Number(m[1])
 }
 
-// Belt-and-suspenders: a nonzero exit with zero parsed fails means a shard died before
-// printing its summary (crash/timeout/OOM) — surface it rather than reporting a false green.
-const crashedShards = results.filter((r) => r.code !== 0 && !/\d+ fail/.test(r.err)).length
-
 console.error(
   `\n[parallel-test] ${buckets.length} shards · ${passSum + failSum} tests · `
-    + `${passSum} pass · ${failSum} fail${crashedShards ? ` · ${crashedShards} shard(s) crashed` : ""} · ${wall}s`,
+    + `${passSum} pass · ${failSum} fail${crashed.length > 0 ? ` · ${crashed.length} shard(s) crashed (see isolated re-run above)` : ""} · ${wall}s`,
 )
 process.exit(failed.length > 0 ? 1 : 0)
