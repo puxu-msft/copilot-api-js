@@ -1,11 +1,13 @@
 /**
  * History-search out-of-process plan (docs/plan/2026-07-21-history-search-out-of-process.md)
- * Phase 3 — the sidecar PROCESS ENTRY POINT. This is what `supervisor.ts` spawns
- * (`<execPath> <entryPath> history-search-daemon --db ... --socket ... --index ...`)
- * as its own OS process, hidden behind an undocumented citty sub-command (no
- * `description`, so it never shows in `--help`'s command list) — an operator is
- * not meant to invoke this directly; it exists purely as the supervisor's spawn
- * target.
+ * Phase 3′ — the sidecar's process entry point AND its own first-class, operator-
+ * facing service command (`history-search-daemon`). Unlike the retired Phase 3
+ * design, this is NOT a hidden spawn target for a main-process supervisor — the
+ * 2026-07-21 architecture revision (see the plan doc's header) made the sidecar a
+ * genuinely INDEPENDENT, separately-started service (systemd `Restart=on-failure`,
+ * or any other process manager, or a bare foreground run) with no parent process
+ * of its own. An operator runs it directly, typically via systemd
+ * (docs/deploy/history-search.service).
  *
  * Runs the full sidecar lifecycle in THIS process, deliberately isolated from
  * the main server process:
@@ -15,18 +17,27 @@
  *       -> close UDS server, unlinking the socket file)
  *
  * A native Tantivy `abort()` (a Rust panic that unwinds through the N-API
- * boundary) cannot be caught by ANY JS try/catch or process signal handler —
+ * boundary) cannot be caught by ANY JS try/catch or process signal handler --
  * this is the exact failure mode the whole out-of-process design exists to
- * contain. This module's own crash-safety code only protects against
- * ordinary JS-level failures (a thrown search error, a socket reset); the
- * native-abort case is handled ENTIRELY by `supervisor.ts` observing this
- * process's exit and deciding whether/when to restart it — never by anything
- * in this file, which cannot see its own abort coming.
+ * contain. This module's own crash-safety code only protects against ordinary
+ * JS-level failures (a thrown search error, a socket reset); a native abort
+ * simply kills THIS process outright, and restart is entirely systemd's job
+ * (`Restart=on-failure` + `RestartSec=`) -- there is no in-process supervisor
+ * anymore to observe or react to it.
+ *
+ * Default args deliberately mirror the main process's own PATHS constants
+ * (HISTORY_V3_DB / HISTORY_SEARCH_DIR / HISTORY_SEARCH_SOCKET) so `bun run
+ * <entry> history-search-daemon` with ZERO flags talks to the exact same
+ * on-disk db and socket path the main process's UDS client (state.ts) reads --
+ * both sides derive the socket path from the SAME shared constant
+ * (`PATHS.HISTORY_SEARCH_SOCKET`), never from independently-typed strings that
+ * could drift out of sync.
  */
 
 import { defineCommand } from "citty"
 import consola from "consola"
 
+import { PATHS } from "~/lib/config/paths"
 import { getNativeHistorySearch } from "~/lib/history/search-native"
 import {
   //
@@ -160,14 +171,29 @@ export async function runHistorySearchDaemon(options: RunHistorySearchDaemonOpti
 export const historySearchDaemonCommand = defineCommand({
   meta: {
     name: "history-search-daemon",
-    // No `description` -- deliberately absent from --help's rendered command
-    // list (an operator is not meant to invoke this directly; it exists only
-    // as supervisor.ts's spawn target).
+    description:
+      "Run the independent history-search sidecar service — tails history-v3.db readonly, "
+      + "builds a Tantivy full-text index, and serves search queries over a Unix domain socket. "
+      + "Run this as its own long-lived process (e.g. via systemd, see docs/deploy/history-search.service); "
+      + "the main `start` server never spawns or supervises it — it is an optional independent service, "
+      + "and the main process degrades to empty search results whenever it is not reachable.",
   },
   args: {
-    db: { type: "string", required: true, description: "Path to history-v3.db to tail readonly" },
-    socket: { type: "string", required: true, description: "UDS socket path to serve search queries on" },
-    index: { type: "string", required: true, description: "Tantivy index directory (also holds the tail cursor)" },
+    db: {
+      type: "string",
+      default: PATHS.HISTORY_V3_DB,
+      description: `Path to history-v3.db to tail readonly (default: ${PATHS.HISTORY_V3_DB}, the same on-disk db the main process writes)`,
+    },
+    socket: {
+      type: "string",
+      default: PATHS.HISTORY_SEARCH_SOCKET,
+      description: `UDS socket path to serve search queries on (default: ${PATHS.HISTORY_SEARCH_SOCKET}, the same path the main process's UDS client reads)`,
+    },
+    index: {
+      type: "string",
+      default: PATHS.HISTORY_SEARCH_DIR,
+      description: `Tantivy index directory, also holds the tail cursor (default: ${PATHS.HISTORY_SEARCH_DIR})`,
+    },
   },
   async run({ args }) {
     const controller = new AbortController()
@@ -175,7 +201,9 @@ export const historySearchDaemonCommand = defineCommand({
     process.on("SIGTERM", onSignal)
     process.on("SIGINT", onSignal)
     try {
+      consola.info(`[history-search-daemon] starting -- db=${args.db} socket=${args.socket} index=${args.index}`)
       await runHistorySearchDaemon({ dbPath: args.db, socketPath: args.socket, indexPath: args.index }, controller.signal)
+      consola.info("[history-search-daemon] shut down cleanly")
     } finally {
       process.off("SIGTERM", onSignal)
       process.off("SIGINT", onSignal)

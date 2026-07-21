@@ -69,9 +69,9 @@ export const PATHS = {
   HISTORY_DB: path.join(APP_DIR, "history.db"),
   /** Online History V3 store. Starts empty and never backfills from HISTORY_DB. */
   HISTORY_V3_DB: path.join(APP_DIR, "history-v3.db"),
-  /** Disposable Tantivy full-text index. Never authoritative and never stored inside History SQLite. Owned by the out-of-process history-search sidecar (history-search-out-of-process plan Phase 3), not the main process directly. */
+  /** Disposable Tantivy full-text index. Never authoritative and never stored inside History SQLite. Owned by the out-of-process history-search sidecar (a separately-started, systemd-managed service — history-search-out-of-process plan Phase 3′), not the main process. */
   HISTORY_SEARCH_DIR: path.join(APP_DIR, "history-search"),
-  /** Unix domain socket the history-search sidecar listens on; the main process's supervisor-owned UDS client queries it. */
+  /** Unix domain socket the history-search sidecar service listens on. Single source of truth for BOTH sides: the sidecar (`history-search-daemon`'s default `--socket`) and the main process's UDS client both read this same constant, so they agree on the path without any parameter-passing between two independently-started processes. */
   HISTORY_SEARCH_SOCKET: path.join(APP_DIR, "history-search.sock"),
   /** Optional exact-byte CAS, physically and lifecycle-isolated from semantic V3. */
   HISTORY_RAW_DB: path.join(APP_DIR, "raw.db"),

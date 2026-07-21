@@ -45,11 +45,13 @@ const main = defineCommand({
     "list-claude-code": listClaudeCode,
     "setup-claude-code": setupClaudeCode,
     "setup-codex": setupCodex,
-    // Hidden — no `meta.description`, so it never appears in --help's rendered
-    // command list. This is the history-search sidecar's own process entry
-    // point (history-search-out-of-process plan Phase 3); it exists solely as
-    // src/lib/history/search/supervisor.ts's spawn target, not for direct
-    // operator invocation.
+    // The history-search sidecar's own service command — a first-class,
+    // documented, independently-run service (history-search-out-of-process
+    // plan Phase 3′; see docs/deploy/history-search.service for a systemd
+    // unit). NOT spawned/supervised by the main `start` server — an operator
+    // starts it directly (e.g. via systemd) whenever they want full-text
+    // History search; the main process degrades to empty search results
+    // whenever it is not reachable.
     "history-search-daemon": historySearchDaemonCommand,
   },
 })
