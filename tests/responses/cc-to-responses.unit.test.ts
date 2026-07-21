@@ -38,6 +38,21 @@ describe("splitInstructionsAndConversation", () => {
 })
 
 describe("translateChatCompletionsToResponses", () => {
+  test("[DI-9] tool message missing tool_call_id throws 400 identifying the offending message", () => {
+    const payload: ChatCompletionsPayload = {
+      model: "gpt-5-resp",
+      messages: [
+        { role: "user", content: "hi" },
+        { role: "assistant", content: "", tool_calls: [{ id: "call_1", type: "function", function: { name: "f", arguments: "{}" } }] },
+        { role: "tool", content: "the tool result" } as Message, // missing tool_call_id
+      ],
+    }
+    // Error must locate the offending message (conversation index + content) so the
+    // client can find it, not just say "some tool message is missing tool_call_id".
+    expect(() => translateChatCompletionsToResponses(payload)).toThrow(/index 2/)
+    expect(() => translateChatCompletionsToResponses(payload)).toThrow(/the tool result/)
+  })
+
   test("translates messages, tools, response format, and stream options", () => {
     const payload: ChatCompletionsPayload = {
       model: "gpt-5-resp",

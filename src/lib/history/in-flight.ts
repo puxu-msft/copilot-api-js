@@ -33,7 +33,7 @@ const entries = new Map<string, HistoryEntry>()
  * `{ ...existing, ...patch }`), so the WeakMap entry is naturally invalidated —
  * we compute once per entry instance and never again.
  */
-const summaryTextCache = new WeakMap<HistoryEntry, { preview: string; responsePreview: string }>()
+let summaryTextCache = new WeakMap<HistoryEntry, { preview: string; responsePreview: string }>()
 
 function getCachedSummaryText(entry: HistoryEntry): { preview: string; responsePreview: string } {
   const hit = summaryTextCache.get(entry)
@@ -69,6 +69,11 @@ export function listInFlight(): Array<HistoryEntry> {
 
 export function clearInFlight(): void {
   entries.clear()
+  // Reset the summary-text memo too, so test isolation is explicit and deterministic
+  // rather than relying on GC of prior entry instances. The WeakMap is naturally
+  // invalidated per-entry in production (fresh object per update), so this only
+  // matters as a hard reset boundary for tests (DI-13).
+  summaryTextCache = new WeakMap()
 }
 
 /**
