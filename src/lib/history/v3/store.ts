@@ -181,6 +181,18 @@ CREATE TABLE IF NOT EXISTS v3_operations (
 );
 CREATE INDEX IF NOT EXISTS idx_v3_operations_created ON v3_operations(created_at DESC, operation_id DESC);
 CREATE INDEX IF NOT EXISTS idx_v3_operations_kind ON v3_operations(kind, created_at DESC);
+-- Tail-cursor index for the out-of-process history-search sidecar (Phase 1):
+-- committed_at is the INSERT-time wall clock, monotonic by construction
+-- (commitPreparedOperation always writes Date.now() at insert time), unlike
+-- created_at (client-declared, can arrive slightly out of order) -- the keyset
+-- tail cursor uses (committed_at, operation_id) specifically because it is the
+-- one column SQLite guarantees to stay stable across a VACUUM (rowid is NOT --
+-- SQLite's own docs only say VACUUM "may" renumber rowids on a table without an
+-- INTEGER PRIMARY KEY, confirmed empirically to actually do so here). Additive +
+-- idempotent, applied unconditionally by the db.exec(V3_SCHEMA_SQL) at the top
+-- of ensureV3Schema on every call (not gated by schema_version -- mirrors how
+-- the two indexes above were introduced without any version bump).
+CREATE INDEX IF NOT EXISTS idx_v3_operations_committed ON v3_operations(committed_at, operation_id);
 CREATE TABLE IF NOT EXISTS v3_tracks (
   operation_id TEXT NOT NULL REFERENCES v3_operations(operation_id) ON DELETE CASCADE,
   track_name TEXT NOT NULL,
