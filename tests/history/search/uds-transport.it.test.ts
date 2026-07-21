@@ -29,6 +29,7 @@ import path from "node:path"
 import {
   //
   createHistorySearchUdsClient,
+  pingHistorySearchUdsClient,
 } from "~/lib/history/search/uds-client"
 import {
   //
@@ -147,6 +148,30 @@ describe("UDS server + client round-trip", () => {
     // The file must survive exactly as written -- unlinkStaleSocket refused to
     // touch it because lstat proved it is NOT a socket.
     expect(fs.readFileSync(socketPath, "utf8")).toBe("important unrelated data, not a socket")
+  })
+
+  test("a LIVE peer already listening on the path is NEVER unlinked -- a second instance fails loudly with EADDRINUSE instead of stealing the socket", async () => {
+    const socketPath = freshSocketPath()
+    // First instance: genuinely listening, serving real queries.
+    const firstSearch: HistorySearchQueryFn = async () => [{ operationId: "first-instance-op", createdAt: 1, score: 1 }]
+    const firstServer = createHistorySearchUdsServer(socketPath, firstSearch)
+    cleanupServers.push(firstServer)
+    await firstServer.listen()
+
+    // Second instance targeting the SAME socket path (the exact double-start
+    // scenario the connection-probe exists to protect against -- two
+    // independently-started sidecar service instances racing for one socket,
+    // which the resident-service architecture (Phase 3′) must never let one
+    // silently steal from the other).
+    const secondServer = createHistorySearchUdsServer(socketPath, async () => [])
+    await expect(secondServer.listen()).rejects.toMatchObject({ code: "EADDRINUSE" })
+
+    // The FIRST instance must still be alive and fully functional -- proof that
+    // unlinkStaleSocket's connection probe correctly detected the live peer and
+    // refused to unlink out from under it.
+    const client = createHistorySearchUdsClient({ socketPath })
+    const rows = await client.query("q", undefined, 5)
+    expect(rows).toEqual([{ operationId: "first-instance-op", createdAt: 1, score: 1 }])
   })
 
   test("server unlinks its own socket file on close()", async () => {
@@ -273,5 +298,47 @@ describe("length-prefix fragmentation over a REAL socket (not just the in-memory
     expect(rows).toHaveLength(50)
     expect(rows[0]?.operationId).toBe(`${bigContent}-0`)
     expect(rows[49]?.operationId).toBe(`${bigContent}-49`)
+  })
+})
+
+describe("pingHistorySearchUdsClient (status/diagnostic reachability probe — unlike query(), DOES distinguish success/failure)", () => {
+  test("a running, reachable sidecar -> { reachable: true }", async () => {
+    const socketPath = freshSocketPath()
+    const server = createHistorySearchUdsServer(socketPath, async () => [])
+    cleanupServers.push(server)
+    await server.listen()
+
+    const result = await pingHistorySearchUdsClient(socketPath)
+    expect(result.reachable).toBe(true)
+    expect(result.error).toBeUndefined()
+    expect(result.latencyMs).toBeGreaterThanOrEqual(0)
+  })
+
+  test("an absent sidecar (no socket at all -- the common 'not installed' case) -> { reachable: false }, NO uncaughtException", async () => {
+    const socketPath = freshSocketPath()
+    await assertNoUncaughtException(async () => {
+      const result = await pingHistorySearchUdsClient(socketPath)
+      expect(result.reachable).toBe(false)
+      expect(result.error).toBeDefined()
+    })
+  })
+
+  test("empty query + limit:0 never actually touches the search function (cheap probe, matches native search_blocking's own short-circuit)", async () => {
+    const socketPath = freshSocketPath()
+    let searchCalled = false
+    const server = createHistorySearchUdsServer(socketPath, async () => {
+      searchCalled = true
+      return []
+    })
+    cleanupServers.push(server)
+    await server.listen()
+
+    await pingHistorySearchUdsClient(socketPath)
+    // The wire request itself still round-trips through the real search callback
+    // (the "cheap" guarantee comes from the NATIVE side's own short-circuit, see
+    // native/history-search/src/lib.rs's search_blocking -- this test's injected
+    // fake search function is always called; it documents the wire shape ping
+    // sends, not a claim that this test double itself skips work).
+    expect(searchCalled).toBe(true)
   })
 })

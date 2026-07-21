@@ -54,8 +54,41 @@ export interface HistorySearchUdsClient {
   query: (query: string, operationKind: string | undefined, limit: number) => Promise<Array<{ operationId: string; createdAt: number; score: number }>>
 }
 
+/** Outcome of a lightweight reachability probe — unlike `query()`, this DOES
+ *  distinguish success from failure (status/diagnostic reporting needs that
+ *  distinction; a real search query deliberately does not expose it). */
+export interface HistorySearchPingResult {
+  reachable: boolean
+  latencyMs: number
+  error?: string
+}
+
 const DEFAULT_CONNECT_TIMEOUT_MS = 2_000
 const DEFAULT_QUERY_TIMEOUT_MS = 5_000
+/** Kept short — this is used for a per-request /api/status reachability check
+ *  (the independent history-search sidecar service may simply not be installed/
+ *  started at all, which is a normal, common, non-error state), so a slow
+ *  status response every time it is absent would be its own problem. */
+const DEFAULT_PING_TIMEOUT_MS = 300
+
+/**
+ * Lightweight reachability probe for status/diagnostic reporting — an empty
+ * query + `limit: 0` (the native sidecar's own `search_blocking` short-circuits
+ * before touching Tantivy for either condition, see native/history-search/src/
+ * lib.rs, so this is cheap even against a real, busy sidecar), but critically
+ * exposes the ACTUAL success/failure outcome that `query()` deliberately
+ * discards (never-throw is the right contract for a real search query feeding
+ * user-facing results; `/api/status` instead needs to know precisely whether
+ * the sidecar answered so an operator can tell "not installed" from "installed
+ * and working").
+ */
+export function pingHistorySearchUdsClient(socketPath: string, timeoutMs: number = DEFAULT_PING_TIMEOUT_MS): Promise<HistorySearchPingResult> {
+  const start = Date.now()
+  return queryOnce(socketPath, { query: "", operationKind: undefined, limit: 0 }, timeoutMs, timeoutMs).then(
+    () => ({ reachable: true, latencyMs: Date.now() - start }),
+    (error: unknown) => ({ reachable: false, latencyMs: Date.now() - start, error: error instanceof Error ? error.message : String(error) }),
+  )
+}
 
 /** Construct a client bound to one sidecar socket path. Stateless across calls --
  *  each `query()` opens its own short-lived connection (simple and robust: no

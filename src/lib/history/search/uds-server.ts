@@ -5,14 +5,20 @@
  * function, and replies with a length-prefixed JSON response.
  *
  * Deliberately takes a plain `search` callback rather than a `HistorySearchDaemon`
- * directly -- keeps this module agnostic of daemon construction/lifecycle (P3's
- * process entry point wires `daemon.search` in), and lets tests exercise the wire
+ * directly -- keeps this module agnostic of daemon construction/lifecycle
+ * (daemon-entry.ts wires `daemon.search` in), and lets tests exercise the wire
  * protocol against a trivial injected function without needing a real db/native
  * index.
  *
  * Crash-safety (this is the whole point of moving search out-of-process — a
- * transport bug here must never crash the SIDECAR either, even though it is only
- * one process away from the supervisor's restart):
+ * transport bug here must never crash the SIDECAR: since Phase 3′'s 2026-07-21
+ * architecture revision, the sidecar is an independently-started, systemd-managed
+ * SERVICE with no in-process supervisor of its own at all -- its own crash-loop
+ * protection, restart policy, and backoff are entirely `systemd`'s job
+ * (`Restart=on-failure`, `RestartSec=`), so a crash here is not "one process away
+ * from a restart" the way it briefly was in the retired Phase 3 design -- it is
+ * the ENTIRE remaining safety net for this process, which is exactly why these
+ * guards matter just as much, if not more):
  *  - every accepted connection gets `withErrorSink` (crash-safety.ts) BEFORE any
  *    other listener is attached, so a socket RST/reset mid-request can never
  *    surface as this process's `uncaughtException`.
@@ -56,19 +62,70 @@ export interface HistorySearchUdsServer {
  * Remove a leftover socket-path FILE before `listen()`, so a stale artifact from a
  * crashed/killed prior sidecar process does not turn every restart into a fatal
  * EADDRINUSE (confirmed empirically: `net.Server.listen(path)` refuses ANY existing
- * path at that location, socket or not). Only ever unlinks a path that `lstat`
- * proves IS an actual socket file — a stray non-socket file at that path (an
- * operator mistake, an unrelated collision) is left untouched and `listen()` is
- * allowed to fail loudly with its own EADDRINUSE, rather than this function
- * silently deleting something it does not own.
+ * path at that location, socket or not).
+ *
+ * Only ever unlinks a path that BOTH (a) `lstat` proves IS an actual socket file
+ * AND (b) a live connection PROBE proves has no active listener. (a) alone is not
+ * enough in the resident-service architecture (Phase 3′): two independently-
+ * started sidecar instances could otherwise race for the same socket path — the
+ * second one's `listen()` must NOT silently steal the path out from under a
+ * still-running first instance (that would be a much worse failure than a loud
+ * EADDRINUSE: the operator would have two sidecars racing to serve, or the first
+ * one's socket clients silently starts talking to the wrong process's queue). The
+ * probe: attempt `net.connect(socketPath)` — a successful `connect` proves a live
+ * peer is listening (do NOT unlink; let `listen()` fail loudly with its own
+ * EADDRINUSE so a genuine double-start is visible to the operator); `ENOENT` or
+ * `ECONNREFUSED` proves the peer is gone (safe to unlink) — confirmed empirically
+ * that Bun's `net.connect` reports `ENOENT` for a path whose original listener
+ * process was killed (the socket-path FILE itself still exists on disk, `lstat`
+ * still sees it, but nothing is bound there anymore), while Node reports the
+ * conventional `ECONNREFUSED` for the identical scenario — both runtimes must be
+ * treated as "dead, safe to reclaim". Any OTHER connect error (e.g. EACCES from a
+ * permission problem) is treated conservatively as "cannot tell, leave it alone"
+ * — `listen()` will then fail with its own error, which is at least honest.
+ *
+ * A stray non-socket file at this path (an operator mistake, an unrelated
+ * collision) is left untouched regardless — `listen()` is allowed to fail loudly
+ * with its own EADDRINUSE, rather than this function silently deleting something
+ * it does not own.
  */
-function unlinkStaleSocket(socketPath: string): void {
+async function unlinkStaleSocket(socketPath: string): Promise<void> {
+  let stat: fs.Stats
   try {
-    const stat = fs.lstatSync(socketPath)
-    if (stat.isSocket()) fs.unlinkSync(socketPath)
+    stat = fs.lstatSync(socketPath)
   } catch {
-    // ENOENT (nothing to unlink) or a transient stat/unlink race — either way `listen()`
-    // below is the real gate; this is best-effort cleanup, not the source of truth.
+    return // ENOENT (nothing to unlink) or a transient stat race -- `listen()` is the real gate.
+  }
+  if (!stat.isSocket()) return // not ours to touch -- see doc above.
+
+  const hasLivePeer = await new Promise<boolean>((resolve) => {
+    const probe = net.connect(socketPath)
+    // withErrorSink is unnecessary here: this promise's own 'error' listener
+    // (attached synchronously, before any await/microtask yield) is the ONLY
+    // listener this transient probe socket will ever have, so there is no
+    // window where an 'error' could arrive unheard.
+    probe.once("connect", () => {
+      probe.destroy()
+      resolve(true)
+    })
+    probe.once("error", (error) => {
+      const code = (error as NodeJS.ErrnoException).code
+      // ENOENT: Bun's observed behavior for a dead peer at an existing socket-path
+      // file. ECONNREFUSED: Node's (and the POSIX-conventional) behavior for the
+      // same dead-peer scenario. Both mean "dead, NOT a live peer" -- resolve
+      // `false`. Anything else (e.g. EACCES) is left alone -- conservatively
+      // resolve `true` (assume a live peer we simply could not confirm), rather
+      // than risk deleting a socket still in use.
+      resolve(code !== "ENOENT" && code !== "ECONNREFUSED")
+    })
+  })
+  if (!hasLivePeer) {
+    try {
+      fs.unlinkSync(socketPath)
+    } catch {
+      // Lost a race with something else removing it first, or a transient fs
+      // error -- either way, `listen()` below is the real gate.
+    }
   }
 }
 
@@ -111,7 +168,7 @@ export function createHistorySearchUdsServer(socketPath: string, search: History
   })
 
   async function listen(): Promise<void> {
-    unlinkStaleSocket(socketPath)
+    await unlinkStaleSocket(socketPath)
     await new Promise<void>((resolve, reject) => {
       const onError = (error: Error): void => {
         server.off("listening", onListening)
@@ -132,7 +189,17 @@ export function createHistorySearchUdsServer(socketPath: string, search: History
       for (const socket of activeSockets) socket.destroy()
       server.close(() => resolve())
     })
-    unlinkStaleSocket(socketPath) // best-effort: remove OUR OWN socket file on clean shutdown
+    // Direct unlink (not the connect-probe path above) -- we just stopped
+    // listening on this exact path ourselves, so there is no "is some OTHER
+    // process still using it" question to answer; a probe here would only add
+    // a needless round-trip (and could itself race a brand-new listener that
+    // started on this path in the interim).
+    try {
+      fs.unlinkSync(socketPath)
+    } catch {
+      // ENOENT (already gone) or a transient fs race -- best-effort cleanup on
+      // our own clean shutdown, not a correctness requirement.
+    }
   }
 
   return { listen, close }
