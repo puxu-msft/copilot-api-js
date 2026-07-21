@@ -1,6 +1,6 @@
 # Plan: History 全文搜索移出主进程（独立 sidecar 进程 + UDS）
 
-> 状态：**已签核，实现中**（隔离 worktree + implementer subagent 执行，主会话监督）。前置止血已落地（`d5e2309d`：in-process 批量提交消除段爆炸崩溃）。本计划在其上做进程隔离。Phase 0（readonly store 读取面）已完成，`cbe163c2`；Phase 1+ 待续。
+> 状态：**已签核，实现中**（隔离 worktree + implementer subagent 执行，主会话监督）。前置止血已落地（`d5e2309d`：in-process 批量提交消除段爆炸崩溃）。本计划在其上做进程隔离。Phase 0（readonly store 读取面）已完成，`cbe163c2`；Phase 1（sidecar 可独立运行）已完成，`d7c64d5d`+`064a1d55`；Phase 2+ 待续。
 > 用户签核决定：① 投影用重建法（不加 `search_text` 列）；② 分 Phase 0→P4 落地；③ sidecar 不可用降级返空；④ 游标用 `(committed_at, operation_id)` keyset；⑤ `source` 契约**收窄到 `inbound`**（其余 facet 返空 + OpenAPI 注明、扩展留 backlog）。
 
 ## Context（为什么做）
@@ -52,9 +52,14 @@
 - **实测确认**（bun 1.3.14 / node 24.16）：bun:sqlite 选项键为 `readonly`（拼错大小写直接 throw `Misspelled option`）；node:sqlite 选项键为 `readOnly`（大小写错了**不抛错、静默忽略、打开可写连接**——比 bun 更危险的失败模式，driver 已按运行时精确映射两种大小写）。`openDatabase()` 原序列里五个基础 PRAGMA（`auto_vacuum`/`journal_mode`/`synchronous`/`busy_timeout`/`foreign_keys`）本身在 readonly 连接上不抛；真正会抛 `attempt to write a readonly database` 的是 `VACUUM`/`ANALYZE`（在 `maybeVacuumOnStartup`/`seedAnalyzeIfNeeded` 内部，两者都有 never-throw try/catch 会静默吞掉——故"跳过"不是可选项而是防止误导性静默失败的正确性要求）以及 schema migration 分支的 `ALTER TABLE`。`openDatabaseReadonly` 全部跳过，只做 busy_timeout + owner 校验。
 - 新测试 `tests/history/v3/readonly-store.it.test.ts`（7 test，含负样本基线证明旧序列确实抛错）；`bun run typecheck` + `bunx eslint`（无 cache）全绿；`test:fast`（unit+http）4329 pass；全量 `.it` 分档 1669 pass/4 fail——4 个失败经 stash 掉本次改动后复现完全相同（`record.attempts` undefined @ projection.ts:246，`store-performance.it.test.ts`/`store.it.test.ts` 自身既有缺陷，与 Phase 0 无关，未修）。
 
-### Phase 1 — sidecar 可独立运行（不接主进程）
+### Phase 1 — sidecar 可独立运行（不接主进程）✅ **已完成**（2026-07-21，`d7c64d5d`+`064a1d55`）
 - 新 `src/lib/history/search/daemon.ts`：`openDatabaseReadonly` → `(committed_at, operation_id)` keyset tail `v3_operations`（autocommit 轮询）→ hydrate → `projectSearchableText` → `HistoryIndex.upsert` + 去抖 flush；游标持久化在索引目录 meta。
 - 测试（`.it`）：真 history-v3.db fixture（若干 operation）→ 跑 daemon 一轮 tail → 断言索引出对话+响应 token、排除 upstream；**游标续跑不重复**；**VACUUM 后续跑不丢不重**（审查回归用例）。
+- **API 形态**：`createHistorySearchDaemon({ dbPath, indexPath, index, pageSize? })` 返回 `{ tailOnce(): Promise<{processed, cursor}>, getCursor(), close() }`；`index` 由调用方持有（`getNativeHistorySearch()` + `new native.HistoryIndex(indexPath)`），daemon 只管 upsert、不管 flush/close（去抖节奏留给调用方，对齐止血版 `search-tantivy.ts` upsert/flush 分离）。游标读写 `readTailCursor(indexPath)`/`writeTailCursor(indexPath, cursor)` 是独立导出的纯函数（原子 tmp+rename，仿 `src/lib/restart/pidfile.ts`），崩溃/损坏文件 never-throw 退化为「从头重 tail」（`HistoryIndex.upsert` 是 delete-then-add 幂等，重 tail 安全只是变慢）。`tailOnce()` 内部循环到某页不足 `pageSize` 才停，故一次调用总能追平到当前所有已提交行。
+- **committed_at 索引**：加进 `V3_SCHEMA_SQL`（`CREATE INDEX IF NOT EXISTS idx_v3_operations_committed ON v3_operations(committed_at, operation_id)`），**未 bump `SCHEMA_VERSION`**——实测确认 `V3_SCHEMA_SQL` 的 `db.exec` 在 `ensureV3Schema` 顶部无条件执行（不受 `schema_version` 门控），对已是当前版本的既有 db 重开仍会补上新增索引；且既有两条索引（`idx_v3_operations_created`/`idx_v3_operations_kind`）当年引入时也未 bump 版本，做法一致。
+- **VACUUM 回归怎么证**：真实 5 条 operation 落库 → daemon tail 一轮（5 processed）→ 对同一 db 路径经生产 `openDatabase` 打开后跑真实 `VACUUM;`（非 mock）→ 再落一条新 operation → 新建 daemon 实例（读回持久化游标，模拟崩溃重启）→ 断言 `processed===1`（不多不少）且全部 6 条（5 条 pre-VACUUM + 1 条 post-VACUUM）都可搜到，无遗漏无重复。
+- **实测发现**：native `.node` 在本 worktree 已存在且早于本次改动（`bun run build:history-search` 已在别处跑过），测试直接复用无需额外构建步骤；`append-once` 前提在测试里补了负面分支——同一 `operationId` 灌入不同内容会**抛 `V3OperationConflictError`**（而非静默覆写），补全了「幂等 no-op」与「冲突必抛」两侧，锁死 keyset tail 不会漏「内容变更的修订」这个假设的完整性。
+- **测试范围外确认**：`bun run typecheck`、`bunx eslint`（无 cache）全绿；`bun run test`（unit+http）4335 pass（较 Phase 0 后的 4329 净增 6，即新增用例）；全量 `.it` 分档（`bun run test:backend`）6008 pass / 4 fail——与 Phase 0 交付时确认的 4 个既有缺陷（`store.it.test.ts` 2 个 + `store-performance.it.test.ts` 2 个，根因 `record.attempts` undefined @ projection.ts:246）完全一致，未新增失败、未修复（超出 Phase 1 范围）。
 
 ### Phase 2 — UDS 服务端 + 协议
 - 新 `uds-server.ts`（`node:net` `createServer({path})`，长度前缀 JSON），daemon listen；`uds-client.ts`（主进程侧 `net.connect`，超时 + socket error 挂 listener + 连不上返空）。
