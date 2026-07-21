@@ -171,9 +171,12 @@ function convertAssistantMessage(message: Message): Array<ResponsesInputItem> {
   }
 
   for (const toolCall of message.tool_calls ?? []) {
+    // NO item `id`: a Responses `function_call` INPUT item is matched by `call_id` only. The item `id`
+    // is an OUTPUT-echo field the API validates as `fc_`-prefixed when present; CC tool-call ids are
+    // `call_`-prefixed, so emitting one as `id` yields an upstream 400 (`Expected an ID that begins with
+    // 'fc'`). `call_id` alone is sufficient (mirrors the anthropic→responses direct bridge).
     items.push({
       type: "function_call",
-      id: toolCall.id,
       call_id: toolCall.id,
       name: toolCall.function.name,
       arguments: toolCall.function.arguments,

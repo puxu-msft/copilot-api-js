@@ -263,9 +263,18 @@ function translateUserBlocks(blocks: Array<ContentBlockParam>, reqId: string | u
   return items
 }
 
-/** Anthropic `tool_use` block → Responses `function_call` item (arguments = JSON.stringify(input)). */
+/**
+ * Anthropic `tool_use` block → Responses `function_call` input item (arguments = JSON.stringify(input)).
+ *
+ * NO item `id`: a Responses `function_call` INPUT item is matched to its `function_call_output` by
+ * `call_id` only. The item `id` is an OUTPUT-echo field the API validates as `fc_`-prefixed when present —
+ * and we only ever hold the tool-call id (`call_`/`toolu_`) on this return leg (the forward leg maps a
+ * Responses `call_id` → Anthropic `tool_use.id`, discarding the original `fc_` id). Emitting the tool-call
+ * id as the item `id` produces a non-`fc` id that upstream rejects (400 `Expected an ID that begins with
+ * 'fc'`); it is never needed for round-tripping (docs/spec/anthropic-via-openai-translation-review WARN-D).
+ */
 function toolUseToFunctionCall(block: ToolUseBlockParam): ResponsesInputItem {
-  return { type: "function_call", id: block.id, call_id: block.id, name: block.name, arguments: JSON.stringify(block.input ?? {}) }
+  return { type: "function_call", call_id: block.id, name: block.name, arguments: JSON.stringify(block.input ?? {}) }
 }
 
 /**

@@ -174,7 +174,6 @@ describe("translateChatCompletionsToResponses", () => {
       },
       {
         type: "function_call",
-        id: "call_1",
         call_id: "call_1",
         name: "get_weather",
         arguments: '{"city":"Paris"}',
@@ -292,14 +291,12 @@ describe("translateChatCompletionsToResponses", () => {
       },
       {
         type: "function_call",
-        id: "call_a",
         call_id: "call_a",
         name: "first_tool",
         arguments: '{"a":1}',
       },
       {
         type: "function_call",
-        id: "call_b",
         call_id: "call_b",
         name: "second_tool",
         arguments: '{"b":2}',

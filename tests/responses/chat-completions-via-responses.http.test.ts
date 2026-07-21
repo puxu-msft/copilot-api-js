@@ -290,7 +290,6 @@ describe("POST /chat/completions via /responses translation", () => {
       },
       {
         type: "function_call",
-        id: "fc_weather",
         call_id: "fc_weather",
         name: "lookup_weather",
         arguments: '{"city":"Paris"}',

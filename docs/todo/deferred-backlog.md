@@ -2,6 +2,10 @@
 
 从记忆库降为引用层（2026-07-05）时归位的活 backlog。每条：现状 / 暂缓原因 / 若做需改什么。
 
+## Responses 输出侧 function_call `id` 用非-`fc` 工具 id（2026-07-21，随请求侧 400 修复一并定位）
+
+- **反向桥输出侧 function_call `id` = tool id（非 `fc_`），echo 回来可能 400**：**现状**：请求输入侧的 400（`Invalid 'input[N].id' … Expected an ID that begins with 'fc'`）已根因修复——`anthropic-to-responses-request.ts` / `cc-to-responses.ts` 合成 `function_call` **输入**项时不再伪造 item `id`（仅留 `call_id`，匹配靠 `call_id`）。但**输出侧** `anthropic-to-responses.ts:159`（非流）与 `anthropic-to-responses-stream.ts:262/449`（流）仍把 Responses `function_call` **输出**项的 `id` 与 `call_id` 都设为同一个 Anthropic tool_use id（反向桥里常是 `toolu_…`，真 OpenAI 输出应是 `id: fc_…` ≠ `call_id: call_…` 两个不同值）。**风险链**：Responses 客户端（Codex/@ai-sdk）收到 `id: toolu_…` 的输出项后，续话时会把它 echo 回下一次请求的 `input`；该请求走 openai-responses DIRECT 路径的 `normalizeCallIds` 只改写 `call_` 前缀、**不碰 `toolu_`**，故 `id: toolu_…` 存活到上游 → 同款 400。**暂缓原因**：① 命中面窄（仅「Responses 客户端 + Anthropic 上游」反向桥 + 工具 id 非 `call_` 前缀）；② 输出侧不能像输入侧那样直接省略 `id`（客户端要靠 item `id` 关联 `output_item.added/done` 与终态），须合成一个确定性 `fc_` id，且**流式 added/done/终态三处必须用同一个 id**——是跨「流 + 非流」协同改动，独立测试面。**若做需改什么**：给这三处（+ 任何其他输出侧 function_call 合成点）引入统一的 `fc_`-id 合成原语（如 `fc_${stableHash(callId)}` 或 `fc_${callId去前缀}`），`call_id` 保持工具 id 原值；`stream-id-sync.ts` 的 added↔done 一致性契约须一并核对；golden http/stream 断言随之更新。
+
 ## Pre-existing e2e 缺陷（History V2 removal 合并 review 2026-07-19 surfaced，非本合并引入）
 
 在纯 `a387a6da`/`952c831f`（合并前 master）复现相同失败 → 确证 pre-existing、非 History V2 removal 引入。二者均 `.e2e.test.ts`、**不进 `test:backend` 默认门**（`bun test .unit.test .it.test .http.test` 显式排除 `.e2e.test.ts`），故全量 `bun test` 才暴露。

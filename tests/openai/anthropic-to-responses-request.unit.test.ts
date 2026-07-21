@@ -183,7 +183,7 @@ describe("translateAnthropicToResponses — basic content translation (equivalen
     expect(inputItems(result)).toEqual([{ type: "message", role: "user", content: [{ type: "input_text", text: "real" }] }])
   })
 
-  test("assistant tool_use → a function_call item (id=call_id=block.id, arguments=JSON.stringify(input)); text+tool_use are SEPARATE items (per-block, no CC-style fold)", () => {
+  test("assistant tool_use → a function_call item (call_id=block.id, NO fabricated item id, arguments=JSON.stringify(input)); text+tool_use are SEPARATE items (per-block, no CC-style fold)", () => {
     const result = translateAnthropicToResponses(
       payload([
         { role: "user", content: "weather?" },
@@ -191,9 +191,25 @@ describe("translateAnthropicToResponses — basic content translation (equivalen
       ]),
     )
     const items = inputItems(result)
-    expect(items.find((i) => i.type === "function_call")).toEqual({ type: "function_call", id: "toolu_1", call_id: "toolu_1", name: "get_weather", arguments: '{"city":"SF"}' })
+    // NO `id` field: a Responses function_call INPUT item is matched by `call_id` only; the item `id`
+    // is an OUTPUT-echo field that must be `fc_`-prefixed if present. We only ever hold the tool-call id
+    // (`toolu_`/`call_`) on this return leg, so fabricating `id` produces an invalid non-`fc` id upstream.
+    expect(items.find((i) => i.type === "function_call")).toEqual({ type: "function_call", call_id: "toolu_1", name: "get_weather", arguments: '{"city":"SF"}' })
     // text + tool_use are SEPARATE items (not folded): user message, assistant text message, function_call.
     expect(items.map((i) => i.type)).toEqual(["message", "message", "function_call"])
+  })
+
+  test("assistant tool_use whose id is a `call_`-prefixed id (echoed from a prior Responses/CC leg) → function_call carries NO item id (upstream rejects a non-`fc` item id)", () => {
+    const result = translateAnthropicToResponses(
+      payload([
+        { role: "user", content: "weather?" },
+        { role: "assistant", content: [{ type: "tool_use", id: "call_jCWUMZ57P3JSaKR5wZBhrO8Z", name: "get_weather", input: { city: "SF" } }] },
+      ]),
+    )
+    const fc = inputItems(result).find((i) => i.type === "function_call")
+    expect(fc).toEqual({ type: "function_call", call_id: "call_jCWUMZ57P3JSaKR5wZBhrO8Z", name: "get_weather", arguments: '{"city":"SF"}' })
+    // The regression: the item `id` must be ABSENT, never the `call_`-prefixed value.
+    expect(fc && "id" in fc).toBe(false)
   })
 
   test("user tool_result (string content) → function_call_output keyed by tool_use_id", () => {
