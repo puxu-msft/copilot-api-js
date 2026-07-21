@@ -1056,6 +1056,15 @@ const EXEMPT: ReadonlyArray<ExemptField> = [
       "Deprecated legacy key; no dedicated state field — falls back to success_limit/failure_limit (covered by the 'legacy history.limit falls back' test)",
   },
   {
+    configKey: "history.persist_retry.max_attempts",
+    reason:
+      "DI-5 module-local retry budget fed directly to setV3PersistRetryConfig (no state field, avoids a store→state cycle). config→setter wiring covered by tests/config/history-persist-retry-config.unit.test.ts; setter→retry behavior by tests/history/v3/transient-retry.it.test.ts",
+  },
+  {
+    configKey: "history.persist_retry.backoff_ms",
+    reason: "DI-5 module-local retry budget — see history.persist_retry.max_attempts above (same setV3PersistRetryConfig wiring)",
+  },
+  {
     configKey: "proxy",
     reason: "initProxy() runs once in start.ts before any network requests; changes require restart",
   },

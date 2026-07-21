@@ -46,6 +46,8 @@ import {
   state,
 } from "~/lib/state"
 
+import { setV3PersistRetryConfig } from "~/lib/history/v3"
+
 import type {
   //
   EndpointScope,
@@ -846,6 +848,15 @@ export async function applyConfigToState(): Promise<Config> {
     if (h.raw_capture?.enabled !== undefined) setHistoryConfig({ historyRawCaptureEnabled: h.raw_capture.enabled })
     if (h.raw_capture?.db_path !== undefined) setHistoryConfig({ historyRawCaptureDbPath: h.raw_capture.db_path })
     if (h.raw_capture?.max_object_bytes !== undefined) setHistoryConfig({ historyRawCaptureMaxObjectBytes: h.raw_capture.max_object_bytes })
+    // DI-5 transient retry budget — consumed only by the V3 store drain (no state
+    // field / listener needed), so feed the module setter directly like the other
+    // module-local config knobs (setReactiveRetryConfig above).
+    if (h.persist_retry?.max_attempts !== undefined || h.persist_retry?.backoff_ms !== undefined) {
+      setV3PersistRetryConfig({
+        maxAttempts: h.persist_retry.max_attempts ?? 3,
+        backoffMs: h.persist_retry.backoff_ms ?? 10,
+      })
+    }
   }
 
   // Telemetry settings (telemetry.*, nested: override only when present). Business-layer

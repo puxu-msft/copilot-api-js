@@ -405,6 +405,14 @@ history:
     db_path: "raw.db"
     max_object_bytes: 16777216
 
+  # 终态落盘遇瞬时 SQLite 失败（WAL BUSY/LOCKED/IOERR）时的有界重试（DI-5）。
+  # 此前首次失败即丢弃该 entry；现改为线性退避重试，permanent/conflict 不重试。
+  # Bounded retry for terminal-persistence commits that hit a transient SQLite
+  # error. Permanent failures / conflicts are never retried.
+  persist_retry:
+    max_attempts: 3
+    backoff_ms: 10
+
 # 遥测分三层滚筒（5min/1h/1d）+ 终身累计。
 # Telemetry has three-tier rollup (5min / hourly / daily) + lifetime cumulative.
 telemetry:

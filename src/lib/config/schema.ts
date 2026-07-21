@@ -798,6 +798,21 @@ export const HistoryConfigSchema = z
         })
         .strict(),
     ),
+    /**
+     * Terminal-persistence transient retry (DI-5). A commit that fails with a
+     * transient SQLite error (WAL BUSY/LOCKED/IOERR) is retried with linear
+     * backoff instead of dropping the entry on the first failure. `max_attempts`
+     * caps the retries (a transient storm can't spin forever); `backoff_ms` is
+     * the base linear step. Permanent failures / conflicts are never retried.
+     */
+    persist_retry: nullableSection(
+      z
+        .object({
+          max_attempts: nullableNonnegativeInt(),
+          backoff_ms: nullableNonnegativeInt(),
+        })
+        .strict(),
+    ),
   })
   .strict()
 

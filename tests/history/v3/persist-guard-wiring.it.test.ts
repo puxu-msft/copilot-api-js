@@ -43,6 +43,7 @@ import {
   getV3StoreStatus,
   prepareModelOperation,
   resetV3WriterForTests,
+  setV3PersistRetryConfig,
   V3_SCHEMA_SQL,
 } from "~/lib/history/v3/store"
 
@@ -69,6 +70,7 @@ afterEach(async () => {
   closeDatabase()
   resetV3WriterForTests()
   resetHistoryPersistErrorStats()
+  setV3PersistRetryConfig({ maxAttempts: 3, backoffMs: 10 })
 })
 
 describe("persist-guard wired into V3 write path (Phase 4c)", () => {
@@ -101,6 +103,11 @@ describe("persist-guard wired into V3 write path (Phase 4c)", () => {
     db.exec(V3_SCHEMA_SQL)
     db.exec(`CREATE TRIGGER busy_v3_journal BEFORE INSERT ON v3_journal BEGIN SELECT RAISE(ABORT, 'database is locked'); END;`)
 
+    // Isolate the never-throw + classify/count contract from DI-5's retry: with
+    // maxAttempts=1 a single BUSY produces exactly one v3-drain:transient count
+    // (retry cadence is exercised separately in transient-retry.it.test.ts).
+    setV3PersistRetryConfig({ maxAttempts: 1, backoffMs: 0 })
+
     const record = terminalRecord("op-busy-drain")
     // never-throw: enqueueModelOperation's returned promise must resolve, not reject,
     // even though the underlying commit failed.
@@ -111,6 +118,24 @@ describe("persist-guard wired into V3 write path (Phase 4c)", () => {
     const status = getV3StoreStatus()
     expect(status.failedOperations).toBe(1)
     expect(status.conflicts).toBe(0) // NOT a conflict — a distinct counter, unaffected
+
+    db.exec("DROP TRIGGER busy_v3_journal")
+  })
+
+  test("DI-5: a persistent BUSY is retried up to the budget — each attempt counts, and the entry is ultimately failed (never a silent drop on the first)", async () => {
+    const db = getDatabase()
+    db.exec(V3_SCHEMA_SQL)
+    db.exec(`CREATE TRIGGER busy_v3_journal BEFORE INSERT ON v3_journal BEGIN SELECT RAISE(ABORT, 'database is locked'); END;`)
+    setV3PersistRetryConfig({ maxAttempts: 3, backoffMs: 0 })
+
+    await expect(enqueueModelOperation(terminalRecord("op-busy-retry"))).resolves.toBeUndefined()
+    await drainV3Writer()
+
+    // Each retry attempt hit a real transient failure, so the classify/count sees
+    // all 3 — this is honest (3 SQLite BUSYs did occur), not double-counting; the
+    // entry is counted failed exactly once.
+    expect(getHistoryPersistErrorStats()).toMatchObject({ "v3-drain:transient": 3 })
+    expect(getV3StoreStatus().failedOperations).toBe(1)
 
     db.exec("DROP TRIGGER busy_v3_journal")
   })

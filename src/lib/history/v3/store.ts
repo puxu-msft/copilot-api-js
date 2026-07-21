@@ -18,6 +18,7 @@ import {
   compressBytes,
   decompressBytes,
 } from "~/lib/sqlite/compression"
+import { abortableDelay } from "~/lib/util/abortable-delay"
 
 import type { Database } from "../sqlite/connection"
 
@@ -137,6 +138,30 @@ const pending: Array<PendingOperation> = []
 const pendingDrains = new Set<Promise<void>>()
 let pendingBytes = 0
 let draining = false
+/**
+ * DI-5 transient-retry budget for the drain commit. Module-level (config apply
+ * calls `setV3PersistRetryConfig`) to avoid a store→state import cycle; defaults
+ * mirror the old zero-retry behavior's cadence (a few quick attempts).
+ */
+let persistRetryConfig: { maxAttempts: number; backoffMs: number } = { maxAttempts: 3, backoffMs: 10 }
+export function setV3PersistRetryConfig(cfg: { maxAttempts: number; backoffMs: number }): void {
+  persistRetryConfig = { maxAttempts: Math.max(1, cfg.maxAttempts), backoffMs: Math.max(0, cfg.backoffMs) }
+}
+/** Read the current transient-retry budget (config-wiring assertions). */
+export function getV3PersistRetryConfigForTests(): { maxAttempts: number; backoffMs: number } {
+  return persistRetryConfig
+}
+
+/**
+ * Test-only seam to inject a commit failure into the drain's retry loop. Called
+ * once per commit attempt (before `commitPreparedOperation`); throw a transient
+ * (`database is locked`) or permanent error to exercise the DI-5 retry path
+ * end-to-end without depending on bun:sqlite method-patchability. Null in prod.
+ */
+let commitFailureInjectorForTests: (() => void) | null = null
+export function setV3CommitFailureInjectorForTests(fn: (() => void) | null): void {
+  commitFailureInjectorForTests = fn
+}
 let summaryBackfillStop = false
 let summaryBackfill: Promise<void> | null = null
 let status: V3StoreStatus = {
@@ -680,6 +705,58 @@ function estimateRecordBytes(record: ModelOperationRecord): number {
   }
 }
 
+/** One commit attempt's classified outcome (mirrors persist-guard's `PersistResult` + conflict). */
+export interface TransientRetryAttemptResult {
+  ok: boolean
+  /** persist-guard classified the failure as transient (BUSY/LOCKED/IOERR) — retry can help. */
+  transient: boolean
+  /** data-contract violation (duplicate operationId / differing digest) — never retryable. */
+  conflict: boolean
+}
+
+export interface TransientRetryOptions {
+  maxAttempts: number
+  backoffMs: number
+  /** Abort collapses the backoff wait (shutdown drain wants to land data fast, not cancel it). */
+  signal?: AbortSignal
+}
+
+export interface TransientRetryOutcome {
+  ok: boolean
+  conflict: boolean
+  attempts: number
+}
+
+/**
+ * DI-5: run a commit attempt with bounded retry ONLY for transient (retryable)
+ * persistence failures. persist-guard already classifies BUSY/LOCKED/IOERR as
+ * transient, but the drain used to ignore that and drop the entry on the first
+ * failure. Permanent failures and conflicts are not retried (pointless). A hard
+ * `maxAttempts` cap keeps a transient storm from spinning forever (skill
+ * persistence-async-invariants §4 "持续 drain 失败须软上界"). The linear backoff is
+ * `abortableDelay`-based so a shutdown/abort during a storm collapses the wait
+ * (keeps trying to land the data before close) rather than wedging the drain.
+ */
+export async function runWithTransientRetry(attempt: () => Promise<TransientRetryAttemptResult>, opts: TransientRetryOptions): Promise<TransientRetryOutcome> {
+  const maxAttempts = Math.max(1, opts.maxAttempts)
+  let attempts = 0
+  for (;;) {
+    attempts++
+    const result = await attempt()
+    if (result.ok) return { ok: true, conflict: false, attempts }
+    if (result.conflict) return { ok: false, conflict: true, attempts }
+    if (!result.transient) return { ok: false, conflict: false, attempts } // permanent — retry is pointless
+    if (attempts >= maxAttempts) return { ok: false, conflict: false, attempts } // soft cap
+    try {
+      await abortableDelay(opts.backoffMs * attempts, opts.signal)
+    } catch {
+      // OperationCancelledError: the signal aborted (shutdown). Collapse the wait
+      // but keep retrying up to the cap — abort shortens backoff, it doesn't stop
+      // the effort to persist before the DB closes.
+    }
+  }
+}
+
 async function runDrain(): Promise<void> {
   if (draining) return
   draining = true
@@ -696,26 +773,46 @@ async function runDrain(): Promise<void> {
         // `{ ok, transient }`, no message) — mirrors the same pattern used
         // inside `commitPreparedOperation` itself.
         let nonConflictError: unknown
-        const result = await runHistoryWriteAsync("v3-drain", async () => {
-          try {
-            const commitResult = commitPreparedOperation(getDatabase(), prepared)
-            if (commitResult === "inserted") status = { ...status, persistedOperations: status.persistedOperations + 1 }
-          } catch (error) {
-            if (error instanceof V3OperationConflictError) {
-              // A conflict is a data-contract violation (duplicate operationId,
-              // differing revision/digest), not a SQLite persistence failure —
-              // `commitPreparedOperation` already bumped `status.conflicts`
-              // above. Swallow it HERE (before it reaches persist-guard's own
-              // catch) so the transient/permanent classification — scoped to
-              // genuine DB failures — never double-counts a conflict as a
-              // "v3-drain" persistence failure.
-              return
-            }
-            nonConflictError = error
-            throw error
-          }
-        })
-        if (!result.ok) {
+        // DI-5: a transient failure (WAL BUSY/LOCKED/IOERR) used to be counted as
+        // failed and the entry dropped on the FIRST attempt. Retry it with bounded
+        // backoff (persist-guard already classified transient vs permanent). Each
+        // retry re-runs the full commit: on a failed attempt the operation tx rolls
+        // back entirely and the journal row is `INSERT OR REPLACE`, so retrying the
+        // same `prepared` is idempotent (a rare already-committed row returns
+        // "idempotent" and is not double-written).
+        const retryOutcome = await runWithTransientRetry(
+          async () => {
+            nonConflictError = undefined
+            const result = await runHistoryWriteAsync("v3-drain", async () => {
+              try {
+                commitFailureInjectorForTests?.() // DI-5 test seam: no-op in prod
+                const commitResult = commitPreparedOperation(getDatabase(), prepared)
+                if (commitResult === "inserted") status = { ...status, persistedOperations: status.persistedOperations + 1 }
+              } catch (error) {
+                if (error instanceof V3OperationConflictError) {
+                  // A conflict is a data-contract violation (duplicate operationId,
+                  // differing revision/digest), not a SQLite persistence failure —
+                  // `commitPreparedOperation` already bumped `status.conflicts`
+                  // above. Swallow it HERE so runHistoryWriteAsync reports ok:true
+                  // (retry stops — a conflict is never retryable) and it is never
+                  // double-counted as a "v3-drain" persistence failure.
+                  return
+                }
+                nonConflictError = error
+                throw error
+              }
+            })
+            return { ok: result.ok, transient: result.transient, conflict: false }
+          },
+          // No shutdown signal here on purpose: importing `~/lib/shutdown` would
+          // create a store→shutdown→state require cycle that reorders module init
+          // (corrupts digest computation). The backoff is tiny (base 10ms × a few
+          // attempts), so not collapsing it at shutdown costs ~tens of ms of drain
+          // time — negligible vs. the cycle risk. `runWithTransientRetry` still
+          // accepts a signal for callers that can provide one without the cycle.
+          { maxAttempts: persistRetryConfig.maxAttempts, backoffMs: persistRetryConfig.backoffMs },
+        )
+        if (!retryOutcome.ok) {
           status = {
             ...status,
             failedOperations: status.failedOperations + 1,
