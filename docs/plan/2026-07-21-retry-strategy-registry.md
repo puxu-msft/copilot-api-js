@@ -211,7 +211,9 @@ Commit hash: `1ad16ede`。
 
 ---
 
-### Task 4 (Commit 4): config `retry.strategies` schema + allow+warn
+### Task 4 (Commit 4): config `retry.strategies` schema + allow+warn ✅ 已完成
+
+> **实施结果**：`RETRY_STRATEGY_CONFIG_KEYS`（16 键，与 `RETRY_STRATEGY_ORDER` 平行声明，schema.ts 内联而非从 `retry-registry.ts` 导入，防止 config schema 层反向依赖业务逻辑——同 `ENDPOINT_SCOPE_VALUES` 既有惯例）+ `z.partialRecord(z.enum(...), {enabled}.strict())`（未知键单独报 `invalid_key`、可被 `cleanInvalidPaths` 定点剥离，非整段拒绝）。`state.retryStrategies`（whole-map replace，镜像 `errorSelfhealDelegate` 的既有模式）经 `setReactiveRetryConfig` 扩展（新增第二个 patch 字段，同函数）接线；三处平行块（`mutableState` 初始化 / `CONFIG_MANAGED_DEFAULTS` / `resetConfigManagedState`）+ `cloneState`/`cloneStatePatch` 均用 `Edit` + 唯一后续行定位，`grep -c 'retryStrategies' src/lib/state.ts` = 9 处、无错位重复（已核对每处上下文）。三个 `buildXxxStrategies`（Task 3 遗留的 `config: undefined`）已接回 `state.retryStrategies`。allow+warn 落在 `config.ts` 的 `warnDisabledSharedRetryStrategies`（禁用 network/serverError/tokenRefresh 三个 shared configKey 才警告，anthropic-only 禁用不警告——无跨协议 blast radius）。`tests/config/retry-strategies.it.test.ts`（新，config 文件驱动、非 `setStateForTests` 直接戳）+ `tests/config/config-hot-reload.it.test.ts` 新增一条 EXEMPT 条目（enum-keyed Record 不适配标量 FieldSpec 矩阵，同 `generation.*` 既有先例）。`tests/request/retry-registry.unit.test.ts` 补 attemptRef 共享回归测试（Task 3 reviewer 建议 2）：两条测试分别断言「同一 `assembleRetryStrategies()` 调用内多策略共享同一 attemptRef」+「两次独立调用各自拿到全新 attemptRef（无跨请求泄漏）」，用 `consola.info` spy 解析各策略实际打印的 `Attempt N/M` 行验证（行为级、非结构断言）。golden 默认（`state.retryStrategies={}`）逐字节仍过（6/6，未调整）；四格式套件 2145 pass 零回归；`bun run test`（test:fast）4358 pass（Task 3 基线 4356 + 本次新增 2 条 attemptRef 测试，零回归）；`bun test tests/config` 811 pass。`bun run typecheck` 绿；`bunx eslint`（含改动文件 + 两测试文件）无 error（`--fix` 后重新 typecheck + 重跑测试确认未破坏行为——遵循 `tooling-eslint-fix-at-autofix-breaks-types` 教训的一般性纪律）。
 
 **Files:**
 - Modify: `src/lib/config/schema.ts`（RetryConfigSchema 加 `strategies`）
@@ -222,7 +224,7 @@ Commit hash: `1ad16ede`。
 - Consumes: `assembleRetryStrategies` 读 `state.retryStrategies`。
 - Produces: `state.retryStrategies: Record<string, {enabled?:boolean}>`。
 
-- [ ] **Step 1: 写 config 测试**
+- [x] **Step 1: 写 config 测试**
 
 ```ts
 test("默认全开 → golden 等价", () => { /* 无 retry.strategies → 16 策略全在 */ })
@@ -231,27 +233,33 @@ test("未知策略键 → schema 报错", () => { /* strict */ })
 test("禁用被依赖策略(token_refresh) → allow + consola.warn", () => { /* spy warn */ })
 ```
 
-- [ ] **Step 2: 跑失败**
+- [x] **Step 2: 跑失败**
 
 Run: `bun test tests/config/retry-strategies.it.test.ts` → FAIL。
 
-- [ ] **Step 3: 实现**
+- [x] **Step 3: 实现**
 
 - schema：`RetryConfigSchema` 加 `strategies: z.record(z.enum([...16 configKeys]), z.object({enabled: z.boolean().optional()}).strict()).optional()`（用 enum 键防拼写静默失效）。
 - state：`retryStrategies` 声明态 + `applyConfigToState` 映射 + `resetConfigManagedState` 默认 `{}`（参 CLAUDE.md large-refactor §6 平行块加字段用 Edit + 唯一后续行、`grep -c` 对账防错位）。
 - allow+warn：启动/reload 时若禁用了 shared 策略（network/serverError/tokenRefresh）→ `consola.warn`。
 
-- [ ] **Step 4: 测试通过 + 默认 golden 仍过 + typecheck**
+- [x] **Step 4: 测试通过 + 默认 golden 仍过 + typecheck**
 
 Run: `bun test tests/config/retry-strategies.it.test.ts tests/pipeline/retry-strategy-assembly.golden.it.test.ts && bun run typecheck`
 Expected: PASS。
 
-- [ ] **Step 5: lint + 提交**（含 config.yaml 示例 + schema.json 若有）
+**实测**：`retry-strategies.it.test.ts` 11 pass；golden 6/6 逐字节过；`retry-registry.unit.test.ts`（含新增 attemptRef 回归）20 pass；`config-hot-reload.it.test.ts`（含完整性守卫）361 pass；四格式套件 2145 pass；`bun run test` 4358 pass；`bun test tests/config` 811 pass。
+
+- [x] **Step 5: lint + 提交**（含 config.yaml 示例 + schema.json 若有）
 
 ```bash
-git add -- src/lib/config/schema.ts src/lib/state.ts tests/config/retry-strategies.it.test.ts
-git commit -m "feat(retry): retry.strategies 逐策略 config 开关（opt-out + allow+warn）"
+git add -- src/lib/config/schema.ts src/lib/config/config.ts src/lib/state.ts \
+  src/lib/codec/anthropic/strategies.ts src/lib/codec/openai-cc/strategies.ts src/lib/codec/openai-responses/strategies.ts \
+  tests/config/retry-strategies.it.test.ts tests/config/config-hot-reload.it.test.ts tests/request/retry-registry.unit.test.ts
+git commit -m "feat(retry): retry.strategies 逐策略 config 开关（opt-out + allow+warn）+ attemptRef 共享回归测试"
 ```
+
+**未在原计划文件清单里、但属于本 task 必需的联动改动**（如实记录）：三个 `buildXxxStrategies`（`codec/{anthropic,openai-cc,openai-responses}/strategies.ts`）接回 `state.retryStrategies`（Task 3 报告已预告的「Task 4 需改回」接线点，非范围蔓延）；`tests/config/config-hot-reload.it.test.ts` 补一条 EXEMPT 条目（新 schema 键触发既有完整性守卫，不补会让 Task 4 挂掉一条既有测试——按项目纪律「不忽略已有测试失败」处理，非新增功能）。
 
 ---
 
