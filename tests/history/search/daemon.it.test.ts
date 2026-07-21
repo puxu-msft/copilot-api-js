@@ -123,6 +123,28 @@ describe("history-search sidecar daemon (Phase 1, standalone)", () => {
     daemon.close()
   })
 
+  test("daemon.search() is a thin pass-through to the caller-owned native index's search (Phase 2's uds-server calls this, never the index directly)", async () => {
+    const dbDir = freshDir("daemon-search-passthrough-db-")
+    const dbPath = path.join(dbDir, "history-v3.db")
+    const indexDir = freshDir("daemon-search-passthrough-index-")
+    const indexPath = path.join(indexDir, "index")
+
+    commitOperation(dbPath, "passthrough-op", { conversation: "passthroughneedle", responseBody: "resp", upstreamOnly: "up" })
+
+    const index = await openIndex(indexPath)
+    const daemon = createHistorySearchDaemon({ dbPath, indexPath, index })
+    await daemon.tailOnce()
+    await index.flush()
+
+    const viaDaemon = await daemon.search("passthroughneedle", undefined, 10)
+    const viaIndexDirectly = await index.search("passthroughneedle", undefined, 10)
+    expect(viaDaemon).toEqual(viaIndexDirectly)
+    expect(viaDaemon.map((hit) => hit.operationId)).toEqual(["passthrough-op"])
+
+    await index.close()
+    daemon.close()
+  })
+
   test("cursor persists to disk and a fresh daemon instance resumes without reprocessing", async () => {
     const dbDir = freshDir("daemon-cursor-db-")
     const dbPath = path.join(dbDir, "history-v3.db")

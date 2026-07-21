@@ -33,7 +33,11 @@ import consola from "consola"
 import fs from "node:fs"
 import path from "node:path"
 
-import type { NativeHistoryIndex } from "~/lib/history/search-native"
+import type {
+  //
+  NativeHistoryIndex,
+  TantivySearchHit,
+} from "~/lib/history/search-native"
 import type { Database } from "~/lib/history/sqlite/connection"
 
 import { openDatabaseReadonly } from "~/lib/history/sqlite/connection"
@@ -142,6 +146,13 @@ export interface HistorySearchDaemon {
   /** Release the daemon's own readonly db handle (does NOT touch `options.index` --
    *  the caller constructed it and owns its flush/close lifecycle). */
   close: () => void
+  /**
+   * Thin pass-through to the caller-owned native index's `search` (Phase 2's
+   * `uds-server.ts` calls this instead of reaching into `options.index` directly, so
+   * the transport layer stays agnostic of native-module shape). Does NOT tail/flush
+   * first -- the caller decides tail/flush cadence independently of query cadence.
+   */
+  search: (query: string, operationKind: string | undefined, limit: number) => Promise<Array<TantivySearchHit>>
 }
 
 /**
@@ -207,5 +218,9 @@ export function createHistorySearchDaemon(options: HistorySearchDaemonOptions): 
     readonlyDb = undefined
   }
 
-  return { tailOnce, getCursor, close }
+  function search(query: string, operationKind: string | undefined, limit: number): Promise<Array<TantivySearchHit>> {
+    return options.index.search(query, operationKind, limit)
+  }
+
+  return { tailOnce, getCursor, close, search }
 }
