@@ -1,95 +1,108 @@
-# Spec：async RequestRewrite 链 + 剥离 system-prompt / preprocess 进 registry
+# Spec：剥离 system-prompt / preprocess 成 pre-translation 入站单元（v2）
 
-- **日期**：2026-07-20
-- **状态**：草案（待用户审阅 → 转 plan）
+- **日期**：2026-07-20（v2 修订 2026-07-21，经 GPT reviewer 对抗审逼出 3 BLOCK + 2 MAJOR 后重写）
+- **状态**：草案 v2（待复审 → 用户审阅 → 转 plan）
 - **类型**：内部架构重构（瘦核心 + 内建行为可插拔单元）
 - **关联**：v4 pipeline rewrite-registry（`docs/v4/03-spec/rewrite-registry.md`）、对称四点 hook（`docs/rfc/2026-07-14-symmetric-four-point-hooks.md`）、记忆 [[feedback-prefer-async-await-uniform-over-sync-isolation]]
 
-## 1. 目标与动机（what & why）
+## 0. v1 → v2 变更（审查逼出的根本修正）
 
-把仍**内联在核心（route handler / codec S1b）**的两类请求整形行为，剥离成 v4 `rewrite-registry` 的 `RequestRewrite` 单元，使核心变薄、行为可独立测试/保序/未来可开关。这是「瘦核心 + 内建行为可插拔」方向的一次聚焦推进——**不是从零造插件系统**（rewrite-registry 已存在且成熟），而是把剩余内联行为迁进这套既有契约。
+v1 提议把两个行为剥进既有 S3 `rewrite-registry`（`RequestRewrite`）。**GPT reviewer 对抗审证伪了这个缝位**（逐条已亲手对照代码核实成立）：
 
-两个剥离目标：
-1. **system-prompt override / prepend / append**（跨格式：anthropic / cc / responses）——当前在各 codec 的 `translateInbound`（S1b）里 async 注入。
-2. **Anthropic 消息 preprocess**（`preprocessAnthropicMessages`：dedup-tool-calls + strip-read-tags）——当前在 `routes/messages/handler-v4.ts` route 层计算、经 `preprocessInfo` 喂给 codec。
+- **两个行为都是 pre-translation 关切，S3 是 post-translation 的错 registry**：driver 阶段序为 S1a parse → S1b translateInbound → **S2 translateOut（翻译在此）** → S3 runRewriteIn（`driver.ts:327/329/352`）。到 S3 时 translate 腿的 `env.body` 已是上游目标形状、非客户端原生——system-prompt override（须作用于原生 `system`、翻译前）放 S3 按 `clientFormat` 分派是错的。
+- **preprocess 更早**：`preprocessAnthropicMessages` 在 route 层、**parse 之前**跑（`handler-v4.ts:348`），parse 把 post-preprocess 结果存为 `truncateBaseline`（`codec.ts:408`）。并入 S3 会把重试 baseline 从 post- 变 pre-preprocess，改变重试实际 wire——故 v1 的「并入 anthropic-sanitize」被否。
 
-**枢纽约束**：`RequestRewrite.apply` 当前是**同步**的（`apply(env): RewriteResult`），而 system-prompt 注入是 **async**（`await applyConfigToState()` 读新配置 + `processAnthropicSystem` 等）。用户明确选择**方案 2：把 RequestRewrite 链整体 async 化**，并声明**极度倾向全面引入 async/await、不为保持同步而围堵 async**（[[feedback-prefer-async-await-uniform-over-sync-isolation]]，推翻旧对称四点 PoC 的「同步 parse + 隔离 async」取向）。
+**v2 正确形状**：不进 S3。引入/复用 **pre-translation 入站缝**——system-prompt override 挂 **S1b（translateInbound，已 async）**、preprocess 归位为 **S0 pre-parse 声明单元**。「async 化 S3 rewrite 链」从本 scope 必需**降级为另立项**（见 §7）。
 
-## 2. 现状（约束基线）
+## 1. 目标与动机
 
-- **rewrite-registry 已存在**：`src/lib/pipeline/rewrite-registry.ts` 定义 `RequestRewrite`（`name`/`order`/`appliesTo`/`apply`）+ `ResponseRewrite`，`assembleRequestRewrites` = filter-by-appliesTo + sort-by-order。
-- **响应侧已全 registry 化**：Anthropic 5 单元 + Responses fixIds。
-- **请求侧已有一个单元**：`anthropic-sanitize`（`codec/anthropic/request-rewrite-adapter.ts`），单块内聚（包 `runAnthropicPayloadRewrites`），已消费 `deps.preprocessInfo` 写 `pipelineInfo`/`initialSanitizationInfo` side-channel。
-- **async 基础设施已就位**：`inspectRequest` 已是 `Promise<RequestInspection>`、`withCapturingManagerAsync` 已存在、`translateInbound` 已 async。故 async 爆炸半径**只剩** `runRewriteIn`（S3，当前同步）+ `RequestRewrite.apply` 签名 + `anthropic-sanitize` 的 apply body。
-- **重复 reload**：`handler-v4.ts` 的 `if(payload.system) await applyConfigToState()` 与 `translateInbound` 内 `processAnthropicSystem` 的 `await applyConfigToState()` 是两次幂等调用。
+把仍内联在 route/codec 的两类 **pre-translation 请求整形**行为，剥成**声明式入站单元**，使核心变薄、行为可独立测试/保序/未来可开关。仍是「瘦核心 + 内建行为可插拔」（选项 A 内部架构）的聚焦推进。
 
-## 3. 设计
+两个目标：
+1. **system-prompt override / prepend / append**（**全四格式** anthropic/cc/responses/gemini）——当前散在各 codec `translateInbound`（S1b）内联注入。
+2. **Anthropic 消息 preprocess**（`preprocessAnthropicMessages`：dedup-tool-calls + strip-read-tags）——当前 route 层 pre-parse 内联。
 
-### 3.1 使能改动：RequestRewrite 契约全面 async（统一，不做 union）
+用户偏好 [[feedback-prefer-async-await-uniform-over-sync-isolation]]（全面 async）**在 S1b 天然满足**——translateInbound 已 async，剥进来的入站单元原生 async，无需为此改 S3。
 
-- `RequestRewrite.apply(env): Promise<RewriteResult>`（**统一 Promise，不用 `RewriteResult | Promise<...>` 联合**——避免同步/异步双态分叉，符合用户 async-uniform 偏好）。
-- `runRewriteIn`（`driver.ts` S3）：`function → async function ...: Promise<RequestEnvelope>`，循环 `const result = await rewrite.apply(current)`。
-- `assembleRequestRewrites` 保持**同步**（纯 filter + sort，不涉 IO）。
-- 调用方：`runRequest`（已 async）在 S3 处加 `await`；`inspectRequest` 的镜像 rewrite 循环（已在 async 函数内）加 `await`。
-- 现有 `anthropic-sanitize` 的 `apply` body 当前同步——签名改 async 后 body 不变（自然返回 resolved Promise）。
+## 2. 现状（约束基线，均已核实 file:line）
 
-### 3.2 剥离一：system-prompt override → 跨格式 async RequestRewrite
+- **阶段序**：S1a parse（同步）→ client.inbound hook → **S1b translateInbound（async，`driver.ts:327`）** → S2 translateOut（翻译，`:329`）→ S3 runRewriteIn（同步，`:352`）。
+- **system-prompt 注入现状**：anthropic `codec.ts:253-258`（translateInbound `await processAnthropicSystem`）、cc/responses/gemini 各自 translateInbound 内 `processOpenAIMessages`/`processResponsesInstructions`（gemini `codec/gemini/codec.ts:217-221`）。**四格式都在 S1b。**
+- **preprocess 现状**：`handler-v4.ts:348` route pre-parse，产 `preprocessInfo` 传入 `runMessagesDriver`；parse 存 post-preprocess `truncateBaseline`（`codec.ts:408`），重试策略消费（`anthropic-cell.ts:158`）。
+- **config-freshness 现状**：`handler-v4.ts:341` `if(payload.system) await applyConfigToState()`——**除喂 system-prompt 新鲜度外，还顺带保证 parse 阶段 `state.sanitizeToolNames` 读取（`codec.ts:437` → `tool-name-sanitize.ts:41`）的新鲜度**（parse 早于 translateInbound）。CC 路由是**无条件**独立 reload（`chat-completions/handler-v4.ts:169`）；responses 无 route reload（其 translateInbound 自 reload）。
+- **既有 registry 已 async 基础**：`inspectRequest` 已 `Promise`、`withCapturingManagerAsync` 已存在、translateInbound 已 async。
 
-- 新单元（命名 `system-prompt-override`；三格式共享一个单元、`appliesTo` 覆盖 anthropic/cc/responses，内部按 `env.clientFormat` 分派到 `processAnthropicSystem`/`processOpenAIMessages`/`processResponsesInstructions` 的等价逻辑）。
-- `apply` 内做 `await applyConfigToState()` + 对应格式的 override/prepend/append（两轴 scope：model + endpoint，语义原样保留）。
-- 从三个 codec 的 `translateInbound` **移除 system-prompt 注入段**；gemini 的**格式翻译**仍留 `translateInbound`（只搬 system-prompt 那部分，不动格式翻译）。
-- **config-freshness 收敛**：删掉 `handler-v4.ts` 的前置 `await applyConfigToState()`（system-prompt 分支），freshness 改由本单元 `apply` 内的 `await` 保证——单点、不重复。
-- **order**：`system-prompt-override`（建议 `order 200`），早于 `anthropic-sanitize`（300）。
+## 3. 设计（v2）
 
-### 3.3 剥离二：preprocess 并入 anthropic-sanitize（采纳 3.2(b)）
+### 3.1 system-prompt override → S1b 声明式入站单元（async）
 
-- `preprocessAnthropicMessages`（dedup-tool-calls + strip-read-tags）从 `handler-v4.ts` route 移出，**并入** `anthropic-sanitize` 单元 `apply` 内首步。
-- 消除跨单元 `preprocessInfo` side-channel 传递：现由 route 计算后经 `deps.preprocessInfo` 传入，合并后单元自算 preprocess，直接产出 `pipelineInfo.preprocessing`。
-- 内部顺序：`preprocess → runAnthropicPayloadRewrites`（保持原 route→codec 的先后）。
-- side-channel 回写（`initialSanitizationInfo` / `pipelineInfo` / `thinking` feature）**逐字节保持**。
+- 定义**入站单元契约**（新的小 interface，pre-translation 专用，区别于 post-translation 的 `RequestRewrite`）：
+  ```
+  interface InboundUnit {
+    name: string
+    order: number
+    appliesTo(env): boolean          // 按 clientFormat + config 态门控
+    apply(env): Promise<InboundResult>   // async;返回 {env, changed}
+  }
+  ```
+- `system-prompt-override` 单元：`appliesTo` 覆盖**全四格式**（anthropic/cc/responses/gemini——修 v1 BLOCK：gemini 不能漏），内部按 `env.clientFormat` 分派到 `processAnthropicSystem`/`processOpenAIMessages`/`processResponsesInstructions` 等价逻辑；`apply` 内 `await applyConfigToState()` 保 freshness + 两轴 scope（model+endpoint）原样。
+- driver 在 S1b 组装并 `await` 运行入站单元链（filter+sort+await，与 `runRewriteIn` 同构但 async 且在 translateInbound 阶段）。各 codec translateInbound 的 system-prompt 注入段**移除**（gemini 等的**格式翻译仍留** translateInbound，只搬 system-prompt）。
+- **保留原「无 system 早返回」语义**：`appliesTo` 判 `env.body.system` 存在性（对应格式的 system/instructions 字段），无则跳过——不触发无谓 reload（修 v1 遗留的待定角落）。
 
-### 3.4 保序契约
+### 3.2 preprocess → S0 pre-parse 声明单元
 
-请求侧 order 常量（对齐 `RESPONSE_REWRITE_ORDER` 同款）：
-- `systemPromptOverride: 200`
-- `anthropicSanitize: 300`（含 preprocess）
+- `preprocessAnthropicMessages` 从 `handler-v4.ts` 移出，成 **pre-parse 声明单元**（`anthropic-preprocess`），在 driver/codec 的 parse **之前**运行，产出 `preprocessInfo` 经既有通道传入 parse——**保住 parse 存 post-preprocess `truncateBaseline` 的时序**（修 v1 MAJOR2）。
+- 不并入 S3 `anthropic-sanitize`（v1 的 (b) 已否）。preprocess 与 sanitize 缝位不同（pre-parse vs post-translation），各自独立单元。
 
-anthropic 链：`system-prompt-override(200) → anthropic-sanitize(300)`；cc/responses 链：仅 `system-prompt-override(200)`。
+### 3.3 config-freshness：改无条件 route reload、对齐 CC（修 BLOCK3）
 
-## 4. 数据流 / 阶段
+- `handler-v4.ts:341` 的 `if(payload.system) await applyConfigToState()` 改为**无条件** `await applyConfigToState()`（对齐 `chat-completions/handler-v4.ts:169`），**保住 parse 阶段 `sanitizeToolNames` 新鲜度**——不再依附 system 分支。
+- system-prompt 单元 `apply` 内仍自持 `await applyConfigToState()`（幂等）保其自身 freshness。两处幂等、语义清晰（一保 parse 侧 tool-name、一保 override 侧文本）。
+- 注意 §2 提到「无条件 reload 会重置 system-less 测试设的 state」——plan 阶段须核实：改无条件后受影响测试改为 config 文件驱动（非直接改 state），对齐 CC 路由既有做法。
+
+### 3.4 保序
+
+- S0 pre-parse：`anthropic-preprocess`。
+- S1b 入站单元：`system-prompt-override`（单元链，未来可加更多入站单元）。
+- 两缝独立，无跨缝 order 交织。
+
+## 4. 数据流（v2）
 
 ```
-S1a parse (client-native, 同步)
-  → client.inbound hook (仍见 pre-injection 原生 system)
-S1b translateInbound (async)   ← 只留格式翻译(gemini CC 翻译);system-prompt 注入已移出
-S2 translateOut (client→upstream 格式)
-S3 runRewriteIn (async)        ← await 链:system-prompt-override(200) → anthropic-sanitize(300,含 preprocess)
+S0 pre-parse:  anthropic-preprocess (dedup+strip-read-tags) → preprocessInfo
+S1a parse (同步) → 存 post-preprocess truncateBaseline
+  → client.inbound hook (见 pre-injection 原生 system)
+S1b translateInbound (async):
+     ├─ system-prompt-override 入站单元链 (await, 全四格式分派)
+     └─ 格式翻译 (gemini CC 翻译等, 保留)
+S2 translateOut (翻译)
+S3 runRewriteIn (同步, 不动)  ← anthropic-sanitize/reverse/quarantine 等仍在此
 S4 exchange ...
+route pre-parse: 无条件 await applyConfigToState() (保 sanitizeToolNames 新鲜度)
 ```
 
-## 5. 测试与验收（行为字节等价是硬约束）
+## 5. 测试与验收（字节等价硬约束）
 
-- **golden 预捕（改动前锁）**：anthropic / cc / responses 三格式，带 system-prompt override + prepend + append + preprocess 配置的请求，锁 upstream wire body + `pipelineInfo`/`sanitizationInfo` side-channel，证重构前后**逐字节等价**（真 invariant = 对在意消费者无可观测变化，[[feedback-byte-equivalence-is-proxy-calibrate-by-consumer]]）。
-- **async 契约测试**：rewrite 链 `await` 正确、顺序不变、`assembleRequestRewrites` 仍同步。
-- **单元测试**：`system-prompt-override` 单元三格式 + 两轴 scope（model/endpoint AND）+ prepend/append 空串路径；`anthropic-sanitize` 合并 preprocess 后的 preprocessInfo 产出。
-- **dry-run inspection**：`inspectRequest` 三格式路径 `rewrite-in` stage 快照含新单元、顺序正确。
-- **config-freshness 测试**：改配置后单请求即生效（证 reload 收敛没破坏 freshness）——config 文件驱动、非直接改 state（[[reference-server-vs-test-app-dual-notfound-mirror]] 的 config 中间件教训）。
+- **golden 预捕（改动前锁）**：**全四格式**（anthropic/cc/responses/gemini）带 system-prompt override+prepend+append 配置 + anthropic preprocess 场景，锁 upstream wire body + `pipelineInfo`/`initialSanitizationInfo`/`messageMapping` **子字段**（修 MINOR：显式点名 messageMapping，防合并悄改粒度）+ **preprocess 命中 × 自动截断重试**场景锁 truncateBaseline 仍 post-preprocess（修 MAJOR2）。
+- **入站单元契约测试**：S1b 单元链 await/顺序;S0 pre-parse 单元时序（在 parse 前、baseline post-preprocess）。
+- **单元测试**：`system-prompt-override` 四格式 + 两轴 scope（AND）+ prepend/append 空串 + 无 system 早返回不 reload;`anthropic-preprocess` dedup/strip 计数。
+- **dry-run inspection**：`inspectRequest` 四格式 rewrite/inbound stage 快照含新单元、顺序正确。
+- **config-freshness 测试**：改配置后单请求即生效（system-prompt **与** sanitizeToolNames 两路都测，config 文件驱动）。
 
 ## 6. 风险与不变量
 
-- **async 正确性纪律不豁免**：偏好 async 不等于豁免 async 陷阱——本 spec 无 fire-and-forget/持久化落盘，但 rewrite 链每步须 `await`、异常须传播（never-swallow）。参 [[methodology-sync-to-async-persistence-refactor-invariants]]。
-- **保序**：system-prompt override 必须早于 sanitize（override 改 `system` 字段、sanitize 读它）。order 常量锁定 + 契约测试。
-- **config-freshness 时序**：删 route 前置 reload 后，freshness 全靠单元 `apply` 内 `await applyConfigToState()`——须确保该单元**总是**在读 config 态前 await（对无 system 的请求也要跑 override 单元吗？→ `appliesTo` 或 early-return 保持原「无 system 早返回」语义，避免无谓 reload）。
-- **爆炸半径已实测收窄**：`inspectRequest`/`withCapturingManagerAsync`/`translateInbound` 已 async（对称四点那次完成），非本次新引入。
+- **缝位正确性（本次核心教训）**：pre-translation 行为绝不放 post-translation registry。system-prompt=S1b、preprocess=S0。
+- **保序**：system-prompt override 作用于原生 `system`，须在翻译（S2）前——S1b 满足。
+- **truncateBaseline 时序**：preprocess 须 pre-parse，parse 存 post-preprocess baseline 不变（golden 锁）。
+- **config-freshness 双路**：override 文本（S1b 单元 await）+ parse 侧 sanitizeToolNames（route 无条件 reload）两路都保。
+- **async 正确性不豁免**：入站单元链每步 `await`、异常传播（never-swallow）。参 [[methodology-sync-to-async-persistence-refactor-invariants]]。
 
 ## 7. 不在本次 scope（记录以免误并）
 
-- **接缝② retry 策略**（16 个）统一进 registry —— 单独立项，形状不同（跨 attempt 决策）。
-- **跨格式 sanitize 对称**（OpenAI/Gemini 的 codec `sanitize.ts` 入 registry）—— 后续。
-- **14 个 sanitizer 拆成独立单元** —— v4 有意保留单块内聚，不拆。
-- **对用户 hook 模块暴露这些内部扩展点**（选项 B/C）—— 本次是纯内部架构（选项 A）。
+- **async 化 S3 `RequestRewrite` 链**（本 scope 不需要了）——**另立独立项**：`RequestRewrite.apply` 全面 async 波及 3 个生产 impl（`request-rewrite-adapter.ts`、`openai-cc/reverse-anthropic-rewrite.ts`、`thinking-quarantine/proactive-filter.ts:111` order 250）+ ≥5 测试站点（`quarantine-proactive-filter.it`、`quarantine-e2e.it`、`rewrite-registry.unit`、`inspect-request.unit`、`driver.unit`）。符合用户 async 偏好、可独立做，但爆炸半径已知。记 `docs/todo/deferred-backlog.md`。
+- **接缝② retry 策略统一**、**跨格式 sanitize 对称（S3）**、**14 sanitizer 拆细**、**对用户 hook 暴露**——均后续/另项。
 
 ## 8. 迁移 / 上线
 
-- **零 config 变更、零行为变更**（字节等价）——纯内部结构重构。
-- 无向后兼容负担（内部接口）；不留双轨。
+- **零 config 变更、零行为变更**（四格式字节等价）——纯内部结构重构。
+- 无向后兼容负担;不留双轨。
