@@ -167,7 +167,9 @@ git commit -m "feat(retry): 声明式 retry-strategy registry + assembler（未�
 
 ---
 
-### Task 3 (Commit 3): 三 buildXxxStrategies 委托 assembler（字节等价 gate）
+### Task 3 (Commit 3): 三 buildXxxStrategies 委托 assembler（字节等价 gate）✅ 已完成（commit `1ad16ede`）
+
+> **实施结果**：clientFormat 传参未决执行注已定 —— assembler **只按 `targetEndpoint` 门控**（appliesTo 无视 clientFormat 恒定判断）；三 build 函数的 `ctx.clientFormat` 只作为 `RetryStrategyContext` 的备用字段传实际值（`"anthropic"`/`"openai-cc"`/`"openai-responses"`），不影响装配结果。`state.retryStrategies` 尚未由 Task 4 引入，三处委托暂传 `config: undefined`（assembler 视 `undefined` 同全默认 enabled，等价现状）。golden 6/6 **一次性逐字节通过**，未经调整。四格式套件（anthropic/openai/responses/gemini）2145 pass 零回归；全量快速档 `bun run test` 4356 pass 零回归。`deps.label`（cc）现状确认无消费者（2026-07-13 auto-truncate 移除时已断链，非本次改动引入），已在代码注释里如实记录。
 
 **Files:**
 - Modify: `src/lib/codec/anthropic/strategies.ts:87`（buildAnthropicStrategies body）
@@ -177,21 +179,25 @@ git commit -m "feat(retry): 声明式 retry-strategy registry + assembler（未�
 - Consumes: `assembleRetryStrategies`（Task 2）。
 - Produces: 无新导出（三个 build 函数签名不变、内部换实现）。
 
-- [ ] **Step 1: 改 buildAnthropicStrategies 委托**
+- [x] **Step 1: 改 buildAnthropicStrategies 委托**
 
 body 改为 `return assembleRetryStrategies({ clientFormat: <当前>, targetEndpoint: ENDPOINT.MESSAGES }, { attemptRef:{value:0}, originalPayload: deps.originalPayload, model: deps.model, maxRetries: deps.maxRetries, betaProbe: deps.betaProbe, resanitize: deps.resanitize }, state.retryStrategies ?? {} )`。
 > 注：clientFormat 由调用方（cell）的 env 决定——`buildAnthropicStrategies` 现无 clientFormat 参，需从 deps 或调用点补传（reverse 腿 clientFormat≠anthropic 但 targetEndpoint=MESSAGES）。**改 deps 加 `clientFormat`** 或让 assembler 只按 targetEndpoint 门控（shared appliesTo 无视 clientFormat、anthropic-only 只看 targetEndpoint）——后者更简，clientFormat 仅入 ctx 备用。以 typecheck + golden 为准。
+>
+> **实施落定**：采用后者（assembler 只按 targetEndpoint 门控）。`config` 参数暂传 `undefined`（非 `state.retryStrategies ?? {}` —— 该字段是 Task 4 才引入的声明态，Task 3 时点尚不存在；`assembleRetryStrategies` 对 `undefined` 与 `{}` 的 `isStrategyEnabled` 判定等价，都是全默认 enabled）。
 
-- [ ] **Step 2: 改 cc + responses 委托**
+- [x] **Step 2: 改 cc + responses 委托**
 
 `buildOpenAiCcStrategies` body → `assembleRetryStrategies({ clientFormat:"openai-cc", targetEndpoint: <当前 direct endpoint> }, {...deps, betaProbe:undefined, resanitize:undefined}, state.retryStrategies ?? {})`。responses 同法。cc/responses 的 targetEndpoint 非 MESSAGES → 只得 3 shared（golden 证）。
 
-- [ ] **Step 3: golden（Task 1）必须逐字节仍过 = 字节等价**
+- [x] **Step 3: golden（Task 1）必须逐字节仍过 = 字节等价**
 
 Run: `bun run typecheck && bun test tests/pipeline/retry-strategy-assembly.golden.it.test.ts tests/anthropic tests/openai tests/responses tests/gemini 2>&1 | tail -12`
 Expected: golden 逐字节 PASS + 四格式套件零回归。**这是本 commit 的字节等价证明。** 若 golden 挂：对比 assembler 输出 vs golden 期望，定位 order/appliesTo 错位。
 
-- [ ] **Step 4: lint + 提交**
+**实测**：golden 6/6 一次性通过（未调整任何顺序/appliesTo）；四格式套件 2145 pass/0 fail；`tests/request/retry-registry.unit.test.ts` 18 pass；全量快速档 `bun run test` 4356 pass/0 fail。
+
+- [x] **Step 4: lint + 提交**
 
 ```bash
 bunx eslint src/lib/codec/anthropic/strategies.ts src/lib/codec/openai-cc/strategies.ts src/lib/codec/openai-responses/strategies.ts
@@ -199,7 +205,9 @@ git add -- src/lib/codec/anthropic/strategies.ts src/lib/codec/openai-cc/strateg
 git commit -m "refactor(retry): 三 leg buildStrategies 委托声明式 assembler（字节等价）"
 ```
 
-**Commit invariant**：golden 逐字节过 = 三 leg 装配序不变;driver 消费契约不变。
+Commit hash: `1ad16ede`。
+
+**Commit invariant**：golden 逐字节过 = 三 leg 装配序不变;driver 消费契约不变。**已验证满足。**
 
 ---
 
