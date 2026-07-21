@@ -1,6 +1,8 @@
 # History search Tantivy sidecar v1
 
-> **状态：第一版已接入，产品查询尚未切换。** 本文描述 2026-07-18 从 History SQLite 移出的全文索引。权威语义数据仍是 `history-v3.db` 中的 `ModelOperationRecord`；Tantivy 目录可随时删除，不是 History 的组成部分。下一版产品化设计见 [Tantivy V2 RFC](rfc/2026-07-19-history-search-tantivy-v2.md) 与 [implementation plan](plan/2026-07-19-history-search-tantivy-v2.md)。
+> **[已归档 2026-07-21] 本文描述的 in-process 引擎（`search-tantivy.ts`）已随「search 移出主进程」计划 Phase 0-3 全部删除、退役。当前架构是独立 `history-search-daemon` 子进程 + Unix domain socket，见 [out-of-process search plan](../../plan/2026-07-21-history-search-out-of-process.md) 与 [DESIGN.md「活的架构现状」](../../DESIGN.md)。本文件与其指向的 V2 RFC/plan（同目录下 `-superseded-` 后缀两份）均仅作历史参照，不代表当前实现。**
+>
+> **状态：第一版已接入，产品查询尚未切换。** 本文描述 2026-07-18 从 History SQLite 移出的全文索引。权威语义数据仍是 `history-v3.db` 中的 `ModelOperationRecord`；Tantivy 目录可随时删除，不是 History 的组成部分。下一版产品化设计见 [Tantivy V2 RFC](2026-07-19-history-search-tantivy-v2-superseded-rfc.md) 与 [implementation plan](2026-07-19-history-search-tantivy-v2-superseded-plan.md)。
 
 ## 1．边界
 

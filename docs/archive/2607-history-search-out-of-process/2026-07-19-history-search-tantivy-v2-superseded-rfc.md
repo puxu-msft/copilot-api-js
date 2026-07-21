@@ -1,8 +1,10 @@
 # History Search Tantivy V2：内容单元索引、可恢复回填与产品查询切换
 
+> **[已归档 2026-07-21] 本 RFC 从未被采纳（状态一直是 PROPOSED），且其提议的方向已被「search 移出主进程」计划取代——见 [out-of-process search plan](../../plan/2026-07-21-history-search-out-of-process.md)。仅作历史参照。**
+
 - **状态**：PROPOSED
 - **日期**：2026-07-19
-- **前置版本**：[History search Tantivy sidecar v1](../history-search-tantivy.md)
+- **前置版本**：[History search Tantivy sidecar v1](history-search-tantivy-v1-retired.md)
 - **权威数据源**：`history-v3.db` 中已提交的 `ModelOperationRecord`
 
 ## 1. 背景与问题

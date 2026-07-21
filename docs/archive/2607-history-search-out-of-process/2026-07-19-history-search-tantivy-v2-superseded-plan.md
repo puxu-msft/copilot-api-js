@@ -1,6 +1,8 @@
 # Tantivy V2 implementation plan
 
-- **RFC**：[History Search Tantivy V2](../rfc/2026-07-19-history-search-tantivy-v2.md)
+> **[已归档 2026-07-21] 本 plan 从未执行（对应 RFC 一直是 PROPOSED、未被采纳），且其方向已被「search 移出主进程」计划取代——见 [out-of-process search plan](../../plan/2026-07-21-history-search-out-of-process.md)。仅作历史参照。**
+
+- **RFC**：[History Search Tantivy V2](2026-07-19-history-search-tantivy-v2-superseded-rfc.md)
 - **状态**：PLANNED
 - **原则**：每阶段独立可测试、可提交；直到 Phase 7 完成，HTTP 搜索继续返回 empty data。
 
