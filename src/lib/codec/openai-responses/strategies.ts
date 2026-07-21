@@ -21,10 +21,8 @@ import type { RequestEnvelope } from "~/lib/pipeline/envelope"
 import type { RetryStrategy as EnvRetryStrategy } from "~/lib/pipeline/types"
 import type { ResponsesPayload } from "~/types/api/openai-responses"
 
-import { adaptPayloadStrategy } from "~/lib/pipeline/payload-strategy-adapter"
-import { createNetworkRetryStrategy } from "~/lib/request/strategies/network-retry"
-import { createServerErrorRetryStrategy } from "~/lib/request/strategies/server-error-retry"
-import { createTokenRefreshStrategy } from "~/lib/request/strategies/token-refresh"
+import { ENDPOINT } from "~/lib/models/endpoint"
+import { assembleRetryStrategies } from "~/lib/request/retry-registry"
 
 export interface OpenAiResponsesStrategiesDeps {
   /** Stable baseline for the payload `RetryContext` (network/token-refresh ignore it). */
@@ -35,18 +33,26 @@ export interface OpenAiResponsesStrategiesDeps {
   maxRetries: number
 }
 
-/** Build the ordered env-based Responses retry strategies for one request. */
+/**
+ * Build the ordered env-based Responses retry strategies for one request — thin delegation to the
+ * declarative {@link assembleRetryStrategies} (registry Task 3 / RFC §3.2). `targetEndpoint` is
+ * `ENDPOINT.RESPONSES` (a non-`@messages` endpoint, HTTP construction path — see this test's golden entry
+ * 3) so only the 3 shared entries assemble; `betaProbe`/`resanitize` are `undefined` (this leg never
+ * populates them). `config` is `undefined` (Task 4 wires `retry.strategies` — not yet).
+ */
 export function buildOpenAiResponsesStrategies(deps: OpenAiResponsesStrategiesDeps): ReadonlyArray<EnvRetryStrategy> {
-  const attemptRef = { value: 0 }
-  const adapt = <T>(payloadStrategy: Parameters<typeof adaptPayloadStrategy<T>>[0]): EnvRetryStrategy =>
-    adaptPayloadStrategy(payloadStrategy, { attemptRef, originalPayload: deps.originalPayload as T, model: deps.model, maxRetries: deps.maxRetries })
-
-  return [
-    //
-    adapt(createNetworkRetryStrategy<ResponsesPayload>()),
-    adapt(createServerErrorRetryStrategy<ResponsesPayload>()),
-    adapt(createTokenRefreshStrategy<ResponsesPayload>()),
-  ]
+  return assembleRetryStrategies(
+    { clientFormat: "openai-responses", targetEndpoint: ENDPOINT.RESPONSES },
+    {
+      attemptRef: { value: 0 },
+      originalPayload: deps.originalPayload,
+      model: deps.model,
+      maxRetries: deps.maxRetries,
+      betaProbe: undefined,
+      resanitize: undefined,
+    },
+    undefined,
+  )
 }
 
 /** Build the strategies from the parsed envelope (the driver's per-request factory form). */
