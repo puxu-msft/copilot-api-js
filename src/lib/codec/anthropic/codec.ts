@@ -112,7 +112,7 @@ import {
   renderResponseNonStreamingVia,
 } from "~/lib/pipeline/hub-translate"
 import { state } from "~/lib/state"
-import { processAnthropicSystem } from "~/lib/system-prompt"
+import { applyInboundSystemPrompt } from "~/lib/system-prompt"
 
 import { createAnthropicSanitizeRewrite } from "./request-rewrite-adapter"
 
@@ -246,15 +246,10 @@ export function createAnthropicCodec(args: CreateAnthropicCodecArgs): AnthropicC
       return requestContext
     },
 
-    // S1b (RFC 2026-07-14 §4): async system-prompt injection over the top-level `system` field,
-    // moved off the route handler so `client.inbound` (Phase 4) sees the client-NATIVE system
-    // (pre-injection). Early-returns when there is no system (mirrors the legacy route's
-    // `if (wireBody.system)` guard). `env.body.model` is the resolved name (parse set it).
-    async translateInbound(env) {
-      const body = env.body as MessagesPayload
-      if (!body.system) return env
-      const system = await processAnthropicSystem(body.system, body.model, "anthropic")
-      return env.with({ body: { ...body, system } })
+    // S1b (RFC 2026-07-14 §4): 委托统一入站分发（spec 2026-07-20-inbound-system-prompt-dispatch-hook §3.1）。
+    // client.inbound (Phase 4) 仍见 pre-injection 原生 system（分发在 translateInbound 内、S1a→S1b 之后）。
+    translateInbound(env) {
+      return applyInboundSystemPrompt(env)
     },
 
     getTruncateBaseline() {
