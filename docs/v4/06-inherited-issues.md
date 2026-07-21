@@ -114,6 +114,20 @@ v4 P0-P3 + Stage A/B 全部完成后，逐项实测 A/B 类"预期 v4 会解决"
 - **DI-2/9/10/14** → v4 没碰，**转独立 backlog**：都是脱离等价约束后可单独做的小改进（DI-9 错误带 index、DI-14 改 hash/全比对、DI-10 定统一空消息契约、DI-2 性能基线 + 评估 driver per-stage clone 开销）。
 - **DI-8** → **小测试任务**：补 Azure history 双轨 model 断言 + responses 路径覆盖。
 
+### 本轮清理（2026-07-21，commit `c3fd9867` + 核对）
+
+修完后独立 backlog 收窄：
+- **DI-9** ✅ **修**：cc-to-responses 缺 tool_call_id 的 400 带 conversation index + 内容摘要；该分支此前**零测试覆盖**，补 TDD。
+- **DI-7** ✅ **修**：`computeReaperIntervalMs` 从 manager 闭包提为模块级参数化纯函数（导出 MIN/MAX 常量）+ 边界单测（/3 公式、两 clamp 边缘、disabled→MAX）。
+- **DI-13** ✅ **修**：`clearInFlight` 一并重置 `summaryTextCache` WeakMap（`let` 化），测试隔离显式确定。
+- **DI-4** ✅ **被 History V3 顺带解决**（核对发现）：`finalizeEntry` 已不存在，被 `v3/store.ts:604 commitPreparedOperation` 取代——它显式返回 `"inserted" | "idempotent"`（内容寻址 revision+digest 比对），正是 DI-4 想要的**判别式幂等契约**，比原建议更强。又一个"预期≠实测"的正向例（V3 重构顺带闭合了它）。
+
+**剩余 backlog**（需决策或较大工程）：
+- **DI-14**：prefix fingerprint 是**刻意启发式**（sanitize 会改内容，完整比较反而 false-negative），且仅用于 history 诊断映射（错时 fallback，低危）——不能反射式改，需先懂 buildMessageMapping 消费者再定。
+- **DI-10**：空消息"删除 vs 保 turn"两哲学统一——**改客户端可观测行为**，需用户定夺方向。
+- **DI-8**：深入发现可能牵出 **richest-data-flow 缺陷**——Azure 下 `codec.parse` 用 `raw.modelOverride ?? incoming.model`，`originalRequest.model` 可能记 deployment 而非客户端 body 原值（丢原始信息），待核实；若属实则超出"补测试"，是真 bug。
+- **DI-2 / DI-3 / DI-5**：较大工程（clone 优化 / immutable-transform 彻底化 / recovery log），非紧急 bug。
+
 ---
 
 ## 处置落地
