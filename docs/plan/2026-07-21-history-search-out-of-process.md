@@ -1,6 +1,6 @@
 # Plan: History 全文搜索移出主进程（独立 sidecar 进程 + UDS）
 
-> 状态：**已签核，实现中**（隔离 worktree + implementer subagent 执行，主会话监督）。前置止血已落地（`d5e2309d`：in-process 批量提交消除段爆炸崩溃）。本计划在其上做进程隔离。
+> 状态：**已签核，实现中**（隔离 worktree + implementer subagent 执行，主会话监督）。前置止血已落地（`d5e2309d`：in-process 批量提交消除段爆炸崩溃）。本计划在其上做进程隔离。Phase 0（readonly store 读取面）已完成，`cbe163c2`；Phase 1+ 待续。
 > 用户签核决定：① 投影用重建法（不加 `search_text` 列）；② 分 Phase 0→P4 落地；③ sidecar 不可用降级返空；④ 游标用 `(committed_at, operation_id)` keyset；⑤ `source` 契约**收窄到 `inbound`**（其余 facet 返空 + OpenAPI 注明、扩展留 backlog）。
 
 ## Context（为什么做）
@@ -43,12 +43,14 @@
 
 ## 实现阶段（TDD）
 
-### Phase 0 — readonly store 读取面（blocker 前置，审查发现）
+### Phase 0 — readonly store 读取面（blocker 前置，审查发现）✅ **已完成**（2026-07-21，`cbe163c2`）
 - 导出 `hydrateManifest`（[store.ts:973](src/lib/history/v3/store.ts#L973)）为不依赖模块级状态的纯读函数。
 - [connection.ts](src/lib/history/sqlite/connection.ts) 新增 `openDatabaseReadonly(path)`：跳过 `auto_vacuum` 写 pragma / `maybeVacuumOnStartup` / `seedAnalyzeIfNeeded`，只 `PRAGMA busy_timeout` + 校验 owner。
 - 扩展 [driver.ts](src/lib/sqlite/driver.ts) factory 支持 `{ readonly }`（bun `{readonly:true}` / node `{readOnly:true}`）。
 - `getV3StoredOperation`/`listV3StoredOperations`/`visitV3StoredOperations` 加可选 `db` 参数（默认 `= getDatabase()`）。
 - 测试：readonly 打开真 db fixture、hydrate 一条 operation → record，`projectSearchableText` 出对话+响应文本。**不碰主进程行为**（纯增量、向后兼容）。
+- **实测确认**（bun 1.3.14 / node 24.16）：bun:sqlite 选项键为 `readonly`（拼错大小写直接 throw `Misspelled option`）；node:sqlite 选项键为 `readOnly`（大小写错了**不抛错、静默忽略、打开可写连接**——比 bun 更危险的失败模式，driver 已按运行时精确映射两种大小写）。`openDatabase()` 原序列里五个基础 PRAGMA（`auto_vacuum`/`journal_mode`/`synchronous`/`busy_timeout`/`foreign_keys`）本身在 readonly 连接上不抛；真正会抛 `attempt to write a readonly database` 的是 `VACUUM`/`ANALYZE`（在 `maybeVacuumOnStartup`/`seedAnalyzeIfNeeded` 内部，两者都有 never-throw try/catch 会静默吞掉——故"跳过"不是可选项而是防止误导性静默失败的正确性要求）以及 schema migration 分支的 `ALTER TABLE`。`openDatabaseReadonly` 全部跳过，只做 busy_timeout + owner 校验。
+- 新测试 `tests/history/v3/readonly-store.it.test.ts`（7 test，含负样本基线证明旧序列确实抛错）；`bun run typecheck` + `bunx eslint`（无 cache）全绿；`test:fast`（unit+http）4329 pass；全量 `.it` 分档 1669 pass/4 fail——4 个失败经 stash 掉本次改动后复现完全相同（`record.attempts` undefined @ projection.ts:246，`store-performance.it.test.ts`/`store.it.test.ts` 自身既有缺陷，与 Phase 0 无关，未修）。
 
 ### Phase 1 — sidecar 可独立运行（不接主进程）
 - 新 `src/lib/history/search/daemon.ts`：`openDatabaseReadonly` → `(committed_at, operation_id)` keyset tail `v3_operations`（autocommit 轮询）→ hydrate → `projectSearchableText` → `HistoryIndex.upsert` + 去抖 flush；游标持久化在索引目录 meta。
