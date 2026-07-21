@@ -16,6 +16,7 @@
 import {
   //
   afterEach,
+  beforeAll,
   describe,
   expect,
   test,
@@ -34,6 +35,17 @@ import {
   createHistorySearchUdsServer,
   type HistorySearchQueryFn,
 } from "~/lib/history/search/uds-server"
+
+import { primeUdsConnectForBunTest } from "../../helpers/prime-uds-for-bun-test"
+
+// See prime-uds-for-bun-test.ts's doc comment: without this, whichever test
+// happens to run FIRST in this file (test execution order is not a stable
+// contract) could spuriously fail on a `bun test`-only quirk unrelated to the
+// code under test — this file's own tests each do a `server.listen()` before
+// any client `query()`, which incidentally also primes it, but that ordering
+// is coincidental, not a guarantee; make the requirement explicit instead of
+// relying on it.
+beforeAll(primeUdsConnectForBunTest)
 
 const tmpDirs: Array<string> = []
 function freshSocketPath(): string {
@@ -97,7 +109,18 @@ describe("UDS server + client round-trip", () => {
     // Faithful oracle: fork a REAL child process that binds the socket and never
     // cleanly closes it, then SIGKILL it -- this is exactly what a crashed sidecar
     // leaves behind (the socket-path file survives; nothing is listening on it).
-    const child = Bun.spawn(["bun", "-e", `require("node:net").createServer().listen(${JSON.stringify(socketPath)}); setInterval(() => {}, 1000)`], {
+    //
+    // MUST use `process.execPath` (the resolved absolute bun binary), NOT the bare
+    // `"bun"` command -- confirmed empirically (2026-07-21) that under a
+    // volta-managed bun install, `"bun"` resolves through volta's shim wrapper,
+    // so `Bun.spawn`'s reported `child.pid` is the SHIM's pid, not the real
+    // grandchild bun process actually holding the socket. `child.kill("SIGKILL")`
+    // then kills only the (already-exited) shim -- the real process is never
+    // killed and leaks forever (`setInterval` keeps its event loop alive
+    // indefinitely). This was caught by `ps aux` showing 19 accumulated orphaned
+    // `bun -e ...` processes still listening on now-deleted temp-dir sockets
+    // after repeated `bun test` runs of this exact file.
+    const child = Bun.spawn([process.execPath, "-e", `require("node:net").createServer().listen(${JSON.stringify(socketPath)}); setInterval(() => {}, 1000)`], {
       stdout: "ignore",
       stderr: "ignore",
     })
