@@ -254,6 +254,9 @@ export function stripNonFcFunctionCallItemIds(payload: ResponsesPayload): Respon
   })
 
   if (count === 0) return payload
-  consola.debug(`[responses] Stripped ${count} non-fc function_call item id(s)`)
+  // warn (not debug like normalizeCallIds): with normalize_call_ids ON (default) the `call_`→`fc_` rewrite runs
+  // first, so this backstop only fires on genuinely anomalous ids (non-`call_` foreign prefixes, or normalization
+  // disabled) — rare, and worth surfacing since we mutated client input to avert an upstream 400.
+  consola.warn(`[responses] Stripped ${count} non-fc function_call item id(s) at the wire (would 400 upstream: "Expected an ID that begins with 'fc'")`)
   return { ...payload, input: strippedInput }
 }
