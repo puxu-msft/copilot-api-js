@@ -263,18 +263,32 @@ git commit -m "feat(retry): retry.strategies 逐策略 config 开关（opt-out +
 
 ---
 
-### Task 5 (Commit 5): telemetry per-strategy fire 计数 + 注册集诊断
+### Task 5 (Commit 5): telemetry per-strategy fire 计数 + 注册集诊断 ✅ 已完成
+
+> **实施结果（与原计划的一处偏离，如实记录理由）**：原计划设想把 `retryStrategyFires` 并入 `request-telemetry.ts` 的 settled-request registry（`recordSettledRequest` 那套 dimension×measure 框架）。实施时发现语义不匹配：retry-fire 是**每次 attempt 失败重试决策提交**时的事件（一个请求内同一策略可连续触发多次），不是「per-settled-request 的一次性维度 key」——套用 `recordSettledRequest` 的按 (dimension,key) 去重累加模型会**低估**重复触发。故改为独立、扁平的 process-lifetime `Map<string, number>` 模块 `src/lib/observability/retry-strategy-fires.ts`（`recordRetryStrategyFire` / `getRetryStrategyFireCounts` / `resetRetryStrategyFiresForTests`），镜像既有 `anthropic/tool-input-repair-stats.ts` / `anthropic/protect-streaming-stats.ts` 的「live-observation 聚合计数器，不持久化，重启归零」模式——仍遵循 skill `telemetry-architecture` 的核心原则（开放 bag、`/metrics` 侧零版本 bump 即可新增 key），只是不寄生在 settled-request 那条特定流水线里。`/metrics` 新增单独一族 `copilot_api_retry_strategy_fires_total{strategy="..."}`（非 `(dimension,key)` 两标签形状，因 retry-fire 无 dimension 概念，故走 `renderPrometheusMetrics` 的独立新参数 + 独立发射块，非并入 measure 循环）。
+>
+> **命中点**：`driver.ts` 的 `createSemanticRetryPolicy`——`action.env.ctx.recordAttemptFailure({...})` 那一行**之后**立即调 `recordRetryStrategyFire(strategy.name)`，与 `recordAttemptFailure` 同一提交点（budget-accepted retry：已过 `overBudget` 门 + 已排除 `action.kind==="abort"`）。天然排除 `ws-fallback`/`rate-limit-retry`（走 `dispatch-scheduler.ts` 各自的 `recordAttemptFailure` 调用点，不经过 registry 策略 `.find(canHandle)`）与 L2 buffered-retry（`driver.ts:1299` 那条 `recordAttemptFailure({nextStrategy:"buffered-retry"})` 同理不经过本命中点）——这是**故意的范围**：本 counter 只统计 registry 声明的 16 个反应式策略实际触发，不是「全部 retry 原因」的大一统计数器（RFC §3.5 的字面意图是给 registry 治理面用的诊断，非通用 retry 遥测）。Never-throw：一次 `Map.set` 无 I/O、无外部调用，不会抛，故命中点无需 try/catch（`strategy.handle` 抛出的分支在更早的 catch 里已 return，不会走到这里）。
+>
+> **注册集诊断**：`retry-registry.ts` 新增 `getRetryStrategyRegistryDiagnostics(config)` → `Array<{name, configKey, order, scope, enabled}>`（16 条、按 `order` 排序，与 `assembleRetryStrategies` 的装配序一致）。`scope`（`"shared" | "messages-only"`）**由 `appliesTo` 对两个代表性 probe ctx（`MESSAGES_PROBE_CTX` / `CC_DIRECT_PROBE_CTX`）实测推导**，不是硬编码名单——防止未来 `appliesTo` 门漂移时诊断跟着一起说谎。接线进 `GET /api/config`（`routes/config/route.ts` 的 `buildEffectiveConfig`）新增字段 `retryStrategyRegistry`，喂 `state.retryStrategies` 得到实时 enabled 态（该原始 config record 本就经 `CONFIG_MANAGED_DEFAULTS` 自动派生逐字段暴露；本字段是人类可读的补充视图，非替代）。选 `GET /api/config` 而非 `pipelineInfo`：RFC §3.5 原文列了两个候选通道（"经既有 pipelineInfo 通道或 GET /api/config"），`pipelineInfo` 是**per-request** 诊断（挂在某次请求的 history entry 上），而"声明了哪些策略 + 各自 enabled 态"是**全局静态注册集视图**、与具体某次请求无关，`GET /api/config` 这个已有的"效validate 运行时配置快照"端点语义上更贴切、且已有 completeness-guard 测试基础设施可复用。
+>
+> **测试**：`tests/observability/retry-strategy-fires.unit.test.ts`（新，6 pass，counter 模块行为：空/累加/独立 key/快照不可变/reset）+ `tests/pipeline/driver.unit.test.ts` 新增 `describe("per-strategy retry-fire telemetry")`（5 pass：budget-accepted 递增、strategy 抛出不递增、budget-rejected 不递增、abort 不递增、多策略独立累加）+ `tests/request/retry-registry.unit.test.ts` 新增 `describe("getRetryStrategyRegistryDiagnostics")`（6 pass：16 条、字段投影、scope 探测非硬编码、undefined config 全 enabled、单条禁用、按 order 排序）+ `tests/config/config-effective-route.http.test.ts` 新增一条（`retryStrategyRegistry` 字段存在 + 形状）+ `tests/pipeline/metrics-exposition.unit.test.ts` 新增两条（`copilot_api_retry_strategy_fires_total` 计数 + 零 fire 时仍稳定发射 HELP/TYPE）。全部先跑红确认（TDD）、实现后转绿。golden（`retry-strategy-assembly.golden.it.test.ts`）6/6 逐字节仍过（未碰装配逻辑，只在 driver 消费点追加旁路调用）；`tests/pipeline tests/anthropic tests/openai tests/responses tests/observability tests/request tests/config` 合计 3852 pass / 0 fail（含新增 17 条）；`bun run typecheck` 绿；改动文件 `bunx eslint` 无 error（`src/lib/pipeline/driver.ts:1208` 与 `tests/helpers/isolated-fixture.ts` 的既有 4 条 sort-imports/prettier 告警核实为 HEAD 既有、非本次引入——`git stash` 掉本次全部改动后仍报同样错误，实测确认非我方回归）。`resetRetryStrategyFiresForTests` 已注册进 `tests/helpers/isolated-fixture.ts` 的 `RESETTERS` 表（防跨测试文件泄漏）。
+>
+> **`bun run test:backend` 全量**：3852+ 全绿；另有 4 条 `tests/history/v3/store*.it.test.ts` 失败——经 `git stash` 本次全部改动后**同样失败**（History V3 semantic store 的既有/环境相关失败，与 History 模块零 diff），确认与 Task 5 无关、不阻塞本次交付。
 
 **Files:**
-- Modify: `src/lib/telemetry/*`（加 `retry_strategy_fires{strategy}` counter，按 skill `telemetry-architecture` 开放 counters bag）
-- Modify: driver retry 命中点（`recordAttemptFailure` 处递增）
-- Test: `tests/telemetry/retry-strategy-fires.it.test.ts`（新）
+- New: `src/lib/observability/retry-strategy-fires.ts`（独立轻量 fire-counter，偏离原计划「并入 request-telemetry.ts」的理由见上）
+- Modify: `src/lib/request/retry-registry.ts`（加 `getRetryStrategyRegistryDiagnostics`）
+- Modify: `src/lib/pipeline/driver.ts`（`createSemanticRetryPolicy` 命中点递增）
+- Modify: `src/lib/metrics-exposition.ts`（新增 `retry_strategy_fires_total` 族）
+- Modify: `src/routes/config/route.ts`（`GET /api/config` 新增 `retryStrategyRegistry` 字段）
+- Modify: `tests/helpers/isolated-fixture.ts`（RESETTERS 注册）
+- Test: `tests/observability/retry-strategy-fires.unit.test.ts`（新）、`tests/pipeline/driver.unit.test.ts`、`tests/request/retry-registry.unit.test.ts`、`tests/config/config-effective-route.http.test.ts`、`tests/pipeline/metrics-exposition.unit.test.ts`（均追加）
 
-- [ ] **Step 1: 写 telemetry 测试**：策略触发 → counter 递增、维度基数。
-- [ ] **Step 2: 跑失败**。
-- [ ] **Step 3: 实现**：counters bag 加 `retryStrategyFires`（泛型复制器、零版本 bump，skill `telemetry-architecture` 一）;driver `createSemanticRetryPolicy` 命中 strategy 后递增 `{strategy: strategy.name}`;注册集（声明集 + enabled 态）经 `GET /api/config` 或 pipelineInfo 诊断暴露。
-- [ ] **Step 4: 测试通过 + typecheck + golden 仍过**。
-- [ ] **Step 5: lint + 提交** `feat(retry): per-strategy fire telemetry + 注册集诊断`。
+- [x] **Step 1: 写 telemetry 测试**：策略触发 → counter 递增、维度基数。
+- [x] **Step 2: 跑失败**。
+- [x] **Step 3: 实现**：独立 counters bag（`retry-strategy-fires.ts`，理由见上）;driver `createSemanticRetryPolicy` 命中 strategy 后递增;注册集（声明集 + enabled 态）经 `GET /api/config` 诊断暴露。
+- [x] **Step 4: 测试通过 + typecheck + golden 仍过**。
+- [x] **Step 5: lint + 提交** `feat(retry): per-strategy fire telemetry + 注册集诊断`。
 
 ---
 
