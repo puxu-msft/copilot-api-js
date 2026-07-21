@@ -42,7 +42,11 @@ import {
   setBundledConfigForTests,
 } from "~/lib/config/config"
 import { PATHS } from "~/lib/config/paths"
-import { RetryConfigSchema } from "~/lib/config/schema"
+import {
+  //
+  RETRY_STRATEGY_CONFIG_KEYS,
+  RetryConfigSchema,
+} from "~/lib/config/schema"
 import { RETRY_STRATEGY_ORDER } from "~/lib/request/retry-registry"
 import {
   //
@@ -98,6 +102,14 @@ describe("RetryConfigSchema.strategies", () => {
     const parsed = RetryConfigSchema.parse({ strategies: allKeysMap })
     expect(Object.keys(parsed.strategies ?? {})).toHaveLength(16)
     expect(new Set(Object.keys(parsed.strategies ?? {}))).toEqual(new Set(Object.keys(RETRY_STRATEGY_ORDER)))
+  })
+
+  test("schema RETRY_STRATEGY_CONFIG_KEYS is EXACTLY the registry's RETRY_STRATEGY_ORDER keys — bidirectional parity (no schema-side orphan)", () => {
+    // The test above catches "registry adds a key, schema forgets" (the more common drift). This one closes
+    // the symmetric gap "schema keeps an orphan key the registry no longer declares" (e.g. a strategy was
+    // renamed/removed but its schema enum key lingered → a dead config key the user can set but that never
+    // matches any entry). Set-equality over BOTH sources catches drift in either direction (Task 4 reviewer).
+    expect(new Set<string>(RETRY_STRATEGY_CONFIG_KEYS)).toEqual(new Set(Object.keys(RETRY_STRATEGY_ORDER)))
   })
 
   test("accepts a valid configKey with enabled:false", () => {
