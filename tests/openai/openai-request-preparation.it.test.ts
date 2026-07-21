@@ -131,4 +131,26 @@ describe("prepareResponsesRequest", () => {
     expect(prepared.wire.user).toBe(sessionId)
     expect(prepared.wire.user!.length).toBeLessThanOrEqual(64)
   })
+
+  test("strips a non-`fc_` function_call item id at the wire (backstop for the upstream 400 'Expected an ID that begins with fc')", () => {
+    initState()
+
+    const payload: ResponsesPayload = {
+      model: "gpt-5.4",
+      input: [
+        { type: "message", role: "user", content: [{ type: "input_text", text: "hi" }] },
+        // A `call_`/`toolu_`-prefixed id survives from a CC-origin or Anthropic-native tool call echoed
+        // into a native Responses request — normalizeCallIds is call_-only and gated; this is the
+        // unconditional last-mile catch-all.
+        { type: "function_call", id: "call_jCWUMZ57P3JSaKR5wZBhrO8Z", call_id: "call_jCWUMZ57P3JSaKR5wZBhrO8Z", name: "get_weather", arguments: "{}" },
+      ],
+    }
+
+    const prepared = prepareResponsesRequest(payload)
+    const items = prepared.wire.input as Array<{ type?: string; id?: string; call_id?: string }>
+    const fc = items.find((i) => i.type === "function_call")!
+    expect(fc.id).toBeUndefined()
+    // call_id is preserved untouched (matching key; upstream accepts a `call_`-prefixed call_id).
+    expect(fc.call_id).toBe("call_jCWUMZ57P3JSaKR5wZBhrO8Z")
+  })
 })

@@ -9,6 +9,7 @@ import type {
 } from "~/types/api/openai-responses"
 
 import { copilotHeaders } from "~/lib/copilot-api"
+import { stripNonFcFunctionCallItemIds } from "~/lib/openai/responses-conversion"
 import { state } from "~/lib/state"
 import { isNullish } from "~/lib/utils"
 
@@ -103,7 +104,9 @@ export function prepareChatCompletionsRequest(
 }
 
 export function prepareResponsesRequest(payload: ResponsesPayload, opts?: PrepareOpenAIRequestOptions): PreparedOpenAIRequest<ResponsesPayload> {
-  const wire = fitUserField(payload)
+  // Unconditional last-mile wire defense: drop any non-`fc_` function_call item id (upstream 400 backstop —
+  // catches every prefix `normalizeCallIds`' gated call_-only rewrite misses). See responses-conversion.ts.
+  const wire = stripNonFcFunctionCallItemIds(fitUserField(payload))
   const enableVision = hasVisionContent(wire.input)
   const isAgentCall =
     Array.isArray(wire.input) && wire.input.some((item) => item.role === "assistant" || item.type === "function_call" || item.type === "function_call_output")

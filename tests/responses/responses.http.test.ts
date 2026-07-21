@@ -292,7 +292,7 @@ describe("POST /responses", () => {
     expect(functionCallOutput.call_id).toBe("fc_123")
   })
 
-  test("preserves call ids when normalization is disabled", async () => {
+  test("preserves call_id when normalization is disabled, but still strips a non-fc item id (unconditional wire backstop)", async () => {
     setModels({
       object: "list",
       data: [
@@ -324,7 +324,10 @@ describe("POST /responses", () => {
     expect(res.status).toBe(200)
     expect(upstreamFetchMock).toHaveBeenCalledTimes(1)
     const functionCall = getCapturedInputItem(0)
-    expect(functionCall.id).toBe("call_999")
+    // Normalization OFF → call_id is NOT rewritten (`call_999`, not `fc_999`). But the invalid non-fc item
+    // `id` is ALWAYS stripped by the unconditional wire backstop (`stripNonFcFunctionCallItemIds`) — an
+    // `id: call_999` would 400 upstream regardless of this toggle, and the item is matched by call_id alone.
+    expect(functionCall.id).toBeUndefined()
     expect(functionCall.call_id).toBe("call_999")
   })
 
