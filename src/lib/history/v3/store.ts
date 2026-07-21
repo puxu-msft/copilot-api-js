@@ -772,8 +772,7 @@ export function getV3StoreStatus(): V3StoreStatus {
   return { ...status, pendingOperations: pending.length, pendingBytes, summaryBacklog }
 }
 
-export function getV3StoredOperation(operationId: string): V3StoredOperation | undefined {
-  const db = getDatabase()
+export function getV3StoredOperation(operationId: string, db: Database = getDatabase()): V3StoredOperation | undefined {
   ensureV3Schema(db)
   const row = db.prepare("SELECT manifest_gz,pinned,ended_at,timing_source FROM v3_operations WHERE operation_id=?").get(operationId) as
     | { manifest_gz: Uint8Array; pinned: number; ended_at: number | null; timing_source: V3TimingSource }
@@ -791,8 +790,7 @@ export function getV3Operation(operationId: string): ModelOperationRecord | unde
   return getV3StoredOperation(operationId)?.record
 }
 
-export function listV3StoredOperations(kind?: string, limit = 100): Array<V3StoredOperation> {
-  const db = getDatabase()
+export function listV3StoredOperations(kind?: string, limit = 100, db: Database = getDatabase()): Array<V3StoredOperation> {
   ensureV3Schema(db)
   const rows =
     kind ?
@@ -912,8 +910,7 @@ export function countV3Operations(kind?: string): number {
 }
 
 /** Visit persisted operations newest-first with bounded SQLite/result memory. */
-export function visitV3StoredOperations(visitor: (stored: V3StoredOperation) => unknown, kind?: string, pageSize = 64): void {
-  const db = getDatabase()
+export function visitV3StoredOperations(visitor: (stored: V3StoredOperation) => unknown, kind?: string, pageSize = 64, db: Database = getDatabase()): void {
   ensureV3Schema(db)
   let offset = 0
   while (true) {
@@ -970,7 +967,15 @@ export function clearV3Store(db: Database = getDatabase()): void {
   clear()
 }
 
-function hydrateManifest(db: Database, manifestBlob: Uint8Array): ModelOperationRecord {
+/**
+ * Rebuild a full `ModelOperationRecord` from a compressed manifest blob against
+ * CAS tables (`v3_objects`/`v3_sequence_nodes`) and, if `tracksExternal`, `v3_tracks`.
+ * A pure read: touches only the passed-in `db` handle and module-level constants/pure
+ * helpers (never the mutable writer-singleton state — `pending`/`draining`/`status`) —
+ * this is what makes it safe to call against an independent readonly connection
+ * (e.g. from the history-search sidecar, out-of-process search plan Phase 0).
+ */
+export function hydrateManifest(db: Database, manifestBlob: Uint8Array): ModelOperationRecord {
   const manifest = JSON.parse(decoder.decode(decompressBytes(manifestBlob))) as {
     formatVersion?: number
     record: Omit<ModelOperationRecord, "arena"> & {

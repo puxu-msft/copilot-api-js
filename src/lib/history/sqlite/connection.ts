@@ -104,8 +104,52 @@ function assertV3Owner(database: Database, existed: boolean, dbPath: string): vo
     return
   }
   const identityTable = database.prepare("SELECT name FROM sqlite_schema WHERE type = 'table' AND name = 'history_store_identity'").get()
-  const owner = identityTable ? (database.prepare("SELECT owner FROM history_store_identity LIMIT 1").get() as { owner?: string } | undefined)?.owner : undefined
+  const owner =
+    identityTable ? (database.prepare("SELECT owner FROM history_store_identity LIMIT 1").get() as { owner?: string } | undefined)?.owner : undefined
   if (owner !== V3_OWNER_MARKER) throw new Error(`[history/v3] refusing to open unowned existing database: ${dbPath}`)
+}
+
+/**
+ * Open a READONLY connection to an existing `history-v3.db` for a reader that must
+ * never risk a write — e.g. the history-search sidecar (out-of-process search plan
+ * Phase 0), which self-tails the DB from a separate OS process and must be
+ * physically incapable of blocking/corrupting the primary writer.
+ *
+ * Deliberately does NOT reuse `openDatabase()`'s sequence: that path unconditionally
+ * runs `maybeVacuumOnStartup`/`seedAnalyzeIfNeeded` (VACUUM/ANALYZE — confirmed
+ * empirically to throw `attempt to write a readonly database` on a readonly
+ * connection) and (via callers of `ensureV3Schema`) a migration branch that ALTERs
+ * tables whenever the on-disk schema isn't already at the exact current
+ * `SCHEMA_VERSION` — a real possibility for a reader racing a mid-deploy writer.
+ * A readonly opener must be incapable of attempting ANY of those writes, so this
+ * path only ever issues `PRAGMA busy_timeout` (read-safe — WAL readers still need
+ * SQLITE_BUSY retries against a concurrent writer's checkpoint) plus a read-only
+ * owner-marker check. No auto_vacuum, no VACUUM, no ANALYZE, no schema migration.
+ *
+ * Returns an independent handle, NOT tied to the module-singleton tracked by
+ * `openDatabase`/`getDatabase` — the caller owns it and must `.close()` it
+ * (mirrors `createDatabase` itself, not the singleton accessor).
+ */
+export function openDatabaseReadonly(dbPath: string): Database {
+  if (dbPath === ":memory:") throw new Error("[history/sqlite] openDatabaseReadonly requires an on-disk path, not ':memory:'")
+  const database = createDatabase(dbPath, { readonly: true })
+  database.exec(`PRAGMA busy_timeout = ${BUSY_TIMEOUT_MS};`)
+  assertV3OwnerReadonly(database, dbPath)
+  return database
+}
+
+/**
+ * Readonly counterpart to `assertV3Owner` — SELECT only, never CREATE/INSERT the
+ * identity marker table. A readonly connection could not perform that write anyway,
+ * but making the read-only intent explicit here (rather than relying on the write
+ * throwing) keeps the contract self-documenting and gives a clearer error message
+ * than a raw SQLite "attempt to write a readonly database".
+ */
+function assertV3OwnerReadonly(database: Database, dbPath: string): void {
+  const identityTable = database.prepare("SELECT name FROM sqlite_schema WHERE type = 'table' AND name = 'history_store_identity'").get()
+  const owner =
+    identityTable ? (database.prepare("SELECT owner FROM history_store_identity LIMIT 1").get() as { owner?: string } | undefined)?.owner : undefined
+  if (owner !== V3_OWNER_MARKER) throw new Error(`[history/sqlite] refusing to open unowned or not-yet-initialized database readonly: ${dbPath}`)
 }
 
 /** Read a single-value PRAGMA as an integer (0 if absent / non-numeric). */

@@ -40,7 +40,13 @@ export interface SqliteDatabase {
   transaction<T>(fn: () => T): () => T
 }
 
-type DatabaseFactory = (path: string) => SqliteDatabase
+/** Open options every driver must understand — currently just the readonly flag needed
+ *  by the history-search sidecar's readonly connection into `history-v3.db` (Phase 0). */
+export interface DatabaseOpenOptions {
+  readonly?: boolean
+}
+
+type DatabaseFactory = (path: string, options?: DatabaseOpenOptions) => SqliteDatabase
 
 let cachedFactory: DatabaseFactory | undefined
 
@@ -56,10 +62,14 @@ function getFactory(): DatabaseFactory {
 
 function bunFactory(): DatabaseFactory {
   // bun:sqlite already matches the SqliteDatabase shape (incl. .transaction).
+  // bun:sqlite's option key is `readonly` (lowercase) — passing `readOnly` (the
+  // node:sqlite spelling) throws `TypeError: Misspelled option "readOnly" should
+  // be "readonly"` (verified empirically against Bun 1.3.14), so the two
+  // factories below deliberately use DIFFERENT casings for the same concept.
   const mod = nodeRequire("bun:sqlite") as {
-    Database: new (path: string) => SqliteDatabase
+    Database: new (path: string, options?: { readonly?: boolean }) => SqliteDatabase
   }
-  return (path) => new mod.Database(path)
+  return (path, options) => (options ? new mod.Database(path, { readonly: options.readonly ?? false }) : new mod.Database(path))
 }
 
 function nodeFactory(): DatabaseFactory {
@@ -67,14 +77,22 @@ function nodeFactory(): DatabaseFactory {
   // it goes GA). Suppress once so we don't spam the operator's logs.
   suppressNodeSqliteExperimentalWarning()
   const mod = nodeRequire("node:sqlite") as {
-    DatabaseSync: new (path: string) => {
+    DatabaseSync: new (
+      path: string,
+      options?: { readOnly?: boolean },
+    ) => {
       exec(sql: string): void
       prepare(sql: string): SqliteStatement
       close(): void
     }
   }
-  return (path) => {
-    const inner = new mod.DatabaseSync(path)
+  return (path, options) => {
+    // node:sqlite's option key is `readOnly` (capital O) — the bun:sqlite spelling
+    // (`readonly`) is silently IGNORED (verified empirically against Node 24.16:
+    // passing `{ readonly: true }` opens a writable connection with no error), so
+    // getting this casing wrong would silently defeat the readonly guarantee
+    // instead of throwing — hence the explicit per-runtime key mapping here.
+    const inner = options ? new mod.DatabaseSync(path, { readOnly: options.readonly ?? false }) : new mod.DatabaseSync(path)
     return {
       exec: (sql) => inner.exec(sql),
       prepare: (sql) => inner.prepare(sql),
@@ -119,6 +137,6 @@ function suppressNodeSqliteExperimentalWarning(): void {
 }
 
 /** Open a database at the given path using the active runtime's driver. */
-export function createDatabase(path: string): SqliteDatabase {
-  return getFactory()(path)
+export function createDatabase(path: string, options?: DatabaseOpenOptions): SqliteDatabase {
+  return getFactory()(path, options)
 }
