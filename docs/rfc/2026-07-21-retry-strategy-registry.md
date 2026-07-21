@@ -1,7 +1,7 @@
 # RFC：reactive retry 策略声明式 registry
 
 - **日期**：2026-07-21
-- **状态**：草案（待 ≥3 轮对抗审 → 用户审 open questions → plan）
+- **状态**：**评审通过（2 轮 GPT 对抗审，0 blocker）**，待用户签字 → writing-plans
 - **类型**：大重构（内部治理，仿 v4 rewrite-registry）
 - **关联**：v4 rewrite-registry（`docs/v4/03-spec/rewrite-registry.md`，同款治理的先例）、skill `telemetry-architecture`、`large-refactor`；上游探索 spec `docs/spec/2026-07-20-inbound-system-prompt-dispatch-hook.md`（该探索定位「retry 策略是最大未插件化区」，本 RFC 是其下一独立项）
 
@@ -50,6 +50,7 @@ interface RetryStrategyEntry {
   }
   ```
   **承重不变量**（消除「optional 降级成静默运行时假设」的隐患）：需要 `betaProbe`/`resanitize` 的 entry **全部** `appliesTo: targetEndpoint===MESSAGES`，而这 4 个 @messages 腿（direct + 3 reverse，§3.3）的 `RequestState.betaProbe`/`resanitize` **恒被 populate**（[request-state.ts](../../src/lib/pipeline/request-state.ts)）——故「entry 需要 ⟺ appliesTo 门到 @messages ⟺ 该腿必有」三者同真。消费点用**显式 `throwMissing`**（对齐既有 [anthropic-cell.ts:64](../../src/lib/codec/anthropic/anthropic-cell.ts#L64) 的 `throwMissing` 模式）断言而非 `?? []` 静默兜底（守 `never-swallow-errors`）：`(deps.betaProbe ?? throwMissing("betaProbe")).getCandidates()`。这样 appliesTo/config 门控若写错，是**大声抛错**非静默失灵。（备选:按 entry 分组的可辨识 deps 类型保编译期不变量——更强类型安全但更复杂，本不变量成立故取 throwMissing 简洁式;若日后 betaProbe populate 条件与 appliesTo 脱钩再升级。）
+  > **已知边界（评审 R2 核实，footnote 级、非本 RFC 修）**：上述「4 个 @messages 腿恒 populate」的**字面**有一个反例——**WS 构造点** [routes/responses/ws.ts:279](../../src/routes/responses/ws.ts#L279) 调 `createOpenAiResponsesCodec()`（零参、**不**传 reverse 供给），而 HTTP 三入口([responses/handler-v4.ts:137](../../src/routes/responses/handler-v4.ts#L137) 等)都传 `{reverseBetaProbe, reverseMapperHolder}`。但 WS 反向 `@messages` 路径**目前在 S3 `reverseMapperHolder(env)` 就先行 throwMissing 报错**（早于 S4 strategies 装配、被 ws.ts try/catch 转 WS 错误帧优雅关闭）——是**既存未接线/坏路径**、非本 RFC 引入。故 strategies 层 throwMissing 不会误爆是「意外成立」（被更早的独立缺陷挡住）非设计保证。**红线**：日后若接线 WS 反向 leg，**必须同时补齐 `reverseBetaProbe` + `reverseMapperHolder` 两者**（各自独立可选参、易只补一个），否则 `throwMissing("betaProbe")` 会在 strategies 层真实生产触发。
 - **payload vs native**：`create` 返回二者之一;registry 元数据标 `kind: "payload" | "env"`（assembler 对 payload kind 套 `adaptPayloadStrategy`、native 直用）。承接现状（poisoned-thinking 是 native、读 `env.ctx`）。
 
 ### 3.2 assembler（替换三个 buildXxxStrategies）
@@ -137,7 +138,7 @@ shared 三策略在 registry 声明**一次**（`appliesTo: () => true`）;anthr
 
 **Commit invariant（全程）**：每 commit 结束时，三个 leg 经 `cell.n(env)` 产出的策略数组**与现状字节等价**（golden 锁），driver 消费契约不变。中间态绝不半坏。
 
-- **Commit 1**：golden 预捕——`tests/pipeline/retry-strategy-assembly.golden.it.test.ts` 锁**全部 6 个 cell** 当前组装出的 `name[]` 顺序 + 每策略 canHandle 对代表性 error 的判定：`anthropic|MESSAGES`（direct，16）+ **3 条 reverse `@messages`**（`openai-cc|MESSAGES`/`openai-responses|MESSAGES`/`gemini|MESSAGES`，各 16，评审 MEDIUM1）+ `openai-cc|<direct>` + `openai-responses|<direct>`（各 3）。**在改动前的 HEAD 上跑通**（锁定现状）。若只锁 direct 会放过「reverse 腿丢 13 策略」的实现缺陷。
+- **Commit 1**：golden 预捕——`tests/pipeline/retry-strategy-assembly.golden.it.test.ts` 锁**全部 6 个 cell** 当前组装出的 `name[]` 顺序 + 每策略 canHandle 对代表性 error 的判定：`anthropic|MESSAGES`（direct，16）+ **3 条 reverse `@messages`**（`openai-cc|MESSAGES`/`openai-responses|MESSAGES`/`gemini|MESSAGES`，各 16，评审 MEDIUM1）+ `openai-cc|<direct>` + `openai-responses|<direct>`（各 3）。**在改动前的 HEAD 上跑通**（锁定现状）。若只锁 direct 会放过「reverse 腿丢 13 策略」的实现缺陷。**注（评审 R2）**：`openai-responses|MESSAGES` 一组测 **HTTP 构造路径**（[responses/handler-v4.ts:137](../../src/routes/responses/handler-v4.ts#L137)，真实可达），**不**为 WS 构造路径写 golden（[ws.ts:279](../../src/routes/responses/ws.ts#L279) 目前设计上走不通、S3 先报错——给它写 golden 反会把「既存缺陷」误伪装成「受保护行为」，见 §3.1 已知边界）。
 - **Commit 2**：加 `retry-registry.ts`（契约 + order 常量 + 声明集 + assembler），**不接线**（纯新增、零消费者）。单测 assembler filter/sort/appliesTo。
 - **Commit 3**：三个 `buildXxxStrategies` 改为委托 `assembleRetryStrategies`（default config = 全开）。golden（commit 1）**必须仍逐字节通过** = 字节等价证明。
 - **Commit 4**：config `retry.strategies` schema + `isStrategyEnabled` + allow+warn。测试禁用某策略 → 组装集少它 + warn;默认全开 golden 仍过。
