@@ -342,6 +342,45 @@ describe("classifyError", () => {
     expect(result.type).toBe("bad_request")
   })
 
+  // HTTP/2 pre-response teardown: the connection died before ANY response header
+  // (status 0, zero frames — http2-client.ts's `!headersReceived` close backstop).
+  // Reconnect-and-resend is the only path to a usable response → retryable
+  // (network_error). WEAKER than REFUSED (no protocol guarantee) but kept as a
+  // separate token list. Message strings are the EXACT wire form emitted by
+  // http2-client.ts. See docs/plan/2026-07-22-h2-pool-capacity-routing-and-pre-response-retry.md.
+  test("classifies http2 pre-response close (rstCode=0) as network_error", () => {
+    const error = new Error("[http2] upstream stream closed before any response (rstCode=0)")
+    const result = classifyError(error)
+    expect(result.type).toBe("network_error")
+    expect(result.status).toBe(0)
+  })
+
+  test("classifies http2 pre-response close wrapped in cause as network_error", () => {
+    const cause = new Error("[http2] upstream stream closed before any response (rstCode=0)")
+    const error = new Error("upstream request failed", { cause })
+    const result = classifyError(error)
+    expect(result.type).toBe("network_error")
+  })
+
+  // Boundary guard (verified substring non-overlap): the mid-body truncation
+  // "closed before end" is POST-headers — it must stay a body-stream error, NOT
+  // be re-classified as a pre-response retryable. (Reaches classifyError only if
+  // it ever surfaces as a bare error; the point is the pre-response token must
+  // not match it.)
+  test("does NOT reclassify http2 mid-body 'closed before end' as network_error (stays bad_request)", () => {
+    const error = new Error("[http2] upstream stream closed before end (rstCode=8)")
+    const result = classifyError(error)
+    expect(result.type).toBe("bad_request")
+  })
+
+  // The mid-stream buffered-retry truncation is a different string/path — the
+  // pre-response token must not swallow it.
+  test("does NOT reclassify 'closed without message_stop' truncation as pre-response network_error", () => {
+    const error = new Error("upstream stream truncated: closed without message_stop")
+    const result = classifyError(error)
+    expect(result.type).toBe("bad_request")
+  })
+
   test("classifies generic Error as bad_request with status 0", () => {
     const error = new Error("Something went wrong")
     const result = classifyError(error)
