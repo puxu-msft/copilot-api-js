@@ -8,8 +8,10 @@ import {
   //
   describe,
   expect,
+  spyOn,
   test,
 } from "bun:test"
+import consola from "consola"
 
 import type { ChatCompletionsPayload } from "~/types/api/openai-chat-completions"
 
@@ -195,6 +197,42 @@ describe("sanitizeOpenAIMessages", () => {
       expect(result.systemReminderRemovals).toBeGreaterThan(0)
     } finally {
       setStateForTests({ rewriteSystemReminders: saved })
+    }
+  })
+
+  test("removes empty/whitespace-only text parts, counts them, and logs an INFO line", () => {
+    const infoSpy = spyOn(consola, "info").mockImplementation(((..._args: Array<unknown>) => undefined) as unknown as typeof consola.info)
+    try {
+      const payload: ChatCompletionsPayload = {
+        model: "gpt-5.2",
+        messages: [
+          {
+            role: "user",
+            content: [
+              { type: "text" as const, text: "   " },
+              { type: "text" as const, text: "visible" },
+              { type: "text" as const, text: "" },
+            ],
+          },
+        ],
+      }
+
+      const result = sanitizeOpenAIMessages(payload)
+
+      // Only the non-empty part survives.
+      const parts = result.payload.messages[0].content
+      expect(Array.isArray(parts)).toBe(true)
+      if (Array.isArray(parts)) {
+        expect(parts).toHaveLength(1)
+        expect((parts[0] as { text: string }).text).toBe("visible")
+      }
+      // Two empty parts removed; folded into blocksRemoved (no orphan messages here).
+      expect(result.blocksRemoved).toBe(2)
+
+      const logged = infoSpy.mock.calls.map((call) => String(call[0]))
+      expect(logged.some((line) => line.includes("[Sanitizer:OpenAI]") && line.includes("2 empty text blocks"))).toBe(true)
+    } finally {
+      infoSpy.mockRestore()
     }
   })
 })
