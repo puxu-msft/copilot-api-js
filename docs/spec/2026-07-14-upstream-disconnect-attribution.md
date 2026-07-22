@@ -14,7 +14,7 @@ timeout 归因审计（2026-07-11）识别 G1-G5。**G1（跨端点流终止归�
 > **教训（记档）**：v1 复核过期审计时 grep 过窄（漏 `logUpstreamStreamOutcomeError`/`Truncation`）误判 G1 仍在；异模型 GPT reviewer 广口径 grep + git log 纠正。过期审计属二手源，须广口径 + git 时间线复核。
 
 **v3 范围（用户 2026-07-22 拍板）**：不止补缺口，而是把上游流终止归因**做成 bus-native 一等信号 + 接入 /metrics**：
-1. **Producer**：driver 单点发 `request.upstream_stream_disconnect` / `request.upstream_connect_timeout` bus 事件，退役各 pump 手动调用。
+1. **Producer**：handler 层已有的共享诊断函数（`logUpstreamStreamError`/`Truncation`/`OutcomeError`）加发 `request.upstream_stream_disconnect` / `request.upstream_connect_timeout` bus 事件（非 driver 内收口——driver 不持有诊断基座字段，见 §2.1）。
 2. **Console sink**：订阅事件、格式化今天的诊断行（含 G5 补旋钮）。
 3. **Metrics sink（B）**：订阅事件、累加 Prometheus counter 上 `/metrics`（**bus-counter，非 /api/stats registry 维度**——见 §5 决策）。
 4. **缺口搭车**：G2（post-commit warn）、G3（classifyStreamError 认 undici code）、G4（连接层归因，现由 connect-timeout 事件承载）、G5（补旋钮）。
