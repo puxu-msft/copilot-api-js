@@ -754,9 +754,9 @@ export interface TransientRetryOptions {
    * and therefore shutdown, which has no abort signal here on purpose (see
    * runDrain's note) — for minutes. Once the elapsed time (INCLUDING each
    * attempt's own blocking) plus the next backoff would exceed this cap, stop
-   * retrying and report failure. Measured via `Date.now()`, deterministic in
-   * tests via bun's `setSystemTime`. `0`/`undefined` = no time cap (only
-   * `maxAttempts` bounds).
+   * retrying and report failure. Measured via the injectable `now` seam below
+   * (defaults to `Date.now`; tests inject a deterministic counter). `0`/`undefined`
+   * = no time cap (only `maxAttempts` bounds).
    */
   maxTotalMs?: number
   /** Abort collapses the backoff wait (shutdown drain wants to land data fast, not cancel it). */
