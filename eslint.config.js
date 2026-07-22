@@ -22,7 +22,7 @@ export default defineConfigWithVueTs(
       "ui/**/dist/**",
       "eslint.config.js",
       "tsdown.config.ts",
-      "playwright.config.ts",
+      "ui/playwright.config.ts",
       "prettier.config.mjs",
       // Local debug probe scripts at repo root (not in tsconfig project graph).
       "mutation-probe.mjs",
