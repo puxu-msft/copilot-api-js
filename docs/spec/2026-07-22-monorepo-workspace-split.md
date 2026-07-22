@@ -48,10 +48,10 @@
 
 ```mermaid
 graph TD
-    cli["@scope/cli · bin 入口<br/>src/*.ts 顶层 9 文件: main/start/server/auth/debug/logout/list-claude-code/setup-*"]
-    server["@scope/server · HTTP 面<br/>Hono app 组装 + routes/* 薄路由壳（不含深入 SCC 的 handler）"]
-    core["@scope/core 【整块·内部仍成环·过渡态】<br/>19 模块 SCC + 散装 lib/*.ts（state 等）+ error/forward + ws + system-prompt"]
-    foundation["@scope/foundation 【纯·零下游】<br/>utils atomic-fs stream sqlite(driver+compression) process-identity<br/>repetition-detector diff + error 纯基元子集 + ToolDiagnostics 纯类型"]
+    cli["@hsupu/ghc-proxy-cli · bin 入口<br/>src/*.ts 顶层 9 文件: main/start/server/auth/debug/logout/list-claude-code/setup-*"]
+    server["@hsupu/ghc-proxy-server · HTTP 面<br/>Hono app 组装 + routes/* 薄路由壳（不含深入 SCC 的 handler）"]
+    core["@hsupu/ghc-proxy-core 【整块·内部仍成环·过渡态】<br/>19 模块 SCC + 散装 lib/*.ts（state 等）+ error/forward + ws + system-prompt"]
+    foundation["@hsupu/ghc-proxy-foundation 【纯·零下游】<br/>utils atomic-fs stream sqlite(driver+compression) process-identity<br/>repetition-detector diff + error 纯基元子集 + ToolDiagnostics 纯类型"]
     uiv4["ui-v4 / ui（已有 workspace 成员）<br/>经 ~backend/* re-export core 纯类型"]
 
     cli --> server
@@ -62,7 +62,7 @@ graph TD
     uiv4 -. type-only .-> core
 ```
 
-依赖方向严格向下 `foundation ← core ← server ← cli`。`@scope` 占位（当前发布包 `@hsupu/copilot-api`、bin 名 `copilot-api` 均不变）。
+依赖方向严格向下 `foundation ← core ← server ← cli`。**包命名（用户裁断）**：workspace 包 = `@hsupu/ghc-proxy-{foundation,core,server,cli}`（`ghc-proxy` 对应项目内 GHC 简称）。**待确认**：发布根包 `@hsupu/copilot-api` 与 bin 名 `copilot-api` 是否一并改名为 `@hsupu/ghc-proxy` / `ghc-proxy`（公开契约变更，见 §11 开放问题 1）。
 
 ### 3.1 各包边界（裁断结果）
 
@@ -127,21 +127,21 @@ core 是「边界检查器免疫区」，若不设防会熵增成永久泥球。
 
 - **阶段 0 — 脚手架 + 冷区兑现（对 worktree 零撞行）**
   - 0a. 建 `packages/` 骨架；根 workspace 声明追加 `packages/*`；根 tsconfig `~/*`→`src/*` 暂不动。**invariant**：typecheck + `test:backend` 全绿、运行时零行为变化。
-  - 0b. 切 `cli` 包：`src/*.ts` + `main.ts` 入口迁 `packages/cli/src/`，相对 `./lib/...` 改跨包 `@scope/core`（显式化 cli→core 76 边）。**invariant**：`dist/main.mjs` bin 入口仍产出、`bun run start` 行为逐字节不变。
-  - 0c. 切 `foundation` 包：迁已验证纯基元。**invariant**：foundation 包**零** `@scope/core` import（lint + 边界检查器验证）。
+  - 0b. 切 `cli` 包：`src/*.ts` + `main.ts` 入口迁 `packages/cli/src/`，相对 `./lib/...` 改跨包 `@hsupu/ghc-proxy-core`（显式化 cli→core 76 边）。**invariant**：`dist/main.mjs` bin 入口仍产出、`bun run start` 行为逐字节不变。
+  - 0c. 切 `foundation` 包：迁已验证纯基元。**invariant**：foundation 包**零** `@hsupu/ghc-proxy-core` import（lint + 边界检查器验证）。
 - **阶段 1 — 消 2 条 core→server 脏边（server 边界前置、最危险）**
   - 下沉 `routes/responses/conversation-rebuild::rebuildConversationMessages` → core `lib/`（codec 旁），`codec/openai-responses/codec.ts` 改指 lib。
   - 下沉 `routes/responses/fallback::shouldForceChatCompletionsFallback` → core `lib/pipeline/`，`pipeline/router.ts` 改指 lib。
   - **invariant**：`rg 'from "~/routes"' src/lib` 归零（server↔core 单向 DAG 验收 oracle）；两函数行为逐字节不变；`test:backend` 绿。
   - **危险**：`routes/responses/` 是 `client-query-forwarding` worktree 活动核心区。**必须等其 land 后做**，独立 worktree + 逐函数单 commit。
-- **阶段 2 — 切 `server` 包**：server 只装 Hono app 组装 + routes 薄壳；深入 SCC 的 handler 留 core。**invariant**：`packages/server`→`@scope/core` 单向；core 无 `@scope/server` 运行时 import；`GET /openapi.json` 端点表面逐字节不变。
+- **阶段 2 — 切 `server` 包**：server 只装 Hono app 组装 + routes 薄壳；深入 SCC 的 handler 留 core。**invariant**：`packages/server`→`@hsupu/ghc-proxy-core` 单向；core 无 `@hsupu/ghc-proxy-server` 运行时 import；`GET /openapi.json` 端点表面逐字节不变。
 - **阶段 3+ — core 内部增量解环（长期、不设 deadline）**：依托 §5 state 窄接口，逐域从 SCC 剥模块（telemetry/models/token 等边缘、低入度先剥）；每次只剥一个、land 后重评 SCC。测试同置在此阶段随模块迁移增量做。**invariant**：跨包回边只减不增。
 
 ### 7.3 每 commit 通用 invariant
 
 1. **终态绿**：每 commit 后 typecheck + `test:backend`（涉包边界须全后端、fast 档不够）绿；编译中间态仅限单 commit 内。
 2. **行为字节不变**：搬迁类 commit 不改运行时行为，`GET /openapi.json` + golden test 作 oracle。
-3. **DAG 方向单调**：跨包回边数只减不增（`rg 'from "~/routes"' src/lib`、foundation 包内 `@scope/core` 计数等机械 oracle）。
+3. **DAG 方向单调**：跨包回边数只减不增（`rg 'from "~/routes"' src/lib`、foundation 包内 `@hsupu/ghc-proxy-core` 计数等机械 oracle）。
 4. **显式 pathspec 提交**：`git add -- <精确路径>` / `git commit -F <msg> -- <精确路径>`，免疫 peer 并发 `git add` 的 index race。
 
 ### 7.4 最危险的一步
@@ -152,7 +152,7 @@ core 是「边界检查器免疫区」，若不设防会熵增成永久泥球。
 
 ### 8.1 `~/*` 别名演进
 
-包内一律相对 import（`./foo`），跨包一律包名（`@scope/core`）。过渡期用根 tsconfig `paths` 让 `~/*` 继续解析到**搬迁后的真实位置**，作为「尚未迁移的 import」兜底、新代码禁用 `~/*`。**风险**：`~/*` 能解析到任意包会弱化边界硬度（可用 `~/` 偷跨包绕过检查器造假 DAG）——故 lint 必须**同时禁 `@scope/` 反向 + `~/` 跨包**，过渡期 `~/` 跨包用 lint warn、终态 error。
+包内一律相对 import（`./foo`），跨包一律包名（`@hsupu/ghc-proxy-core`）。过渡期用根 tsconfig `paths` 让 `~/*` 继续解析到**搬迁后的真实位置**，作为「尚未迁移的 import」兜底、新代码禁用 `~/*`。**风险**：`~/*` 能解析到任意包会弱化边界硬度（可用 `~/` 偷跨包绕过检查器造假 DAG）——故 lint 必须**同时禁 `@hsupu/ghc-proxy-` 反向 + `~/` 跨包**，过渡期 `~/` 跨包用 lint warn、终态 error。
 
 ### 8.2 测试同置（day-1 不动）
 
@@ -161,7 +161,7 @@ core 是「边界检查器免疫区」，若不设防会熵增成永久泥球。
 
 ### 8.3 tsdown build
 
-build 入口留 `cli` 包、仍单入口 `packages/cli/src/main.ts` → `dist/main.mjs`，tsdown（rolldown 底座）沿 `@scope/*` workspace import 把 core/foundation 全 bundle 进单产物、与现状逐字节等价——**不给每包各自出 dist**（产物是单 bin CLI、无包级发布需求、包边界价值全在开发期）。每包 `package.json` 须声明 `exports`/`main` 指向其 `src/index.ts`（顺带成为包公共 API 面）。`neverBundle: ["bun:sqlite","node:sqlite"]` 保持。UI build（`build:ui`/`build:ui-v4`）已独立、正交、不受影响。
+build 入口留 `cli` 包、仍单入口 `packages/cli/src/main.ts` → `dist/main.mjs`，tsdown（rolldown 底座）沿 `@hsupu/ghc-proxy-*` workspace import 把 core/foundation 全 bundle 进单产物、与现状逐字节等价——**不给每包各自出 dist**（产物是单 bin CLI、无包级发布需求、包边界价值全在开发期）。每包 `package.json` 须声明 `exports`/`main` 指向其 `src/index.ts`（顺带成为包公共 API 面）。`neverBundle: ["bun:sqlite","node:sqlite"]` 保持。UI build（`build:ui`/`build:ui-v4`）已独立、正交、不受影响。
 
 **未验证技术点（poc-if-unclear、先探后诺）**：tsdown 对 `workspace:*` 依赖是**内联**（继续单产物）还是**外联**（多产物 + 运行时 resolve node_modules）**尚未实测**。这直接影响阶段 4 后 build 脚本怎么写：若默认内联，单 bundle 产物功能不变、`build:backend` 基本不改；若默认外联，多包发布反而更简单、`neverBundle` sqlite 例外可能不必每包重复。**实施前须派 PoC 验证**（`gpt-souls:poc-runner` 或等价），在此之前**不把「各包可独立 build/发布」写进任何用户可见承诺**（§11 开放问题、§10 未采纳均已对齐）。
 
@@ -169,14 +169,14 @@ build 入口留 `cli` 包、仍单入口 `packages/cli/src/main.ts` → `dist/ma
 
 1. **`~backend/*` 前端别名随 core 物理位置漂移（高危易漏）**：ui-v4 经 `~backend/*`→`../src/*` re-export 后端纯类型（`RequestTelemetrySnapshot`/`LearnedSnapshot` 等）；类型迁进 `packages/core/...` 后 vite alias 会断，须同步更新并用 `bun run build:ui-v4`（**非** typecheck、**非** build:ui）验证 `~backend` 纯度。
 2. **`~backend/*` 拉入后端运行时依赖**：跨包 re-export 时类型出口必须是**纯 barrel**（建议每包除 `src/index.ts` 外另出 `src/types.ts` 纯类型 barrel 供前端消费）；否则某类型 SSOT 被挪进带 state 依赖的模块会拉爆 ui-v4 build。
-3. **`~/*` alias 弱化边界硬度**：见 §8.1，lint 必须同时禁 `@scope/` 反向 + `~/` 跨包，否则「名义 foundation 不 import core、实际用 `~/lib/state` 偷 import」造假 DAG（编译过、检查绿、环还在）。
+3. **`~/*` alias 弱化边界硬度**：见 §8.1，lint 必须同时禁 `@hsupu/ghc-proxy-` 反向 + `~/` 跨包，否则「名义 foundation 不 import core、实际用 `~/lib/state` 偷 import」造假 DAG（编译过、检查绿、环还在）。
 4. **`mock.module` 跨包泄漏 + RESETTERS 分包**：若终态走每包各自 `bun test`，单例 reset 责任分散、`RESETTERS` 表须拆、L1 守卫须改。过渡期单进程全套件不触发（§8.2 推荐 day-1 不拆测试进程的原因之一）。
 5. **type-only 回边被 project refs `composite` 卡死**：day-1 贸然上 project references 会拒 ws 2 条 `import type` + core↔server type-only 边（§4 已用 lint 规避）。
 6. **单 lockfile hoisting 的幽灵依赖**：bun workspace 单根 `bun.lock` hoist——某包用了只在别包声明的依赖仍能 resolve，包 `dependencies` 声明可能与实际 import 不符而不报错（发布/CI 换环境即崩）。建议 `knip`（已在用）或 depcruise 校验「每包 import 的外部依赖 ⊆ 该包 package.json deps」。
 7. **`sqlite/driver.ts` 下沉 foundation 后 runtime 分流不能断**：driver 靠 `typeof globalThis.Bun` 分流 `bun:sqlite`/`node:sqlite`、`neverBundle` external。迁移后**必跑真实 server（非 4141 端口）+ Node 双 runtime 冒烟**，不能只信 typecheck。
 8. **state 消费端迁移退化风险**（因用户选 day-1 推进而非双轨，此坑变体）：迁移若中途搁置会短期出现「部分窄接口 + 部分旧 state」混态；因不留双轨、须确保每个 land 的 commit 内 typecheck 绿、不把混态跨 commit 边界带出。
 9. **胖模块里的瘦基元被下层反向依赖（切分前须先抽）**：`lib/tui/` 不是纯 server 表现层——`token/lifecycle.ts` 与 `token/providers/device-auth.ts` 反向依赖 `tui/sensitive-output.ts::writeSensitiveOnce`（「敏感信息只写一次到交互终端」原语）。若把整个 `lib/tui/` 当「server 专属」搬走，会连带把 token（core/foundation 候选）依赖的这个基元搬歪、产生新 core→server 回边。**切分前先把 `sensitive-output.ts`（+ 其 port 接口）单独抽到 foundation 或 core 顶层**，`lib/tui/` 目录整体才能干净归位。（`diagnostics/emergency-output` 是同类模式、目前方向正确——切分时逐一识别。）
-10. **cli 禁依赖 server 的建库菱形**：`cli` 目前**零处** import `routes/`（只单向 core→server 消费）。切分后必须保持——否则 `tsc -b`/build 顺序被迫成 foundation→core→{server,cli}→??? 菱形。**阶段 0 就写一条架构测试钉死 `cli` 不 import `@scope/server`**。
+10. **cli 禁依赖 server 的建库菱形**：`cli` 目前**零处** import `routes/`（只单向 core→server 消费）。切分后必须保持——否则 `tsc -b`/build 顺序被迫成 foundation→core→{server,cli}→??? 菱形。**阶段 0 就写一条架构测试钉死 `cli` 不 import `@hsupu/ghc-proxy-server`**。
 11. **大搬迁用 codemod 不用 sed**：阶段 4 批量改 import 路径用 `ts-morph` codemod，不手工 sed——记忆库 `sed-touched-files-bundle-inflight-work` 已踩过「sed 碰过的文件裹入在飞工作」的坑；搬后 `git diff --cached --stat` 逐文件核对无夹带修改。
 
 ## 10. 未采纳方案记录（record-not-adopted）
@@ -191,7 +191,7 @@ build 入口留 `cli` 包、仍单入口 `packages/cli/src/main.ts` → `dist/ma
 
 ## 11. 开放问题（待 review 澄清）
 
-1. `@scope` 具体命名（`@hsupu/` 复用？还是 `@copilot-api/`？）——不影响结构、可实施期定。
+1. **`@scope` 命名已定** = `@hsupu/ghc-proxy-{foundation,core,server,cli}`。**遗留子决策**：发布根包 `@hsupu/copilot-api` + bin `copilot-api` 是否一并改名 `@hsupu/ghc-proxy` / `ghc-proxy`（公开契约、影响 npm 发布与用户 CLI 命令，待用户定；不影响拆分结构）。
 2. 阶段 1 依赖 `client-query-forwarding` worktree land——需确认其预计 land 时间，或是否协调「只动那 2 个被 core 依赖的函数」提前解封。
 3. `packages/test-harness` 是否作为独立包承载共享测试基建（sandbox-paths/fixtures/helpers）——阶段 3+ 测试同置时决策，本 spec 先标记。
 
