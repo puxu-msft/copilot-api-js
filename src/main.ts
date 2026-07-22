@@ -47,7 +47,7 @@ const main = defineCommand({
     "setup-codex": setupCodex,
     // The history-search sidecar's own service command — a first-class,
     // documented, independently-run service (history-search-out-of-process
-    // plan Phase 3′; see docs/deploy/history-search.service for a systemd
+    // plan Phase 3′; see contrib/systemd/history-search.service for a systemd
     // unit). NOT spawned/supervised by the main `start` server — an operator
     // starts it directly (e.g. via systemd) whenever they want full-text
     // History search; the main process degrades to empty search results

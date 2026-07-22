@@ -65,3 +65,20 @@ sudo /usr/local/bin/copilot-api-deploy.sh
 ## app 侧无需 pidfile
 
 systemd 路径下 app **完全不写、不读 pidfile**——活槽发现（A1）问的是 systemd 运行态，交接信号（B1）由部署脚本外部发送。app 只需注册好 `SIGUSR2 → gracefulShutdown("handoff")` 这一个共享原语，`pidfile` 自管理机制是裸手动路径专属，两者互不干扰（详见 `docs/lifecycle.md`「pidfile 机制是裸手动路径专属」一节的环境判别逻辑）。
+
+---
+
+# history-search sidecar 服务（可选，独立）
+
+`history-search.service` 是 History 全文搜索 sidecar 的 systemd 单元样例（[docs/plan/2026-07-21-history-search-out-of-process.md](../../docs/plan/2026-07-21-history-search-out-of-process.md)）。与上面的主服务器换代**完全无关**：这是一个**独立进程**，主 `copilot-api start` 从不 spawn/监管/重启它，只持一个 UDS client 查询它。安装步骤与理由见 unit 文件自身头部注释。
+
+## 装之前必须先构建 native 产物
+
+sidecar 依赖原生 Tantivy `.node`（`native/history-search/copilot_history_search.node`）——它被 `.gitignore`（编译产物、非源码），依赖本机 Rust 工具链，`bun install` 不产出。**启动 systemd 单元前必须先 `bun run build:history-search`**（也已并入顶层 `bun run build`），否则 sidecar 起不来（`getNativeHistorySearch()` reject）。这与本仓库其它 native/编译产物的构建管线一致。
+
+## 要点
+
+- **独立进程、与主服务器无父子关系。** 主进程不 spawn/监管/重启它，只经 UDS client 查询。
+- **可选。** 不跑此服务，主服务器照常全功能;全文搜索 `GET /history/api/search` 只是返空结果（`partial: true`）而非报错。`GET /api/status` 的 `history_search` 报告 sidecar 当前是否可达，可达时附 `tail` 子对象（`lastSuccessfulTailAt` / `poisonedCount` / `lastTailError`）——纯可达性 ping 分不清「健康」与「可达但索引已静默停止增长」。
+- **零参数默认对齐 PATHS。** `history-search-daemon`（该服务的 citty 子命令）的 `--db`/`--socket`/`--index` 默认值直取主进程 UDS client 读的同一组 `PATHS.HISTORY_V3_DB` / `HISTORY_SEARCH_SOCKET` / `HISTORY_SEARCH_DIR` 常量（`src/lib/config/paths.ts` 单一事实源），两个独立启动的单元间无路径需要保持同步。
+- **崩溃恢复全交给 systemd。** `Restart=on-failure` + `RestartSec=`/`StartLimitIntervalSec=`/`StartLimitBurst=` 取代了早期（已废弃）在进程内自研的指数退避 supervisor + crash-loop-abandon 逻辑——systemd 已把这件事做得又好又可见，且不用再引入一个「它自己的死亡也需要被监管」的第二进程。

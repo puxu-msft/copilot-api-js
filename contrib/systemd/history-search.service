@@ -1,0 +1,70 @@
+# systemd unit template for the history-search sidecar — an OPTIONAL,
+# independent service (history-search-out-of-process plan, docs/plan/2026-07-21-
+# history-search-out-of-process.md). It is NOT spawned or supervised by the main
+# `copilot-api start` server — the two are entirely independent processes with
+# no parent/child relationship. Install this unit only if you want full-text
+# History search; without it, the main server still runs fine and simply
+# reports empty search results (its UDS client never-throws when this service
+# is absent/unreachable — see src/lib/history/search/uds-client.ts).
+#
+# Install:
+#   bun run build:history-search   # builds the native Tantivy .node addon --
+#                                   # .gitignore'd, requires a local Rust
+#                                   # toolchain, NOT produced by `bun install`
+#                                   # alone; the daemon fails to start without it
+#   sudo cp contrib/systemd/history-search.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now history-search
+#
+# Adjust User/WorkingDirectory/ExecStart below to match your install (a dev
+# checkout runs `bun run src/main.ts`; a packaged install runs `node dist/
+# main.mjs` — package.json's own `bin` target). No --db/--socket/--index flags
+# are needed: history-search-daemon's own default args already resolve to the
+# SAME PATHS-derived paths (HISTORY_V3_DB / HISTORY_SEARCH_SOCKET /
+# HISTORY_SEARCH_DIR) the main process reads — single source of truth, no
+# path parameters to keep in sync between the two independently-started units.
+
+[Unit]
+Description=copilot-api history-search sidecar (independent full-text search service)
+# Purely advisory ordering — the main service does not depend on this one
+# being up, and this one does not depend on the main service either; both
+# tolerate the other being absent/down/restarting at any time.
+After=network.target
+
+[Service]
+Type=simple
+# Dev checkout example (adjust to your actual install path/runtime):
+WorkingDirectory=/opt/copilot-api
+ExecStart=/usr/bin/env bun run src/main.ts history-search-daemon
+# Packaged install example instead:
+# ExecStart=/usr/bin/env node dist/main.mjs history-search-daemon
+
+# Crash-loop / restart policy — this REPLACES the retired in-process
+# supervisor's exponential-backoff + crash-loop-abandon logic entirely.
+# systemd's own StartLimitIntervalSec/StartLimitBurst (below) is the crash-loop
+# ceiling: if the service fails to stay up `StartLimitBurst` times within
+# `StartLimitIntervalSec`, systemd stops trying and marks the unit failed —
+# `systemctl status history-search` / `journalctl -u history-search` then
+# shows the operator exactly what happened, instead of a silently-abandoned
+# in-process supervisor flag no one is watching.
+Restart=on-failure
+RestartSec=2
+StartLimitIntervalSec=300
+StartLimitBurst=8
+
+# Graceful shutdown: daemon-entry.ts's SIGTERM handler flushes the staged
+# Tantivy commit, closes the index, then unlinks its own socket file — none of
+# that should ever take anywhere near this long; the generous ceiling is a
+# safety margin, not an expected duration.
+TimeoutStopSec=90
+
+# Hardening (optional but recommended — the sidecar only needs readonly
+# access to history-v3.db and read/write access to its own index directory +
+# socket path, all under one directory tree):
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=%h/.local/share/copilot-api
+
+[Install]
+WantedBy=multi-user.target

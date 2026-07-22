@@ -184,7 +184,7 @@ export function registerCompatPaths(registry: OpenAPIRegistry): void {
       + "Only `source=inbound` (client-facing conversation + response) is currently served by the sidecar's Tantivy projection — "
       + "the other 4 legacy facets (`rewrites-req`/`rewrites-resp`/`req-headers`/`resp-headers`) return `{rows:[],partial:true}` "
       + "(unsupported, not zero matches; see docs/todo/deferred-backlog.md for what expanding them would require). "
-      + "The sidecar is an OPTIONAL, separately-started service (docs/deploy/history-search.service) — when it is not "
+      + "The sidecar is an OPTIONAL, separately-started service (contrib/systemd/history-search.service) — when it is not "
       + "installed/running, `source=inbound` degrades the SAME way (`{rows:[],nextCursor:null,partial:true}`, HTTP 200, never a 500).",
     responses: ok200("Search results ({partial:true} when the requested facet is unsupported or the sidecar is unreachable)"),
   })

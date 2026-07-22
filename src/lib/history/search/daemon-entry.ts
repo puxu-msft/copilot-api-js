@@ -7,7 +7,7 @@
  * genuinely INDEPENDENT, separately-started service (systemd `Restart=on-failure`,
  * or any other process manager, or a bare foreground run) with no parent process
  * of its own. An operator runs it directly, typically via systemd
- * (docs/deploy/history-search.service).
+ * (contrib/systemd/history-search.service).
  *
  * Runs the full sidecar lifecycle in THIS process, deliberately isolated from
  * the main server process:
@@ -206,7 +206,7 @@ export const historySearchDaemonCommand = defineCommand({
     description:
       "Run the independent history-search sidecar service — tails history-v3.db readonly, "
       + "builds a Tantivy full-text index, and serves search queries over a Unix domain socket. "
-      + "Run this as its own long-lived process (e.g. via systemd, see docs/deploy/history-search.service); "
+      + "Run this as its own long-lived process (e.g. via systemd, see contrib/systemd/history-search.service); "
       + "the main `start` server never spawns or supervises it — it is an optional independent service, "
       + "and the main process degrades to empty search results whenever it is not reachable.",
   },

@@ -200,7 +200,7 @@ Full-text History search runs as an **independent, optional service** — `histo
 copilot-api history-search-daemon
 ```
 
-For a persistent, auto-restarting deployment, see the systemd unit template and notes in **[`docs/deploy/`](docs/deploy/)**.
+For a persistent, auto-restarting deployment, see the systemd unit templates and notes in **[`contrib/systemd/`](contrib/systemd/)** (main-server blue-green units + the optional history-search sidecar unit).
 
 ---
 

@@ -393,7 +393,7 @@ describe("search endpoint: sidecar-forwarded contract (no sidecar reachable in t
     // socket) — this file's fixture never points PATHS.HISTORY_SEARCH_SOCKET
     // at a real listener, so this exercises the "sidecar not installed/
     // running" degrade path, which is the common production case for an
-    // operator who has not set up the optional service (docs/deploy/).
+    // operator who has not set up the optional service (contrib/systemd/).
     const search = await get("/api/search?source=inbound&q=needle")
     expect(search.status).toBe(200)
     expect(await json<{ rows: Array<unknown>; partial: boolean }>(search)).toMatchObject({ rows: [], partial: true })
