@@ -51,6 +51,11 @@ import {
   commitPreparedOperation,
   prepareModelOperation,
 } from "~/lib/history/v3/store"
+import {
+  //
+  compressBytes,
+  decompressBytes,
+} from "~/lib/sqlite/compression"
 
 const tmpDirs: Array<string> = []
 function freshDir(prefix: string): string {
@@ -163,8 +168,10 @@ describe("history-search sidecar daemon (Phase 1, standalone)", () => {
 
     // "Crash restart": brand-new daemon instance + brand-new index handle, reading the
     // cursor back from disk — this is the ONLY channel across the two instances.
+    // `indexedAtBoundaryMs` (2026-07-22, blocker-2 fix) always carries at least the
+    // just-tailed row's own id — see daemon.ts's `advanceCursorPastRow`.
     const persistedCursor = readTailCursor(indexPath)
-    expect(persistedCursor).toEqual({ committedAt: expect.any(Number), operationId: "op-1" })
+    expect(persistedCursor).toEqual({ committedAt: expect.any(Number), operationId: "op-1", indexedAtBoundaryMs: ["op-1"] })
 
     const index2 = await openIndex(indexPath)
     const daemon2 = createHistorySearchDaemon({ dbPath, indexPath, index: index2 })
@@ -268,5 +275,152 @@ describe("history-search sidecar daemon (Phase 1, standalone)", () => {
     expect(Buffer.from(after.manifest_gz).equals(Buffer.from(before.manifest_gz))).toBe(true)
 
     closeDatabase()
+  })
+})
+
+describe("merged-state review blockers (2026-07-22) — silent permanent data loss, real probes", () => {
+  test("BLOCKER 1: a single poisoned manifest (bad format version) permanently wedges the tail -- every HEALTHY row after it is silently never indexed, forever, even across restarts", async () => {
+    const dbDir = freshDir("daemon-poison-db-")
+    const dbPath = path.join(dbDir, "history-v3.db")
+    const indexDir = freshDir("daemon-poison-index-")
+    const indexPath = path.join(indexDir, "index")
+
+    // Row 1: healthy, committed first (lowest committed_at/operation_id -- tailed first).
+    commitOperation(dbPath, "aaa-healthy-before", { conversation: "beforepoisonneedle", responseBody: "beforeresp", upstreamOnly: "beforeup" })
+    // Row 2: will be poisoned in place (mirrors store.it.test.ts's "rejects unsupported
+    // future manifest formats" corruption technique) -- a REAL trigger for hydrateManifest
+    // to throw (unsupported formatVersion), not a synthetic mock.
+    commitOperation(dbPath, "bbb-poison", { conversation: "poisonneedle", responseBody: "poisonresp", upstreamOnly: "poisonup" })
+    // Row 3: healthy, committed AFTER the poisoned row -- this is the row that must NOT
+    // be permanently lost just because an earlier row is corrupt.
+    commitOperation(dbPath, "ccc-healthy-after", { conversation: "afterpoisonneedle", responseBody: "afterresp", upstreamOnly: "afterup" })
+
+    const poisonDb = openDatabase(dbPath)
+    const poisonRow = poisonDb.prepare("SELECT manifest_gz FROM v3_operations WHERE operation_id=?").get("bbb-poison") as { manifest_gz: Uint8Array }
+    const manifest = JSON.parse(new TextDecoder().decode(decompressBytes(poisonRow.manifest_gz))) as { formatVersion: number }
+    manifest.formatVersion = 999 // triggers hydrateManifest's real "unsupported manifest format version" throw
+    poisonDb
+      .prepare("UPDATE v3_operations SET manifest_gz=? WHERE operation_id=?")
+      .run(compressBytes(new TextEncoder().encode(JSON.stringify(manifest))), "bbb-poison")
+    closeDatabase()
+
+    const index = await openIndex(indexPath)
+    const daemon = createHistorySearchDaemon({ dbPath, indexPath, index })
+    // A single tailOnce() call must survive the poisoned row internally (this daemon's
+    // own contract: one call catches everything up to "now") -- it must not throw and
+    // abandon rows 2/3 unprocessed just because row 2 is corrupt.
+    const result = await daemon.tailOnce()
+    await index.flush()
+
+    // The healthy row BEFORE the poison must always be searchable (this part never
+    // regresses even in the pre-fix code).
+    expect((await index.search("beforepoisonneedle", undefined, 10)).map((hit) => hit.operationId)).toEqual(["aaa-healthy-before"])
+
+    // THE CORE ASSERTION (silent permanent data loss): the healthy row AFTER the poison
+    // must ALSO be searchable -- one bad manifest must never take down every row behind
+    // it. Pre-fix, tailOnce() throws on row 2 and returns/propagates before row 3 is ever
+    // reached, so this fails (rows 2 AND 3 both silently missing from the index forever,
+    // and the cursor never advances past row 1 -- confirmed by the cursor assertion below).
+    expect((await index.search("afterpoisonneedle", undefined, 10)).map((hit) => hit.operationId)).toEqual(["ccc-healthy-after"])
+
+    // The cursor must advance PAST the poisoned row (to row 3, the last row in the batch)
+    // -- not get stuck at row 1. A cursor stuck at row 1 means every future tailOnce()
+    // call re-reads the SAME poisoned row and re-throws forever (the "operator deletes
+    // tail-cursor.json and it doesn't help" symptom from the report -- the cursor was
+    // never the thing wedged, the poisoned ROW itself is).
+    expect(result.cursor?.operationId).toBe("ccc-healthy-after")
+    expect(readTailCursor(indexPath)?.operationId).toBe("ccc-healthy-after")
+
+    await index.close()
+    daemon.close()
+  })
+
+  test("BLOCKER 2: two operations committed in the SAME millisecond, indexed in one tail round, then discovered across TWO separate tail rounds in either lexicographic order -- neither is permanently lost", async () => {
+    const dbDir = freshDir("daemon-tie-db-")
+    const dbPath = path.join(dbDir, "history-v3.db")
+    const indexDir = freshDir("daemon-tie-index-")
+    const indexPath = path.join(indexDir, "index")
+
+    // Commit the LEXICOGRAPHICALLY LARGER operation_id ("zzz-op") FIRST -- the daemon's
+    // first tailOnce() round only sees this one (mirrors the real race: runDrain commits
+    // "zzz-op" in round-1's tail window, and "aaa-op" has not landed on disk yet).
+    commitOperation(dbPath, "zzz-op-committed-first", { conversation: "zzzneedle", responseBody: "zzzresp", upstreamOnly: "zzzup" })
+
+    const index = await openIndex(indexPath)
+    const daemon = createHistorySearchDaemon({ dbPath, indexPath, index })
+    const firstRound = await daemon.tailOnce()
+    expect(firstRound.processed).toBe(1)
+    await index.flush()
+
+    // Now commit the LEXICOGRAPHICALLY SMALLER operation_id ("aaa-op") -- and force it to
+    // share the EXACT SAME committed_at millisecond as "zzz-op-committed-first" (this is
+    // the real race window this test proves: two backend-to-backend commitPreparedOperation
+    // calls landing in the same Date.now() millisecond, which is entirely plausible under
+    // load -- runDrain's own per-item yield is a single microtask tick, far under 1ms).
+    commitOperation(dbPath, "aaa-op-committed-second", { conversation: "aaaneedle", responseBody: "aaaresp", upstreamOnly: "aaaup" })
+    const tieDb = openDatabase(dbPath)
+    const zzzRow = tieDb.prepare("SELECT committed_at FROM v3_operations WHERE operation_id=?").get("zzz-op-committed-first") as { committed_at: number }
+    tieDb.prepare("UPDATE v3_operations SET committed_at=? WHERE operation_id=?").run(zzzRow.committed_at, "aaa-op-committed-second")
+    closeDatabase()
+
+    // Round 2: the daemon's cursor is currently (zzzRow.committed_at, "zzz-op-committed-first").
+    // "aaa-op-committed-second" has the SAME committed_at but a LEXICOGRAPHICALLY SMALLER
+    // operation_id -- under the naive `WHERE (committed_at,operation_id) > (?,?)` keyset,
+    // `(ms, "aaa-op-committed-second") > (ms, "zzz-op-committed-first")` is FALSE (SQLite
+    // row-value comparison is lexicographic on the tuple), so this row is silently excluded
+    // from EVERY future tail round, forever -- this is the exact permanent-loss scenario.
+    const secondRound = await daemon.tailOnce()
+    await index.flush()
+
+    // THE CORE ASSERTION: "aaa-op-committed-second" must eventually be indexed even though
+    // it committed in the same millisecond as, and sorts lexicographically before, a row
+    // the cursor already passed. Pre-fix this fails (search returns []).
+    expect((await index.search("aaaneedle", undefined, 10)).map((hit) => hit.operationId)).toEqual(["aaa-op-committed-second"])
+    // The already-indexed row must still be there too (no accidental double-processing bugs).
+    expect((await index.search("zzzneedle", undefined, 10)).map((hit) => hit.operationId)).toEqual(["zzz-op-committed-first"])
+    // Second round must report at least the one genuinely-new row as processed (not 0,
+    // which would mean the fix silently dropped it without even attempting the overlap re-scan).
+    expect(secondRound.processed).toBeGreaterThanOrEqual(1)
+
+    await index.close()
+    daemon.close()
+  })
+
+  test("BLOCKER 2 (restart variant): the overlap-dedup state survives a daemon restart -- a fresh instance reading the persisted cursor does not re-lose the same-millisecond row", async () => {
+    const dbDir = freshDir("daemon-tie-restart-db-")
+    const dbPath = path.join(dbDir, "history-v3.db")
+    const indexDir = freshDir("daemon-tie-restart-index-")
+    const indexPath = path.join(indexDir, "index")
+
+    commitOperation(dbPath, "zzz-restart-first", { conversation: "zzzrestartneedle", responseBody: "resp", upstreamOnly: "up" })
+
+    const index1 = await openIndex(indexPath)
+    const daemon1 = createHistorySearchDaemon({ dbPath, indexPath, index: index1 })
+    await daemon1.tailOnce()
+    await index1.flush()
+    daemon1.close()
+    await index1.close()
+
+    commitOperation(dbPath, "aaa-restart-second", { conversation: "aaarestartneedle", responseBody: "resp", upstreamOnly: "up" })
+    const tieDb = openDatabase(dbPath)
+    const zzzRow = tieDb.prepare("SELECT committed_at FROM v3_operations WHERE operation_id=?").get("zzz-restart-first") as { committed_at: number }
+    tieDb.prepare("UPDATE v3_operations SET committed_at=? WHERE operation_id=?").run(zzzRow.committed_at, "aaa-restart-second")
+    closeDatabase()
+
+    // "Crash restart": a BRAND NEW daemon instance, reading ONLY the persisted
+    // tail-cursor.json off disk -- the overlap-dedup bookkeeping must be part of what
+    // gets persisted, or a restart at exactly this moment would re-introduce the loss
+    // (in-memory-only dedup state would reset to "nothing indexed yet at this ms" and
+    // still miss the tie-breaking row via the same keyset boundary bug).
+    const index2 = await openIndex(indexPath)
+    const daemon2 = createHistorySearchDaemon({ dbPath, indexPath, index: index2 })
+    await daemon2.tailOnce()
+    await index2.flush()
+
+    expect((await index2.search("aaarestartneedle", undefined, 10)).map((hit) => hit.operationId)).toEqual(["aaa-restart-second"])
+    expect((await index2.search("zzzrestartneedle", undefined, 10)).map((hit) => hit.operationId)).toEqual(["zzz-restart-first"])
+
+    daemon2.close()
+    await index2.close()
   })
 })

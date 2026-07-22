@@ -6,13 +6,59 @@
  * flush. Pure library surface, independently drivable by tests — process entry
  * point / UDS wiring / supervisor land in later phases (P2/P3), NOT here.
  *
- * Cursor discipline (plan "architecture decision 2", reviewed):
+ * Cursor discipline (plan "architecture decision 2", REVISED 2026-07-22 after a
+ * merged-state review found two silent-permanent-data-loss blockers in the
+ * original design -- both confirmed via real probes, not theoretical):
+ *
  *  - Keyset `(committed_at, operation_id)`, NEVER a raw rowid. `committed_at` is the
  *    INSERT-time wall clock written by `commitPreparedOperation` (`Date.now()`),
- *    monotonic by construction; `operation_id` breaks ties within the same
- *    millisecond. A rowid cursor would silently skip/reprocess rows across a
- *    `VACUUM` (SQLite's own docs: VACUUM "may" renumber rowids on a table without an
- *    INTEGER PRIMARY KEY -- confirmed empirically to actually happen here).
+ *    monotonic by construction; `operation_id` was ORIGINALLY meant to "break ties
+ *    within the same millisecond" -- BUT `operation_id` is a random UUID, entirely
+ *    unrelated to commit ORDER. A naive `WHERE (committed_at,operation_id) > (?,?)`
+ *    keyset boundary is therefore a row-value (lexicographic tuple) comparison: if
+ *    the cursor lands on `(ms, "zzz...")` and a DIFFERENT row committed in the SAME
+ *    millisecond happens to have a lexicographically SMALLER operation_id (e.g.
+ *    "aaa..."), `(ms, "aaa...") > (ms, "zzz...")` is FALSE forever after -- that row
+ *    is silently excluded from every future tail round, permanently. (A raw rowid
+ *    cursor would ALSO silently skip/reprocess rows across a `VACUUM` -- SQLite's own
+ *    docs: VACUUM "may" renumber rowids on a table without an INTEGER PRIMARY KEY,
+ *    confirmed empirically to actually happen here -- which is why rowid was
+ *    rejected in the first place; the fix below does not reopen that hole.)
+ *
+ *    THE FIX (user-directed root-cause repair, keeps the sidecar-side-only
+ *    decoupling -- zero authoritative-schema changes, main process still carries
+ *    zero search burden): `tailOnce()` runs in TWO passes. Pass 1 ("boundary
+ *    re-scan") re-queries EXACTLY the cursor's `committed_at` millisecond with
+ *    `AND operation_id NOT IN <indexedAtBoundaryMs>` until nothing new turns up
+ *    (provably terminating -- see the code comment at its call site: each
+ *    iteration folds newly-seen ids into the persisted exclusion set, so the
+ *    candidate pool strictly shrinks and cannot cycle). Pass 2 (the ordinary
+ *    forward loop) then queries everything with `committed_at > cursor.
+ *    committedAt` -- a plain monotonic filter, since pass 1 already fully
+ *    resolved the tie-breaking millisecond, there is no same-millisecond hazard
+ *    left for pass 2 to worry about. The cursor additionally persists the set of
+ *    operation_ids already indexed AT the boundary millisecond
+ *    (`indexedAtBoundaryMs`) so this re-scan does not re-report already-seen rows
+ *    as newly processed. Once `committed_at` advances past the boundary
+ *    millisecond, this set resets to just the new row (it only ever needs to
+ *    remember ONE millisecond's membership, not an unboundedly-growing history)
+ *    — persisted into `tail-cursor.json` so a restart mid-millisecond does not
+ *    reopen the same loss window (a purely in-memory dedup set would reset on
+ *    restart and re-lose the tie-breaking row at the exact same boundary).
+ *    `HistoryIndex.upsert` is delete-then-add idempotent, so even a hypothetical
+ *    re-upsert of an already-indexed row would be a harmless no-op -- the
+ *    exclusion set is a correctness+termination mechanism, not merely an
+ *    optimization.
+ *
+ *    NOTE (explicitly out of scope, unchanged precondition): this construction
+ *    assumes `committed_at` is monotonic non-decreasing across commits, which in
+ *    turn assumes the system clock never moves backward between two
+ *    `commitPreparedOperation` calls (`Date.now()` is not itself guaranteed
+ *    monotonic across an NTP step-back). A genuine backward clock jump could still
+ *    theoretically violate the ordering this scheme depends on -- this is a
+ *    pre-existing assumption inherited from the original design, not something
+ *    this fix introduces or resolves.
+ *
  *  - append-once premise: `v3_operations` never gets an UPDATE that changes
  *    `manifest_gz` (the sole input to `projectSearchableText`) for an already-committed
  *    row -- `commitPreparedOperation` only INSERTs once per operation_id and treats a
@@ -20,6 +66,25 @@
  *    (never a silent overwrite). So a keyset tail can never miss a "content-changing
  *    revision" because there is no such revision. Locked as a regression in
  *    `tests/history/search/daemon.it.test.ts`.
+ *
+ * Poison-row isolation (2026-07-22, the SECOND merged-state review blocker): a
+ * single row whose manifest cannot be hydrated (a real trigger: an unsupported/
+ * future manifest format version, a missing CAS object, an incomplete sequence --
+ * `hydrateManifest`/`v3/store.ts` throws on all three) used to propagate straight
+ * out of `tailOnce()`'s per-row loop, aborting the ENTIRE round -- every row after
+ * the poisoned one in that batch (and every batch after it, forever, since the
+ * cursor never advanced past it) was silently never indexed. Deleting
+ * `tail-cursor.json` did not help: the poison is IN THE ROW ITSELF, not the
+ * cursor. Mirrors this project's established poison-isolation discipline (skill
+ * `persistence-async-invariants`; `telemetry/store.ts`'s `computeTierSketchBlob`
+ * read-merge-serialize poison isolation): each row's hydrate+project+upsert is
+ * individually try/caught; a poisoned row is COUNTED (`poisoned`) and logged
+ * (rate-limited per operation_id -- see `createPoisonLogDeduper` below -- so a
+ * permanently-poisoned row does not spam the log every tail tick forever), but the
+ * cursor STILL ADVANCES past it and the loop continues to the next row. A search
+ * request for a poisoned operation degrades to "not indexed" (same never-throw
+ * contract the rest of this out-of-process design already guarantees end to end),
+ * not "the whole sidecar's index silently stops growing".
  *
  * Autocommit discipline (plan warning, reviewed): each tail round issues ONE
  * `SELECT ... LIMIT n` as an independent readonly statement -- there is NEVER a
@@ -44,12 +109,23 @@ import { openDatabaseReadonly } from "~/lib/history/sqlite/connection"
 import { projectSearchableText } from "~/lib/history/v3/projection"
 import { hydrateManifest } from "~/lib/history/v3/store"
 
-/** Keyset tail cursor -- the LAST row this daemon has successfully upserted (not
- *  flushed; flush is a separate, cheaper commit boundary). `null`/absent means "tail
- *  from the very beginning". */
+/**
+ * Keyset tail cursor -- the LAST row this daemon has successfully upserted (not
+ * flushed; flush is a separate, cheaper commit boundary). `null`/absent means "tail
+ * from the very beginning".
+ *
+ * `indexedAtBoundaryMs` (2026-07-22, blocker-2 fix): the set of `operation_id`s
+ * already indexed AT the `committedAt` boundary millisecond -- see the module doc's
+ * "overlap re-scan" explanation. Persisted (not just kept in memory) so a restart
+ * exactly at a tie-breaking boundary does not reopen the same loss window. Always
+ * a small, bounded set (only ever the rows sharing ONE millisecond -- cleared the
+ * moment `committedAt` advances past it, see `advanceCursorPastRow` below), never
+ * unboundedly growing.
+ */
 export interface TailCursor {
   committedAt: number
   operationId: string
+  indexedAtBoundaryMs?: Array<string>
 }
 
 const CURSOR_FILE_NAME = "tail-cursor.json"
@@ -69,7 +145,9 @@ export function readTailCursor(indexPath: string): TailCursor | null {
   try {
     const raw = JSON.parse(fs.readFileSync(cursorPath(indexPath), "utf8")) as Partial<TailCursor>
     if (typeof raw.committedAt !== "number" || typeof raw.operationId !== "string") return null
-    return { committedAt: raw.committedAt, operationId: raw.operationId }
+    const indexedAtBoundaryMs =
+      Array.isArray(raw.indexedAtBoundaryMs) && raw.indexedAtBoundaryMs.every((id) => typeof id === "string") ? raw.indexedAtBoundaryMs : undefined
+    return { committedAt: raw.committedAt, operationId: raw.operationId, ...(indexedAtBoundaryMs ? { indexedAtBoundaryMs } : {}) }
   } catch {
     return null // ENOENT / corrupt JSON / missing fields -- treat as "no cursor yet".
   }
@@ -108,6 +186,11 @@ export interface HistorySearchDaemonOptions {
 export interface TailRoundResult {
   /** Number of operations upserted into the index this round. */
   processed: number
+  /** Number of rows this round encountered whose manifest could not be hydrated
+   *  (unsupported format version, missing CAS object, incomplete sequence) --
+   *  skipped, never indexed, but the tail advances past them regardless (see
+   *  module doc's "Poison-row isolation"). */
+  poisoned: number
   /** Cursor AFTER this round (persisted to disk); `null` if nothing has ever been tailed. */
   cursor: TailCursor | null
 }
@@ -120,6 +203,33 @@ interface TailRow {
   kind: string
   created_at: number
   manifest_gz: Uint8Array
+}
+
+/**
+ * Rate-limit repeated poison-row log lines (2026-07-22, review "minor" follow-up):
+ * a permanently-poisoned row would otherwise re-log its failure EVERY tail tick
+ * (every `TAIL_INTERVAL_MS`, forever) since the tail cursor now legitimately
+ * advances past it every round is a NEW round that re-tails from a cursor already
+ * past it -- wait, more precisely: once skipped, a poisoned row is never
+ * re-visited by a LATER round (the cursor is already past it) EXCEPT during the
+ * SAME round it was first seen retried via `WHERE > cursor` still returning it if
+ * the page boundary lands mid-poison -- in practice this set only needs to
+ * suppress a poisoned id from being logged more than once per daemon instance
+ * lifetime (cheap, small, process-lifetime `Set`, not persisted -- a restart
+ * logging it once again is fine and arguably useful).
+ */
+function createPoisonLogDeduper(): (operationId: string, error: unknown) => void {
+  const alreadyWarned = new Set<string>()
+  return (operationId: string, error: unknown): void => {
+    if (alreadyWarned.has(operationId)) return
+    alreadyWarned.add(operationId)
+    consola.warn(
+      `[history-search-daemon] skipping unindexable operation ${operationId} (manifest could not be hydrated -- `
+        + `this row will never be searchable, but the tail advances past it; further occurrences of this SAME `
+        + `operation are logged only once per daemon lifetime):`,
+      error,
+    )
+  }
 }
 
 /**
@@ -166,6 +276,7 @@ export function createHistorySearchDaemon(options: HistorySearchDaemonOptions): 
   const pageSize = options.pageSize ?? DEFAULT_PAGE_SIZE
   let readonlyDb: Database | undefined
   let cursor: TailCursor | null = readTailCursor(options.indexPath)
+  const warnPoisonOnce = createPoisonLogDeduper()
 
   function db(): Database {
     // Constructed lazily (see interface doc) and cached for the daemon's lifetime --
@@ -175,38 +286,102 @@ export function createHistorySearchDaemon(options: HistorySearchDaemonOptions): 
     return readonlyDb
   }
 
+  /**
+   * Advance the in-memory cursor past a just-processed row, maintaining
+   * `indexedAtBoundaryMs` (blocker-2 fix): when the new row's `committed_at`
+   * strictly advances past the previous cursor's millisecond, the boundary set
+   * resets to `[row.operation_id]` (a fresh boundary millisecond, nothing else
+   * seen at it yet); when it is the SAME millisecond as the current cursor, the
+   * row's id is ADDED to the existing set rather than replacing it (both rows at
+   * this millisecond must be remembered as indexed, or the overlap re-scan would
+   * not fully believe either one is done).
+   */
+  function advanceCursorPastRow(row: TailRow): void {
+    const sameMillisecondAsCursor = cursor !== null && cursor.committedAt === row.committed_at
+    const indexedAtBoundaryMs = sameMillisecondAsCursor ? [...(cursor?.indexedAtBoundaryMs ?? []), row.operation_id] : [row.operation_id]
+    cursor = { committedAt: row.committed_at, operationId: row.operation_id, indexedAtBoundaryMs }
+  }
+
   async function tailOnce(): Promise<TailRoundResult> {
     const connection = db()
     let processed = 0
-    // Loop until a page comes back short of `pageSize` -- drains everything currently
-    // committed, not just one page, so a single `tailOnce()` call always catches up
-    // fully (the caller does not need to know how many rounds "catching up" takes).
-    for (;;) {
-      const rows =
-        cursor === null ?
-          (connection
-            .prepare("SELECT operation_id,committed_at,kind,created_at,manifest_gz FROM v3_operations ORDER BY committed_at,operation_id LIMIT ?")
-            .all(pageSize) as Array<TailRow>)
-        : (connection
-            .prepare(
-              "SELECT operation_id,committed_at,kind,created_at,manifest_gz FROM v3_operations WHERE (committed_at,operation_id) > (?,?) ORDER BY committed_at,operation_id LIMIT ?",
-            )
-            .all(cursor.committedAt, cursor.operationId, pageSize) as Array<TailRow>)
-      if (rows.length === 0) break
+    let poisoned = 0
 
-      for (const row of rows) {
+    async function processRow(row: TailRow): Promise<void> {
+      try {
         const record = hydrateManifest(connection, row.manifest_gz)
         const content = projectSearchableText(record)
         await options.index.upsert(row.operation_id, row.kind, row.created_at, content)
-        cursor = { committedAt: row.committed_at, operationId: row.operation_id }
         processed++
+      } catch (error) {
+        // Poison-row isolation (blocker-1 fix, see module doc): NEVER let one bad
+        // manifest abort the whole round -- count it, log it (deduped), advance the
+        // cursor past it exactly as if it had succeeded, and keep going. The row
+        // simply never becomes searchable; every OTHER row is unaffected.
+        poisoned++
+        warnPoisonOnce(row.operation_id, error)
       }
+      advanceCursorPastRow(row)
+    }
 
+    // PASS 1 -- boundary re-scan (blocker-2 fix). Only runs when there IS a cursor
+    // (a fresh tail has no boundary millisecond to re-check). Drains every row that
+    // shares the cursor's EXACT `committed_at` millisecond and is not yet recorded in
+    // `indexedAtBoundaryMs` -- a later-committing row at that same millisecond whose
+    // operation_id sorts lexicographically BEFORE the cursor's would otherwise be
+    // permanently invisible to a plain `>` tuple comparison (see module doc). `NOT
+    // IN (...)` against the persisted, monotonically-growing `indexedAtBoundaryMs`
+    // set is what makes this loop PROVABLY terminate: each iteration that finds any
+    // rows immediately folds their ids into that set (via `advanceCursorPastRow`),
+    // so the very next query's `NOT IN` excludes them -- the candidate pool strictly
+    // shrinks every iteration and cannot cycle forever, regardless of how many rows
+    // happen to share one millisecond.
+    if (cursor !== null) {
+      for (;;) {
+        const excluded = cursor.indexedAtBoundaryMs ?? []
+        const boundaryRows = (
+          excluded.length > 0 ?
+            connection
+              .prepare(
+                `SELECT operation_id,committed_at,kind,created_at,manifest_gz FROM v3_operations WHERE committed_at = ? AND operation_id NOT IN (${excluded.map(() => "?").join(",")}) ORDER BY operation_id LIMIT ?`,
+              )
+              .all(cursor.committedAt, ...excluded, pageSize)
+          : connection
+              .prepare("SELECT operation_id,committed_at,kind,created_at,manifest_gz FROM v3_operations WHERE committed_at = ? ORDER BY operation_id LIMIT ?")
+              .all(cursor.committedAt, pageSize)) as Array<TailRow>
+        if (boundaryRows.length === 0) break
+        for (const row of boundaryRows) await processRow(row)
+        if (boundaryRows.length < pageSize) break
+      }
+    }
+
+    // PASS 2 -- the normal forward page loop. Everything queried here is STRICTLY
+    // AFTER the boundary millisecond (pass 1 already fully drained it), so the
+    // simple monotonic `committed_at > cursor.committedAt` filter has no same-
+    // millisecond tie-break hazard to worry about -- `operation_id` is only used to
+    // ORDER the page deterministically, never as part of the boundary comparison.
+    // Loops until a page comes back short of `pageSize` -- drains everything
+    // currently committed, not just one page, so a single `tailOnce()` call always
+    // catches up fully (the caller does not need to know how many rounds "catching
+    // up" takes).
+    for (;;) {
+      const rows = (
+        cursor === null ?
+          connection
+            .prepare("SELECT operation_id,committed_at,kind,created_at,manifest_gz FROM v3_operations ORDER BY committed_at,operation_id LIMIT ?")
+            .all(pageSize)
+        : connection
+            .prepare(
+              "SELECT operation_id,committed_at,kind,created_at,manifest_gz FROM v3_operations WHERE committed_at > ? ORDER BY committed_at,operation_id LIMIT ?",
+            )
+            .all(cursor.committedAt, pageSize)) as Array<TailRow>
+      if (rows.length === 0) break
+      for (const row of rows) await processRow(row)
       if (rows.length < pageSize) break
     }
 
-    if (processed > 0 && cursor !== null) writeTailCursor(options.indexPath, cursor)
-    return { processed, cursor }
+    if ((processed > 0 || poisoned > 0) && cursor !== null) writeTailCursor(options.indexPath, cursor)
+    return { processed, poisoned, cursor }
   }
 
   function getCursor(): TailCursor | null {
