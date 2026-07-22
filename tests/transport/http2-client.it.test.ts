@@ -23,6 +23,7 @@ import net from "node:net"
 import {
   //
   closeHttp2Sessions,
+  getH2SessionStatusSnapshot,
   http2Fetch,
   setConnectTimeoutForTests,
   setHttp2SessionFactoryForTests,
@@ -362,5 +363,73 @@ describe("http2-client", () => {
       setHttp2SessionFactoryForTests(undefined)
       closeHttp2Sessions()
     }
+  })
+})
+
+// C2 pool-refactor invariants (Map<origin, entry[]> + reservation model). N is
+// hard-coded to 0 (unlimited) in C2, so these lock the BYTE-EQUIVALENT behavior:
+// one shared session per origin, and the reservation released exactly once.
+describe("http2-client pool (C2: capacity model, N=0 unlimited)", () => {
+  test("N=0 concurrent cold-start converges on exactly ONE session (byte-equivalent)", async () => {
+    handler = (stream) => {
+      stream.respond({ ":status": 200 })
+      stream.end("ok")
+    }
+    // Count how many client sessions the factory actually opens.
+    let opened = 0
+    setHttp2SessionFactoryForTests(() => {
+      opened += 1
+      return http2.connect(url)
+    })
+    try {
+      // Fire concurrently BEFORE any session exists — both miss the live lookup;
+      // the capacity-aware `pending` (N=0) must make the second JOIN the first's
+      // connect rather than opening a second session.
+      const [a, b] = await Promise.all([http2Fetch(`${url}/x`, {}), http2Fetch(`${url}/y`, {})])
+      expect(a.status).toBe(200)
+      expect(b.status).toBe(200)
+      await Promise.all([a.text(), b.text()])
+      expect(opened).toBe(1)
+      // Exactly one pooled session for the origin.
+      expect(getH2SessionStatusSnapshot()).toHaveLength(1)
+    } finally {
+      setHttp2SessionFactoryForTests(undefined)
+      closeHttp2Sessions()
+    }
+  })
+
+  test("reservation is released exactly once — activeStreamCount returns to 0 after a normal request (PATH 1)", async () => {
+    handler = (stream) => {
+      stream.respond({ ":status": 200 })
+      stream.end("ok")
+    }
+    const res = await http2Fetch(`${url}/x`, {})
+    await res.text() // drain to completion → stream close
+    // Give the `close` event a tick to fire.
+    await new Promise((r) => setTimeout(r, 20))
+    const rows = getH2SessionStatusSnapshot()
+    expect(rows).toHaveLength(1)
+    expect(rows[0]?.activeStreamCount).toBe(0)
+  })
+
+  test("reservation is released on a pre-request abort (PATH 2) — no leaked slot", async () => {
+    handler = (stream) => {
+      stream.respond({ ":status": 200 })
+      stream.end("ok")
+    }
+    // Prime one live session so the aborted request takes the synchronous reuse path.
+    const warm = await http2Fetch(`${url}/warm`, {})
+    await warm.text()
+    await new Promise((r) => setTimeout(r, 20))
+
+    const ac = new AbortController()
+    ac.abort()
+    await expect(http2Fetch(`${url}/x`, { signal: ac.signal })).rejects.toThrow(/aborted/i)
+    await new Promise((r) => setTimeout(r, 20))
+    // The reused session's reservation taken synchronously must have been handed
+    // back — count is 0, not a leaked 1.
+    const rows = getH2SessionStatusSnapshot()
+    expect(rows).toHaveLength(1)
+    expect(rows[0]?.activeStreamCount).toBe(0)
   })
 })
