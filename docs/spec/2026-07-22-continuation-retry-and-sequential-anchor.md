@@ -89,16 +89,27 @@ message_delta / message_stop
 
 **附带优势**：顺序形状不需要 coexist 逼出的 sink 单槽 `openBlock`→块栈改造（前 spec §4.3(a)），实现更简单。
 
-### 3.3 sink 改造
+### 3.3 index 分配重写（承重——非「sink 小改」；审查 Critical-1 确认）
 
-现 `makeAnchoredSseSink`（`handler-v4.ts:509/581`）+ `buildAnthropicAnchorHooks`（:957）的 anchor 机制改为顺序策略：
-- pre-content anchor：open→delta→**close on first real block_start**（不再 hold open 跨真实块）。
-- 块间 gap：心跳 tick 在无 open 块时**新开** empty-text anchor（复用递增 index）→ delta → 下一真实帧到达时 close。
-- 仅需单槽 `openBlock`（无需块栈）。
+**PoC 的作用域边界（务必明确）**：`exp/block-level-anchor-sequential/hook.ts` 是**手写裸 SSE 帧**，未经过 `client-sink.ts` / `driver.ts` / `keepalive-anchor.ts` 任何一行产线代码。故它证明的是「**Claude CLI 接受这个 wire 形状**」，**没有**证明「**代理能产出这个 wire 形状**」。后者是下面这块尚未动过的架构工作。
 
-### 3.4 剩余子门（计划期）
+**现有 index 模型是「唯一锚点固定 index 0、所有真实块 +1」**（已核实）：
+- `keepalive-anchor.ts:16` `ANCHOR_INDEX = 0`，JSDoc 明言「anchor occupies index 0; all real content blocks flush at index+1」。
+- `remapAnthropicBlockIndex(frame, offset)`（:71-84）被**硬编码 offset=1** 调用：`driver.ts:1095`（buffered 提交）、`driver.ts:1142`（retreat 分支）、`live-reconcile.ts:132`（live 逐帧对账）。
 
-**300s 死线重置**：本 PoC 用短 wire。incident 的 142.9s 静默要求 anchor 空 `text_delta` 每 ~15s 重置 CC 300s no-real-content 死线（对比 `exp/cc-idle-280s`：裸 ping 不重置、真 text_delta 重置）。顺序 anchor 的 gap 保活也是 text_delta，预期重置，但需 >300s 长-idle 真 CLI 跑实证。FAIL 则该场景回退 live（不缓冲仍靠现有 pre-response keepalive）。
+**顺序 anchor 打破这个模型**：anchor 出现在 wire 的 index 0、2、4…（穿插在真实块之间），真实块的最终 index = 它前面已插入的锚点数，是**运行时递增 offset**，不是常量 1。故本 spec 必须在**实现前**定清：
+- (a) **锚点 index 分配算法**：谁在第几个位置、真实块 offset 如何随已插入锚点数递增（取代 `ANCHOR_INDEX=0` 常量 + 固定 +1）。
+- (b) `remapAnthropicBlockIndex` 的 offset 参数从常量改为**依 sink 状态计算**（三处调用点 driver.ts:1095/1142、live-reconcile.ts:132 同步改）。
+- (c) **retreat 分支**（driver.ts:1142）在多锚点情形下的重映射语义。
+- (d) sink 侧 `noteBlockState` 顺序策略：pre-content anchor open→delta→close-on-first-real；块间 gap 心跳 tick 无 open 块时新开 anchor→delta→下一真实帧到达时 close。仅需单槽 `openBlock`（这一层确实比 coexist 块栈简单，但**不是**全部工作）。
+
+这是 index-allocation 原语的重设计，属**本 spec 承重项 + 计划期首个 PoC 门（代理产出侧）**，不是「计划期核实项」。
+
+### 3.4 剩余子门 + 价值前提（计划期；审查 Important 确认因果链）
+
+**300s 死线重置**：本 PoC 用短 wire。incident 的 142.9s 静默要求 anchor 空 `text_delta` 每 ~15s 重置 CC 300s no-real-content 死线（对比 `exp/cc-idle-280s`：裸 ping 不重置、真 text_delta 重置）。顺序 anchor 的 gap 保活也是 text_delta，预期重置，但需 >300s 长-idle 真 CLI 跑实证。
+
+**承重因果链（本 spec 价值主张的前提条件，勿藏）**：本 spec 的真正新增价值在**首块 commit 之后**的 mid-stream CANCEL（如 incident 的 tool_use 截断）——incident 的前 142.9s 纯静默**已被现有 live 路径覆盖**（ADR `2026-07-09-unconditional-keepalive-timeout-safety` §1，`protect_streaming_generation:false` 默认下合成 message_start + anchor 已撑住）。但续写重试**依赖首块已走块级缓冲路径**。故若 300s 门 FAIL → Anthropic 回退 live（非缓冲）→ 块级不启用 → **续写不触发** → incident 类「长静默 + mid-tool_use 截断」复合场景**仍 0 可用产出**（等同今天）。即：**300s 门 PASS 是续写对 Anthropic 长静默场景有效的前提**，非可有可无的细节。门 FAIL 的退路不是「回退 live 就没事」，而是须另想保活形状（否则 incident 目标未达成）。
 
 ---
 
@@ -127,8 +138,8 @@ buffered driver 累积「已 flush 给客户端的完整块」的 canonical 快�
 
 | 格式 | assistant 载体 | 续写轮载体 | 已知 hazard → 门 |
 |---|---|---|---|
-| Anthropic | `messages[…, {role:assistant, content:[已commit块]}, {role:user}]` | user 消息 | ✅ PoC 已验证 |
-| CC | `messages[…, {role:assistant,…}, {role:user}]` | user 消息 | **tool_calls 尾随约束**：OpenAI CC 要求 assistant `tool_calls` 后跟 tool-role 消息；已 commit 完整 tool_call 则续写形状违规 → 计划期 PoC 门 + 回退 partial-degrade |
+| Anthropic | `messages[…, {role:assistant, content:[已commit块]}, {role:user}]` | user 消息 | ✅ **text-only 前缀已验证（= incident 场景）**；**已 commit 完整 tool_use 块作前缀未验证**（PoC `/tmp/poc_tool.json` 的 assistant 前缀是纯文本，证的是「从文本前缀模型会续出 tool_use」，非「tool_use 块作前缀被接受」）→ 补 PoC |
+| CC | `messages[…, {role:assistant,…}, {role:user}]` | user 消息 | **tool_calls 尾随约束（覆盖率窄，勿夸大）**：只在「同一响应内已有**完整** tool_call 被提交、且被截断的是其后的另一个 tool_call」这一窄子集触发（多 tool_call 链非首个被截断）；**单 tool_call / 纯文本 / text+单tool_call 响应的截断续写不受影响**（partial tool_call 被丢弃后前缀不以 tool_calls 结尾）。触发窄子集时回退 partial-degrade → 计划期 PoC 门 |
 | Responses HTTP/WS | `input[…, 已done的output_item, {role:user}]` | input message | GHC Responses 是否接受 prior-output + 合成 follow-up → 计划期 PoC 门（HTTP/WS 共用结论） |
 
 三 builder 共享接口；Responses HTTP 与 WS 共用同一 builder（同 Responses 格式，仅传输不同）。
@@ -148,19 +159,29 @@ buffered driver 累积「已 flush 给客户端的完整块」的 canonical 快�
 
 ## 5. 重试语义、预算、终局
 
-### 5.1 重试窗口扩展
+### 5.1 重试窗口扩展 = 新增 driver 状态机分支（承重；审查 Critical-2 确认）
 
-前 spec：`可重试 = !committedAny && !retreated`（仅首块前）。本 spec 扩展：首块 commit 后截断 → 若 `continuation.enabled` 且格式续写可行且预算未耗 → **续写重试**（重投带合成轮的上游请求）。
+前 spec 的硬不变量（已核实）：`driver.ts:1283` `const retryable = (thrown ? classifyStreamError(thrown)==="other" : true) && !committedAny`——一旦 `committedAny===true` 强制走 :1330 的 `partial-degrade`/`exhausted`，**永不进 retry 分支**。本 spec 不是「放宽一个布尔门」，而是**新增一条与现有 buffer-replay 循环结构不同的 driver 分支**，须在实现前定清：
 
-### 5.2 共享预算
+- **门改造**：加平行分支「`committedAny && continuation 可行 && 预算未耗 → 续写路径」`，而非弱化 `!committedAny`（terminal-only 路径 committedAny 恒 false，其语义须逐字不变，R1）。
+- **replay vs append 语义差异**：现循环体（`flushBufferedFrames` + buffer-then-flush，driver.ts:1090-1145）设计前提是「buffer 全部→drain 后按块提交」。续写是「已提交块**已不在 buffer**、新构造追加了合成轮的 env 跑**新 exchange**、其输出帧接到**同一个已在推进的 sink**」——是 append 非 replay。这条新路径的 `attempt`/`buffer`/`committedAny`/index-offset（§3.3）各自的新语义须画清。
+- **generation/coordinator 语义**：`coordinator.runRecovery(parent.candidate, ...)`（:1300-1314）+ `bind`/`selectGenerationWinner` 假设「recovery = 同一 candidate 恢复」。续写是「部分内容已交付、逻辑上延续的**新** exchange」——与现有 hedged-candidate 语义是否兼容须显式论证（否则计划期会撞「续写套不进现有 retry 循环」而被迫推翻实现路径）。
+
+**归属**：本节列为**计划期首要架构设计项 + Phase 结构骨架**，不是 §5 的一句话扩展。
+
+### 5.2 共享预算 + 反向饥饿（诚实取舍；审查 Important 确认缺失）
 
 一个 exchange 的首块前透明重试 + 首块后续写重试**合计** ≤ `buffered_retry.max_retries`（默认 3）。不设独立续写预算旋钮。
+
+**已知限制（反向饥饿，须记录非隐藏）**：首块前透明重试可能先烧光预算，导致真正命中 mid-stream 截断时续写配额为 0、直接进 `continuation-exhausted`。incident req_162 未踩（前段纯静默非频繁 cut），但「上游偶发抖动、频繁 transport-close」的会话会踩。裁决选项（计划期定其一并记录）：(a) 续写保底最小次数（≠ 独立旋钮，只是共享预算内为续写预留 ≥1）；(b) 显式接受此顺序敏感限制。**本 spec 倾向 (a) 保底 1 次**——incident 类的价值主张不应被首块前重试饿死；最终计划期定。
 
 ### 5.3 终局分类（扩展前 spec §9.2）
 
 - `success` — 完整终止符到达（含续写后成功）。
 - `partial-degrade` — 首块后失败**且**续写不可行（格式门未过 / CC tool_calls 尾随约束 / `continuation.enabled=false`）：已发块保留 + error 帧，不重试。**不再是首块后的默认终局，而是续写不可行时的兜底。**
 - `continuation-exhausted`（新细分）— 续写重试耗尽预算仍未完成：便于观测「续写生效但没救回」vs「压根没续写」。
+
+**telemetry 维度（审查 Minor 确认，勿留实现顺手加）**：前 spec §9.2 的 `retriesBeforeDegrade` 在续写语境须**拆两个独立计数**——「首块前透明重试次数」与「续写次数」——否则无法区分「成功靠透明重试还是靠续写」（项目 `telemetry-architecture`「不可重算因子拆最细」）。字段设计在 spec 阶段定，不留实现。
 
 ---
 
@@ -213,7 +234,7 @@ per-vendor 可覆盖 `<vendor>.buffered_retry.continuation.{enabled,message}`；
 ## 9. 计划期 PoC 门（均 mock upstream 可跑，非阻塞本 spec）
 
 1. 顺序 anchor 300s 死线重置（长-idle 真 CLI）。
-2. CC tool_call index 串行性（真实并行工具调用 CC 流）。
+2. CC tool_call index 串行性（真实并行工具调用 CC 流）。**先验风险偏高**（审查确认）：`stream-accumulator.ts:114-131` 的 `acc.toolCallMap` 是 **index 为 key 的 Map**（非顺序 push），说明现有作者已为「容忍乱序更新同一 index」设计——乱序非纯假设性风险。此门**不建议临实施才测**，早跑。
 3. CC 续写 tool_calls 尾随约束（含已 commit tool_call 时上游是否接受）。
 4. Responses 续写形状（GHC 接受 prior-output 续写；HTTP/WS 共用）。
 5. WS 传输时序（续写重派上游轮 + close-code 对齐）。
@@ -222,8 +243,8 @@ per-vendor 可覆盖 `<vendor>.buffered_retry.continuation.{enabled,message}`；
 
 ## 10. 已实证（PoC 闭环）
 
-- ✅ GHC 拒绝 assistant-prefill（haiku + opus-4.8）；合成 continuation 轮可行、能续 tool_use（`/tmp` PoC，见 §4.1）。
-- ✅ 顺序 anchor CLI-safe：真 claude CLI + mock upstream，numTurns=1、不 stall、两真实块保全（`exp/block-level-anchor-sequential/FINDINGS.md`）。
+- ✅ GHC 拒绝 assistant-prefill（haiku + opus-4.8）；合成 continuation 轮可行——**text-only 前缀** + continue 指令下模型会续出 tool_use（`/tmp/poc_*.json`）。**未验证**：已 commit **完整 tool_use 块**作 assistant 前缀是否被上游接受（§4.3 补 PoC）。
+- ✅ 顺序 anchor **wire 形状被 CLI 接受**：真 claude CLI + mock upstream，numTurns=1、不 stall、两真实块保全（`exp/block-level-anchor-sequential/FINDINGS.md`）。**未验证**：代理**能否产出**该 wire（§3.3 index 分配重写 + 代理产出侧 PoC 门）；顺序 anchor 重置 300s 死线（§3.4 长-idle 门）。
 - ✅ 前 spec landed 状态与 Anthropic default-OFF 根因（§1.2/1.3）经 config/schema/code 实测。
 
 ## 11. ADR / doc-sync 目标
@@ -237,3 +258,11 @@ per-vendor 可覆盖 `<vendor>.buffered_retry.continuation.{enabled,message}`；
 - **续写独立预算旋钮**：增旋钮 + 总上限变两者之和，弃，用共享预算。
 - **Anthropic 保留 whole 兜底**：用户裁决彻底退役，回退 live。
 - **CC/WS 也纳入续写**：用户裁决纳入（CC 升块级后具备结构前提；WS 复用 Responses builder）。
+
+## 13. 审查发现整合记录（异模型 gpt-souls:reviewer，2026-07-22）
+
+主线亲自核对 reviewer 引用的每个 file:line 后采纳：
+- **Critical-1（采纳）** 顺序 anchor 打破「anchor@0 固定 +1」index 模型（`keepalive-anchor.ts:16` + `driver.ts:1095/1142` + `live-reconcile.ts:132` 硬编码 offset 1，已核实）；PoC 是裸帧未走产线、只证 CLI 接受非代理产出 → 升级为 §3.3 承重设计项 + 代理产出侧 PoC 门。
+- **Critical-2（采纳）** 续写与 `driver.ts:1283` `!committedAny` 硬门冲突、replay vs append 语义差异、generation/coordinator 候选语义 → 升级为 §5.1 新增 driver 状态机分支。
+- **Important（采纳）**：300s 门因果链（门 FAIL → 续写不触发 → incident 无解，§3.4）；Anthropic tool_use 保真度 PoC 过度概括（逐字核 `/tmp/poc_tool.json` 前缀纯文本，§4.3/§10 收窄）；共享预算反向饥饿（§5.2 倾向保底 1 次）；CC index 串行门先验风险偏高（`toolCallMap` Map-based，§9）；telemetry 维度须拆两计数（§5.3）。
+- **Important（部分修正采纳）**：CC tool_calls 尾随约束覆盖率**比原措辞窄**——只「多 tool_call 链非首个被截断」触发，单/纯文本不受影响（§4.3 表格改）。reviewer 软化了此项严重性，采纳其更精确边界。
