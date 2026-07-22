@@ -407,12 +407,13 @@ history:
 
   # 终态落盘遇瞬时 SQLite 失败（WAL BUSY/LOCKED/IOERR）时的有界重试（DI-5）。
   # 此前首次失败即丢弃该 entry；现改为线性退避重试，permanent/conflict 不重试。
-  # max_total_ms 是每条 entry 重试的墙钟软上限（DI-5-followup-2）——线性退避之和随
-  # 次数平方增长，极端 max_attempts × backoff_ms 会把 drain（进而 shutdown）拖到分钟级；
-  # 该上限封顶累计退避（0 = 关闭）。
+  # max_total_ms 是每条 entry 重试的墙钟总耗时软上限（DI-5-followup-2）——计入每次
+  # attempt 自身的阻塞（如 SQLite busy_timeout 等待，真实 wedge 的主体）+ 退避；线性
+  # 退避之和随次数平方增长，极端 max_attempts × backoff_ms（或慢 attempt）会把 drain
+  # （进而 shutdown）拖到分钟级；该上限封顶单条 entry 占用 drain 的总时长（0 = 关闭）。
   # Bounded retry for terminal-persistence commits that hit a transient SQLite
   # error. Permanent failures / conflicts are never retried. `max_total_ms` is a
-  # per-commit backoff-budget soft cap (0 disables it).
+  # per-commit wall-clock soft cap (includes each attempt's own blocking; 0 disables it).
   persist_retry:
     max_attempts: 3
     backoff_ms: 10
@@ -744,7 +745,7 @@ anthropic:
   #   empty_text（默认）——无条件 timeout-safe。注入匹配 open block 的空 content delta，并且——在 buffered 模式且尚无 open block 时（pre-commit 长静默）——懒注入一个合成空 text 锚点块，使空 text_delta 重置 Claude Code 的 300s「必须收到真实内容」上限（真实内容全缓冲；commit 时锚点收口、真实块在 index+1 flush）。
   #   ping —— legacy 裸 ping 逃生舱。恢复旧的裸 ping 行为，重置不了 300s（ping 不算 chunk，见 exp/cc-idle-280s/REPORT.md），故长时间 pre-content 静默仍可能超时。仅作为逃生舱保留。
   #   enveloped_ping —— 合成信封 + 裸 ping。未来实验模式；长时间 pre-content 静默预期仍会超时。
-  stream_keepalive_mode: empty_text
+  stream_keepalive_mode: ping
 
   # L2 — transactional buffered retry for streaming generations cut short by an upstream mid-stream RST (GHC NGHTTP2_CANCEL on large Write/Edit in huge contexts). Buffers the whole response and commits only after message_stop, re-running the upstream exchange on a transport-close / truncation — so the client transparently receives ONE complete generation instead of a half stream + error. See docs/rfc/streaming-upstream-rst-buffered-retry.md.
   # L2——针对被上游流中途 RST（超大上下文里大 Write/Edit 触发 GHC NGHTTP2_CANCEL）砍断的流式生成的事务化缓冲重试。缓冲整响应、`message_stop` 后才 commit，transport-close/truncation 则重跑上游交换——客户端透明地拿到一次完整生成而非半截流 + 错误。详见 docs/rfc/streaming-upstream-rst-buffered-retry.md。

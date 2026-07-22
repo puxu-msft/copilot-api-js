@@ -746,26 +746,40 @@ export interface TransientRetryOptions {
   maxAttempts: number
   backoffMs: number
   /**
-   * DI-5-followup-2: soft cap on the cumulative *backoff* budget (ms) across all
-   * retries for ONE commit. The linear backoff sum grows quadratically
-   * (`backoffMs·n(n-1)/2`), so a large `maxAttempts × backoffMs` product could
-   * wedge the drain — and therefore shutdown, which has no abort signal here on
-   * purpose (see runDrain's note) — for minutes. Once the *next* backoff would
-   * push the accumulated backoff past this cap, stop retrying and report failure.
-   * This is a nominal-duration budget (the declared backoff, not measured
-   * wall-clock) so it is deterministic under the abortable-delay test scale,
-   * mirroring how `waitMs` accounting flows from the declared duration rather than
-   * elapsed time. `0`/`undefined` = no time cap (only `maxAttempts` bounds).
+   * DI-5-followup-2: soft cap on the total wall-clock time (ms) one commit may
+   * spend across all its retries. The linear backoff sum grows quadratically
+   * (`backoffMs·n(n-1)/2`), and each `attempt()` can itself block (e.g. a SQLite
+   * `busy_timeout` wait — the bulk of a real WAL-contention wedge), so a large
+   * `maxAttempts × backoffMs` product (or slow attempts) could wedge the drain —
+   * and therefore shutdown, which has no abort signal here on purpose (see
+   * runDrain's note) — for minutes. Once the elapsed time (INCLUDING each
+   * attempt's own blocking) plus the next backoff would exceed this cap, stop
+   * retrying and report failure. Measured via `Date.now()`, deterministic in
+   * tests via bun's `setSystemTime`. `0`/`undefined` = no time cap (only
+   * `maxAttempts` bounds).
    */
   maxTotalMs?: number
   /** Abort collapses the backoff wait (shutdown drain wants to land data fast, not cancel it). */
   signal?: AbortSignal
+  /**
+   * Clock seam for the `maxTotalMs` wall-clock cap. Defaults to `Date.now`
+   * (production). Tests inject a deterministic counter to drive elapsed time
+   * (including a modeled slow `attempt()`) without a real sleep or a global fake
+   * timer — mirroring the `abortableDelay` scale seam.
+   */
+  now?: () => number
 }
 
 export interface TransientRetryOutcome {
   ok: boolean
   conflict: boolean
   attempts: number
+  /**
+   * Which soft cap ended the retry loop, for drain observability — distinguishes
+   * "hit the attempt ceiling" from "ran out of the time budget" when an entry is
+   * dropped. `undefined` when the loop ended on success / permanent failure / conflict.
+   */
+  capReason?: "max-attempts" | "max-total-ms"
 }
 
 /**
@@ -775,31 +789,34 @@ export interface TransientRetryOutcome {
  * failure. Permanent failures and conflicts are not retried (pointless). A hard
  * `maxAttempts` cap keeps a transient storm from spinning forever (skill
  * persistence-async-invariants §4 "持续 drain 失败须软上界"). A `maxTotalMs` cap
- * (DI-5-followup-2) bounds the cumulative backoff so a large attempt/backoff
- * product can't wedge shutdown for minutes. The linear backoff is
- * `abortableDelay`-based so a shutdown/abort during a storm collapses the wait
- * (keeps trying to land the data before close) rather than wedging the drain.
+ * (DI-5-followup-2) bounds the total wall-clock time so a large attempt/backoff
+ * product — or a slow attempt (SQLite busy_timeout) — can't wedge shutdown for
+ * minutes. The linear backoff is `abortableDelay`-based so a shutdown/abort
+ * during a storm collapses the wait (keeps trying to land the data before close)
+ * rather than wedging the drain.
  */
 export async function runWithTransientRetry(attempt: () => Promise<TransientRetryAttemptResult>, opts: TransientRetryOptions): Promise<TransientRetryOutcome> {
   const maxAttempts = Math.max(1, opts.maxAttempts)
   const maxTotalMs = opts.maxTotalMs !== undefined && opts.maxTotalMs > 0 ? opts.maxTotalMs : undefined
+  const now = opts.now ?? Date.now
+  const startedAt = now()
   let attempts = 0
-  let accumulatedBackoffMs = 0
   for (;;) {
     attempts++
     const result = await attempt()
     if (result.ok) return { ok: true, conflict: false, attempts }
     if (result.conflict) return { ok: false, conflict: true, attempts }
     if (!result.transient) return { ok: false, conflict: false, attempts } // permanent — retry is pointless
-    if (attempts >= maxAttempts) return { ok: false, conflict: false, attempts } // attempt-count soft cap
+    if (attempts >= maxAttempts) return { ok: false, conflict: false, attempts, capReason: "max-attempts" } // attempt-count soft cap
     const backoffMs = opts.backoffMs * attempts
-    // Time-budget soft cap: give up before a backoff that would push the cumulative
-    // retry time past maxTotalMs, bounding the quadratic linear-backoff sum so an
-    // extreme config can't wedge the drain (→ shutdown) for minutes.
-    if (maxTotalMs !== undefined && accumulatedBackoffMs + backoffMs > maxTotalMs) {
-      return { ok: false, conflict: false, attempts }
+    // Wall-clock time-budget soft cap: give up once the elapsed time (INCLUDING
+    // each attempt's own blocking — e.g. a SQLite busy_timeout wait, the bulk of a
+    // real wedge) plus the next backoff would exceed maxTotalMs. Bounds the total
+    // time one entry can hold the drain (→ shutdown, which has no abort signal
+    // here on purpose) regardless of the maxAttempts × backoffMs product.
+    if (maxTotalMs !== undefined && now() - startedAt + backoffMs > maxTotalMs) {
+      return { ok: false, conflict: false, attempts, capReason: "max-total-ms" }
     }
-    accumulatedBackoffMs += backoffMs
     try {
       await abortableDelay(backoffMs, opts.signal)
     } catch {
@@ -866,10 +883,14 @@ async function runDrain(): Promise<void> {
           { maxAttempts: persistRetryConfig.maxAttempts, backoffMs: persistRetryConfig.backoffMs, maxTotalMs: persistRetryConfig.maxTotalMs },
         )
         if (!retryOutcome.ok) {
+          // Surface WHICH soft cap dropped the entry (attempt ceiling vs time
+          // budget) alongside the last error, so an operator can tell a transient
+          // storm (max-attempts) from a wedge-guard trip (max-total-ms).
+          const lastError = nonConflictError instanceof Error ? nonConflictError.message : String(nonConflictError)
           status = {
             ...status,
             failedOperations: status.failedOperations + 1,
-            lastError: nonConflictError instanceof Error ? nonConflictError.message : String(nonConflictError),
+            lastError: retryOutcome.capReason ? `${lastError} (retry gave up: ${retryOutcome.capReason})` : lastError,
           }
         }
       } catch (error) {
