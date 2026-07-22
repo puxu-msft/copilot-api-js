@@ -39,6 +39,7 @@ import {
   applyConfigToState,
   resetApplyState,
   resetConfigCache,
+  SHARED_RETRY_STRATEGY_CONFIG_KEYS,
   setBundledConfigForTests,
 } from "~/lib/config/config"
 import { PATHS } from "~/lib/config/paths"
@@ -47,7 +48,11 @@ import {
   RETRY_STRATEGY_CONFIG_KEYS,
   RetryConfigSchema,
 } from "~/lib/config/schema"
-import { RETRY_STRATEGY_ORDER } from "~/lib/request/retry-registry"
+import {
+  //
+  getRetryStrategyRegistryDiagnostics,
+  RETRY_STRATEGY_ORDER,
+} from "~/lib/request/retry-registry"
 import {
   //
   resetConfigManagedState,
@@ -57,25 +62,7 @@ import {
   type StateSnapshot,
 } from "~/lib/state"
 
-/** The frozen 16-name @messages order (same fixture as the Task 1 golden / Task 2 unit test). */
-const ANTHROPIC_16_NAMES = [
-  "network-retry",
-  "server-error-retry",
-  "token-refresh",
-  "effort-learning",
-  "tool-field-rejection-retry",
-  "body-field-rejection-retry",
-  "cache-control-subfield-rejection-retry",
-  "legacy-thinking-retry",
-  "adaptive-thinking-rejection-retry",
-  "poisoned-thinking-retry",
-  "unsupported-beta-retry",
-  "server-tool-rejection-retry",
-  "structured-outputs-rejection-retry",
-  "system-reject-retry",
-  "web-search-not-found-retry",
-  "deferred-tool-retry",
-]
+import { ANTHROPIC_16_NAMES } from "../helpers/retry-strategy-names"
 
 const stubResanitize = (p: MessagesPayload): SanitizeResult<MessagesPayload> => ({ payload: p, blocksRemoved: 0, systemReminderRemovals: 0 })
 const anthropicBaseline = { model: "claude-sonnet-4", messages: [], max_tokens: 100 } as unknown as MessagesPayload
@@ -110,6 +97,22 @@ describe("RetryConfigSchema.strategies", () => {
     // renamed/removed but its schema enum key lingered → a dead config key the user can set but that never
     // matches any entry). Set-equality over BOTH sources catches drift in either direction (Task 4 reviewer).
     expect(new Set<string>(RETRY_STRATEGY_CONFIG_KEYS)).toEqual(new Set(Object.keys(RETRY_STRATEGY_ORDER)))
+  })
+
+  test("config.ts's SHARED_RETRY_STRATEGY_CONFIG_KEYS (drives allow+warn) is EXACTLY the registry's own scope:\"shared\" projection — no silent drift (Task 6 / plan carryover, Task 4 reviewer concern 2)", () => {
+    // warnDisabledSharedRetryStrategies (config.ts) decides "is this configKey a SHARED strategy?" via an
+    // independent hardcoded Set — a second, separate source of truth from the registry's own `appliesTo`
+    // gate (which getRetryStrategyRegistryDiagnostics projects into `scope: "shared" | "messages-only"`).
+    // If a future entry's `appliesTo` gate changes (e.g. a new cross-leg strategy is added, or an existing
+    // one's scope narrows/widens), this Set would silently keep reporting the OLD scope — under- or
+    // over-warning without either side raising an error. Set-equality against the registry's live
+    // `getRetryStrategyRegistryDiagnostics` projection closes that gap.
+    const registrySharedKeys = new Set(
+      getRetryStrategyRegistryDiagnostics(undefined)
+        .filter((d) => d.scope === "shared")
+        .map((d) => d.configKey),
+    )
+    expect(new Set(SHARED_RETRY_STRATEGY_CONFIG_KEYS)).toEqual(registrySharedKeys)
   })
 
   test("accepts a valid configKey with enabled:false", () => {

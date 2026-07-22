@@ -156,7 +156,11 @@ export function renderPrometheusMetrics(
     ([strategy, count]) => `${retryFireName}{strategy="${escapeLabelValue(strategy)}"} ${formatValue(count)}`,
   )
   lines.push(
-    `# HELP ${retryFireName} Cumulative reactive retry-strategy fires (budget-accepted retries) per strategy since process start.`,
+    // Scope note (Task 5 reviewer Minor / plan Task 6 carryover): this counter covers ONLY the 16
+    // reactive strategies declared in the retry-strategy registry (`src/lib/request/retry-registry.ts`)
+    // — it does NOT include ws-fallback, rate-limit-retry, or L2 buffered-retry, which fire their own
+    // `recordAttemptFailure` calls outside the registry's `.find(canHandle)` dispatch point (driver.ts).
+    `# HELP ${retryFireName} Cumulative reactive retry-strategy fires (budget-accepted retries) per strategy since process start. Covers only the 16 registry-declared strategies (src/lib/request/retry-registry.ts) — excludes ws-fallback, rate-limit-retry, and L2 buffered-retry, which fire outside the registry dispatch point.`,
     `# TYPE ${retryFireName} counter`,
     ...retryFireSamples,
   )

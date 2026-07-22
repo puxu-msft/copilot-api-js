@@ -275,7 +275,15 @@ function applyVendorBufferedRetry(value: boolean | BufferedRetryOverride, vendor
  * Anthropic-only entries (400-class) get no such warning — disabling one is a narrower, more deliberate
  * choice with no similar blast radius.
  */
-const SHARED_RETRY_STRATEGY_CONFIG_KEYS: ReadonlySet<string> = new Set(["network", "serverError", "tokenRefresh"])
+/**
+ * The 3 SHARED (`appliesTo:()=>true`) configKeys — kept as an independent hardcoded `Set` rather than derived
+ * from `retry-registry.ts`'s `getRetryStrategyRegistryDiagnostics` (same "config schema layer stays free of a
+ * business-logic import" convention as `RETRY_STRATEGY_CONFIG_KEYS` in schema.ts). Exported ONLY so
+ * `tests/config/retry-strategies.it.test.ts` can assert set-parity against the registry's own `scope: "shared"`
+ * projection — closing the "this Set silently drifts if a future entry's `appliesTo` gate changes" gap (Task 6
+ * / plan carryover, Task 4 reviewer concern 2) without importing the registry into config.ts's own runtime.
+ */
+export const SHARED_RETRY_STRATEGY_CONFIG_KEYS: ReadonlySet<string> = new Set(["network", "serverError", "tokenRefresh"])
 
 function warnDisabledSharedRetryStrategies(strategies: Partial<Record<string, { enabled?: boolean }>>): void {
   const disabled = Object.entries(strategies)
