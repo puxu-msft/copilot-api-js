@@ -65,7 +65,10 @@ describe("generation runtime engine import boundaries", () => {
     expect(source).toMatch(/session\.on\("close", dispose\)/)
     expect(source).toMatch(/session\.on\("goaway", retire\)/)
     expect(source).not.toMatch(/session\.on\("goaway", dispose\)/)
-    expect(source).toMatch(/const retire = \(\): void => \{[\s\S]*sessions\.delete\(origin\)[\s\S]*retiringSessions\.add\(entry\)/)
+    // retire removes the entry from the routable pool (removeSessionEntry, since a
+    // pool is now Map<origin, entry[]>) and moves it to retiringSessions — routing
+    // eligibility gone, but the session (and its PING) live on until close.
+    expect(source).toMatch(/const retire = \(\): void => \{[\s\S]*removeSessionEntry\(entry\)[\s\S]*retiringSessions\.add\(entry\)/)
   })
 
   test("upstream WS has no application PING scheduler that could masquerade as semantic progress", async () => {

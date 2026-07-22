@@ -261,6 +261,20 @@ const FIELDS: ReadonlyArray<FieldSpec> = [
     defaultStateValue: CONFIG_MANAGED_DEFAULTS.sessionConnectTimeout,
   },
   {
+    configKey: "upstream_transport.http2.max_concurrent_streams_per_session",
+    stateKey: "maxConcurrentStreamsPerSession",
+    sampleYamlValue: "4",
+    expectedStateValue: 4,
+    defaultStateValue: CONFIG_MANAGED_DEFAULTS.maxConcurrentStreamsPerSession,
+  },
+  {
+    configKey: "upstream_transport.http2.idle_session_timeout",
+    stateKey: "h2IdleSessionTimeout",
+    sampleYamlValue: "120",
+    expectedStateValue: 120,
+    defaultStateValue: CONFIG_MANAGED_DEFAULTS.h2IdleSessionTimeout,
+  },
+  {
     configKey: "upstream_transport.websocket.pooled_connection_idle_timeout",
     stateKey: "pooledConnectionIdleTimeout",
     sampleYamlValue: "60",
