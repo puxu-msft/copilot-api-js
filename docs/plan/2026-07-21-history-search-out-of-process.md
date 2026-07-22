@@ -72,6 +72,16 @@ Phase 4（REST cutover）合并态审查（gpt-souls 异模型对抗）在 `daem
 - **回归测试**（真实探针、非 mock，TDD 红→绿）：`daemon.it.test.ts` 新增 3 test——① 三行真实记录（健康/poison/健康），poison 行用 `store.it.test.ts` 既有的「改 `formatVersion=999`」手法真实触发 `hydrateManifest` 抛错，断言 poison 行之后的健康行仍可搜到 + 游标推进到最后一行（非卡在 poison 行之前）；② 两行强制共享同一 `committed_at`（直接 UPDATE），提交顺序与字典序相反，跨两次独立 `tailOnce()` 调用发现，断言两行最终都可搜到；③ 同上但第二次 tail 换全新 daemon 实例读盘游标（模拟崩溃重启），证明 `indexedAtBoundaryMs` 的持久化（非仅内存）是关键。`uds-transport.it.test.ts` 新增 4 test 覆盖 status 协议层；新增 `daemon-entry-status.it.test.ts` 2 test 驱动真实 `runHistorySearchDaemon` 进程体证明状态字段端到端可信。
 - **测试范围外确认**：`bun run typecheck`、`bunx eslint`（无 cache）全绿；`bun run test:backend` 全后端连跑 3 次，均 6037/6041 pass——与既有 4 个已知缺陷完全一致，零新增失败；`daemon.it.test.ts`/`daemon-entry-status.it.test.ts` 各自连跑 2-3 次确认无 flaky；`ps aux` 复核零残留 `history-search-daemon` 进程。
 
+#### ⚠ 2026-07-22 追加 major（同一合并态审查复审发现，非数据丢失，已修复，`45be06b2`）
+
+复审确认 Blocker 1/2 真修好、可合并，但发现 pass 2 正常前进循环仍有个真契约缺口：`tailOnce()` 接口文档承诺「单次调用完全追平到 now」，但在**同毫秒行数 > `pageSize` 且落在 page 边界**时不成立——pass 2 一页恰好取满 `pageSize` 行、且这些行全部共享最后一行的 `committed_at`，则该毫秒剩余的行要等**下一次** `tailOnce()` 调用的 pass 1 重扫才补齐（并非丢失，只是单次调用不完整）。按项目价值观（best-complete-solution、兑现契约而非降低承诺）采纳**方案 B（真正兑现契约）**而非改文档措辞降级承诺。
+
+- **修法**：把 pass 1 的「边界重扫」逻辑抽成 `drainBoundaryMillisecond()`（定义在 `tailOnce()` 内部，因为需要该次调用自己的 `connection`/`processRow` 闭包），在两处调用：① pass 1 起手（复用原逻辑，处理调用**前**已存在的边界毫秒）；② pass 2 forward 循环里，每当一页恰好取满 `pageSize`（`rows.length === pageSize`，即可能被 page 边界切断）就再调一次 `drainBoundaryMillisecond()`，把该毫秒剩余行（若有）在**同一次** `tailOnce()` 调用内扫完，再继续按 `committed_at > cursor.committedAt` 前进。`drainBoundaryMillisecond()` 本身在无剩余行时是一次廉价的空查询，调用方不需要先判断「要不要 drain」。
+- **B2 既有保证未回退**：同毫秒去重（`indexedAtBoundaryMs` 排除集机制不变）、跨重启续跑（游标持久化格式不变）、集合清空时机（`advanceCursorPastRow` 毫秒推进即重置，逻辑未动）——全部复用原有代码路径，只是多了一个调用点。全套既有 B2 回归测试（同毫秒乱序、跨重启变体）+ VACUUM/crash-loop/REST cutover 相关测试跑绿确认无回退。
+- **回归测试**（TDD 红→绿）：`daemon.it.test.ts` 新增 1 test——3 条同毫秒记录 + `pageSize:2`（严格小于该毫秒行数），断言**单次** `tailOnce()` 调用后 `result.processed===3` 且三行全部可搜到（而非「第二次调用才完整」）。已验证：临时 stash 掉 pass2 的 drain 调用后此测试真实转红（`processed` 收到 2 而非 3），确认非误报；修复后转绿。
+- **接口文档措辞**：`tailOnce()` 的 doc comment「one call always catches up fully」保留不改——方案 B 落地后这句话现在是真的，不再是「大多数情况」的近似描述。
+- **测试范围外确认**：`bun run typecheck`、`bunx eslint`（无 cache）全绿；`daemon.it.test.ts` 连跑 3 次确认无 flaky（10 test 全绿）；`daemon.it.test.ts`+`daemon-cursor.unit.test.ts`+`uds-transport.it.test.ts`+`daemon-entry-status.it.test.ts`+`daemon-service.it.test.ts`+`search-rest-cutover.it.test.ts` 合并跑 44 test 全绿（B2 既有保证复核）；`bun run test:backend` 全后端连跑 2 次均 6047/6051 pass——与既有 4 个已知缺陷完全一致，零新增失败；`ps aux` 复核零残留 `history-search-daemon` 进程。
+
 ### Phase 2 — UDS 服务端 + 协议 ✅ **已完成**（2026-07-21，`2222f5a4`+`3f2e07a0`）
 - 新 `uds-server.ts`（`node:net` `createServer({path})`，长度前缀 JSON），daemon listen；`uds-client.ts`（主进程侧 `net.connect`，超时 + socket error 挂 listener + 连不上返空）。
 - 测试：daemon + client 往返；client 在 socket 不存在/超时/错误帧下**返空不抛**。
