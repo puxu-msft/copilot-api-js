@@ -1,6 +1,7 @@
 # 上游流终止归因 bus 化 + metrics Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **执行方式（用户 2026-07-22 定）**：**inline + 隔离 worktree**。新会话执行时：先用 `superpowers:using-git-worktrees` 在 `./.worktrees/` 建隔离 worktree（分支如 `feat/upstream-disconnect-attribution`，off master）+ `bun install` + 基线 `bun test` 绿，再用 `superpowers:executing-plans` 逐 Task inline 执行（非 subagent-driven）。Steps 用 checkbox（`- [ ]`）跟踪。**先读文末「执行 Kick-off」**。
+> **状态（2026-07-22 交接）**：spec v3(B) 定稿 + 计划定稿（11 Task / Phase 0-6），已交接待执行。wiring 已按实测修正（handler 层共享收口、非 driver 单点）；NUL 损坏已修；Task 11(G5) 已补；proxy-connect 连跑测试已折入 Task 8 Step 5；backlog 子项目 3 已同步。
 
 **Goal:** 把上游流终止归因做成 bus-native 一等信号：新增两个 `request.*` 事件（`upstream_stream_disconnect` / `upstream_connect_timeout`），console sink 订阅格式化今天的诊断行（含 G5 补旋钮），metrics bus-counter sink 订阅累加 `/metrics`（B 路，不进 `/api/stats`），退役各 pump 手动调用共享 formatter 改为经事件；顺带补 G2（post-commit warn）/G3（`classifyStreamError` 认 undici code）/G4（连接层三处超时归因）。
 
@@ -1517,7 +1518,7 @@ for i in $(seq 1 10); do bun test tests/transport/http-transport.unit.test.ts -t
 ```
 Expected: 10/10 PASS，`recorded` 数组长度恒为 1（非 0 非 2+）。
 
-- [ ] **Step 5: proxy-connect + WS 两条路径的对应测试**（同构，分别造 proxy CONNECT 超时 + WS first-event 超时场景，复用 `tests/transport/proxy-connect.unit.test.ts`/`tests/responses/upstream-ws.unit.test.ts` 既有 mock 手法）
+- [ ] **Step 5: proxy-connect + WS 两条路径的对应测试**（同构，分别造 proxy CONNECT 超时 + WS first-event 超时场景，复用 `tests/transport/proxy-connect.unit.test.ts`/`tests/responses/upstream-ws.unit.test.ts` 既有 mock 手法）。**proxy-connect 分支必须包含连跑循环**（与 TLS 分支 Step 4 同款：同一超时连跑 ≥10 次，断言 `recordUpstreamConnectTimeout("proxy-connect")` 恰被调对应次数、无因并发 socket 事件重复发——证 `fail()` 的 `settled` dedup 生效；spec §6 明列此项，勿只写单次）。
 
 Run: `bun test tests/transport/responses-transport.unit.test.ts`
 Expected: 新增 2 条（proxy-connect phase、ws-first-event phase）PASS。
@@ -1871,3 +1872,26 @@ git commit -m "feat(diagnostics): G5 — disconnect line shows h2ping/idle knobs
 ### Task 数统计
 
 10 个 Task（Commit 1-10），另建议追加 Task 11（G5，可选，见上）。
+
+---
+
+## 执行 Kick-off（复制给新会话）
+
+```
+在 copilot-api-js 执行「上游流终止归因 bus 化 + metrics」实施计划。执行方式：inline + 隔离 worktree。
+
+1. 先用 superpowers:using-git-worktrees 在 ./.worktrees/ 建 feat/upstream-disconnect-attribution（off master）+ bun install + 基线 bun test 绿。
+2. 用 superpowers:executing-plans 逐 Task inline 执行 docs/plan/2026-07-14-upstream-disconnect-attribution.md（11 Task / Phase 0-6，检查点审查）。
+3. 对应 spec：docs/spec/2026-07-14-upstream-disconnect-attribution.md v3(B)；方向 ADR：docs/decisions/2026-07-22-metrics-via-prometheus-grafana.md。
+
+承重上下文（勿踩已澄清的坑）：
+- wiring：不是「driver 单点发事件」——driver 不持有 sseEvents/基座字段。真收口是 handler 层已有的共享诊断函数（logUpstreamStreamError/Truncation/OutcomeError，src/lib/upstream-stream-diagnostics.ts，18 处调用点/5 路由文件），bus 化=给它们加发事件腿。见计划 Architecture。
+- G1（跨端点归因覆盖）已被并发 2026-07-14 工作解决，本计划不重做覆盖，只加 bus 事件 + metrics + G2/G3/G4/G5。
+- metrics 走 B（bus-counter→/metrics，照 retry-strategy-fires.ts 先例，{kind,endpoint}/{phase} label），不走 registry 维度、不进 /api/stats（A 路依赖不存在的 entry-kind 通路=两个 BLOCK，已否决）。
+- 富化用现成 UpstreamStreamSignals（acc.inputTokens/streamState.currentBlockType），非 Anthropic 端点字段缺席但基座照发（诚实退化），不新增 getDisconnectEnrichment 接口。
+- G4 connect-timeout 收口在 transport 层 catch（http-transport/responses-transport 的 send catch），fail() 的 settled 标记已 dedup，不在 proxy-connect.ts 内部加判断。
+
+纪律：项目 CLAUDE.md + user rules（TDD、显式 pathspec 提交、无模型署名、中文注释全宽标点、bun test/typecheck/eslint 无 --cache、不跑服务器命令/不碰 4141 端口、行级共存并发纪律）。每 Task 一提交。收尾：deferred-backlog 子项目 3 措辞已同步(本次交接已做)、live-doc 同步、DESIGN.md「活的架构现状」按需加行。
+
+已知次要项（已折入计划，勿再当遗漏）：Task 8 Step 5 已含 proxy-connect 连跑 dedup 测试；Task 11 是 G5（disconnect 行补 h2ping/idle 旋钮）。
+```

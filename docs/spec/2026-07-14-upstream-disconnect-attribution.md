@@ -1,6 +1,6 @@
 # Spec：上游流终止归因 bus 化 + metrics（upstream-disconnect-attribution）
 
-- 状态：**草案 v3（bus 化 + metrics-B）；B 已自证消解 v3-A 两个 BLOCK；待用户终审 → writing-plans**。v1（bus+A 维度，G1 前提过期）/v2（仅 G2-G5 加性）已被 supersede。
+- 状态：**定稿 v3（bus 化 + metrics-B）；已交接待执行（inline + worktree）**。实施计划 `docs/plan/2026-07-14-upstream-disconnect-attribution.md`（11 Task / Phase 0-6）。v1/v2/v3-A 已 supersede。
   - 评审轨迹：v1/v2/v3-A 均过 GPT reviewer 深度审（v1 BLOCK：G1 过期；v3-A 两 BLOCK：A 维度依赖不存在的 entry-kind 通路）。v3(B) 改用 bus-counter 消解两 BLOCK——B 在事件点累加、从不读 entry（照 `retry-strategy-fires.ts` 先例，2026-07-21），已主会话亲手核实机制（`metrics-exposition.ts:151-175` + `observability/retry-strategy-fires.ts`）。v3(B) 的独立 reviewer 复核因 agent surfacing 故障未取得正文，主会话自证承重点；用户可要求另派新 reviewer 走一遍 clean gate。
 - 日期：2026-07-14（v3 扩写 2026-07-22）
 - 归属：「上游传输可观测性子系统」（`docs/todo/upstream-transport-observability.md`）的**子项目 1**。
