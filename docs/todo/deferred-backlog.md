@@ -962,3 +962,10 @@ registry（`docs/rfc/2026-07-21-retry-strategy-registry.md`）6 commit 全 lande
 - **理想架构 / 若做需改什么**：测试随 core 内部模块剥离（spec 阶段 4+）逐包物理下沉到 `packages/*/src` 旁；若走每包各自 `bun test`，各包 `bunfig` 各自 `[test].preload` 但**指向同一份共享 sandbox-paths**（放 foundation 或新建 `packages/test-harness`、各包 re-export、绝不各包复制）；`RESETTERS` 表随单例分包、L1 守卫 `resetters-complete.unit.test.ts` 改成每包各自枚举本包 `*ForTests`；同步改 `tests/architecture/*.unit.test.ts` 内硬编码 `import.meta.dir`+`../../src/lib/...` 路径。
 - **为何暂缓**：巨量撞行面、依赖 core 内部先解环到位；是「同置收尾」层、落在结构搬迁之后。**触发条件（值得做）**：core 已剥出真子包、需把对应测试随之下沉时。
 - **关联：core 内部解环排序清单**（spec §6 措施 3，随剥离长期存活）：**state 第一**（~83 importer、SCC 入口）、**anthropic/openai/gemini 第二**（state 解耦后可提 core 层 vendor 纵切）、**pipeline/codec 局部环第三**（cell-assembly 三方环）。每次只剥一个、land 后重评 SCC + madge 环快照只减不增。
+
+## 聚合指标迁 Prometheus/Grafana、退役 /api/stats 自建聚合（2026-07-22，ADR 2026-07-22-metrics-via-prometheus-grafana）
+
+- **根因 / 现状**：`/api/stats` + telemetry.db 长窗 rollup（5min/hourly/daily）+ DDSketch 存 + ui stats 页，是自建的迷你时序聚合库；与 `/metrics` 同源（`getDimensionBreakdown`），多出的多窗口/分位/top-N 恰是 Prometheus/Grafana 原生本职。对有 Prometheus 的部署冗余。
+- **当前行为**：聚合可视化靠自建 stats API + UI；无 Grafana/告警。
+- **理想架构 / 若做需改什么（三阶段，破坏性最后做）**：① `/metrics` label/histogram 补齐——把 /api/stats 现有维度 breakdown + 分布以 Prometheus 原生形态铺全（enabling，非破坏）；② 增 Grafana 支持——`docs/GRAFANA.md` + 示例 dashboard JSON + scrape 配置 + README（新增，非破坏）；③ 退役——删 `/api/stats` 路由（`src/routes/stats/`）+ telemetry.db 长窗 rollup/DDSketch（`src/lib/telemetry/read.ts` 30d/90d/lifetime + sketch）+ ui stats 页（`ui/src/composables/useOperationalStats.ts`）；保留 `/metrics`+registry+`getDimensionBreakdown`(sinceStart)、History（per-request 取证）、`/api/status`（健康）、实时面板。telemetry.db 最终形态按「/metrics 实际依赖」在专项 spec 精确裁决。
+- **为何暂缓**：破坏性方向；telemetry 区正被并发会话热改（2026-07-17 起 retry-fire telemetry / generation topology / V2-removal），须待其落定；且第③步须先完成①的 /metrics 无损覆盖。**触发条件（值得做）**：并发 telemetry 工作落定 + 决定正式采用 Grafana 时。第①步（/metrics 补齐）可较早独立启动。发现方：disconnect metrics B/A 取舍追问 → 用户 2026-07-22 决定聚合交 Prometheus/Grafana。
