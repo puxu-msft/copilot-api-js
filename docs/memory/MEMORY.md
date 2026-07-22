@@ -89,6 +89,7 @@
 - [写设计前先核实功能没被 peer 落地](feedback-verify-deferred-task-not-already-landed-before-designing.md) — 不只「自以为暂缓」、连「用户要求实现 X」都先核实 X 是否已 landed(用户未必知现状);并发仓库状态是时间点声明,grep 现码+RFC/DESIGN 状态行核实;撞车先保留自己分析做对比、别急删
 - [绝不推荐短期止血方案](feedback-never-propose-short-term-mitigation.md) — 有根因可修就只提根因;「打开 gated feature 绕过」也算短期将就、禁列选项
 - [现有代码无权威、别为将就它降格最佳方案](feedback-existing-code-has-no-authority-dont-accommodate.md) — 诡异症状=设计错的证据;别把「在现有架构里可行吗」的锚点写进 subagent prompt 让审查背书将就
+- [剥离成可插拔前先核实抽取程度+缝位](methodology-verify-extraction-state-and-seam-before-pluginizing.md) — 「剥成 hook/可插拔」复现请求;先查是否已是纯函数(别重包装)+缝位 pre-vs-post-translation;N=1 别造 registry;真正大块=retry 策略
 - [恢复 agent 永远 SendMessage 绝不 Agent tool 重派](feedback-resume-agent-always-sendmessage-never-agent-tool.md) — 已终止/已完成 subagent 接续永远 `SendMessage`、绝不 `Agent` 重派(丢上下文);唯一 Agent 新派=真全新独立任务
 
 ## project 现状 stub（权威看正式归属；「全 landed」项细节在 docs/git）

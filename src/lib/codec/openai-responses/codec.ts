@@ -135,7 +135,7 @@ import {
   createReverseStreamTranslator,
 } from "~/lib/pipeline/hub-translate"
 import { state } from "~/lib/state"
-import { processResponsesInstructions } from "~/lib/system-prompt"
+import { applyInboundSystemPrompt } from "~/lib/system-prompt"
 import { rebuildConversationMessages } from "~/routes/responses/conversation-rebuild"
 
 import { type ResponsesFallbackScratch } from "./openai-responses-leg"
@@ -312,13 +312,10 @@ export function createOpenAiResponsesCodec(args?: CreateOpenAiResponsesCodecArgs
       return requestContext
     },
 
-    // S1b (RFC 2026-07-14 §4): async system-prompt injection (Responses `instructions`), moved off
-    // the route handler so `client.inbound` (Phase 4) sees the client-NATIVE body (pre-injection).
-    // `env.body.model` is the resolved name (parse set it). One-shot, outside the retry loop.
-    async translateInbound(env) {
-      const body = env.body as ResponsesPayload
-      const instructions = await processResponsesInstructions(body.instructions, body.model, "openai-responses")
-      return env.with({ body: { ...body, instructions } })
+    // S1b (RFC 2026-07-14 §4): 委托统一入站分发（spec 2026-07-20-inbound-system-prompt-dispatch-hook §3.1）。
+    // `client.inbound` (Phase 4) 仍见 pre-injection 原生 body。
+    translateInbound(env) {
+      return applyInboundSystemPrompt(env)
     },
 
     getFallbackResponseId() {

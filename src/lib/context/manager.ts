@@ -211,6 +211,33 @@ export async function withCapturingManagerAsync<T>(fn: () => Promise<T>): Promis
 
 // ─── Factory ───
 
+/**
+ * Cap on the reaper scan interval: a scan misses stale work for at most
+ * `interval` ms, so clamp so a maxAge of hours doesn't mean a scan-every-many-
+ * minutes cadence that delays operator-visible failures.
+ */
+export const REAPER_INTERVAL_MAX_MS = 60_000
+/**
+ * Floor on the reaper scan interval: every scan walks all active contexts, so
+ * don't scan faster than this even when maxAge is tiny (e.g. 1s in tests).
+ */
+export const REAPER_INTERVAL_MIN_MS = 250
+
+/**
+ * Derive the reaper scan interval (ms) from `staleRequestMaxAge` (seconds).
+ * Scanning every `maxAge / 3` keeps worst-case detection latency under ~1.33 ×
+ * maxAge, clamped to [MIN, MAX]; `maxAge ≤ 0` (disabled) returns MAX. Derived
+ * from `staleRequestMaxAge` alone — no extra knob to set inconsistently.
+ *
+ * Exported as a pure, parameterized function so the /3 formula and both clamp
+ * edges get direct boundary regression coverage (DI-7).
+ */
+export function computeReaperIntervalMs(staleRequestMaxAgeSec: number): number {
+  const derived = Math.floor((staleRequestMaxAgeSec * 1000) / 3)
+  if (derived <= 0) return REAPER_INTERVAL_MAX_MS
+  return Math.max(REAPER_INTERVAL_MIN_MS, Math.min(REAPER_INTERVAL_MAX_MS, derived))
+}
+
 export function createRequestContextManager(options?: RequestContextManagerOptions): RequestContextManager {
   const activeContexts = new Map<string, RequestContext>()
   // Operation/finalization registry: populated alongside activeContexts, sealed at logical settle,
@@ -237,33 +264,6 @@ export function createRequestContextManager(options?: RequestContextManagerOptio
   }
 
   // ─── Stale Request Reaper ───
-
-  /**
-   * Cap on the reaper scan interval. A scan misses stale work for at most
-   * `interval` ms, so we derive the effective interval from staleRequestMaxAge
-   * — but clamp to this cap so a maxAge of hours doesn't translate into a
-   * scan-every-many-minutes cadence that delays operator-visible failures.
-   */
-  const REAPER_INTERVAL_MAX_MS = 60_000
-  /**
-   * Floor on the reaper scan interval. Even when maxAge is small (e.g. 1s
-   * for tests), don't scan faster than this — every scan walks all active
-   * contexts and the cost is wasted when no entry is near expiry.
-   */
-  const REAPER_INTERVAL_MIN_MS = 250
-
-  /**
-   * Derive the per-instance scan interval. Scanning every `maxAge / 3` keeps
-   * worst-case detection latency under ~1.33 × maxAge: a request that goes
-   * stale right after a scan waits one full interval (maxAge/3) plus the
-   * usual variance. Configurable via `staleRequestMaxAge` alone — no extra
-   * knob, which means operators can't accidentally set them inconsistently.
-   */
-  function computeReaperIntervalMs(): number {
-    const derived = Math.floor((state.staleRequestMaxAge * 1000) / 3)
-    if (derived <= 0) return REAPER_INTERVAL_MAX_MS
-    return Math.max(REAPER_INTERVAL_MIN_MS, Math.min(REAPER_INTERVAL_MAX_MS, derived))
-  }
 
   let reaperTimer: ReturnType<typeof setInterval> | null = null
   // Reaper tick timing (RC2 diagnostics — see reaper-diagnostics.ts). Frozen interval is
@@ -342,7 +342,7 @@ export function createRequestContextManager(options?: RequestContextManagerOptio
   function startReaper() {
     if (reaperTimer) return // idempotent
     if (state.staleRequestMaxAge <= 0) return // explicitly disabled — no timer at all
-    reaperFrozenIntervalMs = computeReaperIntervalMs()
+    reaperFrozenIntervalMs = computeReaperIntervalMs(state.staleRequestMaxAge)
     lastTickWallMs = undefined
     lastTickMonoMs = undefined
     reaperTimer = setInterval(runReaperOnce, reaperFrozenIntervalMs)

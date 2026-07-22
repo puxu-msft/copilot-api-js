@@ -65,7 +65,8 @@ function isForward(env: RequestEnvelope): boolean {
 /** The shared fallback-exchange scratch parse put on requestState (the CHAT fallback cell reads it). */
 function fallbackScratch(env: RequestEnvelope): ResponsesFallbackScratch {
   const scratch = env.requestState?.responsesFallbackScratch as ResponsesFallbackScratch | undefined
-  if (!scratch) throw new Error("[openai-cc-cell] env.requestState.responsesFallbackScratch missing — openai-responses parse did not populate the fallback leg supply")
+  if (!scratch)
+    throw new Error("[openai-cc-cell] env.requestState.responsesFallbackScratch missing — openai-responses parse did not populate the fallback leg supply")
   return scratch
 }
 
@@ -124,11 +125,11 @@ export const chatCompletionsLeg: OutboundLeg = {
 
 /**
  * RETRY_SEMANTICS for a CC-shaped cell served by the `/chat/completions` leg: the CC stack (auto-truncate
- * ON, N retries) for openai-cc DIRECT + anthropic/gemini FORWARD `@cc`. The only per-cell difference is the
- * console `label`. (The openai-responses FALLBACK cell's semantics come from `responsesFallbackRetrySemantics`.)
+ * ON, N retries) for openai-cc DIRECT + anthropic/gemini FORWARD `@cc`. (The openai-responses FALLBACK
+ * cell's semantics come from `responsesFallbackRetrySemantics`.)
  */
-export function chatCompletionsRetrySemantics(label: string): RetrySemanticsSpec {
-  return { maxRetries: state.maxReactiveRetries, label }
+export function chatCompletionsRetrySemantics(): RetrySemanticsSpec {
+  return { maxRetries: state.maxReactiveRetries }
 }
 
 /**
@@ -137,5 +138,5 @@ export function chatCompletionsRetrySemantics(label: string): RetrySemanticsSpec
  * `buildOpenAiResponsesStrategiesForEnv`), unlike the CC-shaped cells on the same leg which are ON.
  */
 export function responsesFallbackRetrySemantics(): RetrySemanticsSpec {
-  return { maxRetries: 1, label: "Responses(→CC fallback)" }
+  return { maxRetries: 1 }
 }

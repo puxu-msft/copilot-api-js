@@ -71,6 +71,17 @@ describe("openai-cc codec — parse", () => {
     expect(body.model).toBe("gpt-deployment-real")
   })
 
+  test("[DI-8] Azure override: history keeps BOTH tracks — deployment as the model, raw body model preserved in the payload snapshot", () => {
+    const codec = createOpenAiCcCodec()
+    const env = codec.parse(rawReq({ model: "ignored-body-model", messages: [{ role: "user", content: "hi" }] }, { modelOverride: "gpt-deployment-real" }))
+    // originalRequest.model records the URL deployment — in Azure the path deployment
+    // IS the client's authoritative model intent (body.model is designed to be ignored).
+    expect(env.ctx.originalRequest?.model).toBe("gpt-deployment-real")
+    // ...but the client's raw body model is NOT lost (richest-data-flow): the full
+    // pre-resolution body is snapshotted, so the ignored body model stays inspectable.
+    expect((env.ctx.originalRequest?.payload as ChatCompletionsPayload).model).toBe("ignored-body-model")
+  })
+
   test("sets a tool-name mapper on ctx when the payload declares tools", () => {
     const codec = createOpenAiCcCodec()
     const env = codec.parse(

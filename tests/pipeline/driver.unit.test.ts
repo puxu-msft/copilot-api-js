@@ -8,6 +8,8 @@
 
 import {
   //
+  afterEach,
+  beforeEach,
   describe,
   expect,
   test,
@@ -37,6 +39,11 @@ import type {
 } from "~/lib/pipeline/types"
 
 import { HTTPError } from "~/lib/error"
+import {
+  //
+  getRetryStrategyFireCounts,
+  resetRetryStrategyFiresForTests,
+} from "~/lib/observability/retry-strategy-fires"
 import { makeArraySink } from "~/lib/pipeline/client-sink"
 import {
   //
@@ -388,6 +395,110 @@ describe("driver.runExchange — error-driven retry", () => {
     expect(calls.setAttemptError).toHaveLength(1)
     expect(calls.recordAttemptFailure).toHaveLength(1)
     expect(onResolved).toBe(1)
+  })
+
+  describe("per-strategy retry-fire telemetry (Task 5 / RFC §3.5)", () => {
+    beforeEach(() => {
+      resetRetryStrategyFiresForTests()
+    })
+    afterEach(() => {
+      resetRetryStrategyFiresForTests()
+    })
+
+    test("a budget-accepted retry increments the fire counter keyed by the strategy's .name (same commit point as recordAttemptFailure)", async () => {
+      const { ctx } = makeCtx()
+      const env = makeEnv(ctx)
+      const { codec } = makeCodec({ env })
+      let attempts = 0
+      const transport = makeTransport(async () => {
+        attempts++
+        if (attempts === 1) throw new Error("boom")
+        return okStream()
+      })
+      const strategy: RetryStrategy = { name: "test-retry", canHandle: () => true, handle: async (_err, e) => ({ kind: "retry", env: e }) }
+      const driver = createPipelineDriver({ ...BASE, codec, decideRoute: (e) => codec.decideRoute(e), transport, strategies: [strategy] })
+
+      const result = await driver.runRequest({ body: {}, headers: new Headers() })
+      expect(result.ok).toBe(true)
+      expect(getRetryStrategyFireCounts()).toEqual({ "test-retry": 1 })
+    })
+
+    test("a strategy that throws never increments the fire counter (never-throw — the driver's own catch already swallows it, warn-only)", async () => {
+      const { ctx } = makeCtx()
+      const env = makeEnv(ctx)
+      const { codec } = makeCodec({ env })
+      const transport = makeTransport(async () => {
+        throw new Error("boom")
+      })
+      const strategy: RetryStrategy = {
+        name: "throwing-strategy",
+        canHandle: () => true,
+        handle: async () => {
+          throw new Error("strategy exploded")
+        },
+      }
+      const driver = createPipelineDriver({ ...BASE, codec, decideRoute: (e) => codec.decideRoute(e), transport, strategies: [strategy] })
+
+      await expect(driver.runRequest({ body: {}, headers: new Headers() })).rejects.toThrow("boom")
+      expect(getRetryStrategyFireCounts()).toEqual({})
+    })
+
+    test("a budget-rejected retry (over maxRetries) never increments the fire counter — mirrors recordAttemptFailure's post-gate placement", async () => {
+      const { ctx } = makeCtx()
+      const env = makeEnv(ctx)
+      const { codec } = makeCodec({ env })
+      const transport = makeTransport(async () => {
+        throw new Error("boom")
+      })
+      const strategy: RetryStrategy = { name: "always-retry", canHandle: () => true, handle: async (_e, e) => ({ kind: "retry", env: e }) }
+      const driver = createPipelineDriver({ ...BASE, codec, decideRoute: (e) => codec.decideRoute(e), transport, strategies: [strategy], maxRetries: 0 })
+
+      await expect(driver.runRequest({ body: {}, headers: new Headers() })).rejects.toThrow("boom")
+      expect(getRetryStrategyFireCounts()).toEqual({})
+    })
+
+    test("an aborted action (kind:'abort') never increments the fire counter", async () => {
+      const { ctx } = makeCtx()
+      const env = makeEnv(ctx)
+      const { codec } = makeCodec({ env })
+      const transport = makeTransport(async () => {
+        throw new Error("boom")
+      })
+      const strategy: RetryStrategy = {
+        name: "aborting-strategy",
+        canHandle: () => true,
+        handle: async (error) => ({ kind: "abort", error }),
+      }
+      const driver = createPipelineDriver({ ...BASE, codec, decideRoute: (e) => codec.decideRoute(e), transport, strategies: [strategy] })
+
+      await expect(driver.runRequest({ body: {}, headers: new Headers() })).rejects.toThrow("boom")
+      expect(getRetryStrategyFireCounts()).toEqual({})
+    })
+
+    test("multiple distinct strategies firing across attempts each accumulate under their own name", async () => {
+      const { ctx } = makeCtx()
+      const env = makeEnv(ctx)
+      const { codec } = makeCodec({ env })
+      let attempts = 0
+      const transport = makeTransport(async () => {
+        attempts++
+        if (attempts <= 2) throw new Error("boom")
+        return okStream()
+      })
+      const first: RetryStrategy = { name: "strategy-a", canHandle: () => true, handle: async (_e, e) => ({ kind: "retry", env: e }) }
+      // Both strategies canHandle:true; the driver's `.find()` always picks the FIRST match, so
+      // "strategy-a" fires on every retry here — this test locks that both-accumulate-independently
+      // shape via two SEPARATE driver runs (each with its own single-strategy stack) instead.
+      const second: RetryStrategy = { name: "strategy-b", canHandle: () => true, handle: async (_e, e) => ({ kind: "retry", env: e }) }
+      const driverA = createPipelineDriver({ ...BASE, codec, decideRoute: (e) => codec.decideRoute(e), transport, strategies: [first] })
+      await driverA.runRequest({ body: {}, headers: new Headers() })
+
+      attempts = 0
+      const driverB = createPipelineDriver({ ...BASE, codec, decideRoute: (e) => codec.decideRoute(e), transport, strategies: [second] })
+      await driverB.runRequest({ body: {}, headers: new Headers() })
+
+      expect(getRetryStrategyFireCounts()).toEqual({ "strategy-a": 2, "strategy-b": 2 })
+    })
   })
 
   test("migrated cell resolves its stack via CellAssembly, NEVER the legacy deps.strategies factory (no double recordFeature)", async () => {

@@ -405,6 +405,14 @@ history:
     db_path: "raw.db"
     max_object_bytes: 16777216
 
+  # 终态落盘遇瞬时 SQLite 失败（WAL BUSY/LOCKED/IOERR）时的有界重试（DI-5）。
+  # 此前首次失败即丢弃该 entry；现改为线性退避重试，permanent/conflict 不重试。
+  # Bounded retry for terminal-persistence commits that hit a transient SQLite
+  # error. Permanent failures / conflicts are never retried.
+  persist_retry:
+    max_attempts: 3
+    backoff_ms: 10
+
 # 遥测分三层滚筒（5min/1h/1d）+ 终身累计。
 # Telemetry has three-tier rollup (5min / hourly / daily) + lifetime cumulative.
 telemetry:
@@ -903,6 +911,11 @@ anthropic:
 openai_responses:
   # Convert `call_xxx` IDs to `fc_xxx` in input. Required when clients send conversation history with Chat Completions-format tool call IDs to the Responses API (which requires `fc_` prefix). Default: true.
   # 把 input 中的 `call_xxx` ID 转为 `fc_xxx`。客户端用 Chat Completions 格式的 tool call ID 向 Responses API（需 `fc_` 前缀）发对话历史时需要。默认 true。
+  # NOTE: this toggle only governs the `call_`→`fc_` REWRITE (which also touches `call_id`). Independently of it, an
+  # unconditional wire backstop always STRIPS any non-`fc_` `function_call` item `id` (matching is by `call_id` alone),
+  # so a request never carries an item id that upstream rejects with "Expected an ID that begins with 'fc'".
+  # 注意：本开关只控制 `call_`→`fc_` 改写（会同时动 `call_id`）。与之独立，一个无条件的 wire backstop 总会剥掉任何非-`fc_` 的
+  # `function_call` item `id`（匹配只靠 `call_id`），故请求绝不会带上游拒绝的非法 item id。
   normalize_call_ids: true
 
   # Use upstream WebSocket transport for streaming /responses when the model supports it.

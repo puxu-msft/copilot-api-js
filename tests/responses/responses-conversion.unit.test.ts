@@ -23,6 +23,7 @@ import {
   //
   responsesInputToMessages,
   responsesOutputToContent,
+  stripNonFcFunctionCallItemIds,
 } from "~/lib/openai/responses-conversion"
 
 // ============================================================================
@@ -441,5 +442,60 @@ describe("responsesOutputToContent", () => {
     expect(result?.content).toContain("Let me check.")
     expect(result?.tool_calls).toHaveLength(1)
     expect(result?.tool_calls?.[0].function.name).toBe("search")
+  })
+})
+
+// ============================================================================
+// stripNonFcFunctionCallItemIds — unconditional last-mile wire defense
+// ============================================================================
+
+describe("stripNonFcFunctionCallItemIds", () => {
+  test("strips a `call_`-prefixed function_call item id (keeps call_id, matches the upstream 400 class)", () => {
+    const payload = {
+      model: "m",
+      input: [{ type: "function_call", id: "call_abc", call_id: "call_abc", name: "t", arguments: "{}" }],
+    } as const
+    const out = stripNonFcFunctionCallItemIds(payload as never)
+    expect(out.input).toEqual([{ type: "function_call", call_id: "call_abc", name: "t", arguments: "{}" }])
+  })
+
+  test("strips a `toolu_`-prefixed id (the prefix normalizeCallIds' call_-only rewrite misses)", () => {
+    const payload = {
+      model: "m",
+      input: [{ type: "function_call", id: "toolu_9", call_id: "toolu_9", name: "t", arguments: "{}" }],
+    } as const
+    const out = stripNonFcFunctionCallItemIds(payload as never)
+    const fc = (out.input as Array<ResponsesInputItem>)[0]
+    expect(fc.id).toBeUndefined()
+    expect(fc.call_id).toBe("toolu_9")
+  })
+
+  test("keeps a valid `fc_`-prefixed id untouched (returns the SAME payload reference when nothing changes)", () => {
+    const payload = {
+      model: "m",
+      input: [{ type: "function_call", id: "fc_ok", call_id: "call_ok", name: "t", arguments: "{}" }],
+    } as const
+    const out = stripNonFcFunctionCallItemIds(payload as never)
+    expect(out).toBe(payload as never)
+  })
+
+  test("never touches call_id, and applies to function_call_output too", () => {
+    const payload = {
+      model: "m",
+      input: [
+        { type: "function_call", id: "call_x", call_id: "call_x", name: "t", arguments: "{}" },
+        { type: "function_call_output", id: "call_x", call_id: "call_x", output: "ok" },
+      ],
+    } as const
+    const out = stripNonFcFunctionCallItemIds(payload as never)
+    expect(out.input).toEqual([
+      { type: "function_call", call_id: "call_x", name: "t", arguments: "{}" },
+      { type: "function_call_output", call_id: "call_x", output: "ok" },
+    ])
+  })
+
+  test("string input is passed through unchanged", () => {
+    const payload = { model: "m", input: "raw prompt" } as const
+    expect(stripNonFcFunctionCallItemIds(payload as never)).toBe(payload as never)
   })
 })

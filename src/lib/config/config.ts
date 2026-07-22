@@ -46,6 +46,8 @@ import {
   state,
 } from "~/lib/state"
 
+import { setV3PersistRetryConfig } from "~/lib/history/v3"
+
 import type {
   //
   EndpointScope,
@@ -264,6 +266,35 @@ function applyVendorBufferedRetry(value: boolean | BufferedRetryOverride, vendor
   }
   if (value.enabled !== undefined) setEnabled(value.enabled)
   setBufferedRetryOverride(vendor, mapBufferedCaps(value))
+}
+
+/**
+ * `retry.strategies` "allow + warn" (RFC 2026-07-21-retry-strategy-registry §3.4 decision 2, plan Task 4):
+ * disabling a SHARED strategy (network / server-error / token-refresh — the 3 that gate `() => true`,
+ * applying across EVERY leg, not just `@messages`) is allowed (internal-tool posture — never block), but
+ * warns once per apply (startup + every hot-reload that carries the disabled key) since it removes a
+ * cross-cutting resilience net for ALL protocols, not just an Anthropic-only 400-class negotiation.
+ * Anthropic-only entries (400-class) get no such warning — disabling one is a narrower, more deliberate
+ * choice with no similar blast radius.
+ */
+/**
+ * The 3 SHARED (`appliesTo:()=>true`) configKeys — kept as an independent hardcoded `Set` rather than derived
+ * from `retry-registry.ts`'s `getRetryStrategyRegistryDiagnostics` (same "config schema layer stays free of a
+ * business-logic import" convention as `RETRY_STRATEGY_CONFIG_KEYS` in schema.ts). Exported ONLY so
+ * `tests/config/retry-strategies.it.test.ts` can assert set-parity against the registry's own `scope: "shared"`
+ * projection — closing the "this Set silently drifts if a future entry's `appliesTo` gate changes" gap (Task 6
+ * / plan carryover, Task 4 reviewer concern 2) without importing the registry into config.ts's own runtime.
+ */
+export const SHARED_RETRY_STRATEGY_CONFIG_KEYS: ReadonlySet<string> = new Set(["network", "serverError", "tokenRefresh"])
+
+function warnDisabledSharedRetryStrategies(strategies: Partial<Record<string, { enabled?: boolean }>>): void {
+  const disabled = Object.entries(strategies)
+    .filter(([key, sw]) => SHARED_RETRY_STRATEGY_CONFIG_KEYS.has(key) && sw?.enabled === false)
+    .map(([key]) => key)
+  if (disabled.length === 0) return
+  consola.warn(
+    `[config] retry.strategies disables shared retry strateg${disabled.length === 1 ? "y" : "ies"} (${disabled.join(", ")}) — this removes a cross-cutting resilience net (network/server-error/token-refresh recovery) for ALL protocols (Anthropic + Chat Completions + Responses), not just Anthropic 400-class negotiation. Proceeding (allow + warn).`,
+  )
 }
 
 /** Bundled defaults cache — file is immutable for the process lifetime. */
@@ -793,10 +824,18 @@ export async function applyConfigToState(): Promise<Config> {
     setDisabledModels(normalizeModelNameList(config.disabled_models, "disabled_models"))
   }
 
-  // Shared reactive-retry budget (was auto_truncate.max_retries).
-  if (config.retry?.max_reactive_retries !== undefined) {
-    setReactiveRetryConfig({ maxReactiveRetries: config.retry.max_reactive_retries })
+  // Shared reactive-retry budget (was auto_truncate.max_retries) + per-strategy registry opt-out
+  // (RFC 2026-07-21-retry-strategy-registry §3.4 / plan Task 4). `strategies` is a whole-map REPLACE
+  // (retain-on-absence: an absent `retry.strategies` key on a later reload keeps the prior runtime
+  // value — resetConfigManagedState() is the only reset path, mirroring every other Record-typed
+  // config-managed field, e.g. anthropic.error_selfheal_delegate).
+  if (config.retry?.max_reactive_retries !== undefined || config.retry?.strategies !== undefined) {
+    setReactiveRetryConfig({
+      ...(config.retry.max_reactive_retries !== undefined && { maxReactiveRetries: config.retry.max_reactive_retries }),
+      ...(config.retry.strategies !== undefined && { retryStrategies: config.retry.strategies }),
+    })
   }
+  if (config.retry?.strategies !== undefined) warnDisabledSharedRetryStrategies(config.retry.strategies)
   const generation = config.generation
   if (generation) {
     const patch = {
@@ -846,6 +885,15 @@ export async function applyConfigToState(): Promise<Config> {
     if (h.raw_capture?.enabled !== undefined) setHistoryConfig({ historyRawCaptureEnabled: h.raw_capture.enabled })
     if (h.raw_capture?.db_path !== undefined) setHistoryConfig({ historyRawCaptureDbPath: h.raw_capture.db_path })
     if (h.raw_capture?.max_object_bytes !== undefined) setHistoryConfig({ historyRawCaptureMaxObjectBytes: h.raw_capture.max_object_bytes })
+    // DI-5 transient retry budget — consumed only by the V3 store drain (no state
+    // field / listener needed), so feed the module setter directly like the other
+    // module-local config knobs (setReactiveRetryConfig above).
+    if (h.persist_retry?.max_attempts !== undefined || h.persist_retry?.backoff_ms !== undefined) {
+      setV3PersistRetryConfig({
+        maxAttempts: h.persist_retry.max_attempts ?? 3,
+        backoffMs: h.persist_retry.backoff_ms ?? 10,
+      })
+    }
   }
 
   // Telemetry settings (telemetry.*, nested: override only when present). Business-layer

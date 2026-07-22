@@ -25,6 +25,7 @@ import type {
   HistogramSummary,
 } from "./request-telemetry"
 
+import { getRetryStrategyFireCounts } from "./observability/retry-strategy-fires"
 import { TELEMETRY_DIMENSION_NAMES } from "./observability/telemetry-dimensions"
 import {
   //
@@ -81,8 +82,17 @@ function formatValue(value: number): string {
  * distinct keys (the live caller satisfies this — `TELEMETRY_DIMENSION_NAMES` is
  * distinct and `getDimensionBreakdown` returns Map-derived keys). Duplicate
  * `(dimension,key)` pairs would emit duplicate sample lines (a strict-parser error).
+ *
+ * `retryStrategyFires` (RFC 2026-07-21-retry-strategy-registry §3.5 / plan Task 5) is a SEPARATE,
+ * single-labelled (`strategy`) counter family — NOT one of `TELEMETRY_MEASURE_NAMES`'s
+ * `(dimension,key)`-labelled families (a retry-fire has no "dimension", only a strategy name), so it
+ * gets its own emission block rather than folding into the dimension × measure fan-out above.
  */
-export function renderPrometheusMetrics(breakdowns: ReadonlyArray<DimensionBreakdownSnapshot>, acceptedSinceStart: number): string {
+export function renderPrometheusMetrics(
+  breakdowns: ReadonlyArray<DimensionBreakdownSnapshot>,
+  acceptedSinceStart: number,
+  retryStrategyFires: Readonly<Record<string, number>> = {},
+): string {
   const lines: Array<string> = [
     "# Each settled request is counted under EVERY dimension (model/endpoint/client/agentKind/tool);",
     "# filter by the `dimension` label and do NOT sum across dimensions (they are parallel views).",
@@ -138,6 +148,23 @@ export function renderPrometheusMetrics(breakdowns: ReadonlyArray<DimensionBreak
     lines.push(`# HELP ${base} Distribution of ${histogram.name} per (dimension,key) since process start.`, `# TYPE ${base} histogram`, ...samples)
   }
 
+  // Per-strategy retry-fire counter (RFC 2026-07-21-retry-strategy-registry §3.5 / plan Task 5):
+  // single `strategy` label, no `dimension`/`key` pair — a retry-fire is a driver-level event, not a
+  // per-request settled measure. Emitted even with zero fires (stable schema, mirrors the measure loop).
+  const retryFireName = `${METRIC_PREFIX}retry_strategy_fires_total`
+  const retryFireSamples = Object.entries(retryStrategyFires).map(
+    ([strategy, count]) => `${retryFireName}{strategy="${escapeLabelValue(strategy)}"} ${formatValue(count)}`,
+  )
+  lines.push(
+    // Scope note (Task 5 reviewer Minor / plan Task 6 carryover): this counter covers ONLY the 16
+    // reactive strategies declared in the retry-strategy registry (`src/lib/request/retry-registry.ts`)
+    // — it does NOT include ws-fallback, rate-limit-retry, or L2 buffered-retry, which fire their own
+    // `recordAttemptFailure` calls outside the registry's `.find(canHandle)` dispatch point (driver.ts).
+    `# HELP ${retryFireName} Cumulative reactive retry-strategy fires (budget-accepted retries) per strategy since process start. Covers only the 16 registry-declared strategies (src/lib/request/retry-registry.ts) — excludes ws-fallback, rate-limit-retry, and L2 buffered-retry, which fire outside the registry dispatch point.`,
+    `# TYPE ${retryFireName} counter`,
+    ...retryFireSamples,
+  )
+
   // Prometheus requires a trailing newline.
   return `${lines.join("\n")}\n`
 }
@@ -146,5 +173,5 @@ export function renderPrometheusMetrics(breakdowns: ReadonlyArray<DimensionBreak
 export function buildMetricsExposition(now = Date.now()): string {
   const breakdowns = TELEMETRY_DIMENSION_NAMES.map((dimension) => getDimensionBreakdown(dimension, "sinceStart", ALL_KEYS_LIMIT, now))
   const acceptedSinceStart = getRequestTelemetrySnapshot(now).acceptedSinceStart
-  return renderPrometheusMetrics(breakdowns, acceptedSinceStart)
+  return renderPrometheusMetrics(breakdowns, acceptedSinceStart, getRetryStrategyFireCounts())
 }

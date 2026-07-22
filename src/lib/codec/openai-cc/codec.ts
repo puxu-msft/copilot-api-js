@@ -119,7 +119,7 @@ import {
   type ReverseStreamTranslator,
 } from "~/lib/pipeline/hub-translate"
 import { state } from "~/lib/state"
-import { processOpenAIMessages } from "~/lib/system-prompt"
+import { applyInboundSystemPrompt } from "~/lib/system-prompt"
 
 import {
   //
@@ -247,15 +247,10 @@ export function createOpenAiCcCodec(args?: CreateOpenAiCcCodecArgs): OpenAiCcCod
       return requestContext
     },
 
-    // S1b (RFC 2026-07-14 §4): async system-prompt injection, moved off the route handler so the
-    // `client.inbound` hook (S1a→S1b) sees the client-NATIVE body (pre-injection). `env.body.model`
-    // is the resolved name (parse set it); mirrors the legacy route order (model resolved at parse,
-    // then `processOpenAIMessages`'s `applyConfigToState` reload). Idempotent per request (one-shot,
-    // outside the retry loop).
-    async translateInbound(env) {
-      const body = env.body as ChatCompletionsPayload
-      const messages = await processOpenAIMessages(body.messages, body.model, "openai-cc")
-      return env.with({ body: { ...body, messages } })
+    // S1b (RFC 2026-07-14 §4): 委托统一入站分发（spec 2026-07-20-inbound-system-prompt-dispatch-hook §3.1）。
+    // `client.inbound` (S1a→S1b) 仍见 pre-injection 原生 body。
+    translateInbound(env) {
+      return applyInboundSystemPrompt(env)
     },
 
     // S2 translateOut: identity for the forward/direct CC legs (the CC→Responses translation lives in

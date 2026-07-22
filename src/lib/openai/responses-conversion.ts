@@ -222,3 +222,41 @@ export function normalizeCallIds(payload: ResponsesPayload): ResponsesPayload {
   consola.debug(`[responses] Normalized ${count} call ID(s) (call_ → fc_)`)
   return { ...payload, input: normalizedInput }
 }
+
+/**
+ * Strip any `function_call` / `function_call_output` INPUT item `id` that is not `fc_`-prefixed.
+ *
+ * The OpenAI/GHC Responses API validates a `function_call` item `id` (when present) as `fc_`-prefixed and
+ * rejects anything else with `400 Invalid 'input[N].id': '…'. Expected an ID that begins with 'fc'`. Since
+ * the item is matched to its `function_call_output` by `call_id` ALONE, a non-`fc` item `id` is both invalid
+ * upstream and unnecessary — so we drop it (never rewrite: an invented `fc_` id would be a fabricated,
+ * unread value).
+ *
+ * This is the UNCONDITIONAL last-mile wire backstop, complementary to `normalizeCallIds`:
+ *   - `normalizeCallIds` is GATED (`state.normalizeResponsesCallIds`), only rewrites the `call_` prefix, and
+ *     also touches `call_id` — it runs earlier on the via-responses path (and at Responses-direct parse).
+ *   - This runs on EVERY Responses wire (via `prepareResponsesRequest`, the shared choke), catches ANY
+ *     non-`fc` prefix (`toolu_`, echoed foreign ids, …), and NEVER touches `call_id`.
+ *
+ * A valid `fc_`-prefixed id is kept verbatim (least surprise; only the invalid class is removed). Returns the
+ * SAME payload reference when nothing changed (copy-on-write).
+ */
+export function stripNonFcFunctionCallItemIds(payload: ResponsesPayload): ResponsesPayload {
+  if (typeof payload.input === "string") return payload
+
+  let count = 0
+  const strippedInput = payload.input.map((item): ResponsesInputItem => {
+    if (item.type !== "function_call" && item.type !== "function_call_output") return item
+    if (item.id === undefined || item.id.startsWith(FC_PREFIX)) return item
+    count++
+    const { id: _dropped, ...rest } = item
+    return rest
+  })
+
+  if (count === 0) return payload
+  // warn (not debug like normalizeCallIds): with normalize_call_ids ON (default) the `call_`→`fc_` rewrite runs
+  // first, so this backstop only fires on genuinely anomalous ids (non-`call_` foreign prefixes, or normalization
+  // disabled) — rare, and worth surfacing since we mutated client input to avert an upstream 400.
+  consola.warn(`[responses] Stripped ${count} non-fc function_call item id(s) at the wire (would 400 upstream: "Expected an ID that begins with 'fc'")`)
+  return { ...payload, input: strippedInput }
+}

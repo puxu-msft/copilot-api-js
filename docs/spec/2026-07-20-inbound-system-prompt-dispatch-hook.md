@@ -60,14 +60,18 @@ export async function applyInboundSystemPrompt(env: RequestEnvelope): Promise<Re
 
 > 注：本项**独立于分发 hook**，是核查中发现的既有隐患，顺带修正。
 
-- `handler-v4.ts:341` `if(payload.system) await applyConfigToState()` 改**无条件** `await applyConfigToState()`（对齐 CC 路由 `:169`），保 parse 阶段 `sanitizeToolNames` 新鲜度不依附 system 分支。
-- **plan 阶段须核实**：§2 注释说「无条件 reload 会重置 system-less 测试设的 state」——受影响测试改为 config 文件驱动（对齐 CC 路由既有做法），不直接改 state。
-- 若此项风险经 plan 评估过大，可拆为独立 commit / 独立评估，不阻塞分发 hook 主体。
+### 3.3 config-freshness：route reload 改无条件（修既有隐患）—— **实施期实测后 DEFER**
+
+> 独立于分发 hook（本项目现状本就不因分发 hook 改变 route reload）。以下为原设计 + 实测结论。
+
+- **原设计**：`handler-v4.ts:341` `if(payload.system) await applyConfigToState()` 改**无条件**，保 parse 阶段 `sanitizeToolNames` 新鲜度不依附 system 分支。
+- **实测结论（2026-07-21，DEFER）**：改无条件后 `bun test tests/anthropic tests/config tests/routes` 打爆 **20+ 测试**（immediate-keepalive / keepalive buffered-anchor / L2 buffered-retry / live-pump 等），revert 后同套件 2150 pass/0 fail——归因确证是本改动所致。根因即 §2 注释预警：大量 keepalive/buffered-retry 测试**直接设 `state`（非 config 文件）**，每请求无条件 reload 冲掉其 setup。
+- **为何 DEFER 而非硬修**：(1) 该 freshness 不对称是**既有状况**、分发 hook 不引入它;(2) 爆炸半径（20+ 测试需逐个迁 config-file-driven）与分发 hook 主体不成比例、是 tangential 高风险 test-rewrite;(3) 本节原文即给了「拆独立项、不阻塞主体」逃生口。→ 记 `docs/todo/deferred-backlog.md`「anthropic route 无条件 config reload」节。
 
 ## 4. 数据流（v3，无新缝）
 
 ```
-route pre-parse: preprocessAnthropicMessages (已提取,不动) + 无条件 applyConfigToState()
+route pre-parse: preprocessAnthropicMessages (已提取,不动) + if(system) applyConfigToState()  ← §3.3 无条件化 DEFER
 S1a parse (同步)
   → client.inbound hook (见 pre-injection 原生 body)
 S1b translateInbound (async, per-codec):

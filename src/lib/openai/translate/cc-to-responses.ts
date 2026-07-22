@@ -99,7 +99,7 @@ export function translateChatCompletionsToResponses(payload: ChatCompletionsPayl
 function translateMessages(messages: Array<Message>): Array<ResponsesInputItem> {
   const items: Array<ResponsesInputItem> = []
 
-  for (const message of messages) {
+  for (const [index, message] of messages.entries()) {
     switch (message.role) {
       case "user": {
         items.push(convertUserMessage(message))
@@ -110,7 +110,7 @@ function translateMessages(messages: Array<Message>): Array<ResponsesInputItem> 
         break
       }
       case "tool": {
-        items.push(convertToolMessage(message))
+        items.push(convertToolMessage(message, index))
         break
       }
       default: {
@@ -171,9 +171,12 @@ function convertAssistantMessage(message: Message): Array<ResponsesInputItem> {
   }
 
   for (const toolCall of message.tool_calls ?? []) {
+    // NO item `id`: a Responses `function_call` INPUT item is matched by `call_id` only. The item `id`
+    // is an OUTPUT-echo field the API validates as `fc_`-prefixed when present; CC tool-call ids are
+    // `call_`-prefixed, so emitting one as `id` yields an upstream 400 (`Expected an ID that begins with
+    // 'fc'`). `call_id` alone is sufficient (mirrors the anthropic→responses direct bridge).
     items.push({
       type: "function_call",
-      id: toolCall.id,
       call_id: toolCall.id,
       name: toolCall.function.name,
       arguments: toolCall.function.arguments,
@@ -199,7 +202,7 @@ function convertAssistantMessage(message: Message): Array<ResponsesInputItem> {
   return items
 }
 
-function convertToolMessage(message: Message): ResponsesInputItem {
+function convertToolMessage(message: Message, index: number): ResponsesInputItem {
   let output = ""
 
   if (typeof message.content === "string") {
@@ -212,14 +215,17 @@ function convertToolMessage(message: Message): ResponsesInputItem {
   // Responses API matches function_call_output items to prior function_call
   // items by `call_id`. An empty string here would silently produce an
   // unmatched-call_id upstream error that is hard for clients to diagnose.
-  // Reject loudly at the translate boundary with an actionable 400 instead.
+  // Reject loudly at the translate boundary with an actionable 400 instead —
+  // identifying the offending conversation message (index + content preview) so
+  // the client can locate it, not just "some tool message is missing" (DI-9).
   if (!message.tool_call_id) {
+    const preview = output.slice(0, 120)
     throw new HTTPError(
-      "tool message missing tool_call_id (required when bridging Chat Completions tool messages to Responses API)",
+      `tool message at conversation index ${index} missing tool_call_id (required when bridging Chat Completions tool messages to Responses API): ${preview}`,
       400,
       JSON.stringify({
         error: {
-          message: "tool message missing tool_call_id",
+          message: `tool message at conversation index ${index} missing tool_call_id: ${preview}`,
           type: "invalid_request_error",
           code: "missing_tool_call_id",
         },
