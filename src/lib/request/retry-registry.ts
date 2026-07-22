@@ -91,8 +91,6 @@ export interface RetryStrategyDeps {
   readonly betaProbe?: BetaProbe
   /** Populated only on the four `@messages` legs (direct anthropic + 3 reverse). */
   readonly resanitize?: AnthropicSanitizeFn
-  /** cc/responses console log label; unused by any `@messages`-gated entry. */
-  readonly label?: string
 }
 
 /** A registry `create(deps)` factory returns either a payload-oriented strategy (adapted below) or —

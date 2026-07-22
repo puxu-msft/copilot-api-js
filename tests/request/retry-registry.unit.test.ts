@@ -46,28 +46,11 @@ import {
   RETRY_STRATEGY_REGISTRY,
 } from "~/lib/request/retry-registry"
 
-/** The frozen 16-name @messages order (mirrors the Task 1 golden's `ANTHROPIC_16_NAMES` — both must
- *  agree, since Task 3's assembler swap must reproduce it byte-for-byte). */
-const ANTHROPIC_16_NAMES = [
-  "network-retry",
-  "server-error-retry",
-  "token-refresh",
-  "effort-learning",
-  "tool-field-rejection-retry",
-  "body-field-rejection-retry",
-  "cache-control-subfield-rejection-retry",
-  "legacy-thinking-retry",
-  "adaptive-thinking-rejection-retry",
-  "poisoned-thinking-retry",
-  "unsupported-beta-retry",
-  "server-tool-rejection-retry",
-  "structured-outputs-rejection-retry",
-  "system-reject-retry",
-  "web-search-not-found-retry",
-  "deferred-tool-retry",
-]
-
-const SHARED_3_NAMES = ["network-retry", "server-error-retry", "token-refresh"]
+import {
+  //
+  ANTHROPIC_16_NAMES,
+  SHARED_3_NAMES,
+} from "../helpers/retry-strategy-names"
 
 const anthropicBaseline = { model: "claude-sonnet-4", messages: [], max_tokens: 100 } as unknown as MessagesPayload
 const stubResanitize = (p: MessagesPayload): SanitizeResult<MessagesPayload> => ({ payload: p, blocksRemoved: 0, systemReminderRemovals: 0 })
@@ -80,7 +63,6 @@ function stubDeps(): RetryStrategyDeps {
     maxRetries: 5,
     betaProbe: createBetaProbe(undefined),
     resanitize: stubResanitize,
-    label: "test",
   }
 }
 

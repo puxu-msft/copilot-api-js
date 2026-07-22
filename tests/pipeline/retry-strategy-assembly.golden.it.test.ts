@@ -45,33 +45,11 @@ import { buildOpenAiCcStrategies } from "~/lib/codec/openai-cc/strategies"
 import { buildOpenAiResponsesStrategies } from "~/lib/codec/openai-responses/strategies"
 import { ENDPOINT } from "~/lib/models/endpoint"
 
-/**
- * The frozen 16-name Anthropic-stack order (RFC §12.9 / `tests/anthropic/anthropic-codec.unit.test.ts`'s
- * existing direct-leg assertion) — shared by the direct `/v1/messages` leg AND all 3 reverse `@messages`
- * legs (the reverse branch of `buildLegStrategies` delegates to the SAME `buildAnthropicStrategies`).
- */
-const ANTHROPIC_16_NAMES = [
-  "network-retry",
-  "server-error-retry",
-  "token-refresh",
-  "effort-learning",
-  "tool-field-rejection-retry",
-  "body-field-rejection-retry",
-  "cache-control-subfield-rejection-retry",
-  "legacy-thinking-retry",
-  "adaptive-thinking-rejection-retry",
-  "poisoned-thinking-retry",
-  "unsupported-beta-retry",
-  "server-tool-rejection-retry",
-  "structured-outputs-rejection-retry",
-  "system-reject-retry",
-  "web-search-not-found-retry",
-  "deferred-tool-retry",
-]
-
-/** The shared 3-name stack (network → server-error → token-refresh) both CC and Responses direct legs yield
- *  since master removed auto-truncate (2026-07-13) — every CC-family leg's strategy STACK is now identical. */
-const SHARED_3_NAMES = ["network-retry", "server-error-retry", "token-refresh"]
+import {
+  //
+  ANTHROPIC_16_NAMES,
+  SHARED_3_NAMES,
+} from "../helpers/retry-strategy-names"
 
 const stubResanitize = (p: MessagesPayload): SanitizeResult<MessagesPayload> => ({ payload: p, blocksRemoved: 0, systemReminderRemovals: 0 })
 const anthropicBaseline = { model: "claude-sonnet-4", messages: [], max_tokens: 100 } as unknown as MessagesPayload
@@ -95,7 +73,6 @@ describe("retry-strategy assembly golden (pre-refactor lock, Task 1 / Commit 1)"
       originalPayload: ccBaseline,
       model: undefined,
       maxRetries: 5,
-      label: "Completions",
     }).map((s) => s.name)
     expect(names).toEqual(SHARED_3_NAMES)
   })
@@ -125,7 +102,7 @@ describe("retry-strategy assembly golden (pre-refactor lock, Task 1 / Commit 1)"
       } as unknown as RequestEnvelope
     }
 
-    const spec: RetrySemanticsSpec = { maxRetries: 5, label: "test" }
+    const spec: RetrySemanticsSpec = { maxRetries: 5 }
 
     test("4. openai-cc → messages reverse leg → 16 策略顺序", () => {
       const names = anthropicMessagesLeg.buildLegStrategies(spec, reverseEnv("openai-cc")).map((s) => s.name)

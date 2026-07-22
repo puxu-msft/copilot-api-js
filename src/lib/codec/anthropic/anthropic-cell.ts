@@ -177,7 +177,7 @@ export const anthropicMessagesLeg: OutboundLeg = {
 
 /** RETRY_SEMANTICS for the anthropic client on the /v1/messages leg — auto-truncate in the stack, N retries. */
 export function anthropicMessagesRetrySemantics(): RetrySemanticsSpec {
-  return { maxRetries: state.maxReactiveRetries, label: "Anthropic" }
+  return { maxRetries: state.maxReactiveRetries }
 }
 
 /**
@@ -187,6 +187,6 @@ export function anthropicMessagesRetrySemantics(): RetrySemanticsSpec {
  * `/responses` leg which is OFF). The supply `maxRetries` is `autoTruncateMaxRetries` for all three (the
  * driver's top-level retry budget — 1 for responses — is a separate handler-level concern, not this spec).
  */
-export function anthropicReverseRetrySemantics(label: string): RetrySemanticsSpec {
-  return { maxRetries: state.maxReactiveRetries, label }
+export function anthropicReverseRetrySemantics(): RetrySemanticsSpec {
+  return { maxRetries: state.maxReactiveRetries }
 }

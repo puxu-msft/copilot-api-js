@@ -83,22 +83,22 @@ import type {
 // ============================================================================
 
 /**
- * The retry-strategy SEMANTIC spec the wire leg does NOT own: the reactive-retry budget + a label.
+ * The retry-strategy SEMANTIC spec the wire leg does NOT own: the reactive-retry budget.
  * Produced by {@link RETRY_SEMANTICS}[clientFormat](env) — the `env` argument is load-bearing: `maxRetries`
  * is a 2D function that reads `env.targetEndpoint`, NOT a clientFormat scalar (the openai-responses DIRECT
  * `/responses` + FALLBACK `/chat` cells cap at 1, while the SAME client's REVERSE `@messages` cell — and
  * every other cell — uses `state.maxReactiveRetries`).
  *
- * (Historically this also carried an `autoTruncate` flag — the R1/HIGH-A corner. Master removed auto-truncate
- * entirely 2026-07-13, so every cell's strategy STACK is now identical [network → server-error →
- * token-refresh]; the only residual per-cell difference is `maxRetries` + the console label + which builder's
- * body shape the baseline is [CC vs Responses], dispatched by clientFormat in `buildCcFamilyLegStrategies`.)
+ * (Historically this also carried an `autoTruncate` flag — the R1/HIGH-A corner — AND a diagnostic `label`
+ * string (dropped Task 6 / plan carryover: confirmed dead end-to-end, its only consumer — the CC console-log
+ * line — was removed 2026-07-13 alongside auto-truncate). Master removed auto-truncate entirely 2026-07-13,
+ * so every cell's strategy STACK is now identical [network → server-error → token-refresh]; the only
+ * residual per-cell difference is `maxRetries` + which builder's body shape the baseline is [CC vs
+ * Responses], dispatched by clientFormat in `buildCcFamilyLegStrategies`.)
  */
 export interface RetrySemanticsSpec {
   /** Reactive-retry cap for THIS cell (the Responses DIRECT/fallback cells 1; every other cell `maxReactiveRetries`). */
   readonly maxRetries: number
-  /** Diagnostic label (history/telemetry). */
-  readonly label: string
 }
 
 /**
@@ -112,32 +112,32 @@ export const RETRY_SEMANTICS: Record<ClientFormat, (env: RequestEnvelope) => Ret
   // hub-translated CC body; the `@responses` leg's CC→Responses wire step is deferred to prepareWire).
   anthropic: (env) => {
     if (env.targetEndpoint === ENDPOINT.MESSAGES) return anthropicMessagesRetrySemantics()
-    if (env.targetEndpoint === ENDPOINT.CHAT_COMPLETIONS) return chatCompletionsRetrySemantics("Anthropic(→CC)")
-    if (env.targetEndpoint === ENDPOINT.RESPONSES || env.targetEndpoint === ENDPOINT.WS_RESPONSES) return viaResponsesRetrySemantics("Anthropic(→Responses)")
+    if (env.targetEndpoint === ENDPOINT.CHAT_COMPLETIONS) return chatCompletionsRetrySemantics()
+    if (env.targetEndpoint === ENDPOINT.RESPONSES || env.targetEndpoint === ENDPOINT.WS_RESPONSES) return viaResponsesRetrySemantics()
     return assertExhaustiveEndpoint(env.targetEndpoint)
   },
   // openai-cc: DIRECT `/chat` (C3) + via-responses `/responses` (C4 — the CC stack against the CC body,
   // translation deferred to prepareWire) + REVERSE `@messages` (C2b — the Anthropic stack).
   "openai-cc": (env) => {
-    if (env.targetEndpoint === ENDPOINT.MESSAGES) return anthropicReverseRetrySemantics("Anthropic(cc→messages)")
-    if (env.targetEndpoint === ENDPOINT.CHAT_COMPLETIONS) return chatCompletionsRetrySemantics("Completions")
-    if (env.targetEndpoint === ENDPOINT.RESPONSES || env.targetEndpoint === ENDPOINT.WS_RESPONSES) return viaResponsesRetrySemantics("Completions(→Responses)")
+    if (env.targetEndpoint === ENDPOINT.MESSAGES) return anthropicReverseRetrySemantics()
+    if (env.targetEndpoint === ENDPOINT.CHAT_COMPLETIONS) return chatCompletionsRetrySemantics()
+    if (env.targetEndpoint === ENDPOINT.RESPONSES || env.targetEndpoint === ENDPOINT.WS_RESPONSES) return viaResponsesRetrySemantics()
     return assertExhaustiveEndpoint(env.targetEndpoint)
   },
   // openai-responses: the R1/HIGH-A corner — DIRECT `/responses` + FALLBACK `/chat` are auto-truncate OFF
   // (the Responses stack, maxRetries 1), while its REVERSE `@messages` cell (C2b) is auto-truncate ON (the
   // Anthropic stack). RETRY_SEMANTICS reads env.targetEndpoint to pick → a 2D function, NOT a cf scalar.
   "openai-responses": (env) => {
-    if (env.targetEndpoint === ENDPOINT.MESSAGES) return anthropicReverseRetrySemantics("Anthropic(responses→messages)")
+    if (env.targetEndpoint === ENDPOINT.MESSAGES) return anthropicReverseRetrySemantics()
     if (env.targetEndpoint === ENDPOINT.CHAT_COMPLETIONS) return responsesFallbackRetrySemantics()
     if (env.targetEndpoint === ENDPOINT.RESPONSES || env.targetEndpoint === ENDPOINT.WS_RESPONSES) return responsesDirectRetrySemantics()
     return assertExhaustiveEndpoint(env.targetEndpoint)
   },
   // gemini: FORWARD `@cc` (C3) + via-responses `/responses` (C4) + REVERSE `@messages` (C2b).
   gemini: (env) => {
-    if (env.targetEndpoint === ENDPOINT.MESSAGES) return anthropicReverseRetrySemantics("Anthropic(gemini→messages)")
-    if (env.targetEndpoint === ENDPOINT.CHAT_COMPLETIONS) return chatCompletionsRetrySemantics("Gemini")
-    if (env.targetEndpoint === ENDPOINT.RESPONSES || env.targetEndpoint === ENDPOINT.WS_RESPONSES) return viaResponsesRetrySemantics("Gemini(→Responses)")
+    if (env.targetEndpoint === ENDPOINT.MESSAGES) return anthropicReverseRetrySemantics()
+    if (env.targetEndpoint === ENDPOINT.CHAT_COMPLETIONS) return chatCompletionsRetrySemantics()
+    if (env.targetEndpoint === ENDPOINT.RESPONSES || env.targetEndpoint === ENDPOINT.WS_RESPONSES) return viaResponsesRetrySemantics()
     return assertExhaustiveEndpoint(env.targetEndpoint)
   },
 }

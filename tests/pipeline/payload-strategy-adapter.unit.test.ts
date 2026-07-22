@@ -156,7 +156,6 @@ describe("buildOpenAiCcStrategies", () => {
       originalPayload: { model: "gpt-4o", messages: [] },
       model: undefined,
       maxRetries: 5,
-      label: "Completions",
     })
     expect(strategies.map((s) => s.name)).toEqual(["network-retry", "server-error-retry", "token-refresh"])
   })

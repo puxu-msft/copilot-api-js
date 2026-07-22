@@ -17,7 +17,8 @@
  *
  * Since master removed auto-truncate (2026-07-13), the two builders produce IDENTICAL strategy arrays
  * (network → server-error → token-refresh) — the dispatch now only keeps the retry baseline the right BODY
- * SHAPE (Responses vs CC) + the `spec.maxRetries`/`label` the composed {@link RetrySemanticsSpec} carries.
+ * SHAPE (Responses vs CC) + the `spec.maxRetries` the composed {@link RetrySemanticsSpec} carries (its
+ * `label` field was dropped Task 6 / plan carryover — confirmed dead end-to-end).
  * Byte-equivalent to the per-route strategy factories the master handlers pass (chat/responses/gemini/ws).
  */
 
@@ -56,5 +57,5 @@ export function buildCcFamilyLegStrategies(spec: RetrySemanticsSpec, env: Reques
     env.clientFormat === "anthropic" ?
       (env.body as ChatCompletionsPayload)
     : ((env.requestState?.truncateBaseline as ChatCompletionsPayload | undefined) ?? (env.body as ChatCompletionsPayload))
-  return buildOpenAiCcStrategies({ originalPayload, model, maxRetries: spec.maxRetries, label: spec.label })
+  return buildOpenAiCcStrategies({ originalPayload, model, maxRetries: spec.maxRetries })
 }

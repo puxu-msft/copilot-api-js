@@ -27,8 +27,6 @@ export interface OpenAiCcStrategiesDeps {
   model: Model | undefined
   /** Shared reactive-retry budget (`state.maxReactiveRetries`). */
   maxRetries: number
-  /** Console label for the retry log lines (e.g. "Completions" / "Completions(→Responses)"). */
-  label: string
 }
 
 /**
@@ -36,10 +34,7 @@ export interface OpenAiCcStrategiesDeps {
  * {@link assembleRetryStrategies} (registry Task 3 / RFC §3.2). `targetEndpoint` is `ENDPOINT.CHAT_COMPLETIONS`
  * (a non-`@messages` endpoint) so the registry's 13 anthropic-only entries never gate in — only the 3 shared
  * ones assemble (golden-proven). `betaProbe`/`resanitize` are omitted (`undefined`): the CC-family legs never
- * populate them, and none of the 3 shared entries need them. `deps.label` is unused by any assembled entry
- * (unchanged from before this refactor — the CC console-label consumer, `createAutoTruncateStrategy`, was
- * removed 2026-07-13 alongside auto-truncate; the field stays on the interface for the caller's parity/log
- * lines outside this factory, see `cc-family-strategies.ts`). `config` is `state.retryStrategies` (Task 4 /
+ * populate them, and none of the 3 shared entries need them. `config` is `state.retryStrategies` (Task 4 /
  * RFC §3.4 — read fresh per request so hot-reload takes effect on the next request).
  */
 export function buildOpenAiCcStrategies(deps: OpenAiCcStrategiesDeps): ReadonlyArray<EnvRetryStrategy> {
