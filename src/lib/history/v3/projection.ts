@@ -243,7 +243,7 @@ export function recordToHistoryEntry(
       ?? responseMeta?.error?.raw?.responseText
       ?? (responseMeta?.error !== undefined && typeof upstreamResponseBody === "string" ? upstreamResponseBody : undefined)
     const attemptResponseHeaders = headers(attempt.upstreamResponse)
-    const isFinal = index === record.attempts.length - 1
+    const isFinal = index === record.dispatches.length - 1
     const startedAt = attempt.occurredAt ?? (typeof attemptMeta?.startedAt === "number" ? attemptMeta.startedAt : undefined)
     const nextAttempt = record.dispatches.at(index + 1)
     const nextAttemptMeta = metadata(nextAttempt?.metadata)
