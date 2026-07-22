@@ -27,6 +27,7 @@ import {
   validateConfigInput,
 } from "~/lib/config/config"
 import { PATHS } from "~/lib/config/paths"
+import { getRetryStrategyRegistryDiagnostics } from "~/lib/request/retry-registry"
 import {
   //
   CONFIG_MANAGED_DEFAULTS,
@@ -218,6 +219,12 @@ function buildEffectiveConfig(): Record<string, unknown> {
   out.modelMappings = state.modelMappings
   out.modelTranslation = state.modelTranslation
   out.rateLimiter = state.adaptiveRateLimitConfig ?? null
+
+  // ─── Retry-registry diagnostics (RFC 2026-07-21-retry-strategy-registry §3.5 / plan Task 5):
+  // the FULL declared registry (all 16 entries) + each one's live enabled state, derived from
+  // `state.retryStrategies` (already emitted verbatim above as the raw config record) — a
+  // human-readable "what's declared + what's on" view alongside the raw switch map. ───
+  out.retryStrategyRegistry = getRetryStrategyRegistryDiagnostics(state.retryStrategies)
 
   return out
 }

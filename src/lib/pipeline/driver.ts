@@ -23,6 +23,7 @@ import type { RequestContext } from "~/lib/context/request"
 import type { FrozenHedgePolicy } from "~/lib/pipeline/generation/hedge-policy"
 
 import { classifyError } from "~/lib/error"
+import { recordRetryStrategyFire } from "~/lib/observability/retry-strategy-fires"
 import { getDownstreamDeliverySession } from "~/lib/pipeline/delivery/session"
 import { readSyntheticKind } from "~/lib/pipeline/frame-origin"
 import { createGenerationBudget } from "~/lib/pipeline/generation/generation-budget"
@@ -557,6 +558,11 @@ function createSemanticRetryPolicy(deps: DriverDeps): (input: import("./generati
       ...(action.waitMs !== undefined && { waitMs: action.waitMs }),
       ...(action.learning && { learning: true }),
     })
+    // Per-strategy fire telemetry (RFC 2026-07-21-retry-strategy-registry §3.5 / plan Task 5): SAME
+    // commit point as recordAttemptFailure above — only a budget-ACCEPTED retry (past the overBudget
+    // gate, past the abort check) counts as a "fire". A structurally never-throw Map increment (no I/O,
+    // no external call), so no try/catch is needed here — mirrors `recordToolInputRepair`'s call sites.
+    recordRetryStrategyFire(strategy.name)
     if (action.waitMs) action.env.ctx.addQueueWaitMs(action.waitMs)
     return {
       kind: "retry",

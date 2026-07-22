@@ -99,4 +99,17 @@ describe("GET /api/config — effective config snapshot", () => {
       expect(key in body).toBe(true)
     }
   })
+
+  test("retryStrategyRegistry: exposes all 16 declared retry-registry entries with name/configKey/order/scope/enabled (RFC 2026-07-21 §3.5 / Task 5)", async () => {
+    const body = await getConfig()
+    expect(Array.isArray(body.retryStrategyRegistry)).toBe(true)
+    const registry = body.retryStrategyRegistry as Array<{ name: string; configKey: string; order: number; scope: string; enabled: boolean }>
+    expect(registry).toHaveLength(16)
+    // Default config (no retry.strategies in the test fixture) → every entry reports enabled:true.
+    expect(registry.every((e) => e.enabled)).toBe(true)
+    const network = registry.find((e) => e.name === "network-retry")
+    expect(network).toMatchObject({ name: "network-retry", configKey: "network", scope: "shared" })
+    const serverToolRejection = registry.find((e) => e.name === "server-tool-rejection-retry")
+    expect(serverToolRejection).toMatchObject({ name: "server-tool-rejection-retry", configKey: "serverToolRejection", scope: "messages-only" })
+  })
 })

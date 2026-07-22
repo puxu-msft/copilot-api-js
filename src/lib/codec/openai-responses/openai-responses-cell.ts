@@ -139,10 +139,10 @@ export const wsResponsesLeg: OutboundLeg = makeResponsesLeg(ENDPOINT.WS_RESPONSE
  * OFF, maxRetries 1 (the Responses stack, unlike its REVERSE `@messages` cell which is auto-truncate ON).
  */
 export function responsesDirectRetrySemantics(): RetrySemanticsSpec {
-  return { maxRetries: 1, label: "Responses" }
+  return { maxRetries: 1 }
 }
 
 /** RETRY_SEMANTICS for a via-responses/FORWARD `@responses` cell (openai-cc/gemini/anthropic → Responses wire): the CC stack (auto-truncate ON). */
-export function viaResponsesRetrySemantics(label: string): RetrySemanticsSpec {
-  return { maxRetries: state.maxReactiveRetries, label }
+export function viaResponsesRetrySemantics(): RetrySemanticsSpec {
+  return { maxRetries: state.maxReactiveRetries }
 }

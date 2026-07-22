@@ -28,7 +28,6 @@ import type {
 
 import { createBetaProbe } from "~/lib/anthropic/pipeline"
 import { ENDPOINT } from "~/lib/models/endpoint"
-import { state } from "~/lib/state"
 import {
   //
   MIGRATED_CELLS,
@@ -37,6 +36,7 @@ import {
   isCellMigrated,
   resolveCellAssembly,
 } from "~/lib/pipeline/cell-assembly"
+import { state } from "~/lib/state"
 
 import { mockModel } from "../helpers/factories"
 
@@ -105,22 +105,22 @@ describe("C1 — CellAssembly exhaustive records + L1 existence guard", () => {
     expect(RETRY_SEMANTICS.anthropic(envStub("anthropic", ENDPOINT.RESPONSES)).maxRetries).toBe(state.maxReactiveRetries)
   })
 
-  test("C3/C4 semantics: the CC-shaped /chat + /responses cells carry the shared budget + distinct labels", () => {
-    // openai-cc DIRECT + anthropic/gemini FORWARD @cc all run the CC-family stack (shared maxReactiveRetries),
-    // differing only in the console label. Via-responses cells carry the (→Responses) labels.
-    expect(RETRY_SEMANTICS["openai-cc"](envStub("openai-cc", ENDPOINT.CHAT_COMPLETIONS)).label).toBe("Completions")
-    expect(RETRY_SEMANTICS.anthropic(envStub("anthropic", ENDPOINT.CHAT_COMPLETIONS)).label).toBe("Anthropic(→CC)")
-    expect(RETRY_SEMANTICS.gemini(envStub("gemini", ENDPOINT.CHAT_COMPLETIONS)).label).toBe("Gemini")
-    expect(RETRY_SEMANTICS["openai-cc"](envStub("openai-cc", ENDPOINT.RESPONSES)).label).toBe("Completions(→Responses)")
-    expect(RETRY_SEMANTICS.anthropic(envStub("anthropic", ENDPOINT.RESPONSES)).label).toBe("Anthropic(→Responses)")
-    expect(RETRY_SEMANTICS.gemini(envStub("gemini", ENDPOINT.RESPONSES)).label).toBe("Gemini(→Responses)")
+  test("C3/C4 semantics: the CC-shaped /chat + /responses cells carry the shared budget", () => {
+    // openai-cc DIRECT + anthropic/gemini FORWARD @cc all run the CC-family stack (shared maxReactiveRetries).
+    // Via-responses cells carry the same budget (label field dropped Task 6 / plan carryover — confirmed
+    // dead end-to-end, its only consumer was removed 2026-07-13 alongside auto-truncate).
+    expect(RETRY_SEMANTICS["openai-cc"](envStub("openai-cc", ENDPOINT.CHAT_COMPLETIONS)).maxRetries).toBe(state.maxReactiveRetries)
+    expect(RETRY_SEMANTICS.anthropic(envStub("anthropic", ENDPOINT.CHAT_COMPLETIONS)).maxRetries).toBe(state.maxReactiveRetries)
+    expect(RETRY_SEMANTICS.gemini(envStub("gemini", ENDPOINT.CHAT_COMPLETIONS)).maxRetries).toBe(state.maxReactiveRetries)
+    expect(RETRY_SEMANTICS["openai-cc"](envStub("openai-cc", ENDPOINT.RESPONSES)).maxRetries).toBe(state.maxReactiveRetries)
+    expect(RETRY_SEMANTICS.anthropic(envStub("anthropic", ENDPOINT.RESPONSES)).maxRetries).toBe(state.maxReactiveRetries)
+    expect(RETRY_SEMANTICS.gemini(envStub("gemini", ENDPOINT.RESPONSES)).maxRetries).toBe(state.maxReactiveRetries)
   })
 
   test("the migrated anthropic|/v1/messages cell resolves to a live semantics spec", () => {
     // RETRY_SEMANTICS for the MIGRATED cell returns a real spec (not a throw).
     const spec = RETRY_SEMANTICS.anthropic(envStub("anthropic", ENDPOINT.MESSAGES))
     expect(spec.maxRetries).toBeGreaterThanOrEqual(0)
-    expect(spec.label).toBe("Anthropic")
   })
 
   test("L1 (Phase-7 guard): the migrated anthropic|/v1/messages cell's buildStrategies is NON-EMPTY + does not throw", () => {

@@ -856,10 +856,54 @@ export const TelemetryConfigSchema = z
   })
   .strict()
 
+/**
+ * The 16 declarative retry-strategy registry `configKey`s (RFC 2026-07-21-retry-strategy-registry §3.3/§3.4,
+ * plan Task 4). Inlined here (not imported from `~/lib/request/retry-registry.ts`) to keep the config schema
+ * layer free of a business-logic import — the same convention as `ENDPOINT_SCOPE_VALUES` above (mirrors
+ * `ClientFormat`). **MUST stay in sync** with `RETRY_STRATEGY_ORDER`'s key set in `retry-registry.ts`; a
+ * parity test (`tests/config/retry-strategies.it.test.ts`) asserts the two enumerate the same 16 keys so drift
+ * fails CI loudly rather than silently letting a renamed/added strategy go un-configurable or mis-typed.
+ */
+export const RETRY_STRATEGY_CONFIG_KEYS = [
+  "network",
+  "serverError",
+  "tokenRefresh",
+  "effortLearning",
+  "toolFieldRejection",
+  "bodyFieldRejection",
+  "cacheControlSubfield",
+  "legacyThinking",
+  "adaptiveThinkingRejection",
+  "poisonedThinking",
+  "unsupportedBeta",
+  "serverToolRejection",
+  "structuredOutputsRejection",
+  "systemReject",
+  "webSearchNotFound",
+  "deferredTool",
+] as const
+
+/** One `retry.strategies.<configKey>` switch — `enabled` only (order is a correctness contract, not user-tunable; RFC §3.4 decision 1). */
+const RetryStrategySwitchSchema = z.object({ enabled: z.boolean().optional() }).strict()
+
 export const RetryConfigSchema = z
   .object({
     /** Shared per-request cap on ALL reactive retry strategies (network / server-error / token-refresh / 400-class negotiation etc.). 0 = a single attempt, no retry. Default 5. Was `auto_truncate.max_retries`. */
     max_reactive_retries: nullableNonnegativeInt(),
+    /**
+     * Per-strategy retry-registry opt-out (RFC §3.4). Keys are `configKey`s (see
+     * {@link RETRY_STRATEGY_CONFIG_KEYS}) — an ENUM record so a typo'd key is a hard schema error (an
+     * `unrecognized_keys`-style `invalid_key` issue) rather than a silently-ignored no-op switch.
+     * `z.partialRecord` (not `z.record`) so an unrecognized key raises the error on THAT key alone
+     * (mirrors `ModelTranslationSchema` above) — `cleanInvalidPaths()` drops just the offending entry
+     * (warn-and-continue on `config.yaml` load), never crashes the file-load path. Absent key / absent
+     * section = enabled (all 16 strategies on — the current pre-config-switch behavior, byte-equivalent).
+     * Only `enabled` bool is exposed — NOT `order` (declared assembly order is a correctness contract, RFC
+     * §3.4 decision 1). Distinct from `anthropic.error_selfheal_delegate` (D-class, keyed by strategy
+     * `.name` not `configKey`, "delegate to client self-heal" not "remove entirely" — RFC §3.4a, the two
+     * open switches are NOT merged/unified).
+     */
+    strategies: z.partialRecord(z.enum(RETRY_STRATEGY_CONFIG_KEYS), RetryStrategySwitchSchema).optional(),
   })
   .strict()
 
