@@ -1,0 +1,1 @@
+{"model": "gpt-5.4-mini", "max_tokens": 64, "stream": false, "messages": [{"role": "user", "content": "Weather in Paris?"}, {"role": "assistant", "tool_calls": [{"id": "call_g5a", "type": "function", "function": {"name": "get_weather", "arguments": "{\"city\":\"Paris\"}"}}]}, {"role": "user", "content": "network issue. please continue"}]}
