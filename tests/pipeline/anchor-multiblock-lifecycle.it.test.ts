@@ -193,6 +193,7 @@ function buildAnchoredSink(stream: Parameters<typeof makeSseSink>[0]): {
 } {
   const anchorState: AnchorState = { injected: false, messageStartForwarded: false, anchorBlockOpen: false, anchorClosed: false }
   const anchor: AnchorHooks = {
+    isContentBlockStart: (fr: { data?: string }) => { try { return (JSON.parse(fr.data ?? "{}") as { type?: unknown }).type === "content_block_start" } catch { return false } },
     isMessageStart: (fr) => {
       try {
         return typeof fr.data === "string" && (JSON.parse(fr.data) as { type?: string }).type === "message_start"
@@ -242,6 +243,7 @@ function buildEnvelopedPingSink(stream: Parameters<typeof makeSseSink>[0]): {
 } {
   const anchorState: AnchorState = { injected: false, messageStartForwarded: false, anchorBlockOpen: false, anchorClosed: false }
   const anchor: AnchorHooks = {
+    isContentBlockStart: (fr: { data?: string }) => { try { return (JSON.parse(fr.data ?? "{}") as { type?: unknown }).type === "content_block_start" } catch { return false } },
     isMessageStart: (fr) => {
       try {
         return typeof fr.data === "string" && (JSON.parse(fr.data) as { type?: string }).type === "message_start"
@@ -283,14 +285,15 @@ describe("anchor lifecycle across multiple block-level commits — PRODUCER wire
   beforeEach(() => clock.install())
   afterEach(() => clock.restore())
 
-  test("(b) anchor injected pre-commit stays OPEN across blocks: an inter-block idle carries text_delta@0, NOT a bare ping", async () => {
+  test("(b) SEQUENTIAL anchor: closes BEFORE the first real block; inter-block idle is a bare ping (never coexist)", async () => {
     const env = makeEnv()
     env.ctx.beginAttempt({})
 
     // segment 0: real message_start (captured, buffered) → STALL #1 (pre-content) → the idle tick injects the
     //   empty-text anchor (message_start forwarded + content_block_start@0 + empty text_delta@0).
-    // segment 1: a full real text block (its content_block_stop@0 is a commit boundary → block committed live,
-    //   remapped +1) → STALL #2 (INTER-BLOCK) → this is the frame under test.
+    // segment 1: a full real text block → its content_block_stop@0 is a commit boundary → the flush CLOSES the
+    //   anchor (content_block_stop@0) BEFORE the real content_block_start (sequential — spec 2026-07-22 §3.3),
+    //   then remaps the real block +1. STALL #2 (INTER-BLOCK) → this is the frame under test.
     // segment 2: a second real text block + terminal.
     const { stream: up, releases } = makeGatedUpstream([
       [f("message_start", { message: { id: "msg_mb" } })],
@@ -327,64 +330,71 @@ describe("anchor lifecycle across multiple block-level commits — PRODUCER wire
     await flush()
     expect(lastInjectResult()).toBe(true) // the anchor WAS injected pre-commit
 
-    // Release segment 1 → block@0 buffers + commits at its content_block_stop (remapped +1). Park on STALL #2.
+    // Release segment 1 → block@0 buffers + commits: the flush closes the anchor (stop@0) BEFORE the real
+    // content_block_start, then writes the real block remapped +1. Park on STALL #2.
     releases[0]()
     await drain(40)
     await flush()
 
-    // ── THE ORACLE (§4.3): the inter-block idle keepalive MUST be a text_delta@0, not a bare ping. ──
-    // Snapshot the wire, fire ONE idle interval, inspect exactly the frame(s) that tick produced.
+    // ── SEQUENTIAL ORACLE (§3.3): after the first real block, the anchor is CLOSED, so the inter-block idle
+    // keepalive is a BARE ping (there is no open block to carry an empty text_delta). Resetting CC's 300s
+    // no-real-content watchdog for a >300s inter-block gap is a SEPARATE concern — docs/todo/
+    // 2026-07-22-client-proxy-keepalive-300s.md (empty text_delta was empirically insufficient on the proxy
+    // path anyway, G2). The load-bearing P1 property here is CLI-safety: at most ONE block open at a time. ──
     const beforeGap = written.length
     await clock.advance(15_000)
     await flush()
     const gap = written.slice(beforeGap)
 
     expect(gap).toHaveLength(1) // exactly one keepalive frame from the idle tick
-    const g = parse(gap[0])
-    expect(gap[0].event).not.toBe("ping") // NOT a bare ping (the pre-fix degradation → 300s CC disconnect)
-    expect(g.type).toBe("content_block_delta") // a real content delta …
-    expect(g.index).toBe(0) // … on the still-open anchor block@0 …
-    expect(g.delta).toEqual({ type: "text_delta", text: "" }) // … an EMPTY text_delta (resets CC's 300s watchdog)
+    expect(gap[0].event).toBe("ping") // a BARE ping — the anchor is already closed (sequential, never coexist)
 
-    // Release segment 2 → block@1 commits, terminal closes the anchor → clean drain.
+    // Release segment 2 → block@1 commits (remapped +1), terminal clean drain.
     releases[1]()
     const outcome = await outcomeP
     expect(outcome.kind).toBe("complete")
 
-    // ── TERMINAL ORDER ORACLE (§4.3): the anchor close-off `content_block_stop@0` MUST precede the response
-    // tail (`message_delta` + `message_stop`), never trail it. The count-only invariants below never pinned
-    // the POSITION of stop@0, which is exactly how the malformed order (`… message_stop, content_block_stop@0`)
-    // slipped through. Assert the exact ordered suffix of the whole wire. Pre-fix (message_stop treated as a
-    // commit boundary) the tail flushes IN-LOOP and stop@0 trails at the terminal drain → RED.
+    // ── SEQUENTIAL ORDER ORACLE (§3.3): the anchor close-off `content_block_stop@0` precedes the FIRST real
+    // content_block_start (@1), NOT the terminal tail. The terminal suffix is just the last real block's stop
+    // + the response tail (no trailing anchor stop@0 — it closed early). ──
     const seq = written.map((w) => {
       const p = parse(w)
       return p.index === undefined ? p.type : `${p.type}@${p.index}`
     })
-    expect(seq.slice(-4)).toEqual([
-      "content_block_stop@2", // last real block (block@1 remapped +1)
-      "content_block_stop@0", // anchor close-off — BEFORE the tail (defect (b′): it must not trail message_stop)
-      "message_delta",
-      "message_stop",
-    ])
+    // anchor closes BEFORE the first real block opens
+    const stop0Idx = seq.indexOf("content_block_stop@0")
+    const start1Idx = seq.indexOf("content_block_start@1")
+    expect(stop0Idx).toBeGreaterThanOrEqual(0)
+    expect(stop0Idx).toBeLessThan(start1Idx) // close-before-real (sequential)
+    // terminal suffix: last real block stop + tail, NO trailing anchor stop@0
+    expect(seq.slice(-3)).toEqual(["content_block_stop@2", "message_delta", "message_stop"])
 
-    // Structural invariants over the whole wire:
-    // exactly ONE content_block_stop@0 (the anchor close-off at the TERMINAL, not at block@0's boundary).
+    // Structural invariants: exactly ONE anchor close-off (stop@0); message_start once; real blocks at @1/@2.
     const stop0s = written.filter((w) => {
       const p = parse(w)
       return p.type === "content_block_stop" && p.index === 0
     })
     expect(stop0s).toHaveLength(1)
-    // message_start forwarded EXACTLY once; NO bare ping anywhere in the stream.
     expect(written.filter((w) => parse(w).type === "message_start")).toHaveLength(1)
-    expect(written.some((w) => w.event === "ping")).toBe(false)
-    // real blocks live at @1 and @2 (anchor holds @0); anchor stop@0 is the LAST content_block_stop before terminal.
     expect(written.some((w) => parse(w).type === "content_block_start" && parse(w).index === 1)).toBe(true)
     expect(written.some((w) => parse(w).type === "content_block_start" && parse(w).index === 2)).toBe(true)
+
+    // ── CLI-SAFETY INVARIANT (the whole point of sequential): at no point are two content blocks open at once.
+    let open = 0
+    let maxOpen = 0
+    for (const w of written) {
+      const p = parse(w)
+      if (p.type === "content_block_start") open++
+      if (p.type === "content_block_stop") open--
+      maxOpen = Math.max(maxOpen, open)
+    }
+    expect(maxOpen).toBe(1) // sequential — never two blocks coexisting open (the coexist shape stalls the CLI)
     void anchorState
     sink.close?.()
   })
 
-  test("(c) H2 error terminus with an open anchor: close-off content_block_stop@0 precedes the forwarded error frame (§5.3/§10.5)", async () => {
+
+  test("(c) SEQUENTIAL anchor + H2 error terminus: anchor closes BEFORE the real block; error trails at the end", async () => {
     const env = makeEnv()
     env.ctx.beginAttempt({})
 
@@ -428,23 +438,38 @@ describe("anchor lifecycle across multiple block-level commits — PRODUCER wire
     const outcome = await outcomeP
     expect(outcome.kind).toBe("complete") // H2 commits + the handler fails via acc.streamError (mirrors live)
 
-    // ── TERMINAL ORDER ORACLE (§5.3/§10.5): the anchor close-off precedes the error terminus. ──
+    // ── SEQUENTIAL ORDER ORACLE (§3.3): the anchor closes BEFORE the first real block (@1), so by the time
+    // the H2 error terminus arrives the anchor is already closed — the error simply trails at the end. The
+    // ordered prefix around the first real block is stop@0 → start@1; the suffix ends in the error. ──
     const seq = written.map((w) => {
       const p = parse(w)
       return p.index === undefined ? p.type : `${p.type}@${p.index}`
     })
-    expect(seq.slice(-3)).toEqual([
+    const stop0Idx = seq.indexOf("content_block_stop@0")
+    const start1Idx = seq.indexOf("content_block_start@1")
+    expect(stop0Idx).toBeGreaterThanOrEqual(0)
+    expect(stop0Idx).toBeLessThan(start1Idx) // anchor closed before the real block (sequential)
+    expect(seq.slice(-2)).toEqual([
       "content_block_stop@1", // the real text block (remapped +1)
-      "content_block_stop@0", // anchor close-off — BEFORE the error terminus, not after it
-      "error",
+      "error", // H2 terminus trails at the end (anchor already closed early)
     ])
-    // Exactly ONE anchor close-off — the later terminal drain's empty-buffer re-flush is short-circuited by
-    // the `anchorClosed` guard (no second stop@0).
+    // Exactly ONE anchor close-off — the terminal drain's empty-buffer re-flush is short-circuited by the
+    // `anchorClosed` guard (no second stop@0).
     const stop0s = written.filter((w) => {
       const p = parse(w)
       return p.type === "content_block_stop" && p.index === 0
     })
     expect(stop0s).toHaveLength(1)
+    // CLI-safety: at most one block open at a time.
+    let open = 0
+    let maxOpen = 0
+    for (const w of written) {
+      const p = parse(w)
+      if (p.type === "content_block_start") open++
+      if (p.type === "content_block_stop") open--
+      maxOpen = Math.max(maxOpen, open)
+    }
+    expect(maxOpen).toBe(1)
     void anchorState
     sink.close?.()
   })

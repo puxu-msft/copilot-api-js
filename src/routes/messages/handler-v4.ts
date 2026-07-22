@@ -67,6 +67,7 @@ import {
   anchorStartFrame,
   anchorStopFrame,
   closeAnchorIfOpen,
+  isAnthropicContentBlockStart,
   makeSyntheticAnchorInjector,
   makeSyntheticEnvelopeInjector,
   remapAnthropicBlockIndex,
@@ -965,6 +966,7 @@ function buildAnthropicAnchorHooks(enabled: boolean): AnchorHooks | undefined {
         return false // non-JSON frame (e.g. a keepalive line) — not message_start
       }
     },
+    isContentBlockStart: isAnthropicContentBlockStart,
     startFrame: anchorStartFrame(),
     stopFrame: anchorStopFrame(),
     deltaFrame: anchorDeltaFrame(),

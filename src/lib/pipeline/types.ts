@@ -372,6 +372,8 @@ export type ResponseFinishResult =
 export interface AnchorHooks {
   /** Is this rendered client frame the `message_start`? (drives the driver's capture + commit-time dedup). */
   isMessageStart: (frame: ClientFrame) => boolean
+  /** Is this rendered client frame a real `content_block_start`? (drives the sequential anchor close-before-real-block). */
+  isContentBlockStart: (frame: ClientFrame) => boolean
   /** The synthetic anchor `content_block_start{type:"text", text:""}` at index 0 (lights the sink's openBlock). */
   startFrame: ClientFrame
   /** The synthetic anchor `content_block_stop` at index 0 — the commit / terminal-failure close-off. */

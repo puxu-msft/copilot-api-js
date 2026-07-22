@@ -61,6 +61,16 @@ export function createAnchorIndexAllocator(): AnchorIndexAllocator {
   }
 }
 
+/** Is this rendered client frame a real `content_block_start`? (parses the JSON `type`; non-JSON → false). */
+export function isAnthropicContentBlockStart(frame: ServerSentEventMessage): boolean {
+  if (typeof frame.data !== "string") return false
+  try {
+    return (JSON.parse(frame.data) as { type?: unknown }).type === "content_block_start"
+  } catch {
+    return false // non-JSON frame (e.g. a keepalive line) — not a content_block_start
+  }
+}
+
 /** `content_block_start` opening the empty-text anchor block (lights the sink openBlock={0,text}). */
 export function anchorStartFrame(): ServerSentEventMessage {
   return anthropicSseFrame({

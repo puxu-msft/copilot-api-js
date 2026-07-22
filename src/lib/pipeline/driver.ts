@@ -1074,17 +1074,26 @@ export async function runResponseBufferedSink(
     const injected = anchorState.injected
     const anchorBlockOpen = anchorState.anchorBlockOpen
     try {
-      // M4: the anchor reserved index 0 → close it off (empty-text content_block_stop@0) at the TERMINAL
-      // (or retreat) flush, then shift every real content_block_* by +1. Sets the shared `anchorClosed`
-      // guard (spec §10.5) so a later error terminus never emits a second stop@0. Emitted BEFORE the frame
-      // loop and INDEPENDENT of `frames` being non-empty — on the block-level path the terminal frame is
-      // itself a commit boundary (flushed in-loop), so the terminal flush's `frames` is EMPTY, yet the
-      // anchor MUST still be closed here (defect (b): the close-off must never be dropped just because the
-      // post-last-boundary tail is empty).
-      if (isTerminalFlush && injected && anchor && anchorBlockOpen && !anchorState.anchorClosed) {
-        anchorState.anchorClosed = true
-        await (sink.writeAnchor ?? sink.write)(anchor.stopFrame) // "anchor" marker
+      // SEQUENTIAL anchor (spec 2026-07-22 §3.3): close the pre-content anchor (empty-text
+      // content_block_stop@0) BEFORE the first real content block — NOT at the terminal flush — so no two
+      // content blocks are ever open at once (the anchor-COEXIST shape stalls the Claude Code CLI agent
+      // loop, exp/block-level-anchor-sequential/FINDINGS.md). This mirrors the live path
+      // (live-reconcile.ts:125-142). Real blocks are still shifted +1 (the anchor reserved index 0). The
+      // `anchorClosed` guard makes it fire exactly once. Terminal-flush close-off (zero-content completion /
+      // error before any real block) is preserved by the SAME guard below via `closeAnchorBeforeReal`.
+      // NOTE: after the anchor closes, an inter-block idle carries a BARE ping (no open anchor). Resetting
+      // CC's 300s no-real-content watchdog for >300s inter-block gaps is a SEPARATE concern — see
+      // docs/todo/2026-07-22-client-proxy-keepalive-300s.md (empty text_delta was empirically insufficient
+      // on the proxy path anyway, G2). <300s gaps + the 60s byte-idle are covered by the bare ping.
+      const closeAnchorBeforeReal = async (): Promise<void> => {
+        if (injected && anchor && anchorBlockOpen && !anchorState.anchorClosed) {
+          anchorState.anchorClosed = true
+          await (sink.writeAnchor ?? sink.write)(anchor.stopFrame) // "anchor" marker
+        }
       }
+      // Zero-content terminal (message_delta/stop or error before ANY real block): close the anchor here so
+      // it never dangles open (symmetry with live-reconcile's terminal close-off).
+      if (isTerminalFlush) await closeAnchorBeforeReal()
       // Candidate-hosted buffered-merge seam (spec §4): the reducer's transform replaces the raw buffer
       // with its (possibly compacted / repaired) frames just before write. Undefined = verbatim (R1).
       const toFlush = transformBufferedFlush ? transformBufferedFlush(frames, mergeCtx) : frames
@@ -1092,6 +1101,8 @@ export async function runResponseBufferedSink(
         // H1: the anchor already forwarded message_start ahead of the anchor block — skip the buffered
         // copy so the client sees exactly one message_start (re-sending it would corrupt the stream).
         if (anchor && anchorState.messageStartForwarded && anchor.isMessageStart(frame)) continue
+        // Close the anchor off BEFORE the first real content_block_start (sequential — never coexist).
+        if (anchor?.isContentBlockStart?.(frame)) await closeAnchorBeforeReal()
         await sink.write(injected && anchor && anchorBlockOpen ? anchor.remap(frame, 1) : frame)
       }
       return { kind: "ok" }
@@ -1134,11 +1145,16 @@ export async function runResponseBufferedSink(
           })
           if (retreated) {
             // Buffer cap already exceeded → live write-through for the rest (no more buffering). When an anchor
-            // was injected BEFORE the retreat, the live continuation must stay consistent with the retreat
-            // flush's +1 remap (spec §6.3): shift every real content_block_* by +1 (the anchor holds @0) and
-            // DROP a duplicate message_start (H1 — the injector already forwarded it). Inert (byte-identical to
-            // the raw forward) when no anchor was injected — `injected`/`anchorBlockOpen` stay false.
+            // was injected BEFORE the retreat, the live continuation stays SEQUENTIAL (spec 2026-07-22 §3.3):
+            // close the anchor (stop@0) before the first real content_block_start so no two blocks are ever
+            // open at once (never coexist — CLI-safe), then shift every real content_block_* by +1 and DROP a
+            // duplicate message_start (H1 — the injector already forwarded it). Inert (byte-identical to the raw
+            // forward) when no anchor was injected — `injected`/`anchorBlockOpen` stay false.
             if (anchor && anchorState.messageStartForwarded && anchor.isMessageStart(toWrite)) continue // H1 dedup
+            if (anchor?.isContentBlockStart(toWrite) && anchorState.injected && anchorState.anchorBlockOpen && !anchorState.anchorClosed) {
+              anchorState.anchorClosed = true
+              await (sink.writeAnchor ?? sink.write)(anchor.stopFrame) // "anchor" — close before the real block (sequential)
+            }
             await sink.write(anchorState.injected && anchor && anchorState.anchorBlockOpen ? anchor.remap(toWrite, 1) : toWrite)
             continue
           }

@@ -56,6 +56,7 @@ function stubSseStream(): { stream: Parameters<typeof makeSseSink>[0]; written: 
 /** The AnchorHooks the Anthropic handler supplies for enveloped_ping (full frames; the anchor ones stay unused). */
 function anchorHooks(): AnchorHooks {
   return {
+    isContentBlockStart: (fr: { data?: string }) => { try { return (JSON.parse(fr.data ?? "{}") as { type?: unknown }).type === "content_block_start" } catch { return false } },
     isMessageStart: (fr) => {
       try {
         return typeof fr.data === "string" && (JSON.parse(fr.data) as { type?: string }).type === "message_start"

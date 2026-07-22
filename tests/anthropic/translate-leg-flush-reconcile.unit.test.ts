@@ -41,6 +41,7 @@ const ccChunk = (obj: unknown): { data: string; event: string } => ({ data: JSON
 
 /** The ReconcileHooks the live reconcile needs (mirrors buildAnthropicAnchorHooks). */
 const reconcileHooks = {
+  isContentBlockStart: (fr: { data?: string }) => { try { return (JSON.parse(fr.data ?? "{}") as { type?: unknown }).type === "content_block_start" } catch { return false } },
   isMessageStart: (f: ClientFrame): boolean => {
     if (typeof f.data !== "string") return false
     try {
