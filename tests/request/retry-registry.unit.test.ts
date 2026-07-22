@@ -75,6 +75,14 @@ describe("RETRY_STRATEGY_REGISTRY declaration", () => {
     expect(Object.keys(RETRY_STRATEGY_ORDER)).toHaveLength(16)
   })
 
+  test("every entry.configKey is EXACTLY one RETRY_STRATEGY_ORDER key — full-set parity (drift-guard 3rd leg, whole-branch review)", () => {
+    // Closes the third leg of the parity triangle (schema↔ORDER and config.ts SHARED-set↔registry are already
+    // guarded). Without this, a typo'd `configKey: "adaptiveThinkingRejction"` still compiles (its `order:`
+    // references the ORDER object, not the string) but silently no-ops the `retry.strategies.<key>.enabled`
+    // switch via isStrategyEnabled AND reports a stale key in diagnostics — with no test to catch it.
+    expect(new Set(RETRY_STRATEGY_REGISTRY.map((e) => e.configKey))).toEqual(new Set(Object.keys(RETRY_STRATEGY_ORDER)))
+  })
+
   test("every declared order is unique (sort stability isn't masking a collision)", () => {
     const orders = RETRY_STRATEGY_REGISTRY.map((e) => e.order)
     expect(new Set(orders).size).toBe(orders.length)
