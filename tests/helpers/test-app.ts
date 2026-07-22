@@ -2,8 +2,6 @@ import { OpenAPIHono } from "@hono/zod-openapi"
 import { Hono } from "hono"
 import { type BlankEnv } from "hono/types"
 
-import type { UiRoutesOptions } from "~/routes/ui/route"
-
 import { forwardError } from "~/lib/error"
 import { observabilityMiddleware } from "~/lib/observability/middleware"
 import { registerHttpRoutes } from "~/routes"
@@ -12,7 +10,7 @@ import { readinessCheck } from "~/server"
 
 const browserProbePaths = new Set(["/favicon.ico", "/.well-known/appspecific/com.chrome.devtools.json"])
 
-export function createFullTestApp(options: UiRoutesOptions = {}) {
+export function createFullTestApp() {
   // Mirror src/server.ts — OpenAPIHono<BlankEnv> so the aggregated /openapi.json
   // + Scalar docs are exercised by the http test suite, not just the live server.
   const app = new OpenAPIHono<BlankEnv>()
@@ -45,7 +43,7 @@ export function createFullTestApp(options: UiRoutesOptions = {}) {
   // audit: this gap was previously masked by the V2-only `attachHistorySink` in-flight mirror).
   app.use(observabilityMiddleware())
 
-  registerHttpRoutes(app, options)
+  registerHttpRoutes(app)
   registerOpenApiDocs(app)
 
   return app

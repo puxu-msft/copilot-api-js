@@ -96,12 +96,16 @@ describe("unknown endpoint server integration", () => {
     expect(res.headers.get("allow")).toContain("POST")
   })
 
-  test("route-owned c.notFound (missing UI asset) stays 404, no unknown log", async () => {
+  test("route-owned c.notFound stays 404, no unknown log", async () => {
     const app = createServer()
-    const res = await app.request("/ui/assets/does-not-exist-12345.js")
+    // UI 外置后主服务器不再有任何用 c.notFound() 的业务 handler（唯一样本 routes/ui/route.ts
+    // 已随 UI 移出删除），故用一个临时挂载的 route-owned 404 handler 保留三态分类器
+    // route-owned 分支的回归覆盖（区别于 unknown-not-found，见 docs/spec/2026-07-14-…）。
+    app.get("/__test_route_owned__", (c) => c.notFound())
+    const res = await app.request("/__test_route_owned__")
     expect(res.status).toBe(404)
-    // GET /ui/assets/* 命中业务 route → route-owned → 不产生 unknown 日志
-    expect(warnSpy.some((l) => l.includes("/ui/assets/does-not-exist-12345.js"))).toBe(false)
+    // 命中业务 route 自己调用 c.notFound() → route-owned → 不产生 unknown 日志
+    expect(warnSpy.some((l) => l.includes("/__test_route_owned__"))).toBe(false)
   })
 
   test("level=silent → no log", async () => {
@@ -144,7 +148,7 @@ describe("unknown endpoint server integration", () => {
 
   test("cache isolation: two servers classify against their own routes", async () => {
     const a = createServer()
-    const b = createServer({ externalUiUrl: "http://example.test" })
+    const b = createServer()
     expect((await a.request("/__iso_a__")).status).toBe(404)
     expect((await b.request("/__iso_b__")).status).toBe(404)
   })
