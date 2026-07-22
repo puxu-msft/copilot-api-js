@@ -184,7 +184,7 @@ git commit -m "feat(observability): 新增 upstream_stream_disconnect/upstream_c
 ```ts
 export function recordUpstreamStreamDisconnect(kind: string, endpoint: string): void
 export function recordUpstreamConnectTimeout(phase: string): void
-export function getUpstreamStreamDisconnectCounts(): Readonly<Record<string, number>> // key = `${kind} ${endpoint}`（内部分隔符，导出时拆分）
+export function getUpstreamStreamDisconnectCounts(): Readonly<Record<string, number>> // key = `${kind}\x00${endpoint}`（内部分隔符，导出时拆分）
 export function getUpstreamConnectTimeoutCounts(): Readonly<Record<string, number>> // key = phase
 export function resetUpstreamDisconnectMetricsForTests(): void
 ```
@@ -283,14 +283,14 @@ Expected: FAIL（模块不存在）。
  *
  * 照 `retry-strategy-fires.ts` 先例：一个 process-lifetime 进程内 `Map<string, number>`，不持久化，
  * 重启归零（Prometheus `rate()` 处理 counter reset）。两个独立 open bag：
- *   - disconnect：key = `${kind} ${endpoint}`（复合键，内部用   分隔，导出时拆分回两标签）
+ *   - disconnect：key = `${kind}\x00${endpoint}`（复合键，内部用 \x00 分隔，导出时拆分回两标签）
  *   - connect-timeout：key = phase（单标签，更简单，见 spec §2.3）
  *
  * 从不读 history entry / RequestContext——只在事件发生点被动累加（bus sink 调用），彻底绕开
  * "entry 无结构化 kind 字段" 的 A 路 BLOCK（spec §5）。
  */
 
-const KEY_SEP = " "
+const KEY_SEP = "\x00"
 
 let disconnectFires = new Map<string, number>()
 let connectTimeoutFires = new Map<string, number>()
@@ -306,7 +306,7 @@ export function recordUpstreamConnectTimeout(phase: string): void {
   connectTimeoutFires.set(phase, (connectTimeoutFires.get(phase) ?? 0) + 1)
 }
 
-/** Snapshot of the disconnect counter, keyed by the internal composite `kind endpoint` string
+/** Snapshot of the disconnect counter, keyed by the internal composite `kind\x00endpoint` string
  *  (the caller — metrics-exposition.ts — splits it back into two labels). */
 export function getUpstreamStreamDisconnectCounts(): Readonly<Record<string, number>> {
   return Object.fromEntries(disconnectFires)
@@ -1733,6 +1733,106 @@ git commit -m "feat(messages): G2 Anthropic 流式 post-commit header 超时补 
 ```
 
 ---
+
+## Phase 6（Task 11）：G5 —— disconnect 行补 h2ping/idle 旋钮 + hint 指对旋钮
+
+> 补齐 Self-Review「发现的缺口」中的 G5（原计划遗漏为独立 Task）。纯 formatter 单点改动（`upstream-diagnostics.ts:235` `logUpstreamStreamDisconnect`），零 plumbing。
+
+### Task 11（Commit 11）：G5 —— `keepalive=` 扩为三旋钮 + middlebox-hint 指对旋钮
+
+**Files:**
+- Modify: `src/lib/upstream-diagnostics.ts:235-262`（`logUpstreamStreamDisconnect`）
+- Test: `tests/anthropic/stream-truncation.http.test.ts` 或新建 `tests/observability/upstream-disconnect-line.unit.test.ts`（若无直测 formatter 的既有单测，新建）
+
+**Interfaces:**
+- Consumes: `state.upstreamKeepaliveDelay`（既有）、`state.upstreamH2PingInterval`（`state.ts:769`）、`state.streamIdleTimeout`（`state.ts:718`）。
+- Produces: 无新导出；行文本 `keepalive=<n>s` → `keepalive=<tcp>s h2ping=<n>s idle=<n>s`；middlebox-hint 提两旋钮。
+
+- [ ] **Step 1: 写失败测试**
+
+新建 `tests/observability/upstream-disconnect-line.unit.test.ts`（若已有 formatter 直测则追加）。用 `consola` mock 捕获行、断言含新旋钮字段：
+
+```ts
+import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test"
+import consola from "consola"
+
+import { logUpstreamStreamDisconnect } from "~/lib/upstream-diagnostics"
+import { state } from "~/lib/state"
+
+describe("logUpstreamStreamDisconnect G5 旋钮", () => {
+  let captured: Array<string>
+  let restore: () => void
+  beforeEach(() => {
+    captured = []
+    const orig = consola.error
+    consola.error = ((...a: Array<unknown>) => captured.push(a.join(" "))) as never
+    restore = () => (consola.error = orig)
+    state.upstreamKeepaliveDelay = 15
+    state.upstreamH2PingInterval = 20
+    state.streamIdleTimeout = 60
+  })
+  afterEach(() => restore())
+
+  it("keepalive 行含 h2ping= 与 idle=", () => {
+    logUpstreamStreamDisconnect({
+      model: "m", kindLabel: "transport-close", detail: "boom",
+      elapsedMs: 1000, frames: 1, bytes: 10, lastFrameType: "x", lastFrameOffsetMs: 900,
+      stuckBlockType: "", inputTokens: 0, outputTokens: 0,
+    } as never)
+    const line = captured.find((l) => l.includes("STREAM DISCONNECT"))
+    expect(line).toBeDefined()
+    expect(line).toContain("keepalive=15s")
+    expect(line).toContain("h2ping=20s")
+    expect(line).toContain("idle=60s")
+  })
+})
+```
+
+- [ ] **Step 2: 跑测试确认失败**
+
+Run: `bun test tests/observability/upstream-disconnect-line.unit.test.ts`
+Expected: FAIL（行只含 `keepalive=15s`，无 `h2ping=`/`idle=`）。
+
+- [ ] **Step 3: 改 formatter**
+
+`src/lib/upstream-diagnostics.ts` 的 `logUpstreamStreamDisconnect`，把 `:241-242` 的 keepalive 计算扩为三旋钮，并把 `:250-253` 的 hint 改为提两旋钮：
+
+```ts
+  const keepaliveSec = state.upstreamKeepaliveDelay
+  const h2PingSec = state.upstreamH2PingInterval
+  const idleSec = state.streamIdleTimeout
+  const keepalive = keepaliveSec > 0 ? `${keepaliveSec}s` : "default(60s)"
+  const knobs = `keepalive=${keepalive} h2ping=${h2PingSec > 0 ? `${h2PingSec}s` : "off"} idle=${idleSec > 0 ? `${idleSec}s` : "off"}`
+```
+
+hint（`:250-253`）改为同时点两个旋钮（transport 精确分支需要 info 携带 transport——本 task 不 plumb，提两旋钮已修正「指错旋钮」的原缺口；transport 精确分支作可选精化，见 §偏离）：
+
+```ts
+  const likely =
+    looksLikeReclaim ?
+      ` | likely=middlebox-idle-reclaim-during-thinking-stall (hint: connection idle window may be below your keepalive; for http2 lower upstream_transport.h2_ping_interval, else upstream_transport.tcp_keepalive_probe_delay)`
+    : ""
+```
+
+主行（`:256`）的 `keepalive=${keepalive}` 改为 `${knobs}`：
+
+```ts
+    `[upstream-diagnostics] STREAM DISCONNECT model=${info.model} kind=${info.kindLabel} ${knobs}: ${info.detail}`
+```
+
+- [ ] **Step 4: 跑测试确认通过 + 回归 golden**
+
+Run: `bun test tests/observability/upstream-disconnect-line.unit.test.ts tests/anthropic/stream-truncation.http.test.ts`
+Expected: 新测 PASS；既有 golden 若断言了旧 `keepalive=Ns:` 字面则按新形状更新（回归红线：字段值不倒退、只扩字段，spec §6「golden 只锁字段值、不锁 hint 文字」）。
+
+- [ ] **Step 5: typecheck + lint + 提交**
+
+```bash
+bun run typecheck
+bunx eslint src/lib/upstream-diagnostics.ts tests/observability/upstream-disconnect-line.unit.test.ts
+git add -- src/lib/upstream-diagnostics.ts tests/observability/upstream-disconnect-line.unit.test.ts
+git commit -m "feat(diagnostics): G5 — disconnect line shows h2ping/idle knobs + dual-knob hint"
+```
 
 ## Self-Review（对照 spec 覆盖 + 类型一致性）
 
