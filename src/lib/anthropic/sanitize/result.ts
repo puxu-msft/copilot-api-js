@@ -60,7 +60,10 @@ export function finalizeAnthropicSanitization(
     consola.debug(`[Sanitizer:Anthropic] Fixed ${toolStats.fixedNameCount} tool name casing mismatches`)
   }
 
-  if (totalBlocksRemoved > 0 && (toolStats.orphanedToolUseCount > 0 || toolStats.orphanedToolResultCount > 0 || emptyThinkingBlocksRemoved > 0)) {
+  if (
+    totalBlocksRemoved > 0
+    && (toolStats.orphanedToolUseCount > 0 || toolStats.orphanedToolResultCount > 0 || emptyThinkingBlocksRemoved > 0 || emptyTextBlocksRemoved > 0)
+  ) {
     const parts: Array<string> = []
     if (toolStats.orphanedToolUseCount > 0) parts.push(`${toolStats.orphanedToolUseCount} orphaned tool_use`)
     if (toolStats.orphanedToolResultCount > 0) parts.push(`${toolStats.orphanedToolResultCount} orphaned tool_result`)

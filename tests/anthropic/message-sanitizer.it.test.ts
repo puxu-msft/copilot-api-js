@@ -4,8 +4,10 @@ import {
   beforeEach,
   describe,
   expect,
+  spyOn,
   test,
 } from "bun:test"
+import consola from "consola"
 
 import type {
   //
@@ -1262,6 +1264,31 @@ describe("Server Tool Use Support", () => {
         expect(assistantMsg.content[0]).toEqual(thinkingBlock)
         const remainingText = assistantMsg.content[1] as { type: "text"; text: string }
         expect(remainingText.text).toBe("visible")
+      }
+    })
+
+    test("logs an INFO line when ONLY empty text blocks are removed (no orphans / corrupt thinking)", () => {
+      // Regression: the removal-summary log used to gate on orphaned tool_use/result or
+      // corrupt thinking, so a sanitization that ONLY dropped empty text blocks removed
+      // real content silently. It must now surface an INFO line accounting for them.
+      const infoSpy = spyOn(consola, "info").mockImplementation(((..._args: Array<unknown>) => undefined) as unknown as typeof consola.info)
+      try {
+        const inputAssistant = {
+          role: "assistant" as const,
+          content: [
+            { type: "text" as const, text: "   " },
+            { type: "text" as const, text: "visible" },
+          ],
+        }
+        const payload = makePayload([{ role: "user", content: "hello" }, inputAssistant, { role: "user", content: "continue" }])
+
+        const result = sanitizeAnthropicMessages(payload)
+
+        expect(result.blocksRemoved).toBeGreaterThan(0)
+        const logged = infoSpy.mock.calls.map((call) => String(call[0]))
+        expect(logged.some((line) => line.includes("[Sanitizer:Anthropic]") && line.includes("empty text blocks"))).toBe(true)
+      } finally {
+        infoSpy.mockRestore()
       }
     })
   })
