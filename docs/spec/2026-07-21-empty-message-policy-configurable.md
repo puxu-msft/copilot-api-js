@@ -85,8 +85,8 @@ touch：`config/schema.ts`（`nullableEnum`，样例 `refusal_sse_rewrite:582`�
 3. `isEmptyMessage` 单一谓词跨路径一致。
 4. 除空消息语义的有意变更外，其它 sanitize 行为 wire 等价（golden）。
 
-## 待用户定夺（阻塞 plan）
+## 已定决策（2026-07-22）
 
-1. **默认 `delete` 认同？**（空即删，含空 assistant turn；上游交错约束由翻译层正交兜底，不归 empty_message_policy）——已按你的纠正定为此，除非你要别的默认。
-2. **Anthropic 块级清理**：首版是否纳入同一 registry 统一表述（它已是 rewrite，主要是概念归位），还是只做 OpenAI 抬升、Anthropic 保持现状？
-3. 范围确认：这是中型重构（sanitize 主线剥离 + registry 化 + 新 config），是否走完整 plan → subagent review → 分阶段实现？
+1. **默认 `delete`**：空即删，含空 assistant turn；上游交错约束由翻译层正交兜底、不归 empty_message_policy。
+2. **Anthropic 也纳入**：所有格式的 sanitize 都值得挪出主线。首版把 Anthropic sanitize 与 OpenAI sanitize 统一表述在同一 registry 概念下（Anthropic 已是 rewrite、主要是归位对齐；确保 codec.parse 对所有格式都不含 sanitize）。
+3. **走完整 plan**：中型重构（sanitize 主线剥离 + registry 化 + 新 config），走 plan → subagent review → 分阶段实现。**本会话上下文已满，交接新会话执行**——kickoff 见 [`docs/plan/`](../plan/) 待建。
