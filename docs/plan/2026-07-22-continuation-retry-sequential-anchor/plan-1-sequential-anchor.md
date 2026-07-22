@@ -1,5 +1,9 @@
 # Plan-1: 顺序 anchor index 分配重写（承重①）
 
+> **✅ 达成并验证（2026-07-22，commit 266a6f5f）**：Anthropic buffered 块级现为**顺序**（close-before-real，`maxOpen===1` CLI-safe），50 anchor 测试绿 + 真 CLI e2e numTurns=1 + 4432 test:fast 绿。
+> **实现期简化（重要）**：CLI-safety 目标用「**单 pre-content anchor + 首个真实块前 close-off**」（offset 恒 +1）就达成，**未用 Task 1.1 的 allocator**——runtime 递增 index 只在「gap 多 anchor」才需要，而 gap 保活载体（>300s）已归入独立 keepalive 任务（`docs/todo/2026-07-22-client-proxy-keepalive-300s.md`）。allocator（13211ca3）保留、未接线，若未来 keepalive 任务选「gap 多 anchor」方案则接线。
+> **实际改点**：`driver.ts` flushBufferedFrames + retreat 两路径 close-before-first-real-content_block_start；`AnchorHooks.isContentBlockStart` 新增；multiblock oracle 改写为顺序断言 + `maxOpen===1` 不变量。inter-block gap 退化裸 ping（<300s 无碍、>300s 交 keepalive 任务）。对非-anchor vendor 惰性（anchor undefined 短路）。golden `buffered-anchor-golden` 字节等价未破（其场景无 anchor 后真实块）。
+
 > **依赖门:** G1（代理产出侧红-绿基线）+ G2（300s 死线重置分支决策）。G2 FAIL → 本相位形状须重议（见 plan-G）。
 > **审查 Critical-1:** 打破 `ANCHOR_INDEX=0` + 固定 `remap(,1)` 模型，改为运行时递增 index 分配，anchor 穿插 0/2/4…、任一时刻单块 open。完成前 spec 未竟部分（Anthropic 块级 CLI-safe）。
 
