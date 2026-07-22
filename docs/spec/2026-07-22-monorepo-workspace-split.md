@@ -62,7 +62,7 @@ graph TD
     uiv4 -. type-only .-> core
 ```
 
-依赖方向严格向下 `foundation ← core ← server ← cli`。**包命名（用户裁断）**：workspace 包 = `@hsupu/ghc-proxy-{foundation,core,server,cli}`（`ghc-proxy` 对应项目内 GHC 简称）。**待确认**：发布根包 `@hsupu/copilot-api` 与 bin 名 `copilot-api` 是否一并改名为 `@hsupu/ghc-proxy` / `ghc-proxy`（公开契约变更，见 §11 开放问题 1）。
+依赖方向严格向下 `foundation ← core ← server ← cli`。**包命名（用户裁断）**：workspace 包 = `@hsupu/ghc-proxy-{foundation,core,server,cli}`（`ghc-proxy` 对应项目内 GHC 简称）；**发布根包 `@hsupu/copilot-api` 与 bin 名 `copilot-api` 均不改**（workspace 包是内部开发边界、非发布单元，公开契约保持不变）。
 
 ### 3.1 各包边界（裁断结果）
 
@@ -191,7 +191,7 @@ build 入口留 `cli` 包、仍单入口 `packages/cli/src/main.ts` → `dist/ma
 
 ## 11. 开放问题（待 review 澄清）
 
-1. **`@scope` 命名已定** = `@hsupu/ghc-proxy-{foundation,core,server,cli}`。**遗留子决策**：发布根包 `@hsupu/copilot-api` + bin `copilot-api` 是否一并改名 `@hsupu/ghc-proxy` / `ghc-proxy`（公开契约、影响 npm 发布与用户 CLI 命令，待用户定；不影响拆分结构）。
+1. **命名已定**（无遗留）：workspace 包 = `@hsupu/ghc-proxy-{foundation,core,server,cli}`；发布根包 `@hsupu/copilot-api` + bin `copilot-api` **均不改**（workspace 包是内部开发边界、非发布单元）。
 2. 阶段 1 依赖 `client-query-forwarding` worktree land——需确认其预计 land 时间，或是否协调「只动那 2 个被 core 依赖的函数」提前解封。
 3. `packages/test-harness` 是否作为独立包承载共享测试基建（sandbox-paths/fixtures/helpers）——阶段 3+ 测试同置时决策，本 spec 先标记。
 
