@@ -103,7 +103,6 @@ import {
   setConnectedDataFactory,
 } from "./lib/ws"
 import { registerWsRoutes } from "./routes"
-import { normalizeExternalUiUrl } from "./routes/ui/route"
 import { createServer } from "./server"
 
 /** Parse an integer from a string, returning a default if the result is NaN. */
@@ -182,7 +181,6 @@ interface RunServerOptions {
   /** Explicit proxy URL (CLI --proxy). Takes precedence over env vars and config.yaml. */
   proxy?: string
   httpProxyFromEnv: boolean
-  externalUiUrl?: string
   /**
    * 零停机接管：若已有裸手动实例在跑（pidfile 活性检查检测到），绑定同端口
    * （reusePort）并向其发 SIGUSR2 交接，待其 drain 完退出。仅裸手动路径生效；
@@ -212,16 +210,6 @@ export async function runServer(options: RunServerOptions): Promise<void> {
       process.exit(1)
     }
   }
-  let externalUiUrl: string | undefined
-  if (options.externalUiUrl) {
-    try {
-      externalUiUrl = normalizeExternalUiUrl(options.externalUiUrl)
-    } catch (error) {
-      consola.error(error instanceof Error ? error.message : String(error))
-      process.exit(1)
-    }
-  }
-
   // ===========================================================================
   // Phase 1: Logging and Verbose Mode
   // ===========================================================================
@@ -528,7 +516,7 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   // ===========================================================================
   const { hostnames, displayHost } = resolveBindHostnames(options.host)
   const serverUrl = `http://${displayHost}:${options.port}`
-  const server = createServer({ externalUiUrl })
+  const server = createServer()
 
   // Initialize WebSocket support using a single shared adapter.
   // A single createNodeWebSocket instance avoids multiple `upgrade` listeners
@@ -536,12 +524,6 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   // when one handler consumes the socket and the other tries to reject.
   const wsAdapter = await createWebSocketAdapter(server)
   registerWsRoutes(server, wsAdapter.upgradeWebSocket)
-
-  if (externalUiUrl) {
-    consola.info(`Web UI: ${serverUrl}/ui (proxied from ${externalUiUrl})`)
-  } else {
-    consola.info(`Web UI: ${serverUrl}/ui`)
-  }
 
   // Import hono/bun websocket handler for Bun's WebSocket support.
   // Bun.serve() requires an explicit `websocket` handler object alongside `fetch`
@@ -720,10 +702,6 @@ export const start = defineCommand({
       default: true,
       description: "Use HTTP proxy from environment variables (disable with --no-http-proxy-from-env)",
     },
-    "external-ui-url": {
-      type: "string",
-      description: "Proxy /ui to an external frontend dev/build server (for example http://localhost:5173)",
-    },
     restart: {
       type: "boolean",
       default: false,
@@ -772,9 +750,6 @@ export const start = defineCommand({
       // http-proxy-from-env (citty handles --no-http-proxy-from-env via built-in negation)
       "http-proxy-from-env",
       "httpProxyFromEnv",
-      // external-ui-url
-      "external-ui-url",
-      "externalUiUrl",
       // restart
       "restart",
     ])
@@ -799,7 +774,6 @@ export const start = defineCommand({
       tui: args.tui,
       proxy: args.proxy,
       httpProxyFromEnv: args["http-proxy-from-env"],
-      externalUiUrl: args["external-ui-url"],
       restart: args.restart,
     })
   },

@@ -22,11 +22,6 @@ import { ensureValidCopilotToken } from "./lib/token"
 import { registerHttpRoutes } from "./routes"
 import { registerOpenApiDocs } from "./routes/openapi"
 
-export interface ServerOptions {
-  externalUiUrl?: string
-  externalUiV4Url?: string
-}
-
 /**
  * Match the response wire format to the route family so SDK clients see an
  * envelope they can parse. Default = anthropic (covers `/v1/messages` and any
@@ -64,7 +59,7 @@ export function readinessCheck(c: Context): Response {
   )
 }
 
-export function createServer(options: ServerOptions = {}) {
+export function createServer() {
   // OpenAPIHono is a drop-in superclass of Hono — same routing/middleware API,
   // plus it collects `createRoute` definitions registered on it (and on
   // OpenAPIHono sub-apps mounted via `.route()`) so the management API can emit
@@ -153,7 +148,7 @@ export function createServer(options: ServerOptions = {}) {
 
   // Register HTTP routes. WebSocket routes are injected later in start.ts after
   // a shared adapter is created for the concrete runtime/server instance.
-  registerHttpRoutes(server, { externalUiUrl: options.externalUiUrl, externalUiV4Url: options.externalUiV4Url })
+  registerHttpRoutes(server)
 
   // Management-API OpenAPI 3.1 doc (/openapi.json) + Scalar UI (/docs). Must run
   // after registerHttpRoutes so the management routers' definitions are mounted.
