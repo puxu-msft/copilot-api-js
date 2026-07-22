@@ -177,3 +177,5 @@ v4 P0-P3 + Stage A/B 全部完成后，逐项实测 A/B 类"预期 v4 会解决"
 **转交接的两项**（不在本会话继续——工作区被并发 stash 误 apply 污染、且上下文已满）：
 1. **DI-5-followup-1（HIGH）** journal recovery `withDispatchAlias` 修复 + store.it 两红测转绿——**这是先决**，修好 DI-5 的"journal-first 兜底"前提才真成立。
 2. **DI-5-followup-2（MEDIUM）** drain retry 总耗时软上限（防极端配置 shutdown wedge）。
+
+→ 自包含 kickoff：[docs/plan/2026-07-22-di5-journal-recovery-and-retry-cap-kickoff.md](../plan/2026-07-22-di5-journal-recovery-and-retry-cap-kickoff.md)（现状锚点 + 根因亲核 + 修法 + 验收 + 先决顺序）。
