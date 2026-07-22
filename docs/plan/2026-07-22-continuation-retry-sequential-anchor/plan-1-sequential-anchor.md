@@ -7,6 +7,13 @@
 
 **Task 1.1 ✅ landed**：`createAnchorIndexAllocator`（`keepalive-anchor.ts`，运行时递增 wire 计数 + 真实块 upstream→wire 映射，`realBlockOffset(upstreamIndex)`）。3 test。纯新增未接线。
 
+**⚠ 模型修正（2026-07-22 深读，两度修正——以此为准，别按 spec §3 粗描述改）**：coexist「anchor 全程 open 跨真实块」**不是通用行为，精确是 BUFFERED 路径行为**：
+- **LIVE 路径（`live-reconcile.ts:125-142`）已顺序化**：首个真实 `content_block_start`/终止/error 前 emit `stop@0` 关 anchor + 真实块 remap+1，不留 anchor 跨块（gap 若 anchor 已关则 heartbeat 发裸 ping——属剥离的 keepalive 任务，见 `docs/todo/2026-07-22-client-proxy-keepalive-300s.md`）。
+- **BUFFERED 路径（`driver.ts:1094` flushBufferedFrames + `anchor-multiblock-lifecycle.it.test.ts` 明文锁）保持 anchor@0 全程 open**：close-off gated 在 TERMINAL flush，故块间 gap 对 `currentOpenBlock()`=anchor@0 发 `text_delta@0` = **CLI-unsafe 的 coexist wire**（anchor@0 与真实块并存 open）。
+
+**故顺序改造真实靶心 = BUFFERED 路径 gap 处理**（非整个生命周期/非首块）：① `driver.ts:1094` close-off 从「TERMINAL flush」提前到「每真实 `content_block_start` 前」（对齐 live-reconcile）+ remap `1`→`allocator.realBlockOffset()`（:1095 buffered + :1142 retreat）；② 块间 idle heartbeat 开**新 anchor 块**（新 wire index）保活、下一真实块前关（放开 tick :417 的 `!everOpenedRealBlock` 守卫 + `anchorAttempted` per-gap 复位 + 轻量 gap injector 只 start@gapIdx+delta 无 message_start）；③ allocator 挂 `AnchorState` 共享，sink 开块时调 `on*Open()`、remap 读 `realBlockOffset()`。**reviewer Critical-1 坐实的最硬原子改动，不可分解，一处漏改=协议损坏。**
+
+
 **coexist 现状（`client-sink.ts` tick :409-445 + `keepalive-anchor.ts` injector）——三处互锁要反转：**
 1. **anchor 生命周期反转**：coexist 里 `injectAnchor` 只在 pre-content（tick :417 守卫 `openBlockStack.length===0 && !anchorAttempted && !everOpenedRealBlock`）注入 anchor@0，之后 anchor **留栈底**、真实块 push 栈顶 = 两块并存。顺序模型：pre-content anchor 在**第一个真实块到达前** emit `content_block_stop@anchorIdx`（injector 或 driver/reconcile 的「首个真实 content_block_start 前」钩子），栈清空。
 2. **gap anchor 放开**：tick :417 的 `!everOpenedRealBlock` 守卫**禁止**真实块后再注入 anchor——顺序模型要允许「真实块之间 idle 时新开一个 anchor 块」（新 wire index，来自 allocator），delta 保活，下一真实帧到达时关闭。`anchorAttempted` latch 语义须改为 per-gap 复位。
