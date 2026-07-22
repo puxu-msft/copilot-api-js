@@ -1252,5 +1252,6 @@ export function resetV3WriterForTests(): void {
   draining = false
   summaryBackfillStop = true
   summaryBackfill = null
+  commitFailureInjectorForTests = null
   status = { pendingOperations: 0, pendingBytes: 0, persistedOperations: 0, failedOperations: 0, conflicts: 0, summaryBacklog: 0 }
 }

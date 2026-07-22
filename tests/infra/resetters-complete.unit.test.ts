@@ -75,6 +75,11 @@ const EXEMPT: Record<string, string> = {
   // _resetConfigValidationWarnTrackingForTests (validation.ts), which calls this
   // internally — registering both would double-reset the same Set.
   _resetDeprecatedKeyWarnTrackingForTests: "covered by _resetConfigValidationWarnTrackingForTests, which calls it internally",
+  // V3 store transient-retry seams (DI-5): a read-only config getter (no state)
+  // and a fault injector setter whose module-global is cleared centrally by the
+  // ALREADY-registered resetV3WriterForTests.
+  getV3PersistRetryConfigForTests: "read-only assertion hook — no state to reset",
+  setV3CommitFailureInjectorForTests: "commit-failure injector setter — cleared by resetV3WriterForTests (registered)",
 }
 
 function enumerateForTestExports(dir: string): Set<string> {
