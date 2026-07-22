@@ -174,8 +174,18 @@ v4 P0-P3 + Stage A/B 全部完成后，逐项实测 A/B 类"预期 v4 会解决"
 - **MEDIUM（待修，交接）**：`max_attempts/backoff_ms` 无**总耗时上限**（schema 仅非负校验），配合 shutdown drain 无 signal（避 store→shutdown→state 循环）设计，极端配置（如 max_attempts=100/backoff=1000）可让 `drainV3Writer` 卡到分钟级。修法：drain 侧加独立总耗时软 timeout（不引入 shutdown 依赖）。
 - **HIGH（既有 bug，非 DI-5 引入，但动摇本 commit 论证前提）**：`recoverV3Journal` 反序列化的 record 丢失了 `attempts` 非枚举 getter（`store.ts:1228` JSON.parse 后未过 `withDispatchAlias`）→ `prepareModelOperation`→`projection.ts:201/246` 读 `record.attempts`/`.length` 抛错 → **recovery 恒返回 0**。即"journal-first 已兜底 tx/崩溃失败"这个 DI-5 论证前提**当前不成立**（journal recovery 本身坏了）。交叉验证：`tests/history/v3/store.it.test.ts:311`「recovers a self-contained uncommitted journal」+「keeps newly imported」两测当前红，5c164f0e 与父 commit 均红 = 早于 DI-5。**修法**：`recoverV3Journal` 反序列化后过 `withDispatchAlias` 补回 attempts 别名再传 `prepareModelOperation`；并更正 5c164f0e commit message 的"journal-first 已覆盖"断言（应加"前提是 recovery bug 先修"）。
 
-**转交接的两项**（不在本会话继续——工作区被并发 stash 误 apply 污染、且上下文已满）：
+**转交接的两项**（原会话不继续——工作区被并发 stash 误 apply 污染、且上下文已满）：
 1. **DI-5-followup-1（HIGH）** journal recovery `withDispatchAlias` 修复 + store.it 两红测转绿——**这是先决**，修好 DI-5 的"journal-first 兜底"前提才真成立。
 2. **DI-5-followup-2（MEDIUM）** drain retry 总耗时软上限（防极端配置 shutdown wedge）。
+
+### 两 followup 落地（2026-07-22，续接会话）
+
+两项均已实现，全套 TDD，`bun run typecheck` 绿、history+config 全套件 1238 pass/0 fail。
+
+- **followup-1（HIGH）✅ 修**（commit `e75db9bb`）——**根因判定修正**：交接 kickoff 建议"在 `recoverV3Journal` 反序列化后过 `withDispatchAlias`"，亲核后判定**不完整**。真根因在消费端 `projection.ts:246` 读被弃用的**非枚举别名** `record.attempts.length`，而同函数兄弟行（`:201`/`:248`）早已读规范字段 `record.dispatches`。关键反证：第二个红测「keeps newly imported records」（`store.it.test.ts:136-148`）直接 `prepareModelOperation(JSON.parse(...))`、**根本不经过 `recoverV3Journal`**，故 recovery-only 修法救不了它。改 `projection.ts:246` → `record.dispatches.length`（规范字段，跨 JSON round-trip 存活；对活的带别名 record 值等价，因 `attempts` getter 即返回 `dispatches`）**同时**修好两个红测。全仓 grep 确认 `projection.ts:246` 是唯一 reachable 的"读 record 的 `attempts` 别名"站点（`entry-view.ts`/`recovery.ts` 读的是 `HistoryEntry.attempts` 真实数组字段、不同类型、合法）。→ 教训同 [[methodology-broken-reference-supply-vs-delete]] / [[feedback-fix-all-comparison-sites]]：修消费端根因、别只补一个调用点。
+  - **对 `5c164f0e` commit message 的更正**：其"journal-first 已覆盖 tx/崩溃失败"断言的**前提**（`recoverV3Journal` 能正常重放）此前不成立——recovery 因 `projection.ts:246` 读别名恒抛错、返回 0。followup-1 修好后该前提才真成立。DI-5 论证链现完整。
+- **followup-2（MEDIUM）✅ 修**（commit `07302136`）：`runWithTransientRetry` 加 `maxTotalMs` 软上限——累计**名义 backoff**预算（非墙钟，故在 abortableDelay scale seam 下确定、可测），下一次 backoff 会超预算即停止重试、记 failed。封住线性退避和的平方增长（`backoffMs·n(n-1)/2`），极端 config（max_attempts=100/backoff=1000）不再能把 drain→shutdown 拖到分钟级。**无 shutdown 依赖**（不碰 store→shutdown→state 循环）。config `history.persist_retry.max_total_ms`（默认 30000，`0`=关闭）。TDD：unit 正样本对照（同 config 去掉 maxTotalMs 跑满 attempt cap，证早停是时间 cap 不是次数 cap）+ 0-关闭 + 次数 cap 更紧时胜出；it 端到端证 maxTotalMs 触达 drain。
+
+DI-5 台账状态 → **完成**（transient-retry + journal-recovery 前提 + drain 总耗时上限三者齐备）。
 
 → 自包含 kickoff：[docs/plan/2026-07-22-di5-journal-recovery-and-retry-cap-kickoff.md](../plan/2026-07-22-di5-journal-recovery-and-retry-cap-kickoff.md)（现状锚点 + 根因亲核 + 修法 + 验收 + 先决顺序）。

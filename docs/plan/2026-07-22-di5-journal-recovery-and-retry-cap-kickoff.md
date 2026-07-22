@@ -1,5 +1,10 @@
 # Kickoff: DI-5 followup — journal recovery 修复 + drain retry 总耗时上限
 
+> **实施状态（2026-07-22 续接会话完成）：两 followup 均已落地。**
+> - followup-1 → commit `e75db9bb`。**根因判定修正**：本文下方建议的"在 `recoverV3Journal` 过 `withDispatchAlias`"经亲核**不完整**——真根因在消费端 `projection.ts:246` 读非枚举别名 `record.attempts.length`（兄弟行 `:201`/`:248` 早已读规范字段 `record.dispatches`）。第二个红测「keeps newly imported」直接 `prepareModelOperation(JSON.parse(...))`、不经 `recoverV3Journal`，故 recovery-only 修法救不了它。已改 `projection.ts:246` → `record.dispatches.length`，同修两红测。
+> - followup-2 → commit `07302136`（`maxTotalMs` 累计名义 backoff 软上限 + config `history.persist_retry.max_total_ms`）。
+> - 落地台账见 [docs/v4/06-inherited-issues.md](../v4/06-inherited-issues.md) 「两 followup 落地」节。下方原文保留为交接历史。
+
 > 复制本文件全文到新会话启动。自包含——开场读完本文即可开工。
 > 交接自一个上下文已满的长会话（DI-5 transient-retry 已实施 `5c164f0e`，本文是其对抗审查暴露的两个 followup）。
 
