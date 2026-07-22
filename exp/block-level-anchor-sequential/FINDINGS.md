@@ -25,6 +25,18 @@ spec §4.5 为此 FAIL 预留了「备选」：顺序 anchor（任一时刻只�
 
 - **300s 死线重置**:本 PoC 用短 wire（无长静默）。incident 的 142.9s 首字节前静默要求 anchor 的空 `text_delta` 每 ~15s 重置 CC 的 300s no-real-content 死线。这需要 >300s 的长静默真 CLI 跑（对比 `exp/cc-idle-280s`：裸 ping 不重置、真 text_delta 重置）。顺序 anchor 的 gap 保活也是 `text_delta`，预期重置，但**未实证**——列为计划期长-idle 子门。
 
+## G2 实证结果（2026-07-22）：FAIL —— 空 text_delta 不重置 300s 死线
+
+`idle-hook.ts`（顺序 wire + >310s gap，gap 期每 15s 发 `content_block_delta@2 text_delta ""`）驱动真 claude：**302s 时 `numTurns=1, isError:true, result="API Error: Response stalled mid-stream. The response above may be incomplete."`**。即 gap 期的**空** `text_delta` **没有**重置 claude CLI 的 300s no-real-content 死线。
+
+**辨析（影响范围，勿夸大也勿低估）：**
+- **对 incident（req_162）无影响**：incident 的首字节前静默是 **142.9s < 300s**，死线根本不会触发。incident 的可救回性依赖「首块后 tool_use RST → 续写」（发生在流式阶段，非静默阶段），与本门无关。**主目标不被 G2 FAIL 阻断。**
+- **揭示既有 empty_text keepalive 的 >300s 潜在限制**：本 hook 的 gap 保活结构（单块 open + 周期空 delta）与生产 `stream_keepalive_mode: empty_text` 同构 → 说明**现有生产 keepalive 对 >300s 的上游静默同样撑不住**（此前 spec §4.5 stage-2 门「待用户执行」从未真跑，此假设首次被证伪）。这是既有潜在问题、非本特性引入。
+- **待确认假设（需 1 发补充探针）**:FAIL 根因是「**空** text 不算 real content」还是别的。补跑变体：gap 发**非空** `text_delta`（如 `" "` 或不可见字符）看是否重置——若重置则确认「空不算、须非空载体」。非空载体会污染客户端渲染（须权衡：零宽字符/可辨识 marker）。
+- **对 spec §3.4 的回填**:承重因果链的「门 FAIL 退路」现被激活——Anthropic **>300s** 长静默场景须换保活载体（非空 text）或接受限制；但 **<300s（含 incident）不受影响**，续写特性照常推进。
+
+**结论**:G2 FAIL 是真发现但**范围受限于 >300s 静默边缘场景**，不阻断续写主线（incident 及绝大多数场景 <300s）。>300s 保活载体作为独立子问题登记，续写 P0-P7 继续。
+
 ## 复现
 
 ```bash
