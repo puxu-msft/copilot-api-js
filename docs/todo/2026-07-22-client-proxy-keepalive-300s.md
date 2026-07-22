@@ -29,6 +29,18 @@ INTERVAL=20 WINDOW=340 CC_CEIL=400 bash run-arm.sh armD-textdelta  textdelta  88
 - **thinkdelta PASS + textdelta FAIL** → 根因 = **text_delta 特有**（空 text_delta 从不算真实内容，只有 thinking_delta 算）。修法：文本块场景的保活载体不能用空 text_delta。
 - **两者都 FAIL** → 根因 = **CC 2.1.217 收紧了 watchdog**（任何空 delta 不再算）。修法：保活必须带非空内容。
 
+### ⚠ 2026-07-22 实测更新——裁决翻转：根因是「路径」不是「delta 类型」
+
+两 arm 在 CC **2.1.217**、first-party 路径实跑结果：**thinkdelta 与 textdelta 都 PASS**（`is_error:false, duration_ms≈340476, result:"ok"`，`exp/cc-idle-280s/arm{B,D}*.cli.log`）。即 **first-party 路径上空 text_delta 也能重置 300s 死线**——上面两个候选根因（text_delta 特有 / CC 版本收紧）**均被证伪**。
+
+而 G2（`exp/block-level-anchor-sequential/idle-300s.ts`，**经真代理**路径、空 text_delta）在 302s stall，报 **`Response stalled mid-stream. The response above may be incomplete.`**。
+
+**新根因假设（待新会话定）：差异在「路径」——first-party watchdog vs 经代理（custom URL + token）。** 两条线索：
+1. **可能不是 CC 的 300s 死线，而是代理自己的上游 stall 检测**：G2 报文 `Response stalled mid-stream` 与 CC 的 `no chunks received`（arm A/C 的 300s 死线报文）**不同**——很可能是**代理侧的 upstream-idle/stall 看门狗**在 ~300s 触发注入的 error，而非 claude 的死线。查 `src/lib/transport/`（上游 fetch/h2 idle）+ 上游 stall 检测代码：代理是否有自己的 ~300s 上游空闲判定、且只认「真实内容帧」不认空 delta / 只认上游轨。
+2. **或代理没把空 text_delta 逐字节忠实转发**：G2 config 用 `stream_keepalive_mode: ping` + `protect_streaming_generation: false`（live 透传），但仍可能被某层改写/丢弃 gap 期空 delta。用 `curl -N` 直接看代理下行字节确认空 text_delta 是否真到客户端。
+
+**新会话第一步改为**：复现 G2（经代理路径）+ 抓代理下行字节（curl -N）+ 定位 `Response stalled mid-stream` 报文的产生点（代理代码 grep 该字面量）——先确定是**代理 stall 检测**还是 **CC 死线**，再谈载体。first-party 两 arm 已证 delta 类型不是问题。
+
 ## 范围界定（勿夸大）
 - **< 300s 的静默不受影响**——包括续写 incident req_162 的 142.9s。续写特性**不被此问题阻断**（续写救的是首块后 tool_use RST，非静默）。
 - 仅 **>300s 上游静默**受影响（长 thinking / 大 payload 慢首字节）。
