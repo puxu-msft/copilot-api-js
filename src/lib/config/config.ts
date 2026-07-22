@@ -12,6 +12,7 @@ import consola from "consola"
 import fs from "node:fs/promises"
 import { z } from "zod"
 
+import { setV3PersistRetryConfig } from "~/lib/history/v3"
 import { recordConfigReloadTimeoutDiff } from "~/lib/observability/reaper-diagnostics"
 import {
   //
@@ -45,8 +46,6 @@ import {
   setUpstreamTransportConfig,
   state,
 } from "~/lib/state"
-
-import { setV3PersistRetryConfig } from "~/lib/history/v3"
 
 import type {
   //
@@ -990,6 +989,8 @@ export async function applyConfigToState(): Promise<Config> {
     if (upstreamTransport.http2?.ping_interval !== undefined) setUpstreamTransportConfig({ upstreamH2PingInterval: upstreamTransport.http2.ping_interval })
     if (upstreamTransport.http2?.session_connect_timeout !== undefined)
       setUpstreamTransportConfig({ sessionConnectTimeout: upstreamTransport.http2.session_connect_timeout })
+    if (upstreamTransport.http2?.max_concurrent_streams_per_session !== undefined)
+      setUpstreamTransportConfig({ maxConcurrentStreamsPerSession: upstreamTransport.http2.max_concurrent_streams_per_session })
     if (upstreamTransport.websocket?.pooled_connection_idle_timeout !== undefined)
       setUpstreamTransportConfig({ pooledConnectionIdleTimeout: upstreamTransport.websocket.pooled_connection_idle_timeout })
     if (upstreamTransport.websocket?.soft_max_connections !== undefined)

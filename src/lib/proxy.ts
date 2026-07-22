@@ -92,6 +92,15 @@ export function getUpstreamH2PingIntervalMs(): number {
 }
 
 /**
+ * Soft cap on concurrent streams per upstream h2 session (0 = unlimited), from
+ * `state.maxConcurrentStreamsPerSession`. Read fresh by http2-client.ts's pool
+ * routing so a hot-reload affects future routing only, never in-flight streams.
+ */
+export function getUpstreamMaxStreamsPerSession(): number {
+  return state.maxConcurrentStreamsPerSession
+}
+
+/**
  * Build undici Agent options from current runtime state.
  *
  * - `headersTimeout` follows `responseHeaderTimeout` (time to first response headers)

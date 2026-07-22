@@ -31,6 +31,7 @@ import {
   getProxyUrlForOrigin,
   getUpstreamH2PingIntervalMs,
   getUpstreamKeepAliveDelayMs,
+  getUpstreamMaxStreamsPerSession,
 } from "~/lib/proxy"
 import {
   //
@@ -270,12 +271,13 @@ export function scheduleH2KeepalivePing(session: Pick<http2.ClientHttp2Session, 
  */
 
 /**
- * Soft cap on concurrent streams per h2 session (0 = unlimited). C2 hard-codes 0
- * so the pool is byte-equivalent to the old single-session-per-origin multiplex;
- * C3 wires this to `state.maxConcurrentStreamsPerSession` (config, default 1).
+ * Soft cap on concurrent streams per h2 session (0 = unlimited), from
+ * `state.maxConcurrentStreamsPerSession` via proxy.ts (read fresh per call, so a
+ * hot-reload affects future routing only, never in-flight streams — same
+ * no-caching contract as the other transport getters).
  */
 function getConfiguredMaxStreamsPerSession(): number {
-  return 0
+  return getUpstreamMaxStreamsPerSession()
 }
 
 /** Append `entry` to its origin's session array (creating the array on first use). */

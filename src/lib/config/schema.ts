@@ -1012,6 +1012,18 @@ export const UpstreamTransportHttp2ConfigSchema = z
      * disabled behavior the user asked for (D3/D5 "诚实表达能力边界").
      */
     session_connect_timeout: nullableNonnegativeInt(),
+    /**
+     * Soft cap on concurrent streams multiplexed onto a SINGLE upstream h2
+     * session (0 = unlimited). When a session is at its cap, a new request opens
+     * (or reuses another) session for the same origin instead of piling on; the
+     * capped session stays routable once its in-flight streams drain. Default 1
+     * — each concurrent request gets its own connection, so a session-level
+     * upstream teardown (GOAWAY / edge drain) takes down at most one in-flight
+     * request instead of every concurrent stream sharing the connection. 0
+     * restores the old single-session multiplex. Hot-reloadable; a change only
+     * affects future routing, never in-flight streams.
+     */
+    max_concurrent_streams_per_session: nullableNonnegativeInt(),
   })
   .strict()
 export type UpstreamTransportHttp2Config = z.infer<typeof UpstreamTransportHttp2ConfigSchema>
