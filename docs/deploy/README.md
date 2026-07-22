@@ -6,6 +6,15 @@ systemd unit template for the **optional, independent** history-search sidecar
 service (history-search-out-of-process plan). See the unit file's own header
 comment for install steps and rationale.
 
+**Before deploying**: the sidecar requires the native Tantivy `.node` addon
+(`native/history-search/copilot_history_search.node`), which is `.gitignore`d
+(a compiled artifact, not source) and depends on a local Rust toolchain to
+build. Run `bun run build:history-search` (also folded into the top-level
+`bun run build`) BEFORE starting the systemd unit — the sidecar process will
+fail to start (`getNativeHistorySearch()` rejects) without it. This mirrors
+every other native/compiled artifact in this repo's build pipeline; it is not
+something `bun install` alone produces.
+
 Key facts:
 
 - **Independent process, no parent/child relationship with the main server.**
@@ -14,7 +23,11 @@ Key facts:
 - **Optional.** Without this service running, the main server still works
   fully; full-text History search (`GET /history/api/search`) simply returns
   empty results (`partial: true`) instead of an error. `GET /api/status`'s
-  `history_search` field reports whether the sidecar is currently reachable.
+  `history_search` field reports whether the sidecar is currently reachable
+  and, once reachable, a `tail` sub-object (`lastSuccessfulTailAt` /
+  `poisonedCount` / `lastTailError`) reporting whether its tail loop is
+  actually making progress — a pure connectivity ping alone cannot tell
+  "healthy" apart from "reachable but its index has silently stopped growing".
 - **Zero-flag defaults.** `history-search-daemon` (the service's own citty
   sub-command) defaults its `--db`/`--socket`/`--index` args to the exact same
   `PATHS.HISTORY_V3_DB` / `PATHS.HISTORY_SEARCH_SOCKET` / `PATHS.

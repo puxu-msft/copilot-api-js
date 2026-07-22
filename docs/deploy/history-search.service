@@ -8,6 +8,10 @@
 # is absent/unreachable — see src/lib/history/search/uds-client.ts).
 #
 # Install:
+#   bun run build:history-search   # builds the native Tantivy .node addon --
+#                                   # .gitignore'd, requires a local Rust
+#                                   # toolchain, NOT produced by `bun install`
+#                                   # alone; the daemon fails to start without it
 #   sudo cp docs/deploy/history-search.service /etc/systemd/system/
 #   sudo systemctl daemon-reload
 #   sudo systemctl enable --now history-search
