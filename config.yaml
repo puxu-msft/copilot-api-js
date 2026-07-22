@@ -364,6 +364,11 @@ buffered_retry:
   # Forced heartbeat interval (seconds) for the buffered path: the buffer withholds all real frames until commit, so a heartbeat is constructed UNCONDITIONALLY — using stream_keepalive_ping_sec when >0, else this fallback.
   # 缓冲路径的强制心跳间隔秒数：缓冲期在提交前不发任何真实帧，故无条件构造心跳——stream_keepalive_ping_sec >0 时取其值，否则用本值兜底。
   heartbeat_sec: 15
+  # Continuation retry (spec 2026-07-22): after the FIRST block committed to the client, a mid-stream RST (e.g. NGHTTP2_CANCEL cutting a tool_use) no longer degrades to partial-degrade — the proxy re-dispatches upstream with a synthetic continuation turn (the already-committed blocks as an assistant turn + this user message) so the model continues rather than restarts. Shares max_retries above (with a floor of 1 so pre-first-block retries can't starve continuation). Valid per-vendor too (<vendor>.buffered_retry.continuation.*).
+  # 续写重试（spec 2026-07-22）：首个块提交给客户端后，mid-stream RST（如 NGHTTP2_CANCEL 掐断 tool_use）不再降级 partial-degrade——代理带合成续写轮（已提交块作 assistant 轮 + 下方 user 消息）重投上游，让模型续写而非重来。共享上方 max_retries（保底 1 次，防首块前重试饿死续写）。可 per-vendor 覆盖（<vendor>.buffered_retry.continuation.*）。
+  continuation:
+    enabled: true
+    message: "network issue. please continue"
 
 # Per-vendor overrides + enabled mode switch (examples, commented out by default):
 # 各 vendor 覆盖 + enabled 开关（示例，默认注释）：

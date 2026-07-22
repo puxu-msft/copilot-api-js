@@ -224,6 +224,20 @@ export const BufferedRetryOverrideSchema = z
     buffer_cap_bytes: nullableNonnegativeInt(),
     /** Forced heartbeat interval (seconds) for the buffered path; clamped < client idle deadline. */
     heartbeat_sec: nullableNonnegativeInt(),
+    /**
+     * Continuation-retry settings (spec 2026-07-22). After the first block commits, a mid-stream RST
+     * triggers a synthetic continuation turn instead of `partial-degrade`. `enabled` gates it (default
+     * true); `message` is the synthetic user-turn text (default "network issue. please continue").
+     * Valid on the shared `buffered_retry` AND any per-vendor `<vendor>.buffered_retry` (per-vendor wins).
+     */
+    continuation: nullableSection(
+      z
+        .object({
+          enabled: nullableBoolean(),
+          message: z.string().nullable().optional(),
+        })
+        .strict(),
+    ),
   })
   .strict()
 

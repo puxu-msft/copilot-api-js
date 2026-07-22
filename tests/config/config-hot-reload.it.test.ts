@@ -1108,6 +1108,10 @@ const EXEMPT: ReadonlyArray<ExemptField> = [
   { configKey: "buffered_retry.max_retries", reason: "vendor-neutral shared cap → bufferedRetryShared; see buffered-retry-keys.test.ts" },
   { configKey: "buffered_retry.buffer_cap_bytes", reason: "vendor-neutral shared cap → bufferedRetryShared; see buffered-retry-keys.test.ts" },
   { configKey: "buffered_retry.heartbeat_sec", reason: "vendor-neutral shared cap → bufferedRetryShared; see buffered-retry-keys.test.ts" },
+  { configKey: "buffered_retry.continuation.enabled", reason: "shared continuation → bufferedRetryContinuationShared; see buffered-retry-keys.test.ts" },
+  { configKey: "buffered_retry.continuation.message", reason: "shared continuation → bufferedRetryContinuationShared; see buffered-retry-keys.test.ts" },
+  { configKey: "anthropic.buffered_retry.continuation.enabled", reason: "per-vendor continuation → bufferedRetryContinuationOverrides.anthropic; see buffered-retry-keys.test.ts" },
+  { configKey: "anthropic.buffered_retry.continuation.message", reason: "per-vendor continuation → bufferedRetryContinuationOverrides.anthropic; see buffered-retry-keys.test.ts" },
   {
     configKey: "anthropic.buffered_retry.enabled",
     reason: "Anthropic's switch is protect_streaming_generation; `enabled` ignored — see buffered-retry-keys.test.ts",
