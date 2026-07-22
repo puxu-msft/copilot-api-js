@@ -1105,7 +1105,7 @@ export async function runResponseBufferedSink(
         // copy so the client sees exactly one message_start (re-sending it would corrupt the stream).
         if (anchor && anchorState.messageStartForwarded && anchor.isMessageStart(frame)) continue
         // Close the anchor off BEFORE the first real content_block_start (sequential — never coexist).
-        if (anchor?.isContentBlockStart?.(frame)) await closeAnchorBeforeReal()
+        if (anchor?.isContentBlockStart(frame)) await closeAnchorBeforeReal()
         await sink.write(injected && anchor && anchorBlockOpen ? anchor.remap(frame, 1) : frame)
       }
       return { kind: "ok" }
@@ -1230,7 +1230,18 @@ export async function runResponseBufferedSink(
             // close-off already covers recovery-candidate blocks) and was removed;
             // `anchor-multiblock-lifecycle.it.test.ts (c′)` locks the error-terminus ordering.
             const isErrorTerminusFlush = opts.sawUpstreamError?.() ?? false
-            const res = await flushBufferedFrames(buffer, isErrorTerminusFlush, { cause: "boundary", boundaryFrame: toWrite }, candidateOpts.transformBufferedFlush)
+            // Continuation-retry ledger feed (spec 2026-07-22 §4.2 / persistence-async-invariants §3
+            // "record signals at the committed settle point"): snapshot the frames that are ABOUT to commit
+            // BEFORE `buffer` is cleared, then record their canonical blocks into the ledger ONLY on a
+            // successful flush. A partial block (cut mid-generation) never reaches a boundary, so it is never
+            // fed. Inert when no ledger/extractor is wired (Gemini / terminal-only / continuation disabled).
+            const committedFrames = opts.committedBlocksLedger && opts.extractCommittedBlocks ? [...buffer] : undefined
+            const res = await flushBufferedFrames(
+              buffer,
+              isErrorTerminusFlush,
+              { cause: "boundary", boundaryFrame: toWrite },
+              candidateOpts.transformBufferedFlush,
+            )
             sink.resumeHeartbeat?.()
             buffer.length = 0
             committedAny = true
@@ -1240,6 +1251,12 @@ export async function runResponseBufferedSink(
               // on the wire (un-retryable). Surface as a graceful degrade (never-swallow the write error).
               notifyBufferedResolve?.("partial-degrade", attempt, { vendor })
               return { kind: "stream-error", error: res.error }
+            }
+            // Commit succeeded (frames are on the wire) → record the delivered blocks into the continuation
+            // ledger. Done AFTER the successful flush so a write-error above never records an undelivered
+            // block. A zero-content `error` boundary yields no blocks (extractor drops non-content frames).
+            if (committedFrames && opts.committedBlocksLedger && opts.extractCommittedBlocks) {
+              for (const block of opts.extractCommittedBlocks(committedFrames)) opts.committedBlocksLedger.recordCommitted(block)
             }
           }
         }

@@ -27,6 +27,14 @@ import type {
   StreamErrorKind,
 } from "~/lib/stream"
 
+// `import type` — erased at runtime, so this does NOT create a runtime cycle with
+// rewrite-registry.ts (which imports `UpstreamFrame` from here). FrameAction is only
+// used in the dry-run `onRewriteAction` hook signature ([[type-only-import-breaks-visual-cycle]]).
+import type {
+  //
+  CanonicalBlock,
+  CommittedBlocksLedger,
+} from "./committed-blocks-ledger"
 import type {
   //
   ClientFormat,
@@ -34,9 +42,6 @@ import type {
   ResolvedModel,
   UpstreamEndpoint,
 } from "./envelope"
-// `import type` — erased at runtime, so this does NOT create a runtime cycle with
-// rewrite-registry.ts (which imports `UpstreamFrame` from here). FrameAction is only
-// used in the dry-run `onRewriteAction` hook signature ([[type-only-import-breaks-visual-cycle]]).
 import type { FrameAction } from "./rewrite-registry"
 
 // ============================================================================
@@ -540,6 +545,25 @@ export interface RunBufferedOpts extends RunResponseOpts {
    */
   commitBoundaries?: (frame: ClientFrame) => boolean
   /**
+   * Continuation-retry committed-blocks ledger (spec 2026-07-22 §4.2). When PROVIDED alongside
+   * {@link extractCommittedBlocks}, the driver feeds each block-level commit boundary's frames into the
+   * ledger (via the extractor) as the canonical "already-delivered prefix" — the data source a later
+   * mid-stream-cut continuation replays as a synthetic assistant turn. The driver both FEEDS this ledger
+   * (at each boundary) and READS `snapshot()` when it fires the continuation branch, so the same instance
+   * is threaded here. The ledger is cumulative across retry attempts (`onAttemptReset` must NOT clear it).
+   * UNDEFINED = no continuation ledger (Gemini / terminal-only / continuation disabled) — no feeding, and
+   * the driver's continuation branch is never taken. Format-agnostic: the driver only calls the extractor
+   * + `recordCommitted`; all Anthropic/CC/Responses block-reconstruction lives in the extractor.
+   */
+  committedBlocksLedger?: CommittedBlocksLedger
+  /**
+   * Format-specific projection from a commit boundary's committed frames to canonical blocks (spec
+   * 2026-07-22 §4.2). Paired with {@link committedBlocksLedger} — the driver calls it at each block-level
+   * commit with the just-committed buffer and records the result into the ledger. Only meaningful when a
+   * ledger is supplied; the two are wired together by the handler (e.g. `extractAnthropicCommittedBlocks`).
+   */
+  extractCommittedBlocks?: (frames: ReadonlyArray<ClientFrame>) => Array<CanonicalBlock>
+  /**
    * Candidate-hosted buffered-flush transform seam (spec 2026-07-14-responses-buffered-block-merge §4,
    * 2026-07-19 重接地). Same shape/lifecycle as {@link commitBoundaries} — a candidate-supplied option the
    * driver merges in via `currentCandidateResponseOpts` and calls at EVERY flush (block-boundary,
@@ -550,7 +574,7 @@ export interface RunBufferedOpts extends RunResponseOpts {
    * Per-attempt state lives entirely on the candidate side (a fresh candidate session per retry/recovery
    * gives a fresh closure) — the driver has no reset hook to call for this seam.
    */
-  transformBufferedFlush?: (frames: readonly ClientFrame[], ctx: BufferedFlushContext) => readonly ClientFrame[]
+  transformBufferedFlush?: (frames: ReadonlyArray<ClientFrame>, ctx: BufferedFlushContext) => ReadonlyArray<ClientFrame>
   /**
    * Vendor label the driver injects into {@link onBufferedResolve}'s `meta.vendor` (e.g.
    * `"anthropic"` / `"responses"` / `"chat_completions"` / `"responses_ws"`). Lets the handlers
