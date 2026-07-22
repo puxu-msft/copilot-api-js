@@ -342,3 +342,66 @@ describe("pingHistorySearchUdsClient (status/diagnostic reachability probe — u
     expect(searchCalled).toBe(true)
   })
 })
+
+describe("client.getTailStatus() (merged-state review blocker 3, 2026-07-22) -- tail-progress status, distinct from mere UDS reachability", () => {
+  test("a server WITH a getStatus callback answers a real status request with its exact fields", async () => {
+    const socketPath = freshSocketPath()
+    const server = createHistorySearchUdsServer(
+      socketPath,
+      async () => [],
+      () => ({
+        lastSuccessfulTailAt: 1_753_000_000_000,
+        poisonedCount: 3,
+        lastTailError: null,
+      }),
+    )
+    cleanupServers.push(server)
+    await server.listen()
+
+    const client = createHistorySearchUdsClient({ socketPath })
+    const status = await client.getTailStatus()
+    expect(status).toEqual({ lastSuccessfulTailAt: 1_753_000_000_000, poisonedCount: 3, lastTailError: null })
+  })
+
+  test("a server built WITHOUT a getStatus callback rejects a status request rather than crashing or silently answering with a search reply", async () => {
+    const socketPath = freshSocketPath()
+    // No third arg -- exactly like every OTHER test in this file constructs a server,
+    // proving old callers (that only care about search) are unaffected.
+    const server = createHistorySearchUdsServer(socketPath, async () => [])
+    cleanupServers.push(server)
+    await server.listen()
+
+    const client = createHistorySearchUdsClient({ socketPath })
+    await expect(client.getTailStatus()).rejects.toThrow()
+  })
+
+  test("a status request is NEVER confused with a search request over the wire -- disjoint reply shapes, real socket round-trip", async () => {
+    const socketPath = freshSocketPath()
+    let searchWasCalled = false
+    const server = createHistorySearchUdsServer(
+      socketPath,
+      async () => {
+        searchWasCalled = true
+        return [{ operationId: "should-not-appear", createdAt: 1, score: 1 }]
+      },
+      () => ({ lastSuccessfulTailAt: null, poisonedCount: 0, lastTailError: null }),
+    )
+    cleanupServers.push(server)
+    await server.listen()
+
+    const client = createHistorySearchUdsClient({ socketPath })
+    const status = await client.getTailStatus()
+    expect(status).toEqual({ lastSuccessfulTailAt: null, poisonedCount: 0, lastTailError: null })
+    // The status request must route to getStatus, NEVER to search -- a status poll
+    // must never accidentally trigger (or be confused with) a real search query.
+    expect(searchWasCalled).toBe(false)
+  })
+
+  test("getTailStatus() propagates a genuine transport failure (unreachable socket) -- distinct never-throw-vs-throw contract from query()", async () => {
+    const socketPath = freshSocketPath() // nothing ever listens here
+    await assertNoUncaughtException(async () => {
+      const client = createHistorySearchUdsClient({ socketPath, connectTimeoutMs: 200 })
+      await expect(client.getTailStatus()).rejects.toThrow()
+    })
+  })
+})

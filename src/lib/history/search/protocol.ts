@@ -72,8 +72,14 @@ export class FrameDecoder {
   }
 }
 
-/** Request the sidecar's search over the wire. */
+/** Request the sidecar's search over the wire. `type` is OMITTED for a plain search
+ *  request (the original, still-default wire shape — untyped requests from an older
+ *  client build must keep working against a newer server) and `"status"` selects the
+ *  tail-progress status request instead (2026-07-22, merged-state review blocker 3 —
+ *  `/api/status` needs to distinguish "sidecar UDS-reachable" from "sidecar tailing
+ *  is actually making progress", which a pure connectivity ping cannot see). */
 export interface HistorySearchWireRequest {
+  type?: "status"
   query: string
   operationKind?: string
   limit: number
@@ -86,13 +92,46 @@ export interface HistorySearchWireResponse {
   rows: Array<{ operationId: string; createdAt: number; score: number }>
 }
 
+/**
+ * Tail-progress status response (blocker 3) — answers `{type:"status"}` requests.
+ * Deliberately a SEPARATE shape from `HistorySearchWireResponse` (never conflated
+ * with search rows) so a status poll can never be mistaken for a zero-result search.
+ * `null` fields mean "the daemon has not yet completed a single tail round" (a
+ * freshly-started sidecar, or one whose history-v3.db does not exist yet) — NOT an
+ * error; a status poll against a daemon in that state is a normal, valid response.
+ */
+export interface HistorySearchWireStatus {
+  status: {
+    /** Epoch ms of the last tail round that completed WITHOUT throwing (a round with
+     *  zero new rows still counts — "made progress" here means "the tail loop itself
+     *  is alive and functioning", not "found new data"). `null` before the first
+     *  round ever completes. */
+    lastSuccessfulTailAt: number | null
+    /** Cumulative count of poisoned rows (unhydratable manifests) skipped across the
+     *  daemon's ENTIRE lifetime so far, never reset — an operator watching this
+     *  climb over time has a real, actionable signal distinct from "0 = healthy". */
+    poisonedCount: number
+    /** The most recent tail round's thrown error message, if the LAST attempted
+     *  round itself failed outright (distinct from a per-row poisoned skip, which
+     *  does not fail the round) -- `null` once a later round succeeds. */
+    lastTailError: string | null
+  }
+}
+
 /** An error response — the sidecar's search() threw; carries a human-readable message. */
 export interface HistorySearchWireError {
   error: string
 }
 
-export type HistorySearchWireReply = HistorySearchWireResponse | HistorySearchWireError
+export type HistorySearchWireReply = HistorySearchWireResponse | HistorySearchWireStatus | HistorySearchWireError
 
 export function isWireError(reply: unknown): reply is HistorySearchWireError {
   return typeof reply === "object" && reply !== null && typeof (reply as { error?: unknown }).error === "string"
+}
+
+/** Narrows a decoded reply to the status shape (checked BEFORE `isWireError`, since a
+ *  status reply has no `error` key and would otherwise fall through as "not an error"
+ *  ambiguously against a plain search response — the `status` key is the unique tell). */
+export function isWireStatus(reply: unknown): reply is HistorySearchWireStatus {
+  return typeof reply === "object" && reply !== null && typeof (reply as { status?: unknown }).status === "object"
 }

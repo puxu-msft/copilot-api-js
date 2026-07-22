@@ -37,6 +37,8 @@
 import { defineCommand } from "citty"
 import consola from "consola"
 
+import type { HistorySearchWireStatus } from "~/lib/history/search/protocol"
+
 import { PATHS } from "~/lib/config/paths"
 import { getNativeHistorySearch } from "~/lib/history/search-native"
 import {
@@ -80,7 +82,24 @@ export async function runHistorySearchDaemon(options: RunHistorySearchDaemonOpti
   const native = await getNativeHistorySearch()
   const index = new native.HistoryIndex(options.indexPath)
   const daemon: HistorySearchDaemon = createHistorySearchDaemon({ dbPath: options.dbPath, indexPath: options.indexPath, index })
-  const server: HistorySearchUdsServer = createHistorySearchUdsServer(options.socketPath, daemon.search)
+
+  // Tail-progress status (merged-state review blocker 3, 2026-07-22): a pure UDS
+  // reachability ping (`pingHistorySearchUdsClient`) hits the native short-circuit
+  // and answers instantly regardless of whether the tail loop is actually making
+  // progress -- an operator could see `reachable: true` forever while the sidecar
+  // is wedged (e.g. on a permanently-poisoned row that keeps throwing at the ROUND
+  // level, not just the per-row level B1 already isolates -- a genuine infra fault
+  // like the readonly db handle itself failing to open). These three fields are
+  // the sidecar's own honest self-report, read synchronously by the UDS server's
+  // `getStatus` callback below (no I/O, just counters this closure already owns).
+  let lastSuccessfulTailAt: number | null = null
+  let poisonedCount = 0
+  let lastTailError: string | null = null
+  function getStatus(): HistorySearchWireStatus["status"] {
+    return { lastSuccessfulTailAt, poisonedCount, lastTailError }
+  }
+
+  const server: HistorySearchUdsServer = createHistorySearchUdsServer(options.socketPath, daemon.search, getStatus)
 
   let uncommitted = 0
   let firstUncommittedAt: number | undefined
@@ -123,12 +142,25 @@ export async function runHistorySearchDaemon(options: RunHistorySearchDaemonOpti
     tailInFlight = true
     try {
       const result = await daemon.tailOnce()
+      // A round completing AT ALL (even zero new rows) is the "tail loop itself is
+      // alive" signal -- distinct from `result.processed`, which is legitimately 0
+      // most rounds (nothing new committed since the last tick).
+      lastSuccessfulTailAt = Date.now()
+      lastTailError = null
+      poisonedCount += result.poisoned
       if (result.processed > 0) {
         uncommitted += result.processed
         firstUncommittedAt ??= Date.now()
         scheduleFlush()
       }
     } catch (error) {
+      // A ROUND-level throw here is now reserved for genuine infra faults (the
+      // readonly db handle itself failing, a native index write erroring out) --
+      // per-row poison isolation (B1, daemon.ts) already prevents a bad manifest
+      // from ever reaching this catch. `lastSuccessfulTailAt` deliberately does NOT
+      // advance here -- an operator polling status sees it grow stale, the honest
+      // signal that tailing has actually stopped making progress.
+      lastTailError = error instanceof Error ? error.message : String(error)
       consola.error("[history-search-daemon] tail round failed", error)
     } finally {
       tailInFlight = false

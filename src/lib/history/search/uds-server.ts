@@ -41,6 +41,7 @@ import {
   type HistorySearchWireError,
   type HistorySearchWireRequest,
   type HistorySearchWireResponse,
+  type HistorySearchWireStatus,
 } from "./protocol"
 
 export type HistorySearchQueryFn = (
@@ -48,6 +49,12 @@ export type HistorySearchQueryFn = (
   operationKind: string | undefined,
   limit: number,
 ) => Promise<Array<{ operationId: string; createdAt: number; score: number }>>
+
+/** Synchronous accessor for the daemon's current tail-progress status (blocker 3,
+ *  2026-07-22) -- deliberately synchronous (no I/O, just reading in-memory counters
+ *  the tail loop already maintains), so answering a `{type:"status"}` request never
+ *  competes with an in-flight tail round or search query for any lock/resource. */
+export type HistorySearchStatusFn = () => HistorySearchWireStatus["status"]
 
 export interface HistorySearchUdsServer {
   /** Start listening on `socketPath`. Unlinks a stale leftover socket FILE first (never a
@@ -133,8 +140,12 @@ function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
 
-/** Construct (but do not yet start) a sidecar UDS server bound to `search`. */
-export function createHistorySearchUdsServer(socketPath: string, search: HistorySearchQueryFn): HistorySearchUdsServer {
+/** Construct (but do not yet start) a sidecar UDS server bound to `search`. `getStatus`
+ *  (blocker 3, 2026-07-22) is OPTIONAL -- tests exercising just the search wire
+ *  protocol need not supply one; a `{type:"status"}` request against a server built
+ *  without it degrades to a `{error}` wire reply (never a crash), same as any other
+ *  malformed/unsupported request. */
+export function createHistorySearchUdsServer(socketPath: string, search: HistorySearchQueryFn, getStatus?: HistorySearchStatusFn): HistorySearchUdsServer {
   const server: net.Server = withErrorSink(net.createServer())
   // Tracked directly (not via `net.Server`'s own connection bookkeeping, which is
   // private) so `close()` can proactively destroy every open connection rather than
@@ -162,7 +173,7 @@ export function createHistorySearchUdsServer(socketPath: string, search: History
         return
       }
       for (const request of requests) {
-        void handleRequest(request, socket, search)
+        void handleRequest(request, socket, search, getStatus)
       }
     })
   })
@@ -205,9 +216,18 @@ export function createHistorySearchUdsServer(socketPath: string, search: History
   return { listen, close }
 }
 
-async function handleRequest(request: unknown, socket: net.Socket, search: HistorySearchQueryFn): Promise<void> {
+async function handleRequest(request: unknown, socket: net.Socket, search: HistorySearchQueryFn, getStatus: HistorySearchStatusFn | undefined): Promise<void> {
   try {
-    const { query, operationKind, limit } = request as Partial<HistorySearchWireRequest>
+    const { type, query, operationKind, limit } = request as Partial<HistorySearchWireRequest>
+    if (type === "status") {
+      if (!getStatus) {
+        writeReply(socket, { error: "[history-search-uds] this server does not support status requests" })
+        return
+      }
+      const status: HistorySearchWireStatus = { status: getStatus() }
+      writeReply(socket, status)
+      return
+    }
     if (typeof query !== "string" || typeof limit !== "number") {
       writeReply(socket, { error: `[history-search-uds] malformed request: ${JSON.stringify(request)}` })
       return
@@ -221,7 +241,7 @@ async function handleRequest(request: unknown, socket: net.Socket, search: Histo
   }
 }
 
-function writeReply(socket: net.Socket, reply: HistorySearchWireResponse | HistorySearchWireError): void {
+function writeReply(socket: net.Socket, reply: HistorySearchWireResponse | HistorySearchWireStatus | HistorySearchWireError): void {
   // The socket may already be destroyed (peer disconnected mid-request) by the time
   // the async search() call resolves -- writing to a destroyed socket would itself
   // throw/emit 'error'; `.writable` guards that without needing a try/catch around

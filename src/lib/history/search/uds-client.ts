@@ -34,7 +34,9 @@ import {
   encodeFrame,
   FrameDecoder,
   isWireError,
+  isWireStatus,
   type HistorySearchWireResponse,
+  type HistorySearchWireStatus,
 } from "./protocol"
 
 export interface HistorySearchUdsClientOptions {
@@ -52,6 +54,20 @@ export interface HistorySearchUdsClient {
    * degrade-to-empty contract for an unavailable sidecar.
    */
   query: (query: string, operationKind: string | undefined, limit: number) => Promise<Array<{ operationId: string; createdAt: number; score: number }>>
+  /**
+   * Fetch the sidecar's tail-progress status (blocker 3, 2026-07-22) — DOES
+   * distinguish success from failure (mirrors `pingHistorySearchUdsClient`'s
+   * never-silently-degrade contract, deliberately NOT the never-throw contract
+   * `query()` has): `/api/status` needs to tell "sidecar unreachable" apart from
+   * "sidecar reachable but its tail loop has stopped making progress" (e.g. wedged
+   * on a permanently-poisoned row, or simply never started tailing) — a plain
+   * connectivity ping (`pingHistorySearchUdsClient`) cannot see the difference,
+   * since the native short-circuit it relies on answers instantly regardless of
+   * tail health. Rejects on any transport/protocol failure exactly like
+   * `queryOnce` would (unreachable socket, timeout, malformed frame, `{error}`
+   * wire reply, or a server built without `getStatus` wired in).
+   */
+  getTailStatus: () => Promise<HistorySearchWireStatus["status"]>
 }
 
 /** Outcome of a lightweight reachability probe — unlike `query()`, this DOES
@@ -84,7 +100,7 @@ const DEFAULT_PING_TIMEOUT_MS = 300
  */
 export function pingHistorySearchUdsClient(socketPath: string, timeoutMs: number = DEFAULT_PING_TIMEOUT_MS): Promise<HistorySearchPingResult> {
   const start = Date.now()
-  return queryOnce(socketPath, { query: "", operationKind: undefined, limit: 0 }, timeoutMs, timeoutMs).then(
+  return sendRequest(socketPath, { query: "", operationKind: undefined, limit: 0 }, timeoutMs, timeoutMs).then(
     () => ({ reachable: true, latencyMs: Date.now() - start }),
     (error: unknown) => ({ reachable: false, latencyMs: Date.now() - start, error: error instanceof Error ? error.message : String(error) }),
   )
@@ -105,7 +121,8 @@ export function createHistorySearchUdsClient(options: HistorySearchUdsClientOpti
     limit: number,
   ): Promise<Array<{ operationId: string; createdAt: number; score: number }>> {
     try {
-      return await queryOnce(options.socketPath, { query: queryText, operationKind, limit }, connectTimeoutMs, queryTimeoutMs)
+      const reply = await sendRequest(options.socketPath, { query: queryText, operationKind, limit }, connectTimeoutMs, queryTimeoutMs)
+      return (reply as HistorySearchWireResponse).rows
     } catch {
       // Never-throw contract (see module doc): ANY failure -- connect error, timeout,
       // malformed frame, server-side `{ error }` reply -- degrades to empty results.
@@ -113,21 +130,33 @@ export function createHistorySearchUdsClient(options: HistorySearchUdsClientOpti
     }
   }
 
-  return { query }
+  async function getTailStatus(): Promise<HistorySearchWireStatus["status"]> {
+    const reply = await sendRequest(options.socketPath, { type: "status", query: "", operationKind: undefined, limit: 0 }, connectTimeoutMs, queryTimeoutMs)
+    if (!isWireStatus(reply)) throw new Error("[history-search-uds] expected a status reply, got a search response")
+    return reply.status
+  }
+
+  return { query, getTailStatus }
 }
 
 interface WireRequestInput {
+  type?: "status"
   query: string
   operationKind: string | undefined
   limit: number
 }
 
-function queryOnce(
+/** Send one request over a fresh connection and resolve with the DECODED reply
+ *  (either a search response or a status response -- callers narrow via
+ *  `isWireStatus`/direct field access). Rejects (never throws synchronously) on any
+ *  transport/protocol failure -- callers decide whether to degrade (`query()`,
+ *  never-throw) or propagate (`getTailStatus()`, does throw). */
+function sendRequest(
   socketPath: string,
   request: WireRequestInput,
   connectTimeoutMs: number,
   queryTimeoutMs: number,
-): Promise<Array<{ operationId: string; createdAt: number; score: number }>> {
+): Promise<HistorySearchWireResponse | HistorySearchWireStatus> {
   return new Promise((resolve, reject) => {
     const socket = net.connect(socketPath)
     // withErrorSink FIRST, synchronously, before ANY other listener or timer is
@@ -139,7 +168,7 @@ function queryOnce(
     let queryTimer: ReturnType<typeof setTimeout> | undefined
     const decoder = new FrameDecoder()
 
-    const finish = (value: Array<{ operationId: string; createdAt: number; score: number }> | Error): void => {
+    const finish = (value: HistorySearchWireResponse | HistorySearchWireStatus | Error): void => {
       if (settled) return
       settled = true
       clearTimeout(connectTimer)
@@ -179,7 +208,7 @@ function queryOnce(
         finish(new Error(`[history-search-uds] sidecar error: ${reply.error}`))
         return
       }
-      finish((reply as HistorySearchWireResponse).rows)
+      finish(reply as HistorySearchWireResponse | HistorySearchWireStatus)
     })
 
     socket.on("close", () => finish(new Error("[history-search-uds] connection closed before a response arrived")))

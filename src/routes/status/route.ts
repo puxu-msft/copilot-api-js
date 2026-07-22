@@ -222,7 +222,23 @@ statusRoutes.openapi(getStatusRoute, async (c) => {
         // actual lightweight probe, never a persisted alive/pid/abandoned view of a
         // process this side does not own.
         const ping = await pingHistorySearchUdsClient(PATHS.HISTORY_SEARCH_SOCKET)
-        return { enabled: true, ...ping }
+        // Tail-progress status (merged-state review blocker 3, 2026-07-22): the ping
+        // above hits the native short-circuit and answers instantly regardless of
+        // whether the tail loop is actually making progress — a sidecar wedged on a
+        // round-level infra fault would still report `reachable: true` forever with
+        // NOTHING else to distinguish "search index has silently stopped growing"
+        // from "search index is healthy". Only attempted when reachable (a second
+        // round-trip against an already-unreachable sidecar would just fail the same
+        // way and add nothing — never-blocking: `getTailStatus()`'s own rejection is
+        // caught below rather than propagated, since a status-poll failure here must
+        // never turn a routine `/api/status` request into a 500).
+        if (!ping.reachable) return { enabled: true, ...ping }
+        try {
+          const tail = await client.getTailStatus()
+          return { enabled: true, ...ping, tail }
+        } catch (error) {
+          return { enabled: true, ...ping, tailError: error instanceof Error ? error.message : String(error) }
+        }
       })(),
 
       memory: {
