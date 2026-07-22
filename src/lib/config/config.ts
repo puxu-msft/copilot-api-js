@@ -887,11 +887,13 @@ export async function applyConfigToState(): Promise<Config> {
     if (h.raw_capture?.max_object_bytes !== undefined) setHistoryConfig({ historyRawCaptureMaxObjectBytes: h.raw_capture.max_object_bytes })
     // DI-5 transient retry budget — consumed only by the V3 store drain (no state
     // field / listener needed), so feed the module setter directly like the other
-    // module-local config knobs (setReactiveRetryConfig above).
-    if (h.persist_retry?.max_attempts !== undefined || h.persist_retry?.backoff_ms !== undefined) {
+    // module-local config knobs (setReactiveRetryConfig above). `max_total_ms`
+    // (DI-5-followup-2) defaults inside the setter when omitted.
+    if (h.persist_retry?.max_attempts !== undefined || h.persist_retry?.backoff_ms !== undefined || h.persist_retry?.max_total_ms !== undefined) {
       setV3PersistRetryConfig({
         maxAttempts: h.persist_retry.max_attempts ?? 3,
         backoffMs: h.persist_retry.backoff_ms ?? 10,
+        maxTotalMs: h.persist_retry.max_total_ms,
       })
     }
   }

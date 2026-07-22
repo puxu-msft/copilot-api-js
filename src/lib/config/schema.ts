@@ -803,13 +803,19 @@ export const HistoryConfigSchema = z
      * transient SQLite error (WAL BUSY/LOCKED/IOERR) is retried with linear
      * backoff instead of dropping the entry on the first failure. `max_attempts`
      * caps the retries (a transient storm can't spin forever); `backoff_ms` is
-     * the base linear step. Permanent failures / conflicts are never retried.
+     * the base linear step. `max_total_ms` is a per-commit wall-clock soft cap
+     * (DI-5-followup-2): the linear backoff sum grows quadratically, so a large
+     * `max_attempts × backoff_ms` product could wedge the drain — and shutdown,
+     * which has no abort signal here — for minutes; the cap bounds the cumulative
+     * backoff regardless (`0` = disabled). Permanent failures / conflicts are
+     * never retried.
      */
     persist_retry: nullableSection(
       z
         .object({
           max_attempts: nullableNonnegativeInt(),
           backoff_ms: nullableNonnegativeInt(),
+          max_total_ms: nullableNonnegativeInt(),
         })
         .strict(),
     ),

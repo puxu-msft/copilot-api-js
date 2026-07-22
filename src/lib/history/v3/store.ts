@@ -142,13 +142,29 @@ let draining = false
  * DI-5 transient-retry budget for the drain commit. Module-level (config apply
  * calls `setV3PersistRetryConfig`) to avoid a store→state import cycle; defaults
  * mirror the old zero-retry behavior's cadence (a few quick attempts).
+ *
+ * `maxTotalMs` is a per-commit wall-clock soft cap (DI-5-followup-2): the linear
+ * backoff sum grows quadratically (`backoffMs·n(n-1)/2`), so a large
+ * `maxAttempts × backoffMs` product could wedge the drain — and therefore
+ * shutdown, which has no abort signal here on purpose (see runDrain's note) — for
+ * minutes. The cap bounds the total retry time for ONE entry regardless of the
+ * attempt/backoff product. `0` disables the time cap (only `maxAttempts` bounds).
  */
-let persistRetryConfig: { maxAttempts: number; backoffMs: number } = { maxAttempts: 3, backoffMs: 10 }
-export function setV3PersistRetryConfig(cfg: { maxAttempts: number; backoffMs: number }): void {
-  persistRetryConfig = { maxAttempts: Math.max(1, cfg.maxAttempts), backoffMs: Math.max(0, cfg.backoffMs) }
+const DEFAULT_V3_PERSIST_MAX_TOTAL_MS = 30_000
+let persistRetryConfig: { maxAttempts: number; backoffMs: number; maxTotalMs: number } = {
+  maxAttempts: 3,
+  backoffMs: 10,
+  maxTotalMs: DEFAULT_V3_PERSIST_MAX_TOTAL_MS,
+}
+export function setV3PersistRetryConfig(cfg: { maxAttempts: number; backoffMs: number; maxTotalMs?: number }): void {
+  persistRetryConfig = {
+    maxAttempts: Math.max(1, cfg.maxAttempts),
+    backoffMs: Math.max(0, cfg.backoffMs),
+    maxTotalMs: Math.max(0, cfg.maxTotalMs ?? DEFAULT_V3_PERSIST_MAX_TOTAL_MS),
+  }
 }
 /** Read the current transient-retry budget (config-wiring assertions). */
-export function getV3PersistRetryConfigForTests(): { maxAttempts: number; backoffMs: number } {
+export function getV3PersistRetryConfigForTests(): { maxAttempts: number; backoffMs: number; maxTotalMs: number } {
   return persistRetryConfig
 }
 
@@ -729,6 +745,19 @@ export interface TransientRetryAttemptResult {
 export interface TransientRetryOptions {
   maxAttempts: number
   backoffMs: number
+  /**
+   * DI-5-followup-2: soft cap on the cumulative *backoff* budget (ms) across all
+   * retries for ONE commit. The linear backoff sum grows quadratically
+   * (`backoffMs·n(n-1)/2`), so a large `maxAttempts × backoffMs` product could
+   * wedge the drain — and therefore shutdown, which has no abort signal here on
+   * purpose (see runDrain's note) — for minutes. Once the *next* backoff would
+   * push the accumulated backoff past this cap, stop retrying and report failure.
+   * This is a nominal-duration budget (the declared backoff, not measured
+   * wall-clock) so it is deterministic under the abortable-delay test scale,
+   * mirroring how `waitMs` accounting flows from the declared duration rather than
+   * elapsed time. `0`/`undefined` = no time cap (only `maxAttempts` bounds).
+   */
+  maxTotalMs?: number
   /** Abort collapses the backoff wait (shutdown drain wants to land data fast, not cancel it). */
   signal?: AbortSignal
 }
@@ -745,22 +774,34 @@ export interface TransientRetryOutcome {
  * transient, but the drain used to ignore that and drop the entry on the first
  * failure. Permanent failures and conflicts are not retried (pointless). A hard
  * `maxAttempts` cap keeps a transient storm from spinning forever (skill
- * persistence-async-invariants §4 "持续 drain 失败须软上界"). The linear backoff is
+ * persistence-async-invariants §4 "持续 drain 失败须软上界"). A `maxTotalMs` cap
+ * (DI-5-followup-2) bounds the cumulative backoff so a large attempt/backoff
+ * product can't wedge shutdown for minutes. The linear backoff is
  * `abortableDelay`-based so a shutdown/abort during a storm collapses the wait
  * (keeps trying to land the data before close) rather than wedging the drain.
  */
 export async function runWithTransientRetry(attempt: () => Promise<TransientRetryAttemptResult>, opts: TransientRetryOptions): Promise<TransientRetryOutcome> {
   const maxAttempts = Math.max(1, opts.maxAttempts)
+  const maxTotalMs = opts.maxTotalMs !== undefined && opts.maxTotalMs > 0 ? opts.maxTotalMs : undefined
   let attempts = 0
+  let accumulatedBackoffMs = 0
   for (;;) {
     attempts++
     const result = await attempt()
     if (result.ok) return { ok: true, conflict: false, attempts }
     if (result.conflict) return { ok: false, conflict: true, attempts }
     if (!result.transient) return { ok: false, conflict: false, attempts } // permanent — retry is pointless
-    if (attempts >= maxAttempts) return { ok: false, conflict: false, attempts } // soft cap
+    if (attempts >= maxAttempts) return { ok: false, conflict: false, attempts } // attempt-count soft cap
+    const backoffMs = opts.backoffMs * attempts
+    // Time-budget soft cap: give up before a backoff that would push the cumulative
+    // retry time past maxTotalMs, bounding the quadratic linear-backoff sum so an
+    // extreme config can't wedge the drain (→ shutdown) for minutes.
+    if (maxTotalMs !== undefined && accumulatedBackoffMs + backoffMs > maxTotalMs) {
+      return { ok: false, conflict: false, attempts }
+    }
+    accumulatedBackoffMs += backoffMs
     try {
-      await abortableDelay(opts.backoffMs * attempts, opts.signal)
+      await abortableDelay(backoffMs, opts.signal)
     } catch {
       // OperationCancelledError: the signal aborted (shutdown). Collapse the wait
       // but keep retrying up to the cap — abort shortens backoff, it doesn't stop
@@ -822,7 +863,7 @@ async function runDrain(): Promise<void> {
           // attempts), so not collapsing it at shutdown costs ~tens of ms of drain
           // time — negligible vs. the cycle risk. `runWithTransientRetry` still
           // accepts a signal for callers that can provide one without the cycle.
-          { maxAttempts: persistRetryConfig.maxAttempts, backoffMs: persistRetryConfig.backoffMs },
+          { maxAttempts: persistRetryConfig.maxAttempts, backoffMs: persistRetryConfig.backoffMs, maxTotalMs: persistRetryConfig.maxTotalMs },
         )
         if (!retryOutcome.ok) {
           status = {
