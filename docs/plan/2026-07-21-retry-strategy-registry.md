@@ -1,5 +1,7 @@
 # reactive retry 策略声明式 registry Implementation Plan
 
+> **实施状态（2026-07-22）**：**✅ 全 6 task landed master（merge `ed1a1a8f`）**。subagent-driven 执行于 worktree `feat/retry-strategy-registry`，每 task per-task 审 + whole-branch 终审 0 blocker，golden 逐字节等价全程保持。carryover 3 项记 `docs/todo/deferred-backlog.md`。权威现状见 `docs/DESIGN.md` 活的架构现状「reactive retry 策略声明式 registry」行 + RFC。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 把 16 个 reactive retry 策略从「per-leg 硬编码数组 + 注释维护顺序」重构成声明式 registry（named + 声明 order + appliesTo + config 开关 + 统一可观测 + 跨 leg 去重），行为字节等价。
