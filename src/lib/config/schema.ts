@@ -1024,6 +1024,15 @@ export const UpstreamTransportHttp2ConfigSchema = z
      * affects future routing, never in-flight streams.
      */
     max_concurrent_streams_per_session: nullableNonnegativeInt(),
+    /**
+     * Idle timeout in seconds for a pooled h2 session with no in-flight streams
+     * before it is proactively closed (0 = never idle-close). Under a finite
+     * `max_concurrent_streams_per_session` the pool grows to peak concurrency;
+     * this reaps the surplus once a burst subsides. Default 300 (mirrors the WS
+     * pool's `websocket.pooled_connection_idle_timeout`, kept a separate h2-only
+     * knob). Hot-reloadable.
+     */
+    idle_session_timeout: nullableNonnegativeInt(),
   })
   .strict()
 export type UpstreamTransportHttp2Config = z.infer<typeof UpstreamTransportHttp2ConfigSchema>

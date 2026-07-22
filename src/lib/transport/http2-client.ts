@@ -29,6 +29,7 @@ import tls from "node:tls"
 import {
   //
   getProxyUrlForOrigin,
+  getUpstreamH2IdleSessionTimeoutMs,
   getUpstreamH2PingIntervalMs,
   getUpstreamKeepAliveDelayMs,
   getUpstreamMaxStreamsPerSession,
@@ -98,6 +99,8 @@ interface H2SessionEntry {
   pingTimer: NodeJS.Timeout | undefined
   effectivePingIntervalMs: number
   effectiveKeepAliveMs: number | undefined
+  /** idle-reap timer, armed when an ACTIVE session's activeStreamCount hits 0; cleared on the next reservation. */
+  idleTimer: NodeJS.Timeout | undefined
 }
 
 /** Multiple capacity-routed h2 sessions per origin (all resolved + live, routable for new requests). */
@@ -318,14 +321,54 @@ function tryReserveLiveSession(origin: string, n: number): H2SessionEntry | unde
     if (n > 0 && entry.activeStreamCount >= n) continue
     if (best === undefined || entry.activeStreamCount >= best.activeStreamCount) best = entry
   }
-  if (best) best.activeStreamCount += 1 // RESERVE (synchronous, race-free)
+  if (best) {
+    clearIdleTimer(best) // reserving makes it busy — cancel any pending idle reap
+    best.activeStreamCount += 1 // RESERVE (synchronous, race-free)
+  }
   return best
+}
+
+/**
+ * Arm the idle-reap timer for an ACTIVE session that just went idle
+ * (activeStreamCount === 0): after `h2IdleSessionTimeout`, close it if still
+ * idle+active so surplus sessions from a subsided burst don't linger. Retiring
+ * sessions are NOT armed — {@link maybeReclaimRetiringSession} reclaims them the
+ * moment they drain, a separate lifecycle. `0` (disabled) leaves the session
+ * pooled indefinitely (old behavior). The timer is `unref`'d so it never keeps
+ * the process alive.
+ */
+function armIdleTimer(entry: H2SessionEntry): void {
+  clearIdleTimer(entry)
+  if (entry.lifecycle !== "active") return
+  if (entry.activeStreamCount > 0) return
+  const timeoutMs = getUpstreamH2IdleSessionTimeoutMs()
+  if (timeoutMs <= 0) return
+  entry.idleTimer = setTimeout(() => {
+    entry.idleTimer = undefined
+    // Re-check under the timer: a reservation may have arrived (which would have
+    // cleared this timer, but guard anyway), or the session may have retired/closed.
+    if (entry.activeStreamCount > 0 || entry.lifecycle !== "active") return
+    try {
+      entry.session.close() // → 'close' → dispose() removes it from the pool
+    } catch {
+      /* best-effort */
+    }
+  }, timeoutMs)
+  entry.idleTimer.unref()
+}
+
+function clearIdleTimer(entry: H2SessionEntry): void {
+  if (entry.idleTimer) {
+    clearTimeout(entry.idleTimer)
+    entry.idleTimer = undefined
+  }
 }
 
 /** Release a reservation taken by {@link tryReserveLiveSession} / born-reserved admission but never transferred to a live stream. */
 function releaseReservation(entry: H2SessionEntry): void {
   entry.activeStreamCount -= 1
   maybeReclaimRetiringSession(entry)
+  if (entry.activeStreamCount === 0) armIdleTimer(entry)
 }
 
 /**
@@ -400,13 +443,16 @@ async function createAndAdmitBornReserved(origin: string): Promise<H2SessionEntr
       pingTimer,
       effectivePingIntervalMs,
       effectiveKeepAliveMs,
+      idleTimer: undefined, // armed later, only when it goes idle (activeStreamCount → 0)
     }
     const dispose = (): void => {
       if (entry.pingTimer) clearInterval(entry.pingTimer)
+      clearIdleTimer(entry)
       removeSessionEntry(entry)
       retiringSessions.delete(entry)
     }
     const retire = (): void => {
+      clearIdleTimer(entry) // retiring is reclaimed via maybeReclaimRetiringSession, not idle-reap
       removeSessionEntry(entry)
       if (entry.lifecycle === "active") {
         entry.lifecycle = "retiring"
@@ -786,6 +832,7 @@ async function runHttp2Fetch(u: URL, init: UpstreamFetchInit): Promise<Response>
     req.once("close", () => {
       entry.activeStreamCount -= 1
       maybeReclaimRetiringSession(entry)
+      if (entry.activeStreamCount === 0) armIdleTimer(entry) // went idle → schedule reap
       init.onStreamClosed?.()
       resolveRequestClosed()
     })
@@ -925,6 +972,7 @@ export function closeHttp2Sessions(): void {
   poolEpoch++ // signal in-flight creations to self-close instead of re-inserting
   for (const arr of sessions.values()) {
     for (const entry of arr) {
+      clearIdleTimer(entry)
       try {
         entry.session.close()
       } catch {
@@ -934,6 +982,7 @@ export function closeHttp2Sessions(): void {
   }
   sessions.clear()
   for (const entry of retiringSessions) {
+    clearIdleTimer(entry)
     try {
       entry.session.close()
     } catch {

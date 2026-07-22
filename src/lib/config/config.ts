@@ -991,6 +991,8 @@ export async function applyConfigToState(): Promise<Config> {
       setUpstreamTransportConfig({ sessionConnectTimeout: upstreamTransport.http2.session_connect_timeout })
     if (upstreamTransport.http2?.max_concurrent_streams_per_session !== undefined)
       setUpstreamTransportConfig({ maxConcurrentStreamsPerSession: upstreamTransport.http2.max_concurrent_streams_per_session })
+    if (upstreamTransport.http2?.idle_session_timeout !== undefined)
+      setUpstreamTransportConfig({ h2IdleSessionTimeout: upstreamTransport.http2.idle_session_timeout })
     if (upstreamTransport.websocket?.pooled_connection_idle_timeout !== undefined)
       setUpstreamTransportConfig({ pooledConnectionIdleTimeout: upstreamTransport.websocket.pooled_connection_idle_timeout })
     if (upstreamTransport.websocket?.soft_max_connections !== undefined)

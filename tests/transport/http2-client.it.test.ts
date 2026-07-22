@@ -515,3 +515,61 @@ describe("http2-client pool (N=1 cap — one stream per session, shipped default
     }
   })
 })
+
+// C4: idle-session reaping — surplus sessions from a subsided burst are closed
+// after `h2IdleSessionTimeout`; busy sessions are never reaped.
+describe("http2-client pool (C4: idle-session reaping)", () => {
+  afterEach(() => setUpstreamTransportConfig({ maxConcurrentStreamsPerSession: 1, h2IdleSessionTimeout: 300 }))
+
+  test("an idle session is reaped after the idle timeout", async () => {
+    setUpstreamTransportConfig({ maxConcurrentStreamsPerSession: 1, h2IdleSessionTimeout: 0.05 }) // 50ms
+    handler = (stream) => {
+      stream.respond({ ":status": 200 })
+      stream.end("ok")
+    }
+    const res = await http2Fetch(`${url}/x`, {})
+    await res.text()
+    // The session goes idle (activeStreamCount → 0) and is pooled.
+    await waitUntil(() => getH2SessionStatusSnapshot().length === 1)
+    // After the idle timeout it is proactively closed and removed from the pool.
+    await waitUntil(() => getH2SessionStatusSnapshot().length === 0, { timeout: 1000, label: "idle reap" })
+  })
+
+  test("a busy session is NOT reaped while its stream is in-flight", async () => {
+    setUpstreamTransportConfig({ maxConcurrentStreamsPerSession: 1, h2IdleSessionTimeout: 0.05 }) // 50ms
+    let release!: () => void
+    const gate = new Promise<void>((r) => (release = r))
+    handler = (stream) => {
+      stream.respond({ ":status": 200 })
+      void gate.then(() => stream.end("ok"))
+    }
+    try {
+      const req = http2Fetch(`${url}/x`, {})
+      await waitUntil(() => getH2SessionStatusSnapshot().length === 1)
+      // Wait well past the idle timeout with the stream still open.
+      await new Promise((r) => setTimeout(r, 150))
+      // Still pooled — a busy session must never be idle-reaped.
+      expect(getH2SessionStatusSnapshot()).toHaveLength(1)
+      expect(getH2SessionStatusSnapshot()[0]?.activeStreamCount).toBe(1)
+      release()
+      const res = await req
+      await res.text()
+    } finally {
+      release()
+    }
+  })
+
+  test("idle timeout 0 disables reaping — the session lingers", async () => {
+    setUpstreamTransportConfig({ maxConcurrentStreamsPerSession: 1, h2IdleSessionTimeout: 0 }) // disabled
+    handler = (stream) => {
+      stream.respond({ ":status": 200 })
+      stream.end("ok")
+    }
+    const res = await http2Fetch(`${url}/x`, {})
+    await res.text()
+    await waitUntil(() => getH2SessionStatusSnapshot().length === 1)
+    // No reap timer armed — still pooled after a generous wait.
+    await new Promise((r) => setTimeout(r, 150))
+    expect(getH2SessionStatusSnapshot()).toHaveLength(1)
+  })
+})

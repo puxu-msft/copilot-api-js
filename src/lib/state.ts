@@ -782,6 +782,17 @@ export interface State {
   readonly maxConcurrentStreamsPerSession: number
 
   /**
+   * Idle timeout (seconds) for a pooled h2 session with no in-flight streams
+   * before it is proactively closed (0 = never idle-close). Under a finite
+   * `maxConcurrentStreamsPerSession` the pool grows to peak concurrency; this
+   * reaps the surplus once a burst subsides so idle connections don't linger.
+   * Default 300 (mirrors the WS pool's `pooledConnectionIdleTimeout`). Consumed
+   * by http2-client.ts; only ACTIVE idle sessions are reaped (a retiring session
+   * is reclaimed the moment it drains, independently).
+   */
+  readonly h2IdleSessionTimeout: number
+
+  /**
    * TCP connect + TLS handshake deadline (seconds) for a single h2 session
    * establishment attempt. Was the hardcoded `CONNECT_TIMEOUT_MS` in
    * http2-client.ts; wired to real connection attempts in Plan 2. Default 10.
@@ -1615,6 +1626,7 @@ export function setUpstreamTransportConfig(
       | "pooledConnectionIdleTimeout"
       | "softMaxUpstreamWsConnections"
       | "maxConcurrentStreamsPerSession"
+      | "h2IdleSessionTimeout"
     >
   >,
 ): void {
@@ -1625,6 +1637,7 @@ export function setUpstreamTransportConfig(
     || (patch.pooledConnectionIdleTimeout !== undefined && patch.pooledConnectionIdleTimeout !== mutableState.pooledConnectionIdleTimeout)
     || (patch.softMaxUpstreamWsConnections !== undefined && patch.softMaxUpstreamWsConnections !== mutableState.softMaxUpstreamWsConnections)
     || (patch.maxConcurrentStreamsPerSession !== undefined && patch.maxConcurrentStreamsPerSession !== mutableState.maxConcurrentStreamsPerSession)
+    || (patch.h2IdleSessionTimeout !== undefined && patch.h2IdleSessionTimeout !== mutableState.h2IdleSessionTimeout)
   updateState(patch)
   if (changed) {
     for (const listener of transportUpstreamListeners) listener()
@@ -1890,6 +1903,7 @@ export const CONFIG_MANAGED_DEFAULTS = {
   upstreamKeepaliveDelay: 15,
   upstreamH2PingInterval: 15,
   maxConcurrentStreamsPerSession: 1,
+  h2IdleSessionTimeout: 300,
   sessionConnectTimeout: 10,
   pooledConnectionIdleTimeout: 300,
   staleRequestMaxAge: 600,
@@ -2045,6 +2059,7 @@ export function resetConfigManagedState(): void {
     upstreamKeepaliveDelay: CONFIG_MANAGED_DEFAULTS.upstreamKeepaliveDelay,
     upstreamH2PingInterval: CONFIG_MANAGED_DEFAULTS.upstreamH2PingInterval,
     maxConcurrentStreamsPerSession: CONFIG_MANAGED_DEFAULTS.maxConcurrentStreamsPerSession,
+    h2IdleSessionTimeout: CONFIG_MANAGED_DEFAULTS.h2IdleSessionTimeout,
     sessionConnectTimeout: CONFIG_MANAGED_DEFAULTS.sessionConnectTimeout,
     pooledConnectionIdleTimeout: CONFIG_MANAGED_DEFAULTS.pooledConnectionIdleTimeout,
     softMaxUpstreamWsConnections: CONFIG_MANAGED_DEFAULTS.softMaxUpstreamWsConnections,
@@ -2238,6 +2253,7 @@ const mutableState: MutableState = {
   upstreamKeepaliveDelay: CONFIG_MANAGED_DEFAULTS.upstreamKeepaliveDelay,
   upstreamH2PingInterval: CONFIG_MANAGED_DEFAULTS.upstreamH2PingInterval,
   maxConcurrentStreamsPerSession: CONFIG_MANAGED_DEFAULTS.maxConcurrentStreamsPerSession,
+  h2IdleSessionTimeout: CONFIG_MANAGED_DEFAULTS.h2IdleSessionTimeout,
   sessionConnectTimeout: CONFIG_MANAGED_DEFAULTS.sessionConnectTimeout,
   pooledConnectionIdleTimeout: CONFIG_MANAGED_DEFAULTS.pooledConnectionIdleTimeout,
   systemPromptOverrides: [...CONFIG_MANAGED_DEFAULTS.systemPromptOverrides],

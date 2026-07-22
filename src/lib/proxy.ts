@@ -101,6 +101,16 @@ export function getUpstreamMaxStreamsPerSession(): number {
 }
 
 /**
+ * Idle timeout (ms) for a pooled h2 session with no in-flight streams before it
+ * is proactively closed (0 = never), from `state.h2IdleSessionTimeout` (seconds).
+ * Read fresh by http2-client.ts when arming an idle-reap timer.
+ */
+export function getUpstreamH2IdleSessionTimeoutMs(): number {
+  const sec = state.h2IdleSessionTimeout
+  return sec > 0 ? Math.ceil(sec * 1000) : 0
+}
+
+/**
  * Build undici Agent options from current runtime state.
  *
  * - `headersTimeout` follows `responseHeaderTimeout` (time to first response headers)
