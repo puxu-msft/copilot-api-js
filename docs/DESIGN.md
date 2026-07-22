@@ -204,7 +204,7 @@ ui/
 
 路径别名：后端 `~/*` → `src/*`，前端 `@/*` → `ui/src/*`，前端引用后端 `~backend/*` → `../src/*`。
 前端类型统一从后端 re-export，不重复定义。
-前端依赖与脚本由 **`ui/package.json` 自有**（bun workspace 成员，根 `package.json` 声明 `workspaces:["ui"]`、单一根 `bun.lock` hoist）：FE 运行时 + `vite`/`vitest`/`vue-tsc` 等构建测试 devDeps 都在 ui 下，ui 拥有自己的 `build`/`dev`/`typecheck`/`test` 脚本（cwd=ui，配置经 `import.meta.dirname` 自寻）。根脚本经 `bun run --filter copilot-api-ui <script>` 委派（`build:ui`/`dev:ui`/`typecheck:ui`/`test:ui` 入口名不变）。仓库级 dev 工具（`typescript`/`eslint` 及 FE eslint 插件/`tsdown`/`playwright`/`lint-staged`）仍在根——lint 是全树单一关注点。`~backend` 跨引用不变（vite alias 解析后端纯函数源码，无需 workspace 依赖声明）。
+前端依赖与脚本由 **`ui/package.json` 自有**（bun workspace 成员，根 `package.json` 声明 `workspaces:["ui"]`、单一根 `bun.lock` hoist）：FE 运行时 + `vite`/`vitest`/`vue-tsc`/`@playwright/test` 等构建测试 devDeps 都在 ui 下，ui 拥有自己的 `build`/`dev`/`typecheck`/`test`/`test:e2e` 脚本（cwd=ui，配置经 `import.meta.dirname` 自寻）。根脚本经 `bun run --filter copilot-api-ui <script>` 委派（`build:ui`/`dev:ui`/`typecheck:ui`/`test:ui`/`test:e2e-ui` 入口名不变）——但根 `build` 不再链 `build:ui`/`build:ui-v4`（2026-07-22 UI 外置：主服务器不再服务/构建任何 UI，运维单独 `bun run --filter <workspace> build` 后自托管，见 README「Hosting the Web UI」）。仓库级 dev 工具（`typescript`/`eslint` 及 FE eslint 插件/`tsdown`）仍在根——lint 是全树单一关注点；`playwright`/`lint-staged` 不在根（前者随 UI e2e 迁入 `ui/` devDep，后者 2026-06-29 已整体移除）。`~backend` 跨引用不变（vite alias 解析后端纯函数源码，无需 workspace 依赖声明）。
 
 ### 测试组织（按域 + 隔离后缀两维度）
 
@@ -217,11 +217,12 @@ ui/
    ├── config/  pipeline/  streaming/  shutdown/  context/  infra/
    ├── e2e/         # 真实网络/需 token（getE2EMode 门控，不进 offline 全集）
    ├── e2e-client/  # client↔proxy e2e：真实 SDK/CLI 打真 proxy、上游 mock。Tier1（`anthropic-sdk.it.test`，同进程 Bun.serve + setUpstreamFetchForTests 注入点屏蔽，offline，oracle=SDK 可观测行为 .finalMessage()深等/throws/丢帧）；Tier2（`anthropic-cli.e2e.test`，gated on claude+token，spawn 真 proxy〔非4141〕+ config hook mock 上游 + 真 `claude -p`，证 agent-loop stall——空串 refusal recovery 的 thinking-only end_turn 让 claude num_turns=2/result=""）。harness/{serve-in-process,upstream-script,spawn-proxy,drive-claude-cli,cli-refusal-hook}。见 spec 2026-07-13-client-proxy-sdk-e2e-harness
-   ├── e2e-ui/      # Playwright（浏览器）
    ├── helpers/     # 共享测试基建（mock-fetch、state-fixture、test-bootstrap、factories、sse〔含 frameTypesInOrder/dataFramesOfType 解析〕、anthropic-frames〔composable SSE 帧 atoms〕、fake-clock〔确定性时钟〕、history-fixtures、ws-mock…）
    └── fixtures/    # 磁盘样本 payload
    ```
    归属规则：看被测行为所属的 `~/lib/<域>/` 路径，机械可判；新增 src 模块时测试自动有归属。`history/sqlite/` 镜像 src 子目录。
+
+   浏览器 e2e（Playwright，`.pw.ts`）2026-07-22 起不在这棵树下——UI 外置后随各自 UI workspace 迁走，见 `ui/tests/e2e/`（`ui-v4/` 尚无等价 Playwright 套件）；纯 fetch、不需浏览器的 API 断言留在本树（如 `tests/infra/api-endpoints-smoke.http.test.ts`）。
 
 2. **隔离级别后缀**（控制"按速度跑"）：
    - `*.unit.test.ts` — 纯函数，无运行时
@@ -230,7 +231,7 @@ ui/
 
    于是域靠**目录**索引、速度靠**后缀**索引（`bun run test:unit` 只跑快测试）。
 
-**脚本**（`bun run`，非 `npm run`——项目用 bun）：`test:backend` = `bun test .unit.test .it.test .http.test`，三后缀 OR 覆盖全部 offline、天然排除 e2e、新增域零枚举漂移。`test:unit`/`test:it`/`test:http` 按后缀跑；`test:e2e`/`test:e2e-ui`/`test:ui` 单列。
+**脚本**（`bun run`，非 `npm run`——项目用 bun）：`test:backend` = `bun test .unit.test .it.test .http.test`，三后缀 OR 覆盖全部 offline、天然排除 e2e、新增域零枚举漂移。`test:unit`/`test:it`/`test:http` 按后缀跑；`test:e2e`/`test:ui` 单列；`test:e2e-ui` 委派到 `ui/` workspace 自己的 `test:e2e`（浏览器 Playwright，2026-07-22 起不在根 `bunfig.toml` 的 `[test]` 发现范围内）。
 
 **隔离纪律**：bun 单进程跑全套件，全局单例（state、history、upstream-WS manager、`mock.module`）会跨文件泄漏。因此：测试用 DI/fetch-mock 而非 `mock.module`（仅 `tui-format` 的 picocolors 是已证良性的例外）；带 fs I/O 的测试（如 setup-claude-code）用注入的临时目录，绝不碰真实 `$HOME`。
 

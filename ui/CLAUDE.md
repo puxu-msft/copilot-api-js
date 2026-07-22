@@ -4,7 +4,7 @@
 
 这是 copilot-api 内置的请求历史查看器前端。Vue 3 + Vuetify 4 + Vite 7。
 本目录是**独立的 bun workspace 成员**：有自己的 [package.json](package.json)（FE 依赖与脚本）与 [tsconfig.json](tsconfig.json)（后端 tsconfig 经 `exclude` 排除本目录）。根 `package.json` 声明 `workspaces:["ui"]`，**单一根 `bun.lock`**（hoist）。
-后端 `src/routes/ui/route.ts` 默认在 `/ui` 提供 `ui/dist/` 静态文件，可使用 `--external-ui-url` 改为其他 URL（如 vite dev server）。
+后端不再服务/代理本前端（2026-07-22 UI 外置）：`bun run build` 产出 `ui/dist/`，由运维用任意静态服务器独立托管 + 反代 `/api`·`/history/api`·`/ws`·`/models` 到后端（默认 `localhost:4141`）；vite 生产构建 `base` 写死 `/ui/`，托管在别的前缀需相应调整（见根 README「Hosting the Web UI」）。
 
 ## 构建与工具链
 

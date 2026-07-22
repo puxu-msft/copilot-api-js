@@ -4,7 +4,7 @@
 >
 > **裁判轴**：现状以**实测代码为准**（本文事实已对 `package.json`/`App.tsx`/`main.tsx`/`vite.config.ts`/`src/` 目录逐一 spot-verify）。DESIGN.md 早期写「React 18 + RR6」是**文档漂移**，实测为 React 19 + RR7，以本文为准。
 >
-> **定位**：ui-v4 是 copilot-api 请求历史查看器的 React 全面重写，从「请求历史浏览器」升级为「实时 LLM 流量检视台」（DevTools / Network-inspector 范式），与旧 Vue `ui/` 并行共存（后端 `/ui-v4` 静态路由），达功能对等后替换旧 UI（对等 gating 清单见 [TODO.md](TODO.md)）。**⚠ 与后端 `docs/v4/`（模型请求管线重构）无关，只是共用 "v4" 代号。**
+> **定位**：ui-v4 是 copilot-api 请求历史查看器的 React 全面重写，从「请求历史浏览器」升级为「实时 LLM 流量检视台」（DevTools / Network-inspector 范式），与旧 Vue `ui/` 并行共存（2026-07-22 起两者均由运维独立托管，后端不再挂载任何 UI 静态路由，见根 README「Hosting the Web UI」），达功能对等后替换旧 UI（对等 gating 清单见 [TODO.md](TODO.md)）。**⚠ 与后端 `docs/v4/`（模型请求管线重构）无关，只是共用 "v4" 代号。**
 
 ## 1. 技术栈（实测 `package.json`）
 
@@ -102,7 +102,7 @@ SystemMessage    独立支路（不走 ContentRenderer）：system-reminder 解�
 ## 7. 构建 / 别名 / 代理（实测 `vite.config.ts`）
 
 - **别名**（vite + tsconfig 一致）：`@/*`→`ui-v4/src`、`~backend/*`→`../src`、`~/*`→`../src`（`~/*` 供后端源码内部自引用解析，跨引用后端源码时必需）。
-- **base**：dev（`serve`）= `/`，build = `/ui-v4/`（后端 `/ui-v4` 静态路由服务 `dist`）。
+- **base**：dev（`serve`）= `/`，build = `/ui-v4/`（2026-07-22 起后端不再服务此 `dist`，由运维独立托管静态服务器 + 反代 API，见根 README「Hosting the Web UI」）。
 - **dev proxy** 4 路 → 后端（默认 `localhost:4141`，`COPILOT_API_HOST`/`COPILOT_API_PORT` 覆盖）：`/history/api`、`/ws`（`ws:true`）、`/api`、`/models`。
 
 ## 8. 测试（双 runner 后缀互斥，72 测试文件）

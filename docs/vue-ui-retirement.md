@@ -1,8 +1,10 @@
 # Vue `ui/` 退役路线图（增量迁移到 React `ui-v4/`）
 
+> **[2026-07-22 时效性警告]** 本文写作时的前提是「主服务器同时挂载 `/ui`（Vue）+ `/ui-v4`（React）两条路由，退役 = 删主服务器路由」（见 §1 现状锚点原文）。**该前提已被 UI 外置改动推翻**：主服务器不再服务/代理/构建任何前端 UI，两个 workspace 都保留、都由运维独立托管（见 [DESIGN.md](DESIGN.md)「前端子项目」+ README「Hosting the Web UI」）。因此「退役」的含义从「删主服务器的 `/ui` mount」变成「决定运维还托管哪个/哪些静态产物、`ui/` workspace 本身是否/何时整体删除」——**下文逐页迁移方法论、退役检查清单（§2/§3）、已完成退役日志（§4）作为方法论历史仍完整有效**（models 页退役的实测经验、共享件教训依然适用于任何后续页面迁移），但**§1「现状锚点」一段（主服务器双 mount 的表述）与「删主服务器路由」的隐含前提已过时**，读者应以 DESIGN.md「活的架构现状」为准核对当前主服务器路由挂载事实。
+
 - 创建：2026-07-10
 - 归属：前端子项目退役跟踪。**这是「哪些 Vue 页面还能删、怎么删」的单一事实源。**
-- 现状锚点：`ui-v4/` 是**当前活的** React History UI（`/ui-v4`）；`ui/` 是**旧 Vue** UI（`/ui`），正被逐页退役。两者并行挂载见 [DESIGN.md](DESIGN.md)「活的架构现状」+ `src/routes/index.ts`（`/ui` + `/ui-v4` 双 mount）。
+- ~~现状锚点：`ui-v4/` 是**当前活的** React History UI（`/ui-v4`）；`ui/` 是**旧 Vue** UI（`/ui`），正被逐页退役。两者并行挂载见 [DESIGN.md](DESIGN.md)「活的架构现状」+ `src/routes/index.ts`（`/ui` + `/ui-v4` 双 mount）。~~ （已过时，见上方警告——主服务器已不挂载任一 UI）
 - 相关：[ui/CLAUDE.md](../ui/CLAUDE.md)、models 退役 spec [spec/2026-07-08-ui-v4-models-list-parity.md](spec/2026-07-08-ui-v4-models-list-parity.md) + [spec/2026-07-08-ui-v4-raw-json-dual-view.md](spec/2026-07-08-ui-v4-raw-json-dual-view.md)。
 
 ## 1. 逐页退役状态
