@@ -68,7 +68,7 @@ describe("retry-strategy assembly golden (pre-refactor lock)", () => {
   test("anthropic direct @messages → 16 策略顺序", () => {
     const names = buildAnthropicStrategies(stubAnthropicDeps()).map((s) => s.name)
     expect(names).toEqual([
-      "network-retry", "server-error-retry", "token-refresh", "effort-learning-retry",
+      "network-retry", "server-error-retry", "token-refresh", "effort-learning",
       "tool-field-rejection-retry", "body-field-rejection-retry", "cache-control-subfield-rejection-retry",
       "legacy-thinking-retry", "adaptive-thinking-rejection-retry", "poisoned-thinking-retry",
       "unsupported-beta-retry", "server-tool-rejection-retry", "structured-outputs-rejection-retry",
@@ -292,16 +292,18 @@ git commit -m "feat(retry): retry.strategies 逐策略 config 开关（opt-out +
 
 ---
 
-### Task 6 (Commit 6): 去重收口 + 文档同步
+### Task 6 (Commit 6): 去重收口 + 文档同步 ✅ 已完成
+
+> **实施结果**：Step 1 的「删三 leg 重复 import」在 Task 3 委托 assembler 时已提前完成——三个 `codec/{anthropic,openai-cc,openai-responses}/strategies.ts` 委托后只剩 `ENDPOINT`/`assembleRetryStrategies`/`state` + 必要类型 import，typecheck 全程无未用 import 报错（本 task 核实确认，无需再删）。**去重收口的实质工作是死字段清理**：核实发现 `RetrySemanticsSpec.label`（`src/lib/pipeline/cell-assembly.ts`）及其穿透的 `OpenAiCcStrategiesDeps.label`、`RetryStrategyDeps.label` 是全链路死字段——唯一历史消费者（CC 控制台日志行）随 2026-07-13 auto-truncate 移除已断链，`grep` 全仓确认无任何读取点。按 no-destructive 纪律核实无遗漏消费者后整链路删除（`cell-assembly.ts` 接口定义 + 4 处 `RETRY_SEMANTICS` 分支调用 + 4 个语义生产函数 `{anthropic,chatCompletions,responsesFallback,responsesDirect,viaResponses,anthropicReverse}RetrySemantics` + `cc-family-strategies.ts` 消费点 + `openai-cc/strategies.ts` 接口字段 + `retry-registry.ts` 的 `RetryStrategyDeps.label`，共 8 个文件的机械单行删除，typecheck 兜底捕获全部遗漏点）。**carryover 逐条处置**：见 task-6-report.md 完整记录——plan Task 1 示例块 `effort-learning-retry`→`effort-learning` 笔误修正；`/metrics` HELP 行补范围说明；三处硬编码 `ANTHROPIC_16_NAMES`/`SHARED_3_NAMES` 抽取为 `tests/helpers/retry-strategy-names.ts` 独立 fixture 消除漂移风险；`deps.label` 死字段确认删除（见上）；`SHARED_RETRY_STRATEGY_CONFIG_KEYS` parity 测试当场补做（导出该 Set + 加一条测试断言其与 `getRetryStrategyRegistryDiagnostics` 的 `scope:"shared"` 投影集合相等，低成本无取舍，未记 backlog）；13 处 payload cast 分组类型（RFC §3.1 备选）/attemptRef 日志断言脆性/retry-fire counter 无维度切面三项记 `docs/todo/deferred-backlog.md`（过度设计阈值未到或需要用户方向判断）。doc-sync：`docs/DESIGN.md`「活的架构现状」加 registry 行、`docs/API.md` 补 `/api/config` 的 `retryStrategyRegistry` 字段 + `/metrics` 的 `retry_strategy_fires_total` 族说明、本 RFC 状态注 landed。golden 6/6 逐字节仍过（`label` 删除不改变任何 `.name`/顺序输出）；`tests/anthropic tests/openai tests/responses tests/gemini tests/pipeline tests/config tests/observability tests/request` 合计 3905 pass/0 fail（1 todo 无关，含新增 parity 测试）；`bun run test:backend` 6058 pass/4 fail（4 条 History V3 semantic store 失败经 `git stash` 干净基线复现同样失败，确认 pre-existing、与本次改动无关）；`bun run typecheck` 绿；改动文件 `bunx eslint` 无 error（`--fix` 后重跑 typecheck + 全部相关测试确认未破坏行为）。
 
 **Files:**
 - Modify: `src/lib/codec/{openai-cc,openai-responses}/strategies.ts`（删不再用的 create* import + adapt 重复——现由 registry 声明）
 - Modify: `docs/DESIGN.md`（活的架构现状加/改 retry registry 行）、skill（若有 retry 相关）、RFC 状态注 landed
 
-- [ ] **Step 1: 删三 leg 的重复 import**（typecheck 会报未用 import → 删）。
-- [ ] **Step 2: typecheck + 全量 golden + 相关套件零回归**。
-- [ ] **Step 3: doc-sync**（DESIGN 活的架构现状行 + 跨文档 grep）。
-- [ ] **Step 4: 提交** `refactor(retry): 去重收口 + doc-sync（registry landed）`。
+- [x] **Step 1: 删三 leg 的重复 import**（typecheck 会报未用 import → 删）。**实测**：Task 3 委托时已提前清理，本 task 核实确认零残留。
+- [x] **Step 2: typecheck + 全量 golden + 相关套件零回归**。
+- [x] **Step 3: doc-sync**（DESIGN 活的架构现状行 + 跨文档 grep）。
+- [x] **Step 4: 提交** `refactor(retry): 去重收口 + doc-sync（registry landed）`。
 
 ---
 
@@ -313,8 +315,8 @@ git commit -m "feat(retry): retry.strategies 逐策略 config 开关（opt-out +
 - RFC §3.4 config opt-out + allow+warn → Task 4 ✅。
 - RFC §3.4a delegate 并存 → 无代码改动（文档已记，Task 6 doc-sync 确认）。
 - RFC §3.5 可观测 history+metrics → Task 5 ✅。
-- RFC §3.6 去重 → Task 6 ✅。
+- RFC §3.6 去重 → Task 6 ✅（Task 3 提前完成 import 去重 + Task 6 补做 `label` 死字段整链路删除）。
 - RFC §5 6-commit + invariants → Task 1-6 一一对应，每 commit golden gate ✅。
 - RFC §3.1 WS 边界 → Task 1 golden 测 HTTP 路径不测 WS ✅。
 - **Type consistency**：`assembleRetryStrategies(ctx: RetryStrategyContext, deps: RetryStrategyDeps, config): ReadonlyArray<EnvRetryStrategy>` 全程一致;三 build 函数签名不变（内部委托）。
-- **未决执行注**：Task 3 Step 1 的 clientFormat 传参（deps 加 vs assembler 只看 targetEndpoint）——实施时以 typecheck + golden 为准，倾向 assembler 只按 targetEndpoint 门控（更简）。
+- **未决执行注**：Task 3 Step 1 的 clientFormat 传参（deps 加 vs assembler 只看 targetEndpoint）——实施时以 typecheck + golden 为准，倾向 assembler 只按 targetEndpoint 门控（更简）。**实施落定**：assembler 只按 targetEndpoint 门控（见 Task 3 报告）。
