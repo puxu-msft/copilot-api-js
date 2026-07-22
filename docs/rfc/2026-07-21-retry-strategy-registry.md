@@ -1,7 +1,7 @@
 # RFC：reactive retry 策略声明式 registry
 
 - **日期**：2026-07-21
-- **状态**：**分支已全部实施完成（worktree `.worktrees/retry-registry` / 分支 `feat/retry-strategy-registry`）**——6 commit 全 landed（Task 1-6），golden 逐字节等价、每 commit 均经异模型 reviewer 审（0 blocker）；待合并 master。原「评审通过、待用户签字」状态已随实施完成推进。
+- **状态**：**已 landed master（merge `ed1a1a8f`，2026-07-22）**——6 语义 commit 全落地（Task 1-6，共 13 commit 经 worktree `feat/retry-strategy-registry` 三方合并回 master），golden 逐字节等价、3 轮 RFC 对抗审 + 每 task per-task 审 + whole-branch 终审均 0 blocker。worktree/分支已清理。
 - **类型**：大重构（内部治理，仿 v4 rewrite-registry）
 - **关联**：v4 rewrite-registry（`docs/v4/03-spec/rewrite-registry.md`，同款治理的先例）、skill `telemetry-architecture`、`large-refactor`；上游探索 spec `docs/spec/2026-07-20-inbound-system-prompt-dispatch-hook.md`（该探索定位「retry 策略是最大未插件化区」，本 RFC 是其下一独立项）
 
