@@ -436,7 +436,7 @@ export interface AnchorState {
  *   - `"partial-degrade"`: block-level path only — a boundary block was already committed live,
  *     then the stream truncated (un-retryable). A graceful degrade distinct from `exhausted`.
  */
-export type ProtectStreamingOutcome = "success" | "exhausted" | "retreated" | "partial-degrade"
+export type ProtectStreamingOutcome = "success" | "exhausted" | "retreated" | "partial-degrade" | "continuation-exhausted"
 
 /**
  * Options for `runResponseBufferedSink` (L2 — streaming upstream-RST buffered retry,
@@ -521,7 +521,7 @@ export interface RunBufferedOpts extends RunResponseOpts {
    *     degrade distinct from `exhausted` (which committed nothing). Never emitted on the
    *     terminal-only path ({@link commitBoundaries} undefined) — `committedAny` stays false there.
    */
-  onBufferedResolve?: (outcome: ProtectStreamingOutcome, retries: number, meta: { vendor: string }) => void
+  onBufferedResolve?: (outcome: ProtectStreamingOutcome, retries: number, meta: { vendor: string; continuationRetries?: number }) => void
   /**
    * Block-commit boundary predicate (P0 mechanism floor). When PROVIDED, the buffered sink flushes
    * (commits live) the buffered frames up to and including every frame this returns `true` for,

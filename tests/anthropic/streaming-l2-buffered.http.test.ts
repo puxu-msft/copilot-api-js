@@ -238,6 +238,9 @@ describe("L2 buffered retry — Anthropic streaming handler wiring (protect_stre
       partialDegrade: 0,
       totalRetries: 2,
       retriesBeforeDegrade: 0,
+      continuationExhausted: 0,
+      preFirstBlockRetries: 2,
+      continuationRetries: 0,
     })
   })
 
@@ -376,6 +379,9 @@ describe("L2 buffered retry — Anthropic streaming handler wiring (protect_stre
       partialDegrade: 0,
       totalRetries: 1,
       retriesBeforeDegrade: 0,
+      continuationExhausted: 0,
+      preFirstBlockRetries: 1,
+      continuationRetries: 0,
     })
   })
 
@@ -413,6 +419,9 @@ describe("L2 buffered retry — Anthropic streaming handler wiring (protect_stre
       partialDegrade: 1,
       totalRetries: 0,
       retriesBeforeDegrade: 0,
+      continuationExhausted: 0,
+      preFirstBlockRetries: 0,
+      continuationRetries: 0,
     })
   })
 })

@@ -294,6 +294,9 @@ describe("Responses WS buffered retry — close-code(1011) timing (P4 Task 2, ba
       partialDegrade: 0,
       totalRetries: 1,
       retriesBeforeDegrade: 0,
+      continuationExhausted: 0,
+      preFirstBlockRetries: 1,
+      continuationRetries: 0,
     })
   })
 
@@ -335,6 +338,9 @@ describe("Responses WS buffered retry — close-code(1011) timing (P4 Task 2, ba
       partialDegrade: 0,
       totalRetries: 2,
       retriesBeforeDegrade: 0,
+      continuationExhausted: 0,
+      preFirstBlockRetries: 2,
+      continuationRetries: 0,
     })
   })
 

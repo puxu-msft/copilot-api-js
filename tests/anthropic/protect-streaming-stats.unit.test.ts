@@ -54,8 +54,11 @@ describe("protect-streaming-stats", () => {
       exhausted: 1,
       retreated: 1,
       partialDegrade: 1,
+      continuationExhausted: 0,
       totalRetries: 10, // 2 + 0 + 3 + 1 + 4
       retriesBeforeDegrade: 4, // only the partial-degrade leg
+      preFirstBlockRetries: 10, // all retries are pre-first-block (no continuation legs here)
+      continuationRetries: 0,
     })
   })
 
@@ -97,5 +100,30 @@ describe("protect-streaming-stats", () => {
     recordProtectStreamingOutcome("success", 5, { vendor: "responses" })
     resetProtectStreamingStatsForTests()
     expect(getProtectStreamingStats()).toEqual({})
+  })
+
+  test("continuation-exhausted increments its own counter and counts in the hit-rate denominator", () => {
+    recordProtectStreamingOutcome("success", 1, { vendor: "anthropic" })
+    recordProtectStreamingOutcome("continuation-exhausted", 3, { vendor: "anthropic" })
+    const s = getProtectStreamingStats().anthropic
+    expect(s.continuationExhausted).toBe(1)
+    // denominator = success(1) + exhausted(0) + partialDegrade(0) + continuationExhausted(1) = 2
+    expect(protectStreamingHitRate(s)).toBe(0.5)
+  })
+
+  test("retries split into pre-first-block vs continuation counts (telemetry-architecture: finest factors)", () => {
+    // 3 retries total, 2 of which were continuation retries (post-first-block)
+    recordProtectStreamingOutcome("continuation-exhausted", 3, { vendor: "anthropic", continuationRetries: 2 })
+    const s = getProtectStreamingStats().anthropic
+    expect(s.totalRetries).toBe(3)
+    expect(s.continuationRetries).toBe(2)
+    expect(s.preFirstBlockRetries).toBe(1)
+  })
+
+  test("legacy callers (no continuationRetries) attribute all retries to pre-first-block", () => {
+    recordProtectStreamingOutcome("exhausted", 3, { vendor: "responses" })
+    const s = getProtectStreamingStats().responses
+    expect(s.continuationRetries).toBe(0)
+    expect(s.preFirstBlockRetries).toBe(3)
   })
 })

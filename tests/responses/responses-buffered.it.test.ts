@@ -318,6 +318,9 @@ describe("Responses buffered-retry adoption (Task 3.2)", () => {
       partialDegrade: 0,
       totalRetries: 1,
       retriesBeforeDegrade: 0,
+      continuationExhausted: 0,
+      preFirstBlockRetries: 1,
+      continuationRetries: 0,
     })
   })
 
@@ -373,6 +376,9 @@ describe("Responses buffered-retry adoption (Task 3.2)", () => {
       partialDegrade: 0,
       totalRetries: 2,
       retriesBeforeDegrade: 0,
+      continuationExhausted: 0,
+      preFirstBlockRetries: 2,
+      continuationRetries: 0,
     })
   })
 
@@ -538,6 +544,9 @@ describe("Responses buffered-retry adoption (Task 3.2)", () => {
       partialDegrade: 1,
       totalRetries: 0,
       retriesBeforeDegrade: 0,
+      continuationExhausted: 0,
+      preFirstBlockRetries: 0,
+      continuationRetries: 0,
     })
   })
 
@@ -609,6 +618,9 @@ describe("Responses buffered-retry adoption (Task 3.2)", () => {
       partialDegrade: 0,
       totalRetries: 1,
       retriesBeforeDegrade: 0,
+      continuationExhausted: 0,
+      preFirstBlockRetries: 1,
+      continuationRetries: 0,
     })
   })
 
@@ -645,6 +657,9 @@ describe("Responses buffered-retry adoption (Task 3.2)", () => {
       partialDegrade: 1,
       totalRetries: 0,
       retriesBeforeDegrade: 0,
+      continuationExhausted: 0,
+      preFirstBlockRetries: 0,
+      continuationRetries: 0,
     })
   })
 })
