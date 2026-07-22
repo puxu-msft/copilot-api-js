@@ -16,6 +16,12 @@
 
 **风险**：这是协议关键流式代码 + 互锁不变量网，typecheck 绿 ≠ 协议对。改点分散在 injector 的 await-前同步翻 state（`makeSyntheticAnchorInjector` :168-198）、tick 守卫、driver commit/retreat 两 remap、reconcile close-off。**续接会话务必先跑既有 anchor 测试套件建 red-green 基线，再逐不变量改。**
 
+**基线（2026-07-22 实测，coexist 现状）**：`tests/pipeline/anchor-multiblock-lifecycle.it.test.ts` + `tests/anthropic/*anchor*` + `tests/e2e-client/anthropic-buffered.it.test.ts` = **35 pass 0 fail**。
+
+**⚠ golden 重捕纪律（large-refactor）**：`tests/anthropic/c0-live-anchored-direct-stream-golden.http.test.ts` 是**逐字节 golden**，明文锁 coexist wire「injects synthetic anchor content_block_start@0 + remaps every real block +1」。顺序改造**按设计打红它**（wire 变了）——**不是回归**。正确流程：① 先用 G1 `produce-oracle` 独立验证新顺序 wire 结构正确 → ② 再 re-capture 该 golden 为顺序字节 → ③ 绝不「为让 golden 绿」而扭曲实现。同理 `live-post-commit-*-closeoff` / `keepalive-e2e` 的结构断言（`.some(s=>s.index===0)` / `frameTypesInOrder`）须从「anchor@0 常驻 + 并存」改写为顺序断言（改写非删除）。
+
+**Task 1.2/1.3 执行顺序建议（续接会话）**：先写 G1 produce-oracle（红基线）→ allocator 挂 AnchorState → 改 injector close-before-real → 改 tick 放开 gap anchor + per-gap 复位 → 改 driver/reconcile 三 remap → 跑 anchor 套件逐条判 red（golden/结构断言=预期，改写；其他=回归，修）→ re-capture golden → G1 转绿 + run.ts 真 CLI numTurns=1。
+
 ---
 
 **Files:**
