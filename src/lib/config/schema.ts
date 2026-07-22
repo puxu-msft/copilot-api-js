@@ -627,17 +627,15 @@ export const AnthropicConfigSchema = z
      */
     stream_keepalive_ping_sec: nullableNonnegativeInt(),
     /**
-     * Keepalive FRAME type for the client-facing Anthropic stream. `empty_text` (default) is the
-     * unconditionally timeout-safe mode: when a forwarded block is open it injects an EMPTY content
-     * delta matching that block (thinking→thinking_delta, text→text_delta, tool_use→input_json_delta);
-     * ADDITIONALLY, in buffered mode with NO open block yet (pre-commit long silence), it lazily injects
-     * a synthetic empty text ANCHOR block so an empty `text_delta` can reset Claude Code's 300s
-     * no-real-content deadline (real content stays buffered; the anchor closes and real blocks flush at
-     * index+1 on commit; spec 2026-07-08-buffered-keepalive-empty-text-anchor). `ping` is the legacy
-     * bare-`event: ping` escape hatch — a ping is NOT counted as a "chunk" so it does NOT reset the 300s
-     * deadline (may time out; see exp/cc-idle-280s/REPORT.md). `enveloped_ping` (experimental, expected
-     * to time out) synthesizes an envelope then emits a bare ping. redacted_thinking / unknown open
-     * blocks fall back to ping either way.
+     * Keepalive FRAME type for the client-facing Anthropic stream. `ping` (default) is a bare
+     * `event: ping` — it does NOT reset Claude Code's 300s no-real-content deadline (a ping is not a
+     * "chunk"; exp/cc-idle-280s/REPORT.md), so a >300s pre-content silence may time out (an accepted
+     * limit pending a real keepalive — docs/todo/2026-07-22-client-proxy-keepalive-300s.md).
+     * `empty_text` was RETIRED as default (ADR 2026-07-22 D2): it injected an empty content delta / a
+     * synthetic empty-text ANCHOR block, but an empty text block is wrong-shaped AND G2-proven unable to
+     * reset the 300s deadline on the proxy path. Block-level delivery CLI-safety now comes from strict
+     * index-ordered output, not an anchor. `empty_text` / `enveloped_ping` remain SELECTABLE (code kept
+     * dormant) for keepalive research; redacted_thinking / unknown open blocks fall back to ping anyway.
      */
     stream_keepalive_mode: nullableEnum(["ping", "enveloped_ping", "empty_text"] as const),
     /**
