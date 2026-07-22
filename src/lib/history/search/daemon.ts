@@ -302,6 +302,30 @@ export function createHistorySearchDaemon(options: HistorySearchDaemonOptions): 
     cursor = { committedAt: row.committed_at, operationId: row.operation_id, indexedAtBoundaryMs }
   }
 
+  /**
+   * Fully drain every row sharing the cursor's EXACT `committed_at` millisecond
+   * (blocker-2 fix, and its 2026-07-22 pagination follow-up -- see module doc).
+   * Repeatedly queries `committed_at = ? AND operation_id NOT IN (<already-seen>)`
+   * until nothing new turns up -- PROVABLY terminating, since every iteration that
+   * finds any rows immediately folds their ids into `indexedAtBoundaryMs` (via
+   * `advanceCursorPastRow`, called from `processRow`), so the very next query's
+   * `NOT IN` excludes them: the candidate pool strictly shrinks every iteration and
+   * cannot cycle, regardless of how many rows share one millisecond or how small
+   * `pageSize` is relative to that count. Safe and cheap to call even when nothing
+   * remains at the boundary (a no-op single query returning zero rows) -- callers
+   * do not need to first check whether a drain is "needed".
+   *
+   * Used in TWO places: once as pass 1 (re-checking a PRE-EXISTING cursor's
+   * boundary millisecond, in case rows landed there since the last call), and
+   * again inside pass 2's forward loop after every FULL page (in case a page
+   * boundary itself cut a millisecond in half -- pageSize rows fitting exactly at
+   * a millisecond with MORE unprocessed rows at that same millisecond still to
+   * come is otherwise silently left for a LATER `tailOnce()` call's pass 1 to
+   * pick up, breaking this function's own documented "one call always catches up
+   * fully" contract). Defined INSIDE `tailOnce()` (not a sibling closure) since it
+   * needs that call's own `connection` and `processRow` (each `tailOnce()` call
+   * accumulates its own `processed`/`poisoned` counters).
+   */
   async function tailOnce(): Promise<TailRoundResult> {
     const connection = db()
     let processed = 0
@@ -324,19 +348,8 @@ export function createHistorySearchDaemon(options: HistorySearchDaemonOptions): 
       advanceCursorPastRow(row)
     }
 
-    // PASS 1 -- boundary re-scan (blocker-2 fix). Only runs when there IS a cursor
-    // (a fresh tail has no boundary millisecond to re-check). Drains every row that
-    // shares the cursor's EXACT `committed_at` millisecond and is not yet recorded in
-    // `indexedAtBoundaryMs` -- a later-committing row at that same millisecond whose
-    // operation_id sorts lexicographically BEFORE the cursor's would otherwise be
-    // permanently invisible to a plain `>` tuple comparison (see module doc). `NOT
-    // IN (...)` against the persisted, monotonically-growing `indexedAtBoundaryMs`
-    // set is what makes this loop PROVABLY terminate: each iteration that finds any
-    // rows immediately folds their ids into that set (via `advanceCursorPastRow`),
-    // so the very next query's `NOT IN` excludes them -- the candidate pool strictly
-    // shrinks every iteration and cannot cycle forever, regardless of how many rows
-    // happen to share one millisecond.
-    if (cursor !== null) {
+    async function drainBoundaryMillisecond(): Promise<void> {
+      if (cursor === null) return
       for (;;) {
         const excluded = cursor.indexedAtBoundaryMs ?? []
         const boundaryRows = (
@@ -355,15 +368,24 @@ export function createHistorySearchDaemon(options: HistorySearchDaemonOptions): 
       }
     }
 
+    // PASS 1 -- boundary re-scan (blocker-2 fix). Only runs when there IS a cursor
+    // (a fresh tail has no boundary millisecond to re-check). Drains every row that
+    // shares the cursor's EXACT `committed_at` millisecond and is not yet recorded in
+    // `indexedAtBoundaryMs` -- a later-committing row at that same millisecond whose
+    // operation_id sorts lexicographically BEFORE the cursor's would otherwise be
+    // permanently invisible to a plain `>` tuple comparison (see module doc).
+    await drainBoundaryMillisecond()
+
     // PASS 2 -- the normal forward page loop. Everything queried here is STRICTLY
-    // AFTER the boundary millisecond (pass 1 already fully drained it), so the
-    // simple monotonic `committed_at > cursor.committedAt` filter has no same-
-    // millisecond tie-break hazard to worry about -- `operation_id` is only used to
-    // ORDER the page deterministically, never as part of the boundary comparison.
-    // Loops until a page comes back short of `pageSize` -- drains everything
-    // currently committed, not just one page, so a single `tailOnce()` call always
-    // catches up fully (the caller does not need to know how many rounds "catching
-    // up" takes).
+    // AFTER the boundary millisecond (pass 1 already fully drained it, and every
+    // FULL page below re-drains its own new boundary before continuing -- see the
+    // 2026-07-22 pagination fix below), so the simple monotonic `committed_at >
+    // cursor.committedAt` filter has no same-millisecond tie-break hazard left --
+    // `operation_id` is only used to ORDER the page deterministically, never as
+    // part of the boundary comparison. Loops until a page comes back short of
+    // `pageSize` -- drains everything currently committed, not just one page, so a
+    // single `tailOnce()` call always catches up fully (the caller does not need
+    // to know how many rounds "catching up" takes).
     for (;;) {
       const rows = (
         cursor === null ?
@@ -378,6 +400,16 @@ export function createHistorySearchDaemon(options: HistorySearchDaemonOptions): 
       if (rows.length === 0) break
       for (const row of rows) await processRow(row)
       if (rows.length < pageSize) break
+      // 2026-07-22 pagination fix (merged-state review major -- "tailOnce() single-
+      // call full catch-up" contract, honored not just documented): a FULL page
+      // (exactly `pageSize` rows) may have been cut off mid-millisecond -- more rows
+      // could share the LAST processed row's exact `committed_at` but not have fit
+      // in this page. Without this drain, they would be silently left for a LATER
+      // `tailOnce()` call's pass 1 to discover -- which is correct eventually, but
+      // breaks the "one call always catches up fully" guarantee this function
+      // documents and callers (status reporting, tests) rely on. Cheap when nothing
+      // remains (a single no-op query).
+      await drainBoundaryMillisecond()
     }
 
     if ((processed > 0 || poisoned > 0) && cursor !== null) writeTailCursor(options.indexPath, cursor)

@@ -423,4 +423,57 @@ describe("merged-state review blockers (2026-07-22) — silent permanent data lo
     daemon2.close()
     await index2.close()
   })
+
+  test("BLOCKER 2 (page-boundary follow-up, 2026-07-22 merged-state review major): THREE same-millisecond rows, with pageSize smaller than that count, are ALL indexed by a SINGLE tailOnce() call -- not left for a second call to finish", async () => {
+    const dbDir = freshDir("daemon-tie-page-db-")
+    const dbPath = path.join(dbDir, "history-v3.db")
+    const indexDir = freshDir("daemon-tie-page-index-")
+    const indexPath = path.join(indexDir, "index")
+
+    // Three operation_ids in strict lexicographic order -- with pageSize:2 (below),
+    // a page-oblivious pass-2 loop grabs exactly ["op-a","op-b"] on its first (and
+    // only, since 2 === pageSize triggers "keep going") full page, leaving "op-c"
+    // (the same millisecond's third row) for whatever tail round comes next. THE
+    // CORE ASSERTION this test locks in: a single tailOnce() call must not leave
+    // ANY same-millisecond row for later -- the interface's own documented "one
+    // call always catches up fully" contract, honored rather than merely written.
+    commitOperation(dbPath, "op-a", { conversation: "pageboundaryneedleA", responseBody: "respA", upstreamOnly: "upA" })
+    commitOperation(dbPath, "op-b", { conversation: "pageboundaryneedleB", responseBody: "respB", upstreamOnly: "upB" })
+    commitOperation(dbPath, "op-c", { conversation: "pageboundaryneedleC", responseBody: "respC", upstreamOnly: "upC" })
+
+    // Force all three onto the EXACT SAME committed_at millisecond (real sequential
+    // commits could occasionally collide on their own, but this test must not
+    // depend on that timing luck -- mirrors the existing BLOCKER 2 tests' technique).
+    const tieDb = openDatabase(dbPath)
+    const anchor = tieDb.prepare("SELECT committed_at FROM v3_operations WHERE operation_id=?").get("op-a") as { committed_at: number }
+    tieDb.prepare("UPDATE v3_operations SET committed_at=? WHERE operation_id IN ('op-b','op-c')").run(anchor.committed_at)
+    closeDatabase()
+
+    const index = await openIndex(indexPath)
+    // pageSize:2 -- strictly fewer than the 3 same-millisecond rows, so the fix
+    // under test (drainBoundaryMillisecond() called after every FULL page, not
+    // just once as pass 1) is the ONLY thing standing between this test passing
+    // and a page boundary silently splitting the millisecond across two rounds.
+    const daemon = createHistorySearchDaemon({ dbPath, indexPath, index, pageSize: 2 })
+
+    // ONE tailOnce() call -- deliberately not looped, not retried, not followed by
+    // a second call before asserting. This is the exact distinction from the
+    // pre-existing BLOCKER 2 tests above, which explicitly split the tie-breaking
+    // discovery across TWO separate tailOnce() calls (correct for THAT scenario --
+    // a row committed strictly after the first round began). This test's row is
+    // committed BEFORE `tailOnce()` is ever called even once, so a single call
+    // finishing incompletely would be a REGRESSION of the "one call always
+    // catches up fully" contract, not an acceptable multi-round scenario.
+    const result = await daemon.tailOnce()
+    await index.flush()
+
+    expect(result.processed).toBe(3)
+    expect((await index.search("pageboundaryneedleA", undefined, 10)).map((hit) => hit.operationId)).toEqual(["op-a"])
+    expect((await index.search("pageboundaryneedleB", undefined, 10)).map((hit) => hit.operationId)).toEqual(["op-b"])
+    // THE row a page-oblivious fix would have left behind for a SECOND tailOnce() call.
+    expect((await index.search("pageboundaryneedleC", undefined, 10)).map((hit) => hit.operationId)).toEqual(["op-c"])
+
+    await index.close()
+    daemon.close()
+  })
 })
