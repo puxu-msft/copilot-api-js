@@ -1,18 +1,21 @@
 /**
- * Anchor lifecycle across MULTIPLE block-level commits (spec 2026-07-11-block-level-buffered-retry §4.3;
- * fixes the two defects the P1-Task-6 adversarial review confirmed — see .superpowers/sdd/p1-wiring-report.md
- * concern #2 + docs/todo/deferred-backlog.md "anchor 注入器可在真实块之间二次触发").
+ * Anchor lifecycle across MULTIPLE block-level commits — SEQUENTIAL anchor (spec 2026-07-22
+ * §3.3; supersedes the earlier anchor-COEXIST shape of spec 2026-07-11-block-level-buffered-retry §4.3).
  *
  * This is the PRODUCER wire-oracle the existing e2e (which only REPLAYS a hand-built ideal fixture) never
  * had: it drives the REAL `runResponseBufferedSink` with a real anchor injector + `anthropicCommitBoundaries`
- * + a MULTI-block upstream WITH inter-block silence, and asserts the proxy actually PRODUCES the spec §4.3
- * shape — anchor@0 stays OPEN across all blocks, so an inter-block idle carries a `text_delta@0` (which resets
- * Claude Code's 300s no-real-content watchdog, exp/cc-idle-280s/REPORT.md) and NOT a bare `ping` (which does
- * not). Two independent bugs are locked:
+ * + a MULTI-block upstream WITH inter-block silence, and asserts the proxy actually PRODUCES the spec §3.3
+ * SEQUENTIAL shape — at most ONE content block open at a time (`maxOpen===1`), the CLI-safety invariant.
+ * The pre-content anchor is CLOSED (`content_block_stop@0`) BEFORE the first real `content_block_start`
+ * (never coexist — the coexist shape, anchor@0 kept open across real blocks, stalls the Claude Code CLI
+ * agent loop, exp/block-level-anchor-sequential/FINDINGS.md); real blocks then shift +1. After the anchor
+ * closes, an inter-block idle degrades to a BARE ping (there is no open block to carry a `text_delta@0` —
+ * resetting CC's 300s no-real-content watchdog for >300s inter-block gaps is a SEPARATE concern,
+ * docs/todo/2026-07-22-client-proxy-keepalive-300s.md). Two independent bugs remain locked:
  *
- *   (b) HIGH — driver `flushBufferedFrames` closed the anchor at the FIRST block boundary (the old
- *       `firstFlush` gate), so inter-block gaps degraded to a bare ping → 300s disconnect. Fixed: the
- *       close-off is gated on the TERMINAL flush, not the first flush.
+ *   (b→c′) the anchor close-off must precede the first real block / the error terminus — the SEQUENTIAL
+ *       close-before-real (driver `flushBufferedFrames`) replaces the old coexist "keep open across blocks,
+ *       close at the terminal flush" behavior; test (c′) locks the zero-content error-terminus ordering.
  *   (a) MEDIUM — sink heartbeat could RE-fire `injectAnchor` between real blocks when the anchor was NEVER
  *       injected (fast first block, then a later inter-block idle), forwarding a duplicate message_start +
  *       a colliding content_block_start@0. Fixed: an `everOpenedRealBlock` guard on the injection gate.
@@ -461,6 +464,88 @@ describe("anchor lifecycle across multiple block-level commits — PRODUCER wire
     })
     expect(stop0s).toHaveLength(1)
     // CLI-safety: at most one block open at a time.
+    let open = 0
+    let maxOpen = 0
+    for (const w of written) {
+      const p = parse(w)
+      if (p.type === "content_block_start") open++
+      if (p.type === "content_block_stop") open--
+      maxOpen = Math.max(maxOpen, open)
+    }
+    expect(maxOpen).toBe(1)
+    void anchorState
+    sink.close?.()
+  })
+
+  // Lock the ONE corner where the terminal-flush close-off (`isTerminalFlush`, fed by
+  // `isErrorTerminusFlush = sawUpstreamError()` at driver.ts) is LOAD-BEARING and NOT redundant with
+  // the per-frame close-before-real (driver.ts:1105): a ZERO-CONTENT terminal `error` — the anchor was
+  // injected during a pre-content stall, then the upstream errors WITHOUT ever opening a real content
+  // block. The per-frame `isContentBlockStart` close-off never fires (there is no real content_block_start
+  // in the buffer), so ONLY the top-of-flush `if (isTerminalFlush) closeAnchorBeforeReal()` closes the
+  // anchor BEFORE the error frame. Drop the `sawUpstreamError()` term and the ordering flips to
+  // `error → stop@0` (an OPEN anchor block@0 immediately followed by `event: error` — protocol-incomplete);
+  // no other test catches that flip. (The removed `attempt > 0` term was separately DEAD — a recovery
+  // candidate's first committed block carries a content_block_start → the per-frame close-off already
+  // handles it — and was removed with this test in place.)
+  test("(c′) SEQUENTIAL anchor + ZERO-CONTENT error terminus: anchor stop@0 precedes the error (no real block ever)", async () => {
+    const env = makeEnv()
+    env.ctx.beginAttempt({})
+
+    // segment 0: real message_start → STALL (pre-content) → the idle tick injects the anchor.
+    // segment 1: a terminal upstream `error` frame with NO real content block before it, then a CLEAN drain
+    //   (no message_stop). `error` is a commit boundary AND the terminus; its in-loop flush is TERMINAL
+    //   (sawUpstreamError → isErrorTerminusFlush true), so the anchor close-off content_block_stop@0 must
+    //   precede the forwarded error frame — the ONLY site that can close it (no real content_block_start).
+    const { stream: up, releases } = makeGatedUpstream([
+      [f("message_start", { message: { id: "msg_zero" } })],
+      [f("error", { error: { type: "overloaded_error", message: "overloaded" } })],
+    ])
+
+    const driver = makeDriver()
+    const { stream: sseStream, written } = stubSseStream()
+    const { sink, anchor, anchorState, lastInjectResult } = buildAnchoredSink(sseStream)
+    const tracker = makeStopTracker()
+
+    const outcomeP = driver.runResponseBufferedSink(up, env, sink, {
+      ...tracker,
+      anchor,
+      anchorState,
+      commitBoundaries: anthropicCommitBoundaries,
+      retryCap: 0,
+    } as RunBufferedOpts)
+
+    // STALL: pull message_start (CAPTURE), park; the idle tick injects the anchor.
+    await drain(40)
+    await clock.advance(15_000)
+    await flush()
+    expect(lastInjectResult()).toBe(true)
+
+    // Release the terminal error segment → the zero-content error terminus flushes.
+    releases[0]()
+    const outcome = await outcomeP
+    expect(outcome.kind).toBe("complete") // H2 commits + the handler fails via acc.streamError (mirrors live)
+
+    const seq = written.map((w) => {
+      const p = parse(w)
+      return p.index === undefined ? p.type : `${p.type}@${p.index}`
+    })
+    // The anchor block@0 opened (start@0 + empty text_delta@0), then closed (stop@0) BEFORE the error.
+    const stop0Idx = seq.indexOf("content_block_stop@0")
+    const errIdx = seq.indexOf("error")
+    expect(stop0Idx).toBeGreaterThanOrEqual(0)
+    expect(errIdx).toBeGreaterThanOrEqual(0)
+    expect(stop0Idx).toBeLessThan(errIdx) // stop@0 precedes error (balanced block structure)
+    // The error trails at the very end; there is NEVER a real content block (@1).
+    expect(seq[seq.length - 1]).toBe("error")
+    expect(seq.some((s) => s === "content_block_start@1")).toBe(false)
+    // Exactly ONE anchor close-off (idempotent — the terminal drain's empty-buffer re-flush short-circuits).
+    const stop0s = written.filter((w) => {
+      const p = parse(w)
+      return p.type === "content_block_stop" && p.index === 0
+    })
+    expect(stop0s).toHaveLength(1)
+    // CLI-safety: at most one block open at a time (the anchor block, opened then closed).
     let open = 0
     let maxOpen = 0
     for (const w of written) {

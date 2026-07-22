@@ -1049,20 +1049,23 @@ export async function runResponseBufferedSink(
   // Shared buffered-frame flush (extracted so the terminal commit AND the block-level boundary
   // commit apply IDENTICAL anchor-aware semantics: heartbeat freeze → one-time anchor close-off →
   // H1 message_start dedup → +1 remap). Returns a discriminated result so the caller maps it to a
-  // ResponseOutcome (never throws out). `isTerminalFlush` gates the anchor close-off
-  // (`content_block_stop@0`): the anchor reserved index 0 and must stay OPEN across ALL block-level
-  // BOUNDARY flushes (defect (b) fix, spec §4.3) so an inter-block idle rides the still-open anchor
-  // with an empty `text_delta@0` (resets CC's 300s watchdog) instead of degrading to a bare ping. It
-  // closes ONLY on (i) the TERMINAL flush (success commit) or (ii) the one-shot RETREAT flush (which
-  // forfeits buffering and hands off to live write-through — the anchor is closed there so the live
-  // continuation's +1-remapped real blocks don't sit under a dangling anchor; locked by
-  // retreat-anchor-collision.test.ts). The OLD `firstFlush` gate closed it at the FIRST flush, which
-  // on the block-level path is block 0's boundary — WRONG (only the first inter-block gap kept the
-  // anchor; every later gap fell back to a bare ping → 300s disconnect). On the whole-response path
-  // (`commitBoundaries===undefined`) the SINGLE flush IS the terminal → `isTerminalFlush:true`,
-  // byte-identical to the previous inline whole-response commit (R1). C1 (spec §3.3): freeze the
-  // heartbeat BEFORE snapshotting `injected` + flushing so a mid-flush timer tick can't inject a
-  // second anchor start(0).
+  // ResponseOutcome (never throws out). SEQUENTIAL anchor (spec 2026-07-22 §3.3): the anchor reserved
+  // index 0 and is closed (`content_block_stop@0`) BEFORE the first real `content_block_start` — the
+  // per-frame close-off in the loop below (`isContentBlockStart` → closeAnchorBeforeReal) does this on
+  // EVERY flush that carries a real block, so at most ONE content block is ever open at a time (the
+  // anchor-COEXIST shape — anchor@0 kept open across real blocks — stalls the Claude Code CLI agent loop,
+  // exp/block-level-anchor-sequential). `isTerminalFlush` drives the TOP-of-flush close-off, which is only
+  // load-bearing for the ZERO-CONTENT terminus (a completion or `error` before any real block — the
+  // per-frame close-off never fires) and the one-shot RETREAT flush (which forfeits buffering and hands
+  // off to live write-through — the anchor is closed there so the live continuation's +1-remapped real
+  // blocks don't sit under a dangling anchor; locked by retreat-anchor-collision.test.ts). Real blocks are
+  // still shifted +1 (a single pre-content anchor holds @0). NOTE: after the anchor closes, an inter-block
+  // idle degrades to a BARE ping (no open block to carry an empty `text_delta@0`); resetting CC's 300s
+  // no-real-content watchdog for >300s inter-block gaps is a SEPARATE concern (docs/todo/
+  // 2026-07-22-client-proxy-keepalive-300s.md). On the whole-response path (`commitBoundaries===undefined`)
+  // the SINGLE flush IS the terminal → `isTerminalFlush:true`, byte-identical to the previous inline
+  // whole-response commit (R1). C1 (spec §3.3): freeze the heartbeat BEFORE snapshotting `injected` +
+  // flushing so a mid-flush timer tick can't inject a second anchor start(0).
   type FlushResult = { kind: "ok" } | { kind: "client-abort" } | { kind: "write-error"; error: unknown }
   const flushBufferedFrames = async (
     frames: Array<ClientFrame>,
@@ -1216,12 +1219,18 @@ export async function runResponseBufferedSink(
             // blocks may follow) → NOT terminal → close-off stays deferred to the real terminus. The later
             // terminal drain (`drained && sawUpstreamError()`) re-enters `flushBufferedFrames(_, true)` with an
             // EMPTY buffer and the `anchorClosed` guard short-circuits the second stop@0 (idempotent).
-            // A recovery candidate starts a fresh semantic generation behind the same delivery
-            // session. Its first committed real block must close the synthetic anchor inherited
-            // from the failed parent BEFORE that block, matching the pre-runtime whole-response
-            // recovery wire. Primary block-level commits keep the anchor open between blocks.
-            const closesInheritedAnchor = attempt > 0 || (opts.sawUpstreamError?.() ?? false)
-            const res = await flushBufferedFrames(buffer, closesInheritedAnchor, { cause: "boundary", boundaryFrame: toWrite }, candidateOpts.transformBufferedFlush)
+            // Under the SEQUENTIAL model the per-frame close-before-real (flushBufferedFrames loop:
+            // `isContentBlockStart` → closeAnchorBeforeReal) closes the anchor BEFORE every real block —
+            // primary AND recovery-candidate alike (a recovery candidate's first committed block also
+            // carries a `content_block_start`, so the loop handles it). The top-of-flush `isTerminalFlush`
+            // close-off is therefore only LOAD-BEARING for the ZERO-CONTENT `error` terminus (no real block
+            // buffered → the per-frame close-off never fires), where it must emit `content_block_stop@0`
+            // BEFORE the forwarded error frame. `sawUpstreamError()` is already true here (`onUpstreamFrame`
+            // ran before this frame reached the loop). The OLD `attempt > 0` term was dead (the per-frame
+            // close-off already covers recovery-candidate blocks) and was removed;
+            // `anchor-multiblock-lifecycle.it.test.ts (c′)` locks the error-terminus ordering.
+            const isErrorTerminusFlush = opts.sawUpstreamError?.() ?? false
+            const res = await flushBufferedFrames(buffer, isErrorTerminusFlush, { cause: "boundary", boundaryFrame: toWrite }, candidateOpts.transformBufferedFlush)
             sink.resumeHeartbeat?.()
             buffer.length = 0
             committedAny = true
