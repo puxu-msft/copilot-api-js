@@ -954,3 +954,11 @@ registry（`docs/rfc/2026-07-21-retry-strategy-registry.md`）6 commit 全 lande
 **实测爆炸半径（为何延后）**：改无条件后 `bun test tests/anthropic tests/config tests/routes` **打爆 20+ 测试**（immediate-keepalive / keepalive buffered-anchor / L2 buffered-retry / live-pump 等），revert 后同套件 2150 pass/0 fail、归因确证。根因：大量 keepalive/buffered-retry 测试**直接设 `state`（非 config 文件）**，每请求无条件 reload 冲掉其 setup。硬修需把这 20+ 测试逐个迁成 config-file-driven（对齐 CC 路由做法）——与「入站 system-prompt 分发 hook」主体不成比例、tangential 高风险。该不对称是**既有状况**、非分发 hook 引入，故独立延后。
 
 **若做需改什么**：`handler-v4.ts:341` 去 `if(payload.system)` 条件；把受影响的 ~20 个 keepalive/buffered-retry/live-pump 测试从「直接改 `state`」迁成「config 文件驱动」（`useIsolatedRuntime` + config fixture，对齐 CC 路由既有测试）。先枚举全受影响测试再动。关联 spec `docs/spec/2026-07-20-inbound-system-prompt-dispatch-hook.md` §3.3。
+
+## monorepo 测试同置（Phase-2）+ core 内部解环排序清单（2026-07-22，monorepo workspace split spec）
+
+- **根因 / 现状**：monorepo 拆分 spec（[../spec/2026-07-22-monorepo-workspace-split.md](../spec/2026-07-22-monorepo-workspace-split.md)）粗粒度先切阶段只把包边界立起来，**654 个测试仍集中在根 `tests/`**（不在各包 `src` 旁），`bunfig.toml` 单一 `[test].preload`（sandbox-paths 地板）、`RESETTERS` 全仓单例表、`useIsolatedRuntime` fixture 都按「单进程跑全套件」设计。
+- **当前行为**：测试与被测包不同置——拆分后「每包 src/tests 内聚」这个目标在测试侧尚未兑现（day-1 有意不搬，654 文件位移是仅次于 core 主体搬迁的高危撞行面）。
+- **理想架构 / 若做需改什么**：测试随 core 内部模块剥离（spec 阶段 4+）逐包物理下沉到 `packages/*/src` 旁；若走每包各自 `bun test`，各包 `bunfig` 各自 `[test].preload` 但**指向同一份共享 sandbox-paths**（放 foundation 或新建 `packages/test-harness`、各包 re-export、绝不各包复制）；`RESETTERS` 表随单例分包、L1 守卫 `resetters-complete.unit.test.ts` 改成每包各自枚举本包 `*ForTests`；同步改 `tests/architecture/*.unit.test.ts` 内硬编码 `import.meta.dir`+`../../src/lib/...` 路径。
+- **为何暂缓**：巨量撞行面、依赖 core 内部先解环到位；是「同置收尾」层、落在结构搬迁之后。**触发条件（值得做）**：core 已剥出真子包、需把对应测试随之下沉时。
+- **关联：core 内部解环排序清单**（spec §6 措施 3，随剥离长期存活）：**state 第一**（~83 importer、SCC 入口）、**anthropic/openai/gemini 第二**（state 解耦后可提 core 层 vendor 纵切）、**pipeline/codec 局部环第三**（cell-assembly 三方环）。每次只剥一个、land 后重评 SCC + madge 环快照只减不增。
