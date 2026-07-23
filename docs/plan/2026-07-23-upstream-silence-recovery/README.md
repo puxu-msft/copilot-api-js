@@ -16,6 +16,7 @@
 
 ## Global Constraints（每阶段隐含包含，逐字来自 spec/CLAUDE.md）
 
+- **🔴 never-false-kill-legit-thinking（用户 2026-07-23 定，硬约束 `[hard]`，凌驾其他取舍）**：**绝不误杀合法长思考。** 合法 heavy-thinking（deferred-header）时长**无上界**（Q5 实测 header 到达 47-231s、原则上更长），且在 20s commit 时刻与真挂起 **信号同形不可区分**（spec §3 实测）。推论：**① B2 只在上游确定性死亡时重发**（RST/transport-close/clean-EOF——此时连接已死、重发不放弃任何在进行的思考）；**绝不**对 `timeout(header-wait)`/`reaper-cancel` 重发（连接可能仍活、上游可能在合法思考，re-dispatch 会从头重算 = 误杀）。**② 任何 wall-clock 计时器都不得在「连接仍活、上游可能在思考」时终止请求**——挂起请求本就会被 GHC 网关自己在 126-206s `rstCode=0`（确定性失败）终止、届时 B2 救援即可；故不需要、也不允许用计时器去猜 A/B。这**收紧了早前 Q6 的「300s 逃生舱」**：B3 fail-fast 默认不得捕获可能的合法思考（见 plan-4 修订）。
 - **无向后兼容负担**：`streamCommitAfterSec` 默认值改动、B2/B3 新配置键，允许一次性迁移、不留双轨包袱。
 - **server-tool 双执行 gate 硬性复用**：B2 fresh dispatch 前必调 `classifyServerExecutionRisk`（`src/lib/pipeline/generation/hedge-policy.ts:153`），触发条件 = 「未向客户端交付真实语义内容 **且** `classifyServerExecutionRisk(finalWire).kind === "none"`」。**禁止**用 `allowServerTools:true` 绕过（那是 hedge 的宽松开关，B2 是默认行为，安全等级不同）。
 - **三 keepalive 模式 wire contract 必须分支处理**（实测表见 FINDINGS.md）：`ping`（默认）无需 remap；`enveloped_ping` 只需 dedup message_start；`empty_text` 才需 close-anchor + index remap。**anchor remap 不是 B2 的通用前提**。
@@ -69,13 +70,22 @@ B1 与 B2-P0 可并行启动（无共享文件）；B2-P1→P6 必须串行（�
 | `driver.runResponseRecovery(upstream, env, reason)` | 新方法，服务 ready-态挂载点，内部复用既有 `coordinator.runRecovery`（需给后者加一个可选 `retryNextStrategy` 覆盖参数，避免 History 标记与既有 buffered-retry 混淆） | B2-P4 |
 | `spliceFreshAttemptFrame(mode, sink, freshFrames)` | 按 keepalive mode 分支的 wire-level 拼接函数，复用 `reconcileLiveFrame` 既有判定；两挂载点共用 | B2-P4 |
 | `precontent-recovery` verdict | History `attempts[]` 新增语义：首个 pre-content 失败 attempt 标记 `discarded`/`failed`（reason=`precontent-recovery`），fresh attempt 是新 attempt 且 winner | B2-P4/P6 |
-| B3 fail-fast 上限 | 配置键（命名待定，暂拟 `stream_precontent_failfast_sec`），默认 ~300s（对齐 `responseHeaderTimeout`），0=禁用 | B3 |
+| B3 fail-fast 上限 | 配置键（命名待定，暂拟 `stream_precontent_failfast_sec`），**默认 0=禁用**（never-false-kill 硬约束：wall-clock 不得捕获合法思考；挂起靠 GHC 确定性 RST + B2 救援）；运维可显式设一个上限 | B3 |
 
 ## 待填参数 / 待用户裁决（不自行拍板，见文末回报）
 
 - **Q1（B1 窗口上限）**：CC pre-header 容忍度**已实测**（`gpt-souls:poc-runner`，2026-07-23，`exp/silence-recovery-gates/FINDINGS.md`）——真 Claude Code 2.1.218 静默 125s 仍成功、`num_turns=1`，**下界 ≥125s**（旧「50-55s」估计已证伪）；**首次失败点未测**（区间 `[125s, 未知)`），最终默认值待补测 130/150/180s 阶梯。⚠ **事故 RST 最早 ~126s，故仅把窗口调到 125s 不能确认覆盖事故**——B1 单独不够，B2 才是主线。本计划把 B1 窗口上限设计成参数化 + clamp、以已知下界为地板。
 - **Q2（B2 根治 vs 退化 B3 判断）**：事故类大 context 请求在 fresh retry 下能否成功——**已实测但未能定论**（`gpt-souls:poc-runner`，2026-07-23）：4 次 270KB 真 GHC 请求全成功、未复现 0 帧干挂，弱推断「事故间歇/瞬态而非大 context 系统性必挂」。这不影响 B2 的架构是否该做（架构缺陷本身独立成立），但影响运维预期（B2 只在"瞬态失败"下生效）。**B2「根治事故」仍标待验证**——上线后须补埋点记录 pre-ready failure 的 fresh-retry 成功率（见 plan-5 backlog）。
-- **Q6（B3 fail-fast 上限取值）**：spec 已给出 3-4 个量化选项交用户，本计划采用「高上限 ~300s、纯逃生舱」的已裁决结论（spec 用户已确认），若后续用户改变主意需回来改 B3 的默认值，不影响结构。
+- **Q6（B3 fail-fast 上限取值）—— 已被 never-false-kill 硬约束收紧（用户 2026-07-23）**：早前选「高上限 ~300s 逃生舱」，但用户随后定下「**绝不误杀合法长思考**」硬约束——合法思考无上界，任何 wall-clock fail-fast 都可能捕获它。故 **B3 wall-clock fail-fast 默认关闭/不捕获可能的合法思考**，改为依赖「GHC 自身在 126-206s 的确定性 RST + B2 救援」处理挂起请求（见 Global Constraints never-false-kill + plan-4 修订）。配置键保留、允许运维显式开启一个上限，但默认不误杀。
+
+## 用户裁决记录（2026-07-23）
+
+- **fork ①（B2 配置键命名）** → 采默认 `precontent_recovery`（占位，实施可改一处）。
+- **fork ②（B2 是否纳入 `timeout(header-wait)`/`reaper-cancel`）** → **排除**（用户硬约束 never-false-kill：对可能仍在合法思考的连接重发 = 误杀）。B2 只在确定性上游死亡（RST/transport-close/clean-EOF）触发。见 Global Constraints + plan-3 Task 4.3。
+- **fork ③（buffered 路径是否尊重 `max_retries=0`）** → 尊重（推荐默认）；buffered B2 集成若复杂可降级 backlog 只做 live。
+- **fork ④（B3 计时器 vs `responseHeaderTimeout` 独立）** → 独立（关注点分层）；但 B3 计时器本身受 never-false-kill 收紧（默认不捕获合法思考）。
+- **Q6（B3 上限）** → 见上，被 never-false-kill 收紧。
+- **实施授权** → 用户已授权继续（B1 + B2-P0 起，走 subagent-driven-development）。
 
 ---
 

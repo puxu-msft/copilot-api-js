@@ -177,10 +177,9 @@ test("returns false when config.preContentRecovery.enabled === false", () => { .
 
 ## Task 4.3：handler-v4.ts 接线（COMMIT 分支 catch 块）
 
-**门控问题（不自行拍板，交主会话/用户）：** `reaper-cancel` 与 `timeout`（header-wait）是否也该走 B2 恢复？
-- **倾向纳入**：这两种失败在客户端视角与"上游 RST"没有本质区别——都是"我方判定这次尝试救不了了"，若语义内容仍未交付，尝试一次 fresh recovery 符合"消解判别伪命题"的精神（reaper-cancel 本身就是"我方主动判定这个请求太老了"，与 B2 的救援目标不冲突——只要 fresh dispatch 本身还在合理的 budget/deadline 内）。
-- **倾向排除**：`timeout`（header-wait timeout，配置的 `responseHeaderTimeout` 到点）本身就是"已经等了很久"的信号，如果 B2 在这个信号上还要再等一次 fresh dispatch 的完整 header-timeout，会显著延长最坏情况下的用户等待——这正是 B3 存在的理由（用一个更短的、明确的、"逃生舱"性质的等待上限替代"再等一次完整 header-timeout"）。
-- **本计划的默认设计**：`shouldAttemptPreContentRecovery` 只对 **HTTPError 分支** 和 **network_error 类（非 HTTPError 的 catch 分支）** 生效；`isAbortError` 的三个子分支（client-abort / reaper-cancel / timeout）**默认不触发 B2**——因为这三者本质上是"我方主动终止"，且都已经有明确的语义化错误帧（"Request cancelled by the stale-request reaper" / "Upstream timed out before sending response headers"），把它们也导入 B2 会让"一次尝试"的语义复杂化（需要考虑"reaper 为什么要 cancel、要不要在 fresh attempt 上重新触发 reaper deadline"这类新问题）。**这是一个待用户确认的范围边界**——若用户认为 timeout/reaper-cancel 也该纳入 B2（例如 header-timeout 本身就是"deferred-header 场景的一部分"，spec §3 的证据支持这一点：deferred-header 长思考在数十到两百秒后才发 header，若 `responseHeaderTimeout` 设得比这个短，会误杀合法请求），可以后续再扩展触发条件，不影响本阶段的接口设计（`shouldAttemptPreContentRecovery` 的参数已经包含了"是什么错误类型"，扩展只是改这个函数内部的分支，不改调用方结构）。
+**范围裁定（用户 2026-07-23 已定，不再是 open）：** `reaper-cancel` 与 `timeout`（header-wait）**排除出 B2**——用户硬约束「**绝不误杀合法长思考**」：这两类失败发生时上游连接可能仍活、上游可能正在合法 heavy-thinking（deferred-header 无上界），对其 re-dispatch 会从头重算 = **放弃并误杀正在进行的合法思考**。挂起请求本就会被 GHC 网关在 126-206s 自行 `rstCode=0`（确定性失败）终止，届时走 B2-on-RST 救援即可——不需要、也不允许用 timeout 去猜 A/B。
+- **本计划裁定设计**：`shouldAttemptPreContentRecovery` 只对 **HTTPError 分支** 和 **network_error 类（非 HTTPError 的 catch 分支，含 socket reset/RST/transport-close）** 生效；`isAbortError` 的三个子分支（client-abort / reaper-cancel / timeout）**都不触发 B2**——client-abort 是客户端已走、reaper-cancel/timeout 是「连接可能仍活、上游可能在思考」（误杀风险）。这是**确定性上游死亡才重发**原则的直接落地。
+- 见 README Global Constraints 的 `never-false-kill-legit-thinking` 硬约束。
 
 - [ ] **Step 1: 写失败测试**（先在 handler 级别写集成测试，覆盖"HTTPError 分支触发恢复"这一个最小场景，验证接线本身是对的）
 

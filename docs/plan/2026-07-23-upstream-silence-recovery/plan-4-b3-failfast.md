@@ -2,9 +2,11 @@
 
 > **依赖：** Plan-3（B2-P4~P6）完成——B3 复用 B2 的"未交付语义内容"判据（`hasDeliveredSemanticContent`）与 gate 组合方式，且 B3 只在 B2 内部重试**耗尽**或**被 gate 拒绝**时才生效（B3 是最后一道防线，不是 B2 的替代）。
 >
-> **已裁决（spec §8 Q6，用户已确认，不再是待决项）：** 高上限 ~300s（≈ `responseHeaderTimeout`），纯逃生舱，零误伤已知合法长思考（观测最长 231s 都保）。
+> **🔴 已被 never-false-kill 硬约束大改（用户 2026-07-23，凌驾早前 Q6「300s 逃生舱」）：** 合法 heavy-thinking 时长**无上界**（Q5 实测 header 47-231s、原则上更长），且与真挂起在观测上不可区分。故**任何有限 wall-clock fail-fast 都可能误杀合法思考**，与硬约束冲突。**B3 wall-clock fail-fast 默认关闭（`0=禁用`）**——挂起请求本就会被 GHC 网关在 126-206s 自行 `rstCode=0`（确定性失败）终止、届时 B2-on-RST 救援，**这条路径 never 误杀合法思考**（只在确定性上游死亡时动作）。配置键**保留**给「明确接受『宁可少数极长合法思考失败也要有限等待上限』取舍」的运维显式开启，但**默认不设上限、不误杀**。
 
-**Goal：** 把"commit 后仍无真实内容"的最坏情况（B2 内部重试也没救回来 / 被 server-tool-risk 拦下）的用户等待，从"最坏 300+s 硬等到 GHC 自己 RST"压到一个**可配、有明确上限、语义清晰**的 client-actionable SSE error（如 `overloaded_error` + 可读文案）。
+**Goal（修订）：** 默认行为 = **不靠计时器猜 A/B、绝不误杀合法思考**；挂起请求靠「GHC 确定性 RST + B2 救援」自然收敛（最坏等待 = GHC 自己 RST 的 126-206s，之后 B2 救）。B3 只作为**可选的、默认关闭的**运维逃生舱：当运维**显式**配置一个上限时，把"commit 后仍无真实内容"的等待压到该上限 + 一个 client-actionable SSE error（如 `overloaded_error`）——但这是运维主动选择的取舍（会误杀超过该上限的合法思考），**不是默认**。
+
+**⚠ 既有 `responseHeaderTimeout`（默认 300s）的 never-false-kill 张力（follow-up，非本 plan 阻塞）：** 它是一个既有的 wall-clock killer——原则上会杀 >300s 的合法思考（Q5 实测最长 231s < 300s，故实践中罕见，但无上界故理论上可能）。严格遵守 never-false-kill 需评估：是否把 header-wait 从「wall-clock 死线」改为「连接健康 / 确定性失败」判据（h2 PING 仍 ACK 且连接活 = 继续等，不杀）。这超出 B1/B2/B3 新增范围、涉及既有传输超时机制，**记为 follow-up backlog（plan-5 Task 6.3）**，别在本 plan 里静默改既有 300s 行为。
 
 ## Files 清单
 
