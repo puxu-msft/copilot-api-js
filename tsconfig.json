@@ -33,6 +33,8 @@
       "~/setup-claude-code": ["./packages/cli/src/setup-claude-code"],
       "~/setup-codex": ["./packages/cli/src/setup-codex"],
       "~/start": ["./packages/cli/src/start"],
+      "~/lib/tui/sensitive-output": ["./packages/foundation/src/sensitive-output"],
+      "~/lib/utils": ["./packages/foundation/src/utils"],
       "~/*": ["./src/*"]
     }
   },
