@@ -978,7 +978,8 @@ export const TimeoutsConfigSchema = z
     response_header: nullableNonnegativeInt(),
     /**
      * Per-model stream-idle timeout override (seconds), keyed by model-name
-     * substring with `"*"` wildcard. A match wins over `stream_idle`; 0 = disabled.
+     * substring OR glob (`*`/`?`) with `"*"` wildcard (specificity: literal > glob >
+     * `"*"`, then longest key). A match wins over `stream_idle`; 0 = disabled.
      * Bundled default `{ gpt-5.5: 600 }`. Per-key merged with the user table
      * (a user `{}` does NOT wipe the bundled entry). App-guard only — does not
      * touch the undici dispatcher. See ADR 2026-07-12-per-model-idle-timeout-is-app-guard-only.
