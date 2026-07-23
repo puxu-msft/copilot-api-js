@@ -4,7 +4,7 @@
 >
 > **修订说明（2026-07-23，v2，经 GPT 对抗审 + 逐条实测证实后大改）**：v1 严重低估了 token 的所有权收敛面（把「消费者」误算成 2，实为 **8 个**直接读 token-owned state 字段的生产文件）、漏列第 7 条依赖（`utils/sleep`）、未定义 composition root / 测试隔离契约 / 生命周期 owner。评审报告见 `exp/monorepo-split/review-token-plan-gpt.md`。本 v2 补齐。
 >
-> **实施状态（2026-07-23）**：**C1 `3acec08f` / C2 `80b3cc07` / C6 `33f5a355` 已 landed**（foundation 清理 + GHC auth，均 test:backend 6305/0-fail）。C6 应用户要求提前一次性完成。**剩余 C3/C4/C5/C7 交接见 [HANDOFF.md](HANDOFF.md)**。
+> **实施状态（2026-07-23）**：**全部 landed（C1–C7 + lifecycle-hardening）**，每 commit typecheck + test:backend + 精确 lint 绿。commit DAG：C1 `3acec08f` / C2 `80b3cc07` / C6 `33f5a355`（foundation 清理 + GHC auth，早做）→ C3 `61e78be4`（composition-root seam）→ C4 `28d27f5a`（注入 + runtime 单例 + 收敛全链）→ hardening `3dfb923e`（dispose 计时器泄漏守卫，C3/C4 异模型审 0-blocker 后修）→ C5 `faf2a896`（凭据所有权反转进 token store，单一 SoT）→ C7 `705f4f09`（物理抽包 `@hsupu/ghc-proxy-token` + 边界守卫 + build/bin smoke）。DAG 乱序说明见 [HANDOFF.md](HANDOFF.md)。token 包现对 core 零依赖（机器可验证边界），是后续 domain-peel（models / transport）的活模板。
 
 **Goal:** 把 GitHub/Copilot auth 生命周期（`src/lib/token/`）从 core SCC 剥出为独立包 `@hsupu/ghc-proxy-token`，只依赖 `foundation` + **注入契约**（fetch / paths / runtime-config），**对 core 零依赖**（机器可验证边界守卫）。
 

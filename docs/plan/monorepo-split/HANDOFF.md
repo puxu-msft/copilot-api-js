@@ -1,5 +1,7 @@
 # HANDOFF：token 抽包 剩余任务（C3/C4/C5/C7）
 
+> **✅ 全部 landed（2026-07-23）**：C3 `61e78be4` → C4 `28d27f5a` → hardening `3dfb923e` → C5 `faf2a896` → C7 `705f4f09`，每 commit typecheck + test:backend（6315/0）+ 精确 lint 绿。token 包已抽为 `@hsupu/ghc-proxy-token`、对 core 零依赖（`tests/architecture/package-boundaries.unit.test.ts` 机器守卫 + ESLint 双向强制）。本文档保留作为**执行叙事 + 踩坑记录**归档；实施细节以各 commit 为准。
+>
 > 面向接手的新会话。**权威 plan**：[plan-token-package.md](plan-token-package.md)（v2.2，经 3 轮异模型对抗审 0 blocker）。本文只记**当前落地状态 + 剩余任务 + 踩坑**，细节回 plan。工作在隔离 worktree `.worktrees/monorepo-split`（分支 `feat/monorepo-split`）。
 
 ## 当前状态（已 landed，均 test:backend 6305/0-fail 绿）
