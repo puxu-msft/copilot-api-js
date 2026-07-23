@@ -136,3 +136,28 @@ if (canContinue) { continuationCount++; /* → runContinuation（§4）*/ }
 - **顶层决策（新增第 5 个 verdict）经 reviewer 独立核实为合理**，未被推翻（committed 排他 :1048 + commitTerminal 强制结算 :1098/1100 属实）。
 
 > **状态**：Critical 全部在计划层已修正。进入实现前**建议再过一轮异模型审确认修正到位**（尤其 §4 帧变换链画完后），或直接进实现并在 executor 落地后合并态审。
+
+## 11. 落地记录（2026-07-23,分支 `feat/continuation-retry`,未合并 master）
+
+P2(Anthropic 续写)**已完整落地并端到端验证**。提交序:
+
+1. `d151f288` SSOT 新增 `continued` verdict + `continuation` role(typecheck 逐个吃错穷尽镜像:request.ts/context/history/candidate-state)。
+2. `26d1fc4d` `coordinator.runContinuation`(parent 结算 `continued` 非 failed)。
+3. `cd2fa29c` PoC P-A(真 SDK 接受缝合流 + C3 offset 坐实,`exp/continuation-stitch/`)。
+4. `a459fb31` driver committedAny 旁路续写分支 + 缝合重写(wire-index offset + message_start dedup;C3 mutation-verified)。
+5. `ba3e9e02` handler 生产接线(ledger/extractor/hooks + registerAnthropicContinuationBuilder)+ SDK oracle e2e(端到端活线证明)。
+6. `089b8310` telemetry 拆分(preFirstBlock vs continuation)+ Important-2 recordAttemptFailure。
+7. `bdb06513` 合并态审 remediation(见下)。
+
+**Important-1 解决(vs 计划)**:无独立 executor 文件——续写复用 driver `for(;;)` 循环 + `coordinator.runContinuation`。被掐腿无 message_stop 故无需抑制,只丢 message_start dedup + wire-index offset(scalar,primary 腿 offset 0 惰性)。
+
+**合并态异模型审(gpt-souls:reviewer)findings 处理(`bdb06513`,逐条 file:line 复核)**:
+- [Critical-1 = 范围澄清,非阻塞] D4 全端点未落地——但 CC/Responses 属 P4-P6 分阶段,P2 仅 Anthropic(kickoff/plan 界定)。端点矩阵已写进 spec 头。
+- [Critical-2 = 真修] `history/v3/projection.ts` `record.attempts.length`(imported record 上 undefined→TypeError)→ 改回 `record.dispatches.length`。**stale-branch bug**:master 已修(分支落后 32 commit),非续写代码;但**先前把这 4 个 History V3 fail 当「无关预存」dismiss 是错的**(应对照 master 跑而非信 HANDOFF 注)。414 history 测全绿。
+- [Important-1 = 诚实化+backlog] `synthetic:"continuation"` provenance marker 未实现,driver 注释曾谎称已打→改诚实 + 记 `docs/todo/2026-07-22-continuation-synthetic-provenance.md`(纯可观测性缺口)。
+- [Important-2 = 真修] 续写预算超候选上限(`maxTotalCandidates ?? 5`,`max_retries≥5` 时第 6 候选 throw)→ 根因修:续写 best-effort,dispatch 包 try/catch 优雅降级 `continuation-exhausted` 而非崩;候选上限从 `deps.maxRetries` 推导。
+- [Minor = 补测] chained 续写(多跳)成功走**生产路径** SDK e2e 断言(mock 驱不动 runContinuation 候选会话终态);mock 侧加优雅预算降级测。
+
+**验证**:full `test:backend` exit 0(4 History fail 已清,无回归);continuation-flow.it(mock)+ continuation-sdk.it(真 SDK,含 thinking-offset + chained)+ coordinator.it + protect-streaming-stats.unit 全绿;typecheck + lint 干净。
+
+**剩余(非 P2)**:P3 incident 复现 e2e、P4-P6 CC/Responses 续写、P7 默认翻转(依赖 >300s keepalive)、synthetic provenance marker(backlog)。

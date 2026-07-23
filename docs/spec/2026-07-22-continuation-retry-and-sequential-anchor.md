@@ -12,6 +12,18 @@
 
 ---
 
+> **✅ 实施状态(2026-07-23,分支 `feat/continuation-retry`,未合并 master):P2 = Anthropic 续写已完整落地并端到端验证**(SSOT `continued` verdict + `runContinuation` + driver 旁路缝合分支 + handler 接线 + telemetry 拆分;真 `@anthropic-ai/sdk` e2e 证缝合流,含 thinking-offset 与 chained 多跳)。合并态异模型审 2 Critical + 2 Important 已修。**端点矩阵(D4 全端点分阶段,当前仅 Anthropic 落地)**:
+>
+> | 端点 | 块级缓冲 | 续写 | 状态 |
+> |---|---|---|---|
+> | Anthropic messages | ✅ | ✅ **已落地+验证(P2)** | 续写默认 on,需 `protect_streaming_generation` 开块级才激活 |
+> | Responses HTTP | ✅(已有) | ❌ 待 **P4** | builder/extractor/hooks 未接线 |
+> | CC | ⚠️ terminal-only | ❌ 待 **P5** | 需先升块级 |
+> | Responses WS | ⚠️ terminal-only | ❌ 待 **P6** | 需先升块级 + WS 传输门 |
+> | Gemini | — | 排除(N1) | — |
+>
+> 权威实施细节见 plan `.../plan-2b-continuation-executor.md` §11。
+
 ## 1. 背景与问题（Why）
 
 ### 1.1 实证 incident
