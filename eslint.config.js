@@ -395,4 +395,40 @@ export default defineConfigWithVueTs(
       ],
     },
   },
+  // ── Monorepo layer boundary: core/server must NOT import the cli package ──
+  // cli is the DAG top (cli → core/server is legal); this guards the reverse.
+  // Covers the eventual package name and the transitional `~/<clifile>` alias.
+  // (Mirrors the "core/server source never imports the cli package" test.)
+  // Uses @typescript-eslint/no-restricted-imports (distinct rule id) so it
+  // COEXISTS with the core `no-restricted-imports` blocks already targeting
+  // src/lib/** and src/routes/** (flat-config replaces, not merges, same-id
+  // rule options — see the tui blocks above for the same technique).
+  {
+    files: ["src/lib/**/*.ts", "src/routes/**/*.ts", "src/server.ts"],
+    rules: {
+      "@typescript-eslint/no-restricted-imports": [
+        "error",
+        {
+          patterns: [
+            {
+              group: [
+                "@hsupu/ghc-proxy-cli",
+                "@hsupu/ghc-proxy-cli/*",
+                "~/main",
+                "~/auth",
+                "~/debug",
+                "~/logout",
+                "~/list-claude-code",
+                "~/setup-claude-code",
+                "~/setup-codex",
+                "~/start",
+              ],
+              message:
+                "core/server is below cli in the layer DAG — it must never import cli entry/command files. See spec §3.1/§4.",
+            },
+          ],
+        },
+      ],
+    },
+  },
 )

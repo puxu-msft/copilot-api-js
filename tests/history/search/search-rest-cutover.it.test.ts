@@ -93,7 +93,7 @@ function commitOperation(dbPath: string, id: string, needle: string): void {
   closeDatabase()
 }
 
-const devEntryPath = path.resolve(import.meta.dir, "..", "..", "..", "src", "main.ts")
+const devEntryPath = path.resolve(import.meta.dir, "..", "..", "..", "packages", "cli", "src", "main.ts")
 
 function spawnSidecar(args: ReadonlyArray<string>): ReturnType<typeof Bun.spawn> {
   return Bun.spawn([process.execPath, devEntryPath, "history-search-daemon", ...args], { stdout: "ignore", stderr: "ignore" })

@@ -4,7 +4,7 @@ import {
   test,
 } from "bun:test"
 
-import { start } from "../../src/start"
+import { start } from "~/start"
 
 test("start 命令声明 --restart 布尔 flag（默认 false）", () => {
   // `start.args` 的 citty 类型是 `Resolvable<T>`（含 `T | Promise<T> | (() => T)` 联合），

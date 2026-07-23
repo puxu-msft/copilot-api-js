@@ -7,9 +7,10 @@ import {
 } from "citty"
 import consola from "consola"
 
+import { historySearchDaemonCommand } from "~/lib/history/search/daemon-entry"
+
 import { login } from "./auth"
 import { debug } from "./debug"
-import { historySearchDaemonCommand } from "./lib/history/search/daemon-entry"
 import { listClaudeCode } from "./list-claude-code"
 import { logout } from "./logout"
 import { setupClaudeCode } from "./setup-claude-code"

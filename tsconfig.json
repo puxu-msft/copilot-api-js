@@ -25,6 +25,14 @@
       "~/lib/atomic-fs": ["./packages/foundation/src/atomic-fs"],
       "~/lib/process-identity": ["./packages/foundation/src/process-identity"],
       "~/lib/repetition-detector": ["./packages/foundation/src/repetition-detector"],
+      "~/main": ["./packages/cli/src/main"],
+      "~/auth": ["./packages/cli/src/auth"],
+      "~/debug": ["./packages/cli/src/debug"],
+      "~/logout": ["./packages/cli/src/logout"],
+      "~/list-claude-code": ["./packages/cli/src/list-claude-code"],
+      "~/setup-claude-code": ["./packages/cli/src/setup-claude-code"],
+      "~/setup-codex": ["./packages/cli/src/setup-codex"],
+      "~/start": ["./packages/cli/src/start"],
       "~/*": ["./src/*"]
     }
   },

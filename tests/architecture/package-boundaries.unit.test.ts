@@ -77,4 +77,30 @@ describe("package import boundaries", () => {
       expect(foundationHasForbiddenImport(source), file).toBe(false)
     }
   })
+
+  // core (src/lib, src/routes, src/server.ts) is BELOW cli in the layer DAG:
+  // it must never import the cli package. (cli → core/server is legal; this
+  // guards the reverse.) Detects both the transitional `~/<clifile>` alias and
+  // the eventual `@hsupu/ghc-proxy-cli` package name.
+  test("core/server source never imports the cli package", async () => {
+    const CLI_FILES = ["main", "auth", "debug", "logout", "list-claude-code", "setup-claude-code", "setup-codex", "start"]
+    const importsCli = (source: string): boolean => {
+      if (/from ["']@hsupu\/ghc-proxy-cli/.test(source)) return true
+      const aliasCli = new RegExp(String.raw`from ["']~/(?:${CLI_FILES.join("|")})["']`)
+      return aliasCli.test(source)
+    }
+    // Positive control: the detector must actually fire.
+    expect(importsCli('import { start } from "~/start"')).toBe(true)
+    expect(importsCli('import { x } from "@hsupu/ghc-proxy-cli"')).toBe(true)
+    expect(importsCli('import { y } from "~/lib/state"')).toBe(false)
+
+    for (const dir of ["src/lib", "src/routes"]) {
+      const files = await sourceFiles(path.join(repoRoot, dir))
+      for (const file of files) {
+        expect(importsCli(await readFile(file, "utf8")), file).toBe(false)
+      }
+    }
+    // src/server.ts (stays in src, belongs to the server package)
+    expect(importsCli(await readFile(path.join(repoRoot, "src/server.ts"), "utf8"))).toBe(false)
+  })
 })

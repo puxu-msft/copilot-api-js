@@ -3,24 +3,24 @@
 import { defineCommand } from "citty"
 import consola from "consola"
 
-import { applyConfigToState } from "./lib/config/config"
+import { applyConfigToState } from "~/lib/config/config"
 import {
   //
   PATHS,
   ensurePaths,
-} from "./lib/config/paths"
-import { initProxy } from "./lib/proxy"
-import { setCliState } from "./lib/state"
+} from "~/lib/config/paths"
+import { initProxy } from "~/lib/proxy"
+import { setCliState } from "~/lib/state"
 import {
   //
   DeviceAuthProvider,
   FileTokenProvider,
-} from "./lib/token"
+} from "~/lib/token"
 import {
   //
   registerSensitiveOutput,
   writeSensitiveOnce,
-} from "./lib/tui/sensitive-output"
+} from "~/lib/tui/sensitive-output"
 
 interface RunAuthOptions {
   verbose: boolean

@@ -5,27 +5,26 @@ import { dirname } from "node:path"
 import invariant from "tiny-invariant"
 
 import { atomicWriteText } from "~/lib/atomic-fs"
-
-import { applyCodexConfig } from "./lib/codex-config"
-import { applyConfigToState } from "./lib/config/config"
+import { applyCodexConfig } from "~/lib/codex-config"
+import { applyConfigToState } from "~/lib/config/config"
 import {
   //
   ensurePaths,
   PATHS,
-} from "./lib/config/paths"
-import { cacheVSCodeVersion } from "./lib/copilot-api"
+} from "~/lib/config/paths"
+import { cacheVSCodeVersion } from "~/lib/copilot-api"
 import {
   //
   cacheModels,
   type Model,
-} from "./lib/models/client"
-import { initProxy } from "./lib/proxy"
+} from "~/lib/models/client"
+import { initProxy } from "~/lib/proxy"
 import {
   //
   setCliState,
   state,
-} from "./lib/state"
-import { initTokenManagers } from "./lib/token"
+} from "~/lib/state"
+import { initTokenManagers } from "~/lib/token"
 
 /** Preferred order when auto-selecting a default reasoning effort from a model's capabilities. */
 const EFFORT_PREFERENCE = ["high", "medium", "low", "minimal", "xhigh", "max"] as const

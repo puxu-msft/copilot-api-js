@@ -78,7 +78,7 @@ function commitOperation(dbPath: string, id: string, needle: string): void {
   closeDatabase()
 }
 
-const devEntryPath = path.resolve(import.meta.dir, "..", "..", "..", "src", "main.ts")
+const devEntryPath = path.resolve(import.meta.dir, "..", "..", "..", "packages", "cli", "src", "main.ts")
 
 /** Spawn the sidecar service exactly as an operator/systemd would: no
  *  supervising parent process of our own beyond bookkeeping the child handle

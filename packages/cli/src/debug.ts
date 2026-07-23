@@ -5,29 +5,31 @@ import consola from "consola"
 import fs from "node:fs/promises"
 import os from "node:os"
 
-import { applyConfigToState } from "./lib/config/config"
+import { applyConfigToState } from "~/lib/config/config"
 import {
   //
   ensurePaths,
   PATHS,
-} from "./lib/config/paths"
-import { getModels } from "./lib/models/client"
-import { initProxy } from "./lib/proxy"
+} from "~/lib/config/paths"
+import { getModels } from "~/lib/models/client"
+import { initProxy } from "~/lib/proxy"
 import {
   //
   setCliState,
   setCopilotToken,
   setGitHubToken,
   state,
-} from "./lib/state"
-import { GitHubTokenManager } from "./lib/token"
+} from "~/lib/state"
+import { GitHubTokenManager } from "~/lib/token"
 import {
   //
   getCopilotToken,
   getCopilotUsage,
   type QuotaDetail,
-} from "./lib/token/copilot-client"
-import { getGitHubUser } from "./lib/token/github-client"
+} from "~/lib/token/copilot-client"
+import { getGitHubUser } from "~/lib/token/github-client"
+
+import packageJson from "../../../package.json"
 
 interface DebugInfo {
   version: string
@@ -53,17 +55,9 @@ interface RunDebugOptions {
 }
 
 async function getPackageVersion(): Promise<string> {
-  try {
-    const packageJsonPath = new URL("../package.json", import.meta.url).pathname
-    // @ts-expect-error https://github.com/sindresorhus/eslint-plugin-unicorn/blob/v59.0.1/docs/rules/prefer-json-parse-buffer.md
-    // JSON.parse() can actually parse buffers
-    const packageJson = JSON.parse(await fs.readFile(packageJsonPath)) as {
-      version: string
-    }
-    return packageJson.version
-  } catch {
-    return "unknown"
-  }
+  // Version is inlined at build time from the root package.json (works in both
+  // dev and the bundled dist, independent of import.meta.url location).
+  return packageJson.version
 }
 
 function getRuntimeInfo() {

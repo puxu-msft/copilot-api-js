@@ -150,7 +150,7 @@ function killExact(proc: Subprocess, realPid: number | undefined): void {
 export async function spawnHandoverProxy(opts: { port: number; xdgDataHome: string; extraArgs?: Array<string> }): Promise<SpawnedHandoverProxy> {
   if (opts.port === 4141) throw new Error("refusing to spawn on 4141 (the user's main server)")
 
-  const proc: Subprocess = spawn(["bun", "run", "./src/main.ts", "start", "--port", String(opts.port), ...(opts.extraArgs ?? [])], {
+  const proc: Subprocess = spawn(["bun", "run", "./packages/cli/src/main.ts", "start", "--port", String(opts.port), ...(opts.extraArgs ?? [])], {
     env: { ...process.env, XDG_DATA_HOME: opts.xdgDataHome },
     stdout: "pipe",
     stderr: "pipe",

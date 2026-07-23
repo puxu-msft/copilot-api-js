@@ -52,7 +52,7 @@ export async function spawnProxy(opts: { port: number; configYaml: string }): Pr
   copyFileSync(realGithubTokenPath(), join(appDir, "github_token"))
   writeFileSync(join(appDir, "config.yaml"), opts.configYaml)
 
-  const proc: Subprocess = spawn(["bun", "run", "./src/main.ts", "start", "--port", String(opts.port)], {
+  const proc: Subprocess = spawn(["bun", "run", "./packages/cli/src/main.ts", "start", "--port", String(opts.port)], {
     env: { ...process.env, XDG_DATA_HOME: xdg },
     stdout: "pipe",
     stderr: "pipe",

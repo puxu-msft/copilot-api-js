@@ -5,88 +5,86 @@ import consola from "consola"
 import path from "node:path"
 import { getProxyForUrl } from "proxy-from-env"
 
-import {
-  //
-  getProcessIdentity,
-  initProcessIdentity,
-} from "~/lib/process-identity"
+import type { PidfileContent } from "~/lib/restart/pidfile"
 
-import type { PidfileContent } from "./lib/restart/pidfile"
-
-import packageJson from "../package.json"
 import {
   //
   initAdaptiveRateLimiter,
   setMockRateLimiterThrottled,
   setRateLimitPublisher,
-} from "./lib/adaptive-rate-limiter"
-import { loadPersistedFeatureNegotiation } from "./lib/anthropic/feature-negotiation"
+} from "~/lib/adaptive-rate-limiter"
+import { loadPersistedFeatureNegotiation } from "~/lib/anthropic/feature-negotiation"
 import {
   //
   applyConfigToState,
   ConfigParseError,
   loadRawConfigFile,
-} from "./lib/config/config"
+} from "~/lib/config/config"
 import {
   //
   PATHS,
   ensurePaths,
-} from "./lib/config/paths"
-import { snapshotWithSummary } from "./lib/context/activity-summary"
-import { initRequestContextManager } from "./lib/context/manager"
-import { cacheVSCodeVersion } from "./lib/copilot-api"
-import { initDiagnosticLogger } from "./lib/diagnostics"
+} from "~/lib/config/paths"
+import { snapshotWithSummary } from "~/lib/context/activity-summary"
+import { initRequestContextManager } from "~/lib/context/manager"
+import { cacheVSCodeVersion } from "~/lib/copilot-api"
+import { initDiagnosticLogger } from "~/lib/diagnostics"
 import {
   //
   attachBootstrapDiagnosticSpool,
   attachStructuredFileSink,
   disableStructuredFileLogging,
-} from "./lib/diagnostics/file"
+} from "~/lib/diagnostics/file"
 import {
   //
   initHistory,
   setHistoryPublisher,
   startHistoryBackfills,
-} from "./lib/history"
-import { loadPersistedLimits } from "./lib/models/calibration"
-import { cacheModels } from "./lib/models/client"
-import { normalizeForMatching } from "./lib/models/model-name"
-import { startModelRefreshLoop } from "./lib/models/refresh-loop"
-import { initBus } from "./lib/observability"
-import { toActiveRequestWire } from "./lib/observability/active-request-wire"
-import { installConsolaRepublish } from "./lib/observability/republish"
-import { attachCalibrationSink } from "./lib/observability/sinks/calibration"
-import { attachCalibrationFailureSink } from "./lib/observability/sinks/calibration-failure"
-import { attachTelemetrySink } from "./lib/observability/sinks/telemetry"
-import { attachWsSink } from "./lib/observability/sinks/ws"
-import { setRequestLinePublisher } from "./lib/observability/synthetic-request-line"
-import { loadUpstreamHookSafe } from "./lib/pipeline/hooks/loader"
-import { initProxy } from "./lib/proxy"
+} from "~/lib/history"
+import { loadPersistedLimits } from "~/lib/models/calibration"
+import { cacheModels } from "~/lib/models/client"
+import { normalizeForMatching } from "~/lib/models/model-name"
+import { startModelRefreshLoop } from "~/lib/models/refresh-loop"
+import { initBus } from "~/lib/observability"
+import { toActiveRequestWire } from "~/lib/observability/active-request-wire"
+import { installConsolaRepublish } from "~/lib/observability/republish"
+import { attachCalibrationSink } from "~/lib/observability/sinks/calibration"
+import { attachCalibrationFailureSink } from "~/lib/observability/sinks/calibration-failure"
+import { attachTelemetrySink } from "~/lib/observability/sinks/telemetry"
+import { attachWsSink } from "~/lib/observability/sinks/ws"
+import { setRequestLinePublisher } from "~/lib/observability/synthetic-request-line"
+import { loadUpstreamHookSafe } from "~/lib/pipeline/hooks/loader"
+import {
+  //
+  getProcessIdentity,
+  initProcessIdentity,
+} from "~/lib/process-identity"
+import { initProxy } from "~/lib/proxy"
 import {
   //
   initRequestTelemetry,
   runTelemetryJsonBackfill,
-} from "./lib/request-telemetry"
-import { notifyReady } from "./lib/restart/notify"
+} from "~/lib/request-telemetry"
+import { notifyReady } from "~/lib/restart/notify"
 import {
   //
   removePidfileIfOwnedBySelf,
   writePidfile,
-} from "./lib/restart/pidfile"
-import { isSupervised } from "./lib/restart/supervisor-env"
+} from "~/lib/restart/pidfile"
+import { isSupervised } from "~/lib/restart/supervisor-env"
 import {
   //
   resolveManualStartup,
   signalPredecessorHandoff,
-} from "./lib/restart/takeover"
-import { startServer } from "./lib/serve"
+} from "~/lib/restart/takeover"
+import { startServer } from "~/lib/serve"
 import {
   //
   setServerInstance,
   setShutdownPublisher,
   setupShutdownHandlers,
   waitForShutdown,
-} from "./lib/shutdown"
+} from "~/lib/shutdown"
 import {
   //
   setCliState,
@@ -94,18 +92,20 @@ import {
   setTokenBasedBilling,
   state,
   getRawModels,
-} from "./lib/state"
-import { initTokenManagers } from "./lib/token"
-import { getCopilotUsage } from "./lib/token/copilot-client"
-import { attachTerminalUi } from "./lib/tui"
+} from "~/lib/state"
+import { initTokenManagers } from "~/lib/token"
+import { getCopilotUsage } from "~/lib/token/copilot-client"
+import { attachTerminalUi } from "~/lib/tui"
 import {
   //
   createWebSocketAdapter,
   setConnectedDataFactory,
-} from "./lib/ws"
-import { registerWsRoutes } from "./routes"
-import { normalizeExternalUiUrl } from "./routes/ui/route"
-import { createServer } from "./server"
+} from "~/lib/ws"
+import { registerWsRoutes } from "~/routes"
+import { normalizeExternalUiUrl } from "~/routes/ui/route"
+import { createServer } from "~/server"
+
+import packageJson from "../../../package.json"
 
 /** Parse an integer from a string, returning a default if the result is NaN. */
 function parseIntOrDefault(value: string, defaultValue: number): number {

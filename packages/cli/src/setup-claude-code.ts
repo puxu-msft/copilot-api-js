@@ -13,21 +13,21 @@ import {
 } from "node:path"
 import invariant from "tiny-invariant"
 
-import { applyConfigToState } from "./lib/config/config"
-import { ensurePaths } from "./lib/config/paths"
-import { cacheVSCodeVersion } from "./lib/copilot-api"
+import { applyConfigToState } from "~/lib/config/config"
+import { ensurePaths } from "~/lib/config/paths"
+import { cacheVSCodeVersion } from "~/lib/copilot-api"
 import {
   //
   cacheModels,
   type Model,
-} from "./lib/models/client"
-import { initProxy } from "./lib/proxy"
+} from "~/lib/models/client"
+import { initProxy } from "~/lib/proxy"
 import {
   //
   setCliState,
   state,
-} from "./lib/state"
-import { initTokenManagers } from "./lib/token"
+} from "~/lib/state"
+import { initTokenManagers } from "~/lib/token"
 
 /**
  * 1M-context band: Claude Code switches to its 1M-context client path only
