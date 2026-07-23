@@ -1,6 +1,6 @@
 /**
- * 通用「模型名 × 模式」匹配 primitive。承载 glob 编译（纯）、family-prefix vs glob
- * 分派、能力列表的「positive 命中且 negative 未命中」求值，以及 per-model map 键匹配。
+ * 通用「模型名 × 模式」匹配 primitive。承载 glob 编译（纯）、glob vs 精确分派、
+ * 能力列表的「positive 命中且 negative 未命中」求值，以及 per-model map 键匹配。
  *
  * 归属 `models/` 而非 `anthropic/`：它是模型名语义、被 `anthropic/features.ts`、
  * `anthropic/per-model-config.ts`、`anthropic/header-policy/header-glob-strip.ts` 与
@@ -31,14 +31,17 @@ export function globToRegExp(pattern: string): RegExp {
 
 /**
  * 单模式对单候选：先对两侧归一，再按是否含元字符分派——
- * 含 `*`/`?` → 锚定 glob；否则 → family 前缀（`n === np || n.startsWith(np + "-")`，
- * dash 边界，逐字节保持旧 matchModelCapability 语义）。
+ * 含 `*`/`?` → 锚定 glob；否则 → **精确匹配**（`n === np`）。
+ *
+ * family 覆盖（覆盖「一整代 Claude」）一律用显式 glob 表达，如 `claude-opus-4*` 或
+ * `claude-opus-4-*`。旧版的隐式 family-前缀（`n.startsWith(np + "-")`）已退役：glob 落地后
+ * 它是冗余且隐晦的第二条覆盖路径，去掉后 glob-free token 语义收敛为单一、可预测的精确匹配。
  */
 export function matchesModelPattern(candidate: string, pattern: string): boolean {
   const n = normalizeForMatching(candidate)
   const np = normalizeForMatching(pattern)
   if (hasGlobMeta(np)) return globToRegExp(np).test(n)
-  return n === np || n.startsWith(`${np}-`)
+  return n === np
 }
 
 /**

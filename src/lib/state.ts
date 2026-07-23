@@ -266,9 +266,10 @@ export interface State {
 
   /**
    * Config-driven model-capability allowlists (`anthropic.model_capabilities`). Each is a list of
-   * normalized model-name "family" prefixes; a model has the capability when its normalized id
-   * equals an entry or starts with `entry + "-"` (see `features.ts:matchModelCapability`). Bundled
-   * defaults mirror GHC's capability checks; editing config adds/removes models without code changes.
+   * model-name patterns; a glob-free entry matches EXACTLY (normalized), and family coverage uses an
+   * explicit glob (`*`/`?`), e.g. `claude-opus-4*`. `!`-prefixed entries subtract (see
+   * `model-pattern.ts:modelMatchesPatternList`). Bundled defaults mirror GHC's capability checks;
+   * editing config adds/removes models without code changes.
    */
   readonly contextEditingModels: ReadonlyArray<string>
   readonly interleavedThinkingModels: ReadonlyArray<string>
@@ -1941,14 +1942,14 @@ export const CONFIG_MANAGED_DEFAULTS = {
   extendedCacheTtlToolsSystem: "1h" as CacheTtl,
   extendedCacheTtlMessages: "5m" as CacheTtl,
   extendedCacheTtlModels: [
-    "claude-fable-5",
-    "claude-opus-4-5",
-    "claude-opus-4-6",
-    "claude-opus-4-7",
-    "claude-opus-4-8",
-    "claude-sonnet-4-5",
-    "claude-sonnet-4-6",
-    "claude-haiku-4-5",
+    "claude-fable-5*",
+    "claude-opus-4-5*",
+    "claude-opus-4-6*",
+    "claude-opus-4-7*",
+    "claude-opus-4-8*",
+    "claude-sonnet-4-5*",
+    "claude-sonnet-4-6*",
+    "claude-haiku-4-5*",
   ] as ReadonlyArray<string>,
   nonDeferredTools: [] as ReadonlyArray<string>,
   rewriteSystemReminders: false as const,
@@ -1983,30 +1984,31 @@ export const CONFIG_MANAGED_DEFAULTS = {
   // Per-strategy retry-registry opt-out (`retry.strategies.<configKey>.enabled`, RFC §3.4). Empty by
   // default = all 16 registry entries enabled (byte-equivalent to the pre-config-switch behavior).
   retryStrategies: {} as Readonly<Record<string, { enabled?: boolean }>>,
-  // Model-capability allowlists (family prefixes; see features.ts:matchModelCapability). Mirror GHC.
-  contextEditingModels: ["claude-haiku-4-5", "claude-sonnet-4", "claude-opus-4", "claude-opus-41"] as ReadonlyArray<string>,
+  // Model-capability allowlists (explicit globs; see features.ts:matchModelCapability / model-pattern.ts).
+  // A glob-free entry is now an EXACT match — family coverage ("a whole Claude generation") must use an
+  // explicit `*`, e.g. `claude-opus-4*`. Mirror GHC's capability checks.
+  contextEditingModels: ["claude-haiku-4-5*", "claude-sonnet-4*", "claude-opus-4*", "claude-opus-41*"] as ReadonlyArray<string>,
   // Tool-search is default-allow for Claude ≥4.5 (see features.ts:toolSearchDefaultAllow); this map
   // only holds per-model force-on/off overrides. Empty by default.
   toolSearchOverrides: {} as Record<string, boolean>,
   // Memory tool: default OFF (CAPI acceptance of memory_20250818 unverified). memoryModels mirrors GHC
-  // modelSupportsMemory — the BARE `claude-sonnet-4` / `claude-opus-4` entries are load-bearing (they
-  // cover all sonnet-4.x / opus-4.x via the dash-boundary matcher); the specific entries are redundant
-  // but kept as self-documentation. Do NOT drop the bare entries.
+  // modelSupportsMemory — the `claude-sonnet-4*` / `claude-opus-4*` globs are load-bearing (they cover
+  // all sonnet-4.x / opus-4.x); the specific entries are redundant but kept as self-documentation.
   memoryToolEnabled: false,
   memoryModels: [
-    "claude-fable-5",
-    "claude-haiku-4-5",
-    "claude-sonnet-4",
-    "claude-sonnet-4-5",
-    "claude-sonnet-4-6",
-    "claude-opus-4",
-    "claude-opus-4-1",
-    "claude-opus-4-5",
-    "claude-opus-4-6",
-    "claude-opus-4-7",
-    "claude-opus-4-8",
+    "claude-fable-5*",
+    "claude-haiku-4-5*",
+    "claude-sonnet-4*",
+    "claude-sonnet-4-5*",
+    "claude-sonnet-4-6*",
+    "claude-opus-4*",
+    "claude-opus-4-1*",
+    "claude-opus-4-5*",
+    "claude-opus-4-6*",
+    "claude-opus-4-7*",
+    "claude-opus-4-8*",
   ] as ReadonlyArray<string>,
-  interleavedThinkingModels: ["claude-sonnet-4", "claude-haiku-4-5", "claude-opus-4-5"] as ReadonlyArray<string>,
+  interleavedThinkingModels: ["claude-sonnet-4*", "claude-haiku-4-5*", "claude-opus-4-5*"] as ReadonlyArray<string>,
   // Empty by default: adaptive thinking is driven by the upstream `/models` metadata
   // (`capabilities.supports.adaptive_thinking`) via modelHasAdaptiveThinking's tier-1 short-circuit.
   // This name-list is a tier-3 fallback that only fires when metadata is SILENT for a model — kept as

@@ -118,9 +118,12 @@ describe("modelSupportsContextEditing", () => {
     expect(modelSupportsContextEditing("claude-haiku-4.5")).toBe(true)
   })
 
-  test("should NOT match future-lookalike model ids by prefix accident", () => {
-    expect(modelSupportsContextEditing("claude-sonnet-40")).toBe(false)
-    expect(modelSupportsContextEditing("claude-opus-40")).toBe(false)
+  test("broader-glob defaults DO match lookalikes like sonnet-40 (dash-boundary retired)", () => {
+    // The bundled defaults use broad globs (`claude-sonnet-4*` / `claude-opus-4*`), so a lookalike like
+    // `claude-sonnet-40` now matches (accepted tradeoff — no such real model exists). A config that wants
+    // to exclude them uses the explicit dash form `claude-sonnet-4-*` (see the model-pattern tests).
+    expect(modelSupportsContextEditing("claude-sonnet-40")).toBe(true)
+    expect(modelSupportsContextEditing("claude-opus-40")).toBe(true)
   })
 
   test("should NOT support non-Claude models", () => {
@@ -282,9 +285,8 @@ describe("modelSupportsMemory (mirrors GHC; broader than extended-cache-ttl)", (
     expect(modelSupportsMemory("claude-opus-4.2")).toBe(true)
   })
 
-  test("non-Claude and prefix-accidents are denied", () => {
+  test("non-Claude and unrelated ids are denied", () => {
     expect(modelSupportsMemory("gpt-4")).toBe(false)
-    expect(modelSupportsMemory("claude-opus-40")).toBe(false) // dash boundary
     expect(modelSupportsMemory("claude-3-5-sonnet")).toBe(false)
   })
 
@@ -380,15 +382,17 @@ describe("model-capability allowlists are config-driven (state-sourced)", () => 
   // Restore after EVERY test (even on throw) so a mutated module-global can't leak across tests/files.
   afterEach(() => restoreStateForTests(snapshot))
 
-  test("a custom contextEditingModels list overrides the defaults (family-match)", () => {
-    setStateForTests({ contextEditingModels: ["claude-future-9", "claude-opus-4-6"] })
+  test("a custom contextEditingModels list overrides the defaults (explicit glob family)", () => {
+    // Strict family coverage (bare + dashed descendants, excluding the "-90" lookalike) is expressed as
+    // TWO explicit entries — the exact token plus the dash-glob — now that implicit prefixing is retired.
+    setStateForTests({ contextEditingModels: ["claude-future-9", "claude-future-9-*", "claude-opus-4-6"] })
     // The custom family is now supported…
     expect(modelSupportsContextEditing("claude-future-9")).toBe(true)
-    expect(modelSupportsContextEditing("claude-future-9-mini")).toBe(true) // family member
+    expect(modelSupportsContextEditing("claude-future-9-mini")).toBe(true) // family member (dash-glob)
     expect(modelSupportsContextEditing("claude-opus-4.6")).toBe(true)
     // …and a model NOT in the custom list is no longer supported (default opus-4.8 dropped).
     expect(modelSupportsContextEditing("claude-opus-4.8")).toBe(false)
-    // Family boundary still excludes the unrelated "-90" sibling.
+    // The dash-glob still excludes the unrelated "-90" sibling.
     expect(modelSupportsContextEditing("claude-future-90")).toBe(false)
   })
 
@@ -441,11 +445,11 @@ describe("capability matchers fall back to model.family (GHC parity: matches(id)
     ).toBe(false)
   })
 
-  test("family fallback respects the dash boundary (no prefix-accident)", () => {
-    setStateForTests({ contextEditingModels: ["claude-opus-4"] })
-    // family "claude-opus-40" must NOT match the bare "claude-opus-4" contextEditing entry (dash boundary).
+  test("family fallback matches via an explicit dash-glob (dashed descendants, not the -40 lookalike)", () => {
+    setStateForTests({ contextEditingModels: ["claude-opus-4-*"] })
+    // family "claude-opus-40" has no dash after "4" → the dash-glob does NOT match it.
     expect(modelSupportsContextEditing("unknown-id", withFamily("unknown-id", "claude-opus-40"))).toBe(false)
-    // …but the exact family and its dashed descendants DO match.
+    // …but a dashed descendant family DOES match.
     expect(modelSupportsContextEditing("unknown-id", withFamily("unknown-id", "claude-opus-4-7"))).toBe(true)
   })
 })

@@ -686,16 +686,16 @@ export const AnthropicConfigSchema = z
      */
     protect_streaming_escalate_context: nullableBoolean(),
     /**
-     * Config-driven model-capability allowlists. Each list is a set of model-name "family" prefixes
-     * (normalized: lowercase, dots→dashes); a model has the capability when its normalized id equals
-     * an entry or starts with `entry + "-"`. Bundled defaults mirror GHC's capability checks — edit
-     * to add/remove models (e.g. a new Claude release) WITHOUT a code change. See features.ts.
+     * Config-driven model-capability allowlists. Each list is a set of model-name patterns; a glob-free
+     * entry matches EXACTLY (normalized: lowercase, dots→dashes), and family coverage ("a whole Claude
+     * generation") uses an explicit GLOB (`*`/`?`), e.g. `claude-opus-4*` or the dash-precise
+     * `claude-opus-4-*`. Bundled defaults mirror GHC's capability checks — edit to add/remove models
+     * (e.g. a new Claude release) WITHOUT a code change. See features.ts.
      *
-     * Each entry also supports GLOB (`*`/`?`, e.g. `claude-*`, `claude-opus-4-*`) and `!` NEGATION
-     * (`!pattern` SUBTRACTS from the set). Semantics: a model has the capability iff it matches ≥1
-     * positive entry AND no `!` entry (self-contained list, exclusion-always-wins, order-independent);
-     * a list with only `!` entries → empty set. A plain (glob-free) token keeps the family-prefix
-     * dash-boundary semantics above. See docs/spec/2026-07-23-model-capabilities-glob-and-negation.md.
+     * `!` NEGATION (`!pattern` SUBTRACTS from the set). Semantics: a model has the capability iff it
+     * matches ≥1 positive entry AND no `!` entry (self-contained list, exclusion-always-wins,
+     * order-independent); a list with only `!` entries → empty set. The implicit family-prefix matcher
+     * has been retired (2026-07-23) — see docs/spec/2026-07-23-model-capabilities-glob-and-negation.md.
      * YAML: patterns beginning with `!` or `*` MUST be quoted (`- "!claude-haiku-*"`, `- "*claude"`).
      *
      * `tool_search_overrides` is NOT a list: tool-search is default-allow for Claude ≥4.5 (Haiku +

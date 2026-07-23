@@ -14,17 +14,6 @@ import {
   modelMatchesPatternList,
 } from "~/lib/models/model-pattern"
 
-// 冻结一份 legacy family-prefix 参考实现作为等价性 oracle。
-// 旧 matchModelCapability 是 module-private 且将被替换，不能直接引用——故在此冻结。
-function legacyMatch(id: string, prefixes: ReadonlyArray<string>, family?: string): boolean {
-  const norm = (s: string) => s.toLowerCase().replaceAll(".", "-")
-  const candidates = family ? [norm(id), norm(family)] : [norm(id)]
-  return prefixes.some((p) => {
-    const np = norm(p)
-    return candidates.some((n) => n === np || n.startsWith(`${np}-`))
-  })
-}
-
 describe("hasGlobMeta", () => {
   test("detects * and ?", () => {
     expect(hasGlobMeta("claude-*")).toBe(true)
@@ -62,25 +51,29 @@ describe("globToRegExp (pure, no normalization)", () => {
 })
 
 describe("matchesModelPattern (normalizes both sides, then dispatches)", () => {
-  test("plain token → family prefix with dash boundary", () => {
+  test("plain token → EXACT match (implicit family-prefix retired)", () => {
     expect(matchesModelPattern("claude-opus-4", "claude-opus-4")).toBe(true)
-    expect(matchesModelPattern("claude-opus-4-8", "claude-opus-4")).toBe(true)
-    expect(matchesModelPattern("claude-opus-40", "claude-opus-4")).toBe(false) // dash boundary
+    expect(matchesModelPattern("claude-opus-4-8", "claude-opus-4")).toBe(false) // no longer prefix-covers descendants
+    expect(matchesModelPattern("claude-opus-40", "claude-opus-4")).toBe(false)
   })
   test("dot/hyphen spelling normalized on both sides", () => {
     expect(matchesModelPattern("claude-opus-4.6", "claude-opus-4-6")).toBe(true)
   })
-  test("glob token → anchored glob after normalization", () => {
+  test("family coverage requires an explicit glob", () => {
+    expect(matchesModelPattern("claude-opus-4-8", "claude-opus-4*")).toBe(true)
     expect(matchesModelPattern("claude-opus-4-8", "claude-opus-4-*")).toBe(true)
     expect(matchesModelPattern("claude-opus-40", "claude-opus-4-*")).toBe(false) // explicit dash in glob
-    expect(matchesModelPattern("claude-opus-40", "claude-opus-4*")).toBe(true) // no dash → matches 40
+    expect(matchesModelPattern("claude-opus-40", "claude-opus-4*")).toBe(true) // no dash → matches 40 (broader glob)
   })
 })
 
 describe("modelMatchesPatternList (self-contained, exclusion-always-wins)", () => {
-  test("pure positive == legacy family semantics", () => {
-    expect(modelMatchesPatternList("claude-sonnet-4-5", ["claude-sonnet-4"])).toBe(true)
-    expect(modelMatchesPatternList("claude-sonnet-40", ["claude-sonnet-4"])).toBe(false)
+  test("pure positive is EXACT (no implicit family prefix)", () => {
+    expect(modelMatchesPatternList("claude-sonnet-4", ["claude-sonnet-4"])).toBe(true)
+    expect(modelMatchesPatternList("claude-sonnet-4-5", ["claude-sonnet-4"])).toBe(false) // exact, not prefix
+    // family coverage via explicit glob
+    expect(modelMatchesPatternList("claude-sonnet-4-5", ["claude-sonnet-4*"])).toBe(true)
+    expect(modelMatchesPatternList("claude-sonnet-40", ["claude-sonnet-4*"])).toBe(true) // broader glob accepted
   })
   test("glob positive", () => {
     expect(modelMatchesPatternList("claude-opus-4-8", ["claude-*"])).toBe(true)
@@ -105,25 +98,13 @@ describe("modelMatchesPatternList (self-contained, exclusion-always-wins)", () =
     // reverse: family hits positive, id hits negative → excluded.
     expect(modelMatchesPatternList("claude-haiku-4-5", ["claude-*", "!vendor-alias"], "vendor-alias")).toBe(false)
   })
-  test("empty-string family is ignored (legacy truthiness parity)", () => {
-    // Candidate set uses `family ? [id, family] : [id]` to mirror legacy: an empty-string family must
-    // NOT become a match candidate. Isolate with an empty entry (only "" would match ""): after the
-    // fix, family "" is dropped so nothing spuriously matches → false, exactly like legacy.
+  test("empty-string family is ignored (truthiness parity)", () => {
+    // Candidate set uses `family ? [id, family] : [id]`: an empty-string family must NOT become a match
+    // candidate. Isolate with an empty entry (only "" would exact-match ""): family "" is dropped so
+    // nothing spuriously matches → false.
     expect(modelMatchesPatternList("gpt-4", [""], "")).toBe(false)
-    expect(modelMatchesPatternList("gpt-4", [""], "")).toBe(legacyMatch("gpt-4", [""], ""))
     // A real (non-empty) family candidate still participates.
     expect(modelMatchesPatternList("vendor-alias", ["claude-*"], "claude-opus-4-6")).toBe(true)
-  })
-
-  test("equivalence oracle: no-! no-glob inputs match frozen legacy impl", () => {
-    const ids = ["claude-opus-4-8", "claude-opus-40", "claude-sonnet-4-5", "gpt-4", "claude-haiku-4-5"]
-    const prefixLists = [["claude-opus-4"], ["claude-sonnet-4", "claude-haiku-4-5"], ["claude-opus-4-8"]]
-    for (const id of ids) {
-      for (const list of prefixLists) {
-        expect(modelMatchesPatternList(id, list)).toBe(legacyMatch(id, list))
-        expect(modelMatchesPatternList(id, list, "claude-opus-4-6")).toBe(legacyMatch(id, list, "claude-opus-4-6"))
-      }
-    }
   })
 })
 
