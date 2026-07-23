@@ -113,6 +113,19 @@ export function hasDeliveredSemanticContent(session: { hasEmittedRealClientConte
 
 （**验证清单**：确认 `isClientContentFrame` 的现有调用 seam 是否恰好是候选 session 能挂 flag 的地方；若 FirstToken 捕获在 driver 采样层而候选 session 在更上层，需要把 flag 提到二者都可达的位置——不改变「delivery-level、首个真实 delta 翻转」这一判据本身。）
 
+**⚠ flag 归属澄清（consensus 复审第二轮建议）：** flag 是 **delivery-scoped（每条客户端流一份）、只数非-synthetic 真实内容**——这正是「客户端是否已看到真实内容」（=「是否该发 B2」）的正确判据。reviewer 担心的「同一 sink 的全局 flag 会错误禁止 recovery」**只在误数 synthetic 帧时发生**，本设计用 `frame.provenance.kind !== "synthetic"` 过滤已避免：primary 只发了合成脚手架（keepalive ping / anchor）时 flag 恒 false、B2 正常放行；**fresh recovery candidate 写同一条流、其真实帧合法翻转 flag（gate 只在「发起 B2」决策点被读、决策点 flag 恒反映「至此客户端收到的真实内容」，fresh candidate 的写入永不被 flag 阻止）**。实现者须确认 buffered 候选与 live 候选驱动**同一个** delivery flag（reviewer 明确要求「live/buffered 同一 delivery-level 信号」），并补一条集成测试锁死该语义：
+
+```ts
+// tests/pipeline/semantic-content-gate.it.test.ts（补，driver/handler 级）
+test("primary delivered NO semantic content (only synthetic scaffold) → gate false → B2 launches → fresh candidate CAN write real content and flips the flag", async () => {
+  // primary 只发 synthetic keepalive 后 pre-content 失败 → 断言 gate 在发起 B2 前为 false
+  // fresh recovery candidate 写真实 content_block_delta → 断言 flag 翻 true、真实内容正常到客户端、无重复
+})
+test("primary DID deliver a real content_block_delta then failed mid-block → gate true → B2 NOT launched (no duplicate)", async () => {
+  // 断言：客户端已见真实 delta 后 RST → gate true → 不发 fresh dispatch，落既有 terminal/continuation 路径
+})
+```
+
 - [ ] **Step 4: 跑，通过。**
 - [ ] **Step 5: 提交** → `feat(pipeline): delivery-level semantic-content gate (first real content_block_delta, not block-completed)`。
 
@@ -256,7 +269,7 @@ test("settleFinal() is idempotent (calling twice does not double-finalize)", asy
 // tests/pipeline/precontent-recovery-seal-race.it.test.ts（新）
 test("late deferred-header open() resolving AFTER the operation is sealed does NOT throw an unhandled rejection", async () => {
   // mock transport：open() 在 N 秒后才 resolve（模拟 deferred-header）；期间用 reaper/deadline/abort seal 掉 operation
-  // 断言：进程无 unhandledRejection（挂 process.once('unhandledRejection') 探针）；timing 观测被安全丢弃、不抛
+  // 断言：进程无 unhandledRejection（挂 process.once('unhandledRejection') 探针）；整个 recordOpened（headers + timing）在 sealed 时被安全丢弃、不抛
 })
 test("B2 recovery supervisor awaits candidate lifecycle quiescence after cancel/seal (no dangling late rejection)", async () => {
   // 断言：cancel/seal 后 supervisor await 所有在飞候选的 lifecycle.quiesced，观察到 late rejection 被吞（不逃逸）
@@ -264,8 +277,8 @@ test("B2 recovery supervisor awaits candidate lifecycle quiescence after cancel/
 ```
 
 - [ ] **Step 2: 跑，失败（先证探针能抓到坏行为——正样本对照，见 skill `catching-false-green-tests`）。**
-- [ ] **Step 3: 实现**（两处，对齐 backlog 条目的修法①②）：
-  - **① sealed operation 的 timing 观测安全丢弃**：在 `recordOpened` 的 timing 写处（或 `setGenerationDispatchTimingEpoch`/`setAttemptTimingEpoch` 层）加 `if(modelOperationRecorder.sealed) return`，与同族 capture 对齐——timing 是 best-effort 晚到观测、可丢弃，**不**改 `assertWritable` 对语义写的 loud-throw（那是既定正确设计，别放宽）。
+- [ ] **Step 3: 实现**（对齐 backlog 条目的修法①②，采 consensus 复审建议的「整个 `recordOpened` 作 atomic late-open observer」）：
+  - **① 守卫整个 `recordOpened`（不止 timing）**：consensus 复审（gpt-souls:reviewer 第二轮）指出——只丢 timing 不够，`recordOpened`（`driver.ts:634-643`）在 timing 前还调 `setHttpHeaders` + `setGenerationDispatchResponseHeaders`，须把**整个** `recordOpened` 当作 sealed 后可安全丢弃的晚到观测：在 `recordOpened` 开头判 recorder sealed → 直接 `return`（或让所有 `recordOpened` 的 context 写走统一的 sealed-safe observation API）。**主会话 code-read 核实的 ground truth（供实现者定位精确修点）**：`recordOpened` 里**当前唯一真会抛**的是 timing 写（`setGenerationDispatchTimingEpoch:1321`→`setDispatchTiming:1053`→`assertWritable`）——`setHttpHeaders:1205` 是纯 `_httpHeaders` 赋值不撞 recorder、`setAttemptResponseHeaders:1500` 的诊断已在 `request.ts:583` 守卫 sealed，二者今天不抛；但**整method 早返回**是更稳健的修法（防未来往 recordOpened 新增无守卫写、且 sealed 后整条 late-open 观测本就该整体丢弃），并须让 timing setter 本身也对齐同族 `if(sealed) return`（双保险，别只靠调用点）。**不改** `assertWritable` 对语义写的 loud-throw（那是既定正确设计）。回归矩阵覆盖**完整 `recordOpened` 路径**（headers + timing），不只断言 timing。
   - **② recovery supervisor 在 cancel/seal 后 await candidate lifecycle quiescence**：Task 0.5 的 supervisor 在最终收口前，`await` 所有它启动过的候选（primary + 任何 fresh recovery）的 `lifecycle.quiesced`，使晚到的 open/reject 在 supervisor 作用域内被观察、不逃逸成孤儿 rejection（参照 `dispatch-scheduler.ts:213-216` 现有 `void response.lifecycle.quiesced.then(...)` 的 budget release 模式，但改为 supervisor 显式 await 而非 fire-and-forget）。
 - [ ] **Step 4: 跑，通过（reaper/deadline/abort × late-header 组合矩阵全绿、零 unhandled-rejection）。**
 - [ ] **Step 5: 提交** → `fix(pipeline): B2 seal-race crash safety — discard late timing on sealed, supervisor awaits quiescence`。同时**从 [deferred-backlog.md](../../todo/deferred-backlog.md) 移除 MED-2 条**（已在 B2 落地、不再是 backlog）。

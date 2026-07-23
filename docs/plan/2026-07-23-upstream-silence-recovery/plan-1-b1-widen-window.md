@@ -16,11 +16,11 @@
 
 ## 门控问题（不自行拍板，交主会话/用户）
 
-**Q1 已实测下界 ≥125s（旧「50-55s」估计证伪），但首次失败点未测。** 本阶段可以把 clamp 上限从旧的 40 提到已知安全下界（≥125s），但「最终默认值 + 最终上限」仍建议分两步：**先落地拆分重构（默认值暂不动），再补测首次失败点后一次性定默认值。** 建议顺序：
+**Q1 已实测下界 ≥125s（旧「50-55s」估计证伪），但首次失败点未测。** 为消除歧义，明确两步分工（consensus 复审第二轮指出原稿三处指令自相矛盾，此处一锤定音）：
 
-1. 本阶段先落地「clamp 上限可独立配置」的重构（见 Task 1.1），**默认值暂不动**（保持 20，避免在首次失败点未知时激进上调）——但拆分后新常量 `COMMIT_WINDOW_MAX_SEC` 可从 40 提到 **≥125s 已知安全下界**（Q1 已背书这个提升不误伤 CC）。
-2. 补测 Q1 首次失败点（真 CC 130/150/180s 阶梯，离线 mock、零额度，`gpt-souls:poc-runner` 或直接复用 `exp/silence-recovery-gates/` 的 harness）。
-3. 首次失败点出结果后，另开一个小任务（不需要重新走 TDD 大阶段）把默认值从 20 改到实测安全值，走 `bun run test:backend` 回归即可。
+1. **Task 1.1 = 纯字节等价重构**：只把 commit 窗口的 clamp 从 keepalive cadence 拆出成独立函数/常量，`COMMIT_WINDOW_MAX_SEC` **初值保持 40**（= 现 `KEEPALIVE_CADENCE_MAX`），**零行为变化**、回归锁死。**本 Task 不提 ceiling、不动默认值。**
+2. **Task 1.2 = 提 ceiling（行为变化、独立提交）**：把 `COMMIT_WINDOW_MAX_SEC` 从 40 提到 **≥125s 已知安全下界**（Q1 已背书不误伤 CC；**注意这只放宽「允许配置的上限」、默认值仍 20 不变**，故对绝大多数用户零可观测变化）。**默认值 `streamCommitAfterSec` 20→更大** 则须等 Q1 首次失败点补测后再定（见下 Task 1.2 步骤），因为默认值直接影响所有请求、需实测安全边际。
+3. **补测 Q1 首失败点**（真 CC 130/150/180s 阶梯，离线 mock 零额度，复用 `exp/silence-recovery-gates/` harness）→ 定最终默认值。
 
 **待决设计点：commit 窗口的 clamp 上限是否该与 keepalive cadence 的 clamp 上限脱钩？**
 - 现状：`clampKeepaliveCadence` 用同一个 `KEEPALIVE_CADENCE_MAX = CLIENT_IDLE_DEADLINE_SEC - 20 = 40`，同时限制 `stream_keepalive_ping_sec`（保活节奏）和 `stream_commit_after_sec`（commit 窗口）。
@@ -46,12 +46,12 @@ test("commit-window clamp and keepalive-cadence clamp are independently addressa
 - [ ] **Step 4: 跑，通过。** 确认 `bun run test:fast` 全绿（这是纯重命名+拆分，不应有任何行为变化）。
 - [ ] **Step 5: 提交** → `refactor(config): split commit-window clamp from keepalive-cadence clamp (same value, independent constants pending Q1)`。
 
-### Task 1.2（门控，待 Q1 结果，可延后）：回填 Q1 实测的窗口上限
+### Task 1.2（提 ceiling 现在可做；提默认值待 Q1 首失败点）：回填 Q1 实测
 
-- [ ] **Step 1**：Q1 实测出 CC pre-header 容忍度 `T`秒后，把 `COMMIT_WINDOW_MAX_SEC` 从"复用 40"改为 Q1 实测值减安全边际（参照现有 `KEEPALIVE_CADENCE_MAX` 的"留 ≥20s margin"惯例）。
-- [ ] **Step 2**：视 Q1 结果决定是否同时调整 `streamCommitAfterSec` 默认值（当前 20）——若 T 远大于 20，可考虑默认值上调；若 T 接近或小于 20，保持默认不变（20 已经接近安全上限）。**这是运维参数调整，不是必须与本阶段其余步骤同批提交**——可交由主会话在 Q1 结果出来后单独决策+提交。
-- [ ] **Step 3**：跑 `bun run test:backend` 全绿；更新 `schema.ts` 里 `stream_commit_after_sec` 的 TSDoc（当前写"CC 真实 pre-header 容忍度"待补充为具体测得数值 + 出处）。
-- [ ] **Step 4**：提交 → `fix(config): raise stream_commit_after_sec ceiling to measured CC pre-header tolerance (Q1)`。
+- [ ] **Step 1（现在可做）**：把 `COMMIT_WINDOW_MAX_SEC` 从"复用 40"提到 **125s**（Q1 已实测 CC pre-header 容忍 ≥125s 的已知安全下界）——这只放宽「允许配置的上限」、默认值不变，安全。首失败点补测后可再往上调（留 margin）。
+- [ ] **Step 2（待 Q1 首失败点）**：视首失败点结果决定是否上调 `streamCommitAfterSec` 默认值（当前 20）——事故 RST 最早 ~126s，故默认值即使上调也应 < 首失败点且权衡「窗口越大越多 B-Mode2 走原生保护、但 A 型挂起在窗口内干等越久」。**这是运维参数调整，可交由主会话在首失败点出来后单独决策+提交。**
+- [ ] **Step 3**：跑 `bun run test:backend` 全绿；更新 `schema.ts` 里 `stream_commit_after_sec` 的 TSDoc（补 Q1 实测值 ≥125s + 出处 `exp/silence-recovery-gates/FINDINGS.md`）。
+- [ ] **Step 4**：提交 → `fix(config): raise stream_commit_after_sec ceiling to measured CC pre-header floor (Q1 >=125s)`。
 
 ## 验收 Oracle
 
