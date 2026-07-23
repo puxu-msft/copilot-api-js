@@ -9,6 +9,13 @@ import type { RequestEnvelope } from "~/lib/pipeline/envelope"
 
 import { applyInboundSystemPrompt } from "~/lib/system-prompt/inbound"
 
+import { autoRestoreState } from "../helpers/state-fixture"
+
+// processAnthropicSystem consults mutable config-backed state. Restore it after
+// each test even when this file itself does not mutate it, so a preceding
+// bucket-mate cannot leak a hot-reload value into later tests.
+autoRestoreState()
+
 // 最小 fake env：只实现分发函数触达的 clientFormat/body/with。
 function fakeEnv(clientFormat: string, body: unknown): RequestEnvelope {
   const env = {
