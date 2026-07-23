@@ -1,131 +1,125 @@
 # Plan：把 token/auth 域抽成独立包 `@hsupu/ghc-proxy-token`
 
 > **For agentic workers:** REQUIRED SUB-SKILL: `superpowers:subagent-driven-development` 或 `superpowers:executing-plans`。步骤用 `- [ ]` 跟踪。索引 [README.md](README.md)、spec [../../spec/2026-07-22-monorepo-workspace-split.md](../../spec/2026-07-22-monorepo-workspace-split.md)。这是 spec §7.2 阶段 4+「core 内部增量解环」的**首个真领域包剥离**，作为后续 domain-peel 的模板。
+>
+> **修订说明（2026-07-23，v2，经 GPT 对抗审 + 逐条实测证实后大改）**：v1 严重低估了 token 的所有权收敛面（把「消费者」误算成 2，实为 **8 个**直接读 token-owned state 字段的生产文件）、漏列第 7 条依赖（`utils/sleep`）、未定义 composition root / 测试隔离契约 / 生命周期 owner。评审报告见 `exp/monorepo-split/review-token-plan-gpt.md`。本 v2 补齐。
 
-**Goal:** 把 GitHub/Copilot auth 生命周期（`src/lib/token/`）从 core SCC 剥出为独立包 `@hsupu/ghc-proxy-token`，只依赖 `foundation` + 注入契约（fetch / token-store / paths），**不依赖 core**。
+**Goal:** 把 GitHub/Copilot auth 生命周期（`src/lib/token/`）从 core SCC 剥出为独立包 `@hsupu/ghc-proxy-token`，只依赖 `foundation` + **注入契约**（fetch / paths / runtime-config），**对 core 零依赖**（机器可验证边界守卫）。
 
-**Architecture:** token 域被依赖面极窄（仅 2 消费者：`routes/status`、`request/strategies/token-refresh`），领域正交。障碍是它**向 core 伸手的 6 条依赖**。策略：先把 3 条「共享瘦基元」上提 foundation（多域复用的清理性收益），再把 3 条 token 专属依赖反转成注入契约，最后物理 `git mv`。
+**Architecture:** token 被依赖面窄但**读 token-owned 状态的生产点有 8 个**（含 anthropic/openai 四条请求认证活路径）。障碍是 token→core 的 **7 条依赖** + state 所有权反转。策略：先上提共享瘦基元到 foundation → 建 **composition root `createTokenRuntime(deps)`** 统一全部构造链 → 反转 state 所有权（单一 SoT + 隔离契约）→ 物理 `git mv`。
 
-**Tech Stack:** Bun workspaces、tsdown、ESLint 边界守卫、`bun test`。沿用 Phase 0 的过渡别名机制（`~/lib/x` 精确映射）。
+**Tech Stack:** Bun workspaces、tsdown、ESLint 边界守卫、`bun test`（authoritative `parallel-test`）、Phase 0 过渡别名机制。
 
-## Global Constraints（详见 README §Global Constraints）
+## Global Constraints
 
-- 包名 `@hsupu/ghc-proxy-token`；发布根包/bin 不改。
-- 每 commit：typecheck + `bun run test:backend`（authoritative parallel-test，0 fail）+ `bun run lint:all` 无新增违规 + 显式 pathspec 提交。
-- 冻结 oracle = pre-move 已通过的 test:backend；搬迁/注入**不改任何测试的观测行为**，无需新增 golden（行为字节不变）。
-- 每 commit 后跨包回边只减不增；DI 契约用**视图/角色接口**（非裸字段、非位置参），加字段时调用点零改（token 域 `TokenReadView` 已立此范式，commit `54b32200`）。
+- 包名 `@hsupu/ghc-proxy-token`；发布根包/bin 不改；`packages/token/package.json` **必须显式声明 `consola` 等外部依赖**（单 lockfile hoist 会掩盖漏报；foundation 空 deps 不是模板）。
+- 每 commit：typecheck + `bun run test:backend`（0 fail）+ **精确 pathspec** `bunx eslint <path>`（**禁 `eslint --fix` 宽扫**——记忆 `tooling-eslint-fix-broad-sweeps` + `.at()` autofix 破类型；确需 fix 用精确 pathspec + 必跑 typecheck）+ 显式 pathspec commit。
+- 冻结 oracle = pre-move 已通过的 test:backend；搬迁/注入不改任何测试观测行为，无需新增 golden。
+- **DI 用视图/角色接口对象**（非裸字段、非位置参）：加字段时调用点零改（`TokenReadView`/`GithubHeaderIdentity` 已立范式，`54b32200`）。
+- **每 commit 终态自洽绿**：跨多构造链/多消费点的原子迁移**必须在同一 commit 完成**（见「闭合 commit DAG」）；façade 仅作 commit 内短暂委托层、该 commit 后无新消费者可调用它；**绝不跨 commit 留双 SoT**。
 
-## 实测依据（依赖清单，已核）
+## 通用 DomainPeel Contract（可复用模板——每个后续域 models/transport 填同一张表作 gate）
 
-token 向 core 的 6 条依赖：
+| 通用步骤 | 必填可验证产物 |
+|---|---|
+| **依赖盘点** | 完整 import 清单，分类 foundation-hoist / domain-owned / injected-core-capability / 不可切；grep 带正样本 |
+| **公共 API** | 包 barrel + 禁 deep-import 的消费者矩阵；类型由拥有包定义、消费方 re-export |
+| **角色视图** | 只读 domain-state 与 runtime-config **分离**；无裸 `State` / 位置参 |
+| **composition root** | `create<Domain>Runtime(deps)`，逐条列全部 production entry + 直接构造路径，**无全局 DI escape hatch** |
+| **所有权迁移** | 单一 SoT、全读写消费者矩阵、旧字段删除条件、生命周期 dispose/reload 契约 |
+| **测试隔离** | snapshot/restore 或 reset 所有权、fixture 接线、RESETTERS/L1 守卫、**跨测试正向控制** |
+| **物理搬迁** | `git mv`、过渡 alias、package deps 声明、边界 guard 正反控制、build/runtime smoke |
 
-| 依赖 | 实测 | 处理 |
-|---|---|---|
-| `tui/sensitive-output`（writeSensitiveOnce） | **零 import 纯叶子**；消费者 4（tui 2 + token 2） | **上提 foundation**（T0a） |
-| `error` | token 3 文件 import `~/lib/error` | **上提 error 纯基元 foundation**（T0b，需先解 ToolDiagnostics 类型链，spec §3.2） |
-| `config/paths` | token 仅 `providers/file.ts` 用 `PATHS.GITHUB_TOKEN_PATH`；paths 无 core 依赖但 11 消费者 | **注入路径**（T0c，不 hoist 整个 paths——11 消费者不值） |
-| `copilot-api`（`githubHeaders` + `GITHUB_API_BASE_URL`） | `githubHeaders` 现**仅 token 用**（两调用方都是 token） | **移入 token 包**（T1a） |
-| `transport/upstream-fetch`（`upstreamFetch`） | token 6 处调用（GHC/GitHub auth 端点） | **注入 fetch 契约**（T1b） |
-| `state` 写（setGitHubToken/setCopilotToken/setTokenState）+ 读（经 `TokenReadView`） | token 拥有 github/copilot token + tokenInfo 状态 | **token 包拥有 token store**（T1c） |
+**token 特有（不入通用模板）**：GitHub device OAuth、`githubHeaders`/GHC endpoint 常量、token-file 路径、validate 临时 credential swap、refresh timer/refreshInFlight、sensitive 一次性终端输出。通用模板只要求每域声明自己的 external ports / durable+ephemeral state / dispose / 行为 oracle。
 
----
+## 实测依赖清单（7 条 token→core，已逐条核实）
 
-## Phase T0：上提共享瘦基元到 foundation（清理性、多域复用、低风险）
+| # | 依赖 | 实测锚点 | 处理 |
+|---|---|---|---|
+| 1 | `tui/sensitive-output`（writeSensitiveOnce） | 零 import 纯叶子；消费者 4（tui 2 + token 2） | **上提 foundation**（C1） |
+| 2 | `error` 纯基元 | token 3 文件 import；`http-error.ts:1` 自身 type-import `~/lib/upstream-diagnostics` | **上提 foundation + 切 http-error 自身 import edge**（C2） |
+| 3 | **`utils/sleep`**（v1 漏） | `github-client.ts:16 import { sleep } from "~/lib/utils"`（93/107 调用）；无 `~/lib/utils` alias | **上提 sleep 到 foundation**（C1，随瘦基元） |
+| 4 | `config/paths.PATHS.GITHUB_TOKEN_PATH` | 仅 `providers/file.ts`；但构造链 3 条（GitHubTokenManager/DeviceAuthProvider/CLI auth） | **注入 `TokenPersistencePaths` 角色对象**（C4） |
+| 5 | `copilot-api` auth 符号 | 完整表：`standardHeaders`/`GITHUB_API_BASE_URL`/`GITHUB_BASE_URL`/`GITHUB_CLIENT_ID`/`COPILOT_INTERNAL_API_VERSION`/`GithubHeaderIdentity`/`githubHeaders`（token 外零消费） | **移入 token 私有 `ghc-auth-http.ts`**（C6） |
+| 6 | `transport/upstream-fetch` | token 6 处调用；`UpstreamFetchInit` 含 onTrailers/onStreamClosed | **注入 `TokenFetch` 角色契约**（C4） |
+| 7 | `state` token 字段（读 8 生产点 + 写 3 setter + validate swap） | 见「所有权收敛矩阵」 | **token store 单一 SoT**（C5） |
 
-### Task T0a：`sensitive-output` → foundation
+## Composition root（承重设计）
 
-**Files:** Move `src/lib/tui/sensitive-output.ts` → `packages/foundation/src/sensitive-output.ts`；Modify `tsconfig.json`（别名映射）、`packages/foundation/src/index.ts`（barrel）、4 消费者（`tui/terminal-ui.ts`、`tui/output-arbiter.ts`、`token/lifecycle.ts`、`token/providers/device-auth.ts`）的 import。
+token 包唯一公开装配入口，覆盖**全部 5 条 CLI 构造链**（实测：`start`/`setup-claude-code`/`setup-codex` 用 `initTokenManagers`；**`auth` 直构造 DeviceAuth+FileProvider；`debug` 直构造 GitHubTokenManager ×3 + 直写 setGitHubToken/setCopilotToken**）：
 
-- [ ] **Step 1**：`git mv src/lib/tui/sensitive-output.ts packages/foundation/src/sensitive-output.ts`。
-- [ ] **Step 2**：根 tsconfig `paths` 加 `"~/lib/tui/sensitive-output": ["./packages/foundation/src/sensitive-output"]`（精确 key，在 `~/*` 前）。
-- [ ] **Step 3**：foundation barrel `index.ts` 加 `export * from "./sensitive-output"`。
-- [ ] **Step 4**：4 消费者里凡**相对** import（`./sensitive-output` / `../tui/sensitive-output`）改 `~/lib/tui/sensitive-output`（alias 覆盖；`~/lib/*` 形式不用改）。用 `grep -rn 'sensitive-output' src` 找全。
-- [ ] **Step 5**：`bun run typecheck` GREEN；`bun test tests/architecture/package-boundaries.unit.test.ts`（foundation 守卫仍绿——sensitive-output 纯、无 `~/` import）。
-- [ ] **Step 6**：`bun run test:backend` = 0 fail；`bunx eslint --fix` 触碰文件 + 复跑 typecheck。
-- [ ] **Step 7**：`git add -- <精确路径>`；`git commit`「refactor(foundation): hoist sensitive-output leaf primitive」。
+```ts
+export interface TokenPersistencePaths { readonly githubTokenPath: string }
+export interface TokenRuntimeConfigView { readonly showGitHubToken: boolean; readonly vsCodeVersion?: string } // core-owned, injected live
+export interface TokenCredentialsView { readonly githubToken?: string; readonly copilotToken?: string; readonly tokenInfo?: TokenInfo; readonly copilotTokenInfo?: CopilotTokenInfo } // token-owned SoT
+export interface TokenFetch { (url: string, init: TokenFetchInit): Promise<Response> } // token-owned role type, assembly adapts upstreamFetch
+export interface TokenRuntimeDependencies { readonly fetch: TokenFetch; readonly paths: TokenPersistencePaths; readonly runtimeConfig: TokenRuntimeConfigView }
+export interface TokenRuntime {
+  initialize(options?: InitTokenManagersOptions): Promise<TokenRuntimeManagers>
+  acquireGitHubToken(options?: AcquireGitHubTokenOptions): Promise<TokenInfo>
+  getCopilotUsage(): Promise<CopilotUsageResponse>
+  getGitHubUser(): Promise<GitHubUser>
+  getCredentials(): TokenCredentialsView
+  dispose(): Promise<void> // stop refresh timer, await/reject in-flight refresh, release store
+}
+export function createTokenRuntime(deps: TokenRuntimeDependencies): TokenRuntime
+```
 
-### Task T0b：error 纯基元 → foundation（先解 ToolDiagnostics 类型链）
+装配层（CLI 各命令唯一组装点）构造 runtime；`auth`→`acquireGitHubToken({forceDeviceAuth:true})`；`debug`→runtime operations，**禁回写 core state**；core/CLI 需 credential 只读 `getCredentials()` 视图，**不存镜像**。模块级 `setTokenFetch()` 仅可作过渡 shim、由 runtime 拥有含 reset，**非生产公共 API**。
 
-> 依据 spec §3.2：`http-error.ts` 被 `ToolDiagnostics` 类型经 `upstream-diagnostics.ts`（import state）拴 core，须先解链。
+## 所有权收敛矩阵（C5 gate——8 生产读点，全部核实）
 
-- [ ] **Step 1**：把 `ToolDiagnostics` **类型定义**从 `src/lib/upstream-diagnostics.ts` 抽到 `packages/foundation/src/tool-diagnostics-types.ts`（纯类型）；`upstream-diagnostics.ts` 改 `export type { ToolDiagnostics } from "~/lib/error/tool-diagnostics-types"`（re-export，SSOT）。typecheck GREEN。
-- [ ] **Step 2**：`git mv` error 纯基元 `parsing.ts`/`utils.ts`（纯函数）/`http-error.ts`（解链后）/`classify.ts` → `packages/foundation/src/error/`；tsconfig 加 `"~/lib/error/*"` 精确映射子路径；**`forward.ts` 留 core**（import state+Hono）。
-- [ ] **Step 3**：core 内 `lib/error/index.ts` barrel 继续 re-export forward（本地）+ 从 foundation re-export 纯基元——**barrel 符号表面零改动**，~57 消费者不动。
-- [ ] **Step 4**：typecheck + test:backend 0 fail + foundation 守卫（error 纯基元零 `~/` import——若 classify 引 http-error 用相对 `./http-error` 则 OK）+ lint。
-- [ ] **Step 5**：`git commit`「refactor(foundation): hoist error pure primitives (decouple ToolDiagnostics type)」。
+token store 是 `githubToken`/`copilotToken`/`tokenInfo`/`copilotTokenInfo` **唯一 SoT**；下列每点迁为经 token 包只读 API/视图，**删 state 字段 + setter + 镜像**：
 
-### Task T0c：token 文件路径改注入（不 hoist config/paths）
+| 读点（file:line） | 用途 |
+|---|---|
+| `src/lib/anthropic/client.ts:154` · `src/lib/openai/{chat-completions-client:42,embeddings:51,responses-client:57}.ts` | 请求认证活路径 |
+| `src/lib/copilot-api.ts:79`（copilotHeaders/BaseUrl 的 token 读） | 上游 header builder |
+| `src/server.ts:48-54` | 启动认证 |
+| `src/routes/status/route.ts:108,199-201` · `src/routes/token/route.ts:55-69` | 状态/metadata |
+| `src/lib/request/strategies/token-refresh.ts` · `src/routes/status`（`~/lib/token` 深 import） | 改经 token barrel、禁 deep import |
 
-- [ ] **Step 1**：写失败测试——`FileTokenProvider` 可注入 token 文件路径（构造参数），不再硬依赖 `PATHS.GITHUB_TOKEN_PATH`。
-- [ ] **Step 2**：`providers/file.ts` 构造函数加 `tokenFilePath: string`（DI）；`fs.writeFile/readFile` 用注入值。移除 `import { PATHS } from "~/lib/config/paths"`。
-- [ ] **Step 3**：`FileTokenProvider` 的构造点（token 装配处）传 `PATHS.GITHUB_TOKEN_PATH`——**注入发生在 core/cli 装配层**（token 包不知 PATHS）。找构造点：`grep -rn 'new FileTokenProvider' src`。
-- [ ] **Step 4**：typecheck + test:backend 0 fail + lint。
-- [ ] **Step 5**：`git commit`「refactor(token): inject token file path (drop config/paths dep)」。
+**`showGitHubToken`/`vsCodeVersion` 不入 store**（CLI/config 经 `setCliState` 拥有）→ 经 `TokenRuntimeConfigView` 注入 live 视图；热重载改这俩后须断言 token header + sensitive 决策读新值。
 
----
+## 测试隔离契约（C5 gate——单进程全套件基础）
 
-## Phase T1：反转 token 专属 core 依赖为注入契约
+实测 `cloneState` 特殊克隆 `tokenInfo`/`copilotTokenInfo`（`state.ts:1186,1219`），token store 迁走后 `restoreStateForTests` 不恢复它 → 跨测试泄漏/双 SoT 漂移。**必须**：
+- token 包 `snapshotTokenStoreForTests()`/`restoreTokenStoreForTests()`（深拷贝）**或** core 单一 `snapshotRuntimeStateForTests()` 原子组合 state+store；`tests/helpers/isolated-fixture.ts` 同一 beforeEach/afterEach capture+restore。
+- 新 module-global store 提供 `resetTokenStoreForTests()` 登记 RESETTERS **或**明确纳入快照 + L1 `EXEMPT`（二选一不可漏）。
+- **正向隔离测试**：测试 A 写 4 字段、测试 B 断全恢复；refresh timer/in-flight promise 存在时证 teardown 不留计时器/异步写。
 
-### Task T1a：GHC auth HTTP helpers 移入 token 包
+## 闭合 commit DAG（每步同一 commit 内完整闭合、终态绿；替代 v1 松散 task）
 
-- [ ] **Step 1**：把 `githubHeaders` + `GithubHeaderIdentity`（现仅 token 用）+ auth 用的 URL 常量（`GITHUB_API_BASE_URL`；`github-client.ts` 里的 `GITHUB_BASE_URL`）迁到 `src/lib/token/ghc-auth-http.ts`（token 内部模块）；`copilot-api.ts` 删 `githubHeaders`（确认无他用：`grep -rn githubHeaders src` 仅 token）。
-- [ ] **Step 2**：token 的 copilot-client/github-client 改 import 本地 `./ghc-auth-http`；`copilotBaseUrl`/`copilotHeaders`（token 是否还用？实测 token 不用这俩——仅 models/transport 用，留 core）。
-- [ ] **Step 3**：typecheck + test:backend 0 fail（`tests/infra/copilot-api.it.test.ts` 的 githubHeaders 测试随之迁到 token 测试或调整 import）+ lint。
-- [ ] **Step 4**：`git commit`「refactor(token): own GHC auth HTTP helpers (githubHeaders + urls)」。
+- **C1**（冷、低风险）：`sensitive-output` + `sleep`（连同 utils 里 sleep）上提 foundation；tsconfig 精确 alias（`~/lib/tui/sensitive-output`、`~/lib/utils` 需拆——见下）；4+ 消费者相对 import 改 alias；foundation barrel + 守卫。
+  - 注：`utils.ts` 是多符号文件，只需 `sleep` → 抽 `sleep` 到 foundation（`packages/foundation/src/sleep.ts` 或并入现有），`utils.ts` re-export 或消费者改 import；避免整文件搬（其它符号可能有 core 依赖，先查 `grep -n 'export' src/lib/utils.ts`）。
+- **C2**：foundation 建 `error/tool-diagnostics-types.ts`（纯类型 SoT）→ **改 `http-error.ts:1` 自身 import 指向 foundation 类型**（不是靠 upstream-diagnostics re-export）→ 移 `http-error`/`classify`/`parsing`/`utils`(error) 纯基元入 foundation；`upstream-diagnostics.ts` 仅对旧 core 消费者 type re-export；**`forward.ts` 留 core**。targeted 测试：`instanceof HTTPError` 跨 foundation/core barrel 为真、400 diagnostics 从 producer 到 `forwardError` log 仍可观测（`tests/infra/{error,error-format,upstream-diagnostics}.unit.test.ts`）。error barrel 符号面零改、~57 消费者不动。
+- **C3**：建 `createTokenRuntime`/`TokenRuntimeDependencies` 骨架 + 视图接口；旧 `initTokenManagers` lifecycle **façade 委托** runtime（同 commit 内不改消费者）。
+- **C4**：**同一 commit** 收敛全部 provider/manager/CLI 5 链到 runtime，带 fetch(`TokenFetch`) + paths(`TokenPersistencePaths`) + config(`TokenRuntimeConfigView`)；validate 临时 swap → `withGitHubTokenForValidation(token, op)`（try/finally + 并发策略）。装配层适配 `upstreamFetch`/`PATHS`/config 视图。
+- **C5**：接入 token-store snapshot/reset + fixture；**同一 commit** 迁完 8 个 core token-field 读点经 token 包 API、删 state token 字段+setter+镜像；`routes/token`/status/readiness/4 client/header builder 逐一。生命周期 `disposeTokenRuntime()` 单 owner，shutdown 只调它；测试：重复 init / shutdown-during-refresh / teardown-during-refresh 三条确定性 + 跨测试隔离正向。
+- **C6**：GHC auth HTTP 完整符号表（见依赖 #5）移入 token `ghc-auth-http.ts`；`copilot-api.ts` 删 `githubHeaders`（确认 token 外零用）。`copilotBaseUrl`/`copilotHeaders` 留 core（models/transport 用）。
+- **C7 = T2**：`git mv src/lib/token → packages/token/src`；package.json（声明 consola 等）+ tsconfig；过渡 alias `~/lib/token`+`~/lib/token/*`（2 barrel 消费者不改）；内部 import 收敛相对、对 foundation 用包名/alias。
+  - **边界守卫**（复用 `package-boundaries.unit.test.ts` foundation guard 手法）：扫 `packages/token/src`，**拒所有 `~/`**、只许相对 + `@hsupu/ghc-proxy-foundation` + bare external + `node:`；**正样本对照**证 `@hsupu/ghc-proxy-core`/`~/lib/state`/`~/lib/transport/upstream-fetch` 会被命中。ESLint 同规则。
+  - smoke：`bun run build:backend`（tsdown 内联 token）+ bin `--help` 不变。
 
-### Task T1b：注入 fetch 契约
+## 风险 + 回滚
 
-- [ ] **Step 1**：定义 token 包的 fetch 契约接口 `UpstreamFetch`（角色接口：`(url: string, init: RequestInit) => Promise<Response>`，与 `upstreamFetch` 签名对齐）在 token 包内。
-- [ ] **Step 2**：copilot-client/github-client（及 device-auth）改为**接收注入的 fetch**（经 manager 构造参数或模块级 DI seam `setTokenFetch()`），不再 `import { upstreamFetch } from "~/lib/transport/upstream-fetch"`。
-- [ ] **Step 3**：装配层（core/cli token 初始化处）把 `upstreamFetch` 注入 token。找初始化点：`grep -rn 'initTokenManagers\|new .*TokenManager' src`。
-- [ ] **Step 4**：typecheck + test:backend 0 fail（token 测试注入 mock fetch）+ lint。
-- [ ] **Step 5**：`git commit`「refactor(token): inject upstream fetch contract (drop transport dep)」。
-
-### Task T1c：token 包拥有 token store（反转 state 写）
-
-> 最承重一步。token 的 github/copilot token + tokenInfo 现属 `state.ts`。token 包应拥有这块 store，core 经视图读、经 token 包 API 写。
-
-- [ ] **Step 1**：在 token 包建 `token-store.ts`——拥有 `{ githubToken, copilotToken, tokenInfo, copilotTokenInfo, showGitHubToken }` + 读视图（`getTokenReadView` 迁来）+ 写（`setGitHubToken` 等迁来）。
-- [ ] **Step 2**：`state.ts` 这几字段**改为委托** token store（或 state 订阅 token store）——**决策点**：state 保留这些字段作 live-config 一部分？还是完全移交 token store、state 经 token 包读？倾向：token store 是 SoT，state.ts 的 `TokenReadView` seam 改成 re-export token 包的（`src/lib/state-readers/token.ts` → token 包）。**这步须确认热重载 / snapshot-restore 测试不破**（state 快照机制涉及这些字段）。
-- [ ] **Step 3**：2 个外部消费者（`routes/status`、`request/strategies/token-refresh`）改经 token 包公共 API。
-- [ ] **Step 4**：typecheck + test:backend 0 fail（**尤其 config-hot-reload / state snapshot-restore / RESETTERS 守卫**）+ lint。
-- [ ] **Step 5**：`git commit`「refactor(token): own token store (invert state ownership)」。
-
----
-
-## Phase T2：物理抽包
-
-### Task T2：`git mv src/lib/token` → `packages/token/src` + 包定义 + 边界守卫
-
-- [ ] **Step 1**：确认 T0/T1 后 token 对 core 零依赖：`grep -rn 'from "~/lib/' src/lib/token | grep -vE 'foundation-mapped|state-readers'` 应仅剩 foundation-alias + 注入契约。若有残留 core import，回补对应 T1 步。
-- [ ] **Step 2**：`packages/token/package.json`（`@hsupu/ghc-proxy-token`, private, exports index）+ `tsconfig.json`。
-- [ ] **Step 3**：`git mv src/lib/token/* packages/token/src/`；tsconfig 加 `"~/lib/token"` + `"~/lib/token/*"` 精确映射（过渡别名，2 消费者不改 import）。
-- [ ] **Step 4**：token 包内部 import 收敛为相对 `./`；对 foundation 用 `@hsupu/ghc-proxy-foundation`（或过渡 `~/lib/*` alias）；注入契约为 token 包自有接口。
-- [ ] **Step 5**：架构守卫 + ESLint：`packages/token/src/**` 禁 import `@hsupu/ghc-proxy-core`/`~/lib/{非foundation}`（只许 foundation + 注入契约 + 相对）。加正样本对照。
-- [ ] **Step 6**：typecheck + test:backend 0 fail + lint + `bun run build:backend`（tsdown 内联 token 包）+ bin `--help` 不变。
-- [ ] **Step 7**：`git commit`「refactor(token): extract @hsupu/ghc-proxy-token package」。
-
----
-
-## 每 commit 通用 invariant（见 Global Constraints）+ 关键风险
-
-- **最危险**：T1c（token store 反转 state 所有权）——涉 state snapshot-restore / 热重载 / RESETTERS 守卫。**缓解**：先只加 token store + 让 state 委托（双向一致），跑全 config/shutdown 测试确认快照机制不破，再切消费者。
-- **T0b** ToolDiagnostics 解链若牵出更多 error 消费者的类型错，按 spec §3.2 gatekeeper 逐个补 re-export。
-- **回滚**：隔离 worktree 内做，每 commit 自足绿、可 `git revert`。
+- **最危险 = C5**（state 所有权反转 + 8 读点 + 隔离契约）。缓解：C3/C4 先把 runtime + 注入立好、façade 委托保持行为；C5 先加 store+snapshot+隔离测试证不泄漏，再同 commit 切 8 读点 + 删 state 字段。
+- **C2 http-error edge**：必须改 http-error 自身 import（非 re-export），否则 foundation→core type edge，守卫红。
+- 隔离 worktree、每 commit 自足绿、可 `git revert`。
 
 ## Self-Review
 
-- spec §3.2（error 劈裂）→ T0b ✓；§5（视图 seam）→ 已立（T1c 沿用）✓；§7.2 阶段 4+（domain peel）→ 本 plan 是首例 ✓。
-- 无占位：6 条依赖每条有具体 Task + 实测锚点。
-- 类型一致：`TokenReadView`/`GithubHeaderIdentity`/`UpstreamFetch` 角色接口贯穿。
-- **开放决策**（T1c Step 2）：state 保留 token 字段作 live-config vs 完全移交 token store——影响热重载语义，实施前定。
+- 7 依赖每条有 commit + 实测锚点 ✓；composition root 覆盖 5 CLI 链 ✓；8 读点收敛矩阵 ✓；隔离契约 ✓；两视图分离（credential vs config）✓；边界守卫正反控制 ✓；DomainPeel Contract 可复用 ✓。
+- 无占位。类型一致：`TokenCredentialsView`/`TokenRuntimeConfigView`/`TokenFetch`/`TokenPersistencePaths`/`TokenRuntime` 贯穿。
+- **开放决策（实施前定）**：state token 字段快照——(a) token store 自有 snapshot + fixture 组合，还是 (b) core 单一 `snapshotRuntimeStateForTests` 原子组合。倾向 (a)（token 拥有自己的隔离，符合包自治）。
 
 ## Kick-off Prompt
 
 ```
-执行 docs/plan/monorepo-split/plan-token-package.md（在 .worktrees/monorepo-split）。
-按 T0a→T0b→T0c→T1a→T1b→T1c→T2 顺序。每 commit：typecheck + test:backend(parallel-test, 0 fail)
-+ lint:all 无新增 + 显式 pathspec。DI 用视图/角色接口非裸字段。T1c 最危险(state 所有权反转)——
-先加 store+委托、验快照/热重载/RESETTERS 守卫绿再切消费者。物理搬迁用 git mv + 过渡别名(2 消费者不改)。
+执行 docs/plan/monorepo-split/plan-token-package.md v2（.worktrees/monorepo-split）。
+按闭合 commit DAG C1→C7 顺序，每 commit 同一提交内完整闭合、终态 typecheck+test:backend(parallel-test,0 fail)+精确 pathspec lint 绿，绝不跨 commit 留双 SoT。
+DI 用视图/角色接口对象（非裸字段/位置参）。composition root createTokenRuntime 覆盖全 5 CLI 链(start/setup-*/auth/debug)、无全局 DI escape。
+C2 必须改 http-error 自身 import 指 foundation 类型(非 re-export)。C5 最危险(state 所有权反转+8 读点+隔离契约)——先立 store+snapshot+正向隔离测试再同 commit 切读点删字段。
+C7 边界守卫扫 packages/token/src 拒所有 ~/、带正样本证 core/state/transport 被命中。禁 eslint --fix 宽扫。
 判据：长远正确+完整 > 省事，禁 ROI/YAGNI 砍范围。
 ```
