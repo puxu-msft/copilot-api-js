@@ -19,6 +19,17 @@
 4. **MED-2 已折进 B2 plan Task 0.6**（seal-race crash 安全，B2 必治顺带关闭既有 process.exit 缺陷）；MED-1 折进 B2 dispatch-open 测试矩阵。
 5. **记忆索引 MEMORY.md 的 upstream-silence 行**已在工作区更新到新态但**未提交**（与 peer WIP 纠缠），下个碰 MEMORY.md 的会话一并提交。
 
+## 0.2 实施已启动（2026-07-23，用户授权继续）
+
+用户授权实施 + 定下硬约束「**绝不误杀合法长思考**」（已编码进 plan Global Constraints + 各 fork 裁定，commit `5874ea78`）。走 `superpowers:subagent-driven-development` 于**隔离 worktree**。
+
+- **worktree / 分支**：`.worktrees/upstream-silence-recovery` @ `feat/upstream-silence-recovery`（从 master `5874ea78` 起，node_modules 已软链）。**未合回 master**——按 SDD 纪律全阶段 + 终审后再 ff 合并。
+- **进度 ledger**：`.worktrees/upstream-silence-recovery/.superpowers/sdd/progress.md`（gitignored；含阶段 DAG + 完成记录）。**接手先读它**，已完成的别重派。
+- **已完成**：✅ **B1**（plan-1，commits `5874ea78..31ba4a60`）——拆 commit-window clamp + ceiling→125s（Q1 实测下界）+ 独立告警抑制标志（异模型 review 抓的 Important，已 TDD 回归修复）。默认值 `streamCommitAfterSec` 仍 20（首失败点待补测再定）。test:backend 6346 pass。
+- **剩余（串行，见 ledger DAG）**：B2-P0（配置骨架 + telemetry）→ B2-P1（driver pre-ready ownership）→ B2-P2（delivery-level semantic gate）→ B2-P3（sink supervisor + seal-race crash 安全 Task 0.6 + coordinator.runRecoveryFromPreReadyFailure）→ B2-P4~P6（plan-3 两挂载点执行器 + splice + 接线 + 协议矩阵）→ B3（plan-4，默认关）→ 全分支终审 → ff 合 master。
+- **续跑方式**：新会话读 [plan kickoff](2026-07-23-upstream-silence-recovery/kickoff.md) + ledger，`superpowers:subagent-driven-development` 从 B2-P0 起，每任务 fresh implementer（gpt-souls:implementer）→ 异模型任务 review（Claude reviewer）→ fix loop → 标 ledger。承重声称亲自 code-read 复核。
+
+
 
 
 | 主题 | commit（约） | 权威文档 |
