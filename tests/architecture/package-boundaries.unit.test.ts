@@ -36,10 +36,19 @@ async function sourceFiles(root: string): Promise<Array<string>> {
 // leak. (Files OUTSIDE foundation keep importing `~/lib/<x>` via the
 // transitional alias; that is fine — this guard only governs foundation's own
 // source.)
+//
+// `importsSpecifier` matches a specifier in ANY import form — static
+// `from "X"`, side-effect `import "X"`, dynamic `import("X")`, or `require("X")`
+// — so a non-`from` import shape cannot silently bypass a package boundary.
+// `specBody` is the regex body of the quoted specifier (e.g. `~\/`).
+function importsSpecifier(source: string, specBody: string): boolean {
+  return new RegExp(String.raw`(?:\bfrom|\bimport|\brequire)\s*\(?\s*["']${specBody}`).test(source)
+}
+const SIBLING_CORE_SERVER_CLI = String.raw`@hsupu\/ghc-proxy-(?:core|server|cli)`
+const ROOT_ALIAS = String.raw`~\/`
+
 function foundationHasForbiddenImport(source: string): boolean {
-  const siblingPkg = /from ["']@hsupu\/ghc-proxy-(?:core|server|cli)/
-  const anyRootAlias = /from ["']~\//
-  return siblingPkg.test(source) || anyRootAlias.test(source)
+  return importsSpecifier(source, SIBLING_CORE_SERVER_CLI) || importsSpecifier(source, ROOT_ALIAS)
 }
 
 // A file in the `token` package may import ONLY: token-internal modules (RELATIVE
@@ -51,9 +60,7 @@ function foundationHasForbiddenImport(source: string): boolean {
 // `~/lib/token[/…]` via the transitional alias; this guard governs only the
 // package's own source.)
 function tokenHasForbiddenImport(source: string): boolean {
-  const siblingPkg = /from ["']@hsupu\/ghc-proxy-(?:core|server|cli)/
-  const anyRootAlias = /from ["']~\//
-  return siblingPkg.test(source) || anyRootAlias.test(source)
+  return importsSpecifier(source, SIBLING_CORE_SERVER_CLI) || importsSpecifier(source, ROOT_ALIAS)
 }
 
 describe("workspace packages", () => {
@@ -93,6 +100,10 @@ describe("package import boundaries", () => {
     expect(foundationHasForbiddenImport('import { state } from "~/lib/state"')).toBe(true)
     expect(foundationHasForbiddenImport('import { x } from "@hsupu/ghc-proxy-core"')).toBe(true)
     expect(foundationHasForbiddenImport('import { d } from "~/lib/util/abortable-delay"')).toBe(true)
+    // Non-`from` import shapes must also be flagged (side-effect / dynamic / require):
+    expect(foundationHasForbiddenImport('import "~/lib/state"')).toBe(true)
+    expect(foundationHasForbiddenImport('const s = await import("~/lib/state")')).toBe(true)
+    expect(foundationHasForbiddenImport('const s = require("~/lib/state")')).toBe(true)
     // foundation-internal relative + bare external imports are allowed:
     expect(foundationHasForbiddenImport('import { s } from "./stream"')).toBe(false)
     expect(foundationHasForbiddenImport('import { z } from "node:zlib"')).toBe(false)
@@ -117,6 +128,10 @@ describe("package import boundaries", () => {
     expect(tokenHasForbiddenImport('import { upstreamFetch } from "~/lib/transport/upstream-fetch"')).toBe(true)
     expect(tokenHasForbiddenImport('import { PATHS } from "~/lib/config/paths"')).toBe(true)
     expect(tokenHasForbiddenImport('import { x } from "@hsupu/ghc-proxy-core"')).toBe(true)
+    // Non-`from` import shapes must also be flagged (side-effect / dynamic / require):
+    expect(tokenHasForbiddenImport('import "~/lib/state"')).toBe(true)
+    expect(tokenHasForbiddenImport('const p = await import("~/lib/config/paths")')).toBe(true)
+    expect(tokenHasForbiddenImport('const p = require("~/lib/config/paths")')).toBe(true)
     // Allowed: foundation package (any subpath), relative, bare external, node:.
     expect(tokenHasForbiddenImport('import { s } from "@hsupu/ghc-proxy-foundation/sensitive-output"')).toBe(false)
     expect(tokenHasForbiddenImport('import { standardHeaders } from "@hsupu/ghc-proxy-foundation/ghc-http-primitives"')).toBe(false)
