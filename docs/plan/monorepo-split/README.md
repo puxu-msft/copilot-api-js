@@ -58,6 +58,8 @@ graph LR
 | Phase 3 | plan-3-core-body-move.md | ⏳ drain 窗口 + PoC 结论后展开 |
 | Phase 4+ | 每次剥离单独起 plan | ⏳ 长期 |
 
+**首个 Phase-4 领域包剥离**：[plan-token-package.md](plan-token-package.md) —— 把 `token/auth` 域抽成 `@hsupu/ghc-proxy-token`（评审中）。Phase 0d（state 视图 seam）token 域已落地 `54b32200`（`src/lib/state-readers/token.ts` 的 `TokenReadView`，立「依赖视图/角色接口非裸字段」范式）。
+
 ## 各阶段 kick-off prompt
 
 > Phase 0 的完整 kickoff 在 [plan-0](plan-0-scaffold-foundation-cli.md) 末尾。以下是后续阶段的启动种子（展开成完整 plan 时细化）。
