@@ -3,6 +3,8 @@
 > **For agentic workers:** REQUIRED SUB-SKILL: `superpowers:subagent-driven-development` 或 `superpowers:executing-plans`。步骤用 `- [ ]` 跟踪。索引 [README.md](README.md)、spec [../../spec/2026-07-22-monorepo-workspace-split.md](../../spec/2026-07-22-monorepo-workspace-split.md)。这是 spec §7.2 阶段 4+「core 内部增量解环」的**首个真领域包剥离**，作为后续 domain-peel 的模板。
 >
 > **修订说明（2026-07-23，v2，经 GPT 对抗审 + 逐条实测证实后大改）**：v1 严重低估了 token 的所有权收敛面（把「消费者」误算成 2，实为 **8 个**直接读 token-owned state 字段的生产文件）、漏列第 7 条依赖（`utils/sleep`）、未定义 composition root / 测试隔离契约 / 生命周期 owner。评审报告见 `exp/monorepo-split/review-token-plan-gpt.md`。本 v2 补齐。
+>
+> **实施状态（2026-07-23）**：**C1 `3acec08f` / C2 `80b3cc07` / C6 `33f5a355` 已 landed**（foundation 清理 + GHC auth，均 test:backend 6305/0-fail）。C6 应用户要求提前一次性完成。**剩余 C3/C4/C5/C7 交接见 [HANDOFF.md](HANDOFF.md)**。
 
 **Goal:** 把 GitHub/Copilot auth 生命周期（`src/lib/token/`）从 core SCC 剥出为独立包 `@hsupu/ghc-proxy-token`，只依赖 `foundation` + **注入契约**（fetch / paths / runtime-config），**对 core 零依赖**（机器可验证边界守卫）。
 
