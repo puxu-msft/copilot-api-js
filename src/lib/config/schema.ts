@@ -572,16 +572,21 @@ export const AnthropicConfigSchema = z
       .optional(),
     tool_search_non_deferred: nullableNonemptyStringArray(),
     warmup: nullableEnum(["allow", "reject", "drop", "fake"] as const),
-    // Free-form Records — key = model-name pattern, value = list
+    // Free-form Records — key = model-name pattern, value = list.
+    // Key matching (shared `per-model-config.ts`): a plain key is a model-name SUBSTRING; a key with a
+    // glob metachar (`*`/`?`) is an ANCHORED GLOB; `"*"` = all models. Aggregation differs by map:
+    // `effort_overrides` is a WHITELIST (`findMostSpecific`: most-specific wins, specificity literal >
+    // glob > `"*"` then longest key); every other Record here is an additive STRIP-LIST
+    // (`collectAllMatching`: union of ALL matching keys incl. `"*"`).
     effort_overrides: z.record(z.string(), z.array(z.string())).optional(),
     beta_strip_headers: z.record(z.string(), z.array(z.string())).optional(),
-    // GHC 未支持的 cache_control 子字段黑名单（model-name pattern → 子字段列表；"*" = 所有模型）。
+    // GHC 未支持的 cache_control 子字段黑名单（model-name pattern / glob → 子字段列表；"*" = 所有模型；additive `collectAllMatching`）。
     // passthrough 模式下剥除。ADDS to 内置 {scope} + reactive learned cache。
     cache_control_strip_subfields: z.record(z.string(), z.array(z.string())).optional(),
     partner_strip_features: z.record(z.string(), z.array(z.string())).optional(),
-    // Custom-tool top-level field names to strip / keep (model-name pattern → field list;
-    // `"*"` = all models). tool_strip_fields ADDS to the built-in default
-    // (`eager_input_streaming`) + reactive learned cache; tool_keep_fields SUBTRACTS
+    // Custom-tool top-level field names to strip / keep (model-name pattern / glob → field list;
+    // `"*"` = all models; additive `collectAllMatching`). tool_strip_fields ADDS to the built-in
+    // default (`eager_input_streaming`) + reactive learned cache; tool_keep_fields SUBTRACTS
     // (the reversibility escape hatch — e.g. re-enable a field a future upstream supports).
     tool_strip_fields: z.record(z.string(), z.array(z.string())).optional(),
     tool_keep_fields: z.record(z.string(), z.array(z.string())).optional(),
