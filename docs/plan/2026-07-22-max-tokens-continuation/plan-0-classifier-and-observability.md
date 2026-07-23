@@ -64,7 +64,7 @@ export function isResponsesMaxTokensTerminal(status: string, incompleteReason: s
 
 ### Task 0.1: Anthropic terminal observer（独立数据源，替代原「读 ledger」方案）
 
-- [ ] **Step 1: 写失败测试** —— 覆盖 A'/zero-delta B/B-closed/thinking-after-text 四类**必须被本 observer 正确捕获、而 ledger 无法捕获**的反例（这是本 task 存在的理由，测试须显式证明"若用 ledger 会判错，用 observer 能判对"）。
+- [x] **Step 1: 写失败测试** —— 覆盖 A'/zero-delta B/B-closed/thinking-after-text 四类**必须被本 observer 正确捕获、而 ledger 无法捕获**的反例（这是本 task 存在的理由，测试须显式证明"若用 ledger 会判错，用 observer 能判对"）。
 
 ```ts
 // tests/pipeline/max-tokens-terminal-observer.unit.test.ts
@@ -106,9 +106,9 @@ test("thinking-after-text: text block committed (closed), THEN thinking block st
 })
 ```
 
-- [ ] **Step 2: 跑，失败。**
-- [ ] **Step 3: 实现** —— `updateAnthropicTerminalObserver` 读 Anthropic 帧的 `type`/`content_block.type`：`content_block_start` 时更新 `lastBlockKind` 为新块类型、`lastBlockClosed=false`；`content_block_stop` 时（若匹配当前最后块的 index，或简化为"最近一次 start 对应的 stop"）设 `lastBlockClosed=true`；`content_block_delta` 不改变 kind/closed（只是同一块内的增量）。**实现须显式不依赖 ledger**——本文件不 import `committed-blocks-ledger.ts`。
-- [ ] **Step 4: 跑，通过。**
+- [x] **Step 2: 跑，失败。**
+- [x] **Step 3: 实现** —— `updateAnthropicTerminalObserver` 读 Anthropic 帧的 `type`/`content_block.type`：`content_block_start` 时更新 `lastBlockKind` 为新块类型、`lastBlockClosed=false`；`content_block_stop` 时（若匹配当前最后块的 index，或简化为"最近一次 start 对应的 stop"）设 `lastBlockClosed=true`；`content_block_delta` 不改变 kind/closed（只是同一块内的增量）。**实现须显式不依赖 ledger**——本文件不 import `committed-blocks-ledger.ts`。
+- [x] **Step 4: 跑，通过。**
 - [ ] **Step 5: 提交** → `feat(pipeline): independent Anthropic terminal observer (last wire block kind+closed, NOT the continuation ledger)`。
 
 ### Task 0.2: 分型判定器（穷尽判定表，spec §5.2，消费 observer）
