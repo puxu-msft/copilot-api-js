@@ -47,7 +47,9 @@ export function matchesModelPattern(candidate: string, pattern: string): boolean
  * 空列表 / 只有 negative → false。
  */
 export function modelMatchesPatternList(id: string, entries: ReadonlyArray<string>, family?: string): boolean {
-  const candidates = family === undefined ? [id] : [id, family]
+  // Truthiness (not `!== undefined`) mirrors the legacy `matchModelCapability` candidate set: an
+  // empty-string family is ignored, so `modelMatchesPatternList(id, ["*"], "")` stays false like before.
+  const candidates = family ? [id, family] : [id]
   const hit = (pattern: string) => candidates.some((c) => matchesModelPattern(c, pattern))
 
   let matchedPositive = false

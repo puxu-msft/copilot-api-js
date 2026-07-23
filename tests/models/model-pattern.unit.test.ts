@@ -105,6 +105,16 @@ describe("modelMatchesPatternList (self-contained, exclusion-always-wins)", () =
     // reverse: family hits positive, id hits negative → excluded.
     expect(modelMatchesPatternList("claude-haiku-4-5", ["claude-*", "!vendor-alias"], "vendor-alias")).toBe(false)
   })
+  test("empty-string family is ignored (legacy truthiness parity)", () => {
+    // Candidate set uses `family ? [id, family] : [id]` to mirror legacy: an empty-string family must
+    // NOT become a match candidate. Isolate with an empty entry (only "" would match ""): after the
+    // fix, family "" is dropped so nothing spuriously matches → false, exactly like legacy.
+    expect(modelMatchesPatternList("gpt-4", [""], "")).toBe(false)
+    expect(modelMatchesPatternList("gpt-4", [""], "")).toBe(legacyMatch("gpt-4", [""], ""))
+    // A real (non-empty) family candidate still participates.
+    expect(modelMatchesPatternList("vendor-alias", ["claude-*"], "claude-opus-4-6")).toBe(true)
+  })
+
   test("equivalence oracle: no-! no-glob inputs match frozen legacy impl", () => {
     const ids = ["claude-opus-4-8", "claude-opus-40", "claude-sonnet-4-5", "gpt-4", "claude-haiku-4-5"]
     const prefixLists = [["claude-opus-4"], ["claude-sonnet-4", "claude-haiku-4-5"], ["claude-opus-4-8"]]

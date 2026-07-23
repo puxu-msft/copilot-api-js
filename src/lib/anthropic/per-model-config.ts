@@ -19,7 +19,11 @@
  * test, so `claude-opus-4.8` and `claude-opus-4-8` match the same entry.
  */
 
-import { hasGlobMeta, matchesModelKey } from "~/lib/models/model-pattern"
+import {
+  //
+  hasGlobMeta,
+  matchesModelKey,
+} from "~/lib/models/model-pattern"
 
 /**
  * Return the value for the most-specific (longest) key whose substring matches
