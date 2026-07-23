@@ -210,7 +210,7 @@ max_tokens 在各格式 wire 上形态不同，续传触发须 per-format 识别
 ## 8. 各端点接入与边界
 
 - **Anthropic**：三分型 §3 + 触发 §5 + builder（复用续写 spec Anthropic builder）。
-- **Chat Completions**：`finish_reason=length` 触发；A 类续写复用续写 spec CC builder；B 类 CC tool_calls 尾随约束（续写 spec §4.3）叠加本 spec B 类风险，默认透传。
+- **Chat Completions**：`finish_reason=length` 触发；A 类续写复用续写 spec CC builder；B 类默认透传（CC **无** tool_calls 尾随约束——master FINDINGS G5a 已证伪，§5.2；B 类透传理由是发散 hazard、非尾随约束）。
 - **Responses HTTP/WS**：`incomplete+max_output_tokens` 触发；A 类复用 Responses builder；WS 续写重派上游轮的传输时序（续写 spec §7 WS 门）叠加。
 - **Gemini**：排除，透传（N1）。
 - **8.4 非流式**（N2）：首版不做。非流式 max_tokens 同样常见（`max_non_streaming_output_tokens=16000` 更低、更易撞），但走 `runResponseWhole`、不经流式续写循环——独立第二挂载点，列 backlog。
@@ -273,7 +273,7 @@ max_tokens 在各格式 wire 上形态不同，续传触发须 per-format 识别
 ## 13. 未决问题（进 plan 前须闭合）
 
 - **~~Q1 客户端可见性契约~~ 已裁决（2026-07-23，§4）**：默认 `transparent`（能藏则藏、藏不掉透传），支持多策略可配置（transparent/passthrough/marker）。用户不在乎双计费/下游预算。**透明只对客户端；后端 history/telemetry 忠实完整**（§9）。
-- **~~Q2 C 类策略~~ 已裁决（2026-07-23，§3.3/§6）**：多策略可配置（`passthrough` 默认 / `retry_with_budget` / `continue`），非二选一。抬预算是允许的 opt-in 策略。
+- **~~Q2 C 类策略~~ 已裁决（2026-07-23，§3.3/§6）**：多策略可配置（`passthrough` 默认 / `retry_with_budget` opt-in 抬预算），非二选一。无 `continue`（thinking 被 ledger 排除、不可作前缀，ADR D3）。
 - **Q3 默认档（已定初始默认、观测后可调）**：§6 `classes` 默认 `text:"continue", tool_use:"passthrough", thinking:"passthrough"`、`visibility:"transparent"`、`max_rounds:1`——A 类续、B/C 透传。这些是**已裁决的初始默认值**（非阻塞 plan 的未决项），未来通过观测再调整。
 - **Q4 max_rounds 多轮语义（计划期技术项）**：A 类续写后可能再撞 max_tokens → 是否需多轮 vs 成本爆炸（每轮满上下文）。默认 1，plan 期定多轮时的预算/usage 累积语义。
 - **Q5 三方合并态交互**（审查 major：原只画两方）：一个 exchange 可能**三套 client-egress 机制叠加**——① 续写 spec 的**错误续写**（mid-stream CANCEL 续回）+ 顺序 anchor 的**运行时递增 index offset**（续写 spec §3.3，本身未闭合承重项）；② 本 spec 的 **max_tokens post-success 续写**（块 index 连续递增跨 attempt）；③ 重复截断 spec 的**有状态 client.outbound**（下沉到 `delivery/session.ts`、eager-forward `content_block_start` + 块内缓冲折叠）。三者同 exchange 时的 **index 账**（三层重编号来源）、**挂载层次**（本 spec 续写缝合在哪层 vs repetition 折叠在 delivery 层的相对次序）、**预算/attempt 账**均须画清。计划期须出三方叠加时序图 + 显式声明相对次序与 index 归属，否则撞集成缝（记忆 `cross-phase-integration-seam-only-caught-at-merged-state`）。
@@ -304,6 +304,8 @@ max_tokens 在各格式 wire 上形态不同，续传触发须 per-format 识别
 ## 16. 审查采纳记录
 
 两轮**异模型对抗审查**（GPT-souls reviewer + Claude opus reviewer，独立并行收敛）。判据轴：长远正确 + 完整（非 ROI/YAGNI）。两份报告：`2026-07-22-max-tokens-continuation-review-gpt.md` / `-review-claude-a.md`。**两 reviewer 强收敛**（`ln` 虚构 + settle-freeze 张力两项独立同时命中）。
+
+> **注（chronological record）**：本节是**第一轮**采纳记录，其中部分前提（committed-blocks-ledger「master 尚无」、旧行号 `driver.ts:1283/1233/1255`）**已被 §16.1 第二轮复审据实推翻纠正**（底座已 landed master、行号刷新）——以 §16.1 + 正文为准，本节保留作过程记录。
 
 **采纳（全部主要发现）**：
 - **[两 reviewer BLOCKER/major 收敛] `ln` 变量虚构** → 全文改回 `committedAny`（`driver.ts:1283` 已亲手 grep 核实，master 与分支一致；根因=起草时误用 `rg -r ln` 替换 flag 把 `committedAny` 显示成 `ln`）。删「已核实重命名」伪叙事。
@@ -342,5 +344,5 @@ max_tokens 在各格式 wire 上形态不同，续传触发须 per-format 识别
 **用户裁决记录（2026-07-23）**：
 - **Q1 客户端可见性 → transparent 默认**：能藏就藏、藏不掉才透传；用户不在乎双重计费、下游预算约束当前不被客户端强制、proxy 无义务确保其完美。支持多策略可配置（transparent/passthrough/marker），默认 transparent。→ §4 从「承重伦理未决」改为已裁决决策；放弃原「倾向 P2 marker」。
 - **关键约束（用户强调）：透明只对客户端；本程序内部 history/telemetry/日志一律忠实完整**——缝合隐藏是呈现层行为、不回写记录层。→ §9 补 `perRoundStopReason`（记真实每轮终止含被藏的 max_tokens）+ `clientVisibleStopReason` 并存；对齐 ADR `richest-data-flow`（后端完整、前端选择性呈现）。
-- **Q2 C 类 → 多策略可配置**：`passthrough`（默认）/ `retry_with_budget`（opt-in 抬预算，N3 铁律相应放宽为可配置）/ `continue`。非二选一。
+- **Q2 C 类 → 多策略可配置**：`passthrough`（默认）/ `retry_with_budget`（opt-in 抬预算，N3 铁律相应放宽为可配置）。非二选一。无 `continue`（thinking 不可作续写前缀，ADR D3）。
 - **doc-sync 待办（landing 时）**：本决策触及「proxy 不为维护 client 预算契约负责」，属决策级——landing 时新建/更新 ADR（`docs/decisions/`），可挂靠既有 `2026-07-05-internal-tool-security-posture` + `2026-07-05-richest-data-flow`。
