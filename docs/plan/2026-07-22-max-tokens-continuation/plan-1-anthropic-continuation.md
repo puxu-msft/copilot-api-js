@@ -1,41 +1,74 @@
 # Plan-1: Anthropic direct A 类续写（成功终止截获，新增实现）
 
-> 依赖：P0（分型判定器 + config schema）+ M（Anthropic 格已在 planning 期确认，实施前重新核对 `driver.ts:1336` 附近代码是否漂移）+ 门 D（transparent 缝合被 SDK 接受）+ 门 A（text-only 前缀续写，max_tokens 场景）。
-> 目标：默认 `enabled:false` 时零行为变更；opt-in 后 A 类（text 已闭合截断）自动续写到自然终止，客户端默认看到干净的 `end_turn`（transparent 缝合），后端 history 忠实记录真实每轮终止。
+> **修订记录（2026-07-23，据 GPT plan-review [major] 修订）**：
+> 1. Task 1.1 的 settle 时序测试拆分为两个独立 oracle（driver integration + handler/in-process），因为 `runResponseBufferedSink` 本身从不调用 `ctx.complete()`——只驱动 driver 级测试断言"handler 未被调用"是假绿，真正的调用点在 handler 层。
+> 2. visibility×class 非法组合校验（`resolveEffectiveMaxTokensContinuation`，P0 Task 0.4 已建好）**必须是 P1 首个可启用 commit 就消费**，不得留到 P2——否则 P1 落地到 P2 之间的窗口期，用户配置 `passthrough+continue` 会让 driver 在已透传终止符后又发续写帧，破坏协议。
+> 3. Task 1.2 的分型判定输入源改为 P0 的独立 terminal observer（`TerminalObserverState`），不再是原方案的裸 ledger 最后块（该方案已被认定为 blocker 并在 spec/plan-0 修正）。
+
+> 依赖：P0（独立 terminal observer + 分型判定器 + config schema + **组合校验函数** `resolveEffectiveMaxTokensContinuation`）+ M（Anthropic 格已在 planning 期确认，实施前重新核对 `driver.ts:1336` 附近代码是否漂移）+ **provenance 前置任务**（见 `plan-provenance-prerequisite.md`，本计划 Task 1.4 依赖其产出）+ 门 D（transparent 缝合被 SDK 接受）+ 门 A（text-only 前缀续写，max_tokens 场景）。
+> 目标：默认 `enabled:false` 时零行为变更；opt-in 后 A 类（text 已闭合截断）自动续写到自然终止，客户端默认看到干净的 `end_turn`（transparent 缝合），后端 history 忠实记录真实每轮终止；**任何 commit 落地时刻，非法组合配置都不可能产生协议错误**（组合校验从第一个可启用 commit 就生效）。
 
 **Files：**
 - Modify: `src/lib/pipeline/driver.ts`（`runResponseBufferedSink` 的 terminal drain 分支内插入 max_tokens 截获——**新代码路径，不是修改 cut-path 续写分支**）
-- Modify: `src/routes/messages/handler-v4.ts`（生产接线：把 `resolveMaxTokensContinuation("anthropic")` 传给 driver opts；沿用已有的 `committedBlocksLedger`/`extractCommittedBlocks`/`continuation` builder 接线模式，新增一组 `maxTokensContinuation` 专属 opts）
+- Modify: `src/routes/messages/handler-v4.ts`（生产接线：把 `resolveEffectiveMaxTokensContinuation("anthropic")` 传给 driver opts，读 Task 0.1 的 observer 而非 ledger）
 - Test: `tests/pipeline/max-tokens-continuation-anthropic.it.test.ts`（driver 级，sequenced-transport 仿姊妹 `continuation-flow.it.test.ts`）
+- Test: `tests/routes/messages/max-tokens-continuation-settle-timing.it.test.ts`（handler/in-process 级，settle 时序独立 oracle，**新增文件，与 driver 级测试分开**）
 - Test: `tests/e2e-client/max-tokens-continuation-sdk.it.test.ts`（SDK oracle，仿姊妹 `continuation-sdk.it.test.ts`）
 
 **Interfaces：**
-- Consumes: `TruncationClass`/`classifyMaxTokensTruncation`（P0）、`resolveMaxTokensContinuation`（P0）、`CommittedBlocksLedger`/`getContinuationBuilder("anthropic")`/`coordinator.runContinuation`/`continued` verdict（**全部复用姊妹，不重新定义**）
-- Produces: driver 内新的 `canContinueMaxTokens` 判据 + 对应触发分支；`pipelineInfo.maxTokensContinuation` 的真实 populate 点
+- Consumes: `TruncationClass`/`classifyMaxTokensTruncation`/`TerminalObserverState`/`updateAnthropicTerminalObserver`（P0 独立 observer，**不是 ledger**）、`resolveEffectiveMaxTokensContinuation`（P0，已含组合校验）、`getContinuationBuilder("anthropic")`/`coordinator.runContinuation`/`continued` verdict（**全部复用姊妹，不重新定义**）、synthetic provenance marker（前置任务产出）
+- Produces: driver 内新的 `canContinueMaxTokens` 判据 + 对应触发分支；`pipelineInfo.maxTokensContinuation` 的真实 populate 点（P0 已建骨架，本阶段驱动多轮/抑制的真实值）
 
 ---
 
-### Task 1.1: settle/finalize 时序契约决策（承重架构项，必须先于任何代码）
+### Task 1.1a: 驱动 oracle 一——driver-integration（首轮不 flush + 派发续写 + driver 未返回）
 
-> **这是 spec §5.1 标注的「承重架构设计项，非核实项」**——post-success 续写在 `message_stop` 已到达后启新 exchange，会撞 settle-freeze 不变量。姊妹机制是 cut-path（`!drained`，从未到达 settle 点），本特性是 success-path（`drained && sawMessageStop()` 已为真，若不介入会立即走向 settle）——**settle 时点不同，不能假设姊妹的时序契约直接适用**。
+> **拆分说明**：这一层只证明 driver 内部控制流正确——`runResponseBufferedSink` 在 max_tokens 截获后**不 return**、继续循环、构造并派发续写请求。它**不能**证明 `ctx.complete()` 的调用次数（driver 从不直接调用它），试图在这层 spy `ctx.complete()` 会因为从未被调用而产生假绿（无论实现对错，这层测试里它都不会被调）。
 
-- [ ] **Step 1: 读透 settle 触发链** —— 精确定位「什么代码路径在 `drained && sawMessageStop()` 为真之后、多久会调用 `ctx.complete()`/`recordGenerationLogicalTerminal`」。核实：`driver.ts:1336-1358` 的 terminal drain 只是 driver 内部的 flush + `notifyBufferedResolve` + `return {kind:"complete"}`；真正的 `ctx.complete()` 调用在 **handler** 层（`src/routes/messages/handler-v4.ts:1442` `env.ctx.complete(buildAnthropicResponseData(acc, model))`），发生在 driver 的 `runResponseBufferedSink` **返回之后**。
-- [ ] **Step 2: 决策时序方案** —— 因为 `ctx.complete()` 在 handler 层、driver 返回之后才调用，**本特性的截获点在 driver 内部（terminal drain 分支），天然早于 settle**——只要截获逻辑在 driver 返回 `{kind:"complete"}` **之前**判断"这是 max_tokens 且应续写"并转而继续 driver 内部的 `for(;;)` 循环（不 return），settle 就根本不会被触发（因为 handler 侧的 `env.ctx.complete()` 依赖 driver 返回 `outcome.kind==="complete"`，只要 driver 不返回、继续循环，`ctx.complete()` 无从调用）。**这与姊妹 cut-path 的处理时序同构**（姊妹也是在 driver 内部循环 `continue`，不返回给 handler）。
-- [ ] **Step 3: 显式记录决策** —— 写入本文件与 README 冻结契约：**「settle 不推迟、不做已 settle 补记协议——因为driver 循环内部 `continue` 天然阻止了 settle 触发，这是`for(;;)`循环结构本身提供的时序保证，非新设计」**。若续写循环最终真正结束（自然终止或预算耗尽），driver 才 `return {kind:"complete"|"stream-error"}`，handler 才调用一次 `ctx.complete()`/`ctx.fail()`——与现有 R1 路径完全同构，无需新的 settle 协议。
-- [ ] **Step 4: 反例排查（写测试钉死这个假设）** —— 断言"driver 在 max_tokens 截获后继续循环时，`ctx.complete()` 未被调用"，及"只有循环真正终止后才调用一次"。
+- [ ] **Step 1: 写失败测试** —— 断言 driver 内部行为，不涉及 handler/ctx。
 
 ```ts
 // tests/pipeline/max-tokens-continuation-anthropic.it.test.ts
-test("driver internal loop continues past a max_tokens terminal drain when continuation is enabled — handler-level ctx.complete() is NOT invoked until the loop truly ends", async () => {
-  // 用 spy 包装 env.ctx.complete，断言在续写期间未被调用，只在最终 outcome 后调用一次
+test("driver-integration: A-class max_tokens terminal drain does NOT flush to the sink; a continuation exchange is dispatched; the internal for(;;) loop does not return", async () => {
+  // mock 上游：块@1 text 完整 commit -> message_delta{stop_reason:max_tokens} + message_stop（干净终止）
+  // 用 spy 包装 transport.send（driver 依赖），断言：
+  //   (a) 首轮的 message_delta/message_stop 帧从未到达 sink.write
+  //   (b) transport.send 被调用第二次（续写请求已派发）
+  //   (c) runResponseBufferedSink 尚未 resolve（仍在 pending，用 Promise.race против 一个短 timeout 断言未决）
+})
+test("driver-integration: enabled=false -> byte-identical passthrough, loop returns immediately after first terminal (R1)", async () => {
+  // 同样的 max_tokens 干净终止，但 enabled=false -> transport.send 只调用一次，sink 收到完整首轮帧
 })
 ```
 
-- [ ] **Step 5: 提交** → `docs(plan): settle/finalize timing decision for max_tokens continuation (driver-loop-continue, no new settle protocol)`。**本 task 只是决策 + 钉死测试，不含实际截获实现**（Task 1.2 才实现）。
+- [ ] **Step 2: 跑，失败。**
+- [ ] **Step 3: 实现骨架**（本 task 只搭 driver 内部判据框架，完整实现在 Task 1.2）。
+- [ ] **Step 4: 跑，通过。**
+- [ ] **Step 5: 提交** → `test(pipeline): driver-integration oracle for max_tokens continuation internal loop control flow`。
 
-### Task 1.2: driver 内 terminal drain 截获分支（新增实现，核心）
+### Task 1.1b: 驱动 oracle 二——handler/in-process（`ctx.complete()`/history terminal 只在末 leg 后一次）
 
-- [ ] **Step 1: 写失败测试** —— 首轮干净终止于 `max_tokens` + A 类（text 已闭合）+ `enabled:true` → 续写而非透传。
+> **拆分说明**：这一层跑**真实 HTTP 请求**（走 handler，非直接调用 driver），才能验证 `ctx.complete()`/`recordGenerationLogicalTerminal`（在 `handler-v4.ts:1442` 调用）确实只在续写循环真正结束后触发一次，且 parent dispatch 结算为 `continued`（非 `failed`/`discarded`），final dispatch 结算为 `committed`。
+
+- [ ] **Step 1: 写失败测试** —— in-process 真实请求（`serveInProcess` harness，仿姊妹 `continuation-sdk.it.test.ts`）。
+
+```ts
+// tests/routes/messages/max-tokens-continuation-settle-timing.it.test.ts
+test("handler/in-process: ctx.complete() / history terminal fires exactly ONCE, only after the continuation loop truly ends; parent dispatch verdict=continued, final dispatch verdict=committed", async () => {
+  // 真实 in-process HTTP 请求，mock 上游脚本：首轮 max_tokens 干净终止 -> 续写轮 end_turn 干净终止
+  // 断言：
+  //   - ctx.complete 只被调用一次（spy 或读 history 只有一条 entry、非两条）
+  //   - 读 model operation record：parent dispatch.verdict === "continued"、final dispatch.verdict === "committed"
+  //   - history entry 的 client-facing 结局只有一个（非"先 complete 又 fail"之类的双重结算）
+})
+```
+
+- [ ] **Step 2-4:** 跑失败 → 无需额外实现（本 task 验证 Task 1.1a 骨架 + Task 1.2 完整实现共同产生的行为，实现在 Task 1.2 完成，本 task 的测试通过标志 Task 1.2 也已完成——**故本 task 的 Step 2-4 实际上在 Task 1.2 之后才跑绿，先写在这里作为 Task 1.2 的验收断言之一**）→ 跑通过。
+- [ ] **Step 5: 提交**（与 Task 1.2 同一提交或紧随其后）→ `test(handler): settle-timing oracle confirms ctx.complete() fires once, parent=continued final=committed`。
+
+### Task 1.2: driver 内 terminal drain 截获分支（新增实现，核心，含组合校验前移）
+
+- [ ] **Step 1: 写失败测试** —— 首轮干净终止于 `max_tokens` + A 类（text 已闭合）+ `enabled:true` → 续写而非透传；**新增**非法组合测试（`passthrough`+`continue` 降级生效）。
 
 ```ts
 test("A-class max_tokens terminal drain: continuation enabled + text closed -> continues instead of flushing max_tokens to client", async () => {
@@ -51,6 +84,10 @@ test("B-closed (complete interactive tool_use before max_tokens) -> no continuat
 test("budget exhausted after max_rounds -> passthrough the final real max_tokens terminator (honest fallback, spec §4)", async () => {
   // 续写 max_rounds 次仍撞 max_tokens -> 最后一次正常 flush 透传（藏不掉兜底）
 })
+test("visibility=passthrough + classes.text=continue (illegal combination): downgraded to passthrough at THIS first commit — no protocol violation possible even mid-rollout", async () => {
+  // 配置该非法组合，断言 driver 消费的是 resolveEffectiveMaxTokensContinuation 的降级结果（classes.text=passthrough），
+  // 而非原始配置的 continue —— 即便本 commit 是"首次启用"，也不可能出现"已终止流后又续写"的协议错误
+})
 ```
 
 - [ ] **Step 2: 跑，失败。**
@@ -58,10 +95,12 @@ test("budget exhausted after max_rounds -> passthrough the final real max_tokens
 
 ```ts
 // 新分支，与 cut-path 的 canContinue（:1415-1423）平行但独立——判据完全不同（success path, not error path）
-const maxTokensConfig = opts.maxTokensContinuation // 新增 opt，P1 handler 接线传入
-const lastBlock = /* 读 candidateOpts 累积器或 ledger 最后一块状态 */
+// maxTokensConfig 已经过 P0 的 resolveEffectiveMaxTokensContinuation 组合校验（passthrough+continue 已被降级），
+// driver 侧不需要重复校验组合合法性，只需信任传入值。
+const maxTokensConfig = opts.maxTokensContinuation // 新增 opt，Task 1.5 handler 接线传入（已是 effective config）
+const observerSnapshot = opts.maxTokensTerminalObserver?.() // 读 P0 独立 observer，非 ledger
 const truncationClass = maxTokensConfig && candidateOpts.sawMessageStop?.() && stopReasonIsMaxTokens
-  ? classifyMaxTokensTruncation({ lastBlockType: lastBlock?.type, lastBlockClosed: lastBlock?.closed })
+  ? classifyMaxTokensTruncation(observerSnapshot)
   : undefined
 const canContinueMaxTokens =
   truncationClass !== undefined
@@ -73,6 +112,7 @@ const canContinueMaxTokens =
 if (canContinueMaxTokens) {
   // 记录真实首轮 stop_reason 到 perRoundStopReason（后端忠实，§9），但不 flush 给客户端
   // 构造续写请求（复用姊妹 continuation builder + coordinator.runContinuation）
+  // 打 synthetic:"continuation" provenance（前置任务产出，见 plan-provenance-prerequisite.md）
   // continue 循环（不 return），不触发 handler 侧 ctx.complete()
 }
 // 否则走既有 :1348 flush（byte-identical，R1）
@@ -83,9 +123,10 @@ if (canContinueMaxTokens) {
   - **C4 同构风险**：生产接线（handler 传 `maxTokensContinuation` opts 给 driver）是独立必需步骤，不能假设"接口存在=已接线"——Task 1.5 显式验证。
   - **message_start dedup**：续写 exchange 产生的第二个 `message_start` 必须丢弃（复用姊妹 `continuation.isMessageStart` 判据）。
   - **首轮 message_stop 不发**：与姊妹「已完整块照发但不发 message_stop」的处理一致——本特性额外要求连 `message_delta` 本身也不发（因为姊妹场景 message_delta 从未产出，本特性场景它已产出但要抑制，这是**新增的抑制逻辑**，不能照搬姊妹「无需抑制因为没发生」的假设）。
+  - **组合校验前移**（本次修订新增）：`maxTokensConfig` 在进入 driver 之前已经过 `resolveEffectiveMaxTokensContinuation` 处理，driver 本身不重复做 `visibility==="passthrough"` 的降级判断——这是 handler 接线层（Task 1.5）的职责，driver 只信任传入的 effective config。
 
-- [ ] **Step 4: 跑，通过。**
-- [ ] **Step 5: 提交** → `feat(driver): max_tokens success-path continuation interception (Anthropic direct)`。
+- [ ] **Step 4: 跑，通过（含 Task 1.1b 的 handler/in-process 测试此时也应转绿）。**
+- [ ] **Step 5: 提交** → `feat(driver): max_tokens success-path continuation interception (Anthropic direct, combination-validated from first commit)`。
 
 ### Task 1.3: visibility=transparent wire 抑制（terminal ownership matrix Anthropic 格的③要素落地）
 
@@ -106,43 +147,46 @@ test("usage.output_tokens monotonic across the stitched stream, final value = su
 
 ### Task 1.4: 后端忠实记录（`perRoundStopReason`/`clientVisibleStopReason`/`suppressedMaxTokens`）
 
+> **依赖 provenance 前置任务**（`plan-provenance-prerequisite.md`）——本 task 断言 `attempts[]` 含真实 `synthetic:"continuation"` 标记，若前置任务未完成，本测试的该项断言必然失败（这是设计内的依赖顺序，非本 task 缺陷）。
+
 - [ ] **Step 1: 写失败测试（独立 oracle，不靠客户端 wire 自证——skill `verifying-authoritative-claims`）** —— 直接读持久化 history entry，断言即便客户端看到 `end_turn`，后端记录仍完整保留真实的首轮 `max_tokens`。
 
 ```ts
-test("history perRoundStopReason includes the suppressed max_tokens; clientVisibleStopReason is end_turn; both coexist", async () => {
+test("history perRoundStopReason includes the suppressed max_tokens; clientVisibleStopReason is end_turn; both coexist; attempts[] carries real synthetic:continuation provenance", async () => {
   // 走真实 http 流程（非手动挂字段），读 getHistory() 持久化 entry
   const entry = await getHistoryEntryFor(reqId)
   expect(entry.pipelineInfo.maxTokensContinuation.perRoundStopReason).toEqual(["max_tokens", "end_turn"])
   expect(entry.pipelineInfo.maxTokensContinuation.clientVisibleStopReason).toBe("end_turn")
   expect(entry.pipelineInfo.maxTokensContinuation.suppressedMaxTokens).toBe(true)
-  // attempts[] 含合成续写轮的 upstreamRequest（打 synthetic:"continuation"）+ 真实 upstreamResponse（无合成物）
+  // attempts[] 含合成续写轮的 upstreamRequest，真实带 synthetic:"continuation" provenance 标记（非 fixture 手工挂）
+  const continuationAttempt = entry.attempts.find(a => a.dispatchVerdict === "continued" || /* 视 provenance 前置任务的确切字段形状 */)
+  expect(continuationAttempt?.upstreamRequest?.extensions?.synthetic).toBe("continuation") // 精确字段路径以前置任务定稿为准
+  // 上游原始轨（upstreamResponse）无合成物
 })
 ```
 
-- [ ] **Step 2-4:** 跑失败 → 实现（Task 1.2 截获点记录每轮真实 stopReason 到累积数组，最终 populate `pipelineInfo.maxTokensContinuation`；复用 P0 Task 0.4 的字段骨架和 `recordMaxTokensContinuation` 方法真正调用）→ 跑通过。
-- [ ] **Step 5: 提交** → `feat(history): faithful backend recording for max_tokens continuation (perRoundStopReason + clientVisibleStopReason)`。
+- [ ] **Step 2-4:** 跑失败 → 实现（Task 1.2 截获点记录每轮真实 stopReason 到累积数组，最终 populate `pipelineInfo.maxTokensContinuation`；复用 P0 Task 0.5 的字段骨架和 `recordMaxTokensTruncation`/新增 `recordMaxTokensContinuationRounds` 方法真正调用多轮场景）→ 跑通过。
+- [ ] **Step 5: 提交** → `feat(history): faithful backend recording for max_tokens continuation (perRoundStopReason + clientVisibleStopReason + real provenance)`。
 
-**警示（对照记忆 `settle 冻结 history entry`）：** 本 task 的字段必须在 `ctx.complete()` **调用之前**完成 record（settle 冻结 entry 快照），不能依赖 settle 之后的 mutation——Task 1.1 已确认续写循环内 `ctx.complete()` 延后到循环真正结束才调用，故 record 时点在循环内部持续累积（每轮 flush 前 append 到累积数组），最终一次性随 `ctx.complete()` 的 `buildAnthropicResponseData` 一起提交，符合「settle 前 record」纪律。
+**警示（对照记忆 `settle 冻结 history entry`）：** 本 task 的字段必须在 `ctx.complete()` **调用之前**完成 record（settle 冻结 entry 快照），不能依赖 settle 之后的 mutation——Task 1.1a/1.1b 已确认续写循环内 `ctx.complete()` 延后到循环真正结束才调用，故 record 时点在循环内部持续累积（每轮 flush 前 append 到累积数组），最终一次性随 `ctx.complete()` 的 `buildAnthropicResponseData` 一起提交，符合「settle 前 record」纪律。
 
-### Task 1.5: handler 生产接线（C4 同构风险，独立必需步骤）
+### Task 1.5: handler 生产接线（C4 同构风险，独立必需步骤，含组合校验消费）
 
-- [ ] **Step 1: 写失败测试** —— 端到端验证 opts 真正从 handler 传到 driver，未接线时续写不触发（即便 driver 内部逻辑正确，未接线=死代码）。
+- [ ] **Step 1: 写失败测试** —— 端到端验证 opts 真正从 handler 传到 driver，未接线时续写不触发（即便 driver 内部逻辑正确，未接线=死代码）；**验证 handler 传的是 effective config（已过组合校验），非原始 raw config**。
 
 ```ts
-test("production wiring: handler passes resolveMaxTokensContinuation('anthropic') to driver opts; unwired path never continues", async () => {
-  // 对照 handler-v4.ts 当前 opts 组装，断言 maxTokensContinuation 键存在且值来自 resolveMaxTokensContinuation
+test("production wiring: handler passes resolveEffectiveMaxTokensContinuation('anthropic') (combination-validated) to driver opts; unwired path never continues", async () => {
+  // 对照 handler-v4.ts 当前 opts 组装，断言 maxTokensContinuation 键存在且值来自 resolveEffectiveMaxTokensContinuation（非裸 resolveMaxTokensContinuation）
 })
 ```
 
 - [ ] **Step 2-4:** 跑失败 → 在 `src/routes/messages/handler-v4.ts` 组装 `runResponseBufferedSink` opts 处（`:1203` 附近，与既有 `committedBlocksLedger`/`continuation` 接线相邻）新增：
 ```ts
-maxTokensContinuation: {
-  ...resolveMaxTokensContinuation("anthropic"),
-  classifyTruncation: classifyMaxTokensTruncation,
-},
+maxTokensContinuation: resolveEffectiveMaxTokensContinuation("anthropic"), // 已含组合校验降级
+maxTokensTerminalObserver: () => anthropicTerminalObserverState, // P0 独立 observer 实例，per-request
 ```
 → 跑通过。
-- [ ] **Step 5: 提交** → `feat(handler): wire max_tokens_continuation config into Anthropic buffered path (production wiring)`。
+- [ ] **Step 5: 提交** → `feat(handler): wire effective max_tokens_continuation config + terminal observer into Anthropic buffered path (production wiring)`。
 
 ### P1 收口
 
@@ -150,3 +194,4 @@ maxTokensContinuation: {
 - [ ] **R1 golden 验证**：`enabled:false` 时四种截断分型的 max_tokens 透传逐字节等价于现状（跑既有 golden 测试套件，确认未破坏任何既有断言）。
 - [ ] **连跑确定性**：涉及 terminal 截获时序的测试连跑 10-25 次（FakeClock + 持 ReadableStream controller 精确控帧）。
 - [ ] History oracle 独立验收（Task 1.4 的真实持久化读回，非手动 round-trip）。
+- [ ] **组合校验验收**：无论何时启用 P1（即便只是"刚落地这一个 commit"），配置 `passthrough+continue` 的用户不可能观察到协议违规（Task 1.2 的降级测试 + Task 1.5 的接线测试共同覆盖）。
