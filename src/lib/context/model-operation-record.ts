@@ -249,6 +249,20 @@ export type DispatchVerdict = "committed" | "discarded" | "failed" | "cancelled"
 export type CandidateRole = "primary" | "hedge" | "recovery" | "continuation"
 export type CandidateVerdict = "winner" | "loser" | "failed" | "cancelled" | "continued"
 
+/**
+ * Upstream wall-clock instants captured for one physical dispatch. These are
+ * Date.now() epochs rather than frame offsets, so they survive retries and
+ * remain directly comparable with external diagnostics.
+ */
+export interface DispatchTiming {
+  readonly upstreamHeadersAt?: number
+  readonly upstreamMessageStartAt?: number
+  readonly upstreamFirstTokenAt?: number
+  readonly upstreamLastTokenAt?: number
+}
+
+export type DispatchTimingKind = keyof DispatchTiming
+
 /** Diagnostic retained on the attempt that produced it. */
 export interface AttemptDiagnostic {
   readonly sequence: number
@@ -271,6 +285,7 @@ export interface ModelOperationDispatch {
   readonly effectiveRequest?: OperationTrack
   readonly upstreamRequest?: OperationTrack
   readonly upstreamResponse?: OperationTrack
+  readonly timing?: DispatchTiming
   readonly diagnostics: ReadonlyArray<AttemptDiagnostic>
   readonly verdict?: DispatchVerdict
   readonly settledSequence?: number
@@ -500,6 +515,7 @@ export interface ModelOperationRecorder {
   setDispatchEffectiveRequest(dispatch: DispatchHandle, request: OperationTrackInput): void
   setDispatchTransport(dispatch: DispatchHandle, transport: OperationTransport): void
   setDispatchUpstreamRequest(dispatch: DispatchHandle, request: OperationTrackInput): void
+  setDispatchTiming(dispatch: DispatchHandle, kind: DispatchTimingKind, epoch: number, mode: "once" | "latest"): void
   recordDispatchDiagnostic(dispatch: DispatchHandle, input: RecordAttemptDiagnosticInput): void
   settleDispatch(dispatch: DispatchHandle, input: SettleDispatchInput): void
   /** @deprecated P4-P8 transition adapters. */
@@ -525,6 +541,7 @@ interface MutableDispatch {
   effectiveRequest?: OperationTrack
   upstreamRequest?: OperationTrack
   upstreamResponse?: OperationTrack
+  timing?: DispatchTiming
   diagnostics: Array<AttemptDiagnostic>
   verdict?: DispatchVerdict
   settledSequence?: number
@@ -727,6 +744,7 @@ export function createModelOperationRecorder(input: CreateModelOperationRecorder
       ...(attempt.effectiveRequest === undefined ? {} : { effectiveRequest: attempt.effectiveRequest }),
       ...(attempt.upstreamRequest === undefined ? {} : { upstreamRequest: attempt.upstreamRequest }),
       ...(attempt.upstreamResponse === undefined ? {} : { upstreamResponse: attempt.upstreamResponse }),
+      ...(attempt.timing === undefined ? {} : { timing: Object.freeze({ ...attempt.timing }) }),
       diagnostics: Object.freeze([...attempt.diagnostics]),
       ...(attempt.verdict === undefined ? {} : { verdict: attempt.verdict }),
       ...(attempt.settledSequence === undefined ? {} : { settledSequence: attempt.settledSequence }),
@@ -1030,6 +1048,16 @@ export function createModelOperationRecorder(input: CreateModelOperationRecorder
       if (dispatch.verdict !== undefined) throw new Error(`[model-operation-record] dispatch already settled: ${handle}`)
       if (dispatch.upstreamRequest !== undefined) throw new Error(`[model-operation-record] dispatch upstream request already recorded: ${handle}`)
       dispatch.upstreamRequest = freezeTrack(request)
+    },
+
+    setDispatchTiming(handle, kind, epoch, mode): void {
+      assertWritable()
+      const dispatch = getDispatch(handle)
+      // A response-header event is physically earlier than settlement, but its
+      // async listener can run after the driver marks the dispatch settled. Timing
+      // remains an observation of that completed dispatch until terminal sealing.
+      if (mode === "once" && dispatch.timing?.[kind] !== undefined) return
+      dispatch.timing = { ...dispatch.timing, [kind]: epoch }
     },
 
     recordDispatchDiagnostic(handle, diagnosticInput): void {

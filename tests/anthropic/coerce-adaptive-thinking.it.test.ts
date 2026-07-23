@@ -57,9 +57,11 @@ describe("coerceAdaptiveThinking", () => {
     expect(prepared.wire.output_config).toBeUndefined()
   })
 
-  test("name-fallback: rewrites even when metadata lacks adaptive_thinking (opus-4-8)", () => {
-    setStateForTests({ coerceAdaptiveThinking: "basic" })
-    // mockModel without supports.adaptive_thinking → relies on name fallback
+  test("name-fallback: rewrites when the config override lists a model whose metadata lacks adaptive_thinking (opus-4-8)", () => {
+    // The tier-3 name fallback is OFF by default (adaptiveThinkingModels is empty — adaptive is
+    // metadata-driven). This exercises the fallback via the config override: force opus-4-8 into the
+    // list, then a mockModel WITHOUT supports.adaptive_thinking must still coerce enabled→adaptive.
+    setStateForTests({ coerceAdaptiveThinking: "basic", adaptiveThinkingModels: ["claude-opus-4-8"] })
     const model = mockModel("claude-opus-4-8", { vendor: "Anthropic" })
     const prepared = prepareAnthropicRequest(enabledThinkingPayload("claude-opus-4-8"), { resolvedModel: model })
 

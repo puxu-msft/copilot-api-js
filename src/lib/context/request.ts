@@ -1324,6 +1324,7 @@ export function createRequestContext(opts: {
       const attempt = _attempts[generationAttempt.v2Index]
       if (mode === "once" && attempt[kind] !== undefined) return
       attempt[kind] = epoch
+      modelOperationRecorder.setDispatchTiming(dispatch, kind, epoch, mode)
       recordAttemptDiagnostic(`timing.${kind}`, "info", { epoch, mode }, undefined, generationAttempt)
     },
 
@@ -1522,6 +1523,8 @@ export function createRequestContext(opts: {
       if (!attempt) return
       if (mode === "once" && attempt[kind] !== undefined) return
       attempt[kind] = epoch
+      const generationAttempt = generationAttempts.find((candidate) => candidate.v2Index === attempt.index)
+      if (generationAttempt) modelOperationRecorder.setDispatchTiming(generationAttempt.handle, kind, epoch, mode)
       recordAttemptDiagnostic(`timing.${kind}`, "info", { epoch, mode })
     },
 

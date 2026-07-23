@@ -106,6 +106,11 @@ describe("driver loop-top upstream timing capture", () => {
     expect(a.upstreamMessageStartAt).toBeGreaterThan(0)
     expect(a.upstreamFirstTokenAt).toBeGreaterThanOrEqual(a.upstreamMessageStartAt!)
     expect(a.upstreamLastTokenAt).toBeGreaterThanOrEqual(a.upstreamFirstTokenAt!)
+    expect(env.ctx.modelOperationSnapshot.dispatches[0]?.timing).toEqual({
+      upstreamMessageStartAt: a.upstreamMessageStartAt,
+      upstreamFirstTokenAt: a.upstreamFirstTokenAt,
+      upstreamLastTokenAt: a.upstreamLastTokenAt,
+    })
   })
 
   test("openai upstream (data-only chunks, M-E): first/last token captured, no message_start", async () => {

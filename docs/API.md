@@ -123,7 +123,7 @@
 | 路由 | 方法 | 说明 |
 |------|------|------|
 | `/history/api/entries` | GET | V3 canonical operation 分页列表（默认 `operationKind=generation`，可显式取 bypass operation）；支持 model / endpoint / state / session / agent / pid / time 过滤与 `terminalOnly=true`。`tier=archive` 明确 400，不回读旧 archive。 |
-| `/history/api/entries/:id` | GET | 从 V3 canonical store 投影完整 entry；未知 id 返回 404。 |
+| `/history/api/entries/:id` | GET | 从 V3 canonical store 投影完整 entry；`attempts[].timing` 始终含 `source`，并在该 physical dispatch 有采样值时完整带出绝对 epoch 的 `upstreamHeadersAt`、`upstreamMessageStartAt`、`upstreamFirstTokenAt`、`upstreamLastTokenAt`；未知 id 返回 404。 |
 | `/history/api/entries/:id/export` | GET | 将 V3 `getEntry` 投影服务端 zstd 压缩为 `.json.zst` 附件。 |
 | `/history/api/entries/:id/pin`、`.../unpin` | POST | 更新 `v3_operations.pinned` 专列；详情和 summary 均立即反映。 |
 | `/history/api/stats` | GET | 从 V3 列表与 in-flight 合并视图聚合计数、token 与 model breakdown。 |

@@ -1,6 +1,6 @@
 # 请求首包/时序埋点 Implementation Plan
 
-> **实施状态（2026-07-14）：`[全部 landed，已合并 master `f982e0e3`]`。** Phase 0-5 全部实现 + 每 task TDD 绿 + typecheck 绿 + lint clean（仅不碰存量债）+ 细粒度提交，经隔离 worktree `feat/timing-instrumentation`（13 commits）rebase 后以 `--no-ff` merge commit 合入 master（冲突消解=去除 chat-completions/responses handler 里 merge 重复的 `const streamStartMs`）。ADR + DESIGN/API + deferred-backlog 均已同步。实现中偏差已回折：Task 0.2 谓词按真实类型（`ClientFormat`/`UpstreamEndpoint` via `ENDPOINT`）校准；Task 2.3 并入 0.4（ctx 载体与投影同测避免 test-only getter）；Task 4.2 无代码（REST 重取 option a）。合并态 review 修 HIGH-1（Responses-WS 客户端谓词读 event 行→改 parse data.type）。
+> **实施状态（2026-07-23）：`[全部 landed；V3 canonical 补链已在 feat/q5-timing-projection 提交]`。** 初始 Phase 0-5 已实现并合入 master `f982e0e3`；后续 V3 read-path 审计确认上游 4 刻只经 V2 兼容 `Attempt` 投影保存，未进入 `ModelOperationDispatch`，因此补加 V3 canonical `dispatch.timing`、`RequestContext` 双写与 `recordToHistoryEntry` REST 投影。该字段随 manifest/journal JSON 作为 record 一部分编码，不新增 SQLite 列或 schema migration。新增真 V3 store→Hono REST `.it` 覆盖，证 `/history/api/entries/:id` 的 `attempts[].timing` 同时返回四个绝对 epoch。初始实现的其余收官信息：每 task TDD 绿 + typecheck 绿 + lint clean，经隔离 worktree `feat/timing-instrumentation`（13 commits）rebase 后以 `--no-ff` merge commit 合入 master；ADR + DESIGN/API + deferred-backlog 已同步。实现中偏差已回折：Task 0.2 谓词按真实类型（`ClientFormat`/`UpstreamEndpoint` via `ENDPOINT`）校准；Task 2.3 并入 0.4（ctx 载体与投影同测避免 test-only getter）；Task 4.2 无代码（REST 重取 option a）。合并态 review 修 HIGH-1（Responses-WS 客户端谓词读 event 行→改 parse data.type）。
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -639,3 +639,12 @@ git commit -m "feat(timing): register 3 timing distributions in telemetry HISTOG
 ## Kick-off Prompt
 
 见同目录 `2026-07-14-request-timing-instrumentation-kickoff.md`。
+
+---
+
+## Q5 埋点复审 follow-up（2026-07-23，V3 持久化+投影落地后，非阻断 MED）
+
+V3 dispatch timing 持久化 + REST 投影已落地（commit `a5a263a8`，经异模型 review 判「可合并、0 blocker」，持久化完整性/settled-dispatch 竞态/once-latest 语义均 PASS）。两个 review 标注的非阻断 MED，记此待后续对齐（都不改变数据完整性）：
+
+- **MED-1（测试缺口）**：`tests/pipeline/upstream-timing.it.test.ts` 的 dispatch.timing 断言覆盖了 `upstreamMessageStartAt/FirstTokenAt/LastTokenAt`（帧循环捕获），**但未覆盖 `upstreamHeadersAt`**——它是唯一走 `recordOpened` 独立接线路径的刻（`driver.ts:642-643`），该 harness 用 `runResponse` 喂已开流、绕过 dispatch-scheduler 的 `open()→recordOpened`。接线已 code-read 验证存在、capture 原语 + V3→REST plumbing 均已测；缺的是一个走完整 dispatch-open 路径、断言 `recordOpened` 真的 set 了 `upstreamHeadersAt` 的 .it 测试。**若做**：加 driver full-path（真 stream transport → open → recordOpened）测试或直调 recording.recordOpened 的 focused 测试。**为何非阻断**：唯一走真实上游头到达才能触发的刻，接线已验证；风险是若接线未来被改坏则 Q5 测量静默产不出该刻——故值得补，但不阻断埋点落地。
+- **MED-2（sealed 守卫不对称）**：`setGenerationDispatchTimingEpoch`（`request.ts:1321-1329`）+ `setAttemptTimingEpoch`（:1521-1529）在写 V3 recorder（`setDispatchTiming`→`assertWritable`）时，若 model-operation 已 terminal seal 会**抛错**；而同族 capture 回调一律 `if (sealed) return` 静默跳。**未构造出真实可达路径**（timing 回调在 seal 后触发的路径不存在），但与代码库遍布的 sealed 防御不一致。**注意**：本项目对 seal 边界的既定设计是「seal 后写入应 loud throw」（`assertWritable` 硬钉、经首轮 review 确认正确），故此项对齐需谨慎——不是简单加 `if (sealed) return`（那会把 loud 变 silent），而是厘清「timing 是否应享 settle→seal 窗口的宽松、seal 后是否该静默」，避免与 assertWritable 的 loud 边界冲突。

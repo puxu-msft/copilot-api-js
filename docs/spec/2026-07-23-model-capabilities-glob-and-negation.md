@@ -4,6 +4,9 @@
 - 日期：2026-07-23
 - 归属：`docs/spec/`（配置契约 + 匹配语义）。相关：[docs/API.md](../API.md) 端点无关，[docs/anthropic-compat.md](../anthropic-compat.md) 需同步能力匹配说明。
 
+> **后续修订（2026-07-23，supersede §2.2 第一条 + §1）**：**隐式 family 前缀匹配已退役。** glob 落地后，一个 glob-free token 不再 `startsWith(p + "-")` 覆盖后代，而是**精确匹配**（`norm(x) === norm(p)`）；family 覆盖一律用显式 glob（`claude-opus-4*` 或 dash-精确的 `claude-opus-4-*`）。内置默认表已迁为 glob 形态（`E → E*`），config.yaml 同步迁移。原文下方凡称「family 前缀逐字节保持现状 / 向后兼容承重点」的表述均已作废（见 §2.2 标注）。权威实现：`src/lib/models/model-pattern.ts:matchesModelPattern`。
+
+
 ## 1. 目标与动机
 
 `anthropic.model_capabilities` 下 5 个 list 型能力允许表（`context_editing` / `interleaved_thinking` / `adaptive_thinking` / `extended_cache_ttl` / `memory`）当前只支持「family 前缀」逐条枚举：一个裸 token `p` 命中当归一后模型名 `=== p` 或 `startsWith(p + "-")`。要覆盖「一整代 Claude 除某个变体外全开」这类意图，运维只能逐个列全名，既啰嗦又会随新模型上线漏项。
@@ -46,7 +49,7 @@
 
 单条模式的匹配规则**按是否含 glob 元字符（`*` 或 `?`）分派**：
 
-- **不含元字符 → family 前缀语义（逐字节保持现状）**：`norm(x) === norm(p)` 或 `norm(x).startsWith(norm(p) + "-")`。这条是**向后兼容承重点**——内置默认表 `claude-sonnet-4` 靠 dash 边界覆盖 `claude-sonnet-4-5` 却不误伤 `claude-sonnet-40`。
+- **~~不含元字符 → family 前缀语义（逐字节保持现状）~~**（**已退役，见顶部后续修订**）：现为**精确匹配** `norm(x) === norm(p)`。~~`norm(x).startsWith(norm(p) + "-")`。这条是**向后兼容承重点**——内置默认表 `claude-sonnet-4` 靠 dash 边界覆盖 `claude-sonnet-4-5` 却不误伤 `claude-sonnet-40`。~~ family 覆盖改用显式 glob（`claude-sonnet-4*` 或 dash-精确的 `claude-sonnet-4-*`）。
 - **含元字符 → glob**：`norm(p)` 里的 `*`→`.*`、`?`→`.`，其余正则元字符转义，编译成**锚定**（`^…$`）大小写不敏感正则，对 `norm(x)` 整体匹配。
 
   - dash 边界由运维用 glob 显式控制：`claude-opus-4-*` 编译为 `^claude-opus-4-.*$`（天然带 dash），而 `claude-opus-4*` 会匹配 `claude-opus-40`。二者语义不同、由运维取舍。
@@ -111,7 +114,7 @@
 
 - `hasGlobMeta(pattern): boolean` —— 是否含 `*`/`?`。
 - `globToRegExp(pattern): RegExp` —— 锚定、大小写不敏感的**纯编译**（从 header 文件迁入，行为逐字节保持；**不**内置 `normalizeForMatching`）。
-- `matchesModelPattern(candidate: string, pattern: string): boolean` —— 单模式对单候选，先对两侧跑 `normalizeForMatching`，再按 §2.2 分派 family-prefix vs glob。
+- `matchesModelPattern(candidate: string, pattern: string): boolean` —— 单模式对单候选，先对两侧跑 `normalizeForMatching`，再按 §2.2 分派 glob vs **精确匹配**（隐式 family 前缀已退役，见顶部后续修订）。
 - `modelMatchesPatternList(id: string, entries: ReadonlyArray<string>, family?: string): boolean` —— 列表求值，实现 §2.1 的「positive 命中且 negative 未命中」，候选集 `[id, family?]`（§2.3）。
 - `matchesModelKey(modelName: string, key: string): boolean` —— map 键匹配：先归一，`key` 含元字符 → 锚定 glob，否则 → substring `includes`（§3.2）。供 `per-model-config.ts` 调用。
 
@@ -148,7 +151,7 @@ YAML 里 `!` 是 tag 指示符、行首 `*` 是 alias 指示符。实测项目�
 context_editing:
   - "claude-*"          # 推荐引号（此处 * 非行首，裸写也合法）
   - "!claude-haiku-*"   # 必须引号（! 是 YAML tag 指示符）
-  - claude-opus-4       # 裸 family 前缀无需引号，语义不变
+  - claude-opus-4       # 精确匹配（隐式 family 前缀已退役——family 覆盖用 claude-opus-4* 或 claude-opus-4-*）
 tool_search_overrides:
   "claude-*": true      # glob 键（推荐引号）
   "claude-haiku-*": false
@@ -161,10 +164,10 @@ tool_search_overrides:
 真相域归位（`choosing-test-type`）：匹配语义是纯函数 → unit/property 为主；热重载是集成 → 一条 `.it`。
 
 - **新增 `tests/models/model-pattern.unit.test.ts`**（primitive 真相域）：
-  - `matchesModelPattern`：family 前缀 exact / dash 边界（`claude-opus-4` 不匹配 `claude-opus-40`）/ glob `*`/`?` / `.`↔`-` 归一 / 大小写不敏感 / 正则元字符转义（`+`/`.`/`(` 不被当正则通配）。
-  - `modelMatchesPatternList`：纯 positive（等价旧 family 语义）/ positive+negative 剔除胜 / 只有 negative → false / 空列表 → false / `!`+glob 组合 / **id 命中 positive 但 family 命中 negative → 剔除**、以及**反向组合（family 命中 positive、id 命中 negative → 剔除）**，证明 §2.3「任一候选命中任一 negative 即剔除」不是只测了同候选对称情形。
+  - `matchesModelPattern`：~~family 前缀 exact / dash 边界（`claude-opus-4` 不匹配 `claude-opus-40`）~~ **（前缀已退役）→ 现为 glob-free **精确匹配**；family 覆盖用显式 glob** / glob `*`/`?` / `.`↔`-` 归一 / 大小写不敏感 / 正则元字符转义（`+`/`.`/`(` 不被当正则通配）。
+  - `modelMatchesPatternList`：纯 positive（**现为精确、非旧 family 前缀语义**）/ positive+negative 剔除胜 / 只有 negative → false / 空列表 → false / `!`+glob 组合 / **id 命中 positive 但 family 命中 negative → 剔除**、以及**反向组合（family 命中 positive、id 命中 negative → 剔除）**，证明 §2.3「任一候选命中任一 negative 即剔除」不是只测了同候选对称情形。
   - `matchesModelKey`：不含元字符 → substring 保持（`claude-opus-4-7` 命中 `claude-opus-4-7-high`）/ 含元字符 → 锚定 glob（`claude-*` 不匹配 `xclaude`）。
-  - **等价性 oracle（reviewer minor-fix）**：旧 `matchModelCapability` 是 module-private 且将被替换，**不能**用它当 oracle。测试内**冻结一份 legacy family-prefix 参考实现**（`n === np || n.startsWith(np + "-")`，对 `[id, family]` 双候选），对一组「无 `!`、无 glob」的模型 × 前缀笛卡尔输入，逐条断言 `modelMatchesPatternList` 与该冻结实现结果相同——守住向后兼容。
+  - ~~**等价性 oracle（reviewer minor-fix）**：测试内**冻结一份 legacy family-prefix 参考实现**……~~ **（已删除）** —— 前缀退役后不再要求与 legacy family-prefix 等价，故该冻结 oracle 已从测试移除（见顶部后续修订）。
 - **扩 `tests/anthropic/anthropic-features.unit.test.ts`**：5 个能力各加 glob/`!` 用例（含 `contextEditingModels: ["claude-*", "!claude-haiku-*"]` 打到 `modelSupports*`）；`toolSearchOverrides` 加 glob 键用例（`{ "claude-*": false }`；以及 §3.3 定序：`{ "claude-opus-4-8": true, "claude-*": false }` → 精确 literal 键压过 glob 键得 `true`）。
 - **扩 `tests/anthropic/per-model-config.unit.test.ts`**：glob 键 + substring 键并存；§3.3 定序（literal > glob、同种类键长胜、`"*"` 恒最后兜底）；`collectAllMatching` 的 glob 键加性并集。
 - **新增 blast-radius 接线测试（reviewer minor-fix）**：至少各取一个 `findMostSpecific` 消费者与一个 `collectAllMatching` 消费者，证明 glob 键在它们身上生效且向后兼容——`findMostSpecific` 取 `streamIdleTimeoutOverrides`（timeout-resolver）；`collectAllMatching` 取 `stripToolFields` + `keepToolFields` **同时命中**的交互（strip 加、keep 减）。

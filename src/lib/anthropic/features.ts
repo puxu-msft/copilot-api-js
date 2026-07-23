@@ -54,25 +54,22 @@ export function supportsDirectAnthropicApi(modelId: string): ApiRoutingDecision 
 // ============================================================================
 
 /**
- * Match a model against a config-driven capability allowlist of model-name "family" prefixes.
+ * Match a model against a config-driven capability allowlist of model-name patterns.
  *
- * Delegates to `modelMatchesPatternList` (model-pattern.ts): each list entry is a family prefix
- * (dash-boundary, byte-for-byte the legacy semantics) UNLESS it contains a glob metachar (`*`/`?`),
- * and a `!`-prefixed entry SUBTRACTS (self-contained list, exclusion-always-wins, order-independent).
+ * Delegates to `modelMatchesPatternList` (model-pattern.ts): a glob-free entry matches EXACTLY
+ * (normalized), an entry with a glob metachar (`*`/`?`) matches as an anchored glob, and a
+ * `!`-prefixed entry SUBTRACTS (self-contained list, exclusion-always-wins, order-independent).
  * See docs/spec/2026-07-23-model-capabilities-glob-and-negation.md.
  *
- * A prefix `p` matches when `normalize(x) === normalize(p)` OR `normalize(x)` starts with
- * `normalize(p) + "-"`, for `x` in {modelId, family}. The trailing-dash boundary is what makes
- * `claude-opus-4` match the bare `claude-opus-4` and the whole `claude-opus-4-x` family, WITHOUT
- * matching the unrelated `claude-opus-40`. Entries may be written dotted or dashed (both normalize
- * the same). The lists live in `state` (sourced from `anthropic.model_capabilities` in config.yaml —
- * bundled defaults mirror GHC's capability checks); editing config adds/removes models without a code change.
+ * Family coverage ("a whole Claude generation") must be written as an explicit glob, e.g.
+ * `claude-opus-4*` covers `claude-opus-4`, `claude-opus-4-5`, … (the implicit family-prefix
+ * matcher has been retired). Entries may be written dotted or dashed (both normalize the same).
+ * The lists live in `state` (sourced from `anthropic.model_capabilities` in config.yaml — bundled
+ * defaults mirror GHC's capability checks); editing config adds/removes models without a code change.
  *
  * The optional `family` mirrors GHC's `matches(id) || matches(family)` (chatModelCapabilities.ts /
  * anthropic.ts): a model whose resolved id normalizes to a denied form but whose family is an allowed
- * Claude family still lights the capability up. Our dash boundary is intentionally stricter than GHC's
- * bare `startsWith` (GHC's `claude-opus-40` would match `claude-opus-4`; ours does not) — a deliberate,
- * more-correct divergence that avoids prefix-accident false positives.
+ * Claude family still lights the capability up.
  */
 function matchModelCapability(modelId: string, prefixes: ReadonlyArray<string>, family?: string): boolean {
   return modelMatchesPatternList(modelId, prefixes, family)
