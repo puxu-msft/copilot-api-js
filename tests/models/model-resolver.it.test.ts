@@ -12,6 +12,7 @@ import {
   //
   getModelFamily,
   isSameModelName,
+  modelRemapParts,
   normalizeForMatching,
   normalizeModelKeyedRecord,
   normalizeModelNameList,
@@ -165,6 +166,21 @@ describe("isSameModelName", () => {
     // e.g. the client alias "haiku" resolving to "claude-sonnet-4.6"
     expect(isSameModelName("haiku", "claude-sonnet-4.6")).toBe(false)
     expect(isSameModelName("claude-opus-4.8", "claude-sonnet-4.6")).toBe(false)
+  })
+})
+
+describe("modelRemapParts", () => {
+  test("surfaces source only on a genuine remap", () => {
+    // client asked for "gpt-5.5", config mapped it to "gpt-5.6-t" (different model)
+    expect(modelRemapParts("gpt-5.5", "gpt-5.6-t")).toEqual({ source: "gpt-5.5", target: "gpt-5.6-t" })
+  })
+
+  test("suppresses source when client/resolved are the same model spelled differently", () => {
+    expect(modelRemapParts("claude-opus-4-8", "claude-opus-4.8")).toEqual({ target: "claude-opus-4.8" })
+  })
+
+  test("suppresses source when no client name was captured", () => {
+    expect(modelRemapParts(undefined, "gpt-5.6-t")).toEqual({ target: "gpt-5.6-t" })
   })
 })
 
