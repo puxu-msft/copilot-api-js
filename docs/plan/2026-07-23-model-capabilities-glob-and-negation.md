@@ -1,5 +1,7 @@
 # `model_capabilities` glob + `!` 剔除 —— 实施计划
 
+> **实施状态（2026-07-23）：✅ 全部 landed 并合入 master（合并提交 `77e07413`，feature 提交 `02f112c8`..`ccf6c254`）。** 6 个 Task + 合并态 review 三项修复全部完成；全后端 6283 pass/0 fail、typecheck + ESLint 绿；两轮 spec 审 + 一轮 plan 审 + 一轮合并态审（GPT）达成「可合并」共识。落地实现见 `src/lib/models/model-pattern.ts` + `docs/DESIGN.md`「类型架构」节。执行中相对本计划的偏差：Task 6 的 `config.schema.json` regenerate 被证为对本特性 no-op（`model_capabilities` 用 TSDoc 而非 `.describe()`），故未生成——见收尾备注。
+>
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 让 `anthropic.model_capabilities` 的 5 个 list 型能力与 `tool_search_overrides` map 键支持 glob（`*`/`?`）与 `!xxx` 剔除，且不破坏既有 family 前缀语义与内置默认表。

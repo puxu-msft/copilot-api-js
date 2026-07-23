@@ -1,6 +1,6 @@
 # Spec：`anthropic.model_capabilities` 支持 glob 与 `!` 剔除
 
-- 状态：草案 v2（已折入两轮异模型 subagent 审：GPT 对抗审 + Claude 一致性审；2 majors + minors 全部处理，待用户过目定稿）
+- 状态：✅ landed（合入 master 合并提交 `77e07413`，2026-07-23）。已折入两轮异模型 subagent 审 + 一轮合并态审；实现见 [docs/plan/2026-07-23-model-capabilities-glob-and-negation.md](../plan/2026-07-23-model-capabilities-glob-and-negation.md) 与 `src/lib/models/model-pattern.ts`。
 - 日期：2026-07-23
 - 归属：`docs/spec/`（配置契约 + 匹配语义）。相关：[docs/API.md](../API.md) 端点无关，[docs/anthropic-compat.md](../anthropic-compat.md) 需同步能力匹配说明。
 
