@@ -1,5 +1,7 @@
 # Phase 0：脚手架 + 边界 lint + foundation + cli 包 — 实施计划
 
+> **实施状态（2026-07-23，全 5 task landed 分支 `feat/monorepo-split`）**：✅ 完成。Task1 PoC gate `c7f39c54`、Task2 scaffold `8cf733bd`、Task3 boundary lint `3e1a1373`、Task4 foundation move `a37d93cc`、Task5 cli extract `151f974a`。终态：typecheck GREEN、build 单产物、test:backend 恰好 5 个既有 History-V3/RESETTERS known-red（0 新增）、所有触碰文件 lint 绿（全仓 345 lint 错误为既有债、非本次引入）。待合并 master（协调 4 个 peer worktree）。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: `superpowers:subagent-driven-development`（推荐）或 `superpowers:executing-plans`。步骤用 `- [ ]` 跟踪。索引与全局约束见 [README.md](README.md)。spec = [../../spec/2026-07-22-monorepo-workspace-split.md](../../spec/2026-07-22-monorepo-workspace-split.md)。
 
 **Goal:** 把 workspace 骨架、边界 lint 硬强制、`@hsupu/ghc-proxy-foundation`（真叶子纯基元）、`@hsupu/ghc-proxy-cli`（8 顶层文件）立起来，运行时行为逐字节不变。
