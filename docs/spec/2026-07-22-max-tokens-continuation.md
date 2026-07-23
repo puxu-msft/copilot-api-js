@@ -1,6 +1,6 @@
 # Spec: `max_tokens` 续传（max-tokens continuation）
 
-> 状态：**草案（brainstorming + 实测取证产出，两轮异模型对抗审查已消化，待用户过目）**
+> 状态：**草案（两轮异模型对抗审查已消化、Q1/Q2 用户已裁决 2026-07-23、续写底座已 landed master 已对齐——可进 plan 阶段；plan 首要产出 = §5.3 terminal ownership matrix）**
 > 日期：2026-07-22
 > 关系：**姊妹并列** [`2026-07-22-continuation-retry-and-sequential-anchor.md`](2026-07-22-continuation-retry-and-sequential-anchor.md)（下称「续写 spec」）。**复用**其 §4 续写机制（committed-blocks-ledger + 合成 continuation 轮 + per-format builder），但**触发路径相反**：续写 spec 处理**错误截断**（mid-stream `NGHTTP2_CANCEL`，成功路径外的 throw），本 spec 处理**成功路径的预算截断**（`stop_reason=max_tokens`，干净终止）。
 > 实测取证：4141 History API，近 1200 条中 5 例 `max_tokens`（~0.4%），全 `claude-sonnet-5` 流式、`state=completed`、`output_tokens` 精确 = 客户端自设 `max_tokens`（下详）。
@@ -33,9 +33,9 @@
 
 ### 1.3 为何这**不是**续写 spec 的场景（承重区分）
 
-续写 spec 的重试门在 `src/lib/pipeline/driver.ts:1283` 的 `committedAny`：`const retryable = (thrown ? classifyStreamError(thrown)==="other" : true) && !committedAny`（已 grep 核实变量名，master 与 feat/continuation-retry 分支一致）——**仅错误 throw 路径**。`max_tokens` 是**成功路径**：`message_stop` 已干净到达、无 throw、driver 正常收尾。故 max_tokens 续写**不是放宽一个布尔门**，而是**成功路径上一条全新的 post-success 续写分支**（§5）。
+续写 spec 的重试门在 `src/lib/pipeline/driver.ts:1366` 的 `committedAny`：`const retryable = (thrown ? classifyStreamError(thrown)==="other" : true) && !committedAny`（已 grep 核实）——**仅错误 throw 路径**。`max_tokens` 是**成功路径**：`message_stop` 已干净到达、无 throw、driver 正常收尾（master `driver.ts:1327-1358` 对 `sawMessageStop()` 走 terminal drain flush）。故 max_tokens 续写**不是放宽一个布尔门**，而是**成功路径上一条全新的 post-success 续写分支**（§5）——须在 terminal drain 写客户端**之前**插入截获，master 现有 continuation 走的是 cut/transport-close 的 append 路径（`driver.ts:1401-1453`），**不覆盖成功终止**。
 
-**为何仍复用续写 spec 机制**：`feat/continuation-retry` 分支已在 `driver.ts:1233` 铺好 committed-blocks-ledger 喂养 + `driver.ts:1255` committed settle 点记录 + per-format continuation-request-builder + 合成 continuation 轮（GHC 拒 assistant-prefill 的绕过，已双模型 PoC 实证）。A 类续写 = 复用这套底座 + 换触发点。**故本 spec 依赖续写 spec 先 landed**（§11 sequencing）。
+**底座已 landed master（2026-07-23 复核纠正）**：续写 spec 的机制**已合并入 master**（`feat/continuation-retry` worktree 已移除）——`committed-blocks-ledger.ts` / `committed-block-extractor.ts` / `continuation-builder.ts` 模块 + `driver.ts:1279` ledger 喂养快照 + `driver.ts:1300` `recordCommitted` + `driver.ts:1412-1453` 续写触发（`canContinue` 门 + `buildRequest` + `coordinator.runContinuation`）+ `handler-v4.ts:1219` `createCommittedBlocksLedger()`/`extractAnthropicCommittedBlocks` 接线 + `continued` verdict（`model-operation-record.ts:246/250`）全在 master。**A 类续写 = 直接复用这套已 landed 底座 + 换触发点（成功终止而非 cut）**。依赖已满足（§11）。
 
 ---
 
@@ -45,7 +45,7 @@
 - G1 **A 类（text 截断）proxy 侧自动续写**：复用续写 spec §4 机制，成功路径新触发分支，把预算截断的 text 续到自然终止（`end_turn`/`tool_use`）。
 - G2 **B 类（tool_use 截断）安全兜底 + PoC 门**：默认**不自动续、如实透传 max_tokens**；PoC 验证「悬挂 tool_use 前缀续写能否忠实重建同一工具调用」通过后再评估纳入。
 - G3 **C 类（thinking-only、0 答案）识别 + 兜底策略**：默认如实透传；探索「提高预算重试」而非「续写」的正确解，PoC 门定夺。
-- G4 **客户端可见性契约定清**（承重决策，§4）：续写会把 `max_tokens` 信号从缝合流里藏掉——是否/如何让客户端仍能观测「预算被突破」。
+- G4 **客户端可见性策略（已裁决，§4）**：默认 transparent 缝合（藏掉 max_tokens、藏不掉透传），多策略可配置；**透明只对客户端、后端记录忠实**。
 - G5 **独立预算模型**（§6）：每轮续写是满上下文（实测 cache_read 30 万+ token、极贵），不与首块前透明重试共享预算旋钮。
 - G6 覆盖 Anthropic `/v1/messages` + Chat Completions + Responses（HTTP/WS），per-format terminal 检测（§7）。
 - G7 vendor 中立配置 + 可观测性（history + telemetry）。
@@ -53,7 +53,7 @@
 **非目标：**
 - N1 **不含 Gemini**（结构不兼容，沿用续写 spec §7.4 / 本项目多处 Gemini 排除；保持透传）。
 - N2 不保护非流式路径（首版；见 §8.4）。
-- N3 **不静默替客户端抬 `max_tokens` 请求预算**——客户端自设 32000（模型允许 64000）是主动选择，proxy 不擅改请求体的 max_tokens 字段（§4.3 例外：C 类 retry-with-budget 仅在 opt-in + 显式标注下探索）。
+- N3 **默认不静默替客户端抬 `max_tokens` 请求预算**——但**用户裁决（2026-07-23）：抬预算是允许的可配置策略**（C 类 `retry_with_budget`，§6 `thinking_retry_budget`）；默认仍不抬（`passthrough`），opt-in 开启后可抬到模型 cap。用户明确不在乎下游预算约束被突破。
 - N4 不改非 max_tokens 类终局分类（`end_turn`/`tool_use`/`refusal` 不动）。
 - N5 **不追求续写完美保真**：合成 continuation 轮是「重构的意图」，续写块可有降级（诚实标注，沿用续写 spec N4）。
 
@@ -78,7 +78,7 @@
 **为何默认不自动续**：
 1. **悬挂块非法**：`start@1`（tool_use）无 `stop@1`，partial_json 不完整。按 ledger 铁律（续写 spec §4.2）partial 块**绝不入账、直接丢弃重生成**。**零-delta 退化子情形**：`content_block_start`（tool_use）后未产生任何 `input_json_delta` 就被截断（连半截 JSON 都没有）同样归 B——判定「最后块 tool_use 且无 `content_block_stop`」已吸收此情形，但实现须显式测该边界。
 2. **重生成 ≠ 续写**：合成轮里模型从**已 commit 的前缀**（此例是前面的 text 块 + 一个被丢弃的半截工具意图）**从头重规划**这个工具调用——极可能吐出**不同的 tool / 不同的 input**，而非「接着写原来那半个 JSON」。这与「续写文本」的语义完全不同。**这是 B 类的真正 hazard**（发散），下面第 3 点澄清它**不是**「上游是否接受 tool_use 前缀」的问题。
-3. **前缀接受性已验证、发散风险仍在（更正过时引用）**：续写 spec 正文 §10 曾标「已 commit 完整 tool_use 块作前缀**未验证**」，但其分支 PoC 门 **G3 已 PASS**（`.worktrees/continuation-retry/exp/continuation-shape/FINDINGS.md`：GHC 接受「完整 tool_use 块作 assistant 前缀 + user 续写轮」、返回正常 text+tool_use、无 400）。**但 G3 验证的是「完整未截断 tool_use 块作前缀被接受」，≠ B 类场景**——B 类的 partial tool_use 被**丢弃**、前缀退化为其前的已闭合块（多为 text 或完整 tool_use），故 G3 只消除了「前缀不被接受」这一 hazard，**发散 hazard（第 2 点）仍在、仍需门 B**。
+3. **前缀接受性已验证、发散风险仍在（更正过时引用）**：续写 spec 正文 §10 曾标「已 commit 完整 tool_use 块作前缀**未验证**」，但 PoC 门 **G3 已 PASS**（master `exp/continuation-shape/FINDINGS.md`：GHC 接受「完整 tool_use 块作 assistant 前缀 + user 续写轮」、返回正常 text+tool_use、无 400）。**但 G3 验证的是「完整未截断 tool_use 块作前缀被接受」，≠ B 类场景**——B 类的 partial tool_use 被**丢弃**、前缀退化为其前的已闭合块（多为 text；若前缀末是完整 interactive tool_use 则按 B-closed/ADR D3 正常终止不续，§5.2）。故 G3 只消除了「前缀不被接受」这一 hazard，**发散 hazard（第 2 点）仍在、仍需门 B**。
 4. **客户端本就正确处理**：agent 客户端（Claude Code）拿到 `stop_reason=max_tokens` + 截断的 tool_use，本就被设计来重试 / 追加 max_tokens。
 
 **PoC 门 B（§9-2）通过后**可评估的形状：丢弃 partial tool_use → 合成轮请模型「继续」→ 断言模型是否忠实产出**语义等价**的完整工具调用（而非发散）。门 FAIL → B 类永久兜底透传（不牺牲 A 类）。
@@ -88,29 +88,32 @@
 **特征**：`output_tokens=32000` 几乎全是 `thinking_tokens`（实测 31998/31999），可见答案 = 0。客户端烧满预算、拿到**零产出**。这是**最痛的**（钱花了、啥也没有），但：
 
 - **thinking 无法干净回喂**：被打断的 thinking 带签名、且模型在续写轮会**重新思考**（发散，不接续）。合成「已 commit thinking 块 + continue」既有签名风险（参考 skill `ghc-anthropic-upstream` thinking signature quarantine）又语义不接续。
-- **正确解可能是「提高预算重试」而非「续写」**：客户端设的 32000 < 模型 64000；C 类的真问题是**预算不足以容纳 thinking + 答案**。但 **N3 铁律**：proxy 不静默抬客户端请求预算。
+- **正确解可能是「提高预算重试」而非「续写」**：客户端设的 32000 < 模型 64000；C 类的真问题是**预算不足以容纳 thinking + 答案**。**用户裁决（2026-07-23）：抬预算是允许的可配置策略**（不再是 N3 铁律禁区）。
 
-**C 类候选策略（PoC 门 C，§9-3 定夺其一）**：
-- (a) **纯识别 + 透传**（默认兜底）：如实透传，靠 telemetry/history 让 C 类可见（诊断价值：谁在烧满预算思考却零产出）。
-- (b) **opt-in retry-with-raised-budget**：显式开关下，对 C 类**重发**（非续写——因 thinking 不可续）并抬高本次 upstream 的 max_tokens（≤ 模型 cap），合成物打标记、telemetry 记「预算突破」。**须客户端可见性契约（§4）覆盖**——不能静默双计费。
-- (c) 拒绝介入：C 类交客户端。
+**C 类多策略（用户裁决：支持多种策略、可配置，§6 `classes.thinking`）**——两种并存、按配置选：
+- `passthrough`（**默认兜底**）：如实透传，靠 telemetry/history 让 C 类可见（诊断价值：谁在烧满预算思考却零产出）。
+- `retry_with_budget`（opt-in，门 C PASS 后）：对 C 类**重发**（非续写——因 thinking 不可续）并抬高本次 upstream 的 max_tokens（`thinking_retry_budget`，默认模型 cap）。visibility 策略决定客户端可见性（默认 transparent 缝合）。
+- **无 `continue` 选项**：master ADR D3 已固化——extractor 把 thinking 块从 ledger 排除、上游拒 thinking 作前缀，故 thinking 续写在现架构下不可实现（`driver.ts:1434` `ledger.snapshot()` already excludes thinking）。若真要支持须先推翻 ADR D3 的 thinking-quarantine，不在本 spec 范围。
 
-**倾向 (a) 默认 + (b) opt-in**，最终 PoC 门定。**先验风险高**——thinking round-trip 是本项目历史雷区（多个 400 incident），C 类续写不应临实施才测。
+**门 C 先验风险高**——thinking round-trip 是本项目历史雷区（多个 400 incident），`retry_with_budget` 不应临实施才测；默认 `passthrough` 始终安全。
 
 ---
 
-## 4. 承重决策：客户端可见性契约（G4）
+## 4. 客户端可见性策略（G4，**用户已裁决 2026-07-23**）
 
-**问题**：续写把内部多轮缝合成**一条连续流**，客户端最终看到的 `stop_reason` 是续写完成后的 `end_turn`/`tool_use`——**`max_tokens` 信号被彻底藏掉**。客户端明确设了 `max_tokens=32000`、期望「最多 32000 token」，proxy 静默交付更多 → **未经同意的双重（多重）计费 + 违反客户端显式预算约束**。这与本项目「no silent behavior change」直接张力。
+**问题**：续写把内部多轮缝合成**一条连续流**，客户端最终看到的 `stop_reason` 是续写完成后的 `end_turn`/`tool_use`——`max_tokens` 信号被藏掉。客户端设了 `max_tokens=32000`、proxy 静默交付更多 token（双重计费 + 突破客户端显式预算约束）。
 
-**候选（spec 阶段须定或列为首要未决问题 Q1）**：
-- **(P1) 透明缝合**：客户端完全不知发生了续写，看到一条超预算的完整流。**最不诚实**，违 N3 精神。
-- **(P2) 缝合 + 可辨识 marker**：续写块前注入可见 marker（如 `\n\n(budget exceeded; continued)`），并在 history/telemetry 记录真实轮数/总 token。客户端看到完整答案**且**知道预算被突破。**倾向此项**（对齐 richest-data-flow「合成物必打可辨识标记」+ 诚实）。
-- **(P3) 不缝合、保留 max_tokens、旁路提供续写**：如实透传 `max_tokens`，把续写结果放 side channel（history / 响应头），客户端自选是否取用。最诚实但对现有客户端**无自动收益**（等于不续）。
+**用户裁决（2026-07-23）**：**能藏就藏、藏不掉才透传**。理由：本项目下**下游预算约束当前并不被客户端强制遵守、proxy 无义务确保其完美**，用户明确**不在乎双重计费**。这落在项目 `internal-tool-security-posture`（不为假想顾虑阻塞任务、以功能价值为先）+「无向后兼容负担」的哲学内——「藏掉 max_tokens 给客户端一条完整响应」对续写分型是**严格更好的 UX**（客户端本就想要完整输出），代价（预算/计费诚实性）用户已显式放弃。
 
-**注**：此决策**独立于分型**——A/B/C 若续写都撞同一可见性问题。且与「双重计费」耦合：续写多烧的 token 记谁账、telemetry 如何拆（§9）。**这是本 spec 最承重的价值/伦理取舍，不可藏在实现里。**
+**默认策略 = 透明缝合（transparent-stitch）**：
+- 续到自然终止（`end_turn`/`tool_use`）→ **抑制**首轮的 `message_delta{stop_reason:max_tokens}` + `message_stop`（不转发），保持流 open，续写轮块重编号接续，以续写轮的**真实终止符**收尾。客户端看到一条干净的完整流，不知发生过续写。
+- **藏不掉 → 透传**：若续到 `max_rounds` 仍是 `max_tokens`（预算真耗尽、无干净终止可替换），或分型不续写（B/C 默认），则**如实转发** terminal `max_tokens`（无可藏之物）。这是诚实兜底、非纠结取舍。
 
-**响应体 `usage.output_tokens` 呈现策略（审查建议，须与 Q1 一并定）**：P2 缝合流下最终 `message_delta.usage.output_tokens` 该报什么？——(i) 各轮之和（诚实反映总消耗，但可能 > 客户端 `max_tokens`、下游可能误判为「超预算异常」）；(ii) 只报末轮（隐藏总量、与 telemetry 双计费维度不一致）。**倾向 (i) 报真实总和 + marker 显式说明**（richest-data-flow：末端拿到真数据自行判断），但须验证主流客户端 SDK 不因 `output_tokens > max_tokens` 抛错（门 D 附带）。marker 文本本身也是 `output_tokens` 的一部分、须计入。
+**多策略可配置（用户裁决：支持多种策略，§6 `visibility`）**：默认 `transparent`，但保留 `passthrough`（永不缝合、始终透传 max_tokens，等于关掉可见性隐藏）与 `marker`（缝合 + 可辨识 marker，给想要「完整答案 + 知道被截过」的场景）作为可选策略。选 `transparent` 时无 marker、无双计费提示——用户要的就是「藏掉」。
+
+**`usage.output_tokens` 呈现（简化，用户不在乎下游预算）**：transparent 缝合流报**各轮真实总和**（richest-data-flow：末端拿真数据；`output_tokens > max_tokens` 是真实消耗、用户已接受下游可能不识）。无需为「下游误判超预算」做特殊处理（下游本就不强制预算）。marker 策略下 marker 文本计入 output_tokens。
+
+**注：透明只对客户端、后端必须忠实（用户强调 2026-07-23；richest-data-flow 硬规则）**——此策略**独立于分型**（A/B/C 若续写共用同一 visibility 策略）。「藏」**只作用于转发给客户端的 wire**；**本程序内部 history/telemetry/日志一律忠实完整记录**：真实轮数、每轮 upstreamRequest（含合成 continuation 轮，打 `synthetic:"continuation"` 标记）、每轮 upstreamResponse（原始轨绝不含合成物）、被抑制的首轮 `max_tokens` 终止、每轮真实 usage/总 token、分型。即诊断/计费真相归后端双轨保全，缝合隐藏只在客户端呈现层——这正是 richest-data-flow「后端存储必须完整、前端可选择性呈现、合成物必打标记」（§9 详列）。
 
 ---
 
@@ -118,13 +121,13 @@
 
 ### 5.1 与 `committedAny` 错误门正交
 
-`src/lib/pipeline/driver.ts:1283` 的 `committedAny` 门（`retryable = … && !committedAny`）在**错误 throw 路径**。max_tokens 无 throw、走**成功收尾**。故须**新增 post-success 分支**：
+`src/lib/pipeline/driver.ts:1366` 的 `committedAny` 门（`retryable = … && !committedAny`）在**错误 throw 路径**。max_tokens 无 throw、走**成功收尾**。故须**新增 post-success 分支**：
 
 - **触发条件**：成功终止 + terminal `stop_reason==max_tokens`（per-format 检测，§7）+ 分型 ∈ 已启用档（§3）+ 续写预算未耗（§6）+ `max_tokens_continuation.enabled`。
 - **append 非 replay**（沿用续写 spec §5.1）：已提交块已不在 buffer；新构造合成轮 env 跑**新 exchange**，输出帧接到**同一个已在推进的 sink**、index 从已 commit 块数续编。
 - **与 generation/coordinator 语义 + settle/finalize 时序契约（承重架构项，非核实项；审查 major）**：max_tokens 走成功路径，**success 已在 settle 点冻结 history entry 快照**（skill `persistence-async-invariants` §2、记忆 `settle 冻结 history entry`），coordinator 已 `whenModelOperationFinalized`。post-success 再启新 exchange 接同一 sink 会撞两处硬约束：(a) **finalize race**（记忆 `V3 direct-driver async finalize race`——getEntry 撞异步 finalize，须 `await whenModelOperationFinalized`）；(b) **已冻结记录能否追加 attempts[]**。故本 spec 必须**在实现前**定清「settle/finalize 与 post-success 续写的时序契约」：要么把 settle **推迟**到续写循环真正终止（`end_turn`/预算耗尽）之后（则续写期 entry 保持 open、attempts[] 可追加），要么定义「已 settle entry 的续写补记」协议。这与续写 spec §5.1 把 `committedAny` 门升为承重 driver 状态机分支**对等**——本 spec 是其 **success 侧变体**，同等承重，不降格。
 
-**依赖的是接口形状、非二元「是否 landed」（审查 major）**：续写 spec 的续写/hedged-candidate 兼容结论**仍在迭代**——其 `docs/plan/.../plan-2b-continuation-executor.md` 显示需新增第 5 个 `DispatchVerdict`/`CandidateVerdict` 值 `"continued"`，且类型传播（`src/lib/context/request.ts:690-693` `settleGenerationAttempt` 内联字面量联合、多处调用点）是其 reviewer 对抗审才补漏发现的真实挡编译点。故本 spec 对续写 spec 的依赖**不是「landed 与否」一个布尔**，而是 `continued` verdict 的**具体接口形状**——若该接口在计划落地前再变，本 spec 的 post-success 触发点设计须同步复核。计划期须比照续写 spec plan-2b 的显式类型改动清单处理 success 侧触发。
+**依赖已 landed、接口已固化（2026-07-23 复核纠正）**：`continued` verdict **已在 master** `DispatchVerdict`/`CandidateVerdict`（`model-operation-record.ts:246/250`：`"committed"|"discarded"|"failed"|"cancelled"|"continued"`），且是 **named type**（`request.ts:691` `settleGenerationAttempt(verdict: DispatchVerdict)` 从 model-operation-record import，非内联字面量联合——改一处定义即传播）。`coordinator.runContinuation`（`coordinator.ts:143-154`：结算 parent 后建 continuation candidate）也在 master。故本 spec 的 post-success 触发**直接复用既有 `continued` 语义 + `runContinuation`**，无「接口再变需同步复核」的悬置。**唯一新增**：把触发从 cut 路径（`driver.ts:1401`）扩到成功终止路径（terminal drain 前截获，§5.3）——这是本 spec 的承重实现工作，非接口变更。
 
 ### 5.2 分型判定点
 
@@ -135,12 +138,25 @@
 | text | 闭合 | **A** | 可续写（已闭合合法前缀） |
 | text | **未闭合**（悬挂） | **A'** | **须核实的角落**：Anthropic 在 max_tokens 时是否总先发 `content_block_stop` 再 `message_delta`？实测 5 例中唯一 A 类样本 `_44` 是闭合的（n=1，**不足以当协议不变量**）。若上游可能留悬挂 text → 按 ledger 铁律丢弃 partial → 前缀退化为「上一个已闭合块」，等同 A（可能丢一小段未闭合文本，诚实标注）。**列为门 A 附带核实项**。 |
 | tool_use | 未闭合（悬挂） | **B** | 默认透传（§3.2） |
-| tool_use | 闭合 | **B-closed** | 罕见（闭合工具后立即撞预算）；等同 A 语义可续，但受续写 spec「完整 tool_use 块作前缀」未验证门约束（§3.2） |
-| thinking | 任意 | **C** | 默认透传（§3.3） |
+| tool_use | 闭合 | **B-closed** | **正常 client turn boundary、不续写**（对齐 master 已固化 ADR D3：完整 interactive tool_use 是合法回合边界——客户端须执行工具并带 `tool_result` 返回，proxy 不能越过它续生成）。转发 `tool_use` + 真实 max_tokens 终止形态，交客户端接续。master `driver.ts:1423` 的 `!hasCompleteInteractiveToolUse(ledger.snapshot())` 门本就拦此情形。若未来要支持 server_tool_use / 非交互工具续写，须按工具类型另立分型 + PoC + 显式 ADR 修订，**不复用 A 类**。 |
+| thinking | 任意 | **C** | 默认透传（§3.3）；master extractor 已从 ledger 排除 thinking（不可作续写前缀，ADR D3） |
 
 **C 类判据优先级（消歧，审查建议）**：以**「最后块 == thinking」为唯一判据**，不用「thinking_tokens ≈ output_tokens」——后者在「已 commit 可见 text + 其后 thinking 截断」时会误标（该场景有可见答案、应归 A' 而非 C）。thinking_tokens 占比仅作 telemetry **辅助**维度、不参与分型。
 
-判定须在 commit-boundary 累积器 / ledger 上做（已知块结构），不重解析 wire。per-format 分型判定（CC/Responses 无 content_block 概念，靠 finish_reason=length + 累积块类型推断，§7）。**混合块序列**（text→tool_use、多 tool_use 链）归「最后块」所属分型——多 tool_use 链非首个被截断的 CC 尾随约束叠加续写 spec §4.3，默认透传。
+判定须在 commit-boundary 累积器 / ledger 上做（已知块结构），不重解析 wire。per-format 分型判定（CC/Responses 无 content_block 概念，靠 finish_reason=length + 累积块类型推断，§7）。**混合块序列**（text→tool_use、多 tool_use 链）归「最后块」所属分型。**CC tool_calls 尾随约束不适用（master FINDINGS G5a PASS 已证伪）**：`exp/continuation-shape/FINDINGS.md` G5a 实测 GHC 接受 `assistant{tool_calls}` 直接接 user（无 tool role）、返回正常 completion 非 400——OpenAI 标准的 tool_calls 尾随约束在 GHC 上不成立，故 CC 续写不撞该 hazard、无需 partial-degrade fallback（推翻续写 spec §4.3 CC 行旧约束）。G4 PASS 亦证 CC 并行 tool_call index 严格串行（块边界判据成立，§7）。
+
+### 5.3 transparent-stitch wire 机制 + terminal ownership matrix（承重；审查 major）
+
+`visibility:transparent` 缝合的 wire 层关键：**首轮的成功终止符必须被抑制**（不转发给客户端），保持流 open，续写轮的块以 §3.1 index 续编接续，最终以**续写轮的真实终止符**（`end_turn`/`tool_use`/或藏不掉时的 `max_tokens`）收尾。
+
+**⚠️ terminator 抑制 ≠ commit boundary（审查 major，纠正上版过简）**：master pipeline 里 commit boundary、upstream 终止检测、client-facing terminal emission 是**不同层、不同时点**的概念，不能折叠成一个机制。例如 Anthropic `codec/anthropic/commit-boundaries.ts` **只把 `content_block_stop`/`error` 当 commit boundary、明确排除 `message_stop`**（后者留在 terminal drain，`driver.ts:1327-1358`）；CC 的 `message_delta` 被 `anthropic-to-cc-stream.ts` 当场翻译成 finish chunk、而 `[DONE]` 由 handler 另处补写；Responses 不同 leg 的 `response.completed/.incomplete` 产出点各异。故 transparent 分支须在**各自的 terminal emission 层之前**截获，改 `commitBoundaries` 不足以完成。
+
+**交付物：terminal ownership matrix（plan 首要产出）**——每个 `(inbound format × outbound client format × direct/translate/fallback/WS) leg` 一格，明确四件事：① upstream completion 信号在哪层被 accumulator 记录；② client-visible terminator 由哪个 codec/translator/handler 构造；③ transparent 分支在该构造**之前**在哪层截获；④ continuation 最终 completion 时**谁且只谁**发唯一终局。无此矩阵，CC/Responses/WS 的 wire 拦截点无法唯一确定（P3 不能只靠 per-format PoC）。
+
+- **抑制点（Anthropic direct，P1/P2 可先行）**：terminal drain（`driver.ts:1327-1358`）写客户端**前**插入截获——检测 `sawMessageStop()` + 终止 `stop_reason==max_tokens` + 分型可续 + 预算未耗 → 不 flush 首轮 `message_delta{max_tokens}`+`message_stop`、转触发续写轮 append 同一 sink（§5.1）。这是**新增的成功终止截获**，master 现有 continuation（`driver.ts:1401-1453`）只处理无终止符的 cut，**不能拿它的 append 测试当成功路径 wire 正确性证明**。
+- **藏不掉的兜底**：续到 `max_rounds` 仍 `max_tokens`、或分型/visibility 不续写 → 该轮 terminator **正常转发**（无续写轮可接、无可藏之物）。
+- **多轮 usage 缝合语义（审查建议）**：Anthropic `message_delta.usage.output_tokens` 是累积语义；抑制首轮 message_delta 后，客户端可见流须保持 usage **单调递增**、末轮 message_delta 报**各轮真实总和**（§4；门 D 验 `output_tokens > max_tokens` SDK 不抛错 + 单调性）。marker 策略下 marker 文本计入。
+- **后端忠实**：被抑制的首轮 terminator **仍完整写入 history**（§9 `perRoundStopReason`）——抑制只对客户端 wire。
 
 ---
 
@@ -152,14 +168,24 @@
 max_tokens_continuation:            # 新顶层 vendor 中立段
   enabled: false                    # 总开关（opt-in，默认不改既有 max_tokens 透传行为）
   max_rounds: 1                     # 续写轮数上限（默认 1；每轮满上下文极贵，保守）
-  classes:                          # 分型分档启用
-    text: true                      # A 类（enabled 时默认可用）
-    tool_use: false                 # B 类（PoC 门 B 前恒 false）
-    thinking: false                 # C 类（PoC 门 C 前恒 false）
+  classes:                          # 分型分档策略（用户裁决：多策略可配置）
+    text: "continue"                # A 类：continue（续写）| passthrough
+    tool_use: "passthrough"         # B 类：passthrough（默认）| continue（仅 server_tool_use/非交互工具，须 PoC 门 B + ADR 修订；完整 interactive tool_use 恒不续，ADR D3）
+    thinking: "passthrough"         # C 类：passthrough（默认）| retry_with_budget（门 C PASS 后；无 "continue"——thinking 被 ledger 排除、不可作前缀，ADR D3）
   message: "Please continue where you left off."   # 合成 user 轮内容，可配置
-  visibility: "marker"              # P1 transparent | P2 marker | P3 sidecar（§4，默认 marker）
+  visibility: "transparent"         # transparent（默认，能藏则藏）| passthrough（永不缝合）| marker（缝合+可辨识标记）
+  thinking_retry_budget: null       # C 类 retry_with_budget 抬到的 max_tokens（null=模型 cap；仅 thinking:retry_with_budget 生效）
 ```
 per-vendor 可覆盖 `<vendor>.max_tokens_continuation.*`；解析优先级 per-vendor > 共享 > 内置默认。配置哲学独立（记忆 `config-philosophy-separate`）：键改名留旧别名、热重载绝不因配置杀进程。
+
+**visibility × class 组合矩阵（承重；审查 major——协议约束、非自由组合）**：同一 SSE 流的自动续写要求「不把首轮终止符转给客户端」；而 `passthrough` 定义就是「始终透传终止符」——一旦 `message_stop`/`[DONE]`/`response.incomplete` 转出，流已合法终止、**不能**在同连接续写。故：
+
+| visibility | `classes.*:"continue"/"retry_with_budget"` | 语义 |
+|---|---|---|
+| `transparent` / `marker` | 允许 | 同流续写（transparent 抑制终止符 / marker 抑制 + 注标记） |
+| `passthrough` | **不启动续写**、如实透传终止符 | 配置解析须**显式拒绝或降级**该组合，并在 history/telemetry 记 `strategy-prevented-stitch`——**绝不静默吞掉** `continue` 设置（诚实配置语义） |
+
+（`passthrough` 下若要「续写结果旁路提供」需另定真实 side-channel API，非本 spec 目标。）
 
 **默认全关（`enabled:false`）**：不 opt-in 时**零行为变更、max_tokens 逐字节透传**（对齐续写 spec 的 disabled 字节等价精神）。
 
@@ -192,10 +218,12 @@ max_tokens 在各格式 wire 上形态不同，续传触发须 per-format 识别
 
 ---
 
-## 9. 可观测性（承重——分型 + 双计费必须可见）
+## 9. 可观测性（承重——后端忠实 + 分型 + 双计费必须可见）
 
-- **history `pipelineInfo.maxTokensContinuation`**：`{ truncationClass: "text"|"tool_use"|"thinking", roundsAttempted, roundsSucceeded, continuedTokens, finalStopReason, visibilityMode }`。落 `pipelineInfo` 唯一诊断通道（记忆 `plan-verify-interface-location`）。
-- **每轮续写 = 新 attempt**（沿用续写 spec §4.4）：`attempts[]` 完整记录合成轮 upstreamRequest（打 `synthetic:"continuation"`）+ ledger 快照引用 + upstreamResponse。**上游原始轨绝不含合成物**。
+**总纲（用户强调 2026-07-23）**：无论客户端 visibility 策略如何（即便 `transparent` 藏掉了 max_tokens），**后端记录一律忠实**——history/telemetry 反映真实内部发生的一切，与「客户端看到什么」解耦。缝合隐藏是**呈现层**行为、不回写记录层。
+
+- **history `pipelineInfo.maxTokensContinuation`**：`{ truncationClass: "text"|"tool_use"|"thinking", roundsAttempted, roundsSucceeded, continuedTokens, perRoundStopReason: [...], clientVisibleStopReason, suppressedMaxTokens: boolean, visibilityMode }`。**`perRoundStopReason` 忠实记每轮真实终止**（含被抑制的首轮 `max_tokens`）、`clientVisibleStopReason` 记客户端实际看到的（缝合后 `end_turn`），两者**并存**以显式区分「真实 vs 客户端可见」。落 `pipelineInfo` 唯一诊断通道（记忆 `plan-verify-interface-location`）。
+- **每轮续写 = 新 attempt**（沿用续写 spec §4.4）：`attempts[]` 完整记录合成轮 upstreamRequest（打 `synthetic:"continuation"`）+ ledger 快照引用 + upstreamResponse（含首轮真实 `max_tokens` 终止 + usage）。**上游原始轨绝不含合成物**。
 - **telemetry 维度**（`telemetry-architecture`「不可重算因子拆最细」）：
   - **分型 counter**：`max_tokens_truncation{class=text|tool_use|thinking}`——即便 `enabled:false` 也应记录（诊断价值：C 类零产出烧满预算的频率）。
   - **续写 counter**：`max_tokens_continuation{class, outcome=succeeded|exhausted|degraded}` + `continuedTokens` sum（**双计费可见性**——多烧的 token 独立成维，不混入正常 usage）。
@@ -208,7 +236,8 @@ max_tokens 在各格式 wire 上形态不同，续传触发须 per-format 识别
 ## 10. 测试策略
 
 - **单元**：分型判定器（A/B/C，含悬挂 tool_use 识别、thinking-only 识别）；per-format terminal 检测（Anthropic max_tokens / CC length / Responses incomplete+max_output_tokens）；A 类 continuation builder 组装（复用续写 spec 测试资产）。
-- **客户端 oracle**（wire 正确性不自洽，skill `client-proxy-e2e-testing`）：`@anthropic-ai/sdk` / `openai` SDK 消费缝合流（已发块 + 续写块重编号），断累积连续、无重复、无协议破坏；断 visibility marker（P2）被 SDK 正确接受。
+- **客户端 oracle**（wire 正确性不自洽，skill `client-proxy-e2e-testing`）：`@anthropic-ai/sdk` / `openai` SDK 消费 transparent 缝合流（首轮 max_tokens terminator 被抑制 + 续写块重编号），断客户端**只看到干净 `end_turn`、无 max_tokens、累积连续无重复无协议破坏**；`passthrough`/`marker` 策略各自断言。
+- **后端忠实 oracle（用户强调）**：独立断言 history `perRoundStopReason` 含被抑制的首轮 `max_tokens`、`clientVisibleStopReason=end_turn`、attempts[] 含合成轮 + 真实 usage 总和——即「客户端藏掉 ≠ 后端藏掉」（skill `verifying-authoritative-claims`：后端记录用独立 oracle、不靠客户端 wire 自证）。
 - **e2e（mock upstream，skill `upstream-hook-mocking`）**：造「A 类 text 撞 max_tokens」→ 断代理发续写请求（含合成轮）→ mock 续写响应 → 客户端拿完整拼接 + marker。造 B 类悬挂 tool_use → 断**默认透传**（不续）。造 C 类 thinking-only → 断透传 + telemetry 记 class=thinking。
 - **golden 字节等价**：`enabled:false` 时四格式 max_tokens 透传逐字节等价（disabled = 零变更）。
 - **真相域按 skill `choosing-test-type` 归位**：wire 正确性用 producer oracle；分型判定纯函数走 unit；双计费用 telemetry 断言。
@@ -218,23 +247,23 @@ max_tokens 在各格式 wire 上形态不同，续传触发须 per-format 识别
 
 ## 11. Sequencing（依赖与落地顺序）
 
-**硬依赖**：本 spec 的 A 类续写**复用续写 spec §4 的 committed-blocks-ledger + continuation-request-builder + 合成 continuation 轮**（`feat/continuation-retry` 分支已实现 P0+P1，`.worktrees/continuation-retry/…/driver.ts:1227` ledger 喂养——**该基建仅在分支、master 尚无**，已核实 `grep committedBlocksLedger src/` on master 零命中）。故：
+**底座已 landed master（2026-07-23 复核纠正——原 spec 误称「仅在分支、master 尚无」被实测证伪）**：续写 spec 的 committed-blocks-ledger + extractor + continuation-builder + `continued` verdict + `runContinuation` **全部已合并入 master**（`git grep committedBlocksLedger master -- src/` 命中 `driver.ts`/`types.ts`/`handler-v4.ts`；`.worktrees/continuation-retry/` 已移除）。**根因**：起草时（会话早期）该基建确在分支、`grep` 确零命中；期间并发会话把续写工作 landed 到 master + 移除 worktree，ground truth 在我脚下变了——教训是**并发仓库里，修订期须 re-verify landed state，不复用早期 grep 快照**（记忆 `verify-running-server-has-fix-before-diagnosing` / `remerge-stale-feature-across-subsystem-rewrite`）。故：
 
-- **P0（识别层，须解决累积器来源）**：分型判定器 + per-format terminal 检测 + §9 分型 telemetry counter（`class=text|tool_use|thinking`）+ history `truncationClass` 字段。**纯识别、零续写、零行为变更**。**⚠️ 内部一致性修正（审查 major）**：§5.2 称分型判定「在 commit-boundary 累积器 / ledger 上做」，而 committed-blocks-ledger **master 尚不存在**（仅在分支）。故 P0 的「无依赖」须二选一并在计划期拍板：**(a)** 分型判定不依赖续写 ledger——自建独立轻量累积器（读 codec 已有的 commit-boundary accumulator，Anthropic 端点也有），**风险：防止与未来续写 ledger 两套逻辑分叉**；**(b)** 承认 P0 的 Anthropic 分型判定间接依赖续写 ledger、只能 CC/Responses（各有独立累积器）先行。**倾向 (a)**——分型判定本就只需「最后块类型 + 是否闭合」，比续写 ledger（需 canonical 块快照）轻得多，用 codec accumulator 足够，且 C 类可见性价值不该被续写 spec 合并进度绑架。
-- **P1（依赖续写 spec landed master）**：A 类续写触发分支（成功路径 post-success，§5）+ 复用 Anthropic builder + visibility 契约（§4，默认 marker）+ 独立预算（§6）。默认 `enabled:false` → 字节等价。
-- **P2（PoC 门后）**：B 类（门 B PASS 后）/ C 类 retry-with-budget（门 C PASS 后）分档启用。
-- **P3**：CC / Responses / WS 接入（各自叠加续写 spec 的 per-format 门）。
+- **P0（识别 + 观测层，可独立先行）**：分型判定器 + per-format terminal 检测 + §9 分型 telemetry counter（`class=text|tool_use|thinking`）+ history `truncationClass` 字段。**纯识别、零续写、零行为变更**——立即产出 C 类零产出可见性价值。**累积器来源已定**：直接复用 master 已有的 `committed-blocks-ledger` + `extractAnthropicCommittedBlocks`（`handler-v4.ts:1219`）或 codec commit-boundary accumulator，**无需自建**（原「二选一自建轻量累积器」前提已消失）。
+- **P1（依赖已满足）**：A 类续写触发分支——**成功终止截获**（§5.3，terminal drain 前）+ 复用已 landed 的 `continuation.buildRequest`/`runContinuation`/`continued` verdict + visibility 契约（§4，**默认 transparent**）+ 独立预算（§6）。默认 `enabled:false` → 字节等价。**唯一新增实现**：成功路径 terminal 截获（master 现有 continuation 仅覆盖 cut 路径，§5.3）。
+- **P2（PoC 门后）**：B 类（门 B PASS 后、仅非交互工具 + ADR 修订）/ C 类 `retry_with_budget`（门 C PASS 后）分档启用。
+- **P3（须先出 §5.3 terminal ownership matrix）**：CC / Responses / WS 接入——各自的 terminator 拦截点由矩阵唯一确定，配 producer/client oracle；不能只靠 per-format PoC。
 
-**若续写 spec 迟迟不合并**：P0 走 (a) 仍可独立交付（识别 + 观测），P1+ 阻塞——spec 显式记录此依赖，避免计划期撞「续写底座不在 master」。
+依赖已满足，无「续写底座不在 master」的阻塞。
 
 ---
 
 ## 12. 计划期 PoC 门（均 mock/真实上游可跑，非阻塞本 spec）
 
 1. **门 A（低风险，复用续写 spec §10 已 PASS）**：text-only 前缀续写——GHC 从 text 前缀干净续写。续写 spec 已双模型实证，本 spec 直接继承，仅补「A 类 max_tokens 场景」端到端一发。
-2. **门 B（高风险，早跑）**：丢弃 partial tool_use → 合成轮续写 → 断模型是否忠实产出**语义等价**的完整工具调用（vs 发散成不同工具/input）。**先验风险高**（续写 spec 已标 tool_use 前缀未验证）。FAIL → B 类永久透传。
+2. **门 B（高风险，早跑）**：丢弃 partial tool_use → 合成轮续写 → 断模型是否忠实产出**语义等价**的完整工具调用（vs 发散成不同工具/input）。**先验风险高**。FAIL → B 类永久透传。（注：G3 已证「完整 tool_use 前缀被接受」，门 B 测的是 partial 丢弃后的**发散**，两者不同。）
 3. **门 C（高风险，早跑）**：C 类策略验证——(b) retry-with-raised-budget 是否真能在更高预算下产出答案（而非再次烧满 thinking）；thinking round-trip 签名安全（参考 skill `ghc-anthropic-upstream`）。FAIL → C 类仅 (a) 识别+透传。
-4. **门 D（客户端可见性）**：P2 marker 帧被 `@anthropic-ai/sdk` / `openai` / 真 Claude CLI 正确接受（不 stall、不破协议）。
+4. **门 D（客户端缝合接受性）**：`transparent` 缝合流（首轮 terminator 抑制 + 续写块重编号，最终 `end_turn`）被 `@anthropic-ai/sdk` / `openai` / 真 Claude CLI 正确接受（不 stall、不破协议、`output_tokens > max_tokens` 不抛错）；`marker` 策略帧亦然。
 5. **门 E（per-format 分型）**：CC toolCallMap / Responses output_item 状态能否可靠判 B 类悬挂（§7 角落）。
 
 任一门 FAIL → 该分型/格式回退透传，不牺牲其余（沿用续写 spec「主/备/兜底之一通过即保默认可交付」）。
@@ -243,22 +272,22 @@ max_tokens 在各格式 wire 上形态不同，续传触发须 per-format 识别
 
 ## 13. 未决问题（进 plan 前须闭合）
 
-- **Q1（承重）客户端可见性契约**（§4）：P1 transparent / P2 marker / P3 sidecar 三选一 + 双计费记账方式 + `usage.output_tokens` 呈现（§4 末）。**本 spec 倾向 P2 marker**（诚实 + 有收益），但这是**用户价值/伦理取舍**，须用户裁决。**额外裁决维度（审查建议）**：marker 是**可见文本注入 text 块**，对 agent-loop 客户端（Claude Code）会随续写内容进入**下一轮对话历史、污染下游上下文**（与重复截断 spec §1.1「垃圾文本进对话历史」同类顾虑）。故 Q1 不只权衡「诚实 vs 收益」，还须权衡「marker 污染下游 context」——可能倾向「marker 走 SSE 注释/元数据而非正文 text_delta」或 P3 sidecar。
-- **Q2 C 类策略**（§3.3）：(a) 纯透传 / (b) opt-in retry-with-budget / (c) 拒绝介入——门 C + 用户裁决。
-- **Q3 默认启用范围**：`enabled` 默认 false 已定；但 opt-in 时 A 类是否默认 on、B/C 是否恒需显式开——§6 config `classes` 默认 `text:true, tool_use:false, thinking:false`，待确认。
-- **Q4 max_rounds 默认**（§6）：1 轮是否够（A 类续写后可能再撞 max_tokens → 需多轮）vs 成本爆炸（每轮满上下文）。
+- **~~Q1 客户端可见性契约~~ 已裁决（2026-07-23，§4）**：默认 `transparent`（能藏则藏、藏不掉透传），支持多策略可配置（transparent/passthrough/marker）。用户不在乎双计费/下游预算。**透明只对客户端；后端 history/telemetry 忠实完整**（§9）。
+- **~~Q2 C 类策略~~ 已裁决（2026-07-23，§3.3/§6）**：多策略可配置（`passthrough` 默认 / `retry_with_budget` / `continue`），非二选一。抬预算是允许的 opt-in 策略。
+- **Q3 默认档（已定初始默认、观测后可调）**：§6 `classes` 默认 `text:"continue", tool_use:"passthrough", thinking:"passthrough"`、`visibility:"transparent"`、`max_rounds:1`——A 类续、B/C 透传。这些是**已裁决的初始默认值**（非阻塞 plan 的未决项），未来通过观测再调整。
+- **Q4 max_rounds 多轮语义（计划期技术项）**：A 类续写后可能再撞 max_tokens → 是否需多轮 vs 成本爆炸（每轮满上下文）。默认 1，plan 期定多轮时的预算/usage 累积语义。
 - **Q5 三方合并态交互**（审查 major：原只画两方）：一个 exchange 可能**三套 client-egress 机制叠加**——① 续写 spec 的**错误续写**（mid-stream CANCEL 续回）+ 顺序 anchor 的**运行时递增 index offset**（续写 spec §3.3，本身未闭合承重项）；② 本 spec 的 **max_tokens post-success 续写**（块 index 连续递增跨 attempt）；③ 重复截断 spec 的**有状态 client.outbound**（下沉到 `delivery/session.ts`、eager-forward `content_block_start` + 块内缓冲折叠）。三者同 exchange 时的 **index 账**（三层重编号来源）、**挂载层次**（本 spec 续写缝合在哪层 vs repetition 折叠在 delivery 层的相对次序）、**预算/attempt 账**均须画清。计划期须出三方叠加时序图 + 显式声明相对次序与 index 归属，否则撞集成缝（记忆 `cross-phase-integration-seam-only-caught-at-merged-state`）。
 
 ---
 
 ## 14. 风险登记
 
-- R1（承重）客户端可见性 / 双计费 → §4 Q1 契约 + §9 telemetry 双计费维度。
+- R1 客户端可见性（已裁决 transparent）→ §4；风险转为「后端记录须保持忠实、抑制只作用客户端 wire」（§5.3/§9），R1' = 缝合抑制误伤后端记录 → §9 `perRoundStopReason` 忠实 + 独立 oracle 断后端记录含真实 max_tokens。
 - R2 B 类续写发散（重建不同工具）→ §3.2 默认透传 + 门 B。
 - R3 C 类 thinking round-trip 签名 400（历史雷区）→ §3.3 默认透传 + 门 C 早跑。
 - R4 成本爆炸（每轮满上下文 30 万+ token）→ §6 独立预算 max_rounds 保守默认 1。
 - R5 缝合破协议（客户端 stall）→ §10 客户端 oracle + 门 D。
-- R6 依赖续写 spec 未合并 → §11 P0 走路线 (a) 自建轻量累积器可独立先行。
+- R6 底座依赖（**已 landed master、依赖满足**）→ §11；残留风险 R6' = 修订期未 re-verify landed state 致陈旧（本轮已犯并修正）→ 复审前 re-grep master。
 - R7 `enabled:false` 非零变更 → §10 golden 字节等价 invariant。
 
 ---
@@ -267,7 +296,7 @@ max_tokens 在各格式 wire 上形态不同，续传触发须 per-format 识别
 
 - **A/B/C 分型**：按 max_tokens 截断位置——A=text（已闭合可续）、B=tool_use input（悬挂非法）、C=thinking-only（0 答案）。
 - **post-success 分支**：成功路径（`message_stop` 已到）上的续写触发，区别于续写 spec 的错误 throw 路径 `committedAny` 门。
-- **visibility 契约**：续写缝合后客户端能否观测「预算被突破」的决策（P1/P2/P3，§4）。
+- **visibility 契约**：续写缝合的客户端可见性策略（`transparent`/`passthrough`/`marker`，§4/§6）。
 - **retry-with-budget**：C 类专属——**重发**（非续写，因 thinking 不可续）并抬高本次 upstream max_tokens。
 
 ---
@@ -292,4 +321,26 @@ max_tokens 在各格式 wire 上形态不同，续传触发须 per-format 识别
 
 **未采纳**：无（方向性发现全采纳；纯排期建议转入 §11 phasing）。
 
-**仍开放（须用户裁决，非审查新增）**：§13 Q1（客户端可见性契约）+ Q2（C 类策略）——两 reviewer 均确认这是 spec 自承的、进计划阶段前的用户裁决门。
+---
+
+### 16.1 第二轮复审采纳记录（2026-07-23，用户裁决后 + 修订版）
+
+同两 reviewer resume 复审修订版（报告 `-rereview-gpt.md` / `-rereview-claude.md`）。**两轮上轮发现确认良好消化**；核心设计（三分型、transparent-stitch 默认 + 后端忠实双轨、独立预算、PoC 门）**两 reviewer 均认可**。新发现全部采纳（均为「对齐已成 master 事实 + 修正过时前提」，非结构重做）：
+
+- **[两 reviewer 收敛，Claude 定为 blocker] 续写底座已 landed master、spec「仅在分支/master 尚无」被证伪**——又一处「已核实 grep」与实测相反（同 `ln` 模式）。**根因不同**：`ln` 是我误用 `rg -r` 替换 flag；本次是**并发会话在起草后把续写工作 landed 到 master + 移除 worktree、ground truth 在脚下变了**，我复用了早期 grep 快照。已亲手 `git grep committedBlocksLedger master` + 读 `driver.ts:1412` 据实重写 §11/§1.3/§5.1/R6：底座已 landed、P0 直接复用 ledger（无需自建）、P1 依赖满足；删所有 `.worktrees/continuation-retry/` 失效路径。**教训**：并发仓库修订期须 re-verify landed state。
+- **[两 reviewer 收敛] §5.2 B-closed「可续」+ §6 `thinking:"continue"` 撞 master 已固化 ADR D3** → B-closed 改「完整 interactive tool_use 是正常 client turn boundary、不续写」（对齐 `driver.ts:1423` `!hasCompleteInteractiveToolUse` 门）；删 thinking `continue`（extractor 已从 ledger 排除 thinking，`driver.ts:1434`）。
+- **[Claude major] CC tool_calls 尾随约束已被 master FINDINGS G5a 证伪未吸收** → §5.2/§8 吸收 G5a（GHC 无该约束、CC 续写不撞 hazard）+ G4（CC index 串行已证）。
+- **[GPT major] §6 `visibility:passthrough` × 同流续写协议不可兼容** → 补 visibility×class 组合矩阵：`passthrough` 时续写**不启动**、显式拒绝/降级该组合、记 `strategy-prevented-stitch`，绝不静默吞 `continue`。
+- **[GPT major] §5.3 把 terminator 抑制等同 commit boundary 与架构不符** → §5.3 升为 **terminal ownership matrix**（每 `(inbound×outbound×leg)` 一格、四要素）+ 明确「成功终止截获是新增实现」（master continuation 仅覆盖 cut 路径 `driver.ts:1401`）。
+- **[Claude major] §5.1 `continued` verdict 依赖前提过时** → 更新：已 landed named type（`model-operation-record.ts:246/250`）、非 in-flight 内联联合；直接复用。
+- **[两 reviewer minor/建议] 陈旧清理** → 删重复 Q4；§11 P1「默认 marker」→ transparent；§15 P1/P2/P3 → transparent/passthrough/marker；行号刷新（`driver.ts:1283`→`:1366`、ledger `:1233/:1255`→`:1279/:1300`）；Q3/Q4 明确为「已定初始默认、观测后调」；§4/§5.3 补多轮 usage 单调/总和语义。
+
+**两轮 verdict**：修订闭合上述后**可进 plan 阶段**（Q1/Q2 用户已裁决、无需重开）。plan 首要产出 = §5.3 terminal ownership matrix；P0 识别观测 + Anthropic direct transparent A 类可作前两阶段。
+
+**仍开放（须用户裁决，非审查新增）**：~~§13 Q1（客户端可见性契约）+ Q2（C 类策略）~~ **已于 2026-07-23 裁决**（见下）。
+
+**用户裁决记录（2026-07-23）**：
+- **Q1 客户端可见性 → transparent 默认**：能藏就藏、藏不掉才透传；用户不在乎双重计费、下游预算约束当前不被客户端强制、proxy 无义务确保其完美。支持多策略可配置（transparent/passthrough/marker），默认 transparent。→ §4 从「承重伦理未决」改为已裁决决策；放弃原「倾向 P2 marker」。
+- **关键约束（用户强调）：透明只对客户端；本程序内部 history/telemetry/日志一律忠实完整**——缝合隐藏是呈现层行为、不回写记录层。→ §9 补 `perRoundStopReason`（记真实每轮终止含被藏的 max_tokens）+ `clientVisibleStopReason` 并存；对齐 ADR `richest-data-flow`（后端完整、前端选择性呈现）。
+- **Q2 C 类 → 多策略可配置**：`passthrough`（默认）/ `retry_with_budget`（opt-in 抬预算，N3 铁律相应放宽为可配置）/ `continue`。非二选一。
+- **doc-sync 待办（landing 时）**：本决策触及「proxy 不为维护 client 预算契约负责」，属决策级——landing 时新建/更新 ADR（`docs/decisions/`），可挂靠既有 `2026-07-05-internal-tool-security-posture` + `2026-07-05-richest-data-flow`。
