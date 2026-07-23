@@ -177,6 +177,11 @@ describe("L2 buffered retry — Anthropic streaming handler wiring (protect_stre
       streamKeepalivePingSec: 0,
       protectStreamingGeneration: "on",
       bufferedRetryShared: { maxRetries: 3, bufferCapBytes: 16_777_216, heartbeatSec: 15 },
+      // This suite goldens the L2 TRANSPARENT-retry + partial-degrade mechanism. Continuation-retry
+      // (spec 2026-07-22, default ON) is a SEPARATE feature with its own suites (continuation-flow.it,
+      // the SDK-oracle e2e) — a post-commit RST would otherwise trigger a continuation instead of the
+      // partial-degrade this suite locks. Disable it here so the degrade golden stays exact.
+      bufferedRetryContinuationShared: { enabled: false, message: "network issue. please continue" },
     })
     applyFetchMock(upstreamFetchMock)
     setModels({ object: "list", data: [mockModel(MODEL, { vendor: "Anthropic", supported_endpoints: ["/v1/messages"] })] })

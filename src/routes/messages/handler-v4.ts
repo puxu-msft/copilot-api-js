@@ -60,6 +60,8 @@ import {
   extractAppliedEdits,
   summarizeAppliedEdits,
 } from "~/lib/anthropic/applied-context-edits"
+import { extractAnthropicCommittedBlocks } from "~/lib/anthropic/committed-block-extractor"
+import { registerAnthropicContinuationBuilder } from "~/lib/anthropic/continuation-builder"
 import { selectForwardableResponseHeaders } from "~/lib/anthropic/header-policy"
 import {
   //
@@ -68,6 +70,7 @@ import {
   anchorStopFrame,
   closeAnchorIfOpen,
   isAnthropicContentBlockStart,
+  isAnthropicMessageStart,
   makeSyntheticAnchorInjector,
   makeSyntheticEnvelopeInjector,
   remapAnthropicBlockIndex,
@@ -130,6 +133,8 @@ import {
   createOpenAIStreamAccumulator,
 } from "~/lib/openai/stream-accumulator"
 import { makeDeliverySseSink } from "~/lib/pipeline/client-sink"
+import { createCommittedBlocksLedger } from "~/lib/pipeline/committed-blocks-ledger"
+import { getContinuationBuilder } from "~/lib/pipeline/continuation-request-builder"
 import { createPipelineDriver } from "~/lib/pipeline/driver"
 import {
   //
@@ -150,6 +155,7 @@ import {
 import {
   //
   resolveBufferedCaps,
+  resolveContinuation,
   state,
 } from "~/lib/state"
 import { createUpstreamHttpTransport } from "~/lib/transport/http-transport"
@@ -186,6 +192,10 @@ const MAX_LEARNING_RETRIES = 32
 
 /** L2 escalation floor: the most aggressive `clear_tool_uses` input-token trigger we'll set on a retry. */
 const ESCALATE_MIN_TRIGGER = 4096
+
+// Register the Anthropic continuation-request builder once at module load, so `getContinuationBuilder`
+// resolves it in the buffered opts below (spec 2026-07-22 §4.3). Idempotent (a Map set).
+registerAnthropicContinuationBuilder()
 
 // ============================================================================
 // Main entry point
@@ -1201,6 +1211,24 @@ async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): 
           // Anthropic block-level commit remains a handler-selected delivery policy. The
           // candidate session owns accumulators/diagnostics but must not shadow this outer gate.
           commitBoundaries: anthropicCommitBoundaries,
+          // Continuation-retry (spec 2026-07-22 §4-§5, ADR D3): after a committed block, a mid-stream cut
+          // runs a synthetic continuation exchange whose frames stitch onto the same client stream. The
+          // ledger accumulates the delivered prefix (extractor → text/tool_use, thinking excluded); the
+          // continuation hooks carry the format ops + the registry-resolved builder. Per-request ledger.
+          // The driver's continuation branch is inert unless all three (ledger + extractor + hooks) are wired.
+          committedBlocksLedger: createCommittedBlocksLedger(),
+          extractCommittedBlocks: extractAnthropicCommittedBlocks,
+          ...(getContinuationBuilder("anthropic") && {
+            continuation: {
+              enabled: resolveContinuation("anthropic").enabled,
+              message: resolveContinuation("anthropic").message,
+              isMessageStart: isAnthropicMessageStart,
+              isContentBlockStart: isAnthropicContentBlockStart,
+              remap: remapAnthropicBlockIndex,
+              // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- guarded by the `&&` above
+              buildRequest: getContinuationBuilder("anthropic")!,
+            },
+          }),
           // H2 (a terminal upstream `error` frame) is a clean drain WITHOUT message_stop — the same
           // shape as an RST-truncation. This lets the buffered sink COMMIT it (the handler then fails
           // via acc.streamError, mirroring live) instead of wastefully retrying it as a truncation.

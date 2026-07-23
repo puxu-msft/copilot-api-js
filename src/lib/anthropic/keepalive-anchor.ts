@@ -71,6 +71,16 @@ export function isAnthropicContentBlockStart(frame: ServerSentEventMessage): boo
   }
 }
 
+/** Is this rendered client frame the `message_start`? (parses the JSON `type`; non-JSON → false). */
+export function isAnthropicMessageStart(frame: ServerSentEventMessage): boolean {
+  if (typeof frame.data !== "string") return false
+  try {
+    return (JSON.parse(frame.data) as { type?: unknown }).type === "message_start"
+  } catch {
+    return false
+  }
+}
+
 /** `content_block_start` opening the empty-text anchor block (lights the sink openBlock={0,text}). */
 export function anchorStartFrame(): ServerSentEventMessage {
   return anthropicSseFrame({

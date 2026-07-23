@@ -20,7 +20,7 @@ export type ClientFormat = "anthropic" | "openai-cc" | "openai-responses" | "gem
  * loosely here; each builder narrows it internally — tightened when the per-format builders land in
  * P3-P6). `committed` is the ledger snapshot; `message` is the configured synthetic user-turn text.
  */
-export type ContinuationRequestBuilder = (original: unknown, committed: Array<CanonicalBlock>, message: string) => unknown
+export type ContinuationRequestBuilder = (original: unknown, committed: ReadonlyArray<CanonicalBlock>, message: string) => unknown
 
 const REGISTRY = new Map<ClientFormat, ContinuationRequestBuilder>()
 
