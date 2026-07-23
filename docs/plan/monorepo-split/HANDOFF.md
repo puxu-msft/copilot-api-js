@@ -24,6 +24,9 @@
 
 ### C3 + C4：composition root + 注入（大、设计密集）
 - 建 `createTokenRuntime({fetch,paths,runtimeConfig})` + `installTokenRuntime`/`getTokenRuntime`（fail-fast 未安装）/`resetTokenRuntimeForTests`——见 plan「Composition root」+「Singleton lifecycle 契约」。
+
+> **为何 instance runtime 而非「模块全局 + reset」（决策已定，勿简化回全局）**：曾质疑「返回 instance 是过度设计、项目惯用全局单例（`state.ts`/`initTokenManagers`）更简单」。**实测证据推翻此质疑**：本仓库「bun 单进程跨文件共享 module-global 单例泄漏」是**反复出现的头号 flaky 根因**——为此才有 skill `test-isolation`/`debugging-test-pollution` + L1 守卫 `resetters-complete` + `useIsolatedRuntime` fixture 整套基建。即「全局 + reset」在本项目**不是够用的简单方案，而是持续产生污染 bug、要一整套守卫兜的已知债**。instance 版**每测试自造 runtime、依赖闭包随实例走、用完即弃 → 从结构上免疫跨测试泄漏**，正对本项目真实痛点，且顺项目既有 DI/隔离方向（`useIsolatedRuntime`）。`resetTokenRuntimeForTests` 仍要（覆盖对进程单例访问器的场景 + timer/in-flight 清理），但**主隔离手段是每测试自造实例**。**结论：plan v2.2 的 instance 设计保持不变。**
+
 - **同一 commit** 收敛全部构造链到 runtime：
   - 5 条 CLI 链：`start`/`setup-claude-code`/`setup-codex`（用 `initTokenManagers`）+ **`auth`（直构造 DeviceAuth+FileProvider）+ `debug`（直构造 GitHubTokenManager ×3 + 直写 setGitHubToken/setCopilotToken）**——后两条是 escape hatch，必须收进 runtime。
   - 3 个 lifecycle-op 消费者用**同一实例**：`server.ts:126` 中间件 `ensureValidCopilotToken` / `token-refresh.ts:27` refresh / `shutdown.ts:398` dispose。删 `getCopilotTokenManager`/`ensureValidCopilotToken`/`stopTokenRefresh` 模块级公共导出。
