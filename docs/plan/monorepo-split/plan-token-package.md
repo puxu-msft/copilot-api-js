@@ -65,10 +65,17 @@ export interface TokenRuntime {
   dispose(): Promise<void> // stop refresh timer, await/reject in-flight refresh, release store
 }
 export function createTokenRuntime(deps: TokenRuntimeDependencies): TokenRuntime
-/** Process-singleton accessor: composition root installs THE runtime; request/
+/** Process-singleton lifecycle: composition root INSTALLS THE runtime; request/
  *  shutdown-time consumers read this same instance (never a fresh one). */
-export function getTokenRuntime(): TokenRuntime
+export function installTokenRuntime(runtime: TokenRuntime): void // replace requires prior dispose; installing over a LIVE runtime throws
+export function getTokenRuntime(): TokenRuntime // fail-fast throws if not installed (no silent module-global fallback)
+export function resetTokenRuntimeForTests(): Promise<void> // dispose current (stop timer + drain in-flight) + clear singleton; registered in RESETTERS
 ```
+
+**Singleton lifecycle 契约**（承重——防多命令启动/测试间留 disposed/错误实例）：
+- `installTokenRuntime` 安装进程单例；**重复安装规则**：替换前必须先 `dispose()` 旧 runtime，安装到一个 LIVE runtime 之上 throw（防双 owner）。
+- `getTokenRuntime()` 未安装即 fail-fast throw（明确错误，**无模块级 manager 静默兜底**）。
+- `resetTokenRuntimeForTests()`：dispose 当前（停 timer + drain in-flight refresh）+ 清空单例；**登记 RESETTERS** + fixture afterEach 调用（纳入 §测试隔离契约）。
 
 装配层（CLI 各命令唯一组装点）构造 runtime；`auth`→`acquireGitHubToken({forceDeviceAuth:true})`；`debug`→runtime operations，**禁回写 core state**；core/CLI 需 credential 只读 `getCredentials()` 视图，**不存镜像**。模块级 `setTokenFetch()` 仅可作过渡 shim、由 runtime 拥有含 reset，**非生产公共 API**。
 
@@ -100,8 +107,8 @@ token store 是 `githubToken`/`copilotToken`/`tokenInfo`/`copilotTokenInfo` **�
 
 实测 `cloneState` 特殊克隆 `tokenInfo`/`copilotTokenInfo`（`state.ts:1186,1219`），token store 迁走后 `restoreStateForTests` 不恢复它 → 跨测试泄漏/双 SoT 漂移。**必须**：
 - token 包 `snapshotTokenStoreForTests()`/`restoreTokenStoreForTests()`（深拷贝）**或** core 单一 `snapshotRuntimeStateForTests()` 原子组合 state+store；`tests/helpers/isolated-fixture.ts` 同一 beforeEach/afterEach capture+restore。
-- 新 module-global store 提供 `resetTokenStoreForTests()` 登记 RESETTERS **或**明确纳入快照 + L1 `EXEMPT`（二选一不可漏）。
-- **正向隔离测试**：测试 A 写 4 字段、测试 B 断全恢复；refresh timer/in-flight promise 存在时证 teardown 不留计时器/异步写。
+- 新 module-global store 提供 `resetTokenStoreForTests()` 登记 RESETTERS **或**明确纳入快照 + L1 `EXEMPT`（二选一不可漏）。**并且** `resetTokenRuntimeForTests()`（dispose 单例 runtime：停 refresh timer + drain in-flight）登记 RESETTERS + fixture afterEach 调用——否则 runtime 的 timer/异步 refresh 会跨测试残留。
+- **正向隔离测试**：测试 A 写 4 字段、测试 B 断全恢复；refresh timer/in-flight promise 存在时证 teardown 不留计时器/异步写；**runtime 未安装时 `getTokenRuntime()` fail-fast**（防静默兜底掩盖漏装配）。
 
 ## 闭合 commit DAG（每步同一 commit 内完整闭合、终态绿；替代 v1 松散 task）
 
