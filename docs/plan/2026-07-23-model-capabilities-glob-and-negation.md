@@ -90,6 +90,13 @@ describe("globToRegExp (pure, no normalization)", () => {
     expect(globToRegExp("a.c").test("a.c")).toBe(true)
     expect(globToRegExp("a+c").test("aaac")).toBe(false)
   })
+  test("escapes the full regex metachar set (table-driven)", () => {
+    // Each char must match itself literally, not act as a regex operator.
+    for (const ch of ["[", "]", "\\", "^", "$", "|", "(", ")", "{", "}"]) {
+      expect(globToRegExp(`a${ch}b`).test(`a${ch}b`)).toBe(true)
+      expect(globToRegExp(`a${ch}b`).test("axb")).toBe(false)
+    }
+  })
   test("does NOT normalize dots to dashes", () => {
     // Pure compiler: header side depends on this staying literal.
     expect(globToRegExp("claude-opus-4.6").test("claude-opus-4-6")).toBe(false)
@@ -268,6 +275,8 @@ git commit -F /tmp/t1-msg.txt -- src/lib/models/model-pattern.ts tests/models/mo
 
 ### Task 2: header-glob-strip.ts 复用 primitive 的 `globToRegExp`（消重复）
 
+**前置依赖**：Task 1 的 commit 必须先落地（本任务 import `~/lib/models/model-pattern`，Task 2 的 commit 不可脱离 Task 1 单独 cherry-pick，否则 header 文件引用不存在模块、构建失败）。
+
 **Files:**
 - Modify: `src/lib/anthropic/header-policy/header-glob-strip.ts`（删本地 `globToRegExp`，改 import）
 
@@ -287,8 +296,8 @@ import { globToRegExp } from "~/lib/models/model-pattern"
 
 - [ ] **Step 2: 跑 header 侧现有测试确认逐字节不变**
 
-Run: `bun test tests/anthropic/header-glob-strip.unit.test.ts tests/anthropic/header-policy 2>/dev/null; bun test $(rg -l 'header-glob-strip|pruneHeaders|keepHeaders|compileHeaderStrip' tests --glob '*.ts')`
-Expected: PASS（header 行为守卫；若无专门测试文件，跑 `rg` 命中的全部）。
+Run: `bun test tests/anthropic/header-policy/header-glob-strip.unit.test.ts`
+Expected: PASS（header 行为守卫；这是真实存在的测试文件，勿吞 stderr、勿用不存在路径）。
 
 - [ ] **Step 3: typecheck**
 
@@ -347,6 +356,23 @@ describe("model_capabilities glob + negation (spec 2026-07-23)", () => {
     expect(modelSupportsExtendedCacheTtl("claude-opus-40")).toBe(false)
   })
 
+  test("glob + negation on adaptiveThinkingModels (consumer = modelHasAdaptiveThinking, metadata-silent)", () => {
+    // adaptive_thinking's consumer is modelHasAdaptiveThinking, NOT a modelSupports* fn.
+    // Name-list only kicks in when /models metadata is silent — pass no resolvedModel.
+    setStateForTests({ adaptiveThinkingModels: ["claude-*", "!claude-haiku-*"] })
+    expect(modelHasAdaptiveThinking("claude-opus-4.8")).toBe(true)
+    expect(modelHasAdaptiveThinking("claude-haiku-4.5")).toBe(false) // excluded
+    // positive mutation: drop the negative → Haiku flips to true (proves the ! leg is live)
+    setStateForTests({ adaptiveThinkingModels: ["claude-*"] })
+    expect(modelHasAdaptiveThinking("claude-haiku-4.5")).toBe(true)
+  })
+
+  test("metadata adaptive_thinking:true still wins over the name-list (metadata-first intact)", () => {
+    const withSupports = { capabilities: { supports: { adaptive_thinking: true } } } as Parameters<typeof modelHasAdaptiveThinking>[1]
+    setStateForTests({ adaptiveThinkingModels: ["!claude-*"] }) // name-list would deny…
+    expect(modelHasAdaptiveThinking("claude-opus-4.8", withSupports)).toBe(true) // …but metadata true wins
+  })
+
   test("only-negation list yields empty capability set", () => {
     setStateForTests({ contextEditingModels: ["!claude-haiku-*"] })
     expect(modelSupportsContextEditing("claude-opus-4.8")).toBe(false)
@@ -357,7 +383,7 @@ describe("model_capabilities glob + negation (spec 2026-07-23)", () => {
 - [ ] **Step 2: 跑测试确认失败**
 
 Run: `bun test tests/anthropic/anthropic-features.unit.test.ts`
-Expected: FAIL —— glob/`!` 用例未通过（旧 `matchModelCapability` 把 `claude-*` 当字面前缀、`!…` 当字面前缀）。
+Expected: FAIL —— **glob positive 用例未命中**（旧 `matchModelCapability` 把 `claude-*` 当字面前缀、`claude-opus-4.8` 归一后不以 `claude-*-` 开头 → false）。注：`!` negative 腿的 red/green 由 Task 1 的 `modelMatchesPatternList` 单测承担（此处 `["claude-*", "!…"]` 因 positive 先天不命中、整列表本就 false，不能独立证明 negative 未实现）；本 Step 只需确认 glob positive 未实现即可。
 
 - [ ] **Step 3: 改实现**（`src/lib/anthropic/features.ts`）
 
@@ -398,6 +424,8 @@ git commit -F /tmp/t3-msg.txt -- src/lib/anthropic/features.ts tests/anthropic/a
 - Modify: `src/lib/anthropic/per-model-config.ts`（`findMostSpecific` + `collectAllMatching` 用 `matchesModelKey`；`findMostSpecific` specificity 定序 literal > glob）
 - Test: `tests/anthropic/per-model-config.unit.test.ts`（扩展）
 - Test: `tests/anthropic/anthropic-features.unit.test.ts`（追加 toolSearchOverrides glob 用例）
+- Test: `tests/anthropic/strip-tool-fields.it.test.ts`（blast-radius：`collectAllMatching` 真实消费者）
+- Test: `tests/models/timeout-resolver.unit.test.ts`（blast-radius：`findMostSpecific` 真实消费者）
 
 **Interfaces:**
 - Consumes: `matchesModelKey`, `hasGlobMeta` from `~/lib/models/model-pattern`（Task 1）。
@@ -445,9 +473,11 @@ Expected: FAIL —— glob 键用例（`xclaude` 应 undefined 却因 substring 
 
 - [ ] **Step 3: 改实现**（`src/lib/anthropic/per-model-config.ts`）
 
-import 区（`normalizeForMatching` import 之后）加：
+**替换** import（`tsconfig.json` 开了 `noUnusedLocals`：改完后本文件不再用 `normalizeForMatching`，两个函数都改走 `matchesModelKey`，故必须把旧 import 整行删掉换成新的，否则 `bun run typecheck` 因 unused import 失败）：
 
 ```typescript
+// 删除：import { normalizeForMatching } from "~/lib/models/resolver"
+// 换成：
 import { hasGlobMeta, matchesModelKey } from "~/lib/models/model-pattern"
 ```
 
@@ -498,8 +528,12 @@ export function collectAllMatching<T>(modelName: string, patterns: Record<string
 ```typescript
   test("toolSearchOverrides glob key force-disables a family", () => {
     setStateForTests({ toolSearchOverrides: { "claude-*": false } })
+    // Positive-first: claude-opus-4.8 is default-allow TRUE; the glob override flips it to false.
     expect(modelSupportsToolSearch("claude-opus-4.8")).toBe(false)
-    expect(modelSupportsToolSearch("gpt-4")).toBe(false) // no glob hit, default-allow already false for non-claude
+    // Mutation control: drop the override → it flips back to true (proves the glob leg is live,
+    // not a coincidental default). NOT gpt-4 (that is false via default-allow regardless — invalid).
+    setStateForTests({ toolSearchOverrides: {} })
+    expect(modelSupportsToolSearch("claude-opus-4.8")).toBe(true)
   })
 
   test("toolSearchOverrides literal key outranks glob key", () => {
@@ -509,33 +543,51 @@ export function collectAllMatching<T>(modelName: string, patterns: Record<string
   })
 ```
 
-- [ ] **Step 5: 新增 blast-radius 接线测试**（证明 glob 键在非-capability 消费者身上也生效且向后兼容）
+- [ ] **Step 5: 新增 blast-radius 接线测试（spec §3.1：真实消费者，各一个 `findMostSpecific` / `collectAllMatching` 消费者）**
 
-在 `tests/anthropic/per-model-config.unit.test.ts` 追加（`collectAllMatching` strip+keep 交互，模拟 message-tools 用法）：
+**(a) `collectAllMatching` 真实消费者 = `stripToolFields`**（strip + keep 交互）。追加进既有 `tests/anthropic/strip-tool-fields.it.test.ts`（先读该文件既有 setStateForTests/snapshot 模式照搬）：
 
 ```typescript
-describe("blast-radius wiring: collectAllMatching strip+keep interaction", () => {
-  test("glob strip key adds, glob keep key removes (message-tools pattern)", () => {
-    const stripFields = { "claude-*": [["a", "b"]] } as Record<string, Array<Array<string>>>
-    const keepFields = { "claude-opus-*": [["b"]] } as Record<string, Array<Array<string>>>
-    const strip = new Set<string>()
-    for (const fields of collectAllMatching("claude-opus-4-8", stripFields)) for (const f of fields) strip.add(f)
-    for (const fields of collectAllMatching("claude-opus-4-8", keepFields)) for (const f of fields) strip.delete(f)
-    expect([...strip].sort()).toEqual(["a"]) // b added by strip glob, removed by keep glob
+import { stripToolFields } from "~/lib/anthropic/message-tools"
+// …在既有 describe 内，用该文件既有的 state snapshot/restore afterEach：
+test("glob strip key adds a field, glob keep key removes it (spec 2026-07-23)", () => {
+  setStateForTests({
+    stripToolFields: { "claude-*": [["custom_field"]] },
+    keepToolFields: { "claude-opus-*": [["custom_field"]] },
   })
+  const tools = [{ name: "t", description: "d", input_schema: { type: "object" }, custom_field: 1 }] as never
+  // opus matches BOTH: strip glob adds custom_field, keep glob removes it → field survives.
+  const opus = stripToolFields(tools, "claude-opus-4.8") as Array<Record<string, unknown>>
+  expect(opus[0]).toHaveProperty("custom_field")
+  // sonnet matches ONLY the strip glob (not the opus keep) → field stripped.
+  const sonnet = stripToolFields(tools, "claude-sonnet-4.6") as Array<Record<string, unknown>>
+  expect(sonnet[0]).not.toHaveProperty("custom_field")
 })
 ```
 
+**(b) `findMostSpecific` 真实消费者 = `resolveStreamIdleTimeoutSec`**（timeout-resolver）。追加进 `tests/models/timeout-resolver.unit.test.ts`（先读既有模式）：
+
+```typescript
+import { resolveStreamIdleTimeoutSec } from "~/lib/models/timeout-resolver"
+test("glob key routes through resolveStreamIdleTimeoutSec; literal outranks glob (spec 2026-07-23)", () => {
+  setStateForTests({ streamIdleTimeoutOverrides: { "claude-*": 600, "claude-opus-4-8": 900 } })
+  expect(resolveStreamIdleTimeoutSec("claude-sonnet-4.6")).toBe(600) // glob hit
+  expect(resolveStreamIdleTimeoutSec("claude-opus-4.8")).toBe(900) // literal outranks glob
+})
+```
+
+（注：两个 `state` 键 `stripToolFields`/`keepToolFields`/`streamIdleTimeoutOverrides` 均为既有可 `setStateForTests` 的字段；`stripToolFields()`/`resolveStreamIdleTimeoutSec()` 是生产消费者——这满足 spec §3.1「真实接线、非手工套 Set」的验收。若某 test 文件的 tool fixture 形状不同，按该文件既有 helper 构造 `Tool`。）
+
 - [ ] **Step 6: 跑测试确认通过**
 
-Run: `bun test tests/anthropic/per-model-config.unit.test.ts tests/anthropic/anthropic-features.unit.test.ts`
-Expected: PASS（全部，含既有 specificity 回归用例）。
+Run: `bun test tests/anthropic/per-model-config.unit.test.ts tests/anthropic/anthropic-features.unit.test.ts tests/anthropic/strip-tool-fields.it.test.ts tests/models/timeout-resolver.unit.test.ts && bun run typecheck`
+Expected: PASS（全部，含既有 specificity 回归用例）+ typecheck 绿（确认 stale import 已删）。
 
 - [ ] **Step 7: 提交**
 
 ```bash
-git add -- src/lib/anthropic/per-model-config.ts tests/anthropic/per-model-config.unit.test.ts tests/anthropic/anthropic-features.unit.test.ts
-git commit -F /tmp/t4-msg.txt -- src/lib/anthropic/per-model-config.ts tests/anthropic/per-model-config.unit.test.ts tests/anthropic/anthropic-features.unit.test.ts
+git add -- src/lib/anthropic/per-model-config.ts tests/anthropic/per-model-config.unit.test.ts tests/anthropic/anthropic-features.unit.test.ts tests/anthropic/strip-tool-fields.it.test.ts tests/models/timeout-resolver.unit.test.ts
+git commit -F /tmp/t4-msg.txt -- src/lib/anthropic/per-model-config.ts tests/anthropic/per-model-config.unit.test.ts tests/anthropic/anthropic-features.unit.test.ts tests/anthropic/strip-tool-fields.it.test.ts tests/models/timeout-resolver.unit.test.ts
 # feat(anthropic): per-model map keys support glob; specificity literal > glob
 ```
 
@@ -557,7 +609,7 @@ Run: `rg -n "async function writeConfig|Special semantics|resetConfigCache" test
 - [ ] **Step 2: 写失败测试**（追加进 "Special semantics" describe 块内，用真实 `writeConfig` + `applyConfigToState`）
 
 ```typescript
-  test("model_capabilities glob + ! negation flows through to modelSupports* (spec 2026-07-23)", async () => {
+  test("model_capabilities glob + ! negation flows through + hot-reload flips (spec 2026-07-23)", async () => {
     const { modelSupportsContextEditing, modelSupportsToolSearch } = await import("~/lib/anthropic/features")
     await writeConfig(`
 anthropic:
@@ -582,18 +634,38 @@ anthropic:
     const withSupports = { capabilities: { supports: { context_editing: false } } } as Parameters<typeof modelSupportsContextEditing>[1]
     expect(modelSupportsContextEditing("claude-opus-4.8", withSupports)).toBe(false)
 
+    // HOT-RELOAD: rewrite with a flipped config → cache refresh → results flip.
+    resetConfigCache()
+    await writeConfig(`
+anthropic:
+  model_capabilities:
+    context_editing:
+      - "!claude-*"
+`)
+    await applyConfigToState()
+    expect(state.contextEditingModels).toEqual(["!claude-*"])
+    expect(modelSupportsContextEditing("claude-opus-4.8")).toBe(false) // only-negation → empty set
+
     resetConfigManagedState()
   })
 ```
 
-（注：若矩阵的 completeness 守卫已覆盖 `context_editing`/`tool_search_overrides` 的存在性，则本用例纯加语义分支、不触发守卫；`state` / `resetConfigManagedState` / `applyConfigToState` / `writeConfig` 均为该文件既有导入/helper。）
+（注：`writeConfig` / `applyConfigToState` / `resetConfigCache` / `resetConfigManagedState` / `state` 均为该文件既有导入/helper；两轮 reload + `resetConfigCache()` 之间刷新，真正验证「热重载」而非仅首次加载。）
 
-- [ ] **Step 3: 跑测试确认失败→通过**
+- [ ] **Step 3: YAML 引号行为测试（spec §5：quoted 成功 / bare `!`·行首 `*` 的解析行为，与 glob 功能 test 分开）**
+
+先探针确认本项目 `yaml` 解析器对 bare `!`/行首 `*` 的真实行为（不臆断）：
+
+Run: `bun -e 'import {parse} from "yaml"; try { console.log("quoted:", JSON.stringify(parse("a:\n  - \"!claude-*\"\n  - \"*claude\"").a)) } catch(e){console.log("quoted-err",e.message)}; try { console.log("bare-bang:", JSON.stringify(parse("a:\n  - !claude-x").a)) } catch(e){console.log("bare-bang-err", e.message)}; try { console.log("bare-star:", JSON.stringify(parse("a:\n  - *claude").a)) } catch(e){console.log("bare-star-err", e.message)}'`
+
+依观测结果写一条**独立** test（放进该 it 文件的 "Special semantics" 块或新 describe，勿混入 glob 功能 test）：quoted `"!claude-*"` / `"*claude"` 解析为原字符串保留；bare `- *claude` 抛解析错误（alias），bare `- !claude-x` 产生 tag 错误/非字符串值。断言严格匹配探针观测到的行为（若 bare 情形是 warning+空值而非 throw，则断言其得到的实际值形态）。此测试锁定 spec §5 文档规则与 parser 行为一致，防后续文档漂移。
+
+- [ ] **Step 4: 跑测试确认失败→通过**
 
 Run: `bun test tests/config/config-hot-reload.it.test.ts`
 Expected: 若 Task 3/4 已落地则 PASS；否则先 FAIL 后随实现 PASS。若 helper 名不符，按 Step 1 读到的真实 helper 修正。
 
-- [ ] **Step 4: 提交**
+- [ ] **Step 5: 提交**
 
 ```bash
 git add -- tests/config/config-hot-reload.it.test.ts
@@ -658,8 +730,10 @@ git commit -F /tmp/t6-msg.txt -- src/lib/config/schema.ts config.schema.json con
 - [ ] **归档本 plan**：头部加实施状态注解（landed / 分支）。
 - [ ] **维护记忆库**：若有新教训（如 specificity 定序坑）落 stub 进 MEMORY.md。
 
-## Self-Review（作者自查）
+## Self-Review（作者自查，已折入 GPT plan-review 的 2 majors + minors）
 
-- **Spec 覆盖**：§2.1 剔除语义→Task 1/3；§2.2 family vs glob 分派→Task 1；§2.3 id/family 双候选→Task 1（含反向组合）；§3.1 blast radius→Task 4 接线测试；§3.2 键匹配→Task 4；§3.3 specificity 定序→Task 4；§4.1 primitive 抽取+纯 globToRegExp→Task 1/2；§4.2 改动表→Task 2-6；§5 YAML→Task 5/6；§6 测试→Task 1/3/4/5；§7 非目标（`system_reject_models` 不动）→无任务（正确，不碰）；§8 兼容→Task 1 等价 oracle。全覆盖。
-- **Placeholder 扫描**：Task 5 使用该文件真实 helper `writeConfig` + `applyConfigToState`（Step 1 命令核实签名）。无隐藏 TODO；所有步骤均含真实代码/命令。
-- **类型一致性**：`hasGlobMeta`/`globToRegExp`/`matchesModelPattern`/`modelMatchesPatternList`/`matchesModelKey` 在 Task 1 定义、Task 2/3/4 消费，签名一致。
+- **Spec 覆盖**：§2.1 剔除语义→Task 1/3；§2.2 family vs glob 分派→Task 1；§2.3 id/family 双候选→Task 1（含反向组合）；§3.1 blast radius→Task 4 **真实消费者**接线测试（`stripToolFields` + `resolveStreamIdleTimeoutSec`，非手工套 Set）；§3.2 键匹配→Task 4；§3.3 specificity 定序→Task 4；§4.1 primitive 抽取+纯 globToRegExp→Task 1/2；§4.2 改动表→Task 2-6；§5 YAML（含 bare `!`/`*` 解析行为）→Task 5 Step 3 + Task 6；§6 测试→Task 1/3/4/5；§7 非目标（`system_reject_models` 不动）→无任务（正确，不碰）；§8 兼容→Task 1 等价 oracle。**5 个能力全覆盖**：context_editing/interleaved/memory/extended_cache_ttl 走 `modelSupports*`，**adaptive_thinking 走 `modelHasAdaptiveThinking`**（Task 3 已补，含 metadata-first 正例）。
+- **Placeholder 扫描**：Task 5 使用该文件真实 helper `writeConfig` + `applyConfigToState`（Step 1 命令核实签名）；Task 5 Step 3 YAML 行为先探针后断言（非占位）。无隐藏 TODO；所有步骤均含真实代码/命令。
+- **类型一致性**：`hasGlobMeta`/`globToRegExp`/`matchesModelPattern`/`modelMatchesPatternList`/`matchesModelKey` 在 Task 1 定义、Task 2/3/4 消费，签名一致。Task 4 替换（非追加）`per-model-config.ts` 的 import 以避 `noUnusedLocals` 失败。
+- **无效断言已清除**：Task 4 toolSearchOverrides 用例改用 Claude 正样本 + mutation 反转（去掉 `gpt-4` 恒 false 的无效断言）。
+- **red 预测精确化**：Task 3 Step 2 只声称「glob positive 未实现致失败」；negative 腿的 red/green 归 Task 1 单测承担。
