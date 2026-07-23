@@ -30,6 +30,10 @@ import path from "node:path"
 import {
   //
   applyConfigToState,
+  clampCommitWindowSec,
+  clampKeepaliveCadence,
+  COMMIT_WINDOW_MAX_SEC,
+  KEEPALIVE_CADENCE_MAX,
   resetApplyState,
   resetConfigCache,
   setBundledConfigForTests,
@@ -87,6 +91,19 @@ afterEach(async () => {
   resetConfigCache()
   resetApplyState()
   setBundledConfigForTests(null)
+})
+
+// ============================================================================
+// Delayed-commit and keepalive cadence clamps
+// ============================================================================
+
+describe("stream commit and keepalive clamps", () => {
+  test("commit-window clamp and keepalive-cadence clamp are independently addressable with the same ceiling today", () => {
+    expect(COMMIT_WINDOW_MAX_SEC).toBe(40)
+    expect(KEEPALIVE_CADENCE_MAX).toBe(40)
+    expect(clampCommitWindowSec(50)).toBe(COMMIT_WINDOW_MAX_SEC)
+    expect(clampKeepaliveCadence(50)).toBe(KEEPALIVE_CADENCE_MAX)
+  })
 })
 
 // ============================================================================

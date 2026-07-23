@@ -217,20 +217,18 @@ let configLastMtimeMs: number = 0
 let lastStatTimeMs: number = 0
 const STAT_DEBOUNCE_MS = 2000
 
-/**
- * Claude Code's request timeout is a body-idle watchdog at ~60s (Q2 oracle, exp/q2-oracle). Any
- * client-proxy keepalive interval (the ping cadence AND the delayed-commit window) MUST stay WELL
- * below this — clamped to a large margin, not one tick — so even a jittery interval never approaches
- * the deadline. Single authority for the deadline.
- */
+/** Claude Code's client-facing stream body-idle watchdog, used only to bound post-commit keepalive cadence. */
 const CLIENT_IDLE_DEADLINE_SEC = 60
 // Cap leaves a LARGE margin (≥20s) under the deadline — not just 1 tick. Even a jittery interval must
 // never approach 60s; the empirical safe ceiling is ~45s (ping@45s kept CC alive), so 40 sits inside it.
-const KEEPALIVE_CADENCE_MAX = CLIENT_IDLE_DEADLINE_SEC - 20
+export const KEEPALIVE_CADENCE_MAX = CLIENT_IDLE_DEADLINE_SEC - 20
+// This starts equal to KEEPALIVE_CADENCE_MAX for behavior neutrality. Its physical safety boundary is
+// the pre-header client tolerance, not the post-commit body-idle deadline; Task 1.2 raises it from Q1.
+export const COMMIT_WINDOW_MAX_SEC = KEEPALIVE_CADENCE_MAX
 let warnedKeepaliveClamp = false
 
-/** Clamp a keepalive interval/window (0 = disabled) to stay WELL below the client idle deadline; warn once. */
-function clampKeepaliveCadence(sec: number): number {
+/** Clamp a post-commit keepalive interval (0 = disabled) to stay WELL below the client idle deadline; warn once. */
+export function clampKeepaliveCadence(sec: number): number {
   if (sec <= 0 || sec <= KEEPALIVE_CADENCE_MAX) return sec
   if (!warnedKeepaliveClamp) {
     warnedKeepaliveClamp = true
@@ -239,6 +237,18 @@ function clampKeepaliveCadence(sec: number): number {
     )
   }
   return KEEPALIVE_CADENCE_MAX
+}
+
+/** Clamp a pre-commit window (0 = immediate commit); its ceiling intentionally does not share keepalive-cadence semantics. */
+export function clampCommitWindowSec(sec: number): number {
+  if (sec <= 0 || sec <= COMMIT_WINDOW_MAX_SEC) return sec
+  if (!warnedKeepaliveClamp) {
+    warnedKeepaliveClamp = true
+    consola.warn(
+      `keepalive interval ${sec}s leaves too little margin under the ~${CLIENT_IDLE_DEADLINE_SEC}s client idle deadline — clamped to ${COMMIT_WINDOW_MAX_SEC}s`,
+    )
+  }
+  return COMMIT_WINDOW_MAX_SEC
 }
 
 /**
@@ -680,7 +690,7 @@ export async function applyConfigToState(): Promise<Config> {
     if (a.stream_keepalive_ping_sec !== undefined) setAnthropicBehavior({ streamKeepalivePingSec: clampKeepaliveCadence(a.stream_keepalive_ping_sec) })
     if (a.stream_keepalive_escalate_sec !== undefined) setAnthropicBehavior({ streamKeepaliveEscalateSec: a.stream_keepalive_escalate_sec })
     if (a.stream_keepalive_mode !== undefined) setAnthropicBehavior({ streamKeepaliveMode: a.stream_keepalive_mode })
-    if (a.stream_commit_after_sec !== undefined) setAnthropicBehavior({ streamCommitAfterSec: clampKeepaliveCadence(a.stream_commit_after_sec) })
+    if (a.stream_commit_after_sec !== undefined) setAnthropicBehavior({ streamCommitAfterSec: clampCommitWindowSec(a.stream_commit_after_sec) })
     if (a.protect_streaming_generation !== undefined) setAnthropicBehavior({ protectStreamingGeneration: a.protect_streaming_generation })
     // Per-vendor buffered-retry cap override for Anthropic (legacy
     // protect_streaming_{max_retries,heartbeat,buffer_cap_bytes} migrate here via

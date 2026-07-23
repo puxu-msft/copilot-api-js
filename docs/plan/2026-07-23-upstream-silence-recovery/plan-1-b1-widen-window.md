@@ -33,7 +33,7 @@
 
 ### Task 1.1：拆分 commit 窗口的 clamp（现在，不改行为）
 
-- [ ] **Step 1: 写失败测试** —— 断言 `stream_commit_after_sec` 和 `stream_keepalive_ping_sec` 现在各自有独立可寻址的 clamp 逻辑（哪怕数值当前相同）
+- [x] **Step 1: 写失败测试** —— 断言 `stream_commit_after_sec` 和 `stream_keepalive_ping_sec` 现在各自有独立可寻址的 clamp 逻辑（哪怕数值当前相同）
 
 ```ts
 // tests/config/buffered-retry-keys.unit.test.ts（追加）
@@ -43,10 +43,10 @@ test("commit-window clamp and keepalive-cadence clamp are independently addressa
 })
 ```
 
-- [ ] **Step 2: 跑，失败**（因为目前只有一个共用函数，没有两个可分别断言来源的入口——如果测试写法上无法区分，改为白盒测试直接 import 两个新导出的常量/函数进行断言）。
-- [ ] **Step 3: 接线** —— 在 `src/lib/config/config.ts` 拆出 `clampCommitWindowSec`（新函数，上限常量 `COMMIT_WINDOW_MAX_SEC`，初值等于现有 `KEEPALIVE_CADENCE_MAX` 以保持逐字节等价）与保留原 `clampKeepaliveCadence`（服务 `stream_keepalive_ping_sec`）；`stream_commit_after_sec` 的赋值点（`config.ts:660` 附近）改调 `clampCommitWindowSec`。
-- [ ] **Step 4: 跑，通过。** 确认 `bun run test:fast` 全绿（这是纯重命名+拆分，不应有任何行为变化）。
-- [ ] **Step 5: 提交** → `refactor(config): split commit-window clamp from keepalive-cadence clamp (same value, independent constants pending Q1)`。
+- [x] **Step 2: 跑，失败**（因为目前只有一个共用函数，没有两个可分别断言来源的入口——如果测试写法上无法区分，改为白盒测试直接 import 两个新导出的常量/函数进行断言）。
+- [x] **Step 3: 接线** —— 在 `src/lib/config/config.ts` 拆出 `clampCommitWindowSec`（新函数，上限常量 `COMMIT_WINDOW_MAX_SEC`，初值等于现有 `KEEPALIVE_CADENCE_MAX` 以保持逐字节等价）与保留原 `clampKeepaliveCadence`（服务 `stream_keepalive_ping_sec`）；`stream_commit_after_sec` 的赋值点（`config.ts:660` 附近）改调 `clampCommitWindowSec`。
+- [x] **Step 4: 跑，通过。** 确认 `bun run test:fast` 全绿（这是纯重命名+拆分，不应有任何行为变化）。
+- [x] **Step 5: 提交** → `refactor(config): split commit-window clamp from keepalive-cadence clamp (same value, independent constants pending Q1)`。
 
 ### Task 1.2（ceiling 可定为 300s 减余量；默认值仍是取舍，需用户拍板）：回填 Q1 实测
 
