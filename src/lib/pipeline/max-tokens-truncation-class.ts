@@ -20,3 +20,15 @@ export function classifyMaxTokensTruncation(observer: TerminalObserverState): Tr
       return undefined
   }
 }
+
+export function isAnthropicMaxTokensTerminal(stopReason: string): boolean {
+  return stopReason === "max_tokens"
+}
+
+export function isCcMaxTokensTerminal(finishReason: string): boolean {
+  return finishReason === "length"
+}
+
+export function isResponsesMaxTokensTerminal(status: string, incompleteReason: string | undefined): boolean {
+  return status === "incomplete" && incompleteReason === "max_output_tokens"
+}

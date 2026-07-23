@@ -172,7 +172,7 @@ test("responses accumulator captures incomplete_details.reason on response.incom
 
 ### Task 0.3: per-format terminal 检测
 
-- [ ] **Step 1: 写失败测试** —— 三格式检测器，读已有 accumulator 字段（含 Task 0.2b 新增的 `incompleteReason`）。
+- [x] **Step 1: 写失败测试** —— 三格式检测器，读已有 accumulator 字段（含 Task 0.2b 新增的 `incompleteReason`）。
 
 ```ts
 test("anthropic: stop_reason max_tokens is terminal", () => {
@@ -189,7 +189,7 @@ test("responses: status incomplete + reason max_output_tokens is terminal", () =
 })
 ```
 
-- [ ] **Step 2-4:** 跑失败 → 实现（纯字符串比较，读调用方传入值，本函数不导入 accumulator 类型，保持 type-light）→ 跑通过。
+- [x] **Step 2-4:** 跑失败 → 实现（纯字符串比较，读调用方传入值，本函数不导入 accumulator 类型，保持 type-light）→ 跑通过。
 - [ ] **Step 5: 提交** → `feat(pipeline): per-format max_tokens terminal detection`。
 
 ### Task 0.4: config schema 骨架（仅 schema + state 解析，不接线续写触发；但**含 P1 前移的组合校验**）

@@ -1,6 +1,11 @@
 import { expect, test } from "bun:test"
 
-import { classifyMaxTokensTruncation } from "~/lib/pipeline/max-tokens-truncation-class"
+import {
+  classifyMaxTokensTruncation,
+  isAnthropicMaxTokensTerminal,
+  isCcMaxTokensTerminal,
+  isResponsesMaxTokensTerminal,
+} from "~/lib/pipeline/max-tokens-truncation-class"
 import { createTerminalObserver } from "~/lib/pipeline/max-tokens-terminal-observer"
 
 test("A: a closed text block is classified as text", () => {
@@ -34,4 +39,20 @@ test("thinking observed after text stays thinking rather than falling back to th
   observer.lastBlockClosed = false
 
   expect(classifyMaxTokensTruncation(observer)).toBe("thinking")
+})
+
+test("Anthropic max_tokens is terminal while end_turn is not", () => {
+  expect(isAnthropicMaxTokensTerminal("max_tokens")).toBe(true)
+  expect(isAnthropicMaxTokensTerminal("end_turn")).toBe(false)
+})
+
+test("Chat Completions length is a max_tokens terminal", () => {
+  expect(isCcMaxTokensTerminal("length")).toBe(true)
+  expect(isCcMaxTokensTerminal("stop")).toBe(false)
+})
+
+test("Responses incomplete plus max_output_tokens is a max_tokens terminal", () => {
+  expect(isResponsesMaxTokensTerminal("incomplete", "max_output_tokens")).toBe(true)
+  expect(isResponsesMaxTokensTerminal("incomplete", "content_filter")).toBe(false)
+  expect(isResponsesMaxTokensTerminal("completed", undefined)).toBe(false)
 })
