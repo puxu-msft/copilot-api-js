@@ -16,7 +16,7 @@
 
 - **无向后兼容负担**：§9a leaf 契约破坏性升级，用户 hook 统一迁到有状态契约（不留单帧/有状态双档）；允许短期报错，不留双轨。
 - **默认 opt-in**：`repetition_truncation.enabled` 默认 `false`；关闭时全端点**逐字节等价**（golden 锁）。
-- **richest-data-flow（ADR）**：截断只作用 **forwarded 轨**；upstream-original 轨（`response-processor.ts:149-155` pre-render 采样）**永远保全部 204 份**。被 drop 的份**不进** forwarded 轨；仅 marker 帧是合成帧、**必打可辨识标记**（`DeliverySyntheticKind` 新值 `"repetition-truncated"`，走 delivery `writeToSink` dedicated 通道，非 frame-tag）。
+- **richest-data-flow（ADR）**：截断只作用 **forwarded 轨**；upstream-original 轨（`response-processor.ts:149-155` pre-render 采样）**永远保全部 204 份**。被 drop 的份**不进** forwarded 轨；仅 marker 帧是合成帧、**必打可辨识标记**。**两套 provenance 通道都要覆盖**（合并态审查 R4 补正）：(a) 真正驱动 `SseEventRecord.synthetic` 持久化落盘的是 `frame-origin.ts` 的 `SyntheticOriginKind`（Symbol tag，`readSyntheticKind`/`tagFrameSynthetic`，`client-sink.ts:198/295/307/592/632` 读它）——**这是 P0/spec §5.5 站点清单最初漏掉的真正落盘通道**；(b) delivery 路由用 `DeliverySyntheticKind`（`writeToSink`）。marker 帧走 delivery `writeToSink` dedicated 通道 + 同时打 `SyntheticOriginKind` tag，二者全站点同一 commit（R4）。
 - **截断阈值与告警阈值解耦**：新建 `text-repetition/` 纯核（**非**复用 `repetition-detector.ts` 的有损滑窗）；触发用独立 `truncation_min_repetitions`（默认 8、远高于告警 3），保留观察-only detector 的 warn 不动。
 - **命名**：顶层 vendor 中立 `repetition_truncation.{enabled,min_pattern_length,truncation_min_repetitions,keep_copies,marker_template}`；经 `applyConfigToState` 传播、热重载、配置不因重命名杀进程。
 - **no-auto-server**：不跑 `bun run dev`/`start`（4141 主服务器绝不碰）；服务器行为由用户或**非 4141 端口**测试实例验证。可跑 `bun run typecheck`/`lint:all`/`bun test`。

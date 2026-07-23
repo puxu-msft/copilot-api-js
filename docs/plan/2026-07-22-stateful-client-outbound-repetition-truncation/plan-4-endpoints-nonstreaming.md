@@ -274,7 +274,7 @@ interface CcApproximateState {
 function ccApproximateTransform(frame: ClientFrame, s: CcApproximateState): FrameAction {
   const parsed = parseCcChunk(frame.data) // helper: JSON.parse + read choices[0].delta.content, tolerate parse failure → passthrough
   if (!parsed || typeof parsed.content !== "string" || parsed.content === "") return { kind: "emit", frames: [frame] }
-  if (s.suppressing) return { kind: "drop" } // already truncated this run — swallow further deltas
+  if (s.suppressing) return { kind: "suppress" } // already truncated this run — swallow further deltas
   const cfg = { minPatternLength: state.repetitionTruncation.minPatternLength, minRepetitions: state.repetitionTruncation.truncationMinRepetitions, keepCopies: state.repetitionTruncation.keepCopies }
   const result = feedApproximateCollapse(s.collapse, parsed.content, cfg)
   if (result.action === "forward") return { kind: "emit", frames: [frame] }
@@ -360,7 +360,7 @@ function responsesApproximateTransform(frame: ClientFrame, s: ResponsesApproxima
   }
   if (parsed.type !== "response.output_text.delta") return { kind: "emit", frames: [frame] }
   const idx = parsed.data.output_index as number
-  if (s.suppressingItems.has(idx)) return { kind: "drop" }
+  if (s.suppressingItems.has(idx)) return { kind: "suppress" }
   const itemState = s.perItem.get(idx) ?? createApproximateCollapseState()
   s.perItem.set(idx, itemState)
   const cfg = { minPatternLength: state.repetitionTruncation.minPatternLength, minRepetitions: state.repetitionTruncation.truncationMinRepetitions, keepCopies: state.repetitionTruncation.keepCopies }

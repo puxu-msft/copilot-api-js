@@ -63,22 +63,23 @@ type FlushReason = "commit-boundary" | "natural-drain" | "client-aborted" | "ups
 ### Task 1: `hooks/types.ts` 契约类型升级
 
 **Files:**
-- Modify: `src/lib/pipeline/hooks/types.ts`（`UpstreamHook.client.outbound` 字段类型 + 新增 `StatefulClientOutbound`/`ClientFrameAction`/`FlushReason` 类型定义）
+- Modify: `src/lib/pipeline/hooks/types.ts`（`UpstreamHook.client.outbound` 字段类型 + 新增 `StatefulClientOutbound`/`FlushReason` 类型定义；`FrameAction` **复用** `~/lib/pipeline/rewrite-registry` 既有导出、不新造）
 - Test: `tests/pipeline/hooks/stateful-client-outbound-types.unit.test.ts`（新建——纯类型层验证，无运行时行为，断言接口形状可被正确构造/赋值）
 
 **Interfaces:**
-- Produces（本相位裁决后的最终形状，逐字对齐 README + 门控问题 Q1 裁决）：
+- Produces（本相位裁决后的最终形状，逐字对齐 README 冻结契约）：
   ```ts
   export type FlushReason = "commit-boundary" | "natural-drain" | "client-aborted" | "upstream-truncated"
-  export type ClientFrameAction = { kind: "buffer" } | { kind: "emit"; frames: Array<ClientFrame> } | { kind: "drop" }
+  // FrameAction 直接复用 rewrite-registry.ts:76 的既有 union：{ kind:"emit"; frames } | { kind:"suppress" } | { kind:"buffer" }
+  import type { FrameAction } from "~/lib/pipeline/rewrite-registry"
   export interface StatefulClientOutbound<S = unknown> {
     createState(env: RequestEnvelope): S
-    transform(frame: ClientFrame, state: S): ClientFrameAction
+    transform(frame: ClientFrame, state: S): FrameAction
     flush(state: S, reason: FlushReason): Array<ClientFrame>
   }
   ```
   `UpstreamHook.client.outbound` 字段类型从 `(frame: ClientFrame, env: RequestEnvelope) => ClientFrame | undefined` 换成 `StatefulClientOutbound`（**破坏性**——不是新增可选字段，是替换现有字段的类型，spec §3.1 显式承认）。
-- 与 `ResponseRewrite`（`rewrite-registry.ts:101`）同构但不复用其类型别名——见本文件顶部「关键设计澄清」+「门控问题 Q1」，`ClientFrameAction` 是独立类型（帧类型 `ClientFrame` 而非 `UpstreamFrame`，字面量 `"drop"` 而非 `"suppress"`）。
+- 与 `ResponseRewrite`（`rewrite-registry.ts:101`）同构且**直接复用**其 `FrameAction` 类型（`rewrite-registry.ts:76`，值 `"emit"|"suppress"|"buffer"`）——实测确认 `ClientFrame`/`UpstreamFrame` 是同一 `SseFrame` 别名（`types.ts:51/54`），故 `FrameAction.emit.frames`（`Array<UpstreamFrame>`）对 client 帧直接可用，无需新造 `ClientFrameAction`（README 早期草稿的 `"drop"` 是笔误，权威是 `"suppress"`）。
 
 - [ ] **Step 1: 写失败测试 — 新契约类型可构造性 + 旧契约类型不再兼容（红测证明当前类型仍是旧签名）**
 
@@ -94,7 +95,8 @@ import { describe, expect, test } from "bun:test"
 
 import type { ClientFrame } from "~/lib/pipeline/types"
 import type { RequestEnvelope } from "~/lib/pipeline/envelope"
-import type { ClientFrameAction, FlushReason, StatefulClientOutbound, UpstreamHook } from "~/lib/pipeline/hooks/types"
+import type { FrameAction } from "~/lib/pipeline/rewrite-registry"
+import type { FlushReason, StatefulClientOutbound, UpstreamHook } from "~/lib/pipeline/hooks/types"
 
 describe("StatefulClientOutbound contract (spec §3.1)", () => {
   test("a conforming implementation satisfies UpstreamHook.client.outbound's type", () => {
@@ -103,7 +105,7 @@ describe("StatefulClientOutbound contract (spec §3.1)", () => {
     }
     const impl: StatefulClientOutbound<CounterState> = {
       createState: (_env: RequestEnvelope): CounterState => ({ count: 0 }),
-      transform: (frame: ClientFrame, state: CounterState): ClientFrameAction => {
+      transform: (frame: ClientFrame, state: CounterState): FrameAction => {
         state.count++
         return { kind: "emit", frames: [frame] }
       },
@@ -120,11 +122,11 @@ describe("StatefulClientOutbound contract (spec §3.1)", () => {
     expect(reasons.length).toBe(4)
   })
 
-  test("all three ClientFrameAction kinds are assignable", () => {
-    const buffer: ClientFrameAction = { kind: "buffer" }
-    const drop: ClientFrameAction = { kind: "drop" }
-    const emit: ClientFrameAction = { kind: "emit", frames: [{ data: "x" }] }
-    expect([buffer.kind, drop.kind, emit.kind]).toEqual(["buffer", "drop", "emit"])
+  test("all three reused FrameAction kinds are assignable", () => {
+    const buffer: FrameAction = { kind: "buffer" }
+    const suppress: FrameAction = { kind: "suppress" }
+    const emit: FrameAction = { kind: "emit", frames: [{ data: "x" }] }
+    expect([buffer.kind, suppress.kind, emit.kind]).toEqual(["buffer", "suppress", "emit"])
   })
 })
 ```
@@ -132,7 +134,7 @@ describe("StatefulClientOutbound contract (spec §3.1)", () => {
 - [ ] **Step 2: 跑测试证失败**
 
 Run: `bun test tests/pipeline/hooks/stateful-client-outbound-types.unit.test.ts`
-Expected: FAIL —— TypeScript 编译错误：`Module '"~/lib/pipeline/hooks/types"' has no exported member 'ClientFrameAction'`（`StatefulClientOutbound`/`FlushReason` 同理未导出）。这是本 Task 唯一一处**类型级**红测（区别于 P0 Task 3 的经验教训——那里 `syntheticKind` 字段是裸 `string`，本 Task 的 `UpstreamHook.client.outbound` 字段类型是精确接口类型，赋值不兼容确实会被 tsc 拒绝，此处类型级红测的假设是站得住的）。
+Expected: FAIL —— TypeScript 编译错误：`Module '"~/lib/pipeline/hooks/types"' has no exported member 'StatefulClientOutbound'`（`FlushReason` 同理未导出；`FrameAction` 从 `rewrite-registry` 导入、**已存在**故不报错）。这是本 Task 唯一一处**类型级**红测（区别于 P0 Task 3 的经验教训——那里 `syntheticKind` 字段是裸 `string`，本 Task 的 `UpstreamHook.client.outbound` 字段类型是精确接口类型，赋值不兼容确实会被 tsc 拒绝，此处类型级红测的假设是站得住的）。
 
 - [ ] **Step 3: 实现契约类型**
 
@@ -145,11 +147,10 @@ Expected: FAIL —— TypeScript 编译错误：`Module '"~/lib/pipeline/hooks/t
 ```typescript
 /**
  * §9a stateful client.outbound contract (spec 2026-07-22-stateful-client-outbound-repetition-
- * truncation §3.1) — same-shape as `ResponseRewrite` (rewrite-registry.ts) but over CLIENT-shaped
- * frames, not upstream frames, and with its own action union (`ClientFrameAction`, NOT
- * rewrite-registry.ts's `FrameAction` — different frame type, different literal for "drop this
- * frame" (`"drop"` here vs `"suppress"` there); deliberately independent types, see this plan's
- * "门控问题 Q1" for why they are not unified).
+ * truncation §3.1) — same-shape as `ResponseRewrite` (rewrite-registry.ts) and REUSES its
+ * `FrameAction` union directly (`{kind:"emit"|"suppress"|"buffer"}`, rewrite-registry.ts:76).
+ * `ClientFrame`/`UpstreamFrame` are the same `SseFrame` alias (types.ts:51/54), so the reuse is
+ * type-safe — no separate client-frame action type is needed.
  *
  * `createState` runs once per client request (S6 render→yield mount point, `candidate-response-
  * session.ts`'s `postRender` — P3 will move the MOUNT POINT to `delivery/session.ts`'s sink-egress
@@ -159,12 +160,14 @@ Expected: FAIL —— TypeScript 编译错误：`Module '"~/lib/pipeline/hooks/t
  * real signals a LATER phase (P2 eager-start / P3 sink-egress descent) wires up — P1 only
  * guarantees the flush() METHOD exists and natural-drain fires correctly.
  */
+import type { FrameAction } from "~/lib/pipeline/rewrite-registry"
+
 export interface StatefulClientOutbound<S = unknown> {
   /** Create this hook's private per-request state. Receives the parsed `env` (mirrors
    *  ResponseRewrite.createState's "seed state from request data" convention). */
   createState(env: RequestEnvelope): S
-  /** Per-frame transform: buffer it (accumulate internally), emit 0+ replacement frames, or drop it. */
-  transform(frame: ClientFrame, state: S): ClientFrameAction
+  /** Per-frame transform: buffer it (accumulate internally), emit 0+ replacement frames, or suppress it. */
+  transform(frame: ClientFrame, state: S): FrameAction
   /** Flush any buffered frames. `reason` distinguishes WHY the flush is happening (a commit
    *  boundary mid-stream vs the stream's natural end vs an abort/truncation) — a hook that only
    *  cares about "give me everything at the end" can ignore `reason` and always drain fully; a
@@ -176,10 +179,10 @@ export interface StatefulClientOutbound<S = unknown> {
 /** Why a {@link StatefulClientOutbound.flush} call is happening (spec §3.3). */
 export type FlushReason = "commit-boundary" | "natural-drain" | "client-aborted" | "upstream-truncated"
 
-/** The action a {@link StatefulClientOutbound.transform} returns for one client frame — independent
- *  of rewrite-registry.ts's `FrameAction` (different frame type, `"drop"` not `"suppress"`; see this
- *  plan's module doc "关键设计澄清" for why these are NOT unified into one type). */
-export type ClientFrameAction = { kind: "buffer" } | { kind: "emit"; frames: Array<ClientFrame> } | { kind: "drop" }
+// NOTE: transform returns the reused `FrameAction` from rewrite-registry.ts (values
+// "emit"|"suppress"|"buffer") — NOT a bespoke client-frame action type. Earlier drafts of this
+// plan proposed a separate `ClientFrameAction`/"drop"; that was overturned (README "drop" was a
+// typo, authority is "suppress", and ClientFrame===UpstreamFrame===SseFrame makes reuse safe).
 ```
 
 替换 `UpstreamHook.client.outbound` 字段（`:46`）：
@@ -196,7 +199,7 @@ export type ClientFrameAction = { kind: "buffer" } | { kind: "emit"; frames: Arr
     outbound?: StatefulClientOutbound
 ```
 
-（`ClientFrame`/`RequestEnvelope` 已在文件顶部 import，无需新增导入；`StatefulClientOutbound`/`FlushReason`/`ClientFrameAction` 是本文件内新增的本地类型，`outbound?: StatefulClientOutbound` 使用默认泛型参数 `S = unknown`。）
+（`ClientFrame`/`RequestEnvelope` 已在文件顶部 import；`FrameAction` 从 `~/lib/pipeline/rewrite-registry` import（既有导出、复用）；`StatefulClientOutbound`/`FlushReason` 是本文件内新增的本地类型，`outbound?: StatefulClientOutbound` 使用默认泛型参数 `S = unknown`。）
 
 - [ ] **Step 4: 跑测试证通过**
 
@@ -223,12 +226,12 @@ feat(hooks)!: upgrade client.outbound to a stateful contract (spec §3.1, §9a)
 
 BREAKING CHANGE: UpstreamHook.client.outbound is now StatefulClientOutbound<S> (createState/
 transform/flush) instead of a single-frame (frame, env) => ClientFrame | undefined function.
-New ClientFrameAction ({kind:"buffer"|"emit"|"drop"}) and FlushReason ({"commit-boundary"|
-"natural-drain"|"client-aborted"|"upstream-truncated"}) types — deliberately independent from
-rewrite-registry.ts's FrameAction (different frame type, different "drop" literal; see plan-1's
-门控问题 Q1 for why these are not unified). This commit intentionally leaves ONE known compile
-error at candidate-response-session.ts's sole client.outbound call site — Task 2 (next commit)
-migrates it to the new contract; the two are one semantic unit split for reviewability.
+transform returns the REUSED FrameAction from rewrite-registry.ts ({kind:"emit"|"suppress"|
+"buffer"}) — ClientFrame===UpstreamFrame===SseFrame makes the reuse type-safe, no bespoke type.
+New FlushReason ({"commit-boundary"|"natural-drain"|"client-aborted"|"upstream-truncated"}) type.
+This commit intentionally leaves ONE known compile error at candidate-response-session.ts's sole
+client.outbound call site — Task 2 (next commit) migrates it to the new contract; the two are one
+semantic unit split for reviewability.
 EOF
 ```
 
