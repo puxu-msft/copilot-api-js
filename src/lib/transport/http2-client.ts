@@ -364,8 +364,10 @@ function addSessionEntry(entry: H2SessionEntry): void {
  * `finally` releases ONLY its own token. A bare per-origin counter let a
  * pre-shutdown creation's `finally decCreating` wrongly delete a POST-shutdown
  * creation's slot (the counter can't tell whose count it is), re-breaching the
- * cap. `closeHttp2Sessions` drops the leases it can see, but a straggler's own
- * lease-scoped release stays correct because it only touches its own token.
+ * cap. `closeHttp2Sessions` deliberately RETAINS leases (never clears this map):
+ * each straggler self-releases its own token when its acquire frame settles (the
+ * epoch bump makes createAndAdmitBornReserved throw), so a post-shutdown request's
+ * lease is never collaterally dropped.
  */
 const creating = new Map<string, Set<symbol>>()
 
