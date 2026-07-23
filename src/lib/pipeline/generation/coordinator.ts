@@ -53,6 +53,11 @@ export interface CreateGenerationCoordinatorInput<TProcessor> {
 export interface GenerationCoordinator<TProcessor> {
   readonly deliveryIdentity: symbol
   runPrimary(): Promise<CoordinatedCandidate<TProcessor>>
+  /**
+   * Starts the one parent-less recovery candidate after the primary failed before becoming ready.
+   * The failed primary settles itself, so this operation must never settle a parent; it is guarded
+   * at most once for the coordinator's shared generation budget.
+   */
   runRecoveryFromPreReadyFailure(reason: string, env: RequestEnvelope): Promise<CoordinatedCandidate<TProcessor>>
   runRecovery(parent: CoordinatedCandidate<TProcessor>, reason: string, env?: RequestEnvelope): Promise<CoordinatedCandidate<TProcessor>>
   /**

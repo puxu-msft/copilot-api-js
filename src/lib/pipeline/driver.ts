@@ -20,13 +20,18 @@ import type {
   DispatchHandle,
 } from "~/lib/context/model-operation-record"
 import type { RequestContext } from "~/lib/context/request"
-import type { FrozenHedgePolicy } from "~/lib/pipeline/generation/hedge-policy"
+import type {
+  //
+  FrozenHedgePolicy,
+  ServerExecutionRisk,
+} from "~/lib/pipeline/generation/hedge-policy"
 
 import { classifyError } from "~/lib/error"
 import { recordRetryStrategyFire } from "~/lib/observability/retry-strategy-fires"
 import { getDownstreamDeliverySession } from "~/lib/pipeline/delivery/session"
 import { readSyntheticKind } from "~/lib/pipeline/frame-origin"
 import { createGenerationBudget } from "~/lib/pipeline/generation/generation-budget"
+import { classifyServerExecutionRisk } from "~/lib/pipeline/generation/hedge-policy"
 import { getUpstreamHook } from "~/lib/pipeline/hooks/loader"
 import { classifyStreamError } from "~/lib/stream"
 import {
@@ -188,11 +193,31 @@ export interface PipelineDriverWithNonStreaming extends PipelineDriver {
   runResponseBufferedSink(upstream: UpstreamStream, env: RequestEnvelope, sink: ClientSink, opts: RunBufferedOpts): Promise<ResponseOutcome>
   /** Current candidate response session; follows buffered recovery to its fresh child candidate. */
   getCandidateResponseSession(upstream: UpstreamStream): CandidateResponseSession | undefined
+  /**
+   * Starts the one parent-less recovery candidate saved by a failed pre-ready primary dispatch.
+   * Throws when no such failure is available or the final prepared wire could double-execute a server tool.
+   */
+  runPreContentRecovery(reason: string): Promise<DriverRequestResult>
 }
 
 interface GenerationBinding {
   readonly coordinator: GenerationCoordinator<CandidateResponseSession>
   readonly candidate: CoordinatedCandidate<CandidateResponseSession>
+}
+
+interface PreReadyFailure {
+  readonly coordinator: GenerationCoordinator<CandidateResponseSession>
+  readonly env: RequestEnvelope
+}
+
+export class ServerExecutionRiskBlocksPreContentRecoveryError extends Error {
+  readonly risk: Exclude<ServerExecutionRisk, { readonly kind: "none" }>
+
+  constructor(risk: Exclude<ServerExecutionRisk, { readonly kind: "none" }>) {
+    super(`[driver] pre-content recovery blocked by server execution risk: ${risk.kind} (${risk.toolType})`)
+    this.name = "ServerExecutionRiskBlocksPreContentRecoveryError"
+    this.risk = risk
+  }
 }
 
 interface DriverGenerationRuntime {
@@ -221,8 +246,12 @@ function createDriverGenerationRuntime(): DriverGenerationRuntime {
 
 export function createPipelineDriver(deps: DriverDeps): PipelineDriverWithNonStreaming {
   const generation = createDriverGenerationRuntime()
+  let lastPreReadyFailure: PreReadyFailure | undefined
   return {
-    runRequest: (raw) => runRequest(deps, raw, generation),
+    runRequest: (raw) =>
+      runRequest(deps, raw, generation, (failure) => {
+        lastPreReadyFailure = failure
+      }),
     runResponse: (upstream, env, opts) => runResponse(deps, upstream, env, opts, generation),
     inspectRequest: (raw, stopAfter) => inspectRequest(deps, raw, stopAfter),
     runResponseNonStreaming: (upstream, env) => deps.codec.renderResponseNonStreaming(upstream.nonStream, env),
@@ -230,6 +259,7 @@ export function createPipelineDriver(deps: DriverDeps): PipelineDriverWithNonStr
     runResponseSink: (upstream, env, sink, opts) => trackResponsePump(env, runResponseSink(deps, upstream, env, sink, opts, generation)),
     runResponseBufferedSink: (upstream, env, sink, opts) => trackResponsePump(env, runResponseBufferedSink(deps, upstream, env, sink, opts, generation)),
     getCandidateResponseSession: (upstream) => generation.currentSession(upstream),
+    runPreContentRecovery: (reason) => runPreContentRecovery(deps, generation, lastPreReadyFailure, reason),
   }
 }
 
@@ -309,7 +339,12 @@ function outboundPrepareWire(deps: DriverDeps, env: RequestEnvelope): PreparedRe
 }
 
 /** S1→S4: ingest → route/translate → rewrite-in → exchange (error-driven retry). */
-async function runRequest(deps: DriverDeps, raw: RawHttpRequest, generation: DriverGenerationRuntime): Promise<DriverRequestResult> {
+async function runRequest(
+  deps: DriverDeps,
+  raw: RawHttpRequest,
+  generation: DriverGenerationRuntime,
+  rememberPreReadyFailure: (failure: PreReadyFailure) => void,
+): Promise<DriverRequestResult> {
   // S1a — Ingest: parse inbound → envelope (codec builds ctx + extracts body/model). SYNC.
   const parsed = deps.codec.parse(raw)
 
@@ -368,8 +403,33 @@ async function runRequest(deps: DriverDeps, raw: RawHttpRequest, generation: Dri
   // Runtime-optional for structural mock contexts, preserving the existing operation-scope seam.
   // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
   parsed.ctx.trackOperationBody?.(exchangePromise)
-  const candidate = await exchangePromise
-  generation.bind(coordinator, candidate)
+  try {
+    const candidate = await exchangePromise
+    generation.bind(coordinator, candidate)
+    return { ok: true, upstream: candidate.upstream, env: candidate.env }
+  } catch (error) {
+    // Preserve runRequest's rejection exactly, while retaining the coordinator plus post-hook env for the
+    // caller's explicit B2 recovery decision. No recovery is dispatched from this error path.
+    rememberPreReadyFailure({ coordinator, env: afterHook })
+    throw error
+  }
+}
+
+async function runPreContentRecovery(
+  deps: DriverDeps,
+  generation: DriverGenerationRuntime,
+  failure: PreReadyFailure | undefined,
+  reason: string,
+): Promise<DriverRequestResult> {
+  if (!failure) throw new Error("[driver] runPreContentRecovery called without a preceding pre-ready failure")
+
+  // Prepare the actual recovery wire before deciding eligibility. Server-tool classification must inspect
+  // that final target wire and must reject rather than inherit the hedge policy's allowServerTools escape hatch.
+  const risk = classifyServerExecutionRisk(outboundPrepareWire(deps, failure.env))
+  if (risk.kind !== "none") throw new ServerExecutionRiskBlocksPreContentRecoveryError(risk)
+
+  const candidate = await failure.coordinator.runRecoveryFromPreReadyFailure(reason, failure.env)
+  generation.bind(failure.coordinator, candidate)
   return { ok: true, upstream: candidate.upstream, env: candidate.env }
 }
 

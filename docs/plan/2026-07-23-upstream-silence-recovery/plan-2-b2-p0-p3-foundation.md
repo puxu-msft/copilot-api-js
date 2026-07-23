@@ -177,7 +177,9 @@ test("budget/reservation accounting shares the SAME generation budget as the pri
 
 **关键设计要点（保证零回归）：** `runRequest` 对外的 Promise 语义完全不变——遇到 `coordinator.runPrimary()` reject 时，**先**把 `{coordinator, env: afterHook}` 存进 `lastPreReadyFailure`，**再** rethrow（与今天行为逐字节等价，除非调用方之后显式调用新方法）。
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试** —— `tests/pipeline/driver-precontent-recovery.it.test.ts` 覆盖既有 reject 身份、fresh recovery 成功、无前置失败 programmer error、server-tool gate 不二次 dispatch。
+
+- [x] **Step 2: 跑，失败。** —— 新 API 缺失时 3 个新增行为按预期以 `TypeError: driver.runPreContentRecovery is not a function` 失败；`runRequest` reject 回归锁在旧行为下已绿，作为 characterization lock。
 
 ```ts
 // tests/pipeline/driver-precontent-recovery.it.test.ts
@@ -196,8 +198,7 @@ test("runPreContentRecovery gates on classifyServerExecutionRisk BEFORE dispatch
 })
 ```
 
-- [ ] **Step 2: 跑，失败。**
-- [ ] **Step 3: 接线**：
+- [x] **Step 3: 接线**：
   - `runRequest` 内部把 `const candidate = await exchangePromise` 包一层 try/catch：catch 时 `lastPreReadyFailure = { coordinator, env: afterHook }`，然后 `throw error`（不吞异常）。
   - 新增：
 
@@ -219,10 +220,10 @@ async function runPreContentRecovery(deps: DriverDeps, generation: DriverGenerat
 ```
 
   - `PipelineDriverWithNonStreaming` 接口新增 `runPreContentRecovery(reason: string): Promise<DriverRequestResult>`。
-- [ ] **Step 4: 跑，通过 + 回归**（`bun run test:fast` 确认现有所有 `runRequest` 消费方零行为变化）。
-- [ ] **Step 5: 提交** → `feat(pipeline): driver.runPreContentRecovery — fresh dispatch after a pre-ready primary failure, gated by classifyServerExecutionRisk`。
+- [x] **Step 4: 跑，通过 + 回归** —— targeted 4 pass；`bun run typecheck` 通过；改动文件 eslint 0 error。全套 `test:fast` / `test:backend` 在提交前 gate 复跑。
+- [x] **Step 5: 提交** → `feat(pipeline): add pre-content driver recovery gate`（`7a9ae008`）。
 
-**门控问题（不自行拍板）：** server-tool-risk 命中时具体该"抛错"还是"返回一个专门的 result variant"，属于纯实现细节（不影响外部契约），但影响 P4/P5 的调用方写法是 try/catch 还是 if/else——建议实现者按 TDD 第一次跑到这里时观察调用方（handler-v4.ts）的实际控制流需求再定，别提前锁死。
+**门控决定（2026-07-23，TDD 后）：** risk 命中使用专门的 `ServerExecutionRiskBlocksPreContentRecoveryError` 抛错。该 API 尚无 P4/P5 调用方，因而没有既有 result union 或 if/else 消费契约；抛错与 `runRequest` 的既有失败流一致，保留 risk kind/toolType，明确要求调用方走既有 terminal-error 路径。无论如何，gate 在 `outboundPrepareWire` 后、`runRecoveryFromPreReadyFailure` 前运行，绝不使用 hedge 的 `allowServerTools` 逃生开关。
 
 ---
 
