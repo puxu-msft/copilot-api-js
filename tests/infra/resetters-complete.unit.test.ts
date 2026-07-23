@@ -54,6 +54,11 @@ const EXEMPT: Record<string, string> = {
   setStateForTests: "state mutator — covered by snapshot/restore",
   snapshotStateForTests: "state snapshot mechanism",
   restoreStateForTests: "state restore mechanism",
+  // Token store snapshot/restore — the credential store's snapshot mechanism,
+  // composed into snapshotStateForTests/restoreStateForTests (so the per-test
+  // state snapshot atomically covers credentials). No independent reset.
+  snapshotTokenStoreForTests: "token-store snapshot mechanism — composed into snapshotStateForTests",
+  restoreTokenStoreForTests: "token-store restore mechanism — composed into restoreStateForTests",
   // Handled inside resetTestRuntime (runtime trio), not the RESETTERS table.
   resetBusForTests: "handled by resetTestRuntime",
   resetRequestContextManagerForTests: "handled by resetTestRuntime",

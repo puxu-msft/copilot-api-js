@@ -34,5 +34,8 @@ export {
   type TokenRuntimeManagers,
 } from "./runtime"
 
+// Credential store (single source of truth; read-only view for core consumers)
+export { getTokenCredentials, restoreTokenStoreForTests, snapshotTokenStoreForTests, type TokenCredentialsView, type TokenStoreSnapshot } from "./store"
+
 // Types
 export type { CopilotTokenInfo, TokenInfo, TokenSource, TokenValidationResult } from "./types"

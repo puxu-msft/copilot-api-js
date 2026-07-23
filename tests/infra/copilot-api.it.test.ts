@@ -210,8 +210,8 @@ describe("copilotHeaders", () => {
     expect(headers["x-model-header"]).toBe("value")
   })
 
-  test("builds GitHub headers from shared state", () => {
-    const headers = githubHeaders(state)
+  test("builds GitHub headers from an identity", () => {
+    const headers = githubHeaders({ githubToken: "gh-test-token", vsCodeVersion: "1.104.3" })
 
     expect(headers).toMatchObject({
       accept: "application/json",

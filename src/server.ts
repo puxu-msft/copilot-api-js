@@ -18,7 +18,11 @@ import {
   unknownEndpointFinalizer,
 } from "./lib/observability/unknown-endpoint"
 import { state } from "./lib/state"
-import { peekTokenRuntime } from "./lib/token"
+import {
+  //
+  getTokenCredentials,
+  peekTokenRuntime,
+} from "./lib/token"
 import { registerHttpRoutes } from "./routes"
 import { registerOpenApiDocs } from "./routes/openapi"
 
@@ -45,13 +49,14 @@ export { detectErrorWireFormat }
  * HTTP test app mirrors identical behavior from a single source.
  */
 export function readinessCheck(c: Context): Response {
-  const healthy = Boolean(state.copilotToken && state.githubToken)
+  const credentials = getTokenCredentials()
+  const healthy = Boolean(credentials.copilotToken && credentials.githubToken)
   return c.json(
     {
       status: healthy ? "healthy" : "unhealthy",
       checks: {
-        copilotToken: Boolean(state.copilotToken),
-        githubToken: Boolean(state.githubToken),
+        copilotToken: Boolean(credentials.copilotToken),
+        githubToken: Boolean(credentials.githubToken),
         models: Boolean(state.models),
       },
     },

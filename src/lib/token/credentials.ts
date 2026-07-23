@@ -2,22 +2,13 @@
  * The token domain's credential seam — the single site that reads and writes
  * the GitHub/Copilot credentials.
  *
- * In C4 the credentials still live in core `state` (read via the token
- * read-view, written via the named setters). C5 reverses ownership into this
- * package's token store and rewrites the bodies here — this module is the ONLY
- * file C5 edits to switch the source of truth. Everything else in the token
- * package (HTTP clients, managers, runtime) mutates credentials exclusively
- * through these helpers, and the advertised VS Code version comes from the
- * injected, core-owned {@link TokenRuntimeConfigView}.
+ * C5 reversed ownership of the credentials out of core `state` into this
+ * package's {@link ./store}. Everything else in the token package (HTTP
+ * clients, managers, runtime) reads/writes credentials exclusively through
+ * these helpers; the advertised VS Code version still comes from the injected,
+ * core-owned {@link TokenRuntimeConfigView}. This module is the ONLY place that
+ * knows where the credentials physically live.
  */
-
-import {
-  //
-  setCopilotToken,
-  setGitHubToken,
-  setTokenState,
-} from "~/lib/state"
-import { getTokenReadView } from "~/lib/state-readers/token"
 
 import type { GithubHeaderIdentity } from "./ghc-auth-http"
 import type {
@@ -27,32 +18,40 @@ import type {
 } from "./types"
 
 import { getTokenDeps } from "./dependencies"
+import {
+  //
+  getTokenCredentials,
+  setStoreCopilotToken,
+  setStoreCopilotTokenInfo,
+  setStoreGithubToken,
+  setStoreTokenInfo,
+} from "./store"
 
 /**
  * Assemble the {@link GithubHeaderIdentity} for the current process: the GitHub
- * token (core state today, token store after C5) plus the injected advertised
- * VS Code version.
+ * token (token store) plus the injected advertised VS Code version.
  */
 export function currentGithubHeaderIdentity(): GithubHeaderIdentity {
   return {
-    githubToken: getTokenReadView().githubToken,
+    githubToken: getTokenCredentials().githubToken,
     vsCodeVersion: getTokenDeps().runtimeConfig.vsCodeVersion,
   }
 }
 
 /** Set the current GitHub token credential. */
 export function setGithubCredential(token: string | undefined): void {
-  setGitHubToken(token)
+  setStoreGithubToken(token)
 }
 
 /** Set the current Copilot token credential. */
 export function setCopilotCredential(token: string | undefined): void {
-  setCopilotToken(token)
+  setStoreCopilotToken(token)
 }
 
-/** Record GitHub / Copilot token metadata. */
+/** Record GitHub / Copilot token metadata (only the keys present in `patch`). */
 export function setTokenInfoCredential(patch: { tokenInfo?: TokenInfo; copilotTokenInfo?: CopilotTokenInfo }): void {
-  setTokenState(patch)
+  if ("tokenInfo" in patch) setStoreTokenInfo(patch.tokenInfo)
+  if ("copilotTokenInfo" in patch) setStoreCopilotTokenInfo(patch.copilotTokenInfo)
 }
 
 /**
@@ -66,12 +65,11 @@ let validationChain: Promise<unknown> = Promise.resolve()
  * Run `op` with the GitHub credential temporarily set to `token`, restoring the
  * previous value afterwards (try/finally). Concurrent calls are serialized so
  * the temporary swap is never observed by an unrelated request or another
- * validation. This is the single site C5 rewrites to swap the token store
- * instead of core state.
+ * validation.
  */
 export async function withGitHubTokenForValidation<T>(token: string, op: () => Promise<T>): Promise<T> {
   const run = validationChain.then(async () => {
-    const original = getTokenReadView().githubToken
+    const original = getTokenCredentials().githubToken
     setGithubCredential(token)
     try {
       return await op()

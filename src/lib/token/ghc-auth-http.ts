@@ -11,9 +11,9 @@ export const GITHUB_BASE_URL = "https://github.com"
 export const GITHUB_CLIENT_ID = "Iv1.b507a08c87ecfe98"
 
 /**
- * The narrow role interface `githubHeaders` needs from its caller — NOT the
- * whole `State` god-object. Adding a field leaves every call site unchanged:
- * callers pass a context view (token domain's `getTokenReadView()`) that
+ * The narrow role interface `githubHeaders` needs from its caller — NOT a whole
+ * state object. Adding a field leaves every call site unchanged: callers pass a
+ * context view (the token domain's `currentGithubHeaderIdentity()`) that
  * structurally satisfies this.
  */
 export interface GithubHeaderIdentity {

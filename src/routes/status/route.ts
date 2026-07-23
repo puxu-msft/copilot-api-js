@@ -41,6 +41,7 @@ import {
   serverStartTime,
   state,
 } from "~/lib/state"
+import { getTokenCredentials } from "~/lib/token"
 import {
   //
   getCopilotUsage,
@@ -98,6 +99,7 @@ const getStatusRoute = createRoute({
 
 statusRoutes.openapi(getStatusRoute, async (c) => {
   const now = Date.now()
+  const credentials = getTokenCredentials()
 
   // Rate limiter status + config
   const limiter = getAdaptiveRateLimiter()
@@ -105,7 +107,7 @@ statusRoutes.openapi(getStatusRoute, async (c) => {
   let serverStatus: "healthy" | "unhealthy" | "shutting_down"
   if (getIsShuttingDown()) {
     serverStatus = "shutting_down"
-  } else if (state.copilotToken && state.githubToken) {
+  } else if (credentials.copilotToken && credentials.githubToken) {
     serverStatus = "healthy"
   } else {
     serverStatus = "unhealthy"
@@ -196,9 +198,9 @@ statusRoutes.openapi(getStatusRoute, async (c) => {
 
       auth: {
         accountType: state.accountType,
-        tokenSource: state.tokenInfo?.source ?? null,
-        tokenExpiresAt: state.tokenInfo?.expiresAt ?? null,
-        copilotTokenExpiresAt: state.copilotTokenInfo ? state.copilotTokenInfo.expiresAt * 1000 : null,
+        tokenSource: credentials.tokenInfo?.source ?? null,
+        tokenExpiresAt: credentials.tokenInfo?.expiresAt ?? null,
+        copilotTokenExpiresAt: credentials.copilotTokenInfo ? credentials.copilotTokenInfo.expiresAt * 1000 : null,
       },
 
       quota,

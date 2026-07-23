@@ -8,6 +8,7 @@ import { createResponseHeaderTimeoutSignal } from "~/lib/fetch-utils"
 import { getShutdownSignal } from "~/lib/shutdown"
 import { state } from "~/lib/state"
 import { combineAbortSignals } from "~/lib/stream"
+import { getTokenCredentials } from "~/lib/token"
 import { upstreamFetch } from "~/lib/transport/upstream-fetch"
 
 export interface EmbeddingRequest {
@@ -48,7 +49,7 @@ export interface EmbeddingsExchange {
 
 /** Freeze the exact request shape used at the transport boundary before I/O starts. */
 export function prepareEmbeddingsRequest(payload: EmbeddingRequest): PreparedEmbeddingsRequest {
-  if (!state.copilotToken) throw new Error("Copilot token not found")
+  if (!getTokenCredentials().copilotToken) throw new Error("Copilot token not found")
   const normalizedPayload = {
     ...payload,
     input: typeof payload.input === "string" ? [payload.input] : payload.input,

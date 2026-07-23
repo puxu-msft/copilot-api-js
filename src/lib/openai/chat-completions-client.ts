@@ -8,7 +8,7 @@ import type {
   ChatCompletionResponse,
 } from "~/types/api/openai-chat-completions"
 
-import { state } from "~/lib/state"
+import { getTokenCredentials } from "~/lib/token"
 import { sendUpstreamHttp } from "~/lib/transport/send"
 
 import {
@@ -39,7 +39,7 @@ export const createChatCompletions = async (
   payload: ChatCompletionsPayload,
   opts?: CreateChatCompletionsOptions,
 ): Promise<ChatCompletionResponse | AsyncGenerator<ServerSentEventMessage>> => {
-  if (!state.copilotToken) throw new Error("Copilot token not found")
+  if (!getTokenCredentials().copilotToken) throw new Error("Copilot token not found")
 
   const prepared = prepareChatCompletionsRequest(payload, opts)
   opts?.onPrepared?.({

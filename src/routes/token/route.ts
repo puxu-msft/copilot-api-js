@@ -5,7 +5,7 @@ import {
   z,
 } from "@hono/zod-openapi"
 
-import { state } from "~/lib/state"
+import { getTokenCredentials } from "~/lib/token"
 
 export const tokenRoutes = new OpenAPIHono()
 
@@ -50,22 +50,23 @@ const getTokensRoute = createRoute({
 })
 
 tokenRoutes.openapi(getTokensRoute, (c) => {
+  const credentials = getTokenCredentials()
   return c.json({
     github:
-      state.tokenInfo ?
+      credentials.tokenInfo ?
         {
-          token: state.tokenInfo.token,
-          source: state.tokenInfo.source,
-          expiresAt: state.tokenInfo.expiresAt ?? null,
-          refreshable: state.tokenInfo.refreshable,
+          token: credentials.tokenInfo.token,
+          source: credentials.tokenInfo.source,
+          expiresAt: credentials.tokenInfo.expiresAt ?? null,
+          refreshable: credentials.tokenInfo.refreshable,
         }
       : null,
     copilot:
-      state.copilotTokenInfo ?
+      credentials.copilotTokenInfo ?
         {
-          token: state.copilotTokenInfo.token,
-          expiresAt: state.copilotTokenInfo.expiresAt,
-          refreshIn: state.copilotTokenInfo.refreshIn,
+          token: credentials.copilotTokenInfo.token,
+          expiresAt: credentials.copilotTokenInfo.expiresAt,
+          refreshIn: credentials.copilotTokenInfo.refreshIn,
         }
       : null,
   })

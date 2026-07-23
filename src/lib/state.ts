@@ -17,6 +17,17 @@ import type {
   TokenInfo,
 } from "./token/types"
 
+import {
+  //
+  restoreTokenStoreForTests,
+  setStoreCopilotToken,
+  setStoreCopilotTokenInfo,
+  setStoreGithubToken,
+  setStoreTokenInfo,
+  snapshotTokenStoreForTests,
+  type TokenStoreSnapshot,
+} from "./token/store"
+
 /**
  * Server-side context editing mode.
  * Controls how Anthropic's context_management trims older context when input grows large.
@@ -146,12 +157,6 @@ export interface State {
   readonly unknownEndpointLogging: UnknownEndpointLogging
   readonly logging: LoggingConfigState
   readonly tuiEnabled: boolean
-  readonly githubToken?: string
-  readonly copilotToken?: string
-
-  /** Token metadata (new token system) */
-  readonly tokenInfo?: TokenInfo
-  readonly copilotTokenInfo?: CopilotTokenInfo
 
   readonly accountType: "individual" | "business" | "enterprise"
   /**
@@ -1117,7 +1122,17 @@ type MutableState = {
   -readonly [K in keyof State]: State[K]
 }
 
-export type StateSnapshot = MutableState
+/**
+ * A per-test snapshot of BOTH the mutable state and the token domain's
+ * credential store (the credentials moved out of `state` into `~/lib/token`'s
+ * store in the monorepo split; the snapshot composes them so the existing
+ * per-test state snapshot/restore atomically covers credentials too — no
+ * separate fixture wiring or resetter needed).
+ */
+export interface StateSnapshot {
+  readonly state: MutableState
+  readonly tokenStore: TokenStoreSnapshot
+}
 
 /** Epoch ms when the server started (set once in runServer) */
 export let serverStartTime = 0
@@ -1178,7 +1193,6 @@ function cloneState(source: MutableState): MutableState {
   return {
     ...source,
     adaptiveRateLimitConfig: source.adaptiveRateLimitConfig ? { ...source.adaptiveRateLimitConfig } : undefined,
-    copilotTokenInfo: source.copilotTokenInfo ? { ...source.copilotTokenInfo } : undefined,
     modelIds: new Set(source.modelIds),
     modelIndex: new Map(source.modelIndex),
     modelMappings: { ...source.modelMappings },
@@ -1211,7 +1225,6 @@ function cloneState(source: MutableState): MutableState {
     systemPromptOverrides: [...source.systemPromptOverrides],
     systemPromptPrepend: [...source.systemPromptPrepend],
     systemPromptAppend: [...source.systemPromptAppend],
-    tokenInfo: source.tokenInfo ? { ...source.tokenInfo } : undefined,
   }
 }
 
@@ -1220,9 +1233,6 @@ function cloneStatePatch(patch: Partial<MutableState>): Partial<MutableState> {
 
   if ("adaptiveRateLimitConfig" in patch) {
     cloned.adaptiveRateLimitConfig = patch.adaptiveRateLimitConfig ? { ...patch.adaptiveRateLimitConfig } : undefined
-  }
-  if ("copilotTokenInfo" in patch) {
-    cloned.copilotTokenInfo = patch.copilotTokenInfo ? { ...patch.copilotTokenInfo } : undefined
   }
   if ("modelIds" in patch) {
     cloned.modelIds = patch.modelIds ? new Set(patch.modelIds) : undefined
@@ -1259,9 +1269,6 @@ function cloneStatePatch(patch: Partial<MutableState>): Partial<MutableState> {
   }
   if ("systemPromptAppend" in patch) {
     cloned.systemPromptAppend = patch.systemPromptAppend ? [...patch.systemPromptAppend] : undefined
-  }
-  if ("tokenInfo" in patch) {
-    cloned.tokenInfo = patch.tokenInfo ? { ...patch.tokenInfo } : undefined
   }
   if ("effortsOverrides" in patch) {
     cloned.effortsOverrides = patch.effortsOverrides ? { ...patch.effortsOverrides } : undefined
@@ -1322,18 +1329,6 @@ function cloneStatePatch(patch: Partial<MutableState>): Partial<MutableState> {
   }
 
   return cloned
-}
-
-export function setGitHubToken(githubToken: string | undefined): void {
-  updateState({ githubToken })
-}
-
-export function setCopilotToken(copilotToken: string | undefined): void {
-  updateState({ copilotToken })
-}
-
-export function setTokenState(patch: Partial<Pick<MutableState, "tokenInfo" | "copilotTokenInfo">>): void {
-  updateState(patch)
 }
 
 export function setCliState(patch: Partial<Pick<MutableState, "accountType" | "ghcApiBaseUrl" | "showGitHubToken" | "verbose">>): void {
@@ -1831,23 +1826,41 @@ export function resolveContinuation(vendor: string): BufferedRetryContinuation {
  * Tests should prefer this over direct mutation snapshots so State can stay readonly.
  */
 export function snapshotStateForTests(): StateSnapshot {
-  return cloneState(mutableState)
+  return { state: cloneState(mutableState), tokenStore: snapshotTokenStoreForTests() }
 }
 
 /**
  * Controlled test-only mutation path.
  * Keeps readonly State in application code while allowing tests to set fixtures.
+ *
+ * The token credentials moved out of `state` into `~/lib/token`'s store; this
+ * shim still accepts the four credential keys and forwards them to the store so
+ * the ~137 existing `setStateForTests({ copilotToken, ... })` call sites keep
+ * working unchanged (test-only convenience, not a production write path).
  */
-export function setStateForTests(patch: Partial<MutableState>): void {
-  updateState(cloneStatePatch(patch))
+export function setStateForTests(
+  patch: Partial<MutableState> & {
+    githubToken?: string
+    copilotToken?: string
+    tokenInfo?: TokenInfo
+    copilotTokenInfo?: CopilotTokenInfo
+  },
+): void {
+  const { githubToken, copilotToken, tokenInfo, copilotTokenInfo, ...statePatch } = patch
+  if ("githubToken" in patch) setStoreGithubToken(githubToken)
+  if ("copilotToken" in patch) setStoreCopilotToken(copilotToken)
+  if ("tokenInfo" in patch) setStoreTokenInfo(tokenInfo)
+  if ("copilotTokenInfo" in patch) setStoreCopilotTokenInfo(copilotTokenInfo)
+  updateState(cloneStatePatch(statePatch))
   if ("models" in patch && !("modelIndex" in patch) && !("modelIds" in patch)) {
     rebuildModelIndex()
   }
 }
 
-/** Restore state from a snapshot captured by snapshotStateForTests(). */
+/** Restore state + token store from a snapshot captured by snapshotStateForTests(). */
 export function restoreStateForTests(snapshot: StateSnapshot): void {
-  updateState(cloneState(snapshot))
+  updateState(cloneState(snapshot.state))
+  restoreTokenStoreForTests(snapshot.tokenStore)
 }
 
 /**

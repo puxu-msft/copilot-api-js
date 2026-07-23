@@ -14,7 +14,7 @@ import type {
   ResponsesResponse,
 } from "~/types/api/openai-responses"
 
-import { state } from "~/lib/state"
+import { getTokenCredentials } from "~/lib/token"
 import { sendUpstreamHttp } from "~/lib/transport/send"
 
 import {
@@ -54,7 +54,7 @@ export const createResponses = async (
   payload: ResponsesPayload,
   opts?: CreateResponsesOptions,
 ): Promise<ResponsesResponse | AsyncGenerator<ServerSentEventMessage>> => {
-  if (!state.copilotToken) throw new Error("Copilot token not found")
+  if (!getTokenCredentials().copilotToken) throw new Error("Copilot token not found")
 
   const prepared = prepareResponsesRequest(payload, opts)
   opts?.onPrepared?.({

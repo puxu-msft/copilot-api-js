@@ -37,6 +37,7 @@ import {
 import { getShutdownSignal } from "~/lib/shutdown"
 import { state } from "~/lib/state"
 import { combineAbortSignals } from "~/lib/stream"
+import { getTokenCredentials } from "~/lib/token"
 import { upstreamFetch } from "~/lib/transport/upstream-fetch"
 import { summarizeToolsForDiagnostics } from "~/lib/upstream-diagnostics"
 
@@ -151,7 +152,7 @@ export async function createAnthropicMessages(
   payload: MessagesPayload,
   opts?: CreateAnthropicMessagesOptions,
 ): Promise<AnthropicMessageResponse | AsyncGenerator<ServerSentEventMessage>> {
-  if (!state.copilotToken) throw new Error("Copilot token not found")
+  if (!getTokenCredentials().copilotToken) throw new Error("Copilot token not found")
 
   const prepared = prepareAnthropicRequest(payload, opts)
   opts?.onPrepared?.({

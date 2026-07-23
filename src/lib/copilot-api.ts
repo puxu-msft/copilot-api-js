@@ -6,6 +6,7 @@ import {
   standardHeaders,
   USER_AGENT,
 } from "~/lib/ghc-http-primitives"
+import { getTokenCredentials } from "~/lib/token"
 import { upstreamFetch } from "~/lib/transport/upstream-fetch"
 
 import type { State } from "./state"
@@ -68,7 +69,7 @@ export const copilotHeaders = (state: State, opts?: CopilotHeaderOptions) => {
   const requestId = randomUUID()
   const interactionType = opts?.intent ?? "conversation-panel"
   const headers: Record<string, string> = {
-    Authorization: `Bearer ${state.copilotToken}`,
+    Authorization: `Bearer ${getTokenCredentials().copilotToken}`,
     "content-type": standardHeaders()["content-type"],
     "copilot-integration-id": "vscode-chat",
     "editor-version": `vscode/${state.vsCodeVersion}`,
