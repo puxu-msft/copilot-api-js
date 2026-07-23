@@ -90,6 +90,18 @@ describe("accumulateResponsesStreamEvent", () => {
     expect(acc.status).toBe("incomplete")
   })
 
+  test("captures incomplete_details.reason from response.incomplete", () => {
+    const acc = createResponsesStreamAccumulator()
+    accumulateResponsesStreamEvent(
+      {
+        type: "response.incomplete",
+        response: { id: "resp_max_tokens", model: "gpt-4o", status: "incomplete", incomplete_details: { reason: "max_output_tokens" } },
+      } as any,
+      acc,
+    )
+    expect(acc.incompleteReason).toBe("max_output_tokens")
+  })
+
   // ── terminal upstream `error` event (buffered-retry gate; symmetric with Anthropic) ──
 
   test("records a terminal `error` event into streamError WITHOUT setting status", () => {

@@ -24,6 +24,8 @@ type OutputDetails = { text?: number; audio?: number; image?: number; video?: nu
 /** Stream accumulator for Responses API format */
 export interface ResponsesStreamAccumulator extends BaseStreamAccumulator {
   status: string
+  /** Reason carried by a `response.incomplete` terminal, when present. */
+  incompleteReason?: string
   responseId: string
   toolCalls: Array<{ id: string; callId: string; name: string; arguments: string }>
   /** Tool call accumulators indexed by output_index */
@@ -126,6 +128,7 @@ export function accumulateResponsesStreamEvent(event: ResponsesStreamEvent, acc:
     case "response.failed":
     case "response.incomplete": {
       acc.status = event.response.status
+      if (event.type === "response.incomplete") acc.incompleteReason = event.response.incomplete_details?.reason
       break
     }
 

@@ -157,7 +157,7 @@ test("thinking-after-text (the exact ledger-would-misclassify case from Task 0.1
 
 > **修订记录**：spec §11 P0 与 M.2 已交叉确认——这是 P0 分型判定的前置依赖（Responses 格的 `isResponsesMaxTokensTerminal` 需要这个值才能工作），不能推迟到 P3。已核实 `src/lib/openai/responses-stream-accumulator.ts` 当前只捕获 `status`，不捕获 `incomplete_details.reason`。
 
-- [ ] **Step 1: 写失败测试** —— accumulator 捕获该字段。
+- [x] **Step 1: 写失败测试** —— accumulator 捕获该字段。
 
 ```ts
 test("responses accumulator captures incomplete_details.reason on response.incomplete", () => {
@@ -167,7 +167,7 @@ test("responses accumulator captures incomplete_details.reason on response.incom
 })
 ```
 
-- [ ] **Step 2-4:** 跑失败 → 在 `ResponsesStreamAccumulator` 接口加 `incompleteReason?: string` 字段，`case "response.incomplete"` 分支补 `acc.incompleteReason = event.response.incomplete_details?.reason` → 跑通过。
+- [x] **Step 2-4:** 跑失败 → 在 `ResponsesStreamAccumulator` 接口加 `incompleteReason?: string` 字段，`case "response.incomplete"` 分支补 `acc.incompleteReason = event.response.incomplete_details?.reason` → 跑通过。
 - [ ] **Step 5: 提交** → `fix(responses): capture incomplete_details.reason in stream accumulator (P0 prerequisite for max_tokens classification)`。
 
 ### Task 0.3: per-format terminal 检测
