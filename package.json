@@ -1,6 +1,6 @@
 {
   "name": "@hsupu/copilot-api",
-  "version": "0.8.4-beta.16",
+  "version": "0.8.4-beta.18",
   "description": "Turn GitHub Copilot into an OpenAI/Anthropic API compatible provider. Use Gemini and Claude models with Codex CLI through your Copilot subscription.",
   "keywords": [
     "anthropic-compatible",

@@ -24,31 +24,6 @@
 # 除非另有说明，所有设置均支持热重载。 / All settings are hot-reloadable unless noted otherwise.
 
 # ============================================================================
-# Structured diagnostics and terminal UI / 结构化诊断与终端界面
-# ============================================================================
-# terminal_level / file_level 支持热重载；只过滤 diagnostic，不过滤请求终态行。
-# terminal_level / file_level are hot-reloadable and only filter diagnostics,
-# never request terminal lines. Levels: silent|trace|debug|info|warn|error|fatal.
-# file.* 与 tui.enabled 在启动时冻结，修改后需重启。
-# file.* and tui.enabled are frozen at startup and require a restart.
-logging:
-  terminal_level: info
-  file_level: debug
-  file:
-    enabled: true
-    # 空字符串解析到 $APP_DIR/logs/diagnostic。/ Empty resolves to $APP_DIR/logs/diagnostic.
-    directory: ""
-    # 0 = 不按大小分段。/ 0 = no size-based rolling.
-    max_size_mb: 10
-    # 0 = 不按数量裁剪本进程分段。/ 0 = no per-process count pruning.
-    max_files_per_process: 7
-    # 0 = 不按年龄清理已死亡进程 artifact。/ 0 = no age-based dead-owner retention.
-    retention_days: 7
-
-tui:
-  enabled: true
-
-# ============================================================================
 # Upstream (GHC API) / 上游
 # ============================================================================
 
@@ -385,6 +360,45 @@ buffered_retry:
 #   buffered_retry: false           # opt back into live (unbuffered) forwarding; default is true. or: { enabled: true, max_retries: 4 }
 
 # ============================================================================
+# Structured Logging and TUI / 结构化日志与终端界面
+# ============================================================================
+# terminal_level / file_level 支持热重载；只过滤 diagnostic，不过滤请求终态行。
+# terminal_level / file_level are hot-reloadable and only filter diagnostics,
+# never request terminal lines. Levels: silent|trace|debug|info|warn|error|fatal.
+# file.* 与 tui.enabled 在启动时冻结，修改后需重启。
+# file.* and tui.enabled are frozen at startup and require a restart.
+logging:
+  terminal_level: info
+  file_level: debug
+  file:
+    enabled: false
+    # 空字符串解析到 $APP_DIR/logs/diagnostic。/ Empty resolves to $APP_DIR/logs/diagnostic.
+    directory: ""
+    # 0 = 不按大小分段。/ 0 = no size-based rolling.
+    max_size_mb: 10
+    # 0 = 不按数量裁剪本进程分段。/ 0 = no per-process count pruning.
+    max_files_per_process: 7
+    # 0 = 不按年龄清理已死亡进程 artifact。/ 0 = no age-based dead-owner retention.
+    retention_days: 7
+
+tui:
+  enabled: true
+
+access_log:
+  enabled: false
+  log_path: "access.log"
+
+# 打到代理但没匹配任何业务路由的请求（客户端打错 path / base URL / method）按归类状态码
+# 分别控制日志级别。日志经 consola → TUI + copilot-api.log。
+# Requests that reach the proxy but match no business route, logged per classified status.
+#   not_found          → 404: real routing miss / 真正未匹配的路径
+#   method_not_allowed → 405: path exists, wrong method (returns 405 + Allow header)
+# Levels: silent (off) | debug | info | warn | error. Default warn/warn.
+unknown_endpoint_logging:
+  not_found: warn
+  method_not_allowed: warn
+
+# ============================================================================
 # History & Telemetry / 历史记录与遥测
 # ============================================================================
 
@@ -396,12 +410,12 @@ history:
 
   # 保留的最新成功/失败请求数（-1 = 无限制，0 = 临时禁止）。
   # Successful/Failed entries kept in SQLite (-1 = unlimited, 0 = temporarily disabled).
-  success_limit: 1000
-  failure_limit: 1000
+  # success_limit: 1000
+  # failure_limit: 1000
 
   # Seconds between reaper passes that trim each bucket (0 = disabled, default: 600)
   # 修剪各桶的周期间隔秒数（0 = 禁用，默认 3600）
-  reaper_interval: 3600
+  # reaper_interval: 3600
 
   # 捕捉原始客户端/上游字节流到独立数据库。需启用历史记录。
   # Exact-byte capture in an independent database. History must be enabled.
@@ -1015,16 +1029,3 @@ hooks:
   # Load the hook module. Default false — the feature is fully off unless true.
   # 是否加载 hook 模块。默认 false——除非 true 否则特性完全关闭。
   enabled: false
-
-# ============================================================================
-# Unknown HTTP Endpoint Logging / 未知 HTTP 端点日志
-# ============================================================================
-# 打到代理但没匹配任何业务路由的请求（客户端打错 path / base URL / method）按归类状态码
-# 分别控制日志级别。日志经 consola → TUI + copilot-api.log。
-# Requests that reach the proxy but match no business route, logged per classified status.
-#   not_found          → 404: real routing miss / 真正未匹配的路径
-#   method_not_allowed → 405: path exists, wrong method (returns 405 + Allow header)
-# Levels: silent (off) | debug | info | warn | error. Default warn/warn.
-unknown_endpoint_logging:
-  not_found: warn
-  method_not_allowed: warn
