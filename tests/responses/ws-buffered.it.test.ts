@@ -345,6 +345,8 @@ describe("Responses WS buffered retry (P4 Task 1)", () => {
       totalRetries: 1,
       retriesBeforeDegrade: 0,
       continuationExhausted: 0,
+      precontentRecoverySuccess: 0,
+      precontentRecoveryExhausted: 0,
       preFirstBlockRetries: 1,
       continuationRetries: 0,
     })
@@ -479,6 +481,8 @@ describe("Responses WS buffered retry (P4 Task 1)", () => {
       totalRetries: 1,
       retriesBeforeDegrade: 0,
       continuationExhausted: 0,
+      precontentRecoverySuccess: 0,
+      precontentRecoveryExhausted: 0,
       preFirstBlockRetries: 1,
       continuationRetries: 0,
     })

@@ -38,7 +38,7 @@ S1 parse → S1b translateInbound → S2 route/translateOut → S3 rewrite-in
 
 ## Task 0.1：配置骨架（纯新增，默认关闭，不接线）
 
-**为什么先做配置骨架：** 让后续所有阶段都能通过 `state.xxx` 读取"是否启用/触发条件"，避免接线阶段还要临时加 flag。默认 OFF——B2 是新拓扑，先在配置层留一个总开关，实际接线（P4/P5）完成前不应该有任何行为差异。
+**为什么先做配置骨架：** 让后续所有阶段都能通过 `state.xxx` 读取“是否启用/触发条件”，避免接线阶段还要临时加 flag。配置默认 `enabled:true` 已裁定；B2 是新拓扑，但实际接线留在 P4/P5，所以本阶段仍不产生任何行为差异。
 
 - [x] **Step 1: 写失败测试** —— 新配置键存在、默认值符合预期、config.ts 能正确映射
 
@@ -58,7 +58,7 @@ test("config key precontent_recovery.enabled maps to state via applyConfigToStat
 - [x] **Step 4: 跑，通过。** —— `bun test tests/config/buffered-retry-keys.unit.test.ts tests/config/config-hot-reload.it.test.ts`：404 pass，0 fail；`bunx eslint` 目标文件与 `bun run typecheck` 均通过。
 - [x] **Step 5: 提交** → `feat(config): add precontent_recovery config scaffold (default enabled, not yet wired)`。
 
-**命名与默认值待决项（交主会话/用户确认，不自行拍板）：** 配置键名 `precontent_recovery` / `pre_content_recovery` / 更贴合 spec 用语的其他名字——本计划用 `precontent_recovery` 占位，若用户有偏好命名，实现时改一处即可（不影响后续阶段结构）。默认值建议 `enabled: true`（因为 B2 对合法长思考零误伤、只在真失败时触发，符合"long-termism-wins"默认开启新正确机制的项目哲学）——但因为这是行为默认值变更，仍建议在 P4/P5 完整落地并过 P6 协议矩阵后再实际打开默认值（即：本 Task 先把默认值定义为 `true`，但 P4/P5 的功能开关暂时在代码里额外加一层"feature not yet wired"防护，直到 P5 完成才让默认值生效——**由执行者在 TDD 中用测试锁定这个顺序，不要在 gate 尚未接线完成前就让默认值产生用户可见的行为变化**）。
+**已裁定命名与默认值：** 配置键使用 `precontent_recovery`，默认 `enabled: true`。P4/P5 完整接线前不读取该 state 字段，故这个默认值在本阶段没有用户可见副作用；后续接线须用测试锁定此顺序。
 
 ---
 
@@ -291,17 +291,17 @@ test("B2 recovery supervisor awaits candidate lifecycle quiescence after cancel/
 
 **设计依据：** 镜像 `protect-streaming-stats.ts` 现有的 `continuationExhausted` 模式（同一份统计对象，新增两个字段）。
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 ```ts
 // tests/anthropic/protect-streaming-stats.unit.test.ts（追加，若无此文件则新建）
 test("recordProtectStreamingOutcome accepts 'precontent-recovery-success' / 'precontent-recovery-exhausted' outcomes", () => { ... })
 ```
 
-- [ ] **Step 2: 跑，失败。**
-- [ ] **Step 3: 接线** —— `ProtectStreamingOutcome` union（`~/lib/pipeline/types.ts`，`ProtectStreamingStats` 消费方 re-export 的类型）新增两个字面量；`protect-streaming-stats.ts` 的 `ProtectStreamingStats` interface + `emptyStats()` + `keyOf()` 补充映射（camelCase：`precontentRecoverySuccess` / `precontentRecoveryExhausted`）。
-- [ ] **Step 4: 跑，通过。**
-- [ ] **Step 5: 提交** → `feat(telemetry): add precontent-recovery outcome counters (mirrors continuation counters)`。
+- [x] **Step 2: 跑，失败。** —— `bun test tests/anthropic/protect-streaming-stats.unit.test.ts`（新增计数器断言收到 `undefined`，符合缺少字段/映射的预期）。
+- [x] **Step 3: 接线** —— `ProtectStreamingOutcome` union（`~/lib/pipeline/types.ts`，`ProtectStreamingStats` 消费方 re-export 的类型）新增两个字面量；`protect-streaming-stats.ts` 的 `ProtectStreamingStats` interface + `emptyStats()` + `keyOf()` 补充映射（camelCase：`precontentRecoverySuccess` / `precontentRecoveryExhausted`）。
+- [x] **Step 4: 跑，通过。** —— `bun test tests/anthropic/protect-streaming-stats.unit.test.ts`：13 pass，0 fail。
+- [x] **Step 5: 提交** → `feat(telemetry): add precontent-recovery outcome counters (mirrors continuation counters)`。
 
 ---
 

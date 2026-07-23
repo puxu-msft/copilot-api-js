@@ -462,8 +462,17 @@ export interface AnchorState {
  *   - `"retreated"`:       buffer cap exceeded → retreated to live forwarding.
  *   - `"partial-degrade"`: block-level path only — a boundary block was already committed live,
  *     then the stream truncated (un-retryable). A graceful degrade distinct from `exhausted`.
+ *   - `"precontent-recovery-success"` / `"precontent-recovery-exhausted"`: reserved B2 counters for
+ *     a fresh dispatch that follows a failure before real content reaches the client.
  */
-export type ProtectStreamingOutcome = "success" | "exhausted" | "retreated" | "partial-degrade" | "continuation-exhausted"
+export type ProtectStreamingOutcome =
+  | "success"
+  | "exhausted"
+  | "retreated"
+  | "partial-degrade"
+  | "continuation-exhausted"
+  | "precontent-recovery-success"
+  | "precontent-recovery-exhausted"
 
 /**
  * Options for `runResponseBufferedSink` (L2 — streaming upstream-RST buffered retry,
