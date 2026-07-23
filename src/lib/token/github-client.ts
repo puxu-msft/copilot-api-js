@@ -2,18 +2,19 @@
 
 import consola from "consola"
 
+import { HTTPError } from "~/lib/error"
+import { standardHeaders } from "~/lib/ghc-http-primitives"
+import { getTokenReadView } from "~/lib/state-readers/token"
+import { upstreamFetch } from "~/lib/transport/upstream-fetch"
+import { sleep } from "~/lib/utils"
+
 import {
   //
   GITHUB_API_BASE_URL,
   GITHUB_BASE_URL,
   GITHUB_CLIENT_ID,
   githubHeaders,
-  standardHeaders,
-} from "~/lib/copilot-api"
-import { HTTPError } from "~/lib/error"
-import { getTokenReadView } from "~/lib/state-readers/token"
-import { upstreamFetch } from "~/lib/transport/upstream-fetch"
-import { sleep } from "~/lib/utils"
+} from "./ghc-auth-http"
 
 // ============================================================================
 // User

@@ -1,28 +1,19 @@
 import { randomUUID } from "node:crypto"
 
+import {
+  //
+  EDITOR_PLUGIN_VERSION,
+  standardHeaders,
+  USER_AGENT,
+} from "~/lib/ghc-http-primitives"
 import { upstreamFetch } from "~/lib/transport/upstream-fetch"
 
 import type { State } from "./state"
 
 import { setVSCodeVersion } from "./state"
 
-export const standardHeaders = () => ({
-  "content-type": "application/json",
-  accept: "application/json",
-})
-
-const COPILOT_VERSION = "0.38.0"
-const EDITOR_PLUGIN_VERSION = `copilot-chat/${COPILOT_VERSION}`
-const USER_AGENT = `GitHubCopilotChat/${COPILOT_VERSION}`
-
 /** Copilot Chat API version (for chat/completions requests) */
 const COPILOT_API_VERSION = "2025-05-01"
-
-/** Copilot internal API version (for token & usage endpoints) */
-export const COPILOT_INTERNAL_API_VERSION = "2025-04-01"
-
-/** GitHub public API version (for /user, repos, etc.) */
-const GITHUB_API_VERSION = "2022-11-28"
 
 /**
  * Session-level interaction ID.
@@ -104,33 +95,6 @@ export const copilotHeaders = (state: State, opts?: CopilotHeaderOptions) => {
 
   return headers
 }
-
-export const GITHUB_API_BASE_URL = "https://api.github.com"
-
-/**
- * The narrow role interface `githubHeaders` needs from its caller — NOT the
- * whole `State` god-object. Adding a field here (when the headers grow) leaves
- * every call site unchanged: callers pass a context view (e.g. the token
- * domain's `getTokenReadView()`) that structurally satisfies this. Keeps the
- * helper decoupled from State while staying extensible + richest-data-flow.
- */
-export interface GithubHeaderIdentity {
-  readonly githubToken?: string
-  readonly vsCodeVersion?: string
-}
-export const githubHeaders = (identity: GithubHeaderIdentity) => ({
-  ...standardHeaders(),
-  authorization: `token ${identity.githubToken}`,
-  "editor-version": `vscode/${identity.vsCodeVersion}`,
-  "editor-plugin-version": EDITOR_PLUGIN_VERSION,
-  "user-agent": USER_AGENT,
-  "x-github-api-version": GITHUB_API_VERSION,
-  "x-vscode-user-agent-library-version": "electron-fetch",
-})
-
-export const GITHUB_BASE_URL = "https://github.com"
-export const GITHUB_CLIENT_ID = "Iv1.b507a08c87ecfe98"
-export const GITHUB_APP_SCOPES = ["read:user"].join(" ")
 
 // ============================================================================
 // VSCode version detection

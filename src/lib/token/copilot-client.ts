@@ -1,14 +1,15 @@
 /** Copilot API client — token and usage */
 
-import {
-  //
-  COPILOT_INTERNAL_API_VERSION,
-  GITHUB_API_BASE_URL,
-  githubHeaders,
-} from "~/lib/copilot-api"
 import { HTTPError } from "~/lib/error"
+import { COPILOT_INTERNAL_API_VERSION } from "~/lib/ghc-http-primitives"
 import { getTokenReadView } from "~/lib/state-readers/token"
 import { upstreamFetch } from "~/lib/transport/upstream-fetch"
+
+import {
+  //
+  GITHUB_API_BASE_URL,
+  githubHeaders,
+} from "./ghc-auth-http"
 
 // ============================================================================
 // Token

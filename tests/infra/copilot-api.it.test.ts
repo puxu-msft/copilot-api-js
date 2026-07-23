@@ -15,14 +15,14 @@ import {
   copilotHeaders,
   copilotWsUrl,
   getVSCodeVersion,
-  githubHeaders,
-  standardHeaders,
 } from "~/lib/copilot-api"
+import { standardHeaders } from "~/lib/ghc-http-primitives"
 import {
   //
   setStateForTests,
   state,
 } from "~/lib/state"
+import { githubHeaders } from "~/lib/token/ghc-auth-http"
 
 import {
   //

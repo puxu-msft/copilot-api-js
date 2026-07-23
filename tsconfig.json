@@ -41,6 +41,7 @@
       "~/lib/error/utils": ["./packages/foundation/src/error/utils"],
       "~/lib/error/transport-reason": ["./packages/foundation/src/error/transport-reason"],
       "~/lib/error/tool-diagnostics-types": ["./packages/foundation/src/error/tool-diagnostics-types"],
+      "~/lib/ghc-http-primitives": ["./packages/foundation/src/ghc-http-primitives"],
       "~/*": ["./src/*"]
     }
   },
