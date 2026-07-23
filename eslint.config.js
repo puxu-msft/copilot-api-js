@@ -364,4 +364,35 @@ export default defineConfigWithVueTs(
       ],
     },
   },
+  // ── Monorepo layer boundary: foundation is a leaf package ──
+  // (spec docs/spec/2026-07-22-monorepo-workspace-split.md §4/§6)
+  // foundation source may import ONLY foundation-internal modules via relative
+  // `./` paths, or bare external packages. It must never import a sibling
+  // workspace package, nor use the `~/` root alias at all (which resolves into
+  // the app/core tree). Mirrors tests/architecture/package-boundaries.unit.test.ts.
+  {
+    files: ["packages/foundation/src/**/*.ts"],
+    rules: {
+      "no-restricted-imports": [
+        "error",
+        {
+          patterns: [
+            {
+              group: [
+                "@hsupu/ghc-proxy-core",
+                "@hsupu/ghc-proxy-core/*",
+                "@hsupu/ghc-proxy-server",
+                "@hsupu/ghc-proxy-server/*",
+                "@hsupu/ghc-proxy-cli",
+                "@hsupu/ghc-proxy-cli/*",
+                "~/*",
+              ],
+              message:
+                "foundation is a leaf package: import only foundation-internal modules via relative `./` paths, or bare external packages. No sibling workspace packages, no `~/` alias. See spec §4.",
+            },
+          ],
+        },
+      ],
+    },
+  },
 )
