@@ -61,6 +61,19 @@ export function isSameModelName(clientModel: string, model: string): boolean {
 }
 
 /**
+ * Shared decision for how to display a resolved model: surface the client's
+ * original name (`source`) ONLY on a genuine alias→canonical remap — suppressed
+ * when the client and resolved names are the same model spelled differently
+ * (via {@link isSameModelName}) or when no client name was captured. Single
+ * source of truth for the "show client → resolved arrow?" rule shared by the
+ * completion log line ({@link formatLogLine}) and the TUI detail view; each
+ * consumer owns its own styling (dim/magenta vs plain).
+ */
+export function modelRemapParts(clientModel: string | undefined, resolvedModel: string): { source?: string; target: string } {
+  return clientModel && !isSameModelName(clientModel, resolvedModel) ? { source: clientModel, target: resolvedModel } : { target: resolvedModel }
+}
+
+/**
  * Normalize the KEYS of a model-keyed config record via `normalizeForMatching`
  * so that spelling variants (dot/hyphen/case) all match the same way. The
  * wildcard key `"*"` is preserved verbatim. When two keys collapse to the same

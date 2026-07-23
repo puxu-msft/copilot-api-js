@@ -815,13 +815,20 @@ export const HistoryConfigSchema = z
      * transient SQLite error (WAL BUSY/LOCKED/IOERR) is retried with linear
      * backoff instead of dropping the entry on the first failure. `max_attempts`
      * caps the retries (a transient storm can't spin forever); `backoff_ms` is
-     * the base linear step. Permanent failures / conflicts are never retried.
+     * the base linear step. `max_total_ms` is a per-commit wall-clock soft cap
+     * (DI-5-followup-2): the linear backoff sum grows quadratically and each
+     * attempt can itself block (SQLite busy_timeout), so a large
+     * `max_attempts × backoff_ms` product or slow attempts could wedge the drain —
+     * and shutdown, which has no abort signal here — for minutes; the cap bounds
+     * the total elapsed time one entry spends retrying (`0` = disabled). Permanent
+     * failures / conflicts are never retried.
      */
     persist_retry: nullableSection(
       z
         .object({
           max_attempts: nullableNonnegativeInt(),
           backoff_ms: nullableNonnegativeInt(),
+          max_total_ms: nullableNonnegativeInt(),
         })
         .strict(),
     ),
@@ -994,6 +1001,19 @@ export const TimeoutsConfigSchema = z
 
 export const UpstreamTransportHttp2ConfigSchema = z
   .object({
+    /**
+     * Whether to prefer HTTP/2 (node:http2) for every `https://` upstream. Default `true`.
+     *
+     * `false` routes `https://` upstreams through undici (HTTP/1.1) instead — an
+     * escape hatch that only works honestly on **Node** (`dist/main.mjs`). Under
+     * **Bun** (`dev`/`start`), undici's HTTP/1.1 parser hangs forever on the
+     * Copilot hosts' chunked responses (Node finalizes in 0.4s, Bun never returns
+     * — the exact reason h2 is the default; see transport/upstream-fetch.ts). The
+     * value is honored literally on both runtimes; a loud warning is logged when
+     * `false` is applied on Bun. Plaintext `http://` upstreams (local SearXNG)
+     * always use undici regardless of this flag.
+     */
+    favor: nullableBoolean(),
     /** Upstream HTTP/2 PING keepalive interval in seconds (0 = disabled). Same semantics as the migrated `timeouts.upstream_h2_ping`. Default 15. Works on both Bun and Node (node:http2 transport is runtime-neutral). */
     ping_interval: nullableNonnegativeInt(),
     /**
@@ -1017,6 +1037,27 @@ export const UpstreamTransportHttp2ConfigSchema = z
      * disabled behavior the user asked for (D3/D5 "诚实表达能力边界").
      */
     session_connect_timeout: nullableNonnegativeInt(),
+    /**
+     * Soft cap on concurrent streams multiplexed onto a SINGLE upstream h2
+     * session (0 = unlimited). When a session is at its cap, a new request opens
+     * (or reuses another) session for the same origin instead of piling on; the
+     * capped session stays routable once its in-flight streams drain. Default 1
+     * — each concurrent request gets its own connection, so a session-level
+     * upstream teardown (GOAWAY / edge drain) takes down at most one in-flight
+     * request instead of every concurrent stream sharing the connection. 0
+     * restores the old single-session multiplex. Hot-reloadable; a change only
+     * affects future routing, never in-flight streams.
+     */
+    max_concurrent_streams_per_session: nullableNonnegativeInt(),
+    /**
+     * Idle timeout in seconds for a pooled h2 session with no in-flight streams
+     * before it is proactively closed (0 = never idle-close). Under a finite
+     * `max_concurrent_streams_per_session` the pool grows to peak concurrency;
+     * this reaps the surplus once a burst subsides. Default 300 (mirrors the WS
+     * pool's `websocket.pooled_connection_idle_timeout`, kept a separate h2-only
+     * knob). Hot-reloadable.
+     */
+    idle_session_timeout: nullableNonnegativeInt(),
   })
   .strict()
 export type UpstreamTransportHttp2Config = z.infer<typeof UpstreamTransportHttp2ConfigSchema>

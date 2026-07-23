@@ -29,8 +29,10 @@ import tls from "node:tls"
 import {
   //
   getProxyUrlForOrigin,
+  getUpstreamH2IdleSessionTimeoutMs,
   getUpstreamH2PingIntervalMs,
   getUpstreamKeepAliveDelayMs,
+  getUpstreamMaxStreamsPerSession,
 } from "~/lib/proxy"
 import {
   //
@@ -80,7 +82,14 @@ const H2_ILLEGAL_HEADERS = new Set(["host", "connection", "transfer-encoding", "
  */
 const TRANSPORT_OWNED_HEADERS = new Set(["accept-encoding"])
 
-/** Per-origin h2 session tracking, generation-based retire-and-replace (P4). Not exported — {@link getSession} keeps returning a bare session. */
+/**
+ * Per-origin h2 sessions, generation-based retire-and-replace (P4). Now an ARRAY
+ * per origin (capacity-based routing, plan 2026-07-22): a session at its
+ * concurrent-stream cap (`activeStreamCount >= N`) is skipped for NEW requests
+ * but stays routable once its in-flight streams drain — a session teardown then
+ * takes down at most N in-flight streams instead of every concurrent request.
+ * Not exported — {@link acquireSession} keeps returning a bare session + entry.
+ */
 interface H2SessionEntry {
   session: http2.ClientHttp2Session
   origin: string
@@ -90,20 +99,20 @@ interface H2SessionEntry {
   pingTimer: NodeJS.Timeout | undefined
   effectivePingIntervalMs: number
   effectiveKeepAliveMs: number | undefined
+  /** idle-reap timer, armed when an ACTIVE session's activeStreamCount hits 0; cleared on the next reservation. */
+  idleTimer: NodeJS.Timeout | undefined
 }
 
-/** One multiplexed h2 session per origin (resolved + live, routable for new requests). */
-const sessions = new Map<string, H2SessionEntry>()
+/** Multiple capacity-routed h2 sessions per origin (all resolved + live, routable for new requests). */
+const sessions = new Map<string, Array<H2SessionEntry>>()
 /**
  * Entries that left the routable pool (config hot-reload OR upstream GOAWAY)
  * but still have in-flight streams draining. Their `pingTimer` keeps running —
- * see {@link getSession}'s `retire`/`dispose` split for why.
+ * see the `retire`/`dispose` split in {@link createAndAdmitBornReserved} for why.
  */
 const retiringSessions = new Set<H2SessionEntry>()
-/** Reverse lookup so {@link runHttp2Fetch} can track per-entry active stream count without threading the entry through the whole request path. */
-const sessionEntryByHttp2Session = new WeakMap<http2.ClientHttp2Session, H2SessionEntry>()
-/** In-flight session creations, so concurrent requests to one origin share a connect. */
-const pending = new Map<string, Promise<http2.ClientHttp2Session>>()
+/** In-flight cold-start creations, so concurrent unlimited (n===0) requests to one origin converge on one connect. */
+const pending = new Map<string, Promise<H2SessionEntry>>()
 /** Bumped by {@link closeHttp2Sessions}; lets an in-flight creation detect a shutdown that raced it. */
 let poolEpoch = 0
 /** Bumped by {@link reconcileH2SessionsForConfigChange}; stamped onto every entry created afterward. */
@@ -263,115 +272,269 @@ export function scheduleH2KeepalivePing(session: Pick<http2.ClientHttp2Session, 
  * connect is shared, so cancelling it would wrongly fail them). It settles into
  * the pool (or is observed if it rejects) regardless of who is still waiting.
  */
-async function getSession(origin: string): Promise<http2.ClientHttp2Session> {
+
+/**
+ * Soft cap on concurrent streams per h2 session (0 = unlimited), from
+ * `state.maxConcurrentStreamsPerSession` via proxy.ts (read fresh per call, so a
+ * hot-reload affects future routing only, never in-flight streams — same
+ * no-caching contract as the other transport getters).
+ */
+function getConfiguredMaxStreamsPerSession(): number {
+  return getUpstreamMaxStreamsPerSession()
+}
+
+/** Append `entry` to its origin's session array (creating the array on first use). */
+function addSessionEntry(entry: H2SessionEntry): void {
+  const arr = sessions.get(entry.origin)
+  if (arr) arr.push(entry)
+  else sessions.set(entry.origin, [entry])
+}
+
+/** Remove `entry` from its origin's session array by identity; drop the origin key when its array empties. */
+function removeSessionEntry(entry: H2SessionEntry): void {
+  const arr = sessions.get(entry.origin)
+  if (!arr) return
+  const i = arr.indexOf(entry)
+  if (i !== -1) arr.splice(i, 1)
+  if (arr.length === 0) sessions.delete(entry.origin)
+}
+
+/**
+ * Synchronously pick a routable session for `origin` under cap `n` and RESERVE a
+ * slot on it (`activeStreamCount += 1`) before returning — the synchronous
+ * reserve is what makes `n` a true cap: two concurrent callers can't both grab
+ * the last slot (there is no await between select and reserve). Returns
+ * `undefined` if no live session has spare capacity.
+ *
+ * best-fit: among eligible entries pick the FULLEST (highest activeStreamCount,
+ * tie → last/MRU) so load concentrates on few sessions and the rest fall idle
+ * for reaping (C4). `n === 0` = unlimited: the first live entry always qualifies
+ * ⇒ exactly one session per origin ⇒ byte-equivalent to the old multiplex.
+ */
+function tryReserveLiveSession(origin: string, n: number): H2SessionEntry | undefined {
+  const arr = sessions.get(origin)
+  if (!arr) return undefined
+  let best: H2SessionEntry | undefined
+  for (const entry of arr) {
+    if (entry.lifecycle !== "active") continue
+    if (entry.session.closed || entry.session.destroyed) continue
+    if (n > 0 && entry.activeStreamCount >= n) continue
+    if (best === undefined || entry.activeStreamCount >= best.activeStreamCount) best = entry
+  }
+  if (best) {
+    clearIdleTimer(best) // reserving makes it busy — cancel any pending idle reap
+    best.activeStreamCount += 1 // RESERVE (synchronous, race-free)
+  }
+  return best
+}
+
+/**
+ * Arm the idle-reap timer for an ACTIVE session that just went idle
+ * (activeStreamCount === 0): after `h2IdleSessionTimeout`, close it if still
+ * idle+active so surplus sessions from a subsided burst don't linger. Retiring
+ * sessions are NOT armed — {@link maybeReclaimRetiringSession} reclaims them the
+ * moment they drain, a separate lifecycle. `0` (disabled) leaves the session
+ * pooled indefinitely (old behavior). The timer is `unref`'d so it never keeps
+ * the process alive.
+ */
+function armIdleTimer(entry: H2SessionEntry): void {
+  clearIdleTimer(entry)
+  if (entry.lifecycle !== "active") return
+  if (entry.activeStreamCount > 0) return
+  const timeoutMs = getUpstreamH2IdleSessionTimeoutMs()
+  if (timeoutMs <= 0) return
+  entry.idleTimer = setTimeout(() => {
+    entry.idleTimer = undefined
+    // Re-check under the timer: a reservation may have arrived (which would have
+    // cleared this timer, but guard anyway), or the session may have retired/closed.
+    if (entry.activeStreamCount > 0 || entry.lifecycle !== "active") return
+    try {
+      entry.session.close() // → 'close' → dispose() removes it from the pool
+    } catch {
+      /* best-effort */
+    }
+  }, timeoutMs)
+  entry.idleTimer.unref()
+}
+
+function clearIdleTimer(entry: H2SessionEntry): void {
+  if (entry.idleTimer) {
+    clearTimeout(entry.idleTimer)
+    entry.idleTimer = undefined
+  }
+}
+
+/** Release a reservation taken by {@link tryReserveLiveSession} / born-reserved admission but never transferred to a live stream. */
+function releaseReservation(entry: H2SessionEntry): void {
+  entry.activeStreamCount -= 1
+  maybeReclaimRetiringSession(entry)
+  if (entry.activeStreamCount === 0) armIdleTimer(entry)
+}
+
+/**
+ * Connect a NEW session for `origin` and admit it to the pool BORN-RESERVED
+ * (`activeStreamCount` starts at 1 = the caller's slot). Born-reserved closes the
+ * race where a concurrent {@link tryReserveLiveSession} grabs the just-admitted
+ * fresh session and pushes it over cap: it enters the pool already holding the
+ * creator's slot. The reservation is created only AFTER both self-destruct checks
+ * (shutdown-epoch, generation) pass, so those branches never leak a count.
+ */
+async function createAndAdmitBornReserved(origin: string): Promise<H2SessionEntry> {
+  // Loop (not recursion) so a config-reload race retries within the same frame.
+  for (;;) {
+    const epochAtStart = poolEpoch
+    // Captured BEFORE the (possibly slow) connect — compared after it resolves to
+    // detect a reconcile that raced this creation (HIGH-3).
+    const generationAtStart = currentGeneration
+    // withErrorSink at the point we take ownership of the session (works for the
+    // prod factory AND an injected test factory): guards every session teardown —
+    // the shutdown-race close below, an eventual socket RST — against an orphaned
+    // 'error' → uncaughtException → server crash. See crash-safety.ts.
+    const session = withErrorSink(await sessionFactory(origin))
+    // If closeHttp2Sessions() ran while this session was being established (shutdown
+    // drain racing a new tunnel handshake), don't re-insert it into the just-cleared
+    // pool — close it and throw (no reservation exists yet to leak). The caller's
+    // request fails, which is correct during a graceful-shutdown drain.
+    if (poolEpoch !== epochAtStart) {
+      try {
+        session.close()
+      } catch {
+        /* best-effort */
+      }
+      throw abortError()
+    }
+    // A reconcile ran while sessionFactory's connect was in flight. The
+    // connection-level params (keepAliveMs/connectTimeoutMs) are fixed at
+    // sessionFactory's own entry point, BEFORE the socket/TLS handshake completes
+    // (P2) — so this session may already have been established with STALE config
+    // even though currentGeneration has since moved on. Admitting it as
+    // "generation = currentGeneration" would make H2SessionStatusRow lie about
+    // which config it used. Discard it and retry: the next loop iteration calls
+    // sessionFactory again, reading the now-settled (post-reconcile) config.
+    if (currentGeneration !== generationAtStart) {
+      try {
+        session.close()
+      } catch {
+        /* best-effort */
+      }
+      continue
+    }
+    // Read fresh at entry-creation time (after the possibly-slow proxy/TLS
+    // handshake) so a config change that raced this creation is honored — same
+    // "no caching across calls" contract P2 established for createSession.
+    const effectivePingIntervalMs = getUpstreamH2PingIntervalMs()
+    const effectiveKeepAliveMs = getUpstreamKeepAliveDelayMs()
+    // The factory (test or prod) owns connection setup; pool management is shared.
+    // Two distinct responsibilities, split by event: `retire` stops routing NEW
+    // requests to this session (goaway OR a config-hot-reload reconcile — a
+    // GOAWAY'd/retired session must not take new streams); `dispose` (error/close)
+    // is the only place that clears the keepalive PING timer. A GOAWAY/retire does
+    // NOT destroy the session — its already-in-flight streams keep running, so the
+    // keepalive must keep pinging them until `close` fires (guaranteed to follow,
+    // and clears the timer then). Clearing on retire would strand a draining
+    // long-thinking stream in exactly the silence this keepalive exists to defeat.
+    const pingTimer = scheduleH2KeepalivePing(session, effectivePingIntervalMs)
+    const entry: H2SessionEntry = {
+      session,
+      origin,
+      generation: currentGeneration, // === generationAtStart, confirmed above
+      lifecycle: "active",
+      activeStreamCount: 1, // BORN-RESERVED for the creator (see doc comment)
+      pingTimer,
+      effectivePingIntervalMs,
+      effectiveKeepAliveMs,
+      idleTimer: undefined, // armed later, only when it goes idle (activeStreamCount → 0)
+    }
+    const dispose = (): void => {
+      if (entry.pingTimer) clearInterval(entry.pingTimer)
+      clearIdleTimer(entry)
+      removeSessionEntry(entry)
+      retiringSessions.delete(entry)
+    }
+    const retire = (): void => {
+      clearIdleTimer(entry) // retiring is reclaimed via maybeReclaimRetiringSession, not idle-reap
+      removeSessionEntry(entry)
+      if (entry.lifecycle === "active") {
+        entry.lifecycle = "retiring"
+        retiringSessions.add(entry)
+      }
+    }
+    session.on("error", dispose)
+    session.on("close", dispose)
+    session.on("goaway", retire)
+    session.unref()
+    addSessionEntry(entry)
+    return entry
+  }
+}
+
+/**
+ * Acquire a reserved session+entry for `origin`, honoring the per-session
+ * concurrent-stream cap. The returned entry holds exactly ONE reservation the
+ * caller must either transfer to a live stream ({@link runHttp2Fetch}'s
+ * `req.once("close")` decrement) or release ({@link releaseReservation}).
+ *
+ * - Cap hit on a live session → reuse it (synchronous reserve, race-free).
+ * - Miss + `n === 0` + an in-flight cold-start creation exists → JOIN it and
+ *   reserve on the shared entry, so concurrent cold-start callers converge on one
+ *   session (byte-equivalent to the old per-origin connect dedup).
+ * - Otherwise → connect a new born-reserved session. For `n >= 1` each missing
+ *   caller connects its own (the isolation the incident calls for); only the
+ *   `n === 0` path shares via {@link pending}.
+ */
+async function acquireSession(origin: string, signal: AbortSignal | undefined): Promise<H2SessionEntry> {
   ensureH2ReconcileSubscription()
 
-  const live = sessions.get(origin)
-  if (live && !live.session.closed && !live.session.destroyed) return live.session
+  const n = getConfiguredMaxStreamsPerSession()
 
-  const inflight = pending.get(origin)
-  if (inflight) return inflight
-
-  const creation = (async (): Promise<http2.ClientHttp2Session> => {
-    // Loop (not recursion into getSession()) so a config-reload race (below)
-    // retries within the SAME creation frame/pending-map entry. Recursing into
-    // getSession() would open a second, independent pending.set/delete bracket;
-    // in the microtask window between the two frames, a third-party caller's
-    // freshly-inserted pending entry could be deleted by the OUTER frame's
-    // now-stale `finally` — a real race, not a hypothetical one. A single loop
-    // has exactly one pending.set/delete pair for the whole retry sequence.
-    for (;;) {
-      const epochAtStart = poolEpoch
-      // Captured BEFORE the (possibly slow) connect — compared after it
-      // resolves to detect a reconcile that raced this creation (HIGH-3).
-      const generationAtStart = currentGeneration
-      // withErrorSink at the point we take ownership of the session (works for the
-      // prod factory AND an injected test factory): guards every session teardown —
-      // the shutdown-race close below, an eventual socket RST — against an orphaned
-      // 'error' → uncaughtException → server crash. See crash-safety.ts.
-      const session = withErrorSink(await sessionFactory(origin))
-      // If closeHttp2Sessions() ran while this session was being established (shutdown
-      // drain racing a new tunnel handshake), don't re-insert it into the just-cleared
-      // pool — close it instead, so it doesn't leak as an orphaned open session.
-      if (poolEpoch !== epochAtStart) {
-        try {
-          session.close()
-        } catch {
-          /* best-effort */
-        }
-        return session
-      }
-      // A reconcile ran while sessionFactory's connect was in flight. The
-      // connection-level params (keepAliveMs/connectTimeoutMs) are fixed at
-      // sessionFactory's own entry point, BEFORE the socket/TLS handshake
-      // completes (P2) — so this session may already have been established
-      // with STALE config even though currentGeneration has since moved on.
-      // Admitting it as "generation = currentGeneration" would make
-      // H2SessionStatusRow lie about which config it actually used. Discard
-      // it and retry: the next loop iteration calls sessionFactory again,
-      // which reads the now-settled (post-reconcile) config from scratch.
-      if (currentGeneration !== generationAtStart) {
-        try {
-          session.close()
-        } catch {
-          /* best-effort */
-        }
-        continue
-      }
-      // Read fresh at entry-creation time (after the possibly-slow proxy/TLS
-      // handshake) so a config change that raced this creation is honored —
-      // same "no caching across calls" contract P2 already established for
-      // createSession's own reads of these functions.
-      const effectivePingIntervalMs = getUpstreamH2PingIntervalMs()
-      const effectiveKeepAliveMs = getUpstreamKeepAliveDelayMs()
-      // The factory (test or prod) owns connection setup; pool management is shared.
-      // Two distinct responsibilities, split by event: `retire` stops routing NEW
-      // requests to this session (goaway OR a config-hot-reload reconcile — a
-      // GOAWAY'd/retired session must not take new streams); `dispose` (error/close)
-      // is the only place that clears the keepalive PING timer. A GOAWAY/retire does
-      // NOT destroy the session — its already-in-flight streams keep running, so the
-      // keepalive must keep pinging them until `close` fires (guaranteed to follow,
-      // and clears the timer then). Clearing on retire would strand a draining
-      // long-thinking stream in exactly the silence this keepalive exists to defeat.
-      const pingTimer = scheduleH2KeepalivePing(session, effectivePingIntervalMs)
-      const entry: H2SessionEntry = {
-        session,
-        origin,
-        generation: currentGeneration, // === generationAtStart, confirmed above
-        lifecycle: "active",
-        activeStreamCount: 0,
-        pingTimer,
-        effectivePingIntervalMs,
-        effectiveKeepAliveMs,
-      }
-      sessionEntryByHttp2Session.set(session, entry)
-      const dispose = (): void => {
-        if (entry.pingTimer) clearInterval(entry.pingTimer)
-        if (sessions.get(origin) === entry) sessions.delete(origin)
-        retiringSessions.delete(entry)
-      }
-      const retire = (): void => {
-        if (sessions.get(origin) === entry) sessions.delete(origin)
-        if (entry.lifecycle === "active") {
-          entry.lifecycle = "retiring"
-          retiringSessions.add(entry)
-        }
-      }
-      session.on("error", dispose)
-      session.on("close", dispose)
-      session.on("goaway", retire)
-      session.unref()
-      sessions.set(origin, entry)
-      return session
+  const reused = tryReserveLiveSession(origin, n)
+  if (reused) {
+    // The hot path took a reservation synchronously; if this request already
+    // aborted, hand the slot back rather than leaking it (the caller's raceAbort
+    // may have rejected already, so nobody downstream will release it).
+    if (signal?.aborted) {
+      releaseReservation(reused)
+      throw abortError()
     }
-  })()
-
-  pending.set(origin, creation)
-  try {
-    return await creation
-  } finally {
-    pending.delete(origin)
+    return reused
   }
+
+  // Cold-start dedup is only wanted when unlimited (n === 0): all callers should
+  // converge on one multiplexed session. Under a finite cap each missing caller
+  // needs its own session, so pending is neither read nor written there.
+  let entry: H2SessionEntry
+  if (n === 0) {
+    const inflight = pending.get(origin)
+    if (inflight) {
+      entry = await inflight
+      // Defensive symmetry with tryReserveLiveSession's reserve (which clears the
+      // idle timer): a joined entry is a still-in-creation born-reserved session
+      // that cannot yet have been idle-armed, so this is a no-op TODAY — but it
+      // keeps "reserve ⇒ clear idle timer" a single unconditional rule rather than
+      // an implicit timing invariant a future refactor could silently break.
+      clearIdleTimer(entry)
+      entry.activeStreamCount += 1 // reserve on the joined session
+    } else {
+      const creation = createAndAdmitBornReserved(origin)
+      pending.set(origin, creation)
+      try {
+        entry = await creation
+      } finally {
+        // Identity-guarded: only clear if still ours (a later creation may have replaced it).
+        if (pending.get(origin) === creation) pending.delete(origin)
+      }
+    }
+  } else {
+    entry = await createAndAdmitBornReserved(origin)
+  }
+
+  // Post-connect abort check: releasing this caller's own reservation is
+  // independent of any peer sharing the joined session (each holds its own +1).
+  if (signal?.aborted) {
+    releaseReservation(entry)
+    throw abortError()
+  }
+  return entry
 }
 
 /** Lazily subscribe (once) to `onUpstreamTransportChange`, mirroring proxy.ts's `ensureTimeoutSubscription()`. */
@@ -459,8 +622,13 @@ export function reconcileH2SessionsForConfigChange(): void {
     // exactly "what was already retiring before this call") lets the second
     // loop visit each entry exactly once per reconcile.
     const preexistingRetiring = new Set(retiringSessions)
-    for (const [origin, entry] of sessions) {
-      sessions.delete(origin)
+    // Flatten every origin's session array — each origin may now hold MULTIPLE
+    // capacity-routed sessions, all of which must retire on a config reload.
+    // Snapshot the entries first (retire mutates `sessions` via removeSessionEntry).
+    const liveEntries: Array<H2SessionEntry> = []
+    for (const arr of sessions.values()) liveEntries.push(...arr)
+    sessions.clear()
+    for (const entry of liveEntries) {
       if (entry.lifecycle === "active") {
         entry.lifecycle = "retiring"
         retiringSessions.add(entry)
@@ -507,7 +675,7 @@ function entryToStatusRow(entry: H2SessionEntry): H2SessionStatusRow {
 
 export function getH2SessionStatusSnapshot(): ReadonlyArray<H2SessionStatusRow> {
   const rows: Array<H2SessionStatusRow> = []
-  for (const entry of sessions.values()) rows.push(entryToStatusRow(entry))
+  for (const arr of sessions.values()) for (const entry of arr) rows.push(entryToStatusRow(entry))
   for (const entry of retiringSessions) rows.push(entryToStatusRow(entry))
   return rows
 }
@@ -615,13 +783,19 @@ async function runHttp2Fetch(u: URL, init: UpstreamFetchInit): Promise<Response>
   const signal = init.signal
   if (signal?.aborted) throw abortError()
 
-  // Race the (possibly slow proxy-tunneled) session creation against THIS request's
-  // abort, so an aborted request fails promptly instead of waiting out the shared
-  // connect. The session-creation promise keeps running for the other concurrent
-  // callers — we abort our wait, not their connect.
-  const session = await raceAbort(getSession(u.origin), signal)
-  // The proxy tunnel / TLS handshake may have taken a while; re-check abort.
-  if (signal?.aborted) throw abortError()
+  // Acquire a reserved session+entry (honoring the per-session concurrent-stream
+  // cap). raceAbort cancels only THIS request's wait — the underlying
+  // acquireSession keeps running for concurrent callers, and releases its own
+  // reservation internally if it resolves after an abort, so no slot leaks.
+  const entry = await raceAbort(acquireSession(u.origin, signal), signal)
+  const session = entry.session
+  // The proxy tunnel / TLS handshake may have taken a while; re-check abort. We
+  // hold one reservation on `entry` (from acquireSession) — release it on this
+  // early exit so an abort in the connect window doesn't leak a slot (PATH 2).
+  if (signal?.aborted) {
+    releaseReservation(entry)
+    throw abortError()
+  }
 
   return new Promise<Response>((resolve, reject) => {
     const headers: Record<string, string> = {
@@ -635,7 +809,17 @@ async function runHttp2Fetch(u: URL, init: UpstreamFetchInit): Promise<Response>
       headers[lower] = value
     }
 
-    const req = session.request(headers)
+    let req: http2.ClientHttp2Stream
+    try {
+      req = session.request(headers)
+    } catch (err) {
+      // session.request() threw (e.g. the pooled session died in the async gap
+      // between acquire and here) — release our reservation (never transferred to
+      // a stream, so no `close` will fire to release it) and reject (PATH 3).
+      releaseReservation(entry)
+      reject(err as Error)
+      return
+    }
 
     // Physical-dispatch teardown barrier. Cancelling one response owns only this h2 stream;
     // the pooled session remains available to siblings. Resolve cancellation/rejection only
@@ -645,27 +829,19 @@ async function runHttp2Fetch(u: URL, init: UpstreamFetchInit): Promise<Response>
       resolveRequestClosed = resolve
     })
 
-    // activeStreamCount bookkeeping (P4): Node guarantees `close` fires exactly
-    // once per h2 stream regardless of outcome (normal end / RST / abort before or
-    // after headers) — using this single platform-guaranteed event, instead of
-    // hand-decrementing on every distinct termination path below, is what makes
-    // global constraint #3 ("exactly-once decrement, every path") hold without
-    // manually enumerating every path.
-    const streamEntry = sessionEntryByHttp2Session.get(session)
-    if (streamEntry) {
-      streamEntry.activeStreamCount += 1
-      req.once("close", () => {
-        streamEntry.activeStreamCount -= 1
-        maybeReclaimRetiringSession(streamEntry)
-        init.onStreamClosed?.()
-        resolveRequestClosed()
-      })
-    } else {
-      req.once("close", () => {
-        init.onStreamClosed?.()
-        resolveRequestClosed()
-      })
-    }
+    // activeStreamCount bookkeeping: the stream now owns the reservation acquired
+    // above. Node guarantees `close` fires exactly once per h2 stream regardless of
+    // outcome (normal end / RST / abort before or after headers) — this single
+    // platform-guaranteed event releases the reservation exactly once, without
+    // hand-decrementing on every distinct termination path below (global
+    // constraint #3). PATH 1 (the sole path once the stream exists).
+    req.once("close", () => {
+      entry.activeStreamCount -= 1
+      maybeReclaimRetiringSession(entry)
+      if (entry.activeStreamCount === 0) armIdleTimer(entry) // went idle → schedule reap
+      init.onStreamClosed?.()
+      resolveRequestClosed()
+    })
 
     let responseResolved = false
     let rejectionScheduled = false
@@ -800,15 +976,19 @@ async function runHttp2Fetch(u: URL, init: UpstreamFetchInit): Promise<Response>
 /** Close all pooled sessions (active + retiring). Called on graceful shutdown, and by `setHttp2SessionFactoryForTests` (test isolation). */
 export function closeHttp2Sessions(): void {
   poolEpoch++ // signal in-flight creations to self-close instead of re-inserting
-  for (const entry of sessions.values()) {
-    try {
-      entry.session.close()
-    } catch {
-      /* best-effort */
+  for (const arr of sessions.values()) {
+    for (const entry of arr) {
+      clearIdleTimer(entry)
+      try {
+        entry.session.close()
+      } catch {
+        /* best-effort */
+      }
     }
   }
   sessions.clear()
   for (const entry of retiringSessions) {
+    clearIdleTimer(entry)
     try {
       entry.session.close()
     } catch {

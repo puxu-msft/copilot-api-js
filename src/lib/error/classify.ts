@@ -82,6 +82,26 @@ export function classifyError(error: unknown): ApiError {
     }
   }
 
+  // HTTP/2 pre-response teardown: the h2 stream/session died BEFORE any response
+  // headers arrived (status 0, zero frames — http2-client.ts's `!headersReceived`
+  // close backstop). Semantically DISTINCT from REFUSED_STREAM (which carries a
+  // protocol zero-processing guarantee): here the connection is simply dead, and
+  // reconnecting + resending is the ONLY way to deliver any usable response — not
+  // retrying just yields "quota maybe already spent AND zero response". If the
+  // upstream had metered the request before the teardown, it is recorded twice
+  // (inherent, unavoidable; History/telemetry record it faithfully). The
+  // network-retry strategy's `hasRetried` latch bounds the extra attempt to at
+  // most one. Kept in its OWN token list so it never dilutes the strict
+  // REFUSED_STREAM guarantee.
+  if (error instanceof Error && isRetryablePreResponseHttp2Close(error)) {
+    return {
+      type: "network_error",
+      status: 0,
+      message: formatErrorWithCause(error),
+      raw: error,
+    }
+  }
+
   // Network errors: fetch failures, socket closures, connection resets, timeouts, DNS failures
   // Bun throws TypeError for some fetch failures, and plain Error for socket closures.
   // Match broadly on error message patterns to catch all network-level failures.
@@ -330,6 +350,32 @@ function isRetryableHttp2StreamError(error: Error): boolean {
   if (HTTP2_RETRYABLE_MESSAGE_TOKENS.some((token) => msg.includes(token))) return true
 
   if (error.cause instanceof Error) return isRetryableHttp2StreamError(error.cause)
+
+  return false
+}
+
+/**
+ * HTTP/2 pre-response teardown tokens — the connection died before ANY response
+ * header arrived (status 0, zero frames). This is WEAKER than
+ * {@link HTTP2_RETRYABLE_MESSAGE_TOKENS}: no protocol zero-processing guarantee,
+ * only the strong evidence that the upstream returned not a single response byte.
+ * Reconnect-and-resend is the only path to deliver a usable response (see the
+ * classifyError branch). Kept in a SEPARATE list so the strict REFUSED_STREAM
+ * semantics are never diluted.
+ *
+ * Substring uniqueness (verified): "closed before any response" is emitted ONLY
+ * at http2-client.ts's `!headersReceived` close backstop. It does NOT overlap
+ * with the mid-body "closed before end" (post-headers — must stay a body-stream
+ * error, never re-classified as retryable here) nor with the buffered-retry
+ * "closed without message_stop" truncation.
+ */
+const HTTP2_PRE_RESPONSE_RETRYABLE_TOKENS = ["upstream stream closed before any response"]
+
+function isRetryablePreResponseHttp2Close(error: Error): boolean {
+  const msg = error.message.toLowerCase()
+  if (HTTP2_PRE_RESPONSE_RETRYABLE_TOKENS.some((token) => msg.includes(token))) return true
+
+  if (error.cause instanceof Error) return isRetryablePreResponseHttp2Close(error.cause)
 
   return false
 }

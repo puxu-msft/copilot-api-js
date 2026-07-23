@@ -412,11 +412,17 @@ history:
 
   # 终态落盘遇瞬时 SQLite 失败（WAL BUSY/LOCKED/IOERR）时的有界重试（DI-5）。
   # 此前首次失败即丢弃该 entry；现改为线性退避重试，permanent/conflict 不重试。
+  # max_total_ms 是每条 entry 重试的墙钟总耗时软上限（DI-5-followup-2）——计入每次
+  # attempt 自身的阻塞（如 SQLite busy_timeout 等待，真实 wedge 的主体）+ 退避；线性
+  # 退避之和随次数平方增长，极端 max_attempts × backoff_ms（或慢 attempt）会把 drain
+  # （进而 shutdown）拖到分钟级；该上限封顶单条 entry 占用 drain 的总时长（0 = 关闭）。
   # Bounded retry for terminal-persistence commits that hit a transient SQLite
-  # error. Permanent failures / conflicts are never retried.
+  # error. Permanent failures / conflicts are never retried. `max_total_ms` is a
+  # per-commit wall-clock soft cap (includes each attempt's own blocking; 0 disables it).
   persist_retry:
     max_attempts: 3
     backoff_ms: 10
+    max_total_ms: 30000
 
 # 遥测分三层滚筒（5min/1h/1d）+ 终身累计。
 # Telemetry has three-tier rollup (5min / hourly / daily) + lifetime cumulative.

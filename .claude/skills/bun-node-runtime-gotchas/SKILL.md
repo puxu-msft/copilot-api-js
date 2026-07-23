@@ -1,6 +1,6 @@
 ---
 name: bun-node-runtime-gotchas
-description: 当 copilot-api-js 在 Bun/Node 双运行时下遇到「stdlib/Web 标准行为诡异」或 Bun 独有 API 能力边界时使用——undici.Response≠globalThis.Response（instanceof 跨 realm 假失败、Bun 下恰好相等掩盖 Node bug）、new Headers 对异大小写同名键逗号拼接非覆盖（头合并畸形双 Bearer）、bun:sqlite `.get()` 返 null 而 node:sqlite 返 undefined、触发器写入被计入 `.run().changes`、Bun.Terminal 伪终端不给子进程投递 SIGWINCH+stdout.rows 不刷新（PTY 测 resize 恒绿假测）、node-pty 在 bun 下 spawn 语义损坏。凡「Bun 能跑 Node 挂」「两 runtime 行为分歧」或「Bun 独有 API 悄悄不工作」的排查。
+description: 当 copilot-api-js 在 Bun/Node 双运行时下遇到「stdlib/Web 标准行为诡异」或 Bun 独有 API 能力边界时使用——undici.Response≠globalThis.Response（instanceof 跨 realm 假失败、Bun 下恰好相等掩盖 Node bug）、new Headers 对异大小写同名键逗号拼接非覆盖（头合并畸形双 Bearer）、bun:sqlite `.get()` 返 null 而 node:sqlite 返 undefined、触发器写入被计入 `.run().changes`、Bun.Terminal 伪终端不给子进程投递 SIGWINCH+stdout.rows 不刷新（PTY 测 resize 恒绿假测）、node-pty 在 bun 下 spawn 语义损坏、node:http2 服务端 pre-header 销毁 Bun 只发裸 close 不发 error（永挂）、net.connect() ENOENT 在 Bun.serve 请求处理器内抢在 post-connect listener 前投递致 uncaughtException 崩主进程（须 new Socket()+listener-before-connect）。凡「Bun 能跑 Node 挂」「两 runtime 行为分歧」或「Bun 独有 API 悄悄不工作」的排查。
 ---
 
 # Bun / Node 跨运行时 stdlib 陷阱
@@ -58,6 +58,17 @@ new Headers({ authorization: "Bearer A", Authorization: "Bearer B" })
 - **Node v24**：同场景 `req` 先触发 **`error`（`ERR_HTTP2_SESSION_ERROR`）** 再 `close`（rstCode=2）——`error` 先到、正常 reject。
 
 修法：pre-header 阶段挂一个 `req.once("close")` backstop，`!headersReceived` 时 reject（headers 已到的正常 close 是 no-op、不误 reject）。注意与 active-stream 记账的 `req.once("close")` 归因点**互相独立**（一个 reject fetch promise、一个做计数），别混用同一个 handler 双触发。另注：Bun 对**干净** server RST_STREAM（`stream.close(code)`）投递为普通 `end` + `rstCode=0`（实测），故「干净 RST」在 Bun 下这一路不可辨——依赖 rstCode 判错误类型的逻辑对 Bun 要留退路。
+
+## `net.connect()` 的 ENOENT `'error'` 在**请求处理器上下文**里抢在 post-connect listener 之前投递（listener-after-connect 失效）
+
+`net.connect(path)` **在返回 socket 之前就已启动连接尝试**，故「先 `const s = net.connect(path)` 再 `s.on("error", ...)`」这个几乎所有代码都在用的顺序，对**连不上的路径**（UDS `ENOENT` / `ECONNREFUSED`）有一个 listener-attach 竞态窗口。两 runtime + 两事件循环上下文实测（Bun 1.3.14，2026-07-22 生产崩溃逼出）：
+
+- **独立脚本 / 顶层 async / `bun test` 顶层**：ENOENT `'error'` 在**后续 tick** 异步投递，post-connect listener 来得及挂 → 不崩。**这正是掩盖层**——所有在此上下文写的验证都是 false-green（`bun test` 里靠一次在先的 `net.Server.listen()` 把 Bun 的 UDS-connect 内部「暖」了，见 `tests/helpers/prime-uds-for-bun-test.ts`）。
+- **`Bun.serve` 请求处理器内**（真实生产上下文）：同一个 ENOENT `'error'` 在**调用方拿回控制权之前**就投递，post-connect listener **来不及挂** → 无监听者的 `'error'` 变 `uncaughtException` → `main.ts` `exit(1)`（`history-search` sidecar 未起时任何 `/api/search` 打崩整主服务器，250/250 复现）。**注意它不是同步 throw**——`net.connect()` 不抛（`threwSync:false` 实测），故包 `try/catch` 或放进 `new Promise` executor **都接不住**（不是 rejection、是进程级逃逸）。`withErrorSink`(socket) 在此同样失效（它挂在**已经晚了**的返回 socket 上）。
+
+**根因修（唯一可靠形状）**：**别用 `net.connect()`**。造一个**未连接**的 `const s = new net.Socket()` → 挂全部 listener（error sink + 真 error + connect/data/close/end）→ **最后**才 `s.connect(path)`。listener 保证先于任何连接尝试存在，两 runtime × 两上下文都无窗口。落地 `src/lib/history/search/uds-client.ts` `sendRequest`（commit `6729efc7`）。
+
+**测试真相域陷阱**：此崩溃的忠实 oracle **必须**在 `Bun.serve` 处理器上下文、且走真 `bun run`（非 `bun test` 顶层，否则被 warm-up 掩盖）——用 `Bun.spawn([process.execPath, "-e", ...])` 起子进程、handler 内 query 缺失 socket、按 exit code 判崩溃（`uds-transport.it.test.ts` 的「faithful production oracle」测，revert fix 即红）。in-process `process.on("uncaughtException")` 探针在顶层跑=false-green，与 [[reference-picocolors-collapses-to-identity-in-bun-test]] 同族「bun test 环境掩盖真行为」。呼应 skill `debugging-server-crashes`（无监听 `'error'` → `uncaughtException` 放大链）与 `empirical-verification`（两 runtime × 两上下文实测裁决）。
 
 ## 通用手法
 

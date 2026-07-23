@@ -22,12 +22,15 @@ import {
 } from "~/lib/proxy"
 import {
   //
+  onUpstreamTransportChange,
   setStateForTests,
   setUpstreamTransportConfig,
+  state,
 } from "~/lib/state"
 import {
   //
   setUpstreamFetchForTests,
+  selectUpstreamTransport,
   upstreamFetch,
 } from "~/lib/transport/upstream-fetch"
 
@@ -102,6 +105,29 @@ describe("upstream dispatcher — keepalive contract", () => {
 
     expect(getUpstreamDispatcher()).not.toBe(before)
   })
+
+  test("upstreamH2Favor change updates state but does NOT fire onUpstreamTransportChange listeners (no needless h2 reconcile / dispatcher rebuild)", () => {
+    setStateForTests({ upstreamH2Favor: true, upstreamKeepaliveDelay: 15 })
+    let fired = 0
+    const unsubscribe = onUpstreamTransportChange(() => {
+      fired += 1
+    })
+    try {
+      // favor is a pure per-request routing flag: the value applies immediately...
+      setUpstreamTransportConfig({ upstreamH2Favor: false })
+      expect(state.upstreamH2Favor).toBe(false)
+      // ...but no listener fires — direct oracle, independent of any specific
+      // listener's side-effect shape (a favor flip must not retire h2 sessions).
+      expect(fired).toBe(0)
+
+      // Positive control: a real connection-affecting field DOES fire listeners,
+      // proving the counter is wired and the 0 above is a genuine no-fire.
+      setUpstreamTransportConfig({ upstreamKeepaliveDelay: 45 })
+      expect(fired).toBe(1)
+    } finally {
+      unsubscribe()
+    }
+  })
 })
 
 describe("real undici load (C1 regression guard)", () => {
@@ -121,5 +147,26 @@ describe("real undici load (C1 regression guard)", () => {
     // Bun's shim Agent does not. If proxy.ts reverts to bare "undici", this fails.
     initProxy({ fromEnv: false })
     expect("stats" in getUpstreamDispatcher()).toBe(true)
+  })
+})
+
+describe("selectUpstreamTransport — https h2-favor routing", () => {
+  autoRestoreState()
+
+  test("https prefers http2 by default (favor=true)", () => {
+    setUpstreamTransportConfig({ upstreamH2Favor: true })
+    expect(selectUpstreamTransport(new URL("https://api.githubcopilot.com/v1/messages"))).toBe("http2")
+  })
+
+  test("https falls back to undici when favor=false", () => {
+    setUpstreamTransportConfig({ upstreamH2Favor: false })
+    expect(selectUpstreamTransport(new URL("https://api.githubcopilot.com/v1/messages"))).toBe("undici")
+  })
+
+  test("plaintext http always uses undici regardless of favor", () => {
+    setUpstreamTransportConfig({ upstreamH2Favor: true })
+    expect(selectUpstreamTransport(new URL("http://localhost:8080/search"))).toBe("undici")
+    setUpstreamTransportConfig({ upstreamH2Favor: false })
+    expect(selectUpstreamTransport(new URL("http://localhost:8080/search"))).toBe("undici")
   })
 })

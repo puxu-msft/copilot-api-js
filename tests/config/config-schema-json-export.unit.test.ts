@@ -81,6 +81,7 @@ describe("ConfigSchema → JSON Schema export", () => {
 
     const http2 = pickObjectSchema(utProps.http2)
     const http2Props = http2.properties as Record<string, unknown>
+    expect(http2Props.favor).toBeDefined()
     expect(http2Props.ping_interval).toBeDefined()
     expect(http2Props.session_connect_timeout).toBeDefined()
 

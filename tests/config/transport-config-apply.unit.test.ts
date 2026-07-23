@@ -9,8 +9,10 @@ import {
   beforeEach,
   describe,
   expect,
+  spyOn,
   test,
 } from "bun:test"
+import consola from "consola"
 import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
@@ -65,6 +67,40 @@ describe("applyConfigToState — upstream_transport.* / server.responses_ws.*", 
     await writeConfig("upstream_transport:\n  http2:\n    ping_interval: 33\n")
     await applyConfigToState()
     expect(state.upstreamH2PingInterval).toBe(33)
+  })
+
+  test("upstream_transport.http2.favor reaches state.upstreamH2Favor", async () => {
+    await writeConfig("upstream_transport:\n  http2:\n    favor: false\n")
+    await applyConfigToState()
+    expect(state.upstreamH2Favor).toBe(false)
+  })
+
+  test("upstream_transport.http2.favor=false logs a loud warning under Bun (only signal that https will hang)", async () => {
+    // The unit tier runs under Bun (`typeof Bun !== 'undefined'`), which is exactly
+    // the runtime where favor:false bricks every https upstream (undici hangs on
+    // GHC's chunked responses). Lock the operator-facing warning so a future
+    // refactor can't silently drop it or invert the runtime guard.
+    const warnSpy = spyOn(consola, "warn").mockImplementation(((..._args: Array<unknown>) => undefined) as unknown as typeof consola.warn)
+    try {
+      await writeConfig("upstream_transport:\n  http2:\n    favor: false\n")
+      await applyConfigToState()
+      const messages = warnSpy.mock.calls.map((call: Array<unknown>) => String(call[0]))
+      expect(messages.some((m) => m.includes("favor") && m.toLowerCase().includes("bun"))).toBe(true)
+    } finally {
+      warnSpy.mockRestore()
+    }
+  })
+
+  test("upstream_transport.http2.favor=true does NOT warn", async () => {
+    const warnSpy = spyOn(consola, "warn").mockImplementation(((..._args: Array<unknown>) => undefined) as unknown as typeof consola.warn)
+    try {
+      await writeConfig("upstream_transport:\n  http2:\n    favor: true\n")
+      await applyConfigToState()
+      const messages = warnSpy.mock.calls.map((call: Array<unknown>) => String(call[0]))
+      expect(messages.some((m) => m.includes("favor"))).toBe(false)
+    } finally {
+      warnSpy.mockRestore()
+    }
   })
 
   test("upstream_transport.http2.session_connect_timeout reaches state.sessionConnectTimeout", async () => {

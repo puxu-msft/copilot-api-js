@@ -75,20 +75,32 @@ afterEach(async () => {
 
 describe("history.persist_retry config wiring", () => {
   test("applyConfigToState feeds persist_retry into the V3 store retry budget", async () => {
-    await writeConfig("history:\n  persist_retry:\n    max_attempts: 7\n    backoff_ms: 25\n")
+    await writeConfig("history:\n  persist_retry:\n    max_attempts: 7\n    backoff_ms: 25\n    max_total_ms: 5000\n")
     await applyConfigToState()
-    expect(getV3PersistRetryConfigForTests()).toEqual({ maxAttempts: 7, backoffMs: 25 })
+    expect(getV3PersistRetryConfigForTests()).toEqual({ maxAttempts: 7, backoffMs: 25, maxTotalMs: 5000 })
   })
 
   test("absent persist_retry leaves the budget at its baseline (no clobber to 0)", async () => {
     await writeConfig("history:\n  enabled: true\n")
     await applyConfigToState()
-    expect(getV3PersistRetryConfigForTests()).toEqual({ maxAttempts: 3, backoffMs: 10 })
+    expect(getV3PersistRetryConfigForTests()).toEqual({ maxAttempts: 3, backoffMs: 10, maxTotalMs: 30_000 })
   })
 
   test("max_attempts is floored at 1 (a 0 in config never disables all attempts)", async () => {
     await writeConfig("history:\n  persist_retry:\n    max_attempts: 0\n")
     await applyConfigToState()
     expect(getV3PersistRetryConfigForTests().maxAttempts).toBe(1)
+  })
+
+  test("max_total_ms omitted defaults to the 30s cap (not 0/unbounded)", async () => {
+    await writeConfig("history:\n  persist_retry:\n    max_attempts: 7\n    backoff_ms: 25\n")
+    await applyConfigToState()
+    expect(getV3PersistRetryConfigForTests().maxTotalMs).toBe(30_000)
+  })
+
+  test("max_total_ms: 0 disables the time cap (explicit opt-out survives)", async () => {
+    await writeConfig("history:\n  persist_retry:\n    max_total_ms: 0\n")
+    await applyConfigToState()
+    expect(getV3PersistRetryConfigForTests().maxTotalMs).toBe(0)
   })
 })

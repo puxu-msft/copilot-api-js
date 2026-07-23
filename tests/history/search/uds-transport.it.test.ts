@@ -7,10 +7,19 @@
  * `tests/transport/http2-client.it.test.ts` ("a TLS connect timeout rejects
  * WITHOUT a process uncaughtException"): install a `process.on('uncaughtException')`
  * probe BEFORE exercising the failure path, assert it never fires, remove it in a
- * `finally`. Unlike that file's WHATWG-EventTarget async-escape case, `net.Socket`/
- * `net.Server` are plain `node:events` EventEmitters, so an in-process probe is a
- * FAITHFUL proof here (no subprocess needed) — Node's "an unheard 'error' event
- * rethrows synchronously as uncaughtException" semantics fire on THIS event loop.
+ * `finally`.
+ *
+ * ⚠ An in-process probe here is NOT a faithful proof of the production crash mode
+ * (corrected 2026-07-22): at the `bun test` top level a prior `server.listen()` in
+ * this same file "warms" Bun's UDS-connect internals (see prime-uds-for-bun-test.ts),
+ * so a missing-socket connect emits a catchable async `'error'` — and these probes
+ * pass even against the pre-fix `net.connect()`-then-listener code. The REAL crash
+ * only surfaces inside a `Bun.serve` request handler under plain `bun run` (an
+ * ENOENT `'error'` delivered before a post-`net.connect()` listener can attach →
+ * `uncaughtException` → `main.ts` exit(1)). The faithful oracle for that is the
+ * spawned-child test below; the in-process probes are retained as cheap coverage of
+ * the OTHER never-throw branches (hang / malformed frame / wire-error / immediate
+ * close), which are context-independent.
  */
 
 import {
@@ -192,6 +201,54 @@ describe("UDS client never-throw contract (crash-safety-critical)", () => {
       const rows = await client.query("q", undefined, 5)
       expect(rows).toEqual([])
     })
+  })
+
+  // FAITHFUL production oracle for the real crash (2026-07-22): the in-process
+  // probes above run at the `bun test` top level, where a prior `server.listen()`
+  // in this same file has "warmed" Bun's UDS-connect internals (see
+  // prime-uds-for-bun-test.ts) — so a missing-socket `query()` emits a catchable
+  // async `'error'` and they pass EVEN against the pre-fix code. Production is a
+  // different event-loop context: inside a `Bun.serve` request handler, an ENOENT
+  // on `net.connect()` was delivered BEFORE the returned socket's listener could
+  // attach, escaping `withErrorSink` as an `uncaughtException` → `main.ts`
+  // `exit(1)`. (The earlier "in-process probe is a FAITHFUL proof / this is purely
+  // a bun-test artifact, not a real bug" claims — this file's header and
+  // prime-uds-for-bun-test.ts lines 46-50 — were both false-green, verified
+  // outside a request handler.) This test reproduces the true context by spawning
+  // a real `bun run` child that queries a missing sidecar from inside a Bun.serve
+  // handler under concurrent load; it exits non-zero on any uncaught escape.
+  // Load-bearing negative control: reverting sendRequest to `net.connect()` +
+  // listener-after makes this child crash (250/250 in the original repro).
+  test("missing sidecar queried from INSIDE a Bun.serve request handler under load -> no process crash (faithful production oracle)", async () => {
+    const missing = freshSocketPath() // nothing ever listens here
+    const clientModule = path.resolve(import.meta.dir, "../../../src/lib/history/search/uds-client.ts")
+    const child = Bun.spawn(
+      [
+        process.execPath,
+        "-e",
+        `
+        import { createHistorySearchUdsClient } from ${JSON.stringify(clientModule)}
+        let bad = 0
+        process.on("uncaughtException", () => { bad++ })
+        process.on("unhandledRejection", () => { bad++ })
+        const client = createHistorySearchUdsClient({ socketPath: ${JSON.stringify(missing)}, connectTimeoutMs: 300, queryTimeoutMs: 300 })
+        const server = Bun.serve({ port: 0, async fetch() { return new Response(JSON.stringify(await client.query("q", undefined, 5))) } })
+        const url = "http://localhost:" + server.port + "/"
+        let allEmpty = true
+        for (let r = 0; r < 4; r++) {
+          const res = await Promise.all(Array.from({ length: 40 }, () => fetch(url).then((x) => x.json())))
+          allEmpty = allEmpty && res.every((x) => Array.isArray(x) && x.length === 0)
+        }
+        server.stop()
+        process.exit(bad === 0 && allEmpty ? 0 : 1)
+        `,
+      ],
+      { stdout: "ignore", stderr: "ignore" },
+    )
+    const exitCode = await child.exited
+    // Exit 0 = 160 in-handler queries all degraded to [] with zero uncaught
+    // escapes. A non-zero exit (crash / exit(1) / assertion) fails the test.
+    expect(exitCode).toBe(0)
   })
 
   test("server closes the connection immediately after accepting (no response) -> query() resolves to [], NO uncaughtException", async () => {

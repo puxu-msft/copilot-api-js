@@ -92,6 +92,35 @@ export function getUpstreamH2PingIntervalMs(): number {
 }
 
 /**
+ * Soft cap on concurrent streams per upstream h2 session (0 = unlimited), from
+ * `state.maxConcurrentStreamsPerSession`. Read fresh by http2-client.ts's pool
+ * routing so a hot-reload affects future routing only, never in-flight streams.
+ */
+export function getUpstreamMaxStreamsPerSession(): number {
+  return state.maxConcurrentStreamsPerSession
+}
+
+/**
+ * Idle timeout (ms) for a pooled h2 session with no in-flight streams before it
+ * is proactively closed (0 = never), from `state.h2IdleSessionTimeout` (seconds).
+ * Read fresh by http2-client.ts when arming an idle-reap timer.
+ */
+export function getUpstreamH2IdleSessionTimeoutMs(): number {
+  const sec = state.h2IdleSessionTimeout
+  return sec > 0 ? Math.ceil(sec * 1000) : 0
+}
+
+/**
+ * Whether to prefer HTTP/2 (node:http2) for `https://` upstreams. Derived live
+ * from `state.upstreamH2Favor` so a hot-reload reroutes subsequent requests with
+ * no h2-session teardown. Consumed by upstream-fetch.ts:selectUpstreamTransport.
+ * See `state.upstreamH2Favor` for the Bun-hang caveat when this is `false`.
+ */
+export function getUpstreamH2Favor(): boolean {
+  return state.upstreamH2Favor
+}
+
+/**
  * Build undici Agent options from current runtime state.
  *
  * - `headersTimeout` follows `responseHeaderTimeout` (time to first response headers)

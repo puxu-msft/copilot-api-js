@@ -796,6 +796,48 @@ export interface State {
   readonly upstreamH2PingInterval: number
 
   /**
+   * Soft cap on concurrent streams multiplexed onto a SINGLE upstream h2 session
+   * (0 = unlimited). At the cap, a new request opens (or reuses another) session
+   * for the same origin instead of piling on; the capped session stays routable
+   * once its in-flight streams drain. Default 1 — one connection per concurrent
+   * request, so a session-level upstream teardown (GOAWAY / edge drain) takes
+   * down at most one in-flight request instead of every concurrent stream on a
+   * shared connection. 0 restores the old single-session multiplex. Consumed by
+   * http2-client.ts's pool routing; a hot-reload only affects future routing,
+   * never in-flight streams.
+   */
+  readonly maxConcurrentStreamsPerSession: number
+
+  /**
+   * Idle timeout (seconds) for a pooled h2 session with no in-flight streams
+   * before it is proactively closed (0 = never idle-close). Under a finite
+   * `maxConcurrentStreamsPerSession` the pool grows to peak concurrency; this
+   * reaps the surplus once a burst subsides so idle connections don't linger.
+   * Default 300 (mirrors the WS pool's `pooledConnectionIdleTimeout`). Consumed
+   * by http2-client.ts; only ACTIVE idle sessions are reaped (a retiring session
+   * is reclaimed the moment it drains, independently).
+   */
+  readonly h2IdleSessionTimeout: number
+
+  /**
+   * Whether to prefer HTTP/2 (node:http2) for every `https://` upstream.
+   * Default: `true` — the production path all real GHC-fronted upstreams need.
+   *
+   * `false` routes `https://` upstreams through undici (HTTP/1.1) instead. This
+   * is an escape hatch that only works honestly on **Node** (`dist/main.mjs`):
+   * under **Bun** (`dev`/`start`), undici's HTTP/1.1 parser hangs forever on the
+   * Copilot hosts' chunked responses (verified: Node finalizes in 0.4s, Bun
+   * never returns — the exact reason the h2 path is the default; see
+   * transport/upstream-fetch.ts + docs/spec/upstream-http2-transport.md). The
+   * config value is honored literally on both runtimes; config.ts emits a loud
+   * warning when `false` is applied on Bun. Consumed per-request by
+   * upstream-fetch.ts (no h2-session teardown needed — a hot-reload just reroutes
+   * subsequent requests). Plaintext `http://` upstreams (local SearXNG) always
+   * use undici regardless of this flag.
+   */
+  readonly upstreamH2Favor: boolean
+
+  /**
    * TCP connect + TLS handshake deadline (seconds) for a single h2 session
    * establishment attempt. Was the hardcoded `CONNECT_TIMEOUT_MS` in
    * http2-client.ts; wired to real connection attempts in Plan 2. Default 10.
@@ -1634,16 +1676,33 @@ export function setUpstreamTransportConfig(
   patch: Partial<
     Pick<
       MutableState,
-      "upstreamKeepaliveDelay" | "upstreamH2PingInterval" | "sessionConnectTimeout" | "pooledConnectionIdleTimeout" | "softMaxUpstreamWsConnections"
+      | "upstreamKeepaliveDelay"
+      | "upstreamH2PingInterval"
+      | "upstreamH2Favor"
+      | "sessionConnectTimeout"
+      | "pooledConnectionIdleTimeout"
+      | "softMaxUpstreamWsConnections"
+      | "maxConcurrentStreamsPerSession"
+      | "h2IdleSessionTimeout"
     >
   >,
 ): void {
+  // NOTE: `upstreamH2Favor` is deliberately ABSENT from this change-detection.
+  // It is a pure per-request routing flag (upstream-fetch.ts reads it live via
+  // getUpstreamH2Favor on every call), so a favor change needs NO connection
+  // rebuild — firing the listeners here would needlessly retire every active h2
+  // session (http2-client's reconcile), rebuild the undici dispatcher, and
+  // reconcile the WS pool. `updateState(patch)` below still applies the new
+  // value unconditionally, so routing flips on the very next request. Do not add
+  // favor to `changed`.
   const changed =
     (patch.upstreamKeepaliveDelay !== undefined && patch.upstreamKeepaliveDelay !== mutableState.upstreamKeepaliveDelay)
     || (patch.upstreamH2PingInterval !== undefined && patch.upstreamH2PingInterval !== mutableState.upstreamH2PingInterval)
     || (patch.sessionConnectTimeout !== undefined && patch.sessionConnectTimeout !== mutableState.sessionConnectTimeout)
     || (patch.pooledConnectionIdleTimeout !== undefined && patch.pooledConnectionIdleTimeout !== mutableState.pooledConnectionIdleTimeout)
     || (patch.softMaxUpstreamWsConnections !== undefined && patch.softMaxUpstreamWsConnections !== mutableState.softMaxUpstreamWsConnections)
+    || (patch.maxConcurrentStreamsPerSession !== undefined && patch.maxConcurrentStreamsPerSession !== mutableState.maxConcurrentStreamsPerSession)
+    || (patch.h2IdleSessionTimeout !== undefined && patch.h2IdleSessionTimeout !== mutableState.h2IdleSessionTimeout)
   updateState(patch)
   if (changed) {
     for (const listener of transportUpstreamListeners) listener()
@@ -1936,6 +1995,9 @@ export const CONFIG_MANAGED_DEFAULTS = {
   streamIdleTimeout: 300,
   upstreamKeepaliveDelay: 15,
   upstreamH2PingInterval: 15,
+  maxConcurrentStreamsPerSession: 1,
+  h2IdleSessionTimeout: 300,
+  upstreamH2Favor: true,
   sessionConnectTimeout: 10,
   pooledConnectionIdleTimeout: 300,
   staleRequestMaxAge: 600,
@@ -2090,6 +2152,9 @@ export function resetConfigManagedState(): void {
   setUpstreamTransportConfig({
     upstreamKeepaliveDelay: CONFIG_MANAGED_DEFAULTS.upstreamKeepaliveDelay,
     upstreamH2PingInterval: CONFIG_MANAGED_DEFAULTS.upstreamH2PingInterval,
+    maxConcurrentStreamsPerSession: CONFIG_MANAGED_DEFAULTS.maxConcurrentStreamsPerSession,
+    h2IdleSessionTimeout: CONFIG_MANAGED_DEFAULTS.h2IdleSessionTimeout,
+    upstreamH2Favor: CONFIG_MANAGED_DEFAULTS.upstreamH2Favor,
     sessionConnectTimeout: CONFIG_MANAGED_DEFAULTS.sessionConnectTimeout,
     pooledConnectionIdleTimeout: CONFIG_MANAGED_DEFAULTS.pooledConnectionIdleTimeout,
     softMaxUpstreamWsConnections: CONFIG_MANAGED_DEFAULTS.softMaxUpstreamWsConnections,
@@ -2286,6 +2351,9 @@ const mutableState: MutableState = {
   streamIdleTimeout: CONFIG_MANAGED_DEFAULTS.streamIdleTimeout,
   upstreamKeepaliveDelay: CONFIG_MANAGED_DEFAULTS.upstreamKeepaliveDelay,
   upstreamH2PingInterval: CONFIG_MANAGED_DEFAULTS.upstreamH2PingInterval,
+  maxConcurrentStreamsPerSession: CONFIG_MANAGED_DEFAULTS.maxConcurrentStreamsPerSession,
+  h2IdleSessionTimeout: CONFIG_MANAGED_DEFAULTS.h2IdleSessionTimeout,
+  upstreamH2Favor: CONFIG_MANAGED_DEFAULTS.upstreamH2Favor,
   sessionConnectTimeout: CONFIG_MANAGED_DEFAULTS.sessionConnectTimeout,
   pooledConnectionIdleTimeout: CONFIG_MANAGED_DEFAULTS.pooledConnectionIdleTimeout,
   systemPromptOverrides: [...CONFIG_MANAGED_DEFAULTS.systemPromptOverrides],

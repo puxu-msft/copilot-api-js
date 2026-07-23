@@ -12,6 +12,7 @@ import consola from "consola"
 import fs from "node:fs/promises"
 import { z } from "zod"
 
+import { setV3PersistRetryConfig } from "~/lib/history/v3"
 import { recordConfigReloadTimeoutDiff } from "~/lib/observability/reaper-diagnostics"
 import {
   //
@@ -48,8 +49,6 @@ import {
   setUpstreamTransportConfig,
   state,
 } from "~/lib/state"
-
-import { setV3PersistRetryConfig } from "~/lib/history/v3"
 
 import type {
   //
@@ -913,11 +912,13 @@ export async function applyConfigToState(): Promise<Config> {
     if (h.raw_capture?.max_object_bytes !== undefined) setHistoryConfig({ historyRawCaptureMaxObjectBytes: h.raw_capture.max_object_bytes })
     // DI-5 transient retry budget — consumed only by the V3 store drain (no state
     // field / listener needed), so feed the module setter directly like the other
-    // module-local config knobs (setReactiveRetryConfig above).
-    if (h.persist_retry?.max_attempts !== undefined || h.persist_retry?.backoff_ms !== undefined) {
+    // module-local config knobs (setReactiveRetryConfig above). `max_total_ms`
+    // (DI-5-followup-2) defaults inside the setter when omitted.
+    if (h.persist_retry?.max_attempts !== undefined || h.persist_retry?.backoff_ms !== undefined || h.persist_retry?.max_total_ms !== undefined) {
       setV3PersistRetryConfig({
         maxAttempts: h.persist_retry.max_attempts ?? 3,
         backoffMs: h.persist_retry.backoff_ms ?? 10,
+        maxTotalMs: h.persist_retry.max_total_ms,
       })
     }
   }
@@ -1012,8 +1013,23 @@ export async function applyConfigToState(): Promise<Config> {
     if (upstreamTransport.tcp_keepalive_probe_delay !== undefined)
       setUpstreamTransportConfig({ upstreamKeepaliveDelay: upstreamTransport.tcp_keepalive_probe_delay })
     if (upstreamTransport.http2?.ping_interval !== undefined) setUpstreamTransportConfig({ upstreamH2PingInterval: upstreamTransport.http2.ping_interval })
+    if (upstreamTransport.http2?.favor !== undefined) {
+      setUpstreamTransportConfig({ upstreamH2Favor: upstreamTransport.http2.favor })
+      // Honored literally on both runtimes, but favor:false routes https upstreams
+      // through undici, whose HTTP/1.1 parser hangs forever on GHC's chunked
+      // responses under Bun (the reason h2 is the default). Warn loudly so a Bun
+      // operator who bricks every https request understands why.
+      if (!upstreamTransport.http2.favor && typeof Bun !== "undefined")
+        consola.warn(
+          "[config] upstream_transport.http2.favor=false routes https upstreams through undici (HTTP/1.1), which hangs forever on GitHub Copilot's chunked responses under Bun — every https request will stall. favor:false is only usable on Node (dist/main.mjs).",
+        )
+    }
     if (upstreamTransport.http2?.session_connect_timeout !== undefined)
       setUpstreamTransportConfig({ sessionConnectTimeout: upstreamTransport.http2.session_connect_timeout })
+    if (upstreamTransport.http2?.max_concurrent_streams_per_session !== undefined)
+      setUpstreamTransportConfig({ maxConcurrentStreamsPerSession: upstreamTransport.http2.max_concurrent_streams_per_session })
+    if (upstreamTransport.http2?.idle_session_timeout !== undefined)
+      setUpstreamTransportConfig({ h2IdleSessionTimeout: upstreamTransport.http2.idle_session_timeout })
     if (upstreamTransport.websocket?.pooled_connection_idle_timeout !== undefined)
       setUpstreamTransportConfig({ pooledConnectionIdleTimeout: upstreamTransport.websocket.pooled_connection_idle_timeout })
     if (upstreamTransport.websocket?.soft_max_connections !== undefined)

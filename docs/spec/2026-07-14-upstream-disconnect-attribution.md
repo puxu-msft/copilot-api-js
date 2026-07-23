@@ -1,6 +1,6 @@
 # Spec：上游流终止归因 bus 化 + metrics（upstream-disconnect-attribution）
 
-- 状态：**草案 v3（bus 化 + metrics-B）；B 已自证消解 v3-A 两个 BLOCK；待用户终审 → writing-plans**。v1（bus+A 维度，G1 前提过期）/v2（仅 G2-G5 加性）已被 supersede。
+- 状态：**定稿 v3（bus 化 + metrics-B）；已交接待执行（inline + worktree）**。实施计划 `docs/plan/2026-07-14-upstream-disconnect-attribution.md`（11 Task / Phase 0-6）。v1/v2/v3-A 已 supersede。
   - 评审轨迹：v1/v2/v3-A 均过 GPT reviewer 深度审（v1 BLOCK：G1 过期；v3-A 两 BLOCK：A 维度依赖不存在的 entry-kind 通路）。v3(B) 改用 bus-counter 消解两 BLOCK——B 在事件点累加、从不读 entry（照 `retry-strategy-fires.ts` 先例，2026-07-21），已主会话亲手核实机制（`metrics-exposition.ts:151-175` + `observability/retry-strategy-fires.ts`）。v3(B) 的独立 reviewer 复核因 agent surfacing 故障未取得正文，主会话自证承重点；用户可要求另派新 reviewer 走一遍 clean gate。
 - 日期：2026-07-14（v3 扩写 2026-07-22）
 - 归属：「上游传输可观测性子系统」（`docs/todo/upstream-transport-observability.md`）的**子项目 1**。
@@ -14,18 +14,18 @@ timeout 归因审计（2026-07-11）识别 G1-G5。**G1（跨端点流终止归�
 > **教训（记档）**：v1 复核过期审计时 grep 过窄（漏 `logUpstreamStreamOutcomeError`/`Truncation`）误判 G1 仍在；异模型 GPT reviewer 广口径 grep + git log 纠正。过期审计属二手源，须广口径 + git 时间线复核。
 
 **v3 范围（用户 2026-07-22 拍板）**：不止补缺口，而是把上游流终止归因**做成 bus-native 一等信号 + 接入 /metrics**：
-1. **Producer**：driver 单点发 `request.upstream_stream_disconnect` / `request.upstream_connect_timeout` bus 事件，退役各 pump 手动调用。
+1. **Producer**：handler 层已有的共享诊断函数（`logUpstreamStreamError`/`Truncation`/`OutcomeError`）加发 `request.upstream_stream_disconnect` / `request.upstream_connect_timeout` bus 事件（非 driver 内收口——driver 不持有诊断基座字段，见 §2.1）。
 2. **Console sink**：订阅事件、格式化今天的诊断行（含 G5 补旋钮）。
 3. **Metrics sink（B）**：订阅事件、累加 Prometheus counter 上 `/metrics`（**bus-counter，非 /api/stats registry 维度**——见 §5 决策）。
 4. **缺口搭车**：G2（post-commit warn）、G3（classifyStreamError 认 undici code）、G4（连接层归因，现由 connect-timeout 事件承载）、G5（补旋钮）。
 
 ## 2. 架构
 
-### 2.1 Producer：driver 单点发事件（fire-once）
+### 2.1 Producer：共享收口函数发事件（fire-once）
 
-**driver 侧 format-agnostic 累加器已存在、复用现成的**：`src/lib/pipeline/stream/response-processor.ts:147-161` 的帧循环对四端点+WS 统一无条件 `upstreamSse.push(...)`（含 `offsetMs`/`type`(via `upstreamFrameDiagType`)/`raw`）+ `:171` 无条件 `onUpstreamFrame`。基座字段（bytes/events/frames/lastFrameType/lastFrameOffsetMs/streamStartMs）从 `upstreamSse` 直接派生，**不新建累加器**（reviewer 核实）。
+> **wiring 更正（planner 实测 2026-07-22）**：早稿说「driver 单点发事件」——**不准确**。driver 的 8 处 `stream-error` return（`driver.ts:812/832/956/1178/1217/1238/1272/1332`）只把 `ResponseOutcome` 交还 handler；**driver 本身不持有 `sseEvents`/`bytesIn` 等诊断基座字段**（`RequestContext` 无 live `sseEvents` getter，这些活在各 handler 的 candidate-local `diag`/`streamState` = `UpstreamStreamSignals` 形状）。真正的**单一收口是 handler 层已有的共享诊断函数** `logUpstreamStreamError`/`Truncation`/`OutcomeError`（`src/lib/upstream-stream-diagnostics.ts`，被 6 个路由文件 ~28 处调用、已是所有端点的唯一 choke point）。「单点」= **一个共享收口函数**，不是「driver 内一次性收口」。
 
-**fire-once 收口（reviewer 应改：非天然单点）**：`stream-error` 有 **8 处**函数级 return（`driver.ts:806/826/950/1172/1211/1232/1266/1326`，分布 `runResponseSink`+`runResponseBufferedSink` 两函数）。逻辑上一请求最多一次（重试中间走 `continue` 绕过），但**物理单点需新增一个两函数共经的收口**发事件。**任务**：抽 `emitDisconnectEvent(ctx, signals)` 收口，8 处 return 前统一经它（或在 `runResponsePump` 追踪层收口）。
+**改动**：让这些共享诊断函数（已从 `UpstreamStreamSignals` 收集基座字段并调 console formatter）**额外发 bus 事件**——即在共享函数内 `emitDisconnectEvent(signals)`，metrics counter sink（和将来 sub-3 的 history/ui）订阅。console 覆盖今天已由这些共享函数保证（G1 已解决），本改动只是给它们**加一条 bus 发射腿**，不移动调用点、不入侵 driver。fire-once 天然成立（共享函数每次终态失败被调一次；重试中间不调）。
 
 **事件 schema**：
 ```ts
@@ -42,7 +42,7 @@ timeout 归因审计（2026-07-11）识别 G1-G5。**G1（跨端点流终止归�
   connect: { phase: "tls" | "proxy-connect" | "ws-first-event"; deadlineMs; target } }
 ```
 
-**富化通道（reviewer 应改：v2 未说清）**：tokens/stuckBlock 是 Anthropic 候选会话解析的 format-specific 值，driver format-agnostic 拿不到。**任务**：设计「driver 发事件前向候选会话查询可选富化」的接口（如候选会话暴露 `getDisconnectEnrichment(): {inputTokens?,outputTokens?,stuckBlockType?} | undefined`，非 Anthropic 返 undefined）——不脏染 ctx。
+**富化通道（planner 实测简化）**：tokens/stuckBlock 是 Anthropic 候选会话解析的 format-specific 值。**现有 `UpstreamStreamSignals` 结构已天然携带**（`acc.inputTokens`/`streamState.currentBlockType`）——共享收口函数发事件时从中取；非 Anthropic 端点这些字段本就缺席 → 事件里省略（**诚实退化**，无需新接口）。早稿的 `getDisconnectEnrichment()` 候选会话查询接口**不采用**（多一层、无必要），保留为退回选项。
 
 ### 2.2 Console sink：订阅事件、退役同步调用
 
@@ -66,7 +66,7 @@ label 低基数：`kind`(~6) × `endpoint`(4) 有界；`phase`(3)。**connect-ti
 
 ## 4. G4 + G5
 
-- **G4**：连接层三处超时（TLS `http2-client.ts:199`、proxy CONNECT `proxy-connect.ts:149`、WS first-event `upstream-ws-attempt.ts:159`）在 throw 前发 `request.upstream_connect_timeout` 事件。proxy-connect 发事件置于 `fail()` **内部**（`:137` `if(settled)return` 去重，防 socket 竞态重复）。console sink 打行、metrics sink 累加 `phase` counter。
+- **G4**：连接层三处超时（TLS `http2-client.ts:199`、proxy CONNECT `proxy-connect.ts:149`、WS first-event `upstream-ws-attempt.ts:159`）在 throw 前发 `request.upstream_connect_timeout` 事件。**收口点（planner 实测）**：置于 transport 层的 catch（`http-transport.ts`/`responses-transport.ts`），`fail()` 的 `settled` 标记已保证外层只进一次、不需在 `proxy-connect.ts` 内部重复判断。console sink 打行、metrics sink 累加 `phase` counter。
 - **G5**：console sink 格式化时 `keepalive=` 扩为 `keepalive=<tcp>s h2ping=<n>s idle=<n>s`；middlebox-hint 按 transport 分支（http2→`h2_ping_interval`，否则 `tcp_keepalive_probe_delay`）。**只改一处 formatter**（`emitDisconnect` 采集 leaf 委托给唯一 formatter，非两实现——reviewer 核实）。
 
 ## 5. 决策：metrics 为何 B（bus-counter）而非 A（registry 维度）
