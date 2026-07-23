@@ -49,6 +49,7 @@
 - [微改动别反射式派 subagent 评审](feedback-tier-subagent-review-skip-for-mechanical-micro-changes.md) — user-rule 41 `tiered-review-by-risk`；机械低风险走 TDD、微改攒批合并态审
 - [agent 后台连挂也绝不擅换模型](feedback-never-unilaterally-switch-agent-model-on-flakiness.md) — 永远 resume 原 agent；破坏异模型对抗、是用户决策
 - [eslint --cache 假绿](tooling-eslint-cache-false-pass.md) — 对过期文件假绿；`lint:all` 已去 cache
+- [config.schema.json 只由 .describe() 生成非 TSDoc](reference-config-schema-json-from-describe-not-tsdoc.md) — 改字段 TSDoc 是 no-op；regenerate 前 git diff 防裹进别会话 stale drift
 - [gpt-tokenizer 对重复字符病态慢](reference-gpt-tokenizer-pathological-on-repeated-chars.md) — 60KB repeat=15s vs 真实词句 40ms；测试造大 payload 别用单字符 repeat
 - [bun test 慢的三层根因与逐层解](reference-bun-test-parallel-breaks-single-process-superlinear-degradation.md) — 单进程超线性退化→`--parallel`→LPT 分片；崩溃桶须 --isolate 重跑；pty/e2e 不并行
 - [eslint --fix 的 .at() autofix 破类型](tooling-eslint-fix-at-autofix-breaks-types.md) — `.at(-1)` 返 T|undefined；--fix 后必重跑 typecheck
