@@ -651,7 +651,11 @@ function createDriverRecordingPort(deps: DriverDeps, ctx: RequestContext): Dispa
     },
 
     settleDispatch(dispatch, settlement) {
-      if (settlement.verdict === "discarded" && settlement.retryNextStrategy)
+      // A `discarded` retry OR a `continued` continuation hand-off (spec 2026-07-22 §5.3) records the
+      // attempt's next strategy so the History [RETRY] diagnostic + attempt_failed telemetry show it
+      // (`nextStrategy` distinguishes "buffered-retry" from "continuation"). A `continued` parent
+      // partially delivered but a continuation exchange follows → `willRetry: true` is accurate.
+      if ((settlement.verdict === "discarded" || settlement.verdict === "continued") && settlement.retryNextStrategy)
         ctx.recordAttemptFailure({
           willRetry: true,
           nextStrategy: settlement.retryNextStrategy,

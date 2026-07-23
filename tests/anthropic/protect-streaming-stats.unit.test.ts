@@ -72,6 +72,19 @@ describe("protect-streaming-stats", () => {
     expect(r.totalRetries).toBe(8) // 1 + 2 + 5
   })
 
+  test("continuation split (§5.3): meta.continuationRetries splits totalRetries into pre-first-block vs continuation; continuation-exhausted is its own bucket", () => {
+    // a save via continuation: 3 total retries, 2 of them AFTER the first block committed (continuation legs).
+    recordProtectStreamingOutcome("success", 3, { vendor: "anthropic", continuationRetries: 2 })
+    // continuation fired but ran out of budget → its own outcome bucket (distinct from partial-degrade).
+    recordProtectStreamingOutcome("continuation-exhausted", 1, { vendor: "anthropic", continuationRetries: 1 })
+    const s = getProtectStreamingStats().anthropic
+    expect(s.continuationRetries).toBe(3) // 2 + 1
+    expect(s.preFirstBlockRetries).toBe(1) // (3-2) + (1-1) = 1 — the transparent retries only
+    expect(s.totalRetries).toBe(4) // preFirstBlock + continuation = 1 + 3
+    expect(s.continuationExhausted).toBe(1)
+    expect(s.partialDegrade).toBe(0) // continuation-exhausted is NOT counted as partial-degrade
+  })
+
   test("hit-rate folds partial-degrade into the denominator (success / (success + exhausted + partialDegrade))", () => {
     recordProtectStreamingOutcome("success", 1, { vendor: "anthropic" })
     recordProtectStreamingOutcome("success", 1, { vendor: "anthropic" })
