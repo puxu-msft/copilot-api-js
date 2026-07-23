@@ -37,6 +37,7 @@ import {
 } from "./credentials"
 import {
   //
+  getTokenDeps,
   installTokenDeps,
   type TokenRuntimeDependencies,
 } from "./dependencies"
@@ -98,11 +99,6 @@ export interface TokenRuntime {
 class TokenRuntimeImpl implements TokenRuntime {
   private githubTokenManager: GitHubTokenManager | null = null
   private copilotTokenManager: CopilotTokenManager | null = null
-  private readonly deps: TokenRuntimeDependencies
-
-  constructor(deps: TokenRuntimeDependencies) {
-    this.deps = deps
-  }
 
   private ensureGitHubTokenManager(options: { cliToken?: string } = {}): GitHubTokenManager {
     if (!this.githubTokenManager) {
@@ -147,8 +143,9 @@ class TokenRuntimeImpl implements TokenRuntime {
       // No default
     }
 
-    // Show token if configured
-    if (this.deps.runtimeConfig.showGitHubToken && !writeSensitiveOnce("github-token", "GitHub token", tokenInfo.token)) {
+    // Show token if configured (read the ambient runtime-config, the single
+    // installed deps source — same view credentials.ts reads vsCodeVersion from).
+    if (getTokenDeps().runtimeConfig.showGitHubToken && !writeSensitiveOnce("github-token", "GitHub token", tokenInfo.token)) {
       consola.warn("GitHub token display requested, but no healthy interactive terminal is available")
     }
 
@@ -235,7 +232,7 @@ class TokenRuntimeImpl implements TokenRuntime {
  */
 export function createTokenRuntime(deps: TokenRuntimeDependencies): TokenRuntime {
   installTokenDeps(deps)
-  return new TokenRuntimeImpl(deps)
+  return new TokenRuntimeImpl()
 }
 
 // ============================================================================

@@ -39,6 +39,8 @@ export class CopilotTokenManager {
   private refreshInFlight: Promise<CopilotTokenInfo | null> | null = null
   /** Set when a refresh attempt fails; cleared on next success */
   private _refreshNeeded = false
+  /** Set by dispose(); blocks any (re)scheduling so no timer outlives disposal. */
+  private disposed = false
 
   constructor(options: CopilotTokenManagerOptions) {
     this.githubTokenManager = options.githubTokenManager
@@ -142,6 +144,11 @@ export class CopilotTokenManager {
    * the new token's `refresh_in`.
    */
   private scheduleRefresh(refreshInSeconds: number): void {
+    // Never (re)arm a timer after disposal — refresh()'s .then reschedules
+    // unconditionally, so a refresh in flight when dispose() runs would
+    // otherwise leave a live timer (and its manager reference) behind.
+    if (this.disposed) return
+
     // Sanity check: refresh_in should be positive and reasonable
     let effectiveRefreshIn = refreshInSeconds
     if (refreshInSeconds <= 0) {
@@ -187,8 +194,15 @@ export class CopilotTokenManager {
    * write outlives disposal. Awaited by the runtime's dispose / test reset.
    */
   async dispose(): Promise<void> {
+    // Set the guard BEFORE draining so the in-flight refresh's .then (which
+    // reschedules unconditionally) cannot re-arm a timer during the await.
+    this.disposed = true
     this.cancelScheduledRefresh()
     await this.refreshInFlight
+    // Belt-and-suspenders: cancel again in case a timer was armed in the
+    // window between the guard check and here (there is none today, but the
+    // second cancel is cheap and defends future edits).
+    this.cancelScheduledRefresh()
   }
 
   /**
@@ -250,5 +264,10 @@ export class CopilotTokenManager {
 
     const now = Date.now() / 1000
     return this.currentToken.expiresAt - marginSeconds <= now
+  }
+
+  /** Test-only: whether a refresh timer is currently armed. */
+  _hasScheduledRefreshForTests(): boolean {
+    return this.refreshTimeout !== null
   }
 }
