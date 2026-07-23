@@ -145,7 +145,7 @@ runHedge(env = input.env) {
 
 B2 需要的是同构操作，但 role 用已存在的字面量 `"recovery"`（`CandidateRole = "primary" | "hedge" | "recovery" | "continuation"`，`model-operation-record.ts:249`），且必须**恰好触发一次**（B2 spec 明确"一次全新上游 dispatch"，非无限重试/无限竞速）。
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 ```ts
 // tests/pipeline/precontent-recovery-coordinator.unit.test.ts
@@ -160,10 +160,10 @@ test("budget/reservation accounting shares the SAME generation budget as the pri
 })
 ```
 
-- [ ] **Step 2: 跑，失败。**
-- [ ] **Step 3: 接线** —— `coordinator.ts` 的 `GenerationCoordinator<TProcessor>` 接口 + `createGenerationCoordinator` 实现：新增 `recoveryFromPreReadyStarted` 布尔守卫（镜像 `hedgeStarted`），`runRecoveryFromPreReadyFailure(reason, env) { if (recoveryFromPreReadyStarted) throw ...; recoveryFromPreReadyStarted = true; return start({role: "recovery", env}) }`。**不需要**settle 任何 parent（原 primary 已经在 `candidate.ts` 自行 settle 为 `failed`）——这是与 `runRecovery`/`runContinuation` 的关键差异，务必在代码注释里写清楚"为什么这里不 settle parent"（避免未来有人误以为漏写）。
-- [ ] **Step 4: 跑，通过。**
-- [ ] **Step 5: 提交** → `feat(pipeline): coordinator.runRecoveryFromPreReadyFailure (parent-less recovery candidate)`。
+- [x] **Step 2: 跑，失败。** —— `bun test tests/pipeline/precontent-recovery-coordinator.unit.test.ts`：3 fail，均为预期的 `TypeError: coordinator.runRecoveryFromPreReadyFailure is not a function`。
+- [x] **Step 3: 接线** —— `coordinator.ts` 的 `GenerationCoordinator<TProcessor>` 接口 + `createGenerationCoordinator` 实现：新增 `recoveryFromPreReadyStarted` 布尔守卫（镜像 `hedgeStarted`），`runRecoveryFromPreReadyFailure(reason, env) { if (recoveryFromPreReadyStarted) throw ...; recoveryFromPreReadyStarted = true; return start({role: "recovery", env}) }`。**不需要**settle 任何 parent（原 primary 已经在 `candidate.ts` 自行 settle 为 `failed`）——这是与 `runRecovery`/`runContinuation` 的关键差异，务必在代码注释里写清楚"为什么这里不 settle parent"（避免未来有人误以为漏写）。
+- [x] **Step 4: 跑，通过。** —— targeted coordinator suite：13 pass、0 fail；`bun run typecheck` 与改动文件 eslint 通过。
+- [x] **Step 5: 提交** → `feat(pipeline): coordinator.runRecoveryFromPreReadyFailure (parent-less recovery candidate)`。
 
 **风险点（验证清单，实现者必须确认）：**
 - `start()` 内部 `runtimes.set(runtime.handle, runtime)` + `active = runtime` 的赋值时序，与 `runHedge`/`runPrimary` 完全一致——确认没有"当 primary 已经因失败清空 `active` 后，新的 recovery 候选是否会被某个陈旧 `active` 引用绊住"的边界问题（读 `coordinator.ts:113` 附近的 `active` 变量全部读写点）。

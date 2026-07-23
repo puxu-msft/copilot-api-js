@@ -53,6 +53,7 @@ export interface CreateGenerationCoordinatorInput<TProcessor> {
 export interface GenerationCoordinator<TProcessor> {
   readonly deliveryIdentity: symbol
   runPrimary(): Promise<CoordinatedCandidate<TProcessor>>
+  runRecoveryFromPreReadyFailure(reason: string, env: RequestEnvelope): Promise<CoordinatedCandidate<TProcessor>>
   runRecovery(parent: CoordinatedCandidate<TProcessor>, reason: string, env?: RequestEnvelope): Promise<CoordinatedCandidate<TProcessor>>
   /**
    * Continuation-retry (spec 2026-07-22 §5.1, ADR D3): the append counterpart of {@link runRecovery}.
@@ -94,6 +95,7 @@ export function createGenerationCoordinator<TProcessor>(input: CreateGenerationC
   const candidateReservations = new Map<CandidateHandle, import("./generation-budget").BudgetReservation>()
   let primaryStarted = false
   let hedgeStarted = false
+  let recoveryFromPreReadyStarted = false
   let raceStarted = false
   let active: CandidateRuntime<TProcessor> | undefined
   let cancelledReason: string | undefined
@@ -128,6 +130,13 @@ export function createGenerationCoordinator<TProcessor>(input: CreateGenerationC
       if (primaryStarted) throw new Error("[generation-coordinator] primary already started")
       primaryStarted = true
       return start({ role: "primary", env: input.env })
+    },
+
+    runRecoveryFromPreReadyFailure(_reason, env) {
+      if (recoveryFromPreReadyStarted) throw new Error("[generation-coordinator] recovery from pre-ready failure already started")
+      recoveryFromPreReadyStarted = true
+      // The primary never became ready and has already settled itself as failed in candidate.ts, so there is no ready parent to settle here.
+      return start({ role: "recovery", env })
     },
 
     async runRecovery(parent, reason, env = parent.env) {
