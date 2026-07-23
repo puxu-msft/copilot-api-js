@@ -531,7 +531,17 @@ export interface HistoryEntry {
     dispatchReason?: string
     strategy?: string
     durationMs: number
-    timing?: { source: "canonical" | "upstream-latency" | "next-attempt-upper-bound" | "operation-upper-bound" | "unavailable" }
+    timing?: {
+      source: "canonical" | "upstream-latency" | "next-attempt-upper-bound" | "operation-upper-bound" | "unavailable"
+      /** Upstream 200 response-header epoch for this physical dispatch. */
+      upstreamHeadersAt?: number
+      /** Upstream Anthropic `message_start` epoch for this physical dispatch. */
+      upstreamMessageStartAt?: number
+      /** First real upstream content token epoch for this physical dispatch. */
+      upstreamFirstTokenAt?: number
+      /** Last real upstream content token epoch for this physical dispatch. */
+      upstreamLastTokenAt?: number
+    }
     transport?: RequestTransport
     error?: string
     /** New capture (RFC §4): attempt wall-clock start; producer wires in P4. */

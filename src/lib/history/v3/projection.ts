@@ -274,7 +274,13 @@ export function recordToHistoryEntry(
       dispatchReason: attempt.reason,
       strategy: attempt.strategy,
       durationMs,
-      timing: { source: attemptTimingSource },
+      timing: {
+        source: attemptTimingSource,
+        ...(attempt.timing?.upstreamHeadersAt !== undefined && { upstreamHeadersAt: attempt.timing.upstreamHeadersAt }),
+        ...(attempt.timing?.upstreamMessageStartAt !== undefined && { upstreamMessageStartAt: attempt.timing.upstreamMessageStartAt }),
+        ...(attempt.timing?.upstreamFirstTokenAt !== undefined && { upstreamFirstTokenAt: attempt.timing.upstreamFirstTokenAt }),
+        ...(attempt.timing?.upstreamLastTokenAt !== undefined && { upstreamLastTokenAt: attempt.timing.upstreamLastTokenAt }),
+      },
       ...(startedAt !== undefined && { startedAt }),
       // `attempt.transport` is the first-class field written by beginAttempt/setAttemptTransport
       // (model-operation-record.ts) — NOT `attempt.metadata.transport`, which is never set (that
