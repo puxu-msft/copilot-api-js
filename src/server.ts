@@ -18,7 +18,7 @@ import {
   unknownEndpointFinalizer,
 } from "./lib/observability/unknown-endpoint"
 import { state } from "./lib/state"
-import { ensureValidCopilotToken } from "./lib/token"
+import { peekTokenRuntime } from "./lib/token"
 import { registerHttpRoutes } from "./routes"
 import { registerOpenApiDocs } from "./routes/openapi"
 
@@ -125,7 +125,7 @@ export function createServer() {
   // waiting for a 401 from the upstream API.
   server.use(async (_c, next) => {
     await applyConfigToState()
-    await ensureValidCopilotToken()
+    await peekTokenRuntime()?.ensureValidCopilotToken()
     await next()
   })
 

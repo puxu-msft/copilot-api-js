@@ -1,16 +1,16 @@
 import consola from "consola"
 
 import { formatErrorWithCause } from "~/lib/error"
-import {
-  //
-  setCopilotToken,
-  setGitHubToken,
-} from "~/lib/state"
 
 import type { GitHubTokenManager } from "./github-token-manager"
 import type { CopilotTokenInfo } from "./types"
 
 import { getCopilotToken } from "./copilot-client"
+import {
+  //
+  setCopilotCredential,
+  setGithubCredential,
+} from "./credentials"
 
 export interface CopilotTokenManagerOptions {
   /** GitHub token manager instance */
@@ -60,7 +60,7 @@ export class CopilotTokenManager {
     const tokenInfo = await this.fetchCopilotToken()
 
     // Update global state
-    setCopilotToken(tokenInfo.token)
+    setCopilotCredential(tokenInfo.token)
 
     // Show token in verbose mode
     consola.debug("GitHub Copilot Token fetched successfully!")
@@ -107,7 +107,7 @@ export class CopilotTokenManager {
           const newGithubToken = await this.githubTokenManager.refresh()
           if (newGithubToken) {
             // Update state and retry
-            setGitHubToken(newGithubToken.token)
+            setGithubCredential(newGithubToken.token)
             continue
           }
         }
@@ -183,6 +183,15 @@ export class CopilotTokenManager {
   }
 
   /**
+   * Stop auto-refresh and drain any in-flight refresh so no timer or async
+   * write outlives disposal. Awaited by the runtime's dispose / test reset.
+   */
+  async dispose(): Promise<void> {
+    this.cancelScheduledRefresh()
+    await this.refreshInFlight
+  }
+
+  /**
    * Refresh the Copilot token.
    *
    * Single entry point for all refreshes — both scheduled and on-demand
@@ -201,7 +210,7 @@ export class CopilotTokenManager {
       .then((tokenInfo) => {
         if (tokenInfo) {
           this._refreshNeeded = false
-          setCopilotToken(tokenInfo.token)
+          setCopilotCredential(tokenInfo.token)
           // Reschedule based on new token's refresh_in
           this.scheduleRefresh(tokenInfo.refreshIn)
           consola.verbose(`[CopilotToken] Token refreshed (next refresh_in=${tokenInfo.refreshIn}s)`)

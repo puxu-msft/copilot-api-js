@@ -100,6 +100,26 @@ export class GitHubTokenManager {
   }
 
   /**
+   * Force interactive device authorization, bypassing provider priority.
+   * Runs the DeviceAuthProvider's flow (which persists the token to file) and
+   * caches the result as the current token. Used by the `auth` CLI command.
+   */
+  async forceDeviceAuth(): Promise<TokenInfo> {
+    const deviceAuthProvider = this.providers.find((p) => p instanceof DeviceAuthProvider)
+    if (!deviceAuthProvider) {
+      throw new Error("No device authorization provider is configured")
+    }
+
+    const tokenInfo = await deviceAuthProvider.getToken()
+    if (!tokenInfo) {
+      throw new Error("Failed to obtain GitHub token via device authorization")
+    }
+
+    this.currentToken = tokenInfo
+    return tokenInfo
+  }
+
+  /**
    * Force refresh the current token.
    * Only works if the current token source supports refresh.
    * For non-refreshable sources (CLI, env), this will call onTokenExpired.

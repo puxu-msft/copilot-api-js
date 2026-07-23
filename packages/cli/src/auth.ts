@@ -2,6 +2,7 @@
 
 import { defineCommand } from "citty"
 import consola from "consola"
+import fs from "node:fs/promises"
 
 import { applyConfigToState } from "~/lib/config/config"
 import {
@@ -11,11 +12,7 @@ import {
 } from "~/lib/config/paths"
 import { initProxy } from "~/lib/proxy"
 import { setCliState } from "~/lib/state"
-import {
-  //
-  DeviceAuthProvider,
-  FileTokenProvider,
-} from "~/lib/token"
+import { installDefaultTokenRuntime } from "~/lib/token-runtime"
 import {
   //
   registerSensitiveOutput,
@@ -25,6 +22,16 @@ import {
 interface RunAuthOptions {
   verbose: boolean
   showGitHubToken: boolean
+}
+
+/** Whether the given path exists as a non-empty file. */
+async function tokenFileWritten(tokenPath: string): Promise<boolean> {
+  try {
+    const content = await fs.readFile(tokenPath, "utf8")
+    return content.trim().length > 0
+  } catch {
+    return false
+  }
 }
 
 export async function runAuth(options: RunAuthOptions): Promise<void> {
@@ -57,28 +64,25 @@ export async function runAuth(options: RunAuthOptions): Promise<void> {
       initProxy({ url: undefined, fromEnv: true })
     }
 
-    // Use DeviceAuthProvider directly for force authentication
-    const deviceAuthProvider = new DeviceAuthProvider()
-    const tokenInfo = await deviceAuthProvider.getToken()
-
-    if (!tokenInfo) {
-      throw new Error("Failed to obtain GitHub token via device authorization")
-    }
+    // Force interactive device authorization via the token runtime (persists the
+    // token to file and sets the current GitHub credential).
+    const runtime = installDefaultTokenRuntime()
+    const tokenInfo = await runtime.acquireGitHubToken({ forceDeviceAuth: true })
 
     if (options.showGitHubToken && !writeSensitiveOnce("github-token", "GitHub token", tokenInfo.token)) {
       consola.warn("GitHub token display requested, but no healthy interactive terminal is available")
     }
 
-    // Validate and show user info
-    const validation = await deviceAuthProvider.validate(tokenInfo.token)
-    if (validation.valid) {
-      consola.info(`Logged in as ${validation.username}`)
+    // Validate and show user info (best-effort: device auth already succeeded).
+    try {
+      const user = await runtime.getGitHubUser()
+      consola.info(`Logged in as ${user.login}`)
+    } catch {
+      // Validation is informational only here; the token was obtained and saved.
     }
 
-    // File provider will have already saved the token during device auth
-    // But we can verify the file exists
-    const fileProvider = new FileTokenProvider()
-    if (await fileProvider.isAvailable()) {
+    // The device flow saved the token to file — confirm it landed.
+    if (await tokenFileWritten(PATHS.GITHUB_TOKEN_PATH)) {
       consola.success("GitHub token written to", PATHS.GITHUB_TOKEN_PATH)
     }
   } finally {

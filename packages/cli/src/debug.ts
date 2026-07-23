@@ -5,6 +5,8 @@ import consola from "consola"
 import fs from "node:fs/promises"
 import os from "node:os"
 
+import type { QuotaDetail } from "~/lib/token/copilot-client"
+
 import { applyConfigToState } from "~/lib/config/config"
 import {
   //
@@ -13,21 +15,8 @@ import {
 } from "~/lib/config/paths"
 import { getModels } from "~/lib/models/client"
 import { initProxy } from "~/lib/proxy"
-import {
-  //
-  setCliState,
-  setCopilotToken,
-  setGitHubToken,
-  state,
-} from "~/lib/state"
-import { GitHubTokenManager } from "~/lib/token"
-import {
-  //
-  getCopilotToken,
-  getCopilotUsage,
-  type QuotaDetail,
-} from "~/lib/token/copilot-client"
-import { getGitHubUser } from "~/lib/token/github-client"
+import { setCliState } from "~/lib/state"
+import { installDefaultTokenRuntime } from "~/lib/token-runtime"
 
 import packageJson from "../../../package.json"
 
@@ -90,14 +79,11 @@ async function getAccountInfo(): Promise<{
   try {
     await ensurePaths()
 
-    // Use GitHubTokenManager to get token
-    const tokenManager = new GitHubTokenManager()
-    const tokenInfo = await tokenManager.getToken()
-    setGitHubToken(tokenInfo.token)
+    // Acquire a GitHub token via the runtime, then fetch user + usage.
+    const runtime = installDefaultTokenRuntime()
+    await runtime.acquireGitHubToken()
 
-    if (!state.githubToken) return null
-
-    const [user, copilot] = await Promise.all([getGitHubUser(), getCopilotUsage()])
+    const [user, copilot] = await Promise.all([runtime.getGitHubUser(), runtime.getCopilotUsage()])
 
     return { user, copilot }
   } catch {
@@ -206,19 +192,14 @@ const debugModels = defineCommand({
 
     await ensurePaths()
 
+    const runtime = installDefaultTokenRuntime()
     if (args["github-token"]) {
-      setGitHubToken(args["github-token"])
       consola.info("Using provided GitHub token")
-    } else {
-      // Use GitHubTokenManager to get token
-      const tokenManager = new GitHubTokenManager()
-      const tokenInfo = await tokenManager.getToken()
-      setGitHubToken(tokenInfo.token)
     }
+    await runtime.acquireGitHubToken({ cliToken: args["github-token"] })
 
     // Get Copilot token without setting up refresh interval
-    const { token } = await getCopilotToken()
-    setCopilotToken(token)
+    await runtime.acquireCopilotTokenOnce()
 
     const models = await getModels()
 
@@ -250,17 +231,16 @@ const debugUsage = defineCommand({
       initProxy({ url: undefined, fromEnv: true })
     }
 
-    // Use GitHubTokenManager to get token
-    const tokenManager = new GitHubTokenManager()
-    const tokenInfo = await tokenManager.getToken()
-    setGitHubToken(tokenInfo.token)
+    // Use the token runtime to get a GitHub token
+    const runtime = installDefaultTokenRuntime()
+    await runtime.acquireGitHubToken()
 
     // Show logged in user
-    const user = await getGitHubUser()
+    const user = await runtime.getGitHubUser()
     consola.info(`Logged in as ${user.login}`)
 
     try {
-      const usage = await getCopilotUsage()
+      const usage = await runtime.getCopilotUsage()
 
       if (args.json) {
         console.log(JSON.stringify(usage, null, 2))

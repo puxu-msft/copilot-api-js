@@ -27,7 +27,7 @@ import {
   setCliState,
   state,
 } from "~/lib/state"
-import { initTokenManagers } from "~/lib/token"
+import { initTokenManagers } from "~/lib/token-runtime"
 
 /**
  * 1M-context band: Claude Code switches to its 1M-context client path only

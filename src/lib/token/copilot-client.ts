@@ -2,9 +2,9 @@
 
 import { HTTPError } from "~/lib/error"
 import { COPILOT_INTERNAL_API_VERSION } from "~/lib/ghc-http-primitives"
-import { getTokenReadView } from "~/lib/state-readers/token"
-import { upstreamFetch } from "~/lib/transport/upstream-fetch"
 
+import { currentGithubHeaderIdentity } from "./credentials"
+import { getTokenDeps } from "./dependencies"
 import {
   //
   GITHUB_API_BASE_URL,
@@ -16,8 +16,8 @@ import {
 // ============================================================================
 
 export const getCopilotToken = async (): Promise<CopilotTokenResponse> => {
-  const response = await upstreamFetch(`${GITHUB_API_BASE_URL}/copilot_internal/v2/token`, {
-    headers: { ...githubHeaders(getTokenReadView()), "x-github-api-version": COPILOT_INTERNAL_API_VERSION },
+  const response = await getTokenDeps().fetch(`${GITHUB_API_BASE_URL}/copilot_internal/v2/token`, {
+    headers: { ...githubHeaders(currentGithubHeaderIdentity()), "x-github-api-version": COPILOT_INTERNAL_API_VERSION },
     signal: AbortSignal.timeout(15_000),
   })
 
@@ -43,8 +43,8 @@ export interface CopilotTokenResponse {
 // ============================================================================
 
 export const getCopilotUsage = async (): Promise<CopilotUsageResponse> => {
-  const response = await upstreamFetch(`${GITHUB_API_BASE_URL}/copilot_internal/user`, {
-    headers: { ...githubHeaders(getTokenReadView()), "x-github-api-version": COPILOT_INTERNAL_API_VERSION },
+  const response = await getTokenDeps().fetch(`${GITHUB_API_BASE_URL}/copilot_internal/user`, {
+    headers: { ...githubHeaders(currentGithubHeaderIdentity()), "x-github-api-version": COPILOT_INTERNAL_API_VERSION },
     signal: AbortSignal.timeout(15_000),
   })
 

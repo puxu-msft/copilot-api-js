@@ -1,9 +1,8 @@
 import fs from "node:fs/promises"
 
-import { PATHS } from "~/lib/config/paths"
-
 import type { TokenInfo } from "../types"
 
+import { getTokenDeps } from "../dependencies"
 import { GitHubTokenProvider } from "./base"
 
 /**
@@ -14,6 +13,11 @@ export class FileTokenProvider extends GitHubTokenProvider {
   readonly name = "File"
   readonly priority = 3
   readonly refreshable = false
+
+  /** The token-file path from the injected persistence ports. */
+  private get tokenPath(): string {
+    return getTokenDeps().paths.githubTokenPath
+  }
 
   async isAvailable(): Promise<boolean> {
     try {
@@ -46,7 +50,7 @@ export class FileTokenProvider extends GitHubTokenProvider {
    * This is used by device auth provider to persist tokens.
    */
   async saveToken(token: string): Promise<void> {
-    await fs.writeFile(PATHS.GITHUB_TOKEN_PATH, token.trim())
+    await fs.writeFile(this.tokenPath, token.trim())
   }
 
   /**
@@ -54,13 +58,13 @@ export class FileTokenProvider extends GitHubTokenProvider {
    */
   async clearToken(): Promise<void> {
     try {
-      await fs.writeFile(PATHS.GITHUB_TOKEN_PATH, "")
+      await fs.writeFile(this.tokenPath, "")
     } catch {
       // Ignore errors when clearing
     }
   }
 
   private async readTokenFile(): Promise<string> {
-    return fs.readFile(PATHS.GITHUB_TOKEN_PATH, "utf8")
+    return fs.readFile(this.tokenPath, "utf8")
   }
 }

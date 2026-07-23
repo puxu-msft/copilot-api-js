@@ -51,7 +51,7 @@ import {
 } from "./request-telemetry"
 import { notifyStopping } from "./restart/notify"
 import { state } from "./state"
-import { stopTokenRefresh } from "./token"
+import { peekTokenRuntime } from "./token"
 import { closeHttp2Sessions } from "./transport/http2-client"
 import { emergencyWrite } from "./tui/terminal-coordinator"
 import {
@@ -395,7 +395,7 @@ export async function gracefulShutdown(signal: string, deps?: ShutdownDeps): Pro
   }
   const server = deps?.server ?? serverInstance
   const rateLimiter = deps?.rateLimiter !== undefined ? deps.rateLimiter : getAdaptiveRateLimiter()
-  const stopRefresh = deps?.stopTokenRefreshFn ?? stopTokenRefresh
+  const stopRefresh = deps?.stopTokenRefreshFn ?? (() => void peekTokenRuntime()?.dispose())
   const closeWsClients = deps?.closeAllClientsFn ?? closeAllClients
   const getWsClientCount = deps?.getClientCountFn ?? getClientCount
   const drainModelOperationFinalizations =

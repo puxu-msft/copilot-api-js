@@ -10,7 +10,7 @@ import consola from "consola"
 
 import type { ApiError } from "~/lib/error"
 
-import { getCopilotTokenManager } from "~/lib/token"
+import { peekTokenRuntime } from "~/lib/token"
 
 import type {
   //
@@ -20,14 +20,13 @@ import type {
 } from "../retry-types"
 
 /**
- * Refresh the Copilot token via the global manager.
- * Returns true on success, false on failure.
+ * Refresh the Copilot token via the installed runtime.
+ * Returns true on success, false if no runtime is installed or refresh failed.
  */
 async function refreshCopilotToken(): Promise<boolean> {
-  const manager = getCopilotTokenManager()
-  if (!manager) return false
-  const result = await manager.refresh()
-  return result !== null
+  const runtime = peekTokenRuntime()
+  if (!runtime) return false
+  return runtime.refreshCopilotToken()
 }
 
 /**

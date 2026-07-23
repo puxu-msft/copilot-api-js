@@ -93,7 +93,7 @@ import {
   state,
   getRawModels,
 } from "~/lib/state"
-import { initTokenManagers } from "~/lib/token"
+import { initTokenManagers } from "~/lib/token-runtime"
 import { getCopilotUsage } from "~/lib/token/copilot-client"
 import { attachTerminalUi } from "~/lib/tui"
 import {

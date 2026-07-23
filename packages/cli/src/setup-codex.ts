@@ -24,7 +24,7 @@ import {
   setCliState,
   state,
 } from "~/lib/state"
-import { initTokenManagers } from "~/lib/token"
+import { initTokenManagers } from "~/lib/token-runtime"
 
 /** Preferred order when auto-selecting a default reasoning effort from a model's capabilities. */
 const EFFORT_PREFERENCE = ["high", "medium", "low", "minimal", "xhigh", "max"] as const

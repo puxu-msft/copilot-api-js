@@ -21,7 +21,6 @@ import {
   describe,
   expect,
   mock,
-  spyOn,
   test,
 } from "bun:test"
 
@@ -30,7 +29,12 @@ import {
   setModels,
   setStateForTests,
 } from "~/lib/state"
-import * as tokenModule from "~/lib/token"
+import {
+  //
+  installTokenRuntime,
+  resetTokenRuntimeForTests,
+  type TokenRuntime,
+} from "~/lib/token"
 
 import { mockModel } from "../../helpers/factories"
 import { useIsolatedRuntime } from "../../helpers/isolated-fixture"
@@ -196,21 +200,21 @@ describe("pre-commit error shaping — enabled, A-class retry-signal", () => {
 describe("pre-commit error shaping — CF-1: token-refresh vs. error-shaping ordering", () => {
   useIsolatedRuntime()
 
-  const mockRefresh = mock<() => Promise<{ token: string } | null>>()
-  let refreshSpy: ReturnType<typeof spyOn>
+  const mockRefresh = mock<() => Promise<boolean>>()
 
   beforeEach(() => {
     setupCommonState()
     setStateForTests({ errorShapingEnabled: true })
     mockRefresh.mockReset()
-    mockRefresh.mockResolvedValue({ token: "refreshed-token" })
-    refreshSpy = spyOn(tokenModule, "getCopilotTokenManager").mockImplementation(
-      () => ({ refresh: mockRefresh }) as unknown as ReturnType<typeof tokenModule.getCopilotTokenManager>,
-    )
+    mockRefresh.mockResolvedValue(true)
+    // Install a runtime whose Copilot-token refresh succeeds so a single 401 is
+    // refreshed + retried by the token-refresh strategy (peekTokenRuntime()).
+    // useIsolatedRuntime()'s afterEach disposes/clears it via RESETTERS.
+    installTokenRuntime({ refreshCopilotToken: () => mockRefresh(), dispose: async () => {} } as unknown as TokenRuntime)
   })
 
-  afterAll(() => {
-    refreshSpy?.mockRestore()
+  afterAll(async () => {
+    await resetTokenRuntimeForTests()
   })
 
   test("a single (unexhausted) 401 is refreshed + retried transparently — the client sees the eventual 200, never an error-shaping response", async () => {

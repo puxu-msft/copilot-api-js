@@ -76,6 +76,7 @@ import {
   type StateSnapshot,
   snapshotStateForTests,
 } from "~/lib/state"
+import { resetTokenRuntimeForTests } from "~/lib/token"
 import {
   //
   setConnectTimeoutForTests,
@@ -141,6 +142,12 @@ export const RESETTERS: ReadonlyArray<{ name: string; reset: () => void | Promis
   // would otherwise leak its registration into the next test file.
   { name: "resetTerminalCoordinatorForTests", reset: resetTerminalCoordinatorForTests },
   { name: "resetSensitiveOutputForTests", reset: resetSensitiveOutputForTests },
+  // Token runtime process-singleton: a CLI-flow test that installs a runtime
+  // (installDefaultTokenRuntime) must not leak it (its refresh timer / owned
+  // managers) into the next test. dispose() stops the timer + drains in-flight
+  // refresh, then the singleton is cleared. (The token DEPS — fetch/paths/config
+  // ports — are stateless adapters installed once at the floor and never reset.)
+  { name: "resetTokenRuntimeForTests", reset: resetTokenRuntimeForTests },
   { name: "resetStructuredFileSinkForTests", reset: resetStructuredFileSinkForTests },
   { name: "resetBootstrapSpoolForTests", reset: resetBootstrapSpoolForTests },
   { name: "resetDiagnosticLoggerForTests", reset: resetDiagnosticLoggerForTests },

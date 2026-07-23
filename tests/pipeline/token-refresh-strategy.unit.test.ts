@@ -1,12 +1,10 @@
 import {
   //
   afterAll,
-  beforeAll,
   beforeEach,
   describe,
   expect,
   mock,
-  spyOn,
   test,
 } from "bun:test"
 
@@ -18,23 +16,28 @@ import type {
 import type { RetryContext } from "~/lib/request/retry-types"
 
 import { createTokenRefreshStrategy } from "~/lib/request/strategies/token-refresh"
-import * as tokenModule from "~/lib/token"
+import {
+  //
+  installTokenRuntime,
+  resetTokenRuntimeForTests,
+  type TokenRuntime,
+} from "~/lib/token"
 
 // ============================================================================
-// Spy on getCopilotTokenManager (avoids mock.module cross-file pollution)
+// Install a fake runtime whose refreshCopilotToken is a mock. The retry
+// strategy reads the installed runtime via peekTokenRuntime(); a `null` runtime
+// (returnRuntime=false) exercises the "no runtime installed" abort path.
 // ============================================================================
 
-const mockRefresh = mock<() => Promise<{ token: string } | null>>()
-const mockManager = { refresh: mockRefresh }
-let returnManager = true
-let spy: ReturnType<typeof spyOn>
+const mockRefresh = mock<() => Promise<boolean>>()
 
-beforeAll(() => {
-  spy = spyOn(tokenModule, "getCopilotTokenManager").mockImplementation(() => (returnManager ? (mockManager as any) : null))
-})
+const fakeRuntime = {
+  refreshCopilotToken: () => mockRefresh(),
+  dispose: async () => {},
+} as unknown as TokenRuntime
 
-afterAll(() => {
-  spy.mockRestore()
+afterAll(async () => {
+  await resetTokenRuntimeForTests()
 })
 
 // ============================================================================
@@ -61,10 +64,12 @@ const retryContext: RetryContext<unknown> = {
 // ============================================================================
 
 describe("createTokenRefreshStrategy", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
+    // Fresh runtime install each test (a prior test may have uninstalled it).
+    await resetTokenRuntimeForTests()
+    installTokenRuntime(fakeRuntime)
     mockRefresh.mockReset()
-    mockRefresh.mockResolvedValue({ token: "new-token" })
-    returnManager = true
+    mockRefresh.mockResolvedValue(true)
   })
 
   test("has name 'token-refresh'", () => {
@@ -101,7 +106,7 @@ describe("createTokenRefreshStrategy", () => {
   })
 
   test("canHandle returns false after failed handle too", async () => {
-    mockRefresh.mockResolvedValue(null)
+    mockRefresh.mockResolvedValue(false)
     const strategy = createTokenRefreshStrategy()
     const payload = { model: "test" }
 
@@ -124,8 +129,8 @@ describe("createTokenRefreshStrategy", () => {
     expect(mockRefresh).toHaveBeenCalledTimes(1)
   })
 
-  test("handle returns abort when refresh fails (returns null)", async () => {
-    mockRefresh.mockResolvedValue(null)
+  test("handle returns abort when refresh fails (returns false)", async () => {
+    mockRefresh.mockResolvedValue(false)
     const strategy = createTokenRefreshStrategy()
     const payload = { model: "test" }
     const error = authExpiredError()
@@ -136,8 +141,8 @@ describe("createTokenRefreshStrategy", () => {
     expect((result as any).error).toBe(error)
   })
 
-  test("handle returns abort when no token manager available", async () => {
-    returnManager = false
+  test("handle returns abort when no token runtime is installed", async () => {
+    await resetTokenRuntimeForTests()
     const strategy = createTokenRefreshStrategy()
     const payload = { model: "test" }
     const error = authExpiredError()

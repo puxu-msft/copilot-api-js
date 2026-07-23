@@ -4,10 +4,10 @@ import consola from "consola"
 
 import { HTTPError } from "~/lib/error"
 import { standardHeaders } from "~/lib/ghc-http-primitives"
-import { getTokenReadView } from "~/lib/state-readers/token"
-import { upstreamFetch } from "~/lib/transport/upstream-fetch"
 import { sleep } from "~/lib/utils"
 
+import { currentGithubHeaderIdentity } from "./credentials"
+import { getTokenDeps } from "./dependencies"
 import {
   //
   GITHUB_API_BASE_URL,
@@ -31,8 +31,8 @@ export interface GitHubUser {
 }
 
 export const getGitHubUser = async (): Promise<GitHubUser> => {
-  const response = await upstreamFetch(`${GITHUB_API_BASE_URL}/user`, {
-    headers: githubHeaders(getTokenReadView()),
+  const response = await getTokenDeps().fetch(`${GITHUB_API_BASE_URL}/user`, {
+    headers: githubHeaders(currentGithubHeaderIdentity()),
     signal: AbortSignal.timeout(15_000),
   })
 
@@ -54,7 +54,7 @@ export interface DeviceCodeResponse {
 }
 
 export const getDeviceCode = async (): Promise<DeviceCodeResponse> => {
-  const response = await upstreamFetch(`${GITHUB_BASE_URL}/login/device/code`, {
+  const response = await getTokenDeps().fetch(`${GITHUB_BASE_URL}/login/device/code`, {
     method: "POST",
     headers: standardHeaders(),
     body: JSON.stringify({
@@ -79,7 +79,7 @@ export async function pollAccessToken(deviceCode: DeviceCodeResponse): Promise<s
   const expiresAt = Date.now() + deviceCode.expires_in * 1000
 
   while (Date.now() < expiresAt) {
-    const response = await upstreamFetch(`${GITHUB_BASE_URL}/login/oauth/access_token`, {
+    const response = await getTokenDeps().fetch(`${GITHUB_BASE_URL}/login/oauth/access_token`, {
       method: "POST",
       headers: standardHeaders(),
       body: JSON.stringify({

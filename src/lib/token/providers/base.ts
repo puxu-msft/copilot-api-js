@@ -1,15 +1,11 @@
-import {
-  //
-  setGitHubToken,
-} from "~/lib/state"
-import { getTokenReadView } from "~/lib/state-readers/token"
-import { getGitHubUser } from "~/lib/token/github-client"
-
 import type {
   //
   TokenInfo,
   TokenValidationResult,
 } from "../types"
+
+import { withGitHubTokenForValidation } from "../credentials"
+import { getGitHubUser } from "../github-client"
 
 /**
  * Abstract base class for GitHub token providers.
@@ -51,12 +47,10 @@ export abstract class GitHubTokenProvider {
    * Returns validation result with username if successful.
    */
   async validate(token: string): Promise<TokenValidationResult> {
-    // Temporarily set the token to validate
-    const originalToken = getTokenReadView().githubToken
-
     try {
-      setGitHubToken(token)
-      const user = await getGitHubUser()
+      // Temporarily swap in the token being validated, atomically w.r.t. other
+      // validations and requests, so `getGitHubUser` authenticates as it.
+      const user = await withGitHubTokenForValidation(token, () => getGitHubUser())
       return {
         valid: true,
         username: user.login,
@@ -66,9 +60,6 @@ export abstract class GitHubTokenProvider {
         valid: false,
         error: error instanceof Error ? error.message : String(error),
       }
-    } finally {
-      // Restore original token
-      setGitHubToken(originalToken)
     }
   }
 }
