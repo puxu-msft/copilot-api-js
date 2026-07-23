@@ -130,6 +130,37 @@ export interface BufferedRetryContinuation {
   message: string
 }
 
+export type MaxTokensContinuationTextStrategy = "continue" | "passthrough"
+export type MaxTokensContinuationToolUseStrategy = "continue" | "passthrough"
+export type MaxTokensContinuationThinkingStrategy = "passthrough" | "retry_with_budget"
+export type MaxTokensContinuationVisibility = "transparent" | "passthrough" | "marker"
+
+/**
+ * Resolved max_tokens continuation policy for one vendor. P0 only resolves and records this
+ * policy; P1 is the first phase allowed to consume it for continuation behavior.
+ */
+export interface MaxTokensContinuationConfig {
+  enabled: boolean
+  maxRounds: number
+  classes: {
+    text: MaxTokensContinuationTextStrategy
+    toolUse: MaxTokensContinuationToolUseStrategy
+    thinking: MaxTokensContinuationThinkingStrategy
+  }
+  message: string
+  visibility: MaxTokensContinuationVisibility
+  thinkingRetryBudget: number | null
+}
+
+export interface EffectiveMaxTokensContinuationConfig extends MaxTokensContinuationConfig {
+  diagnostics: Array<"strategy-prevented-stitch">
+}
+
+/** Partial vendor override; class fields resolve independently so one override need not repeat every strategy. */
+export interface MaxTokensContinuationOverride extends Omit<Partial<MaxTokensContinuationConfig>, "classes"> {
+  classes?: Partial<MaxTokensContinuationConfig["classes"]>
+}
+
 /** unknown HTTP endpoint 日志级别（silent = 不打）。值须与 config/schema.ts 的 LOG_LEVELS 一致。 */
 export type LogLevel = "silent" | "debug" | "info" | "warn" | "error"
 
@@ -427,6 +458,10 @@ export interface State {
    * declares; unset fields fall through to {@link bufferedRetryContinuationShared}.
    */
   readonly bufferedRetryContinuationOverrides: Record<string, Partial<BufferedRetryContinuation>>
+  /** Vendor-neutral shared max_tokens continuation policy, resolved per vendor below. */
+  readonly maxTokensContinuationShared: MaxTokensContinuationConfig
+  /** Per-vendor max_tokens continuation overrides (partial, merged over the shared policy). */
+  readonly maxTokensContinuationOverrides: Record<string, MaxTokensContinuationOverride>
   /**
    * Chat Completions buffered-retry mode switch (P3). `false` (default) keeps the
    * live streaming path; `true` adopts the terminal-only buffered sink. Caps come
@@ -1179,6 +1214,18 @@ function cloneContinuationOverrides(source: Record<string, Partial<BufferedRetry
   return out
 }
 
+function cloneMaxTokensContinuationConfig(source: MaxTokensContinuationConfig): MaxTokensContinuationConfig {
+  return { ...source, classes: { ...source.classes } }
+}
+
+function cloneMaxTokensContinuationOverrides(source: Record<string, MaxTokensContinuationOverride>): Record<string, MaxTokensContinuationOverride> {
+  const out: Record<string, MaxTokensContinuationOverride> = {}
+  for (const [vendor, config] of Object.entries(source)) {
+    out[vendor] = { ...config, ...(config.classes && { classes: { ...config.classes } }) }
+  }
+  return out
+}
+
 /** Deep-clone `modelTranslation` (ingress → rule list, each rule its own object with its own `features` array). */
 function cloneModelTranslation(source: ModelTranslation): ModelTranslation {
   const out: ModelTranslation = {}
@@ -1207,6 +1254,8 @@ function cloneState(source: MutableState): MutableState {
     bufferedRetryOverrides: cloneBufferedRetryOverrides(source.bufferedRetryOverrides),
     bufferedRetryContinuationShared: { ...source.bufferedRetryContinuationShared },
     bufferedRetryContinuationOverrides: cloneContinuationOverrides(source.bufferedRetryContinuationOverrides),
+    maxTokensContinuationShared: cloneMaxTokensContinuationConfig(source.maxTokensContinuationShared),
+    maxTokensContinuationOverrides: cloneMaxTokensContinuationOverrides(source.maxTokensContinuationOverrides),
     stripBetaHeaders: cloneStripBetaHeaders(source.stripBetaHeaders),
     stripCacheControlSubfields: cloneStripBetaHeaders(source.stripCacheControlSubfields),
     stripPartnerFeatures: cloneStripBetaHeaders(source.stripPartnerFeatures),
@@ -1820,6 +1869,81 @@ export function resolveContinuation(vendor: string): BufferedRetryContinuation {
   }
 }
 
+/** Set the shared max_tokens continuation policy. P0 resolves it but does not consume it in the driver. */
+export function setMaxTokensContinuationShared(patch: MaxTokensContinuationOverride): void {
+  const { classes, ...scalarPatch } = patch
+  updateState({
+    maxTokensContinuationShared: {
+      ...state.maxTokensContinuationShared,
+      ...scalarPatch,
+      ...(classes && {
+        classes: {
+          text: classes.text ?? state.maxTokensContinuationShared.classes.text,
+          toolUse: classes.toolUse ?? state.maxTokensContinuationShared.classes.toolUse,
+          thinking: classes.thinking ?? state.maxTokensContinuationShared.classes.thinking,
+        },
+      }),
+    },
+  })
+}
+
+/** Set a per-vendor max_tokens continuation override. */
+export function setMaxTokensContinuationOverride(vendor: string, patch: MaxTokensContinuationOverride): void {
+  const previous = state.maxTokensContinuationOverrides[vendor] ?? {}
+  const { classes, ...scalarPatch } = patch
+  updateState({
+    maxTokensContinuationOverrides: {
+      ...state.maxTokensContinuationOverrides,
+      [vendor]: {
+        ...previous,
+        ...scalarPatch,
+        ...(classes && {
+          classes: {
+            text: classes.text ?? previous.classes?.text,
+            toolUse: classes.toolUse ?? previous.classes?.toolUse,
+            thinking: classes.thinking ?? previous.classes?.thinking,
+          },
+        }),
+      },
+    },
+  })
+}
+
+/** Resolve max_tokens continuation settings with per-vendor values taking precedence over shared values. */
+export function resolveMaxTokensContinuation(vendor: string): MaxTokensContinuationConfig {
+  const override = state.maxTokensContinuationOverrides[vendor] ?? {}
+  const shared = state.maxTokensContinuationShared
+  return {
+    enabled: override.enabled ?? shared.enabled,
+    maxRounds: override.maxRounds ?? shared.maxRounds,
+    classes: {
+      text: override.classes?.text ?? shared.classes.text,
+      toolUse: override.classes?.toolUse ?? shared.classes.toolUse,
+      thinking: override.classes?.thinking ?? shared.classes.thinking,
+    },
+    message: override.message ?? shared.message,
+    visibility: override.visibility ?? shared.visibility,
+    thinkingRetryBudget: override.thinkingRetryBudget ?? shared.thinkingRetryBudget,
+  }
+}
+
+/**
+ * Enforce the wire-level constraint that passthrough terminates the stream and therefore cannot stitch.
+ * P1 must consume this resolved form before it ever enables continuation behavior.
+ */
+export function resolveEffectiveMaxTokensContinuation(vendor: string): EffectiveMaxTokensContinuationConfig {
+  const config = resolveMaxTokensContinuation(vendor)
+  if (config.visibility !== "passthrough") return { ...config, diagnostics: [] }
+
+  const prevented = config.classes.text === "continue" || config.classes.toolUse === "continue" || config.classes.thinking === "retry_with_budget"
+  if (!prevented) return { ...config, diagnostics: [] }
+  return {
+    ...config,
+    classes: { text: "passthrough", toolUse: "passthrough", thinking: "passthrough" },
+    diagnostics: ["strategy-prevented-stitch"],
+  }
+}
+
 /**
  * Capture a deep-enough clone of state for test restoration.
  * Tests should prefer this over direct mutation snapshots so State can stay readonly.
@@ -2041,6 +2165,8 @@ export function resetConfigManagedState(): void {
     bufferedRetryOverrides: cloneBufferedRetryOverrides(CONFIG_MANAGED_DEFAULTS.bufferedRetryOverrides),
     bufferedRetryContinuationShared: { ...CONFIG_MANAGED_DEFAULTS.bufferedRetryContinuationShared },
     bufferedRetryContinuationOverrides: cloneContinuationOverrides(CONFIG_MANAGED_DEFAULTS.bufferedRetryContinuationOverrides),
+    maxTokensContinuationShared: cloneMaxTokensContinuationConfig(CONFIG_MANAGED_DEFAULTS.maxTokensContinuationShared),
+    maxTokensContinuationOverrides: cloneMaxTokensContinuationOverrides(CONFIG_MANAGED_DEFAULTS.maxTokensContinuationOverrides),
     chatCompletionsBufferedRetry: CONFIG_MANAGED_DEFAULTS.chatCompletionsBufferedRetry,
   })
   // Shared reactive-retry budget (was auto_truncate.max_retries) + per-strategy registry opt-out.
@@ -2131,6 +2257,8 @@ const mutableState: MutableState = {
   bufferedRetryOverrides: cloneBufferedRetryOverrides(CONFIG_MANAGED_DEFAULTS.bufferedRetryOverrides),
   bufferedRetryContinuationShared: { ...CONFIG_MANAGED_DEFAULTS.bufferedRetryContinuationShared },
   bufferedRetryContinuationOverrides: cloneContinuationOverrides(CONFIG_MANAGED_DEFAULTS.bufferedRetryContinuationOverrides),
+  maxTokensContinuationShared: cloneMaxTokensContinuationConfig(CONFIG_MANAGED_DEFAULTS.maxTokensContinuationShared),
+  maxTokensContinuationOverrides: cloneMaxTokensContinuationOverrides(CONFIG_MANAGED_DEFAULTS.maxTokensContinuationOverrides),
   chatCompletionsBufferedRetry: CONFIG_MANAGED_DEFAULTS.chatCompletionsBufferedRetry,
   protectStreamingEscalateContext: CONFIG_MANAGED_DEFAULTS.protectStreamingEscalateContext,
   injectClaudeCodeOfficialTools: CONFIG_MANAGED_DEFAULTS.injectClaudeCodeOfficialTools,

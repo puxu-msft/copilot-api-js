@@ -24,6 +24,7 @@ import type {
   //
   BufferedRetryCaps,
   BufferedRetryContinuation,
+  MaxTokensContinuationConfig,
   CacheControlMode,
   CacheTtl,
   CompiledRewriteRule,
@@ -79,6 +80,15 @@ export const CONFIG_MANAGED_DEFAULTS = {
   bufferedRetryOverrides: {} as Record<string, Partial<BufferedRetryCaps>>,
   bufferedRetryContinuationShared: { enabled: true, message: "network issue. please continue" } as BufferedRetryContinuation,
   bufferedRetryContinuationOverrides: {} as Record<string, Partial<BufferedRetryContinuation>>,
+  maxTokensContinuationShared: {
+    enabled: false,
+    maxRounds: 1,
+    classes: { text: "continue", toolUse: "passthrough", thinking: "passthrough" },
+    message: "Please continue where you left off.",
+    visibility: "transparent",
+    thinkingRetryBudget: null,
+  } as MaxTokensContinuationConfig,
+  maxTokensContinuationOverrides: {} as Record<string, import("./state").MaxTokensContinuationOverride>,
   // Default ON (P3 flip, 2026-07-14): buffering/generation-preservation beats the
   // downstream streaming UX for CC. See docs/decisions/ + plan README frozen contract.
   chatCompletionsBufferedRetry: true,

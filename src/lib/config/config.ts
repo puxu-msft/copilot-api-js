@@ -25,6 +25,8 @@ import {
   setAnthropicBehavior,
   setBufferedRetryContinuationOverride,
   setBufferedRetryContinuationShared,
+  setMaxTokensContinuationOverride,
+  setMaxTokensContinuationShared,
   setBufferedRetryOverride,
   setBufferedRetryShared,
   setChatCompletionsConfig,
@@ -103,6 +105,7 @@ export {
 import type {
   //
   BufferedRetryOverride,
+  MaxTokensContinuationOverride,
   Config,
   RewriteRule,
 } from "./schema"
@@ -265,6 +268,25 @@ function mapContinuation(m: BufferedRetryOverride): Partial<BufferedRetryContinu
   if (c.enabled !== undefined) out.enabled = c.enabled
   if (c.message != null) out.message = c.message
   return out
+}
+
+/** Map snake_case configuration into the state-owned max_tokens continuation shape. */
+function mapMaxTokensContinuation(value: MaxTokensContinuationOverride): import("~/lib/state").MaxTokensContinuationOverride {
+  const classes = value.classes
+  return {
+    ...(value.enabled !== undefined && { enabled: value.enabled }),
+    ...(value.max_rounds !== undefined && { maxRounds: value.max_rounds }),
+    ...(classes && {
+      classes: {
+        ...(classes.text !== undefined && { text: classes.text }),
+        ...(classes.tool_use !== undefined && { toolUse: classes.tool_use }),
+        ...(classes.thinking !== undefined && { thinking: classes.thinking }),
+      },
+    }),
+    ...(value.message !== undefined && { message: value.message }),
+    ...(value.visibility !== undefined && { visibility: value.visibility }),
+    ...(value.thinking_retry_budget !== undefined && { thinkingRetryBudget: value.thinking_retry_budget ?? null }),
+  }
 }
 
 /**
@@ -668,6 +690,7 @@ export async function applyConfigToState(): Promise<Config> {
       const cont = mapContinuation(a.buffered_retry)
       if (cont) setBufferedRetryContinuationOverride("anthropic", cont)
     }
+    if (a.max_tokens_continuation) setMaxTokensContinuationOverride("anthropic", mapMaxTokensContinuation(a.max_tokens_continuation))
     if (a.protect_streaming_escalate_context !== undefined) setAnthropicBehavior({ protectStreamingEscalateContext: a.protect_streaming_escalate_context })
     // Model-capability allowlists (retain-on-absence per sub-key; an explicit empty list clears).
     if (a.model_capabilities) {
@@ -805,6 +828,7 @@ export async function applyConfigToState(): Promise<Config> {
     const cont = mapContinuation(config.buffered_retry)
     if (cont) setBufferedRetryContinuationShared(cont)
   }
+  if (config.max_tokens_continuation) setMaxTokensContinuationShared(mapMaxTokensContinuation(config.max_tokens_continuation))
 
   // L2 cross-field guard: buffered streaming with NO keepalive heartbeat = clients idle out.
   // Checked on the EFFECTIVE state (post-apply, so bundled defaults + hot-reload retain are reflected).
@@ -1097,6 +1121,7 @@ export async function applyConfigToState(): Promise<Config> {
   if (responsesConfig && responsesConfig.buffered_retry !== undefined) {
     applyVendorBufferedRetry(responsesConfig.buffered_retry, "responses", (enabled) => setResponsesConfig({ responsesBufferedRetry: enabled }))
   }
+  if (responsesConfig?.max_tokens_continuation) setMaxTokensContinuationOverride("responses", mapMaxTokensContinuation(responsesConfig.max_tokens_continuation))
   if (responsesConfig && responsesConfig.fix_stream_ids !== undefined) setResponsesConfig({ fixResponsesStreamIds: responsesConfig.fix_stream_ids })
   if (responsesConfig && responsesConfig.strip_image_generation_tool !== undefined)
     setResponsesConfig({ stripImageGenerationTool: responsesConfig.strip_image_generation_tool })
@@ -1122,6 +1147,9 @@ export async function applyConfigToState(): Promise<Config> {
     applyVendorBufferedRetry(chatCompletionsConfig.buffered_retry, "chat_completions", (enabled) =>
       setChatCompletionsConfig({ chatCompletionsBufferedRetry: enabled }),
     )
+  }
+  if (chatCompletionsConfig?.max_tokens_continuation) {
+    setMaxTokensContinuationOverride("chat_completions", mapMaxTokensContinuation(chatCompletionsConfig.max_tokens_continuation))
   }
 
   syncModelRefreshLoop()

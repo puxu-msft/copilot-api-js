@@ -214,6 +214,27 @@ export const RateLimiterConfigSchema = z
  * override > shared `buffered_retry.*` > built-in default (max_retries 3 /
  * buffer_cap_bytes 16777216 / heartbeat_sec 15).
  */
+export const MaxTokensContinuationClassesSchema = z
+  .object({
+    text: nullableEnum(["continue", "passthrough"] as const),
+    tool_use: nullableEnum(["continue", "passthrough"] as const),
+    thinking: nullableEnum(["passthrough", "retry_with_budget"] as const),
+  })
+  .strict()
+  .describe("Per-truncation-class max_tokens continuation strategies.")
+
+export const MaxTokensContinuationOverrideSchema = z
+  .object({
+    enabled: nullableBoolean(),
+    max_rounds: nullableNonnegativeInt(),
+    classes: nullableSection(MaxTokensContinuationClassesSchema),
+    message: nullableString(),
+    visibility: nullableEnum(["transparent", "passthrough", "marker"] as const),
+    thinking_retry_budget: nullableNonnegativeInt(),
+  })
+  .strict()
+  .describe("Opt-in max_tokens continuation policy. Disabled by default so terminal frames pass through unchanged.")
+
 export const BufferedRetryOverrideSchema = z
   .object({
     /** Mode switch (responses / chat_completions only; ignored for shared + anthropic). */
@@ -677,6 +698,8 @@ export const AnthropicConfigSchema = z
      * see CONFIG_MIGRATIONS in compat.ts.)
      */
     buffered_retry: nullableSection(BufferedRetryOverrideSchema),
+    /** Per-vendor override for the top-level max_tokens_continuation policy. */
+    max_tokens_continuation: nullableSection(MaxTokensContinuationOverrideSchema),
     /**
      * On each buffered RST/truncation retry, FORCE a progressively aggressive native
      * `clear_tool_uses` context_management edit (lower trigger + smaller keep) to compress the
@@ -736,6 +759,8 @@ export const ResponsesConfigSchema = z
      * shared top-level `buffered_retry.*` for this vendor (see resolveBufferedCaps).
      */
     buffered_retry: nullableBufferedRetry(),
+    /** Per-vendor override for the top-level max_tokens_continuation policy. */
+    max_tokens_continuation: nullableSection(MaxTokensContinuationOverrideSchema),
     fix_stream_ids: nullableBoolean(),
     /**
      * Strip the `image_generation` builtin tool from inbound Responses
@@ -792,6 +817,8 @@ export type ServerConfig = z.infer<typeof ServerConfigSchema>
 export const ChatCompletionsConfigSchema = z
   .object({
     buffered_retry: nullableBufferedRetry(),
+    /** Per-vendor override for the top-level max_tokens_continuation policy. */
+    max_tokens_continuation: nullableSection(MaxTokensContinuationOverrideSchema),
   })
   .strict()
 
@@ -1330,6 +1357,12 @@ export const ConfigSchema = z
      * switch). See resolveBufferedCaps in state.ts.
      */
     buffered_retry: nullableSection(BufferedRetryOverrideSchema),
+    /**
+     * Vendor-neutral max_tokens continuation policy. Per-vendor overrides use the matching
+     * `anthropic` / `openai_responses` / `chat_completions` sections and win over this base.
+     * Disabled by default: P0 records diagnostics but never changes client wire behavior.
+     */
+    max_tokens_continuation: nullableSection(MaxTokensContinuationOverrideSchema),
     model_mappings: ModelMappingsSchema.nullable()
       .transform((v): z.infer<typeof ModelMappingsSchema> | undefined => v ?? undefined)
       .optional(),
@@ -1479,6 +1512,7 @@ export type ShutdownConfig = z.infer<typeof ShutdownConfigSchema>
 export type ResponsesConfig = z.infer<typeof ResponsesConfigSchema>
 export type ChatCompletionsConfig = z.infer<typeof ChatCompletionsConfigSchema>
 export type BufferedRetryOverride = z.infer<typeof BufferedRetryOverrideSchema>
+export type MaxTokensContinuationOverride = z.infer<typeof MaxTokensContinuationOverrideSchema>
 export type HistoryConfig = z.infer<typeof HistoryConfigSchema>
 export type TelemetryConfig = z.infer<typeof TelemetryConfigSchema>
 export type TimeoutsConfig = z.infer<typeof TimeoutsConfigSchema>

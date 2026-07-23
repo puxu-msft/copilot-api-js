@@ -225,6 +225,32 @@
 #   buffered_retry:
 #     max_retries: 5
 
+# Opt-in policy for clean `max_tokens` terminals. The default is disabled, so terminal
+# frames remain byte-for-byte pass-through. P0 records a diagnostic only; later phases
+# consume this policy to stitch supported continuation classes.
+# max_tokens_continuation:
+#   enabled: false
+#   max_rounds: 1
+#   classes:
+#     text: continue                 # continue | passthrough
+#     tool_use: passthrough          # continue | passthrough
+#     thinking: passthrough          # passthrough | retry_with_budget
+#   message: "Please continue where you left off."
+#   visibility: transparent          # transparent | passthrough | marker
+#   thinking_retry_budget: null      # null = model cap when retry_with_budget is enabled
+#
+# Per-vendor override examples:
+# anthropic:
+#   max_tokens_continuation:
+#     max_rounds: 2
+# openai_responses:
+#   max_tokens_continuation:
+#     visibility: marker
+# chat_completions:
+#   max_tokens_continuation:
+#     classes:
+#       text: passthrough
+
 # ============================================================================
 # Unknown HTTP Endpoint Logging
 # ============================================================================

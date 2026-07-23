@@ -345,6 +345,19 @@ buffered_retry:
     enabled: true
     message: "network issue. please continue"
 
+# Max-token terminal continuation is separately opt-in. P0 only observes and records the real terminal; with enabled=false it never changes the client wire.
+# max_tokens 终局续传独立 opt-in。P0 只观察并记录真实终局；enabled=false 时绝不改变客户端 wire。
+max_tokens_continuation:
+  enabled: false
+  max_rounds: 1
+  classes:
+    text: continue
+    tool_use: passthrough
+    thinking: passthrough
+  message: "Please continue where you left off."
+  visibility: transparent
+  thinking_retry_budget: null
+
 # Per-vendor overrides + enabled mode switch (examples, commented out by default):
 # 各 vendor 覆盖 + enabled 开关（示例，默认注释）：
 #   anthropic.buffered_retry — caps override only; Anthropic's switch is anthropic.protect_streaming_generation (default false; enabled ignored here). Block-level delivery CLI-safety comes from strict index-ordered output; the empty-text anchor keepalive was retired (ADR 2026-07-22 D2).

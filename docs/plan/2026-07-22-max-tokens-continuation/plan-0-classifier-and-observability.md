@@ -196,7 +196,7 @@ test("responses: status incomplete + reason max_output_tokens is terminal", () =
 
 > **修订记录**：spec §11 已明确「visibility×class 非法组合校验须随 P1 首次消费落地」，本 task 提前把**校验函数**建好（供 P1 首个可启用 commit 直接消费），但本 task 自身仍不接线到 driver（P0 保持"零续写"边界）。
 
-- [ ] **Step 1: 写失败测试** —— schema 解析 + 默认值 + `resolveMaxTokensContinuation(vendor)` per-vendor 覆盖优先级（镜像 `resolveContinuation`）+ 组合校验函数（独立函数，P0 建好，P1 消费）。
+- [x] **Step 1: 写失败测试** —— schema 解析 + 默认值 + `resolveMaxTokensContinuation(vendor)` per-vendor 覆盖优先级（镜像 `resolveContinuation`）+ 组合校验函数（独立函数，P0 建好，P1 消费）。
 
 ```ts
 // tests/config/max-tokens-continuation-config.unit.test.ts
@@ -226,9 +226,9 @@ test("visibility=transparent + classes.text=continue: allowed, no downgrade", ()
 })
 ```
 
-- [ ] **Step 2: 跑，失败。**
-- [ ] **Step 3: 实现** —— `MaxTokensContinuationOverrideSchema`（`z.object({enabled, max_rounds, classes:{text,tool_use,thinking}, message, visibility, thinking_retry_budget}).strict()`，放**新的顶层** `max_tokens_continuation` 段）。`state.ts` 加 `maxTokensContinuationShared`/`maxTokensContinuationOverrides` + `resolveMaxTokensContinuation(vendor)`（per-vendor > shared > 内置默认）+ `CONFIG_MANAGED_DEFAULTS` 补齐 + test helper 三处覆盖。**新增** `resolveEffectiveMaxTokensContinuation(vendor)`（在 `resolveMaxTokensContinuation` 之上叠加组合校验层：`visibility==="passthrough"` 时把 `classes.*` 中 `"continue"`/`"retry_with_budget"` 强制降级为 `"passthrough"`，返回值附带 `diagnostics: string[]` 含 `"strategy-prevented-stitch"`）——**这个函数本 task 建好但暂无消费者**（P0 保持零续写边界），P1 Task 1.x 直接消费它，不重新实现。
-- [ ] **Step 4: 跑，通过。**
+- [x] **Step 2: 跑，失败。**
+- [x] **Step 3: 实现** —— `MaxTokensContinuationOverrideSchema`（`z.object({enabled, max_rounds, classes:{text,tool_use,thinking}, message, visibility, thinking_retry_budget}).strict()`，放**新的顶层** `max_tokens_continuation` 段）。`state.ts` 加 `maxTokensContinuationShared`/`maxTokensContinuationOverrides` + `resolveMaxTokensContinuation(vendor)`（per-vendor > shared > 内置默认）+ `CONFIG_MANAGED_DEFAULTS` 补齐 + test helper 三处覆盖。**新增** `resolveEffectiveMaxTokensContinuation(vendor)`（在 `resolveMaxTokensContinuation` 之上叠加组合校验层：`visibility==="passthrough"` 时把 `classes.*` 中 `"continue"`/`"retry_with_budget"` 强制降级为 `"passthrough"`，返回值附带 `diagnostics: string[]` 含 `"strategy-prevented-stitch"`）——**这个函数本 task 建好但暂无消费者**（P0 保持零续写边界），P1 Task 1.x 直接消费它，不重新实现。
+- [x] **Step 4: 跑，通过。**
 - [ ] **Step 5: 提交** → `feat(config): max_tokens_continuation schema + state resolution + effective-config combination validation (unwired to driver)`。
 
 ### Task 0.5: history `pipelineInfo.maxTokensContinuation` 字段 + **Anthropic 真实生产接线**（非仅类型占位）
