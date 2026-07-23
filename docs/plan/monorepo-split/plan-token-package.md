@@ -60,12 +60,27 @@ export interface TokenRuntime {
   getCopilotUsage(): Promise<CopilotUsageResponse>
   getGitHubUser(): Promise<GitHubUser>
   getCredentials(): TokenCredentialsView
+  ensureValidCopilotToken(): Promise<void> // request-time (server middleware)
+  refreshCopilotToken(): Promise<boolean>  // retry strategy
   dispose(): Promise<void> // stop refresh timer, await/reject in-flight refresh, release store
 }
 export function createTokenRuntime(deps: TokenRuntimeDependencies): TokenRuntime
+/** Process-singleton accessor: composition root installs THE runtime; request/
+ *  shutdown-time consumers read this same instance (never a fresh one). */
+export function getTokenRuntime(): TokenRuntime
 ```
 
 装配层（CLI 各命令唯一组装点）构造 runtime；`auth`→`acquireGitHubToken({forceDeviceAuth:true})`；`debug`→runtime operations，**禁回写 core state**；core/CLI 需 credential 只读 `getCredentials()` 视图，**不存镜像**。模块级 `setTokenFetch()` 仅可作过渡 shim、由 runtime 拥有含 reset，**非生产公共 API**。
+
+**同实例生命周期操作消费者矩阵**（承重——runtime 是单一进程 owner，request/shutdown 时点必须用**同一实例**，非新建、非模块级 manager escape hatch）：
+
+| 消费点（file:line） | 现状 | 迁为 |
+|---|---|---|
+| `src/server.ts:126` 中间件 `ensureValidCopilotToken()` | 模块级全局 | `getTokenRuntime().ensureValidCopilotToken()`（或装配层注入 runtime 引用） |
+| `src/lib/request/strategies/token-refresh.ts:27` `getCopilotTokenManager().refresh()` | 全局 singleton 访问 | `getTokenRuntime().refreshCopilotToken()` |
+| `src/lib/shutdown.ts:398` `stopTokenRefresh()`（`deps.stopTokenRefreshFn` 可注入） | 模块级 | `getTokenRuntime().dispose()`（shutdown 只调它，单 owner） |
+
+C4 建立 composition root 时**同时**收敛这 3 个 lifecycle-op 消费者到 `getTokenRuntime()` 的窄 operation API；**禁**保留 `getCopilotTokenManager`/`ensureValidCopilotToken`/`stopTokenRefresh` 模块级导出作为绕过路径（可留为 runtime 内部委托、但公共面只剩 runtime）。
 
 ## 所有权收敛矩阵（C5 gate——8 生产读点，全部核实）
 
@@ -94,7 +109,7 @@ token store 是 `githubToken`/`copilotToken`/`tokenInfo`/`copilotTokenInfo` **�
   - 注：`utils.ts` 是多符号文件，只需 `sleep` → 抽 `sleep` 到 foundation（`packages/foundation/src/sleep.ts` 或并入现有），`utils.ts` re-export 或消费者改 import；避免整文件搬（其它符号可能有 core 依赖，先查 `grep -n 'export' src/lib/utils.ts`）。
 - **C2**：foundation 建 `error/tool-diagnostics-types.ts`（纯类型 SoT）→ **改 `http-error.ts:1` 自身 import 指向 foundation 类型**（不是靠 upstream-diagnostics re-export）→ 移 `http-error`/`classify`/`parsing`/`utils`(error) 纯基元入 foundation；`upstream-diagnostics.ts` 仅对旧 core 消费者 type re-export；**`forward.ts` 留 core**。targeted 测试：`instanceof HTTPError` 跨 foundation/core barrel 为真、400 diagnostics 从 producer 到 `forwardError` log 仍可观测（`tests/infra/{error,error-format,upstream-diagnostics}.unit.test.ts`）。error barrel 符号面零改、~57 消费者不动。
 - **C3**：建 `createTokenRuntime`/`TokenRuntimeDependencies` 骨架 + 视图接口；旧 `initTokenManagers` lifecycle **façade 委托** runtime（同 commit 内不改消费者）。
-- **C4**：**同一 commit** 收敛全部 provider/manager/CLI 5 链到 runtime，带 fetch(`TokenFetch`) + paths(`TokenPersistencePaths`) + config(`TokenRuntimeConfigView`)；validate 临时 swap → `withGitHubTokenForValidation(token, op)`（try/finally + 并发策略）。装配层适配 `upstreamFetch`/`PATHS`/config 视图。
+- **C4**：**同一 commit** 收敛全部 provider/manager/CLI 5 链 + **3 个 lifecycle-op 消费者**（server 中间件 `ensureValidCopilotToken`、refresh 策略、shutdown）到 `getTokenRuntime()` 单例 + runtime 窄 API，带 fetch(`TokenFetch`) + paths(`TokenPersistencePaths`) + config(`TokenRuntimeConfigView`)；validate 临时 swap → `withGitHubTokenForValidation(token, op)`（try/finally + 并发策略）。装配层适配 `upstreamFetch`/`PATHS`/config 视图。**删除 `getCopilotTokenManager`/`ensureValidCopilotToken`/`stopTokenRefresh` 模块级公共导出**（escape hatch）。
 - **C5**：接入 token-store snapshot/reset + fixture；**同一 commit** 迁完 8 个 core token-field 读点经 token 包 API、删 state token 字段+setter+镜像；`routes/token`/status/readiness/4 client/header builder 逐一。生命周期 `disposeTokenRuntime()` 单 owner，shutdown 只调它；测试：重复 init / shutdown-during-refresh / teardown-during-refresh 三条确定性 + 跨测试隔离正向。
 - **C6**：GHC auth HTTP 完整符号表（见依赖 #5）移入 token `ghc-auth-http.ts`；`copilot-api.ts` 删 `githubHeaders`（确认 token 外零用）。`copilotBaseUrl`/`copilotHeaders` 留 core（models/transport 用）。
 - **C7 = T2**：`git mv src/lib/token → packages/token/src`；package.json（声明 consola 等）+ tsconfig；过渡 alias `~/lib/token`+`~/lib/token/*`（2 barrel 消费者不改）；内部 import 收敛相对、对 foundation 用包名/alias。
