@@ -195,7 +195,15 @@ export function makeSseSink(stream: SSEStreamingApi, opts: SseSinkOptions = {}):
 
   const sampleForwarded = (
     frame: ClientFrame,
-    synthetic?: "keepalive" | "anchor" | "synthetic-message-start" | "hook-rewrite" | "refusal-recovery" | "error-shaping-canonical" | "error-shaping-auq" | "buffered-terminal-repair",
+    synthetic?:
+      | "keepalive"
+      | "anchor"
+      | "synthetic-message-start"
+      | "hook-rewrite"
+      | "refusal-recovery"
+      | "error-shaping-canonical"
+      | "error-shaping-auq"
+      | "buffered-terminal-repair",
     generationSynthetic: SseEventRecord["synthetic"] = synthetic,
   ): void => {
     const record: SseEventRecord = {
@@ -466,7 +474,14 @@ export function makeSseSink(stream: SSEStreamingApi, opts: SseSinkOptions = {}):
  */
 export function makeDeliverySseSink(stream: SSEStreamingApi, opts: SseSinkOptions = {}): ClientSink {
   const { heartbeat, ...rawOptions } = opts
-  const rawSink = makeSseSink(stream, rawOptions)
+  const deliveryRef: { current?: ReturnType<typeof createDownstreamDeliverySession> } = {}
+  const rawSink = makeSseSink(stream, {
+    ...rawOptions,
+    onFirstRealContent: () => {
+      deliveryRef.current?.markRealClientContentEmitted()
+      opts.onFirstRealContent?.()
+    },
+  })
   const delivery = createDownstreamDeliverySession({
     sink: rawSink,
     monotonicNow: Date.now,
@@ -483,6 +498,7 @@ export function makeDeliverySseSink(stream: SSEStreamingApi, opts: SseSinkOption
         },
       }),
   })
+  deliveryRef.current = delivery
   return delivery.clientSink
 }
 
@@ -656,7 +672,14 @@ export function makeWsSink(ws: WSContext, opts: WsSinkOptions = {}): ClientSink 
 /** Generation-owned WS delivery with an application-frame heartbeat independent from upstream attempts. */
 export function makeDeliveryWsSink(ws: WSContext, opts: WsSinkOptions = {}): ClientSink {
   const { heartbeat, ...rawOptions } = opts
-  const rawSink = makeWsSink(ws, rawOptions)
+  const deliveryRef: { current?: ReturnType<typeof createDownstreamDeliverySession> } = {}
+  const rawSink = makeWsSink(ws, {
+    ...rawOptions,
+    onFirstRealContent: () => {
+      deliveryRef.current?.markRealClientContentEmitted()
+      opts.onFirstRealContent?.()
+    },
+  })
   const delivery = createDownstreamDeliverySession({
     sink: rawSink,
     monotonicNow: Date.now,
@@ -669,6 +692,7 @@ export function makeDeliveryWsSink(ws: WSContext, opts: WsSinkOptions = {}): Cli
         },
       }),
   })
+  deliveryRef.current = delivery
   return delivery.clientSink
 }
 

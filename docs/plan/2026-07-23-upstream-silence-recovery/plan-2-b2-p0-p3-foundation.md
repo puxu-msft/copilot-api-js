@@ -75,7 +75,7 @@ test("config key precontent_recovery.enabled maps to state via applyConfigToStat
 - **ready 但流未产出真实内容**（已有 `upstream`，pump 正在跑，但上游在**首个真实 `content_block_delta`** 前失败）：`hasEmittedRealClientContent === false` → gate false（可安全 B2 恢复）。
 - **ready 且已发过真实 delta**（哪怕 block 未 stop）：`hasEmittedRealClientContent === true` → gate **true**（**禁止** B2 fresh dispatch，避免重复；这一段属于 continuation-retry / truncation 的地盘，不是 B2）。
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试** —— 新增 pure gate unit 与 delivery integration 覆盖。
 
 ```ts
 // tests/pipeline/semantic-content-gate.unit.test.ts
@@ -99,8 +99,8 @@ test("only a content_block_start (block opened, no delta) → false (no real byt
 })
 ```
 
-- [ ] **Step 2: 跑，失败。**
-- [ ] **Step 3: 实现**：
+- [x] **Step 2: 跑，失败。** —— gate 模块不存在，两个新测试文件均以预期的 module-not-found 失败。
+- [x] **Step 3: 实现**：
   - `src/lib/pipeline/generation/semantic-content-gate.ts`（纯函数，读 delivery flag）：
 
 ```ts
@@ -126,8 +126,8 @@ test("primary DID deliver a real content_block_delta then failed mid-block → g
 })
 ```
 
-- [ ] **Step 4: 跑，通过。**
-- [ ] **Step 5: 提交** → `feat(pipeline): delivery-level semantic-content gate (first real content_block_delta, not block-completed)`。
+- [x] **Step 4: 跑，通过。** —— targeted gate：13 pass；现有 streaming/postcommit regression：36 pass、7 skip、0 fail；`bun run typecheck` 与改动文件 eslint 通过。`bun run test:backend` 最终复跑：6359 pass、0 fail（首次并行性能阈值偶发失败后已单文件复跑 3 pass）。
+- [x] **Step 5: 提交** → `feat(pipeline): delivery-level semantic-content gate (first real content_block_delta, not block-completed)`。
 
 ---
 

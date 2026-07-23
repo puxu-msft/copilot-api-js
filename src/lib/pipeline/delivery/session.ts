@@ -31,8 +31,12 @@ export interface CreateDownstreamDeliverySessionOptions {
 /** Generation-scoped delivery port consumed by the retry/competition engine. */
 export interface DownstreamDeliverySession {
   readonly identity: symbol
+  /** Irreversible, delivery-scoped flag for real client content that has reached the sink. */
+  readonly hasEmittedRealClientContent: boolean
   readonly snapshot: DeliverySnapshot
   readonly clientSink: ClientSink
+  /** Mark the unique first real client-content egress observed by the transport sink. */
+  markRealClientContentEmitted(): void
   writeScaffold(frames: ReadonlyArray<DeliveryFrame>): Promise<void>
   commitWinnerBlock(candidateId: string, frames: ReadonlyArray<DeliveryFrame | DeliveryFrame["frame"]>): Promise<void>
   writeWinnerFrame(candidateId: string, frame: DeliveryFrame | DeliveryFrame["frame"]): Promise<void>
@@ -69,6 +73,7 @@ export function createDownstreamDeliverySession(options: CreateDownstreamDeliver
   let heartbeatStopped = false
   let scaffoldAttempted = false
   let pendingOpenBlocks: Array<DeliveredOpenBlock> = []
+  let hasEmittedRealClientContent = false
 
   const write = async (entry: DeliveryFrame, allowTerminating = false): Promise<void> => {
     await serializer.enqueue(async () => {
@@ -180,6 +185,12 @@ export function createDownstreamDeliverySession(options: CreateDownstreamDeliver
 
   const session: DownstreamDeliverySession = {
     identity,
+    get hasEmittedRealClientContent() {
+      return hasEmittedRealClientContent
+    },
+    markRealClientContentEmitted() {
+      hasEmittedRealClientContent = true
+    },
     get snapshot() {
       return Object.freeze({
         state,
