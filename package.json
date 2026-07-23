@@ -32,7 +32,8 @@
   ],
   "workspaces": [
     "ui",
-    "ui-v4"
+    "ui-v4",
+    "packages/*"
   ],
   "scripts": {
     "build": "bun run build:ui && bun run build:ui-v4 && bun run build:backend && bun run build:history-search",
