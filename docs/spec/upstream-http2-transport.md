@@ -19,7 +19,7 @@
 > - **(B3)上游 `RST_STREAM`(非 NO_ERROR)/GOAWAY 中断在途流 → ReadableStream error(reject reader)**,绝不静默 `{done:true}`(否则截断流被当 success,对齐 stream.ts Bug 2 防护)。
 > - **(B2)传输层 idle-timeout 设为应用层 guard 的 1.5×**(对齐 `UNDICI_TIMEOUT_MULTIPLIER`),让 `guardSseIterable` 始终先触发抛 `StreamIdleTimeoutError`,错误分类一致。
 > - **(C1)h2 单 session 故障域放大**(在途多 stream 共享一连接,GOAWAY 全挂):文档化此固有差异;在途失败映射 `network-retry` 让 pipeline 重试;评估每 origin 多 session。
-> - **(G1)C3 切换需运行时 config 开关 `upstream_transport`**(非 test-only 的 `setUpstreamFetchForTests`),生产可热回退到 undici。
+> - **(G1)C3 切换需运行时 config 开关 `upstream_transport`**(非 test-only 的 `setUpstreamFetchForTests`),生产可热回退到 undici。**〔已实现 2026-07-22〕** 落地为 `upstream_transport.http2.favor: boolean`(默认 `true`)——`false` 逐请求把 `https://` 热回退到 undici(`upstream-fetch.ts:selectUpstreamTransport` 读 `proxy.ts:getUpstreamH2Favor`,热重载无需 session teardown)。只在 Node 诚实可用(Bun 下 undici 仍挂 GHC chunked,故 config.ts apply `false` 时打 `consola.warn`;两 runtime 均逐字 honor,不做 Bun 硬拦截——用户决策)。见 DESIGN.md 配置表 `upstreamH2Favor` 行。
 
 
 ---

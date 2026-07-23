@@ -989,6 +989,19 @@ export const TimeoutsConfigSchema = z
 
 export const UpstreamTransportHttp2ConfigSchema = z
   .object({
+    /**
+     * Whether to prefer HTTP/2 (node:http2) for every `https://` upstream. Default `true`.
+     *
+     * `false` routes `https://` upstreams through undici (HTTP/1.1) instead — an
+     * escape hatch that only works honestly on **Node** (`dist/main.mjs`). Under
+     * **Bun** (`dev`/`start`), undici's HTTP/1.1 parser hangs forever on the
+     * Copilot hosts' chunked responses (Node finalizes in 0.4s, Bun never returns
+     * — the exact reason h2 is the default; see transport/upstream-fetch.ts). The
+     * value is honored literally on both runtimes; a loud warning is logged when
+     * `false` is applied on Bun. Plaintext `http://` upstreams (local SearXNG)
+     * always use undici regardless of this flag.
+     */
+    favor: nullableBoolean(),
     /** Upstream HTTP/2 PING keepalive interval in seconds (0 = disabled). Same semantics as the migrated `timeouts.upstream_h2_ping`. Default 15. Works on both Bun and Node (node:http2 transport is runtime-neutral). */
     ping_interval: nullableNonnegativeInt(),
     /**

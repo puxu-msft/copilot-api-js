@@ -92,6 +92,16 @@ export function getUpstreamH2PingIntervalMs(): number {
 }
 
 /**
+ * Whether to prefer HTTP/2 (node:http2) for `https://` upstreams. Derived live
+ * from `state.upstreamH2Favor` so a hot-reload reroutes subsequent requests with
+ * no h2-session teardown. Consumed by upstream-fetch.ts:selectUpstreamTransport.
+ * See `state.upstreamH2Favor` for the Bun-hang caveat when this is `false`.
+ */
+export function getUpstreamH2Favor(): boolean {
+  return state.upstreamH2Favor
+}
+
+/**
  * Build undici Agent options from current runtime state.
  *
  * - `headersTimeout` follows `responseHeaderTimeout` (time to first response headers)

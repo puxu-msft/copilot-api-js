@@ -136,6 +136,14 @@ describe("validateConfig — type errors", () => {
     expect(result.history?.raw_capture?.max_object_bytes).toBeUndefined()
     expect(warnedMessages().some((m) => m.includes("max_object_bytes"))).toBe(true)
   })
+
+  test("upstream_transport.http2.favor: boolean accepted, non-boolean stripped + warned", () => {
+    expect(validateConfig({ upstream_transport: { http2: { favor: false } } }).upstream_transport?.http2?.favor).toBe(false)
+    expect(validateConfig({ upstream_transport: { http2: { favor: true } } }).upstream_transport?.http2?.favor).toBe(true)
+    const bad = validateConfig({ upstream_transport: { http2: { favor: "no" } } })
+    expect(bad.upstream_transport?.http2?.favor).toBeUndefined()
+    expect(warnedMessages().some((m) => m.includes("favor"))).toBe(true)
+  })
 })
 
 describe("validateConfig — deprecated keys", () => {

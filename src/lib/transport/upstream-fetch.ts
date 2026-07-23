@@ -32,7 +32,11 @@
 // package.json + the C1 regression test (upstream-fetch.unit.test.ts) guard it.
 import { fetch as undiciFetch } from "undici/index.js"
 
-import { getUpstreamDispatcher } from "~/lib/proxy"
+import {
+  //
+  getUpstreamDispatcher,
+  getUpstreamH2Favor,
+} from "~/lib/proxy"
 
 import { http2Fetch } from "./http2-client"
 
@@ -59,15 +63,28 @@ type UpstreamFetchFn = (url: string | URL, init: UpstreamFetchInit) => Promise<R
 const undiciUpstreamFetch: UpstreamFetchFn = (url, init) => undiciFetch(url, { ...init, dispatcher: getUpstreamDispatcher() }) as unknown as Promise<Response>
 
 /**
- * Prefer HTTP/2 for every `https://` upstream. All real upstreams are h2-native
- * (verified: GHC `api.*.githubcopilot.com`, `api.github.com`, `github.com`,
+ * Choose the transport for an upstream URL. Plaintext `http://` always uses
+ * undici. `https://` prefers HTTP/2 unless `upstream_transport.http2.favor` is
+ * disabled (see {@link getUpstreamH2Favor} + the `state.upstreamH2Favor` caveat:
+ * `favor:false` falls back to undici, which hangs on GHC under Bun). Exported so
+ * the routing decision is unit-testable without mocking the transports.
+ */
+export function selectUpstreamTransport(url: URL): "http2" | "undici" {
+  if (url.protocol !== "https:") return "undici"
+  return getUpstreamH2Favor() ? "http2" : "undici"
+}
+
+/**
+ * Prefer HTTP/2 for every `https://` upstream (unless `favor` is disabled — see
+ * {@link selectUpstreamTransport}). All real upstreams are h2-native (verified:
+ * GHC `api.*.githubcopilot.com`, `api.github.com`, `github.com`,
  * `api.anthropic.com`), and undici's HTTP/1.1 parser hangs forever under Bun on
  * the Copilot hosts' chunked responses (see http2-client.ts / RFC). The only
  * plaintext `http://` upstream (local SearXNG) stays on undici.
  */
 const productionUpstreamFetch: UpstreamFetchFn = (url, init) => {
   const u = typeof url === "string" ? new URL(url) : url
-  return u.protocol === "https:" ? http2Fetch(u, init) : undiciUpstreamFetch(u, init)
+  return selectUpstreamTransport(u) === "http2" ? http2Fetch(u, init) : undiciUpstreamFetch(u, init)
 }
 
 let activeUpstreamFetch: UpstreamFetchFn = productionUpstreamFetch

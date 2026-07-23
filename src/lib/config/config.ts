@@ -988,6 +988,17 @@ export async function applyConfigToState(): Promise<Config> {
     if (upstreamTransport.tcp_keepalive_probe_delay !== undefined)
       setUpstreamTransportConfig({ upstreamKeepaliveDelay: upstreamTransport.tcp_keepalive_probe_delay })
     if (upstreamTransport.http2?.ping_interval !== undefined) setUpstreamTransportConfig({ upstreamH2PingInterval: upstreamTransport.http2.ping_interval })
+    if (upstreamTransport.http2?.favor !== undefined) {
+      setUpstreamTransportConfig({ upstreamH2Favor: upstreamTransport.http2.favor })
+      // Honored literally on both runtimes, but favor:false routes https upstreams
+      // through undici, whose HTTP/1.1 parser hangs forever on GHC's chunked
+      // responses under Bun (the reason h2 is the default). Warn loudly so a Bun
+      // operator who bricks every https request understands why.
+      if (!upstreamTransport.http2.favor && typeof Bun !== "undefined")
+        consola.warn(
+          "[config] upstream_transport.http2.favor=false routes https upstreams through undici (HTTP/1.1), which hangs forever on GitHub Copilot's chunked responses under Bun — every https request will stall. favor:false is only usable on Node (dist/main.mjs).",
+        )
+    }
     if (upstreamTransport.http2?.session_connect_timeout !== undefined)
       setUpstreamTransportConfig({ sessionConnectTimeout: upstreamTransport.http2.session_connect_timeout })
     if (upstreamTransport.websocket?.pooled_connection_idle_timeout !== undefined)
