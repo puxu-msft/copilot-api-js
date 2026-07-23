@@ -423,7 +423,8 @@ export interface State {
    * the window, the real HTTP status is forwarded (the client keeps its native retry/backoff). If the
    * window elapses with the upstream still silent (opus pre-response thinking, empirically ≤~13s but
    * can run longer), the proxy commits a 200 + keepalive and any later error degrades to an SSE frame.
-   * `0` disables (commit immediately at t0). Clamped < CLIENT_IDLE_DEADLINE_SEC (60). Default 20.
+   * `0` disables (commit immediately at t0). Clamped by `clampCommitWindowSec` to `COMMIT_WINDOW_MAX_SEC`.
+   * Default 20.
    */
   readonly streamCommitAfterSec: number
 

@@ -50,7 +50,7 @@ test("commit-window clamp and keepalive-cadence clamp are independently addressa
 
 - [x] **Step 1（现在可做）**：把 `COMMIT_WINDOW_MAX_SEC` 从"复用 40"提到 **125s**（Q1 已实测 CC pre-header 容忍 ≥125s 的已知安全下界）——这只放宽「允许配置的上限」、默认值不变，安全。首失败点补测后可再往上调（留 margin）。
 - [-] **Step 2（本次跳过，待 Q1 首失败点）**：视首失败点结果决定是否上调 `streamCommitAfterSec` 默认值（当前 20）——事故 RST 最早 ~126s，故默认值即使上调也应 < 首失败点且权衡「窗口越大越多 B-Mode2 走原生保护、但 A 型挂起在窗口内干等越久」。**这是运维参数调整，可交由主会话在首失败点出来后单独决策+提交。**
-- [x] **Step 3**：按本次执行指令跑 `bun run test:fast` 全绿；更新 `schema.ts` 里 `stream_commit_after_sec` 的 TSDoc（补 Q1 实测值 ≥125s + 出处 `exp/silence-recovery-gates/FINDINGS.md`）。
+- [x] **Step 3**：跑 `bun run test:backend` 全绿；更新 `schema.ts` 里 `stream_commit_after_sec` 的 TSDoc（补 Q1 实测值 ≥125s + 出处 `exp/silence-recovery-gates/FINDINGS.md`）。
 - [x] **Step 4**：提交 → `fix(config): raise stream_commit_after_sec ceiling to measured CC pre-header floor (Q1 >=125s)`。
 
 ## 验收 Oracle
