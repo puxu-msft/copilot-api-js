@@ -4,9 +4,22 @@
 
 ## 0. 一句话现状
 
-原始两波网络事故的**决策 1+2**、三个暂缓项（**②per-origin 硬 cap / ③结构化 error tag / Q5 timing 埋点**）均已 landed master；**①上游静默 spec** 已定稿（经对抗审 + PoC，B2 主线待用户裁决）。全后端 6300+ pass。剩余 = spec 的用户裁决→plan→执行 + Q5 实测 + 两个非阻断 MED。
+原始两波网络事故的**决策 1+2**、三个暂缓项（**②per-origin 硬 cap / ③结构化 error tag / Q5 timing 埋点**）均已 landed master；**①上游静默 spec** 已定稿。**2026-07-23 续会话进展**：**Q5 已实测闭合**（只读 4141 直读 `upstreamHeadersAt`，34 正样本 header@47-231s∩success，deferred-header 实测证实、等-header 判别证伪、对抗审 HIGH-1/2 解除，spec 已回填 `9f886ade`）；**Q1/Q2 已跑**（Q1=CC pre-header 容忍 ≥125s、Q2 未定论，`exp/silence-recovery-gates/` + `25e6f81c`）；**B2 主线 + Q6 高上限已用户裁决**；**B1+B2+B3 TDD plan 已产出并跨模型对抗审**（`docs/plan/2026-07-23-upstream-silence-recovery/`，1 CRITICAL + 1 HIGH 已整合，`d280687f`）；**§3 doc/skill 已补**（`8fff5dd0`）；**MED-1/MED-2 入 backlog**（`21f0c8a9`，MED-2 已折进 B2 plan Task 0.6）。**剩余 = 用户裁决 plan 的几个开放分叉 → 实施（B1 + B2-P0 可开工）+ Q1 首失败点补测。**
 
-## 1. 已落地（master，别重做）
+## 0.1 续会话更新（2026-07-23，supersedes §2/§3 below）
+
+**本会话提交**（master，均显式 pathspec）：`9f886ade`（spec Q5 回填）、`8fff5dd0`（§3 doc/skill）、`25e6f81c`（Q1/Q2 PoC+FINDINGS）、`21f0c8a9`（MED-1/2 backlog）、`d280687f`（TDD plan）、`69786897`（记忆 stub）。
+
+**§3 待补 skill/doc = 已全部完成**：DESIGN.md h2 池多会话细节（`8fff5dd0`）、API.md timing 字段（早已就绪、无需改）、skill `history-sqlite-schema`（dispatch timing 注）、skill `proxy-api-reference`（timing 字段）。
+
+**剩余（新会话继续）**：
+1. **plan 的用户待裁决分叉**（实施前，见 [plan README](2026-07-23-upstream-silence-recovery/README.md) 文末 + 各门控）：① B2 配置键命名（占位 `precontent_recovery`）；② B2 触发范围是否纳入 `reaper-cancel`/`timeout(header-wait)`（plan 默认排除、留 B3）；③ buffered 路径 B2 是否尊重 `max_retries=0`、复杂则降级 backlog 只做 live；④ B3 fail-fast 计时器是否与 `responseHeaderTimeout` 合并（plan 倾向独立）。**这些是真分叉、需用户拍板**，不阻塞 B1/B2-P0 开工。
+2. **实施**：B1（plan-1，独立低风险）+ B2-P0（plan-2 Task 0.1 配置骨架）可即开工；B2-P1~P6 串行；B3 依赖 B2 gate。走 `superpowers:subagent-driven-development`。**实施前建议对整合后 plan 再过一轮 consensus 复审**（resume 原 `gpt-souls:reviewer`）。
+3. **Q1 首失败点补测**（130/150/180s 阶梯，离线 mock 零额度，复用 `exp/silence-recovery-gates/` harness）→ 定 B1 窗口最终上限/默认值。
+4. **MED-2 已折进 B2 plan Task 0.6**（seal-race crash 安全，B2 必治顺带关闭既有 process.exit 缺陷）；MED-1 折进 B2 dispatch-open 测试矩阵。
+5. **记忆索引 MEMORY.md 的 upstream-silence 行**已在工作区更新到新态但**未提交**（与 peer WIP 纠缠），下个碰 MEMORY.md 的会话一并提交。
+
+
 
 | 主题 | commit（约） | 权威文档 |
 |---|---|---|
