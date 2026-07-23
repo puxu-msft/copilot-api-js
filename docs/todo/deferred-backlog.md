@@ -969,3 +969,10 @@ registry（`docs/rfc/2026-07-21-retry-strategy-registry.md`）6 commit 全 lande
 - **当前行为**：聚合可视化靠自建 stats API + UI；无 Grafana/告警。
 - **理想架构 / 若做需改什么（三阶段，破坏性最后做）**：① `/metrics` label/histogram 补齐——把 /api/stats 现有维度 breakdown + 分布以 Prometheus 原生形态铺全（enabling，非破坏）；② 增 Grafana 支持——`docs/GRAFANA.md` + 示例 dashboard JSON + scrape 配置 + README（新增，非破坏）；③ 退役——删 `/api/stats` 路由（`src/routes/stats/`）+ telemetry.db 长窗 rollup/DDSketch（`src/lib/telemetry/read.ts` 30d/90d/lifetime + sketch）+ ui stats 页（`ui/src/composables/useOperationalStats.ts`）；保留 `/metrics`+registry+`getDimensionBreakdown`(sinceStart)、History（per-request 取证）、`/api/status`（健康）、实时面板。telemetry.db 最终形态按「/metrics 实际依赖」在专项 spec 精确裁决。
 - **为何暂缓**：破坏性方向；telemetry 区正被并发会话热改（2026-07-17 起 retry-fire telemetry / generation topology / V2-removal），须待其落定；且第③步须先完成①的 /metrics 无损覆盖。**触发条件（值得做）**：并发 telemetry 工作落定 + 决定正式采用 Grafana 时。第①步（/metrics 补齐）可较早独立启动。发现方：disconnect metrics B/A 取舍追问 → 用户 2026-07-22 决定聚合交 Prometheus/Grafana。
+
+## h2 连接池总 per-origin session 数上限（2026-07-22，h2-pool-capacity-routing plan Q4）
+
+- **根因 / 现状**：h2 池按容量选路后（`upstream_transport.http2.max_concurrent_streams_per_session`，默认 N=1），每 origin 的 live session 数 = 峰值并发；`http2-client.ts` 有 idle-reap（`idle_session_timeout`，默认 300s）收敛长尾，但**没有对「同一 origin 同时存活的 session 总数」设硬上限**（idle+busy 合计）。
+- **当前行为**：一次病态 fan-out（同 origin 瞬时数百并发）会瞬时开出数百条 h2 连接，之后靠 idle-reap 慢慢收敛。实测工作负载约 4 并发，fd 成本可忽略，未观测到问题。
+- **理想架构 / 若做需改什么**：加可选 `upstream_transport.http2.max_sessions_per_origin`（0=无限），WS 式软语义——超 cap 建新时驱逐一条 **idle** entry（`busy` 永不驱逐、负载下允许暂时超 cap 绝不阻塞请求）。落点：`acquireSession` 新建前检查 + 一个 `evictOneIdle(origin)` 助手；schema/state/config/proxy 加键（镜像 `max_concurrent_streams_per_session` 的接线）。
+- **为何暂缓**：plan Q4 经权衡「实测约 4 并发、fd 成本可忽略、idle-reap 已收敛长尾」判定「仅病态 fan-out 才值」，默认无限、留 backlog。**触发条件（值得做）**：出现真实的同 origin 高 fan-out（fd 耗尽 / 上游因连接数过多主动限流）场景。发现方：h2-pool-capacity-routing plan（[../plan/2026-07-22-h2-pool-capacity-routing-and-pre-response-retry.md](../plan/2026-07-22-h2-pool-capacity-routing-and-pre-response-retry.md)）开放问题 Q4。

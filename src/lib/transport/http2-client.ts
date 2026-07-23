@@ -507,6 +507,12 @@ async function acquireSession(origin: string, signal: AbortSignal | undefined): 
     const inflight = pending.get(origin)
     if (inflight) {
       entry = await inflight
+      // Defensive symmetry with tryReserveLiveSession's reserve (which clears the
+      // idle timer): a joined entry is a still-in-creation born-reserved session
+      // that cannot yet have been idle-armed, so this is a no-op TODAY — but it
+      // keeps "reserve ⇒ clear idle timer" a single unconditional rule rather than
+      // an implicit timing invariant a future refactor could silently break.
+      clearIdleTimer(entry)
       entry.activeStreamCount += 1 // reserve on the joined session
     } else {
       const creation = createAndAdmitBornReserved(origin)
