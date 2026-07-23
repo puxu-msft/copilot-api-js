@@ -15,6 +15,7 @@ import {
   parseRetryAfterHeader,
   parseTokenLimitError,
 } from "~/lib/error"
+import { tagTransportError } from "~/lib/error/transport-reason"
 
 describe("HTTPError", () => {
   test("should create error with status and response text", () => {
@@ -379,6 +380,30 @@ describe("classifyError", () => {
     const error = new Error("upstream stream truncated: closed without message_stop")
     const result = classifyError(error)
     expect(result.type).toBe("bad_request")
+  })
+
+  // Structured transport-reason TAG (authoritative over substring). The tag path
+  // is proven by tagging errors whose MESSAGE matches NO substring — classification
+  // must come from the tag alone.
+  test("classifies a TAGGED pre-response-close as network_error regardless of message", () => {
+    const error = tagTransportError(new Error("opaque transport failure"), "pre-response-close")
+    expect(classifyError(error).type).toBe("network_error")
+  })
+
+  test("classifies a TAGGED refused-stream as network_error regardless of message", () => {
+    const error = tagTransportError(new Error("opaque transport failure"), "refused-stream")
+    expect(classifyError(error).type).toBe("network_error")
+  })
+
+  test("does NOT reclassify a TAGGED mid-body-close as network_error (stays bad_request)", () => {
+    const error = tagTransportError(new Error("opaque transport failure"), "mid-body-close")
+    expect(classifyError(error).type).toBe("bad_request")
+  })
+
+  test("the transport tag survives cause-chaining", () => {
+    const cause = tagTransportError(new Error("opaque"), "pre-response-close")
+    const wrapped = new Error("upstream request failed", { cause })
+    expect(classifyError(wrapped).type).toBe("network_error")
   })
 
   test("classifies generic Error as bad_request with status 0", () => {

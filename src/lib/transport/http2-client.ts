@@ -26,6 +26,7 @@ import consola from "consola"
 import http2 from "node:http2"
 import tls from "node:tls"
 
+import { tagTransportError } from "~/lib/error/transport-reason"
 import {
   //
   getProxyUrlForOrigin,
@@ -1012,7 +1013,7 @@ async function runHttp2Fetch(u: URL, init: UpstreamFetchInit): Promise<Response>
           req.once("close", () => {
             if (!ended) {
               try {
-                controller.error(new Error(`[http2] upstream stream closed before end (rstCode=${String(req.rstCode)})`))
+                controller.error(tagTransportError(new Error(`[http2] upstream stream closed before end (rstCode=${String(req.rstCode)})`), "mid-body-close"))
               } catch {
                 /* already closed/errored */
               }
@@ -1030,9 +1031,12 @@ async function runHttp2Fetch(u: URL, init: UpstreamFetchInit): Promise<Response>
       resolve(new Response(body, { status, headers: responseHeaders }))
     })
 
-    // Error before headers (connect failure, RST before response) → reject.
+    // Error before headers (connect failure, RST before response) → reject. Tag a
+    // REFUSED_STREAM (node:http2 surfaces it here, pre-response) so classifyError
+    // reads the structured reason instead of matching the error string.
     req.once("error", (err: Error) => {
       signal?.removeEventListener("abort", onPreResponseAbort)
+      if (err.message.toUpperCase().includes("NGHTTP2_REFUSED_STREAM")) tagTransportError(err, "refused-stream")
       rejectAfterRequestClosed(err)
     })
 
@@ -1049,7 +1053,9 @@ async function runHttp2Fetch(u: URL, init: UpstreamFetchInit): Promise<Response>
     req.once("close", () => {
       if (!headersReceived) {
         signal?.removeEventListener("abort", onPreResponseAbort)
-        rejectAfterRequestClosed(new Error(`[http2] upstream stream closed before any response (rstCode=${String(req.rstCode)})`))
+        rejectAfterRequestClosed(
+          tagTransportError(new Error(`[http2] upstream stream closed before any response (rstCode=${String(req.rstCode)})`), "pre-response-close"),
+        )
       }
     })
 
