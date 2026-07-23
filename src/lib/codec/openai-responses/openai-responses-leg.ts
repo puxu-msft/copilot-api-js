@@ -81,8 +81,8 @@ const DROPPED_CC_PARAMS_WARNING_CODE = "cc_to_responses_dropped_params"
 export interface FallbackExchange {
   responseId: string
   itemId: string
-  /** Model name for the CC→Responses translator's `response.created.model` (resolved name). */
-  clientModel: string
+  /** The resolved upstream model name for the CC→Responses translator's `response.created.model`. (The client-original name lives on `ctx.clientModel` in the RequestContext, a different type.) */
+  resolvedModel: string
   /** Prior conversation rebuilt from session history, prepended to the translated CC payload. */
   rebuiltMessages: Array<Message>
 }

@@ -256,7 +256,11 @@ const RESPONSE_BRIDGES = {
   [ENDPOINT.WS_RESPONSES]: responsesUpstreamToAnthropicResponseBridge,
 } satisfies Record<UpstreamEndpoint, ResponseBridge>
 
-export function renderResponseNonStreamingVia(targetEndpoint: UpstreamEndpoint, upstream: unknown, opts?: ReasoningRoundTripOptions): RenderedNonStreamingResponse {
+export function renderResponseNonStreamingVia(
+  targetEndpoint: UpstreamEndpoint,
+  upstream: unknown,
+  opts?: ReasoningRoundTripOptions,
+): RenderedNonStreamingResponse {
   return RESPONSE_BRIDGES[targetEndpoint](upstream, opts)
 }
 
@@ -428,7 +432,7 @@ export interface ReverseStreamTranslator {
  * translator). Now an EXHAUSTIVE `Record<ClientFormat, ReverseStreamTranslatorFactory>` — a missing
  * clientFormat is a COMPILE error via `satisfies`. Each entry constructs a FRESH per-request stateful
  * translator (a factory, not a plain value); `openai-responses`'s factory additionally threads the
- * `exchangeCtx` param (the second hop's responseId/itemId/clientModel).
+ * `exchangeCtx` param (the second hop's responseId/itemId/resolvedModel).
  */
 type ReverseStreamTranslatorFactory = (modelId: string, exchangeCtx?: TranslateExchangeContext, opts?: ReasoningRoundTripOptions) => ReverseStreamTranslator
 
@@ -447,14 +451,14 @@ const ccFamilyReverseStreamFactory: ReverseStreamTranslatorFactory = (modelId) =
  * subtask F): the upstream Anthropic SSE stream feeds
  * {@link createAnthropicToResponsesStreamTranslator} directly (was a TWO-hop Anthropic→CC→Responses via
  * {@link createAnthropicToCcStreamTranslator} + {@link createCCToResponsesStreamTranslator}). Reuses the
- * SAME `exchangeCtx` (responseId/itemId/clientModel) the old two-hop path already required — no new
+ * SAME `exchangeCtx` (responseId/itemId/resolvedModel) the old two-hop path already required — no new
  * exchange-context contract (mirrors subtask E's reuse of `TranslateExchangeContext`). `opts.stripThinkingSignature`
  * (Phase 5, RFC §4.3 scenario B) threads straight through to the reasoning round-trip carrier.
  */
 const responsesReverseStreamFactory: ReverseStreamTranslatorFactory = (modelId, exchangeCtx, opts) => {
   if (!exchangeCtx) {
     throw new Error(
-      "[hub-translate] createReverseStreamTranslator: the openai-responses reverse leg requires an exchangeCtx (responseId/itemId/clientModel) — the responses handler must build a reverse-exchange",
+      "[hub-translate] createReverseStreamTranslator: the openai-responses reverse leg requires an exchangeCtx (responseId/itemId/resolvedModel) — the responses handler must build a reverse-exchange",
     )
   }
   const direct = createAnthropicToResponsesStreamTranslator(modelId, exchangeCtx, opts)

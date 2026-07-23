@@ -50,9 +50,9 @@ import type {
   ResponsesUsage,
 } from "~/types/api/openai-responses"
 
-import type { TranslateExchangeContext } from "./responses-to-cc-request"
-
 import { buildClaudeSignatureCarrier } from "~/lib/anthropic/claude-signature-carrier"
+
+import type { TranslateExchangeContext } from "./responses-to-cc-request"
 
 /**
  * Translate an Anthropic Messages response into a Responses response (REVERSE leg, direct bridge).
@@ -139,7 +139,7 @@ export function translateAnthropicResponseToResponses(
     object: "response",
     created_at: Math.floor(Date.now() / 1000),
     status,
-    model: response.model || ctx.clientModel,
+    model: response.model || ctx.resolvedModel,
     output,
     usage: mapUsage(response.usage),
     tools: [],

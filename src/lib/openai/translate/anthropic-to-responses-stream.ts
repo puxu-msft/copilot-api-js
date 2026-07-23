@@ -75,14 +75,14 @@ import {
   mapUsage,
 } from "./anthropic-to-responses"
 
-/** The stable per-request ids + client-requested model name this leg needs (the SAME shape subtask E's non-streaming bridge takes). */
+/** The stable per-request ids + resolved model name this leg needs (the SAME shape subtask E's non-streaming bridge takes). */
 export interface AnthropicToResponsesStreamExchangeContext {
   /** Stable `resp_xxx` id assigned by the handler (used as Responses `response.id`). */
   responseId: string
   /** Stable `item_xxx` id for the synthesized message output item. */
   itemId: string
-  /** Model name the client requested (falls back to the upstream's own `model` field when absent). */
-  clientModel: string
+  /** The resolved upstream model name, stamped on synthesized frames until the upstream emits its own `model`. (The client-original name lives on `ctx.clientModel` in the RequestContext, a different type.) */
+  resolvedModel: string
 }
 
 /** Terminal meta the owns-sink reverse pump reads OUT-OF-BAND (self-contained running state, no CC accumulator). */
@@ -352,7 +352,13 @@ export function createAnthropicToResponsesStreamTranslator(
                 delta: delta.thinking,
               }),
             )
-          } else if (delta.type === "signature_delta" && kind === "thinking" && outputIndex !== undefined && typeof delta.signature === "string" && delta.signature.length > 0) {
+          } else if (
+            delta.type === "signature_delta"
+            && kind === "thinking"
+            && outputIndex !== undefined
+            && typeof delta.signature === "string"
+            && delta.signature.length > 0
+          ) {
             // Phase 5 round-trip carrier: capture the REAL Claude signature (probe (e): fires exactly
             // ONCE with the complete signature, no mid-state/authoritative-version ambiguity like the
             // forward leg's Responses encrypted_content) — surfaced at flush() via claude-signature-carrier.

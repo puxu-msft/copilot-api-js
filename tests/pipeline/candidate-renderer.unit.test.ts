@@ -129,7 +129,7 @@ describe("candidate-isolated response renderers", () => {
   test("Responses fallback candidate renderer reads candidate-local exchange ids", () => {
     const codec = createOpenAiResponsesCodec()
     const scratch = {
-      exchange: { responseId: "resp_candidate", itemId: "item_candidate", clientModel: "gpt-candidate", rebuiltMessages: [] },
+      exchange: { responseId: "resp_candidate", itemId: "item_candidate", resolvedModel: "gpt-candidate", rebuiltMessages: [] },
       ensure() {
         return this.exchange
       },
