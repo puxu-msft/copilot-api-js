@@ -7,15 +7,15 @@
  * (spelling variants suppressed), not a raw `!==`.
  */
 
-import type { Model } from "~/lib/models/client"
-import type { RawHttpRequest } from "~/lib/pipeline/types"
-
 import {
   //
   describe,
   expect,
   test,
 } from "bun:test"
+
+import type { Model } from "~/lib/models/client"
+import type { RawHttpRequest } from "~/lib/pipeline/types"
 
 import { resolveCodecModel } from "~/lib/codec/model-resolution"
 import { ENDPOINT } from "~/lib/models/endpoint"
