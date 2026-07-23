@@ -113,7 +113,7 @@ test("thinking-after-text: text block committed (closed), THEN thinking block st
 
 ### Task 0.2: 分型判定器（穷尽判定表，spec §5.2，消费 observer）
 
-- [ ] **Step 1: 写失败测试** —— 覆盖 spec §5.2 穷尽表全部行，输入改为 `TerminalObserverState`（非原方案的裸 `{lastBlockType, lastBlockClosed}`——语义相同但类型来源已锁定为 observer 产物，防止实现时误接 ledger）。
+- [x] **Step 1: 写失败测试** —— 覆盖 spec §5.2 穷尽表全部行，输入改为 `TerminalObserverState`（非原方案的裸 `{lastBlockType, lastBlockClosed}`——语义相同但类型来源已锁定为 observer 产物，防止实现时误接 ledger）。
 
 ```ts
 // tests/pipeline/max-tokens-truncation-class.unit.test.ts
@@ -148,9 +148,9 @@ test("thinking-after-text (the exact ledger-would-misclassify case from Task 0.1
 })
 ```
 
-- [ ] **Step 2: 跑，失败。**
-- [ ] **Step 3: 实现** —— 穷尽 switch，输入类型为 `TerminalObserverState`（本文件**不** import `committed-blocks-ledger.ts`，防止未来漂移回 blocker 状态）；`thinking` 分支忽略 `lastBlockClosed`，唯一判据是类型本身。
-- [ ] **Step 4: 跑，通过。**
+- [x] **Step 2: 跑，失败。**
+- [x] **Step 3: 实现** —— 穷尽 switch，输入类型为 `TerminalObserverState`（本文件**不** import `committed-blocks-ledger.ts`，防止未来漂移回 blocker 状态）；`thinking` 分支忽略 `lastBlockClosed`，唯一判据是类型本身。
+- [x] **Step 4: 跑，通过。**
 - [ ] **Step 5: 提交** → `feat(pipeline): max_tokens truncation classifier consuming the independent terminal observer (A/B/B-closed/C exhaustive)`。
 
 ### Task 0.2b: Responses `incomplete_details.reason` accumulator 捕获（P0 前置依赖，非 P3）
