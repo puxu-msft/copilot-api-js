@@ -43,11 +43,22 @@ import fs from "node:fs"
  *     INSTANCES priming pass runs before every dispatch, cached only per app
  *     INSTANCE (not per module) so repeat calls on the same instance are cheap.
  *     See `test-app.ts`'s `wrapRequestWithUdsPriming` for the applied pattern.
- *   - CONFIRMED PRODUCTION-SAFE: under plain `bun run` (never `bun test`), the
- *     identical first-ever ENOENT connect ALWAYS emits a normal async `error`
- *     event with no special handling needed — this is purely a `bun test`
- *     test-runner artifact, not a real uds-client.ts bug. `docs/plan/2026-07-
- *     21-history-search-out-of-process.md` records the full repro.
+ *   - MOSTLY a `bun test` runner artifact, but NOT entirely — corrected
+ *     2026-07-22. The earlier "CONFIRMED PRODUCTION-SAFE ... purely a `bun test`
+ *     test-runner artifact, not a real uds-client.ts bug" conclusion was WRONG: a
+ *     real production `bun run` server DID crash (`connect ENOENT` on the sidecar
+ *     socket → `uncaughtException` → `main.ts` exit(1)) when a search query ran
+ *     INSIDE a `Bun.serve` request handler with the sidecar absent. The prior
+ *     verification only exercised a top-level `bun run` connect (which, like the
+ *     warmed bun-test case, emits a catchable async `'error'`); it never tried the
+ *     request-handler event-loop context. The ROOT fix lives in uds-client.ts's
+ *     `sendRequest` (construct an UNCONNECTED `new net.Socket()`, attach all
+ *     listeners, THEN `socket.connect()` — so no listener-attach window exists in
+ *     ANY context). This priming helper remains a `bun test`-only ergonomic
+ *     workaround for the FIRST-connect warm-up quirk; it is NOT what makes
+ *     production safe. See the faithful spawned-child oracle in
+ *     `tests/history/search/uds-transport.it.test.ts`.
+ *     `docs/plan/2026-07-21-history-search-out-of-process.md` records the repro.
  *
  * Any `.it.test.ts` whose FIRST UDS interaction is a connect to a path that may
  * not exist yet (e.g. polling a client before its sidecar's socket is created)

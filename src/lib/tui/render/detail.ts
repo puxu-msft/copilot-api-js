@@ -1,5 +1,6 @@
 import type { AttemptSnapshot } from "~/lib/observability"
 
+import { modelRemapParts } from "~/lib/models/resolver"
 import {
   //
   formatBytes,
@@ -33,9 +34,16 @@ export function buildDetailDocument(entry: DetailView, now: number): DetailDocum
   const { ctx } = entry
   const retries = (ctx.attemptCount ?? 1) - 1
   const lastMs = ctx.currentAttemptStartedAt === undefined ? undefined : now - ctx.currentAttemptStartedAt
+  // Model line: show `client → resolved` only on a genuine remap (shared
+  // suppression via modelRemapParts — same rule as the completion log line);
+  // non-remaps / spelling variants collapse to the resolved name alone. Detail
+  // is monochrome (sanitizeTerminalText strips ANSI downstream), so — unlike the
+  // log line — the source is not dimmed here.
+  const modelTarget = ctx.resolvedModel ?? "(resolving)"
+  const modelSource = ctx.resolvedModel ? modelRemapParts(ctx.clientModel ?? undefined, ctx.resolvedModel).source : undefined
   const lines: Array<KeyedDetailLine> = [
     keyed("route", `${ctx.method} ${ctx.path}`),
-    keyed("model", `model: ${ctx.clientModel ?? "?"} → ${ctx.resolvedModel ?? "(resolving)"}`),
+    keyed("model", `model: ${modelSource ? `${modelSource} → ` : ""}${modelTarget}`),
     ...(ctx.multiplier === undefined ? [] : [keyed("multiplier", `multiplier: ${ctx.multiplier}x`)]),
     keyed("state", `state: ${ctx.state}`),
     keyed("elapsed", `elapsed: ${formatDurationField({ lastMs, totalMs: now - ctx.startTime, retries })}`),

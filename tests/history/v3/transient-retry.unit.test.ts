@@ -106,4 +106,95 @@ describe("runWithTransientRetry", () => {
     expect(Date.now() - started).toBeLessThan(1000)
     expect(res.attempts).toBe(3)
   })
+
+  // DI-5-followup-2: maxTotalMs is a real WALL-CLOCK cap on the total time one
+  // commit may spend retrying — including each attempt's OWN blocking (a SQLite
+  // busy_timeout wait is the bulk of a real wedge), which a nominal-backoff-only
+  // budget would miss. Time is driven deterministically through the `now` seam
+  // (default Date.now in prod); backoff stays instant (scale 0).
+
+  /** A deterministic clock: starts at 0, advances by `stepMs` on each read. */
+  function fakeClock(stepMs: number): () => number {
+    let t = -stepMs // first read (startedAt) returns 0
+    return () => (t += stepMs)
+  }
+
+  test("maxTotalMs counts each attempt's OWN blocking time (the real wedge), not just backoff", async () => {
+    // clock advances 1000ms per read with ZERO backoff, so the only thing consuming
+    // the budget is elapsed time between reads (models a slow attempt). startedAt=0,
+    // then reads at 1000,2000,3000,4000... The check `now()-0+0 > 3000` first trips
+    // at the read returning 4000 → attempts=4. Proves attempt-blocking counts.
+    let calls = 0
+    const res = await runWithTransientRetry(
+      () => {
+        calls++
+        return Promise.resolve(outcome(false, true)) // always transient
+      },
+      { maxAttempts: 100, backoffMs: 0, maxTotalMs: 3000, now: fakeClock(1000) },
+    )
+    expect(res.ok).toBe(false)
+    expect(res.attempts).toBe(4)
+    expect(res.capReason).toBe("max-total-ms")
+    expect(calls).toBe(4)
+  })
+
+  test("POSITIVE CONTROL: the SAME slow clock without maxTotalMs runs to the attempt cap", async () => {
+    // Proves the previous test's early stop is the time cap, not the attempt cap.
+    let calls = 0
+    const res = await runWithTransientRetry(
+      () => {
+        calls++
+        return Promise.resolve(outcome(false, true))
+      },
+      { maxAttempts: 6, backoffMs: 0, now: fakeClock(1000) }, // no maxTotalMs
+    )
+    expect(res.attempts).toBe(6)
+    expect(res.capReason).toBe("max-attempts")
+    expect(calls).toBe(6)
+  })
+
+  test("the predicted next backoff is included so the loop never sleeps PAST the budget", async () => {
+    // Clock frozen at 0 (attempts instant); only the predictive `elapsed + nextBackoff`
+    // term can trip the cap. backoff 1000,2000,3000,4000; cap 3000 → the 4th (4000)
+    // would overshoot (3rd's 3000 is not > 3000), so it gives up at attempt 4.
+    let calls = 0
+    const res = await runWithTransientRetry(
+      () => {
+        calls++
+        return Promise.resolve(outcome(false, true))
+      },
+      { maxAttempts: 100, backoffMs: 1000, maxTotalMs: 3000, now: () => 0 },
+    )
+    expect(res.attempts).toBe(4)
+    expect(res.capReason).toBe("max-total-ms")
+    expect(calls).toBe(4)
+  })
+
+  test("maxTotalMs: 0 disables the time cap (only maxAttempts bounds)", async () => {
+    let calls = 0
+    const res = await runWithTransientRetry(
+      () => {
+        calls++
+        return Promise.resolve(outcome(false, true))
+      },
+      { maxAttempts: 5, backoffMs: 1000, maxTotalMs: 0, now: fakeClock(100_000) }, // huge elapsed, cap disabled
+    )
+    expect(res.attempts).toBe(5)
+    expect(res.capReason).toBe("max-attempts")
+    expect(calls).toBe(5)
+  })
+
+  test("the attempt-count cap still wins (with its capReason) when it is tighter than the time cap", async () => {
+    let calls = 0
+    const res = await runWithTransientRetry(
+      () => {
+        calls++
+        return Promise.resolve(outcome(false, true))
+      },
+      { maxAttempts: 2, backoffMs: 10, maxTotalMs: 1_000_000 }, // huge budget, tiny attempt cap
+    )
+    expect(res.attempts).toBe(2)
+    expect(res.capReason).toBe("max-attempts")
+    expect(calls).toBe(2)
+  })
 })

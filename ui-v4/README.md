@@ -1,6 +1,6 @@
 # copilot-api ui-v4
 
-copilot-api 请求历史查看器的 React 全面重写——从「请求历史浏览器」升级为「**实时 LLM 流量检视台**」（DevTools / Network-inspector 范式）。与旧 Vue 版 `ui/` 并行共存（后端 `/ui-v4` 静态路由），达功能对等后替换。
+copilot-api 请求历史查看器的 React 全面重写——从「请求历史浏览器」升级为「**实时 LLM 流量检视台**」（DevTools / Network-inspector 范式）。与旧 Vue 版 `ui/` 并行共存（2026-07-22 起两者均由运维独立托管，后端不再挂载任何 UI 静态路由，见根 README「Hosting the Web UI」），达功能对等后替换。
 
 - **架构现状**（栈/入口/数据层/渲染管线/目录职责）→ [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
 - **设计规格 WHAT/WHY** → [docs/DESIGN.md](docs/DESIGN.md)
@@ -22,7 +22,7 @@ copilot-api 请求历史查看器的 React 全面重写——从「请求历史�
 
 - `bun run dev:ui-v4`（仓库根）或在本目录 `bun run dev` 启动 vite，代理后端（默认 `localhost:4141`，可经 `COPILOT_API_HOST`/`COPILOT_API_PORT` 覆盖）。
 - 后端需另行启动（`bun run dev`）。访问 vite 打印的本地 URL。
-- 生产构建 `bun run build:ui-v4` → `ui-v4/dist`，后端 `/ui-v4` 静态路由服务。
+- 生产构建 `bun run build:ui-v4` → `ui-v4/dist`；后端不再服务此产物（2026-07-22 UI 外置），由运维用任意静态服务器独立托管 + 反代 `/api`·`/history/api`·`/ws`·`/models` 到后端（默认 `localhost:4141`）。vite 生产构建 `base` 写死 `/ui-v4/`，托管在别的前缀需相应调整（见根 README「Hosting the Web UI」）。
 
 ## 测试
 

@@ -42,7 +42,7 @@
 - ui-v4 = 新 bun workspace 成员（根 `workspaces:["ui","ui-v4"]`，单一根 `bun.lock`）。
 - 自有 `package.json`，**FE 库（jsdiff、react-markdown、CodeMirror 等）声明进 `ui-v4/package.json`**（不放根——现有 `diff` 错放在根 package.json 是既有不一致，不照搬；是否迁回 ui workspace 属 ui/ 范围、需另行授权）。
 - 别名三条（**`~/*` 不可漏**，因后端源码内部用 `~/*` 自引用，ui-v4 跨引用后端源码时必须能解析）：`@/*`→`ui-v4/src/*`、`~backend/*`→`../src/*`、`~/*`→`../src/*`。vite.config + tsconfig 都要配。
-- 后端**新增 `/ui-v4` 静态路由**挂 `ui-v4/dist`（与 `/ui` 并存，可部署并行构建）；开发期 `--external-ui-url` 指向 vite dev。
+- 后端曾挂载 `/ui-v4` 静态路由服务 `dist`（与 `/ui` 并存），开发期 `--external-ui-url` 指向 vite dev；**2026-07-22 起该挂载与 flag 均已移除**——主服务器不再服务/代理/构建任何 UI，运维改为独立托管 `ui-v4/dist`（任意静态服务器）+ 反代 API 到后端，见根 README「Hosting the Web UI」。
 - **WSClient React 生命周期**：类式 WSClient 提为**React 树外的模块单例 + 引用计数 connect/disconnect**，而非每个 hook 实例一个连接——规避 StrictMode 开发期 effect 双挂载（connect→disconnect→connect 竞态）与 HMR 连接泄漏。
 
 ### 后端契约

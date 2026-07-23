@@ -224,6 +224,20 @@ export const BufferedRetryOverrideSchema = z
     buffer_cap_bytes: nullableNonnegativeInt(),
     /** Forced heartbeat interval (seconds) for the buffered path; clamped < client idle deadline. */
     heartbeat_sec: nullableNonnegativeInt(),
+    /**
+     * Continuation-retry settings (spec 2026-07-22). After the first block commits, a mid-stream RST
+     * triggers a synthetic continuation turn instead of `partial-degrade`. `enabled` gates it (default
+     * true); `message` is the synthetic user-turn text (default "network issue. please continue").
+     * Valid on the shared `buffered_retry` AND any per-vendor `<vendor>.buffered_retry` (per-vendor wins).
+     */
+    continuation: nullableSection(
+      z
+        .object({
+          enabled: nullableBoolean(),
+          message: z.string().nullable().optional(),
+        })
+        .strict(),
+    ),
   })
   .strict()
 
@@ -613,17 +627,15 @@ export const AnthropicConfigSchema = z
      */
     stream_keepalive_ping_sec: nullableNonnegativeInt(),
     /**
-     * Keepalive FRAME type for the client-facing Anthropic stream. `empty_text` (default) is the
-     * unconditionally timeout-safe mode: when a forwarded block is open it injects an EMPTY content
-     * delta matching that block (thinking→thinking_delta, text→text_delta, tool_use→input_json_delta);
-     * ADDITIONALLY, in buffered mode with NO open block yet (pre-commit long silence), it lazily injects
-     * a synthetic empty text ANCHOR block so an empty `text_delta` can reset Claude Code's 300s
-     * no-real-content deadline (real content stays buffered; the anchor closes and real blocks flush at
-     * index+1 on commit; spec 2026-07-08-buffered-keepalive-empty-text-anchor). `ping` is the legacy
-     * bare-`event: ping` escape hatch — a ping is NOT counted as a "chunk" so it does NOT reset the 300s
-     * deadline (may time out; see exp/cc-idle-280s/REPORT.md). `enveloped_ping` (experimental, expected
-     * to time out) synthesizes an envelope then emits a bare ping. redacted_thinking / unknown open
-     * blocks fall back to ping either way.
+     * Keepalive FRAME type for the client-facing Anthropic stream. `ping` (default) is a bare
+     * `event: ping` — it does NOT reset Claude Code's 300s no-real-content deadline (a ping is not a
+     * "chunk"; exp/cc-idle-280s/REPORT.md), so a >300s pre-content silence may time out (an accepted
+     * limit pending a real keepalive — docs/todo/2026-07-22-client-proxy-keepalive-300s.md).
+     * `empty_text` was RETIRED as default (ADR 2026-07-22 D2): it injected an empty content delta / a
+     * synthetic empty-text ANCHOR block, but an empty text block is wrong-shaped AND G2-proven unable to
+     * reset the 300s deadline on the proxy path. Block-level delivery CLI-safety now comes from strict
+     * index-ordered output, not an anchor. `empty_text` / `enveloped_ping` remain SELECTABLE (code kept
+     * dormant) for keepalive research; redacted_thinking / unknown open blocks fall back to ping anyway.
      */
     stream_keepalive_mode: nullableEnum(["ping", "enveloped_ping", "empty_text"] as const),
     /**
@@ -803,13 +815,20 @@ export const HistoryConfigSchema = z
      * transient SQLite error (WAL BUSY/LOCKED/IOERR) is retried with linear
      * backoff instead of dropping the entry on the first failure. `max_attempts`
      * caps the retries (a transient storm can't spin forever); `backoff_ms` is
-     * the base linear step. Permanent failures / conflicts are never retried.
+     * the base linear step. `max_total_ms` is a per-commit wall-clock soft cap
+     * (DI-5-followup-2): the linear backoff sum grows quadratically and each
+     * attempt can itself block (SQLite busy_timeout), so a large
+     * `max_attempts × backoff_ms` product or slow attempts could wedge the drain —
+     * and shutdown, which has no abort signal here — for minutes; the cap bounds
+     * the total elapsed time one entry spends retrying (`0` = disabled). Permanent
+     * failures / conflicts are never retried.
      */
     persist_retry: nullableSection(
       z
         .object({
           max_attempts: nullableNonnegativeInt(),
           backoff_ms: nullableNonnegativeInt(),
+          max_total_ms: nullableNonnegativeInt(),
         })
         .strict(),
     ),
@@ -982,6 +1001,19 @@ export const TimeoutsConfigSchema = z
 
 export const UpstreamTransportHttp2ConfigSchema = z
   .object({
+    /**
+     * Whether to prefer HTTP/2 (node:http2) for every `https://` upstream. Default `true`.
+     *
+     * `false` routes `https://` upstreams through undici (HTTP/1.1) instead — an
+     * escape hatch that only works honestly on **Node** (`dist/main.mjs`). Under
+     * **Bun** (`dev`/`start`), undici's HTTP/1.1 parser hangs forever on the
+     * Copilot hosts' chunked responses (Node finalizes in 0.4s, Bun never returns
+     * — the exact reason h2 is the default; see transport/upstream-fetch.ts). The
+     * value is honored literally on both runtimes; a loud warning is logged when
+     * `false` is applied on Bun. Plaintext `http://` upstreams (local SearXNG)
+     * always use undici regardless of this flag.
+     */
+    favor: nullableBoolean(),
     /** Upstream HTTP/2 PING keepalive interval in seconds (0 = disabled). Same semantics as the migrated `timeouts.upstream_h2_ping`. Default 15. Works on both Bun and Node (node:http2 transport is runtime-neutral). */
     ping_interval: nullableNonnegativeInt(),
     /**
@@ -1005,6 +1037,27 @@ export const UpstreamTransportHttp2ConfigSchema = z
      * disabled behavior the user asked for (D3/D5 "诚实表达能力边界").
      */
     session_connect_timeout: nullableNonnegativeInt(),
+    /**
+     * Soft cap on concurrent streams multiplexed onto a SINGLE upstream h2
+     * session (0 = unlimited). When a session is at its cap, a new request opens
+     * (or reuses another) session for the same origin instead of piling on; the
+     * capped session stays routable once its in-flight streams drain. Default 1
+     * — each concurrent request gets its own connection, so a session-level
+     * upstream teardown (GOAWAY / edge drain) takes down at most one in-flight
+     * request instead of every concurrent stream sharing the connection. 0
+     * restores the old single-session multiplex. Hot-reloadable; a change only
+     * affects future routing, never in-flight streams.
+     */
+    max_concurrent_streams_per_session: nullableNonnegativeInt(),
+    /**
+     * Idle timeout in seconds for a pooled h2 session with no in-flight streams
+     * before it is proactively closed (0 = never idle-close). Under a finite
+     * `max_concurrent_streams_per_session` the pool grows to peak concurrency;
+     * this reaps the surplus once a burst subsides. Default 300 (mirrors the WS
+     * pool's `websocket.pooled_connection_idle_timeout`, kept a separate h2-only
+     * knob). Hot-reloadable.
+     */
+    idle_session_timeout: nullableNonnegativeInt(),
   })
   .strict()
 export type UpstreamTransportHttp2Config = z.infer<typeof UpstreamTransportHttp2ConfigSchema>

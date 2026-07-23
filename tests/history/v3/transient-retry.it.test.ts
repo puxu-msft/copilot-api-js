@@ -118,4 +118,25 @@ describe("DI-5 drain transient retry (end-to-end)", () => {
     expect(getV3Operation(id)).toBeUndefined()
     expect(getV3StoreStatus().failedOperations).toBe(1)
   })
+
+  test("DI-5-followup-2: max_total_ms bounds the drain below an extreme attempt cap (no shutdown wedge)", async () => {
+    // Extreme config: 100 attempts × 1000ms base backoff would take ~82 minutes of
+    // cumulative backoff. The wall-clock cap makes the drain give up early instead —
+    // proving max_total_ms reaches the drain end-to-end (not just the unit helper).
+    // Margins are boundary-safe: with real (near-zero) elapsed for in-memory commits,
+    // attempt 2's predicted backoff (2000) stays under 2500, but attempt 3's (3000)
+    // overshoots regardless — so it deterministically stops at 3 attempts.
+    setV3PersistRetryConfig({ maxAttempts: 100, backoffMs: 1000, maxTotalMs: 2500 })
+    const injected = injectTransientTxFailures(50) // far more failures than the time cap allows attempts
+    const id = await enqueueOneTerminal()
+    await drainModelOperationTerminalSubscribers()
+    await drainV3Writer()
+
+    expect(injected.remaining()).toBe(47) // exactly 3 attempts consumed, then the time cap tripped
+    expect(getV3Operation(id)).toBeUndefined()
+    expect(getV3StoreStatus().failedOperations).toBe(1)
+    // capReason is surfaced in lastError so an operator can tell a wedge-guard trip
+    // from a plain attempt-ceiling storm.
+    expect(getV3StoreStatus().lastError).toContain("max-total-ms")
+  })
 })

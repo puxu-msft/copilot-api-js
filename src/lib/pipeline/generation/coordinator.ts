@@ -54,6 +54,14 @@ export interface GenerationCoordinator<TProcessor> {
   readonly deliveryIdentity: symbol
   runPrimary(): Promise<CoordinatedCandidate<TProcessor>>
   runRecovery(parent: CoordinatedCandidate<TProcessor>, reason: string, env?: RequestEnvelope): Promise<CoordinatedCandidate<TProcessor>>
+  /**
+   * Continuation-retry (spec 2026-07-22 §5.1, ADR D3): the append counterpart of {@link runRecovery}.
+   * `runRecovery` REPLACES a failed parent whose content never reached the client (settles it
+   * `discarded`/`failed`); `runContinuation` APPENDS a logically-continued exchange AFTER a parent that
+   * PARTIALLY delivered — its committed-boundary content is already on the client wire. The parent is
+   * therefore settled `continued` (not failed), and the new candidate takes `role:"continuation"`.
+   */
+  runContinuation(parent: CoordinatedCandidate<TProcessor>, reason: string, env: RequestEnvelope): Promise<CoordinatedCandidate<TProcessor>>
   runHedge(env?: RequestEnvelope): Promise<CoordinatedCandidate<TProcessor>>
   raceReadyCandidates(candidates: ReadonlyArray<CoordinatedCandidate<TProcessor>>): Promise<HedgeWinner<TProcessor>>
   racePrimaryWithDelayedHedge(input: {
@@ -130,6 +138,19 @@ export function createGenerationCoordinator<TProcessor>(input: CreateGenerationC
       candidateReservations.get(parentRuntime.handle)?.release()
       if (active === parentRuntime) active = undefined
       return start({ role: "recovery", parentCandidate: parent.candidate, env })
+    },
+
+    async runContinuation(parent, reason, env) {
+      const parentRuntime = runtimes.get(parent.candidate)
+      if (!parentRuntime) throw new Error("[generation-coordinator] continuation parent is not owned by this coordinator")
+      // The parent PARTIALLY delivered (its committed blocks are on the client wire) → settle it
+      // `continued`, NOT `discarded`/`failed`. `retryNextStrategy:"continuation"` marks the diagnostic
+      // trail as a continuation hand-off (distinct from a transparent retry — telemetry §5.3 split).
+      await parent.settleDispatch({ verdict: "continued", reason, retryNextStrategy: "continuation" })
+      parentRuntime.settle({ verdict: "continued", reason })
+      candidateReservations.get(parentRuntime.handle)?.release()
+      if (active === parentRuntime) active = undefined
+      return start({ role: "continuation", parentCandidate: parent.candidate, env })
     },
 
     runHedge(env = input.env) {

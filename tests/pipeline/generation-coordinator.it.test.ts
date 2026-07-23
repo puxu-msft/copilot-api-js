@@ -191,6 +191,31 @@ describe("P6-T2 generation coordinator", () => {
     expect(processors[0]).not.toBe(processors[1])
   })
 
+  test("buffered continuation is a child candidate; parent settles `continued` (not failed) — partial delivery", async () => {
+    const recording = createRecording()
+    const opens: Array<string> = []
+    const processors: Array<symbol> = []
+    const deliveryIdentity = Symbol("delivery")
+    const coordinator = createGenerationCoordinator({
+      env: envelope("primary"),
+      deliveryIdentity,
+      createCandidate: candidateFactory({ recording: recording.port, opens, processors }),
+    })
+    const primary = await coordinator.runPrimary()
+
+    const continuation = await coordinator.runContinuation(primary, "mid-stream-cut", envelope("continuation"))
+
+    expect(continuation.deliveryIdentity).toBe(deliveryIdentity)
+    expect(continuation.role).toBe("continuation")
+    expect(recording.candidates.get(continuation.candidate)?.parentCandidate).toBe(primary.candidate)
+    // The parent PARTIALLY delivered → settled `continued`, NOT `failed`/`discarded` (the honest verdict
+    // for content already on the client wire; distinct from runRecovery's failed/discarded).
+    expect(recording.candidates.get(primary.candidate)?.verdict).toBe("continued")
+    expect(recording.dispatches.get(primary.dispatch)?.verdict).toBe("continued")
+    expect(processors).toHaveLength(2)
+    expect(processors[0]).not.toBe(processors[1])
+  })
+
   test("chained buffered recovery advances the parent while preserving one delivery identity", async () => {
     const recording = createRecording()
     const opens: Array<string> = []

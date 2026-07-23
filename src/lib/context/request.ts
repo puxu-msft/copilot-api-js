@@ -38,6 +38,7 @@ import { withRejectionObserver } from "~/lib/transport/crash-safety"
 import type {
   //
   DispatchHandle,
+  DispatchVerdict,
   FrameNodeHandle,
   ModelOperationRecord,
   OperationFrameObservation,
@@ -687,12 +688,7 @@ export function createRequestContext(opts: {
     })
   }
 
-  function settleGenerationAttempt(
-    attempt: GenerationAttemptCapture,
-    verdict: "committed" | "discarded" | "failed" | "cancelled",
-    reason?: string,
-    error?: unknown,
-  ): void {
+  function settleGenerationAttempt(attempt: GenerationAttemptCapture, verdict: DispatchVerdict, reason?: string, error?: unknown): void {
     if (modelOperationRecorder.sealed || attempt.settled) return
     const v2 = _attempts[attempt.v2Index]
     if (verdict !== "committed" && attempt.sseEvents !== undefined) v2.sseEvents = [...attempt.sseEvents]

@@ -20,13 +20,17 @@ import {
 import http2 from "node:http2"
 import net from "node:net"
 
+import { setUpstreamTransportConfig } from "~/lib/state"
 import {
   //
   closeHttp2Sessions,
+  getH2SessionStatusSnapshot,
   http2Fetch,
   setConnectTimeoutForTests,
   setHttp2SessionFactoryForTests,
 } from "~/lib/transport/http2-client"
+
+import { waitUntil } from "../helpers/wait-until"
 
 let server: http2.Http2Server
 let url: string
@@ -362,5 +366,210 @@ describe("http2-client", () => {
       setHttp2SessionFactoryForTests(undefined)
       closeHttp2Sessions()
     }
+  })
+})
+
+// C2 pool-refactor invariants under N=0 (unlimited) — locks the BYTE-EQUIVALENT
+// behavior: one shared session per origin, reservation released exactly once. N=0
+// is set explicitly because the shipped default is now 1 (C3).
+describe("http2-client pool (N=0 unlimited — byte-equivalent multiplex)", () => {
+  beforeEach(() => setUpstreamTransportConfig({ maxConcurrentStreamsPerSession: 0 }))
+  afterEach(() => setUpstreamTransportConfig({ maxConcurrentStreamsPerSession: 1 }))
+
+  test("N=0 concurrent cold-start converges on exactly ONE session (byte-equivalent)", async () => {
+    handler = (stream) => {
+      stream.respond({ ":status": 200 })
+      stream.end("ok")
+    }
+    // Count how many client sessions the factory actually opens.
+    let opened = 0
+    setHttp2SessionFactoryForTests(() => {
+      opened += 1
+      return http2.connect(url)
+    })
+    try {
+      // Fire concurrently BEFORE any session exists — both miss the live lookup;
+      // the capacity-aware `pending` (N=0) must make the second JOIN the first's
+      // connect rather than opening a second session.
+      const [a, b] = await Promise.all([http2Fetch(`${url}/x`, {}), http2Fetch(`${url}/y`, {})])
+      expect(a.status).toBe(200)
+      expect(b.status).toBe(200)
+      await Promise.all([a.text(), b.text()])
+      expect(opened).toBe(1)
+      // Exactly one pooled session for the origin.
+      expect(getH2SessionStatusSnapshot()).toHaveLength(1)
+    } finally {
+      setHttp2SessionFactoryForTests(undefined)
+      closeHttp2Sessions()
+    }
+  })
+
+  test("reservation is released exactly once — activeStreamCount returns to 0 after a normal request (PATH 1)", async () => {
+    handler = (stream) => {
+      stream.respond({ ":status": 200 })
+      stream.end("ok")
+    }
+    const res = await http2Fetch(`${url}/x`, {})
+    await res.text() // drain to completion → stream close
+    // Give the `close` event a tick to fire.
+    await new Promise((r) => setTimeout(r, 20))
+    const rows = getH2SessionStatusSnapshot()
+    expect(rows).toHaveLength(1)
+    expect(rows[0]?.activeStreamCount).toBe(0)
+  })
+
+  test("reservation is released on a pre-request abort (PATH 2) — no leaked slot", async () => {
+    handler = (stream) => {
+      stream.respond({ ":status": 200 })
+      stream.end("ok")
+    }
+    // Prime one live session so the aborted request takes the synchronous reuse path.
+    const warm = await http2Fetch(`${url}/warm`, {})
+    await warm.text()
+    await new Promise((r) => setTimeout(r, 20))
+
+    const ac = new AbortController()
+    ac.abort()
+    await expect(http2Fetch(`${url}/x`, { signal: ac.signal })).rejects.toThrow(/aborted/i)
+    await new Promise((r) => setTimeout(r, 20))
+    // The reused session's reservation taken synchronously must have been handed
+    // back — count is 0, not a leaked 1.
+    const rows = getH2SessionStatusSnapshot()
+    expect(rows).toHaveLength(1)
+    expect(rows[0]?.activeStreamCount).toBe(0)
+  })
+})
+
+// C3: the shipped default N=1 — one concurrent stream per session, so a
+// session-level teardown takes down at most one in-flight request.
+describe("http2-client pool (N=1 cap — one stream per session, shipped default)", () => {
+  beforeEach(() => setUpstreamTransportConfig({ maxConcurrentStreamsPerSession: 1 }))
+  afterEach(() => setUpstreamTransportConfig({ maxConcurrentStreamsPerSession: 1 }))
+
+  test("N=1 concurrent requests to one origin open SEPARATE sessions (peak activeStreamCount ≤ 1)", async () => {
+    // Hold every stream open until we release it, so all requests are in-flight
+    // simultaneously and the cap is actually exercised (not serialized).
+    const openStreams: Array<http2.ServerHttp2Stream> = []
+    let release!: () => void
+    const releaseGate = new Promise<void>((r) => (release = r))
+    handler = (stream) => {
+      stream.respond({ ":status": 200 })
+      openStreams.push(stream)
+      void releaseGate.then(() => stream.end("ok"))
+    }
+    let opened = 0
+    setHttp2SessionFactoryForTests(() => {
+      opened += 1
+      return http2.connect(url)
+    })
+    try {
+      const reqs = [http2Fetch(`${url}/a`, {}), http2Fetch(`${url}/b`, {}), http2Fetch(`${url}/c`, {})]
+      // Wait until all three streams have reached the server (all in-flight).
+      await waitUntil(() => openStreams.length === 3)
+      // Peak: three concurrent streams, N=1 ⇒ three separate sessions, none over cap.
+      const rows = getH2SessionStatusSnapshot()
+      expect(rows).toHaveLength(3)
+      expect(Math.max(...rows.map((r) => r.activeStreamCount))).toBeLessThanOrEqual(1)
+      expect(opened).toBe(3)
+      release()
+      const settled = await Promise.all(reqs)
+      await Promise.all(settled.map((r) => r.text()))
+    } finally {
+      release() // idempotent-safe: releaseGate already resolved
+      setHttp2SessionFactoryForTests(undefined)
+      closeHttp2Sessions()
+    }
+  })
+
+  test("N=1: a single session teardown fails only its own stream — siblings survive", async () => {
+    const openStreams: Array<http2.ServerHttp2Stream> = []
+    handler = (stream) => {
+      stream.respond({ ":status": 200 })
+      openStreams.push(stream)
+      // leave open; the test decides which to destroy vs finish
+    }
+    try {
+      const victim = http2Fetch(`${url}/victim`, {})
+      const survivor = http2Fetch(`${url}/survivor`, {})
+      await waitUntil(() => openStreams.length === 2)
+      // Two separate sessions under N=1.
+      expect(getH2SessionStatusSnapshot()).toHaveLength(2)
+      // Destroy the FIRST stream's whole session (simulating an upstream
+      // session-level teardown); the second is on a DIFFERENT session (N=1).
+      openStreams[0]?.session?.destroy(new Error("simulated upstream teardown"))
+      // The survivor finishes cleanly — the blast radius did NOT reach it.
+      openStreams[1]?.end("ok")
+      const res = await survivor
+      expect(res.status).toBe(200)
+      expect(await res.text()).toBe("ok")
+      // Best-effort drain the victim (under Bun a server session.destroy() can be
+      // delivered to the client as a clean end rather than a stream error — the
+      // documented Bun RST caveat — so we don't assert it throws; the isolation
+      // oracle is the survivor above + the pool dropping the dead session below).
+      await victim.then((r) => r.text()).catch(() => {})
+      // The destroyed session is removed from the pool; the survivor's remains.
+      await waitUntil(() => getH2SessionStatusSnapshot().length === 1)
+    } finally {
+      setHttp2SessionFactoryForTests(undefined)
+      closeHttp2Sessions()
+    }
+  })
+})
+
+// C4: idle-session reaping — surplus sessions from a subsided burst are closed
+// after `h2IdleSessionTimeout`; busy sessions are never reaped.
+describe("http2-client pool (C4: idle-session reaping)", () => {
+  afterEach(() => setUpstreamTransportConfig({ maxConcurrentStreamsPerSession: 1, h2IdleSessionTimeout: 300 }))
+
+  test("an idle session is reaped after the idle timeout", async () => {
+    setUpstreamTransportConfig({ maxConcurrentStreamsPerSession: 1, h2IdleSessionTimeout: 0.05 }) // 50ms
+    handler = (stream) => {
+      stream.respond({ ":status": 200 })
+      stream.end("ok")
+    }
+    const res = await http2Fetch(`${url}/x`, {})
+    await res.text()
+    // The session goes idle (activeStreamCount → 0) and is pooled.
+    await waitUntil(() => getH2SessionStatusSnapshot().length === 1)
+    // After the idle timeout it is proactively closed and removed from the pool.
+    await waitUntil(() => getH2SessionStatusSnapshot().length === 0, { timeout: 1000, label: "idle reap" })
+  })
+
+  test("a busy session is NOT reaped while its stream is in-flight", async () => {
+    setUpstreamTransportConfig({ maxConcurrentStreamsPerSession: 1, h2IdleSessionTimeout: 0.05 }) // 50ms
+    let release!: () => void
+    const gate = new Promise<void>((r) => (release = r))
+    handler = (stream) => {
+      stream.respond({ ":status": 200 })
+      void gate.then(() => stream.end("ok"))
+    }
+    try {
+      const req = http2Fetch(`${url}/x`, {})
+      await waitUntil(() => getH2SessionStatusSnapshot().length === 1)
+      // Wait well past the idle timeout with the stream still open.
+      await new Promise((r) => setTimeout(r, 150))
+      // Still pooled — a busy session must never be idle-reaped.
+      expect(getH2SessionStatusSnapshot()).toHaveLength(1)
+      expect(getH2SessionStatusSnapshot()[0]?.activeStreamCount).toBe(1)
+      release()
+      const res = await req
+      await res.text()
+    } finally {
+      release()
+    }
+  })
+
+  test("idle timeout 0 disables reaping — the session lingers", async () => {
+    setUpstreamTransportConfig({ maxConcurrentStreamsPerSession: 1, h2IdleSessionTimeout: 0 }) // disabled
+    handler = (stream) => {
+      stream.respond({ ":status": 200 })
+      stream.end("ok")
+    }
+    const res = await http2Fetch(`${url}/x`, {})
+    await res.text()
+    await waitUntil(() => getH2SessionStatusSnapshot().length === 1)
+    // No reap timer armed — still pooled after a generous wait.
+    await new Promise((r) => setTimeout(r, 150))
+    expect(getH2SessionStatusSnapshot()).toHaveLength(1)
   })
 })

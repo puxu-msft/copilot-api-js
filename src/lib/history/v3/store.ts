@@ -142,13 +142,29 @@ let draining = false
  * DI-5 transient-retry budget for the drain commit. Module-level (config apply
  * calls `setV3PersistRetryConfig`) to avoid a store→state import cycle; defaults
  * mirror the old zero-retry behavior's cadence (a few quick attempts).
+ *
+ * `maxTotalMs` is a per-commit wall-clock soft cap (DI-5-followup-2): the linear
+ * backoff sum grows quadratically (`backoffMs·n(n-1)/2`), so a large
+ * `maxAttempts × backoffMs` product could wedge the drain — and therefore
+ * shutdown, which has no abort signal here on purpose (see runDrain's note) — for
+ * minutes. The cap bounds the total retry time for ONE entry regardless of the
+ * attempt/backoff product. `0` disables the time cap (only `maxAttempts` bounds).
  */
-let persistRetryConfig: { maxAttempts: number; backoffMs: number } = { maxAttempts: 3, backoffMs: 10 }
-export function setV3PersistRetryConfig(cfg: { maxAttempts: number; backoffMs: number }): void {
-  persistRetryConfig = { maxAttempts: Math.max(1, cfg.maxAttempts), backoffMs: Math.max(0, cfg.backoffMs) }
+const DEFAULT_V3_PERSIST_MAX_TOTAL_MS = 30_000
+let persistRetryConfig: { maxAttempts: number; backoffMs: number; maxTotalMs: number } = {
+  maxAttempts: 3,
+  backoffMs: 10,
+  maxTotalMs: DEFAULT_V3_PERSIST_MAX_TOTAL_MS,
+}
+export function setV3PersistRetryConfig(cfg: { maxAttempts: number; backoffMs: number; maxTotalMs?: number }): void {
+  persistRetryConfig = {
+    maxAttempts: Math.max(1, cfg.maxAttempts),
+    backoffMs: Math.max(0, cfg.backoffMs),
+    maxTotalMs: Math.max(0, cfg.maxTotalMs ?? DEFAULT_V3_PERSIST_MAX_TOTAL_MS),
+  }
 }
 /** Read the current transient-retry budget (config-wiring assertions). */
-export function getV3PersistRetryConfigForTests(): { maxAttempts: number; backoffMs: number } {
+export function getV3PersistRetryConfigForTests(): { maxAttempts: number; backoffMs: number; maxTotalMs: number } {
   return persistRetryConfig
 }
 
@@ -729,14 +745,41 @@ export interface TransientRetryAttemptResult {
 export interface TransientRetryOptions {
   maxAttempts: number
   backoffMs: number
+  /**
+   * DI-5-followup-2: soft cap on the total wall-clock time (ms) one commit may
+   * spend across all its retries. The linear backoff sum grows quadratically
+   * (`backoffMs·n(n-1)/2`), and each `attempt()` can itself block (e.g. a SQLite
+   * `busy_timeout` wait — the bulk of a real WAL-contention wedge), so a large
+   * `maxAttempts × backoffMs` product (or slow attempts) could wedge the drain —
+   * and therefore shutdown, which has no abort signal here on purpose (see
+   * runDrain's note) — for minutes. Once the elapsed time (INCLUDING each
+   * attempt's own blocking) plus the next backoff would exceed this cap, stop
+   * retrying and report failure. Measured via the injectable `now` seam below
+   * (defaults to `Date.now`; tests inject a deterministic counter). `0`/`undefined`
+   * = no time cap (only `maxAttempts` bounds).
+   */
+  maxTotalMs?: number
   /** Abort collapses the backoff wait (shutdown drain wants to land data fast, not cancel it). */
   signal?: AbortSignal
+  /**
+   * Clock seam for the `maxTotalMs` wall-clock cap. Defaults to `Date.now`
+   * (production). Tests inject a deterministic counter to drive elapsed time
+   * (including a modeled slow `attempt()`) without a real sleep or a global fake
+   * timer — mirroring the `abortableDelay` scale seam.
+   */
+  now?: () => number
 }
 
 export interface TransientRetryOutcome {
   ok: boolean
   conflict: boolean
   attempts: number
+  /**
+   * Which soft cap ended the retry loop, for drain observability — distinguishes
+   * "hit the attempt ceiling" from "ran out of the time budget" when an entry is
+   * dropped. `undefined` when the loop ended on success / permanent failure / conflict.
+   */
+  capReason?: "max-attempts" | "max-total-ms"
 }
 
 /**
@@ -745,12 +788,18 @@ export interface TransientRetryOutcome {
  * transient, but the drain used to ignore that and drop the entry on the first
  * failure. Permanent failures and conflicts are not retried (pointless). A hard
  * `maxAttempts` cap keeps a transient storm from spinning forever (skill
- * persistence-async-invariants §4 "持续 drain 失败须软上界"). The linear backoff is
- * `abortableDelay`-based so a shutdown/abort during a storm collapses the wait
- * (keeps trying to land the data before close) rather than wedging the drain.
+ * persistence-async-invariants §4 "持续 drain 失败须软上界"). A `maxTotalMs` cap
+ * (DI-5-followup-2) bounds the total wall-clock time so a large attempt/backoff
+ * product — or a slow attempt (SQLite busy_timeout) — can't wedge shutdown for
+ * minutes. The linear backoff is `abortableDelay`-based so a shutdown/abort
+ * during a storm collapses the wait (keeps trying to land the data before close)
+ * rather than wedging the drain.
  */
 export async function runWithTransientRetry(attempt: () => Promise<TransientRetryAttemptResult>, opts: TransientRetryOptions): Promise<TransientRetryOutcome> {
   const maxAttempts = Math.max(1, opts.maxAttempts)
+  const maxTotalMs = opts.maxTotalMs !== undefined && opts.maxTotalMs > 0 ? opts.maxTotalMs : undefined
+  const now = opts.now ?? Date.now
+  const startedAt = now()
   let attempts = 0
   for (;;) {
     attempts++
@@ -758,9 +807,18 @@ export async function runWithTransientRetry(attempt: () => Promise<TransientRetr
     if (result.ok) return { ok: true, conflict: false, attempts }
     if (result.conflict) return { ok: false, conflict: true, attempts }
     if (!result.transient) return { ok: false, conflict: false, attempts } // permanent — retry is pointless
-    if (attempts >= maxAttempts) return { ok: false, conflict: false, attempts } // soft cap
+    if (attempts >= maxAttempts) return { ok: false, conflict: false, attempts, capReason: "max-attempts" } // attempt-count soft cap
+    const backoffMs = opts.backoffMs * attempts
+    // Wall-clock time-budget soft cap: give up once the elapsed time (INCLUDING
+    // each attempt's own blocking — e.g. a SQLite busy_timeout wait, the bulk of a
+    // real wedge) plus the next backoff would exceed maxTotalMs. Bounds the total
+    // time one entry can hold the drain (→ shutdown, which has no abort signal
+    // here on purpose) regardless of the maxAttempts × backoffMs product.
+    if (maxTotalMs !== undefined && now() - startedAt + backoffMs > maxTotalMs) {
+      return { ok: false, conflict: false, attempts, capReason: "max-total-ms" }
+    }
     try {
-      await abortableDelay(opts.backoffMs * attempts, opts.signal)
+      await abortableDelay(backoffMs, opts.signal)
     } catch {
       // OperationCancelledError: the signal aborted (shutdown). Collapse the wait
       // but keep retrying up to the cap — abort shortens backoff, it doesn't stop
@@ -822,13 +880,17 @@ async function runDrain(): Promise<void> {
           // attempts), so not collapsing it at shutdown costs ~tens of ms of drain
           // time — negligible vs. the cycle risk. `runWithTransientRetry` still
           // accepts a signal for callers that can provide one without the cycle.
-          { maxAttempts: persistRetryConfig.maxAttempts, backoffMs: persistRetryConfig.backoffMs },
+          { maxAttempts: persistRetryConfig.maxAttempts, backoffMs: persistRetryConfig.backoffMs, maxTotalMs: persistRetryConfig.maxTotalMs },
         )
         if (!retryOutcome.ok) {
+          // Surface WHICH soft cap dropped the entry (attempt ceiling vs time
+          // budget) alongside the last error, so an operator can tell a transient
+          // storm (max-attempts) from a wedge-guard trip (max-total-ms).
+          const lastError = nonConflictError instanceof Error ? nonConflictError.message : String(nonConflictError)
           status = {
             ...status,
             failedOperations: status.failedOperations + 1,
-            lastError: nonConflictError instanceof Error ? nonConflictError.message : String(nonConflictError),
+            lastError: retryOutcome.capReason ? `${lastError} (retry gave up: ${retryOutcome.capReason})` : lastError,
           }
         }
       } catch (error) {
@@ -1252,5 +1314,6 @@ export function resetV3WriterForTests(): void {
   draining = false
   summaryBackfillStop = true
   summaryBackfill = null
+  commitFailureInjectorForTests = null
   status = { pendingOperations: 0, pendingBytes: 0, persistedOperations: 0, failedOperations: 0, conflicts: 0, summaryBacklog: 0 }
 }

@@ -27,6 +27,14 @@ import type {
   StreamErrorKind,
 } from "~/lib/stream"
 
+// `import type` — erased at runtime, so this does NOT create a runtime cycle with
+// rewrite-registry.ts (which imports `UpstreamFrame` from here). FrameAction is only
+// used in the dry-run `onRewriteAction` hook signature ([[type-only-import-breaks-visual-cycle]]).
+import type {
+  //
+  CanonicalBlock,
+  CommittedBlocksLedger,
+} from "./committed-blocks-ledger"
 import type {
   //
   ClientFormat,
@@ -34,9 +42,6 @@ import type {
   ResolvedModel,
   UpstreamEndpoint,
 } from "./envelope"
-// `import type` — erased at runtime, so this does NOT create a runtime cycle with
-// rewrite-registry.ts (which imports `UpstreamFrame` from here). FrameAction is only
-// used in the dry-run `onRewriteAction` hook signature ([[type-only-import-breaks-visual-cycle]]).
 import type { FrameAction } from "./rewrite-registry"
 
 // ============================================================================
@@ -372,6 +377,8 @@ export type ResponseFinishResult =
 export interface AnchorHooks {
   /** Is this rendered client frame the `message_start`? (drives the driver's capture + commit-time dedup). */
   isMessageStart: (frame: ClientFrame) => boolean
+  /** Is this rendered client frame a real `content_block_start`? (drives the sequential anchor close-before-real-block). */
+  isContentBlockStart: (frame: ClientFrame) => boolean
   /** The synthetic anchor `content_block_start{type:"text", text:""}` at index 0 (lights the sink's openBlock). */
   startFrame: ClientFrame
   /** The synthetic anchor `content_block_stop` at index 0 — the commit / terminal-failure close-off. */
@@ -390,6 +397,26 @@ export interface AnchorHooks {
    * real blocks flush at +1). Non-block frames (message_delta / message_stop / non-JSON) pass through.
    */
   remap: (frame: ClientFrame, offset: number) => ClientFrame
+}
+
+/**
+ * Continuation-retry hooks (spec 2026-07-22 §4-§5, ADR D3) — everything the driver's continuation branch
+ * needs, resolved by the handler so the driver stays format-agnostic. The handler supplies these ONLY when
+ * continuation is enabled AND a per-format builder exists, so `opts.continuation !== undefined` IS the gate.
+ */
+export interface ContinuationHooks {
+  /** Per-vendor gate (resolved from config). When false the driver never takes the continuation branch. */
+  enabled: boolean
+  /** The synthetic user-turn text ("network issue. please continue" default). */
+  message: string
+  /** Is this rendered frame the `message_start`? — a continuation leg's duplicate is dropped. */
+  isMessageStart: (frame: ClientFrame) => boolean
+  /** Is this rendered frame a `content_block_start`? — the driver counts wire-delivered blocks for the offset. */
+  isContentBlockStart: (frame: ClientFrame) => boolean
+  /** Shift a `content_block_*` frame's index by `offset` (continuation blocks re-indexed by the wire-delivered count). */
+  remap: (frame: ClientFrame, offset: number) => ClientFrame
+  /** Build the continuation upstream body: `[original] + [assistant = committed] + [user = message]`. */
+  buildRequest: (originalBody: unknown, committed: ReadonlyArray<CanonicalBlock>, message: string) => unknown
 }
 
 /**
@@ -436,7 +463,7 @@ export interface AnchorState {
  *   - `"partial-degrade"`: block-level path only — a boundary block was already committed live,
  *     then the stream truncated (un-retryable). A graceful degrade distinct from `exhausted`.
  */
-export type ProtectStreamingOutcome = "success" | "exhausted" | "retreated" | "partial-degrade"
+export type ProtectStreamingOutcome = "success" | "exhausted" | "retreated" | "partial-degrade" | "continuation-exhausted"
 
 /**
  * Options for `runResponseBufferedSink` (L2 — streaming upstream-RST buffered retry,
@@ -521,7 +548,7 @@ export interface RunBufferedOpts extends RunResponseOpts {
    *     degrade distinct from `exhausted` (which committed nothing). Never emitted on the
    *     terminal-only path ({@link commitBoundaries} undefined) — `committedAny` stays false there.
    */
-  onBufferedResolve?: (outcome: ProtectStreamingOutcome, retries: number, meta: { vendor: string }) => void
+  onBufferedResolve?: (outcome: ProtectStreamingOutcome, retries: number, meta: { vendor: string; continuationRetries?: number }) => void
   /**
    * Block-commit boundary predicate (P0 mechanism floor). When PROVIDED, the buffered sink flushes
    * (commits live) the buffered frames up to and including every frame this returns `true` for,
@@ -538,6 +565,35 @@ export interface RunBufferedOpts extends RunResponseOpts {
    */
   commitBoundaries?: (frame: ClientFrame) => boolean
   /**
+   * Continuation-retry committed-blocks ledger (spec 2026-07-22 §4.2). When PROVIDED alongside
+   * {@link extractCommittedBlocks}, the driver feeds each block-level commit boundary's frames into the
+   * ledger (via the extractor) as the canonical "already-delivered prefix" — the data source a later
+   * mid-stream-cut continuation replays as a synthetic assistant turn. The driver both FEEDS this ledger
+   * (at each boundary) and READS `snapshot()` when it fires the continuation branch, so the same instance
+   * is threaded here. The ledger is cumulative across retry attempts (`onAttemptReset` must NOT clear it).
+   * UNDEFINED = no continuation ledger (Gemini / terminal-only / continuation disabled) — no feeding, and
+   * the driver's continuation branch is never taken. Format-agnostic: the driver only calls the extractor
+   * + `recordCommitted`; all Anthropic/CC/Responses block-reconstruction lives in the extractor.
+   */
+  committedBlocksLedger?: CommittedBlocksLedger
+  /**
+   * Format-specific projection from a commit boundary's committed frames to canonical blocks (spec
+   * 2026-07-22 §4.2). Paired with {@link committedBlocksLedger} — the driver calls it at each block-level
+   * commit with the just-committed buffer and records the result into the ledger. Only meaningful when a
+   * ledger is supplied; the two are wired together by the handler (e.g. `extractAnthropicCommittedBlocks`).
+   */
+  extractCommittedBlocks?: (frames: ReadonlyArray<ClientFrame>) => Array<CanonicalBlock>
+  /**
+   * Continuation-retry seam (spec 2026-07-22 §4-§5, ADR D3). When present ALONGSIDE
+   * {@link committedBlocksLedger} + {@link extractCommittedBlocks}, a mid-stream cut AFTER a committed
+   * block runs a synthetic continuation exchange (`[original body] + [assistant = committed] + [user =
+   * message]`) instead of degrading — the continuation frames are stitched onto the SAME client stream
+   * (its duplicate `message_start` dropped, its blocks re-indexed by the wire-delivered block count).
+   * Format-agnostic: all format knowledge lives in the hooks the handler supplies. Undefined = no
+   * continuation (Gemini / disabled / non-ledger path) — the driver's continuation branch is never taken.
+   */
+  continuation?: ContinuationHooks
+  /**
    * Candidate-hosted buffered-flush transform seam (spec 2026-07-14-responses-buffered-block-merge §4,
    * 2026-07-19 重接地). Same shape/lifecycle as {@link commitBoundaries} — a candidate-supplied option the
    * driver merges in via `currentCandidateResponseOpts` and calls at EVERY flush (block-boundary,
@@ -548,7 +604,7 @@ export interface RunBufferedOpts extends RunResponseOpts {
    * Per-attempt state lives entirely on the candidate side (a fresh candidate session per retry/recovery
    * gives a fresh closure) — the driver has no reset hook to call for this seam.
    */
-  transformBufferedFlush?: (frames: readonly ClientFrame[], ctx: BufferedFlushContext) => readonly ClientFrame[]
+  transformBufferedFlush?: (frames: ReadonlyArray<ClientFrame>, ctx: BufferedFlushContext) => ReadonlyArray<ClientFrame>
   /**
    * Vendor label the driver injects into {@link onBufferedResolve}'s `meta.vendor` (e.g.
    * `"anthropic"` / `"responses"` / `"chat_completions"` / `"responses_ws"`). Lets the handlers

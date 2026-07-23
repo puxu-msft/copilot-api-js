@@ -41,8 +41,5 @@
     "tests/**/*.ts",
     "scripts/**/*.ts",
     "packages/**/*.ts"
-  ],
-  "exclude": [
-    "tests/e2e-ui/**/*"
   ]
 }

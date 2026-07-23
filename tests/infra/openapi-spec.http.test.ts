@@ -42,10 +42,9 @@ async function getSpec(): Promise<Spec> {
 function canonicalSpecPath(rawPath: string): string | null {
   let p = rawPath.replace(/\/+$/, "") || "/"
 
-  // The doc endpoints themselves + static UI + the /history → /ui redirect.
+  // The doc endpoints themselves + the bare /history root (an unknown-404 catch-all,
+  // not a documented API — see routes/history/route.ts).
   if (p === "/openapi.json" || p === "/docs" || p === "/history") return null
-  if (p === "/ui" || p.startsWith("/ui/")) return null
-  if (p === "/ui-v4" || p.startsWith("/ui-v4/")) return null
   // Gemini is one catch-all route (:modelWithMethod) but documented as 3 explicit
   // `{model}:<method>` paths — the catch-all itself is intentionally not a spec key.
   if (p === "/v1beta/models/:modelWithMethod") return null

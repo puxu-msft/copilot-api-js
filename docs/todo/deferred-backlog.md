@@ -924,11 +924,11 @@ registry（`docs/rfc/2026-07-21-retry-strategy-registry.md`）6 commit 全 lande
 - **理想架构 / 若做需改什么**：把连接/会话生命周期做成一等结构化事件（进 observability bus + 结构化日志 + /metrics）。**承重难题＝多路复用池化 session 的 request 关联**（一条 h2 session 被多并发 request 共享，GOAWAY/PING/session-close 非 1:1 归属某 request）——候选解 A（correlation-id 穿透 + 连接级事件扇出到在途 request）/ B（两级模型读时关联）/ C（全事件上 bus + 投影分发），详见 [docs/todo/upstream-transport-observability.md](upstream-transport-observability.md) §5。
 - **为何暂缓**：子项目 1（跨端点流终止归因统一，流级、per-request、不碰关联难题）先行独立交付；本片需先攻克多路复用关联模型（最硬），范围大，用户 2026-07-14 决定拆后做。**触发条件（值得做）**：子项目 1 落地后、需在真实数据上区分 A/B 截断归因时。详细设计草案（范围/维度/关联模型/surface）已冻结在 [upstream-transport-observability.md](upstream-transport-observability.md)。
 
-## 上游传输可观测子系统 — 子项目 3：history transportTrace 字段 + /metrics 传输聚合 + ui-v4 Transport 段（2026-07-14，transport-observability 分解）
+## 上游传输可观测子系统 — 子项目 3：history transportTrace 字段 + ui-v4 Transport 段（2026-07-14，transport-observability 分解；2026-07-22 更新：metrics 已归子项目 1）
 
 - **根因 / 现状**：子项目 1/2 产出的传输事件目前无结构化落盘/聚合/展示宿主。history entry 无「传输因果链」字段（connect→session→stream→truncation→retry），/metrics 无传输维度（GOAWAY 速率 / PING RTT histogram / truncation A/B/success 计数 / per-origin session gauge），ui-v4 History 详情无 Transport 段。
 - **当前行为**：单请求事后取证只能读散落日志 + 解 blob 反推，无「打开一条 entry 看全传输因果链」。
-- **理想架构 / 若做需改什么**：history 新增结构化字段（顶层 `transportTrace` 或 `attempts[].transport`，与 sseEvents 并列、遵 richest-data-flow），新字段「三处必改」见 skill `persistence-async-invariants`、schema 迁移见 `history-sqlite-schema`；/metrics 走遥测 registry 三支柱（skill `telemetry-architecture`）；ui-v4 详情加 Transport 时间线段。**须与 request-timing-instrumentation（2026-07-14 spec，owns TTFB/7 刻时序）协调字段边界**，避免重复 per-attempt 时序存储。**并入本片：把上游流终止归因从「各 pump 手动调共享 primitive」重构成「driver 单点发 `request.upstream_stream_disconnect` bus 事件 + sink」**——子项目 1 v1 曾拟的 C 架构，因 mid-stream 覆盖已工作、bus 化的真正受益方是本片的订阅需求（history/metrics 投影订阅同一事件），故折到这里、按真消费者设计事件 schema，而非在子项目 1 对可工作代码空转。
+- **理想架构 / 若做需改什么**：history 新增结构化字段（顶层 `transportTrace` 或 `attempts[].transport`，与 sseEvents 并列、遵 richest-data-flow），新字段「三处必改」见 skill `persistence-async-invariants`、schema 迁移见 `history-sqlite-schema`；ui-v4 详情加 Transport 时间线段。**须与 request-timing-instrumentation（2026-07-14 spec，owns TTFB/7 刻时序）协调字段边界**，避免重复 per-attempt 时序存储。**订阅子项目 1 已产出的 bus 事件**（`request.upstream_stream_disconnect` / `request.upstream_connect_timeout`，见 spec `docs/spec/2026-07-14-upstream-disconnect-attribution.md` v3(B)）持久化到 history——子项目 1 已把 producer（共享收口函数发事件）+ console + metrics（bus-counter→/metrics，B 路）做完，本片是同一 bus 事件的**history/ui 消费者**。注：`/metrics` 传输聚合**已归子项目 1**（B 路 counter）、**不在本片**；`/api/stats` 维度聚合按 ADR `2026-07-22-metrics-via-prometheus-grafana` 退役方向、不做。
 - **为何暂缓**：依赖子项目 1/2 先产出事件源；是「沉淀 + 展示」层，落在采集之后。用户 2026-07-14 决定拆后做。**触发条件（值得做）**：子项目 1/2 的事件已产出、需持久化因果链 + fleet 指标 + UI 展示时。详细 surface 设计见 [upstream-transport-observability.md](upstream-transport-observability.md) §6。
 
 ## retry 策略可插拔化 / 声明式 registry —— 入站侧剥离的下一独立项（2026-07-21 定为下一项）
@@ -962,3 +962,17 @@ registry（`docs/rfc/2026-07-21-retry-strategy-registry.md`）6 commit 全 lande
 - **理想架构 / 若做需改什么**：测试随 core 内部模块剥离（spec 阶段 4+）逐包物理下沉到 `packages/*/src` 旁；若走每包各自 `bun test`，各包 `bunfig` 各自 `[test].preload` 但**指向同一份共享 sandbox-paths**（放 foundation 或新建 `packages/test-harness`、各包 re-export、绝不各包复制）；`RESETTERS` 表随单例分包、L1 守卫 `resetters-complete.unit.test.ts` 改成每包各自枚举本包 `*ForTests`；同步改 `tests/architecture/*.unit.test.ts` 内硬编码 `import.meta.dir`+`../../src/lib/...` 路径。
 - **为何暂缓**：巨量撞行面、依赖 core 内部先解环到位；是「同置收尾」层、落在结构搬迁之后。**触发条件（值得做）**：core 已剥出真子包、需把对应测试随之下沉时。
 - **关联：core 内部解环排序清单**（spec §6 措施 3，随剥离长期存活）：**state 第一**（~83 importer、SCC 入口）、**anthropic/openai/gemini 第二**（state 解耦后可提 core 层 vendor 纵切）、**pipeline/codec 局部环第三**（cell-assembly 三方环）。每次只剥一个、land 后重评 SCC + madge 环快照只减不增。
+
+## 聚合指标迁 Prometheus/Grafana、退役 /api/stats 自建聚合（2026-07-22，ADR 2026-07-22-metrics-via-prometheus-grafana）
+
+- **根因 / 现状**：`/api/stats` + telemetry.db 长窗 rollup（5min/hourly/daily）+ DDSketch 存 + ui stats 页，是自建的迷你时序聚合库；与 `/metrics` 同源（`getDimensionBreakdown`），多出的多窗口/分位/top-N 恰是 Prometheus/Grafana 原生本职。对有 Prometheus 的部署冗余。
+- **当前行为**：聚合可视化靠自建 stats API + UI；无 Grafana/告警。
+- **理想架构 / 若做需改什么（三阶段，破坏性最后做）**：① `/metrics` label/histogram 补齐——把 /api/stats 现有维度 breakdown + 分布以 Prometheus 原生形态铺全（enabling，非破坏）；② 增 Grafana 支持——`docs/GRAFANA.md` + 示例 dashboard JSON + scrape 配置 + README（新增，非破坏）；③ 退役——删 `/api/stats` 路由（`src/routes/stats/`）+ telemetry.db 长窗 rollup/DDSketch（`src/lib/telemetry/read.ts` 30d/90d/lifetime + sketch）+ ui stats 页（`ui/src/composables/useOperationalStats.ts`）；保留 `/metrics`+registry+`getDimensionBreakdown`(sinceStart)、History（per-request 取证）、`/api/status`（健康）、实时面板。telemetry.db 最终形态按「/metrics 实际依赖」在专项 spec 精确裁决。
+- **为何暂缓**：破坏性方向；telemetry 区正被并发会话热改（2026-07-17 起 retry-fire telemetry / generation topology / V2-removal），须待其落定；且第③步须先完成①的 /metrics 无损覆盖。**触发条件（值得做）**：并发 telemetry 工作落定 + 决定正式采用 Grafana 时。第①步（/metrics 补齐）可较早独立启动。发现方：disconnect metrics B/A 取舍追问 → 用户 2026-07-22 决定聚合交 Prometheus/Grafana。
+
+## h2 连接池总 per-origin session 数上限（2026-07-22，h2-pool-capacity-routing plan Q4）
+
+- **根因 / 现状**：h2 池按容量选路后（`upstream_transport.http2.max_concurrent_streams_per_session`，默认 N=1），每 origin 的 live session 数 = 峰值并发；`http2-client.ts` 有 idle-reap（`idle_session_timeout`，默认 300s）收敛长尾，但**没有对「同一 origin 同时存活的 session 总数」设硬上限**（idle+busy 合计）。
+- **当前行为**：一次病态 fan-out（同 origin 瞬时数百并发）会瞬时开出数百条 h2 连接，之后靠 idle-reap 慢慢收敛。实测工作负载约 4 并发，fd 成本可忽略，未观测到问题。
+- **理想架构 / 若做需改什么**：加可选 `upstream_transport.http2.max_sessions_per_origin`（0=无限），WS 式软语义——超 cap 建新时驱逐一条 **idle** entry（`busy` 永不驱逐、负载下允许暂时超 cap 绝不阻塞请求）。落点：`acquireSession` 新建前检查 + 一个 `evictOneIdle(origin)` 助手；schema/state/config/proxy 加键（镜像 `max_concurrent_streams_per_session` 的接线）。
+- **为何暂缓**：plan Q4 经权衡「实测约 4 并发、fd 成本可忽略、idle-reap 已收敛长尾」判定「仅病态 fan-out 才值」，默认无限、留 backlog。**触发条件（值得做）**：出现真实的同 origin 高 fan-out（fd 耗尽 / 上游因连接数过多主动限流）场景。发现方：h2-pool-capacity-routing plan（[../plan/2026-07-22-h2-pool-capacity-routing-and-pre-response-retry.md](../plan/2026-07-22-h2-pool-capacity-routing-and-pre-response-retry.md)）开放问题 Q4。

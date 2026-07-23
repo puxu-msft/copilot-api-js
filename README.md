@@ -30,7 +30,7 @@ First run will trigger GitHub device-flow auth automatically and cache the token
 git clone https://github.com/puxu-msft/copilot-api-js.git
 cd copilot-api-js
 bun install
-bun run dev --external-ui-url http://localhost:5173  # Development mode with hot reload and proxying /ui to the Vite dev server
+bun run dev  # Development mode with hot reload (main server only, API-only — see "Hosting the Web UI" below)
 bun run dev:ui  # Development mode for UI on Vite dev server
 
 # Publish to npm
@@ -79,7 +79,6 @@ Experimental options:
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `--external-ui-url` |  | Reverse-proxy `/ui` to an external Vite dev / build server |
 | `--verbose`, `-v` | `false` | Verbose logging (includes Copilot token refresh logs) |
 | `--mock-rate-limiter-throttled` | `false` | Test-only: simulate upstream 429 after the limiter timeout |
 
@@ -206,9 +205,37 @@ For a persistent, auto-restarting deployment, see the systemd unit templates and
 
 ## Internal API Endpoints
 
-Management (`/api/*`), History REST (`/history/api/*`), metrics (`/metrics`), health probes (`/health`, `/health/readiness`, `/health/liveness`), the History WebSocket (`/ws`), and the Web UIs (`/ui/*`, `/ui-v4/*`) are all documented in **[`docs/API.md`](docs/API.md)** alongside the vendor-compatible endpoints.
+Management (`/api/*`), History REST (`/history/api/*`), metrics (`/metrics`), health probes (`/health`, `/health/readiness`, `/health/liveness`), and the History WebSocket (`/ws`) are all documented in **[`docs/API.md`](docs/API.md)** alongside the vendor-compatible endpoints. The main server is API-only — it does not serve, proxy, or build any Web UI; see "Hosting the Web UI" below.
 
 History is persisted to a content-addressed SQLite store (`history-v3.db`): every request/response is recorded as an immutable canonical operation record via a single-writer terminal bus, with periodic DB maintenance (WAL checkpoint / incremental vacuum / analyze). There is no built-in tiered cold-format archiving — the `history.archive.*` config surface was retired together with History V2 (2026-07-18). See **[`docs/history.md`](docs/history.md)** and **[`docs/lifecycle.md`](docs/lifecycle.md)**.
+
+---
+
+## Hosting the Web UI
+
+The main server is API-only: it never serves, proxies, or builds `ui/` (legacy Vue) or `ui-v4/` (React, the actively developed History UI). Both workspaces are kept in this repo and are meant to be built and hosted **independently** by ops, with a reverse proxy in front routing API traffic to the backend (default `localhost:4141`):
+
+```sh
+# Build the UI you want to serve (ui-v4 is the actively developed one)
+bun run build:ui-v4   # → ui-v4/dist
+# bun run build:ui    # → ui/dist (legacy Vue, being retired — see docs/vue-ui-retirement.md)
+
+# Serve ui-v4/dist with any static file server, e.g.:
+npx serve ui-v4/dist
+```
+
+Then put a reverse proxy in front that forwards these paths to the backend (`localhost:4141` by default):
+
+| Path | Protocol | Notes |
+|------|----------|-------|
+| `/api/*` | HTTP | Management API |
+| `/history/api/*` | HTTP | History REST |
+| `/ws` | WebSocket | History/live-request push |
+| `/models` | HTTP | OpenAI-compatible model list (consumed by the UI) |
+
+Everything else (the UI's own static assets, index.html, client-side routes) is served by the static file server, not the backend.
+
+**Base path caveat**: `ui-v4/vite.config.ts` bakes in `base: "/ui-v4/"` for production builds, and the legacy `ui/vite.config.ts` bakes in `base: "/ui/"`. If you host either workspace at a different path prefix (or at the domain root), adjust that workspace's `base` before building, or configure your reverse proxy to strip/rewrite the prefix accordingly.
 
 ---
 

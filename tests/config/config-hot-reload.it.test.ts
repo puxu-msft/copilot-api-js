@@ -254,11 +254,33 @@ const FIELDS: ReadonlyArray<FieldSpec> = [
     defaultStateValue: CONFIG_MANAGED_DEFAULTS.upstreamH2PingInterval,
   },
   {
+    configKey: "upstream_transport.http2.favor",
+    stateKey: "upstreamH2Favor",
+    // Sample MUST differ from the default (true) so R1/R2 prove the wiring.
+    sampleYamlValue: "false",
+    expectedStateValue: false,
+    defaultStateValue: CONFIG_MANAGED_DEFAULTS.upstreamH2Favor,
+  },
+  {
     configKey: "upstream_transport.http2.session_connect_timeout",
     stateKey: "sessionConnectTimeout",
     sampleYamlValue: "5",
     expectedStateValue: 5,
     defaultStateValue: CONFIG_MANAGED_DEFAULTS.sessionConnectTimeout,
+  },
+  {
+    configKey: "upstream_transport.http2.max_concurrent_streams_per_session",
+    stateKey: "maxConcurrentStreamsPerSession",
+    sampleYamlValue: "4",
+    expectedStateValue: 4,
+    defaultStateValue: CONFIG_MANAGED_DEFAULTS.maxConcurrentStreamsPerSession,
+  },
+  {
+    configKey: "upstream_transport.http2.idle_session_timeout",
+    stateKey: "h2IdleSessionTimeout",
+    sampleYamlValue: "120",
+    expectedStateValue: 120,
+    defaultStateValue: CONFIG_MANAGED_DEFAULTS.h2IdleSessionTimeout,
   },
   {
     configKey: "upstream_transport.websocket.pooled_connection_idle_timeout",
@@ -1065,6 +1087,10 @@ const EXEMPT: ReadonlyArray<ExemptField> = [
     reason: "DI-5 module-local retry budget — see history.persist_retry.max_attempts above (same setV3PersistRetryConfig wiring)",
   },
   {
+    configKey: "history.persist_retry.max_total_ms",
+    reason: "DI-5-followup-2 module-local retry budget — see history.persist_retry.max_attempts above (same setV3PersistRetryConfig wiring)",
+  },
+  {
     configKey: "proxy",
     reason: "initProxy() runs once in start.ts before any network requests; changes require restart",
   },
@@ -1108,6 +1134,10 @@ const EXEMPT: ReadonlyArray<ExemptField> = [
   { configKey: "buffered_retry.max_retries", reason: "vendor-neutral shared cap → bufferedRetryShared; see buffered-retry-keys.test.ts" },
   { configKey: "buffered_retry.buffer_cap_bytes", reason: "vendor-neutral shared cap → bufferedRetryShared; see buffered-retry-keys.test.ts" },
   { configKey: "buffered_retry.heartbeat_sec", reason: "vendor-neutral shared cap → bufferedRetryShared; see buffered-retry-keys.test.ts" },
+  { configKey: "buffered_retry.continuation.enabled", reason: "shared continuation → bufferedRetryContinuationShared; see buffered-retry-keys.test.ts" },
+  { configKey: "buffered_retry.continuation.message", reason: "shared continuation → bufferedRetryContinuationShared; see buffered-retry-keys.test.ts" },
+  { configKey: "anthropic.buffered_retry.continuation.enabled", reason: "per-vendor continuation → bufferedRetryContinuationOverrides.anthropic; see buffered-retry-keys.test.ts" },
+  { configKey: "anthropic.buffered_retry.continuation.message", reason: "per-vendor continuation → bufferedRetryContinuationOverrides.anthropic; see buffered-retry-keys.test.ts" },
   {
     configKey: "anthropic.buffered_retry.enabled",
     reason: "Anthropic's switch is protect_streaming_generation; `enabled` ignored — see buffered-retry-keys.test.ts",

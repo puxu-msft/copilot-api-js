@@ -145,6 +145,7 @@ export function sanitizeOpenAIMessages(payload: ChatCompletionsPayload): Sanitiz
   messages = ensureOpenAIStartsWithUser(messages)
 
   // Final safety net: remove empty/whitespace-only text parts from array content
+  let emptyTextPartsRemoved = 0
   const allMessages = [...sanitizedSystemMessages, ...messages].map((msg) => {
     if (!Array.isArray(msg.content)) return msg
     const filtered = msg.content.filter((part) => {
@@ -152,14 +153,24 @@ export function sanitizeOpenAIMessages(payload: ChatCompletionsPayload): Sanitiz
       return true
     })
     if (filtered.length === msg.content.length) return msg
+    emptyTextPartsRemoved += msg.content.length - filtered.length
     return { ...msg, content: filtered }
   })
 
-  const blocksRemoved = originalCount - messages.length
+  const orphanMessagesRemoved = originalCount - messages.length
 
-  if (blocksRemoved > 0) {
-    consola.info(`[Sanitizer:OpenAI] Filtered ${blocksRemoved} orphaned tool messages`)
+  if (orphanMessagesRemoved > 0) {
+    consola.info(`[Sanitizer:OpenAI] Filtered ${orphanMessagesRemoved} orphaned tool messages`)
   }
+
+  // Removing an empty text part deletes real content from the wire payload, so it
+  // must be as observable as the orphan-message pruning above (mirrors the
+  // Anthropic-side `empty text blocks` accounting in sanitize/result.ts).
+  if (emptyTextPartsRemoved > 0) {
+    consola.info(`[Sanitizer:OpenAI] Removed ${emptyTextPartsRemoved} empty text blocks`)
+  }
+
+  const blocksRemoved = orphanMessagesRemoved + emptyTextPartsRemoved
 
   return {
     payload: {

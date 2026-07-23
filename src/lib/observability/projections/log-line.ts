@@ -21,7 +21,7 @@ import pc from "picocolors"
 import type { ResponseThinking } from "~/lib/history/entry-view"
 import type { EndpointType } from "~/lib/history/types"
 
-import { isSameModelName } from "~/lib/models/resolver"
+import { modelRemapParts } from "~/lib/models/resolver"
 
 import {
   //
@@ -192,12 +192,13 @@ export function formatLogLine(parts: LogLineParts): string {
 
   // Model token WITHOUT a leading space, so both the full form (which adds its
   // own space) and the compact `<inputFormat>/<model>` form can reuse it. Shows
-  // "clientModel → model" only on a genuine remap — suppressed when the client
-  // and resolved names are the same model spelled differently (e.g.
-  // "claude-opus-4-8" vs "claude-opus-4.8").
+  // "clientModel → model" only on a genuine remap — the `source`/`target` split
+  // (suppress-when-same-model) is shared with the detail view via
+  // {@link modelRemapParts}; styling (dim source / magenta target) is ours.
   let modelToken = ""
   if (model !== undefined) {
-    modelToken = clientModel && !isSameModelName(clientModel, model) ? `${pc.dim(clientModel)} → ${pc.magenta(model)}` : pc.magenta(model)
+    const { source, target } = modelRemapParts(clientModel, model)
+    modelToken = source ? `${pc.dim(source)} → ${pc.magenta(target)}` : pc.magenta(target)
   }
   const coloredModel = model === undefined ? "" : ` ${modelToken}`
   const coloredMultiplier = pc.dim(formatBillingLabel(multiplier))

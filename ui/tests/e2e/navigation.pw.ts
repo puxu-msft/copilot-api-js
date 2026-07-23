@@ -6,7 +6,6 @@ import {
 
 import {
   //
-  BASE_URL,
   ensureServerRunning,
   uiUrl,
 } from "./helpers"
@@ -14,12 +13,11 @@ import {
 test.beforeAll(ensureServerRunning)
 
 test.describe("Navigation", () => {
-  test("/history redirects to /ui#/v/activity", async ({ page }) => {
-    const response = await page.goto(`${BASE_URL}/history`)
-    expect(response).not.toBeNull()
-    expect(response?.status()).toBe(200)
-    await page.waitForURL(/\/ui#\/v\/activity/)
-  })
+  // NOTE: "/history redirects to /ui#/v/activity" was dropped here (UI-externalize,
+  // docs/plan/2026-07-22-ui-externalize.md) — that redirect lived on the MAIN
+  // backend server's /history route (removed, see routes/history/route.ts), not
+  // on this UI workspace's own preview server. This suite now only drives pages
+  // actually served by ui/'s own vite preview/dev server.
 
   test("/ui loads and shows the Vuetify app bar", async ({ page }) => {
     await page.goto(uiUrl())

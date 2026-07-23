@@ -334,11 +334,11 @@ export interface HistoryEntryData {
   attempts?: Array<{
     index: number
     candidateId?: string
-    candidateRole?: "primary" | "hedge" | "recovery"
+    candidateRole?: CandidateRole
     parentCandidateId?: string
-    candidateVerdict?: "winner" | "loser" | "failed" | "cancelled"
+    candidateVerdict?: CandidateVerdict
     dispatchId?: string
-    dispatchVerdict?: "committed" | "discarded" | "failed" | "cancelled"
+    dispatchVerdict?: DispatchVerdict
     dispatchReason?: string
     strategy?: string
     durationMs: number

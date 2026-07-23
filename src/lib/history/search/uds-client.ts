@@ -14,15 +14,29 @@
  *   - the server sends a malformed/undecodable frame
  *   - the server sends a `{ error }` wire reply
  *
- * CRASH-SAFETY: `net.connect()` emits `error` ASYNCHRONOUSLY for a path that does
- * not exist (ENOENT) or refuses the connection (ECONNREFUSED) — confirmed
- * empirically that an unlistened `error` on this socket becomes this (the MAIN)
- * process's `uncaughtException`, which `main.ts`'s global handler turns into
- * `process.exit(1)`. This is EXACTLY the crash-amplification chain the whole
- * out-of-process plan exists to prevent, except here it would hit the very
- * process the plan is protecting. Every socket this module creates gets an
- * `error` listener attached BEFORE any other operation (via `withErrorSink`,
- * mirrored from `crash-safety.ts`) — never conditionally, never after a delay.
+ * CRASH-SAFETY: a `connect ENOENT`/`ECONNREFUSED` on this socket that has no
+ * `'error'` listener becomes the MAIN process's `uncaughtException`, which
+ * `main.ts`'s global handler turns into `process.exit(1)`. This is EXACTLY the
+ * crash-amplification chain the whole out-of-process plan exists to prevent,
+ * except here it would hit the very process the plan is protecting.
+ *
+ * The critical subtlety (verified empirically, Bun 1.3.14): `net.connect(path)`
+ * STARTS the connection attempt BEFORE it returns the socket, so a listener
+ * attached to the returned socket can arrive too late. Standalone it looks async
+ * (the ENOENT `'error'` fires on a later tick, so a listener attached right after
+ * `net.connect()` catches it) — but INSIDE a `Bun.serve` request-handler event
+ * loop the `'error'` is delivered before the caller regains control, so
+ * `withErrorSink`-after-`net.connect` is defeated and the process crashes (this
+ * was a real production `exit(1)` when the sidecar socket was absent; the earlier
+ * "async, so a post-connect listener is safe" claim was a false-green verified
+ * outside a request handler). It is NOT a synchronous throw either, so `query()`'s
+ * try/catch cannot see it — it escapes as `uncaughtException`.
+ *
+ * Fix: never use `net.connect()` here. Construct an UNCONNECTED `new net.Socket()`,
+ * attach the error sink + the real `'error'` listener (and all other handlers)
+ * FIRST, and only then call `socket.connect(path)` — the listeners provably
+ * predate any connection attempt, closing the window on both runtimes and in both
+ * event-loop contexts.
  */
 
 import net from "node:net"
@@ -158,10 +172,15 @@ function sendRequest(
   queryTimeoutMs: number,
 ): Promise<HistorySearchWireResponse | HistorySearchWireStatus> {
   return new Promise((resolve, reject) => {
-    const socket = net.connect(socketPath)
-    // withErrorSink FIRST, synchronously, before ANY other listener or timer is
-    // armed — an ENOENT/ECONNREFUSED `error` can fire on the very next microtask
-    // (see module doc); there must be no window where it is unheard.
+    // UNCONNECTED socket — `.connect()` is called LAST, only after every listener
+    // (error sink, real error, connect, data, close, end) is armed. `net.connect()`
+    // would start connecting before returning, letting a `connect ENOENT`/`ECONNREFUSED`
+    // `'error'` fire before we can attach a listener (defeated `withErrorSink` inside a
+    // Bun.serve request handler → real production `uncaughtException` → exit(1); see
+    // module doc). Constructing the socket unconnected removes that window entirely.
+    const socket = new net.Socket()
+    // withErrorSink STILL first (defense-in-depth for a LATE teardown re-emit: `finish()`
+    // → `socket.destroy()` can emit `'error'` again after settle, and `.on` outlives it).
     withErrorSink(socket)
 
     let settled = false
@@ -221,5 +240,10 @@ function sendRequest(
     // calls `socket.destroy()`, which reliably drives the 'close' event afterward
     // on both runtimes.
     socket.on("end", () => finish(new Error("[history-search-uds] connection ended before a response arrived")))
+
+    // LAST: every listener above is now armed, so no `connect ENOENT`/`ECONNREFUSED`
+    // `'error'` can land in an unlistened window (see module doc for why this ordering
+    // is load-bearing, not cosmetic).
+    socket.connect(socketPath)
   })
 }
