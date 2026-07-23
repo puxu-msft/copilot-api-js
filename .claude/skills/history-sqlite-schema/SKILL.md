@@ -30,6 +30,8 @@ description: 当需要了解 copilot-api-js 当前 History V3 SQLite 结构时�
 | `raw.db` | `raw_objects` | exact-byte CAS |
 | `raw.db` | `raw_refs` | operation/sequence/track → raw object 或显式 gap |
 
+**dispatch timing 四刻无独立列**：`ModelOperationDispatch.timing` 的绝对 epoch 四刻（`upstreamHeadersAt` / `upstreamMessageStartAt` / `upstreamFirstTokenAt` / `upstreamLastTokenAt`，采集于 `src/lib/pipeline/driver.ts:642-643`）随 `v3_operations` 的 value-free manifest JSON（及 `v3_journal` 恢复态）序列化，**无 SQLite schema 迁移、无专列**——直接查库看不到独立字段，须经 `/history/api/entries/:id` 的 `attempts[].timing` 投影读出（`src/lib/history/v3/projection.ts:277-283`）。诊断用途见 spec `2026-07-23-upstream-silence-commit-timing.md` §3（GHC deferred-header）。
+
 ## 直接查库
 
 ```bash
