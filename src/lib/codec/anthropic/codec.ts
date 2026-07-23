@@ -81,6 +81,7 @@ import {
 import { buildAnthropicToolNameMapper } from "~/lib/anthropic/sanitize/tool-name-sanitize"
 import { createAnthropicStreamAccumulator } from "~/lib/anthropic/stream-accumulator"
 import { createQuarantineProactiveFilter } from "~/lib/anthropic/thinking-quarantine/proactive-filter"
+import { resolveCodecModel } from "~/lib/codec/model-resolution"
 import {
   //
   modelIdFor,
@@ -99,7 +100,6 @@ import {
 import { ENDPOINT } from "~/lib/models/endpoint"
 import {
   //
-  resolveModelTarget,
   type RouteOverride,
 } from "~/lib/models/resolver"
 import { createResponsesStreamAccumulator } from "~/lib/openai/responses-stream-accumulator"
@@ -111,7 +111,6 @@ import {
   type ForwardStreamTranslator,
   renderResponseNonStreamingVia,
 } from "~/lib/pipeline/hub-translate"
-import { state } from "~/lib/state"
 import { applyInboundSystemPrompt } from "~/lib/system-prompt"
 
 import { createAnthropicSanitizeRewrite } from "./request-rewrite-adapter"
@@ -390,23 +389,12 @@ function parseAnthropic(raw: RawHttpRequest): ParseAnthropicResult {
   const clientBody = (raw.originalBodyForHistory ?? raw.body) as MessagesPayload
   const originalSnapshot = structuredClone(clientBody)
 
-  const clientModel = raw.modelOverride ?? incoming.model
-  const resolvedTarget = raw.preResolved ?? resolveModelTarget(clientModel)
-  const resolvedName = resolvedTarget.name
-  const routeOverride = resolvedTarget.routeOverride
-  // The client's ORIGINAL (pre-resolution) model name — for the observability
-  // `clientModel` and the history `requested` field. It MUST come from the
-  // original client body, NOT `incoming.model`: on the v4 handler path `raw.body`
-  // is the already-resolved `wireBody` (`model === resolvedName`), so deriving the
-  // client name from `incoming.model` would collapse it to `resolvedName` and drop
-  // the remap entirely (the `<client> → <resolved>` arrow would never render). The
-  // other inbound formats (cc/responses/gemini) pass the client-raw body, so their
-  // `incoming.model` is already original; using `originalSnapshot.model` is correct
-  // for every path (it equals `incoming.model` when no pre-resolution happened).
-  const originalClientModel = raw.modelOverride ?? originalSnapshot.model
-  if (resolvedName !== originalClientModel) consola.debug(`Model name resolved: ${originalClientModel} → ${resolvedName}`)
-  const selectedModel = raw.preResolved ? raw.preResolved.model : state.modelIndex.get(resolvedName)
-  const clientModelName = originalClientModel !== resolvedName ? originalClientModel : undefined
+  // Model resolution (requested/resolved/selected/clientModel) via the shared
+  // codec primitive — it owns the rule that the client-original name comes from
+  // the raw client body, not a handler-pre-resolved `body.model`, and that
+  // `clientModel` is set only on a genuine remap (spelling variants suppressed).
+  const { requestedModel, resolvedName, routeOverride, selectedModel, clientModel } = resolveCodecModel(raw)
+  if (resolvedName !== requestedModel) consola.debug(`Model name resolved: ${requestedModel} → ${resolvedName}`)
 
   // The model-resolved payload (messages already preprocessed by the route). This
   // is the truncation + message-mapping baseline: preprocessed, pre-initial-sanitize.
@@ -426,7 +414,7 @@ function parseAnthropic(raw: RawHttpRequest): ParseAnthropicResult {
   })
 
   ctx.setOriginalRequest({
-    model: clientModelName ?? originalSnapshot.model,
+    model: requestedModel,
     messages: originalSnapshot.messages as unknown as Array<unknown>,
     stream: originalSnapshot.stream ?? false,
     tools: originalSnapshot.tools as unknown as Array<unknown> | undefined,
@@ -444,7 +432,7 @@ function parseAnthropic(raw: RawHttpRequest): ParseAnthropicResult {
 
   ctx.setResolvedModel({
     resolved: resolvedName,
-    ...(clientModelName !== undefined && { client: clientModelName }),
+    ...(clientModel !== undefined && { client: clientModel }),
   })
 
   // The direct sanitize chain — reused as the adapter's sanitize and auto-truncate's

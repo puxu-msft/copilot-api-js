@@ -79,6 +79,7 @@ import type {
 
 import { createBetaProbe } from "~/lib/anthropic/pipeline"
 import { createAnthropicStreamAccumulator } from "~/lib/anthropic/stream-accumulator"
+import { resolveCodecModel } from "~/lib/codec/model-resolution"
 import {
   //
   buildReverseResanitize,
@@ -106,7 +107,6 @@ import {
 } from "~/lib/models/endpoint"
 import {
   //
-  resolveModelTarget,
   type RouteOverride,
 } from "~/lib/models/resolver"
 import { resolveResponseSessionId } from "~/lib/openai/response-session-store"
@@ -206,10 +206,10 @@ function reasoningRoundTripOpts(env: RequestEnvelope): { stripThinkingSignature:
  */
 export function createOpenAiResponsesCodec(args?: CreateOpenAiResponsesCodecArgs): OpenAiResponsesCodec {
   let requestContext: RequestContext | undefined
-  // The resolved upstream model name (for the fallback / reverse translator's clientModel).
+  // The resolved upstream model name (for the fallback / reverse translator's resolvedModel).
   let resolvedModelName = ""
   // Fallback (Responses→CC) exchange SCRATCH (RFC §11.2c): a shared MUTABLE holder both this codec's render
-  // side (reads exchange ids/clientModel) and — once C4a routes the CHAT cell through the assembly — the
+  // side (reads exchange ids/resolvedModel) and — once C4a routes the CHAT cell through the assembly — the
   // OUTBOUND_LEGS[CHAT_COMPLETIONS] fallback leg (calls `ensure` in translateOut, reads rebuiltMessages in
   // prepareWire) reference. parse threads it onto env.requestState so both sides see the SAME instance.
   // `ensure` builds the exchange LAZILY + idempotently (the build closure lives here — it needs
@@ -221,7 +221,7 @@ export function createOpenAiResponsesCodec(args?: CreateOpenAiResponsesCodecArgs
         return (scratch.exchange ??= {
           responseId: `resp_${genShortId()}`,
           itemId: `item_${genShortId()}`,
-          clientModel: resolvedModelName || (env.body as ResponsesPayload).model,
+          resolvedModel: resolvedModelName || (env.body as ResponsesPayload).model,
           rebuiltMessages: rebuildConversationMessages(env.ctx.sessionId),
         })
       },
@@ -242,7 +242,7 @@ export function createOpenAiResponsesCodec(args?: CreateOpenAiResponsesCodecArgs
       ccTranslator ??= createCCToResponsesStreamTranslator({
         responseId: fallbackExchange.responseId,
         itemId: fallbackExchange.itemId,
-        clientModel: fallbackExchange.clientModel,
+        resolvedModel: fallbackExchange.resolvedModel,
       })
       return ccTranslator
     }
@@ -250,7 +250,7 @@ export function createOpenAiResponsesCodec(args?: CreateOpenAiResponsesCodecArgs
       (reverseExchange ??= {
         responseId: `resp_${genShortId()}`,
         itemId: `item_${genShortId()}`,
-        clientModel: resolvedModelName || (env.body as { model?: string }).model || "",
+        resolvedModel: resolvedModelName || (env.body as { model?: string }).model || "",
       })
     const ensureReverseTranslator = (env: RequestEnvelope): ReverseStreamTranslator => {
       const modelId = modelIdFor(env.model as Model | undefined, (env.body as { model?: string }).model) ?? ""
@@ -284,7 +284,7 @@ export function createOpenAiResponsesCodec(args?: CreateOpenAiResponsesCodecArgs
     (reverseExchange ??= {
       responseId: `resp_${genShortId()}`,
       itemId: `item_${genShortId()}`,
-      clientModel: resolvedModelName || (env.body as { model?: string }).model || "",
+      resolvedModel: resolvedModelName || (env.body as { model?: string }).model || "",
     })
 
   return {
@@ -368,7 +368,7 @@ export function createOpenAiResponsesCodec(args?: CreateOpenAiResponsesCodecArgs
       return translateCCToResponsesResponse(upstream as ChatCompletionResponse, {
         responseId: fallbackScratch.exchange.responseId,
         itemId: fallbackScratch.exchange.itemId,
-        clientModel: fallbackScratch.exchange.clientModel,
+        resolvedModel: fallbackScratch.exchange.resolvedModel,
       })
     },
 
@@ -417,14 +417,12 @@ function parseOpenAiResponses(raw: RawHttpRequest): { env: RequestEnvelope; reso
   const working: ResponsesPayload = { ...incoming }
   stripImageGenerationTool(working)
 
-  // Azure deployment routes inject the deployment name as an explicit override
-  // (path wins over body.model).
-  const clientModel = raw.modelOverride ?? incoming.model
-  const resolvedTarget = raw.preResolved ?? resolveModelTarget(clientModel)
-  const resolvedName = resolvedTarget.name
-  const routeOverride = resolvedTarget.routeOverride
-  if (resolvedName !== clientModel) consola.debug(`Model name resolved: ${clientModel} → ${resolvedName}`)
-  const selectedModel = raw.preResolved ? raw.preResolved.model : state.modelIndex.get(resolvedName)
+  // Model resolution (requested/resolved/selected/clientModel) via the shared
+  // codec primitive. Azure deployment routes inject the deployment name as an
+  // explicit `modelOverride` (path wins over body.model); the primitive folds it
+  // into `requestedModel`.
+  const { requestedModel, resolvedName, routeOverride, selectedModel, clientModel } = resolveCodecModel(raw)
+  if (resolvedName !== requestedModel) consola.debug(`Model name resolved: ${requestedModel} → ${resolvedName}`)
   working.model = resolvedName
 
   // Create the request context (triggers "created" → history insert).
@@ -442,7 +440,7 @@ function parseOpenAiResponses(raw: RawHttpRequest): { env: RequestEnvelope; reso
   })
 
   ctx.setOriginalRequest({
-    model: clientModel, // client's original (pre-resolution) name
+    model: requestedModel,
     messages: responsesInputToMessages(originalSnapshot.input),
     stream: originalSnapshot.stream ?? false,
     tools: originalSnapshot.tools,
@@ -466,7 +464,7 @@ function parseOpenAiResponses(raw: RawHttpRequest): { env: RequestEnvelope; reso
 
   ctx.setResolvedModel({
     resolved: resolvedName,
-    ...(clientModel !== resolvedName && { client: clientModel }),
+    ...(clientModel !== undefined && { client: clientModel }),
   })
 
   const env = makeEnvelope({
