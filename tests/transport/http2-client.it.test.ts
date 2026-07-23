@@ -659,4 +659,100 @@ describe("http2-client pool (per-origin session HARD cap — block until a slot 
       }
     }
   })
+
+  // HIGH-1 regression: two CONCURRENT cold-start requests at cap=1 must not both
+  // open a session before either lands in `sessions` (in-flight creations count
+  // toward the cap). Gate the factory so both would cross the cap check while the
+  // first is still connecting — only ONE must reach the factory.
+  test("cold-start fan-out respects the cap (in-flight creations counted)", async () => {
+    setUpstreamTransportConfig({ maxConcurrentStreamsPerSession: 1, maxSessionsPerOrigin: 1, h2IdleSessionTimeout: 0 })
+    let factoryCalls = 0
+    let releaseFactory!: () => void
+    const factoryGate = new Promise<void>((r) => (releaseFactory = r))
+    setHttp2SessionFactoryForTests(async () => {
+      factoryCalls += 1
+      await factoryGate // hold the first caller in creation while the second races the cap
+      return http2.connect(url)
+    })
+    handler = (stream) => {
+      stream.respond({ ":status": 200 })
+      stream.end("ok")
+    }
+    try {
+      const a = http2Fetch(`${url}/a`, {})
+      const b = http2Fetch(`${url}/b`, {})
+      // Both raced the cap while the first is stuck in the gated factory. The cap
+      // (1) counting the in-flight creation must have let only ONE reach the
+      // factory — the pre-fix bug opened two.
+      await new Promise((r) => setTimeout(r, 80))
+      expect(factoryCalls).toBe(1)
+      releaseFactory()
+      // Both complete (the second reuses the freed session or opens its own once a
+      // slot frees) — neither is dropped.
+      const [ra, rb] = await Promise.all([a, b])
+      expect(ra.status).toBe(200)
+      expect(rb.status).toBe(200)
+      await Promise.all([ra.text(), rb.text()])
+    } finally {
+      releaseFactory()
+    }
+  })
+
+  // HIGH-2 regression: closeHttp2Sessions() while a request is blocked on the cap
+  // must FAIL the blocked request (pool torn down), never silently reopen a session.
+  test("closeHttp2Sessions fails a blocked waiter (does not reopen a session)", async () => {
+    setUpstreamTransportConfig({ maxConcurrentStreamsPerSession: 1, maxSessionsPerOrigin: 1, h2IdleSessionTimeout: 0 })
+    let factoryCalls = 0
+    setHttp2SessionFactoryForTests(() => {
+      factoryCalls += 1
+      return http2.connect(url)
+    })
+    const openStreams: Array<http2.ServerHttp2Stream> = []
+    handler = (stream) => {
+      stream.respond({ ":status": 200 })
+      openStreams.push(stream)
+    }
+    const held = http2Fetch(`${url}/held`, {})
+    await waitUntil(() => openStreams.length === 1)
+    expect(factoryCalls).toBe(1)
+    const blocked = http2Fetch(`${url}/blocked`, {})
+    await new Promise((r) => setTimeout(r, 50))
+    expect(openStreams.length).toBe(1) // blocked at cap
+    // Tear the pool down. The blocked waiter must reject — NOT open a 2nd session.
+    closeHttp2Sessions()
+    await expect(blocked).rejects.toThrow(/abort/i)
+    await new Promise((r) => setTimeout(r, 50))
+    expect(factoryCalls).toBe(1) // no new session opened by the woken waiter
+    await held.catch(() => {})
+    setHttp2SessionFactoryForTests(() => http2.connect(url))
+  })
+
+  // HIGH-3 regression: a synchronous reuse-reserve followed by an immediate abort
+  // must NOT leak the reservation (a ghost activeStreamCount that pins the cap).
+  test("immediate abort after a synchronous reserve does not leak the reservation", async () => {
+    setUpstreamTransportConfig({ maxConcurrentStreamsPerSession: 1, maxSessionsPerOrigin: 0, h2IdleSessionTimeout: 0 })
+    handler = (stream) => {
+      stream.respond({ ":status": 200 })
+      stream.end("ok")
+    }
+    // Warm one reusable idle session.
+    const warm = await http2Fetch(`${url}/warm`, {})
+    await warm.text()
+    await new Promise((r) => setTimeout(r, 20))
+    expect(getH2SessionStatusSnapshot()).toHaveLength(1)
+
+    // Fire then abort in the SAME microtask window (reuse path reserves synchronously).
+    const ac = new AbortController()
+    const p = http2Fetch(`${url}/x`, { signal: ac.signal })
+    ac.abort()
+    await expect(p).rejects.toThrow(/abort/i)
+    await new Promise((r) => setTimeout(r, 20))
+    // The reserved slot must have been handed back — count 0, not a ghost 1.
+    const rows = getH2SessionStatusSnapshot()
+    expect(rows).toHaveLength(1)
+    expect(rows[0]?.activeStreamCount).toBe(0)
+    // And the session is reusable (a follow-up succeeds immediately).
+    const after = await http2Fetch(`${url}/after`, {})
+    expect(await after.text()).toBe("ok")
+  })
 })

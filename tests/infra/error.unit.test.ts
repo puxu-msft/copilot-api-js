@@ -382,9 +382,9 @@ describe("classifyError", () => {
     expect(result.type).toBe("bad_request")
   })
 
-  // Structured transport-reason TAG (authoritative over substring). The tag path
-  // is proven by tagging errors whose MESSAGE matches NO substring — classification
-  // must come from the tag alone.
+  // Structured transport-reason TAG (authoritative + exhaustive over substring).
+  // The tag path is proven by tagging errors whose MESSAGE matches a CONFLICTING
+  // fallback token — classification must come from the tag, never the substring.
   test("classifies a TAGGED pre-response-close as network_error regardless of message", () => {
     const error = tagTransportError(new Error("opaque transport failure"), "pre-response-close")
     expect(classifyError(error).type).toBe("network_error")
@@ -395,9 +395,22 @@ describe("classifyError", () => {
     expect(classifyError(error).type).toBe("network_error")
   })
 
-  test("does NOT reclassify a TAGGED mid-body-close as network_error (stays bad_request)", () => {
-    const error = tagTransportError(new Error("opaque transport failure"), "mid-body-close")
-    expect(classifyError(error).type).toBe("bad_request")
+  test("a TAGGED mid-body-close stays bad_request EVEN when the message matches a retryable substring", () => {
+    // Conflicting messages: without the exhaustive tag branch these would fall
+    // through to the substring fallback and be mis-classified network_error.
+    for (const msg of [
+      "Stream closed with error code NGHTTP2_REFUSED_STREAM",
+      "[http2] upstream stream closed before any response (rstCode=0)",
+      "read ECONNRESET",
+    ]) {
+      const error = tagTransportError(new Error(msg), "mid-body-close")
+      expect(classifyError(error).type, msg).toBe("bad_request")
+    }
+  })
+
+  test("a TAGGED pre-response-close wins over a conflicting mid-body substring in the message", () => {
+    const error = tagTransportError(new Error("[http2] upstream stream closed before end (rstCode=8)"), "pre-response-close")
+    expect(classifyError(error).type).toBe("network_error")
   })
 
   test("the transport tag survives cause-chaining", () => {

@@ -354,6 +354,29 @@ function addSessionEntry(entry: H2SessionEntry): void {
   else sessions.set(entry.origin, [entry])
 }
 
+/**
+ * In-flight session creations per origin, counted toward the per-origin total cap
+ * BEFORE the session lands in `sessions` (HIGH-1). Without this, N concurrent
+ * cold-start callers all see `sessions.length < cap` and each starts its own
+ * connect, blowing past the cap in exactly the fan-out it exists to bound.
+ */
+const creating = new Map<string, number>()
+
+/** Total sessions counting toward `origin`'s cap: routable (live) + in-flight creations. */
+function originCapCount(origin: string): number {
+  return (sessions.get(origin)?.length ?? 0) + (creating.get(origin) ?? 0)
+}
+
+function incCreating(origin: string): void {
+  creating.set(origin, (creating.get(origin) ?? 0) + 1)
+}
+
+function decCreating(origin: string): void {
+  const c = (creating.get(origin) ?? 0) - 1
+  if (c <= 0) creating.delete(origin)
+  else creating.set(origin, c)
+}
+
 /** Remove `entry` from its origin's session array by identity; drop the origin key when its array empties. */
 function removeSessionEntry(entry: H2SessionEntry): void {
   const arr = sessions.get(entry.origin)
@@ -558,8 +581,15 @@ async function createAndAdmitBornReserved(origin: string): Promise<H2SessionEntr
 async function acquireSession(origin: string, signal: AbortSignal | undefined): Promise<H2SessionEntry> {
   ensureH2ReconcileSubscription()
 
+  // Captured once: a pool-wide teardown (closeHttp2Sessions bumps poolEpoch) that
+  // races this acquire — including one that happens WHILE we're blocked on the cap
+  // — must fail the request rather than silently reopen a session on a closed pool
+  // (HIGH-2). Checked after every blocking wait below.
+  const startEpoch = poolEpoch
+
   for (;;) {
     if (signal?.aborted) throw abortError()
+    if (poolEpoch !== startEpoch) throw abortError() // pool was torn down under us
     const n = getConfiguredMaxStreamsPerSession()
 
     const reused = tryReserveLiveSession(origin, n)
@@ -574,20 +604,21 @@ async function acquireSession(origin: string, signal: AbortSignal | undefined): 
       return reused
     }
 
-    // No reusable session — we must create one. First honor the per-origin total
-    // hard cap: at cap (every session busy at its stream cap, else tryReserve
-    // would have hit), BLOCK for a freed slot rather than growing the pool.
+    // No reusable session — we must create one. The per-origin total-session cap
+    // applies ONLY to the finite-stream-cap regime (n >= 1), which is the only one
+    // that opens multiple sessions per origin; under n === 0 the pool is
+    // single-session-per-origin by construction, so a session cap is moot (and the
+    // cold-start join below must not be blocked by it).
     const cap = getConfiguredMaxSessionsPerOrigin()
-    if (cap > 0 && (sessions.get(origin)?.length ?? 0) >= cap) {
+    if (n > 0 && cap > 0 && originCapCount(origin) >= cap) {
       await waitForOriginSlot(origin, signal) // throws on abort; resolves on a freed slot
       continue // re-attempt reserve/create from the top (state may have changed)
     }
 
-    // Cold-start dedup is only wanted when unlimited (n === 0): all callers should
-    // converge on one multiplexed session. Under a finite cap each missing caller
-    // needs its own session, so pending is neither read nor written there.
     let entry: H2SessionEntry
     if (n === 0) {
+      // Cold-start dedup (unlimited): all callers converge on one multiplexed
+      // session. No cap accounting — n === 0 never accumulates multiple sessions.
       const inflight = pending.get(origin)
       if (inflight) {
         entry = await inflight
@@ -609,7 +640,20 @@ async function acquireSession(origin: string, signal: AbortSignal | undefined): 
         }
       }
     } else {
-      entry = await createAndAdmitBornReserved(origin)
+      // Reserve a per-origin CAP slot synchronously (incCreating) BEFORE the async
+      // connect, so concurrent cold-start callers can't all pass the cap check and
+      // each open a session (HIGH-1). Released in `finally`: on success the entry is
+      // already in `sessions` (net cap count unchanged); on failure the slot frees
+      // and a blocked waiter is woken to retry.
+      incCreating(origin)
+      let created = false
+      try {
+        entry = await createAndAdmitBornReserved(origin)
+        created = true
+      } finally {
+        decCreating(origin)
+        if (!created) wakeOriginSlotWaiter(origin) // creation failed → the reserved cap slot frees
+      }
     }
 
     // Post-connect abort check: releasing this caller's own reservation is
@@ -808,31 +852,48 @@ function abortError(): Error {
  * it would wrongly fail them. When abort wins, `p`'s eventual rejection is still
  * observed (via {@link withRejectionObserver}) so an orphaned rejection can't reach
  * `process.unhandledRejection` and crash the server.
+ *
+ * `onAbandonedResolve` closes an ownership leak: when abort wins the race but `p`
+ * LATER resolves with a value that carries a resource (e.g. acquireSession's
+ * synchronously-reserved entry — HIGH-3), the caller never receives that value to
+ * release it. The callback hands ownership of the abandoned value back for cleanup.
+ * It fires ONLY on a post-abort resolve (never on reject — a rejected p released
+ * nothing).
  */
-function raceAbort<T>(p: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
+function raceAbort<T>(p: Promise<T>, signal: AbortSignal | undefined, onAbandonedResolve?: (value: T) => void): Promise<T> {
   if (!signal) return p
   return new Promise<T>((resolve, reject) => {
-    const observe = (): void => void withRejectionObserver(p)
-    if (signal.aborted) {
-      observe()
-      reject(abortError())
-      return
-    }
+    let settled = false // whether the RETURNED promise already settled
     const onAbort = (): void => {
-      observe()
+      if (settled) return
+      settled = true
       reject(abortError())
     }
-    signal.addEventListener("abort", onAbort, { once: true })
+    // ALWAYS attach a handler to p (even when already aborted below): its outcome
+    // must never be unhandled, and a post-abort RESOLVE is reclaimed exactly once
+    // here (never double — this is the sole onAbandonedResolve call site).
     p.then(
       (v) => {
         signal.removeEventListener("abort", onAbort)
+        if (settled) {
+          onAbandonedResolve?.(v) // abort already won → hand the value back for cleanup
+          return
+        }
+        settled = true
         resolve(v)
       },
       (e: unknown) => {
         signal.removeEventListener("abort", onAbort)
+        if (settled) return // abort already won; this handler marks p's rejection observed
+        settled = true
         reject(e as Error)
       },
     )
+    if (signal.aborted) {
+      onAbort() // reject now; the p.then above will reclaim p's eventual value
+      return
+    }
+    signal.addEventListener("abort", onAbort, { once: true })
   })
 }
 
@@ -872,7 +933,10 @@ async function runHttp2Fetch(u: URL, init: UpstreamFetchInit): Promise<Response>
   // cap). raceAbort cancels only THIS request's wait — the underlying
   // acquireSession keeps running for concurrent callers, and releases its own
   // reservation internally if it resolves after an abort, so no slot leaks.
-  const entry = await raceAbort(acquireSession(u.origin, signal), signal)
+  // If abort wins this race while acquireSession still resolves a reserved entry
+  // (the synchronous-reuse path resolves ~immediately), the entry would otherwise
+  // be dropped with its reservation held forever (HIGH-3) — hand it back to release.
+  const entry = await raceAbort(acquireSession(u.origin, signal), signal, (abandoned) => releaseReservation(abandoned))
   const session = entry.session
   // The proxy tunnel / TLS handshake may have taken a while; re-check abort. We
   // hold one reservation on `entry` (from acquireSession) — release it on this
@@ -1002,7 +1066,11 @@ async function runHttp2Fetch(u: URL, init: UpstreamFetchInit): Promise<Response>
           // the residual.
           req.once("error", (err) => {
             try {
-              controller.error(err)
+              // Post-header body error (session drop / RST after response headers)
+              // — a truncated body. Tag it mid-body-close so classifyError reads
+              // the structured reason instead of node's error string (this is the
+              // OTHER real mid-body producer besides the bare-close backstop below).
+              controller.error(err instanceof Error ? tagTransportError(err, "mid-body-close") : err)
             } catch {
               /* already errored */
             }
@@ -1078,6 +1146,7 @@ export function closeHttp2Sessions(): void {
     }
   }
   sessions.clear()
+  creating.clear() // in-flight creations are abandoned on shutdown (their acquire sees the epoch bump)
   for (const entry of retiringSessions) {
     clearIdleTimer(entry)
     try {

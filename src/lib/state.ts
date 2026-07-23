@@ -793,12 +793,17 @@ export interface State {
   readonly h2IdleSessionTimeout: number
 
   /**
-   * Soft cap on total live h2 sessions per origin (idle + busy, 0 = unlimited).
-   * Bounds the surplus a finite `maxConcurrentStreamsPerSession` accumulates —
-   * WS-pool soft semantics: over cap, a new session evicts an IDLE one, a busy
-   * session is NEVER evicted (transient over-cap beats blocking a request).
-   * Default 0; `h2IdleSessionTimeout` already converges the tail, this only
-   * matters for pathological same-origin fan-out. Consumed by http2-client.ts.
+   * Cap on total live h2 sessions per origin (routable + in-flight creations, 0 =
+   * unlimited). Bounds the sessions a finite `maxConcurrentStreamsPerSession`
+   * accumulates. Enforced as a HARD cap: at cap with every session busy, a new
+   * request BLOCKS until a slot frees (a stream closes or a session is disposed)
+   * rather than growing the pool. The block is UPSTREAM-side — the handler-layer
+   * delayed-commit keepalive keeps the client connection alive; client abort /
+   * reaper / header-wait timeout release the waiter. Counts only ROUTABLE sessions
+   * (not draining retiring ones, so a config reload never blocks behind them).
+   * Max concurrent in-flight streams per origin = this × maxConcurrentStreamsPerSession.
+   * Default 0; `h2IdleSessionTimeout` converges the tail, this bounds pathological
+   * same-origin fan-out. Consumed by http2-client.ts.
    */
   readonly maxSessionsPerOrigin: number
 

@@ -68,19 +68,36 @@ export function classifyError(error: unknown): ApiError {
   }
 
   // HTTP/2 transport errors carry a STRUCTURED reason tag set by the producer
-  // (http2-client.ts), which is authoritative — read it first. Both
-  // `pre-response-close` (connection died before any response header — reconnect
-  // is the only path to a usable response) and `refused-stream` (RFC 9113 §8.7
-  // zero-processing guarantee) are safely retryable → network_error → the
-  // existing network-retry strategy (hasRetried latch bounds it to one retry).
-  // `mid-body-close` is NOT retried here (a truncated body, surfaced as a stream
-  // error) — it falls through to bad_request. The substring checks below remain
-  // as an explicit defense-in-depth FALLBACK for any error that reaches classify
-  // WITHOUT a tag (an untagged path, or a layer that re-wraps without the tag).
+  // (http2-client.ts), which is authoritative and EXHAUSTIVE: when a tag is
+  // present, it — never the substring fallback below — decides the classification,
+  // so a real (tagged) error can never be re-classified by a coincidental string
+  // overlap. `pre-response-close` (connection died before any response header —
+  // reconnect is the only path to a usable response) and `refused-stream` (RFC
+  // 9113 §8.7 zero-processing guarantee) are safely retryable → network_error →
+  // the existing network-retry strategy (hasRetried latch bounds it to one
+  // retry). `mid-body-close` (a truncated body after headers) is NOT retryable —
+  // it terminates as bad_request here rather than falling through. The substring
+  // checks BELOW are a defense-in-depth fallback ONLY for errors that reach
+  // classify WITHOUT a tag (an untagged path, or a layer that re-wraps and drops
+  // the tag).
   if (error instanceof Error) {
     const reason = getTransportErrorReason(error)
-    if (reason === "pre-response-close" || reason === "refused-stream") {
-      return { type: "network_error", status: 0, message: formatErrorWithCause(error), raw: error }
+    if (reason !== undefined) {
+      switch (reason) {
+        case "pre-response-close":
+        case "refused-stream": {
+          return { type: "network_error", status: 0, message: formatErrorWithCause(error), raw: error }
+        }
+        case "mid-body-close": {
+          // Truncated body after headers — never a pre-response retry. Terminal.
+          return { type: "bad_request", status: 0, message: formatErrorWithCause(error), raw: error }
+        }
+        default: {
+          // Exhaustiveness: a new TransportErrorReason must add its case above.
+          const _never: never = reason
+          return _never
+        }
+      }
     }
   }
 
