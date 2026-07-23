@@ -500,11 +500,13 @@ anthropic:
       - claude-sonnet-4
       - claude-haiku-4-5
       - claude-opus-4-5
-    # Adaptive thinking ({type:adaptive}) — name fallback when /models metadata is silent. / Adaptive thinking（{type:adaptive}）——/models 元数据缺失时按名单兜底。
-    adaptive_thinking:
-      - claude-opus-4-6
-      - claude-opus-4-7
-      - claude-opus-4-8
+    # Adaptive thinking ({type:adaptive}) — metadata-driven by default; empty here.
+    # Adaptive thinking（{type:adaptive}）——默认由上游 /models 元数据（capabilities.supports.adaptive_thinking）驱动，此处留空。
+    # This name-list is a fallback that ONLY fires when /models metadata is silent for a model. Uncomment
+    # to force a model adaptive before its metadata propagates. / 此名单仅在 /models 元数据对某模型缺失时兜底；
+    # 取消注释即可在某模型 metadata 尚未生效前强制其走 adaptive。
+    # adaptive_thinking:
+    #   - claude-opus-4-6
     # extended-cache-ttl-2025-04-11 support (1h prompt cache). Mirrors GHC — NARROWER than context/memory
     # (no bare sonnet-4 / opus-4 / opus-4.1). / extended-cache-ttl-2025-04-11 支持（1h prompt cache）。镜像 GHC，比 context/memory 更窄。
     extended_cache_ttl:

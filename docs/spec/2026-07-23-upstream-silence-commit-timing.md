@@ -182,9 +182,31 @@ commit 的真正代价**不是**「锁定了内容」，而是「锁定了 **HTT
 
 3. **第三层（兜底、取舍项）：B3 pre-content fail-fast 上限**。当 B2 内部重试耗尽/系统性挂起时，把 206s 硬等压到可配上限 + 客户端可行动错误。**上限取值需用户拍板**（§8 Q6）。
 
-**为什么不选「找更好判别信号」（§5.A 全线）：** §3 实测证明 Anthropic 路径的 deferred-header 使判别在物理上不成立 —— 这不是工程投入不够，是信号根本不存在。继续找判别信号 = 在错误前提上打转。
+**为什么不选「找更好判别信号」（§5.A 全线）：** §3 的 deferred-header 证据（**待 Q5 直读终验，见 §0**）强烈提示：在**本代理当前已接入的同一 response stream 可观测面内**，20s 时刻的判别信号不存在。**不排除** GHC 提供某个独立状态面（§8 Q8 capability probe 待探）。但即便存在这样一个信号，B2 主线也**不依赖**它 —— 早 commit 后失去内部恢复能力本身即架构缺陷（§0 两论证拆分），移除不可逆性优于在 20s 猜 A/B。
 
-**若「等 header」被证伪后仍想要判别的替代**：唯一诚实的「判别」是 A3/A6 的**时间阈值 + 遥测**，但它必然在「误伤长思考」与「无用」之间二选一 —— 故本 spec 把它降级为 B3 的 fail-fast 逃生舱（显式取舍、用户拍板），不作主判据。
+**若仍想要判别的替代**：唯一诚实的「判别」是 A3/A6 的**时间阈值 + 遥测**，但它必然在「误伤长思考」与「无用」之间二选一 —— 故本 spec 把它降级为 B3 的 fail-fast 逃生舱（显式取舍、用户拍板），不作主判据。
+
+### 6.1 PoC 裁决（B2 vs B5，2026-07-23，`gpt-souls:poc-runner`，实验代码 `exp/silence-recovery-b2-vs-b5/`）
+
+**结论：B2 为主线，B5 作后续可配置的尾延迟优化层。长远完整形状 = 先做 driver-owned 的 pre-semantic recovery supervisor（B2 覆盖 post-commit pre-content）+ continuation（post-content），形成完整 post-commit 恢复面；B5 后续接同一 pending-open seam 优化延迟、非替代 B2。**
+
+**SDK wire oracle 实测（离线真 `@anthropic-ai/sdk` 0.106.0 探针，4 场景 ×3 次确定，无 GHC/无凭据）**：
+- **默认 `ping` 模式：fresh attempt 的真实 `message_start` 可自然成为客户端首消息、无需 remap**（验证 §4 修订：anchor remap 只是 `empty_text` 机件、非通用前提）。
+- 三模式 splice wire contract 全通过：
+
+| mode | 已发脚手架 | fresh attempt 拼接规则 |
+|---|---|---|
+| `ping`（默认） | 裸 `event: ping` | fresh `message_start` 原样成首 message，real block 原 index |
+| `enveloped_ping` | synthetic/已捕获 message_start、无 anchor | 丢弃 duplicate message_start；real block 原 index |
+| `empty_text` | message_start + anchor `content_block_start@0` + 空 delta | 首 real block 前写 `content_block_stop@0`；丢 dup message_start；real block index +1；失败/终止在首 real block 前也须先 close anchor |
+
+**B2 不是 continuation 小变体（代码实证）**：`runRequest` 只在拿到 ready upstream 后才 bind 返回（`driver.ts:311-374`）；pre-header 失败时 handler 手上只有 rejected `p`、**无 CoordinatedCandidate、无 ready parent**，而 `runContinuation` 要求 ready parent + `committedAny=true`（`coordinator.ts:143-153` / `driver.ts:1401-1454`）。**B2 必须新建**（可复用 candidate/dispatch/history/budget/sink/reconcile 底层机件）：① pre-ready failure ownership（driver 暴露/持有 pending primary、把 pre-ready 失败结算为可追踪 parent）；② 统一 semantic-content gate（不能只看 `committedAny`——它只表示 buffered 某完整 block 已写；须覆盖 pre-ready + ready 后首 semantic frame 前 + live/buffered）；③ sink lifetime supervisor（首失败路径不能 close sink 后再拼第二条，由上层 recovery supervisor 管最终 close）；④ 三模式协议级回归矩阵（覆盖 primary failure/recovery failure/abort/header-timeout/budget exhaustion）；⑤ pre-ready primary / recovery / winner 的 discarded/failed/winner history settlement。
+
+**server-tool 双执行 gate（B2 与 B5 共用，spec Q9）**：复用 `classifyServerExecutionRisk`（`hedge-policy.ts:152-183`，从最终 target `PreparedRequest` 分类、非猜客户端格式）。B2 fresh dispatch 前必调，条件 = 「未向 client 写真实 semantic content **且** `classifyServerExecutionRisk(finalWire).kind === "none"`」。**注意**：该 gate 是保守 capability 预防、**不能证明上游未执行**；`allowServerTools:true` 无条件放行**不满足**安全要求、主线不应用它绕过；classifier 会跳过无字符串 `type` 的 tool object——若安全目标扩至「畸形/未类型化 tool 也禁 dup dispatch」需另加 stricter gate。
+
+**B5 可行但仍是新 pre-ready 拓扑**：现有 hedge 是 post-header（`driver.ts:769-837` 需已 ready binding），B5 需新建 pending-open race（primary dispatch 起即暴露 pending-ready promise、threshold 到期 race 两个**未 ready** opening、opening failure 不即取消另一个、winner 建议按「first complete semantic block」而非「first header」否则可能选中一个之后继续静默的流）。B5 在 candidate race/cancel/budget 子域比 B2 复用更多，但缺 pending-open race + pre-header winner predicate + 败者 semantic-frame delivery gate。
+
+**待验证门（PoC 明确未验证）**：真实 GHC 大 context fresh-retry 成功率（= §8 Q2，决定 B2 根治 vs 退化 B3）、GHC cancel 后计费语义、server tool 首 token 前执行时点、真实 CC 300s watchdog。
 
 ---
 
@@ -192,10 +214,10 @@ commit 的真正代价**不是**「锁定了内容」，而是「锁定了 **HTT
 
 - **delayed-commit（`streamCommitAfterSec`）**：B1 直接调其值 + clamp 上限（当前 clamp < 60，`schema.ts`）；B2 在 COMMIT 分支的 post-commit catch（`handler-v4.ts:634-699`）里新增「pre-content 失败 → 内部重试 splice」路径。
 - **CC 两层 watchdog**：B1 的窗口上限由 CC pre-header 容忍度（**未测**，非 60s SSE byte-idle —— 那层在 commit 后才生效）决定；commit 后决策 1 的 empty_text 无条件保活继续压住 60s/300s 两层（不变）。
-- **keepalive sink / anchor**：B2 复用 anchor 的 index-remap（真实块落 index+1、锚点收口）—— 这是 B2 可行的机件基础（§4）。
+- **keepalive sink / anchor**：**仅 `empty_text` 模式**才需 anchor 的 index-remap（真实块落 index+1、锚点收口）；默认 `ping` 不需 remap、`enveloped_ping` 只需 message_start dedup（§6.1 三模式 contract 表、SDK 探针实测）。**anchor remap 不是 B2 的通用前提**。
 - **决策 2 的 pre-commit network-retry**：只在 commit 前起作用（保原生状态）；B1 加宽窗口 = 扩大决策 2 的有效区间。
-- **hedge（post-header）**：与本 spec 正交（hedge 在响应头之后 racing 慢首 token；本 spec 在响应头**之前/之上**）。
-- **`feat/continuation-retry`（post-commit + post-content 续写救援）**：**互补关系**。continuation 救「首块已发、mid-stream 被掐」；本 spec B2 救「一个真实块都没发、pre-content 干挂」。二者共享 anchor/remap/dedup 机件，`committedAny` 真/假是分界。**若两者都落地，post-commit 的重试覆盖 = pre-content（本 spec）∪ post-content（continuation），形成完整 post-commit 重试面。**
+- **hedge（post-header）**：现状与本 spec 正交（hedge 在响应头之后 racing 慢首 token）；但 **B5 拟把 hedge 扩到 pre-header**（§6.1，新 pending-open race）。
+- **`feat/continuation-retry`（post-commit + post-content 续写救援，已 landed master）**：**互补关系**。continuation 救「首块已发、mid-stream 被掐」（`committedAny=true` + ready parent）；本 spec B2 救「一个真实块都没发、pre-content/pre-ready 干挂」（`committedAny=false` + 无 ready parent，**非 continuation 小变体**，§6.1）。**若两者都落地，post-commit 重试覆盖 = pre-content（本 spec B2）∪ post-content（continuation），形成完整 post-commit 恢复面。**
 - **buffered-retry（`protect_streaming_generation`，默认 OFF）**：buffered 缓冲全部真实帧到 message_stop 再 commit、mid-stream RST 透明重试 —— 但它 commit **晚**（message_stop 后），对「pre-response 纯静默、连 message_start 都没有」的事故场景，buffered 一样在 commit 前干等、且其 pre-commit keepalive 走的正是决策 1 的 anchor。buffered 与本 spec B2 的关系需在 plan 阶段厘清（§8 Q7）。
 
 ---
