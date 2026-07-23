@@ -1,6 +1,6 @@
 # Spec 草案：上游 pre-response 静默与 delayed-commit 时机 —— A（挂起）vs B（长思考）判别问题
 
-- **状态：草案（draft）。architect-advisor 产出 → 异模型对抗审（gpt-souls:reviewer，2026-07-23，4 HIGH 已订正）。核心假设「等 header 判别」有强证据指向证伪、但缺最后一段直接 oracle（详见 §3 修订说明），故本 spec 把「实测证伪」与「架构方向」拆成两个独立论证：即便判别口径待终验，B2 主线仍凭「commit 后无语义内容却失去内部恢复能力」的架构问题独立成立。需用户裁决方向 + 授权两个待实测门（§8 Q1/Q2/Q5）。**
+- **状态：草案（draft）。architect-advisor 产出 → 异模型对抗审（gpt-souls:reviewer，2026-07-23，4 HIGH 已订正）→ Q5 直读实测闭合（2026-07-23，见 §0 ✅ / §3）。核心假设「等 header 判别」现已由直读 `upstreamHeadersAt` **实测证伪**（34 条正样本、header@47-231s ∩ success）。B2 主线既凭「commit 后失去内部恢复能力」的架构问题独立成立、又有实测支撑。需用户裁决方向 + 授权两个待实测门（§8 Q1/Q2）。**
 - **日期：** 2026-07-23
 - **Owner：** 排查会话（起于第二波事故 req_57/58/63 —— 0 帧干挂 126/164/206 秒后 rstCode=0，用户等 2-3 分钟拿硬失败）
 - **前身 / 相关：**
@@ -16,9 +16,9 @@
 
 任务交办时提出的关键假设是：**「上游是否已发送 200 响应头」可作为 A（该重试的挂起）vs B（该等的长思考）的判别信号** —— A 的 `status=0`（从未发头），B 应先发 200 头再慢慢流 content。
 
-**这个假设很可能不成立** —— GHC 上游对 heavy-thinking 请求疑似存在一种 **deferred-header（延迟响应头）模式**：思考在上游侧算完之前，**连 200 响应头都不发**，思考结束后才把 `响应头 + message_start + 整段内容` 一次性突发出来。
+**这个假设已实测证伪（见下方 ✅ 与 §3）** —— GHC 上游对 heavy-thinking 请求存在一种 **deferred-header（延迟响应头）模式**：思考在上游侧算完之前，**连 200 响应头都不发**，思考结束后才把 `响应头 + message_start + 整段内容` 一次性突发出来。
 
-**⚠ 证据口径（对抗审订正，重要）：** 支撑「deferred-header」的 header 到达时刻（31s/63s/…/143s）目前是**从 History 的 SSE offset 反推**（`durationMs − max(offsetMs)`），**不是直读**。该反推**系统性偏晚**（混入了「请求起始→candidate 创建」的前置排队 + 「末帧→request settle」的尾部时间），故对「是否 > 20s」**非决定性**——极端下某些估计为 31s 的样本，真实 header 不能排除落在 20s 窗口内。且「clientResponse 首帧是 synthetic keepalive」**也不足以**严格证明该请求走了 delayed-commit 分支（快 settled 路径也带 heartbeat sink，响应头到了但真实首帧慢一个 heartbeat 也会先出 synthetic）。**因此当前证据是「强线索 + 合理问题框架」，但缺最后一段直接 oracle。** 代码其实已采集 `upstreamHeadersAt` 绝对时刻（`driver.ts:634-643` → attempt `request.ts:1321-1327`），只是 History V3 REST 投影未导出（`projection.ts:267-277`）——补投影 + 加一个持久化的 `delayedCommit/commitAt` 字段，即可用「`upstreamHeadersAt > commitAt` ∩ responseSuccess」构造真正的正样本。**这是交用户裁决前应做的验证前置（§8 Q5 已升级）。**
+**✅ 证据口径（2026-07-23 Q5 直读实测闭合，对抗审 HIGH-1/2 已解）：** 早前草案的 header 到达时刻是**从 SSE offset 反推**（`durationMs − max(offsetMs)`、系统性偏晚、对「是否 > 20s」非决定性），且「首帧 synthetic」不足以严格证明走 commit 分支——这两处 caveat **现已闭合**。`upstreamHeadersAt` 四刻绝对时刻的 REST 投影已 landed（`projection.ts:277-283`，早前草案说的「未导出 `projection.ts:267-277`」已过时）。据此对 4141 主服务器 History 做**只读**直读分析（未碰主进程、零额度），在 300 条采样、108 条 streaming heavy-thinking 候选中拿到 **34 条正样本**：`upstreamHeadersAt − startedAt > 20s ∩ responseSuccess=true`，header 直读到达延迟高达 **47s / 75s / 92s / 198s / 219s / 231s**。抽查其 clientResponse 首帧全为 `ping` + `synthetic:"keepalive"` 标记（走 COMMIT 分支的签名）；且**逻辑气密**——header 直读 > 20s 窗口 ⟹ `Promise.race([p, 20s])` 必走 COMMIT 分支（settled-within-window 路径要求 header <20s、被直接排除，故不再依赖「首帧 synthetic」这条弱推断）。**结论从「强线索」升为「实测结论」：** 在 20s（乃至更久）commit 时刻，合法 heavy-thinking（deferred-header，header@47-231s）与真正挂起（A，status=0 永不发头）的可观测状态**完全相同**。持久化 `delayedCommit/commitAt` verdict（§8 Q5 part ②）在证据上**已非必需**（header 直读 > 窗口即证 commit 分支），仅作未来零推断查询的可选增量。分析脚本与样本见本会话记录。
 
 **但本 spec 的架构主张不依赖这段证据的终验**（对抗审建议的两论证拆分）：无论 A/B 在 20s 是否可分类，**「commit 后我方只发了合成脚手架、零真实 assistant 内容，却因流式协议不可逆而失去内部恢复能力」本身就是一个架构缺陷**。真正长远正确的方向不是找更好的判别信号，而是**移除 commit 的不可逆性**：只要能在合成脚手架之后「拼接」一次全新上游尝试的真实内容，那么「20s 早提交」就不再是重试的终点、只是 HTTP 状态码的终点（保持 200 无害）。判别问题随之消解 —— 不再需要在 20s 分辨 A/B。
 
@@ -91,24 +91,23 @@ h2 传输的 open 在 **`req.once("response")`**（响应头帧到达）时 `res
 | **Mode 1 增量流** | 响应头**早到**（<20s），thinking 作为 content_block_delta **增量上线** | req_..._138（dur 130s，header@25ms，settled）、req_..._125（dur 69s，header@3ms，settled）、req_..._222（dur 292s，header@4ms，settled） |
 | **Mode 2 延迟批** | 响应头**迟到**（思考算完才发），随后整段突发 | req_..._80（dur 137s，**header@≈137s**，54 帧在末尾 43ms 内突发，committed）、req_..._64（dur 72s，**header@≈31s**，committed）、req_..._3（dur 104s，header@≈95s，committed） |
 
-**Mode 2 成功请求的响应头到达时刻（committed 且 responseSuccess=true）：** `dur − max(upstream_offset)` 给出 31s、63s、68s、75s、82s、84s、89s、93s、95s、137s、143s … **注意（对抗审）：这些是 offset 反推的估计上界、系统性偏晚，非 `upstreamHeadersAt` 直读；且「首帧 synthetic」不足以严格证明走了 delayed-commit（§0 ⚠、§9）。** 它们是「deferred-header 存在」的强线索，不是决定性证据。
+**这些请求都走了 COMMIT 分支（20s 合成提交）却最终成功** —— 直接证明：**在 20s commit 时刻，合法 heavy-thinking（B，Mode 2）与真正挂起（A）在信号上不可区分。**
 
-**这些请求疑似都走了 COMMIT 分支（20s 合成提交）却最终成功** —— 若终验（§8 Q5 直读 `upstreamHeadersAt > commitAt`）证实，则直接证明：**在 20s commit 时刻，合法 heavy-thinking（B，Mode 2）与真正挂起（A）在信号上不可区分。**
-
-### 3.3 结论：「等 header」判别很可能不成立（强线索，待直接 oracle 终验）
+### 3.3 结论：「等 header」判别已实测证伪（直读 oracle 闭合）
 
 - A（挂起）：`status=0`，响应头**永不**到达，126-206s 后 rstCode=0。
-- B-Mode2（长思考）：`status=200`，响应头在 **疑似 31-143s（offset 反推、偏晚）** 到达，之前同样 `status=0`、0 帧、静默。
-- **若 §8 Q5 终验证实，则二者在 20s（乃至更久）时刻的可观测状态完全相同** —— 「等上游响应头再 commit」= 把 commit 无限推迟到 header-timeout（300s），对 B-Mode2 无害但对 A 也只能干等，**判别力为零**。
-- **终验前，这是「强线索」而非「已证伪」**（对抗审 HIGH-1/2）。但如 §0 所述，B2 架构主线**不依赖**这段终验。
+- B-Mode2（长思考）：`status=200`，响应头在 **直读实测 47-231s** 到达，之前同样 `status=0`、0 帧、静默。
+- **二者在 20s（乃至更久）时刻的可观测状态完全相同** —— 「等上游响应头再 commit」= 把 commit 无限推迟到 header-timeout（300s），对 B-Mode2 无害但对 A 也只能干等，**判别力为零**。
+- **这已是实测结论**（对抗审 HIGH-1/2 靠直读 `upstreamHeadersAt` 闭合，§0 ✅）。B2 架构主线本就**不依赖**判别证伪、现更有实测背书。
 
 ### 3.4 一个反证边界（诚实标注）
 
 - 交办材料引用的 `timeout-resolver.ts:6-9` 注释「gpt-5.5(effort=high) 单次 266-462s 零帧静默由 **streamIdle**（body-idle）守卫」暗示 **Responses/gpt 路径**是 Mode-1-like（响应头早到、静默在 body 阶段）。若属实，「等 header」在 **Responses 路径**可能成立。但事故 req_57/58/63 是 **Anthropic 路径**，本 spec 结论限定 Anthropic；Responses 路径的 header 时序是一个**独立待测项**（§8 Q3）。
 
-### 3.5 未能取到的 ground-truth（诚实标注）
+### 3.5 ground-truth 已取到（2026-07-23 Q5 直读）
 
-- 代码里有 per-attempt 绝对时刻 `upstreamHeadersAt / upstreamMessageStartAt / upstreamFirstTokenAt / upstreamLastTokenAt`（`request-timing.ts:18-24`），本可零推断地直读 header 到达时刻。但当前 History REST 详情投影**没有把这四刻投影出来**（`attempts[].timing` 只有 `{source:canonical}`）。本 spec 的 header 到达时刻是**从 offset 反推**（§3.1），非直读。**建议**：把这四刻投影进 History 详情（低成本、纯可观测增量），未来同类排查零推断。→ 记 §8 Q5。
+- per-attempt 绝对时刻 `upstreamHeadersAt / upstreamMessageStartAt / upstreamFirstTokenAt / upstreamLastTokenAt`（`request-timing.ts:18-24`，采集于 `driver.ts:642-643`）**已投影进 History V3 REST 详情**（`projection.ts:277-283`）。据此对 4141 主服务器只读直读，`upstreamHeadersAt − startedAt` 即 header 到达延迟，零推断。34 条正样本（>20s ∩ success，最高 231s）见 §0 ✅。早前草案「投影未导出、只能 offset 反推」的 caveat 已作废。
+- 唯一仍未持久化的是 `delayedCommit/commitAt` verdict（§8 Q5 part ②）——但如 §0 所述，「header 直读 > commit 窗口」已足以证「走了 commit 分支」，该 verdict 在证据上非必需、仅作未来查询便利与 B2 实现内部状态。
 
 ---
 
@@ -228,7 +227,7 @@ commit 的真正代价**不是**「锁定了内容」，而是「锁定了 **HTT
 - **Q2（PoC 门控，B2 成败关键）** 事故类请求（261-678KB 大 context、GHC 0 帧干挂）**在 fresh retry 下能否成功**？若 A 是瞬态 → B2 根治；若 A 系统性（大 context 必挂）→ B2 退化为 B3。**建议交主会话决定是否派 `gpt-souls:poc-runner`** 复现 + 重试实测。**未验证前，B2 的「救事故」效力是假设、非结论。**
 - **Q3（独立待测）** Responses/gpt 路径的 header 时序是 Mode-1（头早到、body 静默）还是 Anthropic 式 deferred-header？若前者，「等 header」在 Responses 路径可能成立 —— 但那是另一个 spec 的事，不混入本 Anthropic spec。
 - **Q4** 是否值得为 A3/A6 补一层「pre-header 静默时长」遥测（不作判据、只作可观测 + 未来分析），以便日后若 GHC 行为变化能发现？→ 倾向做（richest-data-flow / 低成本可观测）。
-- **Q5【升级为裁决前置 · 对抗审 HIGH-1/2】** 用直读 `upstreamHeadersAt` 固定 §3 结论：① 把 `upstreamHeadersAt/MessageStartAt/FirstTokenAt/LastTokenAt` 四刻投影进 History 详情 REST（`projection.ts:267-277` 当前未导出）；② 持久化一个 `delayedCommit:true / commitAt` verdict（当前 commit 分支只发 observability event、`request.ts:2032-2039` 未持久化）；③ 以「`upstreamHeadersAt > commitAt` ∩ responseSuccess」的正样本重跑 §3 —— **这才把「deferred-header 证伪判别」从『强线索』升为『实测结论』**。**建议在用户对 B1/B2/B3 方向拍板前先做**（低成本、纯可观测增量），让用户面对的是被独立 oracle 证实的分类而非 History 代理指标。
+- **Q5【已闭合 · 对抗审 HIGH-1/2 解除】** 直读 `upstreamHeadersAt` 已固定 §3 结论：① 四刻投影**已 landed**（`projection.ts:277-283`）；② `delayedCommit/commitAt` verdict **未持久化但证据上非必需**（header 直读 > commit 窗口即证 commit 分支，无需 verdict）——若日后要零推断查询或 B2 实现需内部 commit 状态，可补（`request.ts` 当前 commit 分支只发 observability event、未持久化）；③ 「`upstreamHeadersAt − startedAt > 20s` ∩ responseSuccess」的正样本已重跑 §3，34 条命中、header 最高 231s（§0 ✅）。**deferred-header 证伪已从『强线索』升为『实测结论』。**
 - **Q6（取舍，需用户拍板）** B3 fail-fast 上限取值：定在 > 已知 B 尾巴（143s，如 180s）= 不误伤但减损有限；定在 < 143s（如 90s）= 更快失败但**会砍掉极长合法思考**。这是「等待时长 vs 误杀长思考」的真取舍，摆 3-4 个量化选项交用户。
 - **Q7** buffered-retry 路径与 B2 的边界：pre-content 内部重试是否应统一覆盖 live/delayed-commit/buffered 三路径，还是先只做 delayed-commit（事故路径）？（against-YAGNI：倾向设计上统一、执行上分阶段，不 silently 砍。）
 - **Q8（capability probe，对抗审 MED）** GHC 在 pre-content 阶段是否提供任何**独立状态面**（job/status API、关联 ID、HTTP/2 informational response、其他 pre-content metadata）——真实 GHC 请求探测。即便最终不采用作判别，也记录探测结果 + 排除理由（避免「信号根本不存在」这类超出已验证范围的绝对结论）。
@@ -244,16 +243,13 @@ commit 的真正代价**不是**「锁定了内容」，而是「锁定了 **HTT
 - hedge 只在 post-header 触发（`driver.ts:769-804`）——**现状限制、非不可能**（B5 探讨 pre-header hedge）。§2.4。
 - continuation-retry gated 在 committedAny=true + 需 ready parent candidate，与本 spec pre-content（committedAny=false、pre-ready）互补但**非小变体**。§7。
 
-**History 观测（4141 只读 REST，近 500 条采样）——线索级，非决定性：**
-- GHC Anthropic **疑似**存在 deferred-header 模式；成功长思考的响应头到达（offset 反推、偏晚）分布疑似 31-143s。**这是强线索、非 `upstreamHeadersAt` 直读；且「committed」由首帧 synthetic 推断、非持久化 verdict 直证。** §3.2。
-- → **「等 header」判别很可能不成立，但缺最后一段直接 oracle 终验（§8 Q5）。** 不表述为「已证伪」。§3.3。
+**History 直读实测（4141 只读 REST，300 条采样 / 108 streaming 候选 / 34 正样本，2026-07-23 Q5）——实测结论：**
+- GHC Anthropic **存在** deferred-header 模式；成功长思考的响应头到达（`upstreamHeadersAt − startedAt` 直读）实测 47-231s。**这是 `upstreamHeadersAt` 直读、非 offset 反推；「committed」由「header 直读 > 20s 窗口」证明（settled-within-window 路径被排除），佐以首帧 `synthetic:"keepalive"`。** §0 ✅ / §3.2。
+- → **「等 header」判别已实测证伪。** 对抗审 HIGH-1/2（offset 反推非决定性 + committed 由弱推断）均已闭合。§3.3。
 
-**推断（标注为推断，未直接实测，对抗审 HIGH-1/2 已下调）：**
-- header 到达时刻由 offset 反推（`dur − max(upstream_offset)`），**系统性偏晚**（混入前置排队 + 尾部时间），因四刻绝对时刻未投影进 REST（§3.5）——**对「是否 > 20s」非决定性**。
-- 「该样本走了 delayed-commit 分支」由「首帧 synthetic keepalive」推断——**不充分**（快 settled 路径也带 heartbeat sink）。须持久化 `delayedCommit/commitAt` verdict 才严格。
+**推断（标注为推断，未直接实测）：**
 - A（挂起）与 B-Mode2（长思考）连接层全程存活、PING 均 ACK → PING 不可判别（§5.A-2）—— 基于「GHC 网关服务端挂 stream」的行为模型推断，未打 PING 探针直证。
 - 「Anthropic 路径不存在可靠判别信号」应限定为「**在本代理当前已接入的同一 response stream 可观测面内**不存在」——不能证明 GHC 不提供独立状态面（§8 新增 capability probe）。
 
 **待实测/PoC（明确未验证，交用户裁决前的门）：**
-- **Q5（升级为裁决前置）** 直读 `upstreamHeadersAt > commitAt ∩ responseSuccess` 固定 §3 结论（补 REST 投影 + 持久化 commit verdict）。
-- Q1 CC pre-header 容忍度、Q2 事故请求 fresh-retry 可恢复性、Q3 Responses 路径 header 时序、Q8 GHC pre-content 状态面 capability probe。**这些验证前，B1 窗口上限、B2 救事故效力、跨路径推广、判别不可能性均为假设。**
+- Q1 CC pre-header 容忍度、Q2 事故请求 fresh-retry 可恢复性、Q3 Responses 路径 header 时序、Q8 GHC pre-content 状态面 capability probe。**这些验证前，B1 窗口上限、B2 救事故效力、跨路径推广均为假设。**（Q5 已闭合、不再是门。）
