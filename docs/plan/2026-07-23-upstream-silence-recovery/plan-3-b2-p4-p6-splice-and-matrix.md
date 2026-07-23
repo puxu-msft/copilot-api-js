@@ -1,0 +1,308 @@
+# Plan-3: B2-P4～P6 —— fresh-dispatch splice 执行器 + handler 接线 + 协议级回归矩阵
+
+> **依赖：** Plan-2（P0-P3）全部完成。**这是全计划最难的部分**——三 keepalive 模式的 wire contract 分支逻辑 + handler-v4.ts 的精确挂载点。
+
+## 背景：挂载点精确定位（代码实证）
+
+`handler-v4.ts` 的 COMMIT 分支（`streamCommitAfterSec > 0` 且窗口已过期后）：
+
+```
+streamSSE(c, async (stream) => {
+  ...
+  try {
+    let result: DriverRequestResult
+    try {
+      result = await p                     // ← p = driver.runRequest(...)（handler-v4.ts:426）
+    } catch (error) {
+      // ← 这里！pre-ready 失败必然落在这个 catch 块（handler-v4.ts:647-694）
+      //   现有分支：isAbortError → client-abort/reaper-cancel/timeout 三分支
+      //             HTTPError → 上游 4xx/5xx
+      //             其余（socket reset / HTTP2 REFUSED_STREAM）→ network_error
+      // B2 要在这三类"非 client-abort"的失败上，语义内容未交付时，先试 fresh recovery
+    }
+    ...
+  } finally {
+    sink.finalize?.()
+    detachClientAbort()
+  }
+})
+```
+
+**关键判断：** B2 只对**非 client-abort**的失败生效（`isAbortError && clientAbort.signal.aborted` 分支必须原样保留 —— 客户端已经断开，救回来没有意义，且 spec/FINDINGS 都没有把 client-abort 纳入 B2 范围）。`reaper-cancel` 和 `timeout`（header-wait timeout）在语义上更接近"我方主动放弃"，是否也该走 B2 恢复——**这是一个待决问题**，见下方 Task 4.3 的门控项。HTTPError（上游 4xx/5xx）与其余非 abort 错误（network_error 类，socket reset/RST）是 B2 的核心目标（这正是原始事故 req_57/58/63 的形状：`rstCode=0`）。
+
+### ⚠ 第二个挂载点：ready-但-pre-content 失败（Unified gate 的另一半，别只做 pre-ready）
+
+上面这段只覆盖了 `await p` 本身 reject 的场景（pre-ready，`runRequest` 从未拿到 upstream）。但 spec/FINDINGS 明确要求统一 gate **同时覆盖"已经 ready、pump 正在跑、但上游在首个真实语义内容之前失败"**这第二种失败——这在代码里是完全不同的落点：
+
+- **live 路径**：`pumpAnthropicStreamingV4` 的 `outcome.kind === "stream-error"` 分支（`handler-v4.ts:1279-1320`）——upstream 的可迭代对象在 `sink.write` 过程中抛出（H3）。此刻 `acc`（accumulator）是否已经产出过真实 block，即 `hasDeliveredSemanticContent` 的 ready-态判据（Plan-2 Task 0.2 的第二分支）。
+- **buffered 路径**：`driver.ts` 内部 `runResponseBufferedSink` 的重试循环耗尽/不可重试时，落到 `degradeOutcome = committedAny ? committedDegrade : "exhausted"`（`driver.ts:1482`）——**当 `committedAny === false`**（等价于"ready 但没有真实内容交付"）的 `"exhausted"` 分支，是 B2 buffered 路径的目标挂载点。**当 `committedAny === true`** 时已经是 continuation-retry 的地盘，不是 B2 的范围（两者由 `committedAny` 这同一个既有布尔值互斥区分，无需新增判据）。
+
+**这意味着 Task 4.3 的接线必须做两处，不是一处**：① `handler-v4.ts` COMMIT 分支的外层 `catch (error)`（pre-ready，Plan-2 已提供 `driver.runPreContentRecovery`）；② `pumpAnthropicStreamingV4` 的 `stream-error` 分支 + `runResponseBufferedSink` 的 `"exhausted"` 结局（ready-但-pre-content，**这里不能直接调 `driver.runPreContentRecovery`**——那个方法的设计前提是"`coordinator.runPrimary()` 本身 reject"，而 ready-态失败时 primary 已经成功 ready 过、只是**响应流**失败了，需要走的是**已有的** `coordinator.runRecovery(parent, reason, env)`（这才是"ready parent 存在、要发起下一个候选"的正确既有方法，"B2 不是 continuation 变体"这句话只针对 pre-ready 场景，ready-态失败复用现有 `runRecovery` 完全合适——它与 continuation 的唯一区别是 gate 条件不同：`runRecovery`（无条件，既有机制，spec 之前就存在于"buffered-retry 委托 transparent retry"）vs `runContinuation`（`committedAny===true`），**而 B2 在 ready-态的新增价值仅仅是"把这条已有的 `runRecovery` 路径也接到 live（非 buffered）模式下"**——现状 `runRecovery` 目前只在 buffered 路径的驱动循环里被调用（`driver.ts:1389`），live 路径的 `pumpAnthropicStreamingV4` 遇到 `stream-error` 目前**没有任何重试**、直接终态失败。这是本计划必须澄清的第二个"新拓扑"点，其难度不亚于 pre-ready 分支，实现者务必两处都覆盖，不要只做 pre-ready 就当 B2 完工）。
+
+**这一发现改变了 Files 清单与 Task 划分**（见下）——原草稿遗漏了 live 路径 ready-态失败这一半，现已修正。
+
+## Files 总览
+
+- Modify: `src/routes/messages/handler-v4.ts`（① COMMIT 分支的外层 `catch` 块，`:647-694` 附近——pre-ready 挂载点；② `pumpAnthropicStreamingV4` 的 `outcome.kind === "stream-error"` 分支，`:1279-1320` 附近——live 路径 ready-态挂载点）
+- Modify: `src/lib/pipeline/driver.ts`（`runResponseBufferedSink` 的 `"exhausted"` 结局分支，`:1467-1488` 附近——buffered 路径 ready-态挂载点；`committedAny===false` 时旁路进 B2，`committedAny===true` 维持现有 continuation/partial-degrade 逻辑不变）
+- Create: `src/routes/messages/precontent-recovery-splice.ts`（三模式 wire-level 拼接函数 `spliceFreshAttemptFrames` + 触发判定 `shouldAttemptPreContentRecovery`，两个挂载点共用）
+- Modify: `src/routes/messages/post-commit-error.ts`（若 splice 也失败，仍需现有 `writeTerminalThenSettle` 机制收尾——复用，不重写）
+- Test: `tests/routes/messages/precontent-recovery-splice.unit.test.ts`（三模式 splice 纯函数测试）
+- Test: `tests/e2e-client/precontent-recovery.it.test.ts`（client-proxy e2e，真 `@anthropic-ai/sdk` oracle，仿 `continuation-sdk.it.test.ts` 结构，覆盖两个挂载点）
+- Test: `tests/routes/messages/precontent-recovery-matrix.it.test.ts`（协议级回归矩阵：三模式 × 5 种失败形态 × 两个挂载点）
+- Test: `tests/pipeline/precontent-recovery-buffered.it.test.ts`（buffered 路径的 `committedAny===false` 旁路分支，driver 级）
+
+---
+
+## Task 4.0：ready-态挂载点 —— live 路径复用既有 `runRecovery`
+
+**先做这个 Task，再做 Task 4.1（splice 纯函数对两个挂载点通用，但需求先从这里确认）。**
+
+**设计依据：** `coordinator.runRecovery(parent, reason, env)`（`coordinator.ts:133-141`）已经是"给定一个 ready 的 parent 候选，settle 掉它、开一个新候选"的现成机制——目前**只有 buffered 路径的驱动循环在调用它**（`driver.ts:1389`，`runResponseBufferedSink` 内部）。live 路径的 `pumpAnthropicStreamingV4` 遇到 `stream-error` 时，目前是**直接终态失败**（`handler-v4.ts:1279-1320`，写错误帧 + `ctx.fail` + return），从未调用过 `runRecovery`。
+
+B2 在 live 路径的新增值：当 `outcome.kind === "stream-error"` 且 `!hasDeliveredSemanticContent(candidateSnapshot)` 且 `!classifyServerExecutionRisk(...)` 命中时，**不要**立即写终态错误帧，而是调用 `driver`（需要新暴露一个方法，例如 `runResponseRecovery(upstream, env, reason)`，内部找到该 upstream 绑定的 `binding.coordinator` + `binding.candidate` 调用 `coordinator.runRecovery(candidate, reason, env)`，语义类似 `driver.ts:769-845` 现有 `maybeRunHedgedResponseSink` 里"通过 `generation.bindings.get(upstream)` 找回 coordinator/candidate"的既有写法）——成功后返回新的 `{upstream, env}`，handler 用 Task 4.1 的 splice 函数把新流的帧接进同一个 sink。
+
+- [ ] **Step 1: 写失败测试**
+
+```ts
+// tests/pipeline/precontent-recovery-live.it.test.ts（新，driver 级，先于 handler 级验证机制本身）
+test("driver exposes a way to recover a ready-but-pre-content-failed upstream via coordinator.runRecovery, without requiring committedAny", async () => {
+  // mock transport：primary 成功 open，但流在首个真实 block 前抛错（stream-error 形状）
+  // 断言：调用新的 driver 方法后，能拿到第二个 upstream（recovery 候选），且 coordinator 记录了 runRecovery 的 settle（parent verdict=failed, reason=... ）
+})
+test("if the primary already delivered a real block before failing, this path is NOT applicable (that's continuation's job, not B2's)", async () => {
+  // 断言：hasDeliveredSemanticContent 为 true 时，调用方（handler）不应该走这条路径——这是纯门控测试，非 driver 内部强制
+})
+```
+
+- [ ] **Step 2: 跑，失败。**
+- [ ] **Step 3: 接线** —— `driver.ts` 新增方法（`PipelineDriverWithNonStreaming` 接口扩展），签名草案：
+
+```ts
+runResponseRecovery(upstream: UpstreamStream, env: RequestEnvelope, reason: string): Promise<DriverRequestResult>
+```
+
+  内部：`const binding = generation.bindings.get(upstream); if (!binding) throw ...; const recovered = await binding.coordinator.runRecovery(binding.candidate, reason, env); generation.bind(binding.coordinator, recovered); return {ok:true, upstream: recovered.upstream, env: recovered.env}`。**这个方法与 Plan-2 Task 0.4 的 `runPreContentRecovery` 是姊妹方法**——前者服务 ready-态失败（有 upstream 引用可查 binding），后者服务 pre-ready 失败（没有 upstream，只能用 driver 闭包记的 `lastPreReadyFailure`）。两者共享 Task 4.1 的同一个 splice 拼接函数与同一个 server-tool gate 检查点，但驱动它们的 coordinator 方法不同（一个新建 `runRecoveryFromPreReadyFailure`，一个复用既有 `runRecovery`）——**实现者必须在这里调用 `classifyServerExecutionRisk` 一次，不要假设 `runRecoveryFromPreReadyFailure` 里已经做过检查就漏了这条路径的检查（两个方法各自独立 gate，不能只查一处）**。
+- [ ] **Step 4: 跑，通过。**
+- [ ] **Step 5: 提交** → `feat(pipeline): driver.runResponseRecovery — reuse existing coordinator.runRecovery for ready-but-pre-content live-path failures`。
+
+**buffered 路径的对应接线**（同一 Task 内一并完成，因为复用同一个 `runRecovery` 调用、只是触发点在 `driver.ts` 内部而非 handler）：
+
+- [ ] 在 `runResponseBufferedSink` 的失败判定处（`driver.ts:1361-1399` 附近，现有 `retryable` 分支），**在 `!committedAny` 分支耗尽重试预算、即将走向 `degradeOutcome="exhausted"` 之前**，插入一次 B2 gate 检查（`!hasDeliveredSemanticContent` 在 buffered 场景下等价于 `!committedAny`——**这两者是否完全等价需要实现者用测试确认**：`committedAny` 由 `anthropicCommitBoundaries` 判定"是否有 boundary 被 flush 过"，而 `hasDeliveredSemanticContent` 目前设计读的是 `CandidateBoundaryClassifier.result`——buffered 候选是否也驱动了同一个 boundary classifier 是 Plan-2 Task 0.2 已经标注的验证点，这里再次确认）+ server-tool gate；命中则不走 `degradeOutcome`，而是走 B2 的 splice-recovery（**注意 buffered 场景下 splice 目标不是"接进同一个 live sink"，而是"这次的 fresh attempt 本身重新进入 buffered 缓冲循环"——即 B2 在 buffered 模式下退化成"多给一次重试机会，且这次重试不计入原有 `retryCap` 预算"，本质上是把 `retryCap` 用尽后的最后一击外挂在 buffered 循环外层，而非改写 buffered 循环内部逻辑**）。
+
+**⚠ 门控问题（不自行拍板）**：buffered 路径的这个"外挂一次"设计是否与 buffered-retry 现有的 `retryCap` 语义冲突（比如用户配置 `max_retries=0` 是否意味着"连 B2 这一次都不该有"）？**倾向**：`max_retries=0` 应该被尊重（用户明确表达"不要任何重试"），B2 在 buffered 路径的旁路应该额外检查 `resolveBufferedCaps(vendor).maxRetries > 0` 才生效，或者更保守地——**B2 在 buffered 路径的这一节，鉴于风险与本计划篇幅，建议作为独立子任务，若实现期发现复杂度超出预期，可以先只完整交付 live 路径（Task 4.0 的 live 部分 + Task 4.1-4.5），把 buffered 路径的 B2 集成降级为本计划 backlog 的一项（记入 Plan-5 Task 6.3），而不是勉强塞一个可能语义不清的实现**。这是一个范围调整，需要主会话确认是否接受"先只做 live、buffered 留 backlog"这个降级，而不是 planner 单方面砍掉。
+
+---
+
+## Task 4.1：三模式 wire-level splice 纯函数
+
+**设计依据（实测表，FINDINGS.md 逐字摘录）：**
+
+| mode | 已发脚手架 | fresh attempt 拼接规则 |
+|---|---|---|
+| `ping`（默认） | 裸 `event: ping` | fresh `message_start` 原样成首 message，real block 原 index |
+| `enveloped_ping` | synthetic/已捕获 message_start、无 anchor | 丢弃 duplicate message_start；real block 原 index |
+| `empty_text` | message_start + anchor `content_block_start@0` + 空 delta | 首 real block 前写 `content_block_stop@0`；丢 dup message_start；real block index +1；失败/终止在首 real block 前也须先 close anchor |
+
+这与 `live-reconcile.ts` 的 `reconcileLiveFrame` 是**同构问题**（"给定 AnchorState + AnchorHooks，决定要不要 drop message_start / 要不要先关 anchor / 要不要 remap index"）——但 `reconcileLiveFrame` 是逐帧增量应用在"仍在同一条上游流"上，B2 面对的是"上游流已经彻底断了、要接一条全新的流"，语义上更接近"一次性重放 `reconcileLiveFrame` 的判定逻辑作用在 fresh attempt 的第一帧上，之后转入正常透传"。
+
+**推荐实现路径**：复用 `AnchorState` + `AnchorHooks` + `reconcileLiveFrame`（`~/lib/anthropic/live-reconcile`），不重新发明一套判定逻辑——fresh attempt 开始后的第一帧仍然过一次 `reconcileLiveFrame(frame, anchorState, anchorHooks)`（这个函数已经处理了"dedup message_start"、"要不要先 close anchor"、"要不要 remap"的全部三模式分支），之后的帧走正常 `write`。`closeAnchorIfOpen`（导出自 `~/lib/anthropic/keepalive-anchor`，`keepalive-anchor.ts:178`，`handler-v4.ts` 已在多处导入使用）可直接复用于"recovery 也失败、需要在写终态错误帧前收口 anchor"的场景（Task 4.1 的第 4 个测试用例）。**唯一需要新增的**是：ping 模式下 `anchorHooks` 是 `undefined`（`buildAnthropicAnchorHooks(enabled=false)` 见 `handler-v4.ts:968-970`），此时 `reconcileLiveFrame` 根本不会被调用到（因为 `liveReconcilingSink` 在 `anchorHooks` 为 undefined 时直接返回原始 sink，`handler-v4.ts:1148-1150`）——**验证清单**：确认 ping 模式下"fresh message_start 直接透传成为首帧"这一实测行为，是否只需要"不做任何特殊处理、直接把 fresh attempt 的帧一帧帧 write 出去"就自然成立（FINDINGS 的 SDK 探针已经验证了这一点：`ping → fresh message_start → text@0` 场景下 SDK 正确累积，说明 Anthropic SDK 本身不介意收到"心跳 ping 之后来一个全新 message_start"——这是**协议层面**的宽容性，不是我方代码要做什么特殊处理）。
+
+- [ ] **Step 1: 写失败测试** —— 三模式分别验证
+
+```ts
+// tests/routes/messages/precontent-recovery-splice.unit.test.ts
+test("ping mode: fresh message_start passes through untouched (no anchor state involved)", () => {
+  // 用 makeArraySink 收集写出的帧；驱动 spliceFreshAttemptFrames 走 ping 模式
+  // 断言：fresh attempt 的 message_start / content_block_start 等帧原样写出，无 remap
+})
+test("enveloped_ping mode: duplicate message_start from fresh attempt is dropped; real blocks keep original index", () => {
+  // anchorState.injected = true, anchorState.anchorBlockOpen = false（enveloped_ping 特征）
+  // 断言 fresh attempt 的 message_start 帧被丢弃，第一个 content_block_start 保持原 index
+})
+test("empty_text mode: anchor is closed (content_block_stop@0) before the first real block; real block index shifts +1", () => {
+  // anchorState.injected = true, anchorState.anchorBlockOpen = true, anchorState.anchorClosed = false
+  // 断言输出序列包含 stopFrame（先于任何真实 block），且真实 block 的 index 被 remap +1
+})
+test("empty_text mode: if the SECOND fresh dispatch ALSO fails before any real block, the anchor is STILL closed before the terminal error frame", () => {
+  // 覆盖 FINDINGS 明确点名的 corner case："失败/终止在首 real block 前也须先 close anchor"
+})
+```
+
+- [ ] **Step 2: 跑，失败。**
+- [ ] **Step 3: 实现** `src/routes/messages/precontent-recovery-splice.ts`：**不重新发明判定逻辑**，直接复用 `reconcileLiveFrame` + 已有的 `AnchorState`/`AnchorHooks` 类型（从 `~/lib/pipeline/types` 导入）、`closeAnchorIfOpen`（已有，`~/lib/anthropic/keepalive-anchor` 或 `handler-v4.ts` 引用处，需确认导出位置）。函数签名草案（局部签名，不改公共类型）：
+
+```ts
+/** 把 fresh recovery attempt 的每一帧，按现有 anchor 状态过一次 reconcile，再交给 supervisor 包装的 sink 写出。
+ *  纯粹复用 live-reconcile 的既有判定——不是重新发明协议逻辑。 */
+export async function spliceFreshAttemptFrame(
+  frame: ClientFrame,
+  sink: ClientSink,
+  anchorState: AnchorState,
+  anchorHooks: AnchorHooks | undefined,
+): Promise<void> {
+  if (!anchorHooks) {
+    await sink.write(frame) // ping 模式：anchorHooks 恒 undefined，直通
+    return
+  }
+  const frames = reconcileLiveFrame(frame, anchorState, anchorHooks)
+  for (const f of frames) await sink.write(f)
+}
+```
+
+  **验证清单**：`reconcileLiveFrame` 目前的隐含假设是"这是同一条直播流的增量帧"（例如 `messageStartForwarded` 状态在"没注入过 anchor"时的 passthrough 分支里也会被设置，`live-reconcile.ts:108-116`）——需要实现者用测试确认，当 fresh attempt 的第一帧是 `message_start` 且 `anchorState.injected === true`（因为原 attempt 确实注入过 keepalive）时，`reconcileLiveFrame` 会正确地把这第二个 message_start 识别为"重复"并丢弃（这是 P4 存在的核心理由——FINDINGS 的 SDK 探针场景 2/3/4 已经验证了这个丢弃行为，本 Task 只是把它包装成生产代码路径，理论上应该直接复用即可，不应该出现意外分歧；若测试跑出分歧，说明 `reconcileLiveFrame` 需要扩展一个新分支而非本函数绕过它）。
+
+- [ ] **Step 4: 跑，通过。**
+- [ ] **Step 5: 提交** → `feat(anthropic): precontent-recovery splice reuses live-reconcile anchor judgment for fresh attempt frames`。
+
+---
+
+## Task 4.2：触发判定 `shouldAttemptPreContentRecovery`
+
+- [ ] **Step 1: 写失败测试**
+
+```ts
+test("returns true when: not client-abort AND no semantic content delivered AND config enabled", () => { ... })
+test("returns false when client already aborted (client-abort takes precedence, no point recovering)", () => { ... })
+test("returns false when semantic content already delivered (this is exactly the existing continuation-retry's job, not B2's)", () => { ... })
+test("returns false when config.preContentRecovery.enabled === false", () => { ... })
+```
+
+- [ ] **Step 2: 跑，失败。**
+- [ ] **Step 3: 实现**（纯函数，组合 Plan-2 的 `hasDeliveredSemanticContent` + `state.preContentRecovery.enabled` + `classifyPostCommitAbort` 的 `client-abort` 分支排除）。
+- [ ] **Step 4: 跑，通过。**
+- [ ] **Step 5: 提交** → `feat(anthropic): shouldAttemptPreContentRecovery gate combinator`。
+
+---
+
+## Task 4.3：handler-v4.ts 接线（COMMIT 分支 catch 块）
+
+**门控问题（不自行拍板，交主会话/用户）：** `reaper-cancel` 与 `timeout`（header-wait）是否也该走 B2 恢复？
+- **倾向纳入**：这两种失败在客户端视角与"上游 RST"没有本质区别——都是"我方判定这次尝试救不了了"，若语义内容仍未交付，尝试一次 fresh recovery 符合"消解判别伪命题"的精神（reaper-cancel 本身就是"我方主动判定这个请求太老了"，与 B2 的救援目标不冲突——只要 fresh dispatch 本身还在合理的 budget/deadline 内）。
+- **倾向排除**：`timeout`（header-wait timeout，配置的 `responseHeaderTimeout` 到点）本身就是"已经等了很久"的信号，如果 B2 在这个信号上还要再等一次 fresh dispatch 的完整 header-timeout，会显著延长最坏情况下的用户等待——这正是 B3 存在的理由（用一个更短的、明确的、"逃生舱"性质的等待上限替代"再等一次完整 header-timeout"）。
+- **本计划的默认设计**：`shouldAttemptPreContentRecovery` 只对 **HTTPError 分支** 和 **network_error 类（非 HTTPError 的 catch 分支）** 生效；`isAbortError` 的三个子分支（client-abort / reaper-cancel / timeout）**默认不触发 B2**——因为这三者本质上是"我方主动终止"，且都已经有明确的语义化错误帧（"Request cancelled by the stale-request reaper" / "Upstream timed out before sending response headers"），把它们也导入 B2 会让"一次尝试"的语义复杂化（需要考虑"reaper 为什么要 cancel、要不要在 fresh attempt 上重新触发 reaper deadline"这类新问题）。**这是一个待用户确认的范围边界**——若用户认为 timeout/reaper-cancel 也该纳入 B2（例如 header-timeout 本身就是"deferred-header 场景的一部分"，spec §3 的证据支持这一点：deferred-header 长思考在数十到两百秒后才发 header，若 `responseHeaderTimeout` 设得比这个短，会误杀合法请求），可以后续再扩展触发条件，不影响本阶段的接口设计（`shouldAttemptPreContentRecovery` 的参数已经包含了"是什么错误类型"，扩展只是改这个函数内部的分支，不改调用方结构）。
+
+- [ ] **Step 1: 写失败测试**（先在 handler 级别写集成测试，覆盖"HTTPError 分支触发恢复"这一个最小场景，验证接线本身是对的）
+
+```ts
+// tests/routes/messages/precontent-recovery-matrix.it.test.ts（起步，本 Task 只覆盖第一行）
+test("COMMIT branch: HTTPError before any real content block → fresh recovery dispatch is attempted, and succeeds", async () => {
+  // sequencedUpstream([() => httpErrorResponse(529, {...}), () => createSseResponse([msgStart, textBlock, terminal])])
+  // 驱动 delayed-commit（streamCommitAfterSec 极小或 FakeClock 强制 commit）
+  // 断言：客户端最终收到 ONE coherent turn（首个 HTTPError 从未到达客户端 —— 只有合成 keepalive + 拼接后的真实内容）
+  // 断言：up.callCount() === 2（第一次失败 + fresh recovery 成功）
+})
+```
+
+- [ ] **Step 2: 跑，失败。**
+- [ ] **Step 3: 接线** —— 在 `handler-v4.ts` 的 COMMIT 分支内层 `catch (error)` 块顶部，`isAbortError` 分支之前/之后（取决于哪种顺序更清晰——建议放在 `isAbortError` 检查之后、`HTTPError` 检查内部与新的 catch-all 分支内部，即两处都要加）新增：
+
+```ts
+// 伪代码骨架，实现者需按 Plan-2 的 supervisor/gate 实际签名调整
+const ctx = codec.getContext()
+ctx?.setForwardedResponse({ sseEvents: [...forwardedSseEvents] })
+if (error instanceof Error && isAbortError(error)) {
+  // ... 现有三分支不变（client-abort / reaper-cancel / timeout）
+}
+if (shouldAttemptPreContentRecovery({ error, session: anthropicCandidateSnapshotSafe(driver, /* 需要 upstream 引用，pre-ready 场景没有 */), config: state.preContentRecovery })) {
+  try {
+    const recovered = await driver.runPreContentRecovery("post-commit-pre-content-failure")
+    if (recovered.ok) {
+      // 用 recovery-sink-supervisor 包装的 sink，走 spliceFreshAttemptFrame 逐帧拼接
+      // 复用 pumpAnthropicStreamingDispatch 的现有帧循环——需要重构成可传入 supervisor sink 的形态
+      // 成功 → 正常走完 pump，最终由 supervisor.settleFinal() 收口
+      return
+    }
+    // recovered.ok===false（decideRoute reject，理论上不该发生在 recovery 路径——记录 warning）
+  } catch (recoveryError) {
+    // fresh recovery 本身也失败（或被 server-tool gate 拦截）→ 落回现有 writeTerminalThenSettle 路径
+    // 用 recoveryError 而非原始 error 构造终态错误帧？还是原始 error？—— 待 TDD 定，倾向原始 error
+    // （recoveryError 是内部机制失败，客户端不关心"我们尝试救援又失败了"的细节，只关心最终错误类型）
+  }
+}
+// 现有 HTTPError / 其余分支逻辑不变（recovery 未触发或 recovery 失败后落到这里）
+```
+
+  **这段接线是本计划复杂度最高的单点**，实现者必须：
+  1. 先确认 `pumpAnthropicStreamingDispatch` 现有的帧循环能否被抽出一个"给定 upstream+env+sink，跑到底"的可复用子函数，供"首次 attempt"和"fresh recovery attempt"两处调用（**不要复制粘贴一份新的循环**——DRY，且降低两处逻辑分叉导致的维护负担）。
+  2. 确认 `anchorState`/`anchorHooks` 在 recovery 场景下必须是**同一个** `AnchorState` 实例（不能重新 `{injected:false, ...}` 初始化）——因为 anchor 是否已经注入过是"首次 attempt 期间"就确定的状态，fresh attempt 只是"接着用"。
+  3. 确认 recovery 成功之后的 sink 收口时机——用 Plan-2 Task 0.5 的 supervisor，只有 fresh attempt 走完（`outcome.kind === "complete"`）才调 `supervisor.settleFinal()`。
+
+- [ ] **Step 4: 跑，通过。**
+- [ ] **Step 5: 提交** → `feat(anthropic): wire precontent-recovery into the COMMIT branch's post-commit catch (HTTPError + network_error paths)`。
+
+---
+
+## Task 4.4：History settlement（新 attempt + verdict 语义）
+
+**设计依据：** `runPreContentRecovery` 内部调用 `coordinator.runRecoveryFromPreReadyFailure`，这本身已经通过 `createCandidateRuntime` → `input.recording.beginCandidate` 走了标准的 History candidate 记录路径（`candidate.ts:70`）——**大部分 History 接线是"免费"的**（复用了 `DispatchRecordingPort` 现有机制）。需要新增的只是：① 首次失败的 attempt 上打一个可诊断的 reason 标记（例如 `recordAttemptFailure({ willRetry: true, nextStrategy: "precontent-recovery" })`，镜像 continuation 的 `"continuation"` nextStrategy 用法，见 `driver.ts:1443`）；② winner 候选正常走 `env.ctx.selectGenerationWinner(...)`。
+
+**Task 4.0 的 `runResponseRecovery`（ready-态挂载点）复用的是既有 `coordinator.runRecovery`——那条路径本身已经在 `settleDispatch` 里传 `retryNextStrategy`（见 `coordinator.ts:136` `runRecovery` 内部 `settleDispatch({ verdict: "discarded", reason, retryNextStrategy: "buffered-retry" })`）打了 History 标记，但这个既有标记写死是 `"buffered-retry"` 字面量——** B2 在 ready-态触发时，若继续用这个字面量，History 上会把"B2 pre-content 恢复"误标成"buffered-retry"，造成诊断混淆。**需要给 `runRecovery` 增加一个可选的 `retryNextStrategy` 覆盖参数**（局部签名扩展，不改调用方既有行为——现有 buffered 路径调用 `runRecovery(parent, reason, env)` 不传这个新参数时保持 `"buffered-retry"` 字面量不变），B2 的调用点显式传 `"precontent-recovery"`。
+
+- [ ] **Step 1: 写失败测试**
+
+```ts
+// tests/routes/messages/precontent-recovery-matrix.it.test.ts（追加）
+test("History: the failed pre-ready attempt is recorded with nextStrategy='precontent-recovery'; the fresh attempt is the winner", async () => {
+  // 驱动 recovery 成功场景；起 createFullTestApp，请求后读 History entry
+  // 断言 attempts[0]（首次失败）有 willRetry:true, nextStrategy:"precontent-recovery"
+  // 断言 attempts[1]（fresh recovery）是 winner（selectedGenerationDispatch 指向它）
+  // 断言 upstreamResponse 轨（首次失败 attempt）忠实记录了真实的失败字节（无合成物污染）
+})
+```
+
+- [ ] **Step 2: 跑，失败。**
+- [ ] **Step 3: 接线** —— 在 `runPreContentRecovery` 调用 `runRecoveryFromPreReadyFailure` **之前**，用 `failure.env.ctx.recordAttemptFailure({ willRetry: true, nextStrategy: "precontent-recovery" })`（需确认这个方法是否要求当前有一个 active attempt——参照 `driver.ts:1443` 附近 `if (!parent) currentEnv.ctx.recordAttemptFailure(...)` 的用法模式，B2 场景类似"无 parent"，即没有 `generation?.bindings.get(current)` 可用，直接调用顶层 `recordAttemptFailure`）。
+- [ ] **Step 4: 跑，通过。**
+- [ ] **Step 5: 提交** → `feat(anthropic): precontent-recovery History settlement (nextStrategy tagging + winner selection)`。
+
+---
+
+## Task 4.5：协议级回归矩阵（三模式 × 5 种失败形态）
+
+**这是 FINDINGS 明确要求的"必须新建"第 4 件机件**——覆盖 primary failure / recovery failure / abort / header-timeout / budget exhaustion，跨三种 keepalive mode。
+
+- [ ] **Step 1: 写失败测试**（矩阵展开，可用 `describe.each`/参数化辅助函数减少重复）
+
+```ts
+// tests/routes/messages/precontent-recovery-matrix.it.test.ts（完整矩阵）
+const MODES = ["ping", "enveloped_ping", "empty_text"] as const
+for (const mode of MODES) {
+  describe(`precontent-recovery matrix — mode=${mode}`, () => {
+    test("primary pre-content failure → recovery succeeds → ONE coherent client turn", async () => { ... })
+    test("primary pre-content failure → recovery ALSO fails pre-content → terminal error frame (no infinite retry)", async () => { ... })
+    test("client aborts DURING the recovery fresh dispatch → settled-abort, zero further bytes, no dangling recovery candidate", async () => { ... })
+    test("recovery fresh dispatch hits response-header-timeout → falls through to existing timeout error frame (not an infinite wait)", async () => { ... })
+    test("recovery is gated OFF by server-execution-risk → falls through to existing terminal error immediately (no fresh dispatch attempted)", async () => { ... })
+  })
+}
+test("generation-budget exhaustion: repeated pre-content failures across MULTIPLE requests do not leak candidate/dispatch reservations", async () => {
+  // 复用 tests/pipeline/candidate-runtime.it.test.ts 的 budget 断言风格
+})
+```
+
+- [ ] **Step 2: 跑，失败（红-绿 mutation 预测，注明可能不咬）：**
+  - **预测**：ping/enveloped_ping/empty_text 三模式的"recovery 成功"场景，删除 Task 4.1 的 splice 分支判断会让 empty_text 场景出现"客户端收到两个 message_start"或"index 冲突"的可观测失败——**这个预测可能不咬**（若 `reconcileLiveFrame` 的既有防护已经足够健壮，删除 splice 分支可能只是退化成"透传"而非"崩溃"）；执行期必须真跑一次删除 Task 4.1 实现后的红色状态确认，若不咬，说明测试断言粒度不够，需要加严（比如显式断言 index 序列而非只断言最终内容正确）。
+- [ ] **Step 3-5**：随 Task 4.1-4.4 的实现逐步补齐，本 Task 是"收口验证"而非独立实现——若前面步骤已经正确，这里应该自然转绿；若红，回头修 Task 4.1-4.4（不要在这里打补丁绕过）。
+- [ ] **提交** → `test(anthropic): precontent-recovery protocol regression matrix (3 modes × 5 failure shapes)`。
+
+---
+
+## 验收 Oracle（本阶段整体）
+
+- `bun run test:backend` 全绿。
+- `tests/e2e-client/precontent-recovery.it.test.ts`（真 SDK oracle）对齐 `continuation-sdk.it.test.ts` 的验收标准：`.finalMessage()` 拿到 ONE coherent turn，`callCount()` 反映恰好一次内部重试。
+- History 详情页（或 REST）能看到"precontent-recovery"标记的 attempt，不与 continuation 的 `"continuation"` nextStrategy 混淆。
+- 三 keepalive 模式的 wire contract 全部通过（Task 4.1 + 4.5）。
+
+## 风险
+
+- **最高风险**：Task 4.3 的 handler 接线（帧循环复用 + supervisor 收口时机）——涉及现有 900+ 行 handler 文件的精细手术，任何时序错误都可能导致 sink 提前关闭或计时器泄漏。**强烈建议**：这个 Task 由实现者独立开一个 review 轮次（异模型 subagent 复核 sink 生命周期的每个分支，尤其 `finally` 块与 supervisor 的交互）。
+- **同等高风险**：Task 4.0 的第二挂载点（live 路径 `stream-error` 分支复用 `runRecovery`）——这是一条**现状完全没有重试机制**的路径，新增重试行为本身就有较大回归面（尤其 `acc`/`streamState`/`sseEvents` 这些 handler 本地累积状态在"换一条新 upstream 流"后要不要重置——Plan-2 Task 0.5 的 sink supervisor 只管 sink 生命周期，不管这些 handler 本地累积器，需要实现者在 Task 4.0 里一并设计"recovery 后 accumulator 是否要 rebind 到新 candidate session"，参照 buffered 路径 `onAttemptReset` 的既有模式）。
+- **次高风险**：`reconcileLiveFrame` 复用是否真的"零改动可用"，还是需要扩展新分支——Task 4.1 的验证清单已经点名，执行期若发现分歧，允许在 `live-reconcile.ts` 里新增分支（这是"细化已接受架构合同"范围内的局部扩展，不是新架构决策），但**不要**在 splice 函数里重新发明一套平行逻辑。
+- **范围风险**：Task 4.0 的 buffered 子任务若实现期发现复杂度失控，允许降级为 backlog（已在 Task 4.0 末尾列出门控问题）——但 live 路径必须完整交付，不能同样降级（否则原始事故 req_57/58/63 的形状——live 路径 pre-ready + ready-态两种失败——救不全）。
+
+## 未采纳方案
+
+- **B2 fresh dispatch 参与竞速（B5 化）**：spec/FINDINGS 已明确 B2 是串行救援，B5（并发赌）是独立备选、非本计划范围——本阶段严格保持串行（`runPreContentRecovery` 是 `await`，不是 race）。
+- **恢复失败后再重试第二次**：spec 明确"一次全新上游 dispatch"，未提及多次重试的预算设计——本计划遵循"恰好一次"，若用户希望支持"最多 N 次 pre-content 重试"，需要回到 spec 层面明确 budget 语义（这不是实现细节，是新的架构决策，交主会话）。
