@@ -359,22 +359,36 @@ function addSessionEntry(entry: H2SessionEntry): void {
  * BEFORE the session lands in `sessions` (HIGH-1). Without this, N concurrent
  * cold-start callers all see `sessions.length < cap` and each starts its own
  * connect, blowing past the cap in exactly the fan-out it exists to bound.
+ *
+ * Each creation holds a UNIQUE lease token (not a bare counter): a creation's
+ * `finally` releases ONLY its own token. A bare per-origin counter let a
+ * pre-shutdown creation's `finally decCreating` wrongly delete a POST-shutdown
+ * creation's slot (the counter can't tell whose count it is), re-breaching the
+ * cap. `closeHttp2Sessions` drops the leases it can see, but a straggler's own
+ * lease-scoped release stays correct because it only touches its own token.
  */
-const creating = new Map<string, number>()
+const creating = new Map<string, Set<symbol>>()
 
-/** Total sessions counting toward `origin`'s cap: routable (live) + in-flight creations. */
+/** Total sessions counting toward `origin`'s cap: routable (live) + in-flight creation leases. */
 function originCapCount(origin: string): number {
-  return (sessions.get(origin)?.length ?? 0) + (creating.get(origin) ?? 0)
+  return (sessions.get(origin)?.length ?? 0) + (creating.get(origin)?.size ?? 0)
 }
 
-function incCreating(origin: string): void {
-  creating.set(origin, (creating.get(origin) ?? 0) + 1)
+/** Acquire a unique creation lease for `origin` (counts toward the cap); returns the token to release. */
+function acquireCreatingLease(origin: string): symbol {
+  const token = Symbol("h2CreatingLease")
+  const set = creating.get(origin)
+  if (set) set.add(token)
+  else creating.set(origin, new Set([token]))
+  return token
 }
 
-function decCreating(origin: string): void {
-  const c = (creating.get(origin) ?? 0) - 1
-  if (c <= 0) creating.delete(origin)
-  else creating.set(origin, c)
+/** Release a creation lease by its OWN token (idempotent; only ever removes this token). */
+function releaseCreatingLease(origin: string, token: symbol): void {
+  const set = creating.get(origin)
+  if (!set) return
+  set.delete(token)
+  if (set.size === 0) creating.delete(origin)
 }
 
 /** Remove `entry` from its origin's session array by identity; drop the origin key when its array empties. */
@@ -640,18 +654,20 @@ async function acquireSession(origin: string, signal: AbortSignal | undefined): 
         }
       }
     } else {
-      // Reserve a per-origin CAP slot synchronously (incCreating) BEFORE the async
-      // connect, so concurrent cold-start callers can't all pass the cap check and
-      // each open a session (HIGH-1). Released in `finally`: on success the entry is
-      // already in `sessions` (net cap count unchanged); on failure the slot frees
-      // and a blocked waiter is woken to retry.
-      incCreating(origin)
+      // Reserve a per-origin CAP slot synchronously (a unique creation lease)
+      // BEFORE the async connect, so concurrent cold-start callers can't all pass
+      // the cap check and each open a session (HIGH-1). The lease is UNIQUE so this
+      // creation's `finally` releases only ITS OWN slot — a pre-shutdown creation
+      // can't delete a post-shutdown creation's slot (re-review HIGH). Released in
+      // `finally`: on success the entry is already in `sessions` (net cap count
+      // unchanged); on failure the slot frees and a blocked waiter is woken.
+      const lease = acquireCreatingLease(origin)
       let created = false
       try {
         entry = await createAndAdmitBornReserved(origin)
         created = true
       } finally {
-        decCreating(origin)
+        releaseCreatingLease(origin, lease)
         if (!created) wakeOriginSlotWaiter(origin) // creation failed → the reserved cap slot frees
       }
     }
@@ -1146,7 +1162,12 @@ export function closeHttp2Sessions(): void {
     }
   }
   sessions.clear()
-  creating.clear() // in-flight creations are abandoned on shutdown (their acquire sees the epoch bump)
+  // Deliberately DO NOT clear `creating`: each in-flight creation releases its OWN
+  // lease in its `finally` (createAndAdmitBornReserved throws on the epoch bump this
+  // function just made, so every straggler settles and self-releases). A global
+  // clear here would wrongly delete the lease of a request that started AFTER
+  // shutdown, re-breaching the cap (re-review HIGH). Lease ownership, not a global
+  // reset, is what keeps the accounting correct across a teardown.
   for (const entry of retiringSessions) {
     clearIdleTimer(entry)
     try {

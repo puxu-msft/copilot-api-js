@@ -727,6 +727,62 @@ describe("http2-client pool (per-origin session HARD cap — block until a slot 
     setHttp2SessionFactoryForTests(() => http2.connect(url))
   })
 
+  // Re-review HIGH regression: a pre-shutdown creation's cleanup must not corrupt
+  // the cap accounting across a shutdown boundary (creation leases are per-token,
+  // not a bare per-origin counter, and shutdown does NOT globally clear them). The
+  // cap must hold throughout: A (pre-shutdown creation) holds the only slot; B
+  // (post-shutdown) BLOCKS behind A's lease; when A aborts and releases ITS OWN
+  // lease, B proceeds; C then blocks behind B. Total sessions never exceed cap=1.
+  test("cap holds across a shutdown boundary (per-token creation leases)", async () => {
+    setUpstreamTransportConfig({ maxConcurrentStreamsPerSession: 1, maxSessionsPerOrigin: 1, h2IdleSessionTimeout: 0 })
+    let factoryCalls = 0
+    const gates: Array<() => void> = []
+    const gatedFactory = async (): Promise<http2.ClientHttp2Session> => {
+      factoryCalls += 1
+      await new Promise<void>((r) => gates.push(r)) // each creation blocks in the factory
+      return http2.connect(url)
+    }
+    setHttp2SessionFactoryForTests(gatedFactory)
+    handler = (stream) => {
+      stream.respond({ ":status": 200 })
+      stream.end("ok")
+    }
+    try {
+      // A: pre-shutdown creation, stuck in the gated factory (holds lease tA).
+      const a = http2Fetch(`${url}/a`, {})
+      await waitUntil(() => factoryCalls === 1)
+      // Tear the pool down (bumps epoch, clears sessions — but NOT the leases). This
+      // resets the factory too, so re-install the gated one for B.
+      closeHttp2Sessions()
+      setHttp2SessionFactoryForTests(gatedFactory)
+      // B: post-shutdown request. A's lease still occupies the only cap slot, so B
+      // must BLOCK (not start a creation) until A releases.
+      const b = http2Fetch(`${url}/b`, {})
+      await new Promise((r) => setTimeout(r, 80))
+      expect(factoryCalls).toBe(1) // B is blocked behind A's lease — cap held
+      // Release A: it hits the epoch bump → aborts → releases only its OWN lease →
+      // wakes B, which now creates its own session.
+      gates[0]?.()
+      await expect(a).rejects.toThrow(/abort/i)
+      await waitUntil(() => factoryCalls === 2, { timeout: 2000, label: "B proceeds after A frees its lease" })
+      // C: must be blocked behind B's lease (cap still 1).
+      const c = http2Fetch(`${url}/c`, {})
+      await new Promise((r) => setTimeout(r, 80))
+      expect(factoryCalls).toBe(2) // C blocked — cap held across the boundary
+      // Release B → its session connects, its stream completes; C then REUSES B's
+      // now-idle session (N=1) rather than opening a 3rd — the cap is never
+      // breached. factoryCalls stays 2.
+      gates[1]?.()
+      const rb = await b
+      await rb.text()
+      const rc = await c
+      await rc.text()
+      expect(factoryCalls).toBe(2) // C reused B's freed session — no 3rd connection
+    } finally {
+      for (const g of gates) g()
+    }
+  })
+
   // HIGH-3 regression: a synchronous reuse-reserve followed by an immediate abort
   // must NOT leak the reservation (a ghost activeStreamCount that pins the cap).
   test("immediate abort after a synchronous reserve does not leak the reservation", async () => {
