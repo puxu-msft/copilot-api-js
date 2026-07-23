@@ -1,12 +1,17 @@
-import { expect, test } from "bun:test"
-
 import {
+  //
+  expect,
+  test,
+} from "bun:test"
+
+import { createTerminalObserver } from "~/lib/pipeline/max-tokens-terminal-observer"
+import {
+  //
   classifyMaxTokensTruncation,
   isAnthropicMaxTokensTerminal,
   isCcMaxTokensTerminal,
   isResponsesMaxTokensTerminal,
 } from "~/lib/pipeline/max-tokens-truncation-class"
-import { createTerminalObserver } from "~/lib/pipeline/max-tokens-terminal-observer"
 
 test("A: a closed text block is classified as text", () => {
   expect(classifyMaxTokensTruncation({ lastBlockKind: "text", lastBlockClosed: true })).toBe("text")

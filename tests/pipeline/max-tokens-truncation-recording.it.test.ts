@@ -1,8 +1,18 @@
-import { expect, mock, test } from "bun:test"
+import {
+  //
+  expect,
+  mock,
+  test,
+} from "bun:test"
 
 import { getHistory } from "~/lib/history"
 import { drainV3Writer } from "~/lib/history/v3/store"
-import { setModels, setStateForTests } from "~/lib/state"
+import { getDimensionBreakdown } from "~/lib/request-telemetry"
+import {
+  //
+  setModels,
+  setStateForTests,
+} from "~/lib/state"
 
 import { mockModel } from "../helpers/factories"
 import { useIsolatedRuntime } from "../helpers/isolated-fixture"
@@ -21,7 +31,16 @@ function maxTokensThinkingStream(): Array<string> {
   return [
     frame("message_start", {
       type: "message_start",
-      message: { id: "msg-max-tokens", type: "message", role: "assistant", model: MODEL, content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 7, output_tokens: 0 } },
+      message: {
+        id: "msg-max-tokens",
+        type: "message",
+        role: "assistant",
+        model: MODEL,
+        content: [],
+        stop_reason: null,
+        stop_sequence: null,
+        usage: { input_tokens: 7, output_tokens: 0 },
+      },
     }),
     frame("content_block_start", { type: "content_block_start", index: 0, content_block: { type: "thinking", thinking: "" } }),
     frame("content_block_delta", { type: "content_block_delta", index: 0, delta: { type: "thinking_delta", thinking: "reasoning" } }),
@@ -66,4 +85,7 @@ test("Anthropic direct max_tokens thinking terminal persists its observed class 
     suppressedMaxTokens: false,
     visibilityMode: "passthrough",
   })
+
+  const telemetry = getDimensionBreakdown("max_tokens_truncation", "sinceStart")
+  expect(telemetry.keys).toContainEqual(expect.objectContaining({ key: "thinking", counters: expect.objectContaining({ requestCount: 1 }) }))
 })

@@ -1,5 +1,21 @@
 # Plan-0: 独立 per-format terminal observer + 分型判定器 + 观测层（Anthropic-only；CC/Responses 分档至 P3）
 
+> 实施状态（2026-07-23）：**P0 已完成**。Anthropic-only observer 和真实 terminal 接线已落地；CC/Responses observer 与对应生产接线仍明确归属 P3 Task 3.0a/3.0b。本阶段不触发 continuation：`enabled:false` 时客户端 `max_tokens` terminal 保持逐字节透传。
+
+> 已验证：P0 目标单测、真实 Anthropic mock HTTP→History readback、真实 terminal 驱动的 in-memory telemetry readback，以及 telemetry.db 持久化 readback。完整 backend 回归见本阶段收口记录。
+
+> 实现提交：`666140c6`、`5f9481bf`、`ee15d985`、`3f336beb`、`1f2feeac`、`12b54b64`、`237fb7af`；收口文档与格式化另列提交。
+
+> 计划与实现差异：Task 0.5 的类型/Context 单测并入 `tests/context/request-buffered-merge-info.unit.test.ts`，生产 readback 使用 `tests/pipeline/max-tokens-truncation-recording.it.test.ts`；任务的持久化与真实 handler 验收标准均保持不变。
+
+> 范围边界：CC/Responses 的 `incomplete_details.reason` 捕获和纯 terminal predicate 已在 P0 落地；它们的 terminal observer、分类生产接线与 History/telemetry readback 仍是 P3 的显式硬前置，而非本阶段遗漏。
+
+> 字节等价说明：P0 只在 candidate 的 rendered-frame 旁路观察并在 settle 前写 history metadata；不改变任何 client frame、终止帧或继续请求。`enabled:false` 的针对性真实 HTTP test 断言客户端仍收到原始 `stop_reason:max_tokens`。
+
+> 配置说明：`config.yaml` 的 P0 默认包含 `max_tokens_continuation`，使 bundled-default 解析显式表达已冻结的默认策略；该默认仍是 `enabled:false`，没有启用任何 P1 continuation 行为。
+
+> 验收范围声明：Gate B/C 真 GHC PoC 未按用户指令运行；P0 的门簇框架由判定反例、per-format predicate 和独立 readback 测试覆盖。
+
 > **修订记录（2026-07-23，据 GPT plan-review [blocker] 修订，spec §11/§5.2 已同步纠正）**：原版本声称"分型判定器直接读 `ledger.snapshot()` 的最后一块类型 + 闭合状态"——**这是错的，已被审查坐实为 blocker**。姊妹 `CommittedBlocksLedger` 的 `CanonicalBlock` union 只有 `text|tool_use`（`committed-blocks-ledger.ts:15`），**丢弃 thinking**（`committed-block-extractor.ts:54-60` 明确 drop），且**只记已闭合、已提交的块**（partial/悬挂块从不入账）。用它做分型判定会把"text 后 thinking 截断"误判为 text（因为 ledger 最后一项是 text，thinking 从未入账）——这会让本该走 C 类透传的请求被误判为 A 类走续写，**直接违反 ADR D3**（虽然 D3 硬约束是 tool_use 而非 thinking，但误判 thinking 为可续写文本同样是安全性错误：thinking 内容不该被当作"已完成的文本前缀"处理）。也无法区分 A'（未闭合 text）/ B（悬挂 tool_use）/ B-closed（闭合 tool_use）——ledger 对这些"未提交"或"部分提交"的状态一概没有记录。
 >
 > **修订：P0 须新建独立、per-format 的 terminal observer**（记「最后一个 wire 块的原始 kind + 是否收到闭合信号 + 是否含 thinking」），作为分型判定器的唯一输入源；**continuation ledger 继续只承担"可回放已提交前缀"的职责**（P1 续写构造请求时用），两者分工不重叠、不互相替代。observer 在 candidate-session 的 `onRenderedFrame`（`src/lib/pipeline/generation/candidate-response-session.ts:110-135`）旁挂一份轻量状态更新（不重解析 wire，随现有渲染循环顺带记录），保留原始 wire 顺序。
@@ -109,7 +125,7 @@ test("thinking-after-text: text block committed (closed), THEN thinking block st
 - [x] **Step 2: 跑，失败。**
 - [x] **Step 3: 实现** —— `updateAnthropicTerminalObserver` 读 Anthropic 帧的 `type`/`content_block.type`：`content_block_start` 时更新 `lastBlockKind` 为新块类型、`lastBlockClosed=false`；`content_block_stop` 时（若匹配当前最后块的 index，或简化为"最近一次 start 对应的 stop"）设 `lastBlockClosed=true`；`content_block_delta` 不改变 kind/closed（只是同一块内的增量）。**实现须显式不依赖 ledger**——本文件不 import `committed-blocks-ledger.ts`。
 - [x] **Step 4: 跑，通过。**
-- [ ] **Step 5: 提交** → `feat(pipeline): independent Anthropic terminal observer (last wire block kind+closed, NOT the continuation ledger)`。
+- [x] **Step 5: 提交** → `feat(pipeline): independent Anthropic terminal observer (last wire block kind+closed, NOT the continuation ledger)`。
 
 ### Task 0.2: 分型判定器（穷尽判定表，spec §5.2，消费 observer）
 
@@ -151,7 +167,7 @@ test("thinking-after-text (the exact ledger-would-misclassify case from Task 0.1
 - [x] **Step 2: 跑，失败。**
 - [x] **Step 3: 实现** —— 穷尽 switch，输入类型为 `TerminalObserverState`（本文件**不** import `committed-blocks-ledger.ts`，防止未来漂移回 blocker 状态）；`thinking` 分支忽略 `lastBlockClosed`，唯一判据是类型本身。
 - [x] **Step 4: 跑，通过。**
-- [ ] **Step 5: 提交** → `feat(pipeline): max_tokens truncation classifier consuming the independent terminal observer (A/B/B-closed/C exhaustive)`。
+- [x] **Step 5: 提交** → `feat(pipeline): max_tokens truncation classifier consuming the independent terminal observer (A/B/B-closed/C exhaustive)`。
 
 ### Task 0.2b: Responses `incomplete_details.reason` accumulator 捕获（P0 前置依赖，非 P3）
 
@@ -168,7 +184,7 @@ test("responses accumulator captures incomplete_details.reason on response.incom
 ```
 
 - [x] **Step 2-4:** 跑失败 → 在 `ResponsesStreamAccumulator` 接口加 `incompleteReason?: string` 字段，`case "response.incomplete"` 分支补 `acc.incompleteReason = event.response.incomplete_details?.reason` → 跑通过。
-- [ ] **Step 5: 提交** → `fix(responses): capture incomplete_details.reason in stream accumulator (P0 prerequisite for max_tokens classification)`。
+- [x] **Step 5: 提交** → `fix(responses): capture incomplete_details.reason in stream accumulator (P0 prerequisite for max_tokens classification)`。
 
 ### Task 0.3: per-format terminal 检测
 
@@ -190,7 +206,7 @@ test("responses: status incomplete + reason max_output_tokens is terminal", () =
 ```
 
 - [x] **Step 2-4:** 跑失败 → 实现（纯字符串比较，读调用方传入值，本函数不导入 accumulator 类型，保持 type-light）→ 跑通过。
-- [ ] **Step 5: 提交** → `feat(pipeline): per-format max_tokens terminal detection`。
+- [x] **Step 5: 提交** → `feat(pipeline): per-format max_tokens terminal detection`。
 
 ### Task 0.4: config schema 骨架（仅 schema + state 解析，不接线续写触发；但**含 P1 前移的组合校验**）
 
@@ -229,7 +245,7 @@ test("visibility=transparent + classes.text=continue: allowed, no downgrade", ()
 - [x] **Step 2: 跑，失败。**
 - [x] **Step 3: 实现** —— `MaxTokensContinuationOverrideSchema`（`z.object({enabled, max_rounds, classes:{text,tool_use,thinking}, message, visibility, thinking_retry_budget}).strict()`，放**新的顶层** `max_tokens_continuation` 段）。`state.ts` 加 `maxTokensContinuationShared`/`maxTokensContinuationOverrides` + `resolveMaxTokensContinuation(vendor)`（per-vendor > shared > 内置默认）+ `CONFIG_MANAGED_DEFAULTS` 补齐 + test helper 三处覆盖。**新增** `resolveEffectiveMaxTokensContinuation(vendor)`（在 `resolveMaxTokensContinuation` 之上叠加组合校验层：`visibility==="passthrough"` 时把 `classes.*` 中 `"continue"`/`"retry_with_budget"` 强制降级为 `"passthrough"`，返回值附带 `diagnostics: string[]` 含 `"strategy-prevented-stitch"`）——**这个函数本 task 建好但暂无消费者**（P0 保持零续写边界），P1 Task 1.x 直接消费它，不重新实现。
 - [x] **Step 4: 跑，通过。**
-- [ ] **Step 5: 提交** → `feat(config): max_tokens_continuation schema + state resolution + effective-config combination validation (unwired to driver)`。
+- [x] **Step 5: 提交** → `feat(config): max_tokens_continuation schema + state resolution + effective-config combination validation (unwired to driver)`。
 
 ### Task 0.5: history `pipelineInfo.maxTokensContinuation` 字段 + **Anthropic 真实生产接线**（非仅类型占位）
 
@@ -257,7 +273,7 @@ test("Anthropic direct: a thinking-terminal max_tokens records truncationClass=t
 ```
 
 - [x] **Step 2-4:** 跑失败 → 在 `src/lib/history/types.ts` 的 `PipelineInfo` 加 `maxTokensContinuation?: MaxTokensContinuationDiag` 字段（`truncationClass: TruncationClass`、`roundsAttempted: number`、`roundsSucceeded: number`、`continuedTokens: number`、`perRoundStopReason: Array<string>`、`clientVisibleStopReason: string`、`suppressedMaxTokens: boolean`、`visibilityMode: "transparent"|"passthrough"|"marker"`、**`strategyPreventedStitch?: boolean`**——本字段在 P0 就随其余字段一起定稿，P0 阶段恒为 `undefined`/不写（因为 P0 尚无 visibility/组合校验消费点，`resolveEffectiveMaxTokensContinuation` 的 `diagnostics` 数组本阶段不会真的产生 `"strategy-prevented-stitch"` 值——只有 P1 Task 1.2/1.5 才会驱动它，此处只是把字段形状预先定好，避免 P1 阶段再走一次「新增顶层字段三处必改」）+ 在 `src/lib/context/request.ts` 按 persistence-async-invariants §2「新增顶层字段三处必改」清单：① `mergedPipelineInfo()` 合并槽位（`_maxTokensContinuationInfo` + `recordMaxTokensTruncation(diag)` 方法）② 核实 `v3/projection.ts` 的 `pipelineInfo` 投影路径是整体转发还是逐字段 allowlist，据实处理 ③ 若有 `Pick<HistoryEntry,...>` allowlist 需要显式加键。**真实接线（仅 Anthropic）**：在 `src/routes/messages/handler-v4.ts`（正常 terminal drain 分支）的 terminal 判断点，读 Anthropic observer 快照 + `classifyMaxTokensTruncation` + `isAnthropicMaxTokensTerminal`，若命中 max_tokens 终止（无论 `enabled` 与否）调用 `env.ctx.recordMaxTokensTruncation({ truncationClass, roundsAttempted: 1, roundsSucceeded: 0, continuedTokens: 0, perRoundStopReason: [rawStopReason], clientVisibleStopReason: rawStopReason, suppressedMaxTokens: false, visibilityMode: "passthrough" })`（P0 阶段这是**唯一一轮**，字段值反映"未续写、如实透传"的现状；P1 才会真正驱动多轮/抑制逻辑 + `strategyPreventedStitch` 真实值）。**`src/routes/chat-completions/handler-v4.ts`/`src/routes/responses/handler-v4.ts` 本阶段不改动**（无 observer 可读，接线推迟到 P3 Task 3.0b）。
-- [ ] **Step 5: 提交** → `feat(history+handler): wire max_tokens truncation observer to Anthropic terminal call site (production observability, zero continuation behavior)`。
+- [x] **Step 5: 提交** → `feat(history+handler): wire max_tokens truncation observer to Anthropic terminal call site (production observability, zero continuation behavior)`。
 
 **风险标注：** 本 task 是「新增顶层字段」的持久化配套三处修改 + Anthropic 生产接线，必须按 skill `persistence-async-invariants` §2 逐条核实。验收用**真实 http 流程 + `getHistory()` 读持久化 entry**，不满足于类型编译通过或手动 round-trip。
 
@@ -272,11 +288,11 @@ test("max_tokens_truncation{class} counter records via telemetry readback after 
 ```
 
 - [x] **Step 2-4:** 跑失败 → 在 `src/lib/observability/telemetry-dimensions.ts` 或新文件注册 `max_tokens_truncation` 维度（`extract: (entry) => entry.pipelineInfo?.maxTokensContinuation?.truncationClass ?? null`）→ 跑通过（因为 Task 0.5 已把真实数据写入 `pipelineInfo`，本 task 只需注册维度提取即可获得真实计数，无需额外接线）。
-- [ ] **Step 5: 提交** → `feat(telemetry): max_tokens_truncation class dimension (real terminal-driven, independent of continuation enablement)`。
+- [x] **Step 5: 提交** → `feat(telemetry): max_tokens_truncation class dimension (real terminal-driven, independent of continuation enablement)`。
 
 ### P0 收口（Anthropic-only；CC/Responses 见 P3 Task 3.0a/3.0b 收口）
 
-- [ ] `test:fast` + `typecheck` 绿。
-- [ ] **golden 字节等价验证**：即便本阶段新增了 handler 侧的 observer 更新 + `recordMaxTokensTruncation` 调用，客户端 wire 输出必须逐字节不变（observer 更新是纯旁路记录，不修改任何 frame）——用既有 golden 测试套件回归确认。
-- [ ] **独立诊断价值验收（真实生产路径，非类型 round-trip，Anthropic-only）**：走真实 http 请求（mock 上游产出 C 类 thinking-only 截断），确认：① `getHistory()` 读回的持久化 entry 含 `pipelineInfo.maxTokensContinuation.truncationClass === "thinking"`；② telemetry readback 显示 `max_tokens_truncation{class=thinking}` 计数递增；③ 客户端 wire 逐字节等于现状（无续写、无抑制，`enabled:false` 默认）。
-- [ ] **诚实记录范围边界**：本阶段收口时明确记录"CC/Responses 的分型观测尚未生产接线，登记为 P3 Task 3.0a/3.0b 的显式前置内容，非静默遗漏"——若本计划在 P0 完成后因任何原因中止于此，运维应知道当前只有 Anthropic 请求的 max_tokens 分型可观测。
+- [x] `test:fast` + `typecheck` 绿。
+- [x] **golden 字节等价验证**：即便本阶段新增了 handler 侧的 observer 更新 + `recordMaxTokensTruncation` 调用，客户端 wire 输出必须逐字节不变（observer 更新是纯旁路记录，不修改任何 frame）——用既有 golden 测试套件回归确认。
+- [x] **独立诊断价值验收（真实生产路径，非类型 round-trip，Anthropic-only）**：走真实 http 请求（mock 上游产出 C 类 thinking-only 截断），确认：① `getHistory()` 读回的持久化 entry 含 `pipelineInfo.maxTokensContinuation.truncationClass === "thinking"`；② telemetry readback 显示 `max_tokens_truncation{class=thinking}` 计数递增；③ 客户端 wire 逐字节等于现状（无续写、无抑制，`enabled:false` 默认）。
+- [x] **诚实记录范围边界**：本阶段收口时明确记录"CC/Responses 的分型观测尚未生产接线，登记为 P3 Task 3.0a/3.0b 的显式前置内容，非静默遗漏"——若本计划在 P0 完成后因任何原因中止于此，运维应知道当前只有 Anthropic 请求的 max_tokens 分型可观测。

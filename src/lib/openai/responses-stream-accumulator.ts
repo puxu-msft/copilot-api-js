@@ -4,7 +4,11 @@
  */
 
 import type { BaseStreamAccumulator } from "~/lib/stream"
-import type { GhcCompletionTokensDetails, GhcInputTokensDetails } from "~/types/api/ghc-usage"
+import type {
+  //
+  GhcCompletionTokensDetails,
+  GhcInputTokensDetails,
+} from "~/types/api/ghc-usage"
 import type { ResponsesStreamEvent } from "~/types/api/openai-responses"
 
 import { nonNegOrUndef } from "~/types/api/ghc-usage"
@@ -111,7 +115,12 @@ export function accumulateResponsesStreamEvent(event: ResponsesStreamEvent, acc:
         const idet = event.response.usage.input_tokens_details as GhcInputTokensDetails | undefined
         acc.cachedInputTokens = idet?.cached_tokens ?? 0
         acc.cacheWriteInputTokens = nonNegOrUndef(idet?.cache_write_tokens) ?? 0
-        acc.inputDetails = { text: nonNegOrUndef(idet?.text_tokens), audio: nonNegOrUndef(idet?.audio_tokens), image: nonNegOrUndef(idet?.image_tokens), video: nonNegOrUndef(idet?.video_tokens) }
+        acc.inputDetails = {
+          text: nonNegOrUndef(idet?.text_tokens),
+          audio: nonNegOrUndef(idet?.audio_tokens),
+          image: nonNegOrUndef(idet?.image_tokens),
+          video: nonNegOrUndef(idet?.video_tokens),
+        }
         const odet = event.response.usage.output_tokens_details as GhcCompletionTokensDetails | undefined
         acc.outputDetails = {
           text: nonNegOrUndef(odet?.text_tokens),

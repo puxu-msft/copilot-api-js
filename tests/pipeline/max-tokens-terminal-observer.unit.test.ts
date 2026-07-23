@@ -1,6 +1,14 @@
-import { expect, test } from "bun:test"
+import {
+  //
+  expect,
+  test,
+} from "bun:test"
 
-import { createTerminalObserver, updateAnthropicTerminalObserver } from "~/lib/pipeline/max-tokens-terminal-observer"
+import {
+  //
+  createTerminalObserver,
+  updateAnthropicTerminalObserver,
+} from "~/lib/pipeline/max-tokens-terminal-observer"
 
 test("A': text block_start then delta then cut without content_block_stop records an open text block", () => {
   const observer = createTerminalObserver()

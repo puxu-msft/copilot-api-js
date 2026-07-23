@@ -1144,8 +1144,14 @@ const EXEMPT: ReadonlyArray<ExemptField> = [
   { configKey: "buffered_retry.heartbeat_sec", reason: "vendor-neutral shared cap → bufferedRetryShared; see buffered-retry-keys.test.ts" },
   { configKey: "buffered_retry.continuation.enabled", reason: "shared continuation → bufferedRetryContinuationShared; see buffered-retry-keys.test.ts" },
   { configKey: "buffered_retry.continuation.message", reason: "shared continuation → bufferedRetryContinuationShared; see buffered-retry-keys.test.ts" },
-  { configKey: "anthropic.buffered_retry.continuation.enabled", reason: "per-vendor continuation → bufferedRetryContinuationOverrides.anthropic; see buffered-retry-keys.test.ts" },
-  { configKey: "anthropic.buffered_retry.continuation.message", reason: "per-vendor continuation → bufferedRetryContinuationOverrides.anthropic; see buffered-retry-keys.test.ts" },
+  {
+    configKey: "anthropic.buffered_retry.continuation.enabled",
+    reason: "per-vendor continuation → bufferedRetryContinuationOverrides.anthropic; see buffered-retry-keys.test.ts",
+  },
+  {
+    configKey: "anthropic.buffered_retry.continuation.message",
+    reason: "per-vendor continuation → bufferedRetryContinuationOverrides.anthropic; see buffered-retry-keys.test.ts",
+  },
   {
     configKey: "anthropic.buffered_retry.enabled",
     reason: "Anthropic's switch is protect_streaming_generation; `enabled` ignored — see buffered-retry-keys.test.ts",
@@ -1181,6 +1187,115 @@ const EXEMPT: ReadonlyArray<ExemptField> = [
     configKey: "retry.strategies",
     reason:
       "enum-keyed Record<configKey,{enabled}> (RFC 2026-07-21-retry-strategy-registry §3.4, plan Task 4) — apply/retain-on-absence/reset + typo'd-key schema rejection + allow-and-warn-on-shared-strategy-disable + end-to-end assembleRetryStrategies wiring all covered in tests/config/retry-strategies.it.test.ts",
+  },
+
+  // Nested max_tokens continuation policy is covered by its dedicated schema/application/effective-config suite.
+  { configKey: "max_tokens_continuation.enabled", reason: "shared max_tokens continuation policy; see max-tokens-continuation-config.unit.test.ts" },
+  { configKey: "max_tokens_continuation.max_rounds", reason: "shared max_tokens continuation policy; see max-tokens-continuation-config.unit.test.ts" },
+  { configKey: "max_tokens_continuation.classes.text", reason: "shared max_tokens continuation policy; see max-tokens-continuation-config.unit.test.ts" },
+  { configKey: "max_tokens_continuation.classes.tool_use", reason: "shared max_tokens continuation policy; see max-tokens-continuation-config.unit.test.ts" },
+  { configKey: "max_tokens_continuation.classes.thinking", reason: "shared max_tokens continuation policy; see max-tokens-continuation-config.unit.test.ts" },
+  { configKey: "max_tokens_continuation.message", reason: "shared max_tokens continuation policy; see max-tokens-continuation-config.unit.test.ts" },
+  { configKey: "max_tokens_continuation.visibility", reason: "shared max_tokens continuation policy; see max-tokens-continuation-config.unit.test.ts" },
+  {
+    configKey: "max_tokens_continuation.thinking_retry_budget",
+    reason: "shared max_tokens continuation policy; see max-tokens-continuation-config.unit.test.ts",
+  },
+  {
+    configKey: "anthropic.max_tokens_continuation.enabled",
+    reason: "per-vendor Anthropic max_tokens continuation policy; see max-tokens-continuation-config.unit.test.ts",
+  },
+  {
+    configKey: "anthropic.max_tokens_continuation.max_rounds",
+    reason: "per-vendor Anthropic max_tokens continuation policy; see max-tokens-continuation-config.unit.test.ts",
+  },
+  {
+    configKey: "anthropic.max_tokens_continuation.classes.text",
+    reason: "per-vendor Anthropic max_tokens continuation policy; see max-tokens-continuation-config.unit.test.ts",
+  },
+  {
+    configKey: "anthropic.max_tokens_continuation.classes.tool_use",
+    reason: "per-vendor Anthropic max_tokens continuation policy; see max-tokens-continuation-config.unit.test.ts",
+  },
+  {
+    configKey: "anthropic.max_tokens_continuation.classes.thinking",
+    reason: "per-vendor Anthropic max_tokens continuation policy; see max-tokens-continuation-config.unit.test.ts",
+  },
+  {
+    configKey: "anthropic.max_tokens_continuation.message",
+    reason: "per-vendor Anthropic max_tokens continuation policy; see max-tokens-continuation-config.unit.test.ts",
+  },
+  {
+    configKey: "anthropic.max_tokens_continuation.visibility",
+    reason: "per-vendor Anthropic max_tokens continuation policy; see max-tokens-continuation-config.unit.test.ts",
+  },
+  {
+    configKey: "anthropic.max_tokens_continuation.thinking_retry_budget",
+    reason: "per-vendor Anthropic max_tokens continuation policy; see max-tokens-continuation-config.unit.test.ts",
+  },
+  {
+    configKey: "openai_responses.max_tokens_continuation.enabled",
+    reason: "per-vendor Responses max_tokens continuation policy; see max-tokens-continuation-config.unit.test.ts",
+  },
+  {
+    configKey: "openai_responses.max_tokens_continuation.max_rounds",
+    reason: "per-vendor Responses max_tokens continuation policy; see max-tokens-continuation-config.unit.test.ts",
+  },
+  {
+    configKey: "openai_responses.max_tokens_continuation.classes.text",
+    reason: "per-vendor Responses max_tokens continuation policy; see max-tokens-continuation-config.unit.test.ts",
+  },
+  {
+    configKey: "openai_responses.max_tokens_continuation.classes.tool_use",
+    reason: "per-vendor Responses max_tokens continuation policy; see max-tokens-continuation-config.unit.test.ts",
+  },
+  {
+    configKey: "openai_responses.max_tokens_continuation.classes.thinking",
+    reason: "per-vendor Responses max_tokens continuation policy; see max-tokens-continuation-config.unit.test.ts",
+  },
+  {
+    configKey: "openai_responses.max_tokens_continuation.message",
+    reason: "per-vendor Responses max_tokens continuation policy; see max-tokens-continuation-config.unit.test.ts",
+  },
+  {
+    configKey: "openai_responses.max_tokens_continuation.visibility",
+    reason: "per-vendor Responses max_tokens continuation policy; see max-tokens-continuation-config.unit.test.ts",
+  },
+  {
+    configKey: "openai_responses.max_tokens_continuation.thinking_retry_budget",
+    reason: "per-vendor Responses max_tokens continuation policy; see max-tokens-continuation-config.unit.test.ts",
+  },
+  {
+    configKey: "chat_completions.max_tokens_continuation.enabled",
+    reason: "per-vendor Chat Completions max_tokens continuation policy; see max-tokens-continuation-config.unit.test.ts",
+  },
+  {
+    configKey: "chat_completions.max_tokens_continuation.max_rounds",
+    reason: "per-vendor Chat Completions max_tokens continuation policy; see max-tokens-continuation-config.unit.test.ts",
+  },
+  {
+    configKey: "chat_completions.max_tokens_continuation.classes.text",
+    reason: "per-vendor Chat Completions max_tokens continuation policy; see max-tokens-continuation-config.unit.test.ts",
+  },
+  {
+    configKey: "chat_completions.max_tokens_continuation.classes.tool_use",
+    reason: "per-vendor Chat Completions max_tokens continuation policy; see max-tokens-continuation-config.unit.test.ts",
+  },
+  {
+    configKey: "chat_completions.max_tokens_continuation.classes.thinking",
+    reason: "per-vendor Chat Completions max_tokens continuation policy; see max-tokens-continuation-config.unit.test.ts",
+  },
+  {
+    configKey: "chat_completions.max_tokens_continuation.message",
+    reason: "per-vendor Chat Completions max_tokens continuation policy; see max-tokens-continuation-config.unit.test.ts",
+  },
+  {
+    configKey: "chat_completions.max_tokens_continuation.visibility",
+    reason: "per-vendor Chat Completions max_tokens continuation policy; see max-tokens-continuation-config.unit.test.ts",
+  },
+  {
+    configKey: "chat_completions.max_tokens_continuation.thinking_retry_budget",
+    reason: "per-vendor Chat Completions max_tokens continuation policy; see max-tokens-continuation-config.unit.test.ts",
   },
 ]
 

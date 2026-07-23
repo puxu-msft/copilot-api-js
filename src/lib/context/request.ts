@@ -296,7 +296,8 @@ export function createRequestContext(opts: {
   let _bufferedMergeInfo: PipelineInfo["bufferedMerge"] | null = null
   let _maxTokensContinuationInfo: PipelineInfo["maxTokensContinuation"] | null = null
   const mergedPipelineInfo = (): PipelineInfo | null => {
-    if (!_pipelineInfo && !_streamTimeouts && !_askNormalization && !_sendMessageNormalization && !_bufferedMergeInfo && !_maxTokensContinuationInfo) return null
+    if (!_pipelineInfo && !_streamTimeouts && !_askNormalization && !_sendMessageNormalization && !_bufferedMergeInfo && !_maxTokensContinuationInfo)
+      return null
     return {
       ..._pipelineInfo,
       ..._streamTimeouts,
@@ -1191,7 +1192,6 @@ export function createRequestContext(opts: {
       _pipelineInfo = info
       recordAttemptDiagnostic("pipeline.info", "info", info)
     },
-
 
     setStreamTimeouts(patch: { streamIdleTimeoutMs?: number; responseHeaderTimeoutMs?: number }) {
       // Merge (the two fields are independent). Kept separate from `_pipelineInfo`

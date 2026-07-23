@@ -10,14 +10,21 @@ export type TruncationClass = "text" | "tool_use" | "tool_use_closed" | "thinkin
  */
 export function classifyMaxTokensTruncation(observer: TerminalObserverState): TruncationClass | undefined {
   switch (observer.lastBlockKind) {
-    case "text":
+    case "text": {
       return "text"
-    case "tool_use":
+    }
+    case "tool_use": {
       return observer.lastBlockClosed ? "tool_use_closed" : "tool_use"
-    case "thinking":
+    }
+    case "thinking": {
       return "thinking"
-    case undefined:
+    }
+    case undefined: {
       return undefined
+    }
+    default: {
+      return undefined
+    }
   }
 }
 

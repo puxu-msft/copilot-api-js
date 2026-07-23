@@ -266,7 +266,7 @@ function mapContinuation(m: BufferedRetryOverride): Partial<BufferedRetryContinu
   if (!c) return undefined
   const out: Partial<BufferedRetryContinuation> = {}
   if (c.enabled !== undefined) out.enabled = c.enabled
-  if (c.message != null) out.message = c.message
+  if (c.message !== undefined && c.message !== null) out.message = c.message
   return out
 }
 

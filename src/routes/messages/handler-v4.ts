@@ -143,6 +143,16 @@ import {
   type CandidateResponseSessionFactory,
 } from "~/lib/pipeline/generation/candidate-response-session"
 import { createRuntimeHedgePolicy } from "~/lib/pipeline/generation/runtime-policy"
+import {
+  //
+  createTerminalObserver,
+  updateAnthropicTerminalObserver,
+} from "~/lib/pipeline/max-tokens-terminal-observer"
+import {
+  //
+  classifyMaxTokensTruncation,
+  isAnthropicMaxTokensTerminal,
+} from "~/lib/pipeline/max-tokens-truncation-class"
 import { anthropicNonStreamingTruncation } from "~/lib/pipeline/non-streaming-completeness"
 import { clientFirstRealSinkOpts } from "~/lib/pipeline/request-timing"
 import { createStreamRepetitionChecker } from "~/lib/repetition-detector"
@@ -158,8 +168,6 @@ import {
   resolveContinuation,
   state,
 } from "~/lib/state"
-import { classifyMaxTokensTruncation, isAnthropicMaxTokensTerminal } from "~/lib/pipeline/max-tokens-truncation-class"
-import { createTerminalObserver, updateAnthropicTerminalObserver } from "~/lib/pipeline/max-tokens-terminal-observer"
 import { createUpstreamHttpTransport } from "~/lib/transport/http-transport"
 import { resolveInboundQuery } from "~/lib/transport/query-forward"
 import {
@@ -270,7 +278,10 @@ const createAnthropicCandidateResponseSession: CandidateResponseSessionFactory =
       onRenderedFrame(state, frame) {
         if (typeof frame.data === "string") {
           try {
-            updateAnthropicTerminalObserver(state.terminalObserver, JSON.parse(frame.data) as { type: string; index?: number; content_block?: { type: string } })
+            updateAnthropicTerminalObserver(
+              state.terminalObserver,
+              JSON.parse(frame.data) as { type: string; index?: number; content_block?: { type: string } },
+            )
           } catch {
             // Non-JSON SSE frames (for example ping) do not contain Anthropic block state.
           }
