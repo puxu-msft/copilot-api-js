@@ -109,7 +109,7 @@
 - 续到自然终止（`end_turn`/`tool_use`）→ **抑制**首轮的 `message_delta{stop_reason:max_tokens}` + `message_stop`（不转发），保持流 open，续写轮块重编号接续，以续写轮的**真实终止符**收尾。客户端看到一条干净的完整流，不知发生过续写。
 - **藏不掉 → 透传**：若续到 `max_rounds` 仍是 `max_tokens`（预算真耗尽、无干净终止可替换），或分型不续写（B/C 默认），则**如实转发** terminal `max_tokens`（无可藏之物）。这是诚实兜底、非纠结取舍。
 
-**多策略可配置（用户裁决：支持多种策略，§6 `visibility`）**：默认 `transparent`，但保留 `passthrough`（永不缝合、始终透传 max_tokens，等于关掉可见性隐藏）与 `marker`（缝合 + 可辨识 marker，给想要「完整答案 + 知道被截过」的场景）作为可选策略。选 `transparent` 时无 marker、无双计费提示——用户要的就是「藏掉」。
+**多策略可配置（用户裁决：支持多种策略，§6 `visibility`）**：默认 `transparent`，但保留 `passthrough`（永不缝合、始终透传 max_tokens，等于关掉可见性隐藏）与 `marker`（**与 transparent 一样抑制被替代的首轮 terminator**、区别仅为在续写前注入一个可辨识且格式合法的 marker，给想要「完整答案 + 知道被截过」的场景）作为可选策略。选 `transparent` 时无 marker、无双计费提示——用户要的就是「藏掉」。**`marker` ≠ 不抑制终止符**：一旦首轮 `message_stop`/`[DONE]`/`response.incomplete` 转出、流已合法终止、无法同流续写；故 marker 必须与 transparent 同样抑制首轮 terminator，仅额外注 marker（门 D 须以此真实 producer wire 作 SDK oracle）。
 
 **`usage.output_tokens` 呈现（简化，用户不在乎下游预算）**：transparent 缝合流报**各轮真实总和**（richest-data-flow：末端拿真数据；`output_tokens > max_tokens` 是真实消耗、用户已接受下游可能不识）。无需为「下游误判超预算」做特殊处理（下游本就不强制预算）。marker 策略下 marker 文本计入 output_tokens。
 
@@ -143,7 +143,7 @@
 
 **C 类判据优先级（消歧，审查建议）**：以**「最后块 == thinking」为唯一判据**，不用「thinking_tokens ≈ output_tokens」——后者在「已 commit 可见 text + 其后 thinking 截断」时会误标（该场景有可见答案、应归 A' 而非 C）。thinking_tokens 占比仅作 telemetry **辅助**维度、不参与分型。
 
-判定须在 commit-boundary 累积器 / ledger 上做（已知块结构），不重解析 wire。per-format 分型判定（CC/Responses 无 content_block 概念，靠 finish_reason=length + 累积块类型推断，§7）。**混合块序列**（text→tool_use、多 tool_use 链）归「最后块」所属分型。**CC tool_calls 尾随约束不适用（master FINDINGS G5a PASS 已证伪）**：`exp/continuation-shape/FINDINGS.md` G5a 实测 GHC 接受 `assistant{tool_calls}` 直接接 user（无 tool role）、返回正常 completion 非 400——OpenAI 标准的 tool_calls 尾随约束在 GHC 上不成立，故 CC 续写不撞该 hazard、无需 partial-degrade fallback（推翻续写 spec §4.3 CC 行旧约束）。G4 PASS 亦证 CC 并行 tool_call index 严格串行（块边界判据成立，§7）。
+判定须在**独立 per-format terminal observer** 上做（记最后 wire 块 kind + 是否闭合 + thinking，§11 P0——**不是** continuation ledger：后者丢 thinking + 只记已闭合 committed 块，无法判 A'/B/C），不重解析 wire。per-format 分型判定（CC/Responses 无 content_block 概念，靠 finish_reason=length + 累积块类型推断，§7）。**混合块序列**（text→tool_use、多 tool_use 链）归「最后块」所属分型。**CC tool_calls 尾随约束不适用（master FINDINGS G5a PASS 已证伪）**：`exp/continuation-shape/FINDINGS.md` G5a 实测 GHC 接受 `assistant{tool_calls}` 直接接 user（无 tool role）、返回正常 completion 非 400——OpenAI 标准的 tool_calls 尾随约束在 GHC 上不成立，故 CC 续写不撞该 hazard、无需 partial-degrade fallback（推翻续写 spec §4.3 CC 行旧约束）。G4 PASS 亦证 CC 并行 tool_call index 严格串行（块边界判据成立，§7）。
 
 ### 5.3 transparent-stitch wire 机制 + terminal ownership matrix（承重；审查 major）
 
@@ -249,8 +249,8 @@ max_tokens 在各格式 wire 上形态不同，续传触发须 per-format 识别
 
 **底座已 landed master（2026-07-23 复核纠正——原 spec 误称「仅在分支、master 尚无」被实测证伪）**：续写 spec 的 committed-blocks-ledger + extractor + continuation-builder + `continued` verdict + `runContinuation` **全部已合并入 master**（`git grep committedBlocksLedger master -- src/` 命中 `driver.ts`/`types.ts`/`handler-v4.ts`；`.worktrees/continuation-retry/` 已移除）。**根因**：起草时（会话早期）该基建确在分支、`grep` 确零命中；期间并发会话把续写工作 landed 到 master + 移除 worktree，ground truth 在我脚下变了——教训是**并发仓库里，修订期须 re-verify landed state，不复用早期 grep 快照**（记忆 `verify-running-server-has-fix-before-diagnosing` / `remerge-stale-feature-across-subsystem-rewrite`）。故：
 
-- **P0（识别 + 观测层，可独立先行）**：分型判定器 + per-format terminal 检测 + §9 分型 telemetry counter（`class=text|tool_use|thinking`）+ history `truncationClass` 字段。**纯识别、零续写、零行为变更**——立即产出 C 类零产出可见性价值。**累积器来源已定**：直接复用 master 已有的 `committed-blocks-ledger` + `extractAnthropicCommittedBlocks`（`handler-v4.ts:1219`）或 codec commit-boundary accumulator，**无需自建**（原「二选一自建轻量累积器」前提已消失）。
-- **P1（依赖已满足）**：A 类续写触发分支——**成功终止截获**（§5.3，terminal drain 前）+ 复用已 landed 的 `continuation.buildRequest`/`runContinuation`/`continued` verdict + visibility 契约（§4，**默认 transparent**）+ 独立预算（§6）。默认 `enabled:false` → 字节等价。**唯一新增实现**：成功路径 terminal 截获（master 现有 continuation 仅覆盖 cut 路径，§5.3）。
+- **P0（识别 + 观测层，可独立先行）**：分型判定器 + per-format terminal 检测 + §9 分型 telemetry counter（`class=text|tool_use|thinking`）+ history `truncationClass`/`perRoundStopReason`/`clientVisibleStopReason` 字段。**纯识别、零续写、零行为变更**——立即产出 C 类零产出可见性价值。**分型数据源须新建独立 terminal observer，不能复用 continuation ledger（审查 blocker 纠正）**：master `committed-blocks-ledger.ts` 的 `CanonicalBlock` 仅 `text|tool_use`、**丢弃 thinking**（extractor `committed-block-extractor.ts:54-60`）、且只记**已闭合 committed** 块——分型需要的「最后 wire 块的 kind + 是否闭合 + thinking」它一概没有，拿 `ledger.snapshot()` 末项判分型会把「text 后 thinking 截断」误判为 text→可能违反 ADR D3。故 P0 须建**独立轻量 per-format terminal observer**（记最后 wire 块 kind / 是否收到 `content_block_stop` / 是否有可 replay committed prefix；CC/Responses 记 tool-call/output-item 的打开与完成状态），在 candidate-session `onRenderedFrame` / 原始 accumulator 旁更新、保留原始 wire 顺序、单测覆盖 A'/zero-delta B/B-closed/thinking-after-text 反例。**continuation ledger 只继续承担「可回放已提交前缀」职责**（续写时用），与分型 observer 分工。**P0 须接真实 terminal 调用点**（正常 terminal 时 `recordMaxTokensTruncation`，非仅加类型槽位）——否则「enabled:false 也记分型 counter」无生产路径、验收不成立（审查 major）。
+- **P1（依赖已满足）**：A 类续写触发分支——**成功终止截获**（§5.3，terminal drain 前）+ 复用已 landed 的 `continuation.buildRequest`/`runContinuation`/`continued` verdict + visibility 契约（§4，**默认 transparent**）+ 独立预算（§6）。默认 `enabled:false` → 字节等价。**唯一新增实现**：成功路径 terminal 截获（master 现有 continuation 仅覆盖 cut 路径，§5.3）。**visibility×class 非法组合校验须随 P1 首次消费落地**（passthrough+continue 在同流会写「已终止流后继续」的协议错误），不可延到 P2（审查 major）。
 - **P2（PoC 门后）**：B 类（门 B PASS 后、仅非交互工具 + ADR 修订）/ C 类 `retry_with_budget`（门 C PASS 后）分档启用。
 - **P3（须先出 §5.3 terminal ownership matrix）**：CC / Responses / WS 接入——各自的 terminator 拦截点由矩阵唯一确定，配 producer/client oracle；不能只靠 per-format PoC。
 
