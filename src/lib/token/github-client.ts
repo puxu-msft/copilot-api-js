@@ -11,7 +11,7 @@ import {
   standardHeaders,
 } from "~/lib/copilot-api"
 import { HTTPError } from "~/lib/error"
-import { state } from "~/lib/state"
+import { getTokenReadView } from "~/lib/state-readers/token"
 import { upstreamFetch } from "~/lib/transport/upstream-fetch"
 import { sleep } from "~/lib/utils"
 
@@ -31,7 +31,7 @@ export interface GitHubUser {
 
 export const getGitHubUser = async (): Promise<GitHubUser> => {
   const response = await upstreamFetch(`${GITHUB_API_BASE_URL}/user`, {
-    headers: githubHeaders(state),
+    headers: githubHeaders(getTokenReadView()),
     signal: AbortSignal.timeout(15_000),
   })
 

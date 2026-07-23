@@ -13,8 +13,8 @@ import {
   //
   setGitHubToken,
   setTokenState,
-  state,
 } from "~/lib/state"
+import { getTokenReadView } from "~/lib/state-readers/token"
 import { writeSensitiveOnce } from "~/lib/tui/sensitive-output"
 
 import { CopilotTokenManager } from "./copilot-token-manager"
@@ -74,7 +74,7 @@ export async function initTokenManagers(options: InitTokenManagersOptions = {}):
   }
 
   // Show token if configured
-  if (state.showGitHubToken && !writeSensitiveOnce("github-token", "GitHub token", tokenInfo.token)) {
+  if (getTokenReadView().showGitHubToken && !writeSensitiveOnce("github-token", "GitHub token", tokenInfo.token)) {
     consola.warn("GitHub token display requested, but no healthy interactive terminal is available")
   }
 

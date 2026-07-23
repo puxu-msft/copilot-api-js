@@ -1,8 +1,8 @@
 import {
   //
   setGitHubToken,
-  state,
 } from "~/lib/state"
+import { getTokenReadView } from "~/lib/state-readers/token"
 import { getGitHubUser } from "~/lib/token/github-client"
 
 import type {
@@ -52,7 +52,7 @@ export abstract class GitHubTokenProvider {
    */
   async validate(token: string): Promise<TokenValidationResult> {
     // Temporarily set the token to validate
-    const originalToken = state.githubToken
+    const originalToken = getTokenReadView().githubToken
 
     try {
       setGitHubToken(token)

@@ -106,10 +106,22 @@ export const copilotHeaders = (state: State, opts?: CopilotHeaderOptions) => {
 }
 
 export const GITHUB_API_BASE_URL = "https://api.github.com"
-export const githubHeaders = (state: State) => ({
+
+/**
+ * The narrow role interface `githubHeaders` needs from its caller — NOT the
+ * whole `State` god-object. Adding a field here (when the headers grow) leaves
+ * every call site unchanged: callers pass a context view (e.g. the token
+ * domain's `getTokenReadView()`) that structurally satisfies this. Keeps the
+ * helper decoupled from State while staying extensible + richest-data-flow.
+ */
+export interface GithubHeaderIdentity {
+  readonly githubToken?: string
+  readonly vsCodeVersion?: string
+}
+export const githubHeaders = (identity: GithubHeaderIdentity) => ({
   ...standardHeaders(),
-  authorization: `token ${state.githubToken}`,
-  "editor-version": `vscode/${state.vsCodeVersion}`,
+  authorization: `token ${identity.githubToken}`,
+  "editor-version": `vscode/${identity.vsCodeVersion}`,
   "editor-plugin-version": EDITOR_PLUGIN_VERSION,
   "user-agent": USER_AGENT,
   "x-github-api-version": GITHUB_API_VERSION,
