@@ -25,17 +25,10 @@
  * re-injected by the `{...selected, ...core}` merge regardless.
  */
 
+import { globToRegExp } from "~/lib/models/model-pattern"
+
 /** Headers that must never be stripped, even if a glob matches them. */
 const PROTECTED_HEADERS: ReadonlySet<string> = new Set(["authorization", "content-type", "content-length", "copilot-integration-id"])
-
-/** Translate a glob (`*` `?`) into an anchored case-insensitive RegExp. */
-function globToRegExp(pattern: string): RegExp {
-  const escaped = pattern
-    .replaceAll(/[.+^${}()|[\]\\]/gu, String.raw`\$&`)
-    .replaceAll("*", ".*")
-    .replaceAll("?", ".")
-  return new RegExp(`^${escaped}$`, "iu")
-}
 
 /** Compile patterns into a predicate; returns null when nothing to strip. */
 export function compileHeaderStrip(patterns: ReadonlyArray<string>): ((name: string) => boolean) | null {
