@@ -4,7 +4,8 @@ import { promises as fsPromises } from "node:fs"
 import { dirname } from "node:path"
 import invariant from "tiny-invariant"
 
-import { atomicWriteText } from "./lib/atomic-fs"
+import { atomicWriteText } from "~/lib/atomic-fs"
+
 import { applyCodexConfig } from "./lib/codex-config"
 import { applyConfigToState } from "./lib/config/config"
 import {

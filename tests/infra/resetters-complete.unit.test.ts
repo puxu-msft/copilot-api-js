@@ -27,6 +27,21 @@ import path from "node:path"
 import { RESETTER_NAMES } from "../helpers/isolated-fixture"
 
 const SRC_DIR = path.resolve(import.meta.dir, "../../src")
+const REPO_ROOT = path.resolve(import.meta.dir, "../..")
+
+// Module-global singletons live in `src/` AND (since the monorepo split) in
+// `packages/*/src/`. Reset exports must be enumerated across every package
+// source root, else moving a singleton into a package makes its registered
+// RESETTER look "stale". See spec §8.2.
+function packageSrcRoots(): Array<string> {
+  const packagesDir = path.join(REPO_ROOT, "packages")
+  if (!fs.existsSync(packagesDir)) return []
+  return fs
+    .readdirSync(packagesDir, { withFileTypes: true })
+    .filter((e) => e.isDirectory() && fs.existsSync(path.join(packagesDir, e.name, "src")))
+    .map((e) => path.join(packagesDir, e.name, "src"))
+}
+const SRC_ROOTS = [SRC_DIR, ...packageSrcRoots()]
 
 /**
  * Exports enumerated by the guard but intentionally NOT in `RESETTERS`, each
@@ -96,7 +111,10 @@ function enumerateForTestExports(dir: string): Set<string> {
 }
 
 describe("RESETTERS table is complete (no module-global reset drifts unregistered)", () => {
-  const enumerated = enumerateForTestExports(SRC_DIR)
+  const enumerated = new Set<string>()
+  for (const root of SRC_ROOTS) {
+    for (const name of enumerateForTestExports(root)) enumerated.add(name)
+  }
 
   test("the enumeration actually found exports (guard is not vacuously passing)", () => {
     // Self-check: an empty enumeration would make the assertions below trivially

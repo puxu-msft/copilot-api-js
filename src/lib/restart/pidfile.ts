@@ -1,13 +1,18 @@
 import consola from "consola"
-import { readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs"
+import {
+  //
+  readFileSync,
+  renameSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs"
 
-import { isProcessAlive } from "../process-identity"
+import { isProcessAlive } from "~/lib/process-identity"
 
 // Re-exported for backward-compat call sites / tests that import isProcessAlive
 // from this module (e.g. tests/restart/pidfile.unit.test.ts). The canonical
 // definition now lives in process-identity.ts (a neutral leaf both `restart`
 // and `history/sqlite` can import without cross-subsystem coupling).
-export { isProcessAlive }
 
 /** pidfile 内容 —— 复用 process-identity 的 pid+bootTime，加 port。 */
 export interface PidfileContent {
@@ -74,3 +79,5 @@ export function removePidfileIfOwnedBySelf(path: string, self: { pid: number; bo
   }
   removePidfile(path)
 }
+
+export { isProcessAlive } from "~/lib/process-identity"

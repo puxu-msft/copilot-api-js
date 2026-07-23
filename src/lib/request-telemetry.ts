@@ -1,14 +1,15 @@
 import consola from "consola"
 import fs from "node:fs/promises"
 
+import {
+  //
+  createSerializedAsyncFn,
+} from "~/lib/atomic-fs"
+
 import type { UsageData } from "./history/store"
 import type { ThinkingBlockCounts } from "./observability/telemetry-dimensions"
 import type { TelemetryDatabase } from "./telemetry/db"
 
-import {
-  //
-  createSerializedAsyncFn,
-} from "./atomic-fs"
 import { PATHS } from "./config/paths"
 import { CAPPED_DIMENSION_NAMES } from "./observability/telemetry-dimensions"
 import {

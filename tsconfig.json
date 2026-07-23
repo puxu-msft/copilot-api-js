@@ -19,13 +19,20 @@
     "noUncheckedSideEffectImports": true,
     "baseUrl": ".",
     "paths": {
+      "~/lib/util/*": ["./packages/foundation/src/util/*"],
+      "~/lib/diff/*": ["./packages/foundation/src/diff/*"],
+      "~/lib/stream": ["./packages/foundation/src/stream"],
+      "~/lib/atomic-fs": ["./packages/foundation/src/atomic-fs"],
+      "~/lib/process-identity": ["./packages/foundation/src/process-identity"],
+      "~/lib/repetition-detector": ["./packages/foundation/src/repetition-detector"],
       "~/*": ["./src/*"]
     }
   },
   "include": [
     "src/**/*.ts",
     "tests/**/*.ts",
-    "scripts/**/*.ts"
+    "scripts/**/*.ts",
+    "packages/**/*.ts"
   ],
   "exclude": [
     "tests/e2e-ui/**/*"

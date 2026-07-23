@@ -5,6 +5,12 @@ import consola from "consola"
 import path from "node:path"
 import { getProxyForUrl } from "proxy-from-env"
 
+import {
+  //
+  getProcessIdentity,
+  initProcessIdentity,
+} from "~/lib/process-identity"
+
 import type { PidfileContent } from "./lib/restart/pidfile"
 
 import packageJson from "../package.json"
@@ -55,11 +61,6 @@ import { attachTelemetrySink } from "./lib/observability/sinks/telemetry"
 import { attachWsSink } from "./lib/observability/sinks/ws"
 import { setRequestLinePublisher } from "./lib/observability/synthetic-request-line"
 import { loadUpstreamHookSafe } from "./lib/pipeline/hooks/loader"
-import {
-  //
-  getProcessIdentity,
-  initProcessIdentity,
-} from "./lib/process-identity"
 import { initProxy } from "./lib/proxy"
 import {
   //
