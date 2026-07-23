@@ -191,6 +191,8 @@ maxTokensTerminalObserver: () => anthropicTerminalObserverState, // P0 独立 ob
 ### Task 1.6: `strategy-prevented-stitch` 真实落盘 + telemetry（残留项，round-2 审查坐实缺具体记录任务）
 
 > **修订记录（2026-07-23，据 GPT plan-review round-2 [残留] 修订）**：`resolveEffectiveMaxTokensContinuation` 的 `diagnostics` 数组此前只是函数返回值，没有落到 `pipelineInfo`/telemetry 的具体任务——round-2 审查指出这违反 spec「绝不静默吞配置」的要求（用户配置了非法组合，必须能在 history/telemetry 里查到"这次请求本该续写但被 visibility 策略阻止了"，不能只在内存里降级完事）。
+>
+> **⚠️ commit invariant（据 GPT plan-review round-3 [残留] 修订）**：本 task 的落盘/telemetry 记录**必须与 Task 1.5 handler 接线同一 commit 落地**（或作为 Task 1.5 的不可分割前置），**不得单独 later commit**——否则 Task 1.5 落地到本 task 之间会短暂出现「非法组合已被正确降级、但降级事实不可观测」的生产状态，违反 spec「绝不静默吞配置」+ 本项目「每 commit 终态自洽」。即：**第一个消费组合校验的生产 commit（Task 1.5）必须同时带上 strategy-prevented-stitch 的真实记录**。故下方 Step 1-4 与 Task 1.5 交织实现、Step 5 合并进 Task 1.5 的提交。
 
 - [ ] **Step 1: 写失败测试** —— 真实持久化 + telemetry readback，非函数返回值断言。
 
@@ -213,7 +215,7 @@ test("a request with a LEGAL combination (visibility=transparent + classes.text=
 - [ ] **Step 2: 跑，失败。**
 - [ ] **Step 3: 实现** —— 在 Task 1.2 的截获点：当 `resolveEffectiveMaxTokensContinuation` 返回的 `diagnostics` 数组含 `"strategy-prevented-stitch"` 时（即本次请求命中了曾被降级的非法组合配置——注意这个诊断信号的产生时机是**配置解析时**，不是每次请求时都重新跑校验，但记录动作是**每次命中 max_tokens 终止时**），把 `strategyPreventedStitch: true` 写入 `recordMaxTokensTruncation` 调用的 diag 对象（P0 Task 0.5 已建的记录端口，本 task 只是真正传入非默认值）。**telemetry 侧**：在 `src/lib/observability/telemetry-dimensions.ts` 或新文件注册一个独立于 `max_tokens_truncation{class}` 的 outcome 维度/counter（`max_tokens_continuation_outcome{outcome="strategy-prevented-stitch"}`，参照 telemetry-architecture skill「聚合后无法重算的因子拆最细」——这是一个独立可观测事件，不应该被塞进 class 维度里稀释掉）。
 - [ ] **Step 4: 跑，通过。**
-- [ ] **Step 5: 提交** → `feat(observability): real strategy-prevented-stitch recording (history + telemetry readback, not just in-memory diagnostics)`。
+- [ ] **Step 5: 提交** → **合并进 Task 1.5 的提交**（见本 task 顶部 commit invariant——不单独 later commit，与 handler 接线同 commit 消除「已降级但不可观测」窗口）。
 
 ### P1 收口
 
