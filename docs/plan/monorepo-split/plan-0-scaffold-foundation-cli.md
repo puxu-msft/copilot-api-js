@@ -1,6 +1,6 @@
 # Phase 0：脚手架 + 边界 lint + foundation + cli 包 — 实施计划
 
-> **实施状态（2026-07-23，全 5 task landed 分支 `feat/monorepo-split`）**：✅ 完成。Task1 PoC gate `c7f39c54`、Task2 scaffold `8cf733bd`、Task3 boundary lint `3e1a1373`、Task4 foundation move `a37d93cc`、Task5 cli extract `151f974a`。终态：typecheck GREEN、build 单产物、test:backend 恰好 5 个既有 History-V3/RESETTERS known-red（0 新增）、所有触碰文件 lint 绿（全仓 345 lint 错误为既有债、非本次引入）。待合并 master（协调 4 个 peer worktree）。
+> **实施状态（2026-07-23，全 5 task landed + 已合并 master `390bae31`）**：✅ 完成并合并。Task1 PoC gate `c7f39c54`、Task2 scaffold `8cf733bd`、Task3 boundary lint `3e1a1373`、Task4 foundation move `a37d93cc`、Task5 cli extract `151f974a`；分支合最新 master 后 test:backend **6305 pass / 0 fail**、typecheck GREEN、边界守卫 11 pass、build 单产物、bin 不变；经 `--ff-only` 干净合入 master（与并发 peer 的 codec-resolveCodecModel 多提交重构冲突：等其落定后合才自洽——教训见下）。**下一步 Phase 0d**（state 窄接口 seam）。
 
 > **For agentic workers:** REQUIRED SUB-SKILL: `superpowers:subagent-driven-development`（推荐）或 `superpowers:executing-plans`。步骤用 `- [ ]` 跟踪。索引与全局约束见 [README.md](README.md)。spec = [../../spec/2026-07-22-monorepo-workspace-split.md](../../spec/2026-07-22-monorepo-workspace-split.md)。
 
