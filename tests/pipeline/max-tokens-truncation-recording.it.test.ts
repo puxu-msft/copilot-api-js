@@ -27,21 +27,25 @@ function frame(event: string, value: unknown): string {
   return `event: ${event}\ndata: ${JSON.stringify(value)}\n\n`
 }
 
+function messageStart(): string {
+  return frame("message_start", {
+    type: "message_start",
+    message: {
+      id: "msg-max-tokens",
+      type: "message",
+      role: "assistant",
+      model: MODEL,
+      content: [],
+      stop_reason: null,
+      stop_sequence: null,
+      usage: { input_tokens: 7, output_tokens: 0 },
+    },
+  })
+}
+
 function maxTokensThinkingStream(): Array<string> {
   return [
-    frame("message_start", {
-      type: "message_start",
-      message: {
-        id: "msg-max-tokens",
-        type: "message",
-        role: "assistant",
-        model: MODEL,
-        content: [],
-        stop_reason: null,
-        stop_sequence: null,
-        usage: { input_tokens: 7, output_tokens: 0 },
-      },
-    }),
+    messageStart(),
     frame("content_block_start", { type: "content_block_start", index: 0, content_block: { type: "thinking", thinking: "" } }),
     frame("content_block_delta", { type: "content_block_delta", index: 0, delta: { type: "thinking_delta", thinking: "reasoning" } }),
     frame("message_delta", { type: "message_delta", delta: { stop_reason: "max_tokens", stop_sequence: null }, usage: { output_tokens: 4 } }),
@@ -50,15 +54,43 @@ function maxTokensThinkingStream(): Array<string> {
   ]
 }
 
-function setup(): void {
+function maxTokensTextStream(): Array<string> {
+  return [
+    messageStart(),
+    frame("content_block_start", { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } }),
+    frame("content_block_delta", { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "partial answer" } }),
+    frame("content_block_stop", { type: "content_block_stop", index: 0 }),
+    frame("message_delta", { type: "message_delta", delta: { stop_reason: "max_tokens", stop_sequence: null }, usage: { output_tokens: 4 } }),
+    frame("message_stop", { type: "message_stop" }),
+    "data: [DONE]\n\n",
+  ]
+}
+
+function setup(frames = maxTokensThinkingStream()): void {
   setStateForTests({ copilotToken: "test-token", accountType: "individual", vsCodeVersion: "1.100.0", responseHeaderTimeout: 0 })
   setModels({ object: "list", data: [mockModel(MODEL, { vendor: "Anthropic", supported_endpoints: ["/v1/messages"] })] })
-  applyFetchMock(
-    mock(async () => new Response(createSseResponse(maxTokensThinkingStream()).body, { status: 200, headers: { "content-type": "text/event-stream" } })),
-  )
+  applyFetchMock(mock(async () => new Response(createSseResponse(frames).body, { status: 200, headers: { "content-type": "text/event-stream" } })))
 }
 
 useIsolatedRuntime()
+
+test("Anthropic direct max_tokens terminal after a closed text block persists class=text while enabled=false forwards max_tokens", async () => {
+  setup(maxTokensTextStream())
+
+  const response = await app.request("/v1/messages", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ model: MODEL, max_tokens: 4, stream: true, messages: [{ role: "user", content: "answer" }] }),
+  })
+
+  expect(response.status).toBe(200)
+  const wire = await response.text()
+  expect(wire).toContain('"stop_reason":"max_tokens"')
+  await drainV3Writer()
+
+  const entry = getHistory({ endpoint: "anthropic-messages" }).entries[0]
+  expect(entry?.pipelineInfo?.maxTokensContinuation?.truncationClass).toBe("text")
+})
 
 test("Anthropic direct max_tokens thinking terminal persists its observed class while enabled=false leaves client stop_reason unchanged", async () => {
   setup()
