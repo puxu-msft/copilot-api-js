@@ -98,11 +98,18 @@ afterEach(async () => {
 // ============================================================================
 
 describe("stream commit and keepalive clamps", () => {
-  test("commit-window clamp and keepalive-cadence clamp are independently addressable with the same ceiling today", () => {
-    expect(COMMIT_WINDOW_MAX_SEC).toBe(40)
+  test("commit-window ceiling follows Q1's measured 125-second CC pre-header floor independently of keepalive cadence", async () => {
+    expect(COMMIT_WINDOW_MAX_SEC).toBe(125)
     expect(KEEPALIVE_CADENCE_MAX).toBe(40)
-    expect(clampCommitWindowSec(50)).toBe(COMMIT_WINDOW_MAX_SEC)
+    expect(clampCommitWindowSec(126)).toBe(COMMIT_WINDOW_MAX_SEC)
     expect(clampKeepaliveCadence(50)).toBe(KEEPALIVE_CADENCE_MAX)
+
+    await applyYaml(``)
+    expect(state.streamCommitAfterSec).toBe(20)
+
+    await applyYaml(`anthropic:\n  stream_commit_after_sec: 126\n  stream_keepalive_ping_sec: 50\n`)
+    expect(state.streamCommitAfterSec).toBe(COMMIT_WINDOW_MAX_SEC)
+    expect(state.streamKeepalivePingSec).toBe(KEEPALIVE_CADENCE_MAX)
   })
 })
 
