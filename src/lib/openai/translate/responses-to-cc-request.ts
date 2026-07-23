@@ -62,10 +62,13 @@ export interface TranslateExchangeContext {
   /** Stable `item_xxx` id for the synthesized message output item. */
   itemId: string
   /**
-   * Model name the client requested. Used to populate `response.created.model`
-   * before the upstream CC stream's first chunk arrives with its real model name.
+   * The resolved upstream model name. Used to populate `response.created.model`
+   * (and the empty-choices/empty-stream fallbacks) before the upstream CC stream's
+   * first chunk arrives with its own `model`. Named for its value (resolved, not
+   * the client-original) — the client-original name lives on `ctx.clientModel` in
+   * the RequestContext, a different type.
    */
-  clientModel: string
+  resolvedModel: string
 }
 
 // ============================================================================
@@ -160,7 +163,7 @@ export function translateCCToResponsesResponse(ccResponse: ChatCompletionRespons
   // errored stream flushes) — fail loud rather than crash downstream.
   // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
   if (!choice) {
-    throw new HTTPError("Upstream chat-completions returned empty choices array", 502, JSON.stringify({ upstream: ccResponse }), ctx.clientModel)
+    throw new HTTPError("Upstream chat-completions returned empty choices array", 502, JSON.stringify({ upstream: ccResponse }), ctx.resolvedModel)
   }
 
   const message = choice.message
@@ -194,7 +197,7 @@ export function translateCCToResponsesResponse(ccResponse: ChatCompletionRespons
     object: "response",
     created_at: ccResponse.created,
     status,
-    model: ccResponse.model || ctx.clientModel,
+    model: ccResponse.model || ctx.resolvedModel,
     output,
     usage: ccResponse.usage ? ccUsageToResponsesUsage(ccResponse.usage) : null,
     tools: [],
@@ -228,7 +231,7 @@ interface ResponsesStreamFrame {
  * whole-stream driver over it, so both paths produce byte-identical output. The
  * `response.created` event is emitted lazily on the first `translate`/`flush`
  * call (matching the legacy generator's "emit created before the loop", incl. the
- * empty-stream case) and carries `ctx.clientModel` since no chunk has updated the
+ * empty-stream case) and carries `ctx.resolvedModel` since no chunk has updated the
  * model yet at that point.
  */
 export interface CCToResponsesStreamTranslator {
@@ -249,7 +252,7 @@ export function createCCToResponsesStreamTranslator(ctx: TranslateExchangeContex
   const createdAt = Math.floor(Date.now() / 1000)
   const contentParts: Array<string> = []
   const toolCalls = new Map<number, { id: string; callId: string; name: string; arguments: Array<string> }>()
-  let model = ctx.clientModel
+  let model = ctx.resolvedModel
   let usage: ChatCompletionUsage | undefined
   let finishReason: FinishReason | null = null
   let sequenceNumber = 0
@@ -258,7 +261,7 @@ export function createCCToResponsesStreamTranslator(ctx: TranslateExchangeContex
   let started = false
 
   // Emit `response.created` once, lazily — before any chunk updates `model`, so
-  // it carries the injected clientModel (matching the legacy generator's
+  // it carries the injected resolvedModel (matching the legacy generator's
   // pre-loop emission).
   const ensureStarted = (out: Array<ResponsesStreamFrame>): void => {
     if (started) return

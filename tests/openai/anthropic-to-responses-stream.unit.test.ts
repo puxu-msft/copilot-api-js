@@ -40,7 +40,7 @@ import {
 } from "~/lib/openai/responses-stream-accumulator"
 import { createAnthropicToResponsesStreamTranslator } from "~/lib/openai/translate/anthropic-to-responses-stream"
 
-const ctx = { responseId: "resp_abc", itemId: "item_abc", clientModel: "claude-opus-4.8" }
+const ctx = { responseId: "resp_abc", itemId: "item_abc", resolvedModel: "claude-opus-4.8" }
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
