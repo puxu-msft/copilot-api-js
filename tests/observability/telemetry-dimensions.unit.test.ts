@@ -36,6 +36,31 @@ function makeEntry(overrides: Partial<HistoryEntryData> = {}): HistoryEntryData 
 // A ctx snapshot isn't read by the current extractors; cast a stub.
 const ctxStub = {} as never
 
+describe("max_tokens_truncation dimension", () => {
+  test("extracts the persisted truncation class and skips entries with no max_tokens terminal", () => {
+    expect(
+      extractTelemetryKeys(
+        makeEntry({
+          pipelineInfo: {
+            maxTokensContinuation: {
+              truncationClass: "thinking",
+              roundsAttempted: 1,
+              roundsSucceeded: 0,
+              continuedTokens: 0,
+              perRoundStopReason: ["max_tokens"],
+              clientVisibleStopReason: "max_tokens",
+              suppressedMaxTokens: false,
+              visibilityMode: "passthrough",
+            },
+          },
+        }),
+        ctxStub,
+      ).max_tokens_truncation,
+    ).toBe("thinking")
+    expect(extractTelemetryKeys(makeEntry(), ctxStub).max_tokens_truncation).toBeNull()
+  })
+})
+
 describe("normalizeClient", () => {
   test("collapses a versioned user-agent to its leading product token (lowercased)", () => {
     expect(normalizeClient({ "user-agent": "claude-cli/1.2.3" })).toBe("claude-cli")

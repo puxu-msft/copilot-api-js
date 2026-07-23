@@ -176,6 +176,11 @@ export const TELEMETRY_DIMENSIONS: ReadonlyArray<StatDimension> = [
   { name: "client", cardinality: "capped", extract: (entry) => normalizeClient(entry.clientRequest?.headers) },
   { name: "agentKind", cardinality: "bounded", extract: (entry) => (entry.agentId ? "subagent" : "main") },
   { name: "tool", cardinality: "capped", extract: (entry) => extractToolNames(entry) },
+  {
+    name: "max_tokens_truncation",
+    cardinality: "bounded",
+    extract: (entry) => entry.pipelineInfo?.maxTokensContinuation?.truncationClass ?? null,
+  },
 ]
 
 /** The capped (high-cardinality) dimension names, passed to `recordSettledRequest` so it bounds their key counts. */
