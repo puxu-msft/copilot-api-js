@@ -1,10 +1,10 @@
 # h2 连接池按容量选路 + pre-response 关闭可重试
 
-> **实施状态**（2026-07-22）：计划已获批、经异模型对抗审查（gpt-souls:reviewer，HIGH-1 已修正）。实施按 C1→C4 分 commit 推进。此文件为 `docs/plan/` 权威副本（源自 `~/.claude/plans/`）。
-> - [ ] C1 classify pre-response 可重试（决策 2）
-> - [ ] C2 池重构（Map<origin,entry[]> + 预留 + 容量感知 pending，N 实质无限）
-> - [ ] C3 启用 N（默认 1）
-> - [ ] C4 idle session 生命周期
+> **实施状态**（2026-07-23，已实现）：计划获批 → 异模型对抗审查（HIGH-1 已修正）→ C1–C4 全部落地 → 合并态异模型审查（无 CRITICAL/HIGH，2 条 LOW 已处理）。全后端 `test:backend` **6170 pass 0 fail**、typecheck+lint 绿、idle-reap 时序 8×确定。C1/C2 已在 master；C3/C4/守卫修复/审查加固在分支 `feat/h2-pool-capacity-cap`（`.worktrees/h2-pool-cap`），**合并回 master 待并发 peer 的 `favor` WIP 先提交**（二者在 `state.ts` 的 `setUpstreamTransportConfig` union 单行碰撞，须 3-way 保留双字段）。
+> - [x] C1 classify pre-response 可重试（决策 2）— 独立表 + 4 条守卫（master `b69a18fd`）
+> - [x] C2 池重构（Map<origin,entry[]> + 预留 + 容量感知 pending，N=0 字节等价）（master `aa320228`）
+> - [x] C3 启用 N（默认 1）+ 并发 .it 测试（`b5892380`）
+> - [x] C4 idle-reap + `idle_session_timeout`（`3ff3781b`）+ 守卫修复（`640c728e`）+ 审查加固（`ea607777`）
 
 ## Context（为什么做这个改动）
 
