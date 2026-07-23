@@ -23,6 +23,7 @@ import {
   restoreStateForTests,
   setStateForTests,
   snapshotStateForTests,
+  state,
 } from "~/lib/state"
 
 import { mockModel } from "../helpers/factories"
@@ -522,6 +523,24 @@ describe("modelHasAdaptiveThinking / modelRequiresEnabledThinking — pinned to 
   test("silent metadata (no supports) → requiresEnabled abstains (reactive net is the floor)", () => {
     const model = mockModel("claude-mystery", { vendor: "Anthropic" })
     expect(modelRequiresEnabledThinking(model)).toBe(false)
+  })
+
+  test("DEFAULT name-list is empty → a metadata-silent adaptive model is NOT flagged by name (metadata-driven only)", () => {
+    // adaptive is driven by upstream /models metadata; the name fallback ships empty by default. With no
+    // resolvedModel (metadata silent) and the default state, even a real adaptive id like opus-4.6 is not
+    // name-flagged — it relies on tier-1 metadata (verified present) or the reactive rejection-retry.
+    const snap = snapshotStateForTests()
+    try {
+      restoreStateForTests(snap) // ensure ambient default (empty list) — bun leaks module-global state across files
+      expect(state.adaptiveThinkingModels).toEqual([])
+      expect(modelHasAdaptiveThinking("claude-opus-4.6")).toBe(false)
+      // …but metadata still drives it, and an explicit config override re-enables the fallback.
+      expect(modelHasAdaptiveThinking("claude-opus-4.6", { capabilities: { supports: { adaptive_thinking: true } } } as unknown as Parameters<typeof modelHasAdaptiveThinking>[1])).toBe(true)
+      setStateForTests({ adaptiveThinkingModels: ["claude-opus-4-6"] })
+      expect(modelHasAdaptiveThinking("claude-opus-4.6")).toBe(true)
+    } finally {
+      restoreStateForTests(snap)
+    }
   })
 
   test("no resolved model → abstains", () => {

@@ -2007,7 +2007,13 @@ export const CONFIG_MANAGED_DEFAULTS = {
     "claude-opus-4-8",
   ] as ReadonlyArray<string>,
   interleavedThinkingModels: ["claude-sonnet-4", "claude-haiku-4-5", "claude-opus-4-5"] as ReadonlyArray<string>,
-  adaptiveThinkingModels: ["claude-opus-4-6", "claude-opus-4-7", "claude-opus-4-8"] as ReadonlyArray<string>,
+  // Empty by default: adaptive thinking is driven by the upstream `/models` metadata
+  // (`capabilities.supports.adaptive_thinking`) via modelHasAdaptiveThinking's tier-1 short-circuit.
+  // This name-list is a tier-3 fallback that only fires when metadata is SILENT for a model — kept as
+  // an optional config override (`anthropic.model_capabilities.adaptive_thinking`) for forcing a new
+  // adaptive model before its `/models` metadata propagates; the reactive adaptive-thinking-rejection-
+  // retry is the runtime safety net otherwise.
+  adaptiveThinkingModels: [] as ReadonlyArray<string>,
   responseHeaderTimeout: 300,
   streamIdleTimeout: 300,
   upstreamKeepaliveDelay: 15,
