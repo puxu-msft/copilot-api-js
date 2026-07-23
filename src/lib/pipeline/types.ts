@@ -400,6 +400,26 @@ export interface AnchorHooks {
 }
 
 /**
+ * Continuation-retry hooks (spec 2026-07-22 §4-§5, ADR D3) — everything the driver's continuation branch
+ * needs, resolved by the handler so the driver stays format-agnostic. The handler supplies these ONLY when
+ * continuation is enabled AND a per-format builder exists, so `opts.continuation !== undefined` IS the gate.
+ */
+export interface ContinuationHooks {
+  /** Per-vendor gate (resolved from config). When false the driver never takes the continuation branch. */
+  enabled: boolean
+  /** The synthetic user-turn text ("network issue. please continue" default). */
+  message: string
+  /** Is this rendered frame the `message_start`? — a continuation leg's duplicate is dropped. */
+  isMessageStart: (frame: ClientFrame) => boolean
+  /** Is this rendered frame a `content_block_start`? — the driver counts wire-delivered blocks for the offset. */
+  isContentBlockStart: (frame: ClientFrame) => boolean
+  /** Shift a `content_block_*` frame's index by `offset` (continuation blocks re-indexed by the wire-delivered count). */
+  remap: (frame: ClientFrame, offset: number) => ClientFrame
+  /** Build the continuation upstream body: `[original] + [assistant = committed] + [user = message]`. */
+  buildRequest: (originalBody: unknown, committed: ReadonlyArray<CanonicalBlock>, message: string) => unknown
+}
+
+/**
  * The mutable buffered empty-text keepalive ANCHOR state — the single source of truth shared across
  * the cross-handler injector, the driver's buffered path, and the live-path reconciliation (spec
  * 2026-07-08-buffered-keepalive-empty-text-anchor §10.1.5 H1). Today the driver owns/creates it
@@ -563,6 +583,16 @@ export interface RunBufferedOpts extends RunResponseOpts {
    * ledger is supplied; the two are wired together by the handler (e.g. `extractAnthropicCommittedBlocks`).
    */
   extractCommittedBlocks?: (frames: ReadonlyArray<ClientFrame>) => Array<CanonicalBlock>
+  /**
+   * Continuation-retry seam (spec 2026-07-22 §4-§5, ADR D3). When present ALONGSIDE
+   * {@link committedBlocksLedger} + {@link extractCommittedBlocks}, a mid-stream cut AFTER a committed
+   * block runs a synthetic continuation exchange (`[original body] + [assistant = committed] + [user =
+   * message]`) instead of degrading — the continuation frames are stitched onto the SAME client stream
+   * (its duplicate `message_start` dropped, its blocks re-indexed by the wire-delivered block count).
+   * Format-agnostic: all format knowledge lives in the hooks the handler supplies. Undefined = no
+   * continuation (Gemini / disabled / non-ledger path) — the driver's continuation branch is never taken.
+   */
+  continuation?: ContinuationHooks
   /**
    * Candidate-hosted buffered-flush transform seam (spec 2026-07-14-responses-buffered-block-merge §4,
    * 2026-07-19 重接地). Same shape/lifecycle as {@link commitBoundaries} — a candidate-supplied option the

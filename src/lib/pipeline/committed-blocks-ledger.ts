@@ -12,9 +12,7 @@
  */
 
 /** A committed content block in canonical (client-native) form. Union grows with new block types. */
-export type CanonicalBlock =
-  | { type: "text"; text: string }
-  | { type: "tool_use"; id: string; name: string; input: unknown }
+export type CanonicalBlock = { type: "text"; text: string } | { type: "tool_use"; id: string; name: string; input: unknown }
 
 export interface CommittedBlocksLedger {
   /** Record one FULLY-committed block (called by the driver at each commit boundary). */
@@ -29,4 +27,16 @@ export function createCommittedBlocksLedger(): CommittedBlocksLedger {
     recordCommitted: (block) => void blocks.push(block),
     snapshot: () => blocks.map((b) => ({ ...b })),
   }
+}
+
+/**
+ * ADR D3 gate: does the committed prefix contain a COMPLETE, client-interactive `tool_use` block? A
+ * complete tool_use is a legitimate turn boundary — the client executes the tool and drives the next
+ * turn — so continuation must NOT fire. The ledger only holds `text` / `tool_use` (the extractor drops
+ * `server_tool_use` and other non-interactive / non-replayable blocks), so any `tool_use` here is one the
+ * client must run. Format-agnostic (operates on the canonical union), so the driver's continuation gate
+ * calls it directly.
+ */
+export function hasCompleteInteractiveToolUse(committed: ReadonlyArray<CanonicalBlock>): boolean {
+  return committed.some((b) => b.type === "tool_use")
 }

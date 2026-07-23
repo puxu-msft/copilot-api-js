@@ -35,14 +35,10 @@ function toContentBlockParam(block: CanonicalBlock): ContentBlockParam {
   return { type: "tool_use", id: block.id, name: block.name, input: block.input }
 }
 
-/**
- * ADR D3: does the committed prefix contain a COMPLETE, client-interactive tool_use block? The ledger
- * only holds `text` / `tool_use` (the extractor drops `server_tool_use` and other non-interactive /
- * non-replayable blocks), so any `tool_use` here is one the client must execute → a turn boundary.
- */
-export function hasCompleteInteractiveToolUse(committed: ReadonlyArray<CanonicalBlock>): boolean {
-  return committed.some((b) => b.type === "tool_use")
-}
+// hasCompleteInteractiveToolUse (ADR D3 gate) is format-agnostic — it moved to the ledger module (where
+// CanonicalBlock lives) so the driver can call it without importing this Anthropic module. Re-exported
+// here for the builder's own consumers / tests.
+export { hasCompleteInteractiveToolUse } from "~/lib/pipeline/committed-blocks-ledger"
 
 /**
  * Build the Anthropic continuation upstream request. `original` is the original client MessagesPayload

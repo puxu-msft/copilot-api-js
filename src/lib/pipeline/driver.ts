@@ -68,6 +68,7 @@ import {
   isCellMigrated,
   resolveCellAssembly,
 } from "./cell-assembly"
+import { hasCompleteInteractiveToolUse } from "./committed-blocks-ledger"
 import {
   //
   createCandidateRuntime,
@@ -1003,6 +1004,26 @@ export async function runResponseBufferedSink(
   // are byte-identical to the whole-response behaviour (R1).
   let committedAny = false
 
+  // Continuation-retry (spec 2026-07-22 §4-§5, ADR D3). Present ⇒ a mid-stream cut AFTER a committed block
+  // runs a synthetic continuation exchange whose frames are STITCHED onto the SAME client stream. State
+  // persists across legs like `committedAny`:
+  //   - `continuationCount`: continuation legs so far (shared budget + telemetry §5.3 split, distinct from
+  //     the transparent-retry `attempt`).
+  //   - `wireDeliveredBlocks`: content blocks delivered to the client so far — the re-index offset for the
+  //     NEXT continuation leg. Counts thinking too (it occupies a wire index), UNLIKE the ledger which
+  //     excludes it (C3: offset MUST be the wire count, not the ledger length — exp/continuation-stitch).
+  //   - `continuationOffset`: fixed for the CURRENT leg = `wireDeliveredBlocks` at leg start; 0 on the
+  //     primary/recovery legs so `continuation.remap(_, 0)` is inert.
+  //   - `onContinuationLeg`: the current leg is a continuation exchange → drop its duplicate message_start.
+  // Scoped to the anchor-DORMANT path (D2 default `stream_keepalive_mode: ping`, PoC-validated); the
+  // empty_text-anchor + continuation combo is an untested corner (backlog).
+  const continuation = opts.continuation
+  const continuationOriginalBody = env.body // the ORIGINAL client body (spec §4.1 — cache-friendly; every continuation leg builds from [original] + [full ledger])
+  let continuationCount = 0
+  let wireDeliveredBlocks = 0
+  let continuationOffset = 0
+  let onContinuationLeg = false
+
   // Buffered empty-text keepalive anchor (spec 2026-07-08-buffered-keepalive-empty-text-anchor §3.2 +
   // §10.1.5 H1). The anchor STATE is now HANDLER-OWNED and threaded in via `opts.anchorState` so the
   // handler's UNIQUE injector (attached to the sink's `heartbeat.injectAnchor`) and this buffered
@@ -1104,9 +1125,21 @@ export async function runResponseBufferedSink(
         // H1: the anchor already forwarded message_start ahead of the anchor block — skip the buffered
         // copy so the client sees exactly one message_start (re-sending it would corrupt the stream).
         if (anchor && anchorState.messageStartForwarded && anchor.isMessageStart(frame)) continue
+        // Continuation stitch (spec §4.4): a continuation leg's upstream emits its OWN message_start (new
+        // id/usage) — DROP it so the client sees exactly one message_start across the whole stitched stream.
+        if (continuation && onContinuationLeg && continuation.isMessageStart(frame)) continue
         // Close the anchor off BEFORE the first real content_block_start (sequential — never coexist).
         if (anchor?.isContentBlockStart(frame)) await closeAnchorBeforeReal()
-        await sink.write(injected && anchor && anchorBlockOpen ? anchor.remap(frame, 1) : frame)
+        // Continuation re-index (C3): shift this leg's content_block_* by the wire-delivered block count
+        // (continuationOffset), so continuation blocks continue the client's index sequence. Inert on the
+        // primary leg (offset 0). Applied on top of any anchor remap (mutually exclusive in practice — the
+        // continuation path is anchor-dormant).
+        let outFrame = injected && anchor && anchorBlockOpen ? anchor.remap(frame, 1) : frame
+        if (continuation && continuationOffset > 0) outFrame = continuation.remap(outFrame, continuationOffset)
+        // Count every content block delivered to the client (incl. thinking) — the offset for the NEXT
+        // continuation leg (C3: wire count, not ledger length).
+        if (continuation && continuation.isContentBlockStart(frame)) wireDeliveredBlocks++
+        await sink.write(outFrame)
       }
       return { kind: "ok" }
     } catch (error) {
@@ -1310,10 +1343,10 @@ export async function runResponseBufferedSink(
           // Client gone mid-flush. L2 produced a COMPLETE generation (reached the terminal frame) — the
           // flush failed at the transport, NOT the retry: count it as a `success` so the hit-rate
           // denominator isn't a blind spot. The handler still settles the request as failed (delivery).
-          notifyBufferedResolve?.("success", attempt, { vendor })
+          notifyBufferedResolve?.("success", attempt, { vendor, ...(continuationCount > 0 && { continuationRetries: continuationCount }) })
           return { kind: "stream-error", error: res.error }
         }
-        notifyBufferedResolve?.("success", attempt, { vendor })
+        notifyBufferedResolve?.("success", attempt, { vendor, ...(continuationCount > 0 && { continuationRetries: continuationCount }) })
         return { kind: "complete", headers: current.headers, ...(finish && { finish }) }
       }
 
@@ -1356,6 +1389,61 @@ export async function runResponseBufferedSink(
         currentEnv = recovered.env
         continue
       }
+
+      // Continuation-retry (spec 2026-07-22 §4-§5, ADR D3): committedAny is TRUE here (a block is on the
+      // wire, so the transparent-retry gate above forced this branch) AND the stream was cut. Instead of
+      // degrading, run a synthetic continuation exchange whose frames stitch onto the SAME client stream.
+      // Gated so it never fires on the terminal-only path (committedAny false) or when unwired:
+      //   - continuation hooks + ledger + extractor all present (handler wires them together);
+      //   - the cut is a truncation / transport-close (same error class as the retry gate);
+      //   - ADR D3: the committed prefix has NO complete interactive tool_use (that is a legitimate turn
+      //     boundary — the client runs the tool — so we terminate normally, NOT continue);
+      //   - shared budget (transparent retries + continuations ≤ cap) with a ONE-TIME floor of 1 on the
+      //     first continuation (spec §5.2 (a)): the incident value must not be starved by pre-first-block
+      //     retries. `continuationBudget` decrements to 0 afterwards → `continuation-exhausted` is reachable.
+      const ledger = opts.committedBlocksLedger
+      const remainingShared = cap - attempt - continuationCount
+      const continuationBudget = continuationCount === 0 ? Math.max(remainingShared, 1) : remainingShared
+      const canContinue =
+        committedAny
+        && (thrown ? classifyStreamError(thrown) === "other" : true)
+        && continuation !== undefined
+        && continuation.enabled
+        && ledger !== undefined
+        && opts.extractCommittedBlocks !== undefined
+        && continuationBudget > 0
+        && !hasCompleteInteractiveToolUse(ledger.snapshot())
+      if (canContinue) {
+        continuationCount++
+        // Snapshot this cut leg's frames + finalize its duration BEFORE the reset (D1 — a cut leg's frames
+        // survive for diagnosis), mirroring the transparent-retry bookkeeping.
+        currentEnv.ctx.commitAttemptSseEvents()
+        currentEnv.ctx.finalizeCurrentAttemptDuration()
+        opts.onAttemptReset?.()
+        currentEnv.ctx.resetRepairOutcomesForAttempt()
+        currentEnv.ctx.resetSseEvents()
+        // Build the continuation upstream body: [original] + [assistant = committed prefix] + [user =
+        // message]. `ledger.snapshot()` already excludes thinking (extractor) — upstream rejects thinking
+        // as a prefix (ADR D3). The synthetic turns are marked `synthetic:"continuation"` on the
+        // upstreamRequest track by the handler-supplied builder path; they never touch the upstream-original
+        // response track (§4.4).
+        const continuationBody = continuation.buildRequest(continuationOriginalBody, ledger.snapshot(), continuation.message)
+        const contEnv = currentEnv.with({ body: continuationBody })
+        const parent = generation?.bindings.get(current)
+        if (!parent) currentEnv.ctx.recordAttemptFailure({ willRetry: true, nextStrategy: "continuation" })
+        const coordinator = parent?.coordinator ?? createDriverCoordinator(deps, contEnv)
+        const continued = parent ? await coordinator.runContinuation(parent.candidate, "continuation", contEnv) : await coordinator.runPrimary()
+        generation?.bind(coordinator, continued)
+        currentEnv.ctx.selectGenerationWinner(continued.candidate, continued.dispatch)
+        current = continued.upstream
+        currentEnv = continued.env
+        // This next leg's frames re-index by the blocks already delivered (C3: wire count) and drop the
+        // leg's duplicate message_start.
+        continuationOffset = wireDeliveredBlocks
+        onContinuationLeg = true
+        continue
+      }
+
       // Exhausted / non-retryable → surface the error (truncation synthesizes one) for the
       // handler to classify + write its protocol error frame (unchanged from the live path). The
       // final failed attempt's frames stay at the top-level slot (no per-attempt snapshot).
@@ -1364,12 +1452,15 @@ export async function runResponseBufferedSink(
       // 穷尽/非重试：最终失败 attempt 也 finalize duration，供终端汇总行 last（截断路径无 setter）。
       currentEnv.ctx.finalizeCurrentAttemptDuration()
       await closeAnchorIfOpen()
-      // Block-level degrade (P0): a boundary block was ALREADY committed live, then the stream
-      // truncated (the `!committedAny` gate above forced this branch, un-retryable). The committed
-      // prefix is on the wire, so this is a GRACEFUL degrade — `partial-degrade`, distinct from
-      // `exhausted` (which committed nothing). On the terminal-only path `committedAny` is always
-      // false → `exhausted`, unchanged (R1).
-      notifyBufferedResolve?.(committedAny ? "partial-degrade" : "exhausted", attempt, { vendor })
+      // Block-level degrade (P0) / continuation-exhausted (spec §5.3): a boundary block was ALREADY
+      // committed live, then the stream truncated (un-retryable). If continuation was ATTEMPTED but ran out
+      // of budget (or the final continuation leg was itself cut), this is `continuation-exhausted` — distinct
+      // from `partial-degrade` (continuation never fired: gate off / no builder / interactive tool_use / cut
+      // was not a truncation) and from `exhausted` (terminal-only path, committed nothing). Lets observability
+      // tell "continuation fired but didn't save it" from "never continued".
+      const committedDegrade = continuationCount > 0 ? "continuation-exhausted" : "partial-degrade"
+      const degradeOutcome = committedAny ? committedDegrade : "exhausted"
+      notifyBufferedResolve?.(degradeOutcome, attempt, { vendor, ...(continuationCount > 0 && { continuationRetries: continuationCount }) })
       return {
         kind: "stream-error",
         error: thrown ?? new Error("upstream stream truncated: closed without message_stop"),
