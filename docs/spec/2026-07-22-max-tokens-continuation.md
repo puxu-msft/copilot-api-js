@@ -141,7 +141,7 @@
 | tool_use | 闭合 | **B-closed** | **正常 client turn boundary、不续写**（对齐 master 已固化 ADR D3：完整 interactive tool_use 是合法回合边界——客户端须执行工具并带 `tool_result` 返回，proxy 不能越过它续生成）。转发 `tool_use` + 真实 max_tokens 终止形态，交客户端接续。master `driver.ts:1423` 的 `!hasCompleteInteractiveToolUse(ledger.snapshot())` 门本就拦此情形。若未来要支持 server_tool_use / 非交互工具续写，须按工具类型另立分型 + PoC + 显式 ADR 修订，**不复用 A 类**。 |
 | thinking | 任意 | **C** | 默认透传（§3.3）；master extractor 已从 ledger 排除 thinking（不可作续写前缀，ADR D3） |
 
-**C 类判据优先级（消歧，审查建议）**：以**「最后块 == thinking」为唯一判据**，不用「thinking_tokens ≈ output_tokens」——后者在「已 commit 可见 text + 其后 thinking 截断」时会误标（该场景有可见答案、应归 A' 而非 C）。thinking_tokens 占比仅作 telemetry **辅助**维度、不参与分型。
+**C 类判据优先级（消歧，审查建议）**：以**「最后块 == thinking」为唯一判据**，不用「thinking_tokens ≈ output_tokens」比例判据。理由：比例判据在「已 commit 可见 text + 其后 thinking 截断」场景会**误判为 A**（text 消耗了 token、thinking 占比被稀释、达不到「≈ output_tokens」阈值），而该场景**最后块是被截断的 thinking → 正确分型是 C**（thinking 无法干净续写、ADR D3，保守走 passthrough 安全）。即「最后块 kind」判据对此场景给出正确的 C、比例判据给错的 A。thinking_tokens 占比仅作 telemetry **辅助**维度、不参与分型。（P0 实现已按此判据落 C，reviewer 实测 thinking→thinking 一致。）
 
 判定须在**独立 per-format terminal observer** 上做（记最后 wire 块 kind + 是否闭合 + thinking，§11 P0——**不是** continuation ledger：后者丢 thinking + 只记已闭合 committed 块，无法判 A'/B/C），不重解析 wire。per-format 分型判定（CC/Responses 无 content_block 概念，靠 finish_reason=length + 累积块类型推断，§7）。**混合块序列**（text→tool_use、多 tool_use 链）归「最后块」所属分型。**CC tool_calls 尾随约束不适用（master FINDINGS G5a PASS 已证伪）**：`exp/continuation-shape/FINDINGS.md` G5a 实测 GHC 接受 `assistant{tool_calls}` 直接接 user（无 tool role）、返回正常 completion 非 400——OpenAI 标准的 tool_calls 尾随约束在 GHC 上不成立，故 CC 续写不撞该 hazard、无需 partial-degrade fallback（推翻续写 spec §4.3 CC 行旧约束）。G4 PASS 亦证 CC 并行 tool_call index 严格串行（块边界判据成立，§7）。
 
