@@ -16,15 +16,15 @@
  * unit tests); this file covers the seam those inject past.
  */
 
-import type { Model } from "~/lib/models/client"
-import type { RawHttpRequest } from "~/lib/pipeline/types"
-
 import {
   //
   describe,
   expect,
   test,
 } from "bun:test"
+
+import type { Model } from "~/lib/models/client"
+import type { RawHttpRequest } from "~/lib/pipeline/types"
 
 import { createBetaProbe } from "~/lib/anthropic/pipeline"
 import { createAnthropicCodec } from "~/lib/codec/anthropic/codec"
@@ -77,5 +77,19 @@ describe("anthropic codec — clientModel wiring", () => {
     const ctx = parse({ bodyModel: "sonnet", resolvedName: "claude-sonnet-5" })
     expect(ctx.clientModel).toBe("sonnet")
     expect(ctx.resolvedModel).toBe("claude-sonnet-5")
+  })
+
+  test("the persisted history entry preserves the raw client model as `requested` (independent oracle)", () => {
+    // Assert the PERSISTED product, not just the live ctx fields: even on the
+    // pre-resolved handler shape, history's `requested` + `clientRequest.model`
+    // must be the raw client name — this falsifies "display fixed but history
+    // still dropped the original". Reads a source (originalRequest.model) distinct
+    // from resolveCodecModel's return value.
+    const ctx = parse({ bodyModel: "claude-sonnet-5", originalModel: "sonnet", resolvedName: "claude-sonnet-5" })
+    const entry = ctx.toHistoryEntry()
+    expect(entry.model?.requested).toBe("sonnet")
+    expect(entry.model?.resolved).toBe("claude-sonnet-5")
+    expect(entry.clientRequest?.model).toBe("sonnet")
+    expect((entry.clientRequest?.body as { model?: string } | undefined)?.model).toBe("sonnet")
   })
 })

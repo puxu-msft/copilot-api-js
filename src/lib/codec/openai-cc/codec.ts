@@ -78,6 +78,7 @@ import type {
 
 import { createBetaProbe } from "~/lib/anthropic/pipeline"
 import { createAnthropicStreamAccumulator } from "~/lib/anthropic/stream-accumulator"
+import { resolveCodecModel } from "~/lib/codec/model-resolution"
 import { getRequestContextManager } from "~/lib/context/manager"
 import {
   //
@@ -94,7 +95,6 @@ import {
 } from "~/lib/models/endpoint"
 import {
   //
-  resolveModelTarget,
   type RouteOverride,
 } from "~/lib/models/resolver"
 import { sanitizeOpenAIMessages } from "~/lib/openai/sanitize"
@@ -118,7 +118,6 @@ import {
   renderResponseNonStreamingVia,
   type ReverseStreamTranslator,
 } from "~/lib/pipeline/hub-translate"
-import { state } from "~/lib/state"
 import { applyInboundSystemPrompt } from "~/lib/system-prompt"
 
 import {
@@ -348,16 +347,13 @@ function parseOpenAiCc(raw: RawHttpRequest): { env: RequestEnvelope; baseline: C
   // Snapshot the CLIENT raw (pre-rewrite, pre-system-prompt) for history.
   const originalSnapshot = structuredClone(clientBody)
 
-  // Azure deployment routes inject the deployment name as an explicit override
-  // (path wins over body.model). It defines the effective requested model.
-  const clientModel = raw.modelOverride ?? incoming.model
-  // Prefer the route's pre-reload resolution (legacy timing — before the
-  // system-prompt config reload, P2.2-D3); else resolve + look up here.
-  const resolvedTarget = raw.preResolved ?? resolveModelTarget(clientModel)
-  const resolvedName = resolvedTarget.name
-  const routeOverride = resolvedTarget.routeOverride
-  if (resolvedName !== clientModel) consola.debug(`Model name resolved: ${clientModel} → ${resolvedName}`)
-  const selectedModel = raw.preResolved ? raw.preResolved.model : state.modelIndex.get(resolvedName)
+  // Model resolution (requested/resolved/selected/clientModel) via the shared
+  // codec primitive. Azure deployment routes inject the deployment name as an
+  // explicit `modelOverride` (path wins over body.model); the primitive folds it
+  // into `requestedModel`. `preResolved` carries the route's pre-reload resolution
+  // (legacy timing — before the system-prompt config reload, P2.2-D3).
+  const { requestedModel, resolvedName, routeOverride, selectedModel, clientModel } = resolveCodecModel(raw)
+  if (resolvedName !== requestedModel) consola.debug(`Model name resolved: ${requestedModel} → ${resolvedName}`)
 
   // Create the request context (triggers "created" → history insert).
   const manager = getRequestContextManager()
@@ -373,7 +369,7 @@ function parseOpenAiCc(raw: RawHttpRequest): { env: RequestEnvelope; baseline: C
   })
 
   ctx.setOriginalRequest({
-    model: clientModel, // client's original (pre-resolution) name
+    model: requestedModel,
     messages: originalSnapshot.messages as unknown as Array<unknown>,
     stream: originalSnapshot.stream ?? false,
     tools: originalSnapshot.tools?.map((t) => ({ name: t.function.name, description: t.function.description })),
@@ -391,7 +387,7 @@ function parseOpenAiCc(raw: RawHttpRequest): { env: RequestEnvelope; baseline: C
 
   ctx.setResolvedModel({
     resolved: resolvedName,
-    ...(clientModel !== resolvedName && { client: clientModel }),
+    ...(clientModel !== undefined && { client: clientModel }),
   })
 
   // Sanitize messages (orphan tool blocks, system-reminders). O10

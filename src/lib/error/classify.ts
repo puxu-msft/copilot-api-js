@@ -5,6 +5,7 @@ import {
   extractTokenLimitFromResponseText,
   isUpstreamRateLimited,
 } from "./parsing"
+import { getTransportErrorReason } from "./transport-reason"
 import {
   //
   formatErrorWithCause,
@@ -66,13 +67,47 @@ export function classifyError(error: unknown): ApiError {
     }
   }
 
-  // HTTP/2 REFUSED_STREAM: the peer refused the stream BEFORE performing any
-  // application processing (RFC 9113 §5.1.2 & §8.7). The protocol GUARANTEES the
-  // request was not processed, so retry is safe even for a non-idempotent POST —
-  // unlike a generic 5xx or a mid-stream NGHTTP2_CANCEL / NGHTTP2_INTERNAL_ERROR
-  // (which MAY have been partially processed). Classified as network_error so the
-  // existing network-retry strategy retries once on a fresh h2 session. Matched
-  // BEFORE isNetworkError only for locality — both map to the same envelope.
+  // HTTP/2 transport errors carry a STRUCTURED reason tag set by the producer
+  // (http2-client.ts), which is authoritative and EXHAUSTIVE: when a tag is
+  // present, it — never the substring fallback below — decides the classification,
+  // so a real (tagged) error can never be re-classified by a coincidental string
+  // overlap. `pre-response-close` (connection died before any response header —
+  // reconnect is the only path to a usable response) and `refused-stream` (RFC
+  // 9113 §8.7 zero-processing guarantee) are safely retryable → network_error →
+  // the existing network-retry strategy (hasRetried latch bounds it to one
+  // retry). `mid-body-close` (a truncated body after headers) is NOT retryable —
+  // it terminates as bad_request here rather than falling through. The substring
+  // checks BELOW are a defense-in-depth fallback ONLY for errors that reach
+  // classify WITHOUT a tag (an untagged path, or a layer that re-wraps and drops
+  // the tag).
+  if (error instanceof Error) {
+    const reason = getTransportErrorReason(error)
+    if (reason !== undefined) {
+      switch (reason) {
+        case "pre-response-close":
+        case "refused-stream": {
+          return { type: "network_error", status: 0, message: formatErrorWithCause(error), raw: error }
+        }
+        case "mid-body-close": {
+          // Truncated body after headers — never a pre-response retry. Terminal.
+          return { type: "bad_request", status: 0, message: formatErrorWithCause(error), raw: error }
+        }
+        default: {
+          // Exhaustiveness: a new TransportErrorReason must add its case above.
+          const _never: never = reason
+          return _never
+        }
+      }
+    }
+  }
+
+  // HTTP/2 REFUSED_STREAM (substring FALLBACK — tag preferred above): the peer
+  // refused the stream BEFORE performing any application processing (RFC 9113
+  // §5.1.2 & §8.7). The protocol GUARANTEES the request was not processed, so
+  // retry is safe even for a non-idempotent POST — unlike a generic 5xx or a
+  // mid-stream NGHTTP2_CANCEL / NGHTTP2_INTERNAL_ERROR (which MAY have been
+  // partially processed). Classified as network_error so the existing
+  // network-retry strategy retries once on a fresh h2 session.
   if (error instanceof Error && isRetryableHttp2StreamError(error)) {
     return {
       type: "network_error",
@@ -82,17 +117,16 @@ export function classifyError(error: unknown): ApiError {
     }
   }
 
-  // HTTP/2 pre-response teardown: the h2 stream/session died BEFORE any response
-  // headers arrived (status 0, zero frames — http2-client.ts's `!headersReceived`
-  // close backstop). Semantically DISTINCT from REFUSED_STREAM (which carries a
-  // protocol zero-processing guarantee): here the connection is simply dead, and
-  // reconnecting + resending is the ONLY way to deliver any usable response — not
-  // retrying just yields "quota maybe already spent AND zero response". If the
-  // upstream had metered the request before the teardown, it is recorded twice
-  // (inherent, unavoidable; History/telemetry record it faithfully). The
-  // network-retry strategy's `hasRetried` latch bounds the extra attempt to at
-  // most one. Kept in its OWN token list so it never dilutes the strict
-  // REFUSED_STREAM guarantee.
+  // HTTP/2 pre-response teardown (substring FALLBACK — tag preferred above): the
+  // h2 stream/session died BEFORE any response headers arrived (status 0, zero
+  // frames — http2-client.ts's `!headersReceived` close backstop). Semantically
+  // DISTINCT from REFUSED_STREAM (which carries a protocol zero-processing
+  // guarantee): here the connection is simply dead, and reconnecting + resending
+  // is the ONLY way to deliver any usable response — not retrying just yields
+  // "quota maybe already spent AND zero response". If the upstream had metered the
+  // request before the teardown, it is recorded twice (inherent, unavoidable;
+  // History/telemetry record it faithfully). The network-retry strategy's
+  // `hasRetried` latch bounds the extra attempt to at most one.
   if (error instanceof Error && isRetryablePreResponseHttp2Close(error)) {
     return {
       type: "network_error",

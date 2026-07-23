@@ -283,6 +283,14 @@ const FIELDS: ReadonlyArray<FieldSpec> = [
     defaultStateValue: CONFIG_MANAGED_DEFAULTS.h2IdleSessionTimeout,
   },
   {
+    configKey: "upstream_transport.http2.max_sessions_per_origin",
+    stateKey: "maxSessionsPerOrigin",
+    // Sample MUST differ from the default (0) so R1/R2 prove the wiring.
+    sampleYamlValue: "8",
+    expectedStateValue: 8,
+    defaultStateValue: CONFIG_MANAGED_DEFAULTS.maxSessionsPerOrigin,
+  },
+  {
     configKey: "upstream_transport.websocket.pooled_connection_idle_timeout",
     stateKey: "pooledConnectionIdleTimeout",
     sampleYamlValue: "60",
@@ -1471,5 +1479,56 @@ system_prompt_overrides:
     expect(state.thinkingBlockMessagePolicy).toBe(CONFIG_MANAGED_DEFAULTS.thinkingBlockMessagePolicy)
     expect(state.responseHeaderTimeout).toBe(CONFIG_MANAGED_DEFAULTS.responseHeaderTimeout)
     expect(state.streamIdleTimeout).toBe(CONFIG_MANAGED_DEFAULTS.streamIdleTimeout)
+  })
+
+  test("model_capabilities glob + ! negation flows through + hot-reload flips (spec 2026-07-23)", async () => {
+    const { modelSupportsContextEditing, modelSupportsToolSearch } = await import("~/lib/anthropic/features")
+    await writeConfig(`
+anthropic:
+  model_capabilities:
+    context_editing:
+      - "claude-*"
+      - "!claude-haiku-*"
+    tool_search_overrides:
+      "claude-*": false
+      "claude-opus-4-8": true
+`)
+    await applyConfigToState()
+    // list glob + negation
+    expect(state.contextEditingModels).toEqual(["claude-*", "!claude-haiku-*"])
+    expect(modelSupportsContextEditing("claude-opus-4.8")).toBe(true)
+    expect(modelSupportsContextEditing("claude-haiku-4.5")).toBe(false)
+    // map glob key + literal-outranks-glob specificity
+    expect(modelSupportsToolSearch("claude-opus-4.8")).toBe(true)
+    expect(modelSupportsToolSearch("claude-sonnet-4.6")).toBe(false)
+
+    // declared metadata false still beats a glob positive
+    const withSupports = { capabilities: { supports: { context_editing: false } } } as unknown as Parameters<typeof modelSupportsContextEditing>[1]
+    expect(modelSupportsContextEditing("claude-opus-4.8", withSupports)).toBe(false)
+
+    // HOT-RELOAD: rewrite with a flipped config → cache refresh → results flip.
+    resetConfigCache()
+    await writeConfig(`
+anthropic:
+  model_capabilities:
+    context_editing:
+      - "!claude-*"
+`)
+    await applyConfigToState()
+    expect(state.contextEditingModels).toEqual(["!claude-*"])
+    expect(modelSupportsContextEditing("claude-opus-4.8")).toBe(false) // only-negation → empty set
+
+    resetConfigManagedState()
+  })
+
+  test("YAML quoting rules for glob/! patterns (spec 2026-07-23 §5)", async () => {
+    // Documents WHY config.yaml must quote patterns beginning with ! or *.
+    const { parse } = await import("yaml")
+    // quoted patterns are preserved verbatim
+    expect(parse('a:\n  - "!claude-*"\n  - "*claude"').a).toEqual(["!claude-*", "*claude"])
+    // bare leading `!` → YAML tag indicator → NOT the literal string (empty/unresolved)
+    expect(parse("a:\n  - !claude-x", { logLevel: "silent" }).a).toEqual([""])
+    // bare leading `*` → YAML alias → parse error
+    expect(() => parse("a:\n  - *claude")).toThrow()
   })
 })

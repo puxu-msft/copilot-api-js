@@ -263,7 +263,7 @@ describe("createReverseStreamTranslator — REVERSE-leg dispatch (Phase 5, T5.2/
   })
 
   test("responses leg: DIRECT single-hop Anthropic → Responses lifecycle events (RFC 2026-07-14 subtask F, needs the reverse exchange)", () => {
-    const t = createReverseStreamTranslator("openai-responses", "claude-x", { responseId: "resp_r", itemId: "item_r", clientModel: "claude-x" })
+    const t = createReverseStreamTranslator("openai-responses", "claude-x", { responseId: "resp_r", itemId: "item_r", resolvedModel: "claude-x" })
     const frames = [
       ...t.renderFrame(start),
       ...t.renderFrame(textStart),

@@ -116,3 +116,19 @@ describe("prepareAnthropicRequest — end-to-end wire strip", () => {
     expect(tools[0].future_hint).toBeUndefined()
   })
 })
+
+describe("blast-radius: glob keys route through stripToolFields (spec 2026-07-23)", () => {
+  test("glob strip key adds a field, glob keep key removes it", () => {
+    setStateForTests({
+      stripToolFields: { "claude-*": ["custom_field"] },
+      keepToolFields: { "claude-opus-*": ["custom_field"] },
+    })
+    const tools = [{ name: "t", description: "d", input_schema: { type: "object" }, custom_field: 1 }] as unknown as Array<Tool>
+    // opus matches BOTH: strip glob adds custom_field, keep glob removes it → field survives.
+    const opus = stripToolFields(tools, "claude-opus-4.8") as unknown as Array<Record<string, unknown>>
+    expect(opus[0]).toHaveProperty("custom_field")
+    // sonnet matches ONLY the strip glob (not the opus keep) → field stripped.
+    const sonnet = stripToolFields(tools, "claude-sonnet-4.6") as unknown as Array<Record<string, unknown>>
+    expect(sonnet[0]).not.toHaveProperty("custom_field")
+  })
+})

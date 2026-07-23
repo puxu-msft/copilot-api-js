@@ -820,6 +820,21 @@ export interface State {
   readonly h2IdleSessionTimeout: number
 
   /**
+   * Cap on total live h2 sessions per origin (routable + in-flight creations, 0 =
+   * unlimited). Bounds the sessions a finite `maxConcurrentStreamsPerSession`
+   * accumulates. Enforced as a HARD cap: at cap with every session busy, a new
+   * request BLOCKS until a slot frees (a stream closes or a session is disposed)
+   * rather than growing the pool. The block is UPSTREAM-side — the handler-layer
+   * delayed-commit keepalive keeps the client connection alive; client abort /
+   * reaper / header-wait timeout release the waiter. Counts only ROUTABLE sessions
+   * (not draining retiring ones, so a config reload never blocks behind them).
+   * Max concurrent in-flight streams per origin = this × maxConcurrentStreamsPerSession.
+   * Default 0; `h2IdleSessionTimeout` converges the tail, this bounds pathological
+   * same-origin fan-out. Consumed by http2-client.ts.
+   */
+  readonly maxSessionsPerOrigin: number
+
+  /**
    * Whether to prefer HTTP/2 (node:http2) for every `https://` upstream.
    * Default: `true` — the production path all real GHC-fronted upstreams need.
    *
@@ -1684,6 +1699,7 @@ export function setUpstreamTransportConfig(
       | "softMaxUpstreamWsConnections"
       | "maxConcurrentStreamsPerSession"
       | "h2IdleSessionTimeout"
+      | "maxSessionsPerOrigin"
     >
   >,
 ): void {
@@ -1703,6 +1719,7 @@ export function setUpstreamTransportConfig(
     || (patch.softMaxUpstreamWsConnections !== undefined && patch.softMaxUpstreamWsConnections !== mutableState.softMaxUpstreamWsConnections)
     || (patch.maxConcurrentStreamsPerSession !== undefined && patch.maxConcurrentStreamsPerSession !== mutableState.maxConcurrentStreamsPerSession)
     || (patch.h2IdleSessionTimeout !== undefined && patch.h2IdleSessionTimeout !== mutableState.h2IdleSessionTimeout)
+    || (patch.maxSessionsPerOrigin !== undefined && patch.maxSessionsPerOrigin !== mutableState.maxSessionsPerOrigin)
   updateState(patch)
   if (changed) {
     for (const listener of transportUpstreamListeners) listener()
@@ -1997,6 +2014,7 @@ export const CONFIG_MANAGED_DEFAULTS = {
   upstreamH2PingInterval: 15,
   maxConcurrentStreamsPerSession: 1,
   h2IdleSessionTimeout: 300,
+  maxSessionsPerOrigin: 0,
   upstreamH2Favor: true,
   sessionConnectTimeout: 10,
   pooledConnectionIdleTimeout: 300,
@@ -2154,6 +2172,7 @@ export function resetConfigManagedState(): void {
     upstreamH2PingInterval: CONFIG_MANAGED_DEFAULTS.upstreamH2PingInterval,
     maxConcurrentStreamsPerSession: CONFIG_MANAGED_DEFAULTS.maxConcurrentStreamsPerSession,
     h2IdleSessionTimeout: CONFIG_MANAGED_DEFAULTS.h2IdleSessionTimeout,
+    maxSessionsPerOrigin: CONFIG_MANAGED_DEFAULTS.maxSessionsPerOrigin,
     upstreamH2Favor: CONFIG_MANAGED_DEFAULTS.upstreamH2Favor,
     sessionConnectTimeout: CONFIG_MANAGED_DEFAULTS.sessionConnectTimeout,
     pooledConnectionIdleTimeout: CONFIG_MANAGED_DEFAULTS.pooledConnectionIdleTimeout,
@@ -2353,6 +2372,7 @@ const mutableState: MutableState = {
   upstreamH2PingInterval: CONFIG_MANAGED_DEFAULTS.upstreamH2PingInterval,
   maxConcurrentStreamsPerSession: CONFIG_MANAGED_DEFAULTS.maxConcurrentStreamsPerSession,
   h2IdleSessionTimeout: CONFIG_MANAGED_DEFAULTS.h2IdleSessionTimeout,
+  maxSessionsPerOrigin: CONFIG_MANAGED_DEFAULTS.maxSessionsPerOrigin,
   upstreamH2Favor: CONFIG_MANAGED_DEFAULTS.upstreamH2Favor,
   sessionConnectTimeout: CONFIG_MANAGED_DEFAULTS.sessionConnectTimeout,
   pooledConnectionIdleTimeout: CONFIG_MANAGED_DEFAULTS.pooledConnectionIdleTimeout,

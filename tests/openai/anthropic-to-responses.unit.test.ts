@@ -59,7 +59,7 @@ function anthropicResponse(content: AnthropicResponse["content"], over?: Partial
   }
 }
 
-const ctx: TranslateExchangeContext = { responseId: "resp_abc", itemId: "item_abc", clientModel: "claude-opus-4.8" }
+const ctx: TranslateExchangeContext = { responseId: "resp_abc", itemId: "item_abc", resolvedModel: "claude-opus-4.8" }
 
 describe("translateAnthropicResponseToResponses — top-level envelope", () => {
   test("id/model/status wrap through", () => {
@@ -69,7 +69,7 @@ describe("translateAnthropicResponseToResponses — top-level envelope", () => {
     expect(result.model).toBe("claude-opus-4.8")
   })
 
-  test("model falls back to ctx.clientModel when the upstream response omits it", () => {
+  test("model falls back to ctx.resolvedModel when the upstream response omits it", () => {
     const result = translateAnthropicResponseToResponses(anthropicResponse([{ type: "text", text: "hi", citations: null }], { model: "" }), ctx)
     expect(result.model).toBe("claude-opus-4.8")
   })

@@ -572,16 +572,21 @@ export const AnthropicConfigSchema = z
       .optional(),
     tool_search_non_deferred: nullableNonemptyStringArray(),
     warmup: nullableEnum(["allow", "reject", "drop", "fake"] as const),
-    // Free-form Records — key = model-name pattern, value = list
+    // Free-form Records — key = model-name pattern, value = list.
+    // Key matching (shared `per-model-config.ts`): a plain key is a model-name SUBSTRING; a key with a
+    // glob metachar (`*`/`?`) is an ANCHORED GLOB; `"*"` = all models. Aggregation differs by map:
+    // `effort_overrides` is a WHITELIST (`findMostSpecific`: most-specific wins, specificity literal >
+    // glob > `"*"` then longest key); every other Record here is an additive STRIP-LIST
+    // (`collectAllMatching`: union of ALL matching keys incl. `"*"`).
     effort_overrides: z.record(z.string(), z.array(z.string())).optional(),
     beta_strip_headers: z.record(z.string(), z.array(z.string())).optional(),
-    // GHC 未支持的 cache_control 子字段黑名单（model-name pattern → 子字段列表；"*" = 所有模型）。
+    // GHC 未支持的 cache_control 子字段黑名单（model-name pattern / glob → 子字段列表；"*" = 所有模型；additive `collectAllMatching`）。
     // passthrough 模式下剥除。ADDS to 内置 {scope} + reactive learned cache。
     cache_control_strip_subfields: z.record(z.string(), z.array(z.string())).optional(),
     partner_strip_features: z.record(z.string(), z.array(z.string())).optional(),
-    // Custom-tool top-level field names to strip / keep (model-name pattern → field list;
-    // `"*"` = all models). tool_strip_fields ADDS to the built-in default
-    // (`eager_input_streaming`) + reactive learned cache; tool_keep_fields SUBTRACTS
+    // Custom-tool top-level field names to strip / keep (model-name pattern / glob → field list;
+    // `"*"` = all models; additive `collectAllMatching`). tool_strip_fields ADDS to the built-in
+    // default (`eager_input_streaming`) + reactive learned cache; tool_keep_fields SUBTRACTS
     // (the reversibility escape hatch — e.g. re-enable a field a future upstream supports).
     tool_strip_fields: z.record(z.string(), z.array(z.string())).optional(),
     tool_keep_fields: z.record(z.string(), z.array(z.string())).optional(),
@@ -686,10 +691,18 @@ export const AnthropicConfigSchema = z
      * an entry or starts with `entry + "-"`. Bundled defaults mirror GHC's capability checks — edit
      * to add/remove models (e.g. a new Claude release) WITHOUT a code change. See features.ts.
      *
+     * Each entry also supports GLOB (`*`/`?`, e.g. `claude-*`, `claude-opus-4-*`) and `!` NEGATION
+     * (`!pattern` SUBTRACTS from the set). Semantics: a model has the capability iff it matches ≥1
+     * positive entry AND no `!` entry (self-contained list, exclusion-always-wins, order-independent);
+     * a list with only `!` entries → empty set. A plain (glob-free) token keeps the family-prefix
+     * dash-boundary semantics above. See docs/spec/2026-07-23-model-capabilities-glob-and-negation.md.
+     * YAML: patterns beginning with `!` or `*` MUST be quoted (`- "!claude-haiku-*"`, `- "*claude"`).
+     *
      * `tool_search_overrides` is NOT a list: tool-search is default-allow for Claude ≥4.5 (Haiku +
      * pre-4.5 denied), so it needs no allowlist. The overrides map holds per-model force-on/off
-     * decisions only (keys = model-name substrings, `"*"` = wildcard; value true=force-on/false=off),
-     * checked after declared metadata but before the built-in default-allow matcher.
+     * decisions only (keys = model-name substrings OR glob patterns, `"*"` = wildcard; value
+     * true=force-on/false=off), checked after declared metadata but before the built-in default-allow
+     * matcher. Key specificity when multiple match: literal substring > glob > `"*"` (then longest key).
      */
     model_capabilities: z
       .object({
@@ -970,7 +983,8 @@ export const TimeoutsConfigSchema = z
     response_header: nullableNonnegativeInt(),
     /**
      * Per-model stream-idle timeout override (seconds), keyed by model-name
-     * substring with `"*"` wildcard. A match wins over `stream_idle`; 0 = disabled.
+     * substring OR glob (`*`/`?`) with `"*"` wildcard (specificity: literal > glob >
+     * `"*"`, then longest key). A match wins over `stream_idle`; 0 = disabled.
      * Bundled default `{ gpt-5.5: 600 }`. Per-key merged with the user table
      * (a user `{}` does NOT wipe the bundled entry). App-guard only — does not
      * touch the undici dispatcher. See ADR 2026-07-12-per-model-idle-timeout-is-app-guard-only.
@@ -1058,6 +1072,18 @@ export const UpstreamTransportHttp2ConfigSchema = z
      * knob). Hot-reloadable.
      */
     idle_session_timeout: nullableNonnegativeInt(),
+    /**
+     * Cap on the TOTAL live h2 sessions per origin (routable + in-flight
+     * creations, 0 = unlimited). Bounds the sessions a finite
+     * `max_concurrent_streams_per_session` accumulates. Enforced as a HARD cap: at
+     * cap with every session busy, a new request BLOCKS (upstream-side, the client
+     * connection stays alive via the handler delayed-commit keepalive) until a
+     * slot frees, rather than growing the pool. Default 0 (unlimited) —
+     * `idle_session_timeout` converges the long tail; this bounds pathological
+     * same-origin fan-out. Max concurrent in-flight streams per origin = this ×
+     * max_concurrent_streams_per_session. Hot-reloadable.
+     */
+    max_sessions_per_origin: nullableNonnegativeInt(),
   })
   .strict()
 export type UpstreamTransportHttp2Config = z.infer<typeof UpstreamTransportHttp2ConfigSchema>

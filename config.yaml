@@ -237,11 +237,11 @@ timeouts:
   # Each upstream attempt: Max seconds between SSE events (0 = no timeout). Applies to all streaming paths.
   stream_idle: 600
 
-  # 按模型覆盖 stream_idle（秒），键为模型名子串；"*" = 所有模型。
-  # Per-model stream_idle override (seconds), keyed by model-name substring; "*" = all models.
+  # 按模型覆盖 stream_idle（秒），键为模型名子串（或 glob `*`/`?`）；"*" = 所有模型。
+  # Per-model stream_idle override (seconds), keyed by model-name substring (or glob `*`/`?`); "*" = all models.
   #
-  # 命中项优先于上面的标量 stream_idle；0 = 禁用（无空闲超时）。最长子串匹配胜出。
-  # A match wins over the scalar stream_idle above; 0 = disabled (no idle timeout). Longest-substring match wins.
+  # 命中项优先于上面的标量 stream_idle；0 = 禁用（无空闲超时）。多键命中时具体度：literal 子串 > glob > "*"（同类再按键长最长胜）。
+  # A match wins over the scalar stream_idle above; 0 = disabled (no idle timeout). Key specificity when multiple match: literal substring > glob > "*" (then longest key).
   #
   # 引入理由：观察到 gpt-5.5 (effort=high) 爆发前有 266–462s 的零帧静默期，但一些早期模型不会。
   # Reason: Observed gpt-5.5 (effort=high) emits a single 266–462s zero-frame silent-reasoning gap before a burst, but some earlier models do not.
@@ -484,6 +484,10 @@ anthropic:
   # 模型具该能力当且仅当其归一化 id 等于某项或以 `项 + "-"` 开头——故 `claude-opus-4` 匹配 `claude-opus-4` 及整个 `claude-opus-4-x` 族，但不匹配无关的 `claude-opus-40`。
   # These mirror GitHub Copilot Chat's capability checks; edit to add/remove models (e.g. a new Claude release) WITHOUT a code change. Entries may be dotted or dashed.
   # 这些镜像 GitHub Copilot Chat 的能力判定；增删模型（如新 Claude 版本）只改这里、无需改码。项可写点号或连字符形态。
+  # Entries also support GLOB (`*`/`?`, e.g. `claude-*`, `claude-opus-4-*`) and `!` NEGATION (`!pattern` subtracts). A model has the capability iff it matches ≥1 positive entry AND no `!` entry (order-independent; a list with only `!` entries = empty set). Plain glob-free tokens keep the family-prefix semantics above.
+  # 项还支持 GLOB（`*`/`?`，如 `claude-*`、`claude-opus-4-*`）与 `!` 剔除（`!pattern` 从集合中减去）。模型具该能力当且仅当命中 ≥1 个 positive 项且不命中任何 `!` 项（顺序无关；只有 `!` 项的列表 = 空集）。不含 glob 的裸 token 保持上面的 family 前缀语义。
+  # YAML NOTE: patterns beginning with `!` or `*` MUST be quoted (`- "!claude-haiku-*"`, `- "*claude"`); a bare `claude-*` (star not leading) is fine but quoting all is recommended.
+  # YAML 注意：以 `!` 或 `*` 开头的项必须加引号（`- "!claude-haiku-*"`、`- "*claude"`）；`claude-*`（`*` 非行首）可不加、但推荐一律加引号。
   model_capabilities:
     # context_management (clear_tool_uses / clear_thinking) support. / context_management（clear_tool_uses / clear_thinking）支持。
     context_editing:
@@ -540,8 +544,11 @@ anthropic:
     # 原生服务端 tool_search 对 Claude ≥4.5 默认放行（拒 Haiku 与 pre-4.5），镜像 GHC——新模型自动点亮、无名单维护。
     # 此表只放 per-model 覆盖：键是模型名子串（"*"=通配），值 true=强制开 / false=强制关。
     # 优先级：/models 元数据 > 本覆盖表（最具体键胜）> default-allow。总闸是下方 `tool_search` 开关。默认：空（由 default-allow 决定）。
+    # Keys also support glob (`*`/`?`); specificity when multiple match: literal substring > glob > "*" (then longest key). Quote keys beginning with `*`.
+    # 键同样支持 glob（`*`/`?`）；多键命中时具体度：literal 子串 > glob > "*"（再按键长）。以 `*` 开头的键须加引号。
     # tool_search_overrides:
     #   claude-opus-4-8: true
+    #   "claude-haiku-*": true
     #   "*": false
 
   # Client→upstream request-header forwarding MODE (Anthropic path). Selects which list below is active. Both modes apply the same security floor first: the proxy's own core keys (Authorization / editor-version / x-request-id / openai-intent / x-github-api-version / anthropic-version / anthropic-beta / …) always win, and a sensitive denylist (cookie / x-api-key / host / content-length / content-encoding / accept-encoding / forwarded chain / hop-by-hop + x-github-* / openai-* namespaces) is ALWAYS removed — the whitelist cannot re-admit a credential. Request-side mirror of strict_response_headers.
@@ -577,8 +584,8 @@ anthropic:
   # ---------------------------------------------------------------------------
   # Strip the listed `anthropic-beta` tokens from outbound requests before they are forwarded upstream.
   # 转发上游前从出站请求剥离列出的 `anthropic-beta` token。
-  # Keys are model-name substrings matched against the resolved model name; the pseudo-key "*" applies to every model.
-  # 键是匹配解析后模型名的模型名子串；伪键 "*" 应用到所有模型。
+  # Keys are model-name substrings (or glob `*`/`?`) matched against the resolved model name; the pseudo-key "*" applies to every model.
+  # 键是匹配解析后模型名的模型名子串（或 glob `*`/`?`）；伪键 "*" 应用到所有模型。
   # Applies to both client-sent and locally-built betas, so use it for tokens the upstream rejects (e.g. `unsupported beta header(s): X`).
   # 同时作用于客户端发送与本地构建的 beta，故用于上游拒绝的 token（如 `unsupported beta header(s): X`）。
   #
@@ -602,12 +609,12 @@ anthropic:
       - mid-conversation-system-2026-04-07
 
   # Per-model supported effort levels (whitelist) for output_config.effort. / output_config.effort 的 per-model 支持档位（白名单）。
-  # Keys are model name substrings matched against the resolved model name. / 键是与解析后模型名匹配的模型名子串。
+  # Keys are model name substrings (or glob `*`/`?`) matched against the resolved model name. / 键是与解析后模型名匹配的模型名子串（或 glob `*`/`?`）。
   # Values are arrays of supported efforts from: none, low, medium, high, xhigh, max. / 值是支持档位数组，取自：none、low、medium、high、xhigh、max。
   # Requests outside the whitelist are clamped to the nearest supported value (above max → max supported; below min → min supported). / 白名单外的请求会被钳到最近支持值（高于上限→最高支持值；低于下限→最低支持值）。
   #
   # Match semantics (whitelist — single source of truth): / 匹配语义（白名单——单一真相源）：
-  #   - The MOST SPECIFIC (longest) key whose substring matches the model wins. e.g. for model "claude-opus-4.7-high", the key "claude-opus-4.7-high" beats "claude-opus-4.7"; only the winning key's values apply (no union). / 最具体（最长）的匹配键胜出，如 "claude-opus-4.7-high" 击败 "claude-opus-4.7"；仅胜出键的值生效（不取并集）。
+  #   - Keys may be a plain substring OR a glob (`*`/`?`). The MOST SPECIFIC key wins by ordering: literal substring > glob > "*" (within a kind, the longest key string wins). e.g. for model "claude-opus-4.7-high", the literal key "claude-opus-4.7-high" beats "claude-opus-4.7" and any glob; only the winning key's values apply (no union). / 键可为普通子串或 glob（`*`/`?`）。最具体键按 literal 子串 > glob > "*" 定序胜出（同类再按键长最长胜），如 "claude-opus-4.7-high" 击败 "claude-opus-4.7" 及任何 glob；仅胜出键的值生效（不取并集）。
   #   - The pseudo-key "*" is a last-resort wildcard (used only when no other key matches). / 伪键 "*" 是最后兜底通配（仅无其它键匹配时用）。
   #
   # Cross-validation: if a configured whitelist contains efforts the upstream model metadata does NOT declare, the out-of-range entries are dropped with a warn log. If the intersection is empty, the metadata wins (avoids guaranteed 400s from stale config). / 交叉校验：若配置白名单含上游元数据未声明的档位，超范围项被丢弃并 warn；交集为空则元数据胜出（避免陈旧配置必 400）。
@@ -864,7 +871,7 @@ anthropic:
   # Body field pre-filter / Body 字段预过滤
   # ---------------------------------------------------------------------------
   # Strip top-level body fields from outbound Anthropic payloads per model. / 按模型从出站 Anthropic payload 剥离顶层 body 字段。
-  # Keys are model-name substrings; "*" applies to every model. / 键是模型名子串；"*" 应用到所有模型。
+  # Keys are model-name substrings (or glob `*`/`?`); "*" applies to every model. / 键是模型名子串（或 glob `*`/`?`）；"*" 应用到所有模型。
   # Match semantics (strip-list — additive): every matching key contributes its fields to the strip set, including "*". / 匹配语义（剥离表——叠加）：每个匹配键（含 "*"）都把其字段并入剥离集。
   # Always merged with the built-in default {"*": [inference_geo]} and with runtime-learned entries from upstream `<field>: Extra inputs are not permitted` 400 errors (persisted in negotiation-states.json). / 始终与内置默认 {"*": [inference_geo]} 及运行时学习项（来自上游 400、持久化于 negotiation-states.json）合并。
   #

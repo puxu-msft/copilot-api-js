@@ -42,7 +42,7 @@ Anthropic 直连为 **bypass-direct** codec（translate/render = identity）—�
 | **refusal 恢复** | thinking-only refusal（`stop_reason: refusal`）恢复 | [refusal-recovery.md](refusal-recovery.md) |
 | **sanitize 链** | 请求侧 cache_control 剥离、字段规整等 | [sanitize-pipeline.md](sanitize-pipeline.md) |
 
-功能矩阵（配置）：thinking signature 自包含（块级保护）、adaptive thinking 强制、model_capabilities 名单、cache_control 模式、L2 protect_streaming、refusal 恢复——逐项见 DESIGN.md「活的架构现状」「改写词汇」与 `anthropic.*` 运行时选项表。
+功能矩阵（配置）：thinking signature 自包含（块级保护）、adaptive thinking 强制、model_capabilities 名单（支持 glob/`!` 剔除，语义见 DESIGN.md）、cache_control 模式、L2 protect_streaming、refusal 恢复——逐项见 DESIGN.md「活的架构现状」「改写词汇」与 `anthropic.*` 运行时选项表。
 
 ## 客户端配置
 

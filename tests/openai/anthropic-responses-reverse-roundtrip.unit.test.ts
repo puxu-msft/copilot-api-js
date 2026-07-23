@@ -36,7 +36,7 @@ import { createAnthropicToResponsesStreamTranslator } from "~/lib/openai/transla
 import { translateAnthropicResponseToResponses } from "~/lib/openai/translate/anthropic-to-responses"
 import { translateResponsesToAnthropicRequest } from "~/lib/openai/translate/responses-to-anthropic-request"
 
-const ctx: TranslateExchangeContext = { responseId: "resp_e2e", itemId: "item_e2e", clientModel: "claude-opus-4.8" }
+const ctx: TranslateExchangeContext = { responseId: "resp_e2e", itemId: "item_e2e", resolvedModel: "claude-opus-4.8" }
 
 /** A realistic-shaped Claude signature (matches the byte pattern observed in probe (e), FINDINGS.md). */
 const REAL_CLAUDE_SIGNATURE
