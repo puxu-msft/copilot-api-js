@@ -1861,23 +1861,17 @@ export function rebuildModelIndex(): void {
     modelIds: new Set(data.map((m) => m.id)),
   })
 }
-/**
- * Built-in model mapping. Intentionally EMPTY: model name mapping (short
- * aliases like opus/sonnet/haiku, redirects) is owned exclusively by the
- * bundled `config.yaml`, the single source of truth. If config.yaml can't be
- * read, the mapping stays empty and unknown aliases simply fail to resolve
- * (the upstream rejects them) rather than falling back to hardcoded names.
- */
-export const DEFAULT_MODEL_MAPPINGS: Record<string, string> = {}
+import {
+  //
+  CONFIG_MANAGED_DEFAULTS,
+  DEFAULT_MODEL_MAPPINGS,
+  DEFAULT_MODEL_TRANSLATION,
+} from "./state-defaults"
 
-/** Built-in `model_translation` mapping. Intentionally EMPTY — see {@link DEFAULT_MODEL_MAPPINGS} rationale. */
-export const DEFAULT_MODEL_TRANSLATION: ModelTranslation = {}
-
-import { CONFIG_MANAGED_DEFAULTS } from "./state-defaults"
-
-// Re-exported for back-compat: the defaults live in ./state-defaults (single-responsibility split);
-// existing `import { CONFIG_MANAGED_DEFAULTS } from "~/lib/state"` consumers keep working.
-export { CONFIG_MANAGED_DEFAULTS } from "./state-defaults"
+// Re-exported for back-compat: the bundled defaults live in ./state-defaults (single-responsibility
+// split); existing `import { CONFIG_MANAGED_DEFAULTS | DEFAULT_MODEL_MAPPINGS | DEFAULT_MODEL_TRANSLATION }
+// from "~/lib/state"` consumers keep working.
+export { CONFIG_MANAGED_DEFAULTS, DEFAULT_MODEL_MAPPINGS, DEFAULT_MODEL_TRANSLATION } from "./state-defaults"
 
 export function resetConfigManagedState(): void {
   setUnknownEndpointLogging({ ...CONFIG_MANAGED_DEFAULTS.unknownEndpointLogging })

@@ -11,6 +11,7 @@
 import type { ThinkingBlockSanitizeMode } from "~/lib/anthropic/sanitize/content-blocks"
 import type { ThinkingDestackStrategy } from "~/lib/anthropic/sanitize/destack-adjacent-thinking"
 import type { RepairItem } from "~/lib/anthropic/tool-input-repair"
+import type { ModelTranslation } from "~/lib/config/schema"
 
 import {
   //
@@ -32,6 +33,18 @@ import type {
   UnknownEndpointLogging,
   WarmupPolicy,
 } from "./state"
+
+/**
+ * Built-in model mapping. Intentionally EMPTY: model name mapping (short
+ * aliases like opus/sonnet/haiku, redirects) is owned exclusively by the
+ * bundled `config.yaml`, the single source of truth. If config.yaml can't be
+ * read, the mapping stays empty and unknown aliases simply fail to resolve
+ * (the upstream rejects them) rather than falling back to hardcoded names.
+ */
+export const DEFAULT_MODEL_MAPPINGS: Record<string, string> = {}
+
+/** Built-in `model_translation` mapping. Intentionally EMPTY — see {@link DEFAULT_MODEL_MAPPINGS} rationale. */
+export const DEFAULT_MODEL_TRANSLATION: ModelTranslation = {}
 
 /**
  * Default values for config-managed scalar/runtime fields.
