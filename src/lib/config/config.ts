@@ -226,6 +226,7 @@ export const KEEPALIVE_CADENCE_MAX = CLIENT_IDLE_DEADLINE_SEC - 20
 // Q1 measured real Claude Code 2.1.218 safely waiting 125s before HTTP response headers; this known-safe floor is the current configurable ceiling pending a first-failure measurement (see exp/silence-recovery-gates/FINDINGS.md).
 export const COMMIT_WINDOW_MAX_SEC = 125
 let warnedKeepaliveClamp = false
+let warnedCommitWindowClamp = false
 
 /** Clamp a post-commit keepalive interval (0 = disabled) to stay WELL below the client idle deadline; warn once. */
 export function clampKeepaliveCadence(sec: number): number {
@@ -242,11 +243,9 @@ export function clampKeepaliveCadence(sec: number): number {
 /** Clamp a pre-commit window (0 = immediate commit); its ceiling intentionally does not share keepalive-cadence semantics. */
 export function clampCommitWindowSec(sec: number): number {
   if (sec <= 0 || sec <= COMMIT_WINDOW_MAX_SEC) return sec
-  if (!warnedKeepaliveClamp) {
-    warnedKeepaliveClamp = true
-    consola.warn(
-      `delayed-commit window ${sec}s exceeds the measured Claude Code pre-header safety floor — clamped to ${COMMIT_WINDOW_MAX_SEC}s`,
-    )
+  if (!warnedCommitWindowClamp) {
+    warnedCommitWindowClamp = true
+    consola.warn(`delayed-commit window ${sec}s exceeds the measured Claude Code pre-header safety floor — clamped to ${COMMIT_WINDOW_MAX_SEC}s`)
   }
   return COMMIT_WINDOW_MAX_SEC
 }

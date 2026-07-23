@@ -21,8 +21,10 @@ import {
   beforeEach,
   describe,
   expect,
+  spyOn,
   test,
 } from "bun:test"
+import consola from "consola"
 import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
@@ -98,6 +100,19 @@ afterEach(async () => {
 // ============================================================================
 
 describe("stream commit and keepalive clamps", () => {
+  test("commit-window and keepalive clamps each emit their own first warning", () => {
+    const warnSpy = spyOn(consola, "warn").mockImplementation((() => undefined) as unknown as typeof consola.warn)
+    try {
+      expect(clampCommitWindowSec(COMMIT_WINDOW_MAX_SEC + 1)).toBe(COMMIT_WINDOW_MAX_SEC)
+      expect(clampKeepaliveCadence(KEEPALIVE_CADENCE_MAX + 1)).toBe(KEEPALIVE_CADENCE_MAX)
+      expect(warnSpy).toHaveBeenCalledTimes(2)
+      expect(warnSpy.mock.calls[0]?.[0]).toContain("delayed-commit window")
+      expect(warnSpy.mock.calls[1]?.[0]).toContain("keepalive interval")
+    } finally {
+      warnSpy.mockRestore()
+    }
+  })
+
   test("commit-window ceiling follows Q1's measured 125-second CC pre-header floor independently of keepalive cadence", async () => {
     expect(COMMIT_WINDOW_MAX_SEC).toBe(125)
     expect(KEEPALIVE_CADENCE_MAX).toBe(40)
