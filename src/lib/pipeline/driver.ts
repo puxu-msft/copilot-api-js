@@ -472,7 +472,11 @@ async function runGenerationPreflight(deps: DriverDeps, env: RequestEnvelope): P
 function createDriverCoordinator(deps: DriverDeps, initialEnv: RequestEnvelope): GenerationCoordinator<CandidateResponseSession> {
   const recording = createDriverRecordingPort(deps, initialEnv.ctx)
   const perCandidateDispatchBudget = Math.max(16, 1 + deps.maxRetries + deps.maxLearningRetries)
-  const maxTotalCandidates = deps.hedgePolicy?.maxTotalCandidates ?? 5
+  // Serial candidate headroom: 1 primary + the shared retry/continuation budget (spec 2026-07-22 §5.2 —
+  // transparent retries AND continuation legs each open a candidate). Sized from deps.maxRetries so a
+  // higher-than-default config does not trip the candidate cap; the continuation branch ALSO degrades
+  // gracefully if this is somehow exceeded (best-effort). Hedge configs override via hedgePolicy.
+  const maxTotalCandidates = deps.hedgePolicy?.maxTotalCandidates ?? Math.max(5, 1 + deps.maxRetries)
   const generationBudget = createGenerationBudget({
     maxActiveCandidates: deps.hedgePolicy?.maxActiveCandidates ?? 2,
     maxTotalCandidates,
@@ -1428,24 +1432,36 @@ export async function runResponseBufferedSink(
         currentEnv.ctx.resetSseEvents()
         // Build the continuation upstream body: [original] + [assistant = committed prefix] + [user =
         // message]. `ledger.snapshot()` already excludes thinking (extractor) — upstream rejects thinking
-        // as a prefix (ADR D3). The synthetic turns are marked `synthetic:"continuation"` on the
-        // upstreamRequest track by the handler-supplied builder path; they never touch the upstream-original
-        // response track (§4.4).
+        // as a prefix (ADR D3). The synthetic turns ARE faithfully recorded on the upstreamRequest track
+        // (real wire bytes) and never touch the upstream-original response track (§4.4). NOTE: they are not
+        // yet tagged with a `synthetic:"continuation"` PROVENANCE marker — an observability gap tracked in
+        // docs/todo/2026-07-22-continuation-synthetic-provenance.md (the continuation itself is correct).
         const continuationBody = continuation.buildRequest(continuationOriginalBody, ledger.snapshot(), continuation.message)
         const contEnv = currentEnv.with({ body: continuationBody })
-        const parent = generation?.bindings.get(current)
-        if (!parent) currentEnv.ctx.recordAttemptFailure({ willRetry: true, nextStrategy: "continuation" })
-        const coordinator = parent?.coordinator ?? createDriverCoordinator(deps, contEnv)
-        const continued = parent ? await coordinator.runContinuation(parent.candidate, "continuation", contEnv) : await coordinator.runPrimary()
-        generation?.bind(coordinator, continued)
-        currentEnv.ctx.selectGenerationWinner(continued.candidate, continued.dispatch)
-        current = continued.upstream
-        currentEnv = continued.env
-        // This next leg's frames re-index by the blocks already delivered (C3: wire count) and drop the
-        // leg's duplicate message_start.
-        continuationOffset = wireDeliveredBlocks
-        onContinuationLeg = true
-        continue
+        try {
+          const parent = generation?.bindings.get(current)
+          if (!parent) currentEnv.ctx.recordAttemptFailure({ willRetry: true, nextStrategy: "continuation" })
+          const coordinator = parent?.coordinator ?? createDriverCoordinator(deps, contEnv)
+          const continued = parent ? await coordinator.runContinuation(parent.candidate, "continuation", contEnv) : await coordinator.runPrimary()
+          generation?.bind(coordinator, continued)
+          currentEnv.ctx.selectGenerationWinner(continued.candidate, continued.dispatch)
+          current = continued.upstream
+          currentEnv = continued.env
+          // This next leg's frames re-index by the blocks already delivered (C3: wire count) and drop the
+          // leg's duplicate message_start.
+          continuationOffset = wireDeliveredBlocks
+          onContinuationLeg = true
+          continue
+        } catch (continuationDispatchError) {
+          // Continuation is BEST-EFFORT ("尽力救回完整响应"): if OPENING the continuation exchange fails
+          // (e.g. the generation candidate budget is exhausted on a high max_retries config — the candidate
+          // cap is not the continuation budget), degrade GRACEFULLY rather than crash the request. The
+          // committed prefix is already on the client wire, so fall through to the degrade return below,
+          // which emits `continuation-exhausted` (continuationCount was already incremented).
+          consola.debug(
+            `[driver] continuation dispatch failed, degrading to continuation-exhausted: ${continuationDispatchError instanceof Error ? continuationDispatchError.message : String(continuationDispatchError)}`,
+          )
+        }
       }
 
       // Exhausted / non-retryable → surface the error (truncation synthesizes one) for the

@@ -356,4 +356,39 @@ describe("continuation-retry driver FLOW", () => {
     // budget = cap - attempt - continuationCount; cap=1, floor 1 on first → exactly 1 continuation, then 0.
     expect(sendCount()).toBe(1)
   })
+
+  // NOTE: chained continuation SUCCESS (primary → cont-1 cut → cont-2 success, stitched across 3 legs) is
+  // asserted in the PRODUCTION path (tests/e2e-client/continuation-sdk.it.test.ts "CHAINED") — the mock
+  // harness here cannot drive `runContinuation`'s candidate-session terminal detection across hops. The
+  // cross-leg offset + cumulative ledger are therefore verified there; below locks only the graceful budget
+  // degrade, which the mock CAN show.
+
+  test("Important-2: a high budget that would exceed the generation candidate cap degrades gracefully (continuation-exhausted), never an unhandled throw", async () => {
+    const env = makeEnv()
+    env.ctx.beginAttempt({})
+    // every leg commits a block then cuts → keeps continuing until the candidate cap (maxTotalCandidates,
+    // derived as max(5, 1+deps.maxRetries)) is hit; the opts.retryCap budget (7) is DELIBERATELY larger so the
+    // candidate cap is reached first — proving the dispatch failure degrades, not throws.
+    const cutLeg = (): UpstreamStream =>
+      up([
+        f("message_start", { message: { id: "dup" } }),
+        f("content_block_start", { index: 0, content_block: { type: "text", text: "" } }),
+        f("content_block_delta", { index: 0, delta: { type: "text_delta", text: "x" } }),
+        f("content_block_stop", { index: 0 }),
+      ])
+    const initial = cutLeg()
+    const { driver } = makeDriver([cutLeg(), cutLeg(), cutLeg(), cutLeg(), cutLeg(), cutLeg(), cutLeg()], 3) // deps.maxRetries=3 → candidate cap 5
+    const { sink } = arraySink()
+    const ledger = createCommittedBlocksLedger()
+    let resolved: { outcome: string } | undefined
+    const opts = bufferedOpts(ledger, makeStopTracker())
+    opts.retryCap = 7 // budget larger than the candidate cap → the cap is hit first
+    opts.onBufferedResolve = (outcome) => (resolved = { outcome })
+
+    // Must NOT throw an unhandled "candidate budget exhausted" — best-effort continuation degrades.
+    const outcome = await driver.runResponseBufferedSink(initial, env, sink, opts)
+
+    expect(outcome.kind).toBe("stream-error")
+    expect(resolved?.outcome).toBe("continuation-exhausted") // graceful terminal, not a crash
+  })
 })

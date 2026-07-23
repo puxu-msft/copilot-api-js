@@ -147,6 +147,28 @@ describe("client↔proxy SDK e2e — continuation-retry (upstream shielded)", ()
     expect(final.stop_reason).toBe("end_turn")
   })
 
+  test("CHAINED: primary → continuation-1 cut → continuation-2 success — the SDK receives ONE turn stitched across THREE legs", async () => {
+    // initial leg: text (@0) then cut; continuation-1: text (→ @1) then cut again; continuation-2: text (→ @2)
+    // + terminal. Each leg's own message_start is dropped; blocks re-index by the wire-delivered count.
+    const up = sequencedUpstream([
+      () => createSseResponse([msgStart("m0"), ...textBlock(0, "A. ")]),
+      () => createSseResponse([msgStart("m1"), ...textBlock(0, "B. ")]),
+      () => createSseResponse([msgStart("m2"), ...textBlock(0, "C."), ...terminal]),
+    ])
+    setUpstreamFetchForTests(up.handler)
+
+    const final = await client.messages.stream({ model: MODEL, max_tokens: 64, messages: [{ role: "user", content: "write" }] }).finalMessage()
+
+    expect(up.callCount()).toBe(3) // initial + 2 continuation legs
+    // three text blocks stitched contiguously across three upstream exchanges, ONE coherent turn.
+    expect(final.content).toEqual([
+      { type: "text", text: "A. " },
+      { type: "text", text: "B. " },
+      { type: "text", text: "C." },
+    ] as never)
+    expect(final.stop_reason).toBe("end_turn")
+  })
+
   test("positive control: a clean single-exchange turn is untouched (continuation never fires)", async () => {
     const up = scriptedUpstream(() => createSseResponse([msgStart("msg_ok"), ...textBlock(0, "All in one. "), ...terminal]))
     setUpstreamFetchForTests(up.handler)
