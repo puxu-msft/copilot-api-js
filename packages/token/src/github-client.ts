@@ -1,10 +1,9 @@
 /** GitHub OAuth API client — device code flow and user info */
 
+import { HTTPError } from "@hsupu/ghc-proxy-foundation/error/http-error"
+import { standardHeaders } from "@hsupu/ghc-proxy-foundation/ghc-http-primitives"
+import { sleep } from "@hsupu/ghc-proxy-foundation/utils"
 import consola from "consola"
-
-import { HTTPError } from "~/lib/error"
-import { standardHeaders } from "~/lib/ghc-http-primitives"
-import { sleep } from "~/lib/utils"
 
 import { currentGithubHeaderIdentity } from "./credentials"
 import { getTokenDeps } from "./dependencies"

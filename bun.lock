@@ -54,9 +54,21 @@
         "vue-eslint-parser": "^10.4.1",
       },
     },
+    "packages/cli": {
+      "name": "@hsupu/ghc-proxy-cli",
+      "version": "0.0.0",
+    },
     "packages/foundation": {
       "name": "@hsupu/ghc-proxy-foundation",
       "version": "0.0.0",
+    },
+    "packages/token": {
+      "name": "@hsupu/ghc-proxy-token",
+      "version": "0.0.0",
+      "dependencies": {
+        "@hsupu/ghc-proxy-foundation": "workspace:*",
+        "consola": "^3.4.2",
+      },
     },
     "ui": {
       "name": "copilot-api-ui",
@@ -368,7 +380,11 @@
 
     "@hono/zod-validator": ["@hono/zod-validator@0.8.0", "", { "peerDependencies": { "hono": ">=4.10.0", "zod": "^3.25.0 || ^4.0.0" } }, "sha512-5uS4S1/LKtZQYvD4BtpPUFkOv8d1wNxHHrChm26buMiEYc1FrHWvDUaKVBwkiVtvSExHSpLGDvcnpI2Copyj9w=="],
 
+    "@hsupu/ghc-proxy-cli": ["@hsupu/ghc-proxy-cli@workspace:packages/cli"],
+
     "@hsupu/ghc-proxy-foundation": ["@hsupu/ghc-proxy-foundation@workspace:packages/foundation"],
+
+    "@hsupu/ghc-proxy-token": ["@hsupu/ghc-proxy-token@workspace:packages/token"],
 
     "@humanfs/core": ["@humanfs/core@0.19.1", "", {}, "sha512-5DyQ4+1JEUzejeK1JGICcideyfUbGixgS9jNgex5nqkW+cY7WZhxBigmieN5Qnw9ZosSNVC9KQKyb+GUaGyKUA=="],
 

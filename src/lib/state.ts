@@ -7,16 +7,13 @@ import type {
   Model,
   ModelsResponse,
 } from "~/lib/models/client"
-
-import { normalizeForMatching } from "~/lib/models/model-name"
-
-import type { AdaptiveRateLimiterConfig } from "./adaptive-rate-limiter"
 import type {
   //
   CopilotTokenInfo,
   TokenInfo,
-} from "./token/types"
+} from "~/lib/token/types"
 
+import { normalizeForMatching } from "~/lib/models/model-name"
 import {
   //
   restoreTokenStoreForTests,
@@ -26,7 +23,9 @@ import {
   setStoreTokenInfo,
   snapshotTokenStoreForTests,
   type TokenStoreSnapshot,
-} from "./token/store"
+} from "~/lib/token/store"
+
+import type { AdaptiveRateLimiterConfig } from "./adaptive-rate-limiter"
 
 /**
  * Server-side context editing mode.

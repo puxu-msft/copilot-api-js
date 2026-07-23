@@ -1,6 +1,5 @@
+import { formatErrorWithCause } from "@hsupu/ghc-proxy-foundation/error/utils"
 import consola from "consola"
-
-import { formatErrorWithCause } from "~/lib/error"
 
 import type { GitHubTokenManager } from "./github-token-manager"
 import type { CopilotTokenInfo } from "./types"

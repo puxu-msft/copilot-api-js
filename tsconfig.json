@@ -19,6 +19,8 @@
     "noUncheckedSideEffectImports": true,
     "baseUrl": ".",
     "paths": {
+      "@hsupu/ghc-proxy-foundation": ["./packages/foundation/src/index.ts"],
+      "@hsupu/ghc-proxy-foundation/*": ["./packages/foundation/src/*"],
       "~/lib/util/*": ["./packages/foundation/src/util/*"],
       "~/lib/diff/*": ["./packages/foundation/src/diff/*"],
       "~/lib/stream": ["./packages/foundation/src/stream"],
@@ -42,6 +44,8 @@
       "~/lib/error/transport-reason": ["./packages/foundation/src/error/transport-reason"],
       "~/lib/error/tool-diagnostics-types": ["./packages/foundation/src/error/tool-diagnostics-types"],
       "~/lib/ghc-http-primitives": ["./packages/foundation/src/ghc-http-primitives"],
+      "~/lib/token": ["./packages/token/src/index"],
+      "~/lib/token/*": ["./packages/token/src/*"],
       "~/*": ["./src/*"]
     }
   },

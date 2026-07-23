@@ -15,9 +15,8 @@
  * package's HTTP clients and file provider see them too.
  */
 
+import { writeSensitiveOnce } from "@hsupu/ghc-proxy-foundation/sensitive-output"
 import consola from "consola"
-
-import { writeSensitiveOnce } from "~/lib/tui/sensitive-output"
 
 import type { CopilotUsageResponse } from "./copilot-client"
 import type { GitHubUser } from "./github-client"

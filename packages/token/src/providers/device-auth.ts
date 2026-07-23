@@ -1,14 +1,13 @@
+import { writeSensitiveOnce } from "@hsupu/ghc-proxy-foundation/sensitive-output"
 import consola from "consola"
+
+import type { TokenInfo } from "../types"
 
 import {
   //
   getDeviceCode,
   pollAccessToken,
-} from "~/lib/token/github-client"
-import { writeSensitiveOnce } from "~/lib/tui/sensitive-output"
-
-import type { TokenInfo } from "../types"
-
+} from "../github-client"
 import { GitHubTokenProvider } from "./base"
 import { FileTokenProvider } from "./file"
 

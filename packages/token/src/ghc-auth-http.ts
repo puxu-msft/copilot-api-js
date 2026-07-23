@@ -4,7 +4,7 @@ import {
   GITHUB_API_VERSION,
   standardHeaders,
   USER_AGENT,
-} from "~/lib/ghc-http-primitives"
+} from "@hsupu/ghc-proxy-foundation/ghc-http-primitives"
 
 export const GITHUB_API_BASE_URL = "https://api.github.com"
 export const GITHUB_BASE_URL = "https://github.com"

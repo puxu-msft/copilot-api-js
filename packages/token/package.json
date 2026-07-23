@@ -1,0 +1,14 @@
+{
+  "name": "@hsupu/ghc-proxy-token",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./*": "./src/*"
+  },
+  "dependencies": {
+    "@hsupu/ghc-proxy-foundation": "workspace:*",
+    "consola": "^3.4.2"
+  }
+}

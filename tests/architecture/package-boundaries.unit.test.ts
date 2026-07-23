@@ -42,6 +42,20 @@ function foundationHasForbiddenImport(source: string): boolean {
   return siblingPkg.test(source) || anyRootAlias.test(source)
 }
 
+// A file in the `token` package may import ONLY: token-internal modules (RELATIVE
+// `./` paths), the foundation package (`@hsupu/ghc-proxy-foundation[/…]`), or
+// bare external packages (node:, npm — e.g. consola). It must NEVER import a
+// sibling core/server/cli package, nor use the `~/` alias at all (which resolves
+// into the core tree) — the whole point of the extraction is a machine-verified
+// zero-dependency-on-core boundary. (Consumers OUTSIDE the package keep importing
+// `~/lib/token[/…]` via the transitional alias; this guard governs only the
+// package's own source.)
+function tokenHasForbiddenImport(source: string): boolean {
+  const siblingPkg = /from ["']@hsupu\/ghc-proxy-(?:core|server|cli)/
+  const anyRootAlias = /from ["']~\//
+  return siblingPkg.test(source) || anyRootAlias.test(source)
+}
+
 describe("workspace packages", () => {
   test("root workspaces includes packages/*", async () => {
     const pkg = JSON.parse(await readFile(path.join(repoRoot, "package.json"), "utf8")) as {
@@ -54,6 +68,21 @@ describe("workspace packages", () => {
     const pkg = JSON.parse(await readFile(path.join(repoRoot, "packages/foundation/package.json"), "utf8")) as { name?: string; private?: boolean }
     expect(pkg.name).toBe("@hsupu/ghc-proxy-foundation")
     expect(pkg.private).toBe(true)
+  })
+
+  test("token package.json declares correct name, is private, and declares its external deps", async () => {
+    const pkg = JSON.parse(await readFile(path.join(repoRoot, "packages/token/package.json"), "utf8")) as {
+      name?: string
+      private?: boolean
+      dependencies?: Record<string, string>
+    }
+    expect(pkg.name).toBe("@hsupu/ghc-proxy-token")
+    expect(pkg.private).toBe(true)
+    // Must EXPLICITLY declare its runtime deps (single-lockfile hoist would
+    // otherwise hide a missing declaration — foundation's empty-deps is not the
+    // template here; the token package actually uses consola + foundation).
+    expect(pkg.dependencies?.consola).toBeDefined()
+    expect(pkg.dependencies?.["@hsupu/ghc-proxy-foundation"]).toBeDefined()
   })
 })
 
@@ -75,6 +104,33 @@ describe("package import boundaries", () => {
     for (const file of files) {
       const source = await readFile(file, "utf8")
       expect(foundationHasForbiddenImport(source), file).toBe(false)
+    }
+  })
+
+  // Positive control: prove the token detector fires on core imports and the
+  // `~/` alias, and does NOT fire on the allowed forms (foundation package,
+  // relative, bare external). A green scan over the package without this proves
+  // nothing (the exact import forms the extraction removed — `~/lib/state`,
+  // `~/lib/transport/upstream-fetch`, `~/lib/config/paths` — must be flagged).
+  test("token boundary detector flags forbidden imports (positive control)", () => {
+    expect(tokenHasForbiddenImport('import { state } from "~/lib/state"')).toBe(true)
+    expect(tokenHasForbiddenImport('import { upstreamFetch } from "~/lib/transport/upstream-fetch"')).toBe(true)
+    expect(tokenHasForbiddenImport('import { PATHS } from "~/lib/config/paths"')).toBe(true)
+    expect(tokenHasForbiddenImport('import { x } from "@hsupu/ghc-proxy-core"')).toBe(true)
+    // Allowed: foundation package (any subpath), relative, bare external, node:.
+    expect(tokenHasForbiddenImport('import { s } from "@hsupu/ghc-proxy-foundation/sensitive-output"')).toBe(false)
+    expect(tokenHasForbiddenImport('import { standardHeaders } from "@hsupu/ghc-proxy-foundation/ghc-http-primitives"')).toBe(false)
+    expect(tokenHasForbiddenImport('import { getGitHubUser } from "../github-client"')).toBe(false)
+    expect(tokenHasForbiddenImport('import consola from "consola"')).toBe(false)
+    expect(tokenHasForbiddenImport('import fs from "node:fs/promises"')).toBe(false)
+  })
+
+  test("token package imports nothing forbidden (relative + foundation + bare external only)", async () => {
+    const root = path.join(repoRoot, "packages/token/src")
+    const files = await sourceFiles(root)
+    for (const file of files) {
+      const source = await readFile(file, "utf8")
+      expect(tokenHasForbiddenImport(source), file).toBe(false)
     }
   })
 

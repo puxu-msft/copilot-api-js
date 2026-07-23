@@ -395,6 +395,39 @@ export default defineConfigWithVueTs(
       ],
     },
   },
+  // ── Monorepo layer boundary: token package depends only on foundation ──
+  // (spec docs/spec/2026-07-22-monorepo-workspace-split.md §7.2 + plan-token-package)
+  // token source may import ONLY token-internal modules (relative `./`), the
+  // foundation package (`@hsupu/ghc-proxy-foundation[/…]`), or bare external
+  // packages (consola, node:). It must never import a sibling core/server/cli
+  // package, nor use the `~/` root alias (which resolves into the core tree) —
+  // the extraction's whole point is a zero-dependency-on-core boundary. Mirrors
+  // tests/architecture/package-boundaries.unit.test.ts.
+  {
+    files: ["packages/token/src/**/*.ts"],
+    rules: {
+      "no-restricted-imports": [
+        "error",
+        {
+          patterns: [
+            {
+              group: [
+                "@hsupu/ghc-proxy-core",
+                "@hsupu/ghc-proxy-core/*",
+                "@hsupu/ghc-proxy-server",
+                "@hsupu/ghc-proxy-server/*",
+                "@hsupu/ghc-proxy-cli",
+                "@hsupu/ghc-proxy-cli/*",
+                "~/*",
+              ],
+              message:
+                "token package depends only on foundation: import token-internal modules via relative `./` paths, the `@hsupu/ghc-proxy-foundation` package, or bare external packages. No core/server/cli, no `~/` alias. See spec §7.2.",
+            },
+          ],
+        },
+      ],
+    },
+  },
   // ── Monorepo layer boundary: core/server must NOT import the cli package ──
   // cli is the DAG top (cli → core/server is legal); this guards the reverse.
   // Covers the eventual package name and the transitional `~/<clifile>` alias.

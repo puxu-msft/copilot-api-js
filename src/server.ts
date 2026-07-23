@@ -5,6 +5,12 @@ import { cors } from "hono/cors"
 import { trimTrailingSlash } from "hono/trailing-slash"
 import { type BlankEnv } from "hono/types"
 
+import {
+  //
+  getTokenCredentials,
+  peekTokenRuntime,
+} from "~/lib/token"
+
 import type { ErrorWireFormat } from "./lib/error"
 
 import { applyConfigToState } from "./lib/config/config"
@@ -18,11 +24,6 @@ import {
   unknownEndpointFinalizer,
 } from "./lib/observability/unknown-endpoint"
 import { state } from "./lib/state"
-import {
-  //
-  getTokenCredentials,
-  peekTokenRuntime,
-} from "./lib/token"
 import { registerHttpRoutes } from "./routes"
 import { registerOpenApiDocs } from "./routes/openapi"
 

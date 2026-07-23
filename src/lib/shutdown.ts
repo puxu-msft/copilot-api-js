@@ -19,6 +19,8 @@
 import consola from "consola"
 import { setMaxListeners } from "node:events"
 
+import { peekTokenRuntime } from "~/lib/token"
+
 import type { AdaptiveRateLimiter } from "./adaptive-rate-limiter"
 import type { RequestContext } from "./context/request"
 import type {
@@ -51,7 +53,6 @@ import {
 } from "./request-telemetry"
 import { notifyStopping } from "./restart/notify"
 import { state } from "./state"
-import { peekTokenRuntime } from "./token"
 import { closeHttp2Sessions } from "./transport/http2-client"
 import { emergencyWrite } from "./tui/terminal-coordinator"
 import {

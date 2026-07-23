@@ -1,7 +1,7 @@
 /** Copilot API client — token and usage */
 
-import { HTTPError } from "~/lib/error"
-import { COPILOT_INTERNAL_API_VERSION } from "~/lib/ghc-http-primitives"
+import { HTTPError } from "@hsupu/ghc-proxy-foundation/error/http-error"
+import { COPILOT_INTERNAL_API_VERSION } from "@hsupu/ghc-proxy-foundation/ghc-http-primitives"
 
 import { currentGithubHeaderIdentity } from "./credentials"
 import { getTokenDeps } from "./dependencies"
