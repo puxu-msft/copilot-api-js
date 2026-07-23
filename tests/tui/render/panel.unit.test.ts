@@ -394,6 +394,22 @@ describe("buildDetailLines", () => {
     expect(blob).toContain("claude-opus-4-8")
   })
 
+  test("collapses to the resolved model alone when client/resolved are the same model spelled differently", () => {
+    // Not a genuine remap — just hyphen/dot spelling; the noisy `client → resolved`
+    // arrow (and the model line's arrow) must be suppressed on the model line.
+    const noRemap = makeDetail({ id: "abcd1234-5678-90ab-cdef", clientModel: "claude-opus-4-8", model: "claude-opus-4.8", elapsedMs: 1000 })
+    const modelLine = buildDetailLines({ entry: noRemap, now: NOW, columns: 120 }).find((line) => line.startsWith("model:"))
+    expect(modelLine).toBe("model: claude-opus-4.8")
+    expect(modelLine).not.toContain("→")
+  })
+
+  test("shows the resolved model alone (no `?` placeholder) when no client name was captured", () => {
+    const noClient = makeDetail({ id: "abcd1234-5678-90ab-cdef", model: "claude-opus-4-8", elapsedMs: 1000 })
+    const modelLine = buildDetailLines({ entry: noClient, now: NOW, columns: 120 }).find((line) => line.startsWith("model:"))
+    expect(modelLine).toBe("model: claude-opus-4-8")
+    expect(modelLine).not.toContain("?")
+  })
+
   test("renders thinking as requested → effective", () => {
     const lines = buildDetailLines({ entry, now: NOW, columns: 120 })
     const blob = lines.join("\n")
