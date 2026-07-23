@@ -32,10 +32,12 @@
 ### Task 4.4: merged-state 异模型对抗审查
 
 > **修订记录（2026-07-23）**：审查重点②增补"防止实现漂移未同步回 M 文档"须覆盖全 leg 枚举（非仅原 4 格）；新增⑥核实 provenance 前置任务的产出是否真实生产接线（非测试 fixture 手工挂字段）；新增⑦以 `plan-Q5-three-way-overlap.md` 的时序图为对账标准，而非要求 reviewer 临场重新推导三方交互。
+>
+> **修订记录二（2026-07-23，round-2）**：新增⑧核实 P3 的 CC/Responses observer（Task 3.0a/3.0b）是否真的完整落地（非停留在接口签名——这正是第一轮 blocker 的重演风险，round-2 已在 P0/P3 分档修正，但实现阶段仍须复核未漂移回"只有签名无实现"的状态）；新增⑨核实 `strategy-prevented-stitch` 是否真的可从 history/telemetry 查到（非仅内存 diagnostics 数组）；新增⑩核实 Q5 的 index 账实现是否与修正后的时序图一致（`anchor@0→real@1→continuation@2`，非"offset 含 anchor 占位"的错误版本）。
 
 > **不自审**——按项目纪律，审查永远派 subagent，多视角对抗。派 reviewer（Claude 或 GPT 侧均可，倾向异模型对既往实现方）审查合并态：
 - 显式写裁判轴：长远正确 + 完整（非 ROI/YAGNI）。
-- 审查重点：① settle/finalize 时序契约是否真的如 Plan-1 Task 1.1a/1.1b 假设的那样安全（这是本计划最脆弱的架构假设，必须独立验证非自证，两个独立 oracle 是否都真的覆盖了各自该覆盖的层次）；② terminal ownership matrix 全 leg 枚举是否在实现后仍与矩阵文档一致（防止实现漂移未同步回 M 文档，含 translate/fallback/reverse legs 的透传 producer oracle 是否真实存在且通过）；③ visibility×class 组合矩阵校验是否有遗漏组合，且校验是否真的在 P1 首个 commit 就生效（非事后补丁）；④ 后端忠实记录（`perRoundStopReason`）是否真的独立于客户端可见性（用独立 history oracle 断言，不接受"客户端看起来对就行"的自证）；⑤ 跨 C3/C4 同构风险类比姊妹教训是否被正确规避；⑥ synthetic provenance 标记是否真实接线（读真实持久化 entry，非测试 fixture 手工构造，核对 `plan-provenance-prerequisite.md` 的 Task P.3 验收标准）；⑦ 以 `plan-Q5-three-way-overlap.md` 的时序图为对账标准，核实实现是否与该图一致（若发现实现偏离时序图但功能正确，须更新文档追认；若实现有图未预见的冲突，须报告为发现）。
+- 审查重点：① settle/finalize 时序契约是否真的如 Plan-1 Task 1.1a/1.1b 假设的那样安全（这是本计划最脆弱的架构假设，必须独立验证非自证，两个独立 oracle 是否都真的覆盖了各自该覆盖的层次）；② terminal ownership matrix 全 leg 枚举是否在实现后仍与矩阵文档一致（防止实现漂移未同步回 M 文档，含 translate/fallback/reverse legs 的透传 producer oracle 是否真实存在且通过）；③ visibility×class 组合矩阵校验是否有遗漏组合，且校验是否真的在 P1 首个 commit 就生效（非事后补丁）；④ 后端忠实记录（`perRoundStopReason`）是否真的独立于客户端可见性（用独立 history oracle 断言，不接受"客户端看起来对就行"的自证）；⑤ 跨 C3/C4 同构风险类比姊妹教训是否被正确规避；⑥ synthetic provenance 标记是否真实接线（读真实持久化 entry，非测试 fixture 手工构造，核对 `plan-provenance-prerequisite.md` 的 Task P.3 验收标准）；⑦ 以 `plan-Q5-three-way-overlap.md` 的时序图为对账标准，核实实现是否与该图一致（若发现实现偏离时序图但功能正确，须更新文档追认；若实现有图未预见的冲突，须报告为发现）；⑧ P3 的 CC/Responses observer（Task 3.0a/3.0b）是否有真实实现+反例测试+生产接线，而非停留在类型签名（这是本计划自己在 round-2 踩过一次的坑，实现阶段须防止同类漂移）；⑨ `strategy-prevented-stitch` 是否有真实 history/telemetry readback 断言（非仅函数返回值/内存诊断）；⑩ Q5 的 index 账实现（`wireDeliveredBlocks` 计数逻辑、anchor remap 与续写 offset 的链式组合）是否与 round-2 修正后的时序图一致，尤其"anchor 状态在续写 leg 是否重置"这个 master 代码自己标注的 untested corner 是否已被显式处理（非留白假设）。
 
 - [ ] 收到审查报告后，逐条核实（不盲信 reviewer 断言，亲自对照 file:line）。
 - [ ] 处理发现，记录未采纳项及理由。
@@ -55,11 +57,11 @@
 
 1. `enabled:false`（默认）时，全部已实现格式的 max_tokens 透传逐字节等价于本计划实施前的行为（golden 回归 0 差异）。
 2. Anthropic direct A 类续写 opt-in 后：客户端默认看到干净的 `end_turn`（transparent），后端 history 完整记录真实每轮终止 + 真实 synthetic provenance（非 fixture 手工挂）。
-3. CC direct / CC via-responses / Responses direct / Responses fallback 四格的 A 类续写覆盖（除非各自 PoC 门 FAIL，此时对应格式 backlog 登记 + 透传兜底）。
-4. Responses-WS 视姊妹依赖落地状态，可能收口于 backlog 状态（不算失败，是诚实依赖边界）；`openai-responses×/v1/messages`reverse 格的核实结论已归类（可挂载则实现，否则透传 oracle）。
+3. CC direct / CC via-responses / Responses direct / Responses fallback 四格的 A 类续写覆盖（除非各自 PoC 门 FAIL，此时对应格式 backlog 登记 + 透传兜底），且各自的 terminal observer（P3 Task 3.0a/3.0b）有真实实现 + 反例测试 + 生产接线，非仅接口签名。
+4. Responses-WS 视姊妹依赖落地状态，可能收口于 backlog 状态（不算失败，是诚实依赖边界）；`openai-responses×/v1/messages`reverse 格**已定论「本版本不支持」**（非「待核实」），透传 producer oracle（Task 3.12）已通过。
 5. B/C 类默认透传；门 B（观测分布 + 用户裁决阈值）/门 C PASS 的部分按 Plan-2 Task 2.2/2.3 落地为 opt-in。
-6. visibility×class 组合矩阵的配置校验从 P1 首个 commit 就全程生效，无静默吞配置的路径。
+6. visibility×class 组合矩阵的配置校验从 P1 首个 commit 就全程生效，无静默吞配置的路径；且该次降级的 `strategy-prevented-stitch` 真实落盘 + telemetry 可查（Plan-1 Task 1.6），非仅内存诊断。
 7. terminal ownership matrix **全 leg 枚举**文档与实现一致（Task 4.4 审查项，含 translate/fallback/reverse legs 的透传 producer oracle）。
-8. 分型 telemetry counter 独立于续写开关都能观测，且经真实 terminal 调用点驱动（P0 已验收，此处确认全流程未被后续改动破坏）。
+8. Anthropic 分型 telemetry counter 独立于续写开关都能观测，且经真实 terminal 调用点驱动（P0 已验收，此处确认全流程未被后续改动破坏）；CC/Responses 分型 telemetry 同理，经 P3 真实接线驱动。
 9. synthetic `continuation` provenance 标记真实生产接线（`plan-provenance-prerequisite.md` 已收口，backlog 条目关闭）。
-10. Q5 三方叠加时序图 + 至少一个生产 oracle 已产出（`plan-Q5-three-way-overlap.md`），且被 Task 4.4 的 merged-state 审查引用为对账标准。
+10. Q5 三方叠加时序图（**已按 master 真实 `wireDeliveredBlocks` 计数逻辑修正，非"offset 含 anchor 占位"的错误版本**）+ 至少一个生产 oracle 已产出（`plan-Q5-three-way-overlap.md`），且被 Task 4.4 的 merged-state 审查引用为对账标准。

@@ -188,10 +188,37 @@ maxTokensTerminalObserver: () => anthropicTerminalObserverState, // P0 独立 ob
 → 跑通过。
 - [ ] **Step 5: 提交** → `feat(handler): wire effective max_tokens_continuation config + terminal observer into Anthropic buffered path (production wiring)`。
 
+### Task 1.6: `strategy-prevented-stitch` 真实落盘 + telemetry（残留项，round-2 审查坐实缺具体记录任务）
+
+> **修订记录（2026-07-23，据 GPT plan-review round-2 [残留] 修订）**：`resolveEffectiveMaxTokensContinuation` 的 `diagnostics` 数组此前只是函数返回值，没有落到 `pipelineInfo`/telemetry 的具体任务——round-2 审查指出这违反 spec「绝不静默吞配置」的要求（用户配置了非法组合，必须能在 history/telemetry 里查到"这次请求本该续写但被 visibility 策略阻止了"，不能只在内存里降级完事）。
+
+- [ ] **Step 1: 写失败测试** —— 真实持久化 + telemetry readback，非函数返回值断言。
+
+```ts
+// tests/pipeline/max-tokens-strategy-prevented-stitch.it.test.ts
+test("a request configured with visibility=passthrough + classes.text=continue: history entry records strategyPreventedStitch=true; telemetry counter for the outcome increments", async () => {
+  // 走真实 http 流程，配置该非法组合，mock 上游产出 A 类 max_tokens 截断
+  const entry = await getHistoryEntryFor(reqId)
+  expect(entry.pipelineInfo.maxTokensContinuation.strategyPreventedStitch).toBe(true)
+  expect(entry.pipelineInfo.maxTokensContinuation.truncationClass).toBe("text") // 分型仍照常记录（观测独立于是否续写）
+  // telemetry readback：一个独立于 class 维度的 outcome 计数器
+  const stats = await readTelemetrySnapshot()
+  expect(stats.maxTokensContinuationOutcome["strategy-prevented-stitch"]).toBeGreaterThan(0)
+})
+test("a request with a LEGAL combination (visibility=transparent + classes.text=continue): strategyPreventedStitch is false/undefined, no spurious counter increment", async () => {
+  // 对照组，确认没有配置该组合的正常请求不会误触发这个诊断标记
+})
+```
+
+- [ ] **Step 2: 跑，失败。**
+- [ ] **Step 3: 实现** —— 在 Task 1.2 的截获点：当 `resolveEffectiveMaxTokensContinuation` 返回的 `diagnostics` 数组含 `"strategy-prevented-stitch"` 时（即本次请求命中了曾被降级的非法组合配置——注意这个诊断信号的产生时机是**配置解析时**，不是每次请求时都重新跑校验，但记录动作是**每次命中 max_tokens 终止时**），把 `strategyPreventedStitch: true` 写入 `recordMaxTokensTruncation` 调用的 diag 对象（P0 Task 0.5 已建的记录端口，本 task 只是真正传入非默认值）。**telemetry 侧**：在 `src/lib/observability/telemetry-dimensions.ts` 或新文件注册一个独立于 `max_tokens_truncation{class}` 的 outcome 维度/counter（`max_tokens_continuation_outcome{outcome="strategy-prevented-stitch"}`，参照 telemetry-architecture skill「聚合后无法重算的因子拆最细」——这是一个独立可观测事件，不应该被塞进 class 维度里稀释掉）。
+- [ ] **Step 4: 跑，通过。**
+- [ ] **Step 5: 提交** → `feat(observability): real strategy-prevented-stitch recording (history + telemetry readback, not just in-memory diagnostics)`。
+
 ### P1 收口
 
 - [ ] `test:fast` + `typecheck` 绿；`test:backend`（driver + handler 集成）绿。
 - [ ] **R1 golden 验证**：`enabled:false` 时四种截断分型的 max_tokens 透传逐字节等价于现状（跑既有 golden 测试套件，确认未破坏任何既有断言）。
 - [ ] **连跑确定性**：涉及 terminal 截获时序的测试连跑 10-25 次（FakeClock + 持 ReadableStream controller 精确控帧）。
 - [ ] History oracle 独立验收（Task 1.4 的真实持久化读回，非手动 round-trip）。
-- [ ] **组合校验验收**：无论何时启用 P1（即便只是"刚落地这一个 commit"），配置 `passthrough+continue` 的用户不可能观察到协议违规（Task 1.2 的降级测试 + Task 1.5 的接线测试共同覆盖）。
+- [ ] **组合校验验收**：无论何时启用 P1（即便只是"刚落地这一个 commit"），配置 `passthrough+continue` 的用户不可能观察到协议违规（Task 1.2 的降级测试 + Task 1.5 的接线测试共同覆盖），且该次请求的 `strategy-prevented-stitch` 已真实落盘 + telemetry 可查（Task 1.6，非仅内存诊断）。

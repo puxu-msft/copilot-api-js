@@ -29,15 +29,14 @@
 | `openai-cc` × `/responses`（via-responses，CC body 经 prepareWire 转 Responses wire） | 复用 `pumpStreamingV4`（同 CC direct 判据，但 `translateOut` 已在 S2 把上游 wire 转 Responses，客户端仍看 CC 帧） | 是（同 CC direct，走 `runResponseBufferedSink`） | **是**——但**触发判据须读 Responses 上游的 `incomplete`，转译回 CC `finish_reason=length` 给客户端**，是 CC builder 与 Responses accumulator 的交叉场景，P3 CC 子任务须显式覆盖此变体，不能只测 CC direct |
 | `openai-responses` × `/responses`（direct，HTTP+WS） | `pumpStreamingV4`（`responses/handler-v4.ts:320`，`viaFallback=false`） | 是（`:380`，HTTP/WS 共用同一 buffered 判据函数，WS 另有独立 pump 但共享 accumulator 类型） | **是**——P3 Responses 子任务 |
 | `openai-responses` × `/chat/completions`（fallback，`viaFallback=true`） | 同 `pumpStreamingV4`，`viaFallback` 分支 | 是（**同一个 buffered 调用**，`viaFallback` 只影响是否等待 fallback session 注册，不影响 buffered 判据；docstring `:336-338` 确认「direct and via-chat fallback now share the same buffered unit」） | **是**——但触发判据是 CC 的 `finish_reason=length`（因为 fallback 时上游 wire 已是 CC），需在 P3 Responses 子任务显式覆盖 fallback 变体（与 direct 变体共用 handler 代码但触发信号来源不同） |
-| `openai-responses` × `/v1/messages`（reverse，upstream 是 Anthropic） | `pumpReverseAnthropicLegV4`（`responses/handler-v4.ts:576`） | **待核实**（planning 期未读到该函数完整实现体是否调用 `runResponseSink` 还是 `runResponseBufferedSink`——非流式路径 `:265` 明确用 `renderReverseNonStreamingV4`，流式路径 `:233` 调用 `pumpReverseAnthropicLegV4`，函数体尚待读） | **待核实（M.1 前置动作）** |
+| `openai-responses` × `/v1/messages`（reverse，upstream 是 Anthropic） | `pumpReverseAnthropicLegV4`（`responses/handler-v4.ts:576-645`） | **否，已确认**（`:585` 明确调用 `driver.runResponseSink(upstream, env, sink)`，非 `runResponseBufferedSink`——round-2 复核已亲自读取完整函数体，非「待核实」） | **本版本不支持**——强制透传，登记 backlog（与 `openai-cc×/v1/messages`reverse 同构确认，非猜测类推） |
 | `gemini` × `/chat/completions`（direct，委托内部 CC codec） | `pumpGeminiStreamingV4`（`gemini/handler-v4.ts:415`） | 否（只调用 `runResponseSink`，已核实） | **不适用（N1，Gemini 入站排除）** |
 | `gemini` × `/v1/messages`（reverse） | `pumpReverseGeminiStreamingV4`（`gemini/handler-v4.ts:623`） | 待核实但**不适用（N1）** | **不适用（N1）** |
 | `gemini` × `/responses`（via-responses） | 待核实但**不适用（N1）** | 待核实 | **不适用（N1）** |
 
 **收窄结论（本特性实际覆盖范围，非全部 12 格）：**
 - **可挂载且本计划覆盖：** `anthropic×/v1/messages`（P1）、`openai-cc×/chat/completions`（P3）、`openai-cc×/responses`via-responses 变体（P3，需交叉覆盖）、`openai-responses×/responses`（P3）、`openai-responses×/chat/completions`fallback 变体（P3，需交叉覆盖）。
-- **本版本不支持、强制透传、登记 backlog（因为底层根本不走 buffered）：** `anthropic×/chat/completions`translate、`anthropic×/responses`translate（HTTP+WS）、`openai-cc×/v1/messages`reverse。
-- **待 M.1 核实：** `openai-responses×/v1/messages`reverse（是否走 buffered）。
+- **本版本不支持、强制透传、登记 backlog（因为底层根本不走 buffered，全部已确认非待核实）：** `anthropic×/chat/completions`translate、`anthropic×/responses`translate（HTTP+WS）、`openai-cc×/v1/messages`reverse、`openai-responses×/v1/messages`reverse。
 - **不适用（N1 Gemini 排除）：** 全部 3 个 `gemini×*` 格。
 
 ---
@@ -118,11 +117,11 @@
 
 ---
 
-### 待核实：`openai-responses × /v1/messages`（reverse leg）
+### 已确定「本版本不支持」：`openai-responses × /v1/messages`（reverse leg）
 
 | 要素 | 内容 |
 |---|---|
-| 是否走 buffered | **未核实**——`pumpReverseAnthropicLegV4`（`responses/handler-v4.ts:576`）的函数体在 planning 期未完整读取，需 M.1 确认其调用 `runResponseSink` 还是 `runResponseBufferedSink`。**若走 `runResponseSink`（无缓冲）**，本 leg 天然不可挂载，标「本版本不支持，强制透传」，与 `openai-cc×/v1/messages`reverse 同构（CC reverse 已确认不用 buffered，Responses reverse 大概率同构但**不能凭类比下结论，必须读码确认**） |
+| 是否走 buffered | **否，已确认**——round-2 复核亲自读取 `pumpReverseAnthropicLegV4`（`responses/handler-v4.ts:576-645`）完整函数体，`:585` 明确调用 `driver.runResponseSink(upstream, env, sink)`（非 `runResponseBufferedSink`）。与 `openai-cc×/v1/messages`reverse（已确认不用 buffered，docstring 明文「L2 buffered-retry is NOT applied on the reverse leg」）同构一致，非猜测类推——两者是同一类"reverse leg 无缓冲"架构决策的两个具体实例。 |
 
 ---
 
@@ -133,7 +132,7 @@
 | `anthropic × /chat/completions`translate | 本版本不支持（无 buffered），强制透传 | `test("anthropic @cc translate leg: max_tokens passes through untouched, continuation never triggers")` |
 | `anthropic × /responses`translate（HTTP+WS） | 同上 | 同构测试，HTTP+WS 各一条 |
 | `openai-cc × /v1/messages`reverse | 本版本不支持（无 buffered，docstring 明文），强制透传 | `test("cc reverse @messages leg: max_tokens passes through untouched")` |
-| `openai-responses × /v1/messages`reverse | 待核实后归类（若无 buffered 则同上） | 视核实结果定 |
+| `openai-responses × /v1/messages`reverse | 本版本不支持（无 buffered，已确认非待核实），强制透传 | `test("responses reverse @messages leg: max_tokens passes through untouched via runResponseSink")`（见 `plan-3-cc-responses.md` Task 3.12） |
 | `gemini × *`（全部 3 格） | 不适用（N1，Gemini 入站排除，且已确认只走 `runResponseSink`） | `test("gemini inbound: max_tokens_continuation config is never consulted (N1 exclusion)")` |
 
 ---
@@ -144,15 +143,14 @@
 
 - [ ] 实施者亲自读 `src/routes/chat-completions/handler-v4.ts` 的 `[DONE]` 合成完整时序（CC direct 行④）。
 - [ ] 实施者亲自读 `src/routes/responses/handler-v4.ts` direct 路径的 `max_tokens`/`incomplete` 正常终止构造点（Responses direct 行②④）+ 核实 CC via-responses / Responses fallback 两个交叉场景的触发判据来源（哪一层完成了 Responses↔CC 的响应翻译，早于还是晚于 buffered 的 `sawMessageStop` 判断）。
-- [ ] 实施者读 `responses/handler-v4.ts:576` 附近的 `pumpReverseAnthropicLegV4` 完整函数体，确认 Responses reverse leg 是否走 buffered（待核实项）。
 - [ ] 实施者核实姊妹 spec Responses-WS 续写传输时序的实施状态（`docs/plan/2026-07-22-continuation-retry-sequential-anchor/plan-4-7-remaining.md` Task 6.1/6.2）。
-- [ ] 每个可挂载格核实后，写一个 producer-oracle 单测断言④要素（"唯一终局"不变量）；每个「不支持/不适用」格写对应的透传 producer oracle（上表已列目标）。
+- [ ] 每个可挂载格核实后，写一个 producer-oracle 单测断言④要素（"唯一终局"不变量）；每个「不支持/不适用」格写对应的透传 producer oracle（上表已列目标，含已确认的 Responses reverse leg，见 `plan-3-cc-responses.md` Task 3.12）。
 - [ ] **提交** → `docs(plan): fill terminal ownership matrix M (full leg enumeration verified)`。
 
-**验收标准：** 5 个「可挂载」格（Anthropic direct、CC direct、CC via-responses、Responses direct、Responses fallback）+ 1 个「待核实」格（Responses reverse）的四要素全部落实到具体 file:line + producer-oracle 测试骨架；3 个「不支持」格 + 3 个「不适用」格的透传 oracle 全部写出。P3 才能开工。
+**验收标准：** 5 个「可挂载」格（Anthropic direct、CC direct、CC via-responses、Responses direct、Responses fallback）的四要素全部落实到具体 file:line + producer-oracle 测试骨架；4 个「不支持」格（含已确认的 Responses reverse）+ 3 个「不适用」格的透传 oracle 全部写出。P3 才能开工。
 
 ### Task M.2: 与 P0 的 `incomplete_details.reason` 缺口交叉确认
 
-- [ ] 核实 P0 Task 0.1（独立 terminal observer）与 Task 0.2（per-format 纯 predicate）的分工——`isResponsesMaxTokensTerminal` 本身是纯 predicate（接受 `status`+`incompleteReason` 两个参数），**不负责捕获**该值；捕获 `incomplete_details.reason` 是 Task 0.1 的 Responses observer 实现细节（因为 A/B/C 分型判定本身就需要这个值来触发 `isResponsesMaxTokensTerminal`，不能推迟到 P3——分型判定必须在 P0 就完整工作）。
-- [ ] 与 `plan-3-cc-responses.md` 核对不重复实现——`incomplete_details.reason` 的捕获在 P0 阶段随 observer 一起建，P3 只消费已建好的字段，不重新实现捕获逻辑。
-- [ ] **提交** → `docs(plan): cross-confirm incomplete_details.reason capture belongs to P0 observer, not P3`。
+- [ ] 核实 P0 Task 0.2（Anthropic-only 独立 terminal observer）与 Task 0.3（per-format 纯 predicate）的分工——`isResponsesMaxTokensTerminal` 本身是纯 predicate（接受 `status`+`incompleteReason` 两个参数），**不负责捕获**该值；捕获 `incomplete_details.reason` 是 P0 Task 0.2b 的实现内容（因为 A/B/C 分型判定本身就需要这个值来触发 `isResponsesMaxTokensTerminal`，不能推迟到 P3——分型判定必须在 P0 就完整工作，**这一点与 P0 的 observer 分档决策不冲突**：`incomplete_details.reason` 是 accumulator 字段捕获，不是 observer 本身，Responses 的独立 terminal observer 实现仍在 P3 Task 3.0b）。
+- [ ] 与 `plan-3-cc-responses.md` 核对不重复实现——`incomplete_details.reason` 的捕获在 P0 阶段已建（Task 0.2b），P3 Task 3.0b 只消费已建好的字段用于 Responses observer 的更新函数，不重新实现捕获逻辑。
+- [ ] **提交** → `docs(plan): cross-confirm incomplete_details.reason capture belongs to P0 (accumulator field, distinct from the P3-deferred Responses observer)`。

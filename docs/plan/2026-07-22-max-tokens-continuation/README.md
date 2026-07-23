@@ -6,6 +6,8 @@
 > **姊妹底座（已 landed master，复用勿重造）：** [`docs/spec/2026-07-22-continuation-retry-and-sequential-anchor.md`](../../spec/2026-07-22-continuation-retry-and-sequential-anchor.md) + [ADR](../../decisions/2026-07-22-continuation-retry-sequential-anchor.md) + [其 plan](../2026-07-22-continuation-retry-sequential-anchor/)（尤其 `plan-2b-continuation-executor.md` 记录的 wire-index offset / message_start dedup / `continued` verdict 教训——本计划的续写在**成功路径**触发，同一批坑会重演，逐条对照）。冲突以 max_tokens spec 为准。
 >
 > **修订记录（2026-07-23，据 GPT plan-review 1 blocker + 7 major 修订）**：本计划已过第一轮异模型对抗审查（`docs/plan/2026-07-22-max-tokens-continuation/plan-review-gpt.md`），发现 1 个 blocker（分型数据源误用 continuation ledger）+ 7 个 major（组合校验时序、settle 测试拆分、marker 语义矛盾、terminal ownership matrix 只列 4 格漏了 translate/fallback/reverse legs、synthetic provenance 无具名任务、Q5 三方交互无具名任务、Responses accumulator 字段缺口位置错放）。**spec 已同步修订**（`git log` 提交 `647c47f0`），本次 plan 修订逐条闭合，见各文件顶部的"修订记录"标注。
+>
+> **修订记录二（2026-07-23，据 GPT plan-review round-2 修订，`plan-review-gpt-round2.md`）**：第一轮修订后仍保留 1 个 blocker + 3 个残留。**blocker**：P0 的"独立 terminal observer"只把 Anthropic 写全，CC/Responses 仍是接口草图无实现——**已按分档决策修订**（P0 收窄为 Anthropic-only，覆盖当前唯一已观测人群；CC/Responses observer 落地移到 `plan-3` 新增 Task 3.0a/3.0b，作为该阶段其余 task 的硬前置，非静默砍范围）。**3 个残留**：① `strategy-prevented-stitch` 补齐真实 history/telemetry 落盘 + readback 验收（`plan-1` 新增 Task 1.6）；② Q5 的 index 账有误——round-2 亲自核实 master `driver.ts:1145-1149` 后发现 anchor 帧从不计入 `wireDeliveredBlocks`（anchor 走 `sink.writeAnchor` 直接写出，不经过计数循环），已重画为"两层独立 remap 链式组合"而非"续写 offset 内含 anchor 占位数"；③ Responses reverse leg 经亲自读取 `responses/handler-v4.ts:576-645` 完整函数体确认**definitively 走 `runResponseSink`（非 buffered）**，`plan-M`/`plan-3` 已从"待核实"改为"本版本不支持"定论 + 补透传 producer oracle。
 
 **Goal：** 三分型（A=text 已闭合 / B=tool_use 悬挂 / B-closed=tool_use 已闭合 / C=thinking-only）识别 `stop_reason=max_tokens` 成功截断；A 类默认 opt-in 续写到自然终止，客户端默认 `transparent` 缝合（藏掉 max_tokens）；后端 history/telemetry 忠实完整记录真实每轮终止（不受客户端可见性策略影响）；B/C 默认透传，PoC 门后可扩展。
 
@@ -44,29 +46,30 @@ G  PoC 门簇（早跑，定可行性）
    ├ 门 C（thinking retry-with-budget 是否真提升产出 + 签名安全）—— 高风险，早跑，决定 P2.3 范围
    └ 门 E（CC toolCallMap / Responses output_item 悬挂判据可靠性）—— 决定 P3 覆盖
    ▼
-P0 独立 terminal observer + 分型判定器 + per-format terminal 检测 + 观测层 + config schema（含组合校验函数）+ 真实生产接线（纯识别、零续写、零行为变更，可独立先行）
+P0 独立 terminal observer（**Anthropic-only**，分档决策）+ 分型判定器 + per-format terminal 检测（三格式） + 观测层 + config schema（含组合校验函数）+ Anthropic 真实生产接线（纯识别、零续写、零行为变更，可独立先行）
    ▼
-M  terminal ownership matrix（全 leg 枚举：direct+translate+fallback+reverse+WS，四要素表，P3 强制前置产出）
+M  terminal ownership matrix（全 leg 枚举：direct+translate+fallback+reverse+WS，四要素表，含已定论的 Responses reverse=不支持，P3 强制前置产出）
    ▼
 Provenance  synthetic continuation provenance（独立前置任务，`plan-1` Task 1.4 依赖）
-Q5          三方叠加集成设计（独立前置任务，续写×顺序anchor×重复截断）
+Q5          三方叠加集成设计（独立前置任务，续写×顺序anchor×重复截断，index 账已按 master 真实计数逻辑修正）
    ▼（Provenance + Q5 可与 P1 早期 task 并行，但 plan-1 Task 1.4/驱动测试依赖它们的产出）
-P1 Anthropic direct A 类续写（成功终止截获，新增实现；组合校验从首个 commit 就生效；settle 时序两个独立 oracle）—— 依赖 M 的 Anthropic 格 + Provenance + 门 D + 门 A
+P1 Anthropic direct A 类续写（成功终止截获，新增实现；组合校验从首个 commit 就生效；settle 时序两个独立 oracle；strategy-prevented-stitch 真实落盘）—— 依赖 M 的 Anthropic 格 + Provenance + 门 D + 门 A
    ▼
 P2 marker 策略完整实现（transparent 的严格超集）+ B/C 类门后扩展
    ├─P2.2 B 类扩展（门 B PASS 且用户接受观测分布后）
    └─P2.3 C 类 retry_with_budget（门 C PASS 后）
    ▼
-P3 CC / Responses(HTTP+WS) 接入（依赖 M 全部相关格 + 各自 PoC 门 E）
+P3 CC/Responses terminal observer 落地（Task 3.0a/3.0b，硬前置）→ CC / Responses(HTTP+WS) 接入（依赖 M 全部相关格 + 各自 PoC 门 E）
    ▼
 P4 非流式挂载点 + 收口（N2 backlog 登记 / doc-sync / ADR 定稿 / merged-state review 以 Q5 时序图为对账标准）
 ```
 
-- **M（terminal ownership matrix）是 P3 的强制前置产出**，两 reviewer 均把它定为「plan 首要交付物」——矩阵在 P0 完成分型判定后、P1 实现前必须先画 Anthropic 一格开工，但**全 leg 枚举**在 P3 开工前必须完整（含 translate/fallback/reverse/WS，非只 4 个直连格）。
+- **M（terminal ownership matrix）是 P3 的强制前置产出**，两 reviewer 均把它定为「plan 首要交付物」——矩阵在 P0 完成 Anthropic 分型判定后、P1 实现前必须先画 Anthropic 一格开工，但**全 leg 枚举**在 P3 开工前必须完整（含 translate/fallback/reverse/WS，非只 4 个直连格；Responses reverse 已定论为"本版本不支持"，非待核实）。
+- **P0 是 Anthropic-only 分档，非砍范围**：CC/Responses 的独立 observer 落地是 P3 的显式前置内容（Task 3.0a/3.0b），与"P1 只做 Anthropic-only 续写"的既有分档节奏一致——诚实分档记录在 `plan-0`/`plan-3` 顶部。
 - **Provenance 与 Q5 是独立前置任务，非"顺手项"**——两者在 M 之后即可开工，`plan-1` 的 Task 1.4（History 忠实记录）依赖 Provenance 的产出，`plan-1` 的驱动测试隐含依赖 Q5 已画清的 index 账（防止实现撞见未预料的三方冲突）。
 - **P1、P2 串行**（P2 的 marker 缝合直接建在 P1 的成功终止截获 + transparent 抑制机制之上）。
 - **P2.2/P2.3 互相独立**，可并行（各自门 gate）。
-- **P3 三格（CC / Responses HTTP+fallback / Responses WS）可并行**（复用 P1/P2 的 visibility/预算层，各自只需按 M 矩阵实现该格的截获点 + builder）。
+- **P3 内部：Task 3.0a/3.0b（observer 落地）必须先于该阶段其余 task**；CC direct / CC via-responses / Responses direct / Responses fallback / Responses WS 各自的截获+builder task 在 observer 落地后可并行（复用 P1/P2 的 visibility/预算层）。
 - **P4 收口必须在所有已启用分型/格式验收后**，且默认值翻转（如果未来决定收紧/放宽 Q3 初始默认）必须在对应门 PASS 之后。
 
 ## 冻结契约（单一事实源，跨任务引用；标 `[复用姊妹]` 的不得重新定义，标 `[本特性新增]` 的在对应 task 落地时唯一定稿）
@@ -76,11 +79,11 @@ P4 非流式挂载点 + 收口（N2 backlog 登记 / doc-sync / ADR 定稿 / mer
 | `hasCompleteInteractiveToolUse` | 姊妹已定义（`committed-blocks-ledger.ts`） | `[复用姊妹]` | 判"已提交前缀是否含完整 tool_use"，与 P0 的分型 observer 是两个不同判据、须都查（见 Global Constraints） |
 | `ContinuationRequestBuilder` / `registerContinuationBuilder` / `getContinuationBuilder` | 姊妹已定义（`src/lib/pipeline/continuation-request-builder.ts`） | `[复用姊妹]` | A 类续写复用同一 registry；本特性触发点不同（成功终止 vs cut），但 builder 签名不变 |
 | `continued` verdict / `coordinator.runContinuation` | 姊妹已 landed（`model-operation-record.ts:246/250`、`coordinator.ts:143-154`） | `[复用姊妹]` | 本特性的 post-success 续写同样是「部分交付 + 续写接续」的语义，复用同一 verdict，不新增第 6 个值 |
-| `TerminalObserverState` / `createTerminalObserver` / `updateAnthropicTerminalObserver` 等 | `{ lastBlockKind: "text"\|"tool_use"\|"thinking"\|undefined; lastBlockClosed: boolean }` | `[本特性新增]` | P0 Task 0.1 定稿——**独立于 ledger**，是分型判定的唯一合法输入源 |
+| `TerminalObserverState` / `createTerminalObserver` / `updateAnthropicTerminalObserver`（P0，Anthropic-only）/ `updateCcTerminalObserver`/`updateResponsesTerminalObserver`（P3 Task 3.0a/3.0b） | `{ lastBlockKind: "text"\|"tool_use"\|"thinking"\|undefined; lastBlockClosed: boolean }` | `[本特性新增]` | STATE 形状格式无关、P0 定稿；Anthropic 更新函数 P0 实现，CC/Responses 更新函数**分档至 P3**（诚实分档，非砍范围——实测唯一已观测人群是 Anthropic）——**独立于 ledger**，是分型判定的唯一合法输入源 |
 | `TruncationClass` | `"text" \| "tool_use" \| "tool_use_closed" \| "thinking"` | `[本特性新增]` | P0 Task 0.2 定稿；对应 spec §5.2 A/B/B-closed/C；消费 `TerminalObserverState`，不消费 ledger |
 | `TerminalOwnershipEntry` | `{ leg: string; buffered: boolean; accumulatorSite: string; terminatorConstructor: string; interceptSite: string; finalCompletionOwner: string }` | `[本特性新增]` | M（terminal ownership matrix）task 定稿，全 leg 枚举（含 buffered 布尔标注是否可挂载） |
 | `MaxTokensContinuationConfig` / `resolveMaxTokensContinuation` / `resolveEffectiveMaxTokensContinuation` | `{ enabled; max_rounds; classes; message; visibility; thinking_retry_budget }` + 组合校验包装函数（返回值含 `diagnostics: string[]`） | `[本特性新增]` | P0 Task 0.4 定稿（schema + state 解析 + 组合校验），P1 首个 commit 就消费 `resolveEffectiveMaxTokensContinuation`（非裸 `resolveMaxTokensContinuation`） |
-| `pipelineInfo.maxTokensContinuation` | `{ truncationClass, roundsAttempted, roundsSucceeded, continuedTokens, perRoundStopReason: string[], clientVisibleStopReason, suppressedMaxTokens: boolean, visibilityMode, strategyPreventedStitch?: boolean }` | `[本特性新增]` | P0 Task 0.5 定稿字段形状 + 真实生产接线（三格式 handler 正常 terminal 分支调用），P1 驱动多轮/抑制的真实值 |
+| `pipelineInfo.maxTokensContinuation` | `{ truncationClass, roundsAttempted, roundsSucceeded, continuedTokens, perRoundStopReason: string[], clientVisibleStopReason, suppressedMaxTokens: boolean, visibilityMode, strategyPreventedStitch?: boolean }` | `[本特性新增]` | P0 Task 0.5 定稿字段形状 + **Anthropic-only** 真实生产接线，P1 驱动多轮/抑制/`strategyPreventedStitch`（Task 1.6）的真实值，P3 Task 3.0a/3.0b 补 CC/Responses 接线 |
 | `maxTokensTruncation` / `maxTokensContinuation` telemetry counters | `{class}` / `{class,outcome}` + `continuedTokens` sum | `[本特性新增]` | P0 Task 0.6，消费 Task 0.5 的真实接线数据 |
 | `UpstreamRequestLeg.synthetic` / `OperationSyntheticKind += "continuation"` | provenance 标记字段 | `[本特性新增，独立前置任务]` | `plan-provenance-prerequisite.md`，非姊妹既有实现（姊妹仍是 backlog 状态） |
 
@@ -89,6 +92,6 @@ P4 非流式挂载点 + 收口（N2 backlog 登记 / doc-sync / ADR 定稿 / mer
 - 权威 spec 承重章节：§3（三分型策略）、§4（visibility 契约，含 marker 统一契约）、§5（成功路径新分支 + terminal ownership matrix）、§6（独立预算 + 组合矩阵）、§7（per-format 检测）、§9（可观测性）、§10（测试策略）、§11（sequencing，含 P0 独立 observer 修订）、§12（PoC 门）、§13（Q5 三方交互）。
 - 姊妹底座 file:line（已 landed master，2026-07-23 复核确认）：`src/lib/pipeline/continuation-request-builder.ts`、`src/lib/pipeline/driver.ts:1336`（terminal drain 起点，本特性截获点）/`:1401-1453`（cut-path 续写触发，本特性**不复用此触发点**，只复用其内部调用的 builder/coordinator）、`src/lib/pipeline/generation/coordinator.ts:143-154`（`runContinuation`）、`src/lib/context/model-operation-record.ts:246,250`（`continued` verdict）。
 - 姊妹 plan 的教训清单（本计划对应 task 会逐条重演风险，务必对照）：`docs/plan/2026-07-22-continuation-retry-sequential-anchor/plan-2b-continuation-executor.md` §10（异模型审）—— C3（offset 数据源必须是 wire 已交付块数非 ledger 长度）、C4（生产接线是独立必需步骤，不可假设）、Important-1（replay vs append 帧变换挂载点须先画清）、Important-2（`retryNextStrategy` 消费点）。
-- 本计划自身的第一轮审查报告（须逐条闭合验证）：`docs/plan/2026-07-22-max-tokens-continuation/plan-review-gpt.md`。
+- 本计划自身的审查报告（须逐条闭合验证）：`docs/plan/2026-07-22-max-tokens-continuation/plan-review-gpt.md`（第一轮）+ `plan-review-gpt-round2.md`（第二轮，聚焦确认前一轮修订 + 新发现的 anchor 计数错误/Anthropic-only observer blocker）。
 - PoC 先例：`exp/continuation-shape/`（姊妹 spec G3/G4/G5 已 PASS，FINDINGS.md 在此）、`exp/continuation-stitch/`（P-A wire-index offset 门，含 BROKEN 对照样本）。
 - 测试骨架：`tests/e2e-client/continuation-sdk.it.test.ts`（姊妹 SDK oracle 先例，本特性可仿写）、`tests/pipeline/continuation-flow.it.test.ts`（driver 级 sequenced-transport 先例）。
