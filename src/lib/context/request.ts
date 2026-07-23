@@ -294,14 +294,16 @@ export function createRequestContext(opts: {
   let _askNormalization: PipelineInfo["askUserQuestionNormalization"] | null = null
   let _sendMessageNormalization: PipelineInfo["sendMessageNormalization"] | null = null
   let _bufferedMergeInfo: PipelineInfo["bufferedMerge"] | null = null
+  let _maxTokensContinuationInfo: PipelineInfo["maxTokensContinuation"] | null = null
   const mergedPipelineInfo = (): PipelineInfo | null => {
-    if (!_pipelineInfo && !_streamTimeouts && !_askNormalization && !_sendMessageNormalization && !_bufferedMergeInfo) return null
+    if (!_pipelineInfo && !_streamTimeouts && !_askNormalization && !_sendMessageNormalization && !_bufferedMergeInfo && !_maxTokensContinuationInfo) return null
     return {
       ..._pipelineInfo,
       ..._streamTimeouts,
       ...(_askNormalization && { askUserQuestionNormalization: _askNormalization }),
       ...(_sendMessageNormalization && { sendMessageNormalization: _sendMessageNormalization }),
       ...(_bufferedMergeInfo && { bufferedMerge: _bufferedMergeInfo }),
+      ...(_maxTokensContinuationInfo && { maxTokensContinuation: _maxTokensContinuationInfo }),
     }
   }
   let _sseEvents: Array<SseEventRecord> | null = null
@@ -1034,6 +1036,11 @@ export function createRequestContext(opts: {
       _sendMessageNormalization = { ..._sendMessageNormalization, ...diag }
       recordAttemptDiagnostic("repair.send_message_normalization", "warning", diag)
     },
+    recordMaxTokensTruncation(diag) {
+      // Persist through mergedPipelineInfo at terminal settle, not through a transient context event.
+      _maxTokensContinuationInfo = diag
+      recordAttemptDiagnostic("max_tokens.truncation", "info", diag)
+    },
     recordBufferedMergeInfo(diag) {
       // Mirrors recordSendMessageNormalization's real shape (request.context_updated was removed in
       // 9853e768 — pipelineInfo now reaches SQLite solely via mergedPipelineInfo() → commitTerminal's
@@ -1184,6 +1191,7 @@ export function createRequestContext(opts: {
       _pipelineInfo = info
       recordAttemptDiagnostic("pipeline.info", "info", info)
     },
+
 
     setStreamTimeouts(patch: { streamIdleTimeoutMs?: number; responseHeaderTimeoutMs?: number }) {
       // Merge (the two fields are independent). Kept separate from `_pipelineInfo`

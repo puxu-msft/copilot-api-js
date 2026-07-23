@@ -235,7 +235,7 @@ test("visibility=transparent + classes.text=continue: allowed, no downgrade", ()
 
 > **修订记录**：spec §11/审查 major 已明确——P0 的分型 counter 若要在 `enabled:false` 时也能观测，必须有真实 terminal 调用点，不能停在"加了类型槽位、没人调用"。**修订二**：本 task 范围收窄为 **Anthropic-only**（与本文件顶部分档决策一致）——把 Task 0.1-0.3 的 observer/分型判定器/terminal 检测**接到 Anthropic handler 的正常 terminal 分支**，即便续写机制本身（P1）尚未实现，Anthropic 分型识别本身已是完整生产路径，覆盖当前唯一已观测人群。CC/Responses 的对应接线在 `plan-3-cc-responses.md` Task 3.0b。
 
-- [ ] **Step 1: 写失败测试** —— 类型 + **真实持久化 round-trip**（非手动挂字段）。
+- [x] **Step 1: 写失败测试** —— 类型 + **真实持久化 round-trip**（非手动挂字段）。
 
 ```ts
 // tests/history/pipeline-info-max-tokens.unit.test.ts（类型/序列化层）
@@ -256,14 +256,14 @@ test("Anthropic direct: a thinking-terminal max_tokens records truncationClass=t
 })
 ```
 
-- [ ] **Step 2-4:** 跑失败 → 在 `src/lib/history/types.ts` 的 `PipelineInfo` 加 `maxTokensContinuation?: MaxTokensContinuationDiag` 字段（`truncationClass: TruncationClass`、`roundsAttempted: number`、`roundsSucceeded: number`、`continuedTokens: number`、`perRoundStopReason: Array<string>`、`clientVisibleStopReason: string`、`suppressedMaxTokens: boolean`、`visibilityMode: "transparent"|"passthrough"|"marker"`、**`strategyPreventedStitch?: boolean`**——本字段在 P0 就随其余字段一起定稿，P0 阶段恒为 `undefined`/不写（因为 P0 尚无 visibility/组合校验消费点，`resolveEffectiveMaxTokensContinuation` 的 `diagnostics` 数组本阶段不会真的产生 `"strategy-prevented-stitch"` 值——只有 P1 Task 1.2/1.5 才会驱动它，此处只是把字段形状预先定好，避免 P1 阶段再走一次「新增顶层字段三处必改」）+ 在 `src/lib/context/request.ts` 按 persistence-async-invariants §2「新增顶层字段三处必改」清单：① `mergedPipelineInfo()` 合并槽位（`_maxTokensContinuationInfo` + `recordMaxTokensTruncation(diag)` 方法）② 核实 `v3/projection.ts` 的 `pipelineInfo` 投影路径是整体转发还是逐字段 allowlist，据实处理 ③ 若有 `Pick<HistoryEntry,...>` allowlist 需要显式加键。**真实接线（仅 Anthropic）**：在 `src/routes/messages/handler-v4.ts`（正常 terminal drain 分支）的 terminal 判断点，读 Anthropic observer 快照 + `classifyMaxTokensTruncation` + `isAnthropicMaxTokensTerminal`，若命中 max_tokens 终止（无论 `enabled` 与否）调用 `env.ctx.recordMaxTokensTruncation({ truncationClass, roundsAttempted: 1, roundsSucceeded: 0, continuedTokens: 0, perRoundStopReason: [rawStopReason], clientVisibleStopReason: rawStopReason, suppressedMaxTokens: false, visibilityMode: "passthrough" })`（P0 阶段这是**唯一一轮**，字段值反映"未续写、如实透传"的现状；P1 才会真正驱动多轮/抑制逻辑 + `strategyPreventedStitch` 真实值）。**`src/routes/chat-completions/handler-v4.ts`/`src/routes/responses/handler-v4.ts` 本阶段不改动**（无 observer 可读，接线推迟到 P3 Task 3.0b）。
+- [x] **Step 2-4:** 跑失败 → 在 `src/lib/history/types.ts` 的 `PipelineInfo` 加 `maxTokensContinuation?: MaxTokensContinuationDiag` 字段（`truncationClass: TruncationClass`、`roundsAttempted: number`、`roundsSucceeded: number`、`continuedTokens: number`、`perRoundStopReason: Array<string>`、`clientVisibleStopReason: string`、`suppressedMaxTokens: boolean`、`visibilityMode: "transparent"|"passthrough"|"marker"`、**`strategyPreventedStitch?: boolean`**——本字段在 P0 就随其余字段一起定稿，P0 阶段恒为 `undefined`/不写（因为 P0 尚无 visibility/组合校验消费点，`resolveEffectiveMaxTokensContinuation` 的 `diagnostics` 数组本阶段不会真的产生 `"strategy-prevented-stitch"` 值——只有 P1 Task 1.2/1.5 才会驱动它，此处只是把字段形状预先定好，避免 P1 阶段再走一次「新增顶层字段三处必改」）+ 在 `src/lib/context/request.ts` 按 persistence-async-invariants §2「新增顶层字段三处必改」清单：① `mergedPipelineInfo()` 合并槽位（`_maxTokensContinuationInfo` + `recordMaxTokensTruncation(diag)` 方法）② 核实 `v3/projection.ts` 的 `pipelineInfo` 投影路径是整体转发还是逐字段 allowlist，据实处理 ③ 若有 `Pick<HistoryEntry,...>` allowlist 需要显式加键。**真实接线（仅 Anthropic）**：在 `src/routes/messages/handler-v4.ts`（正常 terminal drain 分支）的 terminal 判断点，读 Anthropic observer 快照 + `classifyMaxTokensTruncation` + `isAnthropicMaxTokensTerminal`，若命中 max_tokens 终止（无论 `enabled` 与否）调用 `env.ctx.recordMaxTokensTruncation({ truncationClass, roundsAttempted: 1, roundsSucceeded: 0, continuedTokens: 0, perRoundStopReason: [rawStopReason], clientVisibleStopReason: rawStopReason, suppressedMaxTokens: false, visibilityMode: "passthrough" })`（P0 阶段这是**唯一一轮**，字段值反映"未续写、如实透传"的现状；P1 才会真正驱动多轮/抑制逻辑 + `strategyPreventedStitch` 真实值）。**`src/routes/chat-completions/handler-v4.ts`/`src/routes/responses/handler-v4.ts` 本阶段不改动**（无 observer 可读，接线推迟到 P3 Task 3.0b）。
 - [ ] **Step 5: 提交** → `feat(history+handler): wire max_tokens truncation observer to Anthropic terminal call site (production observability, zero continuation behavior)`。
 
 **风险标注：** 本 task 是「新增顶层字段」的持久化配套三处修改 + Anthropic 生产接线，必须按 skill `persistence-async-invariants` §2 逐条核实。验收用**真实 http 流程 + `getHistory()` 读持久化 entry**，不满足于类型编译通过或手动 round-trip。
 
 ### Task 0.6: telemetry 分型 counter（`enabled:false` 时也应记录——独立诊断价值，消费 Task 0.5 的真实接线）
 
-- [ ] **Step 1: 写失败测试** —— 分型 counter 独立于续写是否启用都记录，**读真实 telemetry persist/readback**（非类型 round-trip）。
+- [x] **Step 1: 写失败测试** —— 分型 counter 独立于续写是否启用都记录，**读真实 telemetry persist/readback**（非类型 round-trip）。
 
 ```ts
 test("max_tokens_truncation{class} counter records via telemetry readback after a real terminal (continuation.enabled=false)", async () => {
@@ -271,7 +271,7 @@ test("max_tokens_truncation{class} counter records via telemetry readback after 
 })
 ```
 
-- [ ] **Step 2-4:** 跑失败 → 在 `src/lib/observability/telemetry-dimensions.ts` 或新文件注册 `max_tokens_truncation` 维度（`extract: (entry) => entry.pipelineInfo?.maxTokensContinuation?.truncationClass ?? null`）→ 跑通过（因为 Task 0.5 已把真实数据写入 `pipelineInfo`，本 task 只需注册维度提取即可获得真实计数，无需额外接线）。
+- [x] **Step 2-4:** 跑失败 → 在 `src/lib/observability/telemetry-dimensions.ts` 或新文件注册 `max_tokens_truncation` 维度（`extract: (entry) => entry.pipelineInfo?.maxTokensContinuation?.truncationClass ?? null`）→ 跑通过（因为 Task 0.5 已把真实数据写入 `pipelineInfo`，本 task 只需注册维度提取即可获得真实计数，无需额外接线）。
 - [ ] **Step 5: 提交** → `feat(telemetry): max_tokens_truncation class dimension (real terminal-driven, independent of continuation enablement)`。
 
 ### P0 收口（Anthropic-only；CC/Responses 见 P3 Task 3.0a/3.0b 收口）

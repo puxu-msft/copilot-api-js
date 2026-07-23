@@ -158,6 +158,8 @@ import {
   resolveContinuation,
   state,
 } from "~/lib/state"
+import { classifyMaxTokensTruncation, isAnthropicMaxTokensTerminal } from "~/lib/pipeline/max-tokens-truncation-class"
+import { createTerminalObserver, updateAnthropicTerminalObserver } from "~/lib/pipeline/max-tokens-terminal-observer"
 import { createUpstreamHttpTransport } from "~/lib/transport/http-transport"
 import { resolveInboundQuery } from "~/lib/transport/query-forward"
 import {
@@ -213,6 +215,7 @@ type AnthropicCandidateResponseSnapshot =
   | Readonly<{
       kind: "anthropic-direct"
       acc: ReturnType<typeof createAnthropicStreamAccumulator>
+      terminalObserver: ReturnType<typeof createTerminalObserver>
       sseEvents: Array<SseEventRecord>
       streamState: StreamPumpState
     }>
@@ -232,6 +235,7 @@ const createAnthropicCandidateResponseSession: CandidateResponseSessionFactory =
       ...input,
       createState: () => ({
         acc: createAnthropicStreamAccumulator(),
+        terminalObserver: createTerminalObserver(),
         checkRepetition: createStreamRepetitionChecker(model),
         sseEvents: [] as Array<SseEventRecord>,
         streamState: {
@@ -263,6 +267,16 @@ const createAnthropicCandidateResponseSession: CandidateResponseSessionFactory =
           checkRepetition: state.checkRepetition,
         })
       },
+      onRenderedFrame(state, frame) {
+        if (typeof frame.data === "string") {
+          try {
+            updateAnthropicTerminalObserver(state.terminalObserver, JSON.parse(frame.data) as { type: string; index?: number; content_block?: { type: string } })
+          } catch {
+            // Non-JSON SSE frames (for example ping) do not contain Anthropic block state.
+          }
+        }
+        return frame
+      },
       sawMessageStop: (state) => state.acc.sawMessageStop,
       sawUpstreamError: (state) => state.acc.streamError !== undefined,
       onBufferedResolve(state, outcome, retries, meta) {
@@ -271,7 +285,13 @@ const createAnthropicCandidateResponseSession: CandidateResponseSessionFactory =
         input.env.ctx.recordFeature("protect-streaming-retry", { outcome, retries, vendor: meta.vendor })
         consola.debug(`[protect-stream] ${outcome} for ${state.acc.model || model} after ${retries} retr${retries === 1 ? "y" : "ies"}`)
       },
-      snapshot: (state) => ({ kind: "anthropic-direct" as const, acc: state.acc, sseEvents: state.sseEvents, streamState: state.streamState }),
+      snapshot: (state) => ({
+        kind: "anthropic-direct" as const,
+        acc: state.acc,
+        terminalObserver: state.terminalObserver,
+        sseEvents: state.sseEvents,
+        streamState: state.streamState,
+      }),
     })
   }
 
@@ -1259,7 +1279,7 @@ async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): 
 
     const candidate = anthropicCandidateSnapshot(driver, upstream)
     if (candidate.kind !== "anthropic-direct") throw new Error("[Anthropic:v4] wrong candidate response session kind")
-    const { acc, sseEvents, streamState } = candidate
+    const { acc, terminalObserver, sseEvents, streamState } = candidate
 
     recordForwarded() // before any ctx.settle (settle finalizes the entry); finally re-guards a throw
     // Flush the COMMITTED attempt's tool-input repair outcomes once (telemetry + feature tag + log).
@@ -1439,6 +1459,23 @@ async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): 
       })
       sink.finalize?.()
     } else {
+      if (isAnthropicMaxTokensTerminal(acc.stopReason)) {
+        const truncationClass = classifyMaxTokensTruncation(terminalObserver)
+        if (truncationClass !== undefined) {
+          // P0 is observation-only: record the actual upstream terminal before ctx.complete freezes
+          // the history entry, without suppressing or rewriting any client-visible frame.
+          env.ctx.recordMaxTokensTruncation({
+            truncationClass,
+            roundsAttempted: 1,
+            roundsSucceeded: 0,
+            continuedTokens: 0,
+            perRoundStopReason: [acc.stopReason],
+            clientVisibleStopReason: acc.stopReason,
+            suppressedMaxTokens: false,
+            visibilityMode: "passthrough",
+          })
+        }
+      }
       env.ctx.complete(buildAnthropicResponseData(acc, model))
       sink.finalize?.()
     }

@@ -2,6 +2,29 @@ import { describe, expect, test } from "bun:test"
 
 import { createRequestContext } from "~/lib/context/request"
 
+describe("RequestContext.recordMaxTokensTruncation", () => {
+  test("merges into pipelineInfo and survives a later full-replace pipeline update", () => {
+    const ctx = createRequestContext({ endpoint: "anthropic-messages" })
+    ctx.recordMaxTokensTruncation({
+      truncationClass: "thinking",
+      roundsAttempted: 1,
+      roundsSucceeded: 0,
+      continuedTokens: 0,
+      perRoundStopReason: ["max_tokens"],
+      clientVisibleStopReason: "max_tokens",
+      suppressedMaxTokens: false,
+      visibilityMode: "passthrough",
+    })
+    ctx.setPipelineInfo({ preprocessing: { strippedReadTagCount: 0, dedupedToolCallCount: 0 } })
+
+    expect(ctx.pipelineInfo?.maxTokensContinuation?.truncationClass).toBe("thinking")
+    expect(ctx.pipelineInfo?.preprocessing).toBeDefined()
+
+    ctx.complete({ success: true, model: "m", usage: { input_tokens: 1, output_tokens: 1 }, content: null, stop_reason: "max_tokens" })
+    expect(ctx.toHistoryEntry().pipelineInfo?.maxTokensContinuation?.perRoundStopReason).toEqual(["max_tokens"])
+  })
+})
+
 describe("RequestContext.recordBufferedMergeInfo", () => {
   test("merges into pipelineInfo without requiring setPipelineInfo to have been called", () => {
     const ctx = createRequestContext({ endpoint: "openai-responses" })

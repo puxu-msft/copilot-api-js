@@ -228,8 +228,22 @@ export interface ForwardedResponse {
   sseEvents?: Array<SseEventRecord>
 }
 
+export interface MaxTokensContinuationDiag {
+  truncationClass: "text" | "tool_use" | "tool_use_closed" | "thinking"
+  roundsAttempted: number
+  roundsSucceeded: number
+  continuedTokens: number
+  perRoundStopReason: Array<string>
+  clientVisibleStopReason: string
+  suppressedMaxTokens: boolean
+  visibilityMode: "transparent" | "passthrough" | "marker"
+  strategyPreventedStitch?: boolean
+}
+
 export interface PipelineInfo {
   truncation?: TruncationInfo
+  /** Faithful server-side max_tokens terminal diagnostics, independent of client-visible wire shaping. */
+  maxTokensContinuation?: MaxTokensContinuationDiag
   preprocessing?: PreprocessInfo
   sanitization?: Array<SanitizationInfo>
   messageMapping?: Array<number>

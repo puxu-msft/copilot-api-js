@@ -509,6 +509,8 @@ export interface RequestContext {
   whenModelOperationFinalized(): Promise<ModelOperationRecord>
   setToolNameMapper(mapper: ToolNameMapper | null): void
   setPipelineInfo(info: PipelineInfo): void
+  /** Persist max_tokens terminal diagnostics independently of full-replace pipeline-info writers. */
+  recordMaxTokensTruncation(diag: NonNullable<PipelineInfo["maxTokensContinuation"]>): void
   /** Merge Responses buffered-merge diagnostics into `pipelineInfo` (independent slot — survives the gated `setPipelineInfo` full-replace calls, mirrors the existing `_streamTimeouts`/`_sendMessageNormalization` pattern). */
   recordBufferedMergeInfo(diag: BufferedMergeDiag): void
   /** Record the per-model effective timeouts for this request (merged into `pipelineInfo`, survives the gated `setPipelineInfo` full-replace calls). */
