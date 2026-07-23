@@ -15,17 +15,13 @@
 
 import consola from "consola"
 
-import { state } from "~/lib/state"
+// ToolDiagnostics type SoT moved to foundation (packages/foundation/src/error/
+// tool-diagnostics-types.ts) so `http-error` can reference it without a
+// foundation→core edge. Imported locally for this module's own signatures +
+// re-exported for existing core consumers.
+import type { ToolDiagnostics } from "~/lib/error/tool-diagnostics-types"
 
-/** Diagnostics summary for the tools sent on a failing (400) upstream request. */
-export interface ToolDiagnostics {
-  /** Total number of tools sent on the request. */
-  count: number
-  /** Tool names not matching `^[A-Za-z0-9_-]{1,64}$` (capped at MAX_DIAGNOSTIC_ITEMS). */
-  invalidNames?: Array<string>
-  /** Per-tool list of suspicious schema-keyword paths (capped at MAX_DIAGNOSTIC_ITEMS). */
-  suspiciousSchemas?: Array<{ name: string; keys: Array<string> }>
-}
+import { state } from "~/lib/state"
 
 /** Maximum number of items reported per diagnostic category, to avoid log explosion. */
 const MAX_DIAGNOSTIC_ITEMS = 8
@@ -260,3 +256,5 @@ export function logUpstreamStreamDisconnect(info: UpstreamStreamDisconnectInfo):
       + likely,
   )
 }
+
+export { type ToolDiagnostics } from "~/lib/error/tool-diagnostics-types"

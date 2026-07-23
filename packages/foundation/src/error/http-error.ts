@@ -1,4 +1,4 @@
-import type { ToolDiagnostics } from "~/lib/upstream-diagnostics"
+import type { ToolDiagnostics } from "./tool-diagnostics-types"
 
 export class HTTPError extends Error {
   status: number

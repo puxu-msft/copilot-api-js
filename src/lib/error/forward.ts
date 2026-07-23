@@ -5,22 +5,21 @@ import consola from "consola"
 
 import type { RequestContext } from "~/lib/context/request"
 
-import { state } from "~/lib/state"
-import { logToolDiagnostics } from "~/lib/upstream-diagnostics"
-
-import { isAbortError } from "./classify"
-import { HTTPError } from "./http-error"
+import { isAbortError } from "~/lib/error/classify"
+import { HTTPError } from "~/lib/error/http-error"
 import {
   //
   extractTokenLimitFromResponseText,
   isUpstreamRateLimited,
-} from "./parsing"
+} from "~/lib/error/parsing"
 import {
   //
   formatErrorWithCause,
   looksLikeHtml,
   parseRetryAfterHeader,
-} from "./utils"
+} from "~/lib/error/utils"
+import { state } from "~/lib/state"
+import { logToolDiagnostics } from "~/lib/upstream-diagnostics"
 
 /**
  * Wire format for the error response body.
