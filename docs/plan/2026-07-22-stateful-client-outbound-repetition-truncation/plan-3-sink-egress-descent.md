@@ -4,22 +4,24 @@
 >
 > **权威 spec：** [`docs/spec/2026-07-22-stateful-client-outbound-repetition-truncation.md`](../../spec/2026-07-22-stateful-client-outbound-repetition-truncation.md) §4（§9b 下沉 + postRender 职责拆分）/ §4.1-4.3 / §5.5（provenance）/ §5.6（双缓冲）/ §10 P3 行。总览 [`README.md`](README.md)——**「Produces / 冻结契约」+「红线 R1-R6」是跨相位单一事实源**，本文档只看自己这块，遇到与 README 冲突处以 README 为准。
 >
-> **前置依赖（严格，P0+P1+P2）：** 实施前必须 grep 确认下列符号已按各自相位落地——本 plan 撰写时 P1 尚未成文、P2（`plan-2-eager-start-anthropic.md`）已成文但假设尚未实施，故本文档在「P2 已按其 plan 落地（内建 hook 挂 postRender + 待发帧队列适配器）」的前提下设计「如何拆掉 P2 的临时适配器、下沉到 delivery 层」。
+> **前置依赖（严格，P0+P1+P2）：** P1（`plan-1-stateful-contract.md`）已成文并落地——`client.outbound` leaf 升级为 `StatefulClientOutbound`（`FrameAction` 复用 `~/lib/pipeline/rewrite-registry`，字面量 `"emit"|"suppress"|"buffer"`，**不是** `"drop"`），且 `candidate-response-session.ts` 的挂载点是**数组返回**的 `onRenderedFrame(frame): ReadonlyArray<ClientFrame>` + `flushRenderedFrames(): ReadonlyArray<ClientFrame>` 状态机（不是单帧 `postRender`）。P2（`plan-2-eager-start-anthropic.md`）已按此真实基线重写——内建截断 hook 是该状态机内的**第二环**（用户 hook 之后），**没有**「待发帧队列」适配器（P1 的数组返回值天然消解了一帧输入多帧输出的接口问题，P2 从未需要引入这层适配）；候选终止路径的 `flush(reason)` 经 `CandidateResponseSession.flushTruncationHook(reason)` 这个 P2 新增的逃生口方法触达。本文档以这套**真实落地的数组状态机 + 第二环挂载**为唯一基线设计「如何拆掉 P2 的第二环挂载、下沉到 delivery 层」——`postRender`/「待发帧队列」这些说法已随 P1/P2 的真实落地废弃，本文档全文不再使用。
 > ```bash
-> grep -n "StatefulClientOutbound\|FlushReason\|FrameAction" src/lib/pipeline/hooks/types.ts
-> grep -n "createRepetitionTruncationHook\|truncationHook\|pendingOutputFrames" src/lib/pipeline/generation/candidate-response-session.ts src/routes/messages/handler-v4.ts src/lib/pipeline/hooks/builtin/repetition-truncation.ts
+> grep -n "StatefulClientOutbound\|FlushReason" src/lib/pipeline/hooks/types.ts
+> grep -n "FrameAction" src/lib/pipeline/rewrite-registry.ts
+> grep -n "onRenderedFrame\|flushRenderedFrames\|truncationHook\|flushTruncationHook" src/lib/pipeline/generation/candidate-response-session.ts src/routes/messages/handler-v4.ts
+> grep -n "createRepetitionTruncationHook" src/lib/pipeline/hooks/builtin/repetition-truncation.ts
 > grep -n "boundary.observe\|captureGenerationDispatchFrameTransform" src/lib/pipeline/generation/candidate-response-session.ts
 > grep -n "createDownstreamDeliverySession\|writeToSink\|syntheticKind" src/lib/pipeline/delivery/session.ts
 > ```
-> 任一 grep 结果与本文档假设不符 → 停下核实，不得在 P3 里越权补 P1/P2 的活（仅拆除/迁移 P2 的临时机制是本相位的**核心工作**，非越权）。
+> 任一 grep 结果与本文档假设不符 → 停下核实，不得在 P3 里越权补 P1/P2 的活（仅拆除/迁移 P2 第二环挂载是本相位的**核心工作**，非越权）。
 
-**Goal（spec §10 P3 行）：** 把 client-egress 挂载点从 candidate-local `postRender` 下沉到候选仲裁**之后**的 `delivery/session.ts` 串行写 choke point——覆盖全量 client 字节（渲染帧 + sink 合成/心跳/anchor 帧）+ 统一 forwarded-轨 provenance 标记；**拆分** postRender 职责（`boundary.observe`（hedge/candidate-race 依据）+ 诊断 capture **留在** postRender，仅有状态 `client.outbound` 转换器下沉，R3）；commit invariant：`repetition_truncation.enabled:false` 时 delivery 输出对四格式（Anthropic/CC/Responses/Gemini）逐字节等价（含 Gemini `flushResponse` 帧、Anthropic timer heartbeat 帧、anchor start/stop 帧的相对顺序）。
+**Goal（spec §10 P3 行）：** 把 client-egress 挂载点从 candidate-local 的 `onRenderedFrame`/`flushRenderedFrames` 状态机下沉到候选仲裁**之后**的 `delivery/session.ts` 串行写 choke point——覆盖全量 client 字节（渲染帧 + sink 合成/心跳/anchor 帧）+ 统一 forwarded-轨 provenance 标记；**拆分**候选层职责（`boundary.observe`（hedge/candidate-race 依据）+ 诊断 capture（`captureGenerationDispatchFrameTransform`）**留在**候选层，仅有状态 `client.outbound` 转换器下沉，R3）；commit invariant：`repetition_truncation.enabled:false` 时 delivery 输出对四格式（Anthropic/CC/Responses/Gemini）逐字节等价（含 Gemini `flushResponse` 帧、Anthropic timer heartbeat 帧、anchor start/stop 帧的相对顺序）。
 
 **Architecture（本相位撰写时实读代码确认的关键机制，见文末「实读代码发现的与 spec/README 不符之处」——部分是本 plan 必须解决的真实设计缺口，非可忽略的细节）：**
 
 1. **单一串行写入点**：`delivery/session.ts` 的 `createDownstreamDeliverySession` 内部只有**一个**函数 `write(entry: DeliveryFrame, allowTerminating)` 真正把帧送到 raw sink（经 `writeToSink(sink, entry)`）——`clientSink.write`/`writeSynthetic`/`writeKeepalive`/`writeSyntheticEnvelope`/`writeAnchor`/`writeScaffold`/`commitWinnerBlock`/`writeWinnerFrame` 全部最终调用这一个 `write()`。这是 §9b 描述的「候选仲裁之后的串行写 choke point」——本相位把有状态 `client.outbound` 转换器挂在这个函数入口，而非任何 route handler 层。
 2. **哪些帧经过 hook、哪些不经过（本 plan 的核心设计决策，spec §4.2「有状态 hook 可选择不缓冲」的字面落地方式）**：`DeliveryFrame.provenance.kind` 只有两种——`"candidate"`（真正的候选渲染帧，来自 driver 通过 `commitWinnerBlock`/`writeWinnerFrame`/`clientSink.write` 送入的内容）与 `"synthetic"`（delivery 层自身合成——keepalive/anchor/synthetic-message-start/generic synthetic，经 `writeKeepalive`/`writeAnchor`/`writeSyntheticEnvelope`/`writeSynthetic` 送入）。**本 plan 的设计决策**：只有 `provenance.kind==="candidate"` 的帧才喂给 `client.outbound` 链；`"synthetic"` 帧（心跳/anchor/message-start-envelope/通用终态错误帧）在 `write()` 内部**结构性绕过**链本身，直接照常写出——这是把 spec §4.2「截断器可选择不缓冲心跳/anchor」这句话，从「hook 内部逻辑判断」改成「delivery 层调度层面的结构性保证」的**必要修正**（详见文末「不符之处」第 1 条：README 冻结契约 `transform(frame: ClientFrame, state: S)` 签名本身不携带 provenance，一个纯 `ClientFrame` 无法让 hook 自己分辨「这是心跳帧」——除非 delivery 层预先替 hook 做这个判断）。这个决策对本特性（截断器）而言与 spec 意图完全等价（截断器本来就不该缓冲心跳/anchor），只是把「谁来保证」从「hook 自己」换成「调度层」，更健壮（一个写错的 hook 不可能意外吞掉心跳帧）。
-3. **多帧适配天然消解（P2 临时机制在此退役）**：`write()` 本身是「一次调用处理一个 `DeliveryFrame`」，但它的调用方（`writeScaffold`/`commitWinnerBlock`）已经是 `for (const entry of frames) await write(entry)` 循环——这意味着 hook 链的「一个输入帧产出 0-N 个输出帧」可以在 `write()` 内部直接 `for (const outputFrame of chainResult) { ...原 write() 单帧逻辑... }` 循环处理，**不需要**任何外部排队适配器。P2 的「待发帧队列」（`postRender` 单进单出契约逼出的临时机制）在这里被结构性消解——这正是 README 相位 DAG 把「先在旧层跑通逻辑」与「下沉」分成两个相位的价值兑现点。
+3. **多帧适配天然满足（P1 的数组机制在候选层已经解决过一次，P3 只是换个宿主重新利用同一原理）**：`write()` 本身是「一次调用处理一个 `DeliveryFrame`」，但它的调用方（`writeScaffold`/`commitWinnerBlock`）已经是 `for (const entry of frames) await write(entry)` 循环——这意味着 hook 链的「一个输入帧产出 0-N 个输出帧」可以在 `write()` 内部直接 `for (const outputFrame of chainResult) { ...原 write() 单帧逻辑... }` 循环处理，**不需要**任何外部排队适配器。这与 P1/P2 在候选层用数组返回值（`onRenderedFrame(frame): ReadonlyArray<ClientFrame>`）解决同一个「一帧输入多帧输出」问题是**同一原理在不同宿主的重复应用**——P3 不是「消解掉 P2 遗留的队列适配器」（P2 从未引入这样的适配器，P1 的数组机制已经在候选层解决过），而是「把这套已验证有效的机制搬到新宿主（`write()` 内的 for 循环）继续用」。
 4. **§5.6 双缓冲折叠位置天然满足**：`runResponseBufferedSink` 的 buffered-merge/commit flush 调用的仍是 `sink.write(frame)`（`driver.ts:1095/1142` 等）——这个 `sink` 就是 `createDownstreamDeliverySession` 返回的 `clientSink`，其 `write` 方法内部就是本相位新增 hook 链的调用点。故 buffered-merge 的重渲染**必然先于**本相位的 hook 链运行（`sink.write` 是 buffered-merge flush 循环的最后一步），折叠天然发生在 buffered-merge **之后**——这是 P3 下沉设计的自动推论，不需要额外代码保证顺序，只需要一个集成测试锁定它（Task 7）。
 5. **Provenance：P0 已落地四处站点 + 本相位实读代码发现的第五处真实缺口（R4 的完整闭环，本 plan 的核心贡献）**：P0（`plan-0-foundation.md` Task 3）已经把 `DeliverySyntheticKind` 加值、`session.ts` 的 `writeToSink` switch 新分支、`OperationSyntheticKind` 加值、`client-sink.ts` 两处 `sampleForwarded` 参数类型字面量联合都补上了`"repetition-truncated"`。**但实读 `client-sink.ts` 运行时数据流后发现一个 P0 未处理、只有 P3 实际驱动 delivery 层写路径时才会暴露的缺口**：`writeToSink`（P0 落地）把 `"repetition-truncated"` 路由到 `sink.writeSynthetic(entry.frame)`；但 raw sink 的 `writeSynthetic` 实现（`client-sink.ts:306-309`）是 `sampleForwarded(frame, readSyntheticKind(frame), "synthetic")`——它持久化到 `SseEventRecord.synthetic` 字段的值来自 `readSyntheticKind(frame)`，这是**另一个完全独立的机制**（`frame-origin.ts` 的 `SyntheticOriginKind` Symbol 标签，经 `tagFrameSynthetic` 写入、`readSyntheticKind` 读取），**不是** delivery 层路由决策所依据的 `DeliverySyntheticKind`（`DeliveryFrame.provenance.syntheticKind`）。P0 的 Task 3 只改了 `sampleForwarded` 的**参数类型**（允许 `"repetition-truncated"` 作为合法字面量传入），却没有改变**实际传入的值**——`writeSynthetic` 调用点硬编码 `readSyntheticKind(frame)`，而 `SyntheticOriginKind`（`frame-origin.ts`）联合类型里根本没有 `"repetition-truncated"` 这个值，所以除非 marker 帧自身也被 `tagFrameSynthetic(frame, "repetition-truncated")` 标记过，`readSyntheticKind(frame)` 永远返回 `undefined`——持久化的 `SseEventRecord.synthetic` 字段会静默丢失这个标记（这正是项目记忆 `methodology-full-primitive-not-partial-else-silent-field-drop` 描述的模式：新枚举值只加了一部分站点）。**本相位 Task 5 补齐这第五处站点**（`frame-origin.ts` 的 `SyntheticOriginKind` 加值 + marker 帧构造改用 `tagFrameSynthetic(frame, "repetition-truncated")`，取代 P2 阶段临时使用的 `"hook-rewrite"` 值——P2 阶段那是权宜之计，P3 有了正式的 `DeliverySyntheticKind` 通道后应该让两个标签系统在这个值上保持一致）。
 
@@ -31,7 +33,7 @@
 
 - **`enabled:false` 全端点字节等价（R1）**：本相位每个 Task 完成后都要跑 Task 1 的 golden 预捕基线回放。
 - **richest-data-flow**：marker 帧必须出现在 forwarded 轨且可辨识；upstream-original 轨不受任何影响（本相位不触碰 `response-processor.ts` 的上游轨采样，只在 delivery 层工作）。
-- **R3（classifier 留 postRender）**：任一 commit 都不得让 `boundary.observe` 随 hook 一起搬走——同一 commit 落地拆分（Task 4）。
+- **R3（classifier 留候选层）**：任一 commit 都不得让 `boundary.observe` 随 hook 一起搬走——同一 commit 落地拆分（Task 4）。
 - **R4（provenance 全站点同 commit）**：见 Architecture 第 5 点五处站点，Task 5 一次性全部落地。
 - **byte-critical commit invariant**：`enabled:false` 时 delivery 逐字节等价——每个改动 `delivery/session.ts`/`client-sink.ts` 的 commit 后都要跑 golden 回放（不只是最后一个 Task 才验证）。
 - **no-auto-server**：不跑 `bun run dev`/`start`；本相位无需 M-2 idle 回归（P2 已覆盖 Anthropic、P5 覆盖其余端点）。可跑 `bun run typecheck`/`lint:all`/`bun test`。
@@ -41,10 +43,10 @@
 
 ## 消费的上游契约（P0/P1/P2 提供，P3 不得改名，只做「挂载点迁移」）
 
-1. **`StatefulClientOutbound<S>`/`FrameAction`/`FlushReason`**（`hooks/types.ts`，P1）。
+1. **`StatefulClientOutbound<S>`/`FlushReason`**（`hooks/types.ts`，P1）+ **`FrameAction`**（`~/lib/pipeline/rewrite-registry`，P1 复用非新造，字面量 `"emit"|"suppress"|"buffer"`）。
 2. **`createRepetitionTruncationHook()`**（`hooks/builtin/repetition-truncation.ts`，P2）：Anthropic 精确档 hook 实例，本相位**原样复用**（不改内部算法），只改「谁在何处调用它」。
-3. **`getUpstreamHook()?.client?.outbound`**（`hooks/loader.ts`，P1 已升级为有状态）：用户配置 hook，本相位从 `postRender` 迁到 delivery 层，与内建 hook 组成同一条链（顺序：用户 hook 先、内建截断 hook 后——P2 Architecture 段落已确定的顺序，本相位延续）。
-4. **`state.repetitionTruncation`**（P0）、**`collapseRepetition`**（P0）：本相位不直接调用，由 Task 1 引入的内建 hook（P2 产出）内部调用，本相位只搬运挂载点。
+3. **`getUpstreamHook()?.client?.outbound`**（`hooks/loader.ts`，P1 已升级为有状态）：用户配置 hook，本相位从候选层的 `onRenderedFrame`/`flushRenderedFrames` 状态机迁到 delivery 层，与内建 hook 组成同一条链（顺序：用户 hook 先、内建截断 hook 后——P2 已确定的顺序，本相位延续）。
+4. **`state.repetitionTruncation`**（P0）、**`collapseRepetition`**（P0）：本相位不直接调用，由 P2 引入的内建 hook 内部调用，本相位只搬运挂载点。
 
 ---
 
@@ -52,11 +54,12 @@
 
 - [ ] **Task 1** — golden 四格式预捕（`enabled:false` 真实渲染基线，含 Gemini `flushResponse`/Anthropic heartbeat/anchor 帧序）——**先于任何代码改动**
 - [ ] **Task 2** — `env` 线程接入 `createDownstreamDeliverySession`（机制先行，尚无消费者，commit invariant：零行为变化）
-- [ ] **Task 3** — client-outbound 链运行器（`buildClientOutboundChain`/`runClientOutboundChain`/`flushClientOutboundChain`）+ 接入 `write()` 调度（只对 `provenance.kind==="candidate"` 帧生效，合成帧结构性绕过）
-- [ ] **Task 4** — 拆除 P2 postRender 临时挂载（待发帧队列适配器 + `truncationHook` 字段）；`boundary.observe`/诊断 capture 原地保留（R3 同 commit）
+- [ ] **Task 3** — client-outbound 链运行器（`buildClientOutboundChain`）+ 接入 `write()` 调度（只对 `provenance.kind==="candidate"` 帧生效，合成帧结构性绕过）
+- [ ] **Task 4** — 拆除 P2 候选层第二环挂载（内建 hook 调用 + `truncationHook`/`flushTruncationHook` 字段）；`boundary.observe`/诊断 capture 原地保留（R3 同 commit）
 - [ ] **Task 5** — provenance 缺口修复：`SyntheticOriginKind`（`frame-origin.ts`）加值 `"repetition-truncated"` + marker 帧改用 `tagFrameSynthetic` 标记（R4 收尾——P0 Task 3 已落地四处，本 Task 补齐实读代码发现的第五处 `readSyntheticKind`/`writeSynthetic` 数据流缺口，同 commit）
 - [ ] **Task 6** — commit invariant 验证：golden 回放（`enabled:false` 四格式逐字节等价，含 WS 路径）
 - [ ] **Task 7** — 204× 端到端回归（证明下沉后功能与 P2 一致）+ §5.6 双缓冲折叠位置集成测试
+
 
 ### Task 1 — golden 补充预捕（P0 已锁定内容开关等价，本 Task 补齐「机制」维度）
 
@@ -511,7 +514,7 @@ EOF
   // src/lib/pipeline/delivery/client-outbound-chain.ts
   export interface ClientOutboundChain {
     /** Run one candidate frame through every hook in the chain (user hook first, then built-in
-     *  hooks). Returns the frames to actually write (0, 1, or many) — "drop"/"buffer" outcomes
+     *  hooks). Returns the frames to actually write (0, 1, or many) — "suppress"/"buffer" outcomes
      *  along the way naturally collapse to fewer output frames than input. */
     run(frame: ClientFrame): Array<ClientFrame>
     /** Flush every hook's still-buffered state for the given lifecycle reason (client-abort /
@@ -532,8 +535,8 @@ EOF
  * outbound`, P1-upgraded to StatefulClientOutbound) runs FIRST, the BUILT-IN Anthropic exact-tier
  * repetition-truncation hook (P2's createRepetitionTruncationHook, gated on env.targetEndpoint
  * being the direct Anthropic leg) runs SECOND — mirroring the ORDER already established in P2's
- * postRender wiring (a user hook that rewrites text should see its output become the truncation
- * hook's input, matching "what will the client actually see").
+ * onRenderedFrame/flushRenderedFrames chain wiring (a user hook that rewrites text should see its
+ * output become the truncation hook's input, matching "what will the client actually see").
  *
  * ONLY called for "candidate" provenance frames (real render output) — delivery/session.ts's
  * write() structurally EXCLUDES "synthetic" frames (keepalive/anchor/synthetic-message-start/
@@ -548,7 +551,8 @@ EOF
  * wanted to see synthetic frames in the first place).
  */
 import { getUpstreamHook } from "~/lib/pipeline/hooks/loader"
-import type { FlushReason, FrameAction, StatefulClientOutbound } from "~/lib/pipeline/hooks/types"
+import type { FlushReason, StatefulClientOutbound } from "~/lib/pipeline/hooks/types"
+import type { FrameAction } from "~/lib/pipeline/rewrite-registry" // 复用，非新造（P1 实测核实同构）
 import type { RequestEnvelope } from "~/lib/pipeline/envelope"
 import type { ClientFrame } from "~/lib/pipeline/types"
 
@@ -579,7 +583,7 @@ export function buildClientOutboundChain(env: RequestEnvelope | undefined): Clie
     // (spec §6 table: the exact tier is Anthropic-only; CC/Responses/WS approximate tiers are P4).
     // env.targetEndpoint is the OUTBOUND wire the render produced for (RFC §3.1) — the direct leg
     // check mirrors P2's createAnthropicCandidateResponseSession gating (same condition, now
-    // evaluated here instead of in postRender since the mount point has moved).
+    // evaluated here instead of in the candidate-layer state machine since the mount point has moved).
     if (env.targetEndpoint === ENDPOINT.MESSAGES) {
       const truncationHook = createRepetitionTruncationHook()
       links.push({ hook: truncationHook, state: truncationHook.createState(env) })
@@ -594,8 +598,8 @@ export function buildClientOutboundChain(env: RequestEnvelope | undefined): Clie
         for (const f of current) {
           const action: FrameAction = link.hook.transform(f, link.state)
           if (action.kind === "emit") next.push(...action.frames)
-          // "buffer" / "drop" → contribute ZERO frames to `next` (buffer = held inside the hook's
-          // own state for a later flush/emit; drop = discarded — the chain doesn't distinguish the
+          // "buffer" / "suppress" → contribute ZERO frames to `next` (buffer = held inside the hook's
+          // own state for a later flush/emit; suppress = discarded — the chain doesn't distinguish the
           // two at this layer, since both mean "nothing to write right now").
         }
         current = next
@@ -837,7 +841,7 @@ bun test tests/openai/c0-cc-repetition-truncation-disabled-golden.http.test.ts
 bun test tests/responses/c0-repetition-truncation-disabled-golden.http.test.ts
 bun test tests/gemini/c0-repetition-truncation-disabled-golden.http.test.ts
 ```
-Expected: 全绿——**关键点**：此刻 `postRender` 的 P2 挂载**仍然存在**（Task 4 才拆除），故生产请求路径的实际截断行为此刻是**双重挂载**（postRender 的旧路径 + delivery 层的新路径都在跑）——这是一个**必须显式确认的中间态**：若 `enabled:true`，同一个 204× 请求理论上会被**两层都尝试折叠**，可能产生错误的双重折叠或者矛盾的行为。**本 Step 必须新增一个专门断言这个中间态行为的测试**（见 Step 6.1），不能只满足于「golden 绿」（golden 测的是 `enabled:false`，测不出双重挂载问题）。
+Expected: 全绿——**关键点**：此刻 P2 落地的候选层第二环挂载**仍然存在**（Task 4 才拆除），故生产请求路径的实际截断行为此刻是**双重挂载**（候选层 `onRenderedFrame`/`flushRenderedFrames` 状态机内第二环的旧路径 + delivery 层的新路径都在跑）——这是一个**必须显式确认的中间态**：若 `enabled:true`，同一个 204× 请求理论上会被**两层都尝试折叠**，可能产生错误的双重折叠或者矛盾的行为。**本 Step 必须新增一个专门断言这个中间态行为的测试**（见 Step 6.1），不能只满足于「golden 绿」（golden 测的是 `enabled:false`，测不出双重挂载问题）。
 
 - [ ] **Step 6.1: 补充中间态验证（双重挂载不产生错误行为）**
 
@@ -845,17 +849,18 @@ Expected: 全绿——**关键点**：此刻 `postRender` 的 P2 挂载**仍然�
 // tests/pipeline/delivery-client-outbound-double-mount-transition.unit.test.ts
 /**
  * P3 Task 3→4 TRANSITION STATE verification: between Task 3 (delivery-layer chain wired) and Task 4
- * (postRender's P2 mount torn down), a production Anthropic request is processed by BOTH the P2
- * postRender hook instance AND the P3 delivery-layer hook instance — because postRender's
- * onRenderedFrame runs BEFORE the frame ever reaches the sink/delivery session's write(). This test
- * proves that double-mounting does NOT corrupt the 204x collapse (worst case: the postRender layer
- * already collapsed it to 1 copy + marker BEFORE delivery's chain ever sees it — delivery's OWN
- * truncation hook then sees only ONE short delta + one marker delta, neither of which re-triggers
- * a SECOND collapse, since neither is individually long/repetitive enough to re-match). This is a
- * TRANSITION-ONLY test — Task 4 deletes the postRender mount, at which point this test's premise
- * (double-mounting exists) no longer holds; it should be DELETED alongside Task 4's changes (see
- * Task 4's own test cleanup step), not kept as a permanent regression guard for a state that will
- * no longer exist.
+ * (P2's candidate-layer second-link mount torn down), a production Anthropic request is processed
+ * by BOTH the P2 candidate-layer hook instance (mounted as the second link in onRenderedFrame/
+ * flushRenderedFrames, per P2 Task 2) AND the P3 delivery-layer hook instance — because the
+ * candidate-layer state machine runs BEFORE the frame ever reaches the sink/delivery session's
+ * write(). This test proves that double-mounting does NOT corrupt the 204x collapse (worst case:
+ * the candidate layer already collapsed it to 1 copy + marker BEFORE delivery's chain ever sees it
+ * — delivery's OWN truncation hook then sees only ONE short delta + one marker delta, neither of
+ * which re-triggers a SECOND collapse, since neither is individually long/repetitive enough to
+ * re-match). This is a TRANSITION-ONLY test — Task 4 deletes the candidate-layer second-link mount,
+ * at which point this test's premise (double-mounting exists) no longer holds; it should be DELETED
+ * alongside Task 4's changes (see Task 4's own test cleanup step), not kept as a permanent
+ * regression guard for a state that will no longer exist.
  */
 import { describe, expect, test } from "bun:test"
 // ... (实施时用真实 HTTP 请求驱动 204x 流，断言 enabled:true 时输出恰好一份折叠+一个 marker，
@@ -876,34 +881,33 @@ built-in Anthropic exact-tier repetition-truncation hook (P2, runs second, gated
 /v1/messages leg) into one ordered chain, driven by session.ts's SOLE write() function. Only
 "candidate"-provenance frames enter the chain — synthetic frames (keepalive/anchor/synthetic-
 message-start) structurally bypass it (delivery-layer guarantee, stronger than a hook-internal
-judgment call). TRANSITION STATE: postRender's P2 mount still runs too (double-mounted) until
-Task 4 tears it down — verified harmless via a transition-only test (deleted in Task 4).
+judgment call). TRANSITION STATE: P2's candidate-layer second-link mount still runs too (double-
+mounted) until Task 4 tears it down — verified harmless via a transition-only test (deleted in Task 4).
 EOF
 ```
 
-### Task 4 — 拆除 P2 postRender 临时挂载（R3：classifier/诊断 capture 原地保留，同 commit）
+### Task 4 — 拆除 P2 候选层第二环挂载（R3：classifier/诊断 capture 原地保留，同 commit）
 
 **Files:**
-- Modify: `src/lib/pipeline/generation/candidate-response-session.ts`（`postRender` 移除待发帧队列 + 内建 hook 调用，`CreateCandidateResponseSessionInput` 移除 `truncationHook` 字段）
-- Modify: `src/routes/messages/handler-v4.ts`（`createAnthropicCandidateResponseSession` 移除 `truncationHook: createRepetitionTruncationHook()` 传参 + 移除候选终止路径的 `flush(reason)` 调用——现在 delivery 层的 `terminate()` 是统一终止入口）
+- Modify: `src/lib/pipeline/generation/candidate-response-session.ts`（`onRenderedFrame`/`flushRenderedFrames` 状态机移除第二环——内建截断 hook 的调用 + `truncationHook`/`truncationState`/`applyTruncationAction` 相关变量与逻辑；`CreateCandidateResponseSessionInput` 移除 `truncationHook` 字段；`CandidateResponseSession` 移除 `flushTruncationHook` 方法）
+- Modify: `src/routes/messages/handler-v4.ts`（`createAnthropicCandidateResponseSession` 移除 `truncationHook: createRepetitionTruncationHook()` 传参 + 移除候选终止路径调用 `session.flushTruncationHook(reason)` 的代码——现在 delivery 层的 `terminate()`/`flushOutbound()` 是统一出口）
 - Delete: `tests/pipeline/generation/candidate-repetition-truncation-glue.unit.test.ts`（P2 Task 2 产出，验证的是即将被删除的机制本身，测试随机制一起退役）
 - Delete: `tests/pipeline/delivery-client-outbound-double-mount-transition.unit.test.ts`（Task 3 Step 6.1 产出的过渡态验证，本 Task 完成后其前提「双重挂载」不再存在）
-- Modify: `src/lib/pipeline/generation/candidate-response-session.ts` 的 `postRender` 函数文档注释（移除「P2 glue」相关描述，若有）
-- Test: `tests/pipeline/generation/postrender-classifier-preserved.unit.test.ts`（新建，R3 核心不变量的正面验证）
+- Test: `tests/pipeline/generation/candidate-layer-classifier-preserved.unit.test.ts`（新建，R3 核心不变量的正面验证）
 
-**R3 核心不变量（本 Task 的唯一硬约束，spec §4.1/README R3 逐字）**：`boundary.observe`（hedge/candidate-race 依据）+ 诊断 capture（`captureGenerationDispatchFrameTransform`）**必须留在** `postRender`，**同一个 commit** 里既拆除 hook 调用又保证这两者原地不动——不允许「先删 hook 调用、下个 commit 才发现 classifier 也被误删」的分步骤修复。
+**R3 核心不变量（本 Task 的唯一硬约束，spec §4.1/README R3 逐字）**：`boundary.observe`（hedge/candidate-race 依据）+ 诊断 capture（`captureGenerationDispatchFrameTransform`）**必须留在候选层**，**同一个 commit** 里既拆除内建 hook 第二环又保证这两者原地不动——不允许「先删 hook 调用、下个 commit 才发现 classifier 也被误删」的分步骤修复。
 
-- [ ] **Step 1: 写失败测试 — 拆除后 postRender 的剩余职责验证（正面证明 classifier 还在）**
+- [ ] **Step 1: 写失败测试 — 拆除后候选层剩余职责验证（正面证明 classifier 还在）**
 
 ```typescript
-// tests/pipeline/generation/postrender-classifier-preserved.unit.test.ts
+// tests/pipeline/generation/candidate-layer-classifier-preserved.unit.test.ts
 /**
- * P3 Task 4 (R3) — after tearing down the P2 postRender truncation-hook mount, this test proves
- * `boundary.observe` (hedge/candidate-race dependency) and diagnostic capture
- * (captureGenerationDispatchFrameTransform) STILL run inside postRender, unmodified. This is the
- * POSITIVE half of R3's invariant (the negative half — "the truncation hook no longer runs here" —
- * is proven by this Task's Step 4 removing the double-mount transition test, which would otherwise
- * still pass and mask the fact that postRender no longer collapses anything).
+ * P3 Task 4 (R3) — after tearing down P2's candidate-layer second-link truncation-hook mount, this
+ * test proves `boundary.observe` (hedge/candidate-race dependency) and diagnostic capture
+ * (captureGenerationDispatchFrameTransform) STILL run inside the onRenderedFrame/flushRenderedFrames
+ * state machine, unmodified. This is the POSITIVE half of R3's invariant (the negative half — "the
+ * truncation hook no longer runs here" — is proven by the first test below, which asserts the array
+ * output is UNCOLLAPSED once the second link is torn down).
  */
 import { afterEach, beforeEach, describe, expect, test } from "bun:test"
 
@@ -922,7 +926,7 @@ const textStart = (index: number): ClientFrame => ({ event: "content_block_start
 const textDelta = (index: number, text: string): ClientFrame => ({ event: "content_block_delta", data: JSON.stringify({ type: "content_block_delta", index, delta: { type: "text_delta", text } }) })
 const blockStop = (index: number): ClientFrame => ({ event: "content_block_stop", data: JSON.stringify({ type: "content_block_stop", index }) })
 
-describe("R3: boundary.observe + diagnostic capture stay in postRender after the truncation hook is torn down", () => {
+describe("R3: boundary.observe + diagnostic capture stay in the candidate layer after the truncation hook second-link is torn down", () => {
   let snapshot: StateSnapshot
   beforeEach(() => {
     snapshot = snapshotStateForTests()
@@ -930,7 +934,7 @@ describe("R3: boundary.observe + diagnostic capture stay in postRender after the
   })
   afterEach(() => restoreStateForTests(snapshot))
 
-  test("postRender no longer collapses a 204x repeat itself (the hook has moved to delivery/session.ts)", () => {
+  test("onRenderedFrame no longer collapses a 204x repeat itself (the hook has moved to delivery/session.ts) — NO truncationHook field passed", () => {
     const env = makeEnv("/v1/messages")
     const session = createCandidateResponseSession({
       candidate: 1 as never,
@@ -940,16 +944,19 @@ describe("R3: boundary.observe + diagnostic capture stay in postRender after the
       renderer: { renderResponse: (f: unknown) => f as ClientFrame, flushResponse: () => [] },
       createState: () => ({}),
       snapshot: () => ({}),
+      // NO truncationHook — the caller (handler-v4.ts, post-Task-4) no longer passes one for the
+      // Anthropic direct leg either, since the built-in hook has fully relocated to delivery/session.ts.
     })
     session.responseOpts.onRenderedFrame?.(textStart(0))
     const unit = "card\n\n（专注。）\n\n"
     for (let i = 0; i < 204; i++) session.responseOpts.onRenderedFrame?.(textDelta(0, unit))
-    const finalFrame = session.responseOpts.onRenderedFrame?.(blockStop(0))
-    // postRender now returns the SAME stop frame it was given — no collapse, no marker, no
-    // pending-queue multi-frame drain (that machinery is GONE, torn down this Task). The actual
-    // collapse now happens downstream in delivery/session.ts's write() (Task 3), which this
-    // candidate-local unit test does not exercise (it never reaches a delivery session).
-    expect(finalFrame).toBe(blockStop(0))
+    const stop = blockStop(0)
+    const stopResult = session.responseOpts.onRenderedFrame?.(stop) ?? []
+    // Array output is the SAME single stop frame — no collapse, no marker (the second link is GONE,
+    // torn down this Task). The actual collapse now happens downstream in delivery/session.ts's
+    // write() (Task 3), which this candidate-local unit test does not exercise (it never reaches a
+    // delivery session).
+    expect(stopResult).toEqual([stop])
   })
 
   test("boundary.observe still fires for a real Anthropic text block close (hedge/candidate-race dependency intact)", () => {
@@ -977,123 +984,62 @@ describe("R3: boundary.observe + diagnostic capture stay in postRender after the
 
 - [ ] **Step 2: 跑证失败**
 
-Run: `bun test tests/pipeline/generation/postrender-classifier-preserved.unit.test.ts`
-Expected: FAIL —— 第一个测试失败（`finalFrame` 目前仍是 3 帧待发队列的产物，非原始 `blockStop(0)` 引用——Task 2 的 P2 挂载此刻仍在跑）。第二个测试预期已经 PASS（`boundary.observe` 现有逻辑本来就没被 P2 破坏，本相位也不该破坏它——这是一个回归锚点，不是本 Task 要修的红）。
+Run: `bun test tests/pipeline/generation/candidate-layer-classifier-preserved.unit.test.ts`
+Expected: FAIL —— 第一个测试失败——若测试传入了 `truncationHook` 字段则编译失败（本测试故意不传，模拟 Task 4 之后 handler 层不再传入的状态）；若容忍缺省，`stopResult` 此刻仍是**未挂 hook 时的行为**（原样通过），本测试恰好会 PASS——**这是 Task 4「拆除」这个动作本身在纯粹「移除传参」层面的测试局限**：本 Step 真正验证「拆除」的红测重点应放在 handler 层集成测试（Task 4 Step 6 的端到端回归）而非本文件——本文件的价值在于**独立于 handler 接线**验证候选层状态机自身在「无 truncationHook」时的正确 baseline 行为 + `boundary.observe` 不受影响，这本身就是「正确修改后应有的样子」，故本 Step 更准确的说法是：**在 Task 4 修改之前**（`onRenderedFrame`/`flushRenderedFrames` 仍含第二环逻辑代码，即使本测试没传 `truncationHook`），代码路径应仍是「`truncationHook` 为 `undefined` 时第二环是 no-op（`applyTruncationAction` 分支被跳过）」——这在 P2 落地时就已经是正确行为（可选字段语义），所以本测试在 Task 4 之前**也应该 PASS**。**因此本 Task 严格意义上不是传统 TDD「先红后绿」——是一次纯删除重构**，Step 2 的价值改为「跑通既有测试矩阵，确认删除前基线正确」，真正的红绿验证在 Step 5（删除后跑全部测试，确认删除没有破坏任何东西）。
 
-- [ ] **Step 3: 拆除 `postRender` 的 P2 挂载**
+- [ ] **Step 3: 拆除候选层第二环挂载**
 
-在 `candidate-response-session.ts` 的 `postRender` 函数（`:111-138`）内，删除 P2 Task 2 引入的「待发帧队列」+「内建 hook 调用」整段逻辑，恢复到 P1 交付时的形态（只保留用户 hook 调用 + `input.onRenderedFrame` + `boundary.observe` + 诊断 capture）：
+在 `candidate-response-session.ts` 的 `onRenderedFrame`/`flushRenderedFrames` 状态机内（P2 Task 2 落地的实现），删除内建截断 hook 第二环相关的全部代码——`truncationHook`/`truncationState`/`truncationFlushed`/`applyTruncationAction` 声明，以及 `onRenderedFrame`/`flushRenderedFrames` 函数体内引用它们的那层遍历，恢复到只有「用户 hook 第一环 → 格式收尾 `input.onRenderedFrame` → `postClassify`」（P1 落地形态）：
 
 ```typescript
-// candidate-response-session.ts — postRender 恢复（P2 挂载整段删除，只保留 P1 交付的形态）
-const postRender = (frame: ClientFrame): ClientFrame | undefined => {
-  // The legacy mutating client.outbound hook belongs before classification and is therefore
-  // candidate-local. P3 has moved the STATEFUL client.outbound consumer (repetition-truncation and
-  // any future built-in hooks) to delivery/session.ts's write() choke point (spec §4.1/§9b) — this
-  // candidate-local call is now ONLY the (P1-upgraded) USER-configured hook, kept here because a
-  // user hook that mutates the request-local render BEFORE classification is a documented (if
-  // legacy) capability; see hooks/types.ts's client.outbound doc for the coverage caveat this
-  // implies (a render-produced frame only — sink-layer synthetic/heartbeat/anchor frames are NOT
-  // seen here, by design, since THOSE now flow through the delivery-layer chain instead, spec §4.2).
-  const hook = getUpstreamHook()?.client?.outbound
-  const hooked = hook ? hook(frame, input.env) : frame
-  if (hooked === undefined) return undefined
-  const transformed = input.onRenderedFrame ? input.onRenderedFrame(state, hooked) : hooked
-  if (transformed === undefined) return undefined
-  if (transformed !== frame || readSyntheticKind(transformed) !== undefined) {
-    const transform = { stage: "client-transform", transformId: "candidate:on-rendered-frame", forceDerived: true }
-    if (typeof input.env.ctx.captureGenerationDispatchFrameTransform === "function") {
-      input.env.ctx.captureGenerationDispatchFrameTransform(input.dispatch, frame, transformed, transform)
-    } else {
-      input.env.ctx.captureGenerationFrameTransform?.(frame, transformed, transform)
-    }
+// candidate-response-session.ts — onRenderedFrame（拆除第二环，恢复 P1 形态）
+const onRenderedFrame = (frame: ClientFrame): ReadonlyArray<ClientFrame> => {
+  const hookedFrames = hook ? applyHookAction(hook.transform(frame, hookState)) : [frame]
+  const out: Array<ClientFrame> = []
+  for (const hooked of hookedFrames) {
+    const transformed = input.onRenderedFrame ? input.onRenderedFrame(state, hooked) : hooked
+    if (transformed === undefined) continue
+    out.push(postClassify(frame, transformed))
   }
-  const syntheticKind = readSyntheticKind(transformed)
-  boundary.observe({
-    frame: transformed,
-    sequence: sequence++,
-    observedAtMonotonic: performance.now(),
-    provenance:
-      syntheticKind === undefined ?
-        { kind: "candidate", candidateId: String(input.candidate), dispatchId: String(input.dispatch) }
-      : { kind: "synthetic", syntheticKind },
-  })
-  return transformed
+  return out
+}
+
+const flushRenderedFrames = (): ReadonlyArray<ClientFrame> => {
+  if (!hook || hookFlushed) return []
+  hookFlushed = true
+  const flushed = hook.flush(hookState, "natural-drain")
+  const out: Array<ClientFrame> = []
+  for (const hooked of flushed) {
+    const transformed = input.onRenderedFrame ? input.onRenderedFrame(state, hooked) : hooked
+    if (transformed === undefined) continue
+    out.push(postClassify(hooked, transformed))
+  }
+  return out
 }
 ```
 
-**核实**：这段代码与 P1 交付前（P2 之前）的原始 `postRender`（本 plan 开篇 grep 到的 `:111-138` 版本）逐字相同——本 Task 是**纯删除**，不引入任何新逻辑。同时删除 `CreateCandidateResponseSessionInput` 里 P2 新增的 `truncationHook?: import("~/lib/pipeline/hooks/types").StatefulClientOutbound<unknown>` 字段。
+（这与 P1 plan Task 2 落地的 `onRenderedFrame`/`flushRenderedFrames` 原始实现逐字相同——本 Task 是**纯删除**，不引入任何新逻辑；`hook`/`hookState`/`hookFlushed`/`applyHookAction`/`postClassify` 全部是 P1 产出、未被本 Task 触碰的既有变量/函数。）
+
+同时删除 `CreateCandidateResponseSessionInput` 里 P2 新增的 `truncationHook?: import("~/lib/pipeline/hooks/types").StatefulClientOutbound<unknown>` 字段，以及 `CandidateResponseSession` 接口里 P2 新增的 `flushTruncationHook?: (reason: FlushReason) => ReadonlyArray<ClientFrame>` 方法（连同其在 `createCandidateResponseSession` 返回值里的实现）。
 
 - [ ] **Step 4: `handler-v4.ts` 移除 P2 接线**
 
-在 `createAnthropicCandidateResponseSession`（`:216-265`）的 `MESSAGES` 分支，删除 P2 Task 2 新增的 `truncationHook: createRepetitionTruncationHook() as ...` 一行；顶部删除 `import { createRepetitionTruncationHook } from "~/lib/pipeline/hooks/builtin/repetition-truncation"`（若 `handler-v4.ts` 其余地方不再使用这个 import，ESLint 的 `no-unused-vars` 会在下一步 typecheck/lint 中捕获遗漏）。
+在 `createAnthropicCandidateResponseSession`（`:216` 附近）的 `MESSAGES` 分支，删除 P2 Task 2 新增的 `truncationHook: createRepetitionTruncationHook()` 一行；顶部删除 `import { createRepetitionTruncationHook } from "~/lib/pipeline/hooks/builtin/repetition-truncation"`（若 `handler-v4.ts` 其余地方不再使用这个 import，ESLint 的 `no-unused-vars` 会在下一步 typecheck/lint 中捕获遗漏）。
 
-同时删除 P2 Task 2 在候选终止路径（`pumpAnthropicStreamingV4` 的 `outcome.kind==="settled-abort"` 分支 + `stream-error`/`streamError` 分支）新增的 `truncationHook.flush(...)` 调用——**这些调用点现在的正确宿主是 delivery 层的 `terminate(command)`**（`delivery/session.ts:211-220`），本 Task 不在这里新增替代调用（那是 Task 3 的 `flush` 方法已经存在、但**尚未被 `terminate()` 调用**——这是一个需要显式核实的接线缺口，见 Step 4.1）。
+同时删除 P2 Task 2 在候选终止路径（`pumpAnthropicStreamingV4` 的 `outcome.kind==="settled-abort"` 分支 + `stream-error`/`streamError` 分支）新增的 `session.flushTruncationHook(reason)` 调用——**这些调用点现在的正确宿主是 delivery 层的 `terminate(command)`/`flushOutbound(reason)`**（Task 3 已经把这两个方法接好），本 Task 不在这里新增替代调用（那是 Task 3 已经完成的工作，见 Task 3「核心设计」代码块的 `terminate`/`flushOutbound` 实现——**已在 Task 3 落地，本 Task 不重复**）。
 
-- [ ] **Step 4.1: 核实 `terminate()` 是否需要调用 `outboundChain.flush(reason)`（若尚未接线，本 Task 补上）**
+**核实**：`grep -n "flushTruncationHook\|truncationHook" src/routes/messages/handler-v4.ts src/lib/pipeline/generation/candidate-response-session.ts` 应在本 Task 完成后**零命中**——这是「P2 候选层挂载完全拆除」的字面验证标准。
 
-`grep -n "async terminate" src/lib/pipeline/delivery/session.ts` 核实 `terminate(command)` 现有实现（`:211-220`）：
+- [ ] **Step 5: 跑证通过 + 全套件回归**
 
-```typescript
-// 现有（Task 3 之前）
-async terminate(command) {
-  if (state !== "open") return
-  state = "terminating"
-  closeHeartbeat()
-  const frames = command.kind === "client-aborted" ? [] : (command.frames ?? [])
-  for (const entry of frames) await write(entry, true)
-  state = "closed"
-  sink.close?.()
-  await sink.finalize?.()
-},
+```bash
+bun test tests/pipeline/generation/candidate-layer-classifier-preserved.unit.test.ts
+bun run typecheck
+bun run test:backend
 ```
+Expected: 全绿——`test:backend` 全绿证明拆除动作没有破坏任何既有回归（尤其 hedge/candidate-race 相关测试，若存在 `tests/pipeline/hedged-driver.it.test.ts` 之类依赖 `boundary.observe` 的测试，必须仍然绿）。
 
-`command.kind === "client-aborted"` 时 `frames` 是空数组——这正是 `outboundChain.flush("client-aborted")` 该介入的地方（丢弃 hook 缓冲，`flush` 返回 `[]`，与现有行为语义一致，调用它只是确保 hook 自身的内部状态被正确清空，即使返回值不消费）。**非** `client-aborted` 的终止（`upstream-exhausted`/`upstream-nonretryable`/`request-cancelled`）目前直接把调用方传入的 `command.frames` 写出——这些帧是**候选层**已经决定好的错误响应帧（如 Anthropic 格式化的错误 SSE），**不应该**再经过 `client.outbound` 链（截断 hook 不应该尝试折叠一个错误提示文本）。**故本 Task 的正确实现**：只在 `client-aborted` 分支调用 `outboundChain.flush("client-aborted")`（丢弃返回值，纯粹为了让 hook 状态正确复位）；上游截断场景（spec §3.3「upstream-truncated」）**由谁调用 `flush("upstream-truncated")`** 需要额外核实——**这是本 Task 实施前必须核实清楚的一个真实设计问题**，见下方「实施前必须核实」。
-
-**实施前必须核实（真实的设计缺口，非可跳过的细节）**：spec §3.3「上游截断（无 message_stop）」的语义是「已发帧收不回；仍在缓冲的 delta 若命中则尽力吐折叠+marker、否则原样吐」——但 `terminate(command)` 的 `DeliveryTerminalCommand` 联合类型（`delivery/types.ts:44-49`）里，代表「上游截断」的分支是 `"upstream-exhausted"`/`"upstream-nonretryable"` 中的哪一个（或者是另一条完全不同的路径，如 `stream-error` outcome 直接调用 `sink.writeSynthetic` 而不经过 `terminate()`——P2 plan 的 Task 2 就是假设了「upstream-truncated 走 `pumpAnthropicStreamingV4` 的 `stream-error` 分支，在 `sink.writeSynthetic` 调用前插入 `flush`」，而不是走 `terminate()`）——**实施者必须先读 `handler-v4.ts` 该分支的真实调用序列，确认「上游截断」这条路径此刻是否经过 `delivery/session.ts` 的 `terminate()`，还是完全绕开它、直接调用 `sink.writeSynthetic`**（`grep -n "writeSynthetic\|terminate" src/routes/messages/handler-v4.ts`）。若是后者（绕开 `terminate()`），本 Task 需要在 handler 侧的 `sink.writeSynthetic` 调用**之前**手动获取 `outboundChain` 并调用 `flush("upstream-truncated")`——但 `outboundChain` 目前是 `delivery/session.ts` 内部的私有闭包变量，handler 层无法直接访问它。**这暴露了一个 P3 设计本身需要决策的真实分叉**：要么（a）在 `DownstreamDeliverySession` 接口新增一个公开方法 `flushOutbound(reason): ClientFrame[]`，供 handler 在它自己的错误分支里显式调用；要么（b）扩展 `DeliveryTerminalCommand` 的类型，让「upstream-truncated」也走 `terminate()`，由 `terminate()` 内部统一调用 `outboundChain.flush`。**本 plan 选择方案 (a)**（侵入面更小——`terminate()` 现有的「client-facing 错误帧」路径语义清晰，不应该在承载它的函数里叠加另一套 flush 触发条件），把这个分叉记录在 Task 4 的「与 spec 不一致处」自审条目，供实施者/审查者核对。
-
-```typescript
-// delivery/session.ts — DownstreamDeliverySession 接口新增方法
-export interface DownstreamDeliverySession {
-  // ...existing...
-  /** Flush the client.outbound chain's buffered hook state for an out-of-band lifecycle event that
-   *  does NOT go through terminate() (e.g. a handler-level upstream-truncation branch that writes
-   *  its own error frame directly via sink.writeSynthetic). Returns the frames the caller should
-   *  write BEFORE its own terminal frame (spec §3.3 partial-degrade: salvage what was buffered). */
-  flushOutbound(reason: FlushReason): Array<ClientFrame>
-}
-// ...
-const session: DownstreamDeliverySession = {
-  // ...existing...
-  flushOutbound(reason) {
-    return outboundChain.flush(reason)
-  },
-  async terminate(command) {
-    if (state !== "open") return
-    state = "terminating"
-    closeHeartbeat()
-    if (command.kind === "client-aborted") outboundChain.flush("client-aborted") // discard, reset hook state
-    const frames = command.kind === "client-aborted" ? [] : (command.frames ?? [])
-    for (const entry of frames) await write(entry, true)
-    state = "closed"
-    sink.close?.()
-    await sink.finalize?.()
-  },
-}
-```
-
-在 `handler-v4.ts` 的上游截断分支（`pumpAnthropicStreamingV4` 的 `outcome.kind==="stream-error"` 分支，写 `shapeRawStreamErrorFrame` 之前）新增：
-
-```typescript
-// handler-v4.ts — stream-error 分支，writeSynthetic 之前
-const delivery = getDownstreamDeliverySession(sink)
-const salvaged = delivery?.flushOutbound("upstream-truncated") ?? []
-for (const f of salvaged) await sink.write(f) // best-effort salvage of buffered-but-collapsible content
-```
-
-（`getDownstreamDeliverySession` 已是既有导出——`grep -n "export function getDownstreamDeliverySession" src/lib/pipeline/delivery/session.ts` 核实签名。）
-
-- [ ] **Step 5: 删除 P2 遗留测试 + Task 3 过渡态测试**
+- [ ] **Step 6: 删除本相位的两个过渡态测试**
 
 ```bash
 rm tests/pipeline/generation/candidate-repetition-truncation-glue.unit.test.ts
@@ -1102,19 +1048,10 @@ rm tests/pipeline/delivery-client-outbound-double-mount-transition.unit.test.ts
 
 （前者验证的机制本身被本 Task 删除；后者验证的「双重挂载安全」前提在本 Task 完成后不再成立——继续保留会变成一个恒真但无意义的测试，故删除而非保留。）
 
-- [ ] **Step 6: 跑证通过 + 全套件回归**
+- [ ] **Step 7: golden 回放（本相位每个改动 delivery 层的 commit 都要做，此刻验证「拆除候选层第二环挂载后，功能仍然通过新路径正确工作」）**
 
 ```bash
-bun test tests/pipeline/generation/postrender-classifier-preserved.unit.test.ts
-bun run typecheck
-bun run test:backend
-```
-Expected: 全绿——`test:backend` 全绿证明拆除动作没有破坏任何既有回归（尤其 hedge/candidate-race 相关测试，若存在 `tests/pipeline/hedged-driver.it.test.ts` 之类依赖 `boundary.observe` 的测试，必须仍然绿）。
-
-- [ ] **Step 7: golden 回放（本相位每个改动 delivery 层的 commit 都要做，此刻验证「拆除 postRender 挂载后，功能仍然通过新路径正确工作」）**
-
-```bash
-bun test tests/anthropic/repetition-truncation-exact.http.test.ts  # P2 Task 3 产出的 204x 端到端测试——现在必须仍然绿，证明功能从 postRender 迁到 delivery 层后行为不变
+bun test tests/anthropic/repetition-truncation-exact.http.test.ts  # P2 Task 3 产出的 204x 端到端测试——现在必须仍然绿，证明功能从候选层迁到 delivery 层后行为不变
 bun test tests/anthropic/c0-repetition-truncation-mechanism-golden.http.test.ts
 bun test tests/gemini/c0-repetition-truncation-mechanism-golden.http.test.ts
 bun test tests/responses/c0-repetition-truncation-mechanism-golden.http.test.ts
@@ -1128,23 +1065,25 @@ Expected: 全绿——**关键**：`repetition-truncation-exact.http.test.ts` �
 - [ ] **Step 8: 提交**
 
 ```bash
-git add -- src/lib/pipeline/generation/candidate-response-session.ts src/routes/messages/handler-v4.ts src/lib/pipeline/delivery/session.ts src/lib/pipeline/delivery/types.ts tests/pipeline/generation/postrender-classifier-preserved.unit.test.ts
+git add -- src/lib/pipeline/generation/candidate-response-session.ts src/routes/messages/handler-v4.ts tests/pipeline/generation/candidate-layer-classifier-preserved.unit.test.ts
 git rm -- tests/pipeline/generation/candidate-repetition-truncation-glue.unit.test.ts tests/pipeline/delivery-client-outbound-double-mount-transition.unit.test.ts
-git commit -F - -- src/lib/pipeline/generation/candidate-response-session.ts src/routes/messages/handler-v4.ts src/lib/pipeline/delivery/session.ts src/lib/pipeline/delivery/types.ts tests/pipeline/generation/postrender-classifier-preserved.unit.test.ts tests/pipeline/generation/candidate-repetition-truncation-glue.unit.test.ts tests/pipeline/delivery-client-outbound-double-mount-transition.unit.test.ts <<'EOF'
-refactor(pipeline): tear down P2's postRender truncation mount; classifier/diagnostics stay (R3)
+git commit -F - -- src/lib/pipeline/generation/candidate-response-session.ts src/routes/messages/handler-v4.ts tests/pipeline/generation/candidate-layer-classifier-preserved.unit.test.ts tests/pipeline/generation/candidate-repetition-truncation-glue.unit.test.ts tests/pipeline/delivery-client-outbound-double-mount-transition.unit.test.ts <<'EOF'
+refactor(pipeline): tear down P2's candidate-layer second-link truncation mount; classifier/diagnostics stay (R3)
 
-postRender reverts to its P1 shape (user client.outbound hook + input.onRenderedFrame + boundary.
-observe + diagnostic capture) — the P2-only multi-frame pending-output queue + built-in hook call
-are removed in this SAME commit as confirming boundary.observe/captureGenerationDispatchFrameTransform
+onRenderedFrame/flushRenderedFrames revert to their P1 shape (user client.outbound hook as the sole
+link + input.onRenderedFrame + boundary.observe + diagnostic capture) — the P2-only second link
+(the built-in Anthropic exact-tier repetition-truncation hook + its createState/flush wiring) is
+removed in this SAME commit as confirming boundary.observe/captureGenerationDispatchFrameTransform
 are untouched (R3: never split classifier-preservation from mount-removal across commits).
-DownstreamDeliverySession gains flushOutbound(reason) for the handler's upstream-truncation salvage
-path (which writes its own error frame directly, bypassing terminate()) — terminate()'s own
-client-aborted branch now calls outboundChain.flush internally. P2's glue test + Task 3's
+handler-v4.ts's candidate-termination glue (flushTruncationHook calls) is also removed — Task 3's
+delivery/session.ts terminate()/flushOutbound() are now the sole outlet. P2's glue test + Task 3's
 double-mount transition test are deleted (their premises no longer hold); P2's end-to-end 204x HTTP
 test (repetition-truncation-exact.http.test.ts) is the load-bearing regression anchor proving the
 descended mount behaves identically.
 EOF
 ```
+
+---
 
 ### Task 5 — provenance 缺口修复：`SyntheticOriginKind` 加值 + marker 帧改用正式通道
 
@@ -1534,7 +1473,7 @@ EOF
 
 - [ ] 挂载点下沉到 `delivery/session.ts` 串行写 choke point（spec §4.1）：Task 3。
 - [ ] 覆盖全量 client 字节——渲染帧 + sink 合成/心跳/anchor 帧（spec §4.2）：Task 3 的「合成帧结构性绕过」设计（截断器不缓冲心跳/anchor，符合 spec §4.2 字面「有状态 hook 可选择不缓冲」——本 plan 把它做成调度层保证而非 hook 内部判断，更强，见 Architecture 第 2 点）。
-- [ ] R3（classifier/诊断 capture 留 postRender，同 commit 拆分）：Task 4。
+- [ ] R3（classifier/诊断 capture 留候选层，同 commit 拆分）：Task 4。
 - [ ] R4（provenance 全站点同 commit）：P0 Task 3 已交付四处，本 plan Task 5 补齐实读代码发现的第五处真实缺口（`SyntheticOriginKind`）+ 第二处衍生缺口（`write()` 的 provenance 重分类）——**两处缺口合并在同一个 Task 5 commit 内**，符合 R4「同一个 commit」纪律（若拆成两个 commit，中间态会出现「类型层能表达新值，但没有任何调用路径真正产生正确标记」的半坏态）。
 - [ ] byte-critical commit invariant——`enabled:false` 时 delivery 逐字节等价，含 Gemini `flushResponse`/Anthropic heartbeat/anchor 帧序（spec §4.3）：Task 1 补充 golden + Task 2/3/4/5 每个 Task 末尾的回放步骤 + Task 6 的变异有牙验证。
 - [ ] §5.6 双缓冲折叠位置（buffered-merge 之后）：Task 7（用真实 Responses buffered-merge reducer + spy hook 验证顺序，非凭空断言）。
@@ -1545,22 +1484,24 @@ EOF
 
 ### 与 P0/P1/P2 契约类型一致
 
-- [ ] `StatefulClientOutbound<S>`/`FrameAction`/`FlushReason`：Task 3 的 `buildClientOutboundChain` 直接消费，未改名（继承 P2 plan 已记录的「消费的上游契约」第 6 条 `"drop"` vs `"suppress"` 疑点，本相位同样按 README 字面 `"drop"` 实现——若 P1 实际落地不同，Task 3 的 `action.kind==="emit"` 检查逻辑本身不受值域影响，只有未被检查的分支——本 plan 的 `run()` 实现里 `"buffer"`/`"drop"` 都落入「贡献零帧」的隐式 else，代码字面不写死某个具体字符串，故这处疑点对 Task 3 的实现**无影响**，只影响类型声明的精确度）。
+- [ ] `StatefulClientOutbound<S>`/`FlushReason`（`hooks/types.ts`）+ `FrameAction`（`~/lib/pipeline/rewrite-registry`，字面量 `"emit"|"suppress"|"buffer"`）：Task 3 的 `buildClientOutboundChain` 直接消费，未改名——与 P1 落地签名逐字对齐（早前草稿的 `"drop"` 疑点已随 P1/P2 落地澄清，本 plan 全文同步订正，见前置依赖段落）。
 - [ ] `createRepetitionTruncationHook()`（P2）：Task 3 原样调用，未改内部算法；Task 5 只改了它内部 `markerDeltaFrame` 的 `tagFrameSynthetic` 第二参数字面量（`"hook-rewrite"`→`"repetition-truncated"`），不改函数签名/接口。
 - [ ] `DeliverySyntheticKind`/`OperationSyntheticKind`/`writeToSink`/`sampleForwarded` 字面量联合（P0 Task 3）：Task 5 复用，未重新定义。
 - [ ] `getUpstreamHook()?.client?.outbound`（P1）：Task 3 假设其已升级为 `StatefulClientOutbound`——**实施前必须 grep 核实 P1 落地形态**（本 plan 开篇「前置依赖」已列出 grep 命令）；若 P1 仍是旧单帧签名（`(frame,env)=>frame|undefined`），Task 3 的 `links.push({hook:userHook, state:userHook.createState(env)})` 这行会编译失败（旧签名没有 `createState` 方法）——这是本 plan 对 P1 的强前置依赖，非可绕过的细节。
 
 ### 实读代码时发现的、与 spec/README 不符或需要显式记录的点（如实报告，未静默修改 spec/README 本身）
 
+0. **【合并态审查修正】本 plan（连同 P2）曾按 P1 尚未定稿时的假设（单帧 `postRender` + `FrameAction.{kind:"drop"}`）撰写，经合并态审查发现 P1 实际落地是数组返回的 `onRenderedFrame`/`flushRenderedFrames` 状态机 + `FrameAction` 复用 `rewrite-registry.ts`（字面量 `"suppress"` 非 `"drop"`）——已整体重写 Task 3（挂载点前置假设改为「候选层是数组状态机」）+ Task 4（「拆除」的对象从「单帧 postRender 恢复」改为「删除 P2 的数组状态机第二环」）+ 修正全文档 `"drop"`→`"suppress"` 引用。这与 P2 plan 的纠正是同一次审查发现的同一根因，两份 plan 已保持一致——如实记录该纠正过程，而非悄悄改掉、假装从未发生。
 1. **【核心发现】provenance 通道存在 P0 未处理的真实缺口**（Architecture 第 5 点 + Task 5 全文）：P0 Task 3 交付的四处站点（`DeliverySyntheticKind`/`OperationSyntheticKind`/`writeToSink` switch/`client-sink.ts` 两处 `sampleForwarded` 参数类型）**都只改了类型层**——raw sink 的 `writeSynthetic(frame)` 实际持久化的 `SseEventRecord.synthetic` 字段来自 `readSyntheticKind(frame)`，这是完全独立的 `frame-origin.ts` `SyntheticOriginKind` Symbol 标签机制，P0 从未触碰它。**这意味着 P0 Task 3 声称的「R4 全站点落地」实际上留了一个从未被激活的死通道**——直到 P2 的 marker 帧构造（用 `"hook-rewrite"` 权宜标记）和本相位 Task 5（正式改用 `"repetition-truncated"` + 补齐 `SyntheticOriginKind`）之前，这条通道从始至终不会产生正确的持久化标记。这是本 plan 撰写过程中实读代码（而非纸面推演）才发现的问题，已在 Task 5 完整记录 + 修复。**建议**：P0 plan（`plan-0-foundation.md`）的 Task 3 自审段落应该补一条注记，说明「本 Task 交付的是类型层 + 路由层，`SyntheticOriginKind` 的实际数据流闭环由 P3 Task 5 完成」——本 plan 不擅自修改 P0 文档，只在此如实指出这个跨文档的依赖关系，供 P0/P3 的实施者/审查者对照。
 2. **【核心发现】`write()` 的 provenance 重分类是 Task 3 本身遗漏、Task 5 补上的必要逻辑**：Task 3 初版实现（`outputEntry = outputFrame===entry.frame ? entry : {...entry, frame:outputFrame}`）只替换了 `frame` 字段，**没有**重新判定 `provenance`——一个从 hook 链产出的全新合成帧（如 marker）会**继承**原输入帧的 `provenance.kind:"candidate"`，导致 `writeToSink` 把它当作普通候选帧路由到 `sink.write`（而非 `sink.writeSynthetic`），完全绕开 R4 想要建立的 provenance 标记机制。**这是本 plan 自己在撰写 Task 3 时先写出的一个有缺陷版本、又在设计 Task 5 时通过读代码论证发现并修复的**——如实记录这个「自己先写错、自己纠正」的过程，而非假装 Task 3 从一开始就是完备的，是本自审的诚实要求。
-3. **`terminate()` 与「upstream-truncated」flush 触发点的分叉**（Task 4「实施前必须核实」段落）：spec §3.3 要求上游截断时 `flush("upstream-truncated")` 被调用，但 `DeliveryTerminalCommand` 联合类型里没有直接对应「上游截断」的分支——现有 `handler-v4.ts` 的上游截断处理（`stream-error`/`streamError` 分支）目前直接调用 `sink.writeSynthetic` 写错误帧，**完全绕开** `delivery/session.ts` 的 `terminate()`。本 plan Task 4 提出的解决方案（新增公开方法 `flushOutbound(reason)`，供 handler 显式调用）是**一个未经 P1/P2/README 预先裁定的接口新增**——README 冻结契约的 `DownstreamDeliverySession` 接口（若 P3 之前的版本已经定型）里没有这个方法。**这是本 plan 主动做出的架构决策，非静默修改**：已在 Task 4 详细论证了两个候选方案（(a) 新增公开方法 vs (b) 扩展 `DeliveryTerminalCommand` 让 `terminate()` 统一处理）并说明选择 (a) 的理由（侵入面更小）。若审查者/用户认为应该走方案 (b)（统一到 `terminate()` 内部），需要额外一轮设计——本 plan 的当前选择记录在此，供后续裁决。
+3. **`terminate()` 与「upstream-truncated」flush 触发点的分叉**（Task 4「实施前必须核实」段落）：spec §3.3 要求上游截断时 `flush("upstream-truncated")` 被调用，但 `DeliveryTerminalCommand` 联合类型里没有直接对应「上游截断」的分支——现有 `handler-v4.ts` 的上游截断处理（`stream-error`/`streamError` 分支）目前直接调用 `sink.writeSynthetic` 写错误帧，**完全绕开** `delivery/session.ts` 的 `terminate()`。本 plan Task 3 提出的解决方案（新增公开方法 `flushOutbound(reason)`，供 handler 显式调用）是**一个未经 P1/P2/README 预先裁定的接口新增**——README 冻结契约的 `DownstreamDeliverySession` 接口（若 P3 之前的版本已经定型）里没有这个方法。**这是本 plan 主动做出的架构决策，非静默修改**：已在 Task 4「实施前必须核实」详细论证了两个候选方案（(a) 新增公开方法 vs (b) 扩展 `DeliveryTerminalCommand` 让 `terminate()` 统一处理）并说明选择 (a) 的理由（侵入面更小）。若审查者/用户认为应该走方案 (b)（统一到 `terminate()` 内部），需要额外一轮设计——本 plan 的当前选择记录在此，供后续裁决。
 4. **`writeCount` 的计数语义在链引入「一对多」帧展开后需要一个显式决策**（Task 3「核心设计」段落末尾）：本 plan 选择「按 `write()` 调用次数计数，非按实际写出帧数计数」——这是一个纯粹的诊断字段语义决策，spec/README 未提及，本 plan 自行决定并记录理由（保持与既有粗粒度诊断用途的直觉对应）。
 5. **`config.example.yaml` 是否需要新增本特性的机制层相关示例**——P3 本身不新增任何配置键（配置键是 P0 的范围），故本相位无需碰 `config.yaml`/`config.example.yaml`，此处仅确认这一点、非遗漏。
 6. **`repetition-detector.ts` 的告警检测器在本相位挂载点下沉后是否受影响**——**不受影响**：它挂在 `onUpstreamFrame`（上游原始帧回调，`response-processor.ts` 内），与本相位改动的 `client.outbound` 挂载点（渲染帧、delivery 层）是完全独立的两个采样点，spec §5.1「两套并存」的字面要求在本相位依然成立，未被下沉动作影响。
 
 ### 未采纳方案（record-not-adopted）
 
+- **（已推翻，见上「不符之处」第 0 条）曾按「候选层挂载点是单帧 `postRender`」的假设设计 Task 3/4**——该假设被 P1 的真实数组状态机落地推翻，已整体重写。记录此推翻过程供审阅者核对。
 - **考虑过把 Task 6 的变异验证固化成永久 CI 常驻测试**（而非「一次性验证 + 文档记录」）——**未采纳**：变异验证的本质是「刻意注入一个已知 bug，证明现有测试会抓住它」，固化成永久测试意味着代码库里长期保留一段「正确代码的错误版本」（即使只是测试文件里的字符串替换脚本），这本身是一种代码异味；项目既有先例（`client-proxy-e2e-testing` skill 的 MUTANT-A/C/D）也是采用「开发时验证 + 写入文档」而非固化的模式，本 plan 遵循同一惯例。
-- **考虑过在 `buildClientOutboundChain` 内部对 `"buffer"`/`"drop"` 两种 `FrameAction` 结果做不同处理**（例如日志级别不同，`"drop"` 更「主动」、`"buffer"` 更「暂存」）——**未采纳**：README 冻结契约没有要求区分这两者在链运行器层面的处理方式，两者对「这一帧本次不产出任何输出」这个结果是等价的；额外区分会引入本相位不需要的复杂度，若未来某个具体 hook 需要区分（比如诊断需要知道「这一帧是被永久丢弃还是被暂存」），那应该是该 hook 自己内部状态的事，不该由链运行器代为判断。
+- **考虑过在 `buildClientOutboundChain` 内部对 `"buffer"`/`"suppress"` 两种 `FrameAction` 结果做不同处理**（例如日志级别不同，`"suppress"` 更「主动」、`"buffer"` 更「暂存」）——**未采纳**：README 冻结契约没有要求区分这两者在链运行器层面的处理方式，两者对「这一帧本次不产出任何输出」这个结果是等价的；额外区分会引入本相位不需要的复杂度，若未来某个具体 hook 需要区分（比如诊断需要知道「这一帧是被永久丢弃还是被暂存」），那应该是该 hook 自己内部状态的事，不该由链运行器代为判断。
 - **考虑过让 `client-outbound-chain.ts` 的 `flush()` 把每个 hook 的输出重新喂回后续 hook**（形成一个真正的多阶段管道，而非「各 hook 独立 flush，结果直接拼接」）——**未采纳**：见「核心设计」代码块内已经写明的理由——flush 是终态事件，不应该被当作普通帧重新进入链（重新处理一个已经是「终态决策」的输出有引入循环/重复处理的风险），且当前唯一的内建 hook（Anthropic 精确截断）与用户 hook 之间不存在「用户 hook 需要看到截断 hook 的 flush 输出」这个具体需求——如果未来出现这个真实需求，应该在那时重新设计，而非预先构建一个没有具体消费者的通用机制。

@@ -114,6 +114,18 @@ export interface BufferedRetryCaps {
   heartbeatSec: number
 }
 
+/**
+ * Resolved continuation-retry settings for one vendor (`resolveContinuation` return). After the first
+ * block commits, a mid-stream RST triggers a synthetic continuation turn (spec
+ * 2026-07-22-continuation-retry-and-sequential-anchor §4). `enabled` gates it per vendor; `message` is
+ * the synthetic user-turn text. Resolution mirrors caps: per-vendor override > shared > built-in
+ * default (`{ enabled: true, message: "network issue. please continue" }`).
+ */
+export interface BufferedRetryContinuation {
+  enabled: boolean
+  message: string
+}
+
 /** unknown HTTP endpoint 日志级别（silent = 不打）。值须与 config/schema.ts 的 LOG_LEVELS 一致。 */
 export type LogLevel = "silent" | "debug" | "info" | "warn" | "error"
 
@@ -362,12 +374,16 @@ export interface State {
   readonly streamKeepalivePingSec: number
 
   /**
-   * Keepalive frame type for the client-facing Anthropic stream: `empty_text` (default) injects an
-   * empty content delta matching the open block, and in buffered mode with no open block yet lazily
-   * injects a synthetic empty text anchor block so an empty text_delta resets CC's 300s no-real-content
-   * deadline (spec 2026-07-08-buffered-keepalive-empty-text-anchor); `ping` restores the classic
-   * bare-ping (may time out — a ping is not a "chunk"); `enveloped_ping` (experimental, expected to time
-   * out) synthesizes an envelope then emits a bare ping. Default empty_text.
+   * Keepalive frame type for the client-facing Anthropic stream. Default `ping` (a bare `event: ping`).
+   *
+   * NOTE (ADR 2026-07-22 D2): `empty_text` was RETIRED as the default. It injected an empty content delta
+   * matching an open block, and in buffered mode lazily opened a synthetic empty-text ANCHOR block so an
+   * empty text_delta would reset CC's 300s no-real-content deadline. But an empty text block is a
+   * WRONG-shaped keepalive and was G2-proven unable to reset that deadline on the proxy path, so it is
+   * disabled by default (a bare `ping` does not reset the 300s deadline either — a >300s pre-content
+   * silence may time out; a real keepalive is pending research, docs/todo/2026-07-22-client-proxy-
+   * keepalive-300s.md). Block-level delivery CLI-safety now comes from strict index-ordered output, not
+   * from an anchor. `empty_text` / `enveloped_ping` remain SELECTABLE (code kept dormant) for that research.
    */
   readonly streamKeepaliveMode: "ping" | "enveloped_ping" | "empty_text"
 
@@ -401,6 +417,17 @@ export interface State {
    * the fields it declares; unset fields fall through to {@link bufferedRetryShared}.
    */
   readonly bufferedRetryOverrides: Record<string, Partial<BufferedRetryCaps>>
+  /**
+   * Vendor-neutral SHARED continuation-retry settings. Overridden per-vendor by
+   * {@link bufferedRetryContinuationOverrides}; resolve via `resolveContinuation(vendor)`.
+   * Built-in default: `{ enabled: true, message: "network issue. please continue" }`.
+   */
+  readonly bufferedRetryContinuationShared: BufferedRetryContinuation
+  /**
+   * Per-vendor continuation overrides (keyed by vendor). Each override sets only the fields it
+   * declares; unset fields fall through to {@link bufferedRetryContinuationShared}.
+   */
+  readonly bufferedRetryContinuationOverrides: Record<string, Partial<BufferedRetryContinuation>>
   /**
    * Chat Completions buffered-retry mode switch (P3). `false` (default) keeps the
    * live streaming path; `true` adopts the terminal-only buffered sink. Caps come
@@ -1134,6 +1161,15 @@ function cloneBufferedRetryOverrides(source: Record<string, Partial<BufferedRetr
   return out
 }
 
+/** Deep-clone the per-vendor continuation override map (each vendor entry is its own object). */
+function cloneContinuationOverrides(source: Record<string, Partial<BufferedRetryContinuation>>): Record<string, Partial<BufferedRetryContinuation>> {
+  const out: Record<string, Partial<BufferedRetryContinuation>> = {}
+  for (const [vendor, c] of Object.entries(source)) {
+    out[vendor] = { ...c }
+  }
+  return out
+}
+
 /** Deep-clone `modelTranslation` (ingress → rule list, each rule its own object with its own `features` array). */
 function cloneModelTranslation(source: ModelTranslation): ModelTranslation {
   const out: ModelTranslation = {}
@@ -1161,6 +1197,8 @@ function cloneState(source: MutableState): MutableState {
     negotiationTtlOverridesMs: { ...source.negotiationTtlOverridesMs },
     bufferedRetryShared: { ...source.bufferedRetryShared },
     bufferedRetryOverrides: cloneBufferedRetryOverrides(source.bufferedRetryOverrides),
+    bufferedRetryContinuationShared: { ...source.bufferedRetryContinuationShared },
+    bufferedRetryContinuationOverrides: cloneContinuationOverrides(source.bufferedRetryContinuationOverrides),
     stripBetaHeaders: cloneStripBetaHeaders(source.stripBetaHeaders),
     stripCacheControlSubfields: cloneStripBetaHeaders(source.stripCacheControlSubfields),
     stripPartnerFeatures: cloneStripBetaHeaders(source.stripPartnerFeatures),
@@ -1750,6 +1788,19 @@ export function setBufferedRetryOverride(vendor: string, patch: Partial<Buffered
   })
 }
 
+/** Set the SHARED continuation settings (partial merge). Hot-reloadable. Mirrors {@link setBufferedRetryShared}. */
+export function setBufferedRetryContinuationShared(patch: Partial<BufferedRetryContinuation>): void {
+  updateState({ bufferedRetryContinuationShared: { ...state.bufferedRetryContinuationShared, ...patch } })
+}
+
+/** Set a per-vendor continuation override (partial merge). Hot-reloadable. Mirrors {@link setBufferedRetryOverride}. */
+export function setBufferedRetryContinuationOverride(vendor: string, patch: Partial<BufferedRetryContinuation>): void {
+  const prev = state.bufferedRetryContinuationOverrides[vendor] ?? {}
+  updateState({
+    bufferedRetryContinuationOverrides: { ...state.bufferedRetryContinuationOverrides, [vendor]: { ...prev, ...patch } },
+  })
+}
+
 /**
  * Resolve the effective buffered-retry caps for one vendor. Priority (highest
  * first): per-vendor override ({@link State.bufferedRetryOverrides}) > shared
@@ -1764,6 +1815,19 @@ export function resolveBufferedCaps(vendor: string): BufferedRetryCaps {
     maxRetries: o.maxRetries ?? s.maxRetries,
     bufferCapBytes: o.bufferCapBytes ?? s.bufferCapBytes,
     heartbeatSec: o.heartbeatSec ?? s.heartbeatSec,
+  }
+}
+
+/**
+ * Resolve continuation-retry settings for `vendor` (per-vendor override > shared > built-in default).
+ * Single resolution point — mirrors {@link resolveBufferedCaps}.
+ */
+export function resolveContinuation(vendor: string): BufferedRetryContinuation {
+  const o = state.bufferedRetryContinuationOverrides[vendor] ?? {}
+  const s = state.bufferedRetryContinuationShared
+  return {
+    enabled: o.enabled ?? s.enabled,
+    message: o.message ?? s.message,
   }
 }
 
@@ -1840,11 +1904,13 @@ export const CONFIG_MANAGED_DEFAULTS = {
   responseHeaderWhitelist: ["request-id", "x-request-id", "anthropic-ratelimit-*", "anthropic-organization-id", "retry-after"] as ReadonlyArray<string>,
   stripAttributionHeader: true,
   streamKeepalivePingSec: 20,
-  streamKeepaliveMode: "empty_text" as "ping" | "enveloped_ping" | "empty_text",
+  streamKeepaliveMode: "ping" as "ping" | "enveloped_ping" | "empty_text", // ADR 2026-07-22 D2: empty_text retired as default (wrong-shaped, G2-ineffective); kept selectable/dormant for research
   streamCommitAfterSec: 20,
   protectStreamingGeneration: false as false | "on" | "tool_use_only",
   bufferedRetryShared: { maxRetries: 3, bufferCapBytes: 16_777_216, heartbeatSec: 15 } as BufferedRetryCaps,
   bufferedRetryOverrides: {} as Record<string, Partial<BufferedRetryCaps>>,
+  bufferedRetryContinuationShared: { enabled: true, message: "network issue. please continue" } as BufferedRetryContinuation,
+  bufferedRetryContinuationOverrides: {} as Record<string, Partial<BufferedRetryContinuation>>,
   // Default ON (P3 flip, 2026-07-14): buffering/generation-preservation beats the
   // downstream streaming UX for CC. See docs/decisions/ + plan README frozen contract.
   chatCompletionsBufferedRetry: true,
@@ -2167,6 +2233,8 @@ export function resetConfigManagedState(): void {
   updateState({
     bufferedRetryShared: { ...CONFIG_MANAGED_DEFAULTS.bufferedRetryShared },
     bufferedRetryOverrides: cloneBufferedRetryOverrides(CONFIG_MANAGED_DEFAULTS.bufferedRetryOverrides),
+    bufferedRetryContinuationShared: { ...CONFIG_MANAGED_DEFAULTS.bufferedRetryContinuationShared },
+    bufferedRetryContinuationOverrides: cloneContinuationOverrides(CONFIG_MANAGED_DEFAULTS.bufferedRetryContinuationOverrides),
     chatCompletionsBufferedRetry: CONFIG_MANAGED_DEFAULTS.chatCompletionsBufferedRetry,
   })
   // Shared reactive-retry budget (was auto_truncate.max_retries) + per-strategy registry opt-out.
@@ -2255,6 +2323,8 @@ const mutableState: MutableState = {
   protectStreamingGeneration: CONFIG_MANAGED_DEFAULTS.protectStreamingGeneration,
   bufferedRetryShared: { ...CONFIG_MANAGED_DEFAULTS.bufferedRetryShared },
   bufferedRetryOverrides: cloneBufferedRetryOverrides(CONFIG_MANAGED_DEFAULTS.bufferedRetryOverrides),
+  bufferedRetryContinuationShared: { ...CONFIG_MANAGED_DEFAULTS.bufferedRetryContinuationShared },
+  bufferedRetryContinuationOverrides: cloneContinuationOverrides(CONFIG_MANAGED_DEFAULTS.bufferedRetryContinuationOverrides),
   chatCompletionsBufferedRetry: CONFIG_MANAGED_DEFAULTS.chatCompletionsBufferedRetry,
   protectStreamingEscalateContext: CONFIG_MANAGED_DEFAULTS.protectStreamingEscalateContext,
   injectClaudeCodeOfficialTools: CONFIG_MANAGED_DEFAULTS.injectClaudeCodeOfficialTools,

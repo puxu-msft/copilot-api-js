@@ -10,13 +10,14 @@
  */
 
 import type { BetaProbe } from "~/lib/anthropic/pipeline"
+import type { CandidateRole } from "~/lib/context/model-operation-record"
 import type { PrepareHints } from "~/lib/request/retry-types"
 
 import type { RequestEnvelope } from "../envelope"
 import type { RequestState } from "../request-state"
 
-/** Candidate topology role; recovery is serial while hedge can be concurrent. */
-export type CandidateRole = "primary" | "hedge" | "recovery"
+// CandidateRole ("primary" | "hedge" | "recovery" | "continuation") is sourced from the operation-record
+// SSOT — do NOT re-declare the literal union here (spec 2026-07-22; SSOT-types).
 
 /** Candidate-local state produced from one frozen generation snapshot. */
 export interface CandidateStateFork {

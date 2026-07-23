@@ -39,6 +39,7 @@ import {
   //
   resetConfigManagedState,
   resolveBufferedCaps,
+  resolveContinuation,
   restoreStateForTests,
   snapshotStateForTests,
   state,
@@ -256,5 +257,38 @@ describe("retain-on-absence + reset", () => {
     expect(resolveBufferedCaps("anthropic")).toEqual({ maxRetries: 3, bufferCapBytes: 16_777_216, heartbeatSec: 15 })
     expect(state.bufferedRetryOverrides).toEqual({})
     expect(state.chatCompletionsBufferedRetry).toBe(true)
+  })
+})
+
+// ============================================================================
+// Continuation settings (spec 2026-07-22): shared + per-vendor, full apply path
+// ============================================================================
+
+describe("resolveContinuation via applyConfigToState", () => {
+  test("built-in defaults with no config: enabled true, default message, every vendor", async () => {
+    await applyYaml(``)
+    for (const vendor of ["anthropic", "responses", "chat_completions"]) {
+      expect(resolveContinuation(vendor)).toEqual({ enabled: true, message: "network issue. please continue" })
+    }
+  })
+
+  test("shared continuation applies to every vendor without an override", async () => {
+    await applyYaml(`buffered_retry:\n  continuation:\n    message: "please continue"\n`)
+    expect(resolveContinuation("responses").message).toBe("please continue")
+    expect(resolveContinuation("chat_completions").message).toBe("please continue")
+    expect(resolveContinuation("responses").enabled).toBe(true) // untouched default
+  })
+
+  test("per-vendor override > shared > default", async () => {
+    await applyYaml(`buffered_retry:\n  continuation:\n    message: "shared"\nanthropic:\n  buffered_retry:\n    continuation:\n      enabled: false\n`)
+    expect(resolveContinuation("anthropic")).toEqual({ enabled: false, message: "shared" })
+    expect(resolveContinuation("responses").message).toBe("shared") // shared, no anthropic override
+  })
+
+  test("resetConfigManagedState restores continuation defaults", async () => {
+    await applyYaml(`buffered_retry:\n  continuation:\n    enabled: false\n    message: "x"\n`)
+    expect(resolveContinuation("responses")).toEqual({ enabled: false, message: "x" })
+    resetConfigManagedState()
+    expect(resolveContinuation("responses")).toEqual({ enabled: true, message: "network issue. please continue" })
   })
 })

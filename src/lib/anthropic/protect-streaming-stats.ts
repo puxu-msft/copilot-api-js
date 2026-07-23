@@ -36,6 +36,13 @@ export interface ProtectStreamingStats {
    * `exhausted` (which committed nothing).
    */
   partialDegrade: number
+  /**
+   * Continuation path only (spec 2026-07-22): the retry engine engaged AFTER the first block committed
+   * — a synthetic continuation turn was re-dispatched but retries were exhausted before the generation
+   * finished. Distinct from `exhausted` (which never committed) and `partial-degrade` (which never
+   * attempted continuation): here continuation WAS tried but did not save.
+   */
+  continuationExhausted: number
   /** Total retries consumed across all engagements (every leg). */
   totalRetries: number
   /**
@@ -43,6 +50,15 @@ export interface ProtectStreamingStats {
    * (and produced a committed prefix)" signal is not lost inside `totalRetries` (spec §9.2 M-1).
    */
   retriesBeforeDegrade: number
+  /**
+   * Retries consumed BEFORE the first block committed (pre-first-block transparent retries). Split from
+   * {@link continuationRetries} so telemetry can tell whether a save came from transparent retry vs
+   * continuation (telemetry-architecture: irreducible factors kept finest). `totalRetries =
+   * preFirstBlockRetries + continuationRetries`.
+   */
+  preFirstBlockRetries: number
+  /** Retries consumed AFTER the first block committed (continuation re-dispatches). */
+  continuationRetries: number
 }
 
 const emptyStats = (): ProtectStreamingStats => ({
@@ -50,35 +66,43 @@ const emptyStats = (): ProtectStreamingStats => ({
   exhausted: 0,
   retreated: 0,
   partialDegrade: 0,
+  continuationExhausted: 0,
   totalRetries: 0,
   retriesBeforeDegrade: 0,
+  preFirstBlockRetries: 0,
+  continuationRetries: 0,
 })
 
 /** Per-vendor engagement counters (vendor = `anthropic` / `responses` / `chat_completions` / `responses_ws`). */
 let byVendor: Record<string, ProtectStreamingStats> = {}
 
-/** Map an outcome label to its counter field (only `partial-degrade` needs the camelCase remap). */
-const keyOf = (o: ProtectStreamingOutcome): keyof ProtectStreamingStats => (o === "partial-degrade" ? "partialDegrade" : o)
+/** Map an outcome label to its counter field (camelCase remaps for the hyphenated labels). */
+const keyOf = (o: ProtectStreamingOutcome): keyof ProtectStreamingStats =>
+  o === "partial-degrade" ? "partialDegrade" : o === "continuation-exhausted" ? "continuationExhausted" : o
 
 /**
- * Record one buffered-retry resolution under `meta.vendor`. `retries` = re-exchanges consumed for
- * this generation (folded into `totalRetries`, and additionally into `retriesBeforeDegrade` for a
- * `partial-degrade`).
+ * Record one buffered-retry resolution under `meta.vendor`. `retries` = total re-exchanges consumed for
+ * this generation (folded into `totalRetries`, and into `retriesBeforeDegrade` for a `partial-degrade`).
+ * `meta.continuationRetries` (default 0) is the subset consumed AFTER the first block committed; the
+ * remainder is attributed to `preFirstBlockRetries`.
  */
-export function recordProtectStreamingOutcome(outcome: ProtectStreamingOutcome, retries: number, meta: { vendor: string }): void {
+export function recordProtectStreamingOutcome(outcome: ProtectStreamingOutcome, retries: number, meta: { vendor: string; continuationRetries?: number }): void {
   const s = (byVendor[meta.vendor] ??= emptyStats())
   s[keyOf(outcome)] += 1
   s.totalRetries += retries
+  const contRetries = meta.continuationRetries ?? 0
+  s.continuationRetries += contRetries
+  s.preFirstBlockRetries += retries - contRetries
   if (outcome === "partial-degrade") s.retriesBeforeDegrade += retries
 }
 
 /**
- * §8 hit rate for one vendor's bucket: `success / (success + exhausted + partialDegrade)`.
- * `null` when the denominator is 0 (no scoreable engagements yet — e.g. only retreats), so callers
- * can render "n/a" instead of a misleading 0.
+ * §8 hit rate for one vendor's bucket: `success / (success + exhausted + partialDegrade +
+ * continuationExhausted)`. `null` when the denominator is 0 (no scoreable engagements yet — e.g. only
+ * retreats), so callers can render "n/a" instead of a misleading 0.
  */
 export function protectStreamingHitRate(s: ProtectStreamingStats): number | null {
-  const denom = s.success + s.exhausted + s.partialDegrade
+  const denom = s.success + s.exhausted + s.partialDegrade + s.continuationExhausted
   return denom === 0 ? null : s.success / denom
 }
 

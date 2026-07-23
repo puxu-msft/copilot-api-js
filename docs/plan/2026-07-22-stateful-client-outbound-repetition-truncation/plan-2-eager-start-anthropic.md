@@ -4,21 +4,23 @@
 >
 > **权威 spec：** [`docs/spec/2026-07-22-stateful-client-outbound-repetition-truncation.md`](../../spec/2026-07-22-stateful-client-outbound-repetition-truncation.md) §3.2（eager-start 机制）/ §3.3（hook 状态生命周期）/ §5.1-5.3（纯核+per-format 抽取）/ §5.5（provenance）/ §6（端点分档）/ §10 P2 行。总览 [`README.md`](README.md)——**「Produces / 冻结契约」+「红线 R1-R6」是跨相位单一事实源**，本文档只看自己这块，遇到与 README 冲突处以 README 为准。
 >
-> **前置依赖（严格，P0 + P1）：** 实施前必须 grep 确认下列符号已按 README 冻结契约落地——本 plan 撰写时 P1（`plan-1-stateful-contract.md`）尚未成文，故本文档在假设 P1 已交付「`client.outbound` leaf 升级为 `StatefulClientOutbound` + 迁移三条驱动调用点」的前提下设计；**若实施时 P1 尚未落地或落地形态与下方假设不符，先停下核实，不得在 P2 里越权补 P1 的活**（除非 Task 1 明确标注「本 Task 自建，P1 未提供也应由 P2 兜底」的部分，见 Task 1 開篇「组合胶水层」说明）。
+> **前置依赖（严格，P0 + P1）：** P1（`plan-1-stateful-contract.md`）已成文并落地——`client.outbound` leaf 升级为 `StatefulClientOutbound`（`transform` 返回值复用 `~/lib/pipeline/rewrite-registry` 的 `FrameAction`，字面量 `"emit"|"suppress"|"buffer"`，**不是** `"drop"`）；且 `candidate-response-session.ts` 的挂载点本身从「单帧 `postRender`」重构成了**数组返回**的 `onRenderedFrame(frame): ReadonlyArray<ClientFrame>` + `flushRenderedFrames(): ReadonlyArray<ClientFrame>` 状态机（P1 Task 2）——旧的单帧 `postRender`/`hook(frame,env)` 调用形态已不存在。本 plan 以 P1 落地的这套**数组状态机**为唯一基线设计 Task 2（内建截断 hook 作为该状态机内、用户 hook 之后的「第二环」，不再需要任何「待发帧队列」适配器——P1 的 `onRenderedFrame` 本身已经是数组返回，天然能表达一帧输入产出 0/1/多帧输出，P2 不必重新发明这层机制）。
 > ```bash
-> grep -n "StatefulClientOutbound\|FlushReason\|FrameAction" src/lib/pipeline/hooks/types.ts
+> grep -n "StatefulClientOutbound\|FlushReason" src/lib/pipeline/hooks/types.ts
+> grep -n "FrameAction" src/lib/pipeline/rewrite-registry.ts
 > grep -n "collapseRepetition\|CollapseConfig\|CollapseResult" src/lib/text-repetition/collapse.ts
 > grep -n "repetitionTruncation" src/lib/state.ts
-> grep -n "postRender" src/lib/pipeline/generation/candidate-response-session.ts
+> grep -n "onRenderedFrame\|flushRenderedFrames" src/lib/pipeline/generation/candidate-response-session.ts src/lib/pipeline/types.ts
 > ```
+> 任一 grep 结果与本文档假设不符（例如 P1 的数组签名/`hook` 挂载方式与下方描述有出入）→ 停下核实，不得在 P2 里越权改动 P1 的机制层。
 
-**Goal（spec §10 P2 行）：** Anthropic 截断 hook（eager 转发 `content_block_start` + 只缓冲 `text_delta` + block-aware keepalive 发空 delta）作为首个 first-party 有状态 `client.outbound` 消费者，仍挂在**现有** `candidate-response-session.ts` 的 `postRender` 层（P3 才下沉到 `delivery/session.ts`）——先在这一层跑通截断逻辑本身，把「逻辑错」与「迁移错」两类失败隔离开（README「相位 DAG」的显式设计意图）。TDD 关键：造 204× 重复流断言精确一份 + marker（producer wire-oracle 断完整帧序）；造长非重复 text 块断言不 idle-out（PTY / 客户端 e2e，M-2 门，真实客户端计时）。
+**Goal（spec §10 P2 行）：** Anthropic 截断 hook（eager 转发 `content_block_start` + 只缓冲 `text_delta` + block-aware keepalive 发空 delta）作为首个 first-party 有状态 `client.outbound` 消费者，仍挂在**现有** `candidate-response-session.ts` 的（P1 数组化后的）`onRenderedFrame`/`flushRenderedFrames` 状态机层（P3 才下沉到 `delivery/session.ts`）——先在这一层跑通截断逻辑本身，把「逻辑错」与「迁移错」两类失败隔离开（README「相位 DAG」的显式设计意图）。TDD 关键：造 204× 重复流断言精确一份 + marker（producer wire-oracle 断完整帧序）；造长非重复 text 块断言不 idle-out（PTY / 客户端 e2e，M-2 门，真实客户端计时）。
 
 **Architecture：**
 - 新建 `src/lib/pipeline/hooks/builtin/repetition-truncation.ts`：一个 `StatefulClientOutbound<TruncationHookState>` 契约的具体实例（**内建**消费者，不经用户 hook loader；与 `getUpstreamHook()?.client?.outbound` 的用户配置 hook 是两个独立通道，见 Task 1 的「组合顺序」说明）。
-- `candidate-response-session.ts` 的 `postRender` 增加对该内建 hook 的调用，位于（P1 已迁移的）用户 `client.outbound` 有状态调用**之后**（用户 hook 先对渲染帧做任意改写，内建截断器在其输出上工作——这样用户 hook 若本身就做文本改写，截断器看到的是改写后的最终文本，语义上更接近「客户端最终会看到什么」）。
-- C1 eager-start 的关键机制（spec §3.2）：`content_block_start`（text 类型）立即 `emit` 直接转发（保持 delivery ledger 视角下该块 open，`delivery/session.ts` 的 `openBlocks`/`pendingOpenBlocks` 由**实际写出的帧**派生，故此帧必须真正到达 `sink.write()`）；随后的 `text_delta` 一律 `{kind:"buffer"}`（hook 内部累积，driver 端不转发、不留存）；到 `content_block_stop`（该块 commit 边界）——先调用 hook 的 flush 逻辑（本 Task 设计为 transform 自身在看到 `content_block_stop` 时内联触发，而非等待外部单独调用 `flush()`，因为 `content_block_stop` 帧本身就是 hook 能直接观察到的普通输入帧，见 Task 1 「commit 边界内联触发」说明）产出：未命中→原样吐回全部缓冲的原始帧（byte-identical）；命中→吐一个整合过的折叠 delta + 一个 marker delta；随后放行 `content_block_stop` 本身。`flush(state, reason)` 独立签名保留给**跨越多帧生命周期的**触发（`client-aborted`/`upstream-truncated`/`natural-drain`），在候选会话终止路径调用（见 Task 2）。
-- Provenance（本相位的**过渡**决策，见 Task 1 末尾「与 R4/P3 的关系」）：P2 仍在 postRender 层（P3 才下沉到 `delivery/session.ts` 的 `writeToSink` 专用通道 + `DeliverySyntheticKind`），此刻 marker 帧的可辨识标记复用**既有** `SyntheticOriginKind`（`frame-origin.ts`）的 `"hook-rewrite"` 值——marker 帧客观上就是「一个 `client.outbound` 家族 hook 产生的合成帧」，这与 `origin.ts` 模块文档定义的 `"hook-rewrite"` 语义吻合，且**零新增枚举值**（不给 P3 留下要「退役」的额外符号）。P3 迁移挂载点时，只需把这一个 `tagFrameSynthetic` 调用替换成 delivery 层的 `writeToSink` dedicated 通道（`DeliverySyntheticKind:"repetition-truncated"`），无需清理 P2 遗留的专属枚举值——两个通道自然交接，不违反 R4（R4 约束的是 `DeliverySyntheticKind` 全站点同 commit 落地，那是 P3 才有生产写入点的通道，P2 使用的是另一个既有独立通道，不冲突）。
+- `candidate-response-session.ts` 的 `onRenderedFrame`/`flushRenderedFrames` 状态机（P1 落地）内新增对该内建 hook 的调用——作为链的**第二环**，位于 P1 已经接好的用户 `client.outbound` 有状态调用**之后**（用户 hook 先对渲染帧做任意改写，内建截断器在其输出上工作——这样用户 hook 若本身就做文本改写，截断器看到的是改写后的最终文本，语义上更接近「客户端最终会看到什么」）。这个「链式接第二环」的写法完全复用 P1 状态机已经建立的「遍历 hook 输出数组、每个元素再喂给下一环」模式，不需要任何 P2 专属的适配层。
+- C1 eager-start 的关键机制（spec §3.2）：`content_block_start`（text 类型）立即 `emit` 直接转发（保持 delivery ledger 视角下该块 open，`delivery/session.ts` 的 `openBlocks`/`pendingOpenBlocks` 由**实际写出的帧**派生，故此帧必须真正到达 `sink.write()`）；随后的 `text_delta` 一律 `{kind:"buffer"}`（hook 内部累积，driver 端不转发、不留存）；到 `content_block_stop`（该块 commit 边界）——先调用 hook 的 flush 逻辑（本 Task 设计为 transform 自身在看到 `content_block_stop` 时内联触发，而非等待外部单独调用 `flush()`，因为 `content_block_stop` 帧本身就是 hook 能直接观察到的普通输入帧，见 Task 1 「commit 边界内联触发」说明）产出：未命中→原样吐回全部缓冲的原始帧（byte-identical）；命中→吐一个整合过的折叠 delta + 一个 marker delta；随后放行 `content_block_stop` 本身。这个「一帧输入、多帧输出」的结果由 `{kind:"emit", frames:[...]}` 直接表达，P1 的 `onRenderedFrame` 数组返回值原生支持，**不需要**任何额外的多帧适配机制。`flush(state, reason)` 独立签名保留给**跨越多帧生命周期的**触发（`client-aborted`/`upstream-truncated`/`natural-drain`），在候选会话终止路径调用（见 Task 2）——`"natural-drain"` 这一种已经由 P1 的 `flushRenderedFrames` 自然触发（P1 Task 2 落地），本相位只需确认内建 hook 正确响应它，另外两种（`"client-aborted"`/`"upstream-truncated"`）需要 Task 2 在 handler 层显式接线（P1 未接线这两种，Architecture 段落已记录为 P1 遗留给 P2/P3 的边界）。
+- Provenance（本相位的**过渡**决策，见 Task 1 末尾「与 R4/P3 的关系」）：P2 仍在候选层（P3 才下沉到 `delivery/session.ts` 的 `writeToSink` 专用通道 + `DeliverySyntheticKind`），此刻 marker 帧的可辨识标记复用**既有** `SyntheticOriginKind`（`frame-origin.ts`）的 `"hook-rewrite"` 值——marker 帧客观上就是「一个 `client.outbound` 家族 hook 产生的合成帧」，这与 `origin.ts` 模块文档定义的 `"hook-rewrite"` 语义吻合，且**零新增枚举值**（不给 P3 留下要「退役」的额外符号）。P3 迁移挂载点时，只需把这一个 `tagFrameSynthetic` 调用替换成 delivery 层的 `writeToSink` dedicated 通道（`DeliverySyntheticKind:"repetition-truncated"`），无需清理 P2 遗留的专属枚举值——两个通道自然交接，不违反 R4（R4 约束的是 `DeliverySyntheticKind` 全站点同 commit 落地，那是 P3 才有生产写入点的通道，P2 使用的是另一个既有独立通道，不冲突）。
 - eager-start 与块内缓冲+keepalive 必须同一 commit（**R2**）：Task 1 一次性交付完整 hook（`createState`/`transform`/内联 commit-boundary 处理），Task 1 自身的测试矩阵同时覆盖「204× 精确折叠」与「长非重复块 keepalive 保活」——不能拆成「先加 eager-start」「后加缓冲」两个 commit。
 
 **Tech Stack：** TypeScript / Bun（`bun test`）+ Hono SSE。测试 = `bun run test`（fast=unit+http）/ `test:backend`（含 it/e2e-client，交付前）；后端单例隔离见 skill `test-isolation`；M-2 idle 回归见 skill `client-proxy-e2e-testing`（Tier 1 压缩计时器 + Tier 2 gated 真实 CLI）。
@@ -27,7 +29,7 @@
 
 - **无向后兼容负担**：本相位新增内建消费者，不改变任何既有默认行为——`repetition_truncation.enabled` 默认 `false`（P0 落地），P2 的一切代码只在 `enabled:true` 时生效。
 - **`enabled:false` 全端点字节等价（R1）**：本相位每个 Task 的实现都要验证 `enabled:false` 分支零变化（内建 hook 的 `createState`/`transform` 在 `enabled:false` 时必须是纯 identity passthrough，不做任何缓冲/折叠判定）。
-- **richest-data-flow**：截断只作用 forwarded 轨；upstream-original 轨永远保全部份数（本相位不触碰 `response-processor.ts` 的上游轨采样点，只在 postRender 之后的渲染帧上工作）。
+- **richest-data-flow**：截断只作用 forwarded 轨；upstream-original 轨永远保全部份数（本相位不触碰 `response-processor.ts` 的上游轨采样点，只在 `onRenderedFrame`/`flushRenderedFrames` 状态机内的渲染帧上工作）。
 - **R2（eager-start 同 commit）**：见上「Architecture」末段。
 - **no-auto-server**：不跑 `bun run dev`/`start`（4141 主服务器绝不碰）；M-2 idle 回归的 Tier 1 用 in-process `Bun.serve({port:0})`（`serveInProcess()` 既有 harness）；Tier 2 gated CLI 测试起**非 4141 端口**测试实例，测试自行按 PID 清理。可跑 `bun run typecheck`/`lint:all`/`bun test`。
 - **细粒度提交**：每任务末显式 pathspec commit（`git commit -F <msgfile> -- <精确路径>`），conventional commits，无模型署名。
@@ -38,26 +40,27 @@
 
 1. **`collapseRepetition(fullText, cfg): CollapseResult`**（`src/lib/text-repetition/collapse.ts`，P0）：`cfg: {minPatternLength, minRepetitions, keepCopies}`；`CollapseResult: {collapsed, truncatedCount, unitLength, matched}`。
 2. **`state.repetitionTruncation: RepetitionTruncationState`**（`src/lib/state.ts`，P0）：`{enabled, minPatternLength, truncationMinRepetitions, keepCopies, markerTemplate}`。P2 调用 `collapseRepetition` 时 `cfg.minRepetitions = state.repetitionTruncation.truncationMinRepetitions`（**不是**告警阈值 3，spec §5.2 硬性阈值解耦）。
-3. **`StatefulClientOutbound<S>` leaf 契约**（`src/lib/pipeline/hooks/types.ts`，P1，README 冻结契约逐字）：
+3. **`StatefulClientOutbound<S>` leaf 契约**（`src/lib/pipeline/hooks/types.ts`，P1，已落地并实测核实）：
    ```ts
+   import type { FrameAction } from "~/lib/pipeline/rewrite-registry" // 复用，非新造
    interface StatefulClientOutbound<S = unknown> {
      createState(env: RequestEnvelope): S
-     transform(frame: ClientFrame, state: S): FrameAction   // { kind:"buffer" } | { kind:"emit", frames } | { kind:"drop" }
+     transform(frame: ClientFrame, state: S): FrameAction   // { kind:"buffer" } | { kind:"emit", frames } | { kind:"suppress" }
      flush(state: S, reason: FlushReason): Array<ClientFrame>
    }
    type FlushReason = "commit-boundary" | "natural-drain" | "client-aborted" | "upstream-truncated"
    ```
-4. **`tagFrameSynthetic`/`readSyntheticKind`**（`src/lib/pipeline/frame-origin.ts`，既有机制，P0/P1 未改）：`SyntheticOriginKind = "hook-rewrite" | "refusal-recovery" | "error-shaping-auq" | "error-shaping-canonical" | "buffered-terminal-repair"`。P2 复用 `"hook-rewrite"` 值标记 marker 帧（见上「Provenance」段）。
-5. **`pipelineInfo.repetitionTruncation`** + ctx 写入方法（`src/lib/history/types.ts` + `src/lib/context/request.ts`，P0）：`Array<{blockIndex, truncatedCount, forwardedBeforeDetection, unitLength}>`。精确档（本相位）`forwardedBeforeDetection` 恒为 `0`（spec §6/§9：精确档没有「命中前已转发」的概念，缓冲全量后才决定）。写入方法名以 P0 落地为准——**实施前 grep 确认**（`grep -n "recordRepetitionTruncation\|repetitionTruncation" src/lib/context/request.ts`），若名称不同以实际落地签名为准，自审记一行差异。
-
-**已知与 README 字面表述的差异（如实记录，非静默改）**：README 冻结契约把 `FrameAction` 写作 `{ kind:"buffer" } | { kind:"emit", frames } | { kind:"drop" }` 并注「FrameAction 复用 rewrite-registry 现有 union（P1 T? 确认同构）」——但现有 `src/lib/pipeline/rewrite-registry.ts` 的 `FrameAction` 实际是 `{kind:"emit";frames}|{kind:"suppress"}|{kind:"buffer"}`（用 `"suppress"`，不是 `"drop"`）。二者字段值不同，不可能是同一个 TS 类型的字面复用——**本 plan 按 README 逐字文本采用 `"drop"`**（假设 P1 在 `hooks/types.ts` 定义了一个结构相似但独立的 `FrameAction` 类型，与 `rewrite-registry.ts` 同名但不同值域），并在此明确记录这一差异，供 P1 实施者/审查者核对「T?」这一未决项到底如何裁决；若 P1 实际让两者复用同一类型（即真的用 `"suppress"` 而非 `"drop"`），Task 1 的实现把 `"drop"` 全部替换为 `"suppress"` 即可，逻辑不受影响，只是字面值不同——**实施前置动作**：grep `hooks/types.ts` 的 `FrameAction` 定义，按其真实值域调整 Task 1 代码。
+   **`FrameAction` 权威来源是 `~/lib/pipeline/rewrite-registry`（P1 实测核实 `ClientFrame`/`UpstreamFrame` 同一类型别名后拍板复用，不新造类型）**——字面量是 `"emit"`/`"suppress"`/`"buffer"`，**没有 `"drop"`**（README 早期草稿曾有 `"drop"` 笔误，P1 plan 自审已勘误并全文统一为 `"suppress"`；本 plan 全文同步对齐，不再保留 `"drop"` 字面量）。
+4. **P1 数组化的驱动接线**（`src/lib/pipeline/generation/candidate-response-session.ts`/`src/lib/pipeline/types.ts`，P1 落地）：`candidate-response-session.ts` 内部维护一个 `onRenderedFrame(frame: ClientFrame): ReadonlyArray<ClientFrame>` + `flushRenderedFrames(): ReadonlyArray<ClientFrame>` 状态机——每 candidate 一次 `createState`（若挂了 hook）、每帧一次 `transform`（`"suppress"`/`"buffer"` 贡献零帧，`"emit"` 贡献 `frames` 数组）、自然结束时一次 `flush(state,"natural-drain")` 经 `flushRenderedFrames` 排空。P2 的内建截断 hook 是这个状态机内**第二环**（用户 hook 之后），不需要重新设计挂载机制，只需要在 P1 已建好的「链式接下一环」模式里插入一个新环节（见 Task 2）。**关键**：P1 只把 `"natural-drain"` 这一种 `FlushReason` 接好了真实触发点；`"client-aborted"`/`"upstream-truncated"` 两种需要 P2 在 handler 层显式接线（P1 plan 自审「遗留给 P2 的边界」①②③ 已记录这是有意的分阶段交付，非 P1 疏漏）。
+5. **`tagFrameSynthetic`/`readSyntheticKind`**（`src/lib/pipeline/frame-origin.ts`，既有机制，P0/P1 未改）：`SyntheticOriginKind = "hook-rewrite" | "refusal-recovery" | "error-shaping-auq" | "error-shaping-canonical" | "buffered-terminal-repair"`。P2 复用 `"hook-rewrite"` 值标记 marker 帧（见上「Provenance」段）。
+6. **`pipelineInfo.repetitionTruncation`** + ctx 写入方法（`src/lib/history/types.ts` + `src/lib/context/request.ts`，P0）：`Array<{blockIndex, truncatedCount, forwardedBeforeDetection, unitLength}>`。精确档（本相位）`forwardedBeforeDetection` 恒为 `0`（spec §6/§9：精确档没有「命中前已转发」的概念，缓冲全量后才决定）。写入方法名以 P0 落地为准——**实施前 grep 确认**（`grep -n "recordRepetitionTruncation\|repetitionTruncation" src/lib/context/request.ts`），若名称不同以实际落地签名为准，自审记一行差异。
 
 ---
 
 ## 任务列表（TDD，bite-sized）
 
 - [ ] **Task 1** — Anthropic 精确截断内建 hook（`createState`/`transform`/commit-boundary 内联折叠）+ 纯单元测试矩阵（204× 折叠、无匹配字节等价、非文本块直通、marker provenance）
-- [ ] **Task 2** — 组合胶水：内建 hook 接入 `postRender`（用户 hook 之后）+ 候选终止路径调用 `flush(reason)` + `pipelineInfo` 观测写入
+- [ ] **Task 2** — 组合胶水：内建 hook 接入 `onRenderedFrame`/`flushRenderedFrames` 状态机（第二环，用户 hook 之后）+ 候选终止路径调用 `flush(reason)` + `pipelineInfo` 观测写入
 - [ ] **Task 3** — HTTP 集成测试：204× 重复流端到端断言精确一份 + marker（producer wire-oracle，真实 Anthropic handler）
 - [ ] **Task 4** — M-2 idle 回归 Tier 1（压缩计时器，undici 真实客户端，长非重复块不 idle-out）
 - [ ] **Task 5** — M-2 idle 回归 Tier 2（gated，真实 `claude` CLI，长非重复块真实计时不断连）
@@ -86,7 +89,7 @@
   ```
   `createRepetitionTruncationHook()` 是一个工厂（不是模块级单例——每 request 一个新 `state`，通过 `createState(env)` 由调用方在 per-request 生命周期内实例化，P1 契约要求 per-request 隔离，README「G1」）。
 
-**「组合胶水层」说明**（本 Task 范围声明）：本 Task 只交付**这一个 hook 实例自身**（`createState`/`transform`），不接入任何调用点——纯函数式、可独立单测。Task 2 才做「接入 postRender + 候选终止路径调用 flush」的胶水工作。这个切分让 Task 1 的测试矩阵可以完全脱离 HTTP handler / driver 跑（纯 `transform(frame, state)` 直接函数调用），Task 3 才是真正的端到端集成断言。
+**「组合胶水层」说明**（本 Task 范围声明）：本 Task 只交付**这一个 hook 实例自身**（`createState`/`transform`），不接入任何调用点——纯函数式、可独立单测。Task 2 才做「接入 P1 落地的 `onRenderedFrame`/`flushRenderedFrames` 状态机 + 候选终止路径调用 flush」的胶水工作。这个切分让 Task 1 的测试矩阵可以完全脱离 HTTP handler / driver 跑（纯 `transform(frame, state)` 直接函数调用），Task 3 才是真正的端到端集成断言。
 
 **核心算法（commit 边界内联触发，见 Architecture 段落）：**
 
@@ -122,7 +125,8 @@ import { collapseRepetition } from "~/lib/text-repetition/collapse"
 import { tagFrameSynthetic } from "~/lib/pipeline/frame-origin"
 import { state } from "~/lib/state"
 
-import type { FlushReason, FrameAction, StatefulClientOutbound } from "~/lib/pipeline/hooks/types"
+import type { FlushReason, StatefulClientOutbound } from "~/lib/pipeline/hooks/types"
+import type { FrameAction } from "~/lib/pipeline/rewrite-registry" // 复用，非新造（P1 实测核实同构）
 
 export interface TruncationHookState {
   openTextBlockIndex: number | undefined
@@ -264,7 +268,7 @@ export function createRepetitionTruncationHook(): StatefulClientOutbound<Truncat
 }
 ```
 
-**与 R4/P3 的关系（已在 Architecture 段落展开，此处不重复）**：本 Task 用 `tagFrameSynthetic(frame, "hook-rewrite")` 标记 marker 帧——这是**既有**通道（`frame-origin.ts`，P0/P1 未新增任何值），不是 P0 为本特性新加的 `DeliverySyntheticKind:"repetition-truncated"`（那个通道属于 P3 下沉后的 `delivery/session.ts` `writeToSink` dedicated 方法，本相位挂载点仍在 postRender、还没有到那层）。
+**与 R4/P3 的关系（已在 Architecture 段落展开，此处不重复）**：本 Task 用 `tagFrameSynthetic(frame, "hook-rewrite")` 标记 marker 帧——这是**既有**通道（`frame-origin.ts`，P0/P1 未新增任何值），不是 P0 为本特性新加的 `DeliverySyntheticKind:"repetition-truncated"`（那个通道属于 P3 下沉后的 `delivery/session.ts` `writeToSink` dedicated 方法，本相位挂载点仍在候选层的 `onRenderedFrame`/`flushRenderedFrames` 状态机内、还没有到那层）。
 
 - [ ] **Step 1: 写失败测试 — 核心场景矩阵**
 
@@ -434,26 +438,29 @@ block's own content_block_stop (byte-identical passthrough on no-match), and exp
 for out-of-band lifecycle events (client-abort discards; upstream-truncation applies the same
 collapse decision with no boundary frame). Marker frames tagged "hook-rewrite" via the EXISTING
 frame-origin.ts channel (not a new DeliverySyntheticKind — that channel is P3's, post sink-egress
-descent). No wiring yet — pure hook, unit-tested in isolation (Task 2 wires it into postRender).
+descent). No wiring yet — pure hook, unit-tested in isolation (Task 2 wires it into the
+onRenderedFrame/flushRenderedFrames state machine as a second chain link).
 EOF
 ```
 
 ---
 
-### Task 2 — 组合胶水：接入 `postRender` + 候选终止路径 flush + `pipelineInfo` 观测
+### Task 2 — 组合胶水：接入 `onRenderedFrame`/`flushRenderedFrames` 状态机（第二环）+ 候选终止路径 flush + `pipelineInfo` 观测
 
 **Files:**
-- Modify: `src/lib/pipeline/generation/candidate-response-session.ts`（`postRender` 函数，Anthropic-only 挂载）
-- Modify: `src/routes/messages/handler-v4.ts`（`createAnthropicCandidateResponseSession`，`createState`/终止路径挂 flush）
+- Modify: `src/lib/pipeline/generation/candidate-response-session.ts`（`onRenderedFrame`/`flushRenderedFrames` 状态机，新增第二环；`CreateCandidateResponseSessionInput` 新增 `truncationHook` 字段）
+- Modify: `src/routes/messages/handler-v4.ts`（`createAnthropicCandidateResponseSession` 传入 `truncationHook`；候选终止路径挂 `flush("client-aborted")`/`flush("upstream-truncated")`）
 - Test: `tests/pipeline/generation/candidate-repetition-truncation-glue.unit.test.ts`（新建）
 
 **Interfaces:**
-- Consumes：Task 1 `createRepetitionTruncationHook()`；P1 落地的用户 `client.outbound` 有状态调用（`postRender` 现有 `getUpstreamHook()?.client?.outbound` 分支——**实施前 grep 确认其真实签名**：`grep -n "client?.outbound" src/lib/pipeline/generation/candidate-response-session.ts`；若 P1 已把它从单帧升级为 `StatefulClientOutbound`，本 Task 的内建 hook 调用顺序须排在它**之后**，见 Architecture「用户 hook 之后」）。
-- Produces：`postRender` 新增一段仅对 `env.targetEndpoint === ENDPOINT.MESSAGES`（Anthropic 直连腿）生效的内建 hook 调用；`pipelineInfo.repetitionTruncation` 写入（每次 `resolveCommit` 命中即调用一次 ctx 写入方法，累积多个 block 的记录）。
+- Consumes：Task 1 `createRepetitionTruncationHook()`；**P1 落地的数组状态机**（`candidate-response-session.ts` 内部的 `onRenderedFrame(frame): ReadonlyArray<ClientFrame>` + `flushRenderedFrames(): ReadonlyArray<ClientFrame>`，已经把用户 `client.outbound` hook 接成了链的第一环——`hook`/`hookState`/`applyHookAction`/`postClassify` 均为 P1 产出的既有局部变量/函数，本 Task 直接复用，不重新发明）。
+- Produces：状态机内新增第二环——内建截断 hook 在用户 hook 输出的基础上再跑一次 `transform`，其结果继续流入 `input.onRenderedFrame`（格式收尾）+ `postClassify`（P1 既有，未改）；`pipelineInfo.repetitionTruncation` 写入。
 
-**接入点的挂载条件（本 Task 的核心设计决策）**：README 冻结契约 + spec §6 表明确「精确档只在 Anthropic」——但 spec §4.1/§4.2 也说明 P3 之后挂载点会下沉到 `delivery/session.ts`（覆盖全部 client 字节，格式无关的挂载机制）。P2 阶段挂载仍在**候选层** `postRender`（每种 `targetEndpoint` 各自的候选会话工厂各自决定要不要接内建 hook），故本 Task 显式只在 `createAnthropicCandidateResponseSession`（`handler-v4.ts:216`）的 `MESSAGES` 分支接入，不touch CC/Responses/Gemini 的候选会话工厂（那些端点近似档是 P4 的范围，P2 不越权实现）。
+**接入点的挂载条件（本 Task 的核心设计决策）**：README 冻结契约 + spec §6 表明确「精确档只在 Anthropic」——故本 Task 显式只在 `createAnthropicCandidateResponseSession`（`handler-v4.ts:216`）的 `MESSAGES` 分支传入 `truncationHook`，不 touch CC/Responses/Gemini 的候选会话工厂（那些端点近似档是 P4 的范围，P2 不越权实现）。`CreateCandidateResponseSessionInput.truncationHook` 是一个新增的**可选**字段——未传入时（CC/Responses/Gemini）状态机行为与 P1 落地时完全一致，字节等价（R1 的另一面）。
 
-- [ ] **Step 1: 写失败测试 — postRender 接入后的观察行为（不 mock 内建 hook，用真实模块验证接线）**
+**链的组合顺序（复用 P1 已建立的模式，不新增机制）**：`frame → 用户 hook.transform → [多帧] → 逐帧内建截断 hook.transform → [多帧] → 逐帧 input.onRenderedFrame（格式收尾） → postClassify → 输出`。P1 的 `onRenderedFrame` 函数体已经是「遍历用户 hook 输出数组、每个元素再喂给下一步」的结构（`for (const hooked of hookedFrames) { ...; out.push(postClassify(...)) }`），本 Task 只需要在这个循环内部**再插入一层遍历**（用户 hook 输出 → 内建截断 hook 输出 → 格式收尾），是对已有代码结构的直接扩展，不是并行发明一套新机制。
+
+- [ ] **Step 1: 写失败测试 — 状态机接入后的观察行为（数组返回，不 mock 内建 hook，用真实模块验证接线）**
 
 ```typescript
 // tests/pipeline/generation/candidate-repetition-truncation-glue.unit.test.ts
@@ -462,13 +469,11 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test"
 import type { ClientFrame } from "~/lib/pipeline/types"
 
 import { createRequestContext } from "~/lib/context/request"
-import {
-  createCandidateResponseSession,
-} from "~/lib/pipeline/generation/candidate-response-session"
+import { createCandidateResponseSession } from "~/lib/pipeline/generation/candidate-response-session"
+import { createRepetitionTruncationHook } from "~/lib/pipeline/hooks/builtin/repetition-truncation"
 import { setStateForTests, snapshotStateForTests, restoreStateForTests, type StateSnapshot } from "~/lib/state"
-import { readSyntheticKind } from "~/lib/pipeline/frame-origin"
 
-// A minimal RequestEnvelope stub — enough surface for postRender + the candidate session plumbing.
+// A minimal RequestEnvelope stub — enough surface for the state machine + candidate session plumbing.
 function makeEnv(targetEndpoint: string) {
   const ctx = createRequestContext({ endpoint: "anthropic-messages" })
   return {
@@ -497,7 +502,7 @@ const textDelta = (index: number, text: string): ClientFrame => ({
 const blockStop = (index: number): ClientFrame => ({ event: "content_block_stop", data: JSON.stringify({ type: "content_block_stop", index }) })
 const parsedText = (frame: ClientFrame): string => (JSON.parse(frame.data ?? "{}") as { delta?: { text?: string } }).delta?.text ?? ""
 
-describe("postRender wires the Anthropic repetition-truncation hook (Task 2 glue)", () => {
+describe("onRenderedFrame/flushRenderedFrames wires the Anthropic repetition-truncation hook as a second chain link (P2 Task 2)", () => {
   let snapshot: StateSnapshot
   beforeEach(() => {
     snapshot = snapshotStateForTests()
@@ -507,7 +512,7 @@ describe("postRender wires the Anthropic repetition-truncation hook (Task 2 glue
   })
   afterEach(() => restoreStateForTests(snapshot))
 
-  test("Anthropic direct leg (targetEndpoint=/v1/messages): a 204x repeat collapses through postRender's frame-by-frame drive", () => {
+  test("Anthropic direct leg (targetEndpoint=/v1/messages): a 204x repeat collapses through the array state machine — eager-start passthrough, buffered deltas contribute ZERO frames, commit boundary emits collapsed+marker+stop as a 3-element array", () => {
     const env = makeEnv("/v1/messages")
     const session = createCandidateResponseSession({
       candidate: 1 as never,
@@ -517,147 +522,162 @@ describe("postRender wires the Anthropic repetition-truncation hook (Task 2 glue
       renderer: { renderResponse: (f: unknown) => f as ClientFrame, flushResponse: () => [] },
       createState: () => ({}),
       snapshot: () => ({}),
+      truncationHook: createRepetitionTruncationHook(),
     })
-    const results: Array<ClientFrame | undefined> = []
-    results.push(session.responseOpts.onRenderedFrame?.(textStart(0)))
+
+    const startResult = session.responseOpts.onRenderedFrame?.(textStart(0)) ?? []
+    expect(startResult).toEqual([textStart(0)]) // eager-start: passthrough, one frame out
+
     const unit = "card\n\n（专注。）\n\n"
-    results.push(session.responseOpts.onRenderedFrame?.(textDelta(0, "prefix text over ten characters long. ")))
-    for (let i = 0; i < 204; i++) results.push(session.responseOpts.onRenderedFrame?.(textDelta(0, unit)))
-    const finalFrame = session.responseOpts.onRenderedFrame?.(blockStop(0))
-    // Eager start passed through; every buffered delta suppressed (undefined) until the stop boundary,
-    // which the hook resolves into collapsed+marker frames — but postRender's onRenderedFrame contract
-    // returns exactly ONE frame per call (a single ClientFrame | undefined), so the glue must decide how
-    // multi-frame commit-boundary output is delivered through a single-frame-return hook point. See the
-    // glue implementation below (Step 3) for the resolution: postRender internally drives a per-candidate
-    // pending-output queue so multiple frames from ONE input frame are drained across subsequent driver
-    // reads — verified via the processor's actual multi-yield behavior in Task 3's HTTP-level test
-    // (this unit test only exercises the state machine's OWN transform/flush outputs directly, not the
-    // postRender-level frame-multiplexing, which needs the real driver loop to observe end-to-end).
-    expect(finalFrame).toBeDefined()
+    const prefixResult = session.responseOpts.onRenderedFrame?.(textDelta(0, "prefix text over ten characters long. ")) ?? []
+    expect(prefixResult).toEqual([]) // buffered — ZERO frames out (array, not undefined)
+
+    for (let i = 0; i < 204; i++) {
+      const r = session.responseOpts.onRenderedFrame?.(textDelta(0, unit)) ?? []
+      expect(r).toEqual([]) // every buffered delta contributes zero frames
+    }
+
+    const stop = blockStop(0)
+    const stopResult = session.responseOpts.onRenderedFrame?.(stop) ?? []
+    // The commit boundary resolves through the array chain in ONE call: collapsed delta + marker
+    // delta + the original stop frame — no queue, no multi-call draining needed (P1's array
+    // mechanism natively expresses "one input frame → many output frames").
+    expect(stopResult).toHaveLength(3)
+    expect(parsedText(stopResult[0])).toBe("prefix text over ten characters long. " + unit) // exactly ONE copy retained
+    expect(parsedText(stopResult[1])).toContain("duplicated outputs truncated")
+    expect(stopResult[2]).toBe(stop) // boundary frame passed through by reference
+  })
+
+  test("targetEndpoint !== /v1/messages (no truncationHook passed by the caller): frames pass through the array chain unmodified — byte-identical to P1's baseline state machine", () => {
+    const env = makeEnv("/chat/completions")
+    const session = createCandidateResponseSession({
+      candidate: 1 as never,
+      dispatch: 1 as never,
+      env,
+      responseRewrites: [],
+      renderer: { renderResponse: (f: unknown) => f as ClientFrame, flushResponse: () => [] },
+      createState: () => ({}),
+      snapshot: () => ({}),
+      // no truncationHook — mirrors createAnthropicCandidateResponseSession's Task 2 gating (only
+      // the MESSAGES branch passes one; this test proves the OTHER branches stay byte-identical).
+    })
+    const frame = textDelta(0, "hello")
+    expect(session.responseOpts.onRenderedFrame?.(frame)).toEqual([frame])
   })
 })
 ```
 
-> **实施注（Step 1 已知的接口错配，需在 Step 3 实现前解决，非留到实施时才发现）**：`postRender`（`candidate-response-session.ts:111`）的签名是 `(frame: ClientFrame) => ClientFrame | undefined`——**单帧进单帧出**，而 Task 1 的 hook `transform` 在命中 commit 边界时要 `emit` **多帧**（collapsed delta + marker delta + stop）。这是 P2 在「仍挂 postRender 层」这一前置约束下必须解决的接口不匹配（P3 下沉到 `delivery/session.ts` 后，`write`/`writeScaffold`/`commitWinnerBlock` 等方法天然支持多帧写入，届时这个多路复用层可以整层删除——这正是 README「相位 DAG」把「先在旧 postRender 层跑通逻辑」与「再下沉」分成两个相位的原因之一：postRender 层需要一个临时的多帧适配器，P3 直接消费多帧 API 不再需要它）。
->
-> **解决方案**：在 `postRender` 内部维护一个 per-candidate 的「待发帧队列」（`pendingOutputFrames: Array<ClientFrame>`）——当内建 hook 的 `transform` 返回多帧时，取队列头一帧作为 `postRender` 本次调用的返回值，其余帧推入队列；`postRender` 每次被调用时先检查队列是否非空，若非空直接从队列取出下一帧返回（**不**消费当前输入帧，也不再次调用 hook）。这利用了驱动侧「循环读取上游帧、每帧调用一次 `onRenderedFrame`」的既有节奏——只要驱动侧的循环足够快地把「同一个 commit 边界」产生的 3 帧都在合理时间内吐给客户端即可（延迟在毫秒级，不影响用户体验；这不是一个新的缓冲窗口，只是把已经决定要发的 3 帧分 3 次调用吐出）。
-
 - [ ] **Step 2: 跑证失败**
 
 Run: `bun test tests/pipeline/generation/candidate-repetition-truncation-glue.unit.test.ts`
-Expected: FAIL —— `postRender` 尚未挂内建 hook，`finalFrame` 会是原始 `blockStop(0)` 帧本身（未经折叠），测试暂不断言精确折叠内容（Step 1 的测试本身故意只断言「有返回值」这个粗粒度不变量，因为细粒度的「恰好折叠成什么」已经在 Task 1 的纯单元测试锁定——本 Task 的测试价值在于「接线对不对」，不重复 Task 1 的算法断言）；本 Step 之所以仍标 FAIL，是因为 Step 3 的实现引入的「待发帧队列」機制本身尚不存在，若不实现就跑，`onRenderedFrame` 调用链会在 `postRender` 内部因为没有队列支撑而直接把每次调用都传给尚未挂载的 hook——处于「hook 未接线」状态，等价于恒等直通，`finalFrame` 会 `toBeDefined()` 恰好也成立（因为直通也返回定义的帧）。**因此这个测试在「接线之前」是一个弱 oracle（无法在此 Step 精确区分「接线了但没队列」vs「完全没接线」）——Step 3 实现后必须补一个更强的断言**（见 Step 3 后的「Step 3.5 补强断言」）证明真正走了多帧队列路径，不能只满足于本测试当前的粗粒度断言。
+Expected: FAIL —— 编译错误（`CreateCandidateResponseSessionInput` 尚无 `truncationHook` 字段）；一旦临时放宽类型跑运行时，`stopResult` 的长度会是 1（`onRenderedFrame` 此刻只有用户 hook 一环，未接内建截断 hook，`stop` 帧原样通过）。
 
-- [ ] **Step 3: 实现「待发帧队列」+ 挂载内建 hook**
+- [ ] **Step 3: 状态机内新增第二环**
 
-在 `candidate-response-session.ts` 的 `postRender` 函数内（`:111-138`）新增：
+在 `candidate-response-session.ts` 的 `onRenderedFrame`/`flushRenderedFrames`（P1 落地的实现）内新增内建截断 hook 作为第二环——**这是对 P1 既有代码的直接扩展**，不是并行的新机制：
 
 ```typescript
-// candidate-response-session.ts — postRender 函数体内新增（紧邻现有 hook 调用逻辑之后、boundary.observe 之前）
-// P2 glue（spec 2026-07-22 §3.2/§10 P2 行）: a temporary multi-frame adapter for the postRender single-
-// frame-in/single-frame-out contract. Only armed when the caller supplied a truncation hook (Anthropic
-// direct leg only, wired by handler-v4.ts's createAnthropicCandidateResponseSession — see Task 2).
-// P3 (sink-egress descent) removes this queue entirely: the delivery-layer write API natively accepts
-// multiple frames per call, so this adapter is a P2-only stopgap, not a permanent mechanism.
+// candidate-response-session.ts — P1 落地的 onRenderedFrame/flushRenderedFrames 函数体上方新增
+// P2 (spec 2026-07-22 §3.2/§10 P2 行): a second stateful client.outbound consumer — the built-in
+// Anthropic exact-tier repetition-truncation hook — chained AFTER the user hook (P1's `hook`), so it
+// sees the user hook's OUTPUT (a user hook that rewrites text should have the truncation hook
+// collapse the REWRITTEN text, matching "what will the client actually see"). Only mounted when the
+// caller supplies `input.truncationHook` (Anthropic direct leg only, wired by handler-v4.ts's
+// createAnthropicCandidateResponseSession — Task 2). Reuses P1's array-native mechanism: no queue,
+// no adapter — `applyTruncationAction` mirrors P1's `applyHookAction` exactly (same FrameAction
+// union, same "suppress"/"buffer" → zero frames, "emit" → frames array).
+const truncationHook = input.truncationHook
+const truncationState = truncationHook?.createState(input.env)
+let truncationFlushed = false
+
+const applyTruncationAction = (action: import("~/lib/pipeline/rewrite-registry").FrameAction): Array<ClientFrame> => {
+  if (action.kind === "suppress") return []
+  if (action.kind === "buffer") return []
+  return action.frames
+}
 ```
 
-`postRender` 函数签名需要新增一个可选参数（工厂输入 `input.truncationHook?: StatefulClientOutbound<unknown>`），并在函数体顶部维护一个闭包内的 `pendingOutputFrames: Array<ClientFrame>` 队列（`postRender` 每次调用时优先检查该队列，若非空直接 `shift()` 返回、跳过 hook 调用本身；否则先跑现有的用户 hook + `input.onRenderedFrame` 逻辑得到 `transformed` 帧，再喂给内建截断 hook 的 `transform(transformed, truncationState)`——`{kind:"drop"}` → 返回 `undefined`；`{kind:"buffer"}` → 返回 `undefined`（本帧被吞、不发，等待后续 commit 边界）；`{kind:"emit", frames}` → 取 `frames[0]` 作为本次返回值，`frames.slice(1)` 推入 `pendingOutputFrames`）。
-
-`createCandidateResponseSession` 的 `CreateCandidateResponseSessionInput` 新增可选字段：
+修改 P1 落地的 `onRenderedFrame` 函数体，在「用户 hook 输出」与「格式收尾 `input.onRenderedFrame`」之间插入第二环遍历：
 
 ```typescript
-// candidate-response-session.ts — CreateCandidateResponseSessionInput 新增字段
+// candidate-response-session.ts — onRenderedFrame（P1 落地版本，本 Task 在内层循环插入第二环）
+const onRenderedFrame = (frame: ClientFrame): ReadonlyArray<ClientFrame> => {
+  const hookedFrames = hook ? applyHookAction(hook.transform(frame, hookState)) : [frame]
+  const out: Array<ClientFrame> = []
+  for (const hooked of hookedFrames) {
+    // P2: second link — the built-in truncation hook runs on the user hook's output.
+    const truncatedFrames = truncationHook ? applyTruncationAction(truncationHook.transform(hooked, truncationState)) : [hooked]
+    for (const truncated of truncatedFrames) {
+      const transformed = input.onRenderedFrame ? input.onRenderedFrame(state, truncated) : truncated
+      if (transformed === undefined) continue
+      out.push(postClassify(frame, transformed))
+    }
+  }
+  return out
+}
+```
+
+`flushRenderedFrames`（P1 落地版本）同样需要在用户 hook 的 flush 输出与格式收尾之间插入内建 hook 的处理——**注意顺序**：用户 hook 的 `flush("natural-drain")` 产出的帧先经内建截断 hook 的 `transform`（可能被继续缓冲/命中折叠），**然后**再对内建截断 hook 自己调用一次 `flush("natural-drain")` 排空它自己的缓冲（两次 flush 各自负责各自的 hook，顺序是「用户 hook flush → 喂给截断 hook transform → 截断 hook 自己 flush」，保证截断 hook 不会漏掉「用户 hook 在流末尾才吐出的文本」这种边界情况）：
+
+```typescript
+// candidate-response-session.ts — flushRenderedFrames（P1 落地版本，本 Task 插入截断 hook 的 flush 环节）
+const flushRenderedFrames = (): ReadonlyArray<ClientFrame> => {
+  if (hookFlushed) return []
+  hookFlushed = true
+  const hookFlushedFrames = hook ? hook.flush(hookState, "natural-drain") : []
+  const staged: Array<ClientFrame> = []
+  for (const hooked of hookFlushedFrames) {
+    staged.push(...(truncationHook ? applyTruncationAction(truncationHook.transform(hooked, truncationState)) : [hooked]))
+  }
+  if (truncationHook && !truncationFlushed) {
+    truncationFlushed = true
+    staged.push(...truncationHook.flush(truncationState, "natural-drain"))
+  }
+  const out: Array<ClientFrame> = []
+  for (const s of staged) {
+    const transformed = input.onRenderedFrame ? input.onRenderedFrame(state, s) : s
+    if (transformed === undefined) continue
+    out.push(postClassify(s, transformed))
+  }
+  return out
+}
+```
+
+`CreateCandidateResponseSessionInput` 新增可选字段：
+
+```typescript
+// candidate-response-session.ts — CreateCandidateResponseSessionInput 新增字段（紧邻既有字段）
+/** P2 (spec 2026-07-22): the built-in Anthropic exact-tier repetition-truncation hook, mounted as
+ *  the SECOND link in the onRenderedFrame/flushRenderedFrames chain (after the user client.outbound
+ *  hook). Optional — omitted for every non-Anthropic-direct candidate session factory (CC/Responses/
+ *  Gemini), which stay byte-identical to P1's baseline. */
 readonly truncationHook?: import("~/lib/pipeline/hooks/types").StatefulClientOutbound<unknown>
 ```
 
-`handler-v4.ts` 的 `createAnthropicCandidateResponseSession`（`:216-265`）在 `MESSAGES` 分支的 `createCandidateResponseSession({...input, ...})` 调用里新增：
+`handler-v4.ts` 的 `createAnthropicCandidateResponseSession`（`:216` 附近）在 `MESSAGES` 分支的 `createCandidateResponseSession({...input, ...})` 调用里新增：
 
 ```typescript
 // handler-v4.ts — createAnthropicCandidateResponseSession 的 MESSAGES 分支新增
-truncationHook: createRepetitionTruncationHook() as import("~/lib/pipeline/hooks/types").StatefulClientOutbound<unknown>,
+truncationHook: createRepetitionTruncationHook(),
 ```
 
 （`createRepetitionTruncationHook` 需要在 `handler-v4.ts` 顶部新增 import：`import { createRepetitionTruncationHook } from "~/lib/pipeline/hooks/builtin/repetition-truncation"`。）
 
-`postRender` 内建 hook 的 `state` 由 `truncationHook.createState(input.env)` 在 `postRender` 闭包创建时（即函数首次求值时）实例化一次，贯穿整个候选生命周期——与 P1 的用户 hook 有状态调用共享「per-candidate-session 一份 state」的生命周期语义（本相位仍在候选层，故 per-candidate 天然等价 per-request，因为一个 Anthropic 直连候选就是一次上游 attempt；这与 spec §3.3「P3 之后 createState 时机 = 每 client 请求一次」不同——**本相位的差异记录**：P2 阶段 `createState` 语义是「每候选一次」而非「每 client 请求一次」，两者在**无 hedge/无 retry 的单候选场景**下等价，但在 buffered-retry 多 attempt 场景下不等价——每次新 attempt 会创建新候选会话、从而重新 `createState()`，缓冲状态**不会**跨 attempt 存活。这在 P2 阶段是**可接受的简化**（因为 spec §3.3 明确「retry 发生在 delivery 的上游」「失败 attempt 的半缓冲帧从不到达 delivery」，本相位既然还没到 delivery 层，就没有这个保证；但反过来看，一次 attempt 内部的截断逻辑仍然完整正确，只是「跨 attempt 累积」这个非目标场景在 P2 没有被特别处理——**这不是遗漏，是 P3 下沉后才有意义讨论的问题**，因为 P3 的 delivery 层才是「跨 attempt 存活」的正确宿主，P2 提前处理这个问题没有意义，反而会与 P3 的实现产生逻辑重叠）。
-
-candidate-终止路径的 `flush(reason)` 调用——`createCandidateResponseSession` 目前**没有**统一的「候选终止」钩子可挂（`finish`/`snapshot`/`captureTerminalSnapshot` 是候选完成时的正常终态捕获，不是「异常终止/abort」信号）。**实施前置核实**：grep `candidate-response-session.ts` 现有的 abort/terminate 相关信号来源（`grep -n "abort\|terminate\|AbortSignal" src/lib/pipeline/generation/candidate-response-session.ts src/routes/messages/handler-v4.ts`），若候选层本身没有「abort 时机」的钩子，`flush("client-aborted")` 的调用点应该挂在 `handler-v4.ts` 現有的 `clientAbort.signal` 处理路径上（`pumpAnthropicStreamingV4` 的 `outcome.kind === "settled-abort"` 分支，`:1240-1247`）——在该分支写入 forwarded 之前，调用 `truncationHook.flush(truncationState, "client-aborted")` 并**丢弃**其返回值（该分支本身就是"客户端已经断开，零字节写出"的语义，flush 的丢弃行为与此天然一致，调用它只是为了让 hook 状态正确复位，供后续同请求的候选生命周期检查用——严格来说在这个分支下丢弃返回值就是全部所需行为，flush 调用本身可以说是显式记录一次「hook 生命周期正确关闭」的意图，而非有实际输出消费）。`upstream-truncated` 场景挂在 `pumpAnthropicStreamingV4` 的 `stream-error`/`streamError` 分支——**核实**：spec §3.3「上游截断（无 message_stop）」对应 `acc.streamError` 或 H3 `stream-error` 路径，该分支目前直接调用 `sink.writeSynthetic` 写入格式化的错误帧；本 Task 在该分支的 `writeSynthetic` 调用**之前**插入 `const salvage = truncationHook.flush(truncationState, "upstream-truncated"); for (const f of salvage) await sink.write(f)`——把 hook 在截断前尽力保留的部分内容真正写出（spec §3.3「尽力吐折叠+marker、否则原样吐，never 静默丢」的字面要求）。
-
-- [ ] **Step 3.5 补强断言（解决 Step 2 弱 oracle 问题）**
-
-在 Step 1 的测试文件追加：
-
-```typescript
-  test("the pending-output queue actually drains multiple frames across successive onRenderedFrame calls (strong oracle for the multi-frame adapter)", () => {
-    const env = makeEnv("/v1/messages")
-    const session = createCandidateResponseSession({
-      candidate: 1 as never,
-      dispatch: 1 as never,
-      env,
-      responseRewrites: [],
-      renderer: { renderResponse: (f: unknown) => f as ClientFrame, flushResponse: () => [] },
-      createState: () => ({}),
-      snapshot: () => ({}),
-    })
-    session.responseOpts.onRenderedFrame?.(textStart(0))
-    const unit = "card\n\n（专注。）\n\n"
-    session.responseOpts.onRenderedFrame?.(textDelta(0, "prefix text over ten characters long. "))
-    for (let i = 0; i < 204; i++) session.responseOpts.onRenderedFrame?.(textDelta(0, unit))
-    // The content_block_stop call triggers the commit boundary → 3 frames queued (collapsed delta,
-    // marker delta, stop). The FIRST onRenderedFrame(stop) call returns frame 1/3; the queue then
-    // holds 2 more — drained by subsequent calls (the driver loop's NEXT iterations, simulated here by
-    // calling onRenderedFrame again with an ARBITRARY frame, which must be IGNORED in favor of the queue).
-    const first = session.responseOpts.onRenderedFrame?.(blockStop(0))
-    expect(first).toBeDefined()
-    expect(JSON.parse(first!.data ?? "{}").type).toBe("content_block_delta") // the collapsed text delta, not the stop itself
-    const dummyNextFrame: ClientFrame = { event: "message_delta", data: JSON.stringify({ type: "message_delta" }) }
-    const second = session.responseOpts.onRenderedFrame?.(dummyNextFrame)
-    expect(JSON.parse(second!.data ?? "{}").delta?.text).toContain("duplicated outputs truncated") // marker, drained from queue
-    const third = session.responseOpts.onRenderedFrame?.(dummyNextFrame)
-    expect(JSON.parse(third!.data ?? "{}").type).toBe("content_block_stop") // the ORIGINAL stop frame, drained last
-    // Queue now empty — a 4th call finally processes the dummy frame for real (passthrough, no truncation state).
-    const fourth = session.responseOpts.onRenderedFrame?.(dummyNextFrame)
-    expect(fourth).toBe(dummyNextFrame)
-  })
-```
-
-Run: `bun test tests/pipeline/generation/candidate-repetition-truncation-glue.unit.test.ts`
-Expected: PASS（两个测试皆绿，第二个是本 Task 的真正强 oracle）。
+candidate-终止路径的 `flush(reason)` 调用——这部分与 P1 的数组化重构**正交**（讨论的是「候选异常终止时如何触发 `flush`」，不涉及单帧/数组的接口形状）：`createCandidateResponseSession` 目前**没有**统一的「候选终止」钩子可挂（`finish`/`snapshot`/`captureTerminalSnapshot` 是候选完成时的正常终态捕获，不是「异常终止/abort」信号）。**实施前置核实**：grep `candidate-response-session.ts` 现有的 abort/terminate 相关信号来源（`grep -n "abort\|terminate\|AbortSignal" src/lib/pipeline/generation/candidate-response-session.ts src/routes/messages/handler-v4.ts`），若候选层本身没有「abort 时机」的钩子，`flush("client-aborted")` 的调用点应该挂在 `handler-v4.ts` 現有的 `clientAbort.signal` 处理路径上（`pumpAnthropicStreamingV4` 的 `outcome.kind === "settled-abort"` 分支）——在该分支写入 forwarded 之前，调用 `truncationHook.flush(truncationState, "client-aborted")` 并**丢弃**其返回值（该分支本身就是「客户端已经断开，零字节写出」的语义，flush 的丢弃行为与此天然一致，调用它只是为了让 hook 状态正确复位）。`upstream-truncated` 场景挂在 `pumpAnthropicStreamingV4` 的 `stream-error`/`streamError` 分支——**核实**：spec §3.3「上游截断（无 message_stop）」对应 `acc.streamError` 或 H3 `stream-error` 路径，该分支目前直接调用 `sink.writeSynthetic` 写入格式化的错误帧；本 Task 在该分支的 `writeSynthetic` 调用**之前**插入 `const salvage = truncationHook.flush(truncationState, "upstream-truncated"); for (const f of salvage) await sink.write(f)`——把 hook 在截断前尽力保留的部分内容真正写出（spec §3.3「尽力吐折叠+marker、否则原样吐，never 静默丢」的字面要求）。**注意**：这两处调用需要访问 `truncationState`/`truncationHook`——这两个变量目前是 `postRender`（P1 状态机）闭包内的局部变量，handler 层无法直接触达；**本 Task 的解决方式**是让 `createCandidateResponseSession` 的返回值（`CandidateResponseSession` 接口）新增一个可选的 `flushTruncationHook?: (reason: FlushReason) => ReadonlyArray<ClientFrame>` 方法，内部直接调用闭包里的 `truncationHook?.flush(truncationState, reason) ?? []`——供 handler 层在候选终止路径显式调用（同 P3 plan Task 4 记录的 `flushOutbound` 设计决策同构，都是「delivery/候选层内部状态需要一个显式暴露的 flush 出口供上层生命周期事件调用」这一模式的实例）。
 
 - [ ] **Step 4: `pipelineInfo.repetitionTruncation` 观测写入**
 
-在 `resolveCommit` 命中折叠的调用点（`postRender` 的多帧适配逻辑内，紧邻 `truncationHook.transform` 返回 `{kind:"emit", frames}` 且检测到该次是「commit 边界折叠」而非普通 emit 的分支——**实现细节**：Task 1 的 hook 本身不知道自己是否命中了折叠，只有调用方能从「返回的帧数是 1（未命中）还是 3（命中）」这个外部可观察信号推断——但更干净的做法是让 `transform` 的返回值携带一个可选的诊断字段。**本 Task 决定扩展 Task 1 的内部实现**（非 README 冻结契约的一部分，纯内部实现细节）：`resolveCommit` 除了返回 `frames`，也返回 `truncated?: {truncatedCount, unitLength}`（Task 1 代码已经如此设计，见 Task 1「核心算法」代码块的 `resolveCommit` 签名）——`transform` 本身的返回类型是 README 冻结的 `FrameAction`（不能夹带诊断字段），所以 `postRender` 侧无法直接从 `FrameAction` 读到 `truncated` 诊断。**解决**：本 Task 让 hook 实例额外暴露一个非契约的诊断读取口——`createRepetitionTruncationHook()` 返回值追加一个仅供 P2 glue 使用的调试字段 `__lastTruncation?: {truncatedCount, unitLength, blockIndex}`（一个可变的闭包内部快照，每次命中折叠时更新，供 `postRender` 在调用完 `transform` 后立即读取一次）：
+Task 1 的 hook 暴露 `takeLastTruncation()` 诊断读取口（非 README 冻结契约的一部分，纯内部实现细节，设计与理由见 Task 1 原文，此处不重复）。本状态机在**内建截断 hook 的 `transform`/`flush` 调用之后**立即读取一次：
 
 ```typescript
-// repetition-truncation.ts — createRepetitionTruncationHook() 返回值追加（Task 1 文件的追加 diff，本 Task 落地）
-export interface StatefulClientOutboundWithDiagnostics<S> extends StatefulClientOutbound<S> {
-  /** P2-glue-only diagnostic hook: the most recent commit-boundary truncation event, if any (cleared
-   *  after each read by the caller convention — glue reads it once per transform() call that could
-   *  have triggered a boundary). Not part of the StatefulClientOutbound contract (README frozen
-   *  interface) — purely an internal escape hatch so postRender can drive pipelineInfo observability
-   *  without threading a new return channel through the contractual FrameAction union. */
-  takeLastTruncation(): { blockIndex: number; truncatedCount: number; unitLength: number } | undefined
-}
+// candidate-response-session.ts — onRenderedFrame 内，紧邻 truncationHook.transform 调用之后
+const diag = (truncationHook as import("~/lib/pipeline/hooks/builtin/repetition-truncation").StatefulClientOutboundWithDiagnostics<unknown> | undefined)?.takeLastTruncation?.()
+if (diag) input.env.ctx.recordRepetitionTruncation?.({ blockIndex: diag.blockIndex, truncatedCount: diag.truncatedCount, forwardedBeforeDetection: 0, unitLength: diag.unitLength })
 ```
 
-（在 `createRepetitionTruncationHook` 函数体内追加一个闭包变量 `let lastTruncation: {...} | undefined`，`resolveCommit` 命中时设置它，`transform` 里调用 `resolveCommit` 之后设置该变量，返回的对象字面量追加 `takeLastTruncation(){ const v = lastTruncation; lastTruncation = undefined; return v }` 方法。）
+（精确档 `forwardedBeforeDetection` 恒 `0`，spec §6/§9；**`recordRepetitionTruncation` 方法名以 P0 实际落地为准**——见「消费的上游契约」第 6 条，实施前 grep 核实。）
 
-`postRender` 在检测到 `truncationHook` 具备 `takeLastTruncation`（类型收窄）时，每次调用完 `transform` 后立即 `const diag = truncationHook.takeLastTruncation?.(); if (diag) input.env.ctx.recordRepetitionTruncation?.({ blockIndex: diag.blockIndex, truncatedCount: diag.truncatedCount, forwardedBeforeDetection: 0, unitLength: diag.unitLength })`（精确档 `forwardedBeforeDetection` 恒 `0`，spec §6/§9；**`recordRepetitionTruncation` 方法名以 P0 实际落地为准**——见「消费的上游契约」第 5 条，实施前 grep 核实）。
-
-在 Task 1 的单元测试文件（`repetition-truncation.unit.test.ts`）追加一个针对 `takeLastTruncation` 的测试用例（TDD：先写失败测试，验证该诊断字段命中折叠后被正确设置、且读取后清空）：
-
-```typescript
-  test("takeLastTruncation() surfaces the most recent commit-boundary truncation, then clears", () => {
-    hook.transform(textStart(0), hookState)
-    const unit = "boundary-case-unit-\n"
-    for (let i = 0; i < 8; i++) hook.transform(textDelta(0, unit), hookState)
-    hook.transform(blockStop(0), hookState)
-    const diag = (hook as import("~/lib/pipeline/hooks/builtin/repetition-truncation").StatefulClientOutboundWithDiagnostics<TruncationHookState>).takeLastTruncation()
-    expect(diag).toEqual({ blockIndex: 0, truncatedCount: 7, unitLength: unit.length })
-    expect(
-      (hook as import("~/lib/pipeline/hooks/builtin/repetition-truncation").StatefulClientOutboundWithDiagnostics<TruncationHookState>).takeLastTruncation(),
-    ).toBeUndefined() // cleared after read
-  })
-```
+在 Task 1 的单元测试文件（`repetition-truncation.unit.test.ts`）追加一个针对 `takeLastTruncation` 的测试用例（若 Task 1 尚未含此用例——见 Task 1 原文，本 Task 只负责状态机侧的接线验证，不重复 Task 1 已有的诊断字段单测）。
 
 - [ ] **Step 5: 跑全部测试证通过 + typecheck**
 
@@ -673,25 +693,27 @@ Expected: 全绿。
 ```bash
 bun test tests/pipeline/ tests/anthropic/ tests/messages/
 ```
-Expected: 全绿（`truncationHook` 是可选字段，未传入时 `postRender` 完全不改变现有行为——R1 的另一面：不仅 `enabled:false` 时字节等价，**未接线的调用点**（CC/Responses/Gemini 候选会话工厂，未来才会各自决定要不要接近似档）此刻也必须字节等价，因为它们根本没有传 `truncationHook` 字段）。
+Expected: 全绿（`truncationHook` 是可选字段，未传入时状态机行为与 P1 落地时完全一致——R1 的另一面：不仅 `enabled:false` 时字节等价，**未接线的调用点**（CC/Responses/Gemini 候选会话工厂，未来才会各自决定要不要接近似档）此刻也必须字节等价，因为它们根本没有传 `truncationHook` 字段）。
 
 - [ ] **Step 7: 提交**
 
 ```bash
 git add -- src/lib/pipeline/hooks/builtin/repetition-truncation.ts src/lib/pipeline/generation/candidate-response-session.ts src/routes/messages/handler-v4.ts tests/pipeline/hooks/builtin/repetition-truncation.unit.test.ts tests/pipeline/generation/candidate-repetition-truncation-glue.unit.test.ts
 git commit -F - -- src/lib/pipeline/hooks/builtin/repetition-truncation.ts src/lib/pipeline/generation/candidate-response-session.ts src/routes/messages/handler-v4.ts tests/pipeline/hooks/builtin/repetition-truncation.unit.test.ts tests/pipeline/generation/candidate-repetition-truncation-glue.unit.test.ts <<'EOF'
-feat(pipeline): wire Anthropic repetition-truncation hook into postRender (P2 glue)
+feat(pipeline): wire Anthropic repetition-truncation hook as a second onRenderedFrame chain link (P2 Task 2)
 
-postRender gains an optional per-candidate multi-frame adapter (a P2-only stopgap — the single-
-frame-in/single-frame-out contract can't natively express a commit-boundary's 3-frame emit; P3's
-sink-egress descent removes this queue entirely once the delivery-layer write API accepts multiple
-frames per call). Wired ONLY on the Anthropic direct leg (createAnthropicCandidateResponseSession).
-Candidate-termination glue: client-abort discards the buffer via flush("client-aborted") (dropped,
-consistent with the settled-abort zero-bytes semantics); upstream-truncation salvages via
-flush("upstream-truncated") before the synthesized error frame (spec §3.3 partial-degrade — never
-silently drop). pipelineInfo.repetitionTruncation observability wired via a diagnostic escape hatch
-(takeLastTruncation) that stays OUTSIDE the StatefulClientOutbound contract (README frozen
-interface) — an internal detail, not a spec-visible symbol.
+Mounted as the SECOND stateful client.outbound consumer in P1's array-native onRenderedFrame/
+flushRenderedFrames state machine (after the user hook, before per-format finishing touches) —
+reuses P1's mechanism directly (applyHookAction's exact FrameAction-handling pattern, mirrored as
+applyTruncationAction), no queue/adapter needed since P1's array return already natively expresses
+"one input frame -> zero/one/many output frames". Wired ONLY on the Anthropic direct leg
+(createAnthropicCandidateResponseSession). Candidate-termination glue: client-abort discards the
+buffer via flush("client-aborted") (dropped, consistent with the settled-abort zero-bytes
+semantics); upstream-truncation salvages via flush("upstream-truncated") before the synthesized
+error frame (spec §3.3 partial-degrade — never silently drop) — exposed via a new
+CandidateResponseSession.flushTruncationHook escape hatch (handler layer can't otherwise reach the
+state-machine-closure-local truncationState). pipelineInfo.repetitionTruncation observability wired
+via Task 1's diagnostic escape hatch (takeLastTruncation), read right after each transform() call.
 EOF
 ```
 
@@ -703,7 +725,7 @@ EOF
 - Test: `tests/anthropic/repetition-truncation-exact.http.test.ts`（新建）
 
 **Interfaces:**
-- Consumes：Task 1/2 落地的完整挂载链（`app.request` → 真实 `handler-v4.ts` → `postRender` 内建 hook）。
+- Consumes：Task 1/2 落地的完整挂载链（`app.request` → 真实 `handler-v4.ts` → `onRenderedFrame`/`flushRenderedFrames` 状态机内的内建截断 hook 第二环）。
 - **Producer wire-oracle 断完整帧序**（README 判据要求，非只断言「有折叠」）：完整重放上游 204× 重复帧序列，断言客户端收到的 forwarded SSE 字节序列是「散文前缀 + 恰好 1 份折叠单元 + marker delta + `content_block_stop`」，而**不是**「204 份原样」也不是「散文 + 折叠但缺 marker」——即断言**完整帧序**，不是抽样断言某个字段存在。
 
 - [ ] **Step 1: 写失败测试 — 204× 重复流真实 HTTP 请求**
@@ -878,7 +900,7 @@ describe("P2 Task 3 — Anthropic exact-tier repetition-truncation, end-to-end H
 - [ ] **Step 2: 跑证失败**
 
 Run: `bun test tests/anthropic/repetition-truncation-exact.http.test.ts`
-Expected: FAIL —— 若 Task 1/2 尚未落地则整个挂载链不存在（`enabled:true` 时行为与 `enabled:false` 完全相同，`rawOccurrences` 会是 204 而非 1，第一个测试直接失败于 `block0Deltas` 长度断言）。若 Task 1/2 已落地，此 Step 应已经 PASS——本 Task 是纯粹的端到端验证，不引入新实现，只是把 Task 1/2 的组合结果暴露在真实 HTTP 层再验证一次（**跨层双重验证的价值**：Task 2 的单元测试用手工构造的 `postRender` 直接调用，本 Task 验证真实驱动循环 `response-processor.ts` 的 `processFrames` 逐帧调用 `renderFrames`→`onRenderedFrame` 时，多帧队列适配器在**真实异步生成器循环**下行为一致——单元测试的手工调用序列可能掩盖真实驱动循环里帧与帧之间穿插的其他副作用调用，如 `boundary.observe`/诊断 capture）。
+Expected: FAIL —— 若 Task 1/2 尚未落地则整个挂载链不存在（`enabled:true` 时行为与 `enabled:false` 完全相同，`rawOccurrences` 会是 204 而非 1，第一个测试直接失败于 `block0Deltas` 长度断言）。若 Task 1/2 已落地，此 Step 应已经 PASS——本 Task 是纯粹的端到端验证，不引入新实现，只是把 Task 1/2 的组合结果暴露在真实 HTTP 层再验证一次（**跨层双重验证的价值**：Task 2 的单元测试用手工构造的状态机直接调用 `onRenderedFrame`/`flushRenderedFrames`，本 Task 验证真实驱动循环 `response-processor.ts` 的 `processFrames` 逐帧调用 `renderFrames`→`onRenderedFrame` 时行为一致——单元测试的手工调用序列可能掩盖真实驱动循环里帧与帧之间穿插的其他副作用调用，如 `boundary.observe`/诊断 capture）。
 
 - [ ] **Step 3: 若失败，核实并修复接线缺口（不新增算法逻辑，只核实 Task 1/2 接线完整）**
 
@@ -1431,25 +1453,26 @@ EOF
 
 ### 占位扫描（禁 TBD/占位）
 
-- [ ] `grep -n "TODO\|TBD\|FIXME\|占位\|placeholder" docs/plan/2026-07-22-stateful-client-outbound-repetition-truncation/plan-2-eager-start-anthropic.md` → 预期仅本行 + Task 5 `REPORT.md`「骨架，结果留白」的说明性文字命中（该处不是「该写代码却没写」的占位，是「结果依赖用户真实运行、写作阶段无法编造」的显式留白，且 `REPORT.md` 骨架本身内容完整，`<用户跑完填写>` 是数据占位不是代码占位——已在 Task 5 Step 6 上下文注明）。所有生产代码/测试代码为真实可运行实现（含 `resolveCommit`/`parseFrame`/postRender 队列适配器等完整函数体），非伪代码骨架。
+- [ ] `grep -n "TODO\|TBD\|FIXME\|占位\|placeholder" docs/plan/2026-07-22-stateful-client-outbound-repetition-truncation/plan-2-eager-start-anthropic.md` → 预期仅本行 + Task 5 `REPORT.md`「骨架，结果留白」的说明性文字命中（该处不是「该写代码却没写」的占位，是「结果依赖用户真实运行、写作阶段无法编造」的显式留白，且 `REPORT.md` 骨架本身内容完整，`<用户跑完填写>` 是数据占位不是代码占位——已在 Task 5 Step 6 上下文注明）。所有生产代码/测试代码为真实可运行实现（含 `resolveCommit`/`parseFrame`/状态机第二环接线等完整函数体），非伪代码骨架。
 
 ### 与 P0/P1 契约类型一致
 
 - [ ] `collapseRepetition(fullText, cfg): CollapseResult` 签名（Task 1 直接调用，未改名）。
 - [ ] `state.repetitionTruncation`（Task 1/2/3/4/5 全部通过 `state.repetitionTruncation.*`/`setStateForTests` 读写，未另建平行配置读取路径）。
-- [ ] `StatefulClientOutbound<S>`/`FrameAction`/`FlushReason`：**本 plan 依赖 P1 尚未定稿的确切签名**——「消费的上游契约」节已显式记录一处与 README 冻结契约字面不符的疑点（`FrameAction` 的 `"drop"` vs `rewrite-registry.ts` 现有 `"suppress"`），Task 1 按 README 字面（`"drop"`）实现，若 P1 实际产出与此不同，实施者需按 P1 真实签名调整（值域替换，逻辑不变，已在开篇「消费的上游契约」段落写明处理方式）。
+- [ ] `StatefulClientOutbound<S>`/`FrameAction`/`FlushReason`：与 P1 落地签名逐字对齐——`FrameAction` 从 `~/lib/pipeline/rewrite-registry` 原样 import（字面量 `"emit"|"suppress"|"buffer"`，早前草稿的 `"drop"` 疑点已随 P1 落地澄清并在本 plan 全文订正，见「消费的上游契约」第 3 条）。
+- [ ] `onRenderedFrame(frame): ReadonlyArray<ClientFrame>`/`flushRenderedFrames(): ReadonlyArray<ClientFrame>`：与 P1 落地的驱动接线状态机逐字对齐（Task 2 是这个状态机内的「第二环」，不是并行机制）。
 - [ ] `tagFrameSynthetic`/`readSyntheticKind`/`SyntheticOriginKind`：Task 1 复用既有值 `"hook-rewrite"`，未新增枚举值（P3 才引入 `DeliverySyntheticKind:"repetition-truncated"`，两个通道不冲突，见 Architecture「Provenance」段）。
 
 ### 实读代码时发现的、与 spec/README 不符或需要显式记录的点（如实报告，未静默修改 spec/README 本身）
 
-1. **`FrameAction` 值域疑点**（已在「消费的上游契约」第 6 条详细记录）：README 冻结契约写 `{kind:"buffer"}|{kind:"emit",frames}|{kind:"drop"}` 并注「复用 rewrite-registry 现有 union（P1 T? 确认同构）」，但 `src/lib/pipeline/rewrite-registry.ts:76` 现有 `FrameAction` 实际是 `{kind:"emit";frames}|{kind:"suppress"}|{kind:"buffer"}`（`"suppress"` 非 `"drop"`）——两者不可能是同一个 TS 联合类型的字面复用，除非 P1 故意在 `hooks/types.ts` 定义一个结构相似但独立同名类型。这是 P1 的「T?」未决项，本 plan 只能记录、不能替 P1 裁决。
-2. **`postRender` 单帧契约与本相位「多帧 commit 边界输出」的根本性不匹配**（Task 2「实施注」段落）：`candidate-response-session.ts:111` 的 `postRender` 类型是 `(frame: ClientFrame) => ClientFrame | undefined`——严格单进单出。Task 1 的 hook 在命中折叠时天然产出 2-3 帧（collapsed delta + marker delta [+ boundary frame]）。这个不匹配不是 plan 撰写疏漏，是 README「相位 DAG」本身设计意图的必然后果（P2 故意先在旧单帧层跑通逻辑、P3 才下沉到原生多帧 API 的 `delivery/session.ts`）——**Task 2 的「待发帧队列」适配器是为解决这个已知的架构性错配而设计的临时机制**，其存在本身印证了 README「隔离逻辑错与迁移错」这一相位切分理由的正确性，而非某种可以避免的额外复杂度。
-3. **`createCandidateResponseSession` 目前没有统一的「候选异常终止」钩子**（Task 2「候选终止路径」段落）：`finish`/`snapshot` 只在正常完成时触发，abort/upstream-truncated 信号目前只存在于 `handler-v4.ts` 的 `pumpAnthropicStreamingV4` 函数体内（`outcome.kind==="settled-abort"`/`stream-error` 分支），不是候选会话对象自身暴露的生命周期事件。Task 2 因此把 `flush(reason)` 的调用点放在 handler 层而非 `candidate-response-session.ts` 内部——这是读代码后调整的接线位置（与 spec §3.3 描述的「候选终止时调用 flush」在**语义**上一致，但**物理调用点**在 handler 而非 session 对象内部方法），若 P3 下沉后这个终止信号有了更统一的宿主（`delivery/session.ts` 的 `terminate(command)` 方法已经是这样一个统一终止入口，见 P3 plan），Task 2 这个 P2-only 的分散接线方式会被 P3 的集中接线取代。
-4. **`repetition-detector.ts` 的 `checkRepetition` 仍在 `handler-v4.ts:224/252` 挂在 Anthropic 直连候选会话的 `createState`/`recordUpstreamFrame` 路径**——本相位新增的截断 hook 与既有告警检测器是**两个独立并行的消费者**，都读同一段上游文本但用途不同（告警 vs 截断），本 plan 未改动告警检测器的现有接线，符合 spec §5.1「两套并存」的字面要求，此处如实确认两者不冲突（不同挂载点：告警在 `onUpstreamFrame`/上游原始帧，截断在 `postRender`/渲染后帧）。
-5. **`resolveAnthropicKeepalive`/`makeAnthropicKeepaliveFrame` 的 block-aware 逻辑本身不需要本相位改动**——它已经在既有 `client-sink.ts`/`delivery/session.ts` 的 `openBlocks`/`pendingOpenBlocks` ledger 之上工作（`currentOpenBlock()`/`ledger.openBlocks.at(-1)`），只要 eager-start 保证「块 0 的 `content_block_start` 真的写到 wire 上」，ledger 就会自然识别出这个 open block——本 plan 没有在这条既有机制上做任何修改，Task 4/5 的价值纯粹是**验证**这个既有机制在「一个块的缓冲期长达数百帧」这个新场景下确实按预期工作，而非新增一条心跳路径。
+1. **本 plan 曾按 P1 尚未定稿时的假设（单帧 `postRender` + `FrameAction.{kind:"drop"}`）撰写 Task 1/2，经合并态审查发现 P1 实际落地是数组返回的 `onRenderedFrame`/`flushRenderedFrames` 状态机 + `FrameAction` 复用 `rewrite-registry.ts`（字面量 `"suppress"` 非 `"drop"`）——已整体重写 Task 2（删除「待发帧队列」适配器，改为在 P1 状态机内插入「第二环」）+ 修正全文档 `"drop"`→`"suppress"` 引用**：这是一次真实的「计划撰写时对尚未定稿的上游相位做出的假设，被后续上游相位的真实落地推翻」的案例——如实记录该纠正过程，而非悄悄改掉、假装从未发生。`{@link StatefulClientOutbound}` 契约本身的字段名（`createState`/`transform`/`flush`）与 `FlushReason` 的四个值没有变化，变化的只是（a）挂载点从单帧 `postRender` 换成数组 `onRenderedFrame`/`flushRenderedFrames`，（b）`FrameAction` 的第三个字面量是 `"suppress"` 不是 `"drop"`——两处修正后，Task 2 的实现反而**更简单**（P1 的数组机制天然消解了「一帧输入多帧输出」的接口错配，不再需要专属适配层），这也验证了 P1 plan 自审里「P1 数组化的驱动接线」这个设计决策本身对下游相位（P2）是正收益的。
+2. **`createCandidateResponseSession` 目前没有统一的「候选异常终止」钩子**（Task 2「候选终止路径」段落）：`finish`/`snapshot` 只在正常完成时触发，abort/upstream-truncated 信号目前只存在于 `handler-v4.ts` 的 `pumpAnthropicStreamingV4` 函数体内（`outcome.kind==="settled-abort"`/`stream-error` 分支），不是候选会话对象自身暴露的生命周期事件。Task 2 因此让 `createCandidateResponseSession` 的返回值新增一个 `flushTruncationHook?(reason)` 方法（供 handler 层显式调用，触达闭包内部的 `truncationState`）——这是读代码后调整的接线方式（与 spec §3.3 描述的「候选终止时调用 flush」在**语义**上一致，但**物理调用点**在 handler 而非 session 对象内部方法），若 P3 下沉后这个终止信号有了更统一的宿主（`delivery/session.ts` 的 `terminate(command)` 方法已经是这样一个统一终止入口，见 P3 plan 的 `flushOutbound` 设计，两者是同一模式在不同相位的实例），Task 2 这个 P2-only 的分散接线方式会被 P3 的集中接线取代。
+3. **`repetition-detector.ts` 的 `checkRepetition` 仍在 `handler-v4.ts:224/252` 挂在 Anthropic 直连候选会话的 `createState`/`recordUpstreamFrame` 路径**——本相位新增的截断 hook 与既有告警检测器是**两个独立并行的消费者**，都读同一段上游文本但用途不同（告警 vs 截断），本 plan 未改动告警检测器的现有接线，符合 spec §5.1「两套并存」的字面要求，此处如实确认两者不冲突（不同挂载点：告警在 `onUpstreamFrame`/上游原始帧，截断在 `onRenderedFrame`/渲染后帧）。
+4. **`resolveAnthropicKeepalive`/`makeAnthropicKeepaliveFrame` 的 block-aware 逻辑本身不需要本相位改动**——它已经在既有 `client-sink.ts`/`delivery/session.ts` 的 `openBlocks`/`pendingOpenBlocks` ledger 之上工作（`currentOpenBlock()`/`ledger.openBlocks.at(-1)`），只要 eager-start 保证「块 0 的 `content_block_start` 真的写到 wire 上」，ledger 就会自然识别出这个 open block——本 plan 没有在这条既有机制上做任何修改，Task 4/5 的价值纯粹是**验证**这个既有机制在「一个块的缓冲期长达数百帧」这个新场景下确实按预期工作，而非新增一条心跳路径。
 
 ### 未采纳方案（record-not-adopted）
 
-- **考虑过让 Task 1 的 hook 直接操作 `client-sink.ts`/`delivery/session.ts` 的 open-block ledger**（绕开「postRender 单帧契约」的限制，直接在 sink 层做缓冲）——**未采纳**：这正是 P3 要做的事（README 相位 DAG 明确「P2 先在旧 postRender 层跑通截断逻辑再于 P3 迁层，隔离逻辑错与迁移错」），P2 提前做等于绕过了这个刻意的风险隔离设计，会让「截断算法本身是否正确」与「挂载点下沉是否正确」两类失败重新耦合在一起——与 README 的显式意图相悖，故 Task 2 选择了「待发帧队列」这个更笨拙但风险隔离更彻底的临时方案。
-- **考虑过让 `flush(reason)` 的候选终止调用点统一走一个新增的「候选生命周期事件总线」**（而非直接在 `handler-v4.ts` 的具体分支内联调用）——**未采纳**：P2 阶段引入一个新的事件总线机制本身就是一次不小的架构决策，且 P3 下沉后 `delivery/session.ts` 的 `terminate(command)` 已经是这样一个统一终止入口，P2 提前造一个类似但更小范围的总线会在 P3 时被废弃——不值得，直接在具体分支内联调用更符合「P2 是临时垫脚层」的定位，代价是 Task 2 的接线代码在 P3 会被整段删除（这是预期的、可接受的一次性成本，非长期技术债）。
+- **（已推翻，见上「不符之处」第 1 条）曾采纳「postRender 待发帧队列适配器」方案**——该方案是本 plan 早期基于「P1 挂载点仍是单帧 `postRender`」这一（后被证伪的）假设设计的临时多帧适配层。P1 实际落地的数组状态机使这个适配层完全没有存在必要——已整体删除，改为「状态机内插入第二环」。记录此推翻过程供审阅者核对，避免未来重新引入一个已被证明不必要的机制。
+- **考虑过让 Task 1 的 hook 直接操作 `client-sink.ts`/`delivery/session.ts` 的 open-block ledger**（绕开候选层挂载点，直接在 sink 层做缓冲）——**未采纳**：这正是 P3 要做的事（README 相位 DAG 明确「P2 先在旧候选层跑通截断逻辑再于 P3 迁层，隔离逻辑错与迁移错」），P2 提前做等于绕过了这个刻意的风险隔离设计，会让「截断算法本身是否正确」与「挂载点下沉是否正确」两类失败重新耦合在一起——与 README 的显式意图相悖。
+- **考虑过让 `flush(reason)` 的候选终止调用点统一走一个新增的「候选生命周期事件总线」**（而非新增 `flushTruncationHook` 逃生口 + 在 `handler-v4.ts` 的具体分支内联调用）——**未采纳**：P2 阶段引入一个新的事件总线机制本身就是一次不小的架构决策，且 P3 下沉后 `delivery/session.ts` 的 `terminate(command)` 已经是这样一个统一终止入口，P2 提前造一个类似但更小范围的总线会在 P3 时被废弃——不值得，直接暴露一个逃生口方法更符合「P2 是临时垫脚层」的定位，代价是 Task 2 的这个方法在 P3 会被整段删除（这是预期的、可接受的一次性成本，非长期技术债）。
 - **考虑过用 `repetition-detector.ts` 的现有 `RepetitionDetector` 类做增量检测**（每个 delta 到达时增量判断，而非在 commit 边界对累积文本跑一次 `collapseRepetition`）——**未采纳**：spec §5.1 HIGH-1 已经把这条路堵死（新建纯核、不复用滑窗检测器），本 plan 严格遵循；且 Anthropic 精确档的语义本来就要求「先攒完整个块，一次性判定」（因为 `keep_copies` 精确裁剪需要看到全部内容才能决定截哪几份），增量判断反而不适合精确档（增量判断适合的是 P4 的近似档，那里本来就要求「边转发边检测」）。

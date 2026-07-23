@@ -13,8 +13,73 @@ import { anthropicSseFrame } from "./sse-frame"
  * Reserved index of the synthetic empty-text keepalive ANCHOR block injected in buffered
  * pre-commit (spec 2026-07-08-buffered-keepalive-empty-text-anchor). The anchor occupies
  * index 0; all real content blocks flush at index+1 (see remapAnthropicBlockIndex).
+ *
+ * NOTE (spec 2026-07-22 §3.3): this fixed "anchor@0, real blocks at +1" model is the COEXIST shape.
+ * The SEQUENTIAL-anchor shape (CLI-safe) needs runtime-incrementing indices instead — see
+ * {@link createAnchorIndexAllocator}, which supersedes the fixed offset at the sink/driver seam.
  */
 export const ANCHOR_INDEX = 0
+
+/**
+ * Runtime index allocator for the SEQUENTIAL-anchor wire (spec 2026-07-22 §3.3). Unlike the fixed
+ * `ANCHOR_INDEX=0` + `remap(frame, 1)` coexist model, sequential anchors are interspersed among real
+ * blocks (wire indices 0=anchor, 1=real, 2=gap-anchor, 3=real, …) with AT MOST ONE block open at a
+ * time — so a real block's final wire index is NOT `upstreamIndex + 1` but depends on how many
+ * anchors were opened before it. The allocator hands out monotonically increasing wire indices and
+ * records the wire index assigned to each real block (in upstream order) so the sink/driver can remap
+ * upstream block frames to their sequential wire index via {@link AnchorIndexAllocator.realBlockOffset}.
+ */
+export interface AnchorIndexAllocator {
+  /** Peek the wire index the NEXT anchor block will occupy (pure — advances only on {@link onAnchorOpen}). */
+  nextAnchorIndex: () => number
+  /** Peek the wire index the NEXT real block will occupy (pure — advances only on {@link onRealBlockOpen}). */
+  nextRealIndex: () => number
+  /** Commit an anchor block at the current wire index (advances the counter). */
+  onAnchorOpen: () => void
+  /** Commit a real block at the current wire index (advances the counter; records the mapping). */
+  onRealBlockOpen: () => void
+  /**
+   * The remap offset for the real block that arrived at `upstreamIndex` (upstream's own 0-based block
+   * numbering): `wireIndex(upstreamIndex) − upstreamIndex`. Real blocks are opened in upstream order,
+   * so `upstreamIndex` is the 0-based position of the real block among all real blocks opened so far.
+   */
+  realBlockOffset: (upstreamIndex: number) => number
+}
+
+export function createAnchorIndexAllocator(): AnchorIndexAllocator {
+  let wireCounter = 0
+  const realWireIndices: Array<number> = []
+  return {
+    nextAnchorIndex: () => wireCounter,
+    nextRealIndex: () => wireCounter,
+    onAnchorOpen: () => void wireCounter++,
+    onRealBlockOpen: () => {
+      realWireIndices.push(wireCounter)
+      wireCounter++
+    },
+    realBlockOffset: (upstreamIndex) => (realWireIndices[upstreamIndex] ?? upstreamIndex) - upstreamIndex,
+  }
+}
+
+/** Is this rendered client frame a real `content_block_start`? (parses the JSON `type`; non-JSON → false). */
+export function isAnthropicContentBlockStart(frame: ServerSentEventMessage): boolean {
+  if (typeof frame.data !== "string") return false
+  try {
+    return (JSON.parse(frame.data) as { type?: unknown }).type === "content_block_start"
+  } catch {
+    return false // non-JSON frame (e.g. a keepalive line) — not a content_block_start
+  }
+}
+
+/** Is this rendered client frame the `message_start`? (parses the JSON `type`; non-JSON → false). */
+export function isAnthropicMessageStart(frame: ServerSentEventMessage): boolean {
+  if (typeof frame.data !== "string") return false
+  try {
+    return (JSON.parse(frame.data) as { type?: unknown }).type === "message_start"
+  } catch {
+    return false
+  }
+}
 
 /** `content_block_start` opening the empty-text anchor block (lights the sink openBlock={0,text}). */
 export function anchorStartFrame(): ServerSentEventMessage {

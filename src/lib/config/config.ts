@@ -17,11 +17,14 @@ import { recordConfigReloadTimeoutDiff } from "~/lib/observability/reaper-diagno
 import {
   //
   type BufferedRetryCaps,
+  type BufferedRetryContinuation,
   type CompiledRewriteRule,
   type CompiledSystemPromptEntry,
   DEFAULT_MODEL_MAPPINGS,
   resolveBufferedCaps,
   setAnthropicBehavior,
+  setBufferedRetryContinuationOverride,
+  setBufferedRetryContinuationShared,
   setBufferedRetryOverride,
   setBufferedRetryShared,
   setChatCompletionsConfig,
@@ -252,6 +255,19 @@ function mapBufferedCaps(m: BufferedRetryOverride): Partial<BufferedRetryCaps> {
 }
 
 /**
+ * Extract the continuation patch from a `buffered_retry` map (shared or per-vendor). Returns `undefined`
+ * when the map declares no `continuation` block, so the caller skips the setter (leaving shared/default).
+ */
+function mapContinuation(m: BufferedRetryOverride): Partial<BufferedRetryContinuation> | undefined {
+  const c = m.continuation
+  if (!c) return undefined
+  const out: Partial<BufferedRetryContinuation> = {}
+  if (c.enabled !== undefined) out.enabled = c.enabled
+  if (c.message != null) out.message = c.message
+  return out
+}
+
+/**
  * Apply a per-vendor `buffered_retry` config value that carries an `enabled` mode
  * switch (Responses / Chat Completions). A bare boolean is the `enabled` shorthand;
  * a map sets `enabled` (when present) via `setEnabled` and routes its caps into the
@@ -265,6 +281,8 @@ function applyVendorBufferedRetry(value: boolean | BufferedRetryOverride, vendor
   }
   if (value.enabled !== undefined) setEnabled(value.enabled)
   setBufferedRetryOverride(vendor, mapBufferedCaps(value))
+  const cont = mapContinuation(value)
+  if (cont) setBufferedRetryContinuationOverride(vendor, cont)
 }
 
 /**
@@ -646,6 +664,10 @@ export async function applyConfigToState(): Promise<Config> {
     // CONFIG_MIGRATIONS). `enabled` is ignored — Anthropic's mode switch is
     // protect_streaming_generation above.
     if (a.buffered_retry) setBufferedRetryOverride("anthropic", mapBufferedCaps(a.buffered_retry))
+    if (a.buffered_retry) {
+      const cont = mapContinuation(a.buffered_retry)
+      if (cont) setBufferedRetryContinuationOverride("anthropic", cont)
+    }
     if (a.protect_streaming_escalate_context !== undefined) setAnthropicBehavior({ protectStreamingEscalateContext: a.protect_streaming_escalate_context })
     // Model-capability allowlists (retain-on-absence per sub-key; an explicit empty list clears).
     if (a.model_capabilities) {
@@ -779,6 +801,10 @@ export async function applyConfigToState(): Promise<Config> {
   // anthropic section — it is the base layer every vendor's per-vendor override
   // falls through to (resolveBufferedCaps). `enabled` is ignored (no shared mode switch).
   if (config.buffered_retry) setBufferedRetryShared(mapBufferedCaps(config.buffered_retry))
+  if (config.buffered_retry) {
+    const cont = mapContinuation(config.buffered_retry)
+    if (cont) setBufferedRetryContinuationShared(cont)
+  }
 
   // L2 cross-field guard: buffered streaming with NO keepalive heartbeat = clients idle out.
   // Checked on the EFFECTIVE state (post-apply, so bundled defaults + hot-reload retain are reflected).

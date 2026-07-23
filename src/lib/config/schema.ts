@@ -224,6 +224,20 @@ export const BufferedRetryOverrideSchema = z
     buffer_cap_bytes: nullableNonnegativeInt(),
     /** Forced heartbeat interval (seconds) for the buffered path; clamped < client idle deadline. */
     heartbeat_sec: nullableNonnegativeInt(),
+    /**
+     * Continuation-retry settings (spec 2026-07-22). After the first block commits, a mid-stream RST
+     * triggers a synthetic continuation turn instead of `partial-degrade`. `enabled` gates it (default
+     * true); `message` is the synthetic user-turn text (default "network issue. please continue").
+     * Valid on the shared `buffered_retry` AND any per-vendor `<vendor>.buffered_retry` (per-vendor wins).
+     */
+    continuation: nullableSection(
+      z
+        .object({
+          enabled: nullableBoolean(),
+          message: z.string().nullable().optional(),
+        })
+        .strict(),
+    ),
   })
   .strict()
 
@@ -558,16 +572,21 @@ export const AnthropicConfigSchema = z
       .optional(),
     tool_search_non_deferred: nullableNonemptyStringArray(),
     warmup: nullableEnum(["allow", "reject", "drop", "fake"] as const),
-    // Free-form Records — key = model-name pattern, value = list
+    // Free-form Records — key = model-name pattern, value = list.
+    // Key matching (shared `per-model-config.ts`): a plain key is a model-name SUBSTRING; a key with a
+    // glob metachar (`*`/`?`) is an ANCHORED GLOB; `"*"` = all models. Aggregation differs by map:
+    // `effort_overrides` is a WHITELIST (`findMostSpecific`: most-specific wins, specificity literal >
+    // glob > `"*"` then longest key); every other Record here is an additive STRIP-LIST
+    // (`collectAllMatching`: union of ALL matching keys incl. `"*"`).
     effort_overrides: z.record(z.string(), z.array(z.string())).optional(),
     beta_strip_headers: z.record(z.string(), z.array(z.string())).optional(),
-    // GHC 未支持的 cache_control 子字段黑名单（model-name pattern → 子字段列表；"*" = 所有模型）。
+    // GHC 未支持的 cache_control 子字段黑名单（model-name pattern / glob → 子字段列表；"*" = 所有模型；additive `collectAllMatching`）。
     // passthrough 模式下剥除。ADDS to 内置 {scope} + reactive learned cache。
     cache_control_strip_subfields: z.record(z.string(), z.array(z.string())).optional(),
     partner_strip_features: z.record(z.string(), z.array(z.string())).optional(),
-    // Custom-tool top-level field names to strip / keep (model-name pattern → field list;
-    // `"*"` = all models). tool_strip_fields ADDS to the built-in default
-    // (`eager_input_streaming`) + reactive learned cache; tool_keep_fields SUBTRACTS
+    // Custom-tool top-level field names to strip / keep (model-name pattern / glob → field list;
+    // `"*"` = all models; additive `collectAllMatching`). tool_strip_fields ADDS to the built-in
+    // default (`eager_input_streaming`) + reactive learned cache; tool_keep_fields SUBTRACTS
     // (the reversibility escape hatch — e.g. re-enable a field a future upstream supports).
     tool_strip_fields: z.record(z.string(), z.array(z.string())).optional(),
     tool_keep_fields: z.record(z.string(), z.array(z.string())).optional(),
@@ -613,17 +632,15 @@ export const AnthropicConfigSchema = z
      */
     stream_keepalive_ping_sec: nullableNonnegativeInt(),
     /**
-     * Keepalive FRAME type for the client-facing Anthropic stream. `empty_text` (default) is the
-     * unconditionally timeout-safe mode: when a forwarded block is open it injects an EMPTY content
-     * delta matching that block (thinking→thinking_delta, text→text_delta, tool_use→input_json_delta);
-     * ADDITIONALLY, in buffered mode with NO open block yet (pre-commit long silence), it lazily injects
-     * a synthetic empty text ANCHOR block so an empty `text_delta` can reset Claude Code's 300s
-     * no-real-content deadline (real content stays buffered; the anchor closes and real blocks flush at
-     * index+1 on commit; spec 2026-07-08-buffered-keepalive-empty-text-anchor). `ping` is the legacy
-     * bare-`event: ping` escape hatch — a ping is NOT counted as a "chunk" so it does NOT reset the 300s
-     * deadline (may time out; see exp/cc-idle-280s/REPORT.md). `enveloped_ping` (experimental, expected
-     * to time out) synthesizes an envelope then emits a bare ping. redacted_thinking / unknown open
-     * blocks fall back to ping either way.
+     * Keepalive FRAME type for the client-facing Anthropic stream. `ping` (default) is a bare
+     * `event: ping` — it does NOT reset Claude Code's 300s no-real-content deadline (a ping is not a
+     * "chunk"; exp/cc-idle-280s/REPORT.md), so a >300s pre-content silence may time out (an accepted
+     * limit pending a real keepalive — docs/todo/2026-07-22-client-proxy-keepalive-300s.md).
+     * `empty_text` was RETIRED as default (ADR 2026-07-22 D2): it injected an empty content delta / a
+     * synthetic empty-text ANCHOR block, but an empty text block is wrong-shaped AND G2-proven unable to
+     * reset the 300s deadline on the proxy path. Block-level delivery CLI-safety now comes from strict
+     * index-ordered output, not an anchor. `empty_text` / `enveloped_ping` remain SELECTABLE (code kept
+     * dormant) for keepalive research; redacted_thinking / unknown open blocks fall back to ping anyway.
      */
     stream_keepalive_mode: nullableEnum(["ping", "enveloped_ping", "empty_text"] as const),
     /**
@@ -674,10 +691,18 @@ export const AnthropicConfigSchema = z
      * an entry or starts with `entry + "-"`. Bundled defaults mirror GHC's capability checks — edit
      * to add/remove models (e.g. a new Claude release) WITHOUT a code change. See features.ts.
      *
+     * Each entry also supports GLOB (`*`/`?`, e.g. `claude-*`, `claude-opus-4-*`) and `!` NEGATION
+     * (`!pattern` SUBTRACTS from the set). Semantics: a model has the capability iff it matches ≥1
+     * positive entry AND no `!` entry (self-contained list, exclusion-always-wins, order-independent);
+     * a list with only `!` entries → empty set. A plain (glob-free) token keeps the family-prefix
+     * dash-boundary semantics above. See docs/spec/2026-07-23-model-capabilities-glob-and-negation.md.
+     * YAML: patterns beginning with `!` or `*` MUST be quoted (`- "!claude-haiku-*"`, `- "*claude"`).
+     *
      * `tool_search_overrides` is NOT a list: tool-search is default-allow for Claude ≥4.5 (Haiku +
      * pre-4.5 denied), so it needs no allowlist. The overrides map holds per-model force-on/off
-     * decisions only (keys = model-name substrings, `"*"` = wildcard; value true=force-on/false=off),
-     * checked after declared metadata but before the built-in default-allow matcher.
+     * decisions only (keys = model-name substrings OR glob patterns, `"*"` = wildcard; value
+     * true=force-on/false=off), checked after declared metadata but before the built-in default-allow
+     * matcher. Key specificity when multiple match: literal substring > glob > `"*"` (then longest key).
      */
     model_capabilities: z
       .object({
@@ -958,7 +983,8 @@ export const TimeoutsConfigSchema = z
     response_header: nullableNonnegativeInt(),
     /**
      * Per-model stream-idle timeout override (seconds), keyed by model-name
-     * substring with `"*"` wildcard. A match wins over `stream_idle`; 0 = disabled.
+     * substring OR glob (`*`/`?`) with `"*"` wildcard (specificity: literal > glob >
+     * `"*"`, then longest key). A match wins over `stream_idle`; 0 = disabled.
      * Bundled default `{ gpt-5.5: 600 }`. Per-key merged with the user table
      * (a user `{}` does NOT wipe the bundled entry). App-guard only — does not
      * touch the undici dispatcher. See ADR 2026-07-12-per-model-idle-timeout-is-app-guard-only.

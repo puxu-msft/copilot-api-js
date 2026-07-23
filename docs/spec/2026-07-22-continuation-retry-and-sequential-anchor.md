@@ -5,7 +5,24 @@
 > 关系：**修订并完成** [`2026-07-11-block-level-buffered-retry.md`](2026-07-11-block-level-buffered-retry.md)（下称「前 spec」）在 Anthropic 上未完成的部分，并反转其 N1 非目标与 §5.2 partial-degrade 终局。
 > 起源 incident：`req_1784722475722_162`（opus-4.8，Claude Code CLI，142.9s 首字节前静默 → 6.6s 流式 → tool_use 中途 `NGHTTP2_CANCEL` → 169.7s FAIL、0 可用产出）。
 
+> **⚠️ 2026-07-22 用户裁决修订（权威见 [ADR](../decisions/2026-07-22-continuation-retry-sequential-anchor.md)，本 spec 部分节被反转）：**
+> - **[D2 反转] §3「顺序 anchor」整节被退役。** 不再向 client 注入空-text block 保活（`empty_text` 全路径禁用、代码保留休眠，默认 `stream_keepalive_mode: ping`）。判据：空-text block 是错误形状且 G2 实证不能重置 CC 300s 死线。**块级递送的 CLI-safety 改由「严格按 index 顺序输出」保证**（块闭合时总按 index 顺序 output，未闭合的低 index 压住已闭合的高 index），不再靠空 anchor 逼单块。**过渡期长静默 = 裸 ping，接受 >300s 断连限制**，真保活留待 [调研](../todo/2026-07-22-client-proxy-keepalive-300s.md)。P1 landed 的顺序 anchor 代码因此转为默认休眠。
+> - **[D3 细化] §4/§5.3 续写触发**：已提交前缀含任一「完整的、需客户端交互的 tool_use 块」→ **不续写、正常终止**（合法轮边界，客户端要执行工具）。续写只在被掐于 text/thinking 且无完整可交互 tool_use 时触发。已完整 text/thinking 块照发客户端但不发 message_stop，直接合成 user 续写轮接进同一连接；thinking 发客户端但不进合成 assistant 前缀。
+> - **[D1 澄清] §6.1 回退 live**：block hook 的跳过是**类型层面**保证的（`runResponseSink` 无法接收 block hook），非约定。**已知缺口**：当前无「运行时自动降级 live」探测，`buffered` 纯由配置决定；记 backlog。
+
 ---
+
+> **✅ 实施状态(2026-07-23,分支 `feat/continuation-retry`,已 FF 合并 master（de37feff，2026-07-23）):P2 = Anthropic 续写已完整落地并端到端验证**(SSOT `continued` verdict + `runContinuation` + driver 旁路缝合分支 + handler 接线 + telemetry 拆分;真 `@anthropic-ai/sdk` e2e 证缝合流,含 thinking-offset 与 chained 多跳)。合并态异模型审 2 Critical + 2 Important 已修。**端点矩阵(D4 全端点分阶段,当前仅 Anthropic 落地)**:
+>
+> | 端点 | 块级缓冲 | 续写 | 状态 |
+> |---|---|---|---|
+> | Anthropic messages | ✅ | ✅ **已落地+验证(P2)** | 续写默认 on,需 `protect_streaming_generation` 开块级才激活 |
+> | Responses HTTP | ✅(已有) | ❌ 待 **P4** | builder/extractor/hooks 未接线 |
+> | CC | ⚠️ terminal-only | ❌ 待 **P5** | 需先升块级 |
+> | Responses WS | ⚠️ terminal-only | ❌ 待 **P6** | 需先升块级 + WS 传输门 |
+> | Gemini | — | 排除(N1) | — |
+>
+> 权威实施细节见 plan `.../plan-2b-continuation-executor.md` §11。
 
 ## 1. 背景与问题（Why）
 

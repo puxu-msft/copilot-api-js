@@ -69,6 +69,7 @@ import type {
 import type { ChatCompletionsPayload } from "~/types/api/openai-chat-completions"
 
 import { createBetaProbe } from "~/lib/anthropic/pipeline"
+import { resolveCodecModel } from "~/lib/codec/model-resolution"
 import {
   //
   createOpenAiCcCodec,
@@ -95,13 +96,11 @@ import {
 import { ENDPOINT } from "~/lib/models/endpoint"
 import {
   //
-  resolveModelTarget,
   type RouteOverride,
 } from "~/lib/models/resolver"
 import { fillMaxCompletionTokens } from "~/lib/openai/request-preparation"
 import { sanitizeOpenAIMessages } from "~/lib/openai/sanitize"
 import { createCandidateStateFactory } from "~/lib/pipeline/generation/candidate-state"
-import { state } from "~/lib/state"
 import { processOpenAIMessages } from "~/lib/system-prompt"
 
 const CLIENT_FORMAT: ClientFormat = "gemini"
@@ -307,10 +306,10 @@ function parseGemini(raw: RawHttpRequest, modelId: string): { env: RequestEnvelo
   // (parity with the legacy `structuredClone(body)` — guards history against later mutation).
   const geminiSnapshot = structuredClone(raw.body as GenerateContentRequest)
 
-  const resolvedTarget = raw.preResolved ?? resolveModelTarget(modelId)
-  const resolvedName = resolvedTarget.name
-  const routeOverride = resolvedTarget.routeOverride
-  const selectedModel = raw.preResolved ? raw.preResolved.model : state.modelIndex.get(resolvedName)
+  // Model resolution via the shared codec primitive. Gemini's model comes from
+  // the URL path (`modelId`), not the native `contents[]` body — pass it as the
+  // explicit requested name.
+  const { requestedModel, resolvedName, routeOverride, selectedModel, clientModel } = resolveCodecModel(raw, { requestedModel: modelId })
   const stream = raw.stream ?? false
 
   const manager = getRequestContextManager()
@@ -326,7 +325,7 @@ function parseGemini(raw: RawHttpRequest, modelId: string): { env: RequestEnvelo
   })
 
   ctx.setOriginalRequest({
-    model: modelId, // client's original (pre-resolution) name
+    model: requestedModel,
     // `messages` reflects the original wire shape (Gemini contents), mirroring how
     // the Anthropic handler stores Anthropic-shape messages.
     messages: projectGeminiContentsAsMessages(geminiSnapshot.contents ?? [], geminiSnapshot.systemInstruction),
@@ -339,7 +338,7 @@ function parseGemini(raw: RawHttpRequest, modelId: string): { env: RequestEnvelo
 
   ctx.setResolvedModel({
     resolved: resolvedName,
-    ...(modelId !== resolvedName && { client: modelId }),
+    ...(clientModel !== undefined && { client: clientModel }),
   })
 
   // env.body stays the client-NATIVE Gemini `contents[]`; S1b `translateInbound` turns it into the

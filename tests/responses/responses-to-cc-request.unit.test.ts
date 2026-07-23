@@ -29,7 +29,7 @@ import {
   translateResponsesToChatCompletions,
 } from "~/lib/openai/translate/responses-to-cc-request"
 
-const CTX = { responseId: "resp_test", itemId: "item_test", clientModel: "gpt-test" }
+const CTX = { responseId: "resp_test", itemId: "item_test", resolvedModel: "gpt-test" }
 
 describe("translateResponsesToChatCompletions", () => {
   test("maps instructions and simple text input", () => {
@@ -241,7 +241,7 @@ describe("translateCCToResponsesResponse", () => {
     } as ChatCompletionResponse
   }
 
-  test("basic text mapping uses injected IDs and clientModel fallback", () => {
+  test("basic text mapping uses injected IDs and resolvedModel fallback", () => {
     const result = translateCCToResponsesResponse(makeCC(), CTX)
     expect(result.id).toBe(CTX.responseId)
     expect(result.status).toBe("completed")
@@ -254,9 +254,9 @@ describe("translateCCToResponsesResponse", () => {
     }
   })
 
-  test("uses clientModel when CC model is empty", () => {
+  test("uses resolvedModel when CC model is empty", () => {
     const result = translateCCToResponsesResponse(makeCC({ model: "" }), CTX)
-    expect(result.model).toBe(CTX.clientModel)
+    expect(result.model).toBe(CTX.resolvedModel)
   })
 
   test("maps tool_calls into separate function_call output items", () => {
@@ -360,13 +360,13 @@ describe("translateCCStreamToResponsesStream", () => {
     for (let i = 1; i < seqs.length; i++) expect(seqs[i]).toBeGreaterThan(seqs[i - 1])
   })
 
-  test("response.created carries injected clientModel", async () => {
+  test("response.created carries injected resolvedModel", async () => {
     const events = await collect([chunk({ content: "x" }), chunk({}, { finish: "stop" })])
     const created = events.find((e) => e.event === "response.created")
     expect(created).toBeDefined()
     if (created) {
       const resp = created.data.response as { model: string; id: string }
-      expect(resp.model).toBe(CTX.clientModel)
+      expect(resp.model).toBe(CTX.resolvedModel)
       expect(resp.id).toBe(CTX.responseId)
     }
   })
