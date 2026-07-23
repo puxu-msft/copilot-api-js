@@ -394,9 +394,19 @@ function parseAnthropic(raw: RawHttpRequest): ParseAnthropicResult {
   const resolvedTarget = raw.preResolved ?? resolveModelTarget(clientModel)
   const resolvedName = resolvedTarget.name
   const routeOverride = resolvedTarget.routeOverride
-  if (resolvedName !== clientModel) consola.debug(`Model name resolved: ${clientModel} → ${resolvedName}`)
+  // The client's ORIGINAL (pre-resolution) model name — for the observability
+  // `clientModel` and the history `requested` field. It MUST come from the
+  // original client body, NOT `incoming.model`: on the v4 handler path `raw.body`
+  // is the already-resolved `wireBody` (`model === resolvedName`), so deriving the
+  // client name from `incoming.model` would collapse it to `resolvedName` and drop
+  // the remap entirely (the `<client> → <resolved>` arrow would never render). The
+  // other inbound formats (cc/responses/gemini) pass the client-raw body, so their
+  // `incoming.model` is already original; using `originalSnapshot.model` is correct
+  // for every path (it equals `incoming.model` when no pre-resolution happened).
+  const originalClientModel = raw.modelOverride ?? originalSnapshot.model
+  if (resolvedName !== originalClientModel) consola.debug(`Model name resolved: ${originalClientModel} → ${resolvedName}`)
   const selectedModel = raw.preResolved ? raw.preResolved.model : state.modelIndex.get(resolvedName)
-  const clientModelName = clientModel !== resolvedName ? clientModel : undefined
+  const clientModelName = originalClientModel !== resolvedName ? originalClientModel : undefined
 
   // The model-resolved payload (messages already preprocessed by the route). This
   // is the truncation + message-mapping baseline: preprocessed, pre-initial-sanitize.
