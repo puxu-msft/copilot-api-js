@@ -233,12 +233,21 @@ export interface ModelOperationTransform {
   readonly extensions?: OperationExtensions
 }
 
-/** Physical dispatch settlement verdict, independent from candidate and operation outcomes. */
-export type DispatchVerdict = "committed" | "discarded" | "failed" | "cancelled"
+/**
+ * Physical dispatch settlement verdict, independent from candidate and operation outcomes.
+ *
+ * `continued` (continuation-retry, spec 2026-07-22 §4/§5, ADR D3): this physical exchange did NOT reach
+ * its own terminator (RST / clean EOF before message_stop) BUT its committed-boundary content was fully
+ * delivered to the client and is carried forward as the already-delivered prefix of a following
+ * continuation exchange. Distinct from `discarded`/`failed` (whose content did NOT reach the client) and
+ * from `committed` (the exclusive singleton, taken by the FINAL continuation exchange that delivers
+ * message_stop). Without this value there is no honest verdict for a partially-delivered parent.
+ */
+export type DispatchVerdict = "committed" | "discarded" | "failed" | "cancelled" | "continued"
 
 /** Candidate topology role and terminal verdict. */
-export type CandidateRole = "primary" | "hedge" | "recovery"
-export type CandidateVerdict = "winner" | "loser" | "failed" | "cancelled"
+export type CandidateRole = "primary" | "hedge" | "recovery" | "continuation"
+export type CandidateVerdict = "winner" | "loser" | "failed" | "cancelled" | "continued"
 
 /** Diagnostic retained on the attempt that produced it. */
 export interface AttemptDiagnostic {

@@ -19,7 +19,13 @@ import type {
 } from "~/lib/anthropic/decode-tool-input-core"
 import type { DestackStats } from "~/lib/anthropic/sanitize/destack-adjacent-thinking"
 import type { BufferedMergeDiag } from "~/lib/codec/openai-responses/buffered-merge-reducer"
-import type { OperationSyntheticKind } from "~/lib/context/model-operation-record"
+import type {
+  //
+  CandidateRole,
+  CandidateVerdict,
+  DispatchVerdict,
+  OperationSyntheticKind,
+} from "~/lib/context/model-operation-record"
 import type { ProcessIdentity } from "~/lib/process-identity"
 import type { CopilotAnnotations } from "~/types/api/anthropic"
 
@@ -517,11 +523,11 @@ export interface HistoryEntry {
   attempts?: Array<{
     index: number
     candidateId?: string
-    candidateRole?: "primary" | "hedge" | "recovery"
+    candidateRole?: CandidateRole
     parentCandidateId?: string
-    candidateVerdict?: "winner" | "loser" | "failed" | "cancelled"
+    candidateVerdict?: CandidateVerdict
     dispatchId?: string
-    dispatchVerdict?: "committed" | "discarded" | "failed" | "cancelled"
+    dispatchVerdict?: DispatchVerdict
     dispatchReason?: string
     strategy?: string
     durationMs: number
