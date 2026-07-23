@@ -50,6 +50,8 @@ description: 当需要查阅/调用 copilot-api-js（本代理）**对客户端�
 
 `GET /history/api/{entries,entries/:id,sessions,export,stats}`、`GET .../search?source=&q=`、`.../search/contains?hash=`、`POST .../entries/:id/{pin,unpin}`、`DELETE .../entries`、`.../sessions/:id`。调试见 skill `history-sqlite-schema`。
 
+**详情 `entries/:id` 的 `attempts[].timing`**：始终含 `source`，并在该 physical dispatch 有采样时带出绝对 epoch（ms）四刻 `upstreamHeadersAt` / `upstreamMessageStartAt` / `upstreamFirstTokenAt` / `upstreamLastTokenAt`——`upstreamHeadersAt − startedAt` 即上游响应头到达延迟（零推断，用于诊断 GHC deferred-header 长思考 vs 挂起，见 spec `2026-07-23-upstream-silence-commit-timing.md`）。list 摘要端点不含 `attempts`（须取详情）。
+
 ## 调用
 
 默认 base `http://localhost:4141`。本地探针经 History API 取真实 entry，详见 memory `empirical-probe-via-history-api`。

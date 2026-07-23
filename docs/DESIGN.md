@@ -18,7 +18,7 @@
 | HTTP 服务器 | `Bun.serve()` | `@hono/node-server` | `lib/serve.ts` |
 | WebSocket | `hono/bun` | `@hono/node-ws` | `lib/ws/adapter.ts` |
 | SQLite | `bun:sqlite` | `node:sqlite`（Node ≥22.5） | `lib/sqlite/driver.ts`（History V2 removal Phase 0 从 `lib/history/sqlite/driver.ts` relocate 到中性位置——4+ 非 history 消费者共享） |
-| 上游 fetch / keepalive | **https → `node:http2`**（h2 session 池 + Response 适配器 + createConnection `setKeepAlive`）；http → `undici/index.js`（子路径绕 Bun shim） | https → `node:http2`；http → `undici/index.js`（Node 本就真 undici） | `transport/http2-client.ts` / `transport/upstream-fetch.ts` / `lib/proxy.ts`，见 skill `debugging-ghc-api-upstream-transport` |
+| 上游 fetch / keepalive | **https → `node:http2`**（h2 session 池：`acquireSession` 容量选路 `Map<origin,entry[]>` + reservation + per-session 并发 cap（N=1 消 blast-radius）+ per-origin 总 session 硬 cap（阻塞式 + lease token）+ idle-reap；Response 适配器 + createConnection `setKeepAlive`；流错误结构化 tag `packages/foundation/src/error/transport-reason.ts`（别名 `~/lib/error/transport-reason`））；http → `undici/index.js`（子路径绕 Bun shim） | https → `node:http2`；http → `undici/index.js`（Node 本就真 undici） | `transport/http2-client.ts` / `transport/upstream-fetch.ts` / `lib/proxy.ts`，见 skill `debugging-ghc-api-upstream-transport` |
 | 代理 | https 上游在 node:http2 隧道层 honor 代理（`transport/proxy-connect.ts`：HTTP/HTTPS CONNECT 手搓 over raw net/tls + SOCKS5 via `socks`，**Bun/Node 两端**——SOCKS5 不再在 Bun 拒绝）；明文 http SearXNG 仍走 undici dispatcher（ProxyAgent / EnvProxyDispatcher，经 upstream-fetch 显式传） | 同左 + 明文 http 另经 `setGlobalDispatcher` | `lib/proxy.ts` / `transport/proxy-connect.ts` / `transport/http2-client.ts`，见 [spec/upstream-http2-transport.md](spec/upstream-http2-transport.md) §2.3 |
 
 #### 依赖选型原则：bun-first
