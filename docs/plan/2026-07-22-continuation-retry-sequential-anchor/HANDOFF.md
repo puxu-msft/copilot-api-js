@@ -1,6 +1,6 @@
 # 交接 + 分析:续写重试 + 顺序 anchor（continuation-retry & sequential-anchor）
 
-> 状态：**P2(Anthropic 续写)已完整落地并端到端验证,分支 `feat/continuation-retry`(隔离 worktree,未合并 master)**。日期更新 2026-07-23。
+> 状态：**P2(Anthropic 续写)已完整落地并端到端验证,分支 `feat/continuation-retry`(隔离 worktree,已 FF 合并 master de37feff)**。日期更新 2026-07-23。
 > 权威 spec：[`docs/spec/2026-07-22-continuation-retry-and-sequential-anchor.md`](../../spec/2026-07-22-continuation-retry-and-sequential-anchor.md)(含实施状态+端点矩阵)+ [ADR](../../decisions/2026-07-22-continuation-retry-sequential-anchor.md)(Accepted)。**P2 落地权威记录见 [plan-2b §11](plan-2b-continuation-executor.md)**。
 
 > **⚠️ 2026-07-23 更新:P2 = Anthropic 续写全链路已 landed**。ADR 经用户裁决(D2 反转:退役空-text 保活→默认 ping+块级顺序输出保 CLI-safety;D3 细化:完整可交互 tool_use 不续写、thinking 发客户端不进合成前缀)。实现:SSOT `continued` verdict → `coordinator.runContinuation` → driver committedAny 旁路缝合分支(wire-index offset + message_start dedup,C3 mutation-verified)→ handler 生产接线 → telemetry 拆分。**真 `@anthropic-ai/sdk` e2e 证缝合流**(含 thinking-offset + chained 多跳)。合并态异模型审 2 Critical + 2 Important 已修(History projection stale-branch 修复、续写预算超候选上限优雅降级、synthetic provenance 缺口记 backlog)。full `test:backend` **exit 0**(先前误判为「预存」的 4 个 History V3 fail 实为 stale-branch bug,已修)。**剩余非 P2**:P3 incident e2e、P4-P6 CC/Responses 续写、P7 默认翻转(依赖 >300s keepalive)、synthetic provenance marker(backlog)。下方 §1-§8 是 P0/P1 阶段的历史交接,保留供追溯。

@@ -137,7 +137,7 @@ if (canContinue) { continuationCount++; /* → runContinuation（§4）*/ }
 
 > **状态**：Critical 全部在计划层已修正。进入实现前**建议再过一轮异模型审确认修正到位**（尤其 §4 帧变换链画完后），或直接进实现并在 executor 落地后合并态审。
 
-## 11. 落地记录（2026-07-23,分支 `feat/continuation-retry`,未合并 master）
+## 11. 落地记录（2026-07-23,分支 `feat/continuation-retry`,已 FF 合并 master de37feff）
 
 P2(Anthropic 续写)**已完整落地并端到端验证**。提交序:
 
