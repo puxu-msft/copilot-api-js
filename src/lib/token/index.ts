@@ -19,5 +19,8 @@ export { EnvTokenProvider } from "./providers/env"
 
 export { FileTokenProvider } from "./providers/file"
 
+// Composition root (the token domain's assembly entry point)
+export { createTokenRuntime, type TokenRuntime, type TokenRuntimeManagers } from "./runtime"
+
 // Types
 export type { CopilotTokenInfo, TokenInfo, TokenSource, TokenValidationResult } from "./types"

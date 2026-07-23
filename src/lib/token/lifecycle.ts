@@ -1,34 +1,32 @@
 /**
- * Token manager lifecycle — global singleton instances and init/teardown helpers.
+ * Token manager lifecycle — legacy façades over a single {@link TokenRuntime}.
  *
- * Holds the process-wide GitHubTokenManager + CopilotTokenManager. Keep state
- * declarations and the functions that mutate them in this single file so we
- * cannot accidentally end up with two competing instances via duplicate
- * declarations across barrel files.
+ * These module-level functions are the historical public surface
+ * (`initTokenManagers` / `getGitHubTokenManager` / `getCopilotTokenManager` /
+ * `stopTokenRefresh` / `ensureValidCopilotToken`). They now delegate to one
+ * process-wide runtime instance owned here, so there is still exactly one
+ * `GitHubTokenManager` + `CopilotTokenManager` pair.
+ *
+ * C4 replaces these façades with an installed `TokenRuntime` singleton read via
+ * `getTokenRuntime()` at every construction chain and lifecycle-op consumer, at
+ * which point the module-level escape exports below are deleted. Until then this
+ * file bridges old callers onto the new runtime without changing any consumer.
  */
 
-import consola from "consola"
-
-import {
+import type { CopilotTokenManager } from "./copilot-token-manager"
+import type { GitHubTokenManager } from "./github-token-manager"
+import type {
   //
-  setGitHubToken,
-  setTokenState,
-} from "~/lib/state"
-import { getTokenReadView } from "~/lib/state-readers/token"
-import { writeSensitiveOnce } from "~/lib/tui/sensitive-output"
+  InitTokenManagersOptions,
+  TokenRuntime,
+} from "./runtime"
 
-import { CopilotTokenManager } from "./copilot-token-manager"
-import { getGitHubUser } from "./github-client"
-import { GitHubTokenManager } from "./github-token-manager"
+import { createTokenRuntime } from "./runtime"
 
-/** Global manager instances */
-let githubTokenManager: GitHubTokenManager | null = null
-let copilotTokenManager: CopilotTokenManager | null = null
+export type { InitTokenManagersOptions } from "./runtime"
 
-export interface InitTokenManagersOptions {
-  /** Token provided via CLI --github-token argument */
-  cliToken?: string
-}
+/** The single process-wide runtime the façades delegate to. */
+const runtime: TokenRuntime = createTokenRuntime()
 
 /**
  * Initialize the token management system.
@@ -38,94 +36,21 @@ export async function initTokenManagers(options: InitTokenManagersOptions = {}):
   githubTokenManager: GitHubTokenManager
   copilotTokenManager: CopilotTokenManager
 }> {
-  // Create GitHub token manager
-  githubTokenManager = new GitHubTokenManager({
-    cliToken: options.cliToken,
-    validateOnInit: false, // We'll validate manually to show login info
-    onTokenExpired: () => {
-      consola.error("GitHub token has expired. Please run `copilot-api auth` to re-authenticate.")
-    },
-  })
-
-  // Get GitHub token
-  const tokenInfo = await githubTokenManager.getToken()
-  setGitHubToken(tokenInfo.token)
-  setTokenState({ tokenInfo })
-
-  // Log token source
-  const isExplicitToken = tokenInfo.source === "cli" || tokenInfo.source === "env"
-  switch (tokenInfo.source) {
-    case "cli": {
-      consola.info("Using provided GitHub token (from CLI)")
-
-      break
-    }
-    case "env": {
-      consola.info("Using GitHub token from environment variable")
-
-      break
-    }
-    case "file": {
-      // File is the default, no need to log
-
-      break
-    }
-    // No default
-  }
-
-  // Show token if configured
-  if (getTokenReadView().showGitHubToken && !writeSensitiveOnce("github-token", "GitHub token", tokenInfo.token)) {
-    consola.warn("GitHub token display requested, but no healthy interactive terminal is available")
-  }
-
-  // Validate and show user info
-  // If the token was explicitly provided (CLI or env), give a clear error and abort on failure
-  try {
-    const user = await getGitHubUser()
-    consola.info(`Logged in as ${user.login}`)
-  } catch (error) {
-    if (isExplicitToken) {
-      const source = tokenInfo.source === "cli" ? "--github-token" : "environment variable"
-      consola.error(`The GitHub token provided via ${source} is invalid or expired.`, error instanceof Error ? error.message : error)
-      process.exit(1)
-    }
-    throw error
-  }
-
-  // Create Copilot token manager
-  copilotTokenManager = new CopilotTokenManager({
-    githubTokenManager,
-  })
-
-  // Initialize Copilot token
-  // If the token was explicitly provided and Copilot rejects it, abort with clear error
-  try {
-    const copilotTokenInfo = await copilotTokenManager.initialize()
-    setTokenState({ copilotTokenInfo })
-  } catch (error) {
-    if (isExplicitToken) {
-      const source = tokenInfo.source === "cli" ? "--github-token" : "environment variable"
-      consola.error(`The GitHub token provided via ${source} does not have Copilot access.`, error instanceof Error ? error.message : error)
-      process.exit(1)
-    }
-    throw error
-  }
-
-  return { githubTokenManager, copilotTokenManager }
+  return runtime.initialize(options)
 }
 
 /**
  * Get the global GitHub token manager instance.
  */
 export function getGitHubTokenManager(): GitHubTokenManager | null {
-  return githubTokenManager
+  return runtime.getGitHubTokenManager()
 }
 
 /**
  * Get the global Copilot token manager instance.
  */
 export function getCopilotTokenManager(): CopilotTokenManager | null {
-  return copilotTokenManager
+  return runtime.getCopilotTokenManager()
 }
 
 /**
@@ -133,7 +58,7 @@ export function getCopilotTokenManager(): CopilotTokenManager | null {
  * Call this during cleanup/shutdown.
  */
 export function stopTokenRefresh(): void {
-  copilotTokenManager?.stopAutoRefresh()
+  void runtime.dispose()
 }
 
 /**
@@ -142,5 +67,5 @@ export function stopTokenRefresh(): void {
  * background refresh failed. No-op if the manager is not initialized.
  */
 export async function ensureValidCopilotToken(): Promise<void> {
-  await copilotTokenManager?.ensureValidToken()
+  await runtime.ensureValidCopilotToken()
 }
