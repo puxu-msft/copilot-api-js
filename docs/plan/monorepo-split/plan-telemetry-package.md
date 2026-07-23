@@ -4,6 +4,8 @@
 >
 > **评审折入摘要（2026-07-23）**：GPT reviewer 确认 (b) 范围正确、三环 #34/#35/#36 确实被打断（无残留回边、无 config 双 SoT），并抓出 3 个 architect 漏项——① JSON backfill 是 post-listen 生命周期调用（§3 runtime API 补 `runJsonBackfill` + §4 矩阵补 start.ts:593 + §6 T2 保序）；② telemetry 无 token 式 setStateForTests-shim，~21 测试直调 lifecycle/record API，删导出与「零 churn」矛盾（§5 补 package-owned `testing` 入口 + 迁移表）；③ `sketchGamma` 是 DB-open 时冻结的数据正确性不变量、**不能**当 live config 值（§3.1 补逐字段 config 生命周期分类 + `effectiveSketchGamma` runtime 私有）。2 MINOR：边界守卫改 allowlist（§7）、config 字段 11 非 12。均已折入。
 >
+> **⏳ 实施状态（2026-07-23）**：**T0 已 landed**（`8a762437`，`sqlite/{driver,compression}` 上提 foundation，test:backend 6317/0），在 **worktree `.worktrees/telemetry-peel` 分支 `feat/telemetry-package`**（从 master `8d156969` 起，含 A 的 SCC 守卫 + 本 plan）。**剩余 T1→T2→T3→T4→T5 待续**（见 §6 闭合 commit DAG）。执行前核实已做：D3 `lib/sqlite` 无并发占用 ✓、madge 三环含 telemetry ✓、D5 坐实 `ui-v4/src/types/status.ts` import `~backend/lib/request-telemetry`（T5 须同步 ui-v4 别名）。**T0 尚未合 master**（留分支等续跑，或经用户许可先合——它独立、利好 history）。接手 kickoff 见文末。
+>
 > **调研基座（2026-07-23，worktree `feat/monorepo-scc-guards` == master + 两条新 SCC 守卫）**：本 plan 的依赖盘点、消费者矩阵、SCC 归属均 grep 实测带 `file:line`；核心结论 = telemetry 与 token 在**所有权形态**上根本不同（telemetry 是 config 的**只读消费者**、不 own 任何 `state` 字段），因此**无 token C5 式的 SoT 反转**，但**有 token 没有的 module-split**（`telemetry-dimensions.ts` 须劈成 name-registry ⊂ package + extractors ⊂ core）。
 >
 > **判据（本 plan 一律按此，禁 ROI/YAGNI 砍范围）**：长远正确 + 完整 > 短期省事；架构健康 / 边界硬度 > 向后兼容 / 回归风险 / 迁移麻烦。承重 invariant：抽出包**对 core 零依赖**（机器可验证边界守卫）、单一 SoT（无双 SoT）、行为逐字节不变。
