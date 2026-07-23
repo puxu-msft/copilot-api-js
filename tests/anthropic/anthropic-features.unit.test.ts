@@ -528,3 +528,55 @@ describe("modelHasAdaptiveThinking / modelRequiresEnabledThinking — pinned to 
     expect(modelRequiresEnabledThinking(undefined)).toBe(false)
   })
 })
+
+describe("model_capabilities glob + negation (spec 2026-07-23)", () => {
+  const snapshot = snapshotStateForTests()
+  afterEach(() => restoreStateForTests(snapshot))
+
+  test("glob positive + ! negation on contextEditingModels", () => {
+    setStateForTests({ contextEditingModels: ["claude-*", "!claude-haiku-*"] })
+    expect(modelSupportsContextEditing("claude-opus-4.8")).toBe(true)
+    expect(modelSupportsContextEditing("claude-haiku-4.5")).toBe(false) // excluded
+    expect(modelSupportsContextEditing("gpt-4")).toBe(false) // no positive hit
+  })
+
+  test("glob on interleavedThinkingModels", () => {
+    setStateForTests({ interleavedThinkingModels: ["claude-sonnet-4-*"] })
+    expect(modelSupportsInterleavedThinking("claude-sonnet-4.5")).toBe(true)
+    expect(modelSupportsInterleavedThinking("claude-sonnet-40")).toBe(false)
+  })
+
+  test("glob on memoryModels with negation", () => {
+    setStateForTests({ memoryModels: ["claude-*", "!claude-opus-4-1"] })
+    expect(modelSupportsMemory("claude-opus-4.8")).toBe(true)
+    expect(modelSupportsMemory("claude-opus-4.1")).toBe(false)
+  })
+
+  test("glob on extendedCacheTtlModels", () => {
+    setStateForTests({ extendedCacheTtlModels: ["claude-opus-4-*"] })
+    expect(modelSupportsExtendedCacheTtl("claude-opus-4.8")).toBe(true)
+    expect(modelSupportsExtendedCacheTtl("claude-opus-40")).toBe(false)
+  })
+
+  test("glob + negation on adaptiveThinkingModels (consumer = modelHasAdaptiveThinking, metadata-silent)", () => {
+    // adaptive_thinking's consumer is modelHasAdaptiveThinking, NOT a modelSupports* fn.
+    // Name-list only kicks in when /models metadata is silent — pass no resolvedModel.
+    setStateForTests({ adaptiveThinkingModels: ["claude-*", "!claude-haiku-*"] })
+    expect(modelHasAdaptiveThinking("claude-opus-4.8")).toBe(true)
+    expect(modelHasAdaptiveThinking("claude-haiku-4.5")).toBe(false) // excluded
+    // positive mutation: drop the negative → Haiku flips to true (proves the ! leg is live)
+    setStateForTests({ adaptiveThinkingModels: ["claude-*"] })
+    expect(modelHasAdaptiveThinking("claude-haiku-4.5")).toBe(true)
+  })
+
+  test("metadata adaptive_thinking:true still wins over the name-list (metadata-first intact)", () => {
+    const withSupports = { capabilities: { supports: { adaptive_thinking: true } } } as unknown as Parameters<typeof modelHasAdaptiveThinking>[1]
+    setStateForTests({ adaptiveThinkingModels: ["!claude-*"] }) // name-list would deny…
+    expect(modelHasAdaptiveThinking("claude-opus-4.8", withSupports)).toBe(true) // …but metadata true wins
+  })
+
+  test("only-negation list yields empty capability set", () => {
+    setStateForTests({ contextEditingModels: ["!claude-haiku-*"] })
+    expect(modelSupportsContextEditing("claude-opus-4.8")).toBe(false)
+  })
+})

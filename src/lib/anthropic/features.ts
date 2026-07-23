@@ -17,6 +17,7 @@ import {
   ENDPOINT,
   isEndpointSupported,
 } from "~/lib/models/endpoint"
+import { modelMatchesPatternList } from "~/lib/models/model-pattern"
 import { normalizeForMatching } from "~/lib/models/resolver"
 import { state } from "~/lib/state"
 
@@ -55,6 +56,11 @@ export function supportsDirectAnthropicApi(modelId: string): ApiRoutingDecision 
 /**
  * Match a model against a config-driven capability allowlist of model-name "family" prefixes.
  *
+ * Delegates to `modelMatchesPatternList` (model-pattern.ts): each list entry is a family prefix
+ * (dash-boundary, byte-for-byte the legacy semantics) UNLESS it contains a glob metachar (`*`/`?`),
+ * and a `!`-prefixed entry SUBTRACTS (self-contained list, exclusion-always-wins, order-independent).
+ * See docs/spec/2026-07-23-model-capabilities-glob-and-negation.md.
+ *
  * A prefix `p` matches when `normalize(x) === normalize(p)` OR `normalize(x)` starts with
  * `normalize(p) + "-"`, for `x` in {modelId, family}. The trailing-dash boundary is what makes
  * `claude-opus-4` match the bare `claude-opus-4` and the whole `claude-opus-4-x` family, WITHOUT
@@ -69,11 +75,7 @@ export function supportsDirectAnthropicApi(modelId: string): ApiRoutingDecision 
  * more-correct divergence that avoids prefix-accident false positives.
  */
 function matchModelCapability(modelId: string, prefixes: ReadonlyArray<string>, family?: string): boolean {
-  const candidates = family ? [normalizeForMatching(modelId), normalizeForMatching(family)] : [normalizeForMatching(modelId)]
-  return prefixes.some((p) => {
-    const np = normalizeForMatching(p)
-    return candidates.some((n) => n === np || n.startsWith(`${np}-`))
-  })
+  return modelMatchesPatternList(modelId, prefixes, family)
 }
 
 /**
