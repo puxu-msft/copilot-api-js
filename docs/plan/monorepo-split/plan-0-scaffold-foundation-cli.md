@@ -22,6 +22,8 @@ Phase 0 依赖两个未验证机制，**Task 1 是 PoC gate，不过不得进 Ta
 1. 根 tsconfig `paths` 加 `~/lib/<x>/*` → `packages/foundation/src/<x>/*` 子路径映射后，**bun test / tsc / tsdown 三者都能解析**（bun 运行时对 tsconfig paths 的支持是关键未知）。
 2. tsdown 从 `src/main.ts` 入口沿 workspace 包 import bundle 时对 `workspace:*` 依赖是内联（期望）还是外联。
 
+> **✅ PoC 结论（2026-07-23，Task 1 已执行，gate PASS）**：两者均验证可行。(a) `~/lib/<x>/*` 精确映射（排在 `~/*` 通配前）被 **bun run / bun test / tsc(skipLibCheck) 三者解析**，负对照（去映射→tsc 报 `Cannot find module`）证明是映射本身生效——**搬迁叶子后旧 `~/lib/x` import 零改仍解析**；(b) tsdown **内联** 别名依赖进单产物——Phase 3 build 保持单入口、不给每包出 dist。详见 worktree 内 `exp/monorepo-split/tsdown-poc/FINDINGS.md`（gitignore、本地）。
+
 ---
 
 ## File Structure
