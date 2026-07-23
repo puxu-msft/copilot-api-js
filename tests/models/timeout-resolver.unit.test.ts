@@ -119,3 +119,11 @@ describe("key-space consistency (LOW — spec §5.4 review tail)", () => {
     expect(resolveResponseHeaderTimeoutSec("gpt-5.5")).toBe(resolveResponseHeaderTimeoutSec("gpt-5-5"))
   })
 })
+
+describe("blast-radius: glob keys route through resolveStreamIdleTimeoutSec (spec 2026-07-23)", () => {
+  test("glob key resolves; literal outranks glob", () => {
+    setStateForTests({ streamIdleTimeoutOverrides: { "claude-*": 600, "claude-opus-4-8": 900 } })
+    expect(resolveStreamIdleTimeoutSec("claude-sonnet-4.6")).toBe(600) // glob hit
+    expect(resolveStreamIdleTimeoutSec("claude-opus-4.8")).toBe(900) // literal outranks glob
+  })
+})

@@ -580,3 +580,23 @@ describe("model_capabilities glob + negation (spec 2026-07-23)", () => {
     expect(modelSupportsContextEditing("claude-opus-4.8")).toBe(false)
   })
 })
+
+describe("toolSearchOverrides glob keys (spec 2026-07-23)", () => {
+  const snapshot = snapshotStateForTests()
+  afterEach(() => restoreStateForTests(snapshot))
+
+  test("glob key force-disables a family", () => {
+    setStateForTests({ toolSearchOverrides: { "claude-*": false } })
+    // Positive-first: claude-opus-4.8 is default-allow TRUE; the glob override flips it to false.
+    expect(modelSupportsToolSearch("claude-opus-4.8")).toBe(false)
+    // Mutation control: drop the override → it flips back to true (proves the glob leg is live).
+    setStateForTests({ toolSearchOverrides: {} })
+    expect(modelSupportsToolSearch("claude-opus-4.8")).toBe(true)
+  })
+
+  test("literal key outranks glob key", () => {
+    setStateForTests({ toolSearchOverrides: { "claude-*": false, "claude-opus-4-8": true } })
+    expect(modelSupportsToolSearch("claude-opus-4.8")).toBe(true) // literal wins over glob
+    expect(modelSupportsToolSearch("claude-sonnet-4.6")).toBe(false) // only glob matches
+  })
+})

@@ -87,3 +87,34 @@ describe("normalized matching (dot/hyphen/case spelling differences)", () => {
     expect(collectAllMatching("claude-opus-4.8", patterns).flat().sort()).toEqual(["base", "beta-x"])
   })
 })
+
+describe("glob keys + specificity ordering (spec 2026-07-23)", () => {
+  test("plain key keeps substring; glob key anchored", () => {
+    expect(findMostSpecific("claude-opus-4-7-high", { "claude-opus-4-7": ["a"] })).toEqual(["a"])
+    expect(findMostSpecific("claude-opus-4-8", { "claude-*": ["g"] })).toEqual(["g"])
+    expect(findMostSpecific("xclaude", { "claude-*": ["g"] })).toBeUndefined() // anchored, not substring
+  })
+
+  test("literal key outranks glob key even when glob string is longer", () => {
+    // "*claude-opus-4-8" (glob) vs "claude-opus-4-8" (literal): literal must win despite the
+    // glob key string being longer.
+    const patterns = { "claude-opus-4-8": ["literal"], "*claude-opus-4-8": ["glob"] }
+    expect(findMostSpecific("claude-opus-4-8", patterns)).toEqual(["literal"])
+  })
+
+  test("among glob keys, longest literal length wins", () => {
+    const patterns = { "claude-*": ["broad"], "claude-opus-*": ["narrow"] }
+    expect(findMostSpecific("claude-opus-4-8", patterns)).toEqual(["narrow"])
+  })
+
+  test('"*" wildcard stays last-resort under glob keys', () => {
+    const patterns = { "claude-*": ["g"], "*": ["fallback"] }
+    expect(findMostSpecific("claude-opus-4-8", patterns)).toEqual(["g"])
+    expect(findMostSpecific("gpt-4", patterns)).toEqual(["fallback"])
+  })
+
+  test("collectAllMatching unions glob + plain keys", () => {
+    const patterns = { "claude-*": ["glob"], "claude-opus-4-8": ["exact"], "*": ["base"] }
+    expect(collectAllMatching("claude-opus-4-8", patterns).flat().sort()).toEqual(["base", "exact", "glob"])
+  })
+})
