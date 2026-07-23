@@ -222,9 +222,9 @@ const CLIENT_IDLE_DEADLINE_SEC = 60
 // Cap leaves a LARGE margin (≥20s) under the deadline — not just 1 tick. Even a jittery interval must
 // never approach 60s; the empirical safe ceiling is ~45s (ping@45s kept CC alive), so 40 sits inside it.
 export const KEEPALIVE_CADENCE_MAX = CLIENT_IDLE_DEADLINE_SEC - 20
-// This starts equal to KEEPALIVE_CADENCE_MAX for behavior neutrality. Its physical safety boundary is
-// the pre-header client tolerance, not the post-commit body-idle deadline; Task 1.2 raises it from Q1.
-export const COMMIT_WINDOW_MAX_SEC = KEEPALIVE_CADENCE_MAX
+// Its physical safety boundary is the pre-header client tolerance, not the post-commit body-idle deadline.
+// Q1 measured real Claude Code 2.1.218 safely waiting 125s before HTTP response headers; this known-safe floor is the current configurable ceiling pending a first-failure measurement (see exp/silence-recovery-gates/FINDINGS.md).
+export const COMMIT_WINDOW_MAX_SEC = 125
 let warnedKeepaliveClamp = false
 
 /** Clamp a post-commit keepalive interval (0 = disabled) to stay WELL below the client idle deadline; warn once. */
@@ -245,7 +245,7 @@ export function clampCommitWindowSec(sec: number): number {
   if (!warnedKeepaliveClamp) {
     warnedKeepaliveClamp = true
     consola.warn(
-      `keepalive interval ${sec}s leaves too little margin under the ~${CLIENT_IDLE_DEADLINE_SEC}s client idle deadline — clamped to ${COMMIT_WINDOW_MAX_SEC}s`,
+      `delayed-commit window ${sec}s exceeds the measured Claude Code pre-header safety floor — clamped to ${COMMIT_WINDOW_MAX_SEC}s`,
     )
   }
   return COMMIT_WINDOW_MAX_SEC
