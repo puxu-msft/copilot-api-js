@@ -34,6 +34,7 @@
 5. **监管 = 主进程 spawn + 指数退避重启 + crash-loop 上限**，挂进 History 关闭顺序。
    - **⚠ crash-loop 上限（审查 major）**：指数退避须有上限 +「连续失败 N 次进入长期冷却 / 停止自动重启」，避免持续畸形输入令 sidecar 反复 abort 烧 CPU/日志。`/api/status.history_search` 暴露「是否已放弃自动重启」布尔量。
    - socket `error` 事件（监管器 + UDS client）**必须挂 listener**（否则冒泡成主进程 uncaughtException → exit(1)，[[debugging-server-crashes]] 放大链）。
+     - **⚠ 实施后补丁（2026-07-22，commit `6729efc7`）**：这条预言的风险真发生了——但「挂 listener」的**顺序**才是关键。原实现 `net.connect(path)` 后才 `withErrorSink(socket)`，看似满足本条，实则在 `Bun.serve` 请求处理器上下文里 ENOENT `'error'` 抢在 post-connect listener 之前投递 → 真的 `exit(1)`（sidecar 未起时任何 `/api/search` 打崩主服务器）。旧验证脱离请求处理器跑=false-green。根因修=`new net.Socket()` + listener-before-connect（最后才 `socket.connect()`）。详见 skill `bun-node-runtime-gotchas`「net.connect() ENOENT」节 + `uds-transport.it.test.ts` 的 faithful spawned-child oracle。
 6. **status 降级**：主进程不再有 in-process `getTantivySearchStatus()`；改报「sidecar 存活 + 上次 UDS 延迟/错误 + 是否放弃重启」。
 
 ## 复用 / 搬迁
