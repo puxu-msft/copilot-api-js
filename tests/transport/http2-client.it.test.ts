@@ -573,3 +573,90 @@ describe("http2-client pool (C4: idle-session reaping)", () => {
     expect(getH2SessionStatusSnapshot()).toHaveLength(1)
   })
 })
+
+// per-origin total-session HARD cap: at cap with every session busy, a new
+// request BLOCKS (upstream-side) until a stream closes, then proceeds — it is
+// never dropped, and never grows the pool past cap. The client-facing keepalive
+// is a separate handler-layer concern (delayed-commit), not tested here.
+describe("http2-client pool (per-origin session HARD cap — block until a slot frees)", () => {
+  afterEach(() => setUpstreamTransportConfig({ maxConcurrentStreamsPerSession: 1, maxSessionsPerOrigin: 0 }))
+
+  test("at cap with all sessions busy, a new request BLOCKS then proceeds when a slot frees", async () => {
+    // N=1, cap=2 → at most 2 concurrent in-flight streams for the origin.
+    setUpstreamTransportConfig({ maxConcurrentStreamsPerSession: 1, maxSessionsPerOrigin: 2, h2IdleSessionTimeout: 0 })
+    const openStreams: Array<http2.ServerHttp2Stream> = []
+    handler = (stream) => {
+      stream.respond({ ":status": 200 })
+      openStreams.push(stream)
+      // held open until the test ends each stream explicitly
+    }
+    try {
+      // Two concurrent requests fill the cap (2 sessions, both busy).
+      const a = http2Fetch(`${url}/a`, {})
+      const b = http2Fetch(`${url}/b`, {})
+      await waitUntil(() => openStreams.length === 2)
+      expect(getH2SessionStatusSnapshot()).toHaveLength(2)
+
+      // A third request must BLOCK (no server stream opens for it) — pool stays at 2.
+      let cThirdResolved = false
+      const c = http2Fetch(`${url}/c`, {}).then((r) => {
+        cThirdResolved = true
+        return r
+      })
+      await new Promise((r) => setTimeout(r, 100))
+      expect(openStreams.length).toBe(2) // still blocked — no 3rd server stream
+      expect(cThirdResolved).toBe(false)
+      expect(getH2SessionStatusSnapshot().length).toBeLessThanOrEqual(2)
+
+      // Free a slot: finish the first stream. The blocked third now proceeds.
+      openStreams[0]?.end("ok")
+      await waitUntil(() => openStreams.length === 3, { timeout: 2000, label: "blocked req unblocks" })
+      openStreams[1]?.end("ok")
+      openStreams[2]?.end("ok")
+      const [ra, rb, rc] = await Promise.all([a, b, c])
+      await Promise.all([ra.text(), rb.text(), rc.text()])
+      expect(cThirdResolved).toBe(true)
+      expect(getH2SessionStatusSnapshot().length).toBeLessThanOrEqual(2)
+    } finally {
+      for (const s of openStreams) {
+        try {
+          s.end()
+        } catch {
+          /* already ended */
+        }
+      }
+    }
+  })
+
+  test("a blocked over-cap request is released by client abort (not left hanging)", async () => {
+    setUpstreamTransportConfig({ maxConcurrentStreamsPerSession: 1, maxSessionsPerOrigin: 1, h2IdleSessionTimeout: 0 })
+    const openStreams: Array<http2.ServerHttp2Stream> = []
+    handler = (stream) => {
+      stream.respond({ ":status": 200 })
+      openStreams.push(stream)
+    }
+    try {
+      const held = http2Fetch(`${url}/held`, {})
+      await waitUntil(() => openStreams.length === 1)
+      // Second request blocks at the cap (1); abort it → must reject promptly.
+      const ac = new AbortController()
+      const blocked = http2Fetch(`${url}/blocked`, { signal: ac.signal })
+      await new Promise((r) => setTimeout(r, 50))
+      expect(openStreams.length).toBe(1) // still blocked
+      ac.abort()
+      await expect(blocked).rejects.toThrow(/abort/i)
+      // The holder is unaffected.
+      openStreams[0]?.end("ok")
+      const r = await held
+      await r.text()
+    } finally {
+      for (const s of openStreams) {
+        try {
+          s.end()
+        } catch {
+          /* already ended */
+        }
+      }
+    }
+  })
+})

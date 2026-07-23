@@ -101,6 +101,15 @@ export function getUpstreamMaxStreamsPerSession(): number {
 }
 
 /**
+ * Soft cap on total live h2 sessions per origin (0 = unlimited), from
+ * `state.maxSessionsPerOrigin`. Read fresh by http2-client.ts before opening a
+ * new session (evict-one-idle if at cap; busy sessions never evicted).
+ */
+export function getUpstreamMaxSessionsPerOrigin(): number {
+  return state.maxSessionsPerOrigin
+}
+
+/**
  * Idle timeout (ms) for a pooled h2 session with no in-flight streams before it
  * is proactively closed (0 = never), from `state.h2IdleSessionTimeout` (seconds).
  * Read fresh by http2-client.ts when arming an idle-reap timer.

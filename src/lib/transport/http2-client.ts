@@ -32,6 +32,7 @@ import {
   getUpstreamH2IdleSessionTimeoutMs,
   getUpstreamH2PingIntervalMs,
   getUpstreamKeepAliveDelayMs,
+  getUpstreamMaxSessionsPerOrigin,
   getUpstreamMaxStreamsPerSession,
 } from "~/lib/proxy"
 import {
@@ -283,6 +284,68 @@ function getConfiguredMaxStreamsPerSession(): number {
   return getUpstreamMaxStreamsPerSession()
 }
 
+/**
+ * Soft cap on TOTAL live sessions per origin (0 = unlimited), from
+ * `state.maxSessionsPerOrigin` via proxy.ts. A HARD cap: while an origin is at
+ * `cap` sessions and every one is at its concurrent-stream cap
+ * (`maxConcurrentStreamsPerSession`), a new request BLOCKS until a slot frees (a
+ * stream closes → its session becomes reusable, or a session is disposed →
+ * room for a new one) rather than growing the pool unboundedly. Max concurrent
+ * in-flight streams per origin = `maxSessionsPerOrigin × maxConcurrentStreamsPerSession`.
+ */
+function getConfiguredMaxSessionsPerOrigin(): number {
+  return getUpstreamMaxSessionsPerOrigin()
+}
+
+/**
+ * Per-origin FIFO waiters blocked on the total-session hard cap. Woken (one per
+ * event) when a stream closes or a session is disposed for that origin — the
+ * woken acquirer re-attempts {@link tryReserveLiveSession} / creation. Registered
+ * synchronously right after a failed reserve (no await between), so a concurrent
+ * close cannot slip a wake between the check and the wait (no lost wakeup).
+ */
+const originSlotWaiters = new Map<string, Array<() => void>>()
+
+/** Wake ONE waiter for `origin` (a single freed stream slot serves a single waiter). No-op if none. */
+function wakeOriginSlotWaiter(origin: string): void {
+  const q = originSlotWaiters.get(origin)
+  if (!q || q.length === 0) return
+  const waiter = q.shift()
+  if (q.length === 0) originSlotWaiters.delete(origin)
+  waiter?.()
+}
+
+/** Block until a session slot for `origin` frees (or `signal` aborts). Caller then retries acquisition. */
+function waitForOriginSlot(origin: string, signal: AbortSignal | undefined): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(abortError())
+      return
+    }
+    const cleanup = (): void => {
+      const q = originSlotWaiters.get(origin)
+      if (q) {
+        const i = q.indexOf(waiter)
+        if (i !== -1) q.splice(i, 1)
+        if (q.length === 0) originSlotWaiters.delete(origin)
+      }
+      signal?.removeEventListener("abort", onAbort)
+    }
+    const waiter = (): void => {
+      cleanup()
+      resolve()
+    }
+    const onAbort = (): void => {
+      cleanup()
+      reject(abortError())
+    }
+    const q = originSlotWaiters.get(origin)
+    if (q) q.push(waiter)
+    else originSlotWaiters.set(origin, [waiter])
+    signal?.addEventListener("abort", onAbort, { once: true })
+  })
+}
+
 /** Append `entry` to its origin's session array (creating the array on first use). */
 function addSessionEntry(entry: H2SessionEntry): void {
   const arr = sessions.get(entry.origin)
@@ -369,6 +432,7 @@ function releaseReservation(entry: H2SessionEntry): void {
   entry.activeStreamCount -= 1
   maybeReclaimRetiringSession(entry)
   if (entry.activeStreamCount === 0) armIdleTimer(entry)
+  wakeOriginSlotWaiter(entry.origin) // a slot on this origin just freed → let a capped waiter retry
 }
 
 /**
@@ -450,6 +514,7 @@ async function createAndAdmitBornReserved(origin: string): Promise<H2SessionEntr
       clearIdleTimer(entry)
       removeSessionEntry(entry)
       retiringSessions.delete(entry)
+      wakeOriginSlotWaiter(entry.origin) // a session left the pool → room under the per-origin cap
     }
     const retire = (): void => {
       clearIdleTimer(entry) // retiring is reclaimed via maybeReclaimRetiringSession, not idle-reap
@@ -458,6 +523,10 @@ async function createAndAdmitBornReserved(origin: string): Promise<H2SessionEntr
         entry.lifecycle = "retiring"
         retiringSessions.add(entry)
       }
+      // Left the ROUTABLE pool → a per-origin cap slot freed (the cap counts only
+      // routable sessions, not draining retiring ones, so a config reload never
+      // blocks new requests behind old sessions still draining).
+      wakeOriginSlotWaiter(entry.origin)
     }
     session.on("error", dispose)
     session.on("close", dispose)
@@ -470,71 +539,86 @@ async function createAndAdmitBornReserved(origin: string): Promise<H2SessionEntr
 
 /**
  * Acquire a reserved session+entry for `origin`, honoring the per-session
- * concurrent-stream cap. The returned entry holds exactly ONE reservation the
- * caller must either transfer to a live stream ({@link runHttp2Fetch}'s
- * `req.once("close")` decrement) or release ({@link releaseReservation}).
+ * concurrent-stream cap AND the per-origin total-session hard cap. The returned
+ * entry holds exactly ONE reservation the caller must either transfer to a live
+ * stream ({@link runHttp2Fetch}'s `req.once("close")` decrement) or release
+ * ({@link releaseReservation}).
  *
- * - Cap hit on a live session → reuse it (synchronous reserve, race-free).
- * - Miss + `n === 0` + an in-flight cold-start creation exists → JOIN it and
- *   reserve on the shared entry, so concurrent cold-start callers converge on one
- *   session (byte-equivalent to the old per-origin connect dedup).
- * - Otherwise → connect a new born-reserved session. For `n >= 1` each missing
- *   caller connects its own (the isolation the incident calls for); only the
- *   `n === 0` path shares via {@link pending}.
+ * - Reusable live session (under its stream cap) → reserve it (synchronous, race-free).
+ * - Miss + `n === 0` + an in-flight cold-start creation exists → JOIN it.
+ * - Miss + under the per-origin session cap → connect a new born-reserved session.
+ * - Miss + AT the per-origin session cap (every session busy at its stream cap) →
+ *   BLOCK until a stream closes / a session is disposed for this origin (the wake
+ *   is FIFO), then retry. The block is bounded by `signal` (client abort, reaper,
+ *   and the header-wait timeout are folded into the upstream fetch signal), and
+ *   the request-lifecycle keepalive (handler-v4 delayed-commit) keeps the CLIENT
+ *   connection alive meanwhile — the block is purely upstream-side.
  */
 async function acquireSession(origin: string, signal: AbortSignal | undefined): Promise<H2SessionEntry> {
   ensureH2ReconcileSubscription()
 
-  const n = getConfiguredMaxStreamsPerSession()
+  for (;;) {
+    if (signal?.aborted) throw abortError()
+    const n = getConfiguredMaxStreamsPerSession()
 
-  const reused = tryReserveLiveSession(origin, n)
-  if (reused) {
-    // The hot path took a reservation synchronously; if this request already
-    // aborted, hand the slot back rather than leaking it (the caller's raceAbort
-    // may have rejected already, so nobody downstream will release it).
+    const reused = tryReserveLiveSession(origin, n)
+    if (reused) {
+      // The hot path took a reservation synchronously; if this request already
+      // aborted, hand the slot back rather than leaking it (the caller's raceAbort
+      // may have rejected already, so nobody downstream will release it).
+      if (signal?.aborted) {
+        releaseReservation(reused)
+        throw abortError()
+      }
+      return reused
+    }
+
+    // No reusable session — we must create one. First honor the per-origin total
+    // hard cap: at cap (every session busy at its stream cap, else tryReserve
+    // would have hit), BLOCK for a freed slot rather than growing the pool.
+    const cap = getConfiguredMaxSessionsPerOrigin()
+    if (cap > 0 && (sessions.get(origin)?.length ?? 0) >= cap) {
+      await waitForOriginSlot(origin, signal) // throws on abort; resolves on a freed slot
+      continue // re-attempt reserve/create from the top (state may have changed)
+    }
+
+    // Cold-start dedup is only wanted when unlimited (n === 0): all callers should
+    // converge on one multiplexed session. Under a finite cap each missing caller
+    // needs its own session, so pending is neither read nor written there.
+    let entry: H2SessionEntry
+    if (n === 0) {
+      const inflight = pending.get(origin)
+      if (inflight) {
+        entry = await inflight
+        // Defensive symmetry with tryReserveLiveSession's reserve (which clears the
+        // idle timer): a joined entry is a still-in-creation born-reserved session
+        // that cannot yet have been idle-armed, so this is a no-op TODAY — but it
+        // keeps "reserve ⇒ clear idle timer" a single unconditional rule rather than
+        // an implicit timing invariant a future refactor could silently break.
+        clearIdleTimer(entry)
+        entry.activeStreamCount += 1 // reserve on the joined session
+      } else {
+        const creation = createAndAdmitBornReserved(origin)
+        pending.set(origin, creation)
+        try {
+          entry = await creation
+        } finally {
+          // Identity-guarded: only clear if still ours (a later creation may have replaced it).
+          if (pending.get(origin) === creation) pending.delete(origin)
+        }
+      }
+    } else {
+      entry = await createAndAdmitBornReserved(origin)
+    }
+
+    // Post-connect abort check: releasing this caller's own reservation is
+    // independent of any peer sharing the joined session (each holds its own +1).
     if (signal?.aborted) {
-      releaseReservation(reused)
+      releaseReservation(entry)
       throw abortError()
     }
-    return reused
+    return entry
   }
-
-  // Cold-start dedup is only wanted when unlimited (n === 0): all callers should
-  // converge on one multiplexed session. Under a finite cap each missing caller
-  // needs its own session, so pending is neither read nor written there.
-  let entry: H2SessionEntry
-  if (n === 0) {
-    const inflight = pending.get(origin)
-    if (inflight) {
-      entry = await inflight
-      // Defensive symmetry with tryReserveLiveSession's reserve (which clears the
-      // idle timer): a joined entry is a still-in-creation born-reserved session
-      // that cannot yet have been idle-armed, so this is a no-op TODAY — but it
-      // keeps "reserve ⇒ clear idle timer" a single unconditional rule rather than
-      // an implicit timing invariant a future refactor could silently break.
-      clearIdleTimer(entry)
-      entry.activeStreamCount += 1 // reserve on the joined session
-    } else {
-      const creation = createAndAdmitBornReserved(origin)
-      pending.set(origin, creation)
-      try {
-        entry = await creation
-      } finally {
-        // Identity-guarded: only clear if still ours (a later creation may have replaced it).
-        if (pending.get(origin) === creation) pending.delete(origin)
-      }
-    }
-  } else {
-    entry = await createAndAdmitBornReserved(origin)
-  }
-
-  // Post-connect abort check: releasing this caller's own reservation is
-  // independent of any peer sharing the joined session (each holds its own +1).
-  if (signal?.aborted) {
-    releaseReservation(entry)
-    throw abortError()
-  }
-  return entry
 }
 
 /** Lazily subscribe (once) to `onUpstreamTransportChange`, mirroring proxy.ts's `ensureTimeoutSubscription()`. */
@@ -839,6 +923,7 @@ async function runHttp2Fetch(u: URL, init: UpstreamFetchInit): Promise<Response>
       entry.activeStreamCount -= 1
       maybeReclaimRetiringSession(entry)
       if (entry.activeStreamCount === 0) armIdleTimer(entry) // went idle → schedule reap
+      wakeOriginSlotWaiter(entry.origin) // a stream slot freed → session reusable → let a capped waiter retry
       init.onStreamClosed?.()
       resolveRequestClosed()
     })
@@ -1000,6 +1085,14 @@ export function closeHttp2Sessions(): void {
   // closed by their own error handling / GC. Callers drain before close, so this
   // is normally already empty.
   pending.clear()
+  // Wake every per-origin cap waiter: the pool is cleared + poolEpoch bumped, so a
+  // woken waiter re-attempts, finds no session, and (createAndAdmitBornReserved's
+  // shutdown-epoch branch) throws — its request fails cleanly instead of hanging
+  // forever on a slot that will never free. Snapshot the waiter functions first
+  // (each `waiter()` mutates originSlotWaiters).
+  const allWaiters = [...originSlotWaiters.values()].flat()
+  originSlotWaiters.clear()
+  for (const w of allWaiters) w()
   // Reset generation/reconcile bookkeeping — a fully-closed pool has no
   // meaningful "in-progress reconcile" state, and per-test isolation (this
   // function backs the `setHttp2SessionFactoryForTests` RESETTER) requires a

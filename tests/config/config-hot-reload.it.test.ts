@@ -283,6 +283,14 @@ const FIELDS: ReadonlyArray<FieldSpec> = [
     defaultStateValue: CONFIG_MANAGED_DEFAULTS.h2IdleSessionTimeout,
   },
   {
+    configKey: "upstream_transport.http2.max_sessions_per_origin",
+    stateKey: "maxSessionsPerOrigin",
+    // Sample MUST differ from the default (0) so R1/R2 prove the wiring.
+    sampleYamlValue: "8",
+    expectedStateValue: 8,
+    defaultStateValue: CONFIG_MANAGED_DEFAULTS.maxSessionsPerOrigin,
+  },
+  {
     configKey: "upstream_transport.websocket.pooled_connection_idle_timeout",
     stateKey: "pooledConnectionIdleTimeout",
     sampleYamlValue: "60",

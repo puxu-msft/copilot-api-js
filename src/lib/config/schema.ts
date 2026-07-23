@@ -1046,6 +1046,16 @@ export const UpstreamTransportHttp2ConfigSchema = z
      * knob). Hot-reloadable.
      */
     idle_session_timeout: nullableNonnegativeInt(),
+    /**
+     * Soft cap on the TOTAL live h2 sessions per origin (idle + busy, 0 =
+     * unlimited). Under a finite `max_concurrent_streams_per_session` the pool
+     * grows to peak concurrency; this bounds the surplus. WS-pool soft semantics:
+     * over cap, a new session evicts an IDLE one; a busy session is NEVER evicted
+     * (load may transiently exceed the cap rather than block a request). Default 0
+     * (unlimited) — `idle_session_timeout` already converges the long tail; this
+     * only matters for pathological same-origin fan-out. Hot-reloadable.
+     */
+    max_sessions_per_origin: nullableNonnegativeInt(),
   })
   .strict()
 export type UpstreamTransportHttp2Config = z.infer<typeof UpstreamTransportHttp2ConfigSchema>
