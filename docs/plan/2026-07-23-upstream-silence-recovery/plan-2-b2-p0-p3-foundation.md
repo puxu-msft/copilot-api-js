@@ -36,7 +36,7 @@ S1 parse → S1b translateInbound → S2 route/translateOut → S3 rewrite-in
 
 ---
 
-## Task 0.1：配置骨架（纯新增，默认关闭，不接线）
+## Task 0.1：配置骨架（纯新增，默认启用，不接线）
 
 **为什么先做配置骨架：** 让后续所有阶段都能通过 `state.xxx` 读取“是否启用/触发条件”，避免接线阶段还要临时加 flag。配置默认 `enabled:true` 已裁定；B2 是新拓扑，但实际接线留在 P4/P5，所以本阶段仍不产生任何行为差异。
 
@@ -45,7 +45,7 @@ S1 parse → S1b translateInbound → S2 route/translateOut → S3 rewrite-in
 ```ts
 // tests/config/buffered-retry-keys.unit.test.ts（追加，或新建 precontent-recovery-config.unit.test.ts）
 test("precontent_recovery config defaults to enabled:true with server-tool-safe gate always on", () => {
-  // 断言 state.preContentRecovery = { enabled: true, ... }（默认值待定，倾向默认开——见下方"命名与默认值"）
+  // 断言 state.preContentRecovery = { enabled: true }（默认值已裁定）
 })
 test("config key precontent_recovery.enabled maps to state via applyConfigToState", () => { ... })
 ```
