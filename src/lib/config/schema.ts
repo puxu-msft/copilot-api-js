@@ -686,10 +686,18 @@ export const AnthropicConfigSchema = z
      * an entry or starts with `entry + "-"`. Bundled defaults mirror GHC's capability checks — edit
      * to add/remove models (e.g. a new Claude release) WITHOUT a code change. See features.ts.
      *
+     * Each entry also supports GLOB (`*`/`?`, e.g. `claude-*`, `claude-opus-4-*`) and `!` NEGATION
+     * (`!pattern` SUBTRACTS from the set). Semantics: a model has the capability iff it matches ≥1
+     * positive entry AND no `!` entry (self-contained list, exclusion-always-wins, order-independent);
+     * a list with only `!` entries → empty set. A plain (glob-free) token keeps the family-prefix
+     * dash-boundary semantics above. See docs/spec/2026-07-23-model-capabilities-glob-and-negation.md.
+     * YAML: patterns beginning with `!` or `*` MUST be quoted (`- "!claude-haiku-*"`, `- "*claude"`).
+     *
      * `tool_search_overrides` is NOT a list: tool-search is default-allow for Claude ≥4.5 (Haiku +
      * pre-4.5 denied), so it needs no allowlist. The overrides map holds per-model force-on/off
-     * decisions only (keys = model-name substrings, `"*"` = wildcard; value true=force-on/false=off),
-     * checked after declared metadata but before the built-in default-allow matcher.
+     * decisions only (keys = model-name substrings OR glob patterns, `"*"` = wildcard; value
+     * true=force-on/false=off), checked after declared metadata but before the built-in default-allow
+     * matcher. Key specificity when multiple match: literal substring > glob > `"*"` (then longest key).
      */
     model_capabilities: z
       .object({
