@@ -129,6 +129,20 @@ describe("stream commit and keepalive clamps", () => {
 })
 
 // ============================================================================
+// Pre-content recovery configuration scaffold
+// ============================================================================
+
+describe("precontent_recovery configuration", () => {
+  test("defaults to enabled and maps anthropic.precontent_recovery.enabled into runtime state", async () => {
+    await applyYaml(``)
+    expect(state.preContentRecovery).toEqual({ enabled: true })
+
+    await applyYaml(`anthropic:\n  precontent_recovery:\n    enabled: false\n`)
+    expect(state.preContentRecovery).toEqual({ enabled: false })
+  })
+})
+
+// ============================================================================
 // Priority: per-vendor override > shared > built-in default
 // ============================================================================
 

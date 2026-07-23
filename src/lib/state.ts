@@ -429,6 +429,12 @@ export interface State {
   readonly streamCommitAfterSec: number
 
   /**
+   * Enables one fresh upstream dispatch after a pre-content failure. This B2-P0
+   * scaffold is deliberately not wired into request handling until P4/P5.
+   */
+  readonly preContentRecovery: { enabled: boolean }
+
+  /**
    * L2 — transactional buffered retry for streaming Anthropic generations cut
    * short by an upstream mid-stream RST (GHC NGHTTP2_CANCEL on large Write/Edit).
    * `false` (default) = live streaming, no buffering. `"on"` = buffer every
@@ -1485,6 +1491,7 @@ export function setAnthropicBehavior(
       | "streamKeepalivePingSec"
       | "streamKeepaliveMode"
       | "streamCommitAfterSec"
+      | "preContentRecovery"
       | "protectStreamingGeneration"
       | "protectStreamingEscalateContext"
       | "injectClaudeCodeOfficialTools"
@@ -2026,6 +2033,7 @@ export function resetConfigManagedState(): void {
     streamKeepalivePingSec: CONFIG_MANAGED_DEFAULTS.streamKeepalivePingSec,
     streamKeepaliveMode: CONFIG_MANAGED_DEFAULTS.streamKeepaliveMode,
     streamCommitAfterSec: CONFIG_MANAGED_DEFAULTS.streamCommitAfterSec,
+    preContentRecovery: { ...CONFIG_MANAGED_DEFAULTS.preContentRecovery },
     protectStreamingGeneration: CONFIG_MANAGED_DEFAULTS.protectStreamingGeneration,
     protectStreamingEscalateContext: CONFIG_MANAGED_DEFAULTS.protectStreamingEscalateContext,
     injectClaudeCodeOfficialTools: CONFIG_MANAGED_DEFAULTS.injectClaudeCodeOfficialTools,
@@ -2253,6 +2261,7 @@ const mutableState: MutableState = {
   streamKeepalivePingSec: CONFIG_MANAGED_DEFAULTS.streamKeepalivePingSec,
   streamKeepaliveMode: CONFIG_MANAGED_DEFAULTS.streamKeepaliveMode,
   streamCommitAfterSec: CONFIG_MANAGED_DEFAULTS.streamCommitAfterSec,
+  preContentRecovery: { ...CONFIG_MANAGED_DEFAULTS.preContentRecovery },
   protectStreamingGeneration: CONFIG_MANAGED_DEFAULTS.protectStreamingGeneration,
   bufferedRetryShared: { ...CONFIG_MANAGED_DEFAULTS.bufferedRetryShared },
   bufferedRetryOverrides: cloneBufferedRetryOverrides(CONFIG_MANAGED_DEFAULTS.bufferedRetryOverrides),

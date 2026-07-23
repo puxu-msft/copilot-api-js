@@ -75,6 +75,7 @@ export const CONFIG_MANAGED_DEFAULTS = {
   streamKeepalivePingSec: 20,
   streamKeepaliveMode: "ping" as "ping" | "enveloped_ping" | "empty_text", // ADR 2026-07-22 D2: empty_text retired as default (wrong-shaped, G2-ineffective); kept selectable/dormant for research
   streamCommitAfterSec: 20,
+  preContentRecovery: { enabled: true },
   protectStreamingGeneration: false as false | "on" | "tool_use_only",
   bufferedRetryShared: { maxRetries: 3, bufferCapBytes: 16_777_216, heartbeatSec: 15 } as BufferedRetryCaps,
   bufferedRetryOverrides: {} as Record<string, Partial<BufferedRetryCaps>>,

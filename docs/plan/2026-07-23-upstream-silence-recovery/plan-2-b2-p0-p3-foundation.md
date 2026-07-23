@@ -40,7 +40,7 @@ S1 parse → S1b translateInbound → S2 route/translateOut → S3 rewrite-in
 
 **为什么先做配置骨架：** 让后续所有阶段都能通过 `state.xxx` 读取"是否启用/触发条件"，避免接线阶段还要临时加 flag。默认 OFF——B2 是新拓扑，先在配置层留一个总开关，实际接线（P4/P5）完成前不应该有任何行为差异。
 
-- [ ] **Step 1: 写失败测试** —— 新配置键存在、默认值符合预期、config.ts 能正确映射
+- [x] **Step 1: 写失败测试** —— 新配置键存在、默认值符合预期、config.ts 能正确映射
 
 ```ts
 // tests/config/buffered-retry-keys.unit.test.ts（追加，或新建 precontent-recovery-config.unit.test.ts）
@@ -50,13 +50,13 @@ test("precontent_recovery config defaults to enabled:true with server-tool-safe 
 test("config key precontent_recovery.enabled maps to state via applyConfigToState", () => { ... })
 ```
 
-- [ ] **Step 2: 跑，失败。**
-- [ ] **Step 3: 接线**：
+- [x] **Step 2: 跑，失败。** —— `bun test tests/config/buffered-retry-keys.unit.test.ts`（新增断言收到 `undefined`，符合缺少 state 字段的预期）。
+- [x] **Step 3: 接线**：
   - `src/lib/state-defaults.ts` 新增 `preContentRecovery: { enabled: true } as PreContentRecoveryConfig`（结构留扩展余地，暂只有 `enabled`；B2-P4 若发现需要更多字段——如"最大一次性重试次数"——此处再扩展，**不要在本 Task 里预先加未用字段**，YAGNI 在"配置项数量"上是合理的，反-YAGNI 只约束"功能范围"不约束"配置粒度"）。
   - `src/lib/config/schema.ts` 新增 `anthropic.precontent_recovery`（或顶层 `buffered_retry` 同级——**待决**：既然 B2 独立于 `protect_streaming_generation`/buffered-retry（可在 buffered/live 任意模式下触发，见 spec Q7），命名不应该嵌进 `buffered_retry` 命名空间，避免"buffered_retry 恒为 map"的既有铁律被误用——建议顶层新键 `anthropic.precontent_recovery: { enabled: boolean }`，与 `stream_commit_after_sec` 平级）。
   - `src/lib/config/config.ts` 新增映射行，镜像 `protect_streaming_escalate_context` 那种简单布尔映射的写法。
-- [ ] **Step 4: 跑，通过。**
-- [ ] **Step 5: 提交** → `feat(config): add precontent_recovery config scaffold (default enabled, not yet wired)`。
+- [x] **Step 4: 跑，通过。** —— `bun test tests/config/buffered-retry-keys.unit.test.ts tests/config/config-hot-reload.it.test.ts`：404 pass，0 fail；`bunx eslint` 目标文件与 `bun run typecheck` 均通过。
+- [x] **Step 5: 提交** → `feat(config): add precontent_recovery config scaffold (default enabled, not yet wired)`。
 
 **命名与默认值待决项（交主会话/用户确认，不自行拍板）：** 配置键名 `precontent_recovery` / `pre_content_recovery` / 更贴合 spec 用语的其他名字——本计划用 `precontent_recovery` 占位，若用户有偏好命名，实现时改一处即可（不影响后续阶段结构）。默认值建议 `enabled: true`（因为 B2 对合法长思考零误伤、只在真失败时触发，符合"long-termism-wins"默认开启新正确机制的项目哲学）——但因为这是行为默认值变更，仍建议在 P4/P5 完整落地并过 P6 协议矩阵后再实际打开默认值（即：本 Task 先把默认值定义为 `true`，但 P4/P5 的功能开关暂时在代码里额外加一层"feature not yet wired"防护，直到 P5 完成才让默认值生效——**由执行者在 TDD 中用测试锁定这个顺序，不要在 gate 尚未接线完成前就让默认值产生用户可见的行为变化**）。
 

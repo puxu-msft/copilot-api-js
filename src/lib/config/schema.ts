@@ -673,6 +673,19 @@ export const AnthropicConfigSchema = z
      */
     stream_commit_after_sec: nullableNonnegativeInt(),
     /**
+     * Enables one fresh dispatch after a pre-content upstream failure. It is
+     * intentionally independent of buffered_retry because recovery applies to
+     * both live and buffered streaming paths. The B2-P0 scaffold is not yet
+     * wired into request handling. Default true.
+     */
+    precontent_recovery: nullableSection(
+      z
+        .object({
+          enabled: nullableBoolean(),
+        })
+        .strict(),
+    ),
+    /**
      * L2 — transactional buffered retry for streaming generations cut short by an
      * upstream mid-stream RST (GHC NGHTTP2_CANCEL on large Write/Edit). Buffers the
      * whole response and commits only after `message_stop`, re-running the exchange
