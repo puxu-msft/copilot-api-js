@@ -76,6 +76,7 @@ import {
   type StateSnapshot,
   snapshotStateForTests,
 } from "~/lib/state"
+import { resetTelemetryRuntimeForTests } from "~/lib/telemetry-runtime"
 import { resetTokenRuntimeForTests } from "~/lib/token"
 import {
   //
@@ -120,6 +121,13 @@ export const RESETTERS: ReadonlyArray<{ name: string; reset: () => void | Promis
   { name: "resetToolInputRepairStatsForTests", reset: resetToolInputRepairStatsForTests },
   { name: "resetAllLimitsForTesting", reset: resetAllLimitsForTesting },
   { name: "_resetRequestTelemetryForTests", reset: _resetRequestTelemetryForTests },
+  // Telemetry runtime process-singleton: a test that installs a runtime
+  // (createTelemetryRuntime + installTelemetryRuntime) must not leak it into the
+  // next test. dispose() runs the final-shutdown teardown, then the singleton is
+  // cleared. The registry's module-local state hard-reset is the SEPARATE
+  // _resetRequestTelemetryForTests entry above (order-independent + idempotent);
+  // the telemetry DEPS ports are stateless adapters installed at the floor, never reset.
+  { name: "resetTelemetryRuntimeForTests", reset: resetTelemetryRuntimeForTests },
   { name: "resetModelsEtagForTests", reset: resetModelsEtagForTests },
   { name: "resetRawModelsForTests", reset: resetRawModelsForTests },
   { name: "resetProcessIdentityForTests", reset: resetProcessIdentityForTests },
