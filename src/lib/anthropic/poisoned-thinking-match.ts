@@ -37,12 +37,22 @@ import { HTTPError } from "~/lib/error"
  * L1 (`destackAdjacentThinking`) proactively prevents BOTH shapes; this matcher only
  * gates the reactive fallback for layouts L1 did not preempt.
  */
+/**
+ * C2's rejected block type, matched CLAUSE-LOCALLY: the block type must follow the
+ * final-block cue itself, not merely appear somewhere in the message. Upstream reuses this
+ * sentence for other block types, and a message may mention thinking for unrelated reasons
+ * ("Thinking is enabled, but the final block ... cannot be `tool_use`"), which strip-all
+ * cannot fix — claiming it would burn our one-shot retry and shadow the real handler.
+ * Quote style is tolerated; the block type is not.
+ */
+const TERMINAL_THINKING_REJECTION = /final block in an assistant message cannot be [`'"]?(?:redacted_)?thinking\b/
+
 export function isThinkingLayoutRejection(message: string): boolean {
   const lower = message.toLowerCase()
+  // C1's cue ("cannot be modified") trails the block type in upstream's wording, so it stays
+  // a message-level token check — the cue itself is specific enough to carry the decision.
   if (lower.includes("cannot be modified")) return lower.includes("thinking") || lower.includes("redacted_thinking")
-  // C2 is phrased without "cannot be modified"; require the full final-block cue so a
-  // bare "thinking" mention elsewhere can never trigger a strip-all.
-  return lower.includes("final block in an assistant message cannot be")
+  return TERMINAL_THINKING_REJECTION.test(lower)
 }
 
 /**

@@ -65,6 +65,23 @@ describe("isThinkingLayoutRejection", () => {
   test("负命中：final block 措辞但主语不是 assistant message", () => {
     expect(isThinkingLayoutRejection("The final block in a user message cannot be `image`.")).toBe(false)
   })
+
+  // 上游用同一句式报告其它块类型的 final-block 违规；strip-all 治不了它们，
+  // 认领只会白烧掉一次性重试机会并遮蔽真正的处理策略（评审 MED-1）。
+  test.each(["`tool_use`", "`text`", "empty"])("负命中：同句式但被拒块是 %s（非 thinking）", (blockKind) => {
+    expect(isThinkingLayoutRejection(`messages.9: The final block in an assistant message cannot be ${blockKind}.`)).toBe(false)
+  })
+
+  // 块类型必须紧跟线索本身，而非「消息里某处出现 thinking」——否则一条因别的原因
+  // 提到 thinking 的 final-block 400 会被误认领（复审 MED，clause-local 收窄）。
+  test("负命中：消息别处提到 thinking，但被拒块是 tool_use", () => {
+    expect(isThinkingLayoutRejection("Thinking is enabled, but the final block in an assistant message cannot be `tool_use`.")).toBe(false)
+  })
+
+  test("正命中：redacted_thinking 变体与引号风格容忍", () => {
+    expect(isThinkingLayoutRejection("The final block in an assistant message cannot be `redacted_thinking`.")).toBe(true)
+    expect(isThinkingLayoutRejection("The final block in an assistant message cannot be thinking.")).toBe(true)
+  })
 })
 
 describe("createPoisonedThinkingRetryStrategy().canHandle — body-parse extraction", () => {

@@ -178,6 +178,28 @@ describe("destackAdjacentThinking: 终端块不变量（C2 + C3）", () => {
     expect(twice.messages).toEqual(once)
     expect(twice.stats.destackedMessages).toBe(0)
   })
+
+  // `terminalRepairs` 单独计「输入本身末块是 thinking（C2 违规）」的消息数——与
+  // insertedMarkers 正交（C1 补的分隔符不算），也与 destackedMessages 正交（因 C1
+  // 触发的不算）。无这组断言时该字段恒置 0 也能全绿（评审 LOW）。
+  test("terminalRepairs: 只计 C2 违规的消息，不双计、不漏计", () => {
+    const c2Only = destackAdjacentThinking([asst([text("hi"), T("a")])], "move_blocks")
+    expect(c2Only.stats.terminalRepairs).toBe(1)
+    expect(c2Only.stats.insertedMarkers).toBe(0) // 纯重排、没补合成块
+
+    const c1Only = destackAdjacentThinking([asst([T("a"), T("b"), tool("t1")])], "move_blocks")
+    expect(c1Only.stats.terminalRepairs).toBe(0) // 末块本来就是 tool_use
+    expect(c1Only.stats.insertedMarkers).toBe(1)
+
+    const both = destackAdjacentThinking([asst([T("a"), T("b")])], "move_blocks")
+    expect(both.stats.terminalRepairs).toBe(1) // 一条消息只加一次，哪怕同时违反 C1
+
+    const two = destackAdjacentThinking([asst([T("a")]), asst([text("x"), T("b")])], "move_blocks")
+    expect(two.stats.terminalRepairs).toBe(2)
+
+    const repaired = destackAdjacentThinking([asst([T("a")])], "move_blocks").messages
+    expect(destackAdjacentThinking(repaired, "move_blocks").stats.terminalRepairs).toBe(0)
+  })
 })
 
 /**
@@ -191,7 +213,7 @@ describe("destackAdjacentThinking: 终端块不变量（C2 + C3）", () => {
  * contents per strategy.
  */
 describe("destackAdjacentThinking: 穷举不变量扫描", () => {
-  type Block = { type: string; text?: string; signature?: string; id?: string }
+  type Block = { type: string; text?: string; signature?: string; id?: string; probeId?: string }
   const ALPHABET: Array<Block> = [
     { type: "thinking", thinking: "", signature: "sig" } as Block,
     { type: "redacted_thinking", data: "d" } as Block,
@@ -205,7 +227,11 @@ describe("destackAdjacentThinking: 穷举不变量扫描", () => {
     yield []
     for (let len = 1; len <= maxLen; len++) {
       const next: Array<Array<Block>> = []
-      for (const prefix of level) for (const b of ALPHABET) next.push([...prefix, b])
+      // Each occurrence gets a FRESH object with a unique `probeId`. Reusing one alphabet
+      // object per block type would make the "no real block dropped" check blind to an
+      // implementation that collapses two identical blocks into one (`includes` would still
+      // find the surviving twin) — review LOW.
+      for (const prefix of level) for (const b of ALPHABET) next.push([...prefix, { ...b, probeId: `${len}-${next.length}` }])
       for (const c of next) yield c
       level = next
     }
@@ -234,8 +260,14 @@ describe("destackAdjacentThinking: 穷举不变量扫描", () => {
         const outThinks = out.filter((b) => isThink(b))
         expect(outThinks, `thinking dropped/reordered: ${label}`).toEqual(inThinks)
 
-        // Every real (non-synthetic) block survives — de-stack only ever INSERTS.
-        for (const b of content) expect(out.includes(b), `real block dropped: ${label}`).toBe(true)
+        // Every real (non-synthetic) block survives, WITH multiplicity — de-stack only ever
+        // INSERTS. Compared by unique `probeId` so dropping one of two identical blocks fails.
+        const inIds = content.map((b) => b.probeId).sort()
+        const outIds = out
+          .filter((b) => b.probeId !== undefined)
+          .map((b) => b.probeId)
+          .sort()
+        expect(outIds, `real block dropped/duplicated: ${label}`).toEqual(inIds)
 
         // Idempotence: a second pass is a byte-identical no-op.
         const again = destackAdjacentThinking(messages, strategy)
