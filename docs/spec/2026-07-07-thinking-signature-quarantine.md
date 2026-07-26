@@ -2,6 +2,7 @@
 
 - 状态：**已实施 landed**——2026-07-08 于分支 `feat/thinking-quarantine` 落地：plan 全 12 任务 + 全分支终审完成。实施计划 [docs/plan/2026-07-07-thinking-quarantine.md](../plan/2026-07-07-thinking-quarantine.md)；设计复审存证 [#04 v4 de-stack](2026-07-07-thinking-signature-quarantine-review-2026-07-07-04.md)（1 CRITICAL + 数 HIGH/MEDIUM 全落实：de-stack 终末 pass、分隔符只计非空块、幂等 + byte-lock、L3 strip-all 排 L1 前、合成 sentinel + history 标注）。
 - 日期：2026-07-07
+- **后续修订（2026-07-26）**：本 spec 的 L1 de-stack 只针对约束 C1（相邻 thinking），其 `move_blocks` 实现会把唯一的非 thinking 块挪走当分隔符，从而**自造**另一条上游约束的违规（C2：assistant 消息末块不得是 thinking）→ 生产每轮必败 400。修订后 L1 同时保证 C1+C2 并尊重 C3（含 tool_use 须以 tool_use 收尾），L2 matcher 也扩为识别两种措辞。**本文 §3.1「只动存在相邻 thinking 的消息」「三策略共性」等表述已被取代**，当前行为以 [2026-07-26-thinking-terminal-block-layout.md](2026-07-26-thinking-terminal-block-layout.md) 为准。
 - 演进：v1（signature+索引+二分，废）→ v2/v2.1（会话级 strip-all + TTL）→ v3（纯结构 collapse，**因过度简化被否**）→ **v4（三层：结构精确 de-stack + reactive 兜底 + 会话 quarantine 全保留）**。评审存证 [#01](2026-07-07-thinking-signature-quarantine-review-2026-07-07-01.md)/[#02](2026-07-07-thinking-signature-quarantine-review-2026-07-07-02.md)/[#03](2026-07-07-thinking-signature-quarantine-review-2026-07-07-03.md)；PoC [exp/thinking-signature-quarantine/README.md](../../exp/thinking-signature-quarantine/README.md)。
 - 相关 skill：`ghc-anthropic-upstream`、`empirical-verification`、`persistence-async-invariants`、`history-sqlite-schema`、`test-isolation`。
 
