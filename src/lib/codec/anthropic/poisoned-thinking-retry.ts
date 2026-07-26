@@ -1,12 +1,13 @@
 /**
  * L2 reactive strip-all retry — the second layer of the three-layer fix for
- * GHC's "thinking ... cannot be modified" 400 (docs/plan/thinking-quarantine).
+ * GHC's illegal-thinking-layout 400s (docs/plan/thinking-quarantine,
+ * docs/spec/2026-07-26-thinking-terminal-block-layout.md).
  *
- * L1 (`destackAdjacentThinking`) proactively prevents the common adjacency-poison
- * case. This L2 strategy is the reactive fallback: when a "thinking ... cannot be
- * modified" 400 still reaches S4 (a non-adjacency poison mode L1 did not preempt),
- * it strips ALL thinking blocks from the payload and retries once to unblock the
- * turn. L3 (this file's `onResolved`) then durably quarantines the offending
+ * L1 (`destackAdjacentThinking`) proactively prevents both known layout violations
+ * (adjacent thinking blocks; a message terminating on thinking). This L2 strategy is
+ * the reactive fallback: when such a 400 still reaches S4 (a layout L1 did not
+ * preempt), it strips ALL thinking blocks from the payload and retries once to unblock
+ * the turn. L3 (this file's `onResolved`) then durably quarantines the offending
  * `(session, agent)` conversation so a later turn is stripped proactively (Task 11).
  *
  * Implemented as a NATIVE env-based strategy (not wrapped by
@@ -14,7 +15,7 @@
  * which the legacy adapter drops. The remediation itself is payload-only (strip-all
  * thinking) so it needs no ctx here.
  *
- * The shared match core (`matchesThinkingModifiedRejection`) lives in the neutral
+ * The shared match core (`matchesThinkingLayoutRejection`) lives in the neutral
  * `~/lib/anthropic/poisoned-thinking-match` leaf so the legacy twin
  * (`~/lib/request/strategies/poisoned-thinking-retry`) imports it DOWNWARD — no
  * request/strategies → codec inversion.
@@ -33,15 +34,15 @@ import type {
 } from "~/lib/pipeline/types"
 import type { MessagesPayload } from "~/types/api/anthropic"
 
-import { matchesThinkingModifiedRejection } from "~/lib/anthropic/poisoned-thinking-match"
+import { matchesThinkingLayoutRejection } from "~/lib/anthropic/poisoned-thinking-match"
 import { stripAllThinking } from "~/lib/anthropic/strip-all-thinking"
 import { getQuarantineStore } from "~/lib/anthropic/thinking-quarantine"
 import { toQuarantineKey } from "~/lib/anthropic/thinking-quarantine/session-key"
 import { state } from "~/lib/state"
 
 /**
- * Reactive fallback for the "thinking ... cannot be modified" 400 that L1 de-stack
- * did not preempt. Per-request one-shot (the `attempted` closure guard) and gated
+ * Reactive fallback for an illegal-thinking-layout 400 that L1 de-stack did not
+ * preempt. Per-request one-shot (the `attempted` closure guard) and gated
  * by `state.stripThinkingOnReject` — a single blunt strip-all-and-retry to unblock
  * the turn, no escalation.
  *
@@ -60,7 +61,7 @@ export function createPoisonedThinkingRetryStrategy(deps?: { store?: ThinkingQua
     canHandle(error: ApiError): boolean {
       if (attempted) return false
       if (!state.stripThinkingOnReject) return false
-      return matchesThinkingModifiedRejection(error)
+      return matchesThinkingLayoutRejection(error)
     },
     handle(error: ApiError, env: RequestEnvelope): Promise<RetryAction> {
       attempted = true

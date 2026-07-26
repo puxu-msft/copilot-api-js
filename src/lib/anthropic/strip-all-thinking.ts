@@ -13,7 +13,8 @@ const THINKING_TYPES = new Set(["thinking", "redacted_thinking"])
  * `redacted_thinking` block, PLUS an orphaned synthetic de-stack separator. L1
  * de-stack ({@link destackAdjacentThinking}, `insert_text` / `move_blocks`)
  * inserts a fixed {@link SYNTHETIC_THINKING_SEPARATOR} text block between two
- * thinking blocks; once strip-all removes the thinking blocks it separated, that
+ * thinking blocks — and, when a message would otherwise END on thinking, as its
+ * terminator; once strip-all removes the thinking blocks it separated, that
  * marker is a meaningless orphan that would otherwise leak upstream — so we drop
  * it in the same pass.
  */
@@ -31,8 +32,9 @@ function isStrippableBlock(block: ContentBlockParam): boolean {
  * This is deliberately coarser than the block-level protection primitives in
  * `thinking-protection.ts`: instead of preserving signed thinking, it drops it
  * wholesale. Callers use it only on the fallback path where the upstream has
- * already rejected the thinking blocks ("thinking cannot be modified" 400), so
- * echoing them verbatim is no longer possible. On such a learning turn L1
+ * already rejected the thinking layout (the "cannot be modified" adjacency 400 or
+ * the "final block ... cannot be `thinking`" terminal 400), so echoing them
+ * verbatim is no longer possible. On such a learning turn L1
  * de-stack may already have inserted a synthetic separator between two thinking
  * blocks; stripping the thinking without also dropping that marker would orphan
  * it and leak it upstream, so strip-all removes it too.
