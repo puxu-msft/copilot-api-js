@@ -1061,7 +1061,15 @@ function makeAnchoredSseSink(
   // anchor hooks when a pre-content silence approaches Claude Code's 300s event-idle deadline.
   const onDemandEscalation = state.streamKeepaliveEscalateSec > 0
   const anchorHooks = buildAnthropicAnchorHooks(state.streamKeepaliveMode !== "ping" || onDemandEscalation)
-  const anchorState: AnchorState = { injected: false, messageStartForwarded: false, anchorBlockOpen: false, anchorClosed: false }
+  // One shared wire state, with separate envelope/content latches. The normal enveloped_ping
+  // prelude sets `injected`; the content injector gates on `contentAnchorInjected` instead.
+  const anchorState: AnchorState = {
+    injected: false,
+    contentAnchorInjected: false,
+    messageStartForwarded: false,
+    anchorBlockOpen: false,
+    anchorClosed: false,
+  }
   // Late-bind holder: the injector must read its sink at CALL time (an idle tick), but the sink's options
   // are evaluated before the sink exists — so `getSink` reads this holder, assigned right after construction.
   const sinkHolder: { current: ClientSink | undefined } = { current: undefined }
@@ -1075,7 +1083,14 @@ function makeAnchoredSseSink(
     : undefined
   const injectContentAnchor =
     anchorHooks && onDemandEscalation ?
-      makeSyntheticAnchorInjector({ anchor: anchorHooks, state: anchorState, getSink: () => sinkHolder.current, resolvedName, reqId })
+      makeSyntheticAnchorInjector({
+        anchor: anchorHooks,
+        state: anchorState,
+        getSink: () => sinkHolder.current,
+        resolvedName,
+        reqId,
+        independentContentLatch: state.streamKeepaliveMode === "enveloped_ping",
+      })
     : undefined
   const sink = makeDeliverySseSink(stream, {
     onForwarded,

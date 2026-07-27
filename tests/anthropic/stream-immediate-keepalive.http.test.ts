@@ -206,6 +206,22 @@ describe("immediate-keepalive — stall cadence ping", () => {
 
   afterEach(() => clock.restore())
 
+  test("enveloped_ping normal envelope does not suppress later pre-content content anchor", async () => {
+    setStateForTests({ streamKeepaliveMode: "enveloped_ping", streamKeepalivePingSec: 2, streamKeepaliveEscalateSec: 4 })
+    const resP = streamRequest("grace-enveloped-escalation")
+    await gateReachedP
+    await clock.advance(2_500) // normal envelope-only scaffold
+    await clock.advance(2_500) // independent content deadline → anchor start + empty delta
+    const res = await resP
+    openGate()
+    const text = await res.text()
+    const types = frameTypesInOrder(text)
+    expect(types.filter((type) => type === "message_start")).toHaveLength(1)
+    expect(types).toContain("content_block_start")
+    expect(types).toContain("content_block_delta")
+    expect(types).toContain("message_stop")
+  })
+
   test("upstream stalls → cadence ping precedes content, then completes → content forwarded after the ping", async () => {
     const resP = streamRequest("grace-commit-complete")
     await gateReachedP // upstream fetch reached, stream already 200, heartbeat armed

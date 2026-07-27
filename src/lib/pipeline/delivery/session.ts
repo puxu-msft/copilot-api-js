@@ -69,6 +69,7 @@ export function createDownstreamDeliverySession(options: CreateDownstreamDeliver
   let heartbeatSuspended = false
   let heartbeatStopped = false
   let scaffoldAttempted = false
+  let contentScaffoldAttempted = false
   let pendingOpenBlocks: Array<DeliveredOpenBlock> = []
 
   const write = async (entry: DeliveryFrame, allowTerminating = false): Promise<void> => {
@@ -122,16 +123,19 @@ export function createDownstreamDeliverySession(options: CreateDownstreamDeliver
         void write(makeEnvelope(heartbeat.contentFrame(heartbeatLedger), "keepalive", monotonicNow())).finally(() => armHeartbeat())
         return
       }
-      if (pendingOpenBlocks.length === 0 && heartbeat.injectContentScaffold && !scaffoldAttempted) {
-        scaffoldAttempted = true
+      // Fixed anchor@0 is valid only before any real block has completed. After the first
+      // committed block, a no-open window needs the future monotone index allocator; reusing
+      // index 0 would make the SDK reorder content. Until that design lands, stay on ping.
+      if (pendingOpenBlocks.length === 0 && semanticBlockCount === 0 && heartbeat.injectContentScaffold && !contentScaffoldAttempted) {
+        contentScaffoldAttempted = true
         void heartbeat
           .injectContentScaffold()
           .then((injected) => {
-            if (!injected) scaffoldAttempted = false
+            if (!injected) contentScaffoldAttempted = false
             else lastContentDeltaAtMonotonic = monotonicNow()
           })
           .catch(() => {
-            scaffoldAttempted = false
+            contentScaffoldAttempted = false
           })
           .finally(() => armHeartbeat())
         return

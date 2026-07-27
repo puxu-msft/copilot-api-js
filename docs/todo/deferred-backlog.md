@@ -2,6 +2,15 @@
 
 从记忆库降为引用层（2026-07-05）时归位的活 backlog。每条：现状 / 暂缓原因 / 若做需改什么。
 
+## Anthropic 块级 buffered 首块后的 >300s keepalive carrier（2026-07-27，块级默认翻转硬门）
+
+- **根因**：块级 buffered 在 `content_block_stop` 前不向客户端写 start/delta；首块提交后的长生成在客户端轨没有 open block。ping 不重置 Claude Code 300s event-idle；固定 anchor@0 又不能在真实 block@0 已完成后复用，否则真实 SDK 会静默重排 content。
+- **当前行为**：commit `faaa37e7` 的按需升级已收窄为 **pre-content-only**：客户端尚未完成任何真实块时，200s 可开单 anchor@0；首块完成后的无-open窗口只ping。历史 live腿若客户端真有open block，原-index空delta分支仍可达，但**块级 buffered终态不可达**。
+- **理想架构**：采用 [inter-block carrier 方案 A](../spec/2026-07-27-inter-block-keepalive-carrier.md)：generation-scoped `createAnchorIndexAllocator` 统一 synthetic anchor、真实块和continuation的单调wire frontier；任一时刻至多一个block open。
+- **为何暂缓**：当前分支先消除已知重复index协议损坏，让吞帧修复和pre-content保活可合并。方案A需原子接线delivery serializer、driver buffered flush、retreat、live-reconcile和continuation frontier；局部补丁会把错误从显式断流变成静默内容重排。
+- **若做需改什么**：复用姊妹plan Task 1.1–1.3；增加`anchorsOpened===0`结构性短路；作废Q5的`anchorShift + continuationOffset`公式；补heartbeat-vs-flush并发、续写上游index重启、多轮真CC历史回传、producer全序/SDK累积/短请求SHA三层oracle。
+- **解除条件（硬门）**：**Anthropic `protect_streaming_generation` 块级默认翻转之前必须完成方案A**。翻默认计划与本条必须互相引用；pre-content-only不能被描述成G2全面闭合。
+
 ## history-search sidecar：其余 4 个 source facet 未接入（2026-07-21，history-search-out-of-process plan Phase 4 收窄）
 
 - **根因 / 现状**：REST `SearchSource` 有 5 facet（`inbound`/`rewrites-req`/`rewrites-resp`/`req-headers`/`resp-headers`，[types.ts:729](../../src/lib/history/types.ts#L729)），但独立 sidecar 的 Tantivy 投影（`projectSearchableText`，[v3/projection.ts](../../src/lib/history/v3/projection.ts)）**只索引客户端可见的对话 + 响应**（对应 `inbound`）——native schema（[lib.rs](../../native/history-search/src/lib.rs)）本身只有 `operation_id`/`operation_kind`/`content`/`created_at` 四个字段，没有 facet 维度，`rewrites-*`/`*-headers` 在退役前的嵌入式引擎里是**扁平的逐请求 SQL 列**（`req_aux` 表），从未进入 sidecar 的 schema。

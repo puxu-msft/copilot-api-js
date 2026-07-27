@@ -231,6 +231,68 @@ describe("P3-T1 downstream delivery session", () => {
     delivery.clientSink.close?.()
   })
 
+  test("normal envelope scaffold does not suppress later pre-content content scaffold", async () => {
+    clock.install()
+    const writes: Array<{ method: string; frame: unknown }> = []
+    let envelopeCalls = 0
+    let contentCalls = 0
+    const delivery = createDownstreamDeliverySession({
+      sink: arraySink(writes),
+      monotonicNow: Date.now,
+      heartbeat: {
+        intervalMs: 20_000,
+        contentDeadlineMs: 200_000,
+        frame: () => ({ event: "ping", data: '{"type":"ping"}' }),
+        async injectScaffold() {
+          envelopeCalls++
+          return true
+        },
+        async injectContentScaffold() {
+          contentCalls++
+          return true
+        },
+      },
+    })
+    for (let elapsed = 0; elapsed < 200_000; elapsed += 20_000) {
+      await clock.advance(20_000)
+      await drain()
+    }
+    expect(envelopeCalls).toBe(1)
+    expect(contentCalls).toBe(1)
+    delivery.clientSink.close?.()
+  })
+
+  test("content scaffold is forbidden after any real block completed", async () => {
+    clock.install()
+    const writes: Array<{ method: string; frame: unknown }> = []
+    let scaffoldCalls = 0
+    const delivery = createDownstreamDeliverySession({
+      sink: arraySink(writes),
+      monotonicNow: Date.now,
+      heartbeat: {
+        intervalMs: 20_000,
+        contentDeadlineMs: 200_000,
+        frame: () => ({ event: "ping", data: '{"type":"ping"}' }),
+        contentFrame: () => ({ event: "content_block_delta", data: '{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":""}}' }),
+        async injectContentScaffold() {
+          scaffoldCalls++
+          return true
+        },
+      },
+    })
+    await delivery.clientSink.write(frame("content_block_start", 0, "text"))
+    await delivery.clientSink.write(frame("content_block_stop", 0))
+    expect(delivery.snapshot.ledger.semanticBlockCount).toBe(1)
+    writes.length = 0
+    for (let elapsed = 0; elapsed < 220_000; elapsed += 20_000) {
+      await clock.advance(20_000)
+      await drain()
+    }
+    expect(scaffoldCalls).toBe(0)
+    expect(writes.every(({ frame: value }) => (value as { event?: string }).event === "ping")).toBe(true)
+    delivery.clientSink.close?.()
+  })
+
   test("contentDeadlineMs=0 leaves ping shape unchanged beyond 300s", async () => {
     clock.install()
     const writes: Array<{ method: string; frame: unknown }> = []

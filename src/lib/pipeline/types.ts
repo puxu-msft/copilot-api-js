@@ -428,8 +428,10 @@ export interface ContinuationHooks {
  * (no torn snapshot — §3.3 B1 flips `injected` synchronously before the first sink write).
  */
 export interface AnchorState {
-  /** The synthetic prelude has been injected onto the forwarded track (message_start — and, in `empty_text`, the anchor block@0 — enqueued). */
+  /** Any synthetic prelude has been injected onto the forwarded track (message envelope and/or content anchor). */
   injected: boolean
+  /** The content anchor itself has been injected. Kept separate so enveloped_ping cannot suppress later content escalation. */
+  contentAnchorInjected?: boolean
   /** The (real or synthetic) `message_start` has been forwarded — the commit flush skips the buffered copy (H1 dedup). */
   messageStartForwarded: boolean
   /**

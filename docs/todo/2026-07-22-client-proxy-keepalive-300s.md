@@ -7,7 +7,7 @@
 
 ## 一句话
 
-CC 有一个 **300s「无真实内容 chunk」idle 死线**（独立于 60s byte-idle）。2026-07-22 的 G2 历史实验在 302s 报 `Response stalled mid-stream`，当时误判为空 `text_delta` 载体无效；2026-07-27 逐层抓字节后确认，代理的 `recoverToolCallText` lookahead 把上游每 15s 产出的空 delta 全吞掉，CC 实际只收到 ping。修复同族 text/input-json 吞帧后，用户裁决按需升级：日常保持 `ping`，默认 200s content-idle 才发空 delta；open block 沿用原 index，pre-content 才开 anchor。真 CC 在 ping-only 上游 gap 下 >315s 连续通过，短请求对照逐字节不变。
+CC 有一个 **300s「无真实内容 chunk」idle 死线**（独立于 60s byte-idle）。2026-07-22 的 G2 历史实验在 302s 报 `Response stalled mid-stream`，当时误判为空 `text_delta` 载体无效；2026-07-27 逐层抓字节后确认，代理的 `recoverToolCallText` lookahead 把上游每 15s 产出的空 delta 全吞掉，CC 实际只收到 ping。修复同族 text/input-json 吞帧后，用户裁决按需升级：日常保持 `ping`，默认 200s content-idle；当前安全实现仅在 pre-content 开单 anchor。真 CC pre-content >315s 连续通过、短请求逐字节不变；首块提交后的无-open窗口暂不升级，完整覆盖等待 generation-scoped allocator（方案 A），并硬阻塞 Anthropic 块级默认翻转。
 
 ## 证据 + 待裁决的根因
 

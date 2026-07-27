@@ -219,11 +219,14 @@ export function makeSyntheticAnchorInjector(args: {
   getSink: () => ClientSink | undefined
   resolvedName: string
   reqId: string
+  /** Allow a content anchor after an envelope-only prelude without re-emitting message_start. */
+  independentContentLatch?: boolean
 }): () => Promise<boolean> {
-  const { anchor, state, getSink, resolvedName, reqId } = args
+  const { anchor, state, getSink, resolvedName, reqId, independentContentLatch = false } = args
   return async (): Promise<boolean> => {
     const sink = getSink()
-    if (!sink || state.injected) return false
+    if (!sink || (independentContentLatch ? state.contentAnchorInjected : state.injected)) return false
+    if (independentContentLatch) state.contentAnchorInjected = true
     if (state.messageStartForwarded) {
       // A real message_start ALREADY reached the client via the live pump (an early upstream message_start
       // forwarded before this first idle tick — e.g. /responses `response.created` then a long reasoning
