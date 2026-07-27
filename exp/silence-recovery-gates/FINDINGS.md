@@ -53,7 +53,7 @@
 1. **不是 harness 的其他部分**：服务器一直挂着（窗口 900–1500s），是客户端先走。SDK 臂显式给了 1250s 超时仍在 300.0s 死——它自己的 `setTimeout(abort, 1_250_000)` 根本没到点。
 2. **不是 CC 的 stream idle watchdog**：把 `CLAUDE_STREAM_IDLE_TIMEOUT_MS` 抬到 600000，放弃点纹丝不动（299,813ms）。且源码侧 `x0i()` 的武装点 `he()` 在 `await …withResponse()` **之后**，pre-header 期间本就没武装。
 3. **是 undici 的默认 `headersTimeout`**：剥掉全部 Anthropic 层的裸 `fetch` 在 300,986ms 抛 `HeadersTimeoutError` / `UND_ERR_HEADERS_TIMEOUT`（客户端侧原始记录 `results/q1-firstfail/barefetch.client.json`，含 runtime 版本；服务端侧 300,934ms）。这一层在 SDK 与 CC 的配置**下面**，所以两者自称的 1200s/1250s 都够不着它。错误类型本身也是证据：客户端超时抛的是 `HeadersTimeoutError`，服务端关连接抛的会是 socket/reset 类错误。机制侧独立佐证：`node_modules/undici/lib/dispatcher/client.js` 把 `headersTimeout` 默认设为 `300e3`，undici 文档同述。
-   **跨 runtime 注记**：bare-fetch 臂跑在系统 **node v24.16.0 / undici 7.25.0**，而 CC 2.1.220 自报的 runtime 是 **Node v26.3.0**（见 `firstfail.observations.json` 的 `x-stainless-runtime-version`）。两个不同 runtime 都落在 ~300s，说明这是 undici 一段时间内的稳定默认——但**仍是默认值而非常量**，可被 dispatcher 覆盖、可随版本改，换版本要重测。
+   **跨 runtime 注记**：bare-fetch 臂跑在系统 **node v24.16.0 / undici 7.25.0**，而 CC 2.1.220 自报的 runtime 是 **Node v26.3.0**（见 `firstfail.observations.json` 的 `x-stainless-runtime-version`；CC 未暴露其内置 undici 版本）。**该默认值在这两个不同 Node runtime 的观测中一致**——但它仍是**可覆盖、可随版本变化的默认值**，换客户端/runtime 版本要重测。（不要写成「undici 一段时间内的稳定默认」：我们只有两个 runtime 样本，其中一个还没暴露具体 undici 版本，那个说法比证据宽。）
 
 **因此 `x-stainless-timeout: 1200` 确实不是 oracle**——上轮的谨慎标注是对的，但真实上限比它小 4 倍，不是大。
 

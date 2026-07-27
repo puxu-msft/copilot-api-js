@@ -15,7 +15,16 @@ OUT="$EXP/results/q1-firstfail"
 PORT="${Q1_PORT:-41932}"
 WINDOW_MS="${Q1_SILENCE_WINDOW_MS:-900000}"
 CAP_MS="${Q1_CAP_MS:-2400000}"
-LABEL="${Q1_LABEL:-firstfail}"
+CLIENT="${Q1_CLIENT:-cli}"
+# The label names the output files, so it must default per arm — a shared default
+# would let `Q1_CLIENT=bare-fetch` silently overwrite the CLI arm's evidence.
+case "$CLIENT" in
+  cli) DEFAULT_LABEL=firstfail ;;
+  sdk) DEFAULT_LABEL=sdkcontrol ;;
+  bare-fetch) DEFAULT_LABEL=barefetch ;;
+  *) echo "unknown Q1_CLIENT '$CLIENT' (expected cli|sdk|bare-fetch)" >&2; exit 1 ;;
+esac
+LABEL="${Q1_LABEL:-$DEFAULT_LABEL}"
 SERVER_PID=''
 
 if [[ "$PORT" == "4141" ]]; then echo "port 4141 is the user's main server and is never allowed" >&2; exit 1; fi

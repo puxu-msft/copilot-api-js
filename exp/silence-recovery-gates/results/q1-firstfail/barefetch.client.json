@@ -1,0 +1,21 @@
+{
+  "baseURL": "http://127.0.0.1:41942",
+  "startedAt": "2026-07-27T22:24:29.761Z",
+  "status": "error",
+  "elapsedMs": 300986,
+  "name": "TypeError",
+  "message": "fetch failed",
+  "cause": {
+    "name": "HeadersTimeoutError",
+    "message": "Headers Timeout Error",
+    "code": "UND_ERR_HEADERS_TIMEOUT"
+  },
+  "runtime": {
+    "argv0": "node",
+    "version": "v24.16.0",
+    "versions": {
+      "node": "24.16.0",
+      "undici": "7.25.0"
+    }
+  }
+}

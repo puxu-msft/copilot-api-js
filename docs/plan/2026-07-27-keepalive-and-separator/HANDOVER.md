@@ -99,7 +99,7 @@
 >
 > **③ 剩下真正要做的**：不是测量（已完成），而是 **`streamCommitAfterSec` 默认值取多少**——现在是一个上界已知的取舍（窗口越大越多长思考走原生保护 vs A 型挂起干等越久），事故 RST 的 126-206s 整段在窗口内。plan-1 Task 1.2 已按此改写，**取值需用户拍板**。
 
-- **收益**：300s 时钟在响应头之后才起跑；推迟到 T 秒 commit，总预算变 T+300s（现在 `stream_commit_after_sec: 20` 等于主动在第 20 秒开跑，把预算钉死 ~320s）。
+- **收益**：CC 的 idle watchdog 在响应头之后才起跑，且 pre-commit 期间上游报错还能返回**真 HTTP 状态码**（保住 CC 全套原生自愈：thinking-strip / cache-beta drop / 429 退避重试）。~~推迟到 T 秒 commit，总预算变 T+300s。~~ **该加法已作废**——见上方 ⚠ 订正，commit 后是可重置的 idle watchdog，不存在固定总预算加法。推迟 commit 延长的是**原生 HTTP 状态保护窗口**，其幅度受 pre-header ~300s 硬上界约束。
 - **用户明确要求**：**源码 + 实证双证**，证明推迟不会破坏 CC 与 proxy 的连接。→ 双证已完成（见上方更新）：源码侧确认 pre-header 期间 CC 的 idle watchdog 尚未武装（`he()` 在 `await …withResponse()` 之后），实证侧测出真正的约束在更低一层。
 - **仍未查的风险面**：代理侧 `stream_commit_after_sec` 与 pre-response 重试/错误整形的交互（上游错误在 commit 前还能以真 HTTP 状态码返回，commit 后就只能走 SSE 内错误——这是**收益的一部分**，也是风险面）。
 - **必须与 `docs/spec/2026-07-23-upstream-silence-commit-timing.md` 合并设计**，别另起炉灶。
