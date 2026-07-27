@@ -56,32 +56,40 @@ test("an assistant turn that is ONLY an empty anchor block does not leave an emp
 
 > 两条候选，**不预先选**——按 7.1/7.3 实测出的具体失败形状定：
 
-- **兜底 α（清洗侧）**：补齐绕过 sanitize 的那条腿，或放宽 `filterEmptyAnthropicTextBlocks` 覆盖到未覆盖的位置。**优点**：治本，且对任何来源的空 text block 都生效。
-- **兜底 β（载体侧）**：把 gap anchor 的载体从空 `text_delta` 换成「非空但客户端不可见」的内容。**风险**：会污染最终文本累积（真 SDK 的 `finalMessage()` 会含该字符），需 O-4 重新验收；且零宽字符是否真的不可见依赖客户端渲染。**明确劣于 α**。
-- **绝不采纳**：「让 CC 别回传」（不可控）、「忽略偶发 400」（`never-swallow-errors`）。
+- **兜底 α（清洗侧）**：补齐绕过 sanitize 的那条腿，或放宽 `filterEmptyAnthropicTextBlocks` 覆盖到未覆盖的位置。**优点**：治本，且对任何来源的空 text block 都生效。**α 可行则直接执行**，不必停。
+- **兜底 β（载体侧）**：把 gap anchor 的载体从空 `text_delta` 换成「非空但客户端不可见」的内容。
 
-- [ ] **Step 1**：按实测失败形状选 α 或 β，在此记录**为什么**。
-- [ ] **Step 2**：TDD 实现。
+> **⚠ β 是停下回报的分叉（plan review major 新增，原 plan 遗漏）**：β **不是实现细节**——它改变客户端可见协议与最终文本：会改 O-4 的 SDK 累积结果、客户端渲染、写进用户对话历史的内容，以及**冻结设计所选的 carrier 形状本身**。让 executor 自行选 β 等于把产品/协议裁决交给实现者。
+>
+> **纪律**：若实测证明 α 不可行、必须转 β，**停下回主会话/用户裁决**，并在获批后补一套独立的客户端矩阵（零宽字符在真 CC / 真 SDK / History UI 三处的可见性与累积行为）再冻结载体。**不得**自行改载体后继续。
+
+- [ ] **Step 1**：按实测失败形状判定 α 还是 β。α → 继续；**β → 停，回报**。
+- [ ] **Step 2**（α）：TDD 实现。
 - [ ] **Step 3**：7.1 / 7.3 转绿。
-- [ ] **提交** → `fix(anthropic): <α 或 β 的具体描述>`
+- [ ] **提交** → `fix(anthropic): <α 的具体描述>`
 
-## Task 7.3：真 CC `numTurns >= 2` 实证（O-7）
+## Task 7.3：真 CC 多轮回传（O-7 —— **已按 plan review major 重写**）
 
-> **依赖 P5**（要有真 gap anchor 才有东西回传）。这是本相位唯一无法用单测替代的部分——「客户端会不会回传」「上游会不会拒」都只有真 CC + 真上游能回答。
+> **依赖 P5**（要有真 gap anchor 才有东西回传）。
+>
+> **原方案会假绿**：它只断言 `numTurns >= 2`，而本仓库**已把 `num_turns > 1` 当作 stall 的可观测签名**（`tests/e2e-client/anthropic-cli.e2e.test.ts:50` "empty-string end_turn STALLS the agent loop (num_turns>1, result empty)"）。即同一个值既可能表示「按设计的工具第二轮」，也可能表示「agent 空转重问」——**它无法区分成功与失败**。
+>
+> **另一个范围限定**：本 oracle 用 upstream hook，故它能独立证明的是「真 CC 怎样回传 + 我方送出的第二轮请求体长什么样」，**不是**「真 GHC 是否接受」。后者只能由「生产 sanitize 后的请求体」oracle 或靶向真上游补证——本 task 覆盖前者，后者列入 backlog（P8.6）。
 
-- [ ] **Step 1**：写 `exp/inter-block-anchor-allocator/multi-turn-replay.ts`——
-  - 用 `tests/e2e-client/harness/{spawn-proxy,drive-claude-cli}` 起**非 4141** 测试服务器；
-  - upstream hook 第一轮产「真实块 → 过 escalate deadline 的静默 → 真实块」（触发 gap anchor）；
-  - 驱动真 `claude`，prompt 设计成**必然产生第二轮**（如要求用一个工具，或明确的多步任务）；
-  - 第二轮的上游请求由 hook **落盘**，供断言检查。
-- [ ] **Step 2**：断言——
-  - `numTurns >= 2`（否则这次跑没有裁决力，**不得**记为 PASS）；
-  - `isError === false`；
-  - 第二轮落盘的上游请求体中**不含空 text content block**；
-  - 最终 `result` 文本**不含保活痕迹**。
-- [ ] **Step 3**：**连跑 >= 3 次**证确定性。
-- [ ] **Step 4**：结果写进 `exp/inter-block-anchor-allocator/FINDINGS.md`。若 FAIL → 进 7.2。
-- [ ] **提交** → `exp(anchor): real-CC multi-turn replay verdict for empty gap anchors`
+- [ ] **Step 1**：写 `exp/inter-block-anchor-allocator/multi-turn-replay.ts`——**确定性 tool-use mock**：
+  - 非 4141 端口起测试服务器（`spawn-proxy` + `drive-claude-cli` harness）；
+  - upstream hook 第一轮：产「真实块 → 过 escalate deadline 的静默（触发 gap anchor）→ **唯一一个 `tool_use` 块**（固定 id）」；
+  - hook 第二轮：收到 tool_result 后产一个含 marker 的终局响应；
+  - hook **落盘每一轮的上游请求体**并**计数命中次数**。
+- [ ] **Step 2**：断言（**四条缺一不可**）——
+  1. **CC 确实执行了工具**，且第二轮回传的 `tool_result` 的 `tool_use_id` **精确等于**第一轮那个 id；
+  2. **上游命中次数恰为 2**（排除 stall 重问 / 第三轮）；
+  3. 第二轮落盘的请求体中：既有正确的 `tool_result`，**又不含任何空 text content block**；
+  4. 最终 `result` 含 marker 且非空，`isError: false`。
+- [ ] **Step 3**：**mutation**——故意让 mock 按 Anthropic 真实校验规则拒绝空 text block（返回 400），并临时绕过 sanitize，确认本测试**转红**。这证明它能咬住空块泄漏，而不是「反正都过」。
+- [ ] **Step 4**：**连跑 >= 3 次**证确定性。
+- [ ] **Step 5**：结果写进 `exp/inter-block-anchor-allocator/FINDINGS.md`。FAIL → 进 7.2（β 需停下回报）。
+- [ ] **提交** → `exp(anchor): deterministic tool-use multi-turn replay oracle for empty gap anchors`
 
 ## Task 7.4：History 侧的可辨识性
 
@@ -102,6 +110,7 @@ test("an assistant turn that is ONLY an empty anchor block does not leave an emp
 
 ## P7 收口
 
-- [ ] 7.1 三条全绿（或 7.2 已闭合）。
-- [ ] O-7 连跑 3 次全 PASS 且每次 `numTurns >= 2`。
-- [ ] FINDINGS 已记录。
+- [ ] 7.1 三条全绿（或 7.2 已闭合；**若走 β 则须已获用户批准**）。
+- [ ] O-7 连跑 3 次全 PASS，每次都满足**四条断言**（tool_id 精确匹配 / 上游命中恰为 2 / 第二轮无空 text block / marker 非空）。**不得**以 `numTurns >= 2` 单独作为通过判据。
+- [ ] O-7 的 400-mutation 验证过该测试能咬住空块泄漏。
+- [ ] FINDINGS 已记录，并注明本 oracle 的**范围限定**：证明的是「CC 如何回传 + 我方送出什么」，非「真 GHC 是否接受」（后者列 backlog）。

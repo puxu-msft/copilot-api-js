@@ -1,6 +1,6 @@
 # P5 — gap anchor 生命周期（per-gap latch + close-before-real）
 
-> **前置**：P2（临界区）、P3（remap）、P6（心跳复活）。**产出**：解除「首块后不升级」的门，gap anchor 可在任意「客户端无 open block」窗口注入并在下一真实块前关闭。
+> **前置**：P2（owner API）、P3（三腿分配 + remap）、**P4**（leg 语义 —— Task 5.4 的交叉缝要用）、P6（心跳复活）。**产出**：解除「首块后不升级」的门，gap anchor 可在任意「客户端无 open block」窗口注入并在下一真实块前关闭。
 > **承重项 5 + 6**。这是 A 真正闭合 >300s 门的相位；前面全部相位都是它的地基。
 
 ## 当前门的精确位置（`fix/client-proxy-keepalive-300s` 分支）
@@ -24,25 +24,33 @@ if (pendingOpenBlocks.length === 0 && semanticBlockCount === 0 && heartbeat.inje
 - Modify: `src/lib/anthropic/keepalive-anchor.ts`（新增**轻量 gap injector**：只 start+delta，无 message_start）
 - Modify: `src/routes/messages/handler-v4.ts`（接线 gap injector）
 - Modify: `src/lib/pipeline/driver.ts`（close-before-real 覆盖 gap anchor，非仅 pre-content anchor）
-- Modify: `src/lib/pipeline/types.ts`（`AnchorState` 的 anchor 生命周期字段语义：`anchorClosed` 从「一次性」改为「当前 anchor 是否已关」）
+- Modify: `src/lib/pipeline/types.ts`（`AnchorState`：**删除** `anchorClosed` 与 `anchorBlockOpen`，新增 `openAnchorIndex?: number`——见下方「状态机（已冻结）」）
 - Test: 新 `tests/pipeline/gap-anchor-lifecycle.it.test.ts`
 
-## `AnchorState` 语义变更（承重，实施期最易错）
+## `AnchorState` 状态机（**已冻结**——plan review major：原文三处语义互相矛盾）
+
+原 plan 对 `anchorClosed` 给了三种互斥说法（Files 说改为「当前 anchor 是否已关」、语义表说保留为「终局收口是否已做」、Task 5.2 又说终局也用 `openAnchorIndex` 幂等）。三者不能同时成立：多 anchor 下若 `anchorClosed` 在第一次 gap close 后永久为 true，后续终局 close 会被短路；若每个 gap 重置，它就不能充当整请求的终局 once guard；若 `openAnchorIndex` 已是唯一判据，`anchorClosed` 就是残留双轨。
+
+**冻结裁决：删除 `anchorClosed`，由 `openAnchorIndex` 单一承担 per-anchor 与终局幂等。**
 
 现有字段是为**单个 pre-content anchor** 设计的：
 
-- `anchorBlockOpen`：注释明写「stays TRUE for the whole stream once set（index 0 remains reserved even after the anchor is closed）」（`types.ts:444`）——即它其实是「本 generation 用过 anchor 吗」的历史标志，**不是**「当前有 anchor open 吗」。
-- `anchorClosed`：universal 幂等守卫，跨全部 close-off 站点，**一次性**。
+- `anchorBlockOpen`（`types.ts:444` 注释明写 "stays TRUE for the whole stream once set"）——其实是「本 generation 用过 anchor 吗」的历史标志，**不是**「当前有 anchor open 吗」。
+- `anchorClosed`——universal 幂等守卫，跨全部 close-off 站点，**一次性**。
 
-多 anchor 下这两个语义都不够用。需要区分三件事：
+多 anchor 下这两个都不够用。冻结后的状态机：
 
-| 概念 | 新字段 | 语义 |
-|---|---|---|
-| 本 generation 用过 anchor 吗 | `allocator.anchorsOpened() > 0` | C3 短路判据（已在 P1） |
-| **当前**有 anchor open 吗 | `openAnchorIndex?: number` | undefined = 无；有值 = 该 index 的 anchor 正 open，下一真实块前须关 |
-| 终局收口是否已做 | `anchorClosed` | 保留原语义供 terminal close-off 幂等 |
+| 概念 | 字段 | 语义 | 写者 | 读者 |
+|---|---|---|---|---|
+| 本 generation 用过 anchor 吗 | `allocator.anchorsOpened() > 0` | 单调计数，仅诊断/断言用；**不再是 remap 判据**（C3 修订） | allocator | 诊断、测试 |
+| **当前**有 anchor open 吗 | `openAnchorIndex?: number` | `undefined → index → undefined` 的转移**同时**承担 per-anchor 关闭与终局 once guard：关闭时置 `undefined`，第二个调用者见 `undefined` 即短路 | gap injector（开）、三处 close-before-real + 各终局站点（关） | 同左 |
+| 终局收口是否已做 | **无独立字段** | 由 `openAnchorIndex === undefined` 表达 | — | — |
 
-**`anchorBlockOpen` 的处置**：它现在的两个用途（① remap 门槛、② close-off 门槛）分别被 `allocator.anchorsOpened()>0`（C3）与 `openAnchorIndex !== undefined` 取代。故本相位**替换**它而非新增并存字段（项目「不留双轨包袱」）。grep 全站点逐处迁移（`rg -n "anchorBlockOpen" src/ tests/`），类型系统会逼出全部站点。
+**`anchorBlockOpen` 与 `anchorClosed` 一并删除**（项目「不留双轨包袱」）。grep 全站点逐处迁移（`rg -n "anchorBlockOpen|anchorClosed" src/ tests/`），类型系统会逼出全部站点。
+
+**exactly-once 测试要求**（本相位必须有）：终局 close-off 有多个潜在调用者——`closeAnchorIfOpen`（`keepalive-anchor.ts:178`）、driver 的终端 close-off（`driver.ts:1105`）、pump 的多个终端分支（`handler-v4.ts:1325/1423/1450/1503/1606/1644/1688`）。必须有一条测试**枚举这些站点两两组合**（或至少覆盖「driver 先关 + pump 后关」「pump 先关 + driver 后关」两序），断言客户端**恰好收到一个** `content_block_stop@anchorIdx`。
+
+> 若实施中发现确实需要一个 generation-terminal 标志（例如某终局站点需区分「anchor 关了」与「整个请求收口了」），**另起名** `terminalClosing` / `terminalClosed`，并在此表补齐其全部写者/读者 + exactly-once 测试——**不得**复活 `anchorClosed` 的模糊语义。
 
 ---
 
@@ -69,16 +77,20 @@ test("the content anchor latch re-arms per gap: N gaps produce N anchors", async
 - [ ] **Step 1: 写失败测试**
 
 ```ts
-test("a gap anchor is closed BEFORE the next real content_block_start (maxOpen===1)", async () => {
+test("a gap anchor is closed BEFORE the next real content_block_start", async () => {
   // 同上场景，用 producer harness 收全部客户端帧
-  assertMaxOneBlockOpen(frames)          // O-2
+  assertBlockProtocolState(frames)       // O-2（升级后：含 delta/stop 归属 + 终局无悬挂）
   // 且精确断言 stop@gapIdx 出现在 start@nextRealIdx 之前
+})
+test("the anchor stop is emitted EXACTLY ONCE no matter which terminus fires first", async () => {
+  // 枚举终局站点两两组合（至少「driver 先关 + pump 后关」「pump 先关 + driver 后关」两序）
+  // 断言客户端恰好收到一个 content_block_stop@anchorIdx
 })
 ```
 
 - [ ] **Step 2**：跑，红（当前 `closeAnchorBeforeReal` 的 `!anchorState.anchorClosed` 幂等守卫使它**只关第一个** anchor）。
-- [ ] **Step 3**：实现——`driver.ts` 的 `closeAnchorBeforeReal` 改判 `openAnchorIndex !== undefined`，关闭后置 undefined（而非一次性 `anchorClosed=true`）。三条路径都要覆盖：flush 循环内 per-frame（`driver.ts` 的 `isContentBlockStart` 分支）、retreat 分支（`:1240` 附近）、live-reconcile（`live-reconcile.ts:136-141`）。
-  - **终局 close-off 的幂等仍需保留**：`closeAnchorIfOpen`（`keepalive-anchor.ts:178`）+ driver 的终端 close-off + pump 的多个终端分支共享 `anchorClosed`，改成 per-anchor 后必须确保**终局只发一次 stop**。用 `openAnchorIndex` 判断即可（关完置 undefined，第二个调用者看到 undefined 短路）。
+- [ ] **Step 3**：实现——按本文件「`AnchorState` 状态机（已冻结）」小节：`closeAnchorBeforeReal` 改判 `openAnchorIndex !== undefined`，关闭后置 `undefined`。三条路径都要覆盖：flush 循环内 per-frame（`driver.ts` 的 `isContentBlockStart` 分支）、retreat 分支（`:1240` 附近）、live-reconcile（`live-reconcile.ts:136-141`）。
+  - **终局幂等由同一字段承担**（不再有独立 `anchorClosed`）：`closeAnchorIfOpen`（`keepalive-anchor.ts:178`）+ driver 终端 close-off（`driver.ts:1105`）+ pump 各终端分支关完即置 `undefined`，后来者见 `undefined` 短路 → 恰好一次。
 - [ ] **Step 4**：跑，绿 + 全部 close-off 测试回归（`live-pump-terminal-anchor-closeoff.http.test.ts`、`live-post-commit-anchor-closeoff.http.test.ts`、`anchor-multiblock-lifecycle.it.test.ts (c′)`）。
 - [ ] **Step 5**：mutation——注释掉 gap anchor 的 close-before-real，确认 O-2 转红。
 - [ ] **Step 6: 提交** → `fix(anchor): close every gap anchor before the next real block`
@@ -100,7 +112,7 @@ test("real@0 -> gap-anchor@1 -> real@2 (the canonical inter-block shape)", async
     "message_delta", "message_stop",
   ])
   assertMonotonicWireIndices(frames)
-  assertMaxOneBlockOpen(frames)
+  assertBlockProtocolState(frames)
 })
 ```
 
@@ -133,7 +145,7 @@ test("gap silence INSIDE a continuation leg still yields a frontier-allocated an
   // 主腿：real@0 → mid-stream cut → 续写腿开始 → 过 deadline 的静默 → 续写腿首块
   // 断言：
   assertMonotonicWireIndices(frames)   // O-1：anchor 落 wire 1、续写块落 wire 2，无复用无跳号
-  assertMaxOneBlockOpen(frames)        // O-2
+  assertBlockProtocolState(frames)     // O-2
   expect(wireShape(frames)).toEqual([...])
 })
 test("an OPEN gap anchor at the moment of a cut is closed before the continuation leg's first block", async () => {
@@ -151,8 +163,26 @@ test("the per-gap latch re-arms across the leg boundary", async () => {
 - [ ] **Step 2**：跑。**四条里至少一条应当红**——若全绿，先怀疑 harness 没真正进入续写腿（用 `continuationCount` / `onContinuationLeg` 探针确认），修 harness 而非改断言。若确认进入了续写腿且全绿，降级为 characterization 并**明确注明**「交叉行为由 P4+P5 各自的实现自然满足，本测试锁住它不被回归」。
 - [ ] **Step 3**：按红的形状修实现。
 - [ ] **Step 4**：跑，绿。
-- [ ] **Step 5**：mutation——把 `onLegStart()`（P4）或 gap injector 的 latch 重置（P5.1）任一破坏，确认本文件转红。这验证本 task 确实咬住的是**交叉**而非单侧。
-- [ ] **Step 6: 提交** → `test(anchor): cover the continuation-leg × gap-anchor integration seam`
+- [ ] **Step 5**：**交叉 mutation 矩阵**（plan review major：原「任一侧 mutation 让本文件转红」**不能证明**测试咬住的是交叉——删 `beginLeg()` 会让纯 continuation 断言红、破坏 latch reset 会让纯多-gap 计数红，「同文件至少一条红」最多证明该文件同时含两侧测试）。
+
+  指定**同一条**交叉测试（推荐「主腿 gap + 续写腿 gap + upstream index 重启」那条，它同时依赖 P4 的 leg 语义与 P5 的 latch），建 4 格矩阵：
+
+  | mutation | 同一条交叉测试的预期 | 两条单侧 control 的预期 |
+  |---|---|---|
+  | 删除 P4 `beginLeg()` | **红**，且失败原因明确是「续写腿块落在已占用 index」 | P4.1 的纯 continuation 测试也红（预期） |
+  | 删除 P5 跨腿 latch re-arm | **红**，且失败原因明确是「续写腿的 gap 没有产生 anchor」 | P5.1 的纯多-gap 测试也红（预期） |
+
+  验收判据是**同一条交叉测试对两个 mutation 分别以不同的、可辨识的原因失败**；再加两条单侧 control，证明该 mutation 不是**只**被 P4.1 / P5.1 的既有性质捕获。若交叉测试对某个 mutation 不红，说明它并未真正依赖那一侧 → 重构场景，不得跳过。
+
+- [ ] **Step 6**：把矩阵结果填进下方表。
+- [ ] **Step 7: 提交** → `test(anchor): cover the continuation-leg × gap-anchor integration seam`
+
+### 交叉 mutation 矩阵（实施期填写）
+
+| mutation | 交叉测试是否红 | 失败原因（须可辨识且不同） | 单侧 control 是否也红 |
+|---|---|---|---|
+| 删 P4 `beginLeg()` | _待填_ | _待填_ | _待填_ |
+| 删 P5 跨腿 latch re-arm | _待填_ | _待填_ | _待填_ |
 
 ## Task 5.5：多 gap + 混合块类型
 
@@ -174,7 +204,8 @@ test("the per-gap latch re-arms across the leg boundary", async () => {
 ## P5 收口
 
 - [ ] `typecheck` + `test:fast` 绿；anchor 全套件对账完毕。
-- [ ] O-1/O-2/O-3 绿；O-6 字节等价仍等于基线。
-- [ ] `rg -n "anchorBlockOpen" src/` 零命中（已被新字段取代）。
+- [ ] O-1/O-2/O-3 绿；O-6 字节等价仍等于 P0 捕获的 base 基线。
+- [ ] `rg -n "anchorBlockOpen|anchorClosed" src/` **零命中**（两者均已被 `openAnchorIndex` 取代，无双轨残留）。
+- [ ] anchor stop 的 **exactly-once** 测试绿（终局站点两两组合）。
 - [ ] `semanticBlockCount === 0` 门已删，其注释已改为指向本 plan。
-- [ ] **Task 5.4 的交叉缝 oracle 绿，且其 mutation 验证过它咬的是交叉而非单侧。**
+- [ ] **Task 5.4 的交叉 mutation 矩阵填满**：同一条交叉测试对两个 mutation 分别以**可辨识的不同原因**失败，且两条单侧 control 也在位。

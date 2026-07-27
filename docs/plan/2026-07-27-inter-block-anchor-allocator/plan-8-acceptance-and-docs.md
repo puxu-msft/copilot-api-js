@@ -47,17 +47,33 @@ test("POSITIVE CONTROL: a deliberately duplicated index DOES get reordered by th
 - [ ] **Step 3**：结果记入 FINDINGS。
 - [ ] **提交** → `exp(anchor): confirm short-request byte equivalence after the full frontier migration`
 
-## Task 8.4：ADR D2 第 3 点措辞修订（承重项 7）
+## Task 8.4：ADR D2 第 3 点措辞修订（承重项 7）—— **停点在写文件之前**
 
 > 原文约束的是**真实块**的 commit 顺序（"若 index=2 尚未闭合，则 index=3 虽已闭合也压住不发"）。A 把 synthetic anchor 也放进同一条 wire index 序列，等于把不变量的论域从「真实块」扩到「真实块 + 合成块，由单一 frontier 分配」。这是**兼容的加强**，不是冲突——但措辞必须同步，否则未来实现者读 D2 会以为 synthetic 帧不在该序列内（第二轮 GPT 审的 blocker 分析里已出现过这一误读）。
+>
+> **⚠ 停点位置（plan review major 修订）**：原方案 Step 1/2 直接改 ADR、Step 3 才说「交主会话呈用户拍板」，等于让 executor 在未获同意前先改权威决策文件。**ADR 记录用户决策，改它必须先获用户明确同意**。故停点前移到**写文件之前**。
 
-- [ ] **Step 1**：改 `docs/decisions/2026-07-22-continuation-retry-sequential-anchor.md` D2 第 3 点：
-  - 论域扩为「**真实块 + 合成 anchor 块由单一 generation-scoped frontier 严格顺序分配**」；
-  - 补一句「wire index 的唯一权威是 `AnchorIndexAllocator`；任何独立偏移量（历史上的 `anchorShift` / `continuationOffset`）已作废」；
+- [ ] **Step 1**：**不修改任何文件**，只生成逐段 replacement 草案（老文本 → 新文本的对照），内容涵盖：
+  - D2 第 3 点：论域扩为「**真实块 + 合成 anchor 块由单一 generation-scoped frontier 严格顺序分配**」；补「wire index 的唯一权威是 `AnchorIndexAllocator`；任何独立偏移量（历史上的 `anchorShift` / `continuationOffset`）已作废」。
+  - D2 第 2 点：「当前按需升级只覆盖 pre-content … >300s 完整覆盖等待方案 A」→「已由方案 A 覆盖（本 plan）」。
+  - 「后果」小节：「首块提交后的 >300s 客户端无-open窗口仍会断流，解除条件是方案 A 落地」标为**已解除**。
   - D2 修订记录追加本次变更 + 日期 + 指向本 plan。
-- [ ] **Step 2**：D2 第 2 点「当前按需升级只覆盖 pre-content ... >300s 完整覆盖等待方案 A」改为「已由方案 A 覆盖（本 plan）」，并把「后果」小节里「首块提交后的 >300s 客户端无-open窗口仍会断流，解除条件是方案 A 落地」标为**已解除**。
-- [ ] **Step 3**：**ADR 改动需用户同意**（项目纪律：ADR 记录用户决策，改它要用户明确同意）。本 task 产出**改动草案**，交主会话呈用户拍板后再落。
-- [ ] **提交** → `docs(adr): extend D2 sequential-index invariant to synthetic blocks under a single frontier`
+- [ ] **Step 2**：**停下，回主会话**，由用户拍板。**未获批准前不得写 `docs/decisions/2026-07-22-continuation-retry-sequential-anchor.md`。**
+- [ ] **Step 3**（获批后）：按草案修改 ADR 并提交 → `docs(adr): extend D2 sequential-index invariant to synthetic blocks under a single frontier`
+- [ ] **未获批时**：P8 的其余验收照常完成，但**不得宣称文档收口**；在 P8.8 收口清单标注该项待批。
+
+## Task 8.4b：冻结 spec 的状态同步（**plan review major 新增**）
+
+> 审查坐实的矛盾：本 plan 与 kickoff 都称该 spec 是「冻结的唯一权威、用户已裁决选 A」，但 **spec 文件头部仍写「设计候选，已按两轮异模型评审修订，待用户裁决」**。执行者会同时读到两个相反状态，而「冻结契约」只存在于计划自述、不在其权威来源中。
+>
+> 这必须在**plan 合并/开工之前**闭合，不能等 P8.6 的「已落地」注解——那是实现完成后的事，解决不了开工时的状态矛盾。
+
+- [ ] **Step 1**：更新 `docs/spec/2026-07-27-inter-block-keepalive-carrier.md` 的**状态行**：由「设计候选，待用户裁决」改为「**已裁决：采用方案 A**（用户 2026-07-27）；实施计划见 `docs/plan/2026-07-27-inter-block-anchor-allocator/`」，并记录裁决日期。
+- [ ] **Step 2**：**不改设计正文**（方案对比、证据、否决理由全部保留原样）——本 task 只同步「决策状态」这一个事实。
+- [ ] **Step 3**：同步 §9「推荐与落地顺序」的措辞，使其反映「A 已被选定并进入实施」而非「推荐 A」。
+- [ ] **提交** → `docs(spec): record that option A was selected and is now in implementation`
+
+> **注意**：本 task 与 8.4 不同——它记录的是**用户已经做出的裁决**（有据可循），不是新的决策，故**不需要**再次征求同意。若执行时发现裁决的范围与本 plan 的表述有出入，停下回报。
 
 ## Task 8.5：Q5 公式作废（承重项 7）
 
@@ -66,8 +82,13 @@ test("POSITIVE CONTROL: a deliberately duplicated index DOES get reordered by th
   - 说明原因：A 之下 `anchorShift` 不再是 {0,1} 的二值量（多 anchor 时任意大），且 `continuationOffset` 已被 frontier 取代——**两个独立偏移不能继续叠加**；
   - 给替代记账表述：「wire index 由 generation-scoped `AnchorIndexAllocator` 单调分配；任一块（真实/anchor/continuation）的 wire index = 其 `allocate*` 调用时的 frontier 值。不存在可用公式从上游 index 推导 wire index——必须查 allocator 的记录。」
   - 该文件的时序图/示例序列相应更新（`anchor@0 → real@1 → continuation@2` 这类举例仍成立，但推导路径改为 frontier）。
-- [ ] **Step 2**：跨文档 grep 验证无残留：`rg -n "anchorShift|i \+ 1 \+ continuationOffset" docs/ src/`。
-- [ ] **Step 3**：同步核查其它引用该公式的文档（`docs/spec/2026-07-22-max-tokens-continuation.md`、`docs/memory/` 相关条目）。
+- [ ] **Step 2**：**分类审计而非字面零命中**（plan review minor 修订）。原判据 `rg -n "anchorShift|i \+ 1 \+ continuationOffset" docs/ src/` **不可能成立**——它会命中 P8.5 自己新增的 round-3 历史说明、本 plan 的 README/kickoff、以及旧评审报告里的引用；且它漏掉 `wireIndex = i + anchorShift + continuationOffset` 整式、空格/反引号变体、以及只写 `continuationOffset` 的规范性表述。正确做法：
+  1. 用**更宽**的 pattern 生成命中清单：`rg -n "wireIndex|anchorShift|continuationOffset" docs/ src/`；
+  2. 逐条分类为 **(a) 已作废的历史记录**（评审报告、修订记录、本 plan 的说明性引用）或 **(b) 仍具规范性的消费者**（宣称它是当前记账方式的表述、代码）；
+  3. **验收判据 = 不存在任何未标注作废的 (b) 类命中**，不是字面零命中；
+  4. 每个保留下来的 (a) 类命中必须带明确的 **superseded 标记**（如「已于 2026-07-27 作废，见 …」）。
+- [ ] **Step 3**：同步 Q5 全文的**表、公式、示例序列与标题**（不只是加一条修订记录——正文里的推导若仍按双偏移写，读者会照旧实现）。
+- [ ] **Step 4**：同步其它引用该公式的文档（`docs/spec/2026-07-22-max-tokens-continuation.md`、`docs/memory/` 相关条目）。
 - [ ] **提交** → `docs(plan): retire the additive wireIndex formula; the allocator frontier is the sole authority`
 
 ## Task 8.6：backlog / DESIGN / 记忆同步
@@ -76,14 +97,17 @@ test("POSITIVE CONTROL: a deliberately duplicated index DOES get reordered by th
   - 关闭「>300s inter-block 保活」条目（若存在），注明由本 plan 闭合；
   - **新增** J（长 text 块 idle 分块）条目：根因 / 当前行为 / 理想架构 / 为何暂缓 / 若做需改什么 / 解除条件。它是 A 落地后的下游收益（把已缓冲文本先 commit 为完整真实块，客户端拿到**真内容**而非空 anchor），依赖本 plan 的 allocator。
   - **新增** B 的复活条件条目（`record-not-adopted`）：若 CC 改为非 eager tool 执行，或需要给 text/thinking 更干净的载体，方案 B（延迟 stop）值得重估。
+  - **新增**「空 anchor 对**真 GHC 上游**的可接受性未被证明」条目（plan review 指出的 O-7 范围限定）：O-7 用 upstream hook，只能证明「CC 如何回传 + 我方送出什么」，**不能**证明真 GHC 接受。理想验证 = 生产 sanitize 后请求体的 oracle 或一次靶向真上游探针。为何暂缓：既有入站清洗（P7.1 已核实）使空块在正常路径上到不了上游，风险低；解除条件 = 若 P7.1 发现任一腿绕过清洗。
 - [ ] **Step 2**：`docs/DESIGN.md`「活的架构现状」——更新 keepalive 行：正常 cadence 裸 ping、逼近 `stream_keepalive_escalate_sec` 时按需升级、**升级覆盖 pre-content 与 inter-block 两类窗口**、wire index 由 generation frontier 统一分配。
 - [ ] **Step 3**：`docs/todo/2026-07-22-client-proxy-keepalive-300s.md`——标为已闭合，指向本 plan 与 FINDINGS。
 - [ ] **Step 3b**：**P6 的现网缺陷单独记账**（若 P6 已独立交付则此步已在其交付时完成，核实即可）：`docs/DESIGN.md` 的 buffered/keepalive 行注明「boundary commit 曾使 delivery 心跳永久死亡（Responses HTTP 默认受影响），已于 <commit> 修复」；`docs/todo/deferred-backlog.md` 若有相关条目一并关闭。
 - [ ] **Step 4**：`docs/spec/2026-07-27-inter-block-keepalive-carrier.md` 头部加实施状态注解（方案 A 已落地 + commit）。
-- [ ] **Step 5**：记忆库——更新 `docs/memory/MEMORY.md` 相关 stub；提炼本次教训（至少三条候选）：
-  1. **「同名方法在两条 sink 实现上语义分歧，测试只装在宽松那条 → 生产缺陷结构性测不到」**（P6；这条有普遍性——凡是「同一接口两个实现 + 测试只覆盖其一」都适用，值得独立成条或并入 `empirical-verification`）；
-  2. **「审查报告的 absence 断言（『全仓 grep 未见』）必须亲自复核」**（P7 的 F4 纠正；`verifying-authoritative-claims` 的又一实例，可并入该 skill 正文）；
-  3. **「跨相位集成缝要在计划期就落成独立 red-first task，不留给合并态审」**（P5.4 的由来；印证既有记忆 `cross-phase-integration-seam-only-caught-at-merged-state`，可作为该条的正向应用实例补入）。
+- [ ] **Step 5**：记忆库——更新 `docs/memory/MEMORY.md` 相关 stub；提炼本次教训（至少四条候选）：
+  1. **「为降风险而加的机制，本身要过同样的对抗检验」**（本轮 blocker：C3 短路是上一轮 reviewer 建议的缓解措施，却自己在默认路径引入 index 复用）。可推广形式：凡「为降低风险 X 而引入的机制 M」，M 必须与主路径接受同等强度的对抗检验；M 形如「某条件下跳过主逻辑」时，须穷举「条件成立但主逻辑仍必需」的场景——那正是 M 的盲区。**这条最有普遍价值，建议独立成条。**
+  2. **「同名方法在两条实现上语义分歧，测试只装在宽松那条 → 生产缺陷结构性测不到」**（P6：raw sink vs delivery sink 的 `freezeHeartbeat`）。
+  3. **「审查报告的 absence 断言（『全仓 grep 未见』）必须亲自复核」**（P7 的 F4 纠正；`verifying-authoritative-claims` 的又一实例）。
+  4. **「跨相位集成缝要在计划期就落成独立 red-first task，不留给合并态审」**（P5.4 的由来；印证既有记忆 `cross-phase-integration-seam-only-caught-at-merged-state`）。
+  5. 附带：**「测试准备替实现完成关键动作 = 假绿」**（手工推进 allocator 会掩盖生产漏分配；mutation 要有「删除接线」维度而非只改常量）。
 - [ ] **提交** → `docs: sync live docs and backlog after the frontier allocator landed`
 
 ## Task 8.7：合并态审查
@@ -102,7 +126,8 @@ test("POSITIVE CONTROL: a deliberately duplicated index DOES get reordered by th
 
 - [ ] `bun run typecheck` + `bun run lint:all`（**不带 cache**）绿。
 - [ ] `bun run test:backend` 绿（不是 `test:fast`——交付前必须全后端）。
-- [ ] O-1 ~ O-8 八条 oracle 逐条记录结果。
+- [ ] **O-1 ~ O-9 九条** oracle 逐条记录结果（与 README 的 oracle 总表、下方验收记录表**同一份清单**对账，三处不得有出入）。
+- [ ] Task 8.4（ADR）若未获批，此处明确标注「待用户批准」，**不得**记为收口完成。
 - [ ] 归档：本 plan 目录各文件头部加实施状态注解 + commit hash。
 
 ## 验收记录（实施期填写）

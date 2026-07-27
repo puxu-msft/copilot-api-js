@@ -13,7 +13,7 @@
 
 ## Interfaces
 
-- Produces: `assertMonotonicWireIndices(frames: ReadonlyArray<ClientFrame>): void`（O-1）、`assertMaxOneBlockOpen(frames): void`（O-2）、`wireShape(frames): Array<string>`（形如 `["message_start","anchor_start@0","delta@0","anchor_stop@0","real_start@1",...]`，供 O-3 精确比对）
+- Produces: `assertMonotonicWireIndices(frames: ReadonlyArray<ClientFrame>): void`（O-1）、`assertBlockProtocolState(frames): void`（O-2 —— 完整块协议状态机，`maxOpen <= 1` 只是其一条子断言）、`wireShape(frames): Array<string>`（形如 `["message_start","anchor_start@0","delta@0","anchor_stop@0","real_start@1",...]`，供 O-3 精确比对）
 - Consumes: 既有 `tests/helpers/fake-clock.ts`、`tests/e2e-client/harness/{spawn-proxy,drive-claude-cli}.ts`
 
 ---
@@ -30,43 +30,69 @@
 
 ## Task 0.1：O-6 字节等价基线脚本
 
-> 基线值 `8691db71ca3b692468ae91dfc2df108871c8f5f684acc73f3832975d60f2a6a0` / 1675 bytes 来自 GPT 代码审的独立重跑（`stream_keepalive_escalate_sec` 0 与 200 两侧同值）。本 task 把一次性验证**固化为可重跑脚本**——后续每相位收口都要跑它。
+> **基线的合同层级（plan review minor 修订）**：历史值 `8691db71…2f6a0` / 1675 bytes 来自 GPT 代码审的独立重跑（`docs/todo/keepalive-300s-fix-review-gpt.md:98`，`escalate` 0/200 两侧同值）——**来源可追溯，但它是某个 commit + 请求 + hook + 配置 + SSE writer 的 characterization，不是跨 master 前进的永久需求**。故：
+>
+> - **权威基线 = 本 task 在实施 base 上捕获的 pre-change 字节**；P8 必须与之逐字节相同。
+> - 历史 SHA 只作 **provenance / sanity check**。
+> - **若捕获值与历史值不同**：不得直接换值了事，必须先证明 hook、请求、配置三者相同，再定位并**记录造成差异的 base change**（哪个 commit、改了什么）。差异无法解释时停下回报——那可能是别的回归。
 
 - [ ] **Step 1**：写 `exp/inter-block-anchor-allocator/deterministic-hook.ts`——一个 upstream hook，产出固定的短响应（message_start + 单 text 块 + message_delta + message_stop，无静默），保证字节确定。
-- [ ] **Step 2**：写 `byte-equivalence.sh`——在**自选非 4141 端口**（如 42061）起测试服务器（`bun run start --port 42061`，config 指向该 hook），`curl -N` 抓完整 SSE 到文件，`sha256sum` + `wc -c` 输出，脚本末尾**按 PID 精确 kill 自己启动的实例**（绝不 `pkill`/`killall`）。
-- [ ] **Step 3**：跑一次，与基线值对照。
-  - **若不匹配**：先查是否因 master 已前进（该基线在 `fix/client-proxy-keepalive-300s` 上测的）。此时**重新捕获基线并在本文件记录新值 + 捕获时的 commit**，不要为对上旧值扭曲配置。基线的作用是「改造前后不变」，不是「与三天前的某次跑一致」。
-- [ ] **Step 4**：`README.md` 记录跑法 + 当前基线值 + 捕获 commit。
-- [ ] **提交** → `test(anchor): add reproducible byte-equivalence baseline probe`
+- [ ] **Step 2**：写 `byte-equivalence.sh`——在**自选非 4141 端口**（如 42061）起测试服务器（`bun run start --port 42061`，config 指向该 hook），`curl -N` 抓完整 SSE 到文件，`sha256sum` + `wc -c` 输出，脚本末尾**按 PID 精确 kill 自己启动的实例**（绝不 `pkill`/`killall`）。**保留捕获的字节文件本身**（不只是 hash），P8 用 `cmp` 逐字节对比。
+- [ ] **Step 3**：跑一次，记录为**权威 base 基线**；与历史值对照并按上面的规则处置差异。
+- [ ] **Step 4**：`README.md` 记录跑法 + base 基线值 + 捕获 commit + 与历史值的关系。
+- [ ] **提交** → `test(anchor): capture the pre-change byte baseline on the implementation base`
 
 ## Task 0.2：O-1 / O-2 producer 全序 harness
 
 > 复用 `tests/pipeline/anchor-multiblock-lifecycle.it.test.ts` 已有的 gated-upstream + mock codec + FakeClock 骨架（那是本仓库唯一的真 producer wire-oracle），把其中的断言抽成可复用原语。**但注意**：该文件用 `makeSseSink`（raw sink）。本 harness 必须**同时**支持 raw sink 与 `makeDeliverySseSink`（生产路径）两种注入，因为 P6 揭示的心跳缺陷只在后者可见。
+>
+> **O-2 已按 plan review major 升级**：原「维护 openSet 并断言峰值为 1」**过弱**——一个坏实现若把 `start@1` 正确 remap、却把同块的 delta/stop 留在 upstream `@0`，单块场景峰值仍是 1，但流末尾悬挂 `@1` 且 delta/stop 指向未 open 的 index，测试照样绿。故升级为完整**块协议状态机**。
 
-- [ ] **Step 1: 写失败测试** —— 抽 `tests/helpers/wire-index-oracle.ts`，并用一个**故意错误的**帧序列证明断言会红：
+- [ ] **Step 1: 写失败测试** —— 抽 `tests/helpers/wire-index-oracle.ts`，并用**故意错误的**帧序列证明每条断言都会红（正样本对照：`pass-null-clean-not-self-validating`）：
 
 ```ts
-// tests/helpers/wire-index-oracle.unit.test.ts —— 正样本对照：证明检查确实触达目标
+// tests/helpers/wire-index-oracle.unit.test.ts
+// ── O-1 ──
 test("assertMonotonicWireIndices rejects a duplicated index", () => {
-  const bad = [startFrame(0), stopFrame(0), startFrame(0)] // real@0, anchor@0 —— 本轮 blocker 的形状
-  expect(() => assertMonotonicWireIndices(bad)).toThrow()
+  expect(() => assertMonotonicWireIndices([startFrame(0), stopFrame(0), startFrame(0)])).toThrow()
 })
-test("assertMaxOneBlockOpen rejects the coexist shape", () => {
-  const bad = [startFrame(0), startFrame(1)] // 两块并存 open
-  expect(() => assertMaxOneBlockOpen(bad)).toThrow()
+test("assertMonotonicWireIndices rejects a gap in the sequence", () => {
+  expect(() => assertMonotonicWireIndices([startFrame(0), stopFrame(0), startFrame(2)])).toThrow()
 })
-test("both accept the current (pre-change) sequential shape", () => {
-  const ok = [startFrame(0), stopFrame(0), startFrame(1), stopFrame(1)]
+
+// ── O-2：四条子断言各有独立负样本 ──
+test("rejects two blocks open at once", () => {
+  expect(() => assertBlockProtocolState([startFrame(0), startFrame(1)])).toThrow()
+})
+test("rejects a delta referencing an index that is not the open block (orphan delta)", () => {
+  expect(() => assertBlockProtocolState([startFrame(1), deltaFrame(0)])).toThrow()   // ← 原 maxOpen 断言放行
+})
+test("rejects a stop with the wrong index", () => {
+  expect(() => assertBlockProtocolState([startFrame(1), stopFrame(0)])).toThrow()    // ← 原断言放行
+})
+test("rejects a dangling open block at end of stream", () => {
+  expect(() => assertBlockProtocolState([startFrame(0)])).toThrow()                  // ← 原断言放行
+})
+test("rejects a duplicated stop", () => {
+  expect(() => assertBlockProtocolState([startFrame(0), stopFrame(0), stopFrame(0)])).toThrow()
+})
+
+// ── 正向：当前（未改造）形状必须通过 ──
+test("both accept the current sequential shape", () => {
+  const ok = [startFrame(0), deltaFrame(0), stopFrame(0), startFrame(1), deltaFrame(1), stopFrame(1)]
   expect(() => assertMonotonicWireIndices(ok)).not.toThrow()
-  expect(() => assertMaxOneBlockOpen(ok)).not.toThrow()
+  expect(() => assertBlockProtocolState(ok)).not.toThrow()
 })
 ```
 
 - [ ] **Step 2**：跑，红（原语还不存在）。
-- [ ] **Step 3**：实现原语。`assertMonotonicWireIndices` 收集全部 `content_block_start` 的 index，断言等于 `[0..n-1]`；`assertMaxOneBlockOpen` 逐帧维护 openSet 断言峰值为 1；`wireShape` 输出可读的类型@index 序列（anchor 帧按 `synthetic` 标记区分）。
+- [ ] **Step 3**：实现原语：
+  - `assertMonotonicWireIndices`：收集全部 `content_block_start` 的 index，断言等于 `[0..n-1]`（无洞无重复）。
+  - `assertBlockProtocolState`：逐帧跑状态机，断言 ① open 集合大小 <= 1；② 每个 delta/stop 的 index === 当前唯一 open 的 index；③ stop 后集合为空；④ 终局集合为空。**`maxOpen <= 1` 只是其中一条子断言，不是全部。**
+  - `wireShape`：输出可读的类型@index 序列（anchor 帧按 `synthetic` 标记区分），供 O-3 精确比对。
 - [ ] **Step 4**：跑，绿。
-- [ ] **Step 5**：把原语接进一个**新的** producer 测试 `tests/pipeline/wire-frontier-producer.it.test.ts`，用**当前**（未改造）代码跑 pre-content anchor + 双真实块场景，断言现状通过 O-1/O-2（现状是 `anchor@0 → real@1 → real@2`，本就合规）。这条是**改造前的绿基线**，后续每相位都要保持绿。
-- [ ] **提交** → `test(anchor): add reusable wire-index producer oracles`
+- [ ] **Step 5**：把原语接进 `tests/pipeline/wire-frontier-producer.it.test.ts`，用**当前**（未改造）代码跑 pre-content anchor + 双真实块场景，断言现状通过 O-1/O-2。这是**改造前的绿基线**，后续每相位都要保持绿。
+- [ ] **提交** → `test(anchor): reusable wire-index and block-protocol-state producer oracles`
 
 ## Task 0.3：现有 anchor 套件红绿基线
 

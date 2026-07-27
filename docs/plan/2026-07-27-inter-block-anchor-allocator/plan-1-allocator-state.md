@@ -1,6 +1,6 @@
 # P1 — allocator 状态归位（frontier 成为唯一权威）
 
-> **前置**：P0。**产出**：`AnchorIndexAllocator` 挂进共享 `AnchorState`，`AnchorHooks` 的三个固定-index 帧改为 factory，`anchorsOpened === 0` 结构性短路就位。
+> **前置**：P0。**产出**：`AnchorIndexAllocator` 挂进共享 `AnchorState`，`AnchorHooks` 的三个固定-index 帧改为 factory，**恒等**短路 primitive 就位（C3 已按 plan review blocker 修订）。
 > **本相位不改任何 remap 站点**（那是 P3）——本相位结束时三处 remap 仍走旧的固定 `+1`，且**必须与 allocator 记账一致**（commit invariant，见下方「等价桥接」）。
 
 ## Files
@@ -14,14 +14,14 @@
 ## Interfaces
 
 - Produces:
-  - `AnchorIndexAllocator.anchorsOpened: () => number`（C3 结构性短路的判据）
+  - `AnchorIndexAllocator.anchorsOpened: () => number`（**诊断 / 断言用计数**。注意：**它不是 C3 短路判据**——判据是映射恒等 `realBlockOffset(i) === 0`，见 Task 1.4 与 README「C3 的修订」）
   - `AnchorState.allocator: AnchorIndexAllocator`（**必填**，非可选——类型系统逼出全部构造点，见 `feedback-fix-all-comparison-sites` 的正向版）
   - `AnchorHooks.startFrame: (index: number) => ClientFrame`（同 `stopFrame` / `deltaFrame`）
 - Consumes: 既有 `createAnchorIndexAllocator`（`keepalive-anchor.ts:49-62`，已 landed 未接线）
 
 ---
 
-## Task 1.1：allocator 加 `anchorsOpened`（C3 的判据）
+## Task 1.1：allocator 加 `anchorsOpened`（诊断计数）—— **U1 的前半，与 1.2 同一 commit**
 
 - [ ] **Step 1: 写失败测试**
 
@@ -43,9 +43,11 @@ test("anchorsOpened is the structural short-circuit predicate", () => {
 - [ ] **Step 4**：跑，绿。
 - [ ] **Step 5: 提交** → `feat(anchor): expose anchorsOpened as the allocator short-circuit predicate`
 
-## Task 1.2：anchor 帧改 factory（固定 index 0 → 分配的 index）
+## Task 1.2：anchor 帧改 factory（固定 index 0 → 分配的 index）—— **与 1.1 同属 U1，一个 commit**
 
 > 这是「`AnchorHooks.startFrame/stopFrame/deltaFrame` 当前固定 index 0，需改为按已分配 index 生成」（承重项 1）的落点。
+>
+> **U1 边界**：1.1 与 1.2 **必须同一个 commit**——`AnchorHooks` 的类型改动会打红全部构造点，拆开则中间 commit 不编译，违反 commit invariant。两者的失败测试可以分别先写，但只提交一次。
 
 - [ ] **Step 1: 写失败测试**
 
@@ -65,7 +67,7 @@ test("index 0 remains byte-identical to the pre-change fixed frames", () => {
 - [ ] **Step 2**：跑，红。
 - [ ] **Step 3**：实现——三个 builder 收 `index: number`。**`ANCHOR_INDEX = 0` 常量的处置**：grep 全站点（`rg -n "ANCHOR_INDEX" src/ tests/`），把每个引用迁到显式 index；常量本身**保留**为 `PRE_CONTENT_ANCHOR_INDEX = 0` 并加注释说明它现在只是「frontier 的起点恰为 0」的可读别名，不再是协议常量。（不删——它是 pre-content 场景 golden 可读性的锚点；若 grep 后确认零引用则删，按 `broken-reference-supply-vs-delete` 的消费者契约判。）
 - [ ] **Step 4**：跑，绿；`AnchorHooks` 的类型改动会打红 `handler-v4.ts` 的 `buildAnthropicAnchorHooks` 与全部构造 `AnchorHooks` 的测试——**这些是类型系统逼出的全站点，逐处改，不得用 `as any` 绕过**。
-- [ ] **Step 5: 提交** → `refactor(anchor): make anchor frames index-parameterized factories`
+- [ ] **Step 5: 提交（U1 一次提交，含 Task 1.1 + 1.2 全部改动）** → `refactor(anchor): index-parameterized anchor frame factories and the anchorsOpened counter`
 
 ## Task 1.3：allocator 挂进 `AnchorState`，generation 级唯一
 
@@ -84,79 +86,111 @@ test("one generation has exactly one allocator, shared across every leg", async 
 ```
 
 - [ ] **Step 2**：跑，红。
-- [ ] **Step 3**：实现——`AnchorState` 加**必填** `allocator: AnchorIndexAllocator`；`makeAnchoredSseSink`（`handler-v4.ts:1046-1090`）创建 `createAnchorIndexAllocator()` 放进 `anchorState`。
-  - **注意**：`driver.ts:1090` 有一个 fallback `opts.anchorState ?? { injected: false, ... }`（`ping` 模式不 thread anchorState 时的驱动本地对象）。该 fallback 也必须带一个 allocator——用**同一个 `createAnchorIndexAllocator()`**，它在无 anchor 时 `anchorsOpened()===0`、`realBlockOffset` 恒 0，天然走 C3 短路。
+- [ ] **Step 3**：实现——`AnchorState` 加**必填** `allocator: AnchorIndexAllocator`；`makeAnchoredSseSink`（`handler-v4.ts:1046-1090`）创建 `createAnchorIndexAllocator()` 放进 `anchorState`；**同一 commit 内**把两个 injector 的 anchor index 改为向 allocator 取（U2 的原子性要求：injector 要 index 必须在 allocator 可达之后）。
+  - **注意**：`driver.ts:1090` 有一个 fallback `opts.anchorState ?? { injected: false, ... }`（`ping` 模式不 thread anchorState 时的驱动本地对象）。该 fallback 也必须带一个 allocator——用**同一个 `createAnchorIndexAllocator()`**，它在无 anchor 主腿上 `realBlockOffset` 恒 0，天然满足 C3 的恒等短路。
 - [ ] **Step 4**：跑，绿 + 全量 `test:fast` 回归。
-- [ ] **Step 5: 提交** → `feat(anchor): thread a generation-scoped index allocator through AnchorState`
+- [ ] **Step 5: 提交（U2）** → `feat(anchor): thread a generation-scoped index allocator through AnchorState`
 
-## Task 1.4：`anchorsOpened === 0` 结构性短路（承重项 2 / C3）
+## Task 1.4：**恒等**短路（承重项 2 / C3——**已按 plan review blocker 修订**）—— **U3，独立 commit**
 
-> **这是本计划风险控制的核心**。审查 F6：A 把今天被 `injected && anchor && anchorBlockOpen` 三重门挡住的死 remap 路径变成每请求热路径；记账错一处，受害的不再只是升级过的请求，而是**全部**普通短请求，且症状是静默重排。
+> **这是本计划风险控制的核心，也是本轮 blocker 的所在**。审查 F6 原本的建议是「`anchorsOpened === 0` 即无条件短路」，GPT plan review 证明该判据与 C4 冲突：**无 anchor 的续写腿**会因此跳过 remap、复用主腿已交付的 wire 0。修订后的判据是**映射恒等**——见 README「C3 的修订」小节的四场景表。
+>
+> 短路仍然必要（它把「记账错误」的爆炸半径限回真正需要 remap 的请求），但**它的成立条件必须自己也经得起对抗检验**（README 记的教训）。
 
-- [ ] **Step 1: 写失败测试** —— 正/负样本对照（`pass-null-clean-not-self-validating`：不能只测「没开 anchor 时结果一样」，要**证明检查确实触达了两条不同的代码路径**）
+- [ ] **Step 1: 写失败测试** —— 四场景全覆盖，**含 blocker 分支**
 
 ```ts
 // tests/pipeline/anchor-remap-short-circuit.unit.test.ts
-test("NEGATIVE (no anchor opened): remap is structurally bypassed — the SAME frame object is returned", () => {
-  const allocator = createAnchorIndexAllocator()
-  allocator.onRealBlockOpen()
+// 场景 A：无 anchor 主腿 → 恒等 → 原对象直返（O-6 字节等价的机制保证）
+test("no-anchor PRIMARY leg: structurally bypassed — the SAME frame object is returned", () => {
+  const a = createAnchorIndexAllocator()
+  a.allocateRealBlock(0)                              // wire 0 == upstream 0 → 恒等
   const frame = realStartFrame(0)
-  const out = resolveRemappedFrame(frame, allocator, anchorHooks)   // 待实现的共享 primitive
-  expect(out).toBe(frame)                 // 引用相等 —— 不是「值相等」，是 structural bypass 的证据
+  expect(resolveRemappedFrame(frame, a, hooks)).toBe(frame)   // 引用相等
 })
-test("POSITIVE (anchor opened): remap engages and shifts the index", () => {
-  const allocator = createAnchorIndexAllocator()
-  allocator.onAnchorOpen()                // anchor@0
-  allocator.onRealBlockOpen()             // real@1
+
+// 场景 B：无 anchor 续写腿 —— BLOCKER 分支，原判据在此写出重复的 wire 0
+test("no-anchor CONTINUATION leg: MUST remap even though anchorsOpened()===0", () => {
+  const a = createAnchorIndexAllocator()
+  a.allocateRealBlock(0)                              // 主腿 real@0
+  a.beginLeg()                                      // 续写腿：upstream index 重启
+  a.allocateRealBlock(0)                              // 该腿 upstream 0 → wire 1
   const frame = realStartFrame(0)
-  const out = resolveRemappedFrame(frame, allocator, anchorHooks)
-  expect(out).not.toBe(frame)
+  const out = resolveRemappedFrame(frame, a, hooks)
+  expect(a.anchorsOpened()).toBe(0)                   // 前置断言：确实没有任何 anchor
+  expect(out).not.toBe(frame)                         // 不得短路
   expect(JSON.parse(out.data as string).index).toBe(1)
 })
+
+// 场景 C/D：有 anchor 的主腿 / 续写腿 → 一律 remap
+test("anchor opened: remap engages on both legs", () => { /* ... */ })
 ```
 
-- [ ] **Step 2**：跑，红。
-- [ ] **Step 3**：实现一个**共享 primitive**（`fix-all-comparison-sites`：归一化/索引 bug 几乎总在多比较点复发，故抽单一原语而非在三处 remap 各写一遍判断）：
+- [ ] **Step 2**：跑，红。**场景 B 是 blocker 的回归锁**——它必须在 primitive 写好前就红。
+- [ ] **Step 3**：实现共享 primitive（`fix-all-comparison-sites`：抽单一原语而非在三处 remap 各写一遍判断）：
 
 ```ts
 // src/lib/anthropic/keepalive-anchor.ts
 /**
  * The SINGLE decision point for "does this real block frame need a wire-index remap?".
- * Structural short-circuit (C3): a generation that never opened an anchor returns the frame
- * OBJECT UNCHANGED — the code path is identical to the pre-allocator behaviour, so a普通短请求
- * cannot be corrupted by an index-accounting bug. Every remap site (driver buffered flush,
- * driver retreat, live-reconcile) MUST route through this, never re-derive the condition.
+ *
+ * Short-circuits ONLY when the mapping is the IDENTITY — i.e. the wire index this leg's block was
+ * allocated equals the upstream index the frame already carries. That holds for a no-anchor PRIMARY
+ * leg (the overwhelmingly common case), whose frames are then returned OBJECT-UNCHANGED so the code
+ * path is byte-identical to the pre-allocator behaviour (C8/O-6).
+ *
+ * It does NOT hold merely because no anchor was opened: a CONTINUATION leg restarts its upstream
+ * index at 0 while the frontier has already moved past it, so `anchorsOpened()===0` continuation
+ * frames MUST still be remapped. Short-circuiting on the anchor count alone re-delivers wire 0 —
+ * the exact index-reuse failure this plan exists to prevent (README "C3 的修订").
  */
 export function resolveRemappedFrame(frame, allocator, anchor): ClientFrame
 ```
 
-- [ ] **Step 4**：跑，绿。
-- [ ] **Step 5**：加一条**架构守卫**测试，防止未来有人绕过 primitive 自己算 offset：
+实现要点：判据读 allocator 的**实际映射**（`realBlockOffset(upstreamIndex) === 0`）而非 anchor 计数——offset 为 0 本身就是恒等的充要条件，且天然覆盖四个场景。`anchorsOpened()` 保留作**诊断与断言**用途，不再是短路判据。
+
+- [ ] **Step 4**：跑，四场景全绿。
+- [ ] **Step 5**：加**架构守卫**，防止未来有人绕过 primitive 自己算 offset：
 
 ```ts
 // tests/architecture/anchor-remap-single-authority.unit.test.ts
 test("no source file computes an anchor remap offset outside resolveRemappedFrame", () => {
   // grep src/ 源码形状：除 keepalive-anchor.ts 外，不得出现 `.remap(` 后跟字面量数字
-  // （正样本对照：故意在一个临时字符串里放 `.remap(frame, 1)` 证明检查会命中）
+  // 正样本对照：故意在一个临时字符串里放 `.remap(frame, 1)` 证明检查会命中
+})
+test("no source file gates a remap on anchorsOpened() — the predicate is offset identity", () => {
+  // 锁住 blocker 不复发：anchorsOpened() 不得出现在任何 remap 分支条件里
 })
 ```
 
-- [ ] **Step 6: 提交** → `feat(anchor): single-authority remap primitive with a structural no-anchor bypass`
+- [ ] **Step 6: 提交** → `feat(anchor): single-authority remap primitive gated on mapping identity`
 
-## 等价桥接（commit invariant，本相位承重）
+## 等价桥接与 commit invariant（**已按 plan review major 重排**）
 
-本相位结束时 allocator 已在记账，但三处 remap **仍未切换**（P3 才切）。为保证每个中间 commit 的终态不变量成立：
+审查坐实两处次序矛盾：① P1.2 要求两个 injector「向 allocator 要 index」，但 allocator 到 P1.3 才挂进共享 state——按原顺序 P1.2 无法独立提交；② P1 收口原本要求「`onRealBlockOpen` 已在生产正确调用」才能证明桥接，但**真实块的分配要到 P3.1 才接线**（且依赖 P2 的 owner API），于是桥接测试只能靠测试手工推进 allocator——那正是「测试准备替实现完成关键动作」的假绿。
 
-- Task 1.3 落地后，allocator 的 `onAnchorOpen`/`onRealBlockOpen` **必须已被正确调用**（sink 开块时），否则 P3 一切就错。
-- 但 remap 仍读固定 `1` → 此时必须成立：**pre-content-only 场景下 `allocator.realBlockOffset(i) === 1` 恒等于旧的固定 `1`**。
-- 因此 P1 收口必须有一条**桥接断言**测试：在当前（pre-content-only）行为下，对每个真实块断言 `allocator.realBlockOffset(upstreamIndex) === (anchorBlockOpen ? 1 : 0)`。这条测试在 P5 引入 gap anchor 后会**按设计失效**（多 anchor 时 offset 会 >1），届时改写为「offset 等于 frontier 记账值」——在 P3 的 Task 3.4 处理。
-- **绝不允许**的中间态：allocator 已按 frontier 分配（多 anchor），但某个 remap 站点还在算 `+1`。P5 必须在 P3 之后。
+**重排后的原子提交单元**：
 
-- [ ] **Step**: 写桥接断言 `tests/pipeline/anchor-allocator-bridge.it.test.ts`，跑绿。
-- [ ] **提交** → `test(anchor): assert allocator accounting matches the legacy fixed offset (bridge invariant)`
+| 单元 | 内容 | 为何原子 |
+|---|---|---|
+| **U1 = Task 1.1 + 1.2**（一个 commit） | allocator 加 `anchorsOpened()`；三个 anchor 帧改 index-parameterized factory；`AnchorHooks` 类型随之改；**全部构造点同步改** | 类型改动会打红所有 `AnchorHooks` 构造点，拆开则中间 commit 不编译 |
+| **U2 = Task 1.3**（一个 commit） | allocator 挂进 `AnchorState`（必填）+ generation owner 创建 + **pre-content anchor 的分配接线**（injector 经 allocator 取 index） | injector 要 index 必须在 allocator 可达之后；两者同 commit 才有意义 |
+| **U3 = Task 1.4**（一个 commit） | 恒等短路 primitive + 架构守卫 | 纯新增，不改调用方 |
+
+**P1 期间成立的 commit invariant（精确表述，不夸大）**：
+
+- **anchor 侧**：pre-content anchor 的 index 由 allocator 分配（U2 起），生产路径真实推进 frontier。
+- **真实块侧**：**尚未**接线（P3.1 才接，它依赖 P2 的 owner API）。故 P1 期间 `realBlockOffset` **没有生产消费者** —— 三处 remap 仍读固定 `1`。
+- 因此 P1 的桥接断言**只能也只应**覆盖 anchor 侧：**pre-content-only 场景下 allocator 分配给 anchor 的 index === 0**，等价于旧的 `ANCHOR_INDEX = 0`，wire 字节不变（O-6）。
+- **绝不允许**的中间态：allocator 已按 frontier 分配多个 anchor，但某处 remap 还在算 `+1`。这由相位顺序保证——**gap anchor（多 anchor 的唯一来源）在 P5，remap 切换在 P3，P3 早于 P5**。
+
+- [ ] **Step**: 写桥接断言 `tests/pipeline/anchor-allocator-bridge.it.test.ts`——断言 pre-content anchor 场景下 allocator 分配的 index 为 0 且 wire 字节与 P0 基线一致。**不**断言真实块 offset（那时还没接线，断了就是自欺）。
+- [ ] **提交** → `test(anchor): bridge invariant — allocator-assigned anchor index matches the legacy constant`
 
 ## P1 收口
 
 - [ ] `typecheck` + `test:fast` 绿；anchor 全套件与 P0 基线同 pass 数（或差异已逐条归因）。
-- [ ] O-1 / O-2 仍绿；O-6 字节等价仍等于基线（**本相位不应改变任何 wire 字节**）。
+- [ ] O-1 / O-2 仍绿；O-6 字节等价仍等于 P0 捕获的 base 基线（**本相位不应改变任何 wire 字节**）。
 - [ ] `rg -n "ANCHOR_INDEX" src/ tests/` 结果已逐处交代。
+- [ ] **恰好三个 commit（U1 / U2 / U3）**，每个终态都 typecheck + test:fast 绿。
+- [ ] 桥接断言**只覆盖 anchor 侧**（真实块分配尚未接线，不得伪造该维度的断言）。

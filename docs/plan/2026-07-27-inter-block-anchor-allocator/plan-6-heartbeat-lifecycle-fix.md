@@ -1,6 +1,6 @@
 # P6 — 心跳生命周期修复（**现网缺陷**，可独立于 A 先行落地）
 
-> **前置**：P0。**可与 P1–P4 并行**（无代码重叠）。**必须先于 P5**。
+> **前置**：P0。**必须先于 P2 与 P5**（**不是**「与 P1–P4 无代码重叠可并行」——那是 plan review 坐实的事实错误：P2 与本相位都改 `delivery/session.ts` 的 heartbeat 生命周期语义，见 README 并行机会小节与 Task 2.2b 交叉门）。可与 **P1** 并行。
 > **本相位不在冻结设计与审查报告里** —— 是 planner 在读码 + 实测中发现的缺陷。它不改变设计的目标或架构方向。
 >
 > **定位（用户 2026-07-27 裁决，提升）**：这**不只是** A 的前置门。CC 与 Responses 的 buffered **默认就是 `true`**，所以该缺陷**当前很可能已在现网生效**——首块提交后心跳永久死亡、之后整段静默无任何保活。故 **P6 自身即有独立生产价值，可以先于 A 的其余相位单独落地、单独合并**，不必等 allocator。若需尽快止血，P0 → P6 是一条完整的可交付路径。
@@ -43,6 +43,8 @@ DELIVERY SINK keepalives during 120s inter-block silence: 0     ← 现网形状
 
 两层都带正样本对照证明探针触达目标：同一 harness 换成 raw sink 就能看到 keepalive；只有生产 sink + 真实 boundary commit 才归零。**层二尤其关键**——它证明这不是「sink 契约的理论分歧」，而是走真 driver、真 commit 边界就会发生的实际行为。
 
+> **证据等级说明（plan review minor）**：**根因与方向**已被独立复核坐实（reviewer 自己复现了层一，并从 driver 控制流独立推出生产 sink 的心跳死亡）。但层二那对精确计数 `RAW 5 / DELIVERY 0` 目前**只存在于文档叙述**——planner 的一次性探针已按纪律删除，当前分支没有可直接复跑的产物。**开工前不得把这两个数字当作已留存的可重复证据**；Task 6.3 / 6.3b 的职责正是把它固化为仓库内测试。届时以测试实测值为准，与此处叙述不符时**以测试为准并更正本文**。
+
 ## 影响面（用户裁决要求写明；planner 逐条核实）
 
 **触发条件**：走 `runResponseBufferedSink` **且**有 `commitBoundaries` 命中（= 发生过 block-level boundary commit）**且** sink 是 `makeDeliverySseSink`。三者同时满足即中招。
@@ -50,7 +52,7 @@ DELIVERY SINK keepalives during 120s inter-block silence: 0     ← 现网形状
 | 端点 | buffered 默认 | sink | `commitBoundaries` | 当前是否受影响 |
 |---|---|---|---|---|
 | **Responses HTTP** | **`true`**（`state-defaults.ts:243` `responsesBufferedRetry`） | `makeDeliverySseSink`（`responses/handler-v4.ts:347`） | **有**，`candidate-response-session.ts:140` 仅 `transport === "http"` 挂 `isResponsesCommitBoundary`（边界含 `response.output_item.done`——**多 item 响应每个 item 都是一次 commit**） | **是。默认配置即中招** |
-| **Chat Completions** | **`true`**（`state-defaults.ts:100` `chatCompletionsBufferedRetry`） | `makeDeliverySseSink`（`chat-completions/handler-v4.ts:519`） | 有，但**退化**：`ccCommitBoundaries` 只认 in-band 上游 `error` 帧，普通内容帧恒 false（`handler-v4.ts:357` + 其注释） | **仅上游 error 路径**。正常响应走终局 flush，此后无后续流 → 实际影响极小 |
+| **Chat Completions** | **`true`**（`state-defaults.ts:100` `chatCompletionsBufferedRetry`） | `makeDeliverySseSink`（`chat-completions/handler-v4.ts:519`） | 有，但**退化**：`ccCommitBoundaries` 只认 in-band 上游 `error` 帧，普通/finish chunk 恒 false（`handler-v4.ts:357` + 其注释；独立探针复核过） | **正常响应结构性幸免**（无 mid-generation boundary commit）；**error 之后是否仍有帧属契约待验证**，由 Task 6.3b Step 5 裁决 |
 | **Responses WS** | `true`（同一 key） | WS sink | **故意省略**（`responses/ws.ts:376-394`，terminal-only） | 否（无 boundary commit） |
 | **Anthropic** | `false`（`state-defaults.ts:84` `protectStreamingGeneration`） | `makeDeliverySseSink`（`messages/handler-v4.ts:1073`） | 有，`anthropicCommitBoundaries`（`content_block_stop`/`error`） | **默认否**；但**用户显式开启 `protect_streaming_generation` 即中招**，且这正是 A 的目标制度 |
 | Gemini | 无 buffered | — | — | 否 |
