@@ -28,6 +28,7 @@ import {
   drainV3Writer,
   getV3Operation,
 } from "~/lib/history/v3/store"
+import { drainModelOperationTerminalSubscribers } from "~/lib/history/v3/terminal-bus"
 import {
   //
   setModels,
@@ -37,6 +38,7 @@ import { setUpstreamFetchForTests } from "~/lib/transport/upstream-fetch"
 
 import { mockModel } from "../helpers/factories"
 import { useIsolatedRuntime } from "../helpers/isolated-fixture"
+import { waitUntil } from "../helpers/wait-until"
 import {
   //
   type InProcessProxy,
@@ -111,40 +113,61 @@ describe("client↔proxy SDK e2e — continuation-retry (upstream shielded)", ()
   })
   afterEach(() => setUpstreamFetchForTests(undefined))
 
-  test("mid-stream cut after a committed text block → the SDK receives ONE stitched turn (delivered + continuation)", async () => {
+  const streamFinal = (sessionId: string, message: string) =>
+    client.messages
+      .stream({ model: MODEL, max_tokens: 64, messages: [{ role: "user", content: message }] }, { headers: { "x-session-id": sessionId } })
+      .finalMessage()
+  const entryForSession = (sessionId: string) => getHistory({ endpoint: "anthropic-messages", sessionId }).entries[0]
+
+  test("CHAINED persistence oracle: primary plus two continuation legs keep exact provenance", async () => {
     // exchange 1: message_start + text@0, then CLEAN CLOSE without message_stop = truncation after a commit.
-    // exchange 2 (continuation): its own message_start + text@0 + terminal.
+    // exchange 2 (continuation): its own message_start + text@0, then another cut.
+    // exchange 3 (continuation): its own message_start + text@0 + terminal.
     const up = sequencedUpstream([
       () => createSseResponse([msgStart("msg_1"), ...textBlock(0, "First half. ")]),
-      () => createSseResponse([msgStart("msg_2_dup"), ...textBlock(0, "Second half."), ...terminal]),
+      () => createSseResponse([msgStart("msg_2_dup"), ...textBlock(0, "Middle. ")]),
+      () => createSseResponse([msgStart("msg_3_dup"), ...textBlock(0, "Second half."), ...terminal]),
     ])
     setUpstreamFetchForTests(up.handler)
 
-    const final = await client.messages.stream({ model: MODEL, max_tokens: 64, messages: [{ role: "user", content: "write" }] }).finalMessage()
+    const sessionId = "continuation-sdk-single"
+    const final = await streamFinal(sessionId, "write")
 
-    expect(up.callCount()).toBe(2) // the continuation exchange was dispatched
-    // ONE coherent turn: two text blocks (delivered + continuation), no throw, no corruption.
+    expect(up.callCount()).toBe(3) // two continuation exchanges were dispatched
+    // ONE coherent turn across all three legs, with no throw or corruption.
     expect(final.content).toEqual([
       { type: "text", text: "First half. " },
+      { type: "text", text: "Middle. " },
       { type: "text", text: "Second half." },
     ] as never)
     expect(final.stop_reason).toBe("end_turn")
+    expect(up.requestBodies()).toHaveLength(3)
+    for (const body of up.requestBodies()) expect(body).not.toHaveProperty("synthetic")
 
+    await drainModelOperationTerminalSubscribers()
     await drainV3Writer()
-    const entry = getHistory({ endpoint: "anthropic-messages" }).entries[0]
+    await waitUntil(() => {
+      const persisted = entryForSession(sessionId)
+      return persisted !== undefined && getV3Operation(persisted.id) !== undefined
+    }, { label: "persisted continuation canonical operation" })
+    const entry = entryForSession(sessionId)
     const canonical = entry ? getV3Operation(entry.id) : undefined
-    expect(canonical?.dispatches).toHaveLength(2)
-    expect(canonical?.dispatches[1]?.upstreamRequest?.extensions).toEqual({ synthetic: "continuation" })
-    expect(canonical?.dispatches[1]?.upstreamResponse?.extensions?.synthetic).toBeUndefined()
-    expect(entry?.attempts).toHaveLength(2)
-    expect(entry?.attempts?.[1]?.upstreamRequest?.synthetic).toBe("continuation")
+    expect(canonical?.dispatches.map((dispatch) => dispatch.upstreamRequest?.synthetic)).toEqual([undefined, "continuation", "continuation"])
+    expect(entry?.attempts?.map((attempt) => attempt.upstreamRequest?.synthetic)).toEqual([undefined, "continuation", "continuation"])
     expect(entry?.attempts?.[1]?.upstreamRequest?.messages).toEqual([
       { role: "user", content: "write" },
       { role: "assistant", content: [{ type: "text", text: "First half. " }] },
       { role: "user", content: "network issue. please continue" },
     ])
-    expect(entry?.attempts?.[1]?.upstreamResponse).not.toHaveProperty("synthetic")
-    expect(entry?.attempts?.[1]?.upstreamResponse?.sseEvents?.some((event) => event.synthetic !== undefined)).toBe(false)
+    expect(entry?.attempts?.[2]?.upstreamRequest?.messages).toEqual([
+      { role: "user", content: "write" },
+      { role: "assistant", content: [{ type: "text", text: "First half. " }, { type: "text", text: "Middle. " }] },
+      { role: "user", content: "network issue. please continue" },
+    ])
+    for (const attempt of entry?.attempts ?? []) {
+      expect(attempt.upstreamResponse).not.toHaveProperty("synthetic")
+      expect(attempt.upstreamResponse?.sseEvents?.some((event) => event.synthetic !== undefined)).toBe(false)
+    }
   })
 
   test("C3 through the real path: a delivered thinking block does not shift the continuation index (wire count, not ledger)", async () => {
@@ -156,7 +179,8 @@ describe("client↔proxy SDK e2e — continuation-retry (upstream shielded)", ()
     ])
     setUpstreamFetchForTests(up.handler)
 
-    const final = await client.messages.stream({ model: MODEL, max_tokens: 64, messages: [{ role: "user", content: "think then write" }] }).finalMessage()
+    const sessionId = "continuation-sdk-thinking"
+    const final = await streamFinal(sessionId, "think then write")
 
     expect(up.callCount()).toBe(2)
     // thinking delivered + two text blocks stitched contiguously — the continuation text is its OWN block
@@ -169,35 +193,19 @@ describe("client↔proxy SDK e2e — continuation-retry (upstream shielded)", ()
     expect(final.stop_reason).toBe("end_turn")
   })
 
-  test("CHAINED: primary → continuation-1 cut → continuation-2 success — the SDK receives ONE turn stitched across THREE legs", async () => {
-    // initial leg: text (@0) then cut; continuation-1: text (→ @1) then cut again; continuation-2: text (→ @2)
-    // + terminal. Each leg's own message_start is dropped; blocks re-index by the wire-delivered count.
-    const up = sequencedUpstream([
-      () => createSseResponse([msgStart("m0"), ...textBlock(0, "A. ")]),
-      () => createSseResponse([msgStart("m1"), ...textBlock(0, "B. ")]),
-      () => createSseResponse([msgStart("m2"), ...textBlock(0, "C."), ...terminal]),
-    ])
-    setUpstreamFetchForTests(up.handler)
-
-    const final = await client.messages.stream({ model: MODEL, max_tokens: 64, messages: [{ role: "user", content: "write" }] }).finalMessage()
-
-    expect(up.callCount()).toBe(3) // initial + 2 continuation legs
-    // three text blocks stitched contiguously across three upstream exchanges, ONE coherent turn.
-    expect(final.content).toEqual([
-      { type: "text", text: "A. " },
-      { type: "text", text: "B. " },
-      { type: "text", text: "C." },
-    ] as never)
-    expect(final.stop_reason).toBe("end_turn")
-  })
-
   test("positive control: a clean single-exchange turn is untouched (continuation never fires)", async () => {
     const up = scriptedUpstream(() => createSseResponse([msgStart("msg_ok"), ...textBlock(0, "All in one. "), ...terminal]))
     setUpstreamFetchForTests(up.handler)
 
-    const final = await client.messages.stream({ model: MODEL, max_tokens: 64, messages: [{ role: "user", content: "hi" }] }).finalMessage()
+    const sessionId = "continuation-sdk-clean"
+    const final = await streamFinal(sessionId, "hi")
 
     expect(up.callCount()).toBe(1) // no continuation dispatched
     expect(final.content).toEqual([{ type: "text", text: "All in one. " }] as never)
+
+    await waitUntil(() => entryForSession(sessionId) !== undefined, { label: "clean transient history entry" })
+    const entry = entryForSession(sessionId)
+    expect(entry?.attempts).toHaveLength(1)
+    expect(entry?.attempts?.[0]?.upstreamRequest).not.toHaveProperty("synthetic")
   })
 })

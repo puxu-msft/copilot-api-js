@@ -43,6 +43,7 @@ import type {
   ModelOperationRecord,
   OperationFrameObservation,
   OperationKind,
+  OperationSyntheticKind,
   PayloadNodeHandle,
 } from "./model-operation-record"
 import type {
@@ -140,9 +141,10 @@ export function legFromEffectiveSource(ep: EffectiveRequest, pipeline?: Pipeline
  * facet. Parallel to `legFromWire` (the deprecated `outboundRequest` builder)
  * during migration; wired into the producer in P2.
  */
-export function legFromUpstreamRequest(wp: WireRequest, forwardedQuery?: string): HistoryUpstreamRequestLeg {
+export function legFromUpstreamRequest(wp: WireRequest, forwardedQuery?: string, synthetic?: OperationSyntheticKind): HistoryUpstreamRequestLeg {
   return {
     format: wp.format,
+    ...(synthetic !== undefined && { synthetic }),
     model: wp.model,
     messages: wp.messages,
     system: (wp.payload as Record<string, unknown> | undefined)?.system,
@@ -1317,9 +1319,12 @@ export function createRequestContext(opts: {
     },
 
     markGenerationDispatchSynthetic(dispatch, kind) {
-      const attempt = generationAttemptByHandle.get(dispatch)
-      if (!attempt) throw new Error(`[request-context] unknown generation dispatch ${dispatch}`)
-      modelOperationRecorder.setDispatchUpstreamRequestExtensions(dispatch, { synthetic: kind })
+      const generationAttempt = generationAttemptByHandle.get(dispatch)
+      if (!generationAttempt || generationAttempt.settled || modelOperationRecorder.sealed) return
+      const attempt = _attempts[generationAttempt.v2Index]
+      if (!attempt?.wireRequest) return
+      attempt.synthetic = kind
+      modelOperationRecorder.setDispatchUpstreamRequestSynthetic(dispatch, kind)
     },
 
     setGenerationDispatchTransport(dispatch, transport) {
@@ -1978,7 +1983,7 @@ export function createRequestContext(opts: {
             //     aggregated `pipeline` (RFC §4); upstreamResponse carries success/
             //     trailers/rawBody + unified frames. ───
             ...(a.effectiveRequest && { effectiveSource: legFromEffectiveSource(a.effectiveRequest, pipelineFromAttempt(a)) }),
-            ...(a.wireRequest && { upstreamRequest: legFromUpstreamRequest(a.wireRequest, opts.query?.forwarded) }),
+            ...(a.wireRequest && { upstreamRequest: legFromUpstreamRequest(a.wireRequest, opts.query?.forwarded, a.synthetic) }),
             ...(upstreamResponse && { upstreamResponse }),
           }
         })

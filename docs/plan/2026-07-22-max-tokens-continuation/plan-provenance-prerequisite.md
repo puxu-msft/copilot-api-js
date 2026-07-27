@@ -1,6 +1,8 @@
 # Plan-Provenance: synthetic `continuation` provenance marker（承重前置任务，非可选顺手项）
 
-> **实施状态（2026-07-27）：已完成。** `OperationSyntheticKind`、`UpstreamRequestLeg.synthetic`、continuation-role dispatch 旁路标记、History V3 投影与真实持久化 readback oracle 均已落地；提交序列见各 Task。
+> **实施状态（2026-07-27）：已完成。** `OperationSyntheticKind`、`UpstreamRequestLeg.synthetic`、continuation-role dispatch 一等 track 标记、History V3 投影与真实持久化 readback oracle 均已落地；提交序列见各 Task。
+>
+> **审查修订：** provenance 改为 canonical `OperationTrack.synthetic` 一等字段，transient `Attempt` 与 canonical track 两个 producer 同步写入；primary/recovery 负向对照、链式 continuation 与真实 wire-body oracle 已补齐。**未采纳帧级 continuation tag**：本任务只标请求腿；若未来扩到帧级，须同步修改 `client-sink.ts` 两处内联 union 与 `frame-origin.ts` 的 `SyntheticOriginKind`。
 
 > **修订记录（2026-07-23，据 GPT plan-review [major] 修订）**：原 README Global Constraints 只写「若姊妹未先落地则顺手解决」，未给具名 task/所有者/数据模型改动/producer-oracle——被审查指出这会产生"测试补 fixture/手工字段，真实 attempt 未标记"的假绿风险。本文件把它升级为**具名前置任务**，`plan-1-anthropic-continuation.md` 的 Task 1.4 显式依赖本文件的产出。
 
@@ -69,7 +71,7 @@ test("a continuation dispatch's upstreamRequest carries synthetic:'continuation'
 - [x] **Step 2: 跑，失败。**
 - [x] **Step 3: 实现** —— 在续写分支构造 `contEnv`/dispatch 记录的位置（姊妹 cut-path 在 `driver.ts:1439-1440` 附近 `const continuationBody = continuation.buildRequest(...)`；本特性 success-path 在 `plan-1` Task 1.2 的新分支），把 `env.ctx.setGenerationDispatchWireRequest(dispatch, { ...wireRequest })` 的调用点扩展为携带 provenance——**需要核实 `setGenerationDispatchWireRequest` 的 `WireRequest` 类型（`context/types.ts:63-69`）是否需要同步加 `synthetic` 字段**，还是 provenance 走单独的记录端口（如新增 `env.ctx.markGenerationDispatchSynthetic(dispatch, kind)` 方法，与 `setGenerationDispatchWireRequest` 分离，职责更单一）——**决策点，实施时定，倾向后者**（分离关注点：wire request 内容 vs provenance 标记是两回事，合并进一个签名会让调用方每次都要想"这次要不要传 synthetic"）。
 - [x] **Step 4: 跑，通过。**
-- [x] **Step 5: 提交** → `7499c502 feat(driver): tag continuation dispatch request provenance`。实现按计划倾向采用独立 `markGenerationDispatchSynthetic` 记录端口，并由 `CandidateRole:"continuation"` 自动覆盖当前 cut-path 与未来 success-path。
+- [x] **Step 5: 提交** → `7499c502 feat(driver): tag continuation dispatch request provenance`。实现按计划倾向采用独立 `markGenerationDispatchSynthetic` 记录端口，并由 `CandidateRole:"continuation"` 自动覆盖当前 cut-path 与未来 success-path；审查修订将 canonical 存储从 extensions 裸键提升为 `OperationTrack.synthetic` 一等字段。
 
 ### Task P.4: History V3 projection 投影该字段
 

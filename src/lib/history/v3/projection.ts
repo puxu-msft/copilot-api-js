@@ -303,9 +303,7 @@ export function recordToHistoryEntry(
       },
       upstreamRequest: {
         ...requestMeta,
-        ...(attempt.upstreamRequest?.extensions?.synthetic !== undefined && {
-          synthetic: attempt.upstreamRequest.extensions.synthetic as NonNullable<NonNullable<HistoryEntry["attempts"]>[number]["upstreamRequest"]>["synthetic"],
-        }),
+        ...(attempt.upstreamRequest?.synthetic !== undefined && { synthetic: attempt.upstreamRequest.synthetic }),
         ...(typeof requestMeta?.query === "string" && { query: requestMeta.query }),
         ...(typeof requestProjection?.model === "string" && { model: requestProjection.model }),
         ...(requestMessages !== undefined && {

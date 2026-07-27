@@ -24,7 +24,21 @@ export type CaptureCapability = "available" | "unavailable" | "not-requested"
 /** Concrete transport selected for one generation attempt. */
 export type OperationTransport = "http" | "upstream-ws" | "upstream-ws-fallback"
 
-/** Known provenance labels for proxy- or hook-synthesized frames. */
+/**
+ * Known provenance labels for proxy- or hook-synthesized data. Applicability is value-specific:
+ *
+ * - Forwarded-frame track: `keepalive`, `anchor`, `synthetic-message-start`, `hook-rewrite`,
+ *   `refusal-recovery`, `error-shaping-canonical`, `error-shaping-auq`, `synthetic`, and
+ *   `buffered-terminal-repair` distinguish proxy-created or rewritten client-visible frames.
+ * - Upstream-original frame track: `hook-mock` and `hook-replay` distinguish hook-produced
+ *   upstream streams from genuine GHC traffic.
+ * - Upstream-request track: `continuation` marks a synthesized continuation dispatch while its
+ *   real wire payload remains byte-faithful and contains no provenance field.
+ *
+ * If frame-level continuation provenance is added later, also update the two inline unions in
+ * `client-sink.ts` and `SyntheticOriginKind` in `frame-origin.ts`; request provenance alone does
+ * not authorize widening those frame-origin contracts.
+ */
 export type OperationSyntheticKind =
   | "keepalive"
   | "anchor"
@@ -143,6 +157,8 @@ export interface DerivedFrameInput extends SourceNodeInput {
 /** Arena-backed input for one independent request or response track. */
 export interface OperationTrackInput {
   readonly payload?: PayloadNodeHandle
+  /** Track-level provenance for synthesized data, such as a continuation upstream request. */
+  readonly synthetic?: OperationSyntheticKind
   readonly frames?: ReadonlyArray<FrameNodeHandle>
   readonly frameObservations?: ReadonlyArray<OperationFrameObservation>
   readonly status?: number
@@ -156,6 +172,8 @@ export interface OperationTrackInput {
 /** Frozen track stored in the canonical record. */
 export interface OperationTrack {
   readonly payload?: PayloadNodeHandle
+  /** Track-level provenance for synthesized data, such as a continuation upstream request. */
+  readonly synthetic?: OperationSyntheticKind
   readonly frames: ReadonlyArray<FrameNodeHandle>
   /** Per-track timing/provenance for frame occurrences. Kept outside CAS semantic values. */
   readonly frameObservations?: ReadonlyArray<OperationFrameObservation>
@@ -516,7 +534,7 @@ export interface ModelOperationRecorder {
   setDispatchEffectiveRequest(dispatch: DispatchHandle, request: OperationTrackInput): void
   setDispatchTransport(dispatch: DispatchHandle, transport: OperationTransport): void
   setDispatchUpstreamRequest(dispatch: DispatchHandle, request: OperationTrackInput): void
-  setDispatchUpstreamRequestExtensions(dispatch: DispatchHandle, extensions: Readonly<Record<string, unknown>>): void
+  setDispatchUpstreamRequestSynthetic(dispatch: DispatchHandle, kind: OperationSyntheticKind): void
   setDispatchTiming(dispatch: DispatchHandle, kind: DispatchTimingKind, epoch: number, mode: "once" | "latest"): void
   recordDispatchDiagnostic(dispatch: DispatchHandle, input: RecordAttemptDiagnosticInput): void
   settleDispatch(dispatch: DispatchHandle, input: SettleDispatchInput): void
@@ -706,6 +724,7 @@ export function createModelOperationRecorder(input: CreateModelOperationRecorder
     }
     return Object.freeze({
       ...(source.payload === undefined ? {} : { payload: source.payload }),
+      ...(source.synthetic === undefined ? {} : { synthetic: source.synthetic }),
       frames: Object.freeze([...(source.frames ?? [])]),
       ...(frameObservations === undefined ? {} : { frameObservations: Object.freeze(frameObservations) }),
       ...(source.status === undefined ? {} : { status: source.status }),
@@ -1052,15 +1071,11 @@ export function createModelOperationRecorder(input: CreateModelOperationRecorder
       dispatch.upstreamRequest = freezeTrack(request)
     },
 
-    setDispatchUpstreamRequestExtensions(handle, requestExtensions): void {
-      assertWritable()
+    setDispatchUpstreamRequestSynthetic(handle, kind): void {
+      if (sealed) return
       const dispatch = getDispatch(handle)
-      if (dispatch.verdict !== undefined) throw new Error(`[model-operation-record] dispatch already settled: ${handle}`)
-      if (dispatch.upstreamRequest === undefined) throw new Error(`[model-operation-record] dispatch upstream request not recorded: ${handle}`)
-      dispatch.upstreamRequest = Object.freeze({
-        ...dispatch.upstreamRequest,
-        extensions: freezeExtensions({ ...dispatch.upstreamRequest.extensions, ...requestExtensions }),
-      })
+      if (dispatch.verdict !== undefined || dispatch.upstreamRequest === undefined) return
+      dispatch.upstreamRequest = Object.freeze({ ...dispatch.upstreamRequest, synthetic: kind })
     },
 
     setDispatchTiming(handle, kind, epoch, mode): void {

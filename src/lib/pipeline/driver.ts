@@ -588,6 +588,7 @@ function createDriverRecordingPort(deps: DriverDeps, ctx: RequestContext): Dispa
     && typeof ctx.beginGenerationDispatch === "function"
     && typeof ctx.settleGenerationCandidate === "function"
     && typeof ctx.settleGenerationDispatch === "function"
+    && typeof ctx.markGenerationDispatchSynthetic === "function"
   const fallbackCandidates = new Set<CandidateHandle>()
 
   const selectSample = (wire: PreparedRequest, env: RequestEnvelope) => {
@@ -618,6 +619,8 @@ function createDriverRecordingPort(deps: DriverDeps, ctx: RequestContext): Dispa
         if (explicit) {
           ctx.setGenerationDispatchEffectiveRequest(handle, sample.effective)
           ctx.setGenerationDispatchWireRequest(handle, sample.wire)
+          // Every dispatch owned by a continuation-role candidate reuses the synthesized body. The future
+          // max_tokens success path calls runContinuation too, so it inherits this provenance automatically.
           if (candidateRoles.get(candidate) === "continuation") ctx.markGenerationDispatchSynthetic(handle, "continuation")
         } else {
           ctx.setAttemptEffectiveRequest(sample.effective)

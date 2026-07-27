@@ -5,7 +5,7 @@
 
 ## 解决结果
 
-续写（continuation）构造合成上游请求 = `[原始体] + [assistant=已提交块] + [user=续写消息]`，由 `continuation.buildRequest` 产出普通 `MessagesPayload`，经 `contEnv = currentEnv.with({ body })` 发上游、由常规 `setGenerationDispatchWireRequest` 捕获进 `attempts[].upstreamRequest`。driver 现在按 `CandidateRole:"continuation"` 通过独立 `markGenerationDispatchSynthetic` 端口把 `{ synthetic: "continuation" }` 写入 canonical upstream-request track extensions；History V3 将它投影为 `attempts[].upstreamRequest.synthetic`。真实 wire body 不含 marker，上游原始响应 track 也不含 marker。
+续写（continuation）构造合成上游请求 = `[原始体] + [assistant=已提交块] + [user=续写消息]`，由 `continuation.buildRequest` 产出普通 `MessagesPayload`，经 `contEnv = currentEnv.with({ body })` 发上游、由常规 `setGenerationDispatchWireRequest` 捕获进 `attempts[].upstreamRequest`。driver 现在按 `CandidateRole:"continuation"` 通过独立 `markGenerationDispatchSynthetic` 端口把 `synthetic: "continuation"` 写入 canonical `OperationTrack.synthetic` 一等字段及 transient `Attempt.synthetic`；History V3 与 observability 快照两条 producer 均将它投影为 `attempts[].upstreamRequest.synthetic`。真实 wire body 不含 marker，上游原始响应 track 也不含 marker。
 
 真实持久化 oracle 位于 `tests/e2e-client/continuation-sdk.it.test.ts`：真实 SDK 请求触发 cut-path 续写，等待 V3 writer 后同时读取 canonical operation 与公共 `getHistory()` entry，断言合成请求体完整、标记存在、upstream-original response 未被污染。
 
@@ -22,7 +22,7 @@
 
 **绝不**把 marker 写进真实 upstream body(会污染发给上游的字节)。应加**旁路 provenance 元数据**:
 - `OperationSyntheticKind`(`model-operation-record.ts`)加 `"continuation"` 值(现有值:`"synthetic-message-start"` 等)。
-- driver 在 `contEnv` → dispatch 记录链路上,给该 dispatch 的 upstreamRequest 打 `extensions.synthetic: "continuation"` 或等价 provenance 字段(不进 body)。
+- driver 在 `contEnv` → dispatch 记录链路上，给该 dispatch 的 upstreamRequest 一等字段打 `synthetic: "continuation"`（不进 body）。
 - History V3 projection 把该 provenance 投影出来,供 UI/诊断查询。
 - 补一条 History oracle:断言 continuation dispatch 的 `upstreamRequest` **既保留真实 wire payload、又带可查 continuation provenance**;`upstreamResponse` 保持真实上游帧、无该标记。
 

@@ -139,6 +139,8 @@ export interface Attempt {
   index: number
   effectiveRequest: EffectiveRequest | null
   wireRequest: WireRequest | null
+  /** Proxy-side provenance for a synthesized upstream request; never part of `wireRequest.payload`. */
+  synthetic?: OperationSyntheticKind
   response: ResponseData | null
   error: ApiError | null
   transport: RequestTransport
@@ -251,6 +253,8 @@ export interface HistoryEffectiveSourceLeg {
  */
 export interface HistoryUpstreamRequestLeg {
   format?: EndpointType
+  /** Proxy-side provenance for a synthesized upstream request; absent on primary/recovery requests. */
+  synthetic?: OperationSyntheticKind
   model?: string
   messages?: Array<unknown>
   system?: unknown

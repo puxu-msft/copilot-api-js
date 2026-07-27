@@ -22,20 +22,29 @@ export interface ScriptedUpstream {
    * (A fresh Response per call — a `ReadableStream` body can only be consumed once, so retries /
    * multiple attempts each need their own.)
    */
-  handler: (url: string | URL, init: unknown) => Promise<Response>
+  handler: (url: string | URL, init: RequestInit | undefined) => Promise<Response>
   /** How many times the proxy actually called upstream — the retry / no-retry oracle. */
   callCount: () => number
+  /** Parsed bodies actually presented to the upstream mock, in dispatch order. */
+  requestBodies: () => ReadonlyArray<unknown>
+}
+
+function parsedRequestBody(init: RequestInit | undefined): unknown {
+  return typeof init?.body === "string" ? JSON.parse(init.body) : undefined
 }
 
 /** Build a scripted upstream that counts proxy→GHC calls and returns `makeResponse()` each time. */
 export function scriptedUpstream(makeResponse: () => Response): ScriptedUpstream {
   let calls = 0
+  const bodies: Array<unknown> = []
   return {
-    handler: () => {
+    handler: (_url, init) => {
+      bodies.push(parsedRequestBody(init))
       calls++
       return Promise.resolve(makeResponse())
     },
     callCount: () => calls,
+    requestBodies: () => bodies,
   }
 }
 
@@ -48,12 +57,15 @@ export function scriptedUpstream(makeResponse: () => Response): ScriptedUpstream
  */
 export function sequencedUpstream(makers: Array<() => Response>): ScriptedUpstream {
   let calls = 0
+  const bodies: Array<unknown> = []
   return {
-    handler: () => {
+    handler: (_url, init) => {
+      bodies.push(parsedRequestBody(init))
       const maker = makers[Math.min(calls, makers.length - 1)]
       calls++
       return Promise.resolve(maker())
     },
     callCount: () => calls,
+    requestBodies: () => bodies,
   }
 }
