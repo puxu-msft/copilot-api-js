@@ -39,8 +39,13 @@
 
 ## 进行中
 
-- **anchor allocator plan 的异模型对抗审**：分支 `feat/anchor-allocator-plan`（worktree `.worktrees/anchor-alloc-plan`），plan commit `4945d988`，审查报告落 `docs/plan/2026-07-27-inter-block-anchor-allocator/plan-review-gpt.md`。
-  该审查期间后端抖动多次；纪律是**只 SendMessage resume 原 agent**，不派替代、不换模型、**也不设「挂 N 次就放弃」的成本逃生口**。
+- **anchor allocator plan**：分支 `feat/anchor-allocator-plan`（worktree `.worktrees/anchor-alloc-plan`），plan commit `4945d988`。
+  **异模型审查已完成**（报告 `docs/plan/2026-07-27-inter-block-anchor-allocator/plan-review-gpt.md`）：**1 blocker + 11 major + 5 minor，不可开工**，planner 正在修订。
+  - **[blocker] C3 × C4 冲突**：`anchorsOpened===0` 的**无条件**结构性短路会让**续写腿**（upstream index 从 0 重启）跳过 remap → **复用主腿已占用的 wire index 0**。plan 现有撞车 oracle 只覆盖「有 anchor」的序列，**漏掉这个更常见的默认分支**。修法方向：短路只能在 frontier **等同恒等映射**时成立（无 anchor **且** 非续写腿）+ red-first oracle 覆盖「无 anchor 的续写腿」。
+    ⚠️ **这条短路正是上一轮设计 reviewer 建议、并被主会话采纳写进要求的风险缓解措施**——结果它自身在默认路径引入了新的 index 复用。**教训：为降风险而加的机制，必须过同样的对抗检验。**
+  - 其余 major 要点：P2 serializer 临界区**有设计无可执行接口**；S2 retreat 与 S3 live 腿**缺真实块分配步骤**；**P2 与 P6 并非「无代码重叠」**、需交叉门；**O-2 / O-7 / Task 5.4 的 mutation 存在假绿空间**（5.4 本就是为防单侧假绿而设，它自己有假绿空间即自相矛盾）；ADR D2 与 Q5 公式的具名 task 存在但**停点与 grep 验收需修正**。
+  - **已确认无问题、勿改**：P6 影响面矩阵成立（Responses HTTP 默认中招 / CC 因 `ccCommitBoundaries` 退化到只认 error 帧而结构性幸免）；P6 独立先交付方向正确；freeze 可恢复 vs close 永久的契约与 raw sink 注释一致；P8.4/P8.5 文档后果有具名 task。
+- **审查期间后端抖动多次**：纪律是**只 SendMessage resume 原 agent**，不派替代、不换模型、**也不设「挂 N 次就放弃」的成本逃生口**。经验：让 reviewer **分段落盘**能在中断时保住已完成部分（本轮救回 82 行）。
 
 ---
 
@@ -99,6 +104,7 @@
 
 ## 方法论教训（本轮反复奏效）
 
+- **为降风险而加的机制，本身要过同样的对抗检验**：`anchorsOpened===0` 短路是上一轮 reviewer 建议、主会话采纳的**缓解措施**，却在默认路径引入了新的 index 复用（见「进行中」的 blocker）。**缓解措施不自带豁免权**。
 - **绿灯不自证**：多次靠 **mutation / positive control** 戳破假绿——一条「验证了 enveloped_ping 升级」的 handler 测试，关掉特性开关后**照样绿**；provenance 的「无条件打标」也能全绿通过 6368 个测试。**补完测试必须自己做反向 mutation，不变红就是没咬住**。
 - **声音权威都要核**：reviewer 的断言错过（F4 称全仓无入站空 text block 清洗，实际 `filterEmptyAnthropicTextBlocks` 无条件跑生产路径）；我自己的转述也错过（说 CC 默认中招，实际 CC 因边界谓词退化而幸免）。**逐条对照代码/实测再背书**。
 - **并发仓库里 ground truth 会在脚下变**：起草期 grep 到「续写底座仅在分支」，修订期它已 landed master + worktree 被移除 → **修订期必须 re-verify landed state，别复用早期 grep 快照**。
