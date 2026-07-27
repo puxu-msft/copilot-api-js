@@ -71,7 +71,7 @@ fast 候选 `bun test .unit.test .http.test` 本次实测 **~38s**（单次；`t
 | `test:backend` | `bun test .unit.test .it.test .http.test` | **保持** = 全后端逻辑（~70s，pre-push） |
 | `test:cov` / `test:cov:report` | 保持全后端（unit+it+http），**内联文件列表改为与 `test:backend` 同源**避免漂移 | 覆盖率应尽量全，不跟 `test` 去 it |
 | `test:ci` | `test:backend && test:pty && test:e2e`（e2e 前提见下） | 当前漏 e2e/pty 全量 |
-| `test:all` / `test:acceptance` | 补 `test:ui-v4`（§5 尾） | 现状漏 ui-v4（40 测试游离聚合门外） |
+| ~~`test:all` / `test:acceptance`~~ | ~~补 `test:ui-v4`（§5 尾）~~ | ~~现状漏 ui-v4（40 测试游离聚合门外）~~ **2026-07-27 用户推翻：两个脚本已删除，前端测试必须显式单独触发，见文末「2026-07-27 反转」** |
 
 **e2e 入 `test:ci`（既成事实，无需新增 gating）**：e2e 直连真 GHC 上游、需真 token+网络，但**早已 token-gated**（`tests/e2e/*.test.ts` 自 commit `c1589b00`(2026-02-07) 起用 `describeWithToken = getE2EMode() !== "mock" ? describe : describe.skip`；`tests/e2e-client/anthropic-cli.e2e.test.ts` 用 `describe.skipIf(!GATED)`）。实测干净环境（无 token）`bun test .e2e.test` → 全 skip / 0 fail。故 `test:ci` 可直接纳入 `test:e2e`，**无需新增 skip 逻辑**——plan 对应 task 降为验证性（跑一次确认干净环境不 fail）。仓库当前无 `.github`/`.husky`/CI（已核实），`test:ci` 是为未来 CI 预备的全量门。
 
@@ -116,14 +116,14 @@ fast 候选 `bun test .unit.test .http.test` 本次实测 **~38s**（单次；`t
 - **孤儿 oracle**：`find tests -name '*.test.ts' | grep -vE '\.(unit|it|http|pty|e2e)\.test\.ts$'` 输出为空；`find src -name '*.test.ts'` 输出为空。
 - **§8 守卫测试绿**。
 - 无按速度命名的文件（后缀仍纯表达真相域）。
-- `test:all`/`test:acceptance` 含 ui-v4。
+- ~~`test:all`/`test:acceptance` 含 ui-v4。~~（2026-07-27 反转，见文末）
 
 ## 11. 非目标
 
 - 不引入正交速度标记（`.slow.` 中缀/目录）——守后缀=类型，靠脚本组合分档。
 - 不改 bun 运行器 / `root` 配置。
 - 不做测试并行化 / sharding（另议）。
-- 不重设计 ui/ui-v4 前端测试**内容**（但 §4 尾把 `test:ui-v4` 补进聚合门，属修既存缺口，不算重设计）。
+- 不重设计 ui/ui-v4 前端测试**内容**（~~但 §4 尾把 `test:ui-v4` 补进聚合门，属修既存缺口，不算重设计~~ → 2026-07-27 该聚合已被推翻删除）。
 
 ## 12. 实施阶段（重排——先定发现矩阵与 e2e 入口，再改默认，最后迁孤儿，修 GPT 顺序建议）
 
@@ -155,3 +155,15 @@ fast 候选 `bun test .unit.test .http.test` 本次实测 **~38s**（单次；`t
 | .integration→.it 统一 | Claude 建议 | 采纳 → §5.2 |
 | L1 发现矩阵守卫 | 两方建议 | 采纳 → §8（长远防线） |
 | 「默认 test 去 it 致 CI 静默漏测」 | — | **不采纳为既成事实**：已核实无 `.github`/hook/scripts 依赖裸 `bun run test`；真实风险在文档语义（已由 §9 覆盖）。 |
+
+## 2026-07-27 反转：前端测试改为显式单独触发（用户决定）
+
+本 spec §4/§5 曾把 `test:ui-v4` 补进 `test:all` / `test:acceptance` 聚合门，理由是「40 个测试游离在聚合门外」。**用户 2026-07-27 推翻此决定**：`ui/` 与 `ui-v4/` 的前端测试（vitest / Playwright）**必须显式单独触发**，任何后端档位脚本都不得聚合它们。
+
+变更：
+- 删除 `test:all`（=backend+ui+ui-v4）与 `test:acceptance`（再加 e2e-ui）——去掉前端后它们只是 `test:backend` 的重名副本，留着就是名实不符。
+- 前端入口保持独立且**只能显式调用**：`test:ui` / `test:ui-v4` / `test:e2e-ui`（及 `test:ui:bun` / `test:ui:vitest` / `test:e2e-ui:local`）。
+- 后端档位不变：`test`(=`test:fast`, unit+http) / `test:backend`(unit+it+http) / `test:ci`(backend+pty+e2e) / `test:cov` / 单后缀档。
+- **机器护栏**：`tests/infra/test-discovery-matrix.unit.test.ts` 新增一条断言——任何 `test`/`test:*` 脚本（前端脚本自身除外）的命令体里出现 `test:ui`/`test:ui-v4`/`test:e2e-ui`/`build:ui*` 即 fail。聚合是一行 `&&` 就能悄悄加回来的改动，而后果只有别人踩到才发现，故用守卫钉住而非只写文档。
+
+「孤儿测试」的判据随之收窄为**后端范围内**无孤儿（§8 的发现矩阵本就只扫 `tests/`）；前端套件不参与该判据，它们由各自 workspace 的 vitest/Playwright 配置负责发现。

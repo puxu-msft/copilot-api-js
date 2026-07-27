@@ -54,8 +54,6 @@
     "test": "bun run test:fast",
     "test:fast": "bun run build:history-search && bun scripts/parallel-test.ts unit http",
     "test:fast:isolated": "bun run build:history-search && bun test --parallel .unit.test .http.test",
-    "test:acceptance": "bun run test:backend && bun run test:ui && bun run test:ui-v4 && bun run test:e2e-ui",
-    "test:all": "bun run test:backend && bun run test:ui && bun run test:ui-v4",
     "test:backend": "bun run build:history-search && bun scripts/parallel-test.ts unit it http",
     "test:backend:isolated": "bun run build:history-search && bun test --parallel .unit.test .it.test .http.test",
     "test:timings": "bun run build:history-search && bun scripts/parallel-test.ts --update unit it http",
