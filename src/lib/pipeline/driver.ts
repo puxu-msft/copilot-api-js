@@ -582,6 +582,7 @@ function createSemanticRetryPolicy(deps: DriverDeps): (input: import("./generati
 function createDriverRecordingPort(deps: DriverDeps, ctx: RequestContext): DispatchRecordingPort {
   let candidateSequence = 0
   let dispatchSequence = 0
+  const candidateRoles = new Map<CandidateHandle, CandidateRole>()
   const explicit =
     typeof ctx.beginGenerationCandidate === "function"
     && typeof ctx.beginGenerationDispatch === "function"
@@ -596,9 +597,9 @@ function createDriverRecordingPort(deps: DriverDeps, ctx: RequestContext): Dispa
 
   return {
     beginCandidate(input) {
-      if (explicit) return ctx.beginGenerationCandidate(input)
-      const handle = `compat-candidate:${++candidateSequence}` as CandidateHandle
-      fallbackCandidates.add(handle)
+      const handle = explicit ? ctx.beginGenerationCandidate(input) : (`compat-candidate:${++candidateSequence}` as CandidateHandle)
+      candidateRoles.set(handle, input.role)
+      if (!explicit) fallbackCandidates.add(handle)
       return handle
     },
 
@@ -617,6 +618,7 @@ function createDriverRecordingPort(deps: DriverDeps, ctx: RequestContext): Dispa
         if (explicit) {
           ctx.setGenerationDispatchEffectiveRequest(handle, sample.effective)
           ctx.setGenerationDispatchWireRequest(handle, sample.wire)
+          if (candidateRoles.get(candidate) === "continuation") ctx.markGenerationDispatchSynthetic(handle, "continuation")
         } else {
           ctx.setAttemptEffectiveRequest(sample.effective)
           ctx.setAttemptWireRequest(sample.wire)
@@ -1432,10 +1434,9 @@ export async function runResponseBufferedSink(
         currentEnv.ctx.resetSseEvents()
         // Build the continuation upstream body: [original] + [assistant = committed prefix] + [user =
         // message]. `ledger.snapshot()` already excludes thinking (extractor) — upstream rejects thinking
-        // as a prefix (ADR D3). The synthetic turns ARE faithfully recorded on the upstreamRequest track
-        // (real wire bytes) and never touch the upstream-original response track (§4.4). NOTE: they are not
-        // yet tagged with a `synthetic:"continuation"` PROVENANCE marker — an observability gap tracked in
-        // docs/todo/2026-07-22-continuation-synthetic-provenance.md (the continuation itself is correct).
+        // as a prefix (ADR D3). The synthetic turns are faithfully recorded as real wire bytes on the
+        // upstreamRequest track; createDriverRecordingPort tags every continuation-role dispatch through
+        // the track's side-channel extensions, never by mutating this body or the upstream-original response.
         const continuationBody = continuation.buildRequest(continuationOriginalBody, ledger.snapshot(), continuation.message)
         const contEnv = currentEnv.with({ body: continuationBody })
         try {

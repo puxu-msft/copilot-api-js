@@ -1316,6 +1316,12 @@ export function createRequestContext(opts: {
       ctx.setAttemptWireRequest(request)
     },
 
+    markGenerationDispatchSynthetic(dispatch, kind) {
+      const attempt = generationAttemptByHandle.get(dispatch)
+      if (!attempt) throw new Error(`[request-context] unknown generation dispatch ${dispatch}`)
+      modelOperationRecorder.setDispatchUpstreamRequestExtensions(dispatch, { synthetic: kind })
+    },
+
     setGenerationDispatchTransport(dispatch, transport) {
       selectGenerationAttempt(dispatch)
       ctx.setAttemptTransport(transport)

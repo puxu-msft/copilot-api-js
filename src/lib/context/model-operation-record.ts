@@ -516,6 +516,7 @@ export interface ModelOperationRecorder {
   setDispatchEffectiveRequest(dispatch: DispatchHandle, request: OperationTrackInput): void
   setDispatchTransport(dispatch: DispatchHandle, transport: OperationTransport): void
   setDispatchUpstreamRequest(dispatch: DispatchHandle, request: OperationTrackInput): void
+  setDispatchUpstreamRequestExtensions(dispatch: DispatchHandle, extensions: Readonly<Record<string, unknown>>): void
   setDispatchTiming(dispatch: DispatchHandle, kind: DispatchTimingKind, epoch: number, mode: "once" | "latest"): void
   recordDispatchDiagnostic(dispatch: DispatchHandle, input: RecordAttemptDiagnosticInput): void
   settleDispatch(dispatch: DispatchHandle, input: SettleDispatchInput): void
@@ -1049,6 +1050,17 @@ export function createModelOperationRecorder(input: CreateModelOperationRecorder
       if (dispatch.verdict !== undefined) throw new Error(`[model-operation-record] dispatch already settled: ${handle}`)
       if (dispatch.upstreamRequest !== undefined) throw new Error(`[model-operation-record] dispatch upstream request already recorded: ${handle}`)
       dispatch.upstreamRequest = freezeTrack(request)
+    },
+
+    setDispatchUpstreamRequestExtensions(handle, requestExtensions): void {
+      assertWritable()
+      const dispatch = getDispatch(handle)
+      if (dispatch.verdict !== undefined) throw new Error(`[model-operation-record] dispatch already settled: ${handle}`)
+      if (dispatch.upstreamRequest === undefined) throw new Error(`[model-operation-record] dispatch upstream request not recorded: ${handle}`)
+      dispatch.upstreamRequest = Object.freeze({
+        ...dispatch.upstreamRequest,
+        extensions: freezeExtensions({ ...dispatch.upstreamRequest.extensions, ...requestExtensions }),
+      })
     },
 
     setDispatchTiming(handle, kind, epoch, mode): void {

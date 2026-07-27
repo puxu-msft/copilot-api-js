@@ -22,6 +22,12 @@ import {
   test,
 } from "bun:test"
 
+import { getHistory } from "~/lib/history"
+import {
+  //
+  drainV3Writer,
+  getV3Operation,
+} from "~/lib/history/v3/store"
 import {
   //
   setModels,
@@ -123,6 +129,21 @@ describe("client↔proxy SDK e2e — continuation-retry (upstream shielded)", ()
       { type: "text", text: "Second half." },
     ] as never)
     expect(final.stop_reason).toBe("end_turn")
+
+    await drainV3Writer()
+    const entry = getHistory({ endpoint: "anthropic-messages" }).entries[0]
+    const canonical = entry ? getV3Operation(entry.id) : undefined
+    expect(canonical?.dispatches).toHaveLength(2)
+    expect(canonical?.dispatches[1]?.upstreamRequest?.extensions).toEqual({ synthetic: "continuation" })
+    expect(canonical?.dispatches[1]?.upstreamResponse?.extensions?.synthetic).toBeUndefined()
+    expect(entry?.attempts).toHaveLength(2)
+    expect(entry?.attempts?.[1]?.upstreamRequest?.messages).toEqual([
+      { role: "user", content: "write" },
+      { role: "assistant", content: [{ type: "text", text: "First half. " }] },
+      { role: "user", content: "network issue. please continue" },
+    ])
+    expect(entry?.attempts?.[1]?.upstreamResponse).not.toHaveProperty("synthetic")
+    expect(entry?.attempts?.[1]?.upstreamResponse?.sseEvents?.some((event) => event.synthetic !== undefined)).toBe(false)
   })
 
   test("C3 through the real path: a delivered thinking block does not shift the continuation index (wire count, not ledger)", async () => {
