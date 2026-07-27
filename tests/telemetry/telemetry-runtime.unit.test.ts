@@ -27,6 +27,7 @@ import {
 import {
   //
   _getTelemetryDbForTests,
+  _isTelemetryShutdownSealedForTests,
   _resetRequestTelemetryForTests,
   getRequestTelemetrySnapshot,
   initRequestTelemetry,
@@ -47,6 +48,7 @@ import {
   snapshotStateForTests,
   type StateSnapshot,
 } from "~/lib/state"
+import { installDefaultTelemetryDeps } from "~/lib/telemetry-assembly"
 
 const fakeConfig: TelemetryConfigView = {
   enabled: false,
@@ -84,6 +86,10 @@ beforeEach(async () => {
 afterEach(async () => {
   await resetTelemetryRuntimeForTests()
   _resetRequestTelemetryForTests()
+  // This file installs FAKE ports (makeFakeDeps) to prove the registry reads the injected view.
+  // The deps holder is last-writer-wins with no reset of its own, so the fakes must be handed back
+  // explicitly — otherwise every later file in this worker reads `enabled: false` / `:memory:`.
+  installDefaultTelemetryDeps()
   restoreStateForTests(snapshot)
 })
 
@@ -177,5 +183,41 @@ describe("tolerant peek leg: recording before assembly is a no-op, not a throw",
     expect(() => peekTelemetryRuntime()?.recordAccepted(1_700_000_000_000)).not.toThrow()
     // The registry's own counter is untouched — the call really did not reach it.
     expect(getRequestTelemetrySnapshot().acceptedSinceStart).toBe(0)
+  })
+})
+
+describe("teardown really hands the domain back (the leak this file used to cause)", () => {
+  test("after the RESETTERS sequence the ports are the LIVE core view again, not this file's fakes", async () => {
+    // Reproduces the exact failure found in merged-state review: this file installs fake ports, and
+    // before the fix they survived into every later file in the same worker (backfill tests then
+    // read `enabled: false` and wrote to `:memory:`).
+    createTelemetryRuntime(makeFakeDeps())
+    expect(getTelemetryDeps().config.enabled).toBe(false) // the fake
+
+    await resetTelemetryRuntimeForTests()
+    _resetRequestTelemetryForTests()
+    installDefaultTelemetryDeps()
+
+    // Live view again: a core-state mutation is visible through the port.
+    setStateForTests({ telemetryEnabled: true })
+    expect(getTelemetryDeps().config.enabled).toBe(true)
+    setStateForTests({ telemetryEnabled: false })
+    expect(getTelemetryDeps().config.enabled).toBe(false)
+  })
+
+  test("the runtime reset must run BEFORE the registry reset, or every later test stays SEALED", async () => {
+    const runtime = createTelemetryRuntime(makeFakeDeps())
+    installTelemetryRuntime(runtime)
+
+    // The fixture's order: dispose the runtime (which seals the registry), THEN hard-reset the
+    // registry (which is the only thing that clears the seal). A sealed registry silently refuses to
+    // re-arm its timers on a config change, so a leaked seal disables hot-reload for the rest of the
+    // worker without failing anything loudly.
+    await resetTelemetryRuntimeForTests()
+    expect(_isTelemetryShutdownSealedForTests()).toBe(true) // dispose sealed it — this is the trap
+    _resetRequestTelemetryForTests()
+    expect(_isTelemetryShutdownSealedForTests()).toBe(false)
+
+    installDefaultTelemetryDeps()
   })
 })

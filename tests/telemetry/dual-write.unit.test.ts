@@ -505,6 +505,18 @@ test("oracle 13 — 跨重启 γ 恒定：重开同库但 config 改 0.02 → ef
     for (const [i, d] of second.entries()) recordOne(base + i, d, 50)
     await expect(persistRequestTelemetry()).resolves.toBeUndefined()
     expect(readTierScalar(dbPath, "model", "opus", base, "req_count")).toBe(600) // 300+300
+
+    // **标量成功不足以证明 sketch 成功**：γ 失配时逐条 poison 隔离会**丢掉那条存图**、但标量照常提交，
+    // 于是只断 req_count 的版本对「delta 建于 live 0.02」这个根因是盲的（合并态评审抓到的假绿）。
+    // 故这里直读跨重启合并后的存图：分位必须落在 0.01 精度界内、且必须真的合并了两批共 600 个观测。
+    const merged = [...first, ...second]
+    const sqlP99 = readRawSketchQuantile(dbPath, "model", "opus", base, "duration_ms", 0.99)
+    expect(sqlP99).not.toBeNull()
+    expect(Math.abs(sqlP99! - exactQuantile(merged, 0.99)) / exactQuantile(merged, 0.99)).toBeLessThanOrEqual(0.01)
+    const sqlP50 = readRawSketchQuantile(dbPath, "model", "opus", base, "duration_ms", 0.5)!
+    expect(Math.abs(sqlP50 - exactQuantile(merged, 0.5)) / exactQuantile(merged, 0.5)).toBeLessThanOrEqual(0.01)
+    // 没有 poison 丢弃告警（若第二批 delta 建于 live 0.02，read-merge-write 会抛→丢存图→这里会红）。
+    expect(warnSpy.mock.calls.some((c) => String(c[0]).includes("dual-write failed") || String(c[0]).includes("poison"))).toBe(false)
   } finally {
     warnSpy.mockRestore()
   }

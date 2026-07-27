@@ -77,7 +77,11 @@ import {
   type StateSnapshot,
   snapshotStateForTests,
 } from "~/lib/state"
-import { installDefaultTelemetryRuntime } from "~/lib/telemetry-assembly"
+import {
+  //
+  installDefaultTelemetryDeps,
+  installDefaultTelemetryRuntime,
+} from "~/lib/telemetry-assembly"
 import { resetTokenRuntimeForTests } from "~/lib/token"
 import {
   //
@@ -121,14 +125,14 @@ export const RESETTERS: ReadonlyArray<{ name: string; reset: () => void | Promis
   { name: "resetProtectStreamingStatsForTests", reset: resetProtectStreamingStatsForTests },
   { name: "resetToolInputRepairStatsForTests", reset: resetToolInputRepairStatsForTests },
   { name: "resetAllLimitsForTesting", reset: resetAllLimitsForTesting },
-  { name: "_resetRequestTelemetryForTests", reset: _resetRequestTelemetryForTests },
-  // Telemetry runtime process-singleton: a test that installs a runtime
-  // (createTelemetryRuntime + installTelemetryRuntime) must not leak it into the
-  // next test. dispose() runs the final-shutdown teardown, then the singleton is
-  // cleared. The registry's module-local state hard-reset is the SEPARATE
-  // _resetRequestTelemetryForTests entry above (order-independent + idempotent);
-  // the telemetry DEPS ports are stateless adapters installed at the floor, never reset.
+  // Telemetry teardown is ORDER-DEPENDENT and these two entries must stay in THIS order:
+  // `resetTelemetryRuntimeForTests` disposes the runtime, and a final-shutdown dispose SEALS the
+  // registry (`telemetryShutdownSealed = true`, so a late config callback cannot re-arm timers
+  // against a closing db). Only the registry hard-reset clears that seal — so running the registry
+  // reset FIRST would leave every following test sealed, silently disabling config-driven timer
+  // re-arming. (This used to claim order-independence; it never was.)
   { name: "resetTelemetryRuntimeForTests", reset: resetTelemetryRuntimeForTests },
+  { name: "_resetRequestTelemetryForTests", reset: _resetRequestTelemetryForTests },
   { name: "resetModelsEtagForTests", reset: resetModelsEtagForTests },
   { name: "resetRawModelsForTests", reset: resetRawModelsForTests },
   { name: "resetProcessIdentityForTests", reset: resetProcessIdentityForTests },
@@ -242,6 +246,12 @@ export function useIsolatedRuntime(opts: IsolatedRuntimeOptions = {}): void {
     // `peekTelemetryRuntime()` legs (accepted/settled recording) and the fail-fast read routes
     // (`/api/status`, `/api/stats`, `/metrics`) see the same wiring here as on the server. Runs in
     // beforeEach — not resetTestRuntime — because RESETTERS clears the singleton in afterEach.
+    //
+    // Re-installing the PORTS (not just the runtime) is what makes this immune to a preceding file
+    // that installed fakes: the deps holder is a last-writer-wins module singleton with no reset, so
+    // without this a fake `TelemetryConfigView` from another test file would silently persist into
+    // every later test in the same worker.
+    installDefaultTelemetryDeps()
     installDefaultTelemetryRuntime()
     // Retry-backoff waits (dispatch-scheduler `abortableDelay`) resolve instantly under
     // the fixture — the declared waitMs/queueWaitMs accounting is untouched. Cuts seconds

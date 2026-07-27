@@ -49,18 +49,23 @@ const PACKAGE_INTERNAL_OPERATIONS = [
   "getTelemetryDb",
 ] as const
 
-/** Module specifiers that reach past the barrel into the package's internals. */
-const DEEP_INTERNAL_SPECIFIERS = [
-  "@hsupu/ghc-proxy-telemetry/request-telemetry",
-  "@hsupu/ghc-proxy-telemetry/runtime",
-  "@hsupu/ghc-proxy-telemetry/dependencies",
-  "@hsupu/ghc-proxy-telemetry/dimension-names",
-  "@hsupu/ghc-proxy-telemetry/testing",
-] as const
+/**
+ * The ONLY package specifiers production code may use. An allowlist, not a list of known-bad
+ * subpaths: `packages/telemetry/package.json` exports `"./*"`, so every internal module is
+ * reachable and enumerating today's five would let tomorrow's sixth through silently.
+ *  - the barrel is the production surface;
+ *  - `/types` is the pure-type barrel the frontend re-exports from.
+ * Notably `/testing` is NOT here — it is the test-only entry.
+ */
+const ALLOWED_PACKAGE_SPECIFIERS = new Set(["@hsupu/ghc-proxy-telemetry", "@hsupu/ghc-proxy-telemetry/types"])
 
-/** Source roots that must obey the surface: the core tree + every workspace package. */
+/**
+ * Source roots that must obey the surface: the core tree, every workspace package, AND the
+ * frontend — `ui-v4` is a production consumer too (it re-exports the snapshot types), so leaving it
+ * out would let the surface leak through the one consumer that is easiest to forget.
+ */
 async function productionSourceRoots(): Promise<Array<string>> {
-  const roots = [path.join(repoRoot, "src")]
+  const roots = [path.join(repoRoot, "src"), path.join(repoRoot, "ui-v4/src")]
   const packagesDir = path.join(repoRoot, "packages")
   for (const entry of await readdir(packagesDir, { withFileTypes: true })) {
     if (!entry.isDirectory()) continue
@@ -76,7 +81,7 @@ async function sourceFiles(root: string): Promise<Array<string>> {
       const resolved = path.join(root, entry.name)
       return (
         entry.isDirectory() ? sourceFiles(resolved)
-        : entry.isFile() && entry.name.endsWith(".ts") ? [resolved]
+        : entry.isFile() && (entry.name.endsWith(".ts") || entry.name.endsWith(".tsx")) ? [resolved]
         : []
       )
     }),
@@ -90,37 +95,88 @@ function importedSpecifiers(source: string): Array<string> {
   return [...source.matchAll(re)].map((match) => match[1])
 }
 
-/** The package-internal specifiers a file reaches for (empty = compliant). */
-function deepInternalImports(source: string): Array<string> {
-  const specifiers = new Set(importedSpecifiers(source))
-  return DEEP_INTERNAL_SPECIFIERS.filter((deep) => specifiers.has(deep))
+/** The disallowed telemetry-package specifiers a file reaches for (empty = compliant). */
+function forbiddenPackageImports(source: string): Array<string> {
+  return [...new Set(importedSpecifiers(source))]
+    .filter((specifier) => specifier === "@hsupu/ghc-proxy-telemetry" || specifier.startsWith("@hsupu/ghc-proxy-telemetry/"))
+    .filter((specifier) => !ALLOWED_PACKAGE_SPECIFIERS.has(specifier))
+    .sort()
+}
+
+/**
+ * The names a module re-exports in `export { … }` / `export type { … }` blocks. Brace-matched and
+ * comma-split rather than pattern-matched: the previous regex demanded a comma or line end after the
+ * name, so the ordinary single-line form `export { recordSettledRequest } from "./x"` slipped
+ * through and the guard passed while an operation WAS public (found in merged-state review).
+ */
+function exportedNames(source: string): Array<string> {
+  const names: Array<string> = []
+  const re = /\bexport\s+(?:type\s+)?\{/g
+  for (const match of source.matchAll(re)) {
+    const open = match.index + match[0].length - 1
+    const close = source.indexOf("}", open)
+    if (close === -1) continue
+    // Drop `//` line comments first — this codebase's import/export blocks open with a bare `//`
+    // (the perfectionist sort anchor), which would otherwise glue onto the first name.
+    const block = source
+      .slice(open + 1, close)
+      .split("\n")
+      .map((line) => line.replace(/\/\/.*$/, ""))
+      .join("\n")
+    for (const part of block.split(",")) {
+      // `a as b` re-exports under `b`; `type X` inside a value block is a type specifier.
+      const name = part
+        .trim()
+        .replace(/^type\s+/, "")
+        .split(/\s+as\s+/)
+        .at(-1)
+        ?.trim()
+      if (name && /^\w+$/.test(name)) names.push(name)
+    }
+  }
+  return names
 }
 
 describe("telemetry package surface (one production entry point)", () => {
-  test("the detector actually bites (positive control on a synthetic consumer)", () => {
-    expect(deepInternalImports(`import { recordSettledRequest } from "@hsupu/ghc-proxy-telemetry/request-telemetry"`)).toEqual([
+  test("the import detector bites on every reachable internal subpath, not just today's five", () => {
+    expect(forbiddenPackageImports(`import { recordSettledRequest } from "@hsupu/ghc-proxy-telemetry/request-telemetry"`)).toEqual([
       "@hsupu/ghc-proxy-telemetry/request-telemetry",
     ])
-    // …and on the non-`from` import shapes a consumer could otherwise slip through.
-    expect(deepInternalImports(`await import("@hsupu/ghc-proxy-telemetry/testing")`)).toEqual(["@hsupu/ghc-proxy-telemetry/testing"])
-    expect(deepInternalImports(`const x = require("@hsupu/ghc-proxy-telemetry/runtime")`)).toEqual(["@hsupu/ghc-proxy-telemetry/runtime"])
+    // The allowlist's reason for existing: a subpath nobody enumerated (the package exports "./*").
+    expect(forbiddenPackageImports(`import { internDim } from "@hsupu/ghc-proxy-telemetry/telemetry/dictionary"`)).toEqual([
+      "@hsupu/ghc-proxy-telemetry/telemetry/dictionary",
+    ])
+    // Non-`from` import shapes must also be flagged.
+    expect(forbiddenPackageImports(`await import("@hsupu/ghc-proxy-telemetry/testing")`)).toEqual(["@hsupu/ghc-proxy-telemetry/testing"])
+    expect(forbiddenPackageImports(`const x = require("@hsupu/ghc-proxy-telemetry/runtime")`)).toEqual(["@hsupu/ghc-proxy-telemetry/runtime"])
 
-    // Negative control: the barrel and the storage subpath (a legitimate internals-test target) are fine.
-    expect(deepInternalImports(`import { getTelemetryRuntime } from "@hsupu/ghc-proxy-telemetry"`)).toEqual([])
-    expect(deepInternalImports(`import { openTelemetryDb } from "@hsupu/ghc-proxy-telemetry/telemetry/db"`)).toEqual([])
+    // Negative control: the two production-legal specifiers.
+    expect(forbiddenPackageImports(`import { getTelemetryRuntime } from "@hsupu/ghc-proxy-telemetry"`)).toEqual([])
+    expect(forbiddenPackageImports(`import type { RequestTelemetrySnapshot } from "@hsupu/ghc-proxy-telemetry/types"`)).toEqual([])
+    // …and an unrelated package is none of this guard's business.
+    expect(forbiddenPackageImports(`import { getTokenCredentials } from "@hsupu/ghc-proxy-token"`)).toEqual([])
+  })
+
+  test("the export parser reads real export syntax (the single-line form that used to slip through)", () => {
+    // Regression control for the false green found in merged-state review: this exact line was added
+    // to the barrel and the guard stayed green.
+    expect(exportedNames(`export { recordSettledRequest } from "./request-telemetry"`)).toEqual(["recordSettledRequest"])
+    expect(exportedNames(`export {\n  //\n  getTelemetryRuntime,\n} from "./runtime"`)).toEqual(["getTelemetryRuntime"])
+    expect(exportedNames(`export { initRequestTelemetry as init } from "./request-telemetry"`)).toEqual(["init"])
+    expect(exportedNames(`export type { TelemetryRuntime } from "./runtime"`)).toEqual(["TelemetryRuntime"])
+    expect(exportedNames(`export { type TelemetryPaths, installTelemetryDeps } from "./dependencies"`)).toEqual(["TelemetryPaths", "installTelemetryDeps"])
   })
 
   test("the barrel exports no registry OPERATION (only types, constants, the runtime and the tier reads)", async () => {
-    const barrel = await readFile(path.join(telemetryPackageSrc, "index.ts"), "utf8")
-    const leaked = PACKAGE_INTERNAL_OPERATIONS.filter((op) => new RegExp(String.raw`(^|[\s,{])${op}\s*(,|$)`, "m").test(barrel))
-    expect(leaked).toEqual([])
+    const exported = new Set(exportedNames(await readFile(path.join(telemetryPackageSrc, "index.ts"), "utf8")))
+    expect(PACKAGE_INTERNAL_OPERATIONS.filter((op) => exported.has(op))).toEqual([])
 
-    // Non-vacuous: the barrel really is the surface we think it is.
-    expect(barrel).toContain("getTelemetryRuntime")
-    expect(barrel).toContain("TELEMETRY_DIMENSION_NAMES")
+    // Non-vacuous: the parser really did read this barrel's surface.
+    expect(exported.has("getTelemetryRuntime")).toBe(true)
+    expect(exported.has("TELEMETRY_DIMENSION_NAMES")).toBe(true)
   })
 
-  test("no production file outside the package deep-imports past the barrel", async () => {
+  test("no production file imports anything but the barrel and the type barrel", async () => {
     const roots = await productionSourceRoots()
     const files = (await Promise.all(roots.map((root) => sourceFiles(root)))).flat()
     expect(files.length).toBeGreaterThan(100)
@@ -128,8 +184,8 @@ describe("telemetry package surface (one production entry point)", () => {
     const violations: Array<string> = []
     for (const file of files) {
       if (file.startsWith(telemetryPackageSrc)) continue
-      const deep = deepInternalImports(await readFile(file, "utf8"))
-      if (deep.length > 0) violations.push(`${path.relative(repoRoot, file)}: ${deep.join(", ")}`)
+      const forbidden = forbiddenPackageImports(await readFile(file, "utf8"))
+      if (forbidden.length > 0) violations.push(`${path.relative(repoRoot, file)}: ${forbidden.join(", ")}`)
     }
     expect(violations).toEqual([])
   })
