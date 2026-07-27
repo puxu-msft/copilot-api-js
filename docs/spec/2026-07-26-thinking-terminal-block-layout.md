@@ -77,7 +77,7 @@ HTTP 400: messages.27: The final block in an assistant message cannot be `thinki
    - `[Ta,Tb,Tc,text,tool1,tool2]` → `[Ta, text, Tb, tool1, Tc, tool2]`（0 个合成，与旧行为一致）
    - `[T,T]` → `[T, SEP, T, SEP]`（2 个合成）
    - `[text, T]` → `[T, text]`（0 个合成，纯重排）
-3. **`insert_text`**：末块是 thinking 时追加 marker（保 C2）。已知边界：该策略契约是「真实块不移位」，故 `[tool, T]` 这种形态它只能产出 `[tool, T, SEP]`（违反 C3）。C3 由默认策略 `move_blocks` 负责；`insert_text` 保持诊断/对照腿定位。
+3. ~~**`insert_text`**：末块是 thinking 时追加 marker（保 C2）。已知边界：该策略契约是「真实块不移位」，故 `[tool, T]` 这种形态它只能产出 `[tool, T, SEP]`（违反 C3）。C3 由默认策略 `move_blocks` 负责；`insert_text` 保持诊断/对照腿定位。~~ **该策略已于 2026-07-27 退役**——见文末「insert_text 退役」。
 4. **`passthrough` 保持完全不动**（诊断对照价值）。
 5. 新增统计 `BlockLayoutRepairStats.terminalRepairs`：因 C2 而被重新收尾的消息数（与 `insertedMarkers` 分开计，落进 `pipelineInfo.sanitization[].blockLayout`（2026-07-27 前该字段叫 `destack`））。2026-07-27 追加同构的 `toolTerminalRepairs`（因 C3 而被重新收尾的消息数）。
 
@@ -137,7 +137,7 @@ C3 会修**完全不含 thinking** 的消息（`[tool, text]` → `[text, tool]`
 ## 明确未做（记录以免被误读为遗漏）
 
 - ~~**不主动修复 C3 违规本身**。destack 只保证自己不制造 C3 违规。客户端原生产出 `[T, tool, text]` 这种形态在观测中从未出现（Anthropic 响应总是 text 在 tool_use 之前），真要修就得移动客户端的真实块、语义风险大于收益。若将来观测到，再按同样的实测流程立案。~~ **2026-07-27 推翻并已实施**（见上节「追加事故」）：不必等 Anthropic 原生产出这种形态——**我方自己产出的非法形态会被客户端 baked 进历史、此后每轮重投**，所以「客户端原生不会有」这个前提本身就是伪安全感。
-- ~~**`insert_text` 的 C3 边界**（见上）不修，理由同上，且它不是默认策略。~~ 仍不修，但理由收窄为**契约冲突**：该策略的契约是「真实块不移位」，而修 C3 必须移位——故它对 C3-only 的消息**不触发**（也不计入 `toolTerminalRepairs`），保持诊断/对照腿的诚实。默认策略 `move_blocks` 覆盖 C3。
+- ~~**`insert_text` 的 C3 边界**（见上）不修，理由同上，且它不是默认策略。~~ **2026-07-27 结案：策略本身退役**——「真实块不移位」与 C3 互斥，不可能在契约内修好；留着就是一个必被上游 400 的配置值。见文末「insert_text 退役」。
 - **L2 strip-all 可能留下 `content: []` 的 assistant 消息**（邻域审查发现，非本次根因）：L2 `handle` 不走 `resanitize`，`stripAllThinking` 又只 filter 不丢空消息，故纯 thinking 的 assistant 消息被 strip 后成空 content 原样上送。已记入 [docs/todo/deferred-backlog.md](../todo/deferred-backlog.md)（含两条修法与触发条件），未实测复现。
 
 ## 教训
@@ -148,3 +148,14 @@ C3 会修**完全不含 thinking** 的消息（`[tool, text]` → `[text, tool]`
 - 上游报的数组索引可能与我方口径不一致，且**偏移方向不固定、甚至越界**——按形状定位，别按索引。
 - **「客户端原生不会产出这种形态」不是安全论据**（2026-07-27 补）：我方自己产出的非法形态会被客户端 baked 进对话历史，此后每轮原样重投——于是「上游/客户端不会这么发」的前提被我方自己打破。凡是我方会**写进响应**的形状，都要假设它会**从请求回流**。
 - **从日志/字段判断代码版本前，先确认那个进程跑的是哪份代码**（2026-07-27 补）：本次决定性证据是落库 `destack` 统计里**缺 `terminalRepairs` 字段**（该字段随修复引入）+ 进程 bootTime 早于修复 commit——payload 自证进程陈旧，比任何推断都硬。
+
+## insert_text 退役（2026-07-27）
+
+**它当初想解决什么**：2026-07-07 三层方案立项时，还不知道上游会接受哪种修复形状，于是并列了两个候选——`insert_text`（只插合成分隔符、**绝不移动客户端写下的真实块**，保守）与 `move_blocks`（允许重排）。`passthrough` 是第三条腿：什么都不做，供上游探针把精确排列送上 wire。
+
+**为什么它不可能是对的**：2026-07-26 的实测确立了 C3——含 `tool_use` 的 assistant 消息必须以 `tool_use` 收尾。要满足 C3 就**必须移位**（把 tool_use 挪到末尾），而这正是 `insert_text` 契约明令禁止的。二者互斥，故它对 `[tool_use, thinking]` 这类输入只能产出 `[tool_use, thinking, SEP]`——一个**保证被上游 400** 的 payload。它不是"更保守的兜底"，而是配置面上的一颗脚枪。
+
+**正确做法 = 删除**（不是"标注为诊断腿后留着"）：
+- 枚举收敛为 `passthrough | move_blocks`。想要"别动我的块序"的人真正需要的是 `passthrough`，它对"什么都不修"这件事是诚实的。
+- 旧值经 config compat 迁移到 `move_blocks` 并告警；**旧键 + 退役值**的组合由 `renameLeaf` 的 `transform` 一跳到位——迁移刻意不链式求值（各自读原始 payload），指望"先改名、再走值迁移"会漏。
+- 用它构造"合成 marker 可见"断言的测试改用 `move_blocks`（同样输入同样插 marker，且测的是默认腿）；热重载样例值改用 `passthrough`——样例若被 compat 改写成默认值，R1/R2 就不再证明任何接线。

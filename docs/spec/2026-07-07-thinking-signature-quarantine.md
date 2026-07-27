@@ -42,7 +42,7 @@ L1 精确修高发毒（**de-stack 保留全部 thinking**）；L2 接住漏网�
 - 精确约束（PoC 实证）：**同一条 assistant 消息内任意两个 `thinking`/`redacted_thinking` 块不得相邻**（非「至多 1 个」）。
 - **可选策略（config enum `anthropic.thinking_destack_strategy`）**——对每条含相邻 thinking 的 assistant 消息三选一：
   1. **`passthrough`（透传）**：L1 不动、原样发出，靠 L2/L3 反应式接住。（= L1 关）
-  2. **`insert_text`（直接插入文本块）**：相邻 thinking 之间**纯插入非空合成 text 块**分隔，真实块**原位不动**（不重排 tool_use）。最简、不触碰真实块顺序（免 tool 顺序疑虑），代价 = 每对相邻 thinking 加一个合成 text 块。
+  2. **`insert_text`（直接插入文本块）**〔**2026-07-27 已退役**，见 [2026-07-26-thinking-terminal-block-layout.md](2026-07-26-thinking-terminal-block-layout.md)「insert_text 退役」〕：相邻 thinking 之间**纯插入非空合成 text 块**分隔，真实块**原位不动**（不重排 tool_use）。最简、不触碰真实块顺序（免 tool 顺序疑虑），代价 = 每对相邻 thinking 加一个合成 text 块。
   3. **`move_blocks`（后移块，默认）**：用消息内**真实**非 thinking 块（text/tool_use）交错分隔相邻 thinking（`[T0,O0,T1,O1,…]`，thinking 首块居首、thinking 组与非thinking 组各自保序）；**真实块不足**（`#thinking > #非thinking+1`）时**补充**非空合成 text 块（永不丢弃 thinking）。零/最少合成污染。
 - **分隔符须非空非纯空白**：实测空 `""`/空格 `" "` text 块被上游 strip 掉、thinking 又相邻仍 400（`pb_sep_empty/space`），非空标记 `"[thinking continued]"` → 200（`pb_sep_marker`）；合成标记打可辨识前缀（`synthetic-must-be-distinguishable`）。**充分条件 `#thinking ≤ #非thinking+1` 只计 trim 后非空的非 thinking 块**（空 text 会被 `filterEmptyAnthropicTextBlocks` + 上游双重 strip，不能算分隔符，评审 CRITICAL）。
 - 三策略共性：**保序**（thinking 块内容不改、相对序不变）、只动「存在相邻 thinking」的消息（合法 interleaved / 单 thinking / 非 thinking 块不动）、**保留全部 thinking**（insert_text 与 move_blocks 均不丢；仅 passthrough 不处理）、**幂等**（`de-stack(de-stack(x))==de-stack(x)` 逐字节——`resanitize` 每次 retry 重跑全链含 de-stack，[codec.ts:322](../../src/lib/codec/anthropic/codec.ts#L322)，必须严格幂等）。
