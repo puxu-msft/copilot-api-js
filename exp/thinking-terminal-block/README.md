@@ -53,7 +53,7 @@ json.dump({'T1':blk[0],'TOOL':blk[1],'T2':blk[2]}, open('/tmp/probe-blocks.json'
 TESTDATA=/tmp/copilot-test-4142
 mkdir -p "$TESTDATA/copilot-api"
 cp ~/.local/share/copilot-api/{github_token,config.yaml} "$TESTDATA/copilot-api/"
-printf '\nanthropic:\n  thinking_destack_strategy: passthrough\n  strip_thinking_on_reject: false\n' >> "$TESTDATA/copilot-api/config.yaml"
+printf '\nanthropic:\n  assistant_block_layout_strategy: passthrough\n  strip_thinking_on_reject: false\n' >> "$TESTDATA/copilot-api/config.yaml"
 XDG_DATA_HOME=$TESTDATA NODE_ENV=production bun run ./packages/cli/src/main.ts start --port 4142 > $TESTDATA/server.log 2>&1 &
 
 # 3) 先跑便宜的（够用就别烧 90k）
@@ -69,4 +69,4 @@ python3 verify-fix-e2e.py 4143     # 4143 = 跑默认 move_blocks 的服务器
 
 - **重放 upstream body 会撞 "Tool names must be unique"**：我方会注入 `Grep`/`Glob`/`Task`/`KillShell`/`tool_search_tool_regex`（客户端把它们声明为 deferred，实际定义由我方补），把已注入过的 body 再喂回去就重复了。脚本按名字剔除这批再发（`INJECTED` 集合）。**这是重放伪影，不是缺陷**——实测客户端发 24 个 + 注入 5 个 = 29 个，无重名。
 - **上游报的 messages 索引不可信**：同一约束在不同 payload 下偏 −1、偏 +1、甚至越界（5 条消息报 `messages.5`）。按形状定位。
-- **别用 4141 主服务器做这些实验**：它是用户的实时实例，且默认配置会 de-stack 掉你要测的排列。
+- **别用 4141 主服务器做这些实验**：它是用户的实时实例，且默认配置会矫正掉你要测的排列。

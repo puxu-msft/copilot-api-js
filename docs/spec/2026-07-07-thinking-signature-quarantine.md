@@ -38,7 +38,7 @@ L1 精确修高发毒（**de-stack 保留全部 thinking**）；L2 接住漏网�
 
 ## 3. 架构
 
-### 3.1 L1 结构 de-stack `src/lib/anthropic/sanitize/destack-adjacent-thinking.ts`
+### 3.1 L1 结构 de-stack `src/lib/anthropic/sanitize/assistant-block-layout.ts`（2026-07-27 前叫 `destack-adjacent-thinking.ts`）
 - 精确约束（PoC 实证）：**同一条 assistant 消息内任意两个 `thinking`/`redacted_thinking` 块不得相邻**（非「至多 1 个」）。
 - **可选策略（config enum `anthropic.thinking_destack_strategy`）**——对每条含相邻 thinking 的 assistant 消息三选一：
   1. **`passthrough`（透传）**：L1 不动、原样发出，靠 L2/L3 反应式接住。（= L1 关）
