@@ -1,4 +1,8 @@
-import type { AssistantBlockLayoutStrategy } from "~/lib/anthropic/sanitize/assistant-block-layout"
+import type {
+  //
+  AssistantBlockLayoutStrategy,
+  SeparatorCarrier,
+} from "~/lib/anthropic/sanitize/assistant-block-layout"
 import type { ThinkingBlockSanitizeMode } from "~/lib/anthropic/sanitize/content-blocks"
 import type { RepairItem } from "~/lib/anthropic/tool-input-repair"
 import type { ModelTranslation } from "~/lib/config/schema"
@@ -502,6 +506,18 @@ export interface State {
    *                     (order-preserving), synthetic marker only when insufficient (default).
    */
   readonly assistantBlockLayoutStrategy: AssistantBlockLayoutStrategy
+  /**
+   * EMIT axis (`anthropic.separator_carrier`): which synthetic separator carrier goes on the wire.
+   * Closed enum — only real-upstream-proven carriers.
+   */
+  readonly separatorCarrier: SeparatorCarrier
+  /**
+   * ACCEPT axis (`anthropic.separator_accept_extra`): extra literals ALSO recognised as our
+   * synthetic separator, unioned on top of the built-in prefix family and legacy spellings.
+   * Widening recognition is monotone — it cannot make a payload illegal — which is why this axis
+   * is open while the emit axis is closed.
+   */
+  readonly separatorAcceptExtra: ReadonlyArray<string>
 
   /**
    * Reactive strip-all fallback (L2) for the GHC "thinking ... cannot be
@@ -1489,6 +1505,8 @@ export function setAnthropicBehavior(
       | "thinkingBlockMessagePolicy"
       | "thinkingBlockSanitizeCheck"
       | "assistantBlockLayoutStrategy"
+      | "separatorCarrier"
+      | "separatorAcceptExtra"
       | "stripThinkingOnReject"
       | "poisonedThinkingQuarantine"
       | "poisonedThinkingTtlHours"
@@ -2030,6 +2048,8 @@ export function resetConfigManagedState(): void {
     thinkingBlockMessagePolicy: CONFIG_MANAGED_DEFAULTS.thinkingBlockMessagePolicy,
     thinkingBlockSanitizeCheck: CONFIG_MANAGED_DEFAULTS.thinkingBlockSanitizeCheck,
     assistantBlockLayoutStrategy: CONFIG_MANAGED_DEFAULTS.assistantBlockLayoutStrategy,
+    separatorCarrier: CONFIG_MANAGED_DEFAULTS.separatorCarrier,
+    separatorAcceptExtra: CONFIG_MANAGED_DEFAULTS.separatorAcceptExtra,
     stripThinkingOnReject: CONFIG_MANAGED_DEFAULTS.stripThinkingOnReject,
     poisonedThinkingQuarantine: CONFIG_MANAGED_DEFAULTS.poisonedThinkingQuarantine,
     poisonedThinkingTtlHours: CONFIG_MANAGED_DEFAULTS.poisonedThinkingTtlHours,
@@ -2264,6 +2284,8 @@ const mutableState: MutableState = {
   thinkingBlockMessagePolicy: CONFIG_MANAGED_DEFAULTS.thinkingBlockMessagePolicy,
   thinkingBlockSanitizeCheck: CONFIG_MANAGED_DEFAULTS.thinkingBlockSanitizeCheck,
   assistantBlockLayoutStrategy: CONFIG_MANAGED_DEFAULTS.assistantBlockLayoutStrategy,
+  separatorCarrier: CONFIG_MANAGED_DEFAULTS.separatorCarrier,
+  separatorAcceptExtra: CONFIG_MANAGED_DEFAULTS.separatorAcceptExtra,
   stripThinkingOnReject: CONFIG_MANAGED_DEFAULTS.stripThinkingOnReject,
   poisonedThinkingQuarantine: CONFIG_MANAGED_DEFAULTS.poisonedThinkingQuarantine,
   poisonedThinkingTtlHours: CONFIG_MANAGED_DEFAULTS.poisonedThinkingTtlHours,

@@ -486,6 +486,33 @@
                 }
               ]
             },
+            "separator_carrier": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "enum": [
+                    "marker_v1"
+                  ]
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "separator_accept_extra": {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
             "strip_thinking_on_reject": {
               "anyOf": [
                 {

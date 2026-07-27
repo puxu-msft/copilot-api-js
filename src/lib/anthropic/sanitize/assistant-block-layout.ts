@@ -4,51 +4,38 @@ import type {
   MessageParam,
 } from "~/types/api/anthropic"
 
-export type AssistantBlockLayoutStrategy = "passthrough" | "move_blocks"
+import type {
+  //
+  AssistantBlockLayoutStrategy,
+  SeparatorCarrier,
+} from "./block-layout-contract"
+
+import {
+  //
+  DEFAULT_SEPARATOR_CARRIER,
+  makeSyntheticSeparator as makeSeparatorBlock,
+} from "./block-layout-contract"
 
 /**
- * Synthetic separator sentinel — a VERSIONED FAMILY matched by prefix, not one frozen literal.
- *
- * Why a text block at all: the separator must survive the round trip through upstream AND through
- * the client's stored history, so it can only be an ordinary, upstream-legal content block. Empty or
- * whitespace-only text is stripped upstream, so it must carry real characters. That means the TEXT
- * ITSELF is the only identity we get — an in-process tag (Symbol/WeakSet) cannot survive a client
- * replaying the block back at us in the next turn, which is exactly when we need to recognise it.
- *
- * Why prefix + version rather than a single frozen string: the previous design compared with `===`
- * against one literal, so changing the wording would silently strand every marker already baked into
- * a client's history (they would stop being recognised as orphans and leak upstream as stray text).
- * Matching a `[copilot-api:thinking-separator…` prefix means a future revision only has to bump the
- * version, and {@link LEGACY_SYNTHETIC_SEPARATORS} keeps older spellings recognised until no live
- * conversation carries them.
- *
- * One producer ({@link makeSyntheticSeparator}) and one recogniser ({@link isSyntheticThinkingSeparator});
- * `tests/anthropic/synthetic-separator-identity.unit.test.ts` fails the build if any other module
- * compares against the literal directly.
+ * Separator identity lives in the pure contract leaf `./block-layout-contract`. NEITHER module reads
+ * `state`: importing it here pulled this file into the 19-module SCC (the ratchet guard caught it),
+ * so the config read stays in the assembly layer (`sanitize/index.ts`), which is already inside that
+ * component, and the resolved carrier is threaded down as an argument.
  */
-const SYNTHETIC_SEPARATOR_PREFIX = "[copilot-api:thinking-separator"
+export {
+  //
+  type AssistantBlockLayoutStrategy,
+  DEFAULT_SEPARATOR_CARRIER,
+  SEPARATOR_CARRIERS,
+  type SeparatorCarrier,
+  separatorText,
+} from "./block-layout-contract"
 
-/** The separator this build EMITS. Consumers must recognise via {@link isSyntheticThinkingSeparator}. */
-export const SYNTHETIC_THINKING_SEPARATOR = `${SYNTHETIC_SEPARATOR_PREFIX}:v1]`
-
-/**
- * Spellings emitted by earlier builds and still present in live client histories. Drop an entry only
- * once no client can replay it (they are conversation-lifetime, not persisted-history, artefacts).
- * `[copilot-api: thinking separator]` was the only spelling before 2026-07-27.
- */
-const LEGACY_SYNTHETIC_SEPARATORS: ReadonlySet<string> = new Set(["[copilot-api: thinking separator]"])
-
-/** Is this block one of OUR synthetic separators — including one a client replayed from an older build? */
-export function isSyntheticThinkingSeparator(block: ContentBlockParam): boolean {
-  if (block.type !== "text" || typeof block.text !== "string") return false
-  const text = block.text.trim()
-  return text.startsWith(SYNTHETIC_SEPARATOR_PREFIX) || LEGACY_SYNTHETIC_SEPARATORS.has(text)
-}
-
-/** Build a fresh synthetic separator block (the single producer). */
-export function makeSyntheticSeparator(): ContentBlockParam {
-  return { type: "text", text: SYNTHETIC_THINKING_SEPARATOR } as ContentBlockParam
-}
+export {
+  //
+  isSyntheticThinkingSeparator,
+  makeSyntheticSeparator,
+} from "./block-layout-contract"
 
 export interface BlockLayoutRepairStats {
   repairedMessages: number
@@ -69,8 +56,6 @@ function isRealSeparator(b: ContentBlockParam): boolean {
   if (b.type === "text") return typeof b.text === "string" && b.text.trim().length > 0
   return true
 }
-
-const marker = makeSyntheticSeparator
 
 function hasAdjacentThinking(content: Array<ContentBlockParam>): boolean {
   for (let i = 1; i < content.length; i++) if (isThinking(content[i]) && isThinking(content[i - 1])) return true
@@ -128,7 +113,7 @@ export function endsOnAssistantTurn(messages: Array<MessageParam>): boolean {
  * turn as an assistant prefill), else the last real separator, else a synthetic marker.
  * Interior `tool_use` blocks are fine as separators (empirically verified).
  */
-function moveBlocksStrategy(content: Array<ContentBlockParam>, stats: BlockLayoutRepairStats): Array<ContentBlockParam> {
+function moveBlocksStrategy(content: Array<ContentBlockParam>, stats: BlockLayoutRepairStats, carrier: SeparatorCarrier): Array<ContentBlockParam> {
   const thinks = content.filter((b) => isThinking(b))
   const others = content.filter((b) => !isThinking(b))
   const realSeps = others.filter((b) => isRealSeparator(b))
@@ -142,7 +127,7 @@ function moveBlocksStrategy(content: Array<ContentBlockParam>, stats: BlockLayou
     tail = realSeps[tailIdx]
     realSeps.splice(tailIdx, 1)
   } else {
-    tail = marker()
+    tail = makeSeparatorBlock(carrier)
     stats.insertedMarkers++
   }
 
@@ -153,7 +138,7 @@ function moveBlocksStrategy(content: Array<ContentBlockParam>, stats: BlockLayou
     if (ti < thinks.length - 1) {
       if (si < realSeps.length) out.push(realSeps[si++])
       else {
-        out.push(marker())
+        out.push(makeSeparatorBlock(carrier))
         stats.insertedMarkers++
       }
     }
@@ -190,6 +175,8 @@ function moveBlocksStrategy(content: Array<ContentBlockParam>, stats: BlockLayou
 export function repairAssistantBlockLayout(
   messages: Array<MessageParam>,
   strategy: AssistantBlockLayoutStrategy,
+  /** EMIT axis: which separator carrier to synthesize when no real block is spare (config-resolved by the caller). */
+  carrier: SeparatorCarrier = DEFAULT_SEPARATOR_CARRIER,
 ): { messages: Array<MessageParam>; stats: BlockLayoutRepairStats } {
   const stats: BlockLayoutRepairStats = { repairedMessages: 0, insertedMarkers: 0, reorderedBlocks: 0, terminalRepairs: 0, toolTerminalRepairs: 0 }
   if (strategy === "passthrough") return { messages, stats }
@@ -211,7 +198,7 @@ export function repairAssistantBlockLayout(
     if (terminalViolation) stats.terminalRepairs++
     if (toolTerminalViolation) stats.toolTerminalRepairs++
     changed = true
-    const newContent = moveBlocksStrategy(msg.content, stats)
+    const newContent = moveBlocksStrategy(msg.content, stats, carrier)
     out.push({ ...msg, content: newContent })
   }
   return { messages: changed ? out : messages, stats }

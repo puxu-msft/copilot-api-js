@@ -786,6 +786,16 @@ anthropic:
   #   passthrough: leave stacked thinking as-is / 保留堆叠的 thinking，不改动
   #   move_blocks: interleave thinking with real non-thinking blocks (order-preserving), synthetic marker only when insufficient (default) / 与真实非 thinking 块交错（保序），不足时才用合成标记（默认）
   assistant_block_layout_strategy: move_blocks
+  # EMIT axis — which synthetic separator carrier goes on the wire when the repair must synthesize
+  # one. Closed enum: only carriers proven acceptable upstream. / 发射轴：合成分隔符用哪种载体；
+  # 封闭枚举，只收已被真上游证实可接受的载体。
+  separator_carrier: marker_v1
+  # ACCEPT axis — EXTRA literals to also recognise as our separator, on top of the built-in family
+  # and the spellings older builds emitted. Open list: widening recognition can never make a payload
+  # illegal, which is what makes carrier migration and historical values safe. Compared trimmed and
+  # in full, never as a substring. / 识别轴：额外承认为我方分隔符的字面量；开放列表，只会扩大识别
+  # 面、永远不会造出非法 payload，载体迁移与历史值靠它。整块 trim 后全等比较，不做子串匹配。
+  separator_accept_extra: []
 
   # Reactive fallback (L2) for the GHC "thinking ... cannot be modified" 400 that L1 assistant block-layout repair (assistant_block_layout_strategy) did not preempt: strip ALL thinking/redacted_thinking blocks from the echoed history and retry the turn once. true = enable the one-shot strip-and-retry (default); false = let the 400 surface unmodified.
   # 对 GHC "thinking ... cannot be modified" 400 的反应式兜底（L2），处理 L1 assistant 块布局矫正（assistant_block_layout_strategy）未能预防的情形：从回显历史中剥离全部 thinking/redacted_thinking 块并重试一次。true = 启用一次性剥离重试（默认）；false = 让该 400 原样抛出。

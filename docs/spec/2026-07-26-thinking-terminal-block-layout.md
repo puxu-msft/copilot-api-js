@@ -159,3 +159,23 @@ C3 会修**完全不含 thinking** 的消息（`[tool, text]` → `[text, tool]`
 - 枚举收敛为 `passthrough | move_blocks`。想要"别动我的块序"的人真正需要的是 `passthrough`，它对"什么都不修"这件事是诚实的。
 - 旧值经 config compat 迁移到 `move_blocks` 并告警；**旧键 + 退役值**的组合由 `renameLeaf` 的 `transform` 一跳到位——迁移刻意不链式求值（各自读原始 payload），指望"先改名、再走值迁移"会漏。
 - 用它构造"合成 marker 可见"断言的测试改用 `move_blocks`（同样输入同样插 marker，且测的是默认腿）；热重载样例值改用 `passthrough`——样例若被 compat 改写成默认值，R1/R2 就不再证明任何接线。
+
+## 合成分隔符的两条轴：发射封闭 / 识别开放（2026-07-27 用户决定）
+
+用户裁定：可配置性应该拆成**主动使用时用什么**与**探测时额外接受什么**两部分。这一拆解推翻了调研 agent 原本"不该可配置"的结论——因为两条轴的风险是**不对称**的：
+
+| 轴 | 配置键 | 形状 | 为什么是这个形状 |
+|---|---|---|---|
+| **EMIT**（主动使用） | `anthropic.separator_carrier` | **封闭 enum**，当前仅 `marker_v1` | 自由字符串会让用户填出纯空白值——上游会 strip 掉它，于是**自造**本 pass 存在的那个 400。新载体（如极小不可见 Unicode）只有过了真上游 PoC 才进这张表。 |
+| **ACCEPT**（探测时额外接受） | `anthropic.separator_accept_extra` | **开放 list** | 扩大识别面是**单调**的：它永远不可能造出非法 payload，只会把更多块归类为"我方合成物"（于是 strip-all 会把它们当孤儿清掉而不是泄漏给上游）。载体迁移、历史值、第三方部署留下的值全靠这条轴活。 |
+
+工程含义：
+- **迁移变得安全**：新版本可以发射 v2 的同时继续识别 v1；回滚也不会把已 baked 进客户端历史的 marker 变成认不出的垃圾。
+- **PoC 变得可做**：测试实例把 EMIT 切到实验载体，生产实例只要 pin 上那个值就仍能识别混进来的历史。
+- 识别侧比较是**整块 trim 后全等**，不做子串匹配——否则一条正常消息里提到该字面量就会被误当分隔符剥掉。空串永远不算（pin 空串也不行）。
+
+这其实是本项目**已经在用的模式**：配置键就是"发新键、认旧键"（`compat.ts` 的 `renameLeaf`）。本次只是把同一个不对称原则应用到 wire 上的哨兵。
+
+### 装配约束（SCC 守卫抓出来的）
+
+契约（策略 enum + 载体表 + 纯谓词）住在 `sanitize/block-layout-contract.ts`，**不 import `state`**。第一版把 state 读进了 `assistant-block-layout.ts`，`circular-deps-ratchet` 立刻转红——该文件被吸进了 19 模块的巨型 SCC（`state-defaults` 要读载体默认值）。正确形状：**配置读留在已经在 SCC 里的装配层**（`sanitize/index.ts` 与 L2/L3 的 strip 调用点），把解析结果作为参数**向下传**给纯契约层。

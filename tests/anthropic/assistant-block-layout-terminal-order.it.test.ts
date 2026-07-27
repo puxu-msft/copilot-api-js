@@ -8,7 +8,7 @@ import {
 import type { MessagesPayload } from "~/types/api/anthropic"
 
 import { sanitizeAnthropicMessages } from "~/lib/anthropic/sanitize"
-import { SYNTHETIC_THINKING_SEPARATOR } from "~/lib/anthropic/sanitize/assistant-block-layout"
+import { separatorText } from "~/lib/anthropic/sanitize/assistant-block-layout"
 import { setStateForTests } from "~/lib/state"
 
 import { autoRestoreState } from "../helpers/state-fixture"
@@ -57,6 +57,6 @@ describe("de-stack terminal-pass wiring", () => {
     // no real non-thinking block remains after orphan deletion, a synthetic marker
     // separates them.
     expect(content.filter((b) => b.type === "thinking")).toHaveLength(2)
-    expect(content.some((b) => b.type === "text" && b.text === SYNTHETIC_THINKING_SEPARATOR)).toBe(true)
+    expect(content.some((b) => b.type === "text" && b.text === separatorText())).toBe(true)
   })
 })

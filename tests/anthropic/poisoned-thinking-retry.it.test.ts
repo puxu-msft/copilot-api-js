@@ -34,7 +34,7 @@ import {
   isThinkingLayoutRejection,
   isToolTerminalPrefillRejection,
 } from "~/lib/anthropic/poisoned-thinking-match"
-import { SYNTHETIC_THINKING_SEPARATOR } from "~/lib/anthropic/sanitize/assistant-block-layout"
+import { separatorText } from "~/lib/anthropic/sanitize/assistant-block-layout"
 import { createPoisonedThinkingRetryStrategy } from "~/lib/codec/anthropic/poisoned-thinking-retry"
 import {
   //
@@ -169,7 +169,7 @@ describe("C3 / prefill 400：认领 + 条件治愈", () => {
   const T = { type: "thinking", thinking: "", signature: "sig" }
   const toolUse = { type: "tool_use", id: "toolu_1", name: "Bash", input: {} }
   const toolResult = { type: "tool_result", tool_use_id: "toolu_1", content: "ok" }
-  const SEP = { type: "text", text: SYNTHETIC_THINKING_SEPARATOR }
+  const SEP = { type: "text", text: separatorText() }
   /** 真实形状的对话：assistant 轮 + 对应的 tool_result user 轮（除非显式要求以 assistant 收尾）。 */
   const envFor = (assistantTurns: Array<Array<unknown>>, tail: "user" | "assistant" = "user"): RequestEnvelope => {
     const messages: Array<unknown> = []

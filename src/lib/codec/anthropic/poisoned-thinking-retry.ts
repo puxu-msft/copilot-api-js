@@ -72,7 +72,7 @@ export function createPoisonedThinkingRetryStrategy(deps?: { store?: ThinkingQua
     handle(error: ApiError, env: RequestEnvelope): Promise<RetryAction> {
       attempted = true
       const payload = env.body as MessagesPayload
-      const { messages, strippedCount } = stripAllThinking(payload.messages)
+      const { messages, strippedCount } = stripAllThinking(payload.messages, state.separatorAcceptExtra)
       // Nothing to strip → the 400 is not actually about echoed thinking we can
       // remove; abort rather than retry an unchanged payload into the same 400.
       if (strippedCount === 0) return Promise.resolve({ kind: "abort", error })

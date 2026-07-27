@@ -159,7 +159,7 @@ export function sanitizeAnthropicMessages(payload: MessagesPayload): ReturnType<
   // `.messages`) and writes the result back there. Its insert/reorder counters are
   // attached SEPARATELY (`stats.blockLayout`) from finalize's subtractive residual model,
   // which assumes blocks only ever decrease — the layout repair INSERTS.
-  const layoutRepair = repairAssistantBlockLayout(finalized.payload.messages, state.assistantBlockLayoutStrategy)
+  const layoutRepair = repairAssistantBlockLayout(finalized.payload.messages, state.assistantBlockLayoutStrategy, state.separatorCarrier)
   return {
     ...finalized,
     payload: { ...finalized.payload, messages: layoutRepair.messages },

@@ -432,6 +432,28 @@ export const AnthropicConfigSchema = z
      */
     assistant_block_layout_strategy: nullableEnum(["passthrough", "move_blocks"] as const),
     /**
+     * EMIT axis for the synthetic block-layout separator: WHICH carrier this process puts on the
+     * wire when `move_blocks` has to synthesize one (no real non-thinking block is spare).
+     *
+     * A closed enum on purpose — a free-form string would let a whitespace-only value through, and
+     * upstream strips those, manufacturing the very 400 the repair exists to prevent. New carriers
+     * (e.g. a minimal invisible-Unicode one) land here only after a real-upstream PoC.
+     * `marker_v1` = the visible versioned marker, the only carrier confirmed accepted upstream.
+     */
+    separator_carrier: nullableEnum(["marker_v1"] as const),
+    /**
+     * ACCEPT axis: EXTRA literals to also recognise as one of our synthetic separators, on top of
+     * the built-in prefix family and the spellings older builds emitted.
+     *
+     * Open list, and safe to be open: widening recognition is monotone — it can never make a
+     * payload illegal, it only classifies more blocks as ours (so strip-all cleans them up as
+     * orphans instead of leaking them upstream). This is the axis that makes carrier migration and
+     * third-party/historical values work: pin whatever a previous deployment emitted and this build
+     * will still recognise it. Compared trimmed and in full — not as a substring — so a normal
+     * message that merely mentions the text is never mistaken for a separator.
+     */
+    separator_accept_extra: nullableNonemptyStringArray(),
+    /**
      * Reactive fallback (L2) for the GHC "thinking ... cannot be modified" 400
      * that L1 layout repair (`assistant_block_layout_strategy`) did not preempt: strip ALL
      * `thinking`/`redacted_thinking` blocks from the echoed history and retry the

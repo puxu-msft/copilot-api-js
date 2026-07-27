@@ -711,6 +711,12 @@ export async function applyConfigToState(): Promise<Config> {
     if (a.thinking_block_message_policy !== undefined) {
       setAnthropicBehavior({ thinkingBlockMessagePolicy: a.thinking_block_message_policy })
     }
+    if (a.separator_carrier !== undefined) {
+      setAnthropicBehavior({ separatorCarrier: a.separator_carrier })
+    }
+    if (a.separator_accept_extra !== undefined) {
+      setAnthropicBehavior({ separatorAcceptExtra: a.separator_accept_extra })
+    }
     if (a.assistant_block_layout_strategy !== undefined) {
       setAnthropicBehavior({ assistantBlockLayoutStrategy: a.assistant_block_layout_strategy })
     }

@@ -5,13 +5,13 @@ import {
   test,
 } from "bun:test"
 
-import { SYNTHETIC_THINKING_SEPARATOR } from "~/lib/anthropic/sanitize/assistant-block-layout"
+import { separatorText } from "~/lib/anthropic/sanitize/assistant-block-layout"
 import { stripAllThinking } from "~/lib/anthropic/strip-all-thinking"
 
 const T = (s: string) => ({ type: "thinking", thinking: "", signature: s })
 const RT = (d: string) => ({ type: "redacted_thinking", data: d })
 const text = (t: string) => ({ type: "text", text: t })
-const sep = () => ({ type: "text", text: SYNTHETIC_THINKING_SEPARATOR })
+const sep = () => ({ type: "text", text: separatorText() })
 
 describe("stripAllThinking", () => {
   test("移除全部 thinking + redacted，保留其余", () => {
@@ -54,7 +54,7 @@ describe("stripAllThinking", () => {
   })
 
   // A4：L1 de-stack（insert_text / move_blocks）会在相邻 thinking 之间插入合成
-  // 分隔符 SYNTHETIC_THINKING_SEPARATOR；L2/L3 strip 掉全部 thinking 后，该 marker
+  // 分隔符 separatorText()；L2/L3 strip 掉全部 thinking 后，该 marker
   // 会成为孤儿并泄漏到上游。strip-all 必须在同一趟里连带剥除它。
   test("剥离孤儿合成分隔符：thinking 剥净后不残留 de-stack marker，真实 text 幸存", () => {
     const msgs = [{ role: "assistant" as const, content: [T("a"), sep(), T("b"), text("real")] as never }]
@@ -62,7 +62,7 @@ describe("stripAllThinking", () => {
     const blocks = messages[0].content as Array<{ type: string; text?: string }>
     expect(blocks.map((b) => b.type)).toEqual(["text"]) // 只剩真实 text
     expect(blocks.map((b) => b.text)).toEqual(["real"]) // 真实 text 幸存
-    expect(blocks.map((b) => b.text)).not.toContain(SYNTHETIC_THINKING_SEPARATOR) // 合成 marker 不在
+    expect(blocks.map((b) => b.text)).not.toContain(separatorText()) // 合成 marker 不在
     expect(strippedCount).toBe(3) // 2 thinking + 1 合成 marker，全计入
   })
 

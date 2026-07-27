@@ -71,7 +71,7 @@ import type {
   MessagesPayload,
 } from "~/types/api/anthropic"
 
-import { SYNTHETIC_THINKING_SEPARATOR } from "~/lib/anthropic/sanitize/assistant-block-layout"
+import { separatorText } from "~/lib/anthropic/sanitize/assistant-block-layout"
 import { createQuarantineProactiveFilter } from "~/lib/anthropic/thinking-quarantine/proactive-filter"
 import { ThinkingQuarantineStore } from "~/lib/anthropic/thinking-quarantine/store"
 import { createPoisonedThinkingRetryStrategy } from "~/lib/codec/anthropic/poisoned-thinking-retry"
@@ -154,7 +154,7 @@ function thinkingTypesIn(messages: Array<MessageParam>): Array<string> {
     .filter((t) => t === "thinking" || t === "redacted_thinking")
 }
 function hasSyntheticMarker(messages: Array<MessageParam>): boolean {
-  const isMarker = (b: { type: string; text?: string }): boolean => b.type === "text" && b.text === SYNTHETIC_THINKING_SEPARATOR
+  const isMarker = (b: { type: string; text?: string }): boolean => b.type === "text" && b.text === separatorText()
   return messages.some((m) => Array.isArray(m.content) && (m.content as Array<{ type: string; text?: string }>).some(isMarker))
 }
 function messagesOf(env: RequestEnvelope): Array<MessageParam> {

@@ -18,9 +18,9 @@ const THINKING_TYPES = new Set(["thinking", "redacted_thinking"])
  * marker is a meaningless orphan that would otherwise leak upstream — so we drop
  * it in the same pass.
  */
-function isStrippableBlock(block: ContentBlockParam): boolean {
+function isStrippableBlock(block: ContentBlockParam, extraAcceptedSeparators: ReadonlyArray<string>): boolean {
   if (THINKING_TYPES.has(block.type)) return true
-  return isSyntheticThinkingSeparator(block)
+  return isSyntheticThinkingSeparator(block, extraAcceptedSeparators)
 }
 
 /**
@@ -51,11 +51,15 @@ function isStrippableBlock(block: ContentBlockParam): boolean {
  * messages pass through untouched. When nothing is removed the input array is
  * returned by reference (zero-copy, byte-identical) with `strippedCount: 0`.
  */
-export function stripAllThinking(messages: Array<MessageParam>): { messages: Array<MessageParam>; strippedCount: number } {
+export function stripAllThinking(
+  messages: Array<MessageParam>,
+  /** ACCEPT axis: extra separator literals to also treat as ours (config-resolved by the caller). */
+  extraAcceptedSeparators: ReadonlyArray<string> = [],
+): { messages: Array<MessageParam>; strippedCount: number } {
   let strippedCount = 0
   const out = messages.map((msg) => {
     if (msg.role !== "assistant" || !Array.isArray(msg.content)) return msg
-    const kept = msg.content.filter((block) => !isStrippableBlock(block))
+    const kept = msg.content.filter((block) => !isStrippableBlock(block, extraAcceptedSeparators))
     const removed = msg.content.length - kept.length
     if (removed === 0) return msg
     strippedCount += removed

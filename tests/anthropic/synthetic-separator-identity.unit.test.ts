@@ -26,19 +26,20 @@ import {
   //
   isSyntheticThinkingSeparator,
   makeSyntheticSeparator,
-  SYNTHETIC_THINKING_SEPARATOR,
+  SEPARATOR_CARRIERS,
+  separatorText,
 } from "~/lib/anthropic/sanitize/assistant-block-layout"
 import { stripAllThinking } from "~/lib/anthropic/strip-all-thinking"
 
 const text = (t: string): ContentBlockParam => ({ type: "text", text: t }) as ContentBlockParam
-const OWNER = "src/lib/anthropic/sanitize/assistant-block-layout.ts"
+const OWNERS = new Set(["src/lib/anthropic/sanitize/block-layout-contract.ts", "src/lib/anthropic/sanitize/assistant-block-layout.ts"])
 /** 2026-07-27 更名前唯一的拼法；客户端历史里仍可能带着它。 */
 const LEGACY_SPELLING = "[copilot-api: thinking separator]"
 
 describe("synthetic separator identity", () => {
   test("产出的 marker 认得出自己（往返）", () => {
     expect(isSyntheticThinkingSeparator(makeSyntheticSeparator())).toBe(true)
-    expect(isSyntheticThinkingSeparator(text(SYNTHETIC_THINKING_SEPARATOR))).toBe(true)
+    expect(isSyntheticThinkingSeparator(text(separatorText()))).toBe(true)
   })
 
   test("认得出旧版本拼法（否则换措辞会把已回流的 marker 变成认不出的垃圾）", () => {
@@ -50,7 +51,7 @@ describe("synthetic separator identity", () => {
   })
 
   test("客户端可能加的空白不影响识别", () => {
-    expect(isSyntheticThinkingSeparator(text(` ${SYNTHETIC_THINKING_SEPARATOR}\n`))).toBe(true)
+    expect(isSyntheticThinkingSeparator(text(` ${separatorText()}\n`))).toBe(true)
   })
 
   test("不误伤真实内容", () => {
@@ -73,17 +74,54 @@ describe("synthetic separator identity", () => {
     expect(strippedCount).toBe(3)
   })
 
+  // ── 两条轴的不对称性（用户 2026-07-27 决定）：发射端封闭、识别端开放 ──────────────
+  // 加一个可接受值只会扩大识别面（永远造不出非法 payload）；发射端若开放成自由字符串，
+  // 用户填个纯空白就能自造 400——这正是本 pass 存在的理由。
+
+  test("ACCEPT 轴：运维 pin 的历史字面量会被认出（迁移与第三方值靠这条活）", () => {
+    const legacyFromSomeOtherDeployment = "<<sep-from-an-older-fork>>"
+    expect(isSyntheticThinkingSeparator(text(legacyFromSomeOtherDeployment))).toBe(false) // 未 pin：不认
+    expect(isSyntheticThinkingSeparator(text(legacyFromSomeOtherDeployment), [legacyFromSomeOtherDeployment])).toBe(true) // pin 后：认
+  })
+
+  test("ACCEPT 轴是单调的：pin 任何东西都不会让内建族/旧拼法失效", () => {
+    for (const extra of [[], ["<<x>>"], ["completely", "unrelated", "values"]]) {
+      expect(isSyntheticThinkingSeparator(text(separatorText()), extra)).toBe(true)
+      expect(isSyntheticThinkingSeparator(text(LEGACY_SPELLING), extra)).toBe(true)
+    }
+  })
+
+  test("ACCEPT 轴按整块 trim 后全等比较，不做子串匹配（否则会误吃正常消息）", () => {
+    const pinned = "SEP"
+    expect(isSyntheticThinkingSeparator(text("SEP"), [pinned])).toBe(true)
+    expect(isSyntheticThinkingSeparator(text("这段话里提到了 SEP 这个词"), [pinned])).toBe(false)
+    expect(isSyntheticThinkingSeparator(text(""), [""])).toBe(false) // 空块永远不算——pin 空串也不行
+  })
+
+  test("EMIT 轴：发射值取自载体表，且产出的块必然被自己认出（往返闭合）", () => {
+    expect(Object.values<string>(SEPARATOR_CARRIERS)).toContain(separatorText())
+    for (const carrier of Object.keys(SEPARATOR_CARRIERS) as Array<keyof typeof SEPARATOR_CARRIERS>) {
+      expect(isSyntheticThinkingSeparator(text(separatorText(carrier)))).toBe(true)
+    }
+  })
+
+  test("EMIT 轴上的每个载体都必须是 trim 后非空的（空白载体会被上游 strip → 自造 400）", () => {
+    for (const [name, value] of Object.entries(SEPARATOR_CARRIERS)) {
+      expect(value.trim().length, `carrier ${name} is blank — upstream strips it and the repair silently fails`).toBeGreaterThan(0)
+    }
+  })
+
   // 身份判断必须单点。两种漂移都要挡：写死字面量（换版本号就漏），以及 import 常量后自己
-  // `=== SYNTHETIC_THINKING_SEPARATOR` 比较（正是 2026-07-27 前 strip-all 的写法——它认不出
+  // `=== SEPARATOR_CARRIERS.marker_v1` 这种绕过谓词的自比较（正是 2026-07-27 前 strip-all 的写法——它认不出
   // 任何旧拼法）。src/ 里的消费者一律只准用谓词。
-  test("src/ 里除拥有者外，既不出现字面量、也不引用该常量（消费者只准用谓词）", () => {
+  test("src/ 里除拥有者外，既不出现载体字面量、也不引用载体表（消费者只准用谓词/发射器）", () => {
     const root = new URL("../..", import.meta.url).pathname
     const hits = [...new Glob("**/*.ts").scanSync({ cwd: `${root}/src`, onlyFiles: true })]
       .map((rel) => `src/${rel}`)
-      .filter((path) => path !== OWNER)
+      .filter((path) => !OWNERS.has(path))
       .filter((path) => {
         const content = readFileSync(`${root}/${path}`, "utf8")
-        return content.includes("copilot-api:thinking-separator") || content.includes(LEGACY_SPELLING) || content.includes("SYNTHETIC_THINKING_SEPARATOR")
+        return content.includes("copilot-api:thinking-separator") || content.includes(LEGACY_SPELLING) || content.includes("SEPARATOR_CARRIERS")
       })
     expect(hits, `这些文件直接比较合成分隔符字面量，应改用 isSyntheticThinkingSeparator():\n${hits.join("\n")}`).toEqual([])
   })

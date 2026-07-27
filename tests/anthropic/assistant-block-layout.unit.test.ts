@@ -12,7 +12,7 @@ import {
   repairAssistantBlockLayout,
   endsOnAssistantTurn,
   hasToolTerminalViolation,
-  SYNTHETIC_THINKING_SEPARATOR,
+  separatorText,
 } from "~/lib/anthropic/sanitize/assistant-block-layout"
 
 const T = (sig: string) => ({ type: "thinking", thinking: "", signature: sig }) as const
@@ -37,7 +37,7 @@ describe("repairAssistantBlockLayout", () => {
     const content = messages[0].content as Array<{ type: string; text?: string }>
     expect(content.filter((b) => b.type === "thinking")).toHaveLength(3)
     // 2 个内部分隔 + 1 个收尾（末块不得是 thinking，见 terminal-block 用例）
-    expect(content.filter((b) => b.type === "text" && b.text === SYNTHETIC_THINKING_SEPARATOR)).toHaveLength(3)
+    expect(content.filter((b) => b.type === "text" && b.text === separatorText())).toHaveLength(3)
     expect(content.at(-1)?.type).toBe("text")
     expect(stats.insertedMarkers).toBe(3)
   })
@@ -68,8 +68,8 @@ describe("repairAssistantBlockLayout", () => {
     const { messages } = repairAssistantBlockLayout([msg], "move_blocks")
     const content = messages[0].content as Array<{ type: string; text?: string }>
     // 1 个内部分隔 + 1 个收尾（空白 text 上游会 strip 掉，撑不住末块位）
-    expect(content.filter((b) => b.type === "text" && b.text === SYNTHETIC_THINKING_SEPARATOR)).toHaveLength(2)
-    expect((content.at(-1) as { text?: string }).text).toBe(SYNTHETIC_THINKING_SEPARATOR)
+    expect(content.filter((b) => b.type === "text" && b.text === separatorText())).toHaveLength(2)
+    expect((content.at(-1) as { text?: string }).text).toBe(separatorText())
   })
 
   test("redacted_thinking 相邻同样矫正（C1 对两种 thinking 类型都成立）", () => {
@@ -77,7 +77,7 @@ describe("repairAssistantBlockLayout", () => {
     const { messages } = repairAssistantBlockLayout([msg], "move_blocks")
     const content = messages[0].content as Array<{ type: string; text?: string }>
     expect(content.map((b) => b.type)).toEqual(["redacted_thinking", "text", "redacted_thinking", "text"])
-    expect(content[1].text).toBe(SYNTHETIC_THINKING_SEPARATOR) // 中间是合成分隔符
+    expect(content[1].text).toBe(separatorText()) // 中间是合成分隔符
     expect(content[3].text).toBe("hi") // 真实 text 被留作收尾块
   })
 
@@ -107,7 +107,7 @@ describe("repairAssistantBlockLayout: 终端块不变量（C2 + C3）", () => {
     const { messages, stats } = repairAssistantBlockLayout([msg], "move_blocks")
     const content = messages[0].content as Array<{ type: string; text?: string }>
     expect(content.map((b) => b.type)).toEqual(["thinking", "text", "thinking", "tool_use"])
-    expect(content[1].text).toBe(SYNTHETIC_THINKING_SEPARATOR)
+    expect(content[1].text).toBe(separatorText())
     expect(stats.insertedMarkers).toBe(1)
   })
 
@@ -133,7 +133,7 @@ describe("repairAssistantBlockLayout: 终端块不变量（C2 + C3）", () => {
     const { messages, stats } = repairAssistantBlockLayout([msg], "move_blocks")
     const content = messages[0].content as Array<{ type: string; text?: string }>
     expect(content.map((b) => b.type)).toEqual(["thinking", "text"])
-    expect(content[1].text).toBe(SYNTHETIC_THINKING_SEPARATOR)
+    expect(content[1].text).toBe(separatorText())
     expect(stats.insertedMarkers).toBe(1)
   })
 

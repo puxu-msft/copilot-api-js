@@ -8,7 +8,11 @@
  * (verbatimModuleSyntax), so there is no runtime cycle with state.ts.
  */
 
-import type { AssistantBlockLayoutStrategy } from "~/lib/anthropic/sanitize/assistant-block-layout"
+import type {
+  //
+  AssistantBlockLayoutStrategy,
+  SeparatorCarrier,
+} from "~/lib/anthropic/sanitize/block-layout-contract"
 import type { ThinkingBlockSanitizeMode } from "~/lib/anthropic/sanitize/content-blocks"
 import type { RepairItem } from "~/lib/anthropic/tool-input-repair"
 import type { ModelTranslation } from "~/lib/config/schema"
@@ -19,6 +23,7 @@ import {
   DEFAULT_REFUSAL_ERROR_MESSAGE,
   DEFAULT_REFUSAL_ERROR_TYPE,
 } from "~/lib/anthropic/recover-refusal"
+import { DEFAULT_SEPARATOR_CARRIER } from "~/lib/anthropic/sanitize/block-layout-contract"
 
 import type {
   //
@@ -97,6 +102,10 @@ export const CONFIG_MANAGED_DEFAULTS = {
   thinkingBlockMessagePolicy: "preserve" as ThinkingBlockMessagePolicy,
   thinkingBlockSanitizeCheck: "all_empty" as false | ThinkingBlockSanitizeMode,
   assistantBlockLayoutStrategy: "move_blocks" as AssistantBlockLayoutStrategy,
+  /** EMIT axis: which synthetic separator carrier this process puts on the wire. */
+  separatorCarrier: DEFAULT_SEPARATOR_CARRIER as SeparatorCarrier,
+  /** ACCEPT axis: extra literals recognised as ours, on top of the built-in family + legacy set. */
+  separatorAcceptExtra: [] as ReadonlyArray<string>,
   stripThinkingOnReject: true,
   poisonedThinkingQuarantine: true,
   poisonedThinkingTtlHours: 72,
