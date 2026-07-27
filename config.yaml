@@ -786,10 +786,10 @@ anthropic:
   #   passthrough: leave stacked thinking as-is / 保留堆叠的 thinking，不改动
   #   insert_text: insert a synthetic text separator between adjacent thinking / 在相邻 thinking 间插入合成文本分隔符
   #   move_blocks: interleave thinking with real non-thinking blocks (order-preserving), synthetic marker only when insufficient (default) / 与真实非 thinking 块交错（保序），不足时才用合成标记（默认）
-  thinking_destack_strategy: move_blocks
+  assistant_block_layout_strategy: move_blocks
 
-  # Reactive fallback (L2) for the GHC "thinking ... cannot be modified" 400 that L1 de-stack (thinking_destack_strategy) did not preempt: strip ALL thinking/redacted_thinking blocks from the echoed history and retry the turn once. true = enable the one-shot strip-and-retry (default); false = let the 400 surface unmodified.
-  # 对 GHC "thinking ... cannot be modified" 400 的反应式兜底（L2），处理 L1 去堆叠（thinking_destack_strategy）未能预防的情形：从回显历史中剥离全部 thinking/redacted_thinking 块并重试一次。true = 启用一次性剥离重试（默认）；false = 让该 400 原样抛出。
+  # Reactive fallback (L2) for the GHC "thinking ... cannot be modified" 400 that L1 assistant block-layout repair (assistant_block_layout_strategy) did not preempt: strip ALL thinking/redacted_thinking blocks from the echoed history and retry the turn once. true = enable the one-shot strip-and-retry (default); false = let the 400 surface unmodified.
+  # 对 GHC "thinking ... cannot be modified" 400 的反应式兜底（L2），处理 L1 assistant 块布局矫正（assistant_block_layout_strategy）未能预防的情形：从回显历史中剥离全部 thinking/redacted_thinking 块并重试一次。true = 启用一次性剥离重试（默认）；false = 让该 400 原样抛出。
   strip_thinking_on_reject: true
 
   # L3 durable quarantine (master switch) for the "thinking ... cannot be modified" 400. When true (default), a successful L2 strip-all retry REMEMBERS the offending (session, agent) conversation in a sidecar SQLite store, so later turns are stripped proactively — skipping the reactive 400+retry round-trip. false = keep only the per-turn L2 reaction (no remembering).

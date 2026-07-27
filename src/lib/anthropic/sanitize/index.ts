@@ -151,19 +151,19 @@ export function sanitizeAnthropicMessages(payload: MessagesPayload): ReturnType<
     emptyThinkingBlocksRemoved,
   )
 
-  // TERMINAL pass (spec §3.1 / plan review #04 CRITICAL): de-stack adjacent thinking
-  // runs AFTER processToolBlocks AND finalize's `filterEmptyAnthropicTextBlocks`, so
+  // TERMINAL pass (spec §3.1 / plan review #04 CRITICAL): the assistant block-layout
+  // repair runs AFTER processToolBlocks AND finalize's `filterEmptyAnthropicTextBlocks`, so
   // (a) no later pass can delete its synthetic separators (as orphan tool_use / empty
-  // text) and (b) it CATCHES adjacency newly created by orphan-tool deletion. It
+  // text) and (b) it CATCHES violations newly created by orphan-tool deletion. It
   // operates on the finalized messages (`.payload.messages` — there is NO top-level
   // `.messages`) and writes the result back there. Its insert/reorder counters are
   // attached SEPARATELY (`stats.blockLayout`) from finalize's subtractive residual model,
-  // which assumes blocks only ever decrease — de-stack INSERTS.
-  const destacked = repairAssistantBlockLayout(finalized.payload.messages, state.assistantBlockLayoutStrategy)
+  // which assumes blocks only ever decrease — the layout repair INSERTS.
+  const layoutRepair = repairAssistantBlockLayout(finalized.payload.messages, state.assistantBlockLayoutStrategy)
   return {
     ...finalized,
-    payload: { ...finalized.payload, messages: destacked.messages },
-    stats: { ...finalized.stats, blockLayout: destacked.stats },
+    payload: { ...finalized.payload, messages: layoutRepair.messages },
+    stats: { ...finalized.stats, blockLayout: layoutRepair.stats },
   }
 }
 

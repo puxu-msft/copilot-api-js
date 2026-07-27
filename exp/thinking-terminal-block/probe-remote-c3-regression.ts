@@ -28,7 +28,12 @@ const label = (m: MessageParam): string => `${m.role}: ${shape(m)}`
 console.log("=== client msg[36] ===", label(clientBody.messages[36]))
 console.log("=== remote sent      ===", label(sentUpstream.messages[36]))
 console.log("=== master produces  ===", label(out.payload.messages[36]))
-console.log("=== destack stats ===", JSON.stringify(out.stats.destack))
+console.log("=== block-layout stats ===", JSON.stringify(out.stats.blockLayout))
+// The layout can look right while the stats wiring is broken — say so loudly instead of
+// printing `undefined` and leaving the reader to assume the pass ran.
+if (out.stats.blockLayout === undefined || out.stats.blockLayout.repairedMessages === 0) {
+  console.log("  !! no repair recorded — either this payload needed none, or the stats wiring is broken")
+}
 
 // Full audit: every assistant message must satisfy C1 (no adjacent thinking),
 // C2 (does not end on thinking) and C3 (a message with tool_use ends on tool_use).

@@ -148,8 +148,9 @@ export interface SanitizationInfo {
   emptyThinkingBlocksRemoved: number
   systemReminderRemovals: number
   /**
-   * Terminal de-stack pass counters (adjacent-thinking separation), present only
-   * when de-stack acted. Pure INSERT/reorder — orthogonal to the block-removal
+   * Terminal assistant block-layout repair counters (adjacent thinking / terminal
+   * thinking / tool_use terminal), present only when the repair acted. Pure
+   * INSERT/reorder — orthogonal to the block-removal
    * counts above (see `repairAssistantBlockLayout` / spec §3.1).
    */
   blockLayout?: BlockLayoutRepairStats
