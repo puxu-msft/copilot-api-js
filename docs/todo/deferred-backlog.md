@@ -4,6 +4,8 @@
 
 ## Anthropic 块级 buffered 首块后的 >300s keepalive carrier（2026-07-27，块级默认翻转硬门）
 
+> 2026-07-27 P6 已先修相邻的 heartbeat 生命周期缺陷：普通 boundary commit 的 `freezeHeartbeat()` 不再永久关闭 delivery timer，Responses HTTP / Anthropic 的首个 boundary 之后会继续发 ping。**本条仍活**，因为它解决的是不同问题——ping 不重置 Claude Code 300s content watchdog，仍需方案 A 的合法 gap anchor carrier。
+
 - **根因**：块级 buffered 在 `content_block_stop` 前不向客户端写 start/delta；首块提交后的长生成在客户端轨没有 open block。ping 不重置 Claude Code 300s event-idle；固定 anchor@0 又不能在真实 block@0 已完成后复用，否则真实 SDK 会静默重排 content。
 - **当前行为**：commit `faaa37e7` 的按需升级已收窄为 **pre-content-only**：客户端尚未完成任何真实块时，200s 可开单 anchor@0；首块完成后的无-open窗口只ping。历史 live腿若客户端真有open block，原-index空delta分支仍可达，但**块级 buffered终态不可达**。
 - **理想架构**：采用 [inter-block carrier 方案 A](../spec/2026-07-27-inter-block-keepalive-carrier.md)：generation-scoped `createAnchorIndexAllocator` 统一 synthetic anchor、真实块和continuation的单调wire frontier；任一时刻至多一个block open。
