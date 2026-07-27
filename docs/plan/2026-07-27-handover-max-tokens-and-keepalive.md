@@ -13,13 +13,12 @@
 
 ## 下一步（严格顺序，用户 2026-07-27 指定「按顺序完成」）
 
-1. **消化 anchor allocator plan 的异模型审查**（in-flight，见下「进行中」）→ 据审查修订 → **合并 plan 到 master**（`docs-merge-before-execute`）。
-2. **P6：心跳死亡修复**（可独立于 A 交付、但仍是 P5 前置）。详见 plan 的 P6 相位 + 本文件「承重发现 #2」。
-3. **方案 A 全相位实施**（P0→P1→P2→P3→P4→P5，P6/P7 可并行起）：隔离 worktree + TDD + 真 SDK/CC 验收。
-4. **Anthropic 块级默认翻转**（姊妹 spec §6.3，`plan-4-7-remaining.md:75` 已列待办）——**硬前置 = A 落地**。
-5. **P1：max_tokens 成功终端截获续写**（Anthropic transparent A 类）。计划见 `docs/plan/2026-07-22-max-tokens-continuation/plan-1-anthropic-continuation.md`。
+1. **P6：心跳死亡修复** —— **可独立交付、且已就绪**（`docs/plan/2026-07-27-inter-block-anchor-allocator/plan-6-heartbeat-lifecycle-fix.md`，其 kickoff 段含完整影响面矩阵可直接用）。路径 = P0 → P6 → 合并。它同时是 P2/P5 的前置。
+2. **方案 A 全相位实施**：P0 → P1 → P2 → **P3M（原 P3/P4/P5 合并的原子相位，内部 M1–M8）** → P7/P8；隔离 worktree + TDD + 真 SDK/CC 验收。**唯一硬序约束：M6（特性开门）晚于 M2–M4。**
+3. **Anthropic 块级默认翻转**（姊妹 spec §6.3）——硬前置 = 方案 A 落地。
+4. **P1：max_tokens 成功终端截获续写**（`docs/plan/2026-07-22-max-tokens-continuation/plan-1-anthropic-continuation.md`）。
 
-> **注意**：4 和 5 的先后可议——P1 不依赖翻转即可实现与测试（测试里显式开 `protect_streaming_generation`），但翻转后 P1 才在默认配置下真正生效。用户已明确**不接受流式、也不接受整响应缓冲**，故翻转是独立必需项、非仅 max_tokens 的前置。
+> P1 不依赖翻转即可实现与测试（测试里显式开 `protect_streaming_generation`），但翻转后才在默认配置下生效。用户已明确**只接受块级 buffered**，故翻转是独立必需项。
 
 ---
 
@@ -37,17 +36,24 @@
 
 ---
 
-## 进行中
+## 方案 A 的 plan（已合并 master，六轮对抗审查）
 
-- **anchor allocator plan**：分支 `feat/anchor-allocator-plan`（worktree `.worktrees/anchor-alloc-plan`）。plan 起草 `4945d988` → 第一轮修订 `05b223c1` → **第三轮修订中**。审查报告：`docs/plan/2026-07-27-inter-block-anchor-allocator/plan-review-gpt.md`（两轮，同文件分小节）。
-- **审查轨迹**：第一轮 1 blocker + 11 major → 修订 → 第二轮 **1 新 blocker + 6 major**，**仍不可开工**。
-  - **[R1 blocker，已闭合]** `anchorsOpened===0` 短路让**零-anchor 续写腿**跳过 remap、复用主腿 wire index 0。**根因是判据维度错了**——要问的是「映射是否恒等」（`realBlockOffset(i)===0`）而非「有没有 anchor」；前者天然覆盖所有让映射非恒等的来源（anchor / leg 重启 / 未来新来源）。已加架构守卫禁止 `anchorsOpened()` 出现在任何 remap 分支条件。
-    ⚠️ 这条短路是**上一轮设计 reviewer 建议、主会话采纳**的风险缓解措施，却自己在默认路径造成 index 复用 → **缓解措施不自带豁免权**。
-  - **[R2 blocker，待修]** **相位循环依赖**：P3 的 red-first / mutation 要求「真实 gap 静默产生第二个 anchor」，但 gap anchor 要到 **P5** 才开放，而 DAG 强制 `P3→P5` → P3 造不出 offset>1 的生产状态，**把 remap 改回固定 `+1` 也不会转红**，红绿门形同虚设。修法须显式论证不重引入假绿。
-  - **[R2 major，待修]** recovery（透明重试）腿的**事务语义仍未闭合**（只推导了主腿/续写腿）；**`WireBlockAllocationPort` 无法原子承载 live-reconcile 的 synthetic close-off + real start**（返回帧缺 provenance）→ S3 那格要重做；**P5.3 仍直接调低阶 `allocateAnchor()`** 违反 P2 自己冻结的 owner-only 契约；**`beginLeg()` 未进 serializer fence** → 与排队 heartbeat/前腿写入竞态。
-  - **已确认闭合、勿再改**：O-2 块协议状态机、O-7 重写（原 `numTurns>=2` **在本仓库已是 stall 签名**、无法区分成败）、O-9 交叉 mutation；DAG、6.3b Responses HTTP 回归锁、AnchorState 单一状态（删 `anchorClosed`+`anchorBlockOpen`）、ADR/β 停点、Q5 分类审计、C8 基线。
-  - **P6 影响面矩阵经独立复核成立**：Responses HTTP 默认中招 / CC 因 `ccCommitBoundaries` 退化到只认 error 帧而结构性幸免。
-- **审查期间后端抖动 3 次**：纪律是**只 SendMessage resume 原 agent**，不派替代、不换模型、**也不设「挂 N 次就放弃」的成本逃生口**。经验：让 reviewer **分段落盘**能在中断时保住已完成部分（本轮救回 82 行）；resume 时**按价值排序任务清单**，中断也先保住高价值结论。
+`docs/plan/2026-07-27-inter-block-anchor-allocator/`（README + 8 相位 + kickoff + `plan-review-gpt.md` 六轮报告）。**契约 C1–C11 / oracle O-1–O-9 / 风险 R1–R13 / 承重项 1–17 / port 五方法**（`allocateAndWriteAnchor` / `withAllocatedRealBlock` / `beginLeg` / `closeOpenAnchor` / `writeBlockFrame`）交叉引用一致。
+
+**六轮审查挖出的东西，按性质分类（都不是代码审查能发现的）**：
+
+| 层次 | 发现 |
+|---|---|
+| 设计缺陷 | `anchorsOpened===0` 短路让**零-anchor 续写腿**复用 wire index 0——而它本是上一轮**为降风险加的缓解措施** |
+| 计划结构 | TDD 相位循环依赖：P3 的红绿门**根本不可满足**（gap anchor 与 close 状态机都在 P5）→ 合并为 P3M |
+| 分布式语义 | 「失败全回滚」在 wire 上不成立——**已发出的字节撤不回** → C9 两段语义（commit point 前可回滚 / 后永久消费 + 终止 delivery） |
+| 迁移工程 | M1 删字段导致未迁移分支**编译不过** → bridge + 迁移期双写 + 逐格状态转移表 |
+| 数据完整性 | 不该退化处退化了（`legacy` provenance，而真 candidate/dispatch id **拿得到**）→ C11 |
+| 自我漂移 | `writeBlockFrame` 又把**第三轮刚清掉的 ambient 当前腿**带回来 → 显式传 `LegToken` |
+
+**两条元教训（已进 P8.6 记忆提炼清单）**：
+1. **为解决问题而新增的机制，本身会引入新缺陷**——六个 blocker 里有三个是这个形状（C3 短路、C9 回滚、`writeBlockFrame`）。**缓解措施不自带豁免权。**
+2. **援引方法论前先核实其适用前提**——planner 把「诚实退化优于伪称完整」用对了方向、却用在了错误前提上（以为拿不到真 id）。参见记忆 `degradation-advice-scoped-to-target-has-equivalent`。
 
 ---
 
