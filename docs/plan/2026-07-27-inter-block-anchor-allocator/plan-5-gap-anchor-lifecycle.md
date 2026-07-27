@@ -1,7 +1,8 @@
 # P5 — gap anchor 生命周期（per-gap latch + close-before-real）
 
-> **前置**：P2（owner API）、P3（三腿分配 + remap）、**P4**（leg 语义 —— Task 5.4 的交叉缝要用）、P6（心跳复活）。**产出**：解除「首块后不升级」的门，gap anchor 可在任意「客户端无 open block」窗口注入并在下一真实块前关闭。
-> **承重项 5 + 6**。这是 A 真正闭合 >300s 门的相位；前面全部相位都是它的地基。
+> **本文件是合并相位 P3M 的一部分**（round-3 blocker：原 P3/P4/P5 在测试可满足性上不可分）。相位权威 = [plan-3-remap-sites.md](plan-3-remap-sites.md)，本文件提供 **M1 / M6 / M7 / M8** 的任务细节。
+> **相位内前置**：M1（可重复 anchor 生命周期，本文件「AnchorState 状态机」小节所定义的能力**前移到 M1** 落地）；M6 起的特性开门必须晚于 M2–M4。
+> **承重项 5 + 6**。这是 A 真正闭合 >300s 门的部分；其余 M 步都是它的地基。
 
 ## 当前门的精确位置（`fix/client-proxy-keepalive-300s` 分支）
 
@@ -202,7 +203,7 @@ test("the per-gap latch re-arms across the leg boundary", async () => {
 - [ ] **Step 3**：**不翻 `protectStreamingGeneration` 默认**（那是 ADR D4 的独立决策，且 A 是它的前置门而非它的一部分）。本计划只让 A 可用，翻默认是主会话/用户的独立裁决。
 - [ ] **提交** → `test(config): lock zero-anchor byte equivalence under shipped defaults`
 
-## P5 收口
+## M1 / M6–M8 收口
 
 - [ ] `typecheck` + `test:fast` 绿；anchor 全套件对账完毕。
 - [ ] O-1/O-2/O-3 绿；O-6 字节等价仍等于 P0 捕获的 base 基线。

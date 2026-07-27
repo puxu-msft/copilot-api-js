@@ -1,7 +1,8 @@
 # P4 — continuation frontier 统一（双偏移作废）
 
-> **前置**：P3（三腿的分配 + remap 已走 frontier）。**产出**：`continuationOffset` 退役，续写腿的块也从同一 frontier 分配；**两条**撞车 oracle（含默认的零-anchor 分支）。
-> **承重项 3 / C4**（审查 F5）+ **本轮 plan review blocker 的另一半**（C3 恒等短路的续写腿分支）。
+> **本文件是合并相位 P3M 的一部分**（round-3 blocker：原 P3/P4/P5 在测试可满足性上不可分）。相位权威 = [plan-3-remap-sites.md](plan-3-remap-sites.md)，本文件提供 **M5** 的任务细节。
+> **相位内前置**：M2–M4（三腿已走 frontier）。**产出**：`continuationOffset` 退役，续写腿的块也从同一 frontier 分配；**两条**撞车 oracle（含默认的零-anchor 分支）。
+> **承重项 3 / C4**（审查 F5）+ round-1 blocker 的另一半（C3 恒等短路的续写腿分支）。
 
 ## 两条撞车路径
 
@@ -107,7 +108,7 @@ test("POSITIVE CONTROL B: the harness reproduces the documented collision on the
   - 若确有其它格式在用且因删而破 → **这才是真分叉**：要么该格式也接 allocator（其 anchor hooks 为 undefined 时 frontier 退化为纯计数，应可行），要么保留 `continuationOffset`（**违反 C4**）。停下记录 + 回主会话，不自行选。
 - [ ] **提交** → `test(continuation): verify the frontier migration across every continuation-enabled format`
 
-## P4 收口
+## M5 收口
 
 - [ ] `typecheck` + `test:fast` 绿；O-1/O-2/O-6 绿。
 - [ ] `rg -n "continuationOffset|wireDeliveredBlocks" src/` 零命中（或残留处已逐一交代）。

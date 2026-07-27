@@ -14,8 +14,10 @@
 
 ## Files
 
-- Modify: `src/lib/pipeline/delivery/session.ts`（**暴露 generation-scoped 分配-写出 owner API**；gap anchor 注入走它）
-- Modify: `src/lib/pipeline/delivery/types.ts`（owner API 的类型）
+- Modify: `src/lib/pipeline/delivery/session.ts`（**暴露 generation-scoped 分配-写出 owner API**；接收注入的 `wireState`；私有 envelope builder 按 `WireWriteSpec.kind` 铸造信封）
+- Modify: `src/lib/pipeline/delivery/types.ts`（owner API + `WireWriteSpec`/`WireEnvelopeFactory`/`WireBlockMapping` + session options 加 `wireState`）
+- Modify: `src/lib/pipeline/client-sink.ts`（`makeDeliverySseSink` 透传 `wireState`）
+- Modify: `src/routes/messages/handler-v4.ts`（**唯一创建点**：建 `GenerationWireState`，同时给 `AnchorState` 与 delivery session）
 - Modify: `src/lib/anthropic/keepalive-anchor.ts`（injector 改调 owner API）
 - Modify: `src/lib/pipeline/driver.ts`（flush 循环内真实块经 owner API 分配 + 写出）
 - Test: 新 `tests/pipeline/anchor-allocation-race.it.test.ts`
@@ -33,8 +35,26 @@ export interface WireBlockMapping {
   readonly wireIndex: number
   readonly upstreamIndex: number
   readonly leg: LegToken
-  /** Remap a content_block_* frame of this block onto its wire index (identity when they already match). */
+  /** Remap a content_block_* frame of this block onto its wire index (identity when they already match → same object). */
   remap(frame: ClientFrame): ClientFrame
+}
+
+/**
+ * What a caller wants written. The caller supplies CONTENT and semantic KIND only; the delivery
+ * owner mints the envelope (sequence, monotonic timestamp, provenance) — callers such as the live
+ * decorator neither hold the delivery clock nor know candidate/dispatch ids, and forging that
+ * metadata would put provenance responsibility in the wrong layer (richest-data-flow).
+ */
+export type WireWriteSpec =
+  | { readonly kind: "real"; readonly frame: ClientFrame }
+  | { readonly kind: "anchor"; readonly frame: ClientFrame }
+  | { readonly kind: "keepalive"; readonly frame: ClientFrame }
+
+/** Declarative sugar handed to build callbacks. */
+export interface WireEnvelopeFactory {
+  real(frame: ClientFrame): WireWriteSpec
+  anchor(frame: ClientFrame): WireWriteSpec
+  keepalive(frame: ClientFrame): WireWriteSpec
 }
 
 /**
@@ -43,39 +63,70 @@ export interface WireBlockMapping {
  * Every allocation happens INSIDE one serializer operation together with the frames that consume it,
  * so no concurrent heartbeat tick or driver flush can interleave between allocating an index and
  * writing it. Callers never hold an allocated-but-unwritten index.
+ *
+ * NOTE on atomicity (C9): a serializer prevents INTERLEAVING, it cannot make two SSE writes
+ * transactional — the first frame may already have reached the client when the second fails. The
+ * commit point is therefore the FIRST attempted external write; see C9's two-stage semantics.
  */
 export interface WireBlockAllocationPort {
-  /**
-   * Allocate the next wire index for a SYNTHETIC anchor and write its frames atomically.
-   * Returns the index written, or undefined when the session refused — in which case NOTHING was
-   * allocated and NOTHING was written (C9).
-   */
-  allocateAndWriteAnchor(build: (index: number) => ReadonlyArray<DeliveryFrame>): Promise<number | undefined>
+  /** Allocate the next wire index for a SYNTHETIC anchor and write its frames in one operation. */
+  allocateAndWriteAnchor(build: (ctx: { wireIndex: number; envelope: WireEnvelopeFactory }) => ReadonlyArray<WireWriteSpec>): Promise<number | undefined>
   /**
    * Allocate the next wire index for a REAL upstream block and write EVERY frame belonging to the
-   * same wire transaction, atomically.
-   *
-   * The callback returns DeliveryFrames — i.e. frames CARRYING provenance — so the owner routes a
-   * synthetic close-off through `writeAnchor` and real block frames through `write` without guessing
-   * from array position. This is what lets the live decorator emit `[anchor_stop, real_start]` as ONE
-   * transaction (see P3 S3 专节) instead of two enqueues.
+   * same wire transaction. Lets the live decorator emit `[anchor_stop, real_start]` as ONE
+   * transaction with correct markers (see P3M "S3 专节") instead of two enqueues.
    */
   withAllocatedRealBlock(
     upstreamIndex: number,
-    build: (ctx: { mapping: WireBlockMapping }) => ReadonlyArray<DeliveryFrame>,
+    build: (ctx: { mapping: WireBlockMapping; envelope: WireEnvelopeFactory }) => ReadonlyArray<WireWriteSpec>,
   ): Promise<WireBlockMapping | undefined>
   /**
    * Fence a leg boundary (continuation / recovery / any new upstream round). Serialized like every
-   * other owner operation: it establishes AFTER all successful writes of the previous leg and BEFORE
+   * other owner operation: establishes AFTER all successful writes of the previous leg and BEFORE
    * any allocation of the next one.
    */
   beginLeg(kind: "continuation" | "recovery"): Promise<LegToken>
 }
 ```
 
+### 注入路径（**round-3 major：P1 handler-owned state 与 P2 session-owned port 之间的接线空洞，本轮冻结**）
+
+审查坐实的空洞：P1 把 allocator 放进 handler-owned `AnchorState`，而 P2 让 delivery session 的 port 成为唯一分配 owner——但 `CreateDownstreamDeliverySessionOptions`（`session.ts:25-29`）**只有 `sink` / `monotonicNow` / `heartbeat`，没有任何 allocator 注入位**，`makeDeliverySseSink` 建 session 时也不接触 `AnchorState`。没有显式接线，实施者只能新建第二个 allocator、闭包偷 handler state、或搞 ambient singleton——**三条都破坏「generation 唯一权威」**。
+
+**冻结的注入路径**（谁创建 / 谁持有 / 如何保证唯一）：
+
+```text
+handler-v4.ts  makeAnchoredSseSink()
+  └─ 创建 ONE  GenerationWireState { allocator, openAnchorIndex, … }   ← 唯一创建点
+       ├─ 放进 handler 的 AnchorState（driver / injector / live 装饰器经它读）
+       └─ 作为 makeDeliverySseSink(stream, { …, wireState }) 的入参
+            └─ createDownstreamDeliverySession({ sink, monotonicNow, heartbeat, wireState })
+                 └─ session 用它构造 WireBlockAllocationPort（唯一分配 owner）
+                      └─ getDownstreamDeliverySession(sink).allocationPort  ← 装饰器/driver 取用
+```
+
+要点：
+
+1. **`GenerationWireState` 是 wire 状态的 SSOT**——同时持有 allocator 与 `openAnchorIndex`（M1 把后者前移进 owner 后，二者天然同属一个对象，也解决了「C9 要求回滚 `openAnchorIndex` 但 session 看不见它」的矛盾）。
+2. **恰好创建一次**，在 handler 的 `makeAnchoredSseSink`；`AnchorState.allocator` 与 session port 引用**同一对象**。
+3. **session 不自建**：`wireState` 为必填（`ping` 模式也传——其 allocator 全程恒等映射，天然走 C3 短路）。
+4. 需改的 files：`delivery/types.ts`（options + port 类型）、`delivery/session.ts`（构造与 port）、`client-sink.ts`（`makeDeliverySseSink` 透传）、`handler-v4.ts`（创建 + 双向传递）。
+
+**守卫（防第二个 allocator 实例）**：
+
+- [ ] identity oracle：一次请求中，driver、live 装饰器、injector、session port 四处读到的 allocator **是同一引用**（`toBe` 引用相等，非值相等）。
+- [ ] 架构守卫：`src/` 下 `createGenerationWireIndexAllocator(` 的调用点**有且仅有** `handler-v4.ts` 一处（带正样本对照——故意加第二处应转红）。
+
 **冻结的语义要点**（实施期不得自行改，要改回主会话）：
 
-1. **事务性分配（C9，round-2 major 收紧）**：分配是**预留**，在同一 operation 的帧成功写出**之前对任何读者不可见**——`realBlockOffset` / mapping 查询都查不到它。写失败时必须**同时回滚** frontier、anchor 计数、current-leg mapping 与 `openAnchorIndex`，不留 provisional 残留。**理由**：transparent recovery 正是会观察这类残留的路径（见下方 recovery 语义）。
+1. **commit point = 首次外部 write（C9，round-3 blocker 重写）**：serializer 只能保证**不交错**，**不能**让两次底层 SSE write 具备数据库式原子性——`writeToSink` 对多帧仍逐个 `await`，第一帧可能已到客户端、第二帧才抛错。**已发出的字节撤销不了**，故原「多帧失败全回滚」是物理上不成立的合同（会在 partial write 后复用客户端已见的 index）。两段语义：
+
+   | 阶段 | 判据 | 行为 |
+   |---|---|---|
+   | **commit point 之前** | session 拒绝、build callback 抛错、**尚未尝试任何 wire write** | 零外部副作用 → 预留对读者始终不可见 → **全回滚**（frontier、anchor 计数、leg mapping、`openAnchorIndex`） |
+   | **commit point 之后** | 任一帧**已尝试或已成功**写出 | index **永久消费、绝不复用**；失败 → 返回 `write-error`/`client-abort`、**终止 delivery**、**禁止后续分配**；已尝试的输出忠实记录（richest-data-flow） |
+
+   即：**reservation 不可见 → 首帧写出前 commit → 此后只进不退**。partial delivery 是既成事实，计划**不承诺**该情形下的 wire 无洞——承诺的是「绝不复用已可见的 index」+「不静默继续」。
 2. **delta / stop 不分配**：只按**该块的 `WireBlockMapping`（不可变 token）**查，**不查 ambient「current leg」**——消除跨 `await` 的可变全局状态（round-2 major）。只有 `content_block_start` 触发分配。
 3. **owner 唯一**：`ClientSink` 上不暴露任何裸分配入口；低阶 `allocateAnchor` / `allocateRealBlock` / `on*Open` 降级为**测试专用**，由架构守卫锁住（Task 2.1 Step 5）。**这条对 P5.3 同样生效**——gap injector 必须走 `allocateAndWriteAnchor`，不得裸调（round-2 major）。
 4. **`beginLeg` 是 serializer command**（`Promise<LegToken>`，非同步裸方法）：它在**前一腿全部成功写出之后、下一腿任一分配之前**建立 fence。否则 continuation dispatch 与在飞的 heartbeat anchor operation、前腿排队中的 delta/stop 之间没有顺序合同（round-2 major）。
@@ -188,25 +239,59 @@ test("after a boundary commit resumes the heartbeat, a tick landing in the next 
 - [ ] **Step 4**：连跑 15 次。
 - [ ] **提交** → `test(delivery): allocation safety in the heartbeat states P6 makes reachable`
 
-## Task 2.2c：事务回滚 + recovery 腿 oracle（**round-2 major**）
+## Task 2.2c：commit-point 三档 oracle + recovery 腿（**round-3 blocker 重写**）
 
-> C9 原表述只说「write 失败不推进 frontier」，不够——审查指出：若 owner 先同步 allocate 再 write，失败时**不仅要退 frontier，还要退当前腿 mapping**，否则 recovery 腿会查到失败块留下的 provisional mapping。
+> C9 的两段语义必须有**三档**测试，因为「失败」在 commit point 前后行为**相反**：前者要求全回滚、后者要求永不回滚。只测其一会让另一半悄悄反向。
 
 - [ ] **Step 1: 写失败测试**
 
 ```ts
-// tests/pipeline/allocation-transaction.it.test.ts
-test("a failed start write rolls back frontier, anchor count, leg mapping and openAnchorIndex", async () => {
-  // 让 sink.write 在 start 帧上抛错 → 断言：
-  //   ① 下一次分配拿到【同一个】index（frontier 未推进）
-  //   ② 失败块的 mapping 不可被后续 delta 查到（realBlockOffset / mapping 查询均查不到）
-  //   ③ anchorsOpened() 未增长；openAnchorIndex 未被置上
+// tests/pipeline/allocation-commit-point.it.test.ts
+// ── 档 1：commit point 之前（零外部副作用）→ 全回滚 ──
+test("build callback throwing BEFORE any wire write rolls back everything", async () => {
+  // build 内直接抛错 → 断言：frontier 未推进（下次分配拿同一 index）、
+  //                        anchorsOpened() 未增、mapping 不可查、openAnchorIndex 未置
 })
-test("an allocated-but-unwritten index is INVISIBLE to readers mid-transaction", async () => {
-  // 在 build callback 内部（帧尚未写出）从另一路径查询 mapping → 必须查不到
+test("a session refusal allocates nothing", async () => { /* 已 terminating/closed */ })
+
+// ── 档 2：第一帧写失败（commit point 已到）→ 永久消费 + 终止 ──
+test("a failed FIRST frame consumes the index permanently and terminates delivery", async () => {
+  // 断言：① 返回 write-error/client-abort
+  //       ② 后续分配【不得】拿到同一 index（绝不复用）
+  //       ③ delivery 已终止：后续分配被拒绝（而非静默继续）
 })
 
-// recovery 两支（表格两行各一条）
+// ── 档 3：第一帧成功、第二帧失败（partial delivery）→ 同档 2 且客户端已见的 index 绝不复用 ──
+test("first frame delivered, second frame failing: the visible index is NEVER reused", async () => {
+  // anchor_start@2 成功到达客户端 → keepalive_delta@2 失败
+  // 断言：② 后续任何分配都不得再产出 wire@2（客户端已见 open block@2）
+  //       ③ delivery 终止、禁止后续分配
+  //       ④ 已尝试的输出被忠实记录（forwarded 轨可见）
+  // 反向断言（防修过头）：不得因此把 index 回滚为可复用
+})
+```
+
+- [ ] **Step 2**：跑，红。
+- [ ] **Step 3**：实现——reservation 不可见 + 首帧写出前 commit + 此后只进不退 + 失败终止 delivery。
+- [ ] **Step 4**：跑，绿。
+- [ ] **Step 5**：**双向 mutation**——
+  - 把档 2/3 改成「失败即回滚 index」（即 round-2 的旧契约）→ 档 3 的「绝不复用」断言必须**转红**；
+  - 把档 1 改成「不回滚」→ 档 1 断言必须**转红**。
+  两个方向都咬得住，才证明两段语义各自有门。
+- [ ] **提交** → `feat(delivery): commit-point allocation semantics with irreversible wire side effects`
+
+## Task 2.2c-b：recovery 腿 index 语义
+
+- [ ] **Step 1: 写失败测试**
+
+```ts
+// tests/pipeline/allocation-recovery-leg.it.test.ts
+test("an allocated-but-unwritten index is INVISIBLE to readers mid-transaction", async () => {
+  // 在 build callback 内部（帧尚未写出）从另一路径查询 mapping → 必须查不到
+  // 注：这是 commit point【之前】的性质，与 C9 档 1 同源
+})
+
+// recovery 两支（P2 recovery 表两行各一条）
 test("recovery leg with NO prior anchor: upstream0 -> wire0, frame returned by reference (identity)", async () => {
   // attempt0 无 anchor、首块前截断 → recovery
 })
@@ -217,10 +302,10 @@ test("recovery leg AFTER a pre-content anchor was written: upstream0 -> wire1 (m
 ```
 
 - [ ] **Step 2**：跑，红。
-- [ ] **Step 3**：实现事务语义（预留对读者不可见 + 失败全量回滚）+ 所有 upstream round 都调 `beginLeg(kind)`。
+- [ ] **Step 3**：实现——预留对读者不可见（commit point 之前）+ 所有 upstream round 都调 `beginLeg(kind)`。
 - [ ] **Step 4**：跑，绿。
-- [ ] **Step 5**：mutation——去掉 mapping 回滚（只退 frontier），确认「失败块 mapping 不可查」那条转红。
-- [ ] **提交** → `feat(delivery): transactional allocation with full rollback and explicit leg fences`
+- [ ] **Step 5**：mutation——只在 continuation 调 `beginLeg`、recovery 漏调，确认 recovery 第二支转红。
+- [ ] **提交** → `feat(delivery): explicit leg fences on every upstream round`
 
 ## Task 2.2d：`beginLeg` fence 时序 oracle（**round-2 major**）
 

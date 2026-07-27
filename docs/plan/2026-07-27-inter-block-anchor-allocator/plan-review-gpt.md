@@ -317,3 +317,105 @@ P8.8 已改为 O-1～O-9，但表中仍写 `O-2 maxOpen===1` 与 `O-7 真 CC num
 5. 修正 spec 状态同步的时序，随后清理四项 minor。
 
 修订后可继续第三轮复审；在上述 blocker 未闭合前，不建议启动实现。
+
+
+## 第三轮复审（commit `5f82fa33`）
+
+### 复审范围与证据
+
+- 对照第二轮 1 blocker + 6 major + 4 minor，读取 `5f82fa33` 对 README、P0–P5、P8、kickoff 的修订。
+- 独立下钻当前生产实现：`delivery/session.ts` 的 serializer／`writeToSink`／私有 envelope builders，`frame-envelope.ts` 的 `DeliveryFrame` 必填元数据，`makeDeliverySseSink` 的 session 归属，`makeReconcilingSink` 的双帧 close-off，以及 driver 的 buffered／recovery 控制流。
+- 未启动服务器，未触碰 4141。
+
+### [blocker] C9 要求“多帧写失败则全量回滚、frontier 不推进”在真实 wire 上不可实现，会在部分写成功时复用已可见 index
+
+**位置**：README C9；P2 Interfaces:47-81、Task 2.2c。
+
+**问题**：`allocateAndWriteAnchor` 一次 transaction 写 `start + delta`；S3 的 `withAllocatedRealBlock` 可能写 `anchor_stop + real_start`。serializer 只能保证**不交错**，不能让两次底层 SSE write 具有数据库式原子性。当前 `writeToSink` 对数组中的帧仍会逐个 `await`：第一帧可能已成功到达客户端，第二帧才抛错。
+
+失败例：
+
+1. owner 预留 wire@2；
+2. `anchor_start@2` 写成功，客户端已看到 open block@2；
+3. `keepalive_delta@2` 写失败；
+4. C9 要求回滚 frontier、anchor count、mapping、`openAnchorIndex`；
+5. 若请求仍有后续动作，下次分配会复用 wire@2，和客户端已见的 start 撞车。即使客户端已断开，也不能声称“nothing was written”。
+
+S3 同理：`anchor_stop` 成功、real start 失败时，close-off 已不可撤销。回滚内存状态不能撤销 wire。计划把“单 serializer operation”误写成“写出要么全部发生、要么全部不发生”，这是物理上不成立的合同。
+
+**修复建议**：按外部副作用的 commit point 重写 C9：
+
+- session 在 operation 开始前拒绝时，不分配；
+- reservation 对其它操作不可见；
+- **第一帧开始写出前**提交／永久消费 index；一旦任一 wire write 被尝试或成功，失败时绝不回滚到可复用状态，而是终止该 delivery，保留 consumed frontier 与能反映已尝试输出的状态；
+- 多帧 operation 的后续帧失败属于 partial delivery，必须返回 `write-error/client-abort` 并禁止继续分配，不能承诺无洞；
+- rollback 只允许发生在 callback/build 抛错或 session 拒绝等**尚未产生任何外部 write**的阶段。
+
+测试需覆盖“build 失败前零副作用”“第一帧 write 失败”“第一帧成功、第二帧失败”三档，并断言后两档 delivery 终止且 index 永不复用。C1 的“永不跳号”应限定为成功交付的健康流；失败终止流不能拿复用 index 来伪造连续。
+
+### [blocker] P3 用 owner API 造第二 anchor 仍依赖 P5 才会落地的多-anchor close 状态机；在 P3 阶段第二 anchor 无法由生产 close-before-real 正确关闭
+
+**位置**：P3:11-37、Task 3.1–3.3；P5 AnchorState 状态机与 Task 5.2。
+
+**问题**：改为直接调用生产 `allocateAndWriteAnchor`，确实解决了“谁触发 anchor”不必等待 heartbeat 的一半循环，而且 anchor 绕 buffer 本身与生产语义一致，不会单纯因为 driver buffer 存在就冲突。但它没有解决**第二个 anchor 如何关闭**：
+
+- P3 的合法序列要求 `anchor@0 → real@1 → anchor@2 → real@3`，每个 anchor 都 start→stop，才能满足 O-2。
+- 当前代码的 `anchorClosed` 是 generation 一次性 guard；第一个 anchor 在 real@1 前关闭后变 true，第二个 anchor 到来时生产 close-before-real 会短路。
+- 删除 `anchorClosed/anchorBlockOpen`、改成可重复 `openAnchorIndex: undefined→index→undefined` 的状态机明确排在 **P5 Task 5.2**。
+- P2 文档虽在 C9 中提到回滚 `openAnchorIndex`，但没有把 AnchorState 字段迁移列入 P2 files／tasks；P5 仍声明自己才新增该字段、删除旧字段。
+
+所以 P3 测试若不手工关第二 anchor，O-2 会在 remap 前就因 coexist／悬挂而红；若测试手工写 stop，又替 P5 的生产 close 实现完成了承重动作，重新引入假绿。P3 的 6 格 mutation 无法获得干净、可归因的红绿门。
+
+**修复建议**：把 `openAnchorIndex` 状态机迁移与通用 close transaction 前移到 P2 owner（它本就是 anchor allocation 的 owner），P3 只消费已具备多-anchor生命周期的 port；P5 仅负责 heartbeat 门与 per-gap latch。或者按计划退路将 P3+P5 合成原子 commit并停下回报。当前“不切相位，只换测试触发”仍未闭合第二轮 blocker。
+
+
+
+### [major] `DeliveryFrame` 在 S3 装饰器侧类型上可构造，但拿不到权威 metadata；让装饰器伪造 envelope 会把 provenance 责任放错层
+
+**位置**：P2 `withAllocatedRealBlock`；P3 S3 专节。
+
+独立核验结果：`DeliveryFrame` 是 `ClientFrameEnvelope`，必填 `sequence`、`observedAtMonotonic`、`provenance`。公开的 `createClientFrameEnvelope` 能在类型上构造它，所以不是“完全不可构造”；但当前真实构造逻辑 `makeEnvelope`／`asDeliveryFrame` 都是 `delivery/session.ts` 私有函数。`makeReconcilingSink` 当前只收到裸 `ClientFrame`，没有 candidate id、dispatch id、sequence，也不拥有 delivery 的 `monotonicNow`。
+
+若装饰器自己填 `sequence:0`、`observedAtMonotonic:0/performance.now()`、`candidateId:'legacy'`，虽然模仿当前 `asDeliveryFrame` 能跑，却违反 richest-data-flow：owner 本来拥有 monotonic clock与 envelope 路由，装饰器不该伪造元数据。尤其 synthetic anchor stop 与 real start 的 provenance 必须正确区分。
+
+**建议**：callback 不返回完整 `DeliveryFrame`，改返回窄的、由 owner 定义的 discriminated write spec，例如 `{ frame, kind: 'real'|'anchor'|'keepalive' }`；delivery session 在内部用私有 builder补 `observedAtMonotonic`／provenance并写出。或者 port 向 callback 暴露 `envelope.real(frame)`／`envelope.synthetic(kind, frame)` factory，metadata仍由 owner生成。P3 S3 的测试要断言 forwarded synthetic marker与 generation envelope provenance，而不只看 wire bytes。
+
+### [major] delivery session 被指定为唯一 allocator owner，但计划没有说明同一个 `GenerationWireIndexAllocator`／`openAnchorIndex` 如何注入 session
+
+P1 把 allocator 放在 handler-owned `AnchorState`，要求 driver、injector、live reconcile共享同一实例。P2 又让 `createDownstreamDeliverySession` 的 port成为唯一分配 owner，但当前 session construction options只有 raw sink、clock、heartbeat；`makeDeliverySseSink` 建 session 时没有 allocator／AnchorState。冻结 port 方法也不收 allocator参数。
+
+C9甚至要求 session transaction回滚 `openAnchorIndex`，但该字段属于 P5 才定义的 `AnchorState`，session 当前不可见它。没有显式 wiring，实施者只能新建第二 allocator、闭包偷取 handler state、或扩大 ambient singleton，都会破坏 generation 唯一权威。
+
+**建议**：在 P1/P2 接口图中冻结 dependency injection：`makeDeliverySseSink` 接收一个 generation wire-state owner（allocator + openAnchor 状态），传给 `createDownstreamDeliverySession`；handler只创建一次，AnchorState和delivery port引用同一对象。相应补 files：`client-sink.ts`、`handler-v4.ts`、delivery options types；identity oracle必须断言 session port、driver与live decorator读的是同一 allocator/state引用。若把 `openAnchorIndex` 前移到 P2，这个 wire-state owner也自然成为其SSOT。
+
+### 已闭合项抽验
+
+- **recovery**：所有 upstream round统一走 serialized `beginLeg(kind)`，两支 recovery oracle覆盖“无 anchor→wire0恒等”和“anchor@0已写→wire1 remap”，并增加仅漏 recovery beginLeg 的 mutation；方向正确。不可变 mapping token比 ambient current-leg查询更稳健。
+- **beginLeg fence**：已改为 serializer command并有前腿排队帧／heartbeat两种交错 oracle，闭合第二轮对应 major。
+- **P5.3 裸分配**：正文已改成只调 port，并有改回裸 `allocateAnchor` 的架构守卫 mutation；闭合。
+- **spec 状态**：已前移 P0.0 Step A 作为开工硬门；闭合。
+- **四项 minor**：U2吸收 bridge commit、`anchorsOpened` 统一为诊断 counter、README/P8 oracle标签、Mermaid命名均已修订，未重开。
+
+### P3 直接 owner-trigger anchor 的论证裁决
+
+“测试只建立前置 wire 状态，真实块 allocation+remap 仍走生产路径”这一分层原则**本身成立**，不是手工篡改 allocator，也能让硬编码 `+1` mutation有理论红点。anchor绕 buffer，若调用发生在 boundary flush之后、下一块到来之前，driver buffer为空，owner operation与driver flush共享serializer，因此**不会天然与 buffer 冲突**。
+
+但该方案只有在 **P2 已同时提供可重复 anchor 的 open/close状态机** 时才可执行。当前状态机仍在P5，导致第二anchor无法生产关闭，故本轮 blocker不是触发方式思想错误，而是前置能力相位放置不完整。
+
+### 第三轮总体 verdict
+
+**存在 blocker，当前不可开工实施；需先修订。**
+
+- blocker：**2**
+- major：**2**
+- minor：**0**
+- nit：**0**
+
+开工前必须：
+
+1. 重写C9为符合不可逆wire副作用的commit语义，禁止部分写失败后回滚并复用index。
+2. 将`openAnchorIndex`与通用多-anchor close transaction前移到P2 owner，或执行已记录的P3+P5原子合并停点。
+3. 冻结handler→delivery session的同一allocator/state注入路径。
+4. 让S3 callback返回owner可封装的write spec/factory，而不是由装饰器伪造`DeliveryFrame` metadata。
+
+上述闭合后，P3 owner-trigger测试法可保留；本轮其余修订无需重开。

@@ -1,6 +1,6 @@
 # P8 — 端到端验收与文档后果
 
-> **前置**：P4、P5、P7。**产出**：三层 oracle 全绿 + ADR/记账 SSOT 的文档修订 + backlog 登记。
+> **前置**：P3M（合并相位全部 M1–M8）、P7。**产出**：三层 oracle 全绿 + ADR/记账 SSOT 的文档修订 + backlog 登记。
 
 ## Task 8.1：O-4 真 `@anthropic-ai/sdk` 累积顺序
 

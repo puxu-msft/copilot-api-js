@@ -1,42 +1,67 @@
-# P3 — 三腿的「分配 + remap」完整矩阵
+# P3M（合并相位）—— 三腿分配 + remap × continuation frontier × anchor 生命周期
 
-> **前置**：P1（allocator 归位）、**P2**（owner API —— 无它则没有可调的分配入口）。**产出**：三条腿各自的真实块分配与 remap 全部走单一权威。
-> **承重项 1**。**注意 live 腿**：冻结设计 §4.2 的改动面列了 `live-reconcile.ts`，但设计正文的机制描述（§4.1）只谈 buffered；审查 F8 指出设计对 B 的改动清单漏了 live 腿，对 A 则**包含**它。
+> **前置**：P1（allocator 归位）、**P2**（owner API + commit-point 语义）。**产出**：frontier 成为全链唯一权威，且 gap anchor 特性开门。
+> **本文件是本合并相位的权威**：执行顺序、commit 序列与门由此规定；任务细节分列于 [plan-4-continuation-frontier.md](plan-4-continuation-frontier.md)（continuation）与 [plan-5-gap-anchor-lifecycle.md](plan-5-gap-anchor-lifecycle.md)（anchor 生命周期）。**三份文件属同一个相位**。
+> **承重项 1 + 3 + 5 + 6**。live 腿必接（冻结设计 §4.2 列了 `live-reconcile.ts`，审查 F8 亦确认）。
 
-## plan review major：原方案只枚举 remap，漏了 allocate
+## 为什么合并（round-3 blocker，用户 2026-07-27 拍板）
 
-审查坐实的问题：原 P3.2/P3.3 只说 S2/S3 「改走 `resolveRemappedFrame`」，**没有任何具名步骤在真实 `content_block_start` 上分配**。而 `realBlockOffset(upstreamIndex)` 只有在**开块时记录过 mapping** 才能 remap 后续 delta/stop——仅把硬编码 `1` 换成 resolver **不会自动创建 mapping**，S2/S3 会读到缺失或旧 mapping，续写腿 upstream index 重启时静默复用 index。
+两轮尝试都证明「remap 记账」与「anchor 生命周期」在**测试可满足性**上不可分：
 
-更隐蔽的是：原 P3.1 的测试用「手工推进 allocator 到多 anchor 状态」，**测试准备替实现完成了关键动作**，因此即使生产路径漏了分配也照样绿。
+- **第一轮**：要求「真实 gap 静默驱动多 anchor」，但 gap anchor 在后一相位 → 造不出 offset>1，把 remap 改回硬编码 `1` 结果完全相同，mutation 不会红。
+- **第二轮**：改用生产 owner API 落第二个 anchor，解决了「谁触发」，但**没解决「谁关闭」**——可重复的 `openAnchorIndex` 状态机仍在后一相位，第一个 anchor 关闭后旧的 `anchorClosed` 永久为 true，第二个 anchor 无法由生产 close-before-real 关掉 → **O-2 会先于 remap 失败**，拿不到可归因的红绿门；测试若手工写 stop，又替后一相位的承重实现干活，重新引入假绿。
 
-## plan review round-2 blocker：P3 的红绿门曾不可满足（已重切）
+**裁决：合并为一个相位。** 硬拆只会让红绿门失真。
 
-第二轮审查坐实一个**循环依赖**：P3 原本要求「多 anchor 状态必须由**真实 gap 静默**驱动」，但 gap anchor 要到 P5 才开放（`semanticBlockCount===0` 门仍在、per-gap latch 与 gap injector 都不存在），而 DAG 又强制 `P3→P5`。于是 P3 阶段生产路径**最多只能有一个 pre-content anchor**，offset 恒为 1——把 remap 改回硬编码 `1` 结果完全相同，**mutation 不会红**，6 格矩阵形同虚设。
+**同时并入原 P4（continuation frontier）**——planner 判断，非范围变更：P4 撞车 oracle 的分支二（`anchor@0 → real@1 → gap-anchor@2 → real@3` + 续写腿）同样需要多-anchor 能力，与上述两项属同一条依赖链；留在链外会重蹈「门不可满足」。分支一（零 anchor 续写腿）不需要多 anchor，仍可在序列早期完成。
 
-### 重切方案：测试用 **P2 的生产 owner API** 显式落 anchor，真实块仍全由生产路径分配 + remap
+## 测试如何取得多-anchor 前置状态（沿用第二轮的分层，已被 reviewer 确认成立）
 
-P3 的测试**不**等 heartbeat 决定注入，而是直接调用 `WireBlockAllocationPort.allocateAndWriteAnchor`——那是 **P5 的 heartbeat 将来要调的同一个生产 API**，经同一个 serializer、真写到 sink。测试只负责「让 wire 上出现第 N 个 anchor」这一个触发动作，**真实块的分配与 remap 一律由生产代码（driver flush / retreat / live 装饰器）完成，测试一行都不碰**。
-
-产生 offset >= 2 的最小合法序列（每个 anchor 各自 open→close，**不违反 C2**）：
+测试**不等 heartbeat**，直接调 **P2 的生产** owner API `allocateAndWriteAnchor` 落 anchor——那正是 M6 之后 heartbeat 要调的同一入口，经同一 serializer、真写到 sink。**真实块的分配与 remap 一律由生产代码完成，测试一行不碰**。
 
 ```text
 anchor@0（测试经 owner API 落）→ real@1（上游0，生产分配）
 anchor@2（测试经 owner API 落）→ real@3（上游1，生产分配）→ offset = 2
 ```
 
-把任一站点的 remap 改回硬编码 `1`，第二个真实块会落 wire 2（已被 anchor 占用）而非 wire 3 → **O-1 转红**。维度 B（删 allocate 调用）则让 mapping 从未创建 → 同样红。
-
-### 为什么这不会重新引入假绿（**必须论证，审查明确要求**）
-
 | 关注点 | 处置 |
 |---|---|
-| 会不会像「手工推进 allocator」那样，测试替实现完成了关键动作？ | **不会**。被测的动作是**真实块的分配 + remap**，它 100% 由生产路径执行；测试只提供 anchor 这个**前置 wire 状态**。若 driver 漏调分配、或 remap 读错 mapping，测试照红。 |
-| 这算不算「测试专用后门」？ | **不算**。`allocateAndWriteAnchor` 是 P2 冻结的**生产** owner API，P5 的 heartbeat 走的就是它。测试与生产的差别只在**谁触发**，不在**走哪条路径**。故无需额外守卫，既有架构守卫（生产只能经 owner API）已足够。 |
-| 「谁触发 anchor」这一环由谁证明？ | 由 **P5 的 O-3** 证明：heartbeat 在真实 gap 静默下确实调用同一 owner API。P3 证「给定 anchor 已在 wire 上，三腿的 index 记账正确」，P5 证「anchor 会在该出现的时候出现」。**两者合起来无缺口**，且各自都有可满足的红绿门。 |
-| 会不会造成计划自己禁止的半坏态？ | **不会**。P5 的门在 P3 期间**保持不动**，生产路径此时仍最多一个 anchor。多-anchor 状态只存在于测试进程内，不是可交付的生产行为。 |
+| 是否像「手工推进 allocator」那样替实现干活？ | **不是**。被测动作 = 真实块的**分配 + remap**，100% 生产路径；测试只提供 anchor 这个前置 wire 状态。driver 漏调分配或 remap 读错 mapping，照红。 |
+| 算不算测试后门？ | **不算**。它是生产 owner API，heartbeat 走的就是它；差别只在**谁触发**，不在**走哪条路径**。既有架构守卫已足够。 |
+| 「谁触发 anchor」谁证明？ | **M6 的 O-3**：heartbeat 在真实 gap 静默下确实调同一 owner。M2–M4 证「给定 anchor 在 wire 上，三腿记账正确」，M6 证「anchor 会在该出现时出现」，合起来无缺口。 |
+| anchor 绕 buffer 会不会与 driver buffer 冲突？ | **不会**（reviewer 独立确认）：owner operation 与 driver flush 共享 serializer，调用发生在 boundary flush 之后、下一块到来之前时 buffer 为空。 |
+| 第二个 anchor 谁关闭？ | **M1 已把可重复的 open/close 状态机前移进 owner**——这正是第二轮缺的那块。生产 close-before-real 因此能正确关闭每一个 anchor。 |
 
-**若实施中发现 owner API 无法作为测试 seam 驱动某一腿**（例如该腿的 sink 拿不到 port），则退路是：把 P3 的三站点与 P5 的开门**合并为一个原子 commit**，提交前一次性过全部 oracle——**不得**维持「分相位但门不可满足」的现状。这条退路**须停下回报**后再走，因为它改变相位边界。
+## 原子 commit 序列（**每个 commit 的终态不变量与可满足的门**）
 
+> ### 半坏窗口为空的证明（承重论证）
+>
+> 本相位内「某腿已迁 frontier」与「某腿仍算 +1」两种状态**在生产上数值等价**，只要生产**尚未开出第二个 anchor**：
+>
+> - 开门前，同一 generation 至多一个 pre-content anchor，故任一真实块的 `mapping.wireIndex − mapping.upstreamIndex ∈ {0, 1}`；
+> - 旧硬编码分支的门槛是 `injected && anchorBlockOpen`（有 anchor）→ 恒 `+1`；无 anchor 时该分支不执行 → 恒 `+0`；
+> - 两者**逐块相等**。差异**只在 ≥2 个 anchor 时显现**，而生产开出第二个 anchor 的唯一途径是 **M6 打开心跳门**。
+>
+> 故 M2–M5 期间即便三腿迁移进度不一，**生产 wire 逐字节不变**（O-6 每个 commit 都跑作为该等价性的实证）。多-anchor 状态只存在于测试进程内，不是可交付的生产行为。
+>
+> **本序列唯一的硬序约束：M6 必须晚于 M2–M4 全部完成。** 违反它才会产生真正的半坏窗口（生产已开多 anchor 而某腿仍算 +1）。
+
+| # | commit | 内容 | 终态不变量 | 可满足的门 |
+|---|---|---|---|---|
+| **M1** | `feat(delivery): repeatable anchor open/close lifecycle in the wire owner` | `openAnchorIndex` 状态机 + 通用多-anchor close transaction **前移进 P2 owner**（删 `anchorClosed`/`anchorBlockOpen`，细节见 plan-5「AnchorState 状态机」） | **纯能力新增**：生产行为零变化（心跳门未动，仍只开 ≤1 anchor）；owner 具备可重复 open→close 能力 | owner 单元测试：连续两轮 open/close 各自正确、close 幂等、终局 exactly-once；**O-6 字节等价**（证明零行为变化） |
+| **M2** | `refactor(driver): allocate and remap buffered-flush blocks via the frontier owner` | S1（`driver.ts:1185`）分配 + remap | S1 走 frontier；S2/S3 仍算 +1（数值等价，见上方证明） | Task 3.1 的 offset≥2 测试（M1 已使第二 anchor 能被生产正确关闭）；S1 两维 mutation 均红；O-1/O-2/O-6 |
+| **M3** | `refactor(driver): allocate and remap retreat write-through blocks via the frontier owner` | S2（`driver.ts:1242`） | S2 走 frontier | Task 3.2 + S2 两维 mutation；O-1/O-2/O-6 |
+| **M4** | `refactor(live-reconcile): allocate, close off and remap live blocks in one wire transaction` | S3（装饰器 + envelope factory，见「S3 专节」） | **三腿全部走 frontier**；`rg "remap\(.*, 1\)" src/` 零命中 | Task 3.3 + S3 两维 mutation + 「transaction 内不可插入」断言；O-1/O-2/O-6 |
+| **M5** | `fix(continuation): make the allocator frontier the sole wire-index authority` | plan-4 Task 4.1/4.2/4.3：退役双偏移、接 `beginLeg(kind)` | `continuationOffset`/`wireDeliveredBlocks` 零残留 | 4.1 **两条**撞车 oracle（分支二此时可满足）+ 两个 positive control + `beginLeg` 两格 mutation |
+| **M6** | `feat(keepalive): allow gap anchors after the first committed block` | plan-5 Task 5.1/5.3：per-gap latch + gap injector + **删 `semanticBlockCount===0` 门**（特性开门） | 生产可开多 anchor——**此时三腿已全部走 frontier**，故无半坏 | O-3 精确形状 + 加回门的 mutation + 架构守卫 mutation（裸 `allocateAnchor` 必红） |
+| **M7** | `test(anchor): cover the continuation-leg × gap-anchor integration seam` | plan-5 Task 5.4 交叉缝 | 交叉行为被锁 | O-9 交叉 mutation 矩阵（同一测试对两侧 mutation 以**不同可辨识原因**失败）+ 两条单侧 control |
+| **M8** | `test(anchor): multi-gap coverage and shipped-default byte equivalence` | plan-5 Task 5.5/5.6 | 默认配置零 anchor、字节等价 | 多 gap × 混合块类型（含 tool_use 不被推迟）；O-6 |
+
+**若某 commit 的门实测不可满足**（例如 M2 的 offset≥2 场景仍拿不到红），**停下回报**——那意味着仍有未识别的依赖，**不得**靠手工补状态硬凑绿。
+
+## 三腿的「分配 + remap」矩阵
+
+原方案只枚举 remap、**漏了 allocate**（round-1 major）：`mapping` 只有在开块时被创建才能供后续 delta/stop 查，仅把硬编码 `1` 换成 resolver **不会自动创建 mapping**，S2/S3 会读到缺失或旧 mapping。故每条腿都必须具名回答三个问题：
 | 腿 | start 帧谁分配？ | delta / stop 如何查 mapping？ | 如何保证同一块不重复分配？ |
 |---|---|---|---|
 | **S1** driver buffered flush（`driver.ts:1185`） | flush 循环内 `anchor.isContentBlockStart(frame)` 为真时经 owner API `withAllocatedRealBlock(upstreamIndex, …)` | 非 start 帧走 `resolveRemappedFrame`，按该块的 **leg token + mapping** 查 | 一个 upstream 块只有一个 start 帧；重复分配会被 3.4 维度 B 的 mutation 咬住 |
@@ -51,20 +76,45 @@ anchor@2（测试经 owner API 落）→ real@3（上游1，生产分配）→ o
 2. **真正的冲突在 provenance**：`reconcileLiveFrame` 对首个真实 start 返回**两帧** `[stopFrame, remapped]`（`live-reconcile.ts:139-141`），且装饰器靠**位置**区分它们——`frames[0]` 走 `writeAnchor`（打 `synthetic:"anchor"`），其余走 `write`（不打标）（`:171-174`）。而原 `allocateAndWriteRealBlock(upstreamIndex, build)` 的 `build` 只返回 `ReadonlyArray<ClientFrame>`，**丢失 provenance**，owner 无从知道哪帧该走哪个底层 port。
 3. **拆成两次写会破坏原子性**：若装饰器先单独写 stop 再调 port 写 start，就是**两个 serializer operation**，heartbeat 可插进中间——正是 C5 要消灭的形状。（注：今天的装饰器确实是两次 `await`，但今天没有分配动作，所以只是顺序问题；引入分配后它就成了 TOCTOU。）
 
-**重做后的 API 形状**（P2「Interfaces」是权威定义，此处只摘要其对 S3 的意义）：
+**API 形状**（P2「Interfaces」是权威定义，此处摘要其对 S3 的意义）：
 
 ```ts
 withAllocatedRealBlock(
   upstreamIndex: number,
-  build: (ctx: { mapping: WireBlockMapping }) => ReadonlyArray<DeliveryFrame>,
+  build: (ctx: { mapping: WireBlockMapping; envelope: WireEnvelopeFactory }) => ReadonlyArray<WireWriteSpec>,
 ): Promise<WireBlockMapping | undefined>
 ```
 
-关键点：callback 返回**带 provenance 的 `DeliveryFrame`**（而非裸 `ClientFrame`），owner 据此把 close-off 路由到 `writeAnchor`、真实帧路由到 `write`，**不再靠数组位置猜**；`ctx.mapping` 是该块的**不可变 token**，其 `remap()` 在恒等时返回原对象（C3）。
+**round-3 major 修正——callback 不返回 `DeliveryFrame`，返回 owner 定义的窄 write spec**：
 
-S1/S2 用它时 callback 只返回一帧（remapped start，provenance = 真实帧）；S3 用它时按需返回两帧（close-off stop 带 `syntheticKind:"anchor"` + remapped start）。**三腿共用同一个 owner API，无特例分支。**
+planner 独立核实：`DeliveryFrame`（= `ClientFrameEnvelope`）必填 `sequence` / `observedAtMonotonic` / `provenance`（`frame-envelope.ts:22-26`）。`createClientFrameEnvelope` 虽是公开导出、**类型上**可构造，但真实构造逻辑 `makeEnvelope` / `asDeliveryFrame` 都是 `delivery/session.ts` **私有**（`:229-247`），且装饰器既没有 candidate/dispatch id，也不持有 delivery 的 `monotonicNow`。若让装饰器自填 `sequence: 0` / `candidateId: "legacy"`，虽能跑通，却把 **provenance 与序号的铸造责任放错层**，违反 richest-data-flow（owner 才拥有时钟与信封路由）。
 
-> **S3 不再有「拿不到就停」的模糊退路**——port 可达性已由上述代码事实确认，S3 是冻结的必做范围。仅当实施时发现 `DeliveryFrame` 的构造在装饰器侧不可行（例如缺 sequence/observedAt 来源）才停下回报。
+故 callback 只提供**内容 + 语义分类**，信封由 owner 铸造：
+
+```ts
+/** What the caller wants written; the owner mints the envelope (sequence / clock / provenance). */
+export type WireWriteSpec =
+  | { readonly kind: "real"; readonly frame: ClientFrame }
+  | { readonly kind: "anchor"; readonly frame: ClientFrame }        // synthetic close-off / open
+  | { readonly kind: "keepalive"; readonly frame: ClientFrame }
+
+/** Optional sugar handed to the callback so call sites read declaratively. */
+export interface WireEnvelopeFactory {
+  real(frame: ClientFrame): WireWriteSpec
+  anchor(frame: ClientFrame): WireWriteSpec
+  keepalive(frame: ClientFrame): WireWriteSpec
+}
+```
+
+owner 按 `kind` 路由到既有的 `write` / `writeAnchor` / `writeKeepalive`（`session.ts:257-278` 的 `writeToSink` 已是这个形状），**并在内部补齐 `sequence`、`observedAtMonotonic`、`provenance`**。于是：
+
+- S1/S2 的 callback 返回 `[envelope.real(remappedStart)]`；
+- S3 返回 `[envelope.anchor(stopFrame), envelope.real(remappedStart)]`——**一个 transaction、正确 marker、不靠数组位置猜**；
+- gap injector（M6）返回 `[envelope.anchor(start), envelope.keepalive(delta)]`。
+
+**三腿与 injector 共用同一 owner API，无特例分支。** 装饰器不再伪造任何 metadata。
+
+> **S3 已无「拿不到就停」的退路**：port 可达性与信封铸造责任都已定型，S3 是冻结必做范围。
 
 ## 三个站点（master 精确行号）
 
@@ -165,9 +215,18 @@ test("S1 buffered flush allocates and remaps real blocks itself at frontier offs
 | S2 driver retreat | _待填_ | _待填_ |
 | S3 live-reconcile | _待填_ | _待填_ |
 
-## P3 收口
+## M2–M4 收口（三腿迁移；相位总收口见下）
 
 - [ ] `typecheck` + `test:fast` 绿；anchor 全套件与基线对账（每处差异归因为「预期改写」或「回归已修」）。
 - [ ] O-1/O-2 绿；O-6 字节等价**仍等于 P0 捕获的 base 基线**（本相位对无-anchor **主腿**请求应零字节变化）。
 - [ ] `rg -n "remap\(.*, 1\)" src/` 零命中。
 - [ ] **6 格 mutation 矩阵填满**，无空格（空格 = 该维度无覆盖）。
+
+## P3M 相位总收口
+
+- [ ] M1–M8 **八个 commit 全部落地**，每个终态 typecheck + `test:fast` 绿，且其「可满足的门」实测通过（非推理认定）。
+- [ ] O-1 / O-2 / O-3 / O-6 / O-9 绿；`rg -n "remap\(.*, 1\)" src/` 与 `rg -n "continuationOffset|wireDeliveredBlocks|anchorBlockOpen|anchorClosed" src/` 均零命中。
+- [ ] 6 格 mutation 矩阵 + 交叉 mutation 矩阵**填满无空格**。
+- [ ] anchor 全套件与 P0 基线对账完毕（每处差异归因为「预期改写」或「回归已修」）。
+- [ ] **硬序约束已遵守**：M6 的开门 commit 晚于 M2–M4。
+

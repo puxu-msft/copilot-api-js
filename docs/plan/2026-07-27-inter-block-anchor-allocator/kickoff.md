@@ -20,7 +20,7 @@
 
 纪律（每个相位都适用，README「全局纪律」有完整版）：
 - TDD：每个 task 严格「写失败测试 → 跑，红 → 实现 → 跑，绿 → 提交」。若预测的红没咬，不得提交假绿，降级为 characterization 并在 plan 里注明。
-- commit invariants：每个 commit 终态必须 typecheck 绿 + test:fast 绿 + C1/C2 两条不变量不处于半坏态。**绝不允许**「已按 frontier 分配但某个 remap 站点还在算 +1」的中间态落盘。主链顺序 **P1→P2→P3→P4→P5** 是硬性的，就是为了这一点（P3 的分配依赖 P2 的 owner API；gap anchor 这个多-anchor 的唯一来源在 P5，晚于 P3 的 remap 切换）。
+- commit invariants：每个 commit 终态必须 typecheck 绿 + test:fast 绿 + C1/C2 两条不变量不处于半坏态。**绝不允许**「已按 frontier 分配但某个 remap 站点还在算 +1」的中间态落盘。主链顺序 **P1→P2→P3M** 是硬性的；P3M 内部的唯一硬序是 **M6（特性开门）晚于 M2–M4（三腿迁移）**——gap anchor 是多-anchor 的唯一生产来源，开门前两种算法数值等价（plan-3 有证明）。
 - 每语义单元一提交，显式 pathspec（`git commit -F <msgfile> -- <精确路径>`），conventional commits，不加模型署名。
 - **绝不碰 4141 端口的用户主服务器**。需要真服务器的 oracle 一律自起非 4141 实例，按 PID 精确 kill，绝不 pkill/killall。
 - 实施中若与冻结设计冲突、或发现不可行处，**停下回报**，不自行改需求。
@@ -108,7 +108,8 @@ AnchorState.allocator 设为**必填**而非可选——让类型系统逼出全
 
 关键要求：
 - 并发 oracle 必须有**正样本对照**——注入一个「先 allocate 再分别 write」的 fake owner（= 非法形状），证明 harness 真能咬住队列外分配。若主测试一上来就绿，**不得**据此认为安全，调整 harness 直到正样本对照能咬住。时序测试**连跑 15 次**。
-- **C9 已收紧为事务语义**（round-2 major）：分配是**预留**，帧成功写出前对任何读者不可见；失败必须**同时回滚** frontier、anchor 计数、leg mapping、openAnchorIndex。只测「下次拿同一 index」不够——还要断言**失败块的 mapping 查不到**（Task 2.2c）。
+- **C9 已按 round-3 blocker 重写为 commit-point 两段语义**：serializer 防交错，但**不能**让两次 SSE write 具备原子性——第一帧可能已到客户端、第二帧才失败，**已发出的字节撤销不了**。故：commit point（首次外部 write）**之前**失败 → 零副作用、可全回滚；**之后**失败 → index **永久消费绝不复用** + **终止 delivery** + 忠实记录。三档 oracle（build 抛错 / 首帧失败 / 首帧成功次帧失败）+ **双向 mutation**（改成「失败即回滚」要让第三档转红；改成「档 1 不回滚」要让第一档转红）。C1 的「永不跳号」只对健康流成立。
+- **注入路径已冻结**（round-3 major）：`CreateDownstreamDeliverySessionOptions` 当前**没有 allocator 注入位**，不冻结的话实施者只能新建第二个 allocator / 闭包偷 state / ambient singleton，三条都破坏唯一权威。冻结为：handler 的 `makeAnchoredSseSink` **唯一创建** `GenerationWireState`（allocator + openAnchorIndex），一份给 `AnchorState`、一份经 `makeDeliverySseSink` 传进 session 构造 port。配 identity oracle（四处引用相等）+ 架构守卫（唯一创建点，带正样本对照）。
 - **recovery 腿语义已冻结**：所有 upstream round（continuation **与** recovery）都调 beginLeg(kind)，不为 continuation 特判。两支 oracle：无 anchor 的 recovery → wire0 恒等；**写过 pre-content anchor 后的 recovery → wire1 必须 remap**（后者正是「忘调也能靠巧合正确」的反例锁）。
 - **beginLeg 是 serializer command**（`Promise<LegToken>`），在前腿全部成功写出后、新腿任一分配前建立 fence；delta/stop 按**不可变 WireBlockMapping token** 查，**不查 ambient「当前腿」**（Task 2.2d）。
 
@@ -117,67 +118,28 @@ AnchorState.allocator 设为**必填**而非可选——让类型系统逼出全
 裁判轴：长远正确 + 完整（非 ROI/YAGNI）。
 ```
 
-### P3 — 三腿的「分配 + remap」完整矩阵
+### P3M — 合并相位（三腿分配+remap × continuation frontier × anchor 生命周期）
 
 ```text
-执行 plan-3-remap-sites.md。前置 P1 + P2（**owner API 是本相位分配步骤的前提**）。先读 README 的 C4 契约与 plan 头部的三腿矩阵表。
+执行合并相位 P3M。**权威 = docs/plan/2026-07-27-inter-block-anchor-allocator/plan-3-remap-sites.md**（commit 序列 M1–M8、三腿矩阵、S3 专节）；任务细节分列于 plan-4（M5）与 plan-5（M1/M6/M7/M8）——**三份文件是一个相位**，别当三个阶段做。前置 P1 + P2。
 
-目标：三条腿各自的**分配 + remap** 全部走单一权威——
-  S1 driver.ts:1185（buffered flush）
-  S2 driver.ts:1242（retreat 写穿）
-  S3 live-reconcile.ts:141（live 腿）
+**为什么合并**（round-3 blocker，用户拍板）：两轮尝试都证明「remap 记账」与「anchor 生命周期」在测试可满足性上不可分。第一轮 gap anchor 在后一相位 → 造不出 offset>1；第二轮改用生产 owner API 落第二个 anchor 解决了「谁触发」，但没解决「谁关闭」——可重复的 openAnchorIndex 状态机仍在后面，第二个 anchor 无法由生产 close-before-real 关掉，O-2 会先于 remap 失败，拿不到可归因的红绿门。硬拆只会让门失真。
 
-**原 plan 只枚举了 remap、漏了 allocate**（审查坐实）：realBlockOffset 只有在开块时记录过 mapping 才能 remap 后续 delta/stop，仅把硬编码 1 换成 resolver **不会自动创建 mapping**，S2/S3 会读到缺失或旧 mapping。故每条腿都必须具名回答：start 帧谁分配、delta/stop 如何查同一 leg 的 mapping、同一块不会重复分配。
+**按 M1–M8 顺序执行，每个 commit 的终态不变量与门都写在表里。** 唯一硬序约束：**M6（特性开门）必须晚于 M2–M4（三腿迁移）**。相位内「某腿已迁 frontier」与「某腿仍算 +1」在生产上**数值等价**（开门前至多一个 anchor，两种算法逐块相等），故 M2–M5 期间生产 wire 逐字节不变——plan 有完整证明，O-6 每个 commit 都跑作为实证。
 
-**live 腿（S3）已按 round-2 major 重做，读 P3 的「S3 专节」**：① port 可达性已由代码事实确认（makeReconcilingSink 的 inner 就是 deliveryBySink 的 key），**不再是停点**；② 真正的冲突在 provenance——reconcileLiveFrame 对首个真实 start 返回两帧 [stop, remapped]，装饰器靠**位置**区分（frames[0] 走 writeAnchor 打 synthetic 标记）。故 owner API 的 callback 返回**带 provenance 的 DeliveryFrame**，一个 transaction 内按 provenance 路由，不再靠位置猜，也不拆成两次 enqueue。
+**测试如何取得多-anchor 前置状态**：测试经 **P2 的生产 owner API** `allocateAndWriteAnchor` 落 anchor（不是等 heartbeat、更不是手工推 allocator），真实块的分配与 remap 全部由生产代码完成。M1 已把可重复 open/close 状态机前移进 owner，故第二个 anchor 能被生产正确关闭——这正是第二轮缺的那块。
 
-**测试纪律（两轮 review 综合，别搞反）**：被测动作 = **真实块的分配 + remap**，必须 100% 由生产路径完成，**禁止**手工推进 allocator。但 anchor 这个**前置 wire 状态**由测试经 **P2 的生产 owner API** `allocateAndWriteAnchor` 落下——**不是**等 heartbeat：gap anchor 要到 P5 才开放，等它会让 P3 的红绿门根本不可满足（round-2 blocker）。P3 文件头部有完整的「为何不会重引入假绿」论证表，先读它。
+**S3（live 腿）已重做两次，读 plan-3「S3 专节」**：① port 可达性已确认；② callback **不返回 DeliveryFrame**（装饰器拿不到权威 sequence / observedAtMonotonic / candidate provenance，伪造会把 provenance 责任放错层），改返回 owner 定义的窄 `WireWriteSpec`（`{kind:'real'|'anchor'|'keepalive', frame}`），**信封由 owner 铸造**；③ 一个 transaction 出 [anchor_stop, real_start]，不拆两次 enqueue。
 
-必做：**6 格** mutation 矩阵 = 三条腿 × 两个维度（A：remap 改回硬编码 1；B：**删除该腿的 allocate 调用**）。维度 B 专门咬「mapping 从未被创建」的漏接线，原 plan 完全没有它。每格都要记录是哪条测试转红；空格 = 该维度无覆盖，补测试。
+必做：**6 格** mutation 矩阵（三腿 × remap/allocate 两维）；M5 的两条撞车 oracle + 两个 positive control；M7 的交叉 mutation 要求同一测试对两侧 mutation 以**可辨识的不同原因**失败。
 
-golden 纪律：先用 O-1/O-2 独立验证新 wire 结构正确，**再**重捕 golden，绝不为让 golden 绿而扭曲实现。重捕单独一个 commit。（pre-content-only 场景**不应有**字节变化；意外变红是回归信号，停下查根因。）
+golden 纪律：先用 O-1/O-2 验证 wire 结构正确，**再**重捕 golden，重捕单独 commit。
+
+**若某个 M-commit 的门实测不可满足，停下回报**——那意味着仍有未识别的依赖，**不得**手工补状态凑绿。
 
 裁判轴：长远正确 + 完整（非 ROI/YAGNI）。
 ```
 
-### P4 — continuation frontier 统一
-
-```text
-执行 plan-4-continuation-frontier.md。前置 P3。先读 README 的 C4 契约与 plan 里的撞车序列。
-
-目标：作废 `wireIndex(i) = i + anchorShift + continuationOffset` 双偏移，续写腿的块也从同一 frontier 分配。
-
-**两个分支的撞车 oracle 都必须先写出并跑红**（Task 4.1）：
-- **分支一（默认路径、本轮 blocker）**：零 anchor 的续写腿。主腿 real@0 已交付 → cut → 续写腿 upstream 从 0 重启；若因 anchorsOpened()===0 而短路，会再写一次 wire 0。这是 ping 模式下的**常见路径**，原 plan 完全漏了。
-- **分支二（审查给的序列）**：anchor@0 → real@1(上游0) → gap-anchor@2 → real@3(上游1)，续写腿 realBlockOffset(0) 命中主腿旧映射得 wire 1 → 再叠 continuationOffset=2 → wire 3 → **已被占用**。
-
-两条各配一个 positive control（分别注入「按原 C3 判据短路」的 fake 与「双偏移」的 fake，证明 oracle 能咬住对应故障）。若某条写完就绿，多半是 continuation 分支根本没进——调 harness 而非改断言。
-
-删 ContinuationHooks.remap 前**不要**反射式清理——先 `rg -n "continuation.*remap" src/` 逐处核实。**已知事实**：现码只有 Anthropic handler 构造 ContinuationHooks（handler-v4.ts:1280），Responses/CC 的 continuation 测试更多是未来/合同核实。所以 Task 4.3 多半**不是真分叉**——先用 grep 与测试确认真实消费者，确认确有消费者且冲突时才停下回报；**不得**为不存在的消费者保留双权威。零消费者则加 @deprecated 保留，交 P8 统一裁决。
-
-裁判轴：长远正确 + 完整（非 ROI/YAGNI）。
-```
-
-### P5 — gap anchor 生命周期
-
-```text
-执行 plan-5-gap-anchor-lifecycle.md。前置 P2 + P3 + **P4**（Task 5.4 的交叉缝要用到 leg 语义）+ **P6**（心跳必须先修好，否则本相位的 oracle 会在 raw sink 上假绿而生产上是死码）。
-
-目标：解除 delivery/session.ts 里 `semanticBlockCount === 0` 那道门（其注释明写解除条件就是本 allocator），让 gap anchor 能在任意「客户端无 open block」窗口注入，并在下一个真实块前关闭。
-
-三个承重点：
-- per-gap latch（5.1）：contentScaffoldAttempted 从一次性改为每 gap 重新武装。注意判据是「有过新真实内容」而非「anchor 关了」——后者会让心跳在同一 gap 内连开多个 anchor。
-- close-before-real（5.2）要覆盖**每一个** gap anchor，不只第一个。三条路径都要：flush 循环 per-frame、retreat 分支、live-reconcile。并须有 anchor stop 的 **exactly-once** 测试（终局站点两两组合）。
-- **续写腿 × gap anchor 的跨相位集成缝（5.4）**——独立 red-first task，**不要**指望 P8 的合并态审兜底。其 mutation 要求是**交叉矩阵**：**同一条**交叉测试对「删 P4 的 beginLeg」与「删 P5 的跨腿 latch re-arm」两个 mutation 分别以**可辨识的不同原因**失败，另加两条单侧 control。只要求「同文件任一条红」是不够的——那最多证明文件里同时有两侧测试。
-
-**AnchorState 状态机已冻结**（plan 有表，别自行猜）：**删除 anchorClosed 与 anchorBlockOpen 两个字段**，由 `openAnchorIndex?: number` 的 undefined → index → undefined 转移**单一**承担 per-anchor 关闭与终局 once guard。原 plan 曾给出三种互斥语义，已裁决统一。若确实需要 generation-terminal 标志，**另起名** terminalClosing/terminalClosed 并补全写者/读者表 + exactly-once 测试，**不得**复活 anchorClosed 的模糊语义。
-
-tool_use 特别注意：CC 是 eager per-block 执行（每个 content_block_stop 就 addTool → processQueue → executeTool）。gap anchor 绝不能推迟 tool_use 块的 stop，也不能插进其 deltas 中间。
-
-**不翻 protect_streaming_generation 默认**——那是 ADR D4 的独立决策，A 是它的前置门而非它的一部分。
-
-裁判轴：长远正确 + 完整（非 ROI/YAGNI）。
-```
 
 ### P6 — 心跳生命周期修复（**现网缺陷**，可独立于 A 先行交付）
 
@@ -232,7 +194,7 @@ tool_use 特别注意：CC 是 eager per-block 执行（每个 content_block_sto
 ### P8 — 端到端验收与文档后果
 
 ```text
-执行 plan-8-acceptance-and-docs.md。前置 P4 + P5 + P7。
+执行 plan-8-acceptance-and-docs.md。前置 P3M + P7。
 
 三层验收 oracle，缺一不可：
 1. O-4 真 @anthropic-ai/sdk 累积顺序 —— 断言 finalMessage 深等值、content 顺序与 wire 一致、gap anchor **在中间不在末尾**。这正是当初发现原 blocker 的手法（重复 index 会被 SDK 静默重排）。positive control 须**先断言 wire 上确有 duplicate index**（防 mock 没生效导致对照组本身失效）。

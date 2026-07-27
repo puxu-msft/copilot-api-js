@@ -23,9 +23,7 @@ graph TD
   P0["P0 基线与守卫<br/>字节等价 SHA oracle + producer 全序 harness + 现有 anchor 套件红绿基线"]
   P1["P1 allocator 状态归位<br/>allocator 挂 AnchorState + mapping-identity 短路 + frame factory"]
   P2["P2 分配临界区<br/>heartbeat/flush 并发缝：分配与写出同一 serializer"]
-  P3["P3 remap 全站点接线<br/>driver buffered flush + retreat + live-reconcile 三处走 frontier"]
-  P4["P4 continuation frontier 统一<br/>作废 anchorShift+continuationOffset 双偏移；撞车序列 oracle"]
-  P5["P5 per-gap latch + gap injector<br/>content latch 每 gap 重新武装 + 下一真实块前关 anchor + 续写腿交叉缝"]
+  P3M["P3M 合并相位（M1-M8）<br/>三腿分配+remap × continuation frontier × anchor 生命周期<br/>细节见 plan-3 / plan-4 / plan-5"]
   P6["P6 心跳生命周期修复<br/>现网缺陷 · 可独立先行交付"]
   P7["P7 多轮回传对策<br/>numTurns>=2 空 anchor 回传 + 入站清洗核实"]
   P8["P8 端到端验收 + 文档后果<br/>真 SDK / 真 CC / SHA + ADR D2 措辞 + Q5 公式作废"]
@@ -34,14 +32,9 @@ graph TD
   P0 --> P6
   P1 --> P2
   P6 --> P2
-  P2 --> P3
-  P3 --> P4
-  P2 --> P5
-  P3 --> P5
-  P6 --> P5
-  P4 --> P5
-  P4 --> P8
-  P5 --> P8
+  P2 --> P3M
+  P6 --> P3M
+  P3M --> P8
   P7 --> P8
 
   style P6 stroke-width:3px
@@ -50,19 +43,19 @@ graph TD
 **并行机会**（是否并行由主会话编排决定，本计划只标依赖）：
 - **P6 可独立交付**（用户 2026-07-27 裁决）：它修的是**当前现网缺陷**（Responses HTTP 默认配置即受影响，见下「现网影响面」），自身即有生产价值，不必等 A 的其余相位。独立路径 = **P0 → P6 → 合并**。
 - **P6 → P2 是硬依赖**（plan review major；原「P6 与 P1–P4 无代码重叠、可并行」是**事实错误**）：两者都改 `delivery/session.ts`，且改的是**同一组语义**——heartbeat operation 的入队 / 挂起 / 恢复与 flush 交接。P6 改变「boundary commit 后 heartbeat 是否继续入队」，直接扩大 P2 竞态的可达状态。若 P6 已独立合并 master，allocator worktree 必须 **rebase / merge 到含 P6 的 master 后**再做 P2——否则会在旧 heartbeat 生命周期上写竞态 oracle，合并后测试语义失效。交叉门见 Task 2.2b。
-- P7 的**核实部分**（入站清洗是否已存在、真 CC 多轮）不依赖任何代码改动，可在 P0 后立刻起；其**兜底实现部分**只有在核实为 FAIL 时才需要，且依赖 P5 能真正产出 gap anchor。
-- 主链 **P0 → P1 → P2 → P3 → P4 → P5 → P8** 全串行：P2 的 owner API 是 P3 分配步骤的前提（无它则无可调的分配入口），P4 的 leg 语义是 P5.4 交叉缝的前提。
+- P7 的**核实部分**（入站清洗是否已存在、真 CC 多轮）不依赖任何代码改动，可在 P0 后立刻起；其**兜底实现部分**只有在核实为 FAIL 时才需要，且依赖 P3M 的 M6 能真正产出 gap anchor。
+- 主链 **P0 → P1 → P2 → P3M → P8** 全串行。**P3M 是合并相位**（round-3 blocker：原 P3/P4/P5 在测试可满足性上不可分——见 plan-3 头部），其内部 8 个原子 commit（M1–M8）各有终态不变量与可满足的门，硬序约束只有一条：**M6（特性开门）必须晚于 M2–M4（三腿迁移）**。
 
 ## 冻结契约表（实施期不得自行更改；要改回主会话）
 
 | # | 契约 | 精确表述 | 权威来源 |
 |---|---|---|---|
-| C1 | 单调 frontier | 一个 generation 内，**所有** wire content block index（真实块、synthetic anchor、continuation / recovery 块）由**唯一** `GenerationWireIndexAllocator` 单调递增分配，永不复用、永不跳号 | 设计 §4.1 |
+| C1 | 单调 frontier | 一个 generation 内，**所有** wire content block index（真实块、synthetic anchor、continuation / recovery 块）由**唯一** `GenerationWireIndexAllocator` 单调递增分配，永不复用。**「永不跳号」只对成功交付的健康流成立**——commit point 之后失败的块会永久消费其 index（C9 ②），此时流已终止，跳号不构成缺陷 | 设计 §4.1；round-3 限定 |
 | C2 | maxOpen===1 | 任一时刻客户端轨至多一个 content block open；gap anchor 必须在下一个真实 `content_block_start` **之前**关闭 | 设计 §4.1；ADR D2 第 3 点（本计划扩其论域） |
 | **C3** | **恒等短路（2026-07-27 修订，原表述有 blocker）** | 短路判据是**映射恒等**，不是 anchor 计数：当且仅当该块的 `WireBlockMapping` 满足 `wireIndex === upstreamIndex` 时，remap 才可返回**原 frame 对象**。等价的充分条件 = **无任何 synthetic 插入且该块属主腿**。**原表述「`anchorsOpened === 0` 即无条件短路」与 C4 冲突，会让无-anchor 续写腿复用 wire 0——已作废** | 审查 F6 提出、GPT plan review blocker 推翻并修订 |
 | C4 | 双偏移作废 | `wireIndex(i) = i + anchorShift + continuationOffset` **作废**。frontier 是 wire index 的唯一权威，两个独立偏移不得继续叠加 | 审查 F5；设计 §4.4 第 3 点 |
 | C5 | 分配临界区 | index 分配必须与其帧写出在**同一个 serializer operation** 内完成（单一 owner API，见 P2「Interfaces」）。「分配后再分别调用 `write*`」**不满足**本契约——那是队列外分配 + 两个 operation。`beginLeg` 同样是 serializer command | 审查 F7；设计 §4.4 第 4 点；plan review round-1/2 major |
-| **C9** | **分配即事务（round-2 收紧）** | 分配是**预留**，在同一 operation 的帧成功写出前**对任何读者不可见**；写失败必须**同时回滚** frontier、anchor 计数、leg mapping 与 `openAnchorIndex`，不留 provisional 残留。frontier 只因**实际写到客户端 wire 的块**而前进（被丢弃的 attempt 由 `driver.ts:1408` 的 `!committedAny` 保证未写出真实块，但**可能已写出 anchor**——见 P2「recovery / leg 边界语义」） | 设计 §4.7；planner 核实重试门；plan review round-2 major |
+| **C9** | **分配的 commit point = 首次外部 write（round-3 重写）** | 已发出的字节**不可撤销**，故「多帧全回滚」在物理上不成立。两段语义：**① commit point 之前**（session 拒绝 / build callback 抛错 / 尚未尝试任何 wire write）→ 零副作用，预留不可见，可**全回滚**（frontier、anchor 计数、leg mapping、`openAnchorIndex` 一并退回）。**② commit point 之后**（任一帧已尝试或已成功写出）→ index **永久消费、绝不复用**，失败即**终止 delivery**（返回 `write-error`/`client-abort`、禁止后续分配），并忠实记录已尝试输出。**C1 的「永不跳号」只对成功交付的健康流成立**；失败终止流不得用复用 index 伪造连续 | plan review round-3 blocker |
 | C6 | anchor 绕 buffer | anchor 帧走 `sink.writeAnchor` 绕过 buffer，**不**进 `extractCommittedBlocks` 的续写合成 assistant 前缀（主腿已核实；**续写腿由 P5.4 独立复验**） | 审查「机械核对」第 6 条 |
 | C7 | 合成帧打标记 | 每个 anchor 帧进 forwarded 轨必带 `synthetic:"anchor"`，keepalive delta 带 `synthetic:"keepalive"`；绝不进上游原始轨 | ADR `2026-07-05-richest-data-flow` |
 | **C8** | **字节等价（措辞修订）** | 权威基线 = **P0 在实施 base 上捕获的 pre-change 字节**；P8 必须与该捕获物逐字节相同。历史值 `8691db71…2f6a0` / 1675 bytes 仅作 **provenance / sanity check**，不是跨 master 前进的永久需求。重捕前必须先证明 hook、请求、配置相同，并记录造成差异的 base change | GPT plan review minor |
@@ -104,18 +97,20 @@ C3 的来历是：上一轮**设计 reviewer** 提出「A 把死 remap 路径变
 | 1 | allocator 全链接线（含 live 腿——设计漏了，审查 F8 补） | P1.2 / P1.3 / **P2.1 / P2.2**（owner API）/ P3.1 / P3.2 / P3.3 | O-1 producer 全序；**6 格** mutation 矩阵（三腿 × 分配/remap 两维） |
 | 2 | **恒等**短路（原「anchorsOpened===0」有 blocker，已修订） | P1.4 | O-6 字节等价 + 四场景对照（无 anchor 主腿短路 / **无 anchor 续写腿必须 remap** / 有 anchor 两腿） |
 | 3 | continuation 撞车序列 | P4.1（**两分支**）/ P4.2 | O-1 + 零 anchor 续写腿 & 有 anchor 撞车两条重放 oracle，各配 positive control |
-| 4 | heartbeat vs flush 的分配并发缝 | P2.1 / P2.2 / **P2.2b**（P2×P6 交叉门）/ P2.3 | O-1 + FakeClock 让点 + C9 写失败不推进 + 连跑 15 次 |
+| 4 | heartbeat vs flush 的分配并发缝 | P2.1 / P2.2 / **P2.2b**（P2×P6 交叉门）/ P2.3 | O-1 + FakeClock 让点 + **C9 三档 commit-point oracle**（2.2c）+ 连跑 15 次 |
 | 5 | per-gap latch（一次性 → 每 gap 重新武装） | P5.1 | 多 gap 场景断言 anchor 数 = gap 数 |
 | 6 | gap anchor 下一真实块前关闭 | P5.2 | O-2 协议状态完整性 + anchor stop **exactly-once**（终局站点两两组合） |
 | 7 | 文档后果（ADR D2 措辞 + Q5 公式作废 + **spec 状态同步**） | **P0.0 Step A**（spec 状态，开工硬门）/ P8.4（**停点在写文件前**）/ P8.5 | 跨文档**分类审计**（无未标注作废的规范性消费者），非字面零命中 |
 | 8 | 多轮空 anchor 历史回传 | P7.1 / P7.2（**β 为停点**）/ P7.3 | O-7 **exact tool-use / tool_result / 上游命中恰为 2**（`numTurns>=2` 已是 stall 签名，不可单用） |
 
-**计划自加的两项**（不在原 8 项承重表内，但同等对待）：
+**计划自加的四项**（不在原 8 项承重表内，同等对待）：
 
 | # | 项 | 落成 task | 验收 oracle |
 |---|---|---|---|
 | 9 | 心跳跨 boundary-commit 存活（现网缺陷） | P6.1 / P6.2 / P6.3 / **P6.3b**（Responses HTTP 回归锁） | O-8 + 两层正样本对照 |
-| 10 | **续写腿 × gap anchor 跨相位集成缝**（用户裁决升格为独立 task） | **P5.4** | O-1/O-2 交叉场景 + 交叉 mutation（破 P4 或 P5 任一侧都要转红） |
+| 10 | 续写腿 × gap anchor 跨相位集成缝（用户裁决升格为独立 task） | **M7**（plan-5 Task 5.4） | O-9 交叉 mutation 矩阵（同一测试对两侧 mutation 以不同原因失败）+ 两条单侧 control |
+| 11 | **wire 副作用不可逆的 commit 语义**（round-3 blocker） | P2「Interfaces」C9 + Task 2.2c | 三档 oracle（build 抛错 / 首帧失败 / 首帧成功次帧失败）+ 双向 mutation |
+| 12 | **allocator 注入路径唯一性**（round-3 major） | P2「注入路径」+ P1.3 | identity oracle（四处引用相等）+ 架构守卫（唯一创建点，带正样本对照） |
 
 ## 验收 oracle 总表（reviewer 要求 >= 5 项，实际 9 项）
 
@@ -195,9 +190,10 @@ raw sink（`makeSseSink`）的 `freezeHeartbeat` 只 `clearTimeout` 不置 stopp
 - [plan-0-baseline-and-guards.md](plan-0-baseline-and-guards.md)
 - [plan-1-allocator-state.md](plan-1-allocator-state.md)
 - [plan-2-allocation-critical-section.md](plan-2-allocation-critical-section.md)
-- [plan-3-remap-sites.md](plan-3-remap-sites.md)
-- [plan-4-continuation-frontier.md](plan-4-continuation-frontier.md)
-- [plan-5-gap-anchor-lifecycle.md](plan-5-gap-anchor-lifecycle.md)
+- **P3M 合并相位**（三份同属一个相位，plan-3 为权威）：
+  - [plan-3-remap-sites.md](plan-3-remap-sites.md) —— 相位权威：commit 序列 M1–M8、三腿矩阵、S3 专节
+  - [plan-4-continuation-frontier.md](plan-4-continuation-frontier.md) —— M5 的任务细节
+  - [plan-5-gap-anchor-lifecycle.md](plan-5-gap-anchor-lifecycle.md) —— M1/M6/M7/M8 的任务细节
 - [plan-6-heartbeat-lifecycle-fix.md](plan-6-heartbeat-lifecycle-fix.md)
 - [plan-7-multi-turn-replay.md](plan-7-multi-turn-replay.md)
 - [plan-8-acceptance-and-docs.md](plan-8-acceptance-and-docs.md)
@@ -214,7 +210,9 @@ raw sink（`makeSseSink`）的 `freezeHeartbeat` 只 `clearTimeout` 不置 stopp
 | R5 | 空 anchor 回传被上游拒 400 | 中：多轮对话第二轮失败 | P7 先核实既有清洗（很可能已覆盖），FAIL 则兜底载体/清洗 | P7 |
 | R6 | golden 重捕掩盖真实回归 | 中 | 重捕前必须先过 O-1/O-2；重捕 commit 与实现 commit 分离，diff 可审 | P3 / P5 |
 | R7 | 与并发会话（`fix/client-proxy-keepalive-300s` 等分支）冲突 | 中 | 隔离 worktree + 行级共存；实施前 rebase/merge 到当时 master，`comm -12` 核 WIP∩FF | P0.0 |
-| R8 | **跨相位集成缝**（P4 leg 语义 × P5 gap anchor）只在合并态才暴露 | 中高：本项目吃过亏的形状，逐 task 审看不到，代价最高 | 升格为独立 task P5.4（red-first + **交叉 mutation 矩阵**），**不**依赖 P8.7 合并态审兜底 | P5.4 |
+| R8 | **跨相位集成缝**（leg 语义 × gap anchor）只在合并态才暴露 | 中高：本项目吃过亏的形状，逐 task 审看不到，代价最高 | 升格为独立 task（M7 / plan-5 Task 5.4，red-first + **交叉 mutation 矩阵**），**不**依赖 P8.7 兜底 | M7 |
+| **R11** | **相位切分本身让红绿门失真** | 高：两轮 review 各抓到一次——门不可满足时，mutation 全绿会被误读为「实现正确」 | 合并为 P3M 单相位 + 每个 M-commit 显式写出「可满足的门」；门实测不可满足即**停下回报**，禁止手工补状态凑绿 | P3M |
+| **R12** | **不可逆副作用被当成可回滚**（C9 原表述） | 高：partial write 后复用客户端已见的 index = 确定的协议损坏 | commit point 两段语义 + 三档 oracle + 双向 mutation；C1「永不跳号」限定为健康流 | P2 Task 2.2c |
 | **R9** | **缓解措施本身引入新缺陷** | 高：C3 短路即实例——为降低 R1 而加的机制，自己在默认路径造成 index 复用（本轮 blocker） | 凡「为降风险 X 而引入的机制 M」，M 必须与主路径接受**同等强度**的对抗检验；M 形如「某条件下跳过主逻辑」时，须穷举「条件成立但主逻辑仍必需」的场景 | 全相位；教训见上文 |
 | **R10** | **测试准备替实现完成关键动作** | 中高：手工推进 allocator 的测试会让生产漏分配照样绿（plan review 指出的 P3.1 假绿） | 多 anchor / 多 leg 状态一律由**生产路径**驱动产生（FakeClock + gated upstream），禁止手工 `allocate*`；mutation 矩阵加「删除 allocate 调用」维度 | P3.1 / P3.4 |
 
