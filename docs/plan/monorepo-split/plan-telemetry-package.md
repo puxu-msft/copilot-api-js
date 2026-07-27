@@ -21,7 +21,7 @@
 
 ## 0. TL;DR（给裁决者的三行）
 
-- **中心分叉**：storage-only 剥离**干净但 0 环削减**（`src/lib/telemetry/*` 不是 SCC 成员）；真正削 SCC 的价值在**把 registry（`request-telemetry.ts`）+ dimensions name-registry 一并剥出**——削 **3 条环 / 2 个环成员**（73→70 环、63→61 成员），机器可验证。
+- **中心分叉**：storage-only 剥离**干净但 0 环削减**（`src/lib/telemetry/*` 不是 SCC 成员）；真正削 SCC 的价值在**把 registry（`request-telemetry.ts`）+ dimensions name-registry 一并剥出**——削 **3 条环 / 2 个环成员**（定稿时预测 73→70 环、63→61 成员；**执行实测 73→70 环、65→63 成员**——成员基数在定稿后被 peer 改动推到 65，预测数不自证），机器可验证。
 - **推荐 = Option (b) 全域一包**（storage + registry + name-registry 合成**一个** `@hsupu/ghc-proxy-telemetry`），**sink（`observability/sinks/telemetry.ts`）与 dimension extractors 留 core**。理由见 §2。
 - **与 token 的关键差异**：① 无 SoT 反转（telemetry 读 config、不 own state）→ 无 `setStateForTests`-shim 涟漪；② 但需 `telemetry-dimensions.ts` 的 name/extractor 劈裂（token 无此）；③ 前置需把 `sqlite/{driver,compression}` 上提 foundation（利好 history，非 telemetry 私有）。
 
@@ -88,7 +88,7 @@ sink 的职责是**读 bus 事件的 `entry`+`ctx`、调 extractor 算出 `keys`
 | 维度 | (a) storage-only | (b) 全域一包【推荐】 | (c) 分两次剥离 |
 |---|---|---|---|
 | 范围 | `src/lib/telemetry/*`（8 文件） | storage + registry + dimensions name-registry（合一包） | 先 storage、后 registry（两 plan） |
-| **SCC 环削减** | **0**（storage 非环成员，实测基线 `members` 无 `lib/telemetry/*`） | **3 环 / 2 成员**（削 baseline #34/#35/#36；`request-telemetry.ts` + `observability/telemetry-dimensions.ts` 出 members） | 最终同 (b)，但 storage 步 0、registry 步才削 |
+| **SCC 环削减** | **0**（storage 非环成员，实测基线 `members` 无 `lib/telemetry/*`） | **3 环 / 2 成员**（削 baseline #34/#35/#36；`request-telemetry.ts` + `observability/telemetry-dimensions.ts` 出 members。定稿预测 63→61，**执行实测 65→63**） | 最终同 (b)，但 storage 步 0、registry 步才削 |
 | 外部消费者 | storage 的域外直接消费者**仅 2**：registry（留 core）+ `routes/stats/route.ts:51`（`~/lib/telemetry/read`）。**storage 独立成包 → 与其 owner（registry）跨包 chatty** | registry 域外消费者 7（见 §4 矩阵）、storage 消费者内聚包内 | storage 步造出一个「只有 registry 一个真消费者」的孤包，registry 步再吸收——**两倍搬迁 ceremony + 中途 chatty 边界** |
 | SoT 反转 | 无 | **无**（telemetry 读 config，不 own state——与 token C5 根本不同） | 无 |
 | module-split（dimensions 劈裂） | 无 | **有**（唯一真难点，§1.3） | registry 步才有 |
@@ -241,7 +241,7 @@ telemetry 包**不删任何 state 字段**（config 归 config）。下列消费
 ## 7. 边界守卫 + ratchet（机器护栏）
 
 - **包边界守卫（allowlist，非复用 token 的 core|server|cli denylist——评审 MINOR-4）**：`tests/architecture/package-boundaries.unit.test.ts` 加 `telemetryHasForbiddenImport`。**不复用 token detector 的 `SIBLING_CORE_SERVER_CLI` denylist**（它只拒 core/server/cli，会错误放行 `@hsupu/ghc-proxy-token` 等其他 sibling 包）。改 **allowlist**：只许 ① 相对 `./`/`../` ② `@hsupu/ghc-proxy-foundation`（含子路径）③ `node:` ④ 已声明 external（`consola`/`@datadog/sketches-js`）；**拒所有其他 `@hsupu/ghc-proxy-*`**（含 token）+ 所有 `~/`。正样本对照证 `~/lib/state` / `~/lib/config/paths` / `~/lib/observability/telemetry-dimensions` / `~/lib/history/store` / `@hsupu/ghc-proxy-core` / **`@hsupu/ghc-proxy-token`** 会被命中；反样本证 `@hsupu/ghc-proxy-foundation/ghc-http-primitives` / `./db` / `consola` / `@datadog/sketches-js` / `node:fs` 不被命中。ESLint 镜像同 allowlist、全 import 形态（`from`/side-effect/dynamic/`require`，记忆技巧 7）。package.json 断言 name/private + deps 含 `consola`+`@datadog/sketches-js`+`@hsupu/ghc-proxy-foundation`。
-- **SCC ratchet**：`circular-deps-ratchet.unit.test.ts` 无需改逻辑（它只比 baseline）；~~**baseline 在 T5 重冻结**~~ → **执行期改为 T2/T3/T4/T5 每步重冻结**：T2 把 facade 插进调用链后 `telemetry-runtime.ts` 会临时进环（环数降但成员 +1），要守住「每 commit 终态绿」就必须在实测确认 diff 只含那一个预期新成员后当场重冻结。预期削 `#34`/`#35`/`#36` 三环。**内容级验收（评审建议——防总数恰降但非预期三环消失的假阳性）**：除断言 `73→70` / `63→61` 数字外，加断言**新 baseline 的 `members` 不再含 `lib/request-telemetry.ts` 或旧 `lib/observability/telemetry-dimensions.ts`**（若这两个仍在 members，说明环只是被搬走没被打断）。**风险**：若实测发现它俩还卷在**别的**未列环里（本调研仅见这 3 条，madge 全跑为准），则削环数不足——执行期以 `computeCircularSnapshot()` 实测 diff 为准，别信本 plan 的预测数。
+- **SCC ratchet**：`circular-deps-ratchet.unit.test.ts` 无需改逻辑（它只比 baseline）；~~**baseline 在 T5 重冻结**~~ → **执行期改为 T2/T3/T4/T5 每步重冻结**：T2 把 facade 插进调用链后 `telemetry-runtime.ts` 会临时进环（环数降但成员 +1），要守住「每 commit 终态绿」就必须在实测确认 diff 只含那一个预期新成员后当场重冻结。预期削 `#34`/`#35`/`#36` 三环。**内容级验收（评审建议——防总数恰降但非预期三环消失的假阳性）**：除断言数字外（定稿预测 `73→70` / `63→61`，**执行实测 `73→70` / `65→63`**），加断言**新 baseline 的 `members` 不再含 `lib/request-telemetry.ts` 或旧 `lib/observability/telemetry-dimensions.ts`**（若这两个仍在 members，说明环只是被搬走没被打断）。**风险**：若实测发现它俩还卷在**别的**未列环里（本调研仅见这 3 条，madge 全跑为准），则削环数不足——执行期以 `computeCircularSnapshot()` 实测 diff 为准，别信本 plan 的预测数。
 - **madge 计 type-only 边（已实测确认）**：`request-telemetry.ts:9 import type UsageData` 与 `telemetry-dimensions.ts:32 import type HistoryEntryData` 均为 type-only、却出现在 baseline `#34`/`#35`——证明 `circular-deps-snapshot.ts` 的 madge 配置**未设 `skipTypeImports`**、type-only 边照计环。**故 T4 的 `UsageData` 解耦是削 `#34` 的必要步**（不能只当「反正 type-only 无运行时环」略过）。
 
 ## 8. 风险 + 回滚
