@@ -14,6 +14,7 @@
  * Commit 2: subscribed but idle — bus carries no terminal events yet.
  */
 
+import { CAPPED_DIMENSION_NAMES } from "~/lib/telemetry-dimension-names"
 import { peekTelemetryRuntime } from "~/lib/telemetry-runtime"
 
 import type {
@@ -24,7 +25,6 @@ import type {
 
 import {
   //
-  CAPPED_DIMENSION_NAMES,
   extractTelemetryKeys,
   extractThinkingBlockCounts,
 } from "../telemetry-dimensions"

@@ -1,38 +1,42 @@
 /**
- * Telemetry dimension registry (sink layer).
+ * Telemetry dimension EXTRACTORS (sink layer).
  *
- * A dimension is a registered key-extractor over a settled request's `entry` (+
- * `ctx`, for ctx-derived dimensions). The sink computes the per-dimension keys
- * HERE — where the entry/ctx types are in scope — and hands `request-telemetry.ts`
- * a plain `Record<dimName, key | key[] | null>`, keeping that aggregation leaf
- * type-light (it never imports entry/ctx, only the resolved keys).
+ * A dimension is a registered key-extractor over a settled request's `entry` (+ `ctx`, for
+ * ctx-derived dimensions). The sink computes the per-dimension keys HERE — where the entry/ctx
+ * types are in scope — and hands `request-telemetry.ts` a plain
+ * `Record<dimName, key | key[] | null>`, keeping that aggregation leaf type-light (it never
+ * imports entry/ctx, only the resolved keys).
  *
- * Adding a dimension is one push to {@link TELEMETRY_DIMENSIONS}; record/persist/
- * load/snapshot in request-telemetry are all generic over dimension names, so no
- * edits there.
+ * The other half of the registry — the dimension NAMES + cardinality classes + the
+ * {@link ThinkingBlockCounts} measure-input shape — lives in the telemetry domain
+ * (`~/lib/telemetry-dimension-names`), which is entry/ctx-free by construction. Adding a dimension
+ * is one spec there plus its extractor in {@link DIMENSION_EXTRACTORS} here; record/persist/load/
+ * snapshot in request-telemetry are all generic over dimension names, so no edits there. The
+ * extractor table is a `Record` over the spec name union, so a spec without an extractor is a
+ * COMPILE error rather than a silently-absent dimension.
  *
- * **`null` semantics**: an extractor returning `null` means "not applicable to this
- * request" → the request is NOT counted under that dimension. Per-dimension request
- * totals may therefore legitimately differ (e.g. `tool` only counts requests that
- * invoked a tool; `client` only counts requests whose inbound `user-agent` we saw).
- * The `model`, `endpoint`, and `agentKind` dimensions never return `null`, so their
- * totals always equal the settled-request count. Empty/whitespace keys are
- * normalized to `"unknown"` by request-telemetry.
+ * **`null` semantics**: an extractor returning `null` means "not applicable to this request" → the
+ * request is NOT counted under that dimension. Per-dimension request totals may therefore
+ * legitimately differ (e.g. `tool` only counts requests that invoked a tool; `client` only counts
+ * requests whose inbound `user-agent` we saw). The `model`, `endpoint`, and `agentKind` dimensions
+ * never return `null`, so their totals always equal the settled-request count. Empty/whitespace
+ * keys are normalized to `"unknown"` by request-telemetry.
  *
- * **multi-key**: an extractor may return `string[]` (e.g. `tool` — one request can
- * invoke several tools). request-telemetry dedups and accumulates once per distinct
- * key.
- *
- * **cardinality**: `bounded` dimensions have a naturally small key space (model /
- * endpoint / agentKind). `capped` dimensions (client / tool) are user/agent-driven
- * and potentially unbounded, so request-telemetry caps their key count and merges
- * overflow into `"other"` (see {@link CAPPED_DIMENSION_NAMES}).
+ * **multi-key**: an extractor may return `string[]` (e.g. `tool` — one request can invoke several
+ * tools). request-telemetry dedups and accumulates once per distinct key.
  */
 
 import type { HistoryEntryData } from "~/lib/context/types"
 import type { RequestContextSnapshot } from "~/lib/observability/events"
+import type {
+  //
+  TelemetryDimensionName,
+  TelemetryDimensionSpec,
+  ThinkingBlockCounts,
+} from "~/lib/telemetry-dimension-names"
 
 import { getHeaderCaseInsensitive } from "~/lib/fetch-utils"
+import { TELEMETRY_DIMENSION_SPECS } from "~/lib/telemetry-dimension-names"
 
 /**
  * The upstream response content envelope for tool-name / thinking-block
@@ -42,17 +46,12 @@ function resolveUpstreamContent(entry: HistoryEntryData): unknown {
   return entry.attempts?.at(-1)?.upstreamResponse?.body
 }
 
-/** A registered telemetry dimension: a name + an entry/ctx → key extractor. */
-export interface StatDimension {
-  name: string
-  /** Resolve this request's key(s) for the dimension. `null` = not applicable (skip); `string[]` = multi-key. */
-  extract: (entry: HistoryEntryData, ctx: RequestContextSnapshot) => string | Array<string> | null
-  /**
-   * Key-space size class. `bounded` = naturally small (no cap). `capped` =
-   * user/agent-driven, potentially unbounded → request-telemetry bounds the key
-   * count and merges overflow into `"other"`. Defaults to `bounded`.
-   */
-  cardinality?: "bounded" | "capped"
+/** Resolve one request's key(s) for a dimension. `null` = not applicable (skip); `string[]` = multi-key. */
+export type TelemetryKeyExtractor = (entry: HistoryEntryData, ctx: RequestContextSnapshot) => string | Array<string> | null
+
+/** A registered telemetry dimension: its domain-owned spec (name + cardinality) plus its core-owned extractor. */
+export interface StatDimension extends TelemetryDimensionSpec {
+  extract: TelemetryKeyExtractor
 }
 
 /**
@@ -103,22 +102,6 @@ export function extractToolNames(entry: HistoryEntryData): Array<string> {
 }
 
 /**
- * Per-request tally of the assistant response's thinking blocks, split by content emptiness +
- * signature presence. The measure-input shape (owned here — the extractor's output; re-used by
- * `request-telemetry.ts`'s `SettledTelemetryInput.thinkingBlocks` via `import type`):
- * - `nonEmpty`      — `thinking` is a non-blank string (real reasoning text).
- * - `emptySigned`   — `thinking` blank but `signature` a non-empty string (normal encrypted /
- *   compat block — Anthropic thinking is self-contained in the signature).
- * - `emptyUnsigned` — `thinking` blank AND `signature` empty/missing/null (a corrupt double-empty
- *   block — the upstream-corruption signal `thinkingBlockSanitizeCheck.all_empty` strips).
- */
-export interface ThinkingBlockCounts {
-  nonEmpty: number
-  emptySigned: number
-  emptyUnsigned: number
-}
-
-/**
  * Tally the assistant response's thinking blocks into {@link ThinkingBlockCounts}. Mirrors
  * {@link extractToolNames}: reads the proxy-recorded `outboundResponse.content` envelope and
  * defends against its `unknown` shape. Filters to `type === "thinking"` FIRST (so
@@ -154,40 +137,25 @@ export function extractThinkingBlockCounts(entry: HistoryEntryData): ThinkingBlo
 }
 
 /**
- * The registered dimensions. Order is irrelevant (keys are name-addressed).
- * `model` is the back-compat dimension projected to
- * `RequestTelemetrySnapshot.modelsSinceStart` / `modelsLast7d`.
- *
- * **Cardinality**: `model`/`client`/`tool` are all `capped` — their keys derive
- * from CLIENT-controlled input (the raw `inboundRequest.model` is forwarded
- * verbatim and recorded even on an upstream-400 failure; user-agent; tool names),
- * so an abusive/buggy client could otherwise grow the key set without bound (memory
- * leak + a `/metrics` cardinality bomb). Only `endpoint` (a 4-value route enum) and
- * `agentKind` (`main`/`subagent`) are genuinely `bounded` and skip the cap.
+ * The extractor for every registered dimension name. Exhaustive by TYPE: the `Record` is keyed by
+ * the spec name union, so adding a spec in `telemetry-dimension-names.ts` without adding its
+ * extractor here fails to compile (rather than yielding a dimension that silently records nothing).
  */
-export const TELEMETRY_DIMENSIONS: ReadonlyArray<StatDimension> = [
+const DIMENSION_EXTRACTORS: Record<TelemetryDimensionName, TelemetryKeyExtractor> = {
   // Resolved/requested live under the `model` parent key (RFC §2.5).
-  {
-    name: "model",
-    cardinality: "capped",
-    extract: (entry) => entry.model?.resolved ?? entry.model?.requested ?? "unknown",
-  },
-  { name: "endpoint", cardinality: "bounded", extract: (entry) => entry.endpoint },
-  { name: "client", cardinality: "capped", extract: (entry) => normalizeClient(entry.clientRequest?.headers) },
-  { name: "agentKind", cardinality: "bounded", extract: (entry) => (entry.agentId ? "subagent" : "main") },
-  { name: "tool", cardinality: "capped", extract: (entry) => extractToolNames(entry) },
-  {
-    name: "max_tokens_truncation",
-    cardinality: "bounded",
-    extract: (entry) => entry.pipelineInfo?.maxTokensContinuation?.truncationClass ?? null,
-  },
-]
+  model: (entry) => entry.model?.resolved ?? entry.model?.requested ?? "unknown",
+  endpoint: (entry) => entry.endpoint,
+  client: (entry) => normalizeClient(entry.clientRequest?.headers),
+  agentKind: (entry) => (entry.agentId ? "subagent" : "main"),
+  tool: (entry) => extractToolNames(entry),
+  max_tokens_truncation: (entry) => entry.pipelineInfo?.maxTokensContinuation?.truncationClass ?? null,
+}
 
-/** The capped (high-cardinality) dimension names, passed to `recordSettledRequest` so it bounds their key counts. */
-export const CAPPED_DIMENSION_NAMES: ReadonlySet<string> = new Set(TELEMETRY_DIMENSIONS.filter((dim) => dim.cardinality === "capped").map((dim) => dim.name))
-
-/** All registered dimension names — `/api/stats` validates the requested `dimension` against this list. */
-export const TELEMETRY_DIMENSION_NAMES: ReadonlyArray<string> = TELEMETRY_DIMENSIONS.map((dim) => dim.name)
+/** The registered dimensions — each domain-owned spec joined with its core-owned extractor. */
+export const TELEMETRY_DIMENSIONS: ReadonlyArray<StatDimension> = TELEMETRY_DIMENSION_SPECS.map((spec) => ({
+  ...spec,
+  extract: DIMENSION_EXTRACTORS[spec.name],
+}))
 
 /** Resolve every registered dimension's key(s) for one settled request. */
 export function extractTelemetryKeys(entry: HistoryEntryData, ctx: RequestContextSnapshot): Record<string, string | Array<string> | null> {

@@ -17,12 +17,12 @@
  * correct and must not force every HTTP test to assemble a dummy runtime).
  */
 
-import type { ThinkingBlockCounts } from "./observability/telemetry-dimensions"
 import type {
   //
   DimensionBreakdownSnapshot,
   RequestTelemetrySnapshot,
 } from "./request-telemetry"
+import type { ThinkingBlockCounts } from "./telemetry-dimension-names"
 import type { TelemetryDatabase } from "./telemetry/db"
 
 import {

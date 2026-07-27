@@ -7,15 +7,15 @@ import {
 } from "~/lib/atomic-fs"
 
 import type { UsageData } from "./history/store"
-import type { ThinkingBlockCounts } from "./observability/telemetry-dimensions"
+import type { ThinkingBlockCounts } from "./telemetry-dimension-names"
 import type { TelemetryDatabase } from "./telemetry/db"
 
-import { CAPPED_DIMENSION_NAMES } from "./observability/telemetry-dimensions"
 import {
   //
   getTelemetryDeps,
   type TelemetryConfigView,
 } from "./telemetry-dependencies"
+import { CAPPED_DIMENSION_NAMES } from "./telemetry-dimension-names"
 import { openTelemetryDb } from "./telemetry/db"
 import {
   //

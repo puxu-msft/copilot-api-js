@@ -26,12 +26,12 @@ import type {
 } from "./request-telemetry"
 
 import { getRetryStrategyFireCounts } from "./observability/retry-strategy-fires"
-import { TELEMETRY_DIMENSION_NAMES } from "./observability/telemetry-dimensions"
 import {
   //
   TELEMETRY_HISTOGRAMS,
   TELEMETRY_MEASURE_NAMES,
 } from "./request-telemetry"
+import { TELEMETRY_DIMENSION_NAMES } from "./telemetry-dimension-names"
 import { getTelemetryRuntime } from "./telemetry-runtime"
 
 /** Prometheus text exposition content-type (format version 0.0.4). */

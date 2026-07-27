@@ -23,7 +23,6 @@ import {
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
-import { CAPPED_DIMENSION_NAMES } from "~/lib/observability/telemetry-dimensions"
 import {
   //
   restoreStateForTests,
@@ -31,6 +30,7 @@ import {
   snapshotStateForTests,
   type StateSnapshot,
 } from "~/lib/state"
+import { CAPPED_DIMENSION_NAMES } from "~/lib/telemetry-dimension-names"
 import {
   //
   _getCumulativeCapKeysForTests,

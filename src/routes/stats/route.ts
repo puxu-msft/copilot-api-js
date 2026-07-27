@@ -31,12 +31,12 @@ import {
   z,
 } from "@hono/zod-openapi"
 
-import { TELEMETRY_DIMENSION_NAMES } from "~/lib/observability/telemetry-dimensions"
 import {
   //
   DEFAULT_BREAKDOWN_LIMIT,
 } from "~/lib/request-telemetry"
 import { state } from "~/lib/state"
+import { TELEMETRY_DIMENSION_NAMES } from "~/lib/telemetry-dimension-names"
 import { getTelemetryRuntime } from "~/lib/telemetry-runtime"
 import {
   //
