@@ -24,9 +24,6 @@ export default defineConfigWithVueTs(
       "tsdown.config.ts",
       "ui/playwright.config.ts",
       "prettier.config.mjs",
-      // Local debug probe scripts at repo root (not in tsconfig project graph).
-      "mutation-probe.mjs",
-      "probe-loopback-baseline.mjs",
       // Experiment / probe scratch dir — not in the tsconfig project graph, so
       // typed linting can only emit "not found by the project service" parse
       // errors. Experiments are intentionally throwaway (see exp/ convention).
