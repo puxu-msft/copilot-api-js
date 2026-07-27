@@ -1,6 +1,8 @@
 # Plan-M: terminal ownership matrix（两轮审查共同点名的 plan 首要交付物）
 
 > **修订记录（2026-07-23，据 GPT plan-review [major] 全 leg 枚举意见修订）**：原版本只列了 4 个同格式直连格（Anthropic direct / CC direct / Responses HTTP direct / Responses WS），被审查指出遗漏运行时真实存在的 translate/fallback/reverse legs（`handler-v4.ts:1123-1137` 的 `@cc`/`@responses` translate、`:1501-1505` 明文注释该 translate leg 不可复用 buffered 判据、`responses/handler-v4.ts:194-235` 的 `viaFallback`/`reverseMessages`）。本版本**从路由决策代码逐条枚举全部运行时可达的 `(inbound × outbound)` 格**，非凭空猜测组合——每格标注该 leg 是否走 `runResponseBufferedSink`（本特性可挂载）还是 `runResponseSink`（当前无缓冲、本特性在该 leg 上只能是「本版本不支持，强制透传」）。
+>
+> **修订记录三（2026-07-27，planner 亲自读码核实，master `db1cb775`）**：本轮对全部「待核实（M.1）」格逐一读码核实，补全四要素，发现两处此前假设的核实缺口已被并发会话的 P0 落地实质关闭：① `incomplete_details.reason` 捕获——`src/lib/openai/responses-stream-accumulator.ts:140`（`accumulateResponsesStreamEvent` 的 `response.incomplete` 分支）**已捕获**（`acc.incompleteReason = event.response.incomplete_details?.reason`，提交 `b8b5e7c2 fix(responses): retain incomplete terminal reason`，属 `f0bd5f73 docs(plan): complete max_tokens continuation P0` 一部分）——原表格 M.2 交叉确认里"当前未被捕获"的表述已过时，本次同步更正为"已捕获"；② P0 的 Anthropic-only observer 分档决策（`plan-0-classifier-and-observability.md`）已按计划落地并标注"P0 已完成"，与本文件 Task M.2 的分工假设一致，无需改动。**结论不变，但依据从"计划假设"升级为"读码确认"**——下述各格的④要素、CC/Responses 交叉场景判据来源、WS 依赖状态均已逐条重新核实（细节见各小节，未核实到的角落已诚实标注 + 给出具体核实方法）。
 
 > **地位不变：** 这不是可选文档任务——没有它 CC/Responses/WS 的 wire 拦截点无法唯一确定，P3 不能只靠 per-format PoC 蒙混过关（spec §5.3）。
 
@@ -68,52 +70,64 @@
 
 ### CC direct（`openai-cc × /chat/completions`）
 
-**状态：CC direct 主形状已在 planning 期读码，`[DONE]` 时序须实施前补全（Task M.1）。**
+**状态：全部四要素已读码核实（2026-07-27），可直接用于 P3 Task 3.2。**
 
 | 要素 | 内容（标注核实来源） |
 |---|---|
-| ①accumulatorSite | `src/routes/chat-completions/handler-v4.ts:355-357` `sawMessageStop: (state) => state.acc.finishReason !== ""` |
-| ②terminatorConstructor | `finish_reason` 是上游原生字段直接透传；客户端可见的流终止符 `data: [DONE]` 由 handler **post-loop 合成**（`:628-657`，driver outcome resolve 之后补写） |
-| ③interceptSite | driver 的 terminal drain 触发点（`sawMessageStop`真）插入检测；**`[DONE]` 合成逻辑须知道"续写中不该发"** |
-| ④finalCompletionOwner | **待核实（M.1）**：`[DONE]` 合成点在 handler post-loop、driver 完成 resolve 之后才跑——续写多轮时只有最后一轮 resolve 后才应合成 `[DONE]`，须读该段完整代码确认协调机制 |
+| ①accumulatorSite | `src/routes/chat-completions/handler-v4.ts:355` `sawMessageStop: (state) => state.acc.finishReason !== ""`；`state.acc` 由同文件 `onRenderedFrame`（`:339-354`）逐帧调 `accumulateOpenAIStreamEvent` 填充 |
+| ②terminatorConstructor | `finish_reason` 是上游原生字段直接透传（`accumulateOpenAIStreamEvent` 写入 `acc.finishReason`，不新构造）；客户端可见的流终止符 `data: [DONE]` 由 handler **post-loop 合成**（`:654`，`await sink.write({ data: "[DONE]" })`，在 `outcome.kind === "complete"` 且 `acc.streamError`/`acc.finishReason===""` 两个提前 return 分支都不成立之后） |
+| ③interceptSite | driver 的 terminal drain 触发点（`driver.ts:1336` `sawMessageStop?.()` 为真、`:1348` flush 之前）——与 Anthropic 同一段共享代码，非 CC 专属分支；`max_tokens` 截获须在这里插入，早于 handler 的 `[DONE]` 合成（该合成在 `runResponseBufferedSink` **返回之后**才跑，见④） |
+| ④finalCompletionOwner | **已确认（非待核实）**：`runResponseBufferedSink`（`driver.ts:989-1509`）内部是一个 `for(;;)` 循环（`:1161`），续写分支（`:1401-1463`）在循环体内部 `continue`，**函数只在真正到达终局（成功 flush 或穷尽退化）时才 `return`**——即 CC handler 的 `pumpStreamingV4`（`:494-554`）拿到的 `outcome` 已经是"全部续写轮结束后的最终结果"，handler 的 `[DONE]` 合成点（`:654`）天然只在最后一轮之后跑一次，**不需要额外协调机制**（原表格"待核实"的顾虑不成立——续写是 driver 内部循环，不是 handler 感知到的多次 `runResponseBufferedSink` 调用）。**核实方法**：`driver.ts:1161` 的 `for(;;)` + `:1445-1454`（`continuationOffset = wireDeliveredBlocks; onContinuationLeg = true; continue`）逐行读码确认。 |
 
-### CC via-responses（`openai-cc × /responses`，交叉场景）
+### CC via-responses（`openai-cc × /responses`，交叉场景——CC 客户端 body，上游实际是 Responses）
 
-| 要素 | 内容 |
+**状态：全部四要素已读码核实（2026-07-27）。**
+
+| 要素 | 内容（标注核实来源） |
 |---|---|
-| ①accumulatorSite | 同 CC direct（客户端看 CC 帧），但**上游 wire 实际是 Responses**——触发判据须读 `ResponsesStreamAccumulator.status`（若能拿到）或 CC 层已翻译的 `finishReason`（若 `prepareWire` 已完成 Responses→CC 的响应翻译，判据可能已经是 CC 形状——**待核实**这层翻译发生在 driver 内部哪个阶段，是否早于 `sawMessageStop` 判断点） |
-| ②-④ | **待核实（M.1）**——这是与 CC direct 共用 handler 代码但触发信号来源不同的变体，不能假设与 direct 完全同构 |
+| ①accumulatorSite | 同 CC direct（`state.acc: OpenAIStreamAccumulator`，客户端看 CC 帧，同一个 `createChatCandidateResponseSession` 非 reverse 分支，`handler-v4.ts:329-361`），**触发判据仍是 CC 形状的 `acc.finishReason`**——翻译发生在 render 阶段之前：上游 Responses SSE 帧先经 `createStreamTranslator().translate()`（`src/lib/openai/translate/responses-to-cc-stream.ts:28-186`）译成 `ChatCompletionChunk`，`response.incomplete` 事件在这里就被译成 CC 的 `finish_reason: mapIncompleteFinishReason(event.response.incomplete_details)`（`:127-129`，`length` 或 `content_filter`），**该翻译是 render 阶段的产物**（driver `renderFrames` 调 `codec.renderResponse` → `codec.ts:263-265` 的 `responsesRenderer.renderFrame`），在 `onRenderedFrame` 读到 `state.acc` 之前已经完成——故 `sawMessageStop` 判断点读到的 `acc.finishReason` **已经是翻译后的 CC 形状**，判据与 CC direct 完全同构，无需额外适配层。 |
+| ②terminatorConstructor | 同 CC direct——`[DONE]` 由 handler `:654` 后置合成；`finish_reason` 已在 render 阶段由 `createStreamTranslator` 译成 CC 形状（见①），无第二次转换。 |
+| ③interceptSite | 同 CC direct——`driver.ts:1336` 判断点，**帧已经过 render 翻译**（CC 客户端从不看到原始 Responses 事件）。 |
+| ④finalCompletionOwner | 同 CC direct——同一个 `runResponseBufferedSink` 循环，via-responses 只是 render 阶段多一层 Responses→CC 翻译（`createResponsesToCcFrameRenderer`，`codec.ts:205`），不影响 driver 层的终局归属。**结论：CC via-responses 与 CC direct 在④要素上完全同构，P3 Task 3.3b 可直接复用 Task 3.2 的截获逻辑（原文档"若翻译发生更晚需要额外适配层"的分支已被证伪排除）。** |
 
 ---
 
 ### Responses HTTP direct（`openai-responses × /responses`，`viaFallback=false`）
 
-**状态：本表基于 planning 期调研，P3 实施前须实施者亲自复核；`incomplete_details.reason` 捕获缺口已知（见下）。**
+**状态：全部四要素已读码核实（2026-07-27）；`incomplete_details.reason` 捕获缺口已被 P0 关闭（非本阶段待办）。**
 
 | 要素 | 内容（标注核实来源） |
 |---|---|
-| ①accumulatorSite | `src/lib/openai/responses-stream-accumulator.ts` `ResponsesStreamAccumulator.status`（`case "response.incomplete"` 分支，`:126-130`填充）。**`incomplete_details.reason` 当前未被捕获**（accumulator 只存 `status`，不存 reason——已核实。此值属于 P0 的独立 terminal observer 需新增捕获的字段，非 P3 阶段才处理，见 `plan-0` 修订 + Task M.2 交叉确认） |
-| ②terminatorConstructor | 待核实完整构造点（`handler-v4.ts:470-490` 只读到 `acc.status===""`兜底分支，正常 `max_tokens` 终止路径的构造代码位置待补） |
-| ③interceptSite | 类似 Anthropic，driver 的 terminal drain 判断（`sawMessageStop`等价物）触发、frame 真正 flush 之前 |
-| ④finalCompletionOwner | 待核实——续写自然终止对 Responses 是 `response.completed` |
+| ①accumulatorSite | `src/lib/openai/responses-stream-accumulator.ts:99-186` `accumulateResponsesStreamEvent`：`case "response.incomplete"`（`:138-141`）填充 `acc.status = event.response.status` **且** `acc.incompleteReason = event.response.incomplete_details?.reason`——**该字段已捕获，非待核实项**：提交 `b8b5e7c2 fix(responses): retain incomplete terminal reason`（属 `f0bd5f73 docs(plan): complete max_tokens continuation P0`），`plan-0-classifier-and-observability.md` 顶部已标注"P0 已完成"且明确"CC/Responses 的 `incomplete_details.reason` 捕获…已在 P0 落地"。**原表格"当前未被捕获"的表述是过时快照，本次同步更正。** |
+| ②terminatorConstructor | `response.completed`/`.incomplete`/`.failed` 三个 Responses 原生 lifecycle 事件由上游直接携带（无客户端侧二次构造）；这三者也是 `isResponsesCommitBoundary`（`src/lib/codec/openai-responses/commit-boundaries.ts:18-32`）认定的 commit boundary 之一，驱动 `driver.ts` 的块级 flush。终止后 handler 不再合成额外终止帧（Responses 协议自带完整 lifecycle，无 CC 式 `[DONE]` 后缀）。 |
+| ③interceptSite | driver 的 terminal drain 判断点（`driver.ts:1336`，`sawMessageStop`读 `acc.status !== ""`，`responses/candidate-response-session.ts:138`）——与 Anthropic/CC 共享同一段代码；块级路径下（HTTP 走 `commitBoundaries: isResponsesCommitBoundary`，`candidate-response-session.ts:140`）截获点还需考虑块级 boundary flush（`:1240` 附近的 `commitBoundaries?.()` 分支）与终局 flush（`:1348`）两处——**`max_tokens` 截获必须在终局 flush（`:1336`判断真）处，不是块级 boundary**（块级 boundary 只是中间 `output_item.done`，不代表整个响应终止）。 |
+| ④finalCompletionOwner | 同 CC direct——`runResponseBufferedSink` 内部 `for(;;)` 循环唯一 `return`，handler（`responses/handler-v4.ts:378-499`）拿到的 outcome 已是续写全部完成后的终局，无需额外协调。 |
 
-### Responses fallback（`openai-responses × /chat/completions`，`viaFallback=true`，交叉场景）
+### Responses fallback（`openai-responses × /chat/completions`，`viaFallback=true`，交叉场景——Responses 客户端 body，上游实际是 CC）
 
-| 要素 | 内容 |
+**状态：全部四要素已读码核实（2026-07-27）。**
+
+| 要素 | 内容（标注核实来源） |
 |---|---|
-| ①accumulatorSite | 同 Responses direct（**同一个 buffered 调用共享同一 `runResponseBufferedSink` 实例**，`viaFallback` 只影响 fallback session 注册时机），但上游 wire 实际是 CC——触发判据须读 CC 的 `finish_reason=length`，非 Responses 的 `incomplete` |
-| ②-④ | **待核实（M.1）**——与 direct 变体共用 handler 代码但触发信号来源不同，须显式区分测试 |
+| ①accumulatorSite | 同 Responses direct（**同一个 `createResponsesCandidateResponseSessionFactory` 非 reverse 分支**，`candidate-response-session.ts:106-166`，`viaFallback` 只影响 `fallbackResponseId` 的读取来源，不影响 accumulator 类型），但上游 wire 实际是 CC——render 阶段先经 `createCCToResponsesStreamTranslator`（`src/lib/openai/translate/responses-to-cc-request.ts:251-`）把 CC SSE 帧译成 Responses 事件（`codec.ts:263-265` 的 `ensureCcTranslator().translate()`），CC 的 `finish_reason:"length"` 在这里被译成 `ccFinishReasonToResponsesStatus("length")` → `{ status: "incomplete", incompleteReason: "max_output_tokens" }`（`responses-to-cc-request.ts:511-513`）——**触发判据读到的 `acc.status`/`acc.incompleteReason` 已经是翻译后的 Responses 形状**，与 direct 完全同构，翻译发生在 render 阶段（早于 `onRenderedFrame` 里的 `accumulateResponsesStreamEvent`），不存在"CC 形状漏读"的风险。 |
+| ②terminatorConstructor | 同 Responses direct——三个 lifecycle 事件（此处是翻译合成的 `response.completed`，携带 `incomplete` status）由 render 阶段产出，非 handler post-loop 二次构造。 |
+| ③interceptSite | 同 Responses direct——driver `:1336` 判断点，帧已经过 CC→Responses render 翻译。 |
+| ④finalCompletionOwner | 同 Responses direct/CC direct——`runResponseBufferedSink` 单一循环终局。**结论：Responses fallback 与 direct 在④要素上完全同构，P3 Task 3.7b 可直接复用 Task 3.6 的截获逻辑（原文档"待核实"的交叉适配顾虑已被证伪排除）。** |
 
 ---
 
 ### Responses WS（`openai-responses × ws:/responses`）
 
-**状态：仅骨架，姊妹 spec WS 续写传输时序依赖须先核实。**
+**状态：核心机制已读码核实；WS 块级续写的姊妹依赖状态已确认——姊妹 spec Task 6.1/6.2 均未落地（2026-07-27 核实）。**
 
-| 要素 | 内容 |
+| 要素 | 内容（标注核实来源） |
 |---|---|
-| ①accumulatorSite | 同 Responses HTTP（共用 accumulator），但 `commitBoundaries` 故意省略（`ws.ts:376-396`，terminal-only 提交） |
-| ②-④ | 待核实，且依赖姊妹 spec plan-4-7 Task 6.1/6.2 的落地状态（WS 续写=新上游轮重新派发，非同连接续帧） |
+| ①accumulatorSite | 同 Responses HTTP（共用同一个 `createResponsesCandidateResponseSessionFactory("ws")`，`candidate-response-session.ts:60-166`），但 `commitBoundaries` **故意省略**（`ws.ts:376-396` 明文注释：WS 不能复用 HTTP 的 `isResponsesCommitBoundary` 块级谓词，因为 `response.output_item.done` 在 WS 语境下提交一个块会过早关闭重试窗口——`committedAny` 提前置真，导致 `output_item.done` 之后、`response.completed` 之前的丢包错误降级为 `partial-degrade` 而非重试）。故 WS 是 **terminal-only** 提交：`driver.ts` 的 `sawMessageStop`/`sawUpstreamError` 是唯一 commit 触发点。 |
+| ②terminatorConstructor | 同 HTTP：三个 lifecycle 事件由上游原生携带；WS 额外有 `stopAfterFrame`（`candidate-response-session.ts:141-146`，`TERMINAL_EVENTS` 命中即停止读取，避免读过 `response.completed` 挂到 idle-timeout）。 |
+| ③interceptSite | 同 HTTP——driver `:1336`——但 WS **没有块级 boundary**（`commitBoundaries` 未传入 `runResponseBufferedSink`，`ws.ts:393-408`），故本特性在 WS 上只能是**整响应级**的 max_tokens 截获（与 CC 的终局-only 判据同构，非 Responses HTTP 的块级判据）。 |
+| ④finalCompletionOwner | 待实施者在实现 Task 3.10 时**核实清楚**：WS 续写按姊妹 spec 的设计是"重新派发上游轮"（新 `upstream turn`，非同连接续帧），这与 Anthropic/CC/Responses-HTTP"同一个 `runResponseBufferedSink` 循环内 `continue`"的机制**不同构**——姊妹 spec Task 6.2（`plan-4-7-remaining.md:59-62`）本身也标注这是"承重实现细节"，其 close-code（1011）/ `sendErrorAndClose` 与增量 commit 时序如何与 `runResponseBufferedSink` 的 continuation 分支对接，**在姊妹 spec 落地前无法确定**，不是本 planner 能越权替姊妹 spec 做的实现决策。 |
+
+**姊妹依赖状态（本次核实，非猜测）**：`docs/plan/2026-07-22-continuation-retry-sequential-anchor/plan-4-7-remaining.md` Task 6.1（`WS 升块级`，`:55-57`）与 Task 6.2（`WS 续写传输时序`，`:59-62`）**均为未勾选的 `- [ ]` 待办项**；`git log --oneline` 显示该文件自 `6696e201`（首次提交，2026-07-22）后再无提交，`git log --oneline master -- src/routes/responses/ws.ts` 也未见任何 WS 块级/续写相关改动——**Task 3.8/3.9/3.10（本特性 Responses-WS 续写）在实施前须重新核实该状态**（若届时仍未落地，按 Task 3.8 既定分支：标记阻塞、登记 backlog，不阻塞 CC/Responses-HTTP 收口）。
 
 ---
 
@@ -139,18 +153,19 @@
 
 ## 矩阵收口任务
 
-### Task M.1: 核实全部「待核实」格 + 补全四要素
+### Task M.1: 核实全部「待核实」格 + 补全四要素 —— **已完成（2026-07-27，planner 读码核实）**
 
-- [ ] 实施者亲自读 `src/routes/chat-completions/handler-v4.ts` 的 `[DONE]` 合成完整时序（CC direct 行④）。
-- [ ] 实施者亲自读 `src/routes/responses/handler-v4.ts` direct 路径的 `max_tokens`/`incomplete` 正常终止构造点（Responses direct 行②④）+ 核实 CC via-responses / Responses fallback 两个交叉场景的触发判据来源（哪一层完成了 Responses↔CC 的响应翻译，早于还是晚于 buffered 的 `sawMessageStop` 判断）。
-- [ ] 实施者核实姊妹 spec Responses-WS 续写传输时序的实施状态（`docs/plan/2026-07-22-continuation-retry-sequential-anchor/plan-4-7-remaining.md` Task 6.1/6.2）。
-- [ ] 每个可挂载格核实后，写一个 producer-oracle 单测断言④要素（"唯一终局"不变量）；每个「不支持/不适用」格写对应的透传 producer oracle（上表已列目标，含已确认的 Responses reverse leg，见 `plan-3-cc-responses.md` Task 3.12）。
-- [ ] **提交** → `docs(plan): fill terminal ownership matrix M (full leg enumeration verified)`。
+- [x] 亲自读 `src/routes/chat-completions/handler-v4.ts` 的 `[DONE]` 合成完整时序（CC direct 行④）——`runResponseBufferedSink` 内部 `for(;;)` 循环唯一 `return`，handler 拿到的 outcome 已是续写全部完成后的终局，无需额外协调机制；原"待核实"的顾虑已证伪排除。
+- [x] 亲自读 `src/routes/responses/handler-v4.ts` direct 路径的 `max_tokens`/`incomplete` 正常终止构造点（Responses direct 行②④）+ 核实 CC via-responses / Responses fallback 两个交叉场景的触发判据来源——**两个交叉场景的 Responses↔CC 翻译均发生在 render 阶段**（`createStreamTranslator`/`createCCToResponsesStreamTranslator`），**早于** `onRenderedFrame` 里的 accumulate 调用，故触发判据读到的值已经是目标格式的形状，与对应 direct 变体完全同构，均可直接复用 direct 变体的截获逻辑（不需要额外适配层——原方案"若翻译发生更晚需要适配层"的分支已被证伪排除）。
+- [x] 核实姊妹 spec Responses-WS 续写传输时序的实施状态（`docs/plan/2026-07-22-continuation-retry-sequential-anchor/plan-4-7-remaining.md` Task 6.1/6.2）——**均未落地**（`- [ ]` 未勾选，该文件自首次提交 `6696e201` 后无后续提交，`git log master -- src/routes/responses/ws.ts` 无相关改动）。P3 Task 3.8 判定分支应走"标记阻塞，登记 backlog，不阻塞 CC/Responses-HTTP 收口"。
+- [ ] **P3 实施前须重新执行一次本核实**（本次核实基于 master `db1cb775`，2026-07-27；实施时点若有新的并发提交需重新读码确认，尤其 WS 姊妹依赖状态——可能在 P3 开工前已推进）。
+- [ ] 每个可挂载格核实后，写一个 producer-oracle 单测断言④要素（"唯一终局"不变量）；每个「不支持/不适用」格写对应的透传 producer oracle（上表已列目标，含已确认的 Responses reverse leg，见 `plan-3-cc-responses.md` Task 3.12）——**测试骨架待 P3 实施时按上述读码结论编写，本任务只完成读码核实，不写测试代码（属 P3 范畴）**。
+- [ ] **提交** → `docs(plan): fill terminal ownership matrix M (full leg enumeration verified via code read, 2026-07-27)`。
 
-**验收标准：** 5 个「可挂载」格（Anthropic direct、CC direct、CC via-responses、Responses direct、Responses fallback）的四要素全部落实到具体 file:line + producer-oracle 测试骨架；4 个「不支持」格（含已确认的 Responses reverse）+ 3 个「不适用」格的透传 oracle 全部写出。P3 才能开工。
+**验收标准：** 5 个「可挂载」格（Anthropic direct、CC direct、CC via-responses、Responses direct、Responses fallback）的四要素全部落实到具体 file:line（**已达成**）+ producer-oracle 测试骨架（**留待 P3**）；4 个「不支持」格（含已确认的 Responses reverse）+ 3 个「不适用」格的透传 oracle 全部写出（**留待 P3**）。P3 才能开工——本次读码核实已清空全部"待核实"标注，P3 开工的唯一剩余前置是编写实际测试代码。
 
-### Task M.2: 与 P0 的 `incomplete_details.reason` 缺口交叉确认
+### Task M.2: 与 P0 的 `incomplete_details.reason` 缺口交叉确认 —— **已完成（该字段已在 P0 落地，非缺口）**
 
-- [ ] 核实 P0 Task 0.2（Anthropic-only 独立 terminal observer）与 Task 0.3（per-format 纯 predicate）的分工——`isResponsesMaxTokensTerminal` 本身是纯 predicate（接受 `status`+`incompleteReason` 两个参数），**不负责捕获**该值；捕获 `incomplete_details.reason` 是 P0 Task 0.2b 的实现内容（因为 A/B/C 分型判定本身就需要这个值来触发 `isResponsesMaxTokensTerminal`，不能推迟到 P3——分型判定必须在 P0 就完整工作，**这一点与 P0 的 observer 分档决策不冲突**：`incomplete_details.reason` 是 accumulator 字段捕获，不是 observer 本身，Responses 的独立 terminal observer 实现仍在 P3 Task 3.0b）。
-- [ ] 与 `plan-3-cc-responses.md` 核对不重复实现——`incomplete_details.reason` 的捕获在 P0 阶段已建（Task 0.2b），P3 Task 3.0b 只消费已建好的字段用于 Responses observer 的更新函数，不重新实现捕获逻辑。
-- [ ] **提交** → `docs(plan): cross-confirm incomplete_details.reason capture belongs to P0 (accumulator field, distinct from the P3-deferred Responses observer)`。
+- [x] 核实 P0 Task 0.2（Anthropic-only 独立 terminal observer）与 Task 0.3（per-format 纯 predicate）的分工——**读码确认**：`src/lib/openai/responses-stream-accumulator.ts:140` 已捕获 `incompleteReason`（提交 `b8b5e7c2`，属 `f0bd5f73 docs(plan): complete max_tokens continuation P0`），`plan-0-classifier-and-observability.md` 顶部已标注"P0 已完成"且第 11 行明确"CC/Responses 的 `incomplete_details.reason` 捕获和纯 terminal predicate 已在 P0 落地；它们的 terminal observer、分类生产接线与 History/telemetry readback 仍是 P3 的显式硬前置"——与本文件的分工假设一致，无需改动。
+- [x] 与 `plan-3-cc-responses.md` 核对不重复实现——该文件依赖声明（顶部"依赖"行）已写明"`incomplete_details.reason` 已在 P0 捕获"，Task 3.0b 只消费已建好的字段，未见重复实现风险。
+- [ ] **提交** → `docs(plan): cross-confirm incomplete_details.reason capture already landed in P0 (b8b5e7c2), matrix M.2 assumption updated from stale "not yet captured" to confirmed`。
