@@ -101,7 +101,7 @@ sink 的职责是**读 bus 事件的 `entry`+`ctx`、调 extractor 算出 `keys`
 **推荐把 storage + registry + dimensions name-registry 合成一个 `@hsupu/ghc-proxy-telemetry`，一个 plan、内部 DAG 排序（foundation-hoist → storage substrate → registry+config 注入 → dimensions 劈裂 → git mv）。** 理由（按判据）：
 
 1. **storage-only（a）不削环、造孤包——违「有意义且完整 > 最小能交付」**。storage 层的 owner/brain 就是 registry；把它俩拆两包，得到一个「唯一真消费者是另一个 core 模块」的孤儿包 + 一条 chatty 跨包边界。这是「为简单而砍范围」的反面教材，判据明令禁止。storage 独立**只在 registry 也剥出后**才有意义（那时它是 registry 的包内 substrate）。
-2. **(b) 是唯一产出机器可验证架构价值的范围**：削 baseline `#34`（`request-telemetry > history/store`）、`#35`（`request-telemetry > telemetry-dimensions > context/types`）、`#36`（`request-telemetry > state`）三环，`request-telemetry.ts` 与 `observability/telemetry-dimensions.ts` 双双出 `members`（63→61）。这正是 spec §6 措施 2 ratchet 要奖励的方向。
+2. **(b) 是唯一产出机器可验证架构价值的范围**：削 baseline `#34`（`request-telemetry > history/store`）、`#35`（`request-telemetry > telemetry-dimensions > context/types`）、`#36`（`request-telemetry > state`）三环，`request-telemetry.ts` 与 `observability/telemetry-dimensions.ts` 双双出 `members`（定稿预测 63→61，**执行实测 65→63**）。这正是 spec §6 措施 2 ratchet 要奖励的方向。
 3. **(b) 的所有权面比 token 简单**（无 SoT 反转），**难点是 dimensions 劈裂**——但该劈裂是模块自陈设计意图的落地、长远正确（registry type-light、extractor 知 entry/ctx 的边界本就该是包边界）。
 4. **(c) 分两次**违「完整 > 最小」且制造冗余 ceremony + 中途 chatty 边界；除非 storage 劈裂本身风险大到需要单独 land（实测不然——storage 依赖仅 3 类、纯度高），否则不值。**唯一采纳 (c) 的条件**：foundation-hoist sqlite 若因 history 域并发占用无法即时做，可先在包内**临时**经 transitional alias 引 `~/lib/sqlite/*`（短期编译中间态），但这属执行期战术、非范围决策。
 
