@@ -184,15 +184,25 @@ export function typeOnlyModuleSpecifiers(sourceFile: ts.SourceFile): Array<strin
  *  - the walk does NOT descend into nested function/class bodies, so a call parked in a helper that
  *    is never invoked cannot stand in for real wiring (a `function decoy() { runJsonBackfill() }`
  *    passed the previous version while production was actually disconnected);
- *  - when `unconditionalOnly` is set, the walk also refuses to enter conditional constructs
- *    (`if`/loop/`switch`/`&&`/ternary), so a feature-gated or `if (false)` branch cannot stand in for
- *    wiring either. Plain blocks and `try`/`catch`/`finally` ARE entered: they do not gate whether
- *    the statement runs on the normal path, and production wraps these very calls in `try`.
+ *  - when `unconditionalOnly` is set, the walk also refuses to enter constructs that may be skipped
+ *    on the normal path: conditionals (`if`/loop/`switch`/`&&`/ternary) AND a `catch` clause, which
+ *    runs only when the `try` throws. Plain blocks, the `try` block itself and `finally` ARE entered
+ *    — `try` does not gate whether its body runs (production wraps these very calls in one), and
+ *    `finally` runs on both the normal and the throwing path.
  */
-/** Constructs whose body may be skipped at runtime — a call inside one is not unconditional wiring. */
+/**
+ * Constructs whose body may be SKIPPED on the normal path — a call inside one is not unconditional
+ * wiring.
+ *
+ * `CatchClause` belongs here and its omission was a real false green: moving the production backfill
+ * out of the `try` body and into `catch` left the normal startup path never running it, while the
+ * guard stayed green. (`try` and `finally` do NOT belong: a `try` body runs unconditionally, and
+ * `finally` runs on both the normal and the throwing path.)
+ */
 function isConditional(node: ts.Node): boolean {
   return (
-    ts.isIfStatement(node)
+    ts.isCatchClause(node)
+    || ts.isIfStatement(node)
     || ts.isSwitchStatement(node)
     || ts.isConditionalExpression(node)
     || ts.isForStatement(node)

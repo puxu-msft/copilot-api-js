@@ -210,6 +210,38 @@ describe("telemetry startup order (initialize → listen → runJsonBackfill)", 
       }
     `
     expect(orderViolations("start.ts", wrappedInTry)).toEqual([])
+
+    // …but a `catch` clause runs ONLY when the try throws, so wiring parked there never runs on the
+    // normal startup path. Treating catch as unconditional was a real false green: the production
+    // backfill could be moved out of the try body into catch and this guard stayed green.
+    const catchOnly = `
+      async function runServer(options) {
+        const telemetryRuntime = installDefaultTelemetryRuntime()
+        await telemetryRuntime.initialize()
+        serverInstance = await startServer({ port })
+        try {
+          // normal path no longer runs it
+        } catch (err) {
+          telemetryRuntime.runJsonBackfill()
+        }
+      }
+    `
+    expect(orderViolations("start.ts", catchOnly)).toEqual(["telemetry runJsonBackfill() is missing from the startup path"])
+
+    // `finally` runs on BOTH paths, so it is legitimate wiring.
+    const inFinally = `
+      async function runServer(options) {
+        const telemetryRuntime = installDefaultTelemetryRuntime()
+        await telemetryRuntime.initialize()
+        serverInstance = await startServer({ port })
+        try {
+          somethingElse()
+        } finally {
+          telemetryRuntime.runJsonBackfill()
+        }
+      }
+    `
+    expect(orderViolations("start.ts", inFinally)).toEqual([])
   })
 
   test("the real startup path holds the whole contract", async () => {
