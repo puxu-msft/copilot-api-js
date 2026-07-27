@@ -16,10 +16,10 @@
 
 **Why：** spec §12 门 A —— 姊妹 spec 的 text-only 前缀续写已双模型实证 PASS（`exp/continuation-shape/FINDINGS.md` G3）。本门只需补一发「真实 max_tokens 截断」场景的端到端验证（截断原因不同——姊妹是 mid-stream CANCEL，本特性是预算耗尽干净终止，wire 形状不同：有 `message_delta{stop_reason:max_tokens}` + `message_stop` 正常到达，而非 RST）。
 
-- [ ] **Step 1：构造小 `max_tokens` 撞预算的请求**，promt 要求生成足够长的纯文本答案，`max_tokens` 设一个明显会截断的小值（如 64）。
-- [ ] **Step 2：跑，确认干净终止形状** —— 记录 wire：`message_delta{stop_reason:max_tokens}` + `message_stop` 到达，无 RST/error。
-- [ ] **Step 3：构造续写请求**（`[原始 messages] + [assistant=已提交 text] + [user=续写消息]`），确认上游接受并从截断处自然续写（非重复、非发散）。
-- [ ] **Step 4：FINDINGS 记录** —— PASS/FAIL + 样本。FAIL → A 类续写整体回退透传（罕见，姊妹机制已验证同构场景 PASS，预期本门 PASS）。
+- [x] **Step 1：构造小 `max_tokens` 撞预算的请求**，promt 要求生成足够长的纯文本答案，`max_tokens` 设一个明显会截断的小值（如 64）。
+- [x] **Step 2：跑，确认干净终止形状** —— 记录 wire：`message_delta{stop_reason:max_tokens}` + `message_stop` 到达，无 RST/error。
+- [x] **Step 3：构造续写请求**（`[原始 messages] + [assistant=已提交 text] + [user=续写消息]`），确认上游接受并从截断处自然续写（非重复、非发散）。
+- [x] **Step 4：FINDINGS 记录** —— **PASS（2026-07-27）**：真实 `claude-haiku-4.5` 首轮 `max_tokens=64` 干净终止于整数 32（`output_tokens=64`），text-only assistant 前缀续写从 33 连续到 64，无重复、无跳号。证据与复现命令见 `exp/continuation-shape/FINDINGS.md`。
 
 ---
 
@@ -62,11 +62,11 @@
 
 > **修订记录（2026-07-23，据 GPT plan-review [major] 修订，spec §4 已同步纠正）**：原 Step 4 把 `marker` 描述为「不抑制信号本身，只追加标记」——**这与 P2 Task 2.3 的实现描述矛盾，且与协议事实不符**：一旦首轮 `message_stop`/`[DONE]`/`response.incomplete` 转出，流已合法终止，无法在同一流续写。已冻结统一契约：**`marker` 与 `transparent` 一样抑制被替代的首轮 terminator，区别仅为在续写前注入一个可辨识且格式合法的 marker**（marker 不是"不抑制"的宽松版，而是"抑制+多一步注记"的严格版）。本门 Step 4 据此修订，并要求以此真实 producer wire 作为 SDK oracle（非手工构造帧）。
 
-- [ ] **Step 1：构造缝合流** —— mock 上游两次 exchange：首次干净终止于 `max_tokens`（`message_delta{stop_reason:max_tokens}` + `message_stop` 已产出但**不转发**给客户端）+ 续写 exchange 产出剩余内容 + 自己的 `message_delta{stop_reason:end_turn}` + `message_stop`。
-- [ ] **Step 2：真 SDK 消费** —— `@anthropic-ai/sdk` 的 `.finalMessage()` 断言：单一 `message_start`、块 index 连续、**最终 `stop_reason` = `end_turn`**（非 `max_tokens`）、无重复内容、无 throw。
-- [ ] **Step 3：usage 单调性验证** —— 客户端可见流的 `message_delta.usage.output_tokens` 累积语义须单调递增；最终值 = 两轮真实 usage 总和（可能 `> max_tokens`）；断言 SDK 不因 `output_tokens > max_tokens` 抛错或行为异常。
-- [ ] **Step 4：`marker` 策略变体（已按统一契约修正）** —— 同样**抑制首轮真实终止符**（与 Step 1 一致，不转发 `message_delta{max_tokens}`/`message_stop`），但在续写内容前/后额外注入一段可辨识的 marker 文本（作为一个新的 text delta，格式合法、非协议扩展字段）；用真实 producer（driver 实际产出的缝合流，非手工拼帧）驱动 SDK，验证 SDK 同样接受、`.finalMessage()` 含 marker 文本片段、`stop_reason` 仍是自然终止（`end_turn`）而非 `max_tokens`。
-- [ ] **Step 5：FINDINGS 记录** —— PASS/FAIL。FAIL（SDK 拒绝抑制真实终止符后的缝合，或 usage 处理异常）→ **P1 承重回退**：`transparent`/`marker` 两策略需调整形状，须与用户重议 Q1 裁决的默认档（spec 已裁决 transparent 默认，若门 FAIL 需回报用户此裁决基础被证伪，非 planner 自行改）。
+- [x] **Step 1：构造缝合流** —— mock 上游两次 exchange：首次干净终止于 `max_tokens`（`message_delta{stop_reason:max_tokens}` + `message_stop` 已产出但**不转发**给客户端）+ 续写 exchange 产出剩余内容 + 自己的 `message_delta{stop_reason:end_turn}` + `message_stop`。
+- [x] **Step 2：真 SDK 消费** —— `@anthropic-ai/sdk` 的 `.finalMessage()` 断言：单一 `message_start`、块 index 连续、**最终 `stop_reason` = `end_turn`**（非 `max_tokens`）、无重复内容、无 throw。
+- [x] **Step 3：usage 单调性验证** —— 客户端可见流的 `message_delta.usage.output_tokens` 累积语义须单调递增；最终值 = 两轮真实 usage 总和（可能 `> max_tokens`）；断言 SDK 不因 `output_tokens > max_tokens` 抛错或行为异常。
+- [x] **Step 4：`marker` 策略变体（已按统一契约修正）** —— 同样**抑制首轮真实终止符**（与 Step 1 一致，不转发 `message_delta{max_tokens}`/`message_stop`），但在续写内容前/后额外注入一段可辨识的 marker 文本（作为一个新的 text delta，格式合法、非协议扩展字段）；用真实 producer（driver 实际产出的缝合流，非手工拼帧）驱动 SDK，验证 SDK 同样接受、`.finalMessage()` 含 marker 文本片段、`stop_reason` 仍是自然终止（`end_turn`）而非 `max_tokens`。
+- [x] **Step 5：FINDINGS 记录** —— **PASS（2026-07-27）**：`@anthropic-ai/sdk@0.106.0` 接受 transparent 与 marker；请求 `max_tokens=64` 时最终 usage 分别为 88/89，均 `stop_reason=end_turn`。真实 `claude` CLI 2.1.220 亦 `num_turns=1`、无 stall。违规 index 冲突与双 terminator 正样本均被 producer oracle 拒绝。证据见 `exp/continuation-shape/FINDINGS.md`。
 
 ---
 
