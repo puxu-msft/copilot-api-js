@@ -22,6 +22,14 @@ import { join } from "node:path"
 
 import {
   //
+  restoreStateForTests,
+  setStateForTests,
+  setTelemetryConfig,
+  snapshotStateForTests,
+  type StateSnapshot,
+} from "~/lib/state"
+import {
+  //
   _getTelemetryDbForTests,
   _isRollupTimerArmedForTests,
   _isTelemetryShutdownSealedForTests,
@@ -31,15 +39,7 @@ import {
   initRequestTelemetry,
   recordSettledRequest,
   shutdownRequestTelemetry,
-} from "~/lib/request-telemetry"
-import {
-  //
-  restoreStateForTests,
-  setStateForTests,
-  setTelemetryConfig,
-  snapshotStateForTests,
-  type StateSnapshot,
-} from "~/lib/state"
+} from "~/lib/telemetry-testing"
 
 const DAY = 86_400_000
 const BASE = 20_000 * DAY

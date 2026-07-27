@@ -15,19 +15,19 @@ import { join } from "node:path"
 
 import {
   //
-  _resetRequestTelemetryForTests,
-  _setRequestTelemetryFilePathForTests,
-  getDimensionBreakdown,
-  persistRequestTelemetry,
-  recordSettledRequest,
-} from "~/lib/request-telemetry"
-import {
-  //
   setTelemetryConfig,
   snapshotStateForTests,
   restoreStateForTests,
   type StateSnapshot,
 } from "~/lib/state"
+import {
+  //
+  _resetRequestTelemetryForTests,
+  _setRequestTelemetryFilePathForTests,
+  getDimensionBreakdown,
+  persistRequestTelemetry,
+  recordSettledRequest,
+} from "~/lib/telemetry-testing"
 
 let stateSnapshot: StateSnapshot
 let tempDirectory: string

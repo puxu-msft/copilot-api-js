@@ -12,6 +12,17 @@ import path from "node:path"
 
 import {
   //
+  TELEMETRY_HISTOGRAMS,
+} from "~/lib/request-telemetry"
+import {
+  //
+  restoreStateForTests,
+  setStateForTests,
+  snapshotStateForTests,
+  type StateSnapshot,
+} from "~/lib/state"
+import {
+  //
   _projectDimBucketsForTests,
   _resetRequestTelemetryForTests,
   _setRequestTelemetryFilePathForTests,
@@ -22,15 +33,7 @@ import {
   persistRequestTelemetry,
   recordAcceptedRequest,
   recordSettledRequest,
-  TELEMETRY_HISTOGRAMS,
-} from "~/lib/request-telemetry"
-import {
-  //
-  restoreStateForTests,
-  setStateForTests,
-  snapshotStateForTests,
-  type StateSnapshot,
-} from "~/lib/state"
+} from "~/lib/telemetry-testing"
 
 let tempDir: string
 let telemetryFile: string

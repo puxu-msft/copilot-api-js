@@ -60,11 +60,6 @@ import {
   initProcessIdentity,
 } from "~/lib/process-identity"
 import { initProxy } from "~/lib/proxy"
-import {
-  //
-  initRequestTelemetry,
-  runTelemetryJsonBackfill,
-} from "~/lib/request-telemetry"
 import { notifyReady } from "~/lib/restart/notify"
 import {
   //
@@ -93,6 +88,7 @@ import {
   state,
   getRawModels,
 } from "~/lib/state"
+import { installDefaultTelemetryRuntime } from "~/lib/telemetry-assembly"
 import { initTokenManagers } from "~/lib/token-runtime"
 import { getCopilotUsage } from "~/lib/token/copilot-client"
 import { attachTerminalUi } from "~/lib/tui"
@@ -391,7 +387,13 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   // throttled forced state transition actually reaches the bus).
   const historyEnabled = options.history ?? state.historyEnabled
   await initHistory(historyEnabled)
-  await initRequestTelemetry()
+  // Assemble the telemetry domain BEFORE its first lifecycle op: the composition root adapts core
+  // PATHS + the live `telemetry.*` config view + the config-change subscription into the domain's
+  // injected ports and installs the process-singleton runtime every tolerant `peekTelemetryRuntime()`
+  // consumer (record legs, read routes, shutdown) resolves. Phase ① of the 5-phase lifecycle;
+  // phase ② (runJsonBackfill) deliberately runs AFTER the server listens, further down.
+  const telemetryRuntime = installDefaultTelemetryRuntime()
+  await telemetryRuntime.initialize()
 
   // Canonical V3 terminal persistence is installed by initHistory. The legacy
   // mutable-context HistorySink is deliberately not attached in production.
@@ -590,7 +592,7 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   // snapshot (never a fresh read — structural disjointness), and is itself never-throw. Synchronous DB
   // work, wrapped defensively so nothing here can bubble into the startup path.
   try {
-    runTelemetryJsonBackfill()
+    telemetryRuntime.runJsonBackfill()
   } catch (err: unknown) {
     consola.warn("[telemetry] json backfill failed", err)
   }

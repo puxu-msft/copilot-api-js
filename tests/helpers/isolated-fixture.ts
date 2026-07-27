@@ -68,7 +68,6 @@ import {
   setUpstreamHookForTests,
 } from "~/lib/pipeline/hooks/loader"
 import { resetProcessIdentityForTests } from "~/lib/process-identity"
-import { _resetRequestTelemetryForTests } from "~/lib/request-telemetry"
 import {
   //
   resetRawModelsForTests,
@@ -76,7 +75,9 @@ import {
   type StateSnapshot,
   snapshotStateForTests,
 } from "~/lib/state"
+import { installDefaultTelemetryRuntime } from "~/lib/telemetry-assembly"
 import { resetTelemetryRuntimeForTests } from "~/lib/telemetry-runtime"
+import { _resetRequestTelemetryForTests } from "~/lib/telemetry-testing"
 import { resetTokenRuntimeForTests } from "~/lib/token"
 import {
   //
@@ -237,6 +238,11 @@ export function useIsolatedRuntime(opts: IsolatedRuntimeOptions = {}): void {
 
   beforeEach(() => {
     snapshot = snapshotStateForTests()
+    // Assemble the telemetry domain exactly as production start.ts does, so the tolerant
+    // `peekTelemetryRuntime()` legs (accepted/settled recording) and the fail-fast read routes
+    // (`/api/status`, `/api/stats`, `/metrics`) see the same wiring here as on the server. Runs in
+    // beforeEach — not resetTestRuntime — because RESETTERS clears the singleton in afterEach.
+    installDefaultTelemetryRuntime()
     // Retry-backoff waits (dispatch-scheduler `abortableDelay`) resolve instantly under
     // the fixture — the declared waitMs/queueWaitMs accounting is untouched. Cuts seconds
     // off any retry-triggering test (e.g. the v4 http golden files). Reset to 1 in afterEach.

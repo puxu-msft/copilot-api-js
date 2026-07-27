@@ -1,12 +1,3 @@
-/**
- * P5 `/api/stats` route 验收 —— window→tier 路由 + lifetime + sketch 分位（HTTP 层）。
- *
- * 承重不变量 8（byte-compat）：`sinceStart`/`7d` 逐字段与 `getDimensionBreakdown` 直接调用结果
- * 相同——本 task **绝不改**这两个 window 的读路径，这里是回归 oracle，不是新功能测试。
- *
- * `30d`/`90d`/`lifetime` 是本 task 净新增能力：路由到 SQLite 分层（`~/lib/telemetry/read.ts`），
- * 断言 counters SUM 正确 + `distributions`/`constituentKeys` 字段存在。
- */
 import {
   //
   afterEach,
@@ -24,20 +15,30 @@ import { join } from "node:path"
 
 import {
   //
+  restoreStateForTests,
+  setStateForTests,
+  snapshotStateForTests,
+  type StateSnapshot,
+} from "~/lib/state"
+/**
+ * P5 `/api/stats` route 验收 —— window→tier 路由 + lifetime + sketch 分位（HTTP 层）。
+ *
+ * 承重不变量 8（byte-compat）：`sinceStart`/`7d` 逐字段与 `getDimensionBreakdown` 直接调用结果
+ * 相同——本 task **绝不改**这两个 window 的读路径，这里是回归 oracle，不是新功能测试。
+ *
+ * `30d`/`90d`/`lifetime` 是本 task 净新增能力：路由到 SQLite 分层（`~/lib/telemetry/read.ts`），
+ * 断言 counters SUM 正确 + `distributions`/`constituentKeys` 字段存在。
+ */
+import { installDefaultTelemetryRuntime } from "~/lib/telemetry-assembly"
+import {
+  //
   _getTelemetryDbForTests,
   _resetRequestTelemetryForTests,
   _setRequestTelemetryFilePathForTests,
   _setTelemetryDbForTests,
   getDimensionBreakdown,
   recordSettledRequest,
-} from "~/lib/request-telemetry"
-import {
-  //
-  restoreStateForTests,
-  setStateForTests,
-  snapshotStateForTests,
-  type StateSnapshot,
-} from "~/lib/state"
+} from "~/lib/telemetry-testing"
 import { openTelemetryDb } from "~/lib/telemetry/db"
 import {
   //
@@ -79,6 +80,9 @@ let snapshot: StateSnapshot
 beforeEach(() => {
   snapshot = snapshotStateForTests()
   _resetRequestTelemetryForTests()
+  // The /api/stats route reads through the assembled runtime (fail-fast: an unassembled telemetry
+  // domain is a wiring bug, never silently-zero stats), so wire it exactly as start.ts does.
+  installDefaultTelemetryRuntime()
   const tempDir = mkdtempSync(join(tmpdir(), "stats-route-test-"))
   tmpDirs.push(tempDir)
   _setRequestTelemetryFilePathForTests(join(tempDir, "request-telemetry.json"))

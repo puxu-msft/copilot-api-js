@@ -29,9 +29,9 @@ export interface TelemetryPaths {
  * NB the per-field lifecycle differs (see the telemetry peel plan §3.1): `enabled` /
  * `persistInterval` / `rollupInterval` retune timers via {@link TelemetryConfigSubscription};
  * `cardinalityCap` / `cumulative` / the retention fields are next-record/next-tick live
- * reads; `sketchGamma` is a DB-open FROZEN candidate (the runtime freezes it into
- * `effectiveSketchGamma`, then never re-reads the live value — a hot γ change would wedge
- * the DDSketch write). `dbPath` is an init-only selection.
+ * reads; `sketchGammaCandidate` is a DB-open FROZEN candidate (the registry freezes it into
+ * its private `effectiveSketchGamma`, then never re-reads the live value — a hot γ change would
+ * wedge the DDSketch write). `dbPath` is an init-only selection.
  */
 export interface TelemetryConfigView {
   readonly enabled: boolean
@@ -39,7 +39,14 @@ export interface TelemetryConfigView {
   readonly persistInterval: number
   readonly rollupInterval: number
   readonly cardinalityCap: number
-  readonly sketchGamma: number
+  /**
+   * The CANDIDATE sketch relativeAccuracy, deliberately NOT named `sketchGamma`: it is read
+   * exactly once per db-open and frozen into the registry's private `effectiveSketchGamma` for
+   * that db's lifetime. Reading it live on the record path would build sketch deltas at a γ that
+   * mismatches the stored blob, and `mergeSketch` fail-loud throws on mismatch → the whole drain
+   * wedges (single-transaction rollback + foldback, never self-healing for `tel_cumulative`).
+   */
+  readonly sketchGammaCandidate: number
   readonly cumulative: boolean
   readonly rawResolutionMinutes: number
   readonly rawRetentionDays: number

@@ -35,10 +35,9 @@ import { TELEMETRY_DIMENSION_NAMES } from "~/lib/observability/telemetry-dimensi
 import {
   //
   DEFAULT_BREAKDOWN_LIMIT,
-  getDimensionBreakdown,
-  getTelemetryDb,
 } from "~/lib/request-telemetry"
 import { state } from "~/lib/state"
+import { getTelemetryRuntime } from "~/lib/telemetry-runtime"
 import {
   //
   type DistributionSummary,
@@ -157,13 +156,13 @@ statsRoutes.openapi(getStatsRoute, (c) => {
   // own default param apply) rather than pre-resolving it, to keep this call expression identical
   // to the pre-task code.
   if (effectiveWindow === "sinceStart" || effectiveWindow === "7d") {
-    return c.json(getDimensionBreakdown(dimension, effectiveWindow, limit), 200)
+    return c.json(getTelemetryRuntime().getDimensionBreakdown(dimension, effectiveWindow, limit), 200)
   }
 
   const effectiveLimit = limit ?? DEFAULT_BREAKDOWN_LIMIT
 
   // 30d/90d/lifetime: net-new SQLite-tiered path.
-  const db = getTelemetryDb()
+  const db = getTelemetryRuntime().getTelemetryDb()
   if (!db) {
     return c.json({ error: "telemetry SQLite store unavailable (telemetry disabled or db not yet initialized)" }, 503)
   }

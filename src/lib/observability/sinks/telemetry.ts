@@ -14,7 +14,7 @@
  * Commit 2: subscribed but idle — bus carries no terminal events yet.
  */
 
-import { recordSettledRequest } from "~/lib/request-telemetry"
+import { peekTelemetryRuntime } from "~/lib/telemetry-runtime"
 
 import type {
   //
@@ -59,7 +59,7 @@ export class TelemetrySink {
     const candidateIds = new Set(attempts.flatMap((attempt) => (attempt.candidateId ? [attempt.candidateId] : [])))
     const hedgeIds = new Set(attempts.flatMap((attempt) => (attempt.candidateRole === "hedge" && attempt.candidateId ? [attempt.candidateId] : [])))
     const recoveryIds = new Set(attempts.flatMap((attempt) => (attempt.candidateRole === "recovery" && attempt.candidateId ? [attempt.candidateId] : [])))
-    recordSettledRequest(
+    peekTelemetryRuntime()?.recordSettled(
       extractTelemetryKeys(entry, event.ctx),
       {
         startedAt: entry.startedAt,

@@ -34,15 +34,15 @@ import {
 } from "~/lib/openai/upstream-ws"
 import {
   //
-  _resetRequestTelemetryForTests,
-  recordAcceptedRequest,
-  recordSettledRequest,
-} from "~/lib/request-telemetry"
-import {
-  //
   setModels,
   setStateForTests,
 } from "~/lib/state"
+import {
+  //
+  _resetRequestTelemetryForTests,
+  recordAcceptedRequest,
+  recordSettledRequest,
+} from "~/lib/telemetry-testing"
 import { generateId } from "~/lib/utils"
 
 import { mockModel } from "../helpers/factories"

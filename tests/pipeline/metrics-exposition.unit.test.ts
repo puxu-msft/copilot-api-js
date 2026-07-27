@@ -23,13 +23,14 @@ import {
   recordRetryStrategyFire,
   resetRetryStrategyFiresForTests,
 } from "~/lib/observability/retry-strategy-fires"
+import { installDefaultTelemetryRuntime } from "~/lib/telemetry-assembly"
 import {
   //
   _resetRequestTelemetryForTests,
   _setRequestTelemetryFilePathForTests,
   recordAcceptedRequest,
   recordSettledRequest,
-} from "~/lib/request-telemetry"
+} from "~/lib/telemetry-testing"
 
 function counters(overrides: Record<string, number> = {}): Record<string, number> {
   return {
@@ -124,6 +125,8 @@ describe("buildMetricsExposition (live registry)", () => {
   beforeEach(async () => {
     tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "metrics-test-"))
     _resetRequestTelemetryForTests()
+    // buildMetricsExposition reads through the assembled runtime — wire it as start.ts does.
+    installDefaultTelemetryRuntime()
     _setRequestTelemetryFilePathForTests(path.join(tempDir, "t.json"))
     resetRetryStrategyFiresForTests()
   })

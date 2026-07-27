@@ -10,13 +10,12 @@ import type { UsageData } from "./history/store"
 import type { ThinkingBlockCounts } from "./observability/telemetry-dimensions"
 import type { TelemetryDatabase } from "./telemetry/db"
 
-import { PATHS } from "./config/paths"
 import { CAPPED_DIMENSION_NAMES } from "./observability/telemetry-dimensions"
 import {
   //
-  onTelemetryConfigChange,
-  state,
-} from "./state"
+  getTelemetryDeps,
+  type TelemetryConfigView,
+} from "./telemetry-dependencies"
 import { openTelemetryDb } from "./telemetry/db"
 import {
   //
@@ -62,6 +61,17 @@ import {
   writeSketchGammaIfAbsent,
   writeTierSketchBlob,
 } from "./telemetry/store"
+
+/**
+ * The injected core-owned telemetry config, read LIVE at every use site (never cached in a
+ * module variable) so a config hot-reload takes effect on the next record / tick — see the
+ * per-field lifecycle contract on {@link TelemetryConfigView}. The one deliberate exception is
+ * `sketchGammaCandidate`, which is read ONCE per db-open and frozen into
+ * {@link effectiveSketchGamma}.
+ */
+function config(): TelemetryConfigView {
+  return getTelemetryDeps().config
+}
 
 const BUCKET_MS = 5 * 60 * 1000
 const WINDOW_MS = 7 * 24 * 60 * 60 * 1000
@@ -140,7 +150,7 @@ const MEASURE_NAMES = [...BASE_MEASURE_NAMES, ...COST_MEASURE_NAMES, ...EXTRA_ME
 export const TELEMETRY_MEASURE_NAMES: ReadonlyArray<string> = MEASURE_NAMES
 
 /**
- * High-cardinality dimensions (client/tool) bound their key count at `state.telemetryCardinalityCap`
+ * High-cardinality dimensions (client/tool) bound their key count at `config().cardinalityCap`
  * (config-driven, default 200 — see CONFIG_MANAGED_DEFAULTS in state.ts); overflow merges into `"other"`.
  * The cap is read live at each resolve so a hot-reload applies (only bounding NEW keys — see resolveCappedKey).
  */
@@ -384,12 +394,22 @@ let dimSinceStart = new Map<string, Map<string, StatAccumulator>>()
 let dimBuckets = new Map<number, Map<string, Map<string, StatAccumulator>>>()
 let persistTimer: ReturnType<typeof setInterval> | null = null
 /**
- * Separate rollup timer (interval `state.telemetryRollupInterval` seconds, default 3600 ≫ persist).
+ * Separate rollup timer (interval `telemetry.rollup_interval` seconds, default 3600 ≫ persist).
  * Distinct from `persistTimer` — different cadence + responsibility (downsample raw→hourly→daily +
  * retention pruning, NOT flushing the outbox). Armed only when telemetry is enabled AND the db is open.
  */
 let rollupTimer: ReturnType<typeof setInterval> | null = null
-let telemetryFilePath = PATHS.REQUEST_TELEMETRY
+/**
+ * Test-only override for the legacy-JSON path. `null` = use the injected
+ * {@link TelemetryPaths.requestTelemetryJsonPath} (the production source of truth, read live so the
+ * path never gets captured at module-load time — the domain has no ambient `PATHS` import).
+ */
+let telemetryFilePathOverride: string | null = null
+
+/** The legacy-JSON path in effect: the test override when set, otherwise the injected port. */
+function telemetryJsonPath(): string {
+  return telemetryFilePathOverride ?? getTelemetryDeps().paths.requestTelemetryJsonPath
+}
 
 // ── additive dual-write to telemetry.db (P3) ──
 // The in-memory paths above (dimBuckets/dimSinceStart) stay UNCHANGED — they remain the read
@@ -443,7 +463,7 @@ let telemetryDb: TelemetryDatabase | null = null
 /**
  * The sketch relativeAccuracy frozen for the LIFETIME of the currently-open telemetry.db (read from
  * `tel_meta['sketch_gamma']` at open, seeded from config on a brand-new db). All sketches built while
- * this db is open use THIS value — NOT live `state.telemetrySketchGamma`. Rationale: stored sketch
+ * this db is open use THIS value — NOT live `config().sketchGammaCandidate`. Rationale: stored sketch
  * blobs carry their γ, and read-merge-write drain merges a new delta into the stored blob; a config
  * `sketch_gamma` hot-reload would build deltas at a different γ, and `mergeSketch` fail-loud throws on
  * a γ mismatch → a poisoned entry would wedge the whole drain (single-transaction rollback + foldback +
@@ -583,10 +603,10 @@ function addToOutboxEntry(entry: OutboxSettledEntry, delta: SettledMeasures, obs
   for (const [name, value] of observations) {
     let sketch = entry.sketches.get(name)
     if (!sketch) {
-      // Bind to the db's frozen γ (see effectiveSketchGamma), NEVER live state.telemetrySketchGamma —
+      // Bind to the db's frozen γ (see effectiveSketchGamma), NEVER live config().sketchGammaCandidate —
       // a runtime config change must not build deltas at a γ that mismatches the stored blob (fail-loud
       // wedge). Falls back to the config default only before any db is opened (no drain happens then).
-      sketch = createSketch(effectiveSketchGamma ?? state.telemetrySketchGamma)
+      sketch = createSketch(effectiveSketchGamma ?? config().sketchGammaCandidate)
       entry.sketches.set(name, sketch)
     }
     sketch.accept(value)
@@ -774,7 +794,7 @@ function drainOutboxToSqlite(db: TelemetryDatabase, snapshot: OutboxSnapshot): v
     }
   }
 
-  // tel_cumulative leg (gated by state.telemetryCumulative at the feed point, so an empty map here when off).
+  // tel_cumulative leg (gated by config().cumulative at the feed point, so an empty map here when off).
   for (const [dimName, keys] of snapshot.cumulative) {
     const dim = dimId(dimName)
     for (const [key, entry] of keys) {
@@ -1020,9 +1040,9 @@ function buildLast7dModelSnapshots(now = Date.now()): Array<RequestTelemetryMode
 
 function startPeriodicPersistence(): void {
   if (persistTimer) return
-  // Persist interval is config-driven (state.telemetryPersistInterval seconds). Hot-reload retunes
-  // it via the onTelemetryConfigChange listener (restartPeriodicPersistence) armed in init.
-  const intervalMs = Math.max(1, state.telemetryPersistInterval) * 1000
+  // Persist interval is config-driven (config().persistInterval seconds). Hot-reload retunes
+  // it via the injected config-change subscription (restartPeriodicPersistence) armed in init.
+  const intervalMs = Math.max(1, config().persistInterval) * 1000
   persistTimer = setInterval(() => {
     void persistRequestTelemetry()
   }, intervalMs)
@@ -1043,28 +1063,28 @@ function restartPeriodicPersistence(): void {
 /** Project the live telemetry retention config into the rollup input (single read point for the tick). */
 function currentRollupConfig(): RollupConfig {
   return {
-    rawResolutionMinutes: state.telemetryRawResolutionMinutes,
-    rawRetentionDays: state.telemetryRawRetentionDays,
-    hourlyRetentionDays: state.telemetryHourlyRetentionDays,
-    dailyRetentionDays: state.telemetryDailyRetentionDays,
+    rawResolutionMinutes: config().rawResolutionMinutes,
+    rawRetentionDays: config().rawRetentionDays,
+    hourlyRetentionDays: config().hourlyRetentionDays,
+    dailyRetentionDays: config().dailyRetentionDays,
   }
 }
 
 /**
  * Arm the rollup timer (raw→hourly→daily downsample + retention pruning). Gated on "telemetry enabled
  * AND the db is open" — no db means nothing to roll up. Interval is config-driven
- * (state.telemetryRollupInterval seconds, default 3600 ≫ persist); hot-reload retunes it via the
- * onTelemetryConfigChange listener (restartRollupTimer) armed in setupTelemetryDb. The tick is
+ * (config().rollupInterval seconds, default 3600 ≫ persist); hot-reload retunes it via the
+ * injected config-change subscription (restartRollupTimer) armed in setupTelemetryDb. The tick is
  * fire-and-forget + never-throw (runRollupTick swallows DB faults warn-once), so a rollup fault can
  * never crash the timer or the process.
  */
 function startRollupTimer(): void {
   if (rollupTimer) return
-  if (!state.telemetryEnabled || telemetryDb === null) return
-  const intervalMs = Math.max(1, state.telemetryRollupInterval) * 1000
+  if (!config().enabled || telemetryDb === null) return
+  const intervalMs = Math.max(1, config().rollupInterval) * 1000
   rollupTimer = setInterval(() => {
     const db = telemetryDb
-    if (!db || !state.telemetryEnabled) return
+    if (!db || !config().enabled) return
     // never-throw: runRollupTick already contains its own try/catch per stage (warn-once), but wrap
     // defensively so a timer callback can never bubble into an unhandledRejection either.
     try {
@@ -1097,7 +1117,7 @@ function stopRollupTimer(): void {
 export function stopTelemetryBackgroundWork(): void {
   stopPeriodicPersistence()
   stopRollupTimer()
-  telemetryConfigUnsub?.() // 注销 onTelemetryConfigChange 订阅，防 drain 期热重载重新拉活 timer（M1）
+  telemetryConfigUnsub?.() // 注销注入的 config-change 订阅，防 drain 期热重载重新拉活 timer（M1）
   telemetryConfigUnsub = null
 }
 
@@ -1198,7 +1218,7 @@ function seedCumulativeCapKeys(db: TelemetryDatabase): void {
 /**
  * Open telemetry.db (when enabled) + arm the persist-timer config hot-reload listener. Idempotent
  * wrt an already-open handle / already-armed listener (closes/unsubscribes the prior one first).
- * Skips opening the db when `state.telemetryEnabled` is false — the JSON path still runs, but no
+ * Skips opening the db when `config().enabled` is false — the JSON path still runs, but no
  * SQLite file is created and the flush drain is a no-op.
  */
 function setupTelemetryDb(): void {
@@ -1217,14 +1237,14 @@ function setupTelemetryDb(): void {
   // db-open). A stale timer would otherwise keep firing against the just-closed handle.
   stopRollupTimer()
   resetRollupFailureLogged()
-  if (state.telemetryEnabled) {
+  if (config().enabled) {
     try {
-      telemetryDb = openTelemetryDb(state.telemetryDbPath || PATHS.TELEMETRY_DB)
+      telemetryDb = openTelemetryDb(config().dbPath || getTelemetryDeps().paths.telemetryDbPath)
       // Freeze the sketch γ (relativeAccuracy) for this db's lifetime: read it from tel_meta, or seed
       // it from config on a brand-new db. All sketches built while this handle is open use THIS value,
       // constant across restart (the stored blobs persist their γ). A config sketch_gamma hot-reload is
       // intentionally a no-op for an already-created db (would fail-loud on merge) — warn if they diverge.
-      const configGamma = state.telemetrySketchGamma
+      const configGamma = config().sketchGammaCandidate
       const dbGamma = readSketchGamma(telemetryDb)
       if (dbGamma === null) {
         writeSketchGammaIfAbsent(telemetryDb, configGamma)
@@ -1250,7 +1270,7 @@ function setupTelemetryDb(): void {
   startRollupTimer()
   // Arm the timer hot-reload listener exactly once across the module's lifetime — retunes BOTH the
   // persist timer (interval) and the rollup timer (interval / enabled) when the telemetry config changes.
-  if (!telemetryConfigUnsub) telemetryConfigUnsub = onTelemetryConfigChange(restartTelemetryTimers)
+  if (!telemetryConfigUnsub) telemetryConfigUnsub = getTelemetryDeps().configSubscription.onChange(restartTelemetryTimers)
 }
 
 export async function initRequestTelemetry(): Promise<void> {
@@ -1281,14 +1301,15 @@ export async function initRequestTelemetry(): Promise<void> {
   // that never got renamed into place. Pure garbage, safe to delete; fire-and-forget + never-throw so
   // it never blocks or breaks init. The JSON body itself is NEVER deleted (no-destructive) — it stays
   // on disk as a historical archive + the one-shot P6 backfill source.
-  void cleanupOrphanTelemetryTmpFiles(telemetryFilePath)
+  const jsonPath = telemetryJsonPath()
+  void cleanupOrphanTelemetryTmpFiles(jsonPath)
 
   // ── Read the legacy JSON ONLY to stash the pre-startup snapshot for the one-shot P6 backfill. ──
   // It no longer seeds dimBuckets/bucketCounts (SQLite rebuild above owns that). Once the backfill's
   // version guard trips the JSON is fully vestigial (still read + stashed here, but the backfill no-ops).
   let raw: string
   try {
-    raw = await fs.readFile(telemetryFilePath, "utf8")
+    raw = await fs.readFile(jsonPath, "utf8")
   } catch {
     // Missing file is non-critical; the SQLite rebuild already restored the window.
     pruneBuckets()
@@ -1306,9 +1327,9 @@ export async function initRequestTelemetry(): Promise<void> {
     // cause: two concurrent writers interleaving O_TRUNC writes (the JSON write path is now removed, so
     // this can only be an old corrupted file from a prior version).
     consola.warn(`[telemetry] legacy telemetry JSON is corrupted, cannot be absorbed (${err instanceof Error ? err.message : String(err)})`)
-    const quarantine = `${telemetryFilePath}.corrupted.${Date.now()}`
+    const quarantine = `${jsonPath}.corrupted.${Date.now()}`
     try {
-      await fs.rename(telemetryFilePath, quarantine)
+      await fs.rename(jsonPath, quarantine)
       consola.warn(`[telemetry] quarantined corrupted file → ${quarantine}`)
     } catch {
       // Rename may fail (permissions, file already gone) — non-fatal.
@@ -1338,14 +1359,14 @@ export function recordAcceptedRequest(timestamp = Date.now()): void {
   // migration failure) `telemetryDb` is null while `telemetryEnabled` stays true; feeding the outbox
   // then would grow it unbounded forever (the flush drain is gated on `db && enabled`, so it never
   // swaps/drains) → silent OOM. `telemetryDb === null` here is equivalent to "SQLite dual-write off".
-  if (state.telemetryEnabled && telemetryDb !== null) outboxAccepted.set(bucket, (outboxAccepted.get(bucket) ?? 0) + 1)
+  if (config().enabled && telemetryDb !== null) outboxAccepted.set(bucket, (outboxAccepted.get(bucket) ?? 0) + 1)
   pruneBuckets(timestamp)
 }
 
 /**
  * Resolve a capped dimension's effective key against ONE store (the process-lifetime
  * `dimSinceStart` OR the target 5-minute bucket). Each store is its own cap authority
- * so its key count is bounded at `state.telemetryCardinalityCap + 1` INDEPENDENTLY — critical across
+ * so its key count is bounded at `config().cardinalityCap + 1` INDEPENDENTLY — critical across
  * a restart: on load `dimSinceStart` resets to empty while a loaded bucket keeps its
  * (already-capped) keys, so a single shared authority (the old `dimSinceStart`-only
  * design) would let post-restart writes blow past the cap in that bucket. Resolving
@@ -1358,10 +1379,10 @@ function resolveCappedKey(store: Map<string, Map<string, StatAccumulator>>, dimN
   const dim = store.get(dimName)
   if (!dim) return key
   if (dim.has(key)) return key
-  // Cap is config-driven (state.telemetryCardinalityCap, default 200). Read live so a
+  // Cap is config-driven (config().cardinalityCap, default 200). Read live so a
   // hot-reload takes effect; `dim.has(key)` short-circuits ABOVE the size check, so shrinking the cap
   // only bounds NEW keys and never evicts already-tracked ones (spec §cardinality_cap hot-reload).
-  if (dim.size >= state.telemetryCardinalityCap) return "other"
+  if (dim.size >= config().cardinalityCap) return "other"
   return key
 }
 
@@ -1391,9 +1412,9 @@ function resolveCumulativeCappedKey(dimName: string, key: string): string {
     cumulativeCapKeys.set(dimName, dim)
   }
   if (dim.has(key)) return key
-  // Cap is config-driven (state.telemetryCardinalityCap, default 200) — read live so a
+  // Cap is config-driven (config().cardinalityCap, default 200) — read live so a
   // hot-reload applies. `dim.has(key)` short-circuits above, so a shrink only bounds NEW keys.
-  if (dim.size >= state.telemetryCardinalityCap) return "other"
+  if (dim.size >= config().cardinalityCap) return "other"
   dim.add(key)
   return key
 }
@@ -1420,10 +1441,10 @@ export function recordSettledRequest(
   // AND db actually open": a db-open failure leaves telemetryDb null while telemetryEnabled stays true;
   // feeding the outbox then would grow it unbounded (the flush drain is gated on `db && enabled` so it
   // never swaps/drains) → silent OOM. telemetryDb null ≡ SQLite dual-write disabled (memory + JSON run on).
-  const enabled = state.telemetryEnabled && telemetryDb !== null
+  const enabled = config().enabled && telemetryDb !== null
   const outboxDelta = enabled ? buildSettledDelta(opts) : null
   const outboxObservations = enabled ? buildSketchObservations(opts) : null
-  const cumulativeEnabled = enabled && state.telemetryCumulative
+  const cumulativeEnabled = enabled && config().cumulative
   for (const [dimName, rawValue] of Object.entries(keys)) {
     if (rawValue === null) continue
     const capped = cappedDimensions?.has(dimName) ?? false
@@ -1740,7 +1761,7 @@ const persistTelemetrySerialized = createSerializedAsyncFn(async () => {
   // requires an async fn) now that the awaited JSON write is gone; the drain itself is synchronous.
   await Promise.resolve()
   const db = telemetryDb
-  if (db && state.telemetryEnabled) {
+  if (db && config().enabled) {
     // Snapshot-and-swap the outbox up front so record* landing during the drain accumulate into the
     // fresh maps, never the snapshot being consumed (re-entrancy guard).
     const snapshot = swapOutbox()
@@ -1809,7 +1830,7 @@ export function runTelemetryJsonBackfill(now = Date.now()): void {
   const snapshot = pendingBackfillJson
   // Consume the snapshot up front (single-shot): even if a guard below no-ops, a re-fire won't re-absorb.
   pendingBackfillJson = null
-  if (!db || !state.telemetryEnabled || snapshot === null) return
+  if (!db || !config().enabled || snapshot === null) return
   migrateJsonToTelemetryDb(db, snapshot, now, currentRollupConfig(), currentBackfillDimensionConfig(), () => telemetryBackfillStopRequested)
 }
 
@@ -1817,14 +1838,14 @@ export function runTelemetryJsonBackfill(now = Date.now()): void {
  * Project the live dimension-semantics config into the backfill input (single read point, mirrors
  * {@link currentRollupConfig}). Keeps the backfill's cap folding / cumulative gating aligned with the
  * live record path: same capped-dimension set (`CAPPED_DIMENSION_NAMES`), same config-driven cap
- * (`state.telemetryCardinalityCap`, so the backfill honors a tuned cap too — Fix round 2), and the same
- * cumulative on/off gate (`state.telemetryCumulative`).
+ * (`config().cardinalityCap`, so the backfill honors a tuned cap too — Fix round 2), and the same
+ * cumulative on/off gate (`config().cumulative`).
  */
 function currentBackfillDimensionConfig(): BackfillDimensionConfig {
   return {
     cappedDimensions: CAPPED_DIMENSION_NAMES,
-    cardinalityCap: state.telemetryCardinalityCap,
-    cumulativeEnabled: state.telemetryCumulative,
+    cardinalityCap: config().cardinalityCap,
+    cumulativeEnabled: config().cumulative,
   }
 }
 
@@ -1836,7 +1857,7 @@ export function _resetRequestTelemetryForTests(): void {
   bucketCounts = new Map()
   dimSinceStart = new Map()
   dimBuckets = new Map()
-  telemetryFilePath = PATHS.REQUEST_TELEMETRY
+  telemetryFilePathOverride = null
   // Close + drop the db handle and outbox so a following test's fresh db never inherits a closed
   // handle ("Cannot use a closed database") or leaked deltas. Unsubscribe the config listener too.
   telemetryDb?.close()
@@ -1858,7 +1879,7 @@ export function _resetRequestTelemetryForTests(): void {
 }
 
 export function _setRequestTelemetryFilePathForTests(path: string): void {
-  telemetryFilePath = path
+  telemetryFilePathOverride = path
 }
 
 /**
@@ -1900,7 +1921,7 @@ export function _isTelemetryShutdownSealedForTests(): boolean {
  */
 export function _runRollupTickForTests(now: number): void {
   const db = telemetryDb
-  if (!db || !state.telemetryEnabled) return
+  if (!db || !config().enabled) return
   runRollupTick(db, now, currentRollupConfig())
 }
 

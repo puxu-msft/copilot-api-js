@@ -26,6 +26,13 @@ import { join } from "node:path"
 import { CAPPED_DIMENSION_NAMES } from "~/lib/observability/telemetry-dimensions"
 import {
   //
+  restoreStateForTests,
+  setStateForTests,
+  snapshotStateForTests,
+  type StateSnapshot,
+} from "~/lib/state"
+import {
+  //
   _getCumulativeCapKeysForTests,
   _resetRequestTelemetryForTests,
   _setRequestTelemetryFilePathForTests,
@@ -33,14 +40,7 @@ import {
   initRequestTelemetry,
   persistRequestTelemetry,
   recordSettledRequest,
-} from "~/lib/request-telemetry"
-import {
-  //
-  restoreStateForTests,
-  setStateForTests,
-  snapshotStateForTests,
-  type StateSnapshot,
-} from "~/lib/state"
+} from "~/lib/telemetry-testing"
 import { openTelemetryDb } from "~/lib/telemetry/db"
 
 const BUCKET_MS = 5 * 60 * 1000

@@ -28,20 +28,20 @@ import { join } from "node:path"
 
 import {
   //
+  restoreStateForTests,
+  setStateForTests,
+  snapshotStateForTests,
+  type StateSnapshot,
+} from "~/lib/state"
+import {
+  //
   _getTelemetryDbForTests,
   _resetRequestTelemetryForTests,
   _setRequestTelemetryFilePathForTests,
   initRequestTelemetry,
   runTelemetryJsonBackfill,
   shutdownRequestTelemetry,
-} from "~/lib/request-telemetry"
-import {
-  //
-  restoreStateForTests,
-  setStateForTests,
-  snapshotStateForTests,
-  type StateSnapshot,
-} from "~/lib/state"
+} from "~/lib/telemetry-testing"
 import { openTelemetryDb } from "~/lib/telemetry/db"
 import { TELEMETRY_JSON_BACKFILL_VERSION } from "~/lib/telemetry/migrate-json"
 import {

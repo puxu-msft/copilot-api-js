@@ -26,6 +26,19 @@ import { join } from "node:path"
 
 import {
   //
+  compressBytes,
+  decompressBytes,
+} from "~/lib/sqlite/compression"
+import {
+  //
+  restoreStateForTests,
+  setStateForTests,
+  setTelemetryConfig,
+  snapshotStateForTests,
+  type StateSnapshot,
+} from "~/lib/state"
+import {
+  //
   _getEffectiveSketchGammaForTests,
   _getOutboxSizeForTests,
   _getTelemetryDbForTests,
@@ -38,20 +51,7 @@ import {
   persistRequestTelemetry,
   recordAcceptedRequest,
   recordSettledRequest,
-} from "~/lib/request-telemetry"
-import {
-  //
-  compressBytes,
-  decompressBytes,
-} from "~/lib/sqlite/compression"
-import {
-  //
-  restoreStateForTests,
-  setStateForTests,
-  setTelemetryConfig,
-  snapshotStateForTests,
-  type StateSnapshot,
-} from "~/lib/state"
+} from "~/lib/telemetry-testing"
 import {
   //
   openTelemetryDb,

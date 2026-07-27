@@ -1,11 +1,12 @@
 /**
- * T1 seam: the telemetry runtime composition root — process-singleton lifecycle +
- * facade delegation to the module-local request-telemetry registry.
+ * The telemetry runtime composition root — process-singleton lifecycle, facade delegation to the
+ * module-local request-telemetry registry (T1), and the CONFIG INJECTION wire (T2).
  *
- * This proves the SEAM (install/get/peek/reset semantics + that the facade actually
- * delegates through to the module singleton), NOT the registry internals (those are
- * covered by tests/pipeline/request-telemetry.unit.test.ts). The config injection
- * itself is wired + exercised in T2.
+ * This proves the SEAM (install/get/peek/reset semantics + that the facade delegates through to
+ * the module singleton + that the registry reads its config from the INJECTED port rather than
+ * core `state`), NOT the registry internals (those are covered by
+ * tests/pipeline/request-telemetry.unit.test.ts) and not the DB-frozen γ contract (covered by
+ * tests/telemetry/dual-write.unit.test.ts oracles 12/13, which now exercise the injected path).
  */
 
 import {
@@ -19,9 +20,11 @@ import {
 
 import {
   //
-  _resetRequestTelemetryForTests,
-  getRequestTelemetrySnapshot,
-} from "~/lib/request-telemetry"
+  restoreStateForTests,
+  setStateForTests,
+  snapshotStateForTests,
+  type StateSnapshot,
+} from "~/lib/state"
 import {
   //
   type TelemetryConfigView,
@@ -37,6 +40,13 @@ import {
   peekTelemetryRuntime,
   resetTelemetryRuntimeForTests,
 } from "~/lib/telemetry-runtime"
+import {
+  //
+  _getTelemetryDbForTests,
+  _resetRequestTelemetryForTests,
+  getRequestTelemetrySnapshot,
+  initRequestTelemetry,
+} from "~/lib/telemetry-testing"
 
 const fakeConfig: TelemetryConfigView = {
   enabled: false,
@@ -44,7 +54,7 @@ const fakeConfig: TelemetryConfigView = {
   persistInterval: 60,
   rollupInterval: 3600,
   cardinalityCap: 200,
-  sketchGamma: 0.0075,
+  sketchGammaCandidate: 0.0075,
   cumulative: false,
   rawResolutionMinutes: 5,
   rawRetentionDays: 7,
@@ -60,8 +70,13 @@ function makeFakeDeps(): TelemetryRuntimeDependencies {
   }
 }
 
+let snapshot: StateSnapshot
+
 beforeEach(async () => {
-  // Clean singleton + module state so each test starts from "no runtime installed".
+  // Clean singleton + module state so each test starts from "no runtime installed"; snapshot core
+  // state too — the injection tests deliberately set `telemetryEnabled` to prove the registry
+  // IGNORES it, and that must not leak into a sibling file sharing this process.
+  snapshot = snapshotStateForTests()
   await resetTelemetryRuntimeForTests()
   _resetRequestTelemetryForTests()
 })
@@ -69,6 +84,7 @@ beforeEach(async () => {
 afterEach(async () => {
   await resetTelemetryRuntimeForTests()
   _resetRequestTelemetryForTests()
+  restoreStateForTests(snapshot)
 })
 
 describe("telemetry runtime singleton lifecycle", () => {
@@ -132,5 +148,34 @@ describe("facade delegates to the module-local registry singleton", () => {
     const rt = createTelemetryRuntime(makeFakeDeps())
     installTelemetryRuntime(rt)
     expect(rt.getTelemetryDb()).toBeNull()
+  })
+})
+
+describe("T2 config injection: the registry reads the INJECTED port, not core state", () => {
+  test("an injected `enabled: false` keeps the db closed even while core state says enabled", async () => {
+    // Core state claims telemetry is ON — if the registry still read `state.telemetryEnabled`
+    // it would open a db here. The injected view is the only thing that must matter.
+    setStateForTests({ telemetryEnabled: true, telemetryDbPath: "/tmp/telemetry-injection-should-not-open.db" })
+    createTelemetryRuntime(makeFakeDeps()) // fakeConfig.enabled === false
+    await initRequestTelemetry()
+    expect(_getTelemetryDbForTests()).toBeNull()
+  })
+
+  test("the injected view is read LIVE (a later mutation is honoured, not a construction-time snapshot)", async () => {
+    // Positive control for the assertion above: flip the SAME port to enabled and the db opens.
+    // Without a live read this would stay null and the test above would pass vacuously.
+    const live = { ...fakeConfig, enabled: true, dbPath: ":memory:" }
+    createTelemetryRuntime({ ...makeFakeDeps(), config: live })
+    await initRequestTelemetry()
+    expect(_getTelemetryDbForTests()).not.toBeNull()
+  })
+})
+
+describe("tolerant peek leg: recording before assembly is a no-op, not a throw", () => {
+  test("peekTelemetryRuntime()?.recordAccepted() no-ops when nothing is assembled", () => {
+    expect(peekTelemetryRuntime()).toBeNull()
+    expect(() => peekTelemetryRuntime()?.recordAccepted(1_700_000_000_000)).not.toThrow()
+    // The registry's own counter is untouched — the call really did not reach it.
+    expect(getRequestTelemetrySnapshot().acceptedSinceStart).toBe(0)
   })
 })

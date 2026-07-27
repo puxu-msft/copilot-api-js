@@ -28,11 +28,6 @@ import { listInFlightEntries } from "~/lib/history/store"
 import { peekUpstreamWsManager } from "~/lib/openai/upstream-ws"
 import {
   //
-  getRequestTelemetrySnapshot,
-  getThinkingBlockTotals,
-} from "~/lib/request-telemetry"
-import {
-  //
   getIsShuttingDown,
   getShutdownPhase,
 } from "~/lib/shutdown"
@@ -41,6 +36,7 @@ import {
   serverStartTime,
   state,
 } from "~/lib/state"
+import { getTelemetryRuntime } from "~/lib/telemetry-runtime"
 import { getTokenCredentials } from "~/lib/token"
 import {
   //
@@ -122,7 +118,7 @@ statusRoutes.openapi(getStatusRoute, async (c) => {
     : { enabled: false }
 
   // History backend stats
-  const requestTelemetry = getRequestTelemetrySnapshot(now)
+  const requestTelemetry = getTelemetryRuntime().getSnapshot(now)
   const upstreamWs = peekUpstreamWsManager()
 
   let historyEntryCount = 0
@@ -307,7 +303,7 @@ statusRoutes.openapi(getStatusRoute, async (c) => {
       // Thinking-block emptiness totals since restart — a PROJECTION of the telemetry
       // measures (summed across the agentKind dimension), NOT a separate counter like
       // protect_streaming / tool_input_repair. { nonEmpty, emptySigned, emptyUnsigned }.
-      thinking_blocks: getThinkingBlockTotals(),
+      thinking_blocks: getTelemetryRuntime().getThinkingBlockTotals(),
 
       // Upstream transport diagnostics (D7 HIGH-7): configured effective values
       // (normalized 0/undefined → null), h2 session pool + hot-reload reconcile

@@ -7,12 +7,15 @@ import {
 
 import { getHistory } from "~/lib/history"
 import { drainV3Writer } from "~/lib/history/v3/store"
-import { getDimensionBreakdown } from "~/lib/request-telemetry"
 import {
   //
   setModels,
   setStateForTests,
 } from "~/lib/state"
+import {
+  //
+  getDimensionBreakdown,
+} from "~/lib/telemetry-testing"
 
 import { mockModel } from "../helpers/factories"
 import { useIsolatedRuntime } from "../helpers/isolated-fixture"

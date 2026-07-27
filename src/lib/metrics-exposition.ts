@@ -29,11 +29,10 @@ import { getRetryStrategyFireCounts } from "./observability/retry-strategy-fires
 import { TELEMETRY_DIMENSION_NAMES } from "./observability/telemetry-dimensions"
 import {
   //
-  getDimensionBreakdown,
-  getRequestTelemetrySnapshot,
   TELEMETRY_HISTOGRAMS,
   TELEMETRY_MEASURE_NAMES,
 } from "./request-telemetry"
+import { getTelemetryRuntime } from "./telemetry-runtime"
 
 /** Prometheus text exposition content-type (format version 0.0.4). */
 export const PROMETHEUS_CONTENT_TYPE = "text/plain; version=0.0.4; charset=utf-8"
@@ -171,7 +170,8 @@ export function renderPrometheusMetrics(
 
 /** Gather every registered dimension's process-lifetime breakdown + the accepted count, then render. */
 export function buildMetricsExposition(now = Date.now()): string {
-  const breakdowns = TELEMETRY_DIMENSION_NAMES.map((dimension) => getDimensionBreakdown(dimension, "sinceStart", ALL_KEYS_LIMIT, now))
-  const acceptedSinceStart = getRequestTelemetrySnapshot(now).acceptedSinceStart
+  const telemetry = getTelemetryRuntime()
+  const breakdowns = TELEMETRY_DIMENSION_NAMES.map((dimension) => telemetry.getDimensionBreakdown(dimension, "sinceStart", ALL_KEYS_LIMIT, now))
+  const acceptedSinceStart = telemetry.getSnapshot(now).acceptedSinceStart
   return renderPrometheusMetrics(breakdowns, acceptedSinceStart, getRetryStrategyFireCounts())
 }

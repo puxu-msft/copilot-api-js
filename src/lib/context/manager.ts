@@ -27,8 +27,8 @@ import type {
 } from "~/lib/observability"
 
 import { recordReaperTick } from "~/lib/observability/reaper-diagnostics"
-import { recordAcceptedRequest } from "~/lib/request-telemetry"
 import { state } from "~/lib/state"
+import { peekTelemetryRuntime } from "~/lib/telemetry-runtime"
 
 import type {
   //
@@ -399,7 +399,7 @@ export function createRequestContextManager(options?: RequestContextManagerOptio
         },
         publisher,
       })
-      recordAcceptedRequest(ctx.startTime)
+      peekTelemetryRuntime()?.recordAccepted(ctx.startTime)
       activeContexts.set(ctx.id, ctx)
       operationScopes.set(ctx.id, ctx)
       // Arm the hard-deadline timer (C4b). It enters the unified cancellation provenance first
