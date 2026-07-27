@@ -6,7 +6,6 @@ import {
   createSerializedAsyncFn,
 } from "~/lib/atomic-fs"
 
-import type { UsageData } from "./history/store"
 import type { ThinkingBlockCounts } from "./telemetry-dimension-names"
 import type { TelemetryDatabase } from "./telemetry/db"
 
@@ -336,12 +335,32 @@ export interface DimensionBreakdownSnapshot {
   keys: Array<DimensionKeySnapshot>
 }
 
+/**
+ * The token-usage fields the telemetry registry reads off a settled request — a STRUCTURAL type
+ * owned here rather than an import of history's `UsageData`.
+ *
+ * The registry only ever reads these five numbers (and never writes usage back), so importing
+ * history's richer record would buy nothing but a dependency edge from the telemetry aggregation
+ * leaf into the history domain — an edge that keeps telemetry inside the core SCC. Every field is
+ * declared exactly as history declares it (the two token counts required, the cache/reasoning
+ * fields optional), so a `UsageData` stays assignable to this without a cast — locked by a
+ * compile-time assignability test in tests/pipeline/request-telemetry.unit.test.ts, which is the
+ * only thing standing between "structurally decoupled" and "silently drifted apart".
+ */
+export interface TelemetryUsage {
+  input_tokens: number
+  output_tokens: number
+  cache_read_input_tokens?: number
+  cache_creation_input_tokens?: number
+  output_tokens_details?: { reasoning_tokens?: number }
+}
+
 /** Settled-request inputs (the measure source). */
 interface SettledTelemetryInput {
   startedAt: number
   endedAt: number
   success: boolean
-  usage?: UsageData
+  usage?: TelemetryUsage
   /**
    * Billing multiplier for the resolved model (from `ctx.multiplier`). When
    * present, drives the per-token-type cost measures. Undefined for token-based
