@@ -11,6 +11,10 @@
 | `bisect-c2.py` | **加法**二分：从 200 的最小构造逐项加生产特征 | 几 KB/发 |
 | `bisect-c2-sub.py` | **减法**二分：从 400 的生产 payload 截断历史 | 递减，最小 14KB |
 | `confirm-c2-precondition.py` | 四变体对照，钉死 C2 的触发前提 | 几 KB/发 |
+| `probe-remote-c3-regression.ts` | 把导出的 history entry 的**客户端 payload** 灌进当前 sanitize 管线，打印三腿形态（客户端发来 / 那台实例发上游 / 当前 master 产出）+ 全消息 C1/C2/C3 审计 | 0（离线，不打上游） |
+
+`probe-remote-c3-regression.ts` 是判「某台实例的 400 是我方哪一版代码造的」的离线首选：
+`bun run exp/thinking-terminal-block/probe-remote-c3-regression.ts <解压后的 entry.json>`（entry 从 History UI 导出的 `.json.zst` 用 `zstd -d` 解开）。
 
 ## C2 的最小复现（先看这个，几乎不花钱）
 
