@@ -64,6 +64,7 @@
 - [编译错误：补符号 vs 删引用](methodology-broken-reference-supply-vs-delete.md) — 按消费者契约+独立 oracle 裁决，别反射式让它编译
 - [复用共享原语选完整版非小版](methodology-full-primitive-not-partial-else-silent-field-drop.md) — 否则静默丢字段+单测假绿；映射测须构造每个非平凡字段
 - [「别继承退化」只在目标真有对应值时成立](methodology-degradation-advice-scoped-to-target-has-equivalent.md) — 目标无对应值→诚实退化+marker；实现者最易过度应用
+- [守卫追不上就换不变量的位置/判据形状](methodology-relocate-invariant-when-guard-cannot-keep-up.md) — 连续被合法语法绕过=形状错；blocklist→allowlist·把顺序契约搬进 runtime 自己；附注释写错致代码看着对、oracle 假绿两坑
 - [修全部比较点](feedback-fix-all-comparison-sites.md) — 归一化键/id bug 多点复发；grep 全仓逐处修+抽共享 primitive
 - [修一条约束别自造兄弟约束违规](methodology-fix-one-constraint-violates-sibling-constraint.md) — 对象级约束要一起断言；最小构造须保留被测对象的结构性处境(序数/位置)否则阴性无裁决力、加法+减法二分两头逼近、matcher 按补救手段归类且须 clause-local、按形状非索引定位
 - [名实不符变量+双源值](methodology-lying-variable-name-dual-source-value.md) — 名字断言单一身份、值取自会撒谎的源(原始vs已变换)；根治=单一原语+命名反映真实来源(requested vs resolved)+单一抑制权+独立oracle锁接线缝
@@ -97,7 +98,7 @@
 - [picocolors 在 bun test 塌缩成恒等](reference-picocolors-collapses-to-identity-in-bun-test.md) — 改测引用相等 + FORCE_COLOR 子进程 SGR
 - [迁移副作用旧路径仍被 eager 求值→双触发](methodology-migrate-side-effect-old-path-still-eager-evaluated.md) — driver eager 求值 deps.strategies 仍触发；根因修=抽 lazy resolver
 - [无疑问改进当场做](feedback-slam-dunk-fixes-do-immediately.md) — 更好+无取舍+无分叉三条全中立即改
-- [写设计前先核实功能没被 peer 落地](feedback-verify-deferred-task-not-already-landed-before-designing.md) — 连「用户要求实现 X」都先核实是否已 landed；grep 现码+RFC/DESIGN 状态行
+- [写设计前先核实功能没被 peer 落地/删除](feedback-verify-deferred-task-not-already-landed-before-designing.md) — 连「用户要求实现 X」都先核实是否已 landed；接手跨周交接第一条命令 = `git log <merge-base>..master -- <子系统路径>`（grep 不到 ≠ 没做，可能是已被判死删除）
 - [绝不推荐短期止血方案](feedback-never-propose-short-term-mitigation.md) — 有根因可修就只提根因；「打开 gated feature 绕过」也禁列
 - [恢复是唯一出路而非风险取舍](feedback-recovery-is-only-path-not-risk-tradeoff.md) — 连接已死重连是唯一出路；沉没账与重试无关、别框成双计费取舍
 - [结构重构提交前跑架构守卫/全 backend](methodology-run-architecture-guards-before-structural-refactor-commit.md) — grep 源码形状/schema 完备性守卫不在直接目录、只跑相关测试会漏红 master
