@@ -1,16 +1,16 @@
 {
-  "port": 41939,
-  "nonce": "barefetch-1785189454773672836",
+  "port": 41942,
+  "nonce": "barefetch-1785191069528184467",
   "windowMs": 900000,
-  "serverStartedAt": "2026-07-27T21:57:34.818Z",
+  "serverStartedAt": "2026-07-27T22:24:29.569Z",
   "attempts": 1,
   "observations": [
     {
       "attempt": 1,
       "path": "/v1/messages",
       "method": "POST",
-      "arrivedAtMs": 269,
-      "abortedAfterMs": 300829,
+      "arrivedAtMs": 240,
+      "abortedAfterMs": 300934,
       "answeredAfterMs": null,
       "headers": {
         "accept": "*/*",
@@ -19,7 +19,7 @@
         "connection": "keep-alive",
         "content-length": "102",
         "content-type": "application/json",
-        "host": "127.0.0.1:41939",
+        "host": "127.0.0.1:41942",
         "sec-fetch-mode": "cors",
         "user-agent": "node"
       }

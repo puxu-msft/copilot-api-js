@@ -47,7 +47,7 @@
 - **既有 skill 里「只有真实 content_block_delta 能重置」的表述不准确**，尚未修正（见 §4 待办）。
 - 300s 是**地板**（`Math.max(env, 3e5)`），只能调高。
 - 300s 时钟在**响应头到达后**才武装（`he()` 在 `await …withResponse()` 之后），头到达前**一帧都不用发**。
-  - **⚠ 2026-07-27 订正**：本行原写「头到达前由 SDK client `timeout = API_TIMEOUT_MS || 600000` 管」——**那不是真正的约束**。SDK 的计时器确实是 600s（2.1.220 实装亦然），但它**从来没机会触发**：更低一层的 undici 默认 `headersTimeout` 在 **300.0s** 就掐断了。实测：真 CC 299,667–300,280ms、SDK（显式 1250s 超时）300,001ms、裸 `fetch` 300,887ms 抛 `UND_ERR_HEADERS_TIMEOUT`。所以 pre-header 预算是 **300s，不是 600s**。见 `exp/silence-recovery-gates/FINDINGS.md` §「Q1 续测」。
+  - **⚠ 2026-07-27 订正**：本行原写「头到达前由 SDK client `timeout = API_TIMEOUT_MS || 600000` 管」——**那不是真正的约束**。SDK 的计时器确实是 600s（2.1.220 实装亦然），但它**从来没机会触发**：更低一层的 undici 默认 `headersTimeout` 在 **~300s** 就掐断了。实测：真 CC 299,667–300,280ms、SDK（显式 1250s 超时）300,001ms、裸 `fetch` 300,887ms 抛 `UND_ERR_HEADERS_TIMEOUT`。所以 pre-header 预算是 **~300s，不是 600s**。见 `exp/silence-recovery-gates/FINDINGS.md` §「Q1 续测」（含作用域限定：这是本机 CC 2.1.220 + Node v26.3.0 的 transport 默认，非协议常量）。
   - 巧合提醒：pre-header 的 300s（undici `headersTimeout`，**任何**响应头即满足）与 commit 后的 300s（CC stream idle watchdog，**ping 不重置**）是**两个不同机制**，数值相同，别合并做预算。
 
 ### 2.2 生产损伤（我亲手用 History 只读探针复核）
@@ -89,9 +89,11 @@
 
 > **⚠ 2026-07-27 续会话更新：T1 的无上限形式已被实测否定，且它不是空地。**
 >
-> **① 实测（Q1 门已闭合）**：CC 的 pre-header 容忍度 = **300.0s**，不是「≥125s、上界未知」。归属 **undici 默认 `headersTimeout`**——在 SDK 与 CC 配置的下一层，所以 CC 自称的 `x-stainless-timeout: 1200`、SDK 的显式 `timeout: 1_250_000` 都够不着它（裸 `fetch` 无 SDK 无 CC 同样在 300,887ms 抛 `UND_ERR_HEADERS_TIMEOUT`；把 `CLAUDE_STREAM_IDLE_TIMEOUT_MS` 抬到 600s 不移动该点）。证据 + 对照见 [`exp/silence-recovery-gates/FINDINGS.md`](../../../exp/silence-recovery-gates/FINDINGS.md) §「Q1 续测」。
+> **① 实测（Q1 门已闭合）**：CC 的 pre-header 容忍度 ≈ **300s**，不是「≥125s、上界未知」。直接触发器**与 undici 默认 `headersTimeout` 一致**——**不是** SDK 的 1200/1250s request timer，**也不是** CC 那个响应头后才武装的 stream-idle watchdog（把 `CLAUDE_STREAM_IDLE_TIMEOUT_MS` 抬到 600s 不移动该点；裸 `fetch` 无 SDK 无 CC 抛 `UND_ERR_HEADERS_TIMEOUT`；裸 TCP socket 打同一 handler 420.1s 未被关，排除我方服务端）。**作用域**：本机 CC 2.1.220 + 其内置 Node v26.3.0 transport 默认，四个完整 attempt 落在 299.667–300.280s。这是**可配置、随版本变化的 transport 默认值，不是协议常量**。证据 + 对照见 [`exp/silence-recovery-gates/FINDINGS.md`](../../../exp/silence-recovery-gates/FINDINGS.md) §「Q1 续测」。
 >
-> **所以「推迟到首个真实块」不能无上限做**：commit 前我方一个字节都发不出，300s 一到客户端整条放弃。真实收益是**有界的**——commit 在 T 秒 ⇒ 总预算 T+300s，T 只能逼近 300s ⇒ **天花板 ~600s**（当前 T=20 ⇒ ~320s）。撞上不致命（CC 原生重试，观测 ≥5 次），代价是上游从头重算。
+> **所以「推迟到首个真实块」不能无上限做**：commit 前我方一个字节都发不出，~300s 一到该 attempt 就被中止。可安全断言的**窄结论仅此一条**——单个 pre-header attempt 必须在 ~300s 前 commit，否则接受它被中止。撞上不致命（CC 原生重试，观测 4 个完整周期、backoff ≈0.55/1.05/2.16/4.06s，最大尝试数未测），代价是上游从头重算。
+>
+> ⚠ **本文档早先版本写过「总预算 T+300s、天花板 ~600s」——那是错的，已删除。** commit 后的 300s 是**可重置的 idle watchdog**（任何非-ping 事件重置），而且我方 `streamKeepaliveEscalateSec` 默认 **200s** 就在主动重置它（[state.ts:410-415](../../../src/lib/state.ts#L410-L415)，注释自陈「留 ~100s 余量给 CC 的 300s watchdog」）。post-commit 能撑多久由 keepalive/escalation 契约决定，**不存在无条件的 T+300 算术**。两个 300s 相互独立配置、当前默认值相同，不得合并做预算。
 >
 > **② 别另起炉灶**：这条已有定稿 spec + 经两轮跨模型评审达成 consensus 的 5 份 plan（[`docs/plan/2026-07-23-upstream-silence-recovery/`](../2026-07-23-upstream-silence-recovery/)），**B1 就是 T1**。且 `feat/upstream-silence-recovery` 分支上 B1 已实现但未合 master（`a81f117d` 拆 clamp、`6c53e27b` ceiling 提 125s，外加 B2-P0 地基）。该分支停在 07-23，**无会话在跟进**（查过所有活跃 session 的 `gitBranch`）；与今日 master 做 `git merge-tree` 试合并：**全部源码文件自动合并干净，只有 `docs/DESIGN.md` 和 `docs/todo/deferred-backlog.md` 两处文本冲突**。用户 2026-07-27 裁决：**先只读评估、暂不动它**。
 >

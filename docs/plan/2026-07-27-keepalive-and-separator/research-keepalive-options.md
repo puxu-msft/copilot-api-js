@@ -307,9 +307,14 @@ ADR 2026-07-22 D2 把 `empty_text` 退役，判据是两条：①「空-text blo
 
 ### 4.9 【结构性方案】把 commit 时机当作心跳杠杆
 
-- 机制：**300s 时钟在响应头到达时才起跑**（§1.5，源码 `:298185` 的 `he()` 位置）。头到达前 CC 的预算是 `API_TIMEOUT_MS` **默认 600s**。当前 `stream_commit_after_sec: 20` 在第 20 秒主动开跑时钟，把总预算钉成 320s——**5463 死于 320.0s，就是这个数**。
-- 若把 commit 推迟到 T 秒（上游仍无内容时继续 hold header），总预算 = T + 300s。T=250 → 550s。
-- 两层超时：pre-commit 期间**两层都不存在**（无头、无流），只受 600s 总预算约束。commit 后由 §4.3 接管。
+> **⚠ 2026-07-27 实测订正（本节两处前提被推翻，见 `exp/silence-recovery-gates/FINDINGS.md` §「Q1 续测」）**：
+> - **「头到达前 CC 的预算是 `API_TIMEOUT_MS` 默认 600s」是错的。** 那个 600s 计时器存在但**永远轮不到它触发**——更低一层的 undici 默认 `headersTimeout` 在 **~300s** 就中止该 attempt（真 CC 四次落在 299.667–300.280s；裸 `fetch` 无 SDK 无 CC 抛 `UND_ERR_HEADERS_TIMEOUT`；裸 TCP socket 打同一 handler 420.1s 未被关，排除服务端）。**pre-commit 预算是 ~300s，不是 600s。**
+> - **「总预算 = T + 300s，T=250 → 550s」是错的**，别再引用。commit 后那个 300s 是**可重置的 idle watchdog**（任何非-ping 事件即重置），不是从 commit 起只跑一次的总时限；而且我方 `streamKeepaliveEscalateSec`（默认 200s）本就在主动重置它。post-commit 能撑多久由 keepalive/escalation 契约决定，不存在这条加法。
+> - **本节的核心论点仍然成立**（且不依赖上面两个数）：推迟 commit 能保住「上游报错时还能返回真 HTTP 状态码 → CC 全套原生自愈」这项能力，见本节末尾的「额外收益」。变的只是**可推迟的幅度有硬上界 ~300s**。
+
+- 机制：**300s 时钟在响应头到达时才起跑**（§1.5，源码 `:298185` 的 `he()` 位置）。~~头到达前 CC 的预算是 `API_TIMEOUT_MS` **默认 600s**。~~ → 实测为 ~300s（undici `headersTimeout`），见上方订正。当前 `stream_commit_after_sec: 20` 在第 20 秒主动开跑时钟——**5463 死于 320.0s** 与此一致（20s commit + 300s post-commit idle）。
+- ~~若把 commit 推迟到 T 秒（上游仍无内容时继续 hold header），总预算 = T + 300s。T=250 → 550s。~~ **作废，见上方订正。** 可安全断言的窄结论是：**单个 pre-header attempt 必须在 ~300s 前 commit，否则该 attempt 被 `headersTimeout` 中止**（撞上不致命，CC 会原生重试，代价是上游从头重算）。
+- 两层超时：pre-commit 期间**§4.3 那两层都不存在**（无头、无流），但**受 undici `headersTimeout` ~300s 约束**（原文写「只受 600s 总预算约束」，已订正）。commit 后由 §4.3 接管。
 - 被 baked：**完全不涉及**——一个字节都不发。
 - 需客户端配合：否。
 - **额外收益（长远正确性）**：pre-commit 期间上游若报错，我方还能返回**真 HTTP 4xx/5xx**，从而保住 CC 的全部原生自愈（thinking-strip / cache-beta drop / role:system 回退 / 429 退避重试）。一旦 commit 成 200，任何错误只能降级成 `200 + SSE error`，`.status === undefined`、**CC 零重试**（skill 已记载，`:10018` + `error.js` 路径）。**早 commit 是在拿自愈能力换心跳，而这个交换现在看是亏的。**

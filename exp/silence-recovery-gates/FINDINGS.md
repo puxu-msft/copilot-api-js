@@ -27,6 +27,8 @@
 - **但事故 RST 最早 ~126s**，故仅把窗口调到 125s **不能确认覆盖事故**（B1 单独救不了干挂到 126-206s 的 A，与 spec §5.B1「部分」一致）。
 - **待续**：定默认值/schema clamp 前，继续跑真 CC 的 130s/150s/180s 阶梯找首个失败区间 + 留安全余量。
 
+> **⚠ 本节（含上面这条「待续」）已被下一节 2026-07-27 续测 supersede。** 阶梯不必跑了，首次失败点已直接测得；「上界未知」不再成立。本节保留仅作历史语境，**搜索命中本节时请直接读下一节**。
+
 ## Q1 续测（2026-07-27）：首次失败点 = **300.0s**，且不归 Anthropic 层 —— 区间闭合
 
 上轮留的 `[125s, 未知)` 现已闭合。**没有走阶梯**：阶梯每档一次完整运行、且只能夹逼。改为让 fake server 静默到远超任何可能容忍度，直接从 `request.signal` 服务端读出客户端放弃的时刻——一次运行同时给出精确点位与其后的重试行为。代码 `q1-abort-observer-server.ts` / `q1-firstfail-cli-runner.ts` / `q1-bare-fetch-runner.ts` / `run-q1-firstfail.sh`，实测 JSON 见 `results/q1-firstfail/`。
@@ -41,7 +43,7 @@
 | firstfail attempt 4 | 同上 | 同上 | **300,256ms** |
 | sdkcontrol | `@anthropic-ai/sdk` 0.106.0，`maxRetries:0`、显式 `timeout: 1_250_000` | 1250 | **300,001ms**，`Request timed out.` |
 | idle-env-600s | 真 CC + `CLAUDE_STREAM_IDLE_TIMEOUT_MS=600000` | — | **299,813ms**（**没动**） |
-| barefetch | Node 裸 `fetch`，无 SDK 无 CC | 无 | **300,887ms**，`UND_ERR_HEADERS_TIMEOUT` |
+| barefetch | Node 裸 `fetch`，无 SDK 无 CC（node v24.16.0 / undici 7.25.0） | 无 | **300,986ms**，`UND_ERR_HEADERS_TIMEOUT`（另一次独立跑 300,887ms） |
 | rawsocket | 裸 TCP socket，无任何 HTTP 客户端 | 无 | **420.1s 仍未被关**（服务端对照） |
 | repro-125s | 真 CC 2.1.220 | — | 成功 125,002ms，exit 0、`num_turns:1` |
 
@@ -50,19 +52,28 @@
 0. **服务端对照（最要命的一条，因为三个客户端臂打的是同一个服务端实现）**：若是我方 Bun server 在 300s 关连接，三臂会一起「撞上 300s」而结论全错。用裸 TCP socket 发同样的 POST 后干等：**420.1s 服务器既没关连接也没发一个字节**（`rawsocket` 臂）。故 `Bun.serve({ idleTimeout: 0 })` 确实禁用了服务端超时，300s 完全在客户端侧。
 1. **不是 harness 的其他部分**：服务器一直挂着（窗口 900–1500s），是客户端先走。SDK 臂显式给了 1250s 超时仍在 300.0s 死——它自己的 `setTimeout(abort, 1_250_000)` 根本没到点。
 2. **不是 CC 的 stream idle watchdog**：把 `CLAUDE_STREAM_IDLE_TIMEOUT_MS` 抬到 600000，放弃点纹丝不动（299,813ms）。且源码侧 `x0i()` 的武装点 `he()` 在 `await …withResponse()` **之后**，pre-header 期间本就没武装。
-3. **是 undici 的默认 `headersTimeout`**：剥掉全部 Anthropic 层的裸 `fetch` 在 300,887ms 抛 `HeadersTimeoutError` / `UND_ERR_HEADERS_TIMEOUT`。这一层在 SDK 与 CC 的配置**下面**，所以两者自称的 1200s/1250s 都够不着它。错误类型本身也是证据：客户端超时抛的是 `HeadersTimeoutError`，服务端关连接抛的会是 socket/reset 类错误。
+3. **是 undici 的默认 `headersTimeout`**：剥掉全部 Anthropic 层的裸 `fetch` 在 300,986ms 抛 `HeadersTimeoutError` / `UND_ERR_HEADERS_TIMEOUT`（客户端侧原始记录 `results/q1-firstfail/barefetch.client.json`，含 runtime 版本；服务端侧 300,934ms）。这一层在 SDK 与 CC 的配置**下面**，所以两者自称的 1200s/1250s 都够不着它。错误类型本身也是证据：客户端超时抛的是 `HeadersTimeoutError`，服务端关连接抛的会是 socket/reset 类错误。机制侧独立佐证：`node_modules/undici/lib/dispatcher/client.js` 把 `headersTimeout` 默认设为 `300e3`，undici 文档同述。
+   **跨 runtime 注记**：bare-fetch 臂跑在系统 **node v24.16.0 / undici 7.25.0**，而 CC 2.1.220 自报的 runtime 是 **Node v26.3.0**（见 `firstfail.observations.json` 的 `x-stainless-runtime-version`）。两个不同 runtime 都落在 ~300s，说明这是 undici 一段时间内的稳定默认——但**仍是默认值而非常量**，可被 dispatcher 覆盖、可随版本改，换版本要重测。
 
 **因此 `x-stainless-timeout: 1200` 确实不是 oracle**——上轮的谨慎标注是对的，但真实上限比它小 4 倍，不是大。
 
-**CC 撞上后不会死给用户看**：观测到 CC 连做 5 次尝试，每次静默 ~300s 后放弃、~2s 后重发（attempt 到达时刻 1,401 / 301,615 / 602,930 / 905,365ms）。即 pre-header 超时落在 CC 的**原生重试保护区**内——代价是每次重试都让上游从头重算。**边界（诚实标注）**：这轮是**我主动杀掉探针服务器结束的**，不是 CC 自己耗尽重试——所以「CC 最多重试几次才向用户报错」**未测定**，只知道 **≥5 次**。两条长跑的末条 `API Error: Unable to connect to API (ConnectionRefused)` 是我方清理的产物，**不是** CC 的自然终态，不要引用成 CC 的放弃行为。
+**CC 撞上后不会死给用户看**：观测到 **4 个完整的 ~300s 超时周期**，每次放弃后 CC 自动重发（attempt 到达 1,401 / 301,615 / 602,930 / 905,365 / 1,209,678ms），第 5 次 attempt 已发出但其结局未被观测。**重试间隔是指数退避**：由 `arrivedAtMs + abortedAfterMs` 算出的四个间隔为 **547 / 1,047 / 2,155 / 4,057ms**（不是固定 ~2s）。即 pre-header 超时落在 CC 的**原生重试保护区**内——代价是每次重试都让上游从头重算。**边界（诚实标注）**：这轮是**我主动杀掉探针服务器结束的**，不是 CC 自己耗尽重试——所以「CC 最多重试几次才向用户报错」**未测定**。两条长跑的末条 `API Error: Unable to connect to API (ConnectionRefused)` 是我方清理的产物，**不是** CC 的自然终态，不要引用成 CC 的放弃行为。
+
+**结论的作用域（别写宽）**：
+- 严格可断言的是——**本机 CC 2.1.220（内置 Node v26.3.0 transport 默认）下，四次 attempt 的 pre-header 首次 transport abort 落在 299.667–300.280s**。「容忍度 = 300.0s」是简写，但**不是协议常量**：`headersTimeout` 是 undici 的**默认值**，可被 dispatcher 覆盖、可随 Node/undici 版本变化。
+- 归因的精确表述是——**不是** Anthropic SDK 的 1200/1250s request timer，**也不是** CC 那个 header 后才武装的 stream-idle watchdog；直接触发器**与 undici 默认 `headersTimeout` 一致**。说「不属于 CC」过宽：undici/Node transport 本来就是 CC 的运行栈的一部分。
+
+**不要由此推出「总预算 T+300s」或「~600s 天花板」**（本文档初稿曾这样写，**是错的**）：commit 之后那个 300s 是 **idle watchdog**、不是 total timeout——任何非-ping 事件都会 `he()` 重置它（`exp/cc-idle-280s/REPORT.md` 实测：ping-only ~300s 断，空 content delta 能撑过 340s）。而且我方默认就在主动重置它：`streamKeepaliveEscalateSec` 默认 **200s**（`src/lib/state.ts:410-415`，注释自陈「留 ~100s 余量给 CC 的 300s watchdog」），到点发匹配开块的 content delta 或 pre-content 注入脚手架，并把 deadline 重锚到该次写出。**post-commit 能撑多久由 keepalive/escalation 契约决定，不是一个 300s 的常数。**
 
 **版本注记**：本轮是 CC **2.1.220**（上轮 2.1.218）。125s 正样本在新版本上复现通过，故两轮可比。参照源码 `~/.claude/refs/claude-code-2.1.207` 与实装版本有漂移（例：2.1.220 里 300s 的 `t1_()` 只在非流式路径调用），**行号与结论都只对 2.1.207 有效**，凡涉及实装行为一律以本表实测为准。
 
 **对 B1 / commit 时机的意义**：
-- **`stream_commit_after_sec` 的物理上限 = 300s**（减安全余量），不是「未知」。plan-1 Task 1.2 把 ceiling 提到 125s 是**安全的，但保守了 175s**。
-- **「把 commit 推迟到首个真实块」在无上限形式下不成立**：commit 前一个字节都没发，300s 一到客户端就整条放弃。commit 在 T 秒 ⇒ 总预算 = T + 300s，T 只能逼近 300s ⇒ **天花板 ~600s**；当前 T=20 ⇒ ~320s。
-- 事故的 RST 落在 126–206s，**整段在 300s 窗口内**——把默认窗口抬到该区间之上，这些请求就能留在 pre-header 区、拿到真 HTTP 状态、走 CC 原生重试，这正是 B1 的收益论证。
-- **两个 300s 是不同机制、数值巧合**：pre-header 的 300s 是 undici `headersTimeout`（任何响应头即满足）；post-commit 的 300s 是 CC 自己的 stream idle watchdog（**ping 不重置**）。别把两者当同一个东西做预算。
+- **`stream_commit_after_sec` 的上限 = 当前实测的 transport default（~300s）减安全余量**，不再是「未知」。plan-1 Task 1.2 把 ceiling 提到 125s 是**安全的，但保守了 175s**。注意这个 300 是**当前客户端栈的默认值、不是永恒常量**，随 CC/Node/undici 版本或 dispatcher 覆盖而变，应按版本重新校准。
+- **「把 commit 推迟到首个真实块」在无上限形式下不成立**：commit 前一个字节都没发，~300s 一到该 attempt 就被 `headersTimeout` 中止。可安全断言的窄结论仅此一条——**单个 pre-header attempt 必须在 ~300s 前 commit，否则接受该 attempt 被中止**。**不要**据此推「总预算 T+300s」或「~600s 天花板」（理由见上一节）。
+- 事故的 RST 落在 126–206s，**整段在 ~300s 窗口内**——把默认窗口抬到该区间之上，这些请求就能留在 pre-header 区、拿到真 HTTP 状态、走 CC 原生重试，这正是 B1 的收益论证。
+- **两个 300s 是相互独立配置、当前默认值恰好相同的两个机制**：pre-header 的是 undici `headersTimeout`（任何响应头即满足）；post-commit 的是 CC 的 stream idle watchdog（**ping 不重置**、非-ping 事件重置）。**不得合并做预算。**（初稿写的「数值巧合」是因果解释，两个样本证不了，此处只陈述可证事实。）
+
+**时间基注记**：探针记的是**服务端 handler 视角**的客户端断开时刻（`arrivedAt` 从 handler 收到并解析完请求起算），而 undici 的 `headersTimeout` 是**客户端 dispatch 视角**。CC 请求体约 190KB，故 attempt 1 的服务端读数 299,667ms 可能比客户端真实阈值早几百毫秒。因此本节的可断言精度是「**约 300s 的默认阈值**」，不是毫秒级阈值。
 
 
 ## Q2：事故类大 context 的 fresh-retry 可恢复性 —— 未能定论（inconclusive）
