@@ -1,10 +1,11 @@
 /**
  * L2 reactive strip-all retry — the guarded matcher AND the `canHandle` decision
- * gate for the GHC "thinking ... cannot be modified" 400.
+ * gate for GHC's illegal-thinking-layout 400s (both the "cannot be modified"
+ * adjacency shape and the "final block ... cannot be `thinking`" terminal shape).
  *
  * Two layers are asserted:
- *   1. The pure `isThinkingModifiedRejection(string)` matcher. It MUST fire on
- *      the real rejection body, and it MUST NOT fire on the legacy
+ *   1. The pure `isThinkingLayoutRejection(string)` matcher. It MUST fire on
+ *      both real rejection bodies, and it MUST NOT fire on the legacy
  *      `thinking.type.enabled` rejection (handled by a separate strategy) or on
  *      an unrelated 400 — a false positive would strip thinking from turns the
  *      upstream never complained about.
@@ -23,7 +24,7 @@ import {
   test,
 } from "bun:test"
 
-import { isThinkingModifiedRejection } from "~/lib/anthropic/poisoned-thinking-match"
+import { isThinkingLayoutRejection } from "~/lib/anthropic/poisoned-thinking-match"
 import { createPoisonedThinkingRetryStrategy } from "~/lib/codec/anthropic/poisoned-thinking-retry"
 import {
   //
@@ -34,21 +35,52 @@ import { setStateForTests } from "~/lib/state"
 
 import { autoRestoreState } from "../helpers/state-fixture"
 
-describe("isThinkingModifiedRejection", () => {
+describe("isThinkingLayoutRejection", () => {
   test("正命中真实 body", () => {
     expect(
-      isThinkingModifiedRejection(
+      isThinkingLayoutRejection(
         "messages.3.content.34: `thinking` or `redacted_thinking` blocks in the latest assistant message cannot be modified. These blocks must remain as they were in the original response.",
       ),
     ).toBe(true)
   })
 
   test("负命中 legacy thinking.type.enabled", () => {
-    expect(isThinkingModifiedRejection('"thinking.type.enabled" is not supported for this model. Use "thinking.type.adaptive"')).toBe(false)
+    expect(isThinkingLayoutRejection('"thinking.type.enabled" is not supported for this model. Use "thinking.type.adaptive"')).toBe(false)
   })
 
   test("负命中无关 400", () => {
-    expect(isThinkingModifiedRejection("messages.0: Extra inputs are not permitted")).toBe(false)
+    expect(isThinkingLayoutRejection("messages.0: Extra inputs are not permitted")).toBe(false)
+  })
+
+  // C2：末块 thinking 的 400 是另一种措辞（无 “cannot be modified”），但同样由
+  // strip-all 治愈，故共用本谓词。真实 body 取自 req_1785016294183_896。
+  test("正命中 C2 终端块拒绝（真实 body）", () => {
+    expect(isThinkingLayoutRejection("messages.27: The final block in an assistant message cannot be `thinking`.")).toBe(true)
+  })
+
+  test("负命中：只提到 thinking 但不是布局拒绝", () => {
+    expect(isThinkingLayoutRejection("thinking budget_tokens must be greater than 1024")).toBe(false)
+  })
+
+  test("负命中：final block 措辞但主语不是 assistant message", () => {
+    expect(isThinkingLayoutRejection("The final block in a user message cannot be `image`.")).toBe(false)
+  })
+
+  // 上游用同一句式报告其它块类型的 final-block 违规；strip-all 治不了它们，
+  // 认领只会白烧掉一次性重试机会并遮蔽真正的处理策略（评审 MED-1）。
+  test.each(["`tool_use`", "`text`", "empty"])("负命中：同句式但被拒块是 %s（非 thinking）", (blockKind) => {
+    expect(isThinkingLayoutRejection(`messages.9: The final block in an assistant message cannot be ${blockKind}.`)).toBe(false)
+  })
+
+  // 块类型必须紧跟线索本身，而非「消息里某处出现 thinking」——否则一条因别的原因
+  // 提到 thinking 的 final-block 400 会被误认领（复审 MED，clause-local 收窄）。
+  test("负命中：消息别处提到 thinking，但被拒块是 tool_use", () => {
+    expect(isThinkingLayoutRejection("Thinking is enabled, but the final block in an assistant message cannot be `tool_use`.")).toBe(false)
+  })
+
+  test("正命中：redacted_thinking 变体与引号风格容忍", () => {
+    expect(isThinkingLayoutRejection("The final block in an assistant message cannot be `redacted_thinking`.")).toBe(true)
+    expect(isThinkingLayoutRejection("The final block in an assistant message cannot be thinking.")).toBe(true)
   })
 })
 
@@ -95,5 +127,14 @@ describe("createPoisonedThinkingRetryStrategy().canHandle — body-parse extract
     const error = classifyError(new HTTPError("400 Bad Request", 400, POISON_BODY))
     // body 本身会命中匹配，但 canHandle 应因 state 门禁短路返回 false。
     expect(createPoisonedThinkingRetryStrategy().canHandle(error)).toBe(false)
+  })
+
+  test("正命中 C2：终端块拒绝 body 同样经 body-parse 接管（L1 未预防时的兜底腿）", () => {
+    setStateForTests({ stripThinkingOnReject: true })
+    const body = '{"error":{"message":"messages.27: The final block in an assistant message cannot be `thinking`.","type":"invalid_request_error"}}'
+    const error = classifyError(new HTTPError("400 Bad Request", 400, body))
+    expect(error.type).toBe("bad_request")
+    expect(error.message.toLowerCase()).not.toContain("final block")
+    expect(createPoisonedThinkingRetryStrategy().canHandle(error)).toBe(true)
   })
 })
