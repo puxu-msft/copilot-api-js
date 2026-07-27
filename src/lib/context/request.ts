@@ -1322,7 +1322,7 @@ export function createRequestContext(opts: {
       const generationAttempt = generationAttemptByHandle.get(dispatch)
       if (!generationAttempt || generationAttempt.settled || modelOperationRecorder.sealed) return
       const attempt = _attempts[generationAttempt.v2Index]
-      if (!attempt?.wireRequest) return
+      if (!attempt.wireRequest) return
       attempt.synthetic = kind
       modelOperationRecorder.setDispatchUpstreamRequestSynthetic(dispatch, kind)
     },

@@ -146,10 +146,13 @@ describe("client↔proxy SDK e2e — continuation-retry (upstream shielded)", ()
 
     await drainModelOperationTerminalSubscribers()
     await drainV3Writer()
-    await waitUntil(() => {
-      const persisted = entryForSession(sessionId)
-      return persisted !== undefined && getV3Operation(persisted.id) !== undefined
-    }, { label: "persisted continuation canonical operation" })
+    await waitUntil(
+      () => {
+        const persisted = entryForSession(sessionId)
+        return persisted !== undefined && getV3Operation(persisted.id) !== undefined
+      },
+      { label: "persisted continuation canonical operation" },
+    )
     const entry = entryForSession(sessionId)
     const canonical = entry ? getV3Operation(entry.id) : undefined
     expect(canonical?.dispatches.map((dispatch) => dispatch.upstreamRequest?.synthetic)).toEqual([undefined, "continuation", "continuation"])
@@ -161,7 +164,13 @@ describe("client↔proxy SDK e2e — continuation-retry (upstream shielded)", ()
     ])
     expect(entry?.attempts?.[2]?.upstreamRequest?.messages).toEqual([
       { role: "user", content: "write" },
-      { role: "assistant", content: [{ type: "text", text: "First half. " }, { type: "text", text: "Middle. " }] },
+      {
+        role: "assistant",
+        content: [
+          { type: "text", text: "First half. " },
+          { type: "text", text: "Middle. " },
+        ],
+      },
       { role: "user", content: "network issue. please continue" },
     ])
     for (const attempt of entry?.attempts ?? []) {
