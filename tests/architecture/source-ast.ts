@@ -184,12 +184,28 @@ export function typeOnlyModuleSpecifiers(sourceFile: ts.SourceFile): Array<strin
  *  - the walk does NOT descend into nested function/class bodies, so a call parked in a helper that
  *    is never invoked cannot stand in for real wiring (a `function decoy() { runJsonBackfill() }`
  *    passed the previous version while production was actually disconnected);
- *  - when `unconditionalOnly` is set, the walk also refuses to enter constructs that may be skipped
- *    on the normal path: conditionals (`if`/loop/`switch`/`&&`/ternary) AND a `catch` clause, which
- *    runs only when the `try` throws. Plain blocks, the `try` block itself and `finally` ARE entered
- *    — `try` does not gate whether its body runs (production wraps these very calls in one), and
- *    `finally` runs on both the normal and the throwing path.
+ *  - when `unconditionalOnly` is set, the walk refuses to enter constructs that may be skipped on the
+ *    normal path — conditionals (`if`/loop/`switch`/`&&`/ternary), a `catch` clause (runs only when
+ *    the `try` throws), a labeled statement (`break label` can jump over it) — rejects
+ *    optional-chained calls (`runtime?.op()` is skipped when the receiver is nullish, which a
+ *    must-run lifecycle call may never be), and stops walking a statement list after an
+ *    unconditional `return`/`throw`/`break`/`continue`, since everything after it is unreachable.
+ *    Plain blocks, the `try` block and `finally` ARE entered: a `try` body runs unconditionally
+ *    (production wraps these very calls in one) and `finally` runs on both paths.
+ *
+ * **What this can and cannot prove.** It is a syntactic approximation of reachability, not control-
+ * flow analysis: it proves the call is present, in this function's own flow, and not inside a
+ * construct that visibly skips it. It CANNOT prove true reachability — a helper called just above
+ * that always throws, a `process.exit()`, or any non-local flow still leaves the call unreached
+ * while the walk sees it. The residual gap and the two candidate designs that would close it (a
+ * narrow injectable sequencing helper with a runtime spy, or a booted-server e2e asserting recorded
+ * phase order) are tracked in docs/todo/deferred-backlog.md.
  */
+/** Statements after which the rest of the enclosing statement list is unreachable. */
+function isTerminator(statement: ts.Statement): boolean {
+  return ts.isReturnStatement(statement) || ts.isThrowStatement(statement) || ts.isBreakStatement(statement) || ts.isContinueStatement(statement)
+}
+
 /**
  * Constructs whose body may be SKIPPED on the normal path — a call inside one is not unconditional
  * wiring.
@@ -202,6 +218,8 @@ export function typeOnlyModuleSpecifiers(sourceFile: ts.SourceFile): Array<strin
 function isConditional(node: ts.Node): boolean {
   return (
     ts.isCatchClause(node)
+    // `label: { break label; call() }` — a labeled block can be jumped out of.
+    || ts.isLabeledStatement(node)
     || ts.isIfStatement(node)
     || ts.isSwitchStatement(node)
     || ts.isConditionalExpression(node)
@@ -222,6 +240,16 @@ export function findCallInScope(scope: ts.Node, predicate: (call: ts.CallExpress
   const visit = (node: ts.Node): void => {
     if (found !== null) return
     if (unconditionalOnly && isConditional(node)) return
+    // Everything after an unconditional `return`/`throw`/`break`/`continue` in the SAME statement
+    // list is unreachable, so stop reading that list there rather than counting what follows.
+    if (unconditionalOnly && ts.isBlock(node)) {
+      for (const statement of node.statements) {
+        if (found !== null) return
+        visit(statement)
+        if (isTerminator(statement)) return
+      }
+      return
+    }
     // Do not enter a nested callable — its body is a different execution flow.
     const isNestedCallable =
       node !== scope
@@ -233,8 +261,14 @@ export function findCallInScope(scope: ts.Node, predicate: (call: ts.CallExpress
         || ts.isClassExpression(node))
     if (isNestedCallable) return
     if (ts.isCallExpression(node) && predicate(node)) {
-      found = node
-      return
+      // `runtime?.op()` is skipped whenever the receiver is nullish — a lifecycle call that MUST run
+      // may never be optional-chained, so this is not wiring regardless of the receiver's type.
+      const isOptionalChained =
+        node.questionDotToken !== undefined || (ts.isPropertyAccessExpression(node.expression) && node.expression.questionDotToken !== undefined)
+      if (!unconditionalOnly || !isOptionalChained) {
+        found = node
+        return
+      }
     }
     ts.forEachChild(node, visit)
   }

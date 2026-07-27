@@ -244,6 +244,57 @@ describe("telemetry startup order (initialize → listen → runJsonBackfill)", 
     expect(orderViolations("start.ts", inFinally)).toEqual([])
   })
 
+  test("a call that is present but unreachable is not wiring either", () => {
+    // A lifecycle call that MUST run may never be optional-chained: the whole call is skipped when
+    // the receiver is nullish, so this is not wiring whatever the receiver's declared type says.
+    const optionalChained = `
+      async function runServer(options) {
+        const telemetryRuntime = installDefaultTelemetryRuntime()
+        await telemetryRuntime.initialize()
+        serverInstance = await startServer({ port })
+        telemetryRuntime?.runJsonBackfill()
+      }
+    `
+    expect(orderViolations("start.ts", optionalChained)).toEqual(["telemetry runJsonBackfill() is missing from the startup path"])
+
+    // A labeled block can be jumped out of before reaching the call.
+    const labeled = `
+      async function runServer(options) {
+        const telemetryRuntime = installDefaultTelemetryRuntime()
+        await telemetryRuntime.initialize()
+        serverInstance = await startServer({ port })
+        backfill: {
+          break backfill
+          telemetryRuntime.runJsonBackfill()
+        }
+      }
+    `
+    expect(orderViolations("start.ts", labeled)).toEqual(["telemetry runJsonBackfill() is missing from the startup path"])
+
+    // Everything after an unconditional return/throw in the same statement list is dead.
+    const afterThrow = `
+      async function runServer(options) {
+        const telemetryRuntime = installDefaultTelemetryRuntime()
+        await telemetryRuntime.initialize()
+        serverInstance = await startServer({ port })
+        throw new Error("boom")
+        telemetryRuntime.runJsonBackfill()
+      }
+    `
+    expect(orderViolations("start.ts", afterThrow)).toEqual(["telemetry runJsonBackfill() is missing from the startup path"])
+
+    const afterReturn = `
+      async function runServer(options) {
+        const telemetryRuntime = installDefaultTelemetryRuntime()
+        await telemetryRuntime.initialize()
+        serverInstance = await startServer({ port })
+        return
+        telemetryRuntime.runJsonBackfill()
+      }
+    `
+    expect(orderViolations("start.ts", afterReturn)).toEqual(["telemetry runJsonBackfill() is missing from the startup path"])
+  })
+
   test("the real startup path holds the whole contract", async () => {
     const source = await readFile(startPath, "utf8")
     // Non-vacuous: the scope and all three milestones must actually resolve in the real file before
