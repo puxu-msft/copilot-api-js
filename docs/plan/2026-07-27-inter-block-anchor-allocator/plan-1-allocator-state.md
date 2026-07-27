@@ -112,7 +112,7 @@ test("no-anchor PRIMARY leg: structurally bypassed — the SAME frame object is 
 test("no-anchor CONTINUATION leg: MUST remap even though anchorsOpened()===0", () => {
   const a = createGenerationWireIndexAllocator()
   a.allocateRealBlock(0)                               // 主腿 real@0
-  a.beginLeg("continuation")                           // 续写腿：upstream index 重启
+  a.beginLeg("continuation", src)                           // 续写腿：upstream index 重启
   const m = a.allocateRealBlock(0)                     // 该腿 upstream 0 → wire 1
   const frame = realStartFrame(0)
   const out = resolveRemappedFrame(frame, m)
@@ -125,7 +125,7 @@ test("no-anchor CONTINUATION leg: MUST remap even though anchorsOpened()===0", (
 test("no-anchor RECOVERY leg after an anchor was written: MUST remap", () => {
   const a = createGenerationWireIndexAllocator()
   a.allocateAnchor()                                   // pre-content anchor@0（attempt0 已写到 wire）
-  a.beginLeg("recovery")                               // attempt0 首块前截断 → recovery
+  a.beginLeg("recovery", src)                               // attempt0 首块前截断 → recovery
   const m = a.allocateRealBlock(0)                     // upstream 0 → wire 1
   expect(resolveRemappedFrame(realStartFrame(0), m)).not.toBe(realStartFrame(0))
 })

@@ -22,9 +22,9 @@
 
 ## 修法（frontier 唯一权威）
 
-续写腿的真实块**不查旧映射**，而是从 frontier **继续分配新 index**。P2 已冻结 `beginLeg(kind)` 为 serializer command，allocator 侧的 leg 语义在 P2.1 落地（分配返回**不可变 `WireBlockMapping` token**，delta/stop 按 token 查，不查 ambient「当前腿」）。本相位负责把 driver 的双偏移退役、在**每个 upstream round** 上接 `beginLeg(kind)`。
+续写腿的真实块**不查旧映射**，而是从 frontier **继续分配新 index**。P2 已冻结 `beginLeg(kind, source)` 为 serializer command，allocator 侧的 leg 语义在 P2.1 落地（分配返回**不可变 `WireBlockMapping` token**，delta/stop 按 token 查，不查 ambient「当前腿」）。本相位负责把 driver 的双偏移退役、在**每个 upstream round** 上接 `beginLeg(kind, source)`。
 
-> **不为 continuation 特判**（round-2 major）：`beginLeg` 对 **continuation 与 recovery 都调**。allocator 由「已成功写出的 frontier + 空的新腿 mapping」自然得出正确结果，两类腿无需分支——也避免「recovery 忘调时靠巧合正确」的脆弱性。recovery 的两种情形见 P2「recovery / leg 边界语义」表。
+> **不为 continuation 特判**（round-2 major）：`beginLeg` 对 **primary、continuation、recovery 三类都调**。allocator 由「已成功写出的 frontier + 空的新腿 mapping」自然得出正确结果，两类腿无需分支——也避免「recovery 忘调时靠巧合正确」的脆弱性。recovery 的两种情形见 P2「recovery / leg 边界语义」表。
 
 > 原 plan 曾列「A. leg-scoped 映射 / B. 分配即映射」两条候选待实施期选。**该选择已在 P2.1 冻结为 B（分配即映射）**——它让分配点与消费点合一、天然支持任意多腿，且是 owner API 的自然形状。此处不再重复裁决。
 
@@ -89,7 +89,7 @@ test("POSITIVE CONTROL B: the harness reproduces the documented collision on the
 - [ ] **Step 1**：（oracle 已在 4.1）
 - [ ] **Step 2**：确认 4.1 红。
 - [ ] **Step 3**：实现——
-  - driver 在进入**每个新 upstream round** 时调 `await port.beginLeg(kind)`——续写腿在 `driver.ts:1491` 附近（取代快照 `continuationOffset`）；**transparent recovery 腿同样要调**（`driver.ts:1409` 附近的 `attempt++` 分支），见 P2 recovery 表。
+  - driver 在进入**每个新 upstream round** 时调 `await port.beginLeg(kind, { candidateId, dispatchId })`（handle 取自该腿的 binding）——续写腿在 `driver.ts:1491` 附近（取代快照 `continuationOffset`）；**transparent recovery 腿同样要调**（`driver.ts:1409` 附近的 `attempt++` 分支），见 P2 recovery 表。
   - 删除 `driver.ts:1186` 的第二层 `continuation.remap(outFrame, continuationOffset)`。
   - 删除 `wireDeliveredBlocks` / `continuationOffset` 的声明与递增（`:1071-1072`、`:1189`、`:1491`）。
   - `ContinuationHooks.remap` 若因此零消费者：**加 `@deprecated` 注释说明「wire index 唯一权威已迁至 allocator frontier」并保留**，交 P8.6 统一裁决是否删。理由：reviewer 的「无消费者可安全删除」类断言必须亲自复核，而跨格式（Responses/CC）续写腿可能仍在用——实施期 `rg -n "continuation.*remap" src/` 逐处核实。

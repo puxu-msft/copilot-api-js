@@ -52,7 +52,7 @@ anchor@2（测试经 owner API 落）→ real@3（上游1，生产分配）→ o
 | **M2** | `refactor(driver): allocate and remap buffered-flush blocks via the frontier owner` | S1（`driver.ts:1185`）分配 + remap | S1 走 frontier；S2/S3 走 bridge（数值等价，见上方证明）；**S1 的 bridge 已删** | Task 3.1 的 offset≥2 测试（M1 已使第二 anchor 能被生产正确关闭）；S1 两维 mutation 均红；O-1/O-2/O-6 |
 | **M3** | `refactor(driver): allocate and remap retreat write-through blocks via the frontier owner` | S2（`driver.ts:1242`） | S2 走 frontier；**S2 的 bridge 已删**；S3 仍走 bridge | Task 3.2 + S2 两维 mutation；O-1/O-2/O-6 |
 | **M4** | `refactor(live-reconcile): allocate, close off and remap live blocks in one wire transaction` | S3（装饰器 + envelope factory，见「S3 专节」） | **三腿全部走 frontier**；`rg "remap\(.*, 1\)" src/` 与 **bridge 判据均零命中** | Task 3.3 + S3 两维 mutation + 「transaction 内不可插入」断言；O-1/O-2/O-6 |
-| **M5** | `fix(continuation): retire the dual offsets and the legacy anchor state fields` | plan-4 Task 4.1/4.2/4.3：退役双偏移、接 `beginLeg(kind)`；**并删除 M1 保留的 `anchorBlockOpen`/`anchorClosed`**（此时已无消费者） | `continuationOffset`/`wireDeliveredBlocks`/`anchorBlockOpen`/`anchorClosed` **全部零残留** | 4.1 **两条**撞车 oracle（分支二此时可满足）+ 两个 positive control + `beginLeg` 两格 mutation |
+| **M5** | `fix(continuation): retire the dual offsets and the legacy anchor state fields` | plan-4 Task 4.1/4.2/4.3：退役双偏移、接 `beginLeg(kind, source)`；**并删除 M1 保留的 `anchorBlockOpen`/`anchorClosed`**（此时已无消费者） | `continuationOffset`/`wireDeliveredBlocks`/`anchorBlockOpen`/`anchorClosed` **全部零残留** | 4.1 **两条**撞车 oracle（分支二此时可满足）+ 两个 positive control + `beginLeg` 两格 mutation |
 | **M6** | `feat(keepalive): allow gap anchors after the first committed block` | plan-5 Task 5.1/5.3：per-gap latch + gap injector + **删 `semanticBlockCount===0` 门**（特性开门） | 生产可开多 anchor——**此时三腿已全部走 frontier**，故无半坏 | O-3 精确形状 + 加回门的 mutation + 架构守卫 mutation（裸 `allocateAnchor` 必红） |
 | **M7** | `test(anchor): cover the continuation-leg × gap-anchor integration seam` | plan-5 Task 5.4 交叉缝 | 交叉行为被锁 | O-9 交叉 mutation 矩阵（同一测试对两侧 mutation 以**不同可辨识原因**失败）+ 两条单侧 control |
 | **M8** | `test(anchor): multi-gap coverage and shipped-default byte equivalence` | plan-5 Task 5.5/5.6 | 默认配置零 anchor、字节等价 | 多 gap × 混合块类型（含 tool_use 不被推迟）；O-6 |
@@ -131,7 +131,7 @@ reviewer 核实（planner 复核确认）：**所有 close 调用点都在 sink 
 原方案只枚举 remap、**漏了 allocate**（round-1 major）：`mapping` 只有在开块时被创建才能供后续 delta/stop 查，仅把硬编码 `1` 换成 resolver **不会自动创建 mapping**，S2/S3 会读到缺失或旧 mapping。故每条腿都必须具名回答三个问题：
 | 腿 | start 帧谁分配？ | delta / stop 如何查 mapping？ | 如何保证同一块不重复分配？ |
 |---|---|---|---|
-| **S1** driver buffered flush（`driver.ts:1185`） | flush 循环内 `anchor.isContentBlockStart(frame)` 为真时经 owner API `withAllocatedRealBlock(upstreamIndex, …)` | 非 start 帧**经 owner `writeBlockFrame(upstreamIndex, frame)`**（owner 内查 mapping → remap → 写 → stop 成功后释放）；调用方不碰 registry | 一个 upstream 块只有一个 start 帧；重复分配会被 3.4 维度 B 的 mutation 咬住 |
+| **S1** driver buffered flush（`driver.ts:1185`） | flush 循环内 `anchor.isContentBlockStart(frame)` 为真时经 owner API `withAllocatedRealBlock(upstreamIndex, …)` | 非 start 帧**经 owner `writeBlockFrame(leg, upstreamIndex, frame)`**（owner 内按**显式 leg** 查 mapping → remap → 写 → stop 成功后释放）；调用方不碰 registry、也不依赖 owner 记「当前腿」 | 一个 upstream 块只有一个 start 帧；重复分配会被 3.4 维度 B 的 mutation 咬住 |
 | **S2** driver retreat（`driver.ts:1242`） | retreat 写穿循环内同样在 start 帧上调 owner API（**原 plan 漏此步**） | 同 S1（**retreat 不换 leg**，故 buffered 阶段登记的 mapping 照常可查 —— C10 ④） | 同 S1；retreat 前已 flush 的块**不得**再分配（buffer 已清空，结构上不会重入——**须有测试**） |
 | **S3** live-reconcile（`live-reconcile.ts:141`） | 装饰器 `makeReconcilingSink` 经 `getDownstreamDeliverySession(inner)` 取 port，在**一个 transaction** 内完成「close-off stop + 分配 + remapped start」（见下方 S3 专节） | 同 S1 | live 腿逐帧透传，一个块一个 start |
 
@@ -296,7 +296,8 @@ test("S1 buffered flush allocates and remaps real blocks itself at frontier offs
 - [ ] **零残留 grep 全绿**：`remap\(.*, 1\)` / `continuationOffset` / `wireDeliveredBlocks` / `anchorBlockOpen` / `anchorClosed` / **迁移期 bridge 判据**（`anchorsOpened\(\) > 0`）在 `src/` 均零命中。
 - [ ] **close 权威唯一**：生产代码在 owner 外无任何 anchor stop 写出、无 `openAnchorIndex` 读写（架构守卫 + 正样本对照）。
 - [ ] **mapping registry 唯一访问者**：owner 外无任何 mapping 读写；三腿的非-start 帧全部经 `writeBlockFrame`（架构守卫 + 正样本对照）。
-- [ ] **provenance 真实**：History generation 轨中真实块带真实 candidateId/dispatchId（主腿 ≠ 续写腿），`"legacy"` 仅出现在既有兼容 helper 一处。
+- [ ] **provenance 真实**：History generation 轨中 **primary / recovery / continuation** 三腿的真实块各带真实 candidateId/dispatchId（主腿 ≠ 续写腿），`"legacy"` 仅出现在既有兼容 helper 一处；无活跃 leg 时分配/写块被拒绝。
+- [ ] **跨腿 mapping 隔离**：`writeBlockFrame` 按**显式 leg** 解析；改回 ambient 当前腿的 mutation 必须转红。
 - [ ] **legacy 字段唯一写者**（M1–M4 期间）：`anchorBlockOpen`/`anchorClosed` 的赋值只出现在 owner；转移表逐格 oracle 绿。
 - [ ] 6 格 mutation 矩阵 + 交叉 mutation 矩阵**填满无空格**。
 - [ ] anchor 全套件与 P0 基线对账完毕（每处差异归因为「预期改写」或「回归已修」）。

@@ -84,11 +84,16 @@ export interface WireBlockAllocationPort {
     build: (ctx: { mapping: WireBlockMapping; envelope: WireEnvelopeFactory }) => ReadonlyArray<WireWriteSpec>,
   ): Promise<WireBlockMapping | undefined>
   /**
-   * Fence a leg boundary (continuation / recovery / any new upstream round). Serialized like every
-   * other owner operation: establishes AFTER all successful writes of the previous leg and BEFORE
-   * any allocation of the next one.
+   * Open a leg and bind the identity its frames were produced by. Serialized like every other owner
+   * operation: establishes AFTER all successful writes of the previous leg and BEFORE any allocation
+   * of the next one.
+   *
+   * EVERY leg goes through here — `primary` included, not just the retry-ish ones — because this is
+   * also where the real candidate/dispatch identity enters the wire state (C11). A `primary` leg that
+   * skipped it would have to fall back to the placeholder identity, which is precisely the wrong
+   * degradation: the driver does hold the real handles.
    */
-  beginLeg(kind: "continuation" | "recovery"): Promise<LegToken>
+  beginLeg(kind: "primary" | "continuation" | "recovery", source: { candidateId: string; dispatchId: string }): Promise<LegToken>
   /**
    * Close the currently open synthetic anchor, if any — the SINGLE close authority (round-4 blocker).
    *
@@ -113,8 +118,14 @@ export interface WireBlockAllocationPort {
    * index that was not itself an allocation (round-5 major).
    *
    * The owner does all four steps inside one serializer operation: look the block's mapping up by
-   * (current leg, `upstreamIndex`), remap the frame onto its wire index, write it, and — when the
-   * frame is that block's `content_block_stop` and the write SUCCEEDED — release the mapping (C10 ③).
+   * (`leg`, `upstreamIndex`), remap the frame onto its wire index, write it, and — when the frame is
+   * that block's `content_block_stop` and the write SUCCEEDED — release the mapping (C10 ③).
+   *
+   * The leg is passed EXPLICITLY, never read from an ambient "current leg" the owner remembers: a
+   * later leg restarts its upstream indices at 0, so an ambient lookup resolves an early frame of the
+   * previous leg against the new one. Removing that ambient state is the whole reason delta/stop
+   * resolve through immutable tokens; taking `LegToken` here keeps that property instead of quietly
+   * reintroducing the race `beginLeg`'s fence was built to close.
    *
    * Callers never touch the mapping registry: without this the lookup/remap/release triple would be
    * re-implemented at each of the three legs, which is exactly how C10's storage decision leaks back
@@ -124,7 +135,7 @@ export interface WireBlockAllocationPort {
    * registered, so writing the frame unremapped would silently land it on a stale index — the R1
    * silent-reordering failure this plan exists to prevent.
    */
-  writeBlockFrame(upstreamIndex: number, frame: ClientFrame): Promise<"written" | "no-mapping" | "write-error">
+  writeBlockFrame(leg: LegToken, upstreamIndex: number, frame: ClientFrame): Promise<"written" | "no-mapping" | "write-error">
 }
 ```
 
@@ -138,7 +149,7 @@ delta/stop 按不可变 token 查（round-2 裁决），但 token **存哪、怎
 | 2 | **查询** | delta/stop 按 **(当前 leg token, 帧自带的 upstream index)** 精确查。**必须支持同腿多块并存**（上游 parallel tool_calls 的 coexist index）——故是 per-leg Map 而非单槽。 |
 | 3 | **释放** | 该块的 `content_block_stop` **成功写出后**删除其条目。（close-before-real 关的是 anchor，不在此列。） |
 | 4 | **retreat 共享** | retreat **不换 leg**，沿用同一 leg map：buffered 阶段登记的 mapping 在 live 写穿阶段照常可查。这正是 S2 必须与 S1 共享状态的原因。 |
-| 5 | **谁执行**（round-5 major） | 查询 / remap / 释放**全部在 owner 内**，经 `writeBlockFrame`——三腿只递 (upstreamIndex, frame)。**架构守卫**：owner 外不得直接读写 mapping registry（`src/` 下对该 Map 的访问有且仅有 delivery owner 一处，带正样本对照）。否则「存哪」的裁决会在三腿各自的实现里被绕开。 |
+| 5 | **谁执行**（round-5 major，round-6 收紧签名） | 查询 / remap / 释放**全部在 owner 内**，经 `writeBlockFrame(leg, upstreamIndex, frame)`——三腿递**显式 `LegToken`** + upstream index + frame，**owner 不记「当前腿」**（ambient 当前腿正是 round-3 决议要消除的东西）。**架构守卫**：owner 外不得直接读写 mapping registry（`src/` 下对该 Map 的访问有且仅有 delivery owner 一处，带正样本对照）。否则「存哪」的裁决会在三腿各自的实现里被绕开。 |
 
 **missing mapping 必须显式报错，绝不原样透传**——查不到 token 说明 start 漏登记（M2–M4 漏接线正是这个形状）。静默透传会让帧落在旧 index 上，就是 R1 的静默重排。配测试：人为删除 mapping 后，后续 delta 必须抛可辨识错误而非被写出。
 
@@ -166,8 +177,27 @@ if (unhedgedBinding) env.ctx.selectGenerationWinner(unhedgedBinding.candidate.ca
 
 **这正是记忆 `methodology-degradation-advice-scoped-to-target-has-equivalent` 的应用**：「别继承退化」只在**目标真有对应值**时成立——这里目标**有**，所以照抄 `legacy` 是**错误的退化**（会把真实身份信息丢进 History，违反 richest-data-flow：后端存储必须完整）。
 
-- [ ] **接线**：`GenerationWireState` 承载「当前 candidate/dispatch」并随 leg 切换更新（`beginLeg` 是天然的更新点）；owner 铸造 `real` 信封时读它。
-- [ ] **oracle**：驱动一次带 continuation 的请求，断言 History 的 generation 轨中真实块的 provenance **带真实 candidateId/dispatchId**（且续写腿与主腿**不同**），而非 `"legacy"`。
+#### primary leg 的初始化时机（**round-6 major：原方案只覆盖 continuation/recovery，primary 无初始化点**）
+
+`beginLeg` 是身份进入 wire state 的唯一入口，故 **primary 也必须调**。但 primary 有一处时序坑，必须写死：
+
+**sink 早于 binding 存在**。两条 stream 路径都先 `makeAnchoredSseSink`（settled-within-window `handler-v4.ts:552`；**delayed-commit `:624`——它在上游 settle 之前就建 sink**），而真实 candidate/dispatch 要等 driver 建立 binding 才有（`driver.ts:1039-1040` 的 `generation?.bindings.get(upstream)`）。**delayed-commit 的 pre-response 窗口尤其明显**：注入器可能在 binding 存在之前就已注入 anchor。
+
+冻结的时序：
+
+| 时点 | 状态 | 说明 |
+|---|---|---|
+| sink 构造（`:552` / `:624`） | **无 leg、无身份** | wire state 已创建但尚未 `beginLeg`；此时只可能写 **synthetic** 帧（anchor / keepalive / synthetic message_start），它们走 `syntheticKind` provenance（C7），**不需要** candidate 身份 |
+| driver 取得 binding 后、**首个真实块分配之前** | `await port.beginLeg("primary", { candidateId, dispatchId })` | driver 在 `runResponseBufferedSink` / `runResponseSink` 入口处（`driver.ts:1039-1040` 已算出 handle 的同一位置）调用 |
+| 此后 | 有 leg、有身份 | 真实块经 `withAllocatedRealBlock` 分配，`real` 帧带真实身份 |
+
+**不变量**：`withAllocatedRealBlock` / `writeBlockFrame` 在**没有活跃 leg 时必须拒绝**（返回错误而非退化为 placeholder）——真实块出现前必然已 `beginLeg`。这条把「primary 忘了初始化」变成**显式失败**而非静默 `"legacy"`。
+
+> **为何 synthetic 帧不需要等 leg**：它们的 provenance 是 `{kind:"synthetic", syntheticKind}`，本就与 candidate 无关（C7）。这也正是 pre-response anchor 能在 binding 之前合法写出的原因——**没有被退化的身份，只有本就不适用的字段**。
+
+- [ ] **接线**：`GenerationWireState` 承载「当前 leg 的 candidate/dispatch」，**唯一写入点是 `beginLeg`**；owner 铸造 `real` 信封时读它。
+- [ ] **oracle（三腿全覆盖）**：驱动一次含 recovery + continuation 的请求，断言 History generation 轨中 **primary / recovery / continuation 三种腿**的真实块 provenance **各自带真实 candidateId/dispatchId**、**均非 `"legacy"`**，且**主腿 ≠ 续写腿**。另单测 delayed-commit 路径：pre-response anchor 在 `beginLeg` 之前写出且带 `synthetic` provenance（不是退化的 candidate 身份）。
+- [ ] **负样本**：无活跃 leg 时调 `withAllocatedRealBlock` / `writeBlockFrame` **必须拒绝**（不得退化为 placeholder 身份）。
 - [ ] **守卫**：`src/` 下 `"legacy"` 字面量的出现有且仅有既有兼容 helper 一处（带正样本对照）。
 
 ### 注入路径（**round-3 major：P1 handler-owned state 与 P2 session-owned port 之间的接线空洞，本轮冻结**）
@@ -228,7 +258,7 @@ handler-v4.ts  makeAnchoredSseSink()
 | attempt0 无 anchor，首块前截断 | 0 | wire **0** | 是 → 原对象直返 |
 | attempt0 已写 pre-content anchor@0，首块前截断 | 1 | wire **1** | 否 → 必须 remap |
 
-**冻结裁决**：**所有** upstream round（continuation **与** recovery）都调 `beginLeg(kind)`，**不为 continuation 特判**。allocator 由「已成功写出的 frontier + 空的新腿 mapping」自然得出正确结果——上表两行都自动成立，无需分支。这样也避免了「recovery 忘了调 beginLeg 时靠巧合正确」的脆弱性（reviewer 指出的正是这一点）。
+**冻结裁决**：**所有** upstream round（**primary**、continuation、recovery）都调 `beginLeg(kind, source)`，**不为任何一类特判**。allocator 由「已成功写出的 frontier + 空的新腿 mapping」自然得出正确结果——上表两行都自动成立，无需分支。这样也避免了「recovery 忘了调 beginLeg 时靠巧合正确」的脆弱性（reviewer 指出的正是这一点）。
 
 `kind` 只用于诊断/遥测，**不参与 index 计算**。
 
@@ -256,7 +286,7 @@ test("allocateAnchor / allocateRealBlock are atomic: peek and commit cannot inte
 test("mappings are immutable tokens — a later leg cannot change how an earlier block resolves", () => {
   const a = createGenerationWireIndexAllocator()
   const m0 = a.allocateRealBlock(0)                     // 主腿 upstream 0 → wire 0（恒等）
-  a.beginLeg("continuation")
+  a.beginLeg("continuation", src)
   const m1 = a.allocateRealBlock(0)                     // 该腿 upstream 0 → wire 1
   expect(m0.wireIndex).toBe(0)                          // ← 旧 token 不受新腿影响
   expect(m1.wireIndex).toBe(1)
@@ -407,10 +437,37 @@ test("recovery leg AFTER a pre-content anchor was written: upstream0 -> wire1 (m
 ```
 
 - [ ] **Step 2**：跑，红。
-- [ ] **Step 3**：实现——预留对读者不可见（commit point 之前）+ 所有 upstream round 都调 `beginLeg(kind)`。
+- [ ] **Step 3**：实现——预留对读者不可见（commit point 之前）+ **三类** upstream round 都调 `beginLeg(kind, source)`（primary 的时机见「primary leg 的初始化时机」）。
 - [ ] **Step 4**：跑，绿。
 - [ ] **Step 5**：mutation——只在 continuation 调 `beginLeg`、recovery 漏调，确认 recovery 第二支转红。
 - [ ] **提交** → `feat(delivery): explicit leg fences on every upstream round`
+
+## Task 2.2c-c：跨腿 mapping 隔离 oracle（**round-6 major**）
+
+> `writeBlockFrame` 的 leg 参数是**显式**的（round-6 收紧）。这条 oracle 证明它真的按传入的 leg 解析，而不是回退到 owner 记住的「当前腿」——后者会让**同一 upstream index 在两条腿上各有一块**时查错 mapping，正是 round-3 决议要消除的 ambient 状态。
+
+- [ ] **Step 1: 写失败测试**
+
+```ts
+// tests/pipeline/cross-leg-mapping-isolation.it.test.ts
+test("the same upstream index on two legs resolves to each leg's own wire index", async () => {
+  // 主腿：upstream0 → wire0（token A）
+  // beginLeg("continuation", …) → 续写腿：upstream0 → wire1（token B）
+  // 交错写两腿的 delta/stop：writeBlockFrame(A, 0, delta) 与 writeBlockFrame(B, 0, delta)
+  // 断言：A 的帧落 wire0、B 的帧落 wire1 —— 各自正确，互不串腿
+  assertMonotonicWireIndices(frames)
+  assertBlockProtocolState(frames)
+})
+test("a stale leg token still resolves its own block after a newer leg opened", async () => {
+  // 前腿排队中的 stop 在 beginLeg 之后才写出 → 仍必须落前腿的 wire index
+})
+```
+
+- [ ] **Step 2**：跑，红。
+- [ ] **Step 3**：实现——`writeBlockFrame` 按**传入的** `LegToken` 查 registry。
+- [ ] **Step 4**：跑，绿。
+- [ ] **Step 5**：**mutation**——把实现改回「忽略入参 leg、用 owner 的当前腿」，确认两条测试**都转红**。这是本 task 的存在理由：证明显式 leg 不是装饰性参数。
+- [ ] **提交** → `test(delivery): cross-leg mapping isolation via explicit leg tokens`
 
 ## Task 2.2d：`beginLeg` fence 时序 oracle（**round-2 major**）
 

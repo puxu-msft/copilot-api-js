@@ -602,3 +602,57 @@ owner在serializer内查token、显式missing报错、remap、按real provenance
 3. real provenance已有真实candidate/dispatch来源，计划尚未接入，不能只笼统“owner铸造”或无条件沿用legacy。
 
 owner close API、M1 bridge算法本身、C9边界、C10数据模型及逐站点迁移均已闭合前轮blocker。上述三项属于接口完整性修订，不再要求推翻P3M或合并M1–M4；修订后计划可进入实施。
+
+
+## 最终确认（commit `8644fbd3`）
+
+### 核验范围
+
+仅复核第五轮遗留的三项：M1迁移期状态转移／唯一写者、非start帧owner API、真实candidate/dispatch provenance。未重开前五轮已确认事项；未启动服务器，未触碰4141。
+
+### 1. 状态转移表与唯一写者守卫：通过
+
+逐格核验结果：
+
+- 初始四字段全false/undefined正确。
+- anchor成功open后`openAnchorIndex=index`、`anchorBlockOpen=true`、`anchorClosed=false`、`injected=true`正确；尤其每次新anchor将`anchorClosed`复位false，是多anchor可重复close的必要条件。
+- pre-commit失败四字段不变，符合零外部副作用。
+- post-commit失败永久消费index并终止delivery；legacy字段保持“历史shift已产生”的`anchorBlockOpen=true`且以`anchorClosed=true`禁止再close，和C9一致。
+- close成功后`openAnchorIndex=undefined`、`anchorBlockOpen`仍true、`anchorClosed=true`正确。`anchorBlockOpen`在旧合同中是“index曾被保留”的历史位，关闭后置false会让未迁移腿突然从+1退到+0。
+- close none不改状态；close write-error进入post-commit终止态，表中取值正确。
+- real block/beginLeg不应改变anchor四字段，正确。
+
+健康流情形也已穷尽：未注入／真content anchor／enveloped_ping；“anchor已关闭但历史shift仍为1”由表明确覆盖。owner是`anchorBlockOpen/anchorClosed`唯一赋值者的源码形状守卫，加逐格oracle及正样本mutation，足以防迁移期双写分岔。bridge保留逐腿mutation可归因性的取舍合理。
+
+### [major] `writeBlockFrame(upstreamIndex, frame)`仍以owner内部“current leg”选mapping，和不可变leg/token合同冲突
+
+**位置**：P2 `WireBlockAllocationPort.writeBlockFrame`、C10查询规则。
+
+新增API正确封装了mapping registry的查询→remap→write→stop成功释放，三腿不再直接碰Map；missing mapping显式报错也正确。但签名只传`upstreamIndex`和frame，文档明确owner按“current leg token”查询。这仍依赖ambient current-leg状态，只是从调用方移进owner，未真正消除：
+
+- 旧腿delta/stop与`beginLeg`虽经同一serializer排序，但一旦调用提交顺序出现“beginLeg先入队、旧腿frame后入队”，owner会用新腿token查同一upstream index；
+- 同一个upstream index可在主腿/continuation/recovery重复出现，仅靠index无法自证它属于哪腿；
+- 前轮冻结的是“delta/stop按该块不可变token查，不查ambient current leg”，当前API没有携带该token。
+
+**建议**：签名至少接`LegToken`：`writeBlockFrame(leg, upstreamIndex, frame)`；更强的是直接接start分配返回的`WireBlockMapping`。调用方持token不是“读registry”，而是显式传身份；owner仍独占registry、remap、write和释放。补mutation：切换current leg后用旧leg token写stop仍命中旧mapping；传错leg明确`no-mapping`，绝不命中新腿同index块。
+
+### [major] C11的真实上下文来源存在，但计划的`beginLeg(kind)`无法携带身份，primary leg尤其延迟提交路径没有初始化点
+
+代码核验确认planner纠正成立：driver binding与candidate response session确实持有真实`candidate`和`dispatch`，不应无条件继承`legacy`退化。但当前接线描述仍未闭合：
+
+- `GenerationWireState`在`makeAnchoredSseSink`中创建；延迟提交路径创建sink时上游promise尚未settle，handler当时没有primary binding可注入。
+- `beginLeg`接口仍只有`kind:"continuation"|"recovery"`，没有candidate/dispatch参数，却被描述为“天然的上下文更新点”；owner无法凭kind得到真实handle。
+- primary leg没有对应的`beginLeg("primary", context)`或`setCandidateContext`；S3 live路径同样需要在首个real frame前完成初始化。
+
+**建议**：把身份写进显式serializer command，例如`beginLeg({kind, candidateId, dispatchId})`并支持primary；每次拿到/切换`current` binding后、该腿首帧前await它。延迟提交sink可先以“无real context”存在（只会写synthetic anchor），待`p`settle且binding可得后初始化primary。`WireWriteSpec.real`铸造时若context缺失应显式报错，不能落legacy。既有compat helper继续是唯一legacy边界。现有History oracle可保留，并补primary delayed-commit一支，证明主腿也不是legacy。
+
+### 最终 verdict
+
+**不可直接合并plan并开工；修复2个major后可以。**
+
+- blocker：**0**
+- major：**2**
+- minor：**0**
+- nit：**0**
+
+状态转移表与唯一写者已通过。剩余仅两处接口身份显式化：`writeBlockFrame`携leg/mapping token，以及`beginLeg`携真实candidate/dispatch并覆盖primary初始化。二者不要求推翻P3M、C9、bridge或既有oracle；修订后可合并plan进入实施。
