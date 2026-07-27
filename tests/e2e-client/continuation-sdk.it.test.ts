@@ -137,6 +137,7 @@ describe("client↔proxy SDK e2e — continuation-retry (upstream shielded)", ()
     expect(canonical?.dispatches[1]?.upstreamRequest?.extensions).toEqual({ synthetic: "continuation" })
     expect(canonical?.dispatches[1]?.upstreamResponse?.extensions?.synthetic).toBeUndefined()
     expect(entry?.attempts).toHaveLength(2)
+    expect(entry?.attempts?.[1]?.upstreamRequest?.synthetic).toBe("continuation")
     expect(entry?.attempts?.[1]?.upstreamRequest?.messages).toEqual([
       { role: "user", content: "write" },
       { role: "assistant", content: [{ type: "text", text: "First half. " }] },
