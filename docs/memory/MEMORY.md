@@ -73,6 +73,7 @@
 - [全套件红先分类再套污染 playbook](methodology-full-suite-red-classify-before-pollution-playbook.md) — 单跑过+全套件挂才真污染；`git log -S` 定 peer commit
 - [transport-config 新字段：纯路由标志绝不进 change-detection](methodology-new-transport-config-field-routing-vs-connection-rebuild.md) — setter 对任一追踪字段变化 fire 全体 listener（含全 h2 session retire）；纯逐请求读的 favor 类标志靠 updateState 无条件应用即时生效、须排除出 changed；实例=favor 初版误加被异模型 reviewer 抓
 - [append 日志 tail 游标两静默丢失陷阱](methodology-append-log-tail-cursor-silent-loss-traps.md) — 同毫秒 tie-break 永久丢行+per-row hydrate 抛错卡死；只合并态审+新鲜探针戳破
+- [响应改写器的 lookahead 不得吞协议有效空帧](../todo/2026-07-22-client-proxy-keepalive-300s.md) — 空载荷不等于无语义；先 curl -N 逐层抓字节，再把无可检测文本的空 delta 旁路透传
 - [架构图优化 Agent 上下文经济](feedback-architecture-map-optimize-agent-context-economy.md) — 价值轴=上下文经济+可信度；目录级关系图+现状小节+L1 守卫
 - [交用户前先 subagent review（含 in-chat 提案）](feedback-subagent-review-before-any-user-facing-proposal.md) — 审查门适用任何交付物含对话里直接呈现的设计
 - [用户对齐只证方向对非细节最优](feedback-user-alignment-confirms-direction-not-detail-optimality.md) — 逐节点头≠细节最优；落盘 spec 前仍过异模型对抗审

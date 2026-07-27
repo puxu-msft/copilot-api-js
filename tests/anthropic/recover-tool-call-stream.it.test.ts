@@ -119,6 +119,15 @@ describe("createToolCallTextRecoverer", () => {
     expect(out[0]).toEqual(normal[0])
   })
 
+  test("空 text_delta 立即透传，不能被 tool-call lookahead 吞掉", () => {
+    const r = createToolCallTextRecoverer(deps)
+    const start = ev({ type: "content_block_start", index: 0, content_block: { type: "text" } })
+    expect(r.processEvent(start.parsed, start.raw)).toEqual([start.raw])
+
+    const keepalive = ev({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "" } })
+    expect(r.processEvent(keepalive.parsed, keepalive.raw)).toEqual([keepalive.raw])
+  })
+
   test("lookahead 跨 delta 切分（marker 被拆成两帧）→ 不泄漏 <invoke/call 残留 + 合成 tool_use", () => {
     // 把降级文本拆成多个 text_delta，marker `<invoke` 恰好跨 delta 边界（delta1 尾="…\n<in"，delta2 头="voke …"）。
     // 32 字符 lookahead 应阻止半截 marker 泄漏给客户端。

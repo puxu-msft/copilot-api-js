@@ -1155,8 +1155,10 @@ export async function runResponseBufferedSink(
       // error before any real block) is preserved by the SAME guard below via `closeAnchorBeforeReal`.
       // NOTE: after the anchor closes, an inter-block idle carries a BARE ping (no open anchor). Resetting
       // CC's 300s no-real-content watchdog for >300s inter-block gaps is a SEPARATE concern — see
-      // docs/todo/2026-07-22-client-proxy-keepalive-300s.md (empty text_delta was empirically insufficient
-      // on the proxy path anyway, G2). <300s gaps + the 60s byte-idle are covered by the bare ping.
+      // docs/todo/2026-07-22-client-proxy-keepalive-300s.md. G2's historical failure was caused by the
+      // recover-tool-call response rewrite swallowing empty text deltas, not by CC rejecting the carrier;
+      // empty deltas now pass through, while the current default remains bare ping by the D2 decision.
+      // <300s gaps + the 60s byte-idle are covered by the bare ping.
       const closeAnchorBeforeReal = async (): Promise<void> => {
         if (injected && anchor && anchorBlockOpen && !anchorState.anchorClosed) {
           anchorState.anchorClosed = true

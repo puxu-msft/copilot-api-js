@@ -24,6 +24,8 @@ incident `req_162`（opus-4.8 / Claude Code CLI）：tool_use 中途 `NGHTTP2_CA
 
 ### D2（相对初稿反转）—— 退役「空-text block 保活」，CLI-safety 改由块级顺序输出保证
 
+> **2026-07-27 事实更正（不自动改写本 ADR 的用户决策）**：G2 当时并未证明空 `text_delta` 无法重置 CC 300s 死线；`recoverToolCallText` marker lookahead 在代理 response rewrite 链中吞掉了空 delta，下游只收到 ping。修复后真 CC 2.1.220 连续两次 315s PASS。故下文“G2 证无效”这一决策前提已被证伪；“空 text block 是否仍因形状原因退役、是否重新启用 `empty_text`”是新的产品语义分叉，须另行用户裁决，不能由这次 bugfix 擅自反转。权威取证见 [client-proxy keepalive 300s](../todo/2026-07-22-client-proxy-keepalive-300s.md)。
+
 **初稿 D2 是「顺序 anchor 取代 coexist」（P1 已 landed close-before-real 空-text anchor）。现反转为：**
 
 1. **退役向 client 注入空 text block 的保活**（`empty_text` 模式：`content_block_start@0(text "")` + 空 `text_delta`）。判据：空 text block 是**错误形状**，且实测（G2）空 `text_delta` 在代理路径**不能重置** CC 的 300s no-real-content 死线，**保不住保活**。

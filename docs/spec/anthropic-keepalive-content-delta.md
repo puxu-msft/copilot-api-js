@@ -21,6 +21,8 @@ opus 在超大上下文里回答前会长时间 pre-content thinking(`message_st
 
 ## 2. 根因(实测,非推断)
 
+> **2026-07-27 补充：经代理 G2 回归已闭合。** first-party 路径的空 `text_delta` 仍有效；经代理路径失败不是 CC 改了规则，也不是代理 `streamIdleTimeout` 开火，而是 shipped config 开启的 `recoverToolCallText` marker lookahead 把上游空 `text_delta` 静默吞掉，客户端实际只收到 20s `event: ping`。`Response stalled mid-stream` 是 CC 300s watchdog 在已有部分输出时合成的错误文案。修复让空 `text_delta` 直接透传；`curl -N` 与真 CC 2.1.220 两次 315s 验收均通过。裁决记录见 [../todo/2026-07-22-client-proxy-keepalive-300s.md](../todo/2026-07-22-client-proxy-keepalive-300s.md)。
+
 **方法**:真实 `claude` CLI 2.1.201 作独立 oracle + 受控 mock 上游(`exp/cc-idle-280s/`:`mock.ts` 按 `idle:TYPE:N:M` 发帧、`run-arm.sh` 用 `--settings` 盖 baseURL、`_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL=1` 触发生产 watchdog)。四臂对照 + prod-faithful 复测。
 
 **裁决:CC 2.1.201 的流式 watchdog 有两层**:

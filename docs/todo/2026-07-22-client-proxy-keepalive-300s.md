@@ -1,11 +1,13 @@
 # 独立任务 kickoff：client↔proxy keepalive 对 CC 300s「无真实内容」死线失效（可能现网回归）
 
-> 状态：待处理（新会话执行）。从续写重试特性（`docs/spec/2026-07-22-continuation-retry-and-sequential-anchor.md` §3.4）的 G2 门实测中剥离出的独立问题——它与续写正交，且可能是**既有生产回归**，故单列。
-> 日期：2026-07-22
+> 状态：**已定位并修复（2026-07-27）**。从续写重试特性（`docs/spec/2026-07-22-continuation-retry-and-sequential-anchor.md` §3.4）的 G2 门实测中剥离出的独立问题——它与续写正交，且确认是**代理活路径的既有吞帧回归**；真实现网是否已经触发取决于上游是否发送空 `text_delta`（当前默认 `ping` 模式的代理合成心跳不经过该改写器，不能据 G2 单独证明已有真实用户请求受害）。
+> 日期：2026-07-22；根因裁决与修复：2026-07-27
+>
+> **最终裁决**：`Response stalled mid-stream` 是 Claude Code 自己在 300s event-idle watchdog 后对“已有部分输出”的友好报文，不是代理产生的错误；代理自己的 `streamIdleTimeout` 也没有触发。G2 的上游 hook 确实每 15s 产出空 `text_delta`，而 shipped config 中开启的 `anthropic.response_text_fix.invoke_in_text` 令 `recoverToolCallText` 响应改写器把短 text delta 放进 tool-call marker lookahead；空字符串永远无法推进窗口，因而被静默吞掉，下游实际只收到代理每 20s 合成的 `event: ping`。修复在 `src/lib/anthropic/recover-tool-call/stream.ts`：空 `text_delta` 不携带可恢复文本，直接逐帧透传，保留非空文本的 lookahead 语义。真 `curl -N` 证修前 gap 期 15 个 ping、0 个空 delta，修后 21 个 gap 空 delta、0 个 ping；真 Claude Code 2.1.220 修前 300.4s FAIL，修后连续两次 315.5s PASS，最终文本均仅 `IDLE_SURVIVED_MARKER`、无保活痕迹。
 
 ## 一句话
 
-CC 有一个 **300s「无真实内容 chunk」idle 死线**（独立于 60s byte-idle）。实测（2026-07-22，真 claude **2.1.217**）：**空 `text_delta` 每 15s 保活并不能重置它**——>310s 上游静默的流在 302s 被 CC 报 `Response stalled mid-stream` 掐断。而当前生产的 `stream_keepalive_mode: empty_text` 发的正是空 `text_delta`，故**现网对 >300s 文本块静默的保活很可能已失效**（正中「opus 长 pre-content thinking 沉默几百秒」的真实场景）。
+CC 有一个 **300s「无真实内容 chunk」idle 死线**（独立于 60s byte-idle）。2026-07-22 的 G2 历史实验在 302s 报 `Response stalled mid-stream`，当时误判为空 `text_delta` 载体无效；2026-07-27 逐层抓字节后确认，代理的 `recoverToolCallText` lookahead 把上游每 15s 产出的空 delta 全吞掉，CC 实际只收到 ping。修复后同一 >310s 实验连续两次通过。当前 shipped keepalive 默认仍是 `ping`（D2 用户决策），所以是否重新启用 `empty_text` 是独立产品决策，不在本 bugfix 中擅自翻转。
 
 ## 证据 + 待裁决的根因
 

@@ -173,6 +173,10 @@ export function createToolCallTextRecoverer(deps: RecoverStreamDeps): ToolCallTe
       if (inTextBlock && parsed.type === "content_block_delta" && parsed.index === textIndex) {
         const delta = parsed.delta as { type?: string; text?: string }
         if (delta.type !== "text_delta" || typeof delta.text !== "string") return [raw]
+        // Empty deltas carry no downgraded tool-call text, so the lookahead has nothing to inspect.
+        // They are nevertheless protocol-significant keepalive chunks for Claude Code's idle
+        // watchdog and must reach the client immediately rather than disappear into `seen`.
+        if (delta.text === "") return [raw]
         seen += delta.text
         if (mode === "BUFFERING") {
           bufferedFrames.push(raw)
