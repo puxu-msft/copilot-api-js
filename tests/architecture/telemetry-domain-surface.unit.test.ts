@@ -104,10 +104,15 @@ function forbiddenPackageImports(source: string): Array<string> {
 }
 
 /**
- * The names a module re-exports in `export { … }` / `export type { … }` blocks. Brace-matched and
- * comma-split rather than pattern-matched: the previous regex demanded a comma or line end after the
- * name, so the ordinary single-line form `export { recordSettledRequest } from "./x"` slipped
- * through and the guard passed while an operation WAS public (found in merged-state review).
+ * Every name a module re-exports in `export { … }` / `export type { … }` blocks — BOTH sides of an
+ * `as` rename. Brace-matched and comma-split rather than pattern-matched: the previous regex
+ * demanded a comma or line end after the name, so the ordinary single-line form
+ * `export { recordSettledRequest } from "./x"` slipped through and the guard passed while an
+ * operation WAS public (found in merged-state review).
+ *
+ * Both sides matter because the question is "is this operation reachable from outside", not "what is
+ * it called out there": `export { recordSettledRequest as rec }` publishes the operation just as
+ * surely, and reporting only `rec` would be the same false green in a new costume.
  */
 function exportedNames(source: string): Array<string> {
   const names: Array<string> = []
@@ -124,17 +129,26 @@ function exportedNames(source: string): Array<string> {
       .map((line) => line.replace(/\/\/.*$/, ""))
       .join("\n")
     for (const part of block.split(",")) {
-      // `a as b` re-exports under `b`; `type X` inside a value block is a type specifier.
-      const name = part
-        .trim()
-        .replace(/^type\s+/, "")
-        .split(/\s+as\s+/)
-        .at(-1)
-        ?.trim()
-      if (name && /^\w+$/.test(name)) names.push(name)
+      // `type X` inside a value block is a type specifier; `a as b` contributes BOTH a and b.
+      const specifier = part.trim().replace(/^type\s+/, "")
+      for (const side of specifier.split(/\s+as\s+/)) {
+        const name = side.trim()
+        if (name && /^\w+$/.test(name)) names.push(name)
+      }
     }
   }
   return names
+}
+
+/**
+ * VALUE star re-exports (`export * from "./x"` / `export * as ns from "./x"`). One of these in the
+ * barrel would republish every registry operation at once while a NAME-based check sees nothing at
+ * all — the largest hole this guard can have, and invisible to {@link exportedNames} by
+ * construction. `export type * from "./types"` is deliberately not matched: type-only, so it can
+ * carry no operation.
+ */
+function valueStarReExports(source: string): Array<string> {
+  return [...source.matchAll(/^[^\S\n]*export\s+(?:type\s+)?\*[^\n]*/gm)].map((match) => match[0].trim()).filter((line) => !/^export\s+type\s+\*/.test(line))
 }
 
 describe("telemetry package surface (one production entry point)", () => {
@@ -157,19 +171,38 @@ describe("telemetry package surface (one production entry point)", () => {
     expect(forbiddenPackageImports(`import { getTokenCredentials } from "@hsupu/ghc-proxy-token"`)).toEqual([])
   })
 
-  test("the export parser reads real export syntax (the single-line form that used to slip through)", () => {
+  test("the export parser reads real export syntax (every form that could hide an operation)", () => {
     // Regression control for the false green found in merged-state review: this exact line was added
     // to the barrel and the guard stayed green.
     expect(exportedNames(`export { recordSettledRequest } from "./request-telemetry"`)).toEqual(["recordSettledRequest"])
+    // An alias publishes the operation just as surely — BOTH sides must be reported, or renaming is
+    // a trivial bypass (found by probing the parser with legal syntax rather than trusting it).
+    expect(exportedNames(`export { recordSettledRequest as rec } from "./x"`)).toEqual(["recordSettledRequest", "rec"])
+    expect(exportedNames(`export {\n  recordSettledRequest, // trailing comment\n  getTelemetryDb,\n} from "./x"`)).toEqual([
+      "recordSettledRequest",
+      "getTelemetryDb",
+    ])
     expect(exportedNames(`export {\n  //\n  getTelemetryRuntime,\n} from "./runtime"`)).toEqual(["getTelemetryRuntime"])
-    expect(exportedNames(`export { initRequestTelemetry as init } from "./request-telemetry"`)).toEqual(["init"])
+    expect(exportedNames(`export { initRequestTelemetry as init } from "./request-telemetry"`)).toEqual(["initRequestTelemetry", "init"])
     expect(exportedNames(`export type { TelemetryRuntime } from "./runtime"`)).toEqual(["TelemetryRuntime"])
     expect(exportedNames(`export { type TelemetryPaths, installTelemetryDeps } from "./dependencies"`)).toEqual(["TelemetryPaths", "installTelemetryDeps"])
   })
 
+  test("the star-re-export detector flags the one-line way to republish everything", () => {
+    expect(valueStarReExports(`export * from "./request-telemetry"`)).toEqual([`export * from "./request-telemetry"`])
+    expect(valueStarReExports(`export * as registry from "./request-telemetry"`)).toEqual([`export * as registry from "./request-telemetry"`])
+    // Type-only stars carry no operation and are the barrel's legitimate `./types` re-export.
+    expect(valueStarReExports(`export type * from "./types"`)).toEqual([])
+  })
+
   test("the barrel exports no registry OPERATION (only types, constants, the runtime and the tier reads)", async () => {
-    const exported = new Set(exportedNames(await readFile(path.join(telemetryPackageSrc, "index.ts"), "utf8")))
+    const barrel = await readFile(path.join(telemetryPackageSrc, "index.ts"), "utf8")
+    const exported = new Set(exportedNames(barrel))
     expect(PACKAGE_INTERNAL_OPERATIONS.filter((op) => exported.has(op))).toEqual([])
+
+    // A value star re-export would republish every operation while the name check above sees
+    // nothing — so it is forbidden outright rather than name-checked.
+    expect(valueStarReExports(barrel)).toEqual([])
 
     // Non-vacuous: the parser really did read this barrel's surface.
     expect(exported.has("getTelemetryRuntime")).toBe(true)
