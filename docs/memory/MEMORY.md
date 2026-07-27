@@ -52,6 +52,7 @@
 - [config.schema.json 只由 .describe() 生成非 TSDoc](reference-config-schema-json-from-describe-not-tsdoc.md) — 改字段 TSDoc 是 no-op；regenerate 前 git diff 防裹进别会话 stale drift
 - [gpt-tokenizer 对重复字符病态慢](reference-gpt-tokenizer-pathological-on-repeated-chars.md) — 60KB repeat=15s vs 真实词句 40ms；测试造大 payload 别用单字符 repeat
 - [bun test 慢的三层根因与逐层解](reference-bun-test-parallel-breaks-single-process-superlinear-degradation.md) — 单进程超线性退化→`--parallel`→LPT 分片；崩溃桶须 --isolate 重跑；pty/e2e 不并行
+- [eslint no-restricted-imports 的 group 是 OR、写不出 allowlist](tooling-eslint-no-restricted-imports-group-is-or-not-allowlist.md) — `["**","!allowed"]` 退化成匹配一切；allowlist 必须用 patterns.regex + 负向先行断言
 - [eslint --fix 的 .at() autofix 破类型](tooling-eslint-fix-at-autofix-breaks-types.md) — `.at(-1)` 返 T|undefined；--fix 后必重跑 typecheck
 - [测 elapsed 逻辑注入 clock seam 别用 setSystemTime](reference-elapsed-time-test-inject-clock-seam-not-setsystemtime.md) — bun setSystemTime 跨 await 不冻结+绝对时基减真 startedAt 出负值；`now?:()=>number` seam 默认 Date.now、测试注入；边界别恰等 cap
 - [real codex 测试用 CODEX_HOME 隔离](reference-codex-ephemeral-insufficient-use-codex-home.md) — --ephemeral 不够、state 仍写真 ~/.codex；代理侧对应=XDG_DATA_HOME
@@ -63,7 +64,7 @@
 - [复用共享原语选完整版非小版](methodology-full-primitive-not-partial-else-silent-field-drop.md) — 否则静默丢字段+单测假绿；映射测须构造每个非平凡字段
 - [「别继承退化」只在目标真有对应值时成立](methodology-degradation-advice-scoped-to-target-has-equivalent.md) — 目标无对应值→诚实退化+marker；实现者最易过度应用
 - [修全部比较点](feedback-fix-all-comparison-sites.md) — 归一化键/id bug 多点复发；grep 全仓逐处修+抽共享 primitive
-- [修一条约束别自造兄弟约束违规](methodology-fix-one-constraint-violates-sibling-constraint.md) — 对象级约束要一起断言；最小构造阴性无裁决力、matcher 按补救手段归类、按形状非索引定位
+- [修一条约束别自造兄弟约束违规](methodology-fix-one-constraint-violates-sibling-constraint.md) — 对象级约束要一起断言；最小构造须保留被测对象的结构性处境(序数/位置)否则阴性无裁决力、加法+减法二分两头逼近、matcher 按补救手段归类且须 clause-local、按形状非索引定位
 - [名实不符变量+双源值](methodology-lying-variable-name-dual-source-value.md) — 名字断言单一身份、值取自会撒谎的源(原始vs已变换)；根治=单一原语+命名反映真实来源(requested vs resolved)+单一抑制权+独立oracle锁接线缝
 - [变体路由既有 outcome + 穷尽 Record 审计](methodology-route-variant-to-existing-outcome-and-exhaustive-record-audit.md) — 复用全 handler + 类型系统逼出全站点
 - [新策略被更宽 matcher 首命中遮蔽](methodology-new-strategy-shadowed-by-broader-first-match.md) — 加 retry 策略前 grep 同错误子串既有 matcher
@@ -78,6 +79,7 @@
 - [计划红绿 mutation 预测可能错、执行期真跑验证](methodology-plan-red-green-mutation-prediction-can-be-wrong-verify.md) — plan「注释 X→变红」可能不咬；不咬别提交假绿、降 characterization
 - [git commit -- pathspec 取工作区非 index](git-commit-pathspec-commits-worktree-not-index.md) — 共享 worktree 最终提交一律 pathspec；姊妹坑=`git mv` 只列新路径漏提删除侧
 - [语义合并冲突暴露对方 timing 潜伏 bug](methodology-semantic-merge-conflict-exposes-latent-bug-via-timing.md) — 两边各绿合并却坏；根因在运行时时序→instrument 探针；`test:backend` 排除 `.e2e`
+- [别合进 peer 多提交重构中间态](methodology-dont-merge-into-midflight-multicommit-refactor.md) — rename/usages 跨提交、合中间点 textually-clean 但 TS2339；等落定或退 last-green 别追 tip；FF 前 WIP∩FF=∅ 则脏主树安全
 - [谁合并谁退让、但必须合并](feedback-merger-yields-but-merge-must-happen.md) — 退让=行级共存两份保+备份→选择性 stash→FF→pop 三方合并
 - [空 pathspec stash push 会误 pop 别人 WIP](git-stash-push-empty-pathspec-pops-peer-wip.md) — 共享 worktree：stash push -- 无改动 path 不建 stash → pop 误弹栈顶别会话 WIP；stash 前先 stash list、验 HEAD 用独立 worktree 非 stash 套路、已提交本无需 stash
 - [按 gitBranch 字段找并发 session](find-claude-session-by-git-branch.md) — ~/.claude/projects/<path>/*.jsonl 的 gitBranch 字段精确命中=强信号(+100)；置信度脚本 /tmp/find-session-by-branch.sh；title 提取须滤系统注入 XML 标签
@@ -103,13 +105,15 @@
 - [恢复 agent 永远 SendMessage 绝不 Agent tool 重派](feedback-resume-agent-always-sendmessage-never-agent-tool.md) — 已终止/完成 subagent 接续永远 SendMessage；唯一 Agent 新派=真全新任务
 
 ## project 现状 stub（权威看正式归属；landed 项细节在 docs/DESIGN/git，此处仅触发指针）
+- [领域包剥离执行技巧（token landed·telemetry landed 待合并）](methodology-domain-peel-execution-techniques.md) — 两型模板：token=SoT 反转型(setStateForTests-shim+snapshot-fold 吸收 137 测试零改动)·telemetry=只读消费+module-split 型(测试零 churn 白拿)；共通=ambient 端口 floor·peek/get 分层·foundation 裸包名需 tsconfig path；telemetry 新增=facade 插层让文件临时进 SCC 绊倒 ratchet·最后一条 core 边藏在默认参数·守卫要 allowlist 不要 denylist·前端 ~backend 类型需纯类型 barrel+双别名·split-commit 陷阱复发；契约模板见 plan-{token,telemetry}-package.md
 - [续写重试（P2 Anthropic 续写 landed+验证+已合并 master de37feff，P3-P7 待续）](project-continuation-retry-sequential-anchor.md) — 首块后 cut 合成 continuation 轮缝合救回；SSOT continued verdict+runContinuation+driver 旁路缝合(wire-index offset≠ledger 长度·真 SDK e2e)；D2 反转退役空-text 保活→默认 ping；权威 plan-2b §11
-- [max_tokens 续传 spec（草案 landed 9de1e221，Q1/Q2 待用户裁决）](project-max-tokens-continuation-spec.md) — 成功路径预算截断三分型 A=text可续/B=tool_use悬挂发散/C=thinking零产出；与续写 spec 正交(post-success 分支)、复用其 ledger；承重=客户端可见性契约(缝合藏 max_tokens→双计费)
+- [max_tokens 续传 spec+plan+P0（P0 landed 3bb1262a，P1 待做）](project-max-tokens-continuation-spec.md) — 成功路径预算截断三分型 A=text可续/B=tool_use悬挂发散/C=thinking零产出；与续写 spec 正交(post-success 分支)、复用其 ledger；裁决=客户端 transparent 缝合(藏 max_tokens)但后端 history/telemetry 忠实；P0=独立 terminal observer(非复用 ledger)+分型观测层
 - [History 搜索移出主进程 sidecar（landed 分支待合并）](project-history-search-out-of-process.md) — systemd 服务；tail 假绿两 blocker 见 [[methodology-append-log-tail-cursor-silent-loss-traps]]
 - [合成/改写帧 forwarded 轨完整性（landed master 2026-07-20）](project-synthetic-frame-forwarded-track-completeness-spec.md) — Unit1 前提被 V3 实测推翻(只治瞬态快照)；reaper 两阶段待 backlog
 - [Responses buffered-merge（landed 分支待合并）](project-responses-buffered-merge-landed.md) — 候选托管 reducer+两旋钮；承重=buffered 默认 ON→drop-delta 作用所有 Responses 流、纯 delta 累加者拿空文本；@ai-sdk 比官方宽容
 - [transport 配置三轴归位（landed master 2c19c7cf）](project-transport-config-three-axis-reorg.md) — timeouts/upstream_transport/responses_ws；0 语义统一+SOCKS 拒 0；热重载 retire-and-replace
-- [h2 池按容量选路 N=1 + pre-response 可重试（landed master 36cf45bf）](project-h2-pool-capacity-routing-and-pre-response-retry.md) — 消灭并发流 blast-radius；Map<origin,entry[]>+reservation+容量感知 pending+idle-reap；与并发 favor 3-way 合并落地
+- [h2 池按容量选路 N=1 + pre-response 可重试（landed master 36cf45bf）](project-h2-pool-capacity-routing-and-pre-response-retry.md) — 消灭并发流 blast-radius；Map<origin,entry[]>+reservation+容量感知 pending+idle-reap；与并发 favor 3-way 合并落地；后续 ②per-origin 硬 cap(阻塞式+lease token) ③error tag ④Q5 埋点全落地
+- [上游静默 commit 时机 spec（Q5 已实测闭合，B2 主线+Q6 高上限定，planner 写 plan 中）](project-upstream-silence-commit-timing-spec.md) — deferred-header 直读证伪等-header 判别(34 正样本 header@47-231s∩success，对抗审 HIGH-1/2 闭合)；B2 主线(post-commit pre-content 重试非 continuation 变体)+B3 Q6 高上限逃生舱；Q1=CC≥125s/Q2 未定论；MED-2=seal 边界 crash race 待与 B2 一并治；**接手看 [docs/plan/2026-07-23-handover-h2-pool-and-silence-spec.md]** + docs/plan/2026-07-23-upstream-silence-recovery.md
 - [History 三层降温归档（landed master 27b65b89）](project-history-tiered-archive.md) — HOT→tier-1→sealed；move 永不真删；durable unit 协作停/续跑
 - [对称四点 hook 架构（landed master 2a77bf7c）](project-symmetric-four-point-hooks.md) — client/upstream×in/out+exchange；data-URL 不解析别名·config-freshness 须 parse 前
 - [请求生命周期 cancel/settle/quiesce（landed master）](project-request-lifecycle-cancel-settle-quiesce.md) — 多根因；承重=有界 grace+per-request 精确 timer>周期 scan；并发合并=等 peer 提交后 3-way 不 force

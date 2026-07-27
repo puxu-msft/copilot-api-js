@@ -173,40 +173,7 @@ export interface SseEventRecord {
   offsetSource?: "observed" | "unavailable"
   type: string
   raw: string
-  /**
-   * Set when this is a PROXY-SYNTHESIZED frame rather than a real upstream frame the client received
-   * as content. Meaningful only on the FORWARDED track (`clientResponse.sseEvents`): it lets history /
-   * UI / logs tell a proxy-injected frame apart from genuine content, so a silent upstream is NEVER
-   * masked as normal streaming (richest-data-flow observability). An empty content_delta keepalive is
-   * otherwise byte-indistinguishable from a real content frame. Two variants:
-   *   - "keepalive" — a heartbeat frame (an `event: ping`, or an empty content_delta injected during an
-   *     upstream stall to reset the client's idle deadline) that does NOT open/close a content block.
-   *   - "anchor" — the buffered empty-text keepalive ANCHOR's structural frames (`content_block_start`
-   *     / `content_block_stop` at the reserved index 0) injected in the pre-commit silence window to
-   *     light an open text block. Its OWN empty text_delta is a "keepalive" (a heartbeat, not structure).
-   *   - "synthetic-message-start" — a FABRICATED `message_start` envelope injected when the upstream
-   *     stalls before ever emitting its real `message_start`, so the client's stream is well-formed
-   *     enough to keep an open block alive (spec keepalive timeout-safety). Heavier than the structural
-   *     "anchor": it carries a fake `id` + zeroed `usage`, an accepted wire/billing divergence, so it is
-   *     marked distinctly rather than folded into "anchor" (richest-data-flow: real vs synthetic must
-   *     stay distinguishable).
-   *   - "hook-mock" / "hook-replay" — the UPSTREAM-original track's frames came from an `exchange`
-   *     upstream-hook mock/replay stream (`tagStream`/`readOrigin`, ~/lib/pipeline/hooks/origin), NOT a
-   *     real GHC upstream response — richest-data-flow requires this be distinguishable from genuine
-   *     upstream traffic.
-   *   - "hook-rewrite" — the FORWARDED track's frame was produced by a `upstream.inbound` hook
-   *     (differs from the pre-hook frame the upstream track kept); the upstream track itself never
-   *     carries this variant (it always records the pre-hook original — spec §3.2/§3.4 H2).
-   *   - "refusal-recovery" — the FORWARDED track's frame was injected or rewritten by refusal recovery
-   *     (the end_turn synthetic text block + rewritten end_turn delta, or the error-mode `event: error`
-   *     frame). The upstream track never carries it (it keeps the genuine upstream `refusal`).
-   *   - "error-shaping-canonical" — the FORWARDED track's post-commit terminal `event: error` frame was
-   *     produced by error-shaping's `buildCanonicalErrorFrame` (G-3), REPLACING the upstream terminator;
-   *     the upstream track keeps the real upstream error. (Phase 3 wiring.)
-   *   - "error-shaping-auq" — the FORWARDED track's frames are the pre-commit AskUserQuestion synthesis
-   *     (a whole fabricated success turn injected in lieu of the upstream error); the upstream track
-   *     keeps the real error. (Phase 4 wiring.)
-   */
+  /** Provenance for a synthesized or hook-produced frame; each value's applicable track is documented on `OperationSyntheticKind`. */
   synthetic?: OperationSyntheticKind
 }
 
@@ -429,6 +396,8 @@ export interface EffectiveSourceLeg {
  */
 export interface UpstreamRequestLeg {
   format?: EndpointType
+  /** Proxy-side provenance for a synthesized upstream request; never written into the wire body. */
+  synthetic?: OperationSyntheticKind
   model?: string
   messages?: Array<MessageContent>
   system?: string | Array<SystemBlock>

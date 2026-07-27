@@ -191,6 +191,25 @@ describe("createRequestContext - attempt lifecycle", () => {
     expect(ctx.currentAttempt!.wireRequest).toBe(wireReq)
   })
 
+  test("markGenerationDispatchSynthetic aligns the transient and canonical upstream-request producers", () => {
+    const { ctx } = makeContext()
+    const candidate = ctx.beginGenerationCandidate({ role: "continuation" })
+    const dispatch = ctx.beginGenerationDispatch({ candidate })
+    const wireReq = {
+      model: "claude-sonnet-4",
+      messages: [{ role: "user", content: "continue" }],
+      payload: { model: "claude-sonnet-4", messages: [{ role: "user", content: "continue" }] },
+      headers: { "anthropic-version": "2023-06-01" },
+      format: "anthropic-messages" as const,
+    }
+    ctx.setGenerationDispatchWireRequest(dispatch, wireReq)
+
+    ctx.markGenerationDispatchSynthetic(dispatch, "continuation")
+
+    expect(ctx.toHistoryEntry().attempts?.[0]?.upstreamRequest?.synthetic).toBe("continuation")
+    expect(ctx.modelOperationSnapshot.dispatches[0]?.upstreamRequest?.synthetic).toBe("continuation")
+  })
+
   test("setAttemptError stores error and calculates durationMs", () => {
     const { ctx } = makeContext()
     ctx.beginAttempt({})

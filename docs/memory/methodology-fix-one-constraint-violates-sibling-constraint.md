@@ -11,8 +11,8 @@ metadata:
 
 **How to apply:**
 - 修改写逻辑前，先把该对象**已知约束全列出**，输出侧逐条断言（不只断言被修的那条）；发现新约束就回头补测已有修复。
-- 约束靠**真实完整 payload 重放**实测确立，别信最小构造的阴性结果：本例 `[T,tool,T]` 在最小对话里 200、在生产 30 消息 payload 里 400，最小构造根本复现不出 C2。
-- 反应式兜底的 matcher 要按**补救手段**归类（同一补救 = 同一谓词的并集），而不是按某一句错误措辞；否则新措辞出现时静默无兜底。
-- 上游报的数组索引可能与我方口径差 1（内联 system 折叠），**按形状定位违规对象，别按索引**。
+- **最小构造的阴性结果没有裁决力，除非它保留了被测对象的结构性处境**。本例隐藏变量是「违规消息是第几个 assistant 消息」——上游只对**非首个** assistant 消息校验 C2，最小构造恰好把它放在首个位置落进豁免区，于是「复现不出来」。构造时要问：真实 payload 里哪些结构性属性属于被测对象的**处境**（序数/位置/前后文），而不只是它自身的形状。二分闭合法：加法（从阴性构造逐项加真实特征）+ 减法（从阳性 payload 截断），两头逼近。
+- 反应式兜底的 matcher 要按**补救手段**归类（同一补救 = 同一谓词的并集），而不是按某一句错误措辞；否则新措辞出现时静默无兜底。且匹配须 **clause-local**（被拒对象紧跟线索），全消息级 token 检查会被无关位置的同词污染。
+- 上游报的数组索引可能与我方口径不一致，且**偏移方向不固定、甚至越界**（实测同一约束下 −1 / +1 / 越界三种都出现过），**按形状定位违规对象，别按索引**。
 
 权威：spec `docs/spec/2026-07-26-thinking-terminal-block-layout.md`、skill `ghc-anthropic-upstream`（三约束表 + 合法形态表）、探针 `exp/thinking-terminal-block/`。相关 [[feedback-fix-all-comparison-sites]]、[[feedback-pass-null-clean-not-self-validating]]、[[methodology-new-strategy-shadowed-by-broader-first-match]]。

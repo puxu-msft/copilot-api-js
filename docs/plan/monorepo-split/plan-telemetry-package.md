@@ -4,7 +4,16 @@
 >
 > **评审折入摘要（2026-07-23）**：GPT reviewer 确认 (b) 范围正确、三环 #34/#35/#36 确实被打断（无残留回边、无 config 双 SoT），并抓出 3 个 architect 漏项——① JSON backfill 是 post-listen 生命周期调用（§3 runtime API 补 `runJsonBackfill` + §4 矩阵补 start.ts:593 + §6 T2 保序）；② telemetry 无 token 式 setStateForTests-shim，~21 测试直调 lifecycle/record API，删导出与「零 churn」矛盾（§5 补 package-owned `testing` 入口 + 迁移表）；③ `sketchGamma` 是 DB-open 时冻结的数据正确性不变量、**不能**当 live config 值（§3.1 补逐字段 config 生命周期分类 + `effectiveSketchGamma` runtime 私有）。2 MINOR：边界守卫改 allowlist（§7）、config 字段 11 非 12。均已折入。
 >
-> **⏳ 实施状态（2026-07-23）**：**T0 已 landed**（`8a762437`，`sqlite/{driver,compression}` 上提 foundation，test:backend 6317/0），在 **worktree `.worktrees/telemetry-peel` 分支 `feat/telemetry-package`**（从 master `8d156969` 起，含 A 的 SCC 守卫 + 本 plan）。**剩余 T1→T2→T3→T4→T5 待续**（见 §6 闭合 commit DAG）。执行前核实已做：D3 `lib/sqlite` 无并发占用 ✓、madge 三环含 telemetry ✓、D5 坐实 `ui-v4/src/types/status.ts` import `~backend/lib/request-telemetry`（T5 须同步 ui-v4 别名）。**T0 尚未合 master**（留分支等续跑，或经用户许可先合——它独立、利好 history）。接手 kickoff 见文末。
+> **✅ 全部 landed（2026-07-27）**：T0 `8a762437`（已在 master）→ T1 `714e83d4` → T2 `1b0bdb42` → T3 `8fbea803` → T4 `198d9026` → T5 `bd3aafe0`，在 worktree `.worktrees/telemetry-peel` 分支 `feat/telemetry-package`（**待合并回 master**）。每 commit typecheck + 全后端（`bun scripts/parallel-test.ts unit it http`，终态 6389/0）+ 架构守卫 26/26 + 精确 pathspec lint 绿。终态：telemetry 抽为 `@hsupu/ghc-proxy-telemetry`、对 core 零依赖（allowlist 边界守卫 + ESLint 镜像 + 域表面守卫，均带正/负样本对照与变异实验）、**SCC 环 73→70 / 环成员 65→63、telemetry 全域零文件在环**。
+>
+> **执行期与本 plan 的偏差（各有理由，均非砍范围）**：
+> 1. **不留 transitional alias**（plan §6 T5 原写「tsconfig transition alias」）。改为消费者（9 生产 + ~20 测试文件）直接迁到包名 `@hsupu/ghc-proxy-telemetry`。理由：过渡别名正是 CLAUDE.md「无向后兼容负担 / 绝不留双轨包袱」要拒的东西，且消费者面小到可以一步迁完。tsconfig 里只留包名解析的 `paths`（那是包解析，不是双轨）。
+> 2. **T2 处 ratchet baseline 重冻结过一次**（plan §7 原写「baseline 在 T5 重冻结」）。T2 把 facade 插进调用链后，`lib/telemetry-runtime.ts` 会**临时**进环（环数 73→72 但成员 65→66），T3/T4 才把它和 registry 一起送出 SCC。为守住「每 commit 终态绿」，T2 在**实测确认 diff 只有那一个新成员 + 两条改道环**后重冻结，并在 commit message 里写明这是过渡态；T3/T4/T5 每步再向下重冻结。终态严格优于起点。
+> 3. **端口字段 `sketchGamma` 改名 `sketchGammaCandidate`**（plan §3 接口原名 `sketchGamma`）。§3.1 要求它「runtime 私有、不进 live view」，改名让「这不是 live 值」写在类型里而非只写在注释里。
+> 4. **`openTelemetryDb` 去掉 `PATHS.TELEMETRY_DB` 默认参数**（plan 未提）。它是 storage 层对 core 的最后一条边；实测全部调用方本就显式传路径，且默认值会让「忘了传」静默落到真实库而非报错。
+> 5. **顺手修了 `typecheck:ui-v4`**（plan 未提）。它在 master 上**本就是红的**（缺 foundation/token 包别名 + 后端 ambient `pino-roll` 声明不在其 program 内），按 CLAUDE.md `dont-ignore-existing-errors` 一并修好，ui-v4 门自那两次抽包以来首次转绿。
+>
+> **历史（2026-07-23）**：**T0 已 landed**（`8a762437`，`sqlite/{driver,compression}` 上提 foundation，test:backend 6317/0），在 **worktree `.worktrees/telemetry-peel` 分支 `feat/telemetry-package`**（从 master `8d156969` 起，含 A 的 SCC 守卫 + 本 plan）。**剩余 T1→T2→T3→T4→T5 待续**（见 §6 闭合 commit DAG）。执行前核实已做：D3 `lib/sqlite` 无并发占用 ✓、madge 三环含 telemetry ✓、D5 坐实 `ui-v4/src/types/status.ts` import `~backend/lib/request-telemetry`（T5 须同步 ui-v4 别名）。**T0 尚未合 master**（留分支等续跑，或经用户许可先合——它独立、利好 history）。接手 kickoff 见文末。
 >
 > **调研基座（2026-07-23，worktree `feat/monorepo-scc-guards` == master + 两条新 SCC 守卫）**：本 plan 的依赖盘点、消费者矩阵、SCC 归属均 grep 实测带 `file:line`；核心结论 = telemetry 与 token 在**所有权形态**上根本不同（telemetry 是 config 的**只读消费者**、不 own 任何 `state` 字段），因此**无 token C5 式的 SoT 反转**，但**有 token 没有的 module-split**（`telemetry-dimensions.ts` 须劈成 name-registry ⊂ package + extractors ⊂ core）。
 >
@@ -248,8 +257,8 @@ telemetry 包**不删任何 state 字段**（config 归 config）。下列消费
 2. **D2 sink/extractor 归属 — ✅ 留 core**（本 plan 前提，GPT reviewer 确认：塞包会拽 `context/types`/`observability/events`/`fetch-utils` 进 telemetry 依赖面、边界守卫必红）。
 3. **D3 前置 foundation-hoist sqlite 时机 — ✅ 现在做**（主会话已实测 `history-cas-stage` worktree 无 `lib/sqlite` 未提交改动、master..分支无 `lib/sqlite` divergence → 无并发占用，collision-safe；一次性、利好 history）。执行 T0 前仍 `git log --oneline -5 -- src/lib/sqlite` + `git worktree list` 现场复核一次。
 4. **D4 `UsageData` 归属 — ✅ 包内 `TelemetryUsage` 结构型**（GPT reviewer 确认 registry 仅结构读 `input_tokens`/`output_tokens`/`cache_read_input_tokens`/`cache_creation_input_tokens`/`output_tokens_details?.reasoning_tokens`，无 history value 依赖；sink 调用点加 TypeScript assignability 测试锁契约）。
-5. **D5 dimensions name-registry 物理落点 — ⏳ 执行期定**：劈裂后 name-registry 是 `packages/telemetry/src/dimensions-registry.ts`（包内）、core extractor 保 `observability/telemetry-dimensions.ts` 引包。**执行 T3 前 grep `~backend` 确认** `TELEMETRY_DIMENSION_NAMES` 等是否被前端消费——若是则须进包 `types.ts` barrel + 改 `ui-v4` 两处别名（§4 类型 SSOT）。
-6. **D6 与 spec §7.2 阶段 0d 的关系 — ⏳ 执行期对齐**：本 plan T2 的 config 注入即「telemetry 消费端从 `import { state }` 迁窄接口」——**吸收/替代** spec 阶段 0d 的 telemetry-state 迁移。定稿后同步 spec §7.2 口径（把 telemetry-0d 标为「经本 telemetry peel T2 落地」），避免双 SoT 叙事。
+5. **D5 dimensions name-registry 物理落点 — ✅ 已定（T3/T5 落地）**：name-registry 落 `packages/telemetry/src/dimension-names.ts`（非 plan 草拟的 `dimensions-registry.ts`），core extractor 保 `observability/telemetry-dimensions.ts` 引包。实测 `~backend` **只**消费 `RequestTelemetrySnapshot` 一个类型（不含 `TELEMETRY_DIMENSION_NAMES`），故前端只需改指包的纯类型 barrel `@hsupu/ghc-proxy-telemetry/types` + `ui-v4` 两处别名。
+6. **D6 与 spec §7.2 阶段 0d 的关系 — ✅ 已对齐**：本 plan T2 的 config 注入即「telemetry 消费端从 `import { state }` 迁窄接口」，**吸收/替代** spec 阶段 0d 的 telemetry-state 迁移（且更强：包对 core 零 import、机器守卫强制，而非仅约定走窄接口）。spec §7.2 阶段 0d 已同步标注——telemetry/token 两域均已被各自的包剥离吸收，剩余 0d 范围只剩 models 域。
 
 ---
 

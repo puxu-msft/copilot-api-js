@@ -31,6 +31,7 @@ import type {
   DispatchHandle,
   DispatchVerdict,
   ModelOperationRecord,
+  OperationSyntheticKind,
 } from "./model-operation-record"
 
 // ─── Request State Machine ───
@@ -138,6 +139,8 @@ export interface Attempt {
   index: number
   effectiveRequest: EffectiveRequest | null
   wireRequest: WireRequest | null
+  /** Proxy-side provenance for a synthesized upstream request; never part of `wireRequest.payload`. */
+  synthetic?: OperationSyntheticKind
   response: ResponseData | null
   error: ApiError | null
   transport: RequestTransport
@@ -250,6 +253,8 @@ export interface HistoryEffectiveSourceLeg {
  */
 export interface HistoryUpstreamRequestLeg {
   format?: EndpointType
+  /** Proxy-side provenance for a synthesized upstream request; absent on primary/recovery requests. */
+  synthetic?: OperationSyntheticKind
   model?: string
   messages?: Array<unknown>
   system?: unknown
@@ -540,6 +545,8 @@ export interface RequestContext {
   }): DispatchHandle
   setGenerationDispatchEffectiveRequest(dispatch: DispatchHandle, request: EffectiveRequest): void
   setGenerationDispatchWireRequest(dispatch: DispatchHandle, request: WireRequest): void
+  /** Attach proxy-side provenance to a synthesized upstream request without changing its wire bytes. */
+  markGenerationDispatchSynthetic(dispatch: DispatchHandle, kind: OperationSyntheticKind): void
   setGenerationDispatchTransport(dispatch: DispatchHandle, transport: RequestTransport): void
   setGenerationDispatchResponseHeaders(dispatch: DispatchHandle, headers: Record<string, string>): void
   setGenerationDispatchTimingEpoch(dispatch: DispatchHandle, kind: AttemptTimingKind, epoch: number, mode: "once" | "latest"): void
