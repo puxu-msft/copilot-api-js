@@ -15,8 +15,12 @@
  * ~250-line startup orchestration with no injectable seam, and the alternative — the registry-level
  * `tests/telemetry/backfill-wiring.unit.test.ts` — calls the two functions itself in the right
  * order, so it stays green no matter what `start.ts` does. That is exactly the gap this file fills.
- * The detector is exercised on synthetic sources first (both orders), so a green run here means the
- * check reached its target rather than matching nothing.
+ *
+ * Source order is read from the TypeScript AST (`./source-ast`), not from patterns over text: a text
+ * version of this guard read a COMMENTED-OUT `// telemetryRuntime.runJsonBackfill()` as live wiring,
+ * so deleting the call the guard exists to protect passed it green (found in merged-state review).
+ * Only executable `CallExpression` nodes count, so a commented or stringified call reads as ABSENT —
+ * which is what it is.
  */
 
 import {
@@ -28,33 +32,53 @@ import {
 import { readFile } from "node:fs/promises"
 import path from "node:path"
 
+import {
+  //
+  findCallOffset,
+  isFunctionCall,
+  isMethodCall,
+  methodCallReceiver,
+  parseSource,
+} from "./source-ast"
+
 const repoRoot = path.resolve(import.meta.dir, "../..")
 const startPath = path.join(repoRoot, "packages/cli/src/start.ts")
 
-/** The three ordered milestones, as the anchors they appear under in the startup path. */
-const MILESTONES = {
-  initialize: /\.initialize\(\)/,
-  listen: /await startServer\(/,
-  backfill: /\.runJsonBackfill\(/,
-} as const
-
-type Milestone = keyof typeof MILESTONES
+type Milestone = "initialize" | "listen" | "backfill"
 
 /**
- * Where each milestone occurs in a startup source (index of the first match). Returns `null` for a
- * milestone that is absent — an absent milestone is itself a violation (the wiring was deleted).
+ * Where each milestone's real CALL occurs, or `null` when it does not exist. `initialize` and
+ * `backfill` additionally have to be called on the SAME receiver, so an unrelated `.initialize()`
+ * elsewhere in startup cannot stand in for the telemetry runtime's.
  */
-function milestoneOffsets(source: string): Record<Milestone, number | null> {
-  const offsets = {} as Record<Milestone, number | null>
-  for (const [name, pattern] of Object.entries(MILESTONES) as Array<[Milestone, RegExp]>) {
-    offsets[name] = source.search(pattern) === -1 ? null : source.search(pattern)
+function milestoneOffsets(fileName: string, source: string): Record<Milestone, number | null> {
+  const sourceFile = parseSource(fileName, source)
+  const backfillReceiver =
+    findCallOffset(sourceFile, (call) => isMethodCall(call, "runJsonBackfill")) === null ? null : (
+      ((): string | null => {
+        let receiver: string | null = null
+        findCallOffset(sourceFile, (call) => {
+          if (!isMethodCall(call, "runJsonBackfill")) return false
+          receiver = methodCallReceiver(call)
+          return true
+        })
+        return receiver
+      })()
+    )
+
+  return {
+    initialize: findCallOffset(
+      sourceFile,
+      (call) => isMethodCall(call, "initialize") && (backfillReceiver === null || methodCallReceiver(call) === backfillReceiver),
+    ),
+    listen: findCallOffset(sourceFile, (call) => isFunctionCall(call, "startServer")),
+    backfill: findCallOffset(sourceFile, (call) => isMethodCall(call, "runJsonBackfill")),
   }
-  return offsets
 }
 
 /** Human-readable order violations (empty = the wiring holds). */
-function orderViolations(source: string): Array<string> {
-  const { initialize, listen, backfill } = milestoneOffsets(source)
+function orderViolations(fileName: string, source: string): Array<string> {
+  const { initialize, listen, backfill } = milestoneOffsets(fileName, source)
   const violations: Array<string> = []
   if (initialize === null) violations.push("telemetry initialize() is missing from the startup path")
   if (listen === null) violations.push("the server-listen call is missing from the startup path")
@@ -75,7 +99,8 @@ const CORRECT_ORDER = `
 
 describe("telemetry startup order (initialize → listen → runJsonBackfill)", () => {
   test("the detector bites on each way the order can break (positive controls)", () => {
-    expect(orderViolations(CORRECT_ORDER)).toEqual([])
+    const violations = (source: string): Array<string> => orderViolations("start.ts", source)
+    expect(violations(CORRECT_ORDER)).toEqual([])
 
     // Backfill hoisted before listen — the double-count regression this ordering exists to prevent.
     const backfillTooEarly = `
@@ -84,7 +109,7 @@ describe("telemetry startup order (initialize → listen → runJsonBackfill)", 
       telemetryRuntime.runJsonBackfill()
       serverInstance = await startServer({ port })
     `
-    expect(orderViolations(backfillTooEarly)).toEqual(["telemetry runJsonBackfill() must run AFTER the server listens"])
+    expect(violations(backfillTooEarly)).toEqual(["telemetry runJsonBackfill() must run AFTER the server listens"])
 
     // Initialize deferred past listen — requests could settle against an unbuilt window / unfrozen γ.
     const initializeTooLate = `
@@ -93,23 +118,52 @@ describe("telemetry startup order (initialize → listen → runJsonBackfill)", 
       await telemetryRuntime.initialize()
       telemetryRuntime.runJsonBackfill()
     `
-    expect(orderViolations(initializeTooLate)).toEqual(["telemetry initialize() must run BEFORE the server listens"])
+    expect(violations(initializeTooLate)).toEqual(["telemetry initialize() must run BEFORE the server listens"])
 
     // The wiring deleted outright must not read as "compliant".
-    expect(orderViolations(`serverInstance = await startServer({ port })`)).toEqual([
+    expect(violations(`serverInstance = await startServer({ port })`)).toEqual([
       "telemetry initialize() is missing from the startup path",
       "telemetry runJsonBackfill() is missing from the startup path",
     ])
   })
 
+  test("a commented-out or stringified call reads as ABSENT, not as live wiring", () => {
+    // The text version of this guard passed on exactly this: the wiring was deleted, the decoy text
+    // remained, and the guard saw a call. An AST sees a comment.
+    const commentedOut = `
+      const telemetryRuntime = installDefaultTelemetryRuntime()
+      await telemetryRuntime.initialize()
+      serverInstance = await startServer({ port })
+      // telemetryRuntime.runJsonBackfill()
+    `
+    expect(orderViolations("start.ts", commentedOut)).toEqual(["telemetry runJsonBackfill() is missing from the startup path"])
+
+    const stringified = `
+      const telemetryRuntime = installDefaultTelemetryRuntime()
+      await telemetryRuntime.initialize()
+      serverInstance = await startServer({ port })
+      consola.info("next: telemetryRuntime.runJsonBackfill()")
+    `
+    expect(orderViolations("start.ts", stringified)).toEqual(["telemetry runJsonBackfill() is missing from the startup path"])
+
+    // A block comment wrapping the whole call site is the same thing.
+    const blockCommented = `
+      const telemetryRuntime = installDefaultTelemetryRuntime()
+      /* await telemetryRuntime.initialize() */
+      serverInstance = await startServer({ port })
+      telemetryRuntime.runJsonBackfill()
+    `
+    expect(orderViolations("start.ts", blockCommented)).toEqual(["telemetry initialize() is missing from the startup path"])
+  })
+
   test("the real startup path holds the order", async () => {
     const source = await readFile(startPath, "utf8")
     // Non-vacuous: prove the anchors actually resolved against the real file before trusting a pass.
-    const offsets = milestoneOffsets(source)
+    const offsets = milestoneOffsets(startPath, source)
     expect(offsets.initialize).not.toBeNull()
     expect(offsets.listen).not.toBeNull()
     expect(offsets.backfill).not.toBeNull()
 
-    expect(orderViolations(source)).toEqual([])
+    expect(orderViolations(startPath, source)).toEqual([])
   })
 })

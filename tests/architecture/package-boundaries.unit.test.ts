@@ -11,6 +11,12 @@ import {
 } from "node:fs/promises"
 import path from "node:path"
 
+import {
+  //
+  allModuleSpecifiers,
+  parseSource,
+} from "./source-ast"
+
 const repoRoot = path.resolve(import.meta.dir, "../..")
 
 async function sourceFiles(root: string): Promise<Array<string>> {
@@ -71,10 +77,19 @@ function tokenHasForbiddenImport(source: string): boolean {
 // other `@hsupu/*`, every `~/` alias, every undeclared bare package — is a boundary violation.
 const TELEMETRY_ALLOWED_EXTERNALS = new Set(["consola", "@datadog/sketches-js"])
 
-function telemetryForbiddenSpecifiers(source: string): Array<string> {
-  const re = /(?:\bfrom|\bimport|\brequire)\s*(?:\(\s*)?["']([^"']+)["']/g
+/**
+ * Parsed with the TypeScript AST, not a source regex. The text version shared a blind spot with the
+ * surface guard: `import /* c *\/ "~/lib/state"` (a comment between the tokens) slipped past
+ * `\s*\(?\s*`, and a specifier mentioned inside a comment or string produced a false positive.
+ *
+ * Deliberately checks TYPE-ONLY imports too — a type edge still couples the package to core and
+ * still counts as a cycle edge in the madge SCC snapshot (severing exactly such an edge is what T4
+ * had to do to get telemetry out of the SCC), so a boundary that ignored them would call a coupled
+ * package clean.
+ */
+function telemetryForbiddenSpecifiers(source: string, fileName = "telemetry.ts"): Array<string> {
   const forbidden: Array<string> = []
-  for (const [, specifier] of source.matchAll(re)) {
+  for (const specifier of allModuleSpecifiers(parseSource(fileName, source))) {
     if (specifier.startsWith("./") || specifier.startsWith("../")) continue
     if (specifier.startsWith("node:")) continue
     if (specifier === "@hsupu/ghc-proxy-foundation" || specifier.startsWith("@hsupu/ghc-proxy-foundation/")) continue
@@ -187,6 +202,14 @@ describe("package import boundaries", () => {
     expect(telemetryForbiddenSpecifiers('import { z } from "zod"')).toEqual(["zod"])
     // Non-`from` import shapes must also be flagged.
     expect(telemetryForbiddenSpecifiers('import "~/lib/state"')).toEqual(["~/lib/state"])
+    // A comment between the tokens defeated the previous regex version of this detector.
+    expect(telemetryForbiddenSpecifiers('import /* c */ "~/lib/state"')).toEqual(["~/lib/state"])
+    // A TYPE-ONLY import is still a boundary violation (it is a real cycle edge — see T4).
+    expect(telemetryForbiddenSpecifiers('import type { HistoryEntryData } from "~/lib/context/types"')).toEqual(["~/lib/context/types"])
+    expect(telemetryForbiddenSpecifiers('export type { UsageData } from "~/lib/history/store"')).toEqual(["~/lib/history/store"])
+    // …and a specifier that only appears in a comment or a string is NOT an import (no false positive).
+    expect(telemetryForbiddenSpecifiers('// we used to import "~/lib/state" here')).toEqual([])
+    expect(telemetryForbiddenSpecifiers('const doc = "~/lib/state"')).toEqual([])
     expect(telemetryForbiddenSpecifiers('const p = await import("~/lib/config/paths")')).toEqual(["~/lib/config/paths"])
     expect(telemetryForbiddenSpecifiers('const p = require("~/lib/config/paths")')).toEqual(["~/lib/config/paths"])
 
@@ -205,7 +228,7 @@ describe("package import boundaries", () => {
     const files = await sourceFiles(root)
     expect(files.length).toBeGreaterThan(5)
     for (const file of files) {
-      expect(telemetryForbiddenSpecifiers(await readFile(file, "utf8")), file).toEqual([])
+      expect(telemetryForbiddenSpecifiers(await readFile(file, "utf8"), file), file).toEqual([])
     }
   })
 
