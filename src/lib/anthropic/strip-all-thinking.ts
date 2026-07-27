@@ -11,7 +11,7 @@ const THINKING_TYPES = new Set(["thinking", "redacted_thinking"])
 /**
  * A block that {@link stripAllThinking} removes: any `thinking` /
  * `redacted_thinking` block, PLUS an orphaned synthetic de-stack separator. L1
- * de-stack ({@link repairAssistantBlockLayout}, `insert_text` / `move_blocks`)
+ * layout repair ({@link repairAssistantBlockLayout}, `move_blocks`)
  * inserts a synthetic separator text block between two
  * thinking blocks — and, when a message would otherwise END on thinking, as its
  * terminator; once strip-all removes the thinking blocks it separated, that

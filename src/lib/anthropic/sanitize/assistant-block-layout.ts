@@ -4,7 +4,7 @@ import type {
   MessageParam,
 } from "~/types/api/anthropic"
 
-export type AssistantBlockLayoutStrategy = "passthrough" | "insert_text" | "move_blocks"
+export type AssistantBlockLayoutStrategy = "passthrough" | "move_blocks"
 
 /**
  * Synthetic separator sentinel — a VERSIONED FAMILY matched by prefix, not one frozen literal.
@@ -119,33 +119,6 @@ export function endsOnAssistantTurn(messages: Array<MessageParam>): boolean {
 }
 
 /**
- * insert_text: keep all blocks in place; insert a synthetic marker whenever two thinking
- * blocks would be adjacent (C1), plus one at the end when the message would otherwise
- * terminate on thinking (C2).
- *
- * Known boundary: this strategy never MOVES a real block, so a message shaped
- * `[tool_use, thinking]` gets the C2 marker appended AFTER the tool_use, which violates
- * C3. Satisfying C3 requires reordering — that is `move_blocks` (the default). This
- * strategy stays a diagnostic/comparison leg.
- */
-function insertTextStrategy(content: Array<ContentBlockParam>, stats: BlockLayoutRepairStats): Array<ContentBlockParam> {
-  const out: Array<ContentBlockParam> = []
-  for (const b of content) {
-    const prev = out.at(-1)
-    if (prev && isThinking(prev) && isThinking(b)) {
-      out.push(marker())
-      stats.insertedMarkers++
-    }
-    out.push(b)
-  }
-  if (endsWithThinking(out)) {
-    out.push(marker())
-    stats.insertedMarkers++
-  }
-  return out
-}
-
-/**
  * move_blocks: interleave thinking with real non-thinking blocks (order-preserving) and
  * reserve one non-thinking block to TERMINATE the message; synthetic marker only when
  * there aren't enough real blocks to fill both duties.
@@ -206,11 +179,10 @@ function moveBlocksStrategy(content: Array<ContentBlockParam>, stats: BlockLayou
  *       → "This model does not support assistant message prefill. The conversation must end
  *          with a user message." (wording is misleading — see `violatesToolTerminal`)
  *
- * `move_blocks` REPAIRS all three: it already reserved the last `tool_use` as terminator so a
- * C1/C2 repair could never manufacture C3, and since 2026-07-27 a standalone C3 violation
- * (client-native, or one another rewrite pass introduced) is a trigger in its own right.
- * `insert_text` never MOVES a real block, so it can only repair C1/C2 — a C3-only message is
- * left untouched there, and that diagnostic leg stays honest about it.
+ * `move_blocks` REPAIRS all three: it reserves the last `tool_use` as terminator so a C1/C2 repair
+ * can never manufacture C3, and since 2026-07-27 a standalone C3 violation (client-native, or one
+ * another rewrite pass introduced) is a trigger in its own right. `passthrough` repairs nothing —
+ * it exists so upstream probes can put an exact arrangement on the wire.
  *
  * Idempotent: messages already satisfying C1+C2+C3 are returned unchanged (byte-identical).
  * See spec §3.1; runs as the TERMINAL sanitize pass.
@@ -230,9 +202,7 @@ export function repairAssistantBlockLayout(
       continue
     }
     const terminalViolation = endsWithThinking(msg.content)
-    // C3 is only a trigger for `move_blocks` — `insert_text` cannot repair it (it never moves
-    // a real block), so claiming the message there would count a repair that did not happen.
-    const toolTerminalViolation = strategy === "move_blocks" && violatesToolTerminal(msg.content)
+    const toolTerminalViolation = violatesToolTerminal(msg.content)
     if (!hasAdjacentThinking(msg.content) && !terminalViolation && !toolTerminalViolation) {
       out.push(msg)
       continue
@@ -241,7 +211,7 @@ export function repairAssistantBlockLayout(
     if (terminalViolation) stats.terminalRepairs++
     if (toolTerminalViolation) stats.toolTerminalRepairs++
     changed = true
-    const newContent = strategy === "insert_text" ? insertTextStrategy(msg.content, stats) : moveBlocksStrategy(msg.content, stats)
+    const newContent = moveBlocksStrategy(msg.content, stats)
     out.push({ ...msg, content: newContent })
   }
   return { messages: changed ? out : messages, stats }

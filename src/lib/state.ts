@@ -498,7 +498,6 @@ export interface State {
    * stacked thinking with a "thinking blocks cannot be modified" 400.
    *
    * - `"passthrough"` — leave stacked thinking as-is.
-   * - `"insert_text"` — insert a synthetic text separator between adjacent thinking.
    * - `"move_blocks"` — interleave thinking with real non-thinking blocks
    *                     (order-preserving), synthetic marker only when insufficient (default).
    */

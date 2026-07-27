@@ -478,7 +478,6 @@
                   "type": "string",
                   "enum": [
                     "passthrough",
-                    "insert_text",
                     "move_blocks"
                   ]
                 },

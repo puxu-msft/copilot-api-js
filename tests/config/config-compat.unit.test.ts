@@ -163,6 +163,7 @@ describe("config compat — legacy key migration (file load)", () => {
     { old: "reject_body_fields", new: "retry_reject_body_fields", value: { "claude-x": ["foo"] } },
     { old: "fake_sse_heartbeat", new: "stream_keepalive_ping_sec", value: 30 },
     { old: "stream_fake_sse_heartbeat", new: "stream_keepalive_ping_sec", value: 30 },
+    { old: "thinking_destack_strategy", new: "assistant_block_layout_strategy", value: "passthrough" },
   ]
 
   for (const { old: oldKey, new: newKey, value } of CONCERN_PREFIX_RENAMES) {
@@ -173,6 +174,27 @@ describe("config compat — legacy key migration (file load)", () => {
       expect(anthropic?.[oldKey]).toBeUndefined()
     })
   }
+
+  // `insert_text` 退役（2026-07-27）：它的契约「真实块不移位」与上游 C3「含 tool_use 必须以
+  // tool_use 收尾」互斥，只能产出必被 400 的 payload，故配置层直接迁到默认策略。两条入口都要覆盖
+  // ——迁移**不链式求值**（各自读原始 payload），所以「旧键 + 退役值」必须由 renameLeaf 的
+  // transform 一跳到位，不能指望先改名再走值迁移。
+  test("退役值 insert_text（新键）→ move_blocks", () => {
+    const result = validateConfig({ anthropic: { assistant_block_layout_strategy: "insert_text" } })
+    expect((result.anthropic as Record<string, unknown>)?.assistant_block_layout_strategy).toBe("move_blocks")
+  })
+
+  test("退役值 insert_text（**旧键**）→ 新键 + move_blocks（一跳到位，不依赖迁移链式求值）", () => {
+    const result = validateConfig({ anthropic: { thinking_destack_strategy: "insert_text" } })
+    const anthropic = result.anthropic as Record<string, unknown> | undefined
+    expect(anthropic?.assistant_block_layout_strategy).toBe("move_blocks")
+    expect(anthropic?.thinking_destack_strategy).toBeUndefined()
+  })
+
+  test("非退役值不被值迁移碰（passthrough 原样保留）", () => {
+    const result = validateConfig({ anthropic: { assistant_block_layout_strategy: "passthrough" } })
+    expect((result.anthropic as Record<string, unknown>)?.assistant_block_layout_strategy).toBe("passthrough")
+  })
 
   // Response-wire fixes regrouped under `response_text_fix` / `response_tool_use_fix` (nested
   // sections). Migrations do NOT chain, so BOTH the ancestral spelling and the intermediate flat

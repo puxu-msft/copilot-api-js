@@ -426,14 +426,11 @@ export const AnthropicConfigSchema = z
      * messages with no thinking at all. Idempotent: an already-legal message passes
      * through byte-identical.
      *   passthrough — leave the client's block layout as-is (repair disabled)
-     *   insert_text — insert a synthetic text separator between adjacent thinking, and
-     *                 after a trailing thinking block; never MOVES a real block, so it
-     *                 cannot satisfy the tool_use-terminal constraint (diagnostic leg)
      *   move_blocks — interleave thinking with real non-thinking blocks (order-
      *                 preserving) and reserve a terminator (the last tool_use when the
      *                 message has one); synthetic marker only when insufficient (default)
      */
-    assistant_block_layout_strategy: nullableEnum(["passthrough", "insert_text", "move_blocks"] as const),
+    assistant_block_layout_strategy: nullableEnum(["passthrough", "move_blocks"] as const),
     /**
      * Reactive fallback (L2) for the GHC "thinking ... cannot be modified" 400
      * that L1 layout repair (`assistant_block_layout_strategy`) did not preempt: strip ALL

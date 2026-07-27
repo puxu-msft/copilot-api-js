@@ -42,14 +42,6 @@ describe("repairAssistantBlockLayout", () => {
     expect(stats.insertedMarkers).toBe(3)
   })
 
-  test("insert_text: 真实块原位、相邻 thinking 间插合成标记", () => {
-    const msg = asst([T("a"), T("b"), T("c"), text("hi"), tool("t1")])
-    const { messages } = repairAssistantBlockLayout([msg], "insert_text")
-    const types = (messages[0].content as Array<{ type: string }>).map((b) => b.type)
-    expect(types).toEqual(["thinking", "text", "thinking", "text", "thinking", "text", "tool_use"])
-    // 真实 text("hi") 与 tool 原位，仅相邻 thinking 间插标记
-  })
-
   test("passthrough: 原样不动", () => {
     const msg = asst([T("a"), T("b")])
     const { messages, stats } = repairAssistantBlockLayout([msg], "passthrough")
@@ -71,13 +63,6 @@ describe("repairAssistantBlockLayout", () => {
     expect(twice).toEqual(once)
   })
 
-  test("redacted_thinking 相邻同样 de-stack", () => {
-    const msg = asst([RT("d1"), RT("d2"), text("hi")])
-    const { messages } = repairAssistantBlockLayout([msg], "insert_text")
-    const types = (messages[0].content as Array<{ type: string }>).map((b) => b.type)
-    expect(types).toEqual(["redacted_thinking", "text", "redacted_thinking", "text"])
-  })
-
   test("空/纯空白 text 不算分隔符（充分条件只计非空）", () => {
     const msg = asst([T("a"), T("b"), text("  ")]) // 唯一非thinking 是纯空白 → 不足 → 需合成
     const { messages } = repairAssistantBlockLayout([msg], "move_blocks")
@@ -85,6 +70,15 @@ describe("repairAssistantBlockLayout", () => {
     // 1 个内部分隔 + 1 个收尾（空白 text 上游会 strip 掉，撑不住末块位）
     expect(content.filter((b) => b.type === "text" && b.text === SYNTHETIC_THINKING_SEPARATOR)).toHaveLength(2)
     expect((content.at(-1) as { text?: string }).text).toBe(SYNTHETIC_THINKING_SEPARATOR)
+  })
+
+  test("redacted_thinking 相邻同样矫正（C1 对两种 thinking 类型都成立）", () => {
+    const msg = asst([RT("d1"), RT("d2"), text("hi")])
+    const { messages } = repairAssistantBlockLayout([msg], "move_blocks")
+    const content = messages[0].content as Array<{ type: string; text?: string }>
+    expect(content.map((b) => b.type)).toEqual(["redacted_thinking", "text", "redacted_thinking", "text"])
+    expect(content[1].text).toBe(SYNTHETIC_THINKING_SEPARATOR) // 中间是合成分隔符
+    expect(content[3].text).toBe("hi") // 真实 text 被留作收尾块
   })
 
   test("user 消息不动", () => {
@@ -149,14 +143,6 @@ describe("repairAssistantBlockLayout: 终端块不变量（C2 + C3）", () => {
     expect(messages[0].content).toEqual(msg.content)
     expect(stats.repairedMessages).toBe(0)
     expect(stats.insertedMarkers).toBe(0)
-  })
-
-  test("insert_text: 末块 thinking 同样补合成标记收尾", () => {
-    const msg = asst([T("a"), T("b")])
-    const { messages } = repairAssistantBlockLayout([msg], "insert_text")
-    const content = messages[0].content as Array<{ type: string; text?: string }>
-    expect(content.map((b) => b.type)).toEqual(["thinking", "text", "thinking", "text"])
-    expect(content.at(-1)?.text).toBe(SYNTHETIC_THINKING_SEPARATOR)
   })
 
   test("passthrough: 末块 thinking 也原样不动（诊断对照腿）", () => {
@@ -264,14 +250,12 @@ describe("repairAssistantBlockLayout: C3 独立触发（tool_use 必须收尾）
     expect(twice.stats.repairedMessages).toBe(0)
   })
 
-  test("insert_text / passthrough: C3-only 不触发（该腿修不了，也不谎报修了）", () => {
+  test("passthrough: C3-only 也不触发（诊断对照腿，完全不动）", () => {
     const msg = asst([T("a"), tool("t1"), text("trailing")])
-    for (const strategy of ["insert_text", "passthrough"] as const) {
-      const { messages, stats } = repairAssistantBlockLayout([msg], strategy)
-      expect(messages[0].content).toEqual(msg.content)
-      expect(stats.repairedMessages).toBe(0)
-      expect(stats.toolTerminalRepairs).toBe(0)
-    }
+    const { messages, stats } = repairAssistantBlockLayout([msg], "passthrough")
+    expect(messages[0].content).toEqual(msg.content)
+    expect(stats.repairedMessages).toBe(0)
+    expect(stats.toolTerminalRepairs).toBe(0)
   })
 
   test("user 消息不受 C3 约束（约束只针对 assistant）", () => {
@@ -353,7 +337,7 @@ describe("repairAssistantBlockLayout: 穷举不变量扫描", () => {
   const endsThinking = (c: Array<Block>) => c.length > 0 && isThink(c.at(-1) as Block)
   const c3Ok = (c: Array<Block>) => !c.some((b) => b.type === "tool_use") || c.at(-1)?.type === "tool_use"
 
-  for (const strategy of ["move_blocks", "insert_text"] as const) {
+  for (const strategy of ["move_blocks"] as const) {
     test(`${strategy}: C1(无相邻) + C2(末块非thinking) + 保序 + 不丢块 + 幂等`, () => {
       let checked = 0
       for (const content of allContents(4)) {
@@ -401,14 +385,5 @@ describe("repairAssistantBlockLayout: 穷举不变量扫描", () => {
       checked++
     }
     expect(checked).toBe(781)
-  })
-
-  test("insert_text: 不制造 C3 违规（本腿修不了 C3，但绝不能弄坏本来合法的）", () => {
-    for (const content of allContents(4)) {
-      if (!c3Ok(content)) continue
-      const msg: MessageParam = { role: "assistant", content: content as never }
-      const out = repairAssistantBlockLayout([msg], "insert_text").messages[0].content as Array<Block>
-      expect(c3Ok(out), `C3 broken by de-stack: ${content.map((b) => b.type).join(",")} -> ${out.map((b) => b.type).join(",")}`).toBe(true)
-    }
   })
 })

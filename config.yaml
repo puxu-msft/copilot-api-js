@@ -784,7 +784,6 @@ anthropic:
   # De-stack adjacent thinking/redacted_thinking blocks so no two are consecutive in an assistant message — GHC rejects an echoed history with stacked thinking ("thinking blocks cannot be modified" 400). Idempotent: a message without adjacent thinking passes through byte-identical.
   # 分隔 assistant 消息中相邻的 thinking/redacted_thinking 块使其两两不相邻——GHC 拒绝回显历史里堆叠的 thinking（报 "thinking blocks cannot be modified" 400）。幂等：无相邻 thinking 的消息逐字透传。
   #   passthrough: leave stacked thinking as-is / 保留堆叠的 thinking，不改动
-  #   insert_text: insert a synthetic text separator between adjacent thinking / 在相邻 thinking 间插入合成文本分隔符
   #   move_blocks: interleave thinking with real non-thinking blocks (order-preserving), synthetic marker only when insufficient (default) / 与真实非 thinking 块交错（保序），不足时才用合成标记（默认）
   assistant_block_layout_strategy: move_blocks
 

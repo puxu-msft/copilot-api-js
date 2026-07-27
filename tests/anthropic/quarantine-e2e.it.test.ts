@@ -186,10 +186,10 @@ describe("Guard A — driver-level ordering over the REAL codec rewrites", () =>
 })
 
 describe("Guard B — L3×L1 interaction: proactive strip-all makes de-stack a no-op (no orphan markers)", () => {
-  // insert_text so de-stack WOULD insert a VISIBLE synthetic separator on any
-  // surviving adjacency — makes the "no marker" assertion load-bearing.
+  // move_blocks (the default) still inserts a VISIBLE synthetic separator here (two
+  // adjacent thinking + one real block) — keeps the "no marker" assertion load-bearing.
   test("quarantined conversation with ADJACENT thinking → final body has NO thinking AND NO synthetic marker", () => {
-    setStateForTests({ poisonedThinkingQuarantine: true, assistantBlockLayoutStrategy: "insert_text" })
+    setStateForTests({ poisonedThinkingQuarantine: true, assistantBlockLayoutStrategy: "move_blocks" })
     store.record({ sessionId: "s1", agentId: "" }, "thinking cannot be modified")
     const { l3, l1 } = realRewrites(store)
 
@@ -202,7 +202,7 @@ describe("Guard B — L3×L1 interaction: proactive strip-all makes de-stack a n
   })
 
   test("CONTRAST — same payload + strategy but NOT quarantined → L3 no-op, de-stack fires: thinking preserved + synthetic marker present", () => {
-    setStateForTests({ poisonedThinkingQuarantine: true, assistantBlockLayoutStrategy: "insert_text" })
+    setStateForTests({ poisonedThinkingQuarantine: true, assistantBlockLayoutStrategy: "move_blocks" })
     // store is EMPTY — this (session) is not quarantined, so L3 is a no-op and L1
     // de-stack is what runs. Proves the marker's absence above is CAUSED by L3.
     const { l3, l1 } = realRewrites(store)
@@ -217,7 +217,7 @@ describe("Guard B — L3×L1 interaction: proactive strip-all makes de-stack a n
 
 describe("Guard C — cross-turn producer→consumer loop (L2 onResolved commit → next-turn L3 proactive), shared store", () => {
   test("turn 1 L2 strip-all success commits quarantine → turn 2 same session is proactively stripped, no marker", () => {
-    setStateForTests({ poisonedThinkingQuarantine: true, stripThinkingOnReject: true, assistantBlockLayoutStrategy: "insert_text" })
+    setStateForTests({ poisonedThinkingQuarantine: true, stripThinkingOnReject: true, assistantBlockLayoutStrategy: "move_blocks" })
 
     // ── Turn 1: the reactive L2 strip-all retry ultimately resolved the turn. The
     // driver calls THIS strategy's onResolved with the retry meta; it durably
@@ -243,7 +243,7 @@ describe("Guard C — cross-turn producer→consumer loop (L2 onResolved commit 
   })
 
   test("un-committed session is NOT quarantined → turn 2 keeps its thinking (loop is closed by the commit, not ambient)", () => {
-    setStateForTests({ poisonedThinkingQuarantine: true, stripThinkingOnReject: true, assistantBlockLayoutStrategy: "insert_text" })
+    setStateForTests({ poisonedThinkingQuarantine: true, stripThinkingOnReject: true, assistantBlockLayoutStrategy: "move_blocks" })
     // No onResolved commit for s2 → the consumer must NOT strip it.
     const { l3, l1 } = realRewrites(store)
     const turn2 = makeEnv({ sessionId: "s2", messages: [{ role: "assistant", content: [think("c"), think("d"), text("again")] }] })

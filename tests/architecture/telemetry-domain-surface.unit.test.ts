@@ -249,7 +249,10 @@ describe("telemetry package surface (one production entry point)", () => {
       if (forbidden.length > 0) violations.push(`${path.relative(repoRoot, file)}: ${forbidden.join(", ")}`)
     }
     expect(violations).toEqual([])
-  })
+    // 这条守卫要走遍并解析每一个生产源文件（当前 ~700 个），本就逼近 bun 默认的 5s 单测超时；
+    // 仓库多加几个文件、或与其它分片并行跑时就会翻车。给它显式预算（对齐 circular-deps-ratchet
+    // 的 30s），而不是为了压进默认超时去缩小扫描面——扫描面正是这条守卫的价值。
+  }, 30_000)
 
   test("the package's own modules import each other RELATIVELY (never through its own package name)", async () => {
     // A package file importing its own package by name would resolve back through the barrel —

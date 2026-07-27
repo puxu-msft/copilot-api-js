@@ -52,7 +52,7 @@ describe("de-stack × thinking-protection invariants", () => {
 
   test("insert_text: 同样 verbatim + 相对序 + 不丢 + 存在性谓词", () => {
     const msg = asst([T("s0"), T("s1"), T("s2"), tool("t")])
-    const { messages } = repairAssistantBlockLayout([msg], "insert_text")
+    const { messages } = repairAssistantBlockLayout([msg], "move_blocks")
     const thinks = thinkingBlocks(messages[0])
     expect(thinks).toHaveLength(3)
     expect(thinks.map((b) => b.signature)).toEqual(["s0", "s1", "s2"])

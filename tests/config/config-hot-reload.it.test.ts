@@ -560,8 +560,10 @@ const FIELDS: ReadonlyArray<FieldSpec> = [
     configKey: "anthropic.assistant_block_layout_strategy",
     stateKey: "assistantBlockLayoutStrategy",
     // Sample MUST differ from the default (move_blocks) so R1/R2 prove the wiring.
-    sampleYamlValue: "insert_text",
-    expectedStateValue: "insert_text",
+    // `insert_text` retired 2026-07-27 — compat now rewrites it to move_blocks, which would
+    // make this sample equal the default and rob R1/R2 of their evidence.
+    sampleYamlValue: "passthrough",
+    expectedStateValue: "passthrough",
     defaultStateValue: CONFIG_MANAGED_DEFAULTS.assistantBlockLayoutStrategy,
   },
   {
