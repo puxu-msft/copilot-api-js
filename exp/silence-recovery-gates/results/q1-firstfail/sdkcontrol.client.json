@@ -1,0 +1,10 @@
+{
+  "delayMs": 1500000,
+  "baseURL": "http://127.0.0.1:41936",
+  "startedAt": "2026-07-27T21:48:06.245Z",
+  "status": "error",
+  "elapsedMs": 300022,
+  "name": "Error",
+  "message": "Request timed out.",
+  "cause": ""
+}

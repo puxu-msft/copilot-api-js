@@ -53,8 +53,17 @@ if [[ "$healthy" != *"$NONCE"* ]]; then
 fi
 echo "server healthy on $PORT (pid $SERVER_PID), silence window ${WINDOW_MS}ms, cap ${CAP_MS}ms"
 
-Q1_BASE_URL="http://127.0.0.1:$PORT" Q1_CAP_MS="$CAP_MS" Q1_RESULTS_PATH="$OUT/$LABEL.client.json" \
-  bun "$EXP/q1-firstfail-cli-runner.ts" || true
+# The CLI arm answers "when does real CC give up". The SDK arm is its control:
+# same server, same window, but an explicit 1250s timeout and maxRetries:0. If
+# the SDK holds past the point where CC bailed, the give-up is CC's; if both bail
+# together, the harness itself is closing the connection and the number is junk.
+if [[ "${Q1_CLIENT:-cli}" == "sdk" ]]; then
+  Q1_BASE_URL="http://127.0.0.1:$PORT" Q1_DELAY_MS="$WINDOW_MS" Q1_RESULTS_PATH="$OUT/$LABEL.client.json" \
+    bun "$EXP/q1-runner.ts" || true
+else
+  Q1_BASE_URL="http://127.0.0.1:$PORT" Q1_CAP_MS="$CAP_MS" Q1_RESULTS_PATH="$OUT/$LABEL.client.json" \
+    bun "$EXP/q1-firstfail-cli-runner.ts" || true
+fi
 
 curl --max-time 5 -fsS "http://127.0.0.1:$PORT/observations" >"$OUT/$LABEL.observations.final.json" 2>/dev/null || true
 echo "--- observations ---"
