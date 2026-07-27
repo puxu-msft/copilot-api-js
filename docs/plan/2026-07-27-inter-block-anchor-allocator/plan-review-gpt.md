@@ -419,3 +419,105 @@ C9甚至要求 session transaction回滚 `openAnchorIndex`，但该字段属于 
 4. 让S3 callback返回owner可封装的write spec/factory，而不是由装饰器伪造`DeliveryFrame` metadata。
 
 上述闭合后，P3 owner-trigger测试法可保留；本轮其余修订无需重开。
+
+
+## 第四轮复审（commit `d7638fd1`）
+
+### 复审范围与证据
+
+- 对照第三轮 2 blocker + 2 major，读取 `d7638fd1` 对 README、P2、P3M、原 P4/P5 子计划、kickoff 的完整修订。
+- 独立核验当前代码的 `writeToSink` 多帧逐个 await、`streamSSE` 两处 sink 构造时点、8 个 handler close 调用与 driver 内部 close、`DeliveryFrame` 私有 builder、`deliveryBySink` 可达路径。
+- 未启动服务器，未触碰 4141。
+
+### [blocker] M1 没有可执行的 owner close API；“终局站点改经 owner 关闭”只写在结论里，接口与 task 均缺失
+
+**位置**：P3M M1；P5 AnchorState/Task 5.2；P2 `WireBlockAllocationPort`。
+
+planner 点名的可达性问题经代码复核后，结论分两部分：
+
+1. **所有现有 handler close 调用都发生在 sink 已构造之后**。两条 stream 路径都先 `makeAnchoredSseSink`，随后闭包／pump 内调用 `closeAnchorIfOpen`；driver 的内部 close 也持有 sink。故“某些分支 sink 尚未构造”这一担忧没有坐实。
+2. **但持有 sink 不等于计划已提供 owner close 能力**。冻结的 `WireBlockAllocationPort` 只有 `allocateAndWriteAnchor`、`withAllocatedRealBlock`、`beginLeg`，没有 `closeOpenAnchor`／terminal-close method。M1 只在表格中写“通用多-anchor close transaction前移进 owner”，P5 Task 5.2 仍要求各站点直接读写 `openAnchorIndex` 并调用旧 `closeAnchorIfOpen`，没有说明如何从 sink 取 port、如何在 serializer 内原子做 `openAnchorIndex→undefined + write anchor stop`、以及 terminal close 与 P6 heartbeat永久停止如何排序。
+
+这会让实现者只能：继续在 owner 外直接写 stop（破坏唯一 owner／serializer合同），或临时发明新 API。M1 是 M2 测试可满足的硬前提，接口缺失意味着 P3M 仍不可执行。
+
+**修复建议**：在 P2 interface正式加入例如：
+
+```ts
+closeOpenAnchor(buildStop: (index: number, envelope: WireEnvelopeFactory) => WireWriteSpec, mode: "before-real" | "terminal"): Promise<"closed" | "none" | "write-error">
+```
+
+由 session serializer 内读取同一个 `GenerationWireState.openAnchorIndex`、生成正确 index 的 stop、按 anchor provenance 写出、在 commit point后永久消费状态，并提供幂等 exactly-once。`terminal` 模式还要与 P6 的永久 heartbeat stop 合成一个 owner command，避免 stop 与新 tick 交错。P5 Task 5.2 应改成逐站点“取得 port→调用 close API”，并增加架构守卫禁止生产代码在 owner 外写 `openAnchorIndex`。既然 sink 已构造，各 handler site 可通过 `getDownstreamDeliverySession(sink)` 取得 port；driver内部直接持 port即可。
+
+### [major] C9 两段边界基本正确，但“write 已入队、尚未执行/await”与 abort 中途状态必须由 serializer command 的开始点明确归类
+
+C9 从不可实现的“多帧全原子回滚”改成“首次外部 write 前可回滚，之后永久消费并终止”，方向正确，三档 oracle和双向 mutation也能咬住主要反例。
+
+仍需精确化两个状态：
+
+- **operation 已 enqueue，但尚未开始执行**：此时还没有 reservation，若 session 在排队期间进入 terminating/closed，operation开始时应重新检查并按“session拒绝、零分配”处理；不能在 enqueue调用时先 reserve。
+- **operation执行中收到 abort**：若 abort 在首个底层 write调用前被观察，属于pre-commit全回滚；若底层 write已调用但promise尚未settle，按计划的“已尝试”应视为post-commit，index永久消费。即 commit flag必须在调用 `writeToSink` **之前同步置位**，不是 await成功之后。
+
+建议在Task 2.2c补两条时序oracle：queued operation等待期间session terminate；首帧write返回pending promise期间触发abort。分别断言前者零分配、后者永久消费+delivery终止。否则“两段”定义虽对，执行边界仍可能被写错。
+
+
+
+### [blocker] M1 删除旧状态字段后，M2–M4 尚未迁移的 `+1` 分支没有可编译／等价的 bridge，“半坏窗口为空”证明缺少前提
+
+**位置**：P3M:36-53；P5 M1 状态机。
+
+P3M 证明假设 M2–M4 期间“未迁移腿仍走旧硬编码分支：有 anchor→+1，无 anchor→+0”，所以与 frontier数值等价。但 M1 明确先删除 `anchorBlockOpen` 与 `anchorClosed`，而现有 S1/S2/S3 的旧门分别直接读取这些字段：
+
+- driver S1/S2：`injected && anchor && anchorBlockOpen ? anchor.remap(...,1) : frame`；
+- live reconcile：`if (!state.anchorBlockOpen) return [frame]`，之后 `!state.anchorClosed` 控 close。
+
+M1 后 S2/S3 还没到 M3/M4，却已经失去旧分支的判据；按“类型系统逼出全站点”会立即编译红。若为了编译顺手把 S2/S3 改成新状态／resolver，就提前做了M3/M4；若只改成 `openAnchorIndex !== undefined`，在pre-anchor已关闭后该值是undefined，却真实块仍须永久整体+1，数值不等价。`openAnchorIndex`只表示当前open，不表示历史保留的wire shift。
+
+因此“半坏窗口为空”并非错误地估算了值，而是**M1→M4之间缺少一个明确的兼容判据**。M1本身的typecheck/test:fast门不可满足，八commit序列不可执行。
+
+**修复建议**：M1必须同时引入一个只服务迁移期、可证明等价的 bridge，例如旧站点在未迁移前用 `wireState.allocator.anchorsOpened() > 0 ? remap(frame,1) : frame`（生产开门前anchor count∈{0,1}），且 close用owner `closeOpenAnchor`；每迁完一腿立即删除该腿bridge，M4后全仓bridge零命中。把bridge写入M1内容、架构守卫、每commit grep和O-6。更干净的选择是M1+M2–M4合成一个原子commit；不能保持当前“删字段但旧站点继续读”的描述。
+
+### [major] P2.2 的旧测试断言仍与新C9冲突
+
+Task 2.2仍保留测试名“a write failure does NOT advance the frontier”，注释要求“下一次分配拿到同一个index、wire无空洞”。新C9明确第一帧write失败已经跨commit point，index必须永久消费并终止delivery。这条旧测试会要求与2.2c档2完全相反的结果，计划执行必红。
+
+**建议**：删除或改写为两个精确测试：session/build拒绝前不推进；首次write尝试失败后永久消费且拒绝后续分配。P2收口的“C9有测试：write失败不推进frontier”也要同步改成两段语义。
+
+### [major] P3M M2/M3 的“mapping token供delta/stop查询”没有定义存放位置，S1/S2逐帧路径可能无法找到正确block token
+
+计划正确规定delta/stop不分配、按不可变`WireBlockMapping` token remap，但当前三腿输入只有frame上的upstream index，接口没有说明成功start后mapping存在哪里、如何在同腿后续delta/stop按upstream index取token、stop后何时释放。若只是把mapping放回allocator的ambient current-leg map，就退回前轮明确否决的全局查询；若存driver局部Map，retreat前后与buffered→live切换必须共享；live decorator也需自己的active mappings。
+
+这在parallel/coexist upstream indices尤其承重：不能只保存“current mapping”单槽。建议冻结generation wire state中的`Map<LegToken, Map<upstreamIndex, WireBlockMapping>>`或每腿active map，start成功commit后登记、delta/stop精确查询、stop成功后删除；retreat沿用同一leg map。补两块并存／交错delta的测试，以及missing mapping必须显式报错而非原样透传。否则M2–M4虽能处理start，后续帧仍可能留旧index。
+
+### WireWriteSpec／唯一wireState抽验
+
+- `WireWriteSpec`让caller只给`real|anchor|keepalive`，owner内部铸造`DeliveryFrame`，正确解决了装饰器拿不到sequence/time/provenance的问题；方向闭合。
+- handler唯一创建`GenerationWireState`并同时注入AnchorState与delivery session，配四处引用identity oracle及唯一factory调用守卫，闭合第三轮注入空洞。
+- 但owner给`real`铸造candidate/dispatch provenance时仍需沿用当前生产语义；若只能填legacy，至少应明确这是既有行为而非伪称保留了未知id。此项不阻断本计划。
+
+
+
+### 已闭合项与第四轮结论
+
+- **C9 根本方向**：commit point前后两段语义正确，三档oracle + 双向mutation覆盖主干；只需补queued/abort边界并清掉旧相反测试。
+- **P3M合并决策**：把三腿、continuation、anchor生命周期放同一相位是正确的；M6晚于M2–M4也确实是多-anchor生产开门的硬序。但M1删除旧字段后的bridge缺失，使当前八commit序列仍不可执行。
+- **终局port可达性**：handler现有8个close调用与driver内部close均在sink构造后，port可通过sink/session取得；“早期分支拿不到sink”未坐实。真正缺的是正式close owner API和逐站点接线task。
+- **WireWriteSpec / wireState注入**：两项第三轮major已实质闭合。
+- 前三轮已确认的recovery、serialized beginLeg、P5 owner-only、spec硬门、O-2/O-7/O-9不重开。
+
+### 第四轮总体 verdict
+
+**存在 blocker，当前不可开工实施；需先修订。**
+
+- blocker：**2**
+- major：**4**
+- minor：**0**
+- nit：**0**
+
+开工前必改：
+
+1. 为owner正式定义并测试`closeOpenAnchor`／terminal close API，逐个迁移handler与driver终局站点。
+2. 给M1→M4增加可编译且数值等价的迁移bridge，或合并M1+M2–M4原子commit。
+3. 完善C9 queued/abort边界，删掉P2.2与新语义相反的旧测试／收口文案。
+4. 冻结mapping token的登记、按leg+upstream index查询、stop释放及retreat共享策略。
+
+上述闭合后，P3M的整体分相与M6硬序可保留；无需推翻已确认的oracle与文档后果。

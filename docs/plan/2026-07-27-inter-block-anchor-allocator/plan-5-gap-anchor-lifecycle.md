@@ -32,7 +32,9 @@ if (pendingOpenBlocks.length === 0 && semanticBlockCount === 0 && heartbeat.inje
 
 原 plan 对 `anchorClosed` 给了三种互斥说法（Files 说改为「当前 anchor 是否已关」、语义表说保留为「终局收口是否已做」、Task 5.2 又说终局也用 `openAnchorIndex` 幂等）。三者不能同时成立：多 anchor 下若 `anchorClosed` 在第一次 gap close 后永久为 true，后续终局 close 会被短路；若每个 gap 重置，它就不能充当整请求的终局 once guard；若 `openAnchorIndex` 已是唯一判据，`anchorClosed` 就是残留双轨。
 
-**冻结裁决：删除 `anchorClosed`，由 `openAnchorIndex` 单一承担 per-anchor 与终局幂等。**
+**冻结裁决：`openAnchorIndex` 单一承担 per-anchor 与终局幂等；`anchorClosed`/`anchorBlockOpen` 退役。**
+
+> **退役的时点（round-4 blocker 修正）**：这两个字段在 **M1 不删**——未迁移的 S2/S3 直接读它们，立删会当场编译红。M1 只**新增** `openAnchorIndex` 与 `closeOpenAnchor`，并由 owner 在 open/close 时**一并维护旧字段**（迁移期双写），旧分支照常工作；**删除下沉到 M5**（那时三腿已迁完，无消费者）。详见 plan-3「M1 的迁移 bridge」。
 
 现有字段是为**单个 pre-content anchor** 设计的：
 
@@ -47,7 +49,7 @@ if (pendingOpenBlocks.length === 0 && semanticBlockCount === 0 && heartbeat.inje
 | **当前**有 anchor open 吗 | `openAnchorIndex?: number` | `undefined → index → undefined` 的转移**同时**承担 per-anchor 关闭与终局 once guard：关闭时置 `undefined`，第二个调用者见 `undefined` 即短路 | gap injector（开）、三处 close-before-real + 各终局站点（关） | 同左 |
 | 终局收口是否已做 | **无独立字段** | 由 `openAnchorIndex === undefined` 表达 | — | — |
 
-**`anchorBlockOpen` 与 `anchorClosed` 一并删除**（项目「不留双轨包袱」）。grep 全站点逐处迁移（`rg -n "anchorBlockOpen|anchorClosed" src/ tests/`），类型系统会逼出全部站点。
+**`anchorBlockOpen` 与 `anchorClosed` 最终一并删除**（项目「不留双轨包袱」）——但删除动作在 **M5**，非 M1。届时 grep 全站点逐处清理（`rg -n "anchorBlockOpen|anchorClosed" src/ tests/`），类型系统会逼出全部站点。
 
 **exactly-once 测试要求**（本相位必须有）：终局 close-off 有多个潜在调用者——`closeAnchorIfOpen`（`keepalive-anchor.ts:178`）、driver 的终端 close-off（`driver.ts:1105`）、pump 的多个终端分支（`handler-v4.ts:1325/1423/1450/1503/1606/1644/1688`）。必须有一条测试**枚举这些站点两两组合**（或至少覆盖「driver 先关 + pump 后关」「pump 先关 + driver 后关」两序），断言客户端**恰好收到一个** `content_block_stop@anchorIdx`。
 
@@ -90,8 +92,10 @@ test("the anchor stop is emitted EXACTLY ONCE no matter which terminus fires fir
 ```
 
 - [ ] **Step 2**：跑，红（当前 `closeAnchorBeforeReal` 的 `!anchorState.anchorClosed` 幂等守卫使它**只关第一个** anchor）。
-- [ ] **Step 3**：实现——按本文件「`AnchorState` 状态机（已冻结）」小节：`closeAnchorBeforeReal` 改判 `openAnchorIndex !== undefined`，关闭后置 `undefined`。三条路径都要覆盖：flush 循环内 per-frame（`driver.ts` 的 `isContentBlockStart` 分支）、retreat 分支（`:1240` 附近）、live-reconcile（`live-reconcile.ts:136-141`）。
-  - **终局幂等由同一字段承担**（不再有独立 `anchorClosed`）：`closeAnchorIfOpen`（`keepalive-anchor.ts:178`）+ driver 终端 close-off（`driver.ts:1105`）+ pump 各终端分支关完即置 `undefined`，后来者见 `undefined` 短路 → 恰好一次。
+- [ ] **Step 3**：实现——**所有 close 一律经 owner 的 `closeOpenAnchor`**（round-4 blocker：生产代码不得在 owner 外读写 `openAnchorIndex` 或自行写 anchor stop 帧）：
+  - **close-before-real**（本 task 的主体）：三条路径各自取 port 后调 `closeOpenAnchor(buildStop, "before-real")` —— flush 循环内 per-frame（`driver.ts` 的 `isContentBlockStart` 分支）、retreat 分支（`:1240` 附近）、live 装饰器（`live-reconcile.ts:136-141`，随 M4 的 transaction 一并做）。
+  - **终局 close**（8 个 handler 站点 + driver 2 处）：**已在 M1 迁移完毕**（见 plan-3「M1 的逐站点 close 迁移」表），本 task 不重复迁移，只需确认其回归仍绿。
+  - **exactly-once 由 API 保证**：第二个调用者见 `openAnchorIndex === undefined` 得 `"none"`，取代原先跨站点共享 `anchorClosed` 的手工幂等。
 - [ ] **Step 4**：跑，绿 + 全部 close-off 测试回归（`live-pump-terminal-anchor-closeoff.http.test.ts`、`live-post-commit-anchor-closeoff.http.test.ts`、`anchor-multiblock-lifecycle.it.test.ts (c′)`）。
 - [ ] **Step 5**：mutation——注释掉 gap anchor 的 close-before-real，确认 O-2 转红。
 - [ ] **Step 6: 提交** → `fix(anchor): close every gap anchor before the next real block`
@@ -207,7 +211,7 @@ test("the per-gap latch re-arms across the leg boundary", async () => {
 
 - [ ] `typecheck` + `test:fast` 绿；anchor 全套件对账完毕。
 - [ ] O-1/O-2/O-3 绿；O-6 字节等价仍等于 P0 捕获的 base 基线。
-- [ ] `rg -n "anchorBlockOpen|anchorClosed" src/` **零命中**（两者均已被 `openAnchorIndex` 取代，无双轨残留）。
+- [ ] `rg -n "anchorBlockOpen|anchorClosed" src/` **零命中**（由 **M5** 完成删除；M1–M4 期间它们仍存在且被 owner 双写维护，属**有明确终点的迁移期双轨**，非遗留包袱）。
 - [ ] anchor stop 的 **exactly-once** 测试绿（终局站点两两组合）。
 - [ ] `semanticBlockCount === 0` 门已删，其注释已改为指向本 plan。
 - [ ] **Task 5.4 的交叉 mutation 矩阵填满**：同一条交叉测试对两个 mutation 分别以**可辨识的不同原因**失败，且两条单侧 control 也在位。

@@ -86,8 +86,40 @@ export interface WireBlockAllocationPort {
    * any allocation of the next one.
    */
   beginLeg(kind: "continuation" | "recovery"): Promise<LegToken>
+  /**
+   * Close the currently open synthetic anchor, if any — the SINGLE close authority (round-4 blocker).
+   *
+   * Runs inside one serializer operation: reads `openAnchorIndex`, builds the stop frame at THAT
+   * index, writes it with anchor provenance, and clears the state. Idempotent by construction — a
+   * second caller observes `undefined` and gets `"none"`, which is what makes the terminal close
+   * exactly-once across the 8 handler sites and the driver's own terminus.
+   *
+   * `mode`:
+   *   - `"before-real"` — mid-stream close ahead of the next real block (C2). The stream continues.
+   *   - `"terminal"`    — the request is ending. Fused with the PERMANENT heartbeat stop in the SAME
+   *                       owner command, so no tick can interleave between the stop frame and the
+   *                       terminus (P6 owns the recoverable-freeze vs permanent-close distinction;
+   *                       this mode takes the permanent one).
+   */
+  closeOpenAnchor(
+    buildStop: (index: number, envelope: WireEnvelopeFactory) => WireWriteSpec,
+    mode: "before-real" | "terminal",
+  ): Promise<"closed" | "none" | "write-error">
 }
 ```
+
+### mapping token 的生命周期（**round-4 major：四点冻结**）
+
+delta/stop 按不可变 token 查（round-2 裁决），但 token **存哪、怎么查、何时释放、retreat 怎么共享**没写死，M2–M4 会各做各的假设。四点冻结：
+
+| # | 问题 | 冻结答案 |
+|---|---|---|
+| 1 | **存放** | 存在 `GenerationWireState`：`Map<LegToken, Map<upstreamIndex, WireBlockMapping>>`。**不是** allocator 的 ambient「current leg」单槽（那正是 round-2 否决的全局查询），也**不是** driver / 装饰器各自的局部 Map（retreat 与 buffered→live 切换必须共享同一份）。登记时机 = start 帧**成功 commit 之后**（C9：commit point 前不可见）。 |
+| 2 | **查询** | delta/stop 按 **(当前 leg token, 帧自带的 upstream index)** 精确查。**必须支持同腿多块并存**（上游 parallel tool_calls 的 coexist index）——故是 per-leg Map 而非单槽。 |
+| 3 | **释放** | 该块的 `content_block_stop` **成功写出后**删除其条目。（close-before-real 关的是 anchor，不在此列。） |
+| 4 | **retreat 共享** | retreat **不换 leg**，沿用同一 leg map：buffered 阶段登记的 mapping 在 live 写穿阶段照常可查。这正是 S2 必须与 S1 共享状态的原因。 |
+
+**missing mapping 必须显式报错，绝不原样透传**——查不到 token 说明 start 漏登记（M2–M4 漏接线正是这个形状）。静默透传会让帧落在旧 index 上，就是 R1 的静默重排。配测试：人为删除 mapping 后，后续 delta 必须抛可辨识错误而非被写出。
 
 ### 注入路径（**round-3 major：P1 handler-owned state 与 P2 session-owned port 之间的接线空洞，本轮冻结**）
 
@@ -127,6 +159,13 @@ handler-v4.ts  makeAnchoredSseSink()
    | **commit point 之后** | 任一帧**已尝试或已成功**写出 | index **永久消费、绝不复用**；失败 → 返回 `write-error`/`client-abort`、**终止 delivery**、**禁止后续分配**；已尝试的输出忠实记录（richest-data-flow） |
 
    即：**reservation 不可见 → 首帧写出前 commit → 此后只进不退**。partial delivery 是既成事实，计划**不承诺**该情形下的 wire 无洞——承诺的是「绝不复用已可见的 index」+「不静默继续」。
+
+   **两类边界状态的归属（round-4 major 补齐）**——不写死的话「两段」定义虽对、执行边界仍会被写错：
+
+   | 状态 | 归属 | 实现约束 |
+   |---|---|---|
+   | operation **已入队、尚未开始执行** | commit point **之前** | **不得在 `enqueue` 调用时预留**——reservation 必须发生在 operation **开始执行时**。若排队期间 session 进入 terminating/closed，operation 开始时**重新检查**并按「session 拒绝、零分配」处理 |
+   | operation 执行中**收到 abort** | 看是否已调底层 write：**首个 `writeToSink` 调用之前**观察到 → pre-commit 全回滚；**已调用但 promise 未 settle** → **算 post-commit**，index 永久消费 | **commit 标志必须在调用 `writeToSink` 之前【同步】置位**，不是 await 成功之后——否则「已尝试」这一档会漏 |
 2. **delta / stop 不分配**：只按**该块的 `WireBlockMapping`（不可变 token）**查，**不查 ambient「current leg」**——消除跨 `await` 的可变全局状态（round-2 major）。只有 `content_block_start` 触发分配。
 3. **owner 唯一**：`ClientSink` 上不暴露任何裸分配入口；低阶 `allocateAnchor` / `allocateRealBlock` / `on*Open` 降级为**测试专用**，由架构守卫锁住（Task 2.1 Step 5）。**这条对 P5.3 同样生效**——gap injector 必须走 `allocateAndWriteAnchor`，不得裸调（round-2 major）。
 4. **`beginLeg` 是 serializer command**（`Promise<LegToken>`，非同步裸方法）：它在**前一腿全部成功写出之后、下一腿任一分配之前**建立 fence。否则 continuation dispatch 与在飞的 heartbeat anchor operation、前腿排队中的 delta/stop 之间没有顺序合同（round-2 major）。
@@ -205,8 +244,13 @@ test("POSITIVE CONTROL: the harness DOES catch an allocation performed OUTSIDE t
   // 断言上面的 oracle 会红 —— 证明这个并发 harness 真能咬住队列外分配，
   // 而不是「碰巧没撞上」（pass-null-clean-not-self-validating）
 })
-test("a write failure does NOT advance the frontier (C9)", async () => {
-  // sink.write 抛错 → 断言下一次分配拿到的仍是同一个 index，wire 上无空洞
+// C9 两段语义（round-4 major：原「任何 write failure 都不推进 frontier」与新 C9 档 2/3 正面冲突，已改写）
+test("a session/build refusal BEFORE any write does not advance the frontier", async () => {
+  // build callback 抛错 / session 拒绝 → 下一次分配拿到【同一个】index（pre-commit 全回滚）
+})
+test("a FAILED first write consumes the index permanently and refuses further allocation", async () => {
+  // sink.write 抛错 → 后续分配【不得】拿到同一 index；delivery 已终止
+  // 详细三档见 Task 2.2c —— 此处只锁「P2.2 的并发 harness 也遵守同一语义」
 })
 ```
 
@@ -269,10 +313,22 @@ test("first frame delivered, second frame failing: the visible index is NEVER re
   //       ④ 已尝试的输出被忠实记录（forwarded 轨可见）
   // 反向断言（防修过头）：不得因此把 index 回滚为可复用
 })
+
+// ── 两类边界状态（round-4 major）──
+test("a QUEUED operation reserves nothing; a terminate while it waits yields zero allocation", async () => {
+  // operation 入队 → 在它开始执行前让 session terminate → 断言：
+  //   ① 排队期间没有任何 reservation（另一路径查询看不到）
+  //   ② operation 开始执行时重新检查并按「session 拒绝」返回，零分配
+})
+test("an abort while the first write's promise is PENDING counts as post-commit", async () => {
+  // sink.write 返回一个未 settle 的 promise → 期间触发 abort
+  // 断言：index 永久消费（后续分配不得拿到它）+ delivery 终止
+  // 反向：abort 若发生在首个 writeToSink 调用【之前】，则属 pre-commit，全回滚
+})
 ```
 
 - [ ] **Step 2**：跑，红。
-- [ ] **Step 3**：实现——reservation 不可见 + 首帧写出前 commit + 此后只进不退 + 失败终止 delivery。
+- [ ] **Step 3**：实现——reservation 在 operation **开始执行时**才建立（非 enqueue 时）+ **commit 标志在调 `writeToSink` 前同步置位** + 此后只进不退 + 失败终止 delivery。
 - [ ] **Step 4**：跑，绿。
 - [ ] **Step 5**：**双向 mutation**——
   - 把档 2/3 改成「失败即回滚 index」（即 round-2 的旧契约）→ 档 3 的「绝不复用」断言必须**转红**；
@@ -342,5 +398,5 @@ test("an in-flight heartbeat anchor operation interleaved with beginLeg keeps th
 - [ ] `typecheck` + `test:fast` 绿；O-1/O-2/O-6 仍绿。
 - [ ] 并发 oracle（2.2 + 2.2b）各连跑 15 次全绿。
 - [ ] 架构守卫锁住「生产路径只经 owner API 分配」。
-- [ ] **C9 有测试**：write 失败不推进 frontier。
+- [ ] **C9 两段语义各有测试**：commit point 前失败 → 全回滚；commit point 后失败 → 永久消费 + 终止 delivery（三档 oracle + 两类边界状态，Task 2.2c）。
 - [ ] **P3.1 原停点已消解**：owner 形状已冻结（若实施中发现站不住，那才是真分叉 → 停下回报）。

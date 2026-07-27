@@ -55,7 +55,8 @@ graph TD
 | **C3** | **恒等短路（2026-07-27 修订，原表述有 blocker）** | 短路判据是**映射恒等**，不是 anchor 计数：当且仅当该块的 `WireBlockMapping` 满足 `wireIndex === upstreamIndex` 时，remap 才可返回**原 frame 对象**。等价的充分条件 = **无任何 synthetic 插入且该块属主腿**。**原表述「`anchorsOpened === 0` 即无条件短路」与 C4 冲突，会让无-anchor 续写腿复用 wire 0——已作废** | 审查 F6 提出、GPT plan review blocker 推翻并修订 |
 | C4 | 双偏移作废 | `wireIndex(i) = i + anchorShift + continuationOffset` **作废**。frontier 是 wire index 的唯一权威，两个独立偏移不得继续叠加 | 审查 F5；设计 §4.4 第 3 点 |
 | C5 | 分配临界区 | index 分配必须与其帧写出在**同一个 serializer operation** 内完成（单一 owner API，见 P2「Interfaces」）。「分配后再分别调用 `write*`」**不满足**本契约——那是队列外分配 + 两个 operation。`beginLeg` 同样是 serializer command | 审查 F7；设计 §4.4 第 4 点；plan review round-1/2 major |
-| **C9** | **分配的 commit point = 首次外部 write（round-3 重写）** | 已发出的字节**不可撤销**，故「多帧全回滚」在物理上不成立。两段语义：**① commit point 之前**（session 拒绝 / build callback 抛错 / 尚未尝试任何 wire write）→ 零副作用，预留不可见，可**全回滚**（frontier、anchor 计数、leg mapping、`openAnchorIndex` 一并退回）。**② commit point 之后**（任一帧已尝试或已成功写出）→ index **永久消费、绝不复用**，失败即**终止 delivery**（返回 `write-error`/`client-abort`、禁止后续分配），并忠实记录已尝试输出。**C1 的「永不跳号」只对成功交付的健康流成立**；失败终止流不得用复用 index 伪造连续 | plan review round-3 blocker |
+| **C9** | **分配的 commit point = 首次外部 write（round-3 重写，round-4 补边界）** | 已发出的字节**不可撤销**，故「多帧全回滚」物理上不成立。两段语义：**① commit point 之前**（session 拒绝 / build callback 抛错 / 尚未尝试任何 wire write）→ 零副作用、预留不可见、**全回滚**。**② commit point 之后**（任一帧已尝试或已成功）→ index **永久消费绝不复用**，失败即**终止 delivery** + 禁止后续分配 + 忠实记录。**两类边界**：queued-未执行 → 属 ①（不得在 enqueue 时预留，执行时重查 session）；abort 于首帧 promise **pending** 期间 → 属 ②（commit 标志须在调 `writeToSink` **前同步置位**）。**C1 的「永不跳号」只对健康流成立** | round-3 blocker + round-4 major |
+| **C10** | **mapping token 生命周期（round-4 新增）** | 存放 = `GenerationWireState` 的 `Map<LegToken, Map<upstreamIndex, WireBlockMapping>>`（非 allocator ambient 单槽、非各腿局部 Map）；登记 = start 帧成功 commit 后；查询 = 按 (leg token, upstream index) 精确查，**须支持同腿多块并存**；释放 = 该块 `content_block_stop` 成功写出后；retreat **不换 leg、沿用同一 map**。**missing mapping 必须显式报错，绝不原样透传** | plan review round-4 major |
 | C6 | anchor 绕 buffer | anchor 帧走 `sink.writeAnchor` 绕过 buffer，**不**进 `extractCommittedBlocks` 的续写合成 assistant 前缀（主腿已核实；**续写腿由 P5.4 独立复验**） | 审查「机械核对」第 6 条 |
 | C7 | 合成帧打标记 | 每个 anchor 帧进 forwarded 轨必带 `synthetic:"anchor"`，keepalive delta 带 `synthetic:"keepalive"`；绝不进上游原始轨 | ADR `2026-07-05-richest-data-flow` |
 | **C8** | **字节等价（措辞修订）** | 权威基线 = **P0 在实施 base 上捕获的 pre-change 字节**；P8 必须与该捕获物逐字节相同。历史值 `8691db71…2f6a0` / 1675 bytes 仅作 **provenance / sanity check**，不是跨 master 前进的永久需求。重捕前必须先证明 hook、请求、配置相同，并记录造成差异的 base change | GPT plan review minor |
@@ -111,6 +112,8 @@ C3 的来历是：上一轮**设计 reviewer** 提出「A 把死 remap 路径变
 | 10 | 续写腿 × gap anchor 跨相位集成缝（用户裁决升格为独立 task） | **M7**（plan-5 Task 5.4） | O-9 交叉 mutation 矩阵（同一测试对两侧 mutation 以不同原因失败）+ 两条单侧 control |
 | 11 | **wire 副作用不可逆的 commit 语义**（round-3 blocker） | P2「Interfaces」C9 + Task 2.2c | 三档 oracle（build 抛错 / 首帧失败 / 首帧成功次帧失败）+ 双向 mutation |
 | 12 | **allocator 注入路径唯一性**（round-3 major） | P2「注入路径」+ P1.3 | identity oracle（四处引用相等）+ 架构守卫（唯一创建点，带正样本对照） |
+| 13 | **owner close 权威 + 10 个站点迁移**（round-4 blocker） | P2 `closeOpenAnchor` + **M1** 逐站点表 | 8 handler + 2 driver 站点各自回归 + exactly-once（终局站点两两组合）+ 架构守卫（owner 外不得写 anchor stop / 读写 `openAnchorIndex`） |
+| 14 | **迁移期 bridge 使每步可编译**（round-4 blocker） | **M1** 引入 / M2–M4 逐腿删 / M5 删旧字段 | 每个 M-commit 的 typecheck + `test:fast` + **O-6**；M4 后 bridge 判据 grep 零命中 |
 
 ## 验收 oracle 总表（reviewer 要求 >= 5 项，实际 9 项）
 
@@ -213,6 +216,7 @@ raw sink（`makeSseSink`）的 `freezeHeartbeat` 只 `clearTimeout` 不置 stopp
 | R8 | **跨相位集成缝**（leg 语义 × gap anchor）只在合并态才暴露 | 中高：本项目吃过亏的形状，逐 task 审看不到，代价最高 | 升格为独立 task（M7 / plan-5 Task 5.4，red-first + **交叉 mutation 矩阵**），**不**依赖 P8.7 兜底 | M7 |
 | **R11** | **相位切分本身让红绿门失真** | 高：两轮 review 各抓到一次——门不可满足时，mutation 全绿会被误读为「实现正确」 | 合并为 P3M 单相位 + 每个 M-commit 显式写出「可满足的门」；门实测不可满足即**停下回报**，禁止手工补状态凑绿 | P3M |
 | **R12** | **不可逆副作用被当成可回滚**（C9 原表述） | 高：partial write 后复用客户端已见的 index = 确定的协议损坏 | commit point 两段语义 + 三档 oracle + 双向 mutation；C1「永不跳号」限定为健康流 | P2 Task 2.2c |
+| **R13** | **迁移中间态不可编译**（M1 原方案删字段） | 高：违反 commit invariants，且会诱导实施者提前做后续 M 步或临时发明 API | M1 只新增不删 + bridge 判据（等价性已证，含 `enveloped_ping` 分支）+ 逐腿删除 + M4 后 grep 零命中 | M1–M5 |
 | **R9** | **缓解措施本身引入新缺陷** | 高：C3 短路即实例——为降低 R1 而加的机制，自己在默认路径造成 index 复用（本轮 blocker） | 凡「为降风险 X 而引入的机制 M」，M 必须与主路径接受**同等强度**的对抗检验；M 形如「某条件下跳过主逻辑」时，须穷举「条件成立但主逻辑仍必需」的场景 | 全相位；教训见上文 |
 | **R10** | **测试准备替实现完成关键动作** | 中高：手工推进 allocator 的测试会让生产漏分配照样绿（plan review 指出的 P3.1 假绿） | 多 anchor / 多 leg 状态一律由**生产路径**驱动产生（FakeClock + gated upstream），禁止手工 `allocate*`；mutation 矩阵加「删除 allocate 调用」维度 | P3.1 / P3.4 |
 

@@ -9,7 +9,7 @@
 ```text
 执行 generation-scoped 单调 wire-index allocator（方案 A）的实施计划。
 
-计划入口：docs/plan/2026-07-27-inter-block-anchor-allocator/README.md —— 先完整读它（相位 DAG + 冻结契约表 C1-C9 + 承重项映射 + **9 条**验收 oracle + 风险登记 R1-R10），再读 plan-0，然后按 DAG 顺序执行。
+计划入口：docs/plan/2026-07-27-inter-block-anchor-allocator/README.md —— 先完整读它（相位 DAG + 冻结契约表 **C1-C10** + 承重项映射 **1-14** + **9 条**验收 oracle + 风险登记 **R1-R13**），再读 plan-0，然后按 DAG 顺序执行。
 
 冻结设计（唯一权威，不得重议其目标与方案选择）：docs/spec/2026-07-27-inter-block-keepalive-carrier.md
 配套审查（其发现已逐条映射进 plan）：同目录 -review-claude.md
@@ -108,7 +108,9 @@ AnchorState.allocator 设为**必填**而非可选——让类型系统逼出全
 
 关键要求：
 - 并发 oracle 必须有**正样本对照**——注入一个「先 allocate 再分别 write」的 fake owner（= 非法形状），证明 harness 真能咬住队列外分配。若主测试一上来就绿，**不得**据此认为安全，调整 harness 直到正样本对照能咬住。时序测试**连跑 15 次**。
-- **C9 已按 round-3 blocker 重写为 commit-point 两段语义**：serializer 防交错，但**不能**让两次 SSE write 具备原子性——第一帧可能已到客户端、第二帧才失败，**已发出的字节撤销不了**。故：commit point（首次外部 write）**之前**失败 → 零副作用、可全回滚；**之后**失败 → index **永久消费绝不复用** + **终止 delivery** + 忠实记录。三档 oracle（build 抛错 / 首帧失败 / 首帧成功次帧失败）+ **双向 mutation**（改成「失败即回滚」要让第三档转红；改成「档 1 不回滚」要让第一档转红）。C1 的「永不跳号」只对健康流成立。
+- **C9 已按 round-3 blocker 重写为 commit-point 两段语义**：serializer 防交错，但**不能**让两次 SSE write 具备原子性——第一帧可能已到客户端、第二帧才失败，**已发出的字节撤销不了**。故：commit point（首次外部 write）**之前**失败 → 零副作用、可全回滚；**之后**失败 → index **永久消费绝不复用** + **终止 delivery** + 忠实记录。三档 oracle（build 抛错 / 首帧失败 / 首帧成功次帧失败）+ **双向 mutation**。**两类边界状态**（round-4）：queued-未执行属 pre-commit（**不得在 enqueue 时预留**，执行时重查 session）；abort 发生在首帧 promise **pending** 期间属 post-commit（**commit 标志须在调 `writeToSink` 前同步置位**，不是 await 成功之后）。C1 的「永不跳号」只对健康流成立。**注意 P2.2 的旧测试「任何 write failure 都不推进 frontier」已按新语义改写**，别照旧断言。
+- **owner 的 close 权威已冻结**（round-4 blocker）：port 新增 `closeOpenAnchor(buildStop, "before-real" | "terminal")`——serializer 内读 `openAnchorIndex`、按该 index 生成 stop、以 anchor provenance 写出、清状态；**幂等 by construction**（第二个调用者得 `"none"`），取代跨站点共享 `anchorClosed` 的手工幂等。`"terminal"` 与 P6 的**永久** heartbeat stop 合成同一 owner command。**生产代码不得在 owner 外写 anchor stop 或读写 `openAnchorIndex`**（架构守卫）。
+- **mapping token 生命周期已冻结**（round-4 major，C10）：存放 = `GenerationWireState` 的 `Map<LegToken, Map<upstreamIndex, WireBlockMapping>>`（**不是** allocator ambient 单槽、**不是**各腿局部 Map）；登记 = start 成功 commit 后；查询 = 按 (leg token, upstream index)，**须支持同腿多块并存**（parallel tool_calls 的 coexist index）；释放 = 该块 stop 成功写出后；**retreat 不换 leg、沿用同一 map**。**missing mapping 必须显式报错，绝不原样透传**（静默透传 = R1 的静默重排）。
 - **注入路径已冻结**（round-3 major）：`CreateDownstreamDeliverySessionOptions` 当前**没有 allocator 注入位**，不冻结的话实施者只能新建第二个 allocator / 闭包偷 state / ambient singleton，三条都破坏唯一权威。冻结为：handler 的 `makeAnchoredSseSink` **唯一创建** `GenerationWireState`（allocator + openAnchorIndex），一份给 `AnchorState`、一份经 `makeDeliverySseSink` 传进 session 构造 port。配 identity oracle（四处引用相等）+ 架构守卫（唯一创建点，带正样本对照）。
 - **recovery 腿语义已冻结**：所有 upstream round（continuation **与** recovery）都调 beginLeg(kind)，不为 continuation 特判。两支 oracle：无 anchor 的 recovery → wire0 恒等；**写过 pre-content anchor 后的 recovery → wire1 必须 remap**（后者正是「忘调也能靠巧合正确」的反例锁）。
 - **beginLeg 是 serializer command**（`Promise<LegToken>`），在前腿全部成功写出后、新腿任一分配前建立 fence；delta/stop 按**不可变 WireBlockMapping token** 查，**不查 ambient「当前腿」**（Task 2.2d）。
@@ -124,6 +126,11 @@ AnchorState.allocator 设为**必填**而非可选——让类型系统逼出全
 执行合并相位 P3M。**权威 = docs/plan/2026-07-27-inter-block-anchor-allocator/plan-3-remap-sites.md**（commit 序列 M1–M8、三腿矩阵、S3 专节）；任务细节分列于 plan-4（M5）与 plan-5（M1/M6/M7/M8）——**三份文件是一个相位**，别当三个阶段做。前置 P1 + P2。
 
 **为什么合并**（round-3 blocker，用户拍板）：两轮尝试都证明「remap 记账」与「anchor 生命周期」在测试可满足性上不可分。第一轮 gap anchor 在后一相位 → 造不出 offset>1；第二轮改用生产 owner API 落第二个 anchor 解决了「谁触发」，但没解决「谁关闭」——可重复的 openAnchorIndex 状态机仍在后面，第二个 anchor 无法由生产 close-before-real 关掉，O-2 会先于 remap 失败，拿不到可归因的红绿门。硬拆只会让门失真。
+
+**M1 已按 round-4 blocker 重做，先读 plan-3 的「M1 的迁移 bridge」与「M1 的逐站点 close 迁移」两节**：
+- M1 **只新增不删**——`anchorBlockOpen`/`anchorClosed` 保留到 M5，由 owner 在 open/close 时**一并维护**（迁移期双写）。原方案「M1 删字段」会让尚未迁移的 S2/S3 当场编译红（它们直接读这些字段），那正是 commit invariants 禁止的半坏中间态。
+- 未迁移腿用 **bridge 判据** `anchorsOpened() > 0 ? +1 : +0`，与旧门**逐块等价**（三种情形的证明在 plan-3，含最易漏的 `enveloped_ping` 分支：置 `injected` 但不开 anchor 块 → 两边都 +0）。每迁完一腿立刻删该腿 bridge，**M4 后全仓零命中**。
+- M1 同时把 **8 个 handler close 站点 + driver 2 处**迁到 `closeOpenAnchor`（逐站点表在 plan-3；**7 个 pump 分支逐个改、不合并**——各分支前置条件不同，合并会掩盖漏改）。port 可达性已确认：所有 close 调用都在 sink 构造之后。
 
 **按 M1–M8 顺序执行，每个 commit 的终态不变量与门都写在表里。** 唯一硬序约束：**M6（特性开门）必须晚于 M2–M4（三腿迁移）**。相位内「某腿已迁 frontier」与「某腿仍算 +1」在生产上**数值等价**（开门前至多一个 anchor，两种算法逐块相等），故 M2–M5 期间生产 wire 逐字节不变——plan 有完整证明，O-6 每个 commit 都跑作为实证。
 

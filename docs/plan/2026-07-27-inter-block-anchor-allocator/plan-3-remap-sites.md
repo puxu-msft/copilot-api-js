@@ -39,8 +39,8 @@ anchor@2（测试经 owner API 落）→ real@3（上游1，生产分配）→ o
 > 本相位内「某腿已迁 frontier」与「某腿仍算 +1」两种状态**在生产上数值等价**，只要生产**尚未开出第二个 anchor**：
 >
 > - 开门前，同一 generation 至多一个 pre-content anchor，故任一真实块的 `mapping.wireIndex − mapping.upstreamIndex ∈ {0, 1}`；
-> - 旧硬编码分支的门槛是 `injected && anchorBlockOpen`（有 anchor）→ 恒 `+1`；无 anchor 时该分支不执行 → 恒 `+0`；
-> - 两者**逐块相等**。差异**只在 ≥2 个 anchor 时显现**，而生产开出第二个 anchor 的唯一途径是 **M6 打开心跳门**。
+> - 未迁移腿走 **M1 引入的 bridge 判据**（`anchorsOpened() > 0 ? +1 : +0`），已迁移腿走 frontier mapping；
+> - 两者**逐块相等**（bridge 的等价性证明见下方「M1 的迁移 bridge」，含 `enveloped_ping` 分支）。差异**只在 ≥2 个 anchor 时显现**，而生产开出第二个 anchor 的唯一途径是 **M6 打开心跳门**。
 >
 > 故 M2–M5 期间即便三腿迁移进度不一，**生产 wire 逐字节不变**（O-6 每个 commit 都跑作为该等价性的实证）。多-anchor 状态只存在于测试进程内，不是可交付的生产行为。
 >
@@ -48,14 +48,57 @@ anchor@2（测试经 owner API 落）→ real@3（上游1，生产分配）→ o
 
 | # | commit | 内容 | 终态不变量 | 可满足的门 |
 |---|---|---|---|---|
-| **M1** | `feat(delivery): repeatable anchor open/close lifecycle in the wire owner` | `openAnchorIndex` 状态机 + 通用多-anchor close transaction **前移进 P2 owner**（删 `anchorClosed`/`anchorBlockOpen`，细节见 plan-5「AnchorState 状态机」） | **纯能力新增**：生产行为零变化（心跳门未动，仍只开 ≤1 anchor）；owner 具备可重复 open→close 能力 | owner 单元测试：连续两轮 open/close 各自正确、close 幂等、终局 exactly-once；**O-6 字节等价**（证明零行为变化） |
-| **M2** | `refactor(driver): allocate and remap buffered-flush blocks via the frontier owner` | S1（`driver.ts:1185`）分配 + remap | S1 走 frontier；S2/S3 仍算 +1（数值等价，见上方证明） | Task 3.1 的 offset≥2 测试（M1 已使第二 anchor 能被生产正确关闭）；S1 两维 mutation 均红；O-1/O-2/O-6 |
-| **M3** | `refactor(driver): allocate and remap retreat write-through blocks via the frontier owner` | S2（`driver.ts:1242`） | S2 走 frontier | Task 3.2 + S2 两维 mutation；O-1/O-2/O-6 |
-| **M4** | `refactor(live-reconcile): allocate, close off and remap live blocks in one wire transaction` | S3（装饰器 + envelope factory，见「S3 专节」） | **三腿全部走 frontier**；`rg "remap\(.*, 1\)" src/` 零命中 | Task 3.3 + S3 两维 mutation + 「transaction 内不可插入」断言；O-1/O-2/O-6 |
-| **M5** | `fix(continuation): make the allocator frontier the sole wire-index authority` | plan-4 Task 4.1/4.2/4.3：退役双偏移、接 `beginLeg(kind)` | `continuationOffset`/`wireDeliveredBlocks` 零残留 | 4.1 **两条**撞车 oracle（分支二此时可满足）+ 两个 positive control + `beginLeg` 两格 mutation |
+| **M1** | `feat(delivery): repeatable anchor lifecycle and close authority in the wire owner` | ① `openAnchorIndex` 状态机 + `closeOpenAnchor` API 落在 owner；② **8 个 handler close 站点 + driver 2 处**迁到 owner close（逐站点见下方迁移表）；③ **只新增不删**旧字段 —— `anchorBlockOpen`/`anchorClosed` 保留，由 owner 在 open/close 时**一并维护**（迁移期双写）；④ 未迁移腿（S2/S3）改用 **bridge 判据** | **可编译、行为等价**：旧字段仍在且被 owner 同步维护，旧分支照常工作；生产行为零变化（心跳门未动，仍只开 ≤1 anchor） | owner 单元测试（连续两轮 open/close、close 幂等、终局 exactly-once）+ 8+2 站点各自的 close 路径回归 + **O-6 字节等价**（证零行为变化） |
+| **M2** | `refactor(driver): allocate and remap buffered-flush blocks via the frontier owner` | S1（`driver.ts:1185`）分配 + remap | S1 走 frontier；S2/S3 走 bridge（数值等价，见上方证明）；**S1 的 bridge 已删** | Task 3.1 的 offset≥2 测试（M1 已使第二 anchor 能被生产正确关闭）；S1 两维 mutation 均红；O-1/O-2/O-6 |
+| **M3** | `refactor(driver): allocate and remap retreat write-through blocks via the frontier owner` | S2（`driver.ts:1242`） | S2 走 frontier；**S2 的 bridge 已删**；S3 仍走 bridge | Task 3.2 + S2 两维 mutation；O-1/O-2/O-6 |
+| **M4** | `refactor(live-reconcile): allocate, close off and remap live blocks in one wire transaction` | S3（装饰器 + envelope factory，见「S3 专节」） | **三腿全部走 frontier**；`rg "remap\(.*, 1\)" src/` 与 **bridge 判据均零命中** | Task 3.3 + S3 两维 mutation + 「transaction 内不可插入」断言；O-1/O-2/O-6 |
+| **M5** | `fix(continuation): retire the dual offsets and the legacy anchor state fields` | plan-4 Task 4.1/4.2/4.3：退役双偏移、接 `beginLeg(kind)`；**并删除 M1 保留的 `anchorBlockOpen`/`anchorClosed`**（此时已无消费者） | `continuationOffset`/`wireDeliveredBlocks`/`anchorBlockOpen`/`anchorClosed` **全部零残留** | 4.1 **两条**撞车 oracle（分支二此时可满足）+ 两个 positive control + `beginLeg` 两格 mutation |
 | **M6** | `feat(keepalive): allow gap anchors after the first committed block` | plan-5 Task 5.1/5.3：per-gap latch + gap injector + **删 `semanticBlockCount===0` 门**（特性开门） | 生产可开多 anchor——**此时三腿已全部走 frontier**，故无半坏 | O-3 精确形状 + 加回门的 mutation + 架构守卫 mutation（裸 `allocateAnchor` 必红） |
 | **M7** | `test(anchor): cover the continuation-leg × gap-anchor integration seam` | plan-5 Task 5.4 交叉缝 | 交叉行为被锁 | O-9 交叉 mutation 矩阵（同一测试对两侧 mutation 以**不同可辨识原因**失败）+ 两条单侧 control |
 | **M8** | `test(anchor): multi-gap coverage and shipped-default byte equivalence` | plan-5 Task 5.5/5.6 | 默认配置零 anchor、字节等价 | 多 gap × 混合块类型（含 tool_use 不被推迟）；O-6 |
+
+### M1 的迁移 bridge（**round-4 blocker：原方案「M1 删字段」会让 M2–M4 期间无法编译**）
+
+审查坐实：M1 若立刻删 `anchorBlockOpen`/`anchorClosed`，尚未迁移的 S2/S3 会**当场编译红**——它们直接读这些字段（`driver.ts:1240,1244`；`live-reconcile.ts:126,129,138`）。而「为了编译顺手改 S2/S3」等于提前做 M3/M4；改成 `openAnchorIndex !== undefined` 又**数值不等价**（pre-content anchor 关闭后该值为 undefined，但真实块仍须整体 +1——`openAnchorIndex` 表示「当前 open」，不表示「历史保留的 wire shift」）。原「半坏窗口为空」的证明假设旧分支还能工作，而 M1 恰好抽走了它读的状态。
+
+**修法：M1 只新增不删 + 未迁移腿用 bridge 判据。**
+
+1. **旧字段保留到 M5**：`anchorBlockOpen`/`anchorClosed` 在 M1 **不删**，改由 owner 在 open/close 时**一并维护**（迁移期双写）。旧分支照常读、照常工作 → **每步都能编译**。
+2. **未迁移腿的 bridge 判据**：
+
+   ```ts
+   // 迁移期专用（M1 引入，随每腿迁移逐条删除，M4 后全仓零命中）
+   const shift = wireState.allocator.anchorsOpened() > 0 ? 1 : 0
+   outFrame = shift > 0 ? anchor.remap(frame, shift) : frame
+   ```
+
+   **等价性证明**：开门前（M6 之前）同一 generation 至多一个 anchor，故 `anchorsOpened() ∈ {0,1}`。
+   - `anchorsOpened()===1` ⟺ 曾开过 pre-content anchor ⟺ 旧门 `injected && anchorBlockOpen` 为真 → 两者都给 `+1`；
+   - `anchorsOpened()===0` ⟺ 从未开 anchor → 旧门为假 → 两者都给 `+0`；
+   - `enveloped_ping` 模式：只注入 message_start envelope、**不开 anchor 块**，故 `anchorsOpened()===0` 且旧门的 `anchorBlockOpen` 为 false → 两者都给 `+0`（**这条最易漏，已核实**：`keepalive-anchor.ts` 的 envelope injector 置 `injected` 但不置 `anchorBlockOpen`）。
+
+   三种情形逐块相等 → bridge 与旧门**行为等价**，M2–M4 期间生产 wire 逐字节不变（O-6 每 commit 实证）。
+3. **逐腿删除**：每迁完一腿立刻删该腿 bridge；**M4 收口后全仓 bridge 零命中**（`rg -n "anchorsOpened\(\) > 0" src/` 为空），旧字段随 M5 一并退役。
+4. **架构守卫**：bridge 判据只允许出现在**尚未迁移**的站点；M4 之后出现任何 bridge 命中即 fail。
+
+> **为何不选「M1+M2–M4 合成一个原子 commit」**（reviewer 给的另一条路）：那会把三腿迁移 + 状态机 + 8 站点 close 迁移压进单个 commit，diff 巨大且**失去逐腿 mutation 的可归因性**（6 格矩阵要能指出是哪一腿漏了）。bridge 方案保住每步可编译 + 每步门可满足 + 逐腿可归因，代价只是一段生命周期明确、有守卫、M4 即清零的迁移期代码。
+
+### M1 的逐站点 close 迁移（**round-4 blocker：owner close API 缺失 + 站点迁移无具名步骤**）
+
+reviewer 核实（planner 复核确认）：**所有 close 调用点都在 sink 构造之后**——两条 stream 路径都先 `makeAnchoredSseSink`，随后闭包/pump 内才调用。故 port 可达性**不是问题**（我上轮的担忧未坐实），真正缺的是 owner 的 close API（已在 P2 冻结 `closeOpenAnchor`）与逐站点迁移步骤。
+
+| # | 站点 | 现状 | M1 改法 |
+|---|---|---|---|
+| 1 | `handler-v4.ts:667` | pre-response 错误终局前 `closeAnchorIfOpen` | `getDownstreamDeliverySession(sink)` 取 port → `closeOpenAnchor(buildStop, "terminal")` |
+| 2–8 | `handler-v4.ts:1352 / 1450 / 1477 / 1530 / 1633 / 1671 / 1715` | pump 的 7 个终端分支 | 同上（**逐个改，不合并**——每个分支的前置条件不同，合并会掩盖某条路径漏改） |
+| 9 | `driver.ts:1361` | driver 终端 close | driver 直接持 port（无需经 sink 查） → `closeOpenAnchor(_, "terminal")` |
+| 10 | `driver.ts:1515` | 失败返回前 close | 同上 |
+| 11 | `driver.ts:1162-1182` `closeAnchorBeforeReal` | flush 内 per-frame close | `closeOpenAnchor(_, "before-real")`（M2 随 S1 迁移时接） |
+
+**要点**：
+- `"terminal"` 模式与 **P6 的永久 heartbeat stop 合成一个 owner command**——否则 stop 帧与新 tick 可能交错。
+- **exactly-once 由 API 保证**：第二个调用者见 `openAnchorIndex === undefined` 得 `"none"`。这取代了原先跨站点共享 `anchorClosed` 的手工幂等。
+- **架构守卫**：生产代码**不得**在 owner 外读写 `openAnchorIndex` 或直接写 anchor stop 帧（带正样本对照）。
 
 **若某 commit 的门实测不可满足**（例如 M2 的 offset≥2 场景仍拿不到红），**停下回报**——那意味着仍有未识别的依赖，**不得**靠手工补状态硬凑绿。
 
@@ -225,7 +268,9 @@ test("S1 buffered flush allocates and remaps real blocks itself at frontier offs
 ## P3M 相位总收口
 
 - [ ] M1–M8 **八个 commit 全部落地**，每个终态 typecheck + `test:fast` 绿，且其「可满足的门」实测通过（非推理认定）。
-- [ ] O-1 / O-2 / O-3 / O-6 / O-9 绿；`rg -n "remap\(.*, 1\)" src/` 与 `rg -n "continuationOffset|wireDeliveredBlocks|anchorBlockOpen|anchorClosed" src/` 均零命中。
+- [ ] O-1 / O-2 / O-3 / O-6 / O-9 绿。
+- [ ] **零残留 grep 全绿**：`remap\(.*, 1\)` / `continuationOffset` / `wireDeliveredBlocks` / `anchorBlockOpen` / `anchorClosed` / **迁移期 bridge 判据**（`anchorsOpened\(\) > 0`）在 `src/` 均零命中。
+- [ ] **close 权威唯一**：生产代码在 owner 外无任何 anchor stop 写出、无 `openAnchorIndex` 读写（架构守卫 + 正样本对照）。
 - [ ] 6 格 mutation 矩阵 + 交叉 mutation 矩阵**填满无空格**。
 - [ ] anchor 全套件与 P0 基线对账完毕（每处差异归因为「预期改写」或「回归已修」）。
 - [ ] **硬序约束已遵守**：M6 的开门 commit 晚于 M2–M4。
