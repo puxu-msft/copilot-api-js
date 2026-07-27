@@ -549,6 +549,10 @@ export async function runServer(options: RunServerOptions): Promise<void> {
 
   consola.info(`Listening on ${serverUrl}`)
   setServerStartTime(Date.now())
+  // Phase ① is over. The runtime fail-fasts here if initialize() never completed, and unblocks the
+  // post-listen backfill below — it OWNS that ordering, so moving these calls cannot silently break
+  // it (see the TelemetryRuntime doc).
+  telemetryRuntime.markServerListening()
 
   // Store server instance and register signal handlers for graceful shutdown.
   // Order matters: setServerInstance must be called before setupShutdownHandlers

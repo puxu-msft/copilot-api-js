@@ -19,11 +19,13 @@ import {
 import {
   //
   createTelemetryRuntime,
+  type TelemetryRuntime,
   getTelemetryRuntime,
   installTelemetryRuntime,
   peekTelemetryRuntime,
   resetTelemetryRuntimeForTests,
 } from "@hsupu/ghc-proxy-telemetry"
+import { openTelemetryDb } from "@hsupu/ghc-proxy-telemetry/telemetry/db"
 import {
   //
   _getTelemetryDbForTests,
@@ -40,6 +42,14 @@ import {
   expect,
   test,
 } from "bun:test"
+import { writeFileSync } from "node:fs"
+import {
+  //
+  mkdtempSync,
+  rmSync,
+} from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 
 import {
   //
@@ -219,5 +229,107 @@ describe("teardown really hands the domain back (the leak this file used to caus
     expect(_isTelemetryShutdownSealedForTests()).toBe(false)
 
     installDefaultTelemetryDeps()
+  })
+})
+
+describe("the runtime OWNS the startup phase order (a runtime oracle, not a source-order guard)", () => {
+  const BACKFILL_NOW = Date.now()
+  let tmpDir: string
+  let dbPath: string
+  let jsonPath: string
+
+  /**
+   * A legacy-JSON snapshot with real, in-retention content, so "did the backfill run" is OBSERVABLE.
+   * The bucket must be an ALIGNED 5-minute timestamp inside the retention window — a `0` bucket is
+   * pruned on absorption and would make both branches look identical again.
+   */
+  function writeLegacySnapshot(): void {
+    const bucket = Math.floor((BACKFILL_NOW - 2 * 86_400_000) / 300_000) * 300_000
+    const envelope = {
+      version: 3,
+      buckets: { [String(bucket)]: 6 },
+      dimensions: { model: { buckets: { [String(bucket)]: { opus: { requestCount: 4, inputTokens: 200 } } } } },
+    }
+    writeFileSync(jsonPath, JSON.stringify(envelope), "utf8")
+  }
+
+  /** A runtime whose telemetry.db is a real file (so a second connection can observe absorption). */
+  function makeDbBackedRuntime(): TelemetryRuntime {
+    return createTelemetryRuntime({
+      paths: { telemetryDbPath: dbPath, requestTelemetryJsonPath: jsonPath },
+      config: { ...fakeConfig, enabled: true, cumulative: true, dbPath },
+      configSubscription: { onChange: () => () => {} },
+    })
+  }
+
+  /** Rows absorbed into tel_raw, read through an INDEPENDENT connection — the oracle. */
+  function absorbedRows(): number {
+    const db = openTelemetryDb(dbPath)
+    try {
+      return (db.prepare("SELECT COUNT(*) AS v FROM tel_raw").get() as { v: number }).v
+    } finally {
+      db.close()
+    }
+  }
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), "telemetry-phase-order-"))
+    dbPath = join(tmpDir, "telemetry.db")
+    jsonPath = join(tmpDir, "request-telemetry.json")
+  })
+
+  afterEach(() => {
+    rmSync(tmpDir, { recursive: true, force: true })
+  })
+
+  test("markServerListening fail-fasts when initialize never ran", () => {
+    const rt = createTelemetryRuntime(makeFakeDeps())
+    // Serving requests against an unbuilt 7d window / unfrozen γ is a wiring bug, not a degraded mode.
+    expect(() => rt.markServerListening()).toThrow(/initialize\(\) never completed/)
+  })
+
+  test("a backfill that arrives BEFORE the listening mark is deferred, then runs AT the mark", async () => {
+    // This is the invariant a source-order guard could only approximate: even with the calls in the
+    // WRONG order, the absorption still happens after the server is listening, never during startup.
+    writeLegacySnapshot()
+    const rt = makeDbBackedRuntime()
+    await rt.initialize()
+
+    rt.runJsonBackfill(BACKFILL_NOW) // too early
+    // NOTE the oracle: the legacy snapshot has real rows, so "absorbed" is distinguishable from
+    // "ran but had nothing to do". An earlier version of this test used an empty db and passed
+    // whether or not the deferral existed — both branches were no-ops.
+    expect(absorbedRows()).toBe(0)
+
+    rt.markServerListening()
+    expect(absorbedRows()).toBeGreaterThan(0)
+  })
+
+  test("in the production order the backfill absorbs at its own call site", async () => {
+    writeLegacySnapshot()
+    const rt = makeDbBackedRuntime()
+    await rt.initialize()
+    rt.markServerListening()
+    expect(absorbedRows()).toBe(0) // nothing has asked for it yet
+
+    rt.runJsonBackfill(BACKFILL_NOW)
+    expect(absorbedRows()).toBeGreaterThan(0)
+  })
+
+  test("re-marking does not absorb twice", async () => {
+    // What this pins is the OBSERVABLE outcome. The single-shot property comes from the registry
+    // (it consumes its pending snapshot and trips a version guard), not from the runtime clearing
+    // its deferred slot — removing that clear changes nothing here, so this test is not evidence
+    // for it, and the code says so.
+    writeLegacySnapshot()
+    const rt = makeDbBackedRuntime()
+    await rt.initialize()
+    rt.runJsonBackfill(BACKFILL_NOW)
+    rt.markServerListening()
+    const afterFirst = absorbedRows()
+    expect(afterFirst).toBeGreaterThan(0)
+
+    rt.markServerListening()
+    expect(absorbedRows()).toBe(afterFirst) // no double absorption
   })
 })

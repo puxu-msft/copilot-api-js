@@ -54,11 +54,31 @@ type SettledTelemetryInput = Parameters<typeof recordSettledRequest>[1]
  * (listen-after), ③ stopBackgroundWork (restart Phase-1), ④ dispose (final shutdown),
  * ⑤ reset (test). Request/shutdown/route consumers operate on ONE runtime instance
  * rather than reaching a module-global directly.
+ *
+ * **The runtime OWNS the phase ordering, rather than trusting the caller to keep it.** The startup
+ * contract — initialize completes before the server listens, the legacy-JSON backfill runs after —
+ * used to live only in the order of statements in `start.ts`, guarded from the outside by parsing
+ * that file. Six rounds of adversarial review showed that a source-order guard can approximate
+ * reachability but never prove it. So the invariant moved inside: {@link markServerListening}
+ * fail-fasts if initialize never ran, and {@link runJsonBackfill} called too early is DEFERRED until
+ * the listening mark instead of running at the wrong time. Reordering the calls in `start.ts` can no
+ * longer break the contract, which is a stronger guarantee than any guard over the call site.
  */
 export interface TelemetryRuntime {
   /** ① Rebuild the in-memory 7d window from SQLite + freeze `effectiveSketchGamma` + stash the pre-startup legacy-JSON snapshot. Runs BEFORE the server listens. */
   initialize(): Promise<void>
-  /** ② Absorb the frozen legacy-JSON snapshot into telemetry.db. Runs AFTER the server listens (non-blocking; structurally disjoint from post-startup tel_raw writes). */
+  /**
+   * The server is now accepting connections — phase ① is over. Fail-fasts when {@link initialize}
+   * never ran: serving requests against an unbuilt 7d window and an unfrozen sketch γ is a wiring
+   * bug, not a degraded mode. Drains a {@link runJsonBackfill} that arrived early. Idempotent.
+   */
+  markServerListening(): void
+  /**
+   * ② Absorb the frozen legacy-JSON snapshot into telemetry.db. Must run AFTER the server listens
+   * (non-blocking; structurally disjoint from post-startup tel_raw writes) — so if it is called
+   * before {@link markServerListening}, it is DEFERRED to that moment rather than run early. The
+   * ordering is therefore enforced here, not by the caller's statement order.
+   */
   runJsonBackfill(now?: number): void
   /** Record one accepted (pre-dispatch) request into the sparkline + accepted leg. */
   recordAccepted(timestamp?: number): void
@@ -86,10 +106,41 @@ export interface TelemetryRuntime {
  * registry's state is module-local by construction — see the module doc above).
  */
 class TelemetryRuntimeImpl implements TelemetryRuntime {
-  initialize(): Promise<void> {
-    return initRequestTelemetry()
+  /** Phase ① completed — `markServerListening` refuses to proceed without it. */
+  private initialized = false
+  /** Phase ② is unblocked once the server accepts connections. */
+  private listening = false
+  /** A `runJsonBackfill(now)` that arrived before the listening mark, held until it is safe to run. */
+  private deferredBackfillAt: number | undefined | "none" = "none"
+
+  async initialize(): Promise<void> {
+    await initRequestTelemetry()
+    this.initialized = true
+  }
+  markServerListening(): void {
+    if (!this.initialized) {
+      throw new Error(
+        "Telemetry runtime: the server is listening but initialize() never completed — requests would settle against an unbuilt 7d window and an unfrozen sketch γ. Call initialize() before starting the server.",
+      )
+    }
+    if (this.listening) return
+    this.listening = true
+    if (this.deferredBackfillAt !== "none") {
+      const now = this.deferredBackfillAt
+      // Clearing first is defensive only: single-shot absorption is already guaranteed downstream
+      // (the registry consumes its pending snapshot and trips a `json_backfill_version` guard), so
+      // no test can observe this line — it exists so the runtime does not hold a stale timestamp.
+      this.deferredBackfillAt = "none"
+      runTelemetryJsonBackfill(now)
+    }
   }
   runJsonBackfill(now?: number): void {
+    // Called before the server listens: hold it rather than run it early. Absorbing the legacy JSON
+    // while startup is still in flight is exactly what the post-listen placement exists to avoid.
+    if (!this.listening) {
+      this.deferredBackfillAt = now
+      return
+    }
     runTelemetryJsonBackfill(now)
   }
   recordAccepted(timestamp?: number): void {

@@ -295,6 +295,23 @@ describe("telemetry startup order (initialize → listen → runJsonBackfill)", 
     expect(orderViolations("start.ts", afterReturn)).toEqual(["telemetry runJsonBackfill() is missing from the startup path"])
   })
 
+  test("the real startup path marks the listening phase (the runtime's ordering hook)", async () => {
+    // The ordering itself is now enforced INSIDE the runtime (see its doc + the runtime oracle in
+    // tests/telemetry/telemetry-runtime.unit.test.ts). That enforcement only engages if startup
+    // actually tells the runtime it is listening, so this checks the hook is wired — and that it
+    // sits between listen and backfill, which is the one thing the runtime cannot check for itself.
+    const source = await readFile(startPath, "utf8")
+    const sourceFile = parseSource(startPath, source)
+    const scope = findFunctionDeclaration(sourceFile, STARTUP_FUNCTION)
+    expect(scope).not.toBeNull()
+    const mark = findCallInScope(scope!, (call) => isMethodCall(call, "markServerListening"), true)
+    const listen = findCallInScope(scope!, (call) => isFunctionCall(call, "startServer"), true)
+    const backfill = findCallInScope(scope!, (call) => isMethodCall(call, "runJsonBackfill"), true)
+    expect(mark).not.toBeNull()
+    expect(listen!.getStart(sourceFile)).toBeLessThan(mark!.getStart(sourceFile))
+    expect(mark!.getStart(sourceFile)).toBeLessThan(backfill!.getStart(sourceFile))
+  })
+
   test("the real startup path holds the whole contract", async () => {
     const source = await readFile(startPath, "utf8")
     // Non-vacuous: the scope and all three milestones must actually resolve in the real file before
