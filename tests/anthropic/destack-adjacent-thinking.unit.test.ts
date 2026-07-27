@@ -10,6 +10,8 @@ import type { MessageParam } from "~/types/api/anthropic"
 import {
   //
   destackAdjacentThinking,
+  endsOnAssistantTurn,
+  hasToolTerminalViolation,
   SYNTHETIC_THINKING_SEPARATOR,
 } from "~/lib/anthropic/sanitize/destack-adjacent-thinking"
 
@@ -203,6 +205,115 @@ describe("destackAdjacentThinking: 终端块不变量（C2 + C3）", () => {
 })
 
 /**
+ * C3 作为**独立触发条件**（2026-07-27）。此前 C3 只被「尊重」——move_blocks 修 C1/C2 时
+ * 顺手保证 tool_use 收尾，但一条**本身就违反 C3、却不违反 C1/C2** 的消息会原样透传给上游、
+ * 换来一个无人接管的 400。
+ *
+ * 现实来源：客户端历史里回流的我方产物（合成/改写帧接在 tool_use 之后）、以及任何在
+ * sanitize 之后动过块序的改写腿。真实事故 req_1785160010003_3754：陈旧实例把
+ * `[T,text(""),T,tool]` 变成 `[T,tool,T]`，客户端此后每轮都带着这条非法消息重投。
+ */
+describe("destackAdjacentThinking: C3 独立触发（tool_use 必须收尾）", () => {
+  test("move_blocks: [T,tool,text] → tool_use 重新收尾，块一个不丢", () => {
+    const msg = asst([T("a"), tool("t1"), text("trailing")])
+    const { messages, stats } = destackAdjacentThinking([msg], "move_blocks")
+    const types = (messages[0].content as Array<{ type: string }>).map((b) => b.type)
+    expect(types).toEqual(["thinking", "text", "tool_use"])
+    expect(stats.toolTerminalRepairs).toBe(1)
+    expect(stats.terminalRepairs).toBe(0) // 末块是 text，不是 C2
+    expect(stats.insertedMarkers).toBe(0) // 纯重排
+  })
+
+  test("move_blocks: 完全没有 thinking 的 [tool,text] 也修", () => {
+    const msg = asst([tool("t1"), text("trailing")])
+    const { messages, stats } = destackAdjacentThinking([msg], "move_blocks")
+    const content = messages[0].content as Array<{ type: string; text?: string }>
+    expect(content.map((b) => b.type)).toEqual(["text", "tool_use"])
+    expect(content[0].text).toBe("trailing") // 真实文本保留，不是合成标记
+    expect(stats.toolTerminalRepairs).toBe(1)
+  })
+
+  test("move_blocks: 生产事故形状 [T,tool,T] 回流 → 修成合法（C2+C3 同时）", () => {
+    const msg = asst([T("a"), tool("t1"), T("b")])
+    const { messages, stats } = destackAdjacentThinking([msg], "move_blocks")
+    const types = (messages[0].content as Array<{ type: string }>).map((b) => b.type)
+    expect(types).toEqual(["thinking", "text", "thinking", "tool_use"]) // 合成标记居中
+    expect(stats.terminalRepairs).toBe(1)
+    expect(stats.toolTerminalRepairs).toBe(1)
+  })
+
+  test("move_blocks: 多 tool_use 时保留内部 tool_use、只把最后一个搬到末尾", () => {
+    const msg = asst([tool("t1"), tool("t2"), text("trailing")])
+    const { messages } = destackAdjacentThinking([msg], "move_blocks")
+    const content = messages[0].content as Array<{ type: string; id?: string }>
+    expect(content.map((b) => b.type)).toEqual(["tool_use", "text", "tool_use"])
+    expect(content.map((b) => b.id)).toEqual(["t1", undefined, "t2"]) // 相对序不变
+  })
+
+  test("move_blocks: 已合法（tool_use 收尾 / 无 tool_use）不触发", () => {
+    const legal = asst([text("hi"), tool("t1")])
+    expect(destackAdjacentThinking([legal], "move_blocks").stats.destackedMessages).toBe(0)
+    const noTool = asst([text("hi"), text("there")])
+    expect(destackAdjacentThinking([noTool], "move_blocks").stats.destackedMessages).toBe(0)
+  })
+
+  test("move_blocks: C3 修复后幂等", () => {
+    const once = destackAdjacentThinking([asst([T("a"), tool("t1"), text("x")])], "move_blocks").messages
+    const twice = destackAdjacentThinking(once, "move_blocks")
+    expect(twice.messages).toEqual(once)
+    expect(twice.stats.destackedMessages).toBe(0)
+  })
+
+  test("insert_text / passthrough: C3-only 不触发（该腿修不了，也不谎报修了）", () => {
+    const msg = asst([T("a"), tool("t1"), text("trailing")])
+    for (const strategy of ["insert_text", "passthrough"] as const) {
+      const { messages, stats } = destackAdjacentThinking([msg], strategy)
+      expect(messages[0].content).toEqual(msg.content)
+      expect(stats.destackedMessages).toBe(0)
+      expect(stats.toolTerminalRepairs).toBe(0)
+    }
+  })
+
+  test("user 消息不受 C3 约束（约束只针对 assistant）", () => {
+    const u: MessageParam = { role: "user", content: [tool("t1"), text("x")] as never }
+    const { messages, stats } = destackAdjacentThinking([u], "move_blocks")
+    expect(messages[0]).toEqual(u)
+    expect(stats.toolTerminalRepairs).toBe(0)
+  })
+})
+
+/**
+ * L2 的认领判据用的两个原语。判据本身**不在这里模拟 strip-all**——L2 拿真实
+ * `stripAllThinking` 的输出前后各跑一次 `hasToolTerminalViolation`，避免「自己写一个近似版
+ * 补救」与真补救漂移（真 strip 还会删孤儿合成分隔符）。
+ */
+describe("hasToolTerminalViolation / endsOnAssistantTurn", () => {
+  const user = (content: Array<unknown>): MessageParam => ({ role: "user", content: content as never })
+
+  test("任一 assistant 消息违反 C3 → true", () => {
+    expect(hasToolTerminalViolation([asst([T("a"), tool("t1"), T("b")])])).toBe(true)
+    expect(hasToolTerminalViolation([asst([tool("t1"), text("x")])])).toBe(true)
+    expect(hasToolTerminalViolation([asst([T("a"), text("hi"), tool("t1")]), user([text("go")])])).toBe(false)
+  })
+
+  test("只看 assistant 消息（user 消息里的同形状不算）", () => {
+    expect(hasToolTerminalViolation([user([tool("t1"), T("a")])])).toBe(false)
+  })
+
+  test("无 tool_use 的消息永远不违反 C3", () => {
+    expect(hasToolTerminalViolation([asst([T("a"), text("x")])])).toBe(false)
+  })
+
+  test("endsOnAssistantTurn：只有 assistant 收尾算字面 prefill，user / system 收尾都不算", () => {
+    expect(endsOnAssistantTurn([user([text("hi")]), asst([text("yo")])])).toBe(true)
+    expect(endsOnAssistantTurn([asst([text("yo")]), user([text("hi")])])).toBe(false)
+    // 内联 system 消息收尾是 CC 的常见形态（用户中途插话），实测上游照常作答 —— 不是 prefill。
+    expect(endsOnAssistantTurn([asst([text("yo")]), { role: "system", content: "mid-turn note" } as never])).toBe(false)
+    expect(endsOnAssistantTurn([])).toBe(false)
+  })
+})
+
+/**
  * Property sweep: EXHAUSTIVELY enumerate every assistant content up to length 4 drawn
  * from a representative block alphabet, and assert the invariants hold for every one of
  * them. This is the guard that a future "fix one constraint" edit cannot regress another
@@ -279,13 +390,24 @@ describe("destackAdjacentThinking: 穷举不变量扫描", () => {
     })
   }
 
-  test("move_blocks: 从不制造 C3 违规（含 tool_use 必以 tool_use 收尾）", () => {
+  test("move_blocks: 对**全部**输入都满足 C3（含 tool_use 必以 tool_use 收尾）", () => {
+    // 2026-07-27 起 C3 是独立触发条件，所以扫描面是全部 781 条输入——不再豁免
+    // 「本身就违反 C3」的输入（那正是我们新修的那一类）。
+    let checked = 0
     for (const content of allContents(4)) {
-      // Only inputs that already satisfy C3 are in scope — de-stack must not BREAK it.
-      // (Inputs that already violate C3 are a client-side shape this pass does not own.)
-      if (!c3Ok(content)) continue
       const msg: MessageParam = { role: "assistant", content: content as never }
       const out = destackAdjacentThinking([msg], "move_blocks").messages[0].content as Array<Block>
+      expect(c3Ok(out), `C3 violated: ${content.map((b) => b.type).join(",")} -> ${out.map((b) => b.type).join(",")}`).toBe(true)
+      checked++
+    }
+    expect(checked).toBe(781)
+  })
+
+  test("insert_text: 不制造 C3 违规（本腿修不了 C3，但绝不能弄坏本来合法的）", () => {
+    for (const content of allContents(4)) {
+      if (!c3Ok(content)) continue
+      const msg: MessageParam = { role: "assistant", content: content as never }
+      const out = destackAdjacentThinking([msg], "insert_text").messages[0].content as Array<Block>
       expect(c3Ok(out), `C3 broken by de-stack: ${content.map((b) => b.type).join(",")} -> ${out.map((b) => b.type).join(",")}`).toBe(true)
     }
   })
