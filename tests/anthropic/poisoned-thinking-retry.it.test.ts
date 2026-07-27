@@ -1,7 +1,8 @@
 /**
- * L2 reactive strip-all retry — the guarded matcher AND the `canHandle` decision
- * gate for GHC's illegal-thinking-layout 400s (both the "cannot be modified"
- * adjacency shape and the "final block ... cannot be `thinking`" terminal shape).
+ * L2 reactive strip-all retry — the guarded matcher AND the `canHandle`/`handle` decision
+ * gates for GHC's illegal-layout 400s: the "cannot be modified" adjacency shape (C1), the
+ * "final block ... cannot be `thinking`" terminal shape (C2), and the misleadingly-worded
+ * "does not support assistant message prefill" shape (C3, conditional remedy).
  *
  * Two layers are asserted:
  *   1. The pure `isThinkingLayoutRejection(string)` matcher. It MUST fire on
@@ -153,8 +154,10 @@ describe("createPoisonedThinkingRetryStrategy().canHandle — body-parse extract
  * de-stack 把 `[T,text(""),T,tool]` 变成 `[T,tool,T]`，上游用一句**与 thinking / tool_use
  * 都无关**的措辞回绝，L2 因此完全不认领 → 客户端吃到硬 400、零兜底。
  *
- * 认领之后仍要分辨：strip-all 只治得了「thinking 把 tool_use 挤离末尾」这一种；对真·不以
- * user 结尾的对话它无能为力，此时必须 abort 而不是白烧掉一次性重试。
+ * 认领之后仍要分辨：strip-all 只治得了「thinking 把 tool_use 挤离末尾」这一种；对**以 assistant
+ * 轮收尾**的对话（同一措辞覆盖的字面 prefill）它无能为力，此时必须 abort 而不是白烧掉一次性重试。
+ * 注意判据是「末条是 assistant」而**不是**「末条不是 user」——内联 `role:"system"` 收尾实测得 200
+ * （真上游对照：`[user,system]` / `[user,assistant,user,system]` 皆 200，`[user,assistant]` 才 400）。
  */
 describe("C3 / prefill 400：认领 + 条件治愈", () => {
   autoRestoreState()
@@ -210,6 +213,35 @@ describe("C3 / prefill 400：认领 + 条件治愈", () => {
     const action = await createPoisonedThinkingRetryStrategy().handle(prefillError(), envFor([[toolUse, T, SEP]]))
     expect(action.kind).toBe("retry")
     expect(contentOf(action, 0).map((b) => b.type)).toEqual(["tool_use"])
+  })
+
+  test("handle：多条违规且**全部**可治愈 → 重试，每条都被剥成合法", async () => {
+    setStateForTests({ stripThinkingOnReject: true })
+    // 合取判据的正向对照：只有「一条可治愈 + 一条不可治愈 → abort」的反向用例时，
+    // 一个「只要有一条可治愈就重试」的错误实现照样全绿。
+    const action = await createPoisonedThinkingRetryStrategy().handle(
+      prefillError(),
+      envFor([
+        [T, toolUse, T],
+        [T, toolUse, T],
+      ]),
+    )
+    expect(action.kind).toBe("retry")
+    expect(contentOf(action, 0).map((b) => b.type)).toEqual(["tool_use"])
+    expect(contentOf(action, 2).map((b) => b.type)).toEqual(["tool_use"]) // 第二条 assistant（中间隔着 user 轮）
+  })
+
+  test("handle：内联 system 消息收尾**不算** prefill → 照常重试（真上游实测 [user,system] 得 200）", async () => {
+    setStateForTests({ stripThinkingOnReject: true })
+    const env = envFor([[T, toolUse, T]])
+    const withSystemTail = env.with({
+      body: {
+        ...(env.body as { messages: Array<unknown> }),
+        messages: [...(env.body as { messages: Array<unknown> }).messages, { role: "system", content: "mid-turn note" }],
+      },
+    } as never)
+    const action = await createPoisonedThinkingRetryStrategy().handle(prefillError(), withSystemTail)
+    expect(action.kind).toBe("retry")
   })
 
   test("handle：非 thinking 造成的 C3（[tool,text]）→ abort，不白烧重试", async () => {

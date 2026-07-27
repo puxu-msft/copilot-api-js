@@ -2,7 +2,7 @@
  * Three-layer thinking-quarantine — end-to-end COMPOSITION guards (Task 12).
  *
  * Prior tasks unit-tested each layer in ISOLATION: L1 de-stack terminal-order
- * (`destack-terminal-order.test.ts`), L2 strip-all retry registration
+ * (`assistant-block-layout-terminal-order.it.test.ts`), L2 strip-all retry registration
  * (`poisoned-thinking-retry-wiring.test.ts`), the L3 store
  * (`thinking-quarantine-store.test.ts`), the L3 `onResolved` commit
  * (`quarantine-onresolved.test.ts`), and the L3 proactive filter alone
@@ -85,7 +85,7 @@ autoRestoreState()
 
 // Content-block factories (mirror strip-all-thinking / proactive-filter tests):
 // empty-string thinking + a signature — this exact shape survives the full
-// sanitize chain (see destack-terminal-order.test.ts), so de-stack is the ONLY
+// sanitize chain (see assistant-block-layout-terminal-order.it.test.ts), so de-stack is the ONLY
 // thing that would touch two adjacent copies of it.
 const think = (sig: string) => ({ type: "thinking", thinking: "", signature: sig })
 const text = (t: string) => ({ type: "text", text: t })

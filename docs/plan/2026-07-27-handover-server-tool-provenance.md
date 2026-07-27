@@ -28,7 +28,7 @@
 
 合法形态：`[T,SEP,T,tool]` / `[T,SEP,T,SEP]`（合成 marker 可合法收尾）/ `[T,tool1,T,tool2]`（tool_use 夹中间合法，C3 只管末块）。
 
-已落地：`destackAdjacentThinking` 三约束全覆盖 + `terminalRepairs`/`toolTerminalRepairs` 统计；L2 matcher 重构为 `classifyLayoutRejection`（C1/C2 一律 strip-all 治愈；C3 **有条件**治愈，仅当 thinking 正是把 tool_use 挤离末尾的原因）。探针在 [exp/thinking-terminal-block/](../../exp/thinking-terminal-block/)。
+已落地：`repairAssistantBlockLayout`（2026-07-27 由 `destackAdjacentThinking` 更名）三约束全覆盖 + `terminalRepairs`/`toolTerminalRepairs` 统计；L2 matcher 重构为 `classifyLayoutRejection`（C1/C2 一律 strip-all 治愈；C3 **有条件**治愈，仅当 thinking 正是把 tool_use 挤离末尾的原因）。探针在 [exp/thinking-terminal-block/](../../exp/thinking-terminal-block/)。
 
 > C3 的主动修复由**并发会话**在 2026-07-27 完成（起因是一台陈旧实例产出 C3 措辞的每轮必败 400）。接手前 `git log` 确认这部分状态。
 
@@ -158,7 +158,7 @@ idx=3 thinking          : start → signature_delta → stop
 1. **config 键是 `anthropic.tool_search`，不是 `tool_search_enabled`**。写错时 schema **静默 strip**、服务器照常启动、health 照常绿 → A/B 静默退化成 A/A。**任何 config-driven 实验都要在结果里断言配置真的生效了**（如 B 侧必须 `deferred=0`）。
 2. **4141 是用户的主服务器，绝不 kill**。实验一律用其他端口起隔离实例（`XDG_DATA_HOME` 隔离），用后按 PID 精确 kill，**绝不 `pkill`/`killall`**。
 3. **`exp/` 在 .gitignore 里**，提交探针需 `git add -f`（项目既有惯例，`git log -- exp/` 可见）。
-4. **验上游对某个排列的反应必须配 `thinking_destack_strategy: passthrough`**，否则我方 L1 会改写掉你精心构造的排列。
+4. **验上游对某个排列的反应必须配 `assistant_block_layout_strategy: passthrough`（旧名 `thinking_destack_strategy`，仍可用但会告警）**，否则我方 L1 会改写掉你精心构造的排列。
 5. **最小构造要保留被测对象的结构性处境**（是第几个同类消息），否则阴性结果没有裁决力——C2 的坑就是这么踩的。
 6. **重放 upstream body 会撞 "Tool names must be unique"**：我方注入的 5 个 tool 要先剔除（重放伪影，非缺陷）。
 7. **`bun run test:backend` 会先跑 `build:history-search`（Rust）**，本机 rustup 无默认工具链时整条失败、一个测试都不跑。绕过：直接 `bun scripts/parallel-test.ts unit it http`。
