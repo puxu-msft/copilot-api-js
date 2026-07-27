@@ -39,13 +39,15 @@
 
 ## 进行中
 
-- **anchor allocator plan**：分支 `feat/anchor-allocator-plan`（worktree `.worktrees/anchor-alloc-plan`），plan commit `4945d988`。
-  **异模型审查已完成**（报告 `docs/plan/2026-07-27-inter-block-anchor-allocator/plan-review-gpt.md`）：**1 blocker + 11 major + 5 minor，不可开工**，planner 正在修订。
-  - **[blocker] C3 × C4 冲突**：`anchorsOpened===0` 的**无条件**结构性短路会让**续写腿**（upstream index 从 0 重启）跳过 remap → **复用主腿已占用的 wire index 0**。plan 现有撞车 oracle 只覆盖「有 anchor」的序列，**漏掉这个更常见的默认分支**。修法方向：短路只能在 frontier **等同恒等映射**时成立（无 anchor **且** 非续写腿）+ red-first oracle 覆盖「无 anchor 的续写腿」。
-    ⚠️ **这条短路正是上一轮设计 reviewer 建议、并被主会话采纳写进要求的风险缓解措施**——结果它自身在默认路径引入了新的 index 复用。**教训：为降风险而加的机制，必须过同样的对抗检验。**
-  - 其余 major 要点：P2 serializer 临界区**有设计无可执行接口**；S2 retreat 与 S3 live 腿**缺真实块分配步骤**；**P2 与 P6 并非「无代码重叠」**、需交叉门；**O-2 / O-7 / Task 5.4 的 mutation 存在假绿空间**（5.4 本就是为防单侧假绿而设，它自己有假绿空间即自相矛盾）；ADR D2 与 Q5 公式的具名 task 存在但**停点与 grep 验收需修正**。
-  - **已确认无问题、勿改**：P6 影响面矩阵成立（Responses HTTP 默认中招 / CC 因 `ccCommitBoundaries` 退化到只认 error 帧而结构性幸免）；P6 独立先交付方向正确；freeze 可恢复 vs close 永久的契约与 raw sink 注释一致；P8.4/P8.5 文档后果有具名 task。
-- **审查期间后端抖动多次**：纪律是**只 SendMessage resume 原 agent**，不派替代、不换模型、**也不设「挂 N 次就放弃」的成本逃生口**。经验：让 reviewer **分段落盘**能在中断时保住已完成部分（本轮救回 82 行）。
+- **anchor allocator plan**：分支 `feat/anchor-allocator-plan`（worktree `.worktrees/anchor-alloc-plan`）。plan 起草 `4945d988` → 第一轮修订 `05b223c1` → **第三轮修订中**。审查报告：`docs/plan/2026-07-27-inter-block-anchor-allocator/plan-review-gpt.md`（两轮，同文件分小节）。
+- **审查轨迹**：第一轮 1 blocker + 11 major → 修订 → 第二轮 **1 新 blocker + 6 major**，**仍不可开工**。
+  - **[R1 blocker，已闭合]** `anchorsOpened===0` 短路让**零-anchor 续写腿**跳过 remap、复用主腿 wire index 0。**根因是判据维度错了**——要问的是「映射是否恒等」（`realBlockOffset(i)===0`）而非「有没有 anchor」；前者天然覆盖所有让映射非恒等的来源（anchor / leg 重启 / 未来新来源）。已加架构守卫禁止 `anchorsOpened()` 出现在任何 remap 分支条件。
+    ⚠️ 这条短路是**上一轮设计 reviewer 建议、主会话采纳**的风险缓解措施，却自己在默认路径造成 index 复用 → **缓解措施不自带豁免权**。
+  - **[R2 blocker，待修]** **相位循环依赖**：P3 的 red-first / mutation 要求「真实 gap 静默产生第二个 anchor」，但 gap anchor 要到 **P5** 才开放，而 DAG 强制 `P3→P5` → P3 造不出 offset>1 的生产状态，**把 remap 改回固定 `+1` 也不会转红**，红绿门形同虚设。修法须显式论证不重引入假绿。
+  - **[R2 major，待修]** recovery（透明重试）腿的**事务语义仍未闭合**（只推导了主腿/续写腿）；**`WireBlockAllocationPort` 无法原子承载 live-reconcile 的 synthetic close-off + real start**（返回帧缺 provenance）→ S3 那格要重做；**P5.3 仍直接调低阶 `allocateAnchor()`** 违反 P2 自己冻结的 owner-only 契约；**`beginLeg()` 未进 serializer fence** → 与排队 heartbeat/前腿写入竞态。
+  - **已确认闭合、勿再改**：O-2 块协议状态机、O-7 重写（原 `numTurns>=2` **在本仓库已是 stall 签名**、无法区分成败）、O-9 交叉 mutation；DAG、6.3b Responses HTTP 回归锁、AnchorState 单一状态（删 `anchorClosed`+`anchorBlockOpen`）、ADR/β 停点、Q5 分类审计、C8 基线。
+  - **P6 影响面矩阵经独立复核成立**：Responses HTTP 默认中招 / CC 因 `ccCommitBoundaries` 退化到只认 error 帧而结构性幸免。
+- **审查期间后端抖动 3 次**：纪律是**只 SendMessage resume 原 agent**，不派替代、不换模型、**也不设「挂 N 次就放弃」的成本逃生口**。经验：让 reviewer **分段落盘**能在中断时保住已完成部分（本轮救回 82 行）；resume 时**按价值排序任务清单**，中断也先保住高价值结论。
 
 ---
 
