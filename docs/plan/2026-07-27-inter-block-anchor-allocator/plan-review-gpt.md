@@ -521,3 +521,84 @@ Task 2.2仍保留测试名“a write failure does NOT advance the frontier”，
 4. 冻结mapping token的登记、按leg+upstream index查询、stop释放及retreat共享策略。
 
 上述闭合后，P3M的整体分相与M6硬序可保留；无需推翻已确认的oracle与文档后果。
+
+
+## 第五轮复审（commit `f15b161c`）
+
+### 复审范围与证据
+
+- 对照第四轮 2 blocker + 4 major，读取 `f15b161c` 对 README、P2、P3M、P5、kickoff 的完整修订。
+- 独立核验 bridge 引用的现有字段语义、`empty_text`／`enveloped_ping` injector 状态转移、8 个 handler + 2 个 driver terminal close 站点、winner delivery candidate context、retreat 的 leg 连续性。
+- 未启动服务器，未触碰 4141。
+
+### M1 bridge 穷尽性裁决
+
+在**健康生产流、M6 尚未开门**的限定下，planner 列的三类等价关系基本穷尽：
+
+1. 从未开 content anchor：`anchorsOpened=0`，旧门 false，均 `+0`；这包含普通 ping、尚未触发 idle、以及虽构建 hooks 但未注入的请求。
+2. 真 empty-text anchor 曾开过：`anchorsOpened=1`；现有 `anchorBlockOpen` 的契约是“一旦置 true，anchor close 后仍保持 true，index 0 永久保留”，所以即使处于“anchor 已 close”的窗口，旧 remap 门仍 true，bridge仍 `+1`。这就是调用方要求核的“第四种窗口”，它没有推翻等价性，但必须在双写契约中明确保留这种**历史标志**语义。
+3. `enveloped_ping`：`injected=true`、`anchorBlockOpen=false`、没有 content anchor allocation，故 count0／旧门false，均`+0`。
+
+其它组合如 `injected=false && anchorBlockOpen=true` 在现有正常 injector中不可达；若发生只能是写失败／状态撕裂，应由C9终止delivery，不属于继续生产的健康流。故bridge算法本身可接受，我也认同用短生命周期bridge保留逐腿mutation可归因性，优于把M1+M2–M4压成一个巨型commit。
+
+### [major] M1“owner双写旧字段”的精确状态转移与唯一写者守卫仍未冻结，存在bridge与旧门分岔的现实入口
+
+**位置**：P3M M1 bridge；P1/P2 injector迁移。
+
+计划只写owner在open/close时“一并维护”`anchorBlockOpen/anchorClosed`，但没有把兼容语义写成表：
+
+- 第一次/后续anchor open：`anchorBlockOpen=true`，且为了让旧close guard可重复工作，`anchorClosed`必须重置为false；
+- close：`anchorClosed=true`，但`anchorBlockOpen`必须继续保持true（历史shift标志），不能随`openAnchorIndex`清成false；
+- envelope-only：两字段都不得被content owner点亮。
+
+更关键的是，当前`makeSyntheticAnchorInjector`会在首个await前直接写`injected/anchorBlockOpen`。P2虽说injector改调owner API，却没有架构守卫禁止它或其它旧站点继续写这两个legacy字段。若injector先置`anchorBlockOpen=true`而owner reservation在pre-commit失败回滚，bridge看`anchorsOpened=0`给+0，旧S1门看legacy true给+1，正好产生迁移期分岔。
+
+**建议**：M1增加明确双写转移表和唯一写者守卫：除delivery owner外，生产代码不得赋值`anchorBlockOpen/anchorClosed`；injector只管理message-envelope状态，content-anchor历史字段由owner在commit point同步维护。补mutation：在owner外提前置legacy true后让build失败，断言bridge与旧门不会分岔；后续anchor reopen必须把`anchorClosed`重置、close后`anchorBlockOpen`仍true。M5再统一删除。
+
+### owner close API 抽验
+
+`closeOpenAnchor`的形状已闭合第四轮blocker：serializer内读SSOT index、按真实index生成anchor stop、幂等返回`none`，terminal模式与永久heartbeat stop同command。10个terminal站点逐一列出，flush/retreat/live close-before-real另列，且现码确认所有handler调用均在sink构造之后，port可达。
+
+仍应注意：terminal stop的write一旦进入commit point后失败，按C9必须保留index consumed并终止；不能先清`openAnchorIndex`后将write失败误报为成功closed。该行为可由已有C9+exactly-once测试组合覆盖，不另列发现。
+
+
+
+### C9／C10 抽验
+
+- **C9 queued／pending约束可实现且闭合**：reservation延迟到serializer operation真正执行，执行时重查session；在调用`writeToSink`前同步置commit flag，promise pending期间abort自然属于post-commit。新增两条时序oracle能分别咬住错误边界。P2.2旧冲突测试也已拆成pre/post两条。
+- **C10四点自洽**：generation-owned `Map<LegToken, Map<upstreamIndex, Mapping>>`支持同腿并存块；start成功commit后登记、stop成功后释放；retreat不换leg，S1登记的token可供S2继续查；missing mapping显式报错避免静默旧index透传。该模型与parallel tool calls／retreat共享需求匹配。
+
+### [major] C10只有数据结构合同，没有冻结非-start帧通过owner查询／写出／释放的API，容易绕开serializer与candidate provenance
+
+当前port只定义“start时分配并写”与close anchor，没有诸如`writeMappedBlockFrame(leg, frame)`。P3仍写“非start帧走普通write路径，按mapping查”，但谁查Map、谁调用`mapping.remap`、stop成功后谁删除条目并未落到接口。若driver／decorator直接读取`GenerationWireState.blockMappings`，就破坏owner唯一写者与serializer内释放；若先remap再`sink.write`，stop write失败时mapping是否释放也容易写反。
+
+**建议**：把C10落实为owner API，例如：
+
+```ts
+writeMappedBlockFrame(leg: LegToken, upstreamIndex: number, frame: ClientFrame): Promise<"written"|"write-error">
+```
+
+owner在serializer内查token、显式missing报错、remap、按real provenance写出；仅在stop成功后删除mapping，失败则按C9终止且保留诊断状态。S1/S2/S3全部调用同一接口；架构守卫禁止owner外读写blockMappings。增加同腿两块交错delta/stop、retreat跨阶段、stop失败不提前释放三组测试。
+
+### provenance核验
+
+当前driver**有现成真实上下文**：`generation.bindings.get(current)`可得`CoordinatedCandidate`，其`candidate`与`dispatch`均真实存在；`CandidateResponseSession`也公开这两个handle。现有`delivery.writeWinnerFrame(String(candidate), frame)`只传candidate，`asDeliveryFrame`才退化成`candidateId:"legacy", dispatchId:"legacy"`——这是既有兼容路径，不代表真实id不可得。
+
+因此，照旧填legacy是“保持当前退化行为”，诚实但不是richest-data-flow最优。既然此次正在重做所有real block写入owner，且项目要求最丰富数据流，推荐`WireWriteSpec.real`携可选/必填candidate+dispatch context，由driver S1/S2从当前binding传入，S3从candidate response session或装饰器构造时注入的context取得；确实仅兼容helper无binding时才标`legacy`并显式synthetic/compat来源。计划当前只说owner铸造provenance，却没规定输入真实id来源，属于major而非阻断。
+
+### 第五轮总体 verdict
+
+**未发现 blocker；修复 major 后可开工实施。**
+
+- blocker：**0**
+- major：**3**
+- minor：**0**
+- nit：**0**
+
+三项major：
+
+1. M1 bridge迁移期双写缺精确状态转移表与legacy字段唯一写者守卫。
+2. C10缺owner-owned非start mapped-write／stop释放API。
+3. real provenance已有真实candidate/dispatch来源，计划尚未接入，不能只笼统“owner铸造”或无条件沿用legacy。
+
+owner close API、M1 bridge算法本身、C9边界、C10数据模型及逐站点迁移均已闭合前轮blocker。上述三项属于接口完整性修订，不再要求推翻P3M或合并M1–M4；修订后计划可进入实施。

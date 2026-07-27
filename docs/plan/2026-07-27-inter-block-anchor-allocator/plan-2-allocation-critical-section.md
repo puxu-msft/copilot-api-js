@@ -42,8 +42,11 @@ export interface WireBlockMapping {
 /**
  * What a caller wants written. The caller supplies CONTENT and semantic KIND only; the delivery
  * owner mints the envelope (sequence, monotonic timestamp, provenance) — callers such as the live
- * decorator neither hold the delivery clock nor know candidate/dispatch ids, and forging that
- * metadata would put provenance responsibility in the wrong layer (richest-data-flow).
+ * decorator neither hold the delivery clock nor mint sequence numbers, and forging that metadata
+ * would put envelope responsibility in the wrong layer (richest-data-flow).
+ *
+ * `real` frames carry the REAL candidate/dispatch identity supplied at wire-state construction; they
+ * are NOT flattened to the `"legacy"` placeholder (see "provenance 的真实上下文" below).
  */
 export type WireWriteSpec =
   | { readonly kind: "real"; readonly frame: ClientFrame }
@@ -105,6 +108,23 @@ export interface WireBlockAllocationPort {
     buildStop: (index: number, envelope: WireEnvelopeFactory) => WireWriteSpec,
     mode: "before-real" | "terminal",
   ): Promise<"closed" | "none" | "write-error">
+  /**
+   * Write a NON-START frame of an already-allocated block — delta / stop / anything carrying a block
+   * index that was not itself an allocation (round-5 major).
+   *
+   * The owner does all four steps inside one serializer operation: look the block's mapping up by
+   * (current leg, `upstreamIndex`), remap the frame onto its wire index, write it, and — when the
+   * frame is that block's `content_block_stop` and the write SUCCEEDED — release the mapping (C10 ③).
+   *
+   * Callers never touch the mapping registry: without this the lookup/remap/release triple would be
+   * re-implemented at each of the three legs, which is exactly how C10's storage decision leaks back
+   * into ambient per-leg state.
+   *
+   * A missing mapping is an ERROR, never a passthrough (C10): it means the block's start was never
+   * registered, so writing the frame unremapped would silently land it on a stale index — the R1
+   * silent-reordering failure this plan exists to prevent.
+   */
+  writeBlockFrame(upstreamIndex: number, frame: ClientFrame): Promise<"written" | "no-mapping" | "write-error">
 }
 ```
 
@@ -118,8 +138,37 @@ delta/stop 按不可变 token 查（round-2 裁决），但 token **存哪、怎
 | 2 | **查询** | delta/stop 按 **(当前 leg token, 帧自带的 upstream index)** 精确查。**必须支持同腿多块并存**（上游 parallel tool_calls 的 coexist index）——故是 per-leg Map 而非单槽。 |
 | 3 | **释放** | 该块的 `content_block_stop` **成功写出后**删除其条目。（close-before-real 关的是 anchor，不在此列。） |
 | 4 | **retreat 共享** | retreat **不换 leg**，沿用同一 leg map：buffered 阶段登记的 mapping 在 live 写穿阶段照常可查。这正是 S2 必须与 S1 共享状态的原因。 |
+| 5 | **谁执行**（round-5 major） | 查询 / remap / 释放**全部在 owner 内**，经 `writeBlockFrame`——三腿只递 (upstreamIndex, frame)。**架构守卫**：owner 外不得直接读写 mapping registry（`src/` 下对该 Map 的访问有且仅有 delivery owner 一处，带正样本对照）。否则「存哪」的裁决会在三腿各自的实现里被绕开。 |
 
 **missing mapping 必须显式报错，绝不原样透传**——查不到 token 说明 start 漏登记（M2–M4 漏接线正是这个形状）。静默透传会让帧落在旧 index 上，就是 R1 的静默重排。配测试：人为删除 mapping 后，后续 delta 必须抛可辨识错误而非被写出。
+
+### provenance 的真实上下文（**round-5 major：planner 上轮的保守是错的，前提经核实不成立**）
+
+我上轮倾向「照实沿用 `asDeliveryFrame` 的 `candidateId:"legacy"` 并注明是既有行为」，理由是「诚实退化优于伪称完整」。**方向对，但前提不成立**——reviewer 核实、planner 复核确认：**driver 实际拿得到真实 handle**。
+
+代码事实：`runResponseBufferedSink` 在进入 flush 循环前已持有
+
+```ts
+const unhedgedBinding = generation?.bindings.get(upstream)          // driver.ts:1039
+if (unhedgedBinding) env.ctx.selectGenerationWinner(unhedgedBinding.candidate.candidate, unhedgedBinding.candidate.dispatch)   // :1040
+```
+
+即 `candidate` / `dispatch` 在 flush 的作用域内**可达**（continuation 腿另有 `generation?.bindings.get(current)`，`:1426`）。
+
+**故裁决：生产路径传真实上下文，只有兼容 helper 才退化。**
+
+| 路径 | provenance |
+|---|---|
+| driver flush / retreat（S1/S2） | **真实** `{ kind:"candidate", candidateId, dispatchId }`，取自当前 binding |
+| live 装饰器（S3） | **真实**——同一 `GenerationWireState` 携带当前 candidate 上下文，装饰器无需自己知道 |
+| synthetic anchor / keepalive | `{ kind:"synthetic", syntheticKind }`（本就正确，C7） |
+| 既有兼容 helper `asDeliveryFrame` | 保留 `"legacy"` —— 它服务的是**尚未接线的旧调用点**，**这是其退化边界，须在代码注释里写明**，不得扩散到新路径 |
+
+**这正是记忆 `methodology-degradation-advice-scoped-to-target-has-equivalent` 的应用**：「别继承退化」只在**目标真有对应值**时成立——这里目标**有**，所以照抄 `legacy` 是**错误的退化**（会把真实身份信息丢进 History，违反 richest-data-flow：后端存储必须完整）。
+
+- [ ] **接线**：`GenerationWireState` 承载「当前 candidate/dispatch」并随 leg 切换更新（`beginLeg` 是天然的更新点）；owner 铸造 `real` 信封时读它。
+- [ ] **oracle**：驱动一次带 continuation 的请求，断言 History 的 generation 轨中真实块的 provenance **带真实 candidateId/dispatchId**（且续写腿与主腿**不同**），而非 `"legacy"`。
+- [ ] **守卫**：`src/` 下 `"legacy"` 字面量的出现有且仅有既有兼容 helper 一处（带正样本对照）。
 
 ### 注入路径（**round-3 major：P1 handler-owned state 与 P2 session-owned port 之间的接线空洞，本轮冻结**）
 

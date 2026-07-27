@@ -56,7 +56,8 @@ graph TD
 | C4 | 双偏移作废 | `wireIndex(i) = i + anchorShift + continuationOffset` **作废**。frontier 是 wire index 的唯一权威，两个独立偏移不得继续叠加 | 审查 F5；设计 §4.4 第 3 点 |
 | C5 | 分配临界区 | index 分配必须与其帧写出在**同一个 serializer operation** 内完成（单一 owner API，见 P2「Interfaces」）。「分配后再分别调用 `write*`」**不满足**本契约——那是队列外分配 + 两个 operation。`beginLeg` 同样是 serializer command | 审查 F7；设计 §4.4 第 4 点；plan review round-1/2 major |
 | **C9** | **分配的 commit point = 首次外部 write（round-3 重写，round-4 补边界）** | 已发出的字节**不可撤销**，故「多帧全回滚」物理上不成立。两段语义：**① commit point 之前**（session 拒绝 / build callback 抛错 / 尚未尝试任何 wire write）→ 零副作用、预留不可见、**全回滚**。**② commit point 之后**（任一帧已尝试或已成功）→ index **永久消费绝不复用**，失败即**终止 delivery** + 禁止后续分配 + 忠实记录。**两类边界**：queued-未执行 → 属 ①（不得在 enqueue 时预留，执行时重查 session）；abort 于首帧 promise **pending** 期间 → 属 ②（commit 标志须在调 `writeToSink` **前同步置位**）。**C1 的「永不跳号」只对健康流成立** | round-3 blocker + round-4 major |
-| **C10** | **mapping token 生命周期（round-4 新增）** | 存放 = `GenerationWireState` 的 `Map<LegToken, Map<upstreamIndex, WireBlockMapping>>`（非 allocator ambient 单槽、非各腿局部 Map）；登记 = start 帧成功 commit 后；查询 = 按 (leg token, upstream index) 精确查，**须支持同腿多块并存**；释放 = 该块 `content_block_stop` 成功写出后；retreat **不换 leg、沿用同一 map**。**missing mapping 必须显式报错，绝不原样透传** | plan review round-4 major |
+| **C10** | **mapping token 生命周期（round-4 新增）** | 存放 = `GenerationWireState` 的 `Map<LegToken, Map<upstreamIndex, WireBlockMapping>>`（非 allocator ambient 单槽、非各腿局部 Map）；登记 = start 帧成功 commit 后；查询 = 按 (leg token, upstream index) 精确查，**须支持同腿多块并存**；释放 = 该块 `content_block_stop` 成功写出后；retreat **不换 leg、沿用同一 map**；**查询/remap/释放全在 owner 内**（`writeBlockFrame`），调用方不碰 registry。**missing mapping 必须显式报错，绝不原样透传** | round-4 + round-5 major |
+| **C11** | **provenance 不无条件退化（round-5 新增）** | `real` 帧携**真实** candidate/dispatch 身份（driver 在 flush 作用域内即可达，`driver.ts:1039-1040`）；`"legacy"` 占位**仅限**既有兼容 helper 的退化边界，不得扩散到新路径。合成帧照 C7 打 `synthetic` 标记。依据：「别继承退化」只在目标真有对应值时成立——此处**有** | plan review round-5 major |
 | C6 | anchor 绕 buffer | anchor 帧走 `sink.writeAnchor` 绕过 buffer，**不**进 `extractCommittedBlocks` 的续写合成 assistant 前缀（主腿已核实；**续写腿由 P5.4 独立复验**） | 审查「机械核对」第 6 条 |
 | C7 | 合成帧打标记 | 每个 anchor 帧进 forwarded 轨必带 `synthetic:"anchor"`，keepalive delta 带 `synthetic:"keepalive"`；绝不进上游原始轨 | ADR `2026-07-05-richest-data-flow` |
 | **C8** | **字节等价（措辞修订）** | 权威基线 = **P0 在实施 base 上捕获的 pre-change 字节**；P8 必须与该捕获物逐字节相同。历史值 `8691db71…2f6a0` / 1675 bytes 仅作 **provenance / sanity check**，不是跨 master 前进的永久需求。重捕前必须先证明 hook、请求、配置相同，并记录造成差异的 base change | GPT plan review minor |
@@ -114,6 +115,8 @@ C3 的来历是：上一轮**设计 reviewer** 提出「A 把死 remap 路径变
 | 12 | **allocator 注入路径唯一性**（round-3 major） | P2「注入路径」+ P1.3 | identity oracle（四处引用相等）+ 架构守卫（唯一创建点，带正样本对照） |
 | 13 | **owner close 权威 + 10 个站点迁移**（round-4 blocker） | P2 `closeOpenAnchor` + **M1** 逐站点表 | 8 handler + 2 driver 站点各自回归 + exactly-once（终局站点两两组合）+ 架构守卫（owner 外不得写 anchor stop / 读写 `openAnchorIndex`） |
 | 14 | **迁移期 bridge 使每步可编译**（round-4 blocker） | **M1** 引入 / M2–M4 逐腿删 / M5 删旧字段 | 每个 M-commit 的 typecheck + `test:fast` + **O-6**；M4 后 bridge 判据 grep 零命中 |
+| 15 | **迁移期双写不分岔**（round-5 major） | **M1** 状态转移表 | 转移表逐格 oracle（含两种失败路径）+ **legacy 字段唯一写者守卫**（带正样本对照） |
+| 16 | **provenance 真实上下文**（round-5 major） | P2「provenance 的真实上下文」 | History generation 轨断言真实 candidateId/dispatchId（主腿 ≠ 续写腿）+ `"legacy"` 唯一出现点守卫 |
 
 ## 验收 oracle 总表（reviewer 要求 >= 5 项，实际 9 项）
 

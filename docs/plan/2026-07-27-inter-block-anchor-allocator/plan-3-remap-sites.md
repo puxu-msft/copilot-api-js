@@ -81,6 +81,30 @@ anchor@2（测试经 owner API 落）→ real@3（上游1，生产分配）→ o
 3. **逐腿删除**：每迁完一腿立刻删该腿 bridge；**M4 收口后全仓 bridge 零命中**（`rg -n "anchorsOpened\(\) > 0" src/` 为空），旧字段随 M5 一并退役。
 4. **架构守卫**：bridge 判据只允许出现在**尚未迁移**的站点；M4 之后出现任何 bridge 命中即 fail。
 
+#### 迁移期双写的精确状态转移表（**round-5 major：双写是经典分岔源，必须写死**）
+
+M1–M4 期间 owner 是 legacy 字段的**唯一写者**；下表规定每个 owner 操作**结束后**四个状态的取值。任何偏离即 bug，不留解释空间。
+
+| owner 操作 | `openAnchorIndex` | `anchorBlockOpen` | `anchorClosed` | `injected` |
+|---|---|---|---|---|
+| 初始（generation 开始） | `undefined` | `false` | `false` | `false` |
+| `allocateAndWriteAnchor` **成功**（pre-content 或 gap） | `= 分配的 index` | `true` | **`false`**（重新武装——旧语义是一次性，多 anchor 下每次开新 anchor 都要复位） | `true` |
+| `allocateAndWriteAnchor` **失败**（pre-commit） | 不变 | 不变 | 不变 | 不变 |
+| `allocateAndWriteAnchor` **失败**（post-commit） | `undefined`（该 anchor 不再可关） | `true`（历史 shift 已产生，**不得回退**） | `true` | `true` |
+| `closeOpenAnchor` 返回 `"closed"` | `undefined` | **`true`**（**关键**：它表示「历史上保留过 wire shift」，**关闭后仍为 true**——这正是 bridge 等价性依赖的那一位） | `true` | 不变 |
+| `closeOpenAnchor` 返回 `"none"` | `undefined`（本就是） | 不变 | 不变 | 不变 |
+| `closeOpenAnchor` 返回 `"write-error"` | `undefined` | 不变（`true`） | `true` | 不变 |
+| `withAllocatedRealBlock` / `beginLeg`（任何结果） | 不变 | 不变 | 不变 | 不变 |
+
+**三条承重解读**（写出来防实施期误解）：
+
+- **`anchorBlockOpen` 在 close 后保持 `true`**——它的旧语义就是「index 0 已被保留」（`types.ts:444` 原注释：*stays TRUE for the whole stream once set*），**不是**「当前有 open block」。若 close 时把它置 false，S2/S3 的旧门会在 pre-content anchor 关闭后突然算 `+0`，与 bridge 的 `+1` 分岔——**这正是「anchor 已关闭但历史 shift 仍为 1」那个窗口**。
+- **`anchorClosed` 每次开新 anchor 时复位 `false`**：旧代码用它做一次性守卫，多 anchor 下必须每轮重新武装，否则第二个 anchor 的 close 被短路（这正是 round-3 blocker 的成因）。M1–M4 期间生产只开 ≤1 anchor，故该复位在生产上不可观测，但**测试经 owner API 落第二个 anchor 时会走到**，必须正确。
+- **post-commit 失败不回退 `anchorBlockOpen`**：与 C9 档 ② 一致——字节已出，历史 shift 是既成事实。
+
+- [ ] **守卫（round-5 major）**：`legacy 字段唯一写者`——`src/` 下对 `anchorBlockOpen` / `anchorClosed` 的**赋值**（`=` 左侧）有且仅出现在 delivery owner 一处；其余站点**只读**。带**正样本对照**：故意在 driver 里加一处赋值，守卫必须转红。
+- [ ] **转移表 oracle**：逐行驱动 owner 操作，断言四个状态的取值与上表**逐格相同**（含两种失败路径）。这是 bridge 等价性的直接支撑，不能只靠 O-6 间接证明。
+
 > **为何不选「M1+M2–M4 合成一个原子 commit」**（reviewer 给的另一条路）：那会把三腿迁移 + 状态机 + 8 站点 close 迁移压进单个 commit，diff 巨大且**失去逐腿 mutation 的可归因性**（6 格矩阵要能指出是哪一腿漏了）。bridge 方案保住每步可编译 + 每步门可满足 + 逐腿可归因，代价只是一段生命周期明确、有守卫、M4 即清零的迁移期代码。
 
 ### M1 的逐站点 close 迁移（**round-4 blocker：owner close API 缺失 + 站点迁移无具名步骤**）
@@ -107,8 +131,8 @@ reviewer 核实（planner 复核确认）：**所有 close 调用点都在 sink 
 原方案只枚举 remap、**漏了 allocate**（round-1 major）：`mapping` 只有在开块时被创建才能供后续 delta/stop 查，仅把硬编码 `1` 换成 resolver **不会自动创建 mapping**，S2/S3 会读到缺失或旧 mapping。故每条腿都必须具名回答三个问题：
 | 腿 | start 帧谁分配？ | delta / stop 如何查 mapping？ | 如何保证同一块不重复分配？ |
 |---|---|---|---|
-| **S1** driver buffered flush（`driver.ts:1185`） | flush 循环内 `anchor.isContentBlockStart(frame)` 为真时经 owner API `withAllocatedRealBlock(upstreamIndex, …)` | 非 start 帧走 `resolveRemappedFrame`，按该块的 **leg token + mapping** 查 | 一个 upstream 块只有一个 start 帧；重复分配会被 3.4 维度 B 的 mutation 咬住 |
-| **S2** driver retreat（`driver.ts:1242`） | retreat 写穿循环内同样在 start 帧上调 owner API（**原 plan 漏此步**） | 同 S1 | 同 S1；retreat 前已 flush 的块**不得**再分配（buffer 已清空，结构上不会重入——**须有测试**） |
+| **S1** driver buffered flush（`driver.ts:1185`） | flush 循环内 `anchor.isContentBlockStart(frame)` 为真时经 owner API `withAllocatedRealBlock(upstreamIndex, …)` | 非 start 帧**经 owner `writeBlockFrame(upstreamIndex, frame)`**（owner 内查 mapping → remap → 写 → stop 成功后释放）；调用方不碰 registry | 一个 upstream 块只有一个 start 帧；重复分配会被 3.4 维度 B 的 mutation 咬住 |
+| **S2** driver retreat（`driver.ts:1242`） | retreat 写穿循环内同样在 start 帧上调 owner API（**原 plan 漏此步**） | 同 S1（**retreat 不换 leg**，故 buffered 阶段登记的 mapping 照常可查 —— C10 ④） | 同 S1；retreat 前已 flush 的块**不得**再分配（buffer 已清空，结构上不会重入——**须有测试**） |
 | **S3** live-reconcile（`live-reconcile.ts:141`） | 装饰器 `makeReconcilingSink` 经 `getDownstreamDeliverySession(inner)` 取 port，在**一个 transaction** 内完成「close-off stop + 分配 + remapped start」（见下方 S3 专节） | 同 S1 | live 腿逐帧透传，一个块一个 start |
 
 ### S3 专节（**round-2 major：原方案站不住，已重做**）
@@ -271,6 +295,9 @@ test("S1 buffered flush allocates and remaps real blocks itself at frontier offs
 - [ ] O-1 / O-2 / O-3 / O-6 / O-9 绿。
 - [ ] **零残留 grep 全绿**：`remap\(.*, 1\)` / `continuationOffset` / `wireDeliveredBlocks` / `anchorBlockOpen` / `anchorClosed` / **迁移期 bridge 判据**（`anchorsOpened\(\) > 0`）在 `src/` 均零命中。
 - [ ] **close 权威唯一**：生产代码在 owner 外无任何 anchor stop 写出、无 `openAnchorIndex` 读写（架构守卫 + 正样本对照）。
+- [ ] **mapping registry 唯一访问者**：owner 外无任何 mapping 读写；三腿的非-start 帧全部经 `writeBlockFrame`（架构守卫 + 正样本对照）。
+- [ ] **provenance 真实**：History generation 轨中真实块带真实 candidateId/dispatchId（主腿 ≠ 续写腿），`"legacy"` 仅出现在既有兼容 helper 一处。
+- [ ] **legacy 字段唯一写者**（M1–M4 期间）：`anchorBlockOpen`/`anchorClosed` 的赋值只出现在 owner；转移表逐格 oracle 绿。
 - [ ] 6 格 mutation 矩阵 + 交叉 mutation 矩阵**填满无空格**。
 - [ ] anchor 全套件与 P0 基线对账完毕（每处差异归因为「预期改写」或「回归已修」）。
 - [ ] **硬序约束已遵守**：M6 的开门 commit 晚于 M2–M4。
