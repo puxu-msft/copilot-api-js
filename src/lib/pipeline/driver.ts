@@ -1093,7 +1093,7 @@ export async function runResponseBufferedSink(
   // truncation/exhaustion, or a post-retreat truncation), the anchor's content_block_start@0 is still OPEN
   // on the forwarded track. The driver returns `stream-error` and the handler writes its protocol error
   // frame, but a dangling open block would leave the client's block structure unbalanced. Close it
-  // (empty-text content_block_stop@0 — known-benign) BEFORE the failure return. `freezeHeartbeat` first so
+  // (empty-text content_block_stop@0 — known-benign) BEFORE the failure return. `close()` first so
   // no ping/anchor can fire between here and the stop write; the write is best-effort (the client may
   // already be gone — a reject is swallowed, there is nothing left to do). NOT called on client-abort /
   // settled-abort (the client is already gone → closing is meaningless). Idempotent — inert when the anchor
@@ -1102,7 +1102,7 @@ export async function runResponseBufferedSink(
   // own terminal-branch `closeAnchorIfOpen` reads the SAME shared `anchorClosed` and short-circuits, so the
   // buffered exhaustion path emits exactly ONE stop@0 (driver's), not a second from the pump.
   const closeAnchorIfOpen = async (): Promise<void> => {
-    sink.freezeHeartbeat?.()
+    sink.close?.()
     // Only `empty_text` (anchorBlockOpen) reserved a content_block@0 that needs balancing; `enveloped_ping`
     // injected a message_start-only envelope (no block) → nothing to close off.
     if (anchorState.injected && anchor && anchorState.anchorBlockOpen && !anchorState.anchorClosed) {

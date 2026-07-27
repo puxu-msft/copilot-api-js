@@ -161,9 +161,9 @@ export function remapAnthropicBlockIndex(frame: ServerSentEventMessage, offset: 
  * anchor's `content_block_stop@0` (`anchorHooks.stopFrame`, routed via `writeAnchor` → `synthetic:"anchor"`)
  * BEFORE the error frame keeps the block structure balanced (empty-text block → known-benign, §3.6).
  *
- * `freezeHeartbeat` first: a terminal failure has NO subsequent real stream (this is an error terminus,
+ * `close()` first: a terminal failure has NO subsequent real stream (this is an error terminus,
  * UNLIKE the live-reconcile close-off §10.3, which still has real blocks streaming after it → must NOT
- * freeze), so freezing is harmless AND prevents a heartbeat tick racing the error frame.
+ * close), so permanent shutdown is correct AND prevents a heartbeat tick racing the error frame.
  *
  * `anchorState.anchorClosed` is the UNIVERSAL idempotency guard shared across every close-off site (this
  * primitive at the handler pre-pump branches + the pump terminal branches, the live-reconcile
@@ -171,14 +171,14 @@ export function remapAnthropicBlockIndex(frame: ServerSentEventMessage, offset: 
  * anchor is closed EXACTLY once no matter which terminus fires first. Inert (byte-equivalent to the
  * no-anchor path) when no anchor was injected (`injected` false), when only a message_start envelope was
  * injected (`enveloped_ping` → `anchorBlockOpen` false: no block to balance), or when the anchor is
- * already closed. The `writeAnchor`/`freezeHeartbeat` optional-chaining tolerates array/WS sinks (no-op).
+ * already closed. The `writeAnchor`/`close` optional-chaining tolerates array/WS sinks (no-op).
  * `anchorState` is optional so the pump's `ping`-mode terminal branches (which thread an undefined
  * `anchorState`) can call it unconditionally — undefined short-circuits to a no-op.
  */
 export async function closeAnchorIfOpen(sink: ClientSink, anchorHooks: AnchorHooks | undefined, anchorState: AnchorState | undefined): Promise<void> {
   if (anchorHooks && anchorState?.injected && anchorState.anchorBlockOpen && !anchorState.anchorClosed) {
     anchorState.anchorClosed = true
-    sink.freezeHeartbeat?.()
+    sink.close?.()
     await sink.writeAnchor?.(anchorHooks.stopFrame)
   }
 }
