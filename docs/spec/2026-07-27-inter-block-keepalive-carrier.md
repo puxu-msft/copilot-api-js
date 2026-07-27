@@ -1,6 +1,6 @@
 # 客户端无 open block 窗口的 >300s keepalive carrier 对比设计
 
-- 状态：设计候选，已按两轮异模型评审修订，待用户裁决
+- 状态：**已裁决：采用方案 A**（用户 2026-07-27）；实施计划见 [`docs/plan/2026-07-27-inter-block-anchor-allocator/`](../plan/2026-07-27-inter-block-anchor-allocator/)
 - 日期：2026-07-27
 - 关联根因：[client↔proxy keepalive 300s](../todo/2026-07-22-client-proxy-keepalive-300s.md)
 - 关联 ADR：[续写重试 + 顺序输出](../decisions/2026-07-22-continuation-retry-sequential-anchor.md)
@@ -182,13 +182,13 @@ backlog必须记录：根因、当前pre-content-only行为、A frontier理想�
 | 长远正确 + 完整 | 最符合 | 被eager tool执行否决 | 不符合，只可临时解阻 |
 | 证据 | allocator unit+短PoC；全接线未测 | 静态推导+CC eager源码 | 单anchor实测+8000条live迁移校准 |
 
-## 9. 推荐与落地顺序
+## 9. 裁决与落地顺序
 
-**终局推荐 A。** wire index属于generation，A是唯一把分散常量、anchorShift和continuationOffset收敛为单一权威frontier的方案；它同时使能合法gap anchor、continuation接续和未来J分块。B虽无合成块且失败更可见，但确定性推迟eager tool执行，并破坏closed-block commit SSOT；C在块级buffered终态首块后不完整。
+**方案 A 已选定并进入实施。** wire index属于generation，A是唯一把分散常量、anchorShift和continuationOffset收敛为单一权威frontier的方案；它同时使能合法gap anchor、continuation接续和未来J分块。B虽无合成块且失败更可见，但确定性推迟eager tool执行，并破坏closed-block commit SSOT；C在块级buffered终态首块后不完整。
 
 落地顺序：
 
-1. 当前分支先收窄为C形状解阻：禁止首块后anchor@0；分离envelope/content latch；文档明确门未闭合。
-2. 下一阶段把A转独立TDD plan，补continuation撞车、serializer并发、多轮回传、无anchor结构短路、ADR D2措辞修订和Q5公式作废。
+1. 既有分支已先收窄为C形状解阻：禁止首块后anchor@0；分离envelope/content latch；该门不是终态。
+2. 方案A按独立TDD plan实施，覆盖continuation撞车、serializer并发、多轮回传、无anchor结构短路、ADR D2措辞修订和Q5公式作废。
 3. **硬门**：A必须在Anthropic块级buffered默认翻转前落地；C不能作为终态。
 4. 最终验收：producer单调全序→真SDK累积顺序→真CC`numTurns≥2` >300s +短请求SHA。
