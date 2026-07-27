@@ -1,0 +1,133 @@
+# 交接：keepalive 300s、合成分隔符、顺序不变量审计（2026-07-27）
+
+**给接手会话**：本文是这一轮的**唯一入口**。按「先读什么 → 已定事实 → 待办与判据」的顺序写；每条待办都带**验收判据**与**证伪方式**，不带「大概」「也许」。
+
+会话起因：用户贴来一条 `API Error: 400 ... does not support assistant message prefill`，要求修复。查下去牵出三条独立的线：C3 布局约束（已收官）、**keepalive 300s 死线（线上损伤，部分已修）**、顺序不变量缺守卫（审计完成，未动手）。
+
+---
+
+## 0. 先读这三份（都在本目录）
+
+| 文件 | 是什么 | 什么时候读 |
+|---|---|---|
+| `research-keepalive-options.md`（446 行） | keepalive 300s 的**源码级机制 + 生产损伤量化 + 14 个方案** | 动 keepalive 任何一行之前 |
+| `research-separator-options.md`（317 行） | 合成分隔符的 18 个方案 + 17 种 block type 逐型判定 + 真上游探针设计 | 动分隔符 / 做不可见 Unicode PoC 之前 |
+| `research-order-invariant-audit.md` | 6 个「靠注释守着、无机器守卫」的顺序/装配隐患，2 CRITICAL | 决定要不要修那两个 CRITICAL 之前 |
+
+**这三份是 subagent 产出、我逐条抽查过承重结论后保留的**。它们标了证据等级（实测 / 源码读证 / 推断），**按标签对待，别把推断当实测**。
+
+---
+
+## 1. 已经落地的（本会话提交，master）
+
+| commit | 内容 |
+|---|---|
+| `39a2a0d9` | L1：C3（含 tool_use 必须以 tool_use 收尾）升为**独立触发条件**的主动修复；781 条穷举扫描扩到全部输入 |
+| `53758f9a` | L2：`classifyLayoutRejection` 分三种线索；C3 走**有条件治愈**（真实 strip-all 前后对比 + 全 payload + 排除 assistant 收尾） |
+| `5b5c8c14` | 事故取证 + 离线探针 `exp/thinking-terminal-block/probe-remote-c3-regression.ts` |
+| `8fb19a6e` / `848ba250` | 全量重命名（`repairAssistantBlockLayout` / `blockLayout` / `assistant_block_layout_strategy`，旧配置键留 compat 别名）+ 活文档跟进 |
+| `5352b478` | 第二轮跨模型评审的 4 minor 收尾 |
+| `2029a1d2` / `67dcb6ee` | `insert_text` 策略退役（契约与 C3 互斥，不可能在契约内修好）+ 理由文档化 |
+| `3f6bf483` | **retry 放弃计数器**：`copilot_api_retry_giveups_total{reason,error_type}` + warn，四种 reason 分开 |
+| `52a4ff94` | 合成分隔符改为**前缀族 + 版本**，单一谓词 + 身份守卫 |
+| （本轮）| **合成分隔符两条轴**：`separator_carrier`（EMIT，封闭 enum）/ `separator_accept_extra`（ACCEPT，开放 list） |
+| `984c56ee` | 根目录散落探针归档进 `exp/` |
+
+**并发会话在 18:28 落了 `68a3b3f5`「escalate keepalive before content timeout」**——它实现了本轮 keepalive 分析里的 R1（有开块时打空 delta）+ 无开块时注入脚手架，且只在逼近 300s 时才升级（日常仍纯 ping、零污染）。**接手前先 `git log --oneline -20` 看这块有没有再动。**
+
+---
+
+## 2. 已确证的硬事实（别再重新推导）
+
+### 2.1 CC 的 300s 死线（源码读证，我亲自复核过引文）
+
+- 参照源码：`~/.claude/refs/claude-code-2.1.207/app.pretty.js`（本机装的是 2.1.220，**引文行号仅对 2.1.207 有效**）。
+- `:10018` `if (a.event === "ping") continue;` 位于 accept-set 判断**之后** → **ping 帧永远不会被 yield 给 CC**。
+- `:298200` 消费循环 `if (ar.type === "ping") { yield…; continue }` 然后才 `he()` → **任何非-ping 事件都重置**，不必是 content delta。`content_block_start`/`content_block_stop`/`message_delta` 都算。
+- **既有 skill 里「只有真实 content_block_delta 能重置」的表述不准确**，尚未修正（见 §4 待办）。
+- 300s 是**地板**（`Math.max(env, 3e5)`），只能调高。
+- 300s 时钟在**响应头到达后**才武装；头到达前由 SDK client `timeout = API_TIMEOUT_MS || 600000` 管，**期间一帧都不用发**。
+
+### 2.2 生产损伤（我亲手用 History 只读探针复核）
+
+- 405 条 entry 里 **没有任何 completed 超过 300s**；最长成功 292.7s。
+- 阴性样本 `req_1785177872790_5500`：可重置帧之间最大间隔 **300,039ms**，state=aborted；上游恢复晚到 39ms。
+- 阳性样本 `req_1785180629203_212`：最大间隔 257,408ms < 300s → completed。
+- **我一度声称有「成功的 314s 请求」，那是错的**（`req_1785179198417_5582` 是 `state: failed`）。别再引用。
+
+### 2.3 空 delta 上不上 wire（本会话实测，`exp/keepalive-escalation-wire/`）
+
+**上。** 12s 静默期间 wire 收到 8 ping + **3 个空 `text_delta`**。所以：
+- G2 的丢失**不在我方管线**，D2 第 ② 条判据是假阴性；
+- 刚落地的升级修复在 wire 层有效；
+- 但该配置下 **anchor 块@0 确实被发出**（真实块 remap 到 index=1）——「客户端历史里的空 text 块全来自上游」这句**要收窄**：production 抽样里 index=0 的可能是我方 anchor，index=1 的才是上游的。
+
+> **⚠️ 这发探针证明的范围要看准**：我用的是 buffered 配置，真实块直到收尾才 flush，所以静默期间**客户端视角是 pre-content 窗口**——探针验证的是**pre-content 升级路径**。而 `docs/DESIGN.md:306` 明写当前升级是 **pre-content-only**：「首块提交后的无-open窗口只 ping，完整覆盖等待 generation-scoped allocator（方案 A）」。
+>
+> **所以 W3（首块已提交、块间无开块）仍然是活的缺口，仍会在 300s 处死**——这正是 T2 要做的实验，别因为这发探针绿了就以为 W3 已解决。
+
+### 2.4 合成分隔符的必要性（有精确判据，不是偏好）
+
+设消息内 `n` 个 thinking、`m` 个可用真实非 thinking 块：**零合成的充要条件是 `m ≥ n`**（`n-1` 个内部间隔 + 1 个合法收尾）。事故形状 `[T,empty,T,tool]` 本来 `m=n=2` 够用，是我方删掉那个空块才让 `m` 掉到 1。
+
+### 2.5 block type 穷举结论
+
+17 种顶层类型逐个判过：**只有 `text` 没有配对关系、外部资源、签名或指令语义**。不换类型；值得实测的是 **text 的最小载荷**（不可见 Unicode）。
+
+---
+
+## 3. 待办（按优先级，每条带验收判据）
+
+### T1【用户已批】commit 时机推迟到首个真实块 —— 前提是不能弄坏 CC↔proxy 连接
+
+- **收益**：300s 时钟在响应头之后才起跑；推迟到 T 秒 commit，总预算变 T+300s（现在 `stream_commit_after_sec: 20` 等于主动在第 20 秒开跑，把预算钉死 ~320s）。
+- **用户明确要求**：**源码 + 实证双证**，证明推迟不会破坏 CC 与 proxy 的连接。
+- **已知的源码侧证据**（§2.1）：头到达前 CC 由 `API_TIMEOUT_MS || 600s` 管，期间不需要任何帧。**但这只是 SDK 层**；还需要查：CC 是否有更早的连接级超时、代理侧 `stream_commit_after_sec` 与 pre-response 重试/错误整形的交互（上游错误在 commit 前还能以真 HTTP 状态码返回，commit 后就只能走 SSE 内错误——这是**收益的一部分**，也是风险面）。
+- **必须与 `docs/spec/2026-07-23-upstream-silence-commit-timing.md` 合并设计**，别另起炉灶。
+- **验收**：① 真 CLI e2e：上游静默 T+250s 后才出首块，客户端完整收尾；② 上游在 commit 前报错时客户端拿到**真 HTTP 状态码**；③ 现有 pre-response 相关测试全绿。
+
+### T2【用户已批】W3（已 commit、无开块）兜底手段 —— **要做实验**
+
+- 并发会话的 `escalationScaffold` 已是一种 W3 实现（升级时注入脚手架）。**尚未有实验证明它在真 CLI 下有效**。
+- 候选对照臂（研究报告 §4.8/§4.10/§4.14）：`content_block_stop` 延迟一帧（把 W3 塌缩进 W2）/ 非标准协议缝隙帧 / `message_delta` 心跳（注意：**每发一次都会把整轮 input 成本再加一次**，污染 CC 成本显示）。
+- **实验骨架已经有了**：照抄 `exp/keepalive-escalation-wire/`（改 hook 让静默发生在**块间**而不是块内），配 skill `client-proxy-e2e-testing` 起真 CLI。
+- **验收**：`[block0] → 静默 340s → [block1]`，两块内容全保、客户端不报 stall。
+
+### T3【用户已批】不可见 Unicode 的 PoC
+
+- **落点已经备好**：EMIT 轴的封闭 enum（`SEPARATOR_CARRIERS`，`src/lib/anthropic/sanitize/block-layout-contract.ts`）。过了门就加一个 `invisible_v1` 值、切默认；旧值继续被 ACCEPT 轴识别，**零迁移成本**。
+- **五道门**（研究报告 §探针 A 有可复跑设计）：① GHC 真上游接受（非 strip）；② 跨模型（opus/sonnet/haiku）；③ mutation（改一个字符要能被检出）；④ wire 保真（不被中间层归一化）；⑤ 客户端往返（CC 存进历史再发回来仍可识别）。
+- **任一门失败 → 维持可见 marker**，不要"部分通过就上"。
+
+### T4【用户已批】`empty_text` 保活模式的删除 —— **但先确认它现在还有没有被用**
+
+- 用户已批准删除。**但 `68a3b3f5` 之后语义变了**：升级路径注入的就是内容 delta / 脚手架。删之前**先读 `resolveAnthropicKeepalive` 与 escalation 的关系**，确认 `empty_text` 这个 mode 值是否已被升级机制取代。
+- 若确认冗余：删 enum 值 + config compat 值迁移（照抄本会话 `insert_text` 退役的做法：`migrateValue` + `renameLeaf` 的 `transform` 两条入口都要覆盖，因为**迁移不链式求值**）。
+- **同时要做的文档纠偏**（研究报告 §5.3 P3）：ADR `2026-07-22-continuation-retry-sequential-anchor` D2 补修订记录（结论保留、**理由第 ② 条已被推翻**）；skill `debugging-claude-client-connection` 改成 §2.1 的精确判据 + 给「60s byte-idle」标存疑；`docs/todo/2026-07-22-client-proxy-keepalive-300s.md` 明确排除「掐断源是代理 stall 检测」这个假设（字面量在 CC `:298433`）。
+
+### T5 顺序不变量审计的 6 个发现 —— **一个都还没动，需要你先裁决顺序**
+
+见 `research-order-invariant-audit.md`。我的建议顺序：
+
+1. **CRITICAL｜Responses WS 缺 `acc.streamError` 分支**（`src/routes/responses/ws.ts:467` vs HTTP 镜像 `handler-v4.ts:451`）——**这是已发生的漂移，不是缺守卫**。上游终止 error 帧会被误判成 truncation，发第二个合成 error + 1011 关闭，History 失败原因被改写。**先修这个**。
+2. **HIGH｜liveness 的假守卫**（`server.ts:119` 要求 liveness 注册在 config/token 中间件之前，但「缺 token 仍 200」的测试走的是**没有该中间件的 test app**）——最误导人，改动小。
+3. **CRITICAL｜WS abort controller 必须在首个 `await` 前注册**（`ws.ts:226`，注释自承 "correct-by-inspection"，对应过一次 4GB OOM）——加守卫，涉及可注入化。
+4. 其余 HIGH/MED：delayed-commit abort listener 顺序、`inspectRequest` 漏 `client.inbound`、`createFullTestApp` 与生产 server 装配漂移。
+
+### T6 零散但别丢
+
+- **`.codex`**：仓库根 0 字节空文件，归档没意义。留着还是删，等用户一句话。
+- **`docs/DESIGN.md:305-306`** 曾写 `empty_text` 是默认（陈旧、误导过我）。`68a3b3f5` 可能已改，**接手时核一遍**。
+- **两条 load-sensitive 测试**：`tests/architecture/telemetry-domain-surface.unit.test.ts`（本会话已给 30s 预算）和 `tests/history/v3/canonical-performance.unit.test.ts`（**未处理**，并行负载下会假红，单跑 3/3 绿）。
+- **`bun run test:backend` 在本机跑不起来**：它先跑 `build:history-search`，而 rustup 没配默认 toolchain。绕过方式：`bun scripts/parallel-test.ts unit it http`。用户已明确**推迟**此项，不算任务。
+- **`lint:all` 常年红**（400 errors，主要在退役的 `ui/`）。同样已推迟。
+
+---
+
+## 4. 给接手会话的纪律提醒（这一轮踩过的坑）
+
+1. **`offsetMs` 是 commit 相对的**。我用它当"请求开始后 N ms"做归因，得出了错误结论并写进了给用户的报告，随后被 `synthetic` 标记字段推翻。**做时间归因前先确认时间基。**
+2. **空的检索结果不能证明不存在**。判「帧有没有 synthetic 标记」时，先确认该投影**能**带出标记（我一开始看的投影根本不含该字段）。
+3. **动手前先 `git log` 看 peer 有没有已经落地**。本轮 P0 的实质在我分析期间被并发会话落了。
+4. **SCC 环守卫是真的会咬**：往 `sanitize/*` 里 import `state` 会把文件吸进 19 模块巨型 SCC。配置读留在装配层，解析结果向下传参。
+5. **后端今天抖得厉害**，agent 中断了 4 次。**永远 `SendMessage` 恢复同一个 agent**，不换模型、不另派；并要求它**边写边落盘**。
