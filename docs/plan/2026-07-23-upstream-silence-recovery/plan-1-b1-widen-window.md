@@ -1,6 +1,8 @@
 # Plan-1: B1 —— 加宽 delayed-commit 窗口
 
-> **依赖：** 无（可与 B2-P0 并行）。**门控：** Q1（CC pre-header 容忍度）**已实测下界 ≥125s**（`exp/silence-recovery-gates/FINDINGS.md`，真 Claude Code 2.1.218 静默 125s 仍成功；首次失败点未测、区间 `[125s, 未知)`）——本阶段把窗口上限设计成参数化 + clamp，以 ≥125s 为地板，最终具体上限值待补测 130/150/180s 阶梯后填一个常量，不改结构。⚠ 事故 RST 最早 ~126s，故 B1 单独不覆盖事故、B2 才是主线。
+> **⚠ 2026-07-27 更新：Q1 门已闭合，本文档下方多处「Q1 未测/待补测」的措辞已过时。** 实测首次失败点 = **300.0s**，且归属 undici 默认 `headersTimeout`（不是 CC、不是 SDK，两者自称的 1200s/1250s 都够不着它）；`CLAUDE_STREAM_IDLE_TIMEOUT_MS` 抬到 600s 不移动该点。证据见 [`exp/silence-recovery-gates/FINDINGS.md`](../../../exp/silence-recovery-gates/FINDINGS.md) §「Q1 续测」。**对本 plan 的三条实质影响**：① Task 1.2 Step 1 把 ceiling 提到 125s **安全但保守了 175s**，可直接定在 300s 减余量；② Task 1.2 Step 2 的「补测 130/150/180s 阶梯」**不必做了**，首失败点已知；③ 默认值 `streamCommitAfterSec` 的取值现在是一个**有上界的取舍**（越大越多 B-Mode2 走原生保护、但 A 型挂起干等越久），不再被未知量卡住。**注意**：撞上 300s 不是致命——CC 会原生重试（实测连做 5 次、间隔 ~2s），代价是上游从头重算。
+
+> **依赖：** 无（可与 B2-P0 并行）。**门控：** Q1 **已闭合 = 300.0s**（原文：「已实测下界 ≥125s、首次失败点未测、区间 `[125s, 未知)`」——下界正确，上界现已测得）。⚠ 事故 RST 最早 ~126s，**整段 126-206s 落在 300s 窗口内**，故把默认窗口抬过该区间即可让事故请求留在 pre-header 区拿真 HTTP 状态、走 CC 原生重试——这比原文「B1 单独不覆盖事故」更乐观，但仍以 B2 为主线（B1 不救 commit 之后才失败的形态）。
 
 **Goal：** 把更多合法长思考（B-Mode2，header 到达 <当前默认 20s~新上限）与短挂起（在窗口内即失败的 A）拉回原生重试保护区——客户端拿到真实 HTTP 状态、CC 原生重试/backoff/token-refresh 继续生效，零合成脚手架。**不依赖任何 A/B 判别、不误伤 B**（spec §5.B-1 已定论）。
 
@@ -46,12 +48,12 @@ test("commit-window clamp and keepalive-cadence clamp are independently addressa
 - [ ] **Step 4: 跑，通过。** 确认 `bun run test:fast` 全绿（这是纯重命名+拆分，不应有任何行为变化）。
 - [ ] **Step 5: 提交** → `refactor(config): split commit-window clamp from keepalive-cadence clamp (same value, independent constants pending Q1)`。
 
-### Task 1.2（提 ceiling 现在可做；提默认值待 Q1 首失败点）：回填 Q1 实测
+### Task 1.2（ceiling 可定为 300s 减余量；默认值仍是取舍，需用户拍板）：回填 Q1 实测
 
-- [ ] **Step 1（现在可做）**：把 `COMMIT_WINDOW_MAX_SEC` 从"复用 40"提到 **125s**（Q1 已实测 CC pre-header 容忍 ≥125s 的已知安全下界）——这只放宽「允许配置的上限」、默认值不变，安全。首失败点补测后可再往上调（留 margin）。
-- [ ] **Step 2（待 Q1 首失败点）**：视首失败点结果决定是否上调 `streamCommitAfterSec` 默认值（当前 20）——事故 RST 最早 ~126s，故默认值即使上调也应 < 首失败点且权衡「窗口越大越多 B-Mode2 走原生保护、但 A 型挂起在窗口内干等越久」。**这是运维参数调整，可交由主会话在首失败点出来后单独决策+提交。**
-- [ ] **Step 3**：跑 `bun run test:backend` 全绿；更新 `schema.ts` 里 `stream_commit_after_sec` 的 TSDoc（补 Q1 实测值 ≥125s + 出处 `exp/silence-recovery-gates/FINDINGS.md`）。
-- [ ] **Step 4**：提交 → `fix(config): raise stream_commit_after_sec ceiling to measured CC pre-header floor (Q1 >=125s)`。
+- [ ] **Step 1**：把 `COMMIT_WINDOW_MAX_SEC` 从「复用 40」提到 **Q1 实测上限 300s 减安全余量**（原稿写的 125s 是当时的已知下界，现已被 2026-07-27 实测取代——见本文档顶部更新）。这只放宽「允许配置的上限」、默认值不变。**不得**填成 300s 整：撞上就是整条请求被客户端放弃。
+- [ ] **Step 2（Q1 已闭合，原「待补测阶梯」作废）**：`streamCommitAfterSec` 默认值（当前 20）是否上调，现在是一个**有上界的取舍**而非未知量——上界 300s 已测定，取舍轴是「窗口越大越多 B-Mode2 走原生保护、但 A 型挂起在窗口内干等越久」。事故 RST 的 126-206s **整段在窗口内**，故默认值抬过 206s 可让事故形态留在 pre-header 区。**这是运维参数取舍，摆量化选项交用户拍板，不由实施者自行决定。**
+- [ ] **Step 3**：跑 `bun run test:backend` 全绿；更新 `schema.ts` 里 `stream_commit_after_sec` 的 TSDoc（补 Q1 实测 300s 上限 + 归属 undici `headersTimeout` + 出处 `exp/silence-recovery-gates/FINDINGS.md`）。
+- [ ] **Step 4**：提交 → `fix(config): raise stream_commit_after_sec ceiling to the measured CC pre-header limit`。
 
 ## 验收 Oracle
 

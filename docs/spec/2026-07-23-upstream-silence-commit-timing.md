@@ -223,7 +223,7 @@ commit 的真正代价**不是**「锁定了内容」，而是「锁定了 **HTT
 
 ## 8. 开放问题 + 需用户/主会话拍板的取舍
 
-- **Q1（实测门控，B1 前置）** CC（Claude Code / @anthropic-ai/sdk）对「请求已发、迟迟无 HTTP 200 响应头」的容忍度是多少秒？这决定 B1 窗口上限。注意这**不是** 60s SSE byte-idle（那层 commit 后才生效），可能是 connect/read timeout。**建议**：隔离端口起测试 server + mock upstream（pre-header 静默 N 秒）+ 真 `claude` 客户端，二分容忍度。**属实测、非推断。**
+- **Q1【已闭合 · 2026-07-27 实测】** CC 对「请求已发、迟迟无 HTTP 200 响应头」的容忍度 = **300.0s**，且**不归 Anthropic 层**——是 undici 默认 `headersTimeout`，位于 SDK/CC 配置的下一层，所以两者自称的 `x-stainless-timeout: 1200` / 显式 `timeout: 1_250_000` 都够不着它。真 CC 2.1.220 四次尝试落在 299,667–300,280ms；裸 `fetch`（无 SDK 无 CC）在 300,887ms 抛 `UND_ERR_HEADERS_TIMEOUT`；把 `CLAUDE_STREAM_IDLE_TIMEOUT_MS` 抬到 600000 **不移动**该点（故不是 CC 的 stream idle watchdog）。撞上后 CC **原生重试**（观测连做 ≥5 次、每次间隔 ~2s；重试上限**未测定**——该轮由我方主动终止，非 CC 耗尽），代价是上游从头重算。证据与对照见 [`exp/silence-recovery-gates/FINDINGS.md`](../../exp/silence-recovery-gates/FINDINGS.md) §「Q1 续测」+ `results/q1-firstfail/`。**推论**：B1 窗口的物理上限 = 300s 减余量；「commit 推迟到首个真实块」的无上限形式**不成立**（pre-commit 一个字节都不发，300s 到点客户端整条放弃）；commit 在 T 秒 ⇒ 总预算 T+300s、天花板 ~600s。注意 pre-header 的 300s（undici `headersTimeout`，任何响应头即满足）与 post-commit 的 300s（CC stream idle watchdog，**ping 不重置**）是**不同机制、数值巧合**。
 - **Q2（PoC 门控，B2 成败关键）** 事故类请求（261-678KB 大 context、GHC 0 帧干挂）**在 fresh retry 下能否成功**？若 A 是瞬态 → B2 根治；若 A 系统性（大 context 必挂）→ B2 退化为 B3。**建议交主会话决定是否派 `gpt-souls:poc-runner`** 复现 + 重试实测。**未验证前，B2 的「救事故」效力是假设、非结论。**
 - **Q3（独立待测）** Responses/gpt 路径的 header 时序是 Mode-1（头早到、body 静默）还是 Anthropic 式 deferred-header？若前者，「等 header」在 Responses 路径可能成立 —— 但那是另一个 spec 的事，不混入本 Anthropic spec。
 - **Q4** 是否值得为 A3/A6 补一层「pre-header 静默时长」遥测（不作判据、只作可观测 + 未来分析），以便日后若 GHC 行为变化能发现？→ 倾向做（richest-data-flow / 低成本可观测）。
@@ -252,4 +252,4 @@ commit 的真正代价**不是**「锁定了内容」，而是「锁定了 **HTT
 - 「Anthropic 路径不存在可靠判别信号」应限定为「**在本代理当前已接入的同一 response stream 可观测面内**不存在」——不能证明 GHC 不提供独立状态面（§8 新增 capability probe）。
 
 **待实测/PoC（明确未验证，交用户裁决前的门）：**
-- Q1 CC pre-header 容忍度、Q2 事故请求 fresh-retry 可恢复性、Q3 Responses 路径 header 时序、Q8 GHC pre-content 状态面 capability probe。**这些验证前，B1 窗口上限、B2 救事故效力、跨路径推广均为假设。**（Q5 已闭合、不再是门。）
+- Q2 事故请求 fresh-retry 可恢复性、Q3 Responses 路径 header 时序、Q8 GHC pre-content 状态面 capability probe。**这些验证前，B2 救事故效力、跨路径推广均为假设。**（Q5、Q1 已闭合、不再是门——**B1 窗口上限现为实测的 300s**，见 §8 Q1。）

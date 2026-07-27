@@ -46,7 +46,9 @@
 - `:298200` 消费循环 `if (ar.type === "ping") { yield…; continue }` 然后才 `he()` → **任何非-ping 事件都重置**，不必是 content delta。`content_block_start`/`content_block_stop`/`message_delta` 都算。
 - **既有 skill 里「只有真实 content_block_delta 能重置」的表述不准确**，尚未修正（见 §4 待办）。
 - 300s 是**地板**（`Math.max(env, 3e5)`），只能调高。
-- 300s 时钟在**响应头到达后**才武装；头到达前由 SDK client `timeout = API_TIMEOUT_MS || 600000` 管，**期间一帧都不用发**。
+- 300s 时钟在**响应头到达后**才武装（`he()` 在 `await …withResponse()` 之后），头到达前**一帧都不用发**。
+  - **⚠ 2026-07-27 订正**：本行原写「头到达前由 SDK client `timeout = API_TIMEOUT_MS || 600000` 管」——**那不是真正的约束**。SDK 的计时器确实是 600s（2.1.220 实装亦然），但它**从来没机会触发**：更低一层的 undici 默认 `headersTimeout` 在 **300.0s** 就掐断了。实测：真 CC 299,667–300,280ms、SDK（显式 1250s 超时）300,001ms、裸 `fetch` 300,887ms 抛 `UND_ERR_HEADERS_TIMEOUT`。所以 pre-header 预算是 **300s，不是 600s**。见 `exp/silence-recovery-gates/FINDINGS.md` §「Q1 续测」。
+  - 巧合提醒：pre-header 的 300s（undici `headersTimeout`，**任何**响应头即满足）与 commit 后的 300s（CC stream idle watchdog，**ping 不重置**）是**两个不同机制**，数值相同，别合并做预算。
 
 ### 2.2 生产损伤（我亲手用 History 只读探针复核）
 
@@ -85,9 +87,19 @@
 
 ### T1【用户已批】commit 时机推迟到首个真实块 —— 前提是不能弄坏 CC↔proxy 连接
 
+> **⚠ 2026-07-27 续会话更新：T1 的无上限形式已被实测否定，且它不是空地。**
+>
+> **① 实测（Q1 门已闭合）**：CC 的 pre-header 容忍度 = **300.0s**，不是「≥125s、上界未知」。归属 **undici 默认 `headersTimeout`**——在 SDK 与 CC 配置的下一层，所以 CC 自称的 `x-stainless-timeout: 1200`、SDK 的显式 `timeout: 1_250_000` 都够不着它（裸 `fetch` 无 SDK 无 CC 同样在 300,887ms 抛 `UND_ERR_HEADERS_TIMEOUT`；把 `CLAUDE_STREAM_IDLE_TIMEOUT_MS` 抬到 600s 不移动该点）。证据 + 对照见 [`exp/silence-recovery-gates/FINDINGS.md`](../../../exp/silence-recovery-gates/FINDINGS.md) §「Q1 续测」。
+>
+> **所以「推迟到首个真实块」不能无上限做**：commit 前我方一个字节都发不出，300s 一到客户端整条放弃。真实收益是**有界的**——commit 在 T 秒 ⇒ 总预算 T+300s，T 只能逼近 300s ⇒ **天花板 ~600s**（当前 T=20 ⇒ ~320s）。撞上不致命（CC 原生重试，观测 ≥5 次），代价是上游从头重算。
+>
+> **② 别另起炉灶**：这条已有定稿 spec + 经两轮跨模型评审达成 consensus 的 5 份 plan（[`docs/plan/2026-07-23-upstream-silence-recovery/`](../2026-07-23-upstream-silence-recovery/)），**B1 就是 T1**。且 `feat/upstream-silence-recovery` 分支上 B1 已实现但未合 master（`a81f117d` 拆 clamp、`6c53e27b` ceiling 提 125s，外加 B2-P0 地基）。该分支停在 07-23，**无会话在跟进**（查过所有活跃 session 的 `gitBranch`）；与今日 master 做 `git merge-tree` 试合并：**全部源码文件自动合并干净，只有 `docs/DESIGN.md` 和 `docs/todo/deferred-backlog.md` 两处文本冲突**。用户 2026-07-27 裁决：**先只读评估、暂不动它**。
+>
+> **③ 剩下真正要做的**：不是测量（已完成），而是 **`streamCommitAfterSec` 默认值取多少**——现在是一个上界已知的取舍（窗口越大越多长思考走原生保护 vs A 型挂起干等越久），事故 RST 的 126-206s 整段在窗口内。plan-1 Task 1.2 已按此改写，**取值需用户拍板**。
+
 - **收益**：300s 时钟在响应头之后才起跑；推迟到 T 秒 commit，总预算变 T+300s（现在 `stream_commit_after_sec: 20` 等于主动在第 20 秒开跑，把预算钉死 ~320s）。
-- **用户明确要求**：**源码 + 实证双证**，证明推迟不会破坏 CC 与 proxy 的连接。
-- **已知的源码侧证据**（§2.1）：头到达前 CC 由 `API_TIMEOUT_MS || 600s` 管，期间不需要任何帧。**但这只是 SDK 层**；还需要查：CC 是否有更早的连接级超时、代理侧 `stream_commit_after_sec` 与 pre-response 重试/错误整形的交互（上游错误在 commit 前还能以真 HTTP 状态码返回，commit 后就只能走 SSE 内错误——这是**收益的一部分**，也是风险面）。
+- **用户明确要求**：**源码 + 实证双证**，证明推迟不会破坏 CC 与 proxy 的连接。→ 双证已完成（见上方更新）：源码侧确认 pre-header 期间 CC 的 idle watchdog 尚未武装（`he()` 在 `await …withResponse()` 之后），实证侧测出真正的约束在更低一层。
+- **仍未查的风险面**：代理侧 `stream_commit_after_sec` 与 pre-response 重试/错误整形的交互（上游错误在 commit 前还能以真 HTTP 状态码返回，commit 后就只能走 SSE 内错误——这是**收益的一部分**，也是风险面）。
 - **必须与 `docs/spec/2026-07-23-upstream-silence-commit-timing.md` 合并设计**，别另起炉灶。
 - **验收**：① 真 CLI e2e：上游静默 T+250s 后才出首块，客户端完整收尾；② 上游在 commit 前报错时客户端拿到**真 HTTP 状态码**；③ 现有 pre-response 相关测试全绿。
 
