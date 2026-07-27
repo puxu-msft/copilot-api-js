@@ -6,8 +6,49 @@ import type {
 
 export type AssistantBlockLayoutStrategy = "passthrough" | "insert_text" | "move_blocks"
 
-/** Fixed, distinguishable synthetic separator (empty/whitespace text is stripped upstream → useless). */
-export const SYNTHETIC_THINKING_SEPARATOR = "[copilot-api: thinking separator]"
+/**
+ * Synthetic separator sentinel — a VERSIONED FAMILY matched by prefix, not one frozen literal.
+ *
+ * Why a text block at all: the separator must survive the round trip through upstream AND through
+ * the client's stored history, so it can only be an ordinary, upstream-legal content block. Empty or
+ * whitespace-only text is stripped upstream, so it must carry real characters. That means the TEXT
+ * ITSELF is the only identity we get — an in-process tag (Symbol/WeakSet) cannot survive a client
+ * replaying the block back at us in the next turn, which is exactly when we need to recognise it.
+ *
+ * Why prefix + version rather than a single frozen string: the previous design compared with `===`
+ * against one literal, so changing the wording would silently strand every marker already baked into
+ * a client's history (they would stop being recognised as orphans and leak upstream as stray text).
+ * Matching a `[copilot-api:thinking-separator…` prefix means a future revision only has to bump the
+ * version, and {@link LEGACY_SYNTHETIC_SEPARATORS} keeps older spellings recognised until no live
+ * conversation carries them.
+ *
+ * One producer ({@link makeSyntheticSeparator}) and one recogniser ({@link isSyntheticThinkingSeparator});
+ * `tests/anthropic/synthetic-separator-identity.unit.test.ts` fails the build if any other module
+ * compares against the literal directly.
+ */
+const SYNTHETIC_SEPARATOR_PREFIX = "[copilot-api:thinking-separator"
+
+/** The separator this build EMITS. Consumers must recognise via {@link isSyntheticThinkingSeparator}. */
+export const SYNTHETIC_THINKING_SEPARATOR = `${SYNTHETIC_SEPARATOR_PREFIX}:v1]`
+
+/**
+ * Spellings emitted by earlier builds and still present in live client histories. Drop an entry only
+ * once no client can replay it (they are conversation-lifetime, not persisted-history, artefacts).
+ * `[copilot-api: thinking separator]` was the only spelling before 2026-07-27.
+ */
+const LEGACY_SYNTHETIC_SEPARATORS: ReadonlySet<string> = new Set(["[copilot-api: thinking separator]"])
+
+/** Is this block one of OUR synthetic separators — including one a client replayed from an older build? */
+export function isSyntheticThinkingSeparator(block: ContentBlockParam): boolean {
+  if (block.type !== "text" || typeof block.text !== "string") return false
+  const text = block.text.trim()
+  return text.startsWith(SYNTHETIC_SEPARATOR_PREFIX) || LEGACY_SYNTHETIC_SEPARATORS.has(text)
+}
+
+/** Build a fresh synthetic separator block (the single producer). */
+export function makeSyntheticSeparator(): ContentBlockParam {
+  return { type: "text", text: SYNTHETIC_THINKING_SEPARATOR } as ContentBlockParam
+}
 
 export interface BlockLayoutRepairStats {
   repairedMessages: number
@@ -29,7 +70,7 @@ function isRealSeparator(b: ContentBlockParam): boolean {
   return true
 }
 
-const marker = (): ContentBlockParam => ({ type: "text", text: SYNTHETIC_THINKING_SEPARATOR }) as ContentBlockParam
+const marker = makeSyntheticSeparator
 
 function hasAdjacentThinking(content: Array<ContentBlockParam>): boolean {
   for (let i = 1; i < content.length; i++) if (isThinking(content[i]) && isThinking(content[i - 1])) return true

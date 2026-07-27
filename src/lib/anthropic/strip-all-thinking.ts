@@ -4,7 +4,7 @@ import type {
   MessageParam,
 } from "~/types/api/anthropic"
 
-import { SYNTHETIC_THINKING_SEPARATOR } from "~/lib/anthropic/sanitize/assistant-block-layout"
+import { isSyntheticThinkingSeparator } from "~/lib/anthropic/sanitize/assistant-block-layout"
 
 const THINKING_TYPES = new Set(["thinking", "redacted_thinking"])
 
@@ -12,7 +12,7 @@ const THINKING_TYPES = new Set(["thinking", "redacted_thinking"])
  * A block that {@link stripAllThinking} removes: any `thinking` /
  * `redacted_thinking` block, PLUS an orphaned synthetic de-stack separator. L1
  * de-stack ({@link repairAssistantBlockLayout}, `insert_text` / `move_blocks`)
- * inserts a fixed {@link SYNTHETIC_THINKING_SEPARATOR} text block between two
+ * inserts a synthetic separator text block between two
  * thinking blocks — and, when a message would otherwise END on thinking, as its
  * terminator; once strip-all removes the thinking blocks it separated, that
  * marker is a meaningless orphan that would otherwise leak upstream — so we drop
@@ -20,12 +20,12 @@ const THINKING_TYPES = new Set(["thinking", "redacted_thinking"])
  */
 function isStrippableBlock(block: ContentBlockParam): boolean {
   if (THINKING_TYPES.has(block.type)) return true
-  return block.type === "text" && block.text === SYNTHETIC_THINKING_SEPARATOR
+  return isSyntheticThinkingSeparator(block)
 }
 
 /**
  * Remove ALL `thinking` / `redacted_thinking` blocks — plus any orphaned
- * synthetic de-stack separator ({@link SYNTHETIC_THINKING_SEPARATOR}) they left
+ * synthetic separator ({@link isSyntheticThinkingSeparator}, which also recognises the spellings older builds emitted) they left
  * behind — from every assistant message. The blunt remedy shared by the L2
  * reactive strip-all retry and the L3 proactive quarantine filter.
  *
