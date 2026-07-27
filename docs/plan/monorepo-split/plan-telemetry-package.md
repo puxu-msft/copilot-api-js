@@ -257,8 +257,8 @@ telemetry 包**不删任何 state 字段**（config 归 config）。下列消费
 2. **D2 sink/extractor 归属 — ✅ 留 core**（本 plan 前提，GPT reviewer 确认：塞包会拽 `context/types`/`observability/events`/`fetch-utils` 进 telemetry 依赖面、边界守卫必红）。
 3. **D3 前置 foundation-hoist sqlite 时机 — ✅ 现在做**（主会话已实测 `history-cas-stage` worktree 无 `lib/sqlite` 未提交改动、master..分支无 `lib/sqlite` divergence → 无并发占用，collision-safe；一次性、利好 history）。执行 T0 前仍 `git log --oneline -5 -- src/lib/sqlite` + `git worktree list` 现场复核一次。
 4. **D4 `UsageData` 归属 — ✅ 包内 `TelemetryUsage` 结构型**（GPT reviewer 确认 registry 仅结构读 `input_tokens`/`output_tokens`/`cache_read_input_tokens`/`cache_creation_input_tokens`/`output_tokens_details?.reasoning_tokens`，无 history value 依赖；sink 调用点加 TypeScript assignability 测试锁契约）。
-5. **D5 dimensions name-registry 物理落点 — ⏳ 执行期定**：劈裂后 name-registry 是 `packages/telemetry/src/dimensions-registry.ts`（包内）、core extractor 保 `observability/telemetry-dimensions.ts` 引包。**执行 T3 前 grep `~backend` 确认** `TELEMETRY_DIMENSION_NAMES` 等是否被前端消费——若是则须进包 `types.ts` barrel + 改 `ui-v4` 两处别名（§4 类型 SSOT）。
-6. **D6 与 spec §7.2 阶段 0d 的关系 — ⏳ 执行期对齐**：本 plan T2 的 config 注入即「telemetry 消费端从 `import { state }` 迁窄接口」——**吸收/替代** spec 阶段 0d 的 telemetry-state 迁移。定稿后同步 spec §7.2 口径（把 telemetry-0d 标为「经本 telemetry peel T2 落地」），避免双 SoT 叙事。
+5. **D5 dimensions name-registry 物理落点 — ✅ 已定（T3/T5 落地）**：name-registry 落 `packages/telemetry/src/dimension-names.ts`（非 plan 草拟的 `dimensions-registry.ts`），core extractor 保 `observability/telemetry-dimensions.ts` 引包。实测 `~backend` **只**消费 `RequestTelemetrySnapshot` 一个类型（不含 `TELEMETRY_DIMENSION_NAMES`），故前端只需改指包的纯类型 barrel `@hsupu/ghc-proxy-telemetry/types` + `ui-v4` 两处别名。
+6. **D6 与 spec §7.2 阶段 0d 的关系 — ✅ 已对齐**：本 plan T2 的 config 注入即「telemetry 消费端从 `import { state }` 迁窄接口」，**吸收/替代** spec 阶段 0d 的 telemetry-state 迁移（且更强：包对 core 零 import、机器守卫强制，而非仅约定走窄接口）。spec §7.2 阶段 0d 已同步标注——telemetry/token 两域均已被各自的包剥离吸收，剩余 0d 范围只剩 models 域。
 
 ---
 
