@@ -11,6 +11,10 @@
 | `bisect-c2.py` | **加法**二分：从 200 的最小构造逐项加生产特征 | 几 KB/发 |
 | `bisect-c2-sub.py` | **减法**二分：从 400 的生产 payload 截断历史 | 递减，最小 14KB |
 | `confirm-c2-precondition.py` | 四变体对照，钉死 C2 的触发前提 | 几 KB/发 |
+| `probe-remote-c3-regression.ts` | 把导出的 history entry 的**客户端 payload** 灌进当前 sanitize 管线，打印三腿形态（客户端发来 / 那台实例发上游 / 当前 master 产出）+ 全消息 C1/C2/C3 审计 | 0（离线，不打上游） |
+
+`probe-remote-c3-regression.ts` 是判「某台实例的 400 是我方哪一版代码造的」的离线首选：
+`bun run exp/thinking-terminal-block/probe-remote-c3-regression.ts <解压后的 entry.json>`（entry 从 History UI 导出的 `.json.zst` 用 `zstd -d` 解开）。
 
 ## C2 的最小复现（先看这个，几乎不花钱）
 
@@ -49,7 +53,7 @@ json.dump({'T1':blk[0],'TOOL':blk[1],'T2':blk[2]}, open('/tmp/probe-blocks.json'
 TESTDATA=/tmp/copilot-test-4142
 mkdir -p "$TESTDATA/copilot-api"
 cp ~/.local/share/copilot-api/{github_token,config.yaml} "$TESTDATA/copilot-api/"
-printf '\nanthropic:\n  thinking_destack_strategy: passthrough\n  strip_thinking_on_reject: false\n' >> "$TESTDATA/copilot-api/config.yaml"
+printf '\nanthropic:\n  assistant_block_layout_strategy: passthrough\n  strip_thinking_on_reject: false\n' >> "$TESTDATA/copilot-api/config.yaml"
 XDG_DATA_HOME=$TESTDATA NODE_ENV=production bun run ./packages/cli/src/main.ts start --port 4142 > $TESTDATA/server.log 2>&1 &
 
 # 3) 先跑便宜的（够用就别烧 90k）
@@ -65,4 +69,4 @@ python3 verify-fix-e2e.py 4143     # 4143 = 跑默认 move_blocks 的服务器
 
 - **重放 upstream body 会撞 "Tool names must be unique"**：我方会注入 `Grep`/`Glob`/`Task`/`KillShell`/`tool_search_tool_regex`（客户端把它们声明为 deferred，实际定义由我方补），把已注入过的 body 再喂回去就重复了。脚本按名字剔除这批再发（`INJECTED` 集合）。**这是重放伪影，不是缺陷**——实测客户端发 24 个 + 注入 5 个 = 29 个，无重名。
 - **上游报的 messages 索引不可信**：同一约束在不同 payload 下偏 −1、偏 +1、甚至越界（5 条消息报 `messages.5`）。按形状定位。
-- **别用 4141 主服务器做这些实验**：它是用户的实时实例，且默认配置会 de-stack 掉你要测的排列。
+- **别用 4141 主服务器做这些实验**：它是用户的实时实例，且默认配置会矫正掉你要测的排列。

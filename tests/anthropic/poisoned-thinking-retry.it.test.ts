@@ -24,7 +24,16 @@ import {
   test,
 } from "bun:test"
 
-import { isThinkingLayoutRejection } from "~/lib/anthropic/poisoned-thinking-match"
+import type { RequestEnvelope } from "~/lib/pipeline/envelope"
+import type { RetryAction } from "~/lib/pipeline/types"
+
+import {
+  //
+  classifyLayoutRejection,
+  isThinkingLayoutRejection,
+  isToolTerminalPrefillRejection,
+} from "~/lib/anthropic/poisoned-thinking-match"
+import { SYNTHETIC_THINKING_SEPARATOR } from "~/lib/anthropic/sanitize/assistant-block-layout"
 import { createPoisonedThinkingRetryStrategy } from "~/lib/codec/anthropic/poisoned-thinking-retry"
 import {
   //
@@ -136,5 +145,120 @@ describe("createPoisonedThinkingRetryStrategy().canHandle — body-parse extract
     expect(error.type).toBe("bad_request")
     expect(error.message.toLowerCase()).not.toContain("final block")
     expect(createPoisonedThinkingRetryStrategy().canHandle(error)).toBe(true)
+  })
+})
+
+/**
+ * C3（prefill 措辞）的认领与治愈判据。真实 body 取自 req_1785160010003_3754：陈旧实例的
+ * de-stack 把 `[T,text(""),T,tool]` 变成 `[T,tool,T]`，上游用一句**与 thinking / tool_use
+ * 都无关**的措辞回绝，L2 因此完全不认领 → 客户端吃到硬 400、零兜底。
+ *
+ * 认领之后仍要分辨：strip-all 只治得了「thinking 把 tool_use 挤离末尾」这一种；对真·不以
+ * user 结尾的对话它无能为力，此时必须 abort 而不是白烧掉一次性重试。
+ */
+describe("C3 / prefill 400：认领 + 条件治愈", () => {
+  autoRestoreState()
+
+  const PREFILL_BODY =
+    '{"type":"error","error":{"type":"invalid_request_error","message":"This model does not support assistant message prefill. The conversation must end with a user message."},"request_id":"req_011CdSfYkFaWerhb4y2PDG86"}'
+  const prefillError = () => classifyError(new HTTPError("400 Bad Request", 400, PREFILL_BODY))
+
+  const T = { type: "thinking", thinking: "", signature: "sig" }
+  const toolUse = { type: "tool_use", id: "toolu_1", name: "Bash", input: {} }
+  const toolResult = { type: "tool_result", tool_use_id: "toolu_1", content: "ok" }
+  const SEP = { type: "text", text: SYNTHETIC_THINKING_SEPARATOR }
+  /** 真实形状的对话：assistant 轮 + 对应的 tool_result user 轮（除非显式要求以 assistant 收尾）。 */
+  const envFor = (assistantTurns: Array<Array<unknown>>, tail: "user" | "assistant" = "user"): RequestEnvelope => {
+    const messages: Array<unknown> = []
+    for (const content of assistantTurns) {
+      messages.push({ role: "assistant", content }, { role: "user", content: [toolResult] })
+    }
+    if (tail === "assistant") messages.pop()
+    return {
+      body: { model: "claude-opus-5", max_tokens: 1024, messages },
+      ctx: {},
+      with(patch: { body: unknown }) {
+        return { ...this, ...patch } as RequestEnvelope
+      },
+    } as unknown as RequestEnvelope
+  }
+  const contentOf = (action: RetryAction, index: number): Array<{ type: string }> =>
+    (action as { env: { body: { messages: Array<{ content: Array<{ type: string }> }> } } }).env.body.messages[index].content
+
+  test("措辞分类：prefill 归 tool-terminal-prefill，与 thinking-layout 分开", () => {
+    expect(isToolTerminalPrefillRejection("This model does not support assistant message prefill. The conversation must end with a user message.")).toBe(true)
+    expect(isThinkingLayoutRejection("This model does not support assistant message prefill. The conversation must end with a user message.")).toBe(false)
+    expect(classifyLayoutRejection(prefillError())).toBe("tool-terminal-prefill")
+  })
+
+  test("canHandle：prefill 400 现在被接管（此前是零兜底的硬 400）", () => {
+    setStateForTests({ stripThinkingOnReject: true })
+    expect(createPoisonedThinkingRetryStrategy().canHandle(prefillError())).toBe(true)
+  })
+
+  test("handle：thinking 造成的 C3（[T,tool,T]）→ 剥 thinking 重试", async () => {
+    setStateForTests({ stripThinkingOnReject: true })
+    const action = await createPoisonedThinkingRetryStrategy().handle(prefillError(), envFor([[T, toolUse, T]]))
+    expect(action.kind).toBe("retry")
+    expect(contentOf(action, 0).map((b) => b.type)).toEqual(["tool_use"]) // 剥完 tool_use 自然收尾
+  })
+
+  test("handle：L1 合成分隔符拖尾（[tool,T,SEP]，insert_text 腿的已知形态）→ 重试；判据必须用真实 strip 结果", async () => {
+    setStateForTests({ stripThinkingOnReject: true })
+    // strip-all 连同孤儿合成 marker 一起删 → `[tool]` 合法。若判据自己「只过滤 thinking」来模拟，
+    // 会算出 `[tool, SEP]` 仍违规而误 abort —— 正是最该兜住 insert_text 腿的时候失手。
+    const action = await createPoisonedThinkingRetryStrategy().handle(prefillError(), envFor([[toolUse, T, SEP]]))
+    expect(action.kind).toBe("retry")
+    expect(contentOf(action, 0).map((b) => b.type)).toEqual(["tool_use"])
+  })
+
+  test("handle：非 thinking 造成的 C3（[tool,text]）→ abort，不白烧重试", async () => {
+    setStateForTests({ stripThinkingOnReject: true })
+    const action = await createPoisonedThinkingRetryStrategy().handle(prefillError(), envFor([[toolUse, { type: "text", text: "trailing" }]]))
+    expect(action.kind).toBe("abort")
+  })
+
+  test("handle：一条可治愈 + 另一条治不了（[tool,text]）→ 整体 abort，绝不发已知仍违规的 payload", async () => {
+    setStateForTests({ stripThinkingOnReject: true })
+    const action = await createPoisonedThinkingRetryStrategy().handle(
+      prefillError(),
+      envFor([
+        [T, toolUse, T],
+        [toolUse, { type: "text", text: "trailing" }],
+      ]),
+    )
+    expect(action.kind).toBe("abort")
+  })
+
+  test("handle：对话以 assistant 收尾（字面 prefill）→ abort，即便块级 C3 剥了能修", async () => {
+    setStateForTests({ stripThinkingOnReject: true })
+    const action = await createPoisonedThinkingRetryStrategy().handle(prefillError(), envFor([[T, toolUse, T]], "assistant"))
+    expect(action.kind).toBe("abort")
+  })
+
+  test("handle：无任何 C3 违规（合法布局）→ abort，不拿 strip-all 当万金油", async () => {
+    setStateForTests({ stripThinkingOnReject: true })
+    const action = await createPoisonedThinkingRetryStrategy().handle(prefillError(), envFor([[T, { type: "text", text: "hi" }, toolUse]]))
+    expect(action.kind).toBe("abort")
+  })
+
+  test("C1/C2 腿不受本条件门影响：thinking-layout 400 仍无条件 strip-all 重试", async () => {
+    setStateForTests({ stripThinkingOnReject: true })
+    const body = '{"error":{"message":"messages.27: The final block in an assistant message cannot be `thinking`."}}'
+    const error = classifyError(new HTTPError("400 Bad Request", 400, body))
+    // 布局合法（tool_use 收尾）→ C3 条件门若误加到这条腿上就会 abort。
+    const action = await createPoisonedThinkingRetryStrategy().handle(error, envFor([[T, { type: "text", text: "hi" }, toolUse]]))
+    expect(action.kind).toBe("retry")
+  })
+
+  test("state 门禁对 C3 一样生效", () => {
+    setStateForTests({ stripThinkingOnReject: false })
+    expect(createPoisonedThinkingRetryStrategy().canHandle(prefillError())).toBe(false)
+  })
+
+  test("负命中：只提 prefill 但不是本措辞的 400 不认领", () => {
+    setStateForTests({ stripThinkingOnReject: true })
+    const body = '{"error":{"message":"prefill is not allowed for streaming requests"}}'
+    expect(createPoisonedThinkingRetryStrategy().canHandle(classifyError(new HTTPError("400 Bad Request", 400, body)))).toBe(false)
   })
 })

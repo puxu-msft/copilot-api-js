@@ -17,6 +17,7 @@ import { state } from "~/lib/state"
 
 import { resolveServerToolMode } from "../server-tool-rewrite-mode"
 import { resolveSystemSanitizeMode } from "../system-reject-mode"
+import { repairAssistantBlockLayout } from "./assistant-block-layout"
 import {
   //
   countAnthropicContentBlocks,
@@ -24,7 +25,6 @@ import {
   stripSyntheticReasoningBlocks,
 } from "./content-blocks"
 import { deduplicateToolCalls } from "./deduplicate-tool-calls"
-import { destackAdjacentThinking } from "./destack-adjacent-thinking"
 import { downgradeEmptyEncryptedSearchResults } from "./empty-encrypted-search-result"
 import { stripReadToolResultTags } from "./read-tool-result-tags"
 import { finalizeAnthropicSanitization } from "./result"
@@ -157,19 +157,19 @@ export function sanitizeAnthropicMessages(payload: MessagesPayload): ReturnType<
   // text) and (b) it CATCHES adjacency newly created by orphan-tool deletion. It
   // operates on the finalized messages (`.payload.messages` — there is NO top-level
   // `.messages`) and writes the result back there. Its insert/reorder counters are
-  // attached SEPARATELY (`stats.destack`) from finalize's subtractive residual model,
+  // attached SEPARATELY (`stats.blockLayout`) from finalize's subtractive residual model,
   // which assumes blocks only ever decrease — de-stack INSERTS.
-  const destacked = destackAdjacentThinking(finalized.payload.messages, state.thinkingDestackStrategy)
+  const destacked = repairAssistantBlockLayout(finalized.payload.messages, state.assistantBlockLayoutStrategy)
   return {
     ...finalized,
     payload: { ...finalized.payload, messages: destacked.messages },
-    stats: { ...finalized.stats, destack: destacked.stats },
+    stats: { ...finalized.stats, blockLayout: destacked.stats },
   }
 }
 
 export { deduplicateToolCalls } from "./deduplicate-tool-calls"
 
 export { stripReadToolResultTags } from "./read-tool-result-tags"
-export { destackActed, type SanitizationStats, toSanitizationInfo } from "./result"
+export { layoutRepairActed, type SanitizationStats, toSanitizationInfo } from "./result"
 export { removeAnthropicSystemReminders } from "./system-reminders"
 export { processToolBlocks } from "./tool-blocks"

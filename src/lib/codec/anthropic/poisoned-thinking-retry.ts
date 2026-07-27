@@ -1,23 +1,24 @@
 /**
  * L2 reactive strip-all retry — the second layer of the three-layer fix for
- * GHC's illegal-thinking-layout 400s (docs/plan/thinking-quarantine,
+ * GHC's illegal-layout 400s (docs/plan/thinking-quarantine,
  * docs/spec/2026-07-26-thinking-terminal-block-layout.md).
  *
- * L1 (`destackAdjacentThinking`) proactively prevents both known layout violations
- * (adjacent thinking blocks; a message terminating on thinking). This L2 strategy is
- * the reactive fallback: when such a 400 still reaches S4 (a layout L1 did not
- * preempt), it strips ALL thinking blocks from the payload and retries once to unblock
- * the turn. L3 (this file's `onResolved`) then durably quarantines the offending
- * `(session, agent)` conversation so a later turn is stripped proactively (Task 11).
+ * L1 (`repairAssistantBlockLayout`) proactively prevents all three known layout violations
+ * (C1 adjacent thinking blocks; C2 a message terminating on thinking; C3 a message carrying
+ * `tool_use` that does not end on it). This L2 strategy is the reactive fallback: when such a
+ * 400 still reaches S4 (a layout L1 did not preempt — a non-default de-stack strategy, or an
+ * L1 regression like the one that produced req_1785160010003_3754), it strips ALL thinking
+ * blocks from the payload and retries once to unblock the turn. L3 (this file's `onResolved`)
+ * then durably quarantines the offending `(session, agent)` conversation so a later turn is
+ * stripped proactively (Task 11).
  *
  * Implemented as a NATIVE env-based strategy (not wrapped by
  * `adaptPayloadStrategy`): L3's `onResolved` reads `env.ctx.{sessionId,agentId}`,
  * which the legacy adapter drops. The remediation itself is payload-only (strip-all
  * thinking) so it needs no ctx here.
  *
- * The shared match core (`matchesThinkingLayoutRejection`) lives in the neutral
- * `~/lib/anthropic/poisoned-thinking-match` leaf so the legacy twin
- * (`~/lib/request/strategies/poisoned-thinking-retry`) imports it DOWNWARD — no
+ * The shared match core (`classifyLayoutRejection`) lives in the neutral
+ * `~/lib/anthropic/poisoned-thinking-match` leaf so this shell imports it DOWNWARD — no
  * request/strategies → codec inversion.
  */
 
@@ -34,7 +35,12 @@ import type {
 } from "~/lib/pipeline/types"
 import type { MessagesPayload } from "~/types/api/anthropic"
 
-import { matchesThinkingLayoutRejection } from "~/lib/anthropic/poisoned-thinking-match"
+import { classifyLayoutRejection } from "~/lib/anthropic/poisoned-thinking-match"
+import {
+  //
+  endsOnAssistantTurn,
+  hasToolTerminalViolation,
+} from "~/lib/anthropic/sanitize/assistant-block-layout"
 import { stripAllThinking } from "~/lib/anthropic/strip-all-thinking"
 import { getQuarantineStore } from "~/lib/anthropic/thinking-quarantine"
 import { toQuarantineKey } from "~/lib/anthropic/thinking-quarantine/session-key"
@@ -61,7 +67,7 @@ export function createPoisonedThinkingRetryStrategy(deps?: { store?: ThinkingQua
     canHandle(error: ApiError): boolean {
       if (attempted) return false
       if (!state.stripThinkingOnReject) return false
-      return matchesThinkingLayoutRejection(error)
+      return classifyLayoutRejection(error) !== null
     },
     handle(error: ApiError, env: RequestEnvelope): Promise<RetryAction> {
       attempted = true
@@ -70,6 +76,18 @@ export function createPoisonedThinkingRetryStrategy(deps?: { store?: ThinkingQua
       // Nothing to strip → the 400 is not actually about echoed thinking we can
       // remove; abort rather than retry an unchanged payload into the same 400.
       if (strippedCount === 0) return Promise.resolve({ kind: "abort", error })
+      // C3 ("...does not support assistant message prefill...") is the one cue whose
+      // remediation is CONDITIONAL, and the verdict is read off the REAL strip-all output
+      // (not a re-implementation of it): retry only when the payload had a C3 violation,
+      // stripping cured EVERY one of them, and the conversation does not end on an assistant
+      // turn — the literal prefill the wording also covers, which stripping cannot fix.
+      // Otherwise abort: a retry we already know still violates C3 would burn the one-shot.
+      if (
+        classifyLayoutRejection(error) === "tool-terminal-prefill"
+        && (!hasToolTerminalViolation(payload.messages) || hasToolTerminalViolation(messages) || endsOnAssistantTurn(payload.messages))
+      ) {
+        return Promise.resolve({ kind: "abort", error })
+      }
       // review M1: `env.with()` is the only immutable-update method (envelope.ts:108);
       // a bare `{ ...env }` spread would drop the prototype method + shared ctx.
       const nextEnv = env.with({ body: { ...payload, messages } })

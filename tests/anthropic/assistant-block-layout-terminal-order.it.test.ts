@@ -8,7 +8,7 @@ import {
 import type { MessagesPayload } from "~/types/api/anthropic"
 
 import { sanitizeAnthropicMessages } from "~/lib/anthropic/sanitize"
-import { SYNTHETIC_THINKING_SEPARATOR } from "~/lib/anthropic/sanitize/destack-adjacent-thinking"
+import { SYNTHETIC_THINKING_SEPARATOR } from "~/lib/anthropic/sanitize/assistant-block-layout"
 import { setStateForTests } from "~/lib/state"
 
 import { autoRestoreState } from "../helpers/state-fixture"
@@ -32,7 +32,7 @@ describe("de-stack terminal-pass wiring", () => {
   autoRestoreState()
 
   test("orphan tool_use between two thinking blocks: processToolBlocks deletes orphan → terminal de-stack re-separates the newly-adjacent thinking", () => {
-    setStateForTests({ thinkingDestackStrategy: "move_blocks" })
+    setStateForTests({ assistantBlockLayoutStrategy: "move_blocks" })
 
     const payload = {
       model: "claude-opus-4.8",

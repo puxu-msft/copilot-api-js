@@ -1,7 +1,7 @@
 # Anthropic 上游对 assistant 消息内 thinking 布局的三条硬约束
 
-日期：2026-07-26
-状态：**已实施**（L1 修复 landed；L2 兜底 matcher 扩展 landed）
+日期：2026-07-26（2026-07-27 追加 C3 主动修复）
+状态：**已实施**（L1 修复 landed；L2 兜底 matcher 扩展 landed；2026-07-27 C3 升级为独立触发的主动修复 + L2 认领 landed）
 相关：[2026-07-07-thinking-signature-quarantine.md](2026-07-07-thinking-signature-quarantine.md)（三层架构 L1/L2/L3 的原始 spec）、skill `ghc-anthropic-upstream`
 
 ## 触发事故
@@ -20,7 +20,7 @@ HTTP 400: messages.27: The final block in an assistant message cannot be `thinki
 
 ## 实测确立的约束（全部亲手实测，非文档推断）
 
-方法：把生产 400 的 upstream payload 原样重放到隔离测试服务器（`XDG_DATA_HOME` 隔离 + `thinking_destack_strategy: passthrough` 保证我方不再改写），逐变体只改 `messages[28]` 的块排列，打真实 GHC 上游。探针：`exp/thinking-terminal-block/`。
+方法：把生产 400 的 upstream payload 原样重放到隔离测试服务器（`XDG_DATA_HOME` 隔离 + `assistant_block_layout_strategy: passthrough`（当时叫 `thinking_destack_strategy`）保证我方不再改写），逐变体只改 `messages[28]` 的块排列，打真实 GHC 上游。探针：`exp/thinking-terminal-block/`。
 
 | # | 约束 | 违规形态 | 上游 400 文本 |
 |---|---|---|---|
@@ -69,9 +69,9 @@ HTTP 400: messages.27: The final block in an assistant message cannot be `thinki
 
 ## 修复
 
-### L1：`destackAdjacentThinking`（`src/lib/anthropic/sanitize/destack-adjacent-thinking.ts`）
+### L1：`repairAssistantBlockLayout`（`src/lib/anthropic/sanitize/assistant-block-layout.ts`，2026-07-27 前叫 `destackAdjacentThinking` / `destack-adjacent-thinking.ts`）
 
-1. **触发条件扩展**：`hasAdjacentThinking(content) || endsWithThinking(content)`。旧实现只在检出相邻 thinking 时才动手，因此客户端原生就以 thinking 收尾的消息（如 `[text, T]`、`[T]`，thinking 阶段被 `max_tokens` 截断的轮次会产生）直接漏过去撞 C2。
+1. **触发条件扩展**：`hasAdjacentThinking(content) || endsWithThinking(content)`（**2026-07-27 起再并上 C3**：`|| violatesToolTerminal(content)`，仅 `move_blocks`——见下文「追加事故」）。旧实现只在检出相邻 thinking 时才动手，因此客户端原生就以 thinking 收尾的消息（如 `[text, T]`、`[T]`，thinking 阶段被 `max_tokens` 截断的轮次会产生）直接漏过去撞 C2。
 2. **`move_blocks` 先预留收尾块，再把剩下的发给交错逻辑**：收尾块优先取**最后一个 `tool_use`**（满足 C3），否则取最后一个真分隔符，两者都没有才补合成 marker。交错阶段照旧按原序消耗真分隔符、不足补 marker。
    - `[T,T,tool]` → `[T, SEP, T, tool]`（1 个合成）
    - `[Ta,Tb,Tc,text,tool1,tool2]` → `[Ta, text, Tb, tool1, Tc, tool2]`（0 个合成，与旧行为一致）
@@ -79,9 +79,9 @@ HTTP 400: messages.27: The final block in an assistant message cannot be `thinki
    - `[text, T]` → `[T, text]`（0 个合成，纯重排）
 3. **`insert_text`**：末块是 thinking 时追加 marker（保 C2）。已知边界：该策略契约是「真实块不移位」，故 `[tool, T]` 这种形态它只能产出 `[tool, T, SEP]`（违反 C3）。C3 由默认策略 `move_blocks` 负责；`insert_text` 保持诊断/对照腿定位。
 4. **`passthrough` 保持完全不动**（诊断对照价值）。
-5. 新增统计 `DestackStats.terminalRepairs`：因 C2 而被重新收尾的消息数（与 `insertedMarkers` 分开计，落进 `pipelineInfo.sanitization[].destack`）。
+5. 新增统计 `BlockLayoutRepairStats.terminalRepairs`：因 C2 而被重新收尾的消息数（与 `insertedMarkers` 分开计，落进 `pipelineInfo.sanitization[].blockLayout`（2026-07-27 前该字段叫 `destack`））。2026-07-27 追加同构的 `toolTerminalRepairs`（因 C3 而被重新收尾的消息数）。
 
-**幂等性**：满足 C1+C2 的消息按引用原样返回（逐字节不变）。
+**幂等性**：满足 C1+C2（2026-07-27 起 +C3）的消息按引用原样返回（逐字节不变）。
 
 ### L2：matcher 扩展（`src/lib/anthropic/poisoned-thinking-match.ts`）
 
@@ -90,12 +90,54 @@ HTTP 400: messages.27: The final block in an assistant message cannot be `thinki
 - `cannot be modified` **且**提到 thinking/redacted_thinking，或
 - `final block in an assistant message cannot be`（要求完整线索，避免任何一句带 "thinking" 的 400 都触发 strip-all）
 
-两种拒绝由同一个补救（strip ALL thinking 后重试一次）治愈，故共用一个谓词；L3 quarantine 逻辑不变。
+两种拒绝由同一个补救（strip ALL thinking 后重试一次）治愈，故共用一个谓词；L3 quarantine 逻辑不变。（**2026-07-27**：C3 的措辞作为**第三种线索**加入，但**不并进本谓词**——它的治愈是有条件的，见下文「追加事故」；入口函数随之从 `matchesThinkingLayoutRejection` 换成 `classifyLayoutRejection`。）
+
+## 追加事故（2026-07-27）：C3 从「只尊重」升为「主动修复」
+
+一台**陈旧实例**（进程启动于 2026-07-25 07:38 UTC，早于本 spec 的 L1 修复 commit `a17c4191`，2026-07-26 07:14 UTC）产出了同一类每轮必败的 400，措辞是 C3 的：
+
+```
+HTTP 400: This model does not support assistant message prefill. The conversation must end with a user message.
+```
+
+取证（导出的 history entry `req_1785160010003_3754`，`attemptCount = 1`，`clientStatus 400`）：
+
+| 腿 | `messages[36]` 形态 |
+|---|---|
+| 客户端发来 | `[thinking, text(""), thinking, tool_use]` —— **合法**（空 text 隔开两个 thinking、tool_use 收尾） |
+| 我方发上游 | `[thinking, tool_use, thinking]` —— 同时违反 C2 与 C3 |
+
+链条：finalize 的 `filterEmptyAnthropicTextBlocks` 先删掉那个空 text（上游本就会 strip，不是分隔符）→ 剩下 `[T,T,tool]` 触发 C1 → **修复前的** `move_blocks` 把唯一非 thinking 块 `tool_use` 当分隔符挪到中间 → `[T,tool,T]`。该实例落库的 `destack` 统计（当时的字段名）里没有 `terminalRepairs` 字段（该字段是 07-26 修复引入的），**payload 自证进程是陈旧的**。
+
+用当前 master 跑同一条客户端 payload（探针 `exp/thinking-terminal-block/probe-remote-c3-regression.ts`）：产出 `[thinking, SEP, thinking, tool_use]`，全部 39 条消息满足 C1+C2+C3 —— **该实例升级即修复**。
+
+但事故暴露了两个真实缺口，已在 master 补上：
+
+1. **L1 只在 C1/C2 违规时才动手，C3 违规本身不是触发条件**。一条「客户端原生就违反 C3」的消息（含上一条这种由陈旧实例产出、被客户端 baked 进历史后每轮重投的）会原样透传上游。现在 `move_blocks` 把 C3 也当独立触发条件（`insert_text` 不能移位、故保持不触发，不谎报修了），新增统计 `BlockLayoutRepairStats.toolTerminalRepairs`。
+2. **L2 认不出 C3 的措辞** → 事故当天完全无兜底，硬 400 直达客户端。现在 matcher 把 C3 的 prefill 措辞作**独立线索**（`classifyLayoutRejection` 返回 `"thinking-layout" | "tool-terminal-prefill" | null`）：C1/C2 一律 strip-all 治愈；C3 **有条件**治愈——判据取自**真实 `stripAllThinking` 的前后对比**（`hasToolTerminalViolation` 各跑一次），而不是另写一个近似版补救——真 strip 还会删掉孤儿合成分隔符，自己模拟会把 `[tool, T, SEP]` 误判成不可治愈。三条同时成立才重试：原 payload 确有 C3 违规、剥完**全部**违规都消失、且对话不以 assistant 轮收尾（同一措辞覆盖的**字面** prefill，剥 thinking 治不了）。否则 abort，不把一次性重试白烧在已知仍违规的 payload 上。
+
+   注意：**内联 `role:"system"` 消息收尾不算 prefill**——实测同一事故对话里有五轮以 system 消息收尾，上游都正常作答。
+
+## 随之而来的重命名（2026-07-27）
+
+C3 会修**完全不含 thinking** 的消息（`[tool, text]` → `[text, tool]`），于是「thinking de-stack」这串名字全部名实不符。已整体改名（异模型 reviewer 判 MED，用户裁定全量）：
+
+| 旧 | 新 |
+|---|---|
+| `destackAdjacentThinking()` | `repairAssistantBlockLayout()` |
+| `sanitize/destack-adjacent-thinking.ts` | `sanitize/assistant-block-layout.ts` |
+| `DestackStats` / `destackedMessages` | `BlockLayoutRepairStats` / `repairedMessages` |
+| `destackActed()` | `layoutRepairActed()` |
+| `ThinkingDestackStrategy` / `state.thinkingDestackStrategy` | `AssistantBlockLayoutStrategy` / `state.assistantBlockLayoutStrategy` |
+| `SanitizationInfo.destack`（history 落盘字段） | `SanitizationInfo.blockLayout` |
+| config `anthropic.thinking_destack_strategy` | config `anthropic.assistant_block_layout_strategy` |
+
+配置键按项目配置哲学**留旧键别名**（`compat.ts` 的 `renameLeaf`，warn-and-continue，绝不 fail-load）；`SYNTHETIC_THINKING_SEPARATOR` 的**名字与字面值都不动**——它确实是 thinking 分隔符，且 `stripAllThinking` 靠精确文本识别孤儿 marker，而客户端历史里已经 baked 了旧值，改字面值会让那些 marker 变成认不出的垃圾。
 
 ## 明确未做（记录以免被误读为遗漏）
 
-- **不主动修复 C3 违规本身**。destack 只保证自己不制造 C3 违规。客户端原生产出 `[T, tool, text]` 这种形态在观测中从未出现（Anthropic 响应总是 text 在 tool_use 之前），真要修就得移动客户端的真实块、语义风险大于收益。若将来观测到，再按同样的实测流程立案。
-- **`insert_text` 的 C3 边界**（见上）不修，理由同上，且它不是默认策略。
+- ~~**不主动修复 C3 违规本身**。destack 只保证自己不制造 C3 违规。客户端原生产出 `[T, tool, text]` 这种形态在观测中从未出现（Anthropic 响应总是 text 在 tool_use 之前），真要修就得移动客户端的真实块、语义风险大于收益。若将来观测到，再按同样的实测流程立案。~~ **2026-07-27 推翻并已实施**（见上节「追加事故」）：不必等 Anthropic 原生产出这种形态——**我方自己产出的非法形态会被客户端 baked 进历史、此后每轮重投**，所以「客户端原生不会有」这个前提本身就是伪安全感。
+- ~~**`insert_text` 的 C3 边界**（见上）不修，理由同上，且它不是默认策略。~~ 仍不修，但理由收窄为**契约冲突**：该策略的契约是「真实块不移位」，而修 C3 必须移位——故它对 C3-only 的消息**不触发**（也不计入 `toolTerminalRepairs`），保持诊断/对照腿的诚实。默认策略 `move_blocks` 覆盖 C3。
 - **L2 strip-all 可能留下 `content: []` 的 assistant 消息**（邻域审查发现，非本次根因）：L2 `handle` 不走 `resanitize`，`stripAllThinking` 又只 filter 不丢空消息，故纯 thinking 的 assistant 消息被 strip 后成空 content 原样上送。已记入 [docs/todo/deferred-backlog.md](../todo/deferred-backlog.md)（含两条修法与触发条件），未实测复现。
 
 ## 教训
@@ -104,3 +146,5 @@ HTTP 400: messages.27: The final block in an assistant message cannot be `thinki
 - **最小构造的阴性结果没有裁决力，除非它保留了被测对象的结构性位置**。这次的隐藏变量是「违规消息是第几个 assistant 消息」——最小构造把它放在首个位置，恰好落进上游的豁免区，于是复现不出来。教训不是「别用最小构造」，而是**构造时要问：真实 payload 里哪些结构性属性是被测对象的处境，而不只是它自身的形状**。
 - 上游 400 的错误措辞可能误导（C3 报的是 "prefill" 而实际原因是 tool_use 之后有块），**分类靠可复现的最小变体实测，不靠错误文本的字面解读**。
 - 上游报的数组索引可能与我方口径不一致，且**偏移方向不固定、甚至越界**——按形状定位，别按索引。
+- **「客户端原生不会产出这种形态」不是安全论据**（2026-07-27 补）：我方自己产出的非法形态会被客户端 baked 进对话历史，此后每轮原样重投——于是「上游/客户端不会这么发」的前提被我方自己打破。凡是我方会**写进响应**的形状，都要假设它会**从请求回流**。
+- **从日志/字段判断代码版本前，先确认那个进程跑的是哪份代码**（2026-07-27 补）：本次决定性证据是落库 `destack` 统计里**缺 `terminalRepairs` 字段**（该字段随修复引入）+ 进程 bootTime 早于修复 commit——payload 自证进程陈旧，比任何推断都硬。

@@ -32,7 +32,8 @@
 - [通过/空/干净/自洽/doc-vs-code 不自证](feedback-pass-null-clean-not-self-validating.md) — verification 簇根；skill `verifying-authoritative-claims`
 - [下完备性判断前先实测每个支撑事实](feedback-verify-facts-before-superlative-completeness-verdict.md) — absence/negative 断言最易凭结构推断而错；别贬防御为「只治一半」
 - [诊断日志是会撒谎的权威声音](methodology-diagnostic-log-is-authoritative-voice-verify-against-ground-truth.md) — 计数器可能只接部分路径恒打零；收紧入参用类型逼全站点
-- [从日志断代码前先核实运行进程含修复](methodology-verify-running-server-has-fix-before-diagnosing-from-log.md) — 生产日志可能陈旧进程打；ps lstart + merge-base 核祖先
+- [从日志断代码前先核实运行进程含修复](methodology-verify-running-server-has-fix-before-diagnosing-from-log.md) — 生产日志可能陈旧进程打；ps lstart + merge-base 核祖先；远端/事后取证用 payload 自证（缺随修复引入的字段=版本指纹）
+- [我方产出会作为客户端历史回流](methodology-our-own-output-returns-as-client-history.md) — 「客户端原生不会发这形状」非安全论据；修复腿须能修自己昨天造的
 - [V3 direct-driver 测试两 gotcha](methodology-v3-direct-driver-test-async-finalize-race-and-arena-enrichment-oracle.md) — getEntry 撞异步 finalize race(await whenModelOperationFinalized)·arena 富化令 golden 过严
 - [reasoned-safe≠tested / producer wire-oracle 必断全序](methodology-reasoned-safe-not-tested-producer-wire-oracle.md) — reviewer「推理安全」也错；client-facing wire 须 producer oracle 断完整帧序
 - [client 源码 grep ≠ REST 上游能力](methodology-client-source-grep-not-rest-capability-probe-endpoint.md) — 代理型上游 REST 表面>client 子集须 curl 打端点；实例=GHC count_tokens 被证伪

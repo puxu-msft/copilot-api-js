@@ -203,7 +203,7 @@ telemetry 包**不删任何 state 字段**（config 归 config）。下列消费
 | 消费点（file:line） | 现引用 | 迁为 |
 |---|---|---|
 | `packages/cli/src/start.ts:394` | `initRequestTelemetry()` | `getTelemetryRuntime().initialize()`（装配点构造 runtime） |
-| `packages/cli/src/start.ts:593`（**listen 后**，评审 MAJOR-1） | `runTelemetryJsonBackfill()` | `getTelemetryRuntime().runJsonBackfill()`——**T2 必须保持 init→listen→backfill 顺序**，`tests/telemetry/backfill-wiring.unit.test.ts`（若无则新建）列为不可省略的生产接线 oracle |
+| `packages/cli/src/start.ts:593`（**listen 后**，评审 MAJOR-1） | `runTelemetryJsonBackfill()` | `getTelemetryRuntime().runJsonBackfill()`——**T2 必须保持 init→listen→backfill 顺序**，`tests/telemetry/backfill-wiring.unit.test.ts` 覆盖 registry 侧行为——但**它不是生产接线 oracle**（合并态评审 MAJOR-3 指出：它自己按正确顺序调用两个函数，故 `start.ts` 怎么改都绿）。真正的生产顺序 oracle 是 `tests/architecture/telemetry-startup-order.unit.test.ts`（AST 读真实 `start.ts` 的调用顺序） |
 | `packages/cli/src/start.ts:400` · `:53` | `attachTelemetrySink(bus)`（sink 留 core） | 不变（sink 在 core、import 包的 `recordSettled`） |
 | `src/lib/context/manager.ts:30` | `recordAcceptedRequest` | `peekTelemetryRuntime()?.recordAccepted()` |
 | `src/lib/observability/sinks/telemetry.ts:17` | `recordSettledRequest` | `peekTelemetryRuntime()?.recordSettled(...)`（sink 留 core） |
@@ -233,7 +233,7 @@ telemetry 包**不删任何 state 字段**（config 归 config）。下列消费
 - **T4（`UsageData` 解耦）**：按 D4 裁决落地（推荐包内 `TelemetryUsage` 结构型），删 `request-telemetry.ts:9` 的 `./history/store` type import。**invariant**：SCC ratchet 应见 `#34` 消失。
 - **T5（git mv）物理抽包**：`git mv src/lib/telemetry → packages/telemetry/src/telemetry` + `src/lib/request-telemetry.ts → packages/telemetry/src/request-telemetry.ts` + name-registry 文件；`package.json`（声明 `consola` + `@datadog/sketches-js` + `@hsupu/ghc-proxy-foundation`）+ tsconfig；transitional alias `~/lib/telemetry`+`~/lib/telemetry/*`+`~/lib/request-telemetry` → 包；包内 import 收敛相对、对 foundation 用包名。
   - **边界守卫**（复用 `package-boundaries.unit.test.ts` 手法）：扫 `packages/telemetry/src`，**拒所有 `~/`**、只许相对 + `@hsupu/ghc-proxy-foundation` + bare external（consola/`@datadog/sketches-js`）+ `node:`；**正样本对照**证 `~/lib/state` / `~/lib/config/paths` / `~/lib/observability/telemetry-dimensions` / `~/lib/history/store` / `@hsupu/ghc-proxy-core` 会被命中。ESLint 镜像同规则、全 import 形态（`from`/side-effect/dynamic/`require`，记忆技巧 7）。
-  - **ratchet 重冻结**：T3/T4 削环后 `bun run scripts/update-circular-deps-baseline.ts` 重生 baseline（预期 73→70 环、63→61 成员，`request-telemetry.ts` + `observability/telemetry-dimensions.ts` 出 `members`），同 commit 提交。**先跑 ratchet 确认只减不增**再重冻结。
+  - **ratchet 重冻结**：T3/T4 削环后 `bun run scripts/update-circular-deps-baseline.ts` 重生 baseline（预期 73→70 环、63→61 成员，`request-telemetry.ts` + `observability/telemetry-dimensions.ts` 出 `members`。**实测**：环数预测中了 73→70，但成员基数当时已是 65 而非 63，故实际是 **65→63**——预测数不自证，以 `computeCircularSnapshot()` 实测 diff 为准），同 commit 提交。**先跑 ratchet 确认只减不增**再重冻结。
   - smoke：`bun run build:backend`（tsdown 内联 telemetry）+ bin `--help` + `GET /api/stats` / `/metrics` / `/api/status` 端点表面不变。
 
 **DAG 说明**：T0 可独立先 land（利好 history）；T1→T2→T3→T4→T5 顺序依赖（seam→inject→split→type-decouple→mv）。T3/T4 是**削环的两步**，须实测 ratchet 变化（记忆 `plan-red-green-mutation-prediction-can-be-wrong-verify`——预测的环削减可能不咬，执行期真跑 madge 验证，不咬别提交假绿）。
@@ -241,7 +241,7 @@ telemetry 包**不删任何 state 字段**（config 归 config）。下列消费
 ## 7. 边界守卫 + ratchet（机器护栏）
 
 - **包边界守卫（allowlist，非复用 token 的 core|server|cli denylist——评审 MINOR-4）**：`tests/architecture/package-boundaries.unit.test.ts` 加 `telemetryHasForbiddenImport`。**不复用 token detector 的 `SIBLING_CORE_SERVER_CLI` denylist**（它只拒 core/server/cli，会错误放行 `@hsupu/ghc-proxy-token` 等其他 sibling 包）。改 **allowlist**：只许 ① 相对 `./`/`../` ② `@hsupu/ghc-proxy-foundation`（含子路径）③ `node:` ④ 已声明 external（`consola`/`@datadog/sketches-js`）；**拒所有其他 `@hsupu/ghc-proxy-*`**（含 token）+ 所有 `~/`。正样本对照证 `~/lib/state` / `~/lib/config/paths` / `~/lib/observability/telemetry-dimensions` / `~/lib/history/store` / `@hsupu/ghc-proxy-core` / **`@hsupu/ghc-proxy-token`** 会被命中；反样本证 `@hsupu/ghc-proxy-foundation/ghc-http-primitives` / `./db` / `consola` / `@datadog/sketches-js` / `node:fs` 不被命中。ESLint 镜像同 allowlist、全 import 形态（`from`/side-effect/dynamic/`require`，记忆技巧 7）。package.json 断言 name/private + deps 含 `consola`+`@datadog/sketches-js`+`@hsupu/ghc-proxy-foundation`。
-- **SCC ratchet**：`circular-deps-ratchet.unit.test.ts` 无需改逻辑（它只比 baseline）；**baseline 在 T5 重冻结**。预期削 `#34`/`#35`/`#36` 三环。**内容级验收（评审建议——防总数恰降但非预期三环消失的假阳性）**：除断言 `73→70` / `63→61` 数字外，加断言**新 baseline 的 `members` 不再含 `lib/request-telemetry.ts` 或旧 `lib/observability/telemetry-dimensions.ts`**（若这两个仍在 members，说明环只是被搬走没被打断）。**风险**：若实测发现它俩还卷在**别的**未列环里（本调研仅见这 3 条，madge 全跑为准），则削环数不足——执行期以 `computeCircularSnapshot()` 实测 diff 为准，别信本 plan 的预测数。
+- **SCC ratchet**：`circular-deps-ratchet.unit.test.ts` 无需改逻辑（它只比 baseline）；~~**baseline 在 T5 重冻结**~~ → **执行期改为 T2/T3/T4/T5 每步重冻结**：T2 把 facade 插进调用链后 `telemetry-runtime.ts` 会临时进环（环数降但成员 +1），要守住「每 commit 终态绿」就必须在实测确认 diff 只含那一个预期新成员后当场重冻结。预期削 `#34`/`#35`/`#36` 三环。**内容级验收（评审建议——防总数恰降但非预期三环消失的假阳性）**：除断言 `73→70` / `63→61` 数字外，加断言**新 baseline 的 `members` 不再含 `lib/request-telemetry.ts` 或旧 `lib/observability/telemetry-dimensions.ts`**（若这两个仍在 members，说明环只是被搬走没被打断）。**风险**：若实测发现它俩还卷在**别的**未列环里（本调研仅见这 3 条，madge 全跑为准），则削环数不足——执行期以 `computeCircularSnapshot()` 实测 diff 为准，别信本 plan 的预测数。
 - **madge 计 type-only 边（已实测确认）**：`request-telemetry.ts:9 import type UsageData` 与 `telemetry-dimensions.ts:32 import type HistoryEntryData` 均为 type-only、却出现在 baseline `#34`/`#35`——证明 `circular-deps-snapshot.ts` 的 madge 配置**未设 `skipTypeImports`**、type-only 边照计环。**故 T4 的 `UsageData` 解耦是削 `#34` 的必要步**（不能只当「反正 type-only 无运行时环」略过）。
 
 ## 8. 风险 + 回滚
@@ -251,7 +251,7 @@ telemetry 包**不删任何 state 字段**（config 归 config）。下列消费
 - **T0/T5 sqlite runtime 分流**（spec §9 陷阱 7）：`driver.ts` 靠 `typeof globalThis.Bun` 分流 `bun:sqlite`/`node:sqlite`、`neverBundle` external。迁 foundation 后**必跑真实 server（非 4141 端口）+ Node 双 runtime 冒烟**，不只信 typecheck。
 - 隔离 worktree、每 commit 自足绿、可 `git revert`。
 
-## 9. 决策记录（D1-D4 已裁定 · D5-D6 待执行期定）
+## 9. 决策记录（D1-D6 全部已裁定 · D5/D6 于执行期关闭）
 
 1. **D1 范围 — ✅ 用户裁定 Option (b) 全域一包**（storage+registry+name-registry），而非 (a) storage-only（0 环削减）或 (c) 分两次。
 2. **D2 sink/extractor 归属 — ✅ 留 core**（本 plan 前提，GPT reviewer 确认：塞包会拽 `context/types`/`observability/events`/`fetch-utils` 进 telemetry 依赖面、边界守卫必红）。
@@ -262,7 +262,7 @@ telemetry 包**不删任何 state 字段**（config 归 config）。下列消费
 
 ---
 
-**Self-Review**：3 层依赖全 grep 实测带 file:line ✓；`decompressBytes` 溯源解 mask（`sqlite/compression.ts`、纯、foundation-able）✓；中心分叉三选项量化（环削减 0 vs 3 vs 分摊）+ 用户裁定 (b) ✓；与 token 差异点名（无 SoT 反转 + 有 module-split）✓；composition root 覆盖唯一构造点 + **post-listen backfill 生命周期** + peek/get 分层 + ambient floor ✓；**config 逐字段生命周期分类（sketchGamma DB-frozen）** ✓；测试隔离契约（config 留 state 零 churn + **直调 API 的 ~21 测试迁 package-owned `testing` 入口**）✓；闭合 DAG T0-T5 + ratchet 重冻结（**内容级验收**）+ type-only 计环实测 ✓；**边界守卫 allowlist 正反控制** ✓；决策 D1-D4 已裁、D5-D6 执行期定 ✓。**GPT 异模型评审 3 MAJOR + 2 MINOR + 3 建议已全折入**（评审折入摘要见头部）。**执行前必做的未验证项**：madge 全跑确认仅 #34/#35/#36 三环含 telemetry（本 plan 预测数不自证）、`~backend` 消费的 telemetry 类型清单、`history-cas-stage` 是否并发占用 `lib/sqlite` 现场复核。
+**Self-Review**：3 层依赖全 grep 实测带 file:line ✓；`decompressBytes` 溯源解 mask（`sqlite/compression.ts`、纯、foundation-able）✓；中心分叉三选项量化（环削减 0 vs 3 vs 分摊）+ 用户裁定 (b) ✓；与 token 差异点名（无 SoT 反转 + 有 module-split）✓；composition root 覆盖唯一构造点 + **post-listen backfill 生命周期** + peek/get 分层 + ambient floor ✓；**config 逐字段生命周期分类（sketchGamma DB-frozen）** ✓；测试隔离契约（config 留 state 零 churn + **直调 API 的 ~21 测试迁 package-owned `testing` 入口**）✓；闭合 DAG T0-T5 + ratchet 重冻结（**内容级验收**）+ type-only 计环实测 ✓；**边界守卫 allowlist 正反控制** ✓；决策 D1-D4 定稿时已裁、D5-D6 执行期已关闭 ✓。**GPT 异模型评审 3 MAJOR + 2 MINOR + 3 建议已全折入**（评审折入摘要见头部）。~~**执行前必做的未验证项**~~ → **执行期已全部核实**：madge 实测确认三环 #34/#35/#36 含 telemetry ✓；`~backend` 实测只消费 `RequestTelemetrySnapshot` 一个类型 ✓；`lib/sqlite` 无并发占用 ✓。D5/D6 已于 §9 关闭。
 
 ## 提示词
 

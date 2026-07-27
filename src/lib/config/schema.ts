@@ -418,19 +418,25 @@ export const AnthropicConfigSchema = z
     tool_inject_claude_code: nullableBoolean(),
     thinking_block_message_policy: nullableEnum(["preserve", "stripped"] as const),
     /**
-     * De-stack adjacent `thinking`/`redacted_thinking` blocks so no two are
-     * consecutive in an assistant message — GHC rejects an echoed history with
-     * stacked thinking ("thinking blocks cannot be modified" 400). Idempotent:
-     * a message without adjacent thinking passes through byte-identical.
-     *   passthrough — leave stacked thinking as-is
-     *   insert_text — insert a synthetic text separator between adjacent thinking
+     * Repair the block layout of assistant messages in the echoed history to the THREE
+     * shapes GHC hard-rejects with a 400 (spec 2026-07-26-thinking-terminal-block-layout):
+     * C1 two adjacent `thinking`/`redacted_thinking` blocks, C2 a message ending on
+     * thinking, C3 a message carrying `tool_use` that does not end on it (reported with
+     * the misleading "does not support assistant message prefill" wording). C3 fires on
+     * messages with no thinking at all. Idempotent: an already-legal message passes
+     * through byte-identical.
+     *   passthrough — leave the client's block layout as-is (repair disabled)
+     *   insert_text — insert a synthetic text separator between adjacent thinking, and
+     *                 after a trailing thinking block; never MOVES a real block, so it
+     *                 cannot satisfy the tool_use-terminal constraint (diagnostic leg)
      *   move_blocks — interleave thinking with real non-thinking blocks (order-
-     *                 preserving), synthetic marker only when insufficient (default)
+     *                 preserving) and reserve a terminator (the last tool_use when the
+     *                 message has one); synthetic marker only when insufficient (default)
      */
-    thinking_destack_strategy: nullableEnum(["passthrough", "insert_text", "move_blocks"] as const),
+    assistant_block_layout_strategy: nullableEnum(["passthrough", "insert_text", "move_blocks"] as const),
     /**
      * Reactive fallback (L2) for the GHC "thinking ... cannot be modified" 400
-     * that L1 de-stack (`thinking_destack_strategy`) did not preempt: strip ALL
+     * that L1 layout repair (`assistant_block_layout_strategy`) did not preempt: strip ALL
      * `thinking`/`redacted_thinking` blocks from the echoed history and retry the
      * turn once. `true` (default) enables the one-shot strip-and-retry; `false`
      * lets the 400 surface unmodified.

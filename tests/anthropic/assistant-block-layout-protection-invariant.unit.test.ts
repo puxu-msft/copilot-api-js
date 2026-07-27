@@ -7,7 +7,7 @@ import {
 
 import type { MessageParam } from "~/types/api/anthropic"
 
-import { destackAdjacentThinking } from "~/lib/anthropic/sanitize/destack-adjacent-thinking"
+import { repairAssistantBlockLayout } from "~/lib/anthropic/sanitize/assistant-block-layout"
 import { hasThinkingSignatureBlocks } from "~/lib/anthropic/thinking-protection"
 
 // Distinct thinking text + signature per block so we can assert VERBATIM content
@@ -37,7 +37,7 @@ const hasAdjacentThinking = (msg: MessageParam): boolean => {
 describe("de-stack × thinking-protection invariants", () => {
   test("move_blocks: thinking 内容 verbatim + 相对序不变 + 不丢块 + 存在性谓词仍真", () => {
     const msg = asst([T("s0"), T("s1"), T("s2"), tool("t")])
-    const { messages } = destackAdjacentThinking([msg], "move_blocks")
+    const { messages } = repairAssistantBlockLayout([msg], "move_blocks")
     const thinks = thinkingBlocks(messages[0])
     // no-drop: all three thinking blocks survive
     expect(thinks).toHaveLength(3)
@@ -52,7 +52,7 @@ describe("de-stack × thinking-protection invariants", () => {
 
   test("insert_text: 同样 verbatim + 相对序 + 不丢 + 存在性谓词", () => {
     const msg = asst([T("s0"), T("s1"), T("s2"), tool("t")])
-    const { messages } = destackAdjacentThinking([msg], "insert_text")
+    const { messages } = repairAssistantBlockLayout([msg], "insert_text")
     const thinks = thinkingBlocks(messages[0])
     expect(thinks).toHaveLength(3)
     expect(thinks.map((b) => b.signature)).toEqual(["s0", "s1", "s2"])
@@ -63,7 +63,7 @@ describe("de-stack × thinking-protection invariants", () => {
 
   test("redacted_thinking: de-stack 后 data 不丢、相对序不变、存在性谓词仍真", () => {
     const msg = asst([RT("d0"), RT("d1"), tool("t")])
-    const { messages } = destackAdjacentThinking([msg], "move_blocks")
+    const { messages } = repairAssistantBlockLayout([msg], "move_blocks")
     const thinks = thinkingBlocks(messages[0])
     expect(thinks.map((b) => b.data)).toEqual(["d0", "d1"])
     expect(hasThinkingSignatureBlocks(messages[0])).toBe(true)

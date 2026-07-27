@@ -4,17 +4,19 @@ import type {
   MessageParam,
 } from "~/types/api/anthropic"
 
-export type ThinkingDestackStrategy = "passthrough" | "insert_text" | "move_blocks"
+export type AssistantBlockLayoutStrategy = "passthrough" | "insert_text" | "move_blocks"
 
 /** Fixed, distinguishable synthetic separator (empty/whitespace text is stripped upstream → useless). */
 export const SYNTHETIC_THINKING_SEPARATOR = "[copilot-api: thinking separator]"
 
-export interface DestackStats {
-  destackedMessages: number
+export interface BlockLayoutRepairStats {
+  repairedMessages: number
   insertedMarkers: number
   reorderedBlocks: number
   /** Messages whose LAST block was a thinking block (C2) and had to be re-terminated. */
   terminalRepairs: number
+  /** Messages carrying `tool_use` that did not END on it (C3) and had to be re-terminated. */
+  toolTerminalRepairs: number
 }
 
 const THINKING_TYPES = new Set(["thinking", "redacted_thinking"])
@@ -41,6 +43,41 @@ function endsWithThinking(content: Array<ContentBlockParam>): boolean {
 }
 
 /**
+ * C3 violation: upstream rejects an assistant message that carries `tool_use` but does not
+ * END on one — anything after the tool call makes it read the turn as an assistant prefill
+ * ("This model does not support assistant message prefill. The conversation must end with a
+ * user message." — misleading wording, empirically pinned to this shape; spec §2 C3).
+ */
+function violatesToolTerminal(content: Array<ContentBlockParam>): boolean {
+  return content.some((b) => b.type === "tool_use") && content.at(-1)?.type !== "tool_use"
+}
+
+/**
+ * Does ANY assistant message violate C3? The L2 reactive fallback composes this with the
+ * ACTUAL `stripAllThinking` output (before vs after) to decide whether strip-all cures a
+ * C3/prefill 400 — never with a re-implemented approximation of that remedy, which would
+ * drift (strip-all also drops orphaned {@link SYNTHETIC_THINKING_SEPARATOR} markers, so a
+ * hand-rolled "filter out thinking" predicate mis-answers `[tool, T, SEP]`).
+ */
+export function hasToolTerminalViolation(messages: Array<MessageParam>): boolean {
+  return messages.some((msg) => msg.role === "assistant" && Array.isArray(msg.content) && violatesToolTerminal(msg.content))
+}
+
+/**
+ * Does the conversation end on an assistant turn — the LITERAL assistant prefill named by
+ * C3's misleading wording ("The conversation must end with a user message.")? That shape is
+ * NOT curable by stripping thinking, so L2 must not spend its one-shot retry on it.
+ *
+ * A trailing `role: "system"` message is NOT a prefill: inline system messages are forwarded
+ * as-is for models that accept them, and such turns are empirically answered (the incident
+ * conversation req_1785160010003_3754 had five prior turns ending on a system message, each
+ * of which upstream answered normally). Only `assistant` counts.
+ */
+export function endsOnAssistantTurn(messages: Array<MessageParam>): boolean {
+  return messages.at(-1)?.role === "assistant"
+}
+
+/**
  * insert_text: keep all blocks in place; insert a synthetic marker whenever two thinking
  * blocks would be adjacent (C1), plus one at the end when the message would otherwise
  * terminate on thinking (C2).
@@ -50,7 +87,7 @@ function endsWithThinking(content: Array<ContentBlockParam>): boolean {
  * C3. Satisfying C3 requires reordering — that is `move_blocks` (the default). This
  * strategy stays a diagnostic/comparison leg.
  */
-function insertTextStrategy(content: Array<ContentBlockParam>, stats: DestackStats): Array<ContentBlockParam> {
+function insertTextStrategy(content: Array<ContentBlockParam>, stats: BlockLayoutRepairStats): Array<ContentBlockParam> {
   const out: Array<ContentBlockParam> = []
   for (const b of content) {
     const prev = out.at(-1)
@@ -77,7 +114,7 @@ function insertTextStrategy(content: Array<ContentBlockParam>, stats: DestackSta
  * turn as an assistant prefill), else the last real separator, else a synthetic marker.
  * Interior `tool_use` blocks are fine as separators (empirically verified).
  */
-function moveBlocksStrategy(content: Array<ContentBlockParam>, stats: DestackStats): Array<ContentBlockParam> {
+function moveBlocksStrategy(content: Array<ContentBlockParam>, stats: BlockLayoutRepairStats): Array<ContentBlockParam> {
   const thinks = content.filter((b) => isThinking(b))
   const others = content.filter((b) => !isThinking(b))
   const realSeps = others.filter((b) => isRealSeparator(b))
@@ -117,26 +154,31 @@ function moveBlocksStrategy(content: Array<ContentBlockParam>, stats: DestackSta
 
 /**
  * Enforce the upstream layout constraints on thinking blocks inside assistant messages.
- * Both are hard 400s, empirically confirmed by replaying a rejected production payload
+ * All three are hard 400s, empirically confirmed by replaying rejected production payloads
  * (docs/spec/2026-07-26-thinking-terminal-block-layout.md):
  *
  *   C1  two adjacent thinking blocks in the latest assistant message
  *       → "`thinking` ... blocks in the latest assistant message cannot be modified"
  *   C2  an assistant message whose FINAL block is thinking
  *       → "The final block in an assistant message cannot be `thinking`"
+ *   C3  an assistant message carrying `tool_use` that does not END on it
+ *       → "This model does not support assistant message prefill. The conversation must end
+ *          with a user message." (wording is misleading — see `violatesToolTerminal`)
  *
- * A third constraint (C3: a message with `tool_use` must END on `tool_use`, or upstream
- * reads it as an assistant prefill) is not repaired here — it is only RESPECTED, so the
- * repair for C1/C2 never manufactures a C3 violation. See `moveBlocksStrategy`.
+ * `move_blocks` REPAIRS all three: it already reserved the last `tool_use` as terminator so a
+ * C1/C2 repair could never manufacture C3, and since 2026-07-27 a standalone C3 violation
+ * (client-native, or one another rewrite pass introduced) is a trigger in its own right.
+ * `insert_text` never MOVES a real block, so it can only repair C1/C2 — a C3-only message is
+ * left untouched there, and that diagnostic leg stays honest about it.
  *
- * Idempotent: messages already satisfying C1+C2 are returned unchanged (byte-identical).
+ * Idempotent: messages already satisfying C1+C2+C3 are returned unchanged (byte-identical).
  * See spec §3.1; runs as the TERMINAL sanitize pass.
  */
-export function destackAdjacentThinking(
+export function repairAssistantBlockLayout(
   messages: Array<MessageParam>,
-  strategy: ThinkingDestackStrategy,
-): { messages: Array<MessageParam>; stats: DestackStats } {
-  const stats: DestackStats = { destackedMessages: 0, insertedMarkers: 0, reorderedBlocks: 0, terminalRepairs: 0 }
+  strategy: AssistantBlockLayoutStrategy,
+): { messages: Array<MessageParam>; stats: BlockLayoutRepairStats } {
+  const stats: BlockLayoutRepairStats = { repairedMessages: 0, insertedMarkers: 0, reorderedBlocks: 0, terminalRepairs: 0, toolTerminalRepairs: 0 }
   if (strategy === "passthrough") return { messages, stats }
 
   let changed = false
@@ -147,12 +189,16 @@ export function destackAdjacentThinking(
       continue
     }
     const terminalViolation = endsWithThinking(msg.content)
-    if (!hasAdjacentThinking(msg.content) && !terminalViolation) {
+    // C3 is only a trigger for `move_blocks` — `insert_text` cannot repair it (it never moves
+    // a real block), so claiming the message there would count a repair that did not happen.
+    const toolTerminalViolation = strategy === "move_blocks" && violatesToolTerminal(msg.content)
+    if (!hasAdjacentThinking(msg.content) && !terminalViolation && !toolTerminalViolation) {
       out.push(msg)
       continue
     }
-    stats.destackedMessages++
+    stats.repairedMessages++
     if (terminalViolation) stats.terminalRepairs++
+    if (toolTerminalViolation) stats.toolTerminalRepairs++
     changed = true
     const newContent = strategy === "insert_text" ? insertTextStrategy(msg.content, stats) : moveBlocksStrategy(msg.content, stats)
     out.push({ ...msg, content: newContent })

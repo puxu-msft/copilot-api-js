@@ -8,8 +8,8 @@
  * (verbatimModuleSyntax), so there is no runtime cycle with state.ts.
  */
 
+import type { AssistantBlockLayoutStrategy } from "~/lib/anthropic/sanitize/assistant-block-layout"
 import type { ThinkingBlockSanitizeMode } from "~/lib/anthropic/sanitize/content-blocks"
-import type { ThinkingDestackStrategy } from "~/lib/anthropic/sanitize/destack-adjacent-thinking"
 import type { RepairItem } from "~/lib/anthropic/tool-input-repair"
 import type { ModelTranslation } from "~/lib/config/schema"
 
@@ -96,7 +96,7 @@ export const CONFIG_MANAGED_DEFAULTS = {
   injectClaudeCodeOfficialTools: true,
   thinkingBlockMessagePolicy: "preserve" as ThinkingBlockMessagePolicy,
   thinkingBlockSanitizeCheck: "all_empty" as false | ThinkingBlockSanitizeMode,
-  thinkingDestackStrategy: "move_blocks" as ThinkingDestackStrategy,
+  assistantBlockLayoutStrategy: "move_blocks" as AssistantBlockLayoutStrategy,
   stripThinkingOnReject: true,
   poisonedThinkingQuarantine: true,
   poisonedThinkingTtlHours: 72,
