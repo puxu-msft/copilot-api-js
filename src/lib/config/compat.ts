@@ -301,6 +301,11 @@ export const CONFIG_MIGRATIONS: ReadonlyArray<ConfigMigration> = [
   renameLeaf("anthropic.backfill_question_from_header", "anthropic.response_tool_use_fix.ask_user_question_question_missing"),
   renameLeaf("anthropic.tool_backfill_question", "anthropic.response_tool_use_fix.ask_user_question_question_missing"),
   renameLeaf("anthropic.tool_repair_malformed_input", "anthropic.response_tool_use_fix.malformed_input"),
+  // thinking_destack_strategy → assistant_block_layout_strategy: the pass enforces THREE
+  // upstream layout constraints, one of which (a message carrying tool_use must end on it)
+  // has nothing to do with thinking and fires on messages with no thinking block at all —
+  // "thinking destack" named only the original C1 duty. Same enum, no value transform.
+  renameLeaf("anthropic.thinking_destack_strategy", "anthropic.assistant_block_layout_strategy"),
   renameLeaf("anthropic.rewrite_system_reminders", "anthropic.system_rewrite_reminders"),
   renameLeaf("anthropic.strip_beta_headers", "anthropic.beta_strip_headers"),
   // strip_request_headers → request_header_blacklist: the HTTP request-header strip is

@@ -9,11 +9,11 @@ import type { MessageParam } from "~/types/api/anthropic"
 
 import {
   //
-  destackAdjacentThinking,
+  repairAssistantBlockLayout,
   endsOnAssistantTurn,
   hasToolTerminalViolation,
   SYNTHETIC_THINKING_SEPARATOR,
-} from "~/lib/anthropic/sanitize/destack-adjacent-thinking"
+} from "~/lib/anthropic/sanitize/assistant-block-layout"
 
 const T = (sig: string) => ({ type: "thinking", thinking: "", signature: sig }) as const
 const RT = (data: string) => ({ type: "redacted_thinking", data }) as const
@@ -21,19 +21,19 @@ const text = (t: string) => ({ type: "text", text: t }) as const
 const tool = (id: string) => ({ type: "tool_use", id, name: "x", input: {} }) as const
 const asst = (content: Array<unknown>): MessageParam => ({ role: "assistant", content: content as never })
 
-describe("destackAdjacentThinking", () => {
+describe("repairAssistantBlockLayout", () => {
   test("move_blocks: 3 相邻 thinking + 3 非thinking → 交错保留全部、无合成", () => {
     const msg = asst([T("a"), T("b"), T("c"), text("hi"), tool("t1"), tool("t2")])
-    const { messages, stats } = destackAdjacentThinking([msg], "move_blocks")
+    const { messages, stats } = repairAssistantBlockLayout([msg], "move_blocks")
     const types = (messages[0].content as Array<{ type: string }>).map((b) => b.type)
     expect(types).toEqual(["thinking", "text", "thinking", "tool_use", "thinking", "tool_use"])
     expect(stats.insertedMarkers).toBe(0)
-    expect(stats.destackedMessages).toBe(1)
+    expect(stats.repairedMessages).toBe(1)
   })
 
   test("move_blocks: 非thinking 不足 → 补非空合成标记，永不丢 thinking", () => {
     const msg = asst([T("a"), T("b"), T("c")]) // 全 thinking，0 非thinking
-    const { messages, stats } = destackAdjacentThinking([msg], "move_blocks")
+    const { messages, stats } = repairAssistantBlockLayout([msg], "move_blocks")
     const content = messages[0].content as Array<{ type: string; text?: string }>
     expect(content.filter((b) => b.type === "thinking")).toHaveLength(3)
     // 2 个内部分隔 + 1 个收尾（末块不得是 thinking，见 terminal-block 用例）
@@ -44,7 +44,7 @@ describe("destackAdjacentThinking", () => {
 
   test("insert_text: 真实块原位、相邻 thinking 间插合成标记", () => {
     const msg = asst([T("a"), T("b"), T("c"), text("hi"), tool("t1")])
-    const { messages } = destackAdjacentThinking([msg], "insert_text")
+    const { messages } = repairAssistantBlockLayout([msg], "insert_text")
     const types = (messages[0].content as Array<{ type: string }>).map((b) => b.type)
     expect(types).toEqual(["thinking", "text", "thinking", "text", "thinking", "text", "tool_use"])
     // 真实 text("hi") 与 tool 原位，仅相邻 thinking 间插标记
@@ -52,35 +52,35 @@ describe("destackAdjacentThinking", () => {
 
   test("passthrough: 原样不动", () => {
     const msg = asst([T("a"), T("b")])
-    const { messages, stats } = destackAdjacentThinking([msg], "passthrough")
+    const { messages, stats } = repairAssistantBlockLayout([msg], "passthrough")
     expect(messages[0].content).toEqual(msg.content)
-    expect(stats.destackedMessages).toBe(0)
+    expect(stats.repairedMessages).toBe(0)
   })
 
   test("no-op: 无相邻 thinking（合法 interleaved）逐字节不变", () => {
     const msg = asst([T("a"), tool("t1"), T("b"), tool("t2")])
-    const { messages, stats } = destackAdjacentThinking([msg], "move_blocks")
+    const { messages, stats } = repairAssistantBlockLayout([msg], "move_blocks")
     expect(messages[0].content).toEqual(msg.content)
-    expect(stats.destackedMessages).toBe(0)
+    expect(stats.repairedMessages).toBe(0)
   })
 
   test("幂等: de-stack(de-stack(x)) == de-stack(x)", () => {
     const msg = asst([T("a"), T("b"), T("c"), text("hi"), tool("t1"), tool("t2")])
-    const once = destackAdjacentThinking([msg], "move_blocks").messages
-    const twice = destackAdjacentThinking(once, "move_blocks").messages
+    const once = repairAssistantBlockLayout([msg], "move_blocks").messages
+    const twice = repairAssistantBlockLayout(once, "move_blocks").messages
     expect(twice).toEqual(once)
   })
 
   test("redacted_thinking 相邻同样 de-stack", () => {
     const msg = asst([RT("d1"), RT("d2"), text("hi")])
-    const { messages } = destackAdjacentThinking([msg], "insert_text")
+    const { messages } = repairAssistantBlockLayout([msg], "insert_text")
     const types = (messages[0].content as Array<{ type: string }>).map((b) => b.type)
     expect(types).toEqual(["redacted_thinking", "text", "redacted_thinking", "text"])
   })
 
   test("空/纯空白 text 不算分隔符（充分条件只计非空）", () => {
     const msg = asst([T("a"), T("b"), text("  ")]) // 唯一非thinking 是纯空白 → 不足 → 需合成
-    const { messages } = destackAdjacentThinking([msg], "move_blocks")
+    const { messages } = repairAssistantBlockLayout([msg], "move_blocks")
     const content = messages[0].content as Array<{ type: string; text?: string }>
     // 1 个内部分隔 + 1 个收尾（空白 text 上游会 strip 掉，撑不住末块位）
     expect(content.filter((b) => b.type === "text" && b.text === SYNTHETIC_THINKING_SEPARATOR)).toHaveLength(2)
@@ -89,7 +89,7 @@ describe("destackAdjacentThinking", () => {
 
   test("user 消息不动", () => {
     const u: MessageParam = { role: "user", content: [text("hi"), text("there")] as never }
-    const { messages } = destackAdjacentThinking([u], "move_blocks")
+    const { messages } = repairAssistantBlockLayout([u], "move_blocks")
     expect(messages[0]).toEqual(u)
   })
 })
@@ -107,10 +107,10 @@ describe("destackAdjacentThinking", () => {
  * 历史事故：只满足 C1 的旧 move_blocks 把 `[T,T,tool]` 交错成 `[T,tool,T]`，自造 C2 违规
  * → 每轮必败的 400（req_1785016294183_896）。
  */
-describe("destackAdjacentThinking: 终端块不变量（C2 + C3）", () => {
+describe("repairAssistantBlockLayout: 终端块不变量（C2 + C3）", () => {
   test("move_blocks: [T,T,tool] → 合成标记居中、tool_use 收尾（生产 400 回归）", () => {
     const msg = asst([T("a"), T("b"), tool("t1")])
-    const { messages, stats } = destackAdjacentThinking([msg], "move_blocks")
+    const { messages, stats } = repairAssistantBlockLayout([msg], "move_blocks")
     const content = messages[0].content as Array<{ type: string; text?: string }>
     expect(content.map((b) => b.type)).toEqual(["thinking", "text", "thinking", "tool_use"])
     expect(content[1].text).toBe(SYNTHETIC_THINKING_SEPARATOR)
@@ -119,7 +119,7 @@ describe("destackAdjacentThinking: 终端块不变量（C2 + C3）", () => {
 
   test("move_blocks: 多个 tool_use 时只有最后一个必须收尾，其余可当分隔符", () => {
     const msg = asst([T("a"), T("b"), T("c"), text("hi"), tool("t1"), tool("t2")])
-    const { messages, stats } = destackAdjacentThinking([msg], "move_blocks")
+    const { messages, stats } = repairAssistantBlockLayout([msg], "move_blocks")
     const types = (messages[0].content as Array<{ type: string }>).map((b) => b.type)
     expect(types).toEqual(["thinking", "text", "thinking", "tool_use", "thinking", "tool_use"])
     expect(stats.insertedMarkers).toBe(0)
@@ -127,16 +127,16 @@ describe("destackAdjacentThinking: 终端块不变量（C2 + C3）", () => {
 
   test("move_blocks: 末块是 thinking 但无相邻 thinking（[text,T]）也必须修 — 单独的 C2 触发条件", () => {
     const msg = asst([text("hi"), T("a")])
-    const { messages, stats } = destackAdjacentThinking([msg], "move_blocks")
+    const { messages, stats } = repairAssistantBlockLayout([msg], "move_blocks")
     const types = (messages[0].content as Array<{ type: string }>).map((b) => b.type)
     expect(types).toEqual(["thinking", "text"])
-    expect(stats.destackedMessages).toBe(1)
+    expect(stats.repairedMessages).toBe(1)
     expect(stats.insertedMarkers).toBe(0)
   })
 
   test("move_blocks: 唯一块就是 thinking（[T]）→ 补合成标记收尾", () => {
     const msg = asst([T("a")])
-    const { messages, stats } = destackAdjacentThinking([msg], "move_blocks")
+    const { messages, stats } = repairAssistantBlockLayout([msg], "move_blocks")
     const content = messages[0].content as Array<{ type: string; text?: string }>
     expect(content.map((b) => b.type)).toEqual(["thinking", "text"])
     expect(content[1].text).toBe(SYNTHETIC_THINKING_SEPARATOR)
@@ -145,15 +145,15 @@ describe("destackAdjacentThinking: 终端块不变量（C2 + C3）", () => {
 
   test("move_blocks: 已合法（末块 tool_use / 无相邻）逐字节不变，不插入任何东西", () => {
     const msg = asst([T("a"), text("hi"), tool("t1")])
-    const { messages, stats } = destackAdjacentThinking([msg], "move_blocks")
+    const { messages, stats } = repairAssistantBlockLayout([msg], "move_blocks")
     expect(messages[0].content).toEqual(msg.content)
-    expect(stats.destackedMessages).toBe(0)
+    expect(stats.repairedMessages).toBe(0)
     expect(stats.insertedMarkers).toBe(0)
   })
 
   test("insert_text: 末块 thinking 同样补合成标记收尾", () => {
     const msg = asst([T("a"), T("b")])
-    const { messages } = destackAdjacentThinking([msg], "insert_text")
+    const { messages } = repairAssistantBlockLayout([msg], "insert_text")
     const content = messages[0].content as Array<{ type: string; text?: string }>
     expect(content.map((b) => b.type)).toEqual(["thinking", "text", "thinking", "text"])
     expect(content.at(-1)?.text).toBe(SYNTHETIC_THINKING_SEPARATOR)
@@ -161,46 +161,46 @@ describe("destackAdjacentThinking: 终端块不变量（C2 + C3）", () => {
 
   test("passthrough: 末块 thinking 也原样不动（诊断对照腿）", () => {
     const msg = asst([text("hi"), T("a")])
-    const { messages, stats } = destackAdjacentThinking([msg], "passthrough")
+    const { messages, stats } = repairAssistantBlockLayout([msg], "passthrough")
     expect(messages[0].content).toEqual(msg.content)
-    expect(stats.destackedMessages).toBe(0)
+    expect(stats.repairedMessages).toBe(0)
   })
 
   test("redacted_thinking 收尾同样修（C2 对两种 thinking 类型都成立）", () => {
     const msg = asst([tool("t1"), RT("d1")])
-    const { messages } = destackAdjacentThinking([msg], "move_blocks")
+    const { messages } = repairAssistantBlockLayout([msg], "move_blocks")
     const types = (messages[0].content as Array<{ type: string }>).map((b) => b.type)
     expect(types).toEqual(["redacted_thinking", "tool_use"])
   })
 
   test("幂等: 终端修复后再跑一次不变", () => {
     const msg = asst([T("a"), T("b"), tool("t1")])
-    const once = destackAdjacentThinking([msg], "move_blocks").messages
-    const twice = destackAdjacentThinking(once, "move_blocks")
+    const once = repairAssistantBlockLayout([msg], "move_blocks").messages
+    const twice = repairAssistantBlockLayout(once, "move_blocks")
     expect(twice.messages).toEqual(once)
-    expect(twice.stats.destackedMessages).toBe(0)
+    expect(twice.stats.repairedMessages).toBe(0)
   })
 
   // `terminalRepairs` 单独计「输入本身末块是 thinking（C2 违规）」的消息数——与
-  // insertedMarkers 正交（C1 补的分隔符不算），也与 destackedMessages 正交（因 C1
+  // insertedMarkers 正交（C1 补的分隔符不算），也与 repairedMessages 正交（因 C1
   // 触发的不算）。无这组断言时该字段恒置 0 也能全绿（评审 LOW）。
   test("terminalRepairs: 只计 C2 违规的消息，不双计、不漏计", () => {
-    const c2Only = destackAdjacentThinking([asst([text("hi"), T("a")])], "move_blocks")
+    const c2Only = repairAssistantBlockLayout([asst([text("hi"), T("a")])], "move_blocks")
     expect(c2Only.stats.terminalRepairs).toBe(1)
     expect(c2Only.stats.insertedMarkers).toBe(0) // 纯重排、没补合成块
 
-    const c1Only = destackAdjacentThinking([asst([T("a"), T("b"), tool("t1")])], "move_blocks")
+    const c1Only = repairAssistantBlockLayout([asst([T("a"), T("b"), tool("t1")])], "move_blocks")
     expect(c1Only.stats.terminalRepairs).toBe(0) // 末块本来就是 tool_use
     expect(c1Only.stats.insertedMarkers).toBe(1)
 
-    const both = destackAdjacentThinking([asst([T("a"), T("b")])], "move_blocks")
+    const both = repairAssistantBlockLayout([asst([T("a"), T("b")])], "move_blocks")
     expect(both.stats.terminalRepairs).toBe(1) // 一条消息只加一次，哪怕同时违反 C1
 
-    const two = destackAdjacentThinking([asst([T("a")]), asst([text("x"), T("b")])], "move_blocks")
+    const two = repairAssistantBlockLayout([asst([T("a")]), asst([text("x"), T("b")])], "move_blocks")
     expect(two.stats.terminalRepairs).toBe(2)
 
-    const repaired = destackAdjacentThinking([asst([T("a")])], "move_blocks").messages
-    expect(destackAdjacentThinking(repaired, "move_blocks").stats.terminalRepairs).toBe(0)
+    const repaired = repairAssistantBlockLayout([asst([T("a")])], "move_blocks").messages
+    expect(repairAssistantBlockLayout(repaired, "move_blocks").stats.terminalRepairs).toBe(0)
   })
 })
 
@@ -213,10 +213,10 @@ describe("destackAdjacentThinking: 终端块不变量（C2 + C3）", () => {
  * sanitize 之后动过块序的改写腿。真实事故 req_1785160010003_3754：陈旧实例把
  * `[T,text(""),T,tool]` 变成 `[T,tool,T]`，客户端此后每轮都带着这条非法消息重投。
  */
-describe("destackAdjacentThinking: C3 独立触发（tool_use 必须收尾）", () => {
+describe("repairAssistantBlockLayout: C3 独立触发（tool_use 必须收尾）", () => {
   test("move_blocks: [T,tool,text] → tool_use 重新收尾，块一个不丢", () => {
     const msg = asst([T("a"), tool("t1"), text("trailing")])
-    const { messages, stats } = destackAdjacentThinking([msg], "move_blocks")
+    const { messages, stats } = repairAssistantBlockLayout([msg], "move_blocks")
     const types = (messages[0].content as Array<{ type: string }>).map((b) => b.type)
     expect(types).toEqual(["thinking", "text", "tool_use"])
     expect(stats.toolTerminalRepairs).toBe(1)
@@ -226,7 +226,7 @@ describe("destackAdjacentThinking: C3 独立触发（tool_use 必须收尾）", 
 
   test("move_blocks: 完全没有 thinking 的 [tool,text] 也修", () => {
     const msg = asst([tool("t1"), text("trailing")])
-    const { messages, stats } = destackAdjacentThinking([msg], "move_blocks")
+    const { messages, stats } = repairAssistantBlockLayout([msg], "move_blocks")
     const content = messages[0].content as Array<{ type: string; text?: string }>
     expect(content.map((b) => b.type)).toEqual(["text", "tool_use"])
     expect(content[0].text).toBe("trailing") // 真实文本保留，不是合成标记
@@ -235,7 +235,7 @@ describe("destackAdjacentThinking: C3 独立触发（tool_use 必须收尾）", 
 
   test("move_blocks: 生产事故形状 [T,tool,T] 回流 → 修成合法（C2+C3 同时）", () => {
     const msg = asst([T("a"), tool("t1"), T("b")])
-    const { messages, stats } = destackAdjacentThinking([msg], "move_blocks")
+    const { messages, stats } = repairAssistantBlockLayout([msg], "move_blocks")
     const types = (messages[0].content as Array<{ type: string }>).map((b) => b.type)
     expect(types).toEqual(["thinking", "text", "thinking", "tool_use"]) // 合成标记居中
     expect(stats.terminalRepairs).toBe(1)
@@ -244,7 +244,7 @@ describe("destackAdjacentThinking: C3 独立触发（tool_use 必须收尾）", 
 
   test("move_blocks: 多 tool_use 时保留内部 tool_use、只把最后一个搬到末尾", () => {
     const msg = asst([tool("t1"), tool("t2"), text("trailing")])
-    const { messages } = destackAdjacentThinking([msg], "move_blocks")
+    const { messages } = repairAssistantBlockLayout([msg], "move_blocks")
     const content = messages[0].content as Array<{ type: string; id?: string }>
     expect(content.map((b) => b.type)).toEqual(["tool_use", "text", "tool_use"])
     expect(content.map((b) => b.id)).toEqual(["t1", undefined, "t2"]) // 相对序不变
@@ -252,31 +252,31 @@ describe("destackAdjacentThinking: C3 独立触发（tool_use 必须收尾）", 
 
   test("move_blocks: 已合法（tool_use 收尾 / 无 tool_use）不触发", () => {
     const legal = asst([text("hi"), tool("t1")])
-    expect(destackAdjacentThinking([legal], "move_blocks").stats.destackedMessages).toBe(0)
+    expect(repairAssistantBlockLayout([legal], "move_blocks").stats.repairedMessages).toBe(0)
     const noTool = asst([text("hi"), text("there")])
-    expect(destackAdjacentThinking([noTool], "move_blocks").stats.destackedMessages).toBe(0)
+    expect(repairAssistantBlockLayout([noTool], "move_blocks").stats.repairedMessages).toBe(0)
   })
 
   test("move_blocks: C3 修复后幂等", () => {
-    const once = destackAdjacentThinking([asst([T("a"), tool("t1"), text("x")])], "move_blocks").messages
-    const twice = destackAdjacentThinking(once, "move_blocks")
+    const once = repairAssistantBlockLayout([asst([T("a"), tool("t1"), text("x")])], "move_blocks").messages
+    const twice = repairAssistantBlockLayout(once, "move_blocks")
     expect(twice.messages).toEqual(once)
-    expect(twice.stats.destackedMessages).toBe(0)
+    expect(twice.stats.repairedMessages).toBe(0)
   })
 
   test("insert_text / passthrough: C3-only 不触发（该腿修不了，也不谎报修了）", () => {
     const msg = asst([T("a"), tool("t1"), text("trailing")])
     for (const strategy of ["insert_text", "passthrough"] as const) {
-      const { messages, stats } = destackAdjacentThinking([msg], strategy)
+      const { messages, stats } = repairAssistantBlockLayout([msg], strategy)
       expect(messages[0].content).toEqual(msg.content)
-      expect(stats.destackedMessages).toBe(0)
+      expect(stats.repairedMessages).toBe(0)
       expect(stats.toolTerminalRepairs).toBe(0)
     }
   })
 
   test("user 消息不受 C3 约束（约束只针对 assistant）", () => {
     const u: MessageParam = { role: "user", content: [tool("t1"), text("x")] as never }
-    const { messages, stats } = destackAdjacentThinking([u], "move_blocks")
+    const { messages, stats } = repairAssistantBlockLayout([u], "move_blocks")
     expect(messages[0]).toEqual(u)
     expect(stats.toolTerminalRepairs).toBe(0)
   })
@@ -323,7 +323,7 @@ describe("hasToolTerminalViolation / endsOnAssistantTurn", () => {
  * Deterministic and exhaustive (no RNG, no seed to drift): 5^0+5^1+5^2+5^3+5^4 = 781
  * contents per strategy.
  */
-describe("destackAdjacentThinking: 穷举不变量扫描", () => {
+describe("repairAssistantBlockLayout: 穷举不变量扫描", () => {
   type Block = { type: string; text?: string; signature?: string; id?: string; probeId?: string }
   const ALPHABET: Array<Block> = [
     { type: "thinking", thinking: "", signature: "sig" } as Block,
@@ -358,7 +358,7 @@ describe("destackAdjacentThinking: 穷举不变量扫描", () => {
       let checked = 0
       for (const content of allContents(4)) {
         const msg: MessageParam = { role: "assistant", content: content as never }
-        const { messages } = destackAdjacentThinking([msg], strategy)
+        const { messages } = repairAssistantBlockLayout([msg], strategy)
         const out = messages[0].content as Array<Block>
         const label = `${strategy} :: ${content.map((b) => b.type + (b.text === "  " ? "(ws)" : "")).join(",")}`
 
@@ -381,9 +381,9 @@ describe("destackAdjacentThinking: 穷举不变量扫描", () => {
         expect(outIds, `real block dropped/duplicated: ${label}`).toEqual(inIds)
 
         // Idempotence: a second pass is a byte-identical no-op.
-        const again = destackAdjacentThinking(messages, strategy)
+        const again = repairAssistantBlockLayout(messages, strategy)
         expect(again.messages[0].content, `not idempotent: ${label}`).toEqual(out as never)
-        expect(again.stats.destackedMessages, `not idempotent (stats): ${label}`).toBe(0)
+        expect(again.stats.repairedMessages, `not idempotent (stats): ${label}`).toBe(0)
         checked++
       }
       expect(checked).toBe(781)
@@ -396,7 +396,7 @@ describe("destackAdjacentThinking: 穷举不变量扫描", () => {
     let checked = 0
     for (const content of allContents(4)) {
       const msg: MessageParam = { role: "assistant", content: content as never }
-      const out = destackAdjacentThinking([msg], "move_blocks").messages[0].content as Array<Block>
+      const out = repairAssistantBlockLayout([msg], "move_blocks").messages[0].content as Array<Block>
       expect(c3Ok(out), `C3 violated: ${content.map((b) => b.type).join(",")} -> ${out.map((b) => b.type).join(",")}`).toBe(true)
       checked++
     }
@@ -407,7 +407,7 @@ describe("destackAdjacentThinking: 穷举不变量扫描", () => {
     for (const content of allContents(4)) {
       if (!c3Ok(content)) continue
       const msg: MessageParam = { role: "assistant", content: content as never }
-      const out = destackAdjacentThinking([msg], "insert_text").messages[0].content as Array<Block>
+      const out = repairAssistantBlockLayout([msg], "insert_text").messages[0].content as Array<Block>
       expect(c3Ok(out), `C3 broken by de-stack: ${content.map((b) => b.type).join(",")} -> ${out.map((b) => b.type).join(",")}`).toBe(true)
     }
   })

@@ -33,7 +33,7 @@ import {
   isThinkingLayoutRejection,
   isToolTerminalPrefillRejection,
 } from "~/lib/anthropic/poisoned-thinking-match"
-import { SYNTHETIC_THINKING_SEPARATOR } from "~/lib/anthropic/sanitize/destack-adjacent-thinking"
+import { SYNTHETIC_THINKING_SEPARATOR } from "~/lib/anthropic/sanitize/assistant-block-layout"
 import { createPoisonedThinkingRetryStrategy } from "~/lib/codec/anthropic/poisoned-thinking-retry"
 import {
   //
@@ -171,8 +171,7 @@ describe("C3 / prefill 400：认领 + 条件治愈", () => {
   const envFor = (assistantTurns: Array<Array<unknown>>, tail: "user" | "assistant" = "user"): RequestEnvelope => {
     const messages: Array<unknown> = []
     for (const content of assistantTurns) {
-      messages.push({ role: "assistant", content })
-      messages.push({ role: "user", content: [toolResult] })
+      messages.push({ role: "assistant", content }, { role: "user", content: [toolResult] })
     }
     if (tail === "assistant") messages.pop()
     return {
@@ -184,7 +183,7 @@ describe("C3 / prefill 400：认领 + 条件治愈", () => {
     } as unknown as RequestEnvelope
   }
   const contentOf = (action: RetryAction, index: number): Array<{ type: string }> =>
-    ((action as { env: { body: { messages: Array<{ content: Array<{ type: string }> }> } } }).env.body.messages[index].content)
+    (action as { env: { body: { messages: Array<{ content: Array<{ type: string }> }> } } }).env.body.messages[index].content
 
   test("措辞分类：prefill 归 tool-terminal-prefill，与 thinking-layout 分开", () => {
     expect(isToolTerminalPrefillRejection("This model does not support assistant message prefill. The conversation must end with a user message.")).toBe(true)
@@ -223,7 +222,10 @@ describe("C3 / prefill 400：认领 + 条件治愈", () => {
     setStateForTests({ stripThinkingOnReject: true })
     const action = await createPoisonedThinkingRetryStrategy().handle(
       prefillError(),
-      envFor([[T, toolUse, T], [toolUse, { type: "text", text: "trailing" }]]),
+      envFor([
+        [T, toolUse, T],
+        [toolUse, { type: "text", text: "trailing" }],
+      ]),
     )
     expect(action.kind).toBe("abort")
   })

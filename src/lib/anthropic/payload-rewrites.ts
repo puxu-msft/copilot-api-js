@@ -36,7 +36,7 @@ import type { SanitizationStats } from "./sanitize/result"
 import { preprocessTools } from "./message-tools"
 import {
   //
-  destackActed,
+  layoutRepairActed,
   sanitizeAnthropicMessages,
 } from "./sanitize"
 import { applyAnthropicToolNameSanitization } from "./sanitize/tool-name-sanitize"
@@ -121,7 +121,7 @@ const sanitizeMessages: AnthropicPayloadRewrite = {
   apply: (payload) => {
     const result = sanitizeAnthropicMessages(payload)
     const s = result.stats
-    const changed = s.totalBlocksRemoved > 0 || s.systemReminderRemovals > 0 || s.fixedNameCount > 0 || s.inlineSystemConverted > 0 || destackActed(s)
+    const changed = s.totalBlocksRemoved > 0 || s.systemReminderRemovals > 0 || s.fixedNameCount > 0 || s.inlineSystemConverted > 0 || layoutRepairActed(s)
     return { payload: result.payload, changed, sanitizeResult: result }
   },
 }

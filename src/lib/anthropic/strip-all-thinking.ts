@@ -4,14 +4,14 @@ import type {
   MessageParam,
 } from "~/types/api/anthropic"
 
-import { SYNTHETIC_THINKING_SEPARATOR } from "~/lib/anthropic/sanitize/destack-adjacent-thinking"
+import { SYNTHETIC_THINKING_SEPARATOR } from "~/lib/anthropic/sanitize/assistant-block-layout"
 
 const THINKING_TYPES = new Set(["thinking", "redacted_thinking"])
 
 /**
  * A block that {@link stripAllThinking} removes: any `thinking` /
  * `redacted_thinking` block, PLUS an orphaned synthetic de-stack separator. L1
- * de-stack ({@link destackAdjacentThinking}, `insert_text` / `move_blocks`)
+ * de-stack ({@link repairAssistantBlockLayout}, `insert_text` / `move_blocks`)
  * inserts a fixed {@link SYNTHETIC_THINKING_SEPARATOR} text block between two
  * thinking blocks — and, when a message would otherwise END on thinking, as its
  * terminator; once strip-all removes the thinking blocks it separated, that

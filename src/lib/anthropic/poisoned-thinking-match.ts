@@ -10,8 +10,8 @@
  *
  * Pure functions only — no state / ctx / payload reads or mutation. The ONE payload-shaped
  * question this decision needs (does stripping thinking actually cure the C3 violation?) is
- * answered by `thinkingCausesToolTerminalViolation` in the de-stack module, which owns the
- * layout constraints — the shell combines the two.
+ * answered by `hasToolTerminalViolation` / `endsOnAssistantTurn` in the block-layout module,
+ * which owns the layout constraints — the shell combines them with the REAL strip-all output.
  */
 
 import type { ApiError } from "~/lib/error"
@@ -35,7 +35,7 @@ import { HTTPError } from "~/lib/error"
  * `legacy-thinking-retry`). C3 (the "prefill" wording) is a SEPARATE cue below — its
  * remediation is conditional, so folding it in here would lie about curability.
  *
- * L1 (`destackAdjacentThinking`) proactively prevents ALL THREE shapes; this matcher only
+ * L1 (`repairAssistantBlockLayout`) proactively prevents ALL THREE shapes; this matcher only
  * gates the reactive fallback for layouts L1 did not preempt.
  */
 /**
@@ -104,8 +104,8 @@ function extractRejectionMessage(error: ApiError): string | null {
  *
  * The two kinds are NOT interchangeable: `thinking-layout` (C1/C2) is always cured by
  * strip-all, while `tool-terminal-prefill` (C3) is cured only when thinking blocks are what
- * pushed `tool_use` off the end — the shell checks the payload
- * (`thinkingCausesToolTerminalViolation`) before committing its one-shot retry.
+ * pushed `tool_use` off the end — the shell compares `hasToolTerminalViolation` before/after the
+ * real strip-all (and rejects an assistant-terminated conversation) before committing its retry.
  */
 export function classifyLayoutRejection(error: ApiError): LayoutRejectionKind | null {
   if (error.type !== "bad_request" || error.status !== 400) return null

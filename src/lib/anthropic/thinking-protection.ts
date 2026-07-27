@@ -15,7 +15,7 @@
  * strip); they key on thinking *existence*, which is all that matters.
  *
  * NOTE (de-stack): thinking blocks' ADJACENCY is NOT a protected property. The
- * de-stack pass (sanitize/destack-adjacent-thinking.ts) deliberately inserts
+ * de-stack pass (sanitize/assistant-block-layout.ts) deliberately inserts
  * non-thinking blocks BETWEEN adjacent thinking blocks to satisfy the upstream
  * "no two thinking blocks may be adjacent" rule. Protected invariants are only:
  * thinking content verbatim, relative order, and no-drop — all of which de-stack

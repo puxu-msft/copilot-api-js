@@ -31,7 +31,7 @@ import { buildMessageMapping } from "~/lib/anthropic/message-mapping"
 import { runAnthropicPayloadRewrites } from "~/lib/anthropic/payload-rewrites"
 import {
   //
-  destackActed,
+  layoutRepairActed,
   toSanitizationInfo,
 } from "~/lib/anthropic/sanitize"
 import { ENDPOINT } from "~/lib/models/endpoint"
@@ -83,10 +83,10 @@ function applyAnthropicSanitize(env: RequestEnvelope, deps: AnthropicRequestRewr
 
   // Same gate + mapping the parse path used (RFC §12.9), PLUS the terminal de-stack
   // (pure insertion — invisible to the block-removal counters, so OR'd in via
-  // destackActed so its telemetry is never dropped): the baseline is the
+  // layoutRepairActed so its telemetry is never dropped): the baseline is the
   // preprocessed, pre-initial-sanitize messages (= this rewrite's input body).
   const hasPreprocessing = deps.preprocessInfo.dedupedToolCallCount > 0 || deps.preprocessInfo.strippedReadTagCount > 0
-  if (stats.totalBlocksRemoved > 0 || stats.systemReminderRemovals > 0 || stats.fixedNameCount > 0 || destackActed(stats) || hasPreprocessing) {
+  if (stats.totalBlocksRemoved > 0 || stats.systemReminderRemovals > 0 || stats.fixedNameCount > 0 || layoutRepairActed(stats) || hasPreprocessing) {
     const messageMapping = buildMessageMapping(baseline.messages, sanitized.messages)
     ctx.setPipelineInfo({
       preprocessing: deps.preprocessInfo,

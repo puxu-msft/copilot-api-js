@@ -3,7 +3,7 @@
  * GHC's illegal-layout 400s (docs/plan/thinking-quarantine,
  * docs/spec/2026-07-26-thinking-terminal-block-layout.md).
  *
- * L1 (`destackAdjacentThinking`) proactively prevents all three known layout violations
+ * L1 (`repairAssistantBlockLayout`) proactively prevents all three known layout violations
  * (C1 adjacent thinking blocks; C2 a message terminating on thinking; C3 a message carrying
  * `tool_use` that does not end on it). This L2 strategy is the reactive fallback: when such a
  * 400 still reaches S4 (a layout L1 did not preempt — a non-default de-stack strategy, or an
@@ -40,7 +40,7 @@ import {
   //
   endsOnAssistantTurn,
   hasToolTerminalViolation,
-} from "~/lib/anthropic/sanitize/destack-adjacent-thinking"
+} from "~/lib/anthropic/sanitize/assistant-block-layout"
 import { stripAllThinking } from "~/lib/anthropic/strip-all-thinking"
 import { getQuarantineStore } from "~/lib/anthropic/thinking-quarantine"
 import { toQuarantineKey } from "~/lib/anthropic/thinking-quarantine/session-key"
@@ -84,7 +84,7 @@ export function createPoisonedThinkingRetryStrategy(deps?: { store?: ThinkingQua
       // Otherwise abort: a retry we already know still violates C3 would burn the one-shot.
       if (
         classifyLayoutRejection(error) === "tool-terminal-prefill"
-        && !(hasToolTerminalViolation(payload.messages) && !hasToolTerminalViolation(messages) && !endsOnAssistantTurn(payload.messages))
+        && (!hasToolTerminalViolation(payload.messages) || hasToolTerminalViolation(messages) || endsOnAssistantTurn(payload.messages))
       ) {
         return Promise.resolve({ kind: "abort", error })
       }

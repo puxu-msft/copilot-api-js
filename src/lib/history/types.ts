@@ -17,7 +17,7 @@ import type {
   AskNormalizationDiag,
   SendMessageNormalizationDiag,
 } from "~/lib/anthropic/decode-tool-input-core"
-import type { DestackStats } from "~/lib/anthropic/sanitize/destack-adjacent-thinking"
+import type { BlockLayoutRepairStats } from "~/lib/anthropic/sanitize/assistant-block-layout"
 import type { BufferedMergeDiag } from "~/lib/codec/openai-responses/buffered-merge-reducer"
 import type {
   //
@@ -150,9 +150,9 @@ export interface SanitizationInfo {
   /**
    * Terminal de-stack pass counters (adjacent-thinking separation), present only
    * when de-stack acted. Pure INSERT/reorder — orthogonal to the block-removal
-   * counts above (see `destackAdjacentThinking` / spec §3.1).
+   * counts above (see `repairAssistantBlockLayout` / spec §3.1).
    */
-  destack?: DestackStats
+  blockLayout?: BlockLayoutRepairStats
 }
 
 export interface PreprocessInfo {

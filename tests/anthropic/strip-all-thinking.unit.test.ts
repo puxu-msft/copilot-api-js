@@ -5,7 +5,7 @@ import {
   test,
 } from "bun:test"
 
-import { SYNTHETIC_THINKING_SEPARATOR } from "~/lib/anthropic/sanitize/destack-adjacent-thinking"
+import { SYNTHETIC_THINKING_SEPARATOR } from "~/lib/anthropic/sanitize/assistant-block-layout"
 import { stripAllThinking } from "~/lib/anthropic/strip-all-thinking"
 
 const T = (s: string) => ({ type: "thinking", thinking: "", signature: s })

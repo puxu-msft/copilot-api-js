@@ -1,5 +1,5 @@
+import type { AssistantBlockLayoutStrategy } from "~/lib/anthropic/sanitize/assistant-block-layout"
 import type { ThinkingBlockSanitizeMode } from "~/lib/anthropic/sanitize/content-blocks"
-import type { ThinkingDestackStrategy } from "~/lib/anthropic/sanitize/destack-adjacent-thinking"
 import type { RepairItem } from "~/lib/anthropic/tool-input-repair"
 import type { ModelTranslation } from "~/lib/config/schema"
 import type {
@@ -69,7 +69,7 @@ export type WarmupPolicy = "allow" | "reject" | "drop" | "fake"
  * - `preserve` — Keep thinking blocks verbatim, preserve their relative order, and never
  *                drop them, but allow all surrounding cleanup (drop orphan tools, downgrade
  *                server tools, edit/drop non-thinking blocks). Thinking *adjacency* is NOT
- *                protected: the de-stack pass (sanitize/destack-adjacent-thinking.ts) may
+ *                protected: the de-stack pass (sanitize/assistant-block-layout.ts) may
  *                insert non-thinking blocks between consecutive thinking blocks to satisfy
  *                the upstream "no two thinking blocks adjacent" rule.
  * - `stripped` — Actively delete thinking blocks from old messages; delete the message if
@@ -493,7 +493,7 @@ export interface State {
 
   /**
    * De-stack strategy for adjacent `thinking`/`redacted_thinking` blocks (config
-   * `anthropic.thinking_destack_strategy`). Ensures no two thinking blocks are
+   * `anthropic.assistant_block_layout_strategy`). Ensures no two thinking blocks are
    * consecutive in an assistant message — GHC rejects an echoed history with
    * stacked thinking with a "thinking blocks cannot be modified" 400.
    *
@@ -502,11 +502,11 @@ export interface State {
    * - `"move_blocks"` — interleave thinking with real non-thinking blocks
    *                     (order-preserving), synthetic marker only when insufficient (default).
    */
-  readonly thinkingDestackStrategy: ThinkingDestackStrategy
+  readonly assistantBlockLayoutStrategy: AssistantBlockLayoutStrategy
 
   /**
    * Reactive strip-all fallback (L2) for the GHC "thinking ... cannot be
-   * modified" 400 that L1 de-stack ({@link thinkingDestackStrategy}) did not
+   * modified" 400 that L1 de-stack ({@link assistantBlockLayoutStrategy}) did not
    * preempt (config `anthropic.strip_thinking_on_reject`). When `true` (default)
    * the `poisoned-thinking-retry` strategy strips ALL thinking/redacted_thinking
    * blocks from the echoed history and retries the turn once; `false` lets the
@@ -1489,7 +1489,7 @@ export function setAnthropicBehavior(
       | "injectClaudeCodeOfficialTools"
       | "thinkingBlockMessagePolicy"
       | "thinkingBlockSanitizeCheck"
-      | "thinkingDestackStrategy"
+      | "assistantBlockLayoutStrategy"
       | "stripThinkingOnReject"
       | "poisonedThinkingQuarantine"
       | "poisonedThinkingTtlHours"
@@ -2030,7 +2030,7 @@ export function resetConfigManagedState(): void {
     injectClaudeCodeOfficialTools: CONFIG_MANAGED_DEFAULTS.injectClaudeCodeOfficialTools,
     thinkingBlockMessagePolicy: CONFIG_MANAGED_DEFAULTS.thinkingBlockMessagePolicy,
     thinkingBlockSanitizeCheck: CONFIG_MANAGED_DEFAULTS.thinkingBlockSanitizeCheck,
-    thinkingDestackStrategy: CONFIG_MANAGED_DEFAULTS.thinkingDestackStrategy,
+    assistantBlockLayoutStrategy: CONFIG_MANAGED_DEFAULTS.assistantBlockLayoutStrategy,
     stripThinkingOnReject: CONFIG_MANAGED_DEFAULTS.stripThinkingOnReject,
     poisonedThinkingQuarantine: CONFIG_MANAGED_DEFAULTS.poisonedThinkingQuarantine,
     poisonedThinkingTtlHours: CONFIG_MANAGED_DEFAULTS.poisonedThinkingTtlHours,
@@ -2264,7 +2264,7 @@ const mutableState: MutableState = {
   injectClaudeCodeOfficialTools: CONFIG_MANAGED_DEFAULTS.injectClaudeCodeOfficialTools,
   thinkingBlockMessagePolicy: CONFIG_MANAGED_DEFAULTS.thinkingBlockMessagePolicy,
   thinkingBlockSanitizeCheck: CONFIG_MANAGED_DEFAULTS.thinkingBlockSanitizeCheck,
-  thinkingDestackStrategy: CONFIG_MANAGED_DEFAULTS.thinkingDestackStrategy,
+  assistantBlockLayoutStrategy: CONFIG_MANAGED_DEFAULTS.assistantBlockLayoutStrategy,
   stripThinkingOnReject: CONFIG_MANAGED_DEFAULTS.stripThinkingOnReject,
   poisonedThinkingQuarantine: CONFIG_MANAGED_DEFAULTS.poisonedThinkingQuarantine,
   poisonedThinkingTtlHours: CONFIG_MANAGED_DEFAULTS.poisonedThinkingTtlHours,

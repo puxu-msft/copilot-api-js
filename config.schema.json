@@ -472,7 +472,7 @@
                 }
               ]
             },
-            "thinking_destack_strategy": {
+            "assistant_block_layout_strategy": {
               "anyOf": [
                 {
                   "type": "string",

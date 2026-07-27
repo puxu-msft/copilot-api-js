@@ -4,13 +4,13 @@ import type {
   MessageParam,
 } from "~/types/api/anthropic"
 
-export type ThinkingDestackStrategy = "passthrough" | "insert_text" | "move_blocks"
+export type AssistantBlockLayoutStrategy = "passthrough" | "insert_text" | "move_blocks"
 
 /** Fixed, distinguishable synthetic separator (empty/whitespace text is stripped upstream → useless). */
 export const SYNTHETIC_THINKING_SEPARATOR = "[copilot-api: thinking separator]"
 
-export interface DestackStats {
-  destackedMessages: number
+export interface BlockLayoutRepairStats {
+  repairedMessages: number
   insertedMarkers: number
   reorderedBlocks: number
   /** Messages whose LAST block was a thinking block (C2) and had to be re-terminated. */
@@ -87,7 +87,7 @@ export function endsOnAssistantTurn(messages: Array<MessageParam>): boolean {
  * C3. Satisfying C3 requires reordering — that is `move_blocks` (the default). This
  * strategy stays a diagnostic/comparison leg.
  */
-function insertTextStrategy(content: Array<ContentBlockParam>, stats: DestackStats): Array<ContentBlockParam> {
+function insertTextStrategy(content: Array<ContentBlockParam>, stats: BlockLayoutRepairStats): Array<ContentBlockParam> {
   const out: Array<ContentBlockParam> = []
   for (const b of content) {
     const prev = out.at(-1)
@@ -114,7 +114,7 @@ function insertTextStrategy(content: Array<ContentBlockParam>, stats: DestackSta
  * turn as an assistant prefill), else the last real separator, else a synthetic marker.
  * Interior `tool_use` blocks are fine as separators (empirically verified).
  */
-function moveBlocksStrategy(content: Array<ContentBlockParam>, stats: DestackStats): Array<ContentBlockParam> {
+function moveBlocksStrategy(content: Array<ContentBlockParam>, stats: BlockLayoutRepairStats): Array<ContentBlockParam> {
   const thinks = content.filter((b) => isThinking(b))
   const others = content.filter((b) => !isThinking(b))
   const realSeps = others.filter((b) => isRealSeparator(b))
@@ -174,11 +174,11 @@ function moveBlocksStrategy(content: Array<ContentBlockParam>, stats: DestackSta
  * Idempotent: messages already satisfying C1+C2+C3 are returned unchanged (byte-identical).
  * See spec §3.1; runs as the TERMINAL sanitize pass.
  */
-export function destackAdjacentThinking(
+export function repairAssistantBlockLayout(
   messages: Array<MessageParam>,
-  strategy: ThinkingDestackStrategy,
-): { messages: Array<MessageParam>; stats: DestackStats } {
-  const stats: DestackStats = { destackedMessages: 0, insertedMarkers: 0, reorderedBlocks: 0, terminalRepairs: 0, toolTerminalRepairs: 0 }
+  strategy: AssistantBlockLayoutStrategy,
+): { messages: Array<MessageParam>; stats: BlockLayoutRepairStats } {
+  const stats: BlockLayoutRepairStats = { repairedMessages: 0, insertedMarkers: 0, reorderedBlocks: 0, terminalRepairs: 0, toolTerminalRepairs: 0 }
   if (strategy === "passthrough") return { messages, stats }
 
   let changed = false
@@ -196,7 +196,7 @@ export function destackAdjacentThinking(
       out.push(msg)
       continue
     }
-    stats.destackedMessages++
+    stats.repairedMessages++
     if (terminalViolation) stats.terminalRepairs++
     if (toolTerminalViolation) stats.toolTerminalRepairs++
     changed = true
