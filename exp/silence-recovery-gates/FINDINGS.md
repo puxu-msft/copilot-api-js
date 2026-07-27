@@ -42,13 +42,15 @@
 | sdkcontrol | `@anthropic-ai/sdk` 0.106.0，`maxRetries:0`、显式 `timeout: 1_250_000` | 1250 | **300,001ms**，`Request timed out.` |
 | idle-env-600s | 真 CC + `CLAUDE_STREAM_IDLE_TIMEOUT_MS=600000` | — | **299,813ms**（**没动**） |
 | barefetch | Node 裸 `fetch`，无 SDK 无 CC | 无 | **300,887ms**，`UND_ERR_HEADERS_TIMEOUT` |
+| rawsocket | 裸 TCP socket，无任何 HTTP 客户端 | 无 | **420.1s 仍未被关**（服务端对照） |
 | repro-125s | 真 CC 2.1.220 | — | 成功 125,002ms，exit 0、`num_turns:1` |
 
-**归因（三步排除，每步都有独立对照）**：
+**归因（四步排除，每步都有独立对照）**：
 
-1. **不是 harness**：服务器一直挂着（窗口 900–1500s），是客户端先走。SDK 臂显式给了 1250s 超时仍在 300.0s 死——它自己的 `setTimeout(abort, 1_250_000)` 根本没到点。
+0. **服务端对照（最要命的一条，因为三个客户端臂打的是同一个服务端实现）**：若是我方 Bun server 在 300s 关连接，三臂会一起「撞上 300s」而结论全错。用裸 TCP socket 发同样的 POST 后干等：**420.1s 服务器既没关连接也没发一个字节**（`rawsocket` 臂）。故 `Bun.serve({ idleTimeout: 0 })` 确实禁用了服务端超时，300s 完全在客户端侧。
+1. **不是 harness 的其他部分**：服务器一直挂着（窗口 900–1500s），是客户端先走。SDK 臂显式给了 1250s 超时仍在 300.0s 死——它自己的 `setTimeout(abort, 1_250_000)` 根本没到点。
 2. **不是 CC 的 stream idle watchdog**：把 `CLAUDE_STREAM_IDLE_TIMEOUT_MS` 抬到 600000，放弃点纹丝不动（299,813ms）。且源码侧 `x0i()` 的武装点 `he()` 在 `await …withResponse()` **之后**，pre-header 期间本就没武装。
-3. **是 undici 的默认 `headersTimeout`**：剥掉全部 Anthropic 层的裸 `fetch` 在 300,887ms 抛 `HeadersTimeoutError` / `UND_ERR_HEADERS_TIMEOUT`。这一层在 SDK 与 CC 的配置**下面**，所以两者自称的 1200s/1250s 都够不着它。
+3. **是 undici 的默认 `headersTimeout`**：剥掉全部 Anthropic 层的裸 `fetch` 在 300,887ms 抛 `HeadersTimeoutError` / `UND_ERR_HEADERS_TIMEOUT`。这一层在 SDK 与 CC 的配置**下面**，所以两者自称的 1200s/1250s 都够不着它。错误类型本身也是证据：客户端超时抛的是 `HeadersTimeoutError`，服务端关连接抛的会是 socket/reset 类错误。
 
 **因此 `x-stainless-timeout: 1200` 确实不是 oracle**——上轮的谨慎标注是对的，但真实上限比它小 4 倍，不是大。
 
