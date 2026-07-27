@@ -22,74 +22,54 @@ export function parseSource(filePath: string, source: string): ts.SourceFile {
   return ts.createSourceFile(filePath, source, ts.ScriptTarget.Latest, /* setParentNodes */ true, ts.ScriptKind.TSX)
 }
 
-/** Where an exported name ultimately comes from. */
-export interface ExportOrigin {
-  /** The name the barrel publishes it under. */
-  exportedAs: string
-  /** The name it is called in its defining module (differs whenever `as` is involved). */
-  originalName: string
-  /** The module it comes from — `null` when it is defined in this very file. */
-  fromModule: string | null
-}
-
 /**
- * Every VALUE binding a module publishes, traced back to its origin module + original name.
+ * EVERY name a module makes publicly reachable, by ANY mechanism.
  *
- * Handles, because each of these was a real bypass at some point:
- *  - `export { a } from "./m"` and `export { a as b } from "./m"`;
- *  - `import { a as x } from "./m"; export { x }` — the local-alias hop that defeats name matching;
- *  - comments anywhere between tokens, and `}`/`,` inside string literals.
+ * The point is to enumerate the module's public SURFACE, not to trace where each name came from.
+ * Provenance tracing is a losing game — three review rounds walked it down through aliases, local
+ * re-export hops, `default`, namespace objects, `const` wrappers and cross-file chains, and each
+ * depth only closed the bypass someone had just demonstrated. Enumerating the surface inverts the
+ * burden: a caller compares this against an explicit allowlist, so ANY new export fails by default
+ * regardless of the mechanism used to create it.
  *
- * Type-only exports (`export type { … }`, and `type` specifiers inside a value block) are excluded:
- * they cannot carry a runtime operation.
+ * Covers named exports (`export { a }`, `export { a as b }`, with or without a module specifier),
+ * `export default …`, and exported declarations (`export const/function/class/enum …`). Type-only
+ * specifiers are reported too — the public type surface is a contract as well. Star re-exports are
+ * NOT enumerable from one file and are reported separately by {@link valueStarReExports}.
  */
-export function valueExportOrigins(sourceFile: ts.SourceFile): Array<ExportOrigin> {
-  // local binding name → where it was imported from (only value imports).
-  const importedBindings = new Map<string, { module: string; originalName: string }>()
+export function publicExportNames(sourceFile: ts.SourceFile): Array<string> {
+  const names: Array<string> = []
   for (const statement of sourceFile.statements) {
-    if (!ts.isImportDeclaration(statement) || !statement.importClause) continue
-    if (statement.importClause.isTypeOnly) continue
-    if (!ts.isStringLiteral(statement.moduleSpecifier)) continue
-    const moduleName = statement.moduleSpecifier.text
-    const bindings = statement.importClause.namedBindings
-    if (bindings && ts.isNamedImports(bindings)) {
-      for (const element of bindings.elements) {
-        if (element.isTypeOnly) continue
-        importedBindings.set(element.name.text, { module: moduleName, originalName: (element.propertyName ?? element.name).text })
-      }
+    // `export default …`
+    if (ts.isExportAssignment(statement)) {
+      names.push("default")
+      continue
     }
-    if (statement.importClause.name) {
-      importedBindings.set(statement.importClause.name.text, { module: moduleName, originalName: "default" })
-    }
-  }
 
-  const origins: Array<ExportOrigin> = []
-  for (const statement of sourceFile.statements) {
-    if (!ts.isExportDeclaration(statement) || statement.isTypeOnly) continue
-    const exportClause = statement.exportClause
-    if (!exportClause || !ts.isNamedExports(exportClause)) continue // star exports: see valueStarReExports
-    const moduleSpecifier =
-      ts.isStringLiteral(statement.moduleSpecifier ?? ts.factory.createStringLiteral("")) ?
-        (statement.moduleSpecifier as ts.StringLiteral | undefined)
-      : undefined
-
-    for (const element of exportClause.elements) {
-      if (element.isTypeOnly) continue
-      const localName = (element.propertyName ?? element.name).text
-      if (moduleSpecifier) {
-        origins.push({ exportedAs: element.name.text, originalName: localName, fromModule: moduleSpecifier.text })
-        continue
+    // `export { … }` / `export type { … }` / `export { … } from "…"`
+    if (ts.isExportDeclaration(statement)) {
+      const clause = statement.exportClause
+      if (clause && ts.isNamedExports(clause)) {
+        for (const element of clause.elements) names.push(element.name.text)
       }
-      // No module specifier: the name refers to a binding in THIS file — follow it back to its import.
-      const imported = importedBindings.get(localName)
-      origins.push({
-        exportedAs: element.name.text,
-        originalName: imported?.originalName ?? localName,
-        fromModule: imported?.module ?? null,
-      })
+      continue
     }
+
+    // `export const/let/var …`, `export function …`, `export class/enum/interface/type …`
+    const modifiers = ts.canHaveModifiers(statement) ? ts.getModifiers(statement) : undefined
+    const isExported = modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword) ?? false
+    if (!isExported) continue
+
+    if (ts.isVariableStatement(statement)) {
+      for (const declaration of statement.declarationList.declarations) {
+        if (ts.isIdentifier(declaration.name)) names.push(declaration.name.text)
+      }
+      continue
+    }
+    const named = statement as { name?: ts.Node }
+    if (named.name && ts.isIdentifier(named.name)) names.push(named.name.text)
   }
-  return origins
+  return names
 }
 
 /**
@@ -183,22 +163,57 @@ export function typeOnlyModuleSpecifiers(sourceFile: ts.SourceFile): Array<strin
 }
 
 /**
- * The source offset of the first real CALL matching `predicate`, or `null` when the call does not
- * exist. Only executable `CallExpression` nodes are considered, so a commented-out call reads as
- * ABSENT rather than present — the exact false green that let a deleted wiring pass a text guard.
+ * The source offset of the first real CALL matching `predicate` inside `scope`'s OWN execution flow,
+ * or `null` when there is none.
+ *
+ * Two deliberate restrictions, each closing a demonstrated false green:
+ *  - only executable `CallExpression` nodes count, so a commented-out or stringified call reads as
+ *    ABSENT — which is what it is;
+ *  - the walk does NOT descend into nested function/class bodies, so a call parked in a helper that
+ *    is never invoked cannot stand in for real wiring (a `function decoy() { runJsonBackfill() }`
+ *    passed the previous version while production was actually disconnected).
  */
-export function findCallOffset(sourceFile: ts.SourceFile, predicate: (call: ts.CallExpression) => boolean): number | null {
-  let offset: number | null = null
+export function findCallInScope(scope: ts.Node, predicate: (call: ts.CallExpression) => boolean): ts.CallExpression | null {
+  let found: ts.CallExpression | null = null
   const visit = (node: ts.Node): void => {
-    if (offset !== null) return
+    if (found !== null) return
+    // Do not enter a nested callable — its body is a different execution flow.
+    const isNestedCallable =
+      node !== scope
+      && (ts.isFunctionDeclaration(node)
+        || ts.isFunctionExpression(node)
+        || ts.isArrowFunction(node)
+        || ts.isMethodDeclaration(node)
+        || ts.isClassDeclaration(node)
+        || ts.isClassExpression(node))
+    if (isNestedCallable) return
     if (ts.isCallExpression(node) && predicate(node)) {
-      offset = node.getStart(sourceFile)
+      found = node
       return
     }
     ts.forEachChild(node, visit)
   }
-  visit(sourceFile)
-  return offset
+  ts.forEachChild(scope, visit)
+  return found
+}
+
+/** The top-level function declaration named `name` (the startup path's own scope). */
+export function findFunctionDeclaration(sourceFile: ts.SourceFile, name: string): ts.FunctionDeclaration | null {
+  for (const statement of sourceFile.statements) {
+    if (ts.isFunctionDeclaration(statement) && statement.name?.text === name) return statement
+  }
+  return null
+}
+
+/**
+ * Whether a call is directly awaited (`await f()`), including `await (f())`. A milestone that must
+ * COMPLETE before the next one starts has to be awaited — `initialize()` without `await` leaves the
+ * server free to listen against a half-built window, while the source order still reads correctly.
+ */
+export function isAwaited(call: ts.CallExpression): boolean {
+  let node: ts.Node | undefined = call.parent
+  while (node && (ts.isParenthesizedExpression(node) || ts.isAsExpression(node))) node = node.parent
+  return node !== undefined && ts.isAwaitExpression(node)
 }
 
 /** True when `call` is `<receiver>.<method>(…)` for the given method name. */

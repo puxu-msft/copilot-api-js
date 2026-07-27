@@ -14,14 +14,17 @@
  * syntax SPACE.
  *
  * Two independent ways the surface can leak, both covered:
- *  1. the BARREL republishing an operation — under its own name, an alias, a local re-export hop, or
- *     wholesale via `export *`;
- *  2. a consumer DEEP-importing past the barrel — the package's `exports` map is `"./*"`, so every
+ *  1. the BARREL publishing something it should not;
+ *  2. a consumer DEEP-IMPORTING past the barrel — the package's `exports` map is `"./*"`, so every
  *     internal module is reachable and only a guard stops it.
  *
- * What stays legitimately public: the snapshot/breakdown TYPES, the registry metadata CONSTANTS
- * (`TELEMETRY_MEASURE_NAMES` / `TELEMETRY_HISTOGRAMS` / `DEFAULT_BREAKDOWN_LIMIT`), the dimension
- * name registry, and the SQLite tier read primitives — none carry lifecycle.
+ * For (1) the check is an exact ALLOWLIST of the barrel's public names rather than a blocklist of
+ * registry operations. Chasing operations was a losing game: each review round traced provenance one
+ * level deeper — through aliases, a local re-export hop, `export default`, a namespace object, a
+ * `const` wrapper, a cross-file two-hop chain — and each depth only closed the bypass just
+ * demonstrated. An allowlist inverts the burden: ANY new public name fails until someone adds it
+ * here deliberately, whatever mechanism created it. Value star re-exports stay forbidden outright,
+ * since they are the one form a single file cannot enumerate.
  */
 
 import {
@@ -39,28 +42,61 @@ import path from "node:path"
 
 import {
   //
-  importedModuleSpecifiers,
+  allModuleSpecifiers,
   parseSource,
-  valueExportOrigins,
+  publicExportNames,
   valueStarReExports,
 } from "./source-ast"
 
 const repoRoot = path.resolve(import.meta.dir, "../..")
 const telemetryPackageSrc = path.join(repoRoot, "packages/telemetry/src")
 
-/** The registry operations that must not escape the package, under ANY name. */
-const PACKAGE_INTERNAL_OPERATIONS = new Set([
-  "initRequestTelemetry",
-  "runTelemetryJsonBackfill",
-  "recordAcceptedRequest",
-  "recordSettledRequest",
-  "persistRequestTelemetry",
-  "shutdownRequestTelemetry",
-  "stopTelemetryBackgroundWork",
-  "getRequestTelemetrySnapshot",
-  "getDimensionBreakdown",
-  "getThinkingBlockTotals",
-  "getTelemetryDb",
+/**
+ * The barrel's COMPLETE public surface. Adding a line here is the deliberate act of widening the
+ * telemetry package's contract — which is exactly the review this guard exists to force.
+ *
+ * Everything listed is either a type, a metadata constant, the assembled runtime, the injected-port
+ * contract, or a SQLite tier read primitive. Notably absent: every registry lifecycle/record/read
+ * operation (`initRequestTelemetry`, `recordSettledRequest`, `getDimensionBreakdown`, …) — those are
+ * reachable only through the runtime in production and through `./testing` in tests.
+ */
+const ALLOWED_BARREL_EXPORTS = new Set([
+  // Composition root: the runtime + its process-singleton lifecycle.
+  "createTelemetryRuntime",
+  "getTelemetryRuntime",
+  "installTelemetryRuntime",
+  "peekTelemetryRuntime",
+  "resetTelemetryRuntimeForTests",
+  "TelemetryRuntime",
+  // Injected ports (the domain's external contract).
+  "getTelemetryDeps",
+  "installTelemetryDeps",
+  "TelemetryConfigSubscription",
+  "TelemetryConfigView",
+  "TelemetryPaths",
+  "TelemetryRuntimeDependencies",
+  // Dimension NAME registry (the entry/ctx-free half).
+  "CAPPED_DIMENSION_NAMES",
+  "TELEMETRY_DIMENSION_NAMES",
+  "TELEMETRY_DIMENSION_SPECS",
+  "TelemetryDimensionCardinality",
+  "TelemetryDimensionName",
+  "TelemetryDimensionSpec",
+  "ThinkingBlockCounts",
+  // Registry metadata constants (no lifecycle).
+  "DEFAULT_BREAKDOWN_LIMIT",
+  "TELEMETRY_HISTOGRAMS",
+  "TELEMETRY_MEASURE_NAMES",
+  // SQLite store: the handle type + the tier read primitives /api/stats serves from.
+  "TelemetryDatabase",
+  "DistributionSummary",
+  "readCumulativeBreakdown",
+  "readCumulativeSketchQuantiles",
+  "readJsonBackfillBoundaryTs",
+  "readTierBreakdown",
+  "readTierSketchQuantiles",
+  "TierBreakdownResult",
+  "TierKeyCounters",
 ])
 
 /**
@@ -100,58 +136,68 @@ async function sourceFiles(root: string): Promise<Array<string>> {
   return nested.flat()
 }
 
-/** The registry operations a module publishes, whatever name it publishes them under (empty = compliant). */
-function leakedOperations(fileName: string, source: string): Array<string> {
+/** Public names the barrel exposes beyond its declared contract (empty = compliant). */
+function unlistedBarrelExports(fileName: string, source: string): Array<string> {
   const sourceFile = parseSource(fileName, source)
-  const leaked = valueExportOrigins(sourceFile)
-    .filter((origin) => PACKAGE_INTERNAL_OPERATIONS.has(origin.originalName))
-    .map((origin) => (origin.exportedAs === origin.originalName ? origin.originalName : `${origin.originalName} as ${origin.exportedAs}`))
-  // A value star re-export republishes a whole module at once — a structural leak no name check sees.
+  const unlisted = publicExportNames(sourceFile).filter((name) => !ALLOWED_BARREL_EXPORTS.has(name))
+  // A value star re-export republishes a whole module at once and cannot be enumerated from this
+  // file at all — the one form the allowlist cannot see, so it is forbidden outright.
   const stars = valueStarReExports(sourceFile).map((module) => `export * from "${module}"`)
-  return [...leaked, ...stars]
+  return [...unlisted, ...stars].sort()
 }
 
-/** The disallowed telemetry-package specifiers a file actually imports at runtime (empty = compliant). */
+/**
+ * The disallowed telemetry-package specifiers a file imports (empty = compliant). Uses ALL
+ * specifiers, not just runtime ones: a `import type { … } from "…/request-telemetry"` bypasses the
+ * public type barrel just as surely as a value import bypasses the runtime one.
+ */
 function forbiddenPackageImports(fileName: string, source: string): Array<string> {
-  return [...new Set(importedModuleSpecifiers(parseSource(fileName, source)))]
+  return [...new Set(allModuleSpecifiers(parseSource(fileName, source)))]
     .filter((specifier) => specifier === "@hsupu/ghc-proxy-telemetry" || specifier.startsWith("@hsupu/ghc-proxy-telemetry/"))
     .filter((specifier) => !ALLOWED_PACKAGE_SPECIFIERS.has(specifier))
     .sort()
 }
 
 describe("telemetry package surface (one production entry point)", () => {
-  test("the leak detector covers every way a barrel can republish an operation", () => {
-    const leaks = (source: string): Array<string> => leakedOperations("index.ts", source)
+  test("the allowlist check catches a new public name however it was created", () => {
+    const unlisted = (source: string): Array<string> => unlistedBarrelExports("index.ts", source)
 
-    expect(leaks(`export { recordSettledRequest } from "./request-telemetry"`)).toEqual(["recordSettledRequest"])
-    // An alias publishes it just as surely — the question is reachability, not the outside name.
-    expect(leaks(`export { recordSettledRequest as rec } from "./request-telemetry"`)).toEqual(["recordSettledRequest as rec"])
-    // The local-alias hop: no name-matching scheme can trace this, which is why the guard is an AST now.
-    expect(leaks(`import { recordSettledRequest as rec } from "./request-telemetry"\nexport { rec }`)).toEqual(["recordSettledRequest as rec"])
-    // Wholesale republication — invisible to any per-name check.
-    expect(leaks(`export * from "./request-telemetry"`)).toEqual([`export * from "./request-telemetry"`])
-    expect(leaks(`export * as registry from "./request-telemetry"`)).toEqual([`export * from "./request-telemetry"`])
-    // Comments between tokens, and a `}` inside a string, both defeated the text parser.
-    expect(leaks(`export { /* c */ recordSettledRequest } from "./request-telemetry"`)).toEqual(["recordSettledRequest"])
-    expect(leaks(`export { recordSettledRequest } from "./x}y"`)).toEqual(["recordSettledRequest"])
+    // Each of these was a separate bypass across three review rounds; one mechanism closes them all,
+    // because the question is no longer "where did this name come from" but "is it on the contract".
+    expect(unlisted(`export { recordSettledRequest } from "./request-telemetry"`)).toEqual(["recordSettledRequest"])
+    expect(unlisted(`export { recordSettledRequest as rec } from "./request-telemetry"`)).toEqual(["rec"])
+    expect(unlisted(`import { recordSettledRequest as rec } from "./request-telemetry"\nexport { rec }`)).toEqual(["rec"])
+    expect(unlisted(`import { recordSettledRequest } from "./request-telemetry"\nexport default recordSettledRequest`)).toEqual(["default"])
+    expect(unlisted(`import * as registry from "./request-telemetry"\nexport { registry }`)).toEqual(["registry"])
+    expect(unlisted(`import { recordSettledRequest } from "./request-telemetry"\nexport const harmless = recordSettledRequest`)).toEqual(["harmless"])
+    // The cross-file two-hop chain: the barrel need not know where `harmless` comes from to reject it.
+    expect(unlisted(`export { harmless } from "./dimension-names"`)).toEqual(["harmless"])
+    // Star re-exports are the one form a single file cannot enumerate — forbidden outright.
+    expect(unlisted(`export * from "./request-telemetry"`)).toEqual([`export * from "./request-telemetry"`])
+    expect(unlisted(`export * as registry from "./request-telemetry"`)).toEqual([`export * from "./request-telemetry"`])
+    // Comments between tokens and a `}` inside a string defeated the earlier text parser.
+    expect(unlisted(`export { /* c */ recordSettledRequest } from "./request-telemetry"`)).toEqual(["recordSettledRequest"])
+    expect(unlisted(`export { recordSettledRequest } from "./x}y"`)).toEqual(["recordSettledRequest"])
 
-    // Negative controls: the barrel's legitimate surface must NOT be flagged.
-    expect(leaks(`export { getTelemetryRuntime } from "./runtime"`)).toEqual([])
-    expect(leaks(`export type { RequestTelemetrySnapshot } from "./request-telemetry"`)).toEqual([])
-    expect(leaks(`export type * from "./types"`)).toEqual([])
-    expect(leaks(`export { type TelemetryPaths, installTelemetryDeps } from "./dependencies"`)).toEqual([])
+    // Negative controls: the declared contract must pass, values and types alike.
+    expect(unlisted(`export { getTelemetryRuntime } from "./runtime"`)).toEqual([])
+    expect(unlisted(`export type { ThinkingBlockCounts } from "./dimension-names"`)).toEqual([])
+    expect(unlisted(`export type * from "./types"`)).toEqual([])
+    expect(unlisted(`export { type TelemetryPaths, installTelemetryDeps } from "./dependencies"`)).toEqual([])
   })
 
-  test("the import detector reads runtime imports only, in every shape", () => {
+  test("the import detector reads every import shape, including type-only", () => {
     const bad = (source: string): Array<string> => forbiddenPackageImports("consumer.ts", source)
 
     expect(bad(`import { recordSettledRequest } from "@hsupu/ghc-proxy-telemetry/request-telemetry"`)).toEqual(["@hsupu/ghc-proxy-telemetry/request-telemetry"])
     // A subpath nobody enumerated — the package exports "./*", so the allowlist is what protects us.
     expect(bad(`import { internDim } from "@hsupu/ghc-proxy-telemetry/telemetry/dictionary"`)).toEqual(["@hsupu/ghc-proxy-telemetry/telemetry/dictionary"])
+    // A TYPE-ONLY deep import bypasses the public type barrel just as surely — the frontend must go
+    // through `/types`, not reach into the registry module.
+    expect(bad(`import type { TelemetryUsage } from "@hsupu/ghc-proxy-telemetry/request-telemetry"`)).toEqual(["@hsupu/ghc-proxy-telemetry/request-telemetry"])
     expect(bad(`await import("@hsupu/ghc-proxy-telemetry/testing")`)).toEqual(["@hsupu/ghc-proxy-telemetry/testing"])
     expect(bad(`const x = require("@hsupu/ghc-proxy-telemetry/runtime")`)).toEqual(["@hsupu/ghc-proxy-telemetry/runtime"])
     expect(bad(`import "@hsupu/ghc-proxy-telemetry/telemetry/db"`)).toEqual(["@hsupu/ghc-proxy-telemetry/telemetry/db"])
-    // Comments between tokens no longer hide a side-effect import.
     expect(bad(`import /* c */ "@hsupu/ghc-proxy-telemetry/telemetry/dictionary"`)).toEqual(["@hsupu/ghc-proxy-telemetry/telemetry/dictionary"])
 
     // Negative controls: the two production-legal specifiers, a mention inside a comment/string,
@@ -163,15 +209,18 @@ describe("telemetry package surface (one production entry point)", () => {
     expect(bad(`import { getTokenCredentials } from "@hsupu/ghc-proxy-token"`)).toEqual([])
   })
 
-  test("the barrel publishes no registry operation", async () => {
+  test("the real barrel publishes exactly its declared contract", async () => {
     const barrelPath = path.join(telemetryPackageSrc, "index.ts")
     const barrel = await readFile(barrelPath, "utf8")
-    expect(leakedOperations(barrelPath, barrel)).toEqual([])
+    expect(unlistedBarrelExports(barrelPath, barrel)).toEqual([])
 
-    // Non-vacuous: the parser really did read this barrel's surface.
-    const exported = new Set(valueExportOrigins(parseSource(barrelPath, barrel)).map((origin) => origin.exportedAs))
-    expect(exported.has("getTelemetryRuntime")).toBe(true)
-    expect(exported.has("TELEMETRY_DIMENSION_NAMES")).toBe(true)
+    // Non-vacuous in BOTH directions: the parser really read this barrel (it found the anchors), and
+    // the allowlist carries no stale entries the barrel no longer exports.
+    const published = new Set(publicExportNames(parseSource(barrelPath, barrel)))
+    expect(published.has("getTelemetryRuntime")).toBe(true)
+    expect(published.has("TELEMETRY_DIMENSION_NAMES")).toBe(true)
+    const stale = [...ALLOWED_BARREL_EXPORTS].filter((name) => !published.has(name))
+    expect(stale).toEqual([])
   })
 
   test("no production file imports anything but the barrel and the type barrel", async () => {
@@ -195,7 +244,7 @@ describe("telemetry package surface (one production entry point)", () => {
     const violations: Array<string> = []
     for (const file of files) {
       const sourceFile = parseSource(file, await readFile(file, "utf8"))
-      const selfReferences = importedModuleSpecifiers(sourceFile).filter((spec) => spec.startsWith("@hsupu/ghc-proxy-telemetry"))
+      const selfReferences = allModuleSpecifiers(sourceFile).filter((spec) => spec.startsWith("@hsupu/ghc-proxy-telemetry"))
       if (selfReferences.length > 0) violations.push(`${path.relative(repoRoot, file)}: ${selfReferences.join(", ")}`)
     }
     expect(violations).toEqual([])
