@@ -429,6 +429,8 @@ export interface EffectiveSourceLeg {
  */
 export interface UpstreamRequestLeg {
   format?: EndpointType
+  /** Proxy-side provenance for a synthesized upstream request; never written into the wire body. */
+  synthetic?: OperationSyntheticKind
   model?: string
   messages?: Array<MessageContent>
   system?: string | Array<SystemBlock>
