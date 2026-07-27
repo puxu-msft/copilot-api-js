@@ -7,10 +7,10 @@
  * blocks@1/@2, closing off only at the terminal). That is necessary-but-not-sufficient: the real
  * Claude Code CLI runs a separate, possibly-stricter agent-loop state machine ON TOP of the SDK.
  * This test drives the REAL `claude` CLI against a spawned real proxy (non-4141) whose mocked
- * upstream (a config-declared hook) emits exactly that anchor-coexist wire, and asserts the CLI
- * assembles it as ONE COMPLETE turn — the "general behavior" half of the real-CLI gate (the
- * 300s-idle-deadline half is a separate exp/ probe, out of scope here; this wire is short/fast,
- * no long silence involved).
+ * upstream (a config-declared hook) emits exactly that anchor-coexist wire. The CLI does NOT
+ * assemble it: the SDK accepts the bytes, but the CLI completes with an empty result. This negative
+ * lock is why production uses the sequential close-before-real shape. The 300s-idle-deadline half
+ * remains a separate exp/ probe; this wire is short and has no long silence.
  *
  * PROXY CONFIG: `stream_keepalive_mode: ping` (NOT the default `empty_text`) makes
  * `buildAnthropicAnchorHooks` return `undefined` (handler-v4.ts:886,
@@ -49,36 +49,35 @@ const GATED = Boolean(Bun.which("claude")) && existsSync(realGithubTokenPath())
 // A unique, non-4141 high port (this test's own proxy, never the user's main server).
 const PORT = 41989
 
-const configYaml = [
-  "hooks:",
-  `  upstream_module: "${HOOK}"`,
-  "  enabled: true",
-  "anthropic:",
-  // ping (not the default empty_text): keeps the live-path anchor reconciliation OFF, so the
-  // hook's anchor-coexist wire reaches claude byte-for-byte, unmodified by the proxy itself — we
-  // are testing claude's acceptance of the WIRE SHAPE, not the proxy's own anchor machinery.
-  "  stream_keepalive_mode: ping",
-  "  protect_streaming_generation: false",
-].join("\n") + "\n"
+const configYaml =
+  [
+    "hooks:",
+    `  upstream_module: "${HOOK}"`,
+    "  enabled: true",
+    "anthropic:",
+    // ping (not the default empty_text): keeps the live-path anchor reconciliation OFF, so the
+    // hook's anchor-coexist wire reaches claude byte-for-byte, unmodified by the proxy itself — we
+    // are testing claude's acceptance of the WIRE SHAPE, not the proxy's own anchor machinery.
+    "  stream_keepalive_mode: ping",
+    "  protect_streaming_generation: false",
+  ].join("\n") + "\n"
 
 describe.skipIf(!GATED)("client↔proxy CLI e2e (real claude → real proxy → hook-mock anchor-coexist wire)", () => {
-  test("anchor-coexist wire (anchor@0 open across two real text blocks) assembles as ONE complete turn", async () => {
+  test("anchor-coexist wire is CLI-unsafe: Claude completes the turn without assembling the real text", async () => {
     let proxy: SpawnedProxy | undefined
     try {
       proxy = await spawnProxy({ port: PORT, configYaml })
       const loaded = await proxy.reloadHook()
       expect(loaded.ok, `hook load failed: ${loaded.error}`).toBe(true)
-      expect(loaded.exports).toContain("onExchange")
+      expect(loaded.exports).toContain("exchange")
 
       const r = driveClaudeCli({ baseURL: proxy.baseURL, prompt: "say hello", model: "claude-sonnet-4.6" })
 
-      // NOT a stall: exactly one agent turn — >1 with an empty result is the stall signature
-      // (per exp/cli-e2e-stall/FINDINGS.md); >1 here would mean the anchor-coexist wire confused
-      // the agent loop into re-querying, which would make P1's block-level default CLI-unsafe.
+      // The current CLI terminates the turn but drops the real text assembled under the coexisting
+      // anchor. This is the empirical rejection of coexistence; production must remain sequential.
       expect(r.numTurns).toBe(1)
-      // The real content (both real blocks' text, concatenated) reached the user intact — proves
-      // the coexisting empty-text anchor did not corrupt or drop the actual assistant text.
-      expect(r.result).toContain("COEXIST_OK_MARKER")
+      expect(r.result).toBe("")
+      expect(r.result).not.toContain("COEXIST_OK_MARKER")
     } finally {
       proxy?.close()
     }
