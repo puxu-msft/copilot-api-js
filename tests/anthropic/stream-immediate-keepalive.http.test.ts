@@ -95,6 +95,10 @@ const upstreamFetchMock = mock((input: string | URL | Request, init?: RequestIni
 const { createFullTestApp } = await import("../helpers/test-app")
 const app = createFullTestApp()
 
+async function drain(n = 60): Promise<void> {
+  for (let i = 0; i < n; i++) await Promise.resolve()
+}
+
 async function streamRequest(sessionId: string): Promise<Response> {
   return app.request("/v1/messages", {
     method: "POST",
@@ -207,19 +211,51 @@ describe("immediate-keepalive — stall cadence ping", () => {
   afterEach(() => clock.restore())
 
   test("enveloped_ping normal envelope does not suppress later pre-content content anchor", async () => {
-    setStateForTests({ streamKeepaliveMode: "enveloped_ping", streamKeepalivePingSec: 2, streamKeepaliveEscalateSec: 4 })
+    setStateForTests({ streamKeepaliveMode: "enveloped_ping", streamKeepalivePingSec: 2, streamKeepaliveEscalateSec: 4, streamCommitAfterSec: 0 })
     const resP = streamRequest("grace-enveloped-escalation")
     await gateReachedP
-    await clock.advance(2_500) // normal envelope-only scaffold
-    await clock.advance(2_500) // independent content deadline → anchor start + empty delta
+    await drain() // immediate commit arms the delivery heartbeat at t0
+    await clock.advance(2_500) // normal envelope-only scaffold at the 2s cadence
+    await drain()
+    await clock.advance(4_500) // cross the independent 4s content deadline
+    await drain()
     const res = await resP
     openGate()
     const text = await res.text()
-    const types = frameTypesInOrder(text)
-    expect(types.filter((type) => type === "message_start")).toHaveLength(1)
-    expect(types).toContain("content_block_start")
-    expect(types).toContain("content_block_delta")
-    expect(types).toContain("message_stop")
+    const frames = text
+      .split("\n")
+      .filter((line) => line.startsWith("data: "))
+      .flatMap((line) => {
+        try {
+          return [JSON.parse(line.slice(6)) as Record<string, unknown>]
+        } catch {
+          return []
+        }
+      })
+    expect(frames.filter((frame) => frame.type === "message_start")).toHaveLength(1)
+    const anchorStart = frames.findIndex(
+      (frame) =>
+        frame.type === "content_block_start"
+        && frame.index === 0
+        && (frame.content_block as { type?: string; text?: string } | undefined)?.type === "text"
+        && (frame.content_block as { text?: string }).text === "",
+    )
+    const anchorDelta = frames.findIndex(
+      (frame) =>
+        frame.type === "content_block_delta"
+        && frame.index === 0
+        && (frame.delta as { type?: string; text?: string } | undefined)?.type === "text_delta"
+        && (frame.delta as { text?: string }).text === "",
+    )
+    const anchorStop = frames.findIndex((frame) => frame.type === "content_block_stop" && frame.index === 0)
+    const realStart = frames.findIndex(
+      (frame) => frame.type === "content_block_start" && frame.index === 1 && (frame.content_block as { type?: string } | undefined)?.type === "text",
+    )
+    expect(anchorStart).toBeGreaterThanOrEqual(0)
+    expect(anchorDelta).toBeGreaterThan(anchorStart)
+    expect(anchorStop).toBeGreaterThan(anchorDelta)
+    expect(realStart).toBeGreaterThan(anchorStop)
+    expect(frames.some((frame) => frame.type === "message_stop")).toBe(true)
   })
 
   test("upstream stalls → cadence ping precedes content, then completes → content forwarded after the ping", async () => {

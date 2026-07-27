@@ -153,3 +153,69 @@
 6. **已有 open block 的升级形状正确**：从 post-wire ledger 取栈顶 block，`makeAnthropicKeepaliveFrame` 在原 index 发匹配空 `thinking_delta/text_delta/input_json_delta`，不新增 block 结构。真实 SDK oracle确认空 thinking delta 不改 thinking 文本或 signature；signature 是独立 `signature_delta`，空字符串追加是恒等变换。
 7. **配置接线完整**：schema、state 默认、setter pick、apply、hot-reload matrix、shipped config 与生成的 `config.schema.json` 均存在；重新生成 schema 无 diff。
 8. **ADR D2 修订边界正确**：只撤销被证伪的“空 delta 无效”理由，保留“日常空 text block 形状错误”、默认 ping、块级严格顺序输出，并记录用户 2026-07-27 的按需升级裁决。没有越权推翻 D1/D3/D4。
+
+
+---
+
+# 第三轮聚焦确认：`dcaf72a6` + `2330ea1f`
+
+## 第三轮评审范围
+
+仅审新增的设计文档修订与 pre-content 收窄／latch 分离，不重审此前已确认的整分支实现。
+
+## 第三轮已读取／执行的证据
+
+- 读取 `delivery/session.ts`、`keepalive-anchor.ts`、`pipeline/types.ts`、`handler-v4.ts` 及两份新增测试的最终代码。
+- 聚焦测试 19 pass/0 fail；typecheck 与改动文件 ESLint 通过。
+- 在临时完整仓库删除 `semanticBlockCount === 0` 条件：`content scaffold is forbidden after any real block completed` 精确变红，`scaffoldCalls` 从 0 变 1。该回归测试确实咬住第二轮 blocker。
+- 独立用真实时间线驱动 handler 的 `enveloped_ping` 组合：wire 为且仅为 1 个 `message_start`，随后 `content_block_start@0 + empty text_delta@0 + stop@0`，真实 block remap 到 index 1，最终 clean `message_stop`。双 latch 实现行为正确。
+- 对现有 handler 集成测试做 mutation：把 `independentContentLatch` 关掉，原测试仍 1 pass/0 fail；把 `state.messageStartForwarded` 防重分支禁用，原测试仍 7 pass/0 fail。说明该测试当前没有真正证明声称的 content anchor 或 exactly-one 机制。
+- 将同一 handler 测试临时改为真实时间 1s cadence／2s deadline，并显式断言存在空 `text_delta` 后，正常实现通过；再禁用 `messageStartForwarded` 防重分支，测试准确变红为 2 个 `message_start`。因此生产代码结论有独立正反对照支撑，但仓库内永久测试仍是假绿。
+- 全 `docs/` 检索 “G2／门／闭合／默认翻转／方案 A”；权威 ADR、max-tokens spec、新 inter-block spec、backlog 与 DESIGN 运行时选项均已诚实写明缺口，但旧 live spec 仍保留冲突绝对表述。
+
+## 第三轮总体 verdict
+
+**整分支仍需修订后才能合并入 `master`。**
+
+- blocker：0
+- major：2
+- minor：0
+- nit：0
+
+代码修复本身已堵住第二轮 blocker，双 latch 行为也正确；当前剩余的是一个历史高风险 seam 的永久测试假绿，以及一份 live spec 仍明确宣称 G2 已闭合。两者都与本轮要求的“真咬”和“不得有任何一处仍宣称门已关上”直接冲突。
+
+## 第三轮事实性发现
+
+### [major] `/home/xp/src/copilot-api-js/.worktrees/keepalive-300s/tests/anthropic/stream-immediate-keepalive.http.test.ts:209-223` — 声称验证双 latch／exactly-one 的 handler 集成测试是假绿，实际没有证明 content anchor 发出
+
+**问题**：测试在 `streamCommitAfterSec:2` 的 delayed-commit 时序下，仅推进两次 2.5s 后就放开 upstream。其断言只检查笼统存在 `content_block_start`/`content_block_delta`，这些类型即使 content escalation 完全没发生，也会由随后真实 upstream response 提供。测试没有断言空 delta，也没有区分 synthetic anchor 与真实 block。
+
+**证据**：
+
+- 关掉 handler 的 `independentContentLatch`，该测试仍绿。
+- 禁用 `makeSyntheticAnchorInjector` 的 `messageStartForwarded` 防重分支，该测试仍绿。
+- 抓测试真实 wire，只看到 `ping + synthetic message_start + 真实 Thinking done. block`；没有空 `text_delta`。现有 `content_block_start`/`delta` 断言命中的是 upstream 真块。
+- 临时把测试改成明确从 sink 构造后计时，或使用真实时间 `streamCommitAfterSec:0, ping=1s, deadline=2s`，并断言 `text_delta.text === ""`，正常代码得到 exactly one `message_start` + anchor@0 + empty delta + real block@1；禁用防重后准确得到 2 个 `message_start` 并变红。
+
+**建议**：由 implementer 修正永久测试，不能只保留当前绿灯。最稳妥方案是让测试避免 delayed-commit／FakeClock 建 sink 时点歧义：设 `streamCommitAfterSec:0` 后再推进 heartbeat，或增加一个明确的“sink 已构造／stream 已 commit”同步 seam。至少逐项断言：① wire 中存在 synthetic anchor 的空 `text_delta`；② `message_start` 恰好 1 个；③ anchor start/delta/stop@0 顺序完整；④真实 block remap 到 @1；⑤ mutation `independentContentLatch:false` 或禁用 `messageStartForwarded` 防重后测试变红。
+
+### [major] `/home/xp/src/copilot-api-js/.worktrees/keepalive-300s/docs/spec/anthropic-keepalive-content-delta.md:3,12,24,54-55,82-87` — 仍有 live spec 宣称“G2 回归已闭合／全部已落地”，违反本轮“不得任何一处仍宣称门已关上”的诚实性要求
+
+**问题**：其它权威文档现已统一写成 pre-content-only、首块后门未闭合、方案 A 是默认翻转硬门；但这份未归档 spec 仍写：
+
+- `Status: 全部已落地`；
+- TL;DR 把 `content_delta` 写成默认方案；
+- 第 24 行明确写“经代理 G2 回归已闭合”；
+- config 节继续写默认 `content_delta`；
+- 已知边界又写 `empty_text` “现默认”且 buffered pre-commit 已兜住。
+
+这不只是历史正文：文件仍位于 live `docs/spec/`，并被 DESIGN 引用。读者会得到与当前 `ping + pre-content-only escalation + inter-block 未闭合` 相反的结论。
+
+**建议**：由 doc-writer 在文件顶部加清晰的 superseded 状态与当前裁决摘要，或迁入 archive；不能只在第 24 行补一句。当前真相应明确指向 `docs/spec/2026-07-27-inter-block-keepalive-carrier.md` 与 backlog：吞帧缺陷已修、pre-content 门已过，但 G2／块级完整门未全面闭合，方案 A 落地前不得翻块级默认。同步修正文中所有“默认 content_delta／empty_text”“全部已落地”“G2 已闭合”字句，或把它们标为带日期的历史快照而非当前结论。
+
+## 第三轮已确认无问题
+
+1. **第二轮 blocker 的代码修复成立**：content scaffold 现在要求 `pendingOpenBlocks.length===0 && semanticBlockCount===0 && !contentScaffoldAttempted`；首块完成后 220s 只有 ping。semantic gate mutation 精确使测试变红。
+2. **delivery latch 分离正确**：普通 `scaffoldAttempted` 与 content `contentScaffoldAttempted` 独立，普通 envelope 不再从 delivery 层屏蔽 content deadline。
+3. **AnchorState latch 分离正确**：`injected` 与 `contentAnchorInjected` 独立；`independentContentLatch` 下，已有 envelope 时 content injector不再重复发 message_start，只开 anchor+delta。真实时间 handler wire 独立确认 exactly one `message_start`。
+4. **主权威文档的缺口模型正确**：ADR D2、max-tokens spec、新 inter-block spec、DESIGN 运行时选项和 backlog均写明 pre-content 已覆盖、首块后无-open仍暴露、方案 A 是完整覆盖及 Anthropic 块级默认翻转的硬前置门。

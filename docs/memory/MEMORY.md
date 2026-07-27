@@ -138,7 +138,7 @@
 - [ui-v4 代码由 agent 协作编写](feedback-ui-v4-code-authored-by-agents.md) — 不用"手搓"贬义；重构自由度放宽(守可恢复性)
 - [Codex/Responses tier-1 硬化（landed）](reference-undici-websocket-runtime-split-bun-vs-node.md) — 关闭码1000+guardCallback+下游保活+opt-in buffered(默认 OFF)
 - [runtime-split：undici WS Bun vs Node](reference-undici-websocket-runtime-split-bun-vs-node.md) — Bun→原生(有 ping)/Node→真 undici(无 ping、抛 invalid)；skill `bun-node-runtime-gotchas`
-- [keepalive 无条件 timeout-safety（landed）](project-keepalive-unconditional-timeout-safety-landed.md) — 权威 ADR 2026-07-09 + spec §10
+- [keepalive 历史无条件 timeout-safety（现已部分 superseded）](project-keepalive-unconditional-timeout-safety-landed.md) — 2026-07-27 当前边界：pre-content-only；首块后硬门见 inter-block carrier 方案 A
 - [v4 流水线重构（landed）](project-v4-pipeline-rearchitecture.md) — v4 P0-P3 + response-pipeline Stage A/B；权威 DESIGN.md
 - [GHC 三特性对齐（landed）](project-ghc-feature-alignment-landed.md) — tool-search default-allow/extended-cache-ttl/memory tool；现状 skill `ghc-api-reference`
 - [history client/upstream 双腿重构（landed 5db1aff6）](project-history-client-upstream-legs-landed.md) — clientRequest/clientResponse+model{}+attempts[]；权威 DESIGN「类型架构」

@@ -227,6 +227,7 @@ export function makeSyntheticAnchorInjector(args: {
     const sink = getSink()
     if (!sink || (independentContentLatch ? state.contentAnchorInjected : state.injected)) return false
     if (independentContentLatch) state.contentAnchorInjected = true
+    if (independentContentLatch && state.injected) state.messageStartForwarded = true
     if (state.messageStartForwarded) {
       // A real message_start ALREADY reached the client via the live pump (an early upstream message_start
       // forwarded before this first idle tick — e.g. /responses `response.created` then a long reasoning
