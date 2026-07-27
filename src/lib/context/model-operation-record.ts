@@ -37,6 +37,7 @@ export type OperationSyntheticKind =
   | "error-shaping-auq"
   | "synthetic"
   | "buffered-terminal-repair"
+  | "continuation"
 
 /** Cross-vendor usage with typed canonical counters and an open details bag. */
 export interface OperationUsage {
