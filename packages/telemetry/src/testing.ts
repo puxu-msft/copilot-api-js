@@ -22,12 +22,12 @@ import {
   //
   getTelemetryDeps,
   type TelemetryRuntimeDependencies,
-} from "./telemetry-dependencies"
+} from "./dependencies"
 import {
   //
   createTelemetryRuntime,
   type TelemetryRuntime,
-} from "./telemetry-runtime"
+} from "./runtime"
 
 export {
   //

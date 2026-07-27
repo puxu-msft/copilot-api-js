@@ -1,20 +1,19 @@
-import consola from "consola"
-import fs from "node:fs/promises"
-
 import {
   //
   createSerializedAsyncFn,
-} from "~/lib/atomic-fs"
+} from "@hsupu/ghc-proxy-foundation/atomic-fs"
+import consola from "consola"
+import fs from "node:fs/promises"
 
-import type { ThinkingBlockCounts } from "./telemetry-dimension-names"
+import type { ThinkingBlockCounts } from "./dimension-names"
 import type { TelemetryDatabase } from "./telemetry/db"
 
 import {
   //
   getTelemetryDeps,
   type TelemetryConfigView,
-} from "./telemetry-dependencies"
-import { CAPPED_DIMENSION_NAMES } from "./telemetry-dimension-names"
+} from "./dependencies"
+import { CAPPED_DIMENSION_NAMES } from "./dimension-names"
 import { openTelemetryDb } from "./telemetry/db"
 import {
   //

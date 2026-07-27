@@ -42,7 +42,7 @@
 | **真实 `history.db` 读写 + reaper 删行** | **30 文件** | `bootstrapTestRuntime()`→`initHistory(true,100)`;`initHistory(enable, _legacyMaxEntries)` 第一参是 enable **不是 in-memory**;`dbPath = state.historyDbPath \|\| PATHS.HISTORY_DB`,`historyDbPath` 默认 `""` → 开**真实 db**,且启动 reaper(超限删行) | `src/lib/history/state.ts:62-74`、`src/lib/state.ts:969`、`tests/helpers/test-bootstrap.ts:51` |
 | `negotiation-states.json` 写空 | 9 文件 | `resetAnthropicFeatureNegotiationForTesting()`→`persistFeatureNegotiation()` 写未沙箱的 `PATHS.NEGOTIATION_STATES` | `src/lib/anthropic/feature-negotiation.ts:270-281`;未沙箱测试见 §5 清单 |
 | `learned-limits.json` 写真实 | auto-truncate 学习测试 | `engine.ts` 直写 `PATHS.LEARNED_LIMITS`,**根本没有注入 seam** | `src/lib/auto-truncate/engine.ts:210,231` |
-| `request-telemetry.json` 写真实 | `management-routes.http` | `_resetRequestTelemetryForTests()` 把路径**还原成真实路径**;有 `_set...FilePathForTests` seam 但该测试没用 | `src/lib/request-telemetry.ts:107,532,535` |
+| `request-telemetry.json` 写真实 | `management-routes.http` | `_resetRequestTelemetryForTests()` 把路径**还原成真实路径**;有 `_set...FilePathForTests` seam 但该测试没用 | `packages/telemetry/src/request-telemetry.ts`（2026-07-27 抽包前为 `src/lib/request-telemetry.ts:107,532,535`） |
 
 **无泄漏(已确认安全)**:`COPILOT_LOG`(FileSink 测试都注入临时 logPath)、`GITHUB_TOKEN_PATH`(offline 不写)、`CONFIG_YAML`(config 测试自沙箱)。唯一绕过 preload 的真实**读**:`tests/e2e/config.ts:74` 读真实 `github_token`,只读、e2e 门控、有意为之,非 clobber。
 

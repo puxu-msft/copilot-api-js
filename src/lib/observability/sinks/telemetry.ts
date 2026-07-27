@@ -14,8 +14,8 @@
  * Commit 2: subscribed but idle — bus carries no terminal events yet.
  */
 
-import { CAPPED_DIMENSION_NAMES } from "~/lib/telemetry-dimension-names"
-import { peekTelemetryRuntime } from "~/lib/telemetry-runtime"
+import { CAPPED_DIMENSION_NAMES } from "@hsupu/ghc-proxy-telemetry"
+import { peekTelemetryRuntime } from "@hsupu/ghc-proxy-telemetry"
 
 import type {
   //

@@ -16,6 +16,7 @@
  * Handlers integrate via getShutdownSignal() to detect Phase 3 abort.
  */
 
+import { peekTelemetryRuntime } from "@hsupu/ghc-proxy-telemetry"
 import consola from "consola"
 import { setMaxListeners } from "node:events"
 
@@ -48,7 +49,6 @@ import { flushAndFreezePersistence as freezeCalibration } from "./models/calibra
 import { peekUpstreamWsManager } from "./openai/upstream-ws"
 import { notifyStopping } from "./restart/notify"
 import { state } from "./state"
-import { peekTelemetryRuntime } from "./telemetry-runtime"
 import { closeHttp2Sessions } from "./transport/http2-client"
 import { emergencyWrite } from "./tui/terminal-coordinator"
 import {

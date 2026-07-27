@@ -26,17 +26,19 @@
  * tools). request-telemetry dedups and accumulates once per distinct key.
  */
 
-import type { HistoryEntryData } from "~/lib/context/types"
-import type { RequestContextSnapshot } from "~/lib/observability/events"
 import type {
   //
   TelemetryDimensionName,
   TelemetryDimensionSpec,
   ThinkingBlockCounts,
-} from "~/lib/telemetry-dimension-names"
+} from "@hsupu/ghc-proxy-telemetry"
+
+import { TELEMETRY_DIMENSION_SPECS } from "@hsupu/ghc-proxy-telemetry"
+
+import type { HistoryEntryData } from "~/lib/context/types"
+import type { RequestContextSnapshot } from "~/lib/observability/events"
 
 import { getHeaderCaseInsensitive } from "~/lib/fetch-utils"
-import { TELEMETRY_DIMENSION_SPECS } from "~/lib/telemetry-dimension-names"
 
 /**
  * The upstream response content envelope for tool-name / thinking-block

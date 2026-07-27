@@ -30,14 +30,12 @@ import {
   OpenAPIHono,
   z,
 } from "@hono/zod-openapi"
-
 import {
   //
   DEFAULT_BREAKDOWN_LIMIT,
-} from "~/lib/request-telemetry"
-import { state } from "~/lib/state"
-import { TELEMETRY_DIMENSION_NAMES } from "~/lib/telemetry-dimension-names"
-import { getTelemetryRuntime } from "~/lib/telemetry-runtime"
+} from "@hsupu/ghc-proxy-telemetry"
+import { TELEMETRY_DIMENSION_NAMES } from "@hsupu/ghc-proxy-telemetry"
+import { getTelemetryRuntime } from "@hsupu/ghc-proxy-telemetry"
 import {
   //
   type DistributionSummary,
@@ -47,7 +45,9 @@ import {
   readTierBreakdown,
   readTierSketchQuantiles,
   type TierKeyCounters,
-} from "~/lib/telemetry/read"
+} from "@hsupu/ghc-proxy-telemetry"
+
+import { state } from "~/lib/state"
 
 export const statsRoutes = new OpenAPIHono()
 

@@ -1,19 +1,18 @@
 import {
   //
-  expect,
-  test,
-} from "bun:test"
-
-import {
-  //
   createSketch,
   quantile,
-} from "~/lib/telemetry/sketch"
+} from "@hsupu/ghc-proxy-telemetry/telemetry/sketch"
 import {
   //
   deserializePackedSketches,
   serializePackedSketches,
-} from "~/lib/telemetry/sketch-blob"
+} from "@hsupu/ghc-proxy-telemetry/telemetry/sketch-blob"
+import {
+  //
+  expect,
+  test,
+} from "bun:test"
 
 function seeded(n: number, span: number, seed = 12345): Array<number> {
   // 确定性伪随机（LCG），避免 flaky

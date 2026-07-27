@@ -48,6 +48,8 @@
       "~/lib/sqlite/compression": ["./packages/foundation/src/sqlite/compression"],
       "~/lib/token": ["./packages/token/src/index"],
       "~/lib/token/*": ["./packages/token/src/*"],
+      "@hsupu/ghc-proxy-telemetry": ["./packages/telemetry/src/index.ts"],
+      "@hsupu/ghc-proxy-telemetry/*": ["./packages/telemetry/src/*"],
       "~/*": ["./src/*"]
     }
   },

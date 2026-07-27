@@ -1,3 +1,19 @@
+import { openTelemetryDb } from "@hsupu/ghc-proxy-telemetry/telemetry/db"
+import { TELEMETRY_JSON_BACKFILL_VERSION } from "@hsupu/ghc-proxy-telemetry/telemetry/migrate-json"
+import {
+  //
+  readCumulativeAccepted,
+  readMetaInt,
+} from "@hsupu/ghc-proxy-telemetry/telemetry/store"
+import {
+  //
+  _getTelemetryDbForTests,
+  _resetRequestTelemetryForTests,
+  _setRequestTelemetryFilePathForTests,
+  initRequestTelemetry,
+  runTelemetryJsonBackfill,
+  shutdownRequestTelemetry,
+} from "@hsupu/ghc-proxy-telemetry/testing"
 /**
  * P6 接线验收 —— 真实生产入口的端到端桥接（非只测纯 migrate 函数）。
  *
@@ -33,22 +49,6 @@ import {
   snapshotStateForTests,
   type StateSnapshot,
 } from "~/lib/state"
-import {
-  //
-  _getTelemetryDbForTests,
-  _resetRequestTelemetryForTests,
-  _setRequestTelemetryFilePathForTests,
-  initRequestTelemetry,
-  runTelemetryJsonBackfill,
-  shutdownRequestTelemetry,
-} from "~/lib/telemetry-testing"
-import { openTelemetryDb } from "~/lib/telemetry/db"
-import { TELEMETRY_JSON_BACKFILL_VERSION } from "~/lib/telemetry/migrate-json"
-import {
-  //
-  readCumulativeAccepted,
-  readMetaInt,
-} from "~/lib/telemetry/store"
 
 const BUCKET_MS = 5 * 60 * 1000
 const HOUR_MS = 3_600_000

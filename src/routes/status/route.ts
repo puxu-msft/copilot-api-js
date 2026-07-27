@@ -10,6 +10,7 @@ import {
   OpenAPIHono,
   z,
 } from "@hono/zod-openapi"
+import { getTelemetryRuntime } from "@hsupu/ghc-proxy-telemetry"
 
 import { getAdaptiveRateLimiter } from "~/lib/adaptive-rate-limiter"
 import {
@@ -36,7 +37,6 @@ import {
   serverStartTime,
   state,
 } from "~/lib/state"
-import { getTelemetryRuntime } from "~/lib/telemetry-runtime"
 import { getTokenCredentials } from "~/lib/token"
 import {
   //

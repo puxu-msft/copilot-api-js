@@ -1,5 +1,9 @@
 import {
   //
+  getDimensionBreakdown,
+} from "@hsupu/ghc-proxy-telemetry/testing"
+import {
+  //
   expect,
   mock,
   test,
@@ -12,10 +16,6 @@ import {
   setModels,
   setStateForTests,
 } from "~/lib/state"
-import {
-  //
-  getDimensionBreakdown,
-} from "~/lib/telemetry-testing"
 
 import { mockModel } from "../helpers/factories"
 import { useIsolatedRuntime } from "../helpers/isolated-fixture"

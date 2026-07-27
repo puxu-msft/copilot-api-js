@@ -1,17 +1,16 @@
 import {
   //
-  expect,
-  test,
-} from "bun:test"
-
-import {
-  //
   createSketch,
   serializeSketch,
   deserializeSketch,
   mergeSketch,
   quantile,
-} from "~/lib/telemetry/sketch"
+} from "@hsupu/ghc-proxy-telemetry/telemetry/sketch"
+import {
+  //
+  expect,
+  test,
+} from "bun:test"
 
 /** 独立 oracle：排序数组精确百分位（非 sketch-vs-sketch 自证）。 */
 function exactQuantile(values: Array<number>, q: number): number {

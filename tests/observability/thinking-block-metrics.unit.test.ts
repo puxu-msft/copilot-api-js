@@ -8,6 +8,12 @@
 
 import {
   //
+  _resetRequestTelemetryForTests,
+  getDimensionBreakdown,
+  getThinkingBlockTotals,
+} from "@hsupu/ghc-proxy-telemetry/testing"
+import {
+  //
   afterEach,
   beforeEach,
   describe,
@@ -22,12 +28,6 @@ import { buildMetricsExposition } from "~/lib/metrics-exposition"
 import { createBus } from "~/lib/observability"
 import { attachTelemetrySink } from "~/lib/observability/sinks/telemetry"
 import { installDefaultTelemetryRuntime } from "~/lib/telemetry-assembly"
-import {
-  //
-  _resetRequestTelemetryForTests,
-  getDimensionBreakdown,
-  getThinkingBlockTotals,
-} from "~/lib/telemetry-testing"
 
 function makeCtx(): RequestContextSnapshot {
   return { id: "ctx-1", endpoint: "anthropic-messages", method: "POST", path: "/v1/messages", state: "completed", startTime: Date.now(), queueWaitMs: 0 }

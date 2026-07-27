@@ -25,8 +25,8 @@ export function internKey(db: TelemetryDatabase, dimId: number, key: string): nu
 
 /** key_id → `{ dim, key }`（读路径反查；dim 为维度名字符串）。未知 id 返 null。 */
 export function resolveKey(db: TelemetryDatabase, keyId: number): { dim: string; key: string } | null {
-  const row = db
-    .prepare("SELECT d.name AS dim, k.key AS key FROM tel_key k JOIN tel_dim d ON d.id = k.dim WHERE k.id = ?")
-    .get(keyId) as { dim: string; key: string } | undefined
+  const row = db.prepare("SELECT d.name AS dim, k.key AS key FROM tel_key k JOIN tel_dim d ON d.id = k.dim WHERE k.id = ?").get(keyId) as
+    | { dim: string; key: string }
+    | undefined
   return row ?? null
 }

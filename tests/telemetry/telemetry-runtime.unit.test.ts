@@ -11,6 +11,28 @@
 
 import {
   //
+  type TelemetryConfigView,
+  type TelemetryRuntimeDependencies,
+  getTelemetryDeps,
+  installTelemetryDeps,
+} from "@hsupu/ghc-proxy-telemetry"
+import {
+  //
+  createTelemetryRuntime,
+  getTelemetryRuntime,
+  installTelemetryRuntime,
+  peekTelemetryRuntime,
+  resetTelemetryRuntimeForTests,
+} from "@hsupu/ghc-proxy-telemetry"
+import {
+  //
+  _getTelemetryDbForTests,
+  _resetRequestTelemetryForTests,
+  getRequestTelemetrySnapshot,
+  initRequestTelemetry,
+} from "@hsupu/ghc-proxy-telemetry/testing"
+import {
+  //
   afterEach,
   beforeEach,
   describe,
@@ -25,28 +47,6 @@ import {
   snapshotStateForTests,
   type StateSnapshot,
 } from "~/lib/state"
-import {
-  //
-  type TelemetryConfigView,
-  type TelemetryRuntimeDependencies,
-  getTelemetryDeps,
-  installTelemetryDeps,
-} from "~/lib/telemetry-dependencies"
-import {
-  //
-  createTelemetryRuntime,
-  getTelemetryRuntime,
-  installTelemetryRuntime,
-  peekTelemetryRuntime,
-  resetTelemetryRuntimeForTests,
-} from "~/lib/telemetry-runtime"
-import {
-  //
-  _getTelemetryDbForTests,
-  _resetRequestTelemetryForTests,
-  getRequestTelemetrySnapshot,
-  initRequestTelemetry,
-} from "~/lib/telemetry-testing"
 
 const fakeConfig: TelemetryConfigView = {
   enabled: false,

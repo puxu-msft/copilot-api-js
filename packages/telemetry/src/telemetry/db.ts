@@ -11,12 +11,11 @@
  * cost 列 scaled-int micro（`round(cost*1e6)`，绝不 REAL——STRICT INTEGER 拒 REAL）。
  * 分布度量存 tel_*.hist_blob（DDSketch 手动序列化，见 sketch.ts）；固定桶只活在 /metrics 内存路径。
  */
-import { PATHS } from "~/lib/config/paths"
 import {
   //
   createDatabase,
   type SqliteDatabase,
-} from "~/lib/sqlite/driver"
+} from "@hsupu/ghc-proxy-foundation/sqlite/driver"
 
 export type TelemetryDatabase = SqliteDatabase
 
@@ -102,9 +101,12 @@ CREATE TABLE IF NOT EXISTS tel_accepted (
 
 /**
  * 打开（或建）telemetry.db，设 PRAGMA + 建幂等地板 schema。返回 driver。
- * `dbPath` 默认 `PATHS.TELEMETRY_DB`；测试注入临时路径（skill test-isolation）。
+ * `dbPath` 由调用方给全：生产路径来自注入的 `TelemetryPaths` 端口（registry 解析
+ * `config().dbPath || paths.telemetryDbPath`），测试注入临时路径（skill test-isolation）。
+ * 刻意不留 `PATHS.TELEMETRY_DB` 默认值——那是本层对 core 的最后一条依赖边，且默认值会让
+ * “忘了传路径”静默落到真实库而非报错。
  */
-export function openTelemetryDb(dbPath: string = PATHS.TELEMETRY_DB): TelemetryDatabase {
+export function openTelemetryDb(dbPath: string): TelemetryDatabase {
   const db = createDatabase(dbPath)
   db.exec("PRAGMA journal_mode = WAL;")
   db.exec("PRAGMA synchronous = NORMAL;")

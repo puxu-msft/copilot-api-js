@@ -26,6 +26,8 @@
  * documented exemptions — so the table cannot silently drift.
  */
 
+import { resetTelemetryRuntimeForTests } from "@hsupu/ghc-proxy-telemetry"
+import { _resetRequestTelemetryForTests } from "@hsupu/ghc-proxy-telemetry/testing"
 import {
   //
   afterEach,
@@ -76,8 +78,6 @@ import {
   snapshotStateForTests,
 } from "~/lib/state"
 import { installDefaultTelemetryRuntime } from "~/lib/telemetry-assembly"
-import { resetTelemetryRuntimeForTests } from "~/lib/telemetry-runtime"
-import { _resetRequestTelemetryForTests } from "~/lib/telemetry-testing"
 import { resetTokenRuntimeForTests } from "~/lib/token"
 import {
   //

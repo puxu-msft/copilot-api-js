@@ -17,6 +17,10 @@ export default defineConfig(({ command }) => {
     resolve: {
       alias: {
         "@": resolve(here, "src"),
+        // The telemetry domain is a workspace package now, so its snapshot types no longer live
+        // under `~backend`. `/types` is the package's PURE-TYPE barrel — it can never drag the
+        // backend runtime (consola / bun:sqlite / DDSketch) into the browser bundle.
+        "@hsupu/ghc-proxy-telemetry/types": resolve(here, "../packages/telemetry/src/types.ts"),
         "~backend": resolve(here, "../src"),
         "~": resolve(here, "../src"),
       },

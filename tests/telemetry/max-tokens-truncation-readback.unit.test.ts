@@ -1,5 +1,13 @@
 import {
   //
+  _resetRequestTelemetryForTests,
+  _setRequestTelemetryFilePathForTests,
+  getDimensionBreakdown,
+  persistRequestTelemetry,
+  recordSettledRequest,
+} from "@hsupu/ghc-proxy-telemetry/testing"
+import {
+  //
   afterEach,
   beforeEach,
   expect,
@@ -20,14 +28,6 @@ import {
   restoreStateForTests,
   type StateSnapshot,
 } from "~/lib/state"
-import {
-  //
-  _resetRequestTelemetryForTests,
-  _setRequestTelemetryFilePathForTests,
-  getDimensionBreakdown,
-  persistRequestTelemetry,
-  recordSettledRequest,
-} from "~/lib/telemetry-testing"
 
 let stateSnapshot: StateSnapshot
 let tempDirectory: string

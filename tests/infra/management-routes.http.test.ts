@@ -1,5 +1,11 @@
 import {
   //
+  _resetRequestTelemetryForTests,
+  recordAcceptedRequest,
+  recordSettledRequest,
+} from "@hsupu/ghc-proxy-telemetry/testing"
+import {
+  //
   beforeAll,
   beforeEach,
   describe,
@@ -37,12 +43,6 @@ import {
   setModels,
   setStateForTests,
 } from "~/lib/state"
-import {
-  //
-  _resetRequestTelemetryForTests,
-  recordAcceptedRequest,
-  recordSettledRequest,
-} from "~/lib/telemetry-testing"
 import { generateId } from "~/lib/utils"
 
 import { mockModel } from "../helpers/factories"

@@ -17,6 +17,7 @@
  *     the manager's `onSettled` hook to remove the context from the active map
  */
 
+import { peekTelemetryRuntime } from "@hsupu/ghc-proxy-telemetry"
 import { consola } from "consola"
 
 import type { EndpointType } from "~/lib/history/store"
@@ -28,7 +29,6 @@ import type {
 
 import { recordReaperTick } from "~/lib/observability/reaper-diagnostics"
 import { state } from "~/lib/state"
-import { peekTelemetryRuntime } from "~/lib/telemetry-runtime"
 
 import type {
   //

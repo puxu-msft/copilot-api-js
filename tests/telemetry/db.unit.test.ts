@@ -1,5 +1,10 @@
 import {
   //
+  openTelemetryDb,
+  SETTLED_TIER_TABLES,
+} from "@hsupu/ghc-proxy-telemetry/telemetry/db"
+import {
+  //
   afterEach,
   expect,
   test,
@@ -11,12 +16,6 @@ import {
 } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-
-import {
-  //
-  openTelemetryDb,
-  SETTLED_TIER_TABLES,
-} from "~/lib/telemetry/db"
 
 const tmpDirs: Array<string> = []
 function tempDbPath(): string {

@@ -17,14 +17,19 @@
  * correct and must not force every HTTP test to assemble a dummy runtime).
  */
 
+import type { ThinkingBlockCounts } from "./dimension-names"
 import type {
   //
   DimensionBreakdownSnapshot,
   RequestTelemetrySnapshot,
 } from "./request-telemetry"
-import type { ThinkingBlockCounts } from "./telemetry-dimension-names"
 import type { TelemetryDatabase } from "./telemetry/db"
 
+import {
+  //
+  installTelemetryDeps,
+  type TelemetryRuntimeDependencies,
+} from "./dependencies"
 import {
   //
   getDimensionBreakdown,
@@ -39,11 +44,6 @@ import {
   shutdownRequestTelemetry,
   stopTelemetryBackgroundWork,
 } from "./request-telemetry"
-import {
-  //
-  installTelemetryDeps,
-  type TelemetryRuntimeDependencies,
-} from "./telemetry-dependencies"
 
 /** The settled-request measure inputs (the internal `SettledTelemetryInput` shape). */
 type SettledTelemetryInput = Parameters<typeof recordSettledRequest>[1]

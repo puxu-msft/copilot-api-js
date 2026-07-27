@@ -23,16 +23,17 @@ import type {
   //
   DimensionBreakdownSnapshot,
   HistogramSummary,
-} from "./request-telemetry"
+} from "@hsupu/ghc-proxy-telemetry"
 
-import { getRetryStrategyFireCounts } from "./observability/retry-strategy-fires"
 import {
   //
   TELEMETRY_HISTOGRAMS,
   TELEMETRY_MEASURE_NAMES,
-} from "./request-telemetry"
-import { TELEMETRY_DIMENSION_NAMES } from "./telemetry-dimension-names"
-import { getTelemetryRuntime } from "./telemetry-runtime"
+} from "@hsupu/ghc-proxy-telemetry"
+import { TELEMETRY_DIMENSION_NAMES } from "@hsupu/ghc-proxy-telemetry"
+import { getTelemetryRuntime } from "@hsupu/ghc-proxy-telemetry"
+
+import { getRetryStrategyFireCounts } from "./observability/retry-strategy-fires"
 
 /** Prometheus text exposition content-type (format version 0.0.4). */
 export const PROMETHEUS_CONTENT_TYPE = "text/plain; version=0.0.4; charset=utf-8"

@@ -12,14 +12,17 @@
 
 // SSOT: the request-telemetry snapshot and the transport diagnostics snapshot are
 // OWNED by the backend (single-source-of-truth-types). The FE re-exports the backend
-// definitions via `~backend/*` rather than re-declaring them. `import type` + `export
-// type` keep this a pure type reference — the build (esbuild/rollup) elides it
-// entirely, so it never pulls the backend modules' value imports (`~/lib/state`,
-// `node:http2`, consola, ...) into the FE bundle.
-import type { RequestTelemetrySnapshot } from "~backend/lib/request-telemetry"
+// definitions rather than re-declaring them. `import type` + `export type` keep this a pure type
+// reference — the build (esbuild/rollup) elides it entirely, so it never pulls the backend
+// modules' value imports (`~/lib/state`, `node:http2`, consola, ...) into the FE bundle.
+//
+// The telemetry snapshot comes from the `@hsupu/ghc-proxy-telemetry` workspace package (its
+// PURE-TYPE barrel, so even a bundler that failed to elide the import could not reach a runtime
+// dependency); the transport snapshot still lives in core, hence `~backend/*`.
+import type { RequestTelemetrySnapshot } from "@hsupu/ghc-proxy-telemetry/types"
 import type { TransportStatusSnapshot } from "~backend/lib/transport/status-snapshot"
 
-export type { RequestTelemetrySnapshot } from "~backend/lib/request-telemetry"
+export type { RequestTelemetrySnapshot } from "@hsupu/ghc-proxy-telemetry/types"
 export type { TransportStatusSnapshot } from "~backend/lib/transport/status-snapshot"
 
 /** GET /api/status — aggregated server status. Top-level keys mirror the handler. */

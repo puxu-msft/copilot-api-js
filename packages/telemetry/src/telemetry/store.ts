@@ -17,7 +17,7 @@ import {
   //
   compressBytes,
   decompressBytes,
-} from "~/lib/sqlite/compression"
+} from "@hsupu/ghc-proxy-foundation/sqlite/compression"
 
 import type { TelemetryDatabase } from "./db"
 

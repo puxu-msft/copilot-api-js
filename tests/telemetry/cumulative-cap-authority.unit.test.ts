@@ -1,3 +1,15 @@
+import { CAPPED_DIMENSION_NAMES } from "@hsupu/ghc-proxy-telemetry"
+import { openTelemetryDb } from "@hsupu/ghc-proxy-telemetry/telemetry/db"
+import {
+  //
+  _getCumulativeCapKeysForTests,
+  _resetRequestTelemetryForTests,
+  _setRequestTelemetryFilePathForTests,
+  getRequestTelemetrySnapshot,
+  initRequestTelemetry,
+  persistRequestTelemetry,
+  recordSettledRequest,
+} from "@hsupu/ghc-proxy-telemetry/testing"
 /**
  * Task 4 (T3.4) 验收 oracle —— cumulative 腿的 DB-seeded 基数 cap 权威（`cumulativeCapKeys`）。
  *
@@ -30,18 +42,6 @@ import {
   snapshotStateForTests,
   type StateSnapshot,
 } from "~/lib/state"
-import { CAPPED_DIMENSION_NAMES } from "~/lib/telemetry-dimension-names"
-import {
-  //
-  _getCumulativeCapKeysForTests,
-  _resetRequestTelemetryForTests,
-  _setRequestTelemetryFilePathForTests,
-  getRequestTelemetrySnapshot,
-  initRequestTelemetry,
-  persistRequestTelemetry,
-  recordSettledRequest,
-} from "~/lib/telemetry-testing"
-import { openTelemetryDb } from "~/lib/telemetry/db"
 
 const BUCKET_MS = 5 * 60 * 1000
 function bucketStart(t: number): number {

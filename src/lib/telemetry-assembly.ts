@@ -19,12 +19,6 @@
  * server bootstrap and the test fixture can both call it freely.
  */
 
-import { PATHS } from "~/lib/config/paths"
-import {
-  //
-  onTelemetryConfigChange,
-  state,
-} from "~/lib/state"
 import {
   //
   installTelemetryDeps,
@@ -32,14 +26,21 @@ import {
   type TelemetryConfigView,
   type TelemetryPaths,
   type TelemetryRuntimeDependencies,
-} from "~/lib/telemetry-dependencies"
+} from "@hsupu/ghc-proxy-telemetry"
 import {
   //
   createTelemetryRuntime,
   installTelemetryRuntime,
   peekTelemetryRuntime,
   type TelemetryRuntime,
-} from "~/lib/telemetry-runtime"
+} from "@hsupu/ghc-proxy-telemetry"
+
+import { PATHS } from "~/lib/config/paths"
+import {
+  //
+  onTelemetryConfigChange,
+  state,
+} from "~/lib/state"
 
 /** The telemetry persistence paths port, read from core `PATHS`. */
 const telemetryPaths: TelemetryPaths = {

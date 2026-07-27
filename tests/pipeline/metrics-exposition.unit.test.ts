@@ -1,3 +1,12 @@
+import type { DimensionBreakdownSnapshot } from "@hsupu/ghc-proxy-telemetry"
+
+import {
+  //
+  _resetRequestTelemetryForTests,
+  _setRequestTelemetryFilePathForTests,
+  recordAcceptedRequest,
+  recordSettledRequest,
+} from "@hsupu/ghc-proxy-telemetry/testing"
 import {
   //
   afterEach,
@@ -9,8 +18,6 @@ import {
 import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
-
-import type { DimensionBreakdownSnapshot } from "~/lib/request-telemetry"
 
 import {
   //
@@ -24,13 +31,6 @@ import {
   resetRetryStrategyFiresForTests,
 } from "~/lib/observability/retry-strategy-fires"
 import { installDefaultTelemetryRuntime } from "~/lib/telemetry-assembly"
-import {
-  //
-  _resetRequestTelemetryForTests,
-  _setRequestTelemetryFilePathForTests,
-  recordAcceptedRequest,
-  recordSettledRequest,
-} from "~/lib/telemetry-testing"
 
 function counters(overrides: Record<string, number> = {}): Record<string, number> {
   return {

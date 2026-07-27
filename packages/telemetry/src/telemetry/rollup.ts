@@ -1,3 +1,4 @@
+import { decompressBytes } from "@hsupu/ghc-proxy-foundation/sqlite/compression"
 /**
  * telemetry.db rollup tick（P4）—— raw→hourly→daily **链式**降采样 + 各层 TTL 保留裁剪。
  *
@@ -20,8 +21,6 @@
  * 由 `request-telemetry.ts` 的独立 rollup timer fire-and-forget 调用；**never-throw**（DB 错 warn-once 不崩 timer）。
  */
 import consola from "consola"
-
-import { decompressBytes } from "~/lib/sqlite/compression"
 
 import type { TelemetryDatabase } from "./db"
 import type { Sketch } from "./sketch"

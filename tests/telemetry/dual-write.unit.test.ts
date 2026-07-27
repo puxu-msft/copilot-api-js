@@ -1,3 +1,39 @@
+import {
+  //
+  openTelemetryDb,
+  type TelemetryDatabase,
+} from "@hsupu/ghc-proxy-telemetry/telemetry/db"
+import {
+  //
+  internDim,
+  internKey,
+} from "@hsupu/ghc-proxy-telemetry/telemetry/dictionary"
+import {
+  //
+  createSketch,
+  quantile,
+} from "@hsupu/ghc-proxy-telemetry/telemetry/sketch"
+import {
+  //
+  deserializePackedSketches,
+  serializePackedSketches,
+} from "@hsupu/ghc-proxy-telemetry/telemetry/sketch-blob"
+import { writeTierSketchBlob } from "@hsupu/ghc-proxy-telemetry/telemetry/store"
+import {
+  //
+  _getEffectiveSketchGammaForTests,
+  _getOutboxSizeForTests,
+  _getTelemetryDbForTests,
+  _resetRequestTelemetryForTests,
+  _setOutboxSoftCapForTests,
+  _setRequestTelemetryFilePathForTests,
+  _setTelemetryDbForTests,
+  getRequestTelemetrySnapshot,
+  initRequestTelemetry,
+  persistRequestTelemetry,
+  recordAcceptedRequest,
+  recordSettledRequest,
+} from "@hsupu/ghc-proxy-telemetry/testing"
 /**
  * T3.3 加性双写接线验收 oracle —— 内存路径 → telemetry.db flush。
  *
@@ -37,42 +73,6 @@ import {
   snapshotStateForTests,
   type StateSnapshot,
 } from "~/lib/state"
-import {
-  //
-  _getEffectiveSketchGammaForTests,
-  _getOutboxSizeForTests,
-  _getTelemetryDbForTests,
-  _resetRequestTelemetryForTests,
-  _setOutboxSoftCapForTests,
-  _setRequestTelemetryFilePathForTests,
-  _setTelemetryDbForTests,
-  getRequestTelemetrySnapshot,
-  initRequestTelemetry,
-  persistRequestTelemetry,
-  recordAcceptedRequest,
-  recordSettledRequest,
-} from "~/lib/telemetry-testing"
-import {
-  //
-  openTelemetryDb,
-  type TelemetryDatabase,
-} from "~/lib/telemetry/db"
-import {
-  //
-  internDim,
-  internKey,
-} from "~/lib/telemetry/dictionary"
-import {
-  //
-  createSketch,
-  quantile,
-} from "~/lib/telemetry/sketch"
-import {
-  //
-  deserializePackedSketches,
-  serializePackedSketches,
-} from "~/lib/telemetry/sketch-blob"
-import { writeTierSketchBlob } from "~/lib/telemetry/store"
 
 const BUCKET_MS = 5 * 60 * 1000
 function bucketStart(t: number): number {

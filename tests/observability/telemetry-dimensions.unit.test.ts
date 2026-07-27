@@ -1,5 +1,11 @@
 import {
   //
+  CAPPED_DIMENSION_NAMES,
+  TELEMETRY_DIMENSION_NAMES,
+  TELEMETRY_DIMENSION_SPECS,
+} from "@hsupu/ghc-proxy-telemetry"
+import {
+  //
   describe,
   expect,
   test,
@@ -15,12 +21,6 @@ import {
   normalizeClient,
   TELEMETRY_DIMENSIONS,
 } from "~/lib/observability/telemetry-dimensions"
-import {
-  //
-  CAPPED_DIMENSION_NAMES,
-  TELEMETRY_DIMENSION_NAMES,
-  TELEMETRY_DIMENSION_SPECS,
-} from "~/lib/telemetry-dimension-names"
 
 /** Minimal settled-entry factory — only the fields the extractors read. */
 function makeEntry(overrides: Partial<HistoryEntryData> = {}): HistoryEntryData {

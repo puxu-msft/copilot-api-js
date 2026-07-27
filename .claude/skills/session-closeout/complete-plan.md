@@ -65,7 +65,7 @@
 ```markdown
 > **实施状态：仅研究（无代码交付）**
 > **落地**：—
-> **现状锚点**：结论落到 [request-telemetry.ts](../../src/lib/request-telemetry.ts) 的自建 registry
+> **现状锚点**：结论落到 [request-telemetry.ts](../../packages/telemetry/src/request-telemetry.ts) 的自建 registry
 > **备注**：裁决＝扩展现有 telemetry、不引 OTel。
 ```
 

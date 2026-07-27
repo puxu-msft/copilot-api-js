@@ -1,3 +1,22 @@
+import type { TelemetryUsage } from "@hsupu/ghc-proxy-telemetry"
+
+import {
+  //
+  TELEMETRY_HISTOGRAMS,
+} from "@hsupu/ghc-proxy-telemetry"
+import {
+  //
+  _projectDimBucketsForTests,
+  _resetRequestTelemetryForTests,
+  _setRequestTelemetryFilePathForTests,
+  getDimensionBreakdown,
+  getRequestTelemetrySnapshot,
+  getThinkingBlockTotals,
+  initRequestTelemetry,
+  persistRequestTelemetry,
+  recordAcceptedRequest,
+  recordSettledRequest,
+} from "@hsupu/ghc-proxy-telemetry/testing"
 import {
   //
   afterEach,
@@ -11,12 +30,7 @@ import os from "node:os"
 import path from "node:path"
 
 import type { UsageData } from "~/lib/history/store"
-import type { TelemetryUsage } from "~/lib/request-telemetry"
 
-import {
-  //
-  TELEMETRY_HISTOGRAMS,
-} from "~/lib/request-telemetry"
 import {
   //
   restoreStateForTests,
@@ -24,19 +38,6 @@ import {
   snapshotStateForTests,
   type StateSnapshot,
 } from "~/lib/state"
-import {
-  //
-  _projectDimBucketsForTests,
-  _resetRequestTelemetryForTests,
-  _setRequestTelemetryFilePathForTests,
-  getDimensionBreakdown,
-  getRequestTelemetrySnapshot,
-  getThinkingBlockTotals,
-  initRequestTelemetry,
-  persistRequestTelemetry,
-  recordAcceptedRequest,
-  recordSettledRequest,
-} from "~/lib/telemetry-testing"
 
 let tempDir: string
 let telemetryFile: string

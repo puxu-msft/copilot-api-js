@@ -20,7 +20,7 @@
  * never-throw 读路径：未知维度 / 空库 → 空结果，不抛（红线：DB 错不崩进程，SQL 语法错误、
  * sketch γ 失配等结构性异常仍会 fail-loud 抛出，交由 route 层 try/catch 转 500）。
  */
-import { decompressBytes } from "~/lib/sqlite/compression"
+import { decompressBytes } from "@hsupu/ghc-proxy-foundation/sqlite/compression"
 
 import type { TelemetryDatabase } from "./db"
 
