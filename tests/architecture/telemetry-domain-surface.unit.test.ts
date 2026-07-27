@@ -172,6 +172,20 @@ describe("telemetry package surface (one production entry point)", () => {
     expect(unlisted(`import { recordSettledRequest } from "./request-telemetry"\nexport const harmless = recordSettledRequest`)).toEqual(["harmless"])
     // The cross-file two-hop chain: the barrel need not know where `harmless` comes from to reject it.
     expect(unlisted(`export { harmless } from "./dimension-names"`)).toEqual(["harmless"])
+    // Anonymous default declarations are `default` too — they have no name to record, and recording
+    // a NAMED default's own name would let an allowlisted identifier publish through the default slot.
+    expect(unlisted(`export default function () { return 1 }`)).toEqual(["default"])
+    expect(unlisted(`export default class {}`)).toEqual(["default"])
+    expect(
+      unlisted(`import { recordSettledRequest } from "./request-telemetry"\nexport default function getTelemetryRuntime() { return recordSettledRequest }`),
+    ).toEqual(["default"])
+    // Destructuring publishes every bound name, nested patterns and holes included.
+    expect(unlisted(`import { recordSettledRequest } from "./request-telemetry"\nexport const { harmless } = { harmless: recordSettledRequest }`)).toEqual([
+      "harmless",
+    ])
+    expect(unlisted(`import { recordSettledRequest } from "./request-telemetry"\nexport const [harmless] = [recordSettledRequest]`)).toEqual(["harmless"])
+    expect(unlisted(`export const [, second] = [1, 2]`)).toEqual(["second"])
+    expect(unlisted(`export const { a: { b } } = { a: { b: 1 } }`)).toEqual(["b"])
     // Star re-exports are the one form a single file cannot enumerate — forbidden outright.
     expect(unlisted(`export * from "./request-telemetry"`)).toEqual([`export * from "./request-telemetry"`])
     expect(unlisted(`export * as registry from "./request-telemetry"`)).toEqual([`export * from "./request-telemetry"`])

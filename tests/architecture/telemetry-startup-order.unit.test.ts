@@ -56,14 +56,15 @@ function orderViolations(fileName: string, source: string, scopeName = STARTUP_F
   // Synthetic fragments in the control tests have no enclosing function; fall back to the file scope.
   const scope: ts.Node = findFunctionDeclaration(sourceFile, scopeName) ?? sourceFile
 
-  const backfill = findCallInScope(scope, (call) => isMethodCall(call, "runJsonBackfill"))
+  const backfill = findCallInScope(scope, (call) => isMethodCall(call, "runJsonBackfill"), true)
   const runtimeReceiver = backfill === null ? null : methodCallReceiver(backfill)
   // The runtime's OWN initialize(), not some other object's.
   const initialize = findCallInScope(
     scope,
     (call) => isMethodCall(call, "initialize") && (runtimeReceiver === null || methodCallReceiver(call) === runtimeReceiver),
+    true,
   )
-  const listen = findCallInScope(scope, (call) => isFunctionCall(call, "startServer"))
+  const listen = findCallInScope(scope, (call) => isFunctionCall(call, "startServer"), true)
 
   const violations: Array<string> = []
   if (initialize === null) violations.push("telemetry initialize() is missing from the startup path")
@@ -182,6 +183,33 @@ describe("telemetry startup order (initialize → listen → runJsonBackfill)", 
       }
     `
     expect(orderViolations("start.ts", deadHelperDecoy)).toEqual(["telemetry runJsonBackfill() is missing from the startup path"])
+
+    // A call gated behind a condition is not unconditional wiring either — `if (false)` today,
+    // a feature flag tomorrow. Plain blocks and `try` are still entered: production wraps these
+    // very calls in `try`, which does not gate whether they run on the normal path.
+    const deadBranch = `
+      async function runServer(options) {
+        const telemetryRuntime = installDefaultTelemetryRuntime()
+        await telemetryRuntime.initialize()
+        serverInstance = await startServer({ port })
+        if (neverTrue) telemetryRuntime.runJsonBackfill()
+      }
+    `
+    expect(orderViolations("start.ts", deadBranch)).toEqual(["telemetry runJsonBackfill() is missing from the startup path"])
+
+    const wrappedInTry = `
+      async function runServer(options) {
+        const telemetryRuntime = installDefaultTelemetryRuntime()
+        await telemetryRuntime.initialize()
+        serverInstance = await startServer({ port })
+        try {
+          telemetryRuntime.runJsonBackfill()
+        } catch (err) {
+          consola.warn(err)
+        }
+      }
+    `
+    expect(orderViolations("start.ts", wrappedInTry)).toEqual([])
   })
 
   test("the real startup path holds the whole contract", async () => {

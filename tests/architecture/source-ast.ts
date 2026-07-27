@@ -39,8 +39,15 @@ export function parseSource(filePath: string, source: string): ts.SourceFile {
  */
 export function publicExportNames(sourceFile: ts.SourceFile): Array<string> {
   const names: Array<string> = []
+
+  /** Every name a binding introduces — `x`, `{ a, b: c }`, `[a, , b]`, and nested combinations. */
+  const bindingNames = (name: ts.BindingName): Array<string> => {
+    if (ts.isIdentifier(name)) return [name.text]
+    return name.elements.flatMap((element) => (ts.isOmittedExpression(element) ? [] : bindingNames(element.name)))
+  }
+
   for (const statement of sourceFile.statements) {
-    // `export default …`
+    // `export default <expression>`
     if (ts.isExportAssignment(statement)) {
       names.push("default")
       continue
@@ -57,13 +64,18 @@ export function publicExportNames(sourceFile: ts.SourceFile): Array<string> {
 
     // `export const/let/var …`, `export function …`, `export class/enum/interface/type …`
     const modifiers = ts.canHaveModifiers(statement) ? ts.getModifiers(statement) : undefined
-    const isExported = modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword) ?? false
-    if (!isExported) continue
+    if (!modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword)) continue
+
+    // `export default function foo() {}` / `export default class {}` are published as `default`,
+    // NOT under the declaration's own name — recording `foo` would let a declaration whose name
+    // happens to be allowlisted publish anything at all through the default slot.
+    if (modifiers.some((modifier) => modifier.kind === ts.SyntaxKind.DefaultKeyword)) {
+      names.push("default")
+      continue
+    }
 
     if (ts.isVariableStatement(statement)) {
-      for (const declaration of statement.declarationList.declarations) {
-        if (ts.isIdentifier(declaration.name)) names.push(declaration.name.text)
-      }
+      for (const declaration of statement.declarationList.declarations) names.push(...bindingNames(declaration.name))
       continue
     }
     const named = statement as { name?: ts.Node }
@@ -171,12 +183,35 @@ export function typeOnlyModuleSpecifiers(sourceFile: ts.SourceFile): Array<strin
  *    ABSENT — which is what it is;
  *  - the walk does NOT descend into nested function/class bodies, so a call parked in a helper that
  *    is never invoked cannot stand in for real wiring (a `function decoy() { runJsonBackfill() }`
- *    passed the previous version while production was actually disconnected).
+ *    passed the previous version while production was actually disconnected);
+ *  - when `unconditionalOnly` is set, the walk also refuses to enter conditional constructs
+ *    (`if`/loop/`switch`/`&&`/ternary), so a feature-gated or `if (false)` branch cannot stand in for
+ *    wiring either. Plain blocks and `try`/`catch`/`finally` ARE entered: they do not gate whether
+ *    the statement runs on the normal path, and production wraps these very calls in `try`.
  */
-export function findCallInScope(scope: ts.Node, predicate: (call: ts.CallExpression) => boolean): ts.CallExpression | null {
+/** Constructs whose body may be skipped at runtime — a call inside one is not unconditional wiring. */
+function isConditional(node: ts.Node): boolean {
+  return (
+    ts.isIfStatement(node)
+    || ts.isSwitchStatement(node)
+    || ts.isConditionalExpression(node)
+    || ts.isForStatement(node)
+    || ts.isForInStatement(node)
+    || ts.isForOfStatement(node)
+    || ts.isWhileStatement(node)
+    || ts.isDoStatement(node)
+    || (ts.isBinaryExpression(node)
+      && (node.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken
+        || node.operatorToken.kind === ts.SyntaxKind.BarBarToken
+        || node.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken))
+  )
+}
+
+export function findCallInScope(scope: ts.Node, predicate: (call: ts.CallExpression) => boolean, unconditionalOnly = false): ts.CallExpression | null {
   let found: ts.CallExpression | null = null
   const visit = (node: ts.Node): void => {
     if (found !== null) return
+    if (unconditionalOnly && isConditional(node)) return
     // Do not enter a nested callable — its body is a different execution flow.
     const isNestedCallable =
       node !== scope
