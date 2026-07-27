@@ -8,8 +8,10 @@
 
 **空 delta 会到达 wire。我方管线不吞它。** 见 `wire-capture-2026-07-27.txt`：12 秒块内静默期间，客户端 wire 上收到 8 个 `ping` + **3 个空 `text_delta`（index=0）**，随后真实内容在 index=1 正常收尾。
 
+**时序很重要**：并发会话的 `883e0533`（2026-07-27 15:20 UTC）已经定位并修好了真正的丢失层——`recoverToolCallText` 的 marker lookahead 在响应改写链里吞掉空 delta，下游只收到 ping；他们随后用真 CC 2.1.220 连跑两次 315s PASS。本探针跑在 21:10，**验的是修复后的行为**，不能读成"一直都上"。
+
 推论：
-1. G2 的丢失发生在**我方之外**（CC 或它的 harness），D2 第 ② 条判据是**假阴性**——这与源码判据一致（`app.pretty.js:10018` 只丢 `event: ping`，内容 delta 一律 `he()` 重置）。
+1. G2 的丢失**发生在我方管线内部**（`recoverToolCallText` lookahead），不是 CC 也不是 harness。D2 第 ② 条判据是**假阴性**，但原因是我方吞帧——与源码判据一致（`app.pretty.js:10018` 只丢 `event: ping`，内容 delta 一律 `he()` 重置）。
 2. 刚落地的升级修复在 wire 层**有效**。
 3. 副产品观察：该配置（buffered + `stream_commit_after_sec: 1`）下 **anchor 块@0 确实被发出**，真实块被 remap 到 index=1。所以"客户端历史里的空 text 块全部来自上游"这个说法**需要收窄**——index=0 的那些可能是我方 anchor。
 

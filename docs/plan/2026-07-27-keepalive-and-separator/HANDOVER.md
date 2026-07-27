@@ -57,9 +57,14 @@
 
 ### 2.3 空 delta 上不上 wire（本会话实测，`exp/keepalive-escalation-wire/`）
 
-**上。** 12s 静默期间 wire 收到 8 ping + **3 个空 `text_delta`**。所以：
-- G2 的丢失**不在我方管线**，D2 第 ② 条判据是假阴性；
-- 刚落地的升级修复在 wire 层有效；
+**上——但这个"上"是被并发会话修出来的，别读成"一直都上"。**
+
+12s 静默期间 wire 收到 8 ping + **3 个空 `text_delta`**。**关键时序**：并发会话的 `883e0533`（15:20 UTC）已经定位并修好了真正的丢失层——**`recoverToolCallText` 的 marker lookahead 在响应改写链里吞掉了空 delta**，下游只收到 ping；修复后他们用真 CC 2.1.220 连跑两次 315s PASS。我这发探针跑在 21:10，**验的是修复后的行为**。
+
+所以正确的结论是：
+- **G2 的丢失确实在我方管线**（不是 CC、不是 harness）。我一度写下的「不在我方管线」是**错的**，因为我没有先查 peer 是否已经动过这块——`883e0533` 比我早 6 小时。
+- D2 第 ② 条判据「空 delta 不能重置 CC 死线」是**假阴性**这一点仍然成立，但原因是**我方吞帧**，不是 CC 不认。
+- 刚落地的升级修复在 wire 层有效（我的探针 + peer 的真 CLI 双证）；
 - 但该配置下 **anchor 块@0 确实被发出**（真实块 remap 到 index=1）——「客户端历史里的空 text 块全来自上游」这句**要收窄**：production 抽样里 index=0 的可能是我方 anchor，index=1 的才是上游的。
 
 > **⚠️ 这发探针证明的范围要看准**：我用的是 buffered 配置，真实块直到收尾才 flush，所以静默期间**客户端视角是 pre-content 窗口**——探针验证的是**pre-content 升级路径**。而 `docs/DESIGN.md:306` 明写当前升级是 **pre-content-only**：「首块提交后的无-open窗口只 ping，完整覆盖等待 generation-scoped allocator（方案 A）」。
@@ -124,7 +129,30 @@
 
 ---
 
-## 4. 给接手会话的纪律提醒（这一轮踩过的坑）
+## 4. 工作方式：**后续改动一律在隔离 worktree 进行**（用户 2026-07-27 决定）
+
+本轮全程在共享主树上作业，代价已经具体地付出来了：
+
+- 三份研究报告在提交前被并发会话的清理**从工作区抹掉**（原件恰好还在 `/tmp` 才救回来，已提交）；
+- 我对丢失层的结论被 peer 早 6 小时的 `883e0533` 推翻，因为在共享树上**很难察觉别人已经动过同一块**；
+- 每次提交都要写显式 pathspec 绕开别人的脏文件，`eslint --fix` 得逐文件点名，否则会把别人的在飞改动裹进来。
+
+所以接手会话**不要再在主树上改代码**：
+
+```bash
+# 起隔离 worktree（放 ./.worktrees/，项目约定）
+git worktree add .worktrees/<topic> -b feat/<topic>
+cd .worktrees/<topic>
+bun install            # 新 worktree 没有 node_modules，pre-commit/eslint 会 exit 127
+```
+
+参见 skill `git-preference:isolating-from-a-shared-git-worktree`。收尾时合回 master 走 `git merge`（三方合并自动合非冲突行），**合并前先 `git log --oneline master ..` 看 peer 在同一区域落了什么**——本轮的教训就是这条。
+
+文档类改动（本目录下的交接/研究报告）**可以**继续在主树直接改并即时提交：它们是接手会话的入口，滞留在特性分支上等于没写。这与项目的 `docs-merge-before-execute` 一致——**定稿文档先合主线，执行再开分支**。
+
+---
+
+## 5. 给接手会话的纪律提醒（这一轮踩过的坑）
 
 1. **`offsetMs` 是 commit 相对的**。我用它当"请求开始后 N ms"做归因，得出了错误结论并写进了给用户的报告，随后被 `synthetic` 标记字段推翻。**做时间归因前先确认时间基。**
 2. **空的检索结果不能证明不存在**。判「帧有没有 synthetic 标记」时，先确认该投影**能**带出标记（我一开始看的投影根本不含该字段）。
