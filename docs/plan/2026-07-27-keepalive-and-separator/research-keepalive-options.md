@@ -110,9 +110,9 @@ b = { defaultHeaders: p, maxRetries: t2,
 
 **这直接回答了"静默期能不能什么都不发"**：
 
-> 能——**在响应头发出之前**，预算约 **600s**（`API_TIMEOUT_MS`），且**期间一帧都不用发**。一旦我方 commit（发 200 + headers），300s 时钟立刻起跑。
+> 能——**在响应头发出之前**，预算约 **300s**（**2026-07-27 实测订正**：原写「~600s（`API_TIMEOUT_MS`）」是错的，那个 600s 计时器永远轮不到触发，实际由更低层的 undici 默认 `headersTimeout` 在 ~300s 中止；见 `exp/silence-recovery-gates/FINDINGS.md` §「Q1 续测」），且**期间一帧都不用发**。一旦我方 commit（发 200 + headers），CC 的 300s idle watchdog 起跑。
 >
-> 我方当前 `stream_commit_after_sec: 20` **主动在第 20 秒开跑 300s 时钟**，把总预算钉死在 ~320s；若把 commit 推迟到 T 秒，总预算变成 T + 300s。**commit 时机本身就是一个 keepalive 杠杆**（§4.9）。
+> 我方当前 `stream_commit_after_sec: 20` **主动在第 20 秒开跑 idle watchdog**。~~若把 commit 推迟到 T 秒，总预算变成 T + 300s。~~ **该加法已作废（2026-07-27）**：commit 后那个 300s 是**可重置的 idle watchdog**（非-ping 事件即重置，且我方 `streamKeepaliveEscalateSec` 默认 200s 主动重置它），不是从 commit 起只跑一次的总时限。**commit 时机仍是一个杠杆**（§4.9），但它买到的是「上游报错时还能返回真 HTTP 状态码」这项能力，不是一段可加总的预算。
 
 ---
 
@@ -307,15 +307,20 @@ ADR 2026-07-22 D2 把 `empty_text` 退役，判据是两条：①「空-text blo
 
 ### 4.9 【结构性方案】把 commit 时机当作心跳杠杆
 
-- 机制：**300s 时钟在响应头到达时才起跑**（§1.5，源码 `:298185` 的 `he()` 位置）。头到达前 CC 的预算是 `API_TIMEOUT_MS` **默认 600s**。当前 `stream_commit_after_sec: 20` 在第 20 秒主动开跑时钟，把总预算钉成 320s——**5463 死于 320.0s，就是这个数**。
-- 若把 commit 推迟到 T 秒（上游仍无内容时继续 hold header），总预算 = T + 300s。T=250 → 550s。
-- 两层超时：pre-commit 期间**两层都不存在**（无头、无流），只受 600s 总预算约束。commit 后由 §4.3 接管。
+> **⚠ 2026-07-27 实测订正（本节两处前提被推翻，见 `exp/silence-recovery-gates/FINDINGS.md` §「Q1 续测」）**：
+> - **「头到达前 CC 的预算是 `API_TIMEOUT_MS` 默认 600s」是错的。** 那个 600s 计时器存在但**永远轮不到它触发**——更低一层的 undici 默认 `headersTimeout` 在 **~300s** 就中止该 attempt（真 CC 四次落在 299.667–300.280s；裸 `fetch` 无 SDK 无 CC 抛 `UND_ERR_HEADERS_TIMEOUT`；裸 TCP socket 打同一 handler 420.1s 未被关，排除服务端）。**pre-commit 预算是 ~300s，不是 600s。**
+> - **「总预算 = T + 300s，T=250 → 550s」是错的**，别再引用。commit 后那个 300s 是**可重置的 idle watchdog**（任何非-ping 事件即重置），不是从 commit 起只跑一次的总时限；而且我方 `streamKeepaliveEscalateSec`（默认 200s）本就在主动重置它。post-commit 能撑多久由 keepalive/escalation 契约决定，不存在这条加法。
+> - **本节的核心论点仍然成立**（且不依赖上面两个数）：推迟 commit 能保住「上游报错时还能返回真 HTTP 状态码 → CC 全套原生自愈」这项能力，见本节末尾的「额外收益」。变的只是**可推迟的幅度有硬上界 ~300s**。
+
+- 机制：**300s 时钟在响应头到达时才起跑**（§1.5，源码 `:298185` 的 `he()` 位置）。~~头到达前 CC 的预算是 `API_TIMEOUT_MS` **默认 600s**。~~ → 实测为 ~300s（undici `headersTimeout`），见上方订正。当前 `stream_commit_after_sec: 20` 在第 20 秒主动开跑时钟——**5463 死于 320.0s** 与此一致（20s commit + 300s post-commit idle）。
+- ~~若把 commit 推迟到 T 秒（上游仍无内容时继续 hold header），总预算 = T + 300s。T=250 → 550s。~~ **作废，见上方订正。** 可安全断言的窄结论是：**单个 pre-header attempt 必须在 ~300s 前 commit，否则该 attempt 被 `headersTimeout` 中止**（撞上不致命，CC 会原生重试，代价是上游从头重算）。
+- 两层超时：pre-commit 期间**§4.3 那两层都不存在**（无头、无流），但**受 undici `headersTimeout` ~300s 约束**（原文写「只受 600s 总预算约束」，已订正）。commit 后由 §4.3 接管。
 - 被 baked：**完全不涉及**——一个字节都不发。
 - 需客户端配合：否。
 - **额外收益（长远正确性）**：pre-commit 期间上游若报错，我方还能返回**真 HTTP 4xx/5xx**，从而保住 CC 的全部原生自愈（thinking-strip / cache-beta drop / role:system 回退 / 429 退避重试）。一旦 commit 成 200，任何错误只能降级成 `200 + SSE error`，`.status === undefined`、**CC 零重试**（skill 已记载，`:10018` + `error.js` 路径）。**早 commit 是在拿自愈能力换心跳，而这个交换现在看是亏的。**
 - 风险：① 客户端在 hold 期间完全没有反馈（用户看到"卡住"）；② 我方 `timeouts.response_header`（当前 600）与之耦合；③ 与既有 `docs/spec/2026-07-23-upstream-silence-commit-timing.md` 正在做的事直接重叠——**必须与那条主线合并设计，不能各修各的**。
 - 成本：中（config + 与 silence-commit spec 协调）。
-- 证伪：mock 上游静默 400s 后吐内容，`stream_commit_after_sec` 设 250，真 CLI 应完整收尾（总 >550s 预算内）。
+- 证伪：mock 上游静默 400s 后吐内容，`stream_commit_after_sec` 设 250，真 CLI 应完整收尾。**注意（2026-07-27 订正）**：原文写的「总 >550s 预算内」预设了已作废的 `250+300` 加法——能不能活到 400s **取决于 post-commit 的 keepalive/escalation 是否持续重置 idle watchdog**，这正是该 oracle 要独立验证的对象，不能拿它当前提。
 
 ### 4.10 `message_delta` 作为心跳载体
 
@@ -376,7 +381,7 @@ CC 提供了两个官方旋钮，源码可查：
 
 | 窗口 | 客户端状态 | 覆盖措施 |
 |---|---|---|
-| **W1 pre-commit** | 响应头还没发 | **R3**：推迟 commit（300s 时钟根本没起跑，预算 ~600s） |
+| **W1 pre-commit** | 响应头还没发 | **R3**：推迟 commit（CC 的 idle watchdog 根本没起跑；**但受 undici `headersTimeout` ~300s 硬约束**，2026-07-27 实测订正，原写 ~600s） |
 | **W2 块内静默** | 有一个真实块开着 | **R1**：该块类型对应的空 delta |
 | **W3 块间空档** | 已 commit，无块开着 | **R2**：一帧 lookahead 延迟 `content_block_stop` → W3 塌缩进 W2 |
 
@@ -436,7 +441,8 @@ CC 提供了两个官方旋钮，源码可查：
 | 300s 死线由"任何非-ping SSE 事件"重置，ping 被 SDK 丢弃 | **源码读证** | `app.pretty.js:298199-298206`、`:10013-10017`、`:88228` |
 | 4 条死亡样本 = CC 300s 墙，差值 300.0s | **实测（推断链闭合）** | History offsetMs + durationMs 逐毫秒吻合；`Response stalled mid-stream` 字面量定位在 CC `:298433` |
 | 闭合过的空 text 块必进 CC transcript | **源码读证** | 物化点唯一 `:298301`；`eJr` `case "text"` `:368803` 不过滤 |
-| 300s 时钟在响应头到达后才起跑，头前预算 ~600s | **源码读证** | `he()` 调用位置 `:298185`；client `timeout` `:88111` |
+| CC 的 idle watchdog 在响应头到达后才起跑 | **源码读证** | `he()` 调用位置 `:298185` |
+| ~~头前预算 ~600s~~ → **头前预算 ~300s**（undici 默认 `headersTimeout`，非 `API_TIMEOUT_MS`） | **实测**（2026-07-27，非源码读证——原表把错误结论标成了最高可信档） | `exp/silence-recovery-gates/FINDINGS.md` §「Q1 续测」；客户端 cause `UND_ERR_HEADERS_TIMEOUT` 见 `results/q1-firstfail/barefetch.client.json` |
 | 经代理路径不安装字节级 watchdog；2.1.207 无 60s 常数 | **源码读证，与既有文档冲突** | `:88334` `Kgc` 门控、`:88231` `k0i` 常数 |
 | G2「空 text_delta 无效」是假阴性 | **推断（证据权重）** | 1 份源码 + 6 个对照臂 vs 1 个带混淆变量的反例。**需 §3.4 的 curl 探针实测确证** |
 | R1/R2/R3 各自有效 | **待真实客户端 e2e** | 需 skill `client-proxy-e2e-testing` 搭真 SDK/CLI；本轮**未跑**，按指示只建议 |

@@ -1,0 +1,63 @@
+{
+  "baseURL": "http://127.0.0.1:41935",
+  "capMs": 400000,
+  "cappedOut": false,
+  "exitCode": 0,
+  "elapsedMs": 126381,
+  "home": "/tmp/silence-q1-firstfail-VoGkEO",
+  "stdout": "{\"is_error\":false,\"duration_api_ms\":125049,\"num_turns\":1,\"stop_reason\":\"end_turn\",\"session_id\":\"899e330a-5e0c-4ae7-a55e-a857cb2416e4\",\"total_cost_usd\":0.00012299999999999998,\"usage\":{\"input_tokens\":1,\"cache_creation_input_tokens\":0,\"cache_read_input_tokens\":0,\"output_tokens\":8,\"server_tool_use\":{\"web_search_requests\":0,\"web_fetch_requests\":0},\"service_tier\":\"standard\",\"cache_creation\":{\"ephemeral_1h_input_tokens\":0,\"ephemeral_5m_input_tokens\":0},\"inference_geo\":\"\",\"iterations\":[],\"speed\":\"standard\"},\"modelUsage\":{\"claude-sonnet-4.6\":{\"inputTokens\":1,\"outputTokens\":8,\"cacheReadInputTokens\":0,\"cacheCreationInputTokens\":0,\"webSearchRequests\":0,\"costUSD\":0.00012299999999999998,\"contextWindow\":200000,\"maxOutputTokens\":32000,\"canonicalModel\":\"claude-sonnet-4-0\",\"provider\":\"firstParty\"}},\"permission_denials\":[],\"terminal_reason\":\"completed\",\"fast_mode_state\":\"off\",\"fast_mode_disabled_reason\":\"unknown\",\"subtype\":\"success\",\"api_error_status\":null,\"result\":\"Q1_PRE_HEADER_OK after 125002ms\",\"ttft_ms\":125249,\"ttft_stream_ms\":125246,\"time_to_request_ms\":221,\"type\":\"result\",\"duration_ms\":125273,\"uuid\":\"c76d93e5-8043-4427-b99d-912e7b319557\"}\n",
+  "stderr": "",
+  "parsed": {
+    "is_error": false,
+    "duration_api_ms": 125049,
+    "num_turns": 1,
+    "stop_reason": "end_turn",
+    "session_id": "899e330a-5e0c-4ae7-a55e-a857cb2416e4",
+    "total_cost_usd": 0.00012299999999999998,
+    "usage": {
+      "input_tokens": 1,
+      "cache_creation_input_tokens": 0,
+      "cache_read_input_tokens": 0,
+      "output_tokens": 8,
+      "server_tool_use": {
+        "web_search_requests": 0,
+        "web_fetch_requests": 0
+      },
+      "service_tier": "standard",
+      "cache_creation": {
+        "ephemeral_1h_input_tokens": 0,
+        "ephemeral_5m_input_tokens": 0
+      },
+      "inference_geo": "",
+      "iterations": [],
+      "speed": "standard"
+    },
+    "modelUsage": {
+      "claude-sonnet-4.6": {
+        "inputTokens": 1,
+        "outputTokens": 8,
+        "cacheReadInputTokens": 0,
+        "cacheCreationInputTokens": 0,
+        "webSearchRequests": 0,
+        "costUSD": 0.00012299999999999998,
+        "contextWindow": 200000,
+        "maxOutputTokens": 32000,
+        "canonicalModel": "claude-sonnet-4-0",
+        "provider": "firstParty"
+      }
+    },
+    "permission_denials": [],
+    "terminal_reason": "completed",
+    "fast_mode_state": "off",
+    "fast_mode_disabled_reason": "unknown",
+    "subtype": "success",
+    "api_error_status": null,
+    "result": "Q1_PRE_HEADER_OK after 125002ms",
+    "ttft_ms": 125249,
+    "ttft_stream_ms": 125246,
+    "time_to_request_ms": 221,
+    "type": "result",
+    "duration_ms": 125273,
+    "uuid": "c76d93e5-8043-4427-b99d-912e7b319557"
+  }
+}

@@ -205,14 +205,14 @@ commit 的真正代价**不是**「锁定了内容」，而是「锁定了 **HTT
 
 **B5 可行但仍是新 pre-ready 拓扑**：现有 hedge 是 post-header（`driver.ts:769-837` 需已 ready binding），B5 需新建 pending-open race（primary dispatch 起即暴露 pending-ready promise、threshold 到期 race 两个**未 ready** opening、opening failure 不即取消另一个、winner 建议按「first complete semantic block」而非「first header」否则可能选中一个之后继续静默的流）。B5 在 candidate race/cancel/budget 子域比 B2 复用更多，但缺 pending-open race + pre-header winner predicate + 败者 semantic-frame delivery gate。
 
-**待验证门（PoC 明确未验证）**：真实 GHC 大 context fresh-retry 成功率（= §8 Q2，决定 B2 根治 vs 退化 B3）、GHC cancel 后计费语义、server tool 首 token 前执行时点、真实 CC 300s watchdog。
+**待验证门（PoC 明确未验证）**：真实 GHC 大 context fresh-retry 成功率（= §8 Q2，决定 B2 根治 vs 退化 B3）、GHC cancel 后计费语义、server tool 首 token 前执行时点。（**pre-header 容忍度已于 2026-07-27 实测闭合**，见 §8 Q1；**post-header 的真实 CC 300s watchdog 由更早的 `exp/cc-idle-280s/` 实测**——ping-only ~300s 断、空 content delta 撑过 340s，**不是**本轮 Q1 测的，两者是不同机制。）
 
 ---
 
 ## 7. 与既有机制的交互
 
 - **delayed-commit（`streamCommitAfterSec`）**：B1 直接调其值 + clamp 上限（当前 clamp < 60，`schema.ts`）；B2 在 COMMIT 分支的 post-commit catch（`handler-v4.ts:634-699`）里新增「pre-content 失败 → 内部重试 splice」路径。
-- **CC 两层 watchdog**：B1 的窗口上限由 CC pre-header 容忍度（**未测**，非 60s SSE byte-idle —— 那层在 commit 后才生效）决定；commit 后决策 1 的 empty_text 无条件保活继续压住 60s/300s 两层（不变）。
+- **CC 两层 watchdog**：B1 的窗口上限由 CC pre-header 容忍度（**2026-07-27 已实测 ≈300s**，归 undici 默认 `headersTimeout`；非 60s SSE byte-idle —— 那层在 commit 后才生效，见 §8 Q1）决定；commit 后决策 1 的 empty_text 无条件保活继续压住 60s/300s 两层（不变）。
 - **keepalive sink / anchor**：**仅 `empty_text` 模式**才需 anchor 的 index-remap（真实块落 index+1、锚点收口）；默认 `ping` 不需 remap、`enveloped_ping` 只需 message_start dedup（§6.1 三模式 contract 表、SDK 探针实测）。**anchor remap 不是 B2 的通用前提**。
 - **决策 2 的 pre-commit network-retry**：只在 commit 前起作用（保原生状态）；B1 加宽窗口 = 扩大决策 2 的有效区间。
 - **hedge（post-header）**：现状与本 spec 正交（hedge 在响应头之后 racing 慢首 token）；但 **B5 拟把 hedge 扩到 pre-header**（§6.1，新 pending-open race）。
@@ -223,7 +223,7 @@ commit 的真正代价**不是**「锁定了内容」，而是「锁定了 **HTT
 
 ## 8. 开放问题 + 需用户/主会话拍板的取舍
 
-- **Q1（实测门控，B1 前置）** CC（Claude Code / @anthropic-ai/sdk）对「请求已发、迟迟无 HTTP 200 响应头」的容忍度是多少秒？这决定 B1 窗口上限。注意这**不是** 60s SSE byte-idle（那层 commit 后才生效），可能是 connect/read timeout。**建议**：隔离端口起测试 server + mock upstream（pre-header 静默 N 秒）+ 真 `claude` 客户端，二分容忍度。**属实测、非推断。**
+- **Q1【已闭合 · 2026-07-27 实测】** CC 对「请求已发、迟迟无 HTTP 200 响应头」的容忍度 ≈ **300s**，且**不是** Anthropic SDK 的 1200/1250s request timer、**也不是** CC 那个响应头后才武装的 stream-idle watchdog——直接触发器**与 undici 默认 `headersTimeout` 一致**（`node_modules/undici/lib/dispatcher/client.js` 默认 `300e3`）。作用域：**本机 CC 2.1.220、其内置 Node v26.3.0 transport 默认配置**下，四个完整 attempt 的 pre-header abort 落在 **299.667–300.280s**；裸 `fetch`（无 SDK 无 CC）抛 `UND_ERR_HEADERS_TIMEOUT`；把 `CLAUDE_STREAM_IDLE_TIMEOUT_MS` 抬到 600000 **不移动**该点；裸 TCP socket 打同一 handler 420.1s 未被关（排除我方服务端）。**这是可配置、可随版本变化的 transport 默认值，不是协议物理常量**，换客户端/runtime 版本需重新校准。撞上后 CC **原生重试**（观测 4 个完整周期，backoff ≈ 0.55/1.05/2.16/4.06s；最大尝试数**未测定**——该轮由我方主动终止），代价是上游从头重算。证据与对照见 [`exp/silence-recovery-gates/FINDINGS.md`](../../exp/silence-recovery-gates/FINDINGS.md) §「Q1 续测」+ `results/q1-firstfail/`。**推论**：B1 窗口上限 = 该 transport default 减余量；**单个 pre-header attempt 必须在 ~300s 前 commit，否则接受该 attempt 被中止**。⚠ **不得**由此推出「总预算 T+300s」或「~600s 天花板」——commit 后的 300s 是**可重置的 idle watchdog**（非-ping 事件即重置），且我方 `streamKeepaliveEscalateSec` 默认 200s 会主动重置它（`src/lib/state.ts:410-415`），post-commit 存活时长由 keepalive/escalation 契约决定。pre-header 与 post-commit 的两个 300s **相互独立配置、当前默认值相同，不得合并做预算**。
 - **Q2（PoC 门控，B2 成败关键）** 事故类请求（261-678KB 大 context、GHC 0 帧干挂）**在 fresh retry 下能否成功**？若 A 是瞬态 → B2 根治；若 A 系统性（大 context 必挂）→ B2 退化为 B3。**建议交主会话决定是否派 `gpt-souls:poc-runner`** 复现 + 重试实测。**未验证前，B2 的「救事故」效力是假设、非结论。**
 - **Q3（独立待测）** Responses/gpt 路径的 header 时序是 Mode-1（头早到、body 静默）还是 Anthropic 式 deferred-header？若前者，「等 header」在 Responses 路径可能成立 —— 但那是另一个 spec 的事，不混入本 Anthropic spec。
 - **Q4** 是否值得为 A3/A6 补一层「pre-header 静默时长」遥测（不作判据、只作可观测 + 未来分析），以便日后若 GHC 行为变化能发现？→ 倾向做（richest-data-flow / 低成本可观测）。
@@ -252,4 +252,4 @@ commit 的真正代价**不是**「锁定了内容」，而是「锁定了 **HTT
 - 「Anthropic 路径不存在可靠判别信号」应限定为「**在本代理当前已接入的同一 response stream 可观测面内**不存在」——不能证明 GHC 不提供独立状态面（§8 新增 capability probe）。
 
 **待实测/PoC（明确未验证，交用户裁决前的门）：**
-- Q1 CC pre-header 容忍度、Q2 事故请求 fresh-retry 可恢复性、Q3 Responses 路径 header 时序、Q8 GHC pre-content 状态面 capability probe。**这些验证前，B1 窗口上限、B2 救事故效力、跨路径推广均为假设。**（Q5 已闭合、不再是门。）
+- Q2 事故请求 fresh-retry 可恢复性、Q3 Responses 路径 header 时序、Q8 GHC pre-content 状态面 capability probe。**这些验证前，B2 救事故效力、跨路径推广均为假设。**（Q5、Q1 已闭合、不再是门——**B1 窗口上限现为实测的 300s**，见 §8 Q1。）
