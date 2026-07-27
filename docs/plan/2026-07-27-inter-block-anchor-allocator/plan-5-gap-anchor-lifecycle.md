@@ -119,10 +119,11 @@ test("real@0 -> gap-anchor@1 -> real@2 (the canonical inter-block shape)", async
 - [ ] **Step 2**：跑，红（当前 `semanticBlockCount === 0` 门挡住，只会看到 ping）。
 - [ ] **Step 3**：实现——
   - 删 `semanticBlockCount === 0` 条件（连同其「until that design lands」注释，改为指向本 plan 与 ADR D2 修订）。
-  - 写轻量 gap injector（`makeGapAnchorInjector`）：`allocateAnchor()` → `writeAnchor(anchor.startFrame(idx))` → `writeKeepalive(anchor.deltaFrame(idx))`，设 `openAnchorIndex = idx`。**不发 message_start**（已在 wire 上）。**分配与两次写在同一 serializer operation**（C5，P2 已铺路）。
+  - 写轻量 gap injector（`makeGapAnchorInjector`）：**只调 `port.allocateAndWriteAnchor(index => [...])`**（round-2 major：原写法 `allocateAnchor() → writeAnchor() → writeKeepalive()` 正是 P2 用整节否决的「队列外分配 + 两个 operation」，且第二帧写失败会留下已推进的 frontier——**与 P2 自己冻结的 owner-only 契约正面冲突**）。callback 内生成带 provenance 的两帧：`start`（`synthetic:"anchor"`）+ `delta`（`synthetic:"keepalive"`）。**不发 message_start**（已在 wire 上）。成功返回后再据其结果置 `openAnchorIndex`；返回 undefined 则什么都不做（C9：未分配未写出）。
   - handler 接线：`injectContentAnchor` 在「已有真实块」时用 gap injector，「pre-content」时用现有 `makeSyntheticAnchorInjector`。两者共享 allocator 与 `openAnchorIndex`。
 - [ ] **Step 4**：跑，绿。
 - [ ] **Step 5**：mutation——把 `semanticBlockCount === 0` 门加回，确认 O-3 转红。
+- [ ] **Step 5b**：**架构守卫 mutation（round-2 major）**——把 gap injector 改回「裸 `allocateAnchor()` + 两次 write」，确认 P2 建立的架构守卫（生产路径只能经 owner API）**转红**。这防止计划后半自己绕过 P2 冻结的契约。
 - [ ] **Step 6: 提交** → `feat(keepalive): allow gap anchors after the first committed block`
 
 ## Task 5.4：续写腿内的 gap 静默（**跨相位集成缝**，用户 2026-07-27 裁决升格为独立 task）

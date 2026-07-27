@@ -7,7 +7,7 @@
 
 ### 路径一：零 anchor 的续写腿（**默认路径，本轮 blocker**）
 
-不需要任何 anchor：主腿交付 `real@0` 后被 cut → 续写腿 upstream index 从 0 重启 → C4 要求分配 wire@1；但若按 C3 的**原**表述（`anchorsOpened()===0` 即短路）会原样重发 `real@0`，与已交付块撞 index。修法见 README「C3 的修订」——短路判据改为**映射恒等**，续写腿因 `legBase>0` 而不恒等，必须 remap。
+不需要任何 anchor：主腿交付 `real@0` 后被 cut → 续写腿 upstream index 从 0 重启 → C4 要求分配 wire@1；但若按 C3 的**原**表述（`anchorsOpened()===0` 即短路）会原样重发 `real@0`，与已交付块撞 index。修法见 README「C3 的修订」——短路判据改为**映射恒等**：续写腿该块的 mapping 是 upstream0 → wire1，不恒等，必须 remap。
 
 ### 路径二：有 anchor 的撞车（审查 F5 给出，逐层核实过）
 
@@ -21,13 +21,15 @@
 
 ## 修法（frontier 唯一权威）
 
-续写腿的真实块**不查旧映射**，而是从 frontier **继续分配新 index**。P2 的 owner API 已冻结 `beginLeg()`，allocator 侧的 leg 语义在 P2.1 落地（`realBlockOffset` 查**当前腿**的 mapping）。本相位负责把 driver 的双偏移退役、接上 `beginLeg()`。
+续写腿的真实块**不查旧映射**，而是从 frontier **继续分配新 index**。P2 已冻结 `beginLeg(kind)` 为 serializer command，allocator 侧的 leg 语义在 P2.1 落地（分配返回**不可变 `WireBlockMapping` token**，delta/stop 按 token 查，不查 ambient「当前腿」）。本相位负责把 driver 的双偏移退役、在**每个 upstream round** 上接 `beginLeg(kind)`。
+
+> **不为 continuation 特判**（round-2 major）：`beginLeg` 对 **continuation 与 recovery 都调**。allocator 由「已成功写出的 frontier + 空的新腿 mapping」自然得出正确结果，两类腿无需分支——也避免「recovery 忘调时靠巧合正确」的脆弱性。recovery 的两种情形见 P2「recovery / leg 边界语义」表。
 
 > 原 plan 曾列「A. leg-scoped 映射 / B. 分配即映射」两条候选待实施期选。**该选择已在 P2.1 冻结为 B（分配即映射）**——它让分配点与消费点合一、天然支持任意多腿，且是 owner API 的自然形状。此处不再重复裁决。
 
 ## Files
 
-- Modify: `src/lib/anthropic/keepalive-anchor.ts`（allocator 加 leg 语义）
+- Modify: `src/lib/anthropic/keepalive-anchor.ts`（allocator 的 leg 语义在 P2.1 已落地，本相位只接线）
 - Modify: `src/lib/pipeline/driver.ts`（退役 `continuationOffset` / `wireDeliveredBlocks`；`:1186` 第二层 remap 删除；`:1491` 快照删除；`:1071-1072` 声明删除）
 - Modify: `src/lib/pipeline/types.ts`（`ContinuationHooks.remap` / `isContentBlockStart` 若因此无消费者则**先标注、不删**——按 `no-destructive-workspace-loss`「绝不以清理死代码为名擅自删」，交 P8 doc-sync 时统一裁决）
 - Test: 新 `tests/pipeline/continuation-frontier-collision.it.test.ts`；改写 `tests/pipeline/continuation-flow.it.test.ts` 的 index 断言
@@ -86,12 +88,12 @@ test("POSITIVE CONTROL B: the harness reproduces the documented collision on the
 - [ ] **Step 1**：（oracle 已在 4.1）
 - [ ] **Step 2**：确认 4.1 红。
 - [ ] **Step 3**：实现——
-  - allocator 加 leg 语义（推荐 B：分配即映射）；driver 在进入续写腿时（`driver.ts:1491` 附近）调 `allocator.beginLeg()` 而非快照 `continuationOffset`。
+  - driver 在进入**每个新 upstream round** 时调 `await port.beginLeg(kind)`——续写腿在 `driver.ts:1491` 附近（取代快照 `continuationOffset`）；**transparent recovery 腿同样要调**（`driver.ts:1409` 附近的 `attempt++` 分支），见 P2 recovery 表。
   - 删除 `driver.ts:1186` 的第二层 `continuation.remap(outFrame, continuationOffset)`。
   - 删除 `wireDeliveredBlocks` / `continuationOffset` 的声明与递增（`:1071-1072`、`:1189`、`:1491`）。
   - `ContinuationHooks.remap` 若因此零消费者：**加 `@deprecated` 注释说明「wire index 唯一权威已迁至 allocator frontier」并保留**，交 P8.6 统一裁决是否删。理由：reviewer 的「无消费者可安全删除」类断言必须亲自复核，而跨格式（Responses/CC）续写腿可能仍在用——实施期 `rg -n "continuation.*remap" src/` 逐处核实。
 - [ ] **Step 4**：跑，4.1 转绿 + `continuation-flow.it.test.ts` 回归（其 index 断言按需**改写**）。
-- [ ] **Step 5**：mutation——把 `beginLeg()` 注释掉，确认 4.1 转红。
+- [ ] **Step 5**：mutation——把 `beginLeg()` 注释掉，确认 4.1 转红；**另一格**：只在 continuation 调而 recovery 不调，确认 P2.2c 的 recovery 第二支转红。
 - [ ] **Step 6: 提交** → `fix(continuation): make the allocator frontier the sole wire-index authority`
 
 ## Task 4.3：跨格式核实（Responses / CC 续写腿）
@@ -110,4 +112,4 @@ test("POSITIVE CONTROL B: the harness reproduces the documented collision on the
 - [ ] `typecheck` + `test:fast` 绿；O-1/O-2/O-6 绿。
 - [ ] `rg -n "continuationOffset|wireDeliveredBlocks" src/` 零命中（或残留处已逐一交代）。
 - [ ] 4.1 **两条**主测试（零 anchor 续写腿 + 有 anchor 撞车）与**两个** positive control 双向都验证过。
-- [ ] `beginLeg()` 的 mutation 已确认能打红 4.1。
+- [ ] `beginLeg()` 的两格 mutation（全删 / 仅 recovery 漏调）分别打红 4.1 与 P2.2c recovery 支。

@@ -21,7 +21,7 @@
 ```mermaid
 graph TD
   P0["P0 基线与守卫<br/>字节等价 SHA oracle + producer 全序 harness + 现有 anchor 套件红绿基线"]
-  P1["P1 allocator 状态归位<br/>allocator 挂 AnchorState + anchorsOpened 结构性短路 + frame factory"]
+  P1["P1 allocator 状态归位<br/>allocator 挂 AnchorState + mapping-identity 短路 + frame factory"]
   P2["P2 分配临界区<br/>heartbeat/flush 并发缝：分配与写出同一 serializer"]
   P3["P3 remap 全站点接线<br/>driver buffered flush + retreat + live-reconcile 三处走 frontier"]
   P4["P4 continuation frontier 统一<br/>作废 anchorShift+continuationOffset 双偏移；撞车序列 oracle"]
@@ -57,12 +57,12 @@ graph TD
 
 | # | 契约 | 精确表述 | 权威来源 |
 |---|---|---|---|
-| C1 | 单调 frontier | 一个 generation 内，**所有** wire content block index（真实块、synthetic anchor、continuation 块）由**唯一** `AnchorIndexAllocator` 单调递增分配，永不复用、永不跳号 | 设计 §4.1 |
+| C1 | 单调 frontier | 一个 generation 内，**所有** wire content block index（真实块、synthetic anchor、continuation / recovery 块）由**唯一** `GenerationWireIndexAllocator` 单调递增分配，永不复用、永不跳号 | 设计 §4.1 |
 | C2 | maxOpen===1 | 任一时刻客户端轨至多一个 content block open；gap anchor 必须在下一个真实 `content_block_start` **之前**关闭 | 设计 §4.1；ADR D2 第 3 点（本计划扩其论域） |
-| **C3** | **恒等短路（2026-07-27 修订，原表述有 blocker）** | 短路判据是**映射恒等**，不是 anchor 计数：当且仅当「该腿的 upstream index 与 allocator 将分配的 wire index 相等」时，remap 才可返回**原 frame 对象**。等价的充分条件 = **无任何 synthetic 插入（`anchorsOpened()===0`）且非续写腿（`legBase===0`）**。**原表述「`anchorsOpened === 0` 即无条件短路」与 C4 冲突，会让无-anchor 续写腿复用 wire 0——已作废** | 审查 F6 提出、GPT plan review blocker 推翻并修订 |
+| **C3** | **恒等短路（2026-07-27 修订，原表述有 blocker）** | 短路判据是**映射恒等**，不是 anchor 计数：当且仅当该块的 `WireBlockMapping` 满足 `wireIndex === upstreamIndex` 时，remap 才可返回**原 frame 对象**。等价的充分条件 = **无任何 synthetic 插入且该块属主腿**。**原表述「`anchorsOpened === 0` 即无条件短路」与 C4 冲突，会让无-anchor 续写腿复用 wire 0——已作废** | 审查 F6 提出、GPT plan review blocker 推翻并修订 |
 | C4 | 双偏移作废 | `wireIndex(i) = i + anchorShift + continuationOffset` **作废**。frontier 是 wire index 的唯一权威，两个独立偏移不得继续叠加 | 审查 F5；设计 §4.4 第 3 点 |
-| C5 | 分配临界区 | index 分配必须与其帧写出在**同一个 serializer operation** 内完成（单一 owner API，见 P2.1）。「分配后再分别调用 `write*`」**不满足**本契约——那是队列外分配 + 两个 operation | 审查 F7；设计 §4.4 第 4 点；plan review major |
-| **C9** | **分配绑定成功写出（新增）** | frontier 只因**实际写到客户端 wire 的块**而前进。被丢弃的 attempt（`driver.ts:1408` 的重试门 `!committedAny` 保证其未写出任何帧）绝不推进 frontier；写失败（client-abort / write-error）后 frontier 的语义须由 P2.1 的 owner API 明确冻结 | 设计 §4.7「分配/写入不同步」；planner 核实重试门 |
+| C5 | 分配临界区 | index 分配必须与其帧写出在**同一个 serializer operation** 内完成（单一 owner API，见 P2「Interfaces」）。「分配后再分别调用 `write*`」**不满足**本契约——那是队列外分配 + 两个 operation。`beginLeg` 同样是 serializer command | 审查 F7；设计 §4.4 第 4 点；plan review round-1/2 major |
+| **C9** | **分配即事务（round-2 收紧）** | 分配是**预留**，在同一 operation 的帧成功写出前**对任何读者不可见**；写失败必须**同时回滚** frontier、anchor 计数、leg mapping 与 `openAnchorIndex`，不留 provisional 残留。frontier 只因**实际写到客户端 wire 的块**而前进（被丢弃的 attempt 由 `driver.ts:1408` 的 `!committedAny` 保证未写出真实块，但**可能已写出 anchor**——见 P2「recovery / leg 边界语义」） | 设计 §4.7；planner 核实重试门；plan review round-2 major |
 | C6 | anchor 绕 buffer | anchor 帧走 `sink.writeAnchor` 绕过 buffer，**不**进 `extractCommittedBlocks` 的续写合成 assistant 前缀（主腿已核实；**续写腿由 P5.4 独立复验**） | 审查「机械核对」第 6 条 |
 | C7 | 合成帧打标记 | 每个 anchor 帧进 forwarded 轨必带 `synthetic:"anchor"`，keepalive delta 带 `synthetic:"keepalive"`；绝不进上游原始轨 | ADR `2026-07-05-richest-data-flow` |
 | **C8** | **字节等价（措辞修订）** | 权威基线 = **P0 在实施 base 上捕获的 pre-change 字节**；P8 必须与该捕获物逐字节相同。历史值 `8691db71…2f6a0` / 1675 bytes 仅作 **provenance / sanity check**，不是跨 master 前进的永久需求。重捕前必须先证明 hook、请求、配置相同，并记录造成差异的 base change | GPT plan review minor |
@@ -82,14 +82,14 @@ graph TD
 
 这是**默认路径**（`stream_keepalive_mode: ping` + 从未 idle 升级），比「有 anchor」的撞车序列常见得多；而原 P4.1 的撞车 oracle 只构造了「pre-anchor + gap-anchor」的序列，**恰好漏掉这个分支**。
 
-**修订后的判据**：短路成立当且仅当**该腿的 upstream index 与将分配的 wire index 相等**（映射恒等）。等价充分条件 = `anchorsOpened() === 0` **且** `legBase === 0`（主腿）。于是：
+**修订后的判据**：短路成立当且仅当该块的 `WireBlockMapping` 满足 **`wireIndex === upstreamIndex`**（映射恒等）。判据只读**该块自己的不可变 token**，不读任何 ambient「当前腿」状态（P2 冻结的 token 模型，round-2 major）。于是：
 
-| 场景 | `anchorsOpened()` | `legBase` | 恒等？ | 行为 |
-|---|---|---|---|---|
-| 无 anchor 主腿（绝大多数请求） | 0 | 0 | 是 | **原对象直返**（O-6 字节等价成立） |
-| 无 anchor 续写腿 | 0 | >0 | **否** | **必须 remap**（blocker 修复点） |
-| 有 anchor 主腿 | >0 | 0 | 否 | remap |
-| 有 anchor 续写腿 | >0 | >0 | 否 | remap |
+| 场景 | 该块 mapping | 恒等？ | 行为 |
+|---|---|---|---|
+| 无 anchor 主腿（绝大多数请求） | upstream0 → wire0 | 是 | **原对象直返**（O-6 字节等价成立） |
+| 无 anchor 续写腿 | upstream0 → wire1 | **否** | **必须 remap**（blocker 修复点） |
+| 无 anchor recovery 腿（前面写过 anchor） | upstream0 → wire1 | 否 | remap（见 P2「recovery / leg 边界语义」） |
+| 有 anchor 主腿 / 续写腿 | upstream i → wire i+k | 否 | remap |
 
 **这条修订必须同时改三处**（不能只补一条测试）：README C3（本表）、P1.4 的 primitive 实现与测试、P4.1 的 oracle 覆盖面。O-6 的「引用相等」要求相应收窄为**只对无-anchor 主腿**成立。
 
@@ -107,7 +107,7 @@ C3 的来历是：上一轮**设计 reviewer** 提出「A 把死 remap 路径变
 | 4 | heartbeat vs flush 的分配并发缝 | P2.1 / P2.2 / **P2.2b**（P2×P6 交叉门）/ P2.3 | O-1 + FakeClock 让点 + C9 写失败不推进 + 连跑 15 次 |
 | 5 | per-gap latch（一次性 → 每 gap 重新武装） | P5.1 | 多 gap 场景断言 anchor 数 = gap 数 |
 | 6 | gap anchor 下一真实块前关闭 | P5.2 | O-2 协议状态完整性 + anchor stop **exactly-once**（终局站点两两组合） |
-| 7 | 文档后果（ADR D2 措辞 + Q5 公式作废 + **spec 状态同步**） | P8.4（**停点在写文件前**）/ **P8.4b** / P8.5 | 跨文档**分类审计**（无未标注作废的规范性消费者），非字面零命中 |
+| 7 | 文档后果（ADR D2 措辞 + Q5 公式作废 + **spec 状态同步**） | **P0.0 Step A**（spec 状态，开工硬门）/ P8.4（**停点在写文件前**）/ P8.5 | 跨文档**分类审计**（无未标注作废的规范性消费者），非字面零命中 |
 | 8 | 多轮空 anchor 历史回传 | P7.1 / P7.2（**β 为停点**）/ P7.3 | O-7 **exact tool-use / tool_result / 上游命中恰为 2**（`numTurns>=2` 已是 stall 签名，不可单用） |
 
 **计划自加的两项**（不在原 8 项承重表内，但同等对待）：

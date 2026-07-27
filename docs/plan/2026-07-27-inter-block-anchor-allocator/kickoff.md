@@ -30,7 +30,7 @@
 
 已知的三个前置事实（planner 实测 / 审查坐实，直接采信，别重新推）：
 
-1. **C3 短路的判据是「映射恒等」，不是「anchor 计数」**（首轮 plan review 的 blocker，已修订）。原表述「`anchorsOpened()===0` 即无条件短路」会让**无 anchor 的续写腿**跳过 remap、复用主腿已交付的 wire 0——这是**默认路径**（ping 模式 + 从未升级），比有 anchor 的撞车常见得多。修订后：短路当且仅当该腿 upstream index === 将分配的 wire index（等价条件 = 无 anchor **且** 主腿）。README「C3 的修订」有四场景表；P1.4 与 P4.1 各有对应的 red-first oracle。
+1. **C3 短路的判据是「映射恒等」，不是「anchor 计数」**（首轮 plan review 的 blocker，已修订）。原表述「`anchorsOpened()===0` 即无条件短路」会让**无 anchor 的续写腿**跳过 remap、复用主腿已交付的 wire 0——这是**默认路径**（ping 模式 + 从未升级），比有 anchor 的撞车常见得多。修订后：短路当且仅当该块的 WireBlockMapping 满足 wireIndex === upstreamIndex（判据只读该块自己的不可变 token，不读 ambient「当前腿」）。README「C3 的修订」有四场景表；P1.4 与 P4.1 各有对应的 red-first oracle。
    **附带教训**（写进 README 风险表 R9）：这条短路是上一轮设计 reviewer 建议、用户采纳的**风险缓解措施**，结果它自己引入了新缺陷——**为降风险而加的机制，本身要过同样的对抗检验**。
 
 2. **P6 修的是当前现网缺陷，不只是 A 的前置门**：生产 delivery-session sink 上，driver 的 boundary commit 序列 suspend → freeze → resume 会让心跳**永久死亡**（freezeHeartbeat 被映射为 closeHeartbeat，置 heartbeatStopped，而 resume 的守卫会因此直接 return）。raw sink 上不会——而现有 anchor 测试全用 raw sink，所以结构性测不到。**Responses HTTP 的 buffered 默认就是 true 且有 output_item 边界，故它在 bundled 默认配置下就受影响**（CC 默认也 true 但边界退化到只认 error 帧，正常响应结构性幸免；Anthropic 默认 false，开启 protect_streaming_generation 即中招）。因此 P6 **可以独立于 A 先行落地与合并**（路径 P0 → P6），它自身就有生产价值。
@@ -46,7 +46,7 @@
 
 | # | 分叉 | 何时停 |
 |---|---|---|
-| 1 | ~~P3.1 谁调 `allocateRealBlock`~~ | **已在计划期消解**——由 P2 的 owner API 冻结。仅当 owner 形状实施时站不住（如 live 腿装饰器接不进）才停下回报 |
+| 1 | ~~P3.1 谁调分配~~ / ~~S3 装饰器能否接入~~ | **均已在计划期消解**——owner API 由 P2 冻结；S3 的 port 可达性已由代码事实确认（round-2）。仅当 `DeliveryFrame` 在装饰器侧无法构造（缺 sequence/observedAt 来源）才停下回报 |
 | 2 | P4.3 删 `continuationOffset` 后跨格式破坏 | 先 grep + 跑测试确认**真实消费者**（现码只有 Anthropic handler 构造 `ContinuationHooks`）。确认是真消费者且冲突时才停；**不得**为不存在的消费者保留双权威 |
 | 3 | P6.2 终局 freeze/close 裁决 | 若两条 sink 的 `close()` 副作用不一致而无法统一。方向已定（freeze 可恢复 / close 永久），需现场核的是 `close()` 是否还关写通道；若不同，引入**窄的**永久停 heartbeat primitive，而非复用语义过宽的 close |
 | 4 | **P7.2 选择 β 载体**（新增） | α 不可行、必须改 anchor 载体时**必停**——β 改变客户端可见协议、最终文本与冻结的 carrier 形状，是产品/协议裁决 |
@@ -80,7 +80,7 @@ harness 必须同时支持 raw sink（makeSseSink）与生产 sink（makeDeliver
 ```text
 执行 plan-1-allocator-state.md。前置 P0 已完成。先读 README 的 C1/C3 两条契约与「C3 的修订」小节。
 
-目标：把已存在但未接线的 createAnchorIndexAllocator（src/lib/anthropic/keepalive-anchor.ts:49-62）挂进共享 AnchorState，把 AnchorHooks 的三个固定 index-0 帧改为 index-parameterized factory，并建立**恒等**短路 primitive。
+目标：把已存在但未接线的 createAnchorIndexAllocator（src/lib/anthropic/keepalive-anchor.ts:49-62，U1 内重命名为 createGenerationWireIndexAllocator）挂进共享 AnchorState，把 AnchorHooks 的三个固定 index-0 帧改为 index-parameterized factory，并建立**恒等**短路 primitive。
 
 本相位**不改任何 remap 站点**（那是 P3）。结束时三处 remap 仍走旧的固定 +1。
 
@@ -102,13 +102,17 @@ AnchorState.allocator 设为**必填**而非可选——让类型系统逼出全
 
 目标：定义并落地**唯一 owner API**，使 index 分配与其帧写出在**同一个 serializer operation** 内完成。
 
-**这不是「描述意图」而是要先定可执行接口**：delivery/serializer.ts 的 enqueue 被 session 私有持有，ClientSink.write* 各自 enqueue 一次。所以「先 allocate 再分别 writeAnchor/writeKeepalive」是**队列外分配 + 两个 operation**，既不满足 C5 也挡不住 TOCTOU。plan 已冻结 owner API 形状（allocateAndWriteAnchor / allocateAndWriteRealBlock / beginLeg）与三条语义要点（失败即不推进 = C9；delta/stop 不分配只查 mapping；ClientSink 不再暴露裸分配入口）。
+**这不是「描述意图」而是要先定可执行接口**：delivery/serializer.ts 的 enqueue 被 session 私有持有，ClientSink.write* 各自 enqueue 一次。所以「先 allocate 再分别 writeAnchor/writeKeepalive」是**队列外分配 + 两个 operation**，既不满足 C5 也挡不住 TOCTOU。plan 已冻结 owner API 形状（allocateAndWriteAnchor / withAllocatedRealBlock / beginLeg）与三条语义要点（失败即不推进 = C9；delta/stop 不分配只查 mapping；ClientSink 不再暴露裸分配入口）。
 
 **P6 依赖**：P6 改变「boundary commit 后 heartbeat 是否继续入队」，直接扩大本相位竞态的可达状态。若 P6 已独立合并 master，先把 worktree rebase/merge 到含 P6 的 master 再做 P2——否则会在旧 heartbeat 生命周期上写竞态 oracle，合并后测试语义失效。Task 2.2b 是专门的交叉门（其场景在 P6 之前不可达）。
 
-关键要求：并发 oracle 必须有**正样本对照**——注入一个「先 allocate 再分别 write」的 fake owner（= 非法形状），证明 harness 真能咬住队列外分配。若主测试一上来就绿，**不得**据此认为安全，调整 harness 直到正样本对照能咬住。时序测试**连跑 15 次**证确定性。另需一条 C9 测试：write 失败不推进 frontier。
+关键要求：
+- 并发 oracle 必须有**正样本对照**——注入一个「先 allocate 再分别 write」的 fake owner（= 非法形状），证明 harness 真能咬住队列外分配。若主测试一上来就绿，**不得**据此认为安全，调整 harness 直到正样本对照能咬住。时序测试**连跑 15 次**。
+- **C9 已收紧为事务语义**（round-2 major）：分配是**预留**，帧成功写出前对任何读者不可见；失败必须**同时回滚** frontier、anchor 计数、leg mapping、openAnchorIndex。只测「下次拿同一 index」不够——还要断言**失败块的 mapping 查不到**（Task 2.2c）。
+- **recovery 腿语义已冻结**：所有 upstream round（continuation **与** recovery）都调 beginLeg(kind)，不为 continuation 特判。两支 oracle：无 anchor 的 recovery → wire0 恒等；**写过 pre-content anchor 后的 recovery → wire1 必须 remap**（后者正是「忘调也能靠巧合正确」的反例锁）。
+- **beginLeg 是 serializer command**（`Promise<LegToken>`），在前腿全部成功写出后、新腿任一分配前建立 fence；delta/stop 按**不可变 WireBlockMapping token** 查，**不查 ambient「当前腿」**（Task 2.2d）。
 
-**P3.1 的原停点（谁调 allocateRealBlock）已由本相位的 owner API 消解**——答案是 delivery session 是唯一 owner，driver flush 与 live-reconcile 各自在自己的真实块 start 帧上调它。仅当该形状实施时站不住才停下回报。
+**P3.1 的原停点（谁调分配）已由本相位的 owner API 消解**——delivery session 是唯一 owner，driver flush 与 live 装饰器各自在自己的真实块 start 帧上调 withAllocatedRealBlock。S3 的可达性也已确认，不再是停点。
 
 裁判轴：长远正确 + 完整（非 ROI/YAGNI）。
 ```
@@ -125,9 +129,9 @@ AnchorState.allocator 设为**必填**而非可选——让类型系统逼出全
 
 **原 plan 只枚举了 remap、漏了 allocate**（审查坐实）：realBlockOffset 只有在开块时记录过 mapping 才能 remap 后续 delta/stop，仅把硬编码 1 换成 resolver **不会自动创建 mapping**，S2/S3 会读到缺失或旧 mapping。故每条腿都必须具名回答：start 帧谁分配、delta/stop 如何查同一 leg 的 mapping、同一块不会重复分配。
 
-**live 腿不能漏**，且注意它的结构：reconcileLiveFrame 是**纯函数**（docstring 明写），不能在里面做 wire 写 —— 分配由装饰器 makeReconcilingSink 经 owner API 完成，remap 仍在纯函数内。若装饰器拿不到 delivery session，**停下回报**（这是 P2 owner 形状的真实性检验）。
+**live 腿（S3）已按 round-2 major 重做，读 P3 的「S3 专节」**：① port 可达性已由代码事实确认（makeReconcilingSink 的 inner 就是 deliveryBySink 的 key），**不再是停点**；② 真正的冲突在 provenance——reconcileLiveFrame 对首个真实 start 返回两帧 [stop, remapped]，装饰器靠**位置**区分（frames[0] 走 writeAnchor 打 synthetic 标记）。故 owner API 的 callback 返回**带 provenance 的 DeliveryFrame**，一个 transaction 内按 provenance 路由，不再靠位置猜，也不拆成两次 enqueue。
 
-**测试纪律**：多 anchor 状态必须由**真实的 gap 静默**驱动（FakeClock 推进过 deadline），**禁止**手工 allocateAnchor() 预置——那会让测试准备替实现完成关键动作，生产漏分配照样绿。
+**测试纪律（两轮 review 综合，别搞反）**：被测动作 = **真实块的分配 + remap**，必须 100% 由生产路径完成，**禁止**手工推进 allocator。但 anchor 这个**前置 wire 状态**由测试经 **P2 的生产 owner API** `allocateAndWriteAnchor` 落下——**不是**等 heartbeat：gap anchor 要到 P5 才开放，等它会让 P3 的红绿门根本不可满足（round-2 blocker）。P3 文件头部有完整的「为何不会重引入假绿」论证表，先读它。
 
 必做：**6 格** mutation 矩阵 = 三条腿 × 两个维度（A：remap 改回硬编码 1；B：**删除该腿的 allocate 调用**）。维度 B 专门咬「mapping 从未被创建」的漏接线，原 plan 完全没有它。每格都要记录是哪条测试转红；空格 = 该维度无覆盖，补测试。
 
@@ -236,7 +240,7 @@ tool_use 特别注意：CC 是 eager per-block 执行（每个 content_block_sto
 3. O-6 短请求字节等价 —— 必须与 **P0 在实施 base 捕获的字节** 逐字节相同（`cmp`，不是比对三天前的历史 SHA）。不同就是 C3 恒等短路失效的信号，回 P1.4 查，不是「可接受的小变化」。
 
 文档后果（承重项 7）：
-- **Task 8.4b（先做）**：同步冻结 spec 的**状态行**——它目前仍写「设计候选，待用户裁决」，与本 plan 自称「已冻结、用户已选 A」矛盾。只改状态行 + §9 措辞，**不动设计正文**。这是记录既有裁决，不需再次征求同意。
+- **spec 状态同步已前移到 P0.0 Step A**（开工硬门，不在 P8）——P8 这里只做「已实施」注解。
 - **Task 8.4（ADR D2）：停点在写文件之前**。只产出逐段 replacement 草案 → 回主会话取得用户明确同意 → 获批后才改 docs/decisions/2026-07-22-continuation-retry-sequential-anchor.md。未获批时 P8 其余验收照常，但**不得宣称文档收口**。
 - 作废 Q5 的 `wireIndex(i) = i + anchorShift + continuationOffset`：验收判据是**分类审计**（先用宽 pattern `rg -n "wireIndex|anchorShift|continuationOffset" docs/ src/` 列命中，逐条分为「已作废历史记录」或「仍具规范性」，要求**无未标注作废的规范性消费者**），**不是字面零命中**——那不可能成立（本 plan 自己就会命中）。Q5 正文的表/公式/示例/标题都要同步，不只是加修订记录。
 - backlog 登记：J（长 text 块 idle 分块）+ B 的复活条件 + 「空 anchor 对真 GHC 的可接受性未证明」（O-7 的范围限定）。

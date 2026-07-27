@@ -54,7 +54,7 @@ test("POSITIVE CONTROL: a deliberately duplicated index DOES get reordered by th
 > **⚠ 停点位置（plan review major 修订）**：原方案 Step 1/2 直接改 ADR、Step 3 才说「交主会话呈用户拍板」，等于让 executor 在未获同意前先改权威决策文件。**ADR 记录用户决策，改它必须先获用户明确同意**。故停点前移到**写文件之前**。
 
 - [ ] **Step 1**：**不修改任何文件**，只生成逐段 replacement 草案（老文本 → 新文本的对照），内容涵盖：
-  - D2 第 3 点：论域扩为「**真实块 + 合成 anchor 块由单一 generation-scoped frontier 严格顺序分配**」；补「wire index 的唯一权威是 `AnchorIndexAllocator`；任何独立偏移量（历史上的 `anchorShift` / `continuationOffset`）已作废」。
+  - D2 第 3 点：论域扩为「**真实块 + 合成 anchor 块由单一 generation-scoped frontier 严格顺序分配**」；补「wire index 的唯一权威是 `GenerationWireIndexAllocator`；任何独立偏移量（历史上的 `anchorShift` / `continuationOffset`）已作废」。
   - D2 第 2 点：「当前按需升级只覆盖 pre-content … >300s 完整覆盖等待方案 A」→「已由方案 A 覆盖（本 plan）」。
   - 「后果」小节：「首块提交后的 >300s 客户端无-open窗口仍会断流，解除条件是方案 A 落地」标为**已解除**。
   - D2 修订记录追加本次变更 + 日期 + 指向本 plan。
@@ -62,25 +62,12 @@ test("POSITIVE CONTROL: a deliberately duplicated index DOES get reordered by th
 - [ ] **Step 3**（获批后）：按草案修改 ADR 并提交 → `docs(adr): extend D2 sequential-index invariant to synthetic blocks under a single frontier`
 - [ ] **未获批时**：P8 的其余验收照常完成，但**不得宣称文档收口**；在 P8.8 收口清单标注该项待批。
 
-## Task 8.4b：冻结 spec 的状态同步（**plan review major 新增**）
-
-> 审查坐实的矛盾：本 plan 与 kickoff 都称该 spec 是「冻结的唯一权威、用户已裁决选 A」，但 **spec 文件头部仍写「设计候选，已按两轮异模型评审修订，待用户裁决」**。执行者会同时读到两个相反状态，而「冻结契约」只存在于计划自述、不在其权威来源中。
->
-> 这必须在**plan 合并/开工之前**闭合，不能等 P8.6 的「已落地」注解——那是实现完成后的事，解决不了开工时的状态矛盾。
-
-- [ ] **Step 1**：更新 `docs/spec/2026-07-27-inter-block-keepalive-carrier.md` 的**状态行**：由「设计候选，待用户裁决」改为「**已裁决：采用方案 A**（用户 2026-07-27）；实施计划见 `docs/plan/2026-07-27-inter-block-anchor-allocator/`」，并记录裁决日期。
-- [ ] **Step 2**：**不改设计正文**（方案对比、证据、否决理由全部保留原样）——本 task 只同步「决策状态」这一个事实。
-- [ ] **Step 3**：同步 §9「推荐与落地顺序」的措辞，使其反映「A 已被选定并进入实施」而非「推荐 A」。
-- [ ] **提交** → `docs(spec): record that option A was selected and is now in implementation`
-
-> **注意**：本 task 与 8.4 不同——它记录的是**用户已经做出的裁决**（有据可循），不是新的决策，故**不需要**再次征求同意。若执行时发现裁决的范围与本 plan 的表述有出入，停下回报。
-
 ## Task 8.5：Q5 公式作废（承重项 7）
 
 - [ ] **Step 1**：`docs/plan/2026-07-22-max-tokens-continuation/plan-Q5-three-way-overlap.md` 追加 **round-3 修订记录**：
   - 明确作废 `wireIndex(i) = i + anchorShift + continuationOffset`；
   - 说明原因：A 之下 `anchorShift` 不再是 {0,1} 的二值量（多 anchor 时任意大），且 `continuationOffset` 已被 frontier 取代——**两个独立偏移不能继续叠加**；
-  - 给替代记账表述：「wire index 由 generation-scoped `AnchorIndexAllocator` 单调分配；任一块（真实/anchor/continuation）的 wire index = 其 `allocate*` 调用时的 frontier 值。不存在可用公式从上游 index 推导 wire index——必须查 allocator 的记录。」
+  - 给替代记账表述：「wire index 由 generation-scoped `GenerationWireIndexAllocator` 单调分配；任一块（真实/anchor/continuation/recovery）的 wire index = 其 `allocate*` 调用时的 frontier 值。不存在可用公式从上游 index 推导 wire index——必须查 allocator 的记录。」
   - 该文件的时序图/示例序列相应更新（`anchor@0 → real@1 → continuation@2` 这类举例仍成立，但推导路径改为 frontier）。
 - [ ] **Step 2**：**分类审计而非字面零命中**（plan review minor 修订）。原判据 `rg -n "anchorShift|i \+ 1 \+ continuationOffset" docs/ src/` **不可能成立**——它会命中 P8.5 自己新增的 round-3 历史说明、本 plan 的 README/kickoff、以及旧评审报告里的引用；且它漏掉 `wireIndex = i + anchorShift + continuationOffset` 整式、空格/反引号变体、以及只写 `continuationOffset` 的规范性表述。正确做法：
   1. 用**更宽**的 pattern 生成命中清单：`rg -n "wireIndex|anchorShift|continuationOffset" docs/ src/`；
@@ -134,12 +121,12 @@ test("POSITIVE CONTROL: a deliberately duplicated index DOES get reordered by th
 
 | oracle | 结果 | 证据位置 |
 |---|---|---|
-| O-1 单调无复用 | _待填_ | |
-| O-2 maxOpen===1 | _待填_ | |
+| O-1 wire index 单调、无复用、无跳号 | _待填_ | |
+| O-2 块协议状态完整性（delta/stop 归属 + 终局无悬挂） | _待填_ | |
 | O-3 real@0→anchor@1→real@2 | _待填_ | |
 | O-4 真 SDK 顺序 | _待填_ | |
 | O-5 真 CC >300s（含对照组） | _待填_ | |
-| O-6 字节等价 SHA | _待填_ | |
-| O-7 真 CC numTurns>=2 | _待填_ | |
+| O-6 短请求字节等价（对比 P0 base 捕获物） | _待填_ | |
+| O-7 exact tool-use / tool_result 两轮回传 | _待填_ | |
 | O-8 心跳跨 commit 存活（Anthropic + Responses HTTP） | _待填_ | |
 | O-9 续写腿 × gap anchor 交叉缝 | _待填_ | |

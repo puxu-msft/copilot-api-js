@@ -9,15 +9,62 @@
 
 更隐蔽的是：原 P3.1 的测试用「手工推进 allocator 到多 anchor 状态」，**测试准备替实现完成了关键动作**，因此即使生产路径漏了分配也照样绿。
 
-**故本相位改为「分配 + remap」的完整矩阵**，每条腿都必须具名回答三个问题：
+## plan review round-2 blocker：P3 的红绿门曾不可满足（已重切）
+
+第二轮审查坐实一个**循环依赖**：P3 原本要求「多 anchor 状态必须由**真实 gap 静默**驱动」，但 gap anchor 要到 P5 才开放（`semanticBlockCount===0` 门仍在、per-gap latch 与 gap injector 都不存在），而 DAG 又强制 `P3→P5`。于是 P3 阶段生产路径**最多只能有一个 pre-content anchor**，offset 恒为 1——把 remap 改回硬编码 `1` 结果完全相同，**mutation 不会红**，6 格矩阵形同虚设。
+
+### 重切方案：测试用 **P2 的生产 owner API** 显式落 anchor，真实块仍全由生产路径分配 + remap
+
+P3 的测试**不**等 heartbeat 决定注入，而是直接调用 `WireBlockAllocationPort.allocateAndWriteAnchor`——那是 **P5 的 heartbeat 将来要调的同一个生产 API**，经同一个 serializer、真写到 sink。测试只负责「让 wire 上出现第 N 个 anchor」这一个触发动作，**真实块的分配与 remap 一律由生产代码（driver flush / retreat / live 装饰器）完成，测试一行都不碰**。
+
+产生 offset >= 2 的最小合法序列（每个 anchor 各自 open→close，**不违反 C2**）：
+
+```text
+anchor@0（测试经 owner API 落）→ real@1（上游0，生产分配）
+anchor@2（测试经 owner API 落）→ real@3（上游1，生产分配）→ offset = 2
+```
+
+把任一站点的 remap 改回硬编码 `1`，第二个真实块会落 wire 2（已被 anchor 占用）而非 wire 3 → **O-1 转红**。维度 B（删 allocate 调用）则让 mapping 从未创建 → 同样红。
+
+### 为什么这不会重新引入假绿（**必须论证，审查明确要求**）
+
+| 关注点 | 处置 |
+|---|---|
+| 会不会像「手工推进 allocator」那样，测试替实现完成了关键动作？ | **不会**。被测的动作是**真实块的分配 + remap**，它 100% 由生产路径执行；测试只提供 anchor 这个**前置 wire 状态**。若 driver 漏调分配、或 remap 读错 mapping，测试照红。 |
+| 这算不算「测试专用后门」？ | **不算**。`allocateAndWriteAnchor` 是 P2 冻结的**生产** owner API，P5 的 heartbeat 走的就是它。测试与生产的差别只在**谁触发**，不在**走哪条路径**。故无需额外守卫，既有架构守卫（生产只能经 owner API）已足够。 |
+| 「谁触发 anchor」这一环由谁证明？ | 由 **P5 的 O-3** 证明：heartbeat 在真实 gap 静默下确实调用同一 owner API。P3 证「给定 anchor 已在 wire 上，三腿的 index 记账正确」，P5 证「anchor 会在该出现的时候出现」。**两者合起来无缺口**，且各自都有可满足的红绿门。 |
+| 会不会造成计划自己禁止的半坏态？ | **不会**。P5 的门在 P3 期间**保持不动**，生产路径此时仍最多一个 anchor。多-anchor 状态只存在于测试进程内，不是可交付的生产行为。 |
+
+**若实施中发现 owner API 无法作为测试 seam 驱动某一腿**（例如该腿的 sink 拿不到 port），则退路是：把 P3 的三站点与 P5 的开门**合并为一个原子 commit**，提交前一次性过全部 oracle——**不得**维持「分相位但门不可满足」的现状。这条退路**须停下回报**后再走，因为它改变相位边界。
 
 | 腿 | start 帧谁分配？ | delta / stop 如何查 mapping？ | 如何保证同一块不重复分配？ |
 |---|---|---|---|
-| **S1** driver buffered flush（`driver.ts:1185`） | flush 循环内 `anchor.isContentBlockStart(frame)` 为真时经 owner API `allocateAndWriteRealBlock(upstreamIndex, …)` | 非 start 帧走 `resolveRemappedFrame`，查**当前腿**的 `realBlockOffset(upstreamIndex)` | 一个 upstream 块只有一个 start 帧；且分配后 mapping 已存在，重复分配会被 Task 3.4 的守卫测试咬住 |
-| **S2** driver retreat（`driver.ts:1242`） | retreat 写穿循环内同样在 start 帧上调 owner API（**原 plan 漏此步**） | 同 S1 | 同 S1；另需注意 retreat 前已 flush 的块**不得**再分配一次（buffer 已清空，结构上不会重入——**须有测试**） |
-| **S3** live-reconcile（`live-reconcile.ts:141`） | `reconcileLiveFrame` 见到真实 `content_block_start` 时分配（**原 plan 漏此步**）。注意它是**纯函数 + 装饰器**结构，分配是副作用 → 由装饰器 `makeReconcilingSink` 在写出前经 owner API 完成 | 同 S1 | live 腿逐帧透传，一个块一个 start |
+| **S1** driver buffered flush（`driver.ts:1185`） | flush 循环内 `anchor.isContentBlockStart(frame)` 为真时经 owner API `withAllocatedRealBlock(upstreamIndex, …)` | 非 start 帧走 `resolveRemappedFrame`，按该块的 **leg token + mapping** 查 | 一个 upstream 块只有一个 start 帧；重复分配会被 3.4 维度 B 的 mutation 咬住 |
+| **S2** driver retreat（`driver.ts:1242`） | retreat 写穿循环内同样在 start 帧上调 owner API（**原 plan 漏此步**） | 同 S1 | 同 S1；retreat 前已 flush 的块**不得**再分配（buffer 已清空，结构上不会重入——**须有测试**） |
+| **S3** live-reconcile（`live-reconcile.ts:141`） | 装饰器 `makeReconcilingSink` 经 `getDownstreamDeliverySession(inner)` 取 port，在**一个 transaction** 内完成「close-off stop + 分配 + remapped start」（见下方 S3 专节） | 同 S1 | live 腿逐帧透传，一个块一个 start |
 
-**若某条腿的结构无法接入 owner API**（例如 S3 的纯函数边界），**停下回报**——这是 P2 owner 形状的真实性检验，不是实现细节。
+### S3 专节（**round-2 major：原方案站不住，已重做**）
+
+原方案写「`reconcileLiveFrame` 是纯函数 → 分配归装饰器」，方向对但**与冻结的 owner API 形状不兼容**。planner 复核了三条代码事实：
+
+1. **port 可达**（reviewer 结论成立）：`makeDeliverySseSink` 返回 `delivery.clientSink`，`deliveryBySink` 正以它为 key（`session.ts:262`）；而 `makeReconcilingSink(inner, …)` 的 `inner` **就是**这个原 delivery sink（`handler-v4.ts:1206-1207`）。故装饰器可经 `getDownstreamDeliverySession(inner)` 拿到 session。**不需要**让 wrapped sink 再注册一次。
+2. **真正的冲突在 provenance**：`reconcileLiveFrame` 对首个真实 start 返回**两帧** `[stopFrame, remapped]`（`live-reconcile.ts:139-141`），且装饰器靠**位置**区分它们——`frames[0]` 走 `writeAnchor`（打 `synthetic:"anchor"`），其余走 `write`（不打标）（`:171-174`）。而原 `allocateAndWriteRealBlock(upstreamIndex, build)` 的 `build` 只返回 `ReadonlyArray<ClientFrame>`，**丢失 provenance**，owner 无从知道哪帧该走哪个底层 port。
+3. **拆成两次写会破坏原子性**：若装饰器先单独写 stop 再调 port 写 start，就是**两个 serializer operation**，heartbeat 可插进中间——正是 C5 要消灭的形状。（注：今天的装饰器确实是两次 `await`，但今天没有分配动作，所以只是顺序问题；引入分配后它就成了 TOCTOU。）
+
+**重做后的 API 形状**（P2「Interfaces」是权威定义，此处只摘要其对 S3 的意义）：
+
+```ts
+withAllocatedRealBlock(
+  upstreamIndex: number,
+  build: (ctx: { mapping: WireBlockMapping }) => ReadonlyArray<DeliveryFrame>,
+): Promise<WireBlockMapping | undefined>
+```
+
+关键点：callback 返回**带 provenance 的 `DeliveryFrame`**（而非裸 `ClientFrame`），owner 据此把 close-off 路由到 `writeAnchor`、真实帧路由到 `write`，**不再靠数组位置猜**；`ctx.mapping` 是该块的**不可变 token**，其 `remap()` 在恒等时返回原对象（C3）。
+
+S1/S2 用它时 callback 只返回一帧（remapped start，provenance = 真实帧）；S3 用它时按需返回两帧（close-off stop 带 `syntheticKind:"anchor"` + remapped start）。**三腿共用同一个 owner API，无特例分支。**
+
+> **S3 不再有「拿不到就停」的模糊退路**——port 可达性已由上述代码事实确认，S3 是冻结的必做范围。仅当实施时发现 `DeliveryFrame` 的构造在装饰器侧不可行（例如缺 sequence/observedAt 来源）才停下回报。
 
 ## 三个站点（master 精确行号）
 
@@ -40,21 +87,26 @@
 
 ## Task 3.1：S1 driver buffered flush（分配 + remap）
 
-> **测试纪律（plan review major）**：断言必须建立在**生产路径自己完成的分配**上。原方案「手工推进 allocator 到多 anchor 状态」会让测试准备替实现完成关键动作，即使生产漏了分配也照样绿——**禁止**。多 anchor 状态必须由**真实的 gap 静默**驱动出来（FakeClock 推进过 deadline），不是手工 `allocateAnchor()`。
+> **测试纪律（两轮 review 综合）**：被测动作 = **真实块的分配 + remap**，必须 100% 由生产路径完成——**禁止**手工推进 allocator（那会让测试准备替实现干活，生产漏分配照样绿）。但 anchor 这个**前置 wire 状态**由测试经 **P2 的生产 owner API** `allocateAndWriteAnchor` 落下（理由与防假绿论证见本文件头部「round-2 blocker」小节）——**不是**等 heartbeat，因为 gap anchor 要到 P5 才开放，等它会造成红绿门不可满足。
 
-- [ ] **Step 1: 写失败测试** —— 多 anchor 场景，全部状态由生产路径产生
+- [ ] **Step 1: 写失败测试** —— offset >= 2 的场景，真实块全由生产路径分配 + remap
 
 ```ts
 // tests/pipeline/remap-sites-mutation.it.test.ts
-test("S1 buffered flush allocates and remaps real blocks itself (no hand-primed allocator)", async () => {
-  // gated upstream + FakeClock：真实块 → 过 deadline 静默（生产路径开 gap anchor）→ 第二个真实块
-  // 断言 assertMonotonicWireIndices(frames) 且第二块落 frontier 值
-  // 前置断言：allocator 的 anchorsOpened() 由生产路径推进（>0），非测试手工设置
+test("S1 buffered flush allocates and remaps real blocks itself at frontier offset >= 2", async () => {
+  // 前置（测试经生产 owner API 落 anchor，不碰 allocator 内部）：
+  //   await port.allocateAndWriteAnchor(...)         → anchor@0
+  //   驱动上游真实块（上游 index 0）                  → 生产分配 wire@1
+  //   await port.allocateAndWriteAnchor(...)         → anchor@2
+  //   驱动上游真实块（上游 index 1）                  → 生产分配 wire@3   ← offset 2
+  assertMonotonicWireIndices(frames)   // 硬编码 +1 会让第二块落已被占用的 wire@2 → 红
+  assertBlockProtocolState(frames)
+  // 前置断言：两个 anchor 确实在 wire 上（证明场景真的建立起来了）
 })
 ```
 
 - [ ] **Step 2**：跑，红。
-- [ ] **Step 3**：实现——start 帧经 owner API `allocateAndWriteRealBlock`；非 start 帧走 `resolveRemappedFrame`。
+- [ ] **Step 3**：实现——start 帧经 owner API `withAllocatedRealBlock`；非 start 帧走 `resolveRemappedFrame`。
 - [ ] **Step 4**：跑，绿；`anchor-multiblock-lifecycle.it.test.ts` 预期仍绿（pre-content-only 场景 offset 仍是 1）。
 - [ ] **Step 5: 提交** → `refactor(driver): allocate and remap buffered-flush blocks via the frontier owner`
 
@@ -72,22 +124,27 @@ test("S1 buffered flush allocates and remaps real blocks itself (no hand-primed 
 
 > **为什么 live 腿仍要接**：块级 buffered 是既定终态，但 ① 迁移期 live 仍是当前生产默认（`protectStreamingGeneration: false`）；② retreat 之后的续流走 live 写穿；③ 留一个算 `+1` 的站点就是 C4 的反例，未来必然被误读。项目「无向后兼容负担 / 不留双轨包袱」。
 
-- [ ] **Step 1: 写失败测试**：live 路径下多 anchor 场景的 index，**且 delta/stop 必须落在同一 wire index 上**（O-2 升级后的协议状态断言会咬住 orphan delta）。
+- [ ] **Step 1: 写失败测试**（**用生产 delivery sink，非 raw sink**）：live 路径下 offset >= 2 的场景（anchor 经 owner API 落，真实块由生产路径分配 + remap），断言：
+  - `assertMonotonicWireIndices` + `assertBlockProtocolState`（delta/stop 必须落在同一 wire index，orphan delta 会被咬住）；
+  - **close-off stop 带 `synthetic:"anchor"` 标记**，remapped start **不带**标记（C7；这是本 task 最容易在重构中丢的东西）；
+  - close-off 与 real start **在同一个 serializer transaction 内**——用一个在两帧之间尝试插入 keepalive 的探针证明它插不进去。
 - [ ] **Step 2**：跑，红。
-- [ ] **Step 3**：实现——分两半：
-  - **分配**（副作用）：`reconcileLiveFrame` 是**纯函数**（其 docstring 明写 "PURE except for the state-flag flips"），不能在里面做 wire 写。故分配由装饰器 `makeReconcilingSink`（`live-reconcile.ts:163`）在写出前经 owner API 完成。
-  - **remap**（纯变换）：`reconcileLiveFrame` 内把 `hooks.remap(frame, 1)` 换成 `resolveRemappedFrame(frame, state.allocator, hooks)`。它已收 `state: AnchorState`（P1.3 起 allocator 在其中），**无需改签名**。
+- [ ] **Step 3**：实现——
+  - **取 port**：装饰器经 `getDownstreamDeliverySession(inner)` 拿 session 的 allocation port。`inner` 就是原 delivery sink（`handler-v4.ts:1206-1207` → `makeDeliverySseSink` 返回的 `delivery.clientSink`，正是 `deliveryBySink` 的 key，`session.ts:262`），故可达。
+  - **一个 transaction 出两帧**：装饰器在见到真实 `content_block_start` 时调 `withAllocatedRealBlock(upstreamIndex, ({ remap }) => [...])`，callback 返回**带 provenance 的 `DeliveryFrame`**：需要 close-off 时返回 `[anchorStop(synthetic:"anchor"), remap(start)(真实)]`，否则只返回 `[remap(start)]`。owner 按 provenance 路由到 `writeAnchor` / `write`，**不再靠数组位置猜**。
+  - **`reconcileLiveFrame` 保持纯函数**：它继续负责「要不要 close-off」+ remap 变换，只是 remap 改用绑定到本块 mapping 的 `resolveRemappedFrame`；**副作用（分配 + 写）全在装饰器的 transaction 内**。
+  - **非 start 帧**（delta/stop/终止符）仍走装饰器的普通 write 路径，remap 按该块 mapping 查。
   - **注意 `hooks` 是 `ReconcileHooks` 不是 `AnchorHooks`**：核实两者 `remap` 签名一致后直接复用；若不一致，扩 `ReconcileHooks` 而非在 live 侧另写判断逻辑（单一权威）。
-  - **若装饰器结构无法接入 owner API**（例如它拿不到 delivery session），**停下回报**——这是 P2 owner 形状的真实性检验。
 - [ ] **Step 4**：跑，绿 + `live-reconcile-collision.it.test.ts` / `live-post-commit-anchor-closeoff.http.test.ts` 回归（结构断言按需改写）。
-- [ ] **Step 5: 提交** → `refactor(live-reconcile): allocate and remap live blocks via the frontier owner`
+- [ ] **Step 5**：mutation——把两帧拆成两次独立写（今天的形状），确认「transaction 内不可插入」的断言转红。
+- [ ] **Step 6: 提交** → `refactor(live-reconcile): allocate, close off and remap live blocks in one wire transaction`
 
 ## Task 3.4：退役 P1 的桥接断言 + **双维** mutation 矩阵
 
 - [ ] **Step 1**：把 P1 的 `anchor-allocator-bridge.it.test.ts` 从「offset 恒等于固定 1」改写为「offset 等于 frontier 记账值」（**改写非删除**，它现在锁的是 C4）。
 - [ ] **Step 2**：建 **6 格** mutation 矩阵——三条腿 × 两个维度（plan review major：只 mutate remap 不足以证明分配已接线）：
   - **维度 A（remap）**：把该站点的 `resolveRemappedFrame` 改回硬编码 `anchor.remap(frame, 1)`。
-  - **维度 B（allocate）**：**删除**该站点的 `allocateAndWriteRealBlock` 调用（保留 remap）。这一维专门咬「mapping 从未被创建」的漏接线——原 plan 完全没有它。
+  - **维度 B（allocate）**：**删除**该站点的 `withAllocatedRealBlock` 调用（保留 remap）。这一维专门咬「mapping 从未被创建」的漏接线——原 plan 完全没有它。
   - 每格逐一确认**至少一条测试转红**，并记录是哪条。某格不打红 → 该维度无覆盖，补测试，不得跳过（`plan 红绿预测可能错、执行期真跑验证`）。
 - [ ] **Step 3**：把矩阵结果写进本文件下方表。
 - [ ] **提交** → `test(anchor): 6-cell mutation matrix over allocation and remap on all three legs`

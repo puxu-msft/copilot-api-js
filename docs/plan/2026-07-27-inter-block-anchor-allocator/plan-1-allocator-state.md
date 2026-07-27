@@ -1,6 +1,6 @@
 # P1 — allocator 状态归位（frontier 成为唯一权威）
 
-> **前置**：P0。**产出**：`AnchorIndexAllocator` 挂进共享 `AnchorState`，`AnchorHooks` 的三个固定-index 帧改为 factory，**恒等**短路 primitive 就位（C3 已按 plan review blocker 修订）。
+> **前置**：P0。**产出**：`GenerationWireIndexAllocator` 挂进共享 `AnchorState`，`AnchorHooks` 的三个固定-index 帧改为 factory，**恒等**短路 primitive 就位（C3 已按 plan review blocker 修订）。
 > **本相位不改任何 remap 站点**（那是 P3）——本相位结束时三处 remap 仍走旧的固定 `+1`，且**必须与 allocator 记账一致**（commit invariant，见下方「等价桥接」）。
 
 ## Files
@@ -14,34 +14,33 @@
 ## Interfaces
 
 - Produces:
-  - `AnchorIndexAllocator.anchorsOpened: () => number`（**诊断 / 断言用计数**。注意：**它不是 C3 短路判据**——判据是映射恒等 `realBlockOffset(i) === 0`，见 Task 1.4 与 README「C3 的修订」）
-  - `AnchorState.allocator: AnchorIndexAllocator`（**必填**，非可选——类型系统逼出全部构造点，见 `feedback-fix-all-comparison-sites` 的正向版）
+  - `GenerationWireIndexAllocator.anchorsOpened: () => number`（**诊断计数，仅供断言/遥测**。它**不是** C3 短路判据——判据是该块 `WireBlockMapping` 的映射恒等，见 Task 1.4 与 README「C3 的修订」）
+  - `AnchorState.allocator: GenerationWireIndexAllocator`（**必填**，非可选——类型系统逼出全部构造点，见 `feedback-fix-all-comparison-sites` 的正向版）
   - `AnchorHooks.startFrame: (index: number) => ClientFrame`（同 `stopFrame` / `deltaFrame`）
-- Consumes: 既有 `createAnchorIndexAllocator`（`keepalive-anchor.ts:49-62`，已 landed 未接线）
+- Consumes: 既有 `createAnchorIndexAllocator`（`keepalive-anchor.ts:49-62`，已 landed 未接线；U1 内**一并重命名**为 `createGenerationWireIndexAllocator`，见 README「命名」小节）
 
 ---
 
-## Task 1.1：allocator 加 `anchorsOpened`（诊断计数）—— **U1 的前半，与 1.2 同一 commit**
+## Task 1.1：allocator 加 `anchorsOpened`（**诊断计数**）—— **U1 的前半，与 1.2 同一 commit**
 
 - [ ] **Step 1: 写失败测试**
 
 ```ts
 // tests/anthropic/sequential-anchor-allocator.unit.test.ts（追加）
-test("anchorsOpened is the structural short-circuit predicate", () => {
-  const a = createAnchorIndexAllocator()
+test("anchorsOpened is a DIAGNOSTIC counter — never a remap predicate", () => {
+  const a = createGenerationWireIndexAllocator()
   expect(a.anchorsOpened()).toBe(0)
-  a.onRealBlockOpen()                       // 真实块不算 anchor
+  a.allocateRealBlock(0)                    // 真实块不算 anchor
   expect(a.anchorsOpened()).toBe(0)
-  expect(a.realBlockOffset(0)).toBe(0)      // 无 anchor → offset 恒 0（byte-equivalent 路径）
-  a.onAnchorOpen()
+  a.allocateAnchor()
   expect(a.anchorsOpened()).toBe(1)
 })
 ```
 
 - [ ] **Step 2**：跑，红（`anchorsOpened` 不存在，TS 报错即算红）。
-- [ ] **Step 3**：实现——allocator 内部 `let anchorCount = 0`，`onAnchorOpen` 递增，暴露 `anchorsOpened: () => anchorCount`。
+- [ ] **Step 3**：实现——allocator 内部 `let anchorCount = 0`，分配 anchor 时递增，暴露 `anchorsOpened: () => anchorCount`。
 - [ ] **Step 4**：跑，绿。
-- [ ] **Step 5: 提交** → `feat(anchor): expose anchorsOpened as the allocator short-circuit predicate`
+- [ ] **Step 5**：**不单独提交**——本 task 的改动随 U1（Task 1.2 Step 5）一次提交。
 
 ## Task 1.2：anchor 帧改 factory（固定 index 0 → 分配的 index）—— **与 1.1 同属 U1，一个 commit**
 
@@ -86,8 +85,8 @@ test("one generation has exactly one allocator, shared across every leg", async 
 ```
 
 - [ ] **Step 2**：跑，红。
-- [ ] **Step 3**：实现——`AnchorState` 加**必填** `allocator: AnchorIndexAllocator`；`makeAnchoredSseSink`（`handler-v4.ts:1046-1090`）创建 `createAnchorIndexAllocator()` 放进 `anchorState`；**同一 commit 内**把两个 injector 的 anchor index 改为向 allocator 取（U2 的原子性要求：injector 要 index 必须在 allocator 可达之后）。
-  - **注意**：`driver.ts:1090` 有一个 fallback `opts.anchorState ?? { injected: false, ... }`（`ping` 模式不 thread anchorState 时的驱动本地对象）。该 fallback 也必须带一个 allocator——用**同一个 `createAnchorIndexAllocator()`**，它在无 anchor 主腿上 `realBlockOffset` 恒 0，天然满足 C3 的恒等短路。
+- [ ] **Step 3**：实现——`AnchorState` 加**必填** `allocator: GenerationWireIndexAllocator`；`makeAnchoredSseSink`（`handler-v4.ts:1046-1090`）创建 `createGenerationWireIndexAllocator()` 放进 `anchorState`；**同一 commit 内**把两个 injector 的 anchor index 改为向 allocator 取（U2 的原子性要求：injector 要 index 必须在 allocator 可达之后）。
+  - **注意**：`driver.ts:1090` 有一个 fallback `opts.anchorState ?? { injected: false, ... }`（`ping` 模式不 thread anchorState 时的驱动本地对象）。该 fallback 也必须带一个 allocator——用**同一个 `createGenerationWireIndexAllocator()`**，它在无 anchor 主腿上给出恒等 mapping（upstream i → wire i），天然满足 C3 的恒等短路。
 - [ ] **Step 4**：跑，绿 + 全量 `test:fast` 回归。
 - [ ] **Step 5: 提交（U2）** → `feat(anchor): thread a generation-scoped index allocator through AnchorState`
 
@@ -103,27 +102,36 @@ test("one generation has exactly one allocator, shared across every leg", async 
 // tests/pipeline/anchor-remap-short-circuit.unit.test.ts
 // 场景 A：无 anchor 主腿 → 恒等 → 原对象直返（O-6 字节等价的机制保证）
 test("no-anchor PRIMARY leg: structurally bypassed — the SAME frame object is returned", () => {
-  const a = createAnchorIndexAllocator()
-  a.allocateRealBlock(0)                              // wire 0 == upstream 0 → 恒等
+  const a = createGenerationWireIndexAllocator()
+  const m = a.allocateRealBlock(0)                     // upstream 0 → wire 0 → 恒等
   const frame = realStartFrame(0)
-  expect(resolveRemappedFrame(frame, a, hooks)).toBe(frame)   // 引用相等
+  expect(resolveRemappedFrame(frame, m)).toBe(frame)   // 引用相等
 })
 
 // 场景 B：无 anchor 续写腿 —— BLOCKER 分支，原判据在此写出重复的 wire 0
 test("no-anchor CONTINUATION leg: MUST remap even though anchorsOpened()===0", () => {
-  const a = createAnchorIndexAllocator()
-  a.allocateRealBlock(0)                              // 主腿 real@0
-  a.beginLeg()                                      // 续写腿：upstream index 重启
-  a.allocateRealBlock(0)                              // 该腿 upstream 0 → wire 1
+  const a = createGenerationWireIndexAllocator()
+  a.allocateRealBlock(0)                               // 主腿 real@0
+  a.beginLeg("continuation")                           // 续写腿：upstream index 重启
+  const m = a.allocateRealBlock(0)                     // 该腿 upstream 0 → wire 1
   const frame = realStartFrame(0)
-  const out = resolveRemappedFrame(frame, a, hooks)
-  expect(a.anchorsOpened()).toBe(0)                   // 前置断言：确实没有任何 anchor
-  expect(out).not.toBe(frame)                         // 不得短路
+  const out = resolveRemappedFrame(frame, m)
+  expect(a.anchorsOpened()).toBe(0)                    // 前置断言：确实没有任何 anchor
+  expect(out).not.toBe(frame)                          // 不得短路
   expect(JSON.parse(out.data as string).index).toBe(1)
 })
 
-// 场景 C/D：有 anchor 的主腿 / 续写腿 → 一律 remap
-test("anchor opened: remap engages on both legs", () => { /* ... */ })
+// 场景 C：无 anchor RECOVERY 腿，但此前写过 pre-content anchor（P2 recovery 表第二行）
+test("no-anchor RECOVERY leg after an anchor was written: MUST remap", () => {
+  const a = createGenerationWireIndexAllocator()
+  a.allocateAnchor()                                   // pre-content anchor@0（attempt0 已写到 wire）
+  a.beginLeg("recovery")                               // attempt0 首块前截断 → recovery
+  const m = a.allocateRealBlock(0)                     // upstream 0 → wire 1
+  expect(resolveRemappedFrame(realStartFrame(0), m)).not.toBe(realStartFrame(0))
+})
+
+// 场景 D：有 anchor 的主腿 → 一律 remap
+test("anchor opened on the primary leg: remap engages", () => { /* ... */ })
 ```
 
 - [ ] **Step 2**：跑，红。**场景 B 是 blocker 的回归锁**——它必须在 primitive 写好前就红。
@@ -134,20 +142,23 @@ test("anchor opened: remap engages on both legs", () => { /* ... */ })
 /**
  * The SINGLE decision point for "does this real block frame need a wire-index remap?".
  *
- * Short-circuits ONLY when the mapping is the IDENTITY — i.e. the wire index this leg's block was
- * allocated equals the upstream index the frame already carries. That holds for a no-anchor PRIMARY
- * leg (the overwhelmingly common case), whose frames are then returned OBJECT-UNCHANGED so the code
- * path is byte-identical to the pre-allocator behaviour (C8/O-6).
+ * Short-circuits ONLY when the block's mapping is the IDENTITY (`wireIndex === upstreamIndex`).
+ * That holds for a no-anchor PRIMARY leg — the overwhelmingly common case — whose frames are then
+ * returned OBJECT-UNCHANGED, so the code path stays byte-identical to the pre-allocator behaviour
+ * (C8/O-6).
  *
- * It does NOT hold merely because no anchor was opened: a CONTINUATION leg restarts its upstream
- * index at 0 while the frontier has already moved past it, so `anchorsOpened()===0` continuation
- * frames MUST still be remapped. Short-circuiting on the anchor count alone re-delivers wire 0 —
- * the exact index-reuse failure this plan exists to prevent (README "C3 的修订").
+ * It does NOT hold merely because no anchor was opened: a continuation or recovery leg restarts its
+ * upstream index at 0 while the frontier has already moved past it, so such frames MUST still be
+ * remapped even though `anchorsOpened() === 0`. Short-circuiting on the anchor count alone
+ * re-delivers wire 0 — the exact index-reuse failure this plan exists to prevent (README "C3 的修订").
+ *
+ * Takes the block's own immutable mapping rather than the allocator, so the decision never depends
+ * on an ambient "current leg" that could shift across an await (P2 token model).
  */
-export function resolveRemappedFrame(frame, allocator, anchor): ClientFrame
+export function resolveRemappedFrame(frame: ClientFrame, mapping: WireBlockMapping): ClientFrame
 ```
 
-实现要点：判据读 allocator 的**实际映射**（`realBlockOffset(upstreamIndex) === 0`）而非 anchor 计数——offset 为 0 本身就是恒等的充要条件，且天然覆盖四个场景。`anchorsOpened()` 保留作**诊断与断言**用途，不再是短路判据。
+实现要点：判据读该块 **`WireBlockMapping` 的实际映射**（`mapping.wireIndex === mapping.upstreamIndex`）而非 anchor 计数——恒等本身就是充要条件，天然覆盖四个场景，且不依赖任何 ambient「当前腿」状态（P2 冻结的 token 模型）。`anchorsOpened()` 保留作**诊断与断言**用途，**不是**短路判据。
 
 - [ ] **Step 4**：跑，四场景全绿。
 - [ ] **Step 5**：加**架构守卫**，防止未来有人绕过 primitive 自己算 offset：
@@ -185,7 +196,7 @@ test("no source file gates a remap on anchorsOpened() — the predicate is offse
 - **绝不允许**的中间态：allocator 已按 frontier 分配多个 anchor，但某处 remap 还在算 `+1`。这由相位顺序保证——**gap anchor（多 anchor 的唯一来源）在 P5，remap 切换在 P3，P3 早于 P5**。
 
 - [ ] **Step**: 写桥接断言 `tests/pipeline/anchor-allocator-bridge.it.test.ts`——断言 pre-content anchor 场景下 allocator 分配的 index 为 0 且 wire 字节与 P0 基线一致。**不**断言真实块 offset（那时还没接线，断了就是自欺）。
-- [ ] **提交** → `test(anchor): bridge invariant — allocator-assigned anchor index matches the legacy constant`
+- [ ] **随 U2 一并提交**（**不单独成 commit**——它验证的正是 U2 的 pre-content 分配接线，与之同属一个语义单元；round-2 minor：原文单列一次提交与收口的「恰好三个 commit」矛盾）。
 
 ## P1 收口
 

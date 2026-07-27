@@ -18,7 +18,22 @@
 
 ---
 
-## Task 0.0：worktree 与并发对齐
+## Task 0.0：worktree、并发对齐与**开工硬门**
+
+> **round-2 major**：原本放在 P8 的「冻结 spec 状态同步」时序不可执行——它自己写着「必须在 plan 合并/开工之前闭合」，却排在实施末尾。**已前移到本 task 作为开工硬门**（P8.6 只保留「已实施」注解）。
+
+### Step A：冻结 spec 的状态同步（**开工硬门，先于任何代码改动**）
+
+矛盾：本 plan 与 kickoff 都称该 spec 是「冻结的唯一权威、用户已裁决选 A」，但 spec 文件头部仍写「设计候选，已按两轮异模型评审修订，**待用户裁决**」。执行者会同时读到两个相反状态，「冻结契约」只存在于计划自述、不在其权威来源中。
+
+- [ ] 更新 `docs/spec/2026-07-27-inter-block-keepalive-carrier.md` 的**状态行**：由「设计候选，待用户裁决」改为「**已裁决：采用方案 A**（用户 2026-07-27）；实施计划见 `docs/plan/2026-07-27-inter-block-anchor-allocator/`」，记录裁决日期。
+- [ ] 同步 §9「推荐与落地顺序」措辞，反映「A 已选定并进入实施」而非「推荐 A」。
+- [ ] **不改设计正文**（方案对比、证据、否决理由原样保留）——只同步「决策状态」这一个事实。
+- [ ] **提交** → `docs(spec): record that option A was selected and is now in implementation`
+
+> 本 step 与 P8.4（ADR）不同：它记录的是**用户已做出的裁决**（有据可循），不是新决策，**不需要**再次征求同意。若执行时发现裁决范围与本 plan 表述有出入，**停下回报**。
+
+### Step B：worktree 与并发对齐
 
 - [ ] 起隔离 worktree：`git worktree add .worktrees/anchor-alloc -b feat/inter-block-anchor-allocator master`
 - [ ] **核实 `fix/client-proxy-keepalive-300s` 的合并状态**。本计划的 P5 依赖该分支的 `contentDeadlineMs` / `injectContentScaffold` / `contentAnchorInjected` 机制（`delivery/{session,types}.ts`、`client-sink.ts`、`handler-v4.ts`、`AnchorState.contentAnchorInjected`）。若尚未合并 master：

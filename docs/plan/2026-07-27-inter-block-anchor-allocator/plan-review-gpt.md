@@ -195,3 +195,125 @@
 - nit：**0**
 
 最高优先级是先由 `gpt-souls:architect-advisor` 或原设计作者消解 C3 与 C4 的合同冲突，再由 planner 重写 allocator owner／DAG／oracle。该 blocker 未闭合前，继续细化实现步骤没有可执行的单一正确目标。
+
+
+## 第二轮复审（commit `05b223c1`）
+
+### 复审范围与已核证据
+
+- 对照第一轮 1 blocker + 11 major + 5 minor，读取 `05b223c1` 对 README、P0–P8、kickoff 的完整修订。
+- 再读生产代码的 `runResponseBufferedSink` retry／retreat 控制流、`makeDeliverySseSink`、`getDownstreamDeliverySession`、`makeReconcilingSink`，独立核验 planner 点名的 retreat／recovery 与 live 装饰器两处未知。
+- 本轮未修改被审计划，未启动服务器，未触碰 4141。
+
+### [major] C3 修订只对主腿／continuation 建模；transparent recovery 会把新的 leg-local mapping 与“上游 index 不重启”混在一起，当前 `beginLeg` 合同不完整
+
+**问题**：把短路条件从 `anchorsOpened()===0` 改为 `realBlockOffset(i)===0`，对“已为当前腿分配过 mapping 的 frame”本身是正确的；零-anchor continuation blocker 因当前腿 mapping 为 upstream0→wire1 而闭合。但计划只在 continuation 时调用 `beginLeg()`，没有明确 transparent retry／recovery 的腿边界。
+
+**代码事实**：`runResponseBufferedSink` 的 transparent retry 只在 `!committedAny` 时发生（`driver.ts:1408`），所以被丢弃 attempt 确实没有任何真实块写入／分配；frontier 仍是 0。此时 recovery upstream index 从 0 重启，**映射应仍是恒等 upstream0→wire0**，无需 `beginLeg()` 也能偶然正确。可一旦 recovery 之前出现过 synthetic pre-content anchor，它已真实写到 client wire、frontier=1，retry attempt 仍未提交真实块；recovery 首块 upstream0 应映到 wire1。若 allocator 当前 mapping 表沿用上一 attempt 的“当前腿”，而上一 attempt 没分配真实块，则 offset 可正确；但计划没有把“transparent recovery 是同一 client generation 的新 upstream round、是否调用 beginLeg、旧 attempt 是否可能留下未写 mapping”冻结成契约。
+
+**C9 相关缺口**：P2 同时写 allocator 的 `allocateRealBlock()` 是同步“返回并已提交”，owner 又要求 write 失败不推进并允许“先写后 commit或回滚”。这意味着 owner 若在真正 write 前调用同步 allocate，就会产生 provisional mapping；失败回滚不仅要退 frontier，还要退**当前腿 mapping**。transparent recovery 正是会观察这类残留的路径。计划只断言“下次分配拿同一 index”，没有断言旧 mapping 被移除、`realBlockOffset` 不会命中失败块。
+
+**建议**：在 C9/P2 增加 transaction 语义：allocation reservation 不能对 `realBlockOffset` 可见，直到同 operation 的 start 帧成功写出；失败必须同时回滚 frontier、anchor count、current-leg mapping、`openAnchorIndex`。新增 recovery oracle 两支：① 无 anchor 的 attempt0 在首块前截断→recovery upstream0→wire0，原对象恒等；② pre-content anchor@0 已写、attempt0 在首个真实块前截断→recovery upstream0→wire1。另加 write-failure mutation，断言失败 start 的 mapping 不可被后续 delta／recovery 查询。明确 transparent recovery 是否调用 `beginLeg()`；推荐将 `beginLeg(kind)` 对所有 upstream round 都调用，但由 allocator 根据“已成功写出的 frontier + 空 current mapping”得出同样结果，避免 continuation 特判。
+
+**结论**：第一轮 blocker 的默认 zero-anchor continuation 分支已被正确识别并有 red-first oracle，但 C3/C9 在 recovery 维度尚未闭合，降为 major 而非原 blocker。
+
+### [major] P2 owner API 目前无法按计划接入 `makeReconcilingSink`：WeakMap 只登记原 delivery sink，装饰器拿到的 inner 可查，但它没有 allocation port，且 `allocateAndWriteRealBlock` 会绕过 reconcile 的 close-before-real 输出
+
+**问题**：planner 把 S3 分成“`makeReconcilingSink` 装饰器负责分配、`reconcileLiveFrame` 负责纯 remap”，方向对，但冻结 API 与当前装饰器形状不兼容。
+
+**代码事实**：`makeDeliverySseSink` 返回 `delivery.clientSink`，`deliveryBySink` 只以这个原 sink 为 key。`makeReconcilingSink(inner, state, hooks)` 的 `inner` 正是原 delivery sink，因此装饰器**可以**通过 `getDownstreamDeliverySession(inner)` 找到 session——这条路可行，不需要让 wrapped sink 再注册一次。
+
+**真正冲突**：`WireBlockAllocationPort.allocateAndWriteRealBlock(upstreamIndex, build)` 的合同是 owner 在 serializer 内“分配并写 already-remapped frames”。而 `reconcileLiveFrame` 对首个真实 start 可能返回 `[anchor_stop, remapped_start]`；anchor stop 必须走 `writeAnchor` 标 synthetic，real start 必须走普通 write。当前 build 只返回 `ReadonlyArray<ClientFrame>`，没有 provenance，owner 无法区分两帧该调用哪个底层 port。若装饰器先单独写 stop 再调 allocation port 写 start，又把 close-off 与 allocation 拆成两个 serializer operations，心跳可插入；若 build 内先调用纯 reconcile，它还需要“已经分配后的 mapping”，形成分配→reconcile→按不同 provenance 写出的事务。
+
+**建议**：把 owner API 改成 transaction callback，而非“build 纯 frames”：例如 `withAllocatedRealBlock(upstreamIndex, ({wireIndex, remap}) => ReadonlyArray<DeliveryFrame>)`，callback 返回带 `syntheticKind` 的 `DeliveryFrame`，同一个 enqueue operation 按 provenance 写出 anchor stop + real start；或者提供专门 `allocateAndWriteReconciledRealBlock({upstreamIndex, closeAnchorIndex, realFrames})`。P3.3 必须写出如何取得 `getDownstreamDeliverySession(inner)`／allocation port，并有真实 live production-sink 测试证明 stop marker、frontier、delta/stop mapping 全正确。当前“若拿不到则停”不是可执行计划，S3 是冻结必做范围，需在开工前定型。
+
+
+
+### [blocker] P3 的 red-first／mutation 场景依赖 P5 才会存在的 gap anchor，形成循环依赖；按当前 DAG 无法把三处 `+1` mutation 打红
+
+**问题**：P3.1 明令“多 anchor 状态必须由真实 gap 静默驱动，禁止手工推进 allocator”；P3.2 同样要求“retreat 发生在 gap anchor 已开过一次之后”；S3 也要求 live 多 anchor。可是 P3 执行时 P5 尚未落地：`semanticBlockCount===0` 门仍在，per-gap latch 与 `makeGapAnchorInjector` 都不存在。生产 heartbeat 在首个真实块后只能 ping，**不可能**产生第二个 gap anchor，offset 永远最多是旧语义的 `+1`。
+
+因此：
+
+- 把 S1/S2/S3 resolver mutation 回硬编码 `1`，在 P3 可达的 pre-content-only 场景下结果完全相同，mutation 不会红；
+- 计划要求“真实 gap 驱动”与相位硬链 `P3→P5` 互相否定；
+- 若为让测试红而提前删 P5 的门，就会进入计划自己禁止的半坏态：gap anchor 已占 wire@2，但尚有 remap 站点仍算 `+1`。
+
+这是实施计划不可执行的循环，不只是测试薄弱，故为 blocker。
+
+**修复建议**：保留 `P3→P5`，但把 P3 的测试构造改为经 **P2 production owner API** 显式提交 anchor block（不是手工推进 allocator，也不依赖 heartbeat gate）：测试先经 `allocateAndWriteAnchor` 写 pre-anchor／第二 anchor，再驱动对应 S1/S2/S3 的真实 start/delta/stop，从而让 offset>1；另由 P5/O-3 单独证明 heartbeat 会调用同一 owner。这样 mutation 能在 P3 红，同时不提前开放 gap feature。若 owner API 无法作为测试 seam 驱动三腿，则必须把 P3 remap 三站点 + P5 gap 开门合成一个原子 commit，并在提交前一次性通过全部 oracle，不能维持当前分相。
+
+### [major] P5.3 仍直接调用低阶 `allocateAnchor()`，与 C5/C9 和 P2 架构守卫正面冲突
+
+P2 冻结“生产路径只能经 owner API，低阶 `allocateAnchor` 测试专用”，架构守卫也禁止 `delivery/session.ts`／injector 外调用裸分配；但 P5.3 的实现步骤仍写：`makeGapAnchorInjector`: `allocateAnchor() → writeAnchor() → writeKeepalive()`。这正是 P2 用整节否决的“队列外分配 + 两个 operation”，并且 write 第二帧失败时会留下已推进 frontier。
+
+**建议**：P5.3 必须只调用 `WireBlockAllocationPort.allocateAndWriteAnchor`，由 callback 生成 start+delta 且带 provenance；成功后再以同一 transaction 的结果更新 `openAnchorIndex`。将“直接 allocate”加入架构守卫 mutation，防止计划后半自己绕过 P2。
+
+### [major] `WireBlockAllocationPort.beginLeg()` 不在 serializer 内，且 C9 没定义并发／失败时 leg 切换的原子性
+
+接口注释称全部 owner 操作绑定 serializer，但 `beginLeg(): void` 是同步裸方法。continuation dispatch 完成时 driver 可调用它，与已排队的 heartbeat anchor operation／前一 leg 最后一批 write 的相对顺序没有合同。若 `beginLeg` 先切 current mapping、前一 leg 的排队 delta/stop 随后查询 mapping，就可能查到新腿；若 anchor operation先入队但后执行，leg base 与预期也可能漂移。
+
+**建议**：`beginLeg` 也必须是 serializer command（`Promise<void>`），并在前一 leg 所有成功 wire writes 之后、下一 leg 任一分配之前建立 fence。最好让 owner API 不暴露可变“current leg”全局查询，而让每次 allocation 返回不可变 `BlockMapping`／leg token，delta/stop 按 token 查，消除跨 await 的 ambient current-leg 状态。增加让 continuation leg 切换与在飞 heartbeat／前腿 stop 交错的时序 oracle。
+
+### O-2／O-7／O-9 抽验结论
+
+- **O-2：已闭合。** 新 `assertBlockProtocolState` 明确检查 delta／stop 必须指向当前唯一 open index、stop 后清空、终局无悬挂；`start@1 + delta@0`、`start@1 + stop@0` 等独立负样本正好能咬住第一轮指出的坏实现。重复 stop 也覆盖。
+- **O-7：原 oracle 假绿判断成立，新设计基本闭合。** 仓库 `anthropic-cli.e2e.test.ts` 的确把 `num_turns>1` 作为 stall 签名。新 oracle 用固定 tool_use id、匹配 tool_result、上游命中恰为 2、最终 marker 非空／无第三轮，能区分正常工具回合与空转重问；绕过 sanitize + 400 mutation 能证明空块泄漏会红。它诚实限定为 mock 上游，不冒充真 GHC 接受性，后者登记 backlog，合理。
+- **O-9：已闭合。** 修订要求同一条“主腿 gap + 续写腿 gap + index 重启”测试分别对删除 `beginLeg` 与删除 latch re-arm 以可辨识不同原因失败，并保留 P4.1／P5.1 单侧 controls；这比“同一文件任一测试红”有实质提升。
+
+### [minor] P1 的“三个 commit”收口与单独 bridge commit 仍不一致
+
+P1 定义 U1/U2/U3 三个 commit，但 bridge 小节又单列 `test(anchor): bridge invariant…` 提交；收口却要求“恰好三个 commit”。按文字执行会得到四个 commit，或把 bridge 偷塞进某个已定义单元。
+
+**建议**：明确 bridge 属于 U2（最自然：它验证 U2 的 pre-content allocation 接线），删独立提交；或把收口改为四个 commit。commit invariant 不应靠执行者猜。
+
+### [minor] P1.1 仍把 `anchorsOpened` 命名／提交描述成“short-circuit predicate”，与修订后的 C3 相反
+
+P1.1 测试名是 `anchorsOpened is the structural short-circuit predicate`，旧的 Step 5 commit 也写 `expose anchorsOpened as ... short-circuit predicate`，虽 U1 最终提交描述已改为 counter。此残留会误导实现者与未来读者，甚至违反新增架构守卫的意图。
+
+**建议**：统一改成 diagnostic counter，删除全部“short-circuit predicate”残留。
+
+### [major] spec 状态同步被放在 P8，但计划自己要求“plan 合并／开工之前”完成，时序仍不可执行
+
+P8.4b 正确识别 spec 状态“待用户裁决”与计划“已冻结选 A”矛盾，也明确写必须在 plan 合并／开工前闭合；但 task 仍位于实施末尾 P8，DAG 没有 preflight 节点。执行到 P8 才改已经太晚。
+
+**建议**：把状态同步移到计划定稿提交本身或 P0.0 的第一步，并作为开工硬门；P8.6 只负责“已实施 commit”注解。ADR 8.4 的写前停点与 P7.2 β 停点则已正确前移／补齐。
+
+### [minor] P8 验收记录标签仍保留旧 oracle 名，可能诱导按弱判据收口
+
+P8.8 已改为 O-1～O-9，但表中仍写 `O-2 maxOpen===1` 与 `O-7 真 CC numTurns>=2`。这与已升级的完整协议状态机及 exact tool-use oracle冲突。
+
+**建议**：标签同步为 `O-2 块协议状态完整性`、`O-7 exact tool-use/tool_result 两轮回传`。同理 README Mermaid 的 P1 节点仍写 `anchorsOpened 结构性短路`，应改为 mapping-identity short circuit。
+
+
+
+### 其余第一轮发现闭合抽验
+
+- **DAG**：`P6→P2`、`P2→P3`、主链全串行已补；P2.2b 覆盖 P6 让 heartbeat 复活后新增的可达竞态，闭合到位。但 P3↔P5 的测试构造循环形成了本轮新 blocker。
+- **P6 Responses HTTP**：6.3b 仍保留端点专属回归锁；CC 正常响应结构性幸免的措辞已限缩，闭合。
+- **P1 U1/U2/U3**：原类型／owner 次序矛盾已大体消除，U2 把 allocator 挂 state 与 injector 取 index合并；仅剩 bridge commit 计数与命名残留两项 minor。
+- **AnchorState**：删除 `anchorClosed` + `anchorBlockOpen`，由 `openAnchorIndex` 单一承担当前 anchor 与 close exactly-once，并要求终局调用者组合测试，方向闭合。若以后确需 terminal flag，计划要求另命名并补写者／读者，合理。
+- **ADR 与 β 停点**：ADR 写文件前停、未获批不得文档收口；P7.2 α 可执行、β 改 carrier 必须回用户裁决，均闭合。
+- **Q5 文档后果**：已从字面零 grep 改为宽 pattern + 历史／规范性分类审计，且要求同步正文表／公式／示例，闭合。
+- **C8**：改为 implementation base 的 pre-change bytes，历史 SHA 只作 provenance，并保留 raw bytes 用 `cmp`；闭合。
+
+### 第二轮总体 verdict
+
+**存在 blocker，当前仍不可开工实施；需先修订。**
+
+- blocker：**1**
+- major：**6**
+- minor：**4**
+- nit：**0**
+
+本轮 blocker 是 P3 测试构造依赖 P5 才开放的 gap anchor，导致 `P3→P5` DAG 下 red-first 与 6 格 mutation 矩阵不可执行。第一轮的 zero-anchor continuation blocker本身已按正确方向修复，但 recovery transaction 与 live decorator owner API 仍有 major。
+
+**开工前最小必改集**：
+
+1. 用 P2 production owner API 在 P3 测试中显式写第二 anchor，或把 P3+P5 合成原子提交，消除循环依赖。
+2. 将 `WireBlockAllocationPort` 改成能在一个 serializer transaction 内输出带 provenance 的 close-off + real start，并明确 `makeReconcilingSink` 如何取得 port。
+3. 冻结 recovery／write-failure 的 transaction mapping rollback，`beginLeg` 也进入 serializer fence或改用不可变 leg token。
+4. P5.3 禁止裸 `allocateAnchor()`，只走 owner API。
+5. 修正 spec 状态同步的时序，随后清理四项 minor。
+
+修订后可继续第三轮复审；在上述 blocker 未闭合前，不建议启动实现。
