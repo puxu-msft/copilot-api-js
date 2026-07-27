@@ -27,6 +27,11 @@ import {
 } from "~/lib/metrics-exposition"
 import {
   //
+  recordRetryGiveUp,
+  resetRetryGiveUpsForTests,
+} from "~/lib/observability/retry-giveups"
+import {
+  //
   recordRetryStrategyFire,
   resetRetryStrategyFiresForTests,
 } from "~/lib/observability/retry-strategy-fires"
@@ -129,11 +134,13 @@ describe("buildMetricsExposition (live registry)", () => {
     installDefaultTelemetryRuntime()
     _setRequestTelemetryFilePathForTests(path.join(tempDir, "t.json"))
     resetRetryStrategyFiresForTests()
+    resetRetryGiveUpsForTests()
   })
 
   afterEach(async () => {
     _resetRequestTelemetryForTests()
     resetRetryStrategyFiresForTests()
+    resetRetryGiveUpsForTests()
     await fs.rm(tempDir, { recursive: true, force: true })
   })
 
@@ -183,6 +190,23 @@ describe("buildMetricsExposition (live registry)", () => {
   test("retry-fire family is stably present (HELP/TYPE) even with zero fires", () => {
     const text = buildMetricsExposition()
     expect(text).toContain("# TYPE copilot_api_retry_strategy_fires_total counter")
+  })
+
+  test("emits the give-up counter with BOTH labels (reason,error_type) — the fire counter's counterpart", () => {
+    recordRetryGiveUp("unclaimed", "bad_request")
+    recordRetryGiveUp("unclaimed", "bad_request")
+    recordRetryGiveUp("strategy-abort", "bad_request")
+    const text = buildMetricsExposition()
+    expect(text).toContain("# TYPE copilot_api_retry_giveups_total counter")
+    expect(text).toContain('copilot_api_retry_giveups_total{reason="unclaimed",error_type="bad_request"} 2')
+    expect(text).toContain('copilot_api_retry_giveups_total{reason="strategy-abort",error_type="bad_request"} 1')
+    // 关键：两个标签必须是**真标签**，不能是被拼成一个字符串的融合 key（那样 PromQL 没法按 reason 聚合）。
+    expect(text).not.toMatch(/retry_giveups_total\{[^}]*unclaimed[\0:][^}]*bad_request/)
+  })
+
+  test("give-up family is stably present (HELP/TYPE) even with zero give-ups", () => {
+    const text = buildMetricsExposition()
+    expect(text).toContain("# TYPE copilot_api_retry_giveups_total counter")
   })
 
   test("emits standard Prometheus histograms (cumulative _bucket{le} + _sum + _count)", () => {

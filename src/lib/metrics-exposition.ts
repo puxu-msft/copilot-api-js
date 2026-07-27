@@ -33,6 +33,11 @@ import {
 import { TELEMETRY_DIMENSION_NAMES } from "@hsupu/ghc-proxy-telemetry"
 import { getTelemetryRuntime } from "@hsupu/ghc-proxy-telemetry"
 
+import {
+  //
+  getRetryGiveUpCounts,
+  type RetryGiveUpCount,
+} from "./observability/retry-giveups"
 import { getRetryStrategyFireCounts } from "./observability/retry-strategy-fires"
 
 /** Prometheus text exposition content-type (format version 0.0.4). */
@@ -92,6 +97,7 @@ export function renderPrometheusMetrics(
   breakdowns: ReadonlyArray<DimensionBreakdownSnapshot>,
   acceptedSinceStart: number,
   retryStrategyFires: Readonly<Record<string, number>> = {},
+  retryGiveUps: ReadonlyArray<RetryGiveUpCount> = [],
 ): string {
   const lines: Array<string> = [
     "# Each settled request is counted under EVERY dimension (model/endpoint/client/agentKind/tool);",
@@ -165,6 +171,20 @@ export function renderPrometheusMetrics(
     ...retryFireSamples,
   )
 
+  // Retry-chain give-up counter — the counterpart of the fire counter above: fires say which
+  // strategy rescued a turn, give-ups say which turns nobody rescued. `unclaimed` is the one to
+  // alert on: it means an upstream rejection arrived whose wording no matcher recognised, which is
+  // how both illegal-layout incidents reached clients unmitigated (see observability/retry-giveups.ts).
+  const giveUpName = `${METRIC_PREFIX}retry_giveups_total`
+  const giveUpSamples = retryGiveUps.map(
+    ({ reason, errorType, count }) => `${giveUpName}{reason="${escapeLabelValue(reason)}",error_type="${escapeLabelValue(errorType)}"} ${formatValue(count)}`,
+  )
+  lines.push(
+    `# HELP ${giveUpName} Cumulative terminal give-ups of the retry chain per (reason,error_type) since process start. reason=unclaimed means no strategy's canHandle matched — the error surfaced to the client verbatim.`,
+    `# TYPE ${giveUpName} counter`,
+    ...giveUpSamples,
+  )
+
   // Prometheus requires a trailing newline.
   return `${lines.join("\n")}\n`
 }
@@ -174,5 +194,5 @@ export function buildMetricsExposition(now = Date.now()): string {
   const telemetry = getTelemetryRuntime()
   const breakdowns = TELEMETRY_DIMENSION_NAMES.map((dimension) => telemetry.getDimensionBreakdown(dimension, "sinceStart", ALL_KEYS_LIMIT, now))
   const acceptedSinceStart = telemetry.getSnapshot(now).acceptedSinceStart
-  return renderPrometheusMetrics(breakdowns, acceptedSinceStart, getRetryStrategyFireCounts())
+  return renderPrometheusMetrics(breakdowns, acceptedSinceStart, getRetryStrategyFireCounts(), getRetryGiveUpCounts())
 }

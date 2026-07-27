@@ -23,6 +23,7 @@ import type { RequestContext } from "~/lib/context/request"
 import type { FrozenHedgePolicy } from "~/lib/pipeline/generation/hedge-policy"
 
 import { classifyError } from "~/lib/error"
+import { recordRetryGiveUp } from "~/lib/observability/retry-giveups"
 import { recordRetryStrategyFire } from "~/lib/observability/retry-strategy-fires"
 import { getDownstreamDeliverySession } from "~/lib/pipeline/delivery/session"
 import { readSyntheticKind } from "~/lib/pipeline/frame-origin"
@@ -534,6 +535,15 @@ function createDriverCoordinator(deps: DriverDeps, initialEnv: RequestEnvelope):
   return createGenerationCoordinator({ env: initialEnv, createCandidate, generationBudget })
 }
 
+/**
+ * Bounded one-line excerpt of an upstream error message for a log line. Full bodies already land in
+ * history (richest-data-flow); the log only needs enough to recognise a NEW upstream wording.
+ */
+function excerptForLog(message: string, max = 300): string {
+  const flat = message.replaceAll(/\s+/g, " ").trim()
+  return flat.length <= max ? flat : `${flat.slice(0, max)}…`
+}
+
 function createSemanticRetryPolicy(deps: DriverDeps): (input: import("./generation/dispatch-scheduler").SemanticRetryInput) => Promise<SemanticRetryDecision> {
   let normalRetries = 0
   let learningRetries = 0
@@ -542,20 +552,45 @@ function createSemanticRetryPolicy(deps: DriverDeps): (input: import("./generati
     // Resolve only after CandidateStateFactory forked env.requestState. Strategy closures (notably
     // beta-probe and reverse resanitize) must bind this candidate's supplies, never generation-shared ones.
     const strategy = (candidateStrategies ??= resolveExchangeStrategies(deps, env)).find((candidate) => candidate.canHandle(error))
-    if (!strategy) return { kind: "fail" }
+    if (!strategy) {
+      // NOBODY understood this rejection. The loudest give-up: it means our matchers have drifted
+      // from what upstream actually says, and the client is about to receive the raw error. Both
+      // illegal-thinking-layout incidents (2026-07-26 C2, 2026-07-27 C3) lived here silently and were
+      // found only when a human pasted the 400 back at us — hence a warn AND a counter, not a
+      // bare `fail`. The message excerpt is what identifies a new upstream wording, so it is logged
+      // (internal-tool posture: diagnostic value over hypothetical leakage).
+      recordRetryGiveUp("unclaimed", error.type)
+      consola.warn(
+        `[Driver] No retry strategy claimed this ${error.type}${error.status ? ` (HTTP ${error.status})` : ""} — surfacing it to the client as-is: ${excerptForLog(error.message)}`,
+      )
+      return { kind: "fail" }
+    }
     let action: RetryAction
     try {
       action = await strategy.handle(error, env)
     } catch (strategyError) {
+      recordRetryGiveUp("strategy-threw", error.type)
       consola.warn(
         `[Driver] Strategy "${strategy.name}" threw while handling the error:`,
         strategyError instanceof Error ? strategyError.message : strategyError,
       )
       return { kind: "fail" }
     }
-    if (action.kind === "abort") return { kind: "fail" }
+    if (action.kind === "abort") {
+      // The strategy recognised the error but decided its remedy does not apply to THIS payload
+      // (e.g. poisoned-thinking-retry declining a literal assistant prefill). Legitimate, but a
+      // rising count means a matcher claims more than it can cure — and while it claims, no other
+      // strategy gets a look (first match wins).
+      recordRetryGiveUp("strategy-abort", error.type)
+      consola.warn(`[Driver] Strategy "${strategy.name}" claimed this ${error.type} but declined to retry it: ${excerptForLog(error.message)}`)
+      return { kind: "fail" }
+    }
     const overBudget = action.learning ? learningRetries++ >= deps.maxLearningRetries : normalRetries++ >= deps.maxRetries
-    if (overBudget) return { kind: "fail" }
+    if (overBudget) {
+      recordRetryGiveUp("budget-exhausted", error.type)
+      consola.warn(`[Driver] Retry budget exhausted while strategy "${strategy.name}" was still willing to retry this ${error.type}`)
+      return { kind: "fail" }
+    }
     if (action.meta) deps.onMeta?.(action.meta, action.env)
     action.env.ctx.recordAttemptFailure({
       willRetry: true,
