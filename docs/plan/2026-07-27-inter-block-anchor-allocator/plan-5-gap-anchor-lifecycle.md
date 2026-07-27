@@ -113,7 +113,48 @@ test("real@0 -> gap-anchor@1 -> real@2 (the canonical inter-block shape)", async
 - [ ] **Step 5**：mutation——把 `semanticBlockCount === 0` 门加回，确认 O-3 转红。
 - [ ] **Step 6: 提交** → `feat(keepalive): allow gap anchors after the first committed block`
 
-## Task 5.4：多 gap + 混合块类型
+## Task 5.4：续写腿内的 gap 静默（**跨相位集成缝**，用户 2026-07-27 裁决升格为独立 task）
+
+> **为什么必须是独立 task 而非交给 P8 合并态审**：这正是本项目吃过亏的形状——**跨 phase 集成缝只在合并态才被发现，代价最高**（记忆 `cross-phase-integration-seam-only-caught-at-merged-state`：Phase A 的契约被下游漏接线，逐 task 审看不到）。P4（leg 语义）与 P5（gap anchor 生命周期）各自的 oracle 都只覆盖自己那一侧：P4 测「续写腿的块从 frontier 分配」，P5 测「gap 静默产生 anchor」，**两者的交叉——续写腿进行中发生 gap 静默——没有任何一侧覆盖**。指望 reviewer 事后挑是把最贵的缺陷留到最后。
+
+**交叉点的具体形状**（实施期要验的就是这些）：
+
+1. 续写腿开始后、其首块到达前的静默 → 此时客户端轨无 open block（主腿末块已闭合），gap anchor 会被注入。该 anchor 的 wire index 必须来自 frontier（在主腿最后一块之后），且续写腿首块要排在它之后。
+2. 续写腿两块之间的静默 → 同 1，但 anchor 落在续写腿内部。
+3. gap anchor 已 open 时**恰好**发生 mid-stream cut 触发续写 → anchor 必须在续写腿首块前被关闭（C2），且不得被计入续写的合成 assistant 前缀（C6 说 anchor 绕 buffer，**但这条要在续写腿上重新验证**——C6 的核实是在主腿场景做的）。
+4. per-gap latch（5.1）跨腿的行为：续写腿的首个真实块是否正确重新武装 latch。
+
+- [ ] **Step 1: 写失败测试**（red-first，覆盖上述 4 个形状）
+
+```ts
+// tests/pipeline/continuation-gap-anchor-seam.it.test.ts
+test("gap silence INSIDE a continuation leg still yields a frontier-allocated anchor", async () => {
+  // 真 runResponseBufferedSink + 真 anchor injector + continuation hooks + FakeClock
+  // 主腿：real@0 → mid-stream cut → 续写腿开始 → 过 deadline 的静默 → 续写腿首块
+  // 断言：
+  assertMonotonicWireIndices(frames)   // O-1：anchor 落 wire 1、续写块落 wire 2，无复用无跳号
+  assertMaxOneBlockOpen(frames)        // O-2
+  expect(wireShape(frames)).toEqual([...])
+})
+test("an OPEN gap anchor at the moment of a cut is closed before the continuation leg's first block", async () => {
+  // 形状 3：断言 anchor_stop 出现在续写腿首个 real_start 之前
+})
+test("the gap anchor never enters the continuation's synthetic assistant prefix", async () => {
+  // 形状 3 的 C6 复验：抓 continuation 请求体，断言其 assistant 前缀不含空 text block
+  // （C6 在主腿已核实；本条是在续写腿上的独立验证，不复用那次结论）
+})
+test("the per-gap latch re-arms across the leg boundary", async () => {
+  // 形状 4：主腿一个 gap + 续写腿一个 gap → 两个 anchor
+})
+```
+
+- [ ] **Step 2**：跑。**四条里至少一条应当红**——若全绿，先怀疑 harness 没真正进入续写腿（用 `continuationCount` / `onContinuationLeg` 探针确认），修 harness 而非改断言。若确认进入了续写腿且全绿，降级为 characterization 并**明确注明**「交叉行为由 P4+P5 各自的实现自然满足，本测试锁住它不被回归」。
+- [ ] **Step 3**：按红的形状修实现。
+- [ ] **Step 4**：跑，绿。
+- [ ] **Step 5**：mutation——把 `onLegStart()`（P4）或 gap injector 的 latch 重置（P5.1）任一破坏，确认本文件转红。这验证本 task 确实咬住的是**交叉**而非单侧。
+- [ ] **Step 6: 提交** → `test(anchor): cover the continuation-leg × gap-anchor integration seam`
+
+## Task 5.5：多 gap + 混合块类型
 
 - [ ] **Step 1: 写失败测试**：三个 gap，块类型分别是 text / thinking / tool_use，断言 O-1/O-2 + anchor 数 = 3 + 每个真实块内容完整无丢失。
   - **tool_use 特别重要**：审查 F3 证实 CC 是 eager per-block 执行；gap anchor 不得推迟 tool_use 块的 stop。断言 `tool_use` 块的 `content_block_stop` 与其 deltas 之间**没有** anchor 帧插入。
@@ -121,7 +162,7 @@ test("real@0 -> gap-anchor@1 -> real@2 (the canonical inter-block shape)", async
 - [ ] **Step 3**：若红则修。
 - [ ] **提交** → `test(anchor): multi-gap coverage across text/thinking/tool_use blocks`
 
-## Task 5.5：默认值裁决
+## Task 5.6：默认值裁决
 
 > 本相位落地后 `stream_keepalive_escalate_sec` 默认 200 会让**任何** >200s content-idle 的请求注入 gap anchor。这是设计意图（D2 修订版：正常 cadence 裸 ping、逼近死线才升级）。
 
@@ -136,3 +177,4 @@ test("real@0 -> gap-anchor@1 -> real@2 (the canonical inter-block shape)", async
 - [ ] O-1/O-2/O-3 绿；O-6 字节等价仍等于基线。
 - [ ] `rg -n "anchorBlockOpen" src/` 零命中（已被新字段取代）。
 - [ ] `semanticBlockCount === 0` 门已删，其注释已改为指向本 plan。
+- [ ] **Task 5.4 的交叉缝 oracle 绿，且其 mutation 验证过它咬的是交叉而非单侧。**

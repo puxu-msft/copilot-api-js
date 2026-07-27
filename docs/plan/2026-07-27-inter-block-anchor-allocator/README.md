@@ -25,8 +25,8 @@ graph TD
   P2["P2 分配临界区<br/>heartbeat/flush 并发缝：分配与写出同一 serializer"]
   P3["P3 remap 全站点接线<br/>driver buffered flush + retreat + live-reconcile 三处走 frontier"]
   P4["P4 continuation frontier 统一<br/>作废 anchorShift+continuationOffset 双偏移；撞车序列 oracle"]
-  P5["P5 per-gap latch + gap injector<br/>content latch 每 gap 重新武装 + 下一真实块前关 anchor"]
-  P6["P6 心跳生命周期修复（前置缺陷）<br/>boundary-commit 后 delivery 心跳复活"]
+  P5["P5 per-gap latch + gap injector<br/>content latch 每 gap 重新武装 + 下一真实块前关 anchor + 续写腿交叉缝"]
+  P6["P6 心跳生命周期修复<br/>现网缺陷 · 可独立先行交付"]
   P7["P7 多轮回传对策<br/>numTurns>=2 空 anchor 回传 + 入站清洗核实"]
   P8["P8 端到端验收 + 文档后果<br/>真 SDK / 真 CC / SHA + ADR D2 措辞 + Q5 公式作废"]
 
@@ -38,15 +38,18 @@ graph TD
   P3 --> P4
   P3 --> P5
   P6 --> P5
+  P4 --> P5
   P4 --> P8
   P5 --> P8
   P7 --> P8
+
+  style P6 stroke-width:3px
 ```
 
 **并行机会**（是否并行由主会话编排决定，本计划只标依赖）：
-- P6 只依赖 P0，与 P1–P5 无代码重叠（`delivery/session.ts` 的心跳复活 vs allocator 的 index 记账），可与 P1 并行起。
+- **P6 可独立交付**（用户 2026-07-27 裁决）：它修的是**当前现网缺陷**（Responses HTTP 默认配置即受影响，见下「现网影响面」），自身即有生产价值，不必等 A 的其余相位。独立路径 = **P0 → P6 → 合并**。但它**仍是 P5 的前置**，A 开工前必须完成。
 - P7 的**核实部分**（入站清洗是否已存在、真 CC 多轮）不依赖任何代码改动，可在 P0 后立刻起；其**兜底实现部分**只有在核实为 FAIL 时才需要，且依赖 P5 能真正产出 gap anchor。
-- P1→P2→P3→P4→P5 是**串行链**：P3 的 remap 依赖 P1 的 allocator 归位，P4 的 continuation 依赖 P3 的单一 remap 权威，P5 的 gap anchor 依赖 P2 的临界区与 P3 的 remap。
+- P1→P2→P3→P4→P5 是**串行链**：P3 的 remap 依赖 P1 的 allocator 归位，P4 的 continuation 依赖 P3 的单一 remap 权威，P5 的 gap anchor 依赖 P2 的临界区、P3 的 remap 与 **P4 的 leg 语义**（Task 5.4 的交叉缝要同时用到两者）。
 
 ## 冻结契约表（实施期不得自行更改；要改回主会话）
 
@@ -74,7 +77,14 @@ graph TD
 | 7 | 文档后果（ADR D2 措辞 + Q5 公式作废） | P8.4 / P8.5 | 跨文档 grep：全仓无残留 `anchorShift` 公式表述 |
 | 8 | 多轮空 anchor 历史回传 | P7.1 / P7.2 / P7.3 | O-5 真 CC `numTurns>=2` |
 
-## 验收 oracle 总表（reviewer 要求 >= 5 项）
+**计划自加的两项**（不在原 8 项承重表内，但同等对待）：
+
+| # | 项 | 落成 task | 验收 oracle |
+|---|---|---|---|
+| 9 | 心跳跨 boundary-commit 存活（现网缺陷） | P6.1 / P6.2 / P6.3 / **P6.3b**（Responses HTTP 回归锁） | O-8 + 两层正样本对照 |
+| 10 | **续写腿 × gap anchor 跨相位集成缝**（用户裁决升格为独立 task） | **P5.4** | O-1/O-2 交叉场景 + 交叉 mutation（破 P4 或 P5 任一侧都要转红） |
+
+## 验收 oracle 总表（reviewer 要求 >= 5 项，实际 9 项）
 
 | ID | oracle | 层级 | 怎么测 | 归属 |
 |---|---|---|---|---|
@@ -85,23 +95,43 @@ graph TD
 | O-5 | 真 CC inter-block >300s，连跑多次 | 真客户端 e2e | `exp/` 新探针（hook 产 `real → >310s 静默 → real`），真 `claude -p`；断言 `numTurns===1`、`isError:false`、含 marker；**连跑 >=3 次**证确定性 | P8.2 |
 | O-6 | 短请求默认配置字节等价 | 字节 golden | 隔离端口起自己的测试服务器（非 4141），deterministic upstream hook，`sha256sum` 对照基线 `8691db71...2f6a0` / 1675 bytes | P0.1 建基线脚本、P8.3 复跑 |
 | O-7 | 真 CC `numTurns>=2` 历史回传不被上游拒 | 真客户端 e2e | 两轮对话：第一轮触发 gap anchor，第二轮携历史回上游；断言第二轮不 400 | P7.3 |
-| O-8 | boundary-commit 后心跳仍活 | 单元 + producer | FakeClock：真实块提交后推进 >= 心跳间隔，断言仍产出 keepalive 帧 | P6.1 |
+| O-8 | boundary-commit 后心跳仍活 | 单元 + producer | FakeClock：真实块提交后推进 >= 心跳间隔，断言仍产出 keepalive 帧。**两条端点各一份**：Anthropic（P6.3）+ Responses HTTP（P6.3b，默认中招的那条） | P6.1 / P6.3 / P6.3b |
+| O-9 | 续写腿内 gap 静默的交叉行为 | producer 全序 | 续写腿进行中过 deadline → 断言 anchor 从 frontier 分配、在续写首块前关闭、不进合成 assistant 前缀、latch 跨腿重新武装 | P5.4 |
 
-## 已发现的前置缺陷（planner 实测，非设计/审查所列）
+## 已发现的现网缺陷（planner 实测，非设计/审查所列）
 
 **P6 的存在理由**：`driver.ts` 的 block-level boundary commit 做 `suspendHeartbeat()`（:1269/:1293）→ `flushBufferedFrames` 内部 `sink.freezeHeartbeat?.()`（:1145）→ `resumeHeartbeat()`（:1271/:1326）。在**生产的 delivery-session sink** 上，`freezeHeartbeat` 被映射为 `closeHeartbeat`（`delivery/session.ts:167`），它置 `heartbeatStopped = true`（:98）——而 `resumeHeartbeat` 的守卫是 `if (!heartbeatSuspended || state !== "open" || heartbeatStopped) return`（:173），**`heartbeatStopped` 为真时直接 return，心跳永久死亡**。
 
-实测（FakeClock 探针，正样本对照）：
+实测两层，均带正样本对照：
 
 ```text
-CONTROL   (suspend->resume,        raw sink):        ["ping","ping","ping","ping"]
-CONTROL   (suspend->resume,        delivery session):["keepalive:ping" x10]
-PRODUCTION(suspend->freeze->resume, delivery session):[]        ← 心跳死亡
+层一（sink 契约）
+  CONTROL   (suspend→resume,        raw sink):         ["ping"×4]
+  CONTROL   (suspend→resume,        delivery session): ["keepalive:ping"×10]
+  PRODUCTION(suspend→freeze→resume, delivery session): []          ← 心跳死亡
+
+层二（真 driver：runResponseBufferedSink + 真 commitBoundaries + 120s 块间静默）
+  RAW SINK      keepalives: 5
+  DELIVERY SINK keepalives: 0                                      ← 现网形状
 ```
 
-raw sink（`makeSseSink`）的 `freezeHeartbeat` 只 `clearTimeout` 不置 stopped 标志，所以 raw sink 上 resume 能复活——**现有 anchor 测试套件全部用 raw sink**（`anchor-multiblock-lifecycle.it.test.ts` 等 import `makeSseSink`），故这个缺陷被结构性地测不到。生产走 `makeDeliverySseSink`。
+raw sink（`makeSseSink`）的 `freezeHeartbeat` 只 `clearTimeout` 不置 stopped 标志，所以 raw sink 上 resume 能复活——**现有 anchor 测试套件全部用 raw sink**（`anchor-multiblock-lifecycle.it.test.ts` 等 import `makeSseSink`），故这个缺陷被结构性地测不到。生产三条 buffered 路径全部走 `makeDeliverySseSink`。
 
-**为什么这是 A 的前置门而非独立 backlog**：A 的 gap anchor 由心跳 tick 注入。若首个真实块提交后心跳已死，gap anchor 永远不会被注入，A 的全部机制在生产上是死码——O-3/O-5 会假绿（因为测试用 raw sink）。故 P6 必须在 P5 之前落地，且其测试必须建在 delivery session 上。
+### 现网影响面（用户 2026-07-27 要求写明；planner 逐条核实）
+
+触发条件 = 走 `runResponseBufferedSink` **且** `commitBoundaries` 命中 **且** sink 是 `makeDeliverySseSink`。
+
+| 端点 | buffered 默认 | `commitBoundaries` | 当前是否受影响 |
+|---|---|---|---|
+| **Responses HTTP** | **`true`**（`state-defaults.ts:243`） | 有（`candidate-response-session.ts:140`，边界含 `response.output_item.done`——多 item 响应逐 item 提交） | **是，默认配置即中招** |
+| Chat Completions | **`true`**（`state-defaults.ts:100`） | 退化：`ccCommitBoundaries` 只认上游 `error` 帧 | 仅 error 路径，实际影响极小 |
+| Responses WS | `true`（同 key） | **故意省略**（`ws.ts:376-394`） | 否 |
+| Anthropic | `false`（`state-defaults.ts:84`） | 有（`anthropicCommitBoundaries`） | 默认否；**开启 `protect_streaming_generation` 即中招**（正是 A 的目标制度） |
+| Gemini | 无 buffered | — | 否 |
+
+**即 Responses HTTP 在 bundled 默认配置下就受影响**：一个多 output_item 的响应，首个 `response.output_item.done` 提交后心跳即永久死亡，其后任意长的上游静默都无保活帧。这与 A 无关，是当前现网行为——**故 P6 可独立于 A 先行落地与合并**（详见 plan-6 的「独立交付」小节）。
+
+**为什么这是 A 的硬前置门**：A 的 gap anchor 由心跳 tick 注入。若首个真实块提交后心跳已死，gap anchor 永远不会被注入，A 的全部机制在生产上是死码——O-3/O-5 会假绿（因为测试用 raw sink）。故 P6 必须在 P5 之前落地，且其测试必须建在 delivery session 上。
 
 ## 反驳设计/审查的一处事实（planner 复核）
 
@@ -145,9 +175,10 @@ raw sink（`makeSseSink`）的 `freezeHeartbeat` 只 `clearTimeout` 不置 stopp
 | # | 风险 | 影响 | 缓解 | 归属 |
 |---|---|---|---|---|
 | R1 | remap 漏点/重复调 → 静默重排客户端内容 | 最高：用户拿到的答案被悄悄改序，SDK 不报错（已被真 SDK probe 证实） | C3 结构性短路把爆炸半径限回「开过 anchor 的请求」；O-1/O-4 双层 oracle；每个 remap 站点独立 mutation | P1.4 / P3 / P8.1 |
-| R2 | 心跳死亡使 A 在生产上全程死码 | 高：所有 oracle 用 raw sink 会假绿 | P6 先修 + 其测试建在 delivery session 上；O-3/O-5 必须走生产 sink | P6 |
+| R2 | 心跳死亡（**当前现网缺陷**，非仅 A 的风险） | 高：Responses HTTP 默认配置下首个 item 提交后即无保活；且会使 A 在生产上全程死码，而 raw-sink oracle 假绿 | P6 先修（可独立交付）+ 其测试建在 delivery session 上；受影响端点各有回归锁（P6.3 / P6.3b）；O-3/O-5 必须走生产 sink | P6 |
 | R3 | continuation 撞车产生重复 wire index | 高：与本轮 blocker 同型故障 | C4 单一 frontier；P4.2 专门的撞车重放 oracle | P4 |
 | R4 | 分配并发缝（tick vs flush） | 中高：重复/跳号，概率性 | C5 同临界区；P2.2 FakeClock 让点 oracle | P2 |
 | R5 | 空 anchor 回传被上游拒 400 | 中：多轮对话第二轮失败 | P7 先核实既有清洗（很可能已覆盖），FAIL 则兜底载体/清洗 | P7 |
 | R6 | golden 重捕掩盖真实回归 | 中 | 重捕前必须先过 O-1/O-2；重捕 commit 与实现 commit 分离，diff 可审 | P3 / P5 |
 | R7 | 与并发会话（`fix/client-proxy-keepalive-300s` 等分支）冲突 | 中 | 隔离 worktree + 行级共存；实施前 rebase/merge 到当时 master，`comm -12` 核 WIP∩FF | P0.0 |
+| R8 | **跨相位集成缝**（P4 leg 语义 × P5 gap anchor）只在合并态才暴露 | 中高：本项目吃过亏的形状，逐 task 审看不到，代价最高 | 升格为独立 task P5.4（red-first + 交叉 mutation），**不**依赖 P8.7 合并态审兜底 | P5.4 |

@@ -29,10 +29,12 @@
 （**P0 Task 0.0 第一件事**：核实 `fix/client-proxy-keepalive-300s` 是否已合并 master——P5 依赖它的 contentDeadlineMs / injectContentScaffold 机制；未合并则从该分支起 worktree 并记录实际 base。）
 
 已知的两个前置事实（planner 实测，直接采信，别重新推）：
-1. **P6 的心跳缺陷是真的**：生产 delivery-session sink 上，driver 的 boundary commit 序列 suspend → freeze → resume 会让心跳**永久死亡**（freezeHeartbeat 被映射为 closeHeartbeat，置 heartbeatStopped，而 resume 的守卫会因此直接 return）。raw sink 上不会——而现有 anchor 测试全用 raw sink，所以测不到。这意味着不修 P6，A 的 gap anchor 在生产上永不会被注入，P5 的 oracle 会假绿。P6 只依赖 P0，可与 P1 并行起，但**必须先于 P5**。
+1. **P6 修的是当前现网缺陷，不只是 A 的前置门**：生产 delivery-session sink 上，driver 的 boundary commit 序列 suspend → freeze → resume 会让心跳**永久死亡**（freezeHeartbeat 被映射为 closeHeartbeat，置 heartbeatStopped，而 resume 的守卫会因此直接 return）。raw sink 上不会——而现有 anchor 测试全用 raw sink，所以结构性测不到。**Responses HTTP 的 buffered 默认就是 true 且有 output_item 边界，故它在 bundled 默认配置下就受影响**（CC 默认也 true 但边界退化、影响极小；Anthropic 默认 false，开启 protect_streaming_generation 即中招）。因此 P6 **可以独立于 A 先行落地与合并**（路径 P0 → P6），它自身就有生产价值；但它**仍是 P5 的前置**，A 开工前必须完成。
 2. **审查 F4 的一个断言是假的**：它说「本仓库没有入站空 text block 清洗」，实际 `sanitize/content-blocks.ts:13` 的 filterEmptyAnthropicTextBlocks 无条件跑在生产 Anthropic 入站路径上。P7 因此从「实现兜底」重定位为「核实触达 + 真 CC 多轮实证」，FAIL 分叉的兜底仍在范围内。
 
 先从 P0 开始（基线与守卫）。P0 不产生任何 src/ 改动，但它建的三条 oracle 是后面每一相位的验收基础——本改造的失败模式是**静默重排客户端内容**，typecheck 绿和单测绿都不足以发现。
+
+（若当前优先级是尽快止血现网 keepalive 缺陷，可只走 P0 → P6 先交付，A 的其余相位另行排期。）
 ```
 
 ---
@@ -130,13 +132,14 @@ Task 4.3 有一个可能的真分叉（某格式因删 continuationOffset 而破
 ### P5 — gap anchor 生命周期
 
 ```text
-执行 plan-5-gap-anchor-lifecycle.md。前置 P2 + P3 + **P6**（心跳必须先修好，否则本相位的 oracle 会在 raw sink 上假绿而生产上是死码）。
+执行 plan-5-gap-anchor-lifecycle.md。前置 P2 + P3 + **P4**（Task 5.4 的交叉缝要用到 leg 语义）+ **P6**（心跳必须先修好，否则本相位的 oracle 会在 raw sink 上假绿而生产上是死码）。
 
 目标：解除 delivery/session.ts 里 `semanticBlockCount === 0` 那道门（其注释明写解除条件就是本 allocator），让 gap anchor 能在任意「客户端无 open block」窗口注入，并在下一个真实块前关闭。
 
-两个承重点：
-- per-gap latch：contentScaffoldAttempted 从一次性改为每 gap 重新武装。注意判据是「有过新真实内容」而非「anchor 关了」——后者会让心跳在同一 gap 内连开多个 anchor。
-- close-before-real 要覆盖**每一个** gap anchor，不只第一个（现有 `!anchorClosed` 幂等守卫使它只关一次）。三条路径都要：flush 循环 per-frame、retreat 分支、live-reconcile。同时终局 close-off 的幂等不能破。
+三个承重点：
+- per-gap latch（5.1）：contentScaffoldAttempted 从一次性改为每 gap 重新武装。注意判据是「有过新真实内容」而非「anchor 关了」——后者会让心跳在同一 gap 内连开多个 anchor。
+- close-before-real（5.2）要覆盖**每一个** gap anchor，不只第一个（现有 `!anchorClosed` 幂等守卫使它只关一次）。三条路径都要：flush 循环 per-frame、retreat 分支、live-reconcile。同时终局 close-off 的幂等不能破。
+- **续写腿 × gap anchor 的跨相位集成缝（5.4）**——用户裁决升格为独立 red-first task，**不要**指望 P8 的合并态审兜底。理由：跨相位集成缝只在合并态才被发现、代价最高（本项目吃过这个亏）。P4 测「续写腿的块从 frontier 分配」、P5 测「gap 静默产生 anchor」，两者的**交叉**（续写腿进行中发生 gap 静默）没有任何一侧覆盖。plan 列了四个要验的具体形状，并要求 mutation 验证它咬的是交叉而非单侧。
 
 AnchorState 字段语义要变（plan 有对照表）：anchorBlockOpen 现在其实是「本 generation 用过 anchor 吗」的历史标志，多 anchor 下不够用，要拆成「用过吗」（allocator.anchorsOpened()>0）与「当前有 open 吗」（openAnchorIndex?: number）。**替换而非并存**（项目不留双轨包袱），grep 全站点逐处迁移。
 
@@ -147,25 +150,32 @@ tool_use 特别注意：CC 是 eager per-block 执行（每个 content_block_sto
 裁判轴：长远正确 + 完整（非 ROI/YAGNI）。
 ```
 
-### P6 — 心跳生命周期修复（可与 P1–P4 并行）
+### P6 — 心跳生命周期修复（**现网缺陷**，可独立于 A 先行交付）
 
 ```text
-执行 plan-6-heartbeat-lifecycle-fix.md。前置仅 P0。**必须先于 P5**。
+执行 plan-6-heartbeat-lifecycle-fix.md。前置仅 P0。**必须先于 P5**，但**可以独立于 A 的其余相位先行落地与合并**——它修的是当前现网缺陷，自身即有生产价值。
 
-这是 planner 读码 + 实测发现的前置缺陷，不在冻结设计与审查报告里。它不改变设计目标或架构方向，只移除「A 落地后在生产上仍是死码」的障碍。
+这是 planner 读码 + 实测发现的缺陷，不在冻结设计与审查报告里。它不改变设计目标或架构方向。
 
 缺陷：driver 的 block-level boundary commit 做 suspendHeartbeat(:1269/:1293) → flushBufferedFrames 内部 freezeHeartbeat(:1145) → resumeHeartbeat(:1271/:1326)。生产 delivery-session sink 上 freezeHeartbeat 被映射为 closeHeartbeat（session.ts:167），置 heartbeatStopped=true（:98），而 resume 的守卫 `if (... || heartbeatStopped) return`（:173）导致心跳**永久死亡**。raw sink（makeSseSink）无此问题——其 freezeHeartbeat 只 clearTimeout。
 
-实测（FakeClock + 正样本对照）：
-  suspend→resume,        raw sink        → ping ×4
-  suspend→resume,        delivery session → keepalive ×10
-  suspend→freeze→resume, delivery session → []          ← 死亡
+**影响面（已核实，plan 里有完整矩阵）**：Responses HTTP 的 buffered 默认 true（state-defaults.ts:243）+ 有 output_item.done 边界（candidate-response-session.ts:140）+ delivery sink → **默认配置下就受影响**：多 item 响应的首个 item 提交后心跳即永久死亡。CC 默认也 true 但边界退化（只认上游 error 帧），影响极小。Anthropic 默认 false，但开启 protect_streaming_generation 即中招。
+
+实测两层，都带正样本对照：
+  层一 sink 契约：suspend→resume raw=ping×4 / delivery=keepalive×10；suspend→freeze→resume delivery=[]
+  层二 真 driver：120s 块间静默，raw sink 5 个 keepalive vs delivery sink 0 个
+
+为什么至今没发现：现有 anchor/心跳测试全构造 raw sink，而三条生产 buffered 路径全走 delivery sink；delivery-session.unit.test.ts 虽直接测 delivery session 但从未组合 freeze+resume。症状是沉默的（没异常、没红测，只是静默期少了 ping）。
 
 修法不是新架构决策，是把偏离的实现对齐到既有契约：client-sink.ts:361-366 明写 freezeHeartbeat「stops the timer WITHOUT closing the sink，write 仍可用（unlike close()）」。delivery session 是实现跑偏了。
 
-必做负样本：修完要有一条「close() 仍然永久，resume 不得复活」的测试，防止修过头。
+必做：
+- 负样本：修完要有一条「close() 仍然永久，resume 不得复活」的测试，防止修过头。
+- **回归锁不能只写 Anthropic**（Task 6.3b）：默认中招的是 Responses HTTP，那条路径必须有自己的回归测试，否则默认受害的路径反而没测。
 
-有一处需要现场裁决的点（plan 里写了）：终局路径（closeAnchorIfOpen、driver 终端、pump 各终端分支）依赖 freeze 的永久性，改完后这些站点该调什么。plan 给了裁决依据；若核实发现两条 sink 的 close() 副作用不一致而无法统一，**停下回报**。
+有一处需现场裁决的点（plan 里写了）：终局路径（closeAnchorIfOpen、driver 终端、pump 各终端分支）依赖 freeze 的永久性，改完后这些站点该调什么。plan 给了裁决依据；若核实发现两条 sink 的 close() 副作用不一致而无法统一，**停下回报**。
+
+若走独立交付：路径 = P0 → P6，交付前补 test:backend 全绿 + 异模型 reviewer 审这一相位 + DESIGN/backlog 同步。
 
 裁判轴：长远正确 + 完整（非 ROI/YAGNI）。
 ```
@@ -201,7 +211,7 @@ tool_use 特别注意：CC 是 eager per-block 执行（每个 content_block_sto
 - 作废 plan-Q5-three-way-overlap.md 的 `wireIndex(i) = i + anchorShift + continuationOffset`，追加 round-3 修订 + 替代记账表述。跨文档 grep 验证无残留。
 - backlog 登记 J（长 text 块 idle 分块，A 的下游收益）+ B 的复活条件（record-not-adopted）。
 
-合并态审查（Task 8.7）：派**异模型** reviewer（本计划由 Claude planner 写 → 用 gpt-souls:reviewer），prompt 必须显式写裁判轴「长远正确 + 完整，非 ROI/YAGNI」。plan 列了 5 个重点检查面，其中一条是 planner 主动登记的已知薄弱面：**续写腿里发生 gap 静默**（P4 的 leg 语义 × P5 的 gap anchor）本计划没有专门 task。reviewer 的「无消费者/可安全删/已通过」类断言要亲自对照代码复核。
+合并态审查（Task 8.7）：派**异模型** reviewer（本计划由 Claude planner 写 → 用 gpt-souls:reviewer），prompt 必须显式写裁判轴「长远正确 + 完整，非 ROI/YAGNI」。plan 列了 5 个重点检查面。注意其中的跨相位集成缝（P4 leg 语义 × P5 gap anchor）**已由 Task 5.4 落成独立 red-first task**，reviewer 的职责是复核 5.4 的覆盖是否够（四个形状是否穷尽、交叉 mutation 是否真咬交叉），不是从零发现它。reviewer 的「无消费者/可安全删/已通过」类断言要亲自对照代码复核。
 
 交付前跑 `bun run test:backend`（不是 test:fast）+ `lint:all`（不带 cache）。
 ```

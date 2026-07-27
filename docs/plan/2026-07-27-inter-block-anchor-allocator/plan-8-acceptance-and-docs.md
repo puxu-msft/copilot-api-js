@@ -78,8 +78,12 @@ test("POSITIVE CONTROL: a deliberately duplicated index DOES get reordered by th
   - **新增** B 的复活条件条目（`record-not-adopted`）：若 CC 改为非 eager tool 执行，或需要给 text/thinking 更干净的载体，方案 B（延迟 stop）值得重估。
 - [ ] **Step 2**：`docs/DESIGN.md`「活的架构现状」——更新 keepalive 行：正常 cadence 裸 ping、逼近 `stream_keepalive_escalate_sec` 时按需升级、**升级覆盖 pre-content 与 inter-block 两类窗口**、wire index 由 generation frontier 统一分配。
 - [ ] **Step 3**：`docs/todo/2026-07-22-client-proxy-keepalive-300s.md`——标为已闭合，指向本 plan 与 FINDINGS。
+- [ ] **Step 3b**：**P6 的现网缺陷单独记账**（若 P6 已独立交付则此步已在其交付时完成，核实即可）：`docs/DESIGN.md` 的 buffered/keepalive 行注明「boundary commit 曾使 delivery 心跳永久死亡（Responses HTTP 默认受影响），已于 <commit> 修复」；`docs/todo/deferred-backlog.md` 若有相关条目一并关闭。
 - [ ] **Step 4**：`docs/spec/2026-07-27-inter-block-keepalive-carrier.md` 头部加实施状态注解（方案 A 已落地 + commit）。
-- [ ] **Step 5**：记忆库——更新 `docs/memory/MEMORY.md` 相关 stub；提炼本次教训（至少两条候选：① 「同名方法在两条 sink 实现上语义分歧，测试装在宽松那条 → 生产缺陷测不到」；② 「审查报告的 absence 断言（『全仓 grep 未见』）必须亲自复核」——后者是 `verifying-authoritative-claims` 的又一实例）。
+- [ ] **Step 5**：记忆库——更新 `docs/memory/MEMORY.md` 相关 stub；提炼本次教训（至少三条候选）：
+  1. **「同名方法在两条 sink 实现上语义分歧，测试只装在宽松那条 → 生产缺陷结构性测不到」**（P6；这条有普遍性——凡是「同一接口两个实现 + 测试只覆盖其一」都适用，值得独立成条或并入 `empirical-verification`）；
+  2. **「审查报告的 absence 断言（『全仓 grep 未见』）必须亲自复核」**（P7 的 F4 纠正；`verifying-authoritative-claims` 的又一实例，可并入该 skill 正文）；
+  3. **「跨相位集成缝要在计划期就落成独立 red-first task，不留给合并态审」**（P5.4 的由来；印证既有记忆 `cross-phase-integration-seam-only-caught-at-merged-state`，可作为该条的正向应用实例补入）。
 - [ ] **提交** → `docs: sync live docs and backlog after the frontier allocator landed`
 
 ## Task 8.7：合并态审查
@@ -90,7 +94,7 @@ test("POSITIVE CONTROL: a deliberately duplicated index DOES get reordered by th
   - C3 结构性短路在**每一条**格式路径上都成立吗（Anthropic 之外的 vendor 走 allocator 时 `anchorsOpened()===0` 是否恒真）；
   - P6 的 freeze/close 裁决是否在**所有**终局路径上正确（`closeAnchorIfOpen` / driver 终端 / pump 的多个终端分支）；
   - `AnchorState` 字段语义变更后，是否有站点仍按旧语义读（`anchorBlockOpen` 的残留）；
-  - 跨 phase 集成缝：P4 的 leg 语义 × P5 的 gap anchor（续写腿里发生 gap 静默会怎样？——**这个组合本计划没有专门 task，是 reviewer 应重点挑的缺口，也是 planner 主动登记的已知薄弱面**）。
+  - 跨 phase 集成缝：P4 的 leg 语义 × P5 的 gap anchor。**该交叉已由 Task 5.4 落成独立 red-first task**（用户 2026-07-27 裁决升格，理由：跨相位集成缝只在合并态才被发现、代价最高），故 reviewer 的职责是**复核 5.4 的覆盖是否真的够**（四个形状是否穷尽、交叉 mutation 是否真咬交叉而非单侧），而不是从零发现它。
 - [ ] **Step 3**：吸收其客观事实，对其判断谨慎取舍；其「无消费者/可安全删/已通过」类绝对断言**亲自对照代码复核**（本 plan 的 P7 就是一例反面教材）。
 - [ ] **Step 4**：未采纳的建议逐条记录理由（`record-not-adopted`）。
 
@@ -112,4 +116,5 @@ test("POSITIVE CONTROL: a deliberately duplicated index DOES get reordered by th
 | O-5 真 CC >300s（含对照组） | _待填_ | |
 | O-6 字节等价 SHA | _待填_ | |
 | O-7 真 CC numTurns>=2 | _待填_ | |
-| O-8 心跳跨 commit 存活 | _待填_ | |
+| O-8 心跳跨 commit 存活（Anthropic + Responses HTTP） | _待填_ | |
+| O-9 续写腿 × gap anchor 交叉缝 | _待填_ | |

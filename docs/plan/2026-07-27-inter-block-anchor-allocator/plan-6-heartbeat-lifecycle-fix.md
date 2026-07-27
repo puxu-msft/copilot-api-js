@@ -1,7 +1,9 @@
-# P6 — 心跳生命周期修复（A 的前置缺陷）
+# P6 — 心跳生命周期修复（**现网缺陷**，可独立于 A 先行落地）
 
 > **前置**：P0。**可与 P1–P4 并行**（无代码重叠）。**必须先于 P5**。
-> **本相位不在冻结设计与审查报告里** —— 是 planner 在读码 + 实测中发现的前置缺陷。它不改变设计的目标或架构方向，只是移除「A 落地后在生产上仍是死码」的障碍。
+> **本相位不在冻结设计与审查报告里** —— 是 planner 在读码 + 实测中发现的缺陷。它不改变设计的目标或架构方向。
+>
+> **定位（用户 2026-07-27 裁决，提升）**：这**不只是** A 的前置门。CC 与 Responses 的 buffered **默认就是 `true`**，所以该缺陷**当前很可能已在现网生效**——首块提交后心跳永久死亡、之后整段静默无任何保活。故 **P6 自身即有独立生产价值，可以先于 A 的其余相位单独落地、单独合并**，不必等 allocator。若需尽快止血，P0 → P6 是一条完整的可交付路径。
 
 ## 缺陷
 
@@ -24,21 +26,48 @@ sink.suspendHeartbeat()            // driver.ts:1269 / :1293   —— 可恢复�
 
 ## 实测证据（planner，FakeClock + 正样本对照）
 
+**层一：sink 契约层**
+
 ```text
 CONTROL   (suspend → resume,          raw sink):         ["ping","ping","ping","ping"]
 CONTROL   (suspend → resume,          delivery session): ["keepalive:ping" ×10]
 PRODUCTION(suspend → freeze → resume, delivery session): []                    ← 心跳死亡
 ```
 
-正样本对照证明探针确实触达目标：同一 harness 在不调 `freezeHeartbeat` 时能观察到 keepalive；只有加上 `freezeHeartbeat`（= 生产 boundary-commit 的真实形状）才归零。
+**层二：真 driver 端到端**（`runResponseBufferedSink` + 真 `commitBoundaries` + gated upstream：一个完整块 → 120s 块间静默）
 
-## 为什么现有测试测不到
+```text
+RAW SINK      keepalives during 120s inter-block silence: 5
+DELIVERY SINK keepalives during 120s inter-block silence: 0     ← 现网形状
+```
 
-全部 anchor / 心跳测试都构造 **raw sink**（`anchor-multiblock-lifecycle.it.test.ts`、`buffered-anchor*.test.ts`、`retreat-anchor-collision.it.test.ts` 等 import `makeSseSink`），而生产 Anthropic 走 `makeDeliverySseSink`（`handler-v4.ts:1073`）。两条 sink 对同一组 `freeze/suspend/resume` 语义**实现不同**，测试装在语义较宽松的那条上——这正是「通过/干净结论不自证」的教科书案例。
+两层都带正样本对照证明探针触达目标：同一 harness 换成 raw sink 就能看到 keepalive；只有生产 sink + 真实 boundary commit 才归零。**层二尤其关键**——它证明这不是「sink 契约的理论分歧」，而是走真 driver、真 commit 边界就会发生的实际行为。
 
-## 为什么这是 A 的硬前置门而非独立 backlog
+## 影响面（用户裁决要求写明；planner 逐条核实）
 
-A 的 gap anchor **由心跳 tick 注入**。首个真实块提交后（= 第一次 boundary commit），生产心跳已死 → gap anchor 永不注入 → A 的全部机制在生产上是死码。而 P5 的 oracle 若沿用现有 raw-sink harness，会**假绿**。故：① P6 必须先落；② P5 及后续的端到端 oracle 必须建在 delivery session 上。
+**触发条件**：走 `runResponseBufferedSink` **且**有 `commitBoundaries` 命中（= 发生过 block-level boundary commit）**且** sink 是 `makeDeliverySseSink`。三者同时满足即中招。
+
+| 端点 | buffered 默认 | sink | `commitBoundaries` | 当前是否受影响 |
+|---|---|---|---|---|
+| **Responses HTTP** | **`true`**（`state-defaults.ts:243` `responsesBufferedRetry`） | `makeDeliverySseSink`（`responses/handler-v4.ts:347`） | **有**，`candidate-response-session.ts:140` 仅 `transport === "http"` 挂 `isResponsesCommitBoundary`（边界含 `response.output_item.done`——**多 item 响应每个 item 都是一次 commit**） | **是。默认配置即中招** |
+| **Chat Completions** | **`true`**（`state-defaults.ts:100` `chatCompletionsBufferedRetry`） | `makeDeliverySseSink`（`chat-completions/handler-v4.ts:519`） | 有，但**退化**：`ccCommitBoundaries` 只认 in-band 上游 `error` 帧，普通内容帧恒 false（`handler-v4.ts:357` + 其注释） | **仅上游 error 路径**。正常响应走终局 flush，此后无后续流 → 实际影响极小 |
+| **Responses WS** | `true`（同一 key） | WS sink | **故意省略**（`responses/ws.ts:376-394`，terminal-only） | 否（无 boundary commit） |
+| **Anthropic** | `false`（`state-defaults.ts:84` `protectStreamingGeneration`） | `makeDeliverySseSink`（`messages/handler-v4.ts:1073`） | 有，`anthropicCommitBoundaries`（`content_block_stop`/`error`） | **默认否**；但**用户显式开启 `protect_streaming_generation` 即中招**，且这正是 A 的目标制度 |
+| Gemini | 无 buffered | — | — | 否 |
+
+**结论**：**Responses HTTP 在 bundled 默认配置下就受影响**——一个多 output_item 的响应，第一个 `response.output_item.done` 提交后心跳即永久死亡，其后任意长的上游静默都不再有保活帧，客户端只能等自己的 idle 超时。这与 A 无关，是当前现网行为。
+
+**为什么至今没被发现（测试盲区）**：
+
+1. **现有 anchor / 心跳测试全部构造 raw sink**（`anchor-multiblock-lifecycle.it.test.ts`、`buffered-anchor*.test.ts`、`retreat-anchor-collision.it.test.ts`、`client-sink*.test.ts` 等一律 import `makeSseSink`），而生产三条 buffered 路径全部走 `makeDeliverySseSink`。两条 sink 对同一组 `freeze/suspend/resume` **实现语义不同**，测试装在语义较宽松的那条上。
+2. `delivery-session.unit.test.ts` 虽然直接测 delivery session，但**没有一条测试组合 `freeze` + `resume`**——它测的是 suspend/resume 与 escalation 的 cadence，从未复现 driver 的 `suspend → freeze → resume` 三步真实序列。
+3. 症状是**沉默的**：没有异常、没有错误帧、没有测试红，只是「静默期少了几个 ping」。只有长静默的真实请求才显形，而长静默请求本来就少、且失败常被归因于上游。
+
+这是「通过/干净结论不自证」的教科书案例——**同名方法在两条实现上语义分歧 + 测试只装在宽松那条**。此教训在 P8.6 提炼进记忆库。
+
+## 为什么它同时是 A 的硬前置门
+
+A 的 gap anchor **由心跳 tick 注入**。首个真实块提交后（= 第一次 boundary commit）生产心跳已死 → gap anchor 永不注入 → A 的全部机制在生产上是死码。而 P5 的 oracle 若沿用现有 raw-sink harness，会**假绿**。故：① P6 必须先于 P5；② P5 及后续端到端 oracle 必须建在 delivery session 上。
 
 ## Files
 
@@ -115,12 +144,36 @@ test("after a real block-level commit on the PRODUCTION delivery sink, an inter-
   // gated upstream：真实块（提交）→ 长静默
   // 断言静默期收到 >= 1 个 keepalive 帧
 })
+test("POSITIVE CONTROL: the same harness on a raw sink already emits keepalives today", async () => {
+  // 证明 harness 有裁决力（planner 实测：raw 5 vs delivery 0）
+})
 ```
 
-- [ ] **Step 2**：跑，红。
+- [ ] **Step 2**：跑，红（planner 已实测该形状为 0 keepalive）。
 - [ ] **Step 3**：（6.2 应已修好；若仍红说明还有第二个死因，查下去）
 - [ ] **Step 4**：跑，绿。
 - [ ] **提交** → `test(pipeline): heartbeat survives block-level commit on the production delivery sink`
+
+## Task 6.3b：受影响端点的回归覆盖（**Responses HTTP 是默认中招的那个**）
+
+> 影响面表显示 **Responses HTTP 在 bundled 默认配置下就受影响**（`responsesBufferedRetry: true` + `response.output_item.done` 边界 + delivery sink）。Anthropic 只在用户开启 `protect_streaming_generation` 时中招。故回归覆盖**不能只写 Anthropic 一条**——否则默认就在受害的那条路径反而没测。
+
+- [ ] **Step 1: 写失败测试** —— Responses HTTP 版本
+
+```ts
+// tests/responses/heartbeat-survives-item-commit.it.test.ts
+test("Responses HTTP: after the first response.output_item.done commit, an idle still emits keepalives", async () => {
+  // 真 runResponseBufferedSink + isResponsesCommitBoundary + makeDeliverySseSink
+  // 上游：output_item.done（提交）→ 长静默 → 第二个 item
+  // 断言静默期 keepalive >= 1
+})
+```
+
+- [ ] **Step 2**：跑，红。
+- [ ] **Step 3**：（由 6.2 的修复覆盖——本 task 只加**该端点的**回归锁）
+- [ ] **Step 4**：跑，绿。
+- [ ] **Step 5**：CC 端点评估——其 `ccCommitBoundaries` 只认上游 `error` 帧，正常响应走终局 flush（此后无后续流）。**核实**该退化路径是否真的无影响：若 error commit 之后还有帧要发，则同样中招，需补测；若确无，在此注明「结构性无影响」+ 依据。
+- [ ] **提交** → `test(responses): lock heartbeat survival across output_item commits`
 
 ## Task 6.4：现有 anchor 测试的 sink 迁移评估
 
@@ -145,3 +198,17 @@ test("after a real block-level commit on the PRODUCTION delivery sink, an inter-
 - [ ] `typecheck` + `test:fast` 绿。
 - [ ] O-8 绿；正/负样本对照双向验证（可恢复 freeze 能复活、永久 close 不能复活）。
 - [ ] 终局路径的 freeze/close 裁决已落地并注明理由。
+- [ ] **受影响端点各有回归锁**：Anthropic（6.3）+ Responses HTTP（6.3b）+ CC 的评估结论。
+
+## 独立交付（用户裁决）
+
+本相位**可独立于 A 的其余相位合并**——它修的是当前现网缺陷（Responses HTTP 默认配置即受影响），自身即有生产价值。
+
+若走独立交付路径：
+
+- [ ] 路径 = **P0 → P6**（P0 的 O-6 字节等价与套件基线仍需先建，用于证明本修复不改变短请求 wire）。
+- [ ] 独立交付前额外补：`bun run test:backend` 全绿 + 异模型 reviewer 审这一相位的合并态。
+- [ ] `docs/DESIGN.md` 与 `docs/todo/deferred-backlog.md` 同步该缺陷的发现与修复（不必等 P8.6 的整体 doc-sync）。
+- [ ] **仍需**在 A 的其余相位开工前完成——P5 依赖它。
+
+**注意**：独立交付**不改变** P5 对它的依赖，也**不**把它从本 plan 中摘除；只是它的合并时机可以提前。
