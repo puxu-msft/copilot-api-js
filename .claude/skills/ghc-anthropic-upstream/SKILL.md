@@ -30,7 +30,7 @@ description: 当排查 copilot-api-js Anthropic 路径上游异常时使用—�
 - **消费方**：TUI 完成行 `think:enc(N)`（灰，加密合法）/ `think:poison(N)`（黄，毒化）token，派生器 entry-view `responseThinkingFromBody`（读**正常完成**请求最终累积的 `finalUpstreamResponse.body`）。附注：usage **无**独立 thinking/reasoning token 计数（`output_tokens` 含 thinking 但不可分离）。
 - thinking signature **自包含**（加密 thinking 内容本身、非上下文/位置）：跨对话/非首块/重写后均 200；约束=原样不改 + thinking 块**相对序**不变。**相邻性非约束**（PoC 订正）：把相邻 thinking 用非 thinking 块交错分隔（打破连续）反而 200，正是上游要求的——见 `cannot be modified` 行。
 - **assistant 消息内 thinking 布局的三条上游硬约束**（2026-07-26 真上游重放实测，全部可复跑：`exp/thinking-terminal-block/`）：**C1** 最新 assistant 消息内两 thinking 不得相邻；**C2** 任一 assistant 消息末块不得是 thinking；**C3** 含 tool_use 的消息必须以 tool_use 收尾。合法形态：`[T,SEP,T,tool]`／`[T,SEP,T,SEP]`（合成 marker **可以**合法收尾）／`[T,tool1,T,tool2]`（tool_use 夹在 thinking 之间合法，C3 只管末块）。**修一条必须同时断言另两条**——本项目就栽在只修 C1 上。
-- **上游 400 的 messages 索引口径与我方数组可能差 1**（我方 payload 含内联 `role:"system"` 消息、上游折叠了其一）：**按形状定位违规消息，别按索引**。
+- **上游 400 的 messages 索引口径与我方数组可能差 1**（实测：上游报 `messages.27`、我方是 28）。**偏移病因未查明**（我方 payload 有 3 条内联 `role:"system"`，怀疑上游折叠但对不上数——折叠 3 条应偏 -3）。**按形状定位违规消息，别按索引**。
 - **最小构造复现不了 C2**：同样的 `[T,tool,T]` 在最小对话里 200、在生产完整 payload（30 消息/3 条内联 system/29 tools）里 400。**复现上游校验必须用真实完整 payload，最小构造的阴性结果没有裁决力。**
 - tool_use.id 上游不校验格式（`toolu_recovered_0` 也 200），只引用一致性要紧；仍合成 `toolu_`+24base62 防客户端 SDK。
 - 上游兼容矩阵/特性协商属 docs（anthropic-compat.md / refusal-recovery.md），本 skill 只管调试。

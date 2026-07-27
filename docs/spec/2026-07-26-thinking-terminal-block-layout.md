@@ -16,7 +16,7 @@ HTTP 400: messages.27: The final block in an assistant message cannot be `thinki
 
 **根因是我方自造**：客户端历史里 `messages[28]`（assistant）形如 `[thinking, thinking, tool_use]`（CC 把本应交替的 thinking 累积成相邻块 baked 进历史）。L1 de-stack 的 `move_blocks` 策略为满足「两个 thinking 不得相邻」，把唯一可用的非 thinking 块（`tool_use`）挪到两个 thinking 之间，产出 `[thinking, tool_use, thinking]` —— 消灭了 C1 违规，却制造了 C2 违规。
 
-> 上游报的索引 `messages.27` 比我方数组索引 28 小 1（我方 payload 含 3 条内联 `role:"system"` 消息，上游对其中一条做了折叠）。**别按上游索引直接定位我方消息**——按形状（哪条 assistant 消息末块是 thinking）定位才可靠。
+> 上游报的索引 `messages.27` 比我方数组索引 28 小 1。**偏移来源未查明**——我方 payload 里确实有 3 条内联 `role:"system"` 消息（见下方"怪味"），怀疑上游折叠了其中一条，但**未实测验证**（若真是折叠 3 条 system，偏移应是 -3 而非 -1，所以这个假说本身就对不上）。实践结论不依赖病因：**按形状定位违规消息（哪条 assistant 消息末块是 thinking），别按上游给的索引**。
 
 ## 实测确立的约束（全部亲手实测，非文档推断）
 
