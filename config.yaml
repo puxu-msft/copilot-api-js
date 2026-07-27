@@ -750,18 +750,17 @@ anthropic:
   # 客户端-代理流式 keepalive ping cadence 秒数。0 = 禁用；默认 20。commit 窗口开 200 后，连接级心跳（与上游解耦）距上次写客户端 N 秒就发一帧 ping——无论上游静默/thinking/buffered——故长 mid-stream/buffered 停滞绝不触发 Claude Code ~60s 空闲看门狗。cadence = ping 之间的最小间隔（真帧或 ping 都推进锚点）；冷启动 commit 先发一个立即 ping，之后由它节流。clamp 到远低于 60 的大余量（实测安全上界 ~45s）。心跳不重置上游 idle-timeout；只记入 forwardedSseEvents。
   stream_keepalive_ping_sec: 20
 
-  # Keepalive FRAME type for the client-facing Anthropic stream. Three modes:
-  #   ping (default) — a bare `event: ping`. Does NOT reset CC's 300s no-real-content deadline (a ping is
-  #     not a "chunk"; exp/cc-idle-280s/REPORT.md), so a >300s pre-content silence CAN still time out — an
-  #     accepted limit pending a real keepalive (docs/todo/2026-07-22-client-proxy-keepalive-300s.md).
-  #   empty_text — RETIRED as default (ADR 2026-07-22 D2). Injected an empty content delta / synthetic
-  #     empty-text ANCHOR block, but an empty text block is wrong-shaped AND G2-proven unable to reset the
-  #     300s deadline on the proxy path. Code kept dormant/selectable for keepalive research only.
-  #   enveloped_ping — synthetic envelope + bare ping. Experimental; expected to time out on long silence.
-  # 客户端流式 keepalive 帧类型。三种模式：
-  #   ping（默认）——裸 `event: ping`。重置不了 CC 的 300s 死线（ping 不算 chunk，见 exp/cc-idle-280s/REPORT.md），故 >300s pre-content 静默仍可能超时——已接受的限制，待真保活方案（docs/todo/2026-07-22-client-proxy-keepalive-300s.md）。
-  #   empty_text —— 已退役默认（ADR 2026-07-22 D2）。曾注入空 content delta / 合成空-text 锚点块，但空 text block 是错误形状且 G2 实证不能重置 300s 死线。代码保留休眠/可选，仅供保活调研。
-  #   enveloped_ping —— 合成信封 + 裸 ping。实验模式；长静默预期仍超时。
+  # After this many seconds without a client-visible content_block_delta, upgrade the normal ping heartbeat to an empty content delta. 0 disables. / 距上一个客户端可见 content_block_delta 超过此秒数后，把常规 ping 升级为空 content delta；0 禁用。
+  stream_keepalive_escalate_sec: 200
+
+  # Keepalive FRAME type for the client-facing Anthropic stream. `ping` remains the normal default shape;
+  # `stream_keepalive_escalate_sec` upgrades it to an empty content delta only near CC's 300s deadline.
+  # With a real block open, escalation uses that index and adds no structure; pre-content escalation alone
+  # opens the synthetic empty-text anchor. `empty_text` remains selectable for always-on content-delta mode;
+  # `enveloped_ping` is experimental envelope + ping.
+  # 客户端流式 keepalive 帧类型。`ping` 保持正常默认形状；`stream_keepalive_escalate_sec` 只在逼近 CC 300s
+  # 死线时升级为空 content delta。已有真实块时沿用其 index、不造结构；仅 pre-content 才开合成空-text anchor。
+  # `empty_text` 仍可选作全程 content-delta 模式；`enveloped_ping` 是实验性信封 + ping。
   stream_keepalive_mode: ping
 
   # L2 — transactional buffered retry for streaming generations cut short by an upstream mid-stream RST (GHC NGHTTP2_CANCEL on large Write/Edit in huge contexts). Buffers the whole response and commits only after message_stop, re-running the upstream exchange on a transport-close / truncation — so the client transparently receives ONE complete generation instead of a half stream + error. See docs/rfc/streaming-upstream-rst-buffered-retry.md.

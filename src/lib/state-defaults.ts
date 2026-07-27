@@ -78,7 +78,8 @@ export const CONFIG_MANAGED_DEFAULTS = {
   responseHeaderWhitelist: ["request-id", "x-request-id", "anthropic-ratelimit-*", "anthropic-organization-id", "retry-after"] as ReadonlyArray<string>,
   stripAttributionHeader: true,
   streamKeepalivePingSec: 20,
-  streamKeepaliveMode: "ping" as "ping" | "enveloped_ping" | "empty_text", // ADR 2026-07-22 D2: empty_text retired as default (wrong-shaped, G2-ineffective); kept selectable/dormant for research
+  streamKeepaliveEscalateSec: 200,
+  streamKeepaliveMode: "ping" as "ping" | "enveloped_ping" | "empty_text", // D2 partial reversal 2026-07-27: ping stays the normal shape; content delta/anchor is injected only near the 300s deadline
   streamCommitAfterSec: 20,
   protectStreamingGeneration: false as false | "on" | "tool_use_only",
   bufferedRetryShared: { maxRetries: 3, bufferCapBytes: 16_777_216, heartbeatSec: 15 } as BufferedRetryCaps,

@@ -678,15 +678,17 @@ export const AnthropicConfigSchema = z
      */
     stream_keepalive_ping_sec: nullableNonnegativeInt(),
     /**
-     * Keepalive FRAME type for the client-facing Anthropic stream. `ping` (default) is a bare
-     * `event: ping` — it does NOT reset Claude Code's 300s no-real-content deadline (a ping is not a
-     * "chunk"; exp/cc-idle-280s/REPORT.md), so a >300s pre-content silence may time out (an accepted
-     * limit pending a real keepalive — docs/todo/2026-07-22-client-proxy-keepalive-300s.md).
-     * `empty_text` was RETIRED as default (ADR 2026-07-22 D2): it injected an empty content delta / a
-     * synthetic empty-text ANCHOR block, but an empty text block is wrong-shaped AND G2-proven unable to
-     * reset the 300s deadline on the proxy path. Block-level delivery CLI-safety now comes from strict
-     * index-ordered output, not an anchor. `empty_text` / `enveloped_ping` remain SELECTABLE (code kept
-     * dormant) for keepalive research; redacted_thinking / unknown open blocks fall back to ping anyway.
+     * Seconds without a client-visible content_block_delta before ping keepalive escalates to an
+     * empty content delta. `0` disables escalation. Default 200 (100s margin before CC's 300s
+     * event-idle watchdog). Existing open block → matching empty delta; no block → lazy anchor.
+     */
+    stream_keepalive_escalate_sec: nullableNonnegativeInt(),
+    /**
+     * Keepalive FRAME type for the client-facing Anthropic stream. `ping` (default) is the normal
+     * low-impact cadence. It does not itself reset Claude Code's 300s event-idle watchdog; the separate
+     * `stream_keepalive_escalate_sec` deadline upgrades to an empty content delta only when needed.
+     * `empty_text` remains selectable for always-on content-delta mode. Block-level CLI-safety comes from
+     * strict index-ordered output; on-demand pre-content escalation reuses the anchor only near deadline.
      */
     stream_keepalive_mode: nullableEnum(["ping", "enveloped_ping", "empty_text"] as const),
     /**

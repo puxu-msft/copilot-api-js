@@ -79,6 +79,7 @@ import {
 import {
   //
   ANTHROPIC_PING,
+  makeAnthropicKeepaliveFrame,
   resolveAnthropicKeepalive,
 } from "~/lib/anthropic/keepalive-frame"
 import { makeReconcilingSink } from "~/lib/anthropic/live-reconcile"
@@ -1056,10 +1057,10 @@ function makeAnchoredSseSink(
     onGenerationFrame,
     onDeliveryFinalized,
   } = args
-  // Hooks are built for BOTH synthetic-prelude modes (empty_text + enveloped_ping); only `ping` opts out.
-  // The mode then selects WHICH injector runs (full anchor vs envelope-only) and whether `anchorBlockOpen`
-  // is set — the hooks themselves are the same format primitives.
-  const anchorHooks = buildAnthropicAnchorHooks(state.streamKeepaliveMode !== "ping")
+  // The normal configured mode may stay `ping`, but on-demand escalation still needs the same
+  // anchor hooks when a pre-content silence approaches Claude Code's 300s event-idle deadline.
+  const onDemandEscalation = state.streamKeepaliveEscalateSec > 0
+  const anchorHooks = buildAnthropicAnchorHooks(state.streamKeepaliveMode !== "ping" || onDemandEscalation)
   const anchorState: AnchorState = { injected: false, messageStartForwarded: false, anchorBlockOpen: false, anchorClosed: false }
   // Late-bind holder: the injector must read its sink at CALL time (an idle tick), but the sink's options
   // are evaluated before the sink exists — so `getSink` reads this holder, assigned right after construction.
@@ -1069,7 +1070,13 @@ function makeAnchoredSseSink(
   // after, no block, no remap — spec §10.6).
   const makeInjector = state.streamKeepaliveMode === "enveloped_ping" ? makeSyntheticEnvelopeInjector : makeSyntheticAnchorInjector
   const injectAnchor =
-    anchorHooks ? makeInjector({ anchor: anchorHooks, state: anchorState, getSink: () => sinkHolder.current, resolvedName, reqId }) : undefined
+    anchorHooks && state.streamKeepaliveMode !== "ping" ?
+      makeInjector({ anchor: anchorHooks, state: anchorState, getSink: () => sinkHolder.current, resolvedName, reqId })
+    : undefined
+  const injectContentAnchor =
+    anchorHooks && onDemandEscalation ?
+      makeSyntheticAnchorInjector({ anchor: anchorHooks, state: anchorState, getSink: () => sinkHolder.current, resolvedName, reqId })
+    : undefined
   const sink = makeDeliverySseSink(stream, {
     onForwarded,
     streamStartMs,
@@ -1083,6 +1090,11 @@ function makeAnchoredSseSink(
         pingFrame: resolveAnthropicKeepalive(state.streamKeepaliveMode),
         clientAbortSignal,
         ...(injectAnchor && { injectAnchor }),
+        ...(onDemandEscalation && {
+          contentDeadlineSec: state.streamKeepaliveEscalateSec,
+          contentFrame: makeAnthropicKeepaliveFrame,
+          ...(injectContentAnchor && { injectContentAnchor }),
+        }),
       },
     }),
   })

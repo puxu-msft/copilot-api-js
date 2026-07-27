@@ -438,6 +438,13 @@ const FIELDS: ReadonlyArray<FieldSpec> = [
     defaultStateValue: CONFIG_MANAGED_DEFAULTS.streamKeepalivePingSec,
   },
   {
+    configKey: "anthropic.stream_keepalive_escalate_sec",
+    stateKey: "streamKeepaliveEscalateSec",
+    sampleYamlValue: "180",
+    expectedStateValue: 180,
+    defaultStateValue: CONFIG_MANAGED_DEFAULTS.streamKeepaliveEscalateSec,
+  },
+  {
     configKey: "anthropic.stream_keepalive_mode",
     stateKey: "streamKeepaliveMode",
     sampleYamlValue: "ping",

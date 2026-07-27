@@ -24,17 +24,17 @@ incident `req_162`（opus-4.8 / Claude Code CLI）：tool_use 中途 `NGHTTP2_CA
 
 ### D2（相对初稿反转）—— 退役「空-text block 保活」，CLI-safety 改由块级顺序输出保证
 
-> **2026-07-27 事实更正（不自动改写本 ADR 的用户决策）**：G2 当时并未证明空 `text_delta` 无法重置 CC 300s 死线；`recoverToolCallText` marker lookahead 在代理 response rewrite 链中吞掉了空 delta，下游只收到 ping。修复后真 CC 2.1.220 连续两次 315s PASS。故下文“G2 证无效”这一决策前提已被证伪；“空 text block 是否仍因形状原因退役、是否重新启用 `empty_text`”是新的产品语义分叉，须另行用户裁决，不能由这次 bugfix 擅自反转。权威取证见 [client-proxy keepalive 300s](../todo/2026-07-22-client-proxy-keepalive-300s.md)。
+> **2026-07-27 D2 部分反转（用户裁决）**：G2 当时并未证明空 `text_delta` 无法重置 CC 300s 死线；`recoverToolCallText` marker lookahead 在代理 response rewrite 链中吞掉了空 delta，下游只收到 ping。修复后真 CC 2.1.220 连续两次 315s PASS，故“G2 证载体无效”这一理由撤销。另一理由“平时注入空 text block 是错误形状”保留，因此默认仍是 `ping`，但新增**按需升级**：距上一个客户端可见 `content_block_delta` 达 `stream_keepalive_escalate_sec`（默认 200s）才升级；真实块已 open 时在原 index 发空 delta、不造新形状，pre-content 无块时才复用 anchor，真实内容到达即重置计时。`0` 关闭升级。权威取证见 [client-proxy keepalive 300s](../todo/2026-07-22-client-proxy-keepalive-300s.md)。
 
 **初稿 D2 是「顺序 anchor 取代 coexist」（P1 已 landed close-before-real 空-text anchor）。现反转为：**
 
 1. **退役向 client 注入空 text block 的保活**（`empty_text` 模式：`content_block_start@0(text "")` + 空 `text_delta`）。判据：空 text block 是**错误形状**，且实测（G2）空 `text_delta` 在代理路径**不能重置** CC 的 300s no-real-content 死线，**保不住保活**。
    - **全路径禁用、但不删代码**（`empty_text` / 顺序 anchor / `enveloped_ping` 实现保留，供后续保活调研复用）。实现手段 = `stream_keepalive_mode` 默认从 `empty_text` 翻为 `ping`（`ping` 模式下 `anchorHooks` 为 undefined，driver 所有 anchor 分支——含 P1 的 close-before-real——**自动 inert**，byte-equivalent 无 anchor 路径）。P1 landed 的顺序 anchor 代码因此**转为默认休眠**（非撤销）。
-2. **过渡期长静默 = 裸 ping，接受 >300s 限制**。60s byte-idle 层仍在；CC 的 300s no-real-content 死线在 >300s 纯静默时会断连。**接受此限制**，等 [keepalive 调研](../todo/2026-07-22-client-proxy-keepalive-300s.md) 出真方案。
+2. **正常 cadence = 裸 ping，逼近死线才按需升级**。60s byte-idle 由 ping 覆盖；content-idle 达默认 200s 后升级为空 delta，pre-content 才短暂开 anchor，消除 >300s 限制而不污染普通请求形状。
 3. **块级递送的 CLI-safety 改由「严格按 index 顺序输出」保证，而非空 anchor**：因为是 block buffering，driver 在块闭合（`content_block_stop`）时**总是按 index 顺序** output——若 index=2 尚未闭合，则 index=3 虽已闭合也**压住不发**给客户端，直到 index=2 闭合。**允许上游 coexist index**（上游可并存 open 多个 index），客户端侧永远只见顺序、完整的块。这取代了「用空 anchor 逼出单块 open」的 P1 手法。
    - Anthropic direct 上游本就严格顺序，此不变量自动成立；CC/Responses 的并行 index（parallel tool_calls）由 D4 各格式块级升级时落地此顺序门。
 
-**理由**：空-text 保活既错误又无效（G2 实证）；用户裁决停止发它、退回裸 ping 并接受 >300s 限制，把真保活留给后续调研；CLI-safety 由块级缓冲的确定性顺序输出承担，比空 anchor 更本质、更简单。
+**理由（2026-07-27 修订）**：平时用空-text block 保活仍是错误形状，故正常 cadence 保持裸 ping；但“空 delta 无效”已被证伪，>300s 限制由按需升级根治。绝大多数请求维持今日 wire，只有逼近死线时才付出空 delta／pre-content anchor 形状；CLI-safety 仍由块级缓冲的确定性顺序输出承担。
 
 ### D3（细化）—— 首块后续写重试，以合成 continuation 轮实现；完整可交互 tool_use 不续写
 
@@ -59,7 +59,7 @@ Responses WS 升块级、CC 升块级；续写覆盖 Anthropic + Responses(HTTP/
 - 正面：incident 类 mid-stream cancel（首块后、限内被掐）可被续写救回；块级递送 CLI-safe 靠确定性顺序输出（无需空 anchor）；全端点统一块级骨架，无 whole 双轨、无空-text 保活的错误形状。
 - 负面/代价：
   - 续写重发上下文 + 重新计费（prompt cache 摊薄）；续写块保真度降级（诚实标注 `synthetic:"continuation"`）。
-  - **>300s 纯静默（尤其首块前长静默，如 incident 的 142.9s 那类若超 300s）会断连**——空-text 保活退役后无替代，接受此限制待调研。incident 本身 142.9s < 300s 不踩，但同类更长静默会踩。
+  - >300s 纯静默由按需升级覆盖；代价是极长 pre-content 静默会在 200s 左右短暂出现 synthetic anchor，而正常短请求保持 ping-only wire。
   - P1 landed 的顺序 anchor 代码转为默认休眠（保留不删）。
   - CC/Responses/WS 续写形状依赖计划期 PoC 门（G3/G4/G5 已 PASS），FAIL 则该格式/角落回退 partial-degrade。
   - 「运行时自动降级 live」缺口（D1）未做，记 backlog。
@@ -68,6 +68,6 @@ Responses WS 升块级、CC 升块级；续写覆盖 Anthropic + Responses(HTTP/
 
 - native prefill 续写：上游双拒，无绕过。
 - 保留 whole 作 Anthropic 兜底：用户裁决彻底退役，回退 live。
-- **保留空-text anchor 保活**（初稿 D2）：用户裁决退役（错误形状 + G2 证无效），改裸 ping + 顺序输出，真保活留待调研。
+- **常驻空-text anchor 保活**（初稿 D2）：仍不采纳，因为日常错误形状；2026-07-27 改采按需升级，只在逼近死线且 pre-content 时短暂开 anchor。
 - 续写独立预算旋钮：弃，用共享预算。
 - 无限续写：弃，受 max_retries 共享预算约束（防病态大请求续写风暴）。

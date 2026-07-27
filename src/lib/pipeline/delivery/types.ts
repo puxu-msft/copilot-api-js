@@ -38,6 +38,12 @@ export interface DeliveryHeartbeat {
   readonly clientAbortSignal?: AbortSignal
   frame(ledger: ClientBlockLedger): ClientFrame
   injectScaffold?(): Promise<boolean>
+  /** Maximum time without a client-visible content_block_delta before escalating from the normal heartbeat. 0 disables escalation. */
+  readonly contentDeadlineMs?: number
+  /** Protocol-specific content delta emitted when escalation is due and a real block is open. */
+  contentFrame?(ledger: ClientBlockLedger): ClientFrame
+  /** Protocol-specific pre-content scaffold + first content delta emitted when escalation is due with no block open. */
+  injectContentScaffold?(): Promise<boolean>
 }
 
 /** First terminal command wins; protocol-specific balancing is supplied by the caller. */

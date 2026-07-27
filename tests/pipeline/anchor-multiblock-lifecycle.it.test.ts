@@ -93,8 +93,8 @@ function makeGatedUpstream(segments: Array<Array<UpstreamFrame>>): { stream: Ups
     releases.push(rel)
   }
   async function* gen(): AsyncIterable<UpstreamFrame> {
-    for (let i = 0; i < segments.length; i++) {
-      for (const fr of segments[i]) yield fr
+    for (const [i, segment] of segments.entries()) {
+      for (const fr of segment) yield fr
       if (i < gates.length) await gates[i]
     }
   }
@@ -196,7 +196,13 @@ function buildAnchoredSink(stream: Parameters<typeof makeSseSink>[0]): {
 } {
   const anchorState: AnchorState = { injected: false, messageStartForwarded: false, anchorBlockOpen: false, anchorClosed: false }
   const anchor: AnchorHooks = {
-    isContentBlockStart: (fr: { data?: string }) => { try { return (JSON.parse(fr.data ?? "{}") as { type?: unknown }).type === "content_block_start" } catch { return false } },
+    isContentBlockStart: (fr: { data?: string }) => {
+      try {
+        return (JSON.parse(fr.data ?? "{}") as { type?: unknown }).type === "content_block_start"
+      } catch {
+        return false
+      }
+    },
     isMessageStart: (fr) => {
       try {
         return typeof fr.data === "string" && (JSON.parse(fr.data) as { type?: string }).type === "message_start"
@@ -246,7 +252,13 @@ function buildEnvelopedPingSink(stream: Parameters<typeof makeSseSink>[0]): {
 } {
   const anchorState: AnchorState = { injected: false, messageStartForwarded: false, anchorBlockOpen: false, anchorClosed: false }
   const anchor: AnchorHooks = {
-    isContentBlockStart: (fr: { data?: string }) => { try { return (JSON.parse(fr.data ?? "{}") as { type?: unknown }).type === "content_block_start" } catch { return false } },
+    isContentBlockStart: (fr: { data?: string }) => {
+      try {
+        return (JSON.parse(fr.data ?? "{}") as { type?: unknown }).type === "content_block_start"
+      } catch {
+        return false
+      }
+    },
     isMessageStart: (fr) => {
       try {
         return typeof fr.data === "string" && (JSON.parse(fr.data) as { type?: string }).type === "message_start"
@@ -340,10 +352,9 @@ describe("anchor lifecycle across multiple block-level commits — PRODUCER wire
     await flush()
 
     // ── SEQUENTIAL ORACLE (§3.3): after the first real block, the anchor is CLOSED, so the inter-block idle
-    // keepalive is a BARE ping (there is no open block to carry an empty text_delta). Resetting CC's 300s
-    // no-real-content watchdog for a >300s inter-block gap is a SEPARATE concern — docs/todo/
-    // 2026-07-22-client-proxy-keepalive-300s.md (empty text_delta was empirically insufficient on the proxy
-    // path anyway, G2). The load-bearing P1 property here is CLI-safety: at most ONE block open at a time. ──
+    // keepalive is a BARE ping at the ordinary cadence (there is no open block to carry an empty text_delta).
+    // The separate on-demand deadline now upgrades near 300s; this short test only locks the P1 CLI-safety
+    // property: at most ONE block open at a time. ──
     const beforeGap = written.length
     await clock.advance(15_000)
     await flush()
@@ -395,7 +406,6 @@ describe("anchor lifecycle across multiple block-level commits — PRODUCER wire
     void anchorState
     sink.close?.()
   })
-
 
   test("(c) SEQUENTIAL anchor + H2 error terminus: anchor closes BEFORE the real block; error trails at the end", async () => {
     const env = makeEnv()
@@ -537,8 +547,8 @@ describe("anchor lifecycle across multiple block-level commits — PRODUCER wire
     expect(errIdx).toBeGreaterThanOrEqual(0)
     expect(stop0Idx).toBeLessThan(errIdx) // stop@0 precedes error (balanced block structure)
     // The error trails at the very end; there is NEVER a real content block (@1).
-    expect(seq[seq.length - 1]).toBe("error")
-    expect(seq.some((s) => s === "content_block_start@1")).toBe(false)
+    expect(seq.at(-1)).toBe("error")
+    expect(seq.includes("content_block_start@1")).toBe(false)
     // Exactly ONE anchor close-off (idempotent — the terminal drain's empty-buffer re-flush short-circuits).
     const stop0s = written.filter((w) => {
       const p = parse(w)

@@ -408,16 +408,21 @@ export interface State {
   readonly streamKeepalivePingSec: number
 
   /**
+   * Seconds without a client-visible Anthropic `content_block_delta` before the normal ping
+   * heartbeat escalates to an empty content delta. `0` disables escalation. Default 200, leaving
+   * ~100s margin before Claude Code's 300s event-idle watchdog. Captured at stream start.
+   */
+  readonly streamKeepaliveEscalateSec: number
+
+  /**
    * Keepalive frame type for the client-facing Anthropic stream. Default `ping` (a bare `event: ping`).
    *
-   * NOTE (ADR 2026-07-22 D2): `empty_text` was RETIRED as the default. It injected an empty content delta
-   * matching an open block, and in buffered mode lazily opened a synthetic empty-text ANCHOR block so an
-   * empty text_delta would reset CC's 300s no-real-content deadline. But an empty text block is a
-   * WRONG-shaped keepalive and was G2-proven unable to reset that deadline on the proxy path, so it is
-   * disabled by default (a bare `ping` does not reset the 300s deadline either — a >300s pre-content
-   * silence may time out; a real keepalive is pending research, docs/todo/2026-07-22-client-proxy-
-   * keepalive-300s.md). Block-level delivery CLI-safety now comes from strict index-ordered output, not
-   * from an anchor. `empty_text` / `enveloped_ping` remain SELECTABLE (code kept dormant) for that research.
+   * NOTE (ADR 2026-07-22 D2, partially reversed 2026-07-27): `empty_text` remains retired as the
+   * NORMAL cadence because a persistent synthetic text block is the wrong everyday wire shape. G2 later
+   * proved the empty delta carrier works; our response rewrite had swallowed it. Default `ping` therefore
+   * gains a separate on-demand escalation (`streamKeepaliveEscalateSec`): only near the 300s deadline does
+   * it emit an empty delta on an existing block, or lazily open the anchor when still pre-content.
+   * Block-level delivery CLI-safety continues to come from strict index-ordered output.
    */
   readonly streamKeepaliveMode: "ping" | "enveloped_ping" | "empty_text"
 
@@ -1497,6 +1502,7 @@ export function setAnthropicBehavior(
       | "responseHeaderWhitelist"
       | "stripAttributionHeader"
       | "streamKeepalivePingSec"
+      | "streamKeepaliveEscalateSec"
       | "streamKeepaliveMode"
       | "streamCommitAfterSec"
       | "protectStreamingGeneration"
@@ -2040,6 +2046,7 @@ export function resetConfigManagedState(): void {
     responseHeaderWhitelist: [...CONFIG_MANAGED_DEFAULTS.responseHeaderWhitelist],
     stripAttributionHeader: CONFIG_MANAGED_DEFAULTS.stripAttributionHeader,
     streamKeepalivePingSec: CONFIG_MANAGED_DEFAULTS.streamKeepalivePingSec,
+    streamKeepaliveEscalateSec: CONFIG_MANAGED_DEFAULTS.streamKeepaliveEscalateSec,
     streamKeepaliveMode: CONFIG_MANAGED_DEFAULTS.streamKeepaliveMode,
     streamCommitAfterSec: CONFIG_MANAGED_DEFAULTS.streamCommitAfterSec,
     protectStreamingGeneration: CONFIG_MANAGED_DEFAULTS.protectStreamingGeneration,
@@ -2269,6 +2276,7 @@ const mutableState: MutableState = {
   responseHeaderWhitelist: [...CONFIG_MANAGED_DEFAULTS.responseHeaderWhitelist],
   stripAttributionHeader: CONFIG_MANAGED_DEFAULTS.stripAttributionHeader,
   streamKeepalivePingSec: CONFIG_MANAGED_DEFAULTS.streamKeepalivePingSec,
+  streamKeepaliveEscalateSec: CONFIG_MANAGED_DEFAULTS.streamKeepaliveEscalateSec,
   streamKeepaliveMode: CONFIG_MANAGED_DEFAULTS.streamKeepaliveMode,
   streamCommitAfterSec: CONFIG_MANAGED_DEFAULTS.streamCommitAfterSec,
   protectStreamingGeneration: CONFIG_MANAGED_DEFAULTS.protectStreamingGeneration,

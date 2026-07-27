@@ -67,6 +67,12 @@ export interface OpenBlock {
 export interface SseSinkHeartbeat {
   /** Seconds of client-forward silence before a synthetic keepalive is injected (<=0 disables). */
   intervalSec: number
+  /** Seconds without a content delta before ping mode escalates; 0/undefined disables escalation. */
+  contentDeadlineSec?: number
+  /** Block-aware content-delta provider used only when escalation is due. */
+  contentFrame?: (openBlock?: OpenBlock) => ClientFrame
+  /** Pre-content scaffold injector used only when escalation is due. */
+  injectContentAnchor?: () => Promise<boolean>
   /**
    * The keepalive frame to inject on forward-idle. Either a FIXED frame (classic `event: ping`)
    * or a PROVIDER called with the current {@link OpenBlock} for block-aware keepalive (an empty
@@ -195,7 +201,15 @@ export function makeSseSink(stream: SSEStreamingApi, opts: SseSinkOptions = {}):
 
   const sampleForwarded = (
     frame: ClientFrame,
-    synthetic?: "keepalive" | "anchor" | "synthetic-message-start" | "hook-rewrite" | "refusal-recovery" | "error-shaping-canonical" | "error-shaping-auq" | "buffered-terminal-repair",
+    synthetic?:
+      | "keepalive"
+      | "anchor"
+      | "synthetic-message-start"
+      | "hook-rewrite"
+      | "refusal-recovery"
+      | "error-shaping-canonical"
+      | "error-shaping-auq"
+      | "buffered-terminal-repair",
     generationSynthetic: SseEventRecord["synthetic"] = synthetic,
   ): void => {
     const record: SseEventRecord = {
@@ -480,6 +494,15 @@ export function makeDeliverySseSink(stream: SSEStreamingApi, opts: SseSinkOption
             return typeof heartbeat.pingFrame === "function" ? heartbeat.pingFrame(open) : heartbeat.pingFrame
           },
           ...(heartbeat.injectAnchor && { injectScaffold: heartbeat.injectAnchor }),
+          ...(heartbeat.contentDeadlineSec !== undefined && { contentDeadlineMs: heartbeat.contentDeadlineSec * 1000 }),
+          ...(heartbeat.contentFrame && {
+            contentFrame: (ledger) => {
+              const contentFrame = heartbeat.contentFrame
+              if (!contentFrame) throw new Error("content heartbeat frame provider disappeared after construction")
+              return contentFrame(ledger.openBlocks.at(-1))
+            },
+          }),
+          ...(heartbeat.injectContentAnchor && { injectContentScaffold: heartbeat.injectContentAnchor }),
         },
       }),
   })

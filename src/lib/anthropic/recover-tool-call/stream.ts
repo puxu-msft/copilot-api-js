@@ -2,6 +2,7 @@ import type { ServerSentEventMessage } from "fetch-event-stream"
 
 import type { StreamEvent } from "~/types/api/anthropic"
 
+import { isEmptyAnthropicStreamDelta } from "../empty-stream-delta"
 import { anthropicSseFrame } from "../sse-frame"
 import {
   //
@@ -176,7 +177,7 @@ export function createToolCallTextRecoverer(deps: RecoverStreamDeps): ToolCallTe
         // Empty deltas carry no downgraded tool-call text, so the lookahead has nothing to inspect.
         // They are nevertheless protocol-significant keepalive chunks for Claude Code's idle
         // watchdog and must reach the client immediately rather than disappear into `seen`.
-        if (delta.text === "") return [raw]
+        if (isEmptyAnthropicStreamDelta(parsed)) return [raw]
         seen += delta.text
         if (mode === "BUFFERING") {
           bufferedFrames.push(raw)
