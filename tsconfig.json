@@ -42,6 +42,7 @@
       "~/lib/error/parsing": ["./packages/foundation/src/error/parsing"],
       "~/lib/error/utils": ["./packages/foundation/src/error/utils"],
       "~/lib/error/transport-reason": ["./packages/foundation/src/error/transport-reason"],
+      "~/lib/error/cancellation-reason": ["./packages/foundation/src/error/cancellation-reason"],
       "~/lib/error/tool-diagnostics-types": ["./packages/foundation/src/error/tool-diagnostics-types"],
       "~/lib/ghc-http-primitives": ["./packages/foundation/src/ghc-http-primitives"],
       "~/lib/sqlite/driver": ["./packages/foundation/src/sqlite/driver"],

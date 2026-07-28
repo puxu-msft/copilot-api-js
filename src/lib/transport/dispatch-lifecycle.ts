@@ -4,6 +4,8 @@ import type {
   UpstreamDispatchLifecycle,
 } from "~/lib/pipeline/types"
 
+import { cancellationAbortError } from "~/lib/error/cancellation-reason"
+
 export interface DispatchLifecycleOwner extends UpstreamDispatchLifecycle {
   readonly signal: AbortSignal
   /** Mark a non-streaming or failed-open dispatch fully quiesced. */
@@ -12,8 +14,14 @@ export interface DispatchLifecycleOwner extends UpstreamDispatchLifecycle {
   ownFrames<T>(source: AsyncIterable<T>): AsyncIterable<T>
 }
 
+/**
+ * Candidate/dispatch-local teardown reason. Tagged `dispatch-cancel` so the client
+ * boundaries can tell an internal disposal (hedge loser, forced cleanup) apart from
+ * a reaper cancel, a hard deadline or an upstream header timeout — they all used to
+ * arrive as the same untyped `AbortError`.
+ */
 function abortReason(reason?: string): DOMException {
-  return new DOMException(reason ?? "The operation was aborted.", "AbortError")
+  return cancellationAbortError("dispatch-cancel", reason ?? "The operation was aborted.")
 }
 
 /**

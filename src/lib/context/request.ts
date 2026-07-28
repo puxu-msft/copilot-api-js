@@ -31,6 +31,11 @@ import type { ToolNameMapper } from "~/lib/tool-name-mapper"
 
 import { getErrorMessage } from "~/lib/error"
 import { HTTPError } from "~/lib/error"
+import {
+  //
+  cancellationAbortError,
+  REQUEST_DEADLINE_CANCEL_REASON,
+} from "~/lib/error/cancellation-reason"
 import { acquireRawCaptureLease } from "~/lib/history/raw/manager"
 import { publishModelOperationTerminal } from "~/lib/history/v3/terminal-bus"
 import { normalizeModelId } from "~/lib/models/resolver"
@@ -994,7 +999,7 @@ export function createRequestContext(opts: {
       return lifecycleAbort.signal
     },
     reapInFlight() {
-      lifecycleAbort.abort()
+      lifecycleAbort.abort(cancellationAbortError("stale-reaper", "Request cancelled by the stale-request reaper"))
     },
     // ─── C5 operation lifecycle (RFC §3.3) — NEW API, no production callers yet ───
     // `operationSignal` is the per-request cancel signal (reaper/deadline/cancel all abort
@@ -1016,7 +1021,11 @@ export function createRequestContext(opts: {
       if (_cancelled) return
       _cancelled = true
       _cancelReason = reason
-      lifecycleAbort.abort()
+      // The reason travels ON the abort, not just in this closure: everything downstream of the
+      // fetch signal (transport → driver → client boundary) sees only the thrown error, and a
+      // bare abort there is indistinguishable from a header timeout. The hard deadline is a
+      // TIMEOUT, so it gets its own cause rather than the generic cancel one.
+      lifecycleAbort.abort(cancellationAbortError(reason === REQUEST_DEADLINE_CANCEL_REASON ? "request-deadline" : "request-cancel", reason))
     },
     trackOperationBody(p) {
       operationScope.trackOperationBody(p)

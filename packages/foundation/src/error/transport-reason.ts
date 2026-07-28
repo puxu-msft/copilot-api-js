@@ -29,8 +29,12 @@ const TRANSPORT_REASON = Symbol("transportErrorReason")
  *   Retryable (protocol zero-processing guarantee).
  * - `mid-body-close`: connection dropped AFTER headers, mid-body (`closed before
  *   end`). NOT a pre-response retry — a truncated body, surfaced as a stream error.
+ * - `pool-closed`: OUR h2 session pool was torn down (shutdown force-close /
+ *   finalize, or a test reset) under a request still acquiring or creating its
+ *   session. A cancellation, not an upstream failure — retrying in-process is
+ *   pointless, so boundaries surface it as a retryable-by-the-CLIENT 529.
  */
-export type TransportErrorReason = "pre-response-close" | "refused-stream" | "mid-body-close"
+export type TransportErrorReason = "pre-response-close" | "refused-stream" | "mid-body-close" | "pool-closed"
 
 /** Tag `err` with a structured transport reason and return it (for inline use at throw sites). */
 export function tagTransportError<E extends Error>(err: E, reason: TransportErrorReason): E {
