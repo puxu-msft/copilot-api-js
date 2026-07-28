@@ -296,3 +296,209 @@ isStrippableBlock(...) -> isSyntheticThinkingSeparator(...)
 10. **frontmatter 大小、YAML 必填字段、Markdown 链接与两个 commit 的 whitespace check 均合格**。
 11. **未把 archive 中旧 `completion-includes-doc-sync` 或历史 HANDOFF 当作必须清零的活规则**。历史叙事可以保留；只有仍自称当前 canonical 五步或可复制执行的活 kickoff 才构成漂移。
 12. **没有把所有 212 个 plan 命中一概报成问题**。feature-specific doc-sync、测试和验收步骤应留在各自计划；单一源只要求抽走跨项目通用流程。
+
+
+## 2026-07-28 复审
+
+### 结论
+
+- **复审范围**：独立核对 `ef616367`、`887602fd`、`1b7b2afb`、`ba0c8345`、`1938599c`、`847f8bc8` 的提交内容及当前最终文件；六个提交均为当前 `HEAD` 祖先，相关目标文件无未提交改动。
+- **原发现落地情况**：F1、F4–F9 的主修属实；F3 的 canonical skill 与新模板已覆盖状态、基线、消费动作、supersession、关闭动作和 HANDOVER/KICKOFF 分工。F2 对 memory stub 的收窄属实；对 CLAUDE 压缩触发器的保留理由成立。F10 不再坚持为事实性缺陷，降为待压力测试的假设。F11 仍未做，但不构成本轮 blocker。
+- **复审 verdict**：**修复下面 1 个 HIGH 后可进入下一阶段**。修复代码/skill 主体可采信，但 `847f8bc8` 的“自我施用”交接文档仍有内部矛盾，不能按当前状态作为可靠的新会话入口。
+- **新增发现计数**：HIGH 1、MED 1、LOW 1；blocker 0。
+
+### 抽查命令与输出
+
+#### 1. 六个提交确已落地，原目标文件干净
+
+```bash
+for c in ef616367 887602fd 1b7b2afb ba0c8345 1938599c 847f8bc8; do
+  git merge-base --is-ancestor "$c" HEAD
+  printf '%s ancestor=%s\n' "$c" "$?"
+done
+
+git status --short -- \
+  .claude/skills/session-closeout/SKILL.md \
+  .claude/skills/session-closeout/handover.md \
+  CLAUDE.md docs/memory/session-closeout-and-handover.md \
+  docs/coding-conventions.md \
+  docs/plan/2026-07-27-keepalive-and-separator/{HANDOVER.md,KICKOFF.md}
+```
+
+输出：六项均为 `ancestor=0`；目标文件 status 无输出。仓库整体仍有大量 peer dirt，但不在上述修复文件中。
+
+#### 2. F1 的五步冻结已基本清零
+
+先做正样本：
+
+```bash
+rg -n --fixed-strings '收尾 == “完成”的一部分' \
+  .claude/skills/session-closeout/SKILL.md
+```
+
+输出：
+
+```text
+8:收尾 == “完成”的一部分：按序走完下面六步……
+```
+
+再查旧表述：
+
+```bash
+rg -n -i '(收尾五步|走收尾五步|按 skill `session-closeout` 五步|每 phase 收尾走五步|session-closeout[^\n]{0,30}五步)' \
+  .claude/skills docs CLAUDE.md \
+  --glob '!**/2026-07-28-session-closeout-skill-review-*.md'
+```
+
+只剩：
+
+```text
+docs/plan/2026-07-22-continuation-retry-sequential-anchor/HANDOFF.md:65:
+## 7. 收尾状态（skill `session-closeout`，当时为五步；当前流程以 skill 为准）
+```
+
+该条是明确标注的历史事实，不是活规则，合格。`1938599c` 实际改了 **15 个文件、15 个 hunk**；提交说明所谓“14 处”与文件数不完全同义，但每个替换都有计数且结果检索成立，不构成实质问题。
+
+#### 3. F4/F5 的代码对账已修正
+
+`docs/coding-conventions.md:19-22` 现在明确：
+
+- 单调性只限 **wire 合法性/识别集合**；
+- destructive consumer 会把碰撞值送进 `stripAllThinking()` 删除；
+- `extraAccepted`/legacy 走 trim 后全等；内置封闭命名空间允许 prefix family；
+- “零成本”改成“成本大幅下降”。
+
+这与 `src/lib/anthropic/sanitize/block-layout-contract.ts:78-80` 及 `src/lib/anthropic/strip-all-thinking.ts:21-23` 一致，F4/F5 关闭。
+
+#### 4. F6–F9 的承重修复属实
+
+- `.claude/skills/session-closeout/SKILL.md:8` 已改为“六步名”。
+- CLAUDE 锚点“文档路由”“文本风格偏好”“细粒度、每阶段提交”“concurrent-sessions 行级共存”“docs-merge-before-execute”均真实命中；`01-core-principles.md`、`21-git-workflow.md`、`40-dev-workflow.md`、`41-doc-mgmt.md` 均存在。
+- `.claude/skills/session-closeout/SKILL.md:64` 已把 durable boundary 写成显式 pathspec `git add` 后立即显式 pathspec `git commit`，并说明仅 add 的 peer 卷入风险。
+- worktree 建立命令已从 canonical skill 移除，交回 `git-preference:isolating-from-a-shared-git-worktree`。
+
+### 三条未全盘采纳的裁决
+
+#### F2：CLAUDE.md 保留压缩 how-to——理由成立，原判部分撤回
+
+项目 CLAUDE 的稳定写法确实是“always-on 压缩线索 + 深层指针”。当前 line 54 的内容虽与正文重叠，但它是触发器层的最短高价值不变量，没有复制具体命令、模板字段或边界分支；memory stub 也已明确“别在这里找可执行细节”。因此：
+
+- **不再要求 CLAUDE 只剩裸六步名**；
+- 当前 CLAUDE 压缩摘要可接受；
+- memory stub 的 How to apply 已收成纯指针，F2 主体关闭。
+
+但 stub 当前新增了一处机械重复，见 R3。
+
+#### F10：description 保留六步名——理由基本成立，原 MED 撤回
+
+我能给出的最强反证仍只是 authoring skill 的通用经验：description 摘流程可能诱导 agent 跳过正文。当前版本已经删除可执行动作，只保留六个覆盖面标签，并显式写“可执行细节只在正文，必须读正文”；这些标签确实帮助 discovery 判断该 skill 是否涵盖归档、记忆和交接。
+
+在没有本仓 pressure test 证明 agent 仍会跳读之前，我没有更强的项目内事实依据继续把它定为缺陷。因此 **F10 从 MED 撤回，改为待验证假设**；若未来压力测试出现跳读，再依据观测收窄 description，而不是现在凭通用偏好删除。
+
+#### F11：未做全新 CLI 压力测试——不是完成 blocker，但不能宣称“行为已验证”
+
+“同一 CLI 进程不能完全验证新注册/修改后的 skill 触发行为”是合理的运行时限制。它不阻断本轮文本修复合并，因为静态链接、事实、模板和自我施用均可独立复核；原 F11 本来也是 LOW。
+
+裁决是：
+
+- **不构成“不能完成本轮文本修复”的 blocker**；
+- 仍不得宣称 skill 的真实触发/遵从行为已经 pressure-tested；
+- 后续应在全新 CLI 进程验证三类场景：上下文将满且有未追踪产物、同主题两个活交接、接手时 HEAD 已越过核验基线。
+
+该后续目前只存在两份评审报告中，未找到独立 todo/plan 条目。报告本身已入库，因此不算“无记录”，但若团队把评审报告视为只读历史而非待办源，应另登记 backlog。
+
+### 新发现
+
+#### R1 / HIGH / `docs/plan/2026-07-27-keepalive-and-separator/HANDOVER.md:3,93,162` 与 `KICKOFF.md:25-32,44-48`
+
+**事实**：`847f8bc8` 声称按新模板自我施用，但最终文档仍有三组直接冲突：
+
+1. HANDOVER line 3 写“T1–T4 用户已批准未开工”，line 93/95 又写“T1 已完成，master `da59c586`”。
+2. HANDOVER line 162 仍写“`test:backend` 跑不起来、会先 build native”，而 KICKOFF line 46 和当前 `package.json:56` 均证明 `test:backend` 已直接等于 `bun scripts/parallel-test.ts unit it http`。
+3. 新模板要求头部列“未提交与未追踪清单”，HANDOVER line 5 只写“本轮代码改动已提交”，没有记录当前 shared worktree 的 dirt；复审时主树确有大量 modified/untracked peer 文件。
+
+此外，canonical 规则说 KICKOFF 的待办“只标批准状态与建议顺序，不复述内容”，但 KICKOFF lines 27-32 仍逐条复述 T1–T6 的机制、门槛与文件；这已经实际证明“模板写对”不等于自我施用正确。
+
+**为什么是问题**：这是新会话的 operational entry point。接手方无法判断 T1 是否还需执行，并会同时看到 `test:backend` 可跑与不可跑两个相反结论，足以造成重复工作或错误绕行。
+
+**建议**：把头部状态按每项真实状态重写；删除/标 superseded 的 line 162 旧门禁；头部显式写 dirty/untracked（区分本任务与 peer）；KICKOFF 的 T1–T6 只保留状态和顺序，正文一律指向 HANDOVER §3。修后再用冲突检索：
+
+```bash
+rg -n '(T1.*未开工|T1.*已完成|test:backend.*跑不起来|test:backend.*可以直接跑)' \
+  docs/plan/2026-07-27-keepalive-and-separator/{HANDOVER.md,KICKOFF.md}
+```
+
+逐条解释剩余命中，不能只报 grep 空。
+
+#### R2 / MED / `.claude/skills/session-closeout/SKILL.md:51`
+
+**事实**：skill 新增绝对数字“本仓另有 21 份历史扁平式 `docs/plan/<date>-handover-<topic>.md`”。按这个精确命名形状，在 `1b7b2afb` 时只有 **5** 份，当前只有 **6** 份；放宽到 `docs/plan/` 直属、文件名含 handover/handoff 也只有 **7** 份。按文档内容标题搜索能得到约 17–22 个候选，但其中混有普通 plan、review 与 kickoff，不等价于所声称的精确路径模式。
+
+复现：
+
+```bash
+git ls-tree -r --name-only 1b7b2afb docs/plan \
+  | rg '^docs/plan/[0-9]{4}-[0-9]{2}-[0-9]{2}-handover-.*\.md$'
+```
+
+输出 5 条。
+
+**为什么是问题**：这是新增的“已实测”式绝对事实，并被用来支撑“不迁移”的决定。决定本身可成立，但数字和定义不成立。
+
+**建议**：删除易腐数字，改成“仓库已有多种历史扁平式 handover/handoff 与单文件交接”；如确需数字，先定义统计口径并用可复跑命令生成。
+
+#### R3 / LOW / `docs/memory/session-closeout-and-handover.md:16-18`
+
+**事实**：完全相同的 `Related：[[methodology-background-agent-result-surfacing-failure]] … [[methodology-probe-conclusion-scope-and-peer-invalidation]]` 连续出现两次。
+
+**为什么是问题**：纯机械重复，不影响规则语义，但与本轮“去重复、单一指针”的目标相悖。
+
+**建议**：删掉一行即可。
+
+### 复审后不再坚持的问题
+
+1. CLAUDE always-on 层保留压缩行动线索，不再视为 F2 缺陷。
+2. description 保留六步覆盖面标签，不再视为 F10 缺陷；等待新 CLI pressure test 再裁决。
+3. `usage-token-net-normalization.md:119` 仍列出一条 feature-specific 收尾链，但其中包含该计划独有的 doc-sync、backfill 与 commit 分组落点；未把它升级成 F1 残留。
+4. HANDOVER/KICKOFF 实例保留本轮事实与踩坑仍然必要；R1 针对的是相互冲突和超出双方分工的重复，不是要求把实例掏空。
+
+
+### 2026-07-28 最终收口复核
+
+#### 已确认修复
+
+`5d909872`、`31e39d6f` 均为当前 `HEAD` 祖先，相关目标文件无未提交改动。以下修复属实：
+
+- HANDOVER 头部已改为“T1 已完成；T2–T4 已批未开工；T5 待裁决；T6 待用户一句话”，与正文 `HANDOVER.md:93-95` 一致。
+- HANDOVER 头部和 §3 T6、KICKOFF 均统一为 `test:backend` 可直接运行；当前 `package.json:56` 也确为 `bun scripts/parallel-test.ts unit it http`。
+- HANDOVER 已记录 shared master 上有大量 peer dirt、我方无未追踪残留。
+- memory stub 的重复 `Related` 已删除；`handover.md` 已把实验产物改为“就地留在 `exp/`”；过时的 `exit 127` 说法已在两组交接中订正。
+- `31e39d6f^..31e39d6f --check` 无输出。
+
+“二十多份历史扁平式命名”不再把 21 绑定到窄路径模式，方向正确；但它仍没有稳定统计口径：在 `31e39d6f` 上，按文件名含 handover/handoff/kickoff 的宽口径是 44，排除目录式 `HANDOVER.md/KICKOFF.md` 后是 40，只看 `docs/plan/` 直属文件是 20。这个数字不再构成正确性 blocker，但最好最终删掉数字，改为“已有多种历史扁平式命名”。
+
+#### accept 轴再次对账
+
+`ba0c8345` 后的 `docs/coding-conventions.md:19-22` 与生产路径的核心语义一致：
+
+- `isSyntheticThinkingSeparator()` 的识别结果确实由 `strip-all-thinking.ts:21-23` 送入删除判据；
+- “单调”已收窄为 wire 合法性/识别集合，不再冒充用户数据安全；
+- 成本已从“零”改成“大幅下降”；
+- built-in family 确实走 `startsWith(SYNTHETIC_SEPARATOR_PREFIX)`，legacy 与 extra 走集合/数组全等。
+
+有一处措辞应理解为“**先 trim 被识别的 block text，再与配置值全等**”，而不是“配置项本身也会 trim”：代码是 `const text = block.text.trim()` 后 `extraAccepted.includes(text)`，`nullableNonemptyStringArray()` 不 trim 配置项。若要消除歧义，可把 convention 的“用户配置的额外值……走整体 trim 后全等”改成上述精确句。
+
+但跨文档仍有未同步事实：`docs/spec/2026-07-26-thinking-terminal-block-layout.md:170,175` 仍写开放 ACCEPT “永远不可能造出非法 payload”并把所有识别概括为“整块 trim 后全等”，没有 destructive-consumer 限定，也漏掉 built-in prefix family；`src/lib/config/schema.ts:449-453` 的注释也仍只强调“不会造非法 payload”。因此 F4/F5 在 **coding-conventions 本文件**已修好，但 doc↔doc / doc↔code 的合并态收口尚未完成。
+
+#### 仍有保留
+
+`31e39d6f` 没有修掉上一节 R1 的 KICKOFF 分工问题：`KICKOFF.md:19-26` 仍逐条复述 T1–T6 的机制与门槛，而 canonical skill `SKILL.md:49` 和模板 `handover.md:81` 要求 KICKOFF “只标批准状态与建议顺序，不复述内容”。其中 line 19 还说“用户已批准 T1–T4”，却没有标出 T1 已完成；接手者只读 KICKOFF 仍可能把 T1 当待办。
+
+#### 最终裁决
+
+**仍有保留，尚未 consensus reached。** 保留点只有两类：
+
+1. 修 KICKOFF，使 T1–T6 只保留真实状态与建议顺序并指向 HANDOVER §3；
+2. 同步修正 `docs/spec/2026-07-26-thinking-terminal-block-layout.md:170,175` 与 `src/lib/config/schema.ts:449-453` 的旧 accept-axis 绝对表述。
+
+“二十多份”数字建议删除，但可降为非阻断的准确性清理。上述两类完成后，我预计可明确给出 consensus reached；F2/F10/F11 不再是共识障碍。
