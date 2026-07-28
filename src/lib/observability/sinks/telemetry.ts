@@ -64,7 +64,12 @@ export class TelemetrySink {
       {
         startedAt: entry.startedAt,
         endedAt: entry.endedAt,
-        success: entry._index?.derived?.responseSuccess ?? finalUpstream?.success ?? event.kind === "request.completed",
+        // The REQUEST VERDICT, not the upstream leg. `responseSuccess` / `finalUpstream.success` are
+        // deliberately `true` for a proxy-introduced failure (a suppressed contentless refusal, an
+        // unrepairable tool_use) because the upstream leg genuinely succeeded — reading them here
+        // recorded a `request.failed` as a telemetry success. Leg health stays observable on the
+        // History entry; this registry counts whether the CLIENT's request succeeded.
+        success: event.kind === "request.completed",
         usage: finalUpstream?.usage,
         // Per-token cost: the billing multiplier rides on the ctx snapshot
         // (state.modelIndex-resolved), not the entry. Undefined for token-based accounts.

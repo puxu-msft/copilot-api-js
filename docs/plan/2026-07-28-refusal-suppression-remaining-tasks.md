@@ -16,7 +16,7 @@
 
 ## 待办（按执行顺序）
 
-### T1 —— 修聚合口径：`failed` + `upstreamSucceeded` 的双计
+### ~~T1 —— 修聚合口径：`failed` + `upstreamSucceeded` 的双计~~ ✅ 已完成
 
 **问题**（对抗评审第三轮发现）：抑制模式下请求终态是 `failed`，但上游腿诚实地记 `success:true`。遥测 sink 按 upstream success 判定，会把一个 `request.failed` 记成成功；History stats 会让**同一请求同时递增 success 与 failure**。
 
@@ -24,7 +24,9 @@
 
 **判据**：一个抑制掉的 refusal 请求，在 `/api/stats` 与 History stats 中**只**计入失败侧一次；上游腿仍诚实显示 `success:true`（两个概念不得互相覆盖）。不得静默改变既有 `successCount` 的上游腿语义——若要区分，新增独立 measure。
 
-**触点**：`src/lib/observability/sinks/telemetry.ts`、`src/lib/history/stats.ts`、`packages/telemetry/src/request-telemetry.ts`。
+**触点**：`src/lib/observability/sinks/telemetry.ts`、`src/lib/history/stats.ts`。
+
+**落地方式**：`stats.ts` 抽出纯函数 `requestBucket()`——互斥性变成**结构性保证**（单一返回值）而非四个并列 `if` 恰好维持的性质；遥测 sink 的 `success` 改读**请求裁决**（`event.kind === "request.completed"`）而非上游腿。上游腿健康度仍在 History entry 上可观测，两个概念不再互相覆盖。守卫 `tests/history/stats-verdict-buckets.unit.test.ts`（6 pass），已过 mutation control：把 `failed` 分支改回旧的 OR 语义 → 2 条变红。
 
 ### T2 —— 双轮 session CLI oracle
 
