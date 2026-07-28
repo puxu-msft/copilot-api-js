@@ -40,12 +40,15 @@ import {
   resetConfigCache,
   setBundledConfigForTests,
 } from "~/lib/config/config"
+import {
+  //
+  resolveBufferedCaps,
+  resolveContinuation,
+} from "~/lib/config/model-overrides"
 import { PATHS } from "~/lib/config/paths"
 import {
   //
   resetConfigManagedState,
-  resolveBufferedCaps,
-  resolveContinuation,
   restoreStateForTests,
   snapshotStateForTests,
   state,

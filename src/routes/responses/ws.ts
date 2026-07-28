@@ -31,6 +31,7 @@ import type {
 
 import { createOpenAiResponsesCodec } from "~/lib/codec/openai-responses/codec"
 import { responsesKeepaliveFrame } from "~/lib/codec/openai-responses/keepalive"
+import { resolveBufferedCaps } from "~/lib/config/model-overrides"
 import {
   //
   ENDPOINT,
@@ -45,11 +46,7 @@ import { createRuntimeHedgePolicy } from "~/lib/pipeline/generation/runtime-poli
 import { clientFirstRealSinkOpts } from "~/lib/pipeline/request-timing"
 import { buildResponsesResponseData } from "~/lib/request/recording"
 import { usageFromTotalInput } from "~/lib/request/usage-normalize"
-import {
-  //
-  resolveBufferedCaps,
-  state,
-} from "~/lib/state"
+import { state } from "~/lib/state"
 import { processResponsesInstructions } from "~/lib/system-prompt"
 import { createUpstreamResponsesTransport } from "~/lib/transport/responses-transport"
 import {

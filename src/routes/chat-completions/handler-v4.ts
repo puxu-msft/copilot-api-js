@@ -74,6 +74,7 @@ import { createOpenAiCcCodec } from "~/lib/codec/openai-cc/codec"
 import { ccKeepaliveFrame } from "~/lib/codec/openai-cc/keepalive"
 import { createReverseAnthropicMapperHolder } from "~/lib/codec/openai-cc/reverse-anthropic-rewrite"
 import { applyConfigToState } from "~/lib/config/config"
+import { resolveBufferedCaps } from "~/lib/config/model-overrides"
 import { HTTPError } from "~/lib/error"
 import { ENDPOINT } from "~/lib/models/endpoint"
 import { resolveModelTarget } from "~/lib/models/resolver"
@@ -112,11 +113,7 @@ import {
   buildOpenAIResponseData,
   usageFromTotalInput,
 } from "~/lib/request"
-import {
-  //
-  resolveBufferedCaps,
-  state,
-} from "~/lib/state"
+import { state } from "~/lib/state"
 import { createUpstreamHttpTransport } from "~/lib/transport/http-transport"
 import { resolveInboundQuery } from "~/lib/transport/query-forward"
 import {

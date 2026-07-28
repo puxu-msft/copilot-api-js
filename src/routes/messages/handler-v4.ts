@@ -31,7 +31,6 @@ import consola from "consola"
 import { streamSSE } from "hono/streaming"
 
 import type { AnthropicMessageResponse } from "~/lib/anthropic/client"
-import type { FeatureKind } from "~/lib/observability"
 import type { SanitizationStats } from "~/lib/anthropic/sanitize"
 import type {
   //
@@ -39,6 +38,7 @@ import type {
   SseEventRecord,
 } from "~/lib/history/store"
 import type { Model } from "~/lib/models/client"
+import type { FeatureKind } from "~/lib/observability"
 import type { RequestEnvelope } from "~/lib/pipeline/envelope"
 import type {
   //
@@ -119,6 +119,11 @@ import { anthropicCommitBoundaries } from "~/lib/codec/anthropic/commit-boundari
 import { applyConfigToState } from "~/lib/config/config"
 import {
   //
+  resolveBufferedCaps,
+  resolveContinuation,
+} from "~/lib/config/model-overrides"
+import {
+  //
   HTTPError,
   isAbortError,
 } from "~/lib/error"
@@ -170,12 +175,7 @@ import {
   buildOpenAIResponseData,
   buildResponsesResponseData,
 } from "~/lib/request"
-import {
-  //
-  resolveBufferedCaps,
-  resolveContinuation,
-  state,
-} from "~/lib/state"
+import { state } from "~/lib/state"
 import { createUpstreamHttpTransport } from "~/lib/transport/http-transport"
 import { resolveInboundQuery } from "~/lib/transport/query-forward"
 import {
@@ -905,8 +905,7 @@ function renderNonStreamingV4(
   // Mirrors the truncation fail-gate's header/inbound timing (c.json builds headers ->
   // setInboundResponseHeaders -> fail; never `throw` -- that would skip c.json and drop the
   // inboundResponse leg, see memory hono-onerror-consumes-throws).
-  const isRefusal =
-    response.stop_reason === "refusal" && !hasClientVisibleContent(response.content as unknown as Array<{ type: string }>)
+  const isRefusal = response.stop_reason === "refusal" && !hasClientVisibleContent(response.content as unknown as Array<{ type: string }>)
   const refusalMode = reqCtx.refusalPolicy.mode
   if (isRefusal)
     reqCtx.recordFeature(REFUSAL_FEATURE_BY_MODE[refusalMode], {
@@ -976,8 +975,7 @@ function renderNonStreamingV4(
   // A suppressed / passed-through contentless refusal still settles FAILED: the client received a
   // clean turn as a PRESENTATION policy, which is not a claim that the turn produced anything.
   const refusalReason = isRefusal ? refusalSummary(extractRefusalDetail((response as { stop_details?: unknown }).stop_details)) : null
-  const failReason =
-    refusalReason ?? (unrepairableTool !== null ? `unrepairable malformed tool_use input (tool=${unrepairableTool})` : truncationReason)
+  const failReason = refusalReason ?? (unrepairableTool !== null ? `unrepairable malformed tool_use input (tool=${unrepairableTool})` : truncationReason)
   const responseData = {
     success: !failReason,
     model: response.model,
@@ -1000,7 +998,13 @@ function renderNonStreamingV4(
     reqCtx.fail(
       response.model,
       new Error(failReason),
-      { usage: responseData.usage, stop_reason: responseData.stop_reason, stopDetails: responseData.stopDetails, content: responseData.content, sourceBody: response },
+      {
+        usage: responseData.usage,
+        stop_reason: responseData.stop_reason,
+        stopDetails: responseData.stopDetails,
+        content: responseData.content,
+        sourceBody: response,
+      },
       // Refusal + unrepairable = a COMPLETE 200 upstream body the proxy re-judged → upstreamSucceeded
       // keeps outboundResponse honest. Semantic truncation = an INCOMPLETE body → stays success:false.
       refusalReason !== null || unrepairableTool !== null ? { upstreamSucceeded: true } : undefined,

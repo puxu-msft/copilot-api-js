@@ -210,7 +210,7 @@ export const RateLimiterConfigSchema = z
  *     {@link nullableBufferedRetry}, which also accepts a bare boolean as the
  *     `enabled` shorthand).
  *
- * Resolution priority (see `resolveBufferedCaps` in state.ts): per-vendor
+ * Resolution priority (see `resolveBufferedCaps` in ./model-overrides.ts): per-vendor
  * override > shared `buffered_retry.*` > built-in default (max_retries 3 /
  * buffer_cap_bytes 16777216 / heartbeat_sec 15).
  */
@@ -1390,7 +1390,7 @@ export const ConfigSchema = z
      * turn overrides the built-in defaults (3 / 16777216 / 15). Top-level (not under
      * a vendor) because the caps are protocol-neutral; only the `enabled` mode switch
      * is per-vendor. The `enabled` field here is ignored (there is no shared mode
-     * switch). See resolveBufferedCaps in state.ts.
+     * switch). See resolveBufferedCaps in ./model-overrides.ts.
      */
     buffered_retry: nullableSection(BufferedRetryOverrideSchema),
     /**

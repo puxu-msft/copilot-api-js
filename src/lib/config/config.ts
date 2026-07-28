@@ -12,6 +12,7 @@ import consola from "consola"
 import fs from "node:fs/promises"
 import { z } from "zod"
 
+import { resolveBufferedCaps } from "~/lib/config/model-overrides"
 import { setV3PersistRetryConfig } from "~/lib/history/v3"
 import { recordConfigReloadTimeoutDiff } from "~/lib/observability/reaper-diagnostics"
 import {
@@ -21,7 +22,6 @@ import {
   type CompiledRewriteRule,
   type CompiledSystemPromptEntry,
   DEFAULT_MODEL_MAPPINGS,
-  resolveBufferedCaps,
   setAnthropicBehavior,
   setBufferedRetryContinuationOverride,
   setBufferedRetryContinuationShared,

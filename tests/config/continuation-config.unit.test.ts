@@ -1,8 +1,16 @@
-import { expect, test } from "bun:test"
+import {
+  //
+  expect,
+  test,
+} from "bun:test"
 
-import { resolveContinuation, setBufferedRetryContinuationOverride, setBufferedRetryContinuationShared } from "~/lib/state"
-
+import { resolveContinuation } from "~/lib/config/model-overrides"
 import { BufferedRetryOverrideSchema } from "~/lib/config/schema"
+import {
+  //
+  setBufferedRetryContinuationOverride,
+  setBufferedRetryContinuationShared,
+} from "~/lib/state"
 
 import { useIsolatedRuntime } from "../helpers/isolated-fixture"
 
