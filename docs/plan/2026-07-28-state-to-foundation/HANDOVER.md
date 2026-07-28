@@ -256,7 +256,10 @@ rg -n 'from "' src/lib/state.ts src/lib/state-defaults.ts
   - ④ **separator 这一对的完整契约**：`SeparatorCarrier` 与 `SEPARATOR_CARRIERS` 的 key union 编译期一致；`separatorText()` / `makeSyntheticSeparator()` 仍消费同一个新 owner；`block-layout-contract` / `assistant-block-layout` 的原公共路径仍可用。
 - **证伪方式**：① 若实测环数明显偏离 30/43，说明 peer 又改了图——**别调整期望值去迁就，先重跑 §3.1 摸清现状**；② golden 必须做变异实验：改任一字符串（含 `DEFAULT_SEPARATOR_CARRIER` 的值）里的一个字符，测试必须变红；③ oracle ③ 的 source guard 也要变异：在旧模块里重新加一份独立声明，必须变红。
 - **风险**：极低（移动字面量，行为逐字节不变）。**但"逐字节不变"是需要被证明的主张，不是免检理由**——上面 ②③ 就是它的证明。
-- **做完这一步的里程碑**：`state-defaults.ts` 应当**只剩类型出边**（§3.7 #12–#14、#16），零值依赖。这是个可验证的中间态，值得单独确认。
+- ✅ **已落地**（worktree `feat/state-foundation`，提交 `2ef2f8f8`）。实测 **70 环/63 成员 → 30/43**，与 PoC 复现值一致；typecheck 绿、`bun scripts/parallel-test.ts unit it http` 6608 pass/0 fail。守卫落在 `tests/architecture/state-defaults-value-owners.unit.test.ts`，**5 条变异逐条证实它会红**（改 golden 一个字 / 改载体字面量 / 旧模块重新声明一份 / 给叶子加一条 import / 值边指回非叶子）。
+- ❌ **原里程碑「`state-defaults.ts` 只剩类型出边、零值依赖」是错的，别照它验收**。S1 之后 `state-defaults` 仍有**两条值出边**——它必须从叶子里取那四个常量。**削环靠的不是「没有值边」，而是「值边的目标是叶子」**（叶子无出边 ⇒ 依赖它不可能成环）。守卫按后者写；按前者验收会得出「S1 没做完」的错误结论。
+- ⚠️ **S1 是过渡态，不是终态，收尾在 S5**：这两条值边指向的是 `~/` 路径，**S6 的文件级 allowlist（只许 `node:` + 相对路径）照样会拒**。终态由 S5 吸收——`SeparatorCarrier` 用显式字面量联合 + 编译期可赋值性断言落到 `state-vocabulary`（同 `RepairItem` 的手法）、四个默认值由 `state-defaults` 自己声明，两个叶子的这部分内容随之清空。**S1 之所以不能直接做终态**：在 state 还不是叶子之前，反向让 `block-layout-contract` 从 `state-defaults` 取值会立刻造出两节点环。
+- **实现形态备忘**：新叶子 `src/lib/anthropic/sanitize/separator-carrier.ts` 持有全部**纯字符串**词汇（前缀 / 载体表 / 类型 / 默认值 / `separatorText` / 文本谓词），`block-layout-contract.ts` 只留两个需要 `ContentBlockParam` 的块形态适配器并 re-export 全部名字。这条「纯字符串在叶子、块形态在契约文件」的界线就是以后新增分隔符符号该往哪放的判据。`tests/anthropic/synthetic-separator-identity.unit.test.ts` 的 `OWNERS` 集合已加入新叶子。
 
 ### S2 — models 逻辑回 models 域
 
@@ -293,6 +296,7 @@ rg -n 'from "' src/lib/state.ts src/lib/state-defaults.ts
 
 ### S5 — 配置词汇归属反转
 
+- **除 §3.7 外，S5 还要收 S1 留下的尾巴**：`state-defaults` 现有的两条值出边（`~/lib/anthropic/refusal-policy` 的四个默认值、`~/lib/anthropic/sanitize/separator-carrier` 的 `DEFAULT_SEPARATOR_CARRIER`）**必须在本步消失**，否则 S6 的文件级 allowlist 必红。做法：默认值由 `state-defaults` 自己声明，`SeparatorCarrier` 走「显式字面量联合 + 编译期可赋值性断言」落到 `state-vocabulary`（与下面 `RepairItem` 同一手法），两个叶子改为从 state 侧取值。届时 `tests/architecture/state-defaults-value-owners.unit.test.ts` 这个过渡守卫要跟着改写而不是删掉——判据从「值边指向叶子」升级成「零跨包值边」。
 - **做什么**：**驱动清单是 §3.7，不是一个手写的符号列表**——§3.7 里所有标着「S5」的边（#1–#4、#9、#11 的类型侧、#12–#14），逐条把词汇的归属反转：实现模块从 state import 类型，而不是 state 从实现模块 import。
 - **⚠️ 别用手写清单**：我第一版在这里写死了 5 个类型名，实测漏了 4 个（`SeparatorCarrier` 与三个 token 类型）——**人工回忆的清单在这类任务里必漏**。以 §3.7 的机器枚举为准，做完再跑一次枚举确认差集为空。
 - **⚠️ 同一词汇有两条路径**：`AssistantBlockLayoutStrategy` / `SeparatorCarrier` 在 `state.ts` 来自 `assistant-block-layout`、在 `state-defaults.ts` 来自 `block-layout-contract`（前者 re-export 后者）。**反转后要指向同一个 owner**，别留两条。
