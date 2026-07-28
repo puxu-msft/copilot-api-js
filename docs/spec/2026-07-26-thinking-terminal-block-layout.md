@@ -65,7 +65,7 @@ HTTP 400: messages.27: The final block in an assistant message cannot be `thinki
 
 **推论 2——我方仍对所有 assistant 消息强制 C2**（比上游要求更严），刻意不引入「首个豁免」的例外：规则更简单、幂等性更好，而首个 assistant 消息以 thinking 收尾本就极罕见；GHC 的 opus 也不支持 assistant prefill（实测报 `does not support assistant message prefill`），所以不存在「改动首个 assistant 会污染 prefill 续写」的顾虑。
 
-**推论 3——上游报的 messages 索引不可信**：全量时上游报 27 / 我方 28（偏 −1）；截断后上游报 15 / 我方 14（偏 **+1**）；只剩 5 条消息（合法索引 0..4）时上游报 `messages.5`（**越界**）。三者互相矛盾，说明上游在校验前对消息做了我方不可见的重组。**永远按形状定位违规消息。**
+**推论 3——上游报的 messages 索引不可信**：全量时上游报 27 / 我方 28（偏 −1）；截断后上游报 15 / 我方 14（偏 **+1**）；只剩 5 条消息（合法索引 0..4）时上游报 `messages.5`（**越界**）；2026-07-28 的 `req_1785276101202_7795` 上游报 69 / 我方 72（偏 **−3**）。四者互相矛盾，说明上游在校验前对消息做了我方不可见的重组。**永远按形状定位违规消息。**
 
 ## 修复
 
@@ -117,6 +117,30 @@ HTTP 400: This model does not support assistant message prefill. The conversatio
 2. **L2 认不出 C3 的措辞** → 事故当天完全无兜底，硬 400 直达客户端。现在 matcher 把 C3 的 prefill 措辞作**独立线索**（`classifyLayoutRejection` 返回 `"thinking-layout" | "tool-terminal-prefill" | null`）：C1/C2 一律 strip-all 治愈；C3 **有条件**治愈——判据取自**真实 `stripAllThinking` 的前后对比**（`hasToolTerminalViolation` 各跑一次），而不是另写一个近似版补救——真 strip 还会删掉孤儿合成分隔符，自己模拟会把 `[tool, T, SEP]` 误判成不可治愈。三条同时成立才重试：原 payload 确有 C3 违规、剥完**全部**违规都消失、且对话不以 assistant 轮收尾（同一措辞覆盖的**字面** prefill，剥 thinking 治不了）。否则 abort，不把一次性重试白烧在已知仍违规的 payload 上。
 
    注意：**内联 `role:"system"` 消息收尾不算 prefill**——实测同一事故对话里有五轮以 system 消息收尾，上游都正常作答。
+
+## 二次事故（2026-07-28）：同一台陈旧实例、同一形态、换了个措辞
+
+`req_1785276101202_7795`（2026-07-28 22:01 UTC，`attemptCount = 1`，`clientStatus 400`）与上节事故是**同一台实例**打的——`process` 指纹逐字段相同：`pid 13201`、`bootTime 1784965095332`（2026-07-25 07:38 UTC）、`procStartTicks 8206609`、`version 0.8.4-beta.17`、且两次都**没有 `gitSha`**。也就是说：上次事故没有促成那台实例升级，它带着 3 天前的代码继续每轮必败。
+
+> **`gitSha` 缺失不足以断定部署形态**（复审用正样本推翻了本节初稿的断言）。`gitSha` 自 2026-06-11 起就在采集里，所以缺失**不是**「那版代码还没这个字段」；但 `initProcessIdentity` 把 git 查询的**一切**失败都折叠成「字段不写」（`git` 不在 `PATH`、cwd 不在 checkout、权限或 `safe.directory` 拒绝、2 秒 timeout），从 checkout 里加载代码但 `cwd=/tmp` 调用同样拿不到 `gitSha`。**能说的只有「git 身份未采集到」**。想让这类归因将来可裁决，得持久化结构化的采集状态（成败与原因），而不是让读者从缺字段反推唯一解释。
+
+形态与上次**块类型序列相同**（内容不同：signature 与 tool id 各是各的）。本次在 `messages[72]`：客户端发来 `[thinking, text(""), thinking, tool_use]`，该实例发上游 `[thinking, tool_use, thinking]`。**唯一的差别在上游的措辞**：
+
+| 事故 | 我方发上游的形态 | 上游回的 400 |
+|---|---|---|
+| `req_1785160010003_3754`（07-27） | `[T, tool, T]` | `This model does not support assistant message prefill…`（C3 措辞） |
+| `req_1785276101202_7795`（07-28） | `[T, tool, T]` | ``The final block in an assistant message cannot be `thinking`.``（C2 措辞） |
+
+**同一个非法形态可以收到两种不同措辞的 400**——它同时违反 C2 与 C3，上游先报哪条不确定。故：**判违规按形状、不按措辞**（与「按形状定位、不按 `messages.N` 索引」同源）；L2 的 matcher 必须两种措辞都认（现状已是），否则同一形态会随上游心情时而有兜底时而没有。
+
+用当前 master 跑同一条客户端 payload（`bun run exp/thinking-terminal-block/probe-remote-c3-regression.ts <entry.json>`）：产出 `[thinking, SEP, thinking, tool_use]`，全部 74 条消息（其中 34 条 assistant）满足 C1+C2+C3，`insertedMarkers: 1`（对比该实例落库的 `insertedMarkers: 0` / `reorderedBlocks: 3`——把 tool_use 当分隔符消耗掉了）。**这起事故代码侧无需再修，修的是那台实例的版本。**
+
+限定一句（复审提醒，别把结论读成绝对）：上面说的是**默认 `move_blocks`、且没有 post-sanitize payload hook** 的内置路径。`passthrough` 策略本就是给上游探针用的刻意 bypass，`upstream.outbound` hook 在 sanitize **之后**改写 payload 且不再过一遍 sanitize——这两条仍能把合法 payload 变成非法形态，它们是有意留的信任边界，不是本轮该修的缺陷。
+
+本轮据此补的两件事：
+
+1. **回归测试补上 finalize→layout 这条缝**（`tests/anthropic/assistant-block-layout-terminal-order.it.test.ts`）。此前该文件只守「`processToolBlocks` 删孤儿 tool_use 造出相邻」这一条诱因，而两次生产事故的诱因都是**另一条**：finalize 的空 text 清理删掉客户端自带的空分隔符。两者对 L1 的要求还不一样——孤儿那条修完没有真块可用（只能合成标记收尾），空 text 这条**有**一个真 `tool_use`，必须被**保留作收尾**而不是被当分隔符消耗。positive control：把 `moveBlocksStrategy` 里的 `realSeps.splice(tailIdx, 1)`（收尾块预留）注释掉，新测试立刻红成 `[thinking, tool_use, thinking, tool_use]`，旧测试仍绿——证明新测试咬的是旧测试咬不到的行为。
+2. **探针改为按形状定位 + 遍历全部 attempt + 先打进程身份**（`exp/thinking-terminal-block/probe-remote-c3-regression.ts`）。旧版把消息下标写死成 `36`，换一条 entry 就指着一条无辜消息打印「一切正常」。现在它对**每一个 attempt** 扫出发上游那条腿上的所有违规消息（只看 `attempts[0]` 会在「首次合法、重试才违规」的 entry 上给出静默假阴性——复审构造该样本证过），三腿对照（客户端发来 / 该 attempt 发上游 / 当前 master 产出），并把 `pid/version/gitSha/booted` 打在最前面——「这个 400 是哪一版代码造的」是判断的第一步，不该靠读者自己去翻 JSON。
 
 ## 随之而来的重命名（2026-07-27）
 
