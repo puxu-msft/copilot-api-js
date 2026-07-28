@@ -1,11 +1,12 @@
 /**
- * CLI e2e (Tier 2) upstream hook: first mock a contentless REFUSAL, then normal turns.
+ * CLI e2e (Tier 2) upstream hook: mock a contentless REFUSAL, then one explicit normal user turn.
  *
  * Contentless means no client-visible text/tool_use. This fixture uses the observed zero-content-block
  * shape; the proxy's refusal recovery (S5) transforms its first exchange per config:
  *   - refusal_sse_rewrite: end_turn + refusal_end_turn_text: ""  → empty END_TURN (stall bait)
  *   - refusal_sse_rewrite: end_turn + non-empty text             → recovery text (no stall)
- * Every later exchange returns a normal text turn so a resumed CLI session can prove it still works.
+ * Only a request containing the explicit second-turn token returns a normal text turn; automatic
+ * empty-turn continuation requests keep receiving refusal, so they cannot manufacture a false pass.
  *
  * Loaded via config `hooks.upstream_module` + `enabled: true` + `POST /api/hooks/reload`.
  *
