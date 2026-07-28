@@ -69,12 +69,6 @@ const ALLOWED: Record<string, Array<{ specifier: string; removedBy: string }>> =
       removedBy:
         "S5 — type-only (`Model`, `ModelsResponse`); user decision 2026-07-28 sinks both into foundation next to `ghc-http-primitives`, `models/client.ts` re-exports",
     },
-    { specifier: "~/lib/token/store", removedBy: "S4 — the test-only credential shim inverts into a domain-agnostic snapshot participant registry" },
-    {
-      specifier: "~/lib/token/types",
-      removedBy:
-        "S4 — SAME registry. This one is package layering, not taste: `packages/token` already depends on foundation, so a surviving edge would be foundation → token → foundation, and `import type` is NOT exempt from the boundary guard",
-    },
   ],
   "src/lib/state-defaults.ts": [
     {

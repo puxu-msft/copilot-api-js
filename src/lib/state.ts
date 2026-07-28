@@ -11,22 +11,6 @@ import type {
   Model,
   ModelsResponse,
 } from "~/lib/models/client"
-import type {
-  //
-  CopilotTokenInfo,
-  TokenInfo,
-} from "~/lib/token/types"
-
-import {
-  //
-  restoreTokenStoreForTests,
-  setStoreCopilotToken,
-  setStoreCopilotTokenInfo,
-  setStoreGithubToken,
-  setStoreTokenInfo,
-  snapshotTokenStoreForTests,
-  type TokenStoreSnapshot,
-} from "~/lib/token/store"
 
 import type { AdaptiveRateLimiterConfig } from "./adaptive-rate-limiter"
 
@@ -1178,15 +1162,82 @@ type MutableState = {
 }
 
 /**
- * A per-test snapshot of BOTH the mutable state and the token domain's
- * credential store (the credentials moved out of `state` into `~/lib/token`'s
- * store in the monorepo split; the snapshot composes them so the existing
- * per-test state snapshot/restore atomically covers credentials too — no
- * separate fixture wiring or resetter needed).
+ * A per-test snapshot of the mutable state PLUS one opaque slice per registered participant.
+ *
+ * Treat it as opaque: hand it back to {@link restoreStateForTests} and read nothing out of it. The
+ * participant slices are typed `unknown` on purpose — this module must not know what any domain
+ * keeps in its slice, which is the whole point of the registry (see
+ * {@link registerSnapshotParticipant}).
  */
 export interface StateSnapshot {
   readonly state: MutableState
-  readonly tokenStore: TokenStoreSnapshot
+  readonly participants: ReadonlyMap<string, unknown>
+}
+
+/**
+ * The extra keys {@link setStateForTests} accepts beyond `State`'s own fields, contributed by
+ * whichever domains registered a snapshot participant.
+ *
+ * Declared EMPTY here and filled in by declaration merging from the owning domain's core-side
+ * composition module (`src/lib/token-runtime.ts` adds the four credential keys). That indirection is
+ * not decoration: this module is being reduced to a leaf that depends on nothing but language
+ * builtins, so it cannot name `TokenInfo` or `CopilotTokenInfo` — and `packages/token` already
+ * depends on foundation, so importing them would make the final package graph
+ * foundation → token → foundation. Merging keeps every call site fully typed anyway: a typo in a
+ * credential key is still a compile error.
+ */
+// eslint-disable-next-line @typescript-eslint/no-empty-object-type -- filled by declaration merging; see above
+export interface StateTestPatchExtensions {}
+
+/**
+ * A domain that owns test-visible state living OUTSIDE `mutableState`, and therefore has to join the
+ * per-test snapshot/restore/patch cycle.
+ *
+ * Registered rather than imported because the import would run the wrong way: the domains concerned
+ * (token today) sit BELOW state in the package graph. Registration inverts that — state offers a
+ * slot, the domain's core-side composition module fills it.
+ */
+export interface SnapshotParticipant<S = unknown> {
+  /** Stable identity. Re-registering the same name replaces the entry rather than duplicating it. */
+  readonly name: string
+  /**
+   * The {@link setStateForTests} patch keys this participant owns. A key claimed by nobody is a
+   * hard error, NOT a silent no-op — see {@link setStateForTests}.
+   */
+  readonly claims: ReadonlyArray<string>
+  snapshot: () => S
+  restore: (slice: S) => void
+  /** Apply the claimed keys present in a test patch. Only receives keys this participant claims. */
+  applyTestPatch: (patch: Readonly<Record<string, unknown>>) => void
+}
+
+const snapshotParticipants = new Map<string, SnapshotParticipant>()
+
+/**
+ * `State`'s OPTIONAL fields, which are absent from `mutableState` until something writes them.
+ *
+ * `key in mutableState` is the cheap runtime test for "is this a state field", and for these three it
+ * answers false on a fresh process — so a `setStateForTests({ models })` would be misrouted as a key
+ * nobody owns and throw. Listing them closes that hole;
+ * `tests/state/test-patch-routing.unit.test.ts` re-derives the optional fields from the `State`
+ * declaration and fails if this list drifts, so it cannot silently rot as fields come and go.
+ */
+const OPTIONAL_STATE_FIELDS: ReadonlySet<string> = new Set(["models", "vsCodeVersion", "adaptiveRateLimitConfig"])
+
+const isStateField = (key: string): boolean => key in mutableState || OPTIONAL_STATE_FIELDS.has(key)
+
+/**
+ * Register (or replace) a snapshot participant. Idempotent by `name`, so the composition modules
+ * that call it from several entry points — CLI commands, server bootstrap, the bun test preload —
+ * can call it freely.
+ */
+export function registerSnapshotParticipant<S>(participant: SnapshotParticipant<S>): void {
+  snapshotParticipants.set(participant.name, participant as SnapshotParticipant)
+}
+
+/** Test-only: drop every registration. Exists so a test can prove the unclaimed-key error fires. */
+export function clearSnapshotParticipantsForTests(): void {
+  snapshotParticipants.clear()
 }
 
 /** Epoch ms when the server started (set once in runServer) */
@@ -1880,45 +1931,68 @@ export function setMaxTokensContinuationOverride(vendor: string, patch: MaxToken
 }
 
 /**
- * Capture a deep-enough clone of state for test restoration.
- * Tests should prefer this over direct mutation snapshots so State can stay readonly.
+ * Capture a deep-enough clone of state, plus every registered participant's slice, for test
+ * restoration. Tests should prefer this over direct mutation snapshots so State can stay readonly.
  */
 export function snapshotStateForTests(): StateSnapshot {
-  return { state: cloneState(mutableState), tokenStore: snapshotTokenStoreForTests() }
+  const participants = new Map<string, unknown>()
+  for (const participant of snapshotParticipants.values()) participants.set(participant.name, participant.snapshot())
+  return { state: cloneState(mutableState), participants }
 }
 
 /**
- * Controlled test-only mutation path.
- * Keeps readonly State in application code while allowing tests to set fixtures.
+ * Controlled test-only mutation path. Keeps readonly State in application code while allowing tests
+ * to set fixtures.
  *
- * The token credentials moved out of `state` into `~/lib/token`'s store; this
- * shim still accepts the four credential keys and forwards them to the store so
- * the ~137 existing `setStateForTests({ copilotToken, ... })` call sites keep
- * working unchanged (test-only convenience, not a production write path).
+ * Keys that are not `State` fields are routed to whichever participant claims them (credentials live
+ * in the token domain's store, not in `state`). **An unclaimed key throws.** That is the load-bearing
+ * decision here: the obvious alternative — ignore what nobody claims — turns a missing registration
+ * into a green test suite that has quietly stopped isolating credentials between tests, which is
+ * exactly the failure this shim exists to prevent.
  */
-export function setStateForTests(
-  patch: Partial<MutableState> & {
-    githubToken?: string
-    copilotToken?: string
-    tokenInfo?: TokenInfo
-    copilotTokenInfo?: CopilotTokenInfo
-  },
-): void {
-  const { githubToken, copilotToken, tokenInfo, copilotTokenInfo, ...statePatch } = patch
-  if ("githubToken" in patch) setStoreGithubToken(githubToken)
-  if ("copilotToken" in patch) setStoreCopilotToken(copilotToken)
-  if ("tokenInfo" in patch) setStoreTokenInfo(tokenInfo)
-  if ("copilotTokenInfo" in patch) setStoreCopilotTokenInfo(copilotTokenInfo)
-  updateState(cloneStatePatch(statePatch))
+export function setStateForTests(patch: Partial<MutableState> & Partial<StateTestPatchExtensions>): void {
+  const statePatch: Record<string, unknown> = {}
+  const claimed = new Map<string, Record<string, unknown>>()
+  const unclaimed: Array<string> = []
+
+  for (const [key, value] of Object.entries(patch)) {
+    if (isStateField(key)) {
+      statePatch[key] = value
+      continue
+    }
+    const owner = [...snapshotParticipants.values()].find((participant) => participant.claims.includes(key))
+    if (!owner) {
+      unclaimed.push(key)
+      continue
+    }
+    const slice = claimed.get(owner.name) ?? {}
+    slice[key] = value
+    claimed.set(owner.name, slice)
+  }
+
+  if (unclaimed.length > 0) {
+    const registered = [...snapshotParticipants.keys()].join(", ") || "(none)"
+    throw new Error(
+      `setStateForTests: no snapshot participant claims ${unclaimed.map((key) => `\`${key}\``).join(", ")}. `
+        + `Registered participants: ${registered}. `
+        + `A domain that keeps test-visible state outside \`state\` must call registerSnapshotParticipant() `
+        + `from its core-side composition module (see src/lib/token-runtime.ts), and the bun test preload must reach that module.`,
+    )
+  }
+
+  for (const [name, slice] of claimed) snapshotParticipants.get(name)?.applyTestPatch(slice)
+  updateState(cloneStatePatch(statePatch as Partial<MutableState>))
   if ("models" in patch && !("modelIndex" in patch) && !("modelIds" in patch)) {
     rebuildModelIndex()
   }
 }
 
-/** Restore state + token store from a snapshot captured by snapshotStateForTests(). */
+/** Restore state + every participant's slice from a snapshot captured by snapshotStateForTests(). */
 export function restoreStateForTests(snapshot: StateSnapshot): void {
   updateState(cloneState(snapshot.state))
-  restoreTokenStoreForTests(snapshot.tokenStore)
+  for (const participant of snapshotParticipants.values()) {
+    if (snapshot.participants.has(participant.name)) participant.restore(snapshot.participants.get(participant.name))
+  }
 }
 
 import {

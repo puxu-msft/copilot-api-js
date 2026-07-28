@@ -54,6 +54,11 @@ const EXEMPT: Record<string, string> = {
   setStateForTests: "state mutator — covered by snapshot/restore",
   snapshotStateForTests: "state snapshot mechanism",
   restoreStateForTests: "state restore mechanism",
+  // Registry teardown, NOT a per-test reset. Participants are registered once by the bun test
+  // preload (see src/lib/token-runtime.ts); clearing them between tests would leave every
+  // credential key unclaimed and `setStateForTests` would throw. It exists so a test can PROVE the
+  // unclaimed-key error fires, and every caller restores the registry in a `finally`.
+  clearSnapshotParticipantsForTests: "registry teardown for negative tests — must NOT run per-test",
   // Token store snapshot/restore — the credential store's snapshot mechanism,
   // composed into snapshotStateForTests/restoreStateForTests (so the per-test
   // state snapshot atomically covers credentials). No independent reset.
