@@ -58,7 +58,10 @@ import type {
   ResolvedModel,
   UpstreamEndpoint,
 } from "~/lib/pipeline/envelope"
-import type { ReverseStreamTranslator } from "~/lib/pipeline/hub-translate"
+import type {
+  ReasoningRoundTripOptions,
+  ReverseStreamTranslator,
+} from "~/lib/pipeline/hub-translate"
 import type { RequestState } from "~/lib/pipeline/request-state"
 import type {
   //
@@ -195,9 +198,12 @@ function genShortId(): string {
  * concept) — passing it unconditionally on every reverse call site is harmless (the CC-family
  * factories in hub-translate.ts simply ignore an opts param they never read).
  */
-function reasoningRoundTripOpts(env: RequestEnvelope): { stripThinkingSignature: boolean } {
+function reasoningRoundTripOpts(env: RequestEnvelope): ReasoningRoundTripOptions {
   const modelId = modelIdFor(env.model as Model | undefined, (env.body as { model?: string }).model)
-  return { stripThinkingSignature: stripThinkingSignatureFor("openai-responses", modelId, "anthropic-messages") }
+  return {
+    stripThinkingSignature: stripThinkingSignatureFor("openai-responses", modelId, "anthropic-messages"),
+    onDegradation: ({ category, target }) => env.ctx.recordFeature("translated-refusal-category-dropped", { category, target }),
+  }
 }
 
 /**

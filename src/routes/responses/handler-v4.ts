@@ -52,6 +52,13 @@ import { bridgeClientAbort } from "~/lib/abort-bridge"
 import { createBetaProbe } from "~/lib/anthropic/pipeline"
 import {
   //
+  extractRefusalDetail,
+  isContentlessRefusalResponse,
+  refusalCategoryForDiagnostics,
+  refusalSummary,
+} from "~/lib/anthropic/recover-refusal"
+import {
+  //
   createReverseAnthropicMapperHolder,
 } from "~/lib/codec/openai-cc/reverse-anthropic-rewrite"
 import { createOpenAiResponsesCodec } from "~/lib/codec/openai-responses/codec"
@@ -521,8 +528,10 @@ function renderReverseNonStreamingV4(c: Context, env: RequestEnvelope, resp: Res
   env.ctx.setClientResponseStatus(httpResponse.status)
 
   const truncationReason = anthropicNonStreamingTruncation(anthropicUpstream.stop_reason)
+  const refusalReason = isContentlessRefusalResponse(anthropicUpstream) ? refusalSummary(extractRefusalDetail(anthropicUpstream.stop_details)) : null
+  const failureReason = refusalReason ?? truncationReason
   const responseData = {
-    success: !truncationReason,
+    success: !failureReason,
     model: anthropicUpstream.model,
     usage: {
       input_tokens: anthropicUpstream.usage.input_tokens,
@@ -531,15 +540,23 @@ function renderReverseNonStreamingV4(c: Context, env: RequestEnvelope, resp: Res
       cache_creation_input_tokens: anthropicUpstream.usage.cache_creation_input_tokens ?? undefined,
     },
     stop_reason: anthropicUpstream.stop_reason ?? undefined,
+    stopDetails: (anthropicUpstream as { stop_details?: unknown }).stop_details,
     content: { role: "assistant" as const, content: anthropicUpstream.content },
     responseText: JSON.stringify(anthropicUpstream),
   }
-  if (truncationReason) {
-    env.ctx.fail(anthropicUpstream.model, new Error(truncationReason), {
-      usage: responseData.usage,
-      stop_reason: responseData.stop_reason,
-      content: responseData.content,
-    })
+  if (failureReason) {
+    if (refusalReason) env.ctx.recordFeature("refusal-passthrough", { category: refusalCategoryForDiagnostics(anthropicUpstream.stop_details) })
+    env.ctx.fail(
+      anthropicUpstream.model,
+      new Error(failureReason),
+      {
+        usage: responseData.usage,
+        stop_reason: responseData.stop_reason,
+        stopDetails: responseData.stopDetails,
+        content: responseData.content,
+      },
+      refusalReason ? { upstreamSucceeded: true } : undefined,
+    )
   } else {
     env.ctx.complete(responseData)
   }

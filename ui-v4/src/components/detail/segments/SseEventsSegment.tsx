@@ -77,7 +77,10 @@ export function SseEventsSegment({ entry }: { entry: HistoryEntry }) {
           <FrameList
             label="forwarded sse"
             frames={forwardedFrames}
-            startedAt={entry.startedAt}
+            // Forwarded offsets are COMMIT-relative (the sink computes them from `streamStartMs`),
+            // so the upstream leg's epoch does not apply. With the delayed-commit window defaulting
+            // to 180s this was showing forwarded frames up to three minutes early.
+            startedAt={entry.startedAt + (entry.timing?.client?.streamOpenMs ?? 0)}
           />
         </LegShell>
       : null}

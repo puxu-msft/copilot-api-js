@@ -2,6 +2,21 @@
 
 从记忆库降为引用层（2026-07-05）时归位的活 backlog。每条：现状 / 暂缓原因 / 若做需改什么。
 
+## reverse `@messages` 非流式跨协议 refusal 抑制（2026-07-28，合并态复审后拆出）
+
+- **根因**：Anthropic whole-response refusal rewrite 位于 Anthropic wire 层；reverse `@messages` 的 Chat Completions / Responses / Gemini codec 随后把原始 Anthropic response 翻成目标协议，而三个 route settle 点此前只调用 `anthropicNonStreamingTruncation(stop_reason)`。`stop_reason:"refusal"` 是有效终止符，因此旧代码直接 `ctx.complete()`；本批已用共享 `isContentlessRefusalResponse()` 修正裁决，但没有把 Anthropic 三模式呈现策略提升为跨协议机制。
+- **当前行为**：三条 reverse 非流式腿命中 contentless refusal 时统一 `ctx.fail(refusalSummary(...), ..., {upstreamSucceeded:true})`，记录 `refusal-passthrough`，History / `/api/stats` / telemetry / TUI 的失败口径一致；客户端仍收到现有目标协议翻译：Chat Completions 的 `finish_reason:"content_filter"`、Responses 的 `status:"incomplete"` + `incomplete_details.reason:"refusal"`、Gemini 的对应 content-filter 完成原因。配置的默认 `anthropic.refusal_sse_rewrite="end_turn"` 对这三条非流式腿尚不产生抑制 wire。
+- **理想架构**：把 refusal disposition 抽成协议无关的、请求级冻结的终态决策，先基于原始 Anthropic response 判定 passthrough / suppression / error，再由 CC / Responses / Gemini 各自把该决策渲染成合法且不会中断客户端轮次的正常完成形态；raw upstream response 与 `stopDetails` 继续原样进 History，上游腿继续 `success:true`，请求裁决继续 `failed`。
+- **为何暂缓**：本批的 HIGH 缺陷是后端裁决与计数口径错误，已可独立闭合；真正抑制会改变三种公开协议的客户端 wire，需要决定每种协议的合成文本位置、完成原因、error 模式、usage 与 response id 保持方式，并补真实 SDK / CLI 消费 oracle。把这些协议设计夹进 settle 修复会产生未经规格裁决的新公共行为。
+- **若做需改什么**：① 把 `RefusalPolicy` + detail/template vars 形成跨协议 whole-response disposition；② 在 `openai-cc` / `openai-responses` / Gemini reverse renderer 中分别实现 `end_turn`、`refusal`、`error` 三模式；③ 保证目标协议 exactly-one terminus 与 raw/forwarded 双轨；④ feature 从当前固定 `refusal-passthrough` 改为实际 mode 对应值；⑤ 为三条非流式腿各补 byte golden + 官方 SDK 消费 oracle，并补至少一条同 session 后续轮继续的客户端测试。
+
+## History 详情页 SSE 帧的绝对时间：upstream 轨的原点未证（2026-07-28）
+
+- **根因**：`clientResponse.sseEvents[].offsetMs` 是 **commit 相对**的（`client-sink.ts:216` 用 `Date.now() - streamStartMs`），而 UI 的 `FrameList` 两条轨原本都传 `entry.startedAt` 当原点（`ui-v4/src/components/detail/segments/SseEventsSegment.tsx`）。
+- **已修（2026-07-28）**：forwarded 轨改用 `entry.startedAt + (entry.timing?.client?.streamOpenMs ?? 0)`。这条有证据——生产者在 commit 时刻写 `setClientTimingEpoch("streamOpen", commitInstant)`，与 sink 的 `streamStartMs` 同源。延迟-commit 窗口默认从 20s 抬到 180s 后，这个误差被放大到约 3 分钟，所以先修它。
+- **仍未证 / 本条要做的**：**upstream 轨的 offset 原点是什么，没追出来**。合并态评审指出它未必是 `entry.startedAt`（可能是 attempt/collector 自己的原点）。若确实不是，现在这条轨显示的绝对钟点同样是错的，只是没有被本次默认值改动放大。
+- **若做需改什么**：① 追出 `attempts[].upstreamResponse.sseEvents[].offsetMs` 的写入点与其时间基（`model-operation-record.ts` / `context/request.ts:610,1594` 是消费侧，产生侧待定）；② 若原点可证 → 按轨传对应 epoch；③ 若持久化记录里**没有**可证明的原点 → 该轨只显示 elapsed 或显式「绝对时间不可用」，**不要继续伪造绝对钟点**（已有 `offsetSource === "unavailable"` 的先例可复用）；④ 补一条 UI 回归测试，构造 `streamOpenMs=180000, offsetMs=20000` 断言两轨各自渲染的钟点。
+- **为何暂缓**：产生侧未定位，属独立调查单元；且 upstream 轨的误差不随本次默认值改动放大，不阻塞交付。
 ## `makeReconcilingSink` 未继承 delivery identity，live hedge 胜者写丢失 winner 归属（2026-07-28）
 
 - **根因 / 现状**：透明 `ClientSink` decorator `makeReconcilingSink` 只镜像 write/heartbeat/terminal 方法，没有调用 `inheritDownstreamDeliverySession(inner, decorator)` 继承 generation-owned delivery identity。默认 Anthropic live 接线已确证会把该 decorator 直接传入 `driver.runResponseSink`：`handler-v4.ts:1327` 与 `:1612-1613` → `driver.ts:260` → `runResponseSink:1020` → `maybeRunHedgedResponseSink(...)` → `writeWinnerFrames:971-978`。默认 `streamKeepaliveEscalateSec: 200 > 0` 令 `anchorHooks` 存在，默认 `generationHedgeEnabled: true` + `responseHeaderTimeout: 300` 又令 hedge 可达；探针实证 `getDownstreamDeliverySession(makeReconcilingSink(...)) === undefined`。
@@ -1040,6 +1055,15 @@ registry（`docs/rfc/2026-07-21-retry-strategy-registry.md`）6 commit 全 lande
 - **理想架构 / 若做需改什么**：两条候选，都换判据而非继续扩「跳过构造」名单——① **窄 sequencing helper + runtime spy**：抽一个只拥有这三个动作、依赖回调注入的薄编排函数，`runServer` 调它；测试注入 spy 断言**真实执行顺序与 await 语义**（initialize 的 promise 未 resolve 前 listen 不得被调用）。代价：`runServer` 里三个 milestone 相隔约 200 行其它启动逻辑，helper 要吞掉中间段，可读性变差——需先设计好形状。② **booted-server e2e**：让 telemetry runtime 记录自身相位跃迁，起真实服务器（非 4141 端口）后断言记录到的顺序。代价：进 `test:e2e` 档、不在默认 `test:backend` 里。
 - ~~**为何暂缓**~~ → **✅ 已解决（2026-07-27，`e170566c`），但走的是第三条路**：既没做 ① 也没做 ②，而是**把不变量搬进 runtime 自己**——`markServerListening()` 在 `initialize()` 未完成时 fail-fast，`runJsonBackfill()` 在标记之前被**延迟到标记时**而不是提前执行。于是「调用写反了」不再能破坏契约（延迟保证了它仍在 listen 之后吸收），oracle 退化成一个普通 runtime 单测。教训：**当守卫追不上的时候，正解往往是换不变量的存放位置，而不是造更强的守卫**——`docs/plan/monorepo-split/plan-telemetry-package.md` 与 `tests/architecture/telemetry-startup-order.unit.test.ts` 的注释记录了完整推导。
 - **残余（已知且刻意）**：source 守卫仍保留一个窄职责——断言 `markServerListening()` 真的接在 listen 与 backfill 之间（runtime 自己证不了「有没有人调我」），这一条仍是语法层判断。真实回归形态（挪调用、删 hook、去 await、死分支、死 helper、注释掉）均已实测转红。
+
+## 代理侧 refusal fallback 重试（换模型重发）—— 未采纳，非「不值得」而是本轮范围外（2026-07-28，contentless refusal 抑制期间）
+
+- **根因 / 现状**：上游 contentless refusal 时，代理目前只能**抑制**（合成一个说明性的正常完成轮，见 [docs/refusal-recovery.md](../refusal-recovery.md)）。抑制达成了首要目标——客户端对话轮次不被中断——但**本轮没有产出任何真实内容**：agent 读到的是一句「上游拒绝了」，得自己决定下一步。真正「轮次不中断**且**真的有产出」的做法是换一个模型重发。
+- **不是我们凭空想出来的方案**：上游自己在 `stop_details.explanation` 的样板句里建议的正是这条——`"API integrators: you can reduce refusals for your users by configuring a fallback model"`（三个一手样本里 3/3 都带这句）。Claude Code 也**内建了它**：`stop_reason==="refusal"` 且备有 `refusalFallbackModel` 时 `yield {type:"fallback_request", trigger:"refusal", apiRefusalCategory, ...}` 自动换模型重发（`~/.claude/refs/claude-code-2.1.207/app.pretty.js:298050-298063`，本会话逐行核实）。
+- **当前行为**：我们的抑制**恰恰挡住了 CC 自己的这条腿**——客户端再也看不到 `stop_reason:"refusal"`，所以它的 fallback 永远不会触发。这是抑制的**已知代价**，不是缺陷：CC 的 fallback 依赖用户已配置 `refusalFallbackModel`，且其失败终点仍是结束当前轮（`refusal_no_fallback`），不满足首要目标。
+- **理想架构 / 若做需改什么**：一条新的反应式 retry 腿（参考 `src/lib/request/strategies/` 既有诸腿）。要点：① **循环安全**——refusal 可能对所有模型复发，须有 attempt cap 且不与既有 buffered-retry / continuation 预算打架；② **换模型的选择**依据（配置显式指定 vs 按 catalog 降级）；③ **计费**——多烧一次真实请求，需在 History/遥测里可辨识（该 attempt 打标记，别混进正常重试统计）；④ 与抑制的**优先级**：fallback 成功则不需要抑制，失败才落到抑制兜底——即抑制从「唯一手段」降级为「最后兜底」。
+- **为何暂缓**：用户在范围选择中选了 B 档（诊断忠实化 + 分型，不含自动重试），随后又把焦点收敛到「抑制」。**不是判定它没价值——恰恰相反，它比抑制更接近真正的目标**。**触发条件（值得做）**：观测到 refusal 频次上升（当前极罕见：全部保留数据里仅 3 次，2026-06-23 / 07-13 / 07-27），或用户希望被拒的轮次能自动产出真实内容而非一句说明。
+- **做之前必须先做的实验**（当前**全部未验证**，别当事实用）：同 payload 换模型重发的**恢复率**；同 payload 同模型重发是否必然再拒（官方文档只说 "usually"）；`category` 是否能预测可恢复性（`cyber`/`bio`/`null` 三类已观测，但**无任何**行为差异证据——`bio` 那次是烧了 25,636 thinking token 之后才拒的，不是推理前拦截）。取证基线见 [exp/refusal-samples/FINDINGS.md](../../exp/refusal-samples/FINDINGS.md)。
 ## pre-ready recovery 的分类 reason 未进入 attempt diagnostics（B2 Task 0.4，2026-07-23）
 
 - **根因 / 现状**：`driver.runPreContentRecovery(reason)` 将调用方的分类原因传给 `GenerationCoordinator.runRecoveryFromPreReadyFailure(reason, env)`，但 coordinator 仅用 `_reason` 满足接口、接着 `start({ role: "recovery", env })`；primary 的 pre-ready failed-open attempt 已在 scheduler/candidate 内被 settle 为 `failed`，没有 `retryNextStrategy` 或任意 metadata 字段承载后续 fresh dispatch 的触发原因。现有 `recordAttemptFailure` 只能记录 `willRetry`、`nextStrategy`、`waitMs`、`learning`，而 `CoordinatorCandidateInput` / `beginCandidate` 也没有 recovery metadata。

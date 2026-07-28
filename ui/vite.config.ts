@@ -39,6 +39,11 @@ export default defineConfig(({ command }) => {
       alias: {
         "@": resolve(here, "src"),
         "~backend": resolve(here, "../src"),
+        // Type-only today (so Vite erases it), but aliased anyway to match
+        // ui-v4: if a type-only import ever fails to be erased, this resolves to
+        // the pure-type barrel rather than the package root, which would drag
+        // server runtime into the browser bundle.
+        "@hsupu/ghc-proxy-telemetry/types": resolve(here, "../packages/telemetry/src/types.ts"),
       },
     },
     // In dev mode, serve from root for convenience; in build, use /ui/ prefix

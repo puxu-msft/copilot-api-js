@@ -51,7 +51,7 @@ export function readJsonBackfillBoundaryTs(db: TelemetryDatabase): number | null
 
 /**
  * SQL 列名 → camelCase counters 字段名的投影表（+ 缩放因子）。逐条对齐
- * `request-telemetry.ts` 的 18 个 `MEASURE_NAMES`（BASE9 + COST5 + EXTRA1 + FEATURE3），
+ * `request-telemetry.ts` 的 `MEASURE_NAMES`（BASE + COST + EXTRA + FEATURE），
  * 确保新 SQLite 读路径返回的 `counters` 与内存路径 `DimensionKeySnapshot.counters`
  * 字段名一致（消费端——如 `compareDimensionKeys` 风格的排序、前端渲染——可复用同一套
  * 字段名，无需按数据来源分叉）。cost_* 列是 scaled-int micro（写路径 `round(cost*1e6)`），
@@ -83,6 +83,7 @@ const COUNTER_PROJECTIONS: ReadonlyArray<{ sqlCol: (typeof SETTLED_MEASURE_COLUM
   { sqlCol: "recovery_candidates", counterName: "recoveryCandidates", scale: 1 },
   { sqlCol: "cancelled_dispatches", counterName: "cancelledDispatches", scale: 1 },
   { sqlCol: "unknown_usage_dispatches", counterName: "unknownUsageDispatches", scale: 1 },
+  { sqlCol: "upstream_leg_success_count", counterName: "upstreamLegSuccessCount", scale: 1 },
 ]
 
 /** 一个 key 的聚合 counters（字段名对齐内存路径）+ 折叠进它的原始 key 名集合（供 sketch 合并定位物理行）。 */

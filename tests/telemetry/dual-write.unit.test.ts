@@ -199,6 +199,17 @@ test("oracle 1 — flush 一致性：SQLite tel_raw 标量 == 内存 dimBuckets 
   expect(Math.abs(sqlP99 - exact) / exact).toBeLessThanOrEqual(0.01)
 })
 
+test("upstream leg success measure persists through the additive outbox", async () => {
+  await initRequestTelemetry()
+  const base = bucketStart(Date.now())
+  recordSettledRequest({ model: "opus" }, { startedAt: base, endedAt: base + 10, success: false, upstreamLegSuccess: true })
+  await persistRequestTelemetry()
+
+  expect(readTierScalar(dbPath, "model", "opus", base, "success_count")).toBe(0)
+  expect(readTierScalar(dbPath, "model", "opus", base, "failure_count")).toBe(1)
+  expect(readTierScalar(dbPath, "model", "opus", base, "upstream_leg_success_count")).toBe(1)
+})
+
 test("oracle 2 — 无双计：连续两次 flush（中间不 record）SQLite 桶不翻倍", async () => {
   await initRequestTelemetry()
   const base = bucketStart(Date.now())

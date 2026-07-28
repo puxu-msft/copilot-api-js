@@ -16,7 +16,7 @@ cd .worktrees/<topic>
 bun install            # 新 worktree 没有 node_modules，不装 eslint 会 exit 127
 ```
 
-例外：`docs/plan/2026-07-27-keepalive-and-separator/` 下的交接与研究文档可以在主树直接改并即时提交——它们是入口，滞留分支上等于没写（项目的 `docs-merge-before-execute`）。
+例外：`docs/plan/2026-07-27-keepalive-and-separator/` 下的交接与研究文档可以在主树直接改并即时提交——它们是入口，滞留分支上等于没写。**收尾与交接的完整 how-to 见 skill `session-closeout`（§6 是单一源）**，本提示词只摘其中与你这次直接相关的部分。
 
 合回 master 前先 `git log --oneline master ..` 看并发会话在同一区域落了什么。上一轮就是因为没查，把一个 peer 早 6 小时修掉的缺陷写成了"不存在的缺陷"。
 

@@ -35,12 +35,12 @@ export interface TelemetryDimensionSpec {
  * The registered dimensions. Order is irrelevant (keys are name-addressed). `model` is the
  * back-compat dimension projected to `RequestTelemetrySnapshot.modelsSinceStart` / `modelsLast7d`.
  *
- * `model` / `client` / `tool` are `capped` because their keys derive from client-controlled input
- * (the raw `inboundRequest.model` is forwarded verbatim and recorded even on an upstream-400
- * failure; the user-agent; tool names), so an abusive or buggy client could otherwise grow the key
- * set without bound (memory leak + a `/metrics` cardinality bomb). Only `endpoint` (a route enum)
- * and `agentKind` (`main`/`subagent`) plus `max_tokens_truncation` (a fixed class enum) are
- * genuinely `bounded` and skip the cap.
+ * `model` / `client` / `tool` / `refusal_category` are `capped` because their keys come from open
+ * strings (the raw client model, user-agent, tool names, and the upstream-owned refusal category).
+ * Any of those producers can introduce new values without a proxy release, so the key set must stay
+ * bounded (memory leak + a `/metrics` cardinality bomb). Only `endpoint` (a route enum), `agentKind`
+ * (`main`/`subagent`) and `max_tokens_truncation` (a fixed class enum) are genuinely `bounded` and
+ * skip the cap.
  */
 export const TELEMETRY_DIMENSION_SPECS = [
   { name: "model", cardinality: "capped" },
@@ -49,6 +49,7 @@ export const TELEMETRY_DIMENSION_SPECS = [
   { name: "agentKind", cardinality: "bounded" },
   { name: "tool", cardinality: "capped" },
   { name: "max_tokens_truncation", cardinality: "bounded" },
+  { name: "refusal_category", cardinality: "capped" },
 ] as const satisfies ReadonlyArray<TelemetryDimensionSpec>
 
 /** Every registered dimension name as a union — the compile-time key set the core extractor table must cover exhaustively. */

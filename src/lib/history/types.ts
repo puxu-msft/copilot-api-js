@@ -429,6 +429,7 @@ export interface UpstreamResponseData {
   responseId?: string
   copilotAnnotations?: Array<CopilotAnnotations>
   toolSearchRequests?: number
+  stopDetails?: unknown
 }
 
 /**

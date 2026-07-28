@@ -140,6 +140,58 @@ describe("TerminalUi — response-thinking token threading", () => {
     expect(fail).not.toContain("think:")
   })
 
+  test("contentless refusal failure shows a named refusal category even though failure lines suppress stop_reason", () => {
+    const out = drive(
+      {
+        id: "a",
+        endpoint: "anthropic-messages",
+        state: "failed",
+        attempts: [
+          {
+            index: 0,
+            durationMs: 0,
+            error: "upstream contentless refusal",
+            upstreamResponse: {
+              success: true,
+              stopReason: "refusal",
+              stopDetails: { type: "refusal", category: "cyber", explanation: "diagnostic only" },
+              body: { role: "assistant", content: [] },
+            },
+          },
+        ],
+      },
+      "request.failed",
+    )
+    const fail = line(out, "[FAIL]")
+    expect(fail).toContain("refusal:cyber")
+    expect(fail).not.toContain("diagnostic only")
+  })
+
+  test("refusal with an explicit null category shows refusal:uncategorized", () => {
+    const out = drive(
+      {
+        id: "a",
+        endpoint: "anthropic-messages",
+        state: "failed",
+        attempts: [
+          {
+            index: 0,
+            durationMs: 0,
+            error: "upstream contentless refusal",
+            upstreamResponse: {
+              success: true,
+              stopReason: "refusal",
+              stopDetails: { type: "refusal", category: null, explanation: "diagnostic only" },
+              body: { role: "assistant", content: [] },
+            },
+          },
+        ],
+      },
+      "request.failed",
+    )
+    expect(line(out, "[FAIL]")).toContain("refusal:uncategorized")
+  })
+
   test("no thinking blocks → no think: token on the [ OK ] line", () => {
     const out = drive({
       id: "a",

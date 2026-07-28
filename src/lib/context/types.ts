@@ -4,6 +4,7 @@ import type {
   SendMessageNormalizationDiag,
 } from "~/lib/anthropic/decode-tool-input-core"
 import type { BufferedMergeDiag } from "~/lib/codec/openai-responses/buffered-merge-reducer"
+import type { RefusalPolicy } from "~/lib/anthropic/refusal-policy"
 import type { ApiError } from "~/lib/error"
 import type {
   //
@@ -110,6 +111,8 @@ export interface ResponseData {
   copilotAnnotations?: Array<CopilotAnnotations>
   /** Anthropic server-side tool_search request count, from `usage.server_tool_use.tool_search_requests` */
   toolSearchRequests?: number
+  /** RAW Anthropic `stop_details`, retained verbatim for History diagnostics. */
+  stopDetails?: unknown
 }
 
 /**
@@ -120,6 +123,8 @@ export interface ResponseData {
 export interface PartialResponseInfo {
   usage?: ResponseData["usage"]
   stop_reason?: string
+  /** RAW Anthropic `stop_details`, retained verbatim across fail/abort reconstruction. */
+  stopDetails?: unknown
   /** Complete upstream non-stream response envelope, retained independently of the proxy verdict. */
   sourceBody?: unknown
   /**
@@ -283,6 +288,7 @@ export interface HistoryUpstreamResponseData {
   responseId?: string
   copilotAnnotations?: Array<CopilotAnnotations>
   toolSearchRequests?: number
+  stopDetails?: unknown
 }
 
 /**
@@ -702,6 +708,16 @@ export interface RequestContext {
   readonly repairOutcomes: ReadonlyArray<RepairOutcomeRecord>
   /** Derived: the first UNREPAIRABLE tool of the current attempt, or null (drives the handler fail-gate). */
   readonly unrepairableToolInput: string | null
+  /**
+   * This request's contentless-refusal disposition, FROZEN on first read and immutable thereafter.
+   *
+   * Every layer that needs it (the S5 rewriter at processor construction, the non-streaming
+   * transformWhole, the handler at settle) reads this same snapshot instead of `state`, so they
+   * cannot disagree when a concurrent request hot-reloads config mid-stream. Being immutable and
+   * request-scoped it is also safe under hedging: concurrent candidates share the policy, and each
+   * derives its own verdict from its own accumulator rather than writing to a shared slot.
+   */
+  readonly refusalPolicy: RefusalPolicy
   /** Reset the per-attempt repair outcomes — called by the L2 buffered-retry `onAttemptReset`. */
   resetRepairOutcomesForAttempt(): void
   toHistoryEntry(): HistoryEntryData

@@ -22,7 +22,11 @@ import {
 } from "bun:test"
 import { existsSync } from "node:fs"
 
-import { driveClaudeCli } from "./harness/drive-claude-cli"
+import {
+  //
+  createClaudeCliSession,
+  driveClaudeCli,
+} from "./harness/drive-claude-cli"
 import {
   //
   realGithubTokenPath,
@@ -34,7 +38,11 @@ const HOOK = "./tests/e2e-client/harness/cli-refusal-hook.ts"
 const GATED = Boolean(Bun.which("claude")) && existsSync(realGithubTokenPath())
 
 // A random non-4141 port (never the user's main server).
-const port = (mode: "stall" | "recover"): number => (mode === "stall" ? 41987 : 41988)
+const port = (mode: "stall" | "recover" | "two-turn"): number => {
+  if (mode === "stall") return 41987
+  if (mode === "recover") return 41988
+  return 41990
+}
 
 const configYaml = (refusalEndTurnText: string): string =>
   [
@@ -80,4 +88,37 @@ describe.skipIf(!GATED)("client↔proxy CLI e2e (real claude → real proxy → 
       proxy?.close()
     }
   }, 90_000)
+
+  test("suppressed refusal leaves the SAME session usable for a normal second user turn", async () => {
+    let proxy: SpawnedProxy | undefined
+    try {
+      const recoveryText = "RECOVERY_TEXT_MARKER — upstream refused; rephrase and retry."
+      proxy = await spawnProxy({ port: port("two-turn"), configYaml: configYaml(recoveryText) })
+      const loaded = await proxy.reloadHook()
+      expect(loaded.ok, `hook load failed: ${loaded.error}`).toBe(true)
+      expect(loaded.exports).toContain("exchange")
+
+      const session = createClaudeCliSession({ baseURL: proxy.baseURL })
+      const first = session.run("FIRST_USER_TURN_REQUEST")
+      expect(first.sessionId).toBe(session.sessionId)
+      expect(first.numTurns).toBe(1)
+      expect(first.result).toContain("RECOVERY_TEXT_MARKER")
+      expect(first.isError).toBe(false)
+      expect(first.exitCode, first.stderr).toBe(0)
+      expect(first.stderr).toBe("")
+
+      const second = session.run("SECOND_USER_TURN_REQUEST")
+      // Direct oracle for the primary goal: this is the persisted conversation, not a fresh CLI run.
+      expect(second.sessionId).toBe(session.sessionId)
+      expect(second.result).toContain("SECOND_TURN_OK_MARKER")
+      expect(second.result).not.toBe("")
+      // Any automatic "continue" cycle inside this invocation increments num_turns beyond one.
+      expect(second.numTurns).toBe(1)
+      expect(second.isError).toBe(false)
+      expect(second.exitCode, second.stderr).toBe(0)
+      expect(second.stderr).toBe("")
+    } finally {
+      proxy?.close()
+    }
+  }, 120_000)
 })

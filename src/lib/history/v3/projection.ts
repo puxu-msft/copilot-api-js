@@ -223,6 +223,7 @@ export function recordToHistoryEntry(
             responseText?: string
             copilotAnnotations?: Array<CopilotAnnotations>
             toolSearchRequests?: number
+            stopDetails?: unknown
           }
           error?: { raw?: { responseText?: string } }
           source?: string
@@ -333,6 +334,7 @@ export function recordToHistoryEntry(
         responseId: response?.responseId,
         ...(response?.copilotAnnotations && { copilotAnnotations: response.copilotAnnotations }),
         ...(response?.toolSearchRequests !== undefined && { toolSearchRequests: response.toolSearchRequests }),
+        ...(response?.stopDetails !== undefined && { stopDetails: response.stopDetails }),
       },
       // RFC Phase 3 ③: `attempts[].responseHeaders` — the driver writes this for EVERY attempt
       // (success: UpstreamStream.headers; failure: apiError.responseHeaders), a SEPARATE capture

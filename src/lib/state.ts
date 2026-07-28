@@ -268,10 +268,10 @@ export interface State {
   /** 修复上游发出的畸形 tool_use input（非法 JSON），仅作用于 Anthropic 转发流。可叠加的修复项目集（`tags`=结构感知剥 antml 标签、`jsonrepair`=jsonrepair 结构修复、`unicode`=修空白打断的 `\uXXXX` 转义），按固定规范顺序级联。空数组=关（默认）。history 保留上游原始字节。 */
   readonly toolRepairMalformedInput: ReadonlyArray<RepairItem>
 
-  /** 上游 thinking-only refusal（stop_reason:"refusal" 仅有 thinking 块）的处理策略：`refusal`=透传不改写、`end_turn`=合成 text 块改 end_turn、`error`=发 error SSE 帧并记请求失败（ctx.fail）。默认 `error`。 */
+  /** 上游 contentless refusal（`stop_reason:"refusal"` 且无 client-visible `text`/`tool_use`）的**客户端呈现**策略：`end_turn`=**抑制**（合成 text 块 + 改 end_turn + 补 message_stop，客户端拿到正常完成轮、对话不中断）、`refusal`=原样透传、`error`=发 error SSE 帧。默认 `end_turn`——首要目标是不中断客户端对话轮次（透传与 error 都会让 CC 结束当前轮）。**三种模式请求终态一律 `failed`**：抑制是呈现策略，不改变「上游拒绝、本轮无真实产出」这一事实。 */
   readonly refusalSseRewrite: "refusal" | "end_turn" | "error"
 
-  /** `end_turn` 模式注入的 recovery text 模板（会被客户端 baked 进下一轮请求）。占位符 `{model}`/`{request_id}`/`{thinking_tokens}`，未知占位符原样保留；空串=不追加 text 块（仅改 end_turn）。默认见 `DEFAULT_REFUSAL_END_TURN_TEXT`。 */
+  /** `end_turn`（抑制）模式注入的 text 模板（会被客户端 baked 进下一轮请求）。占位符 `{model}`/`{request_id}`/`{thinking_tokens}`/`{output_tokens}`/`{refusal_category}`/`{refusal_explanation}`，未知值渲染成 `unknown`（`category` 为上游显式 null 时渲染 `uncategorized`），未知占位符原样保留；**空串=不追加 text 块**——实测会让 Claude Code 空转一轮，等于放弃抑制的保护。默认见 `DEFAULT_REFUSAL_END_TURN_TEXT`。 */
   readonly refusalEndTurnText: string
   /** `error` 模式合成 error 帧的 message 模板（客户端 `APIError.message`）。占位符同上。默认见 `DEFAULT_REFUSAL_ERROR_MESSAGE`。 */
   readonly refusalErrorMessage: string

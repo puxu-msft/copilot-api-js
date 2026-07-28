@@ -85,7 +85,21 @@
 
 ## 3. 待办（按优先级，每条带验收判据）
 
-### T1【用户已批】commit 时机推迟到首个真实块 —— 前提是不能弄坏 CC↔proxy 连接
+### T1【已完成 2026-07-28】commit 时机推迟 —— 测量与落地都做完了
+
+> **状态：DONE，合并在 master `da59c586`。** 剩下的不在本条。
+>
+> **测量（Q1 闭合）**：CC pre-header 容忍度 ≈ **300s**，归 undici 默认 `headersTimeout`（不是 SDK 的 1200/1250s request timer，也不是 CC 响应头后才武装的 stream-idle watchdog）。附测：`API_FORCE_IDLE_TIMEOUT=0` 能把它整个关掉（静默 600s 仍单次成功）——但那是**客户端侧**开关，我方取值一律按「客户端没设」来定。证据 `exp/silence-recovery-gates/FINDINGS.md` §「Q1 续测」/§「Q1 附测」。
+>
+> **落地**：`streamCommitAfterSec` 默认 20 → **180**（用户 2026-07-28 拍板）、`COMMIT_WINDOW_MAX_SEC` → **240**（~300s 减余量）、窗口改为**从请求 ingress 起算的 deadline**（合并态审查抓出：handler-局部计时会把 pre-handler 的 token 刷新时间花两次、吃掉 ceiling 承诺的余量）。B1 的 clamp 拆分是 cherry-pick 自 `feat/upstream-silence-recovery`，非重写。
+>
+> **两条别再重新推导的边界**：① 180 只覆盖事故带 126-206s 的**前半段**，180-206s 段仍先 commit、归 B2；② **不存在「总预算 T+300s / ~600s 天花板」**——commit 后那个 300s 是可重置的 idle watchdog，且我方 `streamKeepaliveEscalateSec`（默认 200s）本就在主动重置它。本文档早先版本写过那条算术，是错的。
+>
+> **已知暴露面**（已入 `docs/todo/deferred-backlog.md`）：窗口是全局的，但安全上限只在两个 Node 客户端上实测过；pre-header 容忍度落在 `(20s, 180s)` 的其它 Anthropic 客户端会被这个默认打破。长远形状是客户端感知的 commit policy。
+
+<details>
+<summary>原始 T1 条目（保留供追溯）</summary>
+
 
 > **⚠ 2026-07-27 续会话更新：T1 的无上限形式已被实测否定，且它不是空地。**
 >
@@ -104,6 +118,8 @@
 - **仍未查的风险面**：代理侧 `stream_commit_after_sec` 与 pre-response 重试/错误整形的交互（上游错误在 commit 前还能以真 HTTP 状态码返回，commit 后就只能走 SSE 内错误——这是**收益的一部分**，也是风险面）。
 - **必须与 `docs/spec/2026-07-23-upstream-silence-commit-timing.md` 合并设计**，别另起炉灶。
 - **验收**：① 真 CLI e2e：上游静默 T+250s 后才出首块，客户端完整收尾；② 上游在 commit 前报错时客户端拿到**真 HTTP 状态码**；③ 现有 pre-response 相关测试全绿。
+
+</details>
 
 ### T2【用户已批】W3（已 commit、无开块）兜底手段 —— **要做实验**
 
@@ -145,24 +161,13 @@
 
 ## 4. 工作方式：**后续改动一律在隔离 worktree 进行**（用户 2026-07-27 决定）
 
-本轮全程在共享主树上作业，代价已经具体地付出来了：
+**how-to 不在这里** —— 见 skill `session-closeout` §6（交接与 worktree 分工的单一源）与 skill `git-preference:isolating-from-a-shared-git-worktree`。这里只记本轮为「在共享主树上作业」实付的代价，作为该决定的证据：
 
-- 三份研究报告在提交前被并发会话的清理**从工作区抹掉**（原件恰好还在 `/tmp` 才救回来，已提交）；
+- 三份研究报告在提交前被并发会话的清理**从工作区抹掉**（原件恰好还在 `/tmp` 才救回，已提交）；
 - 我对丢失层的结论被 peer 早 6 小时的 `883e0533` 推翻，因为在共享树上**很难察觉别人已经动过同一块**；
-- 每次提交都要写显式 pathspec 绕开别人的脏文件，`eslint --fix` 得逐文件点名，否则会把别人的在飞改动裹进来。
+- 每次提交都要写显式 pathspec 绕开别人的脏文件，`eslint --fix` 得逐文件点名。
 
-所以接手会话**不要再在主树上改代码**：
-
-```bash
-# 起隔离 worktree（放 ./.worktrees/，项目约定）
-git worktree add .worktrees/<topic> -b feat/<topic>
-cd .worktrees/<topic>
-bun install            # 新 worktree 没有 node_modules，pre-commit/eslint 会 exit 127
-```
-
-参见 skill `git-preference:isolating-from-a-shared-git-worktree`。收尾时合回 master 走 `git merge`（三方合并自动合非冲突行），**合并前先 `git log --oneline master ..` 看 peer 在同一区域落了什么**——本轮的教训就是这条。
-
-文档类改动（本目录下的交接/研究报告）**可以**继续在主树直接改并即时提交：它们是接手会话的入口，滞留在特性分支上等于没写。这与项目的 `docs-merge-before-execute` 一致——**定稿文档先合主线，执行再开分支**。
+一句话结论：**代码进 worktree，本目录的交接/研究文档留主树即时提交**。
 
 ---
 

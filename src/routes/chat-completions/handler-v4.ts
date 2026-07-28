@@ -60,6 +60,13 @@ import { createBetaProbe } from "~/lib/anthropic/pipeline"
 import { recordProtectStreamingOutcome } from "~/lib/anthropic/protect-streaming-stats"
 import {
   //
+  extractRefusalDetail,
+  isContentlessRefusalResponse,
+  refusalCategoryForDiagnostics,
+  refusalSummary,
+} from "~/lib/anthropic/recover-refusal"
+import {
+  //
   accumulateAnthropicStreamEvent,
   createAnthropicStreamAccumulator,
 } from "~/lib/anthropic/stream-accumulator"
@@ -677,10 +684,13 @@ function renderReverseNonStreamingV4(c: Context, env: RequestEnvelope, ccResp: C
   env.ctx.setInboundResponseHeaders(Object.fromEntries(httpResponse.headers.entries()))
   env.ctx.setClientResponseStatus(httpResponse.status)
 
-  // The OUTBOUND-leg (honest Anthropic) response data. Truncation gate on the Anthropic stop_reason.
+  // The OUTBOUND-leg (honest Anthropic) response data. A complete 200 contentless refusal is not
+  // truncation, but it is still a failed client request; keep that verdict separate from upstream success.
   const truncationReason = anthropicNonStreamingTruncation(anthropicUpstream.stop_reason)
+  const refusalReason = isContentlessRefusalResponse(anthropicUpstream) ? refusalSummary(extractRefusalDetail(anthropicUpstream.stop_details)) : null
+  const failureReason = refusalReason ?? truncationReason
   const responseData = {
-    success: !truncationReason,
+    success: !failureReason,
     model: anthropicUpstream.model,
     usage: {
       input_tokens: anthropicUpstream.usage.input_tokens,
@@ -689,17 +699,25 @@ function renderReverseNonStreamingV4(c: Context, env: RequestEnvelope, ccResp: C
       cache_creation_input_tokens: anthropicUpstream.usage.cache_creation_input_tokens ?? undefined,
     },
     stop_reason: anthropicUpstream.stop_reason ?? undefined,
+    stopDetails: (anthropicUpstream as { stop_details?: unknown }).stop_details,
     content: { role: "assistant" as const, content: anthropicUpstream.content },
     // G6 (richest-data-flow): persist the raw Anthropic upstream body so the outbound row keeps the honest
     // upstream shape (never the CC render). Re-serialized from the parsed pristine response (lossless).
     responseText: JSON.stringify(anthropicUpstream),
   }
-  if (truncationReason) {
-    env.ctx.fail(anthropicUpstream.model, new Error(truncationReason), {
-      usage: responseData.usage,
-      stop_reason: responseData.stop_reason,
-      content: responseData.content,
-    })
+  if (failureReason) {
+    if (refusalReason) env.ctx.recordFeature("refusal-passthrough", { category: refusalCategoryForDiagnostics(anthropicUpstream.stop_details) })
+    env.ctx.fail(
+      anthropicUpstream.model,
+      new Error(failureReason),
+      {
+        usage: responseData.usage,
+        stop_reason: responseData.stop_reason,
+        stopDetails: responseData.stopDetails,
+        content: responseData.content,
+      },
+      refusalReason ? { upstreamSucceeded: true } : undefined,
+    )
   } else {
     env.ctx.complete(responseData)
   }

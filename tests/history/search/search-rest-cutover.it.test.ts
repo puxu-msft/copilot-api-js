@@ -31,6 +31,7 @@ import path from "node:path"
 
 import { PATHS } from "~/lib/config/paths"
 import { createModelOperationRecorder } from "~/lib/context/model-operation-record"
+import { isNativeHistorySearchAvailable } from "~/lib/history/search-native"
 import {
   //
   closeDatabase,
@@ -113,7 +114,13 @@ afterEach(async () => {
   for (const dir of tmpDirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true })
 })
 
-describe("GET /history/api/search — real end-to-end sidecar (Phase 4 cutover)", () => {
+// The native Tantivy `.node` is a gitignored build product and is no longer built by `bun install`
+// (2026-07-28). These suites drive the real index, so they gate on its presence rather than fail:
+// an environmental red is too easy to wave away as "pre-existing" — which is exactly what happened.
+// Run them for real with `bun run build:history-search` first (CI's `test:ci` does).
+const NATIVE = isNativeHistorySearchAvailable()
+
+describe.skipIf(!NATIVE)("GET /history/api/search — real end-to-end sidecar (Phase 4 cutover)", () => {
   test("source=inbound with a reachable sidecar returns genuine hits, mapped to full EntrySummary rows", async () => {
     const dbDir = freshDir("search-cutover-db-")
     const dbPath = path.join(dbDir, "history-v3.db")

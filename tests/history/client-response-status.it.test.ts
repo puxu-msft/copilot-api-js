@@ -13,7 +13,7 @@
  * (wrong status captured) lands unambiguously.
  *
  * Covers: success 200 (non-streaming + streaming, multiple formats) AND a
- * failure-forward non-200 (anthropic thinking-only refusal → client 500, a
+ * failure-forward non-200 (anthropic contentless refusal in `error` mode → client 500, a
  * proxy-introduced error forwarded in-handler). `clientResponse.status` is
  * DECOUPLED from the entry verdict — a failed entry can forward a 200 or a 500.
  *
@@ -182,8 +182,12 @@ describe("P3 clientResponse.status capture at forward boundary", () => {
     expect(entry?.clientResponse?.status).toBe(200)
   })
 
-  test("anthropic thinking-only refusal → client 500, clientResponse.status === 500 (failure-forward)", async () => {
+  test("anthropic contentless refusal in `error` mode → client 500, clientResponse.status === 500 (failure-forward)", async () => {
     setModel("claude-sonnet-4.6", "Anthropic", ["/v1/messages"])
+    // The SHIPPED default suppresses a contentless refusal into a normal 200 turn (so the client's
+    // conversation is not interrupted); the 500 failure-forward shape this test exercises is the
+    // opt-in `error` mode, so select it explicitly rather than relying on the default.
+    setStateForTests({ refusalSseRewrite: "error" })
     refusalNext = true
     const res = await app.request("/v1/messages", {
       method: "POST",

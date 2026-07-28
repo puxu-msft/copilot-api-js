@@ -19,6 +19,14 @@ import type {
   UsageData,
 } from "./types"
 
+import type { CategoryProvenance } from "~/lib/anthropic/refusal-detail"
+
+import {
+  //
+  categoryProvenance,
+  extractRefusalDetail,
+  refusalCategoryLabel,
+} from "../anthropic/refusal-detail"
 import { accumulateForwardedContent } from "./accumulate-response"
 
 /** Non-nullable per-attempt shape (the element type of `HistoryEntry.attempts`). */
@@ -103,6 +111,30 @@ export function deriveRequestBytes(entry: ClientLegBytesSource): number | undefi
 /** Upstream response stop reason (final attempt's `upstreamResponse.stopReason`). */
 export function resolveStopReason(entry: Pick<HistoryEntry, "attempts">): string | undefined {
   return finalUpstreamResponse(entry)?.stopReason
+}
+
+/** Display-ready refusal detail while retaining the provenance of the upstream category. */
+export interface ResolvedRefusalDetail {
+  category: string
+  categoryProvenance: CategoryProvenance
+  explanation: string | null | undefined
+  invalid: boolean
+}
+
+/**
+ * Normalize the final upstream response's raw `stopDetails` for History consumers.
+ * The raw object remains untouched on the upstream leg for the JSON view; this
+ * projection only supplies labels for the human-readable diagnostic block.
+ */
+export function resolveRefusalDetail(entry: Pick<HistoryEntry, "attempts">): ResolvedRefusalDetail | undefined {
+  const stopDetails = finalUpstreamResponse(entry)?.stopDetails
+  if (stopDetails === undefined || stopDetails === null) return undefined
+
+  const detail = extractRefusalDetail(stopDetails)
+  // Classification comes from the shared primitive — this consumer only picks its own labels.
+  // Re-deriving the three-way test here is how the four call sites drifted apart on `category: ""`.
+  const provenance = categoryProvenance(detail)
+  return { category: refusalCategoryLabel(detail), categoryProvenance: provenance, explanation: detail.explanation, invalid: detail.invalid }
 }
 
 /**
@@ -284,7 +316,7 @@ function errorFallback(entry: Pick<HistoryEntry, "attempts" | "_index">): string
  * 响应内容预览：非流式取 `finalUpstream.body`(已归一 MessageContent)，流式经
  * `accumulateForwardedContent(clientResponse.sseEvents, endpoint)` 重建(客户端方言，
  * 与 endpoint 分派匹配 —— spec C1)，再 `summarizeResponseMessage`。无内容且失败→错误
- * 回退。在途(无 finalUpstream / 无 forwarded 帧 / 未失败)天然返回 ""。
+ * 回退。在途(无 finalUpstream / 无 forwarded帧 / 未失败)天然返回 ""。
  */
 export function extractResponsePreviewText(entry: Pick<HistoryEntry, "attempts" | "clientResponse" | "endpoint" | "_index">): string {
   const body = finalUpstreamResponse(entry)?.body

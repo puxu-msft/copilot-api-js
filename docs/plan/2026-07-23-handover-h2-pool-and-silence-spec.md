@@ -1,6 +1,6 @@
 # 会话交接：h2 池事故簇 + 上游静默 spec（2026-07-23）
 
-> 交接给新会话继续。本会话从「分析一波网络问题」起，落地了多组修复与一份 spec，并留有若干待续任务 + 待补的 skill/doc。**权威事实以代码 + 下列文档为准**；本文件只做导航 + 剩余任务清单。
+> 交接给新会话继续。**最新实施真相在 §0.2（2026-07-28 更新）——先读它**；§0/§0.1 是 2026-07-23 的历史语境，其中「Q1 ≥125s」「B1+B2-P0 可开工」等表述已被 §0.2 supersede。**权威事实以代码 + §0.2 为准**。
 
 ## 0. 一句话现状
 
@@ -19,23 +19,49 @@
 4. **MED-2 已折进 B2 plan Task 0.6**（seal-race crash 安全，B2 必治顺带关闭既有 process.exit 缺陷）；MED-1 折进 B2 dispatch-open 测试矩阵。
 5. **记忆索引 MEMORY.md 的 upstream-silence 行**已在工作区更新到新态但**未提交**（与 peer WIP 纠缠），下个碰 MEMORY.md 的会话一并提交。
 
-## 0.2 实施已启动（2026-07-23，用户授权继续）
+## 0.2 实施状态（**2026-07-28 更新，本节是实施真相源**）
 
 用户授权实施 + 定下硬约束「**绝不误杀合法长思考**」（已编码进 plan Global Constraints + 各 fork 裁定，commit `5874ea78`）。走 `superpowers:subagent-driven-development` 于**隔离 worktree**。
 
-- **worktree / 分支**：`.worktrees/upstream-silence-recovery` @ `feat/upstream-silence-recovery`（从 master `5874ea78` 起，node_modules 已软链）。**未合回 master**——按 SDD 纪律全阶段 + 终审后再 ff 合并。
-- **进度 ledger**：`.worktrees/upstream-silence-recovery/.superpowers/sdd/progress.md`（gitignored；含阶段 DAG + 完成记录）。**接手先读它**，已完成的别重派。
-- **已完成**：
-  - ✅ **B1**（plan-1，commits `5874ea78..31ba4a60`）——拆 commit-window clamp + ceiling→125s（当时的 Q1 实测下界；**2026-07-28 已改为 240，默认值 20→180**）+ 独立告警抑制标志（异模型 review 抓的 Important，已 TDD 回归修复）。默认值 `streamCommitAfterSec` 仍 20（首失败点待补测再定）。test:backend 6346 pass。
-  - ✅ **B2-P0**（plan-2 Task 0.1 + 0.7，commits `31ba4a60..31c503f4`）——配置骨架 `precontent_recovery.enabled`（默认 true、**未接线**）+ telemetry outcome 计数器（镜像 continuation）。异模型 review 0 blocker、全仓 grep 证零执行路径消费者（零行为变化）、config.schema.json regenerate 零差异、union 穷尽 6 站点全补。test:backend 6351 pass。
-  - ✅ **B2 Task 0.2**（plan-2 Task 0.2，commit `a819834f`）——**delivery-level semantic-content gate（承载对抗审 CRITICAL 修法）**：gate 读 `hasEmittedRealClientContent`（**非** `boundary.result`——后者只在 `content_block_stop` 翻转、会漏「delta 已发 stop 未到」窗口致重复内容），翻转**复用既有** `onFirstRealContent` seam（`isClientContentFrame` 驱动、只数非-synthetic、只一次、live/buffered 共用）。CRITICAL 修法经主会话 + 异模型 reviewer **双重独立核实正确**（synthetic 帧不翻转 gate、CRITICAL 回归非假绿）。**未接线**（P4/P5 才接）、零行为变化。test:backend 6359 pass。
-  - ✅ **B2 Task 0.3**（commit `eff92dc0`）——`coordinator.runRecoveryFromPreReadyFailure`（镜像 runHedge、parent-less、at-most-once、**不 settle parent**——primary 已自行 settle failed；有解释注释）。异模型 review 0 blocker、budget-shared 断言非重言。test:backend 6362 pass。
-  - ✅ **B2 Task 0.4**（commit `85b8c5c6` + backlog `50b09c00`）——`driver.runPreContentRecovery` + pre-ready failure ownership（`lastPreReadyFailure` 存+rethrow 字节等价回归锁）+ **🔴 server-tool 双执行 gate（安全硬约束）经异模型审计确认无绕过**（`classifyServerExecutionRisk` 在 dispatch 前、throw 非 continue、分类最终 target wire、`allowServerTools` 不在此路径；测试 4 非假绿）。`_reason` 透传 gap + afterHook-vs-preflight seam 均记 backlog（P4/P5 解决）。test:backend 6366 pass。
-- **剩余（串行，见 ledger DAG——依赖序；P4~P6 是最硬的 splice+接线+矩阵，宜 fresh 会话清上下文）**：B2 Task 0.5（recovery sink lifetime supervisor，无依赖）→ Task 0.6（seal-race crash 安全，守卫整个 recordOpened，依赖 0.5 quiescence）→ B2-P4~P6（plan-3 两挂载点执行器 + 三模式 splice + handler 接线 + 协议矩阵；**接线时一并解决 backlog 的 afterHook-vs-preflight + reason 透传两 seam**）→ B3（plan-4，**默认关**，never-false-kill）→ 全分支终审 → ff 合 master。
-- **续跑方式**：新会话读 [plan kickoff](2026-07-23-upstream-silence-recovery/kickoff.md) + ledger，`superpowers:subagent-driven-development` 从 B2-P0 起，每任务 fresh implementer（gpt-souls:implementer）→ 异模型任务 review（Claude reviewer）→ fix loop → 标 ledger。承重声称亲自 code-read 复核。
+### ⚠ 接手必读：底座已变，B1 已被主线 supersede
 
+- **master 在本特性分支开工后前进 128 提交**。**B1 已由主线自己落地并改进**：commit 窗口默认 `20 → 180`、ceiling `125 → 240`、并把窗口从 handler timer 重构成 **ingress-relative deadline**（`d0c8a8a4` / `da59c586`）。依据是 **Q1 首失败点实测闭合（2026-07-27）：CC pre-header 容忍 ≈300s，触发器 = undici 默认 `headersTimeout`**（非 SDK 的 1200/1250s、非 CC 响应头后才武装的 stream-idle watchdog；`API_FORCE_IDLE_TIMEOUT=0` 可关闭它）。本分支原先的「ceiling 125s / 默认 20 / 待跑 130-180s 阶梯」**全部作废**。
+- **master 还重写了 delivery/heartbeat 生命周期**（`freezeHeartbeat` 语义、close-before-terminal-drain、心跳跨 block-level commit 存活，P6 已 approved）——这正是 Task 0.5 所在子系统。
+- **本分支已合并 master**（`e951026a`，行级共存）：B1 相关全取主线新版；保留本分支独有的 B2 delta。合并后 typecheck 干净、全后端 **6512 pass**；期间 2 个失败经**同负载对照证明 master 也挂**（History V3 capture-performance flaky 家族，已在 backlog）。
+- **B2 delta 仍为本分支独有**（`precontent_recovery` / semantic-content gate / `runRecoveryFromPreReadyFailure` / `runPreContentRecovery` 等符号在 master 上 **0 命中**）。
 
+### 已完成（分支 `feat/upstream-silence-recovery`，未合回 master）
 
+- **worktree / 分支**：`.worktrees/upstream-silence-recovery`（node_modules 已软链）。**按 SDD 纪律：全阶段 + 终审后再 ff 合并。**
+- **进度 ledger**：`.worktrees/upstream-silence-recovery/.superpowers/sdd/progress.md`（gitignored）。**接手先读它**，已完成的别重派。⚠ 该 ledger 曾被并发 peer 内容污染过一次、已重建；**权威进度以本节 + git 提交为准**。
+- ✅ **B1**（已被主线 supersede，见上；本分支的 B1 提交在合并中让位主线版本）。
+- ✅ **B2-P0**（Task 0.1 + 0.7）——配置骨架 `precontent_recovery.enabled`（默认 true、**未接线**）+ telemetry outcome 计数器。零执行路径消费者（全仓 grep 证）、config.schema.json regenerate 零差异。
+- ✅ **Task 0.2**（`a819834f`）——**delivery-level semantic-content gate（承载对抗审 CRITICAL 修法）**：gate 读 `hasEmittedRealClientContent`（**非** `boundary.result`——后者只在 `content_block_stop` 翻转、会漏「delta 已发 stop 未到」窗口致重复内容），翻转**复用既有** `onFirstRealContent` seam（`isClientContentFrame` 驱动、只数非-synthetic、只一次、live/buffered 共用）。主会话 + 异模型 reviewer 双重独立核实。
+- ✅ **Task 0.3**（`eff92dc0`）——`coordinator.runRecoveryFromPreReadyFailure`（镜像 runHedge、parent-less、at-most-once、**不 settle parent**：primary 已自行 settle failed；有解释注释）。
+- ✅ **Task 0.4**（`85b8c5c6` + backlog `50b09c00`）——`driver.runPreContentRecovery` + pre-ready failure ownership（存+rethrow 字节等价回归锁）+ **🔴 server-tool 双执行 gate 经异模型安全审计确认无绕过**（`classifyServerExecutionRisk` 在 dispatch 前、throw 非 continue、分类最终 target wire、`allowServerTools` 不在此路径）。
+- ✅ **Task 0.5**（`41a351fa` + fix `5d386f72` / `325e3771`）——recovery sink lifetime supervisor。**plan Task 0.5 文本写于 heartbeat 重写之前，实施按现状适配**（5 处偏离全经 reviewer code-read 确证为正当）：只抑制 `close`/`finalize`，`freezeHeartbeat`/`suspendHeartbeat`/`resumeHeartbeat` 原样转发；`settleFinal()` 为幂等 `Promise<void>`（await 异步 `session.terminate()`）；**新增 `inheritDownstreamDeliverySession`**（plan 未提、实施者从当前代码挖出的真实约束：driver 用 sink 对象身份从 WeakMap 找 generation-owned delivery）。**未接线**。异模型 reviewer 自做 5 次 mutation 独立验证；2 条 Important 已闭合——(a) `await` 假绿缺口补守卫（正样本对照：删 `await` → 2 fail 真咬）；(b) Concern 事实订正 + `makeReconcilingSink` identity 缺陷登记 backlog。
+  - **已知 concern（P4/P5 处理）**：`ClientSink.finalize` 类型声明 `void` 但 delivery 实际返回 Promise（`await-thenable`/`no-floating-promises` 均 off，lint 不会报）——接线时收紧为 `void | Promise<void>`。
+  - **supervisor 所有权守卫**：`settleFinal()` **必须放进 owner 的 `finally`**，否则 owner 中途抛出会让 generation heartbeat timer 永久存活（unref 不阻塞退出，但会持续向已死客户端写 ping）。
+
+- ✅ **Task 0.6**（`623fb34f`/`dbdc1ebc`/`424604d3` + fix `a24f8aec`/`8c7221c1`/`e2489b4b`/`513127af`）——**seal-race crash 安全**。① 守卫**整个** `recordOpened`（headers + timing 整体丢弃）+ 三个 timing setter 全对齐 `if (sealed) return`；**`assertWritable` 对语义写的 loud-throw 未放宽**（reviewer 逐一核对 21 处调用点 + 正反双侧 oracle）。② quiescence join 经 reviewer 四点 code-read 核实「supervisor 只包 `ClientSink`、真拿不到 candidate lifecycle」属实 → **授权延后 P4/P5**（backlog 改写保留为余项、非删除）。**这条顺带关闭了一个既有的 process.exit 缺陷**（不止服务 B2）：晚到 deferred-header 撞 sealed recorder 会把良性迟到观测放大成整进程退出。教训已沉淀进 skill `debugging-server-crashes`（变体 C）。
+  - **reviewer 挖出的承重缺陷已修**：`unhandledRejection` 探针因 helper 里 `await request` 提供 live awaiter 而**结构上无牙**（三守卫全拆仍绿）→ 已补**真孤儿拓扑**用例、mutation 证其变红并捕获真实爆炸栈；`setAttemptTimingEpoch` 漏的对称守卫已补。seal-race 连跑 10 次 80/80。
+  - **现状可达性（别夸大）**：主线 production primary 腿今天已被 operation scope 结构性护住；本守卫覆盖 mock/legacy ctx、candidate-discard/supersede，以及 **P4/P5 将新增的未注册 fresh recovery 腿**。
+
+### 🎯 B2 地基（plan-2）**全部完成** —— 下一步 = plan-3 的 P4~P6
+
+### 剩余（依赖序）
+
+**P4~P6**（plan-3：两挂载点执行器 + 三模式 splice + handler 接线 + 协议矩阵——**全特性最硬的一块**；接线时一并解决：backlog 的 `afterHook`-vs-`preflight` env seam、`_reason` 透传、`ClientSink.finalize` 的 `void`-vs-`Promise` 签名、`makeReconcilingSink` 未继承 delivery identity、Task 0.6 ② 的 quiescence join，以及 `settleFinal()` **必须放进 owner 的 `finally`**）→ **B3**（plan-4，**默认关**，never-false-kill）→ 全分支终审 → ff 合 master。
+
+⚠ **P4~P6 接线前务必重读 handler-v4/driver 现状**：master 的 ingress-deadline 重构 + heartbeat 重写已改动 plan-3 假定的接线点（plan-3 的 `file:line` 多半已漂移）。
+
+### 续跑方式
+
+新会话：读本节 + [plan kickoff](2026-07-23-upstream-silence-recovery/kickoff.md) + ledger → `superpowers:subagent-driven-development` **从 Task 0.6 起** → 每任务 fresh implementer（`gpt-souls:implementer`）→ 异模型任务 review（Claude `reviewer`）→ fix loop → 标 ledger。承重声称亲自 code-read 复核。
+
+**验证命令注意**：`bun run test:backend` 的汇总行曾恒报 `0 tests`（bun 即使 piped 也上色、脚本锚定正则不咬），**已修**（master `5454616b`，正样本对照 0 → 4243 pass）。已知**既有** flaky：History V3 capture-performance 家族等 perf/时序测试在负载下会挂（master 同样），判回归以「单跑是否过 + 是否属该家族」为准。
+
+## 1. 已落地（master，别重做）
 
 | 主题 | commit（约） | 权威文档 |
 |---|---|---|

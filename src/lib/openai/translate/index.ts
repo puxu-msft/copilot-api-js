@@ -1,5 +1,9 @@
 export { mapStopReason, mapUsage, translateAnthropicResponseToCC } from "./anthropic-to-cc"
-export type { AnthropicUsageLike } from "./anthropic-to-cc"
+export type {
+  AnthropicUsageLike,
+  RefusalTranslationDegradation,
+  RefusalTranslationDegradationReporter,
+} from "./anthropic-to-cc"
 export {
   //
   anthropicSystemToText,

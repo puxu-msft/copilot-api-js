@@ -2,6 +2,7 @@ import {
   //
   resolveAttemptCount,
   resolveCurrentStrategy,
+  resolveRefusalDetail,
   resolveResponseUsage,
   resolveStopReason,
 } from "~backend/lib/history/entry-view"
@@ -51,6 +52,7 @@ function bufferHoldDisplay(t: ReturnType<typeof deriveTiming>): string | undefin
 export function MetaSegment({ entry }: { entry: HistoryEntry }) {
   // New legs (`_index.derived` / final attempt `upstreamResponse`); legacy top-level legs removed in P4c.
   const usage = resolveResponseUsage(entry)
+  const refusal = resolveRefusalDetail(entry)
   const t = deriveTiming(entry)
   return (
     <div className="mono flex flex-col gap-2 text-[13px] text-[var(--content-secondary)]">
@@ -73,6 +75,10 @@ export function MetaSegment({ entry }: { entry: HistoryEntry }) {
       <Row
         label="stop reason"
         value={resolveStopReason(entry)}
+      />
+      <Row
+        label="refusal category"
+        value={refusal?.category}
       />
       {/* 首包/时序（spec 2026-07-14 §6.4）：上游 TTFT / 客户端可见首包 / keepalive 空窗 / 缓冲扣留 */}
       <Row

@@ -38,6 +38,7 @@ import { TELEMETRY_DIMENSION_SPECS } from "@hsupu/ghc-proxy-telemetry"
 import type { HistoryEntryData } from "~/lib/context/types"
 import type { RequestContextSnapshot } from "~/lib/observability/events"
 
+import { refusalCategoryForDiagnostics } from "~/lib/anthropic/refusal-detail"
 import { getHeaderCaseInsensitive } from "~/lib/fetch-utils"
 
 /**
@@ -151,6 +152,10 @@ const DIMENSION_EXTRACTORS: Record<TelemetryDimensionName, TelemetryKeyExtractor
   agentKind: (entry) => (entry.agentId ? "subagent" : "main"),
   tool: (entry) => extractToolNames(entry),
   max_tokens_truncation: (entry) => entry.pipelineInfo?.maxTokensContinuation?.truncationClass ?? null,
+  refusal_category: (entry) => {
+    const response = entry.attempts?.at(-1)?.upstreamResponse
+    return response?.stopReason === "refusal" ? refusalCategoryForDiagnostics(response.stopDetails) : null
+  },
 }
 
 /** The registered dimensions — each domain-owned spec joined with its core-owned extractor. */

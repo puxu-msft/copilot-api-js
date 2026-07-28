@@ -102,6 +102,8 @@ export interface HubTranslateContext {
 export interface ReasoningRoundTripOptions {
   /** True ⇒ never populate the reasoning round-trip carrier (encrypted_content); plaintext summary/text still renders. */
   stripThinkingSignature?: boolean
+  /** Out-of-band marker for refusal metadata the target protocol cannot represent. */
+  onDegradation?: import("~/lib/anthropic/refusal-detail").RefusalTranslationDegradationReporter
 }
 
 /**
@@ -224,8 +226,8 @@ export interface RenderedNonStreamingResponse {
 type ResponseBridge = (upstream: unknown, opts?: ReasoningRoundTripOptions) => RenderedNonStreamingResponse
 
 /** REVERSE `/v1/messages` leg: Anthropic upstream → CC-canonical (the client codec renders any further hop). */
-const anthropicUpstreamToCcResponseBridge: ResponseBridge = (upstream) => ({
-  rendered: translateAnthropicResponseToCC(upstream as AnthropicResponse),
+const anthropicUpstreamToCcResponseBridge: ResponseBridge = (upstream, opts) => ({
+  rendered: translateAnthropicResponseToCC(upstream as AnthropicResponse, opts?.onDegradation),
   contentFiltered: false,
 })
 
@@ -437,8 +439,8 @@ export interface ReverseStreamTranslator {
 type ReverseStreamTranslatorFactory = (modelId: string, exchangeCtx?: TranslateExchangeContext, opts?: ReasoningRoundTripOptions) => ReverseStreamTranslator
 
 /** `openai-cc` / `gemini` — SINGLE hop: the upstream Anthropic SSE stream feeds the Anthropic→CC translator directly. */
-const ccFamilyReverseStreamFactory: ReverseStreamTranslatorFactory = (modelId) => {
-  const anthropicToCc: AnthropicToCcStreamTranslator = createAnthropicToCcStreamTranslator(modelId)
+const ccFamilyReverseStreamFactory: ReverseStreamTranslatorFactory = (modelId, _exchangeCtx, opts) => {
+  const anthropicToCc: AnthropicToCcStreamTranslator = createAnthropicToCcStreamTranslator(modelId, opts?.onDegradation)
   return {
     renderFrame: (frame) => anthropicToCc.renderFrame(frame as ServerSentEventMessage).map((s) => s.frame),
     flush: () => anthropicToCc.flush().map((s) => s.frame),

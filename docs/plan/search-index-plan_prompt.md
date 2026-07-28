@@ -7,7 +7,7 @@
 > **每个 prompt 必带的公共头**（控制者粘贴时附上）：
 > - **⛔ GIT**：可 `git add -p`/`git commit`（细粒度 pathspec、绝不 `-A`/`.`/`-am`、提交前 `git diff --cached --stat` 复核仅本次改动）；**绝不** push/改写历史/`git checkout` 他人文件/`git stash`。本仓库有并发会话——只提交你本 phase 的精确文件。
 > - **裁判轴**：长远正确 + 范围内完整，**不是** ROI/YAGNI/工期/改动量。
-> - **bun-first**：`bun run typecheck`、`bun run test:backend`（**非 npm**）；前端 `bun run --filter copilot-api-ui typecheck/test`。不分号、三元行首、严格 TS **无 any**、ESNext。`eslint --fix` 你改的文件（非 `prettier --write`）。
+> - **bun-first**：`bun run typecheck`、`bun run test:backend`（**非 npm**）；前端 `bun run typecheck:ui-v4` / `bun run test:ui-v4`（旧 Vue `ui/` 已脱离主链，`--filter copilot-api-ui` 不再可用；如需验它用 `bun run typecheck:ui` / `test:ui`）。不分号、三元行首、严格 TS **无 any**、ESNext。`eslint --fix` 你改的文件（非 `prettier --write`）。
 > - **不起服务器**：不 `bun run dev/start`；需验证服务器行为让用户起。
 > - 完成报 **DONE/DONE_WITH_CONCERNS/BLOCKED/NEEDS_CONTEXT** + 命令结果 + 改动文件 + 确认零越界。
 

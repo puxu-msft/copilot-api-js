@@ -7,6 +7,9 @@
  */
 
 import type { ApiError } from "~/lib/error"
+import type { RefusalPolicy } from "~/lib/anthropic/refusal-policy"
+
+import { DEFAULT_REFUSAL_ERROR_TYPE } from "~/lib/anthropic/refusal-policy"
 import type {
   //
   EndpointType,
@@ -177,6 +180,7 @@ export function legFromUpstreamResponse(r: ResponseData): HistoryUpstreamRespons
     ...(r.responseId !== undefined && { responseId: r.responseId }),
     ...(r.copilotAnnotations && { copilotAnnotations: r.copilotAnnotations }),
     ...(r.toolSearchRequests !== undefined && { toolSearchRequests: r.toolSearchRequests }),
+    ...(r.stopDetails !== undefined && { stopDetails: r.stopDetails }),
   }
 }
 
@@ -327,6 +331,8 @@ export function createRequestContext(opts: {
   let _endTime: number | null = null
   /** Per-attempt tool-input repair outcomes (reset by resetRepairOutcomesForAttempt on L2 retry). */
   const _repairOutcomes: Array<RepairOutcomeRecord> = []
+  /** Frozen on first read (stream start) so every layer of this request sees the same disposition. */
+  let _refusalPolicy: RefusalPolicy | null = null
 
   // History V3 generation recorder. The mutable recorder stays private to RequestContext;
   // consumers see only immutable snapshots / the canonical terminal record.
@@ -776,6 +782,7 @@ export function createRequestContext(opts: {
             ...(response.error === undefined ? {} : { error: response.error }),
             ...(response.responseId === undefined ? {} : { responseId: response.responseId }),
             ...(response.toolSearchRequests === undefined ? {} : { toolSearchRequests: response.toolSearchRequests }),
+            ...(response.stopDetails === undefined ? {} : { stopDetails: response.stopDetails }),
             ...(response.copilotAnnotations === undefined ? {} : { copilotAnnotations: response.copilotAnnotations }),
           },
         }),
@@ -1057,6 +1064,21 @@ export function createRequestContext(opts: {
     },
     get unrepairableToolInput() {
       return _repairOutcomes.find((r) => r.outcome === "unrepairable")?.tool ?? null
+    },
+    get refusalPolicy() {
+      // Lazily frozen: the first reader is the S5 rewriter at stream start, before any concurrent
+      // request can reload config into the middle of THIS stream. Deliberately NOT reset per attempt
+      // — a buffered retry / continuation of the same request must keep the same disposition.
+      _refusalPolicy ??= {
+        mode: appState.refusalSseRewrite,
+        endTurnText: appState.refusalEndTurnText,
+        errorMessage: appState.refusalErrorMessage,
+        // Resolve the empty-string fallback HERE so the snapshot is the final value. Otherwise every
+        // consumer has to remember the same `"" -> api_error` rule, and one that forgets emits an
+        // error frame with an empty `type`.
+        errorType: appState.refusalErrorType === "" ? DEFAULT_REFUSAL_ERROR_TYPE : appState.refusalErrorType,
+      }
+      return _refusalPolicy
     },
     resetRepairOutcomesForAttempt() {
       _repairOutcomes.length = 0
@@ -1725,6 +1747,7 @@ export function createRequestContext(opts: {
           content: partial?.content ?? null,
           ...(partial?.sourceBody !== undefined && { sourceBody: partial.sourceBody }),
           ...(partial?.stop_reason !== undefined && { stop_reason: partial.stop_reason }),
+          ...(partial?.stopDetails !== undefined && { stopDetails: partial.stopDetails }),
         }
         _failureReason = errorMsg
       } else {
@@ -1738,6 +1761,7 @@ export function createRequestContext(opts: {
           content: partial?.content ?? null,
           ...(partial?.sourceBody !== undefined && { sourceBody: partial.sourceBody }),
           ...(partial?.stop_reason !== undefined && { stop_reason: partial.stop_reason }),
+          ...(partial?.stopDetails !== undefined && { stopDetails: partial.stopDetails }),
         }
 
         // Preserve upstream HTTP error details as structured fields
@@ -1802,6 +1826,7 @@ export function createRequestContext(opts: {
         error: "client disconnected",
         content: null,
         ...(partial?.stop_reason !== undefined && { stop_reason: partial.stop_reason }),
+        ...(partial?.stopDetails !== undefined && { stopDetails: partial.stopDetails }),
       }
 
       // P2.5 producer alignment: land the aborted verdict on the final attempt

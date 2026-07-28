@@ -523,6 +523,10 @@ export interface RunBufferedOpts extends RunResponseOpts {
    * not wire it falls back to the prior "retry every no-message_stop clean drain" behavior.
    */
   sawUpstreamError?: () => boolean
+  /** A terminal upstream DECISION that carries no `message_stop`: a contentless refusal. Without it
+   *  the driver reads such a stream as truncation and retries/continues a turn whose complete
+   *  terminus the refusal rewriter already delivered to the client. */
+  sawContentlessRefusal?: () => boolean
   /**
    * Reset ALL handler-side per-attempt accumulators before a retry re-exchanges
    * (acc / local sseEvents / streamState / repetition checker). The driver re-instantiates

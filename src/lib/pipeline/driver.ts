@@ -1430,16 +1430,19 @@ export async function runResponseBufferedSink(
         }
       }
 
-      // COMMIT on a clean drain that reached a TERMINAL upstream state: `message_stop` (success)
-      // OR an upstream `error` frame (H2 — a terminal upstream decision such as overload, NOT a
-      // transport cut). A clean drain with NEITHER is a truncation (Bun delivers a clean RST as a
+      // COMMIT on a clean drain that reached a TERMINAL upstream state: `message_stop` (success),
+      // an upstream `error` frame (H2 — a terminal upstream decision such as overload, NOT a
+      // transport cut), OR a contentless refusal (an equally terminal upstream decision that is NOT
+      // guaranteed to be followed by `message_stop`). Without the refusal arm a refusal that ends
+      // without a terminator looks like truncation, so the driver would retry or continue a stream
+      // whose complete terminus the refusal rewriter has ALREADY delivered to the client. A clean drain with NEITHER is a truncation (Bun delivers a clean RST as a
       // normal `end`, rstCode=0, undetectable — transport/http2-client.ts:169-175) → retryable.
       // Committing H2 flushes the buffered upstream error frame to the client and lets the handler
       // fail via `acc.streamError`, exactly mirroring the live path (NOT a wasteful retry that would
       // also relabel the real error as "truncated" on exhaustion). The committing attempt's frames
       // live at the top-level slot, so they are NOT snapshotted per-attempt here — only a FAILED
       // (retried) attempt gets a per-attempt `sseEvents` row (D1), set in the retry branch below.
-      if (drained && (candidateOpts.sawMessageStop?.() || candidateOpts.sawUpstreamError?.())) {
+      if (drained && (candidateOpts.sawMessageStop?.() || candidateOpts.sawUpstreamError?.() || candidateOpts.sawContentlessRefusal?.())) {
         // Flush the buffered TAIL (everything after the last committed block boundary). On the
         // terminal-only path (`commitBoundaries===undefined`) `buffer` still holds the WHOLE
         // generation and this is the ONE flush — byte-identical to before (R1). On the block-level

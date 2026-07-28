@@ -161,7 +161,7 @@ export const CONFIG_MANAGED_DEFAULTS = {
   forwardClientQueryExclude: [] as ReadonlyArray<string>,
   recoverToolCallText: false,
   toolRepairMalformedInput: [] as ReadonlyArray<RepairItem>,
-  refusalSseRewrite: "error" as "refusal" | "end_turn" | "error",
+  refusalSseRewrite: "end_turn" as "refusal" | "end_turn" | "error",
   refusalEndTurnText: DEFAULT_REFUSAL_END_TURN_TEXT,
   refusalErrorMessage: DEFAULT_REFUSAL_ERROR_MESSAGE,
   refusalErrorType: DEFAULT_REFUSAL_ERROR_TYPE,

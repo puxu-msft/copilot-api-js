@@ -24,6 +24,11 @@
  *   - `stop_reason` → `finish_reason`; `usage` → CC usage.
  */
 
+import {
+  refusalCategoryForDiagnostics,
+  type RefusalTranslationDegradationReporter,
+} from "~/lib/anthropic/refusal-detail"
+
 import type {
   //
   ContentBlock,
@@ -42,14 +47,30 @@ import type {
 // Top-level response translation (Anthropic → CC)
 // ============================================================================
 
+export type {
+  RefusalTranslationDegradation,
+  RefusalTranslationDegradationReporter,
+} from "~/lib/anthropic/refusal-detail"
+
 /**
  * Translate an Anthropic Messages response into a Chat Completions response (reverse-leg response).
  *
  * Collapses the Anthropic content blocks into ONE CC `choices[0]` message (content + tool_calls). The
  * upstream endpoint's own render (Responses / Gemini second hop) consumes this CC shape downstream.
+ * `onDegradation` is the out-of-band observability channel for refusal category metadata CC cannot carry.
  */
-export function translateAnthropicResponseToCC(response: AnthropicResponse): ChatCompletionResponse {
+export function translateAnthropicResponseToCC(
+  response: AnthropicResponse,
+  onDegradation?: RefusalTranslationDegradationReporter,
+): ChatCompletionResponse {
   const message = foldContentBlocks(response.content)
+  if (response.stop_reason === "refusal") {
+    onDegradation?.({
+      kind: "refusal-category-dropped",
+      category: refusalCategoryForDiagnostics((response as { stop_details?: unknown }).stop_details),
+      target: "openai-cc",
+    })
+  }
 
   return {
     id: response.id,

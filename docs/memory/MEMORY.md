@@ -4,6 +4,7 @@
 
 ## 已下沉到项目 skill 的方法论（记忆文件 = stub 指向）
 
+- [收尾与跨会话交接](session-closeout-and-handover.md) → skill `session-closeout` — **收尾六步 + HANDOVER/KICKOFF 写法的唯一归属**；产物先入库再引用、待办带验收判据与证伪方式、自己犯过的错要写进去
 - [审自己写的测试类型错配必派异模型 reviewer](methodology-audit-own-test-type-fit-via-cross-model-reviewer.md) → skill `choosing-test-type` — 真相域归位+试金石+错配四型
 - [sync→async 持久化不变量](methodology-sync-to-async-persistence-refactor-invariants.md) → `persistence-async-invariants` §1 — drain-before-close/pending Set 不靠 bus/never-throw/全 await
 - [信号在 committed settle 点记录](methodology-record-signals-at-committed-outcome-not-per-attempt.md) → `persistence-async-invariants` §3 — per-attempt 累积+onAttemptReset 清空+committed flush
@@ -30,6 +31,7 @@
 
 ## 精炼保留（verification 簇 / 独有教学价值；触发钩子，细节读正文）
 - [通过/空/干净/自洽/doc-vs-code 不自证](feedback-pass-null-clean-not-self-validating.md) — verification 簇根；skill `verifying-authoritative-claims`
+- [探针跑对了结论仍可能错的三种失效](methodology-probe-conclusion-scope-and-peer-invalidation.md) — 查的是投影/量的是 peer 刚改过的代码/配置只激活一条路径；→ skill `empirical-verification`
 - [下完备性判断前先实测每个支撑事实](feedback-verify-facts-before-superlative-completeness-verdict.md) — absence/negative 断言最易凭结构推断而错；别贬防御为「只治一半」
 - [超时归因要逐层剥离、别信配置层自称值](methodology-timeout-attribution-strip-layers-not-config.md) — 真掐断的可能在你配置那层之下(x-stainless-timeout:1200/SDK 1250s 全没触发·实际 undici headersTimeout ~300s)；错误 cause 即层名·客户端侧原始记录必落盘·多臂共享服务端须裸 socket 排除
 - [测客户端何时放弃用服务端观测别跑阶梯](methodology-observe-client-giveup-serverside-not-ladder.md) — 静默超出容忍度+读 request.signal 一次给点位与重试 backoff；两正样本对照先行·Bun 须 idleTimeout:0·自己杀服务器的末尾错误不是客户端终态
@@ -60,13 +62,17 @@
 - [测 elapsed 逻辑注入 clock seam 别用 setSystemTime](reference-elapsed-time-test-inject-clock-seam-not-setsystemtime.md) — bun setSystemTime 跨 await 不冻结+绝对时基减真 startedAt 出负值；`now?:()=>number` seam 默认 Date.now、测试注入；边界别恰等 cap
 - [real codex 测试用 CODEX_HOME 隔离](reference-codex-ephemeral-insufficient-use-codex-home.md) — --ephemeral 不够、state 仍写真 ~/.codex；代理侧对应=XDG_DATA_HOME
 - [node_modules 存在 ≠ 锁文件事实](reference-node-modules-presence-not-lockfile-truth.md) — 可能是 prune orphan；选依赖前 grep bun.lock
-- [worktree bun add 后主树须补 install](reference-worktree-bun-add-needs-main-tree-install-after-merge.md) — 隔离 worktree bun add 只进该树；FF 合并后主树须 bun install
+- [worktree 的隔离性没你以为的强（三向）](reference-worktree-bun-add-needs-main-tree-install-after-merge.md) — ①worktree bun add 只进该树、FF 后主树须 install；②新建 worktree 缺 native/*.node 等产物→在其中跑测试红一片，别误归因（`git check-ignore` 一秒判），交付回归在主树跑；③建在 `.worktrees/` 内的 worktree 仍向上解析到主树 node_modules→「裸装能否自立」验证必须放仓库外（`/tmp`），且清点依赖别信 grep import、只信裸跑
 - [server.ts 与 test-app.ts 双份 notFound 镜像](reference-server-vs-test-app-dual-notfound-mirror.md) — 改 server 中间件须真实 createServer 测；config 中间件每请求覆盖 state
 - [起测试服务器端口被 peer 占用会静默打到 peer mock](reference-spawn-fails-silently-hits-peer-server-verify-port-ownership.md) — launcher 静默失败 health 仍绿；spawn 后验 server.log + ss PID
 - [编译错误：补符号 vs 删引用](methodology-broken-reference-supply-vs-delete.md) — 按消费者契约+独立 oracle 裁决，别反射式让它编译
 - [复用共享原语选完整版非小版](methodology-full-primitive-not-partial-else-silent-field-drop.md) — 否则静默丢字段+单测假绿；映射测须构造每个非平凡字段
 - [「别继承退化」只在目标真有对应值时成立](methodology-degradation-advice-scoped-to-target-has-equivalent.md) — 目标无对应值→诚实退化+marker；实现者最易过度应用
 - [守卫追不上就换不变量的位置/判据形状](methodology-relocate-invariant-when-guard-cannot-keep-up.md) — 连续被合法语法绕过=形状错；blocklist→allowlist·把顺序契约搬进 runtime 自己；附注释写错致代码看着对、oracle 假绿两坑
+- [mutation control 自身要自证改到了代码](methodology-verify-the-mutation-actually-applied.md) — 「没变红」有两解：测试没咬住 vs mutation 根本没生效；sed 静默不匹配最危险，脚本须打替换计数
+- [spec 里的机制性解释必须有实验背书](methodology-mechanism-story-in-spec-must-be-experiment-backed.md) — 给现象配的合理机制别当事实写；行为分型须有行为差异证据，字段取值差异只够支撑诊断分型
+- [ctx 共享可变裁决会被落败 hedge candidate 污染](methodology-request-scoped-mutable-verdict-poisoned-by-hedge-candidates.md) — hedge 默认开、各 candidate 独立 rewriter；正解=请求级不可变快照 + candidate 自推导，两者非二选一
+- [「一个终态」≠「一个完整终止符」](reference-exactly-one-terminal-is-not-exactly-one-complete-terminus.md) — 合成 end_turn 不补 message_stop 真 SDK 抛 stream ended；自造终态须注册进 driver 终态判据
 - [修全部比较点](feedback-fix-all-comparison-sites.md) — 归一化键/id bug 多点复发；grep 全仓逐处修+抽共享 primitive
 - [修一条约束别自造兄弟约束违规](methodology-fix-one-constraint-violates-sibling-constraint.md) — 对象级约束要一起断言；最小构造须保留被测对象的结构性处境(序数/位置)否则阴性无裁决力、加法+减法二分两头逼近、matcher 按补救手段归类且须 clause-local、按形状非索引定位
 - [名实不符变量+双源值](methodology-lying-variable-name-dual-source-value.md) — 名字断言单一身份、值取自会撒谎的源(原始vs已变换)；根治=单一原语+命名反映真实来源(requested vs resolved)+单一抑制权+独立oracle锁接线缝

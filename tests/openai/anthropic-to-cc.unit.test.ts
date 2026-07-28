@@ -117,6 +117,20 @@ describe("translateAnthropicResponseToCC — thinking / server-tool drop", () =>
 })
 
 describe("translateAnthropicResponseToCC — stop_reason → finish_reason", () => {
+  test("refusal reports a distinguishable category-loss degradation marker beside content_filter", () => {
+    const degradations: Array<unknown> = []
+    const result = translateAnthropicResponseToCC(
+      anthropicResponse([], {
+        stop_reason: "refusal",
+        stop_details: { type: "refusal", category: "cyber", explanation: "diagnostic only" },
+      } as never),
+      (degradation) => degradations.push(degradation),
+    )
+    expect(result.choices[0].finish_reason).toBe("content_filter")
+    expect(degradations).toEqual([{ kind: "refusal-category-dropped", category: "cyber", target: "openai-cc" }])
+    expect(JSON.stringify(result)).not.toContain("cyber")
+  })
+
   const cases: Array<[AnthropicResponse["stop_reason"], FinishReason]> = [
     ["end_turn", "stop"],
     ["stop_sequence", "stop"],

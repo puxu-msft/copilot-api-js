@@ -74,8 +74,8 @@ export const TELEMETRY_JSON_BACKFILL_VERSION = 1
  * legacy 扁平 counters 名（camelCase）→ SQLite 可加列（snake_case）+ 是否 cost（float→micro）的
  * 前向映射。逐条是 {@link read.ts} 的 `COUNTER_PROJECTIONS`（micro→float 读向）的**逆变换**：
  * cost 列 `Math.round(v * 1e6)`（对齐 dual-write 的 `microCost`）、其余列 `Math.round(v)`
- * （legacy 计数本就整数，round 只防历史非整值残留）。18 项对齐 `MEASURE_NAMES`（BASE9+COST5+
- * EXTRA1+FEATURE3）。缺省字段（JSON 里没有该 counter）视为 0、不写入 measures（加性 UPSERT 只加提供的）。
+ * （legacy 计数本就整数，round 只防历史非整值残留）。投影项对齐 `MEASURE_NAMES` 的 legacy JSON
+ * 可表达子集；缺省字段（JSON 里没有该 counter）视为 0、不写入 measures（加性 UPSERT 只加提供的）。
  */
 const COUNTER_TO_COLUMN: ReadonlyArray<{ counterName: string; sqlCol: keyof SettledMeasures; cost: boolean }> = [
   { counterName: "requestCount", sqlCol: "req_count", cost: false },
