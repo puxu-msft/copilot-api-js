@@ -136,7 +136,7 @@ export function reconcileLiveFrame(frame: ClientFrame, state: AnchorState, hooks
     // then shifted +1. The `!anchorClosed` guard makes this fire at most once (a normal ≥1-block stream
     // closed at its first content_block_start → later message_delta/stop pass through untouched).
     state.anchorClosed = true
-    out.push(hooks.stopFrame)
+    out.push(hooks.stopFrame(0))
   }
   out.push(hooks.remap(frame, 1)) // content_block_* → +1; message_delta / message_stop / error pass through
   return out

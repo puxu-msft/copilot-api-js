@@ -1020,9 +1020,9 @@ function buildAnthropicAnchorHooks(enabled: boolean): AnchorHooks | undefined {
       }
     },
     isContentBlockStart: isAnthropicContentBlockStart,
-    startFrame: anchorStartFrame(),
-    stopFrame: anchorStopFrame(),
-    deltaFrame: anchorDeltaFrame(),
+    startFrame: anchorStartFrame,
+    stopFrame: anchorStopFrame,
+    deltaFrame: anchorDeltaFrame,
     syntheticMessageStart: (model, reqId) => syntheticMessageStartFrame(model, reqId),
     remap: remapAnthropicBlockIndex,
   }

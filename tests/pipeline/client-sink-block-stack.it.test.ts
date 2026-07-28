@@ -67,7 +67,7 @@ describe("makeSseSink open-block STACK — inter-block keepalive rides the ancho
     const sink = makeSseSink(stream, { heartbeat: { intervalSec: 15, pingFrame: makeAnthropicKeepaliveFrame } })
 
     // Anchor@0 (text) is opened and STAYS open (never stopped) — the buffered keepalive anchor.
-    await sink.write(anchorStartFrame() as ClientFrame)
+    await sink.write(anchorStartFrame(0) as ClientFrame)
     // A real block flushes at the remapped index 1 ABOVE the anchor, then closes.
     await sink.write(blockStart(1, "thinking"))
     await sink.write(blockStop(1))
@@ -86,7 +86,7 @@ describe("makeSseSink open-block STACK — inter-block keepalive rides the ancho
     const { stream, written } = stubSseStream()
     const sink = makeSseSink(stream, { heartbeat: { intervalSec: 15, pingFrame: makeAnthropicKeepaliveFrame } })
 
-    await sink.write(anchorStartFrame() as ClientFrame) // anchor@0 open (bottom of stack)
+    await sink.write(anchorStartFrame(0) as ClientFrame) // anchor@0 open (bottom of stack)
     await sink.write(blockStart(1, "thinking"))
     await sink.write(blockStop(1)) // real@1 closed → stack falls back to anchor@0
     await clock.advance(15_000)
@@ -105,7 +105,7 @@ describe("makeSseSink open-block STACK — inter-block keepalive rides the ancho
     const { stream, written } = stubSseStream()
     const sink = makeSseSink(stream, { heartbeat: { intervalSec: 15, pingFrame: makeAnthropicKeepaliveFrame } })
 
-    await sink.write(anchorStartFrame() as ClientFrame) // anchor@0 (bottom)
+    await sink.write(anchorStartFrame(0) as ClientFrame) // anchor@0 (bottom)
     await sink.write(blockStart(1, "thinking")) // real@1 (top) — still OPEN
 
     await clock.advance(15_000)

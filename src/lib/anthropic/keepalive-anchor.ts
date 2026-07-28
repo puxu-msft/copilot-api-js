@@ -16,20 +16,20 @@ import { anthropicSseFrame } from "./sse-frame"
  *
  * NOTE (spec 2026-07-22 §3.3): this fixed "anchor@0, real blocks at +1" model is the COEXIST shape.
  * The SEQUENTIAL-anchor shape (CLI-safe) needs runtime-incrementing indices instead — see
- * {@link createAnchorIndexAllocator}, which supersedes the fixed offset at the sink/driver seam.
+ * {@link createGenerationWireIndexAllocator}, which supersedes the fixed offset at the sink/driver seam.
  */
-export const ANCHOR_INDEX = 0
+export const PRE_CONTENT_ANCHOR_INDEX = 0
 
 /**
  * Runtime index allocator for the SEQUENTIAL-anchor wire (spec 2026-07-22 §3.3). Unlike the fixed
- * `ANCHOR_INDEX=0` + `remap(frame, 1)` coexist model, sequential anchors are interspersed among real
- * blocks (wire indices 0=anchor, 1=real, 2=gap-anchor, 3=real, …) with AT MOST ONE block open at a
- * time — so a real block's final wire index is NOT `upstreamIndex + 1` but depends on how many
- * anchors were opened before it. The allocator hands out monotonically increasing wire indices and
- * records the wire index assigned to each real block (in upstream order) so the sink/driver can remap
- * upstream block frames to their sequential wire index via {@link AnchorIndexAllocator.realBlockOffset}.
+ * `PRE_CONTENT_ANCHOR_INDEX=0` + `remap(frame, 1)` coexist model, sequential anchors are interspersed
+ * among real blocks (wire indices 0=anchor, 1=real, 2=gap-anchor, 3=real, …) with AT MOST ONE block
+ * open at a time — so a real block's final wire index is NOT `upstreamIndex + 1` but depends on how
+ * many anchors were opened before it. The allocator hands out monotonically increasing wire indices
+ * and records the wire index assigned to each real block (in upstream order) so the sink/driver can
+ * remap upstream block frames via {@link GenerationWireIndexAllocator.realBlockOffset}.
  */
-export interface AnchorIndexAllocator {
+export interface GenerationWireIndexAllocator {
   /** Peek the wire index the NEXT anchor block will occupy (pure — advances only on {@link onAnchorOpen}). */
   nextAnchorIndex: () => number
   /** Peek the wire index the NEXT real block will occupy (pure — advances only on {@link onRealBlockOpen}). */
@@ -38,6 +38,8 @@ export interface AnchorIndexAllocator {
   onAnchorOpen: () => void
   /** Commit a real block at the current wire index (advances the counter; records the mapping). */
   onRealBlockOpen: () => void
+  /** Diagnostic count of allocated synthetic anchors. Never use this as a remap predicate. */
+  anchorsOpened: () => number
   /**
    * The remap offset for the real block that arrived at `upstreamIndex` (upstream's own 0-based block
    * numbering): `wireIndex(upstreamIndex) − upstreamIndex`. Real blocks are opened in upstream order,
@@ -46,17 +48,22 @@ export interface AnchorIndexAllocator {
   realBlockOffset: (upstreamIndex: number) => number
 }
 
-export function createAnchorIndexAllocator(): AnchorIndexAllocator {
+export function createGenerationWireIndexAllocator(): GenerationWireIndexAllocator {
   let wireCounter = 0
+  let anchorCount = 0
   const realWireIndices: Array<number> = []
   return {
     nextAnchorIndex: () => wireCounter,
     nextRealIndex: () => wireCounter,
-    onAnchorOpen: () => void wireCounter++,
+    onAnchorOpen: () => {
+      anchorCount++
+      wireCounter++
+    },
     onRealBlockOpen: () => {
       realWireIndices.push(wireCounter)
       wireCounter++
     },
+    anchorsOpened: () => anchorCount,
     realBlockOffset: (upstreamIndex) => (realWireIndices[upstreamIndex] ?? upstreamIndex) - upstreamIndex,
   }
 }
@@ -81,27 +88,27 @@ export function isAnthropicMessageStart(frame: ServerSentEventMessage): boolean 
   }
 }
 
-/** `content_block_start` opening the empty-text anchor block (lights the sink openBlock={0,text}). */
-export function anchorStartFrame(): ServerSentEventMessage {
+/** `content_block_start` opening the empty-text anchor block at its allocated wire index. */
+export function anchorStartFrame(index: number): ServerSentEventMessage {
   return anthropicSseFrame({
     type: "content_block_start",
-    index: ANCHOR_INDEX,
+    index,
     content_block: { type: "text", text: "" },
   })
 }
 
 /** Empty `text_delta` on the anchor block — the frame that actually resets CC's 300s watchdog. */
-export function anchorDeltaFrame(): ServerSentEventMessage {
+export function anchorDeltaFrame(index: number): ServerSentEventMessage {
   return anthropicSseFrame({
     type: "content_block_delta",
-    index: ANCHOR_INDEX,
+    index,
     delta: { type: "text_delta", text: "" },
   })
 }
 
 /** `content_block_stop` closing the anchor at commit / terminal failure (empty text — known-benign). */
-export function anchorStopFrame(): ServerSentEventMessage {
-  return anthropicSseFrame({ type: "content_block_stop", index: ANCHOR_INDEX })
+export function anchorStopFrame(index: number): ServerSentEventMessage {
+  return anthropicSseFrame({ type: "content_block_stop", index })
 }
 
 /**
@@ -179,7 +186,7 @@ export async function closeAnchorIfOpen(sink: ClientSink, anchorHooks: AnchorHoo
   if (anchorHooks && anchorState?.injected && anchorState.anchorBlockOpen && !anchorState.anchorClosed) {
     anchorState.anchorClosed = true
     sink.close?.()
-    await sink.writeAnchor?.(anchorHooks.stopFrame)
+    await sink.writeAnchor?.(anchorHooks.stopFrame(PRE_CONTENT_ANCHOR_INDEX))
   }
 }
 
@@ -236,8 +243,8 @@ export function makeSyntheticAnchorInjector(args: {
       // `injected`+`anchorBlockOpen` before the first await (race-free vs the commit snapshot, as below).
       state.injected = true
       state.anchorBlockOpen = true
-      await (sink.writeAnchor ?? sink.write)(anchor.startFrame) // "anchor"; noteBlockState → openBlock={0,text}
-      await (sink.writeKeepalive ?? sink.write)(anchor.deltaFrame) // "keepalive": empty text_delta resets CC's 300s watchdog
+      await (sink.writeAnchor ?? sink.write)(anchor.startFrame(PRE_CONTENT_ANCHOR_INDEX)) // "anchor"; noteBlockState → openBlock={0,text}
+      await (sink.writeKeepalive ?? sink.write)(anchor.deltaFrame(PRE_CONTENT_ANCHOR_INDEX)) // "keepalive": empty text_delta resets CC's 300s watchdog
       return true
     }
     const real = state.capturedMessageStart
@@ -262,8 +269,8 @@ export function makeSyntheticAnchorInjector(args: {
       state.anchorBlockOpen = true
       await (sink.writeSyntheticEnvelope ?? sink.write)(synthesize(resolvedName, reqId)) // fabricated → "synthetic-message-start"
     }
-    await (sink.writeAnchor ?? sink.write)(anchor.startFrame) // "anchor"; noteBlockState → openBlock={0,text}
-    await (sink.writeKeepalive ?? sink.write)(anchor.deltaFrame) // "keepalive": empty text_delta resets CC's 300s watchdog
+    await (sink.writeAnchor ?? sink.write)(anchor.startFrame(PRE_CONTENT_ANCHOR_INDEX)) // "anchor"; noteBlockState → openBlock={0,text}
+    await (sink.writeKeepalive ?? sink.write)(anchor.deltaFrame(PRE_CONTENT_ANCHOR_INDEX)) // "keepalive": empty text_delta resets CC's 300s watchdog
     return true
   }
 }

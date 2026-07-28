@@ -1108,7 +1108,7 @@ export async function runResponseBufferedSink(
     if (anchorState.injected && anchor && anchorState.anchorBlockOpen && !anchorState.anchorClosed) {
       anchorState.anchorClosed = true
       try {
-        await (sink.writeAnchor ?? sink.write)(anchor.stopFrame) // "anchor" marker (structural close-off)
+        await (sink.writeAnchor ?? sink.write)(anchor.stopFrame(0)) // "anchor" marker (structural close-off)
       } catch {
         /* client gone mid-close — best-effort, nothing else to do */
       }
@@ -1162,7 +1162,7 @@ export async function runResponseBufferedSink(
       const closeAnchorBeforeReal = async (): Promise<void> => {
         if (injected && anchor && anchorBlockOpen && !anchorState.anchorClosed) {
           anchorState.anchorClosed = true
-          await (sink.writeAnchor ?? sink.write)(anchor.stopFrame) // "anchor" marker
+          await (sink.writeAnchor ?? sink.write)(anchor.stopFrame(0)) // "anchor" marker
         }
       }
       // Zero-content terminal (message_delta/stop or error before ANY real block): close the anchor here so
@@ -1239,7 +1239,7 @@ export async function runResponseBufferedSink(
             if (anchor && anchorState.messageStartForwarded && anchor.isMessageStart(toWrite)) continue // H1 dedup
             if (anchor?.isContentBlockStart(toWrite) && anchorState.injected && anchorState.anchorBlockOpen && !anchorState.anchorClosed) {
               anchorState.anchorClosed = true
-              await (sink.writeAnchor ?? sink.write)(anchor.stopFrame) // "anchor" — close before the real block (sequential)
+              await (sink.writeAnchor ?? sink.write)(anchor.stopFrame(0)) // "anchor" — close before the real block (sequential)
             }
             await sink.write(anchorState.injected && anchor && anchorState.anchorBlockOpen ? anchor.remap(toWrite, 1) : toWrite)
             continue

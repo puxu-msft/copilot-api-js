@@ -46,7 +46,7 @@ function hooks(): ReconcileHooks {
         return false
       }
     },
-    stopFrame: anchorStopFrame(),
+    stopFrame: anchorStopFrame,
     remap: remapAnthropicBlockIndex,
   }
 }

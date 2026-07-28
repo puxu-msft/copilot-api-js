@@ -379,12 +379,12 @@ export interface AnchorHooks {
   isMessageStart: (frame: ClientFrame) => boolean
   /** Is this rendered client frame a real `content_block_start`? (drives the sequential anchor close-before-real-block). */
   isContentBlockStart: (frame: ClientFrame) => boolean
-  /** The synthetic anchor `content_block_start{type:"text", text:""}` at index 0 (lights the sink's openBlock). */
-  startFrame: ClientFrame
-  /** The synthetic anchor `content_block_stop` at index 0 — the commit / terminal-failure close-off. */
-  stopFrame: ClientFrame
-  /** The empty `text_delta` anchor keepalive frame — resets CC's 300s watchdog right after the start. */
-  deltaFrame: ClientFrame
+  /** Build the synthetic anchor `content_block_start{type:"text", text:""}` at its allocated wire index. */
+  startFrame: (index: number) => ClientFrame
+  /** Build the synthetic anchor `content_block_stop` at its allocated wire index. */
+  stopFrame: (index: number) => ClientFrame
+  /** Build the empty `text_delta` anchor keepalive frame at its allocated wire index. */
+  deltaFrame: (index: number) => ClientFrame
   /**
    * Fabricate a `message_start` envelope (fake id + zeroed usage) for when the upstream stalls before
    * emitting its own real `message_start`, so the client stream is well-formed enough to open a block.

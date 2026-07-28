@@ -1,9 +1,13 @@
-import { expect, test } from "bun:test"
+import {
+  //
+  expect,
+  test,
+} from "bun:test"
 
-import { createAnchorIndexAllocator } from "~/lib/anthropic/keepalive-anchor"
+import { createGenerationWireIndexAllocator } from "~/lib/anthropic/keepalive-anchor"
 
 test("sequential allocation: anchor@0, real@1, gap-anchor@2, real@3 (never two blocks share an index)", () => {
-  const a = createAnchorIndexAllocator()
+  const a = createGenerationWireIndexAllocator()
   expect(a.nextAnchorIndex()).toBe(0) // pre-content anchor
   a.onAnchorOpen()
   expect(a.nextRealIndex()).toBe(1) // first real block after the anchor closed
@@ -15,7 +19,7 @@ test("sequential allocation: anchor@0, real@1, gap-anchor@2, real@3 (never two b
 })
 
 test("realBlockOffset maps an upstream block index to the current wire index", () => {
-  const a = createAnchorIndexAllocator()
+  const a = createGenerationWireIndexAllocator()
   a.onAnchorOpen() // anchor@0
   a.onRealBlockOpen() // real block opened at wire index 1 (upstream index 0)
   // upstream frame for this block carries index 0 → wire 1 → offset 1
@@ -27,10 +31,19 @@ test("realBlockOffset maps an upstream block index to the current wire index", (
 })
 
 test("peek methods are pure — they do not advance until on*Open is called", () => {
-  const a = createAnchorIndexAllocator()
+  const a = createGenerationWireIndexAllocator()
   expect(a.nextAnchorIndex()).toBe(0)
   expect(a.nextAnchorIndex()).toBe(0) // still 0 — no advance
   a.onAnchorOpen()
   expect(a.nextRealIndex()).toBe(1)
   expect(a.nextRealIndex()).toBe(1) // still 1
+})
+
+test("anchorsOpened is a DIAGNOSTIC counter — never a remap predicate", () => {
+  const a = createGenerationWireIndexAllocator()
+  expect(a.anchorsOpened()).toBe(0)
+  a.onRealBlockOpen()
+  expect(a.anchorsOpened()).toBe(0)
+  a.onAnchorOpen()
+  expect(a.anchorsOpened()).toBe(1)
 })
