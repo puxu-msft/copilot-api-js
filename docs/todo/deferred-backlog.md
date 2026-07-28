@@ -1064,3 +1064,10 @@ registry（`docs/rfc/2026-07-21-retry-strategy-registry.md`）6 commit 全 lande
 - **理想架构 / 若做需改什么**：一条新的反应式 retry 腿（参考 `src/lib/request/strategies/` 既有诸腿）。要点：① **循环安全**——refusal 可能对所有模型复发，须有 attempt cap 且不与既有 buffered-retry / continuation 预算打架；② **换模型的选择**依据（配置显式指定 vs 按 catalog 降级）；③ **计费**——多烧一次真实请求，需在 History/遥测里可辨识（该 attempt 打标记，别混进正常重试统计）；④ 与抑制的**优先级**：fallback 成功则不需要抑制，失败才落到抑制兜底——即抑制从「唯一手段」降级为「最后兜底」。
 - **为何暂缓**：用户在范围选择中选了 B 档（诊断忠实化 + 分型，不含自动重试），随后又把焦点收敛到「抑制」。**不是判定它没价值——恰恰相反，它比抑制更接近真正的目标**。**触发条件（值得做）**：观测到 refusal 频次上升（当前极罕见：全部保留数据里仅 3 次，2026-06-23 / 07-13 / 07-27），或用户希望被拒的轮次能自动产出真实内容而非一句说明。
 - **做之前必须先做的实验**（当前**全部未验证**，别当事实用）：同 payload 换模型重发的**恢复率**；同 payload 同模型重发是否必然再拒（官方文档只说 "usually"）；`category` 是否能预测可恢复性（`cyber`/`bio`/`null` 三类已观测，但**无任何**行为差异证据——`bio` 那次是烧了 25,636 thinking token 之后才拒的，不是推理前拦截）。取证基线见 [exp/refusal-samples/FINDINGS.md](../../exp/refusal-samples/FINDINGS.md)。
+
+## `parallel-test.ts` 的用例汇总仍系统性欠计（2026-07-28，紧随 ANSI 修复）
+
+- **根因 / 现状**：`scripts/parallel-test.ts` 汇总各 shard 的 `N pass` / `N fail` 时曾因 bun **即使输出到管道也上色**（`\x1b[0m\x1b[32m 26 pass\x1b[0m`）而恒报 `0 tests`，已修（`5454616b`，strip SGR 后正样本对照 0 → 4243）。但修复后**数字仍与直接命令不一致**：同一棵树上 `bun run test:backend`（= `parallel-test.ts unit it http`）报 **4749 tests**，而 `bun test --parallel .unit.test .it.test .http.test` 报 **6614 tests / 644 files**；单 `unit` 档同样差（4007 vs 4304）。已排除的假设：① 不是发现缺口——`tests/` 内 `.unit.test.ts` 计 414、全仓同样 414，`tests/` 之外只有一个 `exp/` 实验文件（本就不该进门）；② 不是别的 CSI 序列——实测 bun 输出的 CSI final byte 只有 `m`。
+- **当前行为**：**门本身（退出码）是对的**——它由各 shard 自己的 exit code 决定，真失败照样红；坏的是**汇总证据行**：交付报告引用的「N pass」系统性偏小约 25%，且无法与直接命令对账。
+- **理想架构 / 若做需改什么**：给 parallel-test 加一条自检——把各 shard 的 `pass+fail+skip` 之和与「预期用例总数」对账，不一致就**显式告警而非静默出数**；或直接改用 `--reporter=junit`（脚本 `refreshTimings` 已经在用 junit XML，逐 `<testcase>` 计数是精确的）取代脆弱的 stdout 文本解析。后者更根治：文本汇总格式随 bun 版本变化的历史已经踩过两次。
+- **为何暂缓**：门的正确性不受影响（exit code 正确），属证据可信度问题；且正确修法（改 junit 计数）值得单独一个改动 + 正样本对照，不该塞进特性分支。**触发条件**：下次有人需要引用精确用例数做交付证据，或第三次被 bun 输出格式变化咬到。**发现方**：upstream-silence 特性分支第二次合并 master 时的对账（2026-07-28）。
