@@ -344,23 +344,25 @@ test("a FAILED first write consumes the index permanently and refuses further al
 >
 > **依赖裁决**：P2 必须基于**含 P6** 的 base 实施（DAG 已补 `P6 → P2`）。若 P6 独立先合并 master，则 allocator worktree 必须 rebase/merge 到含 P6 的 master 后再做 P2——否则会在旧 heartbeat 生命周期上写竞态 oracle，合并后测试语义失效。
 
-- [ ] **Step 1: 写失败测试** —— 只有在 P6 修复后才可达的状态
+> **实施期可达性拆分（2026-07-28 主会话裁决）**：原测试把两种不同相位才可达的事实合在了一条里。P6 已让 boundary commit 后 heartbeat 恢复，但当前 `semanticBlockCount === 0` 门仍禁止首块后的 tick 调 `allocateAndWriteAnchor`；该门按硬序只能在 P3M **M6**（晚于 M2–M4）删除。故 P2 期要求“恢复后的 tick 真分配 gap anchor”不可满足，不得手工补状态或提前开门。
+>
+> 拆成两层，覆盖不减少：① **P2 留下**当前可达 characterization——boundary 后 heartbeat 确实恢复、当前门仍将 tick 路由成 ping，且 owner serializer 在该恢复状态下继续保持不交错；② **移入 M6 O-3**——删门后同一恢复 tick 必须真实进入 `allocateAndWriteAnchor`，配“加回门” mutation。P3M 权威 `plan-3-remap-sites.md` 的 M6 行同步记录该移入项。
+
+- [ ] **Step 1: 写 characterization 测试** —— P6 后、M6 前真实可达状态
 
 ```ts
 // tests/pipeline/allocation-race-after-boundary-commit.it.test.ts
-test("after a boundary commit resumes the heartbeat, a tick landing in the next flush await still allocates safely", async () => {
-  // 这个场景在 P6 之前【不可达】：boundary commit 后心跳已死，tick 根本不会再来
-  // 序列：真实块提交（suspend → freeze → resume）→ 心跳复活 → 下一次 flush 的 await 让点上 tick 触发
-  assertMonotonicWireIndices(frames)
-  assertBlockProtocolState(frames)
-  // 且 anchor 不得插入真实块的 deltas 中间
+test("after a boundary commit resumes heartbeat, the pre-M6 gate emits ping while owner work remains serialized", async () => {
+  // 真实块提交（suspend → freeze → resume）→ 等本 session 自己的 writeCount/ledger 到达 boundary
+  // → 下一 tick 确实发生；M6 前必须是 ping、不得分配 anchor（semanticBlockCount===0 门仍在）
+  // → 与下一 owner operation 交错时 O-1/O-2 仍成立。
 })
 ```
 
-- [ ] **Step 2**：跑，红。
-- [ ] **Step 3**：修（若 P2.2 的 owner API 已正确，此条可能直接绿 → 降级为 characterization 并注明「P6 打开的新可达状态由 owner API 天然覆盖，本测试锁住它」）。
-- [ ] **Step 4**：连跑 15 次。
-- [ ] **提交** → `test(delivery): allocation safety in the heartbeat states P6 makes reachable`
+- [ ] **Step 2**：当前代码应直接绿，注明为 characterization；其正向能力由 P6 测试先证明 heartbeat 真恢复，且断言 tick 产出 ping，不能以“无输出”假绿。
+- [ ] **Step 3**：连跑 15 次；就绪门只读本 session 自己的 ledger/writeCount，不读全局 timer 计数。
+- [ ] **Step 4**：mutation——临时恢复 P6 旧缺陷（让 freeze 永久 stop）时，本测试必须因“恢复 tick 未出现”转红。
+- [ ] **提交** → `test(delivery): characterize pre-M6 allocation safety after heartbeat resume`
 
 ## Task 2.2c：commit-point 三档 oracle + recovery 腿（**round-3 blocker 重写**）
 
