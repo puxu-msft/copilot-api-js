@@ -13,12 +13,22 @@
 
 ## 下一步（严格顺序，用户 2026-07-27 指定「按顺序完成」）
 
-1. **P6：心跳死亡修复** —— **可独立交付、且已就绪**（`docs/plan/2026-07-27-inter-block-anchor-allocator/plan-6-heartbeat-lifecycle-fix.md`，其 kickoff 段含完整影响面矩阵可直接用）。路径 = P0 → P6 → 合并。它同时是 P2/P5 的前置。
-2. **方案 A 全相位实施**：P0 → P1 → P2 → **P3M（原 P3/P4/P5 合并的原子相位，内部 M1–M8）** → P7/P8；隔离 worktree + TDD + 真 SDK/CC 验收。**唯一硬序约束：M6（特性开门）晚于 M2–M4。**
+1. ~~**P6：心跳死亡修复**~~ ✅ **已 landed master `2e1041e8`**（含异模型合并态审查 0 blocker）。顺带修了捕获脚本的进程树泄漏（`54a4281d`）。
+2. **方案 A 全相位实施**（进行中）：**P1 U1/U2 已完成**（分支 `feat/anchor-allocator-p1p2`，未合并）；**U3 + P2 进行中**；之后 **P3M（M1–M8，唯一硬序：M6 晚于 M2–M4）** → P7 → P8。
 3. **Anthropic 块级默认翻转**（姊妹 spec §6.3）——硬前置 = 方案 A 落地。
 4. **P1：max_tokens 成功终端截获续写**（`docs/plan/2026-07-22-max-tokens-continuation/plan-1-anthropic-continuation.md`）。
 
-> P1 不依赖翻转即可实现与测试（测试里显式开 `protect_streaming_generation`），但翻转后才在默认配置下生效。用户已明确**只接受块级 buffered**，故翻转是独立必需项。
+> 步骤 4 的 P1 不依赖翻转即可实现与测试（测试里显式开 `protect_streaming_generation`），但翻转后才在默认配置下生效。用户已明确**只接受块级 buffered**（不接受流式、不接受整响应缓冲），故翻转是独立必需项。
+
+## 方案 A 实施进度（活状态，接手先看这里）
+
+- **分支 `feat/anchor-allocator-p1p2`**（worktree `.worktrees/alloc-p1p2`，base `da59c586`）：
+  - `e1a2fc39` U1 —— allocator 更名 `createGenerationWireIndexAllocator` + `anchorsOpened()` 诊断计数 + anchor 三帧改 factory 收显式 index + `ANCHOR_INDEX`→`PRE_CONTENT_ANCHOR_INDEX`。
+  - `a0890d0c` U2 —— `AnchorState.allocator` 必填、handler 唯一创建点、pre-content injector 从共享 allocator 取 index 并推进 frontier。
+  - **U3 + P2 进行中**。
+- **已裁决的计划内冲突（主会话 2026-07-28）**：P1 U3 的「remap literal 零命中」守卫与「P1 不改 remap 站点」冻结边界冲突 → **采用 ratchet 冻结 baseline**（照抄本仓库既有 `tests/architecture/circular-deps-ratchet.unit.test.ts` 的模式）：当前四处 literal remap（`driver.ts` ×3、`live-reconcile.ts` ×1）列入精确 allowlist、**新增即 fail、只减不增**；**P3M 每迁一站点同步缩减，M4 后 allowlist 必须为空**（已定为 M4 显式验收项）。否决了「守卫推迟到 M4」（P1→P3M 窗口恰好失去保护）与「提前迁移调用点」（动冻结相位边界）。
+- **实施期教训（已发生，勿重踩）**：从 `pipeline/types.ts` 反向 type-import `keepalive-anchor.ts` 会把后者拉进核心 SCC、`circular-deps-ratchet` 报红 → **allocator interface 定义须留在 pipeline owner**，`keepalive-anchor.ts` 只实现契约。
+- **既有 flake（非本工作引入，别去改）**：`tests/transport/h2-keepalive-ping.unit.test.ts` 墙钟波动（单跑 25/25 绿）；`tests/restart/states-flush-freeze.it.test.ts` 分片污染（单跑 6/6 绿）。
 
 ---
 
