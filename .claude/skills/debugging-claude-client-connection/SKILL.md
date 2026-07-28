@@ -37,7 +37,7 @@ CC 对 `/v1/messages` 流式请求关掉 SDK 的 600s 总超时（`API_TIMEOUT_M
 - header-timeout 由 [fetch-utils.ts](../../../src/lib/fetch-utils.ts) 的 `AbortSignal.timeout(responseHeaderTimeout*1000)` 折进上游 fetch 信号触发（GHC 走 h2、不吃 undici Agent 的 `headersTimeout`，靠这个信号兜底）。**上游 0 帧 + status null + 时长≈300s = 上游纯沉默、我方 header-wait 守卫开火**（既非客户端主动断、也非 GHC 主动报错/关流）。
 - 巨型对话（`messageCount` 数百、`requestBytes` MB 级）+ 全程 `clientResponse.sseEvents` 皆 `synthetic:"keepalive"/"synthetic-message-start"/"anchor"`（真实内容 0 帧）= delayed-commit pre-response 路径：窗口期上游沉默 → commit 200 + 合成空 delta 保活撑住 CC 的 300s 层，最终自身 header-wait 到点。注：此路径下终端 error 帧在 `ctx.fail`(snapshot forwarded) **之后**写，**不进 history 快照**——reaper/timeout 二选一别指望 history 里的文案，靠 `durationMs`（300 vs 600）或实时 wire 抓。
 
-**时间基陷阱（踩过，务必换算）**：`clientResponse.sseEvents[].offsetMs` 以 **`streamStartMs`=commit 时刻**为原点（≈ `entry.startedAt + streamCommitAfterSec`，默认 **+20s**），而 `durationMs`/`attempts[].durationMs` 以 **entry 起始**为原点。拿 commit-relative 的心跳 offset 直接减 entry-relative 的 duration，会**凭空多出约一个 `streamCommitAfterSec`（~20s）的"心跳空档"假象**。推理心跳节律（默认 `streamKeepalivePingSec=20`）前先统一到同一原点：末次心跳绝对时刻 = `entry.startedAt + streamCommitAfterSec + offsetMs`，与 abort 时刻同基再比。
+**时间基陷阱（踩过，务必换算）**：`clientResponse.sseEvents[].offsetMs` 以 **`streamStartMs`=commit 时刻**为原点（≈ `entry.startedAt + streamCommitAfterSec`，默认 **+180s**（2026-07-28 起；此前为 +20s，读旧样本按 +20s 换算）），而 `durationMs`/`attempts[].durationMs` 以 **entry 起始**为原点。拿 commit-relative 的心跳 offset 直接减 entry-relative 的 duration，会**凭空多出约一个 `streamCommitAfterSec`（~20s）的"心跳空档"假象**。推理心跳节律（默认 `streamKeepalivePingSec=20`）前先统一到同一原点：末次心跳绝对时刻 = `entry.startedAt + streamCommitAfterSec + offsetMs`，与 abort 时刻同基再比。
 
 ## keepalive 修复 + 合成帧必须可辨识
 

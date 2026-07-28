@@ -41,7 +41,6 @@ import {
   setBundledConfigForTests,
 } from "~/lib/config/config"
 import { PATHS } from "~/lib/config/paths"
-import { CONFIG_MANAGED_DEFAULTS } from "~/lib/state-defaults"
 import {
   //
   resetConfigManagedState,
@@ -52,6 +51,7 @@ import {
   state,
   type StateSnapshot,
 } from "~/lib/state"
+import { CONFIG_MANAGED_DEFAULTS } from "~/lib/state-defaults"
 
 // ============================================================================
 // Isolated tmp-dir harness (mirrors config-hot-reload.it.test.ts)

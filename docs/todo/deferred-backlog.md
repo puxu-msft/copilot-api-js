@@ -2,6 +2,14 @@
 
 从记忆库降为引用层（2026-07-05）时归位的活 backlog。每条：现状 / 暂缓原因 / 若做需改什么。
 
+## delayed-commit 窗口是全局的，但它的安全上限只对两个 Node 客户端实测过（2026-07-28）
+
+- **根因**：`stream_commit_after_sec` 对所有流式 `/v1/messages` 请求一视同仁（`handler-v4.ts` 只按 `clientRaw.stream` 分支，不识别客户端）。但窗口的安全上限来自**客户端的** pre-header 容忍度，而我们只实测过两个样本：真 Claude Code 2.1.220（其内置 Node v26.3.0）与 `@anthropic-ai/sdk` 0.106.0 on Node——两者都是 ~300s，因为都落在 undici 默认 `headersTimeout` 上（`exp/silence-recovery-gates/FINDINGS.md`）。
+- **当前行为**：默认 180s。窗口内我方**一个字节都不发**，所以任何 pre-header 容忍度落在 `(20s, 180s)` 的 Anthropic 客户端，**旧默认下能在 20s 拿到 200+keepalive 而活、新默认下会在收到任何字节前超时**。Python / Go / Java / Ruby 官方 SDK、第三方工具、中间反向代理、以及用户自设的短 timeout 都未测。
+- **理想架构**：commit policy 应当**客户端感知**而非全局一刀切——对可识别的客户端（`x-app: cli` + `user-agent: claude-cli/*`，或已知 Node SDK 的 `x-stainless-runtime`）用实测背书的窗口，对未知客户端用保守窗口（或单独的 `unknown_client_commit_after_sec`）。判据轴是「不为了兼容而放弃正确默认，但也不用两个样本替所有客户端做决定」。
+- **为何暂缓**：本项目实际只服务 Claude Code（用户 2026-07-28 明确按 CC 定 180s）。客户端分类是一个新契约，需要先定「怎样算可识别」并对官方多语言 SDK 补探针，属独立工作单元。
+- **若做需改什么**：① 补官方 SDK 多语言 pre-header 探针（复用 `exp/silence-recovery-gates/run-q1-firstfail.sh`，它已是多臂结构）；② 定客户端识别契约（架构决策，需 ADR）；③ `handler-v4.ts` 的窗口取值改为按分类查表；④ config 增加未知客户端键并同步 schema/TSDoc/DESIGN。
+
 ## Anthropic 块级 buffered 首块后的 >300s keepalive carrier（2026-07-27，块级默认翻转硬门）
 
 > 2026-07-27 P6 已先修相邻的 heartbeat 生命周期缺陷：普通 boundary commit 的 `freezeHeartbeat()` 不再永久关闭 delivery timer，Responses HTTP / Anthropic 的首个 boundary 之后会继续发 ping。**本条仍活**，因为它解决的是不同问题——ping 不重置 Claude Code 300s content watchdog，仍需方案 A 的合法 gap anchor carrier。
