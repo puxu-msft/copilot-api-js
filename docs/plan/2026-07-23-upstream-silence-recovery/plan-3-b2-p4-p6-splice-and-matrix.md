@@ -62,7 +62,7 @@ streamSSE(c, async (stream) => {
 
 ## Task 4.0：ready-态挂载点 —— live 路径复用既有 `runRecovery`
 
-> **实施状态（2026-07-28）：已完成，保持零 handler 接线。** `driver.ts` 的真实位置已从本文草稿的 `src/lib/pipeline/generation/driver.ts` 漂移为 `src/lib/pipeline/driver.ts`；当前 `generation.bindings` 仍是按 `UpstreamStream` 找回 `{coordinator,candidate}` 的 `WeakMap`，故原设计继续适用。新增 `driver.runResponseRecovery(upstream, env, reason)`：先对 ready 态 recovery 自己执行 `classifyServerExecutionRisk(outboundPrepareWire(...))`，不读取也不继承 hedge 的 `allowServerTools`，再调用既有 `coordinator.runRecovery`、绑定并返回 fresh upstream。`runRecovery` 新增可选 `retryNextStrategy` 覆盖参数，默认仍为 `"buffered-retry"`，ready 态 B2 显式写 `"precontent-recovery"`。当前 live pump 的真实 `stream-error` 分支位于 `src/routes/messages/handler-v4.ts:1382-1423`，仍直接终态失败；本 Task 按硬验收不接 handler，因此生产行为未变。测试覆盖 ready-open 后首个真实 block 前抛错可拿到第二 upstream、server-tool gate 不增加 open 次数、已交付真实内容时 delivery gate 为 true、History 标记覆盖与 buffered 默认值回归。
+> **实施状态（2026-07-28）：live driver 能力已完成，保持零 handler 接线；buffered 对应接线已裁决暂缓。** Plan 引用的**行号**已过时（`driver.ts:1389`→`:1530`、`handler-v4.ts:1279-1320`→`:1382-1423`），**文件路径未变**；当前 `generation.bindings` 仍是按 `UpstreamStream` 找回 `{coordinator,candidate}` 的 `WeakMap`，故原设计继续适用。新增 `driver.runResponseRecovery(upstream, env, reason)`：先对 ready 态 recovery 自己执行 `classifyServerExecutionRisk(outboundPrepareWire(...))`，不读取也不继承 hedge 的 `allowServerTools`，再调用既有 `coordinator.runRecovery`、绑定并返回 fresh upstream。`runRecovery` 新增可选 `retryNextStrategy` 覆盖参数，默认仍为 `"buffered-retry"`，ready 态 B2 显式写 `"precontent-recovery"`。当前 live pump 的真实 `stream-error` 分支仍直接终态失败；本 Task 按硬验收不接 handler，因此生产行为未变。测试覆盖 ready-open 后首个真实 block 前抛错可拿到第二 upstream、server-tool gate 不增加 open 次数、已交付真实内容时 delivery gate 为 true、History 标记覆盖与 buffered 默认值回归。下方 buffered 子任务未实施：主会话已裁决在 live Task 4.3/4.5 接线完成、具备实际 splice 语境后再做，现归档于 `docs/todo/deferred-backlog.md` 的“B2 ready-state recovery 的 buffered 路径旁路”条目；该路径必须尊重 `max_retries=0`。
 
 **先做这个 Task，再做 Task 4.1（splice 纯函数对两个挂载点通用，但需求先从这里确认）。**
 
@@ -98,7 +98,7 @@ runResponseRecovery(upstream: UpstreamStream, env: RequestEnvelope, reason: stri
 
 - [ ] 在 `runResponseBufferedSink` 的失败判定处（`driver.ts:1361-1399` 附近，现有 `retryable` 分支），**在 `!committedAny` 分支耗尽重试预算、即将走向 `degradeOutcome="exhausted"` 之前**，插入一次 B2 gate 检查（`!hasDeliveredSemanticContent` 在 buffered 场景下等价于 `!committedAny`——**这两者是否完全等价需要实现者用测试确认**：`committedAny` 由 `anthropicCommitBoundaries` 判定"是否有 boundary 被 flush 过"，而 `hasDeliveredSemanticContent` 目前设计读的是 `CandidateBoundaryClassifier.result`——buffered 候选是否也驱动了同一个 boundary classifier 是 Plan-2 Task 0.2 已经标注的验证点，这里再次确认）+ server-tool gate；命中则不走 `degradeOutcome`，而是走 B2 的 splice-recovery（**注意 buffered 场景下 splice 目标不是"接进同一个 live sink"，而是"这次的 fresh attempt 本身重新进入 buffered 缓冲循环"——即 B2 在 buffered 模式下退化成"多给一次重试机会，且这次重试不计入原有 `retryCap` 预算"，本质上是把 `retryCap` 用尽后的最后一击外挂在 buffered 循环外层，而非改写 buffered 循环内部逻辑**）。
 
-**⚠ 门控问题（不自行拍板）**：buffered 路径的这个"外挂一次"设计是否与 buffered-retry 现有的 `retryCap` 语义冲突（比如用户配置 `max_retries=0` 是否意味着"连 B2 这一次都不该有"）？**倾向**：`max_retries=0` 应该被尊重（用户明确表达"不要任何重试"），B2 在 buffered 路径的旁路应该额外检查 `resolveBufferedCaps(vendor).maxRetries > 0` 才生效，或者更保守地——**B2 在 buffered 路径的这一节，鉴于风险与本计划篇幅，建议作为独立子任务，若实现期发现复杂度超出预期，可以先只完整交付 live 路径（Task 4.0 的 live 部分 + Task 4.1-4.5），把 buffered 路径的 B2 集成降级为本计划 backlog 的一项（记入 Plan-5 Task 6.3），而不是勉强塞一个可能语义不清的实现**。这是一个范围调整，需要主会话确认是否接受"先只做 live、buffered 留 backlog"这个降级，而不是 planner 单方面砍掉。
+**裁决（2026-07-28，已关闭门控）**：buffered 路径不在本 Task 实施，归档至 `docs/todo/deferred-backlog.md`，待 live 路径 Task 4.3/4.5 接线完成后触发。用户已明确 `max_retries=0` 表示“不要任何重试”，因此未来的 buffered B2 外挂旁路必须额外检查 `resolveBufferedCaps(vendor).maxRetries > 0`；该值为 0 时，连 B2 这一次也不得发起。
 
 ---
 
@@ -245,6 +245,8 @@ if (shouldAttemptPreContentRecovery({ error, session: anthropicCandidateSnapshot
 **设计依据：** `runPreContentRecovery` 内部调用 `coordinator.runRecoveryFromPreReadyFailure`，这本身已经通过 `createCandidateRuntime` → `input.recording.beginCandidate` 走了标准的 History candidate 记录路径（`candidate.ts:70`）——**大部分 History 接线是"免费"的**（复用了 `DispatchRecordingPort` 现有机制）。需要新增的只是：① 首次失败的 attempt 上打一个可诊断的 reason 标记（例如 `recordAttemptFailure({ willRetry: true, nextStrategy: "precontent-recovery" })`，镜像 continuation 的 `"continuation"` nextStrategy 用法，见 `driver.ts:1443`）；② winner 候选正常走 `env.ctx.selectGenerationWinner(...)`。
 
 **Task 4.0 的 `runResponseRecovery`（ready-态挂载点）复用的是既有 `coordinator.runRecovery`——那条路径本身已经在 `settleDispatch` 里传 `retryNextStrategy`（见 `coordinator.ts:136` `runRecovery` 内部 `settleDispatch({ verdict: "discarded", reason, retryNextStrategy: "buffered-retry" })`）打了 History 标记，但这个既有标记写死是 `"buffered-retry"` 字面量——** B2 在 ready-态触发时，若继续用这个字面量，History 上会把"B2 pre-content 恢复"误标成"buffered-retry"，造成诊断混淆。**需要给 `runRecovery` 增加一个可选的 `retryNextStrategy` 覆盖参数**（局部签名扩展，不改调用方既有行为——现有 buffered 路径调用 `runRecovery(parent, reason, env)` 不传这个新参数时保持 `"buffered-retry"` 字面量不变），B2 的调用点显式传 `"precontent-recovery"`。
+
+**Task 4.3 接线后的 per-attempt 簿记待核项**：现有 buffered 路径在调用 `runRecovery` 前会依次执行 `commitAttemptSseEvents()`、`finalizeCurrentAttemptDuration()`、`resetSseEvents()`（并夹带同族 reset hook），以免失败 attempt 的上游原始帧被下一 attempt 覆盖、`durationMs` 停在 0；Task 4.0 的 `runResponseRecovery` 当前不做这些调用。Task 4.3 的实际挂载形态落定后，Task 4.4 必须核实簿记应由 handler 在调用前完成，还是下沉到 driver 的 recovery seam，并补 History oracle 锁住首个失败 attempt 的原始帧与非零 duration。验证必须做正样本对照：临时注入“省略 commit/finalize/reset”的 bug，确认测试确实变红，再恢复为绿；本 Task 不提前改代码。
 
 - [ ] **Step 1: 写失败测试**
 

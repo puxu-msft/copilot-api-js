@@ -2,6 +2,15 @@
 
 从记忆库降为引用层（2026-07-05）时归位的活 backlog。每条：现状 / 暂缓原因 / 若做需改什么。
 
+## B2 ready-state recovery 的 buffered 路径旁路（2026-07-28）
+
+- **根因 / 现状**：B2 在 buffered 路径的挂载点是 `runResponseBufferedSink` 的 `degradeOutcome = committedAny ? committedDegrade : "exhausted"` 分支；`committedAny === false` 表示“ready 但无真实内容交付”。ready 态 driver 能力 `runResponseRecovery` 已就位，但只供后续 live handler 接线使用，buffered 旁路尚未接入。
+- **当前行为**：buffered 路径耗尽透明重试预算后直接以 `"exhausted"` 降级，不发起 B2 fresh dispatch。
+- **理想架构 / 若做需改什么**：在 `!committedAny` 分支耗尽预算、即将走向 `degradeOutcome = "exhausted"` 之前，组合 semantic-content gate 与 server-tool gate，并外挂恰好一次 recovery。buffered 场景的 splice 目标不是“接进同一 live sink”，而是让 fresh attempt 重新进入 buffered 缓冲循环；失败 attempt 的原始帧与 duration 簿记仍须在切换前提交并重置。
+- **已裁决语义**：用户已拍板尊重 `max_retries=0`；buffered B2 旁路必须额外检查 `resolveBufferedCaps(vendor).maxRetries > 0` 才能生效。用户明确表达“不要任何重试”时，连 B2 这一次也不得发起。
+- **为何暂缓**：live 路径 Task 4.1～4.5 尚未接线，此刻确定 buffered fresh attempt 如何重入循环、如何复用 splice 与簿记，缺少实际语境，容易提前固化错误形态。
+- **触发条件**：live 路径接线完成，即 Task 4.3/4.5 之后。**发现方**：Task 4.0 review（reviewer，2026-07-28）。
+
 ## reverse `@messages` 非流式跨协议 refusal 抑制（2026-07-28，合并态复审后拆出）
 
 - **根因**：Anthropic whole-response refusal rewrite 位于 Anthropic wire 层；reverse `@messages` 的 Chat Completions / Responses / Gemini codec 随后把原始 Anthropic response 翻成目标协议，而三个 route settle 点此前只调用 `anthropicNonStreamingTruncation(stop_reason)`。`stop_reason:"refusal"` 是有效终止符，因此旧代码直接 `ctx.complete()`；本批已用共享 `isContentlessRefusalResponse()` 修正裁决，但没有把 Anthropic 三模式呈现策略提升为跨协议机制。
