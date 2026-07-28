@@ -28,3 +28,5 @@ metadata:
 **How to apply:** 每新增一个 oracle（测试断言、守卫、grep 判据、验收命令），当场问两句：① 「**什么变异能让它红？**」答不上来、或答案与你想抓的失败不是同一件事，就是没鉴别力；② 「**这个绿，会不会由一个「通过但不是我要的」的情况产生？**」——把每种能产生同样输出的情形列出来，逐个排除或加检查。落到具体形态：计数类判据换集合差；值相等换来源/身份断言；按路径排除换按目标对象本身断言；容器（目录/集合）先展开成逐元素再判；变异实验的正样本必须**旧判据不咬、新判据才咬**（只用新旧都咬的样本，「变红了」是假信号）。
 
 Related: [[feedback-pass-null-clean-not-self-validating]]（通过性结论不自证的根条目）、[[methodology-relocate-invariant-when-guard-cannot-keep-up]]（守卫连续被合法语法绕过时换判据形状/换不变量位置）、[[methodology-verify-the-mutation-actually-applied]]（变异本身也要自证生效）。
+
+**2026-07-28 实例（测试绿、mutation 也不红，因为压根没执行到目标代码）**：给 Responses WS 的 first-event 看门狗写「`TimeoutError` 身份保留在 cause 链里」测试，用了个 `readyState=1` 但从不派发 `open` 事件的假 socket。测试绿；把看门狗改成合成通用 error，**仍然绿**。探针打出 cause 链才看清：`Upstream WebSocket connection aborted` ← `TimeoutError` —— 卡在**握手**那条路径上，握手超时自己也挂 `TimeoutError`，所以断言被一个**同名不同源**的值满足了。修法是让握手先成功，并把断言收紧到「顶层必须是 **request** wrapper」——「走到了目标分支」需要独立证据，不能靠「值对了」反推。**教训**：mutation 不红有两解（测试没咬住 / 代码没执行到），先分清是哪一种；断言一个**类型/名字**时要问「这条路径上还有谁会产出同名的东西」。姊妹 [[methodology-verify-the-mutation-actually-applied]]（另一半：mutation 本身没生效）。
