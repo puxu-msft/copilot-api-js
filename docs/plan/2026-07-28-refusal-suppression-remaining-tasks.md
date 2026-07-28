@@ -59,7 +59,7 @@ accumulator 已收（#1 完成），剩 spec §5 表的 #2–#11：streaming bui
 - ✅ 后端：`refusal-recovered` / `refusal-errored` / `refusal-passthrough` 三个既有 feature 均携带 `{category}` detail，不把 category 拼进 `FeatureKind`。共享 `refusalCategoryForDiagnostics()` 复用 `extractRefusalDetail()` / `isNamedCategory()`，避免各消费面重写判据。
 - ✅ 后端：实码查证 Anthropic→CC 非流式和流式都把 `refusal` 映射为 `finish_reason:"content_filter"`；Anthropic→Responses 两条路径都映射为 `status:"incomplete"` + `incomplete_details.reason:"refusal"`。四条翻译路径均新增 out-of-band `translated-refusal-category-dropped` feature marker（detail `{category,target}`），客户端 wire 仍保持目标协议合法形状。查证时另发现三个 reverse `@messages` 非流式 route builder 未把 raw `stop_details` 写入 History；已在 Chat Completions / Responses / Gemini 三处同步补齐，防止翻译 marker 可见而后端原始事实反而丢失。
 
-后端 mutation control：TUI token、feature detail、`refusal_category` extractor、四条翻译 marker（CC/Responses × 流式/非流式）、reverse CC 非流式 History 保真均临时摘掉对应接线并按预期变红；恢复后逐项转绿。最终全量验证见本节后续提交记录。
+后端 mutation control 分两层：翻译器内部的 `onDegradation` 触发测试此前已临时摘掉对应逻辑并按预期变红；但该结果不能证明 codec→`RequestContext.recordFeature()` 的接线。合并态复审发现接线层原本零测试后，新增 `tests/codec/refusal-degradation-marker-wiring.unit.test.ts`，逐格覆盖 CC/Responses × 流式/非流式，并临时摘掉 `src/lib/codec/openai-{cc,responses}/codec.ts` 三处回调接线，四条测试均按预期变红，恢复后 4/4 转绿。TUI token、feature detail、`refusal_category` extractor、reverse CC 非流式 History 保真各自的既有 mutation control 结论不变。最终全量验证见本节后续提交记录。
 
 ### T5 —— 收尾
 
