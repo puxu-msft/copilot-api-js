@@ -531,6 +531,7 @@ function renderReverseNonStreamingV4(c: Context, env: RequestEnvelope, resp: Res
       cache_creation_input_tokens: anthropicUpstream.usage.cache_creation_input_tokens ?? undefined,
     },
     stop_reason: anthropicUpstream.stop_reason ?? undefined,
+    stopDetails: (anthropicUpstream as { stop_details?: unknown }).stop_details,
     content: { role: "assistant" as const, content: anthropicUpstream.content },
     responseText: JSON.stringify(anthropicUpstream),
   }
@@ -538,6 +539,7 @@ function renderReverseNonStreamingV4(c: Context, env: RequestEnvelope, resp: Res
     env.ctx.fail(anthropicUpstream.model, new Error(truncationReason), {
       usage: responseData.usage,
       stop_reason: responseData.stop_reason,
+      stopDetails: responseData.stopDetails,
       content: responseData.content,
     })
   } else {
