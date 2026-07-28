@@ -49,6 +49,11 @@ function extractRootedPaths(markdown: string): Array<string> {
     .map((m) => m.replace(/^[^\w./-]/, "")) // 去掉前导分隔符(正则的非路径首字符)
     .map((p) => p.replace(/[.,;:)、，。]+$/, "")) // 去掉中英句尾标点
     .filter((p) => p !== "src/" && p !== "tests/" && p !== "ui/") // 裸前缀不算
+    // `node_modules/` 下的引用是**安装产物**不是源码。它是 gitignored 的，一个刚 `git worktree add`
+    // 出来的干净树里天然没有，于是这条守卫会稳定报一个与文档正确性无关的死条目——环境性的红最容易
+    // 被当成「既有失败」挥手放过，进而掩盖真的死条目。守卫要盯的是「DESIGN.md 指向了不存在的**源码**」，
+    // 装没装依赖不在它的职责里（同型处置见 CLAUDE.md 的 history-search native 产物 skipIf 约定）。
+    .filter((p) => !p.split("/").includes("node_modules"))
   return [...new Set(cleaned)]
 }
 
