@@ -75,11 +75,18 @@ describe("core → server 边 ratchet", () => {
   })
 
   test("预过滤对转义拼法也放行（原始文本里没有 `~/routes`，AST 解出来却有）", () => {
-    const escaped = 'import "\\x7e/routes/responses/ws"\n'
-    expect(escaped.includes("~/routes"), "前提：这段源码的原始文本确实不含目标子串").toBe(false)
-    expect(allModuleSpecifiers(parseSource("escaped.ts", escaped)), "而 AST 解码后就是那条边").toEqual(["~/routes/responses/ws"])
-    expect(mayContainDecoded(escaped, "~/routes"), "所以预过滤必须放它进 AST，否则守卫在这条路径上是瞎的").toBe(true)
-    // 反向：普通文件仍被挡在 AST 之外，否则这条修复等于取消了预过滤。
+    // 三种拼法，解码后都是同一条边，原始文本都不含目标子串。后两种是 `/\\[ux]/` 版预过滤漏掉的——
+    // 「产生任意字符必须用 hex/unicode 转义」是错的：`\e` 是 identity escape，反斜杠加换行是行接续。
+    for (const [name, escaped] of [
+      ["hex escape", 'import "\\x7e/routes/responses/ws"\n'],
+      ["identity escape", 'import "~/rout\\es/responses/ws"\n'],
+      ["line continuation", 'import "~/rou\\\ntes/responses/ws"\n'],
+    ] as const) {
+      expect(escaped.includes("~/routes"), `${name}：前提是原始文本确实不含目标子串`).toBe(false)
+      expect(allModuleSpecifiers(parseSource("escaped.ts", escaped)), `${name}：AST 解码后就是那条边`).toEqual(["~/routes/responses/ws"])
+      expect(mayContainDecoded(escaped, "~/routes"), `${name}：预过滤必须放它进 AST，否则守卫在这条路径上是瞎的`).toBe(true)
+    }
+    // 反向：不含反斜杠的普通文件仍被挡在 AST 之外，否则这条修复等于取消了预过滤。
     expect(mayContainDecoded("import { a } from './b'\n", "~/routes")).toBe(false)
   })
 })

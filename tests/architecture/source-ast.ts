@@ -26,19 +26,45 @@ export function parseSource(filePath: string, source: string): ts.SourceFile {
  * Cheap pre-filter for the guards that AST-walk a whole tree: may `text` contain `needle` ONCE THE
  * PARSER HAS DECODED IT? Files that answer no can skip the parse.
  *
- * The naive form of this — `text.includes(needle)` — is what two of these guards shipped with, and
- * it is not sound: escapes decode, so `"\x7e/routes/x"` IS `~/routes/x` to the parser and
- * `SEPARATOR_CARRIERS` IS that identifier, while neither raw text contains the needle. Falling
- * through on any `\x`/`\u` restores soundness for the price of parsing the few files that use one —
- * 13 of 421 under `src/` when this was written. That price matters: parsing everything costs ~1.3s
- * in isolation and blows the default 5s timeout under 16-way sharding, and a guard that times out
- * intermittently is one people learn to ignore.
+ * Three tiers, cheapest first, each sound on its own:
+ *
+ *  1. the raw text contains it — parse, nothing to decide;
+ *  2. the raw text has no backslash — skip. Without escapes a string literal's value and an
+ *     identifier's name are VERBATIM substrings of the source, so a decoded-only occurrence needs an
+ *     escape, and every escape needs a backslash;
+ *  3. otherwise LEX it. The scanner decodes literals and identifiers without building an AST, which
+ *     is what makes this affordable.
+ *
+ * The tiers exist because the two cheaper criteria I tried first were both unsound and both looked
+ * finished:
+ *
+ *  - `text.includes(needle)` alone, shipped with a comment claiming it could not miss.
+ *    `"\x7e/routes/x"` IS `~/routes/x` to the parser while the raw text contains neither.
+ *  - then `|| /\\[ux]/`, on the theory that producing an arbitrary character takes a hex or unicode
+ *    escape. It does not: `"~/rout\es"` decodes to `~/routes` because `\e` is an identity escape,
+ *    and a backslash-newline line continuation splices the needle across two lines. Both parse with
+ *    zero diagnostics. The recurring lesson — a filter's soundness is a claim about the LANGUAGE,
+ *    and enumerating the forms you happen to think of does not establish it. Only the lexer knows.
+ *
+ * Measured over `src/lib` (371 files): parse everything 585ms, tier-2 alone 126ms, these three
+ * tiers 27ms. Cost matters because ~1.3s in isolation blows the default 5s timeout under 16-way
+ * sharding, and a guard that times out intermittently is one people learn to ignore.
  *
  * Still invisible: text never spelled as a single token (`obj["SEPARATOR_" + "CARRIERS"]`). That is
  * a limit of the AST criterion the callers apply, not of this filter.
  */
 export function mayContainDecoded(text: string, needle: string): boolean {
-  return text.includes(needle) || /\\[ux]/.test(text)
+  if (text.includes(needle)) return true
+  if (!text.includes("\\")) return false
+
+  const scanner = ts.createScanner(ts.ScriptTarget.Latest, /* skipTrivia */ true, ts.LanguageVariant.JSX, text)
+  for (let token = scanner.scan(); token !== ts.SyntaxKind.EndOfFileToken; token = scanner.scan()) {
+    // `getTokenValue()` is the DECODED text for the kinds that can carry an escape; for anything
+    // else it is the raw token, which tier 1 already ruled out. Checking it unconditionally means a
+    // token kind added to the language later cannot silently fall out of this filter.
+    if (scanner.getTokenValue()?.includes(needle) === true) return true
+  }
+  return false
 }
 
 /**
