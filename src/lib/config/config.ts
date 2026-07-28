@@ -223,8 +223,12 @@ const CLIENT_IDLE_DEADLINE_SEC = 60
 // never approach 60s; the empirical safe ceiling is ~45s (ping@45s kept CC alive), so 40 sits inside it.
 export const KEEPALIVE_CADENCE_MAX = CLIENT_IDLE_DEADLINE_SEC - 20
 // Its physical safety boundary is the pre-header client tolerance, not the post-commit body-idle deadline.
-// Q1 measured real Claude Code 2.1.218 safely waiting 125s before HTTP response headers; this known-safe floor is the current configurable ceiling pending a first-failure measurement (see exp/silence-recovery-gates/FINDINGS.md).
-export const COMMIT_WINDOW_MAX_SEC = 125
+// Q1 measured that limit at ~300s: real Claude Code 2.1.220 aborts a header-less request at 299.7-300.3s,
+// and so does a bare `fetch` with UND_ERR_HEADERS_TIMEOUT — it is undici's default headersTimeout, one
+// layer below anything the SDK or CC configures (exp/silence-recovery-gates/FINDINGS.md). The ceiling keeps
+// a deliberate 60s margin under it: reaching the limit aborts the whole attempt rather than committing, and
+// the limit is a transport default that a dispatcher override or a runtime bump can move.
+export const COMMIT_WINDOW_MAX_SEC = 240
 let warnedKeepaliveClamp = false
 let warnedCommitWindowClamp = false
 

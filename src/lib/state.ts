@@ -432,8 +432,9 @@ export interface State {
    * the window, the real HTTP status is forwarded (the client keeps its native retry/backoff). If the
    * window elapses with the upstream still silent (opus pre-response thinking, empirically ≤~13s but
    * can run longer), the proxy commits a 200 + keepalive and any later error degrades to an SSE frame.
-   * `0` disables (commit immediately at t0). Clamped by `clampCommitWindowSec` to `COMMIT_WINDOW_MAX_SEC`.
-   * Default 20.
+   * `0` disables (commit immediately at t0). Clamped by `clampCommitWindowSec` to `COMMIT_WINDOW_MAX_SEC`,
+   * which sits under the ~300s pre-header limit (undici's default headersTimeout) — nothing is written
+   * before the commit, so the window runs on the same clock as that limit. Default 180.
    */
   readonly streamCommitAfterSec: number
 

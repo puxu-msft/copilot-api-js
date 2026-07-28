@@ -41,6 +41,7 @@ import {
   setBundledConfigForTests,
 } from "~/lib/config/config"
 import { PATHS } from "~/lib/config/paths"
+import { CONFIG_MANAGED_DEFAULTS } from "~/lib/state-defaults"
 import {
   //
   resetConfigManagedState,
@@ -113,18 +114,29 @@ describe("stream commit and keepalive clamps", () => {
     }
   })
 
-  test("commit-window ceiling follows Q1's measured 125-second CC pre-header floor independently of keepalive cadence", async () => {
-    expect(COMMIT_WINDOW_MAX_SEC).toBe(125)
+  test("commit-window ceiling sits under Q1's measured CC pre-header limit, independently of keepalive cadence", async () => {
+    // Q1 measured the pre-header abort at ~300s (undici's default headersTimeout, not any
+    // Anthropic-level timer — exp/silence-recovery-gates/FINDINGS.md). The ceiling keeps a
+    // deliberate margin under it: hitting it aborts the whole attempt.
+    expect(COMMIT_WINDOW_MAX_SEC).toBe(240)
     expect(KEEPALIVE_CADENCE_MAX).toBe(40)
-    expect(clampCommitWindowSec(126)).toBe(COMMIT_WINDOW_MAX_SEC)
+    expect(clampCommitWindowSec(241)).toBe(COMMIT_WINDOW_MAX_SEC)
     expect(clampKeepaliveCadence(50)).toBe(KEEPALIVE_CADENCE_MAX)
 
     await applyYaml(``)
-    expect(state.streamCommitAfterSec).toBe(20)
+    expect(state.streamCommitAfterSec).toBe(180)
 
-    await applyYaml(`anthropic:\n  stream_commit_after_sec: 126\n  stream_keepalive_ping_sec: 50\n`)
+    await applyYaml(`anthropic:\n  stream_commit_after_sec: 241\n  stream_keepalive_ping_sec: 50\n`)
     expect(state.streamCommitAfterSec).toBe(COMMIT_WINDOW_MAX_SEC)
     expect(state.streamKeepalivePingSec).toBe(KEEPALIVE_CADENCE_MAX)
+  })
+
+  test("the default commit window stays clear of the measured pre-header limit", () => {
+    // The window and the limit are on the same clock: the proxy sends nothing until it commits,
+    // so a default at or above the limit would abort every slow request instead of committing.
+    const MEASURED_PRE_HEADER_ABORT_SEC = 300
+    expect(CONFIG_MANAGED_DEFAULTS.streamCommitAfterSec).toBeLessThan(COMMIT_WINDOW_MAX_SEC)
+    expect(COMMIT_WINDOW_MAX_SEC).toBeLessThan(MEASURED_PRE_HEADER_ABORT_SEC)
   })
 })
 

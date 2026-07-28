@@ -621,7 +621,7 @@ tool_choice 对 **CC 2.1.207 无 gap**（CC 客户端自降级）。真缺口是
 
 1. **响应头转发完备**：[response-header-forward.ts](../../src/lib/anthropic/header-policy/response-header-forward.ts) 显式为**把 `request-id` / `anthropic-ratelimit-*` / `anthropic-organization-id` 等上游头转发给客户端**而存在，双模式（strict=false 黑名单转发全部除 blacklist / strict=true 白名单）。→ **若 GHC 发限流头，本项目会转发给 CC**。无 gap。
 2. **429/529 服务端吞噬**：adaptive rate-limiter 在队列里吸收 429（[http-transport.ts:10](../../src/lib/transport/http-transport.ts#L10)「429 absorbed in its queue」），`executeWithAdaptiveRateLimit` 包裹上游 send（在 `runRequest` 内）；退避计入 `queueWaitMs`。CC 通常**看不到 429**（代理自己退避）。
-3. **delayed-commit keepalive 覆盖队列等待**：handler 的 commit 计时器（`streamCommitAfterSec` 默认 20s，[handler-v4.ts:461-469](../../src/routes/messages/handler-v4.ts#L461)）与 `runRequest`（含 rate-limiter 队列 + 429 吞噬 + 退避）**赛跑**——20s 上游仍静默即 commit 200 + 起 keepalive → **覆盖限流队列等待** → CC 的 60s byte-idle 不撞（keepalive < 60s）、300s no-real-content 被空 delta 重置。
+3. **delayed-commit keepalive 覆盖队列等待**（⚠ **默认值 2026-07-28 已由 20s 改为 180s**，本条的「20s」按 180s 重读；上限来自实测 ~300s pre-header 限，见 `exp/silence-recovery-gates/FINDINGS.md`）：handler 的 commit 计时器（`streamCommitAfterSec` 默认 20s，[handler-v4.ts:461-469](../../src/routes/messages/handler-v4.ts#L461)）与 `runRequest`（含 rate-limiter 队列 + 429 吞噬 + 退避）**赛跑**——20s 上游仍静默即 commit 200 + 起 keepalive → **覆盖限流队列等待** → CC 的 60s byte-idle 不撞（keepalive < 60s）、300s no-real-content 被空 delta 重置。
 
 ### F22（LOW/主要确认）— 限流/重试链路已妥善；两点记档
 

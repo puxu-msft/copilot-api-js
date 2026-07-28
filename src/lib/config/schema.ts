@@ -695,8 +695,10 @@ export const AnthropicConfigSchema = z
      * Delayed-commit window (seconds) for streaming Anthropic requests. The proxy waits up to this
      * long for runRequest to settle before opening the 200 SSE stream — an upstream error within the
      * window keeps its real HTTP status (client retries natively); a stall past it commits 200 +
-     * keepalive. `0` commits immediately. Default 20. Clamped to 125s: Q1 measured real Claude Code
-     * 2.1.218 successfully wait 125s before HTTP response headers; see exp/silence-recovery-gates/FINDINGS.md.
+     * keepalive. `0` commits immediately. Default 180. Clamped to 240s, keeping a margin under the
+     * ~300s pre-header limit measured in exp/silence-recovery-gates/FINDINGS.md (undici's default
+     * headersTimeout, below anything the SDK or CC configures). Nothing is sent before the commit, so
+     * this window and that limit share one clock — reaching the limit aborts the attempt.
      */
     stream_commit_after_sec: nullableNonnegativeInt(),
     /**
