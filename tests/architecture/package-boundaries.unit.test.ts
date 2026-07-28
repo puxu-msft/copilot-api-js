@@ -30,6 +30,16 @@ import {
 
 const repoRoot = path.resolve(import.meta.dir, "../..")
 
+/**
+ * Every module extension these trees can legally contain — not just `.ts`.
+ *
+ * A `.mts` file is a first-class TypeScript module: `tsc` compiles it and a `.ts` file reaches it by
+ * a `./x.mjs` specifier. A `.ts`-only scan opens none of them, so a boundary violation parked in one
+ * is invisible while the guard reports the tree clean. The `.js` family is here for the same reason
+ * (`allowJs` is on) and costs nothing while these trees contain none.
+ */
+const SOURCE_EXTENSIONS = [".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs"]
+
 async function sourceFiles(root: string): Promise<Array<string>> {
   const entries = await readdir(root, { withFileTypes: true })
   const nested = await Promise.all(
@@ -37,7 +47,7 @@ async function sourceFiles(root: string): Promise<Array<string>> {
       const resolved = path.join(root, entry.name)
       return (
         entry.isDirectory() ? sourceFiles(resolved)
-        : entry.isFile() && entry.name.endsWith(".ts") ? [resolved]
+        : entry.isFile() && SOURCE_EXTENSIONS.some((extension) => entry.name.endsWith(extension)) ? [resolved]
         : []
       )
     }),
@@ -259,7 +269,7 @@ describe("state unit: only language/system builtins", () => {
       await stateUnitClosureViolations(),
       "state 单元的立身之本就是「只依赖语言/系统内置」。注意判据是**闭包**且**解析后**的位置——只查三个入口文件的直接 specifier，或把「以点开头」当成「包内」，都是更弱的另一个命题。",
     ).toEqual([])
-  })
+  }, 30_000)
 
   test("闭包确实包含被传递依赖的文件（否则「零违规」只说明扫描没走到）", async () => {
     // `state.ts` → `./ghc-model-types`。第一版守卫漏的正是这个节点，而它零违规地绿着。

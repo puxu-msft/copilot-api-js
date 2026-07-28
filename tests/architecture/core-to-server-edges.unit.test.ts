@@ -37,6 +37,15 @@ import {
 const REPO_ROOT = path.resolve(import.meta.dir, "../..")
 
 /**
+ * These two assertions parse all of `src/lib`. Alone that is ~1.3s; under the 16-way sharded tier it
+ * measured 4.0–4.5s against a 5s default, i.e. a slower machine turns an architecture guard into an
+ * intermittent red that says nothing about architecture. The budget is explicit so the failure mode
+ * is "the guard is slow" rather than "the guard is flaky" — and so nobody is tempted to buy the time
+ * back with a substring pre-filter, which is what was wrong here twice.
+ */
+const SCAN_TIMEOUT_MS = 30_000
+
+/**
  * The surviving inverted edges, newest information first. Removing one is the POINT — delete its row
  * when phase 1 lands it. Adding one is a regression; break the dependency instead, usually by
  * inverting it (the routes side passes the value down) rather than by widening this list.
@@ -74,7 +83,7 @@ async function scanCoreLib(): Promise<{ edges: Array<{ file: string; specifier: 
   const edges: Array<{ file: string; specifier: string }> = []
   const opaque: Array<{ file: string; call: string }> = []
 
-  for await (const rel of new Glob("**/*.ts").scan({ cwd: path.join(REPO_ROOT, "src/lib"), onlyFiles: true })) {
+  for await (const rel of new Glob("**/*.{ts,tsx,mts,cts,js,jsx,mjs,cjs}").scan({ cwd: path.join(REPO_ROOT, "src/lib"), onlyFiles: true })) {
     const file = `src/lib/${rel}`
     const sourceFile = parseSource(file, readFileSync(path.join(REPO_ROOT, file), "utf8"))
 
@@ -100,7 +109,7 @@ describe("core → server 边 ratchet", () => {
       (await coreLib()).edges,
       "多出来的边 = core 又依赖了 HTTP 层，spec §7.2 阶段 1 正在专门消除这类边；\n" + "少掉的边 = 阶段 1 落地了一条，把对应行删掉。",
     ).toEqual(expected)
-  })
+  }, SCAN_TIMEOUT_MS)
 
   test("守卫有效性：植入一条合成边会被抓到（否则「零新增」只证明了扫描没跑到）", () => {
     const planted = parseSource("synthetic.ts", 'import {\n  //\n  a,\n} from "~/routes/responses/ws"\n')
@@ -121,7 +130,7 @@ describe("core → server 边 ratchet", () => {
         "所以「没有新增 ~/routes 边」这句话对那个文件并不成立。确认它不可能指向 routes 层后登记，\n" +
         "或者把目标改成静态 specifier。",
     ).toEqual(expected)
-  })
+  }, SCAN_TIMEOUT_MS)
 
   test("守卫有效性：合成的不可判定目标会被抓到", () => {
     // 报的是 CallExpression 本身，不含外层 `await`——登记表里的项也按这个形状写。

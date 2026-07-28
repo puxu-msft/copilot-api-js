@@ -190,7 +190,12 @@ describe("createRequire 造出的 loader", () => {
     ["具名 import 改名", 'import { createRequire as mint } from "node:module"\nconst load = mint(import.meta.url)\nvoid load("consola")\n'],
     ["namespace import", 'import * as nodeModule from "node:module"\nconst load = nodeModule.createRequire(import.meta.url)\nvoid load("consola")\n'],
     ["default import", 'import nodeModule from "node:module"\nconst load = nodeModule.createRequire(import.meta.url)\nvoid load("consola")\n'],
+    ["default as 改名", 'import { default as nodeModule } from "node:module"\nconst load = nodeModule.createRequire(import.meta.url)\nvoid load("consola")\n'],
     ["无 node: 前缀", 'import { createRequire } from "module"\nconst load = createRequire(import.meta.url)\nvoid load("consola")\n'],
+    ["动态 import 解构", 'const { createRequire } = await import("node:module")\nconst load = createRequire(import.meta.url)\nvoid load("consola")\n'],
+    ["动态 import 解构 + 改名", 'const { createRequire: mint } = await import("node:module")\nconst load = mint(import.meta.url)\nvoid load("consola")\n'],
+    ["require 解构", 'const { createRequire } = require("node:module")\nconst load = createRequire(import.meta.url)\nvoid load("consola")\n'],
+    ["整个 module 对象经动态 import", 'const nodeModule = await import("node:module")\nconst load = nodeModule.createRequire(import.meta.url)\nvoid load("consola")\n'],
   ])("%s 同样追得到", (_name, source) => {
     expect(allModuleSpecifiers(parseSource("p.ts", source))).toContain("consola")
   })
@@ -203,14 +208,29 @@ describe("createRequire 造出的 loader", () => {
     ["局部 const", "const require = (name: string): string => name\nvoid require(someVar)\n"],
     ["函数声明", "function require(name: string): string {\n  return name\n}\nvoid require(someVar)\n"],
     ["形参", "function f(require: (n: string) => void): void {\n  require(someVar)\n}\n"],
+    ["解构绑定", "const { require } = deps\nvoid require(someVar)\n"],
+    ["catch 参数", "try {\n  noop()\n} catch (require) {\n  void require(someVar)\n}\n"],
   ])("被本地遮蔽的 require 不是 loader：%s", (_name, source) => {
     // 否则任何恰好叫 require 的普通局部函数都会被确定性误报成动态加载。
     expect(opaqueModuleReferences(parseSource("p.ts", source))).toEqual([])
     expect(allModuleSpecifiers(parseSource("p.ts", source))).toEqual([])
   })
 
+  test("遮蔽是**按词法作用域**的：内层的同名参数不得关掉外层的 ambient require", () => {
+    // 曾经的实现问「这个文件里有没有声明过 require」，那不是任何一个调用点的问题：一个嵌套 helper
+    // 的参数就能把整份文件的 ambient require 关掉，两行之外真正的 require("~/routes/…") 随即
+    // 从 core ratchet 底下走过去，全套件绿。
+    const source = 'function helper(require: (n: string) => void): void {\n  require("innocent")\n}\nconst m = require("~/routes/responses/ws")\n'
+    expect(allModuleSpecifiers(parseSource("p.ts", source)), "内层那次不算加载，外层那次算").toEqual(["~/routes/responses/ws"])
+  })
+
   test("遮蔽的名字若来自 createRequire，照样是 loader（遮蔽豁免不能变成后门）", () => {
     const source = 'import { createRequire } from "node:module"\nconst require = createRequire(import.meta.url)\nvoid require(target)\n'
     expect(opaqueModuleReferences(parseSource("p.ts", source))).toEqual(["require(target)"])
+  })
+
+  test("`module` 之外的模块解构出同名函数不算 loader（判据是来源，不是名字）", () => {
+    const source = 'const { createRequire } = await import("./my-helpers")\nconst load = createRequire(import.meta.url)\nvoid load("consola")\n'
+    expect(allModuleSpecifiers(parseSource("p.ts", source)), "只应看到那条真实的相对 import").toEqual(["./my-helpers"])
   })
 })
