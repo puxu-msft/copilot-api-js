@@ -1001,6 +1001,18 @@ export function createRequestContext(opts: {
     reapInFlight() {
       lifecycleAbort.abort(cancellationAbortError("stale-reaper", "Request cancelled by the stale-request reaper"))
     },
+    /**
+     * TEST-ONLY: abort the lifecycle WITHOUT a cause tag — i.e. impersonate a producer that skipped
+     * the `cancellationAbortError` contract.
+     *
+     * No production path does this any more, which is exactly why the seam exists: the boundaries
+     * answer `unknown-cancel` / `unknown-abort` for it and the gap counter records it, and the only
+     * way to test that is to be the bad producer on purpose. A test that instead aborted a bare
+     * controller of its own would prove nothing about how OUR context behaves.
+     */
+    abortLifecycleUntaggedForTests() {
+      lifecycleAbort.abort()
+    },
     // ─── C5 operation lifecycle (RFC §3.3) — NEW API, no production callers yet ───
     // `operationSignal` is the per-request cancel signal (reaper/deadline/cancel all abort
     // lifecycleAbort). Consumers that also need client-abort/shutdown combine them at the call

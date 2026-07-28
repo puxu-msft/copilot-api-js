@@ -29,6 +29,12 @@ import { REQUEST_DEADLINE_CANCEL_REASON } from "~/lib/error/cancellation-reason"
 import { getAbortProvenanceGapCounts } from "~/lib/observability/abort-provenance-gaps"
 import {
   //
+  resetUpstreamWsManagerForTests,
+  setUpstreamWsConnectionFactoryForTests,
+} from "~/lib/openai/upstream-ws"
+import {
+  //
+  setDisabledModels,
   setModels,
   setStateForTests,
 } from "~/lib/state"
@@ -82,6 +88,53 @@ async function cancelMidStreamAndReadWire(request: () => Promise<Response> | Res
   } finally {
     restore()
   }
+}
+
+/** A Responses WS connection that yields one event, then fails the way a contract-skipping producer would. */
+function wsConnectionThenUnknownCancel(): never {
+  let open = false
+  return {
+    connect: () => {
+      open = true
+      return Promise.resolve()
+    },
+    sendRequest: () =>
+      (async function* (): AsyncGenerator<Record<string, unknown>> {
+        // A WELL-FORMED first event: a stub without `response` makes the accumulator throw first,
+        // and the test then observes that error instead of the one it is about (cost me a probe).
+        yield {
+          type: "response.created",
+          sequence_number: 0,
+          response: {
+            id: "resp_ws",
+            object: "response",
+            created_at: 1,
+            status: "in_progress",
+            model: "gpt-resp",
+            output: [],
+            usage: null,
+            tools: [],
+            tool_choice: "auto",
+            parallel_tool_calls: false,
+            store: false,
+          },
+        }
+        throw new StreamUnknownCancelError()
+      })(),
+    get isOpen() {
+      return open
+    },
+    get isBusy() {
+      return false
+    },
+    statefulMarker: undefined,
+    model: "gpt-resp",
+    conversationId: undefined,
+    handshakeHeaders: {},
+    rescheduleIdleTimeout: () => {},
+    close: () => {},
+    dispose: () => Promise.resolve(),
+  } as never
 }
 
 const CC_FIRST_FRAME = 'data: {"id":"c1","object":"chat.completion.chunk","created":1,"model":"gpt-4o","choices":[{"index":0,"delta":{"content":"hi"}}]}\n\n'
@@ -289,6 +342,109 @@ describe("abort-provenance gaps are counted for every real transport", () => {
       }),
     )
 
+    expect(getAbortProvenanceGapCounts()).toEqual([])
+  })
+
+  test("the Responses upstream-WEBSOCKET leg counts too — the leg the old funnel missed entirely", async () => {
+    // The direct regression guard for this round: this leg returns its own dispatch lifecycle and
+    // never wraps its generator, so a funnel placed in the transport layer read a deterministic
+    // zero for it while every other test stayed green.
+    setStateForTests({ upstreamWebSocket: true })
+    setDisabledModels([])
+    setModels({ object: "list", data: [mockModel("gpt-resp", { vendor: "OpenAI", supported_endpoints: ["/responses", "ws:/responses"] })] })
+    setUpstreamWsConnectionFactoryForTests(() => wsConnectionThenUnknownCancel())
+    try {
+      await (
+        await app.request("/responses", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ model: "gpt-resp", input: "hi", stream: true }),
+        })
+      ).text()
+
+      expect(getAbortProvenanceGapCounts()).toEqual([{ phase: "post-header", surface: "openai-responses", count: 1 }])
+    } finally {
+      setUpstreamWsConnectionFactoryForTests(null)
+      resetUpstreamWsManagerForTests()
+    }
+  })
+})
+
+/**
+ * The delayed-commit cell of the counter — the one phase whose recording lives in the handler
+ * rather than the driver, so nothing else covers it.
+ */
+describe("delayed-commit gaps are counted, and only when the cause really is unknown", () => {
+  useIsolatedRuntime()
+
+  beforeEach(() => {
+    setStateForTests({ copilotToken: "test-token", responseHeaderTimeout: 0, streamCommitAfterSec: 0, streamKeepalivePingSec: 0 })
+    setModels({ object: "list", data: [mockModel("claude-sonnet-4.5", { vendor: "Anthropic", supported_endpoints: ["/v1/messages"] })] })
+  })
+
+  /** Upstream never sends response headers; it fails with whatever `reject` produces. */
+  function silentUpstreamFailingWith(reject: () => Error): void {
+    applyFetchMock(
+      mock(
+        (_input, init) =>
+          new Promise<Response>((_resolve, rejectFetch) => {
+            const signal = (init as { signal?: AbortSignal } | undefined)?.signal
+            const fail = (): void => rejectFetch(reject())
+            if (signal?.aborted) return fail()
+            signal?.addEventListener("abort", fail, { once: true })
+          }),
+      ),
+    )
+  }
+
+  async function postDelayedCommit(): Promise<string> {
+    const { contexts, restore } = captureContexts()
+    try {
+      const response = await app.request("/v1/messages", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ model: "claude-sonnet-4.5", max_tokens: 16, stream: true, messages: [{ role: "user", content: "hi" }] }),
+      })
+      await tick()
+      contexts.at(-1)?.cancel(REQUEST_DEADLINE_CANCEL_REASON)
+      return await response.text()
+    } finally {
+      restore()
+    }
+  }
+
+  test("an abort with no recorded cause counts, and says so on the wire", async () => {
+    // The transport discards the reason and throws a bare AbortError, and the lifecycle signal's
+    // own reason is stripped too — i.e. a producer that skipped the contract.
+    silentUpstreamFailingWith(() => {
+      const e = new Error("The operation was aborted.")
+      e.name = "AbortError"
+      return e
+    })
+    const { contexts, restore } = captureContexts()
+    let wire: string
+    try {
+      const response = await app.request("/v1/messages", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ model: "claude-sonnet-4.5", max_tokens: 16, stream: true, messages: [{ role: "user", content: "hi" }] }),
+      })
+      await tick()
+      contexts.at(-1)?.abortLifecycleUntaggedForTests()
+      wire = await response.text()
+    } finally {
+      restore()
+    }
+
+    expect(wire).toContain("no cause recorded")
+    expect(getAbortProvenanceGapCounts()).toEqual([{ phase: "delayed-commit", surface: "anthropic", count: 1 }])
+  })
+
+  test("NEGATIVE: a tagged hard deadline in the same window counts nothing", async () => {
+    silentUpstreamFailingWith(() => new Error("upstream gone"))
+    const wire = await postDelayedCommit()
+
+    expect(wire).toContain("hard deadline")
     expect(getAbortProvenanceGapCounts()).toEqual([])
   })
 })
