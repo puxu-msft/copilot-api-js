@@ -4,7 +4,11 @@ import {
   test,
 } from "bun:test"
 
-import type { ClientFrame, ClientSink } from "~/lib/pipeline/types"
+import type {
+  //
+  ClientFrame,
+  ClientSink,
+} from "~/lib/pipeline/types"
 
 import {
   //

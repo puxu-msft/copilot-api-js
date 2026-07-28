@@ -4,7 +4,11 @@ import {
   test,
 } from "bun:test"
 
-import type { ClientFrame, ClientSink } from "~/lib/pipeline/types"
+import type {
+  //
+  ClientFrame,
+  ClientSink,
+} from "~/lib/pipeline/types"
 
 import {
   //
@@ -105,10 +109,7 @@ test("a visible first frame is never rolled back when the second frame fails", a
   const { wireState, delivery, port } = setup(sink)
 
   expect(
-    await port.allocateAndWriteAnchor(({ wireIndex, envelope }) => [
-      envelope.anchor(anchorStart(wireIndex)),
-      envelope.keepalive(anchorDelta(wireIndex)),
-    ]),
+    await port.allocateAndWriteAnchor(({ wireIndex, envelope }) => [envelope.anchor(anchorStart(wireIndex)), envelope.keepalive(anchorDelta(wireIndex))]),
   ).toBeUndefined()
 
   expect(attempts.map((frame) => JSON.parse(frame.data as string).type)).toEqual(["content_block_start", "content_block_delta"])

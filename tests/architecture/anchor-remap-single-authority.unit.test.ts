@@ -121,7 +121,7 @@ test("production allocation is owned only by keepalive allocator internals and d
 })
 
 test("detectors bite on a second allocator creator and a second legacy provenance boundary", () => {
-  expect('const second = createGenerationWireIndexAllocator()'.match(/createGenerationWireIndexAllocator\s*\(/g)).toHaveLength(1)
+  expect("const second = createGenerationWireIndexAllocator()".match(/createGenerationWireIndexAllocator\s*\(/g)).toHaveLength(1)
   expect('candidateId: "legacy", dispatchId: "legacy"'.match(/"legacy"/g)).toHaveLength(2)
 })
 
