@@ -1,5 +1,11 @@
 # Plan-3: B2-P4～P6 —— fresh-dispatch splice 执行器 + handler 接线 + 协议级回归矩阵
 
+> **⚠ 底座已漂移（2026-07-28），接线前必读**：本文档写于 2026-07-23。此后 master 前进 128 提交，**重写了 delivery/heartbeat 生命周期**（`freezeHeartbeat` 语义、close-before-terminal-drain、心跳跨 block-level commit 存活）并把 delayed-commit 窗口**从 handler timer 重构成 ingress-relative deadline**（默认 180s / ceiling 240s）。**本文档引用的 `file:line` 与 handler-v4/driver 接线点假设多半已过时**——动手前逐个重读现状，与本文冲突时**以代码为准**并在报告里写清差异（Task 0.5 已按此处理，其偏离与理由就地记在 plan-2 对应小节）。
+>
+> **已就位的三件地基**（plan-2 已完成、零接线）：`coordinator.runRecoveryFromPreReadyFailure`、delivery-level `hasDeliveredSemanticContent`（读 `hasEmittedRealClientContent`，**非** `boundary.result`）、`recovery-sink-supervisor`（`settleFinal()` 是幂等 `Promise<void>`，须放进 owner 的 `finally`）。**接线时一并解决**：backlog 的 `afterHook`-vs-`preflight` env seam、`_reason` 透传、`ClientSink.finalize` 类型声明 `void` 但实际返回 Promise、`makeReconcilingSink` 未继承 delivery identity（默认 live 路径上 hedge 胜者写因此丢 winner 断言与 candidateId 归属）。
+>
+> **范围裁定（用户硬约束 never-false-kill）**：B2 **排除** `timeout(header-wait)` / `reaper-cancel`，只在确定性上游死亡（RST / transport-close / clean-EOF）触发——详见下方 Task 4.3 与 README 的用户裁决记录。
+>
 > **依赖：** Plan-2（P0-P3）全部完成。**这是全计划最难的部分**——三 keepalive 模式的 wire contract 分支逻辑 + handler-v4.ts 的精确挂载点。
 
 ## 背景：挂载点精确定位（代码实证）

@@ -1,6 +1,10 @@
 # Plan-2: B2-P0～P3 —— 机制地基（server-tool gate 复用点 / 配置骨架 / semantic-content gate / sink lifetime supervisor）
 
-> **依赖：** 无（可与 B1 并行）。**前置阅读：** spec §4/§6.1 + FINDINGS.md 全文（尤其"B2 必须新建"的 5 件机件列表）。
+> **实施状态（2026-07-28）：Task 0.1 / 0.2 / 0.3 / 0.4 / 0.5 / 0.7 已完成，剩 Task 0.6。** 全部**零生产接线**（P4/P5 才接），每个 Task 都过了异模型 review。逐 Task 的实施状态注解写在各自小节内（含与本文档原始设计的偏离及理由）——**接手时以那些注解 + 当前代码为准**，本文档正文写于底座重写之前。
+>
+> ⚠ **底座已漂移**：master 在本 plan 撰写后重写了 delivery/heartbeat 生命周期（`freezeHeartbeat` 语义、close-before-terminal-drain）并把 commit 窗口重构成 ingress-relative deadline。**Task 0.6 与 plan-3 接线前必须重读现状**，本文档的 `file:line` 可能已漂移。
+>
+> **依赖：** 无（可与 B1 并行；B1 已由主线自行落地、无需再做）。**前置阅读：** spec §4/§6.1 + FINDINGS.md 全文（尤其"B2 必须新建"的 5 件机件列表）。
 >
 > **⚠️ 本阶段是全计划技术难度最高的部分。** 以下设计基于对 `driver.ts` / `coordinator.ts` / `candidate.ts` / `dispatch-scheduler.ts` / `hedge-policy.ts` / `boundary-classifier.ts` 的实证阅读（非猜测），但**部分接线细节需在 TDD 执行期用测试验证**（例如 History `completeCandidate`/`selectGenerationWinner` 的确切调用时机与生产代码里其它 recovery 路径的对照）——凡标注「验证」的地方，实现者必须先读对应源码确认再落地，不能凭本文档假设直接写。
 
