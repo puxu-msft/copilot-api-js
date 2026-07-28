@@ -407,3 +407,10 @@ rg -n 'state.*(core|reader)|core.*state|state-read|reader.*state|src/lib/state' 
 ### 最终 verdict
 
 **当前仍不建议直接交给新会话执行。** 主要未闭合项是 S4 AST oracle 仍丢失调用点身份，存在交换实参后假绿；另有 KICKOFF 的旧 grep gate 未同步。修复方式都很局部：S4 snapshot 加 `file + call ordinal` 键，KICKOFF 改指 AST 枚举；同时把两节点环方案明确推荐 (b) 并补“11 个直接类型 + 传递类型闭包”说明。完成后即可交接执行，无需再重做主体调研。
+
+
+## 第四轮：收尾确认
+
+S4 的 keyed AST snapshot 与 §3.7/KICKOFF 的 AST gate 均已解决；S5 的 `state-vocabulary.ts` 方案也正确吸收 11 个直接类型及其传递闭包，并保留不会造回边的 type re-export。**唯一未同步项**：`KICKOFF.md:53` 仍写该环“S1–S5 碰不到、S6 有两个正当选项”，与 HANDOVER 已改为“S5 拆环、S6 推荐回 S5”的最终路线冲突。
+
+**最终 verdict：修正 KICKOFF.md:53 后即可交给新会话执行；当前这一个入口级矛盾修正前，仍不建议交接。**
