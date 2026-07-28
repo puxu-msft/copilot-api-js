@@ -242,6 +242,10 @@ rg -n 'from "' src/lib/state.ts src/lib/state-defaults.ts
 ## 4. 执行步骤（每步带验收 oracle 与证伪方式）
 
 > 通用不变量（每 commit）：typecheck 绿 + `bun scripts/parallel-test.ts unit it http` 绿 + 精确 pathspec lint 绿 + SCC ratchet 只减不增。
+>
+> **出边 ratchet 是 S3–S6 的主驱动件**：`tests/architecture/state-out-edges.unit.test.ts` 把 §3.7 那张表变成了可执行登记册——每条边写明由哪一步消除，**加边会红、减边也会红**（减边红是故意的：逼你做完一步后回来删行、看剩下什么）。**§3.7 从此只是叙事，机器真相以该文件为准。** S6 的入口判据就是它里面那两张表只剩 `node:` 与相对路径。
+>
+> ⚠️ **本机全档有低速率环境性 flake，别误判成自己的回归**：基线（`a675064e`）连跑 18 次全档零时序 flake，本分支连跑 24 次出现 3 次、每次咬的是**不同**的测试（SIGINT 关机 freeze / h2 keepalive ping 节拍 / `.tmp.*` 孤儿清理）——三条互不相关且都是墙钟时序/文件系统测试。真回归会**稳定咬同一条**。怀疑时重跑几次并看是否同一条。
 > **SCC 数字一律 `computeCircularSnapshot()` 实测，禁止从 baseline 环列表推算**（推算会高估，见 §6 第 1 条）。
 
 ### S1 — 把 `state-defaults` 的三类默认值常量挪进零依赖叶子
@@ -264,7 +268,16 @@ rg -n 'from "' src/lib/state.ts src/lib/state-defaults.ts
 ### S2 — models 逻辑回 models 域
 
 - **做什么**：§3.5 ③-a 的 8 个符号 + `rawModels` 模块变量迁往 `src/lib/models/`（建议 `models/cache.ts`）；**106 个直接 import 文件全部改指新家**（4 production + 102 tests——**不是 4 个**，见 §3.5 的口径表；其中 `applyDisabledFilter` 与 `rawModels` 是模块私有、零外部消费者）。`state.ts` 对 `normalizeForMatching` 的 import 随之删除。
-- **保留在 state 的**：`models` / `modelIndex` / `modelIds` / `disabledModels` **字段本身**（它们是状态），只是操作它们的逻辑搬走——通过既有的 `updateState` 写入口。
+- ✅ **已落地**（提交 `3d783f70`）。**但拆分线不在原计划画的位置**——见下面那条 ⚠️。守卫：`tests/architecture/state-out-edges.unit.test.ts`（出边 ratchet，见下）+ `tests/models/cache-ordering.unit.test.ts`（顺序与 seam）。105 个文件由 AST codemod 改指，残留检查**先用合成正样本（别名 import、多行 re-export）证明它咬得住**再信「零命中」。
+- ⚠️ **原计划漏了一个拓扑事实：`state.ts` 自己也在调这些逻辑，共两处**，所以「把 8 个符号整体搬走」即使不留 re-export 也照样会造出那个两节点环。原计划只考虑了「测试从 state import」这一侧。两处分别是：
+  1. `setStateForTests` 在 patch 含 `models` 时调 `rebuildModelIndex()`；
+  2. `resetConfigManagedState()` 调 `setDisabledModels()`（它必须像另外 18 个 config-managed 域一样把禁用列表复位，而复位**必须重新过滤**）。
+- **实际拆分线（与原计划的差异，别按原文验收）**：
+  - **留在 state**：`rebuildModelIndex`（对自己字段的**纯派生**，`new Map(data.map(m => [m.id, m]))` 不含任何 models 知识）、`setDisabledModels`（降级成**普通字段 setter**，属用户批准的「简单 setter 留在 state」）、新增 `setFilteredModels`（窄写入口）。
+  - **搬去 `src/lib/models/cache.ts`**：`rawModels`、`applyDisabledFilter`、`getRawModels`、`getConfigDisabledIds`、`resetRawModelsForTests`、`setModels`，外加新的 `refreshCatalogView()`。
+  - **重新过滤的触发点上移到 config 层**：`applyConfigToState()` 结尾**无条件**调一次 `refreshCatalogView()`。这一条同时覆盖两条路径——`disabled_models` 是 retain-on-absence（键缺失时 apply 分支不触发）、PUT /api/config 会先 `resetConfigManagedState()` 再 apply。
+  - **`cacheModels` 从 `client.ts` 搬进 `cache.ts`**：SCC ratchet 抓到 `models/cache ↔ models/client` 两节点新环——`client.ts` 反手 import cache 去存自己的结果。存储本就是 cache 的职责，依赖改成单向。
+- **保留在 state 的字段**：`models` / `modelIndex` / `modelIds` / `disabledModels` **字段本身**（它们是状态）。
 - **⚠️ 两个特殊消费者，别漏**：`tests/helpers/isolated-fixture.ts` 的 `RESETTERS` 表从 `~/lib/state` 取 `resetRawModelsForTests`；`tests/infra/resetters-complete.unit.test.ts` 是个**完备性守卫**，它按名字枚举 `src/` 与 `packages/*/src/` 下所有 `*ForTest(s|ing)` 导出并要求每个都注册或豁免——符号换文件后 import 路径不同步，它会以一种不直观的方式红。
 - **⚠️ 批量改测试 import 是【已批准】的，不是权宜之计**：项目 CLAUDE.md 的「无向后兼容负担」明确允许强制迁移旧→新。别因为要动一百个文件就怀疑路线走错了。
 - **⚠️ 唯一的"零改动"逃生口在本步【不可用】，而且原因不是纪律而是拓扑**：在 `state.ts` 里加 `export { setModels } from "~/lib/models/cache"` 看似能让 101 个测试免改——但 `models/cache.ts` **必须** import state（字段留在 state），于是 `state.ts → models/cache.ts → state.ts` 立刻是个**两节点环**，正是本任务要消灭的东西。S4 用「反转成注册表」换来了大批测试零改动，**S2 没有对应机制**——这是两步的实质差别，别把 S4 的经验套过来。
