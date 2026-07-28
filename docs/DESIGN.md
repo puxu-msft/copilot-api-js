@@ -199,14 +199,28 @@ module-global `BUILTIN_REQUEST_REWRITES`/`BUILTIN_RESPONSE_REWRITES` **故意为
 
 ```
 ui/
-├── package.json       # 前端自有依赖与脚本（private bun workspace 成员）
-├── src/types/         # 类型定义（re-export 自 ~backend/lib/history/store）
+├── package.json       # 前端自有依赖与脚本（独立包，**非** workspace 成员）
+├── bun.lock           # 自有 lockfile（`cd ui && bun install`）
+├── src/types/         # 类型定义（re-export 自 ~backend/lib/history/types）
 └── tests/             # 前端测试（bun test）
 ```
 
 路径别名：后端 `~/*` → `src/*`，前端 `@/*` → `ui/src/*`，前端引用后端 `~backend/*` → `../src/*`。
 前端类型统一从后端 re-export，不重复定义。
-前端依赖与脚本由 **`ui/package.json` 自有**（bun workspace 成员，根 `package.json` 声明 `workspaces:["ui"]`、单一根 `bun.lock` hoist）：FE 运行时 + `vite`/`vitest`/`vue-tsc`/`@playwright/test` 等构建测试 devDeps 都在 ui 下，ui 拥有自己的 `build`/`dev`/`typecheck`/`test`/`test:e2e` 脚本（cwd=ui，配置经 `import.meta.dirname` 自寻）。根脚本经 `bun run --filter copilot-api-ui <script>` 委派（`build:ui`/`dev:ui`/`typecheck:ui`/`test:ui`/`test:e2e-ui` 入口名不变）——但根 `build` 不再链 `build:ui`/`build:ui-v4`（2026-07-22 UI 外置：主服务器不再服务/构建任何 UI，运维单独 `bun run --filter <workspace> build` 后自托管，见 README「Hosting the Web UI」）。仓库级 dev 工具（`typescript`/`eslint` 及 FE eslint 插件/`tsdown`）仍在根——lint 是全树单一关注点；`playwright`/`lint-staged` 不在根（前者随 UI e2e 迁入 `ui/` devDep，后者 2026-06-29 已整体移除）。`~backend` 跨引用不变（vite alias 解析后端纯函数源码，无需 workspace 依赖声明）。
+
+**`ui/`（旧 Vue）与 `ui-v4/`（活的 React）接线方式不同**——2026-07-28 起 `ui/` 已整体脱离主编译链，见下表。`ui-v4/` 仍是 bun workspace 成员（根 `workspaces` 声明、单一根 `bun.lock` hoist、根脚本经 `bun run --filter copilot-api-ui-v4 <script>` 委派、被根 `eslint .` 覆盖）。
+
+| 链路 | `ui-v4/`（活） | `ui/`（旧 Vue，退役中） |
+|---|---|---|
+| 依赖安装 | 根 workspace 成员，根 `bun install` 一并装 | **独立包**，须 `cd ui && bun install`（自有 `ui/bun.lock`） |
+| 根脚本委派 | `bun run --filter copilot-api-ui-v4 …` | `cd ui && bun run …`（filter 已不能解析） |
+| root `eslint .` | 覆盖（含 react-hooks/jsx-a11y 块） | **不覆盖**（`ui/**` 整体 ignore、不再 lint） |
+| 根 tsconfig | 不在 `include`（自有 tsconfig） | 不在 `include`（自有 tsconfig） |
+| 根 `build` / 测试档位 | 不链、不聚合（显式 `build:ui-v4`/`test:ui-v4`） | 不链、不聚合（显式 `build:ui`/`test:ui`） |
+
+两者的 FE 运行时 + `vite`/`vitest`/`vue-tsc`/`@playwright/test` 等构建测试 devDeps 都在各自 package.json 下，各自拥有 `build`/`dev`/`typecheck`/`test`/`test:e2e` 脚本（cwd=自身，配置经 `import.meta.dirname` 自寻）。根 `build` 不链任何 UI（2026-07-22 UI 外置：主服务器不再服务/构建任何 UI，运维单独构建后自托管，见 README「Hosting the Web UI」）。仓库级 dev 工具（`typescript`/`eslint`/`tsdown`）仍在根；FE eslint 插件只剩 React 侧（Vue 三件套随 `ui/` 脱链一并移除）。
+
+`ui/` 唯一保留的编译链耦合是 `~backend/*`（vite alias + tsconfig paths 解析后端源码）——**它没有机器护栏**：后端重构可以静默把它弄坏（2026-07-28 实测发现 telemetry/foundation 拆包与 `DecodeToolInputConfig.all` 删除都已经把它打断且无人知晓）。改后端后若想确认没打断它，只能显式跑 `bun run typecheck:ui` + `bun run test:ui`。该耦合也划定了「独立」的边界：`ui/` 的 `build`/`test` 在仓库外裸装裸跑可通过，`typecheck` 不行（后端源码的依赖装在仓库根）。代价与实测数据见 [vue-ui-retirement.md](vue-ui-retirement.md) §0。
 
 ### 测试组织（按域 + 隔离后缀两维度）
 
@@ -233,7 +247,7 @@ ui/
 
    于是域靠**目录**索引、速度靠**后缀**索引（`bun run test:unit` 只跑快测试）。
 
-**脚本**（`bun run`，非 `npm run`——项目用 bun）：`test:backend` = `bun test .unit.test .it.test .http.test`，三后缀 OR 覆盖全部 offline、天然排除 e2e、新增域零枚举漂移。`test:unit`/`test:it`/`test:http` 按后缀跑；`test:e2e`/`test:ui` 单列；`test:e2e-ui` 委派到 `ui/` workspace 自己的 `test:e2e`（浏览器 Playwright，2026-07-22 起不在根 `bunfig.toml` 的 `[test]` 发现范围内）。
+**脚本**（`bun run`，非 `npm run`——项目用 bun）：`test:backend` = `bun test .unit.test .it.test .http.test`，三后缀 OR 覆盖全部 offline、天然排除 e2e、新增域零枚举漂移。`test:unit`/`test:it`/`test:http` 按后缀跑；`test:e2e`/`test:ui` 单列；`test:e2e-ui` 落到 `ui/` 自己的 `test:e2e`（浏览器 Playwright，2026-07-22 起不在根 `bunfig.toml` 的 `[test]` 发现范围内；2026-07-28 起 `ui/` 已非 workspace 成员，根脚本经 `cd ui` 而非 `--filter` 调用）。
 
 **隔离纪律**：bun 单进程跑全套件，全局单例（state、history、upstream-WS manager、`mock.module`）会跨文件泄漏。因此：测试用 DI/fetch-mock 而非 `mock.module`（仅 `tui-format` 的 picocolors 是已证良性的例外）；带 fs I/O 的测试（如 setup-claude-code）用注入的临时目录，绝不碰真实 `$HOME`。
 

@@ -3,14 +3,19 @@
 ## 项目上下文
 
 这是 copilot-api 内置的请求历史查看器前端。Vue 3 + Vuetify 4 + Vite 7。
-本目录是**独立的 bun workspace 成员**：有自己的 [package.json](package.json)（FE 依赖与脚本）与 [tsconfig.json](tsconfig.json)（后端 tsconfig 经 `exclude` 排除本目录）。根 `package.json` 声明 `workspaces:["ui"]`，**单一根 `bun.lock`**（hoist）。
+
+> **本目录已于 2026-07-28 从主编译链整体脱钩**，是退役到 React `ui-v4/` 的第一步（决策、边界与代价见 [docs/vue-ui-retirement.md](../docs/vue-ui-retirement.md) §0）。它**不再是 bun workspace 成员**：根 `bun install` 不管它，须 `cd ui && bun install`（自有 `ui/bun.lock`）。它**不被根 `eslint .` 扫描**（`ui/**` 整体 ignore，本目录不再 lint）。它也不在根 `tsconfig` 里，不被任何后端测试档位聚合。只经自己的脚本单独安装 / 编译 / 测试 / 启动。
+
+本目录是**独立的前端项目**：有自己的 [package.json](package.json)（FE 依赖与脚本）、自己的 `bun.lock`、自己的 [tsconfig.json](tsconfig.json)。
 后端不再服务/代理本前端（2026-07-22 UI 外置）：`bun run build` 产出 `ui/dist/`，由运维用任意静态服务器独立托管 + 反代 `/api`·`/history/api`·`/ws`·`/models` 到后端（默认 `localhost:4141`）；vite 生产构建 `base` 写死 `/ui/`，托管在别的前缀需相应调整（见根 README「Hosting the Web UI」）。
 
 ## 构建与工具链
 
-- **依赖管理用 bun**（lockfile 为根 `bun.lock`）。FE 依赖装到本 workspace：在 `ui/` 下 `bun add <pkg>`，或根目录 `bun add --filter copilot-api-ui <pkg>`；不要用 `npm install`（npm 会因 peer deps 冲突失败）。仓库级 dev 工具（typescript/eslint/tsdown/playwright/lint-staged）在根 `package.json`，经 hoist 对本 workspace 可见。
-- 路径别名：`@/*` → `<root>/ui/src/*`，`~backend/*` → `<root>/src/*`（跨项目类型导入）。
-- Base URL \(`base`\) 开发时为 `/`，生产构建为 `/ui/`（后端静态文件挂载路径）。
+- **依赖管理用 bun**：在 `ui/` 下 `bun install` / `bun add <pkg>`，写入本目录的 `bun.lock`；不要用 `npm install`（npm 会因 peer deps 冲突失败），也不要再用 `bun add --filter copilot-api-ui`（本目录已非 workspace 成员，filter 解析不到）。以前靠 workspace hoist 蹭根依赖的写法现在会在裸装时炸（脱钩当天就炸出一个 `diff`），**新加依赖必须显式声明在本目录 package.json**。
+- **`build` 与 `test` 真正独立，`typecheck` 不是**（仓库外裸跑实测）：前两者只需本目录依赖；`typecheck` 因 `~backend/*` 把后端源码拖进类型图，需要后端自己的依赖（consola/fetch-event-stream/…）——那些装在仓库根，故 typecheck 只能在仓库内、且根已 `bun install` 过时跑。边界详情见 [docs/vue-ui-retirement.md](../docs/vue-ui-retirement.md) §0。
+- `@types/node` 在 [package.json](package.json) 里**钉死**在后端同款 `24.6.2`：独立安装会把 vite/vitest 的可选 peer 解析到 26.x，其 Buffer 类型会让后端源码在这里编不过。保留 `~backend` 就必须共用后端的类型环境。
+- 路径别名：`@/*` → `<root>/ui/src/*`，`~backend/*` → `<root>/src/*`（跨项目类型导入）。后端源码内部用的 `~/lib/…` 包别名在 [tsconfig.json](tsconfig.json) 里镜像了一份（SSOT 是根 tsconfig）——**没有护栏**，后端拆包时会静默失配，只有显式跑 `bun run typecheck` 才发现。
+- Base URL \(`base`\) 开发时为 `/`，生产构建为 `/ui/`（静态托管路径）。
 - dev proxy 转发 API 到后端（默认 `localhost:4141`，可通过 `COPILOT_API_HOST`/`COPILOT_API_PORT` 覆盖）。
 
 Vite 配置的自动导入（自动注册组件）：
@@ -19,22 +24,24 @@ Vite 配置的自动导入（自动注册组件）：
 - `unplugin-auto-import` 自动导入 Vue、VueUse、Pinia、vue-router API，生成 [auto-imports.d.ts](types/auto-imports.d.ts)。
 - `unplugin-vue-components` 自动导入 `src/components/` 下的项目组件，生成 [components.d.ts`](types/components.d.ts)。
 
-脚本定义在本目录 [package.json](package.json)；根目录 [package.json](../package.json) 提供同名委派入口（`bun run --filter copilot-api-ui …`），故两处均可运行：
+脚本定义在本目录 [package.json](package.json)；根目录 [package.json](../package.json) 提供同名入口，实现是 `cd ui && bun run <script>`（**不再是** `--filter` 委派），故两处均可运行：
 
 ```bash
-# 在 ui/ 下直接跑(本 workspace 脚本)         # 或在根目录跑(委派)
+# 在 ui/ 下直接跑(需先在本目录 bun install)   # 或在根目录跑
 bun run build      # 构建到 ui/dist/          bun run build:ui
 bun run dev        # 开发模式，Vite 代理后端    bun run dev:ui
 bun run typecheck  # vue-tsc 类型检查          bun run typecheck:ui
 bun run test       # 先跑 bun test，再跑 vitest  bun run test:ui
 ```
 
+**改完后端、想确认没打断本项目**：没有任何自动机制会替你发现，只能显式跑 `bun run typecheck:ui` + `bun run test:ui`。
+
 ## 两套测试系统
 
 | | Bun 测试 | Vitest 测试 |
 |---|---|---|
 | 路径 | `ui/tests/*.test.ts` | `ui/vitest/*.test.ts` |
-| 运行 | `npm run test:ui:bun` | `npm run test:ui:vitest` |
+| 运行 | `bun run test:bun` | `bun run test:vitest` |
 | 环境 | 无 DOM | jsdom + `@vue/test-utils` |
 | 用途 | composable 和工具函数的纯逻辑测试 | 需要 DOM 的组件挂载测试 |
 | Mock | `mock.module()`（Bun 专用，import 须在 mock 之后） | `vi.mock()` / `vi.fn()` |
@@ -132,7 +139,7 @@ Pinia store 直接调用即可（`useHistoryStore()`），无需 provide/inject�
 
 ## 类型体系
 
-**单一真实来源**：核心类型从后端 re-export（`types/index.ts` 通过 `~backend/lib/history/store` 导入 `HistoryEntry`、`ContentBlock` 等）。
+**单一真实来源**：核心类型从后端 re-export（`types/index.ts` 通过 `~backend/lib/history/types` 导入 `HistoryEntry`、`ContentBlock` 等；遥测快照类型走 `@hsupu/ghc-proxy-telemetry`）。**指向纯类型模块、不要指向 `lib/history/store` 那种运行时 barrel**——后者会把 sqlite / socket / pino 拖进前端类型图（见根 [docs/DESIGN.md](../docs/DESIGN.md)「`~backend` 引入的模块必须是纯的」）。
 
 **前端专有类型**：
 - `types/ws.ts` — WebSocket 消息的判别联合类型
