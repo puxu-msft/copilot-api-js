@@ -822,6 +822,15 @@ async function pumpReverseAnthropicLegV4(opts: PumpReverseAnthropicLegOptions): 
     sink.finalize?.()
     return
   }
+  if (terminal.kind === "contentless-refusal") {
+    const summary = refusalSummary(extractRefusalDetail(anthropicAcc.stopDetails))
+    env.ctx.recordFeature("refusal-passthrough", { category: refusalCategoryForDiagnostics(anthropicAcc.stopDetails) })
+    await sink.write({ data: "[DONE]" })
+    recordForwarded()
+    env.ctx.fail(anthropicAcc.model || model, new Error(summary), buildAnthropicResponseData(anthropicAcc, model), { upstreamSucceeded: true })
+    sink.finalize?.()
+    return
+  }
   await sink.write({ data: "[DONE]" })
   recordForwarded()
   env.ctx.complete(buildAnthropicResponseData(anthropicAcc, model))

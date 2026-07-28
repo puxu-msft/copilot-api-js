@@ -655,6 +655,14 @@ async function pumpReverseAnthropicLegV4(opts: PumpReverseAnthropicLegOptions): 
     sink.finalize?.()
     return
   }
+  if (terminal.kind === "contentless-refusal") {
+    const summary = refusalSummary(extractRefusalDetail(anthropicAcc.stopDetails))
+    env.ctx.recordFeature("refusal-passthrough", { category: refusalCategoryForDiagnostics(anthropicAcc.stopDetails) })
+    recordForwarded()
+    env.ctx.fail(anthropicAcc.model || model, new Error(summary), buildAnthropicResponseData(anthropicAcc, model), { upstreamSucceeded: true })
+    sink.finalize?.()
+    return
+  }
   // The processor finish boundary already emitted response.completed through restore/onRenderedFrame.
   recordForwarded()
   env.ctx.complete(buildAnthropicResponseData(anthropicAcc, model))
