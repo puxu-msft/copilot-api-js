@@ -141,27 +141,53 @@ export function postCommitAbortFrame(kind: Exclude<PostCommitAbortKind, "client-
  * 1. `clientAborted` — the client is gone; nothing else matters, there is no reader left.
  * 2. shutdown provenance (Phase 3 abort reason identity / `pool-closed` transport tag).
  * 3. `TimeoutError` — the response-header watchdog itself fired (`AbortSignal.timeout`).
- * 4. the cancellation-cause tag — hard deadline vs stale reaper vs explicit cancel vs
- *    dispatch teardown.
- * 5. fallback: `reaperAborted` (the request's lifecycle signal fired but nobody tagged the
- *    reason) → reaper-cancel.
- * 6. nothing at all → `unknown-abort`. It deliberately does NOT default to a header
- *    timeout: naming a cause we cannot evidence is the exact failure this classifier
- *    exists to end (a 609ms request once shipped as a 900s header timeout), and it
- *    mirrors what `forwardError` does pre-commit. An `unknown-abort` in the wild is a
- *    signal in its own right — some path is not carrying its provenance yet.
+ * 4. the cancellation-cause tag on the error — hard deadline vs stale reaper vs explicit
+ *    cancel vs dispatch teardown.
+ * 5. the same tag read off `lifecycleSignal.reason`, for transports that synthesize a fresh
+ *    error instead of surfacing the reason they were cancelled with.
+ * 6. nothing at all → `unknown-abort`.
+ *
+ * Steps 5 and 6 are where this used to answer `reaper-cancel` for ANY fired lifecycle signal,
+ * on the theory that a bare lifecycle abort means the reaper. Every producer tags its reason
+ * now, so an untagged one means a producer skipped the contract — the same correction
+ * `guardSseIterable` already made. Naming a cause we cannot evidence is the exact failure this
+ * classifier exists to end (a 609ms request once shipped as a 900s header timeout), and an
+ * `unknown-abort` in the wild is a signal in its own right: some path is not carrying its
+ * provenance yet.
+ *
+ * Takes the SIGNAL rather than a `reaperAborted` boolean precisely so step 5 is possible — a
+ * boolean has already thrown away the only thing that could answer "which one".
  */
-export function classifyPostCommitAbort(clientAborted: boolean, reaperAborted: boolean, error?: unknown): PostCommitAbortKind {
+export function classifyPostCommitAbort(clientAborted: boolean, lifecycleSignal: AbortSignal | undefined, error?: unknown): PostCommitAbortKind {
   if (clientAborted) return "client-abort"
+  const fromCause = (candidate: unknown): PostCommitAbortKind | undefined => {
+    switch (getCancellationCause(candidate)) {
+      case "request-deadline": {
+        return "request-deadline"
+      }
+      case "stale-reaper": {
+        return "reaper-cancel"
+      }
+      case "request-cancel": {
+        return "request-cancel"
+      }
+      case "dispatch-cancel": {
+        return "dispatch-cancel"
+      }
+      default: {
+        return undefined
+      }
+    }
+  }
   if (error !== undefined) {
     if (isShutdownCausedAbort(error)) return "shutdown"
     if (error instanceof Error && error.name === "TimeoutError") return "header-timeout"
-    const cause = getCancellationCause(error)
-    if (cause === "request-deadline") return "request-deadline"
-    if (cause === "stale-reaper") return "reaper-cancel"
-    if (cause === "request-cancel") return "request-cancel"
-    if (cause === "dispatch-cancel") return "dispatch-cancel"
+    const tagged = fromCause(error)
+    if (tagged !== undefined) return tagged
   }
-  if (reaperAborted) return "reaper-cancel"
+  if (lifecycleSignal?.aborted === true) {
+    const tagged = fromCause(lifecycleSignal.reason)
+    if (tagged !== undefined) return tagged
+  }
   return "unknown-abort"
 }
