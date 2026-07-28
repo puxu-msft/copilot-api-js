@@ -9,7 +9,11 @@
  * NOT drift.
  */
 
-import { type StreamErrorKind } from "~/lib/stream"
+import {
+  //
+  classifyStreamError,
+  type StreamErrorKind,
+} from "~/lib/stream"
 
 /**
  * Canonical gRPC `status` for a classified stream-lifecycle kind.
@@ -62,4 +66,17 @@ export function geminiStatusToHttpCode(status: string): number {
 export function geminiStreamErrorStatusAndCode(kind: StreamErrorKind): { code: number; status: string } {
   const status = streamErrorKindToGeminiStatus(kind)
   return { code: geminiStatusToHttpCode(status), status }
+}
+
+/**
+ * `{ code, status }` for a raw stream error — the LIVE handler entry point.
+ *
+ * BOUNDARY OBSERVATION POINT: the kind-in variants above stay pure (the codec and unit tests call
+ * them); this error-in wrapper runs once per failed stream on the live path, so it is the one place
+ * that can count a provenance gap without double-counting. A non-zero counter means some producer
+ * aborted without a cause tag — see `~/lib/observability/abort-provenance-gaps`.
+ */
+export function geminiStreamErrorFromError(error: unknown): { code: number; status: string } {
+  const kind = classifyStreamError(error)
+  return geminiStreamErrorStatusAndCode(kind)
 }

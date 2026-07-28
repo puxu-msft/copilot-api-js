@@ -63,7 +63,10 @@ export interface UpstreamHttpTransportDeps {
 /** Build an HTTP {@link Transport} for one request. */
 export function createUpstreamHttpTransport(deps: UpstreamHttpTransportDeps): Transport & PhysicalTransport {
   const send: Transport["send"] = async (wire: PreparedRequest, env: RequestEnvelope, options?: TransportDispatchOptions): Promise<UpstreamStream> => {
-    const lifecycle = createDispatchLifecycle(combineAbortSignals(options?.signal, deps.clientAbortSignal, env.ctx.lifecycleSignal, getShutdownSignal()))
+    const lifecycle = createDispatchLifecycle(
+      combineAbortSignals(options?.signal, deps.clientAbortSignal, env.ctx.lifecycleSignal, getShutdownSignal()),
+      env.clientFormat,
+    )
     const headers = Object.fromEntries(wire.headers.entries())
     const body = wire.body as { model?: unknown; tools?: unknown }
     // Transport-local capture: sendUpstreamHttp fills `.response` (via

@@ -76,7 +76,7 @@ import {
   //
   convertOpenAIResponseToGemini,
 } from "~/lib/gemini"
-import { geminiStreamErrorStatusAndCode } from "~/lib/gemini/stream-error"
+import { geminiStreamErrorFromError } from "~/lib/gemini/stream-error"
 import { ENDPOINT } from "~/lib/models/endpoint"
 import { resolveModelTarget } from "~/lib/models/resolver"
 import { resolveStreamIdleTimeoutMs } from "~/lib/models/timeout-resolver"
@@ -99,7 +99,6 @@ import { classifyReverseAnthropicTerminal } from "~/lib/pipeline/reverse-termina
 import { buildAnthropicResponseData } from "~/lib/request/recording"
 import { usageFromTotalInput } from "~/lib/request/usage-normalize"
 import { state } from "~/lib/state"
-import { classifyStreamError } from "~/lib/stream"
 import { createUpstreamHttpTransport } from "~/lib/transport/http-transport"
 import { resolveInboundQuery } from "~/lib/transport/query-forward"
 import {
@@ -463,12 +462,11 @@ async function pumpGeminiStreamingV4(opts: PumpGeminiStreamingV4Options): Promis
     // forwarded track (the client receives it) via writeSynthetic → recordForwarded → fail (ordering
     // is load-bearing: ctx.fail freezes inboundResponse, so a post-fail snapshot would miss the frame).
     const message = error instanceof Error ? error.message : String(error)
-    const errorKind = classifyStreamError(error)
     await sink
       .writeSynthetic?.({
         data: JSON.stringify({
           candidates: [{ content: { role: "model", parts: [{ text: message }] }, finishReason: "OTHER", index: 0 }],
-          error: { ...geminiStreamErrorStatusAndCode(errorKind), message },
+          error: { ...geminiStreamErrorFromError(error), message },
         }),
       })
       .catch(() => undefined)
@@ -501,7 +499,7 @@ async function pumpGeminiStreamingV4(opts: PumpGeminiStreamingV4Options): Promis
       .writeSynthetic?.({
         data: JSON.stringify({
           candidates: [{ content: { role: "model", parts: [{ text: truncErr.message }] }, finishReason: "OTHER", index: 0 }],
-          error: { ...geminiStreamErrorStatusAndCode(classifyStreamError(truncErr)), message: truncErr.message },
+          error: { ...geminiStreamErrorFromError(truncErr), message: truncErr.message },
         }),
       })
       .catch(() => undefined)
@@ -660,12 +658,11 @@ async function pumpReverseGeminiStreamingV4(opts: PumpReverseGeminiStreamingV4Op
       sseEvents: diag.sseEvents,
     })
     const message = error instanceof Error ? error.message : String(error)
-    const errorKind = classifyStreamError(error)
     await sink
       .writeSynthetic?.({
         data: JSON.stringify({
           candidates: [{ content: { role: "model", parts: [{ text: message }] }, finishReason: "OTHER", index: 0 }],
-          error: { ...geminiStreamErrorStatusAndCode(errorKind), message },
+          error: { ...geminiStreamErrorFromError(error), message },
         }),
       })
       .catch(() => undefined)
@@ -706,7 +703,7 @@ async function pumpReverseGeminiStreamingV4(opts: PumpReverseGeminiStreamingV4Op
       .writeSynthetic?.({
         data: JSON.stringify({
           candidates: [{ content: { role: "model", parts: [{ text: truncErr.message }] }, finishReason: "OTHER", index: 0 }],
-          error: { ...geminiStreamErrorStatusAndCode(classifyStreamError(truncErr)), message: truncErr.message },
+          error: { ...geminiStreamErrorFromError(truncErr), message: truncErr.message },
         }),
       })
       .catch(() => undefined)

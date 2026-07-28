@@ -129,6 +129,7 @@ import {
   type RouteOverride,
 } from "~/lib/models/resolver"
 import { resolveStreamIdleTimeoutMs } from "~/lib/models/timeout-resolver"
+import { recordAbortProvenanceGap } from "~/lib/observability/abort-provenance-gaps"
 import {
   //
   accumulateResponsesStreamEvent,
@@ -710,7 +711,11 @@ async function runMessagesDriver(c: Context, args: RunMessagesDriverArgs): Promi
           // shutdown / header-watchdog / hard-deadline / reaper / dispatch teardown each carry their
           // own identity now, so the terminal frame names the real cause instead of defaulting to
           // "reaper or timeout, pick one".
-          const kind = classifyPostCommitAbort(clientAbort.signal.aborted, ctx?.lifecycleSignal.aborted ?? false, error)
+          const kind = classifyPostCommitAbort(clientAbort.signal.aborted, ctx?.lifecycleSignal, error)
+          // An `unknown-abort` reaching a client is a WIRING GAP (some producer aborted without a
+          // cause tag), not a normal outcome — count it so it shows up on /metrics rather than only
+          // inside one History entry. See `~/lib/observability/abort-provenance-gaps`.
+          if (kind === "unknown-abort") recordAbortProvenanceGap("delayed-commit", "anthropic")
           if (kind === "client-abort") {
             ctx?.abort(resolvedName) // (e) client gone — zero further bytes, no 499 (already 200)
             return

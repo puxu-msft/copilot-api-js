@@ -56,6 +56,7 @@ import { resetModelOperationTerminalBusForTests } from "~/lib/history/v3/termina
 import { clearRecentModelOperationTerminalsForTests } from "~/lib/history/v3/terminal-bus"
 import { resetAllLimitsForTesting } from "~/lib/models/calibration/engine"
 import { resetModelsEtagForTests } from "~/lib/models/client"
+import { resetAbortProvenanceGapsForTests } from "~/lib/observability/abort-provenance-gaps"
 import { resetReaperDiagnosticsForTests } from "~/lib/observability/reaper-diagnostics"
 import { resetRetryGiveUpsForTests } from "~/lib/observability/retry-giveups"
 import { resetRetryStrategyFiresForTests } from "~/lib/observability/retry-strategy-fires"
@@ -140,6 +141,7 @@ export const RESETTERS: ReadonlyArray<{ name: string; reset: () => void | Promis
   { name: "resetAbortableDelayScaleForTests", reset: resetAbortableDelayScaleForTests },
   { name: "resetReaperDiagnosticsForTests", reset: resetReaperDiagnosticsForTests },
   { name: "resetRetryStrategyFiresForTests", reset: resetRetryStrategyFiresForTests },
+  { name: "resetAbortProvenanceGapsForTests", reset: resetAbortProvenanceGapsForTests },
   { name: "resetRetryGiveUpsForTests", reset: resetRetryGiveUpsForTests },
   { name: "_resetConfigValidationWarnTrackingForTests", reset: _resetConfigValidationWarnTrackingForTests },
   { name: "resetBundledConfigCacheForTests", reset: resetBundledConfigCacheForTests },
