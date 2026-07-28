@@ -47,11 +47,22 @@
   - **reviewer 挖出的承重缺陷已修**：`unhandledRejection` 探针因 helper 里 `await request` 提供 live awaiter 而**结构上无牙**（三守卫全拆仍绿）→ 已补**真孤儿拓扑**用例、mutation 证其变红并捕获真实爆炸栈；`setAttemptTimingEpoch` 漏的对称守卫已补。seal-race 连跑 10 次 80/80。
   - **现状可达性（别夸大）**：主线 production primary 腿今天已被 operation scope 结构性护住；本守卫覆盖 mock/legacy ctx、candidate-discard/supersede，以及 **P4/P5 将新增的未注册 fresh recovery 腿**。
 
-### 🎯 B2 地基（plan-2）**全部完成** —— 下一步 = plan-3 的 P4~P6
+### 🎯 B2 地基（plan-2）**全部完成**；P4 已开工
+
+- ✅ **Task 4.0**（`1c5ea173`）——**ready-态挂载点**（B2 两个挂载点的第二个：上游已 ready、pump 在跑、但在首个真实语义内容前失败）。新增 `driver.runResponseRecovery(upstream, env, reason)`，复用既有 `coordinator.runRecovery`。三条承重：① ready-态**自己**调 `classifyServerExecutionRisk`（不复用 pre-ready 的检查、不碰 `allowServerTools`）② 给 `runRecovery` 加可选 `retryNextStrategy`——**默认仍 `"buffered-retry"`**（既有 buffered 调用方零行为变化，有回归锁），B2 显式传 `"precontent-recovery"` 防 History 诊断混淆 ③ **零 handler 接线**（4.3 才接）。`tests/pipeline` 843 pass。
+- **漂移已重核并写进 plan-3**：`driver.ts` 在 `src/lib/pipeline/`（非 plan 草稿的 `generation/`）；live `stream-error` 分支现于 `handler-v4.ts:1382-1423`（plan 写的 `1279-1320` 已过时）；buffered `runRecovery` 调用现于 `driver.ts:1530`。
+
+### 第二次合并 master（`d1c5a4b2`，2026-07-28）
+
+master 又前进 **70 提交**且碰了 P4 的三个目标文件 → **动接线前合并**（本会话已为「建在过时底座上」付过一次代价）。仅 backlog 冲突（取并集），源码全自动合并；全后端 6602 pass / 8 skip / 3 fail，**3 个单跑全过**（2 个 Bun worker SIGILL——Bun 自报是它自己的 bug；1 个负载敏感 UDS sidecar）→ 与合并无关。
+
+⚠ **验证工具的已知缺陷**：`parallel-test` 汇总在我修掉「恒报 0」后**仍欠计约 25%**（`test:backend` 4749 vs 直接命令 6614/644 文件；发现缺口与其他 CSI 序列均已排除）。**门的退出码是对的**（由各 shard 决定、真失败照样红），坏的是**证据行**——引用「N pass」时别当精确值。已入 backlog，根治方向=改用脚本已有的 junit XML 逐 `<testcase>` 计数。
 
 ### 剩余（依赖序）
 
-**P4~P6**（plan-3：两挂载点执行器 + 三模式 splice + handler 接线 + 协议矩阵——**全特性最硬的一块**；接线时一并解决：backlog 的 `afterHook`-vs-`preflight` env seam、`_reason` 透传、`ClientSink.finalize` 的 `void`-vs-`Promise` 签名、`makeReconcilingSink` 未继承 delivery identity、Task 0.6 ② 的 quiescence join，以及 `settleFinal()` **必须放进 owner 的 `finally`**）→ **B3**（plan-4，**默认关**，never-false-kill）→ 全分支终审 → ff 合 master。
+### 剩余（依赖序）
+
+**P4 余下**（plan-3：Task 4.1 splice 纯函数 → 4.2 触发判定 → **4.3 handler 接线（最硬）** → 4.4 History settlement → 4.5 协议矩阵；两挂载点执行器 + 三模式 splice + handler 接线 + 协议矩阵——**全特性最硬的一块**；接线时一并解决：backlog 的 `afterHook`-vs-`preflight` env seam、`_reason` 透传、`ClientSink.finalize` 的 `void`-vs-`Promise` 签名、`makeReconcilingSink` 未继承 delivery identity、Task 0.6 ② 的 quiescence join，以及 `settleFinal()` **必须放进 owner 的 `finally`**）→ **B3**（plan-4，**默认关**，never-false-kill）→ 全分支终审 → ff 合 master。
 
 ⚠ **P4~P6 接线前务必重读 handler-v4/driver 现状**：master 的 ingress-deadline 重构 + heartbeat 重写已改动 plan-3 假定的接线点（plan-3 的 `file:line` 多半已漂移）。
 
