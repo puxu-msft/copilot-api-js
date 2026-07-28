@@ -51,7 +51,9 @@ import type {
 } from "~/types/api/openai-responses"
 
 import { buildClaudeSignatureCarrier } from "~/lib/anthropic/claude-signature-carrier"
+import { refusalCategoryForDiagnostics } from "~/lib/anthropic/recover-refusal"
 
+import type { RefusalTranslationDegradationReporter } from "./anthropic-to-cc"
 import type { TranslateExchangeContext } from "./responses-to-cc-request"
 
 /**
@@ -78,9 +80,16 @@ import type { TranslateExchangeContext } from "./responses-to-cc-request"
 export function translateAnthropicResponseToResponses(
   response: AnthropicResponse,
   ctx: TranslateExchangeContext,
-  opts?: { stripThinkingSignature?: boolean },
+  opts?: { stripThinkingSignature?: boolean; onDegradation?: RefusalTranslationDegradationReporter },
 ): ResponsesResponse {
   const output: Array<ResponsesOutputItem> = []
+  if (response.stop_reason === "refusal") {
+    opts?.onDegradation?.({
+      kind: "refusal-category-dropped",
+      category: refusalCategoryForDiagnostics((response as { stop_details?: unknown }).stop_details),
+      target: "openai-responses",
+    })
+  }
   const reasoningItems: Array<ResponsesReasoningOutput> = []
   let reasoningIndex = 0
   let hasToolCalls = false

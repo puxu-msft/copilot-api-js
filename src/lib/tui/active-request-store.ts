@@ -220,7 +220,8 @@ function featureTag(feature: Exclude<FeatureKind, "thinking">, detail?: Record<s
     case "context-edits-applied":
     case "tool-input-repaired":
     case "tool-input-unrepairable":
-    case "translated-content-filter": {
+    case "translated-content-filter":
+    case "translated-refusal-category-dropped": {
       return feature
     }
     default: {

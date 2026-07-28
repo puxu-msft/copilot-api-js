@@ -57,6 +57,10 @@ import type {
 } from "~/types/api/openai-chat-completions"
 import type { StreamEvent } from "~/types/api/anthropic"
 
+import { refusalCategoryForDiagnostics } from "~/lib/anthropic/recover-refusal"
+
+import type { RefusalTranslationDegradationReporter } from "./anthropic-to-cc"
+
 import { mapStopReason, mapUsage } from "./anthropic-to-cc"
 
 /**
@@ -93,7 +97,10 @@ export interface AnthropicToCcStreamTranslator {
 type BlockKind = "text" | "tool_use" | "drop"
 
 /** Build a per-request {@link AnthropicToCcStreamTranslator} (holds usage accumulation + block-index bookkeeping). */
-export function createAnthropicToCcStreamTranslator(modelId: string): AnthropicToCcStreamTranslator {
+export function createAnthropicToCcStreamTranslator(
+  modelId: string,
+  onDegradation?: RefusalTranslationDegradationReporter,
+): AnthropicToCcStreamTranslator {
   let messageId = ""
   let model = modelId
   const created = Math.floor(Date.now() / 1000)
@@ -247,6 +254,13 @@ export function createAnthropicToCcStreamTranslator(modelId: string): AnthropicT
           }
           // Map the stop_reason via the SHARED helper (tool_use→tool_calls, max_tokens→length, refusal→content_filter).
           finishReason = mapStopReason(stopReason ?? null, sawToolUse)
+          if (stopReason === "refusal") {
+            onDegradation?.({
+              kind: "refusal-category-dropped",
+              category: refusalCategoryForDiagnostics((event.delta as { stop_details?: unknown }).stop_details),
+              target: "openai-cc",
+            })
+          }
           // INLINE finish + usage chunks (the CC leg needs no deferred flush). Role chunk first (empty stream case).
           ensureRoleChunk(out)
           out.push(chunkFrame({}, { finishReason }))

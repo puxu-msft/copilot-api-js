@@ -196,7 +196,9 @@ export function createOpenAiCcCodec(args?: CreateOpenAiCcCodecArgs): OpenAiCcCod
     let reverseTranslator: ReverseStreamTranslator | undefined
     const ensureReverseTranslator = (env: RequestEnvelope): ReverseStreamTranslator => {
       const modelId = (env.model as Model | undefined)?.id ?? (env.body as { model?: string }).model ?? ""
-      return (reverseTranslator ??= createReverseStreamTranslator(CLIENT_FORMAT, modelId))
+      return (reverseTranslator ??= createReverseStreamTranslator(CLIENT_FORMAT, modelId, undefined, {
+        onDegradation: ({ category, target }) => env.ctx.recordFeature("translated-refusal-category-dropped", { category, target }),
+      }))
     }
     return {
       renderResponse(frame, env) {
@@ -279,7 +281,12 @@ export function createOpenAiCcCodec(args?: CreateOpenAiCcCodecArgs): OpenAiCcCod
 
     renderResponseNonStreaming(upstream, env) {
       // REVERSE `@messages` leg (Phase 5): the upstream is Anthropic → CC-canonical (the hub reverse render).
-      if (env.targetEndpoint === ENDPOINT.MESSAGES) return renderResponseNonStreamingVia(ENDPOINT.MESSAGES, upstream).rendered
+      // CC cannot carry `stop_details.category`; the raw Anthropic leg remains intact in History, while
+      // this feature marker makes the client-wire degradation directly queryable.
+      if (env.targetEndpoint === ENDPOINT.MESSAGES)
+        return renderResponseNonStreamingVia(ENDPOINT.MESSAGES, upstream, {
+          onDegradation: ({ category, target }) => env.ctx.recordFeature("translated-refusal-category-dropped", { category, target }),
+        }).rendered
       if (env.targetEndpoint === ENDPOINT.CHAT_COMPLETIONS) return upstream
       return translateResponsesResponseToCC(upstream as ResponsesResponse)
     },

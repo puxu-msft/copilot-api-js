@@ -246,6 +246,25 @@ describe("anthropic-to-cc-stream — usage gross-up (shared mapUsage, no W-rev u
     expect(acc.outputTokens).toBe(20)
   })
 
+  test("refusal message_delta reports the category-loss degradation while mapping to content_filter", () => {
+    const degradations: Array<unknown> = []
+    const t = createAnthropicToCcStreamTranslator("claude-x", (degradation) => degradations.push(degradation))
+    const events = [
+      messageStart({ input_tokens: 1, output_tokens: 0 }),
+      blockStart(0, { type: "text", text: "" }),
+      blockStop(0),
+      aev({
+        type: "message_delta",
+        delta: { stop_reason: "refusal", stop_details: { type: "refusal", category: "cyber" }, stop_sequence: null },
+        usage: { output_tokens: 1 },
+      }),
+      messageStopEvent,
+    ]
+    for (const event of events) t.renderFrame(event)
+    expect(t.getMeta().finishReason).toBe("content_filter")
+    expect(degradations).toEqual([{ kind: "refusal-category-dropped", category: "cyber", target: "openai-cc" }])
+  })
+
   test("stop_reason mapping: end_turn→stop, tool_use→tool_calls, max_tokens→length, refusal→content_filter", () => {
     const finishFor = (stopReason: string, withTool = false): unknown => {
       const events = [messageStart({ input_tokens: 1, output_tokens: 0 })]
