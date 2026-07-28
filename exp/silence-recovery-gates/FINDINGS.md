@@ -75,6 +75,28 @@
 
 **时间基注记**：探针记的是**服务端 handler 视角**的客户端断开时刻（`arrivedAt` 从 handler 收到并解析完请求起算），而 undici 的 `headersTimeout` 是**客户端 dispatch 视角**。CC 请求体约 190KB，故 attempt 1 的服务端读数 299,667ms 可能比客户端真实阈值早几百毫秒。因此本节的可断言精度是「**约 300s 的默认阈值**」，不是毫秒级阈值。
 
+## Q1 附测（2026-07-28）：这个 300s **能被客户端侧环境变量关掉** —— `API_FORCE_IDLE_TIMEOUT=0`
+
+问题：既然掐断的是 undici 的默认 `headersTimeout`，有没有环境变量能覆盖它？
+
+**结论：undici 自己没有这样的环境变量**（`headersTimeout` 是 Dispatcher 构造选项，只能用代码设——`setGlobalDispatcher(new Agent({ headersTimeout: 0 }))`）。**但 Claude Code 自己暴露了一个开关**：`API_FORCE_IDLE_TIMEOUT`。CC 在构造 fetch 选项时会据它把 `fetchOptions.timeout` 设成 `false`，而 undici 的 `timeout:false` **同时关掉 headersTimeout 与 bodyTimeout**。
+
+实测（两臂**同时**起、同一探针、同一 600s 静默窗口）：
+
+| 臂 | 环境 | 结果 |
+|---|---|---|
+| `env-force-idle-0` | `API_FORCE_IDLE_TIMEOUT=0` | **静默 600s 后完整成功**：`result:"Q1_PRE_HEADER_OK after 600001ms"`、`exitCode 0`、`is_error:false`、`num_turns:1`、**单次 attempt 无重试** |
+| `env-control-unset`（并发对照） | 不设 | attempt 1 在 **299,541ms** abort，随后重试到第 3 次 |
+
+原始记录 `results/q1-firstfail/env-force-idle-0.{client,observations}.json` 与 `env-control-unset.observations.json`。
+
+**作用域与未测边界（别写宽）**：
+- 600s **不是新的上限**，只是我的窗口到头了。关掉 undici 计时器后，下一个绑定约束应是 SDK 自己的 request timer（该臂请求头里 `x-stainless-timeout: 1200`）——**未测**。
+- 它同时关掉 **body** 超时。post-commit 阶段 CC 仍有**自己的** 300s stream-idle watchdog（与本条正交、不受影响），本轮**未测**该 env 对 post-header 行为的影响。
+- 这是**客户端侧**开关：代理无法替客户端设置。它的价值是「用户可以为自己的 CC 打开」，不是我方可依赖的前提。
+
+**对本项目的意义**：`stream_commit_after_sec` 的默认值与 clamp **必须按「客户端未设该变量」来定**（默认 180 / clamp 240，见 `src/lib/config/config.ts` 的 `COMMIT_WINDOW_MAX_SEC`）。若用户在自己的 CC 环境里设了 `API_FORCE_IDLE_TIMEOUT=0`，pre-header 上限会大幅抬高，届时 240 的 clamp 会成为**我方**的限制而非客户端的——那时再评估是否放开 clamp。
+
 
 ## Q2：事故类大 context 的 fresh-retry 可恢复性 —— 未能定论（inconclusive）
 
