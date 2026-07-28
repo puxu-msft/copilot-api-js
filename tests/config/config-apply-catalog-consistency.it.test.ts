@@ -38,6 +38,7 @@ import {
 } from "~/lib/models/cache"
 import {
   //
+  resetConfigManagedState,
   restoreStateForTests,
   snapshotStateForTests,
   state,
@@ -110,6 +111,23 @@ describe("applyConfigToState 失败时的目录一致性", () => {
 
     expect(state.disabledModels).toEqual(["model-a"])
     expect(servedIds()).toEqual(["model-b"])
+  })
+
+  // 另一条路：PUT /api/config 先 resetConfigManagedState()（禁用列表回默认、**不重新过滤**）再调
+  // applyConfigToState()。抛错时如果末尾那次重推导没跑，模型就停在「已不再被禁用、却仍不在目录里」——
+  // 与上面那条方向相反、同样自相矛盾。所以重推导挂在 finally 上，而不是某个 throw 之前。
+  test("reset 之后 apply 抛错：解除禁用的模型必须回到目录（与上一条方向相反的同一个不变量）", async () => {
+    await writeConfig("disabled_models:\n  - model-a\n")
+    await applyConfigToState()
+    expect(servedIds(), "前提：model-a 此刻确实被过滤掉了").toEqual(["model-b"])
+
+    resetConfigCache()
+    resetConfigManagedState() // PUT /api/config 的第一步：列表回默认，视图未动
+    await writeConfig(CONFIG_THAT_THROWS_AFTER_DISABLING.replace("  - model-a\n", ""))
+    await expect(applyConfigToState()).rejects.toThrow()
+
+    expect(state.disabledModels, "已经没有任何模型被禁用").toEqual([])
+    expect(servedIds(), "那 model-a 就必须回到目录里——否则它「不被禁用却也不被提供」").toEqual(["model-a", "model-b"])
   })
 })
 
