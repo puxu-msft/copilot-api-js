@@ -12,6 +12,7 @@ import type { UpstreamWsConnection } from "~/lib/openai/upstream-ws-connection"
 import type { RequestEnvelope } from "~/lib/pipeline/envelope"
 import type { PreparedRequest } from "~/lib/pipeline/types"
 
+import { cancellationAbortError } from "~/lib/error/cancellation-reason"
 import { ENDPOINT } from "~/lib/models/endpoint"
 import {
   //
@@ -176,8 +177,9 @@ describe("createUpstreamResponsesTransport — explicit WS fallback dispatch", (
     const iterator = upstream.frames[Symbol.asyncIterator]()
     expect((await iterator.next()).value?.event).toBe("response.created")
 
-    // Reaper force-fails mid-stream (upstream blocked past the last frame).
-    reaper.abort()
+    // Reaper force-fails mid-stream (upstream blocked past the last frame). Abort WITH the cause tag
+    // the real `ctx.reapInFlight()` carries — a bare abort simulates the producer without its contract.
+    reaper.abort(cancellationAbortError("stale-reaper", "Request cancelled by the stale-request reaper"))
     await expect(iterator.next()).rejects.toBeInstanceOf(StreamReaperCancelError)
   })
 

@@ -15,6 +15,11 @@ import type {
 
 import {
   //
+  cancellationAbortError,
+  getCancellationCause,
+} from "~/lib/error/cancellation-reason"
+import {
+  //
   createUpstreamWsManager,
   setUpstreamWsConnectionFactoryForTests,
 } from "~/lib/openai/upstream-ws"
@@ -510,6 +515,32 @@ describe("upstream websocket connection", () => {
     expect(connection.isOpen).toBe(true)
   })
 
+  test("handshake abort keeps its own message AND chains the canceller's reason as `cause`", async () => {
+    // This layer's message says WHERE it died, which the generic reason does not — so it is
+    // kept. But replacing the reason ENTIRELY (what this used to do) erases WHICH party
+    // cancelled: this handshake rides the same composite signal as the h2 path (client /
+    // reaper / hard deadline / dispatch / shutdown), and the boundary then has to guess.
+    // Chaining keeps both, because every provenance reader walks the cause chain.
+    const connection = createUpstreamWsConnection({
+      headers: { authorization: "Bearer test" },
+      model: "gpt-5.2",
+      createSocket: () => socket,
+    })
+
+    const reason = cancellationAbortError("request-deadline", "request_deadline")
+    const ac = new AbortController()
+    const connecting = connection.connect({ signal: ac.signal })
+    ac.abort(reason)
+
+    const error = await connecting.then(
+      () => undefined,
+      (e: unknown) => e,
+    )
+    expect((error as Error).message).toBe("Upstream WebSocket connection aborted")
+    expect((error as Error).cause).toBe(reason)
+    expect(getCancellationCause(error)).toBe("request-deadline")
+  })
+
   test("idle socket error marks connection unusable and closes the socket", async () => {
     const connection = createUpstreamWsConnection({
       headers: { authorization: "Bearer test" },
@@ -897,6 +928,38 @@ describe("P0-T3 pending-first-event and stale-queue cleanup oracle", () => {
     expect(connection.isBusy).toBe(false)
     expect(connection.isOpen).toBe(false)
     // Defensive cleanup — onAbort already closed the socket.
+    connection.close()
+  })
+
+  test("a request abort keeps the WS message AND chains the canceller's reason as `cause`", async () => {
+    // Same rule as the handshake: an already-sent request cancelled by the reaper / hard
+    // deadline must arrive at the boundary carrying WHICH one it was, or the boundary
+    // falls back to guessing — the failure this family of fixes exists to end.
+    const socket = new FakeSocket()
+    const connection = createUpstreamWsConnection({
+      headers: { authorization: "Bearer test" },
+      model: "gpt-5.2",
+      conversationId: "conv-cause-chain",
+      idleTimeoutMs: 0,
+      createSocket: () => socket,
+    })
+    await openConnection(connection, socket)
+
+    const reason = cancellationAbortError("stale-reaper", "Request cancelled by the stale-request reaper")
+    const abort = new AbortController()
+    const iterator = connection.sendRequest({ model: "gpt-5.2", input: "x", stream: true }, { abortSignal: abort.signal })[Symbol.asyncIterator]()
+    const pending = iterator.next()
+    await flushMicrotasks()
+
+    abort.abort(reason)
+
+    const error = await pending.then(
+      () => undefined,
+      (e: unknown) => e,
+    )
+    expect((error as Error).message).toBe("Upstream WebSocket request aborted")
+    expect((error as Error).cause).toBe(reason)
+    expect(getCancellationCause(error)).toBe("stale-reaper")
     connection.close()
   })
 

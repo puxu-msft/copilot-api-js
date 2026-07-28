@@ -26,6 +26,7 @@ import {
   StreamRequestCancelError,
   StreamRequestDeadlineError,
   StreamShutdownError,
+  StreamUnknownCancelError,
   classifyStreamError,
   guardSseIterable,
 } from "~/lib/stream"
@@ -179,7 +180,10 @@ describe("guardSseIterable — abort-source distinction", () => {
 
     await iter.next()
     const secondPromise = iter.next()
-    reaper.abort()
+    // Abort the way the real reaper does (`ctx.reapInFlight()`), i.e. WITH its cause tag.
+    // A bare `reaper.abort()` here would be simulating the producer without its contract —
+    // and would now (correctly) classify as an unknown cancel.
+    reaper.abort(cancellationAbortError("stale-reaper", "Request cancelled by the stale-request reaper"))
 
     await expect(secondPromise).rejects.toBeInstanceOf(StreamReaperCancelError)
   })
@@ -225,7 +229,7 @@ describe("guardSseIterable — abort-source distinction", () => {
     expect(classifyStreamError(error)).toBe("request-deadline")
   })
 
-  test("an explicit ctx.cancel is its own kind; an UNTAGGED lifecycle abort still means reaper", async () => {
+  test("an explicit ctx.cancel is its own kind; an UNTAGGED lifecycle abort is an honest unknown, NOT a fabricated reaper", async () => {
     const cancelled = new AbortController()
     const guardedCancel = guardSseIterable(blockingAfterFirst(), { idleTimeoutMs: 0, reaperSignal: cancelled.signal })
     const cancelIter = guardedCancel[Symbol.asyncIterator]()
@@ -234,15 +238,24 @@ describe("guardSseIterable — abort-source distinction", () => {
     cancelled.abort(cancellationAbortError("request-cancel", "operator cancelled"))
     await expect(cancelPending).rejects.toBeInstanceOf(StreamRequestCancelError)
 
-    // Untagged = what a bare lifecycle abort has always meant. Keeping the reaper default
-    // means this change adds provenance without silently re-labelling existing callers.
+    // Every in-repo producer tags its reason, so an untagged one no longer means "the reaper,
+    // as always" — it means some producer skipped the contract. Answering "reaper" would put a
+    // specific, unearned cause on the wire, which is the exact failure this taxonomy exists to
+    // stop. The negative assertion is the load-bearing half: no reaper text may reach the client.
     const untagged = new AbortController()
     const guardedUntagged = guardSseIterable(blockingAfterFirst(), { idleTimeoutMs: 0, reaperSignal: untagged.signal })
     const untaggedIter = guardedUntagged[Symbol.asyncIterator]()
     await untaggedIter.next()
     const untaggedPending = untaggedIter.next()
     untagged.abort()
-    await expect(untaggedPending).rejects.toBeInstanceOf(StreamReaperCancelError)
+    const untaggedError = await untaggedPending.then(
+      () => undefined,
+      (e: unknown) => e,
+    )
+    expect(untaggedError).toBeInstanceOf(StreamUnknownCancelError)
+    expect(untaggedError).not.toBeInstanceOf(StreamReaperCancelError)
+    expect((untaggedError as Error).message).not.toMatch(/reaper/i)
+    expect(classifyStreamError(untaggedError)).toBe("unknown-cancel")
   })
 
   test("classifyStreamError maps reaper-cancel to its OWN kind, NOT client-abort (→ routes to stream-error, not settled-abort)", () => {

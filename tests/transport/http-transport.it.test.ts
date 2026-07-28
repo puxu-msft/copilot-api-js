@@ -142,8 +142,10 @@ describe("createUpstreamHttpTransport", () => {
     expect(first.done).toBe(false)
     expect((first.value as UpstreamFrame).data).toBe('{"choices":[{"delta":{"content":"hi"}}]}')
 
-    // Reaper force-fails mid-stream (upstream is now blocked, past the last frame).
-    reaper.abort()
+    // Reaper force-fails mid-stream (upstream is now blocked, past the last frame). Abort WITH the
+    // cause tag the real `ctx.reapInFlight()` carries — a bare abort would simulate the producer
+    // without its contract, and now correctly classifies as an unknown cancel instead.
+    reaper.abort(cancellationAbortError("stale-reaper", "Request cancelled by the stale-request reaper"))
     await expect(iterator.next()).rejects.toBeInstanceOf(StreamReaperCancelError)
   })
 
