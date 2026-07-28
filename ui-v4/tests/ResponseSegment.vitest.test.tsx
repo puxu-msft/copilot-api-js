@@ -53,6 +53,68 @@ const withResponse = {
   },
 } as unknown as HistoryEntry
 
+const refusalWithNamedCategory = {
+  id: "refusal-named",
+  startedAt: 0,
+  endpoint: "anthropic-messages",
+  state: "failed",
+  clientRequest: { messages: [] },
+  attempts: [
+    {
+      index: 0,
+      durationMs: 1,
+      upstreamResponse: {
+        success: true,
+        model: "claude-opus-5",
+        status: 200,
+        stopReason: "refusal",
+        stopDetails: {
+          type: "refusal",
+          category: "cyber",
+          explanation: "FULL_EXPLANATION_START\nEvery diagnostic line must remain visible.\nFULL_EXPLANATION_END",
+          recommended_model: "claude-opus-4-8",
+        },
+      },
+    },
+  ],
+} as unknown as HistoryEntry
+
+const refusalWithUncategorizedCategory = {
+  ...refusalWithNamedCategory,
+  id: "refusal-uncategorized",
+  attempts: [
+    {
+      index: 0,
+      durationMs: 1,
+      upstreamResponse: {
+        success: true,
+        model: "claude-opus-4.8",
+        status: 200,
+        stopReason: "refusal",
+        stopDetails: { type: "refusal", category: null, explanation: "No named category matched." },
+      },
+    },
+  ],
+} as unknown as HistoryEntry
+
+const refusalWithMissingCategory = {
+  ...refusalWithNamedCategory,
+  id: "refusal-missing",
+  attempts: [
+    {
+      index: 0,
+      durationMs: 1,
+      upstreamResponse: {
+        success: true,
+        model: "claude-opus-4.8",
+        status: 200,
+        stopReason: "refusal",
+        stopDetails: { type: "refusal", explanation: "Legacy upstream omitted category." },
+      },
+    },
+  ],
+} as unknown as HistoryEntry
+
 const empty = {
   id: "r2",
   startedAt: 0,
@@ -170,6 +232,35 @@ describe("ResponseSegment", () => {
     expect(screen.getAllByText(/"role": "assistant"/).length).toBeGreaterThan(0)
     expect(screen.getByText(/"type": "text"/)).toBeDefined()
     expect(screen.getByText(/forwarded client answer/)).toBeDefined()
+  })
+
+  it("renders a dedicated refusal diagnostic with the named category and complete explanation", () => {
+    const { container } = render(<ResponseSegment entry={refusalWithNamedCategory} />)
+
+    expect(screen.getByText("Refusal diagnostic (upstream)")).toBeDefined()
+    expect(screen.getByText("cyber")).toBeDefined()
+    expect(container.textContent).toContain("FULL_EXPLANATION_START")
+    expect(container.textContent).toContain("Every diagnostic line must remain visible.")
+    expect(container.textContent).toContain("FULL_EXPLANATION_END")
+  })
+
+  it("keeps explicit uncategorized and missing category provenance distinguishable", () => {
+    const { unmount } = render(<ResponseSegment entry={refusalWithUncategorizedCategory} />)
+    expect(screen.getByText("uncategorized")).toBeDefined()
+    expect(screen.getByText(/explicit null/)).toBeDefined()
+
+    unmount()
+    render(<ResponseSegment entry={refusalWithMissingCategory} />)
+    expect(screen.getByText("unknown")).toBeDefined()
+    expect(screen.getByText(/field absent/)).toBeDefined()
+  })
+
+  it("preserves the complete raw stopDetails object in a JSON view", () => {
+    const { container } = render(<ResponseSegment entry={refusalWithNamedCategory} />)
+
+    expect(screen.getByText("Raw stop_details")).toBeDefined()
+    expect(container.textContent).toContain('"recommended_model": "claude-opus-4-8"')
+    expect(container.textContent).toContain('"category": "cyber"')
   })
 
   it("renders the 无响应数据 fallback when there is no response data", () => {
