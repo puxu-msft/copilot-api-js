@@ -854,12 +854,22 @@ describe("forwardError", () => {
     expect(JSON.stringify(data)).not.toContain("timed out before sending response headers")
   })
 
-  test("stale-reaper cancel → 503 carrying the reaper's own reason", () => {
+  test("stale-reaper cancel → 504, same category as the deadline, carrying the reaper's own reason", () => {
+    // The reaper is `stale_request_max_age` expiring — our clock, i.e. a timeout, the same
+    // category the SSE `error.type` tables put it in. It used to land in the 503 catch-all
+    // alongside dispatch teardowns, which made ONE cause change category depending on which
+    // boundary caught it. The message still names the reaper specifically.
     const { ctx, getLastJson } = createMockContextWithSignal(false)
     forwardError(ctx, cancellationAbortError("stale-reaper", "Request cancelled by the stale-request reaper"))
     const { data, status } = getLastJson()
-    expect(status).toBe(503)
+    expect(status).toBe(504)
     expect(JSON.stringify(data)).toContain("stale-request reaper")
+  })
+
+  test("a dispatch teardown stays 503 — only OUR clocks get the timeout category", () => {
+    const { ctx, getLastJson } = createMockContextWithSignal(false)
+    forwardError(ctx, cancellationAbortError("dispatch-cancel", "lost hedge race"))
+    expect(getLastJson().status).toBe(503)
   })
 
   test("TimeoutError-named abort with un-aborted client signal → 504", () => {

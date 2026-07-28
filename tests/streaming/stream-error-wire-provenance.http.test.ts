@@ -154,3 +154,62 @@ describe("mid-stream hard deadline → the wire names a TIMEOUT on every surface
     expect(wire).not.toContain('"code":500')
   })
 })
+
+/**
+ * The OTHER pre-header grid cell, and the one the tests above cannot reach.
+ *
+ * Anthropic's default path is delayed-commit: we open a 200 SSE stream while the upstream is
+ * still silent, so a cancellation can land AFTER we committed but BEFORE upstream response
+ * headers arrive. That failure is delivered by `postCommitAbortFrame`, a different builder
+ * from the post-header pump — and it used to hardcode `api_error` for every kind. Same hard
+ * deadline, two answers, decided by whether upstream headers happened to have arrived.
+ *
+ * The suite above always has a first frame, so it only ever exercises the post-header cell.
+ */
+describe("delayed-commit pre-header abort → the same cause gets the same wire type", () => {
+  useIsolatedRuntime()
+
+  beforeEach(() => {
+    setStateForTests({
+      copilotToken: "test-token",
+      responseHeaderTimeout: 0,
+      // Commit the 200 immediately, then leave upstream silent: the exact production shape.
+      streamCommitAfterSec: 0,
+      streamKeepalivePingSec: 0,
+    })
+    setModels({ object: "list", data: [mockModel("claude-sonnet-4.5", { vendor: "Anthropic", supported_endpoints: ["/v1/messages"] })] })
+  })
+
+  /** An upstream that never sends response headers — it only settles when its signal aborts. */
+  function silentUpstream(): void {
+    applyFetchMock(
+      mock(
+        (_input, init) =>
+          new Promise<Response>((_resolve, reject) => {
+            const signal = (init as { signal?: AbortSignal } | undefined)?.signal
+            const fail = (): void => reject(signal?.reason instanceof Error ? signal.reason : new DOMException("The operation was aborted.", "AbortError"))
+            if (signal?.aborted) return fail()
+            signal?.addEventListener("abort", fail, { once: true })
+          }),
+      ),
+    )
+  }
+
+  test("hard deadline while upstream is still pre-header → timeout_error, the same as post-header", async () => {
+    silentUpstream()
+
+    const wire = await cancelMidStreamAndReadWire(() =>
+      app.request("/v1/messages", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ model: "claude-sonnet-4.5", max_tokens: 16, stream: true, messages: [{ role: "user", content: "hi" }] }),
+      }),
+    )
+
+    expect(wire).toContain("event: error")
+    expect(wire).toContain("timeout_error")
+    // What this builder answered for EVERY kind before it shared the table.
+    expect(wire).not.toContain("api_error")
+    expect(wire).toContain("hard deadline")
+  })
+})

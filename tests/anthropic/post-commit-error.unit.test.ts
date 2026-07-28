@@ -11,6 +11,7 @@ import {
   test,
 } from "bun:test"
 
+import { streamErrorKindToAnthropicErrorType } from "~/lib/anthropic/error-shaping"
 import { HTTPError } from "~/lib/error"
 import { cancellationAbortError } from "~/lib/error/cancellation-reason"
 import { tagTransportError } from "~/lib/error/transport-reason"
@@ -175,7 +176,22 @@ describe("postCommitAbortFrame", () => {
     expect(parse(postCommitAbortFrame("reaper-cancel")).error?.message).toContain("stale-request reaper")
     expect(parse(postCommitAbortFrame("dispatch-cancel")).error?.message).toContain("dispatch cancelled")
     expect(parse(postCommitAbortFrame("unknown-abort")).error?.message).not.toContain("timed out before sending response headers")
-    // The canonical Anthropic error type stays `api_error` for every kind — the SDK branches on it.
-    expect(parse(postCommitAbortFrame("shutdown")).error?.type).toBe("api_error")
+  })
+
+  test("the SDK-facing error.type comes from the SHARED table, not a local literal", () => {
+    // This used to answer `api_error` for every kind, so the same hard deadline reached the
+    // client as `api_error` from here and `timeout_error` from the post-header pump — the
+    // answer decided by whether upstream response headers had arrived, which is not a fact
+    // about what ended the request. Asserting against the shared table (rather than repeating
+    // the literals) is what makes a future local hardcode impossible to sneak back in.
+    const kinds = ["shutdown", "header-timeout", "request-deadline", "reaper-cancel", "request-cancel", "dispatch-cancel", "unknown-abort"] as const
+    for (const kind of kinds) {
+      expect(parse(postCommitAbortFrame(kind)).error?.type).toBe(streamErrorKindToAnthropicErrorType(kind))
+    }
+    // And spot-check the grouping itself, so a table that goes uniformly wrong is still caught.
+    expect(parse(postCommitAbortFrame("request-deadline")).error?.type).toBe("timeout_error")
+    expect(parse(postCommitAbortFrame("reaper-cancel")).error?.type).toBe("timeout_error")
+    expect(parse(postCommitAbortFrame("shutdown")).error?.type).toBe("overloaded_error")
+    expect(parse(postCommitAbortFrame("unknown-abort")).error?.type).toBe("api_error")
   })
 })
