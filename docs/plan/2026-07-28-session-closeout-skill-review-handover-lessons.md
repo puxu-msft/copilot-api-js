@@ -330,3 +330,41 @@
 **不最终放行。** `549ebc25` 已解决绝大多数问题，§6 长度也合格；但在一份专门防假绿 oracle 的 skill 中，V7 不能以 `git status` 假装证明 commit membership。修掉 `SKILL.md:60` 的“即时提交”冲突和 V7 的检查器后，如无新的同级问题，即可最终放行；两条 MINOR 可同批修，但不需要再改架构。
 
 本轮只读核验了提交 `549ebc25`、当前 SKILL/模板/verification-log 与前两轮报告；除追加本节外未修改其它仓库文件，未运行产品测试，未触碰 4141 端口。
+
+## 第四轮复审
+
+复审提交：`3c04a135`。
+
+### 判定
+
+- 第三轮 MAJOR-1（正常路径“即时提交”冲突）：**已解决**。正文已把“在主树改”与“何时提交”拆开，正常路径只在评审放行后最终提交，紧急路径两处都要求标 `草稿·未评审`。
+- 第三轮 MAJOR-2（V7 用 `git status` 证明 commit membership）：**部分解决**。第二时点已改用 `git diff-tree`，技术方向正确；但第一时点仍把 path-scoped `git status` 空输出当成“既有产物已提交”的证明，新引入一个同型假绿，见下方 MAJOR。
+- 第三轮 MINOR-1（四栏/五栏）：**已解决**。
+- 第三轮 MINOR-2（归属契约手工双写）：**已解决**。模板只保留一句记忆与单一源指针，不再维护第二份完整契约。
+
+### [MAJOR] `.claude/skills/session-closeout/SKILL.md:112`——V7 第一时点仍把“status 空”误当成“路径已提交”
+
+**实测正样本对照**：
+
+- `git status --porcelain -- docs/plan/__definitely-not-present__.md` 输出 0 字节；该路径根本不存在、更未提交。
+- 仓库里一个被忽略但未追踪的真实路径 `.claude/settings.local.json`，path-scoped `git status --porcelain -- <path>` 同样输出 0 字节。
+- 对两者运行 `git ls-files --error-unmatch -- <path>` 都退出 1。
+
+因此，第一时点的空 `git status` 只能证明“status 没报告该 pathspec”，不能证明路径存在于 Git 历史，也不能证明 ignored/untracked 产物已提交。交接若引用一个被 `.gitignore` 吞掉的探针输出，V7①会假绿，正是本规则要防的资产丢失路径。
+
+**具体修法**：第一时点必须同时满足两件事：
+
+1. `git ls-files --error-unmatch -- <每个既有产物路径>` 全部成功，证明路径已被 Git 跟踪；目录产物则先展开成应入库文件清单，不能只给目录 pathspec。
+2. `git status --porcelain --untracked-files=all -- <这些路径>` 为空，证明已跟踪版本没有未提交变化；若要捕获 ignored 产物，先用 `git check-ignore -q -- <path>` 显式判定并作为证伪，不能期待普通 `status` 报告。
+
+V7①的证伪条件相应写成“任一路径未被 `git ls-files --error-unmatch` 命中，或 path-scoped status 非空，或被 ignore”。第二时点的 `git diff-tree` 检查可以保留；建议同样按预期路径逐个求集合差，避免只肉眼看输出。
+
+### 是否有其它新矛盾或重复
+
+未发现其它 BLOCKER/MAJOR。正文与模板的提交时序、紧急状态、KICKOFF 归属、五栏模板均一致；把归属契约改成单一引用确实消除了前四轮的主要漂移面。
+
+### 第四轮 verdict
+
+**仍不最终放行。** 4 条整改中 3 条完全解决，V7 第二时点也已修正；但 V7 第一时点仍有一个可实测复现的假绿检查器。在 skill 明确把“未追踪/ignored 产物可能丢失”作为起源事故的情况下，这一处属于 MAJOR，不能降为措辞问题。按上面的 tracked + clean + not-ignored 三项修正后，如无新同级问题即可最终放行。
+
+本轮只读核验了 `3c04a135`、当前 SKILL 与模板，并用不存在路径和仓库内 ignored 路径做了 V7 检查器正样本对照；除追加本节外未修改其它仓库文件，未触碰 4141 端口。
