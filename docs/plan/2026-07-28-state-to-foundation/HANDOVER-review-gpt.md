@@ -379,3 +379,31 @@ rg -n 'state.*(core|reader)|core.*state|state-read|reader.*state|src/lib/state' 
 ## 第二轮总评
 
 整改显著提高了交接质量：§3.7 现在确实完整，consumer 范围、token 分层、strict boundary、package-wide SCC 盲区均被正确暴露。**但当前仍不宜直接交给新会话执行**，因为 S2、S4、S7 各有一个会明确假绿的 oracle；S1 新增 separator 工作也尚未有等价 contract oracle。修复上述 3 个 MAJOR，并补两项 MINOR 后，可进入执行会话。
+
+
+---
+
+## 第三轮：修复确认
+
+**复审提交**：`2919c26c`。
+
+### 第二轮发现的最终判定
+
+| 第二轮发现 | 判定 | 说明 |
+|---|---|---|
+| MAJOR-1：S4 stat oracle 无鉴别力 | **部分解决** | 改成 AST CallExpression 实参比较，已经能咬住单点删键／改键，方向正确；但“全仓全局 multiset”丢失 `file + call ordinal` 身份，两个调用交换整份实参时 multiset 不变，调用点语义却已改变。若红线真是“调用点零改动”，需比较 `file + lexical call index + normalized argument text` 的 keyed snapshot，而不是只有实参全局 multiset。另：基线实测不是“164 个调用点”，而是 164 个 test 文件提到该符号；AST 实测为 159 个含直接调用的文件、622 个直接 CallExpression。文档应区分文件数与调用数。 |
+| MAJOR-2：S2 count 不回升咬不住 re-export | **已解决** | 已改为 ratchet 的 `newCycles/newMembers` 集合差 + state/models-cache 内容断言，并增加 `state.ts` 禁止 re-export 8 符号的直接 AST 判据；正控形状具鉴别力。 |
+| MAJOR-3：S7 grep 维度过窄 | **已解决** | required-file 清单 + 旧路径／旧 owner／旧架构短语／排序清单四维检索，且每维有正样本要求，已覆盖上一轮指出的盲区。 |
+| MINOR-1：S1 `toBe` 不能证明 owner，separator contract 缺失 | **已解决** | 已改为 AST 证明旧模块只 re-export、无重复声明；separator 的值、类型 union、两个消费者、旧公共路径均纳入 oracle，并要求 mutation。 |
+| MINOR-2：§3.7 权威复跑仍用 grep | **部分解决** | HANDOVER 已正确把 `allModuleSpecifiers()` AST 脚本定为权威，并将 `rg 'from "'` 降为浏览。但 KICKOFF:24 仍把 `rg -n 'from "' ...` 写成动手前的“§3.7 出边枚举” gate，接手会话复制 KICKOFF 后仍可能执行不完整检查。应同步改为 AST 命令，或只写“按 HANDOVER §3.7 的 AST 枚举复跑”。 |
+
+### `state.ts ↔ state-defaults.ts` 两节点环预案
+
+- **选项 (b) 成立，并且是本项目判据下的推荐方案。** 建议新文件命名为职责明确的 `state-contract.ts`／`state-types.ts`，由 `state.ts` 与 `state-defaults.ts` 单向依赖，从根上消除互指。
+- 文档写“12 个类型”不准确：当前 `state-defaults.ts` 从 `state.ts` 直接 import **11 个名字**。其中 `MaxTokensContinuationConfig` 又依赖 4 个策略／visibility type alias；抽取时必须搬完整传递闭包，而非机械只搬 import list，否则第三文件仍要反向 import state，环会复活。
+- 还需保持 `~/lib/state` 的原公共类型表面：`state.ts` 应从新 contract re-export 这些类型，且 package-wide madge 与 public API/typecheck oracle共同验证。
+- **选项 (a) 显式豁免技术上诚实，但不应与 (b) 并列称为同等“正当”终态。** 它保留一个已知内部环，与本项目“只减不增、长远架构健康优先”的裁判轴冲突；除非用户明确裁定允许该环，否则应采用 (b)，而不是因“最省”选 (a)。
+
+### 最终 verdict
+
+**当前仍不建议直接交给新会话执行。** 主要未闭合项是 S4 AST oracle 仍丢失调用点身份，存在交换实参后假绿；另有 KICKOFF 的旧 grep gate 未同步。修复方式都很局部：S4 snapshot 加 `file + call ordinal` 键，KICKOFF 改指 AST 枚举；同时把两节点环方案明确推荐 (b) 并补“11 个直接类型 + 传递类型闭包”说明。完成后即可交接执行，无需再重做主体调研。

@@ -21,7 +21,7 @@
 本仓库并发提交频繁，交接一旦陈旧危害大于没有。按顺序跑完这三样再动手（详见 HANDOVER §6 第 4 条）：
 
 1. **§3.1 的环数**（`computeCircularSnapshot()`，**禁止**从 `circular-deps-baseline.json` 推算）；
-2. **§3.7 的出边枚举**（`rg -n 'from "' src/lib/state.ts src/lib/state-defaults.ts`）——**差集非空就先补表再动手**；
+2. **§3.7 的出边枚举**——**必须用 AST**（调 `tests/architecture/source-ast.ts` 的 `allModuleSpecifiers()`），**别用 `rg`**：`rg '^import'` 会静默漏掉全部多行 import，`rg 'from "'` 也漏 side-effect / dynamic / `import = require` 等形态。**差集非空就先补表再动手。**
 3. **§3.5 的消费者计数**。
 
 **行号一律以符号名为准**，文档里的行号只作参考。
