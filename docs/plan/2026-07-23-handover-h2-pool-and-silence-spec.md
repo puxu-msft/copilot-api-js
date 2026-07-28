@@ -43,9 +43,15 @@
   - **已知 concern（P4/P5 处理）**：`ClientSink.finalize` 类型声明 `void` 但 delivery 实际返回 Promise（`await-thenable`/`no-floating-promises` 均 off，lint 不会报）——接线时收紧为 `void | Promise<void>`。
   - **supervisor 所有权守卫**：`settleFinal()` **必须放进 owner 的 `finally`**，否则 owner 中途抛出会让 generation heartbeat timer 永久存活（unref 不阻塞退出，但会持续向已死客户端写 ping）。
 
+- ✅ **Task 0.6**（`623fb34f`/`dbdc1ebc`/`424604d3` + fix `a24f8aec`/`8c7221c1`/`e2489b4b`/`513127af`）——**seal-race crash 安全**。① 守卫**整个** `recordOpened`（headers + timing 整体丢弃）+ 三个 timing setter 全对齐 `if (sealed) return`；**`assertWritable` 对语义写的 loud-throw 未放宽**（reviewer 逐一核对 21 处调用点 + 正反双侧 oracle）。② quiescence join 经 reviewer 四点 code-read 核实「supervisor 只包 `ClientSink`、真拿不到 candidate lifecycle」属实 → **授权延后 P4/P5**（backlog 改写保留为余项、非删除）。**这条顺带关闭了一个既有的 process.exit 缺陷**（不止服务 B2）：晚到 deferred-header 撞 sealed recorder 会把良性迟到观测放大成整进程退出。教训已沉淀进 skill `debugging-server-crashes`（变体 C）。
+  - **reviewer 挖出的承重缺陷已修**：`unhandledRejection` 探针因 helper 里 `await request` 提供 live awaiter 而**结构上无牙**（三守卫全拆仍绿）→ 已补**真孤儿拓扑**用例、mutation 证其变红并捕获真实爆炸栈；`setAttemptTimingEpoch` 漏的对称守卫已补。seal-race 连跑 10 次 80/80。
+  - **现状可达性（别夸大）**：主线 production primary 腿今天已被 operation scope 结构性护住；本守卫覆盖 mock/legacy ctx、candidate-discard/supersede，以及 **P4/P5 将新增的未注册 fresh recovery 腿**。
+
+### 🎯 B2 地基（plan-2）**全部完成** —— 下一步 = plan-3 的 P4~P6
+
 ### 剩余（依赖序）
 
-**Task 0.6**（seal-race crash 安全：守卫**整个** `recordOpened`——headers + timing，非只 timing；依赖 0.5 的 quiescence）→ **P4~P6**（plan-3：两挂载点执行器 + 三模式 splice + handler 接线 + 协议矩阵——**全特性最硬的一块**；接线时一并解决 backlog 的 `afterHook`-vs-`preflight` env seam + `_reason` 透传两项，以及上面的 `finalize` 类型不一致）→ **B3**（plan-4，**默认关**，never-false-kill）→ 全分支终审 → ff 合 master。
+**P4~P6**（plan-3：两挂载点执行器 + 三模式 splice + handler 接线 + 协议矩阵——**全特性最硬的一块**；接线时一并解决：backlog 的 `afterHook`-vs-`preflight` env seam、`_reason` 透传、`ClientSink.finalize` 的 `void`-vs-`Promise` 签名、`makeReconcilingSink` 未继承 delivery identity、Task 0.6 ② 的 quiescence join，以及 `settleFinal()` **必须放进 owner 的 `finally`**）→ **B3**（plan-4，**默认关**，never-false-kill）→ 全分支终审 → ff 合 master。
 
 ⚠ **P4~P6 接线前务必重读 handler-v4/driver 现状**：master 的 ingress-deadline 重构 + heartbeat 重写已改动 plan-3 假定的接线点（plan-3 的 `file:line` 多半已漂移）。
 

@@ -15,7 +15,7 @@
 - **用户已裁决的分叉**（不要再问）：① 配置键 `precontent_recovery` 沿用；② **B2 排除 `timeout(header-wait)`/`reaper-cancel`**——用户硬约束「**绝不误杀合法长思考**」，只在确定性上游死亡（RST/transport-close/clean-EOF）才 fresh dispatch；③ buffered 尊重 `max_retries=0`；④ B3 计时器独立，且 **B3 wall-clock fail-fast 默认关闭**（同一硬约束）。见 README「用户裁决记录」。
 - **验证命令**：`bun run test:backend`（其汇总恒报 `0 tests` 的缺陷已于 master `5454616b` 修复）。**已知既有 flaky**：History V3 capture-performance 家族等 perf/时序测试在负载下会挂（master 同样会）——判回归以「单跑是否通过 + 是否属该家族」为准，别当自己的回归。
 
-**下一步 = Task 0.6**（seal-race crash 安全：守卫**整个** `recordOpened`，headers + timing 都要，不是只 timing），然后 P4~P6（最硬）→ B3 → 终审 → ff 合 master。
+**B2 地基（plan-2）已全部完成**（Task 0.1-0.7；0.6 的 ② quiescence join 授权延后 P4/P5）。**下一步 = plan-3 的 P4~P6**（两挂载点执行器 + 三模式 splice + handler 接线 + 协议矩阵，全特性最硬），然后 B3（默认关）→ 终审 → ff 合 master。
 
 ---
 
@@ -27,7 +27,7 @@
 4. 各阶段文档（按 DAG 顺序）：`plan-1-b1-widen-window.md`（**已由主线完成**） → `plan-2-b2-p0-p3-foundation.md` → `plan-3-b2-p4-p6-splice-and-matrix.md` → `plan-4-b3-failfast.md` → `plan-5-closeout.md`。
 
 **执行顺序（当前实际；原始 gate-first 顺序见括注）：**
-1. ~~B1（plan-1）~~ **已由主线完成**；B2-P0~P3（plan-2）中 Task 0.1/0.2/0.3/0.4/0.5/0.7 **已完成**，**剩 Task 0.6**（seal-race crash 安全）。
+1. ~~B1（plan-1）~~ **已由主线完成**；~~B2-P0~P3（plan-2）~~ **Task 0.1-0.7 全部完成**（0.6 的 ② quiescence join 授权延后 P4/P5，见 backlog）。
 2. B2-P4~P6（plan-3）在 plan-2 全部完成后开始——依赖已产出的 `coordinator.runRecoveryFromPreReadyFailure`、`hasDeliveredSemanticContent`、`recovery-sink-supervisor` 三件机件（**都已就位**）。⚠ 接线前重读 handler-v4/driver 现状（底座已漂移）。
 3. B3（plan-4）在 plan-3 完成后开始——复用 plan-3 的判据组合；**默认关闭**（never-false-kill 硬约束）。
 4. plan-5（收口）在前四者都通过全后端测试后执行。
