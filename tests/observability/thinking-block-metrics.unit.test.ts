@@ -8,6 +8,12 @@
 
 import {
   //
+  _resetRequestTelemetryForTests,
+  getDimensionBreakdown,
+  getThinkingBlockTotals,
+} from "@hsupu/ghc-proxy-telemetry/testing"
+import {
+  //
   afterEach,
   beforeEach,
   describe,
@@ -21,12 +27,7 @@ import type { RequestContextSnapshot } from "~/lib/observability"
 import { buildMetricsExposition } from "~/lib/metrics-exposition"
 import { createBus } from "~/lib/observability"
 import { attachTelemetrySink } from "~/lib/observability/sinks/telemetry"
-import {
-  //
-  _resetRequestTelemetryForTests,
-  getDimensionBreakdown,
-  getThinkingBlockTotals,
-} from "~/lib/request-telemetry"
+import { installDefaultTelemetryRuntime } from "~/lib/telemetry-assembly"
 
 function makeCtx(): RequestContextSnapshot {
   return { id: "ctx-1", endpoint: "anthropic-messages", method: "POST", path: "/v1/messages", state: "completed", startTime: Date.now(), queueWaitMs: 0 }
@@ -54,6 +55,9 @@ function makeEntry(content: unknown): HistoryEntryData {
 describe("thinking-block metrics: sink → telemetry → read-outs", () => {
   beforeEach(() => {
     _resetRequestTelemetryForTests()
+    // The telemetry SINK records through peekTelemetryRuntime() — without an assembled runtime it
+    // is a no-op and this test would silently observe zeros. Wire it as start.ts does.
+    installDefaultTelemetryRuntime()
   })
   afterEach(() => {
     _resetRequestTelemetryForTests()

@@ -1,3 +1,31 @@
+import {
+  //
+  openTelemetryDb,
+  type TelemetryDatabase,
+} from "@hsupu/ghc-proxy-telemetry/telemetry/db"
+import {
+  //
+  internDim,
+  internKey,
+} from "@hsupu/ghc-proxy-telemetry/telemetry/dictionary"
+import {
+  //
+  type RollupConfig,
+  runRollupTick,
+  resetRollupFailureLogged,
+} from "@hsupu/ghc-proxy-telemetry/telemetry/rollup"
+import {
+  //
+  createSketch,
+  quantile,
+} from "@hsupu/ghc-proxy-telemetry/telemetry/sketch"
+import { deserializePackedSketches } from "@hsupu/ghc-proxy-telemetry/telemetry/sketch-blob"
+import {
+  //
+  readMetaInt,
+  upsertSettledTier,
+  upsertSketchBlob,
+} from "@hsupu/ghc-proxy-telemetry/telemetry/store"
 /**
  * P4 rollup tick 验收 oracle —— raw→hourly→daily 链式上卷 + 三约束 + TTL 裁剪 + watermark 幂等。
  *
@@ -25,34 +53,6 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 
 import { decompressBytes } from "~/lib/sqlite/compression"
-import {
-  //
-  openTelemetryDb,
-  type TelemetryDatabase,
-} from "~/lib/telemetry/db"
-import {
-  //
-  internDim,
-  internKey,
-} from "~/lib/telemetry/dictionary"
-import {
-  //
-  type RollupConfig,
-  runRollupTick,
-  resetRollupFailureLogged,
-} from "~/lib/telemetry/rollup"
-import {
-  //
-  createSketch,
-  quantile,
-} from "~/lib/telemetry/sketch"
-import { deserializePackedSketches } from "~/lib/telemetry/sketch-blob"
-import {
-  //
-  readMetaInt,
-  upsertSettledTier,
-  upsertSketchBlob,
-} from "~/lib/telemetry/store"
 
 const RAW = 300_000 // 5min（默认 raw 分辨率）
 const HOUR = 3_600_000

@@ -64,6 +64,7 @@ export function createDownstreamDeliverySession(options: CreateDownstreamDeliver
   let messageEnvelope: ClientBlockLedger["messageEnvelope"] = "none"
   let openBlocks: Array<DeliveredOpenBlock> = []
   let lastWriteAtMonotonic = 0
+  let lastContentDeltaAtMonotonic = monotonicNow()
   let semanticBlockCount = 0
   let terminalWritten = false
   let writeCount = 0
@@ -72,6 +73,7 @@ export function createDownstreamDeliverySession(options: CreateDownstreamDeliver
   let heartbeatSuspended = false
   let heartbeatStopped = false
   let scaffoldAttempted = false
+  let contentScaffoldAttempted = false
   let pendingOpenBlocks: Array<DeliveredOpenBlock> = []
   let hasEmittedRealClientContent = false
 
@@ -81,7 +83,9 @@ export function createDownstreamDeliverySession(options: CreateDownstreamDeliver
       applyPendingFrame(entry)
       await writeToSink(sink, entry)
       applyWireFrame(entry)
-      lastWriteAtMonotonic = monotonicNow()
+      const writtenAt = monotonicNow()
+      lastWriteAtMonotonic = writtenAt
+      if (isContentDelta(entry.frame)) lastContentDeltaAtMonotonic = writtenAt
       writeCount++
     })
   }
@@ -112,9 +116,44 @@ export function createDownstreamDeliverySession(options: CreateDownstreamDeliver
   const tickHeartbeat = (): void => {
     timer = undefined
     if (!heartbeat || state !== "open" || heartbeatSuspended || heartbeatStopped || heartbeat.clientAbortSignal?.aborted) return
-    const elapsed = monotonicNow() - lastWriteAtMonotonic
+    const now = monotonicNow()
+    const heartbeatLedger = Object.freeze({ ...currentLedger(), openBlocks: Object.freeze(pendingOpenBlocks.map((block) => Object.freeze({ ...block }))) })
+    const contentDeadlineMs = heartbeat.contentDeadlineMs ?? 0
+    // Content-idle is independent of byte/write-idle: upstream pings may keep arriving every few
+    // seconds while Claude Code's 300s event watchdog still advances. Check this deadline before
+    // the normal forward-idle gate so frequent ping writes cannot postpone escalation forever.
+    const contentEscalationDue = contentDeadlineMs > 0 && now - lastContentDeltaAtMonotonic >= contentDeadlineMs
+    if (contentEscalationDue) {
+      if (pendingOpenBlocks.length > 0 && heartbeat.contentFrame) {
+        void write(makeEnvelope(heartbeat.contentFrame(heartbeatLedger), "keepalive", monotonicNow())).finally(() => armHeartbeat())
+        return
+      }
+      // Fixed anchor@0 is valid only before any real block has completed. After the first
+      // committed block, a no-open window needs the future monotone index allocator; reusing
+      // index 0 would make the SDK reorder content. Until that design lands, stay on ping.
+      if (pendingOpenBlocks.length === 0 && semanticBlockCount === 0 && heartbeat.injectContentScaffold && !contentScaffoldAttempted) {
+        contentScaffoldAttempted = true
+        void heartbeat
+          .injectContentScaffold()
+          .then((injected) => {
+            if (!injected) contentScaffoldAttempted = false
+            else lastContentDeltaAtMonotonic = monotonicNow()
+          })
+          .catch(() => {
+            contentScaffoldAttempted = false
+          })
+          .finally(() => armHeartbeat())
+        return
+      }
+    }
+    const elapsed = now - lastWriteAtMonotonic
     if (elapsed < heartbeat.intervalMs) {
-      armHeartbeat(heartbeat.intervalMs - elapsed)
+      armHeartbeat(
+        Math.min(
+          heartbeat.intervalMs - elapsed,
+          contentDeadlineMs > 0 ? Math.max(1, contentDeadlineMs - (now - lastContentDeltaAtMonotonic)) : Number.POSITIVE_INFINITY,
+        ),
+      )
       return
     }
     if (heartbeat.injectScaffold && pendingOpenBlocks.length === 0 && !scaffoldAttempted) {
@@ -130,7 +169,6 @@ export function createDownstreamDeliverySession(options: CreateDownstreamDeliver
         .finally(() => armHeartbeat())
       return
     }
-    const heartbeatLedger = Object.freeze({ ...currentLedger(), openBlocks: Object.freeze(pendingOpenBlocks.map((block) => Object.freeze({ ...block }))) })
     void write(makeEnvelope(heartbeat.frame(heartbeatLedger), "keepalive", monotonicNow())).finally(() => armHeartbeat())
   }
 
@@ -169,7 +207,7 @@ export function createDownstreamDeliverySession(options: CreateDownstreamDeliver
     writeKeepalive: (frame) => write(makeEnvelope(frame, "keepalive", monotonicNow())),
     writeSyntheticEnvelope: (frame) => write(makeEnvelope(frame, "synthetic-message-start", monotonicNow())),
     writeAnchor: (frame) => write(makeEnvelope(frame, "anchor", monotonicNow())),
-    freezeHeartbeat: closeHeartbeat,
+    freezeHeartbeat: stopHeartbeat,
     suspendHeartbeat() {
       heartbeatSuspended = true
       stopHeartbeat()
@@ -283,6 +321,10 @@ async function writeToSink(sink: ClientSink, entry: DeliveryFrame): Promise<void
 
 function syntheticKind(entry: DeliveryFrame): DeliverySyntheticKind | undefined {
   return entry.provenance.kind === "synthetic" ? (entry.provenance.syntheticKind as DeliverySyntheticKind) : undefined
+}
+
+function isContentDelta(frame: DeliveryFrame["frame"]): boolean {
+  return parsePayload(frame.data)?.type === "content_block_delta"
 }
 
 function parsePayload(data: string | undefined): { type?: string; index?: number; content_block?: { type?: string } } | undefined {

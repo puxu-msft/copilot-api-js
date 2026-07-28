@@ -51,7 +51,7 @@ Session header 候选（按优先级）：`x-session-id` → `x-conversation-id`
 **per-attempt 上游轨**（proxy ↔ upstream，`attempts[]` 逐次保留——~13 重试策略各产生独立上游往返，常见长度 =1）：
 
 - `effectiveSource` — 本轮 pipeline 工作载荷：`body` = `env.body` 本尊（SoT，逐字保留、不归一 IR）；`{ format, model, messageCount, messages, system }` 是 `body` 的非权威投影；`pipeline` 载本轮 truncation/sanitization/messageMapping。**注**：`env.body` 未必等于客户端端点格式——Gemini 在 route/parse 就 Gemini→CC，故其 `effectiveSource.format='cc'`、原始 Gemini 体只在 `clientRequest.body`
-- `upstreamRequest` — proxy → upstream：发往上游的最终 wire 请求，`{ format, model, messages, system, headers, body }`（带 messages 投影，供详情／debug replay 忠实还原）
+- `upstreamRequest` — proxy → upstream：发往上游的最终 wire 请求，`{ format, synthetic?, model, messages, system, headers, body }`（带 messages 投影，供详情／debug replay 忠实还原）。`synthetic` 是合成上游请求的 provenance，只在 continuation 等合成腿出现；真实 wire body 字节不含该字段
 - `upstreamResponse` — upstream → proxy：**每个已 settled 的 attempt 恒载一条**（成功=真实响应；失败=合成裁决，`fail()`/`abort()` 与 `complete()` 对称写入）。`success` = 上游返回完整 2xx 且协议正常终止；`{ success, status?, headers, trailers?, body?, rawBody?, sseEvents?, usage?, stopReason?, model?, responseId?, copilotAnnotations?, toolSearchRequests? }`。成功流上游帧统一进 `upstreamResponse.sseEvents`；失败（非最终）attempt 的帧在 `attempts[].sseEvents`（L2 buffered-retry D1，仅失败 attempt 落 per-attempt 行）
 - `responseHeaders` — 逐 attempt 上游响应头（driver 每 attempt 写）
 

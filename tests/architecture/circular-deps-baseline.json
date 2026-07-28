@@ -1,5 +1,5 @@
 {
-  "count": 73,
+  "count": 70,
   "cycles": [
     "lib/adaptive-rate-limiter.ts > lib/error/index.ts > lib/error/forward.ts > lib/context/request.ts > lib/context/activity-summary.ts > lib/history/store.ts > lib/history/entries.ts > lib/history/in-flight.ts > lib/history/entry-view.ts > lib/history/accumulate-response.ts > lib/history/types.ts > lib/codec/openai-responses/buffered-merge-reducer.ts > lib/pipeline/frame-origin.ts > lib/pipeline/types.ts > lib/context/types.ts > lib/models/client.ts > lib/copilot-api.ts > lib/state.ts",
     "lib/adaptive-rate-limiter.ts > lib/error/index.ts > lib/error/forward.ts > lib/context/request.ts > lib/context/activity-summary.ts > lib/history/store.ts > lib/history/entries.ts > lib/history/in-flight.ts > lib/history/entry-view.ts > lib/history/accumulate-response.ts > lib/history/types.ts > lib/codec/openai-responses/buffered-merge-reducer.ts > lib/pipeline/frame-origin.ts > lib/pipeline/types.ts > lib/context/types.ts > lib/models/client.ts > lib/copilot-api.ts > lib/state.ts > lib/state-defaults.ts > lib/anthropic/recover-refusal.ts > lib/anthropic/client.ts > lib/shutdown.ts",
@@ -35,9 +35,6 @@
     "lib/anthropic/client.ts > lib/shutdown.ts > lib/context/manager.ts > lib/observability/index.ts > lib/observability/bus.ts > lib/observability/events.ts > lib/observability/projections/log-line.ts > lib/history/entry-view.ts > lib/history/accumulate-response.ts > lib/history/types.ts > lib/codec/openai-responses/buffered-merge-reducer.ts > lib/pipeline/frame-origin.ts > lib/pipeline/types.ts > lib/context/types.ts > lib/models/client.ts > lib/copilot-api.ts > lib/state.ts > lib/state-defaults.ts > lib/anthropic/recover-refusal.ts",
     "lib/anthropic/client.ts > lib/shutdown.ts > lib/context/manager.ts > lib/observability/index.ts > lib/observability/bus.ts > lib/observability/events.ts > lib/observability/projections/log-line.ts > lib/history/types.ts > lib/codec/openai-responses/buffered-merge-reducer.ts > lib/pipeline/frame-origin.ts > lib/pipeline/types.ts > lib/context/types.ts > lib/models/client.ts > lib/copilot-api.ts > lib/state.ts > lib/state-defaults.ts > lib/anthropic/recover-refusal.ts",
     "lib/anthropic/client.ts > lib/shutdown.ts > lib/context/manager.ts > lib/observability/index.ts > lib/observability/bus.ts > lib/observability/events.ts > lib/observability/projections/log-line.ts > lib/observability/projections/format.ts > lib/state.ts > lib/state-defaults.ts > lib/anthropic/recover-refusal.ts",
-    "lib/anthropic/client.ts > lib/shutdown.ts > lib/context/manager.ts > lib/request-telemetry.ts > lib/history/store.ts > lib/history/entries.ts > lib/history/in-flight.ts > lib/history/entry-view.ts > lib/history/accumulate-response.ts > lib/history/types.ts > lib/codec/openai-responses/buffered-merge-reducer.ts > lib/pipeline/frame-origin.ts > lib/pipeline/types.ts > lib/context/types.ts > lib/models/client.ts > lib/copilot-api.ts > lib/state.ts > lib/state-defaults.ts > lib/anthropic/recover-refusal.ts",
-    "lib/anthropic/client.ts > lib/shutdown.ts > lib/context/manager.ts > lib/request-telemetry.ts > lib/observability/telemetry-dimensions.ts > lib/context/types.ts > lib/models/client.ts > lib/copilot-api.ts > lib/state.ts > lib/state-defaults.ts > lib/anthropic/recover-refusal.ts",
-    "lib/anthropic/client.ts > lib/shutdown.ts > lib/context/manager.ts > lib/request-telemetry.ts > lib/state.ts > lib/state-defaults.ts > lib/anthropic/recover-refusal.ts",
     "lib/anthropic/client.ts > lib/shutdown.ts > lib/context/manager.ts > lib/state.ts > lib/state-defaults.ts > lib/anthropic/recover-refusal.ts",
     "lib/anthropic/client.ts > lib/shutdown.ts > lib/context/request.ts > lib/context/activity-summary.ts > lib/history/store.ts > lib/history/entries.ts > lib/history/in-flight.ts > lib/history/entry-view.ts > lib/history/accumulate-response.ts > lib/history/types.ts > lib/codec/openai-responses/buffered-merge-reducer.ts > lib/pipeline/frame-origin.ts > lib/pipeline/types.ts > lib/context/types.ts > lib/models/client.ts > lib/copilot-api.ts > lib/state.ts > lib/state-defaults.ts > lib/anthropic/recover-refusal.ts",
     "lib/anthropic/client.ts > lib/shutdown.ts > lib/history/index.ts > lib/history/store.ts > lib/history/entries.ts > lib/history/in-flight.ts > lib/history/entry-view.ts > lib/history/accumulate-response.ts > lib/history/types.ts > lib/codec/openai-responses/buffered-merge-reducer.ts > lib/pipeline/frame-origin.ts > lib/pipeline/types.ts > lib/context/types.ts > lib/models/client.ts > lib/copilot-api.ts > lib/state.ts > lib/state-defaults.ts > lib/anthropic/recover-refusal.ts",
@@ -118,7 +115,6 @@
     "lib/observability/index.ts",
     "lib/observability/projections/format.ts",
     "lib/observability/projections/log-line.ts",
-    "lib/observability/telemetry-dimensions.ts",
     "lib/openai/upstream-ws-connection.ts",
     "lib/openai/upstream-ws.ts",
     "lib/pipeline/cell-assembly.ts",
@@ -128,7 +124,6 @@
     "lib/pipeline/rewrite-registry.ts",
     "lib/pipeline/types.ts",
     "lib/proxy.ts",
-    "lib/request-telemetry.ts",
     "lib/request/retry-types.ts",
     "lib/request/strategies/deferred-tool-retry.ts",
     "lib/shutdown.ts",

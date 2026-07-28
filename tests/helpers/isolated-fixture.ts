@@ -26,6 +26,8 @@
  * documented exemptions — so the table cannot silently drift.
  */
 
+import { resetTelemetryRuntimeForTests } from "@hsupu/ghc-proxy-telemetry"
+import { _resetRequestTelemetryForTests } from "@hsupu/ghc-proxy-telemetry/testing"
 import {
   //
   afterEach,
@@ -55,6 +57,7 @@ import { clearRecentModelOperationTerminalsForTests } from "~/lib/history/v3/ter
 import { resetAllLimitsForTesting } from "~/lib/models/calibration/engine"
 import { resetModelsEtagForTests } from "~/lib/models/client"
 import { resetReaperDiagnosticsForTests } from "~/lib/observability/reaper-diagnostics"
+import { resetRetryGiveUpsForTests } from "~/lib/observability/retry-giveups"
 import { resetRetryStrategyFiresForTests } from "~/lib/observability/retry-strategy-fires"
 import { resetResponseSessionStoreForTests } from "~/lib/openai/response-session-store"
 import {
@@ -68,7 +71,6 @@ import {
   setUpstreamHookForTests,
 } from "~/lib/pipeline/hooks/loader"
 import { resetProcessIdentityForTests } from "~/lib/process-identity"
-import { _resetRequestTelemetryForTests } from "~/lib/request-telemetry"
 import {
   //
   resetRawModelsForTests,
@@ -76,6 +78,11 @@ import {
   type StateSnapshot,
   snapshotStateForTests,
 } from "~/lib/state"
+import {
+  //
+  installDefaultTelemetryDeps,
+  installDefaultTelemetryRuntime,
+} from "~/lib/telemetry-assembly"
 import { resetTokenRuntimeForTests } from "~/lib/token"
 import {
   //
@@ -119,6 +126,13 @@ export const RESETTERS: ReadonlyArray<{ name: string; reset: () => void | Promis
   { name: "resetProtectStreamingStatsForTests", reset: resetProtectStreamingStatsForTests },
   { name: "resetToolInputRepairStatsForTests", reset: resetToolInputRepairStatsForTests },
   { name: "resetAllLimitsForTesting", reset: resetAllLimitsForTesting },
+  // Telemetry teardown is ORDER-DEPENDENT and these two entries must stay in THIS order:
+  // `resetTelemetryRuntimeForTests` disposes the runtime, and a final-shutdown dispose SEALS the
+  // registry (`telemetryShutdownSealed = true`, so a late config callback cannot re-arm timers
+  // against a closing db). Only the registry hard-reset clears that seal — so running the registry
+  // reset FIRST would leave every following test sealed, silently disabling config-driven timer
+  // re-arming. (This used to claim order-independence; it never was.)
+  { name: "resetTelemetryRuntimeForTests", reset: resetTelemetryRuntimeForTests },
   { name: "_resetRequestTelemetryForTests", reset: _resetRequestTelemetryForTests },
   { name: "resetModelsEtagForTests", reset: resetModelsEtagForTests },
   { name: "resetRawModelsForTests", reset: resetRawModelsForTests },
@@ -126,6 +140,7 @@ export const RESETTERS: ReadonlyArray<{ name: string; reset: () => void | Promis
   { name: "resetAbortableDelayScaleForTests", reset: resetAbortableDelayScaleForTests },
   { name: "resetReaperDiagnosticsForTests", reset: resetReaperDiagnosticsForTests },
   { name: "resetRetryStrategyFiresForTests", reset: resetRetryStrategyFiresForTests },
+  { name: "resetRetryGiveUpsForTests", reset: resetRetryGiveUpsForTests },
   { name: "_resetConfigValidationWarnTrackingForTests", reset: _resetConfigValidationWarnTrackingForTests },
   { name: "resetBundledConfigCacheForTests", reset: resetBundledConfigCacheForTests },
   { name: "resetUpstreamWsManagerForTests", reset: () => void resetUpstreamWsManagerForTests() },
@@ -229,6 +244,17 @@ export function useIsolatedRuntime(opts: IsolatedRuntimeOptions = {}): void {
 
   beforeEach(() => {
     snapshot = snapshotStateForTests()
+    // Assemble the telemetry domain exactly as production start.ts does, so the tolerant
+    // `peekTelemetryRuntime()` legs (accepted/settled recording) and the fail-fast read routes
+    // (`/api/status`, `/api/stats`, `/metrics`) see the same wiring here as on the server. Runs in
+    // beforeEach — not resetTestRuntime — because RESETTERS clears the singleton in afterEach.
+    //
+    // Re-installing the PORTS (not just the runtime) is what makes this immune to a preceding file
+    // that installed fakes: the deps holder is a last-writer-wins module singleton with no reset, so
+    // without this a fake `TelemetryConfigView` from another test file would silently persist into
+    // every later test in the same worker.
+    installDefaultTelemetryDeps()
+    installDefaultTelemetryRuntime()
     // Retry-backoff waits (dispatch-scheduler `abortableDelay`) resolve instantly under
     // the fixture — the declared waitMs/queueWaitMs accounting is untouched. Cuts seconds
     // off any retry-triggering test (e.g. the v4 http golden files). Reset to 1 in afterEach.

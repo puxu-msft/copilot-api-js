@@ -1,3 +1,23 @@
+import type { RollupConfig } from "@hsupu/ghc-proxy-telemetry/telemetry/rollup"
+
+import { readJsonBackfillBoundaryTs } from "@hsupu/ghc-proxy-telemetry"
+import {
+  //
+  openTelemetryDb,
+  type TelemetryDatabase,
+} from "@hsupu/ghc-proxy-telemetry/telemetry/db"
+import {
+  //
+  type BackfillDimensionConfig,
+  cleanupOrphanTelemetryTmpFiles,
+  migrateJsonToTelemetryDb,
+  TELEMETRY_JSON_BACKFILL_VERSION,
+} from "@hsupu/ghc-proxy-telemetry/telemetry/migrate-json"
+import {
+  //
+  readCumulativeAccepted,
+  readMetaInt,
+} from "@hsupu/ghc-proxy-telemetry/telemetry/store"
 /**
  * P6 —— 旧 JSON 全量吸收 backfill（纯快照吸收函数）+ .tmp 清理 验收 oracle。
  *
@@ -31,27 +51,6 @@ import {
 } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-
-import type { RollupConfig } from "~/lib/telemetry/rollup"
-
-import {
-  //
-  openTelemetryDb,
-  type TelemetryDatabase,
-} from "~/lib/telemetry/db"
-import {
-  //
-  type BackfillDimensionConfig,
-  cleanupOrphanTelemetryTmpFiles,
-  migrateJsonToTelemetryDb,
-  TELEMETRY_JSON_BACKFILL_VERSION,
-} from "~/lib/telemetry/migrate-json"
-import { readJsonBackfillBoundaryTs } from "~/lib/telemetry/read"
-import {
-  //
-  readCumulativeAccepted,
-  readMetaInt,
-} from "~/lib/telemetry/store"
 
 const BUCKET_MS = 5 * 60 * 1000
 const HOUR_MS = 3_600_000

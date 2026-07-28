@@ -1,5 +1,11 @@
 import {
   //
+  CAPPED_DIMENSION_NAMES,
+  TELEMETRY_DIMENSION_NAMES,
+  TELEMETRY_DIMENSION_SPECS,
+} from "@hsupu/ghc-proxy-telemetry"
+import {
+  //
   describe,
   expect,
   test,
@@ -9,11 +15,11 @@ import type { HistoryEntryData } from "~/lib/context/types"
 
 import {
   //
-  CAPPED_DIMENSION_NAMES,
   extractTelemetryKeys,
   extractThinkingBlockCounts,
   extractToolNames,
   normalizeClient,
+  TELEMETRY_DIMENSIONS,
 } from "~/lib/observability/telemetry-dimensions"
 
 /** Minimal settled-entry factory — only the fields the extractors read. */
@@ -290,5 +296,31 @@ describe("CAPPED_DIMENSION_NAMES", () => {
     expect(CAPPED_DIMENSION_NAMES.has("tool")).toBe(true)
     expect(CAPPED_DIMENSION_NAMES.has("endpoint")).toBe(false)
     expect(CAPPED_DIMENSION_NAMES.has("agentKind")).toBe(false)
+  })
+})
+
+describe("T3 split: the name registry and the extractors live on opposite sides of the domain boundary", () => {
+  test("every domain-owned spec is joined with a core-owned extractor (no dimension loses its resolver)", () => {
+    // The join is what the split must preserve: names come from the telemetry domain, extractors
+    // from core, and TELEMETRY_DIMENSIONS is exactly their pairing — same names, same order,
+    // every one carrying a callable extractor.
+    expect(TELEMETRY_DIMENSIONS.map((dim) => dim.name)).toEqual([...TELEMETRY_DIMENSION_NAMES])
+    expect(TELEMETRY_DIMENSIONS.map((dim) => dim.cardinality)).toEqual(TELEMETRY_DIMENSION_SPECS.map((spec) => spec.cardinality))
+    for (const dim of TELEMETRY_DIMENSIONS) expect(typeof dim.extract).toBe("function")
+  })
+
+  test("the capped set is derived from the domain-owned specs, not restated in core", () => {
+    expect([...CAPPED_DIMENSION_NAMES].sort()).toEqual(
+      TELEMETRY_DIMENSION_SPECS.filter((spec) => spec.cardinality === "capped")
+        .map((spec) => spec.name)
+        .sort(),
+    )
+    // Non-vacuous: the split would be pointless if nothing were capped.
+    expect(CAPPED_DIMENSION_NAMES.size).toBeGreaterThan(0)
+  })
+
+  test("extractTelemetryKeys resolves a key slot for EVERY registered name (the split kept the registry whole)", () => {
+    const keys = extractTelemetryKeys(makeEntry(), ctxStub)
+    expect(Object.keys(keys).sort()).toEqual([...TELEMETRY_DIMENSION_NAMES].sort())
   })
 })

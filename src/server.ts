@@ -129,7 +129,13 @@ export function createServer() {
   // Also proactively ensure the Copilot token is valid — if the last background
   // refresh failed or the token is about to expire, try refreshing now rather than
   // waiting for a 401 from the upstream API.
-  server.use(async (_c, next) => {
+  server.use(async (c, next) => {
+    // Stamped BEFORE the awaits below, because they are exactly what makes the stamp
+    // necessary: `ensureValidCopilotToken()` can spend real seconds on retries with
+    // backoff, and the Anthropic delayed-commit window is a deadline measured from
+    // request ingress (its budget is shared with the client's own pre-header limit,
+    // which starts at the client's dispatch — see handler-v4's commit window).
+    ;(c as Context).set("ingressAtMs", Date.now())
     await applyConfigToState()
     await peekTokenRuntime()?.ensureValidCopilotToken()
     await next()

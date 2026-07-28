@@ -1,4 +1,4 @@
-# Q1 / Q2 实测门 PoC 结论（2026-07-23）
+# Q1 / Q2 实测门 PoC 结论（2026-07-23，Q1 首次失败点于 2026-07-27 闭合）
 
 关联 spec：[`docs/spec/2026-07-23-upstream-silence-commit-timing.md`](../../docs/spec/2026-07-23-upstream-silence-commit-timing.md) §8 Q1/Q2。执行：`gpt-souls:poc-runner`（主会话补记本文档——运行环境交付纪律禁止子 agent 写 report/findings 文档）。实验代码与实测 JSON 见同目录 `q1-*.ts` / `q2-live-probe.ts` / `results/`。
 
@@ -27,6 +27,77 @@
 - **但事故 RST 最早 ~126s**，故仅把窗口调到 125s **不能确认覆盖事故**（B1 单独救不了干挂到 126-206s 的 A，与 spec §5.B1「部分」一致）。
 - **待续**：定默认值/schema clamp 前，继续跑真 CC 的 130s/150s/180s 阶梯找首个失败区间 + 留安全余量。
 
+> **⚠ 本节（含上面这条「待续」）已被下一节 2026-07-27 续测 supersede。** 阶梯不必跑了，首次失败点已直接测得；「上界未知」不再成立。本节保留仅作历史语境，**搜索命中本节时请直接读下一节**。
+
+## Q1 续测（2026-07-27）：首次失败点 = **300.0s**，且不归 Anthropic 层 —— 区间闭合
+
+上轮留的 `[125s, 未知)` 现已闭合。**没有走阶梯**：阶梯每档一次完整运行、且只能夹逼。改为让 fake server 静默到远超任何可能容忍度，直接从 `request.signal` 服务端读出客户端放弃的时刻——一次运行同时给出精确点位与其后的重试行为。代码 `q1-abort-observer-server.ts` / `q1-firstfail-cli-runner.ts` / `q1-bare-fetch-runner.ts` / `run-q1-firstfail.sh`，实测 JSON 见 `results/q1-firstfail/`。
+
+**对照先行**（否则「没观测到 abort」什么也证明不了）：`curl --max-time 5` 必须被记成 `abortedAfterMs: 5002`（abort 检测真的工作）；10s 窗口必须驱动真 CC 走完整成功、且 `result` 里带着服务器自己写的标签文本（成功路径端到端通）。两条都过。
+
+| 臂 | 客户端 | 自称 timeout | 放弃时刻 |
+|---|---|---:|---:|
+| firstfail attempt 1 | 真 CC 2.1.220 | `x-stainless-timeout: 1200`（秒） | **299,667ms** |
+| firstfail attempt 2（CC 自发重试） | 同上 | 同上 | **300,268ms** |
+| firstfail attempt 3 | 同上 | 同上 | **300,280ms** |
+| firstfail attempt 4 | 同上 | 同上 | **300,256ms** |
+| sdkcontrol | `@anthropic-ai/sdk` 0.106.0，`maxRetries:0`、显式 `timeout: 1_250_000` | 1250 | **300,001ms**，`Request timed out.` |
+| idle-env-600s | 真 CC + `CLAUDE_STREAM_IDLE_TIMEOUT_MS=600000` | — | **299,813ms**（**没动**） |
+| barefetch | Node 裸 `fetch`，无 SDK 无 CC（node v24.16.0 / undici 7.25.0） | 无 | **300,986ms**，`UND_ERR_HEADERS_TIMEOUT`（另一次独立跑 300,887ms） |
+| rawsocket | 裸 TCP socket，无任何 HTTP 客户端 | 无 | **420.1s 仍未被关**（服务端对照） |
+| repro-125s | 真 CC 2.1.220 | — | 成功 125,002ms，exit 0、`num_turns:1` |
+
+**归因（四步排除，每步都有独立对照）**：
+
+0. **服务端对照（最要命的一条，因为三个客户端臂打的是同一个服务端实现）**：若是我方 Bun server 在 300s 关连接，三臂会一起「撞上 300s」而结论全错。用裸 TCP socket 发同样的 POST 后干等：**420.1s 服务器既没关连接也没发一个字节**（`rawsocket` 臂）。故 `Bun.serve({ idleTimeout: 0 })` 确实禁用了服务端超时，300s 完全在客户端侧。
+1. **不是 harness 的其他部分**：服务器一直挂着（窗口 900–1500s），是客户端先走。SDK 臂显式给了 1250s 超时仍在 300.0s 死——它自己的 `setTimeout(abort, 1_250_000)` 根本没到点。
+2. **不是 CC 的 stream idle watchdog**：把 `CLAUDE_STREAM_IDLE_TIMEOUT_MS` 抬到 600000，放弃点纹丝不动（299,813ms）。且源码侧 `x0i()` 的武装点 `he()` 在 `await …withResponse()` **之后**，pre-header 期间本就没武装。
+3. **是 undici 的默认 `headersTimeout`**：剥掉全部 Anthropic 层的裸 `fetch` 在 300,986ms 抛 `HeadersTimeoutError` / `UND_ERR_HEADERS_TIMEOUT`（客户端侧原始记录 `results/q1-firstfail/barefetch.client.json`，含 runtime 版本；服务端侧 300,934ms）。这一层在 SDK 与 CC 的配置**下面**，所以两者自称的 1200s/1250s 都够不着它。错误类型本身也是证据：客户端超时抛的是 `HeadersTimeoutError`，服务端关连接抛的会是 socket/reset 类错误。机制侧独立佐证：`node_modules/undici/lib/dispatcher/client.js` 把 `headersTimeout` 默认设为 `300e3`，undici 文档同述。
+   **跨 runtime 注记**：bare-fetch 臂跑在系统 **node v24.16.0 / undici 7.25.0**，而 CC 2.1.220 自报的 runtime 是 **Node v26.3.0**（见 `firstfail.observations.json` 的 `x-stainless-runtime-version`；CC 未暴露其内置 undici 版本）。**该默认值在这两个不同 Node runtime 的观测中一致**——但它仍是**可覆盖、可随版本变化的默认值**，换客户端/runtime 版本要重测。（不要写成「undici 一段时间内的稳定默认」：我们只有两个 runtime 样本，其中一个还没暴露具体 undici 版本，那个说法比证据宽。）
+
+**因此 `x-stainless-timeout: 1200` 确实不是 oracle**——上轮的谨慎标注是对的，但真实上限比它小 4 倍，不是大。
+
+**CC 撞上后不会死给用户看**：观测到 **4 个完整的 ~300s 超时周期**，每次放弃后 CC 自动重发（attempt 到达 1,401 / 301,615 / 602,930 / 905,365 / 1,209,678ms），第 5 次 attempt 已发出但其结局未被观测。**重试间隔是指数退避**：由 `arrivedAtMs + abortedAfterMs` 算出的四个间隔为 **547 / 1,047 / 2,155 / 4,057ms**（不是固定 ~2s）。即 pre-header 超时落在 CC 的**原生重试保护区**内——代价是每次重试都让上游从头重算。**边界（诚实标注）**：这轮是**我主动杀掉探针服务器结束的**，不是 CC 自己耗尽重试——所以「CC 最多重试几次才向用户报错」**未测定**。两条长跑的末条 `API Error: Unable to connect to API (ConnectionRefused)` 是我方清理的产物，**不是** CC 的自然终态，不要引用成 CC 的放弃行为。
+
+**结论的作用域（别写宽）**：
+- 严格可断言的是——**本机 CC 2.1.220（内置 Node v26.3.0 transport 默认）下，四次 attempt 的 pre-header 首次 transport abort 落在 299.667–300.280s**。「容忍度 = 300.0s」是简写，但**不是协议常量**：`headersTimeout` 是 undici 的**默认值**，可被 dispatcher 覆盖、可随 Node/undici 版本变化。
+- 归因的精确表述是——**不是** Anthropic SDK 的 1200/1250s request timer，**也不是** CC 那个 header 后才武装的 stream-idle watchdog；直接触发器**与 undici 默认 `headersTimeout` 一致**。说「不属于 CC」过宽：undici/Node transport 本来就是 CC 的运行栈的一部分。
+
+**不要由此推出「总预算 T+300s」或「~600s 天花板」**（本文档初稿曾这样写，**是错的**）：commit 之后那个 300s 是 **idle watchdog**、不是 total timeout——任何非-ping 事件都会 `he()` 重置它（`exp/cc-idle-280s/REPORT.md` 实测：ping-only ~300s 断，空 content delta 能撑过 340s）。而且我方默认就在主动重置它：`streamKeepaliveEscalateSec` 默认 **200s**（`src/lib/state.ts:410-415`，注释自陈「留 ~100s 余量给 CC 的 300s watchdog」），到点发匹配开块的 content delta 或 pre-content 注入脚手架，并把 deadline 重锚到该次写出。**post-commit 能撑多久由 keepalive/escalation 契约决定，不是一个 300s 的常数。**
+
+**版本注记**：本轮是 CC **2.1.220**（上轮 2.1.218）。125s 正样本在新版本上复现通过，故两轮可比。参照源码 `~/.claude/refs/claude-code-2.1.207` 与实装版本有漂移（例：2.1.220 里 300s 的 `t1_()` 只在非流式路径调用），**行号与结论都只对 2.1.207 有效**，凡涉及实装行为一律以本表实测为准。
+
+**对 B1 / commit 时机的意义**：
+- **`stream_commit_after_sec` 的上限 = 当前实测的 transport default（~300s）减安全余量**，不再是「未知」。plan-1 Task 1.2 把 ceiling 提到 125s 是**安全的，但保守了 175s**。注意这个 300 是**当前客户端栈的默认值、不是永恒常量**，随 CC/Node/undici 版本或 dispatcher 覆盖而变，应按版本重新校准。
+- **「把 commit 推迟到首个真实块」在无上限形式下不成立**：commit 前一个字节都没发，~300s 一到该 attempt 就被 `headersTimeout` 中止。可安全断言的窄结论仅此一条——**单个 pre-header attempt 必须在 ~300s 前 commit，否则接受该 attempt 被中止**。**不要**据此推「总预算 T+300s」或「~600s 天花板」（理由见上一节）。
+- 事故的 RST 落在 126–206s，**整段在 ~300s 窗口内**——把默认窗口抬到该区间之上，这些请求就能留在 pre-header 区、拿到真 HTTP 状态、走 CC 原生重试，这正是 B1 的收益论证。
+- **两个 300s 是相互独立配置、当前默认值恰好相同的两个机制**：pre-header 的是 undici `headersTimeout`（任何响应头即满足）；post-commit 的是 CC 的 stream idle watchdog（**ping 不重置**、非-ping 事件重置）。**不得合并做预算。**（初稿写的「数值巧合」是因果解释，两个样本证不了，此处只陈述可证事实。）
+
+**时间基注记**：探针记的是**服务端 handler 视角**的客户端断开时刻（`arrivedAt` 从 handler 收到并解析完请求起算），而 undici 的 `headersTimeout` 是**客户端 dispatch 视角**。CC 请求体约 190KB，故 attempt 1 的服务端读数 299,667ms 可能比客户端真实阈值早几百毫秒。因此本节的可断言精度是「**约 300s 的默认阈值**」，不是毫秒级阈值。
+
+## Q1 附测（2026-07-28）：这个 300s **能被客户端侧环境变量关掉** —— `API_FORCE_IDLE_TIMEOUT=0`
+
+问题：既然掐断的是 undici 的默认 `headersTimeout`，有没有环境变量能覆盖它？
+
+**结论：undici 自己没有这样的环境变量**（`headersTimeout` 是 Dispatcher 构造选项，只能用代码设——`setGlobalDispatcher(new Agent({ headersTimeout: 0 }))`）。**但 Claude Code 自己暴露了一个开关**：`API_FORCE_IDLE_TIMEOUT`。CC 在构造 fetch 选项时会据它把 `fetchOptions.timeout` 设成 `false`，而 undici 的 `timeout:false` **同时关掉 headersTimeout 与 bodyTimeout**。
+
+实测（两臂**同时**起、同一探针、同一 600s 静默窗口）：
+
+| 臂 | 环境 | 结果 |
+|---|---|---|
+| `env-force-idle-0` | `API_FORCE_IDLE_TIMEOUT=0` | **静默 600s 后完整成功**：`result:"Q1_PRE_HEADER_OK after 600001ms"`、`exitCode 0`、`is_error:false`、`num_turns:1`、**单次 attempt 无重试** |
+| `env-control-unset`（并发对照） | 不设 | attempt 1 在 **299,541ms** abort，随后重试到第 3 次 |
+
+原始记录 `results/q1-firstfail/env-force-idle-0.{client,observations}.json` 与 `env-control-unset.observations.json`。
+
+**作用域与未测边界（别写宽）**：
+- 600s **不是新的上限**，只是我的窗口到头了。关掉 undici 计时器后，下一个绑定约束应是 SDK 自己的 request timer（该臂请求头里 `x-stainless-timeout: 1200`）——**未测**。
+- 它同时关掉 **body** 超时。post-commit 阶段 CC 仍有**自己的** 300s stream-idle watchdog（与本条正交、不受影响），本轮**未测**该 env 对 post-header 行为的影响。
+- 这是**客户端侧**开关：代理无法替客户端设置。它的价值是「用户可以为自己的 CC 打开」，不是我方可依赖的前提。
+
+**对本项目的意义**：`stream_commit_after_sec` 的默认值与 clamp **必须按「客户端未设该变量」来定**（默认 180 / clamp 240，见 `src/lib/config/config.ts` 的 `COMMIT_WINDOW_MAX_SEC`）。若用户在自己的 CC 环境里设了 `API_FORCE_IDLE_TIMEOUT=0`，pre-header 上限会大幅抬高，届时 240 的 clamp 会成为**我方**的限制而非客户端的——那时再评估是否放开 clamp。
+
+
 ## Q2：事故类大 context 的 fresh-retry 可恢复性 —— 未能定论（inconclusive）
 
 问题：事故类请求（大 context、GHC 0 帧干挂）在 fresh retry 下能否成功？决定 B2 根治 vs 退化 B3。
@@ -51,3 +122,5 @@
 ## 安全与清理（已核）
 
 Q1 全离线（本地 41921，零额度）；Q2 共 4 次真 GHC 大请求（每次约 135k input / 7 output tokens）。未停/重启/改 4141 主服务器（末次确认 PID 144078 仍监听、`/health` healthy）；测试端口 41921/41922 均无残留监听。
+
+2026-07-27 续测同样全离线、零额度（本地 41931-41939，fake server + 真 CC/SDK/裸 fetch）。真 CC 以 `mkdtemp` 隔离 `HOME` 与 `XDG_*` 运行，不读写用户真实 `~/.claude`。收尾时按 PID 精确 kill 全部探针监听（未用 `pkill`/`killall`），复核 41900 段无残留、4141 主服务器 `/health` 仍 healthy。

@@ -41,6 +41,11 @@ import type {
 import { HTTPError } from "~/lib/error"
 import {
   //
+  getRetryGiveUpCounts,
+  resetRetryGiveUpsForTests,
+} from "~/lib/observability/retry-giveups"
+import {
+  //
   getRetryStrategyFireCounts,
   resetRetryStrategyFiresForTests,
 } from "~/lib/observability/retry-strategy-fires"
@@ -395,6 +400,99 @@ describe("driver.runExchange — error-driven retry", () => {
     expect(calls.setAttemptError).toHaveLength(1)
     expect(calls.recordAttemptFailure).toHaveLength(1)
     expect(onResolved).toBe(1)
+  })
+
+  // 放弃计数器（fire 的对偶）：fire 说「谁救了这一轮」，give-up 说「哪些轮次没人救」。
+  // 此前四条放弃路径全部静默 `return { kind: "fail" }`，于是「上游拒绝了我们、而没有任何
+  // 策略听懂它在说什么」在我方零信号——两起非法布局事故就是这么漏到客户端的。
+  describe("retry give-up telemetry", () => {
+    beforeEach(() => {
+      resetRetryGiveUpsForTests()
+    })
+    afterEach(() => {
+      resetRetryGiveUpsForTests()
+    })
+
+    const failingTransport = () =>
+      makeTransport(async () => {
+        throw new Error("boom")
+      })
+
+    test("没有任何策略认领 → 记 unclaimed（按 error.type 分列）", async () => {
+      const { ctx } = makeCtx()
+      const env = makeEnv(ctx)
+      const { codec } = makeCodec({ env })
+      const driver = createPipelineDriver({ ...BASE, codec, decideRoute: (e) => codec.decideRoute(e), transport: failingTransport(), strategies: [] })
+
+      await expect(driver.runRequest({ body: {}, headers: new Headers() })).rejects.toThrow("boom")
+      const rows = getRetryGiveUpCounts()
+      expect(rows).toHaveLength(1)
+      expect(rows[0]).toMatchObject({ reason: "unclaimed", count: 1 })
+    })
+
+    test("策略认领后 abort → 记 strategy-abort，而不是 unclaimed（两者的运维含义不同）", async () => {
+      const { ctx } = makeCtx()
+      const env = makeEnv(ctx)
+      const { codec } = makeCodec({ env })
+      const strategy: RetryStrategy = { name: "claims-then-aborts", canHandle: () => true, handle: async (error) => ({ kind: "abort", error }) }
+      const driver = createPipelineDriver({ ...BASE, codec, decideRoute: (e) => codec.decideRoute(e), transport: failingTransport(), strategies: [strategy] })
+
+      await expect(driver.runRequest({ body: {}, headers: new Headers() })).rejects.toThrow("boom")
+      expect(getRetryGiveUpCounts().map((r) => r.reason)).toEqual(["strategy-abort"])
+    })
+
+    test("策略抛异常 → 记 strategy-threw", async () => {
+      const { ctx } = makeCtx()
+      const env = makeEnv(ctx)
+      const { codec } = makeCodec({ env })
+      const strategy: RetryStrategy = {
+        name: "throwing-strategy",
+        canHandle: () => true,
+        handle: async () => {
+          throw new Error("strategy exploded")
+        },
+      }
+      const driver = createPipelineDriver({ ...BASE, codec, decideRoute: (e) => codec.decideRoute(e), transport: failingTransport(), strategies: [strategy] })
+
+      await expect(driver.runRequest({ body: {}, headers: new Headers() })).rejects.toThrow("boom")
+      expect(getRetryGiveUpCounts().map((r) => r.reason)).toEqual(["strategy-threw"])
+    })
+
+    test("预算耗尽 → 记 budget-exhausted（策略本身还愿意重试）", async () => {
+      const { ctx } = makeCtx()
+      const env = makeEnv(ctx)
+      const { codec } = makeCodec({ env })
+      const strategy: RetryStrategy = { name: "always-retry", canHandle: () => true, handle: async (_e, e) => ({ kind: "retry", env: e }) }
+      const driver = createPipelineDriver({
+        ...BASE,
+        codec,
+        decideRoute: (e) => codec.decideRoute(e),
+        transport: failingTransport(),
+        strategies: [strategy],
+        maxRetries: 0,
+      })
+
+      await expect(driver.runRequest({ body: {}, headers: new Headers() })).rejects.toThrow("boom")
+      expect(getRetryGiveUpCounts().map((r) => r.reason)).toEqual(["budget-exhausted"])
+    })
+
+    test("成功重试的一轮不记任何 give-up（放弃计数只在终局路径上加）", async () => {
+      const { ctx } = makeCtx()
+      const env = makeEnv(ctx)
+      const { codec } = makeCodec({ env })
+      let attempts = 0
+      const transport = makeTransport(async () => {
+        attempts++
+        if (attempts === 1) throw new Error("boom")
+        return okStream()
+      })
+      const strategy: RetryStrategy = { name: "test-retry", canHandle: () => true, handle: async (_err, e) => ({ kind: "retry", env: e }) }
+      const driver = createPipelineDriver({ ...BASE, codec, decideRoute: (e) => codec.decideRoute(e), transport, strategies: [strategy] })
+
+      const result = await driver.runRequest({ body: {}, headers: new Headers() })
+      expect(result.ok).toBe(true)
+      expect(getRetryGiveUpCounts()).toEqual([])
+    })
   })
 
   describe("per-strategy retry-fire telemetry (Task 5 / RFC §3.5)", () => {

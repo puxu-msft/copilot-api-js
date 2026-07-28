@@ -228,8 +228,11 @@ describe("L2 buffered retry — Anthropic streaming handler wiring (protect_stre
     // The accumulator was reset per attempt — usage reflects ONE generation, not the sum of 3.
     expect(entry?.attempts?.at(-1)?.upstreamResponse?.usage?.input_tokens).toBe(100)
     expect(entry?.attempts?.at(-1)?.upstreamResponse?.usage?.output_tokens).toBe(20)
-    // Every exchange is recorded as an attempt.
+    // Every exchange is recorded as an attempt. Transparent recovery legs are real upstream retries,
+    // not proxy-synthesized continuation requests, so neither leg may carry continuation provenance.
     expect(entry?._index?.derived?.attemptCount).toBe(3)
+    expect(entry?.attempts?.map((attempt) => attempt.candidateRole)).toEqual(["primary", "recovery", "recovery"])
+    expect(entry?.attempts?.map((attempt) => attempt.upstreamRequest?.synthetic)).toEqual([undefined, undefined, undefined])
     // D1: each FAILED (non-final) attempt keeps its own upstream-original frames for diagnosis;
     // the SUCCESSFUL (final) attempt's frames are the top-level mirror, not duplicated per-attempt.
     expect(entry?.attempts?.[0]?.sseEvents?.length).toBeGreaterThan(0)

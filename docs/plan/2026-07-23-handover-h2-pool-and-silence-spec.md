@@ -4,7 +4,7 @@
 
 ## 0. 一句话现状
 
-原始两波网络事故的**决策 1+2**、三个暂缓项（**②per-origin 硬 cap / ③结构化 error tag / Q5 timing 埋点**）均已 landed master；**①上游静默 spec** 已定稿。**2026-07-23 续会话进展**：**Q5 已实测闭合**（只读 4141 直读 `upstreamHeadersAt`，34 正样本 header@47-231s∩success，deferred-header 实测证实、等-header 判别证伪、对抗审 HIGH-1/2 解除，spec 已回填 `9f886ade`）；**Q1/Q2 已跑**（Q1=CC pre-header 容忍 ≥125s、Q2 未定论，`exp/silence-recovery-gates/` + `25e6f81c`）；**B2 主线 + Q6 高上限已用户裁决**；**B1+B2+B3 TDD plan 已产出并跨模型对抗审**（`docs/plan/2026-07-23-upstream-silence-recovery/`，1 CRITICAL + 1 HIGH 已整合，`d280687f`）；**§3 doc/skill 已补**（`8fff5dd0`）；**MED-1/MED-2 入 backlog**（`21f0c8a9`，MED-2 已折进 B2 plan Task 0.6）。**剩余 = 用户裁决 plan 的几个开放分叉 → 实施（B1 + B2-P0 可开工）+ Q1 首失败点补测。**
+原始两波网络事故的**决策 1+2**、三个暂缓项（**②per-origin 硬 cap / ③结构化 error tag / Q5 timing 埋点**）均已 landed master；**①上游静默 spec** 已定稿。**2026-07-23 续会话进展**：**Q5 已实测闭合**（只读 4141 直读 `upstreamHeadersAt`，34 正样本 header@47-231s∩success，deferred-header 实测证实、等-header 判别证伪、对抗审 HIGH-1/2 解除，spec 已回填 `9f886ade`）；**Q1/Q2 已跑**（Q1=CC pre-header 容忍 ≥125s、Q2 未定论，`exp/silence-recovery-gates/` + `25e6f81c`）；**B2 主线 + Q6 高上限已用户裁决**；**B1+B2+B3 TDD plan 已产出并跨模型对抗审**（`docs/plan/2026-07-23-upstream-silence-recovery/`，1 CRITICAL + 1 HIGH 已整合，`d280687f`）；**§3 doc/skill 已补**（`8fff5dd0`）；**MED-1/MED-2 入 backlog**（`21f0c8a9`，MED-2 已折进 B2 plan Task 0.6）。**剩余 = 用户裁决 plan 的几个开放分叉 → 实施（B1 + B2-P0 可开工）。**（**Q1 首失败点已于 2026-07-27 实测闭合 ≈300s**，见 `exp/silence-recovery-gates/FINDINGS.md` §「Q1 续测」，补测项作废。）
 
 ## 0.1 续会话更新（2026-07-23，supersedes §2/§3 below）
 
@@ -15,9 +15,25 @@
 **剩余（新会话继续）**：
 1. **plan 的用户待裁决分叉**（实施前，见 [plan README](2026-07-23-upstream-silence-recovery/README.md) 文末 + 各门控）：① B2 配置键命名（占位 `precontent_recovery`）；② B2 触发范围是否纳入 `reaper-cancel`/`timeout(header-wait)`（plan 默认排除、留 B3）；③ buffered 路径 B2 是否尊重 `max_retries=0`、复杂则降级 backlog 只做 live；④ B3 fail-fast 计时器是否与 `responseHeaderTimeout` 合并（plan 倾向独立）。**这些是真分叉、需用户拍板**，不阻塞 B1/B2-P0 开工。
 2. **实施**：B1（plan-1，独立低风险）+ B2-P0（plan-2 Task 0.1 配置骨架）可即开工；B2-P1~P6 串行；B3 依赖 B2 gate。走 `superpowers:subagent-driven-development`。**实施前建议对整合后 plan 再过一轮 consensus 复审**（resume 原 `gpt-souls:reviewer`）。
-3. **Q1 首失败点补测**（130/150/180s 阶梯，离线 mock 零额度，复用 `exp/silence-recovery-gates/` harness）→ 定 B1 窗口最终上限/默认值。
+3. ~~**Q1 首失败点补测**（130/150/180s 阶梯）~~ **已完成，此项作废**（2026-07-27 实测 ≈300s，机制 = undici 默认 `headersTimeout`；见 `exp/silence-recovery-gates/FINDINGS.md` §「Q1 续测」）。剩下的是 **B1 默认值取多少**——上界已知的取舍，交用户拍板。
 4. **MED-2 已折进 B2 plan Task 0.6**（seal-race crash 安全，B2 必治顺带关闭既有 process.exit 缺陷）；MED-1 折进 B2 dispatch-open 测试矩阵。
 5. **记忆索引 MEMORY.md 的 upstream-silence 行**已在工作区更新到新态但**未提交**（与 peer WIP 纠缠），下个碰 MEMORY.md 的会话一并提交。
+
+## 0.2 实施已启动（2026-07-23，用户授权继续）
+
+用户授权实施 + 定下硬约束「**绝不误杀合法长思考**」（已编码进 plan Global Constraints + 各 fork 裁定，commit `5874ea78`）。走 `superpowers:subagent-driven-development` 于**隔离 worktree**。
+
+- **worktree / 分支**：`.worktrees/upstream-silence-recovery` @ `feat/upstream-silence-recovery`（从 master `5874ea78` 起，node_modules 已软链）。**未合回 master**——按 SDD 纪律全阶段 + 终审后再 ff 合并。
+- **进度 ledger**：`.worktrees/upstream-silence-recovery/.superpowers/sdd/progress.md`（gitignored；含阶段 DAG + 完成记录）。**接手先读它**，已完成的别重派。
+- **已完成**：
+  - ✅ **B1**（plan-1，commits `5874ea78..31ba4a60`）——拆 commit-window clamp + ceiling→125s（当时的 Q1 实测下界；**2026-07-28 已改为 240，默认值 20→180**）+ 独立告警抑制标志（异模型 review 抓的 Important，已 TDD 回归修复）。默认值 `streamCommitAfterSec` 仍 20（首失败点待补测再定）。test:backend 6346 pass。
+  - ✅ **B2-P0**（plan-2 Task 0.1 + 0.7，commits `31ba4a60..31c503f4`）——配置骨架 `precontent_recovery.enabled`（默认 true、**未接线**）+ telemetry outcome 计数器（镜像 continuation）。异模型 review 0 blocker、全仓 grep 证零执行路径消费者（零行为变化）、config.schema.json regenerate 零差异、union 穷尽 6 站点全补。test:backend 6351 pass。
+  - ✅ **B2 Task 0.2**（plan-2 Task 0.2，commit `a819834f`）——**delivery-level semantic-content gate（承载对抗审 CRITICAL 修法）**：gate 读 `hasEmittedRealClientContent`（**非** `boundary.result`——后者只在 `content_block_stop` 翻转、会漏「delta 已发 stop 未到」窗口致重复内容），翻转**复用既有** `onFirstRealContent` seam（`isClientContentFrame` 驱动、只数非-synthetic、只一次、live/buffered 共用）。CRITICAL 修法经主会话 + 异模型 reviewer **双重独立核实正确**（synthetic 帧不翻转 gate、CRITICAL 回归非假绿）。**未接线**（P4/P5 才接）、零行为变化。test:backend 6359 pass。
+  - ✅ **B2 Task 0.3**（commit `eff92dc0`）——`coordinator.runRecoveryFromPreReadyFailure`（镜像 runHedge、parent-less、at-most-once、**不 settle parent**——primary 已自行 settle failed；有解释注释）。异模型 review 0 blocker、budget-shared 断言非重言。test:backend 6362 pass。
+  - ✅ **B2 Task 0.4**（commit `85b8c5c6` + backlog `50b09c00`）——`driver.runPreContentRecovery` + pre-ready failure ownership（`lastPreReadyFailure` 存+rethrow 字节等价回归锁）+ **🔴 server-tool 双执行 gate（安全硬约束）经异模型审计确认无绕过**（`classifyServerExecutionRisk` 在 dispatch 前、throw 非 continue、分类最终 target wire、`allowServerTools` 不在此路径；测试 4 非假绿）。`_reason` 透传 gap + afterHook-vs-preflight seam 均记 backlog（P4/P5 解决）。test:backend 6366 pass。
+- **剩余（串行，见 ledger DAG——依赖序；P4~P6 是最硬的 splice+接线+矩阵，宜 fresh 会话清上下文）**：B2 Task 0.5（recovery sink lifetime supervisor，无依赖）→ Task 0.6（seal-race crash 安全，守卫整个 recordOpened，依赖 0.5 quiescence）→ B2-P4~P6（plan-3 两挂载点执行器 + 三模式 splice + handler 接线 + 协议矩阵；**接线时一并解决 backlog 的 afterHook-vs-preflight + reason 透传两 seam**）→ B3（plan-4，**默认关**，never-false-kill）→ 全分支终审 → ff 合 master。
+- **续跑方式**：新会话读 [plan kickoff](2026-07-23-upstream-silence-recovery/kickoff.md) + ledger，`superpowers:subagent-driven-development` 从 B2-P0 起，每任务 fresh implementer（gpt-souls:implementer）→ 异模型任务 review（Claude reviewer）→ fix loop → 标 ledger。承重声称亲自 code-read 复核。
+
 
 
 

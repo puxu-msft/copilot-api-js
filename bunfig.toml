@@ -9,10 +9,11 @@ token = "$NPM_TOKEN"
 root = "./tests"
 # Redirect APP_DIR-derived persistence to a temp dir so no test touches the real
 # ~/.local/share/copilot-api (see tests/helpers/sandbox-paths.ts), then install
-# the token domain's ambient ports so free HTTP functions resolve their
-# transport in every test (see tests/helpers/install-token-deps.ts; ordered
-# AFTER sandbox-paths so PATHS resolves against the redirected XDG_DATA_HOME).
-preload = ["./tests/helpers/sandbox-paths.ts", "./tests/helpers/install-token-deps.ts"]
+# the token + telemetry domains' ambient ports so their free functions resolve
+# their transport / config in every test (see tests/helpers/install-token-deps.ts
+# and install-telemetry-deps.ts; both ordered AFTER sandbox-paths so PATHS
+# resolves against the redirected XDG_DATA_HOME).
+preload = ["./tests/helpers/sandbox-paths.ts", "./tests/helpers/install-token-deps.ts", "./tests/helpers/install-telemetry-deps.ts"]
 coverage = true
 coverageReporter = ["text", "lcov"]
 coverageDir = "coverage"

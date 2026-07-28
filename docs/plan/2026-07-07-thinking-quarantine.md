@@ -1,6 +1,6 @@
 # Thinking「cannot be modified」400 三层防治 Implementation Plan
 
-> **实施状态（2026-07-08）**：已实施 landed 于分支 `feat/thinking-quarantine`——全 12 任务 + 全分支终审完成。规格 [../spec/2026-07-07-thinking-signature-quarantine.md](../spec/2026-07-07-thinking-signature-quarantine.md)；活的架构现状见 [../DESIGN.md](../DESIGN.md)「活的架构现状」表 L1/L2/L3 行。
+> **实施状态（2026-07-08）**：已实施 landed 于分支 `feat/thinking-quarantine`——全 12 任务 + 全分支终审完成。规格 [../spec/2026-07-07-thinking-signature-quarantine.md](../spec/2026-07-07-thinking-signature-quarantine.md)；活的架构现状见 [../DESIGN.md](../DESIGN.md)「活的架构现状」表 L1/L2/L3 行。**本文内的代码片段与符号名是 2026-07-07 的历史快照**（`destackAdjacentThinking`/`DestackStats` 等已于 2026-07-27 更名，见 [../spec/2026-07-26-thinking-terminal-block-layout.md](../spec/2026-07-26-thinking-terminal-block-layout.md)「随之而来的重命名」表）——照抄会指向不存在的符号。
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 

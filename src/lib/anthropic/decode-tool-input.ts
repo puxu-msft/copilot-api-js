@@ -35,6 +35,7 @@ import {
   type DecodeToolInputConfig,
   type SendMessageNormalizationDiag,
 } from "./decode-tool-input-core"
+import { isEmptyAnthropicStreamDelta } from "./empty-stream-delta"
 import {
   //
   repairToolInput,
@@ -342,6 +343,9 @@ export function createToolInputStreamDecoder(cfg: DecodeToolInputConfig, opts: T
         const buf = buffering.get(parsed.index)
         const delta = parsed.delta as { type: string; partial_json?: string }
         if (buf && delta.type === "input_json_delta") {
+          // Empty deltas carry no bytes for decode/repair, but Claude Code counts them as
+          // protocol-significant chunks. Never hold them behind content_block_stop.
+          if (isEmptyAnthropicStreamDelta(parsed)) return [raw]
           buf.chunks.push(delta.partial_json ?? "")
           buf.rawDeltas.push(raw)
           return []

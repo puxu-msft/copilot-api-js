@@ -1,15 +1,9 @@
+import type { TelemetryUsage } from "@hsupu/ghc-proxy-telemetry"
+
 import {
   //
-  afterEach,
-  beforeEach,
-  describe,
-  expect,
-  test,
-} from "bun:test"
-import fs from "node:fs/promises"
-import os from "node:os"
-import path from "node:path"
-
+  TELEMETRY_HISTOGRAMS,
+} from "@hsupu/ghc-proxy-telemetry"
 import {
   //
   _projectDimBucketsForTests,
@@ -22,8 +16,21 @@ import {
   persistRequestTelemetry,
   recordAcceptedRequest,
   recordSettledRequest,
-  TELEMETRY_HISTOGRAMS,
-} from "~/lib/request-telemetry"
+} from "@hsupu/ghc-proxy-telemetry/testing"
+import {
+  //
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  test,
+} from "bun:test"
+import fs from "node:fs/promises"
+import os from "node:os"
+import path from "node:path"
+
+import type { UsageData } from "~/lib/history/store"
+
 import {
   //
   restoreStateForTests,
@@ -690,5 +697,55 @@ describe("distribution histograms", () => {
     const hist = getDimensionBreakdown("model", "sinceStart", 20, now).keys[0].histograms
     // Unobserved distributions are omitted from the breakdown (only duration_ms is always present).
     expect(hist.upstream_first_token_ms).toBeUndefined()
+  })
+})
+
+describe("T4 decoupling: TelemetryUsage is structurally compatible with history's UsageData", () => {
+  // The registry stopped importing `UsageData` (that type edge kept the telemetry aggregation leaf
+  // inside the core SCC). Structural compatibility is now a CONVENTION between two independently
+  // declared types, so it needs a compile-time oracle: if history widens/renames a token field, the
+  // sink's `usage: finalUpstream?.usage` call site would start failing to compile — this assignment
+  // makes that break surface HERE, next to the reason, instead of as a puzzling error in the sink.
+  test("a full UsageData (as the telemetry sink passes it) is assignable to TelemetryUsage", () => {
+    const fromHistory: UsageData = {
+      input_tokens: 11,
+      output_tokens: 7,
+      cache_read_input_tokens: 3,
+      cache_creation_input_tokens: 2,
+      input_tokens_details: { text: 11 },
+      output_tokens_details: { reasoning_tokens: 5, text: 2 },
+    }
+    const asTelemetry: TelemetryUsage = fromHistory
+    // Runtime half: every field the registry actually reads survives the widening.
+    expect(asTelemetry.input_tokens).toBe(11)
+    expect(asTelemetry.output_tokens).toBe(7)
+    expect(asTelemetry.cache_read_input_tokens).toBe(3)
+    expect(asTelemetry.cache_creation_input_tokens).toBe(2)
+    expect(asTelemetry.output_tokens_details?.reasoning_tokens).toBe(5)
+  })
+
+  test("the registry consumes those five fields end to end (the shape is not just type-level)", () => {
+    const now = Date.now()
+    recordSettledRequest(
+      { model: "assignability" },
+      {
+        startedAt: now,
+        endedAt: now + 10,
+        success: true,
+        usage: {
+          input_tokens: 11,
+          output_tokens: 7,
+          cache_read_input_tokens: 3,
+          cache_creation_input_tokens: 2,
+          output_tokens_details: { reasoning_tokens: 5 },
+        },
+      },
+    )
+    const counters = getDimensionBreakdown("model", "sinceStart").keys.find((k) => k.key === "assignability")?.counters
+    expect(counters?.inputTokens).toBe(11)
+    expect(counters?.outputTokens).toBe(7)
+    expect(counters?.cacheReadInputTokens).toBe(3)
+    expect(counters?.cacheCreationInputTokens).toBe(2)
+    expect(counters?.reasoningTokens).toBe(5)
   })
 })

@@ -418,19 +418,44 @@ export const AnthropicConfigSchema = z
     tool_inject_claude_code: nullableBoolean(),
     thinking_block_message_policy: nullableEnum(["preserve", "stripped"] as const),
     /**
-     * De-stack adjacent `thinking`/`redacted_thinking` blocks so no two are
-     * consecutive in an assistant message — GHC rejects an echoed history with
-     * stacked thinking ("thinking blocks cannot be modified" 400). Idempotent:
-     * a message without adjacent thinking passes through byte-identical.
-     *   passthrough — leave stacked thinking as-is
-     *   insert_text — insert a synthetic text separator between adjacent thinking
+     * Repair the block layout of assistant messages in the echoed history to the THREE
+     * shapes GHC hard-rejects with a 400 (spec 2026-07-26-thinking-terminal-block-layout):
+     * C1 two adjacent `thinking`/`redacted_thinking` blocks, C2 a message ending on
+     * thinking, C3 a message carrying `tool_use` that does not end on it (reported with
+     * the misleading "does not support assistant message prefill" wording). C3 fires on
+     * messages with no thinking at all. Idempotent: an already-legal message passes
+     * through byte-identical.
+     *   passthrough — leave the client's block layout as-is (repair disabled)
      *   move_blocks — interleave thinking with real non-thinking blocks (order-
-     *                 preserving), synthetic marker only when insufficient (default)
+     *                 preserving) and reserve a terminator (the last tool_use when the
+     *                 message has one); synthetic marker only when insufficient (default)
      */
-    thinking_destack_strategy: nullableEnum(["passthrough", "insert_text", "move_blocks"] as const),
+    assistant_block_layout_strategy: nullableEnum(["passthrough", "move_blocks"] as const),
+    /**
+     * EMIT axis for the synthetic block-layout separator: WHICH carrier this process puts on the
+     * wire when `move_blocks` has to synthesize one (no real non-thinking block is spare).
+     *
+     * A closed enum on purpose — a free-form string would let a whitespace-only value through, and
+     * upstream strips those, manufacturing the very 400 the repair exists to prevent. New carriers
+     * (e.g. a minimal invisible-Unicode one) land here only after a real-upstream PoC.
+     * `marker_v1` = the visible versioned marker, the only carrier confirmed accepted upstream.
+     */
+    separator_carrier: nullableEnum(["marker_v1"] as const),
+    /**
+     * ACCEPT axis: EXTRA literals to also recognise as one of our synthetic separators, on top of
+     * the built-in prefix family and the spellings older builds emitted.
+     *
+     * Open list, and safe to be open: widening recognition is monotone — it can never make a
+     * payload illegal, it only classifies more blocks as ours (so strip-all cleans them up as
+     * orphans instead of leaking them upstream). This is the axis that makes carrier migration and
+     * third-party/historical values work: pin whatever a previous deployment emitted and this build
+     * will still recognise it. Compared trimmed and in full — not as a substring — so a normal
+     * message that merely mentions the text is never mistaken for a separator.
+     */
+    separator_accept_extra: nullableNonemptyStringArray(),
     /**
      * Reactive fallback (L2) for the GHC "thinking ... cannot be modified" 400
-     * that L1 de-stack (`thinking_destack_strategy`) did not preempt: strip ALL
+     * that L1 layout repair (`assistant_block_layout_strategy`) did not preempt: strip ALL
      * `thinking`/`redacted_thinking` blocks from the echoed history and retry the
      * turn once. `true` (default) enables the one-shot strip-and-retry; `false`
      * lets the 400 surface unmodified.
@@ -653,23 +678,27 @@ export const AnthropicConfigSchema = z
      */
     stream_keepalive_ping_sec: nullableNonnegativeInt(),
     /**
-     * Keepalive FRAME type for the client-facing Anthropic stream. `ping` (default) is a bare
-     * `event: ping` — it does NOT reset Claude Code's 300s no-real-content deadline (a ping is not a
-     * "chunk"; exp/cc-idle-280s/REPORT.md), so a >300s pre-content silence may time out (an accepted
-     * limit pending a real keepalive — docs/todo/2026-07-22-client-proxy-keepalive-300s.md).
-     * `empty_text` was RETIRED as default (ADR 2026-07-22 D2): it injected an empty content delta / a
-     * synthetic empty-text ANCHOR block, but an empty text block is wrong-shaped AND G2-proven unable to
-     * reset the 300s deadline on the proxy path. Block-level delivery CLI-safety now comes from strict
-     * index-ordered output, not an anchor. `empty_text` / `enveloped_ping` remain SELECTABLE (code kept
-     * dormant) for keepalive research; redacted_thinking / unknown open blocks fall back to ping anyway.
+     * Seconds without a client-visible content_block_delta before ping keepalive escalates to an
+     * empty content delta. `0` disables escalation. Default 200 (100s margin before CC's 300s
+     * event-idle watchdog). Existing open block → matching empty delta; no block → lazy anchor.
+     */
+    stream_keepalive_escalate_sec: nullableNonnegativeInt(),
+    /**
+     * Keepalive FRAME type for the client-facing Anthropic stream. `ping` (default) is the normal
+     * low-impact cadence. It does not itself reset Claude Code's 300s event-idle watchdog; the separate
+     * `stream_keepalive_escalate_sec` deadline upgrades to an empty content delta only when needed.
+     * `empty_text` remains selectable for always-on content-delta mode. Block-level CLI-safety comes from
+     * strict index-ordered output; on-demand pre-content escalation reuses the anchor only near deadline.
      */
     stream_keepalive_mode: nullableEnum(["ping", "enveloped_ping", "empty_text"] as const),
     /**
      * Delayed-commit window (seconds) for streaming Anthropic requests. The proxy waits up to this
      * long for runRequest to settle before opening the 200 SSE stream — an upstream error within the
      * window keeps its real HTTP status (client retries natively); a stall past it commits 200 +
-     * keepalive. `0` commits immediately. Default 20. Clamped to 125s: Q1 measured real Claude Code
-     * 2.1.218 successfully wait 125s before HTTP response headers; see exp/silence-recovery-gates/FINDINGS.md.
+     * keepalive. `0` commits immediately. Default 180. Clamped to 240s, keeping a margin under the
+     * ~300s pre-header limit measured in exp/silence-recovery-gates/FINDINGS.md (undici's default
+     * headersTimeout, below anything the SDK or CC configures). Nothing is sent before the commit, so
+     * this window and that limit share one clock — reaching the limit aborts the attempt.
      */
     stream_commit_after_sec: nullableNonnegativeInt(),
     /**

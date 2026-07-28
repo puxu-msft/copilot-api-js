@@ -8,8 +8,12 @@
  * (verbatimModuleSyntax), so there is no runtime cycle with state.ts.
  */
 
+import type {
+  //
+  AssistantBlockLayoutStrategy,
+  SeparatorCarrier,
+} from "~/lib/anthropic/sanitize/block-layout-contract"
 import type { ThinkingBlockSanitizeMode } from "~/lib/anthropic/sanitize/content-blocks"
-import type { ThinkingDestackStrategy } from "~/lib/anthropic/sanitize/destack-adjacent-thinking"
 import type { RepairItem } from "~/lib/anthropic/tool-input-repair"
 import type { ModelTranslation } from "~/lib/config/schema"
 
@@ -19,6 +23,7 @@ import {
   DEFAULT_REFUSAL_ERROR_MESSAGE,
   DEFAULT_REFUSAL_ERROR_TYPE,
 } from "~/lib/anthropic/recover-refusal"
+import { DEFAULT_SEPARATOR_CARRIER } from "~/lib/anthropic/sanitize/block-layout-contract"
 
 import type {
   //
@@ -73,8 +78,9 @@ export const CONFIG_MANAGED_DEFAULTS = {
   responseHeaderWhitelist: ["request-id", "x-request-id", "anthropic-ratelimit-*", "anthropic-organization-id", "retry-after"] as ReadonlyArray<string>,
   stripAttributionHeader: true,
   streamKeepalivePingSec: 20,
-  streamKeepaliveMode: "ping" as "ping" | "enveloped_ping" | "empty_text", // ADR 2026-07-22 D2: empty_text retired as default (wrong-shaped, G2-ineffective); kept selectable/dormant for research
-  streamCommitAfterSec: 20,
+  streamKeepaliveEscalateSec: 200,
+  streamKeepaliveMode: "ping" as "ping" | "enveloped_ping" | "empty_text", // D2 partial reversal 2026-07-27: ping stays the normal shape; content delta/anchor is injected only near the 300s deadline
+  streamCommitAfterSec: 180,
   preContentRecovery: { enabled: true },
   protectStreamingGeneration: false as false | "on" | "tool_use_only",
   bufferedRetryShared: { maxRetries: 3, bufferCapBytes: 16_777_216, heartbeatSec: 15 } as BufferedRetryCaps,
@@ -97,7 +103,11 @@ export const CONFIG_MANAGED_DEFAULTS = {
   injectClaudeCodeOfficialTools: true,
   thinkingBlockMessagePolicy: "preserve" as ThinkingBlockMessagePolicy,
   thinkingBlockSanitizeCheck: "all_empty" as false | ThinkingBlockSanitizeMode,
-  thinkingDestackStrategy: "move_blocks" as ThinkingDestackStrategy,
+  assistantBlockLayoutStrategy: "move_blocks" as AssistantBlockLayoutStrategy,
+  /** EMIT axis: which synthetic separator carrier this process puts on the wire. */
+  separatorCarrier: DEFAULT_SEPARATOR_CARRIER as SeparatorCarrier,
+  /** ACCEPT axis: extra literals recognised as ours, on top of the built-in family + legacy set. */
+  separatorAcceptExtra: [] as ReadonlyArray<string>,
   stripThinkingOnReject: true,
   poisonedThinkingQuarantine: true,
   poisonedThinkingTtlHours: 72,

@@ -1,15 +1,17 @@
 # Spec: CC 流式 300s no-content 断连修复 —— content_delta keepalive + 可观测性标记
 
-**Status:** **全部已落地**(Phase 0-5 + review)。commit:`4d7028c`(实测 harness)/ `3014b42`(sink block-状态机)/ `b561f0d`(config + handler provider)/ `e343763`(共享模块 + web_search)/ `4eddab7`+`c46b603`(doc-sync)/ `da98cf4`(synthetic 标记)/ `9025dbd`(UI)/ `6076232`(验证测试)/ `54716d8`+`8be4a2f`(docs)。
-**Date:** 2026-07-04
+**Status:** **Superseded（历史机制快照，不是活架构）**。2026-07-22 D2 把常驻 `empty_text` 默认反转为 `ping`；2026-07-27 只恢复 **pre-content-only** 按需升级。首块后的客户端无-open窗口仍未覆盖，硬门是 [generation-scoped carrier 方案 A](2026-07-27-inter-block-keepalive-carrier.md)。活状态以 [DESIGN](../DESIGN.md) 与 [G2 todo](../todo/2026-07-22-client-proxy-keepalive-300s.md) 为准。
+**Date:** 2026-07-04；superseded 2026-07-27
 **Owner:** 排查会话
 **实测报告:** [../../exp/cc-idle-280s/REPORT.md](../../exp/cc-idle-280s/REPORT.md)(权威根因数据)
 
 ---
 
-## 0. TL;DR / 快速上手
+## 0. 历史 TL;DR
 
-Claude Code 在长 opus **pre-content thinking 静默** ~280-300s 时断连(`API Error: Stream idle timeout - no chunks received`),**代理原有的 `event: ping` 心跳压不住**。根因:CC 2.1.201 的 watchdog 有**两层**,第二层「300s 内必须收到真实 content chunk」只认 `content_block_delta`、不认 ping。修复:keepalive 从 ping 改为**匹配当前 open block 的空 content_delta**(`stream_keepalive_mode: content_delta`,默认)——空 delta 拼接进真实流无害(SDK oracle 实证),但被 CC 认作 chunk、重置 300s 计时。因空 delta 与真实内容帧字节无法区分,所有 keepalive(含 ping)在 forwarded 轨打 `SseEventRecord.synthetic:"keepalive"` 标记,防止上游沉默被伪装成正常 streaming。
+本文记录 2026-07-04 的第一版设计：用空 content delta 替代 ping。**当前实现不再以 content delta 为默认 cadence**：正常帧是 ping，200s 时只在 pre-content升级为单anchor；块级buffered首块后的长生成仍是硬缺口。下文“默认 content_delta/empty_text”“全部覆盖”等措辞均按历史时间点阅读，不可作为当前契约。
+
+Claude Code 在长 opus **pre-content thinking 静默** ~280-300s 时断连(`API Error: Stream idle timeout - no chunks received`),**代理原有的 `event: ping` 心跳压不住**。根因:CC 2.1.201 的 watchdog 有**两层**,第二层「300s 内必须收到真实 content chunk」只认 `content_block_delta`、不认 ping。历史方案把 keepalive 改为匹配 open block 的空 content delta；其载体与 synthetic 标记结论仍有效，但默认值与覆盖范围已被后续决策取代。
 
 **核心锚点**:配置 `src/lib/config/schema.ts`(`stream_keepalive_mode`)· 帧构造 `src/lib/anthropic/keepalive-frame.ts`(`makeAnthropicKeepaliveFrame`)· block-状态机 `src/lib/pipeline/client-sink.ts`(`makeSseSink` 的 `openBlock` + `tick`)· 活路径 `src/routes/messages/handler-v4.ts`(:429/:492 sink 构造 + `pumpAnthropicStreamingV4`)· 标记字段 `src/lib/history/types.ts`(`SseEventRecord.synthetic`)。
 
@@ -20,6 +22,8 @@ Claude Code 在长 opus **pre-content thinking 静默** ~280-300s 时断连(`API
 opus 在超大上下文里回答前会长时间 pre-content thinking(`message_start` → `content_block_start{thinking}` → 之后静默几百秒才出内容)。这段静默里代理每 20s 发 `event: ping` 保活,但 CC 仍在 ~280s 断连,报 `Stream idle timeout - no chunks received`。用户观测:ping 一直在发(forwarded 轨有 13 个),CC 却说「一个 chunk 都没收到」。
 
 ## 2. 根因(实测,非推断)
+
+> **2026-07-27 补充：只闭合 pre-content，不是 G2 全面闭合。** response rewrites 吞空 delta 已修；默认 `ping + stream_keepalive_escalate_sec:200` 只在客户端尚未完成真实块时开单anchor。块级buffered首块后的生成没有客户端open block，固定anchor@0不能复用，完整覆盖等待方案A。真CC pre-content >330s PASS、短请求与升级关闭逐字节一致。裁决记录见 [G2 todo](../todo/2026-07-22-client-proxy-keepalive-300s.md)。
 
 **方法**:真实 `claude` CLI 2.1.201 作独立 oracle + 受控 mock 上游(`exp/cc-idle-280s/`:`mock.ts` 按 `idle:TYPE:N:M` 发帧、`run-arm.sh` 用 `--settings` 盖 baseURL、`_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL=1` 触发生产 watchdog)。四臂对照 + prod-faithful 复测。
 

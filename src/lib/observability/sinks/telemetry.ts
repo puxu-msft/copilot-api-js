@@ -14,7 +14,8 @@
  * Commit 2: subscribed but idle — bus carries no terminal events yet.
  */
 
-import { recordSettledRequest } from "~/lib/request-telemetry"
+import { CAPPED_DIMENSION_NAMES } from "@hsupu/ghc-proxy-telemetry"
+import { peekTelemetryRuntime } from "@hsupu/ghc-proxy-telemetry"
 
 import type {
   //
@@ -24,7 +25,6 @@ import type {
 
 import {
   //
-  CAPPED_DIMENSION_NAMES,
   extractTelemetryKeys,
   extractThinkingBlockCounts,
 } from "../telemetry-dimensions"
@@ -59,7 +59,7 @@ export class TelemetrySink {
     const candidateIds = new Set(attempts.flatMap((attempt) => (attempt.candidateId ? [attempt.candidateId] : [])))
     const hedgeIds = new Set(attempts.flatMap((attempt) => (attempt.candidateRole === "hedge" && attempt.candidateId ? [attempt.candidateId] : [])))
     const recoveryIds = new Set(attempts.flatMap((attempt) => (attempt.candidateRole === "recovery" && attempt.candidateId ? [attempt.candidateId] : [])))
-    recordSettledRequest(
+    peekTelemetryRuntime()?.recordSettled(
       extractTelemetryKeys(entry, event.ctx),
       {
         startedAt: entry.startedAt,

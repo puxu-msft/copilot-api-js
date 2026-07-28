@@ -63,6 +63,15 @@
       "name": "@hsupu/ghc-proxy-foundation",
       "version": "0.0.0",
     },
+    "packages/telemetry": {
+      "name": "@hsupu/ghc-proxy-telemetry",
+      "version": "0.0.0",
+      "dependencies": {
+        "@datadog/sketches-js": "2.1.1",
+        "@hsupu/ghc-proxy-foundation": "workspace:*",
+        "consola": "^3.4.2",
+      },
+    },
     "packages/token": {
       "name": "@hsupu/ghc-proxy-token",
       "version": "0.0.0",
@@ -388,6 +397,8 @@
     "@hsupu/ghc-proxy-cli": ["@hsupu/ghc-proxy-cli@workspace:packages/cli"],
 
     "@hsupu/ghc-proxy-foundation": ["@hsupu/ghc-proxy-foundation@workspace:packages/foundation"],
+
+    "@hsupu/ghc-proxy-telemetry": ["@hsupu/ghc-proxy-telemetry@workspace:packages/telemetry"],
 
     "@hsupu/ghc-proxy-token": ["@hsupu/ghc-proxy-token@workspace:packages/token"],
 

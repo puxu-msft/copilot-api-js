@@ -1,5 +1,11 @@
 import {
   //
+  _resetRequestTelemetryForTests,
+  recordAcceptedRequest,
+  recordSettledRequest,
+} from "@hsupu/ghc-proxy-telemetry/testing"
+import {
+  //
   beforeAll,
   beforeEach,
   describe,
@@ -32,12 +38,6 @@ import {
   resetUpstreamWsManagerForTests,
   setUpstreamWsConnectionFactoryForTests,
 } from "~/lib/openai/upstream-ws"
-import {
-  //
-  _resetRequestTelemetryForTests,
-  recordAcceptedRequest,
-  recordSettledRequest,
-} from "~/lib/request-telemetry"
 import {
   //
   setModels,

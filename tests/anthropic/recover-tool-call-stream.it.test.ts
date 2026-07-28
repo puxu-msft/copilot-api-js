@@ -119,6 +119,47 @@ describe("createToolCallTextRecoverer", () => {
     expect(out[0]).toEqual(normal[0])
   })
 
+  test("空 text_delta 立即透传，不能被 tool-call lookahead 吞掉", () => {
+    const r = createToolCallTextRecoverer(deps)
+    const start = ev({ type: "content_block_start", index: 0, content_block: { type: "text" } })
+    expect(r.processEvent(start.parsed, start.raw)).toEqual([start.raw])
+
+    const keepalive = ev({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "" } })
+    expect(r.processEvent(keepalive.parsed, keepalive.raw)).toEqual([keepalive.raw])
+  })
+
+  test("空 delta 穿插在 marker 识别前与 BUFFERING 后仍逐帧透传", () => {
+    const r = createToolCallTextRecoverer(deps)
+    const emptyBefore = ev({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "" } })
+    const emptyBuffered = ev({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "" } })
+    const events = [
+      { type: "content_block_start", index: 0, content_block: { type: "text" } },
+      { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "足够长的普通散文用于填满 lookahead 窗口。\ncall\n<in" } },
+      JSON.parse(emptyBefore.raw.data as string),
+      { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: 'voke name="Write">\n<parameter name="file_path">/a</parameter>\n' } },
+      JSON.parse(emptyBuffered.raw.data as string),
+      { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: '<parameter name="content">x</parameter>\n</invoke>\n' } },
+      { type: "content_block_stop", index: 0 },
+      { type: "message_delta", delta: { stop_reason: "end_turn" } },
+      { type: "message_stop" },
+    ]
+    const out = drive(r, events)
+    const emptyDeltas = out.filter(
+      (event) =>
+        event.type === "content_block_delta"
+        && (event.delta as { type?: string; text?: string })?.type === "text_delta"
+        && (event.delta as { text?: string }).text === "",
+    )
+    expect(emptyDeltas).toHaveLength(2)
+    const text = out
+      .filter((event) => event.type === "content_block_delta" && (event.delta as { type?: string })?.type === "text_delta")
+      .map((event) => (event.delta as { text?: string }).text ?? "")
+      .join("")
+    expect(text).not.toContain("<invoke")
+    expect(text).not.toContain("call")
+    expect(out.filter((event) => event.type === "content_block_start" && (event.content_block as { type?: string })?.type === "tool_use")).toHaveLength(1)
+  })
+
   test("lookahead 跨 delta 切分（marker 被拆成两帧）→ 不泄漏 <invoke/call 残留 + 合成 tool_use", () => {
     // 把降级文本拆成多个 text_delta，marker `<invoke` 恰好跨 delta 边界（delta1 尾="…\n<in"，delta2 头="voke …"）。
     // 32 字符 lookahead 应阻止半截 marker 泄漏给客户端。

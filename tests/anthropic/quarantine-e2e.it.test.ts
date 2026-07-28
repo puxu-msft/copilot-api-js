@@ -2,7 +2,7 @@
  * Three-layer thinking-quarantine — end-to-end COMPOSITION guards (Task 12).
  *
  * Prior tasks unit-tested each layer in ISOLATION: L1 de-stack terminal-order
- * (`destack-terminal-order.test.ts`), L2 strip-all retry registration
+ * (`assistant-block-layout-terminal-order.it.test.ts`), L2 strip-all retry registration
  * (`poisoned-thinking-retry-wiring.test.ts`), the L3 store
  * (`thinking-quarantine-store.test.ts`), the L3 `onResolved` commit
  * (`quarantine-onresolved.test.ts`), and the L3 proactive filter alone
@@ -71,7 +71,7 @@ import type {
   MessagesPayload,
 } from "~/types/api/anthropic"
 
-import { SYNTHETIC_THINKING_SEPARATOR } from "~/lib/anthropic/sanitize/destack-adjacent-thinking"
+import { separatorText } from "~/lib/anthropic/sanitize/assistant-block-layout"
 import { createQuarantineProactiveFilter } from "~/lib/anthropic/thinking-quarantine/proactive-filter"
 import { ThinkingQuarantineStore } from "~/lib/anthropic/thinking-quarantine/store"
 import { createPoisonedThinkingRetryStrategy } from "~/lib/codec/anthropic/poisoned-thinking-retry"
@@ -85,7 +85,7 @@ autoRestoreState()
 
 // Content-block factories (mirror strip-all-thinking / proactive-filter tests):
 // empty-string thinking + a signature — this exact shape survives the full
-// sanitize chain (see destack-terminal-order.test.ts), so de-stack is the ONLY
+// sanitize chain (see assistant-block-layout-terminal-order.it.test.ts), so de-stack is the ONLY
 // thing that would touch two adjacent copies of it.
 const think = (sig: string) => ({ type: "thinking", thinking: "", signature: sig })
 const text = (t: string) => ({ type: "text", text: t })
@@ -154,7 +154,7 @@ function thinkingTypesIn(messages: Array<MessageParam>): Array<string> {
     .filter((t) => t === "thinking" || t === "redacted_thinking")
 }
 function hasSyntheticMarker(messages: Array<MessageParam>): boolean {
-  const isMarker = (b: { type: string; text?: string }): boolean => b.type === "text" && b.text === SYNTHETIC_THINKING_SEPARATOR
+  const isMarker = (b: { type: string; text?: string }): boolean => b.type === "text" && b.text === separatorText()
   return messages.some((m) => Array.isArray(m.content) && (m.content as Array<{ type: string; text?: string }>).some(isMarker))
 }
 function messagesOf(env: RequestEnvelope): Array<MessageParam> {
@@ -186,10 +186,10 @@ describe("Guard A — driver-level ordering over the REAL codec rewrites", () =>
 })
 
 describe("Guard B — L3×L1 interaction: proactive strip-all makes de-stack a no-op (no orphan markers)", () => {
-  // insert_text so de-stack WOULD insert a VISIBLE synthetic separator on any
-  // surviving adjacency — makes the "no marker" assertion load-bearing.
+  // move_blocks (the default) still inserts a VISIBLE synthetic separator here (two
+  // adjacent thinking + one real block) — keeps the "no marker" assertion load-bearing.
   test("quarantined conversation with ADJACENT thinking → final body has NO thinking AND NO synthetic marker", () => {
-    setStateForTests({ poisonedThinkingQuarantine: true, thinkingDestackStrategy: "insert_text" })
+    setStateForTests({ poisonedThinkingQuarantine: true, assistantBlockLayoutStrategy: "move_blocks" })
     store.record({ sessionId: "s1", agentId: "" }, "thinking cannot be modified")
     const { l3, l1 } = realRewrites(store)
 
@@ -202,7 +202,7 @@ describe("Guard B — L3×L1 interaction: proactive strip-all makes de-stack a n
   })
 
   test("CONTRAST — same payload + strategy but NOT quarantined → L3 no-op, de-stack fires: thinking preserved + synthetic marker present", () => {
-    setStateForTests({ poisonedThinkingQuarantine: true, thinkingDestackStrategy: "insert_text" })
+    setStateForTests({ poisonedThinkingQuarantine: true, assistantBlockLayoutStrategy: "move_blocks" })
     // store is EMPTY — this (session) is not quarantined, so L3 is a no-op and L1
     // de-stack is what runs. Proves the marker's absence above is CAUSED by L3.
     const { l3, l1 } = realRewrites(store)
@@ -217,7 +217,7 @@ describe("Guard B — L3×L1 interaction: proactive strip-all makes de-stack a n
 
 describe("Guard C — cross-turn producer→consumer loop (L2 onResolved commit → next-turn L3 proactive), shared store", () => {
   test("turn 1 L2 strip-all success commits quarantine → turn 2 same session is proactively stripped, no marker", () => {
-    setStateForTests({ poisonedThinkingQuarantine: true, stripThinkingOnReject: true, thinkingDestackStrategy: "insert_text" })
+    setStateForTests({ poisonedThinkingQuarantine: true, stripThinkingOnReject: true, assistantBlockLayoutStrategy: "move_blocks" })
 
     // ── Turn 1: the reactive L2 strip-all retry ultimately resolved the turn. The
     // driver calls THIS strategy's onResolved with the retry meta; it durably
@@ -243,7 +243,7 @@ describe("Guard C — cross-turn producer→consumer loop (L2 onResolved commit 
   })
 
   test("un-committed session is NOT quarantined → turn 2 keeps its thinking (loop is closed by the commit, not ambient)", () => {
-    setStateForTests({ poisonedThinkingQuarantine: true, stripThinkingOnReject: true, thinkingDestackStrategy: "insert_text" })
+    setStateForTests({ poisonedThinkingQuarantine: true, stripThinkingOnReject: true, assistantBlockLayoutStrategy: "move_blocks" })
     // No onResolved commit for s2 → the consumer must NOT strip it.
     const { l3, l1 } = realRewrites(store)
     const turn2 = makeEnv({ sessionId: "s2", messages: [{ role: "assistant", content: [think("c"), think("d"), text("again")] }] })

@@ -1,5 +1,9 @@
 import {
   //
+  getDimensionBreakdown,
+} from "@hsupu/ghc-proxy-telemetry/testing"
+import {
+  //
   expect,
   mock,
   test,
@@ -7,7 +11,6 @@ import {
 
 import { getHistory } from "~/lib/history"
 import { drainV3Writer } from "~/lib/history/v3/store"
-import { getDimensionBreakdown } from "~/lib/request-telemetry"
 import {
   //
   setModels,

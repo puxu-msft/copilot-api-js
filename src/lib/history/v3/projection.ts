@@ -303,6 +303,7 @@ export function recordToHistoryEntry(
       },
       upstreamRequest: {
         ...requestMeta,
+        ...(attempt.upstreamRequest?.synthetic !== undefined && { synthetic: attempt.upstreamRequest.synthetic }),
         ...(typeof requestMeta?.query === "string" && { query: requestMeta.query }),
         ...(typeof requestProjection?.model === "string" && { model: requestProjection.model }),
         ...(requestMessages !== undefined && {

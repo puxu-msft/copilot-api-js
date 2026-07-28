@@ -1,14 +1,18 @@
 # Plan-1: B1 —— 加宽 delayed-commit 窗口
 
-> **依赖：** 无（可与 B2-P0 并行）。**门控：** Q1（CC pre-header 容忍度）**已实测下界 ≥125s**（`exp/silence-recovery-gates/FINDINGS.md`，真 Claude Code 2.1.218 静默 125s 仍成功；首次失败点未测、区间 `[125s, 未知)`）——本阶段把窗口上限设计成参数化 + clamp，以 ≥125s 为地板，最终具体上限值待补测 130/150/180s 阶梯后填一个常量，不改结构。⚠ 事故 RST 最早 ~126s，故 B1 单独不覆盖事故、B2 才是主线。
+> **实施状态：Task 1.1 + 1.2 已实现（2026-07-28）。** clamp 拆分 + ceiling 240 + 默认 180 + commit 窗口改为 ingress-relative deadline。`COMMIT_WINDOW_MAX_SEC = 240`（实测 ~300s pre-header 上限减 60s 余量），`streamCommitAfterSec` 默认 20 → **180**（用户 2026-07-28 拍板）。B2/B3 仍未实施。
 
-**Goal：** 把更多合法长思考（B-Mode2，header 到达 <当前默认 20s~新上限）与短挂起（在窗口内即失败的 A）拉回原生重试保护区——客户端拿到真实 HTTP 状态、CC 原生重试/backoff/token-refresh 继续生效，零合成脚手架。**不依赖任何 A/B 判别、不误伤 B**（spec §5.B-1 已定论）。
+> **⚠ 2026-07-27 更新：Q1 门已闭合，本文档下方多处「Q1 未测/待补测」的措辞已就地改正（不只是加顶注）。** 实测 pre-header 容忍度 ≈ **300s**，直接触发器与 undici 默认 `headersTimeout` 一致——**不是** SDK 的 1200/1250s request timer，**也不是** CC 那个响应头后才武装的 stream-idle watchdog（抬 `CLAUDE_STREAM_IDLE_TIMEOUT_MS` 到 600s 不移动该点；裸 TCP socket 420.1s 未被关，排除我方服务端）。**作用域**：本机 CC 2.1.220 + 内置 Node v26.3.0 的 transport 默认，四个完整 attempt 落在 299.667–300.280s；**这是可配置、随版本变化的默认值，不是协议常量**。证据见 [`exp/silence-recovery-gates/FINDINGS.md`](../../../exp/silence-recovery-gates/FINDINGS.md) §「Q1 续测」。**对本 plan 的三条实质影响**：① Task 1.2 的 ceiling 可直接定在 ~300s 减余量（原稿的 125s 保守了 175s）；② 「补测 130/150/180s 阶梯」**作废**；③ 默认值 `streamCommitAfterSec` 的取值现在是一个**有上界的取舍**，不再被未知量卡住。**注意**：撞上 ~300s 不致命——CC 会原生重试（观测 4 个完整周期、backoff ≈0.55/1.05/2.16/4.06s，最大尝试数未测），代价是上游从头重算。**另注**：**不要**据此推「总预算 T+300s / ~600s 天花板」——commit 后那个 300s 是可重置的 idle watchdog，我方 `streamKeepaliveEscalateSec`（默认 200s）本就在主动重置它。
+
+> **依赖：** 无（可与 B2-P0 并行）。**门控：** Q1 **已闭合 ≈ 300s**（原文：「已实测下界 ≥125s、首次失败点未测、区间 `[125s, 未知)`」——下界正确，上界现已测得）。⚠ 事故 RST 最早 ~126s，**整段 126-206s 落在 ~300s 的可配置空间内**，故抬高默认窗口能把事故请求的**一部分**拉回 pre-header 区拿真 HTTP 状态、走 CC 原生重试。**注意实际取值是 180**（用户 2026-07-28 拍板），故只覆盖 126-180s 段；**180-206s 段仍先 commit**，仍以 B2 为主线（B1 不救 commit 之后才失败的形态）。
+
+**Goal：** 把更多合法长思考（B-Mode2，header 到达 <默认窗口；该默认 2026-07-28 由 20s 改为 180s）与短挂起（在窗口内即失败的 A）拉回原生重试保护区——客户端拿到真实 HTTP 状态、CC 原生重试/backoff/token-refresh 继续生效，零合成脚手架。**不依赖任何 A/B 判别、不误伤 B**（spec §5.B-1 已定论）。
 
 **为何低风险：** 纯改一个数值型配置的默认值 + clamp 上限，机制本身（`Promise.race([p, windowFired])`）完全不动，`handler-v4.ts:548-565` 零结构改动。
 
 ## 文件清单
 
-- Modify: `src/lib/state-defaults.ts`（`streamCommitAfterSec` 默认值，当前 20）
+- Modify: `src/lib/state-defaults.ts`（`streamCommitAfterSec` 默认值，20 → **180**，done）
 - Modify: `src/lib/config/config.ts`（`clampKeepaliveCadence` 的上限常量 `KEEPALIVE_CADENCE_MAX`，当前 `60-20=40`；**注意**：这个 clamp 目前是 `stream_keepalive_ping_sec` / `stream_commit_after_sec` 共用的同一上限，B1 若要把 commit 窗口的上限与 keepalive cadence 的上限分开，需要拆分两个独立 clamp 函数/常量——这是本阶段的一个**待决设计点**，见下）
 - Modify: `src/lib/config/schema.ts`（`stream_commit_after_sec` 的 TSDoc 说明，反映新默认值/上限来源）
 - Test: `tests/config/buffered-retry-keys.unit.test.ts`（已有 clamp 测试，加新上限断言）
@@ -16,16 +20,16 @@
 
 ## 门控问题（不自行拍板，交主会话/用户）
 
-**Q1 已实测下界 ≥125s（旧「50-55s」估计证伪），但首次失败点未测。** 为消除歧义，明确两步分工（consensus 复审第二轮指出原稿三处指令自相矛盾，此处一锤定音）：
+**Q1 已于 2026-07-27 实测闭合：pre-header 容忍度 ≈ 300s**（作用域与归因见本文档顶部更新与 `exp/silence-recovery-gates/FINDINGS.md` §「Q1 续测」）。原稿在此处写的「下界 ≥125s、首次失败点未测」已作废。三步分工现为：
 
 1. **Task 1.1 = 纯字节等价重构**：只把 commit 窗口的 clamp 从 keepalive cadence 拆出成独立函数/常量，`COMMIT_WINDOW_MAX_SEC` **初值保持 40**（= 现 `KEEPALIVE_CADENCE_MAX`），**零行为变化**、回归锁死。**本 Task 不提 ceiling、不动默认值。**
-2. **Task 1.2 = 提 ceiling（行为变化、独立提交）**：把 `COMMIT_WINDOW_MAX_SEC` 从 40 提到 **≥125s 已知安全下界**（Q1 已背书不误伤 CC；**注意这只放宽「允许配置的上限」、默认值仍 20 不变**，故对绝大多数用户零可观测变化）。**默认值 `streamCommitAfterSec` 20→更大** 则须等 Q1 首次失败点补测后再定（见下 Task 1.2 步骤），因为默认值直接影响所有请求、需实测安全边际。
-3. **补测 Q1 首失败点**（真 CC 130/150/180s 阶梯，离线 mock 零额度，复用 `exp/silence-recovery-gates/` harness）→ 定最终默认值。
+2. **Task 1.2 = 提 ceiling（行为变化、独立提交）**：把 `COMMIT_WINDOW_MAX_SEC` 从 40 提到**实测 transport default（~300s）减安全余量**（**只放宽「允许配置的上限」、默认值仍 20 不变**，故对绝大多数用户零可观测变化）。**不得填 300 整**——撞上就是该 attempt 被 `headersTimeout` 中止。
+3. ~~补测 Q1 首失败点（真 CC 130/150/180s 阶梯）~~ **已完成，此步作废**。剩下的是**默认值 `streamCommitAfterSec` 取多少**——这现在是个上界已知的取舍（见 Task 1.2 Step 2），**交用户拍板**。
 
 **待决设计点：commit 窗口的 clamp 上限是否该与 keepalive cadence 的 clamp 上限脱钩？**
 - 现状：`clampKeepaliveCadence` 用同一个 `KEEPALIVE_CADENCE_MAX = CLIENT_IDLE_DEADLINE_SEC - 20 = 40`，同时限制 `stream_keepalive_ping_sec`（保活节奏）和 `stream_commit_after_sec`（commit 窗口）。
-- 语义上二者的安全上限**不是同一个物理量**：keepalive cadence 的上限来自"客户端 body-idle 60s 死线"（commit **之后**才生效）；commit 窗口的上限来自"CC pre-header 容忍度"（**commit 之前**，可能是完全不同的 connect/read timeout，Q1 待测）。二者恰好现在都设成 40 纯属巧合（同一个保守默认），一旦 Q1 测出 pre-header 容忍度 ≠ 40，继续共用同一 clamp 就会算错。
-- **推荐**：拆成两个独立 clamp（`clampKeepaliveCadence` 保持不变服务 `stream_keepalive_ping_sec`；新增 `clampCommitWindow` 服务 `stream_commit_after_sec`，上限常量待 Q1 填入），这是**局部签名/内部常量拆分**，不改外部配置 schema 字段名/类型，因此在 planner 权限内可直接设计；但**新上限的具体数值**必须来自 Q1 实测，不能我方臆造 —— 若 Q1 未跑先落地这个拆分，新常量先复用现有 40（等价行为），只是把"服务对象"在代码里显式分开，为后续填入不同数值铺路。
+- 语义上二者的安全上限**不是同一个物理量**：keepalive cadence 的上限来自"客户端 body-idle 死线"（commit **之后**才生效）；commit 窗口的上限来自 CC pre-header 容忍度（**commit 之前**，2026-07-27 实测 ≈300s，机制是 undici `headersTimeout`）。二者现在都设成 40 纯属巧合（同一个保守默认），**实测已确认这两个上限的真实值相差极大，继续共用同一 clamp 必然算错**。
+- **推荐（实测已背书，不再是待填空）**：拆成两个独立 clamp（`clampKeepaliveCadence` 保持不变服务 `stream_keepalive_ping_sec`；新增 `clampCommitWindow` 服务 `stream_commit_after_sec`）。这是**局部签名/内部常量拆分**，不改外部配置 schema 字段名/类型。Task 1.1 先做等价拆分（新常量复用 40），Task 1.2 再填入实测值。
 
 ## TDD 步骤
 
@@ -46,12 +50,12 @@ test("commit-window clamp and keepalive-cadence clamp are independently addressa
 - [x] **Step 4: 跑，通过。** 确认 `bun run test:fast` 全绿（这是纯重命名+拆分，不应有任何行为变化）。
 - [x] **Step 5: 提交** → `refactor(config): split commit-window clamp from keepalive-cadence clamp (same value, independent constants pending Q1)`。
 
-### Task 1.2（提 ceiling 现在可做；提默认值待 Q1 首失败点）：回填 Q1 实测
+### Task 1.2（ceiling 可定为 300s 减余量；默认值仍是取舍，需用户拍板）：回填 Q1 实测
 
-- [x] **Step 1（现在可做）**：把 `COMMIT_WINDOW_MAX_SEC` 从"复用 40"提到 **125s**（Q1 已实测 CC pre-header 容忍 ≥125s 的已知安全下界）——这只放宽「允许配置的上限」、默认值不变，安全。首失败点补测后可再往上调（留 margin）。
-- [-] **Step 2（本次跳过，待 Q1 首失败点）**：视首失败点结果决定是否上调 `streamCommitAfterSec` 默认值（当前 20）——事故 RST 最早 ~126s，故默认值即使上调也应 < 首失败点且权衡「窗口越大越多 B-Mode2 走原生保护、但 A 型挂起在窗口内干等越久」。**这是运维参数调整，可交由主会话在首失败点出来后单独决策+提交。**
-- [x] **Step 3**：跑 `bun run test:backend` 全绿；更新 `schema.ts` 里 `stream_commit_after_sec` 的 TSDoc（补 Q1 实测值 ≥125s + 出处 `exp/silence-recovery-gates/FINDINGS.md`）。
-- [x] **Step 4**：提交 → `fix(config): raise stream_commit_after_sec ceiling to measured CC pre-header floor (Q1 >=125s)`。
+- [x] **Step 1（done 2026-07-28）**：`COMMIT_WINDOW_MAX_SEC` = **240**（实测 ~300s 减 60s 余量）。把 `COMMIT_WINDOW_MAX_SEC` 从「复用 40」提到 **实测 transport default（~300s）减安全余量**（原稿写的 125s 是当时的已知下界，现已被 2026-07-27 实测取代——见本文档顶部更新）。这只放宽「允许配置的上限」、默认值不变。**不得**填成 300 整：撞上就是该 attempt 被 `headersTimeout` 中止。
+- [x] **Step 2（done 2026-07-28，用户拍板 180s）**：`streamCommitAfterSec` 默认 20 → **180**（`state-defaults.ts` + `config.yaml` 同步）。`streamCommitAfterSec` 默认值（当时 20）是否上调，现在是一个**有上界的取舍**而非未知量——上界 ~300s 已测定，取舍轴是「窗口越大越多 B-Mode2 走原生保护、但 A 型挂起在窗口内干等越久」。事故 RST 的 126-206s **整段在窗口内**，故默认值抬过 206s 可让事故形态留在 pre-header 区。**这是运维参数取舍，摆量化选项交用户拍板，不由实施者自行决定。**
+- [x] **Step 3（done，验收 gate 有保留）**：`bun scripts/parallel-test.ts unit it http` = 6484 pass / 14 fail，14 条全是 history-search sidecar（本机 native Tantivy 未构建、rustup 无默认 toolchain——已知且用户明确推迟，与本改动无关）；`typecheck` 干净；改动文件 `eslint` 干净。**`bun run test:backend` 本身未能执行**（它先跑 `build:history-search`，同一 rustup 原因即失败），故该 gate **未通过、也未失败——是未执行**。TSDoc 三处（`schema.ts` / `state.ts` / `config.yaml`）+ `DESIGN.md` 状态表已同步。原文「跑 `bun run test:backend` 全绿」更新 `schema.ts` 里 `stream_commit_after_sec` 的 TSDoc（补 Q1 实测 300s 上限 + 归属 undici `headersTimeout` + 出处 `exp/silence-recovery-gates/FINDINGS.md`）。
+- [x] **Step 4（done）**：提交 → `fix(config): raise stream_commit_after_sec ceiling to the measured CC pre-header limit`。
 
 ## 验收 Oracle
 

@@ -438,6 +438,13 @@ const FIELDS: ReadonlyArray<FieldSpec> = [
     defaultStateValue: CONFIG_MANAGED_DEFAULTS.streamKeepalivePingSec,
   },
   {
+    configKey: "anthropic.stream_keepalive_escalate_sec",
+    stateKey: "streamKeepaliveEscalateSec",
+    sampleYamlValue: "180",
+    expectedStateValue: 180,
+    defaultStateValue: CONFIG_MANAGED_DEFAULTS.streamKeepaliveEscalateSec,
+  },
+  {
     configKey: "anthropic.stream_keepalive_mode",
     stateKey: "streamKeepaliveMode",
     sampleYamlValue: "ping",
@@ -564,12 +571,29 @@ const FIELDS: ReadonlyArray<FieldSpec> = [
     defaultStateValue: CONFIG_MANAGED_DEFAULTS.thinkingBlockMessagePolicy,
   },
   {
-    configKey: "anthropic.thinking_destack_strategy",
-    stateKey: "thinkingDestackStrategy",
+    configKey: "anthropic.separator_carrier",
+    stateKey: "separatorCarrier",
+    // 目前载体表只有一个已验证值，样例只能等于默认值；R1/R2 仍能证明"键被读到且不被清零"。
+    sampleYamlValue: "marker_v1",
+    expectedStateValue: "marker_v1",
+    defaultStateValue: CONFIG_MANAGED_DEFAULTS.separatorCarrier,
+  },
+  {
+    configKey: "anthropic.separator_accept_extra",
+    stateKey: "separatorAcceptExtra",
+    sampleYamlValue: `\n  - "<<sep-from-an-older-fork>>"`,
+    expectedStateValue: ["<<sep-from-an-older-fork>>"],
+    defaultStateValue: CONFIG_MANAGED_DEFAULTS.separatorAcceptExtra,
+  },
+  {
+    configKey: "anthropic.assistant_block_layout_strategy",
+    stateKey: "assistantBlockLayoutStrategy",
     // Sample MUST differ from the default (move_blocks) so R1/R2 prove the wiring.
-    sampleYamlValue: "insert_text",
-    expectedStateValue: "insert_text",
-    defaultStateValue: CONFIG_MANAGED_DEFAULTS.thinkingDestackStrategy,
+    // `insert_text` retired 2026-07-27 — compat now rewrites it to move_blocks, which would
+    // make this sample equal the default and rob R1/R2 of their evidence.
+    sampleYamlValue: "passthrough",
+    expectedStateValue: "passthrough",
+    defaultStateValue: CONFIG_MANAGED_DEFAULTS.assistantBlockLayoutStrategy,
   },
   {
     configKey: "anthropic.strip_thinking_on_reject",

@@ -1,6 +1,10 @@
 import { OpenAPIHono } from "@hono/zod-openapi"
 import { Hono } from "hono"
-import { type BlankEnv } from "hono/types"
+import {
+  //
+  type BlankEnv,
+  type MiddlewareHandler,
+} from "hono/types"
 
 import { forwardError } from "~/lib/error"
 import { observabilityMiddleware } from "~/lib/observability/middleware"
@@ -10,7 +14,13 @@ import { readinessCheck } from "~/server"
 
 const browserProbePaths = new Set(["/favicon.ico", "/.well-known/appspecific/com.chrome.devtools.json"])
 
-export function createFullTestApp() {
+/**
+ * `preMiddleware` occupies the same slot as production's config/token middleware
+ * (`src/server.ts`, registered ahead of observability): the one place that runs BEFORE the
+ * handler and can spend real time. Tests that care about anything measured from request
+ * ingress need that slot to exist, or the app silently under-mirrors production.
+ */
+export function createFullTestApp(opts?: { preMiddleware?: MiddlewareHandler }) {
   // Mirror src/server.ts — OpenAPIHono<BlankEnv> so the aggregated /openapi.json
   // + Scalar docs are exercised by the http test suite, not just the live server.
   const app = new OpenAPIHono<BlankEnv>()
@@ -41,6 +51,8 @@ export function createFullTestApp() {
   // (pre-response client-abort is the critical case, RFC pre-response-abort-handling). Without
   // this, a test-only app under-finalizes relative to production (History V2 removal Phase 1
   // audit: this gap was previously masked by the V2-only `attachHistorySink` in-flight mirror).
+  if (opts?.preMiddleware) app.use(opts.preMiddleware)
+
   app.use(observabilityMiddleware())
 
   registerHttpRoutes(app)

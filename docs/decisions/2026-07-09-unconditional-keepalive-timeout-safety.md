@@ -1,7 +1,8 @@
 # ADR: 客户端保活「无条件 timeout-safe」——keepalive 开着则客户端永不因 CC watchdog 超时
 
-- **状态**：Accepted（2026-07-09，用户定夺）
-- **日期**：2026-07-09
+- **状态**：Superseded in part（2026-07-22 D2 反转默认；2026-07-27 仅恢复 pre-content-only 按需升级）
+- **日期**：2026-07-09；部分取代 2026-07-27
+- **当前边界**：本文“无条件 timeout-safe”与“默认 empty_text”不再是活契约。当前默认 `ping + 200s pre-content-only escalation`；块级 buffered 首块后的 >300s 窗口仍未覆盖，硬门见 [inter-block carrier 方案 A](../spec/2026-07-27-inter-block-keepalive-carrier.md)。
 - **相关**：
   - 目标陈述（用户）：**「客户端永不因为超时报错」**。
   - 机制细节（WHAT/HOW）：spec [2026-07-08-buffered-keepalive-empty-text-anchor.md](../spec/2026-07-08-buffered-keepalive-empty-text-anchor.md) §10（本 ADR 落地的合成 message_start 锚点 + live 路径对账 + mode taxonomy）。

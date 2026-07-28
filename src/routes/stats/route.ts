@@ -30,15 +30,12 @@ import {
   OpenAPIHono,
   z,
 } from "@hono/zod-openapi"
-
-import { TELEMETRY_DIMENSION_NAMES } from "~/lib/observability/telemetry-dimensions"
 import {
   //
   DEFAULT_BREAKDOWN_LIMIT,
-  getDimensionBreakdown,
-  getTelemetryDb,
-} from "~/lib/request-telemetry"
-import { state } from "~/lib/state"
+} from "@hsupu/ghc-proxy-telemetry"
+import { TELEMETRY_DIMENSION_NAMES } from "@hsupu/ghc-proxy-telemetry"
+import { getTelemetryRuntime } from "@hsupu/ghc-proxy-telemetry"
 import {
   //
   type DistributionSummary,
@@ -48,7 +45,9 @@ import {
   readTierBreakdown,
   readTierSketchQuantiles,
   type TierKeyCounters,
-} from "~/lib/telemetry/read"
+} from "@hsupu/ghc-proxy-telemetry"
+
+import { state } from "~/lib/state"
 
 export const statsRoutes = new OpenAPIHono()
 
@@ -157,13 +156,13 @@ statsRoutes.openapi(getStatsRoute, (c) => {
   // own default param apply) rather than pre-resolving it, to keep this call expression identical
   // to the pre-task code.
   if (effectiveWindow === "sinceStart" || effectiveWindow === "7d") {
-    return c.json(getDimensionBreakdown(dimension, effectiveWindow, limit), 200)
+    return c.json(getTelemetryRuntime().getDimensionBreakdown(dimension, effectiveWindow, limit), 200)
   }
 
   const effectiveLimit = limit ?? DEFAULT_BREAKDOWN_LIMIT
 
   // 30d/90d/lifetime: net-new SQLite-tiered path.
-  const db = getTelemetryDb()
+  const db = getTelemetryRuntime().getTelemetryDb()
   if (!db) {
     return c.json({ error: "telemetry SQLite store unavailable (telemetry disabled or db not yet initialized)" }, 503)
   }

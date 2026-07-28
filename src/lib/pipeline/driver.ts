@@ -27,6 +27,7 @@ import type {
 } from "~/lib/pipeline/generation/hedge-policy"
 
 import { classifyError } from "~/lib/error"
+import { recordRetryGiveUp } from "~/lib/observability/retry-giveups"
 import { recordRetryStrategyFire } from "~/lib/observability/retry-strategy-fires"
 import { getDownstreamDeliverySession } from "~/lib/pipeline/delivery/session"
 import { readSyntheticKind } from "~/lib/pipeline/frame-origin"
@@ -594,6 +595,15 @@ function createDriverCoordinator(deps: DriverDeps, initialEnv: RequestEnvelope):
   return createGenerationCoordinator({ env: initialEnv, createCandidate, generationBudget })
 }
 
+/**
+ * Bounded one-line excerpt of an upstream error message for a log line. Full bodies already land in
+ * history (richest-data-flow); the log only needs enough to recognise a NEW upstream wording.
+ */
+function excerptForLog(message: string, max = 300): string {
+  const flat = message.replaceAll(/\s+/g, " ").trim()
+  return flat.length <= max ? flat : `${flat.slice(0, max)}…`
+}
+
 function createSemanticRetryPolicy(deps: DriverDeps): (input: import("./generation/dispatch-scheduler").SemanticRetryInput) => Promise<SemanticRetryDecision> {
   let normalRetries = 0
   let learningRetries = 0
@@ -602,20 +612,45 @@ function createSemanticRetryPolicy(deps: DriverDeps): (input: import("./generati
     // Resolve only after CandidateStateFactory forked env.requestState. Strategy closures (notably
     // beta-probe and reverse resanitize) must bind this candidate's supplies, never generation-shared ones.
     const strategy = (candidateStrategies ??= resolveExchangeStrategies(deps, env)).find((candidate) => candidate.canHandle(error))
-    if (!strategy) return { kind: "fail" }
+    if (!strategy) {
+      // NOBODY understood this rejection. The loudest give-up: it means our matchers have drifted
+      // from what upstream actually says, and the client is about to receive the raw error. Both
+      // illegal-thinking-layout incidents (2026-07-26 C2, 2026-07-27 C3) lived here silently and were
+      // found only when a human pasted the 400 back at us — hence a warn AND a counter, not a
+      // bare `fail`. The message excerpt is what identifies a new upstream wording, so it is logged
+      // (internal-tool posture: diagnostic value over hypothetical leakage).
+      recordRetryGiveUp("unclaimed", error.type)
+      consola.warn(
+        `[Driver] No retry strategy claimed this ${error.type}${error.status ? ` (HTTP ${error.status})` : ""} — surfacing it to the client as-is: ${excerptForLog(error.message)}`,
+      )
+      return { kind: "fail" }
+    }
     let action: RetryAction
     try {
       action = await strategy.handle(error, env)
     } catch (strategyError) {
+      recordRetryGiveUp("strategy-threw", error.type)
       consola.warn(
         `[Driver] Strategy "${strategy.name}" threw while handling the error:`,
         strategyError instanceof Error ? strategyError.message : strategyError,
       )
       return { kind: "fail" }
     }
-    if (action.kind === "abort") return { kind: "fail" }
+    if (action.kind === "abort") {
+      // The strategy recognised the error but decided its remedy does not apply to THIS payload
+      // (e.g. poisoned-thinking-retry declining a literal assistant prefill). Legitimate, but a
+      // rising count means a matcher claims more than it can cure — and while it claims, no other
+      // strategy gets a look (first match wins).
+      recordRetryGiveUp("strategy-abort", error.type)
+      consola.warn(`[Driver] Strategy "${strategy.name}" claimed this ${error.type} but declined to retry it: ${excerptForLog(error.message)}`)
+      return { kind: "fail" }
+    }
     const overBudget = action.learning ? learningRetries++ >= deps.maxLearningRetries : normalRetries++ >= deps.maxRetries
-    if (overBudget) return { kind: "fail" }
+    if (overBudget) {
+      recordRetryGiveUp("budget-exhausted", error.type)
+      consola.warn(`[Driver] Retry budget exhausted while strategy "${strategy.name}" was still willing to retry this ${error.type}`)
+      return { kind: "fail" }
+    }
     if (action.meta) deps.onMeta?.(action.meta, action.env)
     action.env.ctx.recordAttemptFailure({
       willRetry: true,
@@ -642,11 +677,13 @@ function createSemanticRetryPolicy(deps: DriverDeps): (input: import("./generati
 function createDriverRecordingPort(deps: DriverDeps, ctx: RequestContext): DispatchRecordingPort {
   let candidateSequence = 0
   let dispatchSequence = 0
+  const candidateRoles = new Map<CandidateHandle, CandidateRole>()
   const explicit =
     typeof ctx.beginGenerationCandidate === "function"
     && typeof ctx.beginGenerationDispatch === "function"
     && typeof ctx.settleGenerationCandidate === "function"
     && typeof ctx.settleGenerationDispatch === "function"
+    && typeof ctx.markGenerationDispatchSynthetic === "function"
   const fallbackCandidates = new Set<CandidateHandle>()
 
   const selectSample = (wire: PreparedRequest, env: RequestEnvelope) => {
@@ -656,9 +693,9 @@ function createDriverRecordingPort(deps: DriverDeps, ctx: RequestContext): Dispa
 
   return {
     beginCandidate(input) {
-      if (explicit) return ctx.beginGenerationCandidate(input)
-      const handle = `compat-candidate:${++candidateSequence}` as CandidateHandle
-      fallbackCandidates.add(handle)
+      const handle = explicit ? ctx.beginGenerationCandidate(input) : (`compat-candidate:${++candidateSequence}` as CandidateHandle)
+      candidateRoles.set(handle, input.role)
+      if (!explicit) fallbackCandidates.add(handle)
       return handle
     },
 
@@ -677,6 +714,9 @@ function createDriverRecordingPort(deps: DriverDeps, ctx: RequestContext): Dispa
         if (explicit) {
           ctx.setGenerationDispatchEffectiveRequest(handle, sample.effective)
           ctx.setGenerationDispatchWireRequest(handle, sample.wire)
+          // Every dispatch owned by a continuation-role candidate reuses the synthesized body. The future
+          // max_tokens success path calls runContinuation too, so it inherits this provenance automatically.
+          if (candidateRoles.get(candidate) === "continuation") ctx.markGenerationDispatchSynthetic(handle, "continuation")
         } else {
           ctx.setAttemptEffectiveRequest(sample.effective)
           ctx.setAttemptWireRequest(sample.wire)
@@ -1113,7 +1153,7 @@ export async function runResponseBufferedSink(
   // truncation/exhaustion, or a post-retreat truncation), the anchor's content_block_start@0 is still OPEN
   // on the forwarded track. The driver returns `stream-error` and the handler writes its protocol error
   // frame, but a dangling open block would leave the client's block structure unbalanced. Close it
-  // (empty-text content_block_stop@0 — known-benign) BEFORE the failure return. `freezeHeartbeat` first so
+  // (empty-text content_block_stop@0 — known-benign) BEFORE the failure return. `close()` first so
   // no ping/anchor can fire between here and the stop write; the write is best-effort (the client may
   // already be gone — a reject is swallowed, there is nothing left to do). NOT called on client-abort /
   // settled-abort (the client is already gone → closing is meaningless). Idempotent — inert when the anchor
@@ -1122,7 +1162,7 @@ export async function runResponseBufferedSink(
   // own terminal-branch `closeAnchorIfOpen` reads the SAME shared `anchorClosed` and short-circuits, so the
   // buffered exhaustion path emits exactly ONE stop@0 (driver's), not a second from the pump.
   const closeAnchorIfOpen = async (): Promise<void> => {
-    sink.freezeHeartbeat?.()
+    sink.close?.()
     // Only `empty_text` (anchorBlockOpen) reserved a content_block@0 that needs balancing; `enveloped_ping`
     // injected a message_start-only envelope (no block) → nothing to close off.
     if (anchorState.injected && anchor && anchorState.anchorBlockOpen && !anchorState.anchorClosed) {
@@ -1175,8 +1215,10 @@ export async function runResponseBufferedSink(
       // error before any real block) is preserved by the SAME guard below via `closeAnchorBeforeReal`.
       // NOTE: after the anchor closes, an inter-block idle carries a BARE ping (no open anchor). Resetting
       // CC's 300s no-real-content watchdog for >300s inter-block gaps is a SEPARATE concern — see
-      // docs/todo/2026-07-22-client-proxy-keepalive-300s.md (empty text_delta was empirically insufficient
-      // on the proxy path anyway, G2). <300s gaps + the 60s byte-idle are covered by the bare ping.
+      // docs/todo/2026-07-22-client-proxy-keepalive-300s.md. G2's historical failure was caused by the
+      // recover-tool-call response rewrite swallowing empty text deltas, not by CC rejecting the carrier;
+      // empty deltas now pass through, while the current default remains bare ping by the D2 decision.
+      // <300s gaps + the 60s byte-idle are covered by the bare ping.
       const closeAnchorBeforeReal = async (): Promise<void> => {
         if (injected && anchor && anchorBlockOpen && !anchorState.anchorClosed) {
           anchorState.anchorClosed = true
@@ -1281,8 +1323,8 @@ export async function runResponseBufferedSink(
             // (one-time anchor close-off `stop@0` → H1 message_start dedup → +1 remap), so an anchor injected
             // before the retreat can't collide the real @0 block with the anchor's @0 or re-send message_start.
             // On the no-anchor path this is byte-identical to the previous raw `for (f of buffer) write(f)`
-            // (every anchor branch inert). SUSPEND/RESUME (recoverable) around the flush — NOT the terminal
-            // path's permanent freeze — because retreat is followed by MORE (live) streaming: a subsequent
+            // (every anchor branch inert). SUSPEND/RESUME (recoverable) around the flush — NOT a terminal
+            // close — because retreat is followed by MORE (live) streaming: a subsequent
             // live stall must still get keepalives (the anchor is now closed, so the tick emits a block-aware
             // empty delta on the live-open block, or a ping). `flushBufferedFrames`' internal freeze clears the
             // timer; resume re-arms a fresh interval so the heartbeat recovers for the live continuation.
@@ -1306,9 +1348,9 @@ export async function runResponseBufferedSink(
             //
             // §4.4 concurrency guard: SUSPEND the heartbeat around this per-block flush (recoverable), so a
             // tick firing on one of the loop's `await sink.write` yields can't splice an empty keepalive
-            // delta into the middle of THIS real block's deltas. RESUME after — unlike the terminal path's
-            // permanent freeze, the block-level flush is followed by MORE streaming, so the inter-block idle
-            // must keep its keepalives. (`flushBufferedFrames`' internal freeze clears the timer; resume
+            // delta into the middle of THIS real block's deltas. RESUME after — unlike a terminal close, the
+            // block-level flush is followed by MORE streaming, so the inter-block idle must keep its
+            // keepalives. (`flushBufferedFrames`' internal freeze clears the timer; resume
             // re-arms a fresh interval, so the heartbeat recovers for the next inter-block gap.)
             sink.suspendHeartbeat?.()
             // §5.3/§10.5 H2 ordering: `error` is BOTH a commit boundary AND the response terminus. When it
@@ -1405,6 +1447,10 @@ export async function runResponseBufferedSink(
         // here (defect (b): it stayed OPEN across every earlier block boundary; now it closes at the end —
         // and unconditionally, even when this tail buffer is EMPTY because the terminal frame was itself a
         // boundary). On the whole-response path this is the single flush → still terminal (R1 byte-identical).
+        // This is a true response terminus: permanently stop heartbeat BEFORE the first flush write.
+        // Unlike retreat/boundary flushes there is no subsequent stream that needs resume. Closing here
+        // also blocks an in-flight heartbeat operation's finally-handler from re-arming during a slow flush.
+        sink.close?.()
         const res = await flushBufferedFrames(buffer, true, { cause: "terminal-drain" }, candidateOpts.transformBufferedFlush)
         if (res.kind === "client-abort") return { kind: "settled-abort" }
         if (res.kind === "write-error") {
@@ -1492,10 +1538,9 @@ export async function runResponseBufferedSink(
         currentEnv.ctx.resetSseEvents()
         // Build the continuation upstream body: [original] + [assistant = committed prefix] + [user =
         // message]. `ledger.snapshot()` already excludes thinking (extractor) — upstream rejects thinking
-        // as a prefix (ADR D3). The synthetic turns ARE faithfully recorded on the upstreamRequest track
-        // (real wire bytes) and never touch the upstream-original response track (§4.4). NOTE: they are not
-        // yet tagged with a `synthetic:"continuation"` PROVENANCE marker — an observability gap tracked in
-        // docs/todo/2026-07-22-continuation-synthetic-provenance.md (the continuation itself is correct).
+        // as a prefix (ADR D3). The synthetic turns are faithfully recorded as real wire bytes on the
+        // upstreamRequest track; createDriverRecordingPort tags every continuation-role dispatch through
+        // the track's side-channel extensions, never by mutating this body or the upstream-original response.
         const continuationBody = continuation.buildRequest(continuationOriginalBody, ledger.snapshot(), continuation.message)
         const contEnv = currentEnv.with({ body: continuationBody })
         try {

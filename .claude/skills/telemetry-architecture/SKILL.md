@@ -14,7 +14,7 @@ description: 当在 copilot-api-js 扩展/重构可扩展持久遥测（request-
 把 5 硬编码维度 + 6 处手抄指标的 `request-telemetry.ts` 重构成 dimension/measure registry 框架时的可复用架构教训。
 
 ### 支柱 1 — 提取下沉到 sink 层、聚合叶子保持 type-light
-维度 = 注册的 key-extractor `(entry, ctx) => string|string[]|null`，放在 `observability/telemetry-dimensions.ts`（entry/ctx 类型 in-scope）；`request-telemetry.ts` 只收 `Record<dimName, key>` key-bag，永不 import entry/ctx（只 import `UsageData`）。加维度 = registry push 一行，record/persist/load/breakdown 全靠遍历 registry，零其它编辑。
+维度 = 注册的 key-extractor `(entry, ctx) => string|string[]|null`，放在 `observability/telemetry-dimensions.ts`（entry/ctx 类型 in-scope）；`request-telemetry.ts` 只收 `Record<dimName, key>` key-bag，永不 import entry/ctx。加维度 = 在包侧 `dimension-names.ts` 加一条 spec + 在 core 侧提取器表加一个 extractor（表是按 spec 名字 union 键控的穷尽 `Record`，漏写直接编译不过），record/persist/load/breakdown 全靠遍历 registry，零其它编辑。
 
 ### 支柱 2 — 开放 counters bag + 泛型 (de)serializer = 零持久版本 bump
 `StatAccumulator.counters: Record<string,number>` 是开放 bag；持久 envelope V3 泛型迭代所有维度名（无 allow-list，未知未来维度 round-trip forward-compat）；loader/serializer 用 `{...acc.counters}` 泛型复制而非字段枚举。加 measure / 加维度 = 数据，不 bump version、不加 loader 分支。
@@ -45,9 +45,18 @@ REFERENCE（实测确证）：`/api/status` 的 `requestTelemetry` model 维度 
 
 设计与失配形态清单见 `docs/spec/2026-07-05-ui-v4-models-enhancement.md` §4.2。任何消费 `/api/status` 或 `/api/stats?dimension=model` 遥测并要 join 目录的工作都会踩此坑。
 
+## 二·五、包边界（2026-07-27 抽包 `@hsupu/ghc-proxy-telemetry`）
+
+遥测域已是独立 workspace 包，**对 core 零依赖**（机器守卫：`tests/architecture/package-boundaries.unit.test.ts` 的 allowlist 检测器 + ESLint 镜像 + `tests/architecture/telemetry-domain-surface.unit.test.ts`）。动这块代码前先知道三件事：
+
+- **拿不到 core**。包里不能 `import "~/lib/..."`，也不能引任何别的 `@hsupu/*`（foundation 除外）。要 core 的东西就走注入端口 `TelemetryPaths` / `TelemetryConfigView` / `TelemetryConfigSubscription`，由 core 侧 composition root `src/lib/telemetry-assembly.ts` 装配（生产在 `start.ts` listen 前装、测试地板在 bunfig preload 装 ports、fixture 每测试装 runtime）。
+- **config 是只读投影，逐字段生命周期不同**（跟 token 的凭据 SoT 反转根本不同——遥测**不拥有**任何 config）。`enabled`/`persist_interval`/`rollup_interval` 靠订阅重调 timer；cap/cumulative/retention 是 next-record live 读；`db_path` 只在 init 选库；**`sketch_gamma` 是 DB-open 冻结的候选值**（端口字段就叫 `sketchGammaCandidate`，别当 live 读——理由见 §三 的 γ 冻结不变量）。
+- **只有一个生产表面**：包 barrel 导出的 `TelemetryRuntime`。registry 的自由函数（`initRequestTelemetry`/`recordSettledRequest`/`getDimensionBreakdown`…）是包内部，**加新导出到 barrel 会被守卫拦**。测试驱动 registry 走包自有的 `@hsupu/ghc-proxy-telemetry/testing` 入口。读路径（`/api/status`·`/api/stats`·`/metrics`）用 fail-fast `getTelemetryRuntime()`（未装配是接线 bug，绝不返回伪造零值），记录腿与 shutdown 用容忍 `peekTelemetryRuntime()?.op()`。
+- **维度 registry 是劈开的**：名字 + 基数类在包（`dimension-names.ts`），提取器留 core（要看 entry/ctx）。加维度要两边都动，类型系统会逼你。
+
 ## 三、分层 SQLite 存储（telemetry.db，2026-07-14 存储层替换）
 
-单 27MB JSON（整文件重写、无索引、硬顶 7d）→ 独立 `telemetry.db`（`src/lib/telemetry/`）。**纯聚合层**、行级明细委托 History DB。权威 spec `docs/spec/2026-07-13-telemetry-tiered-storage.md` + DESIGN.md「活的架构现状」telemetry.db 行。
+单 27MB JSON（整文件重写、无索引、硬顶 7d）→ 独立 `telemetry.db`（`packages/telemetry/src/telemetry/`）。**纯聚合层**、行级明细委托 History DB。权威 spec `docs/spec/2026-07-13-telemetry-tiered-storage.md` + DESIGN.md「活的架构现状」telemetry.db 行。
 
 **形态**：三层 rollup（`tel_raw` 5min / `tel_hourly` / `tel_daily`，链式 raw→hourly→daily）+ 终身 `tel_cumulative` + 无维 `tel_accepted` + 字典 `tel_dim`/`tel_key` + 账本 `tel_meta`（Umzug hybrid）。可加度量 INTEGER 精确 SUM、分布 DDSketch BLOB（`hist_blob`）。
 

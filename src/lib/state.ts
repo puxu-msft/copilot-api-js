@@ -1,5 +1,9 @@
+import type {
+  //
+  AssistantBlockLayoutStrategy,
+  SeparatorCarrier,
+} from "~/lib/anthropic/sanitize/assistant-block-layout"
 import type { ThinkingBlockSanitizeMode } from "~/lib/anthropic/sanitize/content-blocks"
-import type { ThinkingDestackStrategy } from "~/lib/anthropic/sanitize/destack-adjacent-thinking"
 import type { RepairItem } from "~/lib/anthropic/tool-input-repair"
 import type { ModelTranslation } from "~/lib/config/schema"
 import type {
@@ -69,7 +73,7 @@ export type WarmupPolicy = "allow" | "reject" | "drop" | "fake"
  * - `preserve` — Keep thinking blocks verbatim, preserve their relative order, and never
  *                drop them, but allow all surrounding cleanup (drop orphan tools, downgrade
  *                server tools, edit/drop non-thinking blocks). Thinking *adjacency* is NOT
- *                protected: the de-stack pass (sanitize/destack-adjacent-thinking.ts) may
+ *                protected: the de-stack pass (sanitize/assistant-block-layout.ts) may
  *                insert non-thinking blocks between consecutive thinking blocks to satisfy
  *                the upstream "no two thinking blocks adjacent" rule.
  * - `stripped` — Actively delete thinking blocks from old messages; delete the message if
@@ -404,16 +408,21 @@ export interface State {
   readonly streamKeepalivePingSec: number
 
   /**
+   * Seconds without a client-visible Anthropic `content_block_delta` before the normal ping
+   * heartbeat escalates to an empty content delta. `0` disables escalation. Default 200, leaving
+   * ~100s margin before Claude Code's 300s event-idle watchdog. Captured at stream start.
+   */
+  readonly streamKeepaliveEscalateSec: number
+
+  /**
    * Keepalive frame type for the client-facing Anthropic stream. Default `ping` (a bare `event: ping`).
    *
-   * NOTE (ADR 2026-07-22 D2): `empty_text` was RETIRED as the default. It injected an empty content delta
-   * matching an open block, and in buffered mode lazily opened a synthetic empty-text ANCHOR block so an
-   * empty text_delta would reset CC's 300s no-real-content deadline. But an empty text block is a
-   * WRONG-shaped keepalive and was G2-proven unable to reset that deadline on the proxy path, so it is
-   * disabled by default (a bare `ping` does not reset the 300s deadline either — a >300s pre-content
-   * silence may time out; a real keepalive is pending research, docs/todo/2026-07-22-client-proxy-
-   * keepalive-300s.md). Block-level delivery CLI-safety now comes from strict index-ordered output, not
-   * from an anchor. `empty_text` / `enveloped_ping` remain SELECTABLE (code kept dormant) for that research.
+   * NOTE (ADR 2026-07-22 D2, partially reversed 2026-07-27): `empty_text` remains retired as the
+   * NORMAL cadence because a persistent synthetic text block is the wrong everyday wire shape. G2 later
+   * proved the empty delta carrier works; our response rewrite had swallowed it. Default `ping` therefore
+   * gains a separate on-demand escalation (`streamKeepaliveEscalateSec`): only near the 300s deadline does
+   * it emit an empty delta on an existing block, or lazily open the anchor when still pre-content.
+   * Block-level delivery CLI-safety continues to come from strict index-ordered output.
    */
   readonly streamKeepaliveMode: "ping" | "enveloped_ping" | "empty_text"
 
@@ -423,8 +432,9 @@ export interface State {
    * the window, the real HTTP status is forwarded (the client keeps its native retry/backoff). If the
    * window elapses with the upstream still silent (opus pre-response thinking, empirically ≤~13s but
    * can run longer), the proxy commits a 200 + keepalive and any later error degrades to an SSE frame.
-   * `0` disables (commit immediately at t0). Clamped by `clampCommitWindowSec` to `COMMIT_WINDOW_MAX_SEC`.
-   * Default 20.
+   * `0` disables (commit immediately at t0). Clamped by `clampCommitWindowSec` to `COMMIT_WINDOW_MAX_SEC`,
+   * which sits under the ~300s pre-header limit (undici's default headersTimeout) — nothing is written
+   * before the commit, so the window runs on the same clock as that limit. Default 180.
    */
   readonly streamCommitAfterSec: number
 
@@ -500,20 +510,31 @@ export interface State {
 
   /**
    * De-stack strategy for adjacent `thinking`/`redacted_thinking` blocks (config
-   * `anthropic.thinking_destack_strategy`). Ensures no two thinking blocks are
+   * `anthropic.assistant_block_layout_strategy`). Ensures no two thinking blocks are
    * consecutive in an assistant message — GHC rejects an echoed history with
    * stacked thinking with a "thinking blocks cannot be modified" 400.
    *
    * - `"passthrough"` — leave stacked thinking as-is.
-   * - `"insert_text"` — insert a synthetic text separator between adjacent thinking.
    * - `"move_blocks"` — interleave thinking with real non-thinking blocks
    *                     (order-preserving), synthetic marker only when insufficient (default).
    */
-  readonly thinkingDestackStrategy: ThinkingDestackStrategy
+  readonly assistantBlockLayoutStrategy: AssistantBlockLayoutStrategy
+  /**
+   * EMIT axis (`anthropic.separator_carrier`): which synthetic separator carrier goes on the wire.
+   * Closed enum — only real-upstream-proven carriers.
+   */
+  readonly separatorCarrier: SeparatorCarrier
+  /**
+   * ACCEPT axis (`anthropic.separator_accept_extra`): extra literals ALSO recognised as our
+   * synthetic separator, unioned on top of the built-in prefix family and legacy spellings.
+   * Widening recognition is monotone — it cannot make a payload illegal — which is why this axis
+   * is open while the emit axis is closed.
+   */
+  readonly separatorAcceptExtra: ReadonlyArray<string>
 
   /**
    * Reactive strip-all fallback (L2) for the GHC "thinking ... cannot be
-   * modified" 400 that L1 de-stack ({@link thinkingDestackStrategy}) did not
+   * modified" 400 that L1 de-stack ({@link assistantBlockLayoutStrategy}) did not
    * preempt (config `anthropic.strip_thinking_on_reject`). When `true` (default)
    * the `poisoned-thinking-retry` strategy strips ALL thinking/redacted_thinking
    * blocks from the echoed history and retries the turn once; `false` lets the
@@ -1489,6 +1510,7 @@ export function setAnthropicBehavior(
       | "responseHeaderWhitelist"
       | "stripAttributionHeader"
       | "streamKeepalivePingSec"
+      | "streamKeepaliveEscalateSec"
       | "streamKeepaliveMode"
       | "streamCommitAfterSec"
       | "preContentRecovery"
@@ -1497,7 +1519,9 @@ export function setAnthropicBehavior(
       | "injectClaudeCodeOfficialTools"
       | "thinkingBlockMessagePolicy"
       | "thinkingBlockSanitizeCheck"
-      | "thinkingDestackStrategy"
+      | "assistantBlockLayoutStrategy"
+      | "separatorCarrier"
+      | "separatorAcceptExtra"
       | "stripThinkingOnReject"
       | "poisonedThinkingQuarantine"
       | "poisonedThinkingTtlHours"
@@ -2031,6 +2055,7 @@ export function resetConfigManagedState(): void {
     responseHeaderWhitelist: [...CONFIG_MANAGED_DEFAULTS.responseHeaderWhitelist],
     stripAttributionHeader: CONFIG_MANAGED_DEFAULTS.stripAttributionHeader,
     streamKeepalivePingSec: CONFIG_MANAGED_DEFAULTS.streamKeepalivePingSec,
+    streamKeepaliveEscalateSec: CONFIG_MANAGED_DEFAULTS.streamKeepaliveEscalateSec,
     streamKeepaliveMode: CONFIG_MANAGED_DEFAULTS.streamKeepaliveMode,
     streamCommitAfterSec: CONFIG_MANAGED_DEFAULTS.streamCommitAfterSec,
     preContentRecovery: { ...CONFIG_MANAGED_DEFAULTS.preContentRecovery },
@@ -2039,7 +2064,9 @@ export function resetConfigManagedState(): void {
     injectClaudeCodeOfficialTools: CONFIG_MANAGED_DEFAULTS.injectClaudeCodeOfficialTools,
     thinkingBlockMessagePolicy: CONFIG_MANAGED_DEFAULTS.thinkingBlockMessagePolicy,
     thinkingBlockSanitizeCheck: CONFIG_MANAGED_DEFAULTS.thinkingBlockSanitizeCheck,
-    thinkingDestackStrategy: CONFIG_MANAGED_DEFAULTS.thinkingDestackStrategy,
+    assistantBlockLayoutStrategy: CONFIG_MANAGED_DEFAULTS.assistantBlockLayoutStrategy,
+    separatorCarrier: CONFIG_MANAGED_DEFAULTS.separatorCarrier,
+    separatorAcceptExtra: CONFIG_MANAGED_DEFAULTS.separatorAcceptExtra,
     stripThinkingOnReject: CONFIG_MANAGED_DEFAULTS.stripThinkingOnReject,
     poisonedThinkingQuarantine: CONFIG_MANAGED_DEFAULTS.poisonedThinkingQuarantine,
     poisonedThinkingTtlHours: CONFIG_MANAGED_DEFAULTS.poisonedThinkingTtlHours,
@@ -2259,6 +2286,7 @@ const mutableState: MutableState = {
   responseHeaderWhitelist: [...CONFIG_MANAGED_DEFAULTS.responseHeaderWhitelist],
   stripAttributionHeader: CONFIG_MANAGED_DEFAULTS.stripAttributionHeader,
   streamKeepalivePingSec: CONFIG_MANAGED_DEFAULTS.streamKeepalivePingSec,
+  streamKeepaliveEscalateSec: CONFIG_MANAGED_DEFAULTS.streamKeepaliveEscalateSec,
   streamKeepaliveMode: CONFIG_MANAGED_DEFAULTS.streamKeepaliveMode,
   streamCommitAfterSec: CONFIG_MANAGED_DEFAULTS.streamCommitAfterSec,
   preContentRecovery: { ...CONFIG_MANAGED_DEFAULTS.preContentRecovery },
@@ -2274,7 +2302,9 @@ const mutableState: MutableState = {
   injectClaudeCodeOfficialTools: CONFIG_MANAGED_DEFAULTS.injectClaudeCodeOfficialTools,
   thinkingBlockMessagePolicy: CONFIG_MANAGED_DEFAULTS.thinkingBlockMessagePolicy,
   thinkingBlockSanitizeCheck: CONFIG_MANAGED_DEFAULTS.thinkingBlockSanitizeCheck,
-  thinkingDestackStrategy: CONFIG_MANAGED_DEFAULTS.thinkingDestackStrategy,
+  assistantBlockLayoutStrategy: CONFIG_MANAGED_DEFAULTS.assistantBlockLayoutStrategy,
+  separatorCarrier: CONFIG_MANAGED_DEFAULTS.separatorCarrier,
+  separatorAcceptExtra: CONFIG_MANAGED_DEFAULTS.separatorAcceptExtra,
   stripThinkingOnReject: CONFIG_MANAGED_DEFAULTS.stripThinkingOnReject,
   poisonedThinkingQuarantine: CONFIG_MANAGED_DEFAULTS.poisonedThinkingQuarantine,
   poisonedThinkingTtlHours: CONFIG_MANAGED_DEFAULTS.poisonedThinkingTtlHours,

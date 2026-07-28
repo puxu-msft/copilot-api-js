@@ -1,20 +1,23 @@
+import { openTelemetryDb } from "@hsupu/ghc-proxy-telemetry/telemetry/db"
+import {
+  //
+  internDim,
+  internKey,
+  resolveKey,
+} from "@hsupu/ghc-proxy-telemetry/telemetry/dictionary"
 import {
   //
   afterEach,
   expect,
   test,
 } from "bun:test"
-import { mkdtempSync, rmSync } from "node:fs"
-import { tmpdir } from "node:os"
-import { join } from "node:path"
-
-import { openTelemetryDb } from "~/lib/telemetry/db"
 import {
   //
-  internDim,
-  internKey,
-  resolveKey,
-} from "~/lib/telemetry/dictionary"
+  mkdtempSync,
+  rmSync,
+} from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 
 const tmpDirs: Array<string> = []
 function freshDb(): ReturnType<typeof openTelemetryDb> {

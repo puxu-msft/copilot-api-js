@@ -1,12 +1,18 @@
-/**
- * P5 `/api/stats` route 验收 —— window→tier 路由 + lifetime + sketch 分位（HTTP 层）。
- *
- * 承重不变量 8（byte-compat）：`sinceStart`/`7d` 逐字段与 `getDimensionBreakdown` 直接调用结果
- * 相同——本 task **绝不改**这两个 window 的读路径，这里是回归 oracle，不是新功能测试。
- *
- * `30d`/`90d`/`lifetime` 是本 task 净新增能力：路由到 SQLite 分层（`~/lib/telemetry/read.ts`），
- * 断言 counters SUM 正确 + `distributions`/`constituentKeys` 字段存在。
- */
+import { openTelemetryDb } from "@hsupu/ghc-proxy-telemetry/telemetry/db"
+import {
+  //
+  internDim,
+  internKey,
+} from "@hsupu/ghc-proxy-telemetry/telemetry/dictionary"
+import {
+  //
+  _getTelemetryDbForTests,
+  _resetRequestTelemetryForTests,
+  _setRequestTelemetryFilePathForTests,
+  _setTelemetryDbForTests,
+  getDimensionBreakdown,
+  recordSettledRequest,
+} from "@hsupu/ghc-proxy-telemetry/testing"
 import {
   //
   afterEach,
@@ -24,26 +30,21 @@ import { join } from "node:path"
 
 import {
   //
-  _getTelemetryDbForTests,
-  _resetRequestTelemetryForTests,
-  _setRequestTelemetryFilePathForTests,
-  _setTelemetryDbForTests,
-  getDimensionBreakdown,
-  recordSettledRequest,
-} from "~/lib/request-telemetry"
-import {
-  //
   restoreStateForTests,
   setStateForTests,
   snapshotStateForTests,
   type StateSnapshot,
 } from "~/lib/state"
-import { openTelemetryDb } from "~/lib/telemetry/db"
-import {
-  //
-  internDim,
-  internKey,
-} from "~/lib/telemetry/dictionary"
+/**
+ * P5 `/api/stats` route 验收 —— window→tier 路由 + lifetime + sketch 分位（HTTP 层）。
+ *
+ * 承重不变量 8（byte-compat）：`sinceStart`/`7d` 逐字段与 `getDimensionBreakdown` 直接调用结果
+ * 相同——本 task **绝不改**这两个 window 的读路径，这里是回归 oracle，不是新功能测试。
+ *
+ * `30d`/`90d`/`lifetime` 是本 task 净新增能力：路由到 SQLite 分层（`~/lib/telemetry/read.ts`），
+ * 断言 counters SUM 正确 + `distributions`/`constituentKeys` 字段存在。
+ */
+import { installDefaultTelemetryRuntime } from "~/lib/telemetry-assembly"
 import { statsRoutes } from "~/routes/stats/route"
 
 interface DistributionSummaryBody {
@@ -79,6 +80,9 @@ let snapshot: StateSnapshot
 beforeEach(() => {
   snapshot = snapshotStateForTests()
   _resetRequestTelemetryForTests()
+  // The /api/stats route reads through the assembled runtime (fail-fast: an unassembled telemetry
+  // domain is a wiring bug, never silently-zero stats), so wire it exactly as start.ts does.
+  installDefaultTelemetryRuntime()
   const tempDir = mkdtempSync(join(tmpdir(), "stats-route-test-"))
   tmpDirs.push(tempDir)
   _setRequestTelemetryFilePathForTests(join(tempDir, "request-telemetry.json"))
@@ -161,8 +165,8 @@ test("window=lifetime → tel_cumulative，含 distributions + constituentKeys�
   const dim = internDim(db, "model")
   const opus = internKey(db, dim, "opus")
   const sonnet = internKey(db, dim, "sonnet")
-  const { upsertCumulative, upsertCumulativeSketchBlob } = await import("~/lib/telemetry/store")
-  const { createSketch } = await import("~/lib/telemetry/sketch")
+  const { upsertCumulative, upsertCumulativeSketchBlob } = await import("@hsupu/ghc-proxy-telemetry/telemetry/store")
+  const { createSketch } = await import("@hsupu/ghc-proxy-telemetry/telemetry/sketch")
   upsertCumulative(db, dim, opus, { req_count: 5, input_tok: 300 })
   upsertCumulative(db, dim, sonnet, { req_count: 2, input_tok: 40 })
   const sketch = createSketch(0.01)
@@ -194,7 +198,7 @@ test("window=30d → tel_hourly（默认 hourly retention 90d ≥ 30d），count
   _setTelemetryDbForTests(db)
   const dim = internDim(db, "client")
   const claudeCode = internKey(db, dim, "claude-code")
-  const { upsertSettledTier } = await import("~/lib/telemetry/store")
+  const { upsertSettledTier } = await import("@hsupu/ghc-proxy-telemetry/telemetry/store")
   const now = Date.now()
   const HOUR = 3_600_000
   upsertSettledTier(db, "tel_hourly", now - 2 * HOUR, dim, claudeCode, { req_count: 4, input_tok: 40 })
@@ -218,7 +222,7 @@ test("window=90d 且 hourly retention 收窄 < 90 → 路由到 tel_daily", asyn
   _setTelemetryDbForTests(db)
   const dim = internDim(db, "client")
   const claudeCode = internKey(db, dim, "claude-code")
-  const { upsertSettledTier } = await import("~/lib/telemetry/store")
+  const { upsertSettledTier } = await import("@hsupu/ghc-proxy-telemetry/telemetry/store")
   const now = Date.now()
   const DAY = 86_400_000
   // 只写 daily 层 —— 若 route 误路由到 hourly（空表）会读到 0 而非这里写的值,证明路由确实选中了 tel_daily。
@@ -268,8 +272,8 @@ test('多 constituentKeys 的 "other" 折叠行走完整 route → distributions
   const db = freshTelemetryDb()
   _setTelemetryDbForTests(db)
   const dim = internDim(db, "model")
-  const { upsertSettledTier, upsertSketchBlob } = await import("~/lib/telemetry/store")
-  const { createSketch } = await import("~/lib/telemetry/sketch")
+  const { upsertSettledTier, upsertSketchBlob } = await import("@hsupu/ghc-proxy-telemetry/telemetry/store")
+  const { createSketch } = await import("@hsupu/ghc-proxy-telemetry/telemetry/sketch")
   const now = Date.now()
   const HOUR = 3_600_000
   const bucketTs = now - 2 * HOUR // 落在 30d 窗内的 tel_hourly 桶
@@ -334,7 +338,7 @@ test("结构性读失败（损坏的 sketch blob）→ 500，不崩进程", asyn
   _setTelemetryDbForTests(db)
   const dim = internDim(db, "model")
   const opus = internKey(db, dim, "opus")
-  const { upsertSettledTier } = await import("~/lib/telemetry/store")
+  const { upsertSettledTier } = await import("@hsupu/ghc-proxy-telemetry/telemetry/store")
   const now = Date.now()
   upsertSettledTier(db, "tel_hourly", now, dim, opus, { req_count: 1 })
   // 直接写入无法反序列化的垃圾字节到 hist_blob —— 触发 deserializePackedSketches fail-loud。

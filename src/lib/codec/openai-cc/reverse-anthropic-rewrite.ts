@@ -32,7 +32,7 @@ import { buildMessageMapping } from "~/lib/anthropic/message-mapping"
 import { runAnthropicPayloadRewrites } from "~/lib/anthropic/payload-rewrites"
 import {
   //
-  destackActed,
+  layoutRepairActed,
   toSanitizationInfo,
 } from "~/lib/anthropic/sanitize"
 import { buildAnthropicToolNameMapper } from "~/lib/anthropic/sanitize/tool-name-sanitize"
@@ -99,7 +99,7 @@ function applyReverseAnthropicSanitize(env: RequestEnvelope, holder: ReverseAnth
   const sanitizationInfo = toSanitizationInfo(stats)
   // Record when the sanitize acted (orphan/reminder/fixed-name/de-stack). Reverse legs have no Anthropic
   // message-level preprocess, so `preprocessing` is the empty envelope.
-  if (stats.totalBlocksRemoved > 0 || stats.systemReminderRemovals > 0 || stats.fixedNameCount > 0 || destackActed(stats)) {
+  if (stats.totalBlocksRemoved > 0 || stats.systemReminderRemovals > 0 || stats.fixedNameCount > 0 || layoutRepairActed(stats)) {
     const messageMapping = buildMessageMapping(baseline.messages, sanitized.messages)
     ctx.setPipelineInfo({
       preprocessing: { strippedReadTagCount: 0, dedupedToolCallCount: 0 },

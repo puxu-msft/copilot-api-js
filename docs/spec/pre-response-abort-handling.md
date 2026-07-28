@@ -111,7 +111,7 @@
 
 ### 1.4 为什么不能靠 `error.name` 区分超时(round-1 review 的 CRITICAL)
 
-[send.ts:99](../../src/lib/transport/send.ts#L99) 的 `combineAbortSignals` 对 2+ signal 用 `AbortSignal.any`([stream.ts:92](../../src/lib/stream.ts#L92)),合并 signal 的 `.reason` **会**透传触发源的 reason —— `AbortSignal.timeout` 的 reason 是 `TimeoutError` DOMException,clientAbort 默认 reason 是 `AbortError`。**但** [http2-client.ts](../../src/lib/transport/http2-client.ts) 的 abort 路径([:118](../../src/lib/transport/http2-client.ts#L118) 早退 + [:138](../../src/lib/transport/http2-client.ts#L138) `onPreResponseAbort`)**无条件 `reject(abortError())`**(自合成 `new Error("The operation was aborted.")`,name 硬设 "AbortError"),**完全不读 `signal.reason`**。所有 https 上游(GHC/Anthropic/CC/Responses)都走 http2-client,故到达 forwardError/handler 的超时错误其 name 已被抹成 "AbortError",TimeoutError 身份丢失。
+[send.ts:99](../../src/lib/transport/send.ts#L99) 的 `combineAbortSignals` 对 2+ signal 用 `AbortSignal.any`([stream.ts:92](../../packages/foundation/src/stream.ts#L92)),合并 signal 的 `.reason` **会**透传触发源的 reason —— `AbortSignal.timeout` 的 reason 是 `TimeoutError` DOMException,clientAbort 默认 reason 是 `AbortError`。**但** [http2-client.ts](../../src/lib/transport/http2-client.ts) 的 abort 路径([:118](../../src/lib/transport/http2-client.ts#L118) 早退 + [:138](../../src/lib/transport/http2-client.ts#L138) `onPreResponseAbort`)**无条件 `reject(abortError())`**(自合成 `new Error("The operation was aborted.")`,name 硬设 "AbortError"),**完全不读 `signal.reason`**。所有 https 上游(GHC/Anthropic/CC/Responses)都走 http2-client,故到达 forwardError/handler 的超时错误其 name 已被抹成 "AbortError",TimeoutError 身份丢失。
 
 这是一个独立的 **lossy 数据缺陷**(违反 richest-data-flow:abort 的 provenance 被丢)。两条修复路线:
 - **选定方案(不碰 http2-client):用 `c.req.raw.signal.aborted` 判别。** 客户端断开 → raw.signal aborted=true;response_header 超时 → 超时打在 `createFetchSignal()`,raw.signal 仍 false(客户端还连着、只是在等)。此判别对流式(combined=any[timeout, client])与非流式(combined=any[timeout, shutdown, client],shutdown 已被 send.ts:119 提前拦为 529)都成立:到 forwardError 时非 client、非 shutdown 的 abort **只可能**是 timeout。不依赖 error.name 或 reason 透传两层,最 robust。
@@ -132,7 +132,7 @@
 问题:
 - **语义错** — "Unexpected non-HTTP error" 的措辞暗示这是个 bug,但 abort/timeout 是预期内的运维状况(客户端取消、上游太慢)。`consola.error` 的 ERR severity 也错配。
 - **状态码错** — 把客户端取消 / 网关超时统一标成 **HTTP 500 server_error**,等于告诉(或其历史里告诉)客户端"服务器内部 bug"。response_header 超时该是 504,客户端取消该是 499(或干脆不在意——连接已断)。
-- **已有现成工具未用** — [classifyError](../../src/lib/error/classify.ts#L49) 把 abort 判成 `type: "aborted"`、[isAbortError](../../src/lib/error/classify.ts#L265) 识别 `AbortError`/`TimeoutError`/cause 链。forwardError 完全没消费它们。
+- **已有现成工具未用** — [classifyError](../../packages/foundation/src/error/classify.ts#L49) 把 abort 判成 `type: "aborted"`、[isAbortError](../../packages/foundation/src/error/classify.ts#L265) 识别 `AbortError`/`TimeoutError`/cause 链。forwardError 完全没消费它们。
 
 ### 缺陷②:pre-response 客户端断开记成 `failed` 而非 `aborted` —— 状态不一致
 
@@ -157,7 +157,7 @@
 
 ①② 已落地(commit ee4dd34,见 [error.unit.test.ts:740](../../tests/infra/error.unit.test.ts#L740) + [pre-response-abort.http.test.ts](../../tests/anthropic/pre-response-abort.http.test.ts));③ 待实现;④⑤ 见下。
 
-### 缺陷④:stale reaper 空有其名 —— `ctx.fail()` 不取消在飞上游(资源泄漏,暂缓)
+### 缺陷④:stale reaper 空有其名 —— `ctx.fail()` 不取消在飞上游(资源泄漏)—— **✅ 已落地**
 
 第二起 incident 的日志:
 
@@ -168,7 +168,15 @@
 
 reaper 的 `runReaperOnce`([manager.ts:185](../../src/lib/context/manager.ts#L185))在 `ctx.durationMs > maxAge` 时只调 `ctx.fail(...)`——而 `RequestContext.fail()`([request.ts:428](../../src/lib/context/request.ts#L428))**仅记录终态 + 写 history + 移出 active map**,不取消在飞的上游 HTTP/2 fetch、不中止 handler 协程。`RequestContext` 根本没有 AbortController。于是「force-fail」是**装饰性的**:上游 h2 流、handler 协程、客户端 socket 一直活到 `response_header` 超时(本配置 1200s)才真正了结——比声明死亡晚 ~289s 的资源泄漏,且 `[FAIL]` 日志是个谎言(请求并未真的结束)。`state: executing` + `↓5.1KB` = L2 buffered retry(`protect_streaming_generation: tool_use_only`)第一次尝试转发了 5.1KB 后截断、第二次尝试 pre-response 卡住。
 
-**暂缓理由 + 正确修法(待本 RFC 实现期一并做)**:给 reaper「装牙齿」不能简单把一个新 signal 折进现有 stream guard 的 `clientSignal`——`guardSseIterable`([stream.ts:290-291](../../src/lib/stream.ts#L290))只有 shutdown / client 两个 provenance 桶,一个 reaper-cancel 折进 `clientSignal` 会被**误判成客户端断开** → `StreamClientAbortError` → handler 走 `settled-abort` → 对**仍连着的**客户端静默断流(零字节、无 error 帧)+ 错记 `aborted` 终态(正与缺陷② `abort()` 注释要防的 metric 污染反向重演)。正确修法需引入**独立的 `StreamReaperCancelError` / 第三 provenance**(映射为 `stream-error` → 给仍连着的客户端发合成 error 帧、记 `failed`),并把 `RequestContext` 的生命周期 AbortController 作**新命名参数**喂给 guard(而非折进 `clientSignal`),且要覆盖全 5 格式 handler 的 settled-abort 站点。这是与 ③ 同源的「pre-response/in-flight 生命周期」改动,故并入本 RFC 实现期(C 系列之后),而非独立小修。资源泄漏有界(1200s `response_header` 封顶)、先存的,可暂缓。**实测确认**:reaper-teeth 折在**已 await 的**上游 fetch 上不会引入缺陷⑤ 的崩溃(awaited abort 永远被既有 catch 接住,见 exp/stale-abort-unhandled/repro-fullstack.ts:0 unhandled)。
+**修法(当时的暂缓分析 —— 已按此实现,见本节末「落地状态」)**:给 reaper「装牙齿」不能简单把一个新 signal 折进现有 stream guard 的 `clientSignal`——guard 当时只有 shutdown / client 两个 provenance 桶,一个 reaper-cancel 折进 `clientSignal` 会被**误判成客户端断开** → `StreamClientAbortError` → handler 走 `settled-abort` → 对**仍连着的**客户端静默断流(零字节、无 error 帧)+ 错记 `aborted` 终态(正与缺陷② `abort()` 注释要防的 metric 污染反向重演)。正确修法需引入**独立的 `StreamReaperCancelError` / 第三 provenance**(映射为 `stream-error` → 给仍连着的客户端发合成 error 帧、记 `failed`),并把 `RequestContext` 的生命周期 AbortController 作**新命名参数**喂给 guard(而非折进 `clientSignal`),且要覆盖全 5 格式 handler 的 settled-abort 站点。**实测确认**:reaper-teeth 折在**已 await 的**上游 fetch 上不会引入缺陷⑤ 的崩溃(awaited abort 永远被既有 catch 接住,见 exp/stale-abort-unhandled/repro-fullstack.ts:0 unhandled)。
+
+**落地状态(2026-06,C4a `d6eacf0` + C4b `4bd6850`;2026-07-27 doc-sync 复核仍成立)**:reaper 牙齿**已按上述修法实现**,本节开头描述的「force-fail 是装饰性的」**已不再是现状**——
+- `RequestContext` 持 `lifecycleAbort` AbortController + `lifecycleSignal` getter + `reapInFlight()`([request.ts](../../src/lib/context/request.ts) `reapInFlight` / `lifecycleAbort`);
+- reaper 超龄时**先 `ctx.reapInFlight()` 再 `ctx.fail()`**([manager.ts](../../src/lib/context/manager.ts) `runReaperOnce`),先取消再记终态;
+- `lifecycleSignal` 作**独立命名参数 `reaperSignal`** 折进上游 fetch(`transport/{http-transport,send,responses-transport}.ts`),取消 pre-response header-wait;
+- 流内取消经**第三 provenance** `StreamReaperCancelError` → `stream-error`(非 client-abort),见 [http-transport.ts:116](../../src/lib/transport/http-transport.ts#L116)。
+
+完整设计与实现记录见归档 RFC [stale-reaper-cancellation.md](../archive/2606-landed-rfcs/stale-reaper-cancellation.md);运行时选项现状见 [DESIGN.md](../DESIGN.md) `staleRequestMaxAge` 行。
 
 ### 缺陷⑤:孤儿(无 awaiter)上游 fetch 的 abort 拒绝崩溃整服务器 —— 已修复
 
@@ -181,13 +189,13 @@ AbortError: The operation was aborted.
     at abort (unknown)
 ```
 
-`http2Fetch` 的 `onPreResponseAbort`([http2-client.ts:148](../../src/lib/transport/http2-client.ts#L148))在 abort 时 `reject(abortError())`。当这个 fetch promise 在 abort 触发时**已被遗弃(无 live awaiter)**——它的 await 链经另一路径(如 reaper force-fail 后 handler 已 settle、或某并发/detached 路径)先行了结——这个 reject 变成 process 级 `unhandledRejection`,而 [main.ts:29](../../src/main.ts#L29) 的 `process.on("unhandledRejection")` 随即 `process.exit(1)`,把**一条良性的「某在飞操作被取消」放大成杀掉所有并发请求的整进程崩溃**。
+`http2Fetch` 的 `onPreResponseAbort`([http2-client.ts:148](../../src/lib/transport/http2-client.ts#L148))在 abort 时 `reject(abortError())`。当这个 fetch promise 在 abort 触发时**已被遗弃(无 live awaiter)**——它的 await 链经另一路径(如 reaper force-fail 后 handler 已 settle、或某并发/detached 路径)先行了结——这个 reject 变成 process 级 `unhandledRejection`,而 [main.ts:29](../../packages/cli/src/main.ts#L29) 的 `process.on("unhandledRejection")` 随即 `process.exit(1)`,把**一条良性的「某在飞操作被取消」放大成杀掉所有并发请求的整进程崩溃**。
 
 **实测确认机制**(exp/stale-abort-unhandled/,真实本地 node:http2 server):http2Fetch 的 abort 拒绝在**被 await 时正常捕获**、在**promise 被遗弃时变 unhandled**(栈与生产逐帧一致);最小化的 reject-in-abort-listener 不泄漏 → 确属遗弃 promise 特有,非 Bun 通病。**遗弃 promise 的确切来源未能纯静态定位**(主 handler/driver/retry 路径全 await=安全,经多轮 subagent 全栈复现仍 0 unhandled;后台 fire-and-forget fetch 都有 `.catch`)——最可能是 adaptive rate-limiter 的 detached `void this.processQueue()`([adaptive-rate-limiter.ts:421](../../src/lib/adaptive-rate-limiter.ts#L421))或并发请求共享 h2 session 的边角。
 
 **修复(已落地)**:在 `http2Fetch` 返回的 promise 上挂一个**防御性 no-op rejection observer**(`withRejectionObserver`,[http2-client.ts](../../src/lib/transport/http2-client.ts)):`p.catch(()=>{})` 把孤儿 reject 在全局层标记为已观察,**但不消费它**(返回原 `p`,真实 await/.then 消费者仍独立收到 reject)。这消除了**整类**「孤儿上游 fetch 的 abort/RST 拒绝崩服务器」缺陷,**不依赖**定位每个遗弃源(belt-and-suspenders)。实测 Bun+Node 双端验证(exp/stale-abort-unhandled/fix-technique.ts);回归测试 [http2-client.it.test.ts](../../tests/transport/http2-client.it.test.ts)「abandoned (no-awaiter) promise aborted pre-response does NOT emit a process unhandledRejection」+「observer does not swallow the rejection from a real awaiter」。
 
-**为何不放宽全局 handler**:另一条看似更简单的路是让 [main.ts:29](../../src/main.ts#L29) 的 `unhandledRejection` 处理器对 AbortError「warn 但不 exit」。**否决**:`isAbortError`([classify.ts:265](../../src/lib/error/classify.ts#L265))过宽(匹配 `TimeoutError`、任何含 "abort" 子串的 message、cause 链),用在最后防线的全局崩溃 guard 上会把**真正该崩/该告警的未知 reject**(含 "abort" 字样的逻辑 bug、该 alert 的孤儿 `AbortSignal.timeout` 失败)静默降级、让进程在未知状态续跑。根因修复在产生点(http2-client 的 observer),全局 handler 保持严格。
+**为何不放宽全局 handler**:另一条看似更简单的路是让 [main.ts:29](../../packages/cli/src/main.ts#L29) 的 `unhandledRejection` 处理器对 AbortError「warn 但不 exit」。**否决**:`isAbortError`([classify.ts:265](../../packages/foundation/src/error/classify.ts#L265))过宽(匹配 `TimeoutError`、任何含 "abort" 子串的 message、cause 链),用在最后防线的全局崩溃 guard 上会把**真正该崩/该告警的未知 reject**(含 "abort" 字样的逻辑 bug、该 alert 的孤儿 `AbortSignal.timeout` 失败)静默降级、让进程在未知状态续跑。根因修复在产生点(http2-client 的 observer),全局 handler 保持严格。
 
 ---
 
@@ -256,7 +264,7 @@ if (error instanceof Error && isAbortError(error)) {
 - **client-abort 优先于 timeout**(round-2 H-1):客户端恰在超时窗口边缘断开时,`clientAbort.signal.aborted` 与超时可能并发为真 —— **优先记 `aborted`**(客户端确实走了,语义上是取消而非"上游太慢")。判别顺序即编码此优先级(先判 clientAbort)。
 - **`499` 是 C2 阶段的附带 HTTP 表现,不是 C2 的定义性产物**(round-2 C-1):C2(③未上)时 streamSSE 仍在 runRequest 之后,故 client-abort 在 catch 里能 `return c.body(null, 499)`。**C3b(方案 A)把 streamSSE 提前后,响应已 200 flush,499 物理上回不了** —— 届时 client-abort 的可观测结果是 `ctx.abort()` 终态 + 一条被客户端弃读的 200 SSE 流(无 499)。**C2 的真正不变量是「pre-response client-abort 统一 `ctx.abort()` 终态(`state=aborted`)」**,HTTP 表现随阶段变(C2:499 / C3b:已 200 弃读流)。
 - **clientAbort 的翻转源**:C2 阶段 pre-response **只有** bridgeClientAbort([abort-bridge.ts:48](../../src/lib/abort-bridge.ts#L48))一源(stream.onAbort 此时尚未注册),判别可靠;`stream.onAbort`([handler-v4.ts:367](../../src/routes/messages/handler-v4.ts#L367))只在 C3b 提前到 pre-response 期,届时它代表的也是客户端断流,同属 client-gone,不污染判别。
-- **response_header 超时仍走 `ctx.fail` + rethrow** → forwardError 出 504(§3.1)。语义对:超时是上游真慢,不是客户端取消。timeout 的 `aborted` 分类**不进重试环**([classify.ts:54-59](../../src/lib/error/classify.ts#L54) 注释:abort 表示调用方不再要结果,绕过 network 重试),故 504 首次即出,无多 attempt(round-2 M-2;实现期在 strategies 确认 `aborted` 未被任何策略接受)。
+- **response_header 超时仍走 `ctx.fail` + rethrow** → forwardError 出 504(§3.1)。语义对:超时是上游真慢,不是客户端取消。timeout 的 `aborted` 分类**不进重试环**([classify.ts:54-59](../../packages/foundation/src/error/classify.ts#L54) 注释:abort 表示调用方不再要结果,绕过 network 重试),故 504 首次即出,无多 attempt(round-2 M-2;实现期在 strategies 确认 `aborted` 未被任何策略接受)。
 - **`ctx.abort()` 的 partial** —— pre-response 无 usage/stop_reason(上游零响应),传空即可,`abort()`([request.ts:454](../../src/lib/context/request.ts#L454))默认 `usage: {0,0}`。
 - **缺陷② 的修复范围(round-2 H-2,需 Q7 决议)**:本 §3.2 的 `ctx.abort()` 改动写在 **Anthropic** [handler-v4.ts](../../src/routes/messages/handler-v4.ts) 的外层 catch(:323-336,流式/非流式共用)。CC/Responses/Gemini 各有**自己的** handler catch,**不会自动获得**此处理 —— 它们的 pre-response client-abort 经 ①(forwardError)出 499(状态对),但 ctx 终态仍 `ctx.fail`→`failed`(② 未覆盖)。即:**①跨全格式生效、②仅 Anthropic**,于是 CC/Responses/Gemini 永久 `state=failed`+`status=499` 不一致(非过渡态)。Q7 决议:声明 ② 为 Anthropic-only(诚实标注该不一致),还是把 `ctx.abort()` 处理推广到全部格式 handler。
 - **与缺陷②"顶层 error null"的关系**:`ctx.abort()` 设 `_response.error = "client disconnected"` 并 `transition("aborted")`,顶层 state 变 `aborted`,history 不再计入 failed。顶层 `.error` 投影是否回填是 history projection 的次要问题(数据未丢,attempt 层有),不在本 RFC 强行扩面——若评审认为该一并修,记入 Open Q3。

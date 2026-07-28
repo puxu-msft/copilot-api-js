@@ -17,6 +17,7 @@
  *     the manager's `onSettled` hook to remove the context from the active map
  */
 
+import { peekTelemetryRuntime } from "@hsupu/ghc-proxy-telemetry"
 import { consola } from "consola"
 
 import type { EndpointType } from "~/lib/history/store"
@@ -27,7 +28,6 @@ import type {
 } from "~/lib/observability"
 
 import { recordReaperTick } from "~/lib/observability/reaper-diagnostics"
-import { recordAcceptedRequest } from "~/lib/request-telemetry"
 import { state } from "~/lib/state"
 
 import type {
@@ -399,7 +399,7 @@ export function createRequestContextManager(options?: RequestContextManagerOptio
         },
         publisher,
       })
-      recordAcceptedRequest(ctx.startTime)
+      peekTelemetryRuntime()?.recordAccepted(ctx.startTime)
       activeContexts.set(ctx.id, ctx)
       operationScopes.set(ctx.id, ctx)
       // Arm the hard-deadline timer (C4b). It enters the unified cancellation provenance first

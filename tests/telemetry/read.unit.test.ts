@@ -1,3 +1,27 @@
+import { openTelemetryDb } from "@hsupu/ghc-proxy-telemetry/telemetry/db"
+import {
+  //
+  internDim,
+  internKey,
+} from "@hsupu/ghc-proxy-telemetry/telemetry/dictionary"
+import {
+  //
+  readAcceptedBucketsInWindow,
+  readAllRawRowsInWindow,
+  readCumulativeBreakdown,
+  readCumulativeSketchQuantiles,
+  readTierBreakdown,
+  readTierSketchQuantiles,
+} from "@hsupu/ghc-proxy-telemetry/telemetry/read"
+import { createSketch } from "@hsupu/ghc-proxy-telemetry/telemetry/sketch"
+import {
+  //
+  upsertAccepted,
+  upsertCumulative,
+  upsertCumulativeSketchBlob,
+  upsertSettledTier,
+  upsertSketchBlob,
+} from "@hsupu/ghc-proxy-telemetry/telemetry/store"
 /**
  * P5 读半原语验收 —— `readTierBreakdown` / `readCumulativeBreakdown` /
  * `readTierSketchQuantiles` / `readCumulativeSketchQuantiles`。
@@ -22,31 +46,6 @@ import {
 } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-
-import { openTelemetryDb } from "~/lib/telemetry/db"
-import {
-  //
-  internDim,
-  internKey,
-} from "~/lib/telemetry/dictionary"
-import {
-  //
-  readAcceptedBucketsInWindow,
-  readAllRawRowsInWindow,
-  readCumulativeBreakdown,
-  readCumulativeSketchQuantiles,
-  readTierBreakdown,
-  readTierSketchQuantiles,
-} from "~/lib/telemetry/read"
-import { createSketch } from "~/lib/telemetry/sketch"
-import {
-  //
-  upsertAccepted,
-  upsertCumulative,
-  upsertCumulativeSketchBlob,
-  upsertSettledTier,
-  upsertSketchBlob,
-} from "~/lib/telemetry/store"
 
 const tmpDirs: Array<string> = []
 function freshDb(): ReturnType<typeof openTelemetryDb> {

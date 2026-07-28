@@ -86,7 +86,7 @@ export function stripAllThinkingIfQuarantined(
   // Lazy: only build/resolve the durable store once the gates above pass.
   const store = storeOverride ?? getQuarantineStore()
   if (!store.isPoisoned(key)) return { messages, changed: false }
-  const { messages: stripped, strippedCount } = stripAllThinking(messages)
+  const { messages: stripped, strippedCount } = stripAllThinking(messages, state.separatorAcceptExtra)
   store.touch(key) // slide TTL on hit (review H3) — before the count check: seen-again keeps it alive
   if (strippedCount === 0) return { messages, changed: false }
   return { messages: stripped, changed: true }

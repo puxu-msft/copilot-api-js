@@ -4,35 +4,37 @@ import type {
   MessageParam,
 } from "~/types/api/anthropic"
 
-import { SYNTHETIC_THINKING_SEPARATOR } from "~/lib/anthropic/sanitize/destack-adjacent-thinking"
+import { isSyntheticThinkingSeparator } from "~/lib/anthropic/sanitize/assistant-block-layout"
 
 const THINKING_TYPES = new Set(["thinking", "redacted_thinking"])
 
 /**
  * A block that {@link stripAllThinking} removes: any `thinking` /
  * `redacted_thinking` block, PLUS an orphaned synthetic de-stack separator. L1
- * de-stack ({@link destackAdjacentThinking}, `insert_text` / `move_blocks`)
- * inserts a fixed {@link SYNTHETIC_THINKING_SEPARATOR} text block between two
- * thinking blocks; once strip-all removes the thinking blocks it separated, that
+ * layout repair ({@link repairAssistantBlockLayout}, `move_blocks`)
+ * inserts a synthetic separator text block between two
+ * thinking blocks — and, when a message would otherwise END on thinking, as its
+ * terminator; once strip-all removes the thinking blocks it separated, that
  * marker is a meaningless orphan that would otherwise leak upstream — so we drop
  * it in the same pass.
  */
-function isStrippableBlock(block: ContentBlockParam): boolean {
+function isStrippableBlock(block: ContentBlockParam, extraAcceptedSeparators: ReadonlyArray<string>): boolean {
   if (THINKING_TYPES.has(block.type)) return true
-  return block.type === "text" && block.text === SYNTHETIC_THINKING_SEPARATOR
+  return isSyntheticThinkingSeparator(block, extraAcceptedSeparators)
 }
 
 /**
  * Remove ALL `thinking` / `redacted_thinking` blocks — plus any orphaned
- * synthetic de-stack separator ({@link SYNTHETIC_THINKING_SEPARATOR}) they left
+ * synthetic separator ({@link isSyntheticThinkingSeparator}, which also recognises the spellings older builds emitted) they left
  * behind — from every assistant message. The blunt remedy shared by the L2
  * reactive strip-all retry and the L3 proactive quarantine filter.
  *
  * This is deliberately coarser than the block-level protection primitives in
  * `thinking-protection.ts`: instead of preserving signed thinking, it drops it
  * wholesale. Callers use it only on the fallback path where the upstream has
- * already rejected the thinking blocks ("thinking cannot be modified" 400), so
- * echoing them verbatim is no longer possible. On such a learning turn L1
+ * already rejected the thinking layout (the "cannot be modified" adjacency 400 or
+ * the "final block ... cannot be `thinking`" terminal 400), so echoing them
+ * verbatim is no longer possible. On such a learning turn L1
  * de-stack may already have inserted a synthetic separator between two thinking
  * blocks; stripping the thinking without also dropping that marker would orphan
  * it and leak it upstream, so strip-all removes it too.
@@ -49,11 +51,15 @@ function isStrippableBlock(block: ContentBlockParam): boolean {
  * messages pass through untouched. When nothing is removed the input array is
  * returned by reference (zero-copy, byte-identical) with `strippedCount: 0`.
  */
-export function stripAllThinking(messages: Array<MessageParam>): { messages: Array<MessageParam>; strippedCount: number } {
+export function stripAllThinking(
+  messages: Array<MessageParam>,
+  /** ACCEPT axis: extra separator literals to also treat as ours (config-resolved by the caller). */
+  extraAcceptedSeparators: ReadonlyArray<string> = [],
+): { messages: Array<MessageParam>; strippedCount: number } {
   let strippedCount = 0
   const out = messages.map((msg) => {
     if (msg.role !== "assistant" || !Array.isArray(msg.content)) return msg
-    const kept = msg.content.filter((block) => !isStrippableBlock(block))
+    const kept = msg.content.filter((block) => !isStrippableBlock(block, extraAcceptedSeparators))
     const removed = msg.content.length - kept.length
     if (removed === 0) return msg
     strippedCount += removed

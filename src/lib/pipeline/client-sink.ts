@@ -67,6 +67,12 @@ export interface OpenBlock {
 export interface SseSinkHeartbeat {
   /** Seconds of client-forward silence before a synthetic keepalive is injected (<=0 disables). */
   intervalSec: number
+  /** Seconds without a content delta before ping mode escalates; 0/undefined disables escalation. */
+  contentDeadlineSec?: number
+  /** Block-aware content-delta provider used only when escalation is due. */
+  contentFrame?: (openBlock?: OpenBlock) => ClientFrame
+  /** Pre-content scaffold injector used only when escalation is due. */
+  injectContentAnchor?: () => Promise<boolean>
   /**
    * The keepalive frame to inject on forward-idle. Either a FIXED frame (classic `event: ping`)
    * or a PROVIDER called with the current {@link OpenBlock} for block-aware keepalive (an empty
@@ -272,12 +278,10 @@ export function makeSseSink(stream: SSEStreamingApi, opts: SseSinkOptions = {}):
   let lastRealMs = Date.now()
   let timer: ReturnType<typeof setTimeout> | undefined
   let stopped = false
-  // Recoverable per-block flush guard (spec 2026-07-11-block-level-buffered-retry §4.4). Distinct from
-  // freezeHeartbeat (PERMANENT — clears the timer, never resumes): `suspendHeartbeat` only STOPS the tick
-  // from INJECTING (the tick top-guards on this flag and early-returns WITHOUT rescheduling), so a timer
-  // firing mid-flush can't splice an empty delta into a real block's deltas; `resumeHeartbeat` re-arms a
-  // fresh interval so the INTER-block idle still gets keepalives. The block-level path suspends around each
-  // boundary flush loop; the whole-response path keeps using freezeHeartbeat (a one-shot terminal commit).
+  // Recoverable per-block flush guard (spec 2026-07-11-block-level-buffered-retry §4.4). `freezeHeartbeat`
+  // clears the current timer without closing the sink, while `suspendHeartbeat` also blocks a tick that was
+  // already queued from injecting during the flush. `resumeHeartbeat` re-arms a fresh interval so the
+  // inter-block idle still gets keepalives. Terminal paths use `close()` for permanent shutdown.
   let heartbeatSuspended = false
   // Re-arm hook set on the heartbeat-ON path (below, once `tick`/`intervalMs` exist). Stays a no-op on the
   // heartbeat-OFF path so `resumeHeartbeat` is a defined-but-inert primitive there (parity with freezeHeartbeat).
@@ -495,6 +499,15 @@ export function makeDeliverySseSink(stream: SSEStreamingApi, opts: SseSinkOption
             return typeof heartbeat.pingFrame === "function" ? heartbeat.pingFrame(open) : heartbeat.pingFrame
           },
           ...(heartbeat.injectAnchor && { injectScaffold: heartbeat.injectAnchor }),
+          ...(heartbeat.contentDeadlineSec !== undefined && { contentDeadlineMs: heartbeat.contentDeadlineSec * 1000 }),
+          ...(heartbeat.contentFrame && {
+            contentFrame: (ledger) => {
+              const contentFrame = heartbeat.contentFrame
+              if (!contentFrame) throw new Error("content heartbeat frame provider disappeared after construction")
+              return contentFrame(ledger.openBlocks.at(-1))
+            },
+          }),
+          ...(heartbeat.injectContentAnchor && { injectContentScaffold: heartbeat.injectContentAnchor }),
         },
       }),
   })

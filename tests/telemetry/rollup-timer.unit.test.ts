@@ -1,3 +1,15 @@
+import {
+  //
+  _getTelemetryDbForTests,
+  _isRollupTimerArmedForTests,
+  _isTelemetryShutdownSealedForTests,
+  _resetRequestTelemetryForTests,
+  _runRollupTickForTests,
+  _setRequestTelemetryFilePathForTests,
+  initRequestTelemetry,
+  recordSettledRequest,
+  shutdownRequestTelemetry,
+} from "@hsupu/ghc-proxy-telemetry/testing"
 /**
  * P4 rollup timer 接线验收 —— 独立 rollup timer 的 arm / clear / config-restart，以及 live-config 投影
  * 经 `_runRollupTickForTests`（走 timer 回调同一 db handle + `currentRollupConfig`）真实上卷。
@@ -20,18 +32,6 @@ import {
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
-import {
-  //
-  _getTelemetryDbForTests,
-  _isRollupTimerArmedForTests,
-  _isTelemetryShutdownSealedForTests,
-  _resetRequestTelemetryForTests,
-  _runRollupTickForTests,
-  _setRequestTelemetryFilePathForTests,
-  initRequestTelemetry,
-  recordSettledRequest,
-  shutdownRequestTelemetry,
-} from "~/lib/request-telemetry"
 import {
   //
   restoreStateForTests,
@@ -109,7 +109,7 @@ test("live-config 投影上卷：记 settled 请求 → flush → _runRollupTick
   recordSettledRequest({ model: "opus" }, { startedAt: BASE, endedAt: BASE + 1000, success: true, usage: { input_tokens: 100, output_tokens: 0 } })
   recordSettledRequest({ model: "opus" }, { startedAt: BASE + 60_000, endedAt: BASE + 61_000, success: true, usage: { input_tokens: 200, output_tokens: 0 } })
   // flush outbox → tel_raw（P3 写路径）。
-  const { persistRequestTelemetry } = await import("~/lib/request-telemetry")
+  const { persistRequestTelemetry } = await import("@hsupu/ghc-proxy-telemetry/testing")
   await persistRequestTelemetry()
 
   const db = _getTelemetryDbForTests()!

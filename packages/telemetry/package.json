@@ -1,0 +1,15 @@
+{
+  "name": "@hsupu/ghc-proxy-telemetry",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./*": "./src/*"
+  },
+  "dependencies": {
+    "@datadog/sketches-js": "2.1.1",
+    "@hsupu/ghc-proxy-foundation": "workspace:*",
+    "consola": "^3.4.2"
+  }
+}

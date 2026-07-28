@@ -742,9 +742,9 @@ anthropic:
     - anthropic-organization-id
     - retry-after
 
-  # Delayed-commit window (seconds) for streaming. 0 = commit immediately; default 20. Before opening the 200 SSE stream, the proxy waits up to N seconds for the upstream to settle: if it returns/errors WITHIN the window the real HTTP status is forwarded (the client keeps native retry/backoff/token-refresh); if it stays silent past the window (opus pre-response thinking) the proxy COMMITS a 200 + an immediate cold-start ping, and later errors degrade to a rich SSE error frame. Clamped well under the ~60s client idle deadline.
-  # 流式延迟-commit 窗口秒数。0 = 立即 commit；默认 20。开 200 SSE 流之前，代理最多等 N 秒让上游 settle：窗口内返回/报错→转发真 HTTP 状态（客户端保留原生重试/退避/token 刷新）；超窗口仍静默（opus pre-response thinking）→ COMMIT 200 + 立即冷启动 ping，之后错误降级成富 SSE error 帧。clamp 到远低于 ~60s 客户端空闲死线。
-  stream_commit_after_sec: 20
+  # Delayed-commit window (seconds) for streaming. 0 = commit immediately; default 180. Before opening the 200 SSE stream, the proxy waits up to N seconds for the upstream to settle: if it returns/errors WITHIN the window the real HTTP status is forwarded (the client keeps native retry/backoff/token-refresh); if it stays silent past the window (opus pre-response thinking) the proxy COMMITS a 200 + an immediate cold-start ping, and later errors degrade to a rich SSE error frame. Clamped to 240s, under the ~300s pre-header limit measured in exp/silence-recovery-gates/FINDINGS.md (undici's default headersTimeout) — this window and that limit share one clock, since nothing is sent before the commit.
+  # 流式延迟-commit 窗口秒数。0 = 立即 commit；默认 180。开 200 SSE 流之前，代理最多等 N 秒让上游 settle：窗口内返回/报错→转发真 HTTP 状态（客户端保留原生重试/退避/token 刷新）；超窗口仍静默（opus pre-response thinking）→ COMMIT 200 + 立即冷启动 ping，之后错误降级成富 SSE error 帧。clamp 到 240s，位于实测 ~300s pre-header 上限（undici 默认 headersTimeout）之下——commit 前一个字节都不发，故本窗口与那个上限走同一个时钟。
+  stream_commit_after_sec: 180
 
   # Recover once with a fresh dispatch only when the upstream fails before real content reaches the client. This is the B2-P0 configuration scaffold; it is intentionally not wired into request handling until the later recovery phases.
   # 仅在上游于真实内容抵达客户端前失败时，用一次全新 dispatch 恢复。这是 B2-P0 配置骨架，故意不在后续恢复阶段前接入请求处理。
@@ -755,18 +755,17 @@ anthropic:
   # 客户端-代理流式 keepalive ping cadence 秒数。0 = 禁用；默认 20。commit 窗口开 200 后，连接级心跳（与上游解耦）距上次写客户端 N 秒就发一帧 ping——无论上游静默/thinking/buffered——故长 mid-stream/buffered 停滞绝不触发 Claude Code ~60s 空闲看门狗。cadence = ping 之间的最小间隔（真帧或 ping 都推进锚点）；冷启动 commit 先发一个立即 ping，之后由它节流。clamp 到远低于 60 的大余量（实测安全上界 ~45s）。心跳不重置上游 idle-timeout；只记入 forwardedSseEvents。
   stream_keepalive_ping_sec: 20
 
-  # Keepalive FRAME type for the client-facing Anthropic stream. Three modes:
-  #   ping (default) — a bare `event: ping`. Does NOT reset CC's 300s no-real-content deadline (a ping is
-  #     not a "chunk"; exp/cc-idle-280s/REPORT.md), so a >300s pre-content silence CAN still time out — an
-  #     accepted limit pending a real keepalive (docs/todo/2026-07-22-client-proxy-keepalive-300s.md).
-  #   empty_text — RETIRED as default (ADR 2026-07-22 D2). Injected an empty content delta / synthetic
-  #     empty-text ANCHOR block, but an empty text block is wrong-shaped AND G2-proven unable to reset the
-  #     300s deadline on the proxy path. Code kept dormant/selectable for keepalive research only.
-  #   enveloped_ping — synthetic envelope + bare ping. Experimental; expected to time out on long silence.
-  # 客户端流式 keepalive 帧类型。三种模式：
-  #   ping（默认）——裸 `event: ping`。重置不了 CC 的 300s 死线（ping 不算 chunk，见 exp/cc-idle-280s/REPORT.md），故 >300s pre-content 静默仍可能超时——已接受的限制，待真保活方案（docs/todo/2026-07-22-client-proxy-keepalive-300s.md）。
-  #   empty_text —— 已退役默认（ADR 2026-07-22 D2）。曾注入空 content delta / 合成空-text 锚点块，但空 text block 是错误形状且 G2 实证不能重置 300s 死线。代码保留休眠/可选，仅供保活调研。
-  #   enveloped_ping —— 合成信封 + 裸 ping。实验模式；长静默预期仍超时。
+  # After this many seconds without a client-visible content_block_delta, upgrade the normal ping heartbeat to an empty content delta. 0 disables. / 距上一个客户端可见 content_block_delta 超过此秒数后，把常规 ping 升级为空 content delta；0 禁用。
+  stream_keepalive_escalate_sec: 200
+
+  # Keepalive FRAME type for the client-facing Anthropic stream. `ping` remains the normal default shape;
+  # `stream_keepalive_escalate_sec` upgrades it to an empty content delta only near CC's 300s deadline.
+  # With a real block open, escalation uses that index and adds no structure; pre-content escalation alone
+  # opens the synthetic empty-text anchor. `empty_text` remains selectable for always-on content-delta mode;
+  # `enveloped_ping` is experimental envelope + ping.
+  # 客户端流式 keepalive 帧类型。`ping` 保持正常默认形状；`stream_keepalive_escalate_sec` 只在逼近 CC 300s
+  # 死线时升级为空 content delta。已有真实块时沿用其 index、不造结构；仅 pre-content 才开合成空-text anchor。
+  # `empty_text` 仍可选作全程 content-delta 模式；`enveloped_ping` 是实验性信封 + ping。
   stream_keepalive_mode: ping
 
   # L2 — transactional buffered retry for streaming generations cut short by an upstream mid-stream RST (GHC NGHTTP2_CANCEL on large Write/Edit in huge contexts). Buffers the whole response and commits only after message_stop, re-running the upstream exchange on a transport-close / truncation — so the client transparently receives ONE complete generation instead of a half stream + error. See docs/rfc/streaming-upstream-rst-buffered-retry.md.
@@ -789,12 +788,21 @@ anthropic:
   # De-stack adjacent thinking/redacted_thinking blocks so no two are consecutive in an assistant message — GHC rejects an echoed history with stacked thinking ("thinking blocks cannot be modified" 400). Idempotent: a message without adjacent thinking passes through byte-identical.
   # 分隔 assistant 消息中相邻的 thinking/redacted_thinking 块使其两两不相邻——GHC 拒绝回显历史里堆叠的 thinking（报 "thinking blocks cannot be modified" 400）。幂等：无相邻 thinking 的消息逐字透传。
   #   passthrough: leave stacked thinking as-is / 保留堆叠的 thinking，不改动
-  #   insert_text: insert a synthetic text separator between adjacent thinking / 在相邻 thinking 间插入合成文本分隔符
   #   move_blocks: interleave thinking with real non-thinking blocks (order-preserving), synthetic marker only when insufficient (default) / 与真实非 thinking 块交错（保序），不足时才用合成标记（默认）
-  thinking_destack_strategy: move_blocks
+  assistant_block_layout_strategy: move_blocks
+  # EMIT axis — which synthetic separator carrier goes on the wire when the repair must synthesize
+  # one. Closed enum: only carriers proven acceptable upstream. / 发射轴：合成分隔符用哪种载体；
+  # 封闭枚举，只收已被真上游证实可接受的载体。
+  separator_carrier: marker_v1
+  # ACCEPT axis — EXTRA literals to also recognise as our separator, on top of the built-in family
+  # and the spellings older builds emitted. Open list: widening recognition can never make a payload
+  # illegal, which is what makes carrier migration and historical values safe. Compared trimmed and
+  # in full, never as a substring. / 识别轴：额外承认为我方分隔符的字面量；开放列表，只会扩大识别
+  # 面、永远不会造出非法 payload，载体迁移与历史值靠它。整块 trim 后全等比较，不做子串匹配。
+  separator_accept_extra: []
 
-  # Reactive fallback (L2) for the GHC "thinking ... cannot be modified" 400 that L1 de-stack (thinking_destack_strategy) did not preempt: strip ALL thinking/redacted_thinking blocks from the echoed history and retry the turn once. true = enable the one-shot strip-and-retry (default); false = let the 400 surface unmodified.
-  # 对 GHC "thinking ... cannot be modified" 400 的反应式兜底（L2），处理 L1 去堆叠（thinking_destack_strategy）未能预防的情形：从回显历史中剥离全部 thinking/redacted_thinking 块并重试一次。true = 启用一次性剥离重试（默认）；false = 让该 400 原样抛出。
+  # Reactive fallback (L2) for the GHC "thinking ... cannot be modified" 400 that L1 assistant block-layout repair (assistant_block_layout_strategy) did not preempt: strip ALL thinking/redacted_thinking blocks from the echoed history and retry the turn once. true = enable the one-shot strip-and-retry (default); false = let the 400 surface unmodified.
+  # 对 GHC "thinking ... cannot be modified" 400 的反应式兜底（L2），处理 L1 assistant 块布局矫正（assistant_block_layout_strategy）未能预防的情形：从回显历史中剥离全部 thinking/redacted_thinking 块并重试一次。true = 启用一次性剥离重试（默认）；false = 让该 400 原样抛出。
   strip_thinking_on_reject: true
 
   # L3 durable quarantine (master switch) for the "thinking ... cannot be modified" 400. When true (default), a successful L2 strip-all retry REMEMBERS the offending (session, agent) conversation in a sidecar SQLite store, so later turns are stripped proactively — skipping the reactive 400+retry round-trip. false = keep only the per-turn L2 reaction (no remembering).

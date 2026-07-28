@@ -301,6 +301,28 @@ export const CONFIG_MIGRATIONS: ReadonlyArray<ConfigMigration> = [
   renameLeaf("anthropic.backfill_question_from_header", "anthropic.response_tool_use_fix.ask_user_question_question_missing"),
   renameLeaf("anthropic.tool_backfill_question", "anthropic.response_tool_use_fix.ask_user_question_question_missing"),
   renameLeaf("anthropic.tool_repair_malformed_input", "anthropic.response_tool_use_fix.malformed_input"),
+  // insert_text is RETIRED (2026-07-27). Its contract was "never move a real block", which is
+  // mutually exclusive with the upstream constraint that a message carrying tool_use must END on
+  // it (C3, spec 2026-07-26-thinking-terminal-block-layout): satisfying C3 requires reordering, so
+  // the strategy could only ever emit payloads upstream rejects. Rather than leave a config value
+  // that is a guaranteed 400, migrate it to the default. Anyone who picked it for "don't touch my
+  // block order" wants `passthrough`, which is honest about doing no repair at all.
+  migrateValue(
+    "anthropic.assistant_block_layout_strategy",
+    (value) => value === "insert_text",
+    "move_blocks",
+    'anthropic.assistant_block_layout_strategy: "insert_text" is retired (it cannot satisfy the tool_use-terminal constraint, so it produced upstream 400s); using "move_blocks". Set "passthrough" if you meant "do not repair layouts at all"',
+  ),
+  // 旧键 → 新键（2026-07-27 更名）。放在值迁移之后：迁移不链式求值，各自读原始 payload。
+  // thinking_destack_strategy → assistant_block_layout_strategy: the pass enforces THREE
+  // upstream layout constraints, one of which (a message carrying tool_use must end on it)
+  // has nothing to do with thinking and fires on messages with no thinking block at all —
+  // "thinking destack" named only the original C1 duty. Same enum, no value transform.
+  // Migrations do NOT chain (each reads the raw payload), so the OLD key carrying the RETIRED
+  // value must map straight to the final shape here — the value migration above only sees the new key.
+  renameLeaf("anthropic.thinking_destack_strategy", "anthropic.assistant_block_layout_strategy", {
+    transform: (legacy) => (legacy === "insert_text" ? "move_blocks" : legacy),
+  }),
   renameLeaf("anthropic.rewrite_system_reminders", "anthropic.system_rewrite_reminders"),
   renameLeaf("anthropic.strip_beta_headers", "anthropic.beta_strip_headers"),
   // strip_request_headers → request_header_blacklist: the HTTP request-header strip is

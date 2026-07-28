@@ -110,6 +110,27 @@ describe("createToolInputStreamDecoder", () => {
     expect(out[1].type).toBe("content_block_stop")
   })
 
+  test("empty input_json_delta bypasses the malformed-input buffer immediately", () => {
+    const d = createToolInputStreamDecoder(cfg({}), { repairMalformedInput: ["tags"] })
+    const startFrame = start(0, "Write")
+    const keepalive = delta(0, "")
+    expect(d.processEvent(startFrame.parsed, startFrame.raw)).toEqual([startFrame.raw])
+    expect(d.processEvent(keepalive.parsed, keepalive.raw)).toEqual([keepalive.raw])
+  })
+
+  test("empty input_json_delta between buffered fragments stays immediate without changing repair", () => {
+    const d = createToolInputStreamDecoder(cfg({}), { repairMalformedInput: ["tags"] })
+    const keepalive = delta(0, "")
+    const immediate = run(d, [start(0, "Write"), delta(0, '{"path":"/tmp/a",'), keepalive, delta(0, '"content":"ok"}'), stop(0)])
+    expect(immediate.filter((event) => (event.delta as { partial_json?: string } | undefined)?.partial_json === "")).toHaveLength(1)
+    expect(immediate).toContainEqual(JSON.parse(keepalive.raw.data as string))
+    const nonEmpty = immediate
+      .map((event) => (event.delta as { partial_json?: string } | undefined)?.partial_json)
+      .filter((partial): partial is string => typeof partial === "string" && partial !== "")
+      .join("")
+    expect(JSON.parse(nonEmpty)).toEqual({ path: "/tmp/a", content: "ok" })
+  })
+
   test("server_tool_use is never buffered, even when repair would buffer every tool_use", () => {
     const d = createToolInputStreamDecoder(cfg({}), { repairMalformedInput: ["tags"] })
     const out = run(d, [start(0, "web_search", "server_tool_use"), delta(0, '{"q":'), delta(0, '"[1]"}'), stop(0)])

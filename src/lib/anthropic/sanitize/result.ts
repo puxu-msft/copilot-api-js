@@ -6,7 +6,7 @@ import type { MessagesPayload } from "~/types/api/anthropic"
 
 import { state } from "~/lib/state"
 
-import type { DestackStats } from "./destack-adjacent-thinking"
+import type { BlockLayoutRepairStats } from "./assistant-block-layout"
 
 import {
   //
@@ -27,12 +27,14 @@ export interface SanitizationStats {
   inlineSystemConverted: number
   totalBlocksRemoved: number
   /**
-   * Terminal de-stack pass counters (adjacent-thinking separation). PURE
+   * Terminal assistant block-layout repair counters (C1 adjacent-thinking separation,
+   * C2 terminal thinking, C3 tool_use terminal — the last fires on messages with no
+   * thinking at all). PURE
    * INSERT/reorder — deliberately kept OUT of the subtractive `totalBlocksRemoved`
-   * residual model (which assumes blocks only ever decrease). Absent when de-stack
+   * residual model (which assumes blocks only ever decrease). Absent when the repair
    * was a no-op / disabled (`passthrough`).
    */
-  destack?: DestackStats
+  blockLayout?: BlockLayoutRepairStats
 }
 
 export function finalizeAnthropicSanitization(
@@ -92,15 +94,15 @@ export function finalizeAnthropicSanitization(
 }
 
 /**
- * Whether the terminal de-stack pass actually acted. De-stack is PURE INSERTION
+ * Whether the terminal block-layout repair actually acted. The repair is PURE INSERTION
  * (0 removals), so it is invisible to the subtractive block-removal counters — this
  * is the shared primitive every "did sanitization change anything worth recording?"
- * gate must OR in, so de-stack telemetry is never silently dropped across the
+ * gate must OR in, so its telemetry is never silently dropped across the
  * multiple gate sites (fix-all-comparison-sites).
  */
-export function destackActed(stats: SanitizationStats): boolean {
-  const d = stats.destack
-  return d !== undefined && (d.destackedMessages > 0 || d.insertedMarkers > 0)
+export function layoutRepairActed(stats: SanitizationStats): boolean {
+  const d = stats.blockLayout
+  return d !== undefined && (d.repairedMessages > 0 || d.insertedMarkers > 0)
 }
 
 /**
@@ -108,7 +110,7 @@ export function destackActed(stats: SanitizationStats): boolean {
  * (drops `inlineSystemConverted`, which is a role-conversion count, not a block
  * removal). Shared by the legacy handler's `runInitialSanitizationAndRecord` and
  * the v4 Anthropic codec so both record the identical sanitization envelope. The
- * `destack` counters are surfaced only when de-stack acted (see {@link destackActed}),
+ * `blockLayout` counters are surfaced only when the repair acted (see {@link layoutRepairActed}),
  * keeping the envelope byte-identical for the common no-op case.
  */
 export function toSanitizationInfo(stats: SanitizationStats): SanitizationInfo {
@@ -121,6 +123,6 @@ export function toSanitizationInfo(stats: SanitizationStats): SanitizationInfo {
     emptyThinkingBlocksRemoved: stats.emptyThinkingBlocksRemoved,
     systemReminderRemovals: stats.systemReminderRemovals,
   }
-  if (destackActed(stats)) info.destack = stats.destack
+  if (layoutRepairActed(stats)) info.blockLayout = stats.blockLayout
   return info
 }

@@ -24,9 +24,6 @@ export default defineConfigWithVueTs(
       "tsdown.config.ts",
       "ui/playwright.config.ts",
       "prettier.config.mjs",
-      // Local debug probe scripts at repo root (not in tsconfig project graph).
-      "mutation-probe.mjs",
-      "probe-loopback-baseline.mjs",
       // Experiment / probe scratch dir — not in the tsconfig project graph, so
       // typed linting can only emit "not found by the project service" parse
       // errors. Experiments are intentionally throwaway (see exp/ convention).
@@ -422,6 +419,33 @@ export default defineConfigWithVueTs(
               ],
               message:
                 "token package depends only on foundation: import token-internal modules via relative `./` paths, the `@hsupu/ghc-proxy-foundation` package, or bare external packages. No core/server/cli, no `~/` alias. See spec §7.2.",
+            },
+          ],
+        },
+      ],
+    },
+  },
+  // ── Monorepo layer boundary: telemetry package depends only on foundation ──
+  // (spec docs/spec/2026-07-22-monorepo-workspace-split.md §7.2 + plan-telemetry-package)
+  // An ALLOWLIST, not the token block's denylist: listing only core/server/cli would silently
+  // admit any other sibling package as the workspace grows. Telemetry source may import ONLY
+  // package-internal modules (relative), the foundation package, `node:` builtins, and the two
+  // externals its package.json declares. Mirrors the `telemetryForbiddenSpecifiers` detector in
+  // tests/architecture/package-boundaries.unit.test.ts.
+  {
+    files: ["packages/telemetry/src/**/*.ts"],
+    rules: {
+      "no-restricted-imports": [
+        "error",
+        {
+          patterns: [
+            {
+              // A negative-lookahead REGEX, not a `group` glob list: `group` entries are OR-ed, so
+              // `["**", "!allowed"]` degenerates to "match everything". The lookahead is the only
+              // way to express a true allowlist in this rule.
+              regex: String.raw`^(?!\.{1,2}/|node:|@hsupu/ghc-proxy-foundation(?:/|$)|consola(?:/|$)|@datadog/sketches-js(?:/|$)).+`,
+              message:
+                "telemetry package depends only on foundation: import package-internal modules via relative paths, `@hsupu/ghc-proxy-foundation[/…]`, `node:` builtins, or the externals declared in packages/telemetry/package.json (consola, @datadog/sketches-js). No `~/` alias, no other @hsupu/* package. See spec §7.2.",
             },
           ],
         },

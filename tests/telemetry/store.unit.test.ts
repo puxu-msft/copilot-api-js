@@ -1,3 +1,26 @@
+import { openTelemetryDb } from "@hsupu/ghc-proxy-telemetry/telemetry/db"
+import {
+  //
+  internDim,
+  internKey,
+} from "@hsupu/ghc-proxy-telemetry/telemetry/dictionary"
+import {
+  //
+  createSketch,
+  quantile,
+} from "@hsupu/ghc-proxy-telemetry/telemetry/sketch"
+import { deserializePackedSketches } from "@hsupu/ghc-proxy-telemetry/telemetry/sketch-blob"
+import {
+  //
+  upsertSettledTier,
+  upsertCumulative,
+  upsertAccepted,
+  upsertSketchBlob,
+  upsertCumulativeSketchBlob,
+  incrementCumulativeAccepted,
+  readCumulativeAccepted,
+  readCumulativeKeysByDimension,
+} from "@hsupu/ghc-proxy-telemetry/telemetry/store"
 import {
   //
   afterEach,
@@ -13,29 +36,6 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 
 import { decompressBytes } from "~/lib/sqlite/compression"
-import { openTelemetryDb } from "~/lib/telemetry/db"
-import {
-  //
-  internDim,
-  internKey,
-} from "~/lib/telemetry/dictionary"
-import {
-  //
-  createSketch,
-  quantile,
-} from "~/lib/telemetry/sketch"
-import { deserializePackedSketches } from "~/lib/telemetry/sketch-blob"
-import {
-  //
-  upsertSettledTier,
-  upsertCumulative,
-  upsertAccepted,
-  upsertSketchBlob,
-  upsertCumulativeSketchBlob,
-  incrementCumulativeAccepted,
-  readCumulativeAccepted,
-  readCumulativeKeysByDimension,
-} from "~/lib/telemetry/store"
 
 const tmpDirs: Array<string> = []
 function freshDb(): ReturnType<typeof openTelemetryDb> {

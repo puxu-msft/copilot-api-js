@@ -16,6 +16,7 @@
  * Handlers integrate via getShutdownSignal() to detect Phase 3 abort.
  */
 
+import { peekTelemetryRuntime } from "@hsupu/ghc-proxy-telemetry"
 import consola from "consola"
 import { setMaxListeners } from "node:events"
 
@@ -46,11 +47,6 @@ import {
 } from "./history"
 import { flushAndFreezePersistence as freezeCalibration } from "./models/calibration/engine"
 import { peekUpstreamWsManager } from "./openai/upstream-ws"
-import {
-  //
-  shutdownRequestTelemetry,
-  stopTelemetryBackgroundWork,
-} from "./request-telemetry"
 import { notifyStopping } from "./restart/notify"
 import { state } from "./state"
 import { closeHttp2Sessions } from "./transport/http2-client"
@@ -402,7 +398,7 @@ export async function gracefulShutdown(signal: string, deps?: ShutdownDeps): Pro
   const drainModelOperationFinalizations =
     deps?.drainModelOperationFinalizationsFn ?? (() => peekRequestContextManager()?.drainModelOperationFinalizations() ?? Promise.resolve())
   const closeHistory = deps?.shutdownHistoryFn ?? shutdownHistory
-  const closeTelemetry = deps?.shutdownRequestTelemetryFn ?? shutdownRequestTelemetry
+  const closeTelemetry = deps?.shutdownRequestTelemetryFn ?? (async () => await peekTelemetryRuntime()?.dispose())
   const closeDiagnostics = deps?.shutdownDiagnosticLoggingFn ?? shutdownStructuredFileSink
   const publishStopped =
     deps?.publishStoppedFn
@@ -457,7 +453,7 @@ export async function gracefulShutdown(signal: string, deps?: ShutdownDeps): Pro
   // drained + closed later in finalize() (RFC history-finalize-async-offload §4.1).
   stopRefresh()
   stopHistoryBackgroundWork()
-  stopTelemetryBackgroundWork() // 停 telemetry rollup timer，避免与接管的新进程并发上卷（lifecycle.md overlap ②）
+  peekTelemetryRuntime()?.stopBackgroundWork() // 停 telemetry rollup timer，避免与接管的新进程并发上卷（lifecycle.md overlap ②）
   closeHttp2Sessions()
   peekUpstreamWsManager()?.stopNew()
 

@@ -1,5 +1,13 @@
 import {
   //
+  _resetRequestTelemetryForTests,
+  _setRequestTelemetryFilePathForTests,
+  getDimensionBreakdown,
+  persistRequestTelemetry,
+  recordSettledRequest,
+} from "@hsupu/ghc-proxy-telemetry/testing"
+import {
+  //
   afterEach,
   beforeEach,
   expect,
@@ -13,14 +21,6 @@ import {
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
-import {
-  //
-  _resetRequestTelemetryForTests,
-  _setRequestTelemetryFilePathForTests,
-  getDimensionBreakdown,
-  persistRequestTelemetry,
-  recordSettledRequest,
-} from "~/lib/request-telemetry"
 import {
   //
   setTelemetryConfig,

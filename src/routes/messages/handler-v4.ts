@@ -79,6 +79,7 @@ import {
 import {
   //
   ANTHROPIC_PING,
+  makeAnthropicKeepaliveFrame,
   resolveAnthropicKeepalive,
 } from "~/lib/anthropic/keepalive-frame"
 import { makeReconcilingSink } from "~/lib/anthropic/live-reconcile"
@@ -576,10 +577,21 @@ async function runMessagesDriver(c: Context, args: RunMessagesDriverArgs): Promi
   // HTTP status (the client retains native retry/backoff/token-refresh). Only when the window elapses
   // with the upstream still silent (opus pre-response thinking) do we COMMIT a 200 + connection-level
   // keepalive; later errors then degrade to a rich SSE error frame. 0 = commit immediately.
-  if (state.streamCommitAfterSec > 0) {
+  //
+  // The window is a DEADLINE measured from request ingress, not a timer started here. Nothing is
+  // written to the client before the commit, so this window and the client's own pre-header limit
+  // (~300s, undici's default headersTimeout — exp/silence-recovery-gates/FINDINGS.md) run on the same
+  // clock — but the client's starts at ITS dispatch, while this handler is only reached after the
+  // config/token middleware (`server.ts`), whose `ensureValidCopilotToken()` can spend real seconds
+  // on retries with backoff. Timing the window from here would silently spend that time twice and
+  // eat the margin the ceiling is supposed to guarantee.
+  const ingressAtMs = c.get("ingressAtMs") as number | undefined
+  const preHandlerElapsedMs = ingressAtMs === undefined ? 0 : Math.max(0, Date.now() - ingressAtMs)
+  const remainingWindowMs = Math.max(0, state.streamCommitAfterSec * 1000 - preHandlerElapsedMs)
+  if (state.streamCommitAfterSec > 0 && remainingWindowMs > 0) {
     let windowTimer: ReturnType<typeof setTimeout> | undefined
     const windowFired = new Promise<"window">((res) => {
-      windowTimer = setTimeout(() => res("window"), state.streamCommitAfterSec * 1000)
+      windowTimer = setTimeout(() => res("window"), remainingWindowMs)
       ;(windowTimer as unknown as { unref?: () => void }).unref?.()
     })
     // p.then consumes p's rejection so a window-win can't unhandledRejection (the commit body's
@@ -1056,11 +1068,19 @@ function makeAnchoredSseSink(
     onGenerationFrame,
     onDeliveryFinalized,
   } = args
-  // Hooks are built for BOTH synthetic-prelude modes (empty_text + enveloped_ping); only `ping` opts out.
-  // The mode then selects WHICH injector runs (full anchor vs envelope-only) and whether `anchorBlockOpen`
-  // is set — the hooks themselves are the same format primitives.
-  const anchorHooks = buildAnthropicAnchorHooks(state.streamKeepaliveMode !== "ping")
-  const anchorState: AnchorState = { injected: false, messageStartForwarded: false, anchorBlockOpen: false, anchorClosed: false }
+  // The normal configured mode may stay `ping`, but on-demand escalation still needs the same
+  // anchor hooks when a pre-content silence approaches Claude Code's 300s event-idle deadline.
+  const onDemandEscalation = state.streamKeepaliveEscalateSec > 0
+  const anchorHooks = buildAnthropicAnchorHooks(state.streamKeepaliveMode !== "ping" || onDemandEscalation)
+  // One shared wire state, with separate envelope/content latches. The normal enveloped_ping
+  // prelude sets `injected`; the content injector gates on `contentAnchorInjected` instead.
+  const anchorState: AnchorState = {
+    injected: false,
+    contentAnchorInjected: false,
+    messageStartForwarded: false,
+    anchorBlockOpen: false,
+    anchorClosed: false,
+  }
   // Late-bind holder: the injector must read its sink at CALL time (an idle tick), but the sink's options
   // are evaluated before the sink exists — so `getSink` reads this holder, assigned right after construction.
   const sinkHolder: { current: ClientSink | undefined } = { current: undefined }
@@ -1069,7 +1089,20 @@ function makeAnchoredSseSink(
   // after, no block, no remap — spec §10.6).
   const makeInjector = state.streamKeepaliveMode === "enveloped_ping" ? makeSyntheticEnvelopeInjector : makeSyntheticAnchorInjector
   const injectAnchor =
-    anchorHooks ? makeInjector({ anchor: anchorHooks, state: anchorState, getSink: () => sinkHolder.current, resolvedName, reqId }) : undefined
+    anchorHooks && state.streamKeepaliveMode !== "ping" ?
+      makeInjector({ anchor: anchorHooks, state: anchorState, getSink: () => sinkHolder.current, resolvedName, reqId })
+    : undefined
+  const injectContentAnchor =
+    anchorHooks && onDemandEscalation ?
+      makeSyntheticAnchorInjector({
+        anchor: anchorHooks,
+        state: anchorState,
+        getSink: () => sinkHolder.current,
+        resolvedName,
+        reqId,
+        independentContentLatch: state.streamKeepaliveMode === "enveloped_ping",
+      })
+    : undefined
   const sink = makeDeliverySseSink(stream, {
     onForwarded,
     streamStartMs,
@@ -1083,6 +1116,11 @@ function makeAnchoredSseSink(
         pingFrame: resolveAnthropicKeepalive(state.streamKeepaliveMode),
         clientAbortSignal,
         ...(injectAnchor && { injectAnchor }),
+        ...(onDemandEscalation && {
+          contentDeadlineSec: state.streamKeepaliveEscalateSec,
+          contentFrame: makeAnthropicKeepaliveFrame,
+          ...(injectContentAnchor && { injectContentAnchor }),
+        }),
       },
     }),
   })
