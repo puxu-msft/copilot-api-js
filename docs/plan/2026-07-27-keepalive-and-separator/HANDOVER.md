@@ -161,24 +161,13 @@
 
 ## 4. 工作方式：**后续改动一律在隔离 worktree 进行**（用户 2026-07-27 决定）
 
-本轮全程在共享主树上作业，代价已经具体地付出来了：
+**how-to 不在这里** —— 见 skill `session-closeout` §6（交接与 worktree 分工的单一源）与 skill `git-preference:isolating-from-a-shared-git-worktree`。这里只记本轮为「在共享主树上作业」实付的代价，作为该决定的证据：
 
-- 三份研究报告在提交前被并发会话的清理**从工作区抹掉**（原件恰好还在 `/tmp` 才救回来，已提交）；
+- 三份研究报告在提交前被并发会话的清理**从工作区抹掉**（原件恰好还在 `/tmp` 才救回，已提交）；
 - 我对丢失层的结论被 peer 早 6 小时的 `883e0533` 推翻，因为在共享树上**很难察觉别人已经动过同一块**；
-- 每次提交都要写显式 pathspec 绕开别人的脏文件，`eslint --fix` 得逐文件点名，否则会把别人的在飞改动裹进来。
+- 每次提交都要写显式 pathspec 绕开别人的脏文件，`eslint --fix` 得逐文件点名。
 
-所以接手会话**不要再在主树上改代码**：
-
-```bash
-# 起隔离 worktree（放 ./.worktrees/，项目约定）
-git worktree add .worktrees/<topic> -b feat/<topic>
-cd .worktrees/<topic>
-bun install            # 新 worktree 没有 node_modules，pre-commit/eslint 会 exit 127
-```
-
-参见 skill `git-preference:isolating-from-a-shared-git-worktree`。收尾时合回 master 走 `git merge`（三方合并自动合非冲突行），**合并前先 `git log --oneline master ..` 看 peer 在同一区域落了什么**——本轮的教训就是这条。
-
-文档类改动（本目录下的交接/研究报告）**可以**继续在主树直接改并即时提交：它们是接手会话的入口，滞留在特性分支上等于没写。这与项目的 `docs-merge-before-execute` 一致——**定稿文档先合主线，执行再开分支**。
+一句话结论：**代码进 worktree，本目录的交接/研究文档留主树即时提交**。
 
 ---
 

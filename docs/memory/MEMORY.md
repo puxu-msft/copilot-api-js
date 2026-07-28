@@ -4,6 +4,7 @@
 
 ## 已下沉到项目 skill 的方法论（记忆文件 = stub 指向）
 
+- [收尾与跨会话交接](session-closeout-and-handover.md) → skill `session-closeout` — **收尾六步 + HANDOVER/KICKOFF 写法的唯一归属**；产物先入库再引用、待办带验收判据与证伪方式、自己犯过的错要写进去
 - [审自己写的测试类型错配必派异模型 reviewer](methodology-audit-own-test-type-fit-via-cross-model-reviewer.md) → skill `choosing-test-type` — 真相域归位+试金石+错配四型
 - [sync→async 持久化不变量](methodology-sync-to-async-persistence-refactor-invariants.md) → `persistence-async-invariants` §1 — drain-before-close/pending Set 不靠 bus/never-throw/全 await
 - [信号在 committed settle 点记录](methodology-record-signals-at-committed-outcome-not-per-attempt.md) → `persistence-async-invariants` §3 — per-attempt 累积+onAttemptReset 清空+committed flush
