@@ -24,6 +24,7 @@ import type { ServerSentEventMessage } from "fetch-event-stream"
 import type { HeadersCapture } from "~/lib/context/request"
 import type { RequestTransport } from "~/lib/history"
 import type { Model } from "~/lib/models/client"
+import type { AbortProvenanceGapSurface } from "~/lib/observability/abort-provenance-gaps"
 import type { RequestEnvelope } from "~/lib/pipeline/envelope"
 import type {
   //
@@ -103,7 +104,7 @@ async function selectAndSend(
   }
 
   reportTransport(env, "http")
-  return sendViaHttp(wire, deps, reaperSignal, options?.signal, env.ctx.query?.forwarded ?? "")
+  return sendViaHttp(wire, deps, env.clientFormat, reaperSignal, options?.signal, env.ctx.query?.forwarded ?? "")
 }
 
 /** Report the chosen transport on the ctx attempt (legacy `onTransport` → `setAttemptTransport`). */
@@ -115,11 +116,12 @@ function reportTransport(env: RequestEnvelope, transport: RequestTransport): voi
 async function sendViaHttp(
   wire: PreparedRequest,
   deps: UpstreamResponsesTransportDeps,
+  surface: AbortProvenanceGapSurface,
   reaperSignal?: AbortSignal,
   dispatchSignal?: AbortSignal,
   forwardedQuery = "",
 ): Promise<UpstreamStream> {
-  const lifecycle = createDispatchLifecycle(combineAbortSignals(dispatchSignal, deps.clientAbortSignal, reaperSignal, getShutdownSignal()))
+  const lifecycle = createDispatchLifecycle(combineAbortSignals(dispatchSignal, deps.clientAbortSignal, reaperSignal, getShutdownSignal()), surface)
   // Transport-local capture (RFC Phase 2 — no handler-threaded bag); fills `.response`
   // so we can surface upstream response headers as `UpstreamStream.headers` (read by
   // the driver to write ctx.httpHeaders.outboundResponse).

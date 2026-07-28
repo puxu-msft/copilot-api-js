@@ -108,6 +108,31 @@ describe("abort-provenance gap counter", () => {
     expect(getAbortProvenanceGapCounts()).toEqual([{ phase: "post-header", surface: "gemini", count: 1 }])
   })
 
+  test("every client surface reports its own label — none silently degrades to `unknown`", async () => {
+    // A surface that stops threading `env.clientFormat` still counts, but under `unknown`, which
+    // reads as "we do not know which leg leaked" — exactly the ambiguity this metric exists to
+    // remove. The Responses transport had a differently-shaped call site and was silently missing
+    // its label until this arm existed.
+    for (const surface of ["anthropic", "openai-cc", "openai-responses", "gemini"] as const) {
+      const lifecycle = createDispatchLifecycle(undefined, surface)
+      const guarded = lifecycle.ownFrames({
+        [Symbol.asyncIterator]() {
+          return {
+            next(): Promise<IteratorResult<never>> {
+              return Promise.reject(new StreamUnknownCancelError())
+            },
+          }
+        },
+      })
+      await expect(guarded[Symbol.asyncIterator]().next()).rejects.toBeInstanceOf(StreamUnknownCancelError)
+    }
+    expect(
+      getAbortProvenanceGapCounts()
+        .map((row) => row.surface)
+        .toSorted(),
+    ).toEqual(["anthropic", "gemini", "openai-cc", "openai-responses"])
+  })
+
   test("NEGATIVE: healthy tagged traffic never touches the counter", async () => {
     // The whole value of this metric is that a non-zero reading is an action item. Any of these
     // firing it would make the number meaningless.
