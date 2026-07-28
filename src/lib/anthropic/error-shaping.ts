@@ -215,25 +215,38 @@ export function buildCanonicalErrorFrameFromRaw(frame: UpstreamFrame): ClientFra
 }
 
 /**
- * Map a classified stream-lifecycle kind to Anthropic's SSE `error.type`.
+ * Every cause that can end an Anthropic response, across ALL THREE lifecycle points:
+ * `StreamErrorKind` (post-header body) plus the two terminals only the pre-header
+ * boundaries can produce — the response-header watchdog, and an abort with no evidence
+ * at all.
  *
- * SINGLE SOURCE for this protocol: the v4 codec's `formatError` imports this too, so
- * the codec and the live handler cannot drift. They did drift — the codec's private
- * copy answered `timeout_error` for a hard deadline while this live path still said
- * `api_error`, which is how a "landed" deadline mapping never reached the wire.
- *
- * `Record` rather than a `switch` default so a new `StreamErrorKind` is a compile
- * error here instead of silently falling into the generic bucket.
- *
- * Grouping rationale: every clock WE run out (frame-idle watchdog, hard request
- * deadline, stale-request reaper — the reaper is `stale_request_max_age` expiring,
- * which is a deadline) reports as a timeout. `shutdown` is the one genuinely
- * retry-now condition, so it keeps `overloaded_error` (Anthropic's 529 literal).
- * Anthropic has no cancellation literal, so the cancel kinds honestly degrade to
- * the generic `api_error` rather than borrowing an unrelated one.
+ * One vocabulary because it is one question: "what ended this request?" The answer must
+ * not depend on whether upstream response headers happened to have arrived yet.
  */
-const ANTHROPIC_STREAM_ERROR_TYPE: Record<StreamErrorKind, string> = {
+export type AnthropicErrorCauseKind = StreamErrorKind | "header-timeout" | "unknown-abort"
+
+/**
+ * Map a cause to Anthropic's SSE `error.type`.
+ *
+ * SINGLE SOURCE for this protocol, across all three lifecycle points: the post-header
+ * stream pump, the delayed-commit terminal frame (`postCommitAbortFrame`), and the v4
+ * codec. Each used to answer independently, so the SAME cause reached the client as
+ * `timeout_error` or `api_error` depending only on where it was caught.
+ *
+ * `Record` rather than a `switch` default so a new cause is a compile error here instead
+ * of silently falling into the generic bucket.
+ *
+ * Grouping rationale: every clock WE run out reports as a timeout — the frame-idle
+ * watchdog, the response-header watchdog, the hard request deadline, and the stale-request
+ * reaper (`stale_request_max_age` expiring IS a deadline; the config even carries a TODO to
+ * rename it `upstream_request_deadline`). `shutdown` is the one genuinely retry-now
+ * condition, so it keeps `overloaded_error` (Anthropic's 529 literal). Anthropic has no
+ * cancellation literal, so the cancel kinds and the two "no cause recorded" terminals
+ * honestly degrade to the generic `api_error` rather than borrowing an unrelated one.
+ */
+const ANTHROPIC_STREAM_ERROR_TYPE: Record<AnthropicErrorCauseKind, string> = {
   "idle-timeout": "timeout_error",
+  "header-timeout": "timeout_error",
   "request-deadline": "timeout_error",
   "reaper-cancel": "timeout_error",
   shutdown: "overloaded_error",
@@ -241,11 +254,12 @@ const ANTHROPIC_STREAM_ERROR_TYPE: Record<StreamErrorKind, string> = {
   "request-cancel": "api_error",
   "dispatch-cancel": "api_error",
   "unknown-cancel": "api_error",
+  "unknown-abort": "api_error",
   other: "api_error",
 }
 
-/** @see ANTHROPIC_STREAM_ERROR_TYPE — kind-in variant, for callers holding a classified kind. */
-export function streamErrorKindToAnthropicErrorType(kind: StreamErrorKind): string {
+/** @see ANTHROPIC_STREAM_ERROR_TYPE — kind-in variant, for callers holding a classified cause. */
+export function streamErrorKindToAnthropicErrorType(kind: AnthropicErrorCauseKind): string {
   return ANTHROPIC_STREAM_ERROR_TYPE[kind]
 }
 

@@ -577,14 +577,18 @@ export function forwardError(c: Context, error: unknown, format: ErrorWireFormat
       return finalizeErrorDelivery(c, helpers.defaultError("Upstream timed out before sending response headers", true, 504), 504 as ContentfulStatusCode)
     }
     const cancellation = getCancellationCause(error)
-    if (cancellation === "request-deadline") {
-      // The hard per-request deadline is a TIMEOUT (state.requestDeadline), not a generic
-      // unavailability — it keeps 504, but says which clock ran out.
-      consola.warn(`Request deadline exceeded in ${c.req.method} ${c.req.path} (${state.requestDeadline}s): ${errorMessage}`)
+    if (cancellation === "request-deadline" || cancellation === "stale-reaper") {
+      // Both are OUR clock running out, not a generic unavailability: `request_deadline` is
+      // the precise per-request one, `stale_request_max_age` the leak-safety net above it
+      // (its config even carries a TODO to rename it `upstream_request_deadline`). They keep
+      // 504 and say WHICH clock ran out — the same grouping the SSE `error.type` tables use,
+      // so a cause does not change category depending on where it was caught.
+      const clock = cancellation === "request-deadline" ? `request deadline ${state.requestDeadline}s` : `stale-request reaper ${state.staleRequestMaxAge}s`
+      consola.warn(`Request cancelled by our own clock (${clock}) in ${c.req.method} ${c.req.path}: ${errorMessage}`)
       return finalizeErrorDelivery(c, helpers.defaultError(errorMessage, true, 504), 504 as ContentfulStatusCode)
     }
-    // Reaper cancel, dispatch teardown, or an abort nobody tagged. Report the real reason
-    // verbatim (internal-tool posture) rather than inventing a cause we cannot evidence.
+    // Dispatch teardown, an explicit cancel, or an abort nobody tagged. Report the real
+    // reason verbatim (internal-tool posture) rather than inventing a cause we cannot evidence.
     consola.warn(`Request cancelled (${cancellation ?? "untagged abort"}) in ${c.req.method} ${c.req.path}: ${errorMessage}`)
     return finalizeErrorDelivery(c, helpers.defaultError(errorMessage, true, 503), 503 as ContentfulStatusCode)
   }

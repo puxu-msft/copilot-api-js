@@ -22,6 +22,7 @@
 
 import type { ClientFrame } from "~/lib/pipeline/types"
 
+import { streamErrorKindToAnthropicErrorType } from "~/lib/anthropic/error-shaping"
 import {
   //
   type ErrorWireFormat,
@@ -121,9 +122,17 @@ const POST_COMMIT_ABORT_MESSAGE: Record<Exclude<PostCommitAbortKind, "client-abo
   "unknown-abort": "Request aborted (no cause recorded)",
 }
 
-/** Terminal `event: error` frame for a post-commit abort of `kind`. */
+/**
+ * Terminal `event: error` frame for a post-commit abort of `kind`.
+ *
+ * The `error.type` comes from the SHARED Anthropic cause table, not a local literal. It
+ * used to hardcode `api_error` for every kind, so the same hard deadline reached the
+ * client as `api_error` here and `timeout_error` from the post-header pump — the answer
+ * depended on whether upstream response headers had happened to arrive, which is not a
+ * fact about what ended the request.
+ */
 export function postCommitAbortFrame(kind: Exclude<PostCommitAbortKind, "client-abort">): ClientFrame {
-  return anthropicErrorFrame("api_error", POST_COMMIT_ABORT_MESSAGE[kind])
+  return anthropicErrorFrame(streamErrorKindToAnthropicErrorType(kind), POST_COMMIT_ABORT_MESSAGE[kind])
 }
 
 /**
