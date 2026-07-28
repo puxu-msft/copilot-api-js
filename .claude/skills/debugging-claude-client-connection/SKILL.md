@@ -37,7 +37,9 @@ description: 当调试 copilot-api-js 与 Claude Code CLI 客户端之间的连�
 |---|---|---|---|
 | `state`（**首要判据**） | `aborted` | `failed` | `failed` |
 | `attempts[].upstreamResponse.status` + `.sseEvents` | 可能已有帧 | 视时机 | **`null` + `[]`（0 帧）= 上游从未回响应头** |
-| entry-relative `durationMs` | 任意（客户端何时走） | ≈ `staleRequestMaxAge`（默认 **600s**） | ≈ `responseHeaderTimeout`/`streamIdleTimeout`（默认 **300s**） |
+| entry-relative `durationMs` | 任意（客户端何时走） | ≈ `staleRequestMaxAge`（**shipped 1200s**；代码 fallback 600s） | ≈ `responseHeaderTimeout`/`streamIdleTimeout`（**shipped 均 600s**；代码 fallback 均 300s） |
+
+> **⚠ 2026-07-28 订正——归因前先看清用的是哪套数**：本表原写「默认 600s / 默认 300s」，那是 `src/lib/state-defaults.ts` 的**代码 fallback**。真实运行读的是 shipped `config.yaml`：`response_header: 600` / `stream_idle: 600` / `stale_request_max_age: 1200` / `request_deadline: 1200`。拿 300/600 去套一条 600s 的 incident 会把 header-timeout 误判成 reaper。**判之前先读该实例生效的 config**，别凭本表的数字。
 | 下游终端 error 帧文案 | 无（客户端已走，零字节） | `Request cancelled by the stale-request reaper` | `Upstream timed out before sending response headers` |
 
 - `state:"failed"`（非 `aborted`）**当场排除 client-abort**：客户端断开走 `StreamClientAbortError` → driver `settled-abort` → state `aborted`；reaper/timeout 走 `ctx.fail` → `failed`。机制佐证 [forward.ts:521-530](../../../src/lib/error/forward.ts)——client-abort 会 abort `c.req.raw.signal`，header-timeout 只 abort **fetch 信号**、留 `raw.signal` 未 abort。

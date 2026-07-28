@@ -2,6 +2,14 @@
 
 从记忆库降为引用层（2026-07-05）时归位的活 backlog。每条：现状 / 暂缓原因 / 若做需改什么。
 
+## History 详情页 SSE 帧的绝对时间：upstream 轨的原点未证（2026-07-28）
+
+- **根因**：`clientResponse.sseEvents[].offsetMs` 是 **commit 相对**的（`client-sink.ts:216` 用 `Date.now() - streamStartMs`），而 UI 的 `FrameList` 两条轨原本都传 `entry.startedAt` 当原点（`ui-v4/src/components/detail/segments/SseEventsSegment.tsx`）。
+- **已修（2026-07-28）**：forwarded 轨改用 `entry.startedAt + (entry.timing?.client?.streamOpenMs ?? 0)`。这条有证据——生产者在 commit 时刻写 `setClientTimingEpoch("streamOpen", commitInstant)`，与 sink 的 `streamStartMs` 同源。延迟-commit 窗口默认从 20s 抬到 180s 后，这个误差被放大到约 3 分钟，所以先修它。
+- **仍未证 / 本条要做的**：**upstream 轨的 offset 原点是什么，没追出来**。合并态评审指出它未必是 `entry.startedAt`（可能是 attempt/collector 自己的原点）。若确实不是，现在这条轨显示的绝对钟点同样是错的，只是没有被本次默认值改动放大。
+- **若做需改什么**：① 追出 `attempts[].upstreamResponse.sseEvents[].offsetMs` 的写入点与其时间基（`model-operation-record.ts` / `context/request.ts:610,1594` 是消费侧，产生侧待定）；② 若原点可证 → 按轨传对应 epoch；③ 若持久化记录里**没有**可证明的原点 → 该轨只显示 elapsed 或显式「绝对时间不可用」，**不要继续伪造绝对钟点**（已有 `offsetSource === "unavailable"` 的先例可复用）；④ 补一条 UI 回归测试，构造 `streamOpenMs=180000, offsetMs=20000` 断言两轨各自渲染的钟点。
+- **为何暂缓**：产生侧未定位，属独立调查单元；且 upstream 轨的误差不随本次默认值改动放大，不阻塞交付。
+
 ## delayed-commit 窗口是全局的，但它的安全上限只对两个 Node 客户端实测过（2026-07-28）
 
 - **根因**：`stream_commit_after_sec` 对所有流式 `/v1/messages` 请求一视同仁（`handler-v4.ts` 只按 `clientRaw.stream` 分支，不识别客户端）。但窗口的安全上限来自**客户端的** pre-header 容忍度，而我们只实测过两个样本：真 Claude Code 2.1.220（其内置 Node v26.3.0）与 `@anthropic-ai/sdk` 0.106.0 on Node——两者都是 ~300s，因为都落在 undici 默认 `headersTimeout` 上（`exp/silence-recovery-gates/FINDINGS.md`）。
