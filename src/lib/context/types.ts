@@ -111,6 +111,8 @@ export interface ResponseData {
   copilotAnnotations?: Array<CopilotAnnotations>
   /** Anthropic server-side tool_search request count, from `usage.server_tool_use.tool_search_requests` */
   toolSearchRequests?: number
+  /** RAW Anthropic `stop_details`, retained verbatim for History diagnostics. */
+  stopDetails?: unknown
 }
 
 /**
@@ -121,6 +123,8 @@ export interface ResponseData {
 export interface PartialResponseInfo {
   usage?: ResponseData["usage"]
   stop_reason?: string
+  /** RAW Anthropic `stop_details`, retained verbatim across fail/abort reconstruction. */
+  stopDetails?: unknown
   /** Complete upstream non-stream response envelope, retained independently of the proxy verdict. */
   sourceBody?: unknown
   /**
@@ -284,6 +288,7 @@ export interface HistoryUpstreamResponseData {
   responseId?: string
   copilotAnnotations?: Array<CopilotAnnotations>
   toolSearchRequests?: number
+  stopDetails?: unknown
 }
 
 /**

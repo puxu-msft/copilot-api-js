@@ -178,6 +178,7 @@ export function legFromUpstreamResponse(r: ResponseData): HistoryUpstreamRespons
     ...(r.responseId !== undefined && { responseId: r.responseId }),
     ...(r.copilotAnnotations && { copilotAnnotations: r.copilotAnnotations }),
     ...(r.toolSearchRequests !== undefined && { toolSearchRequests: r.toolSearchRequests }),
+    ...(r.stopDetails !== undefined && { stopDetails: r.stopDetails }),
   }
 }
 
@@ -779,6 +780,7 @@ export function createRequestContext(opts: {
             ...(response.error === undefined ? {} : { error: response.error }),
             ...(response.responseId === undefined ? {} : { responseId: response.responseId }),
             ...(response.toolSearchRequests === undefined ? {} : { toolSearchRequests: response.toolSearchRequests }),
+            ...(response.stopDetails === undefined ? {} : { stopDetails: response.stopDetails }),
             ...(response.copilotAnnotations === undefined ? {} : { copilotAnnotations: response.copilotAnnotations }),
           },
         }),
@@ -1733,6 +1735,7 @@ export function createRequestContext(opts: {
           content: partial?.content ?? null,
           ...(partial?.sourceBody !== undefined && { sourceBody: partial.sourceBody }),
           ...(partial?.stop_reason !== undefined && { stop_reason: partial.stop_reason }),
+          ...(partial?.stopDetails !== undefined && { stopDetails: partial.stopDetails }),
         }
         _failureReason = errorMsg
       } else {
@@ -1746,6 +1749,7 @@ export function createRequestContext(opts: {
           content: partial?.content ?? null,
           ...(partial?.sourceBody !== undefined && { sourceBody: partial.sourceBody }),
           ...(partial?.stop_reason !== undefined && { stop_reason: partial.stop_reason }),
+          ...(partial?.stopDetails !== undefined && { stopDetails: partial.stopDetails }),
         }
 
         // Preserve upstream HTTP error details as structured fields
@@ -1810,6 +1814,7 @@ export function createRequestContext(opts: {
         error: "client disconnected",
         content: null,
         ...(partial?.stop_reason !== undefined && { stop_reason: partial.stop_reason }),
+        ...(partial?.stopDetails !== undefined && { stopDetails: partial.stopDetails }),
       }
 
       // P2.5 producer alignment: land the aborted verdict on the final attempt

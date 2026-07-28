@@ -925,6 +925,7 @@ function renderNonStreamingV4(
           cache_creation_input_tokens: response.usage.cache_creation_input_tokens ?? undefined,
         },
         stop_reason: response.stop_reason ?? undefined,
+        stopDetails: (response as { stop_details?: unknown }).stop_details,
         content: { role: "assistant", content: response.content },
         sourceBody: response,
       },
@@ -968,6 +969,7 @@ function renderNonStreamingV4(
       cache_creation_input_tokens: response.usage.cache_creation_input_tokens ?? undefined,
     },
     stop_reason: response.stop_reason ?? undefined,
+    stopDetails: (response as { stop_details?: unknown }).stop_details,
     content: { role: "assistant", content: response.content },
     sourceBody: response,
     responseText: JSON.stringify(response),
@@ -979,7 +981,7 @@ function renderNonStreamingV4(
     reqCtx.fail(
       response.model,
       new Error(failReason),
-      { usage: responseData.usage, stop_reason: responseData.stop_reason, content: responseData.content, sourceBody: response },
+      { usage: responseData.usage, stop_reason: responseData.stop_reason, stopDetails: responseData.stopDetails, content: responseData.content, sourceBody: response },
       // Refusal + unrepairable = a COMPLETE 200 upstream body the proxy re-judged → upstreamSucceeded
       // keeps outboundResponse honest. Semantic truncation = an INCOMPLETE body → stays success:false.
       refusalReason !== null || unrepairableTool !== null ? { upstreamSucceeded: true } : undefined,
@@ -1397,6 +1399,7 @@ async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): 
       env.ctx.fail(acc.model || model, error, {
         usage: partial.usage,
         stop_reason: partial.stop_reason,
+        stopDetails: partial.stopDetails,
         content: partial.content,
       })
       sink.finalize?.()
@@ -1426,6 +1429,7 @@ async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): 
       env.ctx.fail(acc.model || model, new Error(`${acc.streamError.type}: ${acc.streamError.message}`), {
         usage: partial.usage,
         stop_reason: partial.stop_reason,
+        stopDetails: partial.stopDetails,
         content: partial.content,
       })
       sink.finalize?.()
@@ -1462,7 +1466,7 @@ async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): 
       env.ctx.fail(
         acc.model || model,
         new Error(summary),
-        { usage: partial.usage, stop_reason: partial.stop_reason, content: partial.content },
+        { usage: partial.usage, stop_reason: partial.stop_reason, stopDetails: partial.stopDetails, content: partial.content },
         { upstreamSucceeded: true },
       )
       sink.finalize?.()
@@ -1491,7 +1495,7 @@ async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): 
       env.ctx.fail(
         acc.model || model,
         new Error(`unrepairable malformed tool_use input (tool=${tool})`),
-        { usage: partial.usage, stop_reason: partial.stop_reason, content: partial.content },
+        { usage: partial.usage, stop_reason: partial.stop_reason, stopDetails: partial.stopDetails, content: partial.content },
         { upstreamSucceeded: true },
       )
       sink.finalize?.()
@@ -1529,6 +1533,7 @@ async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): 
       env.ctx.fail(acc.model || model, new Error("upstream stream truncated: closed without message_stop"), {
         usage: partial.usage,
         stop_reason: partial.stop_reason,
+        stopDetails: partial.stopDetails,
         content: partial.content,
       })
       sink.finalize?.()
