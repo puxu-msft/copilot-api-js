@@ -70,6 +70,10 @@ export class TelemetrySink {
         // recorded a `request.failed` as a telemetry success. Leg health stays observable on the
         // History entry; this registry counts whether the CLIENT's request succeeded.
         success: event.kind === "request.completed",
+        // Keep the committed upstream leg's transport/model verdict as a separate additive measure.
+        // A proxy-introduced failure can therefore count as request failure AND upstream-leg success
+        // without conflating the two independent health signals.
+        upstreamLegSuccess: finalUpstream?.success === true,
         usage: finalUpstream?.usage,
         // Per-token cost: the billing multiplier rides on the ctx snapshot
         // (state.modelIndex-resolved), not the entry. Undefined for token-based accounts.

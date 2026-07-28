@@ -25,11 +25,11 @@
 
 **为什么排第一**：它现在就在污染真实运维数据，且与已落地的 verdict 解耦直接相关。
 
-**判据**：一个抑制掉的 refusal 请求，在 `/api/stats` 与 History stats 中**只**计入失败侧一次；上游腿仍诚实显示 `success:true`（两个概念不得互相覆盖）。不得静默改变既有 `successCount` 的上游腿语义——若要区分，新增独立 measure。
+**判据**：一个抑制掉的 refusal 请求，在 `/api/stats` 与 History stats 中**只**计入请求失败侧一次；`successCount` / `failureCount` 明确表达互斥的客户端请求裁决。上游腿仍诚实显示 `success:true`，并以独立的 `upstreamLegSuccessCount` measure 恢复可聚合健康度；两个概念不得互相覆盖。
 
 **触点**：`src/lib/observability/sinks/telemetry.ts`、`src/lib/history/stats.ts`。
 
-**落地方式**：`stats.ts` 抽出纯函数 `requestBucket()`——互斥性变成**结构性保证**（单一返回值）而非四个并列 `if` 恰好维持的性质；遥测 sink 的 `success` 改读**请求裁决**（`event.kind === "request.completed"`）而非上游腿。上游腿健康度仍在 History entry 上可观测，两个概念不再互相覆盖。守卫 `tests/history/stats-verdict-buckets.unit.test.ts`（6 pass），已过 mutation control：把 `failed` 分支改回旧的 OR 语义 → 2 条变红。
+**落地方式**：`stats.ts` 抽出纯函数 `requestBucket()`——互斥性变成**结构性保证**（单一返回值）而非四个并列 `if` 恰好维持的性质；遥测 sink 的 `success` 改读**请求裁决**（`event.kind === "request.completed"`）而非上游腿，同时把 committed upstream response 的 `success` 投影为独立 `upstreamLegSuccessCount`。该 measure 经开放 counters bag、内存泛型投影、SQLite additive outbox / rollup / readback 全链贯通，旧库打开时幂等补列，无持久版本 bump。守卫 `tests/history/stats-verdict-buckets.unit.test.ts` 覆盖互斥请求裁决，`tests/observability/thinking-block-metrics.unit.test.ts` 覆盖 sink→registry 双信号，`tests/telemetry/dual-write.unit.test.ts` 覆盖 SQLite 持久化。
 
 ### ~~T2 —— 双轮 session CLI oracle~~ ✅ 已完成
 

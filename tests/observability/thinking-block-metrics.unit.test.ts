@@ -100,4 +100,17 @@ describe("thinking-block metrics: sink → telemetry → read-outs", () => {
     detach()
     expect(getThinkingBlockTotals()).toEqual({ nonEmpty: 0, emptySigned: 0, emptyUnsigned: 0 })
   })
+
+  test("a request.failed with a successful committed upstream leg keeps request verdict and leg health as independent measures", () => {
+    const bus = createBus()
+    const detach = attachTelemetrySink(bus)
+    const entry = makeEntry({ role: "assistant", content: [] })
+    entry.state = "failed"
+    entry.attempts![0]!.dispatchVerdict = "committed"
+    bus.scope("request").publish({ kind: "request.failed", ctx: { ...makeCtx(), state: "failed" }, entry })
+    detach()
+
+    const counters = getDimensionBreakdown("model", "sinceStart").keys.find((key) => key.key === "claude-opus-4.8")?.counters
+    expect(counters).toMatchObject({ requestCount: 1, successCount: 0, failureCount: 1, upstreamLegSuccessCount: 1 })
+  })
 })
