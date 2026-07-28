@@ -7,7 +7,39 @@
 
 ## 一句话现状
 
-`max_tokens` 续传特性的 **spec/plan/P0 已 landed**；推进 P1 时挖出一条**保活缺陷链**（我方吞空 delta → CC 300s watchdog 掐断），已修根因并落地 pre-content 保活；剩余 **inter-block 保活缺口**需要方案 A（接线 multi-anchor allocator），其 TDD plan 已写好、**审查中**。P1 本身未被阻塞，但**块级默认翻转**的硬前置是方案 A。
+`max_tokens` 续传特性的 **spec/plan/P0 已 landed**；推进 P1 时挖出一条**保活缺陷链**（我方吞空 delta → CC 300s watchdog 掐断），已修根因并落地 pre-content 保活 + **P6 心跳死亡修复**；剩余 **inter-block 保活缺口**需要方案 A（接线 multi-anchor allocator），其 TDD plan 经**六轮异模型审至零 blocker**、已合并 master，**实施进行中**（P1 全完成、P2 过半）。max_tokens 的 P1 本身未被阻塞，但**块级默认翻转**的硬前置是方案 A。
+
+## 方案 A 实施进度（活状态，接手先看这里）
+
+**分支 `feat/anchor-allocator-p1p2`**（worktree `.worktrees/alloc-p1p2`，base `da59c586`，**未合并 master**）：
+
+| commit | 内容 |
+|---|---|
+| `e1a2fc39` | **U1** allocator 更名 `createGenerationWireIndexAllocator` + `anchorsOpened()` 诊断计数 + anchor 三帧改 factory 收显式 index + `ANCHOR_INDEX`→`PRE_CONTENT_ANCHOR_INDEX` |
+| `a0890d0c` | **U2** `AnchorState.allocator` 必填、handler `makeAnchoredSseSink()` 唯一创建点、pre-content injector 走共享 allocator |
+| `73e1d6be` | **U3** C3 映射恒等短路 `resolveRemappedFrame` + **ratchet 守卫**（四处 legacy literal remap 冻结、新增即 fail、只减不增） |
+| `f8230e9e` | **P2.1** 低阶原子 allocator：`LegToken` / 不可变 `WireBlockMapping` / `beginLeg` / `allocate*` / `reserve*` + reservation commit/rollback + 无 active leg 拒绝 real 分配 |
+| `92c4325b` | **P2.2** serialized owner API（port 五方法全落地）+ `GenerationWireState` 唯一注入 + 三类 leg 都调 `beginLeg` + 首次 write 前同步 commit + provenance 真实身份 |
+
+**剩余未做**：P2 的 2.2b(拆分后留在 P2 的那半)/2.2c/2.2c-b/2.2c-c/2.2d/2.3 + checkbox 与文档同步 → 然后才是 **P3M（M1–M8）** → P7 → P8。
+
+### 主会话已裁决的计划内冲突（勿重开，两条都写进了 plan）
+
+1. **U3 守卫 × 冻结相位边界**（2026-07-28）：「remap literal 零命中」与「P1 不改 remap 站点」不可两立 → **改用 ratchet 冻结 baseline**，照抄本仓库既有 `tests/architecture/circular-deps-ratchet.unit.test.ts` 的模式。**P3M 每迁一站点必须同步缩减 allowlist，M4 后必须为空**（M4 显式验收项）。否决了「守卫推迟到 M4」（P1→P3M 窗口恰好失去保护）与「提前迁移调用点」。
+2. **P2.2b × M6 硬序**（2026-07-28）：P2.2b 要求「首块提交后 tick 调用 `allocateAndWriteAnchor`」，但 `semanticBlockCount === 0` 那道门（**正是先前保活分支为堵 inter-block blocker 加的 pre-content-only 收窄**）要到 **M6** 才删，而 M6 硬序晚于 M2–M4 → **按 DAG 可达性拆两层**：留在 P2 的是「P6 boundary 后 heartbeat 确实恢复 + owner serializer 在该状态下仍安全」的 characterization；「恢复后的 tick 真正调用 `allocateAndWriteAnchor`」**移入 M6 的 O-3**。**两处 plan 都要写**，M6 验收须含「被移入部分实现并红→绿 + mutation」。
+
+### 实施期教训（已发生，勿重踩）
+
+- **类型归属方向**：从 `pipeline/types.ts` 反向 type-import `keepalive-anchor.ts` 会把后者拉进核心 SCC、`circular-deps-ratchet` 报红 → **allocator interface 定义须留在 pipeline owner**，`keepalive-anchor.ts` 只实现契约。
+- **B1 窗口**：owner 迁移会暴露它——legacy 状态 intent 须在 owner **排队前同步发布**、pre-commit 拒绝时恢复；frontier 仍只在 serializer 内分配。
+- **既有 flake（非本工作引入，别去改）**：`tests/transport/h2-keepalive-ping.unit.test.ts` 墙钟波动（单跑 25/25 绿）；`tests/restart/states-flush-freeze.it.test.ts` 分片污染（单跑 6/6 绿）。
+
+### 本批次已验证的 oracle 形态（可复用）
+
+- owner mutation 删掉首次 write 前的 `reservation.commit()` → 目标断言转红**且**下一 operation 报 `wire-index reservation already open`——证明分配真绑在 owner transaction 上。
+- 非法 owner 正控（两个并发 peek）→ 独立 O-1 oracle 报 `content block start index 0 at ordinal 1; expected 1`。
+- ratchet 正控 → 精确报出新增站点路径 + 提示「P3M 须同步删 baseline、M4 须清零」。
+- 竞态 15/15 确定性；O-6 SHA-256 `1c6163c6…` / 764 bytes / `cmp=identical`。
 
 ---
 
@@ -19,18 +51,6 @@
 4. **P1：max_tokens 成功终端截获续写**（`docs/plan/2026-07-22-max-tokens-continuation/plan-1-anthropic-continuation.md`）。
 
 > 步骤 4 的 P1 不依赖翻转即可实现与测试（测试里显式开 `protect_streaming_generation`），但翻转后才在默认配置下生效。用户已明确**只接受块级 buffered**（不接受流式、不接受整响应缓冲），故翻转是独立必需项。
-
-## 方案 A 实施进度（活状态，接手先看这里）
-
-- **分支 `feat/anchor-allocator-p1p2`**（worktree `.worktrees/alloc-p1p2`，base `da59c586`）：
-  - `e1a2fc39` U1 —— allocator 更名 `createGenerationWireIndexAllocator` + `anchorsOpened()` 诊断计数 + anchor 三帧改 factory 收显式 index + `ANCHOR_INDEX`→`PRE_CONTENT_ANCHOR_INDEX`。
-  - `a0890d0c` U2 —— `AnchorState.allocator` 必填、handler 唯一创建点、pre-content injector 从共享 allocator 取 index 并推进 frontier。
-  - **U3 + P2 进行中**。
-- **已裁决的计划内冲突（主会话 2026-07-28）**：P1 U3 的「remap literal 零命中」守卫与「P1 不改 remap 站点」冻结边界冲突 → **采用 ratchet 冻结 baseline**（照抄本仓库既有 `tests/architecture/circular-deps-ratchet.unit.test.ts` 的模式）：当前四处 literal remap（`driver.ts` ×3、`live-reconcile.ts` ×1）列入精确 allowlist、**新增即 fail、只减不增**；**P3M 每迁一站点同步缩减，M4 后 allowlist 必须为空**（已定为 M4 显式验收项）。否决了「守卫推迟到 M4」（P1→P3M 窗口恰好失去保护）与「提前迁移调用点」（动冻结相位边界）。
-- **实施期教训（已发生，勿重踩）**：从 `pipeline/types.ts` 反向 type-import `keepalive-anchor.ts` 会把后者拉进核心 SCC、`circular-deps-ratchet` 报红 → **allocator interface 定义须留在 pipeline owner**，`keepalive-anchor.ts` 只实现契约。
-- **既有 flake（非本工作引入，别去改）**：`tests/transport/h2-keepalive-ping.unit.test.ts` 墙钟波动（单跑 25/25 绿）；`tests/restart/states-flush-freeze.it.test.ts` 分片污染（单跑 6/6 绿）。
-
----
 
 ## 已 landed（master）
 
