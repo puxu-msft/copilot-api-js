@@ -16,9 +16,9 @@ cd .worktrees/<topic>
 bun install            # 新 worktree 没有 node_modules，不装 eslint 会 exit 127
 ```
 
-例外：`docs/plan/2026-07-27-keepalive-and-separator/` 下的交接与研究文档可以在主树直接改并即时提交——它们是入口，滞留分支上等于没写。**收尾与交接的完整 how-to 见 skill `session-closeout`（§6 是单一源）**，本提示词只摘其中与你这次直接相关的部分。
+例外：`docs/plan/2026-07-27-keepalive-and-separator/` 下的交接与研究文档可以在主树直接改并即时提交——它们是入口，滞留分支上等于没写。**收尾与交接的完整 how-to 见 skill `session-closeout`（§6 是单一源，骨架见其 `handover.md`）**，本提示词只摘其中与你这次直接相关的部分。
 
-合回 master 前先 `git log --oneline master ..` 看并发会话在同一区域落了什么。上一轮就是因为没查，把一个 peer 早 6 小时修掉的缺陷写成了"不存在的缺陷"。
+合回 master 前先 `git log --oneline ..master -- <你改动的路径>`（方向别写反：`master..` 列的是你自己的提交）看并发会话在同一区域落了什么，再 `git log -S<你结论里的关键符号>`。上一轮就是因为没查，把一个 peer 早 6 小时修掉的缺陷写成了"不存在的缺陷"。
 
 ## 待办与优先级
 
@@ -41,9 +41,9 @@ bun install            # 新 worktree 没有 node_modules，不装 eslint 会 ex
 4. **SCC 环守卫会咬**：往 `src/lib/anthropic/sanitize/*` 里 import `state` 会把文件吸进 19 模块巨型 SCC。配置读留在装配层，解析结果向下传参。
 5. **后端抖动时永远 `SendMessage` 恢复同一个 agent**，不换模型、不另派；并要求它边查边落盘（本轮 agent 中断 4 次）。
 
-## 测试与门禁
+## 测试与门禁（**核验于 2026-07-28 11:50 / `23e85aba`；接手第一件事是复验而非采信**）
 
-- `bun run test:backend` 在本机跑不起来（先跑 `build:history-search`，而 rustup 没配默认 toolchain）。用 `bun scripts/parallel-test.ts unit it http` 替代。
+- `bun run test:backend` 现在就是 `bun scripts/parallel-test.ts unit it http`（`1b8bdf2f` 已把 `build:history-search` 从它前面拿掉），可以直接跑。上一版本提示词说它"跑不起来、请用 parallel-test 替代"——那条在写下时就已过期，两者是同一条命令。
 - `bun run lint:all` 常年红（主要是退役的 `ui/`），只对自己改动的文件跑 `bunx eslint`。
-- 以上两条用户已明确**推迟**，不要顺手去修。
+- 以上两条用户已明确**推迟**修复，不要顺手去修。
 - **绝不**碰 4141 端口的用户主服务器；起测试实例用其它端口 + `XDG_DATA_HOME` 隔离，用后按 PID 精确 kill（绝不 `pkill`）。
