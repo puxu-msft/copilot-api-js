@@ -51,7 +51,7 @@
 - **no-premature-stop。** 不因 turn 长度/token 额度**或编译中间态**（删了函数但调用方还引用）停顿、设检查点或延后，推进到下一个 typecheck 绿或完成 checkpoint 再停；独立的跨文件 Edit/工具一律**消息内并行**，绝不串行。
 - **dont-ignore-existing-errors。** 不把已有的测试失败、类型错误、导入缺失当"与我无关"，所有遇到的错误都必须修（放任会掩盖新问题、使回归失去意义）；修前先读实际代码和类型定义确认根因，不猜测。
 - **subagent-explicit-rubric。** 审查/复审**永远派 subagent**、多视角对抗，不在主会话直接做（实现在主线、subagent 作独立核验层）；subagent 默认持 ROI/YAGNI 价值观与本项目冲突，派活必须 prompt 里**显式写裁判轴**（长远正确 + 完整），吸收其客观事实、对其判断谨慎取舍；reviewer 的"无消费者/可安全删除/已通过"等绝对断言**亲自对照代码/实测复核**，行动前读它引用的每个 `file:line`。→ user-rule `40-use-of-agents` + skill `verifying-authoritative-claims`。
-- **session-closeout。** 会话/阶段收尾（交付/报告/ExitPlanMode/提交前/任务跨会话）是"完成"的一部分，按序做完无需提醒——① subagent audit ② doc-sync + 跨文档 grep 验证 ③ 归档 plan 与实验产物（迁 `docs/plan/`、`exp/<topic>/` + 头部实施状态注解）④ 提炼教训 + 维护记忆库 ⑤ 细粒度阶段提交 ⑥ **跨会话交接**（`HANDOVER.md`+`KICKOFF.md` 主树即时提交、`/tmp` 产物先入库再引用、待办带验收判据与证伪方式、把自己犯过的错写进去）。→ skill `session-closeout`（六步 how-to 的单一源）。
+- **session-closeout。** 会话/阶段收尾（交付/报告/ExitPlanMode/提交前/任务跨会话/上下文将满）是"完成"的一部分，按序做完无需提醒——① subagent audit ② doc-sync + 跨文档 grep 验证 ③ 归档 plan（迁 `docs/plan/` + 四档状态注解）与实验产物（就地 `exp/<topic>/`，README 必含「它没有证明什么」）④ 提炼教训 + 维护记忆库 ⑤ 细粒度阶段提交 ⑥ **跨会话交接**（`HANDOVER.md`+`KICKOFF.md` 主树即时提交、产物先提交再引用、待办带验收判据与证伪方式、把自己犯过的错写进去）。**唯一顺序例外：因「上下文将满」触发时 ⑥ 先做**——交接是唯一不可重做的产物。→ skill `session-closeout`（六步 how-to 与模板的单一源）。
 
 ### 大特性的工作流角色
 
