@@ -259,7 +259,7 @@ ui/
 
 所有运行时状态集中在 `lib/state.ts`，通过 CLI 参数或 config.yaml 设置。
 
-> **`[done]` state 已降为 foundation 叶子并迁入 `packages/foundation/`**（monorepo 拆分 Phase 4 的第三次剥离，2026-07-28）。现状：`packages/foundation/src/{state,state-defaults,state-vocabulary}.ts`，**出边只有 `node:` 与相对路径**，由 `tests/architecture/package-boundaries.unit.test.ts` 的文件级 allowlist 机器强制（比 foundation 自身的 denylist 更严——后者放行任意裸 npm 包）。消费端一律经 `~/lib/state*` alias，**86 个 prod + 212 个 test importer 零改动**。
+> **`[done]` state 已降为 foundation 叶子并迁入 `packages/foundation/`**（monorepo 拆分 Phase 4 的第三次剥离，2026-07-28）。现状：`packages/foundation/src/{state,state-defaults,state-vocabulary}.ts`，**出边只有 `node:` 与相对路径**，由 `tests/architecture/package-boundaries.unit.test.ts` 的文件级 allowlist 机器强制（比 foundation 自身的 denylist 更严——后者放行任意裸 npm 包）。消费端经 `~/lib/state*` alias，**物理搬迁本身没有产生任何 import 改写**（这是 alias 的功劳，口径限于「仍从 `~/lib/state*` 消费的既有 import 路径」）。**但迁出 state 的符号，其消费者是强制改指的**：S2 的 models 目录缓存改了 105 个文件、S3 的 4 个 `resolve*` 改了 10 个——「零改动」只对搬家这一步成立，不对整轮成立。
 >
 > 寄居其中的逻辑各回其位：models 目录缓存 → `~/lib/models/cache`（含 `rawModels` / `setModels` / `getRawModels` / `getConfigDisabledIds`，重新过滤的触发点上移到 `applyConfigToState()` 结尾）；4 个 `resolve*` → `~/lib/config/model-overrides`；凭据测试 shim → 领域无关的 snapshot 参与者注册表（`registerSnapshotParticipant`，token 侧由 `~/lib/token-runtime` 注册 + TS 声明合并保类型安全）；配置词汇 → 零依赖叶子 `state-vocabulary.ts`。简单 setter 留在 state。
 >

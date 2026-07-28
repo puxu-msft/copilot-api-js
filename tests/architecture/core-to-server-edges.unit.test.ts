@@ -48,7 +48,13 @@ async function coreFilesImportingServer(): Promise<Array<{ file: string; specifi
   const found: Array<{ file: string; specifier: string }> = []
   for await (const rel of new Glob("**/*.ts").scan({ cwd: path.join(REPO_ROOT, "src/lib"), onlyFiles: true })) {
     const file = `src/lib/${rel}`
-    const sourceFile = parseSource(file, readFileSync(path.join(REPO_ROOT, file), "utf8"))
+    const text = readFileSync(path.join(REPO_ROOT, file), "utf8")
+    // Cheap pre-filter before the AST walk over ~500 files. Sound because the thing being matched is
+    // the specifier TEXT: every import form spells `~/routes` literally, so a file without that
+    // substring cannot contain one. Skipping it cost ~1.3s in isolation and blew the default 5s
+    // timeout under 16-way sharding, which turns a guard into one people learn to ignore.
+    if (!text.includes("~/routes")) continue
+    const sourceFile = parseSource(file, text)
     for (const specifier of new Set(allModuleSpecifiers(sourceFile))) {
       if (specifier === "~/routes" || specifier.startsWith("~/routes/")) found.push({ file, specifier })
     }

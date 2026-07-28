@@ -1094,6 +1094,23 @@ const isStateField = (key: string): boolean => key in mutableState || OPTIONAL_S
  * can call it freely.
  */
 export function registerSnapshotParticipant<S>(participant: SnapshotParticipant<S>): void {
+  // Re-registering the SAME name replaces, so drop the old entry before checking for conflicts —
+  // otherwise a participant would collide with its own previous registration.
+  snapshotParticipants.delete(participant.name)
+
+  // A key claimed by two DIFFERENT participants is rejected rather than resolved by order. The
+  // routing below picks the first claimant it finds, so without this the second domain to register
+  // would silently never receive its keys while snapshot/restore still ran for both — a test-
+  // isolation bug that shows up as one domain mysteriously not being reset. Only the token domain
+  // registers today, so this can only fire for the next one; that is exactly when it is useful.
+  for (const existing of snapshotParticipants.values()) {
+    const overlap = participant.claims.filter((claim) => existing.claims.includes(claim))
+    if (overlap.length > 0) {
+      throw new Error(
+        `registerSnapshotParticipant: "${participant.name}" and "${existing.name}" both claim ${overlap.map((claim) => `\`${claim}\``).join(", ")}. A patch key must have exactly one owner.`,
+      )
+    }
+  }
   snapshotParticipants.set(participant.name, participant as SnapshotParticipant)
 }
 

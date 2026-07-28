@@ -178,6 +178,22 @@ describe("snapshot / restore 参与者", () => {
     }
   })
 
+  test("异名参与者声明同一个 claim 会被拒（而不是按注册顺序静默选第一个）", () => {
+    withClearedRegistry(() => {
+      const make = (name: string): Parameters<typeof registerSnapshotParticipant>[0] => ({
+        name,
+        claims: ["sharedKey"],
+        snapshot: () => null,
+        restore: () => {},
+        applyTestPatch: () => {},
+      })
+      registerSnapshotParticipant(make("first"))
+      // 静默按顺序选第一个的话，second 永远收不到它的键，而 snapshot/restore 仍两边都跑——
+      // 表现为「某个域莫名其妙没被重置」，是最难查的那类测试隔离 bug。
+      expect(() => registerSnapshotParticipant(make("second"))).toThrow(/both claim .*sharedKey/)
+    })
+  })
+
   test("参与者是按名字幂等的：重复注册替换而不是叠加", () => {
     withClearedRegistry(() => {
       let restores = 0

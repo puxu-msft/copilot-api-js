@@ -145,7 +145,12 @@ describe("synthetic separator identity", () => {
       .map((rel) => `src/${rel}`)
       .filter((path) => !OWNERS.has(path))
       .filter((path) => {
-        const sourceFile = parseSource(path, readFileSync(`${root}/${path}`, "utf8"))
+        const content = readFileSync(`${root}/${path}`, "utf8")
+        // 子串预过滤挡在 AST 走查前面：标识符必然逐字出现，所以没有它的文件不可能引用载体表——
+        // 预过滤只可能少扫、不可能漏报，而 AST 仍然负责排除注释/字符串里的同名文本。全扫 ~700 个文件
+        // 的 AST 单跑就 1.3s，16 路分片下会撞爆默认 5s 超时（peer 的 382b561b 踩过同一个坑）。
+        if (!content.includes("SEPARATOR_CARRIERS")) return false
+        const sourceFile = parseSource(path, content)
         let found = false
         const visit = (node: ts.Node): void => {
           if (ts.isIdentifier(node) && node.text === "SEPARATOR_CARRIERS") found = true

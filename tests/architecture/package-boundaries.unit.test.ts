@@ -124,8 +124,68 @@ function telemetryForbiddenSpecifiers(source: string, fileName = "telemetry.ts")
  * OLD denylist too, so on that sample alone the new criterion is indistinguishable from the old one
  * and "it went red" proves nothing. The bare-package sample is the one that only this rule rejects.
  */
-const STATE_UNIT_FILES = ["state.ts", "state-defaults.ts", "state-vocabulary.ts"]
+const STATE_UNIT_ENTRIES = ["state.ts", "state-defaults.ts", "state-vocabulary.ts"]
+const FOUNDATION_SRC = path.join(repoRoot, "packages/foundation/src")
 
+/** Resolve a relative specifier the way the bundler does: `./x` → `./x.ts`, else `./x/index.ts`. */
+async function resolveRelative(fromFile: string, specifier: string): Promise<string | undefined> {
+  const base = path.resolve(path.dirname(fromFile), specifier)
+  for (const candidate of [base, `${base}.ts`, path.join(base, "index.ts")]) {
+    if (await Bun.file(candidate).exists()) return candidate
+  }
+  return undefined
+}
+
+/**
+ * Walk the state unit's TRANSITIVE relative closure and report every specifier that is neither a
+ * `node:` builtin nor a relative path resolving to a file INSIDE `packages/foundation/src`.
+ *
+ * Both halves are load-bearing, and the first version of this guard had neither — it checked the
+ * three entry files' own specifiers and treated any string starting with `.` as internal:
+ *
+ *  - **transitive**: `state.ts` imports `./ghc-model-types`, which was not in the checked set, so a
+ *    bare `consola` import added THERE passed every state guard. The property being claimed is about
+ *    what state DEPENDS ON, and that is a closure, not three files.
+ *  - **containment**: `../../../src/lib/models/model-name` is a relative path that lands back in
+ *    core. It compiles, needs no alias, and re-establishes exactly the `foundation → core` edge this
+ *    migration removed. "Starts with a dot" was never the same claim as "stays inside the package".
+ *
+ * Both were found by an independent reviewer mutating the tree, not by reasoning about the guard.
+ */
+async function stateUnitClosureViolations(): Promise<Array<string>> {
+  const violations: Array<string> = []
+  const seen = new Set<string>()
+  const queue = STATE_UNIT_ENTRIES.map((name) => path.join(FOUNDATION_SRC, name))
+
+  while (queue.length > 0) {
+    const file = queue.pop()
+    if (file === undefined || seen.has(file)) continue
+    seen.add(file)
+
+    const sourceFile = parseSource(file, await readFile(file, "utf8"))
+    for (const specifier of new Set(allModuleSpecifiers(sourceFile))) {
+      if (specifier.startsWith("node:")) continue
+      const relativeTo = path.relative(repoRoot, file)
+      if (!specifier.startsWith(".")) {
+        violations.push(`${relativeTo} → ${specifier} (not a node: builtin)`)
+        continue
+      }
+      const resolved = await resolveRelative(file, specifier)
+      if (resolved === undefined) {
+        violations.push(`${relativeTo} → ${specifier} (unresolvable)`)
+        continue
+      }
+      if (!resolved.startsWith(`${FOUNDATION_SRC}${path.sep}`)) {
+        violations.push(`${relativeTo} → ${specifier} (relative path ESCAPES the package, resolves to ${path.relative(repoRoot, resolved)})`)
+        continue
+      }
+      queue.push(resolved)
+    }
+  }
+  return violations.sort()
+}
+
+/** Single-specifier form, kept for the sample-based tests below. */
 function stateUnitForbiddenSpecifiers(source: string, fileName = "state.ts"): Array<string> {
   return allModuleSpecifiers(parseSource(fileName, source)).filter(
     (specifier) => !specifier.startsWith("node:") && !specifier.startsWith("./") && !specifier.startsWith("../"),
@@ -133,9 +193,19 @@ function stateUnitForbiddenSpecifiers(source: string, fileName = "state.ts"): Ar
 }
 
 describe("state unit: only language/system builtins", () => {
-  test.each(STATE_UNIT_FILES)("packages/foundation/src/%s 只 import node: 与相对路径", async (fileName) => {
-    const source = await readFile(path.join(repoRoot, "packages/foundation/src", fileName), "utf8")
-    expect(stateUnitForbiddenSpecifiers(source, fileName), "state 单元的立身之本就是「只依赖语言/系统内置」——这条边一旦存在，它就不再是叶子").toEqual([])
+  test("整个相对依赖闭包只 import node: 与 foundation 包内相对路径", async () => {
+    expect(
+      await stateUnitClosureViolations(),
+      "state 单元的立身之本就是「只依赖语言/系统内置」。注意判据是**闭包**且**解析后**的位置——只查三个入口文件的直接 specifier，或把「以点开头」当成「包内」，都是更弱的另一个命题。",
+    ).toEqual([])
+  })
+
+  test("闭包确实包含被传递依赖的文件（否则「零违规」只说明扫描没走到）", async () => {
+    // `state.ts` → `./ghc-model-types`。第一版守卫漏的正是这个节点，而它零违规地绿着。
+    const probe = path.join(FOUNDATION_SRC, "ghc-model-types.ts")
+    expect(await Bun.file(probe).exists(), "闭包正控的目标文件不存在了，先修本测试再谈通过").toBe(true)
+    const sourceFile = parseSource(path.join(FOUNDATION_SRC, "state.ts"), await readFile(path.join(FOUNDATION_SRC, "state.ts"), "utf8"))
+    expect(allModuleSpecifiers(sourceFile)).toContain("./ghc-model-types")
   })
 
   test("判据比 foundation 的 denylist 更严：两个正样本，其中一个只有新判据咬得住", () => {
