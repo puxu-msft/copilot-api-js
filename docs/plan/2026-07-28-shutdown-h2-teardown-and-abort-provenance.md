@@ -265,3 +265,19 @@
 **新增 mutation（4 组，全部先红后绿）**：`postCommitAbortFrame` 改回硬编码 `api_error` → delayed-commit 那条红；删掉 `responses-transport` 取消门的 lifecycle 臂 → pre-first-event 那条红；看门狗改回合成通用 error → TimeoutError 身份那条红（**修正测试之前不红**）；共享表条目改坏 → 三协议 wire 测试红。
 
 **门禁**：typecheck 绿、改动文件 eslint 干净、`test:backend` **6610 pass / 0 fail**。
+
+## 第五轮复审后的修复（2026-07-28）—— 0 BLOCKER / 0 HIGH
+
+第四轮复审确认上一轮的 HIGH 已闭合（Anthropic 三格现共用同一张表；pre-commit reaper 提 504 是定向修正、dispatch 仍 503；两条 WS 接缝测试真实载重，独立探针复现了 `open → send → close` 全序列，证明修正后确实走的是 first-event 看门狗而非握手）。剩 2 MED + 1 LOW，全部处理：
+
+**MED-1（unknown 是线索，但没人在看）**——两类 unknown 都退化成协议通用桶（`api_error` / `server_error` / `INTERNAL`），在 `/metrics` 上与任何别的 generic failure 无从区分，只能靠人工打开单条 History 才发现。新增 `abort_provenance_gaps_total{phase,surface}`（`src/lib/observability/abort-provenance-gaps.ts`，与 `retry-giveups.ts` 同构）。**任何非零值都是行动项**，不是可以看趋势的健康指标。
+
+接线位置换过一次，值得记：我最初把它放在**三个协议 mapper 的 error-in 包装**里（"boundary observation point"），lint 当场否决——`no-restricted-imports` 规定 `src/lib/{anthropic,openai,gemini}/**` 不得 import `~/lib/observability/*`（RFC observability-rewrite §2.2）。**规则是对的**：一个「把 kind 映射成字符串」的函数是放副作用的怪地方，而且 codec 也调它。改到 `dispatch-lifecycle` 的 catch —— 两个 transport 的每条被 guard 的流都恰好经过它一次，是真正的单一漏斗；transport 把 `env.clientFormat` 传下来，surface 标签因而准确。**没有**逐个插桩那 18 个塑形 error frame 的 route 站点：漏掉一个就让「零」读作「没有 gap」，比没有这个指标更糟。
+
+**MED-2（backlog 措辞失真）**——我原写「那 4 处 `codec.formatError` 测试是共享表在 codec 侧的唯一覆盖，删之前须确认新测试覆盖同样判据」。复审核实**只对一半**：它们是「codec 这个方法」的唯一调用测试，但共享表本身已由 `error-shaping.unit.test.ts`（逐 kind 全 taxonomy）、`post-commit-error.unit.test.ts`（对照共享表）和三协议真实 wire 测试覆盖；反过来它们自己也不完整（只测 Anthropic 4 种 + CC 3 种，Gemini 与 Responses 根本没测）。已改正，并写明真正要保留的是共享 mapper 全 taxonomy 单测 + production wire oracle。
+
+**LOW（post-commit 的 untagged 仍冒充 reaper）**——`classifyPostCommitAbort` 收的是 `reaperAborted: boolean`，于是任何触发的 lifecycle signal + 未打标错误都答 `reaper-cancel`，正是 `guardSseIterable` 已经放弃的那套理论。改成收 **signal**，顺带解锁一条新臂：真实 transport（h2/undici）会合成自己的 AbortError 而不透传 `signal.reason`，从 signal 上读 tag 能救回被错误对象丢掉的成因——布尔值早就把唯一能回答的东西扔了。全无 tag → `unknown-abort`。类型系统逼出了全部 9 处测试站点。
+
+**新增 mutation（2 组，先红后绿）**：摘掉 dispatch-lifecycle 里那唯一的记录点 → 计数测试变红；`postCommitAbortFrame` 改回硬编码（上一轮）仍红。
+
+**门禁**：typecheck 绿、改动文件 eslint 干净（`handler-v4.ts` 余 4 条经 `eslint --stdin` 对 HEAD 版核实为既有）、`test:backend` **6616 pass / 0 fail**。
