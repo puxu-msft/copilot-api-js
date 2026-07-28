@@ -54,10 +54,7 @@ function streamResponse(marker: string): PhysicalTransportResponse {
   return { kind: "stream", upstream, lifecycle: owner }
 }
 
-function makeEnv(
-  body: unknown,
-  onRecordAttemptFailure: (input: { willRetry: boolean; nextStrategy?: string }) => void = () => {},
-): RequestEnvelope {
+function makeEnv(body: unknown, onRecordAttemptFailure: (input: { willRetry: boolean; nextStrategy?: string }) => void = () => {}): RequestEnvelope {
   const ctx = {
     operationSignal: new AbortController().signal,
     beginAttempt() {},
