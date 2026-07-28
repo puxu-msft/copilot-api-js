@@ -335,3 +335,139 @@ boundary 那条用 `runBoundaryGap(production: boolean)` 同 harness 双跑，�
 MEDIUM-1（terminal-drain 无外层 suspend）建议在同一批里一起修——它是本次改动引入的不变量弱化，且修法只是一行 `sink.close?.()`；若主会话决定分开，请务必在 P5 开工前闭合，因为 A 方案的 gap anchor 正好依赖 tick 在 flush 期间不乱注入。MEDIUM-2/3/4 与全部 LOW 可作为随后一个 doc/test 补丁提交，不阻塞合并。
 
 **绝对断言自查**：本报告里「未发现」「覆盖了」「恒为 false」「没有 scope creep」四类断言，均已按 `verifying-authoritative-claims` 复核 —— 分别对应「五入口全调用点 grep + 逐点读」「8 + 2 个 closeAnchorIfOpen 调用点逐个读上下文」「读 frame-origin.ts 实现 + 该模块文档明写 anchor 不走帧 tag」「grep allocator 标识符零命中 + diff --stat 逐文件过」。未复核到的部分我已在正文显式标注（MEDIUM-1 的失败场景标为「推理，未实证」；plan-0 的 481/474 基线数字未逐一复跑）。
+
+---
+
+# 最终确认（第二轮，2026-07-28）
+
+复审对象：`063f45f9..HEAD` 新增 4 commit —— `238ed08c` / `71e6e1c9` / `16a3a933` / `d8f7546d`。仍是独立实测，不采信 implementer 与主会话的转述。
+
+## 结论
+
+**上轮全部 11 项发现（BLOCKER 1 · HIGH 1 · MEDIUM 4 · LOW 5）已全部闭合并经我独立验证。**
+
+**本轮新增：MEDIUM 1（`byte-equivalence.sh` 每次成功运行泄漏一个测试服务器进程，且当前机器上已有 2 个存活残留）· LOW 1（一条与本分支无关的既有分片污染 flake）。**
+
+**可否合并入 master：可以合并。** 新增的 MEDIUM 只影响 `exp/` 脚本卫生，不触及任何生产代码、也不影响新基线的正确性（我已逐字节复现），不构成合并阻塞；但建议同批或紧接着修掉，并清理机器上那 2 个残留进程。
+
+## 逐项验证
+
+### 1 · BLOCKER 闭合 —— 确认，且污染正控真能咬
+
+两条锁的就绪门都已改为只认自己的 15,000ms timer：
+
+```ts
+for (let i = 0; i < 500 && !clock.liveTimerDelaysMs.includes(15_000); i++) await Promise.resolve()
+expect(clock.liveTimerDelaysMs.filter((delay) => delay === 15_000)).toHaveLength(1)
+```
+
+- `heartbeat-survives-boundary-commit.it.test.ts:216-218` ✅
+- `heartbeat-survives-item-commit.it.test.ts`（同型潜伏）**也已修**，且顺带把整个用例重构成 `runItemGap(makeSink)` 参数化双跑，补上了我上轮点名缺失的 raw-sink 正控 ✅（LOW-3 一并闭合）
+
+**污染正控自验（按要求，不只信声称）**：两个文件都新增了 `setTimeout(() => undefined, 1_000) // shard-neighbor control`。我把两处就绪门**改回旧的 `liveTimerCount` 形态**后连跑 8 次：
+
+```
+old-gate: pass=0 fail=8
+(fail) Responses HTTP … an idle still emits keepalives
+(fail) Responses HTTP … positive control: raw sink
+(fail) heartbeat after a real buffered boundary commit … production delivery sink
+(fail) heartbeat after a real buffered boundary commit … positive control: raw sink
+```
+
+**8/8 稳定转红**，且 4 条 gap 用例全中——这个正控比原缺陷场景更强（它连 raw-sink 正控也一起保护住了）。还原后单跑 6/6 绿。
+
+**标准档位连跑 5 次**（`bun scripts/parallel-test.ts unit it http`）：
+
+```
+run1: 6495 tests · 6495 pass · 0 fail
+run2: 6495 tests · 6495 pass · 0 fail
+run3: 6495 tests · 6495 pass · 0 fail
+run4: 6495 tests · 6494 pass · 1 fail   ← 与本分支无关，见 LOW-新1
+run5: 6495 tests · 6495 pass · 0 fail
+```
+
+**两条 P6 回归锁在 5 次运行里 0 次复发**（上轮是 4/4 复发）。BLOCKER 闭合成立。
+
+### 2 · HIGH 闭合 —— 三层归属门逐层实测，能拦住我当初发现的那种静默命中 peer
+
+- **门① 端口占用拒绝**：那个 peer 进程**至今仍在**（`pid=2509431`，`bun run --cwd .../.worktrees/keepalive-300s exp/tool-keepalive-safety/mock.ts`，仍占 42061）——这是最理想的活体正控。`PORT=42061 ./byte-equivalence.sh` → **rc=3**，打印 `refusing occupied test port 42061; current owner:` 并列出占用者，**没有生成任何 capture 文件**。这正是上轮那次静默污染的入口，现在被硬拦。默认路径改为内核选空闲高位端口（`socket.bind(("127.0.0.1", 0))`）。
+- **门② 启动日志 + 监听 PID 归属**：readiness 循环同时校验 `grep -qE 'Failed to start server|port already in use'`（上轮那次 `server.log` 里正是这行，却被旧脚本忽略）与 `assert_listener_owned`（`ss -ltnp` 取唯一监听 PID，再沿 `/proc/<pid>/stat` 第 4 字段向上走 ppid 链，确认是本次 spawn PID 或其后代）。实跑成功路径输出 `port=45091 listener_pid=3299504 spawn_pid=3299496` —— 祖先链判定确实生效（监听者是 spawn 进程的子进程）。
+- **门③ hook 独有标记**：`grep -Fq msg_allocator_baseline` + `grep -Fq 'allocator baseline'`，不中则 rc=7。**自验该门可达且真咬**：把 `HOOK_MARKER` 换成不可能出现的串重跑 → `rc=7` + `captured wire did not come from deterministic-hook.ts`。
+
+**新权威基线独立复现**：`CAPTURE_OVERRIDE=/tmp/p6-newbase.sse ./byte-equivalence.sh` →
+
+```
+1c6163c62f568fd5e1a46605c23716d1017b47232021b371f3cb145b2a4277f9  764 bytes
+diff /tmp/p6-newbase.sse exp/.../pre-change-wire.sse → IDENTICAL
+```
+
+与声称值、与仓库内 fixture **三方一致**。且 fixture 内容现在**确实是 `deterministic-hook.ts` 的产物**（`id:"msg_allocator_baseline"` / `model:"claude-opus-5"` / `text:"allocator baseline"` / `input_tokens:5` / `output_tokens:3`），与上轮那份 peer mock 的 `msg_1` / `claude-opus-4-8` / `"ok"` 彻底不同 —— 死代码 `deterministic-hook.ts` 现在真的被执行了。
+
+provenance 叙述也处理得当：README 与 plan-0 都**保留**了「首版 `24eda6b8…/734` 经合并态 review 证实来自固定端口上的 peer mock，已作废」的记录，而不是悄悄换个数字。这符合项目的 `dont-lose-history` / 证伪留痕。
+
+### 3 · MEDIUM（terminal-drain C1）闭合 —— 修法正确，未引入反向问题
+
+`driver.ts:1391` 在 terminal-drain flush **之前**加 `sink.close?.()`，注释说明「true response terminus / 无后续流需要 resume / 阻断在飞心跳操作的 finally 重排」。我独立核实了三点：
+
+- **没有后续流被误杀**：`if (drained && (sawMessageStop || sawUpstreamError))` 这个块的两条出口都是 `return`（`complete` 或 `stream-error`），continuation-retry 分支在其**之后**的失败路径里（`continuationCount++` 在 :1471，`continue` 在 :1499），**不可能**在 terminal-drain flush 之后再来一条腿。且 `runResponseBufferedSink` 的 `finally { sink.close?.() }` 本来就会在 return 后立刻关闭——这次只是把关闭点从"flush 之后"提前到"flush 之前"，能被影响的窗口只有这次 flush 本身。
+- **不与 retreat / boundary 两腿混淆**：那两处 `isTerminalFlush:true` 但其后仍有流，注释已明确改成「NOT a terminal close」，仍走 suspend/resume。区分正确。
+- **反向问题（close 之后 `write`/`writeAnchor` 仍须可用）未被引入**：终局 flush 内部会调 `closeAnchorBeforeReal()` → `writeAnchor(anchor.stopFrame)`，若 close 顺带禁写就会静默丢掉 `content_block_stop@0`。我上轮已用 mutation 证明 4 条既有 http 测试锁住这条；本轮 `delivery-session.unit.test.ts:166-188` 又补了直接单测（`suspend → close → writeAnchor → resume → 推进 4×20s`，断言 `writes` **恰好等于** `[{method:"anchor", …}]`）——一条断言同时钉住"写得进去"与"心跳没复活"，是很紧的 oracle。LOW-2 一并闭合。
+- 配套红先测试 `terminal drain permanently closes heartbeat before a slow flush starts`：用装饰器卡住首个 flush write，断言 `closeCalls()===1`、15,000ms timer 已消失、推进 30s 无 ping、释放后 `complete`。设计合理。
+
+### 4 · 其余 MEDIUM / LOW 闭合确认
+
+| 上轮发现 | 闭合验证 |
+|---|---|
+| MEDIUM `wireShape` 的 `isAnchorFrame` 恒 false | 死分支已删，改为调用方注入 `isAnchorFrame(frame, ordinal)`；新增正样本得到 `["anchor_start@0","delta@0","anchor_stop@0","real_start@1","real_stop@1"]` —— anchor 分支**首次可达**。README 同步改成「裸 `ClientFrame` 不携带 anchor provenance，调用方必须传入判定」✅ |
+| MEDIUM `ClientSink` SSOT TSDoc 未写死 | `types.ts` 的 `freezeHeartbeat` 改写为 RECOVERABLE + 「freeze 单独不 fence 已排队的 tick，故可恢复 flush 必须先 `suspendHeartbeat()`」+ 「真终局用 `close`」；`close` 改写为 PERMANENT + **「`write` 与 `writeAnchor` 之后仍必须可用，因为终局 close-off 先关心跳再写最后一帧」**并点名两个消费者。四条语义都写进 SSOT ✅ |
+| MEDIUM DESIGN.md 原句被切断 | 原句 `…写进 makeSseSink/makeWsSink，返回格式无关 ResponseOutcome（…）。` 已完整恢复，心跳段移到其后独立成段 ✅ |
+| LOW driver.ts:1267/1292 陈旧注释 | 「terminal path's permanent freeze」→「a terminal close」，指向真正提供永久性的入口 ✅ |
+| LOW Responses 锁缺 raw 正控 | 已参数化双跑补上 ✅ |
+| LOW 生产接线未锁 | 新增 `tests/responses/candidate-response-session.unit.test.ts`：HTTP 下 `output_item.done` 为 boundary、`output_text.delta` **不是**、WS 下 `commitBoundaries` 为 `undefined` —— 三态齐全，正是我点名的那条接线 ✅ |
+| LOW plan-0 命令与记录值不同源 | 代码块改为 `rg -l "anchor" tests/ -g '*.test.ts'`，与记录的 51 同源 ✅ |
+| LOW e2e 冗余断言 | 已删 ✅ |
+
+### 5 · mutation 复核（最终状态）
+
+把 `session.ts:205` 改回 `freezeHeartbeat: closeHeartbeat`：
+
+```
+16 pass / 3 fail
+(fail) Responses HTTP … after the first response.output_item.done commit, an idle still emits keepalives
+(fail) heartbeat after a real buffered boundary commit … production delivery sink
+(fail) P3-T1 downstream delivery session > freezeHeartbeat is recoverable
+```
+
+两条 raw-sink 正控（pipeline 与 Responses）**均保持绿**，`close remains permanent` / `close … keeps the write port usable` / `terminal drain permanently closes heartbeat` 也保持绿 —— 正负样本仍然分得开。还原后 **19 pass / 0 fail**，与声称一致。
+
+### 门禁
+
+- `bun run typecheck` → 0 error。
+- `bunx eslint --no-cache <本分支全部改动 .ts>` → 0 error。
+- 工作树在我全部 mutation 之后已还原并 `git status --porcelain` 校验干净（仅本报告文件为 untracked）。
+
+## 本轮新增发现
+
+```text
+事实性发现：
+
+[MEDIUM] exp/inter-block-anchor-allocator/byte-equivalence.sh:88-101 — cleanup 只 kill 了 `bun run` 包装进程，真正监听的子进程被孤立，每次成功运行泄漏一个测试服务器 —
+证据：我成功跑完一次后（rc=0、已打印 capture），`ss -ltnp` 显示 pid=3299504（spawn pid 3299496 的子进程）仍在 45091 上监听；`ps` 确认它在脚本退出数分钟后依然存活。更直接的证据是**机器上现存两个 implementer 自己 O-6 验证时留下的残留**：`pid=3259960`（port 54859，`XDG_DATA_HOME=/tmp/p6-o6-owned`）与 `pid=3261081`（port 43943，`XDG_DATA_HOME=/tmp/p6-o6-owned-final`），启动于 00:25 至今未退。这些残留各自持有一份从 `~/.local/share/copilot-api/github_token` 复制来的真实 token，且正是"下一个跑固定端口脚本的人会静默打中的 peer"这一类问题的来源——与本次 HIGH 的根因同源。
+讽刺之处：脚本在 `is_owned_process` 里已经实现了完整的 ppid 祖先链遍历（用来*识别*后代监听者），却在 `cleanup` 里只 kill 了父进程——同一份知识在一处用了、另一处忘了。
+修复建议：`cleanup` 里改为按进程树精确终止——先用 `assert_listener_owned` 已有的 `ss` 查出监听 PID，连同 spawn PID 一起 kill（保持"按 PID 精确 kill、绝不 pkill/killall"的纪律）；或给 `bun run` 加 `exec` 语义 / 直接 spawn `packages/cli/src/main.ts` 避免中间包装进程。另请**清理机器上现存的 3259960 与 3261081**（我只清理了自己启动的 3299504 / 3301237，未越权动别人的进程；4141 主服务器 pid=2557431 全程未触碰，已复查仍在监听）。
+
+[LOW] tests/restart/states-flush-freeze.it.test.ts — 与本分支无关的既有分片污染 flake —
+证据：标准档位 5 次运行里 1 次出现 `(fail) gracefulShutdown 普通信号(SIGINT)不 freeze、仅 handoff(SIGUSR2) freeze`；该文件单跑 6/6 绿；`git diff --name-only 5c84a1e0..HEAD` 不含任何 shutdown 相关文件。属于与上轮 BLOCKER 同一类（`parallel-test.ts` 分片内共享 module 状态）但**不同文件**的既有问题。
+修复建议：不阻塞本次合并；建议单独立项，并把本次修好的"就绪门只认自己的 timer / 显式注册邻居污染正控"这套手法作为模板复用。
+```
+
+## 可否合并入 master
+
+**可以合并。**
+
+- 上轮 **BLOCKER 1 · HIGH 1 · MEDIUM 4 · LOW 5 全部闭合**，每一项我都独立复验（含把修复反向 mutation 回去确认正控转红）。
+- 本轮**遗留 blocker：0**。
+- 本轮新增 **MEDIUM 1 · LOW 1**，均**不阻塞合并**：前者只影响 `exp/` 脚本的进程卫生（不改变新基线正确性，我已逐字节复现），后者与本分支无关。
+- 建议合并后立即做两件事：① 修 `byte-equivalence.sh` 的进程树清理；② 清掉机器上残留的 `3259960` / `3261081` 两个测试服务器。
+
+**绝对断言自查**：本节的「全部闭合」「不可能在 terminal-drain 之后再来一条腿」「两条锁 0 次复发」「与本分支无关」四类断言，分别对应——逐项列表对照 diff 与实跑、读 :1378-1499 全部出口并核 continuation 分支位置、5 次标准档位运行日志逐条 grep、`git diff --name-only` 全量核对 + 该文件单跑 6/6。未复核项：`16a3a933` 的红先测试我确认了其断言设计但未反向 mutation 验证它会红（其保护的行为已被 `delivery-session.unit.test.ts` 与 4 条既有 http 测试从另外两个角度锁住，故未追加）。
