@@ -115,8 +115,14 @@ AnthropicError: stream ended without producing a Message with role=assistant
 - 真 SDK oracle：[anthropic-sdk.it.test.ts](../tests/e2e-client/anthropic-sdk.it.test.ts) —— 含「refusal 无 `message_stop` 时 SDK 仍能 finalize」。
 - 计数口径：[stats-verdict-buckets.unit.test.ts](../tests/history/stats-verdict-buckets.unit.test.ts)。
 
+## 诊断消费面
+
+- TUI 失败完成行显示 `refusal:<category>`，命名类别逐字保留，显式 `null` / 缺失 / 畸形统一显示 `refusal:uncategorized`；完整 explanation 只留详情面，不污染单行。
+- History UI 的 Meta 段显示 category，Response 段显示完整 explanation + raw `stopDetails`。
+- 遥测 registry 提供 **capped** `refusal_category` 维度；非 refusal 不计入该维度，refusal 未命名类别归 `uncategorized`。
+- 三个 refusal feature 带 `{category}` detail；跨协议 Anthropic→CC / Responses 在 category 无法进入客户端 wire 时额外记录 `translated-refusal-category-dropped`（detail `{category,target}`）。History 的 raw upstream `stopDetails` 保持不变，包括 reverse `@messages` 的流式与非流式路径。
+
 ## 已知缺口
 
 - web_search 双跳旁路走 legacy direct、不经 driver/S5，三模式对该路径无效（与既有 web_search bypass 暂缓清单一致）。
-- 消费面尚未接线：TUI 完成行、History UI、遥测 `refusal_category` 维度、跨协议翻译的 category 降级留痕——诊断目前仍需查 History 的 raw 帧。进度见 [docs/plan/2026-07-28-refusal-suppression-remaining-tasks.md](plan/2026-07-28-refusal-suppression-remaining-tasks.md)。
-- **代理侧 fallback 重试**（换模型重发）未做，记在 backlog；上游 explanation 的样板句自己建议的正是这条，CC 也内建了它。
+- **代理侧 fallback 重试**（换模型重发）未做，记在 backlog；上游 explanation 的样板句自己建议的正是这条，CC 也内建了它。进度见 [docs/plan/2026-07-28-refusal-suppression-remaining-tasks.md](plan/2026-07-28-refusal-suppression-remaining-tasks.md)。

@@ -49,15 +49,17 @@ accumulator 已收（#1 完成），剩 spec §5 表的 #2–#11：streaming bui
 
 **落地方式**：字段以 raw `unknown` 形态从 `buildAnthropicResponseData` 与 `handler-v4` 非流式 inline builder 进入 `ResponseData.stopDetails`；`PartialResponseInfo`、`fail()` 的 `upstreamSucceeded` / 普通两支及 `abort()` 重建点逐支复制；`legFromUpstreamResponse` 与 canonical `responseMetadata` 显式枚举；V3 `recordToHistoryEntry` 白名单输出；`HistoryUpstreamResponseData` 与公开 `UpstreamResponseData` 锁步增加同名字段。`tests/history/refusal-stop-details-projection.it.test.ts` 通过真实 canonical terminal → V3 SQLite → readback → projection 覆盖 complete / proxy-introduced fail / 普通 fail / abort，`tests/anthropic/response-rewrite-golden.http.test.ts` 覆盖 streaming 与非流式 handler；三个 expected 均手写自一手样本，另在 builder 测试放入未来字段 `recommended_model` 证明未压扁。mutation control 临时删除 V3 输出白名单后 4/4 settle 测试按预期变红，恢复后 4/4 转绿。
 
-### T4 —— 消费面（诊断真正对人可见）
+### T4 —— 消费面（诊断真正对人可见）——后端部分已完成
 
 否则 D2 的目标不闭环——用户仍要去 raw SSE 挖 category。
 
-- TUI 完成行结构化 token（`refusal:cyber` / `refusal:uncategorized`）——注意失败行当前**刻意**不显示 stop reason，需专门加。
-- History 详情（`entry-view` 派生 + `ui-v4` Meta/Response 段）展示 category + explanation，保留 raw JSON 视图。**前端部分已落地**：`resolveRefusalDetail()` 复用 `extractRefusalDetail()` / `isNamedCategory()`，把命名类别、上游显式 `null`（`uncategorized`）与字段缺失（`unknown`）保留为三种 provenance；Meta 段只给 category 快速扫描，Response 段在 upstream leg 前放独立 `Refusal diagnostic (upstream)` 块，逐字展示完整 explanation，并用 `RawJsonView` 保留含未来字段的原始 `stopDetails`。不把诊断继续压进 `failureReason`。
-- 遥测 `refusal_category` 维度（**capped** 非 bounded——上游是开放字符串，已观测 `cyber`/`bio`/`null`）。
-- `recordFeature` detail `{category}`（**不**把 category 拼进 `FeatureKind` 枚举，否则每个新类别都要发版）。
-- 跨协议翻译降级留痕：Anthropic→CC 映射成 `content_filter`、→Responses 映射成 `incomplete_details.reason`，两者都丢 category；History/遥测须保真并打可辨识降级标记。
+- ✅ 后端：TUI 失败完成行从最终 upstream leg 的 `stopReason` + raw `stopDetails` 派生结构化 token（`refusal:cyber` / `refusal:uncategorized`），不恢复被刻意隐藏的普通 stop reason，也不把完整 explanation 塞进单行。
+- ✅ 前端并行任务：`resolveRefusalDetail()` 复用 `extractRefusalDetail()` / `isNamedCategory()`，把命名类别、上游显式 `null`（`uncategorized`）与字段缺失（`unknown`）保留为三种 provenance；Meta 段只给 category 快速扫描，Response 段在 upstream leg 前放独立 `Refusal diagnostic (upstream)` 块，逐字展示完整 explanation，并用 `RawJsonView` 保留含未来字段的原始 `stopDetails`。不把诊断继续压进 `failureReason`。
+- ✅ 后端：遥测新增 `refusal_category` 维度；非 refusal 返回 `null`，refusal 的命名类别逐字保留，其余归 `uncategorized`；registry 明确标成 **capped**，允许上游未来新增开放字符串。
+- ✅ 后端：`refusal-recovered` / `refusal-errored` / `refusal-passthrough` 三个既有 feature 均携带 `{category}` detail，不把 category 拼进 `FeatureKind`。共享 `refusalCategoryForDiagnostics()` 复用 `extractRefusalDetail()` / `isNamedCategory()`，避免各消费面重写判据。
+- ✅ 后端：实码查证 Anthropic→CC 非流式和流式都把 `refusal` 映射为 `finish_reason:"content_filter"`；Anthropic→Responses 两条路径都映射为 `status:"incomplete"` + `incomplete_details.reason:"refusal"`。四条翻译路径均新增 out-of-band `translated-refusal-category-dropped` feature marker（detail `{category,target}`），客户端 wire 仍保持目标协议合法形状。查证时另发现三个 reverse `@messages` 非流式 route builder 未把 raw `stop_details` 写入 History；已在 Chat Completions / Responses / Gemini 三处同步补齐，防止翻译 marker 可见而后端原始事实反而丢失。
+
+后端 mutation control：TUI token、feature detail、`refusal_category` extractor、四条翻译 marker（CC/Responses × 流式/非流式）、reverse CC 非流式 History 保真均临时摘掉对应接线并按预期变红；恢复后逐项转绿。最终全量验证见本节后续提交记录。
 
 ### T5 —— 收尾
 
