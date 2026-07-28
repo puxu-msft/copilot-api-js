@@ -577,10 +577,21 @@ async function runMessagesDriver(c: Context, args: RunMessagesDriverArgs): Promi
   // HTTP status (the client retains native retry/backoff/token-refresh). Only when the window elapses
   // with the upstream still silent (opus pre-response thinking) do we COMMIT a 200 + connection-level
   // keepalive; later errors then degrade to a rich SSE error frame. 0 = commit immediately.
-  if (state.streamCommitAfterSec > 0) {
+  //
+  // The window is a DEADLINE measured from request ingress, not a timer started here. Nothing is
+  // written to the client before the commit, so this window and the client's own pre-header limit
+  // (~300s, undici's default headersTimeout — exp/silence-recovery-gates/FINDINGS.md) run on the same
+  // clock — but the client's starts at ITS dispatch, while this handler is only reached after the
+  // config/token middleware (`server.ts`), whose `ensureValidCopilotToken()` can spend real seconds
+  // on retries with backoff. Timing the window from here would silently spend that time twice and
+  // eat the margin the ceiling is supposed to guarantee.
+  const ingressAtMs = c.get("ingressAtMs") as number | undefined
+  const preHandlerElapsedMs = ingressAtMs === undefined ? 0 : Math.max(0, Date.now() - ingressAtMs)
+  const remainingWindowMs = Math.max(0, state.streamCommitAfterSec * 1000 - preHandlerElapsedMs)
+  if (state.streamCommitAfterSec > 0 && remainingWindowMs > 0) {
     let windowTimer: ReturnType<typeof setTimeout> | undefined
     const windowFired = new Promise<"window">((res) => {
-      windowTimer = setTimeout(() => res("window"), state.streamCommitAfterSec * 1000)
+      windowTimer = setTimeout(() => res("window"), remainingWindowMs)
       ;(windowTimer as unknown as { unref?: () => void }).unref?.()
     })
     // p.then consumes p's rejection so a window-win can't unhandledRejection (the commit body's
