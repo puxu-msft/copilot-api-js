@@ -24,6 +24,7 @@ import ts from "typescript"
 import {
   //
   allModuleSpecifiers,
+  opaqueModuleReferences,
   parseSource,
 } from "./source-ast"
 
@@ -214,9 +215,18 @@ async function stateUnitClosureViolations(): Promise<Array<string>> {
     seen.add(file)
 
     const sourceFile = parseSource(file, await readFile(file, "utf8"))
+    const relativeTo = path.relative(repoRoot, file)
+
+    // An opaque target is not "no edge", it is an UNKNOWABLE edge, and this guard's claim is
+    // absolute — `import(`${target}`)` type-checks and would otherwise leave every state guard green
+    // while state pulled in an arbitrary package at runtime. `allModuleSpecifiers` reports nothing
+    // for these on purpose (see there); refusing them is this guard's job, not its collector's.
+    for (const opaque of opaqueModuleReferences(sourceFile)) {
+      violations.push(`${relativeTo} → ${opaque} (module target is not statically determinable)`)
+    }
+
     for (const specifier of new Set(allModuleSpecifiers(sourceFile))) {
       if (specifier.startsWith("node:")) continue
-      const relativeTo = path.relative(repoRoot, file)
       if (!specifier.startsWith(".")) {
         violations.push(`${relativeTo} → ${specifier} (not a node: builtin)`)
         continue

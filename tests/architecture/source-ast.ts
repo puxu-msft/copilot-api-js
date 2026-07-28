@@ -174,6 +174,36 @@ export function importedModuleSpecifiers(sourceFile: ts.SourceFile): Array<strin
 }
 
 /**
+ * Dynamic `import()` / `require()` calls whose module target CANNOT be determined statically —
+ * `import(`${target}`)`, `import(path)`, `require(candidate)` — reported as their source text.
+ *
+ * This is the companion to `allModuleSpecifiers`, and the pair only makes sense together. That
+ * function deliberately reports nothing for an opaque target, because inventing a specifier would be
+ * a lie; but a guard that consumes only the specifier list then reads "no edge" where the honest
+ * answer is "unknowable", and a claim like "this module imports only `node:` builtins" quietly
+ * becomes "…plus whatever that expression resolves to at runtime".
+ *
+ * A guard asserting an ABSOLUTE property has to treat these as violations. A guard freezing a
+ * specific edge set can instead register the known ones, so a NEW opaque call still surfaces.
+ */
+export function opaqueModuleReferences(sourceFile: ts.SourceFile): Array<string> {
+  const opaque: Array<string> = []
+  const visit = (node: ts.Node): void => {
+    if (ts.isCallExpression(node)) {
+      const isDynamicImport = node.expression.kind === ts.SyntaxKind.ImportKeyword
+      const isRequire = ts.isIdentifier(node.expression) && node.expression.text === "require"
+      const [firstArgument] = node.arguments
+      if ((isDynamicImport || isRequire) && (firstArgument === undefined || !ts.isStringLiteralLike(firstArgument))) {
+        opaque.push(node.getText(sourceFile).replace(/\s+/g, " "))
+      }
+    }
+    ts.forEachChild(node, visit)
+  }
+  visit(sourceFile)
+  return opaque
+}
+
+/**
  * EVERY module specifier a file references — value AND type-only, in any import/export form.
  *
  * This is the right question for a PACKAGE BOUNDARY (unlike the runtime-only variant used for

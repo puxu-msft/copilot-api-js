@@ -30,6 +30,7 @@ import {
   //
   allModuleSpecifiers,
   mayContainDecoded,
+  opaqueModuleReferences,
   parseSource,
 } from "./source-ast"
 
@@ -45,6 +46,20 @@ const KNOWN_CORE_TO_SERVER: Array<{ file: string; specifier: string }> = [
   { file: "src/lib/pipeline/router.ts", specifier: "~/routes/responses/fallback" },
 ]
 
+/**
+ * Calls under `src/lib/**` whose module target is not statically determinable. Frozen for the same
+ * reason as the edge list, and it is the other half of the same claim: an opaque target could BE a
+ * `~/routes` import, so a ratchet that only counted static specifiers would report "no new edge"
+ * about code it never actually read. Both of these resolve to paths chosen at runtime and neither
+ * can reach the routes layer — the native search binary and a user-configured hook module.
+ *
+ * Adding a row is a deliberate act: say why the target cannot be a routes module.
+ */
+const KNOWN_OPAQUE_TARGETS: Array<{ file: string; call: string }> = [
+  { file: "src/lib/history/search-native.ts", call: "require(candidate)" },
+  { file: "src/lib/pipeline/hooks/loader.ts", call: "import(join(process.cwd(), compiledPath))" },
+]
+
 async function coreFilesImportingServer(): Promise<Array<{ file: string; specifier: string }>> {
   const found: Array<{ file: string; specifier: string }> = []
   for await (const rel of new Glob("**/*.ts").scan({ cwd: path.join(REPO_ROOT, "src/lib"), onlyFiles: true })) {
@@ -57,6 +72,19 @@ async function coreFilesImportingServer(): Promise<Array<{ file: string; specifi
     }
   }
   return found.sort((a, b) => (a.file + a.specifier).localeCompare(b.file + b.specifier))
+}
+
+async function coreOpaqueTargets(): Promise<Array<{ file: string; call: string }>> {
+  const found: Array<{ file: string; call: string }> = []
+  for await (const rel of new Glob("**/*.ts").scan({ cwd: path.join(REPO_ROOT, "src/lib"), onlyFiles: true })) {
+    const file = `src/lib/${rel}`
+    const text = readFileSync(path.join(REPO_ROOT, file), "utf8")
+    // No pre-filter shortcut here: `import(` / `require(` must be spelled to be called, but the
+    // callee can itself be escaped, and this list is short enough that correctness wins.
+    if (!mayContainDecoded(text, "import(") && !mayContainDecoded(text, "require(")) continue
+    for (const call of opaqueModuleReferences(parseSource(file, text))) found.push({ file, call })
+  }
+  return found.sort((a, b) => (a.file + a.call).localeCompare(b.file + b.call))
 }
 
 describe("core → server 边 ratchet", () => {
@@ -77,6 +105,25 @@ describe("core → server 边 ratchet", () => {
   test("模板字面量形态的动态 import 同样算一条边（它曾经能从这个 ratchet 底下走过去）", () => {
     const planted = parseSource("synthetic.ts", "const m = await import(`~/routes/responses/fallback`)\n")
     expect(allModuleSpecifiers(planted).filter((specifier) => specifier.startsWith("~/routes"))).toEqual(["~/routes/responses/fallback"])
+  })
+
+  test("src/lib 里静态不可判定的动态目标与登记表逐条相等", async () => {
+    const expected = [...KNOWN_OPAQUE_TARGETS].sort((a, b) => (a.file + a.call).localeCompare(b.file + b.call))
+    expect(
+      await coreOpaqueTargets(),
+      "多出来的项 = 有一处 import()/require() 的目标是运行时算出来的，静态判据读不到它，\n" +
+        "所以「没有新增 ~/routes 边」这句话对那个文件并不成立。确认它不可能指向 routes 层后登记，\n" +
+        "或者把目标改成静态 specifier。",
+    ).toEqual(expected)
+  })
+
+  test("守卫有效性：合成的不可判定目标会被抓到", () => {
+    // 报的是 CallExpression 本身，不含外层 `await`——登记表里的项也按这个形状写。
+    expect(opaqueModuleReferences(parseSource("synthetic.ts", "const p = 'x'\nconst m = await import(`~/${p}`)\n"))).toEqual(["import(`~/${p}`)"])
+    expect(opaqueModuleReferences(parseSource("synthetic.ts", "const m = require(someVar)\n"))).toEqual(["require(someVar)"])
+    // 反向：静态 specifier 不算不可判定，否则登记表会被真实边淹没。
+    expect(opaqueModuleReferences(parseSource("synthetic.ts", 'const m = await import("~/routes/x")\n'))).toEqual([])
+    expect(opaqueModuleReferences(parseSource("synthetic.ts", "const m = await import(`~/routes/x`)\n"))).toEqual([])
   })
 
   test("预过滤对转义拼法也放行（原始文本里没有 `~/routes`，AST 解出来却有）", () => {
