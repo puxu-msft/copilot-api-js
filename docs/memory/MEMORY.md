@@ -55,6 +55,7 @@
 - [config.schema.json 只由 .describe() 生成非 TSDoc](reference-config-schema-json-from-describe-not-tsdoc.md) — 改字段 TSDoc 是 no-op；regenerate 前 git diff 防裹进别会话 stale drift
 - [gpt-tokenizer 对重复字符病态慢](reference-gpt-tokenizer-pathological-on-repeated-chars.md) — 60KB repeat=15s vs 真实词句 40ms；测试造大 payload 别用单字符 repeat
 - [bun test 慢的三层根因与逐层解](reference-bun-test-parallel-breaks-single-process-superlinear-degradation.md) — 单进程超线性退化→`--parallel`→LPT 分片；崩溃桶须 --isolate 重跑；pty/e2e 不并行
+- [History 端点慢先查 SQL 两缺陷](methodology-sqlite-read-path-unused-blob-and-orderby-index-mismatch.md) — 从不使用的大 BLOB 列白读(77× I/O 放大) + ORDER BY 末项不在索引→每页重建 temp B-tree；实测 73.0s→0.53s(138×)；修法必须扩索引非砍 ORDER BY 末项(否则跨页丢行)；`USE TEMP B-TREE` 是负载无关证据；分页样本外推有均值偏倚+非线性双陷阱
 - [eslint no-restricted-imports 的 group 是 OR、写不出 allowlist](tooling-eslint-no-restricted-imports-group-is-or-not-allowlist.md) — `["**","!allowed"]` 退化成匹配一切；allowlist 必须用 patterns.regex + 负向先行断言
 - [eslint --fix 的 .at() autofix 破类型](tooling-eslint-fix-at-autofix-breaks-types.md) — `.at(-1)` 返 T|undefined；--fix 后必重跑 typecheck
 - [测 elapsed 逻辑注入 clock seam 别用 setSystemTime](reference-elapsed-time-test-inject-clock-seam-not-setsystemtime.md) — bun setSystemTime 跨 await 不冻结+绝对时基减真 startedAt 出负值；`now?:()=>number` seam 默认 Date.now、测试注入；边界别恰等 cap
@@ -67,6 +68,7 @@
 - [复用共享原语选完整版非小版](methodology-full-primitive-not-partial-else-silent-field-drop.md) — 否则静默丢字段+单测假绿；映射测须构造每个非平凡字段
 - [「别继承退化」只在目标真有对应值时成立](methodology-degradation-advice-scoped-to-target-has-equivalent.md) — 目标无对应值→诚实退化+marker；实现者最易过度应用
 - [守卫追不上就换不变量的位置/判据形状](methodology-relocate-invariant-when-guard-cannot-keep-up.md) — 连续被合法语法绕过=形状错；blocklist→allowlist·把顺序契约搬进 runtime 自己；附注释写错致代码看着对、oracle 假绿两坑
+- [mutation control 自身要自证改到了代码](methodology-verify-the-mutation-actually-applied.md) — 「没变红」有两解：测试没咬住 vs mutation 根本没生效；sed 静默不匹配最危险，脚本须打替换计数
 - [spec 里的机制性解释必须有实验背书](methodology-mechanism-story-in-spec-must-be-experiment-backed.md) — 给现象配的合理机制别当事实写；行为分型须有行为差异证据，字段取值差异只够支撑诊断分型
 - [ctx 共享可变裁决会被落败 hedge candidate 污染](methodology-request-scoped-mutable-verdict-poisoned-by-hedge-candidates.md) — hedge 默认开、各 candidate 独立 rewriter；正解=请求级不可变快照 + candidate 自推导，两者非二选一
 - [「一个终态」≠「一个完整终止符」](reference-exactly-one-terminal-is-not-exactly-one-complete-terminus.md) — 合成 end_turn 不补 message_stop 真 SDK 抛 stream ended；自造终态须注册进 driver 终态判据
@@ -82,7 +84,7 @@
 - [架构图优化 Agent 上下文经济](feedback-architecture-map-optimize-agent-context-economy.md) — 价值轴=上下文经济+可信度；目录级关系图+现状小节+L1 守卫
 - [交用户前先 subagent review（含 in-chat 提案）](feedback-subagent-review-before-any-user-facing-proposal.md) — 审查门适用任何交付物含对话里直接呈现的设计
 - [用户对齐只证方向对非细节最优](feedback-user-alignment-confirms-direction-not-detail-optimality.md) — 逐节点头≠细节最优；落盘 spec 前仍过异模型对抗审
-- [后端抖动挂的 Agent 必须只 SendMessage resume](feedback-backend-flakiness-must-sendmessage-resume-no-alternatives.md) — 强制单一路径 resume 原 agent，不派替代/不换模型
+- [后端抖动挂的 Agent 必须只 SendMessage resume](feedback-backend-flakiness-must-sendmessage-resume-no-alternatives.md) — 强制单一路径 resume 原 agent，不派替代/不换模型；**也不设「挂 N 次后判定不值得」的成本逃生口**（纵向放弃是同一违规）
 - [空闲等后台 agent 主动做 dead check](feedback-proactive-liveness-dead-check-on-background-agents.md) — stat output mtime 判活；抖动/stall→resume
 - [计划红绿 mutation 预测可能错、执行期真跑验证](methodology-plan-red-green-mutation-prediction-can-be-wrong-verify.md) — plan「注释 X→变红」可能不咬；不咬别提交假绿、降 characterization
 - [git commit -- pathspec 取工作区非 index](git-commit-pathspec-commits-worktree-not-index.md) — 共享 worktree 最终提交一律 pathspec；姊妹坑=`git mv` 只列新路径漏提删除侧

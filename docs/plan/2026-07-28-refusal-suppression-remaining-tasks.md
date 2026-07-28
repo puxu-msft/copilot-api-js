@@ -69,7 +69,7 @@ accumulator 已收（#1 完成），剩 spec §5 表的 #2–#11：streaming bui
 
 本批没有实现 reverse 非流式的客户端抑制，只闭合裁决口径；完整跨协议 suppression 已同步记入 `docs/refusal-recovery.md` 已知缺口与 `docs/todo/deferred-backlog.md`。
 
-### T5 —— 收尾
+### ~~T5 —— 收尾~~ ✅ 已完成
 
 - 改写 [docs/refusal-recovery.md](../refusal-recovery.md)（现状契约仍写「thinking-only」「默认 error」，已与代码不符）。
 - skill `ghc-anthropic-upstream` 症状表那一行同步。
@@ -81,3 +81,19 @@ accumulator 已收（#1 完成），剩 spec §5 表的 #2–#11：streaming bui
 - **每条 Bash 都显式 `cd` 到 worktree**：shell cwd 被重置过一次，相对路径险些写进主树（主树有 peer 未提交改动）。
 - **绝对断言先跑基线**：判定「这批失败与我无关」必须 stash 后实测，不能凭感觉。
 - **一次就绿的不变量测试必须 mutation control**。
+
+---
+
+## 收官（2026-07-28）
+
+**已合并回 master**：`d108366b merge: contentless refusal suppression`。
+
+合并态验证：`typecheck` 干净、`unit it http` **6553 pass / 0 fail**（此前一路当成「既有失败」的 14 条 history-search，在合入 master 的 `skipIf` 改动后变为显式 skip——peer 在 CLAUDE.md 里把这条写成了纪律：**环境性的红太容易被当成既有失败挥手放过**，那次就是本轮）；`typecheck:ui-v4` + 563 vitest + `build:ui-v4` 全绿。
+
+合并冲突两处，均按**行级共存**解：
+- `docs/DESIGN.md`：取我方 refusal 行（默认 `end_turn`）+ master 的 `streamCommitAfterSec=180`。
+- `docs/todo/deferred-backlog.md`：两边新条目都保留，**用脚本验证合并结果恰好等于两边条目并集**（128 = 126 + 126 − 124 共有，零丢失）。
+
+主树 peer 有未提交的 `docs/memory/MEMORY.md`，按文档化流程处理：备份到 `/tmp` → 带可辨识 message 的选择性 stash（验证栈深 3→4）→ FF → pop（栈深回 3）→ **逐条验证两边改动都在、零冲突标记**。peer 原有的 3 个 stash 未被触碰。
+
+第四轮合并态复审的 2 条 HIGH 与 MED-1/2/3/6/7/8 均已闭合；MED-4/5 与 LOW-1..5 记档在复审报告，未做。
