@@ -39,7 +39,11 @@ description: 当调试 copilot-api-js 与 Claude Code CLI 客户端之间的连�
 > | `getCancellationCause(err)` = `stale-reaper` / `request-deadline` / `request-cancel` / `dispatch-cancel` | 逐个取消方自报家门 |
 > | 以上全无 | 一条**没人打标签**的 abort——这本身就是线索（哪条路径没接上 provenance） |
 >
-> 相应地，客户端拿到的东西也不再撒谎：pre-commit 走有序 precedence（499 client / 529 shutdown / 504 TimeoutError / 504 request-deadline / 503 其余并附真实 reason 原文），post-commit 的 `classifyPostCommitAbort(clientAborted, reaperAborted, error)` 也吃错误对象，`PostCommitAbortKind` 扩到七种、每种自己的终端 frame 文案。**下面的 History 逐字段表退为 fallback**（错误对象拿不到、或看的是修复前的旧记录时用）。
+> 相应地，客户端拿到的东西也不再撒谎：pre-commit 走有序 precedence（499 client / 529 shutdown / 504 TimeoutError / 504 request-deadline / 503 其余并附真实 reason 原文），post-commit 的 `classifyPostCommitAbort(clientAborted, reaperAborted, error)` 也吃错误对象，`PostCommitAbortKind` 扩到八种、每种自己的终端 frame 文案——**没有证据时给 `unknown-abort` 而不是默认宣称 header 超时**（看到 `unknown-abort` 本身就是线索：某条路径还没接上 provenance）。
+>
+> **post-header（流式 body）同样已接通**：`guardSseIterable` 过去对 `ctx.lifecycleSignal` 一律抛 `StreamReaperCancelError`，于是 mid-stream 的 `request_deadline` 在**所有**流式端点上都被说成 stale reaper；现在按 reason 上的 cause tag 分派到 `StreamRequestDeadlineError` / `StreamRequestCancelError` / `StreamDispatchCancelError`，`StreamErrorKind` 与四个 codec 的穷尽 Record 一并扩了（deadline 在 Anthropic/OpenAI 映射为 `timeout_error`、Gemini 为 `DEADLINE_EXCEEDED`）。Responses 上游 WS 侧则把握手/请求取消改成**保留该层 message + 把 reason 挂 `cause`**（两个 provenance 读取器都走 cause 链），first-event 看门狗直接透传 `TimeoutError`。
+>
+> **下面的 History 逐字段表退为 fallback**（错误对象拿不到、或看的是修复前的旧记录时用）。
 >
 > 促成本次修正的反例：History `req_1785234916721_3573` —— 一条 **609ms** 的请求被报成 `504 Upstream timed out before sending response headers`，而当时 `response_header` 配的是 **900s**。真凶是关机 Step 1 拆 h2 池（详见 [docs/lifecycle.md](../../../docs/lifecycle.md) Step 1 注）。**看到 duration 与所声称的超时值对不上，就别再往超时上套。**
 

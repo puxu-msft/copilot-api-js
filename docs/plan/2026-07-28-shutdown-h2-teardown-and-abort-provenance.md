@@ -180,3 +180,21 @@
 **门禁**：`bun run typecheck` 绿、改动文件 eslint 干净（`src/lib/context/request.ts` 余 2 条 `perfectionist/sort-imports` 经核实在 HEAD 即存在，未扫入本次改动）、`bun run test:backend` **6590 pass / 0 fail**。
 
 **端到端真 h2 验证**：计划里的「黑盒 41411 实例 + SIGTERM」未单独执行——方案 A（进程内真 h2c 上游 + 真 `gracefulShutdown`）已经覆盖同一因果链，且它带正样本对照（黑盒臂没有）。这不是省略验证，是用更强的那一个替掉了更弱的那一个；若将来要复现完整信号路径（真 SIGTERM handler → 真 supervisor 重启），黑盒臂仍然值得补。
+
+## 合并态复审后的第二轮修复（2026-07-28）
+
+异模型 subagent 对合并态做了带实测探针的复核，提了 3 HIGH + 2 MED，**全部采纳并修掉**——它们不是新范围，而是同一目标（「任何中止的成因随错误对象一路带到边界」）在我第一轮漏掉的路径上：
+
+| 编号 | 缺口 | 修法 |
+|---|---|---|
+| HIGH-1 | `guardSseIterable` 对 `ctx.lifecycleSignal` 一律抛 `StreamReaperCancelError`——**post-header 的 `request_deadline` 在所有流式端点上被说成 stale reaper**，pre-header 修好了 post-header 照旧撒谎 | 按 reason 的 cause tag 分派；`StreamErrorKind` 加 `request-deadline`/`request-cancel`（类型系统逼出 4 个 codec 的 5 处穷尽 Record）；deadline 在 Anthropic/OpenAI 映射 `timeout_error`、Gemini `DEADLINE_EXCEEDED`；**untagged 仍默认 reaper**（那正是裸 lifecycle abort 一直以来的含义，不静默改标） |
+| HIGH-2 | Responses 上游 WS 在握手/请求取消/first-event 超时三处重建 Error，tag、shutdown 身份、`TimeoutError` 全丢 | 握手与请求取消**保留该层 message + 把 reason 挂 `cause`**（两个读取器都走 cause 链，既留 provenance 又留「死在哪一层」的信息，既有测试的 message 断言也仍然成立）；first-event 看门狗透传 `TimeoutError`；`requestAbort` 转发各源 reason |
+| HIGH-3 | post-commit 对**无任何证据**的 abort 仍默认 `header-timeout`，而 pre-commit 已经拒绝猜——我甚至写了条测试把这个旧兜底锁成绿 | 新增 `unknown-abort` kind；删掉那条锁旧行为的断言，改成阴性断言 |
+| MED-1 | legacy `anthropic/client.ts` 仍用 `getShutdownSignal().aborted` 时间判据（与 `send.ts` 刚修好的因果判据两套语义） | 同样收紧成 `isShutdownCausedAbort` + 调用方 signal reason 兜底 |
+| MED-2 | 文档把「h2 pre-header 修好」外推成「所有路径都已携带 provenance」 | skill 补 post-header / WS 两段，说明各自的适用范围 |
+
+**正样本对照**：把 `request-deadline` 分支改回 `StreamReaperCancelError` → 新测试 `the hard deadline on the lifecycle signal is NOT reported as a reaper cancel` 变红；改回即绿。
+
+**门禁**：typecheck 绿、改动文件 eslint 干净（`openai-responses/codec.ts:61` 的 import 格式错经 `git diff` 核实为既有、不在本次改动行内）、`test:backend` **6592 pass / 0 fail**。
+
+**复审已核实成立、无需改动的 9 条**（不复议）：Phase 1 的 teardown 移位与其 mutation 有效性、h2 pre-header reason 保真、undici 路径本就保留 reason（探针 `same:true`）、pre-commit precedence 顺序、`isShutdownCausedAbort` 在 `_resetShutdownState` 后不跨测试串、`fetchSignal.reason` 兜底探针不会把 reaper 误判成 shutdown、Phase 1 无资源/生命周期泄漏、`docs/lifecycle.md` 与实现一致、测试整体非自证。
