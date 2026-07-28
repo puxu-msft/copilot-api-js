@@ -1100,3 +1100,10 @@ registry（`docs/rfc/2026-07-21-retry-strategy-registry.md`）6 commit 全 lande
 - **当前行为**：守卫遍历 `src/**/*.ts` 的对象字面量，识别 identifier / string-literal / computed 三种属性名，值侧解包 `as` / 括号 / `satisfies`，并解析指向**同文件** `const` 的 identifier 与 shorthand。四种绕过形态各有 mutation 实测变红。**已知盲区**（注释里点名、不外推）：从别的模块 import 来的值、函数返回值，以及由这两者派生的 spread / `Object.assign` / 多级别名——都需要跨表达式常量求值才能判定。
 - **理想架构 / 若做需改什么**：给 `ResponseOutcome` 的 stream-error variant 加一个**只有 `streamErrorOutcome()` 能构造**的 opaque brand/token（例如模块私有 symbol 或 unique-symbol 品牌字段），让类型系统直接拒绝其它构造点。做完之后 AST 守卫可以降级为冗余或删除。需改：`src/lib/pipeline/types.ts` 的 outcome union、driver 内 8 处产出点（已全部走 helper，故改动集中）、以及所有以结构化字面量断言该 outcome 的测试。
 - **为何暂缓**：直接静态 mint 已被守卫覆盖，剩余盲区都需要有人**刻意**绕道才会踩到；而 brand 是一次公开类型契约变更，值得单独一个改动 + 正样本对照，不该塞进 abort 归因这条因果链。**在测试里手写半个 TypeScript 常量求值器是明确不采纳的选项**（异模型复审建议，我同意：那会把守卫变成新的维护负担与新的假绿来源）。**触发条件（值得做）**：观测到 gap 计数与实际 incident 数对不上、或有人真的在别处 mint 了这个 outcome、或下次触碰 `ResponseOutcome` 的类型定义。**发现方**：第八轮异模型复审（2026-07-28），它同时指出「一个宣称覆盖面大于实际覆盖面的守卫本身就是假绿」。
+
+## `test:backend` 并发档位存在低频污染型 flaky（2026-07-28，abort 归因收尾期间六次全量的观测）
+
+- **根因 / 现状**：**未定位**。现象是 `bun run test:backend`（`scripts/parallel-test.ts`，16 分片）偶发挂 1 条，**每次挂的是不同的测试**，且**单跑必过**。这是典型的跨文件状态污染或分片间资源竞争，不是被测代码的缺陷。
+- **当前行为（六次全量的原始数据，同一棵树、同一 sha）**：run1 ✅ / run2 ✅ / run3 ❌ `tests/pipeline/hooks/loader.unit.test.ts` 的 4 条 `loadUpstreamHook` / run4 ✅ / run5 ❌ 架构测试「legacy Vue `ui/` stays detached from the main chain」/ run6 ✅。`loader.unit.test.ts` 单跑连过 **5/5**。更早在本轮中段还观测到一次 `tests/diagnostics/multiprocess-rotation.it.test.ts`（单跑 3/3 过、全量重跑绿）。**三个互不相关的文件**，指向档位机制而非某个测试。
+- **理想架构 / 若做需改什么**：先用 `test:fast:isolated`（已存在，退回非分片）对照确认「污染只在分片模式下发生」；再按 skill `debugging-test-pollution` 的 playbook 二分定位——嫌疑面是**分片间共享的进程级单例**（`loadUpstreamHook` 正是单例 + 版本号语义、`ui/` 那条读文件系统），以及 `scripts/parallel-test.ts` 的**片内共享缓存**是否让同片内的文件互相看见彼此的模块态。修好后应有一条守卫：同一分片内连跑 N 次仍绿。
+- **为何暂缓**：与本轮（abort 归因）因果链无关，且**门本身仍是可信的**——失败是真失败、退出码正确，坏的只是「一次全绿不等于确定性全绿」。定位它需要独立的二分实验，塞进本轮会让本轮的因果链变糊。**触发条件（值得做）**：频率上升到影响交付判断、或某次真回归被当成 flaky 挥手放过（**这正是最危险的失效形态**——本轮就差点把一次环境性红当成「既有失败」）。**发现方**：abort 归因收尾期间连跑六次全量的对照观测（2026-07-28）。

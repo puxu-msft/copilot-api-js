@@ -291,7 +291,15 @@ describe("stream-error outcomes are minted in exactly one place", () => {
     let helperLiterals = 0
 
     for (const file of files) {
-      const sourceFile = parseSource(file, await readFile(file, "utf8"))
+      const text = await readFile(file, "utf8")
+      // Cheap pre-filter before the ~700-file AST walk, which otherwise blows the default 5s
+      // timeout under `--parallel`'s 16 shards — and a guard that flakes is a guard that gets
+      // ignored. SOUND because every form this test resolves is same-file: even the indirect
+      // ones (`kind: STREAM_ERROR_KIND`, shorthand) require the literal to appear in this file
+      // as the const's initializer. It would stop being sound the day cross-module resolution
+      // is added — which is exactly the extension that is deferred to the backlog instead.
+      if (!text.includes("stream-error")) continue
+      const sourceFile = parseSource(file, text)
       const visit = (node: ts.Node): void => {
         if (ts.isObjectLiteralExpression(node)) {
           const mintsStreamError = node.properties.some((prop) => mintsStreamErrorKind(prop, sourceFile))
