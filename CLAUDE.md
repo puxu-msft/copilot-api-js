@@ -36,7 +36,7 @@
 - **internal-tool-security-posture。** 本项目是开发用途、内部个人使用的工具，默认所有信息**全量暴露**（运维/诊断价值 > 假想泄露风险），绝不为"信息泄露/安全"顾虑阻塞任务或做多余处理；但**不豁免真实安全缺陷**（凭据硬编码、注入、密钥写日志、真实数据丢失）。→ ADR [docs/decisions/2026-07-05-internal-tool-security-posture.md](docs/decisions/2026-07-05-internal-tool-security-posture.md)。
 - **richest-data-flow。** 数据以最丰富形式流动、决策交给末端；后端存储必须完整（永不为 DRY/YAGNI/无消费者裁剪），前端可选择性呈现；注入真实流的合成帧必打可辨识标记。→ ADR [docs/decisions/2026-07-05-richest-data-flow.md](docs/decisions/2026-07-05-richest-data-flow.md)。
 - **single-source-of-truth-types。** 类型只在产生/拥有方定义一次、消费端 re-export（后端类型在后端定义、前端经 `~backend/*` re-export）。→ [docs/DESIGN.md](docs/DESIGN.md)「类型架构」节。
-- **empirical-verification。** 裁决依据是亲手实测（可信度：实测 > 文档推断 > 单方声称；executor/reviewer/文档/记忆都可能错）：flaky/时序测试连跑 10–25 次确认确定性、主张与观测冲突时写最小探针（4141 History API、`ss` 看内核 keepalive）、fake timers + mock 随机源是根因修复非症状掩盖；否定性/通过性/自洽/doc-vs-code 结论**不自证**（先用正样本证检查触达目标、wire 正确性用独立 oracle、文档与代码不一致先确证方向）。→ skill `empirical-verification` / `verifying-authoritative-claims`、实例 [pass-null](docs/memory/feedback-pass-null-clean-not-self-validating.md)。
+- **empirical-verification。** 裁决依据是亲手实测（可信度：实测 > 文档推断 > 单方声称；executor/reviewer/文档/记忆都可能错）：flaky/时序测试连跑 10–25 次确认确定性、主张与观测冲突时写最小探针（4141 History API、`ss` 看内核 keepalive）、fake timers + mock 随机源是根因修复非症状掩盖；否定性/通过性/自洽/doc-vs-code 结论**不自证**（先用正样本证检查触达目标、wire 正确性用独立 oracle、文档与代码不一致先确证方向）。**指令类产物（skill/rules）里需要实战检验的断言必须在该 skill 内置自验表 + 记录文件**，让未来会话在正常使用中顺手证伪，绝不写成交接备注或「留给新会话」——范式见 skill `session-closeout` 的「自验」节与 `verification-log.md`、[[feedback-skill-claims-needing-field-proof-must-self-verify]]。→ skill `empirical-verification` / `verifying-authoritative-claims`、实例 [pass-null](docs/memory/feedback-pass-null-clean-not-self-validating.md)。
 
 ## 本项目的工程纪律
 

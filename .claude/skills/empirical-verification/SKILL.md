@@ -71,7 +71,7 @@ subagent 审计常以「PASS 但有 1 个 WARN」或「WARN 低优先级」收�
 
 **① 你查的是「投影」，不是事实。** 判「这些帧带没带 `synthetic` 标记」时，我扫的 History 投影**根本不含该字段**，于是"零个带标记"是投影的产物、不是事实。**先证明这条查询路径能带出你要找的东西**（换个已知一定带标记的样本跑一遍作正样本对照），再用它下否定结论。这是 `feedback-pass-null-clean-not-self-validating` 在**投影/视图**上的特例：空结果同样不自证。
 
-**② 探针测的是「此刻的代码」，而此刻的代码可能刚被别人改过。** 我实测"空 delta 能到达 wire"，据此下结论「丢失不在我方管线」——**错的**：并发会话早 6 小时的提交（`883e0533`）刚修好了真正的丢失层（`recoverToolCallText` 的 marker lookahead 吞帧）。探针量的是修复后的行为，被我读成了原始行为。**下"缺陷不在我方"这类结论前，先 `git log --oneline -20` + `git log -S<关键符号>` 看这块最近有没有被动过。** 与 `feedback-verify-deferred-task-not-already-landed-before-designing` 同源，但更狠：那条讲"功能可能已落地"，这条讲**根因结论会被 peer 的修复悄悄作废**。
+**② 探针测的是「此刻的代码」，而此刻的代码可能刚被别人改过。** 我实测"空 delta 能到达 wire"，据此下结论「丢失不在我方管线」——**错的**：并发会话早 6 小时的提交（`883e0533`）刚修好了真正的丢失层（`recoverToolCallText` 的 marker lookahead 吞帧）。探针量的是修复后的行为，被我读成了原始行为。**下"缺陷不在我方"这类结论前，先按路径查这块最近有没有被动过：`git log --oneline ..master -- <相关路径>`。** 注意 `git log -S<符号>` / `-G<正则>` **不能替代路径口径**——它们匹配 diff 文本，而这次的修复只加了一行 `if (delta.text === "") return [raw]` 守卫，`recoverToolCallText` 这个我会去搜的名字压根不在改动里；`-S` 与 `-G` 实测都找不到 `883e0533`。 与 `feedback-verify-deferred-task-not-already-landed-before-designing` 同源，但更狠：那条讲"功能可能已落地"，这条讲**根因结论会被 peer 的修复悄悄作废**。
 
 **③ 探针的配置决定了它证明的范围，而范围极易被读宽。** 我用 buffered 配置验 keepalive 升级，静默期客户端视角其实是 pre-content 窗口——**验到的只是 pre-content 路径**，而当时的实现本来就写明是 pre-content-only；块间窗口的缺口纹丝未动。**探针结论必须连"它没有证明什么"一起写进产物**（见 `exp/keepalive-escalation-wire/README.md` 的写法），否则下一个人（包括三小时后的自己）会当成全覆盖。
 
