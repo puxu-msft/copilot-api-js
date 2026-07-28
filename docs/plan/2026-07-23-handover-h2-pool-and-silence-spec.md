@@ -60,8 +60,6 @@ master 又前进 **70 提交**且碰了 P4 的三个目标文件 → **动接线
 
 ### 剩余（依赖序）
 
-### 剩余（依赖序）
-
 **P4 余下**（plan-3：Task 4.1 splice 纯函数 → 4.2 触发判定 → **4.3 handler 接线（最硬）** → 4.4 History settlement → 4.5 协议矩阵；两挂载点执行器 + 三模式 splice + handler 接线 + 协议矩阵——**全特性最硬的一块**；接线时一并解决：backlog 的 `afterHook`-vs-`preflight` env seam、`_reason` 透传、`ClientSink.finalize` 的 `void`-vs-`Promise` 签名、`makeReconcilingSink` 未继承 delivery identity、Task 0.6 ② 的 quiescence join，以及 `settleFinal()` **必须放进 owner 的 `finally`**）→ **B3**（plan-4，**默认关**，never-false-kill）→ 全分支终审 → ff 合 master。
 
 ⚠ **P4~P6 接线前务必重读 handler-v4/driver 现状**：master 的 ingress-deadline 重构 + heartbeat 重写已改动 plan-3 假定的接线点（plan-3 的 `file:line` 多半已漂移）。
