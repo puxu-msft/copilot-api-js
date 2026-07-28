@@ -35,10 +35,34 @@ export const SEPARATOR_CARRIERS = {
   marker_v1: `${SYNTHETIC_SEPARATOR_PREFIX}:v1]`,
 } as const
 
-export type SeparatorCarrier = keyof typeof SEPARATOR_CARRIERS
+import type {
+  //
+  AssertAssignable,
+  SeparatorCarrier,
+} from "~/lib/state-vocabulary"
 
-/** The carrier emitted when config says nothing. */
-export const DEFAULT_SEPARATOR_CARRIER: SeparatorCarrier = "marker_v1"
+/**
+ * The union lives in `~/lib/state-vocabulary` (a zero-import leaf) because `state` stores a carrier
+ * and must not import this module. The derivation `keyof typeof SEPARATOR_CARRIERS` cannot follow it
+ * there, so it is written out explicitly and pinned here in BOTH directions: adding a carrier to the
+ * table without widening the union, or widening the union without adding the carrier, is a type
+ * error. Assertions only — nothing is emitted.
+ */
+import { DEFAULT_SEPARATOR_CARRIER as DEFAULT_CARRIER } from "~/lib/state-defaults"
+
+/**
+ * The default carrier is OWNED by `~/lib/state-defaults` (it is a config default, and that file must
+ * end up with no out-edges at all) and re-exported here so this module's public path is unchanged.
+ */
+export { DEFAULT_SEPARATOR_CARRIER } from "~/lib/state-defaults"
+
+/** Fails to compile unless the table and the union describe the same set of carriers. Types only. */
+export type SeparatorCarrierMatchesTable = [
+  AssertAssignable<keyof typeof SEPARATOR_CARRIERS, SeparatorCarrier>,
+  AssertAssignable<SeparatorCarrier, keyof typeof SEPARATOR_CARRIERS>,
+]
+
+export type { SeparatorCarrier } from "~/lib/state-vocabulary"
 
 /**
  * Spellings emitted by earlier builds. Built into the ACCEPT axis so an operator never has to
@@ -52,7 +76,7 @@ const BUILTIN_ACCEPTED_SEPARATORS: ReadonlySet<string> = new Set(["[copilot-api:
  * arrive from a config path that already validated it against the same enum — no runtime fallback is
  * added here, because silently substituting the default would hide such a validation hole.
  */
-export function separatorText(carrier: SeparatorCarrier = DEFAULT_SEPARATOR_CARRIER): string {
+export function separatorText(carrier: SeparatorCarrier = DEFAULT_CARRIER): string {
   return SEPARATOR_CARRIERS[carrier]
 }
 

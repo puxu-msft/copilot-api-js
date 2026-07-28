@@ -25,6 +25,15 @@
 
 import { z } from "zod"
 
+import type {
+  //
+  AssertAssignable,
+  ModelTranslation as VocabModelTranslation,
+  ModelTranslationFeature as VocabModelTranslationFeature,
+  ModelTranslationIngress as VocabModelTranslationIngress,
+  ModelTranslationRule as VocabModelTranslationRule,
+} from "~/lib/state-vocabulary"
+
 import {
   //
   REPAIR_ITEMS,
@@ -1554,8 +1563,39 @@ export type TelemetryConfig = z.infer<typeof TelemetryConfigSchema>
 export type TimeoutsConfig = z.infer<typeof TimeoutsConfigSchema>
 export type RetryConfigSection = z.infer<typeof RetryConfigSchema>
 export type GenerationConfigSection = z.infer<typeof GenerationConfigSchema>
-export type ModelTranslationIngress = (typeof MODEL_TRANSLATION_INGRESS_VALUES)[number]
-export type ModelTranslationFeature = (typeof MODEL_TRANSLATION_FEATURE_VALUES)[number]
-export type ModelTranslationRule = z.infer<typeof ModelTranslationRuleSchema>
-export type ModelTranslation = z.infer<typeof ModelTranslationSchema>
+/**
+ * The `model_translation` vocabulary lives in `~/lib/state-vocabulary` (a zero-import leaf), because
+ * `state` and `state-defaults` store a compiled translation table and must not import this module —
+ * it pulls in zod and the entire config schema. The schemas below stay the PARSER and the single
+ * source of validation; the assertion pins the two together in both directions, so widening the zod
+ * shape without widening the leaf (or the reverse) is a compile error rather than a silent drift.
+ */
+export type {
+  //
+  ModelTranslation,
+  ModelTranslationFeature,
+  ModelTranslationIngress,
+  ModelTranslationRule,
+} from "~/lib/state-vocabulary"
+
+/**
+ * Fails to compile unless the zod-inferred shape and the leaf's declaration agree. Types only.
+ *
+ * **Measured, not assumed** — what it catches and what it does not: adding a value to either enum,
+ * adding a REQUIRED field, and changing a field's type all go red at the assertion's own line.
+ * Adding an OPTIONAL field does NOT, and cannot: `{ a; b? }` and `{ a }` are mutually assignable in
+ * a structural type system, so no assignability check can see it. If a new optional key on
+ * `model_translation` ever needs to reach `state`, the leaf has to be updated by hand — nothing here
+ * will remind you.
+ */
+export type ModelTranslationMatchesSchema = [
+  AssertAssignable<z.infer<typeof ModelTranslationSchema>, VocabModelTranslation>,
+  AssertAssignable<VocabModelTranslation, z.infer<typeof ModelTranslationSchema>>,
+  AssertAssignable<z.infer<typeof ModelTranslationRuleSchema>, VocabModelTranslationRule>,
+  AssertAssignable<VocabModelTranslationRule, z.infer<typeof ModelTranslationRuleSchema>>,
+  AssertAssignable<(typeof MODEL_TRANSLATION_INGRESS_VALUES)[number], VocabModelTranslationIngress>,
+  AssertAssignable<VocabModelTranslationIngress, (typeof MODEL_TRANSLATION_INGRESS_VALUES)[number]>,
+  AssertAssignable<(typeof MODEL_TRANSLATION_FEATURE_VALUES)[number], VocabModelTranslationFeature>,
+  AssertAssignable<VocabModelTranslationFeature, (typeof MODEL_TRANSLATION_FEATURE_VALUES)[number]>,
+]
 export type Config = z.infer<typeof ConfigSchema>

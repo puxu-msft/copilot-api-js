@@ -9,22 +9,6 @@ import {
 } from "./separator-carrier"
 
 /**
- * Pure contract leaf for the assistant block-layout repair: the strategy enum and the block-shaped
- * separator adapters. Deliberately imports NOTHING but types and the zero-import separator
- * vocabulary — `state-defaults` reads the default carrier and strategy type, so any state import
- * here would close an import cycle (the SCC ratchet guard caught exactly that).
- *
- * The separator VOCABULARY itself (carrier table, `SeparatorCarrier`, `DEFAULT_SEPARATOR_CARRIER`,
- * `separatorText`, the text predicate) lives in `./separator-carrier`, which imports nothing at all;
- * this file adds only the two functions that need `ContentBlockParam`, and re-exports every name so
- * both historical public paths keep working. Why the split had to happen: the
- * `~/types/api/anthropic` import on line 1 is enough to disqualify this file as a leaf, and
- * `state-defaults`'s VALUE edge into it kept `state` inside 50 of the repo's 70 import cycles. See
- * docs/plan/2026-07-28-state-to-foundation/HANDOVER.md §3.7 #11.
- */
-export type AssistantBlockLayoutStrategy = "passthrough" | "move_blocks"
-
-/**
  * Synthetic separator sentinel — TWO INDEPENDENT AXES, because emitting and recognising carry
  * opposite risks (user decision 2026-07-27):
  *
@@ -56,7 +40,23 @@ export {
   separatorText,
   SYNTHETIC_SEPARATOR_PREFIX,
 } from "./separator-carrier"
+
 export type { SeparatorCarrier } from "./separator-carrier"
+/**
+ * Pure contract leaf for the assistant block-layout repair: the strategy enum and the block-shaped
+ * separator adapters. Deliberately imports NOTHING but types and the zero-import separator
+ * vocabulary — `state-defaults` reads the default carrier and strategy type, so any state import
+ * here would close an import cycle (the SCC ratchet guard caught exactly that).
+ *
+ * The separator VOCABULARY itself (carrier table, `SeparatorCarrier`, `DEFAULT_SEPARATOR_CARRIER`,
+ * `separatorText`, the text predicate) lives in `./separator-carrier`, which imports nothing at all;
+ * this file adds only the two functions that need `ContentBlockParam`, and re-exports every name so
+ * both historical public paths keep working. Why the split had to happen: the
+ * `~/types/api/anthropic` import on line 1 is enough to disqualify this file as a leaf, and
+ * `state-defaults`'s VALUE edge into it kept `state` inside 50 of the repo's 70 import cycles. See
+ * docs/plan/2026-07-28-state-to-foundation/HANDOVER.md §3.7 #11.
+ */
+export type { AssistantBlockLayoutStrategy } from "~/lib/state-vocabulary"
 
 /**
  * Is this BLOCK one of OUR synthetic separators? The block-shaped adapter over

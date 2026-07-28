@@ -19,6 +19,7 @@ import {
   test,
 } from "bun:test"
 import { readFileSync } from "node:fs"
+import ts from "typescript"
 
 import type { ContentBlockParam } from "~/types/api/anthropic"
 
@@ -30,6 +31,8 @@ import {
   separatorText,
 } from "~/lib/anthropic/sanitize/assistant-block-layout"
 import { stripAllThinking } from "~/lib/anthropic/strip-all-thinking"
+
+import { parseSource } from "../architecture/source-ast"
 
 const text = (t: string): ContentBlockParam => ({ type: "text", text: t }) as ContentBlockParam
 const OWNERS = new Set([
@@ -118,15 +121,50 @@ describe("synthetic separator identity", () => {
   // 身份判断必须单点。两种漂移都要挡：写死字面量（换版本号就漏），以及 import 常量后自己
   // `=== SEPARATOR_CARRIERS.marker_v1` 这种绕过谓词的自比较（正是 2026-07-27 前 strip-all 的写法——它认不出
   // 任何旧拼法）。src/ 里的消费者一律只准用谓词。
-  test("src/ 里除拥有者外，既不出现载体字面量、也不引用载体表（消费者只准用谓词/发射器）", () => {
+  // 两半判据形状不同，因为它们要挡的东西不同：
+  //   * 字面量 —— 文本扫描。写死的 marker 文本无论出现在代码、注释还是字符串里都是隐患。
+  //   * 载体表 —— **AST**。要挡的是「有人 import 了发射常量、绕过谓词自比较」，而不是「有人在文档
+  //     注释里提到了表名」。原本这半也是 `content.includes("SEPARATOR_CARRIERS")`，于是
+  //     `state-vocabulary.ts` 里一句解释这张表的注释就把守卫打红了——判据形状错了，正确反应是换判据
+  //     形状，不是把注释改成不敢提表名。
+  test("src/ 里除拥有者外不出现载体字面量（文本扫描：注释/字符串里写死也算）", () => {
     const root = new URL("../..", import.meta.url).pathname
     const hits = [...new Glob("**/*.ts").scanSync({ cwd: `${root}/src`, onlyFiles: true })]
       .map((rel) => `src/${rel}`)
       .filter((path) => !OWNERS.has(path))
       .filter((path) => {
         const content = readFileSync(`${root}/${path}`, "utf8")
-        return content.includes("copilot-api:thinking-separator") || content.includes(LEGACY_SPELLING) || content.includes("SEPARATOR_CARRIERS")
+        return content.includes("copilot-api:thinking-separator") || content.includes(LEGACY_SPELLING)
       })
-    expect(hits, `这些文件直接比较合成分隔符字面量，应改用 isSyntheticThinkingSeparator():\n${hits.join("\n")}`).toEqual([])
+    expect(hits, `这些文件写死了合成分隔符字面量，应改用 isSyntheticThinkingSeparator():\n${hits.join("\n")}`).toEqual([])
+  })
+
+  test("src/ 里除拥有者外不 import 载体表（AST：只有真引用算，注释提到不算）", () => {
+    const root = new URL("../..", import.meta.url).pathname
+    const hits = [...new Glob("**/*.ts").scanSync({ cwd: `${root}/src`, onlyFiles: true })]
+      .map((rel) => `src/${rel}`)
+      .filter((path) => !OWNERS.has(path))
+      .filter((path) => {
+        const sourceFile = parseSource(path, readFileSync(`${root}/${path}`, "utf8"))
+        let found = false
+        const visit = (node: ts.Node): void => {
+          if (ts.isIdentifier(node) && node.text === "SEPARATOR_CARRIERS") found = true
+          ts.forEachChild(node, visit)
+        }
+        visit(sourceFile)
+        return found
+      })
+    expect(hits, `这些文件引用了发射端载体表、绕过了谓词，应改用 isSyntheticThinkingSeparator():\n${hits.join("\n")}`).toEqual([])
+  })
+
+  test("守卫有效性：合成正样本会被 AST 判据抓到（否则「零命中」只说明扫描没触达）", () => {
+    const planted = parseSource("synthetic.ts", 'import { SEPARATOR_CARRIERS as t } from "x"\nconst a = t.marker_v1\n')
+    let found = false
+    const visit = (node: ts.Node): void => {
+      if (ts.isIdentifier(node) && node.text === "SEPARATOR_CARRIERS") found = true
+      ts.forEachChild(node, visit)
+    }
+    visit(planted)
+    expect(found).toBe(true)
   })
 })

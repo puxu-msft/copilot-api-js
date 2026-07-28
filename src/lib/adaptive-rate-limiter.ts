@@ -77,20 +77,15 @@ function publishRateLimitState(detail: Record<string, unknown> & { mode: RateLim
  * - Gradual recovery: Slowly ramps up speed after leaving rate-limited mode
  */
 
-export interface AdaptiveRateLimiterConfig {
-  /** Base interval for retries, doubles with each retry (default: 10s) */
-  baseRetryIntervalSeconds: number
-  /** Maximum retry interval cap (default: 120s) */
-  maxRetryIntervalSeconds: number
-  /** Interval between requests in rate-limited mode (default: 10s) */
-  requestIntervalSeconds: number
-  /** Time after which to attempt recovery to normal mode (default: 600 seconds) */
-  recoveryTimeoutSeconds: number
-  /** Number of consecutive successes needed to recover (default: 5) */
-  consecutiveSuccessesForRecovery: number
-  /** Gradual recovery steps: intervals to use before full speed (default: [5, 2, 1, 0]) */
-  gradualRecoverySteps: Array<number>
-}
+/**
+ * The config shape lives in `~/lib/state-vocabulary` (a zero-import leaf) because `state` stores it
+ * and must not import this module — this file depends on `consola`, `~/lib/error` and
+ * `./observability`, so it is nowhere near a leaf itself. Re-exported so existing consumers are
+ * unaffected.
+ */
+import type { AdaptiveRateLimiterConfig } from "~/lib/state-vocabulary"
+
+export type { AdaptiveRateLimiterConfig } from "~/lib/state-vocabulary"
 
 const DEFAULT_CONFIG: AdaptiveRateLimiterConfig = {
   baseRetryIntervalSeconds: 10,

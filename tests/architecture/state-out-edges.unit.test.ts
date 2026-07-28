@@ -34,7 +34,6 @@ import {
   //
   allModuleSpecifiers,
   parseSource,
-  typeOnlyModuleSpecifiers,
 } from "./source-ast"
 
 const REPO_ROOT = path.resolve(import.meta.dir, "../..")
@@ -45,50 +44,16 @@ const REPO_ROOT = path.resolve(import.meta.dir, "../..")
  */
 const ALLOWED: Record<string, Array<{ specifier: string; removedBy: string }>> = {
   "src/lib/state.ts": [
+    { specifier: "./state-defaults", removedBy: "never — same unit, moves together" },
+    { specifier: "./state-vocabulary", removedBy: "never — the zero-import vocabulary leaf, moves together" },
     {
-      specifier: "./adaptive-rate-limiter",
-      removedBy: "S5 — type-only (`AdaptiveRateLimiterConfig`); the relative path hides that this becomes a CROSS-PACKAGE edge once state moves",
-    },
-    {
-      specifier: "./state-defaults",
-      removedBy: "never — same unit, moves together (the two-node cycle between them is broken in S5 by `state-vocabulary.ts`)",
-    },
-    {
-      specifier: "~/lib/anthropic/sanitize/assistant-block-layout",
-      removedBy: "S5 — type-only (`AssistantBlockLayoutStrategy`, `SeparatorCarrier`), ownership inverts",
-    },
-    { specifier: "~/lib/anthropic/sanitize/content-blocks", removedBy: "S5 — type-only (`ThinkingBlockSanitizeMode`), ownership inverts" },
-    {
-      specifier: "~/lib/anthropic/tool-input-repair",
+      specifier: "@hsupu/ghc-proxy-foundation/ghc-model-types",
       removedBy:
-        "S5 — type-only (`RepairItem`); it is `(typeof REPAIR_ITEMS)[number]`, so the const array must move too or become an explicit union + assignability assertion",
-    },
-    { specifier: "~/lib/config/schema", removedBy: "S5 — type-only (`ModelTranslation`), ownership inverts" },
-    {
-      specifier: "~/lib/models/client",
-      removedBy:
-        "S5 — type-only (`Model`, `ModelsResponse`); user decision 2026-07-28 sinks both into foundation next to `ghc-http-primitives`, `models/client.ts` re-exports",
+        "S6 — becomes a RELATIVE path once this file lives inside packages/foundation; the GHC catalog wire types already sank there (user decision 2026-07-28)",
     },
   ],
-  "src/lib/state-defaults.ts": [
-    {
-      specifier: "./state",
-      removedBy:
-        'S5 — 11 named types + the inline `import("./state").MaxTokensContinuationOverride` on the `maxTokensContinuationOverrides` field all move to `state-vocabulary.ts`',
-    },
-    { specifier: "~/lib/anthropic/refusal-policy", removedBy: "S5 — VALUE edge, parked on a zero-import leaf by S1; the defaults come home to this file" },
-    {
-      specifier: "~/lib/anthropic/sanitize/block-layout-contract",
-      removedBy: "S5 — type-only (`AssistantBlockLayoutStrategy`, `SeparatorCarrier`), ownership inverts",
-    },
-    { specifier: "~/lib/anthropic/sanitize/content-blocks", removedBy: "S5 — type-only (`ThinkingBlockSanitizeMode`), ownership inverts" },
-    {
-      specifier: "~/lib/anthropic/sanitize/separator-carrier",
-      removedBy: "S5 — VALUE edge, parked on a zero-import leaf by S1; `DEFAULT_SEPARATOR_CARRIER` comes home to this file",
-    },
-    { specifier: "~/lib/anthropic/tool-input-repair", removedBy: "S5 — type-only (`RepairItem`), ownership inverts" },
-    { specifier: "~/lib/config/schema", removedBy: "S5 — type-only (`ModelTranslation`), ownership inverts" },
-  ],
+  "src/lib/state-defaults.ts": [{ specifier: "./state-vocabulary", removedBy: "never — the zero-import vocabulary leaf, moves together" }],
+  "src/lib/state-vocabulary.ts": [],
 }
 
 const outEdges = (rel: string): Array<string> => {
@@ -114,29 +79,21 @@ describe("state → foundation：出边 ratchet", () => {
     expect(unexplained).toEqual([])
   })
 
-  test("S2 已完成：state 对 models 域只剩一条纯类型边", () => {
-    // S2 把目录缓存（rawModels / setModels / getRawModels / getConfigDisabledIds /
-    // resetRawModelsForTests）搬去 `~/lib/models/cache`，随之带走了 `normalizeForMatching` 这条唯一的
-    // **值**出边。剩下的 `~/lib/models/client` 只提供 `Model` / `ModelsResponse` 两个类型，归 S5。
-    //
-    // 判据必须区分 type/value：`allModuleSpecifiers()` 两者都收，直接拿它断言「零 models 边」会红在一条
-    // 本来就该留到 S5 的类型边上——把「S2 没做完」和「S5 还没开始」混成同一个信号。
-    const source = readFileSync(path.join(REPO_ROOT, "src/lib/state.ts"), "utf8")
-    const sourceFile = parseSource("src/lib/state.ts", source)
+  test("S2/S5 已完成：state 对 models 域零出边（wire 类型已下沉 foundation）", () => {
+    // S2 把目录缓存搬去 `~/lib/models/cache`，带走了 `normalizeForMatching` 这条唯一的值出边；S5 把
+    // `Model` / `ModelsResponse` 下沉进 foundation，`models/client.ts` 改为 re-export。判据从「只剩一条
+    // 纯类型边」收紧成「零边」——问题变了，答案要跟着重算，别沿用上一步的形状。
+    const sourceFile = parseSource("src/lib/state.ts", readFileSync(path.join(REPO_ROOT, "src/lib/state.ts"), "utf8"))
     const modelsEdges = [...new Set(allModuleSpecifiers(sourceFile))].filter((specifier) => specifier.includes("/models/"))
-    const typeOnly = new Set(typeOnlyModuleSpecifiers(sourceFile))
-
-    expect(modelsEdges).toEqual(["~/lib/models/client"])
-    expect(
-      modelsEdges.filter((specifier) => !typeOnly.has(specifier)),
-      "state 又长回了一条通往 models 域的值依赖",
-    ).toEqual([])
+    expect(modelsEdges).toEqual([])
   })
 
-  test("S6 的入口判据（现在应当仍未满足——满足了就该去做 S6 了）", () => {
-    const isBuiltinOrRelative = (specifier: string): boolean => specifier.startsWith("node:") || specifier.startsWith(".")
-    const remaining = Object.keys(ALLOWED).flatMap((rel) => outEdges(rel).filter((specifier) => !isBuiltinOrRelative(specifier)))
-    // 这条断言的形态是「还剩几条」而不是「已经为空」：它让每一步的进度可见，而不是一路红到 S6。
-    expect(remaining.length, `还剩 ${remaining.length} 条非内置/非相对出边：\n${remaining.join("\n")}`).toBeGreaterThan(0)
+  test("S6 的入口判据：只剩 node: / 相对路径 / foundation 包内路径", () => {
+    // foundation 包名在 S6 之后会变成相对路径（这三个文件届时就住在 packages/foundation/src 里），
+    // 所以它算作已满足。**任何其他非内置、非相对的出边都会挡住 S6**——那正是本断言存在的意义。
+    const acceptable = (specifier: string): boolean =>
+      specifier.startsWith("node:") || specifier.startsWith(".") || specifier.startsWith("@hsupu/ghc-proxy-foundation")
+    const blocking = Object.keys(ALLOWED).flatMap((rel) => outEdges(rel).filter((specifier) => !acceptable(specifier)))
+    expect(blocking, `还有 ${blocking.length} 条出边挡着物理搬迁：\n${blocking.join("\n")}`).toEqual([])
   })
 })

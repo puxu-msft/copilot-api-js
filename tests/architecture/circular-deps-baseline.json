@@ -1,7 +1,6 @@
 {
-  "count": 30,
+  "count": 27,
   "cycles": [
-    "lib/adaptive-rate-limiter.ts > lib/error/index.ts > lib/error/forward.ts > lib/context/request.ts > lib/context/activity-summary.ts > lib/history/store.ts > lib/history/entries.ts > lib/history/in-flight.ts > lib/history/entry-view.ts > lib/history/accumulate-response.ts > lib/history/types.ts > lib/codec/openai-responses/buffered-merge-reducer.ts > lib/pipeline/frame-origin.ts > lib/pipeline/types.ts > lib/context/types.ts > lib/models/client.ts > lib/copilot-api.ts > lib/state.ts",
     "lib/adaptive-rate-limiter.ts > lib/error/index.ts > lib/error/forward.ts > lib/shutdown.ts",
     "lib/anthropic/pipeline.ts > lib/request/retry-types.ts > lib/error/index.ts > lib/error/forward.ts > lib/context/request.ts > lib/context/activity-summary.ts > lib/history/store.ts > lib/history/entries.ts > lib/history/in-flight.ts > lib/history/entry-view.ts > lib/history/accumulate-response.ts > lib/history/types.ts > lib/codec/openai-responses/buffered-merge-reducer.ts > lib/pipeline/frame-origin.ts > lib/pipeline/types.ts > lib/pipeline/envelope.ts > lib/pipeline/request-state.ts",
     "lib/codec/anthropic/anthropic-cell.ts > lib/pipeline/cell-assembly.ts",
@@ -24,11 +23,9 @@
     "lib/context/activity-summary.ts > lib/context/request.ts",
     "lib/context/request.ts > lib/error/index.ts > lib/error/forward.ts",
     "lib/context/types.ts > lib/observability/index.ts > lib/observability/bus.ts > lib/observability/events.ts",
-    "lib/copilot-api.ts > lib/state.ts > lib/models/client.ts",
     "lib/diagnostics/index.ts > lib/diagnostics/logger.ts > lib/observability/index.ts > lib/observability/bus.ts > lib/observability/events.ts",
     "lib/history/v3/projection.ts > lib/history/v3/store.ts",
     "lib/pipeline/rewrite-registry.ts > lib/pipeline/types.ts",
-    "lib/state-defaults.ts > lib/state.ts",
     "lib/transport/http2-client.ts > lib/transport/upstream-fetch.ts",
     "lib/tui/render/detail.ts > lib/tui/render/panel.ts"
   ],
@@ -43,7 +40,6 @@
     "lib/context/activity-summary.ts",
     "lib/context/request.ts",
     "lib/context/types.ts",
-    "lib/copilot-api.ts",
     "lib/diagnostics/index.ts",
     "lib/diagnostics/logger.ts",
     "lib/error/forward.ts",
@@ -70,8 +66,6 @@
     "lib/pipeline/types.ts",
     "lib/request/retry-types.ts",
     "lib/shutdown.ts",
-    "lib/state-defaults.ts",
-    "lib/state.ts",
     "lib/transport/http2-client.ts",
     "lib/transport/upstream-fetch.ts",
     "lib/tui/render/detail.ts",

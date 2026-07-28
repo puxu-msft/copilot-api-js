@@ -1,173 +1,36 @@
 import type {
   //
-  AssistantBlockLayoutStrategy,
-  SeparatorCarrier,
-} from "~/lib/anthropic/sanitize/assistant-block-layout"
-import type { ThinkingBlockSanitizeMode } from "~/lib/anthropic/sanitize/content-blocks"
-import type { RepairItem } from "~/lib/anthropic/tool-input-repair"
-import type { ModelTranslation } from "~/lib/config/schema"
-import type {
-  //
   Model,
   ModelsResponse,
-} from "~/lib/models/client"
+} from "@hsupu/ghc-proxy-foundation/ghc-model-types"
 
-import type { AdaptiveRateLimiterConfig } from "./adaptive-rate-limiter"
+import type {
+  //
+  AdaptiveRateLimiterConfig,
+  AssistantBlockLayoutStrategy,
+  BufferedRetryCaps,
+  BufferedRetryContinuation,
+  CacheControlMode,
+  CacheTtl,
+  CompiledRewriteRule,
+  CompiledSystemPromptEntry,
+  ContextEditingMode,
+  LoggingConfigState,
+  MaxTokensContinuationConfig,
+  MaxTokensContinuationOverride,
+  ModelTranslation,
+  RepairItem,
+  SeparatorCarrier,
+  ThinkingBlockSanitizeMode,
+  ThinkingBlockMessagePolicy,
+  UnknownEndpointLogging,
+  WarmupPolicy,
+} from "./state-vocabulary"
 
-/**
- * Server-side context editing mode.
- * Controls how Anthropic's context_management trims older context when input grows large.
- * Mirrors VSCode Copilot Chat's `chat.anthropic.contextEditing.mode` setting.
- */
-export type ContextEditingMode = "off" | "clear-thinking" | "clear-tooluse" | "clear-both"
-
-/**
- * Cache control mode for Anthropic requests.
- * Controls how cache_control fields are handled in the wire payload.
- */
-export type CacheControlMode = "disabled" | "passthrough" | "sanitize" | "proxied"
-
-/**
- * Per-layer prompt-cache TTL for the extended-cache-ttl feature. `"5m"` is Anthropic's default
- * (emitted as a bare `{type:"ephemeral"}`); `"1h"` emits `{type:"ephemeral", ttl:"1h"}` and requires
- * the `extended-cache-ttl-2025-04-11` beta. Mirrors GHC's per-layer 5m-vs-1h choice.
- */
-export type CacheTtl = "5m" | "1h"
-
-/**
- * Policy for handling Claude Code "Warmup" requests.
- *
- * - `"allow"`  — pass through normally (default)
- * - `"reject"` — return HTTP 429 error
- * - `"drop"`   — return minimal empty success response without forwarding upstream
- * - `"fake"`   — return a realistic fake response with cache_creation_input_tokens
- */
-export type WarmupPolicy = "allow" | "reject" | "drop" | "fake"
-
-/**
- * Policy for assistant messages that contain `thinking` / `redacted_thinking` blocks.
- *
- * Empirically, Anthropic thinking `signature`s are self-contained — they encrypt the
- * thinking content itself (the upstream decrypts and rebuilds it) and do NOT bind to
- * surrounding context or array position. The only real constraints are that thinking blocks
- * must be echoed verbatim, kept in relative order, and never dropped (their adjacency,
- * however, is not preserved — see `preserve` below).
- *
- * - `preserve` — Keep thinking blocks verbatim, preserve their relative order, and never
- *                drop them, but allow all surrounding cleanup (drop orphan tools, downgrade
- *                server tools, edit/drop non-thinking blocks). Thinking *adjacency* is NOT
- *                protected: the de-stack pass (sanitize/assistant-block-layout.ts) may
- *                insert non-thinking blocks between consecutive thinking blocks to satisfy
- *                the upstream "no two thinking blocks adjacent" rule.
- * - `stripped` — Actively delete thinking blocks from old messages; delete the message if
- *                empty after stripping.
- */
-export type ThinkingBlockMessagePolicy = "preserve" | "stripped"
-
-/** A compiled rewrite rule (regex pre-compiled from config string) */
-export interface CompiledRewriteRule {
-  /** Pattern to match (regex in regex mode, string in line mode) */
-  from: RegExp | string
-  /** Replacement string (supports $0, $1, etc. in regex mode) */
-  to: string
-  /** Match method: "regex" (default) or "line" */
-  method?: "regex" | "line"
-  /** Compiled regex for model name filtering. undefined = apply to all models. */
-  modelPattern?: RegExp
-  /** Endpoint-scope set (ClientFormat values). undefined = apply to all endpoints. */
-  endpointSet?: ReadonlySet<string>
-}
-
-/**
- * A compiled system-prompt prepend/append entry: the literal `text` plus the
- * pre-compiled model/endpoint scope (same two-axis AND semantics as
- * {@link CompiledRewriteRule}). A plain-string config entry compiles to
- * `{ text, modelPattern: undefined, endpointSet: undefined }` (unscoped).
- */
-export interface CompiledSystemPromptEntry {
-  /** The prepend/append text. */
-  text: string
-  /** Compiled regex for model name filtering. undefined = apply to all models. */
-  modelPattern?: RegExp
-  /** Endpoint-scope set (ClientFormat values). undefined = apply to all endpoints. */
-  endpointSet?: ReadonlySet<string>
-}
-
-/**
- * Resolved buffered-retry caps for one vendor (`resolveBufferedCaps` return
- * shape). `maxRetries` = transport-close/truncation retry cap (loop/cost guard);
- * `bufferCapBytes` = OOM guard before retreating to live forwarding (0 =
- * unlimited); `heartbeatSec` = forced keepalive interval during the buffer window.
- */
-export interface BufferedRetryCaps {
-  maxRetries: number
-  bufferCapBytes: number
-  heartbeatSec: number
-}
-
-/**
- * Resolved continuation-retry settings for one vendor (`resolveContinuation` return). After the first
- * block commits, a mid-stream RST triggers a synthetic continuation turn (spec
- * 2026-07-22-continuation-retry-and-sequential-anchor §4). `enabled` gates it per vendor; `message` is
- * the synthetic user-turn text. Resolution mirrors caps: per-vendor override > shared > built-in
- * default (`{ enabled: true, message: "network issue. please continue" }`).
- */
-export interface BufferedRetryContinuation {
-  enabled: boolean
-  message: string
-}
-
-export type MaxTokensContinuationTextStrategy = "continue" | "passthrough"
-export type MaxTokensContinuationToolUseStrategy = "continue" | "passthrough"
-export type MaxTokensContinuationThinkingStrategy = "passthrough" | "retry_with_budget"
-export type MaxTokensContinuationVisibility = "transparent" | "passthrough" | "marker"
-
-/**
- * Resolved max_tokens continuation policy for one vendor. P0 only resolves and records this
- * policy; P1 is the first phase allowed to consume it for continuation behavior.
- */
-export interface MaxTokensContinuationConfig {
-  enabled: boolean
-  maxRounds: number
-  classes: {
-    text: MaxTokensContinuationTextStrategy
-    toolUse: MaxTokensContinuationToolUseStrategy
-    thinking: MaxTokensContinuationThinkingStrategy
-  }
-  message: string
-  visibility: MaxTokensContinuationVisibility
-  thinkingRetryBudget: number | null
-}
-
-export interface EffectiveMaxTokensContinuationConfig extends MaxTokensContinuationConfig {
-  diagnostics: Array<"strategy-prevented-stitch">
-}
-
-/** Partial vendor override; class fields resolve independently so one override need not repeat every strategy. */
-export interface MaxTokensContinuationOverride extends Omit<Partial<MaxTokensContinuationConfig>, "classes"> {
-  classes?: Partial<MaxTokensContinuationConfig["classes"]>
-}
-
-/** unknown HTTP endpoint 日志级别（silent = 不打）。值须与 config/schema.ts 的 LOG_LEVELS 一致。 */
-export type LogLevel = "silent" | "debug" | "info" | "warn" | "error"
-
-/** unknown HTTP endpoint 按状态码分类的日志级别（404 = notFound / 405 = methodNotAllowed）。 */
-export interface UnknownEndpointLogging {
-  notFound: LogLevel
-  methodNotAllowed: LogLevel
-}
-
-export type DiagnosticLogLevel = "silent" | "trace" | "debug" | "info" | "warn" | "error" | "fatal"
-
-export interface LoggingConfigState {
-  terminalLevel: DiagnosticLogLevel
-  fileLevel: DiagnosticLogLevel
-  fileEnabled: boolean
-  fileDirectory: string
-  fileMaxSizeMb: number
-  fileMaxFilesPerProcess: number
-  retentionDays: number
-}
+// Re-exported for back-compat: the bundled defaults live in ./state-defaults (single-responsibility
+// split); existing `import { CONFIG_MANAGED_DEFAULTS | DEFAULT_MODEL_MAPPINGS | DEFAULT_MODEL_TRANSLATION }
+// from "~/lib/state"` consumers keep working.
+export { CONFIG_MANAGED_DEFAULTS, DEFAULT_MODEL_MAPPINGS, DEFAULT_MODEL_TRANSLATION } from "./state-defaults"
 
 export interface State {
   /** unknown HTTP endpoint（未匹配任何业务路由）按状态码分类的日志级别。默认 warn/warn。 */
@@ -2002,10 +1865,35 @@ import {
   DEFAULT_MODEL_TRANSLATION,
 } from "./state-defaults"
 
-// Re-exported for back-compat: the bundled defaults live in ./state-defaults (single-responsibility
-// split); existing `import { CONFIG_MANAGED_DEFAULTS | DEFAULT_MODEL_MAPPINGS | DEFAULT_MODEL_TRANSLATION }
-// from "~/lib/state"` consumers keep working.
-export { CONFIG_MANAGED_DEFAULTS, DEFAULT_MODEL_MAPPINGS, DEFAULT_MODEL_TRANSLATION } from "./state-defaults"
+/**
+ * The config vocabulary lives in `./state-vocabulary` (a zero-import leaf) and is re-exported here so
+ * every existing `import type { CacheTtl } from "~/lib/state"` keeps working. This re-export is safe
+ * BECAUSE the target is a leaf with no edge back — the same shape would have been a cycle if the
+ * vocabulary had been parked in `state-defaults` instead.
+ */
+export type {
+  //
+  BufferedRetryCaps,
+  BufferedRetryContinuation,
+  CacheControlMode,
+  CacheTtl,
+  CompiledRewriteRule,
+  CompiledSystemPromptEntry,
+  ContextEditingMode,
+  DiagnosticLogLevel,
+  EffectiveMaxTokensContinuationConfig,
+  LoggingConfigState,
+  LogLevel,
+  MaxTokensContinuationConfig,
+  MaxTokensContinuationOverride,
+  MaxTokensContinuationTextStrategy,
+  MaxTokensContinuationThinkingStrategy,
+  MaxTokensContinuationToolUseStrategy,
+  MaxTokensContinuationVisibility,
+  ThinkingBlockMessagePolicy,
+  UnknownEndpointLogging,
+  WarmupPolicy,
+} from "./state-vocabulary"
 
 export function resetConfigManagedState(): void {
   setUnknownEndpointLogging({ ...CONFIG_MANAGED_DEFAULTS.unknownEndpointLogging })

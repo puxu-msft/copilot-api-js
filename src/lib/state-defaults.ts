@@ -7,37 +7,25 @@
  * from "~/lib/state"` sites keep working. Type-only imports are erased at runtime
  * (verbatimModuleSyntax), so there is no runtime cycle with state.ts.
  *
- * Its two remaining VALUE edges point at zero-import leaves on purpose (`anthropic/refusal-policy`,
- * `anthropic/sanitize/separator-carrier`): a leaf has no out-edges, so depending on it cannot close
- * a cycle. Both defaults used to be read from their domain's full module, and that alone kept
- * `state` + `state-defaults` inside 52 and 50 of the repo's 70 import cycles — measured 70/63 → 30/43
- * after the redirect. **Any new value import here must also be a leaf**;
- * `tests/architecture/state-defaults-value-owners.unit.test.ts` enforces it. See
- * docs/plan/2026-07-28-state-to-foundation/HANDOVER.md.
+ * It has exactly ONE out-edge left, to the zero-import vocabulary leaf `./state-vocabulary`, and that
+ * is the finished shape: this file is moving into `packages/foundation` alongside `state.ts`, where
+ * the boundary guard permits nothing but `node:` builtins and relative paths. Every default value it
+ * needs is therefore DECLARED here and re-exported by whichever domain consumes it, rather than the
+ * other way round — the reverse arrangement is what kept `state` + `state-defaults` inside 52 and 50
+ * of the repo's 70 import cycles. See docs/plan/2026-07-28-state-to-foundation/HANDOVER.md.
  */
-
-import type {
-  //
-  AssistantBlockLayoutStrategy,
-  SeparatorCarrier,
-} from "~/lib/anthropic/sanitize/block-layout-contract"
-import type { ThinkingBlockSanitizeMode } from "~/lib/anthropic/sanitize/content-blocks"
-import type { RepairItem } from "~/lib/anthropic/tool-input-repair"
-import type { ModelTranslation } from "~/lib/config/schema"
-
-import {
-  //
-  DEFAULT_REFUSAL_END_TURN_TEXT,
-  DEFAULT_REFUSAL_ERROR_MESSAGE,
-  DEFAULT_REFUSAL_ERROR_TYPE,
-} from "~/lib/anthropic/refusal-policy"
-import { DEFAULT_SEPARATOR_CARRIER } from "~/lib/anthropic/sanitize/separator-carrier"
 
 import type {
   //
   BufferedRetryCaps,
   BufferedRetryContinuation,
   MaxTokensContinuationConfig,
+  AssistantBlockLayoutStrategy,
+  MaxTokensContinuationOverride,
+  ModelTranslation,
+  RepairItem,
+  SeparatorCarrier,
+  ThinkingBlockSanitizeMode,
   CacheControlMode,
   CacheTtl,
   CompiledRewriteRule,
@@ -46,7 +34,51 @@ import type {
   ThinkingBlockMessagePolicy,
   UnknownEndpointLogging,
   WarmupPolicy,
-} from "./state"
+} from "./state-vocabulary"
+
+/**
+ * The default texts + carrier this file hands to `CONFIG_MANAGED_DEFAULTS`.
+ *
+ * Declared HERE rather than imported from the domains that consume them, because that is the only
+ * arrangement in which this file has no out-edge at all. S1 parked them on zero-import leaves as a
+ * transitional step — that broke the import CYCLE but left two `~/` edges, which the foundation
+ * boundary rejects regardless of whether the target is a leaf. The domains now import them back:
+ * `anthropic/refusal-policy` and `anthropic/sanitize/separator-carrier` re-export these, so every
+ * existing consumer path is unchanged.
+ *
+ * Being config DEFAULTS, this file is their natural owner anyway — the domain modules only ever read
+ * them to describe what happens when the operator configured nothing.
+ */
+
+/**
+ * DEFAULT for `anthropic.refusal_end_turn_text` (the `end_turn`-mode suppression text).
+ *
+ * Reports what happened WITHOUT asserting anything the wire does not support: it does not claim the
+ * turn was "thinking-only" (the real `cyber` sample produced ZERO content blocks with thinking
+ * disabled), and it does not call the block "transient" (unverified — the `bio` sample refused only
+ * after 25,636 thinking tokens). It carries `{refusal_category}` but deliberately NOT
+ * `{refusal_explanation}`: this text is a SUCCESSFUL assistant message that the client bakes into
+ * conversation history, and the upstream explanation is diagnostic metadata about the request, not
+ * the model's answer to the user's task — replaying it as assistant content pollutes the semantic
+ * context. The explanation stays fully available in History, logs and the `error`-mode message.
+ */
+export const DEFAULT_REFUSAL_END_TURN_TEXT =
+  "上游模型本轮以「拒绝（refusal）」结束，未产出可用回复（拒绝类别：{refusal_category}）。这是上游安全策略对本次请求的拦截，不代表任务本身有问题。请基于已有上下文换一种表述或拆分步骤后继续；若多次复现，考虑调整措辞、移除可能触发策略的内容，或改用其他模型。"
+
+/**
+ * DEFAULT for `anthropic.refusal_error_message` (the message carried by the synthetic Anthropic
+ * `error` frame in the opt-in `error` mode; the client SDK surfaces it as the thrown `APIError`'s
+ * message). Unlike the end_turn text this DOES carry `{refusal_explanation}` — an error frame is
+ * never baked into the conversation history, so the full upstream diagnostic can ride along.
+ */
+export const DEFAULT_REFUSAL_ERROR_MESSAGE =
+  "上游模型本轮以「拒绝（refusal）」结束、未产出可用回复（拒绝类别：{refusal_category}）。已按 error 策略中断本次请求。上游说明：{refusal_explanation}"
+
+/** The Anthropic error `type` carried by a synthetic refusal `error` frame when config leaves it empty. */
+export const DEFAULT_REFUSAL_ERROR_TYPE = "api_error"
+
+/** The synthetic separator carrier emitted when config says nothing. */
+export const DEFAULT_SEPARATOR_CARRIER: SeparatorCarrier = "marker_v1"
 
 /**
  * Built-in model mapping. Intentionally EMPTY: model name mapping (short
@@ -102,7 +134,7 @@ export const CONFIG_MANAGED_DEFAULTS = {
     visibility: "transparent",
     thinkingRetryBudget: null,
   } as MaxTokensContinuationConfig,
-  maxTokensContinuationOverrides: {} as Record<string, import("./state").MaxTokensContinuationOverride>,
+  maxTokensContinuationOverrides: {} as Record<string, MaxTokensContinuationOverride>,
   // Default ON (P3 flip, 2026-07-14): buffering/generation-preservation beats the
   // downstream streaming UX for CC. See docs/decisions/ + plan README frozen contract.
   chatCompletionsBufferedRetry: true,

@@ -1,18 +1,18 @@
 /**
- * S1 守卫：`state-defaults.ts` 的**值**出边只许指向零依赖叶子。
+ * The state unit declares its own default VALUES, and the domains that consume them import them back.
  *
- * 背景（docs/plan/2026-07-28-state-to-foundation/HANDOVER.md §3.2 / §3.7 #11 #15）：把 `state.ts` +
- * `state-defaults.ts` 降成 foundation 叶子的第一步，是切断 `state-defaults` 通往 anthropic 域的两条
- * **值**依赖——三个 refusal 默认文案与 `DEFAULT_SEPARATOR_CARRIER`。这两条边把 state 拴进了 70 个环里的
- * 50 个：实测把它们挪进零依赖叶子后，madge 环数 70/63 成员 → 30/43。
+ * History, because the judgement here changed twice and the reason matters
+ * (docs/plan/2026-07-28-state-to-foundation/HANDOVER.md): `state-defaults.ts` used to read three
+ * refusal templates and the separator carrier FROM the anthropic domain, and those two value edges
+ * alone kept `state` + `state-defaults` inside 52 and 50 of the repo's 70 import cycles. S1 pointed
+ * them at zero-import leaves instead, which measured 70/63 → 30/43 — but a leaf target only fixes the
+ * CYCLE. The foundation boundary rejects a `~/` import whether or not its target is a leaf, so S5
+ * finished the job by moving ownership: `state-defaults` declares the four constants, and
+ * `anthropic/refusal-policy` + `anthropic/sanitize/separator-carrier` re-export them.
  *
- * 为什么守卫要盯「目标叶子零出边」而不是「state-defaults 零值依赖」：S1 之后 `state-defaults` 仍然有值
- * 依赖（它要从叶子取那四个常量），削环靠的不是「没有值边」而是「值边的目标是叶子」——叶子没有出边，
- * 所以谁依赖它都不可能成环。把判据写成前者会既漏又误（HANDOVER 第一版的 S1 里程碑就写错成了「零值
- * 依赖」）。
- *
- * ⚠️ 本文件断言的是**当前的过渡态**，不是终态。S5 会把这两个叶子的内容吸收进 state 单元本身（类型→
- * `state-vocabulary`、默认值→`state-defaults` 自己声明），届时这些边会整条消失，本守卫要跟着改。
+ * So the criterion this file enforces was deliberately tightened from "value edges point at leaves"
+ * to "no cross-module value edges at all". Keeping the old, weaker form would have passed happily
+ * while S6 was still blocked.
  */
 
 import {
@@ -27,21 +27,22 @@ import ts from "typescript"
 
 import {
   //
-  DEFAULT_REFUSAL_END_TURN_TEXT,
-  DEFAULT_REFUSAL_ERROR_MESSAGE,
-  DEFAULT_REFUSAL_ERROR_TYPE,
-} from "~/lib/anthropic/refusal-policy"
-import {
-  //
-  DEFAULT_SEPARATOR_CARRIER,
   SEPARATOR_CARRIERS,
   separatorText,
 } from "~/lib/anthropic/sanitize/separator-carrier"
+import {
+  //
+  DEFAULT_REFUSAL_END_TURN_TEXT,
+  DEFAULT_REFUSAL_ERROR_MESSAGE,
+  DEFAULT_REFUSAL_ERROR_TYPE,
+  DEFAULT_SEPARATOR_CARRIER,
+} from "~/lib/state-defaults"
 
 import {
   //
   allModuleSpecifiers,
   parseSource,
+  typeOnlyModuleSpecifiers,
 } from "./source-ast"
 
 const REPO_ROOT = path.resolve(import.meta.dir, "../..")
@@ -80,41 +81,29 @@ function locallyDeclaredNames(sourceFile: ts.SourceFile): Set<string> {
 /** 这个模块 import/re-export 了哪些模块（AST 口径，覆盖多行 / side-effect / dynamic / `import =` 全形态）。 */
 const outEdges = (rel: string): Array<string> => [...new Set(allModuleSpecifiers(parse(rel)))].sort()
 
-const MOVED_TO_REFUSAL_POLICY = ["DEFAULT_REFUSAL_END_TURN_TEXT", "DEFAULT_REFUSAL_ERROR_MESSAGE", "DEFAULT_REFUSAL_ERROR_TYPE"]
-const MOVED_TO_SEPARATOR_CARRIER = ["SYNTHETIC_SEPARATOR_PREFIX", "SEPARATOR_CARRIERS", "SeparatorCarrier", "DEFAULT_SEPARATOR_CARRIER", "separatorText"]
+const MOVED_DEFAULTS = ["DEFAULT_REFUSAL_END_TURN_TEXT", "DEFAULT_REFUSAL_ERROR_MESSAGE", "DEFAULT_REFUSAL_ERROR_TYPE"]
 
-describe("S1 — state-defaults 的值依赖只指向零依赖叶子", () => {
-  // ── 承重判据：叶子必须真的是叶子 ────────────────────────────────────────────────
-  test.each(["src/lib/anthropic/refusal-policy.ts", "src/lib/anthropic/sanitize/separator-carrier.ts"])("%s 零出边（叶子身份就是它的全部价值）", (leaf) => {
-    expect(outEdges(leaf), `${leaf} 一旦有出边就不再是叶子，state-defaults 依赖它就会重新成环`).toEqual([])
+describe("state-defaults 自持默认值，零跨模块值出边", () => {
+  test("state-defaults 的唯一出边是零依赖词汇叶子，且是纯类型", () => {
+    const sourceFile = parse("src/lib/state-defaults.ts")
+    expect(outEdges("src/lib/state-defaults.ts")).toEqual(["./state-vocabulary"])
+    // 值边为零：唯一那条必须是 type-only，否则 S6 的文件级 allowlist 仍会拒。
+    expect(typeOnlyModuleSpecifiers(sourceFile)).toEqual(["./state-vocabulary"])
   })
 
-  test("state-defaults 的每一条值出边都落在上面那两个叶子上", () => {
-    const sourceFile = parse("src/lib/state-defaults.ts")
-    const valueEdges = new Set<string>()
-    for (const statement of sourceFile.statements) {
-      if (!ts.isImportDeclaration(statement) || !ts.isStringLiteral(statement.moduleSpecifier)) continue
-      const clause = statement.importClause
-      if (!clause) continue // side-effect import 也是值边
-      const bindings = clause.namedBindings
-      const allTypeOnly =
-        clause.isTypeOnly
-        || (bindings !== undefined && ts.isNamedImports(bindings) && bindings.elements.length > 0 && bindings.elements.every((element) => element.isTypeOnly))
-      if (allTypeOnly && clause.name === undefined) continue
-      valueEdges.add(statement.moduleSpecifier.text)
-    }
-    expect([...valueEdges].sort()).toEqual(["~/lib/anthropic/refusal-policy", "~/lib/anthropic/sanitize/separator-carrier"])
+  test("词汇叶子零出边（它的叶子身份就是它的全部价值）", () => {
+    expect(outEdges("src/lib/state-vocabulary.ts"), "state-vocabulary 一旦有出边，state 与 state-defaults 就都跟着不再是叶子").toEqual([])
   })
 
   // ── 单一 owner：旧模块只剩 re-export，不许自己再声明一份 ────────────────────────
-  test("recover-refusal 不再自己声明那三个 refusal 默认值（只 re-export）", () => {
-    const declared = locallyDeclaredNames(parse("src/lib/anthropic/recover-refusal.ts"))
-    expect(MOVED_TO_REFUSAL_POLICY.filter((name) => declared.has(name))).toEqual([])
-  })
-
-  test("block-layout-contract 不再自己声明分隔符载体词汇（只 re-export）", () => {
-    const declared = locallyDeclaredNames(parse("src/lib/anthropic/sanitize/block-layout-contract.ts"))
-    expect(MOVED_TO_SEPARATOR_CARRIER.filter((name) => declared.has(name))).toEqual([])
+  test.each([
+    ["src/lib/anthropic/recover-refusal.ts", MOVED_DEFAULTS],
+    ["src/lib/anthropic/refusal-policy.ts", MOVED_DEFAULTS],
+    ["src/lib/anthropic/sanitize/separator-carrier.ts", ["DEFAULT_SEPARATOR_CARRIER"]],
+    ["src/lib/anthropic/sanitize/block-layout-contract.ts", ["DEFAULT_SEPARATOR_CARRIER", "SEPARATOR_CARRIERS", "separatorText"]],
+  ])("%s 只 re-export、不再自己声明这些默认值", (rel, names) => {
+    const declared = locallyDeclaredNames(parse(rel))
+    expect(names.filter((name) => declared.has(name))).toEqual([])
   })
 
   // ── 逐字 golden：SCC 数字对字符串内容完全不敏感，typecheck 也抓不住搬运时手滑改了一个字 ──

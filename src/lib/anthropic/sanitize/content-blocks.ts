@@ -55,7 +55,9 @@ function isThinkingSignatureEmpty(block: { signature?: unknown }): boolean {
  *   - `"thinking_empty"`  — drop when text is empty, regardless of signature.
  *   - `"any_empty"`       — drop when EITHER text OR signature is empty.
  */
-export type ThinkingBlockSanitizeMode = "all_empty" | "signature_empty" | "thinking_empty" | "any_empty"
+import type { ThinkingBlockSanitizeMode } from "~/lib/state-vocabulary"
+
+export type { ThinkingBlockSanitizeMode } from "~/lib/state-vocabulary"
 
 /**
  * Whether a `type:"thinking"` block should be dropped, given which of its two
@@ -143,7 +145,7 @@ export function filterEmptyThinkingBlocks(messages: Array<MessageParam>, mode: T
 export function stripSyntheticReasoningBlocks(messages: Array<MessageParam>): Array<MessageParam> {
   return messages.map((msg) => {
     if (typeof msg.content === "string") return msg
-    const filtered = msg.content.filter((block) => !(block.type === "thinking" && isSyntheticReasoningSignature((block as { signature?: unknown }).signature)))
+    const filtered = msg.content.filter((block) => block.type !== "thinking" || !isSyntheticReasoningSignature((block as { signature?: unknown }).signature))
     if (filtered.length === msg.content.length) return msg
     return { ...msg, content: filtered } as MessageParam
   })
