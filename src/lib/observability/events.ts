@@ -134,10 +134,13 @@ export type FeatureKind =
   | "transport"
   /** recoverer rebuilt tool_use(s) from downgraded upstream text — `detail: { tools: string[] }` (the recovered tool names, in call order) */
   | "tool-call-recovered"
-  /** recovered a thinking-only upstream refusal by synthesizing a text completion */
+  /** suppression mode: a contentless upstream refusal was rewritten into a normal completed turn so
+   *  the client's conversation is not interrupted (the request still settles FAILED) */
   | "refusal-recovered"
-  /** error mode: surfaced a thinking-only upstream refusal as an `event: error` frame + ctx.fail */
+  /** error mode: surfaced a contentless upstream refusal as an `event: error` frame + ctx.fail */
   | "refusal-errored"
+  /** passthrough mode: the genuine upstream refusal reached the client untouched (still settles FAILED) */
+  | "refusal-passthrough"
   /** error-shaping 决策命中 — detail: { decision: "retry-signal"|"ask-user-question"|"canonical-error"|"defer-to-block-level", errorType: ApiErrorType, commitPhase: "pre-commit"|"post-commit" } */
   | "error-shaping-decided"
   /** error-shaping B类 AskUserQuestion 合成命中 — detail: { errorType: ApiErrorType } */

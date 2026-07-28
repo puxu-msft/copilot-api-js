@@ -4,6 +4,7 @@ import type {
   SendMessageNormalizationDiag,
 } from "~/lib/anthropic/decode-tool-input-core"
 import type { BufferedMergeDiag } from "~/lib/codec/openai-responses/buffered-merge-reducer"
+import type { RefusalObservation } from "~/lib/anthropic/recover-refusal"
 import type { ApiError } from "~/lib/error"
 import type {
   //
@@ -700,6 +701,20 @@ export interface RequestContext {
   readonly repairOutcomes: ReadonlyArray<RepairOutcomeRecord>
   /** Derived: the first UNREPAIRABLE tool of the current attempt, or null (drives the handler fail-gate). */
   readonly unrepairableToolInput: string | null
+  /**
+   * What the S5 refusal rewriter observed + did on this attempt's stream, or null when the upstream
+   * did not produce a contentless refusal.
+   *
+   * This is a CAUSAL signal, not a second re-derivation: the handler settles the request from what
+   * the rewrite layer actually put on the wire, instead of independently re-reading the hot-reloadable
+   * `state.refusalSseRewrite` after the stream drained (two reads of a mutable global cannot be kept
+   * in lockstep — a concurrent request carrying a `system` re-runs `applyConfigToState()` in between).
+   * It is also how the handler knows a terminal frame is already on the wire, so the truncation
+   * fail-gate must not append a second one.
+   */
+  readonly refusalObservation: RefusalObservation | null
+  /** Record the refusal rewriter's observation (called once per stream by the S5 adapter). */
+  recordRefusalObservation(observation: RefusalObservation): void
   /** Reset the per-attempt repair outcomes — called by the L2 buffered-retry `onAttemptReset`. */
   resetRepairOutcomesForAttempt(): void
   toHistoryEntry(): HistoryEntryData

@@ -210,6 +210,7 @@ function featureTag(feature: Exclude<FeatureKind, "thinking">, detail?: Record<s
     case "tool-call-recovered":
     case "refusal-recovered":
     case "refusal-errored":
+    case "refusal-passthrough":
     case "error-shaping-decided":
     case "error-shaping-auq-synthesized":
     case "error-shaping-selfheal-delegated":
