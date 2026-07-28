@@ -1,6 +1,6 @@
 # Plan-2: B2-P0～P3 —— 机制地基（server-tool gate 复用点 / 配置骨架 / semantic-content gate / sink lifetime supervisor）
 
-> **实施状态（2026-07-28）：Task 0.1 / 0.2 / 0.3 / 0.4 / 0.5 / 0.7 已完成，剩 Task 0.6。** 全部**零生产接线**（P4/P5 才接），每个 Task 都过了异模型 review。逐 Task 的实施状态注解写在各自小节内（含与本文档原始设计的偏离及理由）——**接手时以那些注解 + 当前代码为准**，本文档正文写于底座重写之前。
+> **实施状态（2026-07-28）：Task 0.1～0.7 已完成；Task 0.6 的 candidate lifecycle quiescence join 因当前没有 recovery owner，明确转入 P4/P5 接线。** 全部**零生产接线**（P4/P5 才接），每个已交付 Task 都过了对应验证；逐 Task 的实施状态注解写在各自小节内（含与本文档原始设计的偏离及理由）——**接手时以那些注解 + 当前代码为准**，本文档正文写于底座重写之前。
 >
 > ⚠ **底座已漂移**：master 在本 plan 撰写后重写了 delivery/heartbeat 生命周期（`freezeHeartbeat` 语义、close-before-terminal-drain）并把 commit 窗口重构成 ingress-relative deadline。**Task 0.6 与 plan-3 接线前必须重读现状**，本文档的 `file:line` 可能已漂移。
 >
