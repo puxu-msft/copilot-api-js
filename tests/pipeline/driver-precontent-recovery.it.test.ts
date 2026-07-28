@@ -54,13 +54,16 @@ function streamResponse(marker: string): PhysicalTransportResponse {
   return { kind: "stream", upstream, lifecycle: owner }
 }
 
-function makeEnv(body: unknown): RequestEnvelope {
+function makeEnv(
+  body: unknown,
+  onRecordAttemptFailure: (input: { willRetry: boolean; nextStrategy?: string }) => void = () => {},
+): RequestEnvelope {
   const ctx = {
     operationSignal: new AbortController().signal,
     beginAttempt() {},
     transition() {},
     setAttemptError() {},
-    recordAttemptFailure() {},
+    recordAttemptFailure: onRecordAttemptFailure,
     setSseEvents() {},
     setHttpHeaders() {},
     setAttemptEffectiveRequest() {},
@@ -174,11 +177,12 @@ describe("driver pre-content recovery", () => {
     expect(openCalls).toBe(1)
   })
 
-  test("a ready upstream that stream-errors before semantic content can dispatch response recovery", async () => {
+  test("a ready upstream that stream-errors before semantic content dispatches response recovery with the precontent History strategy", async () => {
     let openCalls = 0
+    const recordedFailures: Array<{ willRetry: boolean; nextStrategy?: string }> = []
     const primaryStreamError = new Error("primary stream reset before content")
     const driver = makeDriver({
-      env: makeEnv({ messages: [] }),
+      env: makeEnv({ messages: [] }, (failure) => recordedFailures.push(failure)),
       open: async () => {
         openCalls++
         if (openCalls === 1) {
@@ -213,6 +217,7 @@ describe("driver pre-content recovery", () => {
 
     expect(recovered).toMatchObject({ ok: true, env: expect.any(Object) })
     if (recovered.ok) expect(recovered.upstream.headers.get("x-recovery-marker")).toBe("recovery")
+    expect(recordedFailures).toContainEqual({ willRetry: true, nextStrategy: "precontent-recovery" })
     expect(openCalls).toBe(2)
   })
 
