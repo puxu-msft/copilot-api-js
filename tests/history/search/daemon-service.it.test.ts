@@ -35,6 +35,7 @@ import path from "node:path"
 
 import { PATHS } from "~/lib/config/paths"
 import { createModelOperationRecorder } from "~/lib/context/model-operation-record"
+import { isNativeHistorySearchAvailable } from "~/lib/history/search-native"
 import { createHistorySearchUdsClient } from "~/lib/history/search/uds-client"
 import {
   //
@@ -96,7 +97,13 @@ afterEach(async () => {
   for (const dir of tmpDirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true })
 })
 
-describe("history-search-daemon service command: zero-flag defaults align with PATHS (single source of truth)", () => {
+// The native Tantivy `.node` is a gitignored build product and is no longer built by `bun install`
+// (2026-07-28). These suites drive the real index, so they gate on its presence rather than fail:
+// an environmental red is too easy to wave away as "pre-existing" — which is exactly what happened.
+// Run them for real with `bun run build:history-search` first (CI's `test:ci` does).
+const NATIVE = isNativeHistorySearchAvailable()
+
+describe.skipIf(!NATIVE)("history-search-daemon service command: zero-flag defaults align with PATHS (single source of truth)", () => {
   test("dev form runs with NO flags and serves a query against the real default db/socket/index paths", async () => {
     // No --db/--socket/--index at all -- this is the exact invocation an operator's
     // systemd unit uses. Points HISTORY_DB_PATH-equivalent state at a real on-disk db
@@ -146,7 +153,7 @@ describe("history-search-daemon service command: zero-flag defaults align with P
   }, 20_000)
 })
 
-describe("crash isolation (resident-service model): kill -9 an independently-running sidecar, main process untouched", () => {
+describe.skipIf(!NATIVE)("crash isolation (resident-service model): kill -9 an independently-running sidecar, main process untouched", () => {
   test("SIGKILL the sidecar -> this process's own pid unchanged, client degrades to empty (never throws); starting a FRESH sidecar recovers search", async () => {
     const dbDir = freshDir("resident-crash-db-")
     const dbPath = path.join(dbDir, "history-v3.db")

@@ -69,6 +69,11 @@ import {
 } from "~/lib/pipeline/driver"
 
 import { FakeClock } from "../helpers/fake-clock"
+import {
+  //
+  assertBlockProtocolState,
+  assertMonotonicWireIndices,
+} from "../helpers/wire-index-oracle"
 
 // ── frame fixtures ──────────────────────────────────────────────────────────
 
@@ -393,16 +398,9 @@ describe("anchor lifecycle across multiple block-level commits — PRODUCER wire
     expect(written.some((w) => parse(w).type === "content_block_start" && parse(w).index === 1)).toBe(true)
     expect(written.some((w) => parse(w).type === "content_block_start" && parse(w).index === 2)).toBe(true)
 
-    // ── CLI-SAFETY INVARIANT (the whole point of sequential): at no point are two content blocks open at once.
-    let open = 0
-    let maxOpen = 0
-    for (const w of written) {
-      const p = parse(w)
-      if (p.type === "content_block_start") open++
-      if (p.type === "content_block_stop") open--
-      maxOpen = Math.max(maxOpen, open)
-    }
-    expect(maxOpen).toBe(1) // sequential — never two blocks coexisting open (the coexist shape stalls the CLI)
+    // ── Full producer invariants: starts are monotonic and every delta/stop references the unique open block.
+    assertMonotonicWireIndices(written)
+    assertBlockProtocolState(written)
     void anchorState
     sink.close?.()
   })

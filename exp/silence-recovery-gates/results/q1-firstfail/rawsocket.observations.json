@@ -1,0 +1,24 @@
+{
+  "port": 41941,
+  "nonce": "rawsock-1785190187959783220",
+  "windowMs": 900000,
+  "serverStartedAt": "2026-07-27T22:09:48.001Z",
+  "attempts": 1,
+  "observations": [
+    {
+      "attempt": 1,
+      "path": "/v1/messages",
+      "method": "POST",
+      "arrivedAtMs": 128,
+      "abortedAfterMs": 420101,
+      "answeredAfterMs": null,
+      "headers": {
+        "connection": "keep-alive",
+        "content-length": "102",
+        "content-type": "application/json",
+        "host": "127.0.0.1:41941"
+      }
+    }
+  ],
+  "probes": []
+}

@@ -10,7 +10,25 @@
 - **为何暂缓**：本批的 HIGH 缺陷是后端裁决与计数口径错误，已可独立闭合；真正抑制会改变三种公开协议的客户端 wire，需要决定每种协议的合成文本位置、完成原因、error 模式、usage 与 response id 保持方式，并补真实 SDK / CLI 消费 oracle。把这些协议设计夹进 settle 修复会产生未经规格裁决的新公共行为。
 - **若做需改什么**：① 把 `RefusalPolicy` + detail/template vars 形成跨协议 whole-response disposition；② 在 `openai-cc` / `openai-responses` / Gemini reverse renderer 中分别实现 `end_turn`、`refusal`、`error` 三模式；③ 保证目标协议 exactly-one terminus 与 raw/forwarded 双轨；④ feature 从当前固定 `refusal-passthrough` 改为实际 mode 对应值；⑤ 为三条非流式腿各补 byte golden + 官方 SDK 消费 oracle，并补至少一条同 session 后续轮继续的客户端测试。
 
+## History 详情页 SSE 帧的绝对时间：upstream 轨的原点未证（2026-07-28）
+
+- **根因**：`clientResponse.sseEvents[].offsetMs` 是 **commit 相对**的（`client-sink.ts:216` 用 `Date.now() - streamStartMs`），而 UI 的 `FrameList` 两条轨原本都传 `entry.startedAt` 当原点（`ui-v4/src/components/detail/segments/SseEventsSegment.tsx`）。
+- **已修（2026-07-28）**：forwarded 轨改用 `entry.startedAt + (entry.timing?.client?.streamOpenMs ?? 0)`。这条有证据——生产者在 commit 时刻写 `setClientTimingEpoch("streamOpen", commitInstant)`，与 sink 的 `streamStartMs` 同源。延迟-commit 窗口默认从 20s 抬到 180s 后，这个误差被放大到约 3 分钟，所以先修它。
+- **仍未证 / 本条要做的**：**upstream 轨的 offset 原点是什么，没追出来**。合并态评审指出它未必是 `entry.startedAt`（可能是 attempt/collector 自己的原点）。若确实不是，现在这条轨显示的绝对钟点同样是错的，只是没有被本次默认值改动放大。
+- **若做需改什么**：① 追出 `attempts[].upstreamResponse.sseEvents[].offsetMs` 的写入点与其时间基（`model-operation-record.ts` / `context/request.ts:610,1594` 是消费侧，产生侧待定）；② 若原点可证 → 按轨传对应 epoch；③ 若持久化记录里**没有**可证明的原点 → 该轨只显示 elapsed 或显式「绝对时间不可用」，**不要继续伪造绝对钟点**（已有 `offsetSource === "unavailable"` 的先例可复用）；④ 补一条 UI 回归测试，构造 `streamOpenMs=180000, offsetMs=20000` 断言两轨各自渲染的钟点。
+- **为何暂缓**：产生侧未定位，属独立调查单元；且 upstream 轨的误差不随本次默认值改动放大，不阻塞交付。
+
+## delayed-commit 窗口是全局的，但它的安全上限只对两个 Node 客户端实测过（2026-07-28）
+
+- **根因**：`stream_commit_after_sec` 对所有流式 `/v1/messages` 请求一视同仁（`handler-v4.ts` 只按 `clientRaw.stream` 分支，不识别客户端）。但窗口的安全上限来自**客户端的** pre-header 容忍度，而我们只实测过两个样本：真 Claude Code 2.1.220（其内置 Node v26.3.0）与 `@anthropic-ai/sdk` 0.106.0 on Node——两者都是 ~300s，因为都落在 undici 默认 `headersTimeout` 上（`exp/silence-recovery-gates/FINDINGS.md`）。
+- **当前行为**：默认 180s。窗口内我方**一个字节都不发**，所以任何 pre-header 容忍度落在 `(20s, 180s)` 的 Anthropic 客户端，**旧默认下能在 20s 拿到 200+keepalive 而活、新默认下会在收到任何字节前超时**。Python / Go / Java / Ruby 官方 SDK、第三方工具、中间反向代理、以及用户自设的短 timeout 都未测。
+- **理想架构**：commit policy 应当**客户端感知**而非全局一刀切——对可识别的客户端（`x-app: cli` + `user-agent: claude-cli/*`，或已知 Node SDK 的 `x-stainless-runtime`）用实测背书的窗口，对未知客户端用保守窗口（或单独的 `unknown_client_commit_after_sec`）。判据轴是「不为了兼容而放弃正确默认，但也不用两个样本替所有客户端做决定」。
+- **为何暂缓**：本项目实际只服务 Claude Code（用户 2026-07-28 明确按 CC 定 180s）。客户端分类是一个新契约，需要先定「怎样算可识别」并对官方多语言 SDK 补探针，属独立工作单元。
+- **若做需改什么**：① 补官方 SDK 多语言 pre-header 探针（复用 `exp/silence-recovery-gates/run-q1-firstfail.sh`，它已是多臂结构）；② 定客户端识别契约（架构决策，需 ADR）；③ `handler-v4.ts` 的窗口取值改为按分类查表；④ config 增加未知客户端键并同步 schema/TSDoc/DESIGN。
+
 ## Anthropic 块级 buffered 首块后的 >300s keepalive carrier（2026-07-27，块级默认翻转硬门）
+
+> 2026-07-27 P6 已先修相邻的 heartbeat 生命周期缺陷：普通 boundary commit 的 `freezeHeartbeat()` 不再永久关闭 delivery timer，Responses HTTP / Anthropic 的首个 boundary 之后会继续发 ping。**本条仍活**，因为它解决的是不同问题——ping 不重置 Claude Code 300s content watchdog，仍需方案 A 的合法 gap anchor carrier。
 
 - **根因**：块级 buffered 在 `content_block_stop` 前不向客户端写 start/delta；首块提交后的长生成在客户端轨没有 open block。ping 不重置 Claude Code 300s event-idle；固定 anchor@0 又不能在真实 block@0 已完成后复用，否则真实 SDK 会静默重排 content。
 - **当前行为**：commit `faaa37e7` 的按需升级已收窄为 **pre-content-only**：客户端尚未完成任何真实块时，200s 可开单 anchor@0；首块完成后的无-open窗口只ping。历史 live腿若客户端真有open block，原-index空delta分支仍可达，但**块级 buffered终态不可达**。

@@ -18,6 +18,7 @@ import { statSync } from "node:fs"
 
 import { loadBundledDefaultConfig } from "~/lib/config/config"
 import { PATHS } from "~/lib/config/paths"
+import { CONFIG_MANAGED_DEFAULTS } from "~/lib/state-defaults"
 
 describe("bundled config.yaml", () => {
   test("BUNDLED_CONFIG_YAML resolves to an existing file", () => {
@@ -37,6 +38,13 @@ describe("bundled config.yaml", () => {
     expect(overrides.opus).toBeDefined()
     expect(overrides.sonnet).toBeDefined()
     expect(overrides.haiku).toBeDefined()
+  })
+
+  test("the shipped commit window matches the code default — the two cannot drift apart", async () => {
+    // The clamp tests exercise CONFIG_MANAGED_DEFAULTS, but every real run reads THIS file, so a
+    // shipped value left behind would silently win over the code default with no test going red.
+    const config = await loadBundledDefaultConfig()
+    expect(config.anthropic?.stream_commit_after_sec).toBe(CONFIG_MANAGED_DEFAULTS.streamCommitAfterSec)
   })
 
   test("bundled defaults declare gpt-5.5 stream-idle override (600s)", async () => {

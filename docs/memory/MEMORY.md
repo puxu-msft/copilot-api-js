@@ -31,6 +31,8 @@
 ## 精炼保留（verification 簇 / 独有教学价值；触发钩子，细节读正文）
 - [通过/空/干净/自洽/doc-vs-code 不自证](feedback-pass-null-clean-not-self-validating.md) — verification 簇根；skill `verifying-authoritative-claims`
 - [下完备性判断前先实测每个支撑事实](feedback-verify-facts-before-superlative-completeness-verdict.md) — absence/negative 断言最易凭结构推断而错；别贬防御为「只治一半」
+- [超时归因要逐层剥离、别信配置层自称值](methodology-timeout-attribution-strip-layers-not-config.md) — 真掐断的可能在你配置那层之下(x-stainless-timeout:1200/SDK 1250s 全没触发·实际 undici headersTimeout ~300s)；错误 cause 即层名·客户端侧原始记录必落盘·多臂共享服务端须裸 socket 排除
+- [测客户端何时放弃用服务端观测别跑阶梯](methodology-observe-client-giveup-serverside-not-ladder.md) — 静默超出容忍度+读 request.signal 一次给点位与重试 backoff；两正样本对照先行·Bun 须 idleTimeout:0·自己杀服务器的末尾错误不是客户端终态
 - [诊断日志是会撒谎的权威声音](methodology-diagnostic-log-is-authoritative-voice-verify-against-ground-truth.md) — 计数器可能只接部分路径恒打零；收紧入参用类型逼全站点
 - [从日志断代码前先核实运行进程含修复](methodology-verify-running-server-has-fix-before-diagnosing-from-log.md) — 生产日志可能陈旧进程打；ps lstart + merge-base 核祖先；远端/事后取证用 payload 自证（缺随修复引入的字段=版本指纹）
 - [我方产出会作为客户端历史回流](methodology-our-own-output-returns-as-client-history.md) — 「客户端原生不会发这形状」非安全论据；修复腿须能修自己昨天造的
@@ -58,7 +60,7 @@
 - [测 elapsed 逻辑注入 clock seam 别用 setSystemTime](reference-elapsed-time-test-inject-clock-seam-not-setsystemtime.md) — bun setSystemTime 跨 await 不冻结+绝对时基减真 startedAt 出负值；`now?:()=>number` seam 默认 Date.now、测试注入；边界别恰等 cap
 - [real codex 测试用 CODEX_HOME 隔离](reference-codex-ephemeral-insufficient-use-codex-home.md) — --ephemeral 不够、state 仍写真 ~/.codex；代理侧对应=XDG_DATA_HOME
 - [node_modules 存在 ≠ 锁文件事实](reference-node-modules-presence-not-lockfile-truth.md) — 可能是 prune orphan；选依赖前 grep bun.lock
-- [worktree bun add 后主树须补 install](reference-worktree-bun-add-needs-main-tree-install-after-merge.md) — 隔离 worktree bun add 只进该树；FF 合并后主树须 bun install
+- [worktree 的隔离性没你以为的强（三向）](reference-worktree-bun-add-needs-main-tree-install-after-merge.md) — ①worktree bun add 只进该树、FF 后主树须 install；②新建 worktree 缺 native/*.node 等产物→在其中跑测试红一片，别误归因（`git check-ignore` 一秒判），交付回归在主树跑；③建在 `.worktrees/` 内的 worktree 仍向上解析到主树 node_modules→「裸装能否自立」验证必须放仓库外（`/tmp`），且清点依赖别信 grep import、只信裸跑
 - [server.ts 与 test-app.ts 双份 notFound 镜像](reference-server-vs-test-app-dual-notfound-mirror.md) — 改 server 中间件须真实 createServer 测；config 中间件每请求覆盖 state
 - [起测试服务器端口被 peer 占用会静默打到 peer mock](reference-spawn-fails-silently-hits-peer-server-verify-port-ownership.md) — launcher 静默失败 health 仍绿；spawn 后验 server.log + ss PID
 - [编译错误：补符号 vs 删引用](methodology-broken-reference-supply-vs-delete.md) — 按消费者契约+独立 oracle 裁决，别反射式让它编译
@@ -119,7 +121,7 @@
 - [Responses buffered-merge（landed 分支待合并）](project-responses-buffered-merge-landed.md) — 候选托管 reducer+两旋钮；承重=buffered 默认 ON→drop-delta 作用所有 Responses 流、纯 delta 累加者拿空文本；@ai-sdk 比官方宽容
 - [transport 配置三轴归位（landed master 2c19c7cf）](project-transport-config-three-axis-reorg.md) — timeouts/upstream_transport/responses_ws；0 语义统一+SOCKS 拒 0；热重载 retire-and-replace
 - [h2 池按容量选路 N=1 + pre-response 可重试（landed master 36cf45bf）](project-h2-pool-capacity-routing-and-pre-response-retry.md) — 消灭并发流 blast-radius；Map<origin,entry[]>+reservation+容量感知 pending+idle-reap；与并发 favor 3-way 合并落地；后续 ②per-origin 硬 cap(阻塞式+lease token) ③error tag ④Q5 埋点全落地
-- [上游静默 commit 时机 spec（Q5 已实测闭合，B2 主线+Q6 高上限定，planner 写 plan 中）](project-upstream-silence-commit-timing-spec.md) — deferred-header 直读证伪等-header 判别(34 正样本 header@47-231s∩success，对抗审 HIGH-1/2 闭合)；B2 主线(post-commit pre-content 重试非 continuation 变体)+B3 Q6 高上限逃生舱；Q1=CC≥125s/Q2 未定论；MED-2=seal 边界 crash race 待与 B2 一并治；**接手看 [docs/plan/2026-07-23-handover-h2-pool-and-silence-spec.md]** + docs/plan/2026-07-23-upstream-silence-recovery.md
+- [上游静默 commit 时机 spec（Q5 已实测闭合，B2 主线+Q6 高上限定，planner 写 plan 中）](project-upstream-silence-commit-timing-spec.md) — deferred-header 直读证伪等-header 判别(34 正样本 header@47-231s∩success，对抗审 HIGH-1/2 闭合)；B2 主线(post-commit pre-content 重试非 continuation 变体)+B3 Q6 高上限逃生舱；Q1 已闭合=CC pre-header≈300s(本机 2.1.220 transport default·触发器同 undici headersTimeout·非 SDK/CC 计时器·非协议常量)/Q2 未定论；MED-2=seal 边界 crash race 待与 B2 一并治；**接手看 [docs/plan/2026-07-23-handover-h2-pool-and-silence-spec.md]** + docs/plan/2026-07-23-upstream-silence-recovery.md
 - [History 三层降温归档（landed master 27b65b89）](project-history-tiered-archive.md) — HOT→tier-1→sealed；move 永不真删；durable unit 协作停/续跑
 - [对称四点 hook 架构（landed master 2a77bf7c）](project-symmetric-four-point-hooks.md) — client/upstream×in/out+exchange；data-URL 不解析别名·config-freshness 须 parse 前
 - [请求生命周期 cancel/settle/quiesce（landed master）](project-request-lifecycle-cancel-settle-quiesce.md) — 多根因；承重=有界 grace+per-request 精确 timer>周期 scan；并发合并=等 peer 提交后 3-way 不 force

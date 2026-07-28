@@ -136,6 +136,57 @@ describe("P3-T1 downstream delivery session", () => {
     expect(delivery.snapshot.writeCount).toBe(2)
   })
 
+  test("freezeHeartbeat is recoverable: resumeHeartbeat revives the timer", async () => {
+    clock.install()
+    const writes: Array<{ method: string; frame: unknown }> = []
+    const delivery = createDownstreamDeliverySession({
+      sink: arraySink(writes),
+      monotonicNow: Date.now,
+      heartbeat: {
+        intervalMs: 20_000,
+        frame: () => ({ event: "ping", data: '{"type":"ping"}' }),
+      },
+    })
+
+    delivery.clientSink.suspendHeartbeat?.()
+    delivery.clientSink.freezeHeartbeat?.()
+    await delivery.clientSink.write(frame("content_block_stop", 0))
+    delivery.clientSink.resumeHeartbeat?.()
+    writes.length = 0
+    for (let i = 0; i < 4; i++) {
+      await clock.advance(20_000)
+      await drain()
+    }
+
+    expect(writes.length).toBeGreaterThan(0)
+    expect(writes.every(({ frame: value }) => (value as { event?: string }).event === "ping")).toBe(true)
+    delivery.clientSink.close?.()
+  })
+
+  test("close permanently stops heartbeat but keeps the write port usable for terminal structure", async () => {
+    clock.install()
+    const writes: Array<{ method: string; frame: unknown }> = []
+    const delivery = createDownstreamDeliverySession({
+      sink: arraySink(writes),
+      monotonicNow: Date.now,
+      heartbeat: {
+        intervalMs: 20_000,
+        frame: () => ({ event: "ping", data: '{"type":"ping"}' }),
+      },
+    })
+
+    delivery.clientSink.suspendHeartbeat?.()
+    delivery.clientSink.close?.()
+    await delivery.clientSink.writeAnchor?.(frame("content_block_stop", 0))
+    delivery.clientSink.resumeHeartbeat?.()
+    for (let i = 0; i < 4; i++) {
+      await clock.advance(20_000)
+      await drain()
+    }
+
+    expect(writes).toEqual([{ method: "anchor", frame: frame("content_block_stop", 0) }])
+  })
+
   test("on-demand heartbeat stays ping-only before the content deadline", async () => {
     clock.install()
     const writes: Array<{ method: string; frame: unknown }> = []

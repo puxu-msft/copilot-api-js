@@ -1093,7 +1093,7 @@ export async function runResponseBufferedSink(
   // truncation/exhaustion, or a post-retreat truncation), the anchor's content_block_start@0 is still OPEN
   // on the forwarded track. The driver returns `stream-error` and the handler writes its protocol error
   // frame, but a dangling open block would leave the client's block structure unbalanced. Close it
-  // (empty-text content_block_stop@0 — known-benign) BEFORE the failure return. `freezeHeartbeat` first so
+  // (empty-text content_block_stop@0 — known-benign) BEFORE the failure return. `close()` first so
   // no ping/anchor can fire between here and the stop write; the write is best-effort (the client may
   // already be gone — a reject is swallowed, there is nothing left to do). NOT called on client-abort /
   // settled-abort (the client is already gone → closing is meaningless). Idempotent — inert when the anchor
@@ -1102,7 +1102,7 @@ export async function runResponseBufferedSink(
   // own terminal-branch `closeAnchorIfOpen` reads the SAME shared `anchorClosed` and short-circuits, so the
   // buffered exhaustion path emits exactly ONE stop@0 (driver's), not a second from the pump.
   const closeAnchorIfOpen = async (): Promise<void> => {
-    sink.freezeHeartbeat?.()
+    sink.close?.()
     // Only `empty_text` (anchorBlockOpen) reserved a content_block@0 that needs balancing; `enveloped_ping`
     // injected a message_start-only envelope (no block) → nothing to close off.
     if (anchorState.injected && anchor && anchorState.anchorBlockOpen && !anchorState.anchorClosed) {
@@ -1263,8 +1263,8 @@ export async function runResponseBufferedSink(
             // (one-time anchor close-off `stop@0` → H1 message_start dedup → +1 remap), so an anchor injected
             // before the retreat can't collide the real @0 block with the anchor's @0 or re-send message_start.
             // On the no-anchor path this is byte-identical to the previous raw `for (f of buffer) write(f)`
-            // (every anchor branch inert). SUSPEND/RESUME (recoverable) around the flush — NOT the terminal
-            // path's permanent freeze — because retreat is followed by MORE (live) streaming: a subsequent
+            // (every anchor branch inert). SUSPEND/RESUME (recoverable) around the flush — NOT a terminal
+            // close — because retreat is followed by MORE (live) streaming: a subsequent
             // live stall must still get keepalives (the anchor is now closed, so the tick emits a block-aware
             // empty delta on the live-open block, or a ping). `flushBufferedFrames`' internal freeze clears the
             // timer; resume re-arms a fresh interval so the heartbeat recovers for the live continuation.
@@ -1288,9 +1288,9 @@ export async function runResponseBufferedSink(
             //
             // §4.4 concurrency guard: SUSPEND the heartbeat around this per-block flush (recoverable), so a
             // tick firing on one of the loop's `await sink.write` yields can't splice an empty keepalive
-            // delta into the middle of THIS real block's deltas. RESUME after — unlike the terminal path's
-            // permanent freeze, the block-level flush is followed by MORE streaming, so the inter-block idle
-            // must keep its keepalives. (`flushBufferedFrames`' internal freeze clears the timer; resume
+            // delta into the middle of THIS real block's deltas. RESUME after — unlike a terminal close, the
+            // block-level flush is followed by MORE streaming, so the inter-block idle must keep its
+            // keepalives. (`flushBufferedFrames`' internal freeze clears the timer; resume
             // re-arms a fresh interval, so the heartbeat recovers for the next inter-block gap.)
             sink.suspendHeartbeat?.()
             // §5.3/§10.5 H2 ordering: `error` is BOTH a commit boundary AND the response terminus. When it
@@ -1390,6 +1390,10 @@ export async function runResponseBufferedSink(
         // here (defect (b): it stayed OPEN across every earlier block boundary; now it closes at the end —
         // and unconditionally, even when this tail buffer is EMPTY because the terminal frame was itself a
         // boundary). On the whole-response path this is the single flush → still terminal (R1 byte-identical).
+        // This is a true response terminus: permanently stop heartbeat BEFORE the first flush write.
+        // Unlike retreat/boundary flushes there is no subsequent stream that needs resume. Closing here
+        // also blocks an in-flight heartbeat operation's finally-handler from re-arming during a slow flush.
+        sink.close?.()
         const res = await flushBufferedFrames(buffer, true, { cause: "terminal-drain" }, candidateOpts.transformBufferedFlush)
         if (res.kind === "client-abort") return { kind: "settled-abort" }
         if (res.kind === "write-error") {

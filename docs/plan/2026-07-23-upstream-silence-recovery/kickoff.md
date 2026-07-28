@@ -4,23 +4,39 @@
 
 ---
 
+## ⚠ 当前状态（2026-07-28，先读这一节，别按下面的原始顺序从头开工）
+
+**B2 地基（plan-2 Task 0.1-0.7）已全部完成，下一个是 plan-3 的 P4。** 权威状态见 [`docs/plan/2026-07-23-handover-h2-pool-and-silence-spec.md`](../2026-07-23-handover-h2-pool-and-silence-spec.md) **§0.2**（实施真相源），进度 ledger 在 `.worktrees/upstream-silence-recovery/.superpowers/sdd/progress.md`。
+
+- **工作区**：隔离 worktree `.worktrees/upstream-silence-recovery` @ 分支 `feat/upstream-silence-recovery`（**未合回 master**；node_modules 已软链）。
+- **已完成**：B2-P0（配置骨架 + telemetry）、Task 0.2（delivery-level semantic-content gate）、0.3（`coordinator.runRecoveryFromPreReadyFailure`）、0.4（`driver.runPreContentRecovery` + server-tool gate）、0.5（recovery sink lifetime supervisor）、0.6（seal-race crash 安全；其 ② quiescence join 授权延后 P4/P5）。**全部未接线**（P4/P5 才接），每个都过了异模型 review + mutation 正样本对照。
+- **B1 已被主线 supersede、不用再做**：master 自己落地了 B1 并改进（commit 窗口默认 **180**、ceiling **240**、窗口重构成 ingress-relative deadline）。原因是 **Q1 首失败点已实测闭合（≈300s，触发器 = undici 默认 `headersTimeout`）**——下方「Q1 未实测」的原始表述**作废**。
+- **底座已漂移，接线前必重读现状**：master 在本分支开工后前进 128 提交，**重写了 delivery/heartbeat 生命周期**（`freezeHeartbeat` 语义、close-before-terminal-drain）。**plan-3 的 `file:line` 与 handler/driver 接线点假设多半已过时**——以当前代码为准，plan 文本与现状冲突时**信代码**并在报告里写清差异（Task 0.5 已按此处理，见 §0.2）。本分支已合并 master（`e951026a`）。
+- **用户已裁决的分叉**（不要再问）：① 配置键 `precontent_recovery` 沿用；② **B2 排除 `timeout(header-wait)`/`reaper-cancel`**——用户硬约束「**绝不误杀合法长思考**」，只在确定性上游死亡（RST/transport-close/clean-EOF）才 fresh dispatch；③ buffered 尊重 `max_retries=0`；④ B3 计时器独立，且 **B3 wall-clock fail-fast 默认关闭**（同一硬约束）。见 README「用户裁决记录」。
+- **验证命令**：`bun run test:backend`（其汇总恒报 `0 tests` 的缺陷已于 master `5454616b` 修复）。**已知既有 flaky**：History V3 capture-performance 家族等 perf/时序测试在负载下会挂（master 同样会）——判回归以「单跑是否通过 + 是否属该家族」为准，别当自己的回归。
+
+**B2 地基（plan-2）已全部完成**（Task 0.1-0.7；0.6 的 ② quiescence join 授权延后 P4/P5）。**下一步 = plan-3 的 P4~P6**（两挂载点执行器 + 三模式 splice + handler 接线 + 协议矩阵，全特性最硬），然后 B3（默认关）→ 终审 → ff 合 master。
+
+---
+
 你要实施「上游静默与 delayed-commit 恢复」特性（三层防线 B1/B2/B3）。**先读**（按序）：
 
 1. 权威 spec：`docs/spec/2026-07-23-upstream-silence-commit-timing.md`（什么/为何，已定稿，Q5 已实测闭合）。
-2. PoC 裁决：`exp/silence-recovery-b2-vs-b5/FINDINGS.md`（B2 主线 + 三 keepalive 模式 wire contract 实测表 —— **这是本计划所有 wire-level 判断的实测依据，别脱离它猜测协议行为**）。
-3. 计划总览：`docs/plan/2026-07-23-upstream-silence-recovery/README.md`（阶段 DAG + 冻结契约 + 待决项）。
-4. 各阶段文档（按 DAG 顺序）：`plan-1-b1-widen-window.md` → `plan-2-b2-p0-p3-foundation.md` → `plan-3-b2-p4-p6-splice-and-matrix.md` → `plan-4-b3-failfast.md` → `plan-5-closeout.md`。
+2. PoC 裁决：`exp/silence-recovery-b2-vs-b5/FINDINGS.md`（B2 主线 + 三 keepalive 模式 wire contract 实测表 —— **这是本计划所有 wire-level 判断的实测依据，别脱离它猜测协议行为**）；Q1/Q2 门见 `exp/silence-recovery-gates/FINDINGS.md`（Q1 已闭合 ≈300s；Q2 未定论）。
+3. 计划总览：`docs/plan/2026-07-23-upstream-silence-recovery/README.md`（阶段 DAG + 冻结契约 + 用户裁决记录）。
+4. 各阶段文档（按 DAG 顺序）：`plan-1-b1-widen-window.md`（**已由主线完成**） → `plan-2-b2-p0-p3-foundation.md` → `plan-3-b2-p4-p6-splice-and-matrix.md` → `plan-4-b3-failfast.md` → `plan-5-closeout.md`。
 
-**执行顺序（gate-first，除非另行安排并行）：**
-1. B1（plan-1）与 B2-P0~P3（plan-2）可并行开工（无共享文件、无依赖）。
-2. B2-P4~P6（plan-3）必须在 plan-2 全部完成后才开始——它依赖 plan-2 产出的 `coordinator.runRecoveryFromPreReadyFailure`、`hasDeliveredSemanticContent`、`recovery-sink-supervisor` 三件机件。
-3. B3（plan-4）必须在 plan-3 完成后才开始——复用 plan-3 的判据组合。
-4. plan-5（收口）在前四者都通过 `bun run test:backend` 后执行。
+**执行顺序（当前实际；原始 gate-first 顺序见括注）：**
+1. ~~B1（plan-1）~~ **已由主线完成**；~~B2-P0~P3（plan-2）~~ **Task 0.1-0.7 全部完成**（0.6 的 ② quiescence join 授权延后 P4/P5，见 backlog）。
+2. B2-P4~P6（plan-3）在 plan-2 全部完成后开始——依赖已产出的 `coordinator.runRecoveryFromPreReadyFailure`、`hasDeliveredSemanticContent`、`recovery-sink-supervisor` 三件机件（**都已就位**）。⚠ 接线前重读 handler-v4/driver 现状（底座已漂移）。
+3. B3（plan-4）在 plan-3 完成后开始——复用 plan-3 的判据组合；**默认关闭**（never-false-kill 硬约束）。
+4. plan-5（收口）在前四者都通过全后端测试后执行。
 
-**关键待决项（不要自行拍板，遇到时向主会话/用户确认，见各阶段文档的"门控问题"小节）：**
-- Q1（CC pre-header 容忍度）未实测——B1 的窗口上限具体数值待填，先落地参数化骨架。
-- B2 的配置键命名（`precontent_recovery` 是占位名）与"是否纳入 reaper-cancel/timeout 触发 B2"的范围边界——plan-3 Task 4.3 已列出两种倾向，需要在实现前与主会话对齐。
-- B3 与 `responseHeaderTimeout` 是否需要合并成一个计时器——plan-4 已给出倾向独立的理由，但若实测发现竞态冲突需要回来讨论。
+**关键待决项（已全部裁决，别再问）：**
+- ~~Q1（CC pre-header 容忍度）未实测~~ → **已闭合 ≈300s**（undici 默认 `headersTimeout`），B1 已按此落地（默认 180 / ceiling 240）。
+- 配置键 `precontent_recovery` **沿用**；**B2 排除 `reaper-cancel`/`timeout(header-wait)`**（用户硬约束 never-false-kill：对可能仍在合法思考的活连接重发 = 误杀）。
+- B3 与 `responseHeaderTimeout` **独立计时器**，且 B3 wall-clock fail-fast **默认关闭**（合法思考无上界，任何有限计时器都可能误杀）。
+- 仍开放的只有实现层细节（如 gate 返回形状抛错 vs result variant），按 TDD 观察调用方需求再定。
 
 **承重纪律（务必守）：**
 - **B2 绝不是 continuation-retry 的小变体** —— `runRequest` 的 pre-ready 失败没有 `CoordinatedCandidate` 可用，`runContinuation`/`runRecovery` 都要求已 ready 的 parent。见 plan-2 开头的代码实证。

@@ -1,6 +1,6 @@
 ---
 name: debugging-server-crashes
-description: 当 copilot-api-js 服务器意外整进程退出（一条良性取消/错误却杀掉所有并发请求）时使用——两条同构放大链：① 孤儿 promise（无 live awaiter）的 reject 变全局 unhandledRejection；② EventEmitter（socket/h2 session）emit 'error' 时无监听者变 uncaughtException。main.ts 的 process.on 两个 handler 都 →process.exit(1) 把良性事件放大成崩溃（生产 911s abort incident + "[http2] TLS connect timeout" 崩溃）。根因修=产生点挂对称的两个 class-eliminator 原语（`src/lib/transport/crash-safety.ts` 的 withRejectionObserver / withErrorSink），在取得所有权处统一应用、别放宽全局 handler。跨传输/持久化/reaper 的通用崩溃防御模式。
+description: 当 copilot-api-js 服务器意外整进程退出（一条良性取消/错误却杀掉所有并发请求）时使用——三条同构放大链：① 孤儿 promise（无 live awaiter）的 reject 变全局 unhandledRejection；② EventEmitter（socket/h2 session）emit 'error' 时无监听者变 uncaughtException；③ seal 后晚到的 best-effort 观测写（timing/headers）撞 assertWritable 抛错、经①放大（判据=语义写保持 loud-throw、best-effort 观测静默丢弃；同族不对称即红旗）。main.ts 的 process.on 两个 handler 都 →process.exit(1) 把良性事件放大成崩溃（生产 911s abort incident + "[http2] TLS connect timeout" 崩溃）。根因修=产生点挂对称的两个 class-eliminator 原语（`src/lib/transport/crash-safety.ts` 的 withRejectionObserver / withErrorSink），在取得所有权处统一应用、别放宽全局 handler。跨传输/持久化/reaper 的通用崩溃防御模式。
 ---
 
 # 调试服务器意外退出
@@ -38,6 +38,18 @@ description: 当 copilot-api-js 服务器意外整进程退出（一条良性取
 - **变体 B** `withErrorSink(emitter)`:挂常驻 inert `'error'` listener(`.on` 非 `.once`——迟到 teardown 可多次 emit),返回原 emitter。在 transport **取得 emitter 所有权处**统一应用(socket 创建、从注入工厂接收 session):`createSession` 的两个 `tls.connect`、`getSession` 的 `sessionFactory` 返回值、`proxy-connect` 的 socks/http-connect socket。覆盖全部下游 teardown(handshake 超时、shutdown-race close、创建→adopt handoff gap、未来新增创建点),无需逐一定位。
 
 配合的第二层(defense-in-depth,非必需):`settle` 失败分支用 `sock.destroy()`**不带 err**(err 已由 `reject` 投递)——`destroy()` 无 err 参数**不会** re-emit `'error'`,故即使没有 sink 也不触发 classic `destroy(err)` re-emit 崩溃。两层任一独立即可防住 timeout 路径;都保留。
+
+### 变体 C:**seal 后晚到的 best-effort 观测写抛错**(2026-07-28,upstream-silence B2 Task 0.6)
+
+变体 A 的一类**产生点**,值得单列因为它不在 transport 层、且修法方向相反(不是挂 observer,是**让写本身别抛**)。
+
+- **形状**:某个记录器/账本在 settle 后 `seal`,其写入口用 `assertWritable()` **loud-throw**;而一个**晚到的异步回调**仍会写它 → 抛错沿调用栈上抛 → 若原 promise 已无 live awaiter(handler 因 reap/abort/deadline 早已移交)→ 孤儿 rejection → `unhandledRejection` → `process.exit(1)`。**良性的迟到观测被放大成整进程退出**。
+- **本项目实例**:`dispatch-scheduler` 在 `await input.open()` resolve 后无守卫调 `recording.recordOpened(...)`;GHC 的 **deferred-header** 可让 header 迟到 47-231s(上界未知,见 spec `2026-07-23-upstream-silence-commit-timing`),期间 reaper / `request_deadline` / candidate-discard 完全可能已 seal 掉 operation。窗口越长、race 越现实。
+- **判据(关键,别一刀切)**:分两类写——**语义写**(payload/frame,seal 后写会**腐化记录**)保持 loud-throw,**绝不放宽**;**best-effort 晚到观测**(timing 四刻、response headers 这类只增诊断价值的证据)应与同族逐帧 capture 对齐、`if (sealed) return` **静默丢弃**。同族不对称本身就是红旗:本项目的逐帧 `captureForwardedGenerationFrame` 早已 `if (sealed) return`,唯独 timing 走 `assertWritable` 抛错。
+- **修法**:守卫**整条晚到观测**(整个 `recordOpened` 开头早返回),而非只堵当前会抛的那一处——seal 后整条观测本就该整体丢弃,且防未来往同一回调新增无守卫写;并让 setter 自身也对齐 `if (sealed) return` 作双保险(别只靠调用点)。
+- **正样本对照**:去掉守卫后 seal-race 回归测试必须变红(实测 3/3 红),否则测试没咬住。
+- **⚠ 这里踩过一个真坑,值得单记**:测试挂了 `process.on("unhandledRejection")` 探针、标题也写「不产生 unhandled rejection」,但它**结构上永不触发**——helper 里 `try { await request } catch {}` 提供了 live awaiter,而**本缺陷的前提恰恰是「无 live awaiter」**。异模型 reviewer 把三个守卫**全拆**、只留 unhandled 断言,**3/3 仍全绿**。真正咬住回归的是旁边那三条状态断言(headers / lastSequence / timing 未被污染)。**教训**:断言否定性结论(「不崩」「无泄漏」「没多发」)时,先确认**测试拓扑保留了触发条件**——`await` 一下被测 promise 就等于把 bug 的前提消掉了,探针再正确也测不到。要么另建**孤儿拓扑**用例让探针成为唯一 gate 并以 mutation 证其变红,要么如实改标题、把未覆盖面写进注释/backlog。呼应 [[feedback-pass-null-clean-not-self-validating]] 与 skill `positive-control-your-tests`。
+
 
 **How to apply**：
 1. **别放宽全局 handler** 用 `isAbortError` 之类豁免——过宽（`TimeoutError` / 含 "abort" 子串 / cause 链），会静默降级真正该崩的未知 reject/exception；根因修在产生点、全局 handler 保持严格。

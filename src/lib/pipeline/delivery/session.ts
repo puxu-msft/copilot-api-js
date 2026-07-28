@@ -202,7 +202,7 @@ export function createDownstreamDeliverySession(options: CreateDownstreamDeliver
     writeKeepalive: (frame) => write(makeEnvelope(frame, "keepalive", monotonicNow())),
     writeSyntheticEnvelope: (frame) => write(makeEnvelope(frame, "synthetic-message-start", monotonicNow())),
     writeAnchor: (frame) => write(makeEnvelope(frame, "anchor", monotonicNow())),
-    freezeHeartbeat: closeHeartbeat,
+    freezeHeartbeat: stopHeartbeat,
     suspendHeartbeat() {
       heartbeatSuspended = true
       stopHeartbeat()

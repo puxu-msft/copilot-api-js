@@ -21,8 +21,10 @@ import {
   beforeEach,
   describe,
   expect,
+  spyOn,
   test,
 } from "bun:test"
+import consola from "consola"
 import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
@@ -30,6 +32,10 @@ import path from "node:path"
 import {
   //
   applyConfigToState,
+  clampCommitWindowSec,
+  clampKeepaliveCadence,
+  COMMIT_WINDOW_MAX_SEC,
+  KEEPALIVE_CADENCE_MAX,
   resetApplyState,
   resetConfigCache,
   setBundledConfigForTests,
@@ -45,6 +51,7 @@ import {
   state,
   type StateSnapshot,
 } from "~/lib/state"
+import { CONFIG_MANAGED_DEFAULTS } from "~/lib/state-defaults"
 
 // ============================================================================
 // Isolated tmp-dir harness (mirrors config-hot-reload.it.test.ts)
@@ -87,6 +94,50 @@ afterEach(async () => {
   resetConfigCache()
   resetApplyState()
   setBundledConfigForTests(null)
+})
+
+// ============================================================================
+// Delayed-commit and keepalive cadence clamps
+// ============================================================================
+
+describe("stream commit and keepalive clamps", () => {
+  test("commit-window and keepalive clamps each emit their own first warning", () => {
+    const warnSpy = spyOn(consola, "warn").mockImplementation((() => undefined) as unknown as typeof consola.warn)
+    try {
+      expect(clampCommitWindowSec(COMMIT_WINDOW_MAX_SEC + 1)).toBe(COMMIT_WINDOW_MAX_SEC)
+      expect(clampKeepaliveCadence(KEEPALIVE_CADENCE_MAX + 1)).toBe(KEEPALIVE_CADENCE_MAX)
+      expect(warnSpy).toHaveBeenCalledTimes(2)
+      expect(warnSpy.mock.calls[0]?.[0]).toContain("delayed-commit window")
+      expect(warnSpy.mock.calls[1]?.[0]).toContain("keepalive interval")
+    } finally {
+      warnSpy.mockRestore()
+    }
+  })
+
+  test("commit-window ceiling sits under Q1's measured CC pre-header limit, independently of keepalive cadence", async () => {
+    // Q1 measured the pre-header abort at ~300s (undici's default headersTimeout, not any
+    // Anthropic-level timer — exp/silence-recovery-gates/FINDINGS.md). The ceiling keeps a
+    // deliberate margin under it: hitting it aborts the whole attempt.
+    expect(COMMIT_WINDOW_MAX_SEC).toBe(240)
+    expect(KEEPALIVE_CADENCE_MAX).toBe(40)
+    expect(clampCommitWindowSec(241)).toBe(COMMIT_WINDOW_MAX_SEC)
+    expect(clampKeepaliveCadence(50)).toBe(KEEPALIVE_CADENCE_MAX)
+
+    await applyYaml(``)
+    expect(state.streamCommitAfterSec).toBe(180)
+
+    await applyYaml(`anthropic:\n  stream_commit_after_sec: 241\n  stream_keepalive_ping_sec: 50\n`)
+    expect(state.streamCommitAfterSec).toBe(COMMIT_WINDOW_MAX_SEC)
+    expect(state.streamKeepalivePingSec).toBe(KEEPALIVE_CADENCE_MAX)
+  })
+
+  test("the default commit window stays clear of the measured pre-header limit", () => {
+    // The window and the limit are on the same clock: the proxy sends nothing until it commits,
+    // so a default at or above the limit would abort every slow request instead of committing.
+    const MEASURED_PRE_HEADER_ABORT_SEC = 300
+    expect(CONFIG_MANAGED_DEFAULTS.streamCommitAfterSec).toBeLessThan(COMMIT_WINDOW_MAX_SEC)
+    expect(COMMIT_WINDOW_MAX_SEC).toBeLessThan(MEASURED_PRE_HEADER_ABORT_SEC)
+  })
 })
 
 // ============================================================================

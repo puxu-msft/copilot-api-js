@@ -1,0 +1,110 @@
+{
+  "port": 41944,
+  "nonce": "env-control-unset-1785217462967068647",
+  "windowMs": 600000,
+  "serverStartedAt": "2026-07-28T05:44:23.023Z",
+  "attempts": 3,
+  "observations": [
+    {
+      "attempt": 1,
+      "path": "/v1/messages",
+      "method": "POST",
+      "arrivedAtMs": 1967,
+      "abortedAfterMs": 299541,
+      "answeredAfterMs": null,
+      "headers": {
+        "accept": "application/json",
+        "accept-encoding": "gzip, deflate, br, zstd",
+        "anthropic-beta": "claude-code-20250219,interleaved-thinking-2025-05-14,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05",
+        "anthropic-dangerous-direct-browser-access": "true",
+        "anthropic-version": "2023-06-01",
+        "authorization": "Bearer copilot-api",
+        "connection": "keep-alive",
+        "content-length": "189993",
+        "content-type": "application/json",
+        "host": "127.0.0.1:41944",
+        "user-agent": "claude-cli/2.1.220 (external, claude-vscode, agent-sdk/0.3.215)",
+        "x-app": "cli",
+        "x-claude-code-session-id": "503a2ab3-724c-4ad6-9b5c-12e14662873f",
+        "x-stainless-arch": "x64",
+        "x-stainless-lang": "js",
+        "x-stainless-os": "Linux",
+        "x-stainless-package-version": "0.94.0",
+        "x-stainless-retry-count": "0",
+        "x-stainless-runtime": "node",
+        "x-stainless-runtime-version": "v26.3.0",
+        "x-stainless-timeout": "1200"
+      }
+    },
+    {
+      "attempt": 2,
+      "path": "/v1/messages",
+      "method": "POST",
+      "arrivedAtMs": 302083,
+      "abortedAfterMs": 300283,
+      "answeredAfterMs": null,
+      "headers": {
+        "accept": "application/json",
+        "accept-encoding": "gzip, deflate, br, zstd",
+        "anthropic-beta": "claude-code-20250219,interleaved-thinking-2025-05-14,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05",
+        "anthropic-dangerous-direct-browser-access": "true",
+        "anthropic-version": "2023-06-01",
+        "authorization": "Bearer copilot-api",
+        "connection": "keep-alive",
+        "content-length": "189993",
+        "content-type": "application/json",
+        "host": "127.0.0.1:41944",
+        "user-agent": "claude-cli/2.1.220 (external, claude-vscode, agent-sdk/0.3.215)",
+        "x-app": "cli",
+        "x-claude-code-session-id": "503a2ab3-724c-4ad6-9b5c-12e14662873f",
+        "x-stainless-arch": "x64",
+        "x-stainless-lang": "js",
+        "x-stainless-os": "Linux",
+        "x-stainless-package-version": "0.94.0",
+        "x-stainless-retry-count": "0",
+        "x-stainless-runtime": "node",
+        "x-stainless-runtime-version": "v26.3.0",
+        "x-stainless-timeout": "1200"
+      }
+    },
+    {
+      "attempt": 3,
+      "path": "/v1/messages",
+      "method": "POST",
+      "arrivedAtMs": 603546,
+      "abortedAfterMs": 296603,
+      "answeredAfterMs": null,
+      "headers": {
+        "accept": "application/json",
+        "accept-encoding": "gzip, deflate, br, zstd",
+        "anthropic-beta": "claude-code-20250219,interleaved-thinking-2025-05-14,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05",
+        "anthropic-dangerous-direct-browser-access": "true",
+        "anthropic-version": "2023-06-01",
+        "authorization": "Bearer copilot-api",
+        "connection": "keep-alive",
+        "content-length": "189993",
+        "content-type": "application/json",
+        "host": "127.0.0.1:41944",
+        "user-agent": "claude-cli/2.1.220 (external, claude-vscode, agent-sdk/0.3.215)",
+        "x-app": "cli",
+        "x-claude-code-session-id": "503a2ab3-724c-4ad6-9b5c-12e14662873f",
+        "x-stainless-arch": "x64",
+        "x-stainless-lang": "js",
+        "x-stainless-os": "Linux",
+        "x-stainless-package-version": "0.94.0",
+        "x-stainless-retry-count": "0",
+        "x-stainless-runtime": "node",
+        "x-stainless-runtime-version": "v26.3.0",
+        "x-stainless-timeout": "1200"
+      }
+    }
+  ],
+  "probes": [
+    {
+      "path": "/api/hello",
+      "method": "HEAD",
+      "atMs": 1244,
+      "userAgent": "Bun/1.4.0"
+    }
+  ]
+}

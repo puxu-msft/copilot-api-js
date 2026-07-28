@@ -24,6 +24,7 @@ import os from "node:os"
 import path from "node:path"
 
 import { createModelOperationRecorder } from "~/lib/context/model-operation-record"
+import { isNativeHistorySearchAvailable } from "~/lib/history/search-native"
 import { runHistorySearchDaemon } from "~/lib/history/search/daemon-entry"
 import { createHistorySearchUdsClient } from "~/lib/history/search/uds-client"
 import {
@@ -97,7 +98,13 @@ afterEach(async () => {
   for (const dir of tmpDirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true })
 })
 
-describe("runHistorySearchDaemon's tail-progress status (merged-state review blocker 3, 2026-07-22)", () => {
+// The native Tantivy `.node` is a gitignored build product and is no longer built by `bun install`
+// (2026-07-28). These suites drive the real index, so they gate on its presence rather than fail:
+// an environmental red is too easy to wave away as "pre-existing" — which is exactly what happened.
+// Run them for real with `bun run build:history-search` first (CI's `test:ci` does).
+const NATIVE = isNativeHistorySearchAvailable()
+
+describe.skipIf(!NATIVE)("runHistorySearchDaemon's tail-progress status (merged-state review blocker 3, 2026-07-22)", () => {
   test("lastSuccessfulTailAt becomes non-null after the daemon's initial catch-up tail round, before any client search has ever been issued", async () => {
     const dbPath = path.join(freshDir("status-basic-db-"), "history-v3.db")
     const socketPath = path.join(freshDir("status-basic-sock-"), "history-search.sock")

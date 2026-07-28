@@ -51,6 +51,27 @@ export function getNativeHistorySearch(): Promise<NativeHistorySearchModule> {
   return (nativeModule ??= loadNative())
 }
 
+/**
+ * Whether the native module can be loaded RIGHT NOW, without throwing.
+ *
+ * The `.node` artifact is a build product that `.gitignore` excludes, so it is absent in any fresh
+ * worktree and on any machine without a Rust toolchain — and it is no longer built by `bun install`.
+ * Tests that genuinely need it gate on this instead of failing, because a red that everyone learns
+ * to wave away is worse than an honest skip (2026-07-28: exactly that red was misread as a
+ * pre-existing failure). Anything that runs it for real must build it first.
+ */
+export function isNativeHistorySearchAvailable(): boolean {
+  if (nativeOverride) return true
+  return candidates().some((candidate) => {
+    try {
+      require.resolve(candidate)
+      return true
+    } catch {
+      return false
+    }
+  })
+}
+
 export function setNativeHistorySearchForTests(value: NativeHistorySearchModule | undefined): void {
   nativeOverride = value
   nativeModule = undefined

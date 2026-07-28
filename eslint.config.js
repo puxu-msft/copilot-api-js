@@ -1,10 +1,7 @@
 import config from "@echristian/eslint-config"
-import { defineConfigWithVueTs } from "@vue/eslint-config-typescript"
 import jsxA11y from "eslint-plugin-jsx-a11y"
 import reactHooks from "eslint-plugin-react-hooks"
-import pluginVue from "eslint-plugin-vue"
 import tseslint from "typescript-eslint"
-import vueParser from "vue-eslint-parser"
 import localPlugin from "./scripts/eslint-rules/import-marker.js"
 import prettierConfig from "./prettier.config.mjs"
 
@@ -12,17 +9,22 @@ const disableTypescriptRulesForJson = Object.fromEntries(
   Object.keys(tseslint.plugin.rules).map((ruleName) => [`@typescript-eslint/${ruleName}`, "off"]),
 )
 
-export default defineConfigWithVueTs(
-  pluginVue.configs["flat/essential"],
+export default tseslint.config(
   {
     ignores: [
       //
       "archive/**",
       "refs/**",
-      "ui/**/dist/**",
+      // Legacy Vue frontend — fully detached from the repo-wide toolchain
+      // (2026-07-28): not a workspace member, not in the root tsconfig, and
+      // deliberately NOT linted. It is a frozen subproject being retired into
+      // ui-v4/; it builds, typechecks and tests only through its own scripts.
+      // Dropping it from here is what let the repo shed eslint-plugin-vue,
+      // @vue/eslint-config-typescript and vue-eslint-parser. See
+      // docs/vue-ui-retirement.md §0.
+      "ui/**",
       "eslint.config.js",
       "tsdown.config.ts",
-      "ui/playwright.config.ts",
       "prettier.config.mjs",
       // Experiment / probe scratch dir — not in the tsconfig project graph, so
       // typed linting can only emit "not found by the project service" parse
@@ -30,8 +32,6 @@ export default defineConfigWithVueTs(
       "exp/**",
       // Local ESLint rule sources — not part of the TS project graph.
       "scripts/eslint-rules/**",
-      // Generated declaration files — not in tsconfig either.
-      "ui/types/**/*.d.ts",
       // Fixture / config JSON files — typescript-eslint parser rejects them
       // ("non-standard extension") and they need no linting in the first place.
       "**/*.json",
@@ -41,23 +41,6 @@ export default defineConfigWithVueTs(
   ...config({
     prettier: prettierConfig,
   }),
-  {
-    files: ["ui/**/*.vue"],
-    languageOptions: {
-      parser: vueParser,
-      parserOptions: {
-        parser: tseslint.parser,
-        extraFileExtensions: [".vue"],
-      },
-    },
-    rules: {
-      "@typescript-eslint/no-base-to-string": "off",
-      "@typescript-eslint/no-non-null-assertion": "off",
-      "@typescript-eslint/no-unnecessary-condition": "off",
-      "@typescript-eslint/restrict-template-expressions": "off",
-      "vue/multi-word-component-names": "off",
-    },
-  },
   {
     files: ["**/*.json", "**/*.jsonc", "**/package.json", "**/package-lock.json"],
     rules: disableTypescriptRulesForJson,
@@ -108,8 +91,8 @@ export default defineConfigWithVueTs(
   {
     // Test files legitimately use `as any` for fixtures, `!` for narrowing
     // known-good test data, and mocks that don't need the same strictness
-    // as production code. Mirrors the same relaxations applied to ui/**/*.vue.
-    files: ["**/*.test.ts", "**/*.test.js", "tests/**/*.ts", "ui/tests/**/*.ts", "ui/vitest/**/*.ts"],
+    // as production code.
+    files: ["**/*.test.ts", "**/*.test.js", "tests/**/*.ts"],
     rules: {
       "@typescript-eslint/no-explicit-any": "off",
       "@typescript-eslint/no-non-null-assertion": "off",
@@ -130,8 +113,8 @@ export default defineConfigWithVueTs(
   //
   // The base preset ships eslint-plugin-react-hooks + eslint-plugin-jsx-a11y but
   // leaves them off. Wire their recommended rules for ui-v4 ONLY (glob-limited so
-  // the legacy Vue `ui/` and the backend aren't dragged in — enabling repo-wide
-  // would surface a batch of pre-existing warnings needing separate cleanup).
+  // the backend isn't dragged in — enabling repo-wide would surface a batch of
+  // pre-existing warnings needing separate cleanup).
   // rules-of-hooks/exhaustive-deps catch dependency-array + conditional-hook bugs;
   // jsx-a11y recommended catches accessibility regressions.
   {

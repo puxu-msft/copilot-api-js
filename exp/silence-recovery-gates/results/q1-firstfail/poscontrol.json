@@ -1,0 +1,24 @@
+{
+  "port": 41931,
+  "nonce": "poscontrol-1785188214964718198",
+  "windowMs": 600000,
+  "serverStartedAt": "2026-07-27T21:36:55.003Z",
+  "attempts": 1,
+  "observations": [
+    {
+      "attempt": 1,
+      "path": "/v1/messages",
+      "method": "POST",
+      "arrivedAtMs": 35951,
+      "abortedAfterMs": 5002,
+      "answeredAfterMs": null,
+      "headers": {
+        "accept": "*/*",
+        "content-length": "2",
+        "content-type": "application/x-www-form-urlencoded",
+        "host": "127.0.0.1:41931",
+        "user-agent": "curl/8.5.0"
+      }
+    }
+  ]
+}
