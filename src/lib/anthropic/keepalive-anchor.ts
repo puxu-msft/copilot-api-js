@@ -1,9 +1,11 @@
 import type { ServerSentEventMessage } from "fetch-event-stream"
 
+import type { WireBlockMapping } from "~/lib/pipeline/delivery/types"
 import type {
   //
   AnchorHooks,
   AnchorState,
+  ClientFrame,
   ClientSink,
   GenerationWireIndexAllocator,
 } from "~/lib/pipeline/types"
@@ -139,6 +141,17 @@ export function remapAnthropicBlockIndex(frame: ServerSentEventMessage, offset: 
     })
   }
   return frame
+}
+
+/**
+ * The single decision point for whether a real block frame needs a wire-index remap.
+ *
+ * Only an identity mapping may return the original object. An anchor count is not equivalent to mapping
+ * identity: continuation and recovery legs restart upstream indices even when no synthetic anchor opened.
+ * Reading this block's immutable mapping also avoids ambient-leg state changing across an await.
+ */
+export function resolveRemappedFrame(frame: ClientFrame, mapping: WireBlockMapping): ClientFrame {
+  return mapping.wireIndex === mapping.upstreamIndex ? frame : mapping.remap(frame)
 }
 
 /**

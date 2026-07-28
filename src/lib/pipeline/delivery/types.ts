@@ -4,6 +4,19 @@ import type { ClientFrame } from "../types"
 /** Synthetic provenance selected by the delivery engine's dedicated sink port. */
 export type DeliverySyntheticKind = "keepalive" | "anchor" | "synthetic-message-start" | "synthetic"
 
+declare const legTokenBrand: unique symbol
+
+/** Immutable identity of one upstream generation leg. */
+export type LegToken = string & { readonly [legTokenBrand]: true }
+
+/** Immutable handle mapping one upstream block onto its generation-wide wire index. */
+export interface WireBlockMapping {
+  readonly wireIndex: number
+  readonly upstreamIndex: number
+  readonly leg: LegToken
+  remap(frame: ClientFrame): ClientFrame
+}
+
 /** One already client-shaped frame waiting to enter the unique wire serializer. */
 export type DeliveryFrame = ClientFrameEnvelope
 
