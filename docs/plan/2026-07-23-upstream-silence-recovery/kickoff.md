@@ -6,10 +6,10 @@
 
 ## ⚠ 当前状态（2026-07-28，先读这一节，别按下面的原始顺序从头开工）
 
-**实施已进行到 Task 0.5 完成，下一个是 Task 0.6。** 权威状态见 [`docs/plan/2026-07-23-handover-h2-pool-and-silence-spec.md`](../2026-07-23-handover-h2-pool-and-silence-spec.md) **§0.2**（实施真相源），进度 ledger 在 `.worktrees/upstream-silence-recovery/.superpowers/sdd/progress.md`。
+**B2 地基（plan-2 Task 0.1-0.7）已全部完成，下一个是 plan-3 的 P4。** 权威状态见 [`docs/plan/2026-07-23-handover-h2-pool-and-silence-spec.md`](../2026-07-23-handover-h2-pool-and-silence-spec.md) **§0.2**（实施真相源），进度 ledger 在 `.worktrees/upstream-silence-recovery/.superpowers/sdd/progress.md`。
 
 - **工作区**：隔离 worktree `.worktrees/upstream-silence-recovery` @ 分支 `feat/upstream-silence-recovery`（**未合回 master**；node_modules 已软链）。
-- **已完成**：B2-P0（配置骨架 + telemetry）、Task 0.2（delivery-level semantic-content gate）、Task 0.3（`coordinator.runRecoveryFromPreReadyFailure`）、Task 0.4（`driver.runPreContentRecovery` + server-tool gate）、Task 0.5（recovery sink lifetime supervisor）。**全部未接线**（P4/P5 才接），每个都过了异模型 review。
+- **已完成**：B2-P0（配置骨架 + telemetry）、Task 0.2（delivery-level semantic-content gate）、0.3（`coordinator.runRecoveryFromPreReadyFailure`）、0.4（`driver.runPreContentRecovery` + server-tool gate）、0.5（recovery sink lifetime supervisor）、0.6（seal-race crash 安全；其 ② quiescence join 授权延后 P4/P5）。**全部未接线**（P4/P5 才接），每个都过了异模型 review + mutation 正样本对照。
 - **B1 已被主线 supersede、不用再做**：master 自己落地了 B1 并改进（commit 窗口默认 **180**、ceiling **240**、窗口重构成 ingress-relative deadline）。原因是 **Q1 首失败点已实测闭合（≈300s，触发器 = undici 默认 `headersTimeout`）**——下方「Q1 未实测」的原始表述**作废**。
 - **底座已漂移，接线前必重读现状**：master 在本分支开工后前进 128 提交，**重写了 delivery/heartbeat 生命周期**（`freezeHeartbeat` 语义、close-before-terminal-drain）。**plan-3 的 `file:line` 与 handler/driver 接线点假设多半已过时**——以当前代码为准，plan 文本与现状冲突时**信代码**并在报告里写清差异（Task 0.5 已按此处理，见 §0.2）。本分支已合并 master（`e951026a`）。
 - **用户已裁决的分叉**（不要再问）：① 配置键 `precontent_recovery` 沿用；② **B2 排除 `timeout(header-wait)`/`reaper-cancel`**——用户硬约束「**绝不误杀合法长思考**」，只在确定性上游死亡（RST/transport-close/clean-EOF）才 fresh dispatch；③ buffered 尊重 `max_retries=0`；④ B3 计时器独立，且 **B3 wall-clock fail-fast 默认关闭**（同一硬约束）。见 README「用户裁决记录」。
