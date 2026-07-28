@@ -234,6 +234,7 @@ describe("driver pre-content recovery", () => {
       data: JSON.stringify({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "delivered" } }),
     })
 
+    // Caller-side prerequisite only: Task 4.2/4.3 owns the gate; the driver intentionally does not enforce it.
     expect(hasDeliveredSemanticContent(delivery)).toBe(true)
   })
 

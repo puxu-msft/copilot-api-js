@@ -216,6 +216,10 @@ interface PreReadyFailure {
   readonly env: RequestEnvelope
 }
 
+/**
+ * Blocks B2 pre-content recovery after either a pre-ready dispatch failure or a ready-state response failure.
+ * The class name and message use the B2 umbrella term "pre-content"; they do not identify one mounting point.
+ */
 export class ServerExecutionRiskBlocksPreContentRecoveryError extends Error {
   readonly risk: Exclude<ServerExecutionRisk, { readonly kind: "none" }>
 
