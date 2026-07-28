@@ -2,13 +2,14 @@
 
 从记忆库降为引用层（2026-07-05）时归位的活 backlog。每条：现状 / 暂缓原因 / 若做需改什么。
 
-## reverse `@messages` 六格跨协议 refusal 抑制（非流式 3 + 流式 3；2026-07-28，合并态复审后拆出）
+## reverse `@messages` **非流式**三格没跑 whole-response 改写链（2026-07-28 实测重定范围）
 
-- **根因**：Anthropic refusal rewrite 位于 Anthropic wire 层；reverse `@messages` 的 Chat Completions / Responses / Gemini codec 随后把原始 Anthropic response / SSE 翻成目标协议。后端裁决曾在非流式三格与流式三格分别漏掉 contentless refusal：非流式只看 `anthropicNonStreamingTruncation(stop_reason)`，流式只看 `streamError` / `sawMessageStop`，因此完整 refusal 被误记为 `completed`。这两个裁决缺陷均已修复：非流式复用 `isContentlessRefusalResponse()`；流式由共享 `classifyReverseAnthropicTerminal()` 复用 `isContentlessRefusal()` + `hasClientVisibleContent()` 认领 `contentless-refusal`。剩余根因只在呈现层：尚未把 Anthropic 三模式策略提升成跨协议 disposition。
-- **当前行为**：六格命中 contentless refusal 时都统一 `ctx.fail(refusalSummary(...), ..., {upstreamSucceeded:true})`，记录 `refusal-passthrough`，History / `/api/stats` / telemetry / TUI 的失败口径一致；上游腿继续 `success:true`。客户端仍收到现有目标协议翻译：Chat Completions 的 `finish_reason:"content_filter"`、Responses 的 `status:"incomplete"` + `incomplete_details.reason:"refusal"`、Gemini 的对应 content-filter 完成原因。配置的默认 `anthropic.refusal_sse_rewrite="end_turn"` 对**非流式与流式六格都尚不产生跨协议抑制 wire**。
-- **理想架构**：把 refusal disposition 抽成协议无关的、请求级冻结的终态决策，先基于原始 Anthropic response / accumulator 判定 passthrough / suppression / error，再由 CC / Responses / Gemini 各自把该决策渲染成合法且不会中断客户端轮次的正常完成形态；raw upstream response 与 `stopDetails` 继续原样进 History，上游腿继续 `success:true`，请求裁决继续 `failed`。
-- **为何暂缓**：后端裁决与计数口径缺陷已在六格独立闭合；真正抑制会改变三种公开协议的客户端 wire，并且流式还需 exactly-one terminus 与已转发 partial 的边界设计。需要决定每种协议的合成文本位置、完成原因、error 模式、usage 与 response id 保持方式，并补真实 SDK / CLI 消费 oracle。把这些协议设计夹进 settle 修复会产生未经规格裁决的新公共行为。
-- **若做需改什么**：① 把 `RefusalPolicy` + detail/template vars 形成跨协议 whole-response / streaming disposition；② 在 `openai-cc` / `openai-responses` / Gemini reverse renderer 中分别实现非流式与流式的 `end_turn`、`refusal`、`error` 三模式；③ 保证目标协议 exactly-one terminus 与 raw/forwarded 双轨；④ feature 从当前固定 `refusal-passthrough` 改为实际 mode 对应值；⑤ 为六格各补 byte golden，并为三种客户端补官方 SDK / CLI 消费 oracle与至少一条同 session 后续轮继续测试。
+- **实测订正（原条目范围是错的）**：这条 backlog 原本写成「六格 wire 抑制都没做」。2026-07-28 实测推翻——**流式三格已经在抑制**，客户端拿到的是正常轮（CC `finish_reason:"stop"` + end_turn 正文 + `[DONE]`；Gemini `finishReason:"STOP"` + 文本 part；Responses `response.completed`）。原因是 per-frame 改写链的门是 `targetEndpoint === /v1/messages`，reverse 腿正好命中，Anthropic 帧在 reverse 翻译器看到之前就被改写了。oracle 与逐格字节见 `tests/routes/reverse-refusal-default-wire.it.test.ts`。
+- **根因（比原描述小得多，也宽得多）**：不是「三套协议呈现逻辑没写」，而是**少调了一次**。whole-response 改写链在 `driver.runResponseWhole`（`src/lib/pipeline/driver.ts:1562`），它是 `transformWhole` 的**唯一**驱动点，而它在生产代码里**只有一个调用点**——直连 Anthropic handler（`src/routes/messages/handler-v4.ts:894`）。三条 reverse 非流式路径只调 `driver.runResponseNonStreaming`（`codec.renderResponseNonStreaming`，纯 render）。
+- **因此波及面不止 refusal**：`recover-tool-call` / `tool-input-decode` / `server-tool-filter` / `recover-refusal` 四个 `transformWhole` 钩子在 reverse 非流式腿上**全部落空**（`appliesTo` 都命中，只是链没被驱动）。refusal 只是被观测到的那一个；另外三个尚无 oracle，**做这条时应一并建**。
+- **当前行为**：六格裁决口径已统一（`ctx.fail(refusalSummary(...), ..., {upstreamSucceeded:true})` + `refusal-passthrough`，上游腿 `success:true`）。wire 上非流式三格仍是 CC `finish_reason:"content_filter"`+`content:null` / Responses `status:"incomplete"`+`incomplete_details.reason:"refusal"` / Gemini `finishReason:"SAFETY"`+空 parts。
+- **若做需改什么**：① reverse 非流式路径在翻译成目标协议**之前**，先对 Anthropic body 跑 `driver.runResponseWhole`（流式腿等价于已经这么做了，所以这是**对齐**而非新机制）；② 确认 `renderReverseNonStreamingV4` 的 settle 判据仍读**链前** upstream-original（`isRefusal` 读 `response` 而非 `finalResponse` 是抑制后 settlement 正确的原因，别改反）；③ feature 从写死的 `refusal-passthrough` 改成实际 mode；④ 把 `tests/routes/reverse-refusal-default-wire.it.test.ts` 的三条非流式期望翻成与流式一致（它们就是本任务的落地信号），并补另三个 whole 钩子的 oracle；⑤ 补至少一条同 session 后续轮可继续的真实客户端测试。
+- **为何暂缓**：改动会改变三种公开协议的客户端 wire，需要逐协议裁定合成文本位置、完成原因、error 模式、usage 与 response id 的保持方式。不阻塞任何已交付行为。
 
 ## 两条顺序不变量只有注释守着（2026-07-28，来自顺序不变量审计 #3 / #5）
 
