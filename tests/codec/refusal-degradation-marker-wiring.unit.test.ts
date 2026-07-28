@@ -5,10 +5,8 @@ import {
   test,
 } from "bun:test"
 
-import type { RequestContext } from "~/lib/context/request"
 import type { RequestEnvelope } from "~/lib/pipeline/envelope"
 import type { UpstreamFrame } from "~/lib/pipeline/types"
-import type { AnthropicMessageResponse } from "~/types/api/anthropic-messages"
 
 import { createOpenAiCcCodec } from "~/lib/codec/openai-cc/codec"
 import { createOpenAiResponsesCodec } from "~/lib/codec/openai-responses/codec"
@@ -25,10 +23,15 @@ function makeHarness(clientFormat: "openai-cc" | "openai-responses") {
   const bus = createBus()
   const markers: Array<{ feature: string; detail?: unknown }> = []
   const unsubscribe = bus.subscribe((event) => {
-    if (event.kind === "request.feature_applied" && event.feature === "translated-refusal-category-dropped") markers.push({ feature: event.feature, detail: event.detail })
+    if (event.kind === "request.feature_applied" && event.feature === "translated-refusal-category-dropped")
+      markers.push({ feature: event.feature, detail: event.detail })
   })
   const manager = createRequestContextManager({ publisher: bus.scope("request"), armDeadlineTimers: false })
-  const ctx = manager.create({ endpoint: clientFormat === "openai-cc" ? "openai-chat-completions" : "openai-responses", method: "POST", path: clientFormat === "openai-cc" ? "/chat/completions" : "/responses" })
+  const ctx = manager.create({
+    endpoint: clientFormat === "openai-cc" ? "openai-chat-completions" : "openai-responses",
+    method: "POST",
+    path: clientFormat === "openai-cc" ? "/chat/completions" : "/responses",
+  })
   const env = {
     clientFormat,
     targetEndpoint: ENDPOINT.MESSAGES,
@@ -75,7 +78,7 @@ function refusalDelta(): UpstreamFrame {
   }
 }
 
-function refusalResponse(): AnthropicMessageResponse {
+function refusalResponse() {
   return {
     id: "msg_refusal",
     type: "message",
