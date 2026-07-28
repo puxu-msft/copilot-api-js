@@ -62,6 +62,8 @@ streamSSE(c, async (stream) => {
 
 ## Task 4.0：ready-态挂载点 —— live 路径复用既有 `runRecovery`
 
+> **实施状态（2026-07-28）：已完成，保持零 handler 接线。** `driver.ts` 的真实位置已从本文草稿的 `src/lib/pipeline/generation/driver.ts` 漂移为 `src/lib/pipeline/driver.ts`；当前 `generation.bindings` 仍是按 `UpstreamStream` 找回 `{coordinator,candidate}` 的 `WeakMap`，故原设计继续适用。新增 `driver.runResponseRecovery(upstream, env, reason)`：先对 ready 态 recovery 自己执行 `classifyServerExecutionRisk(outboundPrepareWire(...))`，不读取也不继承 hedge 的 `allowServerTools`，再调用既有 `coordinator.runRecovery`、绑定并返回 fresh upstream。`runRecovery` 新增可选 `retryNextStrategy` 覆盖参数，默认仍为 `"buffered-retry"`，ready 态 B2 显式写 `"precontent-recovery"`。当前 live pump 的真实 `stream-error` 分支位于 `src/routes/messages/handler-v4.ts:1382-1423`，仍直接终态失败；本 Task 按硬验收不接 handler，因此生产行为未变。测试覆盖 ready-open 后首个真实 block 前抛错可拿到第二 upstream、server-tool gate 不增加 open 次数、已交付真实内容时 delivery gate 为 true、History 标记覆盖与 buffered 默认值回归。
+
 **先做这个 Task，再做 Task 4.1（splice 纯函数对两个挂载点通用，但需求先从这里确认）。**
 
 **设计依据：** `coordinator.runRecovery(parent, reason, env)`（`coordinator.ts:133-141`）已经是"给定一个 ready 的 parent 候选，settle 掉它、开一个新候选"的现成机制——目前**只有 buffered 路径的驱动循环在调用它**（`driver.ts:1389`，`runResponseBufferedSink` 内部）。live 路径的 `pumpAnthropicStreamingV4` 遇到 `stream-error` 时，目前是**直接终态失败**（`handler-v4.ts:1279-1320`，写错误帧 + `ctx.fail` + return），从未调用过 `runRecovery`。

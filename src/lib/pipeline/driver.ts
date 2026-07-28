@@ -199,6 +199,11 @@ export interface PipelineDriverWithNonStreaming extends PipelineDriver {
    * Throws when no such failure is available or the final prepared wire could double-execute a server tool.
    */
   runPreContentRecovery(reason: string): Promise<DriverRequestResult>
+  /**
+   * Starts a recovery child for a ready upstream whose response failed before semantic content.
+   * Throws when the upstream has no generation binding or the final prepared wire could double-execute a server tool.
+   */
+  runResponseRecovery(upstream: UpstreamStream, env: RequestEnvelope, reason: string): Promise<DriverRequestResult>
 }
 
 interface GenerationBinding {
@@ -261,6 +266,7 @@ export function createPipelineDriver(deps: DriverDeps): PipelineDriverWithNonStr
     runResponseBufferedSink: (upstream, env, sink, opts) => trackResponsePump(env, runResponseBufferedSink(deps, upstream, env, sink, opts, generation)),
     getCandidateResponseSession: (upstream) => generation.currentSession(upstream),
     runPreContentRecovery: (reason) => runPreContentRecovery(deps, generation, lastPreReadyFailure, reason),
+    runResponseRecovery: (upstream, env, reason) => runResponseRecovery(deps, generation, upstream, env, reason),
   }
 }
 
@@ -424,14 +430,33 @@ async function runPreContentRecovery(
 ): Promise<DriverRequestResult> {
   if (!failure) throw new Error("[driver] runPreContentRecovery called without a preceding pre-ready failure")
 
-  // Prepare the actual recovery wire before deciding eligibility. Server-tool classification must inspect
-  // that final target wire and must reject rather than inherit the hedge policy's allowServerTools escape hatch.
-  const risk = classifyServerExecutionRisk(outboundPrepareWire(deps, failure.env))
-  if (risk.kind !== "none") throw new ServerExecutionRiskBlocksPreContentRecoveryError(risk)
-
+  assertNoServerExecutionRisk(deps, failure.env)
   const candidate = await failure.coordinator.runRecoveryFromPreReadyFailure(reason, failure.env)
   generation.bind(failure.coordinator, candidate)
   return { ok: true, upstream: candidate.upstream, env: candidate.env }
+}
+
+async function runResponseRecovery(
+  deps: DriverDeps,
+  generation: DriverGenerationRuntime,
+  upstream: UpstreamStream,
+  env: RequestEnvelope,
+  reason: string,
+): Promise<DriverRequestResult> {
+  const binding = generation.bindings.get(upstream)
+  if (!binding) throw new Error("[driver] runResponseRecovery called with an upstream that has no generation binding")
+
+  assertNoServerExecutionRisk(deps, env)
+  const candidate = await binding.coordinator.runRecovery(binding.candidate, reason, env, "precontent-recovery")
+  generation.bind(binding.coordinator, candidate)
+  return { ok: true, upstream: candidate.upstream, env: candidate.env }
+}
+
+function assertNoServerExecutionRisk(deps: DriverDeps, env: RequestEnvelope): void {
+  // Prepare the actual recovery wire before deciding eligibility. Server-tool classification must inspect
+  // that final target wire and must reject rather than inherit the hedge policy's allowServerTools escape hatch.
+  const risk = classifyServerExecutionRisk(outboundPrepareWire(deps, env))
+  if (risk.kind !== "none") throw new ServerExecutionRiskBlocksPreContentRecoveryError(risk)
 }
 
 /** S3: assemble the request-rewrite chain and apply each in declared order. */

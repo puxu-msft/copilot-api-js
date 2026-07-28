@@ -59,7 +59,12 @@ export interface GenerationCoordinator<TProcessor> {
    * at most once for the coordinator's shared generation budget.
    */
   runRecoveryFromPreReadyFailure(reason: string, env: RequestEnvelope): Promise<CoordinatedCandidate<TProcessor>>
-  runRecovery(parent: CoordinatedCandidate<TProcessor>, reason: string, env?: RequestEnvelope): Promise<CoordinatedCandidate<TProcessor>>
+  runRecovery(
+    parent: CoordinatedCandidate<TProcessor>,
+    reason: string,
+    env?: RequestEnvelope,
+    retryNextStrategy?: string,
+  ): Promise<CoordinatedCandidate<TProcessor>>
   /**
    * Continuation-retry (spec 2026-07-22 §5.1, ADR D3): the append counterpart of {@link runRecovery}.
    * `runRecovery` REPLACES a failed parent whose content never reached the client (settles it
@@ -144,10 +149,10 @@ export function createGenerationCoordinator<TProcessor>(input: CreateGenerationC
       return start({ role: "recovery", env })
     },
 
-    async runRecovery(parent, reason, env = parent.env) {
+    async runRecovery(parent, reason, env = parent.env, retryNextStrategy = "buffered-retry") {
       const parentRuntime = runtimes.get(parent.candidate)
       if (!parentRuntime) throw new Error("[generation-coordinator] recovery parent is not owned by this coordinator")
-      await parent.settleDispatch({ verdict: "discarded", reason, retryNextStrategy: "buffered-retry" })
+      await parent.settleDispatch({ verdict: "discarded", reason, retryNextStrategy })
       parentRuntime.settle({ verdict: "failed", reason })
       candidateReservations.get(parentRuntime.handle)?.release()
       if (active === parentRuntime) active = undefined

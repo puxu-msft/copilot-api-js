@@ -19,9 +19,16 @@ import type {
 
 import {
   //
+  makeArraySink,
+  makeDeliverySseSink,
+} from "~/lib/pipeline/client-sink"
+import { getDownstreamDeliverySession } from "~/lib/pipeline/delivery/session"
+import {
+  //
   createPipelineDriver,
   type DriverDeps,
 } from "~/lib/pipeline/driver"
+import { hasDeliveredSemanticContent } from "~/lib/pipeline/generation/semantic-content-gate"
 
 function lifecycle(): UpstreamDispatchLifecycle {
   return {
@@ -63,6 +70,7 @@ function makeEnv(body: unknown): RequestEnvelope {
     setAttemptCacheControlStripped() {},
     recordFeature() {},
     addQueueWaitMs() {},
+    selectGenerationWinner() {},
   } as unknown as RequestContext
   return {
     clientFormat: "anthropic",
@@ -163,6 +171,82 @@ describe("driver pre-content recovery", () => {
     await expect(driver.runRequest({ body: {}, headers: new Headers() })).rejects.toThrow("primary failed-open")
 
     await expect(driver.runPreContentRecovery("upstream-rst")).rejects.toThrow(/server.*execution.*risk/i)
+    expect(openCalls).toBe(1)
+  })
+
+  test("a ready upstream that stream-errors before semantic content can dispatch response recovery", async () => {
+    let openCalls = 0
+    const primaryStreamError = new Error("primary stream reset before content")
+    const driver = makeDriver({
+      env: makeEnv({ messages: [] }),
+      open: async () => {
+        openCalls++
+        if (openCalls === 1) {
+          const owner = lifecycle()
+          return {
+            kind: "stream",
+            lifecycle: owner,
+            upstream: {
+              headers: new Headers({ "x-recovery-marker": "primary" }),
+              lifecycle: owner,
+              frames: {
+                [Symbol.asyncIterator]() {
+                  return {
+                    next: async () => Promise.reject(primaryStreamError),
+                  }
+                },
+              },
+            },
+          }
+        }
+        return streamResponse("recovery")
+      },
+    })
+
+    const primary = await driver.runRequest({ body: {}, headers: new Headers() })
+    expect(primary.ok).toBe(true)
+    if (!primary.ok) throw new Error("primary should become ready")
+    const outcome = await driver.runResponseSink(primary.upstream, primary.env, makeArraySink().sink)
+    expect(outcome).toMatchObject({ kind: "stream-error", error: primaryStreamError })
+
+    const recovered = await driver.runResponseRecovery(primary.upstream, primary.env, "transport-close")
+
+    expect(recovered).toMatchObject({ ok: true, env: expect.any(Object) })
+    if (recovered.ok) expect(recovered.upstream.headers.get("x-recovery-marker")).toBe("recovery")
+    expect(openCalls).toBe(2)
+  })
+
+  test("delivery gate prevents callers from selecting ready-state recovery after real content", async () => {
+    const stream = { writeSSE: () => Promise.resolve() } as unknown as Parameters<typeof makeDeliverySseSink>[0]
+    const sink = makeDeliverySseSink(stream, {
+      isRealContentFrame: (frame) => frame.event === "content_block_delta",
+    })
+    const delivery = getDownstreamDeliverySession(sink)
+    if (!delivery) throw new Error("delivery sink must expose its session")
+
+    await sink.write({
+      event: "content_block_delta",
+      data: JSON.stringify({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "delivered" } }),
+    })
+
+    expect(hasDeliveredSemanticContent(delivery)).toBe(true)
+  })
+
+  test("runResponseRecovery gates server-executed tools before dispatching a ready-state recovery", async () => {
+    let openCalls = 0
+    const driver = makeDriver({
+      env: makeEnv({ tools: [{ type: "web_search_20250305" }] }),
+      open: async () => {
+        openCalls++
+        return streamResponse(openCalls === 1 ? "primary" : "recovery")
+      },
+    })
+
+    const primary = await driver.runRequest({ body: {}, headers: new Headers() })
+    expect(primary.ok).toBe(true)
+    if (!primary.ok) throw new Error("primary should become ready")
+
+    await expect(driver.runResponseRecovery(primary.upstream, primary.env, "transport-close")).rejects.toThrow(/server.*execution.*risk/i)
     expect(openCalls).toBe(1)
   })
 })
