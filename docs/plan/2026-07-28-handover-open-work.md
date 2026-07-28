@@ -232,7 +232,7 @@ git merge-base --is-ancestor <tip> master && echo "已被 master 吸收"
 
 1. **绿了不算数，mutation 不咬更要警觉。** 本轮两次写出假绿测试：① 断言被 `remaining > 0` 短路条件满足，改回错误实现照样绿；② 测试自己复制了生产的中间件，删掉生产接线仍全绿。**两次都是把修复改回去才发现的**——写完守卫务必反向验证一次。
 2. **worktree 里的红可能是环境噪声。** `native/history-search/*.node` 是 gitignored 产物，新建 worktree 里没有 → 在其中跑测试会红一片。我据此把 14 条失败归因成 rustup toolchain，**结论对但推理错**。判据一条命令：`git check-ignore <产物路径>`。**交付前的全量回归在主树跑。**（2026-07-28 起该产物已默认不构建、相关测试改为可用性门控，这类红不会再出现。）
-3. **`offsetMs` 是 commit 相对的。** 上一轮据此做时间归因得出错误结论；本轮又发现 UI 也踩了同一个坑（且被默认值 20s→180s 放大到约 3 分钟）。**做任何时间归因前先确认时间基。**
+3. **现在有两个时钟并存，别混用（本轮新增的坑）。** `sseEvents[].offsetMs` 仍是 **commit 相对**（`client-sink.ts:216` 的 `Date.now() - streamStartMs`，本轮没动它），而 **delayed-commit 窗口本轮改成了 ingress 相对**。也就是说 `commit 时刻 ≈ startedAt + streamCommitAfterSec` **这个等式现在不成立了**——commit 时刻要读持久化的 `entry.timing.client.streamOpenMs`，因为窗口会扣掉 pre-handler 已耗时。上一轮据旧等式做归因得出过错误结论；本轮又发现 UI 踩同一个坑（被默认值 20s→180s 放大到约 3 分钟，已修 forwarded 轨）。**做任何时间归因前先确认是哪个时钟。**
 4. **别信配置层自称的超时数字。** CC 头里写 `x-stainless-timeout: 1200`、SDK 设 1250s、源码里是 600s——**三个都没触发**，真正掐断的是下一层 undici 的 300s 默认。逐层剥离 + 看错误 cause 才是归因法。
 5. **后端抖动时永远 `SendMessage` 恢复同一个 agent**，不换模型、不另派；并要求它**边查边落盘**（本轮两个评审 agent 各中断一次，第一次丢了完整报告）。
 6. **动手前先查 peer。** 本轮有两处结论被并发会话已落地的提交推翻；也有一条「那条分支没人管」的判断在几小时内失效。
