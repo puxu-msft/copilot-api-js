@@ -281,3 +281,19 @@
 **新增 mutation（2 组，先红后绿）**：摘掉 dispatch-lifecycle 里那唯一的记录点 → 计数测试变红；`postCommitAbortFrame` 改回硬编码（上一轮）仍红。
 
 **门禁**：typecheck 绿、改动文件 eslint 干净（`handler-v4.ts` 余 4 条经 `eslint --stdin` 对 HEAD 版核实为既有）、`test:backend` **6616 pass / 0 fail**。
+
+## 第六轮复审后的修复（2026-07-28）
+
+第五轮复审用探针证实了我自己在派单时点名最不确定的那处：**Responses upstream WebSocket 成功腿绕过 `dispatch-lifecycle` 漏斗**——它返回自己构造的 lifecycle、frames 从未经过 `ownFrames()`。探针给的是确定性假零（`{"unknown":true,"counts":[]}`），不是推断。
+
+**这是 gap 检测器最坏的失效形态**：功能正确、outcome 正确、所有测试绿，只有计数静默漏报，于是「零」被读成「没有 gap」。比没有这个指标更糟。
+
+**修法**：漏斗上移到 driver。`streamErrorOutcome()` 成为**唯一**产出 `stream-error` outcome 的地方（8 处裸字面量全部改走它），计数在路过时打，surface 取自 `env.clientFormat`——每个 transport 的 frames 都由 driver 消费，这才是诚实的漏斗。加 `tests/architecture` 守卫拒绝裸 `{ kind: "stream-error" }` 字面量（正样本对照验过会红）：绕过是**不可见**的，outcome 照样对、只有计数少。
+
+**测试形态也一并纠正**（这是假零能溜过去的直接原因）：原测试直接调 `createDispatchLifecycle()` 并手工喂四个 surface，只证明了「**如果**漏斗被调用，标签是对的」，看不到「某条 transport 根本不经过漏斗」。现在全部走真实 app（真 driver + 真 transport + 真 client surface）。untagged lifecycle abort 在生产里已无产生者（正是本意），故由上游 body 直接抛出那个「漏了契约的 producer 本会造成」的 `StreamUnknownCancelError`——同一个对象、同一条 driver 路径。
+
+**MED（pre-commit surface 固定 unknown）**——`c.req.path` 本来就知道协议，记 `unknown` 等于把已有信息扔掉、让排查还得回去翻单条 History。新增 `gapSurfaceForPath()`，**刻意比 `server.ts:detectErrorWireFormat` 更细**：后者把 CC 与 Responses 合并成 `openai`，而这两条是分开的腿（其一还是 WebSocket），一条腿的 gap 不能算到另一条头上。10 行路径表测（含 Azure alias 与未知路径）。
+
+**LOW（`/metrics` 零值注释不准确）**——采纳。只有 HELP/TYPE 没有 sample 是**合法**的，但它不创建可查询序列：PromQL 返回空向量，`absent()` 分不清「零 gap」与「旧版本 / 接线坏了 / 没被 scrape」。注释改成诚实说法，并写上真正可用的告警式 `sum(increase(...[5m])) > 0` + 独立的 target health 守卫。
+
+**门禁**：typecheck 绿、改动文件 eslint 干净、`test:backend` **6629 pass / 0 fail**。
