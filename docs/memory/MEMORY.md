@@ -22,7 +22,7 @@
 - [改共享 mock 契约打爆 sibling 测试](methodology-shared-mock-contract-change-breaks-sibling-test-files.md) → 拟下沉 `debugging-frontend-tests` — grep 全 `vi.mock` 逐改+每 task 跑全量
 - [动大工程前核实命名目标](feedback-verify-named-target-resolves-before-large-work.md) — 用户命名目标先 find/ls 核实；踩坑=Vue `ui/` vs React `ui-v4/`
 - [探针跑对了结论仍可能错的三种失效](methodology-probe-conclusion-scope-and-peer-invalidation.md) → skill `empirical-verification` — 查的是投影/量的是 peer 刚改过的代码/配置只激活一条路径
-- [时间归因错三次的同一根因：先点名时钟](methodology-time-base-errors-recur-name-the-clock.md) — 「早/晚 X」省略了相对谁；offsetMs commit-相对·author vs commit date·转述时把 A→B 安到 B→C
+- [时间归因错四次的同一根因：先点名时钟](methodology-time-base-errors-recur-name-the-clock.md) — 「早/晚 X」「写下时就已过期」省略了相对谁；第 4 次就发生在修正前 3 次的那个提交里
 - [测试绝不碰真实环境](feedback_tests_never_touch_real_env.md) → `test-isolation` — DI 注入临时目录(Bun 忽略 env.HOME)；地板=bunfig preload 沙箱
 
 ## 已下沉到 ADR（记忆文件 = stub 指向）

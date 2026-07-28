@@ -159,7 +159,7 @@
 - **`.codex`**：仓库根 0 字节空文件，归档没意义。留着还是删，等用户一句话。
 - **`docs/DESIGN.md:305-306`** 曾写 `empty_text` 是默认（陈旧、误导过我）。`68a3b3f5` 可能已改，**接手时核一遍**。
 - **两条 load-sensitive 测试**：`tests/architecture/telemetry-domain-surface.unit.test.ts`（本会话已给 30s 预算）和 `tests/history/v3/canonical-performance.unit.test.ts`（**未处理**，并行负载下会假红，单跑 3/3 绿）。
-- **`bun run test:backend` 可以直接跑**（**订正于 2026-07-28**）：`1b8bdf2f` 已把 `build:history-search` 从它前面拿掉，它现在就是 `bun scripts/parallel-test.ts unit it http`。本文早先写它"跑不起来、请用 parallel-test 替代"——那条在写下时就已过期，两者是同一条命令。真跑 native history-search 才需要 `bun run build:history-search`（本机 rustup 未配默认 toolchain），相关测试已改为有产物才跑、没有则显式 skip。
+- **`bun run test:backend` 可以直接跑**（**订正于 2026-07-28 12:40**）：`1b8bdf2f`（07-28 09:30 commit date）已把 `build:history-search` 从它前面拿掉，它现在就是 `bun scripts/parallel-test.ts unit it http`。本文早先写它"跑不起来、请用 parallel-test 替代"——那句**写于 `de9ca1e8`（07-27 21:26）、当时属实**，12 小时后被上述提交作废而无人回头改。真跑 native history-search 才需要 `bun run build:history-search`（本机 rustup 未配默认 toolchain），相关测试已改为有产物才跑、没有则显式 skip。
 - **`lint:all` 常年红**（400 errors，主要在退役的 `ui/`）。同样已推迟。
 
 ---

@@ -48,7 +48,7 @@ description: 当 copilot-api-js 会话/阶段收尾时使用——交付、汇�
 
 **两份文档的分工判据**（不写清必然写重，而重复的那份一定先陈旧）：**HANDOVER = 完整档案**，这轮工作的唯一事实源，按需查阅、可以长；**KICKOFF = 能整段复制成新会话第一条消息的提示词**（user-rule `40-dev-workflow`：kick-off prompt doc *for the user to copy*），只放「不先知道就会做错」的东西，其余一律指向 HANDOVER 的小节号、**绝不复述内容**。
 
-**位置**：`docs/plan/<date>-<topic>/HANDOVER.md` + `KICKOFF.md`（目录式）。本仓另有二十多份历史扁平式命名（`<date>-handover-<topic>.md`、`<topic>-kickoff.md`、`HANDOFF.md` 等混用）——**目录式是新约定，旧的不追溯迁移**（MEMORY.md 多条指针指向扁平式路径，迁了会全断）。**在主树直接改并即时提交**——入口文档滞留在特性分支上等于没写（与 CLAUDE.md `docs-merge-before-execute` 同源）。**代码改动才进隔离 worktree**：命令与技法以 skill `git-preference:isolating-from-a-shared-git-worktree` 为准（勿在此复制），只记本仓的两条实测——`.worktrees/` 建在仓库内部、**向上解析主树 `node_modules`，不是依赖隔离环境**；真正会咬的是新树缺 gitignored 构建产物导致的稳定假红（见 [[reference-worktree-bun-add-needs-main-tree-install-after-merge]]）。
+**位置**：`docs/plan/<date>-<topic>/HANDOVER.md` + `KICKOFF.md`（目录式）。本仓另有一批历史扁平式命名（`<date>-handover-<topic>.md`、`<topic>-kickoff.md`、`HANDOFF.md` 三种混用）——**目录式是新约定，旧的不追溯迁移**（MEMORY.md 多条指针指向扁平式路径，迁了会全断）。**在主树直接改并即时提交**——入口文档滞留在特性分支上等于没写（与 CLAUDE.md `docs-merge-before-execute` 同源）。**代码改动才进隔离 worktree**：命令与技法以 skill `git-preference:isolating-from-a-shared-git-worktree` 为准（勿在此复制），只记本仓的两条实测——`.worktrees/` 建在仓库内部、**向上解析主树 `node_modules`，不是依赖隔离环境**；真正会咬的是新树缺 gitignored 构建产物导致的稳定假红（见 [[reference-worktree-bun-add-needs-main-tree-install-after-merge]]）。
 
 **HANDOVER 必含**（缺一条就会让接手会话重走弯路）：
 
