@@ -368,3 +368,11 @@ V7①的证伪条件相应写成“任一路径未被 `git ls-files --error-unma
 **仍不最终放行。** 4 条整改中 3 条完全解决，V7 第二时点也已修正；但 V7 第一时点仍有一个可实测复现的假绿检查器。在 skill 明确把“未追踪/ignored 产物可能丢失”作为起源事故的情况下，这一处属于 MAJOR，不能降为措辞问题。按上面的 tracked + clean + not-ignored 三项修正后，如无新同级问题即可最终放行。
 
 本轮只读核验了 `3c04a135`、当前 SKILL 与模板，并用不存在路径和仓库内 ignored 路径做了 V7 检查器正样本对照；除追加本节外未修改其它仓库文件，未触碰 4141 端口。
+
+## 第五轮复审
+
+复审提交：`119300d2`。
+
+**结论：文件路径场景已解决，但仍不能最终放行。** V7①允许 `<路径>` 指向目录，而 `git ls-files --error-unmatch -- docs` 只要目录下有任一 tracked 文件就成功；目录里同时存在 ignored/untracked 探针文件时，`git status --untracked-files=all` 仍不报 ignored 子项，`git check-ignore docs` 也不会检查每个后代。因此一个“部分入库”的 `exp/<topic>/` 目录仍会三条全过。
+
+修法只需补一句并机械执行：**产物清单必须展开到逐文件路径，禁止拿目录 pathspec 通过 V7①**；若交接引用整个目录，先枚举目录内全部文件（含 ignored/untracked）再逐文件跑 tracked + clean + not-ignored 三项。完成后即可最终放行。
