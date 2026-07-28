@@ -49,4 +49,5 @@
 - **别改 S4 的 164 个 `setStateForTests` 调用点**；但**S2 相反**——S2 需要批量改写约 100 个测试文件的 models 符号 import，那是**已批准**的（无向后兼容负担）。两步的纪律别互相污染。
 - **别把 `models` / `modelIndex` / `disabledModels` 等字段搬走**（本次只搬逻辑，字段留 state）。
 - **别去修 typecheck 里 peer 在飞的报错**（`PostCommitAbortKind` / `retry-giveups`）——不是你引入的，只确认自己没新增。
-- **别为了让 S6 的守卫变绿而把守卫改弱**。守卫红说明 S1–S5 还没做完，不说明守卫太严。
+- **别为了让 S6 的守卫变绿而把守卫改弱**。守卫红通常说明 S1–S5 还没做完，不说明守卫太严。
+  - **唯一具名例外**：package-wide madge oracle 会咬到 `state.ts ↔ state-defaults.ts` 这条两节点环。**它是已知的、预期内的、S1–S5 碰不到的**（详见 HANDOVER §3.7 的 ⚠️ 与 S6 的预案，有两个正当选项）。**别因为这条红回头去找不存在的漏网边**——此时 §3.7 的差集是空的，你会转而怀疑枚举命令又漏了什么，那是死路。
