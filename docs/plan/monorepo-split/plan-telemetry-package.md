@@ -308,5 +308,5 @@ T5 git mv：src/lib/telemetry+request-telemetry+name-registry → packages/telem
 【判据 + 纪律】长远正确+完整>省事，禁 ROI/YAGNI 砍范围；承重 invariant=包对 core 零依赖(机器守卫)+
 无双 SoT+行为逐字节不变。执行技巧记忆 methodology-domain-peel-execution-techniques（setStateForTests
 config 留 state 零 churn、ambient floor、peek/get 分层、foundation 裸包名需 tsconfig path）。收尾走
-session-closeout 五步。文档定稿先合 master 再执行（CLAUDE.md docs-merge-before-execute）。
+按 skill `session-closeout` 走完收尾（步数与内容以 skill 为准，勿在此冻结）。文档定稿先合 master 再执行（CLAUDE.md docs-merge-before-execute）。
 ```

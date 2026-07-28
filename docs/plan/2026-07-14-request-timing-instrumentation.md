@@ -623,7 +623,7 @@ git commit -m "feat(timing): register 3 timing distributions in telemetry HISTOG
 ### Task 5.2: 合并态 subagent review + 记忆维护
 
 - [ ] **Step 1: 派 subagent 审合并态**（整条 timing 链 doc-vs-code 一致、集成缝、承重不变量真落地——显式裁判轴：长远正确+完整）。
-- [ ] **Step 2: 按 skill `session-closeout` 走完收尾五步**（plan 归档状态注解 / doc-sync / 记忆 / review / 提交）。
+- [ ] **Step 2: 按 skill `session-closeout` 走完收尾（步数与内容以 skill 为准，勿在此冻结）**。
 
 ---
 

@@ -1315,7 +1315,7 @@ git commit -F <msgfile> -- <上述精确路径>
 - [ ] 全量回归：`bun test`（后端全套件）+ `cd ui-v4 && bun test`。
 - [ ] `bun run lint:all`（全量权威、无缓存）。
 - [ ] `bun run build:ui` 最终确认。
-- [ ] session-closeout：doc-sync（`docs/DESIGN.md` 活的架构现状 + 配置/列清单若涉及）、plan 归档头部状态注解、记忆库维护、subagent 交付前独立核验、细粒度提交。
+- [ ] 按 skill `session-closeout` 走完收尾（步数与内容以 skill 为准，勿在此冻结）；本任务特有落点：doc-sync 要覆盖 `docs/DESIGN.md` 活的架构现状 + 配置/列清单（若涉及）。
 
 ## Self-Review（写作者自查，已过）
 

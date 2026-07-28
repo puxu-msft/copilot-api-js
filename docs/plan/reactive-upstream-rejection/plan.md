@@ -1403,7 +1403,7 @@ error?: { status: number; message: string; type: string; rawBody?: string }
 
 ---
 
-## 全局收尾（所有 phase 完成后，session-closeout 五步）
+## 全局收尾（所有 phase 完成后，走 skill `session-closeout`，步数与内容以 skill 为准）
 
 - [ ] **① subagent audit**——派 `ecc:typescript-reviewer` + `ecc:code-reviewer`（+ `ecc:silent-failure-hunter` 查 never-swallow）审全量 diff，prompt 写明裁判轴（长远正确 + 完整、非 ROI/YAGNI）；reviewer 绝对断言亲自对照代码复核。
 - [ ] **② doc-sync**——[docs/DESIGN.md](../../DESIGN.md)「活的架构现状」表加 A–H 反应式路径 + 新 config 键 + 新 negotiation 集；`docs/spec/` 相关（tool-use / request-pipeline / anthropic-compat）同步；跨文档 grep 验证无孤引。

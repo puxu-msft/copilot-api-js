@@ -22,7 +22,7 @@ config 声明 TS 文件 mock/拦截/录制回放/注入故障上游、不真发 
 
 纪律：TDD（每任务先写失败测试）；protect-user-main-server（集成实测非 4141 端口 + PID 精确 kill）；
 显式 pathspec commit；独立 oracle 校验（格式 mock 用 accumulator 重建、reactive 策略真跑 driver 观测触发，非自证）；
-收尾走 session-closeout 五步 + subagent 合并态评审。
+按 skill `session-closeout` 走完收尾（步数与内容以 skill 为准，勿在此冻结） + subagent 合并态评审。
 ```
 
 ## 执行前须知

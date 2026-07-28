@@ -1,7 +1,7 @@
 # Phase 5 — 测试收口 + doc-sync + 最终审查 + 合并
 
 > REQUIRED SUB-SKILL: `superpowers:subagent-driven-development` + `session-closeout` + `superpowers:finishing-a-development-branch`。
-> 隐含遵守 [README.md](./README.md) Global Constraints。**Spec**: R6 + `session-closeout` 五步。
+> 隐含遵守 [README.md](./README.md) Global Constraints。**Spec**: R6 + skill `session-closeout`（步数与内容以 skill 为准）。
 
 **Goal:** 全套件 + lint 绿、L1 守卫齐备、活文档与代码同步、未采纳/推迟项归档、最终 whole-branch 对抗审查通过，然后合回 master。
 
