@@ -229,11 +229,13 @@ async function runPreContentRecovery(deps: DriverDeps, generation: DriverGenerat
 
 ## Task 0.5：recovery sink lifetime supervisor
 
+> **实施状态（2026-07-28）：已完成。** 当前 delivery 重写后，`close()` 是 generation-owned heartbeat 的永久停止信号但仍保留终端结构写能力，`finalize()` 经 `session.terminate()` 执行 stop-heartbeat → serializer terminal drain → raw close → raw finalize；因此 supervisor 仅抑制 attempt-local `close`/`finalize`，原样转发可恢复的 `freezeHeartbeat`/`suspendHeartbeat`/`resumeHeartbeat`，并让 `settleFinal()` 返回可等待且幂等的 Promise。重写后的 driver 还用 sink 对象身份从 WeakMap 找 generation-owned delivery，故包装时同步继承该映射，避免未来接线退化到 legacy direct-write。Task 0.5 仍保持零生产接线。
+
 **为什么需要：** `pumpAnthropicStreamingV4`（handler-v4.ts）现有的每个失败分支都在末尾 `sink.finalize?.()`（经外层 `finally`，handler-v4.ts:531-534 / :711-714）。若 B2 在"stream-error"分支里插入"先试一次 fresh recovery"，**不能让第一次失败路径先 finalize 掉 sink**——finalize 会停掉 heartbeat 计时器、标记"投递已终结"（`onDeliveryFinalized` 回调），这个回调目前接的是 `ctx.finalizeModelOperationDelivery()`（`request-timing.ts:179`），**过早调用会让 History 提前封存投递维度**，之后再写第二条内容会破坏时序/幂等假设。
 
 **设计：** 一个包装 `ClientSink` 的 supervisor，把"调用方明确知道自己可能还要重试"的路径的 `finalize`/`close` 调用**拦截为 no-op**，只有 supervisor 自己认定"这是最终结局"（成功完成 / 恢复也失败 / 恢复被 gate 拒绝）才真正转发给内层 sink。
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 ```ts
 // tests/pipeline/recovery-sink-supervisor.unit.test.ts
@@ -250,13 +252,13 @@ test("finalize()/close() called INSIDE a recovery attempt are suppressed (inner 
 test("settleFinal() is idempotent (calling twice does not double-finalize)", async () => { ... })
 ```
 
-- [ ] **Step 2: 跑，失败。**
-- [ ] **Step 3: 实现** `src/lib/pipeline/generation/recovery-sink-supervisor.ts`：包装 `ClientSink`，转发所有写方法，拦截 `finalize`/`close`，暴露 `settleFinal(): void`（幂等，真正调用内层 `close()` 然后 `finalize()`，顺序镜像现有 `finalize` 实现里 `close(); onDeliveryFinalized?.()` 的次序，见 `client-sink.ts:354-359`）。
+- [x] **Step 2: 跑，失败。** —— 新模块不存在，targeted test 以预期的 module-not-found 失败。
+- [x] **Step 3: 实现** `src/lib/pipeline/generation/recovery-sink-supervisor.ts`：包装 `ClientSink`，转发全部写方法与可恢复 heartbeat 控制，拦截 attempt-local `finalize`/`close`，暴露 `settleFinal(): Promise<void>`。当前 `ClientSink.finalize` 类型仍声明 `void`，但 delivery 实现实际返回异步 `session.terminate()`；Promise 返回让最终 owner 能观察终结错误，幂等 Promise 也覆盖并发调用。最终顺序为内层 `close()` 后 await `finalize()`。
 
 **验证清单（实现者必须确认）：** `makeDeliverySseSink`（`client-sink.ts:467`）返回的 sink 实际上是 `createDownstreamDeliverySession` 包出来的（不是 `makeSseSink` 的裸实现）——supervisor 包装的是"最外层暴露给 pump 的 `ClientSink` 接口"，理论上与内部用的是 `makeSseSink` 还是 `makeDeliverySseSink` 无关（只要接口形状一致）。但要读一下 `createDownstreamDeliverySession`（`~/lib/pipeline/delivery/session`）确认它的 `finalize`/`close` 语义与本 supervisor 的假设（"close 停计时器、finalize 才是终态标记"）一致，避免 supervisor 拦截错了方法导致 heartbeat 计时器泄漏。
 
-- [ ] **Step 4: 跑，通过。**
-- [ ] **Step 5: 提交** → `feat(pipeline): recovery sink lifetime supervisor (defer finalize/close until final outcome)`。
+- [x] **Step 4: 跑，通过。** —— supervisor + delivery lifecycle targeted tests 21 pass、0 fail；两轮 mutation positive control 分别证明抑制/heartbeat 与并发幂等断言会咬，delivery identity 测试也先以 `undefined` 预期变红；typecheck、目标 eslint、真实 backend suite 见 Task 报告。
+- [x] **Step 5: 提交** → `feat(pipeline): defer sink settlement across recovery attempts`。
 
 ---
 

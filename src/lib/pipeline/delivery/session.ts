@@ -52,6 +52,12 @@ export function getDownstreamDeliverySession(sink: ClientSink): DownstreamDelive
   return deliveryBySink.get(sink)
 }
 
+/** Preserve generation-owned delivery identity through a transparent ClientSink decorator. */
+export function inheritDownstreamDeliverySession(source: ClientSink, decorator: ClientSink): void {
+  const delivery = deliveryBySink.get(source)
+  if (delivery) deliveryBySink.set(decorator, delivery)
+}
+
 /** Create a delivery session whose identity and ledger outlive every upstream round. */
 export function createDownstreamDeliverySession(options: CreateDownstreamDeliverySessionOptions): DownstreamDeliverySession {
   const { sink } = options
