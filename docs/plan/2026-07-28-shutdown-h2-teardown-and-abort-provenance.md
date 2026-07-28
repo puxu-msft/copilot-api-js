@@ -320,6 +320,20 @@
 | delayed-commit | ✅ 真实 app | ✅ tagged deadline | ✅ |
 | post-header · HTTP | ✅ 真实 app（CC + Anthropic） | ✅ tagged deadline | ✅ |
 | post-header · upstream WS | ✅ 真实 app | （与 HTTP 共用 driver 分支） | ✅ |
-| post-header · 下游 WS | ❌ 未单测 | — | — |
+| post-header · 下游 WS | ✅ 真实 WS server | ✅ tagged truncation | ✅ |
 
-下游 `/responses` WS 经代码追踪确认走同一 driver helper（复审独立核实），但**没有专门测试**——列在此处而非默默略过。
+（第八轮补齐最后一格。）
+
+## 第八轮复审后的修复（2026-07-28）—— 收口
+
+第七轮确认两条测试缺口已补且真的进入目标路径（upstream WS fixture 修正后栈显示 `streamWsEvents → guard → response processor → driver`，不是 accumulator shape error 也不是 pre-first-event fallback）。剩 2 MED + 1 LOW，全部处理：
+
+**MED（守卫声称的能力强于实际）**——复审用探针实测：computed `["kind"]`、指向同文件 const 的 identifier、shorthand `{ kind }` **三种都能大摇大摆走过去**。已全部支持（外加 string-literal 属性名），四种绕过形态逐一 mutation 变红。
+
+更重要的是措辞：**一个「宣称的覆盖面 > 实际覆盖面」的守卫本身就是一种假绿**——它诱使人说「机器会查的」，而这正是造出假零的那个信念。注释现在既列出抓得住什么，也**点名**抓不住什么（跨模块 import 的值、函数返回值）；根治要么写常量求值器、要么给 stream-error variant 加只有 helper 能造的 brand，已记 backlog。
+
+**MED（下游 `/responses` WS 那格）**——采纳「现在就补，别继续留白」。理由复审说得对：这个计数器**已经连续两次**「代码追踪认为对、测试矩阵缺格」，而下游 WS 还独有 `makeDeliveryWsSink`、`sendErrorAndClose`+1011、buffered/live 分支——HTTP 测试代表不了它。新测试一次断言整条终止序列（客户端 error 帧 + 1011 + history failed + 计数），外加 tagged 阴性；mutation 精确红。
+
+**LOW（test-only seam 放在生产公开接口）**——采纳。`RequestContext` 上的 test-only mutator 是所有生产消费者在类型层可调用的、要永久在接口文档里解释一个「不该在生产发生」的操作、且绑死未来任何实现。改为 WeakMap 支撑的导出 helper：行为不变（仍 abort 真实 `lifecycleAbort`，这正是它有牙的原因），生产表面保持干净。在 resetters 守卫里显式豁免并写明理由（per-request mutator，无 module-global 状态可 reset）。
+
+**门禁**：typecheck 绿、改动文件 eslint 干净、`test:backend` **6634 pass / 0 fail**。覆盖矩阵五格全绿。
