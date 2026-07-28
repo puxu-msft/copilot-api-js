@@ -50,4 +50,4 @@
 - **别把 `models` / `modelIndex` / `disabledModels` 等字段搬走**（本次只搬逻辑，字段留 state）。
 - **别去修 typecheck 里 peer 在飞的报错**（`PostCommitAbortKind` / `retry-giveups`）——不是你引入的，只确认自己没新增。
 - **别为了让 S6 的守卫变绿而把守卫改弱**。守卫红通常说明 S1–S5 还没做完，不说明守卫太严。
-  - **唯一具名例外**：package-wide madge oracle 会咬到 `state.ts ↔ state-defaults.ts` 这条两节点环。**它是已知的、预期内的、S1–S5 碰不到的**（详见 HANDOVER §3.7 的 ⚠️ 与 S6 的预案，有两个正当选项）。**别因为这条红回头去找不存在的漏网边**——此时 §3.7 的差集是空的，你会转而怀疑枚举命令又漏了什么，那是死路。
+  - **唯一具名例外**：package-wide madge oracle 可能咬到 `state.ts ↔ state-defaults.ts` 这条两节点环。**它是已知的、预期内的**——按 HANDOVER 的路线它应当在 **S5** 就被 `state-vocabulary.ts` 拆掉、S6 见不到；**若你在 S6 仍看到它，说明 S5 那步没做，回去补 S5，不是回去找漏网边**（此时 §3.7 差集是空的，你会转而怀疑枚举命令又漏了什么，那是死路）。详见 HANDOVER §3.7 的 ⚠️ 与 S5/S6。
