@@ -93,6 +93,8 @@ else { /* COMMIT */ recordFeature("pre-stream-grace-commit",{graceSec,stalledAtL
 硬点：`setTimeout`+`clearTimeout`（禁 `AbortSignal.timeout`）；`p.then(ok,err)` 永久消费 p 的 reject reaction（grace 赢不会 unhandledRejection，callback `await p` 是第二 reaction）；COMMIT 时 `env` 未就绪 → ping cadence **env-independent**（用 `streamKeepalivePingSec` floor 30）；`buffered` 仅在 (a) ok 分支 post-resolve 解（sink 已存在,**不重建**,single-sink）。
 
 ### COMMIT 状态机 4(+1) 分支判别（load-bearing）
+> **⚠ 2026-07-28 已被推翻（`docs/plan/2026-07-28-shutdown-h2-teardown-and-abort-provenance.md`）**：下面这条「绝不用 `error.name`/`classifyStreamError`」的纪律**当时成立、现在相反**。它的前提是「三者 name 都是 AbortError」，而该前提正是那轮修掉的缺陷——取消方现在一律经 `cancellationAbortError` 打 cause tag，`classifyPostCommitAbort` 因此**优先读证据**（shutdown 身份 / `TimeoutError` / cause tag / lifecycle signal 的 reason），signal state 只作兜底，全无证据时给 `unknown-abort` 而非挑一个具体原因。照抄本节会重新引入「609ms 请求被报成 900s 超时」那类谎报。
+
 POST-COMMIT `await p` 后区分（**signal state 判别,绝不用 error.name/classifyStreamError**——d/e/f 三者 name 都是 "AbortError",pre-response reaper 抛的是**普通 AbortError 非 StreamReaperCancelError**,后者只在 `guardSseIterable` stream-drain 合成,`stream.ts:322`):
 - **(a) ok** → 同一 sink 交 pump（`resolveBufferedAndHeartbeat(env)` 取 buffered；`recordFeature("pre-stream-grace-resolved",{totalStalledMs})`）。
 - **(b) `result.ok===false`**（decideRoute reject，**C2：resolve 非 throw,try/catch 接不住,须显式判**）→ 合成 `new HTTPError(reason,status,reason)` → `ctx.fail` + `toAnthropicSseErrorData` 富帧 `writeSynthetic`。

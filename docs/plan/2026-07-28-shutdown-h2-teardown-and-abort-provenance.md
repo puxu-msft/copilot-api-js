@@ -1,8 +1,12 @@
 # 修复：优雅关机 Step 1 秒杀在途请求 + abort 归因失真
 
-> **实施状态：✅ 已完整落地（2026-07-28）。** Phase 1 + Phase 2（2.1–2.5）全部实现，测试与正样本对照见文末「实施记录」。计划正文保持定稿时原样（含当时的行号），后续以代码与 [docs/lifecycle.md](../lifecycle.md) 为准。
+> **实施状态：✅ 已完整落地（2026-07-28）。** 计划正文保持定稿时原样（含当时的行号），后续以代码、[docs/DESIGN.md](../DESIGN.md)、[docs/API.md](../API.md) 与 [docs/lifecycle.md](../lifecycle.md) 为准。
 >
-> 本版已吸收异模型 subagent（`gpt-souls:reviewer`）的对抗评审：4 HIGH + 2 MED 全部采纳，见文末「评审处置」。
+> **范围远超原计划**：原计划只有 Phase 1（关机时序）+ Phase 2（abort provenance）。实际经**八轮**异模型对抗评审（`gpt-souls:reviewer`，同一实例逐轮 `SendMessage` 复审），
+> 每轮的发现都不是新范围，而是同一目标在我漏掉的格子上：计划轮 4H+2M → 合并态 3H+2M → 1H+2M → 1H+2M+1L → 2M+1L → 1H+2M+1L → 2M+1L → **收口 0 BLOCKER/HIGH/MED**。
+> 每轮处置见文末对应小节；累计交付还包括跨阶段 wire 类型统一（第四轮）、`abort_provenance_gaps_total` 可观测（第六轮起）与其单一漏斗定位（第七轮）。
+>
+> **这份计划最该被后人读的部分不是正文，是文末各轮记录**——它们记着每一次「我以为修完了」是怎么被证伪的。
 
 ## Context（为什么做这件事）
 
