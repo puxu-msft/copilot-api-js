@@ -84,6 +84,7 @@
 - [修一条约束别自造兄弟约束违规](methodology-fix-one-constraint-violates-sibling-constraint.md) — 对象级约束要一起断言
 - [名实不符变量+双源值](methodology-lying-variable-name-dual-source-value.md) — 名字断言单一身份、值取自会撒谎的源(原始vs已变换)
 - [变体路由既有 outcome + 穷尽 Record 审计](methodology-route-variant-to-existing-outcome-and-exhaustive-record-audit.md) — 复用全 handler + 类型系统逼出全站点
+- [穷尽 Record 全填≠活路径在读它](methodology-exhaustive-record-proves-table-not-that-live-path-reads-it.md) — 上一条的界限：formatError 无生产调用者时四张表全绿而 wire 照旧；消灭双份+从真实入口读字节+mutation 打在共享表上
 - [新策略被更宽 matcher 首命中遮蔽](methodology-new-strategy-shadowed-by-broader-first-match.md) — 加 retry 策略前 grep 同错误子串既有 matcher
 - [全套件红先分类再套污染 playbook](methodology-full-suite-red-classify-before-pollution-playbook.md) — 单跑过+全套件挂才真污染
 - [并发 agent 不得共享 worktree 做 mutation](methodology-concurrent-agents-must-not-share-worktree-for-mutation.md) — 主会话调度责任

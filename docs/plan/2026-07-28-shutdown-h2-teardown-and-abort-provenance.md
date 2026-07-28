@@ -198,3 +198,42 @@
 **门禁**：typecheck 绿、改动文件 eslint 干净（`openai-responses/codec.ts:61` 的 import 格式错经 `git diff` 核实为既有、不在本次改动行内）、`test:backend` **6592 pass / 0 fail**。
 
 **复审已核实成立、无需改动的 9 条**（不复议）：Phase 1 的 teardown 移位与其 mutation 有效性、h2 pre-header reason 保真、undici 路径本就保留 reason（探针 `same:true`）、pre-commit precedence 顺序、`isShutdownCausedAbort` 在 `_resetShutdownState` 后不跨测试串、`fetchSignal.reason` 兜底探针不会把 reaper 误判成 shutdown、Phase 1 无资源/生命周期泄漏、`docs/lifecycle.md` 与实现一致、测试整体非自证。
+
+## 第三轮复审后的修复（2026-07-28）
+
+同一异模型 reviewer 复核了第二轮的修复本身，提 1 HIGH + 2 MED，**全部采纳并修掉**。这一轮的教训比修复本身更重要：
+
+**HIGH——「landed 的映射」根本没接到活路径上。** 第二轮给四个 codec 的穷尽 `Record` 加了 `request-deadline` 条目，类型系统逼出了每一处、测试全绿、我据此报告「deadline 在 Anthropic 映射 `timeout_error`、Gemini `DEADLINE_EXCEEDED`」。实测下来 **codec 的 `formatError` 没有任何生产调用者**：Anthropic 活路径走 `error-shaping.ts:classifyStreamErrorType`（3-case switch，deadline 落 default `api_error`），Gemini 走 `handler-v4.ts` 里的私有 `geminiStreamErrorStatus`（deadline 落 default `INTERNAL`）。OpenAI 那条腿之所以是对的，纯粹因为它的映射早就抽成了共享的 `streamErrorKindToOpenAIErrorType`，codec 与 handler 调的是同一个函数。
+
+分歧比「少一个条目」更宽——两份映射连 `reaper-cancel` 都不一致（codec 给 `overloaded_error`/`UNAVAILABLE`，活路径给 `api_error`/`INTERNAL`）。
+
+修法不是把值抄一遍，是**消灭双份**，按仓库里已被证明不会漂移的 OpenAI 形状收敛：
+
+| 表 | 位置 | 谁在用 |
+|---|---|---|
+| 消息文案 | `packages/foundation/src/stream.ts:STREAM_ERROR_KIND_MESSAGES` | 4 个 codec（此前是 4 份逐字重复的私有副本） |
+| Anthropic `error.type` | `src/lib/anthropic/error-shaping.ts:ANTHROPIC_STREAM_ERROR_TYPE` | 活 handler（经 `classifyStreamErrorType` 薄包装）+ codec |
+| Gemini `{code,status}` | `src/lib/gemini/stream-error.ts`（新建，镜像 `~/lib/openai/stream-error`） | 活 handler 4 处 + codec |
+| OpenAI `error.type` | `src/lib/openai/stream-error.ts:OPENAI_STREAM_ERROR_TYPE` | 活 handler + codec（本就共享，改成穷尽 Record） |
+
+从 8+ 处重复降到 4 张穷尽表。顺带修掉的名实分裂：Gemini 的 `error.code` 此前是 `shutdown ? 503 : 500` 独立硬编码，会配出 `status:"DEADLINE_EXCEEDED"` + `code:500`；现在 code 由 status 经**规范 gRPC↔HTTP 表**推导，两个字段不可能再打架。
+
+**分组判据（三协议一致）**：凡是**我方跑完的时钟**都报 timeout——frame-idle 看门狗、hard deadline、以及 stale-request reaper（`stale_request_max_age` 到期本质就是 deadline）。`shutdown` 是唯一真正「立刻重试」的条件。取消类在有对应字面量的协议（Gemini `CANCELLED`）用它、没有的（Anthropic）诚实退化到通用桶而非借一个不相干的。
+
+**MED-1——untagged lifecycle abort 不再冒充 reaper。** 第二轮我把它保留成 reaper 并写了理由「那是裸 lifecycle abort 一直以来的含义」。该理由已经失效：仓库里每个 producer 现在都打 tag，所以 untagged 只意味着**某个 producer 漏了契约**，答「reaper」等于把接线缺口重新藏起来——恰好违背同一轮新增 `unknown-abort` 的目的。新增 `StreamUnknownCancelError` / kind `unknown-cancel`（与 post-commit 的 `unknown-abort` 刻意不同名：这里我们**知道**是 lifecycle cancel，只是不知道是哪个）。
+
+连带发现：两个 transport 测试用**裸 `reaper.abort()`** 模拟 reaper——在模拟一个 producer 却不走它的契约。改成用真实的 `cancellationAbortError("stale-reaper", ...)`，既忠实又真的证明了接线。
+
+**MED-2——WS 与 legacy 的修复此前只有临时探针、没有回归测试。** 已固化。
+
+**测试与正样本对照（新增 3 组 mutation，全部实测先红后绿）**：
+
+| 锁住的行为 | 测试 | mutation |
+|---|---|---|
+| 三协议活路径**确实在读**共享表 | `tests/streaming/stream-error-wire-provenance.http.test.ts`（新文件，3 test）——从 `ctx.cancel(request_deadline)` 驱动到真实客户端字节 | 三张共享表各改坏一个条目 → **3/3 变红** |
+| WS 保留 message + 挂 cause | `upstream-ws-connection.unit.test.ts` +2（握手、已发请求） | 去掉 `{ cause: ... }` → 2/2 变红 |
+| legacy 529 门是因果不是时间 | `anthropic-client.it.test.ts` +4（正向 2 + 阴性 2） | 门换回 `getShutdownSignal().aborted` → **恰好两条阴性臂变红、正向臂仍绿**（时间门的谎报特征） |
+
+新测试刻意同时断言「现在必须是什么」与「以前是什么、不许再出现」——只锁正向值的话，退回私有副本仍然可能全绿。
+
+**门禁**：typecheck 绿、改动文件 eslint 干净（`openai-responses/codec.ts:61` 两条 import 格式错经 `eslint --stdin` 对 HEAD 版本核实为既有）、`test:backend` **6605 pass / 0 fail**（含上一轮那条 `multiprocess-rotation` perf flaky，本轮全绿）。

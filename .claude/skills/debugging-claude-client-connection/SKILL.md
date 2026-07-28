@@ -41,7 +41,20 @@ description: 当调试 copilot-api-js 与 Claude Code CLI 客户端之间的连�
 >
 > 相应地，客户端拿到的东西也不再撒谎：pre-commit 走有序 precedence（499 client / 529 shutdown / 504 TimeoutError / 504 request-deadline / 503 其余并附真实 reason 原文），post-commit 的 `classifyPostCommitAbort(clientAborted, reaperAborted, error)` 也吃错误对象，`PostCommitAbortKind` 扩到八种、每种自己的终端 frame 文案——**没有证据时给 `unknown-abort` 而不是默认宣称 header 超时**（看到 `unknown-abort` 本身就是线索：某条路径还没接上 provenance）。
 >
-> **post-header（流式 body）同样已接通**：`guardSseIterable` 过去对 `ctx.lifecycleSignal` 一律抛 `StreamReaperCancelError`，于是 mid-stream 的 `request_deadline` 在**所有**流式端点上都被说成 stale reaper；现在按 reason 上的 cause tag 分派到 `StreamRequestDeadlineError` / `StreamRequestCancelError` / `StreamDispatchCancelError`，`StreamErrorKind` 与四个 codec 的穷尽 Record 一并扩了（deadline 在 Anthropic/OpenAI 映射为 `timeout_error`、Gemini 为 `DEADLINE_EXCEEDED`）。Responses 上游 WS 侧则把握手/请求取消改成**保留该层 message + 把 reason 挂 `cause`**（两个 provenance 读取器都走 cause 链），first-event 看门狗直接透传 `TimeoutError`。
+> **post-header（流式 body）同样已接通**：`guardSseIterable` 过去对 `ctx.lifecycleSignal` 一律抛 `StreamReaperCancelError`，于是 mid-stream 的 `request_deadline` 在**所有**流式端点上都被说成 stale reaper；现在按 reason 上的 cause tag 分派到 `StreamRequestDeadlineError` / `StreamRequestCancelError` / `StreamDispatchCancelError` / `StreamUnknownCancelError`。Responses 上游 WS 侧则把握手/请求取消改成**保留该层 message + 把 reason 挂 `cause`**（两个 provenance 读取器都走 cause 链），first-event 看门狗直接透传 `TimeoutError`。
+>
+> **无 tag 的 lifecycle abort 现在是 `unknown-cancel`，不再冒充 reaper**——每个 producer 都打 tag 之后，untagged 只意味着某条路径漏了契约。**在野看到 `unknown-cancel`/`unknown-abort` 就去补那条 producer 的 tag**，别当噪声。
+>
+> **改 kind → wire 的映射时，改的是这四张共享表，不是 codec 私有副本**（2026-07-28 第三轮：codec 的 `formatError` 无生产调用者，四份表全填而 wire 照旧输出旧值）：
+
+| 表 | 位置 |
+|---|---|
+| 帧文案 | `packages/foundation/src/stream.ts:STREAM_ERROR_KIND_MESSAGES` |
+| Anthropic `error.type` | `src/lib/anthropic/error-shaping.ts:ANTHROPIC_STREAM_ERROR_TYPE` |
+| Gemini `{code,status}` | `src/lib/gemini/stream-error.ts`（code 由 status 经规范 gRPC↔HTTP 表推导，不独立硬编码） |
+| OpenAI `error.type` | `src/lib/openai/stream-error.ts:OPENAI_STREAM_ERROR_TYPE` |
+
+> 分组判据三协议一致：**我方跑完的时钟**（idle 看门狗 / hard deadline / reaper——`stale_request_max_age` 到期本质是 deadline）都报 timeout；`shutdown` 是唯一「立刻重试」；取消类在有字面量的协议用它（Gemini `CANCELLED`）、没有的诚实退化到通用桶。验收要从真实入口驱动读客户端字节（`tests/streaming/stream-error-wire-provenance.http.test.ts`），把 kind 喂给 formatter 的测试证明不了活路径在读表。
 >
 > **下面的 History 逐字段表退为 fallback**（错误对象拿不到、或看的是修复前的旧记录时用）。
 >
