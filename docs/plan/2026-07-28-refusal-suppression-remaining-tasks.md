@@ -54,7 +54,7 @@ accumulator 已收（#1 完成），剩 spec §5 表的 #2–#11：streaming bui
 否则 D2 的目标不闭环——用户仍要去 raw SSE 挖 category。
 
 - TUI 完成行结构化 token（`refusal:cyber` / `refusal:uncategorized`）——注意失败行当前**刻意**不显示 stop reason，需专门加。
-- History 详情（`entry-view` 派生 + `ui-v4` Meta/Response 段）展示 category + explanation，保留 raw JSON 视图。
+- History 详情（`entry-view` 派生 + `ui-v4` Meta/Response 段）展示 category + explanation，保留 raw JSON 视图。**前端部分已落地**：`resolveRefusalDetail()` 复用 `extractRefusalDetail()` / `isNamedCategory()`，把命名类别、上游显式 `null`（`uncategorized`）与字段缺失（`unknown`）保留为三种 provenance；Meta 段只给 category 快速扫描，Response 段在 upstream leg 前放独立 `Refusal diagnostic (upstream)` 块，逐字展示完整 explanation，并用 `RawJsonView` 保留含未来字段的原始 `stopDetails`。不把诊断继续压进 `failureReason`。
 - 遥测 `refusal_category` 维度（**capped** 非 bounded——上游是开放字符串，已观测 `cyber`/`bio`/`null`）。
 - `recordFeature` detail `{category}`（**不**把 category 拼进 `FeatureKind` 枚举，否则每个新类别都要发版）。
 - 跨协议翻译降级留痕：Anthropic→CC 映射成 `content_filter`、→Responses 映射成 `incomplete_details.reason`，两者都丢 category；History/遥测须保真并打可辨识降级标记。
