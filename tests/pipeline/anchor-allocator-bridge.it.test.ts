@@ -17,9 +17,11 @@ import {
   anchorStartFrame,
   anchorStopFrame,
   createGenerationWireIndexAllocator,
+  createGenerationWireState,
   makeSyntheticAnchorInjector,
   syntheticMessageStartFrame,
 } from "~/lib/anthropic/keepalive-anchor"
+import { createDownstreamDeliverySession } from "~/lib/pipeline/delivery/session"
 
 const hooks: AnchorHooks = {
   isMessageStart: () => false,
@@ -33,7 +35,9 @@ const hooks: AnchorHooks = {
 
 test("the pre-content anchor advances the shared allocator from wire index 0", async () => {
   const allocator = createGenerationWireIndexAllocator()
+  const wireState = createGenerationWireState(allocator)
   const state: AnchorState = {
+    wireState,
     allocator,
     injected: false,
     messageStartForwarded: false,
@@ -55,10 +59,11 @@ test("the pre-content anchor advances the shared allocator from wire index 0", a
       frames.push({ kind: "keepalive", data: frame.data ?? "" })
     },
   }
+  const deliverySink = createDownstreamDeliverySession({ sink, wireState }).clientSink
   const inject = makeSyntheticAnchorInjector({
     anchor: hooks,
     state,
-    getSink: () => sink,
+    getSink: () => deliverySink,
     resolvedName: "claude-test",
     reqId: "bridge",
   })
