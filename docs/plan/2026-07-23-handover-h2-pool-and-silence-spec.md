@@ -1,6 +1,6 @@
 # 会话交接：h2 池事故簇 + 上游静默 spec（2026-07-23）
 
-> **状态：进行中**（B2 实施到 P4 Task 4.0 完成）。**核验基线：** master `c716d921` / 分支 `feat/upstream-silence-recovery` @ `1c5ea173`，**2026-07-28**。
+> **状态：进行中**（B2 实施到 P4 Task 4.0 完成）。**核验基线：** master `c716d921` / 分支 `feat/upstream-silence-recovery` @ `796ef05b`（30 提交），**2026-07-28**。
 > **工作区**：隔离 worktree `.worktrees/upstream-silence-recovery`（**未合回 master**；node_modules 向上解析主树、**不是**依赖隔离）。分支上无未提交改动（除 gitignored 的 `.superpowers/sdd/progress.md` ledger）。主树有并发 peer 的未提交 WIP（`.claude/settings.json`、`docs/lifecycle.md`、`docs/memory/*` 等）——**不是本轮的，别动**。
 > **已跑门禁**（基线时刻）：`typecheck` 绿；`bun test --parallel .unit.test .it.test .http.test` = 6602 pass / 8 skip / 3 fail，**3 个失败单跑全过**（2 个 Bun worker SIGILL + 1 个负载敏感 UDS sidecar）。⚠ **`bun run test:backend` 的汇总计数不可信**（见 §0.2 末尾），取真实数请用上面那条直接命令。
 >
@@ -61,6 +61,8 @@
 ### 🎯 B2 地基（plan-2）**全部完成**；P4 已开工
 
 - ✅ **Task 4.0**（`1c5ea173`）——**ready-态挂载点**（B2 两个挂载点的第二个：上游已 ready、pump 在跑、但在首个真实语义内容前失败）。新增 `driver.runResponseRecovery(upstream, env, reason)`，复用既有 `coordinator.runRecovery`。三条承重：① ready-态**自己**调 `classifyServerExecutionRisk`（不复用 pre-ready 的检查、不碰 `allowServerTools`）② 给 `runRecovery` 加可选 `retryNextStrategy`——**默认仍 `"buffered-retry"`**（既有 buffered 调用方零行为变化，有回归锁），B2 显式传 `"precontent-recovery"` 防 History 诊断混淆 ③ **零 handler 接线**（4.3 才接）。`tests/pipeline` 843 pass。
+- **Task 4.0 的 review findings 已全闭合**（`a125e67e`/`22b04ac0`/`1e39a720`/`9cf8a8ee`/`796ef05b`）。reviewer 做了 4 组 mutation，**M4 存活**暴露一个真缺口：driver 侧的 `"precontent-recovery"` 实参丢掉后**全后端 4709 测试仍全绿**——两端各自被证（coordinator 默认值有锁、coordinator 能接受覆盖参数有锁），**中间那根线没被证**。已补独立 oracle（注入 recording callback 断言 `settleDispatch` 收到的 `nextStrategy`），正样本对照真咬。另：错误消息区分 pre-ready/ready-state、plan 注解订正（真正漂移的是**行号**不是路径）、Task 4.4 加 per-attempt 簿记待核项。
+- **buffered 旁路已落 backlog**（主会话裁决，非静默砍）：plan Task 4.0 的 buffered 子任务本轮未做，条目含用户已裁定的 **`max_retries=0` 必须被尊重**语义 + 触发条件（live 路径接线完成后）。
 - **漂移已重核并写进 plan-3**：`driver.ts` 在 `src/lib/pipeline/`（非 plan 草稿的 `generation/`）；live `stream-error` 分支现于 `handler-v4.ts:1382-1423`（plan 写的 `1279-1320` 已过时）；buffered `runRecovery` 调用现于 `driver.ts:1530`。
 
 ### 第二次合并 master（`d1c5a4b2`，2026-07-28）
