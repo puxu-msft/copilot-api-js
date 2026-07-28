@@ -154,7 +154,7 @@ describe("P4 — stale-reaper real abort of an in-flight upstream fetch (0 unhan
       manager._runReaperOnce() // ④: reapInFlight() → lifecycleSignal abort → folded signal aborts the fetch
       expect(ctx.lifecycleSignal.aborted).toBe(true) // PROOF the abort path actually ran (anti pass-null)
       expect(manager.activeCount).toBe(0) // PROOF the reaper reaped THIS ctx (the reject below is its abort)
-      await expect(p).rejects.toThrow(/abort/i) // the awaited path still rejects normally (not swallowed)
+      await expect(p).rejects.toThrow(/stale-request reaper/i) // rejects normally (not swallowed), CARRYING the reaper's own reason
     })
 
     expect(unhandled).toBe(0)
@@ -215,7 +215,7 @@ describe("P4 — stale-reaper real abort of an in-flight upstream fetch (0 unhan
       expect(ctx.settled).toBe(true)
       expect(ctx.lifecycleSignal.aborted).toBe(true)
       expect(failEvents()).toBe(1) // exactly one terminal fail despite multiple reaper passes
-      await expect(p).rejects.toThrow(/abort/i)
+      await expect(p).rejects.toThrow(/stale-request reaper/i)
     })
 
     expect(unhandled).toBe(0)
