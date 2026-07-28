@@ -9,6 +9,8 @@ description: 当 copilot-api-js 会话/阶段收尾时使用——交付、汇�
 
 **唯一的顺序例外：触发原因是「上下文将满」时，§6 先做、其余顺延。** 交接是六步里**唯一不可重做**的产物——§1–§5 的成果丢了下个会话还能重来，交接丢了整轮工作无人接得上；而 §1（派 subagent 并逐条复核 `file:line`）与 §2（跨文档 grep）恰是六步里上下文开销最大的两步，按序走必然烧光预算走不到 §6。先把 HANDOVER/KICKOFF 落盘提交，再按剩余预算回头补 §1–§5，补不完的作为待办写进 HANDOVER。
 
+**用完本 skill 欠一笔账**：文末「自验」节列着五条**尚未被实战检验**的断言，验法都是你走流程时顺手就能观察到的。走完收尾后，至少给你能观察到的那几条各往 [verification-log.md](verification-log.md) 写一行。这是这份 skill 唯一的实战反馈通道——静态自洽已被两轮跨模型评审确认，**它在真实压力下会不会被照做只能靠那里累积**。
+
 ## 1. subagent audit —— 交付前独立核验
 
 交付/报告/ExitPlanMode/采信任何声音权威前，**永远派 subagent** 多视角对抗核验，不在主会话直接做。prompt 里显式写裁判轴「长远正确 + 完整」（subagent 默认 ROI/YAGNI，与本项目冲突）。吸收其客观事实，对其「无消费者/已通过/可安全删除」等绝对断言**亲自对照代码/实测复核、读它引用的每个 `file:line`**，绝不照搬。详见 CLAUDE.md `subagent-explicit-rubric`、skill `empirical-verification`、user-level skill `verifying-authoritative-claims`。
