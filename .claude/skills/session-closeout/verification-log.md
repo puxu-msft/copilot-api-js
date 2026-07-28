@@ -32,3 +32,12 @@
 ## 已毕业
 
 （暂无）
+
+## 2026-07-28 · abort 归因收尾（sha 69fb8916）
+
+- **V1 触发链** — ❌ **负样本，当场记**。本 skill 不是自动浮现的：我在收口后**先自己走了 doc-sync 和记忆维护**，走到一半才想起该调本 skill 拿 how-to。触发原因不是「上下文将满」而是「任务完成、要交付」，而 CLAUDE.md 那行的触发词偏向前者。**证伪形态命中**（「事后才发现该用」）。可能的修法：description 里补「任务完成要交付/汇报时」这一档触发词——但**这是第 1 次观测，不足以改正文**，先记账。
+- **V4 查-peer 配方** — ⚠️ 本轮**未跑**（任务在主树完成、无交接产出，§6 整节不适用）。不计入分母。
+- **V7 闭环提交时点** — ✅ 机械判定通过。①起草前：本轮引用的既有产物（`docs/plan/2026-07-28-shutdown-h2-teardown-and-abort-provenance.md`）在被 API.md/DESIGN.md 引用前已提交（`git ls-files --error-unmatch` 命中、`status --porcelain -uall` 空）。②最终提交后：`git diff-tree --no-commit-id --name-only -r HEAD` 含 API.md / DESIGN.md / 两份 plan / 记忆文件。**注意本轮无 §6 产物**，故②只核 doc-sync 那批。
+- **V8 正交视角** — ⚠️ **本轮只派了一个视角**（`gpt-souls:reviewer`，合并态对抗），跑了**八轮**而非多视角并行。**这不是 V8 说的形态**，不计入 V8 分母。但有独立观测值得记：**同一 reviewer 逐轮 resume 的增量发现没有衰减**——八轮的发现依次是 4H+2M / 3H+2M / 1H+2M / 1H+2M+1L / 2M+1L / 1H+2M+1L / 2M+1L / 0，且**第 6 轮还出了一个 HIGH**（我修复第 5 轮时新引入的假零）。即「为修复上一轮而新写的东西会引入新缺陷」这条在本轮**被实测命中一次**，不是理论风险。
+- **V9 鉴别力正控** — ✅ **强正样本**。本轮新增/加固的判据共 **14 组 mutation**，全部实测先红后绿并附命令。其中**两次 mutation 不红**，且两次都不是「测试没牙」而是**代码根本没执行到**：① first-event 看门狗测试用了 `readyState=1` 但从不派发 `open` 的 socket，卡在握手超时，而握手超时**自己也挂 `TimeoutError`**，断言被同名不同源的值满足；② upstream-WS gap 测试的 fake 缺 `response` 对象，累加器先抛 `undefined is not an object`。**V9 的证伪条款②（已实现却没有「变异后真的变红」的观测）反过来救了我两次**——若当初只写「它专门咬 X」的意图声明，这两条假绿都会留下。
+- **额外（不在自验表内，建议入表）** — 「**守卫宣称的覆盖面 > 实际覆盖面，本身就是一种假绿**」在本轮被实测命中：AST 守卫加固版对 helper 自己的 `"stream-error" as const` 统计为 0，即它同样放过 `as const` 写法的绕过；抓出它的是「helper 必须恰好 mint 一次」的正样本对照。已并入记忆 [[methodology-relocate-invariant-when-guard-cannot-keep-up]] 而非新建条目。
