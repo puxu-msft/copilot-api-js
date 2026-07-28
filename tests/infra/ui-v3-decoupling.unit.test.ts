@@ -1,4 +1,5 @@
 import { ESLint } from "eslint"
+import { Glob } from "bun"
 import {
   //
   describe,
@@ -20,6 +21,26 @@ async function readJson(relativePath: string): Promise<Record<string, unknown>> 
   return (await Bun.file(`${REPO_ROOT}/${relativePath}`).json()) as Record<string, unknown>
 }
 
+/**
+ * `ui/` 下的每一个源文件（相对仓库根），排除安装/构建产物。
+ *
+ * 下面的 eslint / knip 断言都逐个跑这个集合，而**不是**抽几个代表性路径 ——
+ * 抽样挡不住「只忽略了 `ui/src/**`、根层的 `ui/vite.config.ts` 仍在扫」这类
+ * 半吊子排除：样本命中了、属性并不成立。集合随目录自动增长，新增子目录无需改守卫。
+ */
+function uiSourceFiles(): Array<string> {
+  const g = new Glob("**/*.{ts,tsx,vue,js,mjs,cjs,json,html}")
+  return [...g.scanSync({ cwd: `${REPO_ROOT}ui`, onlyFiles: true })]
+    .filter((p) => !p.startsWith("node_modules/") && !p.startsWith("dist/"))
+    .map((p) => `ui/${p}`)
+    .sort()
+}
+
+/** 归一化一条 workspace 模式：bun 认 `ui`/`ui/`/`./ui`/`ui/**`/`./ui/**` 全是同一个声明。 */
+function normalizeWorkspacePattern(pattern: string): string {
+  return pattern.replace(/^\.\//, "").replace(/\/\*\*$/, "").replace(/\/$/, "")
+}
+
 describe("legacy Vue ui/ stays detached from the main chain", () => {
   // 前提校验：下面每条断言都是「ui 不在某处」的否定式，若 ui/ 本身已被整体删除，
   // 它们会全部空转通过。先证被守卫的对象仍然存在，否定断言才有裁决力。
@@ -27,33 +48,42 @@ describe("legacy Vue ui/ stays detached from the main chain", () => {
     expect(await Bun.file(`${REPO_ROOT}/ui/package.json`).exists()).toBe(true)
     // 自带 lockfile = 它有独立的安装图，不再靠根 bun.lock hoist。
     expect(await Bun.file(`${REPO_ROOT}/ui/bun.lock`).exists()).toBe(true)
+    // 逐文件断言的那几条同样会在集合为空时空转 —— 钉一个下界。
+    expect(uiSourceFiles().length).toBeGreaterThan(50)
   })
 
   test("ui/ is not a root workspace member", async () => {
     const pkg = await readJson("package.json")
     const workspaces = pkg.workspaces as Array<string>
-    expect(workspaces).not.toContain("ui")
-    // `packages/*` 一类的 glob 不会命中 ui/，但 `ui*` / `*` 会 —— 一并挡掉。
-    const globHits = workspaces.filter((w) => w !== "ui-v4" && new Bun.Glob(w).match("ui"))
-    expect(globHits, `root workspaces pattern(s) match ui/: ${globHits.join(", ")}`).toEqual([])
+    // 实测（2026-07-28，`bun install --dry-run` 逐一验证）：`ui` / `ui/` / `./ui` /
+    // `ui/**` / `./ui/**` / `ui*` 六种写法 bun **全都**认作同一个 workspace 声明。
+    // 只断 `not.toContain("ui")` 会被其中四种绕过，故先归一化再判。
+    const offenders = workspaces.filter((w) => {
+      const normalized = normalizeWorkspacePattern(w)
+      return normalized === "ui" || new Glob(normalized).match("ui")
+    })
+    expect(offenders, `root workspaces declare ui/ (patterns: ${offenders.join(", ")})`).toEqual([])
   })
 
   test("ui/ is not in the root tsconfig project graph", async () => {
     const tsconfig = await readJson("tsconfig.json")
     const include = tsconfig.include as Array<string>
-    const offenders = include.filter((p) => p === "ui" || p.startsWith("ui/"))
+    const offenders = include.filter((p) => normalizeWorkspacePattern(p).startsWith("ui"))
     expect(offenders, `root tsconfig include pulls in ui/: ${offenders.join(", ")}`).toEqual([])
   })
 
-  test("root eslint ignores ui/ entirely", async () => {
+  test("root eslint ignores every file under ui/", async () => {
     const eslint = new ESLint({ cwd: REPO_ROOT })
     // 用 ESLint 自己的解析结果当 oracle，而不是对配置文件做字符串匹配 —— 后者会被
-    // 任何等价改写（换 glob 写法、挪进别的 config 块）骗过。
-    for (const file of ["ui/src/main.ts", "ui/src/components/message/ToolUseBlock.vue", "ui/tests/entry-legs.test.ts", "ui/vitest/detail-page.test.ts"]) {
-      expect(await eslint.isPathIgnored(`${REPO_ROOT}${file}`), `${file} is NOT ignored by the root eslint config`).toBe(true)
+    // 任何等价改写（换 glob 写法、挪进别的 config 块、改用 files 反向限定）骗过。
+    const linted: Array<string> = []
+    for (const file of uiSourceFiles()) {
+      if (!(await eslint.isPathIgnored(`${REPO_ROOT}${file}`))) linted.push(file)
     }
+    expect(linted, `root eslint still lints ${linted.length} file(s) under ui/:\n${linted.slice(0, 10).join("\n")}`).toEqual([])
     // 正样本对照：证明 isPathIgnored 不是对什么都返回 true。
     expect(await eslint.isPathIgnored(`${REPO_ROOT}src/server.ts`)).toBe(false)
+    expect(await eslint.isPathIgnored(`${REPO_ROOT}ui-v4/src/main.tsx`)).toBe(false)
   })
 
   test("root ui scripts invoke ui/ directly, never through the workspace filter", async () => {
@@ -67,19 +97,20 @@ describe("legacy Vue ui/ stays detached from the main chain", () => {
     expect(offenders, `root script(s) still target ui/ through the bun workspace filter:\n${offenders.join("\n")}`).toEqual([])
   })
 
-  test("root knip excludes ui/", async () => {
+  test("root knip excludes every file under ui/", async () => {
     // 反直觉之处：移出 workspaces 并**不会**让 knip 忽略该目录 —— 恰恰相反，ui/ 从
     // 「有自己 entry point 的 workspace」降级成「一堆没人引用的散文件」，脱钩当天
     // knip 因此把 97 个 ui/ 文件报成 unused。故须显式 ignore。
     const knip = await readJson("knip.json")
     const ignore = knip.ignore as Array<string>
-    // 按 glob 行为判定而非字符串相等：换一种等价写法（`ui/**/*`、`ui/`）不该让守卫失效，
-    // 而一个碰巧含 "ui" 字样却匹配不到的模式也不该蒙混过关。
-    const matched = ignore.filter((p) => new Bun.Glob(p).match("ui/src/main.ts"))
-    expect(matched, `knip.json ignore has no pattern covering ui/ (patterns: ${ignore.join(", ")})`).not.toEqual([])
+    // 逐文件判定而非抽样：`ignore: ["ui/src/**"]` 能让抽样版假绿，却漏掉根层的
+    // vite/vitest/playwright 配置和 tests/ vitest/ 两棵测试树。
+    const covered = (file: string): boolean => ignore.some((p) => new Glob(p).match(file))
+    const uncovered = uiSourceFiles().filter((f) => !covered(f))
+    expect(uncovered, `knip.json ignore misses ${uncovered.length} file(s) under ui/:\n${uncovered.slice(0, 10).join("\n")}`).toEqual([])
     // 正样本对照：这些模式不该顺手把后端或 ui-v4 也一起忽略掉。
-    for (const kept of ["src/server.ts", "ui-v4/src/main.tsx"]) {
-      expect(ignore.some((p) => new Bun.Glob(p).match(kept)), `knip.json ignore unexpectedly covers ${kept}`).toBe(false)
+    for (const kept of ["src/server.ts", "ui-v4/src/main.tsx", "tests/infra/ui-v3-decoupling.unit.test.ts"]) {
+      expect(covered(kept), `knip.json ignore unexpectedly covers ${kept}`).toBe(false)
     }
   })
 })
