@@ -657,12 +657,6 @@ export interface RequestContext {
    */
   reapInFlight(): void
   /**
-   * TEST-ONLY: abort the lifecycle with NO cause tag — impersonate a producer that skipped the
-   * `cancellationAbortError` contract. No production path does this; the seam exists so the
-   * `unknown-cancel` / `unknown-abort` terminals and the gap counter can be driven on purpose.
-   */
-  abortLifecycleUntaggedForTests(): void
-  /**
    * C5 operation lifecycle (RFC §3.3) — NEW API, no production callers until C5 wires
    * handlers/manager/shutdown (behavior-preserving additions).
    *

@@ -50,6 +50,10 @@ const SRC_ROOTS = [SRC_DIR, ...packageSrcRoots()]
 const EXEMPT: Record<string, string> = {
   // Async drain-reset; the fixture uses the sync `clearAnthropicFeatureNegotiationForTests` instead.
   resetAnthropicFeatureNegotiationForTesting: "async drain variant — fixture uses sync clear",
+  // Per-request mutator, not a module-global: it aborts ONE context's lifecycle with no cause tag,
+  // to impersonate a producer that skipped the `cancellationAbortError` contract. Nothing to reset —
+  // the context dies with the request.
+  abortLifecycleUntaggedForTests: "per-request mutator — no module-global state",
   // State mechanism — handled by snapshot/restore in the fixture.
   setStateForTests: "state mutator — covered by snapshot/restore",
   snapshotStateForTests: "state snapshot mechanism",

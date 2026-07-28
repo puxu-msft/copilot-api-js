@@ -25,6 +25,7 @@ import {
 import type { RequestContext } from "~/lib/context/request"
 
 import { getRequestContextManager } from "~/lib/context/manager"
+import { abortLifecycleUntaggedForTests } from "~/lib/context/request"
 import { REQUEST_DEADLINE_CANCEL_REASON } from "~/lib/error/cancellation-reason"
 import { getAbortProvenanceGapCounts } from "~/lib/observability/abort-provenance-gaps"
 import {
@@ -430,7 +431,7 @@ describe("delayed-commit gaps are counted, and only when the cause really is unk
         body: JSON.stringify({ model: "claude-sonnet-4.5", max_tokens: 16, stream: true, messages: [{ role: "user", content: "hi" }] }),
       })
       await tick()
-      contexts.at(-1)?.abortLifecycleUntaggedForTests()
+      abortLifecycleUntaggedForTests(contexts.at(-1)!)
       wire = await response.text()
     } finally {
       restore()
