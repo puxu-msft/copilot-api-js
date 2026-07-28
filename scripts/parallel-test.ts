@@ -147,11 +147,19 @@ for (const r of crashed) {
 
 // Aggregate the per-shard pass/fail tallies. `tests` is derived from pass+fail so it
 // can never disagree with them (bun prints pass/fail on their own lines per shard).
+// Bun colors that summary EVEN WHEN ITS STDOUT IS A PIPE, so the line actually reads
+// `\x1b[0m\x1b[32m 26 pass\x1b[0m` — an anchored `^\s*` never matched it and every run
+// reported `0 tests · 0 pass · 0 fail` (the exit code stayed correct, since it comes from
+// the shards' own exit codes, but the tally line — the evidence a delivery report quotes —
+// was always zero). Strip the escapes before matching.
+// eslint-disable-next-line no-control-regex -- matching the ESC of an SGR sequence is exactly the point
+const stripAnsi = (s: string): string => s.replaceAll(/\[[0-9;]*m/g, "")
 let passSum = 0
 let failSum = 0
 for (const r of results) {
-  for (const m of r.err.matchAll(/^\s*(\d+) pass\b/gm)) passSum += Number(m[1])
-  for (const m of r.err.matchAll(/^\s*(\d+) fail\b/gm)) failSum += Number(m[1])
+  const plain = stripAnsi(r.err)
+  for (const m of plain.matchAll(/^\s*(\d+) pass\b/gm)) passSum += Number(m[1])
+  for (const m of plain.matchAll(/^\s*(\d+) fail\b/gm)) failSum += Number(m[1])
 }
 
 console.error(
