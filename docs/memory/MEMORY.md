@@ -65,6 +65,9 @@
 - [复用共享原语选完整版非小版](methodology-full-primitive-not-partial-else-silent-field-drop.md) — 否则静默丢字段+单测假绿；映射测须构造每个非平凡字段
 - [「别继承退化」只在目标真有对应值时成立](methodology-degradation-advice-scoped-to-target-has-equivalent.md) — 目标无对应值→诚实退化+marker；实现者最易过度应用
 - [守卫追不上就换不变量的位置/判据形状](methodology-relocate-invariant-when-guard-cannot-keep-up.md) — 连续被合法语法绕过=形状错；blocklist→allowlist·把顺序契约搬进 runtime 自己；附注释写错致代码看着对、oracle 假绿两坑
+- [spec 里的机制性解释必须有实验背书](methodology-mechanism-story-in-spec-must-be-experiment-backed.md) — 给现象配的合理机制别当事实写；行为分型须有行为差异证据，字段取值差异只够支撑诊断分型
+- [ctx 共享可变裁决会被落败 hedge candidate 污染](methodology-request-scoped-mutable-verdict-poisoned-by-hedge-candidates.md) — hedge 默认开、各 candidate 独立 rewriter；正解=请求级不可变快照 + candidate 自推导，两者非二选一
+- [「一个终态」≠「一个完整终止符」](reference-exactly-one-terminal-is-not-exactly-one-complete-terminus.md) — 合成 end_turn 不补 message_stop 真 SDK 抛 stream ended；自造终态须注册进 driver 终态判据
 - [修全部比较点](feedback-fix-all-comparison-sites.md) — 归一化键/id bug 多点复发；grep 全仓逐处修+抽共享 primitive
 - [修一条约束别自造兄弟约束违规](methodology-fix-one-constraint-violates-sibling-constraint.md) — 对象级约束要一起断言；最小构造须保留被测对象的结构性处境(序数/位置)否则阴性无裁决力、加法+减法二分两头逼近、matcher 按补救手段归类且须 clause-local、按形状非索引定位
 - [名实不符变量+双源值](methodology-lying-variable-name-dual-source-value.md) — 名字断言单一身份、值取自会撒谎的源(原始vs已变换)；根治=单一原语+命名反映真实来源(requested vs resolved)+单一抑制权+独立oracle锁接线缝
