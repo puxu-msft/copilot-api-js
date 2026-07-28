@@ -19,6 +19,11 @@ import type {
   UsageData,
 } from "./types"
 
+import {
+  //
+  extractRefusalDetail,
+  isNamedCategory,
+} from "../anthropic/recover-refusal"
 import { accumulateForwardedContent } from "./accumulate-response"
 
 /** Non-nullable per-attempt shape (the element type of `HistoryEntry.attempts`). */
@@ -103,6 +108,33 @@ export function deriveRequestBytes(entry: ClientLegBytesSource): number | undefi
 /** Upstream response stop reason (final attempt's `upstreamResponse.stopReason`). */
 export function resolveStopReason(entry: Pick<HistoryEntry, "attempts">): string | undefined {
   return finalUpstreamResponse(entry)?.stopReason
+}
+
+/** Display-ready refusal detail while retaining the provenance of the upstream category. */
+export interface ResolvedRefusalDetail {
+  category: string
+  categoryProvenance: "named" | "uncategorized" | "missing"
+  explanation: string | null | undefined
+  invalid: boolean
+}
+
+/**
+ * Normalize the final upstream response's raw `stopDetails` for History consumers.
+ * The raw object remains untouched on the upstream leg for the JSON view; this
+ * projection only supplies labels for the human-readable diagnostic block.
+ */
+export function resolveRefusalDetail(entry: Pick<HistoryEntry, "attempts">): ResolvedRefusalDetail | undefined {
+  const stopDetails = finalUpstreamResponse(entry)?.stopDetails
+  if (stopDetails === undefined || stopDetails === null) return undefined
+
+  const detail = extractRefusalDetail(stopDetails)
+  if (isNamedCategory(detail.category)) {
+    return { category: detail.category, categoryProvenance: "named", explanation: detail.explanation, invalid: detail.invalid }
+  }
+  if (detail.category === null) {
+    return { category: "uncategorized", categoryProvenance: "uncategorized", explanation: detail.explanation, invalid: detail.invalid }
+  }
+  return { category: "unknown", categoryProvenance: "missing", explanation: detail.explanation, invalid: detail.invalid }
 }
 
 /**
