@@ -33,7 +33,11 @@ import type {
 } from "~/lib/pipeline/types"
 
 import { tagFrameSynthetic } from "~/lib/pipeline/frame-origin"
-import { classifyStreamError } from "~/lib/stream"
+import {
+  //
+  classifyStreamError,
+  type StreamErrorKind,
+} from "~/lib/stream"
 
 import { anthropicSseFrame } from "./sse-frame"
 
@@ -211,23 +215,48 @@ export function buildCanonicalErrorFrameFromRaw(frame: UpstreamFrame): ClientFra
 }
 
 /**
+ * Map a classified stream-lifecycle kind to Anthropic's SSE `error.type`.
+ *
+ * SINGLE SOURCE for this protocol: the v4 codec's `formatError` imports this too, so
+ * the codec and the live handler cannot drift. They did drift — the codec's private
+ * copy answered `timeout_error` for a hard deadline while this live path still said
+ * `api_error`, which is how a "landed" deadline mapping never reached the wire.
+ *
+ * `Record` rather than a `switch` default so a new `StreamErrorKind` is a compile
+ * error here instead of silently falling into the generic bucket.
+ *
+ * Grouping rationale: every clock WE run out (frame-idle watchdog, hard request
+ * deadline, stale-request reaper — the reaper is `stale_request_max_age` expiring,
+ * which is a deadline) reports as a timeout. `shutdown` is the one genuinely
+ * retry-now condition, so it keeps `overloaded_error` (Anthropic's 529 literal).
+ * Anthropic has no cancellation literal, so the cancel kinds honestly degrade to
+ * the generic `api_error` rather than borrowing an unrelated one.
+ */
+const ANTHROPIC_STREAM_ERROR_TYPE: Record<StreamErrorKind, string> = {
+  "idle-timeout": "timeout_error",
+  "request-deadline": "timeout_error",
+  "reaper-cancel": "timeout_error",
+  shutdown: "overloaded_error",
+  "client-abort": "api_error",
+  "request-cancel": "api_error",
+  "dispatch-cancel": "api_error",
+  "unknown-cancel": "api_error",
+  other: "api_error",
+}
+
+/** @see ANTHROPIC_STREAM_ERROR_TYPE — kind-in variant, for callers holding a classified kind. */
+export function streamErrorKindToAnthropicErrorType(kind: StreamErrorKind): string {
+  return ANTHROPIC_STREAM_ERROR_TYPE[kind]
+}
+
+/**
  * Map a streaming error to its Anthropic SSE `error.type` (absorbed from
- * `streaming-pump.ts:anthropicStreamErrorType`, G-3): shutdown → retryable `overloaded_error`,
- * idle-timeout → `timeout_error`, everything else → `api_error`. Pure function — same input yields
- * same output regardless of call site, so `streaming-pump.ts` re-exports this under the old name.
+ * `streaming-pump.ts:anthropicStreamErrorType`, G-3). Thin wrapper that classifies the
+ * raw error then maps the kind. Pure function — same input yields same output regardless
+ * of call site, so `streaming-pump.ts` re-exports this under the old name.
  */
 export function classifyStreamErrorType(error: unknown): string {
-  switch (classifyStreamError(error)) {
-    case "idle-timeout": {
-      return "timeout_error"
-    }
-    case "shutdown": {
-      return "overloaded_error"
-    }
-    default: {
-      return "api_error"
-    }
-  }
+  return streamErrorKindToAnthropicErrorType(classifyStreamError(error))
 }
 
 // ============================================================================

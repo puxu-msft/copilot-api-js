@@ -138,6 +138,7 @@ import {
   createReverseStreamTranslator,
 } from "~/lib/pipeline/hub-translate"
 import { state } from "~/lib/state"
+import { STREAM_ERROR_KIND_MESSAGES } from "~/lib/stream"
 import { applyInboundSystemPrompt } from "~/lib/system-prompt"
 import { rebuildConversationMessages } from "~/routes/responses/conversation-rebuild"
 
@@ -495,20 +496,8 @@ function parseContentLength(header: string | null): number | undefined {
 // S7 — formatError
 // ============================================================================
 
-/** Kind-derived error-frame messages (P2.2-D4 parity — raw message is unavailable here). */
-const STREAM_ERROR_MESSAGES: Record<ClassifiedStreamError, string> = {
-  "idle-timeout": "Stream idle timeout",
-  shutdown: "Server is shutting down",
-  "client-abort": "Client disconnected",
-  "reaper-cancel": "Request cancelled by stale-request reaper",
-  "request-deadline": "Request exceeded its hard deadline",
-  "request-cancel": "Request cancelled",
-  "dispatch-cancel": "Upstream dispatch cancelled",
-  other: "Stream error",
-}
-
 function formatOpenAiResponsesError(err: ClassifiedStreamError): ClientFrame {
-  return { event: "error", data: JSON.stringify({ error: { message: STREAM_ERROR_MESSAGES[err], type: streamErrorKindToOpenAIErrorType(err) } }) }
+  return { event: "error", data: JSON.stringify({ error: { message: STREAM_ERROR_KIND_MESSAGES[err], type: streamErrorKindToOpenAIErrorType(err) } }) }
 }
 
 // ============================================================================

@@ -76,6 +76,7 @@ import {
   //
   convertOpenAIResponseToGemini,
 } from "~/lib/gemini"
+import { geminiStreamErrorStatusAndCode } from "~/lib/gemini/stream-error"
 import { ENDPOINT } from "~/lib/models/endpoint"
 import { resolveModelTarget } from "~/lib/models/resolver"
 import { resolveStreamIdleTimeoutMs } from "~/lib/models/timeout-resolver"
@@ -463,12 +464,11 @@ async function pumpGeminiStreamingV4(opts: PumpGeminiStreamingV4Options): Promis
     // is load-bearing: ctx.fail freezes inboundResponse, so a post-fail snapshot would miss the frame).
     const message = error instanceof Error ? error.message : String(error)
     const errorKind = classifyStreamError(error)
-    const errorCode = errorKind === "shutdown" ? 503 : 500
     await sink
       .writeSynthetic?.({
         data: JSON.stringify({
           candidates: [{ content: { role: "model", parts: [{ text: message }] }, finishReason: "OTHER", index: 0 }],
-          error: { code: errorCode, message, status: geminiStreamErrorStatus(errorKind) },
+          error: { ...geminiStreamErrorStatusAndCode(errorKind), message },
         }),
       })
       .catch(() => undefined)
@@ -501,7 +501,7 @@ async function pumpGeminiStreamingV4(opts: PumpGeminiStreamingV4Options): Promis
       .writeSynthetic?.({
         data: JSON.stringify({
           candidates: [{ content: { role: "model", parts: [{ text: truncErr.message }] }, finishReason: "OTHER", index: 0 }],
-          error: { code: 500, message: truncErr.message, status: geminiStreamErrorStatus(classifyStreamError(truncErr)) },
+          error: { ...geminiStreamErrorStatusAndCode(classifyStreamError(truncErr)), message: truncErr.message },
         }),
       })
       .catch(() => undefined)
@@ -536,21 +536,6 @@ function isGeminiTerminalFrame(frame: ClientFrame): boolean {
     return parsed.candidates?.[0]?.finishReason !== undefined
   } catch {
     return false
-  }
-}
-
-/** Map a streaming error kind to the Gemini gRPC `status` string (matches legacy). */
-function geminiStreamErrorStatus(kind: ReturnType<typeof classifyStreamError>): string {
-  switch (kind) {
-    case "idle-timeout": {
-      return "DEADLINE_EXCEEDED"
-    }
-    case "shutdown": {
-      return "UNAVAILABLE"
-    }
-    default: {
-      return "INTERNAL"
-    }
   }
 }
 
@@ -680,7 +665,7 @@ async function pumpReverseGeminiStreamingV4(opts: PumpReverseGeminiStreamingV4Op
       .writeSynthetic?.({
         data: JSON.stringify({
           candidates: [{ content: { role: "model", parts: [{ text: message }] }, finishReason: "OTHER", index: 0 }],
-          error: { code: errorKind === "shutdown" ? 503 : 500, message, status: geminiStreamErrorStatus(errorKind) },
+          error: { ...geminiStreamErrorStatusAndCode(errorKind), message },
         }),
       })
       .catch(() => undefined)
@@ -721,7 +706,7 @@ async function pumpReverseGeminiStreamingV4(opts: PumpReverseGeminiStreamingV4Op
       .writeSynthetic?.({
         data: JSON.stringify({
           candidates: [{ content: { role: "model", parts: [{ text: truncErr.message }] }, finishReason: "OTHER", index: 0 }],
-          error: { code: 500, message: truncErr.message, status: geminiStreamErrorStatus(classifyStreamError(truncErr)) },
+          error: { ...geminiStreamErrorStatusAndCode(classifyStreamError(truncErr)), message: truncErr.message },
         }),
       })
       .catch(() => undefined)

@@ -31,19 +31,33 @@ import { classifyStreamError } from "~/lib/stream"
  * not the raw error) shares the exact same mapping — no drift between the legacy
  * handler path and the codec path.
  */
+/**
+ * OpenAI SSE `error.type` for a classified stream-lifecycle kind.
+ *
+ * `Record` rather than a `switch` default so a new `StreamErrorKind` is a compile error
+ * here instead of silently landing in the generic `server_error` bucket.
+ *
+ * Grouping rationale (shared with the Anthropic/Gemini tables): every clock WE run out
+ * says timeout — the frame-idle watchdog, the hard request deadline, and the stale-request
+ * reaper (`stale_request_max_age` expiring IS a deadline). Everything else is 5xx-class
+ * transient: OpenAI's wire has no "overloaded" or "cancelled" shape, and `server_error`
+ * already signals a retryable transient condition.
+ */
+const OPENAI_STREAM_ERROR_TYPE: Record<StreamErrorKind, string> = {
+  "idle-timeout": "timeout_error",
+  "request-deadline": "timeout_error",
+  "reaper-cancel": "timeout_error",
+  shutdown: "server_error",
+  "client-abort": "server_error",
+  "request-cancel": "server_error",
+  "dispatch-cancel": "server_error",
+  "unknown-cancel": "server_error",
+  other: "server_error",
+}
+
+/** @see OPENAI_STREAM_ERROR_TYPE */
 export function streamErrorKindToOpenAIErrorType(kind: StreamErrorKind): string {
-  switch (kind) {
-    // Both are our own clocks running out, so both say timeout rather than hiding
-    // behind the generic server_error bucket.
-    case "idle-timeout":
-    case "request-deadline": {
-      return "timeout_error"
-    }
-    default: {
-      // shutdown / client-abort / other → 5xx-class transient.
-      return "server_error"
-    }
-  }
+  return OPENAI_STREAM_ERROR_TYPE[kind]
 }
 
 /**
