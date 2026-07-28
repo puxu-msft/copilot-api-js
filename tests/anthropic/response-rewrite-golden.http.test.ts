@@ -436,15 +436,20 @@ const S7_OUTBOUND = {
 // signature is empty + a real signature_delta follows = the standard shape).
 /** Hand-written refusal templates for the byte-locks below — deliberately NOT the production
  *  constants: an expected value imported from the code under test cannot detect a default change.
- *  The fixture's stop_details carries no `category` and its usage has no `output_tokens_details`,
- *  so both vars must render as the documented `unknown`. */
+ *  The fixture's stop_details carries `category:null` and its usage has no `output_tokens_details`,
+ *  so category renders `uncategorized` while thinking tokens remain `unknown`. */
 const GOLDEN_SUPPRESS_TEMPLATE = "refused c={refusal_category} t={thinking_tokens}"
-const GOLDEN_SUPPRESS_RENDERED = "refused c=unknown t=unknown"
+const GOLDEN_SUPPRESS_RENDERED = "refused c=uncategorized t=unknown"
+const GOLDEN_NON_STREAM_SUPPRESS_RENDERED = "refused c=cyber t=unknown"
 const GOLDEN_ERROR_TEMPLATE = "denied c={refusal_category}"
 
+const STREAM_REFUSAL_STOP_DETAILS_BYTES =
+  '{"type":"refusal","category":null,"explanation":"API integrators: you can reduce refusals..."}'
+const NON_STREAM_REFUSAL_STOP_DETAILS_BYTES =
+  '{"type":"refusal","category":"cyber","explanation":"This request triggered restrictions on violative cyber content..."}'
 const REFUSAL_DELTA = ev("message_delta", {
   type: "message_delta",
-  delta: { stop_reason: "refusal", stop_details: { type: "refusal", explanation: "x" }, stop_sequence: null },
+  delta: { stop_reason: "refusal", stop_details: JSON.parse(STREAM_REFUSAL_STOP_DETAILS_BYTES), stop_sequence: null },
   usage: { output_tokens: 5 },
 })
 function s8Frames(): Array<string> {
@@ -480,7 +485,7 @@ function s6RefusalBody(): string {
     role: "assistant",
     model: MODEL,
     stop_reason: "refusal",
-    stop_details: { type: "refusal", explanation: "x" },
+    stop_details: JSON.parse(NON_STREAM_REFUSAL_STOP_DETAILS_BYTES),
     stop_sequence: null,
     usage: { input_tokens: 5, output_tokens: 6 },
     content: [{ type: "thinking", thinking: "", signature: "SIG-REF" }],
@@ -678,6 +683,9 @@ describe("response-rewrite activated-state golden (handler-v4, byte-lock)", () =
     expect(text).not.toContain('"type":"ping"')
     // Option A: history keeps the upstream-original thinking-only refusal (no synth text).
     expect(lastOutboundContent()).toEqual(S8_OUTBOUND)
+    const entry = getHistory({ endpoint: "anthropic-messages" }).entries[0]
+    expect(entry.state).toBe("failed")
+    expect(JSON.stringify(entry.attempts?.at(-1)?.upstreamResponse?.stopDetails)).toBe(STREAM_REFUSAL_STOP_DETAILS_BYTES)
   })
 
   test("S8 refusal mode: refusal passes through byte-identical", async () => {
@@ -868,8 +876,11 @@ describe("response-rewrite activated-state golden (handler-v4, byte-lock)", () =
       usage: { input_tokens: 5, output_tokens: 6 },
       content: [
         { type: "thinking", thinking: "", signature: "SIG-REF" },
-        { type: "text", text: GOLDEN_SUPPRESS_RENDERED },
+        { type: "text", text: GOLDEN_NON_STREAM_SUPPRESS_RENDERED },
       ],
     })
+    const entry = getHistory({ endpoint: "anthropic-messages" }).entries[0]
+    expect(entry.state).toBe("failed")
+    expect(JSON.stringify(entry.attempts?.at(-1)?.upstreamResponse?.stopDetails)).toBe(NON_STREAM_REFUSAL_STOP_DETAILS_BYTES)
   })
 })
