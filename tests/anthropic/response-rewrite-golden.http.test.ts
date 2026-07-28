@@ -692,16 +692,29 @@ describe("response-rewrite activated-state golden (handler-v4, byte-lock)", () =
   test("S8 refusal mode: refusal passes through byte-identical", async () => {
     scenario = "s8"
     setStateForTests({ refusalSseRewrite: "refusal" })
+    const refusalFeatures: Array<{ feature: string; detail?: unknown }> = []
+    const unsubscribe = getBus().subscribe((event) => {
+      if (event.kind === "request.feature_applied" && event.feature.startsWith("refusal-")) refusalFeatures.push({ feature: event.feature, detail: event.detail })
+    })
     const text = await postStream()
+    unsubscribe()
     // refusal mode = no rewrite: the refusal delta + empty thinking block reach the client unchanged.
     expect(text).toContain('"stop_reason":"refusal"')
     expect(text).not.toContain(GOLDEN_SUPPRESS_RENDERED)
+    const entry = getHistory({ endpoint: "anthropic-messages" }).entries[0]
+    expect(entry.state).toBe("failed")
+    expect(refusalFeatures).toEqual([{ feature: "refusal-passthrough", detail: { category: "uncategorized" } }])
   })
 
   test("S8 error mode: thinking-only refusal → event:error frame + ctx.fail; history keeps upstream refusal", async () => {
     scenario = "s8"
     setStateForTests({ refusalSseRewrite: "error" })
+    const refusalFeatures: Array<{ feature: string; detail?: unknown }> = []
+    const unsubscribe = getBus().subscribe((event) => {
+      if (event.kind === "request.feature_applied" && event.feature.startsWith("refusal-")) refusalFeatures.push({ feature: event.feature, detail: event.detail })
+    })
     const text = await postStream()
+    unsubscribe()
     // The refusal terminator is REPLACED by an Anthropic `event: error` frame (api_error).
     expect(text).toContain("event: error")
     expect(text).toContain('"type":"api_error"')
@@ -719,6 +732,7 @@ describe("response-rewrite activated-state golden (handler-v4, byte-lock)", () =
     expect(entry.attempts?.at(-1)?.upstreamResponse?.success).toBe(true)
     expect(entry.attempts?.at(-1)?.error).toBeUndefined()
     expect(entry._index?.derived?.failureReason?.toLowerCase()).toContain("refusal")
+    expect(refusalFeatures).toEqual([{ feature: "refusal-errored", detail: { category: "uncategorized" } }])
   })
 
   test("S8 end_turn custom template renders vars into the forwarded text block (streaming)", async () => {
@@ -787,7 +801,12 @@ describe("response-rewrite activated-state golden (handler-v4, byte-lock)", () =
   test("S6 error mode: non-streaming thinking-only refusal → 500 error body + ctx.fail", async () => {
     scenario = "s6Refusal"
     setStateForTests({ refusalSseRewrite: "error" })
+    const refusalFeatures: Array<{ feature: string; detail?: unknown }> = []
+    const unsubscribe = getBus().subscribe((event) => {
+      if (event.kind === "request.feature_applied" && event.feature.startsWith("refusal-")) refusalFeatures.push({ feature: event.feature, detail: event.detail })
+    })
     const res = await postJsonRaw()
+    unsubscribe()
     expect(res.status).toBe(500)
     expect(await res.json()).toEqual({ type: "error", error: { type: "api_error", message: expect.any(String) } })
     // history FAILED (request state); upstream leg succeeded → outboundResponse honest, verdict in failureReason.
@@ -796,6 +815,7 @@ describe("response-rewrite activated-state golden (handler-v4, byte-lock)", () =
     expect(entry.attempts?.at(-1)?.upstreamResponse?.success).toBe(true)
     expect(entry.attempts?.at(-1)?.error).toBeUndefined()
     expect(entry._index?.derived?.failureReason?.toLowerCase()).toContain("refusal")
+    expect(refusalFeatures).toEqual([{ feature: "refusal-errored", detail: { category: "cyber" } }])
   })
 
   test("S6 error mode custom message/type render into the non-streaming error body", async () => {
