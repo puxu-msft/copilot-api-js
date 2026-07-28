@@ -74,6 +74,11 @@ function anchorsOpenedRemapPredicates(source: string): Array<string> {
   return source.split("\n").filter((line) => /\b(?:if|while)\s*\(/.test(line) && /anchorsOpened\s*\(/.test(line) && /remap|offset|wireIndex/.test(line))
 }
 
+const LOW_LEVEL_ALLOCATION_NAMES = ["nextAnchorIndex", "nextRealIndex", "onAnchorOpen", "onRealBlockOpen", "allocateAnchor", "allocateRealBlock"]
+function lowLevelAllocationCalls(source: string): Array<string> {
+  return LOW_LEVEL_ALLOCATION_NAMES.flatMap((name) => [...source.matchAll(new RegExp(String.raw`\.${name}\s*\(`, "g"))].map(() => name))
+}
+
 test("detectors bite on a new literal remap and an anchor-count remap predicate", () => {
   expect(literalRemapOffsets("hooks.remap(frame, 2)")).toEqual([".remap(frame, 2)"])
   expect(newLiteralRemapSites([{ file: "src/new-site.ts", expression: ".remap(frame, 2)" }])).toEqual([
@@ -97,6 +102,20 @@ test("no source file gates a remap on anchorsOpened()", async () => {
   for (const file of await sourceFiles(path.join(repoRoot, "src"))) {
     const matches = anchorsOpenedRemapPredicates(await readFile(file, "utf8"))
     if (matches.length > 0) violations.push(`${path.relative(repoRoot, file)}: ${matches.join(" | ")}`)
+  }
+  expect(violations).toEqual([])
+})
+
+test("detector bites when production code allocates outside the owner", () => {
+  expect(lowLevelAllocationCalls("state.allocator.allocateAnchor()")).toEqual(["allocateAnchor"])
+})
+
+test("production allocation is owned only by keepalive allocator internals and delivery session", async () => {
+  const violations: Array<string> = []
+  for (const file of await sourceFiles(path.join(repoRoot, "src"))) {
+    if (file.endsWith("/anthropic/keepalive-anchor.ts") || file.endsWith("/pipeline/delivery/session.ts")) continue
+    const matches = lowLevelAllocationCalls(await readFile(file, "utf8"))
+    if (matches.length > 0) violations.push(`${path.relative(repoRoot, file)}: ${matches.join(", ")}`)
   }
   expect(violations).toEqual([])
 })

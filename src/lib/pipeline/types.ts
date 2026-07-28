@@ -427,15 +427,44 @@ export interface ContinuationHooks {
  * in via {@link RunBufferedOpts.anchorState} so both sides observe the SAME injection/close state
  * (no torn snapshot — §3.3 B1 flips `injected` synchronously before the first sink write).
  */
+declare const legTokenBrand: unique symbol
+
+/** Immutable identity of one upstream generation leg. */
+export type LegToken = string & { readonly [legTokenBrand]: true }
+
+/** Immutable handle mapping one upstream block onto its generation-wide wire index. */
+export interface WireBlockMapping {
+  readonly wireIndex: number
+  readonly upstreamIndex: number
+  readonly leg: LegToken
+  remap(frame: ClientFrame): ClientFrame
+}
+
+export interface WireIndexReservation<Value> {
+  readonly value: Value
+  commit(): void
+  rollback(): void
+}
+
 export interface GenerationWireIndexAllocator {
   /** Peek the wire index the NEXT anchor block will occupy. */
   nextAnchorIndex: () => number
   /** Peek the wire index the NEXT real block will occupy. */
   nextRealIndex: () => number
-  /** Commit an anchor block at the current wire index. */
+  /** Legacy split-phase commit retained until P3M migrates all old call sites. */
   onAnchorOpen: () => void
-  /** Commit a real block at the current wire index and record its upstream mapping. */
+  /** Legacy split-phase commit retained until P3M migrates all old call sites. */
   onRealBlockOpen: () => void
+  /** Begin one upstream round. The delivery owner serializes this synchronous primitive. */
+  beginLeg: (kind: "primary" | "continuation" | "recovery", source: { candidateId: string; dispatchId: string }) => LegToken
+  /** Atomically allocate and commit one synthetic anchor index. */
+  allocateAnchor: () => number
+  /** Atomically allocate and commit one real block mapping on the active leg. */
+  allocateRealBlock: (upstreamIndex: number) => WireBlockMapping
+  /** Low-level reservation used by the delivery owner's pre-write commit protocol. */
+  reserveAnchor: () => WireIndexReservation<number>
+  /** Low-level reservation used by the delivery owner's pre-write commit protocol. */
+  reserveRealBlock: (upstreamIndex: number) => WireIndexReservation<WireBlockMapping>
   /** Diagnostic count of allocated synthetic anchors. Never use this as a remap predicate. */
   anchorsOpened: () => number
   /** Resolve the offset from an upstream block index to its allocated wire index. */

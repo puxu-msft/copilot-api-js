@@ -1,6 +1,5 @@
 import type { ServerSentEventMessage } from "fetch-event-stream"
 
-import type { WireBlockMapping } from "~/lib/pipeline/delivery/types"
 import type {
   //
   AnchorHooks,
@@ -8,6 +7,9 @@ import type {
   ClientFrame,
   ClientSink,
   GenerationWireIndexAllocator,
+  LegToken,
+  WireBlockMapping,
+  WireIndexReservation,
 } from "~/lib/pipeline/types"
 
 import { anthropicSseFrame } from "./sse-frame"
@@ -35,7 +37,56 @@ export const PRE_CONTENT_ANCHOR_INDEX = 0
 export function createGenerationWireIndexAllocator(): GenerationWireIndexAllocator {
   let wireCounter = 0
   let anchorCount = 0
+  let legSequence = 0
+  let activeLeg: LegToken | undefined
+  let reservationOpen = false
   const realWireIndices: Array<number> = []
+
+  const reserve = <Value>(value: Value, apply: () => void): WireIndexReservation<Value> => {
+    if (reservationOpen) throw new Error("wire-index reservation already open")
+    reservationOpen = true
+    let settled = false
+    const settle = (commit: boolean): void => {
+      if (settled) throw new Error("wire-index reservation already settled")
+      settled = true
+      reservationOpen = false
+      if (commit) apply()
+    }
+    return Object.freeze({
+      value,
+      commit: () => settle(true),
+      rollback: () => settle(false),
+    })
+  }
+
+  const beginLeg = (kind: "primary" | "continuation" | "recovery", source: { candidateId: string; dispatchId: string }): LegToken => {
+    if (reservationOpen) throw new Error("cannot begin a leg while a wire-index reservation is open")
+    activeLeg = `${kind}:${source.candidateId}:${source.dispatchId}:${legSequence++}` as LegToken
+    return activeLeg
+  }
+
+  const reserveAnchor = (): WireIndexReservation<number> =>
+    reserve(wireCounter, () => {
+      anchorCount++
+      wireCounter++
+    })
+
+  const reserveRealBlock = (upstreamIndex: number): WireIndexReservation<WireBlockMapping> => {
+    if (!activeLeg) throw new Error("cannot allocate a real block without an active leg")
+    const wireIndex = wireCounter
+    const leg = activeLeg
+    const mapping: WireBlockMapping = Object.freeze({
+      wireIndex,
+      upstreamIndex,
+      leg,
+      remap: (frame: ClientFrame) => remapAnthropicBlockIndex(frame, wireIndex - upstreamIndex),
+    })
+    return reserve(mapping, () => {
+      realWireIndices[upstreamIndex] = wireIndex
+      wireCounter++
+    })
+  }
+
   return {
     nextAnchorIndex: () => wireCounter,
     nextRealIndex: () => wireCounter,
@@ -47,6 +98,19 @@ export function createGenerationWireIndexAllocator(): GenerationWireIndexAllocat
       realWireIndices.push(wireCounter)
       wireCounter++
     },
+    beginLeg,
+    allocateAnchor: () => {
+      const reservation = reserveAnchor()
+      reservation.commit()
+      return reservation.value
+    },
+    allocateRealBlock: (upstreamIndex) => {
+      const reservation = reserveRealBlock(upstreamIndex)
+      reservation.commit()
+      return reservation.value
+    },
+    reserveAnchor,
+    reserveRealBlock,
     anchorsOpened: () => anchorCount,
     realBlockOffset: (upstreamIndex) => (realWireIndices[upstreamIndex] ?? upstreamIndex) - upstreamIndex,
   }
