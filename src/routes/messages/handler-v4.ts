@@ -91,6 +91,7 @@ import {
   //
   DEFAULT_REFUSAL_ERROR_TYPE,
   extractRefusalDetail,
+  refusalCategoryForDiagnostics,
   hasClientVisibleContent,
   isContentlessRefusal,
   refusalSummary,
@@ -895,7 +896,10 @@ function renderNonStreamingV4(
   const isRefusal =
     response.stop_reason === "refusal" && !hasClientVisibleContent(response.content as unknown as Array<{ type: string }>)
   const refusalMode = reqCtx.refusalPolicy.mode
-  if (isRefusal) reqCtx.recordFeature(REFUSAL_FEATURE_BY_MODE[refusalMode])
+  if (isRefusal)
+    reqCtx.recordFeature(REFUSAL_FEATURE_BY_MODE[refusalMode], {
+      category: refusalCategoryForDiagnostics((response as { stop_details?: unknown }).stop_details),
+    })
   if (isRefusal && refusalMode === "error") {
     const summary = refusalSummary(extractRefusalDetail((response as { stop_details?: unknown }).stop_details))
     // Emission point 4 (non-streaming error body): render message/type from config. Empty type
@@ -1462,7 +1466,7 @@ async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): 
       const partial = buildAnthropicResponseData(acc, model)
       const summary = refusalSummary(extractRefusalDetail(acc.stopDetails))
       consola.error(`[REFUSAL] ${summary} for ${acc.model || model} -> wire=${mode}, recorded as failed`)
-      env.ctx.recordFeature(REFUSAL_FEATURE_BY_MODE[mode])
+      env.ctx.recordFeature(REFUSAL_FEATURE_BY_MODE[mode], { category: refusalCategoryForDiagnostics(acc.stopDetails) })
       env.ctx.fail(
         acc.model || model,
         new Error(summary),

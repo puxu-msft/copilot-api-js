@@ -135,11 +135,14 @@ export type FeatureKind =
   /** recoverer rebuilt tool_use(s) from downgraded upstream text — `detail: { tools: string[] }` (the recovered tool names, in call order) */
   | "tool-call-recovered"
   /** suppression mode: a contentless upstream refusal was rewritten into a normal completed turn so
-   *  the client's conversation is not interrupted (the request still settles FAILED) */
+   *  the client's conversation is not interrupted (the request still settles FAILED).
+   *  `detail: { category: string }` uses the named upstream category or `uncategorized`. */
   | "refusal-recovered"
-  /** error mode: surfaced a contentless upstream refusal as an `event: error` frame + ctx.fail */
+  /** error mode: surfaced a contentless upstream refusal as an `event: error` frame + ctx.fail.
+   *  `detail: { category: string }` uses the named upstream category or `uncategorized`. */
   | "refusal-errored"
-  /** passthrough mode: the genuine upstream refusal reached the client untouched (still settles FAILED) */
+  /** passthrough mode: the genuine upstream refusal reached the client untouched (still settles FAILED).
+   *  `detail: { category: string }` uses the named upstream category or `uncategorized`. */
   | "refusal-passthrough"
   /** error-shaping 决策命中 — detail: { decision: "retry-signal"|"ask-user-question"|"canonical-error"|"defer-to-block-level", errorType: ApiErrorType, commitPhase: "pre-commit"|"post-commit" } */
   | "error-shaping-decided"
@@ -177,6 +180,9 @@ export type FeatureKind =
    * wire (N3) — this marker keeps the degradation observably distinguishable (richest-data-flow). `detail: {}`.
    */
   | "translated-content-filter"
+  /** reverse translation mapped an Anthropic refusal to a target protocol that cannot carry
+   *  `stop_details.category`. `detail: { category, target: "openai-cc"|"openai-responses" }`. */
+  | "translated-refusal-category-dropped"
 
 export type TransportKind = "http" | "upstream-ws" | "upstream-ws-fallback"
 

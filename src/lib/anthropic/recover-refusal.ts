@@ -149,6 +149,16 @@ export function isNamedCategory(category: string | null | undefined): category i
 }
 
 /**
+ * Stable category bucket for human-facing and aggregate diagnostics. Named upstream strings remain
+ * verbatim; explicit `null`, absent fields and malformed values all use `uncategorized` because those
+ * consumers need one actionable fallback bucket rather than the raw-storage provenance split.
+ */
+export function refusalCategoryForDiagnostics(stopDetails: unknown): string {
+  const category = extractRefusalDetail(stopDetails).category
+  return isNamedCategory(category) ? category : "uncategorized"
+}
+
+/**
  * The refusal turn's thinking tokens — `undefined` when NOT knowable.
  *
  * Deliberately has NO fallback to `usage.output_tokens`. That fallback would lie: the real `bio`

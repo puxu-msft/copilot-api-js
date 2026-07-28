@@ -17,6 +17,8 @@ import {
 } from "~/lib/observability/projections/format"
 import { formatLogLine } from "~/lib/observability/projections/log-line"
 
+import { refusalCategoryForDiagnostics } from "~/lib/anthropic/recover-refusal"
+
 import type { RequestDisplayEffect } from "../active-request-store"
 
 import { sanitizeTerminalText } from "./sanitize"
@@ -94,8 +96,10 @@ function renderTerminal(effect: Extract<RequestDisplayEffect, { kind: "terminal"
   const durationMs = options.now - ctx.startTime
   const final = attempts?.at(-1)?.upstreamResponse
   const tags = entry.thinking ? [formatThinkingTag(entry.thinking), ...entry.tags] : entry.tags
+  const refusalToken =
+    isError && final?.stopReason === "refusal" ? `refusal:${refusalCategoryForDiagnostics(final.stopDetails)}` : undefined
   const extra =
-    `${!isError && tags.length > 0 ? pc.dim(` (${tags.join(", ")})`) : ""}${isError && effect.error ? `: ${sanitizeTerminalText(effect.error)}` : ""}`
+    `${refusalToken ? ` ${refusalToken}` : ""}${!isError && tags.length > 0 ? pc.dim(` (${tags.join(", ")})`) : ""}${isError && effect.error ? `: ${sanitizeTerminalText(effect.error)}` : ""}`
     || undefined
   const upstreamNames = toolNamesFromResponseBody(final?.body)
   const toolNames = upstreamNames.length > 0 ? upstreamNames : (entry.recoveredToolNames ?? [])

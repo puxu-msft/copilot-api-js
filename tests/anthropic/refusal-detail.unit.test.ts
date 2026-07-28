@@ -26,6 +26,7 @@ import {
   extractRefusalDetail,
   isContentlessRefusal,
   isNamedCategory,
+  refusalCategoryForDiagnostics,
   refusalThinkingTokens,
   renderRefusalTemplate,
 } from "~/lib/anthropic/recover-refusal"
@@ -78,6 +79,15 @@ describe("isNamedCategory — the ONLY gate is 'non-empty string'", () => {
     expect(isNamedCategory(null)).toBe(false)
     expect(isNamedCategory(undefined)).toBe(false)
     expect(isNamedCategory("")).toBe(false)
+  })
+})
+
+describe("refusalCategoryForDiagnostics — observable category is stable across consumers", () => {
+  test("keeps named categories and groups every unnamed shape as uncategorized", () => {
+    expect(refusalCategoryForDiagnostics({ type: "refusal", category: "cyber" })).toBe("cyber")
+    expect(refusalCategoryForDiagnostics({ type: "refusal", category: null })).toBe("uncategorized")
+    expect(refusalCategoryForDiagnostics({ type: "refusal" })).toBe("uncategorized")
+    expect(refusalCategoryForDiagnostics({ type: "refusal", category: 123 })).toBe("uncategorized")
   })
 })
 

@@ -46,6 +46,7 @@ import {
 
 import { resetAnthropicFeatureNegotiationForTesting } from "~/lib/anthropic/feature-negotiation"
 import { getHistory } from "~/lib/history"
+import { getBus } from "~/lib/observability"
 import {
   //
   setModelMappings,
@@ -864,7 +865,12 @@ describe("response-rewrite activated-state golden (handler-v4, byte-lock)", () =
   test("S6 non-streaming: recover-refusal thinking-only → synthesized text + end_turn", async () => {
     scenario = "s6Refusal"
     setStateForTests({ refusalSseRewrite: "end_turn" })
+    const refusalFeatures: Array<{ feature: string; detail?: unknown }> = []
+    const unsubscribe = getBus().subscribe((event) => {
+      if (event.kind === "request.feature_applied" && event.feature.startsWith("refusal-")) refusalFeatures.push({ feature: event.feature, detail: event.detail })
+    })
     const json = await postJson()
+    unsubscribe()
     expect(json).toEqual({
       id: "msg-ns",
       type: "message",
@@ -882,5 +888,6 @@ describe("response-rewrite activated-state golden (handler-v4, byte-lock)", () =
     const entry = getHistory({ endpoint: "anthropic-messages" }).entries[0]
     expect(entry.state).toBe("failed")
     expect(JSON.stringify(entry.attempts?.at(-1)?.upstreamResponse?.stopDetails)).toBe(NON_STREAM_REFUSAL_STOP_DETAILS_BYTES)
+    expect(refusalFeatures).toEqual([{ feature: "refusal-recovered", detail: { category: "cyber" } }])
   })
 })
