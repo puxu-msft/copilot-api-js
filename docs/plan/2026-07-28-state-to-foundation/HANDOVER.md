@@ -301,6 +301,11 @@ rg -n 'from "' src/lib/state.ts src/lib/state-defaults.ts
 ### S4 — 测试 shim 反转成通用 snapshot 参与者注册表
 
 - **做什么**：在 state 里加一个**零领域知识**的参与者注册表（`registerSnapshotParticipant({ snapshot, restore })`），token 包从 core 侧自行注册；`state.ts` 删掉对 `~/lib/token/store` 的 import **以及对 `CopilotTokenInfo` / `TokenInfo` / `TokenStoreSnapshot` 三个类型的依赖**（见 §3.6——签名里还写着 token 类型的话，边根本没断，注册表就白做了）；`setStateForTests` 的宽签名（接收 4 个凭据键）改为转发给已注册参与者。
+- ✅ **已落地**（提交 `a88a2618`）。`state.ts` 对 token 的**两条**边（`token/store` 值 + `token/types` 类型）一次性消失，出边 ratchet 里那两行已删。
+- **实际形态**：`SnapshotParticipant { name, claims, snapshot, restore, applyTestPatch }` + `registerSnapshotParticipant()`；`src/lib/token-runtime.ts`（core 侧、本来就是两域之间的桥）在**两个入口**都注册（`installDefaultTokenDeps` = 测试地板、`installDefaultTokenRuntime` = 生产构造链），各自有一条断言证明它接上了——否则删掉其中一行没有任何 oracle 会红。
+- **类型安全靠 TS 声明合并**：`state.ts` 声明**空的** `StateTestPatchExtensions`，`token-runtime.ts` 用 `declare module "~/lib/state"` 填四个凭据键。**state 侧零 token 类型名，而调用点仍然全类型化**（拼错凭据键仍是编译错误）。注意：augmentation 必须放 **core 侧**，放 `packages/token` 里等于把 `~/` 又引回了包边界。
+- ⚠️ **`key in mutableState` 单独不足以做 key 分类**：`State` 有 **3 个可选字段**（`models` / `vsCodeVersion` / `adaptiveRateLimitConfig`）在被写之前**根本不在对象上**，直接用 `in` 会把 `setStateForTests({ models })` 判成「无人认领」而抛错。已用显式清单 `OPTIONAL_STATE_FIELDS` 补齐，并有守卫从 `State` 声明重新推导、防清单腐烂。
+- **红线核验方式**：629 个既有调用点的 **(文件, 该文件内词法序号, 规范化实参文本)** 三元组改动前后逐条相等（不是 diff --stat、也不是全局实参 multiset）。5 条变异各让一条 oracle 变红。
 - **为什么这样而不是把三个函数搬去 `tests/helpers/`**：`setStateForTests` 的调用遍布 **165 个测试文件**（@ `a675064e`）；反转方案让这些**调用点**一行都不用改。
 - **⚠️ 红线的准确形状（我第一版写错了两次）**：
   - **第一次**：写成「不改任何测试文件」。那是个**确定会假绿的 oracle**——注册必须有一个明确的接线点，而测试进程根本不走 production composition root。现有的测试地板是 `bunfig.toml` 的三个 preload（`sandbox-paths` → `install-token-deps` → `install-telemetry-deps`），它们只装 ambient ports、**不注册任何 snapshot participant**。所以 S4 **必然要改** preload / fixture / `tests/token/credential-store-isolation.it.test.ts` 这类集中式接线文件。把"零 churn"定得过宽，只会逼着实现者选一个"没注册就静默忽略 token 键"的形状——那样现有测试照旧全绿，而凭据隔离其实已经没了。
@@ -400,6 +405,19 @@ rg -n 'from "' src/lib/state.ts src/lib/state-defaults.ts
 
 8. **给自己新写的 oracle 断言"它一定咬得住"，而那只是推理不是实验**。整改时我给 S2 加了「环数不回升」并写道「**专门用来咬 re-export 逃生口，前两条 oracle 对它全绿**」——错的：S2 同时移走了别的边，删掉的旧环完全可能多于新增的两节点环，`count` 不回升照样绿。**鉴别力来自集合差（新环/新成员），不来自计数。** 同一轮我还写了「`toBe` 而非 `toEqual` 能证明是同一份绑定」——对 primitive string **两者都只是值相等**，两处独立字面量照样通过。
    → **教训：oracle 的鉴别力和代码的正确性一样，是需要被实验证明的，不能靠推。** 我在文档里教育别人「守卫绿不自证」，转头就给自己新写的三个 oracle 下了没做实验的绝对断言。**复发点：你新加的每一个 oracle，都要问"什么变异能让它红"，答不上来就是没鉴别力。**
+
+## 6.5 两条**既有**测试基建缺陷（本轮撞到并已定性，**不是本任务引入的**）
+
+> 两条都在 S3 基线（未含 S4 任何改动）上复现过。写在这里是因为下一个会话**一定会再撞到**，而第一反应必然是「我改坏了」。
+
+1. **`tests/history/search/uds-transport.it.test.ts` 的 under-load 用例对分片同居脆弱，任何人新增一个测试文件都可能让全档变红。**
+   - 现象：全档里稳定 fail，子进程退出码 **143 = SIGTERM**（被超时杀掉，不是崩溃）；同一文件**单跑 21/21 通过**。
+   - 关键实证：把新增的测试文件换成**一个只有 `expect(1).toBe(1)` 的平凡文件**，同样触发——所以触发因素是「文件集合变了 → `scripts/parallel-test.ts` 的 LPT 分片重排」，与新增文件的内容无关。
+   - **不是子进程里的查询逻辑挂了**：照抄该子进程程序写探针实测，空闲机 122ms / 满载机 249ms、160/160 全部 settle。所以 `connectTimeoutMs` 兜住了，问题在 16 路并行下的 spawn/启动层面。
+   - 把超时从默认 5s 提到 30s **无效**（照样 30012ms 超时），所以别按「给它更多时间」去修。
+2. **`tests/token/` 目录内两个文件互相污染**：`copilot-token-manager-dispose.it.test.ts` 之后跑 `credential-store-isolation.it.test.ts`，后者的「B 看到干净 store」会 fail。**S3 基线上同样 5 pass 1 fail。** 全档里看不到，只是因为两文件被分到了不同分片——分片一变就会暴露。
+
+**判别自己有没有引入回归的方法**：真回归会**稳定咬同一条**；本机还有一类低速率环境性 flake，每次咬**不同**的时序/文件系统测试（见 §4 开头的 ⚠️）。
 
 ## 7. 产物清单
 
