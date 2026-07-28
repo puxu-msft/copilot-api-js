@@ -39,8 +39,9 @@
 - ✅ **Task 0.2**（`a819834f`）——**delivery-level semantic-content gate（承载对抗审 CRITICAL 修法）**：gate 读 `hasEmittedRealClientContent`（**非** `boundary.result`——后者只在 `content_block_stop` 翻转、会漏「delta 已发 stop 未到」窗口致重复内容），翻转**复用既有** `onFirstRealContent` seam（`isClientContentFrame` 驱动、只数非-synthetic、只一次、live/buffered 共用）。主会话 + 异模型 reviewer 双重独立核实。
 - ✅ **Task 0.3**（`eff92dc0`）——`coordinator.runRecoveryFromPreReadyFailure`（镜像 runHedge、parent-less、at-most-once、**不 settle parent**：primary 已自行 settle failed；有解释注释）。
 - ✅ **Task 0.4**（`85b8c5c6` + backlog `50b09c00`）——`driver.runPreContentRecovery` + pre-ready failure ownership（存+rethrow 字节等价回归锁）+ **🔴 server-tool 双执行 gate 经异模型安全审计确认无绕过**（`classifyServerExecutionRisk` 在 dispatch 前、throw 非 continue、分类最终 target wire、`allowServerTools` 不在此路径）。
-- ✅ **Task 0.5**（`41a351fa`）——recovery sink lifetime supervisor。**注意：plan Task 0.5 文本写于 heartbeat 重写之前，实施按现状适配**：只抑制 `close`/`finalize`，`freezeHeartbeat`/`suspendHeartbeat`/`resumeHeartbeat` 原样转发；`settleFinal()` 为幂等 `Promise<void>`（await 异步 `session.terminate()`）；继承 generation-owned delivery identity（WeakMap，透明 decorator）。**未接线**。
-  - **已知 concern（P4/P5 处理）**：`ClientSink.finalize` 类型声明 `void` 但 delivery 实际返回 Promise——接线时统一修正。
+- ✅ **Task 0.5**（`41a351fa` + fix `5d386f72` / `325e3771`）——recovery sink lifetime supervisor。**plan Task 0.5 文本写于 heartbeat 重写之前，实施按现状适配**（5 处偏离全经 reviewer code-read 确证为正当）：只抑制 `close`/`finalize`，`freezeHeartbeat`/`suspendHeartbeat`/`resumeHeartbeat` 原样转发；`settleFinal()` 为幂等 `Promise<void>`（await 异步 `session.terminate()`）；**新增 `inheritDownstreamDeliverySession`**（plan 未提、实施者从当前代码挖出的真实约束：driver 用 sink 对象身份从 WeakMap 找 generation-owned delivery）。**未接线**。异模型 reviewer 自做 5 次 mutation 独立验证；2 条 Important 已闭合——(a) `await` 假绿缺口补守卫（正样本对照：删 `await` → 2 fail 真咬）；(b) Concern 事实订正 + `makeReconcilingSink` identity 缺陷登记 backlog。
+  - **已知 concern（P4/P5 处理）**：`ClientSink.finalize` 类型声明 `void` 但 delivery 实际返回 Promise（`await-thenable`/`no-floating-promises` 均 off，lint 不会报）——接线时收紧为 `void | Promise<void>`。
+  - **supervisor 所有权守卫**：`settleFinal()` **必须放进 owner 的 `finally`**，否则 owner 中途抛出会让 generation heartbeat timer 永久存活（unref 不阻塞退出，但会持续向已死客户端写 ping）。
 
 ### 剩余（依赖序）
 
