@@ -232,8 +232,13 @@ AnthropicError: stream ended without producing a Message with role=assistant
 | accumulator 以 raw 捕获 `stop_details`（§5 #1） | ✅ `6eb04733` |
 | 请求计数口径（裁决为唯一权威、桶互斥） | ✅ `12212856` |
 | `docs/refusal-recovery.md` 改写为现状契约 | ✅ 本批 |
-| `stop_details` 贯通 History（§5 #2–#11） | ⏳ 进行中（T3） |
-| 双轮 session CLI oracle（首要目标的直接判据） | ⏳ 进行中（T2） |
-| 消费面（§5 #12–#17：TUI / UI / 遥测维度 / 翻译降级） | ❌ 待做（T4） |
+| `stop_details` 贯通 History（§5 #2–#11） | ✅ 已完成（T3），真 SQLite 往返覆盖四种 settle 形态 |
+| 双轮 session CLI oracle（首要目标的直接判据） | ✅ 已完成（T2），真 CLI 2.1.220 实测第二轮可继续 |
+| 消费面（§5 #12–#17：TUI / UI / 遥测维度 / 翻译降级） | ✅ 已完成（T4a/T4b） |
+| 默认值 oracle（§8 要求，合并态复审发现缺失） | ✅ 已完成，3 条全过 mutation control |
+
+> **§5 #16 的落地形状与本表不同且更好**：spec 写 feature detail `{category, disposition}`，落地是 `{category}` + 三个 FeatureKind 的**穷尽 Record**——类型系统能在新增模式时逼出遗漏，比塞进 detail 更强。以落地为准。
+
+> 第四轮**合并态复审**（审最终代码而非设计）结论见 [同目录 `-review-merged-state.md`](2026-07-27-refusal-diagnostics-and-typing-review-merged-state.md)。
 
 > 剩余任务的执行顺序、判据与触点见 [docs/plan/2026-07-28-refusal-suppression-remaining-tasks.md](../plan/2026-07-28-refusal-suppression-remaining-tasks.md)。

@@ -43,6 +43,8 @@ CC 确实有 category 感知的原生渲染（对 `cyber` 有 Cyber Verification
 
 **三种模式终态一律 `failed`**：抑制是**呈现策略**，不改变「上游拒绝了、本轮没有真实产出」这一事实（对齐既有不变量「上游语义失败必记 `ctx.fail`、不谎报成功」）。上游腿仍记 `success:true`（上游确实完整返回了 200 refusal），靠 `ctx.fail(..., {upstreamSucceeded:true})` 分离两个概念。
 
+**配了 CC `refusalFallbackModel` 的用户请注意**：默认 `end_turn` 与 `error` **都**会让 Claude Code 看不见 `stop_reason:"refusal"`，它的原生自动换模型 fallback 因此**永不触发**。这是明知的取舍（CC 的 fallback 依赖用户已配置该项，且其失败终点仍是结束当前轮），不是遗漏。想保留 CC 那条腿请显式设 `refusal_sse_rewrite: refusal`——代价是被拒的轮次会中断。代理侧自己做 fallback 重试记在 [deferred-backlog](todo/deferred-backlog.md)。
+
 **门控**：`stop_reason==="refusal"` **且**整条响应无 client-visible `text`/`tool_use`（**排除 `server_tool_use`**）。带真内容或非 refusal 一律透传。判据 `isContentlessRefusal`（`recover-refusal.ts`）。
 
 ## exactly-one-COMPLETE-terminus（承重不变量）
