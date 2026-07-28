@@ -30,7 +30,6 @@ import {
   setBufferedRetryOverride,
   setBufferedRetryShared,
   setChatCompletionsConfig,
-  setDisabledModels,
   setForwardClientQuery,
   setHistoryConfig,
   setGenerationRuntimeConfig,
@@ -58,7 +57,11 @@ import type {
   SystemPromptEntry,
 } from "./schema"
 
-import { refreshCatalogView } from "../models/cache"
+import {
+  //
+  applyDisabledModels,
+  refreshCatalogView,
+} from "../models/cache"
 import { syncModelRefreshLoop } from "../models/refresh-loop"
 import {
   //
@@ -891,7 +894,7 @@ export async function applyConfigToState(): Promise<Config> {
   // Disabled models: retain-on-absence. An explicit empty list clears; missing
   // key keeps the prior runtime value. Re-filters `state.models` from cached raw.
   if (config.disabled_models !== undefined) {
-    setDisabledModels(normalizeModelNameList(config.disabled_models, "disabled_models"))
+    applyDisabledModels(normalizeModelNameList(config.disabled_models, "disabled_models"))
   }
 
   // Shared reactive-retry budget (was auto_truncate.max_retries) + per-strategy registry opt-out

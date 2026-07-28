@@ -9,12 +9,13 @@
  * import of `~/lib/models/model-name` on the way to becoming a leaf that depends on nothing but
  * language builtins (docs/plan/2026-07-28-state-to-foundation/HANDOVER.md).
  *
- * The dependency runs one way only — this module imports `state`, never the reverse. That is also
- * why {@link setDisabledModels} stayed on `state` as a plain field setter and the re-filter is a
- * SEPARATE call: `state.resetConfigManagedState()` has to reset the disabled list like the other 18
- * config-managed domains, and if that reset had to re-filter, `state` would have to call into this
- * module and close a two-node cycle. Instead the config layer re-derives the view once, at the end
- * of `applyConfigToState()`, which covers both hot reload and the PUT /api/config reset.
+ * The dependency runs one way only — this module imports `state`, never the reverse. That is why the
+ * config layer talks to THIS module rather than setting the disabled list on `state` directly:
+ * {@link applyDisabledModels} keeps "set the list" and "re-derive the view" inseparable, while
+ * `state.setDisabledModels` remains a plain field setter so `state.resetConfigManagedState()` can
+ * reset the list alongside the other 18 config-managed domains without calling into this module —
+ * which would close exactly the two-node cycle this migration removed. The reset path is covered by
+ * the unconditional `refreshCatalogView()` at the end of `applyConfigToState()`.
  *
  * `rawModels` deliberately stays module-scoped rather than joining `State`: it is a cache that
  * exists so a config reload can re-filter without another network round-trip, not something a
@@ -24,6 +25,7 @@
 import {
   //
   rebuildModelIndex,
+  setDisabledModels,
   setFilteredModels,
   state,
 } from "~/lib/state"
@@ -71,6 +73,26 @@ export function refreshCatalogView(): void {
 /** Publish a fresh upstream catalog, filtered by the current disabled list. */
 export function setModels(models: ModelsResponse | undefined): void {
   rawModels = models
+  refreshCatalogView()
+}
+
+/**
+ * Set the disabled list AND re-derive the view, as one step.
+ *
+ * The two halves used to be one call on `state`, and splitting them (so `state` need not import
+ * this module) opened a window: `applyConfigToState()` updated the list at its `disabled_models`
+ * branch and re-derived only at its very end, with three validation `throw`s in between. A config
+ * whose `generation` block failed validation left `state.disabledModels` naming a model that
+ * `state.models` still served — the catalog disagreeing with the policy that filters it.
+ *
+ * Exposing the pair as one function is what makes that unrepresentable: the config layer cannot
+ * update the list without re-deriving, because there is no longer a call that does only the former.
+ * `state.setDisabledModels` still exists as a plain field setter for `resetConfigManagedState()`,
+ * which resets all 19 config-managed domains and must not call into this module (that is the
+ * two-node cycle this migration removed) — the end-of-apply `refreshCatalogView()` covers it.
+ */
+export function applyDisabledModels(disabled: ReadonlyArray<string>): void {
+  setDisabledModels(disabled)
   refreshCatalogView()
 }
 
