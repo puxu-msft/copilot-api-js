@@ -297,3 +297,29 @@
 **LOW（`/metrics` 零值注释不准确）**——采纳。只有 HELP/TYPE 没有 sample 是**合法**的，但它不创建可查询序列：PromQL 返回空向量，`absent()` 分不清「零 gap」与「旧版本 / 接线坏了 / 没被 scrape」。注释改成诚实说法，并写上真正可用的告警式 `sum(increase(...[5m])) > 0` + 独立的 target health 守卫。
 
 **门禁**：typecheck 绿、改动文件 eslint 干净、`test:backend` **6629 pass / 0 fail**。
+
+## 第七轮复审后的修复（2026-07-28）—— 0 BLOCKER / 0 HIGH
+
+第六轮复审确认漏斗上移成立：driver 确实是 HTTP、upstream WS、**下游 `/responses` WS**（它调 `runResponseBufferedSink`/`runResponseSink`，同样经过 helper）与 buffered/hedged 各分支共同经过的唯一 outcome 产出点；全仓再无别处 mint `stream-error`；helper 自伤（正则把它自己的 return 也换掉、造成无限递归）已修且 8 处传参正确。剩 2 MED + 1 LOW，全部处理：
+
+**MED（阳性测试只覆盖 HTTP，没覆盖本轮修复目标）**——一针见血：**本轮修的就是 upstream WS 那条腿，却没有一条测试驱动它**，正确性靠代码追踪，而「靠追踪不靠运行」正是这个 bug 当初混进来的方式。已补真实 app 驱动的 upstream-WS 用例。
+
+踩到一个 fixture 陷阱值得记：我的 fake 只 yield `{ type: "response.created" }`，缺 `response` 对象 → **累加器先抛 `undefined is not an object`**，测试于是观察到一个与它要测的东西无关的错误、计数当然为空。是探针打出 body 才看清（`TRANSPORTS: ["upstream-ws"×4]` 说明腿走对了、错在帧形状）。教训与本轮那条「mutation 不红有两解」同源：**绿/红都要先确认执行到了目标分支**。
+
+**MED（delayed-commit 那格没断言计数）**——补齐，含 tagged 阴性。它的记录点是唯一活在 handler 而非 driver 的一处，别的测试都够不着。新增 test-only seam `ctx.abortLifecycleUntaggedForTests()`：untagged lifecycle abort 在生产已无产生者（正是本意），只能**故意扮演漏了契约的 producer**；测试若改为自建裸 controller，则证明不了「我们的 ctx」的行为。
+
+**LOW（守卫是逐行 regex、可绕过）**——采纳，改为遍历 `src/**` 全部文件的 **AST 扫描**。写的过程中它自己暴露了第二个盲点：helper 的 return 是 `"stream-error" as const`，`isStringLiteralLike` 直接看不见 → 统计到 **0 个字面量**，也就是说这个守卫**同样会放过写成 `as const` 的绕过**。是那条「helper 必须恰好 mint 一次」的正样本对照把它抓出来的；现已解包 `as` / 括号 / `satisfies`。两种绕过形态（单行、跨行+`as const`）都实测变红，后者正是 regex 版漏掉的。
+
+**门禁**：typecheck 绿、改动文件 eslint 干净（`context/types.ts` 与 `handler-v4.ts` 的既有 lint 错经 `eslint --stdin` 对 HEAD 核实）、`test:backend` **6632 pass / 0 fail**。
+
+### 三阶段 × 传输 的计数覆盖矩阵（当前状态）
+
+| 格 | 真实驱动的阳性 | 阴性对照 | mutation 验过 |
+|---|---|---|---|
+| pre-commit | ✅ 真实 `forwardError` | ✅ tagged deadline | ✅ |
+| delayed-commit | ✅ 真实 app | ✅ tagged deadline | ✅ |
+| post-header · HTTP | ✅ 真实 app（CC + Anthropic） | ✅ tagged deadline | ✅ |
+| post-header · upstream WS | ✅ 真实 app | （与 HTTP 共用 driver 分支） | ✅ |
+| post-header · 下游 WS | ❌ 未单测 | — | — |
+
+下游 `/responses` WS 经代码追踪确认走同一 driver helper（复审独立核实），但**没有专门测试**——列在此处而非默默略过。
