@@ -74,6 +74,11 @@ describe("core → server 边 ratchet", () => {
     expect(specifiers).toEqual(["~/routes/responses/ws"])
   })
 
+  test("模板字面量形态的动态 import 同样算一条边（它曾经能从这个 ratchet 底下走过去）", () => {
+    const planted = parseSource("synthetic.ts", "const m = await import(`~/routes/responses/fallback`)\n")
+    expect(allModuleSpecifiers(planted).filter((specifier) => specifier.startsWith("~/routes"))).toEqual(["~/routes/responses/fallback"])
+  })
+
   test("预过滤对转义拼法也放行（原始文本里没有 `~/routes`，AST 解出来却有）", () => {
     // 三种拼法，解码后都是同一条边，原始文本都不含目标子串。后两种是 `/\\[ux]/` 版预过滤漏掉的——
     // 「产生任意字符必须用 hex/unicode 转义」是错的：`\e` 是 identity escape，反斜杠加换行是行接续。

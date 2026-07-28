@@ -62,3 +62,28 @@ describe("mayContainDecoded", () => {
     expect(mayContainDecoded("// 这句话提到了 ~/routes\n", "~/routes")).toBe(true)
   })
 })
+
+/**
+ * 动态 `import()` / `require()` 的实参是**表达式**，所以模板字面量在那里合法（tsc 实测通过），
+ * 而 import/export 声明位要求语法层的 StringLiteral、写模板会得到 TS1141。
+ * 建立在 `allModuleSpecifiers` 上的守卫全都因此漏过 ``import(`consola`)``——state 单元看着没有裸包、
+ * core→server ratchet 看着没新增边。这一组把两侧都钉死：合法的要报，报不出来的不许假装报得出。
+ */
+describe("allModuleSpecifiers：模板字面量形态", () => {
+  test.each([
+    ["dynamic import", "const m = await import(`consola`)\n"],
+    ["require", "const m = require(`consola`)\n"],
+  ])("%s 的模板实参照样算一条边（tsc 认它，守卫就必须认）", (_name, source) => {
+    expect(allModuleSpecifiers(parseSource("p.ts", source))).toEqual(["consola"])
+  })
+
+  test("带插值的模板不报（没有静态 specifier 可报，编造一个是撒谎而不是补洞）", () => {
+    expect(allModuleSpecifiers(parseSource("p.ts", "const n = 'x'\nconst m = await import(`~/${n}`)\n"))).toEqual([])
+  })
+
+  test("声明位的模板字面量是 TS1141、不是可用形态——所以那些位置故意只认 StringLiteral", () => {
+    // 这条守的是**注释里那句论证**：如果哪天 TS 放开了声明位，这里就会开始报边，提示去放宽判据。
+    expect(allModuleSpecifiers(parseSource("p.ts", "import m from `consola`\n"))).toEqual([])
+    expect(allModuleSpecifiers(parseSource("p.ts", "export * from `consola`\n"))).toEqual([])
+  })
+})

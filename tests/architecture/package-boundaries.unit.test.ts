@@ -176,10 +176,15 @@ function resolveSpecifier(fromFile: string, specifier: string): string | undefin
   return resolved === undefined ? undefined : realpathSync(resolved)
 }
 
-/** Is `target` (already canonical) inside `root`? `root` is canonicalised here for the same reason. */
+/**
+ * Is `target` (already canonical) inside `root`? `root` is canonicalised here for the same reason.
+ *
+ * The comparison is per SEGMENT: `relative.startsWith("..")` also matches `..review.ts`, a legal
+ * filename, and would report a file sitting in the package as an escape.
+ */
 function containedIn(root: string, target: string): boolean {
   const relative = path.relative(realpathSync(root), target)
-  return relative !== "" && !relative.startsWith("..") && !path.isAbsolute(relative)
+  return relative !== "" && relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative)
 }
 
 /**
@@ -275,6 +280,9 @@ describe("state unit: only language/system builtins", () => {
     expect(stateUnitForbiddenSpecifiers('const x = await import("lodash")')).toEqual(["lodash"])
     expect(stateUnitForbiddenSpecifiers('import x = require("lodash")')).toEqual(["lodash"])
     expect(stateUnitForbiddenSpecifiers('type T = import("~/lib/error").HTTPError')).toEqual(["~/lib/error"])
+    // 动态 import 的实参是表达式，模板字面量在那里合法且 tsc 通过——曾经整套判据都漏过它。
+    expect(stateUnitForbiddenSpecifiers("const x = await import(`lodash`)")).toEqual(["lodash"])
+    expect(stateUnitForbiddenSpecifiers("const x = require(`lodash`)")).toEqual(["lodash"])
   })
 
   // 解析器的两条自证。它们针对的是**守卫自身**可能出的两种错，方向相反：
@@ -308,6 +316,9 @@ describe("state unit: only language/system builtins", () => {
     expect(containedIn(inside, viaSymlink!)).toBe(false)
     // 正控：同一个判据对真正的包内文件必须放行，否则「红了」只说明它对一切都红。
     expect(containedIn(inside, resolveSpecifier(entry, "./sibling")!)).toBe(true)
+    // 判据按路径**段**比较：`..review.ts` 是合法文件名，按前缀比会被误判成逃逸。
+    expect(containedIn(inside, path.join(inside, "..review.ts"))).toBe(true)
+    expect(containedIn(inside, path.join(tmp, "outside/core.ts"))).toBe(false)
   })
 })
 

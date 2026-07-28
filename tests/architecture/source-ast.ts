@@ -165,7 +165,7 @@ export function importedModuleSpecifiers(sourceFile: ts.SourceFile): Array<strin
       const isDynamicImport = node.expression.kind === ts.SyntaxKind.ImportKeyword
       const isRequire = ts.isIdentifier(node.expression) && node.expression.text === "require"
       const [firstArgument] = node.arguments
-      if ((isDynamicImport || isRequire) && firstArgument && ts.isStringLiteral(firstArgument)) specifiers.push(firstArgument.text)
+      if ((isDynamicImport || isRequire) && firstArgument && ts.isStringLiteralLike(firstArgument)) specifiers.push(firstArgument.text)
     }
     ts.forEachChild(node, visit)
   }
@@ -180,6 +180,17 @@ export function importedModuleSpecifiers(sourceFile: ts.SourceFile): Array<strin
  * bundling concerns): a type-only import still couples the two modules, still shows up as a cycle
  * edge in the madge SCC snapshot, and was exactly the edge T4 had to sever to get telemetry out of
  * the core SCC. A boundary that ignored type imports would call a coupled package "clean".
+ *
+ * **`isStringLiteralLike` at the CALL sites, `isStringLiteral` everywhere else**, and the asymmetry
+ * is load-bearing rather than sloppy: a dynamic `import()` / `require()` takes an EXPRESSION, so
+ * ``import(`consola`)`` compiles clean and slipped past every guard built on this — the state unit
+ * looked free of bare packages and the core→server ratchet looked frozen. The declaration forms take
+ * a grammar-level StringLiteral, so ``import m from `x` ``, ``export * from `x` ``,
+ * ``import m = require(`x`)`` and ``import(`x`).T`` are all TS1141 "String literal expected"
+ * (checked with tsc, not assumed). Widening those would advertise a form that cannot exist.
+ *
+ * Template literals WITH substitutions stay out on purpose: `` import(`~/${name}`) `` has no static
+ * specifier to report, and inventing one would be a lie rather than a gap.
  */
 export function allModuleSpecifiers(sourceFile: ts.SourceFile): Array<string> {
   const specifiers: Array<string> = []
@@ -194,7 +205,7 @@ export function allModuleSpecifiers(sourceFile: ts.SourceFile): Array<string> {
       const isDynamicImport = node.expression.kind === ts.SyntaxKind.ImportKeyword
       const isRequire = ts.isIdentifier(node.expression) && node.expression.text === "require"
       const [firstArgument] = node.arguments
-      if ((isDynamicImport || isRequire) && firstArgument && ts.isStringLiteral(firstArgument)) specifiers.push(firstArgument.text)
+      if ((isDynamicImport || isRequire) && firstArgument && ts.isStringLiteralLike(firstArgument)) specifiers.push(firstArgument.text)
     }
     // `import type X from "y"` inside a type position (`import("y").T`).
     if (ts.isImportTypeNode(node) && ts.isLiteralTypeNode(node.argument) && ts.isStringLiteral(node.argument.literal)) {
