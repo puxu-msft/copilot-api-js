@@ -31,7 +31,7 @@
 
 **落地方式**：`stats.ts` 抽出纯函数 `requestBucket()`——互斥性变成**结构性保证**（单一返回值）而非四个并列 `if` 恰好维持的性质；遥测 sink 的 `success` 改读**请求裁决**（`event.kind === "request.completed"`）而非上游腿。上游腿健康度仍在 History entry 上可观测，两个概念不再互相覆盖。守卫 `tests/history/stats-verdict-buckets.unit.test.ts`（6 pass），已过 mutation control：把 `failed` 分支改回旧的 OR 语义 → 2 条变红。
 
-### T2 —— 双轮 session CLI oracle
+### ~~T2 —— 双轮 session CLI oracle~~ ✅ 已完成
 
 **问题**：现有 CLI e2e 只证明单次 `claude -p` 正常退出且不空转，**没证明同一 session 的后续用户轮还能继续**——而「不中断对话轮次」正是本次改动的**首要目标本身**。目前该目标缺少直接 oracle。
 
@@ -39,11 +39,15 @@
 
 **触点**：`tests/e2e-client/anthropic-cli.e2e.test.ts` + `tests/e2e-client/harness/cli-refusal-hook.ts`（后者的注释仍写「thinking-only」，一并改）。
 
-### T3 —— `stop_details` 无损贯通到 History
+**实测结论**：真 Claude Code CLI 2.1.220 通过显式 UUID `--session-id` 建立第 1 轮、再用 `--resume <同一 UUID>` 发第 2 轮。第 1 轮上游是零 content block、无 `message_stop` 的 contentless refusal，代理抑制后返回非空 recovery text；第 2 轮上游返回正常标记文本。两轮 CLI 均回报同一 `session_id`、`num_turns=1`、`is_error=false`、退出码 0 且 stderr 为空；第 2 轮 `result` 含 `SECOND_TURN_OK_MARKER`，证明 suppression 后同一 session 可继续，未进入“继续”空转。命令 `bun test tests/e2e-client/anthropic-cli.e2e.test.ts`：3 pass / 0 fail（22 assertions）。mutation control 临时禁用 recovery text 合成后，单轮正样本与双轮测试第 1 轮均按预期从 `num_turns=1` 变为 2（2 fail / 1 pass）；恢复生产代码后重新 3/3 通过。另尝试“仅移除合成 `message_stop`”时测试仍绿，因为当前 driver 在识别 contentless refusal 后以其为 terminal boundary，未触发依赖 SDK EOF 的失败；本 oracle 因而直接咬住首要用户行为机制（非空 recovery text），`message_stop` 的字节级正控仍由 refusal terminal invariant 测试负责。
+
+### ~~T3 —— `stop_details` 无损贯通到 History~~ ✅ 已完成
 
 accumulator 已收（#1 完成），剩 spec §5 表的 #2–#11：streaming builder、**非流式 inline builder**（不经 builder）、`ResponseData`、`PartialResponseInfo`、`fail()` 两支 + `abort()` 三个重建点、`legFromUpstreamResponse`、canonical `responseMetadata`（显式枚举，不会自动带新字段）、V3 projection 类型 + 输出白名单、`HistoryUpstreamResponseData` / 公开 `UpstreamResponseData` 锁步双 owner。
 
 **判据**：每种 settle 形态（complete / proxy-introduced fail / 普通 fail / abort / 非流式）都有 projection 测试证明 `stop_details` 落盘后可读回；**不得**用归一化视图替代 raw 存储。
+
+**落地方式**：字段以 raw `unknown` 形态从 `buildAnthropicResponseData` 与 `handler-v4` 非流式 inline builder 进入 `ResponseData.stopDetails`；`PartialResponseInfo`、`fail()` 的 `upstreamSucceeded` / 普通两支及 `abort()` 重建点逐支复制；`legFromUpstreamResponse` 与 canonical `responseMetadata` 显式枚举；V3 `recordToHistoryEntry` 白名单输出；`HistoryUpstreamResponseData` 与公开 `UpstreamResponseData` 锁步增加同名字段。`tests/history/refusal-stop-details-projection.it.test.ts` 通过真实 canonical terminal → V3 SQLite → readback → projection 覆盖 complete / proxy-introduced fail / 普通 fail / abort，`tests/anthropic/response-rewrite-golden.http.test.ts` 覆盖 streaming 与非流式 handler；三个 expected 均手写自一手样本，另在 builder 测试放入未来字段 `recommended_model` 证明未压扁。mutation control 临时删除 V3 输出白名单后 4/4 settle 测试按预期变红，恢复后 4/4 转绿。
 
 ### T4 —— 消费面（诊断真正对人可见）
 
