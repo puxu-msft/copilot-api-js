@@ -107,7 +107,7 @@ describe("thinking-block metrics: sink → telemetry → read-outs", () => {
     const entry = makeEntry({ role: "assistant", content: [] })
     entry.state = "failed"
     entry.attempts![0]!.dispatchVerdict = "committed"
-    bus.scope("request").publish({ kind: "request.failed", ctx: { ...makeCtx(), state: "failed" }, entry })
+    bus.scope("request").publish({ kind: "request.failed", ctx: { ...makeCtx(), state: "failed" }, entry, error: "proxy-introduced refusal verdict" })
     detach()
 
     const counters = getDimensionBreakdown("model", "sinceStart").keys.find((key) => key.key === "claude-opus-4.8")?.counters
