@@ -10,6 +10,7 @@ import {
   readFile,
 } from "node:fs/promises"
 import path from "node:path"
+import ts from "typescript"
 
 import {
   //
@@ -273,29 +274,67 @@ describe("package import boundaries", () => {
 })
 
 /**
- * The post-header abort-provenance gap counter lives in ONE helper in the driver. A bare
- * `{ kind: "stream-error" }` literal bypasses it, and the bypass is invisible: the outcome is
+ * The post-header abort-provenance gap counter lives in ONE helper in the driver. Any other place
+ * that mints a `stream-error` outcome bypasses it, and the bypass is INVISIBLE: the outcome is
  * still correct, only the counter under-reports — and an under-reporting gap detector reads as
- * "no gaps", which is worse than not having one. (That is not hypothetical: the counter's first
- * home missed the Responses upstream-WebSocket leg entirely.)
+ * "no gaps", which is worse than not having one. (Not hypothetical: the counter's first home
+ * missed the Responses upstream-WebSocket leg entirely and read a deterministic zero.)
+ *
+ * AST rather than a line regex: `{ kind:\n "stream-error" }`, a spread, or a second file would all
+ * slip past text matching, and the whole point of this guard is that a bypass leaves no other trace.
  */
-describe("driver: stream-error outcomes go through the counting helper", () => {
-  test('no bare `kind: "stream-error"` object literal outside `streamErrorOutcome`', async () => {
-    const source = await Bun.file(new URL("../../src/lib/pipeline/driver.ts", import.meta.url)).text()
-    const lines = source.split("\n")
+describe("stream-error outcomes are minted in exactly one place", () => {
+  test('no object literal with `kind: "stream-error"` outside `streamErrorOutcome`', async () => {
+    const srcRoot = path.join(repoRoot, "src")
+    const files = await sourceFiles(srcRoot)
+    const offenders: Array<string> = []
+    let helperLiterals = 0
 
-    // Positive control: the helper itself must be present and must be the one place that mints it,
-    // otherwise this test would pass on a file that simply no longer produces the outcome at all.
-    const helperLine = lines.findIndex((line) => line.includes("function streamErrorOutcome("))
-    expect(helperLine).toBeGreaterThan(-1)
+    for (const file of files) {
+      const sourceFile = parseSource(file, await readFile(file, "utf8"))
+      const visit = (node: ts.Node): void => {
+        if (ts.isObjectLiteralExpression(node)) {
+          const mintsStreamError = node.properties.some(
+            (prop) => ts.isPropertyAssignment(prop) && ts.isIdentifier(prop.name) && prop.name.text === "kind" && isStreamErrorLiteral(prop.initializer),
+          )
+          if (mintsStreamError) {
+            if (enclosingFunctionName(node) === MINT_HELPER) helperLiterals += 1
+            else offenders.push(`${path.relative(srcRoot, file)}:${sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile)).line + 1}`)
+          }
+        }
+        ts.forEachChild(node, visit)
+      }
+      visit(sourceFile)
+    }
 
-    const offenders = lines
-      .map((line, index) => ({ line, lineNumber: index + 1 }))
-      .filter(({ line }) => /kind:\s*"stream-error"/.test(line))
-      .filter(({ lineNumber }) => lineNumber !== helperLine + 3) // the helper's own return
-      .filter(({ line }) => !line.trimStart().startsWith("*")) // JSDoc prose
-      .filter(({ line }) => !line.includes("function streamErrorOutcome("))
-
-    expect(offenders.map(({ line, lineNumber }) => `${lineNumber}: ${line.trim()}`)).toEqual([])
+    // Positive control: the helper must still mint it, or this guard would pass on a codebase that
+    // simply stopped producing the outcome — a green that proves nothing.
+    expect(helperLiterals).toBe(1)
+    expect(offenders).toEqual([])
   })
 })
+
+/**
+ * Does this initializer evaluate to the literal `"stream-error"`?
+ *
+ * Unwraps `as const` / parentheses: the helper's own return is written `kind: "stream-error" as const`,
+ * so a naive `isStringLiteralLike` check reports ZERO literals — and would therefore also miss a
+ * bypass written the same way. Caught by the positive control, which is why it is there.
+ */
+function isStreamErrorLiteral(node: ts.Expression): boolean {
+  let cursor: ts.Expression = node
+  while (ts.isAsExpression(cursor) || ts.isParenthesizedExpression(cursor) || ts.isSatisfiesExpression(cursor)) cursor = cursor.expression
+  return ts.isStringLiteralLike(cursor) && cursor.text === "stream-error"
+}
+
+/** Name of the nearest enclosing function/method declaration, for attributing a node. */
+function enclosingFunctionName(node: ts.Node): string | undefined {
+  for (let cursor: ts.Node | undefined = node.parent; cursor; cursor = cursor.parent) {
+    if (ts.isFunctionDeclaration(cursor) && cursor.name) return cursor.name.text
+    if (ts.isMethodDeclaration(cursor) && ts.isIdentifier(cursor.name)) return cursor.name.text
+    if (ts.isVariableDeclaration(cursor) && ts.isIdentifier(cursor.name)) return cursor.name.text
+  }
+  return undefined
+}
+
+const MINT_HELPER = "streamErrorOutcome"
