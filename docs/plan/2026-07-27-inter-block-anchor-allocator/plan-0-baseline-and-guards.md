@@ -49,8 +49,8 @@
 > - **若捕获值与历史值不同**：不得直接换值了事，必须先证明 hook、请求、配置三者相同，再定位并**记录造成差异的 base change**（哪个 commit、改了什么）。差异无法解释时停下回报——那可能是别的回归。
 
 - [x] **Step 1**：写 `exp/inter-block-anchor-allocator/deterministic-hook.ts`——一个 upstream hook，产出固定的短响应（message_start + 单 text 块 + message_delta + message_stop，无静默），保证字节确定。
-- [x] **Step 2**：写 `byte-equivalence.sh`——在**自选非 4141 端口**（如 42061）起测试服务器（`bun run start --port 42061`，config 指向该 hook），`curl -N` 抓完整 SSE 到文件，`sha256sum` + `wc -c` 输出，脚本末尾**按 PID 精确 kill 自己启动的实例**（绝不 `pkill`/`killall`）。**保留捕获的字节文件本身**（不只是 hash），P8 用 `cmp` 逐字节对比。
-- [x] **Step 3**：跑一次，记录为**权威 base 基线**；与历史值对照并按上面的规则处置差异。当前冻结 fixture 为 `24eda6b85d0ce17b955ce50aca27407d37f9a32a1de2e7a8318c6a2f55991e8b / 734 bytes`；历史值对应不同旧 fixture，不能作同输入逐字节比较，关系已记录在 oracle README。
+- [x] **Step 2**：写 `byte-equivalence.sh`——让内核选择**非 4141 空闲高位端口**起测试服务器，config 指向该 hook；readiness 同时校验启动日志、`ss` 监听 PID 属于本次 spawn 进程树、捕获内容含 hook 独有 marker；`curl -N` 抓完整 SSE 到文件，`sha256sum` + `wc -c` 输出，脚本末尾**按 PID 精确 kill 自己启动的实例**（绝不 `pkill`/`killall`）。**保留捕获的字节文件本身**（不只是 hash），P8 用 `cmp` 逐字节对比。
+- [x] **Step 3**：跑一次，记录为**权威 base 基线**；与历史值对照并按上面的规则处置差异。首版 `24eda6b8… / 734 bytes` 经合并态 review 证实来自固定端口上的 peer mock，已作废；增加归属门后重新捕获的权威 fixture 为 `1c6163c62f568fd5e1a46605c23716d1017b47232021b371f3cb145b2a4277f9 / 764 bytes`。
 - [x] **Step 4**：`README.md` 记录跑法 + base 基线值 + 捕获 commit + 与历史值的关系。
 - [x] **提交** → `test(anchor): capture the pre-change byte baseline on the implementation base`
 
@@ -132,6 +132,6 @@ bun test $(rg -ln "anchor" tests/ | tr '\n' ' ')
 |---|---|---|
 | base commit | `5c84a1e011e5d8b12ebde764ef0d8486b9952d6f` | 2026-07-27 |
 | anchor 套件 | 474 pass / 0 fail / 7 skip（481 tests，51 files） | 2026-07-27 / base + P0 test repairs |
-| 短请求 SHA-256 | `24eda6b85d0ce17b955ce50aca27407d37f9a32a1de2e7a8318c6a2f55991e8b` | 2026-07-27 / base |
-| 短请求字节数 | 734 | 2026-07-27 / base |
+| 短请求 SHA-256 | `1c6163c62f568fd5e1a46605c23716d1017b47232021b371f3cb145b2a4277f9` | 2026-07-28 / base；监听 PID + hook marker 归属门实证 |
+| 短请求字节数 | 764 | 2026-07-28 / base；首版 peer mock 假基线已作废 |
 | `fix/client-proxy-keepalive-300s` 合并状态 | 所需机制已在 master base；旧分支 commit 不作为祖先单独出现 | 2026-07-27 / base |

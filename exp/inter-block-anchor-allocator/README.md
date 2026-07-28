@@ -10,14 +10,14 @@
 ./exp/inter-block-anchor-allocator/byte-equivalence.sh
 ```
 
-脚本在非 4141 端口 `42061` 启动隔离测试服务器，使用 `deterministic-hook.ts` 产出固定的单 text block 响应，把完整 SSE 保存为 `pre-change-wire.sse`，输出 SHA-256 与字节数，并按 PID 精确停止自己启动的服务器。
+脚本默认让内核选择非 4141 的空闲高位端口，启动隔离测试服务器并使用 `deterministic-hook.ts` 产出固定的单 text block 响应。readiness 必须同时满足三条：启动日志没有 bind failure、`ss -ltnp` 证明监听进程是本次 spawn 的 PID 或其后代、捕获内容带 hook 独有的 `msg_allocator_baseline` 与 `allocator baseline` 标记；任一不满足即非零退出。完整 SSE 保存为 `pre-change-wire.sse`，脚本输出 SHA-256、字节数及监听 PID，并按 PID 精确停止自己启动的服务器。
 
-实施 base `5c84a1e011e5d8b12ebde764ef0d8486b9952d6f` 捕获结果：
+实施 base `5c84a1e011e5d8b12ebde764ef0d8486b9952d6f` 经上述归属门重新捕获的权威结果：
 
-- SHA-256：`24eda6b85d0ce17b955ce50aca27407d37f9a32a1de2e7a8318c6a2f55991e8b`
-- 字节数：`734`
+- SHA-256：`1c6163c62f568fd5e1a46605c23716d1017b47232021b371f3cb145b2a4277f9`
+- 字节数：`764`
 
-历史 provenance `8691db71ca3b692468ae91dfc2df108871c8f5f684acc73f3832975d60f2a6a0 / 1675 bytes` 来自另一套旧请求、hook 与 SSE 内容。当前 P0 的 hook、请求和响应 fixture 已显式冻结在本目录，因此后续相位以这里保存的 `pre-change-wire.sse` 为权威 base，而不把旧 provenance 当成可直接比较的同一输入。
+历史 provenance `8691db71ca3b692468ae91dfc2df108871c8f5f684acc73f3832975d60f2a6a0 / 1675 bytes` 来自另一套旧请求、hook 与 SSE 内容。首版 P0 记录的 `24eda6b85d0ce17b955ce50aca27407d37f9a32a1de2e7a8318c6a2f55991e8b / 734 bytes` 来自占用固定端口的 peer mock，已被 code review 证伪并替换。后续相位以当前 `pre-change-wire.sse` 为权威 base。
 
 ## O-1 / O-2：producer 全序
 
