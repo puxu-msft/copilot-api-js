@@ -1101,6 +1101,9 @@ export function createRequestContext(opts: {
     get modelOperationTerminalRecord() {
       return modelOperationTerminalRecord
     },
+    get modelOperationSealed() {
+      return modelOperationRecorder.sealed
+    },
     get originalRequest() {
       return _originalRequest
     },
@@ -1338,6 +1341,7 @@ export function createRequestContext(opts: {
     },
 
     setGenerationDispatchTimingEpoch(dispatch, kind, epoch, mode) {
+      if (modelOperationRecorder.sealed) return
       const generationAttempt = generationAttemptByHandle.get(dispatch)
       if (!generationAttempt) throw new Error(`[request-context] unknown generation dispatch ${dispatch}`)
       const attempt = _attempts[generationAttempt.v2Index]

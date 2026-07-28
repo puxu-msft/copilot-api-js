@@ -268,9 +268,11 @@ test("settleFinal() is idempotent (calling twice does not double-finalize)", asy
 
 ## Task 0.6：MED-2 seal 后晚到 upstream 事件的 crash 安全（对抗审 HIGH，B2 必治）
 
+> **实施状态（2026-07-28）：已完成 ①，② 已由漂移后的底座在更上游闭合。** `RequestContext` 新增只读 `modelOperationSealed`，driver 的 `recordOpened` 在入口把整条 late-open headers+timing 观测原子丢弃；`setGenerationDispatchTimingEpoch` 与 recorder 的 `setDispatchTiming` 也各自 sealed-safe，而语义写仍经 `assertWritable` loud-throw。新增 `.it` 覆盖正常 open 正样本与 deadline/reaper/client-abort × deferred-header，并以禁用入口守卫的 mutation 证三条 seal-race 用例 3/3 变红、恢复后完整文件 6/6 变绿。与原计划的主要偏离是：当前 `recovery-sink-supervisor.ts` 只包装 `ClientSink`，不创建也不持有 candidate lifecycle，故不把 lifecycle 句柄硬塞给 sink supervisor；master 漂移后 lifecycle quiescence 已由真正 owner 闭合——`runRequest` 把 primary `exchangePromise` 注册进 operation scope，`candidate.cancel()` 显式 await `runPromise`，scheduler 的 cancel/settle 路径也 await `lifecycle.quiesced`。因此 ② 无需留给 P4/P5，MED-2 可从 backlog 移除。
+
 **🟠 对抗审 gpt-souls:reviewer 2026-07-23 发现（主会话 code-read + Q5 实测确认）：** B2 处理「seal 后晚到的上游事件」这一 territory，但草案目录未覆盖。冻结 backlog 已明定 B2 必须对齐——见 [docs/todo/deferred-backlog.md](../../todo/deferred-backlog.md) 的「timing 写入 vs 同族 capture 的 seal 边界不对称」条。**根因链（已核实）：** `dispatch-scheduler.ts:205-212` 在 `await input.open()` resolve 后**无守卫**调用 `recordOpened`，其 timing 写最终进 `model-operation-record.ts:1053` 的 `assertWritable()`——recorder 已 seal 时**抛错**（同族逐帧 capture 却是 `if(sealed) return` 静默丢弃）。若 operation 在一个 pre-header 的 `open()` 仍挂起期间被 seal（reaper/`request_deadline`/candidate-discard），随后**晚到的 deferred-header**（Q5 实测 header 到达高达 231s、上界未知，**显著拉长这个 pre-header 窗口**）resolve `open()` → `recordOpened` → `assertWritable` 抛错 → 沿 scheduler `run` 上抛 → 若 `p` 已无 live awaiter 则成**孤儿 rejection → unhandledRejection → process.exit**（skill `debugging-server-crashes` 的放大链）。**B2 引入 fresh dispatch 会新增更多「seal 后仍有在飞 open」的路径，放大此 race，故 B2 必须一并治，不能留给 backlog。**
 
-- [ ] **Step 1: 写失败测试**（无 unhandled-rejection 回归）
+- [x] **Step 1: 写失败测试**（无 unhandled-rejection 回归）
 
 ```ts
 // tests/pipeline/precontent-recovery-seal-race.it.test.ts（新）
@@ -283,12 +285,12 @@ test("B2 recovery supervisor awaits candidate lifecycle quiescence after cancel/
 })
 ```
 
-- [ ] **Step 2: 跑，失败（先证探针能抓到坏行为——正样本对照，见 skill `catching-false-green-tests`）。**
-- [ ] **Step 3: 实现**（对齐 backlog 条目的修法①②，采 consensus 复审建议的「整个 `recordOpened` 作 atomic late-open observer」）：
+- [x] **Step 2: 跑，失败（先证探针能抓到坏行为——正样本对照，见 skill `catching-false-green-tests`）。**
+- [x] **Step 3: 实现**（对齐 backlog 条目的修法①②，采 consensus 复审建议的「整个 `recordOpened` 作 atomic late-open observer」）：
   - **① 守卫整个 `recordOpened`（不止 timing）**：consensus 复审（gpt-souls:reviewer 第二轮）指出——只丢 timing 不够，`recordOpened`（`driver.ts:634-643`）在 timing 前还调 `setHttpHeaders` + `setGenerationDispatchResponseHeaders`，须把**整个** `recordOpened` 当作 sealed 后可安全丢弃的晚到观测：在 `recordOpened` 开头判 recorder sealed → 直接 `return`（或让所有 `recordOpened` 的 context 写走统一的 sealed-safe observation API）。**主会话 code-read 核实的 ground truth（供实现者定位精确修点）**：`recordOpened` 里**当前唯一真会抛**的是 timing 写（`setGenerationDispatchTimingEpoch:1321`→`setDispatchTiming:1053`→`assertWritable`）——`setHttpHeaders:1205` 是纯 `_httpHeaders` 赋值不撞 recorder、`setAttemptResponseHeaders:1500` 的诊断已在 `request.ts:583` 守卫 sealed，二者今天不抛；但**整method 早返回**是更稳健的修法（防未来往 recordOpened 新增无守卫写、且 sealed 后整条 late-open 观测本就该整体丢弃），并须让 timing setter 本身也对齐同族 `if(sealed) return`（双保险，别只靠调用点）。**不改** `assertWritable` 对语义写的 loud-throw（那是既定正确设计）。回归矩阵覆盖**完整 `recordOpened` 路径**（headers + timing），不只断言 timing。
   - **② recovery supervisor 在 cancel/seal 后 await candidate lifecycle quiescence**：Task 0.5 的 supervisor 在最终收口前，`await` 所有它启动过的候选（primary + 任何 fresh recovery）的 `lifecycle.quiesced`，使晚到的 open/reject 在 supervisor 作用域内被观察、不逃逸成孤儿 rejection（参照 `dispatch-scheduler.ts:213-216` 现有 `void response.lifecycle.quiesced.then(...)` 的 budget release 模式，但改为 supervisor 显式 await 而非 fire-and-forget）。
-- [ ] **Step 4: 跑，通过（reaper/deadline/abort × late-header 组合矩阵全绿、零 unhandled-rejection）。**
-- [ ] **Step 5: 提交** → `fix(pipeline): B2 seal-race crash safety — discard late timing on sealed, supervisor awaits quiescence`。同时**从 [deferred-backlog.md](../../todo/deferred-backlog.md) 移除 MED-2 条**（已在 B2 落地、不再是 backlog）。
+- [x] **Step 4: 跑，通过（reaper/deadline/abort × late-header 组合矩阵全绿、零 unhandled-rejection）。**
+- [x] **Step 5: 提交** → `fix(pipeline): make late-open observations seal-safe`。同时**从 [deferred-backlog.md](../../todo/deferred-backlog.md) 移除 MED-2 条**（已在 B2 落地、不再是 backlog）。
 
 **注意**：这条同时修复了 MED-2 backlog 的独立 crash 风险（不止服务 B2）——是 B2 的必要前置，也顺带关闭了一个既有的潜在 process.exit 缺陷。
 

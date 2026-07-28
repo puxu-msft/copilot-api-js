@@ -1079,7 +1079,7 @@ export function createModelOperationRecorder(input: CreateModelOperationRecorder
     },
 
     setDispatchTiming(handle, kind, epoch, mode): void {
-      assertWritable()
+      if (sealed) return
       const dispatch = getDispatch(handle)
       // A response-header event is physically earlier than settlement, but its
       // async listener can run after the driver marks the dispatch settled. Timing

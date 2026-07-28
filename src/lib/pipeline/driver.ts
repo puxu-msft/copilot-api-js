@@ -732,6 +732,10 @@ function createDriverRecordingPort(deps: DriverDeps, ctx: RequestContext): Dispa
     },
 
     recordOpened(dispatch, response) {
+      // A transport header can resolve after reaper/deadline/client cancellation has already sealed
+      // canonical observability. Treat the whole late-open observation atomically: headers and timing
+      // are best-effort evidence, not semantic record mutations, so none may leak across the seal.
+      if (ctx.modelOperationSealed) return
       if (response.kind === "stream" || response.kind === "json") {
         const headers = Object.fromEntries((response.kind === "stream" ? response.upstream.headers : response.headers).entries())
         if (Object.keys(headers).length > 0) {

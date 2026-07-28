@@ -470,6 +470,8 @@ export interface RequestContext {
   readonly modelOperationSnapshot: ModelOperationRecord
   /** Canonical terminal record after observability finalization, otherwise null. */
   readonly modelOperationTerminalRecord: ModelOperationRecord | null
+  /** Whether canonical observability has crossed its immutable terminal seal. */
+  readonly modelOperationSealed: boolean
 
   readonly originalRequest: OriginalRequest | null
   readonly response: ResponseData | null
