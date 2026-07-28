@@ -48,15 +48,8 @@ const ERROR_TEXT = "denied: category={refusal_category}"
 const ERROR_RENDERED = "denied: category=unknown"
 
 /** Drive a sequence of plain event objects through a suppression rewriter; return forwarded data strings. */
-function run(events: Array<Record<string, unknown>>, onRecover?: () => void): Array<string> {
-  const recoverer = createRefusalRewriter({
-    mode: "end_turn",
-    endTurnText: SUPPRESS_TEXT,
-    errorMessage: "",
-    errorType: "api_error",
-    staticVars: STATIC,
-    onObserve: onRecover ? () => onRecover() : undefined,
-  })
+function run(events: Array<Record<string, unknown>>): Array<string> {
+  const recoverer = createRefusalRewriter({ policy: { mode: "end_turn", endTurnText: SUPPRESS_TEXT, errorMessage: "", errorType: "api_error" }, staticVars: STATIC })
   const out: Array<string> = []
   for (const ev of events) {
     const { parsed, raw } = frame(ev)
@@ -107,8 +100,7 @@ describe("rewriteRefusalMessageDelta", () => {
 
 describe("createRefusalRecoverer (streaming)", () => {
   test("contentless refusal: passes thinking frames, synthesizes text at maxIndex+1, rewrites delta to end_turn", () => {
-    let recovered = 0
-    const out = run([{ type: "message_start" }, thinkingStart, sigDelta, thinkingStop, refusalDelta, messageStop], () => recovered++)
+    const out = run([{ type: "message_start" }, thinkingStart, sigDelta, thinkingStop, refusalDelta, messageStop])
     const parsed = out.map((d) => JSON.parse(d))
     // thinking frames verbatim
     expect(parsed.slice(0, 4)).toEqual([{ type: "message_start" }, thinkingStart, sigDelta, thinkingStop])
@@ -123,11 +115,10 @@ describe("createRefusalRecoverer (streaming)", () => {
       usage: { output_tokens: 9 },
     })
     expect(parsed[8]).toEqual(messageStop)
-    expect(recovered).toBe(1)
   })
 
   test("renders {thinking_tokens} as `unknown` when the upstream sent no breakdown, and {model}", () => {
-    const recoverer = createRefusalRewriter({ mode: "end_turn", endTurnText: "t={thinking_tokens} m={model}", errorMessage: "", errorType: "api_error", staticVars: STATIC })
+    const recoverer = createRefusalRewriter({ policy: { mode: "end_turn", endTurnText: "t={thinking_tokens} m={model}", errorMessage: "", errorType: "api_error" }, staticVars: STATIC })
     const { parsed, raw } = frame(refusalDelta) // usage.output_tokens = 9
     const out = recoverer.processEvent(parsed, raw)
     // synthetic text delta (index 0) carries the rendered template
@@ -135,21 +126,23 @@ describe("createRefusalRecoverer (streaming)", () => {
     expect(textDelta).toEqual({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "t=unknown m=claude-opus-4.8" } })
   })
 
-  test("empty template appends NO text block, only flips stop_reason to end_turn", () => {
-    const recoverer = createRefusalRewriter({ mode: "end_turn", endTurnText: "", errorMessage: "", errorType: "api_error", staticVars: STATIC })
+  test("empty template appends NO text block — but still emits a COMPLETE terminus (end_turn + message_stop)", () => {
+    const recoverer = createRefusalRewriter({ policy: { mode: "end_turn", endTurnText: "", errorMessage: "", errorType: "api_error" }, staticVars: STATIC })
     const { parsed, raw } = frame(refusalDelta)
     const out = recoverer.processEvent(parsed, raw)
-    // exactly one frame: the rewritten end_turn delta, no synthetic text block
-    expect(out).toHaveLength(1)
+    // no synthetic text block, but the terminus is still complete: without our own message_stop the
+    // real @anthropic-ai/sdk throws "stream ended without producing a Message with role=assistant".
+    expect(out).toHaveLength(2)
     expect(JSON.parse(out[0].data ?? "")).toEqual({
       type: "message_delta",
       delta: { stop_reason: "end_turn", stop_details: null, stop_sequence: null },
       usage: { output_tokens: 9 },
     })
+    expect(out[1].event).toBe("message_stop")
+    expect(JSON.parse(out[1].data ?? "")).toEqual({ type: "message_stop" })
   })
 
   test("normal end_turn stream passes through byte-identical (gate never fires)", () => {
-    let recovered = 0
     const events = [
       { type: "message_start" },
       { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } },
@@ -158,13 +151,11 @@ describe("createRefusalRecoverer (streaming)", () => {
       { type: "message_delta", delta: { stop_reason: "end_turn", stop_sequence: null }, usage: { output_tokens: 2 } },
       messageStop,
     ]
-    const out = run(events, () => recovered++)
+    const out = run(events)
     expect(out).toEqual(events.map((e) => JSON.stringify(e)))
-    expect(recovered).toBe(0)
   })
 
   test("refusal WITH a real text block: gate closed, passes through unchanged", () => {
-    let recovered = 0
     const events = [
       { type: "message_start" },
       { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } },
@@ -173,9 +164,8 @@ describe("createRefusalRecoverer (streaming)", () => {
       refusalDelta,
       messageStop,
     ]
-    const out = run(events, () => recovered++)
+    const out = run(events)
     expect(out).toEqual(events.map((e) => JSON.stringify(e)))
-    expect(recovered).toBe(0)
   })
 
   test("two thinking blocks → synthetic text at index 2", () => {
@@ -206,7 +196,7 @@ describe("createRefusalRecoverer (streaming)", () => {
 describe("createRefusalErrorEmitter (streaming, error mode)", () => {
   /** Drive events through a default error-emitter; return the forwarded frames (event + data preserved). */
   function runEmitter(events: Array<Record<string, unknown>>): Array<ServerSentEventMessage> {
-    const emitter = createRefusalRewriter({ mode: "error", endTurnText: "", errorMessage: ERROR_TEXT, errorType: "api_error", staticVars: STATIC })
+    const emitter = createRefusalRewriter({ policy: { mode: "error", endTurnText: "", errorMessage: ERROR_TEXT, errorType: "api_error" }, staticVars: STATIC })
     const out: Array<ServerSentEventMessage> = []
     for (const ev of events) {
       const { parsed, raw } = frame(ev)
@@ -230,7 +220,7 @@ describe("createRefusalErrorEmitter (streaming, error mode)", () => {
   })
 
   test("renders a custom message template + custom error type into the error frame", () => {
-    const emitter = createRefusalRewriter({ mode: "error", endTurnText: "", errorMessage: "denied m={model} t={thinking_tokens}", errorType: "custom_type", staticVars: STATIC })
+    const emitter = createRefusalRewriter({ policy: { mode: "error", endTurnText: "", errorMessage: "denied m={model} t={thinking_tokens}", errorType: "custom_type" }, staticVars: STATIC })
     const { parsed, raw } = frame(refusalDelta) // usage.output_tokens = 9
     const out = emitter.processEvent(parsed, raw)
     expect(out).toHaveLength(1)
@@ -239,7 +229,7 @@ describe("createRefusalErrorEmitter (streaming, error mode)", () => {
   })
 
   test("empty error type falls back to api_error", () => {
-    const emitter = createRefusalRewriter({ mode: "error", endTurnText: "", errorMessage: "x", errorType: "", staticVars: STATIC })
+    const emitter = createRefusalRewriter({ policy: { mode: "error", endTurnText: "", errorMessage: "x", errorType: "" }, staticVars: STATIC })
     const { parsed, raw } = frame(refusalDelta)
     const out = emitter.processEvent(parsed, raw)
     expect(JSON.parse(out[0].data ?? "").error.type).toBe("api_error")

@@ -4,7 +4,7 @@ import type {
   SendMessageNormalizationDiag,
 } from "~/lib/anthropic/decode-tool-input-core"
 import type { BufferedMergeDiag } from "~/lib/codec/openai-responses/buffered-merge-reducer"
-import type { RefusalObservation } from "~/lib/anthropic/recover-refusal"
+import type { RefusalPolicy } from "~/lib/anthropic/refusal-policy"
 import type { ApiError } from "~/lib/error"
 import type {
   //
@@ -702,19 +702,15 @@ export interface RequestContext {
   /** Derived: the first UNREPAIRABLE tool of the current attempt, or null (drives the handler fail-gate). */
   readonly unrepairableToolInput: string | null
   /**
-   * What the S5 refusal rewriter observed + did on this attempt's stream, or null when the upstream
-   * did not produce a contentless refusal.
+   * This request's contentless-refusal disposition, FROZEN on first read and immutable thereafter.
    *
-   * This is a CAUSAL signal, not a second re-derivation: the handler settles the request from what
-   * the rewrite layer actually put on the wire, instead of independently re-reading the hot-reloadable
-   * `state.refusalSseRewrite` after the stream drained (two reads of a mutable global cannot be kept
-   * in lockstep — a concurrent request carrying a `system` re-runs `applyConfigToState()` in between).
-   * It is also how the handler knows a terminal frame is already on the wire, so the truncation
-   * fail-gate must not append a second one.
+   * Every layer that needs it (the S5 rewriter at processor construction, the non-streaming
+   * transformWhole, the handler at settle) reads this same snapshot instead of `state`, so they
+   * cannot disagree when a concurrent request hot-reloads config mid-stream. Being immutable and
+   * request-scoped it is also safe under hedging: concurrent candidates share the policy, and each
+   * derives its own verdict from its own accumulator rather than writing to a shared slot.
    */
-  readonly refusalObservation: RefusalObservation | null
-  /** Record the refusal rewriter's observation (called once per stream by the S5 adapter). */
-  recordRefusalObservation(observation: RefusalObservation): void
+  readonly refusalPolicy: RefusalPolicy
   /** Reset the per-attempt repair outcomes — called by the L2 buffered-retry `onAttemptReset`. */
   resetRepairOutcomesForAttempt(): void
   toHistoryEntry(): HistoryEntryData

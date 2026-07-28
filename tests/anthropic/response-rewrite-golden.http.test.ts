@@ -45,12 +45,6 @@ import {
 } from "bun:test"
 
 import { resetAnthropicFeatureNegotiationForTesting } from "~/lib/anthropic/feature-negotiation"
-import {
-  //
-  DEFAULT_REFUSAL_END_TURN_TEXT,
-  DEFAULT_REFUSAL_ERROR_MESSAGE,
-  DEFAULT_REFUSAL_ERROR_TYPE,
-} from "~/lib/anthropic/recover-refusal"
 import { getHistory } from "~/lib/history"
 import {
   //
@@ -440,6 +434,14 @@ const S7_OUTBOUND = {
 // rewriting the delta to end_turn (stop_details cleared). The empirical shape of
 // req_1782214935133_68. Default thinking-signature-compat no-ops here (the start's
 // signature is empty + a real signature_delta follows = the standard shape).
+/** Hand-written refusal templates for the byte-locks below — deliberately NOT the production
+ *  constants: an expected value imported from the code under test cannot detect a default change.
+ *  The fixture's stop_details carries no `category` and its usage has no `output_tokens_details`,
+ *  so both vars must render as the documented `unknown`. */
+const GOLDEN_SUPPRESS_TEMPLATE = "refused c={refusal_category} t={thinking_tokens}"
+const GOLDEN_SUPPRESS_RENDERED = "refused c=unknown t=unknown"
+const GOLDEN_ERROR_TEMPLATE = "denied c={refusal_category}"
+
 const REFUSAL_DELTA = ev("message_delta", {
   type: "message_delta",
   delta: { stop_reason: "refusal", stop_details: { type: "refusal", explanation: "x" }, stop_sequence: null },
@@ -462,7 +464,7 @@ const S8_GOLDEN = [
   ev("content_block_delta", { type: "content_block_delta", index: 0, delta: { type: "signature_delta", signature: "SIG-REF" } }),
   ev("content_block_stop", { type: "content_block_stop", index: 0 }),
   ev("content_block_start", { type: "content_block_start", index: 1, content_block: { type: "text", text: "" } }),
-  ev("content_block_delta", { type: "content_block_delta", index: 1, delta: { type: "text_delta", text: DEFAULT_REFUSAL_END_TURN_TEXT } }),
+  ev("content_block_delta", { type: "content_block_delta", index: 1, delta: { type: "text_delta", text: GOLDEN_SUPPRESS_RENDERED } }),
   ev("content_block_stop", { type: "content_block_stop", index: 1 }),
   ev("message_delta", { type: "message_delta", delta: { stop_reason: "end_turn", stop_details: null, stop_sequence: null }, usage: { output_tokens: 5 } }),
   messageStop(),
@@ -570,9 +572,9 @@ describe("response-rewrite activated-state golden (handler-v4, byte-lock)", () =
     // setStateForTests MERGES (no reset) — restore the refusal text config each test so a custom
     // template set by one test can't leak into another's DEFAULT-asserting golden.
     setStateForTests({
-      refusalEndTurnText: DEFAULT_REFUSAL_END_TURN_TEXT,
-      refusalErrorMessage: DEFAULT_REFUSAL_ERROR_MESSAGE,
-      refusalErrorType: DEFAULT_REFUSAL_ERROR_TYPE,
+      refusalEndTurnText: GOLDEN_SUPPRESS_TEMPLATE,
+      refusalErrorMessage: GOLDEN_ERROR_TEMPLATE,
+      refusalErrorType: "api_error",
     })
     applyFetchMock(upstreamMock)
     await resetAnthropicFeatureNegotiationForTesting()
@@ -669,7 +671,7 @@ describe("response-rewrite activated-state golden (handler-v4, byte-lock)", () =
     const text = await postStream()
     expect(text).toBe(S8_GOLDEN)
     // The empty thinking block is kept verbatim; a synthetic text block is appended.
-    expect(text).toContain(DEFAULT_REFUSAL_END_TURN_TEXT)
+    expect(text).toContain(GOLDEN_SUPPRESS_RENDERED)
     expect(text).toContain('"type":"signature_delta","signature":"SIG-REF"')
     // stop_reason rewritten away from refusal.
     expect(text).not.toContain('"refusal"')
@@ -684,7 +686,7 @@ describe("response-rewrite activated-state golden (handler-v4, byte-lock)", () =
     const text = await postStream()
     // refusal mode = no rewrite: the refusal delta + empty thinking block reach the client unchanged.
     expect(text).toContain('"stop_reason":"refusal"')
-    expect(text).not.toContain(DEFAULT_REFUSAL_END_TURN_TEXT)
+    expect(text).not.toContain(GOLDEN_SUPPRESS_RENDERED)
   })
 
   test("S8 error mode: thinking-only refusal → event:error frame + ctx.fail; history keeps upstream refusal", async () => {
@@ -695,7 +697,7 @@ describe("response-rewrite activated-state golden (handler-v4, byte-lock)", () =
     expect(text).toContain("event: error")
     expect(text).toContain('"type":"api_error"')
     // No end_turn synthesis; the original refusal terminator + message_stop are suppressed (not forwarded).
-    expect(text).not.toContain(DEFAULT_REFUSAL_END_TURN_TEXT)
+    expect(text).not.toContain(GOLDEN_SUPPRESS_RENDERED)
     expect(text).not.toContain('"stop_reason":"end_turn"')
     expect(text).not.toContain('"stop_reason":"refusal"')
     // Option A: history keeps the upstream-original thinking-only refusal (forwarded-only reshape).
@@ -714,12 +716,14 @@ describe("response-rewrite activated-state golden (handler-v4, byte-lock)", () =
     scenario = "s8"
     setStateForTests({ refusalSseRewrite: "end_turn", refusalEndTurnText: "REFUSED m={model} t={thinking_tokens}" })
     const text = await postStream()
-    // model resolved into the injected text; thinking_tokens = REFUSAL_DELTA usage.output_tokens (5).
-    expect(text).toContain(`REFUSED m=${MODEL} t=5`)
+    // model resolved into the injected text. thinking_tokens renders `unknown`, NOT the
+    // REFUSAL_DELTA usage.output_tokens (5): that total is not a thinking-token count, and the
+    // fixture carries no `output_tokens_details` breakdown to read one from.
+    expect(text).toContain(`REFUSED m=${MODEL} t=unknown`)
     // no leftover placeholders, no proxy wrapping around the configured bytes.
     expect(text).not.toContain("{model}")
     expect(text).not.toContain("{thinking_tokens}")
-    expect(text).not.toContain(DEFAULT_REFUSAL_END_TURN_TEXT)
+    expect(text).not.toContain(GOLDEN_SUPPRESS_RENDERED)
     expect(text).not.toContain('"stop_reason":"refusal"')
   })
 
@@ -730,7 +734,7 @@ describe("response-rewrite activated-state golden (handler-v4, byte-lock)", () =
     // zero-wrapping: no synthetic text block at all (no content_block_start for a text block after
     // the thinking block), only the stop_reason flip.
     expect(text).not.toContain('"content_block":{"type":"text"')
-    expect(text).not.toContain(DEFAULT_REFUSAL_END_TURN_TEXT)
+    expect(text).not.toContain(GOLDEN_SUPPRESS_RENDERED)
     expect(text).toContain('"stop_reason":"end_turn"')
     expect(text).not.toContain('"stop_reason":"refusal"')
   })
@@ -741,7 +745,9 @@ describe("response-rewrite activated-state golden (handler-v4, byte-lock)", () =
     const text = await postStream()
     expect(text).toContain("event: error")
     expect(text).toContain('"type":"custom_type"')
-    expect(text).toContain(`denied m=${MODEL} t=5`)
+    // t renders `unknown`: the fixture reports usage.output_tokens=5 but no
+    // output_tokens_details.thinking_tokens, and the total is not a thinking-token count.
+    expect(text).toContain(`denied m=${MODEL} t=unknown`)
     expect(text).not.toContain('"type":"api_error"')
   })
 
@@ -788,8 +794,9 @@ describe("response-rewrite activated-state golden (handler-v4, byte-lock)", () =
     setStateForTests({ refusalSseRewrite: "error", refusalErrorMessage: "denied m={model} t={thinking_tokens}", refusalErrorType: "custom_type" })
     const res = await postJsonRaw()
     expect(res.status).toBe(500)
-    // s6RefusalBody upstream usage.output_tokens = 6.
-    expect(await res.json()).toEqual({ type: "error", error: { type: "custom_type", message: `denied m=${MODEL} t=6` } })
+    // s6RefusalBody reports usage.output_tokens = 6 but no output_tokens_details, so the thinking
+    // count is genuinely unknown — rendering 6 would pass the total off as a thinking-token count.
+    expect(await res.json()).toEqual({ type: "error", error: { type: "custom_type", message: `denied m=${MODEL} t=unknown` } })
   })
 
   test("S6 error mode empty error type falls back to api_error (non-streaming)", async () => {
@@ -861,7 +868,7 @@ describe("response-rewrite activated-state golden (handler-v4, byte-lock)", () =
       usage: { input_tokens: 5, output_tokens: 6 },
       content: [
         { type: "thinking", thinking: "", signature: "SIG-REF" },
-        { type: "text", text: DEFAULT_REFUSAL_END_TURN_TEXT },
+        { type: "text", text: GOLDEN_SUPPRESS_RENDERED },
       ],
     })
   })

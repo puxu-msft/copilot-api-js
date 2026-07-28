@@ -56,11 +56,10 @@ import {
 import {
   //
   createRefusalRewriter,
-  extractRefusalDetail,
+  hasClientVisibleContent,
   recoverRefusalInResponse,
   refusalVarsFromResponse,
   renderRefusalTemplate,
-  type RefusalObservation,
   type RefusalRewriter,
 } from "~/lib/anthropic/recover-refusal"
 import {
@@ -354,20 +353,6 @@ interface RefusalState extends RewriteState {
   rewriter: RefusalRewriter
 }
 
-/** Build the observation for the non-streaming path (whole response in hand). */
-function nonStreamingRefusalObservation(resp: AnthropicMessageResponse, vars: ReturnType<typeof refusalVarsFromResponse>): RefusalObservation {
-  const rawStopDetails = (resp as { stop_details?: unknown }).stop_details
-  return {
-    mode: state.refusalSseRewrite,
-    detail: extractRefusalDetail(rawStopDetails),
-    thinkingTokens: vars.thinking_tokens,
-    outputTokens: vars.output_tokens,
-    rawStopDetails,
-    // Non-streaming has no frame terminal to guard; the handler renders the body directly.
-    terminalEmitted: false,
-  }
-}
-
 const refusalRewrite: ResponseRewrite = {
   name: "recover-refusal",
   order: RESPONSE_REWRITE_ORDER.recoverRefusal,
@@ -378,16 +363,14 @@ const refusalRewrite: ResponseRewrite = {
   appliesTo: ANTHROPIC,
   createState: (env): RefusalState => ({
     // ALL observability (ctx.fail + feature + log) lives at the handler's single settle point, which
-    // reads back `ctx.refusalObservation`. The rewriter itself is a pure stream reshape + one report.
+    // re-derives the same disposition from the SAME frozen policy. The rewriter is a pure reshape.
+    // Reading `ctx.refusalPolicy` here is also what FREEZES it for this request (first reader), so
+    // a config hot-reload mid-stream can no longer make the two layers disagree.
     rewriter: createRefusalRewriter({
-      mode: state.refusalSseRewrite,
-      endTurnText: state.refusalEndTurnText,
-      errorMessage: state.refusalErrorMessage,
-      errorType: state.refusalErrorType,
+      policy: env.ctx.refusalPolicy,
       // Static vars known at stream start (before any frame): resolved model + request id. The
       // rewriter self-supplies stop_details + usage from the refusal message_delta.
       staticVars: { model: (env.body as MessagesPayload).model, request_id: env.ctx.id },
-      onObserve: (observation) => env.ctx.recordRefusalObservation(observation),
     }),
   }),
   // Never buffers: emits the passthrough frame, or (at the contentless-refusal message_delta) the
@@ -397,19 +380,18 @@ const refusalRewrite: ResponseRewrite = {
     kind: "emit",
     frames: (st as RefusalState).rewriter.processEvent(parseFrame(frame.data), frame as ServerSentEventMessage) as Array<UpstreamFrame>,
   }),
-  // Non-streaming: record the same observation, then apply the mode. `end_turn` (suppression)
-  // appends a synthetic text block + flips stop_reason. `error` and `refusal` leave the body
-  // UNCHANGED here — error's non-streaming failure is rendered in renderNonStreamingV4, which must
-  // see the upstream-original refusal, so transformWhole must NOT mutate it.
+  // Non-streaming: `end_turn` (suppression) appends a synthetic text block + flips stop_reason.
+  // `error` and `refusal` leave the body UNCHANGED here — error's non-streaming failure is rendered
+  // in renderNonStreamingV4, which must see the upstream-original refusal, so transformWhole must
+  // NOT mutate it. The handler re-derives the same verdict from the same frozen policy.
   transformWhole: (response, env): unknown => {
+    const policy = env.ctx.refusalPolicy
+    if (policy.mode !== "end_turn") return response
     const resp = response as AnthropicMessageResponse
     if (resp.stop_reason !== "refusal") return response
-    const content = resp.content as unknown as Array<{ type: string }>
-    if (content.some((b) => b.type === "text" || b.type === "tool_use")) return response
+    if (hasClientVisibleContent(resp.content as unknown as Array<{ type: string }>)) return response
     const vars = refusalVarsFromResponse(resp, { model: resp.model, request_id: env.ctx.id })
-    env.ctx.recordRefusalObservation(nonStreamingRefusalObservation(resp, vars))
-    if (state.refusalSseRewrite !== "end_turn") return response
-    return recoverRefusalInResponse(resp, renderRefusalTemplate(state.refusalEndTurnText, vars))
+    return recoverRefusalInResponse(resp, renderRefusalTemplate(policy.endTurnText, vars))
   },
 }
 

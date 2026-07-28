@@ -123,8 +123,10 @@ function stalledPartialTurn(text: string): Response {
   )
 }
 
-/** thinking-only refusal: a thinking block (empty text + signature) then stop_reason:refusal. */
-function refusalTurn(): Array<string> {
+/** contentless refusal: a thinking block (empty text + signature) then stop_reason:refusal.
+ *  `withMessageStop:false` reproduces the upstream shape that ends WITHOUT a terminator — a real
+ *  possibility for a refusal, and the one that makes the SDK throw unless the proxy supplies its own. */
+function refusalTurn(withMessageStop = true): Array<string> {
   return [
     ev("message_start", {
       type: "message_start",
@@ -147,7 +149,7 @@ function refusalTurn(): Array<string> {
       delta: { stop_reason: "refusal", stop_details: { type: "refusal" }, stop_sequence: null },
       usage: { output_tokens: 5 },
     }),
-    ev("message_stop", { type: "message_stop" }),
+    ...(withMessageStop ? [ev("message_stop", { type: "message_stop" })] : []),
     DONE,
   ]
 }
@@ -224,7 +226,7 @@ describe("client↔proxy SDK e2e (Anthropic, upstream shielded)", () => {
   // ── refusal recovery (success paths) ──────────────────────────────────────
 
   test("refusal end_turn: SDK assembles a coherent turn with recovery text + stop_reason end_turn", async () => {
-    setStateForTests({ refusalSseRewrite: "end_turn" })
+    setStateForTests({ refusalSseRewrite: "end_turn", refusalEndTurnText: "suppressed c={refusal_category}" })
     const up = scriptedUpstream(() => createSseResponse(refusalTurn()))
     setUpstreamFetchForTests(up.handler)
 
@@ -233,7 +235,24 @@ describe("client↔proxy SDK e2e (Anthropic, upstream shielded)", () => {
     // client-observable: the thinking block is kept + a synthetic text block carries the recovery text
     expect(final.stop_reason).toBe("end_turn")
     const text = final.content.find((b) => b.type === "text") as { text?: string } | undefined
-    expect(text?.text).toBe(DEFAULT_REFUSAL_END_TURN_TEXT)
+    // Hand-written expectation (the fixture's stop_details has no `category`, so it renders the
+    // documented `unknown`) — asserting against the production constant could not detect a change.
+    expect(text?.text).toBe("suppressed c=unknown")
+  })
+
+  test("refusal WITHOUT upstream message_stop: the SDK still finalizes (proxy supplies the terminator)", async () => {
+    // The blocker this guards: a synthesized `end_turn` delta with no `message_stop` leaves the real
+    // SDK waiting and then throwing "stream ended without producing a Message with role=assistant" —
+    // i.e. exactly the interrupted turn suppression exists to prevent. A refusal is NOT guaranteed to
+    // be followed by a terminator, so the proxy emits its own.
+    setStateForTests({ refusalSseRewrite: "end_turn", refusalEndTurnText: "suppressed c={refusal_category}" })
+    const up = scriptedUpstream(() => createSseResponse(refusalTurn(false)))
+    setUpstreamFetchForTests(up.handler)
+
+    const final = await client.messages.stream({ model: MODEL, max_tokens: 16, messages: [{ role: "user", content: "x" }] }).finalMessage()
+
+    expect(final.stop_reason).toBe("end_turn")
+    expect((final.content.find((b) => b.type === "text") as { text?: string } | undefined)?.text).toBe("suppressed c=unknown")
   })
 
   test("refusal empty-string end_turn: SDK assembles thinking + NO text block + end_turn (zero-wrapping)", async () => {

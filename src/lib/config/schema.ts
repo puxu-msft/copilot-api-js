@@ -645,7 +645,7 @@ export const AnthropicConfigSchema = z
     response_text_fix: nullableSection(ResponseTextFixSchema),
     response_tool_use_fix: nullableSection(ResponseToolUseFixSchema),
     refusal_sse_rewrite: nullableEnum(["refusal", "end_turn", "error"] as const),
-    /** `end_turn` 模式注入的 recovery text 模板（会被客户端 baked 进下一轮请求）。支持占位符 `{model}`/`{request_id}`/`{thinking_tokens}`，未知占位符原样保留。空串=不追加 text 块（仅改 end_turn）。未配=内置默认（逐字节等价旧固定文案）。 */
+    /** `end_turn`（抑制）模式注入的 text 模板（会被客户端 baked 进下一轮请求）。占位符 `{model}`/`{request_id}`/`{thinking_tokens}`/`{output_tokens}`/`{refusal_category}`/`{refusal_explanation}`；未知值渲染 `unknown`、上游显式 null 的 category 渲染 `uncategorized`；未知占位符原样保留。**空串=不追加 text 块**，实测会让 Claude Code 空转一轮。未配=内置默认。 */
     refusal_end_turn_text: nullableString(),
     /** `error` 模式合成 error 帧的 message 模板（客户端 `APIError.message`）。占位符同上。未配=内置默认。 */
     refusal_error_message: nullableString(),

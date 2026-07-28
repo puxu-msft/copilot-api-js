@@ -64,6 +64,8 @@ import type {
 
 import { tagFrameSynthetic } from "~/lib/pipeline/frame-origin"
 
+import type { RefusalPolicy } from "./refusal-policy"
+
 import { anthropicSseFrame } from "./sse-frame"
 
 /**
@@ -284,42 +286,21 @@ export function buildSyntheticTextFrames(index: number, text: string): Array<Ser
 export function rewriteRefusalMessageDelta(parsed: RawMessageDeltaEvent): RawMessageDeltaEvent {
   return { ...parsed, delta: { ...parsed.delta, stop_reason: "end_turn", stop_details: null } }
 }
-/** The three client-facing dispositions for a contentless refusal. `refusal` = identity passthrough,
- *  `end_turn` = SUPPRESS (synthesize a normal completed turn — the default, see spec §2),
- *  `error` = surface an Anthropic `event: error` frame. */
-export type RefusalMode = "refusal" | "end_turn" | "error"
 
-/**
- * What the rewriter actually observed and did. This is the CAUSAL signal the handler reads to settle
- * the request — deliberately NOT a second independent re-derivation from `state`.
- *
- * Why causal rather than "both layers call the same resolver": the rewriter captures its policy when
- * the response processor is constructed, while the handler settles after the stream drains, and any
- * concurrent request carrying a `system` re-runs `applyConfigToState()` in between. Two independent
- * reads of a hot-reloadable global CANNOT be kept in lockstep by sharing a pure function — they can
- * only be kept in lockstep by having one of them report what it did.
- */
-export interface RefusalObservation {
-  /** The disposition actually applied to the wire. */
-  mode: RefusalMode
-  /** Normalized, provenance-preserving view (for decisions + display). */
-  detail: RefusalDetail
-  /** Authoritative thinking-token breakdown, or `undefined` when the upstream did not report it. */
-  thinkingTokens: number | undefined
-  outputTokens: number
-  /** RAW upstream `stop_details`, verbatim — normalization must never be the storage boundary. */
-  rawStopDetails: unknown
-  /** True when this rewriter emitted the stream's single client-facing terminal (end_turn / error). */
-  terminalEmitted: boolean
+export type { RefusalMode, RefusalPolicy } from "./refusal-policy"
+
+/** Does this accumulated block list carry anything the client can read as an answer? */
+export function hasClientVisibleContent(blocks: ReadonlyArray<{ type: string }>): boolean {
+  return blocks.some((b) => b.type === "text" || b.type === "tool_use")
 }
 
 /**
- * One-line summary of a refusal observation, for log lines and the History `failureReason`.
- * Keeps the category provenance visible: a named category prints verbatim, an upstream-declared
- * `null` prints `uncategorized`, and an absent/malformed one prints `unknown`.
+ * One-line summary of a refusal, for log lines and the History `failureReason`. Keeps the category
+ * provenance visible: a named category prints verbatim, an upstream-declared `null` prints
+ * `uncategorized`, and an absent/malformed one prints `unknown`.
  */
-export function refusalSummary(observation: RefusalObservation): string {
-  const c = observation.detail.category
+export function refusalSummary(detail: RefusalDetail): string {
+  const c = detail.category
   const category =
     isNamedCategory(c) ? c
     : c === null ? "uncategorized"
@@ -331,8 +312,8 @@ export function refusalSummary(observation: RefusalObservation): string {
  * Build the synthetic Anthropic `event: error` frame (error mode) carrying `errorType` + `message`.
  * Hand-built canonical (not via the `routes/` `anthropicErrorFrame` helper — `lib/` must not depend
  * on `routes/`); the shape is protocol-fixed (`{ type:"error", error:{ type, message } }`) so it
- * cannot drift from that helper. Tagged `synthetic:"refusal-recovery"`: this frame REPLACES the
- * upstream terminator on the forwarded track (the upstream track keeps the real refusal).
+ * cannot drift from that helper. Tagged `synthetic:"refusal-recovery"`: it REPLACES the upstream
+ * terminator on the forwarded track (the upstream track keeps the real refusal).
  */
 function buildRefusalErrorFrame(errorType: string, message: string): ServerSentEventMessage {
   return tagFrameSynthetic<ServerSentEventMessage>(
@@ -347,21 +328,13 @@ export interface RefusalRewriter {
   processEvent: (parsed: StreamEvent | undefined, raw: ServerSentEventMessage) => Array<ServerSentEventMessage>
 }
 
-/** Options for {@link createRefusalRewriter}. Templates/mode are resolved by the assembly layer
- *  (this module must stay free of any `state` import — `state.ts` imports IT for the defaults). */
+/** Options for {@link createRefusalRewriter}. The policy is resolved by the assembly layer (this
+ *  module must stay free of any `state` import — `state.ts` imports IT for the defaults). */
 export interface RefusalRewriterDeps {
-  mode: RefusalMode
-  /** `anthropic.refusal_end_turn_text` (empty string = suppress without appending any text block). */
-  endTurnText: string
-  /** `anthropic.refusal_error_message`. */
-  errorMessage: string
-  /** `anthropic.refusal_error_type` (empty falls back to {@link DEFAULT_REFUSAL_ERROR_TYPE}). */
-  errorType: string
+  /** The request's frozen disposition — see {@link RefusalPolicy}. */
+  policy: RefusalPolicy
   /** Vars known at stream start (before any frame): resolved model + request id. */
   staticVars: RefusalStaticVars
-  /** Invoked exactly ONCE per stream, at the contentless refusal — in EVERY mode, including
-   *  passthrough. Observation is uniform; only the wire disposition differs. */
-  onObserve?: (observation: RefusalObservation) => void
 }
 
 /**
@@ -383,25 +356,20 @@ export interface RefusalRewriterDeps {
  * `refusal` mode never terminates: it stays a byte-for-byte identity passthrough.
  */
 export function createRefusalRewriter(deps: RefusalRewriterDeps): RefusalRewriter {
+  const { mode, endTurnText, errorMessage, errorType } = deps.policy
   let maxIndex = -1
   let sawRealContent = false
-  let observed = false
   let terminated = false
-  /** `end_turn` keeps the upstream terminator (it legitimately ends the synthesized turn); `error`
-   *  drops it (a clean `message_stop` after an error frame is a malformed sequence). */
-  const keepsMessageStop = deps.mode === "end_turn"
 
   return {
     processEvent(parsed, raw) {
       if (!parsed) return [raw]
 
-      // `terminated` = this stream's single client terminal is already on the wire.
-      if (terminated) {
-        if (parsed.type === "message_stop") return keepsMessageStop ? [raw] : []
-        // Repeated `message_delta`, or content frames after the terminal: malformed upstream.
-        // Forwarding them would hand the client a second terminal or post-terminal content.
-        return []
-      }
+      // `terminated` = this stream's single COMPLETE client terminus is already on the wire.
+      // Everything after it is suppressed, INCLUDING the upstream's own `message_stop`: suppression
+      // already emitted its own terminator (see below), so forwarding the upstream one would be a
+      // duplicate, and after an `error` frame a clean `message_stop` is a malformed sequence.
+      if (terminated) return []
 
       if (parsed.type === "content_block_start") {
         if (typeof parsed.index === "number") maxIndex = Math.max(maxIndex, parsed.index)
@@ -424,29 +392,17 @@ export function createRefusalRewriter(deps: RefusalRewriterDeps): RefusalRewrite
         // Render timing: stop_details + the terminal usage are only knowable HERE, not at factory
         // construction (before any frame). Static vars (model/request_id) were captured then.
         const vars = refusalVarsFromDelta(parsed, deps.staticVars)
-        const rawStopDetails = (parsed.delta as { stop_details?: unknown }).stop_details
-        const terminalEmitted = deps.mode !== "refusal"
-        if (!observed) {
-          observed = true
-          deps.onObserve?.({
-            mode: deps.mode,
-            detail: { category: vars.refusal_category, explanation: vars.refusal_explanation, invalid: extractRefusalDetail(rawStopDetails).invalid },
-            thinkingTokens: vars.thinking_tokens,
-            outputTokens: vars.output_tokens,
-            rawStopDetails,
-            terminalEmitted,
-          })
-        }
 
         // Passthrough: identity. The client sees the genuine refusal; only our records change.
-        if (deps.mode === "refusal") return [raw]
+        if (mode === "refusal") return [raw]
 
         terminated = true
 
-        if (deps.mode === "error") {
-          const message = renderRefusalTemplate(deps.errorMessage, vars)
-          const type = deps.errorType === "" ? DEFAULT_REFUSAL_ERROR_TYPE : deps.errorType
+        if (mode === "error") {
+          const message = renderRefusalTemplate(errorMessage, vars)
+          const type = errorType === "" ? DEFAULT_REFUSAL_ERROR_TYPE : errorType
           // Suppress the original refusal delta (don't forward it) and emit the error frame instead.
+          // The error frame IS the terminus for the SDK (it throws), so no `message_stop` follows.
           return [buildRefusalErrorFrame(type, message)]
         }
 
@@ -454,14 +410,21 @@ export function createRefusalRewriter(deps: RefusalRewriterDeps): RefusalRewrite
         // its agent loop is not interrupted. The rewritten delta is a mutation of the upstream
         // refusal delta — on the forwarded track it no longer reflects the upstream stop_reason, so
         // it is tagged synthetic too.
-        const text = renderRefusalTemplate(deps.endTurnText, vars)
+        const text = renderRefusalTemplate(endTurnText, vars)
         const rewritten = tagFrameSynthetic<ServerSentEventMessage>({ ...raw, data: JSON.stringify(rewriteRefusalMessageDelta(parsed)) }, "refusal-recovery")
         // Empty text = zero-wrapping: append NO text block, only the rewritten end_turn delta.
         // NOTE: an empty text is empirically what makes Claude Code spin an extra empty turn
         // (exp/cli-e2e-stall) — it defeats the whole point of suppression. Kept as a legal config
         // value (zero-wrapping contract) but the shipped default is non-empty.
         const synthFrames = text === "" ? [] : buildSyntheticTextFrames(maxIndex + 1, text)
-        return [...synthFrames, rewritten]
+        // Emit our OWN `message_stop` rather than relying on the upstream sending one. A contentless
+        // refusal is not guaranteed to be followed by a terminator, and a synthesized `end_turn`
+        // delta with no `message_stop` leaves the real @anthropic-ai/sdk hanging and then throwing
+        // `stream ended without producing a Message with role=assistant` — which is precisely the
+        // interruption suppression exists to prevent. Emitting it here makes the terminus complete
+        // and unconditional; the upstream's own `message_stop` (if it arrives) is suppressed above
+        // as a duplicate.
+        return [...synthFrames, rewritten, tagFrameSynthetic(anthropicSseFrame({ type: "message_stop" }), "refusal-recovery")]
       }
 
       return [raw]

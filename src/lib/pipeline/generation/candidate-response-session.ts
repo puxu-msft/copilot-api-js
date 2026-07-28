@@ -36,6 +36,8 @@ export type CandidateResponseFinish = ResponseFinishResult & Readonly<Record<str
 export interface CandidateResponseSessionOptions extends RunResponseOpts {
   readonly sawMessageStop?: () => boolean
   readonly sawUpstreamError?: () => boolean
+  /** A terminal upstream DECISION that carries no `message_stop`: a contentless refusal. */
+  readonly sawContentlessRefusal?: () => boolean
   readonly commitBoundaries?: (frame: ClientFrame) => boolean
   readonly transformBufferedFlush?: (frames: readonly ClientFrame[], ctx: import("~/lib/pipeline/types").BufferedFlushContext) => readonly ClientFrame[]
   readonly stopAfterFrame?: (frame: ClientFrame) => boolean
@@ -69,6 +71,8 @@ export interface CreateCandidateResponseSessionInput<State, Snapshot> {
   readonly snapshot: (state: State, renderer: CandidateResponseRenderer, finish: CandidateResponseFinish | undefined) => Snapshot
   readonly sawMessageStop?: (state: State) => boolean
   readonly sawUpstreamError?: (state: State) => boolean
+  /** See {@link CandidateResponseSession.sawContentlessRefusal}. */
+  readonly sawContentlessRefusal?: (state: State) => boolean
   readonly commitBoundaries?: (state: State, frame: ClientFrame) => boolean
   readonly transformBufferedFlush?: (
     state: State,
@@ -146,6 +150,7 @@ export function createCandidateResponseSession<State, Snapshot>(
     },
     ...(input.sawMessageStop && { sawMessageStop: () => input.sawMessageStop?.(state) ?? false }),
     ...(input.sawUpstreamError && { sawUpstreamError: () => input.sawUpstreamError?.(state) ?? false }),
+    ...(input.sawContentlessRefusal && { sawContentlessRefusal: () => input.sawContentlessRefusal?.(state) ?? false }),
     ...(input.commitBoundaries && { commitBoundaries: (frame) => input.commitBoundaries?.(state, frame) ?? false }),
     ...(input.transformBufferedFlush && { transformBufferedFlush: (frames, ctx) => input.transformBufferedFlush?.(state, frames, ctx) ?? frames }),
     ...(input.stopAfterFrame && { stopAfterFrame: (frame) => input.stopAfterFrame?.(state, frame) ?? false }),

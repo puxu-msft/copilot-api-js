@@ -90,6 +90,9 @@ import { recordProtectStreamingOutcome } from "~/lib/anthropic/protect-streaming
 import {
   //
   DEFAULT_REFUSAL_ERROR_TYPE,
+  extractRefusalDetail,
+  hasClientVisibleContent,
+  isContentlessRefusal,
   refusalSummary,
   type RefusalMode,
   refusalVarsFromResponse,
@@ -294,6 +297,10 @@ const createAnthropicCandidateResponseSession: CandidateResponseSessionFactory =
       },
       sawMessageStop: (state) => state.acc.sawMessageStop,
       sawUpstreamError: (state) => state.acc.streamError !== undefined,
+      // A contentless refusal is a terminal upstream decision even without `message_stop` — see the
+      // driver's commit gate. Kept separate from `sawUpstreamError` because that predicate also
+      // drives the error-terminus flush path, which a refusal must not enter.
+      sawContentlessRefusal: (state) => isContentlessRefusal(state.acc.stopReason, hasClientVisibleContent(state.acc.contentBlocks)),
       onBufferedResolve(state, outcome, retries, meta) {
         if (outcome === "success" && retries === 0) return
         recordProtectStreamingOutcome(outcome, retries, meta)
@@ -885,10 +892,12 @@ function renderNonStreamingV4(
   // Mirrors the truncation fail-gate's header/inbound timing (c.json builds headers ->
   // setInboundResponseHeaders -> fail; never `throw` -- that would skip c.json and drop the
   // inboundResponse leg, see memory hono-onerror-consumes-throws).
-  const refusal = reqCtx.refusalObservation
-  if (refusal !== null) reqCtx.recordFeature(REFUSAL_FEATURE_BY_MODE[refusal.mode])
-  if (refusal !== null && refusal.mode === "error") {
-    const summary = refusalSummary(refusal)
+  const isRefusal =
+    response.stop_reason === "refusal" && !hasClientVisibleContent(response.content as unknown as Array<{ type: string }>)
+  const refusalMode = reqCtx.refusalPolicy.mode
+  if (isRefusal) reqCtx.recordFeature(REFUSAL_FEATURE_BY_MODE[refusalMode])
+  if (isRefusal && refusalMode === "error") {
+    const summary = refusalSummary(extractRefusalDetail((response as { stop_details?: unknown }).stop_details))
     // Emission point 4 (non-streaming error body): render message/type from config. Empty type
     // falls back to api_error.
     const errVars = refusalVarsFromResponse(response, { model: response.model, request_id: reqCtx.id })
@@ -944,7 +953,11 @@ function renderNonStreamingV4(
   // Takes priority over truncation — a more precise root cause. The flag is set by the decode S5
   // transformWhole's onDecodeFailure closure during runResponseWhole above.
   const unrepairableTool = reqCtx.unrepairableToolInput
-  const failReason = unrepairableTool !== null ? `unrepairable malformed tool_use input (tool=${unrepairableTool})` : truncationReason
+  // A suppressed / passed-through contentless refusal still settles FAILED: the client received a
+  // clean turn as a PRESENTATION policy, which is not a claim that the turn produced anything.
+  const refusalReason = isRefusal ? refusalSummary(extractRefusalDetail((response as { stop_details?: unknown }).stop_details)) : null
+  const failReason =
+    refusalReason ?? (unrepairableTool !== null ? `unrepairable malformed tool_use input (tool=${unrepairableTool})` : truncationReason)
   const responseData = {
     success: !failReason,
     model: response.model,
@@ -967,7 +980,9 @@ function renderNonStreamingV4(
       response.model,
       new Error(failReason),
       { usage: responseData.usage, stop_reason: responseData.stop_reason, content: responseData.content, sourceBody: response },
-      unrepairableTool !== null ? { upstreamSucceeded: true } : undefined,
+      // Refusal + unrepairable = a COMPLETE 200 upstream body the proxy re-judged → upstreamSucceeded
+      // keeps outboundResponse honest. Semantic truncation = an INCOMPLETE body → stays success:false.
+      refusalReason !== null || unrepairableTool !== null ? { upstreamSucceeded: true } : undefined,
     )
   } else {
     reqCtx.complete(responseData)
@@ -1414,32 +1429,36 @@ async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): 
         content: partial.content,
       })
       sink.finalize?.()
-    } else if (env.ctx.refusalObservation !== null && (env.ctx.refusalObservation.terminalEmitted || acc.sawMessageStop)) {
+    } else if (
+      isContentlessRefusal(acc.stopReason, hasClientVisibleContent(acc.contentBlocks))
+      && (env.ctx.refusalPolicy.mode !== "refusal" || acc.sawMessageStop)
+    ) {
       // Contentless refusal, ANY disposition. The S5 rewrite layer already put the chosen wire shape
       // on the forwarded track (suppression's end_turn turn, error's `event: error` frame, or the
       // untouched upstream refusal); the handler OWNS the terminal state + observability here.
       //
-      // Detected from what the rewrite layer REPORTED (`ctx.refusalObservation`), not from a second
-      // independent read of `state.refusalSseRewrite` — the rewriter captured its policy at processor
-      // construction while this runs after the drain, and any concurrent request carrying a `system`
-      // re-runs applyConfigToState() in between (handler-v4.ts:384). Re-deriving here could settle the
-      // request under a policy that never touched the wire.
+      // Derived from THIS candidate's own accumulator (upstream-original frames — `acc.stopReason`
+      // is the genuine "refusal") plus the request's FROZEN policy. Both this layer and the rewriter
+      // are pure functions of the same immutable inputs, so they cannot disagree even if a concurrent
+      // request hot-reloads config mid-stream, and concurrent hedge candidates each judge their own
+      // stream instead of racing over one shared slot.
       //
-      // MUST precede the truncation branch: the rewriter already emitted this stream's single client
-      // terminal, so appending a second one would hand the client `message_delta(end_turn)` followed
-      // by `event: error`. The `terminalEmitted || sawMessageStop` guard is what keeps that ordering
-      // honest — in passthrough mode with a truncated stream NO terminal was emitted, so we fall
-      // through to the truncation branch on purpose (the client still needs a terminator).
+      // MUST precede the truncation branch: in a rewriting mode the rewriter already emitted this
+      // stream's single COMPLETE terminus (synthetic text + end_turn delta + its own message_stop),
+      // so appending a second one would hand the client `message_delta(end_turn)` followed by
+      // `event: error`. The `mode !== "refusal" || sawMessageStop` guard keeps that honest — in
+      // passthrough mode with a truncated stream NO terminus was emitted, so we deliberately fall
+      // through to the truncation branch (the client still needs a terminator).
       //
       // The verdict is FAILED in every mode: the client receiving a clean synthesized turn is a
       // PRESENTATION policy, not a claim that the turn produced anything. The upstream leg SUCCEEDED
       // (a complete 200 refusal stream), so `upstreamSucceeded` keeps outboundResponse honest and
       // routes the verdict to failureReason.
-      const observation = env.ctx.refusalObservation
+      const mode = env.ctx.refusalPolicy.mode
       const partial = buildAnthropicResponseData(acc, model)
-      const summary = refusalSummary(observation)
-      consola.error(`[REFUSAL] ${summary} for ${acc.model || model} -> wire=${observation.mode}, recorded as failed`)
-      env.ctx.recordFeature(REFUSAL_FEATURE_BY_MODE[observation.mode])
+      const summary = refusalSummary(extractRefusalDetail(acc.stopDetails))
+      consola.error(`[REFUSAL] ${summary} for ${acc.model || model} -> wire=${mode}, recorded as failed`)
+      env.ctx.recordFeature(REFUSAL_FEATURE_BY_MODE[mode])
       env.ctx.fail(
         acc.model || model,
         new Error(summary),

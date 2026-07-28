@@ -7,7 +7,7 @@
  */
 
 import type { ApiError } from "~/lib/error"
-import type { RefusalObservation } from "~/lib/anthropic/recover-refusal"
+import type { RefusalPolicy } from "~/lib/anthropic/refusal-policy"
 import type {
   //
   EndpointType,
@@ -328,8 +328,8 @@ export function createRequestContext(opts: {
   let _endTime: number | null = null
   /** Per-attempt tool-input repair outcomes (reset by resetRepairOutcomesForAttempt on L2 retry). */
   const _repairOutcomes: Array<RepairOutcomeRecord> = []
-  /** Set once per attempt by the S5 refusal rewriter; drives the handler's settle + terminal gate. */
-  let _refusalObservation: RefusalObservation | null = null
+  /** Frozen on first read (stream start) so every layer of this request sees the same disposition. */
+  let _refusalPolicy: RefusalPolicy | null = null
 
   // History V3 generation recorder. The mutable recorder stays private to RequestContext;
   // consumers see only immutable snapshots / the canonical terminal record.
@@ -1061,18 +1061,20 @@ export function createRequestContext(opts: {
     get unrepairableToolInput() {
       return _repairOutcomes.find((r) => r.outcome === "unrepairable")?.tool ?? null
     },
-    get refusalObservation() {
-      return _refusalObservation
-    },
-    recordRefusalObservation(observation) {
-      _refusalObservation = observation
-      recordAttemptDiagnostic("anthropic.refusal", "error", observation)
+    get refusalPolicy() {
+      // Lazily frozen: the first reader is the S5 rewriter at stream start, before any concurrent
+      // request can reload config into the middle of THIS stream. Deliberately NOT reset per attempt
+      // — a buffered retry / continuation of the same request must keep the same disposition.
+      _refusalPolicy ??= {
+        mode: appState.refusalSseRewrite,
+        endTurnText: appState.refusalEndTurnText,
+        errorMessage: appState.refusalErrorMessage,
+        errorType: appState.refusalErrorType,
+      }
+      return _refusalPolicy
     },
     resetRepairOutcomesForAttempt() {
       _repairOutcomes.length = 0
-      // Per-attempt, exactly like the repair outcomes: a discarded buffered-retry attempt must not
-      // leave its refusal verdict behind to settle a later, successful attempt.
-      _refusalObservation = null
     },
     get sessionId() {
       return _sessionId
