@@ -241,4 +241,4 @@ AnthropicError: stream ended without producing a Message with role=assistant
 
 > 第四轮**合并态复审**（审最终代码而非设计）结论见 [同目录 `-review-merged-state.md`](2026-07-27-refusal-diagnostics-and-typing-review-merged-state.md)。
 
-> 剩余任务的执行顺序、判据与触点见 [docs/plan/2026-07-28-refusal-suppression-remaining-tasks.md](../plan/2026-07-28-refusal-suppression-remaining-tasks.md)。
+> 本 spec 的计划已执行完毕。**剩余未做的部分见交接件** [docs/plan/2026-07-28-refusal-suppression-handover.md](../plan/2026-07-28-refusal-suppression-handover.md)；执行记录见 [同目录 remaining-tasks](../plan/2026-07-28-refusal-suppression-remaining-tasks.md)。
