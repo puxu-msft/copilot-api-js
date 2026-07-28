@@ -1,6 +1,10 @@
 # HANDOVER：把 `state` + `state-defaults` 降为 foundation 叶子
 
-> **状态**：**执行中**——范围已由用户拍板（§2）、四条分叉已裁决（§5）、**S1 起代码开工**。本文件是**唯一入口**，接手请先读完再看别的。
+> **状态**：✅ **S1–S7 全部落地**（分支 `feat/state-foundation`，7 个提交 `2ef2f8f8`→`65c5654c`，**尚未合并 master**）。本文件从「怎么做」变成了「做了什么、以及为什么和计划不一样」。
+>
+> **终态**：`packages/foundation/src/{state,state-defaults,state-vocabulary}.ts`，出边只有 `node:` 与相对路径，由 `package-boundaries.unit.test.ts` 的文件级 allowlist 机器强制。**全仓 madge 环 70/63 → 43/50、state 单元零环**（43 与 70 不可直接比——S6 把扫描面从 `src/` 扩到了全部 workspace 包，那是必须的：不扩面的话文件搬出 `src/` 就会「因路径不匹配而消失」，那不是无环的证明）。消费端 **86 prod + 212 test importer 零改动**（走 `~/lib/state*` alias）。
+>
+> **每一步都做过变异实验**（不是「推理它会红」）：S1 五条、S2 正样本自证 + 顺序断言、S3 两条、S4 五条、S5 五条编译期断言（其中**第一版是惰性的、根本不咬**）、S6 两样本对照（`~/` 新旧判据都咬 → 单用它证明不了；裸 npm 包只有新判据咬）。
 > **核验基线**：`23e85aba`（2026-07-28）。**2026-07-28 已在 `a675064e` 重跑全部三项复验，差集为空**——详见 §3.0。**再往后接手请再重跑一次**——数字有时效（见 §6 第 1 条）。
 > **工作区**：文档在主树 `master` 直接改并提交；**代码走隔离 worktree `.worktrees/state-foundation` @ 分支 `feat/state-foundation`**。主树有并发 peer 的未提交改动十余个文件 + 若干未追踪文件，**全部与本任务无关**，一律显式 pathspec 提交。
 > **已跑门禁**：`computeCircularSnapshot()` 实测 + `allModuleSpecifiers()` 出边枚举 + 消费者 AST 计数（均 2026-07-28 @ `a675064e`，见 §3.0）。`bun run test:backend` 在本机**跑不起来**（§8），用 `bun scripts/parallel-test.ts unit it http`。
