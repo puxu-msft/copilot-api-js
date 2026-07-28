@@ -47,7 +47,8 @@ description: 当 copilot-api-js 服务器意外整进程退出（一条良性取
 - **本项目实例**:`dispatch-scheduler` 在 `await input.open()` resolve 后无守卫调 `recording.recordOpened(...)`;GHC 的 **deferred-header** 可让 header 迟到 47-231s(上界未知,见 spec `2026-07-23-upstream-silence-commit-timing`),期间 reaper / `request_deadline` / candidate-discard 完全可能已 seal 掉 operation。窗口越长、race 越现实。
 - **判据(关键,别一刀切)**:分两类写——**语义写**(payload/frame,seal 后写会**腐化记录**)保持 loud-throw,**绝不放宽**;**best-effort 晚到观测**(timing 四刻、response headers 这类只增诊断价值的证据)应与同族逐帧 capture 对齐、`if (sealed) return` **静默丢弃**。同族不对称本身就是红旗:本项目的逐帧 `captureForwardedGenerationFrame` 早已 `if (sealed) return`,唯独 timing 走 `assertWritable` 抛错。
 - **修法**:守卫**整条晚到观测**(整个 `recordOpened` 开头早返回),而非只堵当前会抛的那一处——seal 后整条观测本就该整体丢弃,且防未来往同一回调新增无守卫写;并让 setter 自身也对齐 `if (sealed) return` 作双保险(别只靠调用点)。
-- **正样本对照**:去掉守卫后 seal-race 回归测试必须变红(实测 3/3 红),否则测试没咬住;测试挂 `process.once("unhandledRejection")` 探针 + 覆盖 reaper/deadline/abort × late-header 组合。
+- **正样本对照**:去掉守卫后 seal-race 回归测试必须变红(实测 3/3 红),否则测试没咬住。
+- **⚠ 这里踩过一个真坑,值得单记**:测试挂了 `process.on("unhandledRejection")` 探针、标题也写「不产生 unhandled rejection」,但它**结构上永不触发**——helper 里 `try { await request } catch {}` 提供了 live awaiter,而**本缺陷的前提恰恰是「无 live awaiter」**。异模型 reviewer 把三个守卫**全拆**、只留 unhandled 断言,**3/3 仍全绿**。真正咬住回归的是旁边那三条状态断言(headers / lastSequence / timing 未被污染)。**教训**:断言否定性结论(「不崩」「无泄漏」「没多发」)时,先确认**测试拓扑保留了触发条件**——`await` 一下被测 promise 就等于把 bug 的前提消掉了,探针再正确也测不到。要么另建**孤儿拓扑**用例让探针成为唯一 gate 并以 mutation 证其变红,要么如实改标题、把未覆盖面写进注释/backlog。呼应 [[feedback-pass-null-clean-not-self-validating]] 与 skill `positive-control-your-tests`。
 
 
 **How to apply**：
