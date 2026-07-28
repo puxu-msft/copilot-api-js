@@ -11,6 +11,23 @@ CLAUDE.md 放原则；本文件放可查阅的事实性约定。
 - 错误处理用显式错误类（`src/lib/error/`），避免静默失败。
 - 同目录文件互导用相对 `./foo`，跨域用别名：后端 `~/*`→`src/*`，前端 `@/*`→`ui/src/*`，前端引后端 `~backend/*`→`../src/*`。
 
+## 发射与识别是两条轴（emit-closed / accept-open）
+
+凡是**我方产出、之后又要认回来**的标识物（wire 上的合成哨兵、配置键、协议载体版本），配置面按两条轴拆，**形状相反**：
+
+- **发射轴（主动用什么）= 封闭枚举**。只放已被证实可用的取值。开放成自由字符串，用户就能填出一个自伤值（例：分隔符填纯空白 → 上游 strip 掉 → 自造那个本来要修的 400）。
+- **识别轴（额外承认什么）= 开放列表**。扩大识别面是**单调**的：只会把更多东西归类为"我方产出"，永远不可能造出非法输出。历史值、第三方部署留下的值、迁移期的新旧并存，全靠这条轴。
+
+收益是**迁移与回滚都变成零成本**：新版发射 v2 的同时继续认 v1；回滚不会把已经流到对端的标识物变成认不出的垃圾。识别比较用**整体 trim 后全等**，不做子串匹配（否则正常内容里提到该字面量就被误认），空值永远不算。
+
+项目内实例：配置键的 `compat.ts`（发新键、认旧键）；`assistant_block_layout_strategy` 的 `separator_carrier`（封闭）/ `separator_accept_extra`（开放），见 [spec/2026-07-26-thinking-terminal-block-layout.md](spec/2026-07-26-thinking-terminal-block-layout.md)。
+
+## 配置读留在装配层，别下沉进叶子
+
+纯逻辑叶子（如 `src/lib/anthropic/sanitize/*` 的契约模块）**不要 import `state`**。本仓 `state` 处在一个 19 模块的巨型 SCC 里，叶子一旦读它就被整个吸进去——`tests/architecture/circular-deps-ratchet.unit.test.ts` 会立刻转红（实测踩过）。
+
+正确形状：**配置读留在本来就在 SCC 内的装配层**（`sanitize/index.ts`、driver/strategy 等调用点），把解析结果**作为参数向下传**给纯叶子。副作用是叶子天然可测（不需要 `setStateForTests`）。
+
 ## 注释规范
 
 `/** */`（JSDoc，产文档/悬停）：模块顶部、所有 export、接口字段、重要非导出声明。
@@ -36,6 +53,14 @@ L1 守卫 `tests/infra/test-discovery-matrix.unit.test.ts` 枚举全仓 `*.test.
 5. 涉及信号或退出时用真实子进程或 PTY。
 
 禁止用一个 wall-clock 测试跨层证明全部行为。任何“rotation / exactly-once / production wired / flush completed”断言先用正样本证明目标路径确实触发；exactly-once 用计数多重集，不用会折叠重复的 `Set`。诊断文件域详见 skill `diagnostic-durability`。
+
+### 守卫要挡住**等价绕过形态**，不只挡字面量
+
+写"只有拥有者模块能碰这个标识"这类结构守卫时，光禁字面量不够——`import` 那个常量再自己 `===` 比较，是完全等价的绕过，而且正是真实代码里出现过的写法。守卫要把**两种形态一起禁**，并用旧代码做正样本对照（把旧写法塞回去，守卫必须转红）。
+
+### 遍历全仓的结构守卫要给**显式时间预算**
+
+解析全部生产源文件的守卫（包边界、包面、环 ratchet 之类）本就逼近 bun 默认的 5s 单测超时，仓库多几个文件或与其它分片并行跑就会假红。给它显式预算（`}, 30_000)`，对齐 `circular-deps-ratchet`），**不要为了压进默认超时去缩小扫描面**——扫描面正是这类守卫的价值所在。
 
 ## 实现前门禁
 
