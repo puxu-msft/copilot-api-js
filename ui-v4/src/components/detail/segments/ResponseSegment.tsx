@@ -118,9 +118,11 @@ function RefusalDiagnostic({ entry }: { entry: HistoryEntry }) {
   const raw = finalUpstreamResponse(entry)?.stopDetails
   if (!detail || raw === undefined || raw === null) return null
 
+  // Mirrors the backend `CategoryProvenance` union exactly — the value the derivation returns for
+  // "we could not read an answer" is `unknown`, covering both an absent field and a malformed one.
   let provenance = "named by upstream"
   if (detail.categoryProvenance === "uncategorized") provenance = "explicit null from upstream"
-  else if (detail.categoryProvenance === "missing") provenance = "category field absent"
+  else if (detail.categoryProvenance === "unknown") provenance = "absent or unreadable"
 
   return (
     <LegShell label="Refusal diagnostic (upstream)">

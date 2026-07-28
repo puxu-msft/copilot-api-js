@@ -244,7 +244,7 @@ describe("ResponseSegment", () => {
     expect(container.textContent).toContain("FULL_EXPLANATION_END")
   })
 
-  it("keeps explicit uncategorized and missing category provenance distinguishable", () => {
+  it("keeps an explicit upstream null distinguishable from an unreadable category", () => {
     const { unmount } = render(<ResponseSegment entry={refusalWithUncategorizedCategory} />)
     expect(screen.getByText("uncategorized")).toBeDefined()
     expect(screen.getByText(/explicit null/)).toBeDefined()
@@ -252,7 +252,9 @@ describe("ResponseSegment", () => {
     unmount()
     render(<ResponseSegment entry={refusalWithMissingCategory} />)
     expect(screen.getByText("unknown")).toBeDefined()
-    expect(screen.getByText(/field absent/)).toBeDefined()
+    // `unknown` covers both an absent field and a malformed one — the backend union stopped calling
+    // this case "missing" once an empty-string category had to land in the same bucket.
+    expect(screen.getByText(/absent or unreadable/)).toBeDefined()
   })
 
   it("preserves the complete raw stopDetails object in a JSON view", () => {
