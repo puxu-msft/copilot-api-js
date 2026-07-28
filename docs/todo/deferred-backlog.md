@@ -2,6 +2,14 @@
 
 从记忆库降为引用层（2026-07-05）时归位的活 backlog。每条：现状 / 暂缓原因 / 若做需改什么。
 
+## reverse `@messages` 非流式跨协议 refusal 抑制（2026-07-28，合并态复审后拆出）
+
+- **根因**：Anthropic whole-response refusal rewrite 位于 Anthropic wire 层；reverse `@messages` 的 Chat Completions / Responses / Gemini codec 随后把原始 Anthropic response 翻成目标协议，而三个 route settle 点此前只调用 `anthropicNonStreamingTruncation(stop_reason)`。`stop_reason:"refusal"` 是有效终止符，因此旧代码直接 `ctx.complete()`；本批已用共享 `isContentlessRefusalResponse()` 修正裁决，但没有把 Anthropic 三模式呈现策略提升为跨协议机制。
+- **当前行为**：三条 reverse 非流式腿命中 contentless refusal 时统一 `ctx.fail(refusalSummary(...), ..., {upstreamSucceeded:true})`，记录 `refusal-passthrough`，History / `/api/stats` / telemetry / TUI 的失败口径一致；客户端仍收到现有目标协议翻译：Chat Completions 的 `finish_reason:"content_filter"`、Responses 的 `status:"incomplete"` + `incomplete_details.reason:"refusal"`、Gemini 的对应 content-filter 完成原因。配置的默认 `anthropic.refusal_sse_rewrite="end_turn"` 对这三条非流式腿尚不产生抑制 wire。
+- **理想架构**：把 refusal disposition 抽成协议无关的、请求级冻结的终态决策，先基于原始 Anthropic response 判定 passthrough / suppression / error，再由 CC / Responses / Gemini 各自把该决策渲染成合法且不会中断客户端轮次的正常完成形态；raw upstream response 与 `stopDetails` 继续原样进 History，上游腿继续 `success:true`，请求裁决继续 `failed`。
+- **为何暂缓**：本批的 HIGH 缺陷是后端裁决与计数口径错误，已可独立闭合；真正抑制会改变三种公开协议的客户端 wire，需要决定每种协议的合成文本位置、完成原因、error 模式、usage 与 response id 保持方式，并补真实 SDK / CLI 消费 oracle。把这些协议设计夹进 settle 修复会产生未经规格裁决的新公共行为。
+- **若做需改什么**：① 把 `RefusalPolicy` + detail/template vars 形成跨协议 whole-response disposition；② 在 `openai-cc` / `openai-responses` / Gemini reverse renderer 中分别实现 `end_turn`、`refusal`、`error` 三模式；③ 保证目标协议 exactly-one terminus 与 raw/forwarded 双轨；④ feature 从当前固定 `refusal-passthrough` 改为实际 mode 对应值；⑤ 为三条非流式腿各补 byte golden + 官方 SDK 消费 oracle，并补至少一条同 session 后续轮继续的客户端测试。
+
 ## Anthropic 块级 buffered 首块后的 >300s keepalive carrier（2026-07-27，块级默认翻转硬门）
 
 - **根因**：块级 buffered 在 `content_block_stop` 前不向客户端写 start/delta；首块提交后的长生成在客户端轨没有 open block。ping 不重置 Claude Code 300s event-idle；固定 anchor@0 又不能在真实 block@0 已完成后复用，否则真实 SDK 会静默重排 content。

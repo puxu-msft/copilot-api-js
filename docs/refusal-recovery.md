@@ -126,5 +126,6 @@ AnthropicError: stream ended without producing a Message with role=assistant
 
 ## 已知缺口
 
+- reverse `@messages` 的 Chat Completions / Responses / Gemini **非流式**腿已统一裁决为 `failed`，记录 `refusal-passthrough`，并以 `{upstreamSucceeded:true}` 保持上游腿 `success:true`；但这三条腿目前只把 Anthropic refusal 翻译成目标协议的 `content_filter` / `incomplete` 形态，尚未执行 `anthropic.refusal_sse_rewrite` 的三模式呈现策略，也就尚未把默认 `end_turn` 抑制转换成各目标协议的正常完成轮。根因是 refusal whole-response rewrite 发生在 Anthropic wire 层，而 reverse codec 先把原始 Anthropic body 翻成目标协议，三个 route settle 点此前又只做 truncation 判定；理想架构应让 refusal disposition 在 Anthropic→目标协议翻译前统一裁决并产生协议无关的呈现结果。当前批次先修后端事实与计数口径，避免继续生成“成功的 refusal”；完整抑制需同时设计 CC / Responses / Gemini 三套合法 wire、History raw/forwarded 双轨、feature mode 与真实客户端 oracle，故作为独立任务暂缓，详见 [deferred backlog](todo/deferred-backlog.md)。
 - web_search 双跳旁路走 legacy direct、不经 driver/S5，三模式对该路径无效（与既有 web_search bypass 暂缓清单一致）。
 - **代理侧 fallback 重试**（换模型重发）未做，记在 backlog；上游 explanation 的样板句自己建议的正是这条，CC 也内建了它。进度见 [docs/plan/2026-07-28-refusal-suppression-remaining-tasks.md](plan/2026-07-28-refusal-suppression-remaining-tasks.md)。

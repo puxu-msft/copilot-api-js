@@ -61,6 +61,14 @@ accumulator 已收（#1 完成），剩 spec §5 表的 #2–#11：streaming bui
 
 后端 mutation control 分两层：翻译器内部的 `onDegradation` 触发测试此前已临时摘掉对应逻辑并按预期变红；但该结果不能证明 codec→`RequestContext.recordFeature()` 的接线。合并态复审发现接线层原本零测试后，新增 `tests/codec/refusal-degradation-marker-wiring.unit.test.ts`，逐格覆盖 CC/Responses × 流式/非流式，并临时摘掉 `src/lib/codec/openai-{cc,responses}/codec.ts` 三处回调接线，四条测试均按预期变红，恢复后 4/4 转绿。TUI token、feature detail、`refusal_category` extractor、reverse CC 非流式 History 保真各自的既有 mutation control 结论不变。最终全量验证见本节后续提交记录。
 
+### T4.1 —— 合并态 HIGH：reverse `@messages` 非流式 refusal 裁决统一 ✅ 已完成
+
+合并态复审确认 Chat Completions / Responses / Gemini 三条 reverse `@messages` 非流式 route 只以 `anthropicNonStreamingTruncation(stop_reason)` 决定 fail/complete；`"refusal"` 是有效终止符，导致 contentless refusal 被 `ctx.complete()`，产生 History / stats / telemetry / TUI 与 refusal 诊断互相矛盾的成功口径。
+
+本批复用 `recover-refusal.ts` 的 `isContentlessRefusalResponse()`（其内部唯一复用 `hasClientVisibleContent()`），三条 route 命中时统一用 `refusalSummary()` 作为 failureReason，记录 `refusal-passthrough`，并以 `{upstreamSucceeded:true}` 保持上游 200 腿 `success:true`。`tests/routes/reverse-contentless-refusal.it.test.ts` 对三条真实 HTTP 路径逐条断言请求 `failed`、feature、failureReason、raw `stopDetails` 与上游成功；初始 RED 为 3/3 收到 `completed`，实现后 3/3 GREEN。mutation control 临时摘掉三处 settle gate 后 3/3 重新收到 `completed` 并变红，恢复后重新转绿。架构守卫 `circular-deps-ratchet` 通过；共享谓词留在已有 rewrite 模块，没有向零依赖叶子 `refusal-detail.ts` / `refusal-policy.ts` 引回依赖。
+
+本批没有实现 reverse 非流式的客户端抑制，只闭合裁决口径；完整跨协议 suppression 已同步记入 `docs/refusal-recovery.md` 已知缺口与 `docs/todo/deferred-backlog.md`。
+
 ### T5 —— 收尾
 
 - 改写 [docs/refusal-recovery.md](../refusal-recovery.md)（现状契约仍写「thinking-only」「默认 error」，已与代码不符）。
