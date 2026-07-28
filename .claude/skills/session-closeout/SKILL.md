@@ -7,7 +7,7 @@ description: 当 copilot-api-js 会话/阶段收尾时使用——交付、汇�
 
 收尾 == “完成”的一部分：按序走完下面六步、**无需用户提醒**（CLAUDE.md `session-closeout` 明写「按序做完无需提醒」，最易漏的正是它——「能复述规则 ≠ 落笔前过了一遍」）。CLAUDE.md `session-closeout` 是 always-on 触发器（六步名 + 指向本 skill）；本 skill 是每步 how-to、判定纪律与模板（[complete-plan.md](complete-plan.md) / [handover.md](handover.md)）的**单一源**。战例（why/失败形态）在各 `feedback-*` 记忆，本 skill 只放 how-to。
 
-**唯一的顺序例外：触发原因是「上下文将满」时，§6 先做、其余顺延。** 交接是六步里**唯一不可重做**的产物——§1–§5 的成果丢了下个会话还能重来，交接丢了整轮工作无人接得上；而 §1（派 subagent 并逐条复核 `file:line`）与 §2（跨文档 grep）恰是六步里上下文开销最大的两步，按序走必然烧光预算走不到 §6。先把 HANDOVER/KICKOFF 落盘提交，再按剩余预算回头补 §1–§5，补不完的作为待办写进 HANDOVER。
+**唯一的顺序例外：触发原因是「上下文将满」时，§6 先做、其余顺延。** 交接是六步里**唯一不可重做**的产物——§1–§5 的成果丢了下个会话还能重来，交接丢了整轮工作无人接得上；而 §1（派 subagent 并逐条复核 `file:line`）与 §2（跨文档 grep）恰是六步里上下文开销最大的两步，按序走必然烧光预算走不到 §6。先把 HANDOVER/KICKOFF 落盘提交（**头部状态标「草稿·未评审」**——未评审的档案不自报，接手方会当成已核验的），再按剩余预算回头补 §1–§5，补不完的作为待办写进 HANDOVER。
 
 **用完本 skill 欠一笔账**：文末「自验」节列着若干条**尚未被实战检验**的断言，验法都是你走流程时顺手就能观察到的。走完收尾后，至少给你能观察到的那几条各往 [verification-log.md](verification-log.md) 写一行。这是这份 skill 唯一的实战反馈通道——静态自洽已被跨模型评审确认，**它在真实压力下会不会被照做只能靠那里累积**。
 
@@ -58,7 +58,7 @@ description: 当 copilot-api-js 会话/阶段收尾时使用——交付、汇�
 - **KICKOFF** = 能整段复制成新会话第一条消息的提示词（user-rule `40-dev-workflow`：*for the user to copy*）：只放**启动前的 gate、第一步动作、批准状态、指向 HANDOVER 的小节号**。
 - **允许的重复只有一种**：一个执行 gate 可以逐字重复（指针形式容易被跳过），但该 gate 的**理由、命令细节、数字、后续步骤只留在 HANDOVER**。
 
-**位置**：`docs/plan/<date>-<topic>/HANDOVER.md` + `KICKOFF.md`（目录式）。本仓另有一批历史扁平式命名（`<date>-handover-<topic>.md`、`<topic>-kickoff.md`、`HANDOFF.md` 三种混用）——**目录式是新约定，旧的不追溯迁移**（MEMORY.md 多条指针指向扁平式路径，迁了会全断）。**在主树直接改并即时提交**——入口文档滞留在特性分支上等于没写（与 CLAUDE.md `docs-merge-before-execute` 同源）。**代码改动才进隔离 worktree**：命令与技法以 skill `git-preference:isolating-from-a-shared-git-worktree` 为准（勿在此复制），只记本仓的两条实测——`.worktrees/` 建在仓库内部、**向上解析主树 `node_modules`，不是依赖隔离环境**；真正会咬的是新树缺 gitignored 构建产物导致的稳定假红（见 [[reference-worktree-bun-add-needs-main-tree-install-after-merge]]）。
+**位置**：`docs/plan/<date>-<topic>/HANDOVER.md` + `KICKOFF.md`（目录式）。本仓另有一批历史扁平式命名（`<date>-handover-<topic>.md`、`<topic>-kickoff.md`、`HANDOFF.md` 三种混用）——**目录式是新约定，旧的不追溯迁移**（MEMORY.md 多条指针指向扁平式路径，迁了会全断）。**在主树改、不进特性分支**——入口文档滞留在特性分支上等于没写（与 CLAUDE.md `docs-merge-before-execute` 同源）。**提交时机以模板的落盘闭环为准**：正常路径是评审放行后与评审报告、`docs/` 入口一次精确 pathspec 提交；只有「上下文将满」的紧急路径才即时提交（且头部须标「草稿·未评审」）。**代码改动才进隔离 worktree**：命令与技法以 skill `git-preference:isolating-from-a-shared-git-worktree` 为准（勿在此复制），只记本仓的两条实测——`.worktrees/` 建在仓库内部、**向上解析主树 `node_modules`，不是依赖隔离环境**；真正会咬的是新树缺 gitignored 构建产物导致的稳定假红（见 [[reference-worktree-bun-add-needs-main-tree-install-after-merge]]）。
 
 **HANDOVER 必含**（缺一条就会让接手会话重走弯路）：
 
@@ -110,7 +110,7 @@ description: 当 copilot-api-js 会话/阶段收尾时使用——交付、汇�
 | V8 | 分派正交视角比派两个泛读的**带来增量覆盖** | 每个视角是否**执行了 prompt 指定的方法**；各自**独有**且会改变执行动作的 BLOCKER/MAJOR 有几条；**某个视角若不派，会漏掉什么** | 某视角未执行其指定方法，或**同一产物类型连续 3 次**（与本表毕业阈值同）没有任何独有且改变动作的发现——别拿 HANDOVER 的观测去取消 spec 的视角。**重叠只记数据、不设阈值**——两个正交视角从不同路径撞见同一个致命问题，是结论稳健的证据，不是失败 |
 | V9 | 「每条新判据写鉴别力正控」**改变了判据的写法** | 数交接里的新 detector/oracle：几条写明了目标变异？**已实现的**有没有记录「变异后真的变红」的观测？未实现的有没有明确留成执行期 gate？ | 三种都算证伪：① 判据只有「它专门咬 X」这类意图声明而无目标变异；② **已实现却没有「变异后真的变红」的观测**；③ 未实现且未留执行期正控 gate。⚠️ **写了一句变异 ≠ 鉴别力已验证**——形式合规与主张成立是两件事 |
 | V10 | 「与冻结上游文档对账」**会被触发** | 候选上游文档（CLAUDE.md 文档路由 + 现有 plan 的引用 + DESIGN 活路径 + backlog 条目，`rg` 只做补漏）是否**逐份 disposition**？检索词与范围是否落盘？ | 已引用/已命中的上游文档未对账，或声称「无冲突」却没有检索证据。⚠️ **单关键词空结果不能支持「无」**——主题会改名、旧文档只出现旧方案术语 |
-| V7 | 闭环的两个提交时点**都被照做** | **机械判定，不靠自我报告**，两次 `git status --porcelain` 取交集：① **起草前**——交接要引用的**既有**研究/探针/实现产物是否已提交；② **最终提交后**——HANDOVER、KICKOFF、本轮各评审报告、`docs/` 入口是否都在该提交里、相关路径不再 dirty/untracked | ①「起草时引用了未提交的既有产物」；②「最终提交漏掉闭环产物」。⚠️ 评审报告在起草**之后**产生，整改期间未提交是**合法的**，别按①判红。这是 §6 的**起源事故**（三份研究报告差点丢），最该被机械盯住 |
+| V7 | 闭环的两个提交时点**都被照做** | **机械判定，不靠自我报告**：① **起草前**——`git status --porcelain -- <交接要引用的既有产物路径>` 为空（证明它们已不在工作区待提交状态）；② **最终提交后**——`git diff-tree --no-commit-id --name-only -r HEAD` 的输出**包含**两份文档 + 本轮各评审报告 + `docs/` 入口的每一个路径。⚠️ **②不能用 `git status`**：它比的是工作区相对 HEAD，**证不了文件在这个提交里**（几个提交前入库、本次漏提，status 照样干净）| ①「起草时引用了未提交的既有产物」；②「最终提交漏掉闭环产物」。⚠️ 评审报告在起草**之后**产生，整改期间未提交是**合法的**，别按①判红。这是 §6 的**起源事故**（三份研究报告差点丢），最该被机械盯住 |
 
 **定期度量（非自验，不适用毕业规则）**：新交接带状态行的比例。分母只取**本约定生效后新建的**交接（`git log --diff-filter=A --since=2026-07-28 -- docs/plan/` 里 `*handover*/*handoff*/*kickoff*` 且 `! -iname '*review*'`），判据是「**新建交接合规率 < 100% 即说明规则没落地**」。**不要用全仓比例**——§6 明写「旧的不追溯迁移」，三十多份历史文档被政策豁免、永远没有状态行，全仓比例长期不动是政策的必然结果，拿它当证伪判据会去修一条没坏的规则。全仓基线仅供参考：2026-07-28 用 `find docs/plan -iname '*handover*.md' -o -iname '*handoff*.md' -o -iname '*kickoff*.md'` 逐个 `head -8` 找状态词，得 17/47（含 3 份评审报告的噪声）。
 
