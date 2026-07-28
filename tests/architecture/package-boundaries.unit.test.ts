@@ -6,10 +6,20 @@ import {
 } from "bun:test"
 import {
   //
+  mkdirSync,
+  mkdtempSync,
+  realpathSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs"
+import {
+  //
   readdir,
   readFile,
 } from "node:fs/promises"
+import os from "node:os"
 import path from "node:path"
+import ts from "typescript"
 
 import {
   //
@@ -127,13 +137,49 @@ function telemetryForbiddenSpecifiers(source: string, fileName = "telemetry.ts")
 const STATE_UNIT_ENTRIES = ["state.ts", "state-defaults.ts", "state-vocabulary.ts"]
 const FOUNDATION_SRC = path.join(repoRoot, "packages/foundation/src")
 
-/** Resolve a relative specifier the way the bundler does: `./x` → `./x.ts`, else `./x/index.ts`. */
-async function resolveRelative(fromFile: string, specifier: string): Promise<string | undefined> {
-  const base = path.resolve(path.dirname(fromFile), specifier)
-  for (const candidate of [base, `${base}.ts`, path.join(base, "index.ts")]) {
-    if (await Bun.file(candidate).exists()) return candidate
-  }
-  return undefined
+/**
+ * The project's own compiler options, so this guard resolves specifiers with EXACTLY the semantics
+ * `tsc` uses. Read once — resolution happens per edge of the closure.
+ *
+ * `convertCompilerOptionsFromJson`, not `parseJsonConfigFileContent`: the latter also expands the
+ * `include` globs (1208 files, ~380ms measured here) and this guard runs inside the 16-way sharded
+ * unit tier, where that is most of the default 5s budget. The root tsconfig has no `extends`, so
+ * converting its `compilerOptions` block loses nothing.
+ */
+const compilerOptions = ((): ts.CompilerOptions => {
+  const configPath = path.join(repoRoot, "tsconfig.json")
+  const raw = ts.readConfigFile(configPath, ts.sys.readFile)
+  const converted = ts.convertCompilerOptionsFromJson((raw.config as { compilerOptions?: unknown }).compilerOptions, repoRoot, configPath)
+  if (converted.errors.length > 0) throw new Error(`tsconfig.json compilerOptions failed to parse: ${converted.errors.map((e) => e.messageText).join("; ")}`)
+  return converted.options
+})()
+
+/**
+ * Resolve a specifier to a CANONICAL (symlink-free) absolute path, or `undefined`.
+ *
+ * Two deliberate choices, each replacing a hand-rolled version that looked equivalent and was not:
+ *
+ *  - **TypeScript's resolver, not a candidate table.** The previous `[base, base + ".ts",
+ *    base + "/index.ts"]` rejected `./x.js`, which under `moduleResolution: "Bundler"` legally
+ *    resolves to `x.ts` (the Node-ESM habit) and type-checks fine — so the guard failed on CORRECT
+ *    code, the more expensive direction of wrong. `.tsx`/`.mts`/`.cts` were missing for the same
+ *    reason, and extending the table would only have moved the next gap. Sharing `tsc`'s resolver
+ *    means the guard cannot disagree with the compiler about what a specifier denotes.
+ *  - **`realpathSync`, so containment is about the FILE, not the spelling.** A symlink under
+ *    `packages/foundation/src` pointing at a core file has a lexical path inside the package and an
+ *    identity outside it; comparing spellings would call that clean. Canonical paths also make
+ *    `seen` terminate a symlinked directory cycle, instead of walking an ever-growing path until
+ *    the filesystem errors out.
+ */
+function resolveSpecifier(fromFile: string, specifier: string): string | undefined {
+  const resolved = ts.resolveModuleName(specifier, fromFile, compilerOptions, ts.sys).resolvedModule?.resolvedFileName
+  return resolved === undefined ? undefined : realpathSync(resolved)
+}
+
+/** Is `target` (already canonical) inside `root`? `root` is canonicalised here for the same reason. */
+function containedIn(root: string, target: string): boolean {
+  const relative = path.relative(realpathSync(root), target)
+  return relative !== "" && !relative.startsWith("..") && !path.isAbsolute(relative)
 }
 
 /**
@@ -170,12 +216,12 @@ async function stateUnitClosureViolations(): Promise<Array<string>> {
         violations.push(`${relativeTo} → ${specifier} (not a node: builtin)`)
         continue
       }
-      const resolved = await resolveRelative(file, specifier)
+      const resolved = resolveSpecifier(file, specifier)
       if (resolved === undefined) {
         violations.push(`${relativeTo} → ${specifier} (unresolvable)`)
         continue
       }
-      if (!resolved.startsWith(`${FOUNDATION_SRC}${path.sep}`)) {
+      if (!containedIn(FOUNDATION_SRC, resolved)) {
         violations.push(`${relativeTo} → ${specifier} (relative path ESCAPES the package, resolves to ${path.relative(repoRoot, resolved)})`)
         continue
       }
@@ -229,6 +275,39 @@ describe("state unit: only language/system builtins", () => {
     expect(stateUnitForbiddenSpecifiers('const x = await import("lodash")')).toEqual(["lodash"])
     expect(stateUnitForbiddenSpecifiers('import x = require("lodash")')).toEqual(["lodash"])
     expect(stateUnitForbiddenSpecifiers('type T = import("~/lib/error").HTTPError')).toEqual(["~/lib/error"])
+  })
+
+  // 解析器的两条自证。它们针对的是**守卫自身**可能出的两种错，方向相反：
+  //   ① 对合法代码假红（`.js` specifier）—— 手写候选表犯的就是这个，且不会有人来救：架构测试红了，
+  //      正常反应是改代码去迁就守卫，而不是怀疑守卫。
+  //   ② 对越界代码假绿（symlink 实体在包外）—— 词法比较看不见，而这是守卫存在的全部理由。
+  test("解析器与 tsc 同构：`.js` specifier 在 Bundler 模式下解析到 `.ts`，不算 unresolvable", () => {
+    const stateTs = path.join(FOUNDATION_SRC, "state.ts")
+    const expected = realpathSync(path.join(FOUNDATION_SRC, "state-defaults.ts"))
+    expect(resolveSpecifier(stateTs, "./state-defaults"), "无扩展名形态").toBe(expected)
+    expect(resolveSpecifier(stateTs, "./state-defaults.js"), "`./x.js` → `x.ts` 是 moduleResolution: Bundler 的合法写法，typecheck 通过，守卫就不能报 unresolvable").toBe(
+      expected,
+    )
+    expect(resolveSpecifier(stateTs, "./does-not-exist")).toBeUndefined()
+  })
+
+  test("containment 判断实体而非拼写：指向包外的 symlink 必须算越界", () => {
+    // 在临时目录里造真 symlink，不动被测仓库。
+    const tmp = realpathSync(mkdtempSync(path.join(os.tmpdir(), "state-containment-")))
+    const inside = path.join(tmp, "pkg/src")
+    mkdirSync(inside, { recursive: true })
+    mkdirSync(path.join(tmp, "outside"), { recursive: true })
+    writeFileSync(path.join(tmp, "outside/core.ts"), "export const x = 1\n")
+    writeFileSync(path.join(inside, "sibling.ts"), "export const y = 1\n")
+    writeFileSync(path.join(inside, "entry.ts"), 'export * from "./link"\nexport * from "./sibling"\n')
+    symlinkSync(path.join(tmp, "outside/core.ts"), path.join(inside, "link.ts"))
+
+    const entry = path.join(inside, "entry.ts")
+    const viaSymlink = resolveSpecifier(entry, "./link")
+    expect(viaSymlink, "symlink 的词法路径在包内，实体在包外——canonical 化后必须现形").toBe(path.join(tmp, "outside/core.ts"))
+    expect(containedIn(inside, viaSymlink!)).toBe(false)
+    // 正控：同一个判据对真正的包内文件必须放行，否则「红了」只说明它对一切都红。
+    expect(containedIn(inside, resolveSpecifier(entry, "./sibling")!)).toBe(true)
   })
 })
 
