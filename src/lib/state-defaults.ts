@@ -6,6 +6,14 @@
  * singleton. state.ts imports and re-exports it, so existing `import { CONFIG_MANAGED_DEFAULTS }
  * from "~/lib/state"` sites keep working. Type-only imports are erased at runtime
  * (verbatimModuleSyntax), so there is no runtime cycle with state.ts.
+ *
+ * Its two remaining VALUE edges point at zero-import leaves on purpose (`anthropic/refusal-policy`,
+ * `anthropic/sanitize/separator-carrier`): a leaf has no out-edges, so depending on it cannot close
+ * a cycle. Both defaults used to be read from their domain's full module, and that alone kept
+ * `state` + `state-defaults` inside 52 and 50 of the repo's 70 import cycles — measured 70/63 → 30/43
+ * after the redirect. **Any new value import here must also be a leaf**;
+ * `tests/architecture/state-defaults-value-owners.unit.test.ts` enforces it. See
+ * docs/plan/2026-07-28-state-to-foundation/HANDOVER.md.
  */
 
 import type {
@@ -22,8 +30,8 @@ import {
   DEFAULT_REFUSAL_END_TURN_TEXT,
   DEFAULT_REFUSAL_ERROR_MESSAGE,
   DEFAULT_REFUSAL_ERROR_TYPE,
-} from "~/lib/anthropic/recover-refusal"
-import { DEFAULT_SEPARATOR_CARRIER } from "~/lib/anthropic/sanitize/block-layout-contract"
+} from "~/lib/anthropic/refusal-policy"
+import { DEFAULT_SEPARATOR_CARRIER } from "~/lib/anthropic/sanitize/separator-carrier"
 
 import type {
   //

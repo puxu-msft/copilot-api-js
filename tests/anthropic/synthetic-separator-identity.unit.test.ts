@@ -32,7 +32,11 @@ import {
 import { stripAllThinking } from "~/lib/anthropic/strip-all-thinking"
 
 const text = (t: string): ContentBlockParam => ({ type: "text", text: t }) as ContentBlockParam
-const OWNERS = new Set(["src/lib/anthropic/sanitize/block-layout-contract.ts", "src/lib/anthropic/sanitize/assistant-block-layout.ts"])
+const OWNERS = new Set([
+  "src/lib/anthropic/sanitize/separator-carrier.ts",
+  "src/lib/anthropic/sanitize/block-layout-contract.ts",
+  "src/lib/anthropic/sanitize/assistant-block-layout.ts",
+])
 /** 2026-07-27 更名前唯一的拼法；客户端历史里仍可能带着它。 */
 const LEGACY_SPELLING = "[copilot-api: thinking separator]"
 
