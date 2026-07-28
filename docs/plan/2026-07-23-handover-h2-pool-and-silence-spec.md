@@ -26,7 +26,7 @@
 - **worktree / 分支**：`.worktrees/upstream-silence-recovery` @ `feat/upstream-silence-recovery`（从 master `5874ea78` 起，node_modules 已软链）。**未合回 master**——按 SDD 纪律全阶段 + 终审后再 ff 合并。
 - **进度 ledger**：`.worktrees/upstream-silence-recovery/.superpowers/sdd/progress.md`（gitignored；含阶段 DAG + 完成记录）。**接手先读它**，已完成的别重派。
 - **已完成**：
-  - ✅ **B1**（plan-1，commits `5874ea78..31ba4a60`）——拆 commit-window clamp + ceiling→125s（Q1 实测下界）+ 独立告警抑制标志（异模型 review 抓的 Important，已 TDD 回归修复）。默认值 `streamCommitAfterSec` 仍 20（首失败点待补测再定）。test:backend 6346 pass。
+  - ✅ **B1**（plan-1，commits `5874ea78..31ba4a60`）——拆 commit-window clamp + ceiling→125s（当时的 Q1 实测下界；**2026-07-28 已改为 240，默认值 20→180**）+ 独立告警抑制标志（异模型 review 抓的 Important，已 TDD 回归修复）。默认值 `streamCommitAfterSec` 仍 20（首失败点待补测再定）。test:backend 6346 pass。
   - ✅ **B2-P0**（plan-2 Task 0.1 + 0.7，commits `31ba4a60..31c503f4`）——配置骨架 `precontent_recovery.enabled`（默认 true、**未接线**）+ telemetry outcome 计数器（镜像 continuation）。异模型 review 0 blocker、全仓 grep 证零执行路径消费者（零行为变化）、config.schema.json regenerate 零差异、union 穷尽 6 站点全补。test:backend 6351 pass。
   - ✅ **B2 Task 0.2**（plan-2 Task 0.2，commit `a819834f`）——**delivery-level semantic-content gate（承载对抗审 CRITICAL 修法）**：gate 读 `hasEmittedRealClientContent`（**非** `boundary.result`——后者只在 `content_block_stop` 翻转、会漏「delta 已发 stop 未到」窗口致重复内容），翻转**复用既有** `onFirstRealContent` seam（`isClientContentFrame` 驱动、只数非-synthetic、只一次、live/buffered 共用）。CRITICAL 修法经主会话 + 异模型 reviewer **双重独立核实正确**（synthetic 帧不翻转 gate、CRITICAL 回归非假绿）。**未接线**（P4/P5 才接）、零行为变化。test:backend 6359 pass。
   - ✅ **B2 Task 0.3**（commit `eff92dc0`）——`coordinator.runRecoveryFromPreReadyFailure`（镜像 runHedge、parent-less、at-most-once、**不 settle parent**——primary 已自行 settle failed；有解释注释）。异模型 review 0 blocker、budget-shared 断言非重言。test:backend 6362 pass。

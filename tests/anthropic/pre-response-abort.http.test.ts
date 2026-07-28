@@ -96,7 +96,7 @@ describe("pre-response client abort → aborted + 499 (②)", () => {
 
   test("streaming, client gone pre-response → 499 + history state 'aborted' (NOT 'failed')", async () => {
     const res = await postStreaming()
-    // The delayed-commit window (default 20s) holds the stream un-opened; a pre-response client
+    // The delayed-commit window (default 180s since 2026-07-28) holds the stream un-opened; a pre-response client
     // disconnect settles within the window → settled path → 499 + `aborted` terminal (NOT failed),
     // not a committed 200. The `aborted` terminal proves ②'s ctx.abort() fired, not ctx.fail().
     expect(res.status).toBe(499)

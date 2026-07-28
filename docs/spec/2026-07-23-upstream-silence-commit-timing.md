@@ -54,7 +54,7 @@ first = await Promise.race([ p.then(()=>"upstream"), windowFired(20s) ])
 if (first === "upstream") → runUpstreamSettledPath()   // 转发真实 HTTP 状态，保native retry
 else                       → COMMIT: 200 + keepalive    // 合成脚手架，post-commit 只能补 SSE error
 ```
-其中 `p = driver.runRequest(...)`（`handler-v4.ts:426`），窗口 = `state.streamCommitAfterSec * 1000`（默认 20，schema clamp < 60，`schema.ts:630-635` / `state.ts:1891`）。
+其中 `p = driver.runRequest(...)`（`handler-v4.ts:426`），窗口 = 从**请求 ingress** 起算的 deadline（`state.streamCommitAfterSec * 1000` 减去 pre-handler 已耗时；默认 **180**，clamp 上限 `COMMIT_WINDOW_MAX_SEC = 240`）。**注**：本段原写「默认 20，schema clamp < 60」，2026-07-28 起已不成立。
 
 ### 2.2 `p`（runRequest）在**上游响应头到达**时 resolve —— 而非首帧、非 message_stop
 
@@ -211,7 +211,7 @@ commit 的真正代价**不是**「锁定了内容」，而是「锁定了 **HTT
 
 ## 7. 与既有机制的交互
 
-- **delayed-commit（`streamCommitAfterSec`）**：B1 直接调其值 + clamp 上限（当前 clamp < 60，`schema.ts`）；B2 在 COMMIT 分支的 post-commit catch（`handler-v4.ts:634-699`）里新增「pre-content 失败 → 内部重试 splice」路径。
+- **delayed-commit（`streamCommitAfterSec`）**：B1 直接调其值 + clamp 上限（**2026-07-28 已落地：默认 180、`COMMIT_WINDOW_MAX_SEC = 240`**；原文的「当前 clamp < 60」已过时）；B2 在 COMMIT 分支的 post-commit catch（`handler-v4.ts:634-699`）里新增「pre-content 失败 → 内部重试 splice」路径。
 - **CC 两层 watchdog**：B1 的窗口上限由 CC pre-header 容忍度（**2026-07-27 已实测 ≈300s**，归 undici 默认 `headersTimeout`；非 60s SSE byte-idle —— 那层在 commit 后才生效，见 §8 Q1）决定；commit 后决策 1 的 empty_text 无条件保活继续压住 60s/300s 两层（不变）。
 - **keepalive sink / anchor**：**仅 `empty_text` 模式**才需 anchor 的 index-remap（真实块落 index+1、锚点收口）；默认 `ping` 不需 remap、`enveloped_ping` 只需 message_start dedup（§6.1 三模式 contract 表、SDK 探针实测）。**anchor remap 不是 B2 的通用前提**。
 - **决策 2 的 pre-commit network-retry**：只在 commit 前起作用（保原生状态）；B1 加宽窗口 = 扩大决策 2 的有效区间。
