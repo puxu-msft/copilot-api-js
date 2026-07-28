@@ -1,16 +1,18 @@
 # 计划：下一步解环 —— 词汇层剥离 + barrel 纪律（第四次剥离的前置）
 
-> **状态**：草稿·已过一轮执行方视角评审并整改，**待第二视角（判据证伪）复审 + 用户裁决 §5** 后定稿。
+> **状态**：草稿·已过两个视角评审并整改，**待用户裁决 §5 + 一轮复审**后定稿。
 > **核验基线**：`65c5654c`（分支 `feat/state-foundation` 的 tip，2026-07-28）。**不是 master**——state→foundation 由同伴正在收尾、尚未合回主线。**开工位置与前提复算见 §7，别直接在 master 上照本文数字执行。**
 > **工作区**：本文档在主树写、即时提交。
 > **已跑门禁**：`computeCircularSnapshot()` 实测（§2）。**typecheck / 测试未跑**——PoC 只改 import 指向来量环，不构成可交付实现。
-> **评审**：[执行方视角报告](2026-07-28-vocabulary-leaves-review-claude.md)（3 BLOCKER / 3 MAJOR / 5 MINOR / 2 NIT，**全部采纳**）。本版是整改后的第 2 版。
+> **评审**：两个正交视角，**全部发现均已采纳、无一驳回**——[执行方视角](2026-07-28-vocabulary-leaves-review-claude.md)（3 BLOCKER / 3 MAJOR / 5 MINOR / 2 NIT）+ [判据证伪视角](2026-07-28-vocabulary-leaves-review-gpt.md)（0 BLOCKER / 7 MAJOR / 2 MINOR，四个数字独立复现一致）。本版是第 3 版。
 
 ## 1. 结论先行
 
-**下一步最高价值的动作不是「再拆一个包」，而是把 core 里的词汇类型剥成叶子、并给 barrel 立规矩。** 实测它一步把环从 **43 削到 19**；而 backlog 里排在「state 第一」之后的 vendor 纵切（anthropic/openai/gemini），在当前图里**根本不是承重点**——那份排序写于 state 剥离之前，前提已经变了。
+**下一步最高价值的解环动作不是「再拆一个包」，而是把 core 里的词汇类型剥成叶子、并给 barrel 立规矩。** 实测它一步把环从 **43 削到 19**。
 
-我知道这与「规划下一步拆包」的字面要求有出入，所以把话说清楚：**这一步做完，vendor 纵切才拆得动**；不做，它会像 state 当年一样「day-1 走不通」。
+关于 backlog 里排在「state 第一」之后的 vendor 纵切（anthropic/openai/gemini），**只能说这一条经实测的窄结论**：三个 vendor 目录**当前完全不参与 SCC**（cycles=0、members=0），因此**本轮的减环收益为 0**。
+
+> ⚠️ **第 1 版在这里写了「不做 N1–N3，vendor 纵切 day-1 走不通」——那是没有证据的因果断言，已删除。** 「当前不是承重点」与「当前拆不动」是两个命题，现有数据只支持前者；而 vendor 对 core 的出边（`gemini/convert-stream → history/types`、`openai/upstream-ws-attempt → pipeline/types`、`anthropic/tool-input-repair-stats → context/types` 等）**多数不会因 N1/N2 而消失**。要主张先后顺序，须补一个最小 vendor extraction PoC（枚举全部出边 + 分类可注入/可下沉/必须留 core + 实测 N1–N3 前后差集）。**在那之前，vendor 纵切应视为独立并行单元，不被本计划挡住。**
 
 ## 2. 实测（分支 tip `65c5654c`，post-state）
 
@@ -27,9 +29,9 @@
 
 **这些 PoC 没有证明什么**：只改了 import 指向与类型副本，**没有** typecheck 绿、**没有**测试绿、**没有**处理 owner 侧 re-export 与重复定义。A 用的是**复制**类型定义（真实现必须是搬迁 + owner re-export，否则双份维护）。**B 的 PoC 写法本身是错的**（用了裸包名 `@hsupu/ghc-proxy-foundation`，madge 能解析但 TypeScript 会 TS2305——见 N2）。环数是唯一被证明的东西。
 
-## 3. 承重结构：post-state 的环几乎全由 **type-only 边** 撑着
+## 3. 承重结构：少数几条 type-only 边就能切断多数环
 
-43 个环里有 26 个穿过同一条长环：
+43 个环里有 26 个含相邻边 `context/types → error/index`，其中 **22 个**走下面这条完整主干（另 4 个走 shutdown/ws 或更短的 `context/request` 环）：
 
 ```
 context/types → error/index → error/forward → context/request
@@ -38,7 +40,9 @@ context/types → error/index → error/forward → context/request
   → pipeline/frame-origin → pipeline/types → context/types
 ```
 
-逐条看那些边引用的是什么，全是 `import type`。它们分成两类，**修法完全不同**：
+**⚠️ 措辞更正（第 1 版写错）**：不是「这条长环全是 type-only 边」。实测 43 个环里**只有 1 个**全部由 type-only 边构成，其余 42 个**都含 value edge**——上面链条里 `buffered-merge-reducer → pipeline/frame-origin` 是值 import（`tagFrameSynthetic`）、`error/index → error/forward` 是值 re-export。正确的说法是：**多数环可以被少数几条 type-only 边切断**——「环的组成」与「我们选来切的那条边」是两回事。混淆它们会诱导执行者对真正的 value edge 也用「搬类型」这一招。
+
+本轮选来切的 cut edge 分两类，**修法完全不同**：
 
 ### 3.1 【A 类】诊断/词汇类型被**实现模块**拥有
 
@@ -48,7 +52,7 @@ context/types → error/index → error/forward → context/request
 
 **这与上一轮 state 的承重边是同一个形状**：`state-defaults.ts` 为了三个字符串常量 import `recover-refusal.ts`。**产物类型跟着产它的代码走，是自然而然写出来的，也正是环的来源。**
 
-实测这些类型各自只有 **3–5 个消费文件**、**零测试文件消费**——爆炸半径极小，与它们撑起的 24 个环完全不成比例。
+实测这些类型各自只有 **3–4 个域外消费文件**（原文的「3–5」把 owner 自身算进去了）、**零测试文件消费**——爆炸半径极小，与它们撑起的 24 个环完全不成比例。
 
 ### 3.2 【B 类】类型经 **barrel** 取，而 barrel 同时导出实现
 
@@ -61,19 +65,56 @@ context/types → error/index → error/forward → context/request
 
 ### 3.3 剩余的环（A+B+C 之后的 18 个）
 
-集中在两处，**都不是 type-only，需要真设计**：
+**不止两处**（第 1 版写成「集中在两处」，实测不成立）。C 之后打印全部 18 个环，至少有这些**互相独立**的簇：
 
-- `observability/bus ↔ events ↔ context/types`：`events.ts` 是事件目录，天然要引用各域的形状。
-- `history/store → entries → state → observability/bus`：history 内部环 + history 对 observability 的发布依赖。
+| 簇 | 性质 |
+|---|---|
+| `observability/bus ↔ events ↔ context/types` | 事件目录反向依赖域类型——需真设计 |
+| `history/store → entries → state → observability/bus` | history 内部环 + 对 observability 的发布依赖 |
+| `codec/{anthropic,openai-cc,openai-responses}/*-cell ↔ pipeline/cell-assembly` | **三个独立环** |
+| `context/activity-summary ↔ context/request` | context 内部 |
+| `history/v3/projection ↔ history/v3/store` | History V3 内部 |
+| `pipeline/rewrite-registry ↔ pipeline/types` | pipeline 内部 |
+| `transport/http2-client ↔ transport/upstream-fetch` | transport 内部 |
+| `tui/render/detail ↔ tui/render/panel` | TUI 内部 |
+| `error/index → error/forward` | base 29 环 → A 后 5 → B/C 后 4 |
 
-**本计划不处理这两处**，留给下一轮（见 §6）。
+**本计划一处都不处理**，留给下一轮（见 §6）。**下一轮别按「只剩两处」设计**——那样做完仍会剩下 codec / transport / TUI / pipeline 好几簇。
 
 ## 4. 提议的执行顺序
 
 > 通用不变量（每 commit）：typecheck 绿 + `bun run test:backend` 绿 + 精确 pathspec lint 绿。
 > **SCC 数字一律 `computeCircularSnapshot()` 实测**，禁止从 `circular-deps-baseline.json` 的环列表推算。
 
-### N1 —— 建词汇叶子，搬四个诊断类型　【**Blocked on §5-1**：落点未裁决前不得开工】
+### N0 —— 先修 ratchet 的数学对象（**N1 的前置，且是一条既有缺陷**）
+
+> 这一步不是本计划原有的，是判据证伪视角实测揪出来的。**它修的是既有基建，不是我引入的问题**——但不修，N1 的门禁会以一种无法解释的方式变红。
+
+**问题**：`circular-deps-ratchet` 比较的是 `computeCircularSnapshot()` 产出的 **canonical cycle 字符串集合**，而这个集合**对删边不单调**：
+
+- `graph.circular()` 是**非完备枚举**。snapshot 只把「起点旋转」规范化了（源码注释明说是为了「madge 从不同起点列同一个环」），但删掉一条边后，madge 会**改选此前根本没被列出的既存环**作为输出——于是凭空冒出「新环」。
+- **实测**：N1 的 PoC 相对基线 `newCycles=4`（`newMembers=[]`）。这 4 个不是新造的依赖环，是重新枚举的产物。而 ratchet 断言 `expect(newCycles).toEqual([])` → **对一个纯粹的改进变红**。
+- **计数同样不可靠**：实测 B→C 两侧 `count` 都是 **18**，实际是 **6 出 6 进**（`removedCycles=6, addedCycles=6, sameSet=false`）。同一个数字完全掩盖了集合的整体置换。
+
+**两条判据都不成立**——这一点值得单独记：我在别处一直主张「计数换集合差」，但**集合差只在集合本身良定义且稳定时才更强**；当底层枚举本身不完备、不规范时，集合差继承了它的不稳定性。
+
+**做什么**：把 ratchet 的比较对象换成**对删边单调**的量。推荐从 madge 的依赖图直接算：
+
+- **SCC 成员集**（哪些文件在环里）——删边只会让它缩小；
+- **SCC 内部有向边集**（环内部的边）——删边只会让它缩小。
+
+对这两个集合做差，断言「无新增成员、无新增 SCC 内边」。
+
+**鉴别力正控（三条，缺一不可）**：
+
+1. 新增一条 SCC 内的回边 → **必须红**；
+2. 删掉一条边、即使 cycle 枚举整体重排 → **必须绿**（这条正是现有守卫失败的地方）；
+3. 一删一增、使 count 不变 → **必须红**（这条正是计数失败的地方）。
+
+**为什么必须排在 N1 前面**：不修 N0 就做 N1，你会得到「环从 43 降到 19、但架构守卫红了 4 个新环」这个自相矛盾的局面，而唯一顺手的出路是重冻基线——那等于把「删边导致的重新枚举」和「真新增环」一起闭着眼接受。
+
+### N1 —— 建词汇叶子，搬四个诊断类型　【**Blocked on §5-1**：落点未裁决前不得开工；**前置 N0**】
+
 
 **做什么（三个动作，第 3 条是削环的唯一来源）**：
 
@@ -90,10 +131,10 @@ context/types → error/index → error/forward → context/request
 **验收判据**：
 
 - ① **`history/types.ts` 与 `context/types.ts` 不再 import 那三个 owner 模块**（AST 断言，非 `rg`）——这是 A 类边被切断的直接判据，比环数更贴近目标。
-- ② `computeCircularSnapshot()` 实测**落在 19 环 / 29 成员附近**。**PoC 值，不是保证**；对不上先看判据①是否成立，再按 §7 的前提谓词排查。
+- ② `computeCircularSnapshot()` 实测**落在 19 环 / 29 成员附近**——**这是观测值，不是 gate**。⚠️ **环数与 cycle 字符串集合都不能当正确性判据**（见 N0）：实测 B→C 两侧 count 都是 18，却是 **6 出 6 进**；而 N1 本身会让既有 ratchet 报出 **4 个「新环」**，那是 madge 删边后改选了此前未列出的既存环，**不是真新增**。对不上先看判据①，再按 §7 的前提谓词排查。
 - ③ **叶子零出边**：`allModuleSpecifiers(parseSource(<叶子>))` 为空数组，且**没有任何 barrel re-export 这个叶子**。
 - ④ 三个 owner 的原公共导出路径仍可用；无重复定义。
-- ⑤ **重冻结基线**：跑 `bun run scripts/update-circular-deps-baseline.ts`，把 `tests/architecture/circular-deps-baseline.json` 与代码改动**放进同一个提交**。⚠️ **不重冻结，后面所有 ratchet 判据都在跟一个仍含那 24 个环的陈旧集合比较，护栏对刚打下的战果完全无感。**
+- ⑤ **重冻结基线**：跑 `bun run scripts/update-circular-deps-baseline.ts`，把 baseline 与代码改动**放进同一个提交**。⚠️ 两件事：**(a)** 不重冻结，后面所有 ratchet 判据都在跟一个仍含那 24 个环的陈旧集合比较，护栏对刚打下的战果完全无感；**(b)** **重冻结前必须先做 N0**——否则你是在一个「4 个新环」的红上重冻，等于把「删边导致的重新枚举」和「真新增环」一起接受了，而你无法区分它们。
 - ⑥ 全后端绿。
 
 **鉴别力正控**（每条判据都要有一个「什么变异让它红」）：
@@ -119,7 +160,8 @@ context/types → error/index → error/forward → context/request
 
 1. 对**名单内的 barrel**，用 `parseSource` 枚举它自身的 `export … from "X"` 子句 → 得到「名字 → 真正的 owner specifier」映射（**只需读 barrel 一个文件**；两个目标 barrel 都是 100% 显式具名 re-export，完全可枚举）。
 2. 全仓扫具名 import 子句，凡从该 barrel 取到映射表里的名字即为穿透，报错直接给出「应改指 `X`」。
-3. **`export *` 形态的 barrel（`system-prompt` / `ws` / `models/calibration`）先不列入名单**——它们需要多一跳 `publicExportNames(X)`，本轮不做。
+3. **⚠️ 「全仓无同型穿透」远不止计划列出的两行**：实测两个目标 barrel 当前已有 **43 条 type-only import 声明**。N2 不是「改两条 import 的低风险动作」——它的真实工作量由 §5-2 的两条轴决定，裁决前**不要估工**。
+4. **`export *` 形态的 barrel（`system-prompt` / `ws` / `models/calibration`）先不列入名单**——它们需要多一跳 `publicExportNames(X)`，本轮不做。
 
 **验收判据**：① 守卫测试自身即是「全仓无同型穿透」的可复算命令；② SCC 用 **ratchet 的集合差**（`newCycles` / `newMembers` 为空）——**相对 N1 重冻后的基线**，不是计数。
 
