@@ -61,4 +61,19 @@ describe("wire-index and block-protocol-state producer oracles", () => {
     expect(() => assertBlockProtocolState(sequential)).not.toThrow()
     expect(wireShape(sequential)).toEqual(["real_start@0", "delta@0", "real_stop@0", "real_start@1", "delta@1", "real_stop@1"])
   })
+
+  test("wireShape uses the caller-owned forwarded provenance to label anchor structure", () => {
+    const anchorStart = startFrame(0)
+    const anchorStop = stopFrame(0)
+    const sequential = [anchorStart, deltaFrame(0), anchorStop, startFrame(1), stopFrame(1)]
+    const anchors = new Set([anchorStart, anchorStop])
+
+    expect(wireShape(sequential, { isAnchorFrame: (current) => anchors.has(current) })).toEqual([
+      "anchor_start@0",
+      "delta@0",
+      "anchor_stop@0",
+      "real_start@1",
+      "real_stop@1",
+    ])
+  })
 })

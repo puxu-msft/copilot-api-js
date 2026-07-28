@@ -111,7 +111,7 @@ test("both accept the current sequential shape", () => {
 - [x] **Step 1**：跑全部 touch anchor 的测试文件，记录 pass/fail 数与文件清单（当前 master 实际命中 51 文件）：
 
 ```bash
-bun test $(rg -ln "anchor" tests/ | tr '\n' ' ')
+bun test $(rg -l "anchor" tests/ -g '*.test.ts' | tr '\n' ' ')
 ```
 
 - [x] **Step 2**：把结果（总数 + 任何既有失败）写进本文件的「基线」小节。首跑发现 gated coexist CLI e2e 仍使用退役 hook 接口并期待已被证伪的正向结论；迁到 `hooks.exchange` 后以真实 CLI 结果改成负向 characterization，复跑为 474 pass / 0 fail / 7 skip。

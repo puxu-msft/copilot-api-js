@@ -27,9 +27,9 @@ bun test ./tests/helpers/wire-index-oracle.unit.test.ts ./tests/pipeline/anchor-
 
 - `assertMonotonicWireIndices` 断言全部 `content_block_start` 的 index 严格等于 `[0..n-1]`。
 - `assertBlockProtocolState` 断言任一时刻最多一个块 open，每个 delta/stop 都引用当前 open block，且终局没有悬挂块。
-- `wireShape` 输出可读的 `real_start@N` / `anchor_start@N` / `delta@N` / `*_stop@N` 序列。
+- `wireShape` 输出可读的 `real_start@N` / `anchor_start@N` / `delta@N` / `*_stop@N` 序列；裸 `ClientFrame` 不携带 anchor provenance，因此调用方必须通过 `isAnchorFrame` option 传入 forwarded 记录或 sink-write 侧掌握的身份判定。
 
-正控由 `wire-index-oracle.unit.test.ts` 的重复 index、跳号、双 open、orphan delta、错 index stop、悬挂块和重复 stop 负样本提供。当前 producer 绿基线为 13 tests / 0 failures。
+正控由 `wire-index-oracle.unit.test.ts` 的重复 index、跳号、双 open、orphan delta、错 index stop、悬挂块和重复 stop 负样本提供；另有显式 anchor provenance 正样本证明 `wireShape` 的 anchor 分支可达。当前 helper 绿基线为 9 tests / 0 failures。
 
 ## anchor 套件基线
 

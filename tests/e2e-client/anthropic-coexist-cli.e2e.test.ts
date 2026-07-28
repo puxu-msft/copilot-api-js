@@ -77,7 +77,6 @@ describe.skipIf(!GATED)("client↔proxy CLI e2e (real claude → real proxy → 
       // anchor. This is the empirical rejection of coexistence; production must remain sequential.
       expect(r.numTurns).toBe(1)
       expect(r.result).toBe("")
-      expect(r.result).not.toContain("COEXIST_OK_MARKER")
     } finally {
       proxy?.close()
     }

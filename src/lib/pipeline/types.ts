@@ -687,13 +687,11 @@ export interface ClientSink {
    */
   writeAnchor?(frame: ClientFrame): Promise<void>
   /**
-   * Stop the heartbeat timer WITHOUT closing the sink — `write` stays usable (unlike
-   * {@link close}, which also refuses future ticks). The buffered empty-text-anchor commit /
-   * terminal flush calls this BEFORE its `for (frame of buffer) await write(frame)` loop so a
-   * timer firing mid-flush can't inject a second anchor and collide block indices (spec
-   * 2026-07-08-buffered-keepalive-empty-text-anchor §3.3 C1). Idempotent; a no-op on sinks
-   * whose heartbeat is off (the timer is always undefined). Omitted by sinks with no heartbeat
-   * timer at all (WS/array).
+   * RECOVERABLY stop the currently armed heartbeat timer without closing the sink. A later
+   * {@link resumeHeartbeat} after {@link suspendHeartbeat} MUST be able to arm a fresh interval.
+   * Freeze alone does not fence a tick that was already queued or whose async write is in flight;
+   * recoverable flushes therefore call `suspendHeartbeat()` before freeze. True terminal paths use
+   * {@link close} instead. `write` remains usable throughout. Idempotent; a no-op when heartbeat is off.
    */
   freezeHeartbeat?(): void
   /**
@@ -711,9 +709,11 @@ export interface ClientSink {
    */
   resumeHeartbeat?(): void
   /**
-   * Release sink-held resources (the heartbeat timer). The driver's
-   * `runResponseSink` `finally` MUST call this on every exit (normal / throw /
-   * abort / write-reject) so a self-rescheduling timer can't leak (design §3.3).
+   * PERMANENTLY stop heartbeat injection; {@link resumeHeartbeat} MUST NOT resurrect it. This closes
+   * only the heartbeat lifecycle, not the write port: `write` and {@link writeAnchor} MUST remain usable
+   * afterwards because terminal close-off paths close heartbeat before writing their final structural frame
+   * (`keepalive-anchor.ts` and the buffered driver's terminal close-off). Idempotent; finalizers MUST call
+   * this on every exit so a self-rescheduling timer cannot leak.
    */
   close?(): void
   /** Seal the canonical operation after every real/synthetic client frame has been delivered. */

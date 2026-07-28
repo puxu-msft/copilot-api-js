@@ -163,7 +163,7 @@ describe("P3-T1 downstream delivery session", () => {
     delivery.clientSink.close?.()
   })
 
-  test("close remains permanent: resumeHeartbeat does not revive a closed heartbeat", async () => {
+  test("close permanently stops heartbeat but keeps the write port usable for terminal structure", async () => {
     clock.install()
     const writes: Array<{ method: string; frame: unknown }> = []
     const delivery = createDownstreamDeliverySession({
@@ -177,13 +177,14 @@ describe("P3-T1 downstream delivery session", () => {
 
     delivery.clientSink.suspendHeartbeat?.()
     delivery.clientSink.close?.()
+    await delivery.clientSink.writeAnchor?.(frame("content_block_stop", 0))
     delivery.clientSink.resumeHeartbeat?.()
     for (let i = 0; i < 4; i++) {
       await clock.advance(20_000)
       await drain()
     }
 
-    expect(writes).toHaveLength(0)
+    expect(writes).toEqual([{ method: "anchor", frame: frame("content_block_stop", 0) }])
   })
 
   test("on-demand heartbeat stays ping-only before the content deadline", async () => {

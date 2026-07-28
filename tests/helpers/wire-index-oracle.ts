@@ -5,6 +5,10 @@ interface IndexedPayload {
   readonly index?: number
 }
 
+export interface WireShapeOptions {
+  readonly isAnchorFrame?: (frame: ClientFrame, ordinal: number) => boolean
+}
+
 export function assertMonotonicWireIndices(frames: ReadonlyArray<ClientFrame>): void {
   const starts = indexedFrames(frames).filter(({ payload }) => payload.type === "content_block_start")
   for (const [expectedIndex, { payload }] of starts.entries()) {
@@ -33,19 +37,15 @@ export function assertBlockProtocolState(frames: ReadonlyArray<ClientFrame>): vo
   if (openIndex !== undefined) throw new Error(`content block ${openIndex} remained open at end of stream`)
 }
 
-export function wireShape(frames: ReadonlyArray<ClientFrame>): Array<string> {
-  return indexedFrames(frames).map(({ frame, payload }) => {
+export function wireShape(frames: ReadonlyArray<ClientFrame>, options: WireShapeOptions = {}): Array<string> {
+  return indexedFrames(frames).map(({ frame, payload }, ordinal) => {
     const { type, index } = payload
     if (index === undefined) return type ?? frame.event ?? "unknown"
-    if (type === "content_block_start") return `${isAnchorFrame(frame) ? "anchor" : "real"}_start@${index}`
-    if (type === "content_block_stop") return `${isAnchorFrame(frame) ? "anchor" : "real"}_stop@${index}`
+    if (type === "content_block_start") return `${options.isAnchorFrame?.(frame, ordinal) === true ? "anchor" : "real"}_start@${index}`
+    if (type === "content_block_stop") return `${options.isAnchorFrame?.(frame, ordinal) === true ? "anchor" : "real"}_stop@${index}`
     if (type === "content_block_delta") return `delta@${index}`
     return `${type ?? frame.event ?? "unknown"}@${index}`
   })
-}
-
-function isAnchorFrame(frame: ClientFrame): boolean {
-  return (frame as ClientFrame & { synthetic?: string }).synthetic === "anchor"
 }
 
 function indexedFrames(frames: ReadonlyArray<ClientFrame>): Array<{ frame: ClientFrame; payload: IndexedPayload }> {

@@ -18,13 +18,78 @@ import {
   test,
 } from "bun:test"
 
+import type {
+  //
+  CandidateHandle,
+  DispatchHandle,
+} from "~/lib/context/model-operation-record"
+import type { RequestEnvelope } from "~/lib/pipeline/envelope"
+import type { CandidateResponseRenderer } from "~/lib/pipeline/types"
 import type { ResponsesStreamEvent } from "~/types/api/openai-responses"
 
-import { readSyntheticKind, tagFrameSynthetic } from "~/lib/pipeline/frame-origin"
-import { responseFrame } from "~/routes/responses/candidate-response-session"
+import {
+  //
+  readSyntheticKind,
+  tagFrameSynthetic,
+} from "~/lib/pipeline/frame-origin"
+import {
+  //
+  createResponsesCandidateResponseSessionFactory,
+  responseFrame,
+} from "~/routes/responses/candidate-response-session"
 
 const DELTA_EVENT = { type: "response.output_text.delta" } as unknown as ResponsesStreamEvent
 const DELTA_DATA = JSON.stringify({ type: "response.output_text.delta", delta: "x" })
+
+function env(): RequestEnvelope {
+  return {
+    clientFormat: "openai-responses",
+    targetEndpoint: "/responses",
+    model: { id: "gpt-5" },
+    stream: true,
+    body: { model: "gpt-5", input: "hello" },
+    view: {},
+    prepareHints: {},
+    ctx: {
+      toolNameMapper: undefined,
+      recordStreamProgress() {},
+      captureGenerationFrameTransform() {},
+      captureGenerationDispatchFrameTransform() {},
+      captureGenerationDispatchFrameAction() {},
+      captureUpstreamGenerationDispatchFrame() {},
+      setGenerationDispatchSseEvents() {},
+      setGenerationDispatchTimingEpoch() {},
+    } as never,
+  } as unknown as RequestEnvelope
+}
+
+const renderer: CandidateResponseRenderer = {
+  renderResponse: (frame) => frame,
+  flushResponse: () => [],
+}
+
+function createSession(transport: "http" | "ws") {
+  return createResponsesCandidateResponseSessionFactory(transport)({
+    candidate: "candidate:responses" as CandidateHandle,
+    dispatch: "dispatch:responses" as DispatchHandle,
+    env: env(),
+    responseRewrites: [],
+    renderer,
+  })
+}
+
+describe("Responses candidate session transport wiring", () => {
+  test("HTTP mounts output-item commit boundaries while WS intentionally omits them", () => {
+    const done = { event: "response.output_item.done", data: JSON.stringify({ type: "response.output_item.done", output_index: 0 }) }
+    const delta = { event: "response.output_text.delta", data: JSON.stringify({ type: "response.output_text.delta", output_index: 0, delta: "x" }) }
+    const http = createSession("http")
+    const ws = createSession("ws")
+
+    expect(http.responseOpts.commitBoundaries?.(done)).toBe(true)
+    expect(http.responseOpts.commitBoundaries?.(delta)).toBe(false)
+    expect(ws.responseOpts.commitBoundaries).toBeUndefined()
+  })
+})
 
 describe("responseFrame — hook-rewrite provenance + id/retry preservation (Unit 2)", () => {
   test("HTTP: a hook-rewritten frame keeps synthetic:'hook-rewrite' through re-render", () => {

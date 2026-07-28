@@ -11,6 +11,7 @@ import type { RequestEnvelope } from "~/lib/pipeline/envelope"
 import type {
   //
   ClientFrame,
+  ClientSink,
   FormatCodec,
   PreparedRequest,
   RunBufferedOpts,
@@ -21,7 +22,11 @@ import type {
 
 import { isResponsesCommitBoundary } from "~/lib/codec/openai-responses/commit-boundaries"
 import { createRequestContext } from "~/lib/context/request"
-import { makeDeliverySseSink } from "~/lib/pipeline/client-sink"
+import {
+  //
+  makeDeliverySseSink,
+  makeSseSink,
+} from "~/lib/pipeline/client-sink"
 import {
   //
   createPipelineDriver,
@@ -116,14 +121,14 @@ function makeResponsesStopTracker() {
   }
 }
 
-function stubSseStream(): { stream: Parameters<typeof makeDeliverySseSink>[0]; written: Array<ClientFrame> } {
+function stubSseStream(): { stream: Parameters<typeof makeSseSink>[0]; written: Array<ClientFrame> } {
   const written: Array<ClientFrame> = []
   const stream = {
     writeSSE: (value: ClientFrame) => {
       written.push(value)
       return Promise.resolve()
     },
-  } as unknown as Parameters<typeof makeDeliverySseSink>[0]
+  } as unknown as Parameters<typeof makeSseSink>[0]
   return { stream, written }
 }
 
@@ -136,7 +141,7 @@ describe("Responses HTTP heartbeat after output-item commit", () => {
   beforeEach(() => clock.install())
   afterEach(() => clock.restore())
 
-  test("after the first response.output_item.done commit, an idle still emits keepalives", async () => {
+  async function runItemGap(makeSink: (stream: Parameters<typeof makeSseSink>[0]) => ClientSink): Promise<Array<ClientFrame>> {
     const env = makeEnv()
     env.ctx.beginAttempt({})
     const { stream: upstream, releases } = makeGatedUpstream([
@@ -168,12 +173,7 @@ describe("Responses HTTP heartbeat after output-item commit", () => {
       ],
     ])
     const { stream, written } = stubSseStream()
-    const sink = makeDeliverySseSink(stream, {
-      heartbeat: {
-        intervalSec: 15,
-        pingFrame: { event: "response.ping", data: '{"type":"response.ping"}' },
-      },
-    })
+    const sink = makeSink(stream)
     const tracker = makeResponsesStopTracker()
     const outcomePromise = makeDriver().runResponseBufferedSink(upstream, env, sink, {
       ...tracker,
@@ -191,11 +191,30 @@ describe("Responses HTTP heartbeat after output-item commit", () => {
     await clock.advance(15_000)
     await drain(500)
     const gap = written.slice(beforeGap)
-    expect(gap.filter((current) => current.event === "response.ping").length).toBeGreaterThanOrEqual(1)
 
     releases[0]()
     const outcome = await outcomePromise
     expect(outcome.kind).toBe("complete")
     sink.close?.()
+    return gap
+  }
+
+  const heartbeat = {
+    heartbeat: {
+      intervalSec: 15,
+      pingFrame: { event: "response.ping", data: '{"type":"response.ping"}' },
+    },
+  } as const
+
+  test("after the first response.output_item.done commit, an idle still emits keepalives", async () => {
+    const gap = await runItemGap((stream) => makeDeliverySseSink(stream, heartbeat))
+
+    expect(gap.filter((current) => current.event === "response.ping").length).toBeGreaterThanOrEqual(1)
+  })
+
+  test("positive control: the same Responses harness on a raw sink emits keepalives", async () => {
+    const gap = await runItemGap((stream) => makeSseSink(stream, heartbeat))
+
+    expect(gap.filter((current) => current.event === "response.ping").length).toBeGreaterThanOrEqual(1)
   })
 })

@@ -209,7 +209,7 @@ test("Responses HTTP: after the first response.output_item.done commit, an idle 
 若走独立交付路径：
 
 - [x] 路径 = **P0 → P6**（P0 的 O-6 字节等价与套件基线仍需先建，用于证明本修复不改变短请求 wire）。
-- [ ] 独立交付前额外补：`bun run test:backend` 全绿 + 异模型 reviewer 审这一相位的合并态。当前执行环境无 Rust 默认 toolchain，故按用户指示用 `bun scripts/parallel-test.ts unit it http` 替代 `test:backend` 的 native build 前置；本叶子 agent 不能派生 reviewer，须由主会话完成异模型 merged-state review。
+- [x] 独立交付前额外补：`bun run test:backend` 全绿 + 异模型 reviewer 审这一相位的合并态。当前执行环境无 Rust 默认 toolchain，故按用户指示用 `bun scripts/parallel-test.ts unit it http` 替代 `test:backend` 的 native build 前置。异模型 merged-state review 见 `p6-code-review-claude.md`；其 blocker/HIGH/MEDIUM/LOW 已在复审修复 commits 中闭合并经标准档位连跑验证。
 - [x] `docs/DESIGN.md` 与 `docs/todo/deferred-backlog.md` 同步该缺陷的发现与修复（不必等 P8.6 的整体 doc-sync）。
 - [x] **仍需**在 A 的其余相位开工前完成——P5 依赖它。
 
