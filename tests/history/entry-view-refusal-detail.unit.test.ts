@@ -37,7 +37,7 @@ describe("resolveRefusalDetail", () => {
     })
     expect(resolveRefusalDetail(entryWith({ explanation: "Legacy upstream omitted category." }))).toEqual({
       category: "unknown",
-      categoryProvenance: "missing",
+      categoryProvenance: "unknown",
       explanation: "Legacy upstream omitted category.",
       invalid: false,
     })
@@ -53,7 +53,7 @@ describe("resolveRefusalDetail", () => {
 
     expect(resolveRefusalDetail(entry)).toEqual({
       category: "unknown",
-      categoryProvenance: "missing",
+      categoryProvenance: "unknown",
       explanation: undefined,
       invalid: true,
     })

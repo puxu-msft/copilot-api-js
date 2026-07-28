@@ -66,7 +66,7 @@ import { tagFrameSynthetic } from "~/lib/pipeline/frame-origin"
 
 import {
   extractRefusalDetail,
-  isNamedCategory,
+  refusalCategoryLabel,
 } from "./refusal-detail"
 import type { RefusalDetail } from "./refusal-detail"
 import { DEFAULT_REFUSAL_ERROR_TYPE, type RefusalPolicy } from "./refusal-policy"
@@ -149,7 +149,6 @@ export function refusalThinkingTokens(usage: unknown): number | undefined {
 /** Rendered for a var whose value the upstream never gave us (or gave malformed). */
 const UNKNOWN_VAR = "unknown"
 /** Rendered for a category the upstream explicitly reported as unmapped (`null`). */
-const UNCATEGORIZED_VAR = "uncategorized"
 
 /** Template vars available when rendering a refusal recovery/error message. `model` is the resolved
  *  upstream (GHC canonical) model name; `request_id` is the proxy request id. `thinking_tokens` is
@@ -160,7 +159,8 @@ export interface RefusalTemplateVars {
   request_id: string
   thinking_tokens: number | undefined
   output_tokens: number
-  refusal_category: string | null | undefined
+  /** Already resolved by the producer via `refusalCategoryLabel` — never a raw tri-state. */
+  refusal_category: string
   refusal_explanation: string | null | undefined
 }
 
@@ -179,10 +179,7 @@ export function renderRefusalTemplate(tmpl: string, vars: RefusalTemplateVars): 
     request_id: vars.request_id,
     output_tokens: String(vars.output_tokens),
     thinking_tokens: vars.thinking_tokens === undefined ? UNKNOWN_VAR : String(vars.thinking_tokens),
-    refusal_category:
-      vars.refusal_category === undefined ? UNKNOWN_VAR
-      : vars.refusal_category === null ? UNCATEGORIZED_VAR
-      : vars.refusal_category,
+    refusal_category: vars.refusal_category,
     refusal_explanation: vars.refusal_explanation ?? UNKNOWN_VAR,
   }
   return tmpl.replaceAll(/\{(\w+)\}/g, (whole, key: string) => resolved[key] ?? whole)
@@ -231,7 +228,7 @@ export function refusalVarsFromDelta(parsed: RawMessageDeltaEvent, staticVars: R
     ...staticVars,
     thinking_tokens: refusalThinkingTokens(usage),
     output_tokens: readOutputTokens(usage),
-    refusal_category: detail.category,
+    refusal_category: refusalCategoryLabel(detail),
     refusal_explanation: detail.explanation,
   }
 }
@@ -243,7 +240,7 @@ export function refusalVarsFromResponse(response: AnthropicMessageResponse, stat
     ...staticVars,
     thinking_tokens: refusalThinkingTokens(response.usage),
     output_tokens: readOutputTokens(response.usage),
-    refusal_category: detail.category,
+    refusal_category: refusalCategoryLabel(detail),
     refusal_explanation: detail.explanation,
   }
 }
@@ -276,6 +273,7 @@ export function rewriteRefusalMessageDelta(parsed: RawMessageDeltaEvent): RawMes
 }
 
 export type { RefusalMode, RefusalPolicy } from "./refusal-policy"
+export { categoryProvenance, refusalCategoryLabel, type CategoryProvenance } from "./refusal-detail"
 
 /** Does this accumulated block list carry anything the client can read as an answer? */
 export function hasClientVisibleContent(blocks: ReadonlyArray<{ type: string }>): boolean {
@@ -288,12 +286,7 @@ export function hasClientVisibleContent(blocks: ReadonlyArray<{ type: string }>)
  * `uncategorized`, and an absent/malformed one prints `unknown`.
  */
 export function refusalSummary(detail: RefusalDetail): string {
-  const c = detail.category
-  const category =
-    isNamedCategory(c) ? c
-    : c === null ? "uncategorized"
-    : "unknown"
-  return `upstream contentless refusal (category=${category})`
+  return `upstream contentless refusal (category=${refusalCategoryLabel(detail)})`
 }
 
 /**

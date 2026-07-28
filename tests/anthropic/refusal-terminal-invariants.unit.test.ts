@@ -150,5 +150,8 @@ describe("category rendering across the three real samples", () => {
     expect(rendered(BIO_CATEGORY)).toBe("blocked c=bio")
     expect(rendered(NULL_CATEGORY)).toBe("blocked c=uncategorized")
     expect(rendered(undefined)).toBe("blocked c=unknown")
+    // A malformed empty category must not reach the client as an empty parenthetical — this text is
+    // baked into the conversation, so "（拒绝类别：）" would be visible to the user forever.
+    expect(rendered({ type: "refusal", category: "" })).toBe("blocked c=unknown")
   })
 })

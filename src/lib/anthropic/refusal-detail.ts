@@ -40,10 +40,48 @@ export function isNamedCategory(category: string | null | undefined): category i
   return typeof category === "string" && category.length > 0
 }
 
-/** Stable bucket used by human-facing and aggregate diagnostics. */
+/**
+ * How the upstream expressed (or failed to express) a category. The SINGLE classifier — every
+ * consumer maps this to its own label rather than re-deriving the three-way test.
+ *
+ * The distinction that matters: `uncategorized` means the upstream EXPLICITLY said "no named
+ * category" (`category: null`, a real observed wire shape), while `unknown` means we never got a
+ * usable answer — the field was absent (pre-`stop_details` upstreams) or malformed (empty string,
+ * wrong type). Collapsing those two loses the ability to tell "upstream told us nothing to say"
+ * from "we could not read what it said".
+ */
+export type CategoryProvenance = "named" | "uncategorized" | "unknown"
+
+export function categoryProvenance(detail: RefusalDetail): CategoryProvenance {
+  if (isNamedCategory(detail.category)) return "named"
+  // Only an EXPLICIT null is "the upstream said unmapped". Everything else that reaches here — the
+  // field absent, an empty string, a non-string that `extractRefusalDetail` already folded to
+  // undefined — means we could not read an answer, which is a different fact and gets a different
+  // word. (`detail.invalid` needs no branch of its own: every malformed category lands on `""` or
+  // `undefined`, both of which fall through to `unknown` anyway.)
+  return detail.category === null ? "uncategorized" : "unknown"
+}
+
+/**
+ * The display label for a single request's category: the named category verbatim, or the word for
+ * whichever unnamed provenance applies. Used by everything that shows ONE request (client-visible
+ * suppression text, log line / failureReason, History UI) — as opposed to
+ * {@link refusalCategoryForDiagnostics}, which folds the two unnamed cases together for metrics.
+ */
+export function refusalCategoryLabel(detail: RefusalDetail): string {
+  const provenance = categoryProvenance(detail)
+  return provenance === "named" ? (detail.category as string) : provenance
+}
+
+/**
+ * Stable bucket for AGGREGATE diagnostics (telemetry dimension, TUI token, feature detail).
+ * Deliberately folds both unnamed provenances into one label: a metrics dimension wants low
+ * cardinality, and "the upstream did not name it" is one bucket there. Consumers that show a single
+ * request (client text, History UI) keep the finer distinction instead — see {@link categoryProvenance}.
+ */
 export function refusalCategoryForDiagnostics(stopDetails: unknown): string {
-  const category = extractRefusalDetail(stopDetails).category
-  return isNamedCategory(category) ? category : "uncategorized"
+  const detail = extractRefusalDetail(stopDetails)
+  return categoryProvenance(detail) === "named" ? (detail.category as string) : "uncategorized"
 }
 
 /** Structured marker for refusal metadata a target protocol cannot represent on its client wire. */

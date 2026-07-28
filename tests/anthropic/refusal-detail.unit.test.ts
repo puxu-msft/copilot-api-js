@@ -23,10 +23,12 @@ import {
 
 import {
   //
+  categoryProvenance,
   extractRefusalDetail,
   isContentlessRefusal,
   isNamedCategory,
   refusalCategoryForDiagnostics,
+  refusalCategoryLabel,
   refusalThinkingTokens,
   renderRefusalTemplate,
 } from "~/lib/anthropic/recover-refusal"
@@ -91,6 +93,35 @@ describe("refusalCategoryForDiagnostics — observable category is stable across
   })
 })
 
+describe("categoryProvenance — the ONE classifier every consumer shares", () => {
+  test("named / explicitly-unmapped / absent / malformed each land in their own bucket", () => {
+    expect(categoryProvenance(extractRefusalDetail({ type: "refusal", category: "cyber" }))).toBe("named")
+    expect(categoryProvenance(extractRefusalDetail({ type: "refusal", category: null }))).toBe("uncategorized")
+    expect(categoryProvenance(extractRefusalDetail({ type: "refusal" }))).toBe("unknown")
+    expect(categoryProvenance(extractRefusalDetail(undefined))).toBe("unknown")
+  })
+
+  test("an empty-string category is `unknown`, NOT a category and NOT `uncategorized`", () => {
+    // The divergence this primitive closes: the renderer used to test only null/undefined, so an
+    // empty category slipped through verbatim and rendered as an empty parenthetical in the
+    // CLIENT-VISIBLE suppression text. `""` means we could not read it, not "upstream said unmapped".
+    const detail = extractRefusalDetail({ type: "refusal", category: "" })
+    expect(categoryProvenance(detail)).toBe("unknown")
+    expect(refusalCategoryLabel(detail)).toBe("unknown")
+  })
+
+  test("every consumer of the same detail agrees on the bucket", () => {
+    for (const raw of [{ type: "refusal", category: "" }, { type: "refusal", category: 123 }, { type: "refusal", category: null }, { type: "refusal" }]) {
+      const detail = extractRefusalDetail(raw)
+      const label = refusalCategoryLabel(detail)
+      // aggregate view folds both unnamed buckets; single-request views keep them apart — but both
+      // agree that none of these is a NAMED category.
+      expect(refusalCategoryForDiagnostics(raw)).toBe("uncategorized")
+      expect(label === "uncategorized" || label === "unknown").toBe(true)
+    }
+  })
+})
+
 describe("refusalThinkingTokens — unknown stays unknown", () => {
   test("reads the authoritative breakdown when present (real cyber sample: 0, not output_tokens 1)", () => {
     expect(refusalThinkingTokens({ output_tokens: 1, output_tokens_details: { thinking_tokens: 0 } })).toBe(0)
@@ -118,7 +149,7 @@ describe("renderRefusalTemplate — unknown values render as documented words, n
     request_id: "req_1",
     thinking_tokens: undefined,
     output_tokens: 1,
-    refusal_category: "cyber" as string | null | undefined,
+    refusal_category: "cyber",
     refusal_explanation: "blocked" as string | null | undefined,
   }
 
@@ -134,9 +165,11 @@ describe("renderRefusalTemplate — unknown values render as documented words, n
     expect(renderRefusalTemplate("c={refusal_category}", vars)).toBe("c=cyber")
   })
 
-  test("category null renders `uncategorized`, absent renders `unknown` (the distinction survives)", () => {
-    expect(renderRefusalTemplate("c={refusal_category}", { ...vars, refusal_category: null })).toBe("c=uncategorized")
-    expect(renderRefusalTemplate("c={refusal_category}", { ...vars, refusal_category: undefined })).toBe("c=unknown")
+  test("the producer resolves the label; the renderer just substitutes it", () => {
+    // `refusal_category` is a resolved label by the time it reaches the renderer — the three-way
+    // classification lives in ONE place (`categoryProvenance`), not in each consumer.
+    expect(renderRefusalTemplate("c={refusal_category}", { ...vars, refusal_category: "uncategorized" })).toBe("c=uncategorized")
+    expect(renderRefusalTemplate("c={refusal_category}", { ...vars, refusal_category: "unknown" })).toBe("c=unknown")
   })
 
   test("explanation null/absent renders `unknown`", () => {

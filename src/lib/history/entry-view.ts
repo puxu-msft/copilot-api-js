@@ -19,10 +19,13 @@ import type {
   UsageData,
 } from "./types"
 
+import type { CategoryProvenance } from "~/lib/anthropic/refusal-detail"
+
 import {
   //
+  categoryProvenance,
   extractRefusalDetail,
-  isNamedCategory,
+  refusalCategoryLabel,
 } from "../anthropic/refusal-detail"
 import { accumulateForwardedContent } from "./accumulate-response"
 
@@ -113,7 +116,7 @@ export function resolveStopReason(entry: Pick<HistoryEntry, "attempts">): string
 /** Display-ready refusal detail while retaining the provenance of the upstream category. */
 export interface ResolvedRefusalDetail {
   category: string
-  categoryProvenance: "named" | "uncategorized" | "missing"
+  categoryProvenance: CategoryProvenance
   explanation: string | null | undefined
   invalid: boolean
 }
@@ -128,13 +131,10 @@ export function resolveRefusalDetail(entry: Pick<HistoryEntry, "attempts">): Res
   if (stopDetails === undefined || stopDetails === null) return undefined
 
   const detail = extractRefusalDetail(stopDetails)
-  if (isNamedCategory(detail.category)) {
-    return { category: detail.category, categoryProvenance: "named", explanation: detail.explanation, invalid: detail.invalid }
-  }
-  if (detail.category === null) {
-    return { category: "uncategorized", categoryProvenance: "uncategorized", explanation: detail.explanation, invalid: detail.invalid }
-  }
-  return { category: "unknown", categoryProvenance: "missing", explanation: detail.explanation, invalid: detail.invalid }
+  // Classification comes from the shared primitive — this consumer only picks its own labels.
+  // Re-deriving the three-way test here is how the four call sites drifted apart on `category: ""`.
+  const provenance = categoryProvenance(detail)
+  return { category: refusalCategoryLabel(detail), categoryProvenance: provenance, explanation: detail.explanation, invalid: detail.invalid }
 }
 
 /**
