@@ -1,16 +1,40 @@
 # HANDOVER：把 `state` + `state-defaults` 降为 foundation 叶子
 
-> **状态**：进行中——范围已由用户拍板、**代码尚未动工**。本文件是**唯一入口**，接手请先读完再看别的。
-> **核验基线**：`23e85aba`（2026-07-28）。此后到 `847f8bc8` 的 9 个 peer 提交**全是文档**（`git diff --name-only 23e85aba..847f8bc8` 无一 `src/`、`packages/`、`tests/` 命中），故下列实测数字在 `847f8bc8` 仍成立。**再往后接手请重跑 §3.1 的实测命令**——数字有时效（见 §6 第 1 条）。
-> **工作区**：分支 `master`（本文档直接在主树提交，见 §8）；本任务**未建 worktree**、**无代码改动**；主树有并发 peer 的未提交改动十余个文件 + 3 个未追踪文件，**全部与本任务无关**。
-> **已跑门禁**：`computeCircularSnapshot()` 实测（2026-07-28，见 §3.1/§3.2）。测试门禁**未跑**——本任务零代码改动，无可跑内容；`bun run test:backend` 在本机**跑不起来**（§8）。
+> **状态**：**执行中**——范围已由用户拍板（§2）、四条分叉已裁决（§5）、**S1 起代码开工**。本文件是**唯一入口**，接手请先读完再看别的。
+> **核验基线**：`23e85aba`（2026-07-28）。**2026-07-28 已在 `a675064e` 重跑全部三项复验，差集为空**——详见 §3.0。**再往后接手请再重跑一次**——数字有时效（见 §6 第 1 条）。
+> **工作区**：文档在主树 `master` 直接改并提交；**代码走隔离 worktree `.worktrees/state-foundation` @ 分支 `feat/state-foundation`**。主树有并发 peer 的未提交改动十余个文件 + 若干未追踪文件，**全部与本任务无关**，一律显式 pathspec 提交。
+> **已跑门禁**：`computeCircularSnapshot()` 实测 + `allModuleSpecifiers()` 出边枚举 + 消费者 AST 计数（均 2026-07-28 @ `a675064e`，见 §3.0）。`bun run test:backend` 在本机**跑不起来**（§8），用 `bun scripts/parallel-test.ts unit it http`。
 > **前身**：monorepo 拆分 Phase 4 的第三次剥离（前两次 = `@hsupu/ghc-proxy-token` 2026-07-23、`@hsupu/ghc-proxy-telemetry` 2026-07-27，均已 landed）。
+
+## 3.0 复验记录 @ `a675064e`（2026-07-28）—— 【实测】
+
+按 §6 第 4 条的三步顺序重跑，**§3.1 与 §3.7 完全对上、差集为空**，§3.5 有两处 +1 漂移。
+
+| 项 | 原记录 @ `23e85aba` | 复测 @ `a675064e` | 判定 |
+|---|---|---|---|
+| §3.1 环数 / 成员 / top-6 | 70 / 63，52·50·49·48·35·32 | **完全一致** | ✅ |
+| §3.7 `state.ts` 出边 | 10 条（#1–#10） | 10 条，集合相同 | ✅ 差集空 |
+| §3.7 `state-defaults.ts` 出边 | 6 条（#11–#16） | 6 条，集合相同 | ✅ 差集空 |
+| `state-defaults > state` 两节点环 | 在快照里 | 仍在 | ✅ |
+| §3.5 ③-b `resolve*` 消费者 | prod 7 / tests 3 | prod 7 / tests 3 | ✅ |
+| §3.5 ③-a models 消费者 | prod 4 / tests 101（共 105） | prod 4 / **tests 102（共 106）** | 漂移 +1 |
+| `setStateForTests` 文件数 | 164 / 167 | **165 / 168** | 漂移 +1 |
+
+**三条原表没写全的形态**（不是新的出边，是同一条边的形态遗漏——但每条都会在执行期咬人）：
+
+1. **#10 除 import 外还有一条值 re-export**：`state.ts:2035` `export { CONFIG_MANAGED_DEFAULTS, DEFAULT_MODEL_MAPPINGS, DEFAULT_MODEL_TRANSLATION } from "./state-defaults"`。这是**对外公共表面**，S6 搬迁时要跟着走，S5 拆环时别把它当成普通内部 import 处理掉。
+2. **#16 是 12 个类型不是 11 个**：除 11 个具名 `import type` 外，`state-defaults.ts:97` 还有一个**内联** `import("./state").MaxTokensContinuationOverride`。**S5 建 `state-vocabulary.ts` 时这个内联点必须一起改**——按 named-import 列表数会漏掉它，`allModuleSpecifiers()` 才抓得到（这正是 §6 第 7 条「换成目标一定会出现的锚点」的又一次兑现）。
+3. **`applyDisabledFilter` 是模块私有**（`state.ts:1424`，无 `export`）。§3.5 ③-a 表里的 8 个符号中，只有 **6 个是导出符号**（`setModels` / `getRawModels` / `getConfigDisabledIds` / `resetRawModelsForTests` / `setDisabledModels` / `rebuildModelIndex`），另两个（`applyDisabledFilter` + `rawModels` 模块变量）零外部消费者、随逻辑一起走即可。
+
+**S1 的两个前提复验通过**：`refusal-policy.ts` 仍是 41 行、**零 import** 叶子；`block-layout-contract.ts:1` 仍 `import type { ContentBlockParam } from "~/types/api/anthropic"`（**不可整搬**）。
+
+**复验用的脚本没有留存**（一次性 scratch，跑完即删）。**重跑配方**：写一个脚本调 `tests/architecture/source-ast.ts` 的 `allModuleSpecifiers()` 枚举两个文件的出边、调 `tests/architecture/circular-deps-snapshot.ts` 的 `computeCircularSnapshot()` 量环、再用同一个 AST 走查扫 `src/**` `packages/*/src/**` `tests/**` 统计从 `~/lib/state` import 目标符号的文件数。
 
 ## 1. 入口指引：什么时候读什么
 
 | 材料 | 何时读 |
 |---|---|
-| 本文件 §1.5–**§5** | 动工前必读全部。**必须读到 §5**——那里有 4 条待用户裁决的分叉，其中两条会挡住 S4/S6。从 DESIGN / backlog 指针进来的人最容易在读完步骤后就动手，正好错过这道 gate。**§2.5 与 §3.7 是评审后新加的，第一版没有，缺了它们 S6 必红** |
+| 本文件 §1.5–**§5** | 动工前必读全部。**§3.0 是复验记录**（数字以它为准，§3.1/§3.5 的原始数字标的是更早的 revision）；**§5 的 4 条分叉已由用户裁决完毕**，其中第 1 条决定 S5/S6、第 3 条决定 S4 的注册表形状、第 4 条决定 spec 0d 作废——**照办即可，别再重开**。**§2.5 与 §3.7 是评审后新加的，第一版没有，缺了它们 S6 必红** |
 | [KICKOFF.md](KICKOFF.md) | 起新会话时贴给自己/agent |
 | 同目录 `HANDOVER-review-{gpt,claude}.md` | 想知道某条 oracle「为什么写成这样」时——它们记着被证伪的原始版本 |
 | [plan-token-package.md](../monorepo-split/plan-token-package.md)「通用 DomainPeel Contract」 | 写具体 plan 时（本次不是抽包，但边界守卫/过渡纪律可复用） |
@@ -122,9 +146,9 @@ spec 里有三处直接谈 state，读起来像是在否决本任务：
 | 口径 | 数量 |
 |---|---|
 | production（`src/` + `packages/`，不含 owner 自身） | **4**：`packages/cli/src/start.ts`、`src/lib/config/config.ts`、`src/lib/models/client.ts`、`src/routes/models/internal.ts` |
-| tests | **101** |
+| tests | **102**（@ `a675064e` 复测；`23e85aba` 时是 101） |
 
-⚠️ **这两个数不能只看第一行**。S2 要改的 import 面是 **105 个文件**，不是 4 个。「测试零改动」这条红线**只覆盖 `setStateForTests` 调用点**（见 ③-c），**不覆盖**测试里对 `setModels` / `setDisabledModels` 的 import——那些必须跟着迁走，否则只能靠在 state 留 re-export 双轨来糊住，S2 的边界收敛就成了假完成。
+⚠️ **这两个数不能只看第一行**。S2 要改的 import 面是 **106 个文件**，不是 4 个。「测试零改动」这条红线**只覆盖 `setStateForTests` 调用点**（见 ③-c），**不覆盖**测试里对 `setModels` / `setDisabledModels` 的 import——那些必须跟着迁走，否则只能靠在 state 留 re-export 双轨来糊住，S2 的边界收敛就成了假完成。
 
 **③-b 每模型 override 解析**（纯函数，合并 shared + per-model override）：
 
@@ -146,11 +170,11 @@ spec 里有三处直接谈 state，读起来像是在否决本任务：
 `setStateForTests` 的使用量 —— **【实测，三个 revision 一致】**：
 
 ```bash
-git grep -l -w setStateForTests <rev> -- 'tests/*.ts' | wc -l   # → 164（其中 3 个在 tests/helpers/）
-git grep -l -w setStateForTests <rev> -- '*.ts'      | wc -l   # → 167（多出 state.ts owner + 2 个 exp/ 探针）
+git grep -l -w setStateForTests <rev> -- 'tests/*.ts' | wc -l   # → 165 @ a675064e（164 @ 23e85aba），其中 3 个在 tests/helpers/
+git grep -l -w setStateForTests <rev> -- '*.ts'      | wc -l   # → 168 @ a675064e（167 @ 23e85aba），多出 state.ts owner + 2 个 exp/ 探针
 ```
 
-> 我先前写的「165 个文件」**在任何口径下都复现不出来**，是我没记命令就报数字。以 164 为准，或干脆按上面的命令现场重数。
+> 我先前写的「165 个文件」在 `23e85aba` 口径下复现不出来，是我没记命令就报数字（**巧合的是 peer 后来加了一个文件，@ `a675064e` 恰好就是 165**——这更说明数字必须现场重数，别抄）。**执行期按上面的命令现场重数。**
 
 ### 3.6 类型依赖清单 —— 【实测，但**已被 §3.7 取代**】
 
@@ -184,12 +208,12 @@ rg -n 'from "' src/lib/state.ts src/lib/state-defaults.ts
 | 2 | `~/lib/anthropic/sanitize/content-blocks` | type | `ThinkingBlockSanitizeMode` | **S5** |
 | 3 | `~/lib/anthropic/tool-input-repair` | type | `RepairItem` | **S5** |
 | 4 | `~/lib/config/schema` | type | `ModelTranslation` | **S5** |
-| 5 | `~/lib/models/client` | type | `Model`, `ModelsResponse` | **§5 待裁决 1** |
-| 6 | `~/lib/token/types` | type | `CopilotTokenInfo`, `TokenInfo` | **§5 待裁决 3**（分层反转，不是搬类型能解决的） |
+| 5 | `~/lib/models/client` | type | `Model`, `ModelsResponse` | **S5**（已裁决：两类型下沉 foundation，`models/client.ts` 改 re-export——§5 第 1 条） |
+| 6 | `~/lib/token/types` | type | `CopilotTokenInfo`, `TokenInfo` | **S4**（已裁决：注册表做成领域无关，state 侧零 token 类型名——§5 第 3 条） |
 | 7 | `~/lib/models/model-name` | **value** | `normalizeForMatching` | **S2**（随 models 逻辑走） |
 | 8 | `~/lib/token/store` | **value** + type | 6 个符号 + `TokenStoreSnapshot` | **S4** |
 | 9 | `./adaptive-rate-limiter` | type | `AdaptiveRateLimiterConfig` | **S5** ⚠️ 见下方注 |
-| 10 | `./state-defaults` | value | 3 个 | 同一单元，一起走 —— **但 S6 之后仍然存在，见下方 ⚠️** |
+| 10 | `./state-defaults` | value **+ 值 re-export** | 3 个（`state.ts:2035` 另有一条 `export … from` 把它们转出为公共表面，见 §3.0） | 同一单元，一起走 —— **但 S6 之后仍然存在，见下方 ⚠️** |
 
 **`state-defaults.ts` 的出边**：
 
@@ -200,7 +224,7 @@ rg -n 'from "' src/lib/state.ts src/lib/state-defaults.ts
 | 13 | `~/lib/anthropic/tool-input-repair` | type | `RepairItem` | **S5** |
 | 14 | `~/lib/config/schema` | type | `ModelTranslation` | **S5** |
 | 15 | `~/lib/anthropic/recover-refusal` | **value** | 3 个 `DEFAULT_REFUSAL_*` | **S1** |
-| 16 | `./state` | type | `BufferedRetryCaps` 等 12 个 | 同一单元 —— **但 S6 之后仍然存在，见下方 ⚠️** |
+| 16 | `./state` | type（11 个具名 + **1 个内联 `import("./state").T`**） | `BufferedRetryCaps` 等 11 个 + `state-defaults.ts:97` 的 `MaxTokensContinuationOverride`，共 **12** 个（见 §3.0） | 同一单元 —— **但 S6 之后仍然存在，见下方 ⚠️** |
 
 ⚠️ **#10 与 #16 互指，是一条 S1–S5 消不掉、会原样跟进 foundation 的两节点环**：`state.ts` 从 `state-defaults` 取 3 个值，`state-defaults` 从 `state` 取 **11 个类型**。它**已经在环快照里**（`tests/architecture/circular-deps-baseline.json:71` 的 `"lib/state-defaults.ts > lib/state.ts"`，madge 计 type 边所以它算数）。**S6 新加的 package-wide madge oracle 会立刻咬到它**——见 S5 的「顺手拆掉」方案与 S6 的预案，**别把这条红当成"S1–S5 没做完"去回头找不存在的漏网边**。
 
@@ -236,7 +260,7 @@ rg -n 'from "' src/lib/state.ts src/lib/state-defaults.ts
 
 ### S2 — models 逻辑回 models 域
 
-- **做什么**：§3.5 ③-a 的 8 个符号 + `rawModels` 模块变量迁往 `src/lib/models/`（建议 `models/cache.ts`）；**105 个直接 import 文件全部改指新家**（4 production + 101 tests——**不是 4 个**，见 §3.5 的口径表）。`state.ts` 对 `normalizeForMatching` 的 import 随之删除。
+- **做什么**：§3.5 ③-a 的 8 个符号 + `rawModels` 模块变量迁往 `src/lib/models/`（建议 `models/cache.ts`）；**106 个直接 import 文件全部改指新家**（4 production + 102 tests——**不是 4 个**，见 §3.5 的口径表；其中 `applyDisabledFilter` 与 `rawModels` 是模块私有、零外部消费者）。`state.ts` 对 `normalizeForMatching` 的 import 随之删除。
 - **保留在 state 的**：`models` / `modelIndex` / `modelIds` / `disabledModels` **字段本身**（它们是状态），只是操作它们的逻辑搬走——通过既有的 `updateState` 写入口。
 - **⚠️ 两个特殊消费者，别漏**：`tests/helpers/isolated-fixture.ts` 的 `RESETTERS` 表从 `~/lib/state` 取 `resetRawModelsForTests`；`tests/infra/resetters-complete.unit.test.ts` 是个**完备性守卫**，它按名字枚举 `src/` 与 `packages/*/src/` 下所有 `*ForTest(s|ing)` 导出并要求每个都注册或豁免——符号换文件后 import 路径不同步，它会以一种不直观的方式红。
 - **⚠️ 批量改测试 import 是【已批准】的，不是权宜之计**：项目 CLAUDE.md 的「无向后兼容负担」明确允许强制迁移旧→新。别因为要动一百个文件就怀疑路线走错了。
@@ -258,10 +282,10 @@ rg -n 'from "' src/lib/state.ts src/lib/state-defaults.ts
 ### S4 — 测试 shim 反转成通用 snapshot 参与者注册表
 
 - **做什么**：在 state 里加一个**零领域知识**的参与者注册表（`registerSnapshotParticipant({ snapshot, restore })`），token 包从 core 侧自行注册；`state.ts` 删掉对 `~/lib/token/store` 的 import **以及对 `CopilotTokenInfo` / `TokenInfo` / `TokenStoreSnapshot` 三个类型的依赖**（见 §3.6——签名里还写着 token 类型的话，边根本没断，注册表就白做了）；`setStateForTests` 的宽签名（接收 4 个凭据键）改为转发给已注册参与者。
-- **为什么这样而不是把三个函数搬去 `tests/helpers/`**：`setStateForTests` 的调用遍布 **164 个测试文件**；反转方案让这些**调用点**一行都不用改。
+- **为什么这样而不是把三个函数搬去 `tests/helpers/`**：`setStateForTests` 的调用遍布 **165 个测试文件**（@ `a675064e`）；反转方案让这些**调用点**一行都不用改。
 - **⚠️ 红线的准确形状（我第一版写错了两次）**：
   - **第一次**：写成「不改任何测试文件」。那是个**确定会假绿的 oracle**——注册必须有一个明确的接线点，而测试进程根本不走 production composition root。现有的测试地板是 `bunfig.toml` 的三个 preload（`sandbox-paths` → `install-token-deps` → `install-telemetry-deps`），它们只装 ambient ports、**不注册任何 snapshot participant**。所以 S4 **必然要改** preload / fixture / `tests/token/credential-store-isolation.it.test.ts` 这类集中式接线文件。把"零 churn"定得过宽，只会逼着实现者选一个"没注册就静默忽略 token 键"的形状——那样现有测试照旧全绿，而凭据隔离其实已经没了。
-  - **第二次**：把「164」当成调用点数。**164 是文件数**；直接调用点是 **600 多个**（实测 `rg -o 'setStateForTests\(' tests/ | wc -l` → 628，AST 口径 622——差额是注释/字符串命中，**执行期以 AST 为准**）。红线的正确表述是「**这 164 个文件里的每一个调用点，实参不变**」。
+  - **第二次**：把文件数当成调用点数。**165 是文件数**（@ `a675064e`）；直接调用点是 **600 多个**（实测 `rg -o 'setStateForTests\(' tests/ | wc -l` → 628，AST 口径 622——差额是注释/字符串命中，**执行期以 AST 为准，并现场重数**）。红线的正确表述是「**这些文件里的每一个调用点，实参不变**」。
 - **必须定义并各自有测试的注册表语义**（少一条就是留给下一轮的坑）：重复注册、**缺失 participant 时 fail-fast 还是忽略**、participant 抛错、snapshot/restore 的顺序、snapshot 的类型身份、`"key" in patch` 的显式 undefined 门控（区分"显式 undefined→清空"与"缺席→不动"，token peel 记忆里写过）。
 - **验收 oracle**：① **`rg -n '~/lib/token' src/lib/state.ts` 归零**——注意是**整个 token 包**，不是 `token/store`。我第一版写的 `rg 'token/store'` 是个假绿 oracle：state 有**两条**指向 token 的边（`token/store` 的值 + `token/types` 的 `CopilotTokenInfo`/`TokenInfo`），只 grep 前者会在后者仍在的情况下变绿，让人带着"state 与 token 已解耦"的错误结论一路推进到 S6。**这是"换判据形状"的一个小型正例**——把精确子路径换成覆盖整个来源的形状。② **全仓 `setStateForTests(...)` 调用点的 AST 快照前后相等**：对每个 CallExpression 记 **`文件路径 + 该文件内的词法调用序号 + 规范化实参文本`** 三元组，比对改动前后的集合。⚠️ **不要用"全局实参 multiset"**——那样两个调用点互换整份实参也会通过。③ 正向隔离测试：测试 A 写 4 个凭据键、测试 B 断言已复位；④ 生产侧与测试侧**各有一个注册点**，且各自有一条集成测试证明它接上了。
 - **⚠️ oracle ② 不能用 `git diff --stat -- tests/` 做**（我第一版就是这么写的，无鉴别力）。两个原因：**(a)** S2/S3 已经合法地改过约 104 个测试文件的 import，S4 的 diff 必然被前序 churn 污染，按文件路径排除区分不出来；**(b)** 它证明的是"文件没改"，而红线是"**调用点的实参**没改"——实现者完全可以在一个因 S2 而本来就允许改动的文件里，顺手删掉一个 `setStateForTests({ copilotToken: undefined })`，凭据清空语义就此回归，而 stat oracle 显示通过。**按文件路径做的排除，恰好在允许改动的地方留了洞。**
@@ -273,8 +297,8 @@ rg -n 'from "' src/lib/state.ts src/lib/state-defaults.ts
 - **⚠️ 别用手写清单**：我第一版在这里写死了 5 个类型名，实测漏了 4 个（`SeparatorCarrier` 与三个 token 类型）——**人工回忆的清单在这类任务里必漏**。以 §3.7 的机器枚举为准，做完再跑一次枚举确认差集为空。
 - **⚠️ 同一词汇有两条路径**：`AssistantBlockLayoutStrategy` / `SeparatorCarrier` 在 `state.ts` 来自 `assistant-block-layout`、在 `state-defaults.ts` 来自 `block-layout-contract`（前者 re-export 后者）。**反转后要指向同一个 owner**，别留两条。
 - **⚠️ `./adaptive-rate-limiter` 是跨界边**（§3.7 #9）：相对路径的外观容易让人当成"自己人"跳过，但 S6 搬走之后它就跨包了，且该模块本身依赖 `consola` / `~/lib/error` / `./observability`，绝非叶子。
-- **⚠️ 顺手把 `state ↔ state-defaults` 那条环也拆了（§3.7 #10/#16）**——**放在本步做，不要留到 S6**。理由：S5 正在把词汇**搬进** state，拆环是把类型**搬出** state，两个反向动作放在相邻两步会让同一批类型被摸两次，而且执行者要在"哪些归 `state.ts`、哪些归第三个文件"上做一次没有判据的划分。**正解：本步建一个 `state-vocabulary.ts` 承接全部词汇**（S5 反转进来的 + `state-defaults` 需要的那 11 个），#16 的边顺手就没了。
-  - **实测那 11 个类型的外部消费者很少**：`CompiledRewriteRule` 5 个文件、`CompiledSystemPromptEntry` 2 个、5 个各 1 个、4 个**零消费者**。
+- **⚠️ 顺手把 `state ↔ state-defaults` 那条环也拆了（§3.7 #10/#16）**——**放在本步做，不要留到 S6**。理由：S5 正在把词汇**搬进** state，拆环是把类型**搬出** state，两个反向动作放在相邻两步会让同一批类型被摸两次，而且执行者要在"哪些归 `state.ts`、哪些归第三个文件"上做一次没有判据的划分。**正解：本步建一个 `state-vocabulary.ts` 承接全部词汇**（S5 反转进来的 + `state-defaults` 需要的那 12 个，**含 `state-defaults.ts:97` 那个内联 `import("./state").MaxTokensContinuationOverride`**），#16 的边顺手就没了。
+  - **实测那 12 个类型的外部消费者很少**：`CompiledRewriteRule` 5 个文件、`CompiledSystemPromptEntry` 2 个、5 个各 1 个、4 个**零消费者**。
   - **⚠️ 这里需要在 `state.ts` 留一层 `export type { … } from "./state-vocabulary"` 让那 8 个外部消费者零改动——而这条 re-export 【不会造环】，与 S2 那条被拓扑封死的 re-export 性质【完全相反】**：第三个文件是叶子、对 state 无回边。**你刚在 S2 被教育过"别留 re-export"，别把那条纪律错误地套到这里。** 判据不是"re-export 是坏的"，而是"**这条 re-export 会不会造回边**"。
   - **不要**把那 11 个类型塞进 `state-defaults.ts` 反向让 `state` import。拓扑上成立，但该文件的模块注释自述「holds ONLY the default data, decoupled from the State type shape」——塞进 State 字段类型正好违反它的自述职责。
 - **验收 oracle**：① 重跑 §3.7 的 AST 枚举，`state.ts` / `state-defaults.ts` 的出边**只剩下 §5 分叉决定保留的那些 + 指向新词汇文件的边**；② `computeCircularSnapshot()` 实测环数继续下降，且 `circular-deps-baseline.json:71` 那条 `state-defaults > state` 两节点环**消失**。
@@ -309,19 +333,24 @@ rg -n 'from "' src/lib/state.ts src/lib/state-defaults.ts
 - **验收 oracle**：上述四维检索的每条命中都已处理，或已显式标注为历史前提。
 - **证伪方式**：**每个维度各放一个正样本证明检索触达了目标**——拿一条你已知存在的旧说法（比如 spec §5 里的 `reader-*.ts`、DESIGN 里的 `src/lib/state.ts`）验证 grep 能命中。**否则"零命中"只说明你的检索式不对**，这正是本项目「通过/空/干净结论不自证」那条纪律的直接应用。
 
-## 5. 仍待裁决的分叉（**需用户先定，别自己拍**）
+## 5. 分叉裁决结果（**2026-07-28 用户已拍板，别再重开**）
 
-1. **`Model` / `ModelsResponse` 怎么办**。它们是 GHC 上游 wire 类型（不是配置词汇），而 state 持有 `modelIndex: Map<string, Model>`。两条路：
-   - (a) 一并下沉 foundation（foundation 已住着 `ghc-http-primitives`，wire 类型放旁边自洽）；
-   - (b) state 的模型缓存改用结构型 + 编译期可赋值性 oracle（telemetry T4 的做法）。
-   我倾向 (a)——它们是真·共享词汇；但这会让 foundation 承载 GHC API 形状，需用户认可。
-2. **S2 之后 `models` 字段是否也该跟着走**。本次范围是"逻辑回域、字段留 state"，但如果 models 域最终也要抽包，字段迟早要动。**本次不动**，只是标记出来。
-3. **`~/lib/token/types` 怎么办（§3.7 #6）——这是最硬的一条，因为它是包分层反转不是品味问题**。`packages/token/package.json` 已声明依赖 foundation；state 进 foundation 后若还 import token 类型，就是 `foundation → token → foundation` 的包级环，且 `import type` **不豁免**守卫。三条候选：
-   - (a) `TokenInfo` / `CopilotTokenInfo` / `TokenStoreSnapshot` 一并下沉 foundation，token 包改为从 foundation re-export；
-   - (b) **S4 的参与者注册表把 `setStateForTests` 的签名做成领域无关的泛型**，使 state 侧根本不需要这几个类型名；
-   - (c) 保留这条边、放弃「foundation 零 `~/`」的守卫强度。
-   **我倾向 (b)**——它与 S4「零领域知识」的立意最自洽，且不需要 foundation 承载别的域的形状。**(c) 不推荐**：等于自废 S6 的核心交付。
-4. **spec §7.2 阶段 0d 的「剩余范围 = models 域」与 S2 是什么关系**（详见 §2.5）。两者对象相同、机制不同：0d 迁的是 `import { state }` 的**消费端**到 reader seam，S2 搬的是 state 里的**逻辑**出去。**是 S2 吸收 0d、还是两者都要做、还是 0d 作废**——需用户拍。不定这个，很可能有人把两套都做一遍，或者做完 S2 才发现 reader seam 白建。
+> 原文的四条待裁决分叉已由用户逐条定案（AskUserQuestion，2026-07-28）。下面保留每条的原始选项与理由，便于日后回看「为什么选了这条」。
+
+1. **`Model` / `ModelsResponse`** → ✅ **(a) 一并下沉 foundation**。它们是 GHC 上游 wire 类型，state 持有 `models: ModelsResponse` 与 `modelIndex: Map<string, Model>` 字段（本次不搬字段），所以 state 必须拿到这两个类型。
+   - **落地形态**：挪进 `packages/foundation/src/`（挨着已有的 `ghc-http-primitives.ts`），`src/lib/models/client.ts` 改为 re-export → **86 个消费端零改动、零重复定义、单一 owner**。
+   - 未选 (b)「state 侧结构型 + 编译期可赋值性断言」：`Model` 是个约 40 字段的 interface，复制一份等于长期双份维护；断言只防漂移、不消除重复。
+   - 未选 (c)「保留边、放宽 S6 守卫」：等于自废 S6 的核心交付。
+   - **代价（已认可）**：foundation 从「只装协议管道常量」扩成也装 GHC 响应体形状。
+2. **S2 之后 `models` 字段是否跟着走** → **本次不动**（范围就是「逻辑回域、字段留 state」）。models 域将来若抽包，字段迟早要动，此处只做标记。
+3. **`~/lib/token/types`（§3.7 #6，包分层反转）** → ✅ **(b) S4 的参与者注册表做成领域无关**，使 state 侧**根本不出现 token 类型名**，三条边（`token/store` 的值 + `token/types` 的两个类型 + `TokenStoreSnapshot`）一次性消失。
+   - **为什么**：与 S4「零领域知识」的立意自洽，且不让 foundation 承载别域形状。
+   - **实现要点**：patch 形状由各域自己贡献（泛型参数，或 TS `declare module` 声明合并）。**红线仍是 165 个测试文件的调用点实参不变**——所以不能简单退化成 `Record<string, unknown>` 把实参类型安全丢掉。**具体机制在 S4 动工时定，但「state 侧零 token 类型名」是硬判据。**
+   - 未选 (a)「三个 token 类型下沉 foundation」：机制更简单，但 `TokenStoreSnapshot` 与 store 实现耦合较紧，且 foundation 会承载凭据域形状。
+   - 未选 (c)「保留边、放宽守卫」。
+4. **spec §7.2 阶段 0d 与 S2 的关系** → ✅ **0d 作废，被本任务吸收**。
+   - **理由**：reader seam 的立论是削环（spec §5 的 day-1 承诺）；state 成叶子后**叶子无出边、谁依赖它都不成环**，削环由拓扑直接解决，再建 `core/state/reader-*.ts` 是纯 churn。
+   - **「窄读接口」的封装/爆炸半径收益若仍想要，另立独立 backlog 条目**，不作为本任务前置。→ **S7 必须把 spec §7.2-0d 与 §5 改写成这个结论**，并在 `deferred-backlog.md` 留下那条独立条目。
 
 ## 6. 我犯过的错（**比结论更有用，别重犯**）
 
