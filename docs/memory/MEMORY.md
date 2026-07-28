@@ -127,7 +127,7 @@
 
 ## project 现状 stub（权威看正式归属；landed 项细节在 docs/DESIGN/git，此处仅触发指针）
 - [领域包剥离执行技巧（token·telemetry landed）](methodology-domain-peel-execution-techniques.md) — 两型模板(SoT 反转 / 只读消费+module-split)+共通技巧+ratchet 与守卫两类坑
-- [state 降 foundation 叶子（第三次剥离，文档定稿·代码未动工）](project-state-to-foundation-handover.md) — 三轮评审通过；spec 说「走不通」是旧前提·§3.7 完整出边表是承重·§5 四条待用户裁决
+- [state 降 foundation 叶子（S1–S7 全部 landed）](project-state-to-foundation-handover.md) — 环 70/63→43/50·state 零环；教训=零叶子只解环不解包边界·derived 类型进不了叶子·守卫误伤注释是判据形状错
 - [续写重试（P2 landed master de37feff，P3-P7 待续）](project-continuation-retry-sequential-anchor.md) — 首块后 cut 合成 continuation 缝合
 - [max_tokens 续传（P0 landed 3bb1262a，P1 待做）](project-max-tokens-continuation-spec.md) — 截断三分型 A/B/C
 - [History 搜索移出主进程 sidecar（landed 分支待合并）](project-history-search-out-of-process.md) — systemd 服务
