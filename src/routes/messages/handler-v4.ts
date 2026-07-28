@@ -195,6 +195,7 @@ import {
   anthropicHttpErrorFrame,
   anthropicRejectErrorFrame,
   classifyPostCommitAbort,
+  postCommitAbortFrame,
 } from "./post-commit-error"
 import { retryMetaFeature } from "./retry-meta-feature"
 import {
@@ -705,24 +706,20 @@ async function runMessagesDriver(c: Context, args: RunMessagesDriverArgs): Promi
         // pump's recordForwarded ordering).
         ctx?.setForwardedResponse({ sseEvents: [...forwardedSseEvents] })
         if (error instanceof Error && isAbortError(error)) {
-          // Discriminate by SIGNAL STATE (§4.2.1): client/reaper/timeout are all generic AbortErrors,
-          // and a pre-response reaper-cancel is NOT a StreamReaperCancelError (that's stream-drain only).
-          const kind = classifyPostCommitAbort(clientAbort.signal.aborted, ctx?.lifecycleSignal.aborted ?? false)
+          // Discriminate by the abort's OWN provenance (§4.2.1), with signal state as the fallback:
+          // shutdown / header-watchdog / hard-deadline / reaper / dispatch teardown each carry their
+          // own identity now, so the terminal frame names the real cause instead of defaulting to
+          // "reaper or timeout, pick one".
+          const kind = classifyPostCommitAbort(clientAbort.signal.aborted, ctx?.lifecycleSignal.aborted ?? false, error)
           if (kind === "client-abort") {
             ctx?.abort(resolvedName) // (e) client gone — zero further bytes, no 499 (already 200)
             return
           }
-          // (f) reaper-cancel (reaper already settled it; the `settled` guard dedups) / (d) timeout.
-          // reaper-cancel's fail is a no-op (reaper pre-settled) so the reorder does NOT complete its
-          // transient snapshot — that needs a two-phase reaper protocol (spec §1.3, backlog). timeout is
-          // handler-settled and IS completed by the reorder.
-          await writeTerminalThenSettle(
-            ctx,
-            kind === "reaper-cancel" ?
-              anthropicErrorFrame("api_error", "Request cancelled by the stale-request reaper")
-            : anthropicErrorFrame("api_error", "Upstream timed out before sending response headers"),
-            () => ctx?.fail(resolvedName, error),
-          )
+          // (f) reaper-cancel (reaper already settled it; the `settled` guard dedups) / (d) every other
+          // cause. reaper-cancel's fail is a no-op (reaper pre-settled) so the reorder does NOT complete
+          // its transient snapshot — that needs a two-phase reaper protocol (spec §1.3, backlog). The
+          // handler-settled kinds ARE completed by the reorder.
+          await writeTerminalThenSettle(ctx, postCommitAbortFrame(kind), () => ctx?.fail(resolvedName, error))
           return
         }
         if (error instanceof HTTPError) {

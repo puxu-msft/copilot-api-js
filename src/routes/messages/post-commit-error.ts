@@ -11,10 +11,13 @@
  * `error.type` literal IS what Claude Code / the Anthropic SDK display + branch on — see
  * exp/q2-oracle/REPORT.md). They are unit-tested in isolation here; the C3b COMMIT dispatch wires them.
  *
- * Discrimination uses SIGNAL STATE, never `error.name`: a pre-response client-abort, a stale-reaper
- * cancel, and a header-wait timeout are ALL synthesized by the http2 client as a generic AbortError
- * (the signal reason is discarded), and a pre-response reaper-cancel is a plain AbortError — NOT a
- * `StreamReaperCancelError` (that type only exists inside the stream-drain guard). See RFC §4.2.1.
+ * Discrimination is EVIDENCE-BASED: the abort's own reason (`TimeoutError` identity for the
+ * response-header watchdog, the `pool-closed` transport tag, the cancellation-cause tag carried by
+ * `ctx.cancel` / the reaper / a dispatch teardown) decides the kind, with signal state as the
+ * fallback for aborts nobody tagged. It used to be signal-state ONLY — because the http2 client
+ * discarded the signal reason, every cause arrived as one indistinguishable generic AbortError —
+ * which meant a hard-deadline cancellation was reported to the client as a stale-reaper cancel.
+ * See RFC §4.2.1 and `~/lib/error/cancellation-reason`.
  */
 
 import type { ClientFrame } from "~/lib/pipeline/types"
@@ -25,6 +28,8 @@ import {
   HTTPError,
   mapHttpErrorToEnvelope,
 } from "~/lib/error"
+import { getCancellationCause } from "~/lib/error/cancellation-reason"
+import { isShutdownCausedAbort } from "~/lib/shutdown"
 
 const ANTHROPIC: ErrorWireFormat = "anthropic"
 
@@ -94,16 +99,50 @@ export function anthropicErrorFrame(type: string, message: string): ClientFrame 
   return { event: "error", data: JSON.stringify({ type: "error", error: { type, message } }) }
 }
 
-/** A POST-COMMIT abort classified by SIGNAL STATE (precedence: client > reaper > timeout). */
-export type PostCommitAbortKind = "client-abort" | "reaper-cancel" | "timeout"
+/** A POST-COMMIT abort, classified by the abort's own provenance (signal state is the fallback). */
+export type PostCommitAbortKind = "client-abort" | "shutdown" | "header-timeout" | "request-deadline" | "reaper-cancel" | "request-cancel" | "dispatch-cancel"
+
+/** The terminal SSE error-frame message for each abort kind (`client-abort` writes nothing — the client is gone). */
+const POST_COMMIT_ABORT_MESSAGE: Record<Exclude<PostCommitAbortKind, "client-abort">, string> = {
+  shutdown: "Server is shutting down",
+  "header-timeout": "Upstream timed out before sending response headers",
+  "request-deadline": "Request exceeded its hard deadline",
+  "reaper-cancel": "Request cancelled by the stale-request reaper",
+  "request-cancel": "Request cancelled",
+  "dispatch-cancel": "Upstream dispatch cancelled",
+}
+
+/** Terminal `event: error` frame for a post-commit abort of `kind`. */
+export function postCommitAbortFrame(kind: Exclude<PostCommitAbortKind, "client-abort">): ClientFrame {
+  return anthropicErrorFrame("api_error", POST_COMMIT_ABORT_MESSAGE[kind])
+}
 
 /**
- * Discriminate a POST-COMMIT abort by which controller flipped — NEVER by `error.name` (all three
- * are generic AbortErrors, §4.2.1). Client-abort wins (round-2 H-1: the client is gone, no reader);
- * then reaper-cancel (stale-request reaper aborted the in-flight upstream); else a header-wait timeout.
+ * Discriminate a POST-COMMIT abort. Evidence first, signal state only as a fallback:
+ *
+ * 1. `clientAborted` — the client is gone; nothing else matters, there is no reader left.
+ * 2. shutdown provenance (Phase 3 abort reason identity / `pool-closed` transport tag).
+ * 3. `TimeoutError` — the response-header watchdog itself fired (`AbortSignal.timeout`).
+ * 4. the cancellation-cause tag — hard deadline vs stale reaper vs explicit cancel vs
+ *    dispatch teardown.
+ * 5. fallback: `reaperAborted` (the request's lifecycle signal fired but nobody tagged the
+ *    reason) → reaper-cancel; otherwise the only remaining pre-header cause is the
+ *    header-wait timeout.
+ *
+ * Steps 2-4 are what makes this truthful: with signal state alone, a hard-deadline
+ * cancellation and a reaper cancel are literally the same boolean.
  */
-export function classifyPostCommitAbort(clientAborted: boolean, reaperAborted: boolean): PostCommitAbortKind {
+export function classifyPostCommitAbort(clientAborted: boolean, reaperAborted: boolean, error?: unknown): PostCommitAbortKind {
   if (clientAborted) return "client-abort"
+  if (error !== undefined) {
+    if (isShutdownCausedAbort(error)) return "shutdown"
+    if (error instanceof Error && error.name === "TimeoutError") return "header-timeout"
+    const cause = getCancellationCause(error)
+    if (cause === "request-deadline") return "request-deadline"
+    if (cause === "stale-reaper") return "reaper-cancel"
+    if (cause === "request-cancel") return "request-cancel"
+    if (cause === "dispatch-cancel") return "dispatch-cancel"
+  }
   if (reaperAborted) return "reaper-cancel"
-  return "timeout"
+  return "header-timeout"
 }

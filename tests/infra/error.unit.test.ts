@@ -15,6 +15,7 @@ import {
   parseRetryAfterHeader,
   parseTokenLimitError,
 } from "~/lib/error"
+import { cancellationAbortError } from "~/lib/error/cancellation-reason"
 import { tagTransportError } from "~/lib/error/transport-reason"
 
 describe("HTTPError", () => {
@@ -824,10 +825,41 @@ describe("forwardError", () => {
     expect(getLastJson().status).toBe(499)
   })
 
-  test("response-header timeout (raw.signal NOT aborted) → 504, not the 500 catch-all", () => {
+  test("an untagged abort with an un-aborted client signal → 503 with the REAL message, never a fabricated header timeout", () => {
     const { ctx, getLastJson } = createMockContextWithSignal(false)
     forwardError(ctx, makeAbortError())
-    expect(getLastJson().status).toBe(504)
+    const { data, status } = getLastJson()
+    expect(status).toBe(503)
+    // The regression this locks: it used to answer 504 "Upstream timed out before sending
+    // response headers" for ANY such abort — a claim with no evidence behind it (2026-07-28:
+    // a 609ms request blamed on a 900s timeout).
+    expect(JSON.stringify(data)).not.toContain("timed out before sending response headers")
+  })
+
+  test("shutdown-caused abort → retryable 529, not 503/504", () => {
+    const { ctx, getLastJson } = createMockContextWithSignal(false)
+    const e = tagTransportError(makeAbortError(), "pool-closed")
+    forwardError(ctx, e)
+    const { data, status } = getLastJson()
+    expect(status).toBe(529)
+    expect(JSON.stringify(data)).toContain("shutting down")
+  })
+
+  test("hard request-deadline cancel → 504 naming the deadline, not the header timeout", () => {
+    const { ctx, getLastJson } = createMockContextWithSignal(false)
+    forwardError(ctx, cancellationAbortError("request-deadline", "request_deadline"))
+    const { data, status } = getLastJson()
+    expect(status).toBe(504)
+    expect(JSON.stringify(data)).toContain("request_deadline")
+    expect(JSON.stringify(data)).not.toContain("timed out before sending response headers")
+  })
+
+  test("stale-reaper cancel → 503 carrying the reaper's own reason", () => {
+    const { ctx, getLastJson } = createMockContextWithSignal(false)
+    forwardError(ctx, cancellationAbortError("stale-reaper", "Request cancelled by the stale-request reaper"))
+    const { data, status } = getLastJson()
+    expect(status).toBe(503)
+    expect(JSON.stringify(data)).toContain("stale-request reaper")
   })
 
   test("TimeoutError-named abort with un-aborted client signal → 504", () => {
@@ -848,7 +880,9 @@ describe("forwardError", () => {
 
   test("gemini format: response-header timeout → 504 with DEADLINE_EXCEEDED", () => {
     const { ctx, getLastJson } = createMockContextWithSignal(false)
-    forwardError(ctx, makeAbortError(), "gemini")
+    const e = new Error("The operation was aborted due to timeout")
+    e.name = "TimeoutError"
+    forwardError(ctx, e, "gemini")
     const { data, status } = getLastJson()
     expect(status).toBe(504)
     expect((data as { error: { status: string } }).error.status).toBe("DEADLINE_EXCEEDED")

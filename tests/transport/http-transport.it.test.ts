@@ -24,6 +24,7 @@ import type {
 } from "~/lib/pipeline/types"
 
 import { resetAdaptiveRateLimiter } from "~/lib/adaptive-rate-limiter"
+import { cancellationAbortError } from "~/lib/error/cancellation-reason"
 import { ENDPOINT } from "~/lib/models/endpoint"
 import {
   //
@@ -288,6 +289,52 @@ describe("createUpstreamHttpTransport — rewriteShutdownAbort 529 hook", () => 
     await expect(transport.send(makeWire({ stream: false, body: { model: "claude", messages: [], stream: false } }), makeEnv())).rejects.toMatchObject({
       status: 529,
     })
+    await shutdownPromise
+  })
+
+  test("hook ON, shutting down, but the REAPER cancelled it: NOT 529 — the reason is what decides, not the clock", async () => {
+    // The whole point of the causal gate: during the 60s+120s drain a request can be
+    // cancelled by the stale reaper or the hard deadline. Those are not shutdowns, and
+    // reporting them as "Server is shutting down" would be a fresh lie in place of the
+    // old one. A temporal `getIsShuttingDown()` gate would fail this test.
+    const reaper = new AbortController()
+    setFetchMock(
+      (_input, init) =>
+        new Promise<Response>((_resolve, reject) => {
+          const signal = init?.signal
+          const onAbort = (): void => reject((signal?.reason as Error | undefined) ?? new DOMException("aborted", "AbortError"))
+          if (signal?.aborted) return onAbort()
+          signal?.addEventListener("abort", onAbort, { once: true })
+        }),
+    )
+    const transport = createUpstreamHttpTransport({ idleTimeoutMs: 5000, rewriteShutdownAbort: true })
+
+    const shutdownPromise = gracefulShutdown("SIGTERM", {
+      tracker: createMockTracker([{ status: "streaming" }]),
+      server: createMockServer(),
+      rateLimiter: null,
+      stopTokenRefreshFn: () => {},
+      closeAllClientsFn: () => {},
+      getClientCountFn: () => 0,
+      contextManager: { stopReaper: () => {} },
+      gracefulWaitMs: 500,
+      abortWaitMs: 500,
+      drainPollIntervalMs: 10,
+      drainProgressIntervalMs: 50_000,
+    })
+
+    const reaperReason = cancellationAbortError("stale-reaper", "Request cancelled by the stale-request reaper")
+    const sent = transport.send(
+      makeWire({ stream: false, body: { model: "claude", messages: [], stream: false } }),
+      makeEnv({ lifecycleSignal: reaper.signal }),
+    )
+    reaper.abort(reaperReason) // reaper wins the race, so IT owns the composite signal's reason
+    const caught = await sent.then(
+      () => undefined,
+      (e: unknown) => e,
+    )
+    expect(caught).toBe(reaperReason) // original object, never rewritten
+    expect((caught as { status?: number }).status).toBeUndefined() // definitively not the 529 HTTPError
     await shutdownPromise
   })
 })

@@ -12,6 +12,8 @@ import {
 } from "bun:test"
 
 import { HTTPError } from "~/lib/error"
+import { cancellationAbortError } from "~/lib/error/cancellation-reason"
+import { tagTransportError } from "~/lib/error/transport-reason"
 
 import {
   //
@@ -19,6 +21,7 @@ import {
   anthropicHttpErrorFrame,
   anthropicRejectErrorFrame,
   classifyPostCommitAbort,
+  postCommitAbortFrame,
   toAnthropicSseErrorData,
 } from "../../src/routes/messages/post-commit-error"
 
@@ -106,7 +109,7 @@ describe("anthropicErrorFrame", () => {
   })
 })
 
-describe("classifyPostCommitAbort — signal-state precedence (client > reaper > timeout)", () => {
+describe("classifyPostCommitAbort — signal-state fallback (client > reaper > header-timeout)", () => {
   test("client-abort wins even if reaper also fired", () => {
     expect(classifyPostCommitAbort(true, true)).toBe("client-abort")
     expect(classifyPostCommitAbort(true, false)).toBe("client-abort")
@@ -116,7 +119,59 @@ describe("classifyPostCommitAbort — signal-state precedence (client > reaper >
     expect(classifyPostCommitAbort(false, true)).toBe("reaper-cancel")
   })
 
-  test("timeout when neither signal flipped (header-wait elapsed)", () => {
-    expect(classifyPostCommitAbort(false, false)).toBe("timeout")
+  test("header-timeout when neither signal flipped (header-wait elapsed)", () => {
+    expect(classifyPostCommitAbort(false, false)).toBe("header-timeout")
+  })
+})
+
+describe("classifyPostCommitAbort — provenance beats signal state", () => {
+  function abortNamed(name: string, message = "The operation was aborted."): Error {
+    const e = new Error(message)
+    e.name = name
+    return e
+  }
+
+  test("shutdown teardown is NOT reported as a reaper cancel, even with the lifecycle signal up", () => {
+    const e = tagTransportError(abortNamed("AbortError", "[http2] upstream session pool closed"), "pool-closed")
+    expect(classifyPostCommitAbort(false, true, e)).toBe("shutdown")
+  })
+
+  test("the header watchdog is identified by its TimeoutError, not by elapsed time", () => {
+    expect(classifyPostCommitAbort(false, false, abortNamed("TimeoutError"))).toBe("header-timeout")
+  })
+
+  test("the hard deadline is NOT reported as a reaper cancel — the regression this fixes", () => {
+    // Both fire the SAME lifecycle signal, so signal state alone answers "reaper" for both;
+    // only the tagged reason can tell them apart.
+    const deadline = cancellationAbortError("request-deadline", "request_deadline")
+    const reaper = cancellationAbortError("stale-reaper", "Request cancelled by the stale-request reaper")
+    expect(classifyPostCommitAbort(false, true, deadline)).toBe("request-deadline")
+    expect(classifyPostCommitAbort(false, true, reaper)).toBe("reaper-cancel")
+  })
+
+  test("a dispatch teardown is its own kind", () => {
+    expect(classifyPostCommitAbort(false, false, cancellationAbortError("dispatch-cancel", "lost hedge race"))).toBe("dispatch-cancel")
+  })
+
+  test("client-abort still wins over every provenance", () => {
+    const e = tagTransportError(abortNamed("AbortError"), "pool-closed")
+    expect(classifyPostCommitAbort(true, true, e)).toBe("client-abort")
+  })
+
+  test("an untagged abort falls back to signal state (unchanged behaviour)", () => {
+    expect(classifyPostCommitAbort(false, true, abortNamed("AbortError"))).toBe("reaper-cancel")
+    expect(classifyPostCommitAbort(false, false, abortNamed("AbortError"))).toBe("header-timeout")
+  })
+})
+
+describe("postCommitAbortFrame", () => {
+  test("each kind names its own cause on the wire — no shared fiction", () => {
+    expect(parse(postCommitAbortFrame("shutdown")).error?.message).toBe("Server is shutting down")
+    expect(parse(postCommitAbortFrame("header-timeout")).error?.message).toBe("Upstream timed out before sending response headers")
+    expect(parse(postCommitAbortFrame("request-deadline")).error?.message).toContain("hard deadline")
+    expect(parse(postCommitAbortFrame("reaper-cancel")).error?.message).toContain("stale-request reaper")
+    expect(parse(postCommitAbortFrame("dispatch-cancel")).error?.message).toContain("dispatch cancelled")
+    // The canonical Anthropic error type stays `api_error` for every kind — the SDK branches on it.
+    expect(parse(postCommitAbortFrame("shutdown")).error?.type).toBe("api_error")
   })
 })
