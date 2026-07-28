@@ -236,7 +236,7 @@ Then put a reverse proxy in front that forwards these paths to the backend (`loc
 | `/api/*` | HTTP | Management API |
 | `/history/api/*` | HTTP | History REST |
 | `/ws` | WebSocket | History/live-request push |
-| `/models` | HTTP | OpenAI-compatible model list (consumed by the UI) |
+| `/models` | HTTP | OpenAI-compatible model list. Consumed by API clients, **not** by either UI — both call `/api/models`, already covered by the row above. Proxy it only if you also want vendor API traffic reaching the backend through this host |
 
 Everything else (the UI's own static assets, index.html, client-side routes) is served by the static file server, not the backend.
 

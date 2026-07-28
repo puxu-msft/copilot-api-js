@@ -218,7 +218,7 @@ ui/
 | 根 tsconfig | 不在 `include`（自有 tsconfig） | 不在 `include`（自有 tsconfig） |
 | 根 `build` / 测试档位 | 不链、不聚合（显式 `build:ui-v4`/`test:ui-v4`） | 不链、不聚合（显式 `build:ui`/`test:ui`） |
 
-两者的 FE 运行时 + `vite`/`vitest`/`vue-tsc`/`@playwright/test` 等构建测试 devDeps 都在各自 package.json 下，各自拥有 `build`/`dev`/`typecheck`/`test`/`test:e2e` 脚本（cwd=自身，配置经 `import.meta.dirname` 自寻）。根 `build` 不链任何 UI（2026-07-22 UI 外置：主服务器不再服务/构建任何 UI，运维单独构建后自托管，见 README「Hosting the Web UI」）。仓库级 dev 工具（`typescript`/`eslint`/`tsdown`）仍在根；FE eslint 插件只剩 React 侧（Vue 三件套随 `ui/` 脱链一并移除）。
+两者的 FE 运行时与构建测试 devDeps 都在各自 package.json 下，各自拥有 `build`/`dev`/`preview`/`typecheck`/`test` 脚本（cwd=自身，配置经 `import.meta.dirname` 自寻）。**两侧工具链并不对称**：`ui/` 用 `vue-tsc` 做类型检查、自带 `@playwright/test` 与 `test:e2e`（浏览器 e2e 在 `ui/tests/e2e/`）；`ui-v4/` 用 `tsc`、**没有** Playwright 也没有 `test:e2e`（其 `test` = bun + vitest 两腿）。`typescript` 两侧都不声明，由根 `node_modules` 向上解析。根 `build` 不链任何 UI（2026-07-22 UI 外置：主服务器不再服务/构建任何 UI，运维单独构建后自托管，见 README「Hosting the Web UI」）。仓库级 dev 工具（`typescript`/`eslint`/`tsdown`）仍在根；FE eslint 插件只剩 React 侧（Vue 三件套随 `ui/` 脱链一并移除）。
 
 `ui/` 保留两条通往仓库的绳子。主要一条是 `~backend/*`（vite alias + tsconfig paths 解析后端源码）——**它没有机器护栏**：后端重构可以静默把它弄坏（2026-07-28 实测发现 telemetry/foundation 拆包与 `DecodeToolInputConfig.all` 删除都已经把它打断且无人知晓）。改后端后若想确认没打断它，只能显式跑 `bun run typecheck:ui` + `bun run test:ui`。次要一条是 `ui/bunfig.toml` 向上 preload 仓库的 `tests/helpers/sandbox-paths.ts`（测试期 fs 沙箱地板，刻意保留——沙箱比自足重要）。这两条也划定了「独立」的边界：`ui/` 的 `build`/`test` 在仓库外裸装裸跑可通过（沙箱 preload 随仓库文件一起在），`typecheck` 不行（后端源码的依赖装在仓库根）。代价与实测数据见 [vue-ui-retirement.md](vue-ui-retirement.md) §0。
 

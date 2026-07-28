@@ -89,7 +89,7 @@ v-model 模式：`modelValue` prop + `update:modelValue` emit + 本地 `computed
 
 ### CSS 架构
 
-加载顺序（`main.ts`）：Vuetify 样式 → `vuetify-overrides.css` → `reset.css`（scoped to `.app-legacy`）→ `variables.css` → `base.css` → `scrollbar.css` → `transitions.css` → `diff2html-overrides.css` → `json-viewer.css`
+加载顺序（`main.ts`）：Vuetify 样式 → `vuetify-overrides.css` → `reset.css`（scoped to `.app-legacy`）→ `variables.css` → `base.css` → `scrollbar.css` → `transitions.css` → `json-viewer.css`
 
 **颜色变量来源于 Vuetify theme**（`vuetify.ts` 是唯一真实来源）：
 - `.v-application` 上映射 `--v-theme-*` → 简写变量（`--bg`、`--text`、`--primary`、`--success`、`--error`）
@@ -139,7 +139,7 @@ Pinia store 直接调用即可（`useHistoryStore()`），无需 provide/inject�
 
 ## 类型体系
 
-**单一真实来源**：核心类型从后端 re-export（`types/index.ts` 通过 `~backend/lib/history/types` 导入 `HistoryEntry`、`ContentBlock` 等；遥测快照类型走 `@hsupu/ghc-proxy-telemetry`）。**指向纯类型模块、不要指向 `lib/history/store` 那种运行时 barrel**——后者会把 sqlite / socket / pino 拖进前端类型图（见根 [docs/DESIGN.md](../docs/DESIGN.md)「`~backend` 引入的模块必须是纯的」）。
+**单一真实来源**：核心类型从后端 re-export（`types/index.ts` 通过 `~backend/lib/history/types` 导入 `HistoryEntry`、`ContentBlock` 等；遥测快照类型走 `@hsupu/ghc-proxy-telemetry/types`）。**一律指向纯类型模块，不要指向运行时入口**——`lib/history/store`（运行时 barrel）会把 sqlite / socket / pino 拖进前端类型图，telemetry 的包入口（`@hsupu/ghc-proxy-telemetry`，无 `/types` 后缀）会拖进 consola / DDSketch / bun:sqlite。见根 [docs/DESIGN.md](../docs/DESIGN.md)「`~backend` 引入的模块必须是纯的」。
 
 **前端专有类型**：
 - `types/ws.ts` — WebSocket 消息的判别联合类型
