@@ -60,38 +60,44 @@ const KNOWN_OPAQUE_TARGETS: Array<{ file: string; call: string }> = [
   { file: "src/lib/pipeline/hooks/loader.ts", call: "import(join(process.cwd(), compiledPath))" },
 ]
 
-async function coreFilesImportingServer(): Promise<Array<{ file: string; specifier: string }>> {
-  const found: Array<{ file: string; specifier: string }> = []
+/**
+ * One pass over `src/lib`, answering both halves of the same claim.
+ *
+ * Parsing every file unconditionally, with no substring pre-filter, is deliberate. The obvious
+ * filter (require `~/routes` / `import(` / `require(` to appear in the raw text) is wrong for each
+ * half in a different way: escapes decode, `import /* c *\/ (target)` is a legal call whose text
+ * contains no `import(`, and a `createRequire`-minted loader is called through a name no substring
+ * scan can know in advance. One parse of all of `src/lib` is ~585ms measured — affordable, and
+ * cheaper than the two filtered passes this replaces, which parsed some files twice.
+ */
+async function scanCoreLib(): Promise<{ edges: Array<{ file: string; specifier: string }>; opaque: Array<{ file: string; call: string }> }> {
+  const edges: Array<{ file: string; specifier: string }> = []
+  const opaque: Array<{ file: string; call: string }> = []
+
   for await (const rel of new Glob("**/*.ts").scan({ cwd: path.join(REPO_ROOT, "src/lib"), onlyFiles: true })) {
     const file = `src/lib/${rel}`
-    const text = readFileSync(path.join(REPO_ROOT, file), "utf8")
-    if (!mayContainDecoded(text, "~/routes")) continue
-    const sourceFile = parseSource(file, text)
+    const sourceFile = parseSource(file, readFileSync(path.join(REPO_ROOT, file), "utf8"))
+
     for (const specifier of new Set(allModuleSpecifiers(sourceFile))) {
-      if (specifier === "~/routes" || specifier.startsWith("~/routes/")) found.push({ file, specifier })
+      if (specifier === "~/routes" || specifier.startsWith("~/routes/")) edges.push({ file, specifier })
     }
+    for (const call of opaqueModuleReferences(sourceFile)) opaque.push({ file, call })
   }
-  return found.sort((a, b) => (a.file + a.specifier).localeCompare(b.file + b.specifier))
+
+  edges.sort((a, b) => (a.file + a.specifier).localeCompare(b.file + b.specifier))
+  opaque.sort((a, b) => (a.file + a.call).localeCompare(b.file + b.call))
+  return { edges, opaque }
 }
 
-async function coreOpaqueTargets(): Promise<Array<{ file: string; call: string }>> {
-  const found: Array<{ file: string; call: string }> = []
-  for await (const rel of new Glob("**/*.ts").scan({ cwd: path.join(REPO_ROOT, "src/lib"), onlyFiles: true })) {
-    const file = `src/lib/${rel}`
-    const text = readFileSync(path.join(REPO_ROOT, file), "utf8")
-    // No pre-filter shortcut here: `import(` / `require(` must be spelled to be called, but the
-    // callee can itself be escaped, and this list is short enough that correctness wins.
-    if (!mayContainDecoded(text, "import(") && !mayContainDecoded(text, "require(")) continue
-    for (const call of opaqueModuleReferences(parseSource(file, text))) found.push({ file, call })
-  }
-  return found.sort((a, b) => (a.file + a.call).localeCompare(b.file + b.call))
-}
+/** Both assertions read the same scan — running it twice doubled this file's cost for nothing. */
+let scanned: ReturnType<typeof scanCoreLib> | undefined
+const coreLib = (): ReturnType<typeof scanCoreLib> => (scanned ??= scanCoreLib())
 
 describe("core → server 边 ratchet", () => {
   test("src/lib 通往 ~/routes 的边与登记表逐条相等（只许减少）", async () => {
     const expected = [...KNOWN_CORE_TO_SERVER].sort((a, b) => (a.file + a.specifier).localeCompare(b.file + b.specifier))
     expect(
-      await coreFilesImportingServer(),
+      (await coreLib()).edges,
       "多出来的边 = core 又依赖了 HTTP 层，spec §7.2 阶段 1 正在专门消除这类边；\n" + "少掉的边 = 阶段 1 落地了一条，把对应行删掉。",
     ).toEqual(expected)
   })
@@ -110,7 +116,7 @@ describe("core → server 边 ratchet", () => {
   test("src/lib 里静态不可判定的动态目标与登记表逐条相等", async () => {
     const expected = [...KNOWN_OPAQUE_TARGETS].sort((a, b) => (a.file + a.call).localeCompare(b.file + b.call))
     expect(
-      await coreOpaqueTargets(),
+      (await coreLib()).opaque,
       "多出来的项 = 有一处 import()/require() 的目标是运行时算出来的，静态判据读不到它，\n" +
         "所以「没有新增 ~/routes 边」这句话对那个文件并不成立。确认它不可能指向 routes 层后登记，\n" +
         "或者把目标改成静态 specifier。",
@@ -121,6 +127,12 @@ describe("core → server 边 ratchet", () => {
     // 报的是 CallExpression 本身，不含外层 `await`——登记表里的项也按这个形状写。
     expect(opaqueModuleReferences(parseSource("synthetic.ts", "const p = 'x'\nconst m = await import(`~/${p}`)\n"))).toEqual(["import(`~/${p}`)"])
     expect(opaqueModuleReferences(parseSource("synthetic.ts", "const m = require(someVar)\n"))).toEqual(["require(someVar)"])
+    // token 之间插注释是合法调用，且原始文本里根本没有 `import(`——曾经的子串预过滤会直接跳过整个文件。
+    expect(opaqueModuleReferences(parseSource("synthetic.ts", "const m = import /* c */ (target)\n"))).toHaveLength(1)
+    // createRequire 造出来的 loader 叫什么名字都追得到。
+    expect(
+      opaqueModuleReferences(parseSource("synthetic.ts", 'import { createRequire } from "node:module"\nconst load = createRequire(import.meta.url)\nvoid load(target)\n')),
+    ).toEqual(["load(target)"])
     // 反向：静态 specifier 不算不可判定，否则登记表会被真实边淹没。
     expect(opaqueModuleReferences(parseSource("synthetic.ts", 'const m = await import("~/routes/x")\n'))).toEqual([])
     expect(opaqueModuleReferences(parseSource("synthetic.ts", "const m = await import(`~/routes/x`)\n"))).toEqual([])

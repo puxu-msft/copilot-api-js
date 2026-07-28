@@ -170,3 +170,47 @@ describe("opaqueModuleReferences", () => {
     expect(allModuleSpecifiers(stat)).toEqual(["consola"])
   })
 })
+
+/**
+ * `createRequire` 造出的 loader 可以绑到任何名字上，两位独立评审各自都用它绕过了守卫：
+ * 收集器只认字面 callee `require`，于是整个文件只被看到一条 `node:module` 边。
+ */
+describe("createRequire 造出的 loader", () => {
+  const PRELUDE = 'import { createRequire } from "node:module"\nconst load = createRequire(import.meta.url)\n'
+
+  test("静态实参算一条真实的边（这正是当初被漏掉的那条）", () => {
+    expect(allModuleSpecifiers(parseSource("p.ts", `${PRELUDE}void load("consola")\n`))).toEqual(["node:module", "consola"])
+  })
+
+  test("非静态实参算不可判定", () => {
+    expect(opaqueModuleReferences(parseSource("p.ts", `${PRELUDE}void load(target)\n`))).toEqual(["load(target)"])
+  })
+
+  test.each([
+    ["具名 import 改名", 'import { createRequire as mint } from "node:module"\nconst load = mint(import.meta.url)\nvoid load("consola")\n'],
+    ["namespace import", 'import * as nodeModule from "node:module"\nconst load = nodeModule.createRequire(import.meta.url)\nvoid load("consola")\n'],
+    ["default import", 'import nodeModule from "node:module"\nconst load = nodeModule.createRequire(import.meta.url)\nvoid load("consola")\n'],
+    ["无 node: 前缀", 'import { createRequire } from "module"\nconst load = createRequire(import.meta.url)\nvoid load("consola")\n'],
+  ])("%s 同样追得到", (_name, source) => {
+    expect(allModuleSpecifiers(parseSource("p.ts", source))).toContain("consola")
+  })
+
+  test("ambient require 仍算 loader", () => {
+    expect(allModuleSpecifiers(parseSource("p.ts", 'const m = require("consola")\n'))).toEqual(["consola"])
+  })
+
+  test.each([
+    ["局部 const", "const require = (name: string): string => name\nvoid require(someVar)\n"],
+    ["函数声明", "function require(name: string): string {\n  return name\n}\nvoid require(someVar)\n"],
+    ["形参", "function f(require: (n: string) => void): void {\n  require(someVar)\n}\n"],
+  ])("被本地遮蔽的 require 不是 loader：%s", (_name, source) => {
+    // 否则任何恰好叫 require 的普通局部函数都会被确定性误报成动态加载。
+    expect(opaqueModuleReferences(parseSource("p.ts", source))).toEqual([])
+    expect(allModuleSpecifiers(parseSource("p.ts", source))).toEqual([])
+  })
+
+  test("遮蔽的名字若来自 createRequire，照样是 loader（遮蔽豁免不能变成后门）", () => {
+    const source = 'import { createRequire } from "node:module"\nconst require = createRequire(import.meta.url)\nvoid require(target)\n'
+    expect(opaqueModuleReferences(parseSource("p.ts", source))).toEqual(["require(target)"])
+  })
+})

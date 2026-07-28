@@ -154,6 +154,7 @@ export function valueStarReExports(sourceFile: ts.SourceFile): Array<string> {
  */
 export function importedModuleSpecifiers(sourceFile: ts.SourceFile): Array<string> {
   const specifiers: Array<string> = []
+  const loaders = moduleLoaderNames(sourceFile)
   const visit = (node: ts.Node): void => {
     if (ts.isImportDeclaration(node) && !node.importClause?.isTypeOnly && ts.isStringLiteral(node.moduleSpecifier)) {
       specifiers.push(node.moduleSpecifier.text)
@@ -161,11 +162,9 @@ export function importedModuleSpecifiers(sourceFile: ts.SourceFile): Array<strin
     if (ts.isExportDeclaration(node) && !node.isTypeOnly && node.moduleSpecifier && ts.isStringLiteral(node.moduleSpecifier)) {
       specifiers.push(node.moduleSpecifier.text)
     }
-    if (ts.isCallExpression(node)) {
-      const isDynamicImport = node.expression.kind === ts.SyntaxKind.ImportKeyword
-      const isRequire = ts.isIdentifier(node.expression) && node.expression.text === "require"
+    if (ts.isCallExpression(node) && isModuleLoadCall(node, loaders)) {
       const [firstArgument] = node.arguments
-      if ((isDynamicImport || isRequire) && firstArgument && ts.isStringLiteralLike(firstArgument)) specifiers.push(firstArgument.text)
+      if (firstArgument && ts.isStringLiteralLike(firstArgument)) specifiers.push(firstArgument.text)
     }
     ts.forEachChild(node, visit)
   }
@@ -186,14 +185,113 @@ export function importedModuleSpecifiers(sourceFile: ts.SourceFile): Array<strin
  * A guard asserting an ABSOLUTE property has to treat these as violations. A guard freezing a
  * specific edge set can instead register the known ones, so a NEW opaque call still surfaces.
  */
+/**
+ * Both collectors ask for this on every file, and computing it costs two full walks. A `SourceFile`
+ * is immutable, so caching by identity is safe — without it, scanning `src/lib` paid four extra
+ * tree walks per file and this file's guard went from 0.7s to 1.6s, back into the range that blows
+ * the 5s default under 16-way sharding.
+ */
+const loaderNamesCache = new WeakMap<ts.SourceFile, ReadonlySet<string>>()
+
+/**
+ * The identifiers that LOAD A MODULE when called in this file.
+ *
+ * Always more than `require`. `node:module`'s `createRequire` mints a loader bound to any name the
+ * author picks, and the result is ordinary, idiomatic, type-checking code:
+ *
+ *   import { createRequire } from "node:module"
+ *   const load = createRequire(import.meta.url)
+ *   void load("consola")
+ *
+ * A collector that matched only the literal callee `require` saw one edge to `node:module` there and
+ * called the file clean — the state unit could pull an arbitrary package at runtime with every guard
+ * green. Two independent reviewers found this same hole, which is a fair signal that "the callee is
+ * spelled `require`" was never the property anyone meant to check.
+ *
+ * The other direction matters too: a local helper that merely HAPPENS to be named `require` is not a
+ * module load, and flagging it produces a deterministic false red on innocent code. So a bare
+ * `require` counts only while nothing in the file shadows it — as an ambient Node global it is a real
+ * loader, as a local binding it is whatever the author made it (and if the author made it from
+ * `createRequire`, the first rule already caught it).
+ *
+ * Known residue, stated rather than implied away: a loader passed through a second binding
+ * (`const l2 = load`), or reached via `eval`/`new Function`/`process.getBuiltinModule`. Static
+ * analysis loses to arbitrary indirection in general; these guards catch drift, not an adversary
+ * with commit access.
+ */
+function moduleLoaderNames(sourceFile: ts.SourceFile): ReadonlySet<string> {
+  const memoized = loaderNamesCache.get(sourceFile)
+  if (memoized) return memoized
+
+  const createRequireAliases = new Set<string>()
+  const moduleNamespaces = new Set<string>()
+  const loaders = new Set<string>()
+  let requireIsShadowed = false
+
+  // Pass 1: how did `createRequire` enter this file, and is `require` still the ambient global?
+  const collectBindings = (node: ts.Node): void => {
+    if (ts.isImportDeclaration(node) && ts.isStringLiteral(node.moduleSpecifier) && /^(?:node:)?module$/.test(node.moduleSpecifier.text)) {
+      const clause = node.importClause
+      if (clause?.name) moduleNamespaces.add(clause.name.text)
+      const bindings = clause?.namedBindings
+      if (bindings && ts.isNamespaceImport(bindings)) moduleNamespaces.add(bindings.name.text)
+      if (bindings && ts.isNamedImports(bindings)) {
+        for (const element of bindings.elements) {
+          if ((element.propertyName ?? element.name).text === "createRequire") createRequireAliases.add(element.name.text)
+        }
+      }
+    }
+    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.name.text === "require") requireIsShadowed = true
+    if ((ts.isFunctionDeclaration(node) || ts.isClassDeclaration(node)) && node.name?.text === "require") requireIsShadowed = true
+    if (ts.isParameter(node) && ts.isIdentifier(node.name) && node.name.text === "require") requireIsShadowed = true
+    ts.forEachChild(node, collectBindings)
+  }
+  collectBindings(sourceFile)
+
+  // Pass 2: bindings initialised from a `createRequire(...)` call become loaders themselves.
+  const collectLoaders = (node: ts.Node): void => {
+    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer && ts.isCallExpression(node.initializer)) {
+      const callee = node.initializer.expression
+      const fromNamed = ts.isIdentifier(callee) && createRequireAliases.has(callee.text)
+      const fromNamespace =
+        ts.isPropertyAccessExpression(callee) && callee.name.text === "createRequire" && ts.isIdentifier(callee.expression) && moduleNamespaces.has(callee.expression.text)
+      if (fromNamed || fromNamespace) loaders.add(node.name.text)
+    }
+    ts.forEachChild(node, collectLoaders)
+  }
+  collectLoaders(sourceFile)
+
+  if (!requireIsShadowed) loaders.add("require")
+  loaderNamesCache.set(sourceFile, loaders)
+  return loaders
+}
+
+/** Does this call load a module — `import(x)`, `require(x)`, or a `createRequire`-minted loader? */
+function isModuleLoadCall(node: ts.CallExpression, loaders: ReadonlySet<string>): boolean {
+  if (node.expression.kind === ts.SyntaxKind.ImportKeyword) return true
+  return ts.isIdentifier(node.expression) && loaders.has(node.expression.text)
+}
+
+/**
+ * Dynamic `import()` / `require()` calls whose module target CANNOT be determined statically —
+ * `import(`${target}`)`, `import(path)`, `require(candidate)` — reported as their source text.
+ *
+ * This is the companion to `allModuleSpecifiers`, and the pair only makes sense together. That
+ * function deliberately reports nothing for an opaque target, because inventing a specifier would be
+ * a lie; but a guard that consumes only the specifier list then reads "no edge" where the honest
+ * answer is "unknowable", and a claim like "this module imports only `node:` builtins" quietly
+ * becomes "…plus whatever that expression resolves to at runtime".
+ *
+ * A guard asserting an ABSOLUTE property has to treat these as violations. A guard freezing a
+ * specific edge set can instead register the known ones, so a NEW opaque call still surfaces.
+ */
 export function opaqueModuleReferences(sourceFile: ts.SourceFile): Array<string> {
   const opaque: Array<string> = []
+  const loaders = moduleLoaderNames(sourceFile)
   const visit = (node: ts.Node): void => {
-    if (ts.isCallExpression(node)) {
-      const isDynamicImport = node.expression.kind === ts.SyntaxKind.ImportKeyword
-      const isRequire = ts.isIdentifier(node.expression) && node.expression.text === "require"
+    if (ts.isCallExpression(node) && isModuleLoadCall(node, loaders)) {
       const [firstArgument] = node.arguments
-      if ((isDynamicImport || isRequire) && (firstArgument === undefined || !ts.isStringLiteralLike(firstArgument))) {
+      if (firstArgument === undefined || !ts.isStringLiteralLike(firstArgument)) {
         opaque.push(node.getText(sourceFile).replace(/\s+/g, " "))
       }
     }
@@ -224,6 +322,7 @@ export function opaqueModuleReferences(sourceFile: ts.SourceFile): Array<string>
  */
 export function allModuleSpecifiers(sourceFile: ts.SourceFile): Array<string> {
   const specifiers: Array<string> = []
+  const loaders = moduleLoaderNames(sourceFile)
   const visit = (node: ts.Node): void => {
     if (ts.isImportDeclaration(node) && ts.isStringLiteral(node.moduleSpecifier)) specifiers.push(node.moduleSpecifier.text)
     if (ts.isExportDeclaration(node) && node.moduleSpecifier && ts.isStringLiteral(node.moduleSpecifier)) specifiers.push(node.moduleSpecifier.text)
@@ -231,11 +330,9 @@ export function allModuleSpecifiers(sourceFile: ts.SourceFile): Array<string> {
     if (ts.isImportEqualsDeclaration(node) && ts.isExternalModuleReference(node.moduleReference) && ts.isStringLiteral(node.moduleReference.expression)) {
       specifiers.push(node.moduleReference.expression.text)
     }
-    if (ts.isCallExpression(node)) {
-      const isDynamicImport = node.expression.kind === ts.SyntaxKind.ImportKeyword
-      const isRequire = ts.isIdentifier(node.expression) && node.expression.text === "require"
+    if (ts.isCallExpression(node) && isModuleLoadCall(node, loaders)) {
       const [firstArgument] = node.arguments
-      if ((isDynamicImport || isRequire) && firstArgument && ts.isStringLiteralLike(firstArgument)) specifiers.push(firstArgument.text)
+      if (firstArgument && ts.isStringLiteralLike(firstArgument)) specifiers.push(firstArgument.text)
     }
     // `import type X from "y"` inside a type position (`import("y").T`).
     if (ts.isImportTypeNode(node) && ts.isLiteralTypeNode(node.argument) && ts.isStringLiteral(node.argument.literal)) {
