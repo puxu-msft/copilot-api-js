@@ -489,7 +489,7 @@ export interface AnchorState {
   /** The generation-scoped wire state shared by every anchor and real-block delivery leg. */
   wireState?: GenerationWireState
   /** Alias of `wireState.allocator` retained for the P1/P3M migration seam. */
-  allocator: GenerationWireIndexAllocator
+  allocator?: GenerationWireIndexAllocator
   /** Any synthetic prelude has been injected onto the forwarded track (message envelope and/or content anchor). */
   injected: boolean
   /** The content anchor itself has been injected. Kept separate so enveloped_ping cannot suppress later content escalation. */

@@ -317,7 +317,11 @@ export function createDownstreamDeliverySession(options: CreateDownstreamDeliver
         if (state !== "open") throw new Error("[delivery] cannot begin a leg after delivery termination")
         const current = requireWireState()
         const token = current.allocator.beginLeg(kind, source)
-        current.activeLeg = Object.freeze({ token, kind, source: Object.freeze({ ...source }) })
+        current.activeLeg = Object.freeze({
+          token,
+          kind,
+          source: Object.freeze({ candidateId: source.candidateId, dispatchId: source.dispatchId }),
+        })
         current.legSources.set(token, current.activeLeg.source)
         current.mappings.set(token, new Map())
         return token
@@ -345,6 +349,7 @@ export function createDownstreamDeliverySession(options: CreateDownstreamDeliver
       serializer.enqueue(async () => {
         if (state !== "open") return "write-error"
         const current = requireWireState()
+        if (!current.activeLeg) throw new Error("[delivery] cannot write a real block without an active leg")
         const mapping = current.mappings.get(leg)?.get(upstreamIndex)
         if (!mapping) return "no-mapping"
         const source = current.legSources.get(leg)

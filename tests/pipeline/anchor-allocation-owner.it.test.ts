@@ -25,6 +25,10 @@ const anchorDelta = (index: number): ClientFrame => ({
   event: "content_block_delta",
   data: JSON.stringify({ type: "content_block_delta", index, delta: { type: "text_delta", text: "" } }),
 })
+const anchorStop = (index: number): ClientFrame => ({
+  event: "content_block_stop",
+  data: JSON.stringify({ type: "content_block_stop", index }),
+})
 const realStart = (index: number): ClientFrame => ({
   event: "content_block_start",
   data: JSON.stringify({ type: "content_block_start", index, content_block: { type: "thinking", thinking: "" } }),
@@ -88,16 +92,51 @@ test("first attempted write consumes the index and terminates delivery on failur
   expect(await port.allocateAndWriteAnchor(({ wireIndex, envelope }) => [envelope.anchor(anchorStart(wireIndex))])).toBeUndefined()
 })
 
-test("real frames carry the active leg's real candidate provenance", async () => {
+test("primary, recovery, and continuation legs retain distinct real provenance", async () => {
   const { port, wireState } = setup()
-  const leg = await port.beginLeg("primary", { candidateId: "candidate-primary", dispatchId: "dispatch-primary" })
-  const mapping = await port.withAllocatedRealBlock(0, ({ mapping: allocated, envelope }) => [envelope.real(allocated.remap(realStart(0)))])
-  expect(mapping?.leg).toBe(leg)
-  expect(wireState.legSources.get(leg)).toEqual({ candidateId: "candidate-primary", dispatchId: "dispatch-primary" })
+  const sources = [
+    { kind: "primary" as const, candidateId: "candidate-primary", dispatchId: "dispatch-primary" },
+    { kind: "recovery" as const, candidateId: "candidate-recovery", dispatchId: "dispatch-recovery" },
+    { kind: "continuation" as const, candidateId: "candidate-cont", dispatchId: "dispatch-cont" },
+  ]
+  const legs = []
+  for (const source of sources) {
+    const leg = await port.beginLeg(source.kind, source)
+    const mapping = await port.withAllocatedRealBlock(0, ({ mapping: allocated, envelope }) => [envelope.real(allocated.remap(realStart(0)))])
+    expect(mapping?.leg).toBe(leg)
+    expect(wireState.legSources.get(leg)).toEqual({ candidateId: source.candidateId, dispatchId: source.dispatchId })
+    legs.push(leg)
+  }
+  expect(new Set(legs).size).toBe(3)
+  expect(wireState.legSources.get(legs[0])).not.toEqual(wireState.legSources.get(legs[2]))
 })
 
 test("real allocation without beginLeg is rejected rather than degraded", async () => {
   const { port, wireState } = setup()
   await expect(port.withAllocatedRealBlock(0, ({ mapping, envelope }) => [envelope.real(mapping.remap(realStart(0)))])).rejects.toThrow("active leg")
   expect(wireState.allocator.nextRealIndex()).toBe(0)
+})
+
+test("handler anchor state and delivery port share the exact GenerationWireState reference", () => {
+  const { wireState, delivery, port } = setup()
+  expect(port.wireState).toBe(wireState)
+  expect(delivery.allocationPort).toBe(port)
+  expect(port.wireState?.allocator).toBe(wireState.allocator)
+})
+
+test("closeOpenAnchor passes the allocated index explicitly and is idempotent", async () => {
+  const { wireState, writes, port } = setup()
+  expect(await port.allocateAndWriteAnchor(({ wireIndex, envelope }) => [envelope.anchor(anchorStart(wireIndex))])).toBe(0)
+  const seen: Array<number> = []
+
+  expect(
+    await port.closeOpenAnchor((index, envelope) => {
+      seen.push(index)
+      return envelope.anchor(anchorStop(index))
+    }, "before-real"),
+  ).toBe("closed")
+  expect(await port.closeOpenAnchor((index, envelope) => envelope.anchor(anchorStop(index)), "before-real")).toBe("none")
+  expect(seen).toEqual([0])
+  expect(wireState.openAnchorIndex).toBeUndefined()
+  expect(writes.map(({ frame }) => JSON.parse(frame.data as string).type)).toEqual(["content_block_start", "content_block_stop"])
 })

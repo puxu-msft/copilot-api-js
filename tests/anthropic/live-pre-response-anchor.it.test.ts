@@ -170,8 +170,8 @@ describe("live pre-response silence — handler-owned unique injector synthesize
     // anchorState reflects the injection (shared with the driver's live/buffered reconciliation).
     expect(anchorState.injected).toBe(true)
     expect(anchorState.messageStartForwarded).toBe(true)
-    expect(anchorState.allocator.anchorsOpened()).toBe(1)
-    expect(anchorState.allocator.nextAnchorIndex()).toBe(1)
+    expect(anchorState.wireState?.allocator.anchorsOpened()).toBe(1)
+    expect(anchorState.wireState?.allocator.nextAnchorIndex()).toBe(1)
 
     sink.close?.()
   })

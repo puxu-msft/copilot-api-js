@@ -119,3 +119,46 @@ test("production allocation is owned only by keepalive allocator internals and d
   }
   expect(violations).toEqual([])
 })
+
+test("detectors bite on a second allocator creator and a second legacy provenance boundary", () => {
+  expect('const second = createGenerationWireIndexAllocator()'.match(/createGenerationWireIndexAllocator\s*\(/g)).toHaveLength(1)
+  expect('candidateId: "legacy", dispatchId: "legacy"'.match(/"legacy"/g)).toHaveLength(2)
+})
+
+test("the handler is the only production allocator creation point", async () => {
+  const creators: Array<string> = []
+  for (const file of await sourceFiles(path.join(repoRoot, "src"))) {
+    if (file.endsWith("/anthropic/keepalive-anchor.ts")) continue // factory definition, not a call site
+    const count = (await readFile(file, "utf8")).match(/createGenerationWireIndexAllocator\s*\(/g)?.length ?? 0
+    for (let i = 0; i < count; i++) creators.push(path.relative(repoRoot, file))
+  }
+  expect(creators).toEqual(["src/routes/messages/handler-v4.ts"])
+})
+
+test("legacy candidate provenance is confined to asDeliveryFrame", async () => {
+  const occurrences: Array<string> = []
+  for (const file of await sourceFiles(path.join(repoRoot, "src"))) {
+    const source = await readFile(file, "utf8")
+    const count = source.match(/"legacy"/g)?.length ?? 0
+    for (let i = 0; i < count; i++) occurrences.push(path.relative(repoRoot, file))
+  }
+  expect(occurrences).toEqual(["src/lib/pipeline/delivery/session.ts", "src/lib/pipeline/delivery/session.ts"])
+  const session = await readFile(path.join(repoRoot, "src/lib/pipeline/delivery/session.ts"), "utf8")
+  const helper = session.slice(session.indexOf("function asDeliveryFrame"), session.indexOf("async function writeToSink"))
+  expect(helper.match(/"legacy"/g)).toHaveLength(2)
+})
+
+test("detector bites on owner-private mapping and open-anchor access", () => {
+  expect("state.mappings.get(leg)".match(/\.mappings\.(?:get|set|delete)\s*\(/g)).toHaveLength(1)
+  expect("state.openAnchorIndex = 1".match(/\bopenAnchorIndex\b/g)).toHaveLength(1)
+})
+
+test("mapping registry and open anchor state are accessed only by the delivery owner", async () => {
+  const violations: Array<string> = []
+  for (const file of await sourceFiles(path.join(repoRoot, "src"))) {
+    if (file.endsWith("/pipeline/delivery/session.ts") || file.endsWith("/pipeline/types.ts")) continue
+    const source = await readFile(file, "utf8")
+    if (/\.mappings\.(?:get|set|delete)\s*\(/.test(source) || /\bopenAnchorIndex\b/.test(source)) violations.push(path.relative(repoRoot, file))
+  }
+  expect(violations).toEqual([])
+})

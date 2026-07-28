@@ -22,7 +22,6 @@ import type {
 import type { RequestContext } from "~/lib/context/request"
 import type { FrozenHedgePolicy } from "~/lib/pipeline/generation/hedge-policy"
 
-import { createGenerationWireIndexAllocator } from "~/lib/anthropic/keepalive-anchor"
 import { classifyError } from "~/lib/error"
 import { recordRetryGiveUp } from "~/lib/observability/retry-giveups"
 import { recordRetryStrategyFire } from "~/lib/observability/retry-strategy-fires"
@@ -1108,7 +1107,6 @@ export async function runResponseBufferedSink(
   // `ping`-mode buffered stream that never injects).
   const anchor = opts.anchor
   const anchorState: AnchorState = opts.anchorState ?? {
-    allocator: createGenerationWireIndexAllocator(),
     injected: false,
     messageStartForwarded: false,
     anchorBlockOpen: false,
