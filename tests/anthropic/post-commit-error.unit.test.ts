@@ -119,8 +119,11 @@ describe("classifyPostCommitAbort — signal-state fallback (client > reaper > h
     expect(classifyPostCommitAbort(false, true)).toBe("reaper-cancel")
   })
 
-  test("header-timeout when neither signal flipped (header-wait elapsed)", () => {
-    expect(classifyPostCommitAbort(false, false)).toBe("header-timeout")
+  test("no signal, no evidence → unknown-abort, NOT an invented header timeout", () => {
+    // The old fallback answered "timeout" here on the theory that nothing else was
+    // left. That theory is how a 609ms request got shipped as a 900s header timeout;
+    // pre-commit already refuses to guess, and this is the same refusal.
+    expect(classifyPostCommitAbort(false, false)).toBe("unknown-abort")
   })
 })
 
@@ -158,9 +161,9 @@ describe("classifyPostCommitAbort — provenance beats signal state", () => {
     expect(classifyPostCommitAbort(true, true, e)).toBe("client-abort")
   })
 
-  test("an untagged abort falls back to signal state (unchanged behaviour)", () => {
+  test("an untagged abort falls back to signal state, and to unknown-abort when even that is silent", () => {
     expect(classifyPostCommitAbort(false, true, abortNamed("AbortError"))).toBe("reaper-cancel")
-    expect(classifyPostCommitAbort(false, false, abortNamed("AbortError"))).toBe("header-timeout")
+    expect(classifyPostCommitAbort(false, false, abortNamed("AbortError"))).toBe("unknown-abort")
   })
 })
 
@@ -171,6 +174,7 @@ describe("postCommitAbortFrame", () => {
     expect(parse(postCommitAbortFrame("request-deadline")).error?.message).toContain("hard deadline")
     expect(parse(postCommitAbortFrame("reaper-cancel")).error?.message).toContain("stale-request reaper")
     expect(parse(postCommitAbortFrame("dispatch-cancel")).error?.message).toContain("dispatch cancelled")
+    expect(parse(postCommitAbortFrame("unknown-abort")).error?.message).not.toContain("timed out before sending response headers")
     // The canonical Anthropic error type stays `api_error` for every kind — the SDK branches on it.
     expect(parse(postCommitAbortFrame("shutdown")).error?.type).toBe("api_error")
   })

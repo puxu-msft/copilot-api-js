@@ -100,7 +100,15 @@ export function anthropicErrorFrame(type: string, message: string): ClientFrame 
 }
 
 /** A POST-COMMIT abort, classified by the abort's own provenance (signal state is the fallback). */
-export type PostCommitAbortKind = "client-abort" | "shutdown" | "header-timeout" | "request-deadline" | "reaper-cancel" | "request-cancel" | "dispatch-cancel"
+export type PostCommitAbortKind =
+  | "client-abort"
+  | "shutdown"
+  | "header-timeout"
+  | "request-deadline"
+  | "reaper-cancel"
+  | "request-cancel"
+  | "dispatch-cancel"
+  | "unknown-abort"
 
 /** The terminal SSE error-frame message for each abort kind (`client-abort` writes nothing — the client is gone). */
 const POST_COMMIT_ABORT_MESSAGE: Record<Exclude<PostCommitAbortKind, "client-abort">, string> = {
@@ -110,6 +118,7 @@ const POST_COMMIT_ABORT_MESSAGE: Record<Exclude<PostCommitAbortKind, "client-abo
   "reaper-cancel": "Request cancelled by the stale-request reaper",
   "request-cancel": "Request cancelled",
   "dispatch-cancel": "Upstream dispatch cancelled",
+  "unknown-abort": "Request aborted (no cause recorded)",
 }
 
 /** Terminal `event: error` frame for a post-commit abort of `kind`. */
@@ -126,11 +135,12 @@ export function postCommitAbortFrame(kind: Exclude<PostCommitAbortKind, "client-
  * 4. the cancellation-cause tag — hard deadline vs stale reaper vs explicit cancel vs
  *    dispatch teardown.
  * 5. fallback: `reaperAborted` (the request's lifecycle signal fired but nobody tagged the
- *    reason) → reaper-cancel; otherwise the only remaining pre-header cause is the
- *    header-wait timeout.
- *
- * Steps 2-4 are what makes this truthful: with signal state alone, a hard-deadline
- * cancellation and a reaper cancel are literally the same boolean.
+ *    reason) → reaper-cancel.
+ * 6. nothing at all → `unknown-abort`. It deliberately does NOT default to a header
+ *    timeout: naming a cause we cannot evidence is the exact failure this classifier
+ *    exists to end (a 609ms request once shipped as a 900s header timeout), and it
+ *    mirrors what `forwardError` does pre-commit. An `unknown-abort` in the wild is a
+ *    signal in its own right — some path is not carrying its provenance yet.
  */
 export function classifyPostCommitAbort(clientAborted: boolean, reaperAborted: boolean, error?: unknown): PostCommitAbortKind {
   if (clientAborted) return "client-abort"
@@ -144,5 +154,5 @@ export function classifyPostCommitAbort(clientAborted: boolean, reaperAborted: b
     if (cause === "dispatch-cancel") return "dispatch-cancel"
   }
   if (reaperAborted) return "reaper-cancel"
-  return "header-timeout"
+  return "unknown-abort"
 }
