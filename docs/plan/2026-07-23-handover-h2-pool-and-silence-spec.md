@@ -1,6 +1,17 @@
 # 会话交接：h2 池事故簇 + 上游静默 spec（2026-07-23）
 
+> **状态：进行中**（B2 实施到 P4 Task 4.0 完成）。**核验基线：** master `c716d921` / 分支 `feat/upstream-silence-recovery` @ `1c5ea173`，**2026-07-28**。
+> **工作区**：隔离 worktree `.worktrees/upstream-silence-recovery`（**未合回 master**；node_modules 向上解析主树、**不是**依赖隔离）。分支上无未提交改动（除 gitignored 的 `.superpowers/sdd/progress.md` ledger）。主树有并发 peer 的未提交 WIP（`.claude/settings.json`、`docs/lifecycle.md`、`docs/memory/*` 等）——**不是本轮的，别动**。
+> **已跑门禁**（基线时刻）：`typecheck` 绿；`bun test --parallel .unit.test .it.test .http.test` = 6602 pass / 8 skip / 3 fail，**3 个失败单跑全过**（2 个 Bun worker SIGILL + 1 个负载敏感 UDS sidecar）。⚠ **`bun run test:backend` 的汇总计数不可信**（见 §0.2 末尾），取真实数请用上面那条直接命令。
+>
 > 交接给新会话继续。**最新实施真相在 §0.2（2026-07-28 更新）——先读它**；§0/§0.1 是 2026-07-23 的历史语境，其中「Q1 ≥125s」「B1+B2-P0 可开工」等表述已被 §0.2 supersede。**权威事实以代码 + §0.2 为准**。
+
+## 本轮我犯过的错（写在最前——只给结论会让接手重犯产出结论的错误）
+
+1. **在过时底座上干了一整轮**：开工时没先合 master，等到 Task 0.5（sink supervisor）才发现 master 早已重写了 delivery/heartbeat 生命周期、且我的 B1 已被主线 supersede。**教训**：动某子系统前先 `git log ..master -- <该子系统路径>`；本轮第二次合并就是踩过一次后主动做的。
+2. **把一句错误的经验写进了 skill**：Task 0.6 的正样本对照我写成「`unhandledRejection` 探针实测 3/3 红」，被 reviewer 用第三组 mutation 证伪——那条探针**结构上永不触发**（helper 里 `await request` 消掉了 bug 的前提「无 live awaiter」），真正咬住的是旁边的状态断言。已订正 `debugging-server-crashes` 变体 C。**教训**：断言否定性结论前，先确认测试拓扑**保留了 bug 的触发条件**。
+3. **把工具缺陷判重了**：发现 `test:backend` 恒报 `0 tests` 时我说是「静默假绿」——**不准确**，门的退出码由各 shard 决定、真失败照样红，坏的只是证据行。已当场更正。
+
 
 ## 0. 一句话现状
 
