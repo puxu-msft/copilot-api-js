@@ -17,12 +17,16 @@
 |---|---|---|
 | bun workspace | **移出** | 根 `workspaces` 不再含 `ui`；`ui/` 自带 `bun.lock`，须 `cd ui && bun install` |
 | root `eslint .` | **整体 ignore** | `ui/**` 不再 lint。连带移除根三个纯 Vue devDep（`eslint-plugin-vue`/`@vue/eslint-config-typescript`/`vue-eslint-parser`）与 `defineConfigWithVueTs` 包裹 |
+| root `knip` | **整体 ignore** | 新建 `knip.json` 排除 `ui/**`。**反直觉**：移出 workspaces 不会让 knip 忽略该目录，反而把 `ui/` 从「有自己 entry point 的 workspace」降级成「一堆没人引用的散文件」——脱钩当天 knip 因此把 97 个 ui 文件报成 unused |
 | 根 `*:ui` 脚本 | **保留，改 `cd` 形式** | 9 个入口名不变，实现从 `--filter copilot-api-ui`（已不能解析）改为 `cd ui && bun run …` |
-| `~backend/*` | **保留** | 唯一刻意留下的编译链耦合，见下方「代价」 |
+| `~backend/*` | **保留** | 刻意留下的主要耦合，见下方「代价」 |
+| `ui/bunfig.toml` preload | **保留** | 向上引用仓库的 `tests/helpers/sandbox-paths.ts`（测试期 fs 沙箱地板）。单向、单文件，沙箱比自足重要 |
 
-已经无需处理的：根 `build`（2026-07-22 UI 外置时就不链 UI 了）、根 `tsconfig`（`include` 从来不含 `ui/`）、后端测试档位（`tests/infra/test-discovery-matrix.unit.test.ts` 已禁止聚合前端套件）。
+已经无需处理的：根 `build`（2026-07-22 UI 外置时就不链 UI 了）、根 `tsconfig`（`include` 从来不含 `ui/`）、后端测试档位（`tests/infra/test-discovery-matrix.unit.test.ts` 已禁止聚合前端套件）。经异模型 reviewer 逐个入口核查后确认未拉链的还有：`bunfig.toml`（root 与 ui 各一份）、`tsdown.config.ts`、`prettier.config.mjs`、`prepare`/`prepack`/`release` 生命周期、发布 `files`（实跑 `npm pack --dry-run` 得 8 个文件、UI 为 0）、`scripts/**`、`.gitignore`、`.claude/`、`contrib/`。
 
-脱钩后 root lint 问题数 395 → 368，正好少掉 `ui/` 的 27 个，其余目录一个不增。机器护栏见 `tests/infra/ui-v3-decoupling.unit.test.ts`（workspaces / tsconfig / eslint ignore / `--filter` 残留四项，含「ui 目录仍存在」的非空转前提校验与变异正样本对照）。
+脱钩后 root lint 问题数 395 → 368，正好少掉 `ui/` 的 27 个，其余目录一个不增；root knip 的 `ui/` 条目 97 → 0，其余 10158 条逐条不变（集合恒等）。机器护栏见 `tests/infra/ui-v3-decoupling.unit.test.ts`（workspaces / tsconfig / eslint ignore / knip ignore / `--filter` 残留五项，含「ui 目录仍存在」的非空转前提校验与变异正样本对照）。
+
+> **附带发现（不在本次范围，未处理）**：root `knip` 本身目前是不可用的噪音源——它没有任何配置（`knip.json` 是本次为排除 ui 才新建的），总计报出 10255 条，其中 `refs/`（vendored 的 Claude Code 参考源码）独占 9403 条、`tests/` 707 条。要让 `bun run knip` 重新成为有意义的门，需要单独一轮配置工作（各 workspace 的 entry point、忽略 `refs/` 等），属独立工作项。
 
 ### 代价：`~backend` 会静默烂掉，且没有护栏
 

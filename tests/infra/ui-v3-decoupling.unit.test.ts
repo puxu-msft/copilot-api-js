@@ -66,4 +66,20 @@ describe("legacy Vue ui/ stays detached from the main chain", () => {
       .map(([name, body]) => `${name}: ${body}`)
     expect(offenders, `root script(s) still target ui/ through the bun workspace filter:\n${offenders.join("\n")}`).toEqual([])
   })
+
+  test("root knip excludes ui/", async () => {
+    // 反直觉之处：移出 workspaces 并**不会**让 knip 忽略该目录 —— 恰恰相反，ui/ 从
+    // 「有自己 entry point 的 workspace」降级成「一堆没人引用的散文件」，脱钩当天
+    // knip 因此把 97 个 ui/ 文件报成 unused。故须显式 ignore。
+    const knip = await readJson("knip.json")
+    const ignore = knip.ignore as Array<string>
+    // 按 glob 行为判定而非字符串相等：换一种等价写法（`ui/**/*`、`ui/`）不该让守卫失效，
+    // 而一个碰巧含 "ui" 字样却匹配不到的模式也不该蒙混过关。
+    const matched = ignore.filter((p) => new Bun.Glob(p).match("ui/src/main.ts"))
+    expect(matched, `knip.json ignore has no pattern covering ui/ (patterns: ${ignore.join(", ")})`).not.toEqual([])
+    // 正样本对照：这些模式不该顺手把后端或 ui-v4 也一起忽略掉。
+    for (const kept of ["src/server.ts", "ui-v4/src/main.tsx"]) {
+      expect(ignore.some((p) => new Bun.Glob(p).match(kept)), `knip.json ignore unexpectedly covers ${kept}`).toBe(false)
+    }
+  })
 })
