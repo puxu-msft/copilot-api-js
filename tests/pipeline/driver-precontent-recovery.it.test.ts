@@ -170,7 +170,7 @@ describe("driver pre-content recovery", () => {
 
     await expect(driver.runRequest({ body: {}, headers: new Headers() })).rejects.toThrow("primary failed-open")
 
-    await expect(driver.runPreContentRecovery("upstream-rst")).rejects.toThrow(/server.*execution.*risk/i)
+    await expect(driver.runPreContentRecovery("upstream-rst")).rejects.toThrow(/pre-ready.*server.*execution.*risk/i)
     expect(openCalls).toBe(1)
   })
 
@@ -249,7 +249,7 @@ describe("driver pre-content recovery", () => {
     expect(primary.ok).toBe(true)
     if (!primary.ok) throw new Error("primary should become ready")
 
-    await expect(driver.runResponseRecovery(primary.upstream, primary.env, "transport-close")).rejects.toThrow(/server.*execution.*risk/i)
+    await expect(driver.runResponseRecovery(primary.upstream, primary.env, "transport-close")).rejects.toThrow(/ready-state.*server.*execution.*risk/i)
     expect(openCalls).toBe(1)
   })
 })

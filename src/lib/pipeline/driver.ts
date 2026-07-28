@@ -216,15 +216,12 @@ interface PreReadyFailure {
   readonly env: RequestEnvelope
 }
 
-/**
- * Blocks B2 pre-content recovery after either a pre-ready dispatch failure or a ready-state response failure.
- * The class name and message use the B2 umbrella term "pre-content"; they do not identify one mounting point.
- */
+/** Blocks B2 pre-content recovery after either a pre-ready dispatch failure or a ready-state response failure. */
 export class ServerExecutionRiskBlocksPreContentRecoveryError extends Error {
   readonly risk: Exclude<ServerExecutionRisk, { readonly kind: "none" }>
 
-  constructor(risk: Exclude<ServerExecutionRisk, { readonly kind: "none" }>) {
-    super(`[driver] pre-content recovery blocked by server execution risk: ${risk.kind} (${risk.toolType})`)
+  constructor(risk: Exclude<ServerExecutionRisk, { readonly kind: "none" }>, path: "pre-ready" | "ready-state") {
+    super(`[driver] ${path} pre-content recovery blocked by server execution risk: ${risk.kind} (${risk.toolType})`)
     this.name = "ServerExecutionRiskBlocksPreContentRecoveryError"
     this.risk = risk
   }
@@ -434,7 +431,7 @@ async function runPreContentRecovery(
 ): Promise<DriverRequestResult> {
   if (!failure) throw new Error("[driver] runPreContentRecovery called without a preceding pre-ready failure")
 
-  assertNoServerExecutionRisk(deps, failure.env)
+  assertNoServerExecutionRisk(deps, failure.env, "pre-ready")
   const candidate = await failure.coordinator.runRecoveryFromPreReadyFailure(reason, failure.env)
   generation.bind(failure.coordinator, candidate)
   return { ok: true, upstream: candidate.upstream, env: candidate.env }
@@ -450,17 +447,17 @@ async function runResponseRecovery(
   const binding = generation.bindings.get(upstream)
   if (!binding) throw new Error("[driver] runResponseRecovery called with an upstream that has no generation binding")
 
-  assertNoServerExecutionRisk(deps, env)
+  assertNoServerExecutionRisk(deps, env, "ready-state")
   const candidate = await binding.coordinator.runRecovery(binding.candidate, reason, env, "precontent-recovery")
   generation.bind(binding.coordinator, candidate)
   return { ok: true, upstream: candidate.upstream, env: candidate.env }
 }
 
-function assertNoServerExecutionRisk(deps: DriverDeps, env: RequestEnvelope): void {
+function assertNoServerExecutionRisk(deps: DriverDeps, env: RequestEnvelope, path: "pre-ready" | "ready-state"): void {
   // Prepare the actual recovery wire before deciding eligibility. Server-tool classification must inspect
   // that final target wire and must reject rather than inherit the hedge policy's allowServerTools escape hatch.
   const risk = classifyServerExecutionRisk(outboundPrepareWire(deps, env))
-  if (risk.kind !== "none") throw new ServerExecutionRiskBlocksPreContentRecoveryError(risk)
+  if (risk.kind !== "none") throw new ServerExecutionRiskBlocksPreContentRecoveryError(risk, path)
 }
 
 /** S3: assemble the request-rewrite chain and apply each in declared order. */
