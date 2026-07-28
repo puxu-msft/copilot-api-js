@@ -70,6 +70,7 @@ import {
   anchorStopFrame,
   closeAnchorIfOpen,
   createGenerationWireIndexAllocator,
+  createGenerationWireState,
   isAnthropicContentBlockStart,
   isAnthropicMessageStart,
   makeSyntheticAnchorInjector,
@@ -1075,8 +1076,11 @@ function makeAnchoredSseSink(
   const anchorHooks = buildAnthropicAnchorHooks(state.streamKeepaliveMode !== "ping" || onDemandEscalation)
   // One shared wire state, with separate envelope/content latches. The normal enveloped_ping
   // prelude sets `injected`; the content injector gates on `contentAnchorInjected` instead.
+  const allocator = createGenerationWireIndexAllocator()
+  const wireState = createGenerationWireState(allocator)
   const anchorState: AnchorState = {
-    allocator: createGenerationWireIndexAllocator(),
+    wireState,
+    allocator,
     injected: false,
     contentAnchorInjected: false,
     messageStartForwarded: false,
@@ -1106,6 +1110,7 @@ function makeAnchoredSseSink(
       })
     : undefined
   const sink = makeDeliverySseSink(stream, {
+    wireState,
     onForwarded,
     streamStartMs,
     ...(isRealContentFrame && { isRealContentFrame }),

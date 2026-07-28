@@ -1,5 +1,12 @@
 import type { ClientFrameEnvelope } from "../stream/frame-envelope"
-import type { ClientFrame } from "../types"
+import type {
+  //
+  ClientFrame,
+  GenerationWireState,
+  LegSource,
+  LegToken,
+  WireBlockMapping,
+} from "../types"
 
 /** Synthetic provenance selected by the delivery engine's dedicated sink port. */
 export type DeliverySyntheticKind = "keepalive" | "anchor" | "synthetic-message-start" | "synthetic"
@@ -9,6 +16,32 @@ export type {
   LegToken,
   WireBlockMapping,
 } from "../types"
+
+export type WireWriteSpec =
+  | Readonly<{ kind: "real"; frame: ClientFrame }>
+  | Readonly<{ kind: "anchor"; frame: ClientFrame }>
+  | Readonly<{ kind: "keepalive"; frame: ClientFrame }>
+
+export interface WireEnvelopeFactory {
+  real(frame: ClientFrame): WireWriteSpec
+  anchor(frame: ClientFrame): WireWriteSpec
+  keepalive(frame: ClientFrame): WireWriteSpec
+}
+
+export interface WireBlockAllocationPort {
+  readonly wireState?: GenerationWireState
+  allocateAndWriteAnchor(build: (ctx: { wireIndex: number; envelope: WireEnvelopeFactory }) => ReadonlyArray<WireWriteSpec>): Promise<number | undefined>
+  withAllocatedRealBlock(
+    upstreamIndex: number,
+    build: (ctx: { mapping: WireBlockMapping; envelope: WireEnvelopeFactory }) => ReadonlyArray<WireWriteSpec>,
+  ): Promise<WireBlockMapping | undefined>
+  beginLeg(kind: "primary" | "continuation" | "recovery", source: LegSource): Promise<LegToken>
+  closeOpenAnchor(
+    buildStop: (index: number, envelope: WireEnvelopeFactory) => WireWriteSpec,
+    mode: "before-real" | "terminal",
+  ): Promise<"closed" | "none" | "write-error">
+  writeBlockFrame(leg: LegToken, upstreamIndex: number, frame: ClientFrame): Promise<"written" | "no-mapping" | "write-error">
+}
 
 /** One already client-shaped frame waiting to enter the unique wire serializer. */
 export type DeliveryFrame = ClientFrameEnvelope

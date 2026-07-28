@@ -41,8 +41,12 @@ import type { SseEventRecord } from "~/lib/history"
 import { createDownstreamDeliverySession } from "~/lib/pipeline/delivery/session"
 import { readSyntheticKind } from "~/lib/pipeline/frame-origin"
 
-import type { ClientFrame } from "./types"
-import type { ClientSink } from "./types"
+import type {
+  //
+  ClientFrame,
+  ClientSink,
+  GenerationWireState,
+} from "./types"
 
 /**
  * The currently-open content block observed on the FORWARDED stream — lets a block-aware
@@ -96,6 +100,8 @@ export interface SseSinkHeartbeat {
 
 /** {@link makeSseSink} options — heartbeat (optional) + forwarded-track sampling (optional). */
 export interface SseSinkOptions {
+  /** Optional Anthropic generation wire state. Only the handler composition root creates it. */
+  wireState?: GenerationWireState
   /** Forward-idle keepalive (omitted / `intervalSec<=0` → no timer). */
   heartbeat?: SseSinkHeartbeat
   /**
@@ -477,11 +483,12 @@ export function makeSseSink(stream: SSEStreamingApi, opts: SseSinkOptions = {}):
  * exclusively owns the heartbeat timer and post-wire block ledger across upstream retries.
  */
 export function makeDeliverySseSink(stream: SSEStreamingApi, opts: SseSinkOptions = {}): ClientSink {
-  const { heartbeat, ...rawOptions } = opts
+  const { heartbeat, wireState, ...rawOptions } = opts
   const rawSink = makeSseSink(stream, rawOptions)
   const delivery = createDownstreamDeliverySession({
     sink: rawSink,
     monotonicNow: Date.now,
+    ...(wireState && { wireState }),
     ...(heartbeat
       && heartbeat.intervalSec > 0 && {
         heartbeat: {

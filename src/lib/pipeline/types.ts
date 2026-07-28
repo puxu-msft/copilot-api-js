@@ -446,6 +446,20 @@ export interface WireIndexReservation<Value> {
   rollback(): void
 }
 
+export interface LegSource {
+  readonly candidateId: string
+  readonly dispatchId: string
+}
+
+/** Shared generation state injected into the delivery owner; callers never mutate its registries. */
+export interface GenerationWireState {
+  readonly allocator: GenerationWireIndexAllocator
+  readonly mappings: Map<LegToken, Map<number, WireBlockMapping>>
+  readonly legSources: Map<LegToken, LegSource>
+  activeLeg?: Readonly<{ token: LegToken; kind: "primary" | "continuation" | "recovery"; source: LegSource }>
+  openAnchorIndex?: number
+}
+
 export interface GenerationWireIndexAllocator {
   /** Peek the wire index the NEXT anchor block will occupy. */
   nextAnchorIndex: () => number
@@ -472,7 +486,9 @@ export interface GenerationWireIndexAllocator {
 }
 
 export interface AnchorState {
-  /** The generation-scoped monotonic authority shared by every anchor and real-block delivery leg. */
+  /** The generation-scoped wire state shared by every anchor and real-block delivery leg. */
+  wireState?: GenerationWireState
+  /** Alias of `wireState.allocator` retained for the P1/P3M migration seam. */
   allocator: GenerationWireIndexAllocator
   /** Any synthetic prelude has been injected onto the forwarded track (message envelope and/or content anchor). */
   injected: boolean

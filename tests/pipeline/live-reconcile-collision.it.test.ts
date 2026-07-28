@@ -49,10 +49,12 @@ import {
   remapAnthropicBlockIndex,
   syntheticMessageStartFrame,
   createGenerationWireIndexAllocator,
+  createGenerationWireState,
 } from "~/lib/anthropic/keepalive-anchor"
 import { makeReconcilingSink } from "~/lib/anthropic/live-reconcile"
 import { createRequestContext } from "~/lib/context/request"
-import { makeSseSink } from "~/lib/pipeline/client-sink"
+import { makeDeliverySseSink } from "~/lib/pipeline/client-sink"
+import { getDownstreamDeliverySession } from "~/lib/pipeline/delivery/session"
 import {
   //
   createPipelineDriver,
@@ -139,11 +141,11 @@ const emptyDeltaFor = (ob?: OpenBlock): ClientFrame =>
     { event: "content_block_delta", data: JSON.stringify({ type: "content_block_delta", index: ob.index, delta: { type: "text_delta", text: "" } }) }
   : PING
 
-function stubSseStream(): { stream: Parameters<typeof makeSseSink>[0]; written: Array<{ data: string; event?: string }> } {
+function stubSseStream(): { stream: Parameters<typeof makeDeliverySseSink>[0]; written: Array<{ data: string; event?: string }> } {
   const written: Array<{ data: string; event?: string }> = []
   const stream = {
     writeSSE: (m: { data: string; event?: string }) => (written.push({ data: m.data, ...(m.event !== undefined && { event: m.event }) }), Promise.resolve()),
-  } as unknown as Parameters<typeof makeSseSink>[0]
+  } as unknown as Parameters<typeof makeDeliverySseSink>[0]
   return { stream, written }
 }
 
@@ -172,20 +174,23 @@ function anchorHooks(): AnchorHooks {
 }
 
 /**
- * Build the LIVE sink stack the handler wires (spec §10.1.5 C1 / §10.3): the INNER {@link makeSseSink}
+ * Build the LIVE sink stack the handler wires (spec §10.1.5 C1 / §10.3): the INNER {@link makeDeliverySseSink}
  * carries the handler-owned unique injector on `heartbeat.injectAnchor` (self-referencing the inner sink
  * via a holder), and the DECORATED sink ({@link makeReconcilingSink}) is what the live pump writes real
  * frames to. The injector always writes to the INNER sink (its prelude must NOT be reconciled), while the
  * pump's real frames flow through the decorator. Both share ONE {@link AnchorState}.
  */
 function buildLiveStack(
-  stream: Parameters<typeof makeSseSink>[0],
+  stream: Parameters<typeof makeDeliverySseSink>[0],
   onForwarded: (r: SseEventRecord) => void,
   resolvedName: string,
   reqId: string,
 ): { pumpSink: ClientSink; anchorState: AnchorState } {
+  const allocator = createGenerationWireIndexAllocator()
+  const wireState = createGenerationWireState(allocator)
   const anchorState: AnchorState = {
-    allocator: createGenerationWireIndexAllocator(),
+    wireState,
+    allocator,
     injected: false,
     messageStartForwarded: false,
     anchorBlockOpen: false,
@@ -194,11 +199,13 @@ function buildLiveStack(
   const anchor = anchorHooks()
   const sinkHolder: { current: ClientSink | undefined } = { current: undefined }
   const injector = makeSyntheticAnchorInjector({ anchor, state: anchorState, getSink: () => sinkHolder.current, resolvedName, reqId })
-  const inner = makeSseSink(stream, {
+  const inner = makeDeliverySseSink(stream, {
+    wireState,
     onForwarded,
     heartbeat: { intervalSec: 15, pingFrame: emptyDeltaFor, injectAnchor: injector },
   })
   sinkHolder.current = inner
+  void getDownstreamDeliverySession(inner)?.allocationPort.beginLeg("primary", { candidateId: "candidate-test", dispatchId: "dispatch-test" })
   const pumpSink = makeReconcilingSink(inner, anchorState, anchor)
   return { pumpSink, anchorState }
 }

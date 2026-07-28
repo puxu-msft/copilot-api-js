@@ -44,9 +44,11 @@ import {
   remapAnthropicBlockIndex,
   syntheticMessageStartFrame,
   createGenerationWireIndexAllocator,
+  createGenerationWireState,
 } from "~/lib/anthropic/keepalive-anchor"
 import { createRequestContext } from "~/lib/context/request"
-import { makeSseSink } from "~/lib/pipeline/client-sink"
+import { makeDeliverySseSink } from "~/lib/pipeline/client-sink"
+import { getDownstreamDeliverySession } from "~/lib/pipeline/delivery/session"
 import {
   //
   createPipelineDriver,
@@ -143,11 +145,11 @@ const emptyDeltaFor = (ob?: OpenBlock): ClientFrame => {
   return PING
 }
 
-function stubSseStream(): { stream: Parameters<typeof makeSseSink>[0]; written: Array<{ data: string; event?: string }> } {
+function stubSseStream(): { stream: Parameters<typeof makeDeliverySseSink>[0]; written: Array<{ data: string; event?: string }> } {
   const written: Array<{ data: string; event?: string }> = []
   const stream = {
     writeSSE: (m: { data: string; event?: string }) => (written.push({ data: m.data, ...(m.event !== undefined && { event: m.event }) }), Promise.resolve()),
-  } as unknown as Parameters<typeof makeSseSink>[0]
+  } as unknown as Parameters<typeof makeDeliverySseSink>[0]
   return { stream, written }
 }
 
@@ -170,11 +172,14 @@ const flush = async (): Promise<void> => {
  * the injector's last return (true=injected, false=couldn't, undefined=never fired) for the assertions.
  */
 function buildAnchoredSink(
-  stream: Parameters<typeof makeSseSink>[0],
+  stream: Parameters<typeof makeDeliverySseSink>[0],
   opts: { onForwarded?: (record: SseEventRecord) => void } = {},
 ): { sink: ClientSink; anchor: AnchorHooks; anchorState: AnchorState; lastInjectResult: () => boolean | undefined } {
+  const allocator = createGenerationWireIndexAllocator()
+  const wireState = createGenerationWireState(allocator)
   const anchorState: AnchorState = {
-    allocator: createGenerationWireIndexAllocator(),
+    wireState,
+    allocator,
     injected: false,
     messageStartForwarded: false,
     anchorBlockOpen: false,
@@ -215,11 +220,13 @@ function buildAnchoredSink(
     lastInjectResult = did
     return did
   }
-  const sink = makeSseSink(stream, {
+  const sink = makeDeliverySseSink(stream, {
+    wireState,
     heartbeat: { intervalSec: 15, pingFrame: emptyDeltaFor, injectAnchor },
     ...(opts.onForwarded && { onForwarded: opts.onForwarded }),
   })
   sinkHolder.current = sink
+  void getDownstreamDeliverySession(sink)?.allocationPort.beginLeg("primary", { candidateId: "candidate-test", dispatchId: "dispatch-test" })
   return { sink, anchor, anchorState, lastInjectResult: () => lastInjectResult }
 }
 
@@ -429,7 +436,7 @@ describe("runResponseBufferedSink — buffered empty_text anchor commit close-of
  * be blocked by the commit's `freezeHeartbeat`). `paused()` reports whether the write is currently parked.
  */
 function pausableSseStream(pauseAt: number): {
-  stream: Parameters<typeof makeSseSink>[0]
+  stream: Parameters<typeof makeDeliverySseSink>[0]
   written: Array<{ data: string; event?: string }>
   releaseGate: () => void
   paused: () => boolean
@@ -451,7 +458,7 @@ function pausableSseStream(pauseAt: number): {
         isPaused = false
       }
     },
-  } as unknown as Parameters<typeof makeSseSink>[0]
+  } as unknown as Parameters<typeof makeDeliverySseSink>[0]
   return { stream, written, releaseGate, paused: () => isPaused }
 }
 

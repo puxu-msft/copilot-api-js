@@ -7,10 +7,13 @@ import type {
   ClientFrame,
   ClientSink,
   GenerationWireIndexAllocator,
+  GenerationWireState,
   LegToken,
   WireBlockMapping,
   WireIndexReservation,
 } from "~/lib/pipeline/types"
+
+import { getDownstreamDeliverySession } from "~/lib/pipeline/delivery/session"
 
 import { anthropicSseFrame } from "./sse-frame"
 
@@ -34,6 +37,14 @@ export const PRE_CONTENT_ANCHOR_INDEX = 0
  * and records the wire index assigned to each real block (in upstream order) so the sink/driver can
  * remap upstream block frames via {@link GenerationWireIndexAllocator.realBlockOffset}.
  */
+export function createGenerationWireState(allocator: GenerationWireIndexAllocator): GenerationWireState {
+  return {
+    allocator,
+    mappings: new Map(),
+    legSources: new Map(),
+  }
+}
+
 export function createGenerationWireIndexAllocator(): GenerationWireIndexAllocator {
   let wireCounter = 0
   let anchorCount = 0
@@ -294,46 +305,38 @@ export function makeSyntheticAnchorInjector(args: {
     if (!sink || (independentContentLatch ? state.contentAnchorInjected : state.injected)) return false
     if (independentContentLatch) state.contentAnchorInjected = true
     if (independentContentLatch && state.injected) state.messageStartForwarded = true
-    if (state.messageStartForwarded) {
-      // A real message_start ALREADY reached the client via the live pump (an early upstream message_start
-      // forwarded before this first idle tick — e.g. /responses `response.created` then a long reasoning
-      // silence, recorded by `reconcileLiveFrame`). The wire forbids a second message_start, so do NOT emit
-      // one: open ONLY the anchor block + first empty text_delta to reset CC's 300s watchdog. Sync-flip
-      // `injected`+`anchorBlockOpen` before the first await (race-free vs the commit snapshot, as below).
-      const anchorIndex = state.allocator.nextAnchorIndex()
-      state.allocator.onAnchorOpen()
-      state.injected = true
-      state.anchorBlockOpen = true
-      await (sink.writeAnchor ?? sink.write)(anchor.startFrame(anchorIndex)) // "anchor"; noteBlockState → openBlock={index,text}
-      await (sink.writeKeepalive ?? sink.write)(anchor.deltaFrame(anchorIndex)) // "keepalive": empty text_delta resets CC's 300s watchdog
-      return true
-    }
-    const anchorIndex = state.allocator.nextAnchorIndex()
-    state.allocator.onAnchorOpen()
+    const port = getDownstreamDeliverySession(sink)?.allocationPort
+    if (!port?.wireState) throw new Error("[anchor] delivery allocation owner is unavailable")
     const real = state.capturedMessageStart
-    if (real) {
-      // C1/B1 sync-flip (before the first await — race-free vs the commit snapshot; see docstring).
-      // `anchorBlockOpen` flips HERE too (not after the writeAnchor await): once `injected` is true the
-      // injector is COMMITTED to opening the anchor block@0, so the buffered commit's `injected`+
-      // `anchorBlockOpen` snapshot can never read `injected:true, anchorBlockOpen:false` (which would wrongly
-      // skip the +1 remap). See {@link makeSyntheticEnvelopeInjector} for the enveloped_ping counterpart that
-      // leaves it false.
-      state.injected = true
-      state.messageStartForwarded = true
-      state.anchorBlockOpen = true
-      await sink.write(real) // real captured → forwarded UNMARKED (a real upstream frame)
-    } else {
-      const synthesize = anchor.syntheticMessageStart
-      // Need SOME message_start to open a well-formed prelude; without a synthesizer we cannot (defensive:
-      // `empty_text` always supplies `syntheticMessageStart`) — bail so the tick re-arms to a ping.
-      if (!synthesize) return false
-      state.injected = true
-      state.messageStartForwarded = true
-      state.anchorBlockOpen = true
-      await (sink.writeSyntheticEnvelope ?? sink.write)(synthesize(resolvedName, reqId)) // fabricated → "synthetic-message-start"
+    const synthesize = anchor.syntheticMessageStart
+    if (!state.messageStartForwarded && !real && !synthesize) return false
+
+    // Migration bridge: publish the legacy state intent synchronously before the owner operation queues.
+    // The driver may snapshot these fields while this operation waits behind a flush; the frontier itself
+    // remains private to the serializer. A pre-commit refusal restores all three flags below.
+    const previous = {
+      injected: state.injected,
+      messageStartForwarded: state.messageStartForwarded,
+      anchorBlockOpen: state.anchorBlockOpen,
     }
-    await (sink.writeAnchor ?? sink.write)(anchor.startFrame(anchorIndex)) // "anchor"; noteBlockState → openBlock={index,text}
-    await (sink.writeKeepalive ?? sink.write)(anchor.deltaFrame(anchorIndex)) // "keepalive": empty text_delta resets CC's 300s watchdog
+    state.injected = true
+    state.messageStartForwarded = true
+    state.anchorBlockOpen = true
+    const allocated = await port.allocateAndWriteAnchor(({ wireIndex, envelope }) => {
+      const specs = []
+      if (!previous.messageStartForwarded) {
+        if (real) specs.push(envelope.real(real))
+        else if (synthesize) specs.push(envelope.anchor(synthesize(resolvedName, reqId)))
+      }
+      specs.push(envelope.anchor(anchor.startFrame(wireIndex)), envelope.keepalive(anchor.deltaFrame(wireIndex)))
+      return specs
+    })
+    if (allocated === undefined) {
+      state.injected = previous.injected
+      state.messageStartForwarded = previous.messageStartForwarded
+      state.anchorBlockOpen = previous.anchorBlockOpen
+      return false
+    }
     return true
   }
 }

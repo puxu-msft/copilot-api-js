@@ -7,16 +7,27 @@
  * owner in the next task.
  */
 
-import type { ClientSink } from "../types"
+import type {
+  //
+  ClientFrame,
+  ClientSink,
+  GenerationWireState,
+  LegSource,
+  WireBlockMapping,
+  WireIndexReservation,
+} from "../types"
 import type {
   //
   ClientBlockLedger,
   DeliveredOpenBlock,
   DeliveryFrame,
+  DeliveryHeartbeat,
   DeliverySnapshot,
   DeliverySyntheticKind,
-  DeliveryHeartbeat,
   DeliveryTerminalCommand,
+  WireBlockAllocationPort,
+  WireEnvelopeFactory,
+  WireWriteSpec,
 } from "./types"
 
 import { createDeliverySerializer } from "./serializer"
@@ -26,6 +37,7 @@ export interface CreateDownstreamDeliverySessionOptions {
   readonly sink: ClientSink
   readonly monotonicNow?: () => number
   readonly heartbeat?: DeliveryHeartbeat
+  readonly wireState?: GenerationWireState
 }
 
 /** Generation-scoped delivery port consumed by the retry/competition engine. */
@@ -33,6 +45,7 @@ export interface DownstreamDeliverySession {
   readonly identity: symbol
   readonly snapshot: DeliverySnapshot
   readonly clientSink: ClientSink
+  readonly allocationPort: WireBlockAllocationPort
   writeScaffold(frames: ReadonlyArray<DeliveryFrame>): Promise<void>
   commitWinnerBlock(candidateId: string, frames: ReadonlyArray<DeliveryFrame | DeliveryFrame["frame"]>): Promise<void>
   writeWinnerFrame(candidateId: string, frame: DeliveryFrame | DeliveryFrame["frame"]): Promise<void>
@@ -151,7 +164,7 @@ export function createDownstreamDeliverySession(options: CreateDownstreamDeliver
       )
       return
     }
-    if (heartbeat.injectScaffold && pendingOpenBlocks.length === 0 && !scaffoldAttempted) {
+    if (heartbeat.injectScaffold && pendingOpenBlocks.length === 0 && semanticBlockCount === 0 && !scaffoldAttempted) {
       scaffoldAttempted = true
       void heartbeat
         .injectScaffold()
@@ -193,6 +206,164 @@ export function createDownstreamDeliverySession(options: CreateDownstreamDeliver
     if (payload.type === "message_stop" || payload.type === "response.completed" || payload.type === "error") terminalWritten = true
   }
 
+  const wireState = options.wireState
+  const envelope: WireEnvelopeFactory = Object.freeze({
+    real: (frame: ClientFrame): WireWriteSpec => Object.freeze({ kind: "real", frame }),
+    anchor: (frame: ClientFrame): WireWriteSpec => Object.freeze({ kind: "anchor", frame }),
+    keepalive: (frame: ClientFrame): WireWriteSpec => Object.freeze({ kind: "keepalive", frame }),
+  })
+
+  const requireWireState = (): GenerationWireState => {
+    if (!wireState) throw new Error("[delivery] generation wire state is not configured for this format")
+    return wireState
+  }
+
+  const frameForSpec = (spec: WireWriteSpec, source?: LegSource): DeliveryFrame => {
+    if (spec.kind === "anchor") {
+      const synthetic = parsePayload(spec.frame.data)?.type === "message_start" ? "synthetic-message-start" : "anchor"
+      return makeEnvelope(spec.frame, synthetic, monotonicNow())
+    }
+    if (spec.kind === "keepalive") return makeEnvelope(spec.frame, spec.kind, monotonicNow())
+    if (!source) throw new Error("[delivery] cannot write a real frame without an active leg")
+    return Object.freeze({
+      frame: spec.frame,
+      sequence: 0,
+      observedAtMonotonic: monotonicNow(),
+      provenance: Object.freeze({ kind: "candidate" as const, candidateId: source.candidateId, dispatchId: source.dispatchId }),
+    })
+  }
+
+  const terminateAfterWireFailure = (): void => {
+    state = "closed"
+    closeHeartbeat()
+    sink.close?.()
+  }
+
+  const writeAllocationFrames = async (
+    specs: ReadonlyArray<WireWriteSpec>,
+    reservation: WireIndexReservation<number | WireBlockMapping>,
+    source?: LegSource,
+  ): Promise<boolean> => {
+    if (specs.length === 0) {
+      reservation.rollback()
+      return false
+    }
+    let committed = false
+    try {
+      for (const spec of specs) {
+        const entry = frameForSpec(spec, source)
+        if (!committed) {
+          // C9 commit point: synchronously consume the index BEFORE invoking the first external write.
+          reservation.commit()
+          committed = true
+        }
+        applyPendingFrame(entry)
+        await writeToSink(sink, entry)
+        applyWireFrame(entry)
+        const writtenAt = monotonicNow()
+        lastWriteAtMonotonic = writtenAt
+        if (isContentDelta(entry.frame)) lastContentDeltaAtMonotonic = writtenAt
+        writeCount++
+      }
+      return true
+    } catch {
+      if (!committed) reservation.rollback()
+      else terminateAfterWireFailure()
+      return false
+    }
+  }
+
+  const allocationPort: WireBlockAllocationPort = {
+    wireState,
+    allocateAndWriteAnchor: (build) =>
+      serializer.enqueue(async () => {
+        if (state !== "open") return undefined
+        const current = requireWireState()
+        const reservation = current.allocator.reserveAnchor()
+        let specs: ReadonlyArray<WireWriteSpec>
+        try {
+          specs = build({ wireIndex: reservation.value, envelope })
+        } catch (error) {
+          reservation.rollback()
+          throw error
+        }
+        const written = await writeAllocationFrames(specs, reservation, current.activeLeg?.source)
+        if (!written) return undefined
+        current.openAnchorIndex = reservation.value
+        return reservation.value
+      }),
+    withAllocatedRealBlock: (upstreamIndex, build) =>
+      serializer.enqueue(async () => {
+        if (state !== "open") return undefined
+        const current = requireWireState()
+        if (!current.activeLeg) throw new Error("[delivery] cannot allocate a real block without an active leg")
+        const reservation = current.allocator.reserveRealBlock(upstreamIndex)
+        let specs: ReadonlyArray<WireWriteSpec>
+        try {
+          specs = build({ mapping: reservation.value, envelope })
+        } catch (error) {
+          reservation.rollback()
+          throw error
+        }
+        const written = await writeAllocationFrames(specs, reservation, current.activeLeg.source)
+        if (!written) return undefined
+        const perLeg = current.mappings.get(reservation.value.leg) ?? new Map<number, WireBlockMapping>()
+        perLeg.set(upstreamIndex, reservation.value)
+        current.mappings.set(reservation.value.leg, perLeg)
+        return reservation.value
+      }),
+    beginLeg: (kind, source) =>
+      serializer.enqueue(() => {
+        if (state !== "open") throw new Error("[delivery] cannot begin a leg after delivery termination")
+        const current = requireWireState()
+        const token = current.allocator.beginLeg(kind, source)
+        current.activeLeg = Object.freeze({ token, kind, source: Object.freeze({ ...source }) })
+        current.legSources.set(token, current.activeLeg.source)
+        current.mappings.set(token, new Map())
+        return token
+      }),
+    closeOpenAnchor: (buildStop, mode) =>
+      serializer.enqueue(async () => {
+        const current = requireWireState()
+        if (current.openAnchorIndex === undefined) return "none"
+        if (mode === "terminal") closeHeartbeat()
+        const index = current.openAnchorIndex
+        const entry = frameForSpec(buildStop(index, envelope))
+        try {
+          applyPendingFrame(entry)
+          await writeToSink(sink, entry)
+          applyWireFrame(entry)
+          current.openAnchorIndex = undefined
+          writeCount++
+          return "closed"
+        } catch {
+          terminateAfterWireFailure()
+          return "write-error"
+        }
+      }),
+    writeBlockFrame: (leg, upstreamIndex, frame) =>
+      serializer.enqueue(async () => {
+        if (state !== "open") return "write-error"
+        const current = requireWireState()
+        const mapping = current.mappings.get(leg)?.get(upstreamIndex)
+        if (!mapping) return "no-mapping"
+        const source = current.legSources.get(leg)
+        if (!source) throw new Error("[delivery] block mapping has no leg provenance")
+        const entry = frameForSpec(envelope.real(mapping.remap(frame)), source)
+        try {
+          applyPendingFrame(entry)
+          await writeToSink(sink, entry)
+          applyWireFrame(entry)
+          writeCount++
+          if (parsePayload(frame.data)?.type === "content_block_stop") current.mappings.get(leg)?.delete(upstreamIndex)
+          return "written"
+        } catch {
+          terminateAfterWireFailure()
+          return "write-error"
+        }
+      }),
+  }
+
   const clientSink: ClientSink = {
     write: async (frame) => {
       if (!winnerCandidateId) winnerCandidateId = "sole"
@@ -228,6 +399,7 @@ export function createDownstreamDeliverySession(options: CreateDownstreamDeliver
       })
     },
     clientSink,
+    allocationPort,
     async writeScaffold(frames) {
       for (const entry of frames) await write(entry)
     },

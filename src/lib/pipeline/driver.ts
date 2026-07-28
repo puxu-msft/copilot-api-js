@@ -41,6 +41,7 @@ import { UpstreamTransportFallbackError } from "~/lib/transport/fallback"
 import type { RequestEnvelope } from "./envelope"
 import type {
   //
+  AnchorState,
   ClientFrame,
   ClientSink,
   DriverRequestResult,
@@ -961,7 +962,16 @@ async function runResponseSink(
   const hedged = await maybeRunHedgedResponseSink(deps, upstream, env, sink, opts, generation)
   if (hedged) return hedged
   const unhedgedBinding = generation?.bindings.get(upstream)
-  if (unhedgedBinding) env.ctx.selectGenerationWinner(unhedgedBinding.candidate.candidate, unhedgedBinding.candidate.dispatch)
+  if (unhedgedBinding) {
+    env.ctx.selectGenerationWinner(unhedgedBinding.candidate.candidate, unhedgedBinding.candidate.dispatch)
+    const allocationPort = getDownstreamDeliverySession(sink)?.allocationPort
+    if (allocationPort?.wireState) {
+      await allocationPort.beginLeg("primary", {
+        candidateId: String(unhedgedBinding.candidate.candidate),
+        dispatchId: String(unhedgedBinding.candidate.dispatch),
+      })
+    }
+  }
   const effectiveOpts = currentCandidateResponseOpts(generation, upstream, opts) as RunResponseOpts
   let finish: import("./types").ResponseFinishResult | undefined
   const responseOpts: RunResponseOpts = {
@@ -1038,7 +1048,16 @@ export async function runResponseBufferedSink(
   const hedged = await maybeRunHedgedResponseSink(deps, upstream, env, sink, opts, generation)
   if (hedged) return hedged
   const unhedgedBinding = generation?.bindings.get(upstream)
-  if (unhedgedBinding) env.ctx.selectGenerationWinner(unhedgedBinding.candidate.candidate, unhedgedBinding.candidate.dispatch)
+  if (unhedgedBinding) {
+    env.ctx.selectGenerationWinner(unhedgedBinding.candidate.candidate, unhedgedBinding.candidate.dispatch)
+    const allocationPort = getDownstreamDeliverySession(sink)?.allocationPort
+    if (allocationPort?.wireState) {
+      await allocationPort.beginLeg("primary", {
+        candidateId: String(unhedgedBinding.candidate.candidate),
+        dispatchId: String(unhedgedBinding.candidate.dispatch),
+      })
+    }
+  }
   const cap = opts.retryCap ?? 0
   const bufferCapBytes = opts.bufferCapBytes ?? 0
   const vendor = opts.telemetryVendor ?? "unknown"
@@ -1088,7 +1107,7 @@ export async function runResponseBufferedSink(
   // before). `anchorState` falls back to a driver-local object when the caller does not thread one (e.g. a
   // `ping`-mode buffered stream that never injects).
   const anchor = opts.anchor
-  const anchorState = opts.anchorState ?? {
+  const anchorState: AnchorState = opts.anchorState ?? {
     allocator: createGenerationWireIndexAllocator(),
     injected: false,
     messageStartForwarded: false,
@@ -1446,6 +1465,13 @@ export async function runResponseBufferedSink(
           : await coordinator.runPrimary()
         generation?.bind(coordinator, recovered)
         currentEnv.ctx.selectGenerationWinner(recovered.candidate, recovered.dispatch)
+        const recoveryAllocationPort = getDownstreamDeliverySession(sink)?.allocationPort
+        if (recoveryAllocationPort?.wireState) {
+          await recoveryAllocationPort.beginLeg("recovery", {
+            candidateId: String(recovered.candidate),
+            dispatchId: String(recovered.dispatch),
+          })
+        }
         current = recovered.upstream
         currentEnv = recovered.env
         continue
@@ -1497,6 +1523,13 @@ export async function runResponseBufferedSink(
           const continued = parent ? await coordinator.runContinuation(parent.candidate, "continuation", contEnv) : await coordinator.runPrimary()
           generation?.bind(coordinator, continued)
           currentEnv.ctx.selectGenerationWinner(continued.candidate, continued.dispatch)
+          const continuationAllocationPort = getDownstreamDeliverySession(sink)?.allocationPort
+          if (continuationAllocationPort?.wireState) {
+            await continuationAllocationPort.beginLeg("continuation", {
+              candidateId: String(continued.candidate),
+              dispatchId: String(continued.dispatch),
+            })
+          }
           current = continued.upstream
           currentEnv = continued.env
           // This next leg's frames re-index by the blocks already delivered (C3: wire count) and drop the
