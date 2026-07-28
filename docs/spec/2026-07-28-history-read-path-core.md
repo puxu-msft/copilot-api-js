@@ -1,10 +1,11 @@
 # Spec A：History 读路径性能核心重构
 
-- 状态：草案，待用户裁决 §10 后冻结
+- 状态：**已冻结**（§10 六项裁决完成，经五轮异模型对抗评审）
 - 日期：2026-07-28
-- 拆分说明：本 spec 由一份更大的草案拆出（经三轮异模型对抗评审）。姊妹文档：
-  - [Spec B：History 过滤语义收敛](2026-07-28-history-filter-semantics.md) —— model 过滤可索引化、三方过滤语义收敛、`requestBucket` 收紧。**不阻塞本 spec**。
-  - [待办 C：任意 filter 组合的 exact total](../todo/history-filtered-exact-total.md) —— 独立立项，可能不做。
+- 实施计划：[docs/plan/2026-07-28-history-read-path-core.md](../plan/2026-07-28-history-read-path-core.md)
+- 拆分说明：本 spec 由一份更大的草案拆出。姊妹文档：
+  - [Spec B：History 过滤语义收敛](2026-07-28-history-filter-semantics.md) —— model 过滤可索引化、三方过滤语义收敛、`requestBucket` 收紧。**不阻塞本 spec**；其 §2.1 membership 设计待 PoC 重做。
+  - [待办 C：任意 filter 组合的 exact total](../todo/history-filtered-exact-total.md) —— **已排期**，排在 A / B 之后。
 - 相关：PoC `exp/history-read-path/FINDINGS.md`；schema 权威 skill `history-sqlite-schema`；端点 SSOT [docs/API.md](../API.md)
 
 ## 1. 问题（生产库实测，非推断）
@@ -290,11 +291,23 @@ requestModel? / responseModel? / effectiveModel?
 
 `publishModelOperationTerminal`（`terminal-bus.ts:20-39`，本 spec 作者核实）**不延迟代理响应**，terminal record 经异步 subscriber 落盘，且 rejection 被 `.catch(() => undefined)` 吞掉；writer drain 失败只计入 `failedOperations`，不会把请求交回客户端重试（`store.ts:830-929`）。因此 cutover 后若 trigger 拒绝旧 binary 的 INSERT：请求已交付客户端 → terminal record 写入被拒 → 静默吞掉 → 旧进程退出 → **该 operation 永久消失**。少计可以从 canonical operations 重建，丢失**没有重建源**。
 
-**因此协议是：排他 quiesce 为主，capability gate 仅为最后防线。**
+**已裁决的协议（§10-1、§10-5）：cutover 推迟到下一次启动 + writer ownership lease，不使用 DB capability gate。**
 
-- **排他 quiesce（主协议）**：旧进程停止 accept → drain 全部在飞请求、terminal subscribers 与 V3 writer → 确认无旧 writer → 执行最终 backfill 与 002 cutover → 新进程才开始接流量。**需要重排当前的 zero-downtime 接管顺序**，且必须覆盖 manual / systemd / pm2 三种部署（`restart/takeover.ts:18-25` 显示后两者跳过 pidfile 协议），不能只依赖 pidfile predecessor。
-- **DB capability gate（最后防线）**：防止未被编排覆盖的旧进程静默写坏，但**不作为主迁移协议**。必须用旧 binary fixture 实测。
-- 若将来确实要在不停写的前提下 cutover，前置条件是**跨进程 durable outbox**——被拒的旧 terminal record 能交给新进程重放。没有它就不满足 richest-data-flow。
+**为什么不能在本进程内 cutover**：它需要「暂停 accept → 迁移 → 恢复 accept」，而 `gracefulShutdown()`（`src/lib/shutdown.ts:416-625`）是**不可逆的终态 latch**——`ProcessLifecycleState` 走到 `stopped` 就没有 resume 路径，`waitForShutdown()` 是终态 latch 而非暂停栅栏。现有代码基础上这条路走不通。
+
+**协议（单一路径，plan 不得再选）**：
+
+1. repair worker 只推进到 durable `ready`，**本进程继续按旧 schema 正常服务，不执行 002**
+2. 由运维在自选时机触发**一次专门的维护重启**
+3. 该次启动：在任何 writer 注册、任何 listener 打开**之前**，完成 predecessor quiesce 确认 → 最终 backfill → 002
+4. 002 成功后才 `subscribeModelOperationTerminals` → `listen` → `notifyReady`
+5. 002 失败则不启动新服务，保留旧 schema 并报告，提供重试路径
+
+**quiesce 确认必须跨三种部署模式**。当前 bare / systemd / pm2 **全部**是「先启新槽并阻塞到 READY → 再向旧槽发 SIGUSR2 → 旧槽 drain 后退出」（`packages/cli/src/start.ts:367-389,518-582`、`contrib/systemd/copilot-api-deploy.sh:15-25`、`contrib/pm2/ecosystem.config.cjs:10-26`），与本协议顺序**相反**——维护重启必须走单独的编排，不能复用日常 blue-green 脚本。且 `signalPredecessorHandoff()` never-throw 且**无 ack**，不能仅凭发信号就认为 quiesce 完成。
+
+**writer ownership lease（取代 capability gate）**：在 writer 注册 / 进入请求服务**之前**抢占排他 lease，migration 持排他 lease；冲突时**阻止该进程开始服务**并报错退出，而不是在 terminal commit 时拒绝数据。关键差别是**报错发生在没有任何数据会丢的时点**——进程还没开始服务，没有已交付客户端却写不进去的 record。lease 同时是 supervised 路径（systemd/pm2 无 pidfile）确认前任已停的确定性判据。
+
+**用户可见代价（已知并接受，§10-1）**：这不是「短暂写入停顿」，而是**整个代理服务中断**——期间端口没有 listener，新请求直接连接失败；窗口 = 旧槽 drain（在飞长流式请求可能拖很久，上限 180 s）+ backfill + 002 + 新进程网络初始化。且该次重启**失去 blue-green 的失败保护**（旧槽已停，新代码有 bug 时无法回退到"旧槽持续服务"）。代价换取的是绝不丢 canonical History。
 
 另需防止旧 `ensureV3Schema` 把 `schema_version` 写回旧值（`store.ts:277-299` 的 `INSERT OR REPLACE`）。
 
@@ -355,12 +368,18 @@ API 允许 A 维（`sessionId`/`state`/`endpoint`/`pid`/`agentId`/`from`/`to`）
 
 **错误做法（必须避免）**：SQL 按 A 维取一页 `LIMIT n`，再在 JS 里按 B 维过滤。后果是页面不足、cursor 错位、`total` 错误，且后续本应匹配的行已被前一页的 SQL limit 截断。
 
-**在 Spec B 落地前，只要请求含任一 B 维，必须走下列之一**（plan 阶段择一并固化）：
+**已裁决（§10-6）：采用分批 keyset 路线。** 不保留「保守遍历」作为同等可选项——后者对 `model`/`success` 仍需遍历完整候选集、在主线程线性扫描，不满足「交互请求期间 `/health < 50 ms`」这一核心目标。
 
-- **保守路线**：继续用旧的完整候选遍历语义，只摘掉 R-1（BLOB 白读）与 R-3（OFFSET）。性能改善有限但语义零风险。
-- **分批路线**：SQL 按 A 维做 keyset **分批**扫描，在 JS 侧应用 B 维谓词，**持续拉取直到填满一页或候选耗尽**；`total` 需遍历全部候选后得出。
+算法必须定义清楚下列各点（plan 阶段固化，不得留给实现自行发挥）：
 
-`search` 在 B 落地前保持当前真实行为（persisted 不过滤，见 Spec B §1.1），或按用户裁决明确破坏契约——**不得默默改变**。
+- SQL 按 A 维做 keyset **分批**扫描，在 JS 侧应用 B 维谓词，**持续拉取直到填满一页或候选耗尽**
+- **内部 scan frontier 用 SQL 列 `(created_at, operation_id)`**，不是 `summary_json` 里的字段
+- **API 用户 cursor 与内部 batch frontier 必须分离**——前者是对外契约，后者是实现细节，混用会让翻页错位
+- **`total` 统计所有 filter 匹配项，不受用户 cursor 限制**；这意味着填满页面后仍需继续扫到候选耗尽才能得出 exact total
+- **`direction=newer` 需要反向谓词、反向扫描，并在输出前恢复顺序**
+- `search` 当前 persisted 不生效（Spec B §6-1 裁决为返回空），**不得混进 B 维的谓词求值**
+
+> 注意 `direction` 是一个**从未实现的契约**：`handler.ts` 解析它、`types.ts` 定义它、`ui/` 传递它，但 `queries.ts` **从未读取**（本 spec 作者核实：该文件中无任何 `direction` 引用），因此 `newer` 与 `older` 当前行为相同。§5.9 要求两个方向都可用，所以这是**实现一个新契约**，不是「保持现状」。
 
 ### 5.9 分页语义与 cursor wire
 
@@ -457,12 +476,18 @@ keyset 在静态数据下 tie-break 确定：`operation_id` 是随机 UUID 与�
 
 以下四项均已由用户于 2026-07-28 裁决，**本 spec 据此冻结**。
 
-**10-1 cutover 与重叠旧 writer**（§5.7.3）：**排他 quiesce 为主协议，接受迁移那一次重启的短暂写入停顿**；DB capability gate 仅作最后防线。
+**10-1 cutover 与重叠旧 writer**（§5.7.3）：**cutover 推迟到下一次启动，由运维触发一次专门的维护重启**；quiesce 确认走 writer ownership lease。
 
-> 早期草案推荐反了（把 capability gate 当主协议）。round 4 评审证伪：terminal record 经异步 subscriber 落盘且 rejection 被吞（`terminal-bus.ts:20-39`，本 spec 作者核实），gate 拒绝旧 binary 的 INSERT 会让**已交付客户端的 operation 永久消失**——少计可从 canonical 重建，丢失没有重建源。它不是 fail-loud，是 silent loss。用户裁决：宁可接受秒级写入停顿，也不接受任何 canonical History 丢失。
+> 早期草案两次判断有误，都由评审证伪：v2 推荐 DB capability gate 当主协议（会让已交付客户端的 operation 永久消失，是 silent loss 不是 fail-loud）；修订后写「排他 quiesce + 重排接管顺序」，但没查 `gracefulShutdown()` 是不可逆终态 latch，本进程内 cutover 根本走不通。
+>
+> **代价的更正**：我最初告诉用户这是「短暂的写入停顿」，实际是**整个代理服务中断**（端口无 listener、新请求连接失败、失去 blue-green 失败保护、窗口含最长 180 s 的 drain）。用户在得知真实代价后仍选择接受，换取绝不丢 canonical History。
+
+**10-5 最后防线的形态**：**writer ownership lease，不用 DB capability gate**。防线前移到进程启动时（writer 注册前抢占 lease，冲突则阻止进程开始服务），报错发生在没有任何数据会丢的时点；capability gate 命中时仍会拒绝 terminal INSERT 并丢 canonical record，而旧 INSERT 横跨 journal / CAS / operations / tracks / timeline，单个 trigger 无法把完整 operation 捕获到隔离区。
 
 **10-2 `v3_sessions` 的 session eligibility**：**纳入 `responses_ws`**。它同样是带 sessionId 的真实对话轮次，排除它会让会话统计与请求列表对不上（全局列表的 `operationKind=generation` 本就包含它）。须加带 sessionId 的 `responses_ws` canonical 正样本测试。
 
-**10-3 `activeSessions` 的定义**（§5.4）：**重新定义为「会话列表所示的会话数」**，即 `COUNT(v3_sessions)`。这与用户实际看到的会话列表一致；旧语义（三源全部 kinds 的 distinct sessionId）维护的是一个界面上看不到的口径。**这是对外可见的语义变化**：数字将不再包含 `count_tokens` / `embeddings` 等非对话操作的 session，文档与 UI 命名须同步。
+**10-3 `activeSessions` 的定义**（§5.4）：**重新定义为「会话列表所示的会话数」**，即 `COUNT(v3_sessions)`。**这是对外可见的语义变化**：数字将不再包含 `count_tokens` / `embeddings` 等非对话操作的 session，文档与 UI 命名须同步。
 
-**10-4 `recentActivity` 死字段**（§5.4）：**本次一并移除**。它初始化为 `[]` 后从未被写入（`stats.ts:90`），保留只会让消费者误以为有数据。移除须同步 `HistoryStats` 类型与两个 UI 的类型引用。
+**10-4 `recentActivity` 死字段**（§5.4）：**本次一并移除**。它初始化为 `[]` 后从未被写入（`stats.ts:90`）。移除须同步 `HistoryStats` 类型与两个 UI 的类型引用。
+
+**10-6 A/B 接缝的算法**（§5.8.1）：**采用分批 keyset 路线，不保留「保守遍历」作为同等可选项**——后者对 `model`/`success` 仍需遍历完整候选集，在主线程线性扫描，不满足「交互请求期间 `/health < 50 ms`」这一核心目标。详见 §5.8.1。
