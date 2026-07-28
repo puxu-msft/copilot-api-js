@@ -9,7 +9,7 @@
     "dev": "vite",
     "preview": "vite preview",
     "typecheck": "vue-tsc --noEmit --project tsconfig.json",
-    "test": "npm run test:bun && npm run test:vitest",
+    "test": "bun run test:bun && bun run test:vitest",
     "test:bun": "bun test ./tests/",
     "test:vitest": "vitest run",
     "test:e2e": "playwright test"
@@ -25,6 +25,7 @@
   },
   "devDependencies": {
     "@playwright/test": "^1.61.1",
+    "@types/node": "24.6.2",
     "@vitejs/plugin-vue": "^6.0.7",
     "@vue/test-utils": "^2.4.11",
     "jsdom": "^29.1.1",
