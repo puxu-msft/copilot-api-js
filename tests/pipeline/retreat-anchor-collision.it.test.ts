@@ -48,6 +48,7 @@ import {
   makeSyntheticAnchorInjector,
   remapAnthropicBlockIndex,
   syntheticMessageStartFrame,
+  createGenerationWireIndexAllocator,
 } from "~/lib/anthropic/keepalive-anchor"
 import { createRequestContext } from "~/lib/context/request"
 import { makeSseSink } from "~/lib/pipeline/client-sink"
@@ -198,7 +199,13 @@ function buildAnchoredSink(stream: Parameters<typeof makeSseSink>[0]): {
   anchorState: AnchorState
   lastInjectResult: () => boolean | undefined
 } {
-  const anchorState: AnchorState = { injected: false, messageStartForwarded: false, anchorBlockOpen: false, anchorClosed: false }
+  const anchorState: AnchorState = {
+    allocator: createGenerationWireIndexAllocator(),
+    injected: false,
+    messageStartForwarded: false,
+    anchorBlockOpen: false,
+    anchorClosed: false,
+  }
   const anchor: AnchorHooks = {
     isContentBlockStart: (fr: { data?: string }) => {
       try {

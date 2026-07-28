@@ -5,6 +5,7 @@ import type {
   AnchorHooks,
   AnchorState,
   ClientSink,
+  GenerationWireIndexAllocator,
 } from "~/lib/pipeline/types"
 
 import { anthropicSseFrame } from "./sse-frame"
@@ -29,25 +30,6 @@ export const PRE_CONTENT_ANCHOR_INDEX = 0
  * and records the wire index assigned to each real block (in upstream order) so the sink/driver can
  * remap upstream block frames via {@link GenerationWireIndexAllocator.realBlockOffset}.
  */
-export interface GenerationWireIndexAllocator {
-  /** Peek the wire index the NEXT anchor block will occupy (pure — advances only on {@link onAnchorOpen}). */
-  nextAnchorIndex: () => number
-  /** Peek the wire index the NEXT real block will occupy (pure — advances only on {@link onRealBlockOpen}). */
-  nextRealIndex: () => number
-  /** Commit an anchor block at the current wire index (advances the counter). */
-  onAnchorOpen: () => void
-  /** Commit a real block at the current wire index (advances the counter; records the mapping). */
-  onRealBlockOpen: () => void
-  /** Diagnostic count of allocated synthetic anchors. Never use this as a remap predicate. */
-  anchorsOpened: () => number
-  /**
-   * The remap offset for the real block that arrived at `upstreamIndex` (upstream's own 0-based block
-   * numbering): `wireIndex(upstreamIndex) − upstreamIndex`. Real blocks are opened in upstream order,
-   * so `upstreamIndex` is the 0-based position of the real block among all real blocks opened so far.
-   */
-  realBlockOffset: (upstreamIndex: number) => number
-}
-
 export function createGenerationWireIndexAllocator(): GenerationWireIndexAllocator {
   let wireCounter = 0
   let anchorCount = 0
@@ -239,14 +221,18 @@ export function makeSyntheticAnchorInjector(args: {
       // A real message_start ALREADY reached the client via the live pump (an early upstream message_start
       // forwarded before this first idle tick — e.g. /responses `response.created` then a long reasoning
       // silence, recorded by `reconcileLiveFrame`). The wire forbids a second message_start, so do NOT emit
-      // one: open ONLY the anchor block@0 + first empty text_delta to reset CC's 300s watchdog. Sync-flip
+      // one: open ONLY the anchor block + first empty text_delta to reset CC's 300s watchdog. Sync-flip
       // `injected`+`anchorBlockOpen` before the first await (race-free vs the commit snapshot, as below).
+      const anchorIndex = state.allocator.nextAnchorIndex()
+      state.allocator.onAnchorOpen()
       state.injected = true
       state.anchorBlockOpen = true
-      await (sink.writeAnchor ?? sink.write)(anchor.startFrame(PRE_CONTENT_ANCHOR_INDEX)) // "anchor"; noteBlockState → openBlock={0,text}
-      await (sink.writeKeepalive ?? sink.write)(anchor.deltaFrame(PRE_CONTENT_ANCHOR_INDEX)) // "keepalive": empty text_delta resets CC's 300s watchdog
+      await (sink.writeAnchor ?? sink.write)(anchor.startFrame(anchorIndex)) // "anchor"; noteBlockState → openBlock={index,text}
+      await (sink.writeKeepalive ?? sink.write)(anchor.deltaFrame(anchorIndex)) // "keepalive": empty text_delta resets CC's 300s watchdog
       return true
     }
+    const anchorIndex = state.allocator.nextAnchorIndex()
+    state.allocator.onAnchorOpen()
     const real = state.capturedMessageStart
     if (real) {
       // C1/B1 sync-flip (before the first await — race-free vs the commit snapshot; see docstring).
@@ -269,8 +255,8 @@ export function makeSyntheticAnchorInjector(args: {
       state.anchorBlockOpen = true
       await (sink.writeSyntheticEnvelope ?? sink.write)(synthesize(resolvedName, reqId)) // fabricated → "synthetic-message-start"
     }
-    await (sink.writeAnchor ?? sink.write)(anchor.startFrame(PRE_CONTENT_ANCHOR_INDEX)) // "anchor"; noteBlockState → openBlock={0,text}
-    await (sink.writeKeepalive ?? sink.write)(anchor.deltaFrame(PRE_CONTENT_ANCHOR_INDEX)) // "keepalive": empty text_delta resets CC's 300s watchdog
+    await (sink.writeAnchor ?? sink.write)(anchor.startFrame(anchorIndex)) // "anchor"; noteBlockState → openBlock={index,text}
+    await (sink.writeKeepalive ?? sink.write)(anchor.deltaFrame(anchorIndex)) // "keepalive": empty text_delta resets CC's 300s watchdog
     return true
   }
 }

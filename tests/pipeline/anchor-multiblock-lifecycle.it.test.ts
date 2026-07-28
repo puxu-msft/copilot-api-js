@@ -57,6 +57,7 @@ import {
   makeSyntheticEnvelopeInjector,
   remapAnthropicBlockIndex,
   syntheticMessageStartFrame,
+  createGenerationWireIndexAllocator,
 } from "~/lib/anthropic/keepalive-anchor"
 import { resolveAnthropicKeepalive } from "~/lib/anthropic/keepalive-frame"
 import { anthropicCommitBoundaries } from "~/lib/codec/anthropic/commit-boundaries"
@@ -199,7 +200,13 @@ function buildAnchoredSink(stream: Parameters<typeof makeSseSink>[0]): {
   anchorState: AnchorState
   lastInjectResult: () => boolean | undefined
 } {
-  const anchorState: AnchorState = { injected: false, messageStartForwarded: false, anchorBlockOpen: false, anchorClosed: false }
+  const anchorState: AnchorState = {
+    allocator: createGenerationWireIndexAllocator(),
+    injected: false,
+    messageStartForwarded: false,
+    anchorBlockOpen: false,
+    anchorClosed: false,
+  }
   const anchor: AnchorHooks = {
     isContentBlockStart: (fr: { data?: string }) => {
       try {
@@ -255,7 +262,13 @@ function buildEnvelopedPingSink(stream: Parameters<typeof makeSseSink>[0]): {
   anchorState: AnchorState
   lastInjectResult: () => boolean | undefined
 } {
-  const anchorState: AnchorState = { injected: false, messageStartForwarded: false, anchorBlockOpen: false, anchorClosed: false }
+  const anchorState: AnchorState = {
+    allocator: createGenerationWireIndexAllocator(),
+    injected: false,
+    messageStartForwarded: false,
+    anchorBlockOpen: false,
+    anchorClosed: false,
+  }
   const anchor: AnchorHooks = {
     isContentBlockStart: (fr: { data?: string }) => {
       try {

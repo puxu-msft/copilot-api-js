@@ -22,6 +22,7 @@ import type {
 import type { RequestContext } from "~/lib/context/request"
 import type { FrozenHedgePolicy } from "~/lib/pipeline/generation/hedge-policy"
 
+import { createGenerationWireIndexAllocator } from "~/lib/anthropic/keepalive-anchor"
 import { classifyError } from "~/lib/error"
 import { recordRetryGiveUp } from "~/lib/observability/retry-giveups"
 import { recordRetryStrategyFire } from "~/lib/observability/retry-strategy-fires"
@@ -1087,7 +1088,13 @@ export async function runResponseBufferedSink(
   // before). `anchorState` falls back to a driver-local object when the caller does not thread one (e.g. a
   // `ping`-mode buffered stream that never injects).
   const anchor = opts.anchor
-  const anchorState = opts.anchorState ?? { injected: false, messageStartForwarded: false, anchorBlockOpen: false, anchorClosed: false }
+  const anchorState = opts.anchorState ?? {
+    allocator: createGenerationWireIndexAllocator(),
+    injected: false,
+    messageStartForwarded: false,
+    anchorBlockOpen: false,
+    anchorClosed: false,
+  }
 
   // Terminal-failure close-off (spec §3.3 M1): when the request FAILS after the anchor was injected (a
   // truncation/exhaustion, or a post-retreat truncation), the anchor's content_block_start@0 is still OPEN

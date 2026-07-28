@@ -40,6 +40,7 @@ import {
   makeSyntheticAnchorInjector,
   remapAnthropicBlockIndex,
   syntheticMessageStartFrame,
+  createGenerationWireIndexAllocator,
 } from "~/lib/anthropic/keepalive-anchor"
 import { resolveAnthropicKeepalive } from "~/lib/anthropic/keepalive-frame"
 import { makeSseSink } from "~/lib/pipeline/client-sink"
@@ -91,7 +92,13 @@ function buildOnStream(
   resolvedName: string,
   reqId: string,
 ): { sink: ClientSink; anchorState: AnchorState } {
-  const anchorState: AnchorState = { injected: false, messageStartForwarded: false, anchorBlockOpen: false, anchorClosed: false }
+  const anchorState: AnchorState = {
+    allocator: createGenerationWireIndexAllocator(),
+    injected: false,
+    messageStartForwarded: false,
+    anchorBlockOpen: false,
+    anchorClosed: false,
+  }
   const anchor = anchorHooks()
   const sinkHolder: { current: ClientSink | undefined } = { current: undefined }
   const injector = makeSyntheticAnchorInjector({ anchor, state: anchorState, getSink: () => sinkHolder.current, resolvedName, reqId })
@@ -157,6 +164,8 @@ describe("live pre-response silence — handler-owned unique injector synthesize
     // anchorState reflects the injection (shared with the driver's live/buffered reconciliation).
     expect(anchorState.injected).toBe(true)
     expect(anchorState.messageStartForwarded).toBe(true)
+    expect(anchorState.allocator.anchorsOpened()).toBe(1)
+    expect(anchorState.allocator.nextAnchorIndex()).toBe(1)
 
     sink.close?.()
   })

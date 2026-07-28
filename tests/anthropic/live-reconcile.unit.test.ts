@@ -22,6 +22,7 @@ import type {
 import {
   //
   anchorStopFrame,
+  createGenerationWireIndexAllocator,
   remapAnthropicBlockIndex,
 } from "~/lib/anthropic/keepalive-anchor"
 import {
@@ -54,12 +55,12 @@ function hooks(): ReconcileHooks {
 function injectedState(): AnchorState {
   // The post-injection shared state the handler's empty_text anchor injector leaves behind (message_start +
   // anchor block@0 + empty delta already sent → anchorBlockOpen=true).
-  return { injected: true, messageStartForwarded: true, anchorBlockOpen: true, anchorClosed: false }
+  return { allocator: createGenerationWireIndexAllocator(), injected: true, messageStartForwarded: true, anchorBlockOpen: true, anchorClosed: false }
 }
 
 /** The post-injection state the enveloped_ping ENVELOPE-ONLY injector leaves behind (message_start only, no block). */
 function envelopeInjectedState(): AnchorState {
-  return { injected: true, messageStartForwarded: true, anchorBlockOpen: false, anchorClosed: false }
+  return { allocator: createGenerationWireIndexAllocator(), injected: true, messageStartForwarded: true, anchorBlockOpen: false, anchorClosed: false }
 }
 
 /** Map a frame to `type@index` (index omitted when absent) for compact sequence assertions. */
@@ -72,7 +73,13 @@ function key(fr: ClientFrame): string {
 
 describe("reconcileLiveFrame", () => {
   test("NOT injected → every frame passes through byte-identically (fast-response equivalence)", () => {
-    const state: AnchorState = { injected: false, messageStartForwarded: false, anchorBlockOpen: false, anchorClosed: false }
+    const state: AnchorState = {
+      allocator: createGenerationWireIndexAllocator(),
+      injected: false,
+      messageStartForwarded: false,
+      anchorBlockOpen: false,
+      anchorClosed: false,
+    }
     const h = hooks()
     const frames = [
       f("message_start", { message: { id: "m" } }),
@@ -87,11 +94,17 @@ describe("reconcileLiveFrame", () => {
     // Passthrough leaves the WIRE byte-identical and touches NO structural flag — except it records that a
     // real message_start already went out (`messageStartForwarded`), so a later idle-tick injector won't
     // fabricate a second one. `injected`/`anchorBlockOpen`/`anchorClosed` stay false (no anchor was injected).
-    expect(state).toEqual({ injected: false, messageStartForwarded: true, anchorBlockOpen: false, anchorClosed: false })
+    expect(state).toMatchObject({ injected: false, messageStartForwarded: true, anchorBlockOpen: false, anchorClosed: false })
   })
 
   test("NOT injected + no message_start (pure content) → state stays fully pure", () => {
-    const state: AnchorState = { injected: false, messageStartForwarded: false, anchorBlockOpen: false, anchorClosed: false }
+    const state: AnchorState = {
+      allocator: createGenerationWireIndexAllocator(),
+      injected: false,
+      messageStartForwarded: false,
+      anchorBlockOpen: false,
+      anchorClosed: false,
+    }
     const h = hooks()
     for (const fr of [
       f("content_block_start", { index: 0, content_block: { type: "text", text: "" } }),
@@ -99,7 +112,7 @@ describe("reconcileLiveFrame", () => {
     ]) {
       expect(reconcileLiveFrame(fr, state, h)).toEqual([fr])
     }
-    expect(state).toEqual({ injected: false, messageStartForwarded: false, anchorBlockOpen: false, anchorClosed: false })
+    expect(state).toMatchObject({ injected: false, messageStartForwarded: false, anchorBlockOpen: false, anchorClosed: false })
   })
 
   test("injected: the real upstream sequence reconciles to [drop MS, stop@0 + block@1, delta@1, stop@1, message_delta, message_stop]", () => {
@@ -290,7 +303,13 @@ function stubSink(): { sink: ClientSink; calls: Array<{ m: string; frame?: Clien
 describe("makeReconcilingSink", () => {
   test("NOT injected: write forwards each frame verbatim to inner.write (no anchor routing)", async () => {
     const { sink, calls } = stubSink()
-    const state: AnchorState = { injected: false, messageStartForwarded: false, anchorBlockOpen: false, anchorClosed: false }
+    const state: AnchorState = {
+      allocator: createGenerationWireIndexAllocator(),
+      injected: false,
+      messageStartForwarded: false,
+      anchorBlockOpen: false,
+      anchorClosed: false,
+    }
     const dec = makeReconcilingSink(sink, state, hooks())
     const fr = f("content_block_delta", { index: 0, delta: { type: "text_delta", text: "hi" } })
     await dec.write(fr)

@@ -38,6 +38,7 @@ import {
   makeSyntheticEnvelopeInjector,
   remapAnthropicBlockIndex,
   syntheticMessageStartFrame,
+  createGenerationWireIndexAllocator,
 } from "~/lib/anthropic/keepalive-anchor"
 import { resolveAnthropicKeepalive } from "~/lib/anthropic/keepalive-frame"
 import { makeReconcilingSink } from "~/lib/anthropic/live-reconcile"
@@ -85,7 +86,13 @@ function buildOnStream(
   resolvedName: string,
   reqId: string,
 ): { sink: ClientSink; anchorState: AnchorState; anchor: AnchorHooks } {
-  const anchorState: AnchorState = { injected: false, messageStartForwarded: false, anchorBlockOpen: false, anchorClosed: false }
+  const anchorState: AnchorState = {
+    allocator: createGenerationWireIndexAllocator(),
+    injected: false,
+    messageStartForwarded: false,
+    anchorBlockOpen: false,
+    anchorClosed: false,
+  }
   const anchor = anchorHooks()
   const sinkHolder: { current: ClientSink | undefined } = { current: undefined }
   const injector = makeSyntheticEnvelopeInjector({ anchor, state: anchorState, getSink: () => sinkHolder.current, resolvedName, reqId })

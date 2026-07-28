@@ -427,7 +427,24 @@ export interface ContinuationHooks {
  * in via {@link RunBufferedOpts.anchorState} so both sides observe the SAME injection/close state
  * (no torn snapshot — §3.3 B1 flips `injected` synchronously before the first sink write).
  */
+export interface GenerationWireIndexAllocator {
+  /** Peek the wire index the NEXT anchor block will occupy. */
+  nextAnchorIndex: () => number
+  /** Peek the wire index the NEXT real block will occupy. */
+  nextRealIndex: () => number
+  /** Commit an anchor block at the current wire index. */
+  onAnchorOpen: () => void
+  /** Commit a real block at the current wire index and record its upstream mapping. */
+  onRealBlockOpen: () => void
+  /** Diagnostic count of allocated synthetic anchors. Never use this as a remap predicate. */
+  anchorsOpened: () => number
+  /** Resolve the offset from an upstream block index to its allocated wire index. */
+  realBlockOffset: (upstreamIndex: number) => number
+}
+
 export interface AnchorState {
+  /** The generation-scoped monotonic authority shared by every anchor and real-block delivery leg. */
+  allocator: GenerationWireIndexAllocator
   /** Any synthetic prelude has been injected onto the forwarded track (message envelope and/or content anchor). */
   injected: boolean
   /** The content anchor itself has been injected. Kept separate so enveloped_ping cannot suppress later content escalation. */

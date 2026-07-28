@@ -48,6 +48,7 @@ import {
   makeSyntheticAnchorInjector,
   remapAnthropicBlockIndex,
   syntheticMessageStartFrame,
+  createGenerationWireIndexAllocator,
 } from "~/lib/anthropic/keepalive-anchor"
 import { makeReconcilingSink } from "~/lib/anthropic/live-reconcile"
 import { createRequestContext } from "~/lib/context/request"
@@ -183,7 +184,13 @@ function buildLiveStack(
   resolvedName: string,
   reqId: string,
 ): { pumpSink: ClientSink; anchorState: AnchorState } {
-  const anchorState: AnchorState = { injected: false, messageStartForwarded: false, anchorBlockOpen: false, anchorClosed: false }
+  const anchorState: AnchorState = {
+    allocator: createGenerationWireIndexAllocator(),
+    injected: false,
+    messageStartForwarded: false,
+    anchorBlockOpen: false,
+    anchorClosed: false,
+  }
   const anchor = anchorHooks()
   const sinkHolder: { current: ClientSink | undefined } = { current: undefined }
   const injector = makeSyntheticAnchorInjector({ anchor, state: anchorState, getSink: () => sinkHolder.current, resolvedName, reqId })
