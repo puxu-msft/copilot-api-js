@@ -1,6 +1,6 @@
 ---
 name: debugging-claude-client-connection
-description: 当调试 copilot-api-js 与 Claude Code CLI 客户端之间的连接/流式行为时使用——CC 请求超时三层（响应头到达前只有 undici 默认 headersTimeout ~300s、可被客户端 API_FORCE_IDLE_TIMEOUT=0 关掉；头到达后 60s byte-idle 任意字节/ping 重置 + 300s event-idle 任何非-ping 事件都重置，长 pre-content thinking 静默撞它断连）、keepalive 发空 content-delta 而非裸 ping、合成帧必须打 synthetic 标记 + 必带 event: 行（否则 @anthropic-ai/sdk SSEDecoder 静默丢帧）、SDK 对 200+SSE-error 走裸 APIError 零重试；以及事后判别一条 `[FAIL] … The operation was aborted.`/断流 incident 是 client-abort vs reaper vs header-timeout（三类都抛同一字面量、靠 History `state`(failed≠aborted)/上游 0 帧 status null/durationMs≈300 vs 600 判，附 offsetMs commit-relative 时间基陷阱）。下游客户端行为，区别于上游传输（skill debugging-ghc-api-upstream-transport）与上游 Anthropic wire（skill ghc-anthropic-upstream）。
+description: 当调试 copilot-api-js 与 Claude Code CLI 客户端之间的连接/流式行为时使用——CC 请求超时三层（响应头到达前只有 undici 默认 headersTimeout ~300s、可被客户端 API_FORCE_IDLE_TIMEOUT=0 关掉；头到达后 60s byte-idle 任意字节/ping 重置 + 300s event-idle 任何非-ping 事件都重置，长 pre-content thinking 静默撞它断连）、keepalive 发空 content-delta 而非裸 ping、合成帧必须打 synthetic 标记 + 必带 event: 行（否则 @anthropic-ai/sdk SSEDecoder 静默丢帧）、SDK 对 200+SSE-error 走裸 APIError 零重试；以及事后判别一条 `[FAIL] … The operation was aborted.`/断流 incident 的中止方（2026-07-28 起 abort 自带 provenance：先读 `err.name==="TimeoutError"`/`pool-closed` tag/`isShutdownCausedAbort`/`getCancellationCause`，History `state`(failed≠aborted)/上游 0 帧 status null/durationMs 只作 fallback，附 offsetMs commit-relative 时间基陷阱）。下游客户端行为，区别于上游传输（skill debugging-ghc-api-upstream-transport）与上游 Anthropic wire（skill ghc-anthropic-upstream）。
 ---
 
 # Claude Code 客户端连接与流式行为
@@ -29,9 +29,23 @@ description: 当调试 copilot-api-js 与 Claude Code CLI 客户端之间的连�
 
 ## 事后判别 `[FAIL] … The operation was aborted.`：client-abort vs reaper vs timeout
 
-一条 `[FAIL] POST /v1/messages … 301.0s ↑1.7MB ↑0 ↓0: The operation was aborted.` 的中止方，**不能凭错误串猜**——三类中止（下游客户端断开 / stale-request reaper / 上游 header-wait 超时）在 h2 路径上**都**抛字面量 `"The operation was aborted."`（[http2-client.ts](../../../src/lib/transport/http2-client.ts) `raceAbort` 的 `abortError()`，`name:"AbortError"`），归类由**信号状态**决定、非 `error.name`（`classifyPostCommitAbort(clientAbort.signal.aborted, ctx.lifecycleSignal.aborted)`，优先级 client > reaper > timeout，见 `src/routes/messages/post-commit-error.ts`）。
+> **2026-07-28 大幅订正：先读错误身份，别再从 `durationMs` 猜。** 本节原来的前提——「三类中止都抛同一条字面量、归类只能靠信号状态」——已被修掉：`http2-client.ts` 的 `abortError()` 过去**丢弃 `signal.reason`**，现在原样透传；每个取消方也都带上了具名 reason。于是**中止方的身份现在直接写在错误对象上**：
+>
+> | 证据 | 含义 |
+> |---|---|
+> | `err.name === "TimeoutError"` | 响应头看门狗（`AbortSignal.timeout`）真的开火了——**只有这个**才配叫 header 超时 |
+> | `getTransportErrorReason(err) === "pool-closed"` | 我方 h2 池被拆（关机 Step 4 / finalize） |
+> | `isShutdownCausedAbort(err)` | 关机 Step 3 的具名 abort reason（对象身份比对） |
+> | `getCancellationCause(err)` = `stale-reaper` / `request-deadline` / `request-cancel` / `dispatch-cancel` | 逐个取消方自报家门 |
+> | 以上全无 | 一条**没人打标签**的 abort——这本身就是线索（哪条路径没接上 provenance） |
+>
+> 相应地，客户端拿到的东西也不再撒谎：pre-commit 走有序 precedence（499 client / 529 shutdown / 504 TimeoutError / 504 request-deadline / 503 其余并附真实 reason 原文），post-commit 的 `classifyPostCommitAbort(clientAborted, reaperAborted, error)` 也吃错误对象，`PostCommitAbortKind` 扩到七种、每种自己的终端 frame 文案。**下面的 History 逐字段表退为 fallback**（错误对象拿不到、或看的是修复前的旧记录时用）。
+>
+> 促成本次修正的反例：History `req_1785234916721_3573` —— 一条 **609ms** 的请求被报成 `504 Upstream timed out before sending response headers`，而当时 `response_header` 配的是 **900s**。真凶是关机 Step 1 拆 h2 池（详见 [docs/lifecycle.md](../../../docs/lifecycle.md) Step 1 注）。**看到 duration 与所声称的超时值对不上，就别再往超时上套。**
 
-**唯一可信的裁决走 History**（4141 `GET /history/api/entries/:id`，独立 oracle；日志串本身信息不足）。逐字段判：
+一条 `[FAIL] POST /v1/messages … 301.0s ↑1.7MB ↑0 ↓0: The operation was aborted.` 的中止方，**不能凭错误串猜**——（修复前）三类中止（下游客户端断开 / stale-request reaper / 上游 header-wait 超时）在 h2 路径上**都**抛字面量 `"The operation was aborted."`（[http2-client.ts](../../../src/lib/transport/http2-client.ts) `raceAbort` 的 `abortError()`，`name:"AbortError"`），归类只能由**信号状态**决定。
+
+**错误对象不在手上时，裁决走 History**（4141 `GET /history/api/entries/:id`，独立 oracle；日志串本身信息不足）。逐字段判：
 
 | 字段 | client-abort | reaper-cancel | header-timeout |
 |---|---|---|---|

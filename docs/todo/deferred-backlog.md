@@ -1071,3 +1071,17 @@ registry（`docs/rfc/2026-07-21-retry-strategy-registry.md`）6 commit 全 lande
 - **当前行为**：**门本身（退出码）是对的**——它由各 shard 自己的 exit code 决定，真失败照样红；坏的是**汇总证据行**：交付报告引用的「N pass」系统性偏小约 25%，且无法与直接命令对账。
 - **理想架构 / 若做需改什么**：给 parallel-test 加一条自检——把各 shard 的 `pass+fail+skip` 之和与「预期用例总数」对账，不一致就**显式告警而非静默出数**；或直接改用 `--reporter=junit`（脚本 `refreshTimings` 已经在用 junit XML，逐 `<testcase>` 计数是精确的）取代脆弱的 stdout 文本解析。后者更根治：文本汇总格式随 bun 版本变化的历史已经踩过两次。
 - **为何暂缓**：门的正确性不受影响（exit code 正确），属证据可信度问题；且正确修法（改 junit 计数）值得单独一个改动 + 正样本对照，不该塞进特性分支。**触发条件**：下次有人需要引用精确用例数做交付证据，或第三次被 bun 输出格式变化咬到。**发现方**：upstream-silence 特性分支第二次合并 master 时的对账（2026-07-28）。
+
+## Step 1 还有两个「停后台服务」可能同样饿死 drain 期的在途请求（2026-07-28，h2 池 teardown 修复的邻域审查）
+
+- **根因 / 现状**：关机 Step 1 的 `closeHttp2Sessions()` 已被证明会秒杀正在建连的在途请求（本轮修掉，见 [docs/lifecycle.md](../lifecycle.md) Step 1 注）。**同一行代码的邻居没查**：`stopRefresh()`（= `peekTokenRuntime()?.dispose()`，停 token 刷新）与 `peekUpstreamWsManager()?.stopNew()`（停新建上游 WS）都在 Step 1 执行，而 Step 2/3 还要给在途请求 60s+120s 自然完成。若某个在途请求在 drain 期**需要**刷新 token（长 drain + 短 token 有效期）或**需要**新建一条上游 WS（Responses 腿），它会在 Step 1 之后的窗口里失败——与 h2 那条完全同构。
+- **当前行为**：未观测到 incident。WS 侧有 `ws-before-first-event` → HTTP fallback 兜底，风险较低；token 侧取决于 `dispose()` 是否只停周期刷新（无害）还是也拒绝按需刷新（有害）——**未核实，别当已知**。
+- **理想架构 / 若做需改什么**：逐个回答「这个 stop 会不会让一条已被接纳的在途请求失败？」——会的就照 h2 的办法挪到 Step 4/finalize，只保留真正的「停止**新增**工作」语义。`stopRefresh` 需要读 `packages/token/src/runtime.ts` 的 `dispose()` 判断是停 timer 还是关整个 runtime。
+- **为何暂缓**：本轮范围是 h2 那条已被 incident 证实的路径；把两个未证实的同构猜想一起改会让本次改动的因果链变糊，且 token 侧要先做事实核查而不是改代码。**触发条件（值得做）**：观测到关机窗口内的 token 刷新失败 / WS 建连失败 incident，或下次触碰 shutdown Step 1。**发现方**：h2 池 teardown 修复的 `learn-by-analogy` 邻域审查（2026-07-28）。
+
+## driver 的 `No retry strategy claimed this <type>` 对 `aborted` 是噪声（2026-07-28）
+
+- **根因 / 现状**：[driver.ts:562-566](../../src/lib/pipeline/driver.ts#L562-L566) 在没有任何 retry 策略认领错误时打一条 `consola.warn` + 计数器。它的**本职**是抓「我们的 400 matcher 与上游实际措辞漂移了」（注释写明两次 illegal-thinking-layout incident 就藏在这里）。但 `type: "aborted"` 也会走到这里——而中止**本来就不该有 retry 策略**（客户端走了 / 关机 / reaper 取消，重试毫无意义）。于是每一次正常的取消都在这条本该稀有的 warn 上刷一次，稀释它的信号价值。
+- **当前行为**：功能无影响，纯观测噪声；本轮修复后关机造成的那部分已经消失（在 send 层就变成 529 了），剩下的主要是 client-abort。
+- **理想架构 / 若做需改什么**：按 `error.type` 分级——`aborted` 走 `consola.debug` + 单独的计数维度（仍然可观测、但不占用「matcher 漂移」这条告警通道），其余保持 warn。须同时确认 `recordRetryGiveUp("unclaimed", type)` 的消费方（`/api/stats`）不会因为分级而丢维度。
+- **为何暂缓**：与本轮的因果链无关（本轮改的是归因，不是日志分级），值得单独一个小改动 + 确认 stats 消费面。**触发条件**：这条 warn 的噪声影响到实际排障，或下次触碰 driver 的 give-up 路径。**发现方**：incident `req_1785234916721_3573` 的日志正是这条 warn（2026-07-28）。

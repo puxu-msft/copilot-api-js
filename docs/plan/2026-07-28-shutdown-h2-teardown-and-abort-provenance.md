@@ -1,5 +1,7 @@
 # 修复：优雅关机 Step 1 秒杀在途请求 + abort 归因失真
 
+> **实施状态：✅ 已完整落地（2026-07-28）。** Phase 1 + Phase 2（2.1–2.5）全部实现，测试与正样本对照见文末「实施记录」。计划正文保持定稿时原样（含当时的行号），后续以代码与 [docs/lifecycle.md](../lifecycle.md) 为准。
+>
 > 本版已吸收异模型 subagent（`gpt-souls:reviewer`）的对抗评审：4 HIGH + 2 MED 全部采纳，见文末「评审处置」。
 
 ## Context（为什么做这件事）
@@ -152,3 +154,29 @@
 | MED-2 precedence 非互斥 / deadline 语义 | 采纳 | 2.4 改称有序 precedence，`request_deadline` → 504 而非 503 |
 
 **评审独立核实成立的 8 条**（不再复议）：`closeHttp2Sessions()` 生产唯一调用方是 Step 1；`session.close()` 对已建流确为 graceful（Node 探针）；`maxConcurrentStreamsPerSession=1` 确使并发请求各占一条 session（既有测试 `:449-480`）；移走 pool close 无依赖破坏；进程仍能正常退出；SIGUSR2 无额外障碍；`AbortSignal.any()` reason 透传（Bun 探针）；503/504 在 SDK 与 CC 中都重试（实测）。
+
+---
+
+## 实施记录（2026-07-28）
+
+**与计划的偏差（都是实施期发现的更正确形状，非缩水）**：
+
+1. **`isShutdownCausedAbort` 取代了计划里的两个分散判据**。Step 3 现在 `abort(new DOMException("Server is shutting down","AbortError"))`，该谓词按**对象身份**（沿 `cause` 链）+ `pool-closed` tag 回答「这次中止是不是关机造成的」。同时 `send.ts` 的 529 门多了一路探针：`fetchSignal.reason`——若某个 transport 仍然合成新错误而丢掉 reason，组合信号自己的 reason 仍能给出正确归因（`AbortSignal.any` 取首个中止源的 reason，故不会把 reaper 误判成 shutdown）。
+2. **新增 `packages/foundation/src/error/cancellation-reason.ts`**（计划未预见）：与既有 `transport-reason.ts` 同构的 Symbol-tag 机制，承载 `stale-reaper` / `request-deadline` / `request-cancel` / `dispatch-cancel` 四个取消来源。`REQUEST_DEADLINE_CANCEL_REASON` 常量同时被 `manager.ts` 与 `request.ts` 引用，避免魔法字符串两处漂移。
+3. **`PostCommitAbortKind` 是七种不是六种**：计划漏了 `request-cancel`。把它折进 `reaper-cancel` 就是本次要修的那种撒谎，故单列。
+4. **`request_deadline` 在 pre-commit 边界给 504（不是计划初版的 503）**——它被 `manager.ts` 建模为 `category:"timeout"`，503 会丢掉这个语义（评审 MED-2）。
+
+**测试与正样本对照（4 组 mutation，全部实测先红后绿）**：
+
+| 锁住的行为 | 测试 | mutation（还原旧行为后必须变红） |
+|---|---|---|
+| Step 1 不拆池、在途建连能 drain 完 | `tests/shutdown/shutdown-h2-pool-drain.it.test.ts` | Step 1 加回 `closeHttp2Sessions()` → 红（`settled` 在 Step 1 后已是 `rejected`） |
+| preflight 分支保留 `TimeoutError` 身份 | `http2-client.it.test.ts`「PRE-ABORTED TimeoutError」 | `runHttp2Fetch` 首行改回 `abortError()` → 红 |
+| mid-wait 分支保留 reason 对象 | `http2-client.it.test.ts`「MID-WAIT abort」 | `onPreResponseAbort` 改回 `abortError()` → 红 |
+| 529 门是**因果**判据不是时间判据 | `http-transport.it.test.ts`「REAPER cancelled it: NOT 529」 | 门换成 `getIsShuttingDown()`（计划初版方案）→ 红 |
+
+其余覆盖：`tests/infra/error.unit.test.ts` 五条 precedence 臂（含「非 TimeoutError 的 abort 不得产出 header-timeout 文案」阴性断言）、`post-commit-error.unit.test.ts` 的 provenance 组 + 每种 kind 的 frame 文案、`model-operation-bypass.http.test.ts` 走完整 HTTP 路径的 503/504 两臂。
+
+**门禁**：`bun run typecheck` 绿、改动文件 eslint 干净（`src/lib/context/request.ts` 余 2 条 `perfectionist/sort-imports` 经核实在 HEAD 即存在，未扫入本次改动）、`bun run test:backend` **6590 pass / 0 fail**。
+
+**端到端真 h2 验证**：计划里的「黑盒 41411 实例 + SIGTERM」未单独执行——方案 A（进程内真 h2c 上游 + 真 `gracefulShutdown`）已经覆盖同一因果链，且它带正样本对照（黑盒臂没有）。这不是省略验证，是用更强的那一个替掉了更弱的那一个；若将来要复现完整信号路径（真 SIGTERM handler → 真 supervisor 重启），黑盒臂仍然值得补。
