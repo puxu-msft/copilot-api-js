@@ -11,6 +11,7 @@ import type { RequestEnvelope } from "~/lib/pipeline/envelope"
 import type {
   //
   ClientFrame,
+  ClientSink,
   FormatCodec,
   PreparedRequest,
   RunBufferedOpts,
@@ -128,6 +129,46 @@ function stubSseStream(): { stream: Parameters<typeof makeSseSink>[0]; written: 
   return { stream, written }
 }
 
+function delayFirstWriteUntilReleased(sink: ClientSink): {
+  sink: ClientSink
+  waitUntilBlocked: () => Promise<void>
+  release: () => void
+  closeCalls: () => number
+} {
+  let release!: () => void
+  let blockedResolve!: () => void
+  const gate = new Promise<void>((resolve) => {
+    release = resolve
+  })
+  const blocked = new Promise<void>((resolve) => {
+    blockedResolve = resolve
+  })
+  let first = true
+  let closeCalls = 0
+  const originalWrite = sink.write.bind(sink)
+  const originalClose = sink.close?.bind(sink)
+  return {
+    sink: {
+      ...sink,
+      async write(value) {
+        if (first) {
+          first = false
+          blockedResolve()
+          await gate
+        }
+        await originalWrite(value)
+      },
+      close() {
+        closeCalls++
+        originalClose?.()
+      },
+    },
+    waitUntilBlocked: () => blocked,
+    release,
+    closeCalls: () => closeCalls,
+  }
+}
+
 async function drain(n = 50): Promise<void> {
   for (let i = 0; i < n; i++) await Promise.resolve()
 }
@@ -198,5 +239,45 @@ describe("heartbeat after a real buffered boundary commit", () => {
     const gap = await runBoundaryGap(false)
 
     expect(gap.filter((current) => current.event === "ping").length).toBeGreaterThanOrEqual(1)
+  })
+
+  test("terminal drain permanently closes heartbeat before a slow flush starts", async () => {
+    const env = makeEnv()
+    env.ctx.beginAttempt({})
+    const upstream: UpstreamStream = {
+      frames: (async function* () {
+        yield frame("message_start", { message: { id: "msg_terminal" } })
+        yield frame("content_block_start", { index: 0, content_block: { type: "text" } })
+        yield frame("content_block_delta", { index: 0, delta: { type: "text_delta", text: "terminal" } })
+        yield frame("content_block_stop", { index: 0 })
+        yield frame("message_delta", { delta: { stop_reason: "end_turn", stop_sequence: null }, usage: { output_tokens: 1 } })
+        yield frame("message_stop")
+      })(),
+      headers: new Headers(),
+    }
+    const { stream, written } = stubSseStream()
+    const deliverySink = makeDeliverySseSink(stream, {
+      heartbeat: {
+        intervalSec: 15,
+        pingFrame: { event: "ping", data: '{"type":"ping"}' },
+      },
+    })
+    const delayed = delayFirstWriteUntilReleased(deliverySink)
+    const tracker = makeStopTracker()
+    const outcomePromise = makeDriver().runResponseBufferedSink(upstream, env, delayed.sink, {
+      ...tracker,
+      retryCap: 0,
+    } as RunBufferedOpts)
+
+    await delayed.waitUntilBlocked()
+    expect(delayed.closeCalls()).toBe(1)
+    expect(clock.liveTimerDelaysMs.filter((delay) => delay === 15_000)).toHaveLength(0)
+    await clock.advance(30_000)
+    await drain(500)
+    expect(written.filter((current) => current.event === "ping")).toHaveLength(0)
+
+    delayed.release()
+    const outcome = await outcomePromise
+    expect(outcome.kind).toBe("complete")
   })
 })
