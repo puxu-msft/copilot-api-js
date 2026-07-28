@@ -1,6 +1,6 @@
 ---
 name: debugging-server-crashes
-description: 当 copilot-api-js 服务器意外整进程退出（一条良性取消/错误却杀掉所有并发请求）时使用——两条同构放大链：① 孤儿 promise（无 live awaiter）的 reject 变全局 unhandledRejection；② EventEmitter（socket/h2 session）emit 'error' 时无监听者变 uncaughtException。main.ts 的 process.on 两个 handler 都 →process.exit(1) 把良性事件放大成崩溃（生产 911s abort incident + "[http2] TLS connect timeout" 崩溃）。根因修=产生点挂对称的两个 class-eliminator 原语（`src/lib/transport/crash-safety.ts` 的 withRejectionObserver / withErrorSink），在取得所有权处统一应用、别放宽全局 handler。跨传输/持久化/reaper 的通用崩溃防御模式。
+description: 当 copilot-api-js 服务器意外整进程退出（一条良性取消/错误却杀掉所有并发请求）时使用——三条同构放大链：① 孤儿 promise（无 live awaiter）的 reject 变全局 unhandledRejection；② EventEmitter（socket/h2 session）emit 'error' 时无监听者变 uncaughtException；③ seal 后晚到的 best-effort 观测写（timing/headers）撞 assertWritable 抛错、经①放大（判据=语义写保持 loud-throw、best-effort 观测静默丢弃；同族不对称即红旗）。main.ts 的 process.on 两个 handler 都 →process.exit(1) 把良性事件放大成崩溃（生产 911s abort incident + "[http2] TLS connect timeout" 崩溃）。根因修=产生点挂对称的两个 class-eliminator 原语（`src/lib/transport/crash-safety.ts` 的 withRejectionObserver / withErrorSink），在取得所有权处统一应用、别放宽全局 handler。跨传输/持久化/reaper 的通用崩溃防御模式。
 ---
 
 # 调试服务器意外退出
