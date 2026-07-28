@@ -19,6 +19,8 @@ metadata:
 
 **Why:** 配置层的数字是「意图」，不是「生效值」；生效的是所有层里**最早**触发的那个。
 
-实例与完整对照表（含 5 个臂 + 正样本 + 服务端对照）见 `exp/silence-recovery-gates/FINDINGS.md` §「Q1 续测」。
+**推论：定位到层之后，去查那一层有没有开关。** 本例里 undici 自己没有环境变量（`headersTimeout` 只能构造 Dispatcher 时给），但**上层应用可能替它开了口**——CC 的 `API_FORCE_IDLE_TIMEOUT=0` 会走到 `fetchOptions.timeout = false`，一次性关掉 undici 的 headers+body 两个超时（实测：静默 600s 仍单次尝试干净成功，对照臂 299.5s 死）。所以「这层没有 env 开关」不等于「这个限制关不掉」，要往上一层的封装找。
+
+实例与完整对照表（含 5 个臂 + 正样本 + 服务端对照 + env 开关附测）见 `exp/silence-recovery-gates/FINDINGS.md` §「Q1 续测」与 §「Q1 附测」。
 
 Related: [[methodology-client-source-grep-not-rest-capability-probe-endpoint]]（源码 grep ≠ 上游真实能力，同属「别拿声明当实测」）、[[feedback-pass-null-clean-not-self-validating]]、[[methodology-observe-client-giveup-serverside-not-ladder]]
