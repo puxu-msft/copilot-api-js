@@ -134,8 +134,15 @@ describe("reverse @messages contentless refusal settlement", () => {
       object: "list",
       data: [mockModel(MODEL, { vendor: "Anthropic", supported_endpoints: ["/v1/messages", "/chat/completions", "/responses"] })],
     })
-    // Reverse legs do not apply cross-protocol refusal suppression yet. Pin passthrough mode so the
-    // feature assertion describes the client-facing behavior rather than a configured-but-unapplied policy.
+    // NOTE: `refusalSseRewrite` here does NOT take effect, and no assertion below may depend on it.
+    // The repo-root `config.yaml` pins `refusal_sse_rewrite: end_turn` and the routes re-apply config
+    // per request (`applyConfigToState`), so this write is overwritten before the request-scoped policy
+    // freezes — instrumented at the freeze point on 2026-07-28. Every cell here actually runs under the
+    // default `end_turn`. That is fine for this file: it asserts the VERDICT side (failed /
+    // upstreamSucceeded / feature), which is mode-independent by design. The wire — which IS
+    // mode-dependent, and where streaming and non-streaming legs differ — is pinned separately in
+    // `reverse-refusal-default-wire.it.test.ts`. Left in place rather than deleted so the next reader
+    // does not "restore" it; delete it only together with a way to pin modes that survives the reload.
     setStateForTests({ copilotToken: "tok", refusalSseRewrite: "refusal", streamKeepalivePingSec: 0, streamCommitAfterSec: 0 })
   })
 
