@@ -20,6 +20,7 @@ import { peekTelemetryRuntime } from "@hsupu/ghc-proxy-telemetry"
 import consola from "consola"
 import { setMaxListeners } from "node:events"
 
+import { getTransportErrorReason } from "~/lib/error/transport-reason"
 import { peekTokenRuntime } from "~/lib/token"
 
 import type { AdaptiveRateLimiter } from "./adaptive-rate-limiter"
@@ -232,6 +233,39 @@ export function getShutdownPhase(): typeof shutdownPhase {
  */
 export function getShutdownSignal(): AbortSignal {
   return shutdownAbortController.signal
+}
+
+/** Message carried by the Phase 3 abort reason; also the client-facing 529 text. */
+export const SHUTDOWN_ABORT_MESSAGE = "Server is shutting down"
+
+/** Build the Phase 3 abort reason. A fresh object per abort — identity is what {@link isShutdownAbort} matches. */
+function shutdownAbortReason(): DOMException {
+  return new DOMException(SHUTDOWN_ABORT_MESSAGE, "AbortError")
+}
+
+/**
+ * Was `error` produced by THIS process's shutdown?
+ *
+ * Answers the causal question ("did shutdown cancel this?") that
+ * {@link getIsShuttingDown} cannot: that flag only says the process is somewhere
+ * in its shutdown window, so a request cancelled during the drain by the stale
+ * reaper or the hard request deadline would answer "yes" to it and get
+ * misreported as a shutdown. Two forms of causal evidence are accepted:
+ *  - identity against the live Phase 3 abort reason (the object handed to
+ *    `shutdownAbortController.abort()`), and
+ *  - the `pool-closed` transport tag (Step 4 / finalize tore the h2 pool down
+ *    under a request that was still acquiring its session).
+ * The `cause` walk follows the same wrap-tolerant convention as
+ * `getTransportErrorReason`.
+ */
+export function isShutdownCausedAbort(error: unknown): boolean {
+  if (getTransportErrorReason(error) === "pool-closed") return true
+  const reason = shutdownAbortController.signal.reason as unknown
+  if (reason === undefined || reason === null) return false
+  for (let cursor: unknown = error; cursor instanceof Error; cursor = cursor.cause) {
+    if (cursor === reason) return true
+  }
+  return false
 }
 
 /**
@@ -454,8 +488,19 @@ export async function gracefulShutdown(signal: string, deps?: ShutdownDeps): Pro
   stopRefresh()
   stopHistoryBackgroundWork()
   peekTelemetryRuntime()?.stopBackgroundWork() // 停 telemetry rollup timer，避免与接管的新进程并发上卷（lifecycle.md overlap ②）
-  closeHttp2Sessions()
   peekUpstreamWsManager()?.stopNew()
+  // NOTE: the h2 session pool is deliberately NOT torn down here. `closeHttp2Sessions()`
+  // bumps `poolEpoch`, which makes every in-flight session CREATION throw an AbortError
+  // (http2-client.ts's epoch guards) — i.e. Step 1 would tear up the very promise Step 2
+  // makes ("wait for active requests to finish naturally"). Already-established streams
+  // survive `session.close()` (graceful GOAWAY), so the victims are exactly the requests
+  // still completing their TLS/h2 handshake — and with `maxConcurrentStreamsPerSession=1`
+  // that is EVERY request that arrives while another is in flight, not an edge case
+  // (2026-07-28 incident req_1785234916721_3573: killed 539ms in, then misreported as a
+  // 900s upstream header timeout). Ingress is already closed by `server.close(false)` +
+  // the `getIsShuttingDown()` middleware, so nothing new can enter the pool during the
+  // drain; the pool is closed in Step 4 / finalize instead — mirroring the upstream-WS
+  // split above (`stopNew()` here, `closeAll()` there).
 
   // 通知 supervisor 正在收尾（systemd STOPPING=1；非 systemd no-op）
   notifyStopping()
@@ -519,7 +564,11 @@ export async function gracefulShutdown(signal: string, deps?: ShutdownDeps): Pro
 
     setPhaseFireAndForget("aborting")
     shutdownDrainAbortController = new AbortController()
-    shutdownAbortController.abort()
+    // Abort WITH a reason: it is the only causal evidence that a given in-flight
+    // abort came from shutdown (vs the reaper / hard deadline / a client hangup
+    // that happened to land in the same window). Consumers match it via
+    // `isShutdownAbort` and surface a truthful retryable 529.
+    shutdownAbortController.abort(shutdownAbortReason())
 
     try {
       const phase3Result = await drainActiveRequests(abortWaitMs, tracker, {
@@ -554,6 +603,7 @@ export async function gracefulShutdown(signal: string, deps?: ShutdownDeps): Pro
     // surfaces as EPIPE/ECONNRESET noise in logs. Closing the upstream side
     // first lets in-flight forwarders see a clean EOF from their data source.
     peekUpstreamWsManager()?.closeAll()
+    closeHttp2Sessions() // same ordering rationale, h2 side (see the Step 1 note on why it is NOT there)
 
     // Now close observer WS clients. They've seen all phase transitions up to
     // and including phase4 (guaranteed by the awaited setPhase above).
@@ -643,6 +693,7 @@ async function finalize(deps: FinalizeDeps): Promise<void> {
   // Without this, drain-success paths (Phase 2/3 drained) leave upstream
   // sockets dangling until process GC — wasting GHC-side connection quota.
   peekUpstreamWsManager()?.closeAll()
+  closeHttp2Sessions() // idempotent; covers the drained-naturally paths that skip Step 4
 
   // Publish the truthful terminal outcome while observer clients are still
   // connected. Diagnostic close has already returned, so completed means every
