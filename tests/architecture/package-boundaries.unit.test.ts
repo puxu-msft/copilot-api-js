@@ -271,3 +271,31 @@ describe("package import boundaries", () => {
     expect(importsCli(await readFile(path.join(repoRoot, "src/server.ts"), "utf8"))).toBe(false)
   })
 })
+
+/**
+ * The post-header abort-provenance gap counter lives in ONE helper in the driver. A bare
+ * `{ kind: "stream-error" }` literal bypasses it, and the bypass is invisible: the outcome is
+ * still correct, only the counter under-reports — and an under-reporting gap detector reads as
+ * "no gaps", which is worse than not having one. (That is not hypothetical: the counter's first
+ * home missed the Responses upstream-WebSocket leg entirely.)
+ */
+describe("driver: stream-error outcomes go through the counting helper", () => {
+  test('no bare `kind: "stream-error"` object literal outside `streamErrorOutcome`', async () => {
+    const source = await Bun.file(new URL("../../src/lib/pipeline/driver.ts", import.meta.url)).text()
+    const lines = source.split("\n")
+
+    // Positive control: the helper itself must be present and must be the one place that mints it,
+    // otherwise this test would pass on a file that simply no longer produces the outcome at all.
+    const helperLine = lines.findIndex((line) => line.includes("function streamErrorOutcome("))
+    expect(helperLine).toBeGreaterThan(-1)
+
+    const offenders = lines
+      .map((line, index) => ({ line, lineNumber: index + 1 }))
+      .filter(({ line }) => /kind:\s*"stream-error"/.test(line))
+      .filter(({ lineNumber }) => lineNumber !== helperLine + 3) // the helper's own return
+      .filter(({ line }) => !line.trimStart().startsWith("*")) // JSDoc prose
+      .filter(({ line }) => !line.includes("function streamErrorOutcome("))
+
+    expect(offenders.map(({ line, lineNumber }) => `${lineNumber}: ${line.trim()}`)).toEqual([])
+  })
+})

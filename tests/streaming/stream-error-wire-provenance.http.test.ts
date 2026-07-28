@@ -26,16 +26,22 @@ import type { RequestContext } from "~/lib/context/request"
 
 import { getRequestContextManager } from "~/lib/context/manager"
 import { REQUEST_DEADLINE_CANCEL_REASON } from "~/lib/error/cancellation-reason"
+import { getAbortProvenanceGapCounts } from "~/lib/observability/abort-provenance-gaps"
 import {
   //
   setModels,
   setStateForTests,
 } from "~/lib/state"
+import { StreamUnknownCancelError } from "~/lib/stream"
 
 import { mockModel } from "../helpers/factories"
 import { useIsolatedRuntime } from "../helpers/isolated-fixture"
 import { applyFetchMock } from "../helpers/mock-fetch"
-import { createSseResponseThenBlock } from "../helpers/sse"
+import {
+  //
+  createSseResponseThenBlock,
+  createSseResponseThenError,
+} from "../helpers/sse"
 import { createFullTestApp } from "../helpers/test-app"
 
 const app = createFullTestApp()
@@ -211,5 +217,78 @@ describe("delayed-commit pre-header abort → the same cause gets the same wire 
     // What this builder answered for EVERY kind before it shared the table.
     expect(wire).not.toContain("api_error")
     expect(wire).toContain("hard deadline")
+  })
+})
+
+/**
+ * The gap COUNTER, driven the only way that can prove it: through the real app, so the real driver
+ * consumes the real transport's frames.
+ *
+ * The counter's first home was `dispatch-lifecycle`, on the belief that both transports' frames pass
+ * through `ownFrames()`. The Responses upstream-WebSocket leg does not, so that leg produced a
+ * deterministic FALSE ZERO — the worst failure for a gap detector, since zero then reads as "no
+ * gaps". Its first test suite could not see this because it called `createDispatchLifecycle()` by
+ * hand: that only proves "if the funnel is called, the label is right".
+ *
+ * An untagged lifecycle abort has no production producer any more (that is the whole point), so the
+ * upstream body throws the `StreamUnknownCancelError` a skipped-contract producer would have caused.
+ * Same object, same driver path, same funnel.
+ */
+describe("abort-provenance gaps are counted for every real transport", () => {
+  useIsolatedRuntime()
+
+  beforeEach(() => {
+    setStateForTests({ copilotToken: "test-token", responseHeaderTimeout: 0, streamCommitAfterSec: 0, streamKeepalivePingSec: 0 })
+    setModels({
+      object: "list",
+      data: [
+        mockModel("claude-sonnet-4.5", { vendor: "Anthropic", supported_endpoints: ["/v1/messages"] }),
+        mockModel("gpt-4o", { vendor: "OpenAI", supported_endpoints: ["/chat/completions"] }),
+      ],
+    })
+  })
+
+  test("HTTP transport (Chat Completions) counts its gap under its own surface", async () => {
+    applyFetchMock(mock(() => Promise.resolve(createSseResponseThenError([CC_FIRST_FRAME], new StreamUnknownCancelError()))))
+
+    await (
+      await app.request("/v1/chat/completions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ model: "gpt-4o", stream: true, messages: [{ role: "user", content: "hi" }] }),
+      })
+    ).text()
+
+    expect(getAbortProvenanceGapCounts()).toEqual([{ phase: "post-header", surface: "openai-cc", count: 1 }])
+  })
+
+  test("Anthropic counts under its own surface — the label is not shared across legs", async () => {
+    applyFetchMock(mock(() => Promise.resolve(createSseResponseThenError(ANTHROPIC_FIRST_FRAMES, new StreamUnknownCancelError()))))
+
+    await (
+      await app.request("/v1/messages", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ model: "claude-sonnet-4.5", max_tokens: 16, stream: true, messages: [{ role: "user", content: "hi" }] }),
+      })
+    ).text()
+
+    expect(getAbortProvenanceGapCounts()).toEqual([{ phase: "post-header", surface: "anthropic", count: 1 }])
+  })
+
+  test("NEGATIVE: a TAGGED mid-stream cancel on the same path counts nothing", async () => {
+    // The metric is only useful if a non-zero reading is an action item. Healthy traffic — a real
+    // deadline, which fires the same driver path — must leave it empty.
+    applyFetchMock(mock(() => Promise.resolve(createSseResponseThenBlock([CC_FIRST_FRAME]))))
+
+    await cancelMidStreamAndReadWire(() =>
+      app.request("/v1/chat/completions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ model: "gpt-4o", stream: true, messages: [{ role: "user", content: "hi" }] }),
+      }),
+    )
+
+    expect(getAbortProvenanceGapCounts()).toEqual([])
   })
 })
