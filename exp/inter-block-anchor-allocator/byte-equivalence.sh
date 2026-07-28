@@ -88,9 +88,29 @@ fi
 cleanup() {
   if [[ -f "$PID_FILE" ]]; then
     pid="$(<"$PID_FILE")"
+    # Kill the OWNED LISTENERS FIRST, then the wrapper. `bun run <script>` execs a child that
+    # holds the socket, so killing only the wrapper orphans a live test server that keeps the
+    # port (and a real token) forever — that is exactly how the peer process this script now
+    # refuses to trust came to exist. `is_owned_process` already walks the ppid chain; reuse it
+    # so we only ever kill our own descendants, never a peer's server and never 4141.
+    local listeners=()
+    mapfile -t listeners < <(ss -ltnp "sport = :$PORT" 2>/dev/null | grep -oP 'pid=\K[0-9]+' | sort -u)
+    for listener in "${listeners[@]}"; do
+      [[ "$listener" == "$pid" ]] && continue
+      if is_owned_process "$listener" && kill -0 "$listener" 2>/dev/null; then
+        kill "$listener" 2>/dev/null || true
+      fi
+    done
     if kill -0 "$pid" 2>/dev/null; then
       kill "$pid"
       wait "$pid" 2>/dev/null || true
+    fi
+    # Post-condition: the port must actually be free again. A surviving listener here means the
+    # descendant walk missed something — say so loudly rather than leaking silently.
+    sleep 0.3
+    if ss -ltn "sport = :$PORT" 2>/dev/null | grep -q LISTEN; then
+      printf 'WARNING: test port %s still has a listener after cleanup:\n' "$PORT" >&2
+      ss -ltnp "sport = :$PORT" >&2 || true
     fi
   fi
 }
