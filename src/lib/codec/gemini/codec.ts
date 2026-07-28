@@ -395,6 +395,8 @@ const STREAM_ERROR_STATUS: Record<ClassifiedStreamError, string> = {
   shutdown: "UNAVAILABLE",
   "client-abort": "CANCELLED",
   "reaper-cancel": "UNAVAILABLE",
+  "request-deadline": "DEADLINE_EXCEEDED",
+  "request-cancel": "CANCELLED",
   "dispatch-cancel": "CANCELLED",
   other: "INTERNAL",
 }
@@ -403,6 +405,8 @@ const STREAM_ERROR_MESSAGES: Record<ClassifiedStreamError, string> = {
   shutdown: "Server is shutting down",
   "client-abort": "Client disconnected",
   "reaper-cancel": "Request cancelled by stale-request reaper",
+  "request-deadline": "Request exceeded its hard deadline",
+  "request-cancel": "Request cancelled",
   "dispatch-cancel": "Upstream dispatch cancelled",
   other: "Stream error",
 }

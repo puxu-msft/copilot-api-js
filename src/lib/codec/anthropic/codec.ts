@@ -480,6 +480,8 @@ const STREAM_ERROR_MESSAGES: Record<ClassifiedStreamError, string> = {
   shutdown: "Server is shutting down",
   "client-abort": "Client disconnected",
   "reaper-cancel": "Request cancelled by stale-request reaper",
+  "request-deadline": "Request exceeded its hard deadline",
+  "request-cancel": "Request cancelled",
   "dispatch-cancel": "Upstream dispatch cancelled",
   other: "Stream error",
 }
@@ -487,7 +489,10 @@ const STREAM_ERROR_MESSAGES: Record<ClassifiedStreamError, string> = {
 /** Map the classified kind to Anthropic's error `type` (mirrors legacy anthropicStreamErrorType). */
 function anthropicErrorType(err: ClassifiedStreamError): string {
   switch (err) {
-    case "idle-timeout": {
+    // Our own clocks running out — the hard request deadline is as much a timeout
+    // as the frame-idle watchdog, and used to be reported as a reaper cancel.
+    case "idle-timeout":
+    case "request-deadline": {
       return "timeout_error"
     }
     case "shutdown":
@@ -496,7 +501,7 @@ function anthropicErrorType(err: ClassifiedStreamError): string {
     }
     default: {
       return "api_error"
-    } // client-abort + other
+    } // client-abort + request-cancel + dispatch-cancel + other
   }
 }
 

@@ -17,11 +17,14 @@ import {
   test,
 } from "bun:test"
 
+import { cancellationAbortError } from "~/lib/error/cancellation-reason"
 import {
   //
   StreamClientAbortError,
   StreamIdleTimeoutError,
   StreamReaperCancelError,
+  StreamRequestCancelError,
+  StreamRequestDeadlineError,
   StreamShutdownError,
   classifyStreamError,
   guardSseIterable,
@@ -197,6 +200,49 @@ describe("guardSseIterable — abort-source distinction", () => {
     reaper.abort()
 
     await expect(secondPromise).rejects.toBeInstanceOf(StreamClientAbortError)
+  })
+
+  test("the hard deadline on the lifecycle signal is NOT reported as a reaper cancel", async () => {
+    // `ctx.lifecycleSignal` carries the reaper, the hard deadline and any explicit
+    // ctx.cancel(). Signal state alone cannot tell them apart, so this branch used to
+    // answer "reaper" for all three — a request that blew its deadline reached the client
+    // as a stale-request reap on EVERY streaming surface. The cause tag on the reason
+    // is what makes the distinction possible.
+    const lifecycle = new AbortController()
+    const guarded = guardSseIterable(blockingAfterFirst(), { idleTimeoutMs: 0, reaperSignal: lifecycle.signal })
+    const iter = guarded[Symbol.asyncIterator]()
+
+    await iter.next()
+    const secondPromise = iter.next()
+    lifecycle.abort(cancellationAbortError("request-deadline", "request_deadline"))
+
+    const error = await secondPromise.then(
+      () => undefined,
+      (e: unknown) => e,
+    )
+    expect(error).toBeInstanceOf(StreamRequestDeadlineError)
+    expect(error).not.toBeInstanceOf(StreamReaperCancelError)
+    expect(classifyStreamError(error)).toBe("request-deadline")
+  })
+
+  test("an explicit ctx.cancel is its own kind; an UNTAGGED lifecycle abort still means reaper", async () => {
+    const cancelled = new AbortController()
+    const guardedCancel = guardSseIterable(blockingAfterFirst(), { idleTimeoutMs: 0, reaperSignal: cancelled.signal })
+    const cancelIter = guardedCancel[Symbol.asyncIterator]()
+    await cancelIter.next()
+    const cancelPending = cancelIter.next()
+    cancelled.abort(cancellationAbortError("request-cancel", "operator cancelled"))
+    await expect(cancelPending).rejects.toBeInstanceOf(StreamRequestCancelError)
+
+    // Untagged = what a bare lifecycle abort has always meant. Keeping the reaper default
+    // means this change adds provenance without silently re-labelling existing callers.
+    const untagged = new AbortController()
+    const guardedUntagged = guardSseIterable(blockingAfterFirst(), { idleTimeoutMs: 0, reaperSignal: untagged.signal })
+    const untaggedIter = guardedUntagged[Symbol.asyncIterator]()
+    await untaggedIter.next()
+    const untaggedPending = untaggedIter.next()
+    untagged.abort()
+    await expect(untaggedPending).rejects.toBeInstanceOf(StreamReaperCancelError)
   })
 
   test("classifyStreamError maps reaper-cancel to its OWN kind, NOT client-abort (→ routes to stream-error, not settled-abort)", () => {

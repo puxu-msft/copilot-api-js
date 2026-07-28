@@ -33,7 +33,10 @@ import { classifyStreamError } from "~/lib/stream"
  */
 export function streamErrorKindToOpenAIErrorType(kind: StreamErrorKind): string {
   switch (kind) {
-    case "idle-timeout": {
+    // Both are our own clocks running out, so both say timeout rather than hiding
+    // behind the generic server_error bucket.
+    case "idle-timeout":
+    case "request-deadline": {
       return "timeout_error"
     }
     default: {
