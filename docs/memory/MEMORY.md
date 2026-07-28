@@ -55,7 +55,6 @@
 - [config.schema.json 只由 .describe() 生成非 TSDoc](reference-config-schema-json-from-describe-not-tsdoc.md) — 改字段 TSDoc 是 no-op；regenerate 前 git diff 防裹进别会话 stale drift
 - [gpt-tokenizer 对重复字符病态慢](reference-gpt-tokenizer-pathological-on-repeated-chars.md) — 60KB repeat=15s vs 真实词句 40ms；测试造大 payload 别用单字符 repeat
 - [bun test 慢的三层根因与逐层解](reference-bun-test-parallel-breaks-single-process-superlinear-degradation.md) — 单进程超线性退化→`--parallel`→LPT 分片；崩溃桶须 --isolate 重跑；pty/e2e 不并行
-- [History 端点慢先查 SQL 两缺陷](methodology-sqlite-read-path-unused-blob-and-orderby-index-mismatch.md) — 从不使用的大 BLOB 列白读(77× I/O 放大) + ORDER BY 末项不在索引→每页重建 temp B-tree；实测 73.0s→0.53s(138×)；修法必须扩索引非砍 ORDER BY 末项(否则跨页丢行)；`USE TEMP B-TREE` 是负载无关证据；分页样本外推有均值偏倚+非线性双陷阱
 - [eslint no-restricted-imports 的 group 是 OR、写不出 allowlist](tooling-eslint-no-restricted-imports-group-is-or-not-allowlist.md) — `["**","!allowed"]` 退化成匹配一切；allowlist 必须用 patterns.regex + 负向先行断言
 - [eslint --fix 的 .at() autofix 破类型](tooling-eslint-fix-at-autofix-breaks-types.md) — `.at(-1)` 返 T|undefined；--fix 后必重跑 typecheck
 - [测 elapsed 逻辑注入 clock seam 别用 setSystemTime](reference-elapsed-time-test-inject-clock-seam-not-setsystemtime.md) — bun setSystemTime 跨 await 不冻结+绝对时基减真 startedAt 出负值；`now?:()=>number` seam 默认 Date.now、测试注入；边界别恰等 cap
@@ -84,7 +83,7 @@
 - [架构图优化 Agent 上下文经济](feedback-architecture-map-optimize-agent-context-economy.md) — 价值轴=上下文经济+可信度；目录级关系图+现状小节+L1 守卫
 - [交用户前先 subagent review（含 in-chat 提案）](feedback-subagent-review-before-any-user-facing-proposal.md) — 审查门适用任何交付物含对话里直接呈现的设计
 - [用户对齐只证方向对非细节最优](feedback-user-alignment-confirms-direction-not-detail-optimality.md) — 逐节点头≠细节最优；落盘 spec 前仍过异模型对抗审
-- [后端抖动挂的 Agent 必须只 SendMessage resume](feedback-backend-flakiness-must-sendmessage-resume-no-alternatives.md) — 强制单一路径 resume 原 agent，不派替代/不换模型；**也不设「挂 N 次后判定不值得」的成本逃生口**（纵向放弃是同一违规）
+- [后端抖动挂的 Agent 必须只 SendMessage resume](feedback-backend-flakiness-must-sendmessage-resume-no-alternatives.md) — 强制单一路径 resume 原 agent，不派替代/不换模型
 - [空闲等后台 agent 主动做 dead check](feedback-proactive-liveness-dead-check-on-background-agents.md) — stat output mtime 判活；抖动/stall→resume
 - [计划红绿 mutation 预测可能错、执行期真跑验证](methodology-plan-red-green-mutation-prediction-can-be-wrong-verify.md) — plan「注释 X→变红」可能不咬；不咬别提交假绿、降 characterization
 - [git commit -- pathspec 取工作区非 index](git-commit-pathspec-commits-worktree-not-index.md) — 共享 worktree 最终提交一律 pathspec；姊妹坑=`git mv` 只列新路径漏提删除侧
