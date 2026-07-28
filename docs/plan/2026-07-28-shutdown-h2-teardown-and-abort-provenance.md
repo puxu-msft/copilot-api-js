@@ -237,3 +237,31 @@
 新测试刻意同时断言「现在必须是什么」与「以前是什么、不许再出现」——只锁正向值的话，退回私有副本仍然可能全绿。
 
 **门禁**：typecheck 绿、改动文件 eslint 干净（`openai-responses/codec.ts:61` 两条 import 格式错经 `eslint --stdin` 对 HEAD 版本核实为既有）、`test:backend` **6605 pass / 0 fail**（含上一轮那条 `multiprocess-rotation` perf flaky，本轮全绿）。
+
+## 第四轮复审后的修复（2026-07-28）
+
+第三轮的 HIGH 是同一个根模式挪了一格：我把 post-header 那格的双份映射消灭了，**没对账 delayed-commit pre-header 那格**。
+
+**HIGH——同一个 cause，三格三个答案。** Anthropic 的默认路径是 delayed-commit：已经 commit 200 SSE，上游却仍在 pre-header 静默。这时的取消由 `postCommitAbortFrame()` 交付，而它对所有 kind 硬编码 `api_error`。于是同一条 hard deadline：
+
+| cause | pre-commit HTTP | 已 commit、上游 pre-header | 上游 post-header |
+|---|---|---|---|
+| `request-deadline` | 504 | `api_error` | `timeout_error` |
+| `stale-reaper` | **503** | `api_error` | `timeout_error` |
+| shutdown | 529 | `api_error` | `overloaded_error` |
+
+答案取决于「上游响应头到没到」——那不是关于「什么结束了这个请求」的事实。
+
+修法：把 Anthropic 表的键从 `StreamErrorKind` 扩到 `AnthropicErrorCauseKind = StreamErrorKind | "header-timeout" | "unknown-abort"`。`PostCommitAbortKind` 的每个成员都落在这个词汇表里，所以两套 taxonomy 共用**同一张表**而不是各自维护。pre-commit 那格的 `stale-reaper` 也从 503 兜底臂提到自己的 504 臂——reaper 既已正式归入 timeout（`stale_request_max_age` 到期本质是 deadline，配置里甚至带着改名为 `upstream_request_deadline` 的 TODO），就不该只在最后一格是 timeout。
+
+两条被打到的既有断言都是锁旧不一致行为的，已诚实更新：`postCommitAbortFrame` 的「每种 kind 都是 `api_error`」改成**对照共享表**断言（重复字面量的话，未来的本地硬编码还能溜回来）+ 分组抽查；`forwardError` 的 reaper 503 改 504，并补一条「dispatch teardown 仍是 503」证明不是把所有取消一股脑提级。
+
+**MED-1（两条 WS 跨层空档）**——补齐了，其中一条**第一版写错了**：我用一个 `readyState=1` 但从不派发 `open` 的 socket，结果测试卡在**握手**超时、根本没走到 first-event 看门狗，mutation 打上去毫无反应。探针打出 cause 链才看清（`Upstream WebSocket connection aborted` ← `TimeoutError`，是 connect 那条）。修正为让握手先成功，并把断言收紧到「顶层必须是 **request** wrapper」——这才是「走到了看门狗」的证据。这条正是「新写的 oracle『一定咬得住』只是推理不是实验」。
+
+**MED-2（`codec.formatError` 是死契约）**——核实属实：全仓零生产调用，且 finalize-stream 重设计**已裁决不要这样接线**（WS 表达不成 `ClientFrame`、codec 拿不到 raw message）。`docs/v4/01-architecture.md` 的 S7 行却仍写 `codec.formatError`，与 `docs/DESIGN.md` 自相矛盾——**文档撒谎的部分当场改掉**。删除本身**没做**：项目纪律禁止以「无消费者」为名擅自删接口契约，且这是需要用户拍板的契约变更，已按四段式完整记入 [docs/todo/deferred-backlog.md](../todo/deferred-backlog.md)（含删除清单与「删之前必须先确认什么」）。
+
+**关于 reaper→timeout 的裁决**：复审独立查了 shipped config 与 schema，确认 `stale_request_max_age` 的语义就是「上游单次尝试最大存活秒数」，判定分组站得住；并核实文案（「stale-request reaper」）与 type（`timeout_error`）不矛盾——前者是精确触发器、后者是宽类别，保留 reaper 名字反而提高运维可观察性。也确认我改的那条既有断言不是为了让测试变绿而扭曲判据。
+
+**新增 mutation（4 组，全部先红后绿）**：`postCommitAbortFrame` 改回硬编码 `api_error` → delayed-commit 那条红；删掉 `responses-transport` 取消门的 lifecycle 臂 → pre-first-event 那条红；看门狗改回合成通用 error → TimeoutError 身份那条红（**修正测试之前不红**）；共享表条目改坏 → 三协议 wire 测试红。
+
+**门禁**：typecheck 绿、改动文件 eslint 干净、`test:backend` **6610 pass / 0 fail**。
