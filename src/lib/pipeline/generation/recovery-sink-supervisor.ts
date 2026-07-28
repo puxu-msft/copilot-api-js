@@ -29,13 +29,15 @@ export function createRecoverySinkSupervisor(inner: ClientSink): RecoverySinkSup
     freezeHeartbeat: inner.freezeHeartbeat ? () => inner.freezeHeartbeat?.() : undefined,
     suspendHeartbeat: inner.suspendHeartbeat ? () => inner.suspendHeartbeat?.() : undefined,
     resumeHeartbeat: inner.resumeHeartbeat ? () => inner.resumeHeartbeat?.() : undefined,
-    // Attempt-local terminal cleanup is deliberately suppressed. The recovery owner alone settles
-    // the delivery after success, recovery exhaustion, or a recovery gate rejection.
+    // Attempt-local terminal cleanup is deliberately suppressed. These controls are defined even
+    // when the inner methods are absent so optional attempt cleanup cannot fall through to the inner
+    // sink; the recovery owner alone settles after success, exhaustion, or a gate rejection.
     close() {},
     finalize() {},
   }
-  // The driver resolves generation-owned delivery state by sink identity. Keep that invisible
-  // capability when decorating, or winner/ledger writes would fall back to the legacy direct path.
+  // The driver resolves generation-owned delivery state by sink identity. Keep that capability
+  // when decorating; the fallback still writes into delivery, but loses winner assertions and
+  // candidateId attribution.
   inheritDownstreamDeliverySession(inner, sink)
 
   return {

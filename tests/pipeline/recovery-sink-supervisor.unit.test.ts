@@ -126,6 +126,33 @@ describe("recovery sink lifetime supervisor", () => {
     expect(calls).toEqual(["write:primary", "write:recovery", "close", "finalize"])
   })
 
+  test("settleFinal waits for an asynchronously completing inner finalize", async () => {
+    let finalized = false
+    const supervisor = createRecoverySinkSupervisor({
+      async write() {},
+      finalize: () =>
+        new Promise<void>((resolve) => {
+          setTimeout(() => {
+            finalized = true
+            resolve()
+          }, 1)
+        }),
+    })
+
+    await supervisor.settleFinal()
+
+    expect(finalized).toBeTrue()
+  })
+
+  test("settleFinal propagates an asynchronous inner finalize rejection", async () => {
+    const supervisor = createRecoverySinkSupervisor({
+      async write() {},
+      finalize: () => Promise.reject(new Error("async finalize failed")),
+    })
+
+    await expect(supervisor.settleFinal()).rejects.toThrow("async finalize failed")
+  })
+
   test("settleFinal is idempotent", async () => {
     let closeCalls = 0
     let finalizeCalls = 0

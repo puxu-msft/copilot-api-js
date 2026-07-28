@@ -2,6 +2,14 @@
 
 从记忆库降为引用层（2026-07-05）时归位的活 backlog。每条：现状 / 暂缓原因 / 若做需改什么。
 
+## `makeReconcilingSink` 未继承 delivery identity，live hedge 胜者写丢失 winner 归属（2026-07-28）
+
+- **根因 / 现状**：透明 `ClientSink` decorator `makeReconcilingSink` 只镜像 write/heartbeat/terminal 方法，没有调用 `inheritDownstreamDeliverySession(inner, decorator)` 继承 generation-owned delivery identity。默认 Anthropic live 接线已确证会把该 decorator 直接传入 `driver.runResponseSink`：`handler-v4.ts:1327` 与 `:1612-1613` → `driver.ts:260` → `runResponseSink:1020` → `maybeRunHedgedResponseSink(...)` → `writeWinnerFrames:971-978`。默认 `streamKeepaliveEscalateSec: 200 > 0` 令 `anchorHooks` 存在，默认 `generationHedgeEnabled: true` + `responseHeaderTimeout: 300` 又令 hedge 可达；探针实证 `getDownstreamDeliverySession(makeReconcilingSink(...)) === undefined`。
+- **当前行为**：hedge 胜者写走 `for (const frame of frames) await sink.write(frame)` 回退支，而不是 `delivery.commitWinnerBlock(candidateId, frames)`。帧仍由 reconciling decorator 写入 inner delivery，进入同一 serializer 与 ledger；缺失的是 winner 断言及 `candidateId` 归属，不是字节绕过 delivery。
+- **理想架构 / 若做需改什么**：最小根因修复是在 `makeReconcilingSink` 创建 decorator 后调用 `inheritDownstreamDeliverySession(inner, decorator)`；更完整的长期形状是统一抽取 `decorateClientSink(inner, overrides)` 原语，使 delivery identity 继承成为所有透明 decorator 的默认行为，而非每个调用方的额外义务。两种方案都必须补 identity seam 回归测试，并覆盖 hedge winner 走 `commitWinnerBlock` 而非逐帧回退支。
+- **为何暂缓**：该缺陷先于 upstream-silence-recovery Task 0.5 存在，不由 supervisor 引入；修复属于独立生产缺陷，而 Task 0.5 的范围是 recovery sink lifetime supervisor 与其 identity 保持。本轮只订正事实并登记，不改 `makeReconcilingSink` 生产代码。
+- **触发条件**：P4/P5 接线时，或下次修改任一 sink decorator 时必须处理。**发现方**：Task 0.5 review（reviewer，2026-07-28）。
+
 ## delayed-commit 窗口是全局的，但它的安全上限只对两个 Node 客户端实测过（2026-07-28）
 
 - **根因**：`stream_commit_after_sec` 对所有流式 `/v1/messages` 请求一视同仁（`handler-v4.ts` 只按 `clientRaw.stream` 分支，不识别客户端）。但窗口的安全上限来自**客户端的** pre-header 容忍度，而我们只实测过两个样本：真 Claude Code 2.1.220（其内置 Node v26.3.0）与 `@anthropic-ai/sdk` 0.106.0 on Node——两者都是 ~300s，因为都落在 undici 默认 `headersTimeout` 上（`exp/silence-recovery-gates/FINDINGS.md`）。
