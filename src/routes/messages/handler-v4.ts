@@ -89,7 +89,6 @@ import { createBetaProbe } from "~/lib/anthropic/pipeline"
 import { recordProtectStreamingOutcome } from "~/lib/anthropic/protect-streaming-stats"
 import {
   //
-  DEFAULT_REFUSAL_ERROR_TYPE,
   extractRefusalDetail,
   refusalCategoryForDiagnostics,
   hasClientVisibleContent,
@@ -902,11 +901,14 @@ function renderNonStreamingV4(
     })
   if (isRefusal && refusalMode === "error") {
     const summary = refusalSummary(extractRefusalDetail((response as { stop_details?: unknown }).stop_details))
-    // Emission point 4 (non-streaming error body): render message/type from config. Empty type
-    // falls back to api_error.
+    // Emission point 4 (non-streaming error body). Templates come from the FROZEN policy, not from
+    // the live `state`: the disposition was decided at transformWhole time, and any concurrent
+    // request carrying a `system` re-runs applyConfigToState() (handler-v4.ts:384) in between — so
+    // reading `state` here could render this response's body from a different config than the one
+    // that chose to render it at all. The empty-type fallback is already resolved in the snapshot.
+    const policy = reqCtx.refusalPolicy
     const errVars = refusalVarsFromResponse(response, { model: response.model, request_id: reqCtx.id })
-    const errType = state.refusalErrorType === "" ? DEFAULT_REFUSAL_ERROR_TYPE : state.refusalErrorType
-    const errorBody = { type: "error", error: { type: errType, message: renderRefusalTemplate(state.refusalErrorMessage, errVars) } }
+    const errorBody = { type: "error", error: { type: policy.errorType, message: renderRefusalTemplate(policy.errorMessage, errVars) } }
     // The client receives the 500 error BODY (not the upstream content) — record THAT as the
     // forwarded (proxy→client) response so inboundResponse faithfully mirrors what the client got
     // (the upstream-original thinking blocks are preserved on outboundResponse via fail's partial).

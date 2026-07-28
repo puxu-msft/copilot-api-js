@@ -5,8 +5,14 @@
  * `RefusalPolicy`, but `recover-refusal.ts` is itself imported by `state.ts` (for the default
  * texts), so importing it from the context would pull it into the 19-module core SCC and trip
  * `circular-deps-ratchet`. A leaf with zero imports cannot join a cycle. Keep it that way: no
- * runtime values, no imports.
+ * runtime values beyond bare literals, and NO IMPORTS — the import-freedom is the actual property
+ * that keeps this file out of every cycle.
  */
+
+/** The Anthropic error `type` carried by a synthetic refusal `error` frame when config leaves it
+ *  empty. Lives on the leaf so the policy snapshot can resolve the fallback ONCE at construction —
+ *  otherwise every consumer re-implements the same `"" -> api_error` rule and one of them forgets. */
+export const DEFAULT_REFUSAL_ERROR_TYPE = "api_error"
 
 /** The three client-facing dispositions for a contentless refusal. `refusal` = identity passthrough,
  *  `end_turn` = SUPPRESS (synthesize a normal completed turn — the default),

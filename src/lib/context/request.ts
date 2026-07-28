@@ -8,6 +8,8 @@
 
 import type { ApiError } from "~/lib/error"
 import type { RefusalPolicy } from "~/lib/anthropic/refusal-policy"
+
+import { DEFAULT_REFUSAL_ERROR_TYPE } from "~/lib/anthropic/refusal-policy"
 import type {
   //
   EndpointType,
@@ -1071,7 +1073,10 @@ export function createRequestContext(opts: {
         mode: appState.refusalSseRewrite,
         endTurnText: appState.refusalEndTurnText,
         errorMessage: appState.refusalErrorMessage,
-        errorType: appState.refusalErrorType,
+        // Resolve the empty-string fallback HERE so the snapshot is the final value. Otherwise every
+        // consumer has to remember the same `"" -> api_error` rule, and one that forgets emits an
+        // error frame with an empty `type`.
+        errorType: appState.refusalErrorType === "" ? DEFAULT_REFUSAL_ERROR_TYPE : appState.refusalErrorType,
       }
       return _refusalPolicy
     },

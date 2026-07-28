@@ -69,7 +69,7 @@ import {
   isNamedCategory,
 } from "./refusal-detail"
 import type { RefusalDetail } from "./refusal-detail"
-import type { RefusalPolicy } from "./refusal-policy"
+import { DEFAULT_REFUSAL_ERROR_TYPE, type RefusalPolicy } from "./refusal-policy"
 
 import { anthropicSseFrame } from "./sse-frame"
 
@@ -109,10 +109,9 @@ export const DEFAULT_REFUSAL_END_TURN_TEXT =
 export const DEFAULT_REFUSAL_ERROR_MESSAGE =
   "上游模型本轮以「拒绝（refusal）」结束、未产出可用回复（拒绝类别：{refusal_category}）。已按 error 策略中断本次请求。上游说明：{refusal_explanation}"
 
-/** DEFAULT for `anthropic.refusal_error_type` — the Anthropic error `type` carried by the synthetic
- *  refusal `error` frame (matches the truncation detection error frame — a generic upstream-failure
- *  bucket the client SDK can branch on). An empty config value falls back to this. */
-export const DEFAULT_REFUSAL_ERROR_TYPE = "api_error"
+/** Re-exported from the zero-import leaf, which owns it so the frozen policy can resolve the
+ *  empty-string fallback once at construction. */
+export { DEFAULT_REFUSAL_ERROR_TYPE }
 
 /**
  * Provenance-preserving normalization of the upstream `stop_details`. The RAW object is stored
@@ -198,6 +197,14 @@ export function renderRefusalTemplate(tmpl: string, vars: RefusalTemplateVars): 
  */
 export function isContentlessRefusal(stopReason: string | null | undefined, sawRealContent: boolean): boolean {
   return stopReason === "refusal" && !sawRealContent
+}
+
+/** Whole-response counterpart that reuses the single client-visible-content predicate. */
+export function isContentlessRefusalResponse(response: Pick<AnthropicMessageResponse, "stop_reason" | "content">): boolean {
+  return isContentlessRefusal(
+    response.stop_reason,
+    hasClientVisibleContent(response.content as unknown as ReadonlyArray<{ type: string }>),
+  )
 }
 
 /** Static vars a stream knows before any frame arrives. */
@@ -422,9 +429,8 @@ export function createRefusalRewriter(deps: RefusalRewriterDeps): RefusalRewrite
  * it is not a contentless refusal (real content present, or stop_reason ≠ refusal).
  */
 export function recoverRefusalInResponse(response: AnthropicMessageResponse, renderedText: string): AnthropicMessageResponse {
-  if (response.stop_reason !== "refusal") return response
+  if (!isContentlessRefusalResponse(response)) return response
   const content = response.content as unknown as Array<Record<string, unknown> & { type: string }>
-  if (content.some((b) => b.type === "text" || b.type === "tool_use")) return response
 
   // Empty rendered text = zero-wrapping: don't append a block, only flip stop_reason.
   const recovered = renderedText === "" ? content : [...content, { type: "text", text: renderedText }]
