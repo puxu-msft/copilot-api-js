@@ -61,7 +61,7 @@
   - pros：最小、最快。
   - cons：#2 的「诊断撒谎」和 #6 的「假守卫」都会继续误导后来者，而它们恰恰是最省事的两条。
 
-**我的建议：A。** 顺序 **#1 → #6 → #2 → #4**，#3/#5 转 backlog。
+**我的建议：A。** 顺序 **#1 → #6 → #2 → #4**；#3、#5 **已写进 `docs/todo/deferred-backlog.md`**（不是口头「转 backlog」——那等于静默丢任务）。
 
 > **白拿的部分**：#6 建议的守卫形态是「用真实 `createServer()` + 安装一个会抛/永不 resolve 的 token runtime，断言 `/health/liveness` 立即 200 且 mock 调用 0 次」。本轮为验证 ingress 接线**已经把真实装配骨架搭出来了**——见 `tests/anthropic/commit-window-ingress-deadline.http.test.ts` 里 `installTokenRuntime` + `createServer()` + finally-reset 那条测试。**可复用的是骨架，不是断言**：那条测试让 runtime 最终 resolve、打的是 `/v1/messages`；#6 需要的是**永不 resolve 或直接 throw** 的 runtime、打 `/health/liveness`、并显式断言 `ensureValidCopilotToken` **调用 0 次**且立即 200。#4 的守卫可复用同一 fixture 思路（受控 handler 让第一步就触发 `onClose`）。
 
@@ -173,8 +173,10 @@
 **选项**
 
 - **B1（推荐）立刻把未知客户端退回保守值，可识别且已实测的走 180s**
-  - pros：**不需要先知道任何其它 SDK 的秒数就能做**——这是它相对下面几条的决定性优势。backlog 里已经提出 `unknown_client_commit_after_sec`（`docs/todo/deferred-backlog.md:23-27`）。可识别集就是已实测的两个（CC 的 `x-app: cli` + `user-agent: claude-cli/*`；Node SDK 的 `x-stainless-runtime`），其余一律 20s，回到改动前的行为。
-  - cons：引入客户端识别这一层（虽然只是两条 header 判据）；识别不到的 CC 变体会退回 20s，失去本次收益。
+  - pros：**不需要先知道任何其它 SDK 的秒数就能做**——这是它相对下面几条的决定性优势。backlog 里已经提出 `unknown_client_commit_after_sec`（`docs/todo/deferred-backlog.md:23-27`）。
+  - **⚠ allowlist 必须绑到 SDK family + 版本，别只看 runtime**：我们实测过的只有 **`Anthropic/JS 0.106.0`** 这一个 Node SDK 样本，**不能凭 `x-stainless-runtime: node` 就把所有 Stainless Node 客户端提到 180s**——未知版本一律退保守值。CC 侧同理（`x-app: cli` + `user-agent: claude-cli/*` 且版本在实测集内）。
+  - cons：引入客户端识别这一层；识别不到的 CC 变体会退回 20s，失去本次收益。
+  - **⚠ 与 B2 有确定的文件冲突**：B2 分支正在改 `src/lib/config/{config,schema}.ts`、`config.yaml`、`config.schema.json`。新增 `unknown_client_commit_after_sec` **落在同一批文件上**——先定 fingerprint 契约与 ADR，再决定是交 B2 owner 一并吸收、还是等它合并后再做。别两边同时改配置面。
 - **B2 保留全局默认，但允许显式的 per-client / per-route commit-window profile**
   - pros：能覆盖 B1 覆盖不到的两类——**用户自设短 timeout**、**中间反向代理**，这两类靠 header 识别不出来。
   - cons：新配置面，且要用户知道自己该配什么。
@@ -194,7 +196,9 @@
 ## 2. 不需要裁决、可以直接做的
 
 - **T6 残留**：`.codex` 空文件**已经不在了**（本轮核实），此项作废。`docs/DESIGN.md` 的 pre-content-only 表述**是准确的**（与 D3 一致），无需改。
-- **两条 load-sensitive 测试**：`tests/architecture/telemetry-domain-surface.unit.test.ts`（已给 30s 预算）与 `tests/history/v3/canonical-performance.unit.test.ts`（**未处理**，并行负载下会假红、单跑 3/3 绿）。后者值得给个预算或改判据。
+- **两条 load-sensitive 测试**：`tests/architecture/telemetry-domain-surface.unit.test.ts`（已给 30s 预算）与 `tests/history/v3/canonical-performance.unit.test.ts`（**未处理**）。
+  - ⚠ **别只给后者加 30s 预算**——它敏感的是 **wall-clock ratio**，不是 per-test timeout；加超时不消除调度噪声。评审复跑三次全过，但其中一次 SSE ratio 到 **7.6448**，而门槛是 `< 8`——**已经贴着边**。
+  - 合理的验收：定义稳定的采样方式、**并行负载下连跑 25 次零假红**、且**注入一个真正的超线性退化时必须转红**（否则只是把门槛调松）。
 - **History 详情页 upstream 轨的时间基**（本轮新增 backlog）：forwarded 轨已修（改用持久化的 `streamOpenMs`），**upstream 轨的 offset 原点没追出来**。若持久化记录里没有可证明的原点，该轨应只显示 elapsed 或显式「绝对时间不可用」，**不要继续伪造绝对钟点**（已有 `offsetSource === "unavailable"` 的先例可复用）。
 
 ---
@@ -231,8 +235,8 @@ git merge-base --is-ancestor <tip> master && echo "已被 master 吸收"
 ## 4. 本轮踩过、值得你避开的坑
 
 1. **绿了不算数，mutation 不咬更要警觉。** 本轮两次写出假绿测试：① 断言被 `remaining > 0` 短路条件满足，改回错误实现照样绿；② 测试自己复制了生产的中间件，删掉生产接线仍全绿。**两次都是把修复改回去才发现的**——写完守卫务必反向验证一次。
-2. **worktree 里的红可能是环境噪声。** `native/history-search/*.node` 是 gitignored 产物，新建 worktree 里没有 → 在其中跑测试会红一片。我据此把 14 条失败归因成 rustup toolchain，**结论对但推理错**。判据一条命令：`git check-ignore <产物路径>`。**交付前的全量回归在主树跑。**（2026-07-28 起该产物已默认不构建、相关测试改为可用性门控，这类红不会再出现。）
-3. **现在有两个时钟并存，别混用（本轮新增的坑）。** `sseEvents[].offsetMs` 仍是 **commit 相对**（`client-sink.ts:216` 的 `Date.now() - streamStartMs`，本轮没动它），而 **delayed-commit 窗口本轮改成了 ingress 相对**。也就是说 `commit 时刻 ≈ startedAt + streamCommitAfterSec` **这个等式现在不成立了**——commit 时刻要读持久化的 `entry.timing.client.streamOpenMs`，因为窗口会扣掉 pre-handler 已耗时。上一轮据旧等式做归因得出过错误结论；本轮又发现 UI 踩同一个坑（被默认值 20s→180s 放大到约 3 分钟，已修 forwarded 轨）。**做任何时间归因前先确认是哪个时钟。**
+2. **worktree 里的红可能是环境噪声。** `native/history-search/*.node` 是 gitignored 产物，新建 worktree 里没有 → 在其中跑测试会红一片。我据此把 14 条失败归因成 rustup toolchain，**结论对但推理错**。**判据不止一条命令**：`git check-ignore <产物路径>` 只证明它被忽略；完整归因还要 ③ 确认目标 worktree 里**确实缺**该文件、④ **补齐同一份 artifact 后重跑、看红转绿**。只做第一步就下结论，等于换了个理由继续猜。**交付前的全量回归在主树跑。**（2026-07-28 起该产物已默认不构建、相关测试改为可用性门控，这类红不会再出现。）
+3. **现在有三个时间基并存，按轨分别对待（本轮新增的坑）。** ① **forwarded 轨**（`clientResponse.sseEvents`）是 **commit 相对**（`client-sink.ts:216` 的 `Date.now() - streamStartMs`）；② **upstream 轨**有**自己的 per-attempt collector 锚点**（`upstream-stream-diagnostics.ts` 明写「the SAME base every `sseEvents[i].offsetMs` is relative to」，且 buffered retry 会**重新绑定**一个新 collector），**它不是 `entry.startedAt`、也不是 commit**，而且**没有被持久化**；③ **delayed-commit 窗口**本轮改成了 **ingress 相对**。别用一句「offsetMs 是 commit 相对的」概括——那对 upstream 轨是错的。也就是说 `commit 时刻 ≈ startedAt + streamCommitAfterSec` **这个等式现在不成立了**——commit 时刻要读持久化的 `entry.timing.client.streamOpenMs`，因为窗口会扣掉 pre-handler 已耗时。上一轮据旧等式做归因得出过错误结论；本轮又发现 UI 踩同一个坑（被默认值 20s→180s 放大到约 3 分钟，已修 forwarded 轨）。**做任何时间归因前先确认是哪个时钟。**
 4. **别信配置层自称的超时数字。** CC 头里写 `x-stainless-timeout: 1200`、SDK 设 1250s、源码里是 600s——**三个都没触发**，真正掐断的是下一层 undici 的 300s 默认。逐层剥离 + 看错误 cause 才是归因法。
 5. **后端抖动时永远 `SendMessage` 恢复同一个 agent**，不换模型、不另派；并要求它**边查边落盘**（本轮两个评审 agent 各中断一次，第一次丢了完整报告）。
 6. **动手前先查 peer。** 本轮有两处结论被并发会话已落地的提交推翻；也有一条「那条分支没人管」的判断在几小时内失效。
@@ -252,3 +256,14 @@ git merge-base --is-ancestor <tip> master && echo "已被 master 吸收"
 6. D2 牵动别人正在推进的 B2 线，放最后。
 
 > ⚠ 这个顺序里**没有**「D6 的补测」——我先前把它排在前面，理由是「可能自动消解」，那个理由已被删除（见 D6 的订正）。
+
+**并发所有权门（做之前先过一遍）**：这个顺序里只有 **D1 的 #1 是干净可先做的**——它只动 `src/routes/responses/ws.ts`，与 B2/allocator 两条分支的 diff **无文本交集**（已核）。其余几条要先分工：
+
+| 条目 | 触及的共享文件 | 归属处理 |
+|---|---|---|
+| D1 #1 | `routes/responses/ws.ts` | **可直接做** |
+| D1 #2 | `lib/pipeline/driver.ts` | 等共享底座稳定后再落（B2 在动 pipeline 面） |
+| D3 D-i | `lib/pipeline/delivery/session.ts`、`handler-v4.ts` | **实验可做、实现不要自己上**——交 allocator 分支 owner，或等它合并 |
+| D6 B1 | `lib/config/{config,schema}.ts`、`config.yaml`、`config.schema.json` | **与 B2 确定冲突**，见 D6 里的说明 |
+
+**判据不是「文件名看着不一样」**，是 `git merge-base` + 改动路径求交（§3 已给命令）。

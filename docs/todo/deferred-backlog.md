@@ -10,12 +10,19 @@
 - **为何暂缓**：本批的 HIGH 缺陷是后端裁决与计数口径错误，已可独立闭合；真正抑制会改变三种公开协议的客户端 wire，需要决定每种协议的合成文本位置、完成原因、error 模式、usage 与 response id 保持方式，并补真实 SDK / CLI 消费 oracle。把这些协议设计夹进 settle 修复会产生未经规格裁决的新公共行为。
 - **若做需改什么**：① 把 `RefusalPolicy` + detail/template vars 形成跨协议 whole-response disposition；② 在 `openai-cc` / `openai-responses` / Gemini reverse renderer 中分别实现 `end_turn`、`refusal`、`error` 三模式；③ 保证目标协议 exactly-one terminus 与 raw/forwarded 双轨；④ feature 从当前固定 `refusal-passthrough` 改为实际 mode 对应值；⑤ 为三条非流式腿各补 byte golden + 官方 SDK 消费 oracle，并补至少一条同 session 后续轮继续的客户端测试。
 
+## 两条顺序不变量只有注释守着（2026-07-28，来自顺序不变量审计 #3 / #5）
+
+来源：`docs/plan/2026-07-27-keepalive-and-separator/research-order-invariant-audit.md` 的发现 3 与发现 5。**这两条不是「已经错了」，是「今天对、但没有东西拦住明天改错」**——同一份审计里的 #1/#2（已发生的漂移）与 #4/#6（CRITICAL/假守卫）优先级更高，故这两条降为 backlog；**记在这里是为了不被静默丢掉**。
+
+- **#3（HIGH）delayed-commit SSE 的 abort listener 必须先于首个 ping。** 不变量原文在 `src/routes/messages/handler-v4.ts` 的 `stream.onAbort(...) // register BEFORE the first ping`。谁能破坏：把 `onAbort` 移到 `await sink.writeKeepalive(...)` 之后，或在两者间插入任何可 await 的写/初始化。后果：commit 瞬间断开会漏掉 disconnect，上游请求在无人消费后继续持有连接/accumulator/buffer——**表现是资源滞留而非即时报错**。建议守卫：抽成 `attachAbortThenEmitInitialKeepalive` 原子 helper，用可控 stream 在第一次 write 同步触发 abort，断言 `clientAbort.signal.aborted === true`。
+- **#5（MED）`createFullTestApp` 宣称镜像生产 server，但装配面没有 parity 守卫。** 生产 `src/server.ts` 与 `tests/helpers/test-app.ts` 是两份手写装配；后者仍缺 config/token middleware、unknownEndpointFinalizer、CORS、trimTrailingSlash。谁能破坏：在生产加/重排全局 middleware 而不手改 test app，大量 `.http.test.ts` 继续给假绿。**本轮已部分缓解**（给 `createFullTestApp` 加了生产同位的 `preMiddleware` 槽），但没有 parity 守卫。建议：抽共享 `configureBaseApp(app, deps)` 让两边只注入依赖差异；暂不抽则加结构守卫对两者的基础 route + middleware 注册序列做声明式对账 + 显式 allowlist。
+
 ## History 详情页 SSE 帧的绝对时间：upstream 轨的原点未证（2026-07-28）
 
 - **根因**：`clientResponse.sseEvents[].offsetMs` 是 **commit 相对**的（`client-sink.ts:216` 用 `Date.now() - streamStartMs`），而 UI 的 `FrameList` 两条轨原本都传 `entry.startedAt` 当原点（`ui-v4/src/components/detail/segments/SseEventsSegment.tsx`）。
 - **已修（2026-07-28）**：forwarded 轨改用 `entry.startedAt + (entry.timing?.client?.streamOpenMs ?? 0)`。这条有证据——生产者在 commit 时刻写 `setClientTimingEpoch("streamOpen", commitInstant)`，与 sink 的 `streamStartMs` 同源。延迟-commit 窗口默认从 20s 抬到 180s 后，这个误差被放大到约 3 分钟，所以先修它。
-- **仍未证 / 本条要做的**：**upstream 轨的 offset 原点是什么，没追出来**。合并态评审指出它未必是 `entry.startedAt`（可能是 attempt/collector 自己的原点）。若确实不是，现在这条轨显示的绝对钟点同样是错的，只是没有被本次默认值改动放大。
-- **若做需改什么**：① 追出 `attempts[].upstreamResponse.sseEvents[].offsetMs` 的写入点与其时间基（`model-operation-record.ts` / `context/request.ts:610,1594` 是消费侧，产生侧待定）；② 若原点可证 → 按轨传对应 epoch；③ 若持久化记录里**没有**可证明的原点 → 该轨只显示 elapsed 或显式「绝对时间不可用」，**不要继续伪造绝对钟点**（已有 `offsetSource === "unavailable"` 的先例可复用）；④ 补一条 UI 回归测试，构造 `streamOpenMs=180000, offsetMs=20000` 断言两轨各自渲染的钟点。
+- **原点已追到（2026-07-28 订正，此前写「没追出来」）**：upstream 轨的 offset 锚在**每个 attempt 自己的 collector epoch** 上——`src/lib/upstream-stream-diagnostics.ts` 明写「the SAME base every `sseEvents[i].offsetMs` is relative to」，且 **buffered retry 会重新绑定一个新 collector**。它既不是 `entry.startedAt` 也不是 commit。**关键：这个 epoch 没有被持久化进 history 类型**，所以 UI 拿不到它——因此该轨现在显示的绝对钟点确实是错的，且**无法靠现有持久化数据修正**。
+- **若做需改什么**（原点已知后，路线变成二选一）：**要么**把 collector 的 anchor epoch **持久化**进 history（per-attempt 一个，注意 buffered retry 会重绑），UI 再按轨渲染绝对时间；**要么**承认拿不到、该轨**只显示 elapsed 或显式「绝对时间不可用」**，`offsetSource === "unavailable"` 已有先例可复用。**别再继续伪造绝对钟点。** 无论走哪条，补一条 UI 回归测试：构造 `streamOpenMs=180000, offsetMs=20000`，断言两轨各自渲染的钟点不同且各自正确。
 - **为何暂缓**：产生侧未定位，属独立调查单元；且 upstream 轨的误差不随本次默认值改动放大，不阻塞交付。
 
 ## delayed-commit 窗口是全局的，但它的安全上限只对两个 Node 客户端实测过（2026-07-28）
