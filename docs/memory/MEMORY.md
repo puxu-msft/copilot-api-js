@@ -80,6 +80,8 @@
 - [「一个终态」≠「一个完整终止符」](reference-exactly-one-terminal-is-not-exactly-one-complete-terminus.md) — 合成 end_turn 不补 message_stop 真 SDK 抛 stream ended
 - [中止成因在产生点打标签、别在边界猜](methodology-abort-provenance-tag-at-source-not-guess-at-boundary.md) — fall-through 猜原因=日志/History/客户端三处一致撒谎(609ms 报成 900s 超时)；AbortSignal.any 本就透传 reason 是传输层扔的；preflight 与 mid-wait 两分支须分别 mutation；边界写有序 precedence、每臂要正向证据
 - [关机 Step 1 停的是新增工作还是在途资源](methodology-shutdown-step1-stop-new-vs-kill-inflight.md) — 拆在途请求正用的资源=用 Step 1 撕毁 Step 2 的 drain 承诺；同族不对称(WS 有 stopNew/closeAll 拆分而 h2 没有)即红旗；取证看同刻兄弟请求是否存活
+- [appliesTo 命中 ≠ 链被驱动](methodology-appliesto-matches-but-chain-never-driven.md) — 先数驱动点的生产调用点再下「没生效」结论；缺驱动点=整条链全体落空，别按单钩子估波及面
+- [config.yaml 每请求覆盖 setStateForTests](reference-config-yaml-overwrites-setstatefortests-per-request.md) — 全应用测试钉 config-managed 键是空操作；指纹=同一 policy 一半听测试一半听配置；mutation 要破坏生产代码别翻状态
 - [修全部比较点](feedback-fix-all-comparison-sites.md) — 归一化键/id bug 多点复发；grep 全仓逐处修+抽共享 primitive
 - [修一条约束别自造兄弟约束违规](methodology-fix-one-constraint-violates-sibling-constraint.md) — 对象级约束要一起断言
 - [名实不符变量+双源值](methodology-lying-variable-name-dual-source-value.md) — 名字断言单一身份、值取自会撒谎的源(原始vs已变换)
