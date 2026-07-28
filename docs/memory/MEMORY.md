@@ -60,7 +60,7 @@
 - [测 elapsed 逻辑注入 clock seam 别用 setSystemTime](reference-elapsed-time-test-inject-clock-seam-not-setsystemtime.md) — bun setSystemTime 跨 await 不冻结+绝对时基减真 startedAt 出负值；`now?:()=>number` seam 默认 Date.now、测试注入；边界别恰等 cap
 - [real codex 测试用 CODEX_HOME 隔离](reference-codex-ephemeral-insufficient-use-codex-home.md) — --ephemeral 不够、state 仍写真 ~/.codex；代理侧对应=XDG_DATA_HOME
 - [node_modules 存在 ≠ 锁文件事实](reference-node-modules-presence-not-lockfile-truth.md) — 可能是 prune orphan；选依赖前 grep bun.lock
-- [worktree 不继承 gitignored 产物（双向）](reference-worktree-bun-add-needs-main-tree-install-after-merge.md) — ①worktree bun add 只进该树、FF 后主树须 install；②新建 worktree 缺 native/*.node 等产物→在其中跑测试红一片，别误归因（`git check-ignore` 一秒判），交付回归在主树跑
+- [worktree 的隔离性没你以为的强（三向）](reference-worktree-bun-add-needs-main-tree-install-after-merge.md) — ①worktree bun add 只进该树、FF 后主树须 install；②新建 worktree 缺 native/*.node 等产物→在其中跑测试红一片，别误归因（`git check-ignore` 一秒判），交付回归在主树跑；③建在 `.worktrees/` 内的 worktree 仍向上解析到主树 node_modules→「裸装能否自立」验证必须放仓库外（`/tmp`），且清点依赖别信 grep import、只信裸跑
 - [server.ts 与 test-app.ts 双份 notFound 镜像](reference-server-vs-test-app-dual-notfound-mirror.md) — 改 server 中间件须真实 createServer 测；config 中间件每请求覆盖 state
 - [起测试服务器端口被 peer 占用会静默打到 peer mock](reference-spawn-fails-silently-hits-peer-server-verify-port-ownership.md) — launcher 静默失败 health 仍绿；spawn 后验 server.log + ss PID
 - [编译错误：补符号 vs 删引用](methodology-broken-reference-supply-vs-delete.md) — 按消费者契约+独立 oracle 裁决，别反射式让它编译
