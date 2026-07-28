@@ -183,9 +183,9 @@ Claude Code 2.1.207 打包源码逐行核实（`~/.claude/refs/claude-code-2.1.2
 
 ---
 
-## 8. 第三轮复审的 blocker（**未修，合并前必须解决**）
+## 8. 第三轮复审的 blocker（**已全部修复**，2026-07-28）
 
-对抗评审员对本改稿的复审又报 3 条 blocker，**主会话已逐条核实成立**。它们推翻了 §4.4「request-scoped 快照」与 §4.5 状态机的部分实现选择：
+对抗评审员对本改稿的复审又报 3 条 blocker，**主会话已逐条核实成立并全部修复**（提交 `6eb04733`）。它们推翻了 §4.4 与 §4.5 的部分实现选择，修法记录在下：
 
 ### B-1 exactly-one-terminal ≠ exactly-one **complete** terminal
 
@@ -195,13 +195,13 @@ Claude Code 2.1.207 打包源码逐行核实（`~/.claude/refs/claude-code-2.1.2
 AnthropicError: stream ended without producing a Message with role=assistant
 ```
 
-**修法**：该场景必须补一个**合成 `message_stop`**（打 synthetic 标记），而不是「什么都不做」。§4.5 转移表最后一行需改写为「补齐完整终止符」而非「不再补终态」。
+**已修**：抑制模式**无条件**发自己的 `message_stop`（打 synthetic 标记），上游那个当重复丢弃。守卫是真 SDK e2e（`anthropic-sdk.it.test.ts`「refusal WITHOUT upstream message_stop」）；mutation control 下**一字不差复现**了上面那条错误串。
 
 ### B-2 causal observation 会被 hedge candidate 污染（**已实现代码的正确性缺陷**）
 
 `generationHedgeEnabled` **默认 `true`**（`src/lib/state-defaults.ts:148`，主会话已核实）。primary 与 hedge candidate **各有独立的 ResponseProcessor / rewriter**，但当前实现让它们写入**同一个 request 级** `ctx.refusalObservation` —— 落败 candidate 的 refusal 可以覆盖胜出 candidate 的正常结果，把一个成功请求错判成 refusal 失败。
 
-**修法**：observation 必须是 **candidate/dispatch 作用域**，只有 winner 的 receipt 能驱动 handler settle。评审同时指出 causal observation 与 immutable policy snapshot **不是替代关系**：
+**已修**：共享可变裁决被**整个删除**。改为请求级**不可变** `RefusalPolicy`（`ctx.refusalPolicy`，首次读取时冻结），各层从**各自的 accumulator** 独立推导——没有共享写入点，hedge candidate 之间不可能互相覆盖。评审对两者关系的判断正确：
 - **policy snapshot**（request 级、不可变）保证同一请求的 primary / hedge / retry / continuation 用**同一策略**；
 - **causal observation**（candidate 级）回答「winner 实际做了什么」。
 两者都需要。§4.4 写成「用因果信号替代快照」是错的。
@@ -212,11 +212,11 @@ AnthropicError: stream ended without producing a Message with role=assistant
 
 抑制合成的 `content_block_stop` 是 commit boundary；随后缺 `message_stop` 时可能进入 continuation 路径，而 `resetRepairOutcomesForAttempt()`（本次实现在其中一并清空了 observation）会把 refusal 判定抹掉 —— handler 随后既可能误记 complete，也可能再补 truncation error。
 
-**修法**：contentless refusal 的抑制应成为 driver 认可的 **terminal boundary**，禁止偶然进入网络 continuation，并配合 B-1 补齐 `message_stop`。
+**已修**：driver 的提交门新增 `sawContentlessRefusal`，与 `message_stop`、上游 error 帧**并列**为终态判据（`driver.ts` + `pipeline/types.ts` + `candidate-response-session.ts`）。缺终止符的 refusal 不再被当截断去重试/续写。
 
 ### 其余需处理的发现
 
-- **`failed` + `upstreamResponse.success=true` 会破坏既有聚合**：遥测按 upstream success 把该 `request.failed` 记成成功；History stats 会让同一请求**同时**递增 success 与 failure。§4.7 的解耦必须连带修聚合口径。
+- ~~**`failed` + `upstreamResponse.success=true` 会破坏既有聚合**~~ **已修**（提交 `12212856`）：`stats.ts` 抽出纯函数 `requestBucket()`（单一返回值 = 结构性互斥），遥测 sink 的 `success` 改读请求裁决。守卫 `stats-verdict-buckets.unit.test.ts`，已过 mutation control。
 - **CLI oracle 不足**：当前只证明一次 `claude -p` 正常退出且不空转，**未**证明同一 session 的**后续用户轮**可继续 —— 而「不中断对话轮次」正是首要目标。需要**双轮 session oracle**。
 - **默认值 oracle**：测试必须**省略** `refusal_sse_rewrite` 才能证明默认真的翻转；显式写 `end_turn` 的测试证明不了默认值。
 
@@ -224,13 +224,16 @@ AnthropicError: stream ended without producing a Message with role=assistant
 
 | 项 | 状态 |
 |---|---|
-| 纯逻辑层（provenance 解析 / 诚实 thinking tokens / 改名 / 新占位符 / 去谎报默认文案） | ✅ 已实现，41 unit 通过 |
-| 合并 rewriter + 三模式统一观测 | ⚠️ 已实现，但受 B-2 / B-3 影响，作用域错误 |
-| handler 两分支改读因果信号 + verdict 解耦 | ⚠️ 同上 |
-| 合成 `message_stop`（B-1） | ❌ 未做 |
-| candidate 作用域 observation + policy snapshot（B-2） | ❌ 未做 |
-| continuation terminal boundary（B-3） | ❌ 未做 |
-| 默认翻成 `end_turn` + config 全链（§5 #14） | ❌ 未做 |
-| `stop_details` 无损存储贯通（§5 #1-#11） | ❌ 未做 |
-| 消费面（§5 #12-#17：TUI / UI / 遥测 / 翻译降级） | ❌ 未做 |
-| 测试策略 §6（真实样本 fixture / mutation control / 双轮 CLI oracle） | ❌ 未做 |
+| 纯逻辑层（provenance 解析 / 诚实 thinking tokens / 改名 / 新占位符 / 去谎报默认文案） | ✅ `5b421ad7` |
+| 合并 rewriter + exactly-one-COMPLETE-terminus（B-1） | ✅ `6eb04733`，真 SDK oracle + mutation control |
+| 请求级不可变策略快照（B-2，取代被否的共享裁决） | ✅ `6eb04733` |
+| driver 终态门 `sawContentlessRefusal`（B-3） | ✅ `6eb04733` |
+| **默认翻成 `end_turn` 抑制** + config.yaml / schema / state 同步 | ✅ `6eb04733` |
+| accumulator 以 raw 捕获 `stop_details`（§5 #1） | ✅ `6eb04733` |
+| 请求计数口径（裁决为唯一权威、桶互斥） | ✅ `12212856` |
+| `docs/refusal-recovery.md` 改写为现状契约 | ✅ 本批 |
+| `stop_details` 贯通 History（§5 #2–#11） | ⏳ 进行中（T3） |
+| 双轮 session CLI oracle（首要目标的直接判据） | ⏳ 进行中（T2） |
+| 消费面（§5 #12–#17：TUI / UI / 遥测维度 / 翻译降级） | ❌ 待做（T4） |
+
+> 剩余任务的执行顺序、判据与触点见 [docs/plan/2026-07-28-refusal-suppression-remaining-tasks.md](../plan/2026-07-28-refusal-suppression-remaining-tasks.md)。

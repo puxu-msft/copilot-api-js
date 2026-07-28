@@ -10,9 +10,12 @@
 |---|---|
 | `f66fe5a5` | spec 定稿 + 三份评审 + 取证报告 |
 | `5b421ad7` | 纯逻辑层：provenance 解析 / 诚实 thinking tokens / `isContentlessRefusal` 改名 / 新占位符 / 去谎报默认文案 |
-| （本批） | **默认翻成 `end_turn` 抑制** + B-1 合成 `message_stop` + B-2 请求级不可变策略快照 + B-3 driver 终态门 + accumulator 收 `stop_details` + `RefusalPolicy` 叶子（解 SCC）|
+| `6eb04733` | **默认翻成 `end_turn` 抑制** + B-1 合成 `message_stop` + B-2 请求级不可变策略快照 + B-3 driver 终态门 + accumulator 收 `stop_details` + `RefusalPolicy` 叶子（解 SCC）|
 
-验证基线：`typecheck` 干净；`unit+it+http` 6490 pass / 14 fail，**14 个全是 history-search sidecar**（stash 掉本改动后基线同样失败——缺 Rust 二进制，本机 rustup 未配 toolchain，属既有环境问题）。两条新不变量均通过 mutation control。
+| `12212856` | 请求计数口径：`requestBucket()` 结构性互斥 + 遥测 `success` 改读请求裁决（T1）|
+| 本批 | `docs/refusal-recovery.md` 改写为现状契约（旧文写「thinking-only」「默认 error」，已与代码不符）|
+
+验证基线：`typecheck` 干净；`unit+it+http` 6495 pass / 14 fail，**14 个全是 history-search sidecar**（stash 掉本改动后基线同样失败——缺 Rust 二进制，本机 rustup 未配 toolchain，属既有环境问题）。两条新不变量均通过 mutation control。
 
 ## 待办（按执行顺序）
 

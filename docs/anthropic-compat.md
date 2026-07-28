@@ -39,7 +39,7 @@ Anthropic 直连为 **bypass-direct** codec（translate/render = identity）—�
 | **thinking signature 隔离** | GHC 对相邻 thinking 块 / 空明文 thinking / 被修改的 signature 会 400「cannot be modified」或中毒；L1/L2/L3 三层隔离防护 | [spec/2026-07-07-thinking-signature-quarantine.md](spec/2026-07-07-thinking-signature-quarantine.md) |
 | **tool_use 降级恢复** | 上游偶把 tool_use 降级成 `<invoke>` 文本；recover-tool-call 改写还原 | [tool-use.md](tool-use.md) |
 | **server_tool 过滤** | server_tool_use 块在 GHC 会 400，S5 过滤 | [tool-use.md](tool-use.md) |
-| **refusal 恢复** | thinking-only refusal（`stop_reason: refusal`）恢复 | [refusal-recovery.md](refusal-recovery.md) |
+| **refusal 抑制** | contentless refusal（`stop_reason: refusal`）默认抑制成正常完成轮 | [refusal-recovery.md](refusal-recovery.md) |
 | **sanitize 链** | 请求侧 cache_control 剥离、字段规整等 | [sanitize-pipeline.md](sanitize-pipeline.md) |
 
 功能矩阵（配置）：thinking signature 自包含（块级保护）、adaptive thinking 强制、model_capabilities 名单（支持 glob/`!` 剔除，语义见 DESIGN.md）、cache_control 模式、L2 protect_streaming、refusal 恢复——逐项见 DESIGN.md「活的架构现状」「改写词汇」与 `anthropic.*` 运行时选项表。

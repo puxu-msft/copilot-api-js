@@ -1,76 +1,122 @@
-# Refusal SSE 处理（thinking-only refusal 三模式）
+# Contentless refusal 的处理：抑制到客户端、忠实到后端
 
-把上游 Anthropic 的 **thinking-only refusal** 响应（`stop_reason:"refusal"`，仅有一个 thinking 块、无 `text`/`tool_use`）按配置 `anthropic.refusal_sse_rewrite` 三选一处理，避免客户端拿到空/坏轮。
+把上游 Anthropic 的 **contentless refusal**（`stop_reason:"refusal"` 且无 client-visible `text`/`tool_use`）按配置 `anthropic.refusal_sse_rewrite` 三选一处理。**默认抑制**，避免客户端的对话轮次被中断。
 
-## 问题（实测）
+> 命名注意：本文不再使用「thinking-only refusal」。三个一手样本里有一个（`req_1785187727725_842`）**零 content block**、且请求带 `thinking:{"type":"disabled"}`——「thinking-only」断言了这个条件并不拥有的身份。判据是 `isContentlessRefusal`。
 
-`req_1782214935133_68`：opus-4.8、432k input、112 tools、adaptive thinking 的正经编码轮，上游思考 1058 token 后**拒绝**（`stop_reason:"refusal"`，仅 thinking 块、无可用内容）。代理此前**逐字节透传**、打 `[OK]`；客户端（Claude Code）拿到空/坏轮——session 时间线证实 refusal 之后每轮 user 都变「继续」，用户被迫手动推进卡住的轮次。
+## 首要目标（用户 2026-07-28 裁定）
 
-## 三模式（`anthropic.refusal_sse_rewrite`，默认 `error`）
+> 「下游处理得很烂，我们的主要目的就是避免下游因此中断对话轮次，因此需要抑制此类响应。」
 
-| 值 | 行为 | 终态 |
+**contentless refusal 绝不允许中断客户端的对话轮次。** 这是取舍时的第一判据；后端忠实度是次要目标，且不得与之冲突。
+
+## 三个一手样本（实测，取证见 exp/refusal-samples/FINDINGS.md）
+
+| id | 日期 | model | `stop_details.category` | content blocks | usage |
+|---|---|---|---|---|---|
+| `req_1782214935133_68` | 2026-06-23 | opus-4-8 | `null` | 1 × thinking | out 1097，**无** `output_tokens_details` |
+| `req_1783947618475_731` | 2026-07-13 | opus-4-8 | `"bio"` | 1 × thinking | out 25848 / thinking 25636 |
+| `req_1785187727725_842` | 2026-07-27 | opus-5 | `"cyber"` | **零个** | out 1 / thinking 0 |
+
+**已被证伪、不要再写进设计的说法**：「带 category 的 refusal 是推理前拦截」（`bio` 烧了 25,636 thinking token 才拒）；「重发相同内容必再被拒」（三个样本都没做过重放实验）；「`category` 有无 = 可重试性分型」（真实形态是 `category: null`，无任何证据支持行为差异）。
+
+## 为什么默认是「抑制」（客户端行为逐行实测）
+
+Claude Code 2.1.207 打包源码核实（`~/.claude/refs/claude-code-2.1.207/app.pretty.js`）：
+
+| 客户端收到 | CC 行为 | 对话轮次 |
 |---|---|---|
-| `refusal` | 透传上游原始 refusal，不改写（客户端拿到 dead/空轮） | complete（成功，与历史透传一致） |
-| `end_turn` | **追加**合成 `text` 块（默认 `DEFAULT_REFUSAL_END_TURN_TEXT`：说明被拒、建议换表述/拆步/换模型，**可配**见下）+ `stop_reason:"refusal"→"end_turn"`（清 `stop_details`） | complete（成功） |
-| `error` | 发 Anthropic `event: error` SSE 帧（替换上游终止帧，message/type **可配**见下）+ **`ctx.fail` 记请求失败** | failed（`[FAIL]`） |
+| 原生 `refusal` 透传 | `BTt()` 渲染 refusal 消息（`:170302`；流式 `:298342` 读 `delta.stop_details`、非流式 `:298061`），`yield refusal_no_fallback` | **中断** |
+| `event: error` | Anthropic SDK 抛 `APIError`、流内错误零重试 | **中断** |
+| `end_turn` + **非空** text | 正常完成轮，agent loop 继续 | **不中断** ✅ |
+| `end_turn` + **空** text | 实测 CC 空转再发一轮、`result=""`（`exp/cli-e2e-stall/FINDINGS.md`） | 中断（「继续」循环） |
 
-**默认 `error`**：refusal 是上游语义失败，应显式失败（对齐截断检测「上游语义失败必记 `ctx.fail`、不谎报成功」不变量），而非伪装成 end_turn 成功轮。`error` 帧对客户端：Anthropic SDK 读到流内 `event: error` 会 `throw APIError`、不自动重试（流已 commit）——与真实 Anthropic 流内错误等价（见 memory `reference-claude-code-timeout-and-sse-error-oracle`）。
+CC 确实有 category 感知的原生渲染（对 `cyber` 有 Cyber Verification Program 专属文案）与客户端自动 fallback（`stop_reason==="refusal"` 且备了 `refusalFallbackModel` 时 `yield {type:"fallback_request"}`），但这些路径的终点仍是**结束当前轮**或依赖用户已配置 fallback 模型，不满足首要目标。
 
-**门控（三模式共用）**：仅当 `stop_reason==="refusal"` **且**整条响应无 client-visible `text`/`tool_use` 块时触发（thinking-only/空，**排除 `server_tool_use`**）。带真内容或非 refusal 一律透传。判定 `isThinkingOnlyRefusal`（`recover-refusal.ts`）。
+## 三模式（`anthropic.refusal_sse_rewrite`，默认 `end_turn`）
+
+| 值 | 客户端 wire | 请求终态 |
+|---|---|---|
+| **`end_turn`（默认）** | **抑制**：合成 text 块（`maxIndex+1`）+ `stop_reason: refusal→end_turn`（清 `stop_details`）+ **代理自己的 `message_stop`** | `failed` |
+| `refusal` | 原样透传，逐字节等价 | `failed` |
+| `error` | 发 Anthropic `event: error` 帧替换终止符，抑制其后的 `message_stop` | `failed` |
+
+**三种模式终态一律 `failed`**：抑制是**呈现策略**，不改变「上游拒绝了、本轮没有真实产出」这一事实（对齐既有不变量「上游语义失败必记 `ctx.fail`、不谎报成功」）。上游腿仍记 `success:true`（上游确实完整返回了 200 refusal），靠 `ctx.fail(..., {upstreamSucceeded:true})` 分离两个概念。
+
+**门控**：`stop_reason==="refusal"` **且**整条响应无 client-visible `text`/`tool_use`（**排除 `server_tool_use`**）。带真内容或非 refusal 一律透传。判据 `isContentlessRefusal`（`recover-refusal.ts`）。
+
+## exactly-one-COMPLETE-terminus（承重不变量）
+
+抑制模式**必须**发自己的 `message_stop`，上游那个当重复丢弃。理由是实测的：合成 `end_turn` delta 而不给终止符时，真实 `@anthropic-ai/sdk` 抛
+
+```
+AnthropicError: stream ended without producing a Message with role=assistant
+```
+
+——正是抑制要防的那种中断。上游的 contentless refusal **不保证**后面跟 `message_stop`。
+
+状态机（`createRefusalRewriter`，一个状态机管三种模式）：`open` → 转发一切并跟踪 `maxIndex` / 是否出现 client-visible 块；命中 contentless refusal 的 `message_delta` → 按模式发终态 → `terminated`；此后**一切帧都抑制**（重复 delta、终态后 content 帧、上游的 `message_stop`）。`refusal` 模式永不 terminate，保持恒等透传。
+
+配套：driver 的提交门把 contentless refusal 与 `message_stop`、上游 error 帧**并列**为终态判据（`sawContentlessRefusal`）。否则缺终止符的 refusal 会被当成截断，去重试或续写一个客户端已经拿到完整终止符的轮次。
+
+## 策略按请求冻结（并发安全）
+
+`RefusalPolicy`（mode + 三个模板）在**首次读取时冻结**、此后不可变，挂在 ctx 上（`ctx.refusalPolicy`）。改写层（processor 构造时）与 handler（流 drain 后）读**同一份快照**。
+
+两个原因：① 任何带 `system` 的并发请求都会 `applyConfigToState()`，两次独立读取热重载全局配置无法保证一致；② **generation hedge 默认开启**，并发 candidate 各有独立 rewriter——共享一个可变裁决会让落败 candidate 的 refusal 覆盖胜出者的正常结果。冻结策略 + 各层从**各自的 accumulator** 推导，两个问题一起消掉。
 
 ## 可配置文本（零包装 + 占位符）
 
-`end_turn` 注入的 text 会被客户端（Claude Code）baked 进对话历史、**作为下一轮请求的一部分回灌上游**，故须完全用户可控、零代理包装。三处硬编码文本已开放为 `anthropic.*` 配置键（未配=内置默认，逐字节等价旧固定文案）：
+| 配置键 | 类型 | 作用 |
+|---|---|---|
+| `refusal_end_turn_text` | string（模板） | 抑制模式注入的 text 块内容 |
+| `refusal_error_message` | string（模板） | `error` 帧 message（客户端 `APIError.message`） |
+| `refusal_error_type` | string（纯字面） | `error` 帧 `error.type`；空串回落 `api_error` |
 
-| 配置键 | 类型 | 默认 | 作用 |
-|---|---|---|---|
-| `refusal_end_turn_text` | string（模板） | `DEFAULT_REFUSAL_END_TURN_TEXT` | `end_turn` 注入的 text 块内容 |
-| `refusal_error_message` | string（模板） | `DEFAULT_REFUSAL_ERROR_MESSAGE` | `error` 帧 message（客户端 `APIError.message`） |
-| `refusal_error_type` | string（纯字面） | `api_error` | `error` 帧 `error.type`；空串回落 `api_error` |
+**占位符**：`{model}` `{request_id}` `{thinking_tokens}` `{output_tokens}` `{refusal_category}` `{refusal_explanation}`。未知占位符**原样保留**（防手滑丢文本）。
 
-**占位符**（`end_turn_text` 与 `error_message` 共用，纯函数 `renderRefusalTemplate`）：`{model}`（已解析上游 GHC 规范名）、`{request_id}`、`{thinking_tokens}`（refusal 轮的 `usage.output_tokens`）。**未知占位符原样保留**（不报错、不清空——防手滑丢文本）；无占位符文本逐字节恒等。渲染时点：流式工厂在 refusal `message_delta` 自取 `{thinking_tokens}`（createState 时尚不可知）；非流式 whole-response 在手可预渲染。
+**未知值的渲染是文档化的、不是偶然的**：值缺失渲染 `unknown`；`category` 为上游显式 `null`（「未映射到命名类别」）渲染 `uncategorized`——provenance 一路保留到用户可见文本。
 
-**空串 = 零包装的极致**：`refusal_end_turn_text=""` 时**不追加任何 text 块**，仅 `stop_reason: refusal→end_turn`（清 `stop_details`）。客户端拿到「thinking + 干净 end_turn、无可见文本」，绝无代理注入物混进下一轮。⚠️ **实测：空串会让 Claude Code STALL**（2026-07-13 CLI e2e Tier 2 实证，`tests/e2e-client/anthropic-cli.e2e.test.ts` + `exp/cli-e2e-stall/FINDINGS.md`）：真 `claude -p` 收到 thinking-only end_turn 后 agent-loop **自动再请求一轮**（`num_turns=2`、上游被调 2 次），最终 `result=""`——交互式即「继续」循环。**非空 recovery 文本正是防这个 stall 的**（`num_turns=1`）。故 `refusal_end_turn_text=""` 是主动拿掉这层保护（zero-wrapping 的代价）：要真「一个字都不注入」就用它，但预期客户端会空转一轮。
+**`{thinking_tokens}` 只认权威字段**：仅当 `usage.output_tokens_details.thinking_tokens` 是有限非负数时取值，**绝不回落 `output_tokens`**。理由是实测的：`bio` 样本只有一个 thinking 块，却是 `output_tokens=25848` vs `thinking_tokens=25636`（差 212）——「唯一的块是 thinking」推不出「所有 output token 都是 thinking token」。旧上游（2026-06-23 样本）根本没有这个字段，答案就是「未知」。
 
-**四个发射点**（勿漏）：流式 end_turn text（`buildSyntheticTextFrames`）/ 流式 error 帧（`buildRefusalErrorFrame`）/ 非流式 end_turn body（`recoverRefusalInResponse`）/ 非流式 error body（`handler-v4.ts` 内联）。
+**默认文案的分工**：抑制文本带 `{refusal_category}` 但**不带** `{refusal_explanation}`——它是一条**成功 assistant 消息**、会被 CC baked 进对话历史，而 explanation 是上游诊断元数据、不是模型对用户任务的回答，写进去污染语义上下文。`error` 帧不进对话历史，故带完整 explanation。（「回灌 explanation 会不会再次触发分类器」是**未验证假设**，不作为设计前提。）
+
+**空串 = 零包装的极致**：`refusal_end_turn_text=""` 时不追加任何 text 块，仍发 `end_turn` + `message_stop`。⚠️ **实测空串会让 Claude Code 空转一轮**（`exp/cli-e2e-stall/FINDINGS.md`），等于主动放弃抑制的保护。
 
 ## 合成帧记录层打标（richest-data-flow §3）
 
-refusal 注入/改写的 forwarded 帧（end_turn 合成 text 三帧 + 改写 delta、error 帧）在 forwarded 轨打 `SseEventRecord.synthetic:"refusal-recovery"`（`tagFrameSynthetic`，`src/lib/pipeline/frame-origin.ts` 的泛化 Symbol tag，与 hook-rewrite 同机制；client-sink `write()` 读 `readSyntheticKind`）。**只碰记录层元数据、不碰客户端可见字节**（零包装不冲突）——文本变任意/可空后凭内容启发式判断「是否合成」失效，故 record 层标记是必需的可辨识手段。上游轨 `sseEvents` 绝不含合成物（driver 在 S5 前采样）。非流式无 `sseEvents`，forwarded body 经 `setForwardedResponse` 与上游原始 body 分腿记录、已可辨。
-
-## 为何 error 模式落在 rewrite 层（而非 handler drain 后）
-
-refusal 是**带 `message_stop` 的 clean drain**。若先透传原始 `message_delta{refusal}`+`message_stop` 再在 handler drain 后追加 error 帧，客户端会收到「一个完成的 turn 紧跟一个 error」的畸形帧序。截断检测之所以能在 handler drain 后 `writeSynthetic`，恰因截断**无** `message_stop`、error 帧是流唯一终止符。故 `error` 模式的发帧+抑制原终止帧落在 S5 rewrite 层（`createRefusalErrorEmitter`：suppress 原 delta + emit error 帧 + suppress 随后 message_stop），handler 只负责 `ctx.fail` 终态。
-
-## 可观测性归属（单点不重复）
-
-- `end_turn`：rewrite 层 `onRecover` 记 `recordFeature("refusal-recovered")` + info 日志（handler 正常 complete，唯一知道做了 recovery 的是 rewrite 层）。
-- `error`：handler complete 分支**一处全包** `ctx.fail` + `recordFeature("refusal-errored")` + error 日志（emitter 纯改流无副作用）。两层独立判定同一上游原始条件（同口径排除 server_tool_use），故 handler 必触发、无遗漏；refusal-error 分支**优先于截断分支**，避免 refusal+无 message_stop 复合场景双 error 帧。
-
-## 为何保留 thinking 块（而非剥离）
-
-该 thinking 块带**有效签名**，Anthropic thinking 签名**自包含**（加密的是 thinking 内容本身、与上下文/位置无关），原样回放可被上游接受——**不是**「双空块」（text 与 signature 都空）那种触发 400 的毒块，故无需剥离。且流式剥离需缓冲整个 thinking 阶段（活 UX 回归），所以只追加/替换、不剥离。
+抑制/改写产生的 forwarded 帧（合成 text 三帧 + 改写的 delta + 合成 `message_stop`、error 帧）在 forwarded 轨打 `SseEventRecord.synthetic:"refusal-recovery"`。**只碰记录层元数据、不碰客户端可见字节**。上游轨 `sseEvents` 绝不含合成物（driver 在 S5 前采样）。
 
 ## History 保真
 
-只改**转发/渲染**响应。driver 在 S5 改写链**之前**采样上游原始帧并喂 accumulator，故 history 的 `sseEvents` 与记录的 `stop_reason` 保留真实上游 `refusal`（含 `stop_details`）：客户端看到 end_turn/error，history 看到原始 refusal。
+只改**转发/渲染**响应。History 的 `sseEvents` 与记录的 `stop_reason` / `stop_details` 保留真实上游 refusal：客户端看到正常轮，History 看到原始拒绝。accumulator 以 **raw 对象**捕获 `stop_details`（`acc.stopDetails`）——归一化视图只用于展示/决策，**绝不**作为持久化边界（否则 `category: null` / 字段缺失 / 畸形类型三种 provenance 被压成同一个空值）。
+
+## 请求计数口径
+
+一个被抑制的 refusal 是 `failed` 终态 + `success:true` 上游腿。请求计数以**裁决**为唯一权威、桶互斥（`requestBucket()`，`src/lib/history/stats.ts`）；遥测 registry 的 `success` 记的是**客户端请求是否成功**，不是上游腿。两个概念不再互相覆盖。
 
 ## compat 迁移
 
-旧布尔 `anthropic.refusal_recover_text` → 新枚举 `anthropic.refusal_sse_rewrite`：`true→"end_turn"`（旧合成行为）、`false→"refusal"`（旧透传）。见 `compat.ts`。
-
-## 已知缺口
-
-web_search 双跳旁路走 legacy direct、**不经 driver/S5**，故 `refusal_sse_rewrite` 三模式对 web_search 路径无效（与既有 web_search bypass 暂缓清单一致）。`count_tokens` 不产生成响应、结构上无 refusal，非问题。
+旧布尔 `anthropic.refusal_recover_text` → 枚举 `anthropic.refusal_sse_rewrite`：`true→"end_turn"`、`false→"refusal"`。见 `compat.ts`。
 
 ## 实现
 
-- 纯逻辑：[recover-refusal.ts](../src/lib/anthropic/recover-refusal.ts) —— `isThinkingOnlyRefusal` 门控 + `createRefusalRecoverer`（end_turn 流式合成）/`recoverRefusalInResponse`（end_turn 非流式）/`createRefusalErrorEmitter`（error 流式发帧，纯改流无副作用）。
-- 接入：第 5 条 Anthropic `ResponseRewrite`（`order 400`）的 `refusalRewrite`（[response-rewrite-adapters.ts](../src/lib/codec/anthropic/response-rewrite-adapters.ts)）按 `state.refusalSseRewrite` 三分叉；handler error 分支（流式 complete + 非流式 `renderNonStreamingV4` 返 500）在 [handler-v4.ts](../src/routes/messages/handler-v4.ts)。
-- 合成帧契约：error 帧带 `event: error` 行（否则 Anthropic SDK 静默丢弃 eventless data 帧，见 memory `reference-anthropic-sdk-drops-eventless-sse-frames`）。
+- 纯逻辑：[recover-refusal.ts](../src/lib/anthropic/recover-refusal.ts) —— `isContentlessRefusal` 门控 + `extractRefusalDetail`（provenance 保留）+ `refusalThinkingTokens` + `createRefusalRewriter`（三模式单状态机）+ `recoverRefusalInResponse`（非流式）。
+- 策略类型叶子：[refusal-policy.ts](../src/lib/anthropic/refusal-policy.ts) —— **零依赖**，因为从 context 引用它会把 `recover-refusal` 拖进 19 模块巨型 SCC（`circular-deps-ratchet` 会咬）。
+- 接入：第 5 条 Anthropic `ResponseRewrite`（`order 400`）[response-rewrite-adapters.ts](../src/lib/codec/anthropic/response-rewrite-adapters.ts)；终态与可观测性在 [handler-v4.ts](../src/routes/messages/handler-v4.ts) 的单一 settle 点。
+- 合成帧契约：error 帧与 `message_stop` 都带 `event:` 行（否则 Anthropic SDK 静默丢弃 eventless data 帧）。
 
 ## 测试
 
-- 单元：[recover-refusal.unit.test.ts](../tests/anthropic/recover-refusal.unit.test.ts)（`createRefusalRecoverer` + `createRefusalErrorEmitter` 状态机 + 门控真值表 + 非流式）。
-- golden（字节锁）：[response-rewrite-golden.http.test.ts](../tests/anthropic/response-rewrite-golden.http.test.ts) S8（流式 end_turn）+ S8 refusal mode（透传）+ S6 refusal（非流式 end_turn）。
-- 热重载：[config-hot-reload.it.test.ts](../tests/config/config-hot-reload.it.test.ts) 的 `anthropic.refusal_sse_rewrite` 条目。
+- 纯函数：[refusal-detail.unit.test.ts](../tests/anthropic/refusal-detail.unit.test.ts)（provenance 真值表 / 诚实 thinking tokens / 占位符渲染）。
+- 终态不变量 + 三个真实样本：[refusal-terminal-invariants.unit.test.ts](../tests/anthropic/refusal-terminal-invariants.unit.test.ts)。
+- 状态机：[recover-refusal.unit.test.ts](../tests/anthropic/recover-refusal.unit.test.ts)。
+- golden 字节锁：[response-rewrite-golden.http.test.ts](../tests/anthropic/response-rewrite-golden.http.test.ts) —— expected **不得** import 被测生产常量（否则改默认文案时两边一起变、恒绿）。
+- 真 SDK oracle：[anthropic-sdk.it.test.ts](../tests/e2e-client/anthropic-sdk.it.test.ts) —— 含「refusal 无 `message_stop` 时 SDK 仍能 finalize」。
+- 计数口径：[stats-verdict-buckets.unit.test.ts](../tests/history/stats-verdict-buckets.unit.test.ts)。
+
+## 已知缺口
+
+- web_search 双跳旁路走 legacy direct、不经 driver/S5，三模式对该路径无效（与既有 web_search bypass 暂缓清单一致）。
+- 消费面尚未接线：TUI 完成行、History UI、遥测 `refusal_category` 维度、跨协议翻译的 category 降级留痕——诊断目前仍需查 History 的 raw 帧。进度见 [docs/plan/2026-07-28-refusal-suppression-remaining-tasks.md](plan/2026-07-28-refusal-suppression-remaining-tasks.md)。
+- **代理侧 fallback 重试**（换模型重发）未做，记在 backlog；上游 explanation 的样板句自己建议的正是这条，CC 也内建了它。
