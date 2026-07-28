@@ -26,7 +26,7 @@ DONE。仅完成 Task 0.5；未接入任何 B2 触发路径，生产行为保持
 2. 最外层 `close()` 调 `closeHeartbeat()`：永久停止 generation-owned heartbeat，但不关闭写端口，后续 terminal structural frame 仍可写。
 3. 最外层 `finalize()` 返回 `session.terminate({ kind: "complete" })` 的 Promise。`terminate()` 的当前顺序是：状态 `open→terminating`、`closeHeartbeat()`、等待 serializer 中的终端写、状态 `closed`、raw sink `close()`、await raw sink `finalize()`。raw finalize 最终触发 `onDeliveryFinalized`。
 4. `freezeHeartbeat()` 已被 2026-07-27 重写为可恢复的 `stopHeartbeat()`，不再永久关闭；`suspendHeartbeat()`/`resumeHeartbeat()` 也是块级可恢复控制。因此 supervisor 不能拦截三者，否则会破坏 buffered/block-level flush 时序；它们全部原样转发。
-5. driver 通过 `getDownstreamDeliverySession(sink)` 的 WeakMap 对象身份识别 generation-owned delivery，并据此走 winner/ledger 写路径。旧 plan 未包含这个重写后的隐式能力。supervisor 新对象必须继承内层映射，否则未来 P4/P5 接线时虽字节写出仍可工作，却会静默绕过 generation-owned delivery。为此新增 `inheritDownstreamDeliverySession(source, decorator)`。
+5. driver 通过 `getDownstreamDeliverySession(sink)` 的 WeakMap 对象身份识别 generation-owned delivery，并据此走 winner/ledger 写路径。旧 plan 未包含这个重写后的隐式能力。supervisor 新对象必须继承内层映射；否则回退支虽仍把字节写入 inner delivery 的 serializer 与 ledger，却会绕过 `commitWinnerBlock`，丢失 winner 断言与 `candidateId` 归属。为此新增 `inheritDownstreamDeliverySession(source, decorator)`。
 6. `settleFinal()` 实现为 `Promise<void>` 而非旧 plan 的 `void`，以等待当前真实异步 finalize、传播终结错误，并用同一 Promise 支持并发幂等。
 
 ## 拦截与转发决策
@@ -187,7 +187,7 @@ Positive control 按 reviewer 指定做了精确 mutation：临时把 `await inn
 
 ### IMP-2：`makeReconcilingSink` 的 live delivery identity 缺陷
 
-Concern #2 已从“可能只包裹不走 `getDownstreamDeliverySession` 的 live pump”订正为确证结论，并写入五条证据：两个 handler live 调用点、driver 的 hedge winner 调用链、默认 anchor 包装条件、默认 hedge 可达条件，以及 reviewer 的 identity 探针结果。措辞明确区分：回退支仍把帧写入 inner delivery 的 serializer 与 ledger；实际丢失的是 `commitWinnerBlock` 的 winner 断言与 `candidateId` 归属，不是字节绕过 delivery。
+Concern #2 已订正为默认 Anthropic live 路径确实受影响的结论，并写入五条证据：两个 handler live 调用点、driver 的 hedge winner 调用链、默认 anchor 包装条件、默认 hedge 可达条件，以及 reviewer 的 identity 探针结果。措辞明确区分：回退支仍把帧写入 inner delivery 的 serializer 与 ledger；实际丢失的是 `commitWinnerBlock` 的 winner 断言与 `candidateId` 归属，不是字节绕过 delivery。
 
 同一缺陷已按活文档格式登记到 `docs/todo/deferred-backlog.md`，包含根因/现状、当前行为、理想架构与两种修复形状、暂缓原因、触发条件和发现方。本轮遵守 Task 0.5 边界，没有修改 `makeReconcilingSink` 生产代码。
 
