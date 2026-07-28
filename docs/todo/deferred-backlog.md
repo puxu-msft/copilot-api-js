@@ -1018,6 +1018,13 @@ registry（`docs/rfc/2026-07-21-retry-strategy-registry.md`）6 commit 全 lande
 - **理想架构 / 若做需改什么**：补一个走完整 dispatch-open 路径（真 `input.open()` → `recordOpened`）的 .it 测试，断言 `attempts[].timing.upstreamHeadersAt` 被写入且 `>= startedAt`。可**并入 B2 实施的 dispatch-open 回归矩阵**（B2 大量新建 pre-ready/dispatch-open 路径测试，见 upstream-silence recovery plan），不必独立造 harness。
 - **为何暂缓**：非阻断（功能正确、Q5 实测间接背书），且最经济的做法是折进 B2 的 dispatch-open 测试面。**触发条件**：B2 实施，或任何触碰 dispatch-open→timing 接线的重构。发现方：Q5 timing 埋点复审（2026-07-23）。
 
+## B2 fresh recovery 在 cancel/seal 后的 candidate lifecycle quiescence join 待 P4/P5 owner 接线（Task 0.6 余项，2026-07-28）
+
+- **根因 / 现状**：Task 0.6 已把整个 `recordOpened` 及其 timing setter 改为 sealed-safe，修掉 late deferred-header 的 post-seal 写入/抛错；但当前 [recovery-sink-supervisor.ts](../../src/lib/pipeline/generation/recovery-sink-supervisor.ts) 只包装 `ClientSink`，既不启动也不持有 primary/fresh recovery candidate lifecycle。master 漂移后 primary `exchangePromise` 已由 [driver.ts](../../src/lib/pipeline/driver.ts) 注册进 operation scope，`candidate.cancel()` 与 scheduler cleanup 也会 await `runPromise`/`lifecycle.quiesced`，但 `runPreContentRecovery()` 的 fresh recovery 尚未注册进 operation scope，且 P4/P5 之前没有拥有“本轮 primary + fresh recovery + 最终 sink settlement”的 recovery owner。
+- **当前行为 / 风险**：① 已使 late open 不再因 History timing/header 观测越过 seal 而抛错，主 crash 链已被切断；② 仍缺显式的跨候选 join 契约。未来 P4/P5 接入 fresh recovery 后，若 owner 在 cancel/seal 后先最终收口 sink、却未等待它启动过的所有 candidate quiesce，迟到 reject/cleanup 仍可能脱离 owner 作用域，且 terminal 与物理传输生命周期次序不再由单一 owner 保证。
+- **理想架构 / 若做需改什么**：P4/P5 的 recovery owner 启动 primary/fresh recovery 时登记 candidate completion/lifecycle 句柄；最终成功、耗尽、gate 拒绝或 cancel 后，先 cancel 必要候选并 `await` 全部 quiescence，再调用 `RecoverySinkSupervisor.settleFinal()`。不要把 candidate ownership 反向塞进纯 `ClientSink` decorator。补 mutation-positive-controlled 测试：去掉 owner 的 await 后，late reject/late cleanup 用例必须变红。
+- **为何暂缓**：P0-P3 当前没有 recovery owner，也没有 production 接线；在 sink supervisor 中伪造 candidate registry 会制造错误分层。**触发条件**：B2 P4/P5 挂载 fresh pre-content recovery 时必须同 Task 完成，不能继续后延。
+
 ## L2 strip-all 兜底可能留下 `content: []` 的 assistant 消息（2026-07-26，thinking 终端块修复期间发现）
 
 - **根因 / 现状**：L2 反应式兜底 [poisoned-thinking-retry.ts](../../src/lib/codec/anthropic/poisoned-thinking-retry.ts) 的 `handle` 直接 `env.with({ body: { ...payload, messages } })` 重试，**不走 `resanitize`**（不像 truncation 等策略会重跑 sanitize 链）。而 [stripAllThinking](../../src/lib/anthropic/strip-all-thinking.ts#L54) 只做 `filter`，不会丢弃被清空的消息。因此一条**只含 thinking（+ L1 合成分隔符）**的 assistant 消息被 strip 后会变成 `content: []`，原样发往上游。
