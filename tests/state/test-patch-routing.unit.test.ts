@@ -129,7 +129,7 @@ describe("setStateForTests 的 patch 路由", () => {
   })
 
   test("OPTIONAL_STATE_FIELDS 清单没有相对 State 声明漂移", () => {
-    const source = readFileSync(path.resolve(import.meta.dir, "../../src/lib/state.ts"), "utf8")
+    const source = readFileSync(path.resolve(import.meta.dir, "../../packages/foundation/src/state.ts"), "utf8")
     const sourceFile = ts.createSourceFile("state.ts", source, ts.ScriptTarget.Latest, true)
 
     let declaration: ts.InterfaceDeclaration | undefined

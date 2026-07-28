@@ -5,6 +5,7 @@ import { cors } from "hono/cors"
 import { trimTrailingSlash } from "hono/trailing-slash"
 import { type BlankEnv } from "hono/types"
 
+import { state } from "~/lib/state"
 import {
   //
   getTokenCredentials,
@@ -23,7 +24,6 @@ import {
   UNKNOWN_ENDPOINT_CTX_KEY,
   unknownEndpointFinalizer,
 } from "./lib/observability/unknown-endpoint"
-import { state } from "./lib/state"
 import { registerHttpRoutes } from "./routes"
 import { registerOpenApiDocs } from "./routes/openapi"
 

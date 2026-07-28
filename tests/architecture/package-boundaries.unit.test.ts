@@ -53,8 +53,17 @@ function importsSpecifier(source: string, specBody: string): boolean {
 const SIBLING_CORE_SERVER_CLI = String.raw`@hsupu\/ghc-proxy-(?:core|server|cli)`
 const ROOT_ALIAS = String.raw`~\/`
 
-function foundationHasForbiddenImport(source: string): boolean {
-  return importsSpecifier(source, SIBLING_CORE_SERVER_CLI) || importsSpecifier(source, ROOT_ALIAS)
+/**
+ * Parsed with the AST, not a source regex — for the same reason `telemetryForbiddenSpecifiers` is:
+ * the text form reports a specifier that merely appears in a COMMENT. `state.ts` moved into
+ * foundation carrying a comment that reads `existing \`import … from "~/lib/state"\` consumers keep
+ * working`, and the regex called that a boundary violation. A guard that cannot tell an import from
+ * a sentence about an import trains people to reword comments, which is the opposite of the point.
+ */
+function foundationHasForbiddenImport(source: string, fileName = "foundation.ts"): boolean {
+  return allModuleSpecifiers(parseSource(fileName, source)).some(
+    (specifier) => specifier.startsWith("~/") || /^@hsupu\/ghc-proxy-(?:core|server|cli)(?:\/|$)/.test(specifier),
+  )
 }
 
 // A file in the `token` package may import ONLY: token-internal modules (RELATIVE
@@ -100,6 +109,58 @@ function telemetryForbiddenSpecifiers(source: string, fileName = "telemetry.ts")
   }
   return forbidden
 }
+
+/**
+ * The state unit — `state.ts`, `state-defaults.ts`, `state-vocabulary.ts` — is held to a STRICTER
+ * rule than the rest of foundation: `node:` builtins and relative paths, nothing else.
+ *
+ * That is the machine form of what the user actually approved: state may live in foundation "as long
+ * as it depends only on language/system builtins". Foundation's own guard is a DENYLIST — it rejects
+ * `~/` and the sibling packages, and deliberately admits any bare npm package, because existing
+ * foundation files legitimately use `consola` and `diff`. Reusing it here would have looked like
+ * enforcement while permitting `import lodash from "lodash"` inside `state.ts`.
+ *
+ * When mutating this to check it still bites, use BOTH samples below. A `~/` import is caught by the
+ * OLD denylist too, so on that sample alone the new criterion is indistinguishable from the old one
+ * and "it went red" proves nothing. The bare-package sample is the one that only this rule rejects.
+ */
+const STATE_UNIT_FILES = ["state.ts", "state-defaults.ts", "state-vocabulary.ts"]
+
+function stateUnitForbiddenSpecifiers(source: string, fileName = "state.ts"): Array<string> {
+  return allModuleSpecifiers(parseSource(fileName, source)).filter(
+    (specifier) => !specifier.startsWith("node:") && !specifier.startsWith("./") && !specifier.startsWith("../"),
+  )
+}
+
+describe("state unit: only language/system builtins", () => {
+  test.each(STATE_UNIT_FILES)("packages/foundation/src/%s 只 import node: 与相对路径", async (fileName) => {
+    const source = await readFile(path.join(repoRoot, "packages/foundation/src", fileName), "utf8")
+    expect(stateUnitForbiddenSpecifiers(source, fileName), "state 单元的立身之本就是「只依赖语言/系统内置」——这条边一旦存在，它就不再是叶子").toEqual([])
+  })
+
+  test("判据比 foundation 的 denylist 更严：两个正样本，其中一个只有新判据咬得住", () => {
+    // 样本 ①：`~/` —— 新旧判据都咬。**单用它做变异实验会得到假信号。**
+    expect(stateUnitForbiddenSpecifiers('import { x } from "~/lib/error"')).toEqual(["~/lib/error"])
+    expect(foundationHasForbiddenImport('import { x } from "~/lib/error"')).toBe(true)
+
+    // 样本 ②：裸 npm 包 —— **只有新判据咬**。这条才证明新判据真的更严。
+    expect(stateUnitForbiddenSpecifiers('import x from "lodash"')).toEqual(["lodash"])
+    expect(foundationHasForbiddenImport('import x from "lodash"'), "foundation 的 denylist 放行任意裸包——这正是 state 单元需要单独一条 allowlist 的原因").toBe(
+      false,
+    )
+
+    // 允许的形态一个都不能误伤。
+    expect(stateUnitForbiddenSpecifiers('import { readFileSync } from "node:fs"')).toEqual([])
+    expect(stateUnitForbiddenSpecifiers('import { x } from "./state-vocabulary"')).toEqual([])
+  })
+
+  test("覆盖全部 import 形态（side-effect / dynamic / import= / 内联 import 类型节点）", () => {
+    expect(stateUnitForbiddenSpecifiers('import "~/lib/error"')).toEqual(["~/lib/error"])
+    expect(stateUnitForbiddenSpecifiers('const x = await import("lodash")')).toEqual(["lodash"])
+    expect(stateUnitForbiddenSpecifiers('import x = require("lodash")')).toEqual(["lodash"])
+    expect(stateUnitForbiddenSpecifiers('type T = import("~/lib/error").HTTPError')).toEqual(["~/lib/error"])
+  })
+})
 
 describe("workspace packages", () => {
   test("root workspaces includes packages/*", async () => {

@@ -2,8 +2,7 @@ import type {
   //
   Model,
   ModelsResponse,
-} from "@hsupu/ghc-proxy-foundation/ghc-model-types"
-
+} from "./ghc-model-types"
 import type {
   //
   AdaptiveRateLimiterConfig,

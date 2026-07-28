@@ -85,14 +85,14 @@ const MOVED_DEFAULTS = ["DEFAULT_REFUSAL_END_TURN_TEXT", "DEFAULT_REFUSAL_ERROR_
 
 describe("state-defaults 自持默认值，零跨模块值出边", () => {
   test("state-defaults 的唯一出边是零依赖词汇叶子，且是纯类型", () => {
-    const sourceFile = parse("src/lib/state-defaults.ts")
-    expect(outEdges("src/lib/state-defaults.ts")).toEqual(["./state-vocabulary"])
+    const sourceFile = parse("packages/foundation/src/state-defaults.ts")
+    expect(outEdges("packages/foundation/src/state-defaults.ts")).toEqual(["./state-vocabulary"])
     // 值边为零：唯一那条必须是 type-only，否则 S6 的文件级 allowlist 仍会拒。
     expect(typeOnlyModuleSpecifiers(sourceFile)).toEqual(["./state-vocabulary"])
   })
 
   test("词汇叶子零出边（它的叶子身份就是它的全部价值）", () => {
-    expect(outEdges("src/lib/state-vocabulary.ts"), "state-vocabulary 一旦有出边，state 与 state-defaults 就都跟着不再是叶子").toEqual([])
+    expect(outEdges("packages/foundation/src/state-vocabulary.ts"), "state-vocabulary 一旦有出边，state 与 state-defaults 就都跟着不再是叶子").toEqual([])
   })
 
   // ── 单一 owner：旧模块只剩 re-export，不许自己再声明一份 ────────────────────────

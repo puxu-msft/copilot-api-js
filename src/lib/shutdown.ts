@@ -21,6 +21,7 @@ import consola from "consola"
 import { setMaxListeners } from "node:events"
 
 import { getTransportErrorReason } from "~/lib/error/transport-reason"
+import { state } from "~/lib/state"
 import { peekTokenRuntime } from "~/lib/token"
 
 import type { AdaptiveRateLimiter } from "./adaptive-rate-limiter"
@@ -49,7 +50,6 @@ import {
 import { flushAndFreezePersistence as freezeCalibration } from "./models/calibration/engine"
 import { peekUpstreamWsManager } from "./openai/upstream-ws"
 import { notifyStopping } from "./restart/notify"
-import { state } from "./state"
 import { closeHttp2Sessions } from "./transport/http2-client"
 import { emergencyWrite } from "./tui/terminal-coordinator"
 import {

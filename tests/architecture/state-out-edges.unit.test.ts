@@ -43,17 +43,13 @@ const REPO_ROOT = path.resolve(import.meta.dir, "../..")
  * whose reason no longer matches the code is worse than no row at all.
  */
 const ALLOWED: Record<string, Array<{ specifier: string; removedBy: string }>> = {
-  "src/lib/state.ts": [
+  "packages/foundation/src/state.ts": [
     { specifier: "./state-defaults", removedBy: "never — same unit, moves together" },
     { specifier: "./state-vocabulary", removedBy: "never — the zero-import vocabulary leaf, moves together" },
-    {
-      specifier: "@hsupu/ghc-proxy-foundation/ghc-model-types",
-      removedBy:
-        "S6 — becomes a RELATIVE path once this file lives inside packages/foundation; the GHC catalog wire types already sank there (user decision 2026-07-28)",
-    },
+    { specifier: "./ghc-model-types", removedBy: "never — the GHC catalog wire types sank into foundation (user decision 2026-07-28); a package-internal sibling now" },
   ],
-  "src/lib/state-defaults.ts": [{ specifier: "./state-vocabulary", removedBy: "never — the zero-import vocabulary leaf, moves together" }],
-  "src/lib/state-vocabulary.ts": [],
+  "packages/foundation/src/state-defaults.ts": [{ specifier: "./state-vocabulary", removedBy: "never — the zero-import vocabulary leaf, moves together" }],
+  "packages/foundation/src/state-vocabulary.ts": [],
 }
 
 const outEdges = (rel: string): Array<string> => {
@@ -83,16 +79,16 @@ describe("state → foundation：出边 ratchet", () => {
     // S2 把目录缓存搬去 `~/lib/models/cache`，带走了 `normalizeForMatching` 这条唯一的值出边；S5 把
     // `Model` / `ModelsResponse` 下沉进 foundation，`models/client.ts` 改为 re-export。判据从「只剩一条
     // 纯类型边」收紧成「零边」——问题变了，答案要跟着重算，别沿用上一步的形状。
-    const sourceFile = parseSource("src/lib/state.ts", readFileSync(path.join(REPO_ROOT, "src/lib/state.ts"), "utf8"))
+    const sourceFile = parseSource("packages/foundation/src/state.ts", readFileSync(path.join(REPO_ROOT, "packages/foundation/src/state.ts"), "utf8"))
     const modelsEdges = [...new Set(allModuleSpecifiers(sourceFile))].filter((specifier) => specifier.includes("/models/"))
     expect(modelsEdges).toEqual([])
   })
 
-  test("S6 的入口判据：只剩 node: / 相对路径 / foundation 包内路径", () => {
-    // foundation 包名在 S6 之后会变成相对路径（这三个文件届时就住在 packages/foundation/src 里），
-    // 所以它算作已满足。**任何其他非内置、非相对的出边都会挡住 S6**——那正是本断言存在的意义。
-    const acceptable = (specifier: string): boolean =>
-      specifier.startsWith("node:") || specifier.startsWith(".") || specifier.startsWith("@hsupu/ghc-proxy-foundation")
+  test("S6 已落地：三个文件只剩 node: 与相对路径", () => {
+    // 这就是「只依赖语言/系统内置」的机器形态。S6 之前这条断言的可接受集里还含 foundation 包名（那时
+    // 三个文件还在 src/，取 wire 类型只能走包名）；搬进 packages/foundation/src 之后它变成了同包相对
+    // 路径，可接受集随之收紧——判据的形状要跟着事实走，而不是留着更宽的旧形状继续绿。
+    const acceptable = (specifier: string): boolean => specifier.startsWith("node:") || specifier.startsWith(".")
     const blocking = Object.keys(ALLOWED).flatMap((rel) => outEdges(rel).filter((specifier) => !acceptable(specifier)))
     expect(blocking, `还有 ${blocking.length} 条出边挡着物理搬迁：\n${blocking.join("\n")}`).toEqual([])
   })
