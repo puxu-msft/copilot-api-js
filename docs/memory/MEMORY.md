@@ -21,6 +21,7 @@
 - [UI 交付必跑 build:ui](feedback-verify-ui-with-build-not-just-typecheck.md) → `debugging-frontend-tests` — 根 typecheck 不覆盖 ui-v4；权威门 `typecheck:ui-v4`+rollup
 - [改共享 mock 契约打爆 sibling 测试](methodology-shared-mock-contract-change-breaks-sibling-test-files.md) → 拟下沉 `debugging-frontend-tests` — grep 全 `vi.mock` 逐改+每 task 跑全量
 - [动大工程前核实命名目标](feedback-verify-named-target-resolves-before-large-work.md) — 用户命名目标先 find/ls 核实；踩坑=Vue `ui/` vs React `ui-v4/`
+- [探针跑对了结论仍可能错的三种失效](methodology-probe-conclusion-scope-and-peer-invalidation.md) → skill `empirical-verification` — 查的是投影/量的是 peer 刚改过的代码/配置只激活一条路径
 - [测试绝不碰真实环境](feedback_tests_never_touch_real_env.md) → `test-isolation` — DI 注入临时目录(Bun 忽略 env.HOME)；地板=bunfig preload 沙箱
 
 ## 已下沉到 ADR（记忆文件 = stub 指向）
@@ -31,7 +32,6 @@
 
 ## 精炼保留（verification 簇 / 独有教学价值；触发钩子，细节读正文）
 - [通过/空/干净/自洽/doc-vs-code 不自证](feedback-pass-null-clean-not-self-validating.md) — verification 簇根；skill `verifying-authoritative-claims`
-- [探针跑对了结论仍可能错的三种失效](methodology-probe-conclusion-scope-and-peer-invalidation.md) — 查的是投影/量的是 peer 刚改过的代码/配置只激活一条路径；→ skill `empirical-verification`
 - [下完备性判断前先实测每个支撑事实](feedback-verify-facts-before-superlative-completeness-verdict.md) — absence/negative 断言最易凭结构推断而错；别贬防御为「只治一半」
 - [超时归因要逐层剥离、别信配置层自称值](methodology-timeout-attribution-strip-layers-not-config.md) — 真掐断的可能在你配置那层之下(x-stainless-timeout:1200/SDK 1250s 全没触发·实际 undici headersTimeout ~300s)；错误 cause 即层名·客户端侧原始记录必落盘·多臂共享服务端须裸 socket 排除
 - [测客户端何时放弃用服务端观测别跑阶梯](methodology-observe-client-giveup-serverside-not-ladder.md) — 静默超出容忍度+读 request.signal 一次给点位与重试 backoff；两正样本对照先行·Bun 须 idleTimeout:0·自己杀服务器的末尾错误不是客户端终态
