@@ -40,8 +40,9 @@ S2–S6 顺序依赖，按 HANDOVER 走。
 4. **注释写错，照着注释写的代码就看起来是对的**。我在一个守卫文档里写错一句关于 `catch` 的话，导致一个真实的假绿。写不变量注释时逐字确认语义。
 5. **`"key" in patch` 门控**（S4）：要区分「显式 undefined→清空」与「缺席→不动」，token peel 记忆里明确写过。
 
-## 禁区
+## 禁区与门禁现状（**核验于 2026-07-28 / `847f8bc8`；接手第一件事是复验而非采信**）
 
 - 别去修 typecheck 里 peer 在飞的报错（`PostCommitAbortKind` / `retry-giveups`）——不是你引入的，只确认自己没新增。
 - 别改 `tests/` 下的 165 个 `setStateForTests` 调用点。S4 的反转方案就是为了让它们零改动；**如果你发现要改测试，说明反转做错了**。
 - 别把 `models` / `modelIndex` / `disabledModels` 等**字段**搬走（本次只搬逻辑，字段留 state）。
+- `bun run test:backend` 在本机跑不起来（rustup 无 toolchain），**不是你的问题、也别顺手修**；用 `bun scripts/parallel-test.ts unit it http`。

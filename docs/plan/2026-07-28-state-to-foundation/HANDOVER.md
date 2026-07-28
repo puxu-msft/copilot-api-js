@@ -1,8 +1,10 @@
 # HANDOVER：把 `state` + `state-defaults` 降为 foundation 叶子
 
-> **状态**：范围已由用户拍板、尚未动工。本文件是**唯一入口**，接手请先读完再看别的。
+> **状态**：进行中——范围已由用户拍板、**代码尚未动工**。本文件是**唯一入口**，接手请先读完再看别的。
+> **核验基线**：`23e85aba`（2026-07-28）。此后到 `847f8bc8` 的 9 个 peer 提交**全是文档**（`git diff --name-only 23e85aba..847f8bc8` 无一 `src/`、`packages/`、`tests/` 命中），故下列实测数字在 `847f8bc8` 仍成立。**再往后接手请重跑 §3.1 的实测命令**——数字有时效（见 §6 第 1 条）。
+> **工作区**：分支 `master`（本文档直接在主树提交，见 §8）；本任务**未建 worktree**、**无代码改动**；主树有并发 peer 的未提交改动十余个文件 + 3 个未追踪文件，**全部与本任务无关**。
+> **已跑门禁**：`computeCircularSnapshot()` 实测（2026-07-28，见 §3.1/§3.2）。测试门禁**未跑**——本任务零代码改动，无可跑内容；`bun run test:backend` 在本机**跑不起来**（§8）。
 > **前身**：monorepo 拆分 Phase 4 的第三次剥离（前两次 = `@hsupu/ghc-proxy-token` 2026-07-23、`@hsupu/ghc-proxy-telemetry` 2026-07-27，均已 landed）。
-> **写于** 2026-07-28，基于 HEAD `23e85aba`。**若你接手时 HEAD 已远离此处，先重跑本文「验收 oracle」一节的实测命令**——本文所有数字都是实测的，但实测有时效（见 §6 我踩过的坑第 1 条）。
 
 ## 1. 入口指引：什么时候读什么
 
@@ -163,7 +165,17 @@
 4. **写交接前没先看 `git log`——差点用陈旧事实**。本文成稿前 HEAD 已从我实测时前进 20 个提交，其中 peer 大改了 `recover-refusal.ts`（还顺手建了 `refusal-policy.ts` 这个正是我需要的零依赖叶子）。**我重测后才发现 S1 的工作量已被 peer 砍掉三分之一**。教训：交接一旦陈旧，危害大于没有。
 5. **注释写错会让照着注释写的代码看起来是对的**。同一轮我在一个守卫的文档里写「try/catch/finally 都不 gate 正常路径」——对 `catch` 是错的，于是"把生产调用从 try 移进 catch"编译通过、正常路径永不执行、守卫全绿。自洽且完全错。
 
-## 7. 当前环境状态（接手须知）
+## 7. 产物清单
+
+| 产物 | 路径 | 已提交? | 它**没有**证明什么 |
+|---|---|---|---|
+| 本交接 + kick-off | `docs/plan/2026-07-28-state-to-foundation/{HANDOVER,KICKOFF}.md` | 是（`cc2fb141`） | — |
+| S1 削环 PoC | **无留存**——改完实测完即 `git checkout --` 还原 | 否（有意不留） | 它只证明了「挪走那两个常量后 madge 图变成 30 环/43 成员」。它**没有**证明：改完 typecheck 绿、测试绿、`recover-refusal.ts` 的 re-export 形态可用（PoC 期间恰好撞上 `export … from` 不绑定本地名的 TS2304，是当场手工绕过的），更**没有**证明 state 因此就成了叶子——S1 只削环，state 落地 foundation 要等 S6 |
+| 上一轮 telemetry peel 的执行期偏差记录 | [plan-telemetry-package.md](../monorepo-split/plan-telemetry-package.md) 头部 | 是 | 那是抽包流程的经验，本次**不抽包**，只有边界守卫与过渡纪律可复用 |
+
+**没有 `exp/<topic>/` 目录**：本轮唯一的实验是一次可在 30 秒内重跑的削环量测，配方已完整写进 §3.2 与 §4/S1，留一份实验目录只会多一处会漂移的事实源。**重跑配方**：把 `DEFAULT_REFUSAL_END_TURN_TEXT` / `DEFAULT_REFUSAL_ERROR_MESSAGE` 移入 `src/lib/anthropic/refusal-policy.ts`、`state-defaults.ts:25` 改指该文件，然后跑 `computeCircularSnapshot()`。
+
+## 8. 当前环境状态（接手须知）
 
 - **`rustup` 无任何已安装 toolchain** → `bun run test:backend` 的前置 `build:history-search` **必挂**。用 `bun scripts/parallel-test.ts unit it http`（等价全后端档）。修法：`rustup default stable`。
 - **主树有并发 peer 的未提交改动**（十几个文件）。一律显式 pathspec 提交，`git add -A` 绝对禁止。
