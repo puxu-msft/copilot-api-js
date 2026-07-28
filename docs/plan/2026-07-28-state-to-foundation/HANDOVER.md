@@ -1,8 +1,8 @@
 # HANDOVER：把 `state` + `state-defaults` 降为 foundation 叶子
 
-> **状态**：✅ **S1–S7 全部落地**（分支 `feat/state-foundation`，7 个提交 `2ef2f8f8`→`65c5654c`，**尚未合并 master**）。本文件从「怎么做」变成了「做了什么、以及为什么和计划不一样」。
+> **状态**：✅ **S1–S7 全部落地**（分支 `feat/state-foundation`，**尚未合并 master**）。本文件从「怎么做」变成了「做了什么、以及为什么和计划不一样」。提交范围刻意不在这里冻结 hash——每步一提交、外加两轮复评的修复提交，`git log master..feat/state-foundation` 是唯一不会过期的答案。
 >
-> **终态**：`packages/foundation/src/{state,state-defaults,state-vocabulary}.ts`，出边只有 `node:` 与相对路径，由 `package-boundaries.unit.test.ts` 的文件级 allowlist 机器强制。**全仓 madge 环 70/63 → 43/50、state 单元零环**（43 与 70 不可直接比——S6 把扫描面从 `src/` 扩到了全部 workspace 包，那是必须的：不扩面的话文件搬出 `src/` 就会「因路径不匹配而消失」，那不是无环的证明）。消费端 **86 prod + 212 test importer 零改动**（走 `~/lib/state*` alias）。
+> **终态**：`packages/foundation/src/{state,state-defaults,state-vocabulary}.ts`，出边只有 `node:` 与相对路径，由 `package-boundaries.unit.test.ts` 机器强制——判据是从三个入口出发的**相对依赖闭包**，每个 specifier 要么 `node:`，要么**解析后**（TS 自己的 resolver + realpath 规范化）仍落在 `packages/foundation/src` 内。（初版是「三个文件 + 以点开头即包内」的更弱命题，两轮独立复评各打掉一半，见 §9。）**全仓 madge 环 70/63 → 43/50、state 单元零环**（43 与 70 不可直接比——S6 把扫描面从 `src/` 扩到了全部 workspace 包，那是必须的：不扩面的话文件搬出 `src/` 就会「因路径不匹配而消失」，那不是无环的证明）。消费端 **86 prod + 212 test importer 零改动**——**口径限于「物理搬迁这一步」**（走 `~/lib/state*` alias）：迁出 state 的**符号**其消费者是强制改指的，S2 改了 105 个文件、S3 改了 10 个，「零改动」不对整轮成立。
 >
 > **每一步都做过变异实验**（不是「推理它会红」）：S1 五条、S2 正样本自证 + 顺序断言、S3 两条、S4 五条、S5 五条编译期断言（其中**第一版是惰性的、根本不咬**）、S6 两样本对照（`~/` 新旧判据都咬 → 单用它证明不了；裸 npm 包只有新判据咬）。
 > **核验基线**：`23e85aba`（2026-07-28）。**2026-07-28 已在 `a675064e` 重跑全部三项复验，差集为空**——详见 §3.0。**再往后接手请再重跑一次**——数字有时效（见 §6 第 1 条）。
