@@ -169,11 +169,12 @@ describe("heartbeat after a real buffered boundary commit", () => {
       commitBoundaries: anthropicCommitBoundaries,
       retryCap: 0,
     } as RunBufferedOpts)
+    setTimeout(() => undefined, 1_000) // shard-neighbor control: unrelated timers must not satisfy heartbeat readiness
 
     for (let i = 0; i < 500 && !written.some((current) => current.event === "content_block_stop"); i++) await Promise.resolve()
     expect(written.some((current) => current.event === "content_block_stop")).toBe(true)
-    for (let i = 0; i < 500 && clock.liveTimerCount === 0; i++) await Promise.resolve()
-    expect(clock.liveTimerCount).toBe(1)
+    for (let i = 0; i < 500 && !clock.liveTimerDelaysMs.includes(15_000); i++) await Promise.resolve()
+    expect(clock.liveTimerDelaysMs.filter((delay) => delay === 15_000)).toHaveLength(1)
 
     const beforeGap = written.length
     await clock.advance(15_000)
