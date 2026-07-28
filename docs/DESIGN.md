@@ -259,6 +259,8 @@ ui/
 
 所有运行时状态集中在 `lib/state.ts`，通过 CLI 参数或 config.yaml 设置。
 
+> **`[wip]` state 正在被降为 foundation 叶子**（monorepo 拆分 Phase 4 的第三次剥离，2026-07-28）。目标：`src/lib/state.ts` + `src/lib/state-defaults.ts` 只依赖语言/系统内置，随后物理迁入 `packages/foundation/`；寄居其中的 models 缓存逻辑与 4 个 `resolve*` 回各自域，简单 setter 留在 state。**文档已定稿并经两轮异模型评审、代码尚未动工**，权威入口 [plan/2026-07-28-state-to-foundation/HANDOVER.md](plan/2026-07-28-state-to-foundation/HANDOVER.md)。**注意它 supersede 了 spec `2026-07-22` §5 的 reader seam 方案**（对账见该 HANDOVER §2.5）。要动 `state.ts` / `models/` 的并发会话请先读它。
+
 ### 配置加载层级
 
 `loadConfig()` 在每次调用时产生**生效配置 = bundled defaults 深合并 user overrides**（user 优先）：

@@ -1004,6 +1004,7 @@ registry（`docs/rfc/2026-07-21-retry-strategy-registry.md`）6 commit 全 lande
 - **理想架构 / 若做需改什么**：测试随 core 内部模块剥离（spec 阶段 4+）逐包物理下沉到 `packages/*/src` 旁；若走每包各自 `bun test`，各包 `bunfig` 各自 `[test].preload` 但**指向同一份共享 sandbox-paths**（放 foundation 或新建 `packages/test-harness`、各包 re-export、绝不各包复制）；`RESETTERS` 表随单例分包、L1 守卫 `resetters-complete.unit.test.ts` 改成每包各自枚举本包 `*ForTests`；同步改 `tests/architecture/*.unit.test.ts` 内硬编码 `import.meta.dir`+`../../src/lib/...` 路径。
 - **为何暂缓**：巨量撞行面、依赖 core 内部先解环到位；是「同置收尾」层、落在结构搬迁之后。**触发条件（值得做）**：core 已剥出真子包、需把对应测试随之下沉时。
 - **关联：core 内部解环排序清单**（spec §6 措施 3，随剥离长期存活）：**state 第一**（~83 importer、SCC 入口）、**anthropic/openai/gemini 第二**（state 解耦后可提 core 层 vendor 纵切）、**pipeline/codec 局部环第三**（cell-assembly 三方环）。每次只剥一个、land 后重评 SCC + madge 环快照只减不增。
+  - **⚠️ 「state 第一」当前状态（2026-07-28）：文档已定稿、代码未动工，且方案已由用户改为「state 降为 foundation 叶子」，不再是 spec §5 的 reader seam。** 权威入口 [docs/plan/2026-07-28-state-to-foundation/HANDOVER.md](../plan/2026-07-28-state-to-foundation/HANDOVER.md)（含与 spec 旧结论的对账、完整出边清单、S1–S7 步骤）。**接手前先读它，别按本行下方或 spec §5 的旧方案起步。**
 
 ## 聚合指标迁 Prometheus/Grafana、退役 /api/stats 自建聚合（2026-07-22，ADR 2026-07-22-metrics-via-prometheus-grafana）
 

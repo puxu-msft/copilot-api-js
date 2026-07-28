@@ -10,16 +10,29 @@
 
 | 材料 | 何时读 |
 |---|---|
-| 本文件 §2–§4 | 动工前必读全部 |
+| 本文件 §1.5–§4 | 动工前必读全部；**§2.5 与 §3.7 是新加的，第一版没有，缺了它们 S6 必红** |
 | [KICKOFF.md](KICKOFF.md) | 起新会话时贴给自己/agent |
+| 同目录 `HANDOVER-review-{gpt,claude}.md` | 想知道某条 oracle「为什么写成这样」时——它们记着被证伪的原始版本 |
 | [plan-token-package.md](../monorepo-split/plan-token-package.md)「通用 DomainPeel Contract」 | 写具体 plan 时（本次不是抽包，但边界守卫/过渡纪律可复用） |
 | [plan-telemetry-package.md](../monorepo-split/plan-telemetry-package.md) 头部「执行期偏差」 | 想知道"上一轮为什么这么做"时 |
 | 记忆 `methodology-domain-peel-execution-techniques` | 真正开始搬代码时 |
-| [spec/2026-07-22-monorepo-workspace-split.md](../../spec/2026-07-22-monorepo-workspace-split.md) §7.2 | 需要理解本步在总路线中的位置时 |
+| [spec/2026-07-22-monorepo-workspace-split.md](../../spec/2026-07-22-monorepo-workspace-split.md) §7.2 | 需要理解本步在总路线中的位置时。**⚠️ 先读本文 §2.5**——spec §2.1 白纸黑字写着本任务「走不通」，那是 **2026-07-22 的前提**，S1–S5 拆的正是那个前提。不先读 §2.5 就去读 spec，你会以为本任务被否决了 |
 
 **不需要读**：telemetry peel 的 T1–T5 提交本身（那是抽包，本次不抽包）。
 
+## 1.5 本轮做了什么（**代码零改动**）
+
+1. **实测定位承重边**：跑 `computeCircularSnapshot()` 摸清 SCC 现状，发现 `state` / `state-defaults` 参与了 70 个环里的 52 / 50 个，而把它们拴住的是几个纯字符串常量。
+2. **PoC 并还原**：临时把两个 refusal 常量挪进零依赖叶子，实测 70/63 → 30/43，然后 `git checkout --` 还原（§7 有它「没有证明什么」）。
+3. **与用户逐步收窄范围**：从「state 能不能进 foundation」一路收到 §2 那 6 条。中途我提过一个多余的 `config-vocabulary` 模块，被用户点破（§6 第 2 条）。
+4. **因 peer 改动重测**：成稿前 HEAD 已前进 20 个提交，peer 顺手建好了 `refusal-policy.ts`，S1 的工作量被砍掉三分之一（§6 第 4 条）。
+5. **两轮异模型 subagent 评审并整改**：第一轮独立复现了 PoC 数字、证伪了 4 个 oracle；第二轮以接手方第一人称走查，找出 2 个 BLOCKER。**§2.5、§3.7、S3 的选址硬约束、S6 的两层守卫、S7 都是评审后补的**——第一版没有它们，S6 会在投入 5 个提交后必红。评审报告留在同目录（`HANDOVER-review-{gpt,claude}.md`）。
+
+**代码一行没动。** 相关提交只有文档：`cc2fb141`（初稿）、`773773b2`（补模板槽位）、`31e39d6f`（peer 订正 worktree/eslint 一句）+ 本次整改。
+
 ## 2. 用户已裁定的范围（**别再重开这个议题**）
+
+
 
 用户在 2026-07-27 的讨论中逐条收窄，最终范围是：
 
@@ -29,6 +42,26 @@
 - ✅ **对 state 的读写与辅助函数，可能属于子模块**——用户提出，实测证实（见 §3）。这些回各自的域。
 - ❌ **不做**：单独建 `config-vocabulary` 模块（我提过，被判定多余——见 §6 第 2 条）。
 - ❌ **不做**：把 30 个 config setter 拆到各域。
+
+## 2.5 与 spec `2026-07-22-monorepo-workspace-split` 的关系（**动工前必读，否则你会以为本任务被 spec 否决了**）
+
+spec 里有三处直接谈 state，读起来像是在否决本任务：
+
+- **§2.1**（`:44`）：「state 是 SCC 的核心节点、被 ~83 个 src 文件 `import { state }` 依赖——**「把 state 沉到 foundation」day-1 走不通**（会拽下半个 SCC），强化「state 实现整个留 core」的正确性。」
+- **§5**：给 state 定的方案是**窄读接口 seam**（`core/state/reader-*.ts`）+ day-1 强迁 ~83 个消费端。
+- **§7.2 阶段 0d**：「剩余 0d 范围 = **models 域**」——与本交接 S2 的对象是同一个域。
+- 另有 `docs/todo/deferred-backlog.md` 的解环排序清单仍写「**state 第一**」。
+
+**这不是矛盾，但你必须理解为什么不是**：spec 判「走不通」的**依据**是当时 state 身上那几条实边（value import `models/model-name` + `recover-refusal`，以及一串 type 依赖）。**S1–S5 逐条拆的正是那几条依据**——前提没了，结论随之改变。spec 说的是 **day-1 走不通**，不是「永远不该做」；spec §11「error 整体上提 foundation：否决」那条的理由（「会把 state 拖进 foundation → foundation 不再是叶子」）同样只在 state 还不是叶子时成立。
+
+**所以**：spec §2.1 / §5 / §7.2-0d 记录的是 **2026-07-22 的前提**。用户 2026-07-27 的裁定（§2）是在新前提下做的，**优先级高于 spec 的旧结论**（user-rule `user-prompt-first`）。
+
+⚠️ **两件必须做的事**：
+
+1. **0d 的「剩余范围 = models 域」与 S2 是什么关系，必须先答**。两者对象相同、机制不同（0d 迁的是 `import { state }` 的**消费端**到 reader seam；S2 搬的是 state 里的**逻辑**出去）。**不说清楚就会有人把两套都做一遍**，或者做完 S2 才发现 reader seam 白建。→ 已列入 §5 待裁决第 4 条。
+2. **本任务落地后必须 doc-sync**：spec §2.1 / §3.1 / §5 / §7.2-0d + `deferred-backlog.md` 的「state 第一」条 + `DESIGN.md`「活的架构现状」表，全部要改到与新事实一致。**这是交付的一部分不是可选项**（→ S7）。否则 `docs/` 里会同时存在「state 留 core、走 reader seam」与「state 在 foundation」两套说法，下一个接手方必然重蹈覆辙。
+
+
 
 ## 3. 已确证的硬事实（逐条标证据等级）
 
@@ -53,15 +86,17 @@
 
 **注意 peer 已经走了一半**：`refusal-policy.ts`（41 行、**零 import**）是 peer 在 contentless-refusal 工作中新建的，已经拥有 `DEFAULT_REFUSAL_ERROR_TYPE`，`recover-refusal.ts:114` 再 re-export 出去。**剩下要挪的只有 `DEFAULT_REFUSAL_END_TURN_TEXT` 与 `DEFAULT_REFUSAL_ERROR_MESSAGE` 两个**，目标模块现成。
 
-### 3.3 `state.ts` 只有 3 个值依赖，全部可解 —— 【源码读证 + 实测】
+### 3.3 `state.ts` 的值依赖只有 3 个，全部可解 —— 【源码读证 + 实测】
+
+> ⚠️ **这一节是【削环视角】的结论，不是 S6 的入口判据。** 它只回答「哪些边让 state 成环」；「state 还剩哪些跨界出边」是另一个问题，答案在 **§3.7**，两者差 5 条。**行号会漂移，一律以符号名为准**（下表 `state-defaults` 那行的 `:2025` 在成稿当天就已漂到 `:2035`）。
 
 | 值依赖 | 位置 | 结论 |
 |---|---|---|
-| `normalizeForMatching` | `state.ts:20` ← `~/lib/models/model-name` | 该模块**零 import**；且此函数在 state 内**只被 models 逻辑用**（`:1428`/`:1429`/`:1455`/`:1456` 四处，全在 `applyDisabledFilter` 与 `getConfigDisabledIds` 内）→ **随 models 逻辑一起走，边自然消失** |
-| `~/lib/token/store` 6 个符号 | `state.ts:21-30` | **只出现在 3 个 test-only 函数里**（`snapshotStateForTests:1976`、`setStateForTests:1989`、`restoreStateForTests:2009`），生产路径零使用 → 见 §4 步骤 4 的反转方案 |
-| `./state-defaults` | `state.ts:2025` | 同一单元，一起走 |
+| `normalizeForMatching` | ← `~/lib/models/model-name` | 该模块**零 import**；且此函数在 state 内**只被 models 逻辑用**（4 处，全在 `applyDisabledFilter` 与 `getConfigDisabledIds` 内）→ **随 models 逻辑一起走，边自然消失** |
+| `~/lib/token/store` 6 个符号 | | **只出现在 3 个 test-only 函数里**（`snapshotStateForTests` / `setStateForTests` / `restoreStateForTests`），生产路径零使用 → S4 的反转方案。**已用正样本对照验证过这个否定性断言** |
+| `./state-defaults` | | 同一单元，一起走 |
 
-其余 **7 行全是 `import type`**。
+**`state-defaults.ts` 另有一个值依赖**（`DEFAULT_SEPARATOR_CARRIER`），我第一版从没审计过这个文件 → 见 §3.7 #11。
 
 ### 3.4 `state.ts` 无 I/O、无类实例、字段里无函数 —— 【实测 grep】
 
@@ -82,7 +117,14 @@
 | `setDisabledModels` | `:1476` | 写 + 重新过滤 |
 | `rebuildModelIndex` | `:2018` | 建 `modelIndex: Map<string, Model>` |
 
-**域外消费者：4 个文件**（`rg -ln` 实测）。
+**消费者 —— 【实测，口径写死】**：从 `~/lib/state` **直接 import** 上述符号的文件，AST 扫描 @`23e85aba`：
+
+| 口径 | 数量 |
+|---|---|
+| production（`src/` + `packages/`，不含 owner 自身） | **4**：`packages/cli/src/start.ts`、`src/lib/config/config.ts`、`src/lib/models/client.ts`、`src/routes/models/internal.ts` |
+| tests | **101** |
+
+⚠️ **这两个数不能只看第一行**。S2 要改的 import 面是 **105 个文件**，不是 4 个。「测试零改动」这条红线**只覆盖 `setStateForTests` 调用点**（见 ③-c），**不覆盖**测试里对 `setModels` / `setDisabledModels` 的 import——那些必须跟着迁走，否则只能靠在 state 留 re-export 双轨来糊住，S2 的边界收敛就成了假完成。
 
 **③-b 每模型 override 解析**（纯函数，合并 shared + per-model override）：
 
@@ -93,61 +135,153 @@
 | `resolveMaxTokensContinuation` | `:1938` |
 | `resolveEffectiveMaxTokensContinuation` | `:1959` |
 
-四个共约 45 行。**域外消费者：8 个文件**。它们是"解析"不是"存储"——读 state 的两个字段算出结果，不改 state。
+四个共约 45 行。它们是"解析"不是"存储"——读 state 的两个字段算出结果，不改 state。
 
-**③-c 测试专用**：`snapshotStateForTests:1976` / `setStateForTests:1989` / `restoreStateForTests:2009`。**`setStateForTests` 被 165 个文件使用**（实测 `rg -l`）。
+**消费者 —— 【实测，口径同上】**：production **7** 个（`src/lib/config/config.ts`、`src/routes/chat-completions/{buffered-config,handler-v4}.ts`、`src/routes/messages/handler-v4.ts`、`src/routes/responses/{buffered-config,handler-v4,ws}.ts`）+ tests **3** 个。
 
-### 3.6 类型依赖不构成阻塞 —— 【推断，但机制可靠】
+> 我最初写的是「8 个文件」，未标口径也未复核——**实测 production 直接 import 是 7**。别沿用这个数，按下面的命令自己重数。
 
-7 个 `import type` 全是配置词汇：`AssistantBlockLayoutStrategy`（三值字符串联合）、`ThinkingBlockSanitizeMode`（四值联合）、`RepairItem`（const 数组派生联合）、`ModelTranslation`、`AdaptiveRateLimiterConfig`（数值 config 接口）、`Model`/`ModelsResponse`（**GHC 上游 wire 类型，不是配置词汇**）、`TokenStoreSnapshot`（来自 token 包）。
+**③-c 测试专用**：`snapshotStateForTests:1976` / `setStateForTests:1989` / `restoreStateForTests:2009`。
+
+`setStateForTests` 的使用量 —— **【实测，三个 revision 一致】**：
+
+```bash
+git grep -l -w setStateForTests <rev> -- 'tests/*.ts' | wc -l   # → 164（其中 3 个在 tests/helpers/）
+git grep -l -w setStateForTests <rev> -- '*.ts'      | wc -l   # → 167（多出 state.ts owner + 2 个 exp/ 探针）
+```
+
+> 我先前写的「165 个文件」**在任何口径下都复现不出来**，是我没记命令就报数字。以 164 为准，或干脆按上面的命令现场重数。
+
+### 3.6 类型依赖清单 —— 【实测，但**已被 §3.7 取代**】
+
+> ⚠️ **别用这一节做 S5 的驱动清单，用 §3.7。** 这一节我改过两版都还是漏的（第一版漏 4 个符号，第二版漏了 `state-defaults.ts` 整个文件），原因是它是**人工枚举**。保留它只为解释「为什么这些类型可以反转」这个机制；**清单以机器枚举的 §3.7 为准**。
+>
+> **「推断」升「实测」还差什么**（模板要求写明，而这个空槽位正是上面那个 BLOCKER 的藏身处）：差的就是**跑一遍完整出边枚举**——现在跑过了，结果在 §3.7。
 
 机制：**叶子没有出边，所以谁依赖它都不可能成环**。把词汇的归属反转（实现模块从 state import 类型，而不是 state 从实现模块 import）即可。madge 计 type 边，所以这一步是**必须的**，不能只靠"反正 type 会被擦除"。
 
-⚠️ **`Model`/`ModelsResponse` 需要单独决定**（见 §5 未裁决分叉）。
+三点后果：① `Model`/`ModelsResponse` 需要单独决定（§5 待裁决 1）；② token 类型（`CopilotTokenInfo`/`TokenInfo`/`TokenStoreSnapshot`）**不是 S5 的事而是 S4 的事**，且牵动包分层（§5 待裁决 3）——参与者注册表若签名里还写着 token 类型名，边根本没断；③ 验收**不要数 import 行**，用 §3.7 的 `from "` 枚举或 AST 的 `allModuleSpecifiers()`（`tests/architecture/source-ast.ts` 已有此工具）。
+
+### 3.7 **foundation 准入清单：两个文件的完整出边逐条对账** —— 【实测，机器枚举】
+
+> **这一节是 S6 的入口判据，也是本交接最重要的一节。** §3.3 与 §3.6 回答的是「state **为什么在 SCC 里**」（削环视角，只关心成环的边）；S6 需要的是「state **还剩哪些跨界出边**」（叶子化视角，关心**所有**出边）。**两者的答案不同**——我第一版把前者的结论直接当成了后者的前提，于是漏掉了 5 条边，其中一条会让 S6 在做完前五步之后必红。
+
+**枚举命令（别用 `rg '^import'`）**：
+
+```bash
+rg -n 'from "' src/lib/state.ts src/lib/state-defaults.ts
+```
+
+⚠️ **必须用 `from "` 而不是 `^\s*import`**：本仓库的 import 排版会把 `from` 放到多行 import 的**收尾行**，`^import` 形态的正则会**静默漏掉全部多行 import**——我第一次枚举就是这样漏的，两个 reviewer 里也有一个照着漏了。（这本身就是 §6 第 3 条「判据形状」教训的一个现成实例。）
+
+**`state.ts` 的出边**：
+
+| # | 目标 | 形态 | 符号 | 由哪一步消除 |
+|---|---|---|---|---|
+| 1 | `~/lib/anthropic/sanitize/assistant-block-layout` | type | `AssistantBlockLayoutStrategy`, `SeparatorCarrier` | **S5** |
+| 2 | `~/lib/anthropic/sanitize/content-blocks` | type | `ThinkingBlockSanitizeMode` | **S5** |
+| 3 | `~/lib/anthropic/tool-input-repair` | type | `RepairItem` | **S5** |
+| 4 | `~/lib/config/schema` | type | `ModelTranslation` | **S5** |
+| 5 | `~/lib/models/client` | type | `Model`, `ModelsResponse` | **§5 待裁决 1** |
+| 6 | `~/lib/token/types` | type | `CopilotTokenInfo`, `TokenInfo` | **§5 待裁决 3**（分层反转，不是搬类型能解决的） |
+| 7 | `~/lib/models/model-name` | **value** | `normalizeForMatching` | **S2**（随 models 逻辑走） |
+| 8 | `~/lib/token/store` | **value** + type | 6 个符号 + `TokenStoreSnapshot` | **S4** |
+| 9 | `./adaptive-rate-limiter` | type | `AdaptiveRateLimiterConfig` | **S5** ⚠️ 见下方注 |
+| 10 | `./state-defaults` | value | 3 个 | 同一单元，一起走 |
+
+**`state-defaults.ts` 的出边**：
+
+| # | 目标 | 形态 | 符号 | 由哪一步消除 |
+|---|---|---|---|---|
+| 11 | `~/lib/anthropic/sanitize/block-layout-contract` | type **+ value** | `AssistantBlockLayoutStrategy`, `SeparatorCarrier`（type）/ **`DEFAULT_SEPARATOR_CARRIER`（value）** | **S1**（值）+ **S5**（类型） |
+| 12 | `~/lib/anthropic/sanitize/content-blocks` | type | `ThinkingBlockSanitizeMode` | **S5** |
+| 13 | `~/lib/anthropic/tool-input-repair` | type | `RepairItem` | **S5** |
+| 14 | `~/lib/config/schema` | type | `ModelTranslation` | **S5** |
+| 15 | `~/lib/anthropic/recover-refusal` | **value** | 3 个 `DEFAULT_REFUSAL_*` | **S1** |
+| 16 | `./state` | type | `BufferedRetryCaps` 等 | 同一单元 |
+
+**三条我第一版完全没登记的边，逐条说明为什么它们比看上去难**：
+
+- **#11 的 `DEFAULT_SEPARATOR_CARRIER` 是个【值】依赖，而我全文只审计过 `state.ts`、从没审计过 `state-defaults.ts` 的出边。** 它性质和三个 refusal 常量完全相同 → **并入 S1 一起做**。但它的目标模块 `block-layout-contract.ts` **不是零依赖叶子**（`:1 import type { ContentBlockParam } from "~/types/api/anthropic"`），所以**不能整个搬**——正解是把 `SeparatorCarrier`（类型）与 `DEFAULT_SEPARATOR_CARRIER`（值）**这一对**（同一词汇的值与类型）单独放进一个新的零依赖叶子。
+- **#6 `~/lib/token/types` 是包分层反转，不是品味问题。** `packages/token/package.json` 已声明 `"@hsupu/ghc-proxy-foundation": "workspace:*"`——**token 依赖 foundation**。若 state 进 foundation 后仍 import token 类型，就是 `foundation → token → foundation` 的**包级环**。而 `package-boundaries.unit.test.ts` 的 `foundationHasForbiddenImport` 对 foundation 内**任何** `~/` 一律判违规，`import type` **不豁免**。→ 升级为 §5 待裁决第 3 条。
+- **#9 `./adaptive-rate-limiter` 的相对路径形态掩盖了它是跨界边。** 它现在和 state 同在 `src/lib/`，看起来「同目录、无害」；但 S6 把 state 搬进 `packages/foundation/src/` 之后，这个相对路径就**不再指向同一个包**了。而 `adaptive-rate-limiter.ts` 本身**远不是叶子**（实测出边：`consola`、`~/lib/error` 的 `HTTPError`、`./observability`）。S5 的反转（让它从 state import 类型）能解决，**但前提是你知道要把它算进 S5**——按相对路径的外观很容易把它归成「自己人」跳过。
+
+**这张表的用法**：动工前重跑一次枚举命令，与本表做差集。**差集非空 = 交接已陈旧，先补表再动手**。表里任何一条对不上步骤的，就是一个会在 S6 爆出来的缺口。
 
 ## 4. 执行步骤（每步带验收 oracle 与证伪方式）
 
 > 通用不变量（每 commit）：typecheck 绿 + `bun scripts/parallel-test.ts unit it http` 绿 + 精确 pathspec lint 绿 + SCC ratchet 只减不增。
 > **SCC 数字一律 `computeCircularSnapshot()` 实测，禁止从 baseline 环列表推算**（推算会高估，见 §6 第 1 条）。
 
-### S1 — 两个 refusal 常量挪进已有零依赖叶子
+### S1 — 把 `state-defaults` 的三类默认值常量挪进零依赖叶子
 
-- **做什么**：`DEFAULT_REFUSAL_END_TURN_TEXT` + `DEFAULT_REFUSAL_ERROR_MESSAGE` 从 `recover-refusal.ts` 迁入 `refusal-policy.ts`（该叶子已拥有第三个常量）；`recover-refusal.ts` 改成 re-export（**注意 `export ... from` 不绑定本地名**，文件内若自用需另 import——telemetry peel 踩过这个坑）；`state-defaults.ts:25` 改指 `refusal-policy`。
-- **验收 oracle**：`computeCircularSnapshot()` 实测应得 **30 环 / 43 成员**（PoC 已验证）。
-- **证伪方式**：若实测数字明显偏离，说明 peer 又改了图——**别调整期望值去迁就，先重跑 §3.1 摸清现状**。
-- **风险**：极低（移动字符串字面量，行为逐字节不变）。
+- **做什么（两件，性质相同，一步做完）**：
+  1. `DEFAULT_REFUSAL_END_TURN_TEXT` + `DEFAULT_REFUSAL_ERROR_MESSAGE` 从 `recover-refusal.ts` 迁入 `refusal-policy.ts`（该叶子已拥有第三个常量）；`recover-refusal.ts` 改成 re-export（**注意 `export ... from` 不绑定本地名**，文件内若自用需另 import——telemetry peel 踩过这个坑）；`state-defaults.ts:25` 改指 `refusal-policy`。
+  2. **`DEFAULT_SEPARATOR_CARRIER`（§3.7 #11 的值边）** 与它的类型 `SeparatorCarrier` **成对**迁进一个新的零依赖叶子。**不要整个搬 `block-layout-contract.ts`**——它 `:1` 依赖 `~/types/api/anthropic`，搬过去等于把那条边一起拽进来。
+- **验收 oracle**：① `computeCircularSnapshot()` 实测——**注意 30 环/43 成员是只做第 1 件事的 PoC 值，做完第 2 件事应当更低，具体多少请实测，别拿 30/43 当上限**；② **三个字符串的逐字 golden**——SCC 数字对字符串内容完全不敏感，typecheck 也抓不住"搬运时手滑改了一个字"，必须单独锁；③ 原公共导出路径仍可用，且与新 owner 的导出**引用相等**（`expect(a).toBe(b)`，不是 `toEqual`——后者对两份独立字面量也会绿）。
+- **证伪方式**：① 若实测环数明显偏离，说明 peer 又改了图——**别调整期望值去迁就，先重跑 §3.1 摸清现状**；② golden 必须做变异实验：改字符串里的一个字符，测试必须变红（否则你锁的是个不咬人的断言）。
+- **风险**：极低（移动字面量，行为逐字节不变）。**但"逐字节不变"是需要被证明的主张，不是免检理由**——上面 ②③ 就是它的证明。
+- **做完这一步的里程碑**：`state-defaults.ts` 应当**只剩类型出边**（§3.7 #12–#14、#16），零值依赖。这是个可验证的中间态，值得单独确认。
 
 ### S2 — models 逻辑回 models 域
 
-- **做什么**：§3.5 ③-a 的 8 个符号 + `rawModels` 模块变量迁往 `src/lib/models/`（建议 `models/cache.ts`）；4 个域外消费者改 import。`state.ts` 对 `normalizeForMatching` 的 import 随之删除。
+- **做什么**：§3.5 ③-a 的 8 个符号 + `rawModels` 模块变量迁往 `src/lib/models/`（建议 `models/cache.ts`）；**105 个直接 import 文件全部改指新家**（4 production + 101 tests——**不是 4 个**，见 §3.5 的口径表）。`state.ts` 对 `normalizeForMatching` 的 import 随之删除。
 - **保留在 state 的**：`models` / `modelIndex` / `modelIds` / `disabledModels` **字段本身**（它们是状态），只是操作它们的逻辑搬走——通过既有的 `updateState` 写入口。
-- **验收 oracle**：① `rg -n 'normalizeForMatching' src/lib/state.ts` 归零；② `/api/models` 与 `/api/status` 端点响应逐字节不变（起非 4141 端口测试服务器对比，或用既有 http 测试作冻结基线）；③ 全后端绿。
-- **证伪方式**：`setModels` 的调用顺序（写缓存→过滤→重建索引）是有序副作用，**搬迁后必须保序**；用一个"设置 models 后立刻读 modelIndex"的正样本测试确认索引真的被重建了（不是恰好上一次的残留）。
+- **⚠️ 两个特殊消费者，别漏**：`tests/helpers/isolated-fixture.ts` 的 `RESETTERS` 表从 `~/lib/state` 取 `resetRawModelsForTests`；`tests/infra/resetters-complete.unit.test.ts` 是个**完备性守卫**，它按名字枚举 `src/` 与 `packages/*/src/` 下所有 `*ForTest(s|ing)` 导出并要求每个都注册或豁免——符号换文件后 import 路径不同步，它会以一种不直观的方式红。
+- **⚠️ 批量改测试 import 是【已批准】的，不是权宜之计**：项目 CLAUDE.md 的「无向后兼容负担」明确允许强制迁移旧→新。别因为要动一百个文件就怀疑路线走错了。
+- **⚠️ 唯一的"零改动"逃生口在本步【不可用】，而且原因不是纪律而是拓扑**：在 `state.ts` 里加 `export { setModels } from "~/lib/models/cache"` 看似能让 101 个测试免改——但 `models/cache.ts` **必须** import state（字段留在 state），于是 `state.ts → models/cache.ts → state.ts` 立刻是个**两节点环**，正是本任务要消灭的东西。S4 用「反转成注册表」换来了大批测试零改动，**S2 没有对应机制**——这是两步的实质差别，别把 S4 的经验套过来。
+- **验收 oracle**：① `rg -n 'normalizeForMatching' src/lib/state.ts` 归零；② **全仓（含 tests）不得再从 `~/lib/state` import 这 8 个符号**——用 AST 检测器，不用 `rg`（别名 import、多行 import、`import type` 都能骗过正则）；③ **`computeCircularSnapshot()` 实测环数不回升**——这一条专门用来咬上面那个 re-export 逃生口，前两条 oracle 对它**全部会绿**；④ `/api/models` 与 `/api/status` 端点响应逐字节不变（**先把改动前的响应存成 baseline artifact**，起非 4141 端口测试服务器采样；事后再采一次没有对照物）；⑤ 全后端绿。
+- **证伪方式**：① oracle ② 的检测器**先在合成正样本上证明它会命中**（写一行 `import { setModels as sm } from "~/lib/state"` 确认变红）——否则"零命中"只证明了你的正则不认识这种写法；② `setModels` 的调用顺序（写缓存→过滤→重建索引）是有序副作用，**搬迁后必须保序**，用一个"设置 models 后立刻读 modelIndex"的正样本测试确认索引真的被重建了（不是恰好上一次的残留）。
 
 ### S3 — 4 个 `resolve*` 回各自域
 
-- **做什么**：§3.5 ③-b 的四个纯函数迁往它们的消费域（buffered-retry / max-tokens continuation 相关模块）；8 个域外消费者改 import。
-- **验收 oracle**：① `state.ts` 行数下降且不再出现 override 合并逻辑；② 既有 buffered-retry / max-tokens 测试全绿（它们是行为冻结基线）。
-- **证伪方式**：这四个函数读 state 字段——搬走后它们要么继续读 state（合法，state 是叶子），要么改成接收参数。**如果选后者，必须确认所有调用点传的是同一份 live 值**，否则会静默读到快照。
+- **做什么**：§3.5 ③-b 的四个纯函数迁往 **`src/lib/config/model-overrides.ts`（新建）**；10 个直接 import 文件改指新家（7 production + 3 tests，清单见 §3.5）。
+- **⚠️ 选址是有硬约束的，别按"迁往消费域"字面理解**：这四个函数的消费者主体在 `src/routes/**`（未来的 server 包），但 `src/lib/config/config.ts`（core）**也**消费 `resolveBufferedCaps`。**落在 `src/routes/` 内会造出一条 `core → server` 脏边**，而 spec §7.2 阶段 1 正在**专门消除**仅存的这类边。**硬约束：目标必须在 `src/lib/` 内。**
+- **⚠️ 两个 max-tokens 函数的消费域是空的**：`resolveMaxTokensContinuation` / `resolveEffectiveMaxTokensContinuation` 在 src 侧**只有 `state.ts` 自己**用（域外只有一个测试文件）。「迁往消费域」这句话对它们没有可执行语义——本次只需把它们从 state 移出到 core 内同一个新文件，最终去向由未来的 max-tokens continuation P1 决定。
+- **⚠️ 搬完必须同步 5 处陈旧注释**：`src/lib/config/schema.ts:213,789,1387` 与 `config.ts:309,845` 写着「见 `resolveBufferedCaps` **in state.ts**」。这不是可选的整洁工作——`docs/todo/deferred-backlog.md` 里躺着一条**完全同型**的欠账（陈旧交叉引用指向已迁移的符号），说明这个坑在本项目**已经复发过**。
+- **验收 oracle**：① 全仓（含 tests）不再从 `~/lib/state` import 这 4 个符号（同 S2 的 AST 检测器 + 正样本自证）；② **`rg 'from "~/routes"' src/lib` 仍归零**（直接复用 spec §7.2 阶段 1 的 invariant——这是唯一能咬住"落在 routes 侧"的判据）；③ 既有 buffered-retry / max-tokens 测试全绿（它们是行为冻结基线）。
+- **不作数的 oracle**：「`state.ts` 行数下降」「不再出现 override 合并逻辑」——那是实现形状不是行为，删错东西也能让它成立。
+- **证伪方式**：这四个函数读 state 字段——搬走后它们要么继续读 state（合法，state 是叶子），要么改成接收参数。**如果选后者，必须确认所有调用点传的是同一份 live 值**，否则会静默读到快照：写一个"改 state 后立刻再调一次，结果必须跟着变"的正样本测试。
 
 ### S4 — 测试 shim 反转成通用 snapshot 参与者注册表
 
-- **做什么**：在 state 里加一个**零领域知识**的参与者注册表（`registerSnapshotParticipant({ snapshot, restore })`），token 包从 core 侧自行注册；`state.ts` 删掉对 `~/lib/token/store` 的 import；`setStateForTests` 的宽签名（接收 4 个凭据键）改为转发给已注册参与者。
-- **为什么这样而不是把三个函数搬去 `tests/helpers/`**：`setStateForTests` 被 **165 个文件**使用；反转方案让这 165 个文件**一行都不用改**。
-- **验收 oracle**：① `rg -n 'token/store' src/lib/state.ts` 归零；② 全后端绿且**不改任何测试文件**（改动量本身就是 oracle——若你发现要改测试，说明反转没做对）；③ 正向隔离测试：测试 A 写 4 个凭据键、测试 B 断言已复位。
-- **证伪方式**：`"key" in patch` 门控要保留（区分"显式 undefined→清空"与"缺席→不动"）——token peel 记忆里明确写过这个坑。
+- **做什么**：在 state 里加一个**零领域知识**的参与者注册表（`registerSnapshotParticipant({ snapshot, restore })`），token 包从 core 侧自行注册；`state.ts` 删掉对 `~/lib/token/store` 的 import **以及对 `CopilotTokenInfo` / `TokenInfo` / `TokenStoreSnapshot` 三个类型的依赖**（见 §3.6——签名里还写着 token 类型的话，边根本没断，注册表就白做了）；`setStateForTests` 的宽签名（接收 4 个凭据键）改为转发给已注册参与者。
+- **为什么这样而不是把三个函数搬去 `tests/helpers/`**：`setStateForTests` 的**调用点**遍布 164 个测试文件；反转方案让这些**调用点**一行都不用改。
+- **⚠️ 红线的准确形状（我第一版写错了）**：红线是「**164 个 `setStateForTests` 调用点零改动**」，**不是**「不改任何测试文件」。后者是个**确定会假绿的 oracle**：注册必须有一个明确的接线点，而测试进程根本不走 production composition root——现有的测试地板是 `bunfig.toml` 的三个 preload（`sandbox-paths` → `install-token-deps` → `install-telemetry-deps`），它们只装 ambient ports、**不注册任何 snapshot participant**。所以 S4 **必然要改** preload / fixture / `tests/token/credential-store-isolation.it.test.ts` 这类集中式接线文件。把"零 churn"定得过宽，只会逼着实现者选一个"没注册就静默忽略 token 键"的形状——那样现有测试照旧全绿，而凭据隔离其实已经没了。
+- **必须定义并各自有测试的注册表语义**（少一条就是留给下一轮的坑）：重复注册、**缺失 participant 时 fail-fast 还是忽略**、participant 抛错、snapshot/restore 的顺序、snapshot 的类型身份、`"key" in patch` 的显式 undefined 门控（区分"显式 undefined→清空"与"缺席→不动"，token peel 记忆里写过）。
+- **验收 oracle**：① **`rg -n '~/lib/token' src/lib/state.ts` 归零**——注意是**整个 token 包**，不是 `token/store`。我第一版写的 `rg 'token/store'` 是个假绿 oracle：state 有**两条**指向 token 的边（`token/store` 的值 + `token/types` 的 `CopilotTokenInfo`/`TokenInfo`），只 grep 前者会在后者仍在的情况下变绿，让人带着"state 与 token 已解耦"的错误结论一路推进到 S6。**这是"换判据形状"的一个小型正例**——把精确子路径换成覆盖整个来源的形状。② **164 个 `setStateForTests` 调用点的 diff 为空**（`git diff --stat -- tests/ | rg -v 'helpers/|credential-store-isolation'` 应为空）；③ 正向隔离测试：测试 A 写 4 个凭据键、测试 B 断言已复位；④ 生产侧与测试侧**各有一个注册点**，且各自有一条集成测试证明它接上了。
+- **证伪方式（这步的核心）**：**两个 mutation 都必须让对应的 oracle 变红**——删掉 production 的注册、删掉 test-floor 的注册。只测注册表这个 primitive 本身（"注册了就能取到"）是不够的：那种测试在两处接线全断的情况下依然全绿。
 
 ### S5 — 配置词汇归属反转
 
-- **做什么**：§3.6 的 5 个配置词汇类型（`AssistantBlockLayoutStrategy` / `ThinkingBlockSanitizeMode` / `RepairItem` / `ModelTranslation` / `AdaptiveRateLimiterConfig`）迁入 state（或 foundation 内 state 旁），实现模块反向 import。
-- **验收 oracle**：`state.ts` 的 `import type` 只剩下 §5 分叉决定保留的那些；`computeCircularSnapshot()` 实测环数继续下降。
+- **做什么**：**驱动清单是 §3.7，不是一个手写的符号列表**——§3.7 里所有标着「S5」的边（#1–#4、#9、#11 的类型侧、#12–#14），逐条把词汇的归属反转：实现模块从 state import 类型，而不是 state 从实现模块 import。
+- **⚠️ 别用手写清单**：我第一版在这里写死了 5 个类型名，实测漏了 4 个（`SeparatorCarrier` 与三个 token 类型）——**人工回忆的清单在这类任务里必漏**。以 §3.7 的机器枚举为准，做完再跑一次枚举确认差集为空。
+- **⚠️ 同一词汇有两条路径**：`AssistantBlockLayoutStrategy` / `SeparatorCarrier` 在 `state.ts` 来自 `assistant-block-layout`、在 `state-defaults.ts` 来自 `block-layout-contract`（前者 re-export 后者）。**反转后要指向同一个 owner**，别留两条。
+- **⚠️ `./adaptive-rate-limiter` 是跨界边**（§3.7 #9）：相对路径的外观容易让人当成"自己人"跳过，但 S6 搬走之后它就跨包了，且该模块本身依赖 `consola` / `~/lib/error` / `./observability`，绝非叶子。
+- **验收 oracle**：① 重跑 §3.7 的枚举命令，`state.ts` / `state-defaults.ts` 的出边**只剩下 §5 分叉决定保留的那些 + 同单元的相互引用**；② `computeCircularSnapshot()` 实测环数继续下降。
 - **证伪方式**：`RepairItem` 是 `(typeof REPAIR_ITEMS)[number]`——**它依赖那个 const 数组**。搬类型就得连数组一起搬，或改成显式字面量联合 + 一条编译期可赋值性断言防漂移（telemetry T4 对 `TelemetryUsage` 用过这个手法）。
 
 ### S6 — `git mv` state + state-defaults → foundation
 
-- **做什么**：物理搬迁 + tsconfig path + 边界守卫（复用 `tests/architecture/package-boundaries.unit.test.ts` 的 allowlist 检测器形态，但本次 allowlist 只有 `node:` 与相对路径——"只依赖内置"要变成**机器强制**）。
-- **验收 oracle**：① 边界守卫带正样本对照（故意加一条 `~/lib/x` import 必须变红）；② `computeCircularSnapshot()` 实测 state/state-defaults 不在 `members` 里；③ `bun run build:backend` + bin `--help` + 端点表面不变。
-- **证伪方式**：守卫"绿"不自证——**先做变异实验证明它会咬**（六轮评审的核心教训，见 §6 第 3 条）。
+> **入口判据**：动工前重跑 §3.7 的枚举，两个文件的出边必须**只剩 `node:` 与相对路径**。差集非空就别开始——S6 不是"搬过去再看守卫怎么说"，那是在用守卫做本该 S1–S5 做完的事。
+
+- **做什么**：物理搬迁 + tsconfig path + 边界守卫。
+- **⚠️ 守卫要分两层，别混成一个**（我第一版把这句写错了，说"复用 foundation 的 allowlist 检测器"——**foundation 的检测器根本不是 allowlist**）：
+  - **(a) foundation 包级**：沿用现有的 `foundationHasForbiddenImport`（`package-boundaries.unit.test.ts`），它是个 **denylist**（拒 `@hsupu/ghc-proxy-{core,server,cli}` + 拒任何 `~/`），**放行任意裸 npm 包**。**不要动它**——foundation 现存文件确实在用裸 npm 包（`repetition-detector.ts` 与 `process-identity.ts` 的 `consola`、`diff/block-align.ts` 的 `diff`），改成严格 allowlist 会打红 3 个与本任务无关的既有文件，逼你去做一次没人批准的重构。
+  - **(b) `state.ts` / `state-defaults.ts` 文件级**：**新加**一条更严的 allowlist——只许 `node:` 与相对路径。**这才是"只依赖语言/系统内置"的机器强制。** 形态参考**telemetry 的检测器**（同文件内，注释里明确对比过「telemetry 用 allowlist 而非 token/foundation 的 denylist」），不是 foundation 的。
+- **验收 oracle**：① 边界守卫带**两个**正样本（见下）；② **package-wide 无环证明**（见下）；③ `bun run build:backend` + bin `--help` + 端点表面不变。
+- **⚠️ 变异实验必须有鉴别力**：只用 `~/lib/x` 做正样本**证明不了任何东西**——旧的 denylist 本来就咬 `~/`，新旧判据在这个样本上没有差别，你会得到一个"变红了"的假信号。**至少两个正样本**：① `~/lib/x`（新旧都咬）；② **一个裸 npm 包**（如 `import x from "lodash"`）——**只有新判据咬**。只有 ② 变红才证明新判据真的更严。
+- **⚠️ `computeCircularSnapshot()` 在本步会天然失明**：它的 madge 根是 `path.join(REPO_ROOT, "src")`（实测 `tests/architecture/circular-deps-snapshot.ts`），**不扫描 `packages/`**。state 搬出 `src/` 之后，"state 不在 `members` 里"是**路径消失**的必然结果，不是无环的证明——`packages/foundation/src/state.ts ↔ state-defaults.ts` 就算成环它也照样报绿。**必须**扩扫描根到各 workspace 包，或另加一条 `madge packages/foundation/src --circular`；并**做正控**：临时在 foundation 内造一个相对环，确认新 oracle 变红后还原。
+- **证伪方式**：守卫"绿"不自证——上面两条 ⚠️ 就是它的证明方式（六轮评审的核心教训，见 §6 第 3 条）。
+
+### S7 — doc-sync（**交付的一部分，不是可选项**）
+
+- **做什么**：把 `docs/` 里所有仍按旧前提描述 state 的地方改到与新事实一致：
+  - `docs/spec/2026-07-22-monorepo-workspace-split.md` §2.1（「day-1 走不通」）/ §3.1（core 一行含散装 `lib/*.ts`）/ §5（reader seam 方案）/ §7.2 阶段 0d；
+  - `docs/todo/deferred-backlog.md` 的解环排序清单「state 第一」条；
+  - `docs/DESIGN.md`「活的架构现状」表。
+- **验收 oracle**：`rg -n 'state' docs/ | rg -i '留 core|走不通|reader seam'` 的每条命中都已处理或已显式标注为历史前提。
+- **证伪方式**：**先用正样本证明检索触达了目标**（拿一条你知道存在的旧说法验证 grep 能命中），否则"零命中"只说明你的检索式不对。
 
 ## 5. 仍待裁决的分叉（**需用户先定，别自己拍**）
 
@@ -156,20 +290,44 @@
    - (b) state 的模型缓存改用结构型 + 编译期可赋值性 oracle（telemetry T4 的做法）。
    我倾向 (a)——它们是真·共享词汇；但这会让 foundation 承载 GHC API 形状，需用户认可。
 2. **S2 之后 `models` 字段是否也该跟着走**。本次范围是"逻辑回域、字段留 state"，但如果 models 域最终也要抽包，字段迟早要动。**本次不动**，只是标记出来。
+3. **`~/lib/token/types` 怎么办（§3.7 #6）——这是最硬的一条，因为它是包分层反转不是品味问题**。`packages/token/package.json` 已声明依赖 foundation；state 进 foundation 后若还 import token 类型，就是 `foundation → token → foundation` 的包级环，且 `import type` **不豁免**守卫。三条候选：
+   - (a) `TokenInfo` / `CopilotTokenInfo` / `TokenStoreSnapshot` 一并下沉 foundation，token 包改为从 foundation re-export；
+   - (b) **S4 的参与者注册表把 `setStateForTests` 的签名做成领域无关的泛型**，使 state 侧根本不需要这几个类型名；
+   - (c) 保留这条边、放弃「foundation 零 `~/`」的守卫强度。
+   **我倾向 (b)**——它与 S4「零领域知识」的立意最自洽，且不需要 foundation 承载别的域的形状。**(c) 不推荐**：等于自废 S6 的核心交付。
+4. **spec §7.2 阶段 0d 的「剩余范围 = models 域」与 S2 是什么关系**（详见 §2.5）。两者对象相同、机制不同：0d 迁的是 `import { state }` 的**消费端**到 reader seam，S2 搬的是 state 里的**逻辑**出去。**是 S2 吸收 0d、还是两者都要做、还是 0d 作废**——需用户拍。不定这个，很可能有人把两套都做一遍，或者做完 S2 才发现 reader seam 白建。
 
 ## 6. 我犯过的错（**比结论更有用，别重犯**）
 
-1. **拿基线环列表推算削环量，高估了 8 条**。我先用 `circular-deps-baseline.json` 的环列表模拟"切掉某条边"，算出 70→21；实际跑 madge 是 70→29（本次重测 30）。原因：基线是**规范化后的环列表**，在这个表示上切一条边会把本可经其它路径成立的环也算没了。**教训：SCC 数字只认 `computeCircularSnapshot()` 实测。** 我在给用户的第一版结论里就报了推算值，事后自己纠正。
-2. **过度设计：提议单独建 `config-vocabulary` 模块**。用户一句"state 本身就可以是词汇的家"点破——**一旦 state 是真叶子，谁依赖它都不成环**，独立词汇模块是白加一层。教训：先想清楚"叶子无出边"这个性质能覆盖多少，再决定要不要造新抽象。
-3. **守卫"绿"不自证——这是刚过去那六轮评审的核心教训**。telemetry peel 的合并态审跑了六轮，每轮异模型 reviewer 都用**合法且能编译**的写法绕过我刚加固的守卫（别名导出、`export *`、注释夹在 token 之间、`catch` 分支、没人调的 helper、可选链……）。两次真正的转折点都不是"更强的守卫"，而是**换判据形状**（blocklist→allowlist）和**换不变量位置**（把顺序契约搬进 runtime 自己）。本次 S6 的边界守卫务必带变异实验。详见记忆 `methodology-relocate-invariant-when-guard-cannot-keep-up`。
+> 每条都标了**本任务的复发点**——教训不绑到具体步骤上，读的时候会点头、做的时候照样踩。
+
+1. **拿基线环列表推算削环量，高估了 8 条**。我先用 `circular-deps-baseline.json` 的环列表模拟"切掉某条边"，算出 70→21；实际跑 madge 是 70→29（本次重测 30）。原因：基线是**规范化后的环列表**，在这个表示上切一条边会把本可经其它路径成立的环也算没了。**教训：SCC 数字只认 `computeCircularSnapshot()` 实测。**
+   → **复发点：S1 / S2③ / S5② / S6** 四处都要量环，而 `circular-deps-baseline.json` 就躺在仓库里、比跑 madge 省事得多，诱因是结构性的。
+
+2. **过度设计：提议单独建 `config-vocabulary` 模块**。理由已写进 §2 的 ❌ 条目（叶子无出边，state 自己就是词汇的家）。→ **不会复发**（已被范围禁令硬编码），列在这里只是留个来由。
+
+3. **守卫"绿"不自证——这是刚过去那六轮评审的核心教训**。telemetry peel 的合并态审跑了六轮，每轮异模型 reviewer 都用**合法且能编译**的写法绕过我刚加固的守卫（别名导出、`export *`、注释夹在 token 之间、`catch` 分支、没人调的 helper、可选链……）。两次真正的转折点都不是"更强的守卫"，而是**换判据形状**（blocklist→allowlist）和**换不变量位置**（把顺序契约搬进 runtime 自己）。详见记忆 `methodology-relocate-invariant-when-guard-cannot-keep-up`。
+   → **复发点：S6 的边界守卫，且陷阱已经摆好了**——现有 foundation denylist 本来就咬 `~/`，你最可能选的正样本恰好落在新旧判据的交集里，**变异实验会假绿**。S6 那条「至少两个正样本、其中一个是裸 npm 包」就是为此写的。
+   → **第二个复发点：S4 的 oracle**。我自己在第一版就犯了这个错——`rg 'token/store'` 是个精确子路径判据，对 `token/types` 天然盲。**换成覆盖整个来源的形状**（`rg '~/lib/token'`）才咬得住。
+
 4. **写交接前没先看 `git log`——差点用陈旧事实**。本文成稿前 HEAD 已从我实测时前进 20 个提交，其中 peer 大改了 `recover-refusal.ts`（还顺手建了 `refusal-policy.ts` 这个正是我需要的零依赖叶子）。**我重测后才发现 S1 的工作量已被 peer 砍掉三分之一**。教训：交接一旦陈旧，危害大于没有。
+   → **复发点：动工第一件事**。而且**重跑范围不止 SCC 数字**——按顺序跑完这三样再动手：① §3.1 的环数；② **§3.7 的出边枚举**（差集非空就先补表）；③ §3.5 的消费者计数。**行号一律以符号名为准**（`rg -n 'export function setModels' src/lib/state.ts`），本仓库并发提交频繁、行号必然漂移，§3.3 表里 `state-defaults` 那行的 `:2025` 在成稿当天就已经漂到 `:2035`。
+
 5. **注释写错会让照着注释写的代码看起来是对的**。同一轮我在一个守卫的文档里写「try/catch/finally 都不 gate 正常路径」——对 `catch` 是错的，于是"把生产调用从 try 移进 catch"编译通过、正常路径永不执行、守卫全绿。自洽且完全错。
+   → **复发点一：S3 之后**，`config/schema.ts:213,789,1387` 与 `config.ts:309,845` 那 5 处「见 `resolveBufferedCaps` in state.ts」会全部变成谎言。`docs/todo/deferred-backlog.md` 里躺着一条**完全同型**的欠账，证明这个坑在本项目已经复发过一次。
+   → **复发点二：S6 守卫自身的判据注释**。一句「本守卫强制只依赖内置」配上一个实际只咬 `~/` 的 denylist，就是原坑的完整复刻。
+
+6. **把「削环视角」的审计结论当成了「叶子化视角」的前提**。§3.3 / §3.6 回答的是「state 为什么在 SCC 里」，我直接拿它当成了 S6 的入口判据——但 SCC 只关心**成环的**边，叶子化关心**所有**出边。差集是 5 条，其中一条（`~/lib/token/types`）牵动包分层反转。**照第一版的六步走完，S6 会在投入 5 个提交之后必红**，而那时最省事的动作是把守卫改弱——正好命中第 3 条自己写的教训。
+   → **这就是 §3.7 存在的原因**。**教训：问题换了，答案就得重新算一遍，别复用形状相似的旧结论。**
+
+7. **用 `^\s*import` 枚举出边，静默漏掉全部多行 import**。本仓库的排版把 `from` 放在多行 import 的收尾行。**教训：枚举类判据要从"你以为的语法形态"换成"目标一定会出现的锚点"**（这里是 `from "`），这又是第 3 条同一个道理的实例。
 
 ## 7. 产物清单
 
 | 产物 | 路径 | 已提交? | 它**没有**证明什么 |
 |---|---|---|---|
-| 本交接 + kick-off | `docs/plan/2026-07-28-state-to-foundation/{HANDOVER,KICKOFF}.md` | 是（`cc2fb141`） | — |
+| 本交接 + kick-off | `docs/plan/2026-07-28-state-to-foundation/{HANDOVER,KICKOFF}.md` | 是 | — |
+| 两份异模型评审报告 | 同目录 `HANDOVER-review-{gpt,claude}.md` | 是 | GPT 那份独立复现了 PoC 数字并证伪了 4 个 oracle；Claude 那份以接手方视角找出 2 个 BLOCKER。**两份都没有覆盖对方的领域**——GPT 没做接手方走查，Claude 明确声明不复核数值。**也都漏了 `./adaptive-rate-limiter` 这条边**（§3.7 #9），是我在整改时枚举出来的。别把「两轮评审过了」当成完备性证明 |
 | S1 削环 PoC | **无留存**——改完实测完即 `git checkout --` 还原 | 否（有意不留） | 它只证明了「挪走那两个常量后 madge 图变成 30 环/43 成员」。它**没有**证明：改完 typecheck 绿、测试绿、`recover-refusal.ts` 的 re-export 形态可用（PoC 期间恰好撞上 `export … from` 不绑定本地名的 TS2304，是当场手工绕过的），更**没有**证明 state 因此就成了叶子——S1 只削环，state 落地 foundation 要等 S6 |
 | 上一轮 telemetry peel 的执行期偏差记录 | [plan-telemetry-package.md](../monorepo-split/plan-telemetry-package.md) 头部 | 是 | 那是抽包流程的经验，本次**不抽包**，只有边界守卫与过渡纪律可复用 |
 
