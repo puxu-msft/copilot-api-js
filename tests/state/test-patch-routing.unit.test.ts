@@ -205,4 +205,26 @@ describe("snapshot / restore 参与者", () => {
       expect(restores).toBe(1)
     })
   })
+
+  test("被拒绝的替换不得损毁它没能替换掉的那个注册（抛错必须让注册表原样不动）", () => {
+    withClearedRegistry(() => {
+      const make = (name: string, claims: Array<string>): Parameters<typeof registerSnapshotParticipant>[0] => ({
+        name,
+        claims,
+        snapshot: () => null,
+        restore: () => {},
+        applyTestPatch: () => {},
+      })
+      registerSnapshotParticipant(make("same", ["sameKey"]))
+      registerSnapshotParticipant(make("other", ["otherKey"]))
+
+      // 同名替换，但新 claims 撞上了另一个参与者 —— 必须拒绝。
+      expect(() => registerSnapshotParticipant(make("same", ["otherKey"]))).toThrow(/both claim .*otherKey/)
+
+      // 而且拒绝之后旧的 "same" 还得活着。曾经的实现为了避开「与自己的旧注册冲突」先 delete 再检查，
+      // 于是一次失败的替换会把活着的注册顺手抹掉：调用方 catch 住错误、以为什么都没发生，
+      // 之后 sameKey 就成了无人认领的键。
+      expect(() => setStateForTests({ sameKey: "v" } as never)).not.toThrow()
+    })
+  })
 })

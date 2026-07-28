@@ -1094,16 +1094,19 @@ const isStateField = (key: string): boolean => key in mutableState || OPTIONAL_S
  * can call it freely.
  */
 export function registerSnapshotParticipant<S>(participant: SnapshotParticipant<S>): void {
-  // Re-registering the SAME name replaces, so drop the old entry before checking for conflicts —
-  // otherwise a participant would collide with its own previous registration.
-  snapshotParticipants.delete(participant.name)
-
   // A key claimed by two DIFFERENT participants is rejected rather than resolved by order. The
   // routing below picks the first claimant it finds, so without this the second domain to register
   // would silently never receive its keys while snapshot/restore still ran for both — a test-
   // isolation bug that shows up as one domain mysteriously not being reset. Only the token domain
   // registers today, so this can only fire for the next one; that is exactly when it is useful.
+  //
+  // The same NAME is a replacement, so it is skipped rather than deleted first: a participant must
+  // not collide with its own previous registration, and an earlier version of this did the skipping
+  // by `delete`-ing before the scan — which made a REJECTED replacement destroy the live entry it
+  // failed to replace. A throwing register must leave the registry exactly as it found it, or the
+  // caller that catches the error is left holding keys nobody claims.
   for (const existing of snapshotParticipants.values()) {
+    if (existing.name === participant.name) continue
     const overlap = participant.claims.filter((claim) => existing.claims.includes(claim))
     if (overlap.length > 0) {
       throw new Error(
