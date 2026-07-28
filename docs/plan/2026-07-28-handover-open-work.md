@@ -111,7 +111,7 @@
   - cons：**必须正面处理那条 plan 评审发现的 blocker**——`anchorsOpened===0` 的结构性短路会让 continuation 腿跳过 remap、复用主腿的 wire index 0，即索引冲突。最小接线同样可能踩它。
 - **D-ii 等完整的 allocator 方案 A**（别人在推进）
   - pros：DESIGN 写的就是「完整覆盖等待方案 A」，一次做对。
-  - cons：那条 plan 的跨模型评审曾判「1 blocker + 11 major」——**但那是 45 个提交之前的结论，已经可能过期**，引用前先自己复核现状；期间 W3 继续在 300s 处死。
+  - cons：那条 plan 的跨模型评审曾判「1 blocker + 11 major」——**但那只描述最初那版 plan，不代表当前实施态**：2026-07-28 复核，`alloc-p1p2` 分支上 **P1/P2 已实现**（allocator 参数化、generation state、atomic allocation、leg tokens、delivery serialized ownership + 测试），只是尚未合并、还有未追踪的新测试、且落后 master 63 提交。**引用旧评审前先看分支现状**；期间 W3 继续在 300s 处死。
 
 **我的建议：A，然后按结果走 D-i。** 先用实验确定 `escalationScaffold` 在真 CLI 下到底行不行——它可能已经把 W3 关了，那后面全不必做。若没关上，**优先 D-i 而不是 B/C**：B 改块边界时序、C 会重复计费污染成本显示，都是带语义副作用的载体，而 D-i 用的是本来就为此设计的 primitive。实验结果同时也是 allocator 那条线需要的实测输入。
 
@@ -188,19 +188,34 @@
 
 ---
 
-## 3. 别人的地盘（别抢）
+## 3. 别人的地盘（别抢）—— 以及「活跃」这个词的陷阱
 
-本仓库常有并发会话。动手前先 `git log --oneline master ..` 并查 `git worktree list`。当前活跃：
+本仓库常有并发会话。**先量再判**，别看 worktree 名字就下结论：
 
-| worktree / 分支 | 在做什么 | 与你的关系 |
+```bash
+git worktree list
+for w in .worktrees/*; do                       # 逐个量落后/领先与脏状态
+  echo "$w $(git -C $w branch --show-current) $(git -C $w rev-list --left-right --count master...HEAD)"
+done
+git log --oneline master..HEAD                  # 注意是 master..HEAD，不是 `master ..`
+git merge-base --is-ancestor <tip> master && echo "已被 master 吸收"
+```
+
+**2026-07-28 实测快照（会漂，按上面的命令自己重量）**，格式 `落后/领先`：
+
+| worktree / 分支 | 落后/领先 | 判断 |
 |---|---|---|
-| `.worktrees/upstream-silence-recovery` | **B2**（post-commit pre-content 内部重试），P0 + Task 0.2–0.5 完成、未接线，下一步 Task 0.6 | **D2 会牵动它**（B2 plan 依赖三 keepalive 模式的 wire contract）；B1 已由本轮 master 落地并被它吸收 |
-| `.worktrees/anchor-alloc-plan` / `anchor-flaky` | generation-scoped wire-index allocator（**D3 选项 D** 的那条线） | 跨模型评审判「1 blocker + 11 major」，短期不落地 |
-| `.worktrees/refusal-diagnostics`、`history-cas-stage`、`repetition-truncation`、`shadcn-redesign`、`feat-activity-detail-outline` | 各自独立 | 无重叠 |
+| `upstream-silence-recovery` | 63 / 23 | **真活跃**：B2。**下一步不是 Task 0.6**——plan 自述 Task 0.1–0.7 已完成、crash guard 已做，真实下一阶段是 **plan-3 的 P4/P5 生产接线**（外加 fresh recovery 的 operation-scope join）。**零生产接线**，且落后 master 63，接手前先重读底座 |
+| `alloc-p1p2`（`feat/anchor-allocator-p1p2`）、`anchor-flaky` | 各 63 / 16 | **真活跃**：allocator。**P1/P2 已实现**（参数化、generation state、atomic allocation、leg tokens、delivery serialized ownership + 测试），alloc-p1p2 还有未追踪新测试；**「1 blocker + 11 major」只描述最初那版 plan review，不代表当前实施态**——引用前先复核 |
+| `refusal-diagnostics` | 5 / **0** | **非活跃**：tip 已被 master 吸收，可清理 |
+| `repetition-truncation` | 306 / 1 | 陈旧 |
+| `history-cas-stage` | 999 / 20 | 陈旧（自述已 landed） |
+| `shadcn-redesign` | 1615 / 10 | 陈旧，另有 13 个未追踪报告 |
+| `feat-activity-detail-outline` | 2927 / 52 | 极陈旧，有未追踪 prompt |
+
+> ⚠ **别照抄我最初写的「各自独立、无重叠」——那句是错的。** 落后上千提交的分支不能凭名字断言不重叠，尤其 UI 与 history 那三条会和当前 History/UI 改动相交。**判重叠要 `git merge-base` + 改动路径求交，不是看 worktree 列表。**
 
 `docs/memory/` 下常有别的会话的未提交改动。**改 `MEMORY.md` 用 `git hash-object` + `git update-index` 只暂存自己那一行**（本轮用过三次），别整文件 `git add`。
-
----
 
 ## 4. 本轮踩过、值得你避开的坑
 
