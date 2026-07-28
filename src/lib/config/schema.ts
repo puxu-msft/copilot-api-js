@@ -445,12 +445,18 @@ export const AnthropicConfigSchema = z
      * ACCEPT axis: EXTRA literals to also recognise as one of our synthetic separators, on top of
      * the built-in prefix family and the spellings older builds emitted.
      *
-     * Open list, and safe to be open: widening recognition is monotone — it can never make a
-     * payload illegal, it only classifies more blocks as ours (so strip-all cleans them up as
-     * orphans instead of leaking them upstream). This is the axis that makes carrier migration and
-     * third-party/historical values work: pin whatever a previous deployment emitted and this build
-     * will still recognise it. Compared trimmed and in full — not as a substring — so a normal
-     * message that merely mentions the text is never mistaken for a separator.
+     * Open list, and monotone *on the wire*: widening recognition can never make a payload
+     * illegal, it only classifies more blocks as ours. This is the axis that makes carrier
+     * migration and third-party/historical values work: pin whatever a previous deployment
+     * emitted and this build will still recognise it.
+     *
+     * Monotone is not the same as harmless. Recognition feeds a DESTRUCTIVE consumer —
+     * `stripAllThinking` treats a recognised block as an orphan separator and removes it — so a
+     * value that collides with real assistant text authorises deleting that text on the L2/L3
+     * fallback path. Pin only unambiguous, collision-resistant literals. Values pinned here are
+     * compared trimmed and in full — never as a substring — so a normal message that merely
+     * mentions the text is safe; the built-in carriers, by contrast, match by namespaced prefix
+     * so that an old build still recognises a future carrier.
      */
     separator_accept_extra: nullableNonemptyStringArray(),
     /**
