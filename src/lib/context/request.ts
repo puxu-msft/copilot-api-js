@@ -1341,6 +1341,8 @@ export function createRequestContext(opts: {
     },
 
     setGenerationDispatchTimingEpoch(dispatch, kind, epoch, mode) {
+      // Once sealed, every late timing observation is discarded, including one with an unknown handle;
+      // the semantic "unknown generation dispatch" error remains loud only while the record is writable.
       if (modelOperationRecorder.sealed) return
       const generationAttempt = generationAttemptByHandle.get(dispatch)
       if (!generationAttempt) throw new Error(`[request-context] unknown generation dispatch ${dispatch}`)
@@ -1542,6 +1544,7 @@ export function createRequestContext(opts: {
     },
 
     setAttemptTimingEpoch(kind, epoch, mode) {
+      if (modelOperationRecorder.sealed) return
       const attempt = ctx.currentAttempt
       if (!attempt) return
       if (mode === "once" && attempt[kind] !== undefined) return
