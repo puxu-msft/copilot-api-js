@@ -73,7 +73,7 @@
 - [复用共享原语选完整版非小版](methodology-full-primitive-not-partial-else-silent-field-drop.md) — 否则静默丢字段+单测假绿；映射测须构造每个非平凡字段
 - [「别继承退化」只在目标真有对应值时成立](methodology-degradation-advice-scoped-to-target-has-equivalent.md) — 目标无对应值→诚实退化+marker
 - [守卫追不上就换不变量的位置/判据形状](methodology-relocate-invariant-when-guard-cannot-keep-up.md) — 连续被合法语法绕过=形状错
-- [新写的 oracle「一定咬得住」只是推理不是实验](methodology-new-oracle-discriminating-power-is-experimental.md) — 每加判据必答「什么变异能让它红」；计数→集合差·值相等→身份断言·按路径排除→按对象断言
+- [新写的 oracle「一定咬得住」只是推理不是实验](methodology-new-oracle-discriminating-power-is-experimental.md) — 失效主形态是「相邻」非「离谱」；两问：什么变异让它红·这个绿会不会由「通过但不是我要的」情况产生
 - [mutation control 自身要自证改到了代码](methodology-verify-the-mutation-actually-applied.md) — 「没变红」有两解：测试没咬住 vs mutation 根本没生效
 - [spec 里的机制性解释必须有实验背书](methodology-mechanism-story-in-spec-must-be-experiment-backed.md) — 给现象配的合理机制别当事实写
 - [ctx 共享可变裁决会被落败 hedge candidate 污染](methodology-request-scoped-mutable-verdict-poisoned-by-hedge-candidates.md) — hedge 默认开

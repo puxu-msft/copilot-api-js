@@ -376,3 +376,9 @@ V7①的证伪条件相应写成“任一路径未被 `git ls-files --error-unma
 **结论：文件路径场景已解决，但仍不能最终放行。** V7①允许 `<路径>` 指向目录，而 `git ls-files --error-unmatch -- docs` 只要目录下有任一 tracked 文件就成功；目录里同时存在 ignored/untracked 探针文件时，`git status --untracked-files=all` 仍不报 ignored 子项，`git check-ignore docs` 也不会检查每个后代。因此一个“部分入库”的 `exp/<topic>/` 目录仍会三条全过。
 
 修法只需补一句并机械执行：**产物清单必须展开到逐文件路径，禁止拿目录 pathspec 通过 V7①**；若交接引用整个目录，先枚举目录内全部文件（含 ignored/untracked）再逐文件跑 tracked + clean + not-ignored 三项。完成后即可最终放行。
+
+## 第六轮复审
+
+复审提交：`fb8c1cfa`。
+
+**最终放行。** V7①现已把目录产物展开到实际逐文件全集，再对每个文件分别验证 tracked、clean、not-ignored，关闭了“部分入库目录”假绿；未发现同族第四处或新的 BLOCKER/MAJOR，整批 skill 改动可以合入。
