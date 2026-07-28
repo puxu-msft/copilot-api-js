@@ -105,18 +105,23 @@ function makeDriver(input: { env: RequestEnvelope; open: (wire: PreparedRequest)
   return createPipelineDriver(deps)
 }
 
-async function runLateHeaderAfterSeal(settle: (ctx: RequestContext) => void): Promise<{
+interface LateHeaderAfterSealHarness {
   ctx: RequestContext
-  requestError: unknown
-  unhandled: ReadonlyArray<unknown>
-}> {
+  headersBeforeLateOpen: Record<string, string> | undefined
+  lateOpen: ReturnType<typeof deferred<PhysicalTransportResponse>>
+  request: Promise<unknown>
+  stopUnhandledProbe(): void
+  terminalSequence: number
+  unhandled: Array<unknown>
+}
+
+async function arrangeLateHeaderAfterSeal(settle: (ctx: RequestContext) => void): Promise<LateHeaderAfterSealHarness> {
   const ctx = createRequestContext({ endpoint: "anthropic-messages" })
   ctx.setOriginalRequest({ model: "test-model", messages: [], stream: true, payload: { messages: [] } })
   ctx.finalizeModelOperationDelivery()
-  // Reproduce the orphan-owner topology from the crash report: the logical owner can seal while
-  // PhysicalTransport.open() is still pending. Current production runRequest also tracks the exchange
-  // in operationScope; suppress that newer structural join here so this regression directly locks the
-  // recordOpened/setDispatchTiming defense instead of passing only because another layer delays seal.
+  // Production's primary exchange is registered in operationScope, so its finalizer cannot seal while
+  // open() is pending. Suppress that structural join to exercise the still-reachable mock/legacy context,
+  // candidate-discard/supersede, and future P4/P5 unregistered fresh-recovery topologies directly.
   const driverCtx = new Proxy(ctx, {
     get(target, property, receiver) {
       if (property === "trackOperationBody") return () => {}
@@ -129,31 +134,46 @@ async function runLateHeaderAfterSeal(settle: (ctx: RequestContext) => void): Pr
   const unhandled: Array<unknown> = []
   const onUnhandled = (reason: unknown): void => void unhandled.push(reason)
   process.on("unhandledRejection", onUnhandled)
+
+  await waitUntil(() => ctx.modelOperationSnapshot.dispatches.length === 1, { label: "dispatch to enter deferred physical open" })
+  settle(ctx)
+  await ctx.whenModelOperationFinalized()
+  const terminalRecord = ctx.modelOperationTerminalRecord
+  if (!terminalRecord) throw new Error("expected canonical observability to be sealed before late open")
+
+  return {
+    ctx,
+    headersBeforeLateOpen: ctx.httpHeaders?.outboundResponse,
+    lateOpen,
+    request,
+    stopUnhandledProbe: () => process.off("unhandledRejection", onUnhandled),
+    terminalSequence: terminalRecord.lastSequence,
+    unhandled,
+  }
+}
+
+async function runLateHeaderAfterSeal(settle: (ctx: RequestContext) => void): Promise<{
+  ctx: RequestContext
+  requestError: unknown
+  unhandled: ReadonlyArray<unknown>
+}> {
+  const harness = await arrangeLateHeaderAfterSeal(settle)
   try {
-    await waitUntil(() => ctx.modelOperationSnapshot.dispatches.length === 1, { label: "dispatch to enter deferred physical open" })
-
-    settle(ctx)
-    await ctx.whenModelOperationFinalized()
-    const headersBeforeLateOpen = ctx.httpHeaders?.outboundResponse
-    const terminalRecord = ctx.modelOperationTerminalRecord
-    if (!terminalRecord) throw new Error("expected canonical observability to be sealed before late open")
-    const terminalSequence = terminalRecord.lastSequence
-
-    lateOpen.resolve(streamResponse("arrived-after-seal"))
+    harness.lateOpen.resolve(streamResponse("arrived-after-seal"))
     let requestError: unknown
     try {
-      await request
+      await harness.request
     } catch (error) {
       requestError = error
     }
     await new Promise((resolve) => setTimeout(resolve, 30))
 
-    expect(ctx.httpHeaders?.outboundResponse).toEqual(headersBeforeLateOpen)
-    expect(ctx.modelOperationSnapshot.lastSequence).toBe(terminalSequence)
-    expect(ctx.modelOperationSnapshot.dispatches[0]?.timing?.upstreamHeadersAt).toBeUndefined()
-    return { ctx, requestError, unhandled }
+    expect(harness.ctx.httpHeaders?.outboundResponse).toEqual(harness.headersBeforeLateOpen)
+    expect(harness.ctx.modelOperationSnapshot.lastSequence).toBe(harness.terminalSequence)
+    expect(harness.ctx.modelOperationSnapshot.dispatches[0]?.timing?.upstreamHeadersAt).toBeUndefined()
+    return { ctx: harness.ctx, requestError, unhandled: harness.unhandled }
   } finally {
-    process.off("unhandledRejection", onUnhandled)
+    harness.stopUnhandledProbe()
   }
 }
 
@@ -184,6 +204,18 @@ describe("pre-content late-open seal race", () => {
     expect(ctx.modelOperationSnapshot).toBe(terminal)
   })
 
+  test("the legacy attempt timing setter independently ignores a late observation after seal", async () => {
+    const ctx = createRequestContext({ endpoint: "anthropic-messages" })
+    ctx.beginAttempt({ strategy: "legacy" })
+    ctx.complete({ success: true, model: "test-model", usage: { input_tokens: 0, output_tokens: 0 }, content: "done" })
+    ctx.finalizeModelOperationDelivery()
+    await ctx.whenModelOperationFinalized()
+
+    ctx.setAttemptTimingEpoch?.("upstreamHeadersAt", 2, "once")
+
+    expect(ctx.attempts[0]?.upstreamHeadersAt).toBeUndefined()
+  })
+
   test("the timing recorder independently ignores late best-effort observations but still rejects semantic writes after seal", () => {
     const recorder = createModelOperationRecorder({ identity: { operationId: "late-timing", kind: "generation", createdAt: 1 } })
     const candidate = recorder.beginCandidate({ role: "primary" })
@@ -195,6 +227,27 @@ describe("pre-content late-open seal race", () => {
     expect(() => recorder.setDispatchTiming(dispatch, "upstreamHeadersAt", 2, "once")).not.toThrow()
     expect(recorder.snapshot()).toBe(terminal)
     expect(() => recorder.recordRouting({ requestedModel: "semantic-write-after-seal" })).toThrow(/terminal.*committed/i)
+  })
+
+  test("an orphaned late-open request does not emit an unhandled rejection after terminal seal", async () => {
+    const harness = await arrangeLateHeaderAfterSeal((ctx) => {
+      // Seal observability without aborting the pending transport promise first. An early cancel would
+      // produce an unrelated orphan AbortError before late open exercises the sealed observation path.
+      ctx.fail("test-model", new Error("forced terminal seal"), undefined, { attribution: { category: "timeout", code: "forced-seal" } })
+    })
+    try {
+      // Deliberately leave request without a live awaiter: attaching await/catch here would remove the
+      // orphan topology whose rejected promise is amplified by the production unhandledRejection handler.
+      harness.lateOpen.resolve(streamResponse("orphan-arrived-after-seal"))
+      await new Promise((resolve) => setTimeout(resolve, 30))
+
+      expect(harness.unhandled).toHaveLength(0)
+    } finally {
+      // The request is expected to resolve with the sealed guards present. Attach only after the probe
+      // window so test cleanup cannot accidentally make the unhandled-rejection assertion false-green.
+      await harness.request.catch(() => {})
+      harness.stopUnhandledProbe()
+    }
   })
 
   test("deadline-style failure discards a deferred header that arrives after terminal seal", async () => {
