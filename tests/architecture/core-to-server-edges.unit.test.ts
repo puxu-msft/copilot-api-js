@@ -29,6 +29,7 @@ import path from "node:path"
 import {
   //
   allModuleSpecifiers,
+  mayContainDecoded,
   parseSource,
 } from "./source-ast"
 
@@ -49,11 +50,7 @@ async function coreFilesImportingServer(): Promise<Array<{ file: string; specifi
   for await (const rel of new Glob("**/*.ts").scan({ cwd: path.join(REPO_ROOT, "src/lib"), onlyFiles: true })) {
     const file = `src/lib/${rel}`
     const text = readFileSync(path.join(REPO_ROOT, file), "utf8")
-    // Cheap pre-filter before the AST walk over ~500 files. Sound because the thing being matched is
-    // the specifier TEXT: every import form spells `~/routes` literally, so a file without that
-    // substring cannot contain one. Skipping it cost ~1.3s in isolation and blew the default 5s
-    // timeout under 16-way sharding, which turns a guard into one people learn to ignore.
-    if (!text.includes("~/routes")) continue
+    if (!mayContainDecoded(text, "~/routes")) continue
     const sourceFile = parseSource(file, text)
     for (const specifier of new Set(allModuleSpecifiers(sourceFile))) {
       if (specifier === "~/routes" || specifier.startsWith("~/routes/")) found.push({ file, specifier })
@@ -75,5 +72,14 @@ describe("core → server 边 ratchet", () => {
     const planted = parseSource("synthetic.ts", 'import {\n  //\n  a,\n} from "~/routes/responses/ws"\n')
     const specifiers = allModuleSpecifiers(planted).filter((specifier) => specifier.startsWith("~/routes"))
     expect(specifiers).toEqual(["~/routes/responses/ws"])
+  })
+
+  test("预过滤对转义拼法也放行（原始文本里没有 `~/routes`，AST 解出来却有）", () => {
+    const escaped = 'import "\\x7e/routes/responses/ws"\n'
+    expect(escaped.includes("~/routes"), "前提：这段源码的原始文本确实不含目标子串").toBe(false)
+    expect(allModuleSpecifiers(parseSource("escaped.ts", escaped)), "而 AST 解码后就是那条边").toEqual(["~/routes/responses/ws"])
+    expect(mayContainDecoded(escaped, "~/routes"), "所以预过滤必须放它进 AST，否则守卫在这条路径上是瞎的").toBe(true)
+    // 反向：普通文件仍被挡在 AST 之外，否则这条修复等于取消了预过滤。
+    expect(mayContainDecoded("import { a } from './b'\n", "~/routes")).toBe(false)
   })
 })

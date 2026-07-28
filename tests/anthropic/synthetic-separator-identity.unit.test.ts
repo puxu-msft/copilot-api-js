@@ -32,7 +32,11 @@ import {
 } from "~/lib/anthropic/sanitize/assistant-block-layout"
 import { stripAllThinking } from "~/lib/anthropic/strip-all-thinking"
 
-import { parseSource } from "../architecture/source-ast"
+import {
+  //
+  mayContainDecoded,
+  parseSource,
+} from "../architecture/source-ast"
 
 const text = (t: string): ContentBlockParam => ({ type: "text", text: t }) as ContentBlockParam
 const OWNERS = new Set([
@@ -146,10 +150,10 @@ describe("synthetic separator identity", () => {
       .filter((path) => !OWNERS.has(path))
       .filter((path) => {
         const content = readFileSync(`${root}/${path}`, "utf8")
-        // 子串预过滤挡在 AST 走查前面：标识符必然逐字出现，所以没有它的文件不可能引用载体表——
-        // 预过滤只可能少扫、不可能漏报，而 AST 仍然负责排除注释/字符串里的同名文本。全扫 ~700 个文件
-        // 的 AST 单跑就 1.3s，16 路分片下会撞爆默认 5s 超时（peer 的 382b561b 踩过同一个坑）。
-        if (!content.includes("SEPARATOR_CARRIERS")) return false
+        // 子串预过滤挡在 AST 走查前面：全扫 ~700 个文件的 AST 单跑就 1.3s，16 路分片下会撞爆默认 5s
+        // 超时（peer 的 382b561b 踩过同一个坑）。带 `\x`/`\u` 转义的文件一律放行进 AST——转义拼法
+        // 的原始文本里没有这个标识符，只按子串挡就等于对它瞎了。判据形状与理由见 `mayContainDecoded`。
+        if (!mayContainDecoded(content, "SEPARATOR_CARRIERS")) return false
         const sourceFile = parseSource(path, content)
         let found = false
         const visit = (node: ts.Node): void => {
@@ -171,5 +175,18 @@ describe("synthetic separator identity", () => {
     }
     visit(planted)
     expect(found).toBe(true)
+  })
+
+  test("预过滤对转义拼法也放行（原始文本里没有这个标识符，AST 解出来却有）", () => {
+    const escaped = "const a = SEPARATOR_CARRI\\u0045RS\n"
+    expect(escaped.includes("SEPARATOR_CARRIERS"), "前提：这段源码的原始文本确实不含该标识符").toBe(false)
+    let found = false
+    const visit = (node: ts.Node): void => {
+      if (ts.isIdentifier(node) && node.text === "SEPARATOR_CARRIERS") found = true
+      ts.forEachChild(node, visit)
+    }
+    visit(parseSource("escaped.ts", escaped))
+    expect(found, "而 AST 解码后就是它").toBe(true)
+    expect(mayContainDecoded(escaped, "SEPARATOR_CARRIERS"), "所以预过滤必须放它进 AST，否则守卫在这条路径上是瞎的").toBe(true)
   })
 })

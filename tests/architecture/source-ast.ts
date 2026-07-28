@@ -23,6 +23,25 @@ export function parseSource(filePath: string, source: string): ts.SourceFile {
 }
 
 /**
+ * Cheap pre-filter for the guards that AST-walk a whole tree: may `text` contain `needle` ONCE THE
+ * PARSER HAS DECODED IT? Files that answer no can skip the parse.
+ *
+ * The naive form of this — `text.includes(needle)` — is what two of these guards shipped with, and
+ * it is not sound: escapes decode, so `"\x7e/routes/x"` IS `~/routes/x` to the parser and
+ * `SEPARATOR_CARRIERS` IS that identifier, while neither raw text contains the needle. Falling
+ * through on any `\x`/`\u` restores soundness for the price of parsing the few files that use one —
+ * 13 of 421 under `src/` when this was written. That price matters: parsing everything costs ~1.3s
+ * in isolation and blows the default 5s timeout under 16-way sharding, and a guard that times out
+ * intermittently is one people learn to ignore.
+ *
+ * Still invisible: text never spelled as a single token (`obj["SEPARATOR_" + "CARRIERS"]`). That is
+ * a limit of the AST criterion the callers apply, not of this filter.
+ */
+export function mayContainDecoded(text: string, needle: string): boolean {
+  return text.includes(needle) || /\\[ux]/.test(text)
+}
+
+/**
  * EVERY name a module makes publicly reachable, by ANY mechanism.
  *
  * The point is to enumerate the module's public SURFACE, not to trace where each name came from.
