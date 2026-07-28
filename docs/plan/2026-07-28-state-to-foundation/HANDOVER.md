@@ -180,4 +180,4 @@
 - **`rustup` 无任何已安装 toolchain** → `bun run test:backend` 的前置 `build:history-search` **必挂**。用 `bun scripts/parallel-test.ts unit it http`（等价全后端档）。修法：`rustup default stable`。
 - **主树有并发 peer 的未提交改动**（十几个文件）。一律显式 pathspec 提交，`git add -A` 绝对禁止。
 - **typecheck 当前有 peer 在飞的报错**（`PostCommitAbortKind` / `retry-giveups`）——**不是你引入的**，别去"修"它，只确认自己的改动没新增错误。
-- 代码改动走隔离 worktree（`git worktree add .worktrees/state-foundation -b feat/state-foundation` 后**必须 `bun install`**，否则 eslint exit 127）；**本交接文档本身留在主树**。
+- 代码改动走隔离 worktree（`git worktree add .worktrees/state-foundation -b feat/state-foundation`；`.worktrees/` 在仓库内部、向上解析主树 `node_modules`，**不是依赖隔离环境**——原文的「否则 eslint exit 127」已被实测证伪，无 `node_modules` 的新树里 eslint exit 0）；**本交接文档本身留在主树**。

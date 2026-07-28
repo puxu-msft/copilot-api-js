@@ -14,5 +14,3 @@ metadata:
 **How to apply:** 别在这里找可执行细节——**全部动作、命令与判定纪律都在 skill 正文与 `handover.md` 模板里**，这条记忆只负责把你送过去。2026-07-28 双 reviewer 复审已把当时写在这里的三条摘要（产物入库、验收判据+证伪方式、写下自己犯过的错）连同更精确的动作收进 §6，摘要留在这里只会与正文各自漂移。
 
 Related：[[methodology-background-agent-result-surfacing-failure]]（agent 结论必须落产物文件）、[[methodology-probe-conclusion-scope-and-peer-invalidation]]（探针产物必须写清「没有证明什么」）。
-
-Related：[[methodology-background-agent-result-surfacing-failure]]（agent 结论必须落产物文件）、[[methodology-probe-conclusion-scope-and-peer-invalidation]]（探针产物必须写清「没有证明什么」）。

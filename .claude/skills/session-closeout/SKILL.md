@@ -44,15 +44,15 @@ description: 当 copilot-api-js 会话/阶段收尾时使用——交付、汇�
 
 ## 6. 跨会话交接 —— HANDOVER + KICKOFF
 
-触发：任务跨会话（用户要求 / 上下文将满 / 阶段收尾但任务未完）。user-rule `01-core-principles` 的 `handover-if-context-window-almost-full` 管 **when**，本节是 **how**；骨架照抄同目录模板 [handover.md](handover.md)，本节只写判定纪律。
+触发：任务跨会话（用户要求 / 上下文将满 / 阶段收尾但任务未完）。user-rule `01-core-principles` 的 `handover-if-context-window-almost-full` 管 **when**，本节是 **how**：这里写**必含什么、为什么必含、以及判定纪律**，可照抄的形状在同目录模板 [handover.md](handover.md)（与 §3 ↔ [complete-plan.md](complete-plan.md) 同一分工）。
 
 **两份文档的分工判据**（不写清必然写重，而重复的那份一定先陈旧）：**HANDOVER = 完整档案**，这轮工作的唯一事实源，按需查阅、可以长；**KICKOFF = 能整段复制成新会话第一条消息的提示词**（user-rule `40-dev-workflow`：kick-off prompt doc *for the user to copy*），只放「不先知道就会做错」的东西，其余一律指向 HANDOVER 的小节号、**绝不复述内容**。
 
-**位置**：`docs/plan/<date>-<topic>/HANDOVER.md` + `KICKOFF.md`（目录式）。本仓另有 21 份历史扁平式 `docs/plan/<date>-handover-<topic>.md`——**目录式是新约定，旧的不追溯迁移**（MEMORY.md 多条指针指向扁平式路径，迁了会全断）。**在主树直接改并即时提交**——入口文档滞留在特性分支上等于没写（与 CLAUDE.md `docs-merge-before-execute` 同源）。**代码改动才进隔离 worktree**：命令与技法以 skill `git-preference:isolating-from-a-shared-git-worktree` 为准（勿在此复制），只记本仓的两条实测——`.worktrees/` 建在仓库内部、**向上解析主树 `node_modules`，不是依赖隔离环境**；真正会咬的是新树缺 gitignored 构建产物导致的稳定假红（见 [[reference-worktree-bun-add-needs-main-tree-install-after-merge]]）。
+**位置**：`docs/plan/<date>-<topic>/HANDOVER.md` + `KICKOFF.md`（目录式）。本仓另有二十多份历史扁平式命名（`<date>-handover-<topic>.md`、`<topic>-kickoff.md`、`HANDOFF.md` 等混用）——**目录式是新约定，旧的不追溯迁移**（MEMORY.md 多条指针指向扁平式路径，迁了会全断）。**在主树直接改并即时提交**——入口文档滞留在特性分支上等于没写（与 CLAUDE.md `docs-merge-before-execute` 同源）。**代码改动才进隔离 worktree**：命令与技法以 skill `git-preference:isolating-from-a-shared-git-worktree` 为准（勿在此复制），只记本仓的两条实测——`.worktrees/` 建在仓库内部、**向上解析主树 `node_modules`，不是依赖隔离环境**；真正会咬的是新树缺 gitignored 构建产物导致的稳定假红（见 [[reference-worktree-bun-add-needs-main-tree-install-after-merge]]）。
 
 **HANDOVER 必含**（缺一条就会让接手会话重走弯路）：
 
-- **头部状态行**：`进行中 / 已被接手（谁）/ 已完成（落地 commit）/ 已失效（原因）` + **核验基线 `<sha>` 与日期** + 当前分支/worktree + 未提交与未追踪清单 + 已跑门禁及其结果。这是防陈旧的机制本身——§6 写着「交接一旦陈旧，危害大于没有」，而接手方面对 `docs/plan/` 下二十多份交接，没有状态行就判断不出哪份是活的。
+- **头部状态行**：`进行中 / 已被接手（谁）/ 已完成（落地 commit）/ 已失效（原因）` + **核验基线 `<sha>` 与日期** + 当前分支/worktree + 未提交与未追踪清单 + 已跑门禁及其结果。**陈旧的交接危害大于没有交接**——接手方会照着一份看起来权威、实则失效的档案行动；状态行就是防陈旧的机制本身。没有它，面对 `docs/plan/` 下二十多份交接，判断不出哪份是活的。
 - **入口指引**：先读什么、每份材料在什么时机读。
 - **已确证的硬事实**，逐条标证据等级（实测 / 源码读证 / 推断），并写明「别再重新推导」。
 - **每条待办带验收判据 + 证伪方式**，不写「大概/也许」；用户已批准的、已裁决的、仍待裁决的分叉分开标。
@@ -70,7 +70,7 @@ description: 当 copilot-api-js 会话/阶段收尾时使用——交付、汇�
 - 命中后的动作：受影响的**硬事实**重新核验，核不动就降级为「待验证假设」；受影响的**待办**改写或标注「已被 `<sha>` 作废」。本轮就有一条根因结论被 peer 早 6 小时（author date）的提交悄悄作废。
 - 落盘时把**核验基线 `<sha>`** 写进头部状态行，让接手方一眼看出新鲜度。
 
-**KICKOFF 的写法**：① 工作方式硬性要求放最前（worktree、文档例外、合并前查 peer）；② 待办含用户批准状态与优先级，未裁决的明确标「需用户先定」；③ 这一轮反复踩的坑；④ 测试门禁现状与禁区（哪些命令在本机跑不起来、哪些是用户已明确推迟的、绝不碰的东西）——**这类信息最易腐，必须标「核验于 `<日期>` / `<sha>`」并写明「接手第一件事是复验而非采信」**：本轮 KICKOFF 判死刑的 `test:backend`，在写下它的 1 小时 40 分钟**之前**就已被 peer 修好，而它建议的「替代命令」与它现在是同一条。
+**KICKOFF 的写法**：① 工作方式硬性要求放最前（worktree、文档例外、合并前查 peer）；② 待办含用户批准状态与优先级，未裁决的明确标「需用户先定」；③ 这一轮反复踩的坑；④ 测试门禁现状与禁区（哪些命令在本机跑不起来、哪些是用户已明确推迟的、绝不碰的东西）——**这类信息最易腐，必须标「核验于 `<日期>` / `<sha>`」并写明「接手第一件事是复验而非采信」**。本轮的实例正好说明为什么光「写对」不够：KICKOFF 判 `test:backend` 死刑那句写下时**是对的**，12 小时后 peer 的 `1b8bdf2f` 把它修好，那句就此腐烂——而我自己在修复之后 1 小时 40 分又改过这个文件，从它旁边经过也没发现。没有核验日期，接手方无从知道该不该信它。
 
 **任务收尾后回来关掉交接**：待办全部关闭时把状态行改成「已完成 + 落地 commit」，被新交接取代时写 `superseded-by`，**不删**（按 §3 的归档纪律处理）。同主题已有活交接时更新它或建立显式取代链，**禁止两份并列自称唯一入口**。
 

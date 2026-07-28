@@ -4,7 +4,7 @@
 
 ## 工作方式（硬性要求，放最前）
 
-1. **代码改动走隔离 worktree**：`git worktree add .worktrees/state-foundation -b feat/state-foundation`，进去后**必须先 `bun install`**（否则 eslint exit 127）。
+1. **代码改动走隔离 worktree**：`git worktree add .worktrees/state-foundation -b feat/state-foundation`。注意 `.worktrees/` 建在仓库内部，**向上解析主树的 `node_modules`，不是依赖隔离环境**——实测无 `node_modules` 的新树里 eslint 照样 exit 0（本条订正自 skill 里一句已被证伪的「否则 eslint exit 127」）；真正会咬的是新树缺 gitignored 构建产物导致的稳定假红。
 2. **文档例外**：HANDOVER/KICKOFF/plan/spec 这类入口文档**在主树直接改并即时提交**——滞留在特性分支上等于没写。
 3. **合并前先查 peer**：`git log --oneline -20` + `git worktree list`。本仓库常有并发会话；本交接成稿前 peer 就已经把 S1 的工作量砍掉了三分之一。
 4. **一律显式 pathspec 提交**（`git commit -F <msgfile> -- <精确路径>`）。主树现有十几个 peer 未提交文件，`git add -A` 会把它们卷进来——**绝对禁止**。

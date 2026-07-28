@@ -1,9 +1,9 @@
 # 交接：keepalive 300s、合成分隔符、顺序不变量审计（2026-07-27）
 
-> **状态**：进行中——T1–T4 用户已批准未开工，T5 待用户裁决顺序，T6 待用户一句话。
-> **核验基线**：`23e85aba`（2026-07-28 11:50）——晚于此的 peer 提交可能已作废下面的结论；上一次就栽在这里（见 §5）。
-> **工作区**：master 主树；本轮代码改动已全部提交，**后续代码改动一律进隔离 worktree**（用户 2026-07-27 决定）。
-> **已跑门禁**：`bun scripts/parallel-test.ts unit it http` 绿（2026-07-27）；`bun run lint:all` 常年红（退役的 `ui/`，用户已推迟）。门禁现状最易腐，**接手第一件事是复验而非采信**。
+> **状态**：进行中——**T1 已完成**（2026-07-28，见 §3 T1）；T2–T4 用户已批准、未开工；T5 待用户裁决顺序；T6 待用户一句话。
+> **核验基线**：`847f8bc8`（2026-07-28 12:10）——晚于此的 peer 提交可能已作废下面的结论；上一次就栽在这里（见 §5）。
+> **工作区**：master 共享主树，**并发会话活跃**——本文核验时工作区有大量他人未提交改动（`src/lib/transport/*`、`packages/foundation/*`、多份 `docs/memory/*` 等），我方改动已全部提交，未留未追踪产物。**后续代码改动一律进隔离 worktree**（用户 2026-07-27 决定）。
+> **已跑门禁**：`bun scripts/parallel-test.ts unit it http` 绿（2026-07-27）；`bun run test:backend` 现已等价于该命令（`1b8bdf2f` 起不再前置 `build:history-search`）；`bun run lint:all` 常年红（退役的 `ui/`，用户已推迟）。门禁现状最易腐，**接手第一件事是复验而非采信**。
 
 **给接手会话**：本文是这一轮的**唯一入口**。按「先读什么 → 已定事实 → 待办与判据」的顺序写；每条待办都带**验收判据**与**证伪方式**，不带「大概」「也许」。交接文档本身的写法见 skill `session-closeout` §6 与其 `handover.md` 模板。
 
@@ -159,7 +159,7 @@
 - **`.codex`**：仓库根 0 字节空文件，归档没意义。留着还是删，等用户一句话。
 - **`docs/DESIGN.md:305-306`** 曾写 `empty_text` 是默认（陈旧、误导过我）。`68a3b3f5` 可能已改，**接手时核一遍**。
 - **两条 load-sensitive 测试**：`tests/architecture/telemetry-domain-surface.unit.test.ts`（本会话已给 30s 预算）和 `tests/history/v3/canonical-performance.unit.test.ts`（**未处理**，并行负载下会假红，单跑 3/3 绿）。
-- **`bun run test:backend` 在本机跑不起来**：它先跑 `build:history-search`，而 rustup 没配默认 toolchain。绕过方式：`bun scripts/parallel-test.ts unit it http`。用户已明确**推迟**此项，不算任务。
+- **`bun run test:backend` 可以直接跑**（**订正于 2026-07-28**）：`1b8bdf2f` 已把 `build:history-search` 从它前面拿掉，它现在就是 `bun scripts/parallel-test.ts unit it http`。本文早先写它"跑不起来、请用 parallel-test 替代"——那条在写下时就已过期，两者是同一条命令。真跑 native history-search 才需要 `bun run build:history-search`（本机 rustup 未配默认 toolchain），相关测试已改为有产物才跑、没有则显式 skip。
 - **`lint:all` 常年红**（400 errors，主要在退役的 `ui/`）。同样已推迟。
 
 ---
