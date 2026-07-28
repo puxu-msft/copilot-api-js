@@ -35,8 +35,11 @@
       // surfaces the rot. See ../docs/vue-ui-retirement.md §0.
       "@hsupu/ghc-proxy-foundation": ["../packages/foundation/src/index.ts"],
       "@hsupu/ghc-proxy-foundation/*": ["../packages/foundation/src/*"],
-      "@hsupu/ghc-proxy-telemetry": ["../packages/telemetry/src/index.ts"],
-      "@hsupu/ghc-proxy-telemetry/*": ["../packages/telemetry/src/*"],
+      // Telemetry is mapped ONLY at its pure-type barrel, never the package root:
+      // the root index carries runtime exports (consola, DDSketch, bun:sqlite), and
+      // `src/types.ts` exists precisely so a frontend can re-export the snapshot
+      // shapes without any of that entering its graph. Mirrors ui-v4/tsconfig.json.
+      "@hsupu/ghc-proxy-telemetry/types": ["../packages/telemetry/src/types.ts"],
       "~/lib/atomic-fs": ["../packages/foundation/src/atomic-fs"],
       "~/lib/diff/*": ["../packages/foundation/src/diff/*"],
       "~/lib/error/classify": ["../packages/foundation/src/error/classify"],

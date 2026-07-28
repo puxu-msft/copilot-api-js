@@ -46,11 +46,12 @@ export type {
 
 // Telemetry types moved out of the backend tree into the `telemetry` workspace
 // package (monorepo split), so this one leg goes to the package rather than
-// through `~backend/*`.
+// through `~backend/*` — and specifically to its pure-TYPE barrel, so none of
+// the package's runtime (consola, DDSketch, bun:sqlite) enters this graph.
 export type {
   //
   DimensionBreakdownSnapshot,
   DimensionKeySnapshot,
   DimensionSeriesPoint,
   HistogramSummary,
-} from "@hsupu/ghc-proxy-telemetry"
+} from "@hsupu/ghc-proxy-telemetry/types"
