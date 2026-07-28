@@ -7,10 +7,10 @@ import {
   test,
 } from "bun:test"
 
+import { setModels } from "~/lib/models/cache"
 import {
   //
   setModelMappings,
-  setModels,
   setStateForTests,
 } from "~/lib/state"
 
@@ -211,7 +211,8 @@ describe("POST /v1/messages", () => {
     expect(res.status).toBe(400)
     expect(body).toEqual({
       error: {
-        message: 'Model "msg-only-openai" cannot be served on /v1/messages (vendor is "OpenAI", not Anthropic) and supports no translatable /responses or /chat/completions leg',
+        message:
+          'Model "msg-only-openai" cannot be served on /v1/messages (vendor is "OpenAI", not Anthropic) and supports no translatable /responses or /chat/completions leg',
         type: "error",
       },
     })

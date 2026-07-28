@@ -14,13 +14,13 @@ import {
   afterAll,
 } from "bun:test"
 
+import { setModels } from "~/lib/models/cache"
 import { getModels } from "~/lib/models/client"
 import { resolveModelName } from "~/lib/models/resolver"
 import {
   //
   restoreStateForTests,
   setModelMappings,
-  setModels,
   setStateForTests,
   snapshotStateForTests,
   state,

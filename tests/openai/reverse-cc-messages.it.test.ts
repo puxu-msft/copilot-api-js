@@ -44,6 +44,7 @@ import {
   withCapturingManager,
   withCapturingManagerAsync,
 } from "~/lib/context/manager"
+import { setModels } from "~/lib/models/cache"
 import { ENDPOINT } from "~/lib/models/endpoint"
 import {
   //
@@ -52,7 +53,6 @@ import {
 } from "~/lib/openai/stream-accumulator"
 import { makeArraySink } from "~/lib/pipeline/client-sink"
 import { createPipelineDriver } from "~/lib/pipeline/driver"
-import { setModels } from "~/lib/state"
 
 import { mockModel } from "../helpers/factories"
 import { useIsolatedRuntime } from "../helpers/isolated-fixture"

@@ -7,11 +7,7 @@ import {
 } from "~/lib/copilot-api"
 import { HTTPError } from "~/lib/error"
 import { createResponseHeaderTimeoutSignal } from "~/lib/fetch-utils"
-import {
-  //
-  state,
-  setModels,
-} from "~/lib/state"
+import { state } from "~/lib/state"
 import { upstreamFetch } from "~/lib/transport/upstream-fetch"
 
 /**
@@ -25,12 +21,6 @@ let modelsEtag: string | undefined
 /** Test helper — reset the cached ETag to simulate a fresh process. */
 export function resetModelsEtagForTests(): void {
   modelsEtag = undefined
-}
-
-/** Fetch models from Copilot API and cache in global state. Skips setModels on 304 Not Modified. */
-export async function cacheModels(): Promise<void> {
-  const models = await getModels()
-  if (models) setModels(models)
 }
 
 /**

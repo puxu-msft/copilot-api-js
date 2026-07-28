@@ -26,11 +26,8 @@ import type { RequestContext } from "~/lib/context/request"
 
 import { getRequestContextManager } from "~/lib/context/manager"
 import { REQUEST_DEADLINE_CANCEL_REASON } from "~/lib/error/cancellation-reason"
-import {
-  //
-  setModels,
-  setStateForTests,
-} from "~/lib/state"
+import { setModels } from "~/lib/models/cache"
+import { setStateForTests } from "~/lib/state"
 
 import { mockModel } from "../helpers/factories"
 import { useIsolatedRuntime } from "../helpers/isolated-fixture"

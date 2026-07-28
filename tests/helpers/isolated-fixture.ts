@@ -54,6 +54,7 @@ import {
 } from "~/lib/history/v3/store"
 import { resetModelOperationTerminalBusForTests } from "~/lib/history/v3/terminal-bus"
 import { clearRecentModelOperationTerminalsForTests } from "~/lib/history/v3/terminal-bus"
+import { resetRawModelsForTests } from "~/lib/models/cache"
 import { resetAllLimitsForTesting } from "~/lib/models/calibration/engine"
 import { resetModelsEtagForTests } from "~/lib/models/client"
 import { resetAbortProvenanceGapsForTests } from "~/lib/observability/abort-provenance-gaps"
@@ -74,7 +75,6 @@ import {
 import { resetProcessIdentityForTests } from "~/lib/process-identity"
 import {
   //
-  resetRawModelsForTests,
   restoreStateForTests,
   type StateSnapshot,
   snapshotStateForTests,

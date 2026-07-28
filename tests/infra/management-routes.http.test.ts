@@ -33,16 +33,13 @@ import {
   initHistory,
   insertEntry,
 } from "~/lib/history"
+import { setModels } from "~/lib/models/cache"
 import {
   //
   resetUpstreamWsManagerForTests,
   setUpstreamWsConnectionFactoryForTests,
 } from "~/lib/openai/upstream-ws"
-import {
-  //
-  setModels,
-  setStateForTests,
-} from "~/lib/state"
+import { setStateForTests } from "~/lib/state"
 import { generateId } from "~/lib/utils"
 
 import { mockModel } from "../helpers/factories"

@@ -65,11 +65,8 @@ import type { ResponsesResponse } from "~/types/api/openai-responses"
 
 import { getProtectStreamingStats } from "~/lib/anthropic/protect-streaming-stats"
 import { getHistory } from "~/lib/history"
-import {
-  //
-  setModels,
-  setStateForTests,
-} from "~/lib/state"
+import { setModels } from "~/lib/models/cache"
+import { setStateForTests } from "~/lib/state"
 import { closeAllClients } from "~/lib/ws"
 
 import { mockModel } from "../helpers/factories"

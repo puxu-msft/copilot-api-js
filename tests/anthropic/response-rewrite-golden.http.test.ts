@@ -46,11 +46,11 @@ import {
 
 import { resetAnthropicFeatureNegotiationForTesting } from "~/lib/anthropic/feature-negotiation"
 import { getHistory } from "~/lib/history"
+import { setModels } from "~/lib/models/cache"
 import { getBus } from "~/lib/observability"
 import {
   //
   setModelMappings,
-  setModels,
   setStateForTests,
 } from "~/lib/state"
 
@@ -444,8 +444,7 @@ const GOLDEN_SUPPRESS_RENDERED = "refused c=uncategorized t=unknown"
 const GOLDEN_NON_STREAM_SUPPRESS_RENDERED = "refused c=cyber t=unknown"
 const GOLDEN_ERROR_TEMPLATE = "denied c={refusal_category}"
 
-const STREAM_REFUSAL_STOP_DETAILS_BYTES =
-  '{"type":"refusal","category":null,"explanation":"API integrators: you can reduce refusals..."}'
+const STREAM_REFUSAL_STOP_DETAILS_BYTES = '{"type":"refusal","category":null,"explanation":"API integrators: you can reduce refusals..."}'
 const NON_STREAM_REFUSAL_STOP_DETAILS_BYTES =
   '{"type":"refusal","category":"cyber","explanation":"This request triggered restrictions on violative cyber content..."}'
 const REFUSAL_DELTA = ev("message_delta", {
@@ -694,7 +693,8 @@ describe("response-rewrite activated-state golden (handler-v4, byte-lock)", () =
     setStateForTests({ refusalSseRewrite: "refusal" })
     const refusalFeatures: Array<{ feature: string; detail?: unknown }> = []
     const unsubscribe = getBus().subscribe((event) => {
-      if (event.kind === "request.feature_applied" && event.feature.startsWith("refusal-")) refusalFeatures.push({ feature: event.feature, detail: event.detail })
+      if (event.kind === "request.feature_applied" && event.feature.startsWith("refusal-"))
+        refusalFeatures.push({ feature: event.feature, detail: event.detail })
     })
     const text = await postStream()
     unsubscribe()
@@ -711,7 +711,8 @@ describe("response-rewrite activated-state golden (handler-v4, byte-lock)", () =
     setStateForTests({ refusalSseRewrite: "error" })
     const refusalFeatures: Array<{ feature: string; detail?: unknown }> = []
     const unsubscribe = getBus().subscribe((event) => {
-      if (event.kind === "request.feature_applied" && event.feature.startsWith("refusal-")) refusalFeatures.push({ feature: event.feature, detail: event.detail })
+      if (event.kind === "request.feature_applied" && event.feature.startsWith("refusal-"))
+        refusalFeatures.push({ feature: event.feature, detail: event.detail })
     })
     const text = await postStream()
     unsubscribe()
@@ -803,7 +804,8 @@ describe("response-rewrite activated-state golden (handler-v4, byte-lock)", () =
     setStateForTests({ refusalSseRewrite: "error" })
     const refusalFeatures: Array<{ feature: string; detail?: unknown }> = []
     const unsubscribe = getBus().subscribe((event) => {
-      if (event.kind === "request.feature_applied" && event.feature.startsWith("refusal-")) refusalFeatures.push({ feature: event.feature, detail: event.detail })
+      if (event.kind === "request.feature_applied" && event.feature.startsWith("refusal-"))
+        refusalFeatures.push({ feature: event.feature, detail: event.detail })
     })
     const res = await postJsonRaw()
     unsubscribe()
@@ -887,7 +889,8 @@ describe("response-rewrite activated-state golden (handler-v4, byte-lock)", () =
     setStateForTests({ refusalSseRewrite: "end_turn" })
     const refusalFeatures: Array<{ feature: string; detail?: unknown }> = []
     const unsubscribe = getBus().subscribe((event) => {
-      if (event.kind === "request.feature_applied" && event.feature.startsWith("refusal-")) refusalFeatures.push({ feature: event.feature, detail: event.detail })
+      if (event.kind === "request.feature_applied" && event.feature.startsWith("refusal-"))
+        refusalFeatures.push({ feature: event.feature, detail: event.detail })
     })
     const json = await postJson()
     unsubscribe()

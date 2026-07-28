@@ -37,11 +37,11 @@ import {
   clearHistory,
   getHistory,
 } from "~/lib/history"
+import { setModels } from "~/lib/models/cache"
 import { observabilityMiddleware } from "~/lib/observability/middleware"
 import {
   //
   setModelMappings,
-  setModels,
   setStateForTests,
 } from "~/lib/state"
 import { registerHttpRoutes } from "~/routes"

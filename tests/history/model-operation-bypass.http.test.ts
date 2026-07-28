@@ -14,11 +14,8 @@ import {
   consumeTerminalModelOperation,
   listTerminalModelOperations,
 } from "~/lib/context/lightweight-model-operation"
-import {
-  //
-  setModels,
-  setStateForTests,
-} from "~/lib/state"
+import { setModels } from "~/lib/models/cache"
+import { setStateForTests } from "~/lib/state"
 
 import { mockModel } from "../helpers/factories"
 import { useIsolatedRuntime } from "../helpers/isolated-fixture"

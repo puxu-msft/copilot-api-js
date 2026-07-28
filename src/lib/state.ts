@@ -17,7 +17,6 @@ import type {
   TokenInfo,
 } from "~/lib/token/types"
 
-import { normalizeForMatching } from "~/lib/models/model-name"
 import {
   //
   restoreTokenStoreForTests,
@@ -1414,69 +1413,45 @@ export function setTokenBasedBilling(tokenBasedBilling: boolean): void {
 }
 
 /**
- * Last unfiltered models response from the upstream `/models` endpoint.
- * Kept so a config reload of `disabledModels` can re-filter without
- * requiring another network round-trip. Module-scoped (not part of public
- * State) — consumers always read the filtered view via `state.models`.
+ * Rebuild the two derived lookup indexes from `state.models`.
+ *
+ * Pure derivation over this module's OWN fields — it reads `models.data` and writes `modelIndex` /
+ * `modelIds`, and knows nothing about the models domain beyond `Model` having an `id`. That is why
+ * it stayed here when the catalog CACHE moved to `~/lib/models/cache`: the disabled-id matching,
+ * the raw upstream response and the re-filter policy are model knowledge, but "my two indexes agree
+ * with my model list" is this module's own invariant. Keeping it here is also what lets
+ * `setStateForTests` maintain that invariant without importing the models domain — which would
+ * close the very cycle this whole migration exists to remove
+ * (docs/plan/2026-07-28-state-to-foundation/HANDOVER.md).
  */
-let rawModels: ModelsResponse | undefined
-
-function applyDisabledFilter(models: ModelsResponse | undefined): ModelsResponse | undefined {
-  if (!models) return undefined
-  const disabled = mutableState.disabledModels
-  if (disabled.length === 0) return models
-  // Normalize both sides so a config entry like "claude-opus-4-8" disables the
-  // upstream id "claude-opus-4.8" (dot/hyphen/case spelling is irrelevant).
-  const disabledSet = new Set(disabled.map((id) => normalizeForMatching(id)))
-  return { ...models, data: models.data.filter((m) => !disabledSet.has(normalizeForMatching(m.id))) }
-}
-
-export function setModels(models: ModelsResponse | undefined): void {
-  rawModels = models
-  updateState({ models: applyDisabledFilter(models) })
-  rebuildModelIndex()
-}
-
-/** Last unfiltered upstream `/models` response (includes disabled entries). */
-export function getRawModels(): ModelsResponse | undefined {
-  return rawModels
+export function rebuildModelIndex(): void {
+  const data = mutableState.models?.data ?? []
+  updateState({
+    modelIndex: new Map(data.map((m) => [m.id, m])),
+    modelIds: new Set(data.map((m) => m.id)),
+  })
 }
 
 /**
- * The upstream ids that `config.disabled_models` currently removes from the usable
- * set — computed from the cached raw catalog with the SAME normalized match as
- * {@link applyDisabledFilter} (so config `claude-opus-4-8` reports the actual
- * catalog id `claude-opus-4.8`). Empty when nothing disabled / no catalog yet.
- * Consumed by the internal `/api/models` route to annotate the full catalog.
- */
-export function getConfigDisabledIds(): Array<string> {
-  const raw = rawModels
-  if (!raw) return []
-  const disabled = mutableState.disabledModels
-  if (disabled.length === 0) return []
-  const disabledSet = new Set(disabled.map((id) => normalizeForMatching(id)))
-  return raw.data.filter((m) => disabledSet.has(normalizeForMatching(m.id))).map((m) => m.id)
-}
-
-/**
- * Reset the module-scoped `rawModels` cache (for tests). `rawModels` lives
- * OUTSIDE `mutableState`, so `snapshotStateForTests`/`restoreStateForTests`
- * cannot reach it — without this, a `setModels()` in one test leaks its raw
- * response into the next (a later `setDisabledModels` would re-filter from the
- * stale cache). The unified test fixture calls this in afterEach.
- */
-export function resetRawModelsForTests(): void {
-  rawModels = undefined
-}
-
-/**
- * Update the disabled model ID list and re-filter `state.models` from the
- * cached raw response. Hot-reloadable from config.yaml.
+ * Publish the disabled model ID list. A PLAIN field setter, like the other config-managed setters
+ * on this module — it does NOT re-filter `state.models`, because filtering needs the cached raw
+ * catalog and the normalized id match, both of which live in `~/lib/models/cache`.
+ *
+ * Callers that change this list must follow it with `refreshCatalogView()` from that module. The
+ * config layer does so unconditionally at the end of `applyConfigToState()`, which covers both the
+ * hot-reload path and `resetConfigManagedState()` (production always pairs the reset with a
+ * re-apply — `src/routes/config/route.ts` PUT /api/config).
  */
 export function setDisabledModels(disabledModels: ReadonlyArray<string>): void {
   updateState({ disabledModels: [...disabledModels] })
-  updateState({ models: applyDisabledFilter(rawModels) })
-  rebuildModelIndex()
+}
+
+/**
+ * Publish a filtered catalog view. Called ONLY by `~/lib/models/cache`, which owns the filtering
+ * policy; split out so this module never has to know what "disabled" means.
+ */
+export function setFilteredModels(models: ModelsResponse | undefined): void {
+  updateState({ models })
 }
 
 export function setUnknownEndpointLogging(value: UnknownEndpointLogging): void {
@@ -2011,17 +1986,6 @@ export function restoreStateForTests(snapshot: StateSnapshot): void {
   restoreTokenStoreForTests(snapshot.tokenStore)
 }
 
-/**
- * Rebuild model lookup indexes from state.models.
- * Called by cacheModels() in production; call directly in tests after setting state.models.
- */
-export function rebuildModelIndex(): void {
-  const data = mutableState.models?.data ?? []
-  updateState({
-    modelIndex: new Map(data.map((m) => [m.id, m])),
-    modelIds: new Set(data.map((m) => m.id)),
-  })
-}
 import {
   //
   CONFIG_MANAGED_DEFAULTS,

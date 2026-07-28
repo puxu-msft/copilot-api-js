@@ -58,6 +58,7 @@ import type {
   SystemPromptEntry,
 } from "./schema"
 
+import { refreshCatalogView } from "../models/cache"
 import { syncModelRefreshLoop } from "../models/refresh-loop"
 import {
   //
@@ -1203,6 +1204,16 @@ export async function applyConfigToState(): Promise<Config> {
 
   hasApplied = true
   lastAppliedMtimeMs = currentMtime
+
+  // Re-derive `state.models` + the two lookup indexes from the cached raw catalog and whatever the
+  // disabled list ended up as. UNCONDITIONAL on purpose, and it is the only thing keeping the view
+  // consistent on two paths: `disabled_models` is retain-on-absence, so the branch above does not
+  // fire when the key is missing, and PUT /api/config calls `resetConfigManagedState()` (which
+  // resets the list to its default without re-filtering) immediately before calling us. `state`
+  // cannot re-filter for itself — that needs the raw catalog and the normalized id match, both
+  // owned by `~/lib/models/cache`, and having `state` call into the models domain is exactly the
+  // import cycle docs/plan/2026-07-28-state-to-foundation/HANDOVER.md exists to remove.
+  refreshCatalogView()
 
   return config
 }

@@ -29,12 +29,12 @@ import type {
 
 import { createAnthropicMessages } from "~/lib/anthropic/client"
 import { supportsDirectAnthropicApi } from "~/lib/anthropic/features"
+import { setModels } from "~/lib/models/cache"
 import { getModels } from "~/lib/models/client"
 import { createChatCompletions } from "~/lib/openai/chat-completions-client"
 import {
   //
   restoreStateForTests,
-  setModels,
   setStateForTests,
   snapshotStateForTests,
   state,

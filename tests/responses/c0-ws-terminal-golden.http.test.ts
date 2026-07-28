@@ -34,11 +34,8 @@ import type {
 } from "~/types/api/openai-responses"
 
 import { getRequestContextManager } from "~/lib/context/manager"
-import {
-  //
-  setModels,
-  setStateForTests,
-} from "~/lib/state"
+import { setModels } from "~/lib/models/cache"
+import { setStateForTests } from "~/lib/state"
 
 import { mockModel } from "../helpers/factories"
 import { useIsolatedRuntime } from "../helpers/isolated-fixture"

@@ -49,9 +49,9 @@ import type {
   RouteDecision,
 } from "~/lib/pipeline/types"
 
+import { setModels } from "~/lib/models/cache"
 import { ENDPOINT } from "~/lib/models/endpoint"
 import { decideRoute } from "~/lib/pipeline/router"
-import { setModels } from "~/lib/state"
 
 import { mockModel } from "../helpers/factories"
 import { useIsolatedRuntime } from "../helpers/isolated-fixture"
@@ -174,7 +174,9 @@ const MATRIX: Array<MatrixRow> = [
     id: "msg-only-openai",
     vendor: "OpenAI",
     endpoints: [ENDPOINT.MESSAGES],
-    anthropic: RJ('Model "msg-only-openai" cannot be served on /v1/messages (vendor is "OpenAI", not Anthropic) and supports no translatable /responses or /chat/completions leg'),
+    anthropic: RJ(
+      'Model "msg-only-openai" cannot be served on /v1/messages (vendor is "OpenAI", not Anthropic) and supports no translatable /responses or /chat/completions leg',
+    ),
     cc: RJ('Model "msg-only-openai" does not support the /chat/completions endpoint'),
     responses: RJ('Model "msg-only-openai" does not support /responses or /chat/completions'),
     gemini: RJ('Model "msg-only-openai" does not support the /chat/completions endpoint'),
@@ -225,7 +227,9 @@ const MATRIX: Array<MatrixRow> = [
     id: "google-msg",
     vendor: "Google",
     endpoints: [ENDPOINT.MESSAGES],
-    anthropic: RJ('Model "google-msg" cannot be served on /v1/messages (vendor is "Google", not Anthropic) and supports no translatable /responses or /chat/completions leg'),
+    anthropic: RJ(
+      'Model "google-msg" cannot be served on /v1/messages (vendor is "Google", not Anthropic) and supports no translatable /responses or /chat/completions leg',
+    ),
     cc: RJ('Model "google-msg" does not support the /chat/completions endpoint'),
     responses: TR(ENDPOINT.CHAT_COMPLETIONS),
     gemini: RJ('Model "google-msg" does not support the /chat/completions endpoint'),

@@ -25,12 +25,9 @@ import type {
 
 import { getRequestContextManager } from "~/lib/context/manager"
 import { getHistory } from "~/lib/history"
+import { setModels } from "~/lib/models/cache"
 import { gracefulShutdown } from "~/lib/shutdown"
-import {
-  //
-  setModels,
-  setStateForTests,
-} from "~/lib/state"
+import { setStateForTests } from "~/lib/state"
 import { StreamClientAbortError } from "~/lib/stream"
 import { closeAllClients } from "~/lib/ws"
 

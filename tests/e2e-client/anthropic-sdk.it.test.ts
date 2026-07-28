@@ -36,10 +36,10 @@ import {
   DEFAULT_REFUSAL_ERROR_MESSAGE,
   DEFAULT_REFUSAL_ERROR_TYPE,
 } from "~/lib/anthropic/recover-refusal"
+import { setModels } from "~/lib/models/cache"
 import {
   //
   setBufferedRetryOverride,
-  setModels,
   setStateForTests,
 } from "~/lib/state"
 import { setUpstreamFetchForTests } from "~/lib/transport/upstream-fetch"

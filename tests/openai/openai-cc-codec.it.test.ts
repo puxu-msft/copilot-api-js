@@ -22,7 +22,7 @@ import type { ChatCompletionsPayload } from "~/types/api/openai-chat-completions
 
 import { createOpenAiCcCodec } from "~/lib/codec/openai-cc/codec"
 import { getRequestContextManager } from "~/lib/context/manager"
-import { setModels } from "~/lib/state"
+import { setModels } from "~/lib/models/cache"
 
 import { mockModel } from "../helpers/factories"
 import { useIsolatedRuntime } from "../helpers/isolated-fixture"

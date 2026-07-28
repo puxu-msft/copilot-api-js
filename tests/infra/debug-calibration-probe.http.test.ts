@@ -15,12 +15,9 @@ import {
 } from "bun:test"
 
 import { insertEntry } from "~/lib/history"
+import { setModels } from "~/lib/models/cache"
 import { learnCalibration } from "~/lib/models/calibration"
-import {
-  //
-  setModels,
-  setStateForTests,
-} from "~/lib/state"
+import { setStateForTests } from "~/lib/state"
 import { generateId } from "~/lib/utils"
 
 import { mockModel } from "../helpers/factories"

@@ -33,14 +33,23 @@ import {
   test,
 } from "bun:test"
 
-import { STEPS, toSseBytes } from "../../exp/block-level-anchor-coexist/fixture"
-import { setModels, setStateForTests } from "~/lib/state"
+import { setModels } from "~/lib/models/cache"
+import { setStateForTests } from "~/lib/state"
 import { setUpstreamFetchForTests } from "~/lib/transport/upstream-fetch"
 
-import { createSseResponse } from "../helpers/sse"
+import {
+  //
+  STEPS,
+  toSseBytes,
+} from "../../exp/block-level-anchor-coexist/fixture"
 import { mockModel } from "../helpers/factories"
 import { useIsolatedRuntime } from "../helpers/isolated-fixture"
-import { type InProcessProxy, serveInProcess } from "./harness/serve-in-process"
+import { createSseResponse } from "../helpers/sse"
+import {
+  //
+  type InProcessProxy,
+  serveInProcess,
+} from "./harness/serve-in-process"
 import { scriptedUpstream } from "./harness/upstream-script"
 
 const MODEL = "claude-opus-4.8" // matches the fixture's message_start.model
@@ -77,9 +86,7 @@ describe("client↔proxy SDK e2e (Anthropic, block-level anchor-coexist wire —
     setUpstreamFetchForTests(up.handler)
 
     // (1) does NOT throw under coexistence.
-    const final = await client.messages
-      .stream({ model: MODEL, max_tokens: 64, messages: [{ role: "user", content: "go" }] })
-      .finalMessage()
+    const final = await client.messages.stream({ model: MODEL, max_tokens: 64, messages: [{ role: "user", content: "go" }] }).finalMessage()
 
     // (2) the REAL blocks are intact and correctly separated — not merged/corrupted by the
     // coexisting open anchor@0. The SDK accumulator is index-indifferent (appends
@@ -186,9 +193,7 @@ describe("client↔proxy SDK e2e (Anthropic, block-level anchor-coexist wire —
     const up = scriptedUpstream(() => createSseResponse(fixtureChunks(fullyCollided)))
     setUpstreamFetchForTests(up.handler)
 
-    const final = await client.messages
-      .stream({ model: MODEL, max_tokens: 64, messages: [{ role: "user", content: "go" }] })
-      .finalMessage()
+    const final = await client.messages.stream({ model: MODEL, max_tokens: 64, messages: [{ role: "user", content: "go" }] }).finalMessage()
 
     // RED signal (empirically confirmed by running this mutation): the accumulator's
     // `content_block_start` ALWAYS `.push()`es a new array slot regardless of `index` — so the

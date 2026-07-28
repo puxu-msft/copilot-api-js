@@ -1,7 +1,7 @@
 import consola from "consola"
 
 import { state } from "../state"
-import { cacheModels } from "./client"
+import { cacheModels } from "./cache"
 
 type RefreshModelsFn = () => Promise<void>
 

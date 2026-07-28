@@ -9,11 +9,11 @@ import {
 
 import { getHistory } from "~/lib/history"
 import { drainV3Writer } from "~/lib/history/v3"
+import { setModels } from "~/lib/models/cache"
 import { getBus } from "~/lib/observability"
 import {
   //
   setDisabledModels,
-  setModels,
   setStateForTests,
 } from "~/lib/state"
 

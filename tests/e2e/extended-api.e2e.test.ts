@@ -28,6 +28,7 @@ import type {
 } from "~/types/api/openai-chat-completions"
 
 import { createAnthropicMessages } from "~/lib/anthropic/client"
+import { setModels } from "~/lib/models/cache"
 import {
   //
   getModels,
@@ -41,7 +42,6 @@ import {
   //
   restoreStateForTests,
   setModelMappings,
-  setModels,
   setStateForTests,
   snapshotStateForTests,
   state,

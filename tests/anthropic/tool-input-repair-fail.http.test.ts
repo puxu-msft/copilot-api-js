@@ -27,11 +27,8 @@ import type { RepairItem } from "~/lib/anthropic/tool-input-repair"
 
 import { getToolInputRepairStats } from "~/lib/anthropic/tool-input-repair-stats"
 import { getHistory } from "~/lib/history/store"
-import {
-  //
-  setModels,
-  setStateForTests,
-} from "~/lib/state"
+import { setModels } from "~/lib/models/cache"
+import { setStateForTests } from "~/lib/state"
 
 import {
   //

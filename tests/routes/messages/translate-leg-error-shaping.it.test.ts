@@ -24,12 +24,9 @@ import {
 } from "bun:test"
 import consola from "consola"
 
+import { setModels } from "~/lib/models/cache"
 import { ENDPOINT } from "~/lib/models/endpoint"
-import {
-  //
-  setModels,
-  setStateForTests,
-} from "~/lib/state"
+import { setStateForTests } from "~/lib/state"
 
 import { mockModel } from "../../helpers/factories"
 import { useIsolatedRuntime } from "../../helpers/isolated-fixture"

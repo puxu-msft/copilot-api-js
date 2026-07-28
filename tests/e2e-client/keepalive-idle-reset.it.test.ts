@@ -50,11 +50,8 @@ import {
 } from "bun:test"
 import { request } from "undici/index.js"
 
-import {
-  //
-  setModels,
-  setStateForTests,
-} from "~/lib/state"
+import { setModels } from "~/lib/models/cache"
+import { setStateForTests } from "~/lib/state"
 import { setUpstreamFetchForTests } from "~/lib/transport/upstream-fetch"
 
 import {

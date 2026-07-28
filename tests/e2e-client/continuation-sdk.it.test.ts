@@ -29,11 +29,8 @@ import {
   getV3Operation,
 } from "~/lib/history/v3/store"
 import { drainModelOperationTerminalSubscribers } from "~/lib/history/v3/terminal-bus"
-import {
-  //
-  setModels,
-  setStateForTests,
-} from "~/lib/state"
+import { setModels } from "~/lib/models/cache"
+import { setStateForTests } from "~/lib/state"
 import { setUpstreamFetchForTests } from "~/lib/transport/upstream-fetch"
 
 import { mockModel } from "../helpers/factories"

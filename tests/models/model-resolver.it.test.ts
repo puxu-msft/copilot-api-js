@@ -8,6 +8,7 @@ import {
 
 import type { Model } from "~/lib/models/client"
 
+import { setModels as setCachedModels } from "~/lib/models/cache"
 import {
   //
   getModelFamily,
@@ -23,7 +24,6 @@ import {
   //
   setDisabledModels,
   setModelMappings,
-  setModels as setCachedModels,
   state,
 } from "~/lib/state"
 

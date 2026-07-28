@@ -7,7 +7,8 @@ import {
 
 import type { Model } from "~/lib/models/client"
 
-import { setModels, setDisabledModels } from "~/lib/state"
+import { setModels } from "~/lib/models/cache"
+import { setDisabledModels } from "~/lib/state"
 
 import { useIsolatedRuntime } from "../helpers/isolated-fixture"
 import { createFullTestApp } from "../helpers/test-app"

@@ -22,17 +22,14 @@ import type { MessagesPayload } from "~/types/api/anthropic"
 import { createBetaProbe } from "~/lib/anthropic/pipeline"
 import { createAnthropicCodec } from "~/lib/codec/anthropic/codec"
 import { buildAnthropicStrategies } from "~/lib/codec/anthropic/strategies"
+import { setModels } from "~/lib/models/cache"
 import { ENDPOINT } from "~/lib/models/endpoint"
 import {
   //
   createPipelineDriver,
   type PipelineDriverWithNonStreaming,
 } from "~/lib/pipeline/driver"
-import {
-  //
-  setModels,
-  state,
-} from "~/lib/state"
+import { state } from "~/lib/state"
 
 import { mockModel } from "../../helpers/factories"
 
