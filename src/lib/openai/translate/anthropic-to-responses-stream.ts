@@ -68,9 +68,10 @@ import type {
 } from "~/types/api/openai-responses"
 
 import { buildClaudeSignatureCarrier } from "~/lib/anthropic/claude-signature-carrier"
-import { refusalCategoryForDiagnostics } from "~/lib/anthropic/recover-refusal"
-
-import type { RefusalTranslationDegradationReporter } from "./anthropic-to-cc"
+import {
+  refusalCategoryForDiagnostics,
+  type RefusalTranslationDegradationReporter,
+} from "~/lib/anthropic/refusal-detail"
 
 import {
   //

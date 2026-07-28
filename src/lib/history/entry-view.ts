@@ -23,7 +23,7 @@ import {
   //
   extractRefusalDetail,
   isNamedCategory,
-} from "../anthropic/recover-refusal"
+} from "../anthropic/refusal-detail"
 import { accumulateForwardedContent } from "./accumulate-response"
 
 /** Non-nullable per-attempt shape (the element type of `HistoryEntry.attempts`). */
@@ -316,7 +316,7 @@ function errorFallback(entry: Pick<HistoryEntry, "attempts" | "_index">): string
  * 响应内容预览：非流式取 `finalUpstream.body`(已归一 MessageContent)，流式经
  * `accumulateForwardedContent(clientResponse.sseEvents, endpoint)` 重建(客户端方言，
  * 与 endpoint 分派匹配 —— spec C1)，再 `summarizeResponseMessage`。无内容且失败→错误
- * 回退。在途(无 finalUpstream / 无 forwarded 帧 / 未失败)天然返回 ""。
+ * 回退。在途(无 finalUpstream / 无 forwarded帧 / 未失败)天然返回 ""。
  */
 export function extractResponsePreviewText(entry: Pick<HistoryEntry, "attempts" | "clientResponse" | "endpoint" | "_index">): string {
   const body = finalUpstreamResponse(entry)?.body

@@ -103,7 +103,7 @@ export interface ReasoningRoundTripOptions {
   /** True ⇒ never populate the reasoning round-trip carrier (encrypted_content); plaintext summary/text still renders. */
   stripThinkingSignature?: boolean
   /** Out-of-band marker for refusal metadata the target protocol cannot represent. */
-  onDegradation?: import("~/lib/openai/translate/anthropic-to-cc").RefusalTranslationDegradationReporter
+  onDegradation?: import("~/lib/anthropic/refusal-detail").RefusalTranslationDegradationReporter
 }
 
 /**

@@ -24,7 +24,10 @@
  *   - `stop_reason` → `finish_reason`; `usage` → CC usage.
  */
 
-import { refusalCategoryForDiagnostics } from "~/lib/anthropic/recover-refusal"
+import {
+  refusalCategoryForDiagnostics,
+  type RefusalTranslationDegradationReporter,
+} from "~/lib/anthropic/refusal-detail"
 
 import type {
   //
@@ -44,14 +47,10 @@ import type {
 // Top-level response translation (Anthropic → CC)
 // ============================================================================
 
-/** A structured marker for metadata a target protocol cannot represent on its client wire. */
-export interface RefusalTranslationDegradation {
-  kind: "refusal-category-dropped"
-  category: string
-  target: "openai-cc" | "openai-responses"
-}
-
-export type RefusalTranslationDegradationReporter = (degradation: RefusalTranslationDegradation) => void
+export type {
+  RefusalTranslationDegradation,
+  RefusalTranslationDegradationReporter,
+} from "~/lib/anthropic/refusal-detail"
 
 /**
  * Translate an Anthropic Messages response into a Chat Completions response (reverse-leg response).

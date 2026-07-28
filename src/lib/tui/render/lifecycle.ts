@@ -17,7 +17,7 @@ import {
 } from "~/lib/observability/projections/format"
 import { formatLogLine } from "~/lib/observability/projections/log-line"
 
-import { refusalCategoryForDiagnostics } from "~/lib/anthropic/recover-refusal"
+import { refusalCategoryForDiagnostics } from "~/lib/anthropic/refusal-detail"
 
 import type { RequestDisplayEffect } from "../active-request-store"
 

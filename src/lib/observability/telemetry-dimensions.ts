@@ -38,7 +38,7 @@ import { TELEMETRY_DIMENSION_SPECS } from "@hsupu/ghc-proxy-telemetry"
 import type { HistoryEntryData } from "~/lib/context/types"
 import type { RequestContextSnapshot } from "~/lib/observability/events"
 
-import { refusalCategoryForDiagnostics } from "~/lib/anthropic/recover-refusal"
+import { refusalCategoryForDiagnostics } from "~/lib/anthropic/refusal-detail"
 import { getHeaderCaseInsensitive } from "~/lib/fetch-utils"
 
 /**

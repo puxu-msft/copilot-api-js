@@ -64,9 +64,25 @@ import type {
 
 import { tagFrameSynthetic } from "~/lib/pipeline/frame-origin"
 
+import {
+  extractRefusalDetail,
+  isNamedCategory,
+} from "./refusal-detail"
+import type { RefusalDetail } from "./refusal-detail"
 import type { RefusalPolicy } from "./refusal-policy"
 
 import { anthropicSseFrame } from "./sse-frame"
+
+export {
+  extractRefusalDetail,
+  isNamedCategory,
+  refusalCategoryForDiagnostics,
+} from "./refusal-detail"
+export type {
+  RefusalDetail,
+  RefusalTranslationDegradation,
+  RefusalTranslationDegradationReporter,
+} from "./refusal-detail"
 
 /**
  * DEFAULT for `anthropic.refusal_end_turn_text` (the `end_turn`-mode suppression text).
@@ -112,51 +128,6 @@ export const DEFAULT_REFUSAL_ERROR_TYPE = "api_error"
  * All three are REAL observed shapes (see docs/spec/2026-07-27-refusal-diagnostics-and-typing.md §1).
  * Collapsing them would destroy the ability to tell "upstream said unmapped" from "we never got it".
  */
-export interface RefusalDetail {
-  category: string | null | undefined
-  explanation: string | null | undefined
-  /** `stop_details` was present but a field carried an unexpected type (or it was not an object). */
-  invalid: boolean
-}
-
-/** Read a `string | null | undefined` field, flagging any other type as malformed. */
-function readNullableString(bag: Record<string, unknown>, key: string): { value: string | null | undefined; invalid: boolean } {
-  const raw = bag[key]
-  if (raw === undefined || raw === null) return { value: raw as null | undefined, invalid: false }
-  if (typeof raw !== "string") return { value: undefined, invalid: true }
-  // An empty category is malformed (upstream expresses "unmapped" as `null`, not `""`) — keep the
-  // verbatim value for diagnostics but flag it so it never reads as a named category.
-  return { value: raw, invalid: raw === "" }
-}
-
-/**
- * Parse upstream `stop_details` into {@link RefusalDetail}. Total + never throws: a malformed or
- * absent value yields `undefined` fields rather than an exception, because this runs on a live
- * response path where a parse failure must not take down the turn.
- */
-export function extractRefusalDetail(stopDetails: unknown): RefusalDetail {
-  if (stopDetails === undefined || stopDetails === null) return { category: undefined, explanation: undefined, invalid: false }
-  if (typeof stopDetails !== "object") return { category: undefined, explanation: undefined, invalid: true }
-  const bag = stopDetails as Record<string, unknown>
-  const category = readNullableString(bag, "category")
-  const explanation = readNullableString(bag, "explanation")
-  return { category: category.value, explanation: explanation.value, invalid: category.invalid || explanation.invalid }
-}
-
-/** The ONE gate for "upstream named a category": a non-empty string. Never "the key exists". */
-export function isNamedCategory(category: string | null | undefined): category is string {
-  return typeof category === "string" && category.length > 0
-}
-
-/**
- * Stable category bucket for human-facing and aggregate diagnostics. Named upstream strings remain
- * verbatim; explicit `null`, absent fields and malformed values all use `uncategorized` because those
- * consumers need one actionable fallback bucket rather than the raw-storage provenance split.
- */
-export function refusalCategoryForDiagnostics(stopDetails: unknown): string {
-  const category = extractRefusalDetail(stopDetails).category
-  return isNamedCategory(category) ? category : "uncategorized"
-}
 
 /**
  * The refusal turn's thinking tokens — `undefined` when NOT knowable.
