@@ -117,23 +117,29 @@
 
 ---
 
-### D4 T3：不可见 Unicode 的合成分隔符 PoC 做不做
+### D4 T3 不可见 Unicode PoC：**做不做已经定了（你批过）**，待定的是分期与停止条件
 
-**背景**：落点已备好——EMIT 轴的封闭 enum `SEPARATOR_CARRIERS`（`src/lib/anthropic/sanitize/block-layout-contract.ts`）。过了门就加一个 `invisible_v1` 值、切默认，旧值继续被 ACCEPT 轴识别，**零迁移成本**。五道门：① GHC 真上游接受（非 strip）② 跨模型（opus/sonnet/haiku）③ mutation（改一个字符能被检出）④ wire 保真（不被中间层归一化）⑤ 客户端往返（CC 存进历史再发回来仍可识别）。
+> **订正**：我最初把这条写成「做不做」并给了一个「完全不做」的选项——**那是把你已经拍过的板又摆回去**。上一份交接 `2026-07-27-keepalive-and-separator/HANDOVER.md:131` 明标 `T3【用户已批】`，KICKOFF 也记着「用户已批准 T1–T4」，而且**没有新证据支持反转**。所以下面只问执行形状，不问要不要做。「维持可见 marker」是**任一门失败后的既定 fallback**，不是待选项。
+
+**背景**：落点在 EMIT 轴的封闭 enum `SEPARATOR_CARRIERS`（`src/lib/anthropic/sanitize/block-layout-contract.ts`）。**迁移成本要说准**：历史数据零迁移（ACCEPT 轴继续识别旧值），但**加一个 `invisible_v1` 不是零改动**——`src/lib/config/schema.ts:443` 目前把 enum 硬编码成 `["marker_v1"]`、`config.yaml:791` 也显式配着它，还要同步 state default、生成的 schema、identity 测试与 DESIGN/ADR。
+
+**待定的是：按什么顺序烧额度。** 权威门清单在 `research-separator-options.md:153-224`（本地 `.trim()` 筛选、visible 正控 + empty/space 阴控、独立 History 逐码点 wire oracle、目标模型 × stream true/false × ≥3 次、**删掉 separator 应恢复 C1 400** 的 mutation、SDK/CC round-trip、replacement glyph 与 usage/token 异常）。**我先前压缩成的「五道门」失真了**——把「HTTP 接受」和「wire 非 strip」并成一条、又把 mutation 写成「改一个字符能被检出」，那不是源报告的 mutation oracle（源报告要的是「删掉分隔符后 C1 400 应当回来」）。**以源报告为准，别用我那版。**
 
 **选项**
 
-- **A（推荐）做，但严格执行「任一门失败即维持可见 marker」**
-  - pros：合成分隔符对用户是可见噪声；不可见载体是**体验上的净改善**，而且落点设计已经把迁移成本压到零。
-  - cons：**要烧真 GHC 额度**（门 ①②④⑤ 都需要真上游/真客户端）；五道门任一不过就白跑。
-- **B 不做，维持可见 marker**
-  - pros：零成本、零风险。
-  - cons：合成分隔符会长期出现在用户可见的对话里。
-- **C 只做门 ①（GHC 是否 strip），过了再决定要不要跑完剩下四门**
-  - pros：额度花在最可能否决的那一门上——如果 GHC 直接 strip 掉不可见字符，后面四门不必跑。
-  - cons：多一次决策往返。
+- **A（推荐）漏斗式：本地 → mock → 单个便宜模型 → 再扩**
+  1. 本地：`.trim()` 筛选（**报告里已经测过一轮**，U+00A0/U+FEFF 会被 trim 掉、U+200B 等不会）+ 我方 sanitizer/JSON/History 的逐码点保真；
+  2. mock upstream + 真 SDK/CLI 的 round-trip（离线、零额度）；
+  3. **单个便宜模型、non-stream**，跑正控/阴控/候选/mutation；
+  4. 过了再扩：模型 × stream/non-stream × ≥3 次；
+  5. 最后查 replacement glyph 与 usage/token 异常。
+  - pros：**只有第 3 步之后才烧额度**，而前两步能否决掉大部分候选。
+  - cons：步骤多，要按顺序推。
+- **B 我先前推荐的「只先做门①（GHC 是否 strip）」**
+  - pros：看起来最省。
+  - cons：**成本判断是倒的**——真 GHC 请求已经是最贵的一步，而本地 trim 与 wire oracle 完全免费且能先筛掉一批候选。**不要采用这条**，列在这里只为说明它错在哪。
 
-**我的建议：C。** 门 ① 是最便宜的否决点。**别用「部分通过就上」**——这是研究报告里写死的红线。
+**我的建议：A。** 另外补一条源报告要求、我先前漏掉的**生产切换 gate**：History 的 clientRequest 原始轨 / upstreamRequest effective 轨，以及 `replacedStructuralEmpty`/`insertedSeparators` 必须可辨识——**不可见载体尤其不能靠肉眼确认**。
 
 ---
 
@@ -160,23 +166,28 @@
 
 ---
 
-### D6 非 Claude Code 客户端的暴露面要不要治
+### D6 非 Claude Code 客户端的暴露面
 
-**背景**（本轮新增，已入 `docs/todo/deferred-backlog.md`）：`stream_commit_after_sec` 对**所有** Anthropic 流式请求一视同仁，但窗口的安全上限只在**两个 Node 客户端**上实测过（真 CC 2.1.220、`@anthropic-ai/sdk` on Node，都是 ~300s 因为都落在 undici 默认 `headersTimeout`）。窗口内我方一个字节都不发，所以 **pre-header 容忍度落在 `(20s, 180s)` 的任何 Anthropic 客户端，都被这次默认值改动打破了**（旧默认 20s commit + keepalive 能活）。Python / Go / Java / Ruby 官方 SDK、第三方工具、中间反向代理均未测。
+**背景**（本轮新增，已入 `docs/todo/deferred-backlog.md`）：`stream_commit_after_sec` 对**所有** Anthropic 流式请求一视同仁，但窗口的安全上限只在**两个 Node 客户端**上实测过（真 CC 2.1.220、`@anthropic-ai/sdk` on Node，都是 ~300s 因为都落在 undici 默认 `headersTimeout`）。窗口内我方一个字节都不发，所以 **pre-header 容忍度落在 `(20s, 180s)` 的任何 Anthropic 客户端，都被这次默认值改动打破了**（旧默认 20s commit + keepalive 能活）。Python / Go / Java / Ruby 官方 SDK、第三方工具、中间反向代理、用户自设短 timeout，**均未测**。
 
 **选项**
 
-- **A（推荐）先补测量，不先做实现**
-  - pros：`exp/silence-recovery-gates/run-q1-firstfail.sh` 已是多臂结构，加一个官方 SDK 臂成本很低、全离线零额度。**测完可能发现它们也都是 ~300s**（很可能——多数都用各语言的默认 HTTP 栈），那这条就自动消解、什么都不用做。
-  - cons：花时间在一个「可能不存在」的问题上。
-- **B 直接做客户端感知的 commit policy**
-  - pros：长远正确的形状。
-  - cons：客户端识别是新契约（要定「怎样算可识别」、要 ADR），**在不知道其它客户端到底是多少秒之前做，等于凭空设计**。
+- **B1（推荐）立刻把未知客户端退回保守值，可识别且已实测的走 180s**
+  - pros：**不需要先知道任何其它 SDK 的秒数就能做**——这是它相对下面几条的决定性优势。backlog 里已经提出 `unknown_client_commit_after_sec`（`docs/todo/deferred-backlog.md:23-27`）。可识别集就是已实测的两个（CC 的 `x-app: cli` + `user-agent: claude-cli/*`；Node SDK 的 `x-stainless-runtime`），其余一律 20s，回到改动前的行为。
+  - cons：引入客户端识别这一层（虽然只是两条 header 判据）；识别不到的 CC 变体会退回 20s，失去本次收益。
+- **B2 保留全局默认，但允许显式的 per-client / per-route commit-window profile**
+  - pros：能覆盖 B1 覆盖不到的两类——**用户自设短 timeout**、**中间反向代理**，这两类靠 header 识别不出来。
+  - cons：新配置面，且要用户知道自己该配什么。
+- **B3 先补测量，再据测量扩大 allowlist**
+  - pros：证据驱动。
+  - cons：**这条不能单独成立**——`run-q1-firstfail.sh` 只是个单臂选择器（现有 `cli|sdk|bare-fetch` 三个 runner **都是 Node**），本机**没有 python 的 `anthropic` 模块，也没有 go/java/ruby**。**加第一个 Python 臂本身就是一个完整的 PoC 工作单元**（隔离依赖 + 版本锁 + runner + stream 消费 + timeout 配置 + 结果规范化），多语言矩阵更不是一行改动。而且**一个 Python 样本只能关掉「Python 默认」这一格**，关不掉这条 backlog。（server/launcher/观测那套确实可复用，且全离线零额度——这点成立。）
 - **C 什么都不做**
   - pros：你实际只用 CC。
-  - cons：哪天接了别的客户端会撞上，而且症状是「请求在收到任何字节前超时」——很难联想到是代理的窗口默认值。
+  - cons：哪天接了别的客户端会撞上，症状是「请求在收到任何字节前超时」，很难联想到是代理的窗口默认值。
 
-**我的建议：A。** 先花小钱买掉不确定性。若测出确实有客户端低于 180s，再按 B 走 ADR。
+**我的建议：B1 先落地，B3 作为后续扩 allowlist 的输入，B2 视是否真的出现代理/自设 timeout 场景再说。**
+
+> **两处我先前写错、已删**：① 我说「加一个官方 SDK 臂成本很低」——不成立，见 B3 的 cons；② 我说「多数语言默认 HTTP 栈很可能也是 ~300s，这条可能自动消解」——**那是没有证据的猜测**，不同 SDK 可能有各自独立的 connect/read/request timeout 或根本没有总 timeout。别拿它当决策依据。
 
 ---
 
@@ -230,6 +241,14 @@ git merge-base --is-ancestor <tip> master && echo "已被 master 吸收"
 
 ## 5. 建议的起手顺序
 
-若你不另行指定，我会按：**D1(#1 已发生的漂移) → D3 的实验 → D6 的补测 → D1 剩余 → D4 门① → D2 决定**。
+若你不另行指定，我会按：**D1 的 #1 → D3 的实验 → D4 的本地/mock 前两级 → D1 剩余（#6/#2/#4）→ D6 的 B1 → D2 决定**。
 
-理由：先修此刻就在错的东西（#1 改写失败原因、#2 诊断撒谎），再用**离线零成本的实验/测量**买掉 D3/D6 的不确定性——这两条都可能自动消解，先做能避免白干。烧额度的 D4 和牵动别人线的 D2 放最后。
+理由：
+1. **#1 是此刻就在错判失败原因的生产缺陷**，最该先修。
+2. **D3 的实验离线零额度**，且可能直接证明 W3 已被 `escalationScaffold` 关上——先做能避免白做后面的实现。
+3. **D4 的前两级（本地 trim + 逐码点 oracle、mock upstream 的 SDK/CLI round-trip）同样零额度**，能在烧任何额度前筛掉候选；T3 本身你已批过，不需要再等裁决。
+4. D1 剩余三条里 **#6 成本最低**（本轮已有真实装配骨架可复用）。
+5. **D6 的 B1 不依赖任何补测**就能落地，把未知客户端退回保守值。
+6. D2 牵动别人正在推进的 B2 线，放最后。
+
+> ⚠ 这个顺序里**没有**「D6 的补测」——我先前把它排在前面，理由是「可能自动消解」，那个理由已被删除（见 D6 的订正）。
