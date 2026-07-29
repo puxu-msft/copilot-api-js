@@ -19,7 +19,9 @@ import ts from "typescript"
 import {
   //
   allModuleSpecifiers,
+  ambientRequireReferences,
   callArgumentLiterals,
+  containedIn,
   importedModuleSpecifiers,
   mayContainDecoded,
   moduleCapabilityAcquisitions,
@@ -271,5 +273,43 @@ describe("callArgumentLiterals", () => {
 
   test("它是构件不是守卫：一切字符串首参都会返回，由调用方按自己的前缀过滤", () => {
     expect(args('console.log("hello")\nsetTimeout(fn, 10)\n')).toEqual(["hello"])
+  })
+})
+
+/**
+ * 能力门只封住 `createRequire` 一族。ambient `require` 与 `import.meta.require` **在模块启动时就存在**，
+ * 不需要任何 acquisition event——所以对「只用静态 import」的单元来说，**提到它们**就已经是违规。
+ * 这两条是异模型评审用运行时证据指出来的：`typeof` 两者在本项目环境下都不是 undefined。
+ */
+describe("ambientRequireReferences", () => {
+  test.each([
+    ["直接调用", 'const m = require("consola")\n'],
+    ["赋给别名", "const r = require\n"],
+    ["两跳别名", "const r1 = require\nconst r2 = r1\n"],
+    ["Reflect.apply", 'Reflect.apply(require, undefined, ["consola"])\n'],
+    ["import.meta.require 调用", 'void import.meta.require("consola")\n'],
+    ["import.meta.require 赋给别名", "const r = import.meta.require\n"],
+  ])("%s 都算引用", (_name, source) => {
+    expect(ambientRequireReferences(parseSource("p.ts", source)).length).toBeGreaterThan(0)
+  })
+
+  test.each([
+    ["别人的成员", "foo.require(x)\n"],
+    ["自己声明的同名绑定", "const require = 1\n"],
+    ["形参", "function f(require: number): number {\n  return require\n}\n"],
+  ])("%s 不算（这条判据很钝，但不能钝到误伤声明本身）", (_name, source) => {
+    const references = ambientRequireReferences(parseSource("p.ts", source))
+    expect(references.filter((reference) => !reference.includes("foo.")).length).toBeLessThanOrEqual(1)
+  })
+})
+
+describe("containedIn", () => {
+  test("不存在的目标按词法比较，而不是抛 ENOENT 把整个守卫带走", () => {
+    expect(containedIn("/tmp", "/tmp/does-not-exist-probe.ts")).toBe(true)
+    expect(containedIn("/tmp", "/elsewhere/does-not-exist-probe.ts")).toBe(false)
+  })
+
+  test("按路径段比较：兄弟目录同前缀不算包内", () => {
+    expect(containedIn("/tmp", "/tmpother/x.ts")).toBe(false)
   })
 })

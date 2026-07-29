@@ -23,7 +23,11 @@ import {
   expect,
   test,
 } from "bun:test"
-import { readFileSync } from "node:fs"
+import {
+  //
+  existsSync,
+  readFileSync,
+} from "node:fs"
 import {
   //
   mkdtemp,
@@ -37,6 +41,7 @@ import {
   //
   allModuleSpecifiers,
   callArgumentLiterals,
+  containedIn,
   createSpecifierResolver,
   mayContainDecoded,
   moduleCapabilityAcquisitions,
@@ -154,7 +159,10 @@ async function scanCoreLib(root = path.join(REPO_ROOT, "src/lib"), prefix = "src
     // to count these edges was the one that could not see them.
     for (const reference of referencedFilePaths(sourceFile)) {
       const resolved = path.resolve(path.dirname(path.join(root, rel)), reference)
-      if (resolved.startsWith(path.join(REPO_ROOT, "src/routes") + path.sep)) {
+      // Canonical containment, like the state closure: a symlink sitting in `src/lib` and pointing
+      // into `src/routes` has an innocent spelling and a routes identity. Comparing lexical paths
+      // called that clean for as long as this check existed.
+      if (existsSync(resolved) && containedIn(ROUTES_DIR, resolved)) {
         edges.push({ file, specifier: `/// <reference path="${reference}">` })
       }
     }

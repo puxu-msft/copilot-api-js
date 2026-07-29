@@ -28,6 +28,7 @@ import {
   //
   allModuleSpecifiers,
   ambientRequireReferences,
+  containedIn,
   moduleCapabilityAcquisitions,
   moduleLoadSites,
   referencedFilePaths,
@@ -193,16 +194,6 @@ function resolveSpecifier(fromFile: string, specifier: string): string | undefin
   return resolved === undefined ? undefined : realpathSync(resolved)
 }
 
-/**
- * Is `target` (already canonical) inside `root`? `root` is canonicalised here for the same reason.
- *
- * The comparison is per SEGMENT: `relative.startsWith("..")` also matches `..review.ts`, a legal
- * filename, and would report a file sitting in the package as an escape.
- */
-function containedIn(root: string, target: string): boolean {
-  const relative = path.relative(realpathSync(root), target)
-  return relative !== "" && relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative)
-}
 
 /**
  * Walk the state unit's TRANSITIVE relative closure and report every specifier that is neither a

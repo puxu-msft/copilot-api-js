@@ -15,6 +15,7 @@
  * dependency (the repo's own typecheck runs on it).
  */
 
+import { realpathSync } from "node:fs"
 import path from "node:path"
 import ts from "typescript"
 
@@ -588,18 +589,51 @@ export function createSpecifierResolver(repoRoot: string): (fromFile: string, sp
  * Only meaningful for a unit that genuinely never loads anything at runtime — the state closure has
  * zero mentions today. Anywhere else this would be far too blunt.
  *
- * Property accesses are excluded: `foo.require` is someone else's member, not the global.
+ * `import.meta.require` counts as well, and excluding it was a real hole: the capability gate never
+ * sees it either (nothing is imported), so `const r = import.meta.require` handed the loader to a
+ * name with nothing left to notice. Other property accesses stay excluded — `foo.require` is
+ * someone else's member, not a loader.
  */
 export function ambientRequireReferences(sourceFile: ts.SourceFile): Array<string> {
   const references: Array<string> = []
+  const record = (node: ts.Node): void => {
+    references.push(node.getText(sourceFile).replace(/\s+/g, " ").slice(0, 80))
+  }
   const visit = (node: ts.Node): void => {
-    if (ts.isIdentifier(node) && node.text === "require") {
+    // `import.meta.require` — a loader that exists without any import, like the ambient global.
+    if (ts.isPropertyAccessExpression(node) && node.name.text === "require" && ts.isMetaProperty(node.expression)) {
+      record(node)
+    } else if (ts.isIdentifier(node) && node.text === "require") {
       const isMemberName = ts.isPropertyAccessExpression(node.parent) && node.parent.name === node
       const isDeclarationName = (ts.isVariableDeclaration(node.parent) || ts.isParameter(node.parent) || ts.isBindingElement(node.parent)) && node.parent.name === node
-      if (!isMemberName && !isDeclarationName) references.push(node.parent.getText(sourceFile).replace(/\s+/g, " ").slice(0, 80))
+      if (!isMemberName && !isDeclarationName) record(node.parent)
     }
     ts.forEachChild(node, visit)
   }
   visit(sourceFile)
   return references
+}
+
+/**
+ * Is `target` inside `root`? Both canonicalised, and compared per path SEGMENT.
+ *
+ * Two mistakes folded into one helper because each was made twice. `startsWith(root)` also matches
+ * a sibling `root-other/`, and `relative.startsWith("..")` also matches the legal filename
+ * `..review.ts`. And without `realpath`, a symlink under `root` pointing outside it has an inside
+ * SPELLING and an outside IDENTITY — which is how a `/// <reference>` walked out of `src/routes`
+ * while the guard stayed green. The state closure got this right and the core ratchet was still
+ * comparing lexical paths, because the fix lived in one consumer instead of here.
+ */
+export function containedIn(root: string, target: string): boolean {
+  // A target that does not exist cannot be canonicalised; compare it lexically rather than throwing
+  // ENOENT and taking the whole guard down instead of reporting the edge.
+  const canonical = (candidate: string): string => {
+    try {
+      return realpathSync(candidate)
+    } catch {
+      return candidate
+    }
+  }
+  const relative = path.relative(canonical(root), canonical(target))
+  return relative !== "" && relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative)
 }
