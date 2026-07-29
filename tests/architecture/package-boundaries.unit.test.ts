@@ -6,6 +6,7 @@ import {
 } from "bun:test"
 import {
   //
+  existsSync,
   mkdirSync,
   mkdtempSync,
   realpathSync,
@@ -25,6 +26,7 @@ import ts from "typescript"
 import {
   //
   allModuleSpecifiers,
+  moduleCapabilityAcquisitions,
   moduleLoadSites,
   referencedFilePaths,
   parseSource,
@@ -238,10 +240,23 @@ async function stateUnitClosureViolations(): Promise<Array<string>> {
       violations.push(`${relativeTo} → ${site.text} (runtime module load; the state unit may only use static imports)`)
     }
 
+    // And the door itself, not just the calls through it. Naming loaders can always be defeated by
+    // renaming them; `node:module` is where the ability comes from, and importing it is one
+    // syntactic event with nowhere to hide.
+    for (const acquisition of moduleCapabilityAcquisitions(sourceFile)) {
+      violations.push(`${relativeTo} → ${acquisition} (acquires the runtime module-loading capability)`)
+    }
+
     // A triple-slash reference is a dependency with no specifier — invisible to every import-based
     // check, and just as real. Walk it like any other edge.
     for (const reference of referencedFilePaths(sourceFile)) {
       const resolved = path.resolve(path.dirname(file), reference)
+      if (!existsSync(resolved)) {
+        // Same shape as an unresolvable import. Letting `realpathSync` throw ENOENT here would take
+        // the whole guard down with a filesystem error instead of naming the bad edge.
+        violations.push(`${relativeTo} → /// <reference path="${reference}"> (unresolvable)`)
+        continue
+      }
       if (!containedIn(FOUNDATION_SRC, realpathSync(resolved))) {
         violations.push(`${relativeTo} → /// <reference path="${reference}"> ESCAPES the package`)
         continue

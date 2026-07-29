@@ -37,7 +37,9 @@ import {
   //
   allModuleSpecifiers,
   mayContainDecoded,
+  moduleCapabilityAcquisitions,
   moduleLoadSites,
+  referencedFilePaths,
   parseSource,
 } from "./source-ast"
 
@@ -74,14 +76,16 @@ const KNOWN_CORE_TO_SERVER: Array<{ file: string; specifier: string }> = [
  * module.
  */
 const KNOWN_OPAQUE_TARGETS: Array<{ file: string; call: string }> = [
-  // Mints a loader; loads nothing by itself.
+  // Acquires the capability, then mints a loader; neither loads a source module by itself.
+  { file: "src/lib/history/search-native.ts", call: 'import { createRequire } from "node:module"' },
   { file: "src/lib/history/search-native.ts", call: "createRequire(import.meta.url)" },
   // Probes for the optional native search binary, by absolute path — never a source module.
   { file: "src/lib/history/search-native.ts", call: "require(candidate)" },
   { file: "src/lib/history/search-native.ts", call: "require.resolve(candidate)" },
   // The user-configured hook module, resolved under `process.cwd()`.
   { file: "src/lib/pipeline/hooks/loader.ts", call: "import(join(process.cwd(), compiledPath))" },
-  // Mints a loader; loads nothing by itself.
+  // Same: acquire, then mint. The loader is used for an optional native/CLI probe, never a source module.
+  { file: "src/lib/restart/notify.ts", call: 'import { createRequire } from "node:module"' },
   { file: "src/lib/restart/notify.ts", call: "createRequire(import.meta.url)" },
 ]
 
@@ -119,6 +123,19 @@ async function scanCoreLib(root = path.join(REPO_ROOT, "src/lib"), prefix = "src
     // a binder that keeps disagreeing with the real one.
     for (const site of moduleLoadSites(sourceFile)) {
       if (site.specifier === undefined) opaque.push({ file, call: site.text })
+    }
+    // The capability itself, for the same reason the state guard checks it: a loader can be renamed
+    // without limit, but `node:module` is where it comes from. Registering the doors is bounded;
+    // chasing aliases is not.
+    for (const acquisition of moduleCapabilityAcquisitions(sourceFile)) opaque.push({ file, call: acquisition })
+    // A triple-slash reference into `src/routes` is a real core → server type edge with no
+    // specifier. It was wired into the state closure and NOT here — the guard that exists precisely
+    // to count these edges was the one that could not see them.
+    for (const reference of referencedFilePaths(sourceFile)) {
+      const resolved = path.resolve(path.dirname(path.join(root, rel)), reference)
+      if (resolved.startsWith(path.join(REPO_ROOT, "src/routes") + path.sep)) {
+        edges.push({ file, specifier: `/// <reference path="${reference}">` })
+      }
     }
   }
 

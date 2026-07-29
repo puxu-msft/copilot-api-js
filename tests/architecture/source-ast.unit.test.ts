@@ -21,6 +21,7 @@ import {
   allModuleSpecifiers,
   importedModuleSpecifiers,
   mayContainDecoded,
+  moduleCapabilityAcquisitions,
   moduleLoadSites,
   referencedFilePaths,
   parseSource,
@@ -198,5 +199,48 @@ describe("referencedFilePaths", () => {
 
   test("没有 reference 的文件返回空", () => {
     expect(referencedFilePaths(parseSource("p.ts", 'import { a } from "./b"\n'))).toEqual([])
+  })
+})
+
+/**
+ * 「按名字追 loader」这条路走到头了，这一组就是它的墓志铭。
+ *
+ * 最后一版已经把**调用**过近似了，可 loader 名字的种子仍然来自「初始化表达式文本里提到 createRequire」，
+ * 于是 `import { createRequire as mint }`（改名导入）和 `const mint = createRequire`（工厂别名）
+ * 照样穿过去——**一个披着过近似外衣的欠近似**，而且我自己没看出来，是评审指出的。
+ *
+ * 别名是无界的，但**能力**只从很少几扇门进来：import `node:module`（`createRequire` 的唯一来源）、
+ * 或 `process.getBuiltinModule`。没拿到的东西没法改名，所以守门不需要任何来源分析。
+ */
+describe("moduleCapabilityAcquisitions", () => {
+  test.each([
+    ["具名 import", 'import { createRequire } from "node:module"\n'],
+    ["改名导入（按名字追那版漏的就是它）", 'import { createRequire as mint } from "node:module"\n'],
+    ["namespace import", 'import * as m from "node:module"\n'],
+    ["default import", 'import m from "node:module"\n'],
+    ["无 node: 前缀", 'import { createRequire } from "module"\n'],
+    ["side-effect import", 'import "node:module"\n'],
+    ["re-export", 'export { createRequire } from "node:module"\n'],
+    ["import = require", 'import m = require("node:module")\n'],
+    ["动态 import", 'const m = await import("node:module")\n'],
+    ["require", 'const m = require("node:module")\n'],
+    ["process.getBuiltinModule", 'const m = process.getBuiltinModule("module")\n'],
+  ])("%s 算一次能力获取", (_name, source) => {
+    expect(moduleCapabilityAcquisitions(parseSource("p.ts", source))).toHaveLength(1)
+  })
+
+  test("普通模块不算（否则每个文件都会被报出来，登记表就没有意义了）", () => {
+    expect(moduleCapabilityAcquisitions(parseSource("p.ts", 'import { a } from "consola"\nconst m = await import("./x")\n'))).toEqual([])
+    // `node:module` 之外的 node: 内置也不算——能力的来源只有那一个模块。
+    expect(moduleCapabilityAcquisitions(parseSource("p.ts", 'import { readFileSync } from "node:fs"\n'))).toEqual([])
+  })
+
+  test("能力判据独立于「按名字追 loader」是否追得到（这正是它存在的理由）", () => {
+    const aliased = 'import { createRequire as mint } from "node:module"\nconst load = mint(import.meta.url)\nvoid load("consola")\n'
+    const parsed = parseSource("p.ts", aliased)
+    // 名字这条线确实追不到 `load("consola")`——记下来，免得以后有人以为它能。
+    expect(moduleLoadSites(parsed).some((site) => site.specifier === "consola")).toBe(false)
+    // 但能力那条线拦得住。
+    expect(moduleCapabilityAcquisitions(parsed)).toHaveLength(1)
   })
 })

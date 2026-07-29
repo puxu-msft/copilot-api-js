@@ -269,6 +269,53 @@ function couldLoadModule(node: ts.CallExpression, sourceFile: ts.SourceFile, loa
 }
 
 /**
+ * Sites where a file ACQUIRES the ability to load modules at runtime.
+ *
+ * This is what makes the load-site scan sound, and it exists because tracking loaders by name never
+ * became sound no matter how it was written. The last attempt over-approximated the CALL but still
+ * seeded from names whose initializer text mentioned `createRequire`, so a renamed import
+ * (`import { createRequire as mint }`) or a factory alias (`const mint = createRequire`) walked
+ * straight through — an under-approximation wearing an over-approximation's clothes. A reviewer had
+ * to point that out; the shape looked right to me.
+ *
+ * Acquisition is a different kind of question. Aliasing is unbounded, but the CAPABILITY enters a
+ * module through a small, syntactically visible set of doors: importing `node:module` (in any form
+ * — that is the only place `createRequire` comes from) or calling `process.getBuiltinModule`. You
+ * cannot alias what you never obtained, so guarding the doors needs no provenance analysis at all.
+ *
+ * Out of reach, and stated rather than implied: `eval`, `new Function`, and anything reached through
+ * a value handed in from outside the module. Static analysis loses to those in general — these
+ * guards catch drift, not an adversary with commit access.
+ */
+export function moduleCapabilityAcquisitions(sourceFile: ts.SourceFile): Array<string> {
+  const acquisitions: Array<string> = []
+  const isModuleSpecifier = (text: string): boolean => /^(?:node:)?module$/.test(text)
+
+  const visit = (node: ts.Node): void => {
+    if (ts.isImportDeclaration(node) && ts.isStringLiteralLike(node.moduleSpecifier) && isModuleSpecifier(node.moduleSpecifier.text)) {
+      acquisitions.push(node.getText(sourceFile).replace(/\s+/g, " "))
+    }
+    if (ts.isExportDeclaration(node) && node.moduleSpecifier && ts.isStringLiteralLike(node.moduleSpecifier) && isModuleSpecifier(node.moduleSpecifier.text)) {
+      acquisitions.push(node.getText(sourceFile).replace(/\s+/g, " "))
+    }
+    if (ts.isImportEqualsDeclaration(node) && ts.isExternalModuleReference(node.moduleReference) && ts.isStringLiteralLike(node.moduleReference.expression) && isModuleSpecifier(node.moduleReference.expression.text)) {
+      acquisitions.push(node.getText(sourceFile).replace(/\s+/g, " "))
+    }
+    if (ts.isCallExpression(node)) {
+      // One call is one acquisition, even when both tests fire: `process.getBuiltinModule("module")`
+      // is a `node:module` target AND a builtin-module getter.
+      const [argument] = node.arguments
+      const targetsModule = argument !== undefined && ts.isStringLiteralLike(argument) && isModuleSpecifier(argument.text)
+      const isBuiltinGetter = /(?:^|\.)getBuiltinModule$/.test(node.expression.getText(sourceFile))
+      if (targetsModule || isBuiltinGetter) acquisitions.push(node.getText(sourceFile).replace(/\s+/g, " "))
+    }
+    ts.forEachChild(node, visit)
+  }
+  visit(sourceFile)
+  return acquisitions
+}
+
+/**
  * Files pulled in by a triple-slash `/// <reference path="…" />`.
  *
  * A dependency the module graph never mentions: no import statement, no specifier, yet the types it
