@@ -23,6 +23,7 @@ import type { RequestContext } from "~/lib/context/request"
 import type { FrozenHedgePolicy } from "~/lib/pipeline/generation/hedge-policy"
 
 import { classifyError } from "~/lib/error"
+import { recordAbortProvenanceGap } from "~/lib/observability/abort-provenance-gaps"
 import { recordRetryGiveUp } from "~/lib/observability/retry-giveups"
 import { recordRetryStrategyFire } from "~/lib/observability/retry-strategy-fires"
 import { getDownstreamDeliverySession } from "~/lib/pipeline/delivery/session"
@@ -858,7 +859,7 @@ async function maybeRunHedgedResponseSink(
     if (raced.kind === "failure") {
       binding.coordinator.releaseCandidate(binding.candidate.candidate)
       if (classifyStreamError(raced.error) === "client-abort") return { kind: "settled-abort" }
-      return { kind: "stream-error", error: raced.error }
+      return streamErrorOutcome(raced.error, env)
     }
 
     const selected = raced.candidate
@@ -878,7 +879,7 @@ async function maybeRunHedgedResponseSink(
   } catch (error) {
     binding.coordinator.releaseCandidate(binding.candidate.candidate)
     if (classifyStreamError(error) === "client-abort") return { kind: "settled-abort" }
-    return { kind: "stream-error", error }
+    return streamErrorOutcome(error, env)
   } finally {
     sink.close?.()
   }
@@ -921,6 +922,24 @@ async function writeWinnerFrame(sink: ClientSink, candidate: CandidateHandle, fr
   const delivery = getDownstreamDeliverySession(sink)
   if (delivery) await delivery.writeWinnerFrame(String(candidate), frame)
   else await sink.write(frame)
+}
+
+/**
+ * The SINGLE place a `stream-error` outcome is minted — and therefore the one funnel where a
+ * post-header provenance gap can be counted for EVERY transport.
+ *
+ * The count first lived in `dispatch-lifecycle`, on the belief that both transports' frames pass
+ * through `ownFrames()`. They do not: the Responses upstream-WebSocket success leg returns its own
+ * lifecycle and never wraps its generator, so that leg produced a deterministic FALSE ZERO —
+ * the worst failure mode for a gap detector, since a zero then reads as "no gaps". The driver sees
+ * every transport, so it is the honest funnel.
+ *
+ * Use this instead of a bare `{ kind: "stream-error", error }` literal; `tests/architecture`
+ * guards that.
+ */
+function streamErrorOutcome(error: unknown, env: RequestEnvelope, truncated?: boolean): { kind: "stream-error"; error: unknown; truncated?: boolean } {
+  if (classifyStreamError(error) === "unknown-cancel") recordAbortProvenanceGap("post-header", env.clientFormat)
+  return { kind: "stream-error" as const, error, ...(truncated !== undefined && { truncated }) }
 }
 
 /**
@@ -1002,7 +1021,7 @@ async function runResponseSink(
     if (classifyStreamError(error) === "client-abort") return { kind: "settled-abort" }
     // Otherwise surface the RAW error (richest-data-flow): the format handler classifies
     // it, shapes its protocol error frame, logs diagnostics, and settles ctx.fail.
-    return { kind: "stream-error", error }
+    return streamErrorOutcome(error, env)
   } finally {
     sink.close?.()
   }
@@ -1277,7 +1296,7 @@ export async function runResponseBufferedSink(
               // Client gone mid-retreat-flush — the forwarded prefix is on the wire (un-retryable). Surface as a
               // retreated resolution (never-swallow the write error). The `finally` closes the sink.
               notifyBufferedResolve?.("retreated", attempt, { vendor })
-              return { kind: "stream-error", error: res.error }
+              return streamErrorOutcome(res.error, env)
             }
           } else if (candidateOpts.commitBoundaries?.(toWrite)) {
             // Block-level commit (P0): this frame closes a block → flush the buffered frames up to and
@@ -1333,7 +1352,7 @@ export async function runResponseBufferedSink(
               // A block committed, then the client-side write failed mid-commit — the committed prefix is
               // on the wire (un-retryable). Surface as a graceful degrade (never-swallow the write error).
               notifyBufferedResolve?.("partial-degrade", attempt, { vendor })
-              return { kind: "stream-error", error: res.error }
+              return streamErrorOutcome(res.error, env)
             }
             // Commit succeeded (frames are on the wire) → record the delivered blocks into the continuation
             // ledger. Done AFTER the successful flush so a write-error above never records an undelivered
@@ -1359,11 +1378,7 @@ export async function runResponseBufferedSink(
         // M1: a post-retreat truncation still leaves the anchor open (it was injected during an idle stall
         // before the retreat) → close it before surfacing the stream-error.
         await closeAnchorIfOpen()
-        return {
-          kind: "stream-error",
-          error: thrown ?? new Error("upstream stream truncated: closed without message_stop"),
-          truncated: thrown === null || thrown === undefined,
-        }
+        return streamErrorOutcome(thrown ?? new Error("upstream stream truncated: closed without message_stop"), env, thrown === null || thrown === undefined)
       }
 
       // COMMIT on a clean drain that reached a TERMINAL upstream state: `message_stop` (success),
@@ -1401,7 +1416,7 @@ export async function runResponseBufferedSink(
           // flush failed at the transport, NOT the retry: count it as a `success` so the hit-rate
           // denominator isn't a blind spot. The handler still settles the request as failed (delivery).
           notifyBufferedResolve?.("success", attempt, { vendor, ...(continuationCount > 0 && { continuationRetries: continuationCount }) })
-          return { kind: "stream-error", error: res.error }
+          return streamErrorOutcome(res.error, env)
         }
         notifyBufferedResolve?.("success", attempt, { vendor, ...(continuationCount > 0 && { continuationRetries: continuationCount }) })
         return { kind: "complete", headers: current.headers, ...(finish && { finish }) }
@@ -1529,11 +1544,7 @@ export async function runResponseBufferedSink(
       const committedDegrade = continuationCount > 0 ? "continuation-exhausted" : "partial-degrade"
       const degradeOutcome = committedAny ? committedDegrade : "exhausted"
       notifyBufferedResolve?.(degradeOutcome, attempt, { vendor, ...(continuationCount > 0 && { continuationRetries: continuationCount }) })
-      return {
-        kind: "stream-error",
-        error: thrown ?? new Error("upstream stream truncated: closed without message_stop"),
-        truncated: thrown === null || thrown === undefined,
-      }
+      return streamErrorOutcome(thrown ?? new Error("upstream stream truncated: closed without message_stop"), env, thrown === null || thrown === undefined)
     }
   } finally {
     sink.close?.()

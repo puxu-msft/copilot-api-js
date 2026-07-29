@@ -66,3 +66,24 @@ export function getAbortProvenanceGapCounts(): ReadonlyArray<AbortProvenanceGapC
 export function resetAbortProvenanceGapsForTests(): void {
   gaps = new Map()
 }
+
+/**
+ * Client surface for a request path — for the boundaries that have no `RequestEnvelope` to read
+ * `clientFormat` from (`forwardError` runs before/instead of the driver).
+ *
+ * Deliberately finer than `server.ts:detectErrorWireFormat`, which collapses Chat Completions and
+ * Responses into one `openai`: those are separate legs with separate transports (one of which is
+ * a WebSocket), so a gap on one must not be attributable to the other. Recording `unknown` here
+ * would throw away information the path already carries.
+ */
+export function gapSurfaceForPath(path: string): AbortProvenanceGapSurface {
+  if (path.startsWith("/v1beta")) return "gemini"
+  if (path.startsWith("/responses") || path.startsWith("/v1/responses")) return "openai-responses"
+  if (path.startsWith("/chat/completions") || path.startsWith("/v1/chat/completions") || path.startsWith("/embeddings") || path.startsWith("/v1/embeddings")) {
+    return "openai-cc"
+  }
+  // Azure exposes both OpenAI shapes under /openai/deployments/<name>/<op>.
+  if (path.startsWith("/openai")) return path.includes("/responses") ? "openai-responses" : "openai-cc"
+  if (path.startsWith("/v1/messages")) return "anthropic"
+  return "unknown"
+}

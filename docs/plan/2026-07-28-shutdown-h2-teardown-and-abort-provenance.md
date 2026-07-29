@@ -1,8 +1,12 @@
 # 修复：优雅关机 Step 1 秒杀在途请求 + abort 归因失真
 
-> **实施状态：✅ 已完整落地（2026-07-28）。** Phase 1 + Phase 2（2.1–2.5）全部实现，测试与正样本对照见文末「实施记录」。计划正文保持定稿时原样（含当时的行号），后续以代码与 [docs/lifecycle.md](../lifecycle.md) 为准。
+> **实施状态：✅ 已完整落地（2026-07-28）。** 计划正文保持定稿时原样（含当时的行号），后续以代码、[docs/DESIGN.md](../DESIGN.md)、[docs/API.md](../API.md) 与 [docs/lifecycle.md](../lifecycle.md) 为准。
 >
-> 本版已吸收异模型 subagent（`gpt-souls:reviewer`）的对抗评审：4 HIGH + 2 MED 全部采纳，见文末「评审处置」。
+> **范围远超原计划**：原计划只有 Phase 1（关机时序）+ Phase 2（abort provenance）。实际经**八轮**异模型对抗评审（`gpt-souls:reviewer`，同一实例逐轮 `SendMessage` 复审），
+> 每轮的发现都不是新范围，而是同一目标在我漏掉的格子上：计划轮 4H+2M → 合并态 3H+2M → 1H+2M → 1H+2M+1L → 2M+1L → 1H+2M+1L → 2M+1L → **收口 0 BLOCKER/HIGH/MED**。
+> 每轮处置见文末对应小节；累计交付还包括跨阶段 wire 类型统一（第四轮）、`abort_provenance_gaps_total` 可观测（第六轮起）与其单一漏斗定位（第七轮）。
+>
+> **这份计划最该被后人读的部分不是正文，是文末各轮记录**——它们记着每一次「我以为修完了」是怎么被证伪的。
 
 ## Context（为什么做这件事）
 
@@ -281,3 +285,59 @@
 **新增 mutation（2 组，先红后绿）**：摘掉 dispatch-lifecycle 里那唯一的记录点 → 计数测试变红；`postCommitAbortFrame` 改回硬编码（上一轮）仍红。
 
 **门禁**：typecheck 绿、改动文件 eslint 干净（`handler-v4.ts` 余 4 条经 `eslint --stdin` 对 HEAD 版核实为既有）、`test:backend` **6616 pass / 0 fail**。
+
+## 第六轮复审后的修复（2026-07-28）
+
+第五轮复审用探针证实了我自己在派单时点名最不确定的那处：**Responses upstream WebSocket 成功腿绕过 `dispatch-lifecycle` 漏斗**——它返回自己构造的 lifecycle、frames 从未经过 `ownFrames()`。探针给的是确定性假零（`{"unknown":true,"counts":[]}`），不是推断。
+
+**这是 gap 检测器最坏的失效形态**：功能正确、outcome 正确、所有测试绿，只有计数静默漏报，于是「零」被读成「没有 gap」。比没有这个指标更糟。
+
+**修法**：漏斗上移到 driver。`streamErrorOutcome()` 成为**唯一**产出 `stream-error` outcome 的地方（8 处裸字面量全部改走它），计数在路过时打，surface 取自 `env.clientFormat`——每个 transport 的 frames 都由 driver 消费，这才是诚实的漏斗。加 `tests/architecture` 守卫拒绝裸 `{ kind: "stream-error" }` 字面量（正样本对照验过会红）：绕过是**不可见**的，outcome 照样对、只有计数少。
+
+**测试形态也一并纠正**（这是假零能溜过去的直接原因）：原测试直接调 `createDispatchLifecycle()` 并手工喂四个 surface，只证明了「**如果**漏斗被调用，标签是对的」，看不到「某条 transport 根本不经过漏斗」。现在全部走真实 app（真 driver + 真 transport + 真 client surface）。untagged lifecycle abort 在生产里已无产生者（正是本意），故由上游 body 直接抛出那个「漏了契约的 producer 本会造成」的 `StreamUnknownCancelError`——同一个对象、同一条 driver 路径。
+
+**MED（pre-commit surface 固定 unknown）**——`c.req.path` 本来就知道协议，记 `unknown` 等于把已有信息扔掉、让排查还得回去翻单条 History。新增 `gapSurfaceForPath()`，**刻意比 `server.ts:detectErrorWireFormat` 更细**：后者把 CC 与 Responses 合并成 `openai`，而这两条是分开的腿（其一还是 WebSocket），一条腿的 gap 不能算到另一条头上。10 行路径表测（含 Azure alias 与未知路径）。
+
+**LOW（`/metrics` 零值注释不准确）**——采纳。只有 HELP/TYPE 没有 sample 是**合法**的，但它不创建可查询序列：PromQL 返回空向量，`absent()` 分不清「零 gap」与「旧版本 / 接线坏了 / 没被 scrape」。注释改成诚实说法，并写上真正可用的告警式 `sum(increase(...[5m])) > 0` + 独立的 target health 守卫。
+
+**门禁**：typecheck 绿、改动文件 eslint 干净、`test:backend` **6629 pass / 0 fail**。
+
+## 第七轮复审后的修复（2026-07-28）—— 0 BLOCKER / 0 HIGH
+
+第六轮复审确认漏斗上移成立：driver 确实是 HTTP、upstream WS、**下游 `/responses` WS**（它调 `runResponseBufferedSink`/`runResponseSink`，同样经过 helper）与 buffered/hedged 各分支共同经过的唯一 outcome 产出点；全仓再无别处 mint `stream-error`；helper 自伤（正则把它自己的 return 也换掉、造成无限递归）已修且 8 处传参正确。剩 2 MED + 1 LOW，全部处理：
+
+**MED（阳性测试只覆盖 HTTP，没覆盖本轮修复目标）**——一针见血：**本轮修的就是 upstream WS 那条腿，却没有一条测试驱动它**，正确性靠代码追踪，而「靠追踪不靠运行」正是这个 bug 当初混进来的方式。已补真实 app 驱动的 upstream-WS 用例。
+
+踩到一个 fixture 陷阱值得记：我的 fake 只 yield `{ type: "response.created" }`，缺 `response` 对象 → **累加器先抛 `undefined is not an object`**，测试于是观察到一个与它要测的东西无关的错误、计数当然为空。是探针打出 body 才看清（`TRANSPORTS: ["upstream-ws"×4]` 说明腿走对了、错在帧形状）。教训与本轮那条「mutation 不红有两解」同源：**绿/红都要先确认执行到了目标分支**。
+
+**MED（delayed-commit 那格没断言计数）**——补齐，含 tagged 阴性。它的记录点是唯一活在 handler 而非 driver 的一处，别的测试都够不着。新增 test-only seam `ctx.abortLifecycleUntaggedForTests()`：untagged lifecycle abort 在生产已无产生者（正是本意），只能**故意扮演漏了契约的 producer**；测试若改为自建裸 controller，则证明不了「我们的 ctx」的行为。
+
+**LOW（守卫是逐行 regex、可绕过）**——采纳，改为遍历 `src/**` 全部文件的 **AST 扫描**。写的过程中它自己暴露了第二个盲点：helper 的 return 是 `"stream-error" as const`，`isStringLiteralLike` 直接看不见 → 统计到 **0 个字面量**，也就是说这个守卫**同样会放过写成 `as const` 的绕过**。是那条「helper 必须恰好 mint 一次」的正样本对照把它抓出来的；现已解包 `as` / 括号 / `satisfies`。两种绕过形态（单行、跨行+`as const`）都实测变红，后者正是 regex 版漏掉的。
+
+**门禁**：typecheck 绿、改动文件 eslint 干净（`context/types.ts` 与 `handler-v4.ts` 的既有 lint 错经 `eslint --stdin` 对 HEAD 核实）、`test:backend` **6632 pass / 0 fail**。
+
+### 三阶段 × 传输 的计数覆盖矩阵（当前状态）
+
+| 格 | 真实驱动的阳性 | 阴性对照 | mutation 验过 |
+|---|---|---|---|
+| pre-commit | ✅ 真实 `forwardError` | ✅ tagged deadline | ✅ |
+| delayed-commit | ✅ 真实 app | ✅ tagged deadline | ✅ |
+| post-header · HTTP | ✅ 真实 app（CC + Anthropic） | ✅ tagged deadline | ✅ |
+| post-header · upstream WS | ✅ 真实 app | （与 HTTP 共用 driver 分支） | ✅ |
+| post-header · 下游 WS | ✅ 真实 WS server | ✅ tagged truncation | ✅ |
+
+（第八轮补齐最后一格。）
+
+## 第八轮复审后的修复（2026-07-28）—— 收口
+
+第七轮确认两条测试缺口已补且真的进入目标路径（upstream WS fixture 修正后栈显示 `streamWsEvents → guard → response processor → driver`，不是 accumulator shape error 也不是 pre-first-event fallback）。剩 2 MED + 1 LOW，全部处理：
+
+**MED（守卫声称的能力强于实际）**——复审用探针实测：computed `["kind"]`、指向同文件 const 的 identifier、shorthand `{ kind }` **三种都能大摇大摆走过去**。已全部支持（外加 string-literal 属性名），四种绕过形态逐一 mutation 变红。
+
+更重要的是措辞：**一个「宣称的覆盖面 > 实际覆盖面」的守卫本身就是一种假绿**——它诱使人说「机器会查的」，而这正是造出假零的那个信念。注释现在既列出抓得住什么，也**点名**抓不住什么（跨模块 import 的值、函数返回值）；根治要么写常量求值器、要么给 stream-error variant 加只有 helper 能造的 brand，已记 backlog。
+
+**MED（下游 `/responses` WS 那格）**——采纳「现在就补，别继续留白」。理由复审说得对：这个计数器**已经连续两次**「代码追踪认为对、测试矩阵缺格」，而下游 WS 还独有 `makeDeliveryWsSink`、`sendErrorAndClose`+1011、buffered/live 分支——HTTP 测试代表不了它。新测试一次断言整条终止序列（客户端 error 帧 + 1011 + history failed + 计数），外加 tagged 阴性；mutation 精确红。
+
+**LOW（test-only seam 放在生产公开接口）**——采纳。`RequestContext` 上的 test-only mutator 是所有生产消费者在类型层可调用的、要永久在接口文档里解释一个「不该在生产发生」的操作、且绑死未来任何实现。改为 WeakMap 支撑的导出 helper：行为不变（仍 abort 真实 `lifecycleAbort`，这正是它有牙的原因），生产表面保持干净。在 resetters 守卫里显式豁免并写明理由（per-request mutator，无 module-global 状态可 reset）。
+
+**门禁**：typecheck 绿、改动文件 eslint 干净、`test:backend` **6634 pass / 0 fail**。覆盖矩阵五格全绿。

@@ -226,6 +226,27 @@ export function synthesizeAttemptErrorResponse(a: Attempt): ResponseData | undef
   }
 }
 
+/**
+ * TEST-ONLY registry of each context's lifecycle controller.
+ *
+ * Exists so a test can abort the lifecycle WITHOUT a cause tag — i.e. impersonate a producer that
+ * skipped the `cancellationAbortError` contract. No production path does that any more, which is
+ * precisely why the seam is needed: the boundaries answer `unknown-cancel` / `unknown-abort` for it
+ * and the gap counter records it, and the only way to exercise that is to be the bad producer on
+ * purpose. A test aborting a bare controller of its own would prove nothing about how OUR context
+ * behaves.
+ *
+ * Kept off the `RequestContext` interface deliberately: putting a test-only mutator there makes it
+ * callable by every production consumer and forces any future implementation to provide it, for a
+ * capability that must never run in production.
+ */
+const lifecycleControllers = new WeakMap<RequestContext, AbortController>()
+
+/** @see lifecycleControllers — TEST-ONLY. Aborts `ctx.lifecycleSignal` with no cause tag. */
+export function abortLifecycleUntaggedForTests(ctx: RequestContext): void {
+  lifecycleControllers.get(ctx)?.abort()
+}
+
 export function createRequestContext(opts: {
   endpoint: EndpointType
   sessionId?: string
@@ -2185,5 +2206,6 @@ export function createRequestContext(opts: {
     },
   }
 
+  lifecycleControllers.set(ctx, lifecycleAbort)
   return ctx
 }

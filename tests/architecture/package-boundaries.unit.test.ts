@@ -576,3 +576,133 @@ describe("package import boundaries", () => {
     expect(importsCli(await readFile(path.join(repoRoot, "src/server.ts"), "utf8"))).toBe(false)
   })
 })
+
+/**
+ * The post-header abort-provenance gap counter lives in ONE helper in the driver. Any other place
+ * that mints a `stream-error` outcome bypasses it, and the bypass is INVISIBLE: the outcome is
+ * still correct, only the counter under-reports — and an under-reporting gap detector reads as
+ * "no gaps", which is worse than not having one. (Not hypothetical: the counter's first home
+ * missed the Responses upstream-WebSocket leg entirely and read a deterministic zero.)
+ *
+ * AST rather than a line regex: `{ kind:\n "stream-error" }`, a spread, or a second file would all
+ * slip past text matching, and the whole point of this guard is that a bypass leaves no other trace.
+ */
+describe("stream-error outcomes are minted in exactly one place", () => {
+  test('no object literal with `kind: "stream-error"` outside `streamErrorOutcome`', async () => {
+    const srcRoot = path.join(repoRoot, "src")
+    const files = await sourceFiles(srcRoot)
+    const offenders: Array<string> = []
+    let helperLiterals = 0
+
+    for (const file of files) {
+      const text = await readFile(file, "utf8")
+      // Cheap pre-filter before the ~700-file AST walk, which otherwise blows the default 5s
+      // timeout under `--parallel`'s 16 shards — and a guard that flakes is a guard that gets
+      // ignored. SOUND because every form this test resolves is same-file: even the indirect
+      // ones (`kind: STREAM_ERROR_KIND`, shorthand) require the literal to appear in this file
+      // as the const's initializer. It would stop being sound the day cross-module resolution
+      // is added — which is exactly the extension that is deferred to the backlog instead.
+      if (!text.includes("stream-error")) continue
+      const sourceFile = parseSource(file, text)
+      const visit = (node: ts.Node): void => {
+        if (ts.isObjectLiteralExpression(node)) {
+          const mintsStreamError = node.properties.some((prop) => mintsStreamErrorKind(prop, sourceFile))
+          if (mintsStreamError) {
+            if (enclosingFunctionName(node) === MINT_HELPER) helperLiterals += 1
+            else offenders.push(`${path.relative(srcRoot, file)}:${sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile)).line + 1}`)
+          }
+        }
+        ts.forEachChild(node, visit)
+      }
+      visit(sourceFile)
+    }
+
+    // Positive control: the helper must still mint it, or this guard would pass on a codebase that
+    // simply stopped producing the outcome — a green that proves nothing.
+    expect(helperLiterals).toBe(1)
+    expect(offenders).toEqual([])
+  })
+})
+
+/**
+ * Is this property `kind: "stream-error"`, under any statically-equivalent spelling?
+ *
+ * The forms below are not paranoia — each was probed and each slipped past an earlier version of
+ * this guard. A guard whose stated reach exceeds its actual reach is its own kind of false green:
+ * it invites "the machine checks that", which is exactly the belief that produced the false zero.
+ *
+ *   kind: "stream-error"                identifier name, direct literal
+ *   kind: "stream-error" as const       the helper's own spelling — an `AsExpression`, invisible to
+ *                                       a bare isStringLiteralLike check
+ *   "kind": "stream-error"              string-literal name
+ *   ["kind"]: "stream-error"            computed name
+ *   kind: STREAM_ERROR_KIND             identifier resolving to a same-file `const`
+ *   kind                                shorthand, ditto
+ *
+ * NOT covered (documented rather than implied): a value imported from another module, or returned
+ * by a function. Closing those needs a constant evaluator; the durable fix is a brand on the
+ * stream-error variant that only the helper can produce, noted in the backlog.
+ */
+function mintsStreamErrorKind(prop: ts.ObjectLiteralElementLike, sourceFile: ts.SourceFile): boolean {
+  if (ts.isShorthandPropertyAssignment(prop)) {
+    return prop.name.text === "kind" && resolvesToStreamError(prop.name, sourceFile)
+  }
+  if (!ts.isPropertyAssignment(prop)) return false
+  if (!propertyNameIsKind(prop.name)) return false
+  return isStreamErrorValue(prop.initializer, sourceFile)
+}
+
+function propertyNameIsKind(name: ts.PropertyName): boolean {
+  if (ts.isIdentifier(name) || ts.isStringLiteral(name)) return name.text === "kind"
+  if (ts.isComputedPropertyName(name)) {
+    const inner = unwrapTypeAssertions(name.expression)
+    return ts.isStringLiteralLike(inner) && inner.text === "kind"
+  }
+  return false
+}
+
+function isStreamErrorValue(node: ts.Expression, sourceFile: ts.SourceFile): boolean {
+  const cursor = unwrapTypeAssertions(node)
+  if (ts.isStringLiteralLike(cursor)) return cursor.text === "stream-error"
+  if (ts.isIdentifier(cursor)) return resolvesToStreamError(cursor, sourceFile)
+  return false
+}
+
+function unwrapTypeAssertions(node: ts.Expression): ts.Expression {
+  let cursor: ts.Expression = node
+  while (ts.isAsExpression(cursor) || ts.isParenthesizedExpression(cursor) || ts.isSatisfiesExpression(cursor)) cursor = cursor.expression
+  return cursor
+}
+
+/** Does `name` refer to a same-file `const` initialised to the literal `"stream-error"`? */
+function resolvesToStreamError(name: ts.Identifier, sourceFile: ts.SourceFile): boolean {
+  let found = false
+  const visit = (node: ts.Node): void => {
+    if (
+      !found
+      && ts.isVariableDeclaration(node)
+      && ts.isIdentifier(node.name)
+      && node.name.text === name.text
+      && node.initializer !== undefined
+      && ts.isStringLiteralLike(unwrapTypeAssertions(node.initializer))
+      && (unwrapTypeAssertions(node.initializer) as ts.StringLiteralLike).text === "stream-error"
+    ) {
+      found = true
+    }
+    ts.forEachChild(node, visit)
+  }
+  visit(sourceFile)
+  return found
+}
+
+/** Name of the nearest enclosing function/method declaration, for attributing a node. */
+function enclosingFunctionName(node: ts.Node): string | undefined {
+  for (let cursor: ts.Node | undefined = node.parent; cursor; cursor = cursor.parent) {
+    if (ts.isFunctionDeclaration(cursor) && cursor.name) return cursor.name.text
+    if (ts.isMethodDeclaration(cursor) && ts.isIdentifier(cursor.name)) return cursor.name.text
+    if (ts.isVariableDeclaration(cursor) && ts.isIdentifier(cursor.name)) return cursor.name.text
+  }
+  return undefined
+}
+
+const MINT_HELPER = "streamErrorOutcome"

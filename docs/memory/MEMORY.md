@@ -39,7 +39,7 @@
 - [超时归因要逐层剥离、别信配置层自称值](methodology-timeout-attribution-strip-layers-not-config.md) — 真掐断的常在你配置那层之下(实为 undici headersTimeout ~300s)
 - [测客户端何时放弃用服务端观测别跑阶梯](methodology-observe-client-giveup-serverside-not-ladder.md) — 静默超出容忍度+读 request.signal 一次给点位与重试 backoff
 - [诊断日志是会撒谎的权威声音](methodology-diagnostic-log-is-authoritative-voice-verify-against-ground-truth.md) — 计数器可能只接部分路径恒打零
-- [从日志断代码前先核实运行进程含修复](methodology-verify-running-server-has-fix-before-diagnosing-from-log.md) — 生产日志可能陈旧进程打
+- [从日志断代码前先核实运行进程含修复](methodology-verify-running-server-has-fix-before-diagnosing-from-log.md) — 生产日志可能陈旧进程打；同类第二例先比 process 指纹
 - [我方产出会作为客户端历史回流](methodology-our-own-output-returns-as-client-history.md) — 「客户端原生不会发这形状」非安全论据；修复腿须能修自己昨天造的
 - [V3 direct-driver 测试两 gotcha](methodology-v3-direct-driver-test-async-finalize-race-and-arena-enrichment-oracle.md) — getEntry 撞异步 finalize race(await whenModelOperationFinalized)
 - [reasoned-safe≠tested / producer wire-oracle 必断全序](methodology-reasoned-safe-not-tested-producer-wire-oracle.md) — reviewer「推理安全」也错
@@ -80,6 +80,8 @@
 - [「一个终态」≠「一个完整终止符」](reference-exactly-one-terminal-is-not-exactly-one-complete-terminus.md) — 合成 end_turn 不补 message_stop 真 SDK 抛 stream ended
 - [中止成因在产生点打标签、别在边界猜](methodology-abort-provenance-tag-at-source-not-guess-at-boundary.md) — fall-through 猜原因=日志/History/客户端三处一致撒谎(609ms 报成 900s 超时)；AbortSignal.any 本就透传 reason 是传输层扔的；preflight 与 mid-wait 两分支须分别 mutation；边界写有序 precedence、每臂要正向证据
 - [关机 Step 1 停的是新增工作还是在途资源](methodology-shutdown-step1-stop-new-vs-kill-inflight.md) — 拆在途请求正用的资源=用 Step 1 撕毁 Step 2 的 drain 承诺；同族不对称(WS 有 stopNew/closeAll 拆分而 h2 没有)即红旗；取证看同刻兄弟请求是否存活
+- [appliesTo 命中 ≠ 链被驱动](methodology-appliesto-matches-but-chain-never-driven.md) — 先数驱动点的生产调用点再下「没生效」结论；缺驱动点=整条链全体落空，别按单钩子估波及面
+- [config.yaml 每请求覆盖 setStateForTests](reference-config-yaml-overwrites-setstatefortests-per-request.md) — 全应用测试钉 config-managed 键是空操作；指纹=同一 policy 一半听测试一半听配置；mutation 要破坏生产代码别翻状态
 - [修全部比较点](feedback-fix-all-comparison-sites.md) — 归一化键/id bug 多点复发；grep 全仓逐处修+抽共享 primitive
 - [修一条约束别自造兄弟约束违规](methodology-fix-one-constraint-violates-sibling-constraint.md) — 对象级约束要一起断言
 - [名实不符变量+双源值](methodology-lying-variable-name-dual-source-value.md) — 名字断言单一身份、值取自会撒谎的源(原始vs已变换)

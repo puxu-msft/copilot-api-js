@@ -2,13 +2,14 @@
 
 从记忆库降为引用层（2026-07-05）时归位的活 backlog。每条：现状 / 暂缓原因 / 若做需改什么。
 
-## reverse `@messages` 非流式跨协议 refusal 抑制（2026-07-28，合并态复审后拆出）
+## reverse `@messages` **非流式**三格没跑 whole-response 改写链（2026-07-28 实测重定范围）
 
-- **根因**：Anthropic whole-response refusal rewrite 位于 Anthropic wire 层；reverse `@messages` 的 Chat Completions / Responses / Gemini codec 随后把原始 Anthropic response 翻成目标协议，而三个 route settle 点此前只调用 `anthropicNonStreamingTruncation(stop_reason)`。`stop_reason:"refusal"` 是有效终止符，因此旧代码直接 `ctx.complete()`；本批已用共享 `isContentlessRefusalResponse()` 修正裁决，但没有把 Anthropic 三模式呈现策略提升为跨协议机制。
-- **当前行为**：三条 reverse 非流式腿命中 contentless refusal 时统一 `ctx.fail(refusalSummary(...), ..., {upstreamSucceeded:true})`，记录 `refusal-passthrough`，History / `/api/stats` / telemetry / TUI 的失败口径一致；客户端仍收到现有目标协议翻译：Chat Completions 的 `finish_reason:"content_filter"`、Responses 的 `status:"incomplete"` + `incomplete_details.reason:"refusal"`、Gemini 的对应 content-filter 完成原因。配置的默认 `anthropic.refusal_sse_rewrite="end_turn"` 对这三条非流式腿尚不产生抑制 wire。
-- **理想架构**：把 refusal disposition 抽成协议无关的、请求级冻结的终态决策，先基于原始 Anthropic response 判定 passthrough / suppression / error，再由 CC / Responses / Gemini 各自把该决策渲染成合法且不会中断客户端轮次的正常完成形态；raw upstream response 与 `stopDetails` 继续原样进 History，上游腿继续 `success:true`，请求裁决继续 `failed`。
-- **为何暂缓**：本批的 HIGH 缺陷是后端裁决与计数口径错误，已可独立闭合；真正抑制会改变三种公开协议的客户端 wire，需要决定每种协议的合成文本位置、完成原因、error 模式、usage 与 response id 保持方式，并补真实 SDK / CLI 消费 oracle。把这些协议设计夹进 settle 修复会产生未经规格裁决的新公共行为。
-- **若做需改什么**：① 把 `RefusalPolicy` + detail/template vars 形成跨协议 whole-response disposition；② 在 `openai-cc` / `openai-responses` / Gemini reverse renderer 中分别实现 `end_turn`、`refusal`、`error` 三模式；③ 保证目标协议 exactly-one terminus 与 raw/forwarded 双轨；④ feature 从当前固定 `refusal-passthrough` 改为实际 mode 对应值；⑤ 为三条非流式腿各补 byte golden + 官方 SDK 消费 oracle，并补至少一条同 session 后续轮继续的客户端测试。
+- **实测订正（原条目范围是错的）**：这条 backlog 原本写成「六格 wire 抑制都没做」。2026-07-28 实测推翻——**流式三格已经在抑制**，客户端拿到的是正常轮（CC `finish_reason:"stop"` + end_turn 正文 + `[DONE]`；Gemini `finishReason:"STOP"` + 文本 part；Responses `response.completed`）。原因是 per-frame 改写链的门是 `targetEndpoint === /v1/messages`，reverse 腿正好命中，Anthropic 帧在 reverse 翻译器看到之前就被改写了。oracle 与逐格字节见 `tests/routes/reverse-refusal-default-wire.it.test.ts`。
+- **根因（比原描述小得多，也宽得多）**：不是「三套协议呈现逻辑没写」，而是**少调了一次**。whole-response 改写链在 `driver.runResponseWhole`（`src/lib/pipeline/driver.ts:1562`），它是 `transformWhole` 的**唯一**驱动点，而它在生产代码里**只有一个调用点**——直连 Anthropic handler（`src/routes/messages/handler-v4.ts:894`）。三条 reverse 非流式路径只调 `driver.runResponseNonStreaming`（`codec.renderResponseNonStreaming`，纯 render）。
+- **因此波及面不止 refusal**：`recover-tool-call` / `tool-input-decode` / `server-tool-filter` / `recover-refusal` 四个 `transformWhole` 钩子在 reverse 非流式腿上**全部落空**（`appliesTo` 都命中，只是链没被驱动）。refusal 只是被观测到的那一个；另外三个尚无 oracle，**做这条时应一并建**。
+- **当前行为**：六格裁决口径已统一（`ctx.fail(refusalSummary(...), ..., {upstreamSucceeded:true})` + `refusal-passthrough`，上游腿 `success:true`）。wire 上非流式三格仍是 CC `finish_reason:"content_filter"`+`content:null` / Responses `status:"incomplete"`+`incomplete_details.reason:"refusal"` / Gemini `finishReason:"SAFETY"`+空 parts。
+- **若做需改什么**：① reverse 非流式路径在翻译成目标协议**之前**，先对 Anthropic body 跑 `driver.runResponseWhole`（流式腿等价于已经这么做了，所以这是**对齐**而非新机制）；② 确认 `renderReverseNonStreamingV4` 的 settle 判据仍读**链前** upstream-original（`isRefusal` 读 `response` 而非 `finalResponse` 是抑制后 settlement 正确的原因，别改反）；③ feature 从写死的 `refusal-passthrough` 改成实际 mode；④ 把 `tests/routes/reverse-refusal-default-wire.it.test.ts` 的三条非流式期望翻成与流式一致（它们就是本任务的落地信号），并补另三个 whole 钩子的 oracle；⑤ 补至少一条同 session 后续轮可继续的真实客户端测试。
+- **为何暂缓**：改动会改变三种公开协议的客户端 wire，需要逐协议裁定合成文本位置、完成原因、error 模式、usage 与 response id 的保持方式。不阻塞任何已交付行为。
 
 ## 两条顺序不变量只有注释守着（2026-07-28，来自顺序不变量审计 #3 / #5）
 
@@ -1109,3 +1110,17 @@ registry（`docs/rfc/2026-07-21-retry-strategy-registry.md`）6 commit 全 lande
 - **当前行为**：**没有已知的实际违规**——两个守卫今天都是绿的，且各自领域的边界目前确实成立。坏的是**保证强度**：它们声称「某某不依赖某某」，实际检查的是「源码里没出现我列举的那几种拼法」。
 - **理想架构 / 若做需改什么**：本轮已经把工具做好了——`tests/architecture/source-ast.ts` 的 `createSpecifierResolver(repoRoot)`（用项目自己的 compilerOptions 解析）+ `allModuleSpecifiers()`（AST 枚举全部 import 形态）。两个守卫改成：AST 取 specifier → 解析 → 判断规范化目标是否落在目标目录内；扫描面同时扩到 `.ts/.tsx/.mts/.cts` + `.js` 家族（参考 `package-boundaries` 的 `SOURCE_EXTENSIONS` 与 core ratchet 的 `SOURCE_GLOB`，两处都已有持久 oracle 可抄）。telemetry 那条还要把「只允许 `index.ts` / `types.ts`」表达成解析后的目标文件判断。**每改一条都要配一个 live oracle**：把判据 mutation 回拼写匹配后必须变红——本轮的教训是「primitive 有测试 ≠ 守卫接了线」，而这两个守卫的等价拼法探针此前全绿。
 - **为何暂缓**：这两个守卫**不属于本分支的因果链**（state 降 foundation 叶子），覆盖的是 telemetry 包边界与 generation/delivery/transport 分层，各有六条以上独立边界规则，改判据后每一条都需要重新确认仍然成立并重新冻结——那是一次独立的、需要自己的评审的改动。把它塞进本分支会让「state 搬迁做了什么」变得无法审查，这与本轮把「config 两阶段」留在 backlog 的判断同源（两位评审均认可那个边界）。**触发条件（值得做）**：下次触碰这两个守卫、或 telemetry/generation 领域出现一次「守卫全绿但边界实际被破坏」的事故。**发现方**：state→foundation 分支第十轮复审（2026-07-29），我逐条复现确认属实。
+||||||| a675064e
+## `stream-error` outcome 的唯一产出点靠测试守卫、而非类型系统（2026-07-28，abort 归因收口）
+
+- **根因 / 现状**：post-header 的 abort-provenance gap 计数只在 `src/lib/pipeline/driver.ts:streamErrorOutcome()` 里打。任何别处 mint 一个 `{ kind: "stream-error", … }` 都会绕过它，而**绕过是不可见的**——outcome 照样正确，只有计数静默少报，于是「零」被读成「没有 gap」。这不是假想：该计数器的第一版放在 `dispatch-lifecycle`，完整漏掉了 Responses upstream-WS 腿，读出确定性的零。当前的护栏是 `tests/architecture/package-boundaries.unit.test.ts` 的 AST 扫描。
+- **当前行为**：守卫遍历 `src/**/*.ts` 的对象字面量，识别 identifier / string-literal / computed 三种属性名，值侧解包 `as` / 括号 / `satisfies`，并解析指向**同文件** `const` 的 identifier 与 shorthand。四种绕过形态各有 mutation 实测变红。**已知盲区**（注释里点名、不外推）：从别的模块 import 来的值、函数返回值，以及由这两者派生的 spread / `Object.assign` / 多级别名——都需要跨表达式常量求值才能判定。
+- **理想架构 / 若做需改什么**：给 `ResponseOutcome` 的 stream-error variant 加一个**只有 `streamErrorOutcome()` 能构造**的 opaque brand/token（例如模块私有 symbol 或 unique-symbol 品牌字段），让类型系统直接拒绝其它构造点。做完之后 AST 守卫可以降级为冗余或删除。需改：`src/lib/pipeline/types.ts` 的 outcome union、driver 内 8 处产出点（已全部走 helper，故改动集中）、以及所有以结构化字面量断言该 outcome 的测试。
+- **为何暂缓**：直接静态 mint 已被守卫覆盖，剩余盲区都需要有人**刻意**绕道才会踩到；而 brand 是一次公开类型契约变更，值得单独一个改动 + 正样本对照，不该塞进 abort 归因这条因果链。**在测试里手写半个 TypeScript 常量求值器是明确不采纳的选项**（异模型复审建议，我同意：那会把守卫变成新的维护负担与新的假绿来源）。**触发条件（值得做）**：观测到 gap 计数与实际 incident 数对不上、或有人真的在别处 mint 了这个 outcome、或下次触碰 `ResponseOutcome` 的类型定义。**发现方**：第八轮异模型复审（2026-07-28），它同时指出「一个宣称覆盖面大于实际覆盖面的守卫本身就是假绿」。
+
+## `test:backend` 并发档位存在低频污染型 flaky（2026-07-28，abort 归因收尾期间六次全量的观测）
+
+- **根因 / 现状**：**未定位**。现象是 `bun run test:backend`（`scripts/parallel-test.ts`，16 分片）偶发挂 1 条，**每次挂的是不同的测试**，且**单跑必过**。这是典型的跨文件状态污染或分片间资源竞争，不是被测代码的缺陷。
+- **当前行为（六次全量的原始数据，同一棵树、同一 sha）**：run1 ✅ / run2 ✅ / run3 ❌ `tests/pipeline/hooks/loader.unit.test.ts` 的 4 条 `loadUpstreamHook` / run4 ✅ / run5 ❌ 架构测试「legacy Vue `ui/` stays detached from the main chain」/ run6 ✅。`loader.unit.test.ts` 单跑连过 **5/5**。更早在本轮中段还观测到一次 `tests/diagnostics/multiprocess-rotation.it.test.ts`（单跑 3/3 过、全量重跑绿）。**三个互不相关的文件**，指向档位机制而非某个测试。
+- **理想架构 / 若做需改什么**：先用 `test:fast:isolated`（已存在，退回非分片）对照确认「污染只在分片模式下发生」；再按 skill `debugging-test-pollution` 的 playbook 二分定位——嫌疑面是**分片间共享的进程级单例**（`loadUpstreamHook` 正是单例 + 版本号语义、`ui/` 那条读文件系统），以及 `scripts/parallel-test.ts` 的**片内共享缓存**是否让同片内的文件互相看见彼此的模块态。修好后应有一条守卫：同一分片内连跑 N 次仍绿。
+- **为何暂缓**：与本轮（abort 归因）因果链无关，且**门本身仍是可信的**——失败是真失败、退出码正确，坏的只是「一次全绿不等于确定性全绿」。定位它需要独立的二分实验，塞进本轮会让本轮的因果链变糊。**触发条件（值得做）**：频率上升到影响交付判断、或某次真回归被当成 flaky 挥手放过（**这正是最危险的失效形态**——本轮就差点把一次环境性红当成「既有失败」）。**发现方**：abort 归因收尾期间连跑六次全量的对照观测（2026-07-28）。

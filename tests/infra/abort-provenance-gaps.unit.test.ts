@@ -30,26 +30,29 @@ import os from "node:os"
 import path from "node:path"
 
 import { cancellationAbortError } from "~/lib/error/cancellation-reason"
+import { forwardError } from "~/lib/error/forward"
 import { buildMetricsExposition } from "~/lib/metrics-exposition"
 import {
   //
+  gapSurfaceForPath,
   getAbortProvenanceGapCounts,
   recordAbortProvenanceGap,
   resetAbortProvenanceGapsForTests,
 } from "~/lib/observability/abort-provenance-gaps"
-import {
-  //
-  StreamDispatchCancelError,
-  StreamReaperCancelError,
-  StreamRequestCancelError,
-  StreamRequestDeadlineError,
-  StreamShutdownError,
-  StreamUnknownCancelError,
-} from "~/lib/stream"
 import { installDefaultTelemetryRuntime } from "~/lib/telemetry-assembly"
-import { createDispatchLifecycle } from "~/lib/transport/dispatch-lifecycle"
 
 import { classifyPostCommitAbort } from "../../src/routes/messages/post-commit-error"
+
+/** Minimal hono-ish context for `forwardError` (mirrors tests/infra/error.unit.test.ts). */
+function mockCtx(): never {
+  return {
+    req: { method: "POST", path: "/v1/messages", raw: { signal: new AbortController().signal } },
+    json: () => new Response(null),
+    header: () => {},
+    get: () => undefined,
+    set: () => {},
+  } as never
+}
 
 function total(): number {
   return getAbortProvenanceGapCounts().reduce((sum, row) => sum + row.count, 0)
@@ -88,74 +91,30 @@ describe("abort-provenance gap counter", () => {
     )
   })
 
-  test("an unknown-cancel on the live post-header path is counted once, labelled by client surface", async () => {
-    // Counted in the dispatch-lifecycle funnel — the ONE place every guarded stream from both
-    // transports passes through — rather than at the ~18 route sites that shape the error frame.
-    // Miss one of those and the counter under-reports, which is worse than not having it: a zero
-    // would then read as "no gaps".
-    const lifecycle = createDispatchLifecycle(undefined, "gemini")
-    const guarded = lifecycle.ownFrames({
-      [Symbol.asyncIterator]() {
-        return {
-          next(): Promise<IteratorResult<never>> {
-            return Promise.reject(new StreamUnknownCancelError())
-          },
-        }
-      },
-    })
-    await expect(guarded[Symbol.asyncIterator]().next()).rejects.toBeInstanceOf(StreamUnknownCancelError)
-
-    expect(getAbortProvenanceGapCounts()).toEqual([{ phase: "post-header", surface: "gemini", count: 1 }])
+  test.each([
+    ["/v1/messages", "anthropic"],
+    ["/v1/chat/completions", "openai-cc"],
+    ["/chat/completions", "openai-cc"],
+    ["/v1/embeddings", "openai-cc"],
+    ["/responses", "openai-responses"],
+    ["/v1/responses", "openai-responses"],
+    ["/openai/deployments/gpt-4o/chat/completions", "openai-cc"],
+    ["/openai/deployments/gpt-4o/responses", "openai-responses"],
+    ["/v1beta/models/gpt-4o:streamGenerateContent", "gemini"],
+    ["/something/else", "unknown"],
+  ] as const)("pre-commit surface is read off the path: %s → %s", (path, surface) => {
+    // Recording `unknown` here would throw away information the path already carries, leaving the
+    // operator to open a History entry to learn which leg leaked. Finer than the wire-format
+    // detector on purpose: Chat Completions and Responses are separate legs (one is a WebSocket).
+    expect(gapSurfaceForPath(path)).toBe(surface)
   })
 
-  test("every client surface reports its own label — none silently degrades to `unknown`", async () => {
-    // A surface that stops threading `env.clientFormat` still counts, but under `unknown`, which
-    // reads as "we do not know which leg leaked" — exactly the ambiguity this metric exists to
-    // remove. The Responses transport had a differently-shaped call site and was silently missing
-    // its label until this arm existed.
-    for (const surface of ["anthropic", "openai-cc", "openai-responses", "gemini"] as const) {
-      const lifecycle = createDispatchLifecycle(undefined, surface)
-      const guarded = lifecycle.ownFrames({
-        [Symbol.asyncIterator]() {
-          return {
-            next(): Promise<IteratorResult<never>> {
-              return Promise.reject(new StreamUnknownCancelError())
-            },
-          }
-        },
-      })
-      await expect(guarded[Symbol.asyncIterator]().next()).rejects.toBeInstanceOf(StreamUnknownCancelError)
-    }
-    expect(
-      getAbortProvenanceGapCounts()
-        .map((row) => row.surface)
-        .toSorted(),
-    ).toEqual(["anthropic", "gemini", "openai-cc", "openai-responses"])
-  })
+  test("pre-commit: forwardError counts an untagged abort under its path's surface, and a tagged one not at all", () => {
+    forwardError(mockCtx(), new DOMException("The operation was aborted.", "AbortError"))
+    expect(getAbortProvenanceGapCounts()).toEqual([{ phase: "pre-commit", surface: "anthropic", count: 1 }])
 
-  test("NEGATIVE: healthy tagged traffic never touches the counter", async () => {
-    // The whole value of this metric is that a non-zero reading is an action item. Any of these
-    // firing it would make the number meaningless.
-    for (const error of [
-      new StreamReaperCancelError(),
-      new StreamRequestDeadlineError(),
-      new StreamRequestCancelError(),
-      new StreamDispatchCancelError(),
-      new StreamShutdownError(),
-      new Error("plain transport reset"),
-    ]) {
-      const lifecycle = createDispatchLifecycle(undefined, "anthropic")
-      const guarded = lifecycle.ownFrames({
-        [Symbol.asyncIterator]() {
-          return {
-            next(): Promise<IteratorResult<never>> {
-              return Promise.reject(error)
-            },
-          }
-        },
-      })
-      await expect(guarded[Symbol.asyncIterator]().next()).rejects.toBe(error)
-    }
+    resetAbortProvenanceGapsForTests()
+    forwardError(mockCtx(), cancellationAbortError("request-deadline", "request_deadline"))
     expect(total()).toBe(0)
   })
 
@@ -168,10 +127,13 @@ describe("abort-provenance gap counter", () => {
     expect(total()).toBe(0)
   })
 
-  test("the gap surfaces on /metrics with both labels, and is absent-but-declared when zero", () => {
+  test("the gap surfaces on /metrics with both labels; a clean process declares the family with no samples", () => {
     const zero = buildMetricsExposition()
     expect(zero).toContain("abort_provenance_gaps_total")
-    // Declared (HELP/TYPE) but with no samples — a scraper sees the series exists and is clean.
+    // Declared (HELP/TYPE) with no samples. That is legal exposition, but it does NOT create a
+    // queryable series: PromQL returns an empty vector, so `absent()` cannot distinguish "no gaps"
+    // from "target is an old build / the metric broke / nothing was scraped". Alert on
+    // `sum(increase(...[5m])) > 0` plus a separate target-health guard, not on absence.
     expect(zero).not.toMatch(/abort_provenance_gaps_total\{/)
 
     recordAbortProvenanceGap("delayed-commit", "anthropic")

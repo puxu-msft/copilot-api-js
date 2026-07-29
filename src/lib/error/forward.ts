@@ -19,7 +19,11 @@ import {
   looksLikeHtml,
   parseRetryAfterHeader,
 } from "~/lib/error/utils"
-import { recordAbortProvenanceGap } from "~/lib/observability/abort-provenance-gaps"
+import {
+  //
+  gapSurfaceForPath,
+  recordAbortProvenanceGap,
+} from "~/lib/observability/abort-provenance-gaps"
 import {
   //
   isShutdownCausedAbort,
@@ -593,7 +597,7 @@ export function forwardError(c: Context, error: unknown, format: ErrorWireFormat
     if (cancellation === undefined) {
       // Untagged: every producer tags now, so this is a WIRING GAP, not a normal outcome. Count it
       // so a leak is visible on /metrics instead of only in an individual History entry.
-      recordAbortProvenanceGap("pre-commit", "unknown")
+      recordAbortProvenanceGap("pre-commit", gapSurfaceForPath(c.req.path))
     }
     consola.warn(`Request cancelled (${cancellation ?? "untagged abort"}) in ${c.req.method} ${c.req.path}: ${errorMessage}`)
     return finalizeErrorDelivery(c, helpers.defaultError(errorMessage, true, 503), 503 as ContentfulStatusCode)

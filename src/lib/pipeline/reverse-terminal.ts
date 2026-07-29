@@ -23,24 +23,36 @@
  *      its absence on a clean EOF means the upstream truncated mid-message. Keyed on `sawMessageStop`
  *      (NOT the translator's `finishReason`, which a `message_delta`-then-cut stream sets while still
  *      being truncated) so all reverse pumps AND the canonical direct pump agree on the same signal.
- *   3. **complete** — `message_stop` seen, no error: the stream drained cleanly.
+ *   3. **contentless-refusal** — a complete `message_stop` arrived, but the upstream ended with
+ *      `stop_reason:"refusal"` and no client-visible text/tool_use. This reuses the SAME predicate as
+ *      direct Anthropic streaming and reverse non-streaming; protocol-specific pumps only settle it.
+ *   4. **complete** — `message_stop` seen, no error, no contentless refusal: clean success.
  */
 
 import type { AnthropicStreamAccumulator } from "~/lib/anthropic/stream-accumulator"
+
+import {
+  //
+  hasClientVisibleContent,
+  isContentlessRefusal,
+} from "~/lib/anthropic/recover-refusal"
 
 /** The terminal state of a cleanly-drained reverse Anthropic upstream stream. */
 export type ReverseAnthropicTerminal =
   | { kind: "upstream-error"; error: { type: string; message: string } }
   | { kind: "truncated" }
+  | { kind: "contentless-refusal" }
   | { kind: "complete" }
 
 /**
  * Classify a cleanly-drained (`outcome.kind === "complete"`) reverse Anthropic upstream stream from
- * its accumulator. See the module doc for the priority order (error → truncated → complete) and why
- * `sawMessageStop` — not the translator finish_reason — is the truncation signal.
+ * its accumulator. See the module doc for the priority order
+ * (error → truncated → contentless-refusal → complete) and why `sawMessageStop` — not the translator
+ * finish_reason — is the truncation signal.
  */
 export function classifyReverseAnthropicTerminal(acc: AnthropicStreamAccumulator): ReverseAnthropicTerminal {
   if (acc.streamError) return { kind: "upstream-error", error: acc.streamError }
   if (!acc.sawMessageStop) return { kind: "truncated" }
+  if (isContentlessRefusal(acc.stopReason, hasClientVisibleContent(acc.contentBlocks))) return { kind: "contentless-refusal" }
   return { kind: "complete" }
 }

@@ -712,6 +712,14 @@ async function pumpReverseGeminiStreamingV4(opts: PumpReverseGeminiStreamingV4Op
     sink.finalize?.()
     return
   }
+  if (terminal.kind === "contentless-refusal") {
+    const summary = refusalSummary(extractRefusalDetail(anthropicAcc.stopDetails))
+    env.ctx.recordFeature("refusal-passthrough", { category: refusalCategoryForDiagnostics(anthropicAcc.stopDetails) })
+    recordForwarded()
+    env.ctx.fail(anthropicAcc.model || model, new Error(summary), buildAnthropicResponseData(anthropicAcc, model), { upstreamSucceeded: true })
+    sink.finalize?.()
+    return
+  }
 
   // The processor finish boundary already emitted the geminiTranslator's stream-end frames.
   recordForwarded()

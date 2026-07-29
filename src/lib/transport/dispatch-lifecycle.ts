@@ -1,4 +1,3 @@
-import type { AbortProvenanceGapSurface } from "~/lib/observability/abort-provenance-gaps"
 import type {
   //
   DispatchDisposalResult,
@@ -6,8 +5,6 @@ import type {
 } from "~/lib/pipeline/types"
 
 import { cancellationAbortError } from "~/lib/error/cancellation-reason"
-import { recordAbortProvenanceGap } from "~/lib/observability/abort-provenance-gaps"
-import { classifyStreamError } from "~/lib/stream"
 
 export interface DispatchLifecycleOwner extends UpstreamDispatchLifecycle {
   readonly signal: AbortSignal
@@ -31,7 +28,7 @@ function abortReason(reason?: string): DOMException {
  * Own one HTTP-style physical dispatch without owning the pooled connection.
  * Cancellation reaches the fetch/body stream; disposal closes only the body iterator.
  */
-export function createDispatchLifecycle(externalSignal?: AbortSignal, surface: AbortProvenanceGapSurface = "unknown"): DispatchLifecycleOwner {
+export function createDispatchLifecycle(externalSignal?: AbortSignal): DispatchLifecycleOwner {
   const controller = new AbortController()
   let activeIterator: AsyncIterator<unknown> | undefined
   let settled = false
@@ -135,13 +132,6 @@ export function createDispatchLifecycle(externalSignal?: AbortSignal, surface: A
                 if (result.done) complete()
                 return result
               } catch (error) {
-                // The SINGLE funnel for post-header stream failures: every guarded stream from both
-                // transports passes through here exactly once. An `unknown-cancel` reaching this point
-                // means some cancellation source aborted without calling `cancellationAbortError` —
-                // a wiring gap, not a normal outcome — so count it here rather than at the ~18 route
-                // sites that shape the frame (miss one of those and the counter under-reports, which
-                // is worse than not having it: a zero would then read as "no gaps").
-                if (classifyStreamError(error) === "unknown-cancel") recordAbortProvenanceGap("post-header", surface)
                 // Surface the lifecycle error immediately, but do not claim quiescence until the
                 // guard/source iterator's single cleanup promise has completed.
                 void ensureIteratorCleanup().catch(() => {})
