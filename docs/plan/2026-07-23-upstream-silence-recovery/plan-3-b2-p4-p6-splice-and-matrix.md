@@ -51,9 +51,9 @@ streamSSE(c, async (stream) => {
 
 - Modify: `src/routes/messages/handler-v4.ts`（① COMMIT 分支的外层 `catch` 块，`:647-694` 附近——pre-ready 挂载点；② `pumpAnthropicStreamingV4` 的 `outcome.kind === "stream-error"` 分支，`:1279-1320` 附近——live 路径 ready-态挂载点）
 - Modify: `src/lib/pipeline/driver.ts`（`runResponseBufferedSink` 的 `"exhausted"` 结局分支，`:1467-1488` 附近——buffered 路径 ready-态挂载点；`committedAny===false` 时旁路进 B2，`committedAny===true` 维持现有 continuation/partial-degrade 逻辑不变）
-- Create: `src/routes/messages/precontent-recovery-splice.ts`（三模式 wire-level 拼接函数 `spliceFreshAttemptFrames` + 触发判定 `shouldAttemptPreContentRecovery`，两个挂载点共用）
+- Modify: `src/lib/anthropic/live-reconcile.ts`（Task 4.1′：把既有 live decorator 补成完整透明边界，供后续恢复接线一次构造、跨 attempt 复用；触发判定仍由 Task 4.2/4.3 落地）
 - Modify: `src/routes/messages/post-commit-error.ts`（若 splice 也失败，仍需现有 `writeTerminalThenSettle` 机制收尾——复用，不重写）
-- Test: `tests/routes/messages/precontent-recovery-splice.unit.test.ts`（三模式 splice 纯函数测试）
+- Test: `tests/anthropic/live-reconcile-cross-attempt.unit.test.ts`（按 wire state 覆盖同一个持久 decorated sink 跨首次 attempt 与 fresh attempt 的拼接行为）
 - Test: `tests/e2e-client/precontent-recovery.it.test.ts`（client-proxy e2e，真 `@anthropic-ai/sdk` oracle，仿 `continuation-sdk.it.test.ts` 结构，覆盖两个挂载点）
 - Test: `tests/routes/messages/precontent-recovery-matrix.it.test.ts`（协议级回归矩阵：三模式 × 5 种失败形态 × 两个挂载点）
 - Test: `tests/pipeline/precontent-recovery-buffered.it.test.ts`（buffered 路径的 `committedAny===false` 旁路分支，driver 级）
@@ -102,9 +102,15 @@ runResponseRecovery(upstream: UpstreamStream, env: RequestEnvelope, reason: stri
 
 ---
 
-## Task 4.1：三模式 wire-level splice 纯函数
+## Task 4.1 / 4.1′：三模式 wire-level splice（首版门面否决后重划为持久 decorator）
 
-> **实施状态（2026-07-28）：已完成，保持零 handler 接线。** 新增 `src/routes/messages/precontent-recovery-splice.ts` 的 `spliceFreshAttemptFrame`：无 hooks 时直接 `sink.write`；有 hooks 时复用 `makeReconcilingSink(...).write(frame)`，从而继续由既有 `reconcileLiveFrame` 决定 fresh `message_start` 去重、empty_text anchor close-off 与 `content_block_*` index +1，并保留 close-off 经 `writeAnchor` 写出、携带 synthetic anchor 标记的既有 richest-data-flow 语义。此处相对下方签名草案只偏离一处：不是手动遍历 `reconcileLiveFrame` 返回值并全部调用 `sink.write`，因为当前 `makeReconcilingSink` 已负责把 synthetic `stop@0` 路由到 `writeAnchor`；手动遍历会丢失该标记。四条单测均先 RED 后 GREEN，并分别以“ping 丢帧”“synthetic-prelude 绕过 reconcile”“remap 恒等”“终态前不调用 `closeAnchorIfOpen`”四个 mutation 证实会变红。重核后的真实位置：`reconcileLiveFrame` 在 `src/lib/anthropic/live-reconcile.ts:107`，`makeReconcilingSink` 在 `:164`，`closeAnchorIfOpen` 在 `src/lib/anthropic/keepalive-anchor.ts:178`，`buildAnthropicAnchorHooks` 在 `src/routes/messages/handler-v4.ts:1045`，`liveReconcilingSink` 在 `:1251`，live `stream-error` 分支在 `:1382-1423`。现状还比原 plan 多一层按需 escalation：ping 配置在 `streamKeepaliveEscalateSec > 0` 时也会构造 hooks（`:1105-1109`），但未注入脚手架前 `anchorState.injected=false`，既有 reconcile 仍逐帧原样透传；正常默认 ping（无 escalation）仍是 hooks `undefined` 的直接写出路径。离线真 `@anthropic-ai/sdk` probe 已重跑，`ping → fresh message_start → text@0` 正确累积，故无需 ping 专用协议改写。
+> **实施状态（2026-07-29，Task 4.1′ 重划完成，保持零 handler 接线）。** 2026-07-28 首版新增的 `precontent-recovery-splice.ts` 被评审否决：它在 hooks 存在时每帧临时执行 `makeReconcilingSink(...).write(frame)`，只是给 `handler-v4.ts` 同一函数作用域内已经可取得的 `sink`、`anchorHooks`、`anchorState` 再包一层门面；生产 live direct/translate 两条腿本就通过 `liveReconcilingSink` 构造同一个 decorator，不存在层级障碍。首版文件及其测试已删除，历史否决理由保留在此。
+>
+> 重划后的实际形状是把 `makeReconcilingSink` 补成真正透明的 decorator，并在 Task 4.3 由 handler **一次构造、跨首次 attempt 与 fresh recovery attempt 复用同一个实例**。透明性补齐两类潜伏缺口：① 调用 `inheritDownstreamDeliverySession(inner, sink)`，保留 driver 依 sink 对象身份解析的 winner/candidate delivery 归属；② 对存在的 `suspendHeartbeat`、`resumeHeartbeat`、`finalize` 原样转发，对缺失方法继续保留 `undefined` 供 feature detection。后者在当前 live 生产路径上还不是已触发缺陷：buffered 候选循环和 handler finalize 当前使用原始 sink；它是后续 B2 恢复把 decorated sink 带入这些调用前必须闭合的边界。
+>
+> 三模式验收已搬到 `tests/anthropic/live-reconcile-cross-attempt.unit.test.ts`，判据只按当前 wire state 命名：无 hooks；hooks 已构造但尚未注入；已注入、无 open anchor；已注入且 open anchor。每例都让同一个 sink 实例先承载首次 attempt 状态，再写 fresh attempt 帧；empty-text close-off 额外锁定方法序列 `writeAnchor → write`，防止手工遍历 `reconcileLiveFrame` 后统一 `sink.write` 丢失 `synthetic:"anchor"` 标记；fresh attempt 再次在真实块前以 `error` 终止时，anchor 必须在 error 前且只关闭一次。模式判据不是 config `streamKeepaliveMode`：`streamKeepaliveEscalateSec > 0` 时即使配置为 ping 也会构造 hooks，是否去重/remap 取决于 `injected` 与 `anchorBlockOpen` 的当前状态。
+>
+> 下方 2026-07-23 的原始设计步骤与签名草案保留为历史；其中“新增 per-frame splice 门面”已被本段取代，不再执行。
 
 **设计依据（实测表，FINDINGS.md 逐字摘录）：**
 

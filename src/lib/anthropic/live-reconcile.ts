@@ -23,6 +23,8 @@ import type {
   ClientSink,
 } from "~/lib/pipeline/types"
 
+import { inheritDownstreamDeliverySession } from "~/lib/pipeline/delivery/session"
+
 /** Is this rendered client frame a real `content_block_start`? (parses the JSON `type`; non-JSON → false). */
 function isContentBlockStart(frame: ClientFrame): boolean {
   if (typeof frame.data !== "string") return false
@@ -162,7 +164,7 @@ export function reconcileLiveFrame(frame: ClientFrame, state: AnchorState, hooks
  * state (clears `openBlock={0,text}`), exactly as a real `write` would.
  */
 export function makeReconcilingSink(inner: ClientSink, state: AnchorState, hooks: ReconcileHooks): ClientSink {
-  return {
+  const sink: ClientSink = {
     write: async (frame: ClientFrame): Promise<void> => {
       const wasClosed = state.anchorClosed
       const frames = reconcileLiveFrame(frame, state, hooks)
@@ -185,6 +187,13 @@ export function makeReconcilingSink(inner: ClientSink, state: AnchorState, hooks
     writeSyntheticEnvelope: inner.writeSyntheticEnvelope ? (frame) => inner.writeSyntheticEnvelope?.(frame) ?? Promise.resolve() : undefined,
     writeAnchor: inner.writeAnchor ? (frame) => inner.writeAnchor?.(frame) ?? Promise.resolve() : undefined,
     freezeHeartbeat: inner.freezeHeartbeat ? () => inner.freezeHeartbeat?.() : undefined,
+    suspendHeartbeat: inner.suspendHeartbeat ? () => inner.suspendHeartbeat?.() : undefined,
+    resumeHeartbeat: inner.resumeHeartbeat ? () => inner.resumeHeartbeat?.() : undefined,
     close: inner.close ? () => inner.close?.() : undefined,
+    finalize: inner.finalize ? () => inner.finalize?.() : undefined,
   }
+  // The driver resolves generation-owned delivery state by sink identity. Preserve that capability for
+  // future recovery paths that pass this decorated live sink into winner/candidate-aware driver writes.
+  inheritDownstreamDeliverySession(inner, sink)
+  return sink
 }

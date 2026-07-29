@@ -30,6 +30,11 @@ import {
   reconcileLiveFrame,
   type ReconcileHooks,
 } from "~/lib/anthropic/live-reconcile"
+import {
+  //
+  createDownstreamDeliverySession,
+  getDownstreamDeliverySession,
+} from "~/lib/pipeline/delivery/session"
 
 // ── fixtures ──────────────────────────────────────────────────────────────
 
@@ -282,7 +287,10 @@ function stubSink(): { sink: ClientSink; calls: Array<{ m: string; frame?: Clien
     writeSyntheticEnvelope: (frame) => (calls.push({ m: "writeSyntheticEnvelope", frame }), Promise.resolve()),
     writeAnchor: (frame) => (calls.push({ m: "writeAnchor", frame }), Promise.resolve()),
     freezeHeartbeat: () => calls.push({ m: "freezeHeartbeat" }),
+    suspendHeartbeat: () => calls.push({ m: "suspendHeartbeat" }),
+    resumeHeartbeat: () => calls.push({ m: "resumeHeartbeat" }),
     close: () => calls.push({ m: "close" }),
+    finalize: () => calls.push({ m: "finalize" }),
   }
   return { sink, calls }
 }
@@ -327,8 +335,28 @@ describe("makeReconcilingSink", () => {
     await dec.writeSyntheticEnvelope?.(err)
     await dec.writeAnchor?.(err)
     dec.freezeHeartbeat?.()
+    dec.suspendHeartbeat?.()
+    dec.resumeHeartbeat?.()
     dec.close?.()
-    expect(calls.map((c) => c.m)).toEqual(["writeSynthetic", "writeKeepalive", "writeSyntheticEnvelope", "writeAnchor", "freezeHeartbeat", "close"])
+    dec.finalize?.()
+    expect(calls.map((c) => c.m)).toEqual([
+      "writeSynthetic",
+      "writeKeepalive",
+      "writeSyntheticEnvelope",
+      "writeAnchor",
+      "freezeHeartbeat",
+      "suspendHeartbeat",
+      "resumeHeartbeat",
+      "close",
+      "finalize",
+    ])
+  })
+
+  test("preserves generation-owned delivery identity through the decorator", () => {
+    const delivery = createDownstreamDeliverySession({ sink: { async write() {} } })
+    const dec = makeReconcilingSink(delivery.clientSink, injectedState(), hooks())
+
+    expect(getDownstreamDeliverySession(dec)).toBe(delivery)
   })
 
   test("optional inner methods absent → decorator leaves them undefined (array/WS sinks)", () => {
@@ -337,7 +365,10 @@ describe("makeReconcilingSink", () => {
     expect(dec.writeSynthetic).toBeUndefined()
     expect(dec.writeAnchor).toBeUndefined()
     expect(dec.freezeHeartbeat).toBeUndefined()
+    expect(dec.suspendHeartbeat).toBeUndefined()
+    expect(dec.resumeHeartbeat).toBeUndefined()
     expect(dec.close).toBeUndefined()
+    expect(dec.finalize).toBeUndefined()
   })
 
   test("close-off falls back to inner.write when the inner sink has no writeAnchor", async () => {
