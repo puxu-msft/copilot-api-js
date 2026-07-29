@@ -238,6 +238,22 @@ describe("core → server 边 ratchet", () => {
     }
   })
 
+  // 解析而非拼写的 live oracle。**没有这条**，把判据 mutation 回 `~/routes` 前缀匹配，core 的既有测试
+  // 全绿——那正是这个缺陷能在仓库里活四轮的原因。fixture 用**相对路径**指向真实 routes 模块。
+  test("相对路径写法的 routes 边同样算一条边（判据是解析后的目标，不是 `~/routes` 这个拼写）", async () => {
+    const fixture = await mkdtemp(path.join(os.tmpdir(), "core-relative-routes-"))
+    try {
+      const relativeToRoutes = path.relative(fixture, path.join(REPO_ROOT, "src/routes/responses/fallback")).replaceAll(path.sep, "/")
+      expect(relativeToRoutes.startsWith("~/"), "前提：这个 specifier 里根本没有 `~/routes` 这个拼写").toBe(false)
+      await writeFile(path.join(fixture, "probe.ts"), `import { a } from "${relativeToRoutes}"\nexport const x = a\n`)
+
+      const { edges } = await scanCoreLib(fixture, "fixture")
+      expect(edges.map((edge) => edge.file), "解析后落在 src/routes 里，就是一条 core → server 边").toEqual(["fixture/probe.ts"])
+    } finally {
+      await rm(fixture, { recursive: true, force: true })
+    }
+  })
+
   // 接线 oracle：把 target sweep 从 scanCoreLib 里删掉，此前 76 个测试照样全绿。
   test("守卫真的消费了 callee-blind 目标扫描（primitive 有测试不等于守卫接了线）", async () => {
     const fixture = await mkdtemp(path.join(os.tmpdir(), "core-target-sweep-"))
