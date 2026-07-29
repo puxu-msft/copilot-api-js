@@ -24,7 +24,8 @@ import ts from "typescript"
 import {
   //
   allModuleSpecifiers,
-  opaqueModuleReferences,
+  moduleLoadSites,
+  referencedFilePaths,
   parseSource,
 } from "./source-ast"
 
@@ -227,12 +228,24 @@ async function stateUnitClosureViolations(): Promise<Array<string>> {
     const sourceFile = parseSource(file, await readFile(file, "utf8"))
     const relativeTo = path.relative(repoRoot, file)
 
-    // An opaque target is not "no edge", it is an UNKNOWABLE edge, and this guard's claim is
-    // absolute — `import(`${target}`)` type-checks and would otherwise leave every state guard green
-    // while state pulled in an arbitrary package at runtime. `allModuleSpecifiers` reports nothing
-    // for these on purpose (see there); refusing them is this guard's job, not its collector's.
-    for (const opaque of opaqueModuleReferences(sourceFile)) {
-      violations.push(`${relativeTo} → ${opaque} (module target is not statically determinable)`)
+    // This guard's claim is ABSOLUTE — "nothing but language/system builtins" — so it rejects every
+    // runtime module load outright, whatever the target. Not because a computed target is unknowable
+    // (though it is), but because a unit that loads anything at runtime cannot honestly claim to
+    // depend only on what it statically imports. The over-approximation in `moduleLoadSites` is free
+    // here: the state closure contains zero such calls, so there is nothing to argue about.
+    for (const site of moduleLoadSites(sourceFile)) {
+      violations.push(`${relativeTo} → ${site.text} (runtime module load; the state unit may only use static imports)`)
+    }
+
+    // A triple-slash reference is a dependency with no specifier — invisible to every import-based
+    // check, and just as real. Walk it like any other edge.
+    for (const reference of referencedFilePaths(sourceFile)) {
+      const resolved = path.resolve(path.dirname(file), reference)
+      if (!containedIn(FOUNDATION_SRC, realpathSync(resolved))) {
+        violations.push(`${relativeTo} → /// <reference path="${reference}"> ESCAPES the package`)
+        continue
+      }
+      queue.push(realpathSync(resolved))
     }
 
     for (const specifier of new Set(allModuleSpecifiers(sourceFile))) {

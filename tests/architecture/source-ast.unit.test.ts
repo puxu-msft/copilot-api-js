@@ -21,7 +21,8 @@ import {
   allModuleSpecifiers,
   importedModuleSpecifiers,
   mayContainDecoded,
-  opaqueModuleReferences,
+  moduleLoadSites,
+  referencedFilePaths,
   parseSource,
 } from "./source-ast"
 
@@ -140,97 +141,62 @@ describe("importedModuleSpecifiers", () => {
 })
 
 /**
- * `allModuleSpecifiers` 对不可静态判定的目标**故意什么都不报**（编造一个 specifier 是撒谎）。
- * 代价是消费者会把「不可知」读成「没有边」——这个 primitive 就是用来把那个差别重新说出来的。
+ * `moduleLoadSites` 是**故意的过近似**：callee 侧只问「这看起来像不像一次加载」，不做作用域解析。
+ *
+ * 四轮评审的记录就是它的存在理由——只认字面 `require` 漏掉 `createRequire`；按文件跟踪 `createRequire`
+ * 绑定被嵌套形参一关就全瞎；改成沿 parent 链做词法解析，仍然把 `var` 的提升搞错，而且
+ * `createRequire(url)("consola")` 这种 callee 本身是调用的形态照样漏。**每一次都补上了被演示的那个形态，
+ * 下一次探针又找到新的。** 所以判据从「是不是 loader」换成「可不可能是」——一个不依赖作用域、提升、
+ * callee 形状的问题。
+ *
+ * 代价是假阳（`require.resolve`、只是铸造 loader 的 `createRequire(url)`、恰好叫 require 的局部函数），
+ * 这是**该错的方向**。实参侧仍然精确：字面量报边，其余报「不可判定」。
  */
-describe("opaqueModuleReferences", () => {
+describe("moduleLoadSites", () => {
+  const texts = (source: string): Array<string> => moduleLoadSites(parseSource("p.ts", source)).map((site) => site.text)
+  const specifiers = (source: string): Array<string | undefined> => moduleLoadSites(parseSource("p.ts", source)).map((site) => site.specifier)
+
   test.each([
-    ["模板插值", "const p = 'x'\nconst m = await import(`~/${p}`)\n", "import(`~/${p}`)"],
-    ["标识符实参", "const m = require(someVar)\n", "require(someVar)"],
-    ["表达式实参", "const m = await import(join(a, b))\n", "import(join(a, b))"],
-  ])("%s 算不可判定", (_name, source, expected) => {
-    expect(opaqueModuleReferences(parseSource("p.ts", source))).toEqual([expected])
+    ["动态 import 字面量", 'const m = await import("consola")\n', "consola"],
+    ["无插值模板", "const m = await import(`consola`)\n", "consola"],
+    ["ambient require", 'const m = require("consola")\n', "consola"],
+    ["createRequire 铸造后**直接调用**（callee 本身是一次调用）", 'import { createRequire } from "node:module"\nvoid createRequire(import.meta.url)("consola")\n', "consola"],
+    ["import.meta.require", 'void import.meta.require("consola")\n', "consola"],
+    ["先绑定再调用", 'import { createRequire } from "node:module"\nconst load = createRequire(import.meta.url)\nvoid load("consola")\n', "consola"],
+    ["动态 import 解构出的 createRequire", 'const { createRequire } = await import("node:module")\nconst load = createRequire(import.meta.url)\nvoid load("consola")\n', "consola"],
+    ["var 提升出 block（自写 binder 曾在这里判错）", 'import { createRequire } from "node:module"\n{\n  var load = createRequire(import.meta.url)\n}\nvoid load("consola")\n', "consola"],
+  ])("%s：目标是字面量就报出来", (_name, source, expected) => {
+    expect(specifiers(source)).toContain(expected)
   })
 
   test.each([
-    ["普通字符串", 'const m = await import("consola")\n'],
-    ["无插值模板", "const m = await import(`consola`)\n"],
-    ["静态 import 声明", 'import m from "consola"\n'],
-  ])("%s 不算（否则登记表会被真实边淹没）", (_name, source) => {
-    expect(opaqueModuleReferences(parseSource("p.ts", source))).toEqual([])
+    ["模板插值", "const p = 'x'\nconst m = await import(`~/${p}`)\n"],
+    ["标识符实参", "const m = require(someVar)\n"],
+    ["token 之间插注释", "const m = import /* c */ (target)\n"],
+  ])("%s：目标算不可判定", (_name, source) => {
+    expect(specifiers(source)).toEqual([undefined])
   })
 
-  test("与 allModuleSpecifiers 互补而不重叠：同一个调用不会两边都报", () => {
-    const opaque = parseSource("p.ts", "const p = 'x'\nconst m = await import(`~/${p}`)\n")
-    expect(opaqueModuleReferences(opaque)).toHaveLength(1)
-    expect(allModuleSpecifiers(opaque)).toEqual([])
+  test("普通调用不算（否则登记表会被整个代码库淹没）", () => {
+    expect(texts('doSomething("x")\nrequireAuth(user)\nconst n = myRequirements.length\n')).toEqual([])
+  })
 
-    const stat = parseSource("p.ts", "const m = await import(`consola`)\n")
-    expect(opaqueModuleReferences(stat)).toEqual([])
-    expect(allModuleSpecifiers(stat)).toEqual(["consola"])
+  test("过近似的方向是已知且刻意的：这些确实会被报出来", () => {
+    // 写在测试里而不是只写在注释里——它是判据的一部分，不是缺陷。
+    expect(texts("const r = require.resolve(x)\n")).toEqual(["require.resolve(x)"])
+    expect(texts('import { createRequire } from "node:module"\nconst load = createRequire(import.meta.url)\n')).toEqual(["createRequire(import.meta.url)"])
   })
 })
 
-/**
- * `createRequire` 造出的 loader 可以绑到任何名字上，两位独立评审各自都用它绕过了守卫：
- * 收集器只认字面 callee `require`，于是整个文件只被看到一条 `node:module` 边。
- */
-describe("createRequire 造出的 loader", () => {
-  const PRELUDE = 'import { createRequire } from "node:module"\nconst load = createRequire(import.meta.url)\n'
-
-  test("静态实参算一条真实的边（这正是当初被漏掉的那条）", () => {
-    expect(allModuleSpecifiers(parseSource("p.ts", `${PRELUDE}void load("consola")\n`))).toEqual(["node:module", "consola"])
-  })
-
-  test("非静态实参算不可判定", () => {
-    expect(opaqueModuleReferences(parseSource("p.ts", `${PRELUDE}void load(target)\n`))).toEqual(["load(target)"])
-  })
-
-  test.each([
-    ["具名 import 改名", 'import { createRequire as mint } from "node:module"\nconst load = mint(import.meta.url)\nvoid load("consola")\n'],
-    ["namespace import", 'import * as nodeModule from "node:module"\nconst load = nodeModule.createRequire(import.meta.url)\nvoid load("consola")\n'],
-    ["default import", 'import nodeModule from "node:module"\nconst load = nodeModule.createRequire(import.meta.url)\nvoid load("consola")\n'],
-    ["default as 改名", 'import { default as nodeModule } from "node:module"\nconst load = nodeModule.createRequire(import.meta.url)\nvoid load("consola")\n'],
-    ["无 node: 前缀", 'import { createRequire } from "module"\nconst load = createRequire(import.meta.url)\nvoid load("consola")\n'],
-    ["动态 import 解构", 'const { createRequire } = await import("node:module")\nconst load = createRequire(import.meta.url)\nvoid load("consola")\n'],
-    ["动态 import 解构 + 改名", 'const { createRequire: mint } = await import("node:module")\nconst load = mint(import.meta.url)\nvoid load("consola")\n'],
-    ["require 解构", 'const { createRequire } = require("node:module")\nconst load = createRequire(import.meta.url)\nvoid load("consola")\n'],
-    ["整个 module 对象经动态 import", 'const nodeModule = await import("node:module")\nconst load = nodeModule.createRequire(import.meta.url)\nvoid load("consola")\n'],
-  ])("%s 同样追得到", (_name, source) => {
-    expect(allModuleSpecifiers(parseSource("p.ts", source))).toContain("consola")
-  })
-
-  test("ambient require 仍算 loader", () => {
-    expect(allModuleSpecifiers(parseSource("p.ts", 'const m = require("consola")\n'))).toEqual(["consola"])
-  })
-
-  test.each([
-    ["局部 const", "const require = (name: string): string => name\nvoid require(someVar)\n"],
-    ["函数声明", "function require(name: string): string {\n  return name\n}\nvoid require(someVar)\n"],
-    ["形参", "function f(require: (n: string) => void): void {\n  require(someVar)\n}\n"],
-    ["解构绑定", "const { require } = deps\nvoid require(someVar)\n"],
-    ["catch 参数", "try {\n  noop()\n} catch (require) {\n  void require(someVar)\n}\n"],
-  ])("被本地遮蔽的 require 不是 loader：%s", (_name, source) => {
-    // 否则任何恰好叫 require 的普通局部函数都会被确定性误报成动态加载。
-    expect(opaqueModuleReferences(parseSource("p.ts", source))).toEqual([])
+describe("referencedFilePaths", () => {
+  test("triple-slash reference 是一条没有 specifier 的依赖边，同样要报", () => {
+    const source = '/// <reference path="../../../outside.d.ts" />\nexport const x = 1\n'
+    expect(referencedFilePaths(parseSource("p.ts", source))).toEqual(["../../../outside.d.ts"])
+    // 它在任何基于 import 的检查里都是隐形的——这正是它必须单独有一条的原因。
     expect(allModuleSpecifiers(parseSource("p.ts", source))).toEqual([])
   })
 
-  test("遮蔽是**按词法作用域**的：内层的同名参数不得关掉外层的 ambient require", () => {
-    // 曾经的实现问「这个文件里有没有声明过 require」，那不是任何一个调用点的问题：一个嵌套 helper
-    // 的参数就能把整份文件的 ambient require 关掉，两行之外真正的 require("~/routes/…") 随即
-    // 从 core ratchet 底下走过去，全套件绿。
-    const source = 'function helper(require: (n: string) => void): void {\n  require("innocent")\n}\nconst m = require("~/routes/responses/ws")\n'
-    expect(allModuleSpecifiers(parseSource("p.ts", source)), "内层那次不算加载，外层那次算").toEqual(["~/routes/responses/ws"])
-  })
-
-  test("遮蔽的名字若来自 createRequire，照样是 loader（遮蔽豁免不能变成后门）", () => {
-    const source = 'import { createRequire } from "node:module"\nconst require = createRequire(import.meta.url)\nvoid require(target)\n'
-    expect(opaqueModuleReferences(parseSource("p.ts", source))).toEqual(["require(target)"])
-  })
-
-  test("`module` 之外的模块解构出同名函数不算 loader（判据是来源，不是名字）", () => {
-    const source = 'const { createRequire } = await import("./my-helpers")\nconst load = createRequire(import.meta.url)\nvoid load("consola")\n'
-    expect(allModuleSpecifiers(parseSource("p.ts", source)), "只应看到那条真实的相对 import").toEqual(["./my-helpers"])
+  test("没有 reference 的文件返回空", () => {
+    expect(referencedFilePaths(parseSource("p.ts", 'import { a } from "./b"\n'))).toEqual([])
   })
 })

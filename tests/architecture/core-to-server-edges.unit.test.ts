@@ -30,7 +30,7 @@ import {
   //
   allModuleSpecifiers,
   mayContainDecoded,
-  opaqueModuleReferences,
+  moduleLoadSites,
   parseSource,
 } from "./source-ast"
 
@@ -56,17 +56,26 @@ const KNOWN_CORE_TO_SERVER: Array<{ file: string; specifier: string }> = [
 ]
 
 /**
- * Calls under `src/lib/**` whose module target is not statically determinable. Frozen for the same
- * reason as the edge list, and it is the other half of the same claim: an opaque target could BE a
- * `~/routes` import, so a ratchet that only counted static specifiers would report "no new edge"
- * about code it never actually read. Both of these resolve to paths chosen at runtime and neither
- * can reach the routes layer — the native search binary and a user-configured hook module.
+ * Calls under `src/lib/**` whose module target is computed at runtime. Frozen for the same reason as
+ * the edge list, and it is the other half of the same claim: a computed target could BE a `~/routes`
+ * import, so a ratchet counting only static specifiers would report "no new edge" about code it
+ * never actually read.
  *
- * Adding a row is a deliberate act: say why the target cannot be a routes module.
+ * `moduleLoadSites` over-approximates the CALLEE on purpose (see there), so this list also carries
+ * calls that load nothing — that is the price of not maintaining a binder, and it is paid once per
+ * row rather than forever. Adding a row is a deliberate act: say why the target cannot be a routes
+ * module.
  */
 const KNOWN_OPAQUE_TARGETS: Array<{ file: string; call: string }> = [
+  // Mints a loader; loads nothing by itself.
+  { file: "src/lib/history/search-native.ts", call: "createRequire(import.meta.url)" },
+  // Probes for the optional native search binary, by absolute path — never a source module.
   { file: "src/lib/history/search-native.ts", call: "require(candidate)" },
+  { file: "src/lib/history/search-native.ts", call: "require.resolve(candidate)" },
+  // The user-configured hook module, resolved under `process.cwd()`.
   { file: "src/lib/pipeline/hooks/loader.ts", call: "import(join(process.cwd(), compiledPath))" },
+  // Mints a loader; loads nothing by itself.
+  { file: "src/lib/restart/notify.ts", call: "createRequire(import.meta.url)" },
 ]
 
 /**
@@ -90,7 +99,14 @@ async function scanCoreLib(): Promise<{ edges: Array<{ file: string; specifier: 
     for (const specifier of new Set(allModuleSpecifiers(sourceFile))) {
       if (specifier === "~/routes" || specifier.startsWith("~/routes/")) edges.push({ file, specifier })
     }
-    for (const call of opaqueModuleReferences(sourceFile)) opaque.push({ file, call })
+    // Only sites whose TARGET is computed matter here: a literal `import("yaml")` is already an
+    // edge the specifier scan above sees. `moduleLoadSites` over-approximates the CALLEE, so this
+    // list also carries benign entries (a `createRequire(url)` that only mints a loader, a
+    // `require.resolve`) — each registered once with a note, which is the price of not maintaining
+    // a binder that keeps disagreeing with the real one.
+    for (const site of moduleLoadSites(sourceFile)) {
+      if (site.specifier === undefined) opaque.push({ file, call: site.text })
+    }
   }
 
   edges.sort((a, b) => (a.file + a.specifier).localeCompare(b.file + b.specifier))
@@ -134,17 +150,18 @@ describe("core → server 边 ratchet", () => {
 
   test("守卫有效性：合成的不可判定目标会被抓到", () => {
     // 报的是 CallExpression 本身，不含外层 `await`——登记表里的项也按这个形状写。
-    expect(opaqueModuleReferences(parseSource("synthetic.ts", "const p = 'x'\nconst m = await import(`~/${p}`)\n"))).toEqual(["import(`~/${p}`)"])
-    expect(opaqueModuleReferences(parseSource("synthetic.ts", "const m = require(someVar)\n"))).toEqual(["require(someVar)"])
+    const computed = (source: string): Array<string> =>
+      moduleLoadSites(parseSource("synthetic.ts", source))
+        .filter((site) => site.specifier === undefined)
+        .map((site) => site.text)
+
+    expect(computed("const p = 'x'\nconst m = await import(`~/${p}`)\n")).toEqual(["import(`~/${p}`)"])
+    expect(computed("const m = require(someVar)\n")).toEqual(["require(someVar)"])
     // token 之间插注释是合法调用，且原始文本里根本没有 `import(`——曾经的子串预过滤会直接跳过整个文件。
-    expect(opaqueModuleReferences(parseSource("synthetic.ts", "const m = import /* c */ (target)\n"))).toHaveLength(1)
-    // createRequire 造出来的 loader 叫什么名字都追得到。
-    expect(
-      opaqueModuleReferences(parseSource("synthetic.ts", 'import { createRequire } from "node:module"\nconst load = createRequire(import.meta.url)\nvoid load(target)\n')),
-    ).toEqual(["load(target)"])
+    expect(computed("const m = import /* c */ (target)\n")).toHaveLength(1)
     // 反向：静态 specifier 不算不可判定，否则登记表会被真实边淹没。
-    expect(opaqueModuleReferences(parseSource("synthetic.ts", 'const m = await import("~/routes/x")\n'))).toEqual([])
-    expect(opaqueModuleReferences(parseSource("synthetic.ts", "const m = await import(`~/routes/x`)\n"))).toEqual([])
+    expect(computed('const m = await import("~/routes/x")\n')).toEqual([])
+    expect(computed("const m = await import(`~/routes/x`)\n")).toEqual([])
   })
 
   test("预过滤对转义拼法也放行（原始文本里没有 `~/routes`，AST 解出来却有）", () => {
