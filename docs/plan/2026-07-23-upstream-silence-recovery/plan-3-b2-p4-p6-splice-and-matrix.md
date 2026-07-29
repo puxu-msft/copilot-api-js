@@ -223,8 +223,8 @@ if (shouldAttemptPreContentRecovery({ error, session: anthropicCandidateSnapshot
   try {
     const recovered = await driver.runPreContentRecovery("post-commit-pre-content-failure")
     if (recovered.ok) {
-      // 用 recovery-sink-supervisor 包装的 sink，走 spliceFreshAttemptFrame 逐帧拼接
-      // 复用 pumpAnthropicStreamingDispatch 的现有帧循环——需要重构成可传入 supervisor sink 的形态
+      // 把 fresh attempt 的帧写进**同一条已构造好的 sink 链**（见下方 4 与 Task 4.1′ 的实施状态）
+      // 复用 pumpAnthropicStreamingDispatch 的现有帧循环——需要重构成可传入该 sink 的形态
       // 成功 → 正常走完 pump，最终由 supervisor.settleFinal() 收口
       return
     }
@@ -242,6 +242,7 @@ if (shouldAttemptPreContentRecovery({ error, session: anthropicCandidateSnapshot
   1. 先确认 `pumpAnthropicStreamingDispatch` 现有的帧循环能否被抽出一个"给定 upstream+env+sink，跑到底"的可复用子函数，供"首次 attempt"和"fresh recovery attempt"两处调用（**不要复制粘贴一份新的循环**——DRY，且降低两处逻辑分叉导致的维护负担）。
   2. 确认 `anchorState`/`anchorHooks` 在 recovery 场景下必须是**同一个** `AnchorState` 实例（不能重新 `{injected:false, ...}` 初始化）——因为 anchor 是否已经注入过是"首次 attempt 期间"就确定的状态，fresh attempt 只是"接着用"。
   3. 确认 recovery 成功之后的 sink 收口时机——用 Plan-2 Task 0.5 的 supervisor，只有 fresh attempt 走完（`outcome.kind === "complete"`）才调 `supervisor.settleFinal()`。
+  4. **sink 链只构造一次、primary 与 fresh recovery 共用同一实例**（Task 4.1′ 定稿的形状，取代首版的 per-frame 门面）：`原始 sink` → `createRecoverySinkSupervisor(...)`（跨 attempt 抑制局部 `close`/`finalize`）→ `liveReconcilingSink(supervised, anchorHooks, anchorState)`（`handler-v4.ts:1251`，已是透明 decorator）。**不要**在恢复路径另造 decorator 或另包一层 helper——`sink`/`anchorHooks`/`anchorState` 与 catch 块同在 `handler-v4.ts:1280` 那次解构的作用域内，直接够得着。已删除的 `spliceFreshAttemptFrame` 不存在，别再引用。
 
 - [ ] **Step 4: 跑，通过。**
 - [ ] **Step 5: 提交** → `feat(anthropic): wire precontent-recovery into the COMMIT branch's post-commit catch (HTTPError + network_error paths)`。
