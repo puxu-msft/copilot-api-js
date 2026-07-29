@@ -5,9 +5,13 @@ metadata:
   type: project
 ---
 
-**monorepo 拆分 Phase 4 的第三次剥离，2026-07-28 全部落地**（前两次 = token 2026-07-23、telemetry 2026-07-27）。现状 `packages/foundation/src/{state,state-defaults,state-vocabulary}.ts`，出边只有 `node:` 与相对路径。**全仓 madge 环 70/63 → 43/50、state 单元参与的环为 0**（43 与旧数不可直接比：扫描面同时扩到了全部 workspace 包，而扩面本身是 S6 的一部分——原扫描只看 `src/`，文件搬出 `src/` 会「因路径不匹配而消失」，那不是无环的证明）。
+**monorepo 拆分 Phase 4 的第三次剥离，2026-07-28 落地、2026-07-29 合并 master（`9ec79010`）**（前两次 = token 2026-07-23、telemetry 2026-07-27）。现状 `packages/foundation/src/{state,state-defaults,state-vocabulary}.ts`，出边只有 `node:` 与相对路径。**全仓 madge 环 70/63 → 43/50、state 单元参与的环为 0**（43 与旧数不可直接比：扫描面同时扩到了全部 workspace 包，而扩面本身是 S6 的一部分——原扫描只看 `src/`，文件搬出 `src/` 会「因路径不匹配而消失」，那不是无环的证明）。
 
-权威记录 **[docs/plan/2026-07-28-state-to-foundation/HANDOVER.md](../plan/2026-07-28-state-to-foundation/HANDOVER.md)**（每步的验收 oracle、变异实验、踩过的坑）。此处只留跨任务复用的教训：
+权威记录 **[docs/plan/2026-07-28-state-to-foundation/HANDOVER.md](../plan/2026-07-28-state-to-foundation/HANDOVER.md)**（每步的验收 oracle、变异实验、踩过的坑）。
+
+**这轮真正的产出不是搬迁本身**：S1–S7 之后又跑了十轮独立复评，**没有再改过一行 state 的代码，改的全是守卫如何判定**——同一个错误形状复现七次（守卫声称的性质强于它实际检查的），而「补上刚被演示的那个形态」四次全部被下一轮绕过，只有「换判据的轴」能一次闭一类。演化表见 HANDOVER「判据形状的演化」，方法论已下沉 [[methodology-change-the-criterion-axis-not-add-another-form]] 与 [[methodology-wiring-oracle-primitive-tested-is-not-guard-consuming]]。
+
+此处只留跨任务复用的教训：
 
 - **计划漏掉的拓扑事实**：S2 原计划「把 8 个 models 符号整体搬出 state」不可执行——`state.ts` **自己**还在调其中两个（`setStateForTests` 调 `rebuildModelIndex`、`resetConfigManagedState` 调 `setDisabledModels`），无论留不留 re-export 都会重建那个两节点环。解法是把**触发点上移一层**（重新过滤改由 config 层 `applyConfigToState()` 结尾无条件调一次）。**搬符号前先查「原属主自己调不调它」，只查「谁 import 它」不够。**
 - **`export … from` 不绑定本地名**——搬走符号后原文件若自用需另加 `import`。这一轮踩了两次。

@@ -1,8 +1,8 @@
 # HANDOVER：把 `state` + `state-defaults` 降为 foundation 叶子
 
-> **状态**：✅ **S1–S7 全部落地**（分支 `feat/state-foundation`，**尚未合并 master**）。本文件从「怎么做」变成了「做了什么、以及为什么和计划不一样」。提交范围刻意不在这里冻结 hash——每步一提交、外加两轮复评的修复提交，`git log master..feat/state-foundation` 是唯一不会过期的答案。
+> **状态**：✅ **S1–S7 全部落地，2026-07-29 已合并 master**（合并提交 `9ec79010`）。本文件从「怎么做」变成了「做了什么、以及为什么和计划不一样」。提交范围刻意不在这里冻结 hash——每步一提交、外加十轮复评的修复提交，`git log 0fa444b7..9ec79010` 是唯一不会过期的答案。
 >
-> **终态**：`packages/foundation/src/{state,state-defaults,state-vocabulary}.ts`，出边只有 `node:` 与相对路径，由 `package-boundaries.unit.test.ts` 机器强制——判据是从三个入口出发的**相对依赖闭包**，每个 specifier 要么 `node:`，要么**解析后**（TS 自己的 resolver + realpath 规范化）仍落在 `packages/foundation/src` 内。（初版是「三个文件 + 以点开头即包内」的更弱命题，两轮独立复评各打掉一半，见 §9。）**全仓 madge 环 70/63 → 43/50、state 单元零环**（43 与 70 不可直接比——S6 把扫描面从 `src/` 扩到了全部 workspace 包，那是必须的：不扩面的话文件搬出 `src/` 就会「因路径不匹配而消失」，那不是无环的证明）。消费端 **86 prod + 212 test importer 零改动**——**口径限于「物理搬迁这一步」**（走 `~/lib/state*` alias）：迁出 state 的**符号**其消费者是强制改指的，S2 改了 105 个文件、S3 改了 10 个，「零改动」不对整轮成立。
+> **终态**：`packages/foundation/src/{state,state-defaults,state-vocabulary}.ts`，出边只有 `node:` 与相对路径，由 `package-boundaries.unit.test.ts` 机器强制——判据是从三个入口出发的**相对依赖闭包**（含 triple-slash reference），每个 specifier 要么 `node:`，要么**解析后**（TS 自己的 resolver + realpath 规范化）仍落在 `packages/foundation/src` 内；此外**拒绝一切运行时模块加载**（`import()`、`node:module` 能力获取、以及**提到** ambient `require` / `import.meta.require`）。（初版是「三个文件 + 以点开头即包内」的更弱命题，十轮独立复评逐层打掉，见 §9 与下方「判据形状的演化」。）**全仓 madge 环 70/63 → 43/50、state 单元零环**（43 与 70 不可直接比——S6 把扫描面从 `src/` 扩到了全部 workspace 包，那是必须的：不扩面的话文件搬出 `src/` 就会「因路径不匹配而消失」，那不是无环的证明）。消费端 **86 prod + 212 test importer 零改动**——**口径限于「物理搬迁这一步」**（走 `~/lib/state*` alias）：迁出 state 的**符号**其消费者是强制改指的，S2 改了 105 个文件、S3 改了 10 个，「零改动」不对整轮成立。
 >
 > **每一步都做过变异实验**（不是「推理它会红」）：S1 五条、S2 正样本自证 + 顺序断言、S3 两条、S4 五条、S5 五条编译期断言（其中**第一版是惰性的、根本不咬**）、S6 两样本对照（`~/` 新旧判据都咬 → 单用它证明不了；裸 npm 包只有新判据咬）。
 > **核验基线**：`23e85aba`（2026-07-28）。**2026-07-28 已在 `a675064e` 重跑全部三项复验，差集为空**——详见 §3.0。**再往后接手请再重跑一次**——数字有时效（见 §6 第 1 条）。
@@ -440,3 +440,35 @@ rg -n 'from "' src/lib/state.ts src/lib/state-defaults.ts
 - **主树有并发 peer 的未提交改动**（十几个文件）。一律显式 pathspec 提交，`git add -A` 绝对禁止。
 - **typecheck 当前有 peer 在飞的报错**（`PostCommitAbortKind` / `retry-giveups`）——**不是你引入的**，别去"修"它，只确认自己的改动没新增错误。
 - 代码改动走隔离 worktree（`git worktree add .worktrees/state-foundation -b feat/state-foundation`；`.worktrees/` 在仓库内部、向上解析主树 `node_modules`，**不是依赖隔离环境**——原文的「否则 eslint exit 127」已被实测证伪，无 `node_modules` 的新树里 eslint exit 0）；**本交接文档本身留在主树**。
+
+## 判据形状的演化（十轮复评的实质产出）
+
+代码搬迁本身在 S1–S7 就结束了。**之后十轮复评没有再改过一行 state 的代码，改的全是「守卫如何判定」**——而那才是这轮最值钱的东西，因为同一个错误形状反复出现了七次：
+
+> **守卫声称的性质，强于它实际检查的性质。**
+
+具体实例：只查 3 个文件却声称查闭包 → 把「以点开头」当成「在包内」 → 只认 `StringLiteral` 却声称覆盖全部 import 形态 → 把「不可知」当成「不存在」 → 只扫 `.ts` 却声称扫全树 → 按 `~/routes` 拼写判断却声称约束依赖 → 冻结 specifier 文本却声称冻结边。
+
+**修法分两类，效果差异极大**：
+
+| 动作 | 结果 |
+|---|---|
+| 补上刚被演示的那个形态 | 下一轮探针必定找到新形态。这条路走了四次，四次都被绕过 |
+| **换判据的轴** | 一次闭掉一整类 |
+
+四次成功的换轴，都是同一个动作——**别手写，去问已经知道答案的那个东西**：
+
+1. 手写候选表 `[x, x.ts, x/index.ts]` → `ts.resolveModuleName` + 项目自己的 compilerOptions（守卫与 tsc 不可能再有分歧）
+2. 子串/正则判「源码是否含某文本」→ `ts.createScanner` 逐 token 比对**解码值**（转义拼法一次全覆盖）
+3. 按名字追 loader（改名/别名/`var` 提升/括号 callee 各绕一次）→ **守能力门**：`createRequire` 只从 `node:module` 来，import 它是语法上的单一事件，**没拿到的东西没法改名**
+4. 枚举 callee 形态 → **只问目标**：这个文件里有没有哪次调用把 `~/routes/…` 当第一个实参（「调用怎么写」这个问题被整个绕开）
+
+**第二条承重教训**（第八轮才被抓到）：
+
+> **primitive 有测试 ≠ 守卫真的在消费它。**
+
+实测：把 capability gate 或 target sweep 从守卫里删掉，76 个测试**照样全绿**——因为测试测的是 primitive，没有任何东西断言守卫接了线。现在每条判据都有一条**接线 oracle**：往真实闭包文件植入、走真实入口函数，删掉消费即变红。
+
+**第三条**：`.mts` 扫描面、resolved-target 判据这类修复，最初只有「手工探针验过一次」的记忆，**性质活在对话记录里而不在仓库里**——mutation 回旧形状全套件仍绿。凡是这类修复，必须留下会红的 oracle。
+
+**教训的落地范围要检查**：「比解析后目标、别比拼写」这一课，在 state 闭包修好之后，**在 core→server ratchet 里又原样存在了四轮**，因为修复落在了消费者里而不是共享处。`containedIn` 现已提到 `tests/architecture/source-ast.ts`，两处坑（按段比较、canonical 化）都写在它的文档里。仓库里**还有两个守卫没搬到这一课**（telemetry / generation），已复现并记入 [docs/todo/deferred-backlog.md](../../todo/deferred-backlog.md)。
