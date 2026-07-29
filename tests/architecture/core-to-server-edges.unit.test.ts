@@ -36,6 +36,7 @@ import path from "node:path"
 import {
   //
   allModuleSpecifiers,
+  callArgumentLiterals,
   mayContainDecoded,
   moduleCapabilityAcquisitions,
   moduleLoadSites,
@@ -115,6 +116,16 @@ async function scanCoreLib(root = path.join(REPO_ROOT, "src/lib"), prefix = "src
 
     for (const specifier of new Set(allModuleSpecifiers(sourceFile))) {
       if (specifier === "~/routes" || specifier.startsWith("~/routes/")) edges.push({ file, specifier })
+    }
+    // Callee-blind sweep for the same target. Every bypass found in this file's history was about
+    // how the CALL was spelled — a renamed loader, a parenthesised callee, a computed access — and
+    // none of them was about the target. Asking "does any call in this file take `~/routes/…` as its
+    // argument" sidesteps the entire question, and a routes path passed to something that is not a
+    // loader would be just as much of a smell.
+    for (const literal of callArgumentLiterals(sourceFile)) {
+      if (literal.argument !== "~/routes" && !literal.argument.startsWith("~/routes/")) continue
+      if (edges.some((edge) => edge.file === file && edge.specifier === literal.argument)) continue
+      edges.push({ file, specifier: literal.argument })
     }
     // Only sites whose TARGET is computed matter here: a literal `import("yaml")` is already an
     // edge the specifier scan above sees. `moduleLoadSites` over-approximates the CALLEE, so this

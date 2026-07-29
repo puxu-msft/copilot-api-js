@@ -19,6 +19,7 @@ import ts from "typescript"
 import {
   //
   allModuleSpecifiers,
+  callArgumentLiterals,
   importedModuleSpecifiers,
   mayContainDecoded,
   moduleCapabilityAcquisitions,
@@ -242,5 +243,33 @@ describe("moduleCapabilityAcquisitions", () => {
     expect(moduleLoadSites(parsed).some((site) => site.specifier === "consola")).toBe(false)
     // 但能力那条线拦得住。
     expect(moduleCapabilityAcquisitions(parsed)).toHaveLength(1)
+  })
+})
+
+/**
+ * 本文件历史上每一次绕过都是关于**调用怎么写**的——改名 loader、括号 callee、计算属性访问、两跳别名——
+ * **没有一次是关于目标的**。所以再加一条完全不看 callee 的判据：这个文件里有没有哪次调用，把某个
+ * 特定前缀的字符串当第一个实参。这样「怎么拼这个调用」这个问题被整个绕开了。
+ */
+describe("callArgumentLiterals", () => {
+  const args = (source: string): Array<string> => callArgumentLiterals(parseSource("p.ts", source)).map((literal) => literal.argument)
+
+  test.each([
+    ["普通调用", 'load("~/routes/x")\n'],
+    ["括号 callee", '(nodeRequire)("~/routes/x")\n'],
+    ["计算属性访问", 'lookup["load"]("~/routes/x")\n'],
+    ["深层成员访问", 'deeply.nested.loader("~/routes/x")\n'],
+    ["无插值模板实参", "load(`~/routes/x`)\n"],
+  ])("%s：callee 怎么拼都不影响", (_name, source) => {
+    expect(args(source)).toContain("~/routes/x")
+  })
+
+  test("非字面量实参不报（编造目标比漏掉更糟）", () => {
+    expect(args("load(someVar)\n")).toEqual([])
+    expect(args("load(`~/${p}`)\n")).toEqual([])
+  })
+
+  test("它是构件不是守卫：一切字符串首参都会返回，由调用方按自己的前缀过滤", () => {
+    expect(args('console.log("hello")\nsetTimeout(fn, 10)\n')).toEqual(["hello"])
   })
 })

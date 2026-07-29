@@ -264,8 +264,38 @@ function loaderBindingNames(sourceFile: ts.SourceFile): ReadonlySet<string> {
 
 function couldLoadModule(node: ts.CallExpression, sourceFile: ts.SourceFile, loaderNames: ReadonlySet<string>): boolean {
   if (node.expression.kind === ts.SyntaxKind.ImportKeyword) return true
-  if (ts.isIdentifier(node.expression) && loaderNames.has(node.expression.text)) return true
-  return LOADER_CALLEE.test(node.expression.getText(sourceFile))
+  // `(load)("x")` is the same call as `load("x")`; the parentheses are not a different construct.
+  let callee: ts.Expression = node.expression
+  while (ts.isParenthesizedExpression(callee)) callee = callee.expression
+  if (ts.isIdentifier(callee) && loaderNames.has(callee.text)) return true
+  return LOADER_CALLEE.test(callee.getText(sourceFile))
+}
+
+/**
+ * The string-literal first argument of EVERY call in the file, whatever the callee.
+ *
+ * Deliberately callee-blind. Naming the loader is what keeps failing — `(nodeRequire)("…")`, a
+ * computed member access, a two-hop alias — and each dodge is about the CALLEE, never the target.
+ * A caller looking for edges to a specific place can therefore ask this instead and stop caring how
+ * the call is spelled.
+ *
+ * It over-reports by construction (any function taking a string that happens to look like a
+ * specifier), which is why it is a building block rather than a guard: the caller filters by a
+ * prefix that means something in its own domain.
+ */
+export function callArgumentLiterals(sourceFile: ts.SourceFile): Array<{ text: string; argument: string }> {
+  const literals: Array<{ text: string; argument: string }> = []
+  const visit = (node: ts.Node): void => {
+    if (ts.isCallExpression(node)) {
+      const [argument] = node.arguments
+      if (argument !== undefined && ts.isStringLiteralLike(argument)) {
+        literals.push({ text: node.getText(sourceFile).replace(/\s+/g, " "), argument: argument.text })
+      }
+    }
+    ts.forEachChild(node, visit)
+  }
+  visit(sourceFile)
+  return literals
 }
 
 /**
