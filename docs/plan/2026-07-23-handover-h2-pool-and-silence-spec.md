@@ -71,6 +71,17 @@ master 又前进 **70 提交**且碰了 P4 的三个目标文件 → **动接线
 
 ⚠ **验证工具的已知缺陷**：`parallel-test` 汇总在我修掉「恒报 0」后**仍欠计约 25%**（`test:backend` 4749 vs 直接命令 6614/644 文件；发现缺口与其他 CSI 序列均已排除）。**门的退出码是对的**（由各 shard 决定、真失败照样红），坏的是**证据行**——引用「N pass」时别当精确值。已入 backlog，根治方向=改用脚本已有的 junit XML 逐 `<testcase>` 计数。
 
+### P4 进行中（逐 Task 更新，别等最后）
+
+| Task | 状态 | 要点 |
+|---|---|---|
+| 4.0 ready-态挂载点 | ✅ 审清 | `driver.runResponseRecovery`；独立 gate；`retryNextStrategy` 覆盖 + driver 侧实参已有独立 oracle |
+| 4.1 三模式 splice 纯函数 | 🔄 进行中 | 复用 `reconcileLiveFrame`（**别另造判定**）；ping 直通 / enveloped_ping dedup / empty_text close-anchor+index+1；含「二次也在 real block 前失败仍须 close anchor」corner case |
+| 4.2 触发判定 | ⏳ | `shouldAttemptPreContentRecovery`：非 client-abort ∧ 未交付语义内容 ∧ config 开 |
+| 4.3 handler 接线 | ⏳ | **全特性最硬**；两挂载点；`settleFinal()` 必须进 owner 的 `finally` |
+| 4.4 History settlement | ⏳ | 含 per-attempt 簿记待核项（`commitAttemptSseEvents`/`finalizeCurrentAttemptDuration`/`resetSseEvents`） |
+| 4.5 协议级回归矩阵 | ⏳ | 三模式 × 5 失败形态 × 两挂载点 |
+
 ### 剩余（依赖序）
 
 **P4 余下**（plan-3：Task 4.1 splice 纯函数 → 4.2 触发判定 → **4.3 handler 接线（最硬）** → 4.4 History settlement → 4.5 协议矩阵；两挂载点执行器 + 三模式 splice + handler 接线 + 协议矩阵——**全特性最硬的一块**；接线时一并解决：backlog 的 `afterHook`-vs-`preflight` env seam、`_reason` 透传、`ClientSink.finalize` 的 `void`-vs-`Promise` 签名、`makeReconcilingSink` 未继承 delivery identity、Task 0.6 ② 的 quiescence join，以及 `settleFinal()` **必须放进 owner 的 `finally`**）→ **B3**（plan-4，**默认关**，never-false-kill）→ 全分支终审 → ff 合 master。
