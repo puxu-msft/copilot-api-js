@@ -37,6 +37,7 @@ import {
   //
   allModuleSpecifiers,
   callArgumentLiterals,
+  createSpecifierResolver,
   mayContainDecoded,
   moduleCapabilityAcquisitions,
   moduleLoadSites,
@@ -45,6 +46,8 @@ import {
 } from "./source-ast"
 
 const REPO_ROOT = path.resolve(import.meta.dir, "../..")
+const ROUTES_DIR = path.join(REPO_ROOT, "src/routes")
+const resolveSpecifier = createSpecifierResolver(REPO_ROOT)
 
 /**
  * These two assertions parse all of `src/lib`. Alone that is ~1.3s; under the 16-way sharded tier it
@@ -115,7 +118,14 @@ async function scanCoreLib(root = path.join(REPO_ROOT, "src/lib"), prefix = "src
     const sourceFile = parseSource(file, readFileSync(path.join(root, rel), "utf8"))
 
     for (const specifier of new Set(allModuleSpecifiers(sourceFile))) {
-      if (specifier === "~/routes" || specifier.startsWith("~/routes/")) edges.push({ file, specifier })
+      // RESOLVED target, not spelling. `~/routes/x` and `../../routes/x` are the same module, and a
+      // prefix match on the alias reports the relative form as no edge at all — which type-checks,
+      // and passed this guard and the SCC ratchet for four review rounds. The state closure learned
+      // this and this guard did not, because the lesson was never carried across.
+      const resolved = resolveSpecifier(path.join(root, rel), specifier)
+      if (resolved !== undefined && resolved.startsWith(ROUTES_DIR + path.sep)) {
+        edges.push({ file, specifier })
+      }
     }
     // Callee-blind sweep for the same target. Every bypass found in this file's history was about
     // how the CALL was spelled — a renamed loader, a parenthesised callee, a computed access — and
@@ -210,17 +220,32 @@ describe("core → server 边 ratchet", () => {
   test("扫描面覆盖 tsc 能编译的每种扩展名，而不只是 .ts", async () => {
     const fixture = await mkdtemp(path.join(os.tmpdir(), "core-scan-ext-"))
     try {
+      // 用**真实存在**的 routes 模块：判据是「解析后的目标落在 src/routes 里」，随便编一个不存在的
+      // specifier 会解析失败，于是这条测试会变成在测解析而不是在测扫描面。
       const extensions = ["ts", "tsx", "mts", "cts", "js", "jsx", "mjs", "cjs"]
       for (const extension of extensions) {
-        await writeFile(path.join(fixture, `probe-${extension}.${extension}`), `import { a } from "~/routes/probe-${extension}"\nexport const x = a\n`)
+        await writeFile(path.join(fixture, `probe-${extension}.${extension}`), 'import { a } from "~/routes/responses/fallback"\nexport const x = a\n')
       }
-      await writeFile(path.join(fixture, "ignored.txt"), 'import { a } from "~/routes/nope"\n')
+      await writeFile(path.join(fixture, "ignored.txt"), 'import { a } from "~/routes/responses/fallback"\n')
 
       const { edges } = await scanCoreLib(fixture, "fixture")
       expect(
-        edges.map((edge) => edge.specifier).sort(),
-        "每一种扩展名都必须被打开——`.mts` 是一等 TypeScript 模块，`.ts` 用 `./x.mjs` 就能引到它",
-      ).toEqual(extensions.map((extension) => `~/routes/probe-${extension}`).sort())
+        edges.map((edge) => edge.file).sort(),
+        "每一种扩展名都必须被打开——`.mts` 是一等 TypeScript 模块，`.ts` 用 `./x.mjs` 就能引到它；`.txt` 不是模块，不该被打开",
+      ).toEqual(extensions.map((extension) => `fixture/probe-${extension}.${extension}`).sort())
+    } finally {
+      await rm(fixture, { recursive: true, force: true })
+    }
+  })
+
+  // 接线 oracle：把 target sweep 从 scanCoreLib 里删掉，此前 76 个测试照样全绿。
+  test("守卫真的消费了 callee-blind 目标扫描（primitive 有测试不等于守卫接了线）", async () => {
+    const fixture = await mkdtemp(path.join(os.tmpdir(), "core-target-sweep-"))
+    try {
+      // callee 拼法刻意选一个所有 callee 启发式都认不出的：只有目标扫描能看见它。
+      await writeFile(path.join(fixture, "probe.ts"), 'declare const lookup: Record<string, (n: string) => unknown>\nexport const x = lookup["load"]("~/routes/responses/fallback")\n')
+      const { edges } = await scanCoreLib(fixture, "fixture")
+      expect(edges.map((edge) => edge.specifier), "接线断了的话这里是空数组，而 callArgumentLiterals 的单测依旧全绿").toEqual(["~/routes/responses/fallback"])
     } finally {
       await rm(fixture, { recursive: true, force: true })
     }

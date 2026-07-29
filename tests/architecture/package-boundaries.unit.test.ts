@@ -18,6 +18,7 @@ import {
   //
   readdir,
   readFile,
+  writeFile,
 } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
@@ -26,6 +27,7 @@ import ts from "typescript"
 import {
   //
   allModuleSpecifiers,
+  ambientRequireReferences,
   moduleCapabilityAcquisitions,
   moduleLoadSites,
   referencedFilePaths,
@@ -247,6 +249,15 @@ async function stateUnitClosureViolations(): Promise<Array<string>> {
       violations.push(`${relativeTo} → ${acquisition} (acquires the runtime module-loading capability)`)
     }
 
+    // The ambient `require` needs no import, so the capability gate above never sees it. For a unit
+    // that must not load anything at runtime, MENTIONING it is already the violation — `const a =
+    // require` and `Reflect.apply(require, …)` both type-check and neither writes a call whose
+    // callee is `require`. Refusing the identifier admits no alias chain, since every chain has to
+    // start by naming it.
+    for (const reference of ambientRequireReferences(sourceFile)) {
+      violations.push(`${relativeTo} → ${reference} (references the ambient \`require\`; the state unit may only use static imports)`)
+    }
+
     // A triple-slash reference is a dependency with no specifier — invisible to every import-based
     // check, and just as real. Walk it like any other edge.
     for (const reference of referencedFilePaths(sourceFile)) {
@@ -338,6 +349,24 @@ describe("state unit: only language/system builtins", () => {
   //   ① 对合法代码假红（`.js` specifier）—— 手写候选表犯的就是这个，且不会有人来救：架构测试红了，
   //      正常反应是改代码去迁就守卫，而不是怀疑守卫。
   //   ② 对越界代码假绿（symlink 实体在包外）—— 词法比较看不见，而这是守卫存在的全部理由。
+  // 三条判据各自的**接线** oracle。前一轮评审实测：把 capability gate 或 target sweep 从守卫里删掉，
+  // 76 个测试照样全绿——primitive 有测试**不等于**守卫真的在消费它。这里用真实闭包文件走真实入口。
+  test.each([
+    ["能力门", 'import { createRequire } from "node:module"\n', /acquires the runtime module-loading capability/],
+    ["ambient require 引用", "const a = require\n", /references the ambient/],
+    ["运行时加载", 'const m = await import("consola")\n', /runtime module load/],
+  ])("守卫真的消费了「%s」这条判据（primitive 有测试不等于守卫接了线）", async (_name, planted, expected) => {
+    const entry = path.join(FOUNDATION_SRC, "state-vocabulary.ts")
+    const original = await readFile(entry, "utf8")
+    try {
+      await writeFile(entry, `${planted}\n${original}`)
+      const violations = await stateUnitClosureViolations()
+      expect(violations.join("\n"), "判据接线断了的话，这里会是空数组，而 primitive 的单测依然全绿").toMatch(expected)
+    } finally {
+      await writeFile(entry, original)
+    }
+  })
+
   // 同 core 那条：没有持久 oracle 的话，把扩展名列表改回只剩 `.ts` 全套件依旧全绿。
   test("包内扫描面覆盖 tsc 能编译的每种扩展名", async () => {
     const fixture = mkdtempSync(path.join(os.tmpdir(), "pkg-scan-ext-"))

@@ -15,6 +15,7 @@
  * dependency (the repo's own typecheck runs on it).
  */
 
+import path from "node:path"
 import ts from "typescript"
 
 /** Parse one source file syntactically (no program, no type checker). */
@@ -332,12 +333,18 @@ export function moduleCapabilityAcquisitions(sourceFile: ts.SourceFile): Array<s
       acquisitions.push(node.getText(sourceFile).replace(/\s+/g, " "))
     }
     if (ts.isCallExpression(node)) {
-      // One call is one acquisition, even when both tests fire: `process.getBuiltinModule("module")`
-      // is a `node:module` target AND a builtin-module getter.
+      // The CALLEE has to be a loader too, otherwise `console.log("module")` counts as acquiring the
+      // module-loading capability — which drowns the registry in noise and, worse, trains people to
+      // add rows without reading them. Same for `getBuiltinModule`: it is `process`'s, and only when
+      // asked for `module` itself.
       const [argument] = node.arguments
-      const targetsModule = argument !== undefined && ts.isStringLiteralLike(argument) && isModuleSpecifier(argument.text)
-      const isBuiltinGetter = /(?:^|\.)getBuiltinModule$/.test(node.expression.getText(sourceFile))
-      if (targetsModule || isBuiltinGetter) acquisitions.push(node.getText(sourceFile).replace(/\s+/g, " "))
+      const target = argument !== undefined && ts.isStringLiteralLike(argument) ? argument.text : undefined
+      const calleeText = node.expression.getText(sourceFile)
+      const isLoaderCallee = node.expression.kind === ts.SyntaxKind.ImportKeyword || LOADER_CALLEE.test(calleeText)
+      const isProcessBuiltinGetter = /(?:^|[^\p{ID_Continue}$])process\.getBuiltinModule$/u.test(calleeText)
+      if (target !== undefined && isModuleSpecifier(target) && (isLoaderCallee || isProcessBuiltinGetter)) {
+        acquisitions.push(node.getText(sourceFile).replace(/\s+/g, " "))
+      }
     }
     ts.forEachChild(node, visit)
   }
@@ -547,4 +554,52 @@ export function isFunctionCall(call: ts.CallExpression, fn: string): boolean {
 export function methodCallReceiver(call: ts.CallExpression): string | null {
   if (!ts.isPropertyAccessExpression(call.expression)) return null
   return ts.isIdentifier(call.expression.expression) ? call.expression.expression.text : null
+}
+
+/**
+ * Resolve a specifier with the PROJECT's compiler options, so a guard and `tsc` agree on what it
+ * denotes. Built once per repo root; resolution itself is cheap.
+ *
+ * Guards that match specifier TEXT are testing a spelling, not a dependency: `~/routes/x` and
+ * `../../routes/x` are the same module, and a guard that only knows the first reports the second as
+ * no edge at all. That mistake was made and fixed in the state closure, and then left standing in
+ * the core ratchet for four more rounds because nobody carried the lesson across.
+ *
+ * `convertCompilerOptionsFromJson`, not `parseJsonConfigFileContent`: the latter also expands the
+ * `include` globs (~380ms) and these guards run in a sharded tier.
+ */
+export function createSpecifierResolver(repoRoot: string): (fromFile: string, specifier: string) => string | undefined {
+  const configPath = path.join(repoRoot, "tsconfig.json")
+  const raw = ts.readConfigFile(configPath, ts.sys.readFile)
+  const converted = ts.convertCompilerOptionsFromJson((raw.config as { compilerOptions?: unknown }).compilerOptions, repoRoot, configPath)
+  if (converted.errors.length > 0) throw new Error(`tsconfig.json compilerOptions failed to parse: ${converted.errors.map((error) => error.messageText).join("; ")}`)
+  return (fromFile, specifier) => ts.resolveModuleName(specifier, fromFile, converted.options, ts.sys).resolvedModule?.resolvedFileName
+}
+
+/**
+ * References to the ambient `require` binding — not just calls to it.
+ *
+ * For a unit whose claim is "static imports only", a MENTION is already the violation: `const a =
+ * require` hands the loader to any name at all, `Reflect.apply(require, …, ["consola"])` never
+ * writes a call with `require` as its callee, and both type-check. Chasing those through alias
+ * chains is the losing game this file has already lost four times; refusing the identifier outright
+ * is one line and admits no chain, because every chain must start by naming it.
+ *
+ * Only meaningful for a unit that genuinely never loads anything at runtime — the state closure has
+ * zero mentions today. Anywhere else this would be far too blunt.
+ *
+ * Property accesses are excluded: `foo.require` is someone else's member, not the global.
+ */
+export function ambientRequireReferences(sourceFile: ts.SourceFile): Array<string> {
+  const references: Array<string> = []
+  const visit = (node: ts.Node): void => {
+    if (ts.isIdentifier(node) && node.text === "require") {
+      const isMemberName = ts.isPropertyAccessExpression(node.parent) && node.parent.name === node
+      const isDeclarationName = (ts.isVariableDeclaration(node.parent) || ts.isParameter(node.parent) || ts.isBindingElement(node.parent)) && node.parent.name === node
+      if (!isMemberName && !isDeclarationName) references.push(node.parent.getText(sourceFile).replace(/\s+/g, " ").slice(0, 80))
+    }
+    ts.forEachChild(node, visit)
+  }
+  visit(sourceFile)
+  return references
 }
