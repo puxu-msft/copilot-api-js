@@ -104,6 +104,8 @@ runResponseRecovery(upstream: UpstreamStream, env: RequestEnvelope, reason: stri
 
 ## Task 4.1：三模式 wire-level splice 纯函数
 
+> **实施状态（2026-07-28）：已完成，保持零 handler 接线。** 新增 `src/routes/messages/precontent-recovery-splice.ts` 的 `spliceFreshAttemptFrame`：无 hooks 时直接 `sink.write`；有 hooks 时复用 `makeReconcilingSink(...).write(frame)`，从而继续由既有 `reconcileLiveFrame` 决定 fresh `message_start` 去重、empty_text anchor close-off 与 `content_block_*` index +1，并保留 close-off 经 `writeAnchor` 写出、携带 synthetic anchor 标记的既有 richest-data-flow 语义。此处相对下方签名草案只偏离一处：不是手动遍历 `reconcileLiveFrame` 返回值并全部调用 `sink.write`，因为当前 `makeReconcilingSink` 已负责把 synthetic `stop@0` 路由到 `writeAnchor`；手动遍历会丢失该标记。四条单测均先 RED 后 GREEN，并分别以“ping 丢帧”“synthetic-prelude 绕过 reconcile”“remap 恒等”“终态前不调用 `closeAnchorIfOpen`”四个 mutation 证实会变红。重核后的真实位置：`reconcileLiveFrame` 在 `src/lib/anthropic/live-reconcile.ts:107`，`makeReconcilingSink` 在 `:164`，`closeAnchorIfOpen` 在 `src/lib/anthropic/keepalive-anchor.ts:178`，`buildAnthropicAnchorHooks` 在 `src/routes/messages/handler-v4.ts:1045`，`liveReconcilingSink` 在 `:1251`，live `stream-error` 分支在 `:1382-1423`。现状还比原 plan 多一层按需 escalation：ping 配置在 `streamKeepaliveEscalateSec > 0` 时也会构造 hooks（`:1105-1109`），但未注入脚手架前 `anchorState.injected=false`，既有 reconcile 仍逐帧原样透传；正常默认 ping（无 escalation）仍是 hooks `undefined` 的直接写出路径。离线真 `@anthropic-ai/sdk` probe 已重跑，`ping → fresh message_start → text@0` 正确累积，故无需 ping 专用协议改写。
+
 **设计依据（实测表，FINDINGS.md 逐字摘录）：**
 
 | mode | 已发脚手架 | fresh attempt 拼接规则 |
