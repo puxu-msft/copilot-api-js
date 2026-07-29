@@ -1,6 +1,6 @@
 ---
 name: reference-worktree-bun-add-needs-main-tree-install-after-merge
-description: worktree 的隔离性没你以为的强，三个方向都会咬：① worktree 里 bun add 的依赖不进主树，FF 后主树须补 install；② 新建 worktree 里缺 native/*.node 等构建产物，在其中跑测试会红成一片、极易误判为既有失败；③ 建在仓库内（.worktrees/）的 worktree 仍会向上解析到主树 node_modules，拿它做「裸装能不能跑」的隔离验证是假的
+description: worktree 的隔离性没你以为的强，四个方向都会咬：① worktree 里 bun add 的依赖不进主树，FF 后主树须补 install；② 新建 worktree 里缺 native/*.node 等构建产物，在其中跑测试会红成一片、极易误判为既有失败；③ 建在仓库内（.worktrees/）的 worktree 仍会向上解析到主树 node_modules，拿它做「裸装能不能跑」的隔离验证是假的；④ 派给 subagent 的任务里写「在 worktree X 工作」不改变它的 Bash cwd（默认在主树），它的 typecheck/测试会在主树照常变绿、整轮证据无效
 metadata: 
   node_type: memory
   type: reference
@@ -37,5 +37,19 @@ metadata:
 - 判据：`ls <probe>/../node_modules` 沿路径向上逐级看，只要任一级存在就不是隔离的。
 - 同一次实测还证伪了另一条更常犯的推断：**用 grep/正则扫 import 语句来清点依赖是不可靠的**（多行 import 形式、Vue 模板语法都会骗过正则——我的扫描漏掉了 `diff`，却把 `:disabled=` 当成包名）。「这个项目需要哪些依赖」唯一可信的 oracle 是仓库外裸装裸跑。
 - 边界也要如实写：同一次实测里 `build`/`test` 在仓库外能跑，`typecheck` 不能（它经 `~backend/*` 拖入后端源码，后端自己的依赖装在仓库根）。别把不对称的结论压成一句「已独立」。
+
+## 第四方向（2026-07-29 新增）：派给 subagent 的「在 worktree X 工作」不是它的 cwd
+
+前三条讲**树里有什么**；这条讲**你以为它在哪棵树里**。委派消息里写清「工作目录是 `.worktrees/<name>`」**不会**改变 subagent 的 Bash cwd——它默认落在 primary working directory（主树 `/home/xp/src/copilot-api-js`）。除非 agent 每条命令都自己 `cd` / `git -C` / 用绝对路径，否则它跑的是**主树的代码**。
+
+**失效形态是不对称的，这才是危险处**：路径型命令（`bunx eslint <相对路径>`）会**响亮报错**「找不到文件」，一眼看穿；而 `bun run typecheck`、`bun test <目录>` 在主树**照常全绿**——它们确实跑了、确实绿了，只是跑的是与被审改动无关的那份代码。于是报告里会出现「typecheck 通过 / 1492 pass / 0 fail」这种**看起来是最强证据、实则整轮无效**的行。这是 [[feedback-pass-null-clean-not-self-validating]] 的一个具体形态：绿证明了某件事，只是不是你要的那件事。
+
+2026-07-29 实例：Task 4.1 的 implementer 首轮就这样翻车（eslint 找不到文件才暴露）。主会话侧的独立佐证只要一条命令——`ls 主树/src/routes/messages/precontent-recovery-splice.ts` → `No such file`，而该文件只存在于 worktree 的 `06dc6c29`；**主树跑 typecheck 必然绿、且必然与它无关**。
+
+**How to apply:**
+- **委派 prompt 里把 cwd 写成硬性条款**，不是背景描述：「每条命令显式 `cd <worktree> && ...` 或 `git -C <worktree>`」，并点明「你的 Bash 默认不在那里、主树没有这些文件、在主树跑测试会假绿」。
+- **要求树向证据、并要求它来自第一条命令**：报告开头贴 `pwd` 的真实输出 + `git -C <worktree> rev-parse --short HEAD`（应等于被审提交的 sha）。没有这两行，就把「全绿」当未验证——这是个零成本、随正常流程顺手产生的自验点。
+- **主会话收到绿报告先看树向**，别先看结论。同理适用于评审 agent：它复跑 mutation 时若跑在主树，「变红」同样无效（`git checkout --` 甚至可能还原错树）。
+- 泛化：任何「agent 在非默认目录/非默认环境里干活」的委派（另一个仓库、`/tmp` 探针目录、容器内），都要求它先报出实际所在位置，而不是相信委派消息里写过。
 
 **Related:** worktree SDD 流程见 [[git-commit-pathspec-commits-worktree-not-index]]；no-auto-server 见 CLAUDE.md 工程纪律。实例来自 2026-07-11 列配置特性（dnd-kit reorder）合并后。

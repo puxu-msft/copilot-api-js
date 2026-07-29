@@ -66,7 +66,7 @@
 - [测 elapsed 逻辑注入 clock seam 别用 setSystemTime](reference-elapsed-time-test-inject-clock-seam-not-setsystemtime.md) — bun setSystemTime 跨 await 不冻结
 - [real codex 测试用 CODEX_HOME 隔离](reference-codex-ephemeral-insufficient-use-codex-home.md) — --ephemeral 不够
 - [node_modules 存在 ≠ 锁文件事实](reference-node-modules-presence-not-lockfile-truth.md) — 可能是 prune orphan
-- [worktree 的隔离性没你以为的强（三向）](reference-worktree-bun-add-needs-main-tree-install-after-merge.md) — ①bun add 只进该树②新树缺 gitignored 产物致假红③`.worktrees/` 内仍向上解析主树 node_modules
+- [worktree 的隔离性没你以为的强（四向）](reference-worktree-bun-add-needs-main-tree-install-after-merge.md) — ①bun add 只进该树②新树缺 gitignored 产物致假红③`.worktrees/` 内仍向上解析主树 node_modules④派 subagent 去 worktree 不改它 cwd、主树 typecheck/测试照常绿=整轮证据无效
 - [server.ts 与 test-app.ts 双份 notFound 镜像](reference-server-vs-test-app-dual-notfound-mirror.md) — 改 server 中间件须真实 createServer 测
 - [起测试服务器端口被 peer 占用会静默打到 peer mock](reference-spawn-fails-silently-hits-peer-server-verify-port-ownership.md) — launcher 静默失败 health 仍绿
 - [编译错误：补符号 vs 删引用](methodology-broken-reference-supply-vs-delete.md) — 按消费者契约+独立 oracle 裁决，别反射式让它编译

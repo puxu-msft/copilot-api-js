@@ -76,7 +76,7 @@ master 又前进 **70 提交**且碰了 P4 的三个目标文件 → **动接线
 | Task | 状态 | 要点 |
 |---|---|---|
 | 4.0 ready-态挂载点 | ✅ 审清 | `driver.runResponseRecovery`；独立 gate；`retryNextStrategy` 覆盖 + driver 侧实参已有独立 oracle |
-| 4.1 三模式 splice 纯函数 | 🔄 进行中 | 复用 `reconcileLiveFrame`（**别另造判定**）；ping 直通 / enveloped_ping dedup / empty_text close-anchor+index+1；含「二次也在 real block 前失败仍须 close anchor」corner case |
+| 4.1 三模式 splice 纯函数 | 🔄 实现完成（`06dc6c29`），异模型审进行中 | 新增 `src/routes/messages/precontent-recovery-splice.ts`（28 行，纯委派）+ 4 条单测；**零 handler 接线**（全仓 grep：仅测试导入）。实施者复用 `makeReconcilingSink` 而非手工遍历 `reconcileLiveFrame`（保住 close-off 的 `synthetic:"anchor"` 标记），偏离已写进 plan。**待审重点**：它与 `handler-v4.ts:1251` 已有的 `liveReconcilingSink` 是否是多余间接层 |
 | 4.2 触发判定 | ⏳ | `shouldAttemptPreContentRecovery`：非 client-abort ∧ 未交付语义内容 ∧ config 开 |
 | 4.3 handler 接线 | ⏳ | **全特性最硬**；两挂载点；`settleFinal()` 必须进 owner 的 `finally` |
 | 4.4 History settlement | ⏳ | 含 per-attempt 簿记待核项（`commitAttemptSseEvents`/`finalizeCurrentAttemptDuration`/`resetSseEvents`） |
@@ -91,6 +91,8 @@ master 又前进 **70 提交**且碰了 P4 的三个目标文件 → **动接线
 ### 续跑方式
 
 新会话：读本节 + [plan kickoff](2026-07-23-upstream-silence-recovery/kickoff.md) + ledger → `superpowers:subagent-driven-development` **从 Task 0.6 起** → 每任务 fresh implementer（`gpt-souls:implementer`）→ 异模型任务 review（Claude `reviewer`）→ fix loop → 标 ledger。承重声称亲自 code-read 复核。
+
+🔴 **派 agent 时把 worktree 写成硬性条款**（2026-07-29 实测踩坑）：委派消息里写「在 `.worktrees/upstream-silence-recovery` 工作」**不会**改变 subagent 的 Bash cwd——它默认在主树。eslint 会响亮报「找不到文件」，但 `typecheck` / `bun test` 在主树**照常全绿**，整轮证据无效而报告看起来最强。所以每次委派都要求：① 每条命令显式 `cd <worktree> && ...` 或 `git -C <worktree>`；② 报告开头贴**第一条** Bash 的 `pwd` 实际输出 + `git -C <worktree> rev-parse --short HEAD`（须等于被审提交）。收到绿报告**先看树向证据再看结论**。→ [记忆第四方向](../memory/reference-worktree-bun-add-needs-main-tree-install-after-merge.md)。
 
 **验证命令注意**：`bun run test:backend` 的汇总行曾恒报 `0 tests`（bun 即使 piped 也上色、脚本锚定正则不咬），**已修**（master `5454616b`，正样本对照 0 → 4243 pass）。已知**既有** flaky：History V3 capture-performance 家族等 perf/时序测试在负载下会挂（master 同样），判回归以「单跑是否过 + 是否属该家族」为准。
 
