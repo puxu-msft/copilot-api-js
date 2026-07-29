@@ -76,7 +76,8 @@ master 又前进 **70 提交**且碰了 P4 的三个目标文件 → **动接线
 | Task | 状态 | 要点 |
 |---|---|---|
 | 4.0 ready-态挂载点 | ✅ 审清 | `driver.runResponseRecovery`；独立 gate；`retryNextStrategy` 覆盖 + driver 侧实参已有独立 oracle |
-| 4.1 三模式 splice 纯函数 | 🔄 实现完成（`06dc6c29`），异模型审进行中 | 新增 `src/routes/messages/precontent-recovery-splice.ts`（28 行，纯委派）+ 4 条单测；**零 handler 接线**（全仓 grep：仅测试导入）。实施者复用 `makeReconcilingSink` 而非手工遍历 `reconcileLiveFrame`（保住 close-off 的 `synthetic:"anchor"` 标记），偏离已写进 plan。**待审重点**：它与 `handler-v4.ts:1251` 已有的 `liveReconcilingSink` 是否是多余间接层 |
+| 4.1 三模式 splice | ⚠️ **首版被审掉、已重划范围**（详见下方 4.1′） | 首版 `06dc6c29` 新增 `precontent-recovery-splice.ts` 门面，异模型审判 **MAJOR：多余间接层**——`handler-v4.ts:1251` 的 `liveReconcilingSink` 已是同一 `makeReconcilingSink` 构造，且生产 live 两条腿（`:1361` direct / `:1659` translate）已在用；恢复路径**不存在拿不到该 sink 的层级障碍**（`sink`/`anchorHooks`/`anchorState` 与 catch 块同在 `:1280` 解构的作用域）。主会话逐条 code-read 复核属实 → 采纳 |
+| 4.1′ decorator 透明化 + 跨 attempt 复用 | ⏳ 进行中 | ① `makeReconcilingSink` 补 `inheritDownstreamDeliverySession` + 转发 `suspendHeartbeat`/`resumeHeartbeat`/`finalize`（现漏 3 个方法；对照组 `recovery-sink-supervisor.ts:41`）② 删门面 ③ 三模式验收搬到「同一条持久 decorated sink 跨 attempt 写入」测试，**必须含 `writeAnchor` 标记断言**（reviewer 的 mutation 证明首版此处假绿） |
 | 4.2 触发判定 | ⏳ | `shouldAttemptPreContentRecovery`：非 client-abort ∧ 未交付语义内容 ∧ config 开 |
 | 4.3 handler 接线 | ⏳ | **全特性最硬**；两挂载点；`settleFinal()` 必须进 owner 的 `finally` |
 | 4.4 History settlement | ⏳ | 含 per-attempt 簿记待核项（`commitAttemptSseEvents`/`finalizeCurrentAttemptDuration`/`resetSseEvents`） |
@@ -92,7 +93,7 @@ master 又前进 **70 提交**且碰了 P4 的三个目标文件 → **动接线
 
 新会话：读本节 + [plan kickoff](2026-07-23-upstream-silence-recovery/kickoff.md) + ledger → `superpowers:subagent-driven-development` **从 Task 0.6 起** → 每任务 fresh implementer（`gpt-souls:implementer`）→ 异模型任务 review（Claude `reviewer`）→ fix loop → 标 ledger。承重声称亲自 code-read 复核。
 
-🔴 **派 agent 时把 worktree 写成硬性条款**（2026-07-29 实测踩坑）：委派消息里写「在 `.worktrees/upstream-silence-recovery` 工作」**不会**改变 subagent 的 Bash cwd——它默认在主树。eslint 会响亮报「找不到文件」，但 `typecheck` / `bun test` 在主树**照常全绿**，整轮证据无效而报告看起来最强。所以每次委派都要求：① 每条命令显式 `cd <worktree> && ...` 或 `git -C <worktree>`；② 报告开头贴**第一条** Bash 的 `pwd` 实际输出 + `git -C <worktree> rev-parse --short HEAD`（须等于被审提交）。收到绿报告**先看树向证据再看结论**。→ [记忆第四方向](../memory/reference-worktree-bun-add-needs-main-tree-install-after-merge.md)。
+🔴 **派 agent 时把树向校验绑进每条承重命令**（2026-07-29 实测踩坑 + 评审推翻我的第一版判据）：委派消息里写「在 `.worktrees/upstream-silence-recovery` 工作」**不改变** subagent 的初始 Bash cwd（它继承会话启动 cwd，本会话即主树）。危险不在会不会报错，而在**退出状态不能证明它验证了目标树**：精确指定只存在于本分支的文件时 eslint / `bun test` 都会响亮报未匹配，但 `bun run typecheck` / `bun test tests/routes/` 这类宽选择器在主树**照常全绿**（实测 112 pass）。所以委派 prompt 要求：**每条承重命令自带同链校验** —— `cd /home/xp/src/copilot-api-js/.worktrees/upstream-silence-recovery && test "$(git rev-parse --show-toplevel)" = "/home/xp/src/copilot-api-js/.worktrees/upstream-silence-recovery" && test "$(git rev-parse HEAD)" = "<完整目标 SHA>" && <实际命令>`。**别用 `git -C <worktree> rev-parse HEAD` 当树向证据**——它在哪棵树跑都返回目标 SHA，零区分力。→ [记忆第四方向](../memory/reference-worktree-bun-add-needs-main-tree-install-after-merge.md)。
 
 **验证命令注意**：`bun run test:backend` 的汇总行曾恒报 `0 tests`（bun 即使 piped 也上色、脚本锚定正则不咬），**已修**（master `5454616b`，正样本对照 0 → 4243 pass）。已知**既有** flaky：History V3 capture-performance 家族等 perf/时序测试在负载下会挂（master 同样），判回归以「单跑是否过 + 是否属该家族」为准。
 
