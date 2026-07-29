@@ -24,6 +24,13 @@ import {
   test,
 } from "bun:test"
 import { readFileSync } from "node:fs"
+import {
+  //
+  mkdtemp,
+  rm,
+  writeFile,
+} from "node:fs/promises"
+import os from "node:os"
 import path from "node:path"
 
 import {
@@ -88,13 +95,19 @@ const KNOWN_OPAQUE_TARGETS: Array<{ file: string; call: string }> = [
  * scan can know in advance. One parse of all of `src/lib` is ~585ms measured — affordable, and
  * cheaper than the two filtered passes this replaces, which parsed some files twice.
  */
-async function scanCoreLib(): Promise<{ edges: Array<{ file: string; specifier: string }>; opaque: Array<{ file: string; call: string }> }> {
+/** Every module extension `tsc` compiles. `.ts`-only was the bug: see `SOURCE_GLOB`'s own test. */
+const SOURCE_GLOB = "**/*.{ts,tsx,mts,cts,js,jsx,mjs,cjs}"
+
+async function scanCoreLib(root = path.join(REPO_ROOT, "src/lib"), prefix = "src/lib"): Promise<{
+  edges: Array<{ file: string; specifier: string }>
+  opaque: Array<{ file: string; call: string }>
+}> {
   const edges: Array<{ file: string; specifier: string }> = []
   const opaque: Array<{ file: string; call: string }> = []
 
-  for await (const rel of new Glob("**/*.{ts,tsx,mts,cts,js,jsx,mjs,cjs}").scan({ cwd: path.join(REPO_ROOT, "src/lib"), onlyFiles: true })) {
-    const file = `src/lib/${rel}`
-    const sourceFile = parseSource(file, readFileSync(path.join(REPO_ROOT, file), "utf8"))
+  for await (const rel of new Glob(SOURCE_GLOB).scan({ cwd: root, onlyFiles: true })) {
+    const file = `${prefix}/${rel}`
+    const sourceFile = parseSource(file, readFileSync(path.join(root, rel), "utf8"))
 
     for (const specifier of new Set(allModuleSpecifiers(sourceFile))) {
       if (specifier === "~/routes" || specifier.startsWith("~/routes/")) edges.push({ file, specifier })
@@ -162,6 +175,27 @@ describe("core → server 边 ratchet", () => {
     // 反向：静态 specifier 不算不可判定，否则登记表会被真实边淹没。
     expect(computed('const m = await import("~/routes/x")\n')).toEqual([])
     expect(computed("const m = await import(`~/routes/x`)\n")).toEqual([])
+  })
+
+  // 扫描面的持久 oracle。**没有这条，把 glob 改回 `.ts` 全套件依旧全绿**（第七轮评审实测），
+  // 于是「守卫覆盖 .mts」这件事只活在某次手工探针的记忆里。这里用临时目录喂真实文件给真实扫描函数。
+  test("扫描面覆盖 tsc 能编译的每种扩展名，而不只是 .ts", async () => {
+    const fixture = await mkdtemp(path.join(os.tmpdir(), "core-scan-ext-"))
+    try {
+      const extensions = ["ts", "tsx", "mts", "cts", "js", "jsx", "mjs", "cjs"]
+      for (const extension of extensions) {
+        await writeFile(path.join(fixture, `probe-${extension}.${extension}`), `import { a } from "~/routes/probe-${extension}"\nexport const x = a\n`)
+      }
+      await writeFile(path.join(fixture, "ignored.txt"), 'import { a } from "~/routes/nope"\n')
+
+      const { edges } = await scanCoreLib(fixture, "fixture")
+      expect(
+        edges.map((edge) => edge.specifier).sort(),
+        "每一种扩展名都必须被打开——`.mts` 是一等 TypeScript 模块，`.ts` 用 `./x.mjs` 就能引到它",
+      ).toEqual(extensions.map((extension) => `~/routes/probe-${extension}`).sort())
+    } finally {
+      await rm(fixture, { recursive: true, force: true })
+    }
   })
 
   test("预过滤对转义拼法也放行（原始文本里没有 `~/routes`，AST 解出来却有）", () => {

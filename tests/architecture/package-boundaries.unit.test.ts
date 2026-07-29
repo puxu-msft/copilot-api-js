@@ -9,6 +9,7 @@ import {
   mkdirSync,
   mkdtempSync,
   realpathSync,
+  rmSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs"
@@ -322,6 +323,21 @@ describe("state unit: only language/system builtins", () => {
   //   ① 对合法代码假红（`.js` specifier）—— 手写候选表犯的就是这个，且不会有人来救：架构测试红了，
   //      正常反应是改代码去迁就守卫，而不是怀疑守卫。
   //   ② 对越界代码假绿（symlink 实体在包外）—— 词法比较看不见，而这是守卫存在的全部理由。
+  // 同 core 那条：没有持久 oracle 的话，把扩展名列表改回只剩 `.ts` 全套件依旧全绿。
+  test("包内扫描面覆盖 tsc 能编译的每种扩展名", async () => {
+    const fixture = mkdtempSync(path.join(os.tmpdir(), "pkg-scan-ext-"))
+    try {
+      const extensions = ["ts", "tsx", "mts", "cts", "js", "jsx", "mjs", "cjs"]
+      for (const extension of extensions) writeFileSync(path.join(fixture, `probe.${extension}`), "export const x = 1\n")
+      writeFileSync(path.join(fixture, "notes.txt"), "not a module\n")
+
+      const found = (await sourceFiles(fixture)).map((file) => path.basename(file)).sort()
+      expect(found, "`.mts` 是一等 TypeScript 模块；只扫 `.ts` 的守卫永远不会打开它").toEqual(extensions.map((extension) => `probe.${extension}`).sort())
+    } finally {
+      rmSync(fixture, { recursive: true, force: true })
+    }
+  })
+
   test("解析器与 tsc 同构：`.js` specifier 在 Bundler 模式下解析到 `.ts`，不算 unresolvable", () => {
     const stateTs = path.join(FOUNDATION_SRC, "state.ts")
     const expected = realpathSync(path.join(FOUNDATION_SRC, "state-defaults.ts"))
