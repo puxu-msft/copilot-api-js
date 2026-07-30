@@ -177,7 +177,9 @@ export async function spliceFreshAttemptFrame(
 
 ## Task 4.2：触发判定 `shouldAttemptPreContentRecovery`
 
-- [ ] **Step 1: 写失败测试**
+> **实施状态（2026-07-30）：已完成，保持零 handler 接线。** 新增 `src/routes/messages/precontent-recovery-gate.ts` 的纯函数 `shouldAttemptPreContentRecovery`，显式接收 failure class、delivery session 与运行时 `preContentRecovery` 配置。确定性 `http-error` / `network-error` 仅在配置开启且 `hasDeliveredSemanticContent(session) === false` 时返回 true；`abort` 统一复用 `classifyPostCommitAbort`，`client-abort` / `reaper-cancel` / `timeout` 三类全部返回 false。后两类是 never-false-kill 的故意排除：连接可能仍在合法长思考，不是“暂不支持”。相对原草案的签名细化是新增显式 failure discriminated union，因为纯 gate 必须区分确定性上游死亡与三个 AbortError 子类；没有引入第四套判据。集成测试用真实 production delivery sink 构造“delta 已交付但 `content_block_stop` 未到”状态，并以临时改读 `boundary.result` 的 mutation 证测试会红，锁定 gate 继续读取 delivery-level `hasEmittedRealClientContent`。六类验收均完成独立正样本 mutation。
+
+- [x] **Step 1: 写失败测试**
 
 ```ts
 test("returns true when: not client-abort AND no semantic content delivered AND config enabled", () => { ... })
@@ -186,10 +188,10 @@ test("returns false when semantic content already delivered (this is exactly the
 test("returns false when config.preContentRecovery.enabled === false", () => { ... })
 ```
 
-- [ ] **Step 2: 跑，失败。**
-- [ ] **Step 3: 实现**（纯函数，组合 Plan-2 的 `hasDeliveredSemanticContent` + `state.preContentRecovery.enabled` + `classifyPostCommitAbort` 的 `client-abort` 分支排除）。
-- [ ] **Step 4: 跑，通过。**
-- [ ] **Step 5: 提交** → `feat(anthropic): shouldAttemptPreContentRecovery gate combinator`。
+- [x] **Step 2: 跑，失败。**
+- [x] **Step 3: 实现**（纯函数，组合 Plan-2 的 `hasDeliveredSemanticContent` + `state.preContentRecovery.enabled` + `classifyPostCommitAbort`；冻结范围要求三个 abort 子类全部排除，不只 client-abort）。
+- [x] **Step 4: 跑，通过。**
+- [x] **Step 5: 提交** → `feat(anthropic): shouldAttemptPreContentRecovery gate combinator`。
 
 ---
 
