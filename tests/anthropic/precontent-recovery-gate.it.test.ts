@@ -7,32 +7,11 @@ import {
 
 import type { ClientSink } from "~/lib/pipeline/types"
 
+import { makeReconcilingSink } from "~/lib/anthropic/live-reconcile"
 import { makeDeliverySseSink } from "~/lib/pipeline/client-sink"
 import { getDownstreamDeliverySession } from "~/lib/pipeline/delivery/session"
 import { isClientContentFrame } from "~/lib/pipeline/request-timing"
 import { shouldAttemptPreContentRecovery } from "~/routes/messages/precontent-recovery-gate"
-
-function deliveryWithoutContent() {
-  return { hasEmittedRealClientContent: false }
-}
-
-function throwingUnreadInputs(): {
-  config: { enabled: boolean }
-  session: { hasEmittedRealClientContent: boolean }
-} {
-  return {
-    config: {
-      get enabled(): boolean {
-        throw new Error("abort classification must short-circuit config")
-      },
-    },
-    session: {
-      get hasEmittedRealClientContent(): boolean {
-        throw new Error("abort classification must short-circuit semantic-content state")
-      },
-    },
-  }
-}
 
 function productionDelivery(): { sink: ClientSink; session: NonNullable<ReturnType<typeof getDownstreamDeliverySession>> } {
   const stream = { writeSSE: () => Promise.resolve() } as unknown as Parameters<typeof makeDeliverySseSink>[0]
@@ -51,31 +30,13 @@ function realContentDelta(text: string) {
   }
 }
 
-describe("shouldAttemptPreContentRecovery", () => {
-  test("deterministic HTTP and network failures recover when enabled before semantic content", () => {
-    for (const kind of ["http-error", "network-error"] as const) {
-      expect(
-        shouldAttemptPreContentRecovery({
-          failure: { kind },
-          session: deliveryWithoutContent(),
-          config: { enabled: true },
-        }),
-      ).toBe(true)
-    }
-  })
+const reconcileHooks = {
+  isMessageStart: () => false,
+  stopFrame: { event: "content_block_stop", data: JSON.stringify({ type: "content_block_stop", index: 0 }) },
+  remap: (frame: Parameters<ClientSink["write"]>[0]) => frame,
+}
 
-  test("client abort is excluded with highest-priority short-circuit", () => {
-    const { config, session } = throwingUnreadInputs()
-
-    expect(
-      shouldAttemptPreContentRecovery({
-        failure: { kind: "abort", clientAborted: true, reaperAborted: true },
-        session,
-        config,
-      }),
-    ).toBe(false)
-  })
-
+describe("shouldAttemptPreContentRecovery delivery integration", () => {
   test("a delivered delta before content_block_stop belongs to continuation, not pre-content recovery", async () => {
     const { sink, session } = productionDelivery()
     await sink.write(realContentDelta("already delivered"))
@@ -91,31 +52,23 @@ describe("shouldAttemptPreContentRecovery", () => {
     ).toBe(false)
   })
 
-  test("disabled runtime config excludes deterministic upstream failures", () => {
-    expect(
-      shouldAttemptPreContentRecovery({
-        failure: { kind: "http-error" },
-        session: deliveryWithoutContent(),
-        config: { enabled: false },
-      }),
-    ).toBe(false)
-  })
+  test("a decorated sink cannot resolve delivery state, so recovery must fail closed", async () => {
+    const { sink: rawSink } = productionDelivery()
+    const decorated = makeReconcilingSink(
+      rawSink,
+      { injected: false, messageStartForwarded: false, anchorBlockOpen: false, anchorClosed: false },
+      reconcileHooks,
+    )
+    await decorated.write(realContentDelta("already delivered through decorator"))
+    const decoratedSession = getDownstreamDeliverySession(decorated)
+    expect(decoratedSession).toBeUndefined()
 
-  test("reaper cancellation is deliberately excluded to avoid killing legitimate long thinking", () => {
     expect(
       shouldAttemptPreContentRecovery({
-        failure: { kind: "abort", clientAborted: false, reaperAborted: true },
-        session: deliveryWithoutContent(),
-        config: { enabled: true },
-      }),
-    ).toBe(false)
-  })
-
-  test("header-wait timeout is deliberately excluded to avoid killing legitimate long thinking", () => {
-    expect(
-      shouldAttemptPreContentRecovery({
-        failure: { kind: "abort", clientAborted: false, reaperAborted: false },
-        session: deliveryWithoutContent(),
+        failure: { kind: "network-error" },
+        // Exercise the runtime fail-closed guard against an untyped/wrong 4.3 caller; the public API rejects
+        // this at compile time and requires resolving delivery from the raw sink.
+        session: decoratedSession as never,
         config: { enabled: true },
       }),
     ).toBe(false)

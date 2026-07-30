@@ -177,7 +177,7 @@ export async function spliceFreshAttemptFrame(
 
 ## Task 4.2：触发判定 `shouldAttemptPreContentRecovery`
 
-> **实施状态（2026-07-30）：已完成，保持零 handler 接线。** 新增 `src/routes/messages/precontent-recovery-gate.ts` 的纯函数 `shouldAttemptPreContentRecovery`，显式接收 failure class、delivery session 与运行时 `preContentRecovery` 配置。确定性 `http-error` / `network-error` 仅在配置开启且 `hasDeliveredSemanticContent(session) === false` 时返回 true；`abort` 统一复用 `classifyPostCommitAbort`，`client-abort` / `reaper-cancel` / `timeout` 三类全部返回 false。后两类是 never-false-kill 的故意排除：连接可能仍在合法长思考，不是“暂不支持”。相对原草案的签名细化是新增显式 failure discriminated union，因为纯 gate 必须区分确定性上游死亡与三个 AbortError 子类；没有引入第四套判据。集成测试用真实 production delivery sink 构造“delta 已交付但 `content_block_stop` 未到”状态，并以临时改读 `boundary.result` 的 mutation 证测试会红，锁定 gate 继续读取 delivery-level `hasEmittedRealClientContent`。六类验收均完成独立正样本 mutation。
+> **实施状态（2026-07-30）：已完成，保持零 handler 接线。** 新增 `src/routes/messages/precontent-recovery-gate.ts` 的纯函数 `shouldAttemptPreContentRecovery`，显式接收 failure class、**必填且从 raw sink 解析的** delivery session 与运行时 `preContentRecovery` 配置。确定性 `http-error` / `network-error` 仅在配置开启且 `hasDeliveredSemanticContent(session) === false` 时返回 true；`abort` 直接接收 handler 已算好的 `PostCommitAbortKind`，避免从同一对 signal 重复派生双源值，`client-abort` / `reaper-cancel` / `timeout` 三类全部返回 false。外层 failure 与内层 abort 都用穷尽 switch + `satisfies never`，未知形态 fail-closed。后两类排除由用户硬约束 `never-false-kill-legit-thinking` 授权（见本计划 README Global Constraints）：连接可能仍在合法长思考，不是“暂不支持”，放宽必须重新取得用户裁决。相对原草案的签名细化是新增显式 failure discriminated union，因为纯 gate 必须区分确定性上游死亡与三个 AbortError 子类；没有引入第四套判据。unit 测试覆盖纯组合并进入默认 `bun run test`，integration 测试用真实 production delivery sink 构造“delta 已交付但 `content_block_stop` 未到”状态，并以临时改读 `boundary.result` 的 mutation 证测试会红，锁定 gate 继续读取 delivery-level `hasEmittedRealClientContent`。另用 4.1′ 改写 decorator 证明 decorated sink 按设计解析不到 session；运行时 guard 对误传的 `undefined` fail-closed，漏救一次优先于重复内容。六类初始验收均完成独立正样本 mutation。
 
 - [x] **Step 1: 写失败测试**
 
@@ -191,13 +191,13 @@ test("returns false when config.preContentRecovery.enabled === false", () => { .
 - [x] **Step 2: 跑，失败。**
 - [x] **Step 3: 实现**（纯函数，组合 Plan-2 的 `hasDeliveredSemanticContent` + `state.preContentRecovery.enabled` + `classifyPostCommitAbort`；冻结范围要求三个 abort 子类全部排除，不只 client-abort）。
 - [x] **Step 4: 跑，通过。**
-- [x] **Step 5: 提交** → `feat(anthropic): shouldAttemptPreContentRecovery gate combinator`。
+- [x] **Step 5: 提交** → `feat(anthropic): add precontent recovery trigger gate`。
 
 ---
 
 ## Task 4.3：handler-v4.ts 接线（COMMIT 分支 catch 块）
 
-> **前置约束（Task 4.1′ BLOCKER 后冻结）：** Task 4.3 必须复用同一个 reconciling decorator，但不得让它继承 delivery identity。只有 `recovery-sink-supervisor` 这类逐帧原样、同序、恰好一次转发的纯 pass-through decorator 可以调用 `inheritDownstreamDeliverySession(..., { transparency:"pass-through" })`。生产验收必须同时跑 hedge 开/关两组，锁住 winner fallback 仍经过 reconcile。
+> **前置约束（Task 4.1′ / 4.2 review 后冻结）：** Task 4.3 必须复用同一个 reconciling decorator，但不得让它继承 delivery identity。只有 `recovery-sink-supervisor` 这类 `write` 逐帧原样、同序、恰好一次转发的 write-pass-through decorator 可以调用 `inheritDownstreamDeliverySession(..., { transparency:"write-pass-through" })`。与此同时，`shouldAttemptPreContentRecovery` 的 delivery session **必须从 `handler-v4.ts:645` 解构得到的 raw sink 解析并单独持有，绝不能从 supervisor/reconciling 装饰链解析**：后者按 4.1′ 设计返回 `undefined`，观测不到交付状态必须 fail-closed，否则同一条已交付流会被误判为可恢复。生产验收必须同时跑 hedge 开/关两组，锁住 winner fallback 仍经过 reconcile。
 
 **范围裁定（用户 2026-07-23 已定，不再是 open）：** `reaper-cancel` 与 `timeout`（header-wait）**排除出 B2**——用户硬约束「**绝不误杀合法长思考**」：这两类失败发生时上游连接可能仍活、上游可能正在合法 heavy-thinking（deferred-header 无上界），对其 re-dispatch 会从头重算 = **放弃并误杀正在进行的合法思考**。挂起请求本就会被 GHC 网关在 126-206s 自行 `rstCode=0`（确定性失败）终止，届时走 B2-on-RST 救援即可——不需要、也不允许用 timeout 去猜 A/B。
 - **本计划裁定设计**：`shouldAttemptPreContentRecovery` 只对 **HTTPError 分支** 和 **network_error 类（非 HTTPError 的 catch 分支，含 socket reset/RST/transport-close）** 生效；`isAbortError` 的三个子分支（client-abort / reaper-cancel / timeout）**都不触发 B2**——client-abort 是客户端已走、reaper-cancel/timeout 是「连接可能仍活、上游可能在思考」（误杀风险）。这是**确定性上游死亡才重发**原则的直接落地。
