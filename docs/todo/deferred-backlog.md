@@ -1132,3 +1132,11 @@ registry（`docs/rfc/2026-07-21-retry-strategy-registry.md`）6 commit 全 lande
 - **理想架构 / 若做需改什么**：给 `token` / `cli` 补裸包名 `paths` 别名（与 foundation/telemetry 对称，两行一个包）；更根本的是加一条守卫——**每个 workspace 包的裸包名都必须在 tsconfig `paths` 里有别名**，否则新拆的包天然带着这个逃逸。守卫应有正样本对照（删掉某个别名要变红）。注意别名只解决 tsc/bun 的 specifier 解析，**不解决** worktree 缺 gitignored 构建产物那一类问题（见记忆 `reference-worktree-bun-add-needs-main-tree-install-after-merge` 前三向）。
 - **为何暂缓**：当前零消费者 → 改了也无可观测差异，且它与本轮（B2 上游静默恢复）因果链无关；补别名本身很小，但**配套的守卫**才是真正值钱的部分，值得单独一个改动 + 正样本对照，不该塞进特性分支。**触发条件（值得做）**：① monorepo 拆包推进到「用裸包名消费 token/cli」（`package-boundaries.unit.test.ts:111` 的注释已经预告了这个方向）；② 任何新 workspace 包落地时；③ 在 worktree 里出现「改了包源码但测试行为不变」的诡异症状——那正是这个逃逸的典型表征。
 - **发现方**：给用户级 skill `git-preference:isolating-from-a-shared-git-worktree` 补「委派命令树向 gate」时，评审实测出「gate 全绿 + 测试全绿 + 加载的是主树源码」这条通用逃逸（依赖解析向上逃出嵌套 worktree），随后在本仓库逐包复核得到上述不对称。**教训本身**（gate 证 cwd/树/commit，**不证解析根**）已写进该 skill 与记忆第四方向。
+
+## delivery identity 继承应从模块级导出改为 session 上的方法（2026-07-30，B2 Task 4.1′ BLOCKER 收口时提出）
+
+- **根因 / 现状**：`inheritDownstreamDeliverySession(source, decorator, contract)` 是 `src/lib/pipeline/delivery/session.ts` 的**模块级导出**，任何模块 import 到它就能把任意 decorator 注册进 `deliveryBySink`。「谁有资格继承身份」因此不由类型系统或作用域回答，只能靠**两道后加的防线**：① 运行时 `decorator.write === source.write` 引用相等（对拼写免疫、是主防线）；② `tests/architecture/delivery-identity-inheritance.unit.test.ts` 的 allowlist（按能力入口扫 import 形态）。
+- **当前行为**：两道防线都在、且 ② 已按 `reshaping-a-bypassed-guard` 换轴到真实模块解析。但守卫的存在本身说明契约放错了位置——它在补一个「本不该可能表达」的违规。
+- **理想架构 / 若做需改什么**：改成 `session.adoptPassThroughDecorator(decorator)`（或等价的、只有持有 session 的 delivery owner 够得着的方法）。这样「谁有资格」由普通 TypeScript 作用域回答：拿不到 session 实例的模块**根本写不出**这个调用，AST 守卫连同它的拼写洞一起消失，运行时引用相等检查可作为方法内部的前置断言保留。需改：`session.ts` 导出面（删模块级导出、加方法）、`recovery-sink-supervisor.ts` 唯一调用点、架构守卫（可整条删除或降级为「模块级导出不得复活」的存在性守卫）。
+- **为何暂缓**：与 B2 上游静默恢复的因果链无关；且它与另一条更根本的重塑方向相关联——**把 reconcile 从 sink 包装下沉为 delivery 的 egress transform**（只作用于 `provenance.kind === "candidate"` 的帧），那条一旦做了，「decorator 要不要继承身份」这个问题从根上消失。两条应一起设计，不宜在特性分支上零敲碎打。**触发条件（值得做）**：① 着手 egress-transform 重塑时（本条是它的前置一小步）；② 出现第二个需要继承身份的 decorator；③ 架构守卫再次被合法写法绕过（说明拼写维度的军备竞赛该结束了）。
+- **发现方**：Task 4.1′ 的 BLOCKER（改写型 decorator 继承身份 → hedge 胜者帧绕过 reconcile）收口轮，异模型评审提出；主会话采纳为方向、押后为独立任务。**相关教训**：契约的正确形状是「让违规不可表达」，其次才是「让违规可被机器判定」，最后才是「写进注释请人自觉」——本次三层都用上了，但顺序是倒着补的。
