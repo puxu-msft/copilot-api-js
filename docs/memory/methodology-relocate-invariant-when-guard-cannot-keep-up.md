@@ -7,9 +7,7 @@ metadata:
 
 > **方法论的权威源是 skill `reshaping-a-bypassed-guard`**（停手判据、四种换轴、过近似的场景限定、接线 oracle、自验）。本条只留**项目实例与实测证据**——两处操作正文并存必然漂移，这一点在 2026-07-29 已经踩过一次（同一教训被写成三份）。
 
-telemetry 抽包（2026-07-27）的合并态审跑了**六轮**，每轮异模型 reviewer 都用**合法且能编译的**写法绕过我刚加固的守卫。完整轨迹在 `docs/plan/monorepo-split/plan-telemetry-package.md` 与 `tests/architecture/{source-ast,telemetry-domain-surface,telemetry-startup-order}.ts` 的注释里；本条记**可迁移的判断法**。
-
-**Why:** 输的模式每轮一模一样——我把检查**加深一层**（正则→更细的正则→AST 一跳→AST 两跳），reviewer 就找到第 N+1 种合法写法。原因是判据形状错了：**枚举"坏的形态"是开放集合，永远补不完**；而我每轮的 mutation 验证只证明「守卫能抓我想到的破法」，抓不到我想不到的。两次转折点都不是「更强的守卫」：
+telemetry 抽包（2026-07-27）的合并态审跑了**六轮**，每轮异模型 reviewer 都用**合法且能编译的**写法绕过我刚加固的守卫。完整轨迹在 `docs/plan/monorepo-split/plan-telemetry-package.md` 与 `tests/architecture/{source-ast,telemetry-domain-surface,telemetry-startup-order}.ts` 的注释里。**可迁移的判断法已全部移入 skill**，本条只留证据。
 
 **证据（可迁移的判断都在 skill 里，这里只记发生了什么）：**
 
