@@ -197,6 +197,8 @@ test("returns false when config.preContentRecovery.enabled === false", () => { .
 
 ## Task 4.3：handler-v4.ts 接线（COMMIT 分支 catch 块）
 
+> **挂载裁决 A（主会话 2026-07-30，已定）：** gate 保持在 `handler-v4.ts:707-726` 的 `isAbortError` 块之后；该块三个 abort 子分支全部自行 return，因此 `{kind:"abort"}` 当前没有生产构造者，只作为纯防御与 `satisfies never` 穷尽性锚点。未选 B（把 gate 上提到 abort 块之前统一裁决），因为三类 abort 在两种拓扑下都返回 false，重排微妙 catch 结构没有行为收益。若 4.3 实施中发现统一裁决确实更清晰，须回主会话请求改判，不得自行切换。
+>
 > **前置约束（Task 4.1′ / 4.2 review 后冻结）：** Task 4.3 必须复用同一个 reconciling decorator，但不得让它继承 delivery identity。只有 `recovery-sink-supervisor` 这类 `write` 逐帧原样、同序、恰好一次转发的 write-pass-through decorator 可以调用 `inheritDownstreamDeliverySession(..., { transparency:"write-pass-through" })`。与此同时，`shouldAttemptPreContentRecovery` 的 delivery session **必须从 `handler-v4.ts:645` 解构得到的 raw sink 解析并单独持有，绝不能从 supervisor/reconciling 装饰链解析**：后者按 4.1′ 设计返回 `undefined`，观测不到交付状态必须 fail-closed，否则同一条已交付流会被误判为可恢复。生产验收必须同时跑 hedge 开/关两组，锁住 winner fallback 仍经过 reconcile。
 
 **范围裁定（用户 2026-07-23 已定，不再是 open）：** `reaper-cancel` 与 `timeout`（header-wait）**排除出 B2**——用户硬约束「**绝不误杀合法长思考**」：这两类失败发生时上游连接可能仍活、上游可能正在合法 heavy-thinking（deferred-header 无上界），对其 re-dispatch 会从头重算 = **放弃并误杀正在进行的合法思考**。挂起请求本就会被 GHC 网关在 126-206s 自行 `rstCode=0`（确定性失败）终止，届时走 B2-on-RST 救援即可——不需要、也不允许用 timeout 去猜 A/B。

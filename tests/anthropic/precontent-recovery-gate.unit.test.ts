@@ -23,11 +23,11 @@ function throwingUnreadInputs(): {
         throw new Error("abort classification must short-circuit config")
       },
     },
-    session: {
-      get hasEmittedRealClientContent(): boolean {
-        throw new Error("abort classification must short-circuit semantic-content state")
+    session: new Proxy({} as { hasEmittedRealClientContent: boolean }, {
+      get() {
+        throw new Error("abort classification must short-circuit every semantic-content property access")
       },
-    },
+    }),
   }
 }
 
