@@ -730,7 +730,7 @@ export interface ClientSink {
    */
   close?(): void
   /** Seal the canonical operation after every real/synthetic client frame has been delivered. */
-  finalize?(): void
+  finalize?(): void | Promise<void>
 }
 
 /**

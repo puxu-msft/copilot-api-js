@@ -426,7 +426,7 @@ async function handleResponseCreateV4(ws: WSContext, rawPayload: ResponsesPayloa
         outputDetails: acc.outputDetails,
       }),
     })
-    sink.finalize?.()
+    await sink.finalize?.()
     return
   }
 
@@ -460,7 +460,7 @@ async function handleResponseCreateV4(ws: WSContext, rawPayload: ResponsesPayloa
         outputDetails: acc.outputDetails,
       }),
     })
-    sink.finalize?.()
+    await sink.finalize?.()
     return
   }
 
@@ -494,13 +494,13 @@ async function handleResponseCreateV4(ws: WSContext, rawPayload: ResponsesPayloa
     })
     recordForwarded()
     env.ctx.fail(acc.model || resolvedModel, truncErr, { usage: partial.usage, content: partial.content })
-    sink.finalize?.()
+    await sink.finalize?.()
     return
   }
 
   recordForwarded()
   env.ctx.complete(buildResponsesResponseData(acc, resolvedModel))
-  sink.finalize?.()
+  await sink.finalize?.()
 
   if (!state.clientWebsocketKeepOpen) ws.close(1000, "done")
 }

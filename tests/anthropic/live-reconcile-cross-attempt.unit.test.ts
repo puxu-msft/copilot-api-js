@@ -86,7 +86,9 @@ function recordingSink(): {
       writeKeepalive: (value) => record("writeKeepalive", value),
       writeSyntheticEnvelope: (value) => record("writeSyntheticEnvelope", value),
       close: () => methods.push("close"),
-      finalize: () => methods.push("finalize"),
+      finalize: () => {
+        methods.push("finalize")
+      },
     },
   }
 }

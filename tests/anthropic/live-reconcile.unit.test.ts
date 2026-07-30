@@ -290,7 +290,9 @@ function stubSink(): { sink: ClientSink; calls: Array<{ m: string; frame?: Clien
     suspendHeartbeat: () => calls.push({ m: "suspendHeartbeat" }),
     resumeHeartbeat: () => calls.push({ m: "resumeHeartbeat" }),
     close: () => calls.push({ m: "close" }),
-    finalize: () => calls.push({ m: "finalize" }),
+    finalize: () => {
+      calls.push({ m: "finalize" })
+    },
   }
   return { sink, calls }
 }
