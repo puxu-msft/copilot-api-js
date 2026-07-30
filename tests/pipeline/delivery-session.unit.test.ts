@@ -67,14 +67,14 @@ function arraySink(writes: Array<{ method: string; frame: unknown }>): ClientSin
 describe("P3-T1 downstream delivery session", () => {
   const clock = new FakeClock()
 
-  test("identity inheritance accepts only the same pass-through write reference", () => {
+  test("identity inheritance accepts only the same write-pass-through reference", () => {
     const delivery = createDownstreamDeliverySession({ sink: { async write() {} } })
     const passThrough: ClientSink = { write: delivery.clientSink.write }
-    inheritDownstreamDeliverySession(delivery.clientSink, passThrough, { transparency: "pass-through" })
+    inheritDownstreamDeliverySession(delivery.clientSink, passThrough, { transparency: "write-pass-through" })
     expect(getDownstreamDeliverySession(passThrough)).toBe(delivery)
 
     const wrapped: ClientSink = { write: (frame) => delivery.clientSink.write(frame) }
-    expect(() => inheritDownstreamDeliverySession(delivery.clientSink, wrapped, { transparency: "pass-through" })).toThrow(
+    expect(() => inheritDownstreamDeliverySession(delivery.clientSink, wrapped, { transparency: "write-pass-through" })).toThrow(
       "decorator.write must be the same function reference",
     )
   })

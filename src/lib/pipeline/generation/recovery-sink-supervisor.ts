@@ -22,7 +22,7 @@ export function createRecoverySinkSupervisor(inner: ClientSink): RecoverySinkSup
 
   const sink: ClientSink = {
     // ClientSink write methods are closure-based ports, not this-bound methods; identity inheritance below
-    // additionally requires this exact reference so pass-through semantics are machine-checkable.
+    // additionally requires this exact reference so write-pass-through semantics are machine-checkable.
     // eslint-disable-next-line @typescript-eslint/unbound-method
     write: inner.write,
     writeSynthetic: inner.writeSynthetic ? (frame) => inner.writeSynthetic?.(frame) ?? Promise.resolve() : undefined,
@@ -41,7 +41,7 @@ export function createRecoverySinkSupervisor(inner: ClientSink): RecoverySinkSup
   // The driver resolves generation-owned delivery state by sink identity. Keep that capability
   // when decorating; the fallback still writes into delivery, but loses winner assertions and
   // candidateId attribution.
-  inheritDownstreamDeliverySession(inner, sink, { transparency: "pass-through" })
+  inheritDownstreamDeliverySession(inner, sink, { transparency: "write-pass-through" })
 
   return {
     sink,

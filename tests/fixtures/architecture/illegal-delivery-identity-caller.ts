@@ -4,5 +4,5 @@ import { inheritDownstreamDeliverySession as inheritIdentity } from "~/lib/pipel
 
 export function illegalDeliveryIdentityCaller(source: ClientSink, decorator: ClientSink): void {
   const renamedAgain = inheritIdentity
-  renamedAgain(source, decorator, { transparency: "pass-through" })
+  renamedAgain(source, decorator, { transparency: "write-pass-through" })
 }

@@ -53,19 +53,20 @@ export function getDownstreamDeliverySession(sink: ClientSink): DownstreamDelive
 }
 
 /**
- * Preserve generation-owned delivery identity through a PURE pass-through ClientSink decorator.
+ * Preserve generation-owned delivery identity through a write-pass-through ClientSink decorator.
  *
- * This is legal only when every frame reaching the decorator is forwarded unchanged, in order, and exactly
- * once. A decorator that rewrites, drops, inserts, or reorders frames MUST NOT inherit identity: winner-aware
- * driver writes resolve the session by sink identity and then write through the session's original raw sink,
- * bypassing the decorator. Task 4.1′ exposed this when live reconciliation inherited identity and hedge winner
- * frames skipped duplicate-message removal, anchor close-off, and index remapping.
+ * This contract covers `write` only, not complete sink transparency: the recovery supervisor deliberately
+ * suppresses `close`/`finalize`. That is sufficient because winner candidate envelopes are dispatched by
+ * delivery/session's `writeToSink` default arm to `sink.write(entry.frame)`; they never select `writeAnchor`,
+ * `writeSynthetic`, or `writeKeepalive`. Therefore a decorator whose `write` rewrites, drops, inserts, or
+ * reorders frames MUST NOT inherit identity. Task 4.1′ exposed this when live reconciliation inherited identity
+ * and hedge winner frames skipped duplicate-message removal, anchor close-off, and index remapping.
  */
-export function inheritDownstreamDeliverySession(source: ClientSink, decorator: ClientSink, contract: { transparency: "pass-through" }): void {
+export function inheritDownstreamDeliverySession(source: ClientSink, decorator: ClientSink, contract: { transparency: "write-pass-through" }): void {
   void contract
   if (decorator.write !== source.write) {
     throw new TypeError(
-      "Cannot inherit delivery identity: decorator.write must be the same function reference as source.write for pure pass-through forwarding",
+      "Cannot inherit delivery identity: decorator.write must be the same function reference as source.write for write-pass-through forwarding",
     )
   }
   const delivery = deliveryBySink.get(source)
