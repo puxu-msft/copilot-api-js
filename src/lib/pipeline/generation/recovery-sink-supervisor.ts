@@ -35,7 +35,11 @@ export function createRecoverySinkSupervisor(inner: ClientSink): RecoverySinkSup
     // Attempt-local terminal cleanup is deliberately suppressed. These controls are defined even
     // when the inner methods are absent so optional attempt cleanup cannot fall through to the inner
     // sink; the recovery owner alone settles after success, exhaustion, or a gate rejection.
-    close() {},
+    // Driver terminal cleanup must fence heartbeat immediately so no ping can land after a terminal frame.
+    // Suspension is recoverable: a future recovery attempt may resume it, while settleFinal performs true close.
+    close() {
+      inner.suspendHeartbeat?.()
+    },
     finalize() {},
   }
   // The driver resolves generation-owned delivery state by sink identity. Keep that capability

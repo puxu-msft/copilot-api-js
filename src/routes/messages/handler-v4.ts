@@ -582,6 +582,7 @@ async function runMessagesDriver(c: Context, args: RunMessagesDriverArgs): Promi
       try {
         await pumpAnthropicStreamingDispatch({
           sink: sinkChain.sink,
+          rawSink: sinkChain.rawSink,
           liveSink: sinkChain.liveSink,
           deliverySession: sinkChain.deliverySession,
           buffered,
@@ -595,8 +596,11 @@ async function runMessagesDriver(c: Context, args: RunMessagesDriverArgs): Promi
           anchorState,
         })
       } finally {
-        await sinkChain.settleFinal()
-        detachClientAbort()
+        try {
+          await sinkChain.settleFinal()
+        } finally {
+          detachClientAbort()
+        }
       }
     })
   }
@@ -792,6 +796,7 @@ async function runMessagesDriver(c: Context, args: RunMessagesDriverArgs): Promi
       commitCtx?.recordFeature("stream-upstream-resolved", { totalStalledMs: Date.now() - commitInstant })
       await pumpAnthropicStreamingDispatch({
         sink,
+        rawSink: sinkChain.rawSink,
         liveSink: sinkChain.liveSink,
         deliverySession: sinkChain.deliverySession,
         buffered,
@@ -805,8 +810,11 @@ async function runMessagesDriver(c: Context, args: RunMessagesDriverArgs): Promi
         anchorState,
       })
     } finally {
-      await sinkChain.settleFinal()
-      detachClientAbort()
+      try {
+        await sinkChain.settleFinal()
+      } finally {
+        detachClientAbort()
+      }
     }
   })
 }
@@ -1234,6 +1242,8 @@ function resolveBufferedAndHeartbeat(env: RequestEnvelope): { buffered: boolean;
 interface PumpAnthropicStreamingV4Options {
   /** Supervisor sink shared by buffered/terminal paths; built once by the stream owner. */
   sink: ClientSink
+  /** Raw delivery sink: buffered driver owns its own terminal fence and must bypass the supervisor. */
+  rawSink: ClientSink
   /** Persistent rewriting decorator over `sink`, used by both direct-live and translate-live paths. */
   liveSink: ClientSink
   /** Delivery resolved from the RAW sink before decoration; Task 4.3b's gate must never resolve through the chain. */
@@ -1308,6 +1318,7 @@ function createPreContentRecoverySinkChain(
   anchorState: AnchorState,
 ): {
   readonly sink: ClientSink
+  readonly rawSink: ClientSink
   readonly liveSink: ClientSink
   readonly deliverySession: DownstreamDeliverySession
   settleFinal(): Promise<void>
@@ -1317,6 +1328,7 @@ function createPreContentRecoverySinkChain(
   const supervisor = createRecoverySinkSupervisor(rawSink)
   return {
     sink: supervisor.sink,
+    rawSink,
     liveSink: liveReconcilingSink(supervisor.sink, anchorHooks, anchorState),
     deliverySession,
     settleFinal: () => supervisor.settleFinal(),
@@ -1348,7 +1360,7 @@ function createPreContentRecoverySinkChain(
  * modified tools are reflected (via `createState(env)`).
  */
 async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): Promise<void> {
-  const { sink, liveSink, buffered, forwardedSseEvents, driver, upstream, env, anchorHooks, anchorState } = opts
+  const { sink, rawSink, liveSink, buffered, forwardedSseEvents, driver, upstream, env, anchorHooks, anchorState } = opts
   const anthropicPayload = env.body as MessagesPayload
   const model = anthropicPayload.model
 
@@ -1374,7 +1386,7 @@ async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): 
   try {
     const outcome =
       buffered ?
-        await driver.runResponseBufferedSink(upstream, env, sink, {
+        await driver.runResponseBufferedSink(upstream, env, rawSink, {
           // Buffered synthetic-prelude keepalive (spec 2026-07-08 / §10.6): the handler's injector lazily
           // forwards a message_start prelude via the sink's heartbeat.injectAnchor during a pre-commit stall.
           // On commit the driver dedups the buffered message_start and — for `empty_text` (anchorBlockOpen) —

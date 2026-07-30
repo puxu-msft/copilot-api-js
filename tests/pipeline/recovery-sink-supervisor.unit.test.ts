@@ -126,6 +126,36 @@ describe("recovery sink lifetime supervisor", () => {
     expect(calls).toEqual(["write:primary", "write:recovery", "close", "finalize"])
   })
 
+  test("driver close suspends heartbeat before terminal writes until final settlement", async () => {
+    clock.install()
+    const writes: Array<string> = []
+    const delivery = createDownstreamDeliverySession({
+      sink: {
+        async write(frame) {
+          writes.push(frame.event ?? "write")
+        },
+      },
+      monotonicNow: Date.now,
+      heartbeat: {
+        intervalMs: 20_000,
+        frame: () => namedFrame("ping"),
+      },
+    })
+    const supervisor = createRecoverySinkSupervisor(delivery.clientSink)
+
+    // Real live-handler order: driver finally closes its sink, pump writes a terminal, then attempt-local
+    // finalize runs before the stream owner reaches settleFinal.
+    supervisor.sink.close?.()
+    await supervisor.sink.write(namedFrame("message_stop"))
+    await supervisor.sink.finalize?.()
+    await clock.advance(20_001)
+    await drain()
+
+    expect(writes).toEqual(["message_stop"])
+    await supervisor.settleFinal()
+    expect(clock.liveTimerCount).toBe(0)
+  })
+
   test("settleFinal waits for an asynchronously completing inner finalize", async () => {
     let finalized = false
     const supervisor = createRecoverySinkSupervisor({
@@ -204,8 +234,11 @@ describe("recovery sink lifetime supervisor", () => {
     expect(clock.liveTimerCount).toBe(1)
     supervisor.sink.close?.()
     supervisor.sink.finalize?.()
-    expect(clock.liveTimerCount).toBe(1)
+    expect(clock.liveTimerCount).toBe(0)
 
+    // A fresh recovery attempt explicitly resumes the recoverable heartbeat fence.
+    supervisor.sink.resumeHeartbeat?.()
+    expect(clock.liveTimerCount).toBe(1)
     await clock.advance(20_000)
     await drain()
     expect(writes).toEqual(["ping"])
