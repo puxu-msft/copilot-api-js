@@ -52,6 +52,6 @@ metadata:
 - **主会话收到绿报告先看树向绑定再看结论**。同理适用于评审 agent：它复跑 mutation 若跑在错树，「变红」同样无效，`git checkout --` 甚至可能还原错树。
 - 泛化：任何「agent 在非默认目录/非默认环境里干活」的委派（另一个仓库、`/tmp` 探针目录、容器内），都要求证据**随命令**携带来源，而不是相信委派消息里写过。
 
-**这条自身的教训**：我第一版给的自验点（首条命令贴 `pwd` + `git -C ... rev-parse --short HEAD`）是**推理出来的、没做过绕过测试**的 oracle，评审当场找出四条绕过路径。→ [[methodology-new-oracle-discriminating-power-is-experimental]]、[[methodology-change-the-criterion-axis-not-add-another-form]]（换判据的轴：从「开头自报家门」换成「每条命令自带来源校验」）。
+**这条自身的教训**：我第一版给的自验点（首条命令贴 `pwd` + `git -C ... rev-parse --short HEAD`）是**推理出来的、没做过绕过测试**的 oracle，评审当场找出四条绕过路径。→ [[methodology-new-oracle-discriminating-power-is-experimental]]、[[methodology-relocate-invariant-when-guard-cannot-keep-up]]（换判据的轴：从「开头自报家门」换成「每条命令自带来源校验」）。
 
 **Related:** worktree SDD 流程见 [[git-commit-pathspec-commits-worktree-not-index]]；no-auto-server 见 CLAUDE.md 工程纪律。实例来自 2026-07-11 列配置特性（dnd-kit reorder）合并后。

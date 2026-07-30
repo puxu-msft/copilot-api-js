@@ -72,9 +72,7 @@
 - [编译错误：补符号 vs 删引用](methodology-broken-reference-supply-vs-delete.md) — 按消费者契约+独立 oracle 裁决，别反射式让它编译
 - [复用共享原语选完整版非小版](methodology-full-primitive-not-partial-else-silent-field-drop.md) — 否则静默丢字段+单测假绿；映射测须构造每个非平凡字段
 - [「别继承退化」只在目标真有对应值时成立](methodology-degradation-advice-scoped-to-target-has-equivalent.md) — 目标无对应值→诚实退化+marker
-- [换判据的轴，别再补一个形态](methodology-change-the-criterion-axis-not-add-another-form.md) — 补形态被绕过四次；四次成功换轴都是「别手写、问已知道答案的东西」(resolveModuleName/scanner/能力门/只问目标)
-- [primitive 有测试≠守卫接了线](methodology-wiring-oracle-primitive-tested-is-not-guard-consuming.md) — 删掉守卫里那行消费，76 测试仍全绿；每条判据要植入真实目标+走真实入口
-- [守卫追不上就换不变量的位置/判据形状](methodology-relocate-invariant-when-guard-cannot-keep-up.md) — 连续被合法语法绕过=形状错
+- [守卫连续 2 轮被绕过就**停手换轴**，别再补形态](methodology-relocate-invariant-when-guard-cannot-keep-up.md) — 四种换法(换位置/blocklist→allowlist/别手写问编译器/换问的对象)+过近似方向判据+修复要落共享处
 - [新写的 oracle「一定咬得住」只是推理不是实验](methodology-new-oracle-discriminating-power-is-experimental.md) — 失效主形态是「相邻」非「离谱」；两问：什么变异让它红·这个绿会不会由「通过但不是我要的」情况产生
 - [mutation control 自身要自证改到了代码](methodology-verify-the-mutation-actually-applied.md) — 「没变红」有两解：测试没咬住 vs mutation 根本没生效
 - [spec 里的机制性解释必须有实验背书](methodology-mechanism-story-in-spec-must-be-experiment-backed.md) — 给现象配的合理机制别当事实写
@@ -131,7 +129,7 @@
 
 ## project 现状 stub（权威看正式归属；landed 项细节在 docs/DESIGN/git，此处仅触发指针）
 - [领域包剥离执行技巧（token·telemetry landed）](methodology-domain-peel-execution-techniques.md) — 两型模板(SoT 反转 / 只读消费+module-split)+共通技巧+ratchet 与守卫两类坑
-- [state 降 foundation 叶子（landed master `9ec79010`, 2026-07-29）](project-state-to-foundation-handover.md) — 环 70/63→43/50·state 零环；**实质产出是判据形状的演化**（十轮复评没改一行 state 代码、全在改守卫怎么判）→ [[methodology-change-the-criterion-axis-not-add-another-form]]
+- [state 降 foundation 叶子（landed master `9ec79010`, 2026-07-29）](project-state-to-foundation-handover.md) — 环 70/63→43/50·state 零环；**实质产出是判据形状的演化**（十轮复评没改一行 state 代码、全在改守卫怎么判）→ [[methodology-relocate-invariant-when-guard-cannot-keep-up]]
 - [续写重试（P2 landed master de37feff，P3-P7 待续）](project-continuation-retry-sequential-anchor.md) — 首块后 cut 合成 continuation 缝合
 - [max_tokens 续传（P0 landed 3bb1262a，P1 待做）](project-max-tokens-continuation-spec.md) — 截断三分型 A/B/C
 - [History 搜索移出主进程 sidecar（landed 分支待合并）](project-history-search-out-of-process.md) — systemd 服务

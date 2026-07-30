@@ -1,6 +1,6 @@
 ---
 name: methodology-relocate-invariant-when-guard-cannot-keep-up
-description: 守卫连续几轮被合法语法绕过时，正解通常是换不变量的存放位置（搬进被守护对象自己）或换判据形状（blocklist→allowlist），而不是把守卫的排除名单越写越长
+description: 守卫连续 2 轮被合法语法绕过就停止加固、换判据的轴（换位置/换形状/别手写去问编译器/换问的对象），而不是把排除名单越写越长；含过近似的方向判据与「修复要落在共享处否则只救一个消费者」
 metadata:
   type: project
 ---
@@ -15,6 +15,12 @@ telemetry 抽包（2026-07-27）的合并态审跑了**六轮**，每轮异模�
 
 1. **blocklist → allowlist（换判据）**。原本枚举"禁止导出的 operation 名字"，于是别名/`export default`/namespace 对象/`const` 包装/跨文件两跳链逐个成为绕法。改成**枚举 barrel 允许公开的精确名单**后，这些一次全封死——因为守卫不再问"这名字哪来的"，只问"它在不在契约上"，**跨文件解析因此变得不必要**。附带收益：举证责任反转，扩大公开 API 必须显式加一行=强制评审。
 2. **把不变量搬进被守护对象自己（换位置）**。启动顺序 `initialize → listen → backfill` 原本只活在 `start.ts` 的语句顺序里，靠解析那个文件来守；可选链、label+break、`throw` 后死代码、`catch` 分支、没人调的 helper 逐个成为绕法，而**语法近似永远证不了可达性**。改成 runtime 自己持有相位：`markServerListening()` 在未 initialize 时 fail-fast、`runJsonBackfill()` 在标记前**延迟到标记时**——于是"调用写反了"不再能破坏契约。守卫只剩一个 runtime 自己证不了的窄职责（有没有人调我）。
+4. **别手写，去问已经知道答案的那个东西（换实现者）**。2026-07-29 state→foundation 那轮四次成功换轴全是这一形：手写候选表 `[x, x.ts, x/index.ts]` → `ts.resolveModuleName` + 项目自己的 compilerOptions（守卫与 tsc 不可能再分歧）；子串/正则判「源码含某文本」→ `ts.createScanner` 逐 token 比**解码值**（转义拼法一次全覆盖，此前 `text.includes` 与 `/\\[ux]/` 两版都被 identity escape 和行接续穿过）；按名字追 loader（改名/别名/`var` 提升/括号 callee 各绕一次）→ **守能力门**（`createRequire` 只从 `node:module` 来，import 它是语法上的单一事件，**没拿到的东西没法改名**）；枚举 callee 形态 → **只问目标**（有没有哪次调用把 `~/routes/…` 当第一个实参——「调用怎么写」被整个绕开）。**判别句：我是在重新实现一个别人已经实现对了的东西吗（解析器/词法器/binder）？** 手写 binder 那次连 `var` 提升都判错。
+
+**过近似允许，但要真的是过近似。** 换轴时常用「宁可多报」兜底，方向判据是：**文件级过近似安全**（作用域盲最多多一行登记要解释），**文件级欠近似是静默失明**。陷阱：我曾给一个欠近似套上过近似的外衣——loader 名字的种子只看一级 initializer 文本，一次改名就断链——并为它辩护了一轮，是评审拆穿的。自检：**我的候选集真的是真实集合的超集吗，还是只覆盖了我想到的那些入口？**
+
+**修复要落在共享处，否则只救一个消费者。** 同一条「比解析后目标、别比拼写」在 state 闭包修好之后，**在 core→server ratchet 里又原样活了四轮**，因为修复写在了消费者里。换轴之后立刻问：**还有谁在用旧形状？** `containedIn` 因此提到 `tests/architecture/source-ast.ts`，两个坑（按段比较、canonical 化）写在它自己的文档里。仓库里仍有两个守卫没搬到（telemetry / generation），见 `docs/todo/deferred-backlog.md`。
+
 3. **接受近似但诚实标注（换声明）**。真做不到时，把守卫**能证明什么/不能证明什么**写进注释，残余立 backlog 带触发条件——而不是让注释暗示它是硬保证。反例见下。
 
 **同轮踩到的两个自审盲区（独立价值）：**

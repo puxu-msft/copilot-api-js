@@ -9,7 +9,7 @@ metadata:
 
 权威记录 **[docs/plan/2026-07-28-state-to-foundation/HANDOVER.md](../plan/2026-07-28-state-to-foundation/HANDOVER.md)**（每步的验收 oracle、变异实验、踩过的坑）。
 
-**这轮真正的产出不是搬迁本身**：S1–S7 之后又跑了十轮独立复评，**没有再改过一行 state 的代码，改的全是守卫如何判定**——同一个错误形状复现七次（守卫声称的性质强于它实际检查的），而「补上刚被演示的那个形态」四次全部被下一轮绕过，只有「换判据的轴」能一次闭一类。演化表见 HANDOVER「判据形状的演化」，方法论已下沉 [[methodology-change-the-criterion-axis-not-add-another-form]] 与 [[methodology-wiring-oracle-primitive-tested-is-not-guard-consuming]]。
+**这轮真正的产出不是搬迁本身**：S1–S7 之后又跑了十轮独立复评，**没有再改过一行 state 的代码，改的全是守卫如何判定**——同一个错误形状复现七次（守卫声称的性质强于它实际检查的），而「补上刚被演示的那个形态」四次全部被下一轮绕过，只有「换判据的轴」能一次闭一类。演化表见 HANDOVER「判据形状的演化」，方法论已下沉 [[methodology-relocate-invariant-when-guard-cannot-keep-up]] 与 [[methodology-exhaustive-record-proves-table-not-that-live-path-reads-it]]。
 
 此处只留跨任务复用的教训：
 
