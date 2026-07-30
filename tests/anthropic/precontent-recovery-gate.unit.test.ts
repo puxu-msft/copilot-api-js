@@ -13,21 +13,15 @@ function deliveryWithoutContent() {
   return { hasEmittedRealClientContent: false }
 }
 
-function throwingUnreadInputs(): {
-  config: { enabled: boolean }
-  session: { hasEmittedRealClientContent: boolean }
-} {
+function abortInputWithThrowingReads(abortKind: PostCommitAbortKind) {
   return {
-    config: {
-      get enabled(): boolean {
-        throw new Error("abort classification must short-circuit config")
-      },
+    failure: { kind: "abort" as const, abortKind },
+    get session(): { hasEmittedRealClientContent: boolean } {
+      throw new Error("abort classification must not read session at all")
     },
-    session: new Proxy({} as { hasEmittedRealClientContent: boolean }, {
-      get() {
-        throw new Error("abort classification must short-circuit every semantic-content property access")
-      },
-    }),
+    get config(): { enabled: boolean } {
+      throw new Error("abort classification must not read config at all")
+    },
   }
 }
 
@@ -44,16 +38,8 @@ describe("shouldAttemptPreContentRecovery", () => {
     }
   })
 
-  test("client abort is excluded with highest-priority short-circuit", () => {
-    const { config, session } = throwingUnreadInputs()
-
-    expect(
-      shouldAttemptPreContentRecovery({
-        failure: { kind: "abort", abortKind: "client-abort" },
-        session,
-        config,
-      }),
-    ).toBe(false)
+  test("client abort is excluded without reading session or config", () => {
+    expect(shouldAttemptPreContentRecovery(abortInputWithThrowingReads("client-abort"))).toBe(false)
   })
 
   test("disabled runtime config excludes deterministic upstream failures", () => {

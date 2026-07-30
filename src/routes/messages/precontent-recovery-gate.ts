@@ -46,7 +46,7 @@ export function shouldAttemptPreContentRecovery(input: PreContentRecoveryGateInp
     case "network-error": {
       // This runtime guard protects untyped callers even though the public type requires session. A direct
       // `!input.session` is intentional; no-unnecessary-condition assumes typed callers and is unhelpful here.
-      // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
+      // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- the rule trusts the type; this guard exists precisely to distrust untyped callers
       if (!input.session) return false
       if (!input.config.enabled) return false
       return !hasDeliveredSemanticContent(input.session)
