@@ -34,3 +34,11 @@ Related: [[feedback-pass-null-clean-not-self-validating]]（通过性结论不�
 **2026-07-28 实例（测试绿、mutation 也不红，因为压根没执行到目标代码）**：给 Responses WS 的 first-event 看门狗写「`TimeoutError` 身份保留在 cause 链里」测试，用了个 `readyState=1` 但从不派发 `open` 事件的假 socket。测试绿；把看门狗改成合成通用 error，**仍然绿**。探针打出 cause 链才看清：`Upstream WebSocket connection aborted` ← `TimeoutError` —— 卡在**握手**那条路径上，握手超时自己也挂 `TimeoutError`，所以断言被一个**同名不同源**的值满足了。修法是让握手先成功，并把断言收紧到「顶层必须是 **request** wrapper」——「走到了目标分支」需要独立证据，不能靠「值对了」反推。**教训**：mutation 不红有两解（测试没咬住 / 代码没执行到），先分清是哪一种；断言一个**类型/名字**时要问「这条路径上还有谁会产出同名的东西」。姊妹 [[methodology-verify-the-mutation-actually-applied]]（另一半：mutation 本身没生效）。
 
 **同日第二例（更狠：测试形态本身决定了它看不见什么）**：给「abort 无成因」计数器写测试时，我直接调 `createDispatchLifecycle()` 并手工喂四个 surface，六条测试全绿、mutation 也能咬住。但它只证明了「**如果**漏斗被调用，标签是对的」——**证明不了每条 transport 都到达漏斗**。实际上 Responses upstream-WS 腿返回自己的 lifecycle、frames 从不经过 `ownFrames()`，那条腿**恒计零**。异模型复审用探针打出 `{"unknown":true,"counts":[]}` 才现形。**判据**：写「某机制被触发」的测试时，问「我是自己调用了这个机制，还是让生产路径去调用它？」——手工调用的版本无法发现「生产路径根本不调它」这一类缺陷，而这恰恰是可观测性代码最容易出的错：**功能正确、outcome 正确、测试全绿，只有计数静默漏报**，于是「零」被读成「没问题」，比没有这个指标更糟。修法是把测试上抬到真实入口，并给「唯一产出点」加架构守卫（裸字面量绕过是不可见的）。
+
+## 具体陷阱：守卫写在「值」上，而被守的读取发生在「引用」上（2026-07-30）
+
+`throwingUnreadInputs()` 想锁住「abort 分支什么都不读」，把 `session` 换成 `new Proxy({}, { get() { throw } })`。看起来更严了，实测**零区分力**：把 fail-closed 守卫从分支内挪回 `switch` 之前（正是要防的位置回退），测试 **5 pass / 0 fail**。
+
+根因：`if (!input.session)` 是对**对象引用**做真值判断，而 `get` trap 只拦**属性访问**——真值判断不触发任何 trap。要锁住「不读 `input.session`」，会抛的必须是 **input 自己的访问器**（`get session() { throw }`），而不是 session 值内部的 trap。**守卫要架在被读的那一层上，架深一层等于没架。**
+
+同族：`Object.freeze` 挡不住读；`writable:false` 挡不住取引用；给 mock 的方法挂断言挡不住「拿到函数但不调用」。判据一律是：**写出那个你要防的写法，跑一次，看它红不红。**
