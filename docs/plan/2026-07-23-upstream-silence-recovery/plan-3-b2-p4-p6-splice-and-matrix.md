@@ -51,7 +51,7 @@ streamSSE(c, async (stream) => {
 
 - Modify: `src/routes/messages/handler-v4.ts`（① COMMIT 分支的外层 `catch` 块，`:647-694` 附近——pre-ready 挂载点；② `pumpAnthropicStreamingV4` 的 `outcome.kind === "stream-error"` 分支，`:1279-1320` 附近——live 路径 ready-态挂载点）
 - Modify: `src/lib/pipeline/driver.ts`（`runResponseBufferedSink` 的 `"exhausted"` 结局分支，`:1467-1488` 附近——buffered 路径 ready-态挂载点；`committedAny===false` 时旁路进 B2，`committedAny===true` 维持现有 continuation/partial-degrade 逻辑不变）
-- Modify: `src/lib/anthropic/live-reconcile.ts`（Task 4.1′：把既有 live decorator 补成完整透明边界，供后续恢复接线一次构造、跨 attempt 复用；触发判定仍由 Task 4.2/4.3 落地）
+- Modify: `src/lib/anthropic/live-reconcile.ts`（Task 4.1′：把既有 live rewriting decorator 的控制面补完整，供后续恢复接线一次构造、跨 attempt 复用；它不是 pass-through，故不得继承 delivery identity；触发判定仍由 Task 4.2/4.3 落地）
 - Modify: `src/routes/messages/post-commit-error.ts`（若 splice 也失败，仍需现有 `writeTerminalThenSettle` 机制收尾——复用，不重写）
 - Test: `tests/anthropic/live-reconcile-cross-attempt.unit.test.ts`（按 wire state 覆盖同一个持久 decorated sink 跨首次 attempt 与 fresh attempt 的拼接行为）
 - Test: `tests/e2e-client/precontent-recovery.it.test.ts`（client-proxy e2e，真 `@anthropic-ai/sdk` oracle，仿 `continuation-sdk.it.test.ts` 结构，覆盖两个挂载点）
@@ -110,7 +110,7 @@ runResponseRecovery(upstream: UpstreamStream, env: RequestEnvelope, reason: stri
 >
 > **2026-07-30 BLOCKER 订正：**“继承 delivery identity”不是透明性补齐，而是破坏性行为变更。delivery session 的 winner 写向构造时捕获的 raw sink；driver 又按传入 sink 对象身份决定走 session 还是 `sink.write` fallback。因此 reconciling decorator 一旦注册 identity，默认 live hedge 胜者会绕过 reconcile，客户端收到第二个 `message_start`、与 open anchor@0 冲突的真实 block@0，且 anchor 永不关闭。修复恢复改前契约：改写/丢弃/重排帧的 decorator **不得继承 delivery identity**；`inheritDownstreamDeliverySession` 只允许显式声明 `transparency:"pass-through"` 的纯转发 decorator 使用。代价是 live winner 继续没有 candidateId 归属，这是既有现状，优先级低于 wire 正确性。
 >
-> 三模式验收已搬到 `tests/anthropic/live-reconcile-cross-attempt.unit.test.ts`，判据只按当前 wire state 命名：无 hooks；hooks 已构造但尚未注入；已注入、无 open anchor；已注入且 open anchor。每例都让同一个 sink 实例先承载首次 attempt 状态，再写 fresh attempt 帧；empty-text close-off 额外锁定方法序列 `writeAnchor → write`，防止手工遍历 `reconcileLiveFrame` 后统一 `sink.write` 丢失 `synthetic:"anchor"` 标记；fresh attempt 再次在真实块前以 `error` 终止时，anchor 必须在 error 前且只关闭一次。模式判据不是 config `streamKeepaliveMode`：`streamKeepaliveEscalateSec > 0` 时即使配置为 ping 也会构造 hooks，是否去重/remap 取决于 `injected` 与 `anchorBlockOpen` 的当前状态。
+> 三模式验收已搬到 `tests/anthropic/live-reconcile-cross-attempt.unit.test.ts`，判据只按当前 wire state 命名：无 hooks；hooks 已构造但尚未注入；已注入、无 open anchor；已注入且 open anchor。attempt 边界用例的链序与 Task 4.3 生产链一致：`原始 sink → recovery supervisor → reconciling rewriting decorator`；`close()`/`finalize()` 从最外层 decorator 转发到 supervisor 后被抑制，`settleFinal()` 才到达原始 sink。每例都让同一个 sink 实例先承载首次 attempt 状态，再写 fresh attempt 帧；empty-text close-off 额外锁定方法序列 `writeAnchor → write`，防止手工遍历 `reconcileLiveFrame` 后统一 `sink.write` 丢失 `synthetic:"anchor"` 标记；fresh attempt 再次在真实块前以 `error` 终止时，anchor 必须在 error 前且只关闭一次。模式判据不是 config `streamKeepaliveMode`：`streamKeepaliveEscalateSec > 0` 时即使配置为 ping 也会构造 hooks，是否去重/remap 取决于 `injected` 与 `anchorBlockOpen` 的当前状态。
 >
 > 下方 2026-07-23 的原始设计步骤与签名草案保留为历史；其中“新增 per-frame splice 门面”已被本段取代，不再执行。
 
@@ -246,7 +246,7 @@ if (shouldAttemptPreContentRecovery({ error, session: anthropicCandidateSnapshot
   1. 先确认 `pumpAnthropicStreamingDispatch` 现有的帧循环能否被抽出一个"给定 upstream+env+sink，跑到底"的可复用子函数，供"首次 attempt"和"fresh recovery attempt"两处调用（**不要复制粘贴一份新的循环**——DRY，且降低两处逻辑分叉导致的维护负担）。
   2. 确认 `anchorState`/`anchorHooks` 在 recovery 场景下必须是**同一个** `AnchorState` 实例（不能重新 `{injected:false, ...}` 初始化）——因为 anchor 是否已经注入过是"首次 attempt 期间"就确定的状态，fresh attempt 只是"接着用"。
   3. 确认 recovery 成功之后的 sink 收口时机——用 Plan-2 Task 0.5 的 supervisor，只有 fresh attempt 走完（`outcome.kind === "complete"`）才调 `supervisor.settleFinal()`。
-  4. **sink 链只构造一次、primary 与 fresh recovery 共用同一实例**（Task 4.1′ 定稿的形状，取代首版的 per-frame 门面）：`原始 sink` → `createRecoverySinkSupervisor(...)`（跨 attempt 抑制局部 `close`/`finalize`）→ `liveReconcilingSink(supervised, anchorHooks, anchorState)`（`handler-v4.ts:1251`，已是透明 decorator）。**不要**在恢复路径另造 decorator 或另包一层 helper——`sink`/`anchorHooks`/`anchorState` 与 catch 块同在 `handler-v4.ts:1280` 那次解构的作用域内，直接够得着。已删除的 `spliceFreshAttemptFrame` 不存在，别再引用。
+  4. **sink 链只构造一次、primary 与 fresh recovery 共用同一实例**（Task 4.1′ 定稿的形状，取代首版的 per-frame 门面）：`原始 sink` → `createRecoverySinkSupervisor(...)`（跨 attempt 抑制局部 `close`/`finalize`）→ `liveReconcilingSink(supervised, anchorHooks, anchorState)`。`liveReconcilingSink` 是共享的**改写型** decorator（rewriting，非 pass-through，故不继承 delivery identity）。COMMIT 分支的 post-commit catch 在 `handler-v4.ts:660-760`，其 `sink`/`anchorHooks`/`anchorState` 来自 `:645` 的 `makeAnchoredSseSink` 解构；当前“已构造好的 sink 链”在 catch 中尚不存在，因为 reconciling decorator 只在 pump 内 `:1361` 的实参位置临时创建、无人持有。Task 4.3 必须先把 supervisor 与 reconciling decorator 的一次性构造上提到 `:645` 附近，再把同一实例向 primary pump 与 fresh recovery pump 穿参。**不要**在恢复路径另造 decorator 或另包一层 helper。已删除的 `spliceFreshAttemptFrame` 不存在，别再引用。
 
 - [ ] **Step 4: 跑，通过。**
 - [ ] **Step 5: 提交** → `feat(anthropic): wire precontent-recovery into the COMMIT branch's post-commit catch (HTTPError + network_error paths)`。

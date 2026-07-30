@@ -85,6 +85,8 @@ function recordingSink(): {
       writeAnchor: (value) => record("writeAnchor", value),
       writeKeepalive: (value) => record("writeKeepalive", value),
       writeSyntheticEnvelope: (value) => record("writeSyntheticEnvelope", value),
+      close: () => methods.push("close"),
+      finalize: () => methods.push("finalize"),
     },
   }
 }
@@ -164,22 +166,29 @@ describe("one persistent live-reconcile sink across attempts", () => {
     const recording = recordingSink()
     const state = anchorState()
     const anchorHooks = hooks()
-    const persistentSink = makeReconcilingSink(recording.sink, state, anchorHooks)
-    const supervisor = createRecoverySinkSupervisor(persistentSink)
+    const supervisor = createRecoverySinkSupervisor(recording.sink)
+    const persistentSink = makeReconcilingSink(supervisor.sink, state, anchorHooks)
 
-    await injectEmptyTextAnchor(supervisor.sink, state, anchorHooks)
-    supervisor.sink.close?.()
-    supervisor.sink.finalize?.()
+    expect(typeof persistentSink.close).toBe("function")
+    expect(typeof persistentSink.finalize).toBe("function")
+    await injectEmptyTextAnchor(persistentSink, state, anchorHooks)
+    persistentSink.close?.()
+    persistentSink.finalize?.()
+    expect(recording.methods).not.toContain("close")
+    expect(recording.methods).not.toContain("finalize")
+
     recording.reset()
-    await supervisor.sink.write(messageStart("msg_fresh_empty_text"))
-    await supervisor.sink.write(contentBlockStart(0))
+    await persistentSink.write(messageStart("msg_fresh_empty_text"))
+    await persistentSink.write(contentBlockStart(0))
 
-    // Attempt-local close/finalize are suppressed, so the same decorated sink remains writable for recovery.
+    // Attempt-local close/finalize traversed the outer rewriting decorator but were suppressed by the
+    // inner supervisor, so the same decorated sink remains writable for recovery.
     expect(recording.written.map(key)).toEqual(["content_block_stop@0", "content_block_start@1"])
     expect(recording.methods).toEqual(["writeAnchor", "write"])
     expect(state.anchorClosed).toBe(true)
 
     await supervisor.settleFinal()
+    expect(recording.methods).toEqual(["writeAnchor", "write", "close", "finalize"])
   })
 
   test("injected open anchor: a fresh terminal error closes the anchor exactly once before terminal frames", async () => {

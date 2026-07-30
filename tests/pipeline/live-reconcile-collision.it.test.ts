@@ -377,7 +377,10 @@ describe("live-reconcile collision elimination — injected prelude + live resum
     await clock.advance(15_000)
     await flush()
     expect(anchorState.injected).toBe(true)
-    // Second idle tick (openBlock={0,text} now lit) → one more block-aware empty text_delta@0 keepalive.
+    // The second idle tick is delivery's post-scaffold re-arm; the third tick emits the next block-aware
+    // empty text_delta@0 keepalive on the still-open anchor.
+    await clock.advance(15_000)
+    await flush()
     await clock.advance(15_000)
     await flush()
 
@@ -390,7 +393,8 @@ describe("live-reconcile collision elimination — injected prelude + live resum
     expect(forwardedSeq(forwarded)).toEqual([
       "message_start#synthetic-message-start", // fabricated envelope (no real message_start was available)
       "content_block_start@0#anchor", //          synthetic empty-text anchor block
-      "content_block_delta@0#keepalive", //       anchor's empty text_delta (resets CC's 300s)
+      "content_block_delta@0#keepalive", //       anchor's first empty text_delta (resets CC's 300s)
+      "content_block_delta@0#keepalive", //       third idle-tick keepalive on the open anchor block
       "content_block_stop@0#anchor", //           reconcile close-off (routed via writeAnchor → marked)
       "content_block_start@1", //                 real thinking block, remapped +1 — NO marker
       "content_block_delta@1", //                 real thinking_delta, remapped +1 — NO marker
@@ -418,6 +422,7 @@ describe("live-reconcile collision elimination — injected prelude + live resum
         event: "message_start",
       },
       { data: JSON.stringify({ type: "content_block_start", index: 0, content_block: { type: "text", text: "" } }), event: "content_block_start" },
+      { data: JSON.stringify({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "" } }), event: "content_block_delta" },
       { data: JSON.stringify({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "" } }), event: "content_block_delta" },
       { data: JSON.stringify({ type: "content_block_stop", index: 0 }), event: "content_block_stop" },
       { data: JSON.stringify({ type: "content_block_start", index: 1, content_block: { type: "thinking", thinking: "" } }), event: "content_block_start" },

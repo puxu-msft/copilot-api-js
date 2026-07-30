@@ -21,7 +21,10 @@ export function createRecoverySinkSupervisor(inner: ClientSink): RecoverySinkSup
   let finalSettlement: Promise<void> | undefined
 
   const sink: ClientSink = {
-    write: (frame) => inner.write(frame),
+    // ClientSink write methods are closure-based ports, not this-bound methods; identity inheritance below
+    // additionally requires this exact reference so pass-through semantics are machine-checkable.
+    // eslint-disable-next-line @typescript-eslint/unbound-method
+    write: inner.write,
     writeSynthetic: inner.writeSynthetic ? (frame) => inner.writeSynthetic?.(frame) ?? Promise.resolve() : undefined,
     writeKeepalive: inner.writeKeepalive ? (frame) => inner.writeKeepalive?.(frame) ?? Promise.resolve() : undefined,
     writeSyntheticEnvelope: inner.writeSyntheticEnvelope ? (frame) => inner.writeSyntheticEnvelope?.(frame) ?? Promise.resolve() : undefined,

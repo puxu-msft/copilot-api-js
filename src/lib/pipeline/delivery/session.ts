@@ -63,6 +63,11 @@ export function getDownstreamDeliverySession(sink: ClientSink): DownstreamDelive
  */
 export function inheritDownstreamDeliverySession(source: ClientSink, decorator: ClientSink, contract: { transparency: "pass-through" }): void {
   void contract
+  if (decorator.write !== source.write) {
+    throw new TypeError(
+      "Cannot inherit delivery identity: decorator.write must be the same function reference as source.write for pure pass-through forwarding",
+    )
+  }
   const delivery = deliveryBySink.get(source)
   if (delivery) deliveryBySink.set(decorator, delivery)
 }
