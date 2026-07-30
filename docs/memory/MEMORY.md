@@ -74,6 +74,7 @@
 - [「别继承退化」只在目标真有对应值时成立](methodology-degradation-advice-scoped-to-target-has-equivalent.md) — 目标无对应值→诚实退化+marker
 - [守卫被合法写法绕过：两次实例与取证](methodology-relocate-invariant-when-guard-cannot-keep-up.md) — 方法论权威源已升为 skill `reshaping-a-bypassed-guard`（判据=能否写出可编译 witness）
 - [新写的 oracle「一定咬得住」只是推理不是实验](methodology-new-oracle-discriminating-power-is-experimental.md) — 失效主形态是「相邻」非「离谱」；两问：什么变异让它红·这个绿会不会由「通过但不是我要的」情况产生
+- [迁 oracle 到生产构造时绝不顺手削断言](methodology-migrating-an-oracle-must-not-weaken-its-assertions.md) — 「新构造下不再产生」几乎总是驱动少了一拍；删既有断言须扫参数证性质不存在；注释与断言自相矛盾是最廉价探测器
 - [mutation control 自身要自证改到了代码](methodology-verify-the-mutation-actually-applied.md) — 「没变红」有两解：测试没咬住 vs mutation 根本没生效
 - [spec 里的机制性解释必须有实验背书](methodology-mechanism-story-in-spec-must-be-experiment-backed.md) — 给现象配的合理机制别当事实写
 - [ctx 共享可变裁决会被落败 hedge candidate 污染](methodology-request-scoped-mutable-verdict-poisoned-by-hedge-candidates.md) — hedge 默认开
