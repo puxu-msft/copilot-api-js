@@ -34,8 +34,11 @@ import type {
   ClientFrame,
   ClientSink,
   FormatCodec,
+  PhysicalTransport,
+  PhysicalTransportResponse,
   PreparedRequest,
   Transport,
+  UpstreamDispatchLifecycle,
   UpstreamFrame,
   UpstreamStream,
 } from "~/lib/pipeline/types"
@@ -51,12 +54,17 @@ import {
 } from "~/lib/anthropic/keepalive-anchor"
 import { makeReconcilingSink } from "~/lib/anthropic/live-reconcile"
 import { createRequestContext } from "~/lib/context/request"
-import { makeSseSink } from "~/lib/pipeline/client-sink"
+import {
+  //
+  makeDeliverySseSink,
+  makeSseSink,
+} from "~/lib/pipeline/client-sink"
 import {
   //
   createPipelineDriver,
   type DriverDeps,
 } from "~/lib/pipeline/driver"
+import { createFrozenHedgePolicy } from "~/lib/pipeline/generation/hedge-policy"
 
 import { FakeClock } from "../helpers/fake-clock"
 
@@ -96,9 +104,7 @@ function makeHeadThenSilentThenResume(head: Array<UpstreamFrame>, tail: Array<Up
 function makeCodec(): FormatCodec {
   return {
     format: "anthropic",
-    parse: () => {
-      throw new Error("parse not used")
-    },
+    parse: () => makeEnv(),
     translateOut: (env) => env,
     prepareWire: () => ({ url: "u", headers: new Headers(), body: {}, stream: true }) as PreparedRequest,
     renderResponse: (frame) => frame, // identity render — Anthropic bypass-direct
@@ -131,6 +137,78 @@ function makeDriver() {
   return createPipelineDriver(deps)
 }
 
+function hedgePolicy(enabled: boolean) {
+  return createFrozenHedgePolicy({
+    enabled,
+    thresholdMs: 0,
+    maxSecondaryCandidates: 1,
+    maxActiveCandidates: 2,
+    maxTotalCandidates: 3,
+    maxActiveDispatches: 2,
+    maxTotalDispatches: 4,
+    cleanupMarginMs: 0,
+    responseHeaderTimeoutMs: 0,
+    requestDeadlineAtMs: 0,
+    expectedHedgeCompletionMs: 1,
+  })
+}
+
+function lifecycle(controller: AbortController): UpstreamDispatchLifecycle {
+  let resolve!: () => void
+  const quiesced = new Promise<void>((done) => (resolve = done))
+  return {
+    cancel(reason) {
+      if (!controller.signal.aborted) controller.abort(new Error(reason ?? "cancelled"))
+      resolve()
+    },
+    async dispose(reason) {
+      this.cancel(reason)
+      return { quiesced: true, connectionReusable: false }
+    },
+    quiesced,
+  }
+}
+
+function makeHedgedDriver(tail: Array<UpstreamFrame>, enabled: boolean) {
+  let opens = 0
+  const transport: PhysicalTransport = {
+    async open(_wire, _env, options): Promise<PhysicalTransportResponse> {
+      const isPrimary = opens++ === 0
+      const controller = new AbortController()
+      options?.signal?.addEventListener("abort", () => controller.abort(options.signal?.reason), { once: true })
+      const owner = lifecycle(controller)
+      async function* frames(): AsyncIterable<UpstreamFrame> {
+        if (enabled && isPrimary) {
+          await new Promise<void>((_resolve, reject) => {
+            const abort = () => reject(controller.signal.reason instanceof Error ? controller.signal.reason : new Error("primary cancelled"))
+            if (controller.signal.aborted) abort()
+            else controller.signal.addEventListener("abort", abort, { once: true })
+          })
+        }
+        for (const frame of tail) yield frame
+      }
+      return { kind: "stream", upstream: { headers: new Headers(), frames: frames(), lifecycle: owner }, lifecycle: owner }
+    },
+  }
+  return {
+    driver: createPipelineDriver({
+      codec: makeCodec(),
+      transport: {
+        ...transport,
+        send: async () => {
+          throw new Error("legacy send must not run")
+        },
+      },
+      strategies: [],
+      maxRetries: 0,
+      maxLearningRetries: 0,
+      monotonicNow: () => 0,
+      hedgePolicy: hedgePolicy(enabled),
+    }),
+    opens: () => opens,
+  }
+}
+
 /** Block-aware heartbeat frame: an empty text_delta on the open anchor block, else a bare ping. */
 const PING: ClientFrame = { event: "ping", data: '{"type":"ping"}' }
 const emptyDeltaFor = (ob?: OpenBlock): ClientFrame =>
@@ -148,7 +226,13 @@ function stubSseStream(): { stream: Parameters<typeof makeSseSink>[0]; written: 
 
 function anchorHooks(): AnchorHooks {
   return {
-    isContentBlockStart: (fr: { data?: string }) => { try { return (JSON.parse(fr.data ?? "{}") as { type?: unknown }).type === "content_block_start" } catch { return false } },
+    isContentBlockStart: (fr: { data?: string }) => {
+      try {
+        return (JSON.parse(fr.data ?? "{}") as { type?: unknown }).type === "content_block_start"
+      } catch {
+        return false
+      }
+    },
     isMessageStart: (fr) => {
       try {
         return typeof fr.data === "string" && (JSON.parse(fr.data) as { type?: string }).type === "message_start"
@@ -165,7 +249,7 @@ function anchorHooks(): AnchorHooks {
 }
 
 /**
- * Build the LIVE sink stack the handler wires (spec §10.1.5 C1 / §10.3): the INNER {@link makeSseSink}
+ * Build the LIVE sink stack the handler wires (spec §10.1.5 C1 / §10.3): the INNER {@link makeDeliverySseSink}
  * carries the handler-owned unique injector on `heartbeat.injectAnchor` (self-referencing the inner sink
  * via a holder), and the DECORATED sink ({@link makeReconcilingSink}) is what the live pump writes real
  * frames to. The injector always writes to the INNER sink (its prelude must NOT be reconciled), while the
@@ -181,7 +265,7 @@ function buildLiveStack(
   const anchor = anchorHooks()
   const sinkHolder: { current: ClientSink | undefined } = { current: undefined }
   const injector = makeSyntheticAnchorInjector({ anchor, state: anchorState, getSink: () => sinkHolder.current, resolvedName, reqId })
-  const inner = makeSseSink(stream, {
+  const inner = makeDeliverySseSink(stream, {
     onForwarded,
     heartbeat: { intervalSec: 15, pingFrame: emptyDeltaFor, injectAnchor: injector },
   })
@@ -211,6 +295,57 @@ describe("live-reconcile collision elimination — injected prelude + live resum
   const clock = new FakeClock()
   beforeEach(() => clock.install())
   afterEach(() => clock.restore())
+
+  for (const hedgeEnabled of [false, true]) {
+    test(`production delivery ${hedgeEnabled ? "with" : "without"} hedge routes winner frames through live reconcile`, async () => {
+      const tail = [
+        f("message_start", { message: { id: "msg_real" } }),
+        f("content_block_start", { index: 0, content_block: { type: "thinking", thinking: "" } }),
+        f("content_block_delta", { index: 0, delta: { type: "thinking_delta", thinking: "reasoning" } }),
+        f("content_block_stop", { index: 0 }),
+        f("message_delta", { delta: { stop_reason: "end_turn", stop_sequence: null }, usage: { output_tokens: 7 } }),
+        f("message_stop"),
+      ]
+      const harness = makeHedgedDriver(tail, hedgeEnabled)
+      const request = await harness.driver.runRequest({ body: {}, headers: new Headers() })
+      if (!request.ok) throw new Error("unexpected rejection")
+      const { stream: sseStream, written } = stubSseStream()
+      const forwarded: Array<SseEventRecord> = []
+      const { pumpSink, anchorState } = buildLiveStack(sseStream, (record) => forwarded.push(record), "claude-opus-4.8", `req_hedge_${hedgeEnabled}`)
+      const anchor = anchorHooks()
+
+      anchorState.injected = true
+      anchorState.contentAnchorInjected = true
+      anchorState.messageStartForwarded = true
+      anchorState.anchorBlockOpen = true
+      await pumpSink.writeSyntheticEnvelope?.(anchor.syntheticMessageStart?.("claude-opus-4.8", `req_hedge_${hedgeEnabled}`) ?? f("message_start"))
+      await pumpSink.writeAnchor?.(anchor.startFrame)
+      await pumpSink.writeKeepalive?.(anchor.deltaFrame)
+
+      const outcomeP = harness.driver.runResponseSink(request.upstream, request.env, pumpSink, { onUpstreamFrame: () => {} })
+      if (hedgeEnabled) {
+        await drain()
+        await clock.advance(1)
+      }
+      const outcome = await outcomeP
+
+      expect(outcome.kind).toBe("complete")
+      expect(harness.opens()).toBe(hedgeEnabled ? 2 : 1)
+      expect(forwardedSeq(forwarded)).toEqual([
+        "message_start#synthetic-message-start",
+        "content_block_start@0#anchor",
+        "content_block_delta@0#keepalive",
+        "content_block_stop@0#anchor",
+        "content_block_start@1",
+        "content_block_delta@1",
+        "content_block_stop@1",
+        "message_delta",
+        "message_stop",
+      ])
+      expect(written.filter((entry) => JSON.parse(entry.data).type === "message_start")).toHaveLength(1)
+      expect(anchorState.anchorClosed).toBe(true)
+    })
+  }
 
   test("pre-response silence injects a synthetic prelude; the live resume reconciles (single message_start, anchor@0, real block@1)", async () => {
     const env = makeEnv()
@@ -255,8 +390,7 @@ describe("live-reconcile collision elimination — injected prelude + live resum
     expect(forwardedSeq(forwarded)).toEqual([
       "message_start#synthetic-message-start", // fabricated envelope (no real message_start was available)
       "content_block_start@0#anchor", //          synthetic empty-text anchor block
-      "content_block_delta@0#keepalive", //       anchor's first empty text_delta (resets CC's 300s)
-      "content_block_delta@0#keepalive", //       second idle-tick keepalive on the open anchor block
+      "content_block_delta@0#keepalive", //       anchor's empty text_delta (resets CC's 300s)
       "content_block_stop@0#anchor", //           reconcile close-off (routed via writeAnchor → marked)
       "content_block_start@1", //                 real thinking block, remapped +1 — NO marker
       "content_block_delta@1", //                 real thinking_delta, remapped +1 — NO marker
@@ -284,7 +418,6 @@ describe("live-reconcile collision elimination — injected prelude + live resum
         event: "message_start",
       },
       { data: JSON.stringify({ type: "content_block_start", index: 0, content_block: { type: "text", text: "" } }), event: "content_block_start" },
-      { data: JSON.stringify({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "" } }), event: "content_block_delta" },
       { data: JSON.stringify({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "" } }), event: "content_block_delta" },
       { data: JSON.stringify({ type: "content_block_stop", index: 0 }), event: "content_block_stop" },
       { data: JSON.stringify({ type: "content_block_start", index: 1, content_block: { type: "thinking", thinking: "" } }), event: "content_block_start" },

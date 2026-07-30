@@ -24,6 +24,7 @@ import {
   syntheticMessageStartFrame,
 } from "~/lib/anthropic/keepalive-anchor"
 import { makeReconcilingSink } from "~/lib/anthropic/live-reconcile"
+import { createRecoverySinkSupervisor } from "~/lib/pipeline/generation/recovery-sink-supervisor"
 
 function frame(type: string, extra: Record<string, unknown> = {}): ClientFrame {
   return { event: type, data: JSON.stringify({ type, ...extra }) }
@@ -159,20 +160,26 @@ describe("one persistent live-reconcile sink across attempts", () => {
     expect(state.anchorClosed).toBe(false)
   })
 
-  test("injected open anchor: fresh first block closes through writeAnchor before its index shifts", async () => {
+  test("injected open anchor: supervisor preserves one decorated sink across an attempt boundary", async () => {
     const recording = recordingSink()
     const state = anchorState()
     const anchorHooks = hooks()
     const persistentSink = makeReconcilingSink(recording.sink, state, anchorHooks)
+    const supervisor = createRecoverySinkSupervisor(persistentSink)
 
-    await injectEmptyTextAnchor(persistentSink, state, anchorHooks)
+    await injectEmptyTextAnchor(supervisor.sink, state, anchorHooks)
+    supervisor.sink.close?.()
+    supervisor.sink.finalize?.()
     recording.reset()
-    await persistentSink.write(messageStart("msg_fresh_empty_text"))
-    await persistentSink.write(contentBlockStart(0))
+    await supervisor.sink.write(messageStart("msg_fresh_empty_text"))
+    await supervisor.sink.write(contentBlockStart(0))
 
+    // Attempt-local close/finalize are suppressed, so the same decorated sink remains writable for recovery.
     expect(recording.written.map(key)).toEqual(["content_block_stop@0", "content_block_start@1"])
     expect(recording.methods).toEqual(["writeAnchor", "write"])
     expect(state.anchorClosed).toBe(true)
+
+    await supervisor.settleFinal()
   })
 
   test("injected open anchor: a fresh terminal error closes the anchor exactly once before terminal frames", async () => {

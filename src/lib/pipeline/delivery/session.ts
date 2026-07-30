@@ -52,8 +52,17 @@ export function getDownstreamDeliverySession(sink: ClientSink): DownstreamDelive
   return deliveryBySink.get(sink)
 }
 
-/** Preserve generation-owned delivery identity through a transparent ClientSink decorator. */
-export function inheritDownstreamDeliverySession(source: ClientSink, decorator: ClientSink): void {
+/**
+ * Preserve generation-owned delivery identity through a PURE pass-through ClientSink decorator.
+ *
+ * This is legal only when every frame reaching the decorator is forwarded unchanged, in order, and exactly
+ * once. A decorator that rewrites, drops, inserts, or reorders frames MUST NOT inherit identity: winner-aware
+ * driver writes resolve the session by sink identity and then write through the session's original raw sink,
+ * bypassing the decorator. Task 4.1′ exposed this when live reconciliation inherited identity and hedge winner
+ * frames skipped duplicate-message removal, anchor close-off, and index remapping.
+ */
+export function inheritDownstreamDeliverySession(source: ClientSink, decorator: ClientSink, contract: { transparency: "pass-through" }): void {
+  void contract
   const delivery = deliveryBySink.get(source)
   if (delivery) deliveryBySink.set(decorator, delivery)
 }

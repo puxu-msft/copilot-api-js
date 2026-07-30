@@ -352,11 +352,13 @@ describe("makeReconcilingSink", () => {
     ])
   })
 
-  test("preserves generation-owned delivery identity through the decorator", () => {
+  test("does not inherit delivery identity because it rewrites winner frames", () => {
     const delivery = createDownstreamDeliverySession({ sink: { async write() {} } })
     const dec = makeReconcilingSink(delivery.clientSink, injectedState(), hooks())
 
-    expect(getDownstreamDeliverySession(dec)).toBe(delivery)
+    // If driver winner writes can resolve this decorator as delivery, they bypass dec.write and skip
+    // duplicate-message removal, anchor close-off routing, and index remapping.
+    expect(getDownstreamDeliverySession(dec)).toBeUndefined()
   })
 
   test("optional inner methods absent → decorator leaves them undefined (array/WS sinks)", () => {

@@ -38,7 +38,7 @@ export function createRecoverySinkSupervisor(inner: ClientSink): RecoverySinkSup
   // The driver resolves generation-owned delivery state by sink identity. Keep that capability
   // when decorating; the fallback still writes into delivery, but loses winner assertions and
   // candidateId attribution.
-  inheritDownstreamDeliverySession(inner, sink)
+  inheritDownstreamDeliverySession(inner, sink, { transparency: "pass-through" })
 
   return {
     sink,

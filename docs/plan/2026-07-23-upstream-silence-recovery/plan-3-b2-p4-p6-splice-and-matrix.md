@@ -2,7 +2,7 @@
 
 > **⚠ 底座已漂移（2026-07-28），接线前必读**：本文档写于 2026-07-23。此后 master 前进 128 提交，**重写了 delivery/heartbeat 生命周期**（`freezeHeartbeat` 语义、close-before-terminal-drain、心跳跨 block-level commit 存活）并把 delayed-commit 窗口**从 handler timer 重构成 ingress-relative deadline**（默认 180s / ceiling 240s）。**本文档引用的 `file:line` 与 handler-v4/driver 接线点假设多半已过时**——动手前逐个重读现状，与本文冲突时**以代码为准**并在报告里写清差异（Task 0.5 已按此处理，其偏离与理由就地记在 plan-2 对应小节）。
 >
-> **已就位的三件地基**（plan-2 已完成、零接线）：`coordinator.runRecoveryFromPreReadyFailure`、delivery-level `hasDeliveredSemanticContent`（读 `hasEmittedRealClientContent`，**非** `boundary.result`）、`recovery-sink-supervisor`（`settleFinal()` 是幂等 `Promise<void>`，须放进 owner 的 `finally`）。**接线时一并解决**：backlog 的 `afterHook`-vs-`preflight` env seam、`_reason` 透传、`ClientSink.finalize` 类型声明 `void` 但实际返回 Promise、`makeReconcilingSink` 未继承 delivery identity（默认 live 路径上 hedge 胜者写因此丢 winner 断言与 candidateId 归属）。
+> **已就位的三件地基**（plan-2 已完成、零接线）：`coordinator.runRecoveryFromPreReadyFailure`、delivery-level `hasDeliveredSemanticContent`（读 `hasEmittedRealClientContent`，**非** `boundary.result`）、`recovery-sink-supervisor`（`settleFinal()` 是幂等 `Promise<void>`，须放进 owner 的 `finally`）。**接线时一并解决**：backlog 的 `afterHook`-vs-`preflight` env seam、`_reason` 透传、`ClientSink.finalize` 类型声明 `void` 但实际返回 Promise。`makeReconcilingSink` **必须继续不继承 delivery identity**：默认 live hedge 的 winner-aware 写入只有在查不到 delivery 时才 fallback 到 decorator 的 `write`；继承身份会绕过 reconcile，造成 duplicate `message_start`、anchor index 冲突与 close-off 丢失。live winner 的 candidateId 归属缺失是既有现状，不能用污染 wire 的方式修复。
 >
 > **范围裁定（用户硬约束 never-false-kill）**：B2 **排除** `timeout(header-wait)` / `reaper-cancel`，只在确定性上游死亡（RST / transport-close / clean-EOF）触发——详见下方 Task 4.3 与 README 的用户裁决记录。
 >
@@ -106,7 +106,9 @@ runResponseRecovery(upstream: UpstreamStream, env: RequestEnvelope, reason: stri
 
 > **实施状态（2026-07-29，Task 4.1′ 重划完成，保持零 handler 接线）。** 2026-07-28 首版新增的 `precontent-recovery-splice.ts` 被评审否决：它在 hooks 存在时每帧临时执行 `makeReconcilingSink(...).write(frame)`，只是给 `handler-v4.ts` 同一函数作用域内已经可取得的 `sink`、`anchorHooks`、`anchorState` 再包一层门面；生产 live direct/translate 两条腿本就通过 `liveReconcilingSink` 构造同一个 decorator，不存在层级障碍。首版文件及其测试已删除，历史否决理由保留在此。
 >
-> 重划后的实际形状是把 `makeReconcilingSink` 补成真正透明的 decorator，并在 Task 4.3 由 handler **一次构造、跨首次 attempt 与 fresh recovery attempt 复用同一个实例**。透明性补齐两类潜伏缺口：① 调用 `inheritDownstreamDeliverySession(inner, sink)`，保留 driver 依 sink 对象身份解析的 winner/candidate delivery 归属；② 对存在的 `suspendHeartbeat`、`resumeHeartbeat`、`finalize` 原样转发，对缺失方法继续保留 `undefined` 供 feature detection。后者在当前 live 生产路径上还不是已触发缺陷：buffered 候选循环和 handler finalize 当前使用原始 sink；它是后续 B2 恢复把 decorated sink 带入这些调用前必须闭合的边界。
+> 重划后的实际形状是把 `makeReconcilingSink` 的控制面补完整，并在 Task 4.3 由 handler **一次构造、跨首次 attempt 与 fresh recovery attempt 复用同一个实例**。对存在的 `suspendHeartbeat`、`resumeHeartbeat`、`finalize` 原样转发，对缺失方法继续保留 `undefined` 供 feature detection；这些方法在当前 live 生产路径上还不是已触发缺陷，因为 buffered 候选循环和 handler finalize 当前使用原始 sink，但后续 B2 恢复会把 decorated sink 带入 attempt 边界调用。
+>
+> **2026-07-30 BLOCKER 订正：**“继承 delivery identity”不是透明性补齐，而是破坏性行为变更。delivery session 的 winner 写向构造时捕获的 raw sink；driver 又按传入 sink 对象身份决定走 session 还是 `sink.write` fallback。因此 reconciling decorator 一旦注册 identity，默认 live hedge 胜者会绕过 reconcile，客户端收到第二个 `message_start`、与 open anchor@0 冲突的真实 block@0，且 anchor 永不关闭。修复恢复改前契约：改写/丢弃/重排帧的 decorator **不得继承 delivery identity**；`inheritDownstreamDeliverySession` 只允许显式声明 `transparency:"pass-through"` 的纯转发 decorator 使用。代价是 live winner 继续没有 candidateId 归属，这是既有现状，优先级低于 wire 正确性。
 >
 > 三模式验收已搬到 `tests/anthropic/live-reconcile-cross-attempt.unit.test.ts`，判据只按当前 wire state 命名：无 hooks；hooks 已构造但尚未注入；已注入、无 open anchor；已注入且 open anchor。每例都让同一个 sink 实例先承载首次 attempt 状态，再写 fresh attempt 帧；empty-text close-off 额外锁定方法序列 `writeAnchor → write`，防止手工遍历 `reconcileLiveFrame` 后统一 `sink.write` 丢失 `synthetic:"anchor"` 标记；fresh attempt 再次在真实块前以 `error` 终止时，anchor 必须在 error 前且只关闭一次。模式判据不是 config `streamKeepaliveMode`：`streamKeepaliveEscalateSec > 0` 时即使配置为 ping 也会构造 hooks，是否去重/remap 取决于 `injected` 与 `anchorBlockOpen` 的当前状态。
 >
@@ -192,6 +194,8 @@ test("returns false when config.preContentRecovery.enabled === false", () => { .
 ---
 
 ## Task 4.3：handler-v4.ts 接线（COMMIT 分支 catch 块）
+
+> **前置约束（Task 4.1′ BLOCKER 后冻结）：** Task 4.3 必须复用同一个 reconciling decorator，但不得让它继承 delivery identity。只有 `recovery-sink-supervisor` 这类逐帧原样、同序、恰好一次转发的纯 pass-through decorator 可以调用 `inheritDownstreamDeliverySession(..., { transparency:"pass-through" })`。生产验收必须同时跑 hedge 开/关两组，锁住 winner fallback 仍经过 reconcile。
 
 **范围裁定（用户 2026-07-23 已定，不再是 open）：** `reaper-cancel` 与 `timeout`（header-wait）**排除出 B2**——用户硬约束「**绝不误杀合法长思考**」：这两类失败发生时上游连接可能仍活、上游可能正在合法 heavy-thinking（deferred-header 无上界），对其 re-dispatch 会从头重算 = **放弃并误杀正在进行的合法思考**。挂起请求本就会被 GHC 网关在 126-206s 自行 `rstCode=0`（确定性失败）终止，届时走 B2-on-RST 救援即可——不需要、也不允许用 timeout 去猜 A/B。
 - **本计划裁定设计**：`shouldAttemptPreContentRecovery` 只对 **HTTPError 分支** 和 **network_error 类（非 HTTPError 的 catch 分支，含 socket reset/RST/transport-close）** 生效；`isAbortError` 的三个子分支（client-abort / reaper-cancel / timeout）**都不触发 B2**——client-abort 是客户端已走、reaper-cancel/timeout 是「连接可能仍活、上游可能在思考」（误杀风险）。这是**确定性上游死亡才重发**原则的直接落地。

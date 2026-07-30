@@ -23,8 +23,6 @@ import type {
   ClientSink,
 } from "~/lib/pipeline/types"
 
-import { inheritDownstreamDeliverySession } from "~/lib/pipeline/delivery/session"
-
 /** Is this rendered client frame a real `content_block_start`? (parses the JSON `type`; non-JSON → false). */
 function isContentBlockStart(frame: ClientFrame): boolean {
   if (typeof frame.data !== "string") return false
@@ -192,8 +190,9 @@ export function makeReconcilingSink(inner: ClientSink, state: AnchorState, hooks
     close: inner.close ? () => inner.close?.() : undefined,
     finalize: inner.finalize ? () => inner.finalize?.() : undefined,
   }
-  // The driver resolves generation-owned delivery state by sink identity. Preserve that capability for
-  // future recovery paths that pass this decorated live sink into winner/candidate-aware driver writes.
-  inheritDownstreamDeliverySession(inner, sink)
+  // Deliberately do NOT inherit delivery identity. This decorator rewrites/drops/reorders frames; if the
+  // winner-aware driver resolves it as a delivery session, winner writes bypass `sink.write` and therefore
+  // bypass reconciliation. The fallback through this decorator is required for wire correctness, at the
+  // existing cost that live winner frames do not carry candidateId attribution.
   return sink
 }
