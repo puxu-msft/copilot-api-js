@@ -2,6 +2,8 @@
 
 纯引用层：实质在正式归属（skill / `docs/` / ADR / user-rule），下方每行 stub。合并/清理前 deep-read 正文，不只凭钩子。
 
+**条目已升级为 skill 时**：钩子仍须带「何时触发」的症状词 + 一个**防漏的动作内核**，并写明「方法 → skill，证据 → memory」。只写「方法论已升为 skill」会退化成目录项——约 120 行钩子在竞争注意力，而 skill 万一没浮现时，这行是唯一的兜底。
+
 ## 已下沉到项目 skill 的方法论（记忆文件 = stub 指向）
 
 - [收尾与跨会话交接](session-closeout-and-handover.md) → skill `session-closeout` — 收尾六步 + HANDOVER/KICKOFF 唯一归属
@@ -72,7 +74,7 @@
 - [编译错误：补符号 vs 删引用](methodology-broken-reference-supply-vs-delete.md) — 按消费者契约+独立 oracle 裁决，别反射式让它编译
 - [复用共享原语选完整版非小版](methodology-full-primitive-not-partial-else-silent-field-drop.md) — 否则静默丢字段+单测假绿；映射测须构造每个非平凡字段
 - [「别继承退化」只在目标真有对应值时成立](methodology-degradation-advice-scoped-to-target-has-equivalent.md) — 目标无对应值→诚实退化+marker
-- [守卫被合法写法绕过：两次实例与取证](methodology-relocate-invariant-when-guard-cannot-keep-up.md) — 方法论权威源已升为 skill `reshaping-a-bypassed-guard`（判据=能否写出可编译 witness）
+- [守卫被合法写法绕过：两次实例与取证](methodology-relocate-invariant-when-guard-cannot-keep-up.md) — 又准备补一种等价写法时**停止补形态**；方法权威见 skill `reshaping-a-bypassed-guard`（三-oracle witness 交得出→换轴；交得出结构性闭合证明→继续；两者都无→不提交）
 - [新写的 oracle「一定咬得住」只是推理不是实验](methodology-new-oracle-discriminating-power-is-experimental.md) — 失效主形态是「相邻」非「离谱」；两问：什么变异让它红·这个绿会不会由「通过但不是我要的」情况产生
 - [用例名集合 diff 必须运行时枚举](methodology-test-name-audit-must-enumerate-at-runtime.md) — grep 扫 `test("...")` 对参数化+模板名结构性失明；方法不可靠而结论碰巧对时没有任何信号
 - [迁 oracle 到生产构造时绝不顺手削断言](methodology-migrating-an-oracle-must-not-weaken-its-assertions.md) — 「新构造下不再产生」几乎总是驱动少了一拍；删既有断言须扫参数证性质不存在；注释与断言自相矛盾是最廉价探测器
@@ -131,7 +133,7 @@
 
 ## project 现状 stub（权威看正式归属；landed 项细节在 docs/DESIGN/git，此处仅触发指针）
 - [领域包剥离执行技巧（token·telemetry landed）](methodology-domain-peel-execution-techniques.md) — 两型模板(SoT 反转 / 只读消费+module-split)+共通技巧+ratchet 与守卫两类坑
-- [state 降 foundation 叶子（landed master `9ec79010`, 2026-07-29）](project-state-to-foundation-handover.md) — 环 70/63→43/50·state 零环；**实质产出是判据形状的演化**（十轮复评没改一行 state 代码、全在改守卫怎么判）→ [[methodology-relocate-invariant-when-guard-cannot-keep-up]]
+- [state 降 foundation 叶子（landed master `9ec79010`, 2026-07-29）](project-state-to-foundation-handover.md) — 环 70/63→43/50·state 零环；**实质产出是判据形状的演化**（十轮复评没改一行 state 代码、全在改守卫怎么判）；方法 → skill `reshaping-a-bypassed-guard`，事故取证 → [[methodology-relocate-invariant-when-guard-cannot-keep-up]]
 - [续写重试（P2 landed master de37feff，P3-P7 待续）](project-continuation-retry-sequential-anchor.md) — 首块后 cut 合成 continuation 缝合
 - [max_tokens 续传（P0 landed 3bb1262a，P1 待做）](project-max-tokens-continuation-spec.md) — 截断三分型 A/B/C
 - [History 搜索移出主进程 sidecar（landed 分支待合并）](project-history-search-out-of-process.md) — systemd 服务
