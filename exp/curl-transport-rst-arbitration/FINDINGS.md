@@ -86,3 +86,15 @@ C  stream.close(REFUSED_STREAM)   → curl 无错误          （夹具不忠实
 - 未测 GOAWAY、`REFUSED_STREAM(0x7)` 在忠实形态下的四方行为（后者对本项目的 retry 策略有直接影响）。
 - 未在真实 GHC 上游验证任何一格。
 - 未回头修正 `exp/curl-transport-exe/` 与 `exp/curl-transport-libcurl/` 两份 FINDINGS 正文，只在本文件统一勘误。
+
+## 复现性补记（2026-08-01）
+
+第三层「忠实 RST」实验的服务端保存为 `oracle-faithful-rst.mjs`（三变体 A/B/C）。原始跑动在 `/tmp` 下进行，评审取证时指出仓库只留了结论、没留脚本——已补入。证书用 `../curl-transport-libcurl/regen-certs.sh` 重建。
+
+复跑：
+
+```bash
+node exp/curl-transport-rst-arbitration/oracle-faithful-rst.mjs   # 打印 {"port":N}
+curl -sS -N -k --http2 https://127.0.0.1:N/b                      # 期望 exit 92 INTERNAL_ERROR (err 2)
+curl -sS -N -k --http2 https://127.0.0.1:N/a                      # 期望无错误（夹具不忠实的对照）
+```
