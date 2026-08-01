@@ -1,196 +1,370 @@
 # Spec：上游传输 Provider 化 + curl 外部实现
 
-状态：**草案，待评审** · 日期：2026-08-01 · 决策人：用户 · 撰写：主会话
+状态：**v2 草案，已过一轮 subagent 评审并修订，待复评** · 日期：2026-08-01 · 决策人：用户 · 撰写：主会话
 
-关联：ADR `docs/decisions/2026-07-14-transport-config-three-axis-organization.md`（三轴配置） · RFC `docs/spec/upstream-http2-transport.md`（h2 传输，**本 spec 勘误其中一条断言**） · 实验 `exp/curl-transport-exe/` `exp/curl-transport-libcurl/` `exp/curl-transport-rst-arbitration/`
+关联：ADR `docs/decisions/2026-07-14-transport-config-three-axis-organization.md` · RFC `docs/spec/upstream-http2-transport.md`（**本 spec 勘误其中一条断言，见 §3.1**） · 实验 `exp/curl-transport-exe/` `exp/curl-transport-libcurl/` `exp/curl-transport-rst-arbitration/`
+
+> **v2 修订说明**：v1 被两个独立 subagent 评审判为「需修订后再评」（0 Critical / 10 High / 3 Medium）。两处**事实错误**（§7.1 崩溃机制、§1 耦合面）已由主会话独立复核确认成立并改正。v1 把六项本应在 spec 冻结的契约推给了实现期，v2 逐一冻结。完整处置见 §12。
 
 ---
 
 ## 1. 问题
 
-本项目所有 `https://` 上游走内建 `node:http2`，明文 `http://` 走 undici。根因是 **Bun × undici 的组合下 h1 与 h2 都永久 hang**（body 永不 finalize，`exp/upstream-models-hang/`）。这留下三个缺口：
+本项目所有 `https://` 上游走内建 `node:http2`，明文 `http://` 走 undici。根因是 **Bun × undici 的组合下 h1 与 h2 都永久 hang**（body 永不 finalize，`exp/upstream-models-hang/`）。三个缺口：
 
-1. **`upstream_transport.http2.favor: false` 这个热回退口在 Bun 下是假的**——它回退到 undici，而 undici 在 Bun 下必挂。配置项逐字生效，只打一条警告，实际等于「关掉 h2 就没法工作」。
-2. **明文 `http://` 上游（本地 SearXNG）仍骑在会 hang 的 undici 上**，只是响应小、暂未触发。
-3. **没有任何 h1 能力**。TLS 终止型 MITM 代理给不了 h2 时 `awaitH2Handshake` 直接 reject，无 h1 回退；未来出现 h1-only 上游同样无解。
+1. **`upstream_transport.http2.favor: false` 这个热回退口在 Bun 下是假的**——它回退到必挂的 undici，等于「关掉 h2 就没法工作」。
+2. **明文 `http://` 上游仍骑在会 hang 的 undici 上**，只是响应小、暂未触发。
+3. **没有任何 h1 能力**。TLS 终止型 MITM 代理给不了 h2 时 `awaitH2Handshake` 直接 reject，无 h1 回退。
 
-更深一层的结构问题：**只有一个 provider，所以 provider 契约从未被命名过**。`http2Fetch` / `closeHttp2Sessions` / `getH2SessionStatusSnapshot` / `reconcileH2SessionsForConfigChange` 这四个函数已经构成契约的形状，但它们被写死成具体名字，散落在四个消费点：
+### 1.1 真实的耦合面（v1 的「四个耦合点」不成立）
 
-| 耦合点 | 位置 |
-|---|---|
-| 发请求 | `transport/upstream-fetch.ts` → `http2Fetch` |
-| 状态快照 | `transport/status-snapshot.ts` → `H2SessionStatusRow` / `getH2ReconcileStatus` |
-| 关机 | `shutdown.ts` → `closeHttp2Sessions` |
-| 配置热重载 | `reconcileH2SessionsForConfigChange` |
+v1 声称 h2 与外界的耦合只有四处。两个独立评审各自搜索后均判**不成立**，主会话复核确认。真实迁移面：
 
-外加配置里只有 `upstream_transport.http2.*` 一支，以及 `onTrailers` / `onStreamClosed` 两个 h2-only 回调挂在通用的 `UpstreamFetchInit` 上。
+| # | 耦合类别 | 位置 | v1 是否列出 |
+|---|---|---|---|
+| 1 | 请求选路与调用 | `transport/upstream-fetch.ts:41,72-87`（`http2Fetch` + `getUpstreamH2Favor`） | ✅ |
+| 2 | 状态快照（**五个符号**，不止两个） | `transport/status-snapshot.ts:23-35,103-115`：`H2SessionStatusRow` / `getH2SessionStatusSnapshot` / `getH2ReconcileStatus` / `getSessionConnectTimeoutMs` / `getUpstreamH2PingIntervalMs` | 部分 |
+| 3 | 关机 | `shutdown.ts:606,696` `closeHttp2Sessions()` | ✅ |
+| 4 | **shutdown provenance** | `shutdown.ts:256-268` 把 `pool-closed` 当作 shutdown 成因 | ❌ |
+| 5 | **错误分类法** | `packages/foundation/src/error/transport-reason.ts:32-37` 的 `pool-closed` 是 h2 专属概念，已进 foundation | ❌ |
+| 6 | **UI 直接消费 h2 专属形状** | `ui-v4/src/components/overview/OverviewShadcn.tsx:67-70,151-215`（逐字段读 `lifecycle`/`origin`/`generation`/`activeStreamCount`/`effectivePingIntervalMs`/`effectiveKeepAliveMs`）、`OverviewLegacy.tsx:45-49`、`ui-v4/src/types/status.ts:23-26,41` re-export | ❌ |
+| 7 | **HTTP 测试断言旧 shape** | `tests/infra/management-routes.http.test.ts:480-488` | ❌ |
+| 8 | **h2-only 回调挂在通用 init 上** | `transport/upstream-fetch.ts:44-57` 的 `onTrailers`/`onStreamClosed` → `send.ts:218-219,263-269` → `http-transport.ts:92-95` | 正文提及，未入表 |
+| 9 | 直接耦合 h2 实现导出的测试（8 个文件） | `tests/transport/http2-*.{it,unit}.test.ts`、`tests/shutdown/shutdown-h2-pool-drain.it.test.ts`、`tests/architecture/generation-engine-boundaries.unit.test.ts` 等 | ❌ |
+
+**反向修正**：`reconcileH2SessionsForConfigChange` **不是**对外耦合点——它在 `transport/http2-client.ts:686-692` 由模块自己订阅 `onUpstreamTransportChange`，生产代码无外部调用者。v1 把模块内部细节列成了外部契约。
+
+⇒ 结构问题的准确表述不是「四个动词没被命名」，而是：**「发一个请求」是可替换的，「一个传输提供者的选路、生命周期、可观测性与错误身份」不是**，且其中三项（4/5/6）已经泄漏出 transport 目录，进了 foundation 与前端。
 
 ## 2. 目标
 
-- **G1** 把上述四个动词提成协议无关的 `UpstreamTransportProvider` 契约，让传输实现可替换。
-- **G2** 引入 curl 作为一个 provider，**能服务任意 h1/h2 路径**——h1 与 h2 在这个缝上是平等的，协议不绑定 provider 身份。
-- **G3** 让「某 provider 做不到某件事」成为一等公民：能力声明 + 诊断可见 + 选中时告警，绝不沉默退化。
+- **G1** 把传输实现的选路、生命周期、可观测性、错误身份抽成协议无关的三层契约（§4）。
+- **G2** 引入 curl provider，**能服务任意 h1/h2 路径**——协议不绑定 provider 身份。
+- **G3** 让「某 provider 做不到某件事」成为一等公民：能力声明 + 诊断可见 + 告警，绝不沉默退化（§4.2、§5）。
 - **G4** 明文 `http://` 上游脱离 undici。
 
 ### 非目标
 
-- **不**让 curl 成为默认 h2 传输。默认仍是 `node:http2`（理由见 §5 能力矩阵）。
-- **不**引入进程内 libcurl（`bun:ffi` / `node-libcurl` / Rust napi-rs）。理由见 §6。
-- **不**为 curl provider 复刻现役的池治理（容量选路 / reservation / per-origin 硬 cap / idle-reap / GOAWAY retire-and-drain）。每请求独立进程使这些机制失去对象。
+- **不**让 curl 成为默认 h2 传输（默认仍 `node:http2`，理由 §5）。
+- **不**引入进程内 libcurl（理由 §6，**暂缓非否决**）。
+- **不**为 curl provider 复刻池治理——每请求独立进程使这些机制失去对象。
 
 ## 3. 实证基础
 
-三份 PoC，可复跑脚本与原始输出均在 `exp/` 下。**以下每条都是实测，不是文档推断。**
+三份 PoC，可复跑脚本与原始输出在 `exp/` 下。
 
-### 3.1 一条必须先勘误的既有断言
+### 3.1 对既有 RFC 断言的**部分**勘误
 
-RFC `docs/spec/upstream-http2-transport.md` 记有「**(实现期实测, CRITICAL 限制)** Bun 的 `node:http2` 客户端对任何中途连接终止都交付 synthetic clean `end`——clean server RST 与完整连接 drop 皆然」。
+RFC `docs/spec/upstream-http2-transport.md:7-10` 记有「Bun 的 `node:http2` 对任何中途连接终止都交付 synthetic clean `end`——**clean server RST 与完整连接 drop 皆然**」。
 
-**该断言的 RST 部分不成立**，其证据基础是一个不忠实的测试夹具：
+**RST 那半不成立；连接 drop 那半成立。** 二者的原始探针用了不同 API：
 
-- Node h2 服务端的 `stream.close(code)` 在「已写过 DATA、未 END_STREAM」形态下**不在 wire 上放出 RST 帧**（`NODE_DEBUG=http2` 帧级追踪：客户端侧 `closed with code 0`，服务端发的 `INTERNAL_ERROR(2)` 无人看到）。
-- 改用 `stream.destroy(new Error())` 造出忠实 RST 后，在**无 Content-Length 的 SSE 流**上，四个客户端**全部**检测到 `rst=2`：curl exe (exit 92)、进程内 libcurl (code 92)、Node 上的 `node:http2`、**Bun 上的 `node:http2`**。
+| 原始探针 | 制造方式 | 忠实性 | 该半断言 |
+|---|---|---|---|
+| `exp/upstream-models-hang/probe-rst-events.mjs:3` | `stream.close(NGHTTP2_INTERNAL_ERROR)` | ❌ **不发 RST 帧** | **作废** |
+| `exp/upstream-models-hang/probe-drop-events.mjs:4` | `session.destroy()` | ✅ 忠实 | **成立** |
 
-⇒ 「curl 比现役实现更诚实地报截断」这个动机**基本不成立**。唯一被证实的差异是**整连接 drop**（curl 报 18，Bun 的 `node:http2` 报 clean end），而该场景对 SSE 已有应用层 `message_stop` / `[DONE]` 兜底。
+改用 `stream.destroy(new Error())` 造出忠实 RST 后，在**无 Content-Length 的 SSE 流**上四个客户端**全部**检测到 `rst=2`：curl exe (92)、进程内 libcurl (92)、Node 上的 `node:http2`、**Bun 上的 `node:http2`**（`exp/curl-transport-rst-arbitration/`，oracle 为 `oracle-faithful-rst.mjs` 变体 B）。
 
-> 本项目 skill 已记载「Bun 服务端 `stream.close(code)` 不发忠实 RST」。**本次证明 Node 服务端在此形态下同样不忠实**，caveat 适用范围比原记载更宽。两个 PoC 加主会话，三方都被这个夹具骗过。详见 `exp/curl-transport-rst-arbitration/FINDINGS.md`。
+⇒ **「curl 比现役更诚实地报截断」这个动机只在「整连接 drop」一格成立**，而该场景对 SSE 已有应用层 `message_stop` / `[DONE]` 兜底。curl 的价值应按 **h1 能力**评估，不按「更诚实的 h2」评估。
+
+> 教训：Node h2 服务端的 `stream.close(code)` 在「已写过 DATA、未 END_STREAM」形态下不在 wire 上放出 RST 帧。项目 skill 原只记载 Bun 服务端不忠实——**Node 服务端在此形态下同样不忠实**。本轮两个 PoC 加主会话三方全被它骗过。须写进 skill `debugging-ghc-api-upstream-transport`（该 caveat 现有归属，见 §8 注）。
 
 ### 3.2 curl 的能力与代价
 
 | 能力 | 实测 |
 |---|---|
-| h1 / h2 请求、流式增量 | ✅ `-N` 增量交付正常 |
-| 代理（http / https / socks5 / `--proxy-http2`） | ✅ 四条全通，隧道内目标仍协商 h2 |
-| TCP keepalive | ✅ `--keepalive-time 3` 落内核（`ss` 见秒级倒计时锯齿，非 OS 默认 7200s） |
-| 大 body 全双工 | ✅ 32MiB `--data-binary @-`，10 次复跑无死锁，sha256 一致 |
+| h1 / h2、流式增量 | ✅ `-N` 增量交付 |
+| 代理（http / https / socks5 / `--proxy-http2`） | ✅ 四条全通，隧道内仍协商 h2 |
+| TCP keepalive | ✅ `--keepalive-time` 落内核（`ss` 见秒级锯齿，非 OS 默认 7200s） |
+| 大 body 全双工 | ✅ 32MiB `--data-binary @-`，10 次复跑无死锁 |
 | h1 截断检测 | ✅ Content-Length 短读 / chunked 缺结束块均 exit 18 |
 | trailers | ✅ 能透出，但**只能进程退出后从 dump 文件读** |
-| abort | ✅ SIGTERM median 0.874ms，60 次无僵尸/fd 泄漏 |
-| **h2 PING** | ❌ **完全不存在** |
-| **连接复用** | ❌ 每请求一进程 |
+| abort | ✅ SIGTERM median 0.874ms，60 次无僵尸 / fd 泄漏 |
+| **周期 h2 PING** | ❌ 见下 |
+| **跨请求连接复用** | ❌ 每请求一进程 |
 
-**h2 PING 的否定性取证（五条独立证据 + 正样本对照）**：静默 h2 流 7 秒，Node oracle 收到 0 个 PING；同一 oracle 上 `session.ping()` 让计数 0→1（证明 oracle 不是恒零）；`curl --help all` 无 ping 选项；libcurl headers 无 `CURLOPT_*PING`；`--libcurl` 生成代码只有 `CURLOPT_TCP_KEEPALIVE`。进程内 libcurl 侧同样失败：`CURLOPT_UPKEEP_INTERVAL_MS=100` 下 66 次 `curl_easy_upkeep()` 全部返回 0，Node oracle 观察到 **0** 个 PING 帧——`upkeep` 够不到在途 transfer。
+**h2 PING 的否定性取证**（五条独立证据 + 正样本对照：同一 oracle 上 `session.ping()` 让计数 0→1，证明 oracle 不恒零）。**断言范围按评审意见收窄**：*当前受支持的 curl CLI 公共接口没有可配置的周期 h2 PING*（curl 8.5.0 `--help all` 无相应选项；libcurl `CURLOPT_UPKEEP_INTERVAL_MS` 下 66 次 `curl_easy_upkeep()` 全返回 0 而 oracle 观察到 0 个 PING 帧——upkeep 够不到在途 transfer）。**不**外推为「任何 curl 版本 / 私有 patch / 直调 nghttp2 都不可能」。故 `probe()` 须按**实际 binary** 校验能力，不按版本号推断。
 
-**连接复用代价**（`api.github.com/meta` 连续 20 次）：
+**连接复用代价**（`api.github.com/meta` 连续 20 次，**单机单 host 20 样本的量级观察，非正式 benchmark**）：curl 每次冷连接 TTFB median 42.8ms / p95 114.0ms，pooled `node:http2` 5.4ms / 10.6ms；另有每请求约 7-8ms 进程开销。
 
-| | TTFB median | TTFB p95 |
-|---|---:|---:|
-| curl exe（每次冷连接） | 42.840ms | 114.011ms |
-| pooled `node:http2` | 5.422ms | 10.602ms |
+## 4. 契约（三层）
 
-外加每请求约 7-8ms 进程开销（loopback 扣掉网络后测得）。
+v1 把 provider、选路策略、registry 混成一个对象，导致 `auto` 无法自洽表达（它同时使用两个实现，而接口却说「选中的 provider」）。v2 拆三层。
 
-## 4. 契约
-
-### 4.1 `UpstreamTransportProvider`
+### 4.1 层一：`UpstreamTransportProvider`——单个实现
 
 ```ts
 interface UpstreamTransportProvider {
-  readonly id: "http2" | "curl" | "undici"
-  /** 该 provider 能服务的协议。curl: ["h1","h2"]；http2: ["h2"]；undici: ["h1"] */
+  readonly id: ProviderId                 // "http2" | "curl" | "undici"
   readonly protocols: ReadonlyArray<"h1" | "h2">
-  /** 启动期可用性探测；不可用即抛，进程启动失败（见 §4.3）。 */
+  /** 校验**实际 binary / 运行时**的能力，不按版本号推断。不可用即抛。 */
   probe(): Promise<void>
-  /** 唯一物理请求入口，签名 = 现有 UpstreamFetchFn */
   fetch(url: URL, init: UpstreamFetchInit): Promise<Response>
   readonly capabilities: ProviderCapabilities
-  statusSnapshot(): ProviderStatusRows
-  reconcile(): void
-  close(): void | Promise<void>
+  statusSnapshot(): ProviderStatusDetails
+  /** 幂等。force 模式须 await 全部在途资源释放（curl: 全部 child reap）。 */
+  close(options: { mode: "force"; reason: unknown }): Promise<void>
 }
 ```
 
-### 4.2 `ProviderCapabilities`——让「做不到」成为一等公民
+`auto` **不是** provider id，是 selection mode。
 
-沿用 `status-snapshot.ts` 既有的「**能力**（这个实现根本做不到）vs **配置**（你把它关了）」惯例（该文件的 `TransportRuntimeCapability` 注释已明确此区分存在的意义）。
+### 4.2 层二：`UpstreamTransportSelectionPolicy`——选路
 
 ```ts
+type SelectionMode = "auto" | ProviderId
+interface SelectionOutcome {
+  provider: ProviderId
+  /** 供 curl 决定 --http1.1 / --http2 / --http2-prior-knowledge（§7.2） */
+  protocol: "h1" | "h2"
+}
+/** 纯函数，可单测，不持有实例 */
+function selectProvider(url: URL, mode: SelectionMode, cfg: CurlConfig): SelectionOutcome | SelectionError
+```
+
+### 4.3 层三：`UpstreamTransportRegistry`——实例化、probe、聚合、关机
+
+持有**所有已实例化 provider**（不只是「下一请求会选中的那个」），负责：启动期 probe 当前选路模式**可达**的每个 provider；配置热重载时对新可达 provider 补 probe（失败则**拒绝该次重载并保留旧配置**，不杀进程）；聚合 `/api/status`；shutdown 时 force-close **全部** provider 并 await 其在途资源。
+
+> 「可达」的判定：`auto` 下，`https` 恒可达 `http2`；`curl` 仅当**当前配置里存在明文 `http://` 上游**（如 `ghc_api_base_url` 或 SearXNG 端点）时可达。这样默认安装不会仅因「未来可能用到明文上游」就强制要求 curl 存在。显式 `provider: curl` 则 curl 恒可达。
+
+### 4.4 `ProviderCapabilities`——按对外保证建模，不按 curl 缺口反向拟合
+
+v1 的五个 boolean 是照着 curl 缺什么设的，且混淆了「底层原语限制」与「provider 对 consumer 的保证」。v2 用带级别的联合类型 + 按真实运维维度拆分：
+
+```ts
+type CapabilitySupport =
+  | { level: "supported" }
+  | { level: "unsupported"; reason: string }
+  | { level: "not-applicable" }              // 例：curl 走 h1 时的 h2Ping
+  | { level: "conditional"; condition: string }
+  | { level: "unknown"; evidenceGap: string }
+
 interface ProviderCapabilities {
-  /** curl: false —— 长 thinking 经代理的保活退化 */
-  h2Ping: boolean
-  /** curl: false —— TTFB +37ms 中位 / +103ms p95 */
-  connectionReuse: boolean
-  /** curl: false —— 无 per-session cap / per-origin 硬 cap / idle-reap */
-  poolGovernance: boolean
-  /** curl: "after-end" —— 只能在进程退出后读到 trailers */
-  trailerTiming: "before-end" | "after-end"
-  /** curl: "both"；http2(Bun): "stream-rst" */
-  truncationDetection: "connection-drop" | "stream-rst" | "both"
+  keepalive: { tcpProbeDelay: CapabilitySupport; h2Ping: CapabilitySupport }
+  connectionReuse: { acrossRequests: CapabilitySupport; withinDispatch: CapabilitySupport }
+  pool: { maxConcurrency: CapabilitySupport; queueing: CapabilitySupport; idleReap: CapabilitySupport; goawayDrain: CapabilitySupport }
+  trailers: { capture: CapabilitySupport; deliveryBeforeBodyEnd: CapabilitySupport }
+  truncation: { h1Framing: CapabilitySupport; h2Rst: CapabilitySupport; connectionDrop: CapabilitySupport; semanticTerminal: CapabilitySupport }
+  /** 原语级限制与实证出处，**不**冒充对外契约 */
+  readonly limitations: ReadonlyArray<{ note: string; evidence: string }>
 }
 ```
 
-`/api/status` 的 `h2Sessions` / `h2Reconcile` 泛化为 provider 归位的诊断行 + 能力矩阵。这是本次唯一的**破坏性外部形状变更**，UI 消费方需同步。
+关键区分：`trailers.deliveryBeforeBodyEnd` 对 curl 是 **`supported`**——因为 §7.1 冻结的顺序让 provider 延迟 body 终止，从而对 consumer 仍满足该保证。curl 原始产物只能事后读，那是 `limitations` 里的事实，不是对外契约。**性能数字不进 capability 语义，进 `limitations`。**
 
-### 4.3 选路与配置
+## 5. curl 服务 h2 时用户实际会看到什么
+
+v1 只说「能力回退」，没定义可观察行为。缺 h2 PING 不是状态页上一个 `false`，它按故障形态与 endpoint 表现不同：
+
+| 故障形态 | 检测机制 | Buffered endpoint（CC / Responses 默认开） | Live 或已 commit 的 endpoint（Anthropic 默认**未**开） |
+|---|---|---|---|
+| 中间设备 / edge 主动断连接 | curl 非零 exit → stream error | 未 commit 时可透明重试 | 终止并向客户端报错，保留 partial |
+| 中间设备静默 blackhole | 应用层 `stream_idle` 超时 | 超时后按 buffered 策略 | 超时终止 |
+| 长 thinking 但连接仍活 | 无上游帧 | 下游合成 heartbeat 只保 client↔proxy 腿 | 同左 |
+| **缺 h2 PING 导致中间设备 idle reap** | **无预防手段** | 只能故障后恢复 | **可能直接断流** |
+
+依据：`transport/http2-client.ts:228-260`（现役 PING）、`:126-175`（经 proxy 先建隧道再叠 TLS+h2，故 `setKeepAlive` 只覆盖我方↔proxy 腿）、`packages/foundation/src/stream.ts:340-458`（idle guard）、`state-defaults.ts:120-125`（Anthropic 默认不保护）/`:138-140`/`:277-283`（CC、Responses 默认开）、`pipeline/driver.ts:1390-1431`（仅未 commit 可重试）。
+
+**「唯一」的准确表述**：h2 PING 是*现役实现中*长静默期间唯一会在完整 h2 路径上周期产生帧的机制——不是理论上不存在别的可设计机制。
+
+**启动告警文案须具体**，不能只说「无此能力」：应说明该选择可能使经代理的长 thinking 在 `stream_idle` 触发前就被中间设备断开，且 **Anthropic 端点默认没有透明 buffered retry**。
+
+用户已知悉此代价并要求保留该能力路径（2026-08-01 裁决）。本 spec 不禁止，只如实声明。
+
+## 6. 为什么本轮不用进程内 libcurl
+
+| 路径 | 结论 |
+|---|---|
+| `node-libcurl` | **Bun 下 panic**：`unsupported uv function: uv_timer_init` |
+| Rust + napi-rs | **未验证**——本机无 Rust toolchain，spike 停在构建门口 |
+| `bun:ffi` + 系统 libcurl | Bun 侧能力面基本跑通，但 **Node 不支持 `bun:ffi`** → 运行时分裂 |
+
+**理由更正**（v1 说「唯一实质优势是连接复用」，与本节自身叙述矛盾）。进程内路径相对 CLI 的**已知优势**是：跨请求连接复用、**实时 trailers header callback**（恰好能免掉 §7.1 那整套延迟终止的复杂度）、免每请求 spawn 开销、比 exit code + stderr 更直接的错误信息、更低延迟的 abort。
+
+**不采用的真实理由**是这五条，与优势多少无关：① 无同时支持 Bun + Node 的成熟绑定；② Bun FFI 造成运行时分裂；③ Rust 路径未构建验证；④ multi driver、`ReadableStream` backpressure、teardown barrier 全未实现；⑤ 部署条件不满足——本机 `libcurl.so.4` 存在但 `pkg-config libcurl` 与 curl headers **均不存在**，「运行库存在」不等于「可本机编译绑定」。
+
+> **暂缓非否决**。若未来出现 Bun/Node 双可用绑定、或 h2 PING 在 libcurl 侧成立，应重新评估。入 `docs/todo/deferred-backlog.md`。
+
+## 7. curl provider 的冻结契约
+
+### 7.1 终止时序（v1 把它推给了实现期——v2 冻结）
+
+**先纠正 v1 的事实错误**：`setOutboundResponseTrailers`（`src/lib/context/request.ts:1297-1301`）是一句直接赋值，**没有** `assertWritable`、不检查 `settled`、不经 recorder；实测 settle 后调用不抛错。v1 引用的 `assertWritable` 位于 `context/model-operation-record.ts:680-682`，属另一个 recorder，与这条腿无接线。
+
+**真实风险是数据不一致**：该 setter 的注释写明前提「The transport fires this **before** stream end, so it lands before `complete()/fail()` snapshots the entry」，而 attempt-settle 快照在 `request.ts:753` 读取 `_httpHeaders.outboundResponseTrailers`。curl 若在 settle 后才交付 trailers，不会崩溃，但 trailers **静默不进已封存的 History / operation record**。
+
+**冻结顺序**（同时解决 trailers、exit 分类与 body 终止——三者依赖同一顺序）：
+
+1. stdout 数据**实时**交付 body consumer。
+2. **stdout EOF 只表示「没有更多 body 字节」，不表示 Response 成功结束。**
+3. `await proc.exited`。
+4. 读取并解析 dump fd。
+5. 若成功且存在 trailers，**先**调用 `onTrailers`。
+6. **最后**按 exit / abort 状态执行 `controller.close()` 或 `controller.error()`。
+
+**不选「静默丢 trailers」**：既违反 richest-data-flow，也会掩盖退出分类。步骤 2 是承重的——curl 的 exit 18/92 只有进程退出才确定，若 EOF 即 `close()`，consumer 已见成功完成，再无法改判 `mid-body-close`。
+
+### 7.2 协议参数映射（冻结）
+
+| `http_version` | scheme | curl 参数 |
+|---|---|---|
+| `h1` | 任意 | `--http1.1` |
+| `h2` | `https` | `--http2`（ALPN 协商） |
+| `h2` | `http` | `--http2-prior-knowledge`（**普通 `--http2` 在明文上只是 Upgrade 语义，不等价**） |
+| `auto` | `https` | `--http2`（ALPN，可降 h1） |
+| `auto` | `http` | `--http1.1`（明文默认 h1；「curl 能服务 h2c」须显式 `h2`） |
+
+### 7.3 wire parity（v1 完全遗漏）
+
+curl 会**自动添加** caller 未提供的 header（`User-Agent`、`Accept: */*`、`Content-Type: application/x-www-form-urlencoded`、大 body 的 `Expect: 100-continue`），并**自行读取 `HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY` 环境变量**。现役 h2 adapter 则强制 `accept-encoding: identity` 并过滤 h2 非法 header（`http2-client.ts:73-85,1001-1011`）。直接套用会**静默改变上游看到的 wire**。
+
+冻结：
+
+- `method` / headers / body 以 `UpstreamFetchInit` 为**唯一**输入；显式抑制 curl 自动生成而 caller 未提供的 header。
+- 保持 `accept-encoding: identity`。
+- transport-owned / h2 非法 header 的处理抽**共享 primitive**，不由各 provider 各写一份。
+- **禁止 curl 自读代理环境变量**：先由 `getProxyUrlForOrigin()`（`proxy.ts:228-244`，唯一入口，含 NO_PROXY 语义）决策，再显式传「用此代理」或「明确不用代理」。
+- 保留 `socks5` 与 `socks5h` 的 DNS 解析位置差异，不都映射成 `--socks5`。
+- 空值 header 写 `X-Empty;`（`X-Empty:` 会被 curl 解释为**移除**内部 header）。
+
+### 7.4 流式响应头获取（v1 遗漏）
+
+`fetch()` 必须在**最终响应头**到达后 resolve `Response`，body 随后持续流式消费。但 metadata 在普通文件 fd 里，PoC 只证明「进程退出后可靠读取」。冻结：
+
+- 父进程**增量**读该匿名文件 fd（有界轮询 / `pread`），而非等进程退出。
+- 须识别 interim（1xx）、proxy CONNECT、认证重试等多个 header block，选定**最终** response header block；退出后把**最后**一块识别为 trailers。
+- final headers 可用前，stdout 预读缓冲有**显式上限**并施加 backpressure。
+- headers 到手立即 resolve `Response`；body 终止仍按 §7.1 步骤 2 等 child exit。
+
+### 7.5 错误分类矩阵（v1 的映射不完整且自称「穷尽」有误）
+
+**exit code 空间不是封闭联合**，不能用 `Record` + `never` 声称穷尽。分类由四个输入共同决定，按此优先级：
+
+1. **本方 abort / shutdown provenance**（`AbortSignal.reason`、SIGTERM 是我方发的）——最高优先，绝不误报为 transport close。
+2. 经**忠实 oracle 验证**的 `REFUSED_STREAM` → `refused-stream`（可重试）。
+3. headers 到达**前**的 transport failure（exit 7/28/56/18/92 皆可能）→ `pre-response-close`（可重试）。
+4. headers 到达**后**的截断（exit 18/92/28/56）→ `mid-body-close`（不可重试）。
+5. **未识别**：spawn 失败、exit 23、未知 exit code、非我方发出的 signal → 显式 unknown fallback，**不静默归入任何可重试类**。
+
+stderr 字符串匹配（如 `REFUSED_STREAM`）仅作 defense-in-depth，须容忍 locale / 版本变化；主判据是 exit code + headers phase + 本方 provenance。
+
+> **未闭合项**：忠实 `REFUSED_STREAM(0x7)` 夹具尚未验证（`exp/curl-transport-rst-arbitration/FINDINGS.md` 明列）。第 2 条优先级在实测前**不得**上线为可重试契约——须先补 oracle（§8）。
+
+### 7.6 进程生命周期与 shutdown（v1 遗漏）
+
+每请求一子进程 ⇒ provider 必须追踪所有在途 child。冻结：
+
+- shutdown **Phase 1 不关闭 provider**（`shutdown.ts:484-503` 明确 Phase 1 不撕毁在途请求）。
+- **Phase 3** 由每请求 AbortSignal 负责 SIGTERM + `await proc.exited`。
+- **Phase 4** registry 对全部 provider 执行 force close 并 await 所有 child reap。
+- `close()` **幂等**，finalize 再次调用无害。
+- `fetch()` 与 close 竞态须返回带 **shutdown provenance** 的 cancellation，不是 generic `pre-response-close`。
+
+### 7.7 平台边界
+
+`-D /dev/fd/3` + 「open 后 unlink 的普通文件」依赖 Unix fd 继承与 `/dev/fd`，仅在 Linux/WSL2 实证。**curl provider 首版正式支持范围限定 Linux/Unix**，`probe()` 须校验 `/dev/fd` 与 fd 继承可用。Windows 支持需另定 metadata sink 方案并入测试矩阵——列入 backlog，不在本轮范围。
+
+> `-D` 写 pipe 必失败（exit 23，**Bun 与 Node 皆然**，非 Bun 特有）。不用 `-i`：body 可能含类 header 字节，且 trailers 紧贴 body 之后。
+
+## 8. 配置（冻结优先级）
 
 ```yaml
 upstream_transport:
   provider: auto        # auto | http2 | curl | undici
   curl:
-    binary: curl        # 可覆盖为绝对路径
+    binary: curl
     http_version: auto  # auto | h1 | h2
 ```
 
-- `auto` = **https → http2，明文 http → curl**（G4：明文上游脱离 undici）。
-- 显式 `curl` = **全部**上游走 curl，含 https h2（G2：h1/h2 平等）。
-- 全局单选，**不做 per-origin 覆盖**（用户 2026-08-01 裁决：契约最简，排错时一行配置整体切换）。
-- `http2.favor: false` **保留兼容层 + 警告继续**，映射为 `provider: curl`。配置不享受代码那套「无向后兼容负担」。
-- **选中的 provider 不可用时启动即失败**（用户裁决）。绝不静默回落到 undici——那是回落到一个已知在 Bun 下必挂的实现，等于把启动期硬错误换成运行期悬挂。
-- 选中 curl 且配置了 `http2.ping_interval > 0` 时**启动告警**：该 provider 无此能力。
+- `auto` = **https → http2，明文 http → curl**。**不改变任何现有 https 上游的传输**（评审复核：当前 HTTPS + 默认 `favor:true` 已走 `http2`）。
+- 显式 `curl` = 全部上游走 curl，含 https h2。
+- **全局单选**，不做 per-origin 覆盖（用户 2026-08-01 裁决）。
+- **新旧键优先级（冻结）**：显式 `provider` **始终胜出**；`http2.favor` 仅在 `provider` 缺失时作为兼容输入；两者同时出现**继续启动 + 打印一次冲突警告**。此语义直接沿用 `config/compat.ts:16-18` 已确立的惯例——「user-set new key always wins over the migrated legacy value」。
+- `favor: false` → `provider: curl`；`favor: true` → `provider: auto`（须在迁移消息中说明其 HTTP 行为变化）。
+- **`provider: http2` 遇 `http://` URL** → 选路阶段返回明确的配置错误，**绝不静默 fallback**。
+- **`provider: undici` 在 Bun 下** → 按项目配置兼容政策**警告继续**（`config.ts:1073-1083` 已有先例），**不**冒充 binary unavailable 而启动失败。
+- **选中的 provider 不可用则启动即失败**（用户裁决）。可达性判定见 §4.3——默认安装不会仅因 `auto` 就强制要求 curl。
+- 选中 curl 且配了 `http2.ping_interval > 0` → 启动告警，文案按 §5。
 
-## 5. 为什么默认仍是 `node:http2`
+## 9. `/api/status` 的新形状（冻结）
 
-curl 服务 h2 时**没有 PING**。本项目长 thinking 期 wire 上唯一的活动就是保活，而 GHC 的 CAPI 代理**不透传** SSE `ping` 帧；经网络代理时 TCP keepalive 只覆盖「我方↔proxy」腿，**h2 PING 是唯一覆盖真上游全程的保活**。因此让 curl 接管 h2 热路径是**能力回退，不是平移**。
+既然已允许破坏旧 shape，就一次定义长期正确的形状，不让实现者临场发明：
 
-用户已知悉此代价并要求保留该能力路径。本 spec 的处理是：**不禁止，但如实声明**——能力矩阵、启动告警、`/api/status` 三处可见。
+```ts
+interface UpstreamTransportStatus {
+  selection: { mode: SelectionMode; routes: { http: ProviderId | null; https: ProviderId | null } }
+  providers: Array<{
+    id: ProviderId
+    availability: { level: "ready" | "unavailable" | "not-instantiated"; detail?: string }
+    capabilities: ProviderCapabilities
+    effectiveConfiguration: Record<string, number | string | null>
+    activeOperations: number
+    /** provider 自定：h2 是 session rows + reconcile；curl 是在途 child（pid/origin/protocol/startedAt） */
+    details: ProviderStatusDetails
+  }>
+}
+```
 
-## 6. 为什么不用进程内 libcurl
+不适用字段用**显式 `not-applicable`**，不用缺失或裸 `null`——消费方必须能区分「没有 h2 session」与「当前根本没选 h2 provider」。`ui-v4` 的 `OverviewShadcn` / `OverviewLegacy` / `types/status.ts` 与 `tests/infra/management-routes.http.test.ts` 需同步（§1.1 第 6、7 项）。
 
-| 路径 | 结论 |
-|---|---|
-| `node-libcurl` | **Bun 下 panic**：`unsupported uv function: uv_timer_init`（初始化异步 `Multi` 时）。Node 下可用 |
-| Rust + napi-rs | **未验证**——本机无 Rust toolchain，spike 停在构建门口 |
-| `bun:ffi` + 系统 libcurl | Bun 侧能力面基本跑通（含连接复用、实时 trailers 回调），但 **Node 不支持 `bun:ffi`** → 运行时分裂；且 **h2 PING 同样拿不到** |
+## 10. 测试：约束 → 测试追踪表
 
-进程内路径的**唯一实质优势是连接复用**，而它换不回被否决的 h2 PING。同时它需要自写 `curl_multi_socket_action` 驱动 + `ReadableStream` backpressure + `onStreamClosed` teardown barrier，全部未实现。另有部署硬约束：本机 `libcurl.so.4` 存在但 `pkg-config libcurl` 与 curl headers **均不存在**——「运行库存在」不等于「可本机编译绑定」。
+v1 的「真起 Node oracle 跑 h1/h2、流式、trailers、故障注入、abort、大 body」过于笼统。逐条追踪：
 
-`native/history-search` 的「有产物就真跑、没有就 skip」**不能套到热路径传输**：搜索缺失可显式 skip，上游传输缺失则所有请求不可工作。
+| 约束（出处） | 测试 | 层 |
+|---|---|---|
+| §7.1 stdout EOF 不终止 Response；exit 决定终态 | 注入非零 exit，断言 consumer 见 error 而非成功 | it |
+| §7.1 trailers 在 body terminal 前、且进 settle 快照 | trailers → ctx → 持久化 terminal 全链断言 | it |
+| §7.2 三种 `http_version` × scheme 的参数映射 | 参数构造 + oracle 侧实际协商协议 | unit + it |
+| §7.3 curl 自动 header 被抑制、`accept-encoding: identity` 保持 | **oracle 断言收到的完整 header 集**（不是断言参数数组） | it |
+| §7.3 curl 不读代理环境变量 | 设 `HTTP_PROXY` 但选路判定不走代理，断言未经代理 | it |
+| §7.3 `socks5` vs `socks5h` DNS 语义 | 分别断言解析位置 | it |
+| §7.3 空值 header `;` vs 移除 `:` | oracle 断言 wire | it |
+| §7.4 `Response` 在 body 完成**前** resolve | 断言 headers 到达即 resolve，body 仍在流 | it |
+| §7.4 多 header block（1xx / CONNECT / 认证重试） | 各形态 oracle | it |
+| §7.4 预读缓冲上限与 backpressure | 慢 consumer + 大响应，断言内存有界 | it |
+| §7.5 分类矩阵：exit {7,18,23,28,56,92,unknown} × headers phase × 本方 abort | 完整矩阵，每个 retryability 分支真 wire | it |
+| §7.5 忠实 `REFUSED_STREAM` | **须先补忠实 oracle**（当前未闭合） | it |
+| §7.6 重复 abort、shutdown 全 child reap、无僵尸/fd 泄漏 | 资源计数断言 | it |
+| §7.7 `probe()` 校验 `/dev/fd` 与 fd 继承 | 单测 + binary 不存在 / 无 HTTP2 feature 两种失败 | unit |
+| §8 新旧键优先级、协议不匹配、undici-on-Bun 警告继续 | 配置兼容矩阵 | unit |
+| §9 status 新 shape 与 ui-v4 | 契约测试 | http |
+| §4.4 capability 声明与实际行为一致 | **正反双向 oracle**：每条 `unsupported` 要正样本对照证明确实缺失；每条 `supported` 同样要证明确实具备（`true` 一样会假绿） | it |
 
-> 本条为**暂缓**而非否决。若未来 h2 PING 在 libcurl 侧成立、或出现 Bun/Node 双可用的绑定，进程内路径应重新评估。入 `docs/todo/deferred-backlog.md`。
+并发喂 stdin + drain stdout 的死锁防护须有**正向 control**（构造会死锁的错误驱动顺序，证明测试咬得住）。
 
-## 7. curl provider 的实现约束（PoC 踩出，避免实现期重踩）
+> **夹具纪律**（本轮教训）：h2 故障夹具服务端**必须用 Node**；造 RST **必须用 `stream.destroy(err)`，绝不用 `stream.close(code)`**——后者不放出忠实 RST 帧，会让整套截断测试**假绿**。须写进 skill `debugging-ghc-api-upstream-transport`（该 skill 现已记载 Bun 服务端版本的同类 caveat，本次扩大其适用范围至 Node 服务端）。
 
-- **头部**走 `-D /dev/fd/3`，fd3 绑定**预先 open 后立即 unlink 的普通文件**。`-D` 写 pipe 必失败（exit 23，**Bun 与 Node 皆然**，不是 Bun 特有）。**不用 `-i`**：body 可能含类 header 字节，且 trailers 紧贴 body 之后，靠第一个空行分不干净。
-- **body** 用 `--data-binary @-` 喂 stdin，父进程**必须从启动起并发 drain stdout/stderr**，写完调 `stdin.end()`。`-N` 救不了「先写完 stdin 才读 stdout」的错误驱动顺序。
-- **abort** 用 SIGTERM，且**必须 `await proc.exited`**（防僵尸与 fd 泄漏；fire-and-forget kill 不在 PoC 证明范围）。
-- **代理**用 curl 原生 `--proxy` / `--socks5`（可绕过手搓 CONNECT 隧道），但代理选路**必须**仍从 `getProxyUrlForOrigin` 读，不另起一套。
-- **空值 header** 须写 `X-Empty;`；`X-Empty:` 会被 curl 解释为**移除**内部 header。
-- **错误映射**到现有 `TransportErrorReason`，判据与现役一致（**是否已收到响应头**决定 pre 还是 mid）：exit 7/28/56 且无头 → `pre-response-close`（可重试）；exit 18/92 且有头 → `mid-body-close`（不可重试）；exit 92 且 stderr 含 `REFUSED_STREAM` → `refused-stream`（可重试）。
+## 11. 复评时需要被证伪的断言
 
-### 7.1 必须点名的集成风险：trailers 时序
+1. §1.1 的九类耦合面是否**仍不完整**？
+2. §4.3 的「可达性」判定是否会漏掉某条运行期才出现的明文上游路径（配置热重载后新增）？
+3. §4.4 的维度拆分是否仍在按 curl 反向拟合？换 `undici` 或未来的进程内 libcurl 进来是否够用？
+4. §7.1 冻结的六步顺序，是否与现役 `dispatch-lifecycle.ts` / `guardSseIterable` 的终止语义相容？
+5. §7.5 的五级优先级是否存在两条同时命中且顺序错误的组合？
+6. §8 的 `favor: true → provider: auto` 映射是否真的行为等价？
+7. §9 的 shape 是否覆盖了 `ui-v4` 当前逐字段读取的**每一个**字段？
 
-curl 只能在进程退出后读到 trailers（`trailerTiming: "after-end"`），而现役 `onTrailers` 契约是「body 之后、`end` **之前**」，`transport/http-transport.ts:94` 据此写入 `ctx.setOutboundResponseTrailers`。
+## 12. 评审处置表（v1 → v2）
 
-**settle 之后再写 ctx 会撞 `assertWritable` 抛错**，并可能经孤儿 promise 放大成整进程崩溃（skill `debugging-server-crashes` 的三条同构放大链之一）。
-
-⇒ curl provider **不得**沉默地按现役假设接线。二选一，实现期必须显式决定并写进 plan：① 在 settle 前抢到 trailers；② 走 best-effort 静默丢弃路径（语义写保持 loud-throw、best-effort 观测写静默丢弃——判据同上 skill）。
-
-## 8. 测试策略与一条固化的纪律
-
-- **unit**：curl 参数构造；exit code → `TransportErrorReason` 的穷尽 `Record` + `never` 守卫；capability 声明的穷尽性。
-- **it**：真起 Node oracle 服务端跑 h1/h2、流式、trailers、故障注入、abort、大 body 全双工。
-- **守卫**：provider 契约实现完备性；capability 声明与实际行为一致（**每条 `false` 都要有正样本对照证明该能力确实缺失**，否则是自证）。
-- **启动失败路径**：`binary` 指向不存在的可执行文件时进程启动失败且错误明确。
-
-> **纪律（本轮血的教训，须同时写进 skill `debugging-ghc-api-upstream-transport`）**：h2 故障夹具的**服务端必须用 Node**；造 RST **必须用 `stream.destroy(err)`，绝不用 `stream.close(code)`**——后者不在 wire 上放出忠实 RST 帧，会让整套截断测试**假绿**。本轮两个 PoC 加主会话三方全被它骗过，并据此写出了一条与事实相反的结论。
-
-## 9. 待评审时需要被证伪的断言
-
-供评审者逐条取证，每条都应给 file:line 或命令输出：
-
-1. §1 的四个耦合点是**全部**耦合点——是否漏了消费 h2 专属形状的第五处？
-2. §3.1 的勘误是否成立——RFC 那条断言的原始证据是否确实来自 `stream.close(code)` 夹具？
-3. §3.2 的「curl 无 h2 PING」是否穷尽——是否存在未被五条证据覆盖的写法？
-4. §4.3 的 `auto` 语义是否会让任何现有上游改变传输（除明文 http 外）？
-5. §7.1 的崩溃风险是否真实——`setOutboundResponseTrailers` 在 settle 后调用是否确实抛错？
-6. §5 的「PING 是经代理时唯一覆盖全程的保活」是否仍与当前代码一致？
+| # | 评审发现 | 级别 | 处置 |
+|---|---|---|---|
+| 1 | §7.1 崩溃机制事实错误 | High | **采纳**（主会话独立复核确认）。改为数据不一致风险 + 冻结六步顺序，见 §7.1 |
+| 2 | provider/selection/registry 混为一体，`auto` 不自洽 | High | **采纳**。拆三层，见 §4 |
+| 3 | capability 按 curl 缺口反向拟合 | High | **采纳**。改带级别联合 + 维度拆分，见 §4.4 |
+| 4 | 配置优先级 / h2c / 协议不匹配未冻结 | High | **采纳**。见 §7.2、§8 |
+| 5 | §5 只说「回退」未定义可观察行为 | High | **采纳**。加故障形态 × endpoint 矩阵，见 §5 |
+| 6 | 错误分类不完整、`Record` 非穷尽 | High | **采纳**。四输入五级矩阵 + unknown fallback，见 §7.5 |
+| 7 | 流式 headers 获取缺失 | High | **采纳**。见 §7.4 |
+| 8 | curl 自动 header + 环境代理未中和 | High | **采纳**。见 §7.3 |
+| 9 | `close()` 与 shutdown 时序不兼容 | High | **采纳**。见 §7.6 |
+| 10 | §8 测试未覆盖 §7 全部约束 | High | **采纳**。改约束→测试追踪表，见 §10 |
+| 11 | `/api/status` 新 shape 未定义 | High | **采纳**。见 §9 |
+| 12 | 「四个耦合点」不成立 | Medium | **采纳**（两评审 + 主会话三方确认）。见 §1.1，并反向修正 `reconcile*` 不是外部耦合点 |
+| 13 | §6「唯一实质优势」自相矛盾 | Medium | **采纳**。见 §6 理由更正 |
+| 14 | `/dev/fd/3` 平台边界未声明 | Medium | **采纳**。见 §7.7，首版限定 Linux/Unix，Windows 入 backlog |
+| 15 | 「curl 无 h2 PING」应收窄 | — | **采纳**。见 §3.2 |
+| 16 | §3.1 勘误措辞（原探针未进 git 历史） | — | **部分采纳**。取证 agent 确认现存探针确用 `stream.close(code)`、且 drop 探针用 `session.destroy()` 属忠实，故改为**部分勘误**（RST 半作废、drop 半成立），比 v1 的整条作废更准 |
+| 17 | 建议修订交 `architect-advisor` 完成 | — | **不采纳**。修订涉及用户已作的三项裁决（provider 通用化、全局单选、启动即失败）与本轮实证的取舍，上下文在主会话；spec 定稿属主会话职责（项目纪律）。改为主会话修订 + 复评 |
