@@ -1,0 +1,8 @@
+{"leg":"curl-exe","path":"/ok-nolen","exit":0,"stdout":"COMPLETE-NOLEN","stderr":""}
+{"leg":"curl-exe","path":"/rst-len","exit":92,"stdout":"PARTIAL-LEN","stderr":"curl: (92) HTTP/2 stream 1 was not closed cleanly: PROTOCOL_ERROR (err 1)"}
+{"leg":"curl-exe","path":"/rst-nolen","exit":0,"stdout":"PARTIAL-NOLEN","stderr":""}
+{"leg":"curl-exe","path":"/rst-sse","exit":0,"stdout":"event: message_start\ndata: {}\n\nevent: content_block_delta\ndata: {}\n\n","stderr":""}
+{"leg":"libcurl-ffi","path":"/ok-nolen","code":0,"error":"No error","body":"COMPLETE-NOLEN"}
+{"leg":"libcurl-ffi","path":"/rst-len","code":92,"error":"Stream error in the HTTP/2 framing layer","body":"PARTIAL-LEN"}
+{"leg":"libcurl-ffi","path":"/rst-nolen","code":0,"error":"No error","body":"PARTIAL-NOLEN"}
+{"leg":"libcurl-ffi","path":"/rst-sse","code":0,"error":"No error","body":"event: message_start\ndata: {}\n\nevent: content_block_delta\ndata: {}\n\n"}

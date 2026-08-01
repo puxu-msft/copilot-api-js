@@ -1,0 +1,11 @@
+85 |   let activeSocket = -1n
+86 |   let multiIterations = 0
+87 |   while (true) {
+88 |     multiIterations += 1
+89 |     const multiCode = base.symbols.curl_multi_perform(multi, running)
+90 |     if (multiCode !== 0) throw new Error(`multi_perform failed: ${multiCode} at iteration ${multiIterations}, running=${running[0]}`)
+                                        ^
+error: multi_perform failed: 4 at iteration 43, running=1
+      at performMulti (/home/xp/src/copilot-api-js/exp/curl-transport-libcurl/run-multi-probes.ts:90:36)
+
+Bun v1.3.14 (Linux x64)
