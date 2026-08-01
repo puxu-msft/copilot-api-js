@@ -1,6 +1,6 @@
 # Spec：上游传输 Provider 化 + curl 外部实现
 
-状态：**v2 草案，已过一轮 subagent 评审并修订，待复评** · 日期：2026-08-01 · 决策人：用户 · 撰写：主会话
+状态：**v2.2 草案 —— 已过两轮 subagent 评审并逐条修订；§11 七条断言的取证轮尚未执行，未达「可进入计划阶段」** · 日期：2026-08-01 · 决策人：用户 · 撰写：主会话
 
 关联：ADR `docs/decisions/2026-07-14-transport-config-three-axis-organization.md` · RFC `docs/spec/upstream-http2-transport.md`（**本 spec 勘误其中一条断言，见 §3.1**） · 实验 `exp/curl-transport-exe/` `exp/curl-transport-libcurl/` `exp/curl-transport-rst-arbitration/`
 
@@ -480,3 +480,20 @@ v1 的「真起 Node oracle 跑 h1/h2、流式、trailers、故障注入、abort
 | 15 | 「curl 无 h2 PING」应收窄 | — | **采纳**。见 §3.2 |
 | 16 | §3.1 勘误措辞（原探针未进 git 历史） | — | **部分采纳**。取证 agent 确认现存探针确用 `stream.close(code)`、且 drop 探针用 `session.destroy()` 属忠实，故改为**部分勘误**（RST 半作废、drop 半成立），比 v1 的整条作废更准 |
 | 17 | 建议修订交 `architect-advisor` 完成 | — | **不采纳**。修订涉及用户已作的三项裁决（provider 通用化、全局单选、启动即失败）与本轮实证的取舍，上下文在主会话；spec 定稿属主会话职责（项目纪律）。改为主会话修订 + 复评 |
+
+### 12.1 复评（第二轮）处置
+
+复评逐处核验 v2 的修订是否**实质**落实（而非敷衍），并按要求同时查过度设计。**全部 8 条采纳，无驳回。**
+
+| # | 复评发现 | 处置 |
+|---|---|---|
+| R1 | §4 三层拆分**实质落实**，`auto` 下三个原始歧义已有确定语义 | 确认，无需改动 |
+| R2 | v2 举的「热重载新增明文 `ghc_api_base_url`」**在现役行为里不存在**（启动期字段）；且 **SearXNG 明文上游根本没有实现**，全是陈旧注释 | **采纳**。G4 改为「undici 整体退役」；可达性改为权威 upstream-origin inventory。见 §2、§4.3 |
+| R3 | 「拒绝该次重载并保留旧配置」**不可实施**（apply 非事务性、PUT 先写盘） | **采纳**。改 candidate-config preflight。见 §4.3 |
+| R4 | reload-time 可达集覆盖不了运行期首次出现的动态 URL | **采纳**。加请求期 single-flight lazy probe 不变量。见 §4.3 |
+| R5 | §7.5 静态优先级有**因果竞态**（晚到 abort 改写更早的真实上游失败） | **采纳**。改 first-terminal-cause latch + 子优先级。见 §7.5 |
+| R6 | REFUSED 证据契约自相矛盾（exit 92 区分不了 code 7）；`unknown` fallback 会被宽泛 `isNetworkError` 重新判为可重试 | **采纳**（主会话独立复核确认 `TransportErrorReason` 无 unknown、`classify.ts:151` 宽泛匹配）。见 §7.5 |
+| R7 | **过度设计命中**：`connectionReuse.withinDispatch`、`truncation.semanticTerminal` 无 provider 层消费者；`pool.*` 按 h2 塑形（含 `goawayDrain` 帧名） | **采纳**。删两字段，`pool` 拆为 `admission` + `connectionLifecycle.protocolDrain`。见 §4.4 |
+| R8 | §7.1 自然路径与现役 lifecycle **实质相容**；但六步错误地把 consumer cancellation 与 producer terminal 混为一条；Phase 4 缺 SIGKILL escalation | **采纳**。拆顺序 A / B + 不可逆 `consumerCancelled` gate；补 Phase 4 escalation。见 §7.1、§7.6 |
+
+**仍待完成**：复评的 B 部分（§11 七条待证伪断言的逐条取证）尚未执行。该轮完成前，本 spec 不应视为可进入计划阶段。
