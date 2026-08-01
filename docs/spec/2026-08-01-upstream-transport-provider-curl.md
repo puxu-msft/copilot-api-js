@@ -173,16 +173,30 @@ type CapabilitySupport =
 
 interface ProviderCapabilities {
   keepalive: { tcpProbeDelay: CapabilitySupport; h2Ping: CapabilitySupport }
-  connectionReuse: { acrossRequests: CapabilitySupport; withinDispatch: CapabilitySupport }
-  pool: { maxConcurrency: CapabilitySupport; queueing: CapabilitySupport; idleReap: CapabilitySupport; goawayDrain: CapabilitySupport }
+  connectionReuse: { acrossRequests: CapabilitySupport }
+  /** provider 的准入能力——与「有没有连接池」无关：curl 每请求一进程，同样可用 semaphore/FIFO 提供 */
+  admission: { maxConcurrency: CapabilitySupport; queueing: CapabilitySupport }
+  /** 连接生命周期。`protocolDrain` 而非 `goawayDrain`——GOAWAY 是 h2 专有帧名，不该写进通用契约 */
+  connectionLifecycle: { idleReap: CapabilitySupport; protocolDrain: CapabilitySupport }
   trailers: { capture: CapabilitySupport; deliveryBeforeBodyEnd: CapabilitySupport }
-  truncation: { h1Framing: CapabilitySupport; h2Rst: CapabilitySupport; connectionDrop: CapabilitySupport; semanticTerminal: CapabilitySupport }
+  truncation: { h1Framing: CapabilitySupport; h2Rst: CapabilitySupport; connectionDrop: CapabilitySupport }
   /** 原语级限制与实证出处，**不**冒充对外契约 */
   readonly limitations: ReadonlyArray<{ note: string; evidence: string }>
 }
 ```
 
-关键区分：`trailers.deliveryBeforeBodyEnd` 对 curl 是 **`supported`**——因为 §7.1 冻结的顺序让 provider 延迟 body 终止，从而对 consumer 仍满足该保证。curl 原始产物只能事后读，那是 `limitations` 里的事实，不是对外契约。**性能数字不进 capability 语义，进 `limitations`。**
+关键区分：`trailers.deliveryBeforeBodyEnd` 对 curl 是 **`supported`**——因为 §7.1 冻结的延迟终止让 provider 对 consumer 仍满足该保证（现役 SSE decoder `transport/send.ts:134-157` 与 `guardSseIterable`（`packages/foundation/src/stream.ts:419-448`）都只在 inner iterator 返回 `done` 时才视为自然完成，故 `onTrailers` 必先于 body terminal 被观察到）。curl 原始产物只能事后读，那是 `limitations` 里的事实，不是对外契约。
+
+**语义须收紧**：`deliveryBeforeBodyEnd: supported` 表示「**凡 provider 成功捕获并交付的** trailers，交付必先于 body terminal」，**不**表示所有上游 trailers 都必然被正确捕获——后者由 `trailers.capture` 表达。否则两个字段会被误读为重复。
+
+**性能数字不进 capability 语义，进 `limitations`。**
+
+#### 被删除的两个字段（复评抓出的过度设计）
+
+v2 曾有 `connectionReuse.withinDispatch` 与 `truncation.semanticTerminal`，均已删除：
+
+- `withinDispatch` 是 curl `--next` PoC 的残影。provider 的 `fetch()` 一次只发一个物理请求，现役 `UpstreamDispatchLifecycle` 也明确拥有「一项 physical upstream dispatch」（`pipeline/types.ts:61-75`），正式实现不会在一次 dispatch 内发多个 URL。该字段不参与选路、告警、状态或生命周期——**无消费者**。`--next` 的实验证据留在 PoC 与 `limitations`。
+- `semanticTerminal`（`message_stop` / `[DONE]` 是否构成完整终止符）属于 **codec / stream accumulator**，不属于 HTTP provider。所有 HTTP provider 对它都只能答同一个 `not-applicable`，驱动不了任何 provider 选择或诊断。它是从本轮「curl 截断是否有应用层兜底」的讨论反向生成的字段。
 
 ## 5. curl 服务 h2 时用户实际会看到什么
 
