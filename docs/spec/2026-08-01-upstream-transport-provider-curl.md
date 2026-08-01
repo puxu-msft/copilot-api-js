@@ -41,7 +41,7 @@ v1 声称 h2 与外界的耦合只有四处。两个独立评审各自搜索后�
 - **G1** 把传输实现的选路、生命周期、可观测性、错误身份抽成协议无关的三层契约（§4）。
 - **G2** 引入 curl provider，**能服务任意 h1/h2 路径**——协议不绑定 provider 身份。
 - **G3** 让「某 provider 做不到某件事」成为一等公民：能力声明 + 诊断可见 + 告警，绝不沉默退化（§4.2、§5）。
-- **G4** 明文 `http://` 上游脱离 undici。
+- **G4** 明文 `http://` 上游脱离 undici。**注意**：复评取证显示这条的既有理由是假的——注释里那个「本地 SearXNG」明文上游**不存在**（已退役特性的陈旧引用，详见 §4.3）。G4 的真实内容因此变为：**undici 在 HTTP 路径上已无活的消费者，应整体退役**（仅 upstream WebSocket 仍裸用 undici，不受影响），而不是「把 SearXNG 从 undici 挪到 curl」。
 
 ### 非目标
 
@@ -125,9 +125,39 @@ function selectProvider(url: URL, mode: SelectionMode, cfg: CurlConfig): Selecti
 
 ### 4.3 层三：`UpstreamTransportRegistry`——实例化、probe、聚合、关机
 
-持有**所有已实例化 provider**（不只是「下一请求会选中的那个」），负责：启动期 probe 当前选路模式**可达**的每个 provider；配置热重载时对新可达 provider 补 probe（失败则**拒绝该次重载并保留旧配置**，不杀进程）；聚合 `/api/status`；shutdown 时 force-close **全部** provider 并 await 其在途资源。
+持有**所有已实例化 provider**（不只是「下一请求会选中的那个」），负责：启动期 probe 当前选路模式**可达**的每个 provider；聚合 `/api/status`；shutdown 时 force-close **全部** provider 并 await 其在途资源。
 
-> 「可达」的判定：`auto` 下，`https` 恒可达 `http2`；`curl` 仅当**当前配置里存在明文 `http://` 上游**（如 `ghc_api_base_url` 或 SearXNG 端点）时可达。这样默认安装不会仅因「未来可能用到明文上游」就强制要求 curl 存在。显式 `provider: curl` 则 curl 恒可达。
+#### 可达性的权威定义（v2 的版本被复评推翻，此处重写）
+
+**先纠正一个贯穿全仓的事实错误**：注释里反复出现的「唯一的明文 `http://` 上游（本地 SearXNG）」——`packages/foundation/src/state.ts:751,1500`、`config/schema.ts:1099`、`proxy.ts:7,12`、`transport/upstream-fetch.ts:62,83`、`models/timeout-resolver.ts:13`——**是陈旧引用，指向已退役的 web_search 双跳特性**。全仓无 SearXNG URL 配置、无请求实现。**undici 当前服务的明文路径没有活的消费者。**
+
+当前唯一可能产生明文上游的途径是用户把 `ghc_api_base_url` 配成 `http://`，而它是**启动期字段**、不热重载（`packages/cli/src/start.ts:341-343` 经 `setCliState` 写入；`config/config.ts` 的 `applyConfigToState()` 不触及它；`routes/config/route.ts:212-219` 明列为 startup-phase field）。
+
+⇒ 可达性判定改为**权威的 upstream-origin inventory**，而非模糊扫描配置：由启动期已解析的上游 origin 集合（当前生产调用点见 `token-runtime.ts:58`、`openai/embeddings.ts:67`、`transport/send.ts:263`、`models/client.ts:49`、`copilot-api.ts:128`、`anthropic/client.ts:89`）计算得出。`auto` 下 `https` 恒可达 `http2`；`curl` 仅当 inventory 中存在明文 origin 时可达。显式 `provider: curl` 则恒可达。
+
+#### 配置变更：candidate-config preflight（v2 的「拒绝该次重载」不可实施）
+
+v2 写「拒绝该次重载并保留旧配置」。复评指出**现役 apply 是非事务性的**：`config/config.ts:683-1064` 在到达 transport 段（`:1066-1096`）之前已修改大量 global state，之后继续改到 `:1219-1222`；HTTP PUT 路径更是**先写盘再 reset+apply**（`routes/config/route.ts:151-159`）。故在 transport 阶段抛错时，部分新配置已生效、磁盘已是新配置、旧配置并未保留，`resetConfigManagedState()` 还可能把未重新应用的字段打回默认。
+
+**冻结为 preflight，而非事后 rollback**：
+
+```text
+load + validate candidate config
+  → 计算 candidate 的 upstream-origin inventory
+  → 计算 selection 与可达 provider 集
+  → probe 新可达 provider
+  → 全部成功后才 apply 到 state
+```
+
+失败则**不写 state**；HTTP PUT 须在 probe 成功后才替换磁盘配置（或写临时文件后原子 rename）。相比跨大量 setter 做 rollback，这是长期正确的形状。
+
+#### 请求期 lazy probe invariant（复评新增）
+
+provider 入口接受任意 `URL`。未来的 hook、新上游模块或 per-origin 配置可能在**没有 config reload** 的情况下首次提交 `http://` URL，而 curl 因启动期「不可达」未实例化。故补一条请求期不变量：
+
+- selection 选中尚未 `ready` 的 provider 时，registry 以 **single-flight** 方式执行 lazy `probe()`。
+- 成功则 dispatch；失败则该请求**明确失败**，**不得静默 fallback**。
+- 启动期 / preflight probe 仍是**已知可达** provider 的前置门禁；lazy probe 只覆盖事先无法枚举的动态 URL。
 
 ### 4.4 `ProviderCapabilities`——按对外保证建模，不按 curl 缺口反向拟合
 
@@ -238,19 +268,48 @@ curl 会**自动添加** caller 未提供的 header（`User-Agent`、`Accept: */
 - final headers 可用前，stdout 预读缓冲有**显式上限**并施加 backpressure。
 - headers 到手立即 resolve `Response`；body 终止仍按 §7.1 步骤 2 等 child exit。
 
-### 7.5 错误分类矩阵（v1 的映射不完整且自称「穷尽」有误）
+### 7.5 错误分类（v2 的静态优先级有因果竞态——v2.1 改为 latch + 子优先级）
 
-**exit code 空间不是封闭联合**，不能用 `Record` + `never` 声称穷尽。分类由四个输入共同决定，按此优先级：
+**exit code 空间不是封闭联合**，不能用 `Record` + `never` 声称穷尽。
 
-1. **本方 abort / shutdown provenance**（`AbortSignal.reason`、SIGTERM 是我方发的）——最高优先，绝不误报为 transport close。
-2. 经**忠实 oracle 验证**的 `REFUSED_STREAM` → `refused-stream`（可重试）。
-3. headers 到达**前**的 transport failure（exit 7/28/56/18/92 皆可能）→ `pre-response-close`（可重试）。
-4. headers 到达**后**的截断（exit 18/92/28/56）→ `mid-body-close`（不可重试）。
-5. **未识别**：spawn 失败、exit 23、未知 exit code、非我方发出的 signal → 显式 unknown fallback，**不静默归入任何可重试类**。
+#### 第一步：first-terminal-cause latch（决定大类）
 
-stderr 字符串匹配（如 `REFUSED_STREAM`）仅作 defense-in-depth，须容忍 locale / 版本变化；主判据是 exit code + headers phase + 本方 provenance。
+v2 用一个静态五级优先级，复评指出它有**因果竞态**：若上游已发忠实 RST、curl 已 exit 92，而 JS 尚未处理 `proc.exited` continuation 时恰好触发 request deadline 或 shutdown，静态优先级会把**真实的上游失败改判成本方 abort**。反向场景（signal 先到、我方发 SIGTERM、child 随后退出）则确实应由 abort 获胜。二者的区别不是「谁优先」，是**谁先发生**。
 
-> **未闭合项**：忠实 `REFUSED_STREAM(0x7)` 夹具尚未验证（`exp/curl-transport-rst-arbitration/FINDINGS.md` 明列）。第 2 条优先级在实测前**不得**上线为可重试契约——须先补 oracle（§8）。
+故大类由**不可逆 latch** 裁定，谁先在 producer boundary 赢得它谁定性：
+
+```ts
+type TerminalCause =
+  | { kind: "local-abort"; reason: unknown }
+  | { kind: "process-exit"; exitCode: number | null; signalCode: string | null; headersReceived: boolean; stderr: string }
+```
+
+这与现役 `AbortSignal.any` 的「第一个 aborted source 的 reason 胜出」同构（`transport/send.ts:285-288`），也与本项目「中止成因在产生点打标签、别在边界猜」的既有纪律一致。
+
+#### 第二步：`process-exit` 胜出时的子优先级
+
+1. **经忠实 oracle 验证的 `REFUSED_STREAM`** → `refused-stream`（可重试）。见下方证据契约。
+2. headers 到达**前**、且属**白名单内语义已验证**的 exit → `pre-response-close`（可重试）。
+3. headers 到达**后**的截断（exit 18/92/28/56）→ `mid-body-close`（不可重试）。
+4. 其余一律 → `unknown-transport`（**不可重试**）：spawn 失败、exit 23、未知 exit code、非我方发出的 signal。**即使发生在 headers 之前也走这一档**，不得因「在 headers 前」而落入第 2 档的可重试语义。
+
+#### REFUSED 的证据契约（v2 自相矛盾，此处更正）
+
+v2 说「stderr 字符串仅作 defense-in-depth，主判据是 exit code」——**错**。curl 的 exit 92 只表示 h2 framing/stream error，区分不了 `REFUSED_STREAM(7)` 与 `INTERNAL_ERROR(2)`：本项目自己的裁决数据里，忠实 `INTERNAL_ERROR` 同样是 exit 92（`exp/curl-transport-rst-arbitration/FINDINGS.md`）。故：
+
+- 若忠实 oracle 证明存在稳定、locale-independent 的 machine-readable 输出能区分 code 7 → 以它为主判据。
+- 若实际只能解析 stderr → **承认 stderr parser 就是主判据**，并在解析失败时安全降级为 `unknown-transport`，**绝不凭 exit 92 猜 REFUSED**。
+- **oracle 闭合前，第 1 档保持 disabled。**
+
+#### `unknown-transport` 必须是结构化的（否则本条不可执行）
+
+复评指出并经主会话复核：现役 `TransportErrorReason`（`packages/foundation/src/error/transport-reason.ts:38`）只有 `pre-response-close | refused-stream | mid-body-close | pool-closed`，**没有 unknown**；而 `classify.ts:151` 对未识别 Error 做宽泛 `isNetworkError` message 匹配 → `network_error`，`request/strategies/network-retry.ts:27-41` 会重试它。
+
+⇒ 若 curl 的 unknown 只是抛一个含 “curl/connection/timeout” 字样的普通 Error，第 4 档会在**下一层被重新判为可重试**，spec 的要求形同虚设。
+
+**冻结**：在 `TransportErrorReason` 增加 `unknown-transport`，并在 `classifyError` 的结构化 `switch` 中显式映射为**非 retryable**，且该分支须在宽泛 `isNetworkError` **之前**处理。这是一处对 foundation 的**破坏性扩充**，需同步其穷尽性守卫。
+
+> **未闭合项**：忠实 `REFUSED_STREAM(0x7)` 夹具尚未验证（`exp/curl-transport-rst-arbitration/FINDINGS.md` 明列）。子优先级第 1 档在实测前**不得**上线为可重试契约——须先补 oracle（§10）。
 
 ### 7.6 进程生命周期与 shutdown（v1 遗漏）
 
