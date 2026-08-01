@@ -239,16 +239,46 @@ v1 只说「能力回退」，没定义可观察行为。缺 h2 PING 不是状�
 
 **真实风险是数据不一致**：该 setter 的注释写明前提「The transport fires this **before** stream end, so it lands before `complete()/fail()` snapshots the entry」，而 attempt-settle 快照在 `request.ts:753` 读取 `_httpHeaders.outboundResponseTrailers`。curl 若在 settle 后才交付 trailers，不会崩溃，但 trailers **静默不进已封存的 History / operation record**。
 
-**冻结顺序**（同时解决 trailers、exit 分类与 body 终止——三者依赖同一顺序）：
+**冻结顺序 A：producer-driven terminal**（进程自然退出或自行失败，**且 consumer cancellation 尚未获胜**）：
 
 1. stdout 数据**实时**交付 body consumer。
 2. **stdout EOF 只表示「没有更多 body 字节」，不表示 Response 成功结束。**
-3. `await proc.exited`。
-4. 读取并解析 dump fd。
+3. 在 `proc.exited` 的 settlement callback 中**同步**抢 `process-exit` latch（§7.5）。
+4. 读取并解析 dump fd。child 退出后它已是本地完整文件，**不得再等任何外部事件**——latch 与 body terminal 之间引入异步 yield，会让晚到的 shutdown 在 outer guard 层改写更早发生的 transport failure，绕过 latch 的目的。
 5. 若成功且存在 trailers，**先**调用 `onTrailers`。
 6. **最后**按 exit / abort 状态执行 `controller.close()` 或 `controller.error()`。
 
 **不选「静默丢 trailers」**：既违反 richest-data-flow，也会掩盖退出分类。步骤 2 是承重的——curl 的 exit 18/92 只有进程退出才确定，若 EOF 即 `close()`，consumer 已见成功完成，再无法改判 `mid-body-close`。
+
+#### 顺序 B：consumer-driven cancellation（v2 错把它塞进顺序 A——此处拆开）
+
+现役 disposal 会沿 iterator 链取消 raw `Response.body`（`dispatch-lifecycle.ts:50-78` → `stream.ts:394-417,450-453` → `send.ts:158-163`；未开始消费时直接 `response.body.cancel()`，`send.ts:46-81`）。故 curl provider 的 `ReadableStream.cancel()` 须执行：
+
+```text
+记录 consumer cancellation（置不可逆的 consumerCancelled）
+  → 尝试赢得 local-abort terminal-cause latch
+  → SIGTERM → await proc.exited
+  → 清理 fd / listener
+  → resolve cancel()
+```
+
+**`consumerCancelled` 一旦为 true 即不可逆，且是 callback gate**：此后**不得**执行顺序 A 的第 5、6 步——不再调 `onTrailers`、不再 `controller.close()/error()`。否则会在上层已按 timeout / shutdown / client abort settle **之后**产生 late callback，重新制造本节要消灭的 History 数据分叉；对已取消的 controller 再 close/error 也可能抛无意义状态错误。
+
+**为什么单靠 §7.5 的 latch 不够**：存在这样的竞态——① process exit 先赢得 `terminalCause`；② dump 尚未解析、controller 尚未 terminal；③ client abort / shutdown / idle timeout 触发，outer `guardSseIterable` 立即走 abort 分支（它**独立** race 原始 abort signal，`stream.ts:423-445`）；④ provider 随后才解析到 trailers。此时即使 provider 内部 latch 已判给 process-exit，上层也已按 abort settle，provider **不能**再交付 trailers。故需要两个独立状态：`terminalCause` 决定**失败身份**，`consumerCancelled` 决定**此后是否还允许回调**。
+
+#### 等待窗口的有界性
+
+stdout EOF 之后等待 child exit 的窗口**仍受现役 stream idle timeout 约束**。`guardSseIterable` 对每次 `inner.next()` 分别起 idle timer（`stream.ts:419-428` → `:251-293`），计时基点是**最后一个已交付 SSE event 之后发起的那次 `next()`**，不是 stdout EOF。故：
+
+- 正常情况 stdout EOF 与 child exit 几乎相邻，额外窗口很短。
+- curl 关了 stdout 却迟迟不退出时，idle timeout 先获胜并取消 child——这是**合理**的：此时 provider teardown 已卡住，idle timeout 提供了现成的有界退出，且它不会把完整响应误判成功。
+- **若 timeout 先发生，它是 consumer-driven cancellation（顺序 B），不得继续走 producer-driven success terminal。**
+
+#### 延迟 settle 是资源真实性，不是 lifecycle 卡死
+
+自然路径形成全序：`stdout EOF → proc.exited → 解析 dump → onTrailers → controller.close/error → SSE decoder done → guardSseIterable done → dispatch quiesced → dispatch settlement → operation finalization`。现役代码支持它：`dispatch-lifecycle.ts:128-139`（只有 inner 返回 `done` 才 `complete()`）、`:43-48`（`complete()` 才 resolve `quiesced`）、`generation/dispatch-scheduler.ts:324-331`（settle 前等 `quiesced`）、`context/request.ts:847-861`（finalizer 等 operation scope quiesce）、`context/manager.ts:378-397`。
+
+⇒ `whenModelOperationFinalized()` 会等到 child exit，这**是正确行为**：child / fd / 晚到 callback 未结束就宣称 operation finalized 是假完成。有界性靠 idle timeout、Phase 3 abort、Phase 4 force-close 三道，**不靠提前 resolve lifecycle**。
 
 ### 7.2 协议参数映射（冻结）
 
@@ -330,8 +360,17 @@ v2 说「stderr 字符串仅作 defense-in-depth，主判据是 exit code」—�
 每请求一子进程 ⇒ provider 必须追踪所有在途 child。冻结：
 
 - shutdown **Phase 1 不关闭 provider**（`shutdown.ts:484-503` 明确 Phase 1 不撕毁在途请求）。
-- **Phase 3** 由每请求 AbortSignal 负责 SIGTERM + `await proc.exited`。
-- **Phase 4** registry 对全部 provider 执行 force close 并 await 所有 child reap。
+- **Phase 3** 由每请求 AbortSignal 负责 SIGTERM + `await proc.exited`。该等待成为 Phase 3 drain 的等待项**是正确的**——guard 在 abort/timeout 时已 fire-and-forget 启动 inner cleanup 并立即向 handler 抛出用户可见错误（`stream.ts:394-431`），而 `dispatch-lifecycle` 不在 cleanup 完成前 resolve `quiesced`（`dispatch-lifecycle.ts:54-78`）。现役刻意区分「用户可见错误已产生」与「资源已 quiesced」。Phase 3 自身有 120s 边界（`shutdown.ts:460,561-580`、`config.yaml:223-225`）。
+- **Phase 4 必须有 SIGKILL escalation**（v2 遗漏——只写了 force-close + await reap，若 curl 忽略或卡住 SIGTERM，Phase 4 自己会永久阻塞）：
+
+  ```text
+  Phase 3：SIGTERM + await exit，受 Phase 3 总 deadline 约束
+  Phase 4：对仍存活 child 发 SIGKILL → await proc.exited
+           → 若连 SIGKILL 后 exit promise 都不 settle，记录 lifecycle failure，
+             **不得**宣称 quiesced
+  ```
+
+  只允许 registry 对**自己拥有且仍存活**的 curl child 按 **PID 精确** escalation（与项目 `protect-user-main-server` 纪律一致，绝不 `pkill`/`killall`）。
 - `close()` **幂等**，finalize 再次调用无害。
 - `fetch()` 与 close 竞态须返回带 **shutdown provenance** 的 cancellation，不是 generic `pre-response-close`。
 
