@@ -1065,10 +1065,10 @@ export async function runResponseBufferedSink(
 ): Promise<ResponseOutcome> {
   const hedged = await maybeRunHedgedResponseSink(deps, upstream, env, sink, opts, generation)
   if (hedged) return hedged
+  const allocationPort = opts.wireAllocationPort ?? getDownstreamDeliverySession(sink)?.allocationPort
   const unhedgedBinding = generation?.bindings.get(upstream)
   if (unhedgedBinding) {
     env.ctx.selectGenerationWinner(unhedgedBinding.candidate.candidate, unhedgedBinding.candidate.dispatch)
-    const allocationPort = opts.wireAllocationPort ?? getDownstreamDeliverySession(sink)?.allocationPort
     if (allocationPort?.wireState) {
       const leg = await allocationPort.beginLeg("primary", {
         candidateId: String(unhedgedBinding.candidate.candidate),
@@ -1484,9 +1484,8 @@ export async function runResponseBufferedSink(
           : await coordinator.runPrimary()
         generation?.bind(coordinator, recovered)
         currentEnv.ctx.selectGenerationWinner(recovered.candidate, recovered.dispatch)
-        const recoveryAllocationPort = getDownstreamDeliverySession(sink)?.allocationPort
-        if (recoveryAllocationPort?.wireState) {
-          const leg = await recoveryAllocationPort.beginLeg("recovery", {
+        if (allocationPort?.wireState) {
+          const leg = await allocationPort.beginLeg("recovery", {
             candidateId: String(recovered.candidate),
             dispatchId: String(recovered.dispatch),
           })
@@ -1543,9 +1542,8 @@ export async function runResponseBufferedSink(
           const continued = parent ? await coordinator.runContinuation(parent.candidate, "continuation", contEnv) : await coordinator.runPrimary()
           generation?.bind(coordinator, continued)
           currentEnv.ctx.selectGenerationWinner(continued.candidate, continued.dispatch)
-          const continuationAllocationPort = getDownstreamDeliverySession(sink)?.allocationPort
-          if (continuationAllocationPort?.wireState) {
-            const leg = await continuationAllocationPort.beginLeg("continuation", {
+          if (allocationPort?.wireState) {
+            const leg = await allocationPort.beginLeg("continuation", {
               candidateId: String(continued.candidate),
               dispatchId: String(continued.dispatch),
             })

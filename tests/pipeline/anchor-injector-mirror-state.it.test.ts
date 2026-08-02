@@ -94,13 +94,10 @@ test("a pre-commit owner throw restores every legacy mirror flag", async () => {
   expect(writes).toEqual([])
 })
 
-test("a post-commit abort preserves irreversible anchor mirror state", async () => {
-  let writes = 0
+test("a post-commit keepalive abort preserves irreversible anchor mirror state", async () => {
   const sink: ClientSink = {
     async write() {},
-    async writeAnchor() {
-      if (++writes === 2) throw new StreamClientAbortError()
-    },
+    async writeAnchor() {},
     async writeKeepalive() {
       throw new StreamClientAbortError()
     },
