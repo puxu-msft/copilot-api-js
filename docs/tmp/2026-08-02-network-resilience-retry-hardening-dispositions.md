@@ -89,10 +89,55 @@
 
 B1 排序 / M1 hedge 去向 / M8 第四态形状。三者都改变客户端可观察行为或工作量数量级，不由我裁。
 
-## 5. 待办（用户裁决后执行）
+## 5. 第 3 轮 · GPT 事实复核（v2）
 
-- [ ] 按两轮共 30+ 条发现返工草案，按 reviewer 建议的顺序：B3 → B2 → B4+M3+M8 → B1 → M1/M2/M10 → M5/M6/M7/M9
-- [ ] 补 error-class × commit-state × retreat × 预算的四维穷尽表（用穷尽 `Record` 让类型系统逼出全站点）
-- [ ] 返工后发起第 3 轮复评（`SendMessage` 续跑两个原 reviewer；B 级与已升级分歧另派未卷入第三方）
-- [ ] G10 的暂定驳回并入收口合议
+报告 [review-gpt-r2](2026-08-02-network-resilience-retry-hardening-review-gpt-r2.md)。裁决：**修复 major 后可进入下一阶段**，Blocker 0 / Major 3 / Minor 1。C13–C17、C19–C21、C23 全部确证。
+
+| # | 发现 | 裁决 | 级别 | 复核与理由 |
+|---|---|---|---|---|
+| R1 | **C22 证伪**：allocator plan 并非「仅 P0/P6 落地」——P1/P2 已在分支 `feat/anchor-allocator-p1p2` 完成待合并 | **采纳** | C | 亲手复核：分支存在、`git merge-base --is-ancestor 035d37c8 master` 为 false、分支上 README 自述「P0/P1/P2/P6 已完成，P3M/P7/P8 待执行」。**这是我 v2 新引入的错误**：只查了 master 的 plan README 未查分支——重蹈记忆 `feedback-verify-deferred-task-not-already-landed-before-designing`。已改 §2.5 与 §4.0（阶段 0 剩余量随之缩小） |
+| R2 | **单候选派发 15 证伪**：`DispatchReason` 有四个取值，`rate-limit-retry` / `ws-fallback` 不在四族内；且普通族共享同一个 `normalRetries` 计数器 | **采纳，并改结论形状** | C | 复核 `dispatch-scheduler.ts:39` 确有四个 reason。不只是改数字：**总派发预算不应由「族预算之和」推导，而应由 §4.7 的统一 admission 直接约束，且该 seam 必须覆盖全部 dispatch reason**。已重写 §4.6 |
+| R3 | **候选数 11 部分成立**：仅为不含 hedge 的 sequential 上界；§4.9 统一后 hedge 另开候选 | **采纳** | C | 已在 §4.6 写明「§4.9 定案前候选/派发取值不得冻结」——比写死一个数字正确 |
+| R4 | **C18 收窄**：新 ADR `:6` 已声明笼统「修订」关系，「无 supersede 记录」太强 | **采纳** | D | 复核属实。改为「有笼统修订关系，但旧 ADR 的 WS 条目未标注被取代、仍保留相反的 Accepted 文本」 |
+| R5 | 对 G10 暂定驳回的复核：「是工作分配而非事实断言，无独立证据表明该判定站不住，本轮不反驳」 | **G10 维持驳回** | D | 原评审者已明确表态不反驳 → 按 `adopting-agent-findings` 的 C 级升级路径，此项合议闭合 |
+
+**本轮教训（拟下沉记忆）**：查「某计划做到哪了」时，只读 master 上的 plan 状态行不够——**必须同时扫分支**（`git branch -a` + `merge-base --is-ancestor`）。plan 文档的状态行只对它所在的那个 ref 成立。
+
+
+## 6. 第 3 轮 · Claude 架构复评（v2）
+
+报告 [review-claude-r2](2026-08-02-network-resilience-retry-hardening-review-claude-r2.md)。裁决：**修复 major 后可进入下一阶段，补完即可定稿、不需要第 4 轮全量对抗审**。Blocker 0 / Major 6。
+
+**全部 6 条采纳，已在 v3 补完。** 三条改变设计的先亲手复核：
+
+| 发现 | 复核动作 | 结论 |
+|---|---|---|
+| §4.1 idle-timeout 无条件可救会误救 | `driver.ts:1396` 终局提交要求 `drained &&(sawMessageStop \|\| sawUpstreamError \|\| sawContentlessRefusal)`；上游发完 `message_stop` 但不关流时 `drained=false` 落失败分支 | **成立**。这是 **v2 新引入的缺陷**：会在已完整的轮之后再追加一轮 → 从「多发一个 error 帧」升级成**静默内容重复** |
+| 合成 max_tokens 污染内部观测层 | `handler-v4.ts:1564` 按 `acc.stopReason` 判并派生 `telemetry-dimensions.ts:154` 的 `max_tokens_truncation` 维度 | **成立**。且该特性 P1 自动续传落地后会对我们自己合成的终止符发起续写 |
+| request-deadline 硬掐与第四态不相容 | `manager.ts:417-423` 同一 tick 内 `cancel` 后立刻 `fail`，handler 观察到时 ctx 已 settled | **成立**。合成终止符无处可落 |
+
+| # | 发现 | 裁决 | 级别 | 处置 |
+|---|---|---|---|---|
+| K1 | idle-timeout 三格缺「已见终止符」前置谓词 | 采纳 | C | §4.1 加谓词 `!sawMessageStop() && !sawUpstreamError() && !sawContentlessRefusal()` + 新增一行「idle-timeout ∧ 已见终止符 = 不救」+ mutation 从两臂扩到**三臂** |
+| K2 | 合成 max_tokens 对内部观测层不可辨识（违 A4） | 采纳 | C | §4.5 补内部纪律：识别只走 driver outcome kind；观测层与未来续传层显式排除 `budget-exhausted-truncation` + 守卫测试。**用户裁决的 wire 形状不变** |
+| K3 | request-deadline × 已提交 与硬掐机制不相容 | 采纳 | C | §4.7 第 1 条补「硬掐路径拆成：先通知交付层收口 → 再 settle」。admission 正常工作时不该走到，但兜底路径出错最难发现 |
+| K4 | §4.7 应弃 `mode` 枚举、取「admission 加在硬掐之前」；且 request-age 兜底不能改判原键 | 采纳 | C | `mode: admission` 会**删掉「每个请求终有上界」这条不变量**——一个配置值移除一条不变量是错误配置形状。reaper 保持 request-age 判据，per-attempt **另立第二个键**；并明写「两个不同的量并存不属于 A2 双轨」防实现者误引 A2 去合并 |
+| K5 | §4.0 例外对阶段 0 正交（已核实）但对 §4.7 不正交 | 采纳 | C | 补边界句 + §4.6-5 守卫扩成「预算 N **且时间充裕**」，否则时间被截断时假绿 |
+| K6 | §4.9 缺五项进入计划阶段的最小要件 | 采纳 | C | 补齐五项（hedge 合格性语义 / 预算口径重算 / allocator 接缝 / 缓冲归属 / 验收 oracle 与 PoC） |
+| K7 | 对 G10 暂定驳回的复核：「驳回站得住，理由不是省，而是 6 条 major 里 4 条要求把已核实的机制事实写死进 spec，由持有取证链的一方直接改更可靠」 | **G10 驳回确认成立** | D | 两位 reviewer 独立同意 → 合议闭合 |
+
+**本轮教训（拟下沉记忆）**：返工引入的三处新问题全部「长在上一轮的修复上」——K1 长在 M3 的修复上、K2 长在 M8 裁决的落地方式上、K3 长在 M8 × C6 的交叉处。**每轮处置完必须专门问一句：我这次的修复本身有没有引入同类问题？**
+
+## 7. 收口状态
+
+- 两位 reviewer 独立判定：**补完 major 后可定稿**，Blocker 均为 0。v3 已补完全部 10 条（GPT 4 条 + Claude 6 条）。
+- 驳回项仅 G10 一条，两位 reviewer 均已明确表态不反驳 → 合议闭合。
+
+## 8. 待办（用户批准 v3 后执行）
+
+- [ ] v3 迁入 `docs/spec/`，两轮评审报告与本处置表归档
+- [ ] 补 ADR：旧 ADR 的 Responses-WS 条目标注被 D4 取代（C18）
+- [ ] 阶段 0：合并 `feat/anchor-allocator-p1p2` + 执行 P3M / P7 / P8
+- [ ] 阶段 1：转 planner 出 TDD 实施计划（§4.9 的五项前置须先裁定）
+
 
