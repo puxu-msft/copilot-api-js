@@ -40,6 +40,7 @@ const delta = (index: number): ClientFrame => ({
   event: "content_block_delta",
   data: JSON.stringify({ type: "content_block_delta", index, delta: { type: "text_delta", text: "x" } }),
 })
+const stop = (index: number): ClientFrame => ({ event: "content_block_stop", data: JSON.stringify({ type: "content_block_stop", index }) })
 
 function setupWithSink(sink: ClientSink) {
   const writes: Array<ClientFrame> = []
@@ -149,6 +150,38 @@ test("a REAL-block build success followed by a second-frame abort never reuses t
   ).toEqual({ ok: false, reason: "delivery-finished" })
   expect(wireState.allocator.nextRealIndex()).toBe(1)
   expect(wireState.mappings.get(leg)?.get(0)?.wireIndex).toBe(0)
+  expect(delivery.snapshot.state).toBe("closed")
+})
+
+test("writeBlockFrame abort preserves mapping and terminates delivery", async () => {
+  const sink: ClientSink = {
+    async write(frame) {
+      if (JSON.parse(frame.data ?? "{}").type === "content_block_stop") throw new StreamClientAbortError()
+    },
+    close() {},
+  }
+  const { wireState, delivery, port } = setupWithSink(sink)
+  const leg = ownerValue(await port.beginLeg("primary", PRIMARY))
+  const mapping = ownerValue(await port.withAllocatedRealBlock(0, ({ mapping: allocated, envelope }) => [envelope.real(allocated.remap(start(0)))]))
+
+  expect(await port.writeBlockFrame(leg, 0, stop(0))).toEqual({ ok: false, reason: "delivery-finished" })
+  expect(wireState.mappings.get(leg)?.get(0)).toBe(mapping)
+  expect(delivery.snapshot.state).toBe("closed")
+})
+
+test("writeBlockFrame non-client errors terminate delivery and remain visible", async () => {
+  const sink: ClientSink = {
+    async write(frame) {
+      if (JSON.parse(frame.data ?? "{}").type === "content_block_delta") throw new Error("sink wiring failed")
+    },
+    close() {},
+  }
+  const { wireState, delivery, port } = setupWithSink(sink)
+  const leg = ownerValue(await port.beginLeg("primary", PRIMARY))
+  await port.withAllocatedRealBlock(0, ({ mapping: allocated, envelope }) => [envelope.real(allocated.remap(start(0)))])
+
+  await expect(port.writeBlockFrame(leg, 0, delta(0))).rejects.toThrow("sink wiring failed")
+  expect(wireState.mappings.get(leg)?.has(0)).toBe(true)
   expect(delivery.snapshot.state).toBe("closed")
 })
 

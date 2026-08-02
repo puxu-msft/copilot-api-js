@@ -53,7 +53,7 @@ function setup(sink?: ClientSink) {
   return { wireState, writes, delivery, port: delivery.allocationPort }
 }
 
-test("allocation and every consuming frame run in one serializer operation", async () => {
+test("anchor and following real allocation preserve frontier order", async () => {
   const { port, wireState, writes } = setup()
   const leg = ownerValue(await port.beginLeg("primary", { candidateId: "candidate-primary", dispatchId: "dispatch-primary" }))
   expect(wireState.activeLeg?.token).toBe(leg)
