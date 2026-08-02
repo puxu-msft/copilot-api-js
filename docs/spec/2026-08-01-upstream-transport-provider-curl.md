@@ -8,7 +8,72 @@
 
 ---
 
-## 1. 问题
+## 0. 实现选型与分发（2026-08-01 用户裁决，**取代 curl 作为通用 provider**）
+
+> 本节是最新裁决，与下文以 curl 为通用实现的叙述冲突时**以本节为准**。§1–§4 的架构（三层契约、能力模型、选路）**不受影响**——provider 契约可插拔的意义正在于此。§7 中 curl 专属的实现约束（子进程、argv、dump fd、exit code）随之失效，需在 v3 重写；其中**与实现无关的三条仍然成立**：§7.1 的终止时序与 consumer-cancellation 分离、§7.3 的 wire parity 要求、§7.5 的 first-terminal-cause latch 与 `unknown-transport`。
+
+### 0.1 选型：Rust + napi-rs（hyper / reqwest），不用 curl
+
+穷举七个候选后（矩阵见 `exp/upstream-client-survey/`），**只有 Rust + napi-rs 同时具备 h1、h2 与周期 h2 PING**，其余每个都强制配对：
+
+| 候选 | h1 | h2 | **h2 PING** | 连接复用 | 双运行时 |
+|---|---|---|---|---|---|
+| **Rust + napi-rs (hyper/reqwest)** | ✅ | ✅ | **✅** | ✅ | ✅ |
+| 现役 `node:http2` | ❌ | ✅ | ✅ | ✅ | ✅ |
+| curl exe | ✅ | ✅ | ❌ | ❌ | ✅ |
+| 进程内 libcurl | ✅ | ✅ | ❌ | ✅ | ❌（`bun:ffi` 仅 Bun） |
+| `node:net/tls` + `http-parser-js` | ✅ | ❌ | n/a | 需自建 | ✅ |
+| Bun 原生 `fetch` | ✅ | — | ❌ | ? | ❌ 一致性 |
+| Bun `node:http` shim | ? | ❌ | ❌ | ? | ❌ |
+
+依据：reqwest `ClientBuilder` 的 `http2_keep_alive_interval` / `http2_keep_alive_timeout` / `http2_keep_alive_while_idle` 与 `pool_idle_timeout` / `pool_max_idle_per_host`（**官方文档核实**，docs.rs reqwest 0.13.4）。`while_idle` 的语义正对本项目需求：关闭时 ping **只在流活跃期间**发——长 thinking 恰是「单流活跃但静默」，正是 `curl_easy_upkeep` 够不到的场景。
+
+**Bun 侧生死门已实测通过**：Bun 1.3.14 支持 Node-API ThreadSafeFunction 跨原生线程回调（用真正走 `Napi::ThreadSafeFunction::BlockingCall` 的 `@parcel/watcher` 验证，Bun 与 Node 双双收到 event，有正样本；`node-libcurl` 的 `uv_timer_init` panic **不会**必然重现）。
+**但该实验只覆盖 Node-API 的 TSFN 机制**，未证明 napi-rs 自身的 wrapper、回调 backpressure、取消竞态与高频字节流——正式 spike 须用 napi-rs 本身复验。
+
+被否的两条顺带记录：`llhttp` 官方 npm 包是**代码生成器**而非运行时解析器（要用需自维护 WASM 构建与 glue，代价接近一个小型原生组件）；现成可用的纯 JS 解析器是 `http-parser-js@0.5.10`（chunked + trailers 状态机完整，且 trailers 先于 message-complete 交付）。若将来放弃原生路线，它是 h1 的首选底座。
+
+### 0.2 分发：不发布产物，本地构建（用户裁决）
+
+沿用 `native/history-search` 的模式——**产物不进 npm tarball，由使用者在自己机器上 `cargo build`**。不建 CI 交叉编译矩阵、不发 per-platform sibling 包。
+
+**因此产生一条强制推论**：
+
+> **默认 provider 必须保持 `node:http2`（零依赖）。** 产物不发布 ⇒ npm 安装者没有原生模块 ⇒ 若 Rust provider 是默认，则「缺失即启动失败」会让所有 npm 安装者开箱即挂。
+
+故最终形态：
+
+- **默认 `auto`**：`https` → `node:http2`（**与今天完全一致，npm 安装者无感**）。
+- **Rust provider 为 opt-in**：显式选中且产物不在 → **启动即失败**（§8 已定的语义不变，只是触发条件收窄为「你显式选了它」）。
+- **明文 `http://` 上游**：`auto` 下若 origin inventory 中存在明文 origin，则需要 Rust provider；产物不在则启动失败并明示补救方式。**不静默回落 undici**（它在 Bun 下必挂）。
+- **npm 安装者因此没有 h1 能力**——但**这不是回退**：他们今天也没有（undici 在 Bun 下必挂，且唯一的明文上游 SearXNG 是幽灵，见 §4.3）。
+
+一个对我们有利的事实：napi 是 **N-API（ABI 稳定）**，**同一个 `.node` 同时服务 Bun 与 Node**，不像 `node-libcurl` 那样按 Node ABI 版本切产物——运行时维度不会让产物数量翻倍。
+
+### 0.3 打包接线（现状与需改动处）
+
+现状：`prepack` / `prepare` = `bun run build` = `tsdown`（只打后端 bundle）；`build:history-search` **不在**其中（2026-07-28 纪律：没 Rust 的机器 `bun install` 也要能过）。`files: ["dist", ...]` 虽含 `dist/`，但因 prepack 不构建原生产物，**发布的 tarball 里从来没有 `.node`**。
+
+需改动：
+
+1. `tsdown.config.ts` 的 `deps.neverBundle` 加入原生模块说明符（同 `bun:sqlite` / `node:sqlite` 的既有处理），否则 bundler 会在构建期尝试解析它。
+2. **`prepack` 不接原生构建**——保持与 history-search 一致的纪律。
+3. 加载器沿用 `src/lib/history/search-native.ts:30-47` 的形态：`createRequire(import.meta.url)` + 多候选路径（开发树 `native/<crate>/*.node`、分发 `dist/<name>.node`），全失败则抛。
+4. **与 history-search 的关键差异**：搜索缺产物走 `describe.skipIf` 显式 skip；**传输层不可 skip**——未选中时不加载，选中而缺失则**启动失败**，绝不静默降级。
+5. **必须提供绝对路径覆盖**（配置项 + 环境变量），指向本地构建的 `.node`。**这在 `bun x` 场景下不是便利项而是必需项**：`bun x` 是临时安装、跑完即弃，`import.meta.dirname` 指向那个临时目录，用户自己树里 `cargo build` 的产物**永远不在推算出的候选路径上**。没有绝对路径覆盖，「本地构建」这个分发模式在 `bun x` 下完全不可用。
+
+### 0.3.1 `bun x` 的实测行为
+
+`bun x` **会**解析并安装匹配当前平台的 `optionalDependencies`——实测 `bun x esbuild --version` 输出 `0.28.1`（esbuild 的 bin 是 JS shim，必须调起原生二进制才能打印版本，故这证明平台子包被装上并被调用）。
+
+⇒ 「per-platform 子包」形态在 `bun x` 下开箱可用；但**本 spec 选择的是不发布产物**，故 `bun x` 用户只能跑默认的 `node:http2`，除非用上条的绝对路径覆盖指向自建产物。
+
+### 0.4 本机 Rust 状态
+
+`rustup` 已安装（`~/.cache/cargo/bin/{cargo,rustc,rustup}`），但 **`rustup toolchain list` → `no installed toolchains`**。`rustup default stable` 可补齐，会下载工具链并改动全局环境——**待用户确认后再执行**，本会话未擅自安装。
+
+---
+
 
 本项目所有 `https://` 上游走内建 `node:http2`，明文 `http://` 走 undici。根因是 **Bun × undici 的组合下 h1 与 h2 都永久 hang**（body 永不 finalize，`exp/upstream-models-hang/`）。三个缺口：
 
