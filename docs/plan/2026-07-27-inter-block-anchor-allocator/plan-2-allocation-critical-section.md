@@ -1,6 +1,6 @@
 # P2 — 分配临界区（heartbeat vs flush 的并发缝）
 
-> **实施状态（2026-07-28）**：P2 已完成（Task 2.1–2.3），owner/C9/C10/C11 leg fence 与架构守卫均落地；第二轮返工后标准 `unit it http` 在隔离 worktree、16 shards、复制同基线 native history-search artifact 后第三轮返工后连续三轮 `6571/6571`，三组时序 oracle 各 15/15。后续 debugger 在独立 worktree 连跑 40 轮（含 `load=35` 过载与禁 transpiler cache），固定 17 条 anchor 失败簇出现 0 次；review 阶段曾见的同簇来自两个审查任务共用 worktree 时的生产源码 mutation 污染，不记为 flaky、不改变排空/时序结构。两个原不可达 oracle 已按主会话裁决移到真实可达相位：P2.2b 的“恢复 tick 真分配”→M6；C11 History 三腿 merged-state→M2/M3/M4（M4 统一收口）。
+> **实施状态（2026-07-28）**：P2 已完成（Task 2.1–2.3），owner/C9/C10/C11 leg fence 与架构守卫均落地；第二轮返工后标准 `unit it http` 在隔离 worktree、16 shards、复制同基线 native history-search artifact 后最终收口后连续三轮 `6574/6574`，三组时序 oracle 各 15/15。后续 debugger 在独立 worktree 连跑 40 轮（含 `load=35` 过载与禁 transpiler cache），固定 17 条 anchor 失败簇出现 0 次；review 阶段曾见的同簇来自两个审查任务共用 worktree 时的生产源码 mutation 污染，不记为 flaky、不改变排空/时序结构。两个原不可达 oracle 已按主会话裁决移到真实可达相位：P2.2b 的“恢复 tick 真分配”→M6；C11 History 三腿 merged-state→M2/M3/M4（M4 统一收口）。
 >
 > **前置**：P1 + **P6**（plan review major：两者共享 `delivery/session.ts` 的 heartbeat 生命周期语义，见 Task 2.2b）。**产出**：唯一 owner API，使 index 分配与 wire 写出在同一 serializer operation 内原子完成。
 > **承重项 4**（设计 §4.4 第 4 点 / 审查 F7）。
