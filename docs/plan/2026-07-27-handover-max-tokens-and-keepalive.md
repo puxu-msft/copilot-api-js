@@ -7,32 +7,37 @@
 
 ## 一句话现状
 
-`max_tokens` 续传特性的 **spec/plan/P0 已 landed**；推进 P1 时挖出一条**保活缺陷链**（我方吞空 delta → CC 300s watchdog 掐断），已修根因并落地 pre-content 保活 + **P6 心跳死亡修复**；剩余 **inter-block 保活缺口**需要方案 A（接线 multi-anchor allocator），其 TDD plan 经**六轮异模型审至零 blocker**、已合并 master，**实施进行中**（P1 + P2 全完成、异模型审查中，P3M 未启动）。max_tokens 的 P1 本身未被阻塞，但**块级默认翻转**的硬前置是方案 A。
+`max_tokens` 续传特性的 **spec/plan/P0 已 landed**；推进 P1 时挖出一条**保活缺陷链**（我方吞空 delta → CC 300s watchdog 掐断），已修根因并落地 pre-content 保活 + **P6 心跳死亡修复**；剩余 **inter-block 保活缺口**需要方案 A（接线 multi-anchor allocator），其 TDD plan 经**六轮异模型审至零 blocker**、已合并 master。**方案 A 的 P1+P2 已于 2026-08-02 合并 master（`88e47cef`），经四轮异模型审查，P3M 未启动。** max_tokens 的 P1 本身未被阻塞，但**块级默认翻转**的硬前置是方案 A。
 
 ## 方案 A 实施进度（活状态，接手先看这里）
 
-**分支 `feat/anchor-allocator-p1p2`**（worktree `.worktrees/alloc-p1p2`，base `da59c586`，**未合并 master**）：
+**P1 + P2 已 landed master `88e47cef`**（2026-08-02）。分支 `feat/anchor-allocator-p1p2` 已合并，worktree `.worktrees/alloc-p1p2` 可清理。
 
-| commit | 内容 |
-|---|---|
-| `e1a2fc39` | **U1** allocator 更名 `createGenerationWireIndexAllocator` + `anchorsOpened()` 诊断计数 + anchor 三帧改 factory 收显式 index + `ANCHOR_INDEX`→`PRE_CONTENT_ANCHOR_INDEX` |
-| `a0890d0c` | **U2** `AnchorState.allocator` 必填、handler `makeAnchoredSseSink()` 唯一创建点、pre-content injector 走共享 allocator |
-| `73e1d6be` | **U3** C3 映射恒等短路 `resolveRemappedFrame` + **ratchet 守卫**（四处 legacy literal remap 冻结、新增即 fail、只减不增） |
-| `f8230e9e` | **P2.1** 低阶原子 allocator：`LegToken` / 不可变 `WireBlockMapping` / `beginLeg` / `allocate*` / `reserve*` + reservation commit/rollback + 无 active leg 拒绝 real 分配 |
-| `92c4325b` | **P2.2** serialized owner API（port 五方法全落地）+ `GenerationWireState` 唯一注入 + 三类 leg 都调 `beginLeg` + 首次 write 前同步 commit + provenance 真实身份 |
-| `a2da18fa` | **P2.2b** pre-M6 心跳分配状态 characterization（拆分后留在 P2 的那半，见下方裁决 2） |
-| `0441e476` | **P2.2c** C9 三档 commit-point（首帧写出前提交 / build 抛错不提交）+ queued 与 pending-abort 边界 |
-| `70dbc50b` | **P2.2c-b** recovery 两支 + reservation 对外不可见 |
-| `cdb8b368` | **P2.2c-c** 显式 leg 跨腿 mapping 隔离 / 同腿多块并存 / stop 后释放 / missing mapping fail-visible |
-| `a64fb749` | **P2.2d** serialized `beginLeg` fence（与 queued write 串行） |
-| `0df3675c` | **P2.3** suspend 后零新分配 |
-| `4fa3b568` | **C11** owner 三腿真实 provenance + production 三腿 `beginLeg` + 无 active leg 拒绝 + `"legacy"` 唯一边界守卫 |
-| `443332b0` `3662195d` | 格式化 + bridge oracle 改走 delivery owner |
-| `035d37c8` `79551d06` | 计划 checkbox 与 `DESIGN.md` 活架构表同步 |
+**下一步 = P3M（M1–M8，唯一硬序：M6 晚于 M2–M4）→ P7 → P8。**
 
-**P1 + P2 已全部完成**（HEAD `79551d06`，clean，37 文件 +2048/−282）。标准档 `bun scripts/parallel-test.ts unit it http` **连跑三轮 6550/0**；三组时序测试各 15/15；O-6 字节等价 SHA-256 `1c6163c6…` / 764 bytes / identical。
+### 四轮异模型审查的账（每轮都抓到全套件抓不到的东西）
 
-**当前所处环节**：**分支未合并，第一轮异模型核验已完成、正在返工**。三方核验（Claude `reviewer` 合并态审 + Claude `verifier` oracle 证伪 + GPT `debugger` 根因定位）结论：**逻辑层 0 Blocker**，过渡态自洽性有机制性论证（见下）；但有 4 类 Major + 5 条 oracle 名实不符必须返工。返工完成 → 第二轮异模型审 → 合并 master → **P3M（M1–M8，唯一硬序：M6 晚于 M2–M4）** → P7 → P8。
+| 轮次 | 结论 | 抓到的 |
+|---|---|---|
+| 1 | 0 Blocker / 4 Major | live 腿 `beginLeg` 死接线（默认配置命中）；real 腿 C9 零门；五条 oracle 名实不符；ratchet 判据形状错 |
+| 2 | **1 Blocker** / 3 Major | **live 修复自身没有裁决力**（改回完整原 bug 形态仍 6566/0）；`terminateAfterWireFailure` 吞 finalize；mirror-state throw 路径撕裂；hedge 腿从不 `beginLeg` |
+| 3 | **1 Blocker** / 1 Major | **winner 帧绕过装饰器**、wire index `[0,0,1,1,1]`→`[0,0,0,0]`；C9-② 禁止后续分配随硬关 session 被删 |
+| 4 | **0 / 0，判可合并** | 仅 3 Minor + 2 Nit，全部已修 |
+
+**承重教训（已入库）**：连续三轮「修复引入新回归且全套件照绿」，共同根因是**测试自造 sink，看不到 handler↔装饰器↔driver 这条缝**。判据 = 把修复完整改回原 bug 形态仍全绿即无裁决力；验收必须走真实 HTTP 入口（`createFullTestApp` + `app.request("/v1/messages")`）。→ [[methodology-each-fix-round-introduces-green-passing-regression-at-the-same-seam]]
+
+### 合并时处理的语义冲突（自动合并成功、合并后才红）
+
+master 期间新增守卫「stream-error outcomes are minted in exactly one place」——该 outcome 只允许由 `driver.ts:streamErrorOutcome()` 产出，否则绕过 abort-provenance gap 计数。本分支的 owner 失败契约恰在两处直接 mint，合并后守卫报 `Expected 1 / Received 4`。**修法是接线而非绕过**：两处改走 `streamErrorOutcome(error, env)`，工厂表签名收 `env`；`classifyStreamError` 是纯 `instanceof`、我们自造的 Error 归 `"other"`，故不会误记 gap，穷尽性由 `satisfies` 保持。
+
+顺带修掉 master 上 `deferred-backlog.md` 里一行孤立的 `||||||| a675064e`（peer 解 diff3 时漏删的残留标记）。
+
+**合并态验证**：typecheck 绿、`package-boundaries` 22/22、`FORCE_COLOR=0 bun scripts/parallel-test.ts unit it http` **连跑两轮 6842/6842 · 0 fail**。
+
+### 交给 P3M 的两条硬前置（别漏）
+
+1. **M2 torn-wire 前置条件**（`plan-3-remap-sites.md` 有独立专节）：legacy 瞬时非-client 撕裂会让客户端拿到 index 0 的洞 + 孤儿 `stop@0` 而流仍记成功；今天因 anchor injector 一次性 latch 不可达，**M2 迁真实块后立即成为热路径可达**。四条满足点写在该节，未满足不得宣称 M2 完成、也不得开启 M6。
+2. **M4 必须清空 AST allowlist 的所有 `legacy:*` 条目**（守卫已从字面量 blocklist 换成 AST 调用点 allowlist，三种绕过写法均实测转红、注释不误伤）。
 
 ### 用户裁决：owner 五入口拒绝语义 = 方案 D（2026-07-28）
 
@@ -102,7 +107,7 @@ reviewer 曾报「7 轮里 2 轮出现成员固定的 17 条 anchor 失败簇」
 ## 下一步（严格顺序，用户 2026-07-27 指定「按顺序完成」）
 
 1. ~~**P6：心跳死亡修复**~~ ✅ **已 landed master `2e1041e8`**（含异模型合并态审查 0 blocker）。顺带修了捕获脚本的进程树泄漏（`54a4281d`）。
-2. **方案 A 全相位实施**（进行中）：**P1 + P2 已完成**（分支 `feat/anchor-allocator-p1p2` HEAD `79551d06`，**未合并**，异模型审查中）；审查通过 → 合并 master → **P3M（M1–M8，唯一硬序：M6 晚于 M2–M4）** → P7 → P8。
+2. **方案 A 全相位实施**：~~P1 + P2~~ ✅ **已 landed master `88e47cef`**（2026-08-02，四轮异模型审查）。**下一步 = P3M（M1–M8，唯一硬序：M6 晚于 M2–M4）** → P7 → P8。两条硬前置见上方「交给 P3M 的两条硬前置」。
 3. **Anthropic 块级默认翻转**（姊妹 spec §6.3）——硬前置 = 方案 A 落地。
 4. **P1：max_tokens 成功终端截获续写**（`docs/plan/2026-07-22-max-tokens-continuation/plan-1-anthropic-continuation.md`）。
 
