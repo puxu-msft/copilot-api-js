@@ -423,7 +423,7 @@ test("an abort while the first write's promise is PENDING counts as post-commit"
   - 把档 2/3 改成「失败即回滚 index」（即 round-2 的旧契约）→ 档 3 的「绝不复用」断言必须**转红**；
   - 把档 1 改成「不回滚」→ 档 1 断言必须**转红**。
   两个方向都咬得住，才证明两段语义各自有门。
-  - **返工补齐 real 腿**：`allocation-real-block-refusal.it.test.ts` 覆盖 build rollback、session refusal、首帧/次帧 abort 与 `writeBlockFrame` abort/非-client error。scratch mutation 将 real build catch 的 `rollback()` 改 `commit()` 后两条具名测试分别 `Expected 0 / Received 1`；删除 real session state guard 后拒绝测试收到 `{ok:true,...}` 而转红。所有 mutation 均在独立 scratch worktree 执行。
+  - **返工补齐 real 腿**：`allocation-real-block-refusal.it.test.ts` 覆盖 build rollback、session refusal、首帧/次帧 abort 与 `writeBlockFrame` abort/非-client error。scratch mutation 将 real build catch 的 `rollback()` 改 `commit()` 后两条具名测试分别 `Expected 0 / Received 1`；删除 real session state guard 后拒绝测试收到 `{ok:true,...}` 而转红；删除 `writeBlockFrame` state guard 后 terminated-session 测试收到 `{ok:true,value:"written"}` 而非 delivery-finished。另以 anchor transaction 产出无 active leg 的 real spec 锁 `writeAllocationFrames` pre-commit catch：将 `rollback()` 改 `commit()` 后 frontier `Expected 0 / Received 1`。所有 mutation 均在独立 scratch worktree 执行。
 - [x] **提交** → `feat(delivery): commit-point allocation semantics with irreversible wire side effects`
 
 ## Task 2.2c-b：recovery 腿 index 语义
