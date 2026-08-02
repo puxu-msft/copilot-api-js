@@ -51,7 +51,7 @@ Codex CLI 的一等公民路径，也是偏差最集中处。每请求由 codec�
 - **WebSocket 变体**：`/responses` 同路径支持 `GET` + `Upgrade: websocket`，见 [ws-openai-responses.md](ws-openai-responses.md)。
 - **Codex tier-1 健壮性**（详见 [DESIGN.md](DESIGN.md)「活的架构现状」Codex/Responses 行）：
   - **下游保活**：SSE + WS 都注入 `response.ping`（合法 JSON + 未知 type，Codex 每 SSE 事件重置其 300s idle 钟），间隔 `streamKeepalivePingSec`（默认 20s）；帧打 `synthetic:"keepalive"` 标记入 forwarded 轨。
-  - **opt-in buffered 重试**：`responsesBufferedRetry` **默认 OFF**（Codex 默认不做 mid-stream auto-retry）；on 时缓冲整响应、终态 upstream error 帧 commit+fail 不 retry。
+  - **buffered 重试**：`responsesBufferedRetry` **默认 ON**（2026-07-14 翻转，权威 = `packages/foundation/src/state-defaults.ts`；本行原写「opt-in / 默认 OFF——Codex 默认不做 mid-stream auto-retry」是翻转前的表述，2026-08-02 校正）；开启时缓冲整响应、终态 upstream error 帧 commit+fail 不 retry。显式设 `openai_responses.buffered_retry: false` 可退回实时转发。
   - **上游 WS 关闭码**：全 lifecycle 经 `closeUpstreamWs` 用 `1000`（WHATWG normal，避免 Node/undici 对 1001 抛 `invalid code`）。
   - **idle 上限**：`streamIdleTimeout`（默认 300s）是上游帧静默硬上限，可 per-model 覆盖（`streamIdleTimeoutOverrides`，如 `gpt-5.5:600`）；下游保活**不**重置它。
 

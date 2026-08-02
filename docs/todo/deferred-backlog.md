@@ -2,6 +2,8 @@
 
 从记忆库降为引用层（2026-07-05）时归位的活 backlog。每条：现状 / 暂缓原因 / 若做需改什么。
 
+> **⚠️ 全局更正（2026-08-02）**：下方若干条目的「为何暂缓」把「**buffered 默认 OFF，缺省无差异**」当作论据。该前提**已不成立**——`responsesBufferedRetry` 与 `chatCompletionsBufferedRetry` 已于 **2026-07-14 翻转为默认 `true`**（仅 Anthropic 的 `protectStreamingGeneration` 仍默认 `false`；权威 = `packages/foundation/src/state-defaults.ts`）。这些条目的**判断日期与理由原文保留不改写**（它们在写下时是对的），但**重新评估任何一条时必须先用当前默认值重算 blast radius**——「默认 OFF 所以缺省无差异」这句话今天对 Responses/CC 是错的。
+
 ## reverse `@messages` **非流式**三格没跑 whole-response 改写链（2026-07-28 实测重定范围）
 
 - **实测订正（原条目范围是错的）**：这条 backlog 原本写成「六格 wire 抑制都没做」。2026-07-28 实测推翻——**流式三格已经在抑制**，客户端拿到的是正常轮（CC `finish_reason:"stop"` + end_turn 正文 + `[DONE]`；Gemini `finishReason:"STOP"` + 文本 part；Responses `response.completed`）。原因是 per-frame 改写链的门是 `targetEndpoint === /v1/messages`，reverse 腿正好命中，Anthropic 帧在 reverse 翻译器看到之前就被改写了。oracle 与逐格字节见 `tests/routes/reverse-refusal-default-wire.it.test.ts`。
