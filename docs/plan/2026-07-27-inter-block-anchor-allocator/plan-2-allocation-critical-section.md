@@ -1,6 +1,6 @@
 # P2 — 分配临界区（heartbeat vs flush 的并发缝）
 
-> **实施状态（2026-07-28）**：P2 已完成（Task 2.1–2.3），owner/C9/C10/C11 leg fence 与架构守卫均落地；标准 `unit it http` 6550 tests 连跑三轮全绿，三组时序 oracle 各 15/15。两个原不可达 oracle 已按主会话裁决移到真实可达相位：P2.2b 的“恢复 tick 真分配”→M6；C11 History 三腿 merged-state→M2/M3/M4（M4 统一收口）。
+> **实施状态（2026-07-28）**：P2 已完成（Task 2.1–2.3），owner/C9/C10/C11 leg fence 与架构守卫均落地；标准 `unit it http` 在隔离 worktree、16 shards、复制同基线 native history-search artifact 后连续三轮 `6550/6550`，三组时序 oracle 各 15/15。后续 debugger 在独立 worktree 连跑 40 轮（含 `load=35` 过载与禁 transpiler cache），固定 17 条 anchor 失败簇出现 0 次；review 阶段曾见的同簇来自两个审查任务共用 worktree 时的生产源码 mutation 污染，不记为 flaky、不改变排空/时序结构。两个原不可达 oracle 已按主会话裁决移到真实可达相位：P2.2b 的“恢复 tick 真分配”→M6；C11 History 三腿 merged-state→M2/M3/M4（M4 统一收口）。
 >
 > **前置**：P1 + **P6**（plan review major：两者共享 `delivery/session.ts` 的 heartbeat 生命周期语义，见 Task 2.2b）。**产出**：唯一 owner API，使 index 分配与 wire 写出在同一 serializer operation 内原子完成。
 > **承重项 4**（设计 §4.4 第 4 点 / 审查 F7）。
@@ -73,9 +73,13 @@ export interface WireEnvelopeFactory {
  * transactional — the first frame may already have reached the client when the second fails. The
  * commit point is therefore the FIRST attempted external write; see C9's two-stage semantics.
  */
+export type OwnerResult<T> =
+  | { readonly ok: true; readonly value: T }
+  | { readonly ok: false; readonly reason: "delivery-finished" }
+
 export interface WireBlockAllocationPort {
   /** Allocate the next wire index for a SYNTHETIC anchor and write its frames in one operation. */
-  allocateAndWriteAnchor(build: (ctx: { wireIndex: number; envelope: WireEnvelopeFactory }) => ReadonlyArray<WireWriteSpec>): Promise<number | undefined>
+  allocateAndWriteAnchor(build: (ctx: { wireIndex: number; envelope: WireEnvelopeFactory }) => ReadonlyArray<WireWriteSpec>): Promise<OwnerResult<number>>
   /**
    * Allocate the next wire index for a REAL upstream block and write EVERY frame belonging to the
    * same wire transaction. Lets the live decorator emit `[anchor_stop, real_start]` as ONE
@@ -84,7 +88,7 @@ export interface WireBlockAllocationPort {
   withAllocatedRealBlock(
     upstreamIndex: number,
     build: (ctx: { mapping: WireBlockMapping; envelope: WireEnvelopeFactory }) => ReadonlyArray<WireWriteSpec>,
-  ): Promise<WireBlockMapping | undefined>
+  ): Promise<OwnerResult<WireBlockMapping>>
   /**
    * Open a leg and bind the identity its frames were produced by. Serialized like every other owner
    * operation: establishes AFTER all successful writes of the previous leg and BEFORE any allocation
@@ -95,7 +99,7 @@ export interface WireBlockAllocationPort {
    * skipped it would have to fall back to the placeholder identity, which is precisely the wrong
    * degradation: the driver does hold the real handles.
    */
-  beginLeg(kind: "primary" | "continuation" | "recovery", source: { candidateId: string; dispatchId: string }): Promise<LegToken>
+  beginLeg(kind: "primary" | "continuation" | "recovery", source: { candidateId: string; dispatchId: string }): Promise<OwnerResult<LegToken>>
   /**
    * Close the currently open synthetic anchor, if any — the SINGLE close authority (round-4 blocker).
    *
@@ -114,7 +118,7 @@ export interface WireBlockAllocationPort {
   closeOpenAnchor(
     buildStop: (index: number, envelope: WireEnvelopeFactory) => WireWriteSpec,
     mode: "before-real" | "terminal",
-  ): Promise<"closed" | "none" | "write-error">
+  ): Promise<OwnerResult<"closed" | "none">>
   /**
    * Write a NON-START frame of an already-allocated block — delta / stop / anything carrying a block
    * index that was not itself an allocation (round-5 major).
@@ -137,9 +141,11 @@ export interface WireBlockAllocationPort {
    * registered, so writing the frame unremapped would silently land it on a stale index — the R1
    * silent-reordering failure this plan exists to prevent.
    */
-  writeBlockFrame(leg: LegToken, upstreamIndex: number, frame: ClientFrame): Promise<"written" | "no-mapping" | "write-error">
+  writeBlockFrame(leg: LegToken, upstreamIndex: number, frame: ClientFrame): Promise<OwnerResult<"written" | "no-mapping">>
 }
 ```
+
+**实施期补充裁决（2026-07-28）**：五个入口对 session 非 open 统一返回 `{ok:false, reason:"delivery-finished"}`；只有这一种预期终态进入 `OwnerResult`。未配置 `wireState`、reservation 重入、无 active leg 写 real 等接线错误继续 throw。driver 的四个 `beginLeg` 站点显式 narrow `OwnerResult`，delivery-finished 映射为 `settled-abort`。live 装饰器不注册成 owner：handler 从未装饰 raw delivery sink 取得 port，经 `RunResponseOpts.wireAllocationPort` 显式下传给 driver（production live oracle 锁住）。
 
 ### mapping token 的生命周期（**round-4 major：四点冻结**）
 
@@ -417,6 +423,7 @@ test("an abort while the first write's promise is PENDING counts as post-commit"
   - 把档 2/3 改成「失败即回滚 index」（即 round-2 的旧契约）→ 档 3 的「绝不复用」断言必须**转红**；
   - 把档 1 改成「不回滚」→ 档 1 断言必须**转红**。
   两个方向都咬得住，才证明两段语义各自有门。
+  - **返工补齐 real 腿**：`allocation-real-block-refusal.it.test.ts` 覆盖 build rollback、session refusal、首帧/次帧 abort 与 `writeBlockFrame` abort/非-client error。scratch mutation 将 real build catch 的 `rollback()` 改 `commit()` 后两条具名测试分别 `Expected 0 / Received 1`；删除 real session state guard 后拒绝测试收到 `{ok:true,...}` 而转红。所有 mutation 均在独立 scratch worktree 执行。
 - [x] **提交** → `feat(delivery): commit-point allocation semantics with irreversible wire side effects`
 
 ## Task 2.2c-b：recovery 腿 index 语义
@@ -443,7 +450,7 @@ test("recovery leg AFTER a pre-content anchor was written: upstream0 -> wire1 (m
 - [x] **Step 2**：跑，红。
 - [x] **Step 3**：实现——预留对读者不可见（commit point 之前）+ **三类** upstream round 都调 `beginLeg(kind, source)`（primary 的时机见「primary leg 的初始化时机」）。
 - [x] **Step 4**：跑，绿。
-- [x] **Step 5**：mutation——只在 continuation 调 `beginLeg`、recovery 漏调，确认 recovery 第二支转红。
+- [x] **Step 5（返工后重新完成）**：原勾选无效——旧 `allocation-recovery-leg.it.test.ts` 由测试自己调用 `port.beginLeg("recovery")`，只能锁 owner 算术，无法证明 driver 真接线，属于「测试准备替实现完成关键动作」。现改由 `driver-leg-fence.it.test.ts` 走 production binding-present recovery 分支；scratch mutation 删除 `driver.ts` recovery `beginLeg` 后，具名测试实际失败为 `Expected: "recovery" / Received: "primary"`。continuation 同理由 `continuation-flow.it.test.ts` 走真实 driver 分支；删除 production continuation fence 后实际失败为 `Expected: "continuation" / Received: undefined`。
 - [x] **提交** → `feat(delivery): explicit leg fences on every upstream round`
 
 ## Task 2.2c-c：跨腿 mapping 隔离 oracle（**round-6 major**）

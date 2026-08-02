@@ -17,7 +17,7 @@
 
 - Produces:
   - `GenerationWireIndexAllocator.anchorsOpened: () => number`（**诊断计数，仅供断言/遥测**。它**不是** C3 短路判据——判据是该块 `WireBlockMapping` 的映射恒等，见 Task 1.4 与 README「C3 的修订」）
-  - `AnchorState.allocator: GenerationWireIndexAllocator`（**必填**，非可选——类型系统逼出全部构造点，见 `feedback-fix-all-comparison-sites` 的正向版）
+  - `AnchorState.wireState: GenerationWireState`（**必填**，非可选——P1 原定的必填 `allocator` 在 P2 被更丰富的 SSOT supersede；allocator 只从 `wireState.allocator` 读取，类型系统已逼出全部构造点）
   - `AnchorHooks.startFrame: (index: number) => ClientFrame`（同 `stopFrame` / `deltaFrame`）
 - Consumes: 既有 `createAnchorIndexAllocator`（`keepalive-anchor.ts:49-62`，已 landed 未接线；U1 内**一并重命名**为 `createGenerationWireIndexAllocator`，见 README「命名」小节）
 
@@ -87,7 +87,7 @@ test("one generation has exactly one allocator, shared across every leg", async 
 ```
 
 - [x] **Step 2**：跑，红。
-- [x] **Step 3**：实现——`AnchorState` 加**必填** `allocator: GenerationWireIndexAllocator`；`makeAnchoredSseSink`（`handler-v4.ts:1046-1090`）创建 `createGenerationWireIndexAllocator()` 放进 `anchorState`；**同一 commit 内**把两个 injector 的 anchor index 改为向 allocator 取（U2 的原子性要求：injector 要 index 必须在 allocator 可达之后）。
+- [x] **Step 3（由 P2 最终形状 supersede）**：P1 先以必填 `allocator` 逼出构造点；P2 落地后收敛为必填 `AnchorState.wireState: GenerationWireState`，allocator 只从 `wireState.allocator` 读取，不保留可选/重复 alias。`makeAnchoredSseSink`（`handler-v4.ts`）仍是唯一创建点；injector 经 delivery owner 取同一 wireState。driver 的 ping-mode fallback 仅使用窄 legacy flags，不伪装成完整 `AnchorState`。
   - **注意**：`driver.ts:1090` 有一个 fallback `opts.anchorState ?? { injected: false, ... }`（`ping` 模式不 thread anchorState 时的驱动本地对象）。该 fallback 也必须带一个 allocator——用**同一个 `createGenerationWireIndexAllocator()`**，它在无 anchor 主腿上给出恒等 mapping（upstream i → wire i），天然满足 C3 的恒等短路。
 - [x] **Step 4**：跑，绿 + 全量 `test:fast` 回归。
 - [x] **Step 5: 提交（U2）** → `feat(anchor): thread a generation-scoped index allocator through AnchorState`
@@ -163,16 +163,15 @@ export function resolveRemappedFrame(frame: ClientFrame, mapping: WireBlockMappi
 实现要点：判据读该块 **`WireBlockMapping` 的实际映射**（`mapping.wireIndex === mapping.upstreamIndex`）而非 anchor 计数——恒等本身就是充要条件，天然覆盖四个场景，且不依赖任何 ambient「当前腿」状态（P2 冻结的 token 模型）。`anchorsOpened()` 保留作**诊断与断言**用途，**不是**短路判据。
 
 - [x] **Step 4**：跑，四场景全绿。
-- [x] **Step 5**：加**架构守卫**，防止未来有人绕过 primitive 自己算 offset：
+- [x] **Step 5（返工后换轴完成）**：原 literal-offset blocklist 被评审证伪——变量 offset、直调 `remapAnthropicBlockIndex` 均可绕过，且 baseline 一项只命中注释。已按 `reshaping-a-bypassed-guard` 改为 TypeScript AST **调用点 allowlist**：枚举 `src/` 内所有 `.remap(...)` 与 `remapAnthropicBlockIndex(...)` 真调用，注释不计；`driver.ts` 的 `continuation.remap(outFrame, continuationOffset)` 显式列为 legacy 待迁站点。三种 witness（literal、变量 offset、直调 primitive）均被同一入口判红；真实 scanner wiring mutation（把扫描结果置空）使具名 architecture test 转红。M4 的验收是 allowlist 中 `legacy:*` 条目清零，而非旧 `LEGACY_LITERAL_REMAP_BASELINE`。
 
 ```ts
 // tests/architecture/anchor-remap-single-authority.unit.test.ts
-test("no source file computes an anchor remap offset outside resolveRemappedFrame", () => {
-  // grep src/ 源码形状：除 keepalive-anchor.ts 外，不得出现 `.remap(` 后跟字面量数字
-  // 正样本对照：故意在一个临时字符串里放 `.remap(frame, 1)` 证明检查会命中
+test("all production remap calls are explicitly allowlisted", async () => {
+  // AST 扫真实 CallExpression；新增调用默认 fail，P3M 每迁一个 legacy site 同 commit 缩表。
 })
 test("no source file gates a remap on anchorsOpened() — the predicate is offset identity", () => {
-  // 锁住 blocker 不复发：anchorsOpened() 不得出现在任何 remap 分支条件里
+  // 锁住 blocker 不复发：anchorsOpened() 不得出现在任何 remap 分支条件里。
 })
 ```
 
