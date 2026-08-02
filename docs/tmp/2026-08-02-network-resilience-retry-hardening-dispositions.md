@@ -47,10 +47,52 @@
 
 **结论：generation-scoped 单调 wire-index allocator 是本特性的硬前置，不是可选项，也不能降级为「以后做」。** 排序上它必须先于 §4.0 的默认翻转。
 
-## 4. 待办（第 2 轮评审回来后合并处置）
+## 4. 第 2 轮：Claude `reviewer`（对抗性架构轴）
 
-- [ ] 并入 Claude `reviewer` 的架构轴发现
-- [ ] 按 G1–G9 修订草案 §2 / §4.4 / §4.5 / §6
-- [ ] §4.5 重写为「`retry.total_budget_sec` 与 `timeouts.request_deadline` 的优先级与迁移关系」
-- [ ] 新增依赖节：inter-block allocator 作为硬前置，并给出排序
+报告 [2026-08-02-network-resilience-retry-hardening-review-claude.md](2026-08-02-network-resilience-retry-hardening-review-claude.md)。裁决：**须重做**（§4.0 / §4.4 / §4.5 三节返工后重审）。Blocker 4 / Major 10 / Minor 7 / Nit 1。
+
+### 4.1 主会话独立复核（五条承重发现，全部亲手取证，全部成立）
+
+| 发现 | 复核动作 | 结论 |
+|---|---|---|
+| B2 网络类抬到 9 是空操作 | `network-retry.ts:35,41,50` 的 `hasRetried` 布尔闸；`server-error-retry.ts:24` 的 `SERVER_ERROR_MAX_RETRIES = 2` 硬编码 | **成立**。`max_reactive_retries` 不是绑定约束，抬 5→9 零行为变化 |
+| B4 `idle-timeout` 落不进任何腿 | `packages/foundation/src/stream.ts:164-174` 九种 kind；`driver.ts:1430` 与 `:1481` 两门均要求 `=== "other"` | **成立**。gpt-5.5 的 266–462s 静默正是这一形态 |
+| B1 撞冻结硬前置门 | ADR `2026-07-22-continuation-retry-sequential-anchor.md:27` 原文「并是 Anthropic 块级默认翻转的**硬前置门**」；carrier spec `:16,:157,:193` 三处同义 | **成立**。§4.0 越过了已裁决的门（`what-decided-is-decided` 违反，责任在起草方） |
+| M1 块级废掉 hedge | `driver.ts:823-825` `if (outerOpts && "retryCap" in outerOpts) return undefined`；Anthropic buffered 分支恒带 `retryCap`（`handler-v4.ts:1344`） | **成立** |
+| M3 `bufferedBytes` 不清零 | 全文件仅三处：`driver.ts:1227` 初始化 / `:1274` 累加 / `:1275` 判定，无重置 | **成立**。块级下度量的是整条腿累计渲染字节而非驻留内存 |
+
+### 4.2 逐条处置
+
+| # | 发现 | 裁决 | 级别 | 理由 |
+|---|---|---|---|---|
+| B1 | §4.0 越过 allocator 硬前置门 | **采纳** | A（回用户裁排序） | 门是已裁决事实，不重新论证。需用户在「先做 allocator / 拆阶段并行 / 推翻门」间拍板 |
+| B2 | 网络族抬预算是空操作，须把策略内部硬闸参数化 + 指数退避 + 正样本守卫测试 | **采纳** | C | 已独立复核。这是用户头号诉求的唯一有效落点，且与 §4.0 正交、可独立先行 |
+| B2-附 | `token-refresh` 不应与网络族共用 9 次 | **采纳** | C | 凭据无效时重刷 9 次是打 auth 端点。单列低值 |
+| B3 | §4.5 应扩展既有 `request_deadline` 而非新增键；另有 `stale_request_max_age` 按 `ctx.durationMs` 判定的命名谎言 | **采纳** | C | 与 G1 同源，反对造第二条平行轨（A2）。两个 1200s 杀手都要处理 |
+| B4 | 三腿按 commit 状态分类，代码按 error class 门控；须补 error-class × commit-state 穷尽表 | **采纳** | C | 已复核。`idle-timeout` 在零提交时应可透明重试——它是**代理自设**门限，非上游终局决定 |
+| M1 | 块级化连带废掉 hedge，草案未记录 | **采纳** | A（回用户） | 静默摧毁另一个默认开启的韧性机制违反 `no-silently-cut-but-defer` |
+| M2 | translate leg（`/v1/messages` + `@cc`/`@responses`）零条腿，且它是 `liveReconcilingSink` 的第二消费者 | **采纳** | C | 范围内端点却零覆盖，必须显式处理而非沉默 |
+| M3 | retreat 短路在三腿之前 + `bufferedBytes` 不清零 | **采纳，部分自决** | C | `bufferedBytes` 清零是纯根因修复，自决。retreat 保留为**单块** OOM 兜底（修清零后近乎不可达），但其后截断须走三腿体系而非直接 error |
+| M4 | `32` 派发预算差一个数量级（11 候选 × 15 ≈ 165）；透明重试分支无 try/catch 会硬崩 | **采纳** | C | 两个预算是**相乘**关系，我按相加估了。预算耗尽是可预期终局，不应伪装成意外崩溃 |
+| M5 | §4.2 新终态在 handler 分支阶梯里的优先级未定义，会导致干净终止符后**又**收到 error 帧 | **采纳** | C | 同族陷阱见 `reference-exactly-one-terminal-is-not-exactly-one-complete-terminus` |
+| M6 | `usage:<已累计>` 无定义，acc 每腿重置，跨腿 usage 累加器不存在 | **采纳** | C | §4.2 漏列的新增实现项 |
+| M7 | 「History 记为正常完成」与 contentless refusal 先例冲突，且会毁掉本特性的验收指标 | **采纳** | C | 论证强：把伤害记成成功就再也无法验证本设计是否有效。交付=干净、判定=fail 两轴正交 |
+| M8 | 第四态（已提交 + 无 tool_use + 预算耗尽）未定义，§4.2 的终止符对该前缀非法 | **采纳** | A（回用户选形状） | 该态在本设计下变得**更常见**而非更罕见 |
+| M9 | Responses 续写缺 `sequence_number` / `response.id` 跨腿一致性；§4.2 Responses 分支依赖 §4.3 先落地 | **采纳** | C | 附带：`sequence_number` 是否被客户端校验须先跑探针 |
+| M10 | 推翻 WS terminal-only 的论证不完整；且 ADR D4 与 2026-07-11 决策 2 直接冲突、无 supersede 记录 | **采纳** | C | D4（较新）已决定「Responses WS 升块级」——**我不需要新论证，需要补 supersede 记录**并回应原论证全部三点 |
+| m1–n1 | 七条 Minor + 一条 Nit（O1 闭合、learning 第四族、`recovery.max_candidates` 死旋钮、WS 改动位置指错、fallback 组合未验证、前端/doc 同步面、admission 形式判据） | **全部采纳** | D | 无争议事实修正 |
+| §3 建议表 5 条 | 四维穷尽表 / `admitNewLeg` 统一 seam / 验收指标 / 真 SDK oracle + mutation control / A1 按行为而非按名字扫 | **全部采纳** | C | 最后一条尤其承重：`retreated` 与 hedge 都是「事实上的 live 退路」但不叫 live，逃过了我的公理扫描 |
+
+本轮无驳回项。
+
+### 4.3 需用户裁决的三个分叉（已提问）
+
+B1 排序 / M1 hedge 去向 / M8 第四态形状。三者都改变客户端可观察行为或工作量数量级，不由我裁。
+
+## 5. 待办（用户裁决后执行）
+
+- [ ] 按两轮共 30+ 条发现返工草案，按 reviewer 建议的顺序：B3 → B2 → B4+M3+M8 → B1 → M1/M2/M10 → M5/M6/M7/M9
+- [ ] 补 error-class × commit-state × retreat × 预算的四维穷尽表（用穷尽 `Record` 让类型系统逼出全站点）
+- [ ] 返工后发起第 3 轮复评（`SendMessage` 续跑两个原 reviewer；B 级与已升级分歧另派未卷入第三方）
 - [ ] G10 的暂定驳回并入收口合议
+
