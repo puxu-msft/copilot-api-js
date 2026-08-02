@@ -128,6 +128,13 @@ test("real allocation without beginLeg is rejected rather than degraded", async 
   expect(wireState.allocator.nextRealIndex()).toBe(0)
 })
 
+test("a pre-commit envelope wiring error rolls back the anchor reservation", async () => {
+  const { port, wireState } = setup()
+  await expect(port.allocateAndWriteAnchor(({ envelope }) => [envelope.real(realStart(0))])).rejects.toThrow("active leg")
+  expect(wireState.allocator.nextAnchorIndex()).toBe(0)
+  expect(wireState.allocator.anchorsOpened()).toBe(0)
+})
+
 test("handler anchor state and delivery port share the exact GenerationWireState reference", () => {
   const { wireState, delivery, port } = setup()
   expect(port.wireState).toBe(wireState)

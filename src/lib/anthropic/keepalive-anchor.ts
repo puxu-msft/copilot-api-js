@@ -304,13 +304,13 @@ export function makeSyntheticAnchorInjector(args: {
     const sink = getSink()
     if (!sink || (independentContentLatch ? state.contentAnchorInjected : state.injected)) return false
     const previousContentAnchorInjected = state.contentAnchorInjected
-    if (independentContentLatch) state.contentAnchorInjected = true
-    if (independentContentLatch && state.injected) state.messageStartForwarded = true
     const port = getDownstreamDeliverySession(sink)?.allocationPort
     if (!port?.wireState) throw new Error("[anchor] delivery allocation owner is unavailable")
     const real = state.capturedMessageStart
     const synthesize = anchor.syntheticMessageStart
     if (!state.messageStartForwarded && !real && !synthesize) return false
+    if (independentContentLatch) state.contentAnchorInjected = true
+    if (independentContentLatch && state.injected) state.messageStartForwarded = true
 
     // Migration bridge: publish the legacy state intent synchronously before the owner operation queues.
     // The driver may snapshot these fields while this operation waits behind a flush; the frontier itself
