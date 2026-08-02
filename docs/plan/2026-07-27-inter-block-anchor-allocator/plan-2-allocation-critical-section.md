@@ -75,7 +75,7 @@ export interface WireEnvelopeFactory {
  */
 export type OwnerResult<T> =
   | { readonly ok: true; readonly value: T }
-  | { readonly ok: false; readonly reason: "client-gone" | "session-terminating" | "no-mapping"; readonly committed: boolean }
+  | { readonly ok: false; readonly reason: "client-gone" | "session-terminating" | "wire-torn"; readonly committed: boolean }
 
 export interface WireBlockAllocationPort {
   /** Allocate the next wire index for a SYNTHETIC anchor and write its frames in one operation. */
@@ -141,11 +141,11 @@ export interface WireBlockAllocationPort {
    * registered, so writing the frame unremapped would silently land it on a stale index — the R1
    * silent-reordering failure this plan exists to prevent.
    */
-  writeBlockFrame(leg: LegToken, upstreamIndex: number, frame: ClientFrame): Promise<OwnerResult<"written" | "no-mapping">>
+  writeBlockFrame(leg: LegToken, upstreamIndex: number, frame: ClientFrame): Promise<OwnerResult<"written">>
 }
 ```
 
-**实施期补充裁决（2026-07-28，第二轮复审修订）**：五个入口统一返回 `OwnerResult<T>`；失败原因在产生点区分 `client-gone`、`session-terminating`、`no-mapping`，并携 `committed:boolean`。只有 `client-gone` 映射 `settled-abort`；`session-terminating` 映射独立 `delivery-finished` outcome；missing mapping 是 `ok:false`，绝不伪装写成功。未配置 `wireState`、reservation 重入、无 active leg 写 real 等接线错误继续 throw，非 client wire error 以 `DeliveryOwnerError.committed` 显式传播。live 装饰器不注册成 owner：handler 从未装饰 raw delivery sink 取得 port，经 `RunResponseOpts.wireAllocationPort` 显式下传给 driver。**首版 `live-owner-port.it.test.ts` 只锁 driver 消费、自造 port，不能证明 handler 供给，原“production live oracle 锁住”结论已作废**；返工后由真实 HTTP `c0-live-anchored-direct-stream-golden.http.test.ts` 捕获 handler 创建的 session，完整复现“从 decorated sink 取 port”的 mutation 后实际失败为 `Expected primary / Received undefined`。hedge winner 在 winner 选定后、任一 frame 写出前同样 `beginLeg("primary", winner source)`。
+**实施期补充裁决（2026-07-28，第二/三轮复审修订）**：五个入口统一返回 `OwnerResult<T>`；生命周期/可恢复失败原因在产生点区分 `client-gone`、`session-terminating`、`wire-torn`，并携 `committed:boolean`。只有 `client-gone` 映射 `settled-abort`；`session-terminating` 仅在 `ctx.settled` 已成立时映射 `delivery-finished`，否则显式 `stream-error`；`wire-torn` 始终 `stream-error`。missing mapping 与未配置 `wireState`、reservation 重入、无 active leg 写 real 同属接线错误，直接 throw。非 client wire error 以 `DeliveryOwnerError.committed` 显式传播；若 post-commit 则置独立 `wireTorn`，封锁后续 owner 入口而保持 terminal delivery 可写。live 装饰器不注册成 owner：handler 从未装饰 raw delivery sink 取得 port，经 `RunResponseOpts.wireAllocationPort` 显式下传给 driver。**首版 `live-owner-port.it.test.ts` 只锁 driver 消费、自造 port，不能证明 handler 供给，原“production live oracle 锁住”结论已作废**；返工后由真实 HTTP `c0-live-anchored-direct-stream-golden.http.test.ts` 捕获 handler 创建的 session，完整复现“从 decorated sink 取 port”的 mutation 后实际失败为 `Expected primary / Received undefined`。hedge winner 在 winner 选定后、任一 frame 写出前同样 `beginLeg("primary", winner source)`；winner identity 经不写字节的 `noteWinner` 交给 owner，帧仍走原 `sink.write` 经过 live reconcile，禁止为 provenance 改写字节路径。第三轮反向 mutation改回 owner direct write后，真实 HTTP oracle实际因 message_start 从 1 变 2 而转红。post-commit 非 client 撕裂由独立 `wireTorn` 封锁五入口，删除置位/守卫后具名 oracle收到 `{ok:true,value:1}` 而非 `wire-torn`；session保持 open并成功写 terminal error/finalize。`delivery-finished` 只在 response pump 已在途且另一并发路径已 settle ctx 时允许；session先终结但 ctx仍 pending的 driver oracle必须得到 loud `stream-error`。客户端断开与在途 terminate共用 `finalizeSinkOnce`，删除 latch后 race oracle实际 `Expected 1 / Received 2`。
 
 ### mapping token 的生命周期（**round-4 major：四点冻结**）
 
@@ -515,5 +515,5 @@ test("an in-flight heartbeat anchor operation interleaved with beginLeg keeps th
 - [x] `typecheck` + `test:fast` 绿；O-1/O-2/O-6 仍绿。
 - [x] 并发 oracle（2.2 + 2.2b）各连跑 15 次全绿。
 - [x] 架构守卫锁住「生产路径只经 owner API 分配」。
-- [x] **C9 两段语义各有测试**：commit point 前失败 → 全回滚；commit point 后失败 → 永久消费 + 终止 delivery（三档 oracle + 两类边界状态，Task 2.2c）。
+- [x] **C9 两段语义各有测试**：commit point 前失败 → 全回滚；commit point 后失败 → 永久消费，client-gone 完整 finalize，非 client 撕裂置 `wireTorn` 禁止后续 owner 分配但保留 terminal delivery（三档 oracle + 两类边界状态 + 第三轮 tear→second-allocation mutation，Task 2.2c）。
 - [x] **P3.1 原停点已消解**：owner 形状已冻结（若实施中发现站不住，那才是真分叉 → 停下回报）。
