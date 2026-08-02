@@ -81,7 +81,7 @@ test("missing mapping is explicit and never writes the original frame", async ()
   const primary = ownerValue(await port.beginLeg("primary", { candidateId: "candidate-primary", dispatchId: "dispatch-primary" }))
   const orphan = delta(0, "orphan")
 
-  expect(await port.writeBlockFrame(primary, 0, orphan)).toEqual({ ok: false, reason: "no-mapping", committed: false })
+  await expect(port.writeBlockFrame(primary, 0, orphan)).rejects.toThrow("no mapping")
   expect(writes).toEqual([])
 })
 

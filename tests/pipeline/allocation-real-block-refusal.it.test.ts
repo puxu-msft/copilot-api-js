@@ -67,6 +67,55 @@ function setup() {
 
 const PRIMARY = { candidateId: "candidate-primary", dispatchId: "dispatch-primary" }
 
+test("a post-commit non-client tear poisons future allocations but keeps terminal delivery writable", async () => {
+  const writes: Array<ClientFrame> = []
+  let failFirstAnchor = true
+  let finalized = 0
+  const sink: ClientSink = {
+    async write(frame) {
+      writes.push(frame)
+    },
+    async writeAnchor(frame) {
+      if (failFirstAnchor) {
+        failFirstAnchor = false
+        throw new TypeError("torn wire")
+      }
+      writes.push(frame)
+    },
+    async finalize() {
+      finalized++
+    },
+    close() {},
+  }
+  const { wireState, delivery, port } = setupWithSink(sink)
+
+  await expect(port.allocateAndWriteAnchor(({ wireIndex, envelope }) => [envelope.anchor(start(wireIndex))])).rejects.toThrow("torn wire")
+  expect(wireState.allocator.nextAnchorIndex()).toBe(1)
+  expect(delivery.snapshot.state).toBe("open")
+  expect(await port.allocateAndWriteAnchor(({ wireIndex, envelope }) => [envelope.anchor(start(wireIndex))])).toEqual({
+    ok: false,
+    reason: "wire-torn",
+    committed: false,
+  })
+  expect(await port.beginLeg("primary", PRIMARY)).toEqual({ ok: false, reason: "wire-torn", committed: false })
+  expect(wireState.allocator.nextAnchorIndex()).toBe(1)
+
+  await delivery.terminate({
+    kind: "upstream-nonretryable",
+    frames: [
+      {
+        frame: { event: "error", data: '{"type":"error"}' },
+        sequence: 0,
+        observedAtMonotonic: 0,
+        provenance: { kind: "synthetic", syntheticKind: "synthetic" },
+      },
+    ],
+  })
+  expect(writes.map((frame) => JSON.parse(frame.data ?? "{}").type)).toEqual(["error"])
+  expect(finalized).toBe(1)
+  expect(delivery.snapshot.state).toBe("closed")
+})
+
 test("a REAL-block build callback throwing before any wire write rolls back the whole reservation", async () => {
   const { writes, wireState, port } = setup()
   const leg = ownerValue(await port.beginLeg("primary", PRIMARY))

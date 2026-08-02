@@ -292,7 +292,7 @@ export interface RawHttpRequest {
   readonly clientAbortSignal?: AbortSignal
 }
 
-export type OwnerFailureReason = "client-gone" | "session-terminating" | "no-mapping"
+export type OwnerFailureReason = "client-gone" | "session-terminating" | "wire-torn"
 export type OwnerResult<T> = Readonly<{ ok: true; value: T }> | Readonly<{ ok: false; reason: OwnerFailureReason; committed: boolean }>
 
 export type WireWriteSpec =
@@ -318,7 +318,7 @@ export interface WireBlockAllocationPort {
     buildStop: (index: number, envelope: WireEnvelopeFactory) => WireWriteSpec,
     mode: "before-real" | "terminal",
   ): Promise<OwnerResult<"closed" | "none">>
-  writeBlockFrame(leg: LegToken, upstreamIndex: number, frame: ClientFrame): Promise<OwnerResult<"written" | "no-mapping">>
+  writeBlockFrame(leg: LegToken, upstreamIndex: number, frame: ClientFrame): Promise<OwnerResult<"written">>
 }
 
 /** Per-call hooks for {@link PipelineDriver.runResponse}. */

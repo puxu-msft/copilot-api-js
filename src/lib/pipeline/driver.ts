@@ -56,6 +56,7 @@ import type {
   RawHttpRequest,
   RequestInspectStage,
   RequestInspection,
+  OwnerFailureReason,
   ResponseOutcome,
   RetryAction,
   RetryStrategy,
@@ -869,25 +870,22 @@ async function maybeRunHedgedResponseSink(
     const selected = raced.candidate
     runtime.bind(binding.coordinator, selected)
     env.ctx.selectGenerationWinner(selected.candidate, selected.dispatch)
-    const explicitPort = outerOpts?.wireAllocationPort
-    const delivery = explicitPort ? getDeliverySessionForAllocationPort(explicitPort) : getDownstreamDeliverySession(sink)
-    const allocationPort = explicitPort ?? delivery?.allocationPort
+    const source = { candidateId: String(selected.candidate), dispatchId: String(selected.dispatch) }
+    const allocationPort = outerOpts?.wireAllocationPort ?? getDownstreamDeliverySession(sink)?.allocationPort
     if (allocationPort?.wireState) {
-      const leg = await allocationPort.beginLeg("primary", {
-        candidateId: String(selected.candidate),
-        dispatchId: String(selected.dispatch),
-      })
-      if (!leg.ok) return { kind: leg.reason === "client-gone" ? "settled-abort" : "delivery-finished" }
+      const leg = await allocationPort.beginLeg("primary", source)
+      if (!leg.ok) return ownerFailureOutcome(leg.reason, env)
     }
+    getDownstreamDeliverySessionForPortOrSink(outerOpts?.wireAllocationPort, sink)?.noteWinner(source)
     if (raced.kind === "terminal") {
-      await writeWinnerFrames(sink, delivery, selected.candidate, raced.bufferedFrames)
+      await writeWinnerFrames(sink, selected.candidate, raced.bufferedFrames)
       binding.coordinator.releaseCandidate(selected.candidate)
       return { kind: "complete", headers: selected.upstream.headers, ...(selected.processor.finish && { finish: selected.processor.finish }) }
     }
 
     env.ctx.trackOperationBody(raced.loserCleanup)
-    await writeWinnerFrames(sink, delivery, selected.candidate, raced.bufferedFrames)
-    for await (const frame of raced.liveFrames) await writeWinnerFrame(sink, delivery, selected.candidate, frame)
+    await writeWinnerFrames(sink, selected.candidate, raced.bufferedFrames)
+    for await (const frame of raced.liveFrames) await writeWinnerFrame(sink, selected.candidate, frame)
     binding.coordinator.releaseCandidate(selected.candidate)
     return { kind: "complete", headers: selected.upstream.headers, ...(selected.processor.finish && { finish: selected.processor.finish }) }
   } catch (error) {
@@ -923,27 +921,32 @@ function withCandidateResponseOpts(
   }
 }
 
-async function writeWinnerFrames(
-  sink: ClientSink,
-  delivery: ReturnType<typeof getDownstreamDeliverySession>,
-  candidate: CandidateHandle,
-  frames: ReadonlyArray<ClientFrame>,
-): Promise<void> {
-  if (delivery) {
-    await delivery.commitWinnerBlock(String(candidate), frames)
-    return
+const OWNER_FAILURE_OUTCOMES: Readonly<Record<OwnerFailureReason, ResponseOutcome>> = Object.freeze({
+  "client-gone": Object.freeze({ kind: "settled-abort" }),
+  "session-terminating": Object.freeze({ kind: "delivery-finished" }),
+  "wire-torn": Object.freeze({ kind: "stream-error", error: new Error("[delivery] wire transaction is torn") }),
+})
+
+function ownerFailureOutcome(reason: OwnerFailureReason, env: RequestEnvelope): ResponseOutcome {
+  if (reason === "session-terminating" && !env.ctx.settled) {
+    return { kind: "stream-error", error: new Error("[delivery] session terminated before request context settled") }
   }
+  return OWNER_FAILURE_OUTCOMES[reason]
+}
+
+function getDownstreamDeliverySessionForPortOrSink(
+  port: RunResponseOpts["wireAllocationPort"],
+  sink: ClientSink,
+): ReturnType<typeof getDownstreamDeliverySession> {
+  return port ? getDeliverySessionForAllocationPort(port) : getDownstreamDeliverySession(sink)
+}
+
+async function writeWinnerFrames(sink: ClientSink, _candidate: CandidateHandle, frames: ReadonlyArray<ClientFrame>): Promise<void> {
   for (const frame of frames) await sink.write(frame)
 }
 
-async function writeWinnerFrame(
-  sink: ClientSink,
-  delivery: ReturnType<typeof getDownstreamDeliverySession>,
-  candidate: CandidateHandle,
-  frame: ClientFrame,
-): Promise<void> {
-  if (delivery) await delivery.writeWinnerFrame(String(candidate), frame)
-  else await sink.write(frame)
+async function writeWinnerFrame(sink: ClientSink, _candidate: CandidateHandle, frame: ClientFrame): Promise<void> {
+  await sink.write(frame)
 }
 
 /**
@@ -991,7 +994,7 @@ async function runResponseSink(
         candidateId: String(unhedgedBinding.candidate.candidate),
         dispatchId: String(unhedgedBinding.candidate.dispatch),
       })
-      if (!leg.ok) return { kind: leg.reason === "client-gone" ? "settled-abort" : "delivery-finished" }
+      if (!leg.ok) return ownerFailureOutcome(leg.reason, env)
     }
   }
   const effectiveOpts = currentCandidateResponseOpts(generation, upstream, opts) as RunResponseOpts
@@ -1078,7 +1081,7 @@ export async function runResponseBufferedSink(
         candidateId: String(unhedgedBinding.candidate.candidate),
         dispatchId: String(unhedgedBinding.candidate.dispatch),
       })
-      if (!leg.ok) return { kind: leg.reason === "client-gone" ? "settled-abort" : "delivery-finished" }
+      if (!leg.ok) return ownerFailureOutcome(leg.reason, env)
     }
   }
   const cap = opts.retryCap ?? 0
@@ -1493,7 +1496,7 @@ export async function runResponseBufferedSink(
             candidateId: String(recovered.candidate),
             dispatchId: String(recovered.dispatch),
           })
-          if (!leg.ok) return { kind: leg.reason === "client-gone" ? "settled-abort" : "delivery-finished" }
+          if (!leg.ok) return ownerFailureOutcome(leg.reason, env)
         }
         current = recovered.upstream
         currentEnv = recovered.env
@@ -1551,7 +1554,7 @@ export async function runResponseBufferedSink(
               candidateId: String(continued.candidate),
               dispatchId: String(continued.dispatch),
             })
-            if (!leg.ok) return { kind: leg.reason === "client-gone" ? "settled-abort" : "delivery-finished" }
+            if (!leg.ok) return ownerFailureOutcome(leg.reason, env)
           }
           current = continued.upstream
           currentEnv = continued.env
