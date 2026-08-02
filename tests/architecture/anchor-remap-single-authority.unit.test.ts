@@ -183,6 +183,14 @@ test("detector bites on owner-private mapping and open-anchor access", () => {
   expect("state.openAnchorIndex = 1".match(/\bopenAnchorIndex\b/g)).toHaveLength(1)
 })
 
+test("retired winner write APIs and candidate-shaped helper parameters cannot return", async () => {
+  const session = await readFile(path.join(repoRoot, "src/lib/pipeline/delivery/session.ts"), "utf8")
+  const driver = await readFile(path.join(repoRoot, "src/lib/pipeline/driver.ts"), "utf8")
+  expect(session).not.toContain("commitWinnerBlock")
+  expect(session).not.toContain("writeWinnerFrame")
+  expect(driver).not.toContain("_candidate: CandidateHandle")
+})
+
 test("mapping registry and open anchor state are accessed only by the delivery owner", async () => {
   const violations: Array<string> = []
   for (const file of await sourceFiles(path.join(repoRoot, "src"))) {

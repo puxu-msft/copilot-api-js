@@ -84,12 +84,11 @@ describe("P3-T1 downstream delivery session", () => {
     expect(delivery.snapshot.writeCount).toBe(3)
     expect(delivery.snapshot.state).toBe("open")
 
-    await delivery.commitWinnerBlock("candidate-primary", [
-      deliveryFrame(frame("content_block_stop", 0), "anchor"),
-      deliveryFrame(frame("content_block_start", 1, "thinking")),
-      deliveryFrame(frame("content_block_delta", 1)),
-      deliveryFrame(frame("content_block_stop", 1)),
-    ])
+    delivery.noteWinner({ candidateId: "candidate-primary", dispatchId: "dispatch-primary" })
+    await delivery.writeScaffold([deliveryFrame(frame("content_block_stop", 0), "anchor")])
+    await delivery.clientSink.write(frame("content_block_start", 1, "thinking"))
+    await delivery.clientSink.write(frame("content_block_delta", 1))
+    await delivery.clientSink.write(frame("content_block_stop", 1))
     expect(delivery.snapshot.winnerCandidateId).toBe("candidate-primary")
     expect(delivery.snapshot.ledger.openBlocks).toEqual([])
     expect(delivery.snapshot.ledger.semanticBlockCount).toBe(1)
@@ -110,26 +109,29 @@ describe("P3-T1 downstream delivery session", () => {
     expect(delivery.snapshot.ledger.openBlocks).toEqual([{ index: 0, type: "text", synthetic: true }])
     expect(delivery.snapshot.upstreamRounds).toEqual(["truncated", "recovery-1"])
 
-    await delivery.commitWinnerBlock("recovery-1", [
-      deliveryFrame(frame("content_block_stop", 0), "anchor"),
-      deliveryFrame(frame("content_block_start", 1, "text")),
-      deliveryFrame(frame("content_block_stop", 1)),
-    ])
+    delivery.noteWinner({ candidateId: "recovery-1", dispatchId: "recovery-dispatch" })
+    await delivery.writeScaffold([deliveryFrame(frame("content_block_stop", 0), "anchor")])
+    await delivery.clientSink.write(frame("content_block_start", 1, "text"))
+    await delivery.clientSink.write(frame("content_block_stop", 1))
     expect(delivery.snapshot.winnerCandidateId).toBe("recovery-1")
     expect(delivery.snapshot.ledger.semanticBlockCount).toBe(1)
   })
 
-  test("rejects sibling frames after a winner is selected", async () => {
-    const delivery = createDownstreamDeliverySession({ sink: arraySink([]) })
-    await delivery.commitWinnerBlock("primary", [frame("content_block_start", 0, "text"), frame("content_block_stop", 0)])
+  test("winner identity is recorded without changing the client write path", async () => {
+    const writes: Array<{ method: string; frame: unknown }> = []
+    const delivery = createDownstreamDeliverySession({ sink: arraySink(writes) })
+    delivery.noteWinner({ candidateId: "primary", dispatchId: "dispatch-primary" })
+    await delivery.clientSink.write(frame("message_delta"))
 
-    await expect(delivery.writeWinnerFrame("hedge", frame("message_delta"))).rejects.toThrow(/winner.*primary/)
-    await expect(delivery.writeWinnerFrame("primary", frame("message_delta"))).resolves.toBeUndefined()
+    expect(delivery.snapshot.winnerCandidateId).toBe("primary")
+    expect(writes.map(({ method }) => method)).toEqual(["write"])
   })
 
   test("records real envelopes and terminal writes from actual client wire", async () => {
     const delivery = createDownstreamDeliverySession({ sink: arraySink([]) })
-    await delivery.commitWinnerBlock("primary", [deliveryFrame(frame("message_start")), deliveryFrame(frame("message_stop"))])
+    delivery.noteWinner({ candidateId: "primary", dispatchId: "dispatch-primary" })
+    await delivery.clientSink.write(frame("message_start"))
+    await delivery.clientSink.write(frame("message_stop"))
 
     expect(delivery.snapshot.ledger.messageEnvelope).toBe("real")
     expect(delivery.snapshot.ledger.terminalWritten).toBe(true)

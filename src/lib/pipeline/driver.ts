@@ -878,14 +878,14 @@ async function maybeRunHedgedResponseSink(
     }
     getDownstreamDeliverySessionForPortOrSink(outerOpts?.wireAllocationPort, sink)?.noteWinner(source)
     if (raced.kind === "terminal") {
-      await writeWinnerFrames(sink, selected.candidate, raced.bufferedFrames)
+      await writeWinnerFrames(sink, raced.bufferedFrames)
       binding.coordinator.releaseCandidate(selected.candidate)
       return { kind: "complete", headers: selected.upstream.headers, ...(selected.processor.finish && { finish: selected.processor.finish }) }
     }
 
     env.ctx.trackOperationBody(raced.loserCleanup)
-    await writeWinnerFrames(sink, selected.candidate, raced.bufferedFrames)
-    for await (const frame of raced.liveFrames) await writeWinnerFrame(sink, selected.candidate, frame)
+    await writeWinnerFrames(sink, raced.bufferedFrames)
+    for await (const frame of raced.liveFrames) await writeWinnerFrame(sink, frame)
     binding.coordinator.releaseCandidate(selected.candidate)
     return { kind: "complete", headers: selected.upstream.headers, ...(selected.processor.finish && { finish: selected.processor.finish }) }
   } catch (error) {
@@ -921,17 +921,17 @@ function withCandidateResponseOpts(
   }
 }
 
-const OWNER_FAILURE_OUTCOMES: Readonly<Record<OwnerFailureReason, ResponseOutcome>> = Object.freeze({
-  "client-gone": Object.freeze({ kind: "settled-abort" }),
-  "session-terminating": Object.freeze({ kind: "delivery-finished" }),
-  "wire-torn": Object.freeze({ kind: "stream-error", error: new Error("[delivery] wire transaction is torn") }),
-})
+const OWNER_FAILURE_OUTCOME_FACTORIES = {
+  "client-gone": (): ResponseOutcome => ({ kind: "settled-abort" }),
+  "session-terminating": (): ResponseOutcome => ({ kind: "delivery-finished" }),
+  "wire-torn": (): ResponseOutcome => ({ kind: "stream-error", error: new Error("[delivery] wire transaction is torn") }),
+} satisfies Readonly<Record<OwnerFailureReason, () => ResponseOutcome>>
 
 function ownerFailureOutcome(reason: OwnerFailureReason, env: RequestEnvelope): ResponseOutcome {
   if (reason === "session-terminating" && !env.ctx.settled) {
     return { kind: "stream-error", error: new Error("[delivery] session terminated before request context settled") }
   }
-  return OWNER_FAILURE_OUTCOMES[reason]
+  return OWNER_FAILURE_OUTCOME_FACTORIES[reason]()
 }
 
 function getDownstreamDeliverySessionForPortOrSink(
@@ -941,11 +941,11 @@ function getDownstreamDeliverySessionForPortOrSink(
   return port ? getDeliverySessionForAllocationPort(port) : getDownstreamDeliverySession(sink)
 }
 
-async function writeWinnerFrames(sink: ClientSink, _candidate: CandidateHandle, frames: ReadonlyArray<ClientFrame>): Promise<void> {
+async function writeWinnerFrames(sink: ClientSink, frames: ReadonlyArray<ClientFrame>): Promise<void> {
   for (const frame of frames) await sink.write(frame)
 }
 
-async function writeWinnerFrame(sink: ClientSink, _candidate: CandidateHandle, frame: ClientFrame): Promise<void> {
+async function writeWinnerFrame(sink: ClientSink, frame: ClientFrame): Promise<void> {
   await sink.write(frame)
 }
 

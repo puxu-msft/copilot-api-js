@@ -53,8 +53,6 @@ export interface DownstreamDeliverySession {
   readonly clientSink: ClientSink
   readonly allocationPort: WireBlockAllocationPort
   writeScaffold(frames: ReadonlyArray<DeliveryFrame>): Promise<void>
-  commitWinnerBlock(candidateId: string, frames: ReadonlyArray<DeliveryFrame | DeliveryFrame["frame"]>): Promise<void>
-  writeWinnerFrame(candidateId: string, frame: DeliveryFrame | DeliveryFrame["frame"]): Promise<void>
   noteWinner(source: LegSource): void
   noteUpstreamRoundEnded(reason: string): void
   noteUpstreamRoundStarted(candidateId: string): void
@@ -282,7 +280,7 @@ export function createDownstreamDeliverySession(options: CreateDownstreamDeliver
   const finalizeAfterClientGone = async (): Promise<void> => {
     if (finishReason === "client-gone" && finalized) return finalized
     state = "terminating"
-    finishReason = "client-gone"
+    finishReason ??= "client-gone"
     closeHeartbeat()
     state = "closed"
     await finalizeSinkOnce()
@@ -487,15 +485,6 @@ export function createDownstreamDeliverySession(options: CreateDownstreamDeliver
     async writeScaffold(frames) {
       for (const entry of frames) await write(entry)
     },
-    async commitWinnerBlock(candidateId, frames) {
-      if (winnerCandidateId && winnerCandidateId !== candidateId) throw new Error(`[delivery] winner is ${winnerCandidateId}, not ${candidateId}`)
-      winnerCandidateId = candidateId
-      for (const entry of frames) await write(asDeliveryFrame(entry))
-    },
-    async writeWinnerFrame(candidateId, frame) {
-      if (winnerCandidateId !== candidateId) throw new Error(`[delivery] winner is ${winnerCandidateId ?? "not selected"}, not ${candidateId}`)
-      await write(asDeliveryFrame(frame))
-    },
     noteWinner(source) {
       winnerCandidateId = source.candidateId
       winnerSource = Object.freeze({ candidateId: source.candidateId, dispatchId: source.dispatchId })
@@ -509,7 +498,7 @@ export function createDownstreamDeliverySession(options: CreateDownstreamDeliver
     async terminate(command) {
       if (state !== "open") return
       state = "terminating"
-      finishReason = command.kind === "client-aborted" ? "client-gone" : "session-terminating"
+      finishReason ??= command.kind === "client-aborted" ? "client-gone" : "session-terminating"
       closeHeartbeat()
       const frames = command.kind === "client-aborted" ? [] : (command.frames ?? [])
       for (const entry of frames) await write(entry, true)

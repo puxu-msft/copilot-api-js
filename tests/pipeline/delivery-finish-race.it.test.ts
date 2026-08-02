@@ -69,4 +69,9 @@ test("client-gone racing an in-flight terminate finalizes the raw sink exactly o
   await termination
   expect(finalizeCount).toBe(1)
   expect(delivery.snapshot.state).toBe("closed")
+  expect(await delivery.allocationPort.beginLeg("recovery", { candidateId: "late", dispatchId: "late" })).toEqual({
+    ok: false,
+    reason: "session-terminating",
+    committed: false,
+  })
 })
