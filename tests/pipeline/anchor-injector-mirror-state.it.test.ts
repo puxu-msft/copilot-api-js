@@ -69,6 +69,31 @@ test("an unsatisfied independent-content precondition leaves its latch untouched
   expect(state.anchorBlockOpen).toBe(false)
 })
 
+test("a pre-commit owner throw restores every legacy mirror flag", async () => {
+  const writes: Array<ClientFrame> = []
+  const sink: ClientSink = {
+    async write(frame) {
+      writes.push(frame)
+    },
+    async writeAnchor(frame) {
+      writes.push(frame)
+    },
+    close() {},
+  }
+  const { state, deliverySink } = setup(sink)
+  state.capturedMessageStart = { event: "message_start", data: '{"type":"message_start"}' }
+
+  await expect(injector(state, deliverySink, hooks())()).rejects.toThrow("active leg")
+  expect(state.wireState.allocator.nextAnchorIndex()).toBe(0)
+  expect(state.wireState.allocator.anchorsOpened()).toBe(0)
+  expect(state.wireState.openAnchorIndex).toBeUndefined()
+  expect(state.contentAnchorInjected).toBe(false)
+  expect(state.injected).toBe(false)
+  expect(state.messageStartForwarded).toBe(false)
+  expect(state.anchorBlockOpen).toBe(false)
+  expect(writes).toEqual([])
+})
+
 test("a post-commit abort preserves irreversible anchor mirror state", async () => {
   let writes = 0
   const sink: ClientSink = {

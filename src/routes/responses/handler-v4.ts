@@ -394,6 +394,10 @@ async function pumpStreamingV4(opts: PumpStreamingV4Options): Promise<void> {
   if (candidate.kind !== "responses") throw new Error("[Responses:v4] wrong candidate response session kind")
   const { acc, diag } = candidate
 
+  if (outcome.kind === "delivery-finished") {
+    recordForwarded()
+    return
+  }
   if (outcome.kind === "settled-abort") {
     recordForwarded()
     consola.debug("[Responses:v4] Client disconnected mid-stream — recording aborted")
@@ -587,6 +591,10 @@ async function pumpReverseAnthropicLegV4(opts: PumpReverseAnthropicLegOptions): 
   if (candidate.kind !== "reverse-anthropic") throw new Error("[Responses:v4:reverse] wrong candidate response session kind")
   const { anthropicAcc, diag } = candidate
 
+  if (outcome.kind === "delivery-finished") {
+    recordForwarded()
+    return
+  }
   if (outcome.kind === "settled-abort") {
     recordForwarded()
     consola.debug("[Responses:v4:reverse] Client disconnected mid-stream — recording aborted")

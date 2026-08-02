@@ -13,7 +13,11 @@ import type {
   WireIndexReservation,
 } from "~/lib/pipeline/types"
 
-import { getDownstreamDeliverySession } from "~/lib/pipeline/delivery/session"
+import {
+  //
+  DeliveryOwnerError,
+  getDownstreamDeliverySession,
+} from "~/lib/pipeline/delivery/session"
 
 import { anthropicSseFrame } from "./sse-frame"
 
@@ -320,32 +324,34 @@ export function makeSyntheticAnchorInjector(args: {
       messageStartForwarded: state.messageStartForwarded,
       anchorBlockOpen: state.anchorBlockOpen,
     }
-    const anchorsBefore = port.wireState.allocator.anchorsOpened()
+    const restoreMirror = (): void => {
+      state.injected = previous.injected
+      state.messageStartForwarded = previous.messageStartForwarded
+      state.anchorBlockOpen = previous.anchorBlockOpen
+      state.contentAnchorInjected = previousContentAnchorInjected
+    }
     state.injected = true
     state.messageStartForwarded = true
     state.anchorBlockOpen = true
-    const allocated = await port.allocateAndWriteAnchor(({ wireIndex, envelope }) => {
-      const specs = []
-      if (!previous.messageStartForwarded) {
-        if (real) specs.push(envelope.real(real))
-        else if (synthesize) specs.push(envelope.anchor(synthesize(resolvedName, reqId)))
+    try {
+      const allocated = await port.allocateAndWriteAnchor(({ wireIndex, envelope }) => {
+        const specs = []
+        if (!previous.messageStartForwarded) {
+          if (real) specs.push(envelope.real(real))
+          else if (synthesize) specs.push(envelope.anchor(synthesize(resolvedName, reqId)))
+        }
+        specs.push(envelope.anchor(anchor.startFrame(wireIndex)), envelope.keepalive(anchor.deltaFrame(wireIndex)))
+        return specs
+      })
+      if (!allocated.ok) {
+        if (!allocated.committed) restoreMirror()
+        return false
       }
-      specs.push(envelope.anchor(anchor.startFrame(wireIndex)), envelope.keepalive(anchor.deltaFrame(wireIndex)))
-      return specs
-    })
-    if (!allocated.ok) {
-      // Only a pre-commit refusal leaves the frontier unchanged and may roll the migration bridge back.
-      // A post-commit client abort has already made the anchor externally visible; its mirror state is
-      // therefore irreversible and must remain available to terminal close-off.
-      if (port.wireState.allocator.anchorsOpened() === anchorsBefore) {
-        state.injected = previous.injected
-        state.messageStartForwarded = previous.messageStartForwarded
-        state.anchorBlockOpen = previous.anchorBlockOpen
-        state.contentAnchorInjected = previousContentAnchorInjected
-      }
-      return false
+      return true
+    } catch (error) {
+      if (!(error instanceof DeliveryOwnerError) || !error.committed) restoreMirror()
+      throw error
     }
-    return true
   }
 }
 

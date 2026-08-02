@@ -93,13 +93,15 @@ test("first attempted write consumes the index and terminates delivery on failur
   const { port, wireState, delivery } = setup(sink)
   expect(await port.allocateAndWriteAnchor(({ wireIndex, envelope }) => [envelope.anchor(anchorStart(wireIndex))])).toEqual({
     ok: false,
-    reason: "delivery-finished",
+    reason: "client-gone",
+    committed: true,
   })
   expect(wireState.allocator.nextAnchorIndex()).toBe(1)
   expect(delivery.snapshot.state).toBe("closed")
   expect(await port.allocateAndWriteAnchor(({ wireIndex, envelope }) => [envelope.anchor(anchorStart(wireIndex))])).toEqual({
     ok: false,
-    reason: "delivery-finished",
+    reason: "client-gone",
+    committed: true,
   })
 })
 

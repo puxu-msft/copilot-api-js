@@ -412,6 +412,10 @@ async function handleResponseCreateV4(ws: WSContext, rawPayload: ResponsesPayloa
   if (candidate.kind !== "responses") throw new Error("[WS] wrong candidate response session kind")
   const { acc, diag } = candidate
 
+  if (outcome.kind === "delivery-finished") {
+    recordForwarded()
+    return
+  }
   if (outcome.kind === "settled-abort") {
     recordForwarded()
     consola.debug("[WS] Client disconnected mid-stream — recording aborted")

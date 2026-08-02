@@ -865,15 +865,25 @@ async function maybeRunHedgedResponseSink(
     const selected = raced.candidate
     runtime.bind(binding.coordinator, selected)
     env.ctx.selectGenerationWinner(selected.candidate, selected.dispatch)
+    const explicitPort = outerOpts?.wireAllocationPort
+    const delivery = explicitPort ? undefined : getDownstreamDeliverySession(sink)
+    const allocationPort = explicitPort ?? delivery?.allocationPort
+    if (allocationPort?.wireState) {
+      const leg = await allocationPort.beginLeg("primary", {
+        candidateId: String(selected.candidate),
+        dispatchId: String(selected.dispatch),
+      })
+      if (!leg.ok) return { kind: leg.reason === "client-gone" ? "settled-abort" : "delivery-finished" }
+    }
     if (raced.kind === "terminal") {
-      await writeWinnerFrames(sink, selected.candidate, raced.bufferedFrames)
+      await writeWinnerFrames(sink, delivery, selected.candidate, raced.bufferedFrames)
       binding.coordinator.releaseCandidate(selected.candidate)
       return { kind: "complete", headers: selected.upstream.headers, ...(selected.processor.finish && { finish: selected.processor.finish }) }
     }
 
     env.ctx.trackOperationBody(raced.loserCleanup)
-    await writeWinnerFrames(sink, selected.candidate, raced.bufferedFrames)
-    for await (const frame of raced.liveFrames) await writeWinnerFrame(sink, selected.candidate, frame)
+    await writeWinnerFrames(sink, delivery, selected.candidate, raced.bufferedFrames)
+    for await (const frame of raced.liveFrames) await writeWinnerFrame(sink, delivery, selected.candidate, frame)
     binding.coordinator.releaseCandidate(selected.candidate)
     return { kind: "complete", headers: selected.upstream.headers, ...(selected.processor.finish && { finish: selected.processor.finish }) }
   } catch (error) {
@@ -909,8 +919,12 @@ function withCandidateResponseOpts(
   }
 }
 
-async function writeWinnerFrames(sink: ClientSink, candidate: CandidateHandle, frames: ReadonlyArray<ClientFrame>): Promise<void> {
-  const delivery = getDownstreamDeliverySession(sink)
+async function writeWinnerFrames(
+  sink: ClientSink,
+  delivery: ReturnType<typeof getDownstreamDeliverySession>,
+  candidate: CandidateHandle,
+  frames: ReadonlyArray<ClientFrame>,
+): Promise<void> {
   if (delivery) {
     await delivery.commitWinnerBlock(String(candidate), frames)
     return
@@ -918,8 +932,12 @@ async function writeWinnerFrames(sink: ClientSink, candidate: CandidateHandle, f
   for (const frame of frames) await sink.write(frame)
 }
 
-async function writeWinnerFrame(sink: ClientSink, candidate: CandidateHandle, frame: ClientFrame): Promise<void> {
-  const delivery = getDownstreamDeliverySession(sink)
+async function writeWinnerFrame(
+  sink: ClientSink,
+  delivery: ReturnType<typeof getDownstreamDeliverySession>,
+  candidate: CandidateHandle,
+  frame: ClientFrame,
+): Promise<void> {
   if (delivery) await delivery.writeWinnerFrame(String(candidate), frame)
   else await sink.write(frame)
 }
@@ -969,7 +987,7 @@ async function runResponseSink(
         candidateId: String(unhedgedBinding.candidate.candidate),
         dispatchId: String(unhedgedBinding.candidate.dispatch),
       })
-      if (!leg.ok) return { kind: "settled-abort" }
+      if (!leg.ok) return { kind: leg.reason === "client-gone" ? "settled-abort" : "delivery-finished" }
     }
   }
   const effectiveOpts = currentCandidateResponseOpts(generation, upstream, opts) as RunResponseOpts
@@ -1056,7 +1074,7 @@ export async function runResponseBufferedSink(
         candidateId: String(unhedgedBinding.candidate.candidate),
         dispatchId: String(unhedgedBinding.candidate.dispatch),
       })
-      if (!leg.ok) return { kind: "settled-abort" }
+      if (!leg.ok) return { kind: leg.reason === "client-gone" ? "settled-abort" : "delivery-finished" }
     }
   }
   const cap = opts.retryCap ?? 0
@@ -1472,7 +1490,7 @@ export async function runResponseBufferedSink(
             candidateId: String(recovered.candidate),
             dispatchId: String(recovered.dispatch),
           })
-          if (!leg.ok) return { kind: "settled-abort" }
+          if (!leg.ok) return { kind: leg.reason === "client-gone" ? "settled-abort" : "delivery-finished" }
         }
         current = recovered.upstream
         currentEnv = recovered.env
@@ -1531,7 +1549,7 @@ export async function runResponseBufferedSink(
               candidateId: String(continued.candidate),
               dispatchId: String(continued.dispatch),
             })
-            if (!leg.ok) return { kind: "settled-abort" }
+            if (!leg.ok) return { kind: leg.reason === "client-gone" ? "settled-abort" : "delivery-finished" }
           }
           current = continued.upstream
           currentEnv = continued.env

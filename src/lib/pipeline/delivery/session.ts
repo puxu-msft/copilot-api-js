@@ -60,6 +60,23 @@ export interface DownstreamDeliverySession {
 }
 
 const deliveryBySink = new WeakMap<ClientSink, DownstreamDeliverySession>()
+let deliverySessionObserverForTests: ((session: DownstreamDeliverySession) => void) | undefined
+
+/** Test-only observer for HTTP-path wiring assertions; reset through isolated-fixture RESETTERS. */
+export function setDeliverySessionObserverForTests(observer: ((session: DownstreamDeliverySession) => void) | undefined): void {
+  deliverySessionObserverForTests = observer
+}
+
+/** A non-client owner failure, tagged at the source with whether C9's commit point was crossed. */
+export class DeliveryOwnerError extends Error {
+  readonly committed: boolean
+
+  constructor(cause: unknown, committed: boolean) {
+    super(cause instanceof Error ? cause.message : String(cause), { cause })
+    this.name = "DeliveryOwnerError"
+    this.committed = committed
+  }
+}
 
 /** Resolve the generation-owned delivery behind a production delivery sink. */
 export function getDownstreamDeliverySession(sink: ClientSink): DownstreamDeliverySession | undefined {
@@ -74,6 +91,7 @@ export function createDownstreamDeliverySession(options: CreateDownstreamDeliver
   const serializer = createDeliverySerializer()
   const identity = Symbol("downstreamDeliverySession")
   let state: DeliverySnapshot["state"] = "open"
+  let finishReason: "client-gone" | "session-terminating" | undefined
   let winnerCandidateId: string | undefined
   let messageEnvelope: ClientBlockLedger["messageEnvelope"] = "none"
   let openBlocks: Array<DeliveredOpenBlock> = []
@@ -238,14 +256,21 @@ export function createDownstreamDeliverySession(options: CreateDownstreamDeliver
     })
   }
 
-  const deliveryFinished = <T>(): OwnerResult<T> => Object.freeze({ ok: false, reason: "delivery-finished" })
+  const ownerFailure = <T>(reason: "client-gone" | "session-terminating" | "no-mapping", committed: boolean): OwnerResult<T> =>
+    Object.freeze({ ok: false, reason, committed })
   const ownerSuccess = <T>(value: T): OwnerResult<T> => Object.freeze({ ok: true, value })
 
-  const terminateAfterWireFailure = (): void => {
-    state = "closed"
+  const finalizeAfterClientGone = async (): Promise<void> => {
+    if (state === "closed") return
+    state = "terminating"
+    finishReason = "client-gone"
     closeHeartbeat()
+    state = "closed"
     sink.close?.()
+    await sink.finalize?.()
   }
+
+  const refusedOwnerOperation = <T>(): OwnerResult<T> => ownerFailure(finishReason ?? "session-terminating", false)
 
   const writeAllocationFrames = async (
     specs: ReadonlyArray<WireWriteSpec>,
@@ -278,10 +303,12 @@ export function createDownstreamDeliverySession(options: CreateDownstreamDeliver
       return ownerSuccess(true)
     } catch (error) {
       if (!committed) reservation.rollback()
-      else terminateAfterWireFailure()
-      if (classifyStreamError(error) === "client-abort") return deliveryFinished()
+      if (classifyStreamError(error) === "client-abort") {
+        await finalizeAfterClientGone()
+        return ownerFailure("client-gone", committed)
+      }
       consola.error("[delivery] owner wire write failed", error)
-      throw error
+      throw new DeliveryOwnerError(error, committed)
     }
   }
 
@@ -289,7 +316,7 @@ export function createDownstreamDeliverySession(options: CreateDownstreamDeliver
     wireState,
     allocateAndWriteAnchor: (build) =>
       serializer.enqueue(async () => {
-        if (state !== "open") return deliveryFinished()
+        if (state !== "open") return refusedOwnerOperation()
         const current = requireWireState()
         const reservation = current.allocator.reserveAnchor()
         let specs: ReadonlyArray<WireWriteSpec>
@@ -307,7 +334,7 @@ export function createDownstreamDeliverySession(options: CreateDownstreamDeliver
       }),
     withAllocatedRealBlock: (upstreamIndex, build) =>
       serializer.enqueue(async () => {
-        if (state !== "open") return deliveryFinished()
+        if (state !== "open") return refusedOwnerOperation()
         const current = requireWireState()
         if (!current.activeLeg) throw new Error("[delivery] cannot allocate a real block without an active leg")
         const reservation = current.allocator.reserveRealBlock(upstreamIndex)
@@ -328,7 +355,7 @@ export function createDownstreamDeliverySession(options: CreateDownstreamDeliver
       }),
     beginLeg: (kind, source) =>
       serializer.enqueue(() => {
-        if (state !== "open") return deliveryFinished()
+        if (state !== "open") return refusedOwnerOperation()
         const current = requireWireState()
         const token = current.allocator.beginLeg(kind, source)
         current.activeLeg = Object.freeze({
@@ -342,7 +369,7 @@ export function createDownstreamDeliverySession(options: CreateDownstreamDeliver
       }),
     closeOpenAnchor: (buildStop, mode) =>
       serializer.enqueue(async () => {
-        if (state !== "open") return deliveryFinished()
+        if (state !== "open") return refusedOwnerOperation()
         const current = requireWireState()
         if (current.openAnchorIndex === undefined) return ownerSuccess("none" as const)
         if (mode === "terminal") closeHeartbeat()
@@ -356,18 +383,20 @@ export function createDownstreamDeliverySession(options: CreateDownstreamDeliver
           writeCount++
           return ownerSuccess("closed" as const)
         } catch (error) {
-          terminateAfterWireFailure()
-          if (classifyStreamError(error) === "client-abort") return deliveryFinished()
+          if (classifyStreamError(error) === "client-abort") {
+            await finalizeAfterClientGone()
+            return ownerFailure("client-gone", true)
+          }
           consola.error("[delivery] owner anchor close failed", error)
-          throw error
+          throw new DeliveryOwnerError(error, true)
         }
       }),
     writeBlockFrame: (leg, upstreamIndex, frame) =>
       serializer.enqueue(async () => {
-        if (state !== "open") return deliveryFinished()
+        if (state !== "open") return refusedOwnerOperation()
         const current = requireWireState()
         const mapping = current.mappings.get(leg)?.get(upstreamIndex)
-        if (!mapping) return ownerSuccess("no-mapping" as const)
+        if (!mapping) return ownerFailure("no-mapping", false)
         const source = current.legSources.get(leg)
         if (!source) throw new Error("[delivery] block mapping has no leg provenance")
         const entry = frameForSpec(envelope.real(mapping.remap(frame)), source)
@@ -379,10 +408,12 @@ export function createDownstreamDeliverySession(options: CreateDownstreamDeliver
           if (parsePayload(frame.data)?.type === "content_block_stop") current.mappings.get(leg)?.delete(upstreamIndex)
           return ownerSuccess("written" as const)
         } catch (error) {
-          terminateAfterWireFailure()
-          if (classifyStreamError(error) === "client-abort") return deliveryFinished()
+          if (classifyStreamError(error) === "client-abort") {
+            await finalizeAfterClientGone()
+            return ownerFailure("client-gone", true)
+          }
           consola.error("[delivery] owner block write failed", error)
-          throw error
+          throw new DeliveryOwnerError(error, true)
         }
       }),
   }
@@ -444,6 +475,7 @@ export function createDownstreamDeliverySession(options: CreateDownstreamDeliver
     async terminate(command) {
       if (state !== "open") return
       state = "terminating"
+      finishReason = command.kind === "client-aborted" ? "client-gone" : "session-terminating"
       closeHeartbeat()
       const frames = command.kind === "client-aborted" ? [] : (command.frames ?? [])
       for (const entry of frames) await write(entry, true)
@@ -455,6 +487,7 @@ export function createDownstreamDeliverySession(options: CreateDownstreamDeliver
 
   clientSink.finalize = () => session.terminate({ kind: "complete" })
   deliveryBySink.set(clientSink, session)
+  deliverySessionObserverForTests?.(session)
   armHeartbeat()
   return session
 }

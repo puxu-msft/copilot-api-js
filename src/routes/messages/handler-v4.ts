@@ -1345,6 +1345,10 @@ async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): 
     // counters reflect per-request outcomes, not the buffered-retry count. The unrepairable fail-gate
     // below reads the derived `unrepairableToolInput` (this does not clear it).
     flushToolInputRepairObservability(env.ctx)
+    if (outcome.kind === "delivery-finished") {
+      recordForwarded()
+      return
+    }
     if (outcome.kind === "settled-abort") {
       // Client disconnected mid-stream — the stream is dead, write ZERO further bytes
       // (B0-d). Settle as aborted (forwarded snapshot guaranteed by the finally).
@@ -1629,6 +1633,10 @@ async function pumpTranslateLegStreamingV4(opts: PumpAnthropicStreamingDispatchO
     const outboundResponseData = (): ReturnType<typeof buildOpenAIResponseData> =>
       ccAcc ? buildOpenAIResponseData(ccAcc, model) : buildResponsesResponseData(respAcc as NonNullable<typeof respAcc>, model)
 
+    if (outcome.kind === "delivery-finished") {
+      recordForwarded()
+      return
+    }
     if (outcome.kind === "settled-abort") {
       recordForwarded()
       consola.debug("[Anthropic:v4:translate] Client disconnected mid-stream — recording aborted")

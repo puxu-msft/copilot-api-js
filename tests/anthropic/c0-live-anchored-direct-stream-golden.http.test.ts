@@ -30,7 +30,10 @@ import {
   test,
 } from "bun:test"
 
+import type { DownstreamDeliverySession } from "~/lib/pipeline/delivery/session"
+
 import { getHistory } from "~/lib/history/store"
+import { setDeliverySessionObserverForTests } from "~/lib/pipeline/delivery/session"
 import {
   //
   setModels,
@@ -81,6 +84,7 @@ describe("C0 golden (a) — live-anchored keepalive-ON direct stream (byte-for-b
   useIsolatedRuntime()
   const clock = new FakeClock()
 
+  let observedDelivery: DownstreamDeliverySession | undefined
   let gateReached: () => void
   let gateReachedP: Promise<void>
   let gateOpenP: Promise<void>
@@ -99,6 +103,10 @@ describe("C0 golden (a) — live-anchored keepalive-ON direct stream (byte-for-b
 
   beforeEach(() => {
     clock.install()
+    observedDelivery = undefined
+    setDeliverySessionObserverForTests((session) => {
+      observedDelivery = session
+    })
     gatedFetchMock.mockClear()
     gateReachedP = new Promise<void>((r) => (gateReached = r))
     gateOpenP = new Promise<void>((r) => (openGate = r))
@@ -179,6 +187,10 @@ describe("C0 golden (a) — live-anchored keepalive-ON direct stream (byte-for-b
       sse("message_stop", { type: "message_stop" }),
     ].join("")
     expect(text).toBe(expected)
+    expect(observedDelivery?.allocationPort.wireState?.activeLeg?.kind).toBe("primary")
+    const legSource = observedDelivery?.allocationPort.wireState?.activeLeg?.source
+    expect(legSource?.candidateId).toMatch(/^candidate:/)
+    expect(legSource?.dispatchId).toMatch(/^dispatch:/)
 
     // Cross-check invariants the byte golden already encodes (explicit for regression readability):
     // (1) the anchor prelude keepalive is present (this is the keepalive-ON path, not a bare stream).

@@ -108,7 +108,8 @@ test("a terminated session refuses a REAL-block allocation without allocating or
 
   expect(await port.withAllocatedRealBlock(0, ({ mapping, envelope }) => [envelope.real(mapping.remap(start(0)))])).toEqual({
     ok: false,
-    reason: "delivery-finished",
+    reason: "client-gone",
+    committed: false,
   })
   expect(writes).toEqual([])
   expect(wireState.allocator.nextRealIndex()).toBe(0)
@@ -127,7 +128,8 @@ test("a REAL-block first-write abort consumes the mapping and terminates deliver
 
   expect(await port.withAllocatedRealBlock(0, ({ mapping, envelope }) => [envelope.real(mapping.remap(start(0)))])).toEqual({
     ok: false,
-    reason: "delivery-finished",
+    reason: "client-gone",
+    committed: true,
   })
   expect(wireState.allocator.nextRealIndex()).toBe(1)
   expect(wireState.mappings.get(leg)?.get(0)?.wireIndex).toBe(0)
@@ -147,7 +149,7 @@ test("a REAL-block build success followed by a second-frame abort never reuses t
 
   expect(
     await port.withAllocatedRealBlock(0, ({ mapping, envelope }) => [envelope.real(mapping.remap(start(0))), envelope.real(mapping.remap(delta(0)))]),
-  ).toEqual({ ok: false, reason: "delivery-finished" })
+  ).toEqual({ ok: false, reason: "client-gone", committed: true })
   expect(wireState.allocator.nextRealIndex()).toBe(1)
   expect(wireState.mappings.get(leg)?.get(0)?.wireIndex).toBe(0)
   expect(delivery.snapshot.state).toBe("closed")
@@ -164,15 +166,22 @@ test("writeBlockFrame abort preserves mapping and terminates delivery", async ()
   const leg = ownerValue(await port.beginLeg("primary", PRIMARY))
   const mapping = ownerValue(await port.withAllocatedRealBlock(0, ({ mapping: allocated, envelope }) => [envelope.real(allocated.remap(start(0)))]))
 
-  expect(await port.writeBlockFrame(leg, 0, stop(0))).toEqual({ ok: false, reason: "delivery-finished" })
+  expect(await port.writeBlockFrame(leg, 0, stop(0))).toEqual({ ok: false, reason: "client-gone", committed: true })
   expect(wireState.mappings.get(leg)?.get(0)).toBe(mapping)
   expect(delivery.snapshot.state).toBe("closed")
 })
 
-test("writeBlockFrame non-client errors terminate delivery and remain visible", async () => {
+test("writeBlockFrame non-client errors remain writable for a terminal frame and finalize once", async () => {
+  const writes: Array<string> = []
+  let finalized = 0
   const sink: ClientSink = {
     async write(frame) {
-      if (JSON.parse(frame.data ?? "{}").type === "content_block_delta") throw new Error("sink wiring failed")
+      const type = JSON.parse(frame.data ?? "{}").type as string
+      writes.push(type)
+      if (type === "content_block_delta") throw new Error("sink wiring failed")
+    },
+    async finalize() {
+      finalized++
     },
     close() {},
   }
@@ -182,6 +191,20 @@ test("writeBlockFrame non-client errors terminate delivery and remain visible", 
 
   await expect(port.writeBlockFrame(leg, 0, delta(0))).rejects.toThrow("sink wiring failed")
   expect(wireState.mappings.get(leg)?.has(0)).toBe(true)
+  expect(delivery.snapshot.state).toBe("open")
+  await delivery.terminate({
+    kind: "upstream-nonretryable",
+    frames: [
+      {
+        frame: { event: "error", data: '{"type":"error"}' },
+        sequence: 0,
+        observedAtMonotonic: 0,
+        provenance: { kind: "synthetic", syntheticKind: "synthetic" },
+      },
+    ],
+  })
+  expect(writes).toEqual(["content_block_start", "content_block_delta", "error"])
+  expect(finalized).toBe(1)
   expect(delivery.snapshot.state).toBe("closed")
 })
 
@@ -196,7 +219,7 @@ test("a terminated session refuses writeBlockFrame instead of emitting an unrema
 
   await delivery.terminate({ kind: "client-aborted" })
 
-  expect(await port.writeBlockFrame(leg, 0, delta(0))).toEqual({ ok: false, reason: "delivery-finished" })
+  expect(await port.writeBlockFrame(leg, 0, delta(0))).toEqual({ ok: false, reason: "client-gone", committed: false })
   expect(writes).toHaveLength(writesBefore)
   // 拒绝不得吃掉 mapping —— 释放只在 stop 成功写出后发生（C10 ③）。
   expect(wireState.mappings.get(leg)?.get(0)).toBe(mapping)

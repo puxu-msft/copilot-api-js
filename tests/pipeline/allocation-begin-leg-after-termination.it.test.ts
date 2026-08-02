@@ -54,6 +54,10 @@ test("all owner entries return delivery-finished after a wire failure closes the
     },
     close() {},
   }
+  let finalized = 0
+  sink.finalize = async () => {
+    finalized++
+  }
   const wireState = createGenerationWireState(createGenerationWireIndexAllocator())
   const delivery = createDownstreamDeliverySession({ sink, wireState })
   const port = delivery.allocationPort
@@ -63,19 +67,29 @@ test("all owner entries return delivery-finished after a wire failure closes the
   // 一次失败的 anchor 写出（= 客户端中途断开）走 terminateAfterWireFailure → state = "closed"。
   expect(await port.allocateAndWriteAnchor(({ wireIndex, envelope }) => [envelope.anchor(start(wireIndex))])).toEqual({
     ok: false,
-    reason: "delivery-finished",
+    reason: "client-gone",
+    committed: true,
   })
   expect(delivery.snapshot.state).toBe("closed")
 
   expect(await port.allocateAndWriteAnchor(({ wireIndex, envelope }) => [envelope.anchor(start(wireIndex))])).toEqual({
     ok: false,
-    reason: "delivery-finished",
+    reason: "client-gone",
+    committed: false,
   })
   expect(await port.withAllocatedRealBlock(0, ({ mapping, envelope }) => [envelope.real(mapping.remap(start(0)))])).toEqual({
     ok: false,
-    reason: "delivery-finished",
+    reason: "client-gone",
+    committed: false,
   })
-  expect(await port.writeBlockFrame(primary.value, 0, start(0))).toEqual({ ok: false, reason: "delivery-finished" })
-  expect(await port.beginLeg("recovery", RECOVERY)).toEqual({ ok: false, reason: "delivery-finished" })
-  expect(await port.closeOpenAnchor((index, envelope) => envelope.anchor(start(index)), "terminal")).toEqual({ ok: false, reason: "delivery-finished" })
+  expect(await port.writeBlockFrame(primary.value, 0, start(0))).toEqual({ ok: false, reason: "client-gone", committed: false })
+  expect(await port.beginLeg("recovery", RECOVERY)).toEqual({ ok: false, reason: "client-gone", committed: false })
+  expect(await port.closeOpenAnchor((index, envelope) => envelope.anchor(start(index)), "terminal")).toEqual({
+    ok: false,
+    reason: "client-gone",
+    committed: false,
+  })
+  expect(finalized).toBe(1)
+  await delivery.terminate({ kind: "client-aborted" })
+  expect(finalized).toBe(1)
 })

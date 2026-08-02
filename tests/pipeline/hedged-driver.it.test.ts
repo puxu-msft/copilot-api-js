@@ -16,8 +16,14 @@ import type {
   UpstreamFrame,
 } from "~/lib/pipeline/types"
 
+import {
+  //
+  createGenerationWireIndexAllocator,
+  createGenerationWireState,
+} from "~/lib/anthropic/keepalive-anchor"
 import { createRequestContext } from "~/lib/context/request"
 import { makeArraySink } from "~/lib/pipeline/client-sink"
+import { createDownstreamDeliverySession } from "~/lib/pipeline/delivery/session"
 import { createPipelineDriver } from "~/lib/pipeline/driver"
 import { createFrozenHedgePolicy } from "~/lib/pipeline/generation/hedge-policy"
 
@@ -142,9 +148,14 @@ describe("production driver hedged response", () => {
     const { driver } = harness
     const request = await driver.runRequest({ body: {}, headers: new Headers() })
     if (!request.ok) throw new Error("unexpected rejection")
-    const { sink, frames: delivered } = makeArraySink()
+    const { sink: rawSink, frames: delivered } = makeArraySink()
+    const wireState = createGenerationWireState(createGenerationWireIndexAllocator())
+    const delivery = createDownstreamDeliverySession({ sink: rawSink, wireState })
 
-    const outcome = await driver.runResponseSink(request.upstream, request.env, sink, { onRenderedFrame: (frame) => frame })
+    const outcome = await driver.runResponseSink(request.upstream, request.env, delivery.clientSink, {
+      onRenderedFrame: (frame) => frame,
+      wireAllocationPort: delivery.allocationPort,
+    })
 
     expect(outcome.kind).toBe("complete")
     if (outcome.kind !== "complete") throw new Error("unexpected hedge outcome")
@@ -154,6 +165,13 @@ describe("production driver hedged response", () => {
     expect(delivered.map((frame) => frame.data).join("\n")).toContain("secondary")
     expect(delivered.map((frame) => frame.data).join("\n")).not.toContain("primary")
     expect(request.env.ctx.modelOperationSnapshot.candidates.map((candidate) => candidate.role)).toEqual(["primary", "hedge"])
+    expect(wireState.activeLeg?.kind).toBe("primary")
+    const activeSource = wireState.activeLeg?.source
+    expect(activeSource?.candidateId).toMatch(/^candidate:/)
+    expect(activeSource?.dispatchId).toMatch(/^dispatch:/)
+    if (!activeSource) throw new Error("hedge winner did not establish an active wire leg")
+    const winnerDispatch = request.env.ctx.modelOperationSnapshot.dispatches.find((dispatch) => String(dispatch.handle) === activeSource.dispatchId)
+    expect(String(winnerDispatch?.candidate)).toBe(activeSource.candidateId)
   })
 
   test("a complete primary before the threshold never starts a hedge", async () => {

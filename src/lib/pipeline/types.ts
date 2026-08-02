@@ -292,7 +292,8 @@ export interface RawHttpRequest {
   readonly clientAbortSignal?: AbortSignal
 }
 
-export type OwnerResult<T> = Readonly<{ ok: true; value: T }> | Readonly<{ ok: false; reason: "delivery-finished" }>
+export type OwnerFailureReason = "client-gone" | "session-terminating" | "no-mapping"
+export type OwnerResult<T> = Readonly<{ ok: true; value: T }> | Readonly<{ ok: false; reason: OwnerFailureReason; committed: boolean }>
 
 export type WireWriteSpec =
   | Readonly<{ kind: "real"; frame: ClientFrame }>
@@ -845,6 +846,7 @@ export type ResponseOutcome =
   | { kind: "complete"; headers: Headers; finish?: ResponseFinishResult }
   | { kind: "stream-error"; error: unknown; truncated?: boolean }
   | { kind: "settled-abort" }
+  | { kind: "delivery-finished" }
 
 /**
  * Orchestrates the stage sequence, publishing events + sampling raw data at

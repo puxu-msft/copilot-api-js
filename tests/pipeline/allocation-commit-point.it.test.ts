@@ -64,7 +64,8 @@ test("a closed session refuses an operation without allocating", async () => {
 
   expect(await port.allocateAndWriteAnchor(({ wireIndex, envelope }) => [envelope.anchor(anchorStart(wireIndex))])).toEqual({
     ok: false,
-    reason: "delivery-finished",
+    reason: "client-gone",
+    committed: true,
   })
   expect(wireState.allocator.nextAnchorIndex()).toBe(0)
   expect(wireState.allocator.anchorsOpened()).toBe(0)
@@ -87,7 +88,8 @@ test("a failed first frame permanently consumes its index and terminates deliver
 
   expect(await port.allocateAndWriteAnchor(({ wireIndex, envelope }) => [envelope.anchor(anchorStart(wireIndex))])).toEqual({
     ok: false,
-    reason: "delivery-finished",
+    reason: "client-gone",
+    committed: true,
   })
   expect(attempts).toHaveLength(1)
   expect(wireState.allocator.nextAnchorIndex()).toBe(1)
@@ -95,7 +97,8 @@ test("a failed first frame permanently consumes its index and terminates deliver
   expect(delivery.snapshot.state).toBe("closed")
   expect(await port.allocateAndWriteAnchor(({ wireIndex, envelope }) => [envelope.anchor(anchorStart(wireIndex))])).toEqual({
     ok: false,
-    reason: "delivery-finished",
+    reason: "client-gone",
+    committed: true,
   })
   expect(wireState.allocator.nextAnchorIndex()).toBe(1)
 })
@@ -122,7 +125,7 @@ test("a visible first frame is never rolled back when the second frame fails", a
 
   expect(
     await port.allocateAndWriteAnchor(({ wireIndex, envelope }) => [envelope.anchor(anchorStart(wireIndex)), envelope.keepalive(anchorDelta(wireIndex))]),
-  ).toEqual({ ok: false, reason: "delivery-finished" })
+  ).toEqual({ ok: false, reason: "client-gone", committed: true })
 
   expect(attempts.map((frame) => JSON.parse(frame.data as string).type)).toEqual(["content_block_start", "content_block_delta"])
   expect(JSON.parse(attempts[0].data as string).index).toBe(0)
@@ -152,7 +155,7 @@ test("a queued operation reserves nothing and rechecks state when execution begi
   parked.resolve()
 
   expect(ownerValue(await running)).toBe(0)
-  expect(await queued).toEqual({ ok: false, reason: "delivery-finished" })
+  expect(await queued).toEqual({ ok: false, reason: "client-gone", committed: true })
   await termination
   expect(wireState.allocator.nextAnchorIndex()).toBe(1)
 })
@@ -177,7 +180,7 @@ test("an abort while the first write promise is pending is post-commit", async (
   expect(wireState.allocator.nextAnchorIndex()).toBe(1)
   abort.abort()
 
-  expect(await operation).toEqual({ ok: false, reason: "delivery-finished" })
+  expect(await operation).toEqual({ ok: false, reason: "client-gone", committed: true })
   expect(wireState.allocator.nextAnchorIndex()).toBe(1)
   expect(delivery.snapshot.state).toBe("closed")
 })

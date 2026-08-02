@@ -65,6 +65,7 @@ import {
   resetUpstreamWsManagerForTests,
   setUpstreamWsConnectionFactoryForTests,
 } from "~/lib/openai/upstream-ws"
+import { setDeliverySessionObserverForTests } from "~/lib/pipeline/delivery/session"
 import {
   //
   resetUpstreamHook,
@@ -149,6 +150,7 @@ export const RESETTERS: ReadonlyArray<{ name: string; reset: () => void | Promis
   { name: "setUpstreamWsConnectionFactoryForTests", reset: () => setUpstreamWsConnectionFactoryForTests(null) },
   { name: "setHttp2SessionFactoryForTests", reset: () => setHttp2SessionFactoryForTests(undefined) },
   { name: "setConnectTimeoutForTests", reset: () => setConnectTimeoutForTests(undefined) },
+  { name: "setDeliverySessionObserverForTests", reset: () => setDeliverySessionObserverForTests(undefined) },
   // Not `*ForTests`-named (a production reset) but a module-global counter that
   // leaks across tests, so reset it here too.
   { name: "resetHistoryPersistErrorStats", reset: resetHistoryPersistErrorStats },

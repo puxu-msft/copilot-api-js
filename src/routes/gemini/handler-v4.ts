@@ -434,6 +434,10 @@ async function pumpGeminiStreamingV4(opts: PumpGeminiStreamingV4Options): Promis
   if (candidate.kind !== "gemini") throw new Error("[gemini:v4] wrong candidate response session kind")
   const { diag, meta } = candidate
 
+  if (outcome.kind === "delivery-finished") {
+    recordForwarded()
+    return
+  }
   if (outcome.kind === "settled-abort") {
     recordForwarded()
     consola.debug("[gemini:v4] Client disconnected mid-stream — recording aborted")
@@ -640,6 +644,10 @@ async function pumpReverseGeminiStreamingV4(opts: PumpReverseGeminiStreamingV4Op
   if (candidate.kind !== "reverse-anthropic") throw new Error("[gemini:v4:reverse] wrong candidate response session kind")
   const { anthropicAcc, diag } = candidate
 
+  if (outcome.kind === "delivery-finished") {
+    recordForwarded()
+    return
+  }
   if (outcome.kind === "settled-abort") {
     recordForwarded()
     consola.debug("[gemini:v4:reverse] Client disconnected mid-stream — recording aborted")

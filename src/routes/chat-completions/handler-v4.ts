@@ -557,6 +557,10 @@ async function pumpStreamingV4(opts: PumpStreamingV4Options): Promise<void> {
   if (candidate.kind !== "chat-completions") throw new Error("[ChatCompletions:v4] wrong candidate response session kind")
   const { acc, diag } = candidate
 
+  if (outcome.kind === "delivery-finished") {
+    recordForwarded()
+    return
+  }
   if (outcome.kind === "settled-abort") {
     // Client disconnected mid-stream — write ZERO further bytes (B0-d). Record what was
     // forwarded so far, then settle as aborted (mirrors settleStreamingFailure's abort branch).
@@ -746,6 +750,10 @@ async function pumpReverseAnthropicLegV4(opts: PumpReverseAnthropicLegOptions): 
   if (candidate.kind !== "reverse-anthropic") throw new Error("[ChatCompletions:v4:reverse] wrong candidate response session kind")
   const { anthropicAcc, diag } = candidate
 
+  if (outcome.kind === "delivery-finished") {
+    recordForwarded()
+    return
+  }
   if (outcome.kind === "settled-abort") {
     recordForwarded()
     consola.debug("[ChatCompletions:v4:reverse] Client disconnected mid-stream — recording aborted")
