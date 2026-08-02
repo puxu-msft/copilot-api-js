@@ -9,6 +9,8 @@ import {
   readFile,
 } from "node:fs/promises"
 import path from "node:path"
+import ts from "typescript"
+
 
 const repoRoot = path.resolve(import.meta.dir, "../..")
 
@@ -27,42 +29,68 @@ async function sourceFiles(root: string): Promise<Array<string>> {
   return nested.flat()
 }
 
-interface LiteralRemapSite {
+interface RemapCallSite {
   readonly file: string
-  readonly expression: string
+  readonly call: string
 }
 
-// P1 freezes the pre-existing fixed-offset sites as an exact ratchet baseline. P3M must remove each
-// entry as its call site migrates to resolveRemappedFrame; M4's acceptance gate is this list === [].
-const LEGACY_LITERAL_REMAP_BASELINE: ReadonlyArray<LiteralRemapSite> = [
-  { file: "src/lib/pipeline/driver.ts", expression: ".remap(_, 0)" },
-  { file: "src/lib/pipeline/driver.ts", expression: ".remap(frame, 1)" },
-  { file: "src/lib/pipeline/driver.ts", expression: ".remap(toWrite, 1)" },
-  { file: "src/lib/anthropic/live-reconcile.ts", expression: ".remap(frame, 1)" },
+/**
+ * Explicit allowlist of every production remap call. Unlike the retired literal-offset regex, this
+ * sees variable offsets and direct primitive calls and ignores comments. P3M removes the three
+ * `legacy:*` entries as M2-M4 migrate their sites; M4 requires no `legacy:*` entry to remain.
+ */
+const REMAP_CALL_ALLOWLIST: ReadonlyArray<RemapCallSite> = [
+  { file: "src/lib/anthropic/keepalive-anchor.ts", call: "internal:remapAnthropicBlockIndex" },
+  { file: "src/lib/anthropic/keepalive-anchor.ts", call: "authority:mapping.remap" },
+  { file: "src/lib/pipeline/delivery/session.ts", call: "owner:mapping.remap" },
+  { file: "src/lib/pipeline/driver.ts", call: "legacy:anchor.remap" },
+  { file: "src/lib/pipeline/driver.ts", call: "legacy:continuation.remap" },
+  { file: "src/lib/pipeline/driver.ts", call: "legacy:anchor.remap" },
+  { file: "src/lib/anthropic/live-reconcile.ts", call: "legacy:hooks.remap" },
 ]
 
-function literalRemapOffsets(source: string): Array<string> {
-  return [...source.matchAll(/\.remap\s*\([^,]+,\s*[-+]?\d+\s*\)/g)].map(([match]) => match)
-}
-
-async function currentLiteralRemapSites(): Promise<Array<LiteralRemapSite>> {
-  const sites: Array<LiteralRemapSite> = []
-  for (const file of await sourceFiles(path.join(repoRoot, "src"))) {
-    if (file.endsWith("/anthropic/keepalive-anchor.ts")) continue
-    const relative = path.relative(repoRoot, file)
-    for (const expression of literalRemapOffsets(await readFile(file, "utf8"))) sites.push({ file: relative, expression })
+function remapCalls(fileName: string, source: string): Array<RemapCallSite> {
+  // These scanned production files are `.ts`; parsing them as TSX misreads generic arrow functions
+  // (`<Value>`) as JSX and silently truncates the AST before later remap calls.
+  const sourceFile = ts.createSourceFile(fileName, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS)
+  const calls: Array<RemapCallSite> = []
+  const visit = (node: ts.Node): void => {
+    if (ts.isCallExpression(node)) {
+      const callee = node.expression
+      if (ts.isIdentifier(callee) && callee.text === "remapAnthropicBlockIndex") {
+        calls.push({ file: fileName, call: "internal:remapAnthropicBlockIndex" })
+      } else if (ts.isPropertyAccessExpression(callee) && callee.name.text === "remap") {
+        const receiver = callee.expression.getText(sourceFile)
+        const prefix =
+          fileName.endsWith("/keepalive-anchor.ts") ? "authority"
+          : fileName.endsWith("/delivery/session.ts") ? "owner"
+          : "legacy"
+        calls.push({ file: fileName, call: `${prefix}:${receiver}.remap` })
+      }
+    }
+    ts.forEachChild(node, visit)
   }
-  return sites.sort((a, b) => `${a.file}:${a.expression}`.localeCompare(`${b.file}:${b.expression}`))
+  visit(sourceFile)
+  return calls
 }
 
-function newLiteralRemapSites(current: ReadonlyArray<LiteralRemapSite>, baseline = LEGACY_LITERAL_REMAP_BASELINE): Array<LiteralRemapSite> {
+async function currentRemapCallSites(): Promise<Array<RemapCallSite>> {
+  const sites: Array<RemapCallSite> = []
+  for (const file of await sourceFiles(path.join(repoRoot, "src"))) {
+    const relative = path.relative(repoRoot, file)
+    sites.push(...remapCalls(relative, await readFile(file, "utf8")))
+  }
+  return sites.sort((a, b) => `${a.file}:${a.call}`.localeCompare(`${b.file}:${b.call}`))
+}
+
+function unlistedRemapCalls(current: ReadonlyArray<RemapCallSite>, allowlist = REMAP_CALL_ALLOWLIST): Array<RemapCallSite> {
   const allowed = new Map<string, number>()
-  for (const site of baseline) {
-    const key = `${site.file}:${site.expression}`
+  for (const site of allowlist) {
+    const key = `${site.file}:${site.call}`
     allowed.set(key, (allowed.get(key) ?? 0) + 1)
   }
   return current.filter((site) => {
-    const key = `${site.file}:${site.expression}`
+    const key = `${site.file}:${site.call}`
     const remaining = allowed.get(key) ?? 0
     if (remaining === 0) return true
     allowed.set(key, remaining - 1)
@@ -79,22 +107,25 @@ function lowLevelAllocationCalls(source: string): Array<string> {
   return LOW_LEVEL_ALLOCATION_NAMES.flatMap((name) => [...source.matchAll(new RegExp(String.raw`\.${name}\s*\(`, "g"))].map(() => name))
 }
 
-test("detectors bite on a new literal remap and an anchor-count remap predicate", () => {
-  expect(literalRemapOffsets("hooks.remap(frame, 2)")).toEqual([".remap(frame, 2)"])
-  expect(newLiteralRemapSites([{ file: "src/new-site.ts", expression: ".remap(frame, 2)" }])).toEqual([
-    { file: "src/new-site.ts", expression: ".remap(frame, 2)" },
-  ])
+test("allowlist detector bites on literal, variable-offset, and direct-primitive remap calls", () => {
+  const file = "src/new-site.ts"
+  for (const source of ["hooks.remap(frame, 2)", "hooks.remap(frame, offset)", "remapAnthropicBlockIndex(frame, 1)"]) {
+    const calls = remapCalls(file, source)
+    expect(calls).toHaveLength(1)
+    expect(unlistedRemapCalls(calls)).toEqual(calls)
+  }
+  expect(remapCalls(file, "// hooks.remap(frame, 1)")).toEqual([])
   expect(anchorsOpenedRemapPredicates("if (allocator.anchorsOpened() === 0) return frame // remap")).toHaveLength(1)
 })
 
-test("literal remap sites only shrink from the frozen P1 baseline", async () => {
-  const current = await currentLiteralRemapSites()
-  const additions = newLiteralRemapSites(current)
+test("all production remap calls are explicitly allowlisted", async () => {
+  const current = await currentRemapCallSites()
+  const additions = unlistedRemapCalls(current)
   expect(
     additions,
-    `New literal remap site(s) bypass the single authority. Route them through resolveRemappedFrame instead. P3M must remove migrated entries from LEGACY_LITERAL_REMAP_BASELINE in the same commit; M4 must leave the baseline empty. New sites:\n${additions.map((site) => `${site.file}: ${site.expression}`).join("\n")}`,
+    `New remap call(s) bypass the single authority. Add only a justified authority/owner call; legacy sites must shrink through P3M and be empty after M4. New calls:\n${additions.map((site) => `${site.file}: ${site.call}`).join("\n")}`,
   ).toEqual([])
-  expect(current.length).toBeLessThanOrEqual(LEGACY_LITERAL_REMAP_BASELINE.length)
+  expect(current).toEqual([...REMAP_CALL_ALLOWLIST].sort((a, b) => `${a.file}:${a.call}`.localeCompare(`${b.file}:${b.call}`)))
 })
 
 test("no source file gates a remap on anchorsOpened()", async () => {

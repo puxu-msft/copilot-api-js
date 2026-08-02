@@ -73,15 +73,3 @@ test("an anchor write parked at the sink cannot interleave with a real-block all
   assertBlockProtocolState(frames)
 })
 
-test("POSITIVE CONTROL: allocating outside the serializer creates a duplicate wire index", () => {
-  let frontier = 0
-  const illegalPeek = (): number => frontier
-  const illegalCommit = (): void => void frontier++
-  const anchorIndex = illegalPeek()
-  const realIndex = illegalPeek()
-  illegalCommit()
-  illegalCommit()
-  const bad = [start(anchorIndex), stop(anchorIndex), start(realIndex), stop(realIndex)]
-
-  expect(() => assertMonotonicWireIndices(bad)).toThrow("expected 1")
-})

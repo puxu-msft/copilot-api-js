@@ -41,6 +41,11 @@ test("no-anchor CONTINUATION leg: MUST remap even though no anchor was opened", 
   expect(JSON.parse(out.data as string).index).toBe(1)
 })
 
+test("RECOVERY leg with no prior anchor: upstream 0 to wire 0 stays identity", () => {
+  const frame = realStartFrame(0)
+  expect(resolveRemappedFrame(frame, mapping(0, 0))).toBe(frame)
+})
+
 test("RECOVERY leg after a pre-content anchor: upstream 0 to wire 1 MUST remap", () => {
   const frame = realStartFrame(0)
   const out = resolveRemappedFrame(frame, mapping(0, 1))

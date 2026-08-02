@@ -10,6 +10,7 @@ import {
   createGenerationWireState,
 } from "~/lib/anthropic/keepalive-anchor"
 import { makeDeliverySseSink } from "~/lib/pipeline/client-sink"
+import { getDownstreamDeliverySession } from "~/lib/pipeline/delivery/session"
 
 import { FakeClock } from "../helpers/fake-clock"
 
@@ -23,17 +24,26 @@ test("a suspended heartbeat allocates no further anchors", async () => {
   const allocator = createGenerationWireIndexAllocator()
   const wireState = createGenerationWireState(allocator)
   let injectorCalls = 0
+  let sink: ReturnType<typeof makeDeliverySseSink>
   const stream = {
     writeSSE: async () => {},
   } as unknown as Parameters<typeof makeDeliverySseSink>[0]
-  const sink = makeDeliverySseSink(stream, {
+  sink = makeDeliverySseSink(stream, {
     wireState,
     heartbeat: {
       intervalSec: 15,
       pingFrame: { event: "ping", data: '{"type":"ping"}' },
       injectAnchor: async () => {
         injectorCalls++
-        return true
+        const port = getDownstreamDeliverySession(sink)?.allocationPort
+        if (!port) throw new Error("delivery owner unavailable")
+        const result = await port.allocateAndWriteAnchor(({ wireIndex, envelope }) => [
+          envelope.anchor({
+            event: "content_block_start",
+            data: JSON.stringify({ type: "content_block_start", index: wireIndex, content_block: { type: "text", text: "" } }),
+          }),
+        ])
+        return result.ok
       },
     },
   })

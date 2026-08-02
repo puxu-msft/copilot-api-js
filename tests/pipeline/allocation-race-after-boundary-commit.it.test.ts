@@ -24,7 +24,7 @@ async function drain(n = 40): Promise<void> {
   for (let i = 0; i < n; i++) await Promise.resolve()
 }
 
-test("after boundary resume, the pre-M6 gate emits ping and owner writes remain serialized", async () => {
+test("after boundary resume, the pre-M6 gate emits ping without invoking the anchor injector", async () => {
   const clock = new FakeClock()
   clock.install()
   const written: Array<ClientFrame> = []
