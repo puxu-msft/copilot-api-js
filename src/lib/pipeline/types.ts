@@ -292,10 +292,38 @@ export interface RawHttpRequest {
   readonly clientAbortSignal?: AbortSignal
 }
 
+export type OwnerResult<T> = Readonly<{ ok: true; value: T }> | Readonly<{ ok: false; reason: "delivery-finished" }>
+
+export type WireWriteSpec =
+  | Readonly<{ kind: "real"; frame: ClientFrame }>
+  | Readonly<{ kind: "anchor"; frame: ClientFrame }>
+  | Readonly<{ kind: "keepalive"; frame: ClientFrame }>
+
+export interface WireEnvelopeFactory {
+  real(frame: ClientFrame): WireWriteSpec
+  anchor(frame: ClientFrame): WireWriteSpec
+  keepalive(frame: ClientFrame): WireWriteSpec
+}
+
+export interface WireBlockAllocationPort {
+  readonly wireState?: GenerationWireState
+  allocateAndWriteAnchor(build: (ctx: { wireIndex: number; envelope: WireEnvelopeFactory }) => ReadonlyArray<WireWriteSpec>): Promise<OwnerResult<number>>
+  withAllocatedRealBlock(
+    upstreamIndex: number,
+    build: (ctx: { mapping: WireBlockMapping; envelope: WireEnvelopeFactory }) => ReadonlyArray<WireWriteSpec>,
+  ): Promise<OwnerResult<WireBlockMapping>>
+  beginLeg(kind: "primary" | "continuation" | "recovery", source: LegSource): Promise<OwnerResult<LegToken>>
+  closeOpenAnchor(
+    buildStop: (index: number, envelope: WireEnvelopeFactory) => WireWriteSpec,
+    mode: "before-real" | "terminal",
+  ): Promise<OwnerResult<"closed" | "none">>
+  writeBlockFrame(leg: LegToken, upstreamIndex: number, frame: ClientFrame): Promise<OwnerResult<"written" | "no-mapping">>
+}
+
 /** Per-call hooks for {@link PipelineDriver.runResponse}. */
 export interface RunResponseOpts {
   /** Explicit generation owner for a decorated live sink; never register wrapper objects as owners. */
-  wireAllocationPort?: import("./delivery/types").WireBlockAllocationPort
+  wireAllocationPort?: WireBlockAllocationPort
   /**
    * Invoked at the response loop top with each UPSTREAM-ORIGINAL frame (raw,
    * verbatim — BEFORE the S5 rewrite chain), at the same point/condition the driver

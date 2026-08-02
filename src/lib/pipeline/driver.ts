@@ -1108,12 +1108,13 @@ export async function runResponseBufferedSink(
   // before). `anchorState` falls back to a driver-local object when the caller does not thread one (e.g. a
   // `ping`-mode buffered stream that never injects).
   const anchor = opts.anchor
-  const anchorState: Pick<AnchorState, "injected" | "messageStartForwarded" | "anchorBlockOpen" | "anchorClosed" | "capturedMessageStart"> = opts.anchorState ?? {
-    injected: false,
-    messageStartForwarded: false,
-    anchorBlockOpen: false,
-    anchorClosed: false,
-  }
+  const anchorState: Pick<AnchorState, "injected" | "messageStartForwarded" | "anchorBlockOpen" | "anchorClosed" | "capturedMessageStart"> =
+    opts.anchorState ?? {
+      injected: false,
+      messageStartForwarded: false,
+      anchorBlockOpen: false,
+      anchorClosed: false,
+    }
 
   // Terminal-failure close-off (spec §3.3 M1): when the request FAILS after the anchor was injected (a
   // truncation/exhaustion, or a post-retreat truncation), the anchor's content_block_start@0 is still OPEN

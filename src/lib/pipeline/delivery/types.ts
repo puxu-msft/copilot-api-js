@@ -1,12 +1,5 @@
 import type { ClientFrameEnvelope } from "../stream/frame-envelope"
-import type {
-  //
-  ClientFrame,
-  GenerationWireState,
-  LegSource,
-  LegToken,
-  WireBlockMapping,
-} from "../types"
+import type { ClientFrame } from "../types"
 
 /** Synthetic provenance selected by the delivery engine's dedicated sink port. */
 export type DeliverySyntheticKind = "keepalive" | "anchor" | "synthetic-message-start" | "synthetic"
@@ -14,36 +7,12 @@ export type DeliverySyntheticKind = "keepalive" | "anchor" | "synthetic-message-
 export type {
   //
   LegToken,
+  OwnerResult,
+  WireBlockAllocationPort,
   WireBlockMapping,
+  WireEnvelopeFactory,
+  WireWriteSpec,
 } from "../types"
-
-export type WireWriteSpec =
-  | Readonly<{ kind: "real"; frame: ClientFrame }>
-  | Readonly<{ kind: "anchor"; frame: ClientFrame }>
-  | Readonly<{ kind: "keepalive"; frame: ClientFrame }>
-
-export interface WireEnvelopeFactory {
-  real(frame: ClientFrame): WireWriteSpec
-  anchor(frame: ClientFrame): WireWriteSpec
-  keepalive(frame: ClientFrame): WireWriteSpec
-}
-
-export type OwnerResult<T> = Readonly<{ ok: true; value: T }> | Readonly<{ ok: false; reason: "delivery-finished" }>
-
-export interface WireBlockAllocationPort {
-  readonly wireState?: GenerationWireState
-  allocateAndWriteAnchor(build: (ctx: { wireIndex: number; envelope: WireEnvelopeFactory }) => ReadonlyArray<WireWriteSpec>): Promise<OwnerResult<number>>
-  withAllocatedRealBlock(
-    upstreamIndex: number,
-    build: (ctx: { mapping: WireBlockMapping; envelope: WireEnvelopeFactory }) => ReadonlyArray<WireWriteSpec>,
-  ): Promise<OwnerResult<WireBlockMapping>>
-  beginLeg(kind: "primary" | "continuation" | "recovery", source: LegSource): Promise<OwnerResult<LegToken>>
-  closeOpenAnchor(
-    buildStop: (index: number, envelope: WireEnvelopeFactory) => WireWriteSpec,
-    mode: "before-real" | "terminal",
-  ): Promise<OwnerResult<"closed" | "none">>
-  writeBlockFrame(leg: LegToken, upstreamIndex: number, frame: ClientFrame): Promise<OwnerResult<"written" | "no-mapping">>
-}
 
 /** One already client-shaped frame waiting to enter the unique wire serializer. */
 export type DeliveryFrame = ClientFrameEnvelope

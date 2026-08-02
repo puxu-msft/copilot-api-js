@@ -72,4 +72,3 @@ test("an anchor write parked at the sink cannot interleave with a real-block all
   assertMonotonicWireIndices(frames)
   assertBlockProtocolState(frames)
 })
-

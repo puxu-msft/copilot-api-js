@@ -11,7 +11,6 @@ import {
 import path from "node:path"
 import ts from "typescript"
 
-
 const repoRoot = path.resolve(import.meta.dir, "../..")
 
 async function sourceFiles(root: string): Promise<Array<string>> {

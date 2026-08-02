@@ -24,18 +24,18 @@ test("a suspended heartbeat allocates no further anchors", async () => {
   const allocator = createGenerationWireIndexAllocator()
   const wireState = createGenerationWireState(allocator)
   let injectorCalls = 0
-  let sink: ReturnType<typeof makeDeliverySseSink>
+  const sinkHolder: { current?: ReturnType<typeof makeDeliverySseSink> } = {}
   const stream = {
     writeSSE: async () => {},
   } as unknown as Parameters<typeof makeDeliverySseSink>[0]
-  sink = makeDeliverySseSink(stream, {
+  const sink = makeDeliverySseSink(stream, {
     wireState,
     heartbeat: {
       intervalSec: 15,
       pingFrame: { event: "ping", data: '{"type":"ping"}' },
       injectAnchor: async () => {
         injectorCalls++
-        const port = getDownstreamDeliverySession(sink)?.allocationPort
+        const port = sinkHolder.current ? getDownstreamDeliverySession(sinkHolder.current)?.allocationPort : undefined
         if (!port) throw new Error("delivery owner unavailable")
         const result = await port.allocateAndWriteAnchor(({ wireIndex, envelope }) => [
           envelope.anchor({
@@ -47,6 +47,7 @@ test("a suspended heartbeat allocates no further anchors", async () => {
       },
     },
   })
+  sinkHolder.current = sink
 
   sink.suspendHeartbeat?.()
   await clock.advance(60_000)
