@@ -60,6 +60,7 @@ export interface DownstreamDeliverySession {
 }
 
 const deliveryBySink = new WeakMap<ClientSink, DownstreamDeliverySession>()
+const deliveryByAllocationPort = new WeakMap<WireBlockAllocationPort, DownstreamDeliverySession>()
 let deliverySessionObserverForTests: ((session: DownstreamDeliverySession) => void) | undefined
 
 /** Test-only observer for HTTP-path wiring assertions; reset through isolated-fixture RESETTERS. */
@@ -81,6 +82,11 @@ export class DeliveryOwnerError extends Error {
 /** Resolve the generation-owned delivery behind a production delivery sink. */
 export function getDownstreamDeliverySession(sink: ClientSink): DownstreamDeliverySession | undefined {
   return deliveryBySink.get(sink)
+}
+
+/** Resolve the same owner from an explicitly passed allocation port without registering wrapper sinks. */
+export function getDeliverySessionForAllocationPort(port: WireBlockAllocationPort): DownstreamDeliverySession | undefined {
+  return deliveryByAllocationPort.get(port)
 }
 
 /** Create a delivery session whose identity and ledger outlive every upstream round. */
@@ -487,6 +493,7 @@ export function createDownstreamDeliverySession(options: CreateDownstreamDeliver
 
   clientSink.finalize = () => session.terminate({ kind: "complete" })
   deliveryBySink.set(clientSink, session)
+  deliveryByAllocationPort.set(allocationPort, session)
   deliverySessionObserverForTests?.(session)
   armHeartbeat()
   return session

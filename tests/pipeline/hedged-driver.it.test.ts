@@ -172,6 +172,7 @@ describe("production driver hedged response", () => {
     if (!activeSource) throw new Error("hedge winner did not establish an active wire leg")
     const winnerDispatch = request.env.ctx.modelOperationSnapshot.dispatches.find((dispatch) => String(dispatch.handle) === activeSource.dispatchId)
     expect(String(winnerDispatch?.candidate)).toBe(activeSource.candidateId)
+    expect(delivery.snapshot.winnerCandidateId).toBe(activeSource.candidateId)
   })
 
   test("a complete primary before the threshold never starts a hedge", async () => {

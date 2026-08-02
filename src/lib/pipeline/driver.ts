@@ -25,7 +25,11 @@ import type { FrozenHedgePolicy } from "~/lib/pipeline/generation/hedge-policy"
 import { classifyError } from "~/lib/error"
 import { recordRetryGiveUp } from "~/lib/observability/retry-giveups"
 import { recordRetryStrategyFire } from "~/lib/observability/retry-strategy-fires"
-import { getDownstreamDeliverySession } from "~/lib/pipeline/delivery/session"
+import {
+  //
+  getDeliverySessionForAllocationPort,
+  getDownstreamDeliverySession,
+} from "~/lib/pipeline/delivery/session"
 import { readSyntheticKind } from "~/lib/pipeline/frame-origin"
 import { createGenerationBudget } from "~/lib/pipeline/generation/generation-budget"
 import { getUpstreamHook } from "~/lib/pipeline/hooks/loader"
@@ -866,7 +870,7 @@ async function maybeRunHedgedResponseSink(
     runtime.bind(binding.coordinator, selected)
     env.ctx.selectGenerationWinner(selected.candidate, selected.dispatch)
     const explicitPort = outerOpts?.wireAllocationPort
-    const delivery = explicitPort ? undefined : getDownstreamDeliverySession(sink)
+    const delivery = explicitPort ? getDeliverySessionForAllocationPort(explicitPort) : getDownstreamDeliverySession(sink)
     const allocationPort = explicitPort ?? delivery?.allocationPort
     if (allocationPort?.wireState) {
       const leg = await allocationPort.beginLeg("primary", {
