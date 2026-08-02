@@ -1,0 +1,3 @@
+{"path":"ok","body":"BODY-OK","events":[{"event":"response"},{"event":"data","arg":"BODY-OK"},{"event":"end","rstCode":0},{"event":"close","rstCode":0}]}
+{"path":"rst","body":"PARTIAL-H2-RST-8","events":[{"event":"response"},{"event":"data","arg":"PARTIAL-H2-RST-8"},{"event":"end","rstCode":0},{"event":"close","rstCode":0}]}
+{"path":"destroy","body":"PARTIAL-H2-DESTROY","events":[{"event":"response"},{"event":"data","arg":"PARTIAL-H2-DESTROY"},{"event":"end","rstCode":0},{"event":"close","rstCode":0}]}

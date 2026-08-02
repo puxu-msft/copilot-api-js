@@ -56,6 +56,13 @@ import { bridgeClientAbort } from "~/lib/abort-bridge"
 import { createBetaProbe } from "~/lib/anthropic/pipeline"
 import {
   //
+  extractRefusalDetail,
+  isContentlessRefusalResponse,
+  refusalCategoryForDiagnostics,
+  refusalSummary,
+} from "~/lib/anthropic/recover-refusal"
+import {
+  //
   accumulateAnthropicStreamEvent,
   createAnthropicStreamAccumulator,
 } from "~/lib/anthropic/stream-accumulator"
@@ -69,6 +76,7 @@ import {
   //
   convertOpenAIResponseToGemini,
 } from "~/lib/gemini"
+import { geminiStreamErrorFromError } from "~/lib/gemini/stream-error"
 import { ENDPOINT } from "~/lib/models/endpoint"
 import { resolveModelTarget } from "~/lib/models/resolver"
 import { resolveStreamIdleTimeoutMs } from "~/lib/models/timeout-resolver"
@@ -91,7 +99,6 @@ import { classifyReverseAnthropicTerminal } from "~/lib/pipeline/reverse-termina
 import { buildAnthropicResponseData } from "~/lib/request/recording"
 import { usageFromTotalInput } from "~/lib/request/usage-normalize"
 import { state } from "~/lib/state"
-import { classifyStreamError } from "~/lib/stream"
 import { createUpstreamHttpTransport } from "~/lib/transport/http-transport"
 import { resolveInboundQuery } from "~/lib/transport/query-forward"
 import {
@@ -459,13 +466,11 @@ async function pumpGeminiStreamingV4(opts: PumpGeminiStreamingV4Options): Promis
     // forwarded track (the client receives it) via writeSynthetic → recordForwarded → fail (ordering
     // is load-bearing: ctx.fail freezes inboundResponse, so a post-fail snapshot would miss the frame).
     const message = error instanceof Error ? error.message : String(error)
-    const errorKind = classifyStreamError(error)
-    const errorCode = errorKind === "shutdown" ? 503 : 500
     await sink
       .writeSynthetic?.({
         data: JSON.stringify({
           candidates: [{ content: { role: "model", parts: [{ text: message }] }, finishReason: "OTHER", index: 0 }],
-          error: { code: errorCode, message, status: geminiStreamErrorStatus(errorKind) },
+          error: { ...geminiStreamErrorFromError(error), message },
         }),
       })
       .catch(() => undefined)
@@ -498,7 +503,7 @@ async function pumpGeminiStreamingV4(opts: PumpGeminiStreamingV4Options): Promis
       .writeSynthetic?.({
         data: JSON.stringify({
           candidates: [{ content: { role: "model", parts: [{ text: truncErr.message }] }, finishReason: "OTHER", index: 0 }],
-          error: { code: 500, message: truncErr.message, status: geminiStreamErrorStatus(classifyStreamError(truncErr)) },
+          error: { ...geminiStreamErrorFromError(truncErr), message: truncErr.message },
         }),
       })
       .catch(() => undefined)
@@ -536,21 +541,6 @@ function isGeminiTerminalFrame(frame: ClientFrame): boolean {
   }
 }
 
-/** Map a streaming error kind to the Gemini gRPC `status` string (matches legacy). */
-function geminiStreamErrorStatus(kind: ReturnType<typeof classifyStreamError>): string {
-  switch (kind) {
-    case "idle-timeout": {
-      return "DEADLINE_EXCEEDED"
-    }
-    case "shutdown": {
-      return "UNAVAILABLE"
-    }
-    default: {
-      return "INTERNAL"
-    }
-  }
-}
-
 // ============================================================================
 // REVERSE `@messages` leg (Phase 5) — non-streaming render + streaming pump
 // ============================================================================
@@ -575,8 +565,10 @@ function renderReverseGeminiNonStreamingV4(
   env.ctx.setClientResponseStatus(httpResponse.status)
 
   const truncationReason = anthropicNonStreamingTruncation(anthropicUpstream.stop_reason)
+  const refusalReason = isContentlessRefusalResponse(anthropicUpstream) ? refusalSummary(extractRefusalDetail(anthropicUpstream.stop_details)) : null
+  const failureReason = refusalReason ?? truncationReason
   const responseData = {
-    success: !truncationReason,
+    success: !failureReason,
     model: anthropicUpstream.model,
     usage: {
       input_tokens: anthropicUpstream.usage.input_tokens,
@@ -585,15 +577,23 @@ function renderReverseGeminiNonStreamingV4(
       cache_creation_input_tokens: anthropicUpstream.usage.cache_creation_input_tokens ?? undefined,
     },
     stop_reason: anthropicUpstream.stop_reason ?? undefined,
+    stopDetails: (anthropicUpstream as { stop_details?: unknown }).stop_details,
     content: { role: "assistant" as const, content: anthropicUpstream.content },
     responseText: JSON.stringify(anthropicUpstream),
   }
-  if (truncationReason) {
-    env.ctx.fail(anthropicUpstream.model, new Error(truncationReason), {
-      usage: responseData.usage,
-      stop_reason: responseData.stop_reason,
-      content: responseData.content,
-    })
+  if (failureReason) {
+    if (refusalReason) env.ctx.recordFeature("refusal-passthrough", { category: refusalCategoryForDiagnostics(anthropicUpstream.stop_details) })
+    env.ctx.fail(
+      anthropicUpstream.model,
+      new Error(failureReason),
+      {
+        usage: responseData.usage,
+        stop_reason: responseData.stop_reason,
+        stopDetails: responseData.stopDetails,
+        content: responseData.content,
+      },
+      refusalReason ? { upstreamSucceeded: true } : undefined,
+    )
   } else {
     env.ctx.complete(responseData)
   }
@@ -666,12 +666,11 @@ async function pumpReverseGeminiStreamingV4(opts: PumpReverseGeminiStreamingV4Op
       sseEvents: diag.sseEvents,
     })
     const message = error instanceof Error ? error.message : String(error)
-    const errorKind = classifyStreamError(error)
     await sink
       .writeSynthetic?.({
         data: JSON.stringify({
           candidates: [{ content: { role: "model", parts: [{ text: message }] }, finishReason: "OTHER", index: 0 }],
-          error: { code: errorKind === "shutdown" ? 503 : 500, message, status: geminiStreamErrorStatus(errorKind) },
+          error: { ...geminiStreamErrorFromError(error), message },
         }),
       })
       .catch(() => undefined)
@@ -712,12 +711,20 @@ async function pumpReverseGeminiStreamingV4(opts: PumpReverseGeminiStreamingV4Op
       .writeSynthetic?.({
         data: JSON.stringify({
           candidates: [{ content: { role: "model", parts: [{ text: truncErr.message }] }, finishReason: "OTHER", index: 0 }],
-          error: { code: 500, message: truncErr.message, status: geminiStreamErrorStatus(classifyStreamError(truncErr)) },
+          error: { ...geminiStreamErrorFromError(truncErr), message: truncErr.message },
         }),
       })
       .catch(() => undefined)
     recordForwarded()
     env.ctx.fail(anthropicAcc.model || model, truncErr, buildAnthropicResponseData(anthropicAcc, model))
+    sink.finalize?.()
+    return
+  }
+  if (terminal.kind === "contentless-refusal") {
+    const summary = refusalSummary(extractRefusalDetail(anthropicAcc.stopDetails))
+    env.ctx.recordFeature("refusal-passthrough", { category: refusalCategoryForDiagnostics(anthropicAcc.stopDetails) })
+    recordForwarded()
+    env.ctx.fail(anthropicAcc.model || model, new Error(summary), buildAnthropicResponseData(anthropicAcc, model), { upstreamSucceeded: true })
     sink.finalize?.()
     return
   }

@@ -111,6 +111,7 @@ export function buildAnthropicResponseData(acc: AnthropicStreamAccumulator, fall
     content: contentBlocks.length > 0 ? { role: "assistant", content: contentBlocks } : null,
     ...(acc.copilotAnnotations.length > 0 && { copilotAnnotations: acc.copilotAnnotations }),
     ...(acc.toolSearchRequests > 0 && { toolSearchRequests: acc.toolSearchRequests }),
+    ...(acc.stopDetails !== undefined && { stopDetails: acc.stopDetails }),
   }
 }
 

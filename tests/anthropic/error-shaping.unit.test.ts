@@ -28,6 +28,7 @@ import {
   decide,
   DEFAULT_AUQ_TEMPLATE,
   renderAuqQuestion,
+  streamErrorKindToAnthropicErrorType,
   type ErrorShapingConfig,
 } from "~/lib/anthropic/error-shaping"
 import {
@@ -37,9 +38,16 @@ import {
 } from "~/lib/pipeline/frame-origin"
 import {
   //
+  classifyStreamError,
+  StreamClientAbortError,
+  StreamDispatchCancelError,
+  type StreamErrorKind,
   StreamIdleTimeoutError,
   StreamReaperCancelError,
+  StreamRequestCancelError,
+  StreamRequestDeadlineError,
   StreamShutdownError,
+  StreamUnknownCancelError,
 } from "~/lib/stream"
 
 const baseConfig: ErrorShapingConfig = { enabled: true, askUserQuestion: false, auqTemplate: "", selfhealDelegate: {} }
@@ -156,16 +164,50 @@ describe("buildCanonicalErrorFrame", () => {
 })
 
 describe("classifyStreamErrorType — 收编 streaming-pump.ts:anthropicStreamErrorType 的逻辑", () => {
-  test("idle-timeout → timeout_error", () => {
-    expect(classifyStreamErrorType(new StreamIdleTimeoutError(300_000))).toBe("timeout_error")
+  // Every clock WE run out reports as a timeout — the frame-idle watchdog, the hard
+  // request deadline, and the stale-request reaper (`stale_request_max_age` expiring IS
+  // a deadline). Grouping them is what stopped a hard deadline from reaching the client
+  // as a generic `api_error` on the live path while the codec's private copy said otherwise.
+  test.each([
+    [new StreamIdleTimeoutError(300_000), "idle-timeout"],
+    [new StreamRequestDeadlineError(), "request-deadline"],
+    [new StreamReaperCancelError(), "reaper-cancel"],
+  ])("our own clock running out → timeout_error (%s)", (err) => {
+    expect(classifyStreamErrorType(err)).toBe("timeout_error")
   })
 
-  test("shutdown → overloaded_error", () => {
+  test("shutdown → overloaded_error (the one genuinely retry-now condition)", () => {
     expect(classifyStreamErrorType(new StreamShutdownError())).toBe("overloaded_error")
   })
 
-  test.each([new StreamReaperCancelError(), new Error("transport reset"), "not an error", null])("other/non-classified → api_error (%p)", (err) => {
-    expect(classifyStreamErrorType(err)).toBe("api_error")
+  // Anthropic's wire has no cancellation literal, so the cancel kinds honestly degrade to
+  // the generic bucket rather than borrowing an unrelated one.
+  test.each([new StreamUnknownCancelError(), new StreamRequestCancelError(), new Error("transport reset"), "not an error", null])(
+    "no matching Anthropic literal → api_error (%p)",
+    (err) => {
+      expect(classifyStreamErrorType(err)).toBe("api_error")
+    },
+  )
+
+  test("the live mapper and the v4 codec agree on every kind (they used to drift)", () => {
+    // The codec's `formatError` imports `streamErrorKindToAnthropicErrorType`; this asserts
+    // the wrapper the handler calls resolves to the same table for each kind. A private copy
+    // in either place is what let a "landed" deadline mapping never reach the wire.
+    const cases: Array<[Error, StreamErrorKind]> = [
+      [new StreamIdleTimeoutError(1000), "idle-timeout"],
+      [new StreamShutdownError(), "shutdown"],
+      [new StreamClientAbortError(), "client-abort"],
+      [new StreamReaperCancelError(), "reaper-cancel"],
+      [new StreamRequestDeadlineError(), "request-deadline"],
+      [new StreamRequestCancelError(), "request-cancel"],
+      [new StreamDispatchCancelError(), "dispatch-cancel"],
+      [new StreamUnknownCancelError(), "unknown-cancel"],
+      [new Error("boom"), "other"],
+    ]
+    for (const [error, kind] of cases) {
+      expect(classifyStreamError(error)).toBe(kind)
+      expect(classifyStreamErrorType(error)).toBe(streamErrorKindToAnthropicErrorType(kind))
+    }
   })
 })
 

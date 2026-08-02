@@ -1,10 +1,9 @@
 /**
- * Unit tests for the Anthropic thinking-only-refusal recovery (response-side).
+ * Unit tests for the Anthropic contentless-refusal rewriter (response-side).
  *
- * Covers the pure helpers (`renderRefusalTemplate`), the streaming `createRefusalRecoverer` state
- * machine (passthrough + synthesize-at-refusal, index tracking, gate, template rendering + empty),
- * the `createRefusalErrorEmitter` (error-frame reshape + template), and the non-streaming
- * `recoverRefusalInResponse`. The driver/handler integration is locked separately by
+ * Covers the streaming `createRefusalRewriter` state machine in both suppression (`end_turn`)
+ * and `error` dispositions, and the non-streaming `recoverRefusalInResponse`. The pure parsing
+ * helpers live in refusal-detail.unit.test.ts. The driver/handler integration is locked separately by
  * tests/anthropic/response-rewrite-golden.http.test.ts.
  */
 
@@ -27,13 +26,8 @@ import type {
 import {
   //
   buildSyntheticTextFrames,
-  createRefusalErrorEmitter,
-  createRefusalRecoverer,
-  DEFAULT_REFUSAL_END_TURN_TEXT,
-  DEFAULT_REFUSAL_ERROR_MESSAGE,
-  isThinkingOnlyRefusal,
+  createRefusalRewriter,
   recoverRefusalInResponse,
-  renderRefusalTemplate,
   rewriteRefusalMessageDelta,
 } from "~/lib/anthropic/recover-refusal"
 
@@ -45,9 +39,17 @@ function frame(obj: Record<string, unknown>): { parsed: StreamEvent; raw: Server
   return { parsed: obj as unknown as StreamEvent, raw: { data: JSON.stringify(obj) } }
 }
 
-/** Drive a sequence of plain event objects through a default recoverer; return forwarded data strings. */
-function run(events: Array<Record<string, unknown>>, onRecover?: () => void): Array<string> {
-  const recoverer = createRefusalRecoverer({ onRecover, template: DEFAULT_REFUSAL_END_TURN_TEXT, staticVars: STATIC })
+/** Hand-written suppression text — deliberately NOT the production constant (an expected value
+ *  imported from the code under test goes green when both change together). */
+const SUPPRESS_TEXT = "suppressed: category={refusal_category}"
+/** What SUPPRESS_TEXT renders to for the fixtures below (stop_details carries no category). */
+const SUPPRESS_RENDERED = "suppressed: category=unknown"
+const ERROR_TEXT = "denied: category={refusal_category}"
+const ERROR_RENDERED = "denied: category=unknown"
+
+/** Drive a sequence of plain event objects through a suppression rewriter; return forwarded data strings. */
+function run(events: Array<Record<string, unknown>>): Array<string> {
+  const recoverer = createRefusalRewriter({ policy: { mode: "end_turn", endTurnText: SUPPRESS_TEXT, errorMessage: "", errorType: "api_error" }, staticVars: STATIC })
   const out: Array<string> = []
   for (const ev of events) {
     const { parsed, raw } = frame(ev)
@@ -65,34 +67,6 @@ const refusalDelta = {
   delta: { stop_reason: "refusal", stop_details: { type: "refusal", explanation: "x" }, stop_sequence: null },
   usage: { output_tokens: 9 },
 }
-
-describe("renderRefusalTemplate", () => {
-  const vars = { model: "claude-opus-4.8", request_id: "req_1", thinking_tokens: 25848 }
-
-  test("replaces known placeholders", () => {
-    expect(renderRefusalTemplate("m={model} r={request_id} t={thinking_tokens}", vars)).toBe("m=claude-opus-4.8 r=req_1 t=25848")
-  })
-  test("leaves unknown placeholders verbatim (no throw, no drop)", () => {
-    expect(renderRefusalTemplate("keep {unknown} and {model}", vars)).toBe("keep {unknown} and claude-opus-4.8")
-  })
-  test("empty string stays empty", () => {
-    expect(renderRefusalTemplate("", vars)).toBe("")
-  })
-  test("static text with no placeholders is byte-identical", () => {
-    expect(renderRefusalTemplate(DEFAULT_REFUSAL_END_TURN_TEXT, vars)).toBe(DEFAULT_REFUSAL_END_TURN_TEXT)
-  })
-})
-
-describe("isThinkingOnlyRefusal", () => {
-  test("true only for refusal stop_reason with no real content", () => {
-    expect(isThinkingOnlyRefusal("refusal", false)).toBe(true)
-    expect(isThinkingOnlyRefusal("refusal", true)).toBe(false)
-    expect(isThinkingOnlyRefusal("end_turn", false)).toBe(false)
-    expect(isThinkingOnlyRefusal("tool_use", false)).toBe(false)
-    expect(isThinkingOnlyRefusal(null, false)).toBe(false)
-    expect(isThinkingOnlyRefusal(undefined, false)).toBe(false)
-  })
-})
 
 describe("buildSyntheticTextFrames", () => {
   test("emits start → delta → stop at the given index carrying the passed text", () => {
@@ -125,15 +99,14 @@ describe("rewriteRefusalMessageDelta", () => {
 })
 
 describe("createRefusalRecoverer (streaming)", () => {
-  test("thinking-only refusal: passes thinking frames, synthesizes text at maxIndex+1, rewrites delta to end_turn", () => {
-    let recovered = 0
-    const out = run([{ type: "message_start" }, thinkingStart, sigDelta, thinkingStop, refusalDelta, messageStop], () => recovered++)
+  test("contentless refusal: passes thinking frames, synthesizes text at maxIndex+1, rewrites delta to end_turn", () => {
+    const out = run([{ type: "message_start" }, thinkingStart, sigDelta, thinkingStop, refusalDelta, messageStop])
     const parsed = out.map((d) => JSON.parse(d))
     // thinking frames verbatim
     expect(parsed.slice(0, 4)).toEqual([{ type: "message_start" }, thinkingStart, sigDelta, thinkingStop])
     // synthetic text block at index 1 (thinking was index 0)
     expect(parsed[4]).toEqual({ type: "content_block_start", index: 1, content_block: { type: "text", text: "" } })
-    expect(parsed[5]).toEqual({ type: "content_block_delta", index: 1, delta: { type: "text_delta", text: DEFAULT_REFUSAL_END_TURN_TEXT } })
+    expect(parsed[5]).toEqual({ type: "content_block_delta", index: 1, delta: { type: "text_delta", text: SUPPRESS_RENDERED } })
     expect(parsed[6]).toEqual({ type: "content_block_stop", index: 1 })
     // rewritten message_delta: end_turn, stop_details cleared
     expect(parsed[7]).toEqual({
@@ -142,33 +115,34 @@ describe("createRefusalRecoverer (streaming)", () => {
       usage: { output_tokens: 9 },
     })
     expect(parsed[8]).toEqual(messageStop)
-    expect(recovered).toBe(1)
   })
 
-  test("renders {thinking_tokens} from the refusal delta usage (not 0), and {model}", () => {
-    const recoverer = createRefusalRecoverer({ template: "t={thinking_tokens} m={model}", staticVars: STATIC })
+  test("renders {thinking_tokens} as `unknown` when the upstream sent no breakdown, and {model}", () => {
+    const recoverer = createRefusalRewriter({ policy: { mode: "end_turn", endTurnText: "t={thinking_tokens} m={model}", errorMessage: "", errorType: "api_error" }, staticVars: STATIC })
     const { parsed, raw } = frame(refusalDelta) // usage.output_tokens = 9
     const out = recoverer.processEvent(parsed, raw)
     // synthetic text delta (index 0) carries the rendered template
     const textDelta = JSON.parse(out[1].data ?? "")
-    expect(textDelta).toEqual({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "t=9 m=claude-opus-4.8" } })
+    expect(textDelta).toEqual({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "t=unknown m=claude-opus-4.8" } })
   })
 
-  test("empty template appends NO text block, only flips stop_reason to end_turn", () => {
-    const recoverer = createRefusalRecoverer({ template: "", staticVars: STATIC })
+  test("empty template appends NO text block — but still emits a COMPLETE terminus (end_turn + message_stop)", () => {
+    const recoverer = createRefusalRewriter({ policy: { mode: "end_turn", endTurnText: "", errorMessage: "", errorType: "api_error" }, staticVars: STATIC })
     const { parsed, raw } = frame(refusalDelta)
     const out = recoverer.processEvent(parsed, raw)
-    // exactly one frame: the rewritten end_turn delta, no synthetic text block
-    expect(out).toHaveLength(1)
+    // no synthetic text block, but the terminus is still complete: without our own message_stop the
+    // real @anthropic-ai/sdk throws "stream ended without producing a Message with role=assistant".
+    expect(out).toHaveLength(2)
     expect(JSON.parse(out[0].data ?? "")).toEqual({
       type: "message_delta",
       delta: { stop_reason: "end_turn", stop_details: null, stop_sequence: null },
       usage: { output_tokens: 9 },
     })
+    expect(out[1].event).toBe("message_stop")
+    expect(JSON.parse(out[1].data ?? "")).toEqual({ type: "message_stop" })
   })
 
   test("normal end_turn stream passes through byte-identical (gate never fires)", () => {
-    let recovered = 0
     const events = [
       { type: "message_start" },
       { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } },
@@ -177,13 +151,11 @@ describe("createRefusalRecoverer (streaming)", () => {
       { type: "message_delta", delta: { stop_reason: "end_turn", stop_sequence: null }, usage: { output_tokens: 2 } },
       messageStop,
     ]
-    const out = run(events, () => recovered++)
+    const out = run(events)
     expect(out).toEqual(events.map((e) => JSON.stringify(e)))
-    expect(recovered).toBe(0)
   })
 
   test("refusal WITH a real text block: gate closed, passes through unchanged", () => {
-    let recovered = 0
     const events = [
       { type: "message_start" },
       { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } },
@@ -192,9 +164,8 @@ describe("createRefusalRecoverer (streaming)", () => {
       refusalDelta,
       messageStop,
     ]
-    const out = run(events, () => recovered++)
+    const out = run(events)
     expect(out).toEqual(events.map((e) => JSON.stringify(e)))
-    expect(recovered).toBe(0)
   })
 
   test("two thinking blocks → synthetic text at index 2", () => {
@@ -225,7 +196,7 @@ describe("createRefusalRecoverer (streaming)", () => {
 describe("createRefusalErrorEmitter (streaming, error mode)", () => {
   /** Drive events through a default error-emitter; return the forwarded frames (event + data preserved). */
   function runEmitter(events: Array<Record<string, unknown>>): Array<ServerSentEventMessage> {
-    const emitter = createRefusalErrorEmitter({ messageTemplate: DEFAULT_REFUSAL_ERROR_MESSAGE, errorType: "api_error", staticVars: STATIC })
+    const emitter = createRefusalRewriter({ policy: { mode: "error", endTurnText: "", errorMessage: ERROR_TEXT, errorType: "api_error" }, staticVars: STATIC })
     const out: Array<ServerSentEventMessage> = []
     for (const ev of events) {
       const { parsed, raw } = frame(ev)
@@ -234,14 +205,14 @@ describe("createRefusalErrorEmitter (streaming, error mode)", () => {
     return out
   }
 
-  test("thinking-only refusal: replaces the delta with an error frame, suppresses message_stop", () => {
+  test("contentless refusal: replaces the delta with an error frame, suppresses message_stop", () => {
     const out = runEmitter([{ type: "message_start" }, thinkingStart, sigDelta, thinkingStop, refusalDelta, messageStop])
     // 4 thinking frames pass verbatim, the refusal delta is REPLACED by 1 error frame, message_stop is SUPPRESSED → 5 total
     expect(out).toHaveLength(5)
     expect(out.slice(0, 4).map((f) => JSON.parse(f.data ?? ""))).toEqual([{ type: "message_start" }, thinkingStart, sigDelta, thinkingStop])
     // the error frame carries an `event: error` line (else the Anthropic SDK drops it) + canonical body
     expect(out[4].event).toBe("error")
-    expect(JSON.parse(out[4].data ?? "")).toEqual({ type: "error", error: { type: "api_error", message: DEFAULT_REFUSAL_ERROR_MESSAGE } })
+    expect(JSON.parse(out[4].data ?? "")).toEqual({ type: "error", error: { type: "api_error", message: ERROR_RENDERED } })
     // the original refusal delta + message_stop never reach the client (pure reshape; no ctx/feature
     // side effects — the handler's complete branch owns observability)
     expect(out.some((f) => (f.data ?? "").includes('"stop_reason":"refusal"'))).toBe(false)
@@ -249,16 +220,16 @@ describe("createRefusalErrorEmitter (streaming, error mode)", () => {
   })
 
   test("renders a custom message template + custom error type into the error frame", () => {
-    const emitter = createRefusalErrorEmitter({ messageTemplate: "denied m={model} t={thinking_tokens}", errorType: "custom_type", staticVars: STATIC })
+    const emitter = createRefusalRewriter({ policy: { mode: "error", endTurnText: "", errorMessage: "denied m={model} t={thinking_tokens}", errorType: "custom_type" }, staticVars: STATIC })
     const { parsed, raw } = frame(refusalDelta) // usage.output_tokens = 9
     const out = emitter.processEvent(parsed, raw)
     expect(out).toHaveLength(1)
     expect(out[0].event).toBe("error")
-    expect(JSON.parse(out[0].data ?? "")).toEqual({ type: "error", error: { type: "custom_type", message: "denied m=claude-opus-4.8 t=9" } })
+    expect(JSON.parse(out[0].data ?? "")).toEqual({ type: "error", error: { type: "custom_type", message: "denied m=claude-opus-4.8 t=unknown" } })
   })
 
   test("empty error type falls back to api_error", () => {
-    const emitter = createRefusalErrorEmitter({ messageTemplate: "x", errorType: "", staticVars: STATIC })
+    const emitter = createRefusalRewriter({ policy: { mode: "error", endTurnText: "", errorMessage: "x", errorType: "" }, staticVars: STATIC })
     const { parsed, raw } = frame(refusalDelta)
     const out = emitter.processEvent(parsed, raw)
     expect(JSON.parse(out[0].data ?? "").error.type).toBe("api_error")
@@ -303,7 +274,7 @@ describe("createRefusalErrorEmitter (streaming, error mode)", () => {
 describe("recoverRefusalInResponse (non-streaming)", () => {
   const base = { id: "m", type: "message", role: "assistant", model: "claude-opus-4.8", stop_sequence: null, usage: { input_tokens: 1, output_tokens: 2 } }
 
-  test("thinking-only refusal: appends the rendered text block, end_turn, clears stop_details", () => {
+  test("contentless refusal: appends the rendered text block, end_turn, clears stop_details", () => {
     const resp = {
       ...base,
       stop_reason: "refusal",

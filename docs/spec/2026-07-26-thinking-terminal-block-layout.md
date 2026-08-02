@@ -65,7 +65,7 @@ HTTP 400: messages.27: The final block in an assistant message cannot be `thinki
 
 **推论 2——我方仍对所有 assistant 消息强制 C2**（比上游要求更严），刻意不引入「首个豁免」的例外：规则更简单、幂等性更好，而首个 assistant 消息以 thinking 收尾本就极罕见；GHC 的 opus 也不支持 assistant prefill（实测报 `does not support assistant message prefill`），所以不存在「改动首个 assistant 会污染 prefill 续写」的顾虑。
 
-**推论 3——上游报的 messages 索引不可信**：全量时上游报 27 / 我方 28（偏 −1）；截断后上游报 15 / 我方 14（偏 **+1**）；只剩 5 条消息（合法索引 0..4）时上游报 `messages.5`（**越界**）。三者互相矛盾，说明上游在校验前对消息做了我方不可见的重组。**永远按形状定位违规消息。**
+**推论 3——上游报的 messages 索引不可信**：全量时上游报 27 / 我方 28（偏 −1）；截断后上游报 15 / 我方 14（偏 **+1**）；只剩 5 条消息（合法索引 0..4）时上游报 `messages.5`（**越界**）；2026-07-28 的 `req_1785276101202_7795` 上游报 69 / 我方 72（偏 **−3**）。四者互相矛盾，说明上游在校验前对消息做了我方不可见的重组。**永远按形状定位违规消息。**
 
 ## 修复
 
@@ -118,6 +118,30 @@ HTTP 400: This model does not support assistant message prefill. The conversatio
 
    注意：**内联 `role:"system"` 消息收尾不算 prefill**——实测同一事故对话里有五轮以 system 消息收尾，上游都正常作答。
 
+## 二次事故（2026-07-28）：同一台陈旧实例、同一形态、换了个措辞
+
+`req_1785276101202_7795`（2026-07-28 22:01 UTC，`attemptCount = 1`，`clientStatus 400`）与上节事故是**同一台实例**打的——`process` 指纹逐字段相同：`pid 13201`、`bootTime 1784965095332`（2026-07-25 07:38 UTC）、`procStartTicks 8206609`、`version 0.8.4-beta.17`、且两次都**没有 `gitSha`**。也就是说：上次事故没有促成那台实例升级，它带着 3 天前的代码继续每轮必败。
+
+> **`gitSha` 缺失不足以断定部署形态**（复审用正样本推翻了本节初稿的断言）。`gitSha` 自 2026-06-11 起就在采集里，所以缺失**不是**「那版代码还没这个字段」；但 `initProcessIdentity` 把 git 查询的**一切**失败都折叠成「字段不写」（`git` 不在 `PATH`、cwd 不在 checkout、权限或 `safe.directory` 拒绝、2 秒 timeout），从 checkout 里加载代码但 `cwd=/tmp` 调用同样拿不到 `gitSha`。**能说的只有「git 身份未采集到」**。想让这类归因将来可裁决，得持久化结构化的采集状态（成败与原因），而不是让读者从缺字段反推唯一解释。
+
+形态与上次**块类型序列相同**（内容不同：signature 与 tool id 各是各的）。本次在 `messages[72]`：客户端发来 `[thinking, text(""), thinking, tool_use]`，该实例发上游 `[thinking, tool_use, thinking]`。**唯一的差别在上游的措辞**：
+
+| 事故 | 我方发上游的形态 | 上游回的 400 |
+|---|---|---|
+| `req_1785160010003_3754`（07-27） | `[T, tool, T]` | `This model does not support assistant message prefill…`（C3 措辞） |
+| `req_1785276101202_7795`（07-28） | `[T, tool, T]` | ``The final block in an assistant message cannot be `thinking`.``（C2 措辞） |
+
+**同一个非法形态可以收到两种不同措辞的 400**——它同时违反 C2 与 C3，上游先报哪条不确定。故：**判违规按形状、不按措辞**（与「按形状定位、不按 `messages.N` 索引」同源）；L2 的 matcher 必须两种措辞都认（现状已是），否则同一形态会随上游心情时而有兜底时而没有。
+
+用当前 master 跑同一条客户端 payload（`bun run exp/thinking-terminal-block/probe-remote-c3-regression.ts <entry.json>`）：产出 `[thinking, SEP, thinking, tool_use]`，全部 74 条消息（其中 34 条 assistant）满足 C1+C2+C3，`insertedMarkers: 1`（对比该实例落库的 `insertedMarkers: 0` / `reorderedBlocks: 3`——把 tool_use 当分隔符消耗掉了）。**这起事故代码侧无需再修，修的是那台实例的版本。**
+
+限定一句（复审提醒，别把结论读成绝对）：上面说的是**默认 `move_blocks`、且没有 post-sanitize payload hook** 的内置路径。`passthrough` 策略本就是给上游探针用的刻意 bypass，`upstream.outbound` hook 在 sanitize **之后**改写 payload 且不再过一遍 sanitize——这两条仍能把合法 payload 变成非法形态，它们是有意留的信任边界，不是本轮该修的缺陷。
+
+本轮据此补的两件事：
+
+1. **回归测试补上 finalize→layout 这条缝**（`tests/anthropic/assistant-block-layout-terminal-order.it.test.ts`）。此前该文件只守「`processToolBlocks` 删孤儿 tool_use 造出相邻」这一条诱因，而两次生产事故的诱因都是**另一条**：finalize 的空 text 清理删掉客户端自带的空分隔符。两者对 L1 的要求还不一样——孤儿那条修完没有真块可用（只能合成标记收尾），空 text 这条**有**一个真 `tool_use`，必须被**保留作收尾**而不是被当分隔符消耗。positive control：把 `moveBlocksStrategy` 里的 `realSeps.splice(tailIdx, 1)`（收尾块预留）注释掉，新测试立刻红成 `[thinking, tool_use, thinking, tool_use]`，旧测试仍绿——证明新测试咬的是旧测试咬不到的行为。
+2. **探针改为按形状定位 + 遍历全部 attempt + 先打进程身份**（`exp/thinking-terminal-block/probe-remote-c3-regression.ts`）。旧版把消息下标写死成 `36`，换一条 entry 就指着一条无辜消息打印「一切正常」。现在它对**每一个 attempt** 扫出发上游那条腿上的所有违规消息（只看 `attempts[0]` 会在「首次合法、重试才违规」的 entry 上给出静默假阴性——复审构造该样本证过），三腿对照（客户端发来 / 该 attempt 发上游 / 当前 master 产出），并把 `pid/version/gitSha/booted` 打在最前面——「这个 400 是哪一版代码造的」是判断的第一步，不该靠读者自己去翻 JSON。
+
 ## 随之而来的重命名（2026-07-27）
 
 C3 会修**完全不含 thinking** 的消息（`[tool, text]` → `[text, tool]`），于是「thinking de-stack」这串名字全部名实不符。已整体改名（异模型 reviewer 判 MED，用户裁定全量）：
@@ -167,12 +191,12 @@ C3 会修**完全不含 thinking** 的消息（`[tool, text]` → `[text, tool]`
 | 轴 | 配置键 | 形状 | 为什么是这个形状 |
 |---|---|---|---|
 | **EMIT**（主动使用） | `anthropic.separator_carrier` | **封闭 enum**，当前仅 `marker_v1` | 自由字符串会让用户填出纯空白值——上游会 strip 掉它，于是**自造**本 pass 存在的那个 400。新载体（如极小不可见 Unicode）只有过了真上游 PoC 才进这张表。 |
-| **ACCEPT**（探测时额外接受） | `anthropic.separator_accept_extra` | **开放 list** | 扩大识别面是**单调**的：它永远不可能造出非法 payload，只会把更多块归类为"我方合成物"（于是 strip-all 会把它们当孤儿清掉而不是泄漏给上游）。载体迁移、历史值、第三方部署留下的值全靠这条轴活。 |
+| **ACCEPT**（探测时额外接受） | `anthropic.separator_accept_extra` | **开放 list** | 扩大识别面在 **wire 合法性**上是单调的：它不可能造出非法 payload，只会把更多块归类为"我方合成物"。载体迁移、历史值、第三方部署留下的值全靠这条轴活。**但单调 ≠ 无害**：识别结果喂给 `stripAllThinking()` 的删除判据，pin 一个会与真实 assistant 文本相撞的值，等于授权在 L2/L3 兜底路径上删掉那段真内容——所以 pin 进来的必须是明确、抗碰撞的字面量。 |
 
 工程含义：
-- **迁移变得安全**：新版本可以发射 v2 的同时继续识别 v1；回滚也不会把已 baked 进客户端历史的 marker 变成认不出的垃圾。
+- **迁移变得安全**：新版本可以发射 v2 的同时继续识别 v1；回滚也不会把已 baked 进客户端历史的 marker 变成认不出的垃圾。（成本是**大幅下降**而非零：EMIT 枚举与 `config.yaml` 里 pin 的值仍要改。）
 - **PoC 变得可做**：测试实例把 EMIT 切到实验载体，生产实例只要 pin 上那个值就仍能识别混进来的历史。
-- 识别侧比较是**整块 trim 后全等**，不做子串匹配——否则一条正常消息里提到该字面量就会被误当分隔符剥掉。空串永远不算（pin 空串也不行）。
+- 比较形状分两种，别混：**用户 pin 的额外值与 legacy 字面量走整块 trim 后全等**，不做子串匹配——否则一条正常消息里提到该字面量就会被误当分隔符剥掉；**我方内置载体走带封闭命名空间的前缀族**（`startsWith("[copilot-api:thinking-separator")`），好让旧版本认得出未来版本的载体。空串永远不算（pin 空串也不行）。
 
 这其实是本项目**已经在用的模式**：配置键就是"发新键、认旧键"（`compat.ts` 的 `renameLeaf`）。本次只是把同一个不对称原则应用到 wire 上的哨兵。
 

@@ -21,17 +21,21 @@ import {
 
 import { finalUpstreamResponse } from "~/lib/history/entry-view"
 import { getHistory } from "~/lib/history/store"
+import { setModels } from "~/lib/models/cache"
+import {
+  //
+  resetUpstreamHook,
+  setUpstreamHookForTests,
+} from "~/lib/pipeline/hooks/loader"
 import {
   //
   setDisabledModels,
-  setModels,
   setStateForTests,
 } from "~/lib/state"
 
 import { mockModel } from "../helpers/factories"
 import { useIsolatedRuntime } from "../helpers/isolated-fixture"
 import { applyFetchMock } from "../helpers/mock-fetch"
-import { resetUpstreamHook, setUpstreamHookForTests } from "~/lib/pipeline/hooks/loader"
 import {
   //
   createSseResponse,
@@ -176,15 +180,14 @@ describe("Responses buffered-merge: HTTP block-level flush + History dual-track"
   // track through responseFrame's `...frame` spread + buffered-merge's by-reference pass-through
   // (buffered-merge-reducer.ts:147/163). Previously only static reasoning + a reducer unit test covered it.
   test("Unit 2: a hook-rewritten SURVIVING frame keeps synthetic:'hook-rewrite' through the buffered path (HTTP)", async () => {
-    currentSse = generationSse([{ type: "function_call", id: "fc_1", call_id: "call_1", name: "get_weather", arguments: '{"city":"Tokyo"}', status: "completed" }])
+    currentSse = generationSse([
+      { type: "function_call", id: "fc_1", call_id: "call_1", name: "get_weather", arguments: '{"city":"Tokyo"}', status: "completed" },
+    ])
     // Rewrite the output_item.added frame (a non-delta → survives drop-delta). Returning a DIFFERENT
     // object makes the driver tag it `hook-rewrite`.
     setUpstreamHookForTests({
       upstream: {
-        inbound: (frame) =>
-          typeof frame.data === "string" && frame.data.includes('"response.output_item.added"') ?
-            { ...frame, data: frame.data }
-          : frame,
+        inbound: (frame) => (typeof frame.data === "string" && frame.data.includes('"response.output_item.added"') ? { ...frame, data: frame.data } : frame),
       },
     })
     try {

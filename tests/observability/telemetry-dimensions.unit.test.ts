@@ -42,6 +42,38 @@ function makeEntry(overrides: Partial<HistoryEntryData> = {}): HistoryEntryData 
 // A ctx snapshot isn't read by the current extractors; cast a stub.
 const ctxStub = {} as never
 
+describe("refusal_category dimension", () => {
+  function withStop(stopReason: string | undefined, stopDetails: unknown): HistoryEntryData {
+    return makeEntry({
+      attempts: [
+        {
+          index: 0,
+          durationMs: 0,
+          upstreamResponse: {
+            success: true,
+            model: "claude-opus-5",
+            usage: { input_tokens: 1, output_tokens: 1 },
+            ...(stopReason !== undefined && { stopReason }),
+            stopDetails,
+          },
+        },
+      ],
+    })
+  }
+
+  test("is not applicable to non-refusal requests even when stray stopDetails exist", () => {
+    expect(extractTelemetryKeys(withStop("end_turn", { type: "refusal", category: "cyber" }), ctxStub).refusal_category).toBeNull()
+  })
+
+  test("keeps named upstream categories and groups null/absent/malformed as uncategorized", () => {
+    expect(extractTelemetryKeys(withStop("refusal", { type: "refusal", category: "cyber" }), ctxStub).refusal_category).toBe("cyber")
+    expect(extractTelemetryKeys(withStop("refusal", { type: "refusal", category: "future-category" }), ctxStub).refusal_category).toBe("future-category")
+    expect(extractTelemetryKeys(withStop("refusal", { type: "refusal", category: null }), ctxStub).refusal_category).toBe("uncategorized")
+    expect(extractTelemetryKeys(withStop("refusal", undefined), ctxStub).refusal_category).toBe("uncategorized")
+    expect(extractTelemetryKeys(withStop("refusal", { type: "refusal", category: 42 }), ctxStub).refusal_category).toBe("uncategorized")
+  })
+})
+
 describe("max_tokens_truncation dimension", () => {
   test("extracts the persisted truncation class and skips entries with no max_tokens terminal", () => {
     expect(
@@ -294,6 +326,7 @@ describe("CAPPED_DIMENSION_NAMES", () => {
     expect(CAPPED_DIMENSION_NAMES.has("model")).toBe(true)
     expect(CAPPED_DIMENSION_NAMES.has("client")).toBe(true)
     expect(CAPPED_DIMENSION_NAMES.has("tool")).toBe(true)
+    expect(CAPPED_DIMENSION_NAMES.has("refusal_category")).toBe(true)
     expect(CAPPED_DIMENSION_NAMES.has("endpoint")).toBe(false)
     expect(CAPPED_DIMENSION_NAMES.has("agentKind")).toBe(false)
   })

@@ -35,12 +35,9 @@ import type { DownstreamDeliverySession } from "~/lib/pipeline/delivery/session"
 
 import { PATHS } from "~/lib/config/paths"
 import { getHistory } from "~/lib/history/store"
+import { setModels } from "~/lib/models/cache"
 import { setDeliverySessionObserverForTests } from "~/lib/pipeline/delivery/session"
-import {
-  //
-  setModels,
-  setStateForTests,
-} from "~/lib/state"
+import { setStateForTests } from "~/lib/state"
 
 import {
   //

@@ -1,0 +1,18 @@
+{"at":1785501792112,"event":"ready","h2Port":31443,"h1Port":31444,"pid":1651779}
+{"at":1785501792259,"event":"h2-session","sessionId":1,"remotePort":60592}
+{"at":1785501792261,"event":"h2-request","path":"/hold-long","sessionId":1}
+{"at":1785501804989,"event":"h2-session-error","message":"read ECONNRESET"}
+node:internal/http2/core:934
+        throw new ERR_HTTP2_NO_SOCKET_MANIPULATION();
+              ^
+
+Error [ERR_HTTP2_NO_SOCKET_MANIPULATION]: HTTP/2 sockets should not be directly manipulated (e.g. read and written)
+    at Object.get (node:internal/http2/core:934:15)
+    at shutdown (file:///home/xp/src/copilot-api-js/exp/curl-transport-libcurl/oracle.mjs:111:40)
+    at process.<anonymous> (file:///home/xp/src/copilot-api-js/exp/curl-transport-libcurl/oracle.mjs:118:36)
+    at Object.onceWrapper (node:events:631:26)
+    at process.emit (node:events:509:28) {
+  code: 'ERR_HTTP2_NO_SOCKET_MANIPULATION'
+}
+
+Node.js v24.16.0

@@ -252,10 +252,20 @@ describe("translateAnthropicResponseToResponses — stop_reason → status (IMPR
     expect(result.incomplete_details).toEqual({ reason: "pause_turn" })
   })
 
-  test("refusal (Anthropic-only, no CC equivalent) → incomplete + an HONEST 'refusal' reason (NOT content_filter — Phase 3's corrected distinction applies symmetrically here)", () => {
-    const result = translateAnthropicResponseToResponses(anthropicResponse([{ type: "text", text: "", citations: null }], { stop_reason: "refusal" }), ctx)
+  test("refusal (Anthropic-only, no CC equivalent) → incomplete + an HONEST 'refusal' reason and category-loss marker", () => {
+    const degradations: Array<unknown> = []
+    const result = translateAnthropicResponseToResponses(
+      anthropicResponse([{ type: "text", text: "", citations: null }], {
+        stop_reason: "refusal",
+        stop_details: { type: "refusal", category: "bio", explanation: "diagnostic only" },
+      }),
+      ctx,
+      { onDegradation: (degradation) => degradations.push(degradation) },
+    )
     expect(result.status).toBe("incomplete")
     expect(result.incomplete_details).toEqual({ reason: "refusal" })
+    expect(degradations).toEqual([{ kind: "refusal-category-dropped", category: "bio", target: "openai-responses" }])
+    expect(JSON.stringify(result)).not.toContain("bio")
   })
 
   test("null stop_reason → completed (defensive default)", () => {

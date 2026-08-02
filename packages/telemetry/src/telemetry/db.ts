@@ -48,6 +48,7 @@ const SETTLED_MEASURE_COLUMNS = `
   recovery_candidates      INTEGER NOT NULL DEFAULT 0,
   cancelled_dispatches     INTEGER NOT NULL DEFAULT 0,
   unknown_usage_dispatches INTEGER NOT NULL DEFAULT 0,
+  upstream_leg_success_count INTEGER NOT NULL DEFAULT 0,
   hist_blob                BLOB`
 
 /** 幂等地板 schema：全部表 + 索引。可重复 exec 无害。 */
@@ -113,11 +114,11 @@ export function openTelemetryDb(dbPath: string): TelemetryDatabase {
   db.exec(`PRAGMA busy_timeout = ${BUSY_TIMEOUT_MS};`)
   db.exec("PRAGMA foreign_keys = ON;")
   db.exec(SCHEMA_SQL)
-  ensureGenerationMeasureColumns(db)
+  ensureFeatureMeasureColumns(db)
   return db
 }
 
-function ensureGenerationMeasureColumns(db: TelemetryDatabase): void {
+function ensureFeatureMeasureColumns(db: TelemetryDatabase): void {
   const columns = [
     "generation_candidates",
     "upstream_dispatches",
@@ -126,6 +127,7 @@ function ensureGenerationMeasureColumns(db: TelemetryDatabase): void {
     "recovery_candidates",
     "cancelled_dispatches",
     "unknown_usage_dispatches",
+    "upstream_leg_success_count",
   ] as const
   for (const table of ["tel_raw", "tel_hourly", "tel_daily", "tel_cumulative"] as const) {
     const existing = new Set((db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map((row) => row.name))

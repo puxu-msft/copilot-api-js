@@ -132,6 +132,7 @@ const FEATURE_MEASURE_NAMES = [
   "recoveryCandidates",
   "cancelledDispatches",
   "unknownUsageDispatches",
+  "upstreamLegSuccessCount",
 ] as const
 
 /**
@@ -359,6 +360,8 @@ interface SettledTelemetryInput {
   startedAt: number
   endedAt: number
   success: boolean
+  /** Whether the committed upstream response leg itself succeeded, independent of the client request verdict. */
+  upstreamLegSuccess?: boolean
   usage?: TelemetryUsage
   /**
    * Billing multiplier for the resolved model (from `ctx.multiplier`). When
@@ -597,6 +600,7 @@ function buildSettledDelta(opts: SettledTelemetryInput): SettledMeasures {
     recovery_candidates: opts.generation?.recoveryCandidates ?? 0,
     cancelled_dispatches: opts.generation?.cancelledDispatches ?? 0,
     unknown_usage_dispatches: opts.generation?.unknownUsageDispatches ?? 0,
+    upstream_leg_success_count: opts.upstreamLegSuccess ? 1 : 0,
   }
 }
 
@@ -902,6 +906,7 @@ function applySettledMeasures(acc: StatAccumulator, opts: SettledTelemetryInput,
   c.recoveryCandidates += opts.generation?.recoveryCandidates ?? 0
   c.cancelledDispatches += opts.generation?.cancelledDispatches ?? 0
   c.unknownUsageDispatches += opts.generation?.unknownUsageDispatches ?? 0
+  c.upstreamLegSuccessCount += opts.upstreamLegSuccess ? 1 : 0
 
   // Distribution histograms: only the process-lifetime `dimSinceStart` leg fills them (`withHistograms`),
   // because it is the SOLE consumer that survives P7's single-track convergence — it feeds `/metrics`

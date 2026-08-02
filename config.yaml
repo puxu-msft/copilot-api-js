@@ -922,17 +922,17 @@ anthropic:
     #   缺 `question` 键（present-but-empty 不动）且 `header` 非空者回填 `question = header`，在 decode_top_level_field 之后运行。默认 true。
     ask_user_question_question_missing: true
 
-  # How to handle the upstream thinking-only refusal (stop_reason:"refusal" with only a thinking block, no text/tool_use). Three modes:
-  #   "refusal"  = pass the upstream refusal through unchanged (client gets a dead/empty turn).
-  #   "end_turn" = append a synthetic text block explaining the refusal + flip stop_reason to end_turn (a usable completion).
-  #   "error"    = emit an Anthropic `event: error` SSE frame AND record the request as failed (ctx.fail) — the refusal surfaces as an error, not a fake success.
-  # 上游 thinking-only refusal（stop_reason:"refusal" 仅有 thinking 块、无 text/tool_use）的处理策略，三选一：
-  #   "refusal"  = 透传上游 refusal、不改写（客户端拿到空/坏轮）。
-  #   "end_turn" = 追加合成 text 块说明拒绝 + 把 stop_reason 改成 end_turn（可用的完成）。
-  #   "error"    = 发 Anthropic `event: error` SSE 帧并把请求记为失败（ctx.fail）——refusal 以错误而非伪成功呈现。
-  # Forwarded stream only (history's sseEvents keeps the upstream-original refusal). Default "error". See docs/refusal-recovery.md.
-  # 仅作用于转发流（history 的 sseEvents 保留上游原始 refusal）。默认 "error"。详见 docs/refusal-recovery.md。
-  refusal_sse_rewrite: error
+  # How the CLIENT sees an upstream contentless refusal (stop_reason:"refusal" with no client-visible text/tool_use). Three modes:
+  #   "end_turn" = SUPPRESS it: append a synthetic text block + flip stop_reason to end_turn + emit message_stop, so the client gets a normal completed turn and its conversation is NOT interrupted. (default)
+  #   "refusal"  = pass the upstream refusal through unchanged (Claude Code renders its own refusal message and ENDS the turn).
+  #   "error"    = emit an Anthropic `event: error` SSE frame (the SDK throws and ENDS the turn).
+  # 上游 contentless refusal（stop_reason:"refusal" 且无 client-visible text/tool_use）的**客户端呈现**策略，三选一：
+  #   "end_turn" = **抑制**：合成 text 块 + 把 stop_reason 改成 end_turn + 补 message_stop，客户端拿到正常完成轮、对话不被中断。（默认）
+  #   "refusal"  = 原样透传（Claude Code 会渲染自己的 refusal 消息并结束当前轮）。
+  #   "error"    = 发 Anthropic `event: error` SSE 帧（SDK 抛错并结束当前轮）。
+  # This is a PRESENTATION policy only: in ALL three modes the request still settles as FAILED, and history's sseEvents keep the upstream-original refusal (with stop_details). Default "end_turn". See docs/refusal-recovery.md.
+  # 这只是**呈现**策略：三种模式下请求终态一律记为 failed，history 的 sseEvents 保留上游原始 refusal（含 stop_details）。默认 "end_turn"。详见 docs/refusal-recovery.md。
+  refusal_sse_rewrite: end_turn
 
 # ============================================================================
 # Responses API

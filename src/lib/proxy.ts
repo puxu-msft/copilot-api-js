@@ -33,7 +33,8 @@ import {
   onRequestWatchdogChange,
   onUpstreamTransportChange,
   state,
-} from "./state"
+} from "~/lib/state"
+
 import { buildSocksProxy } from "./transport/proxy-connect"
 
 // ============================================================================

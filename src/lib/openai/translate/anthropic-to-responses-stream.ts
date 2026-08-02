@@ -68,6 +68,10 @@ import type {
 } from "~/types/api/openai-responses"
 
 import { buildClaudeSignatureCarrier } from "~/lib/anthropic/claude-signature-carrier"
+import {
+  refusalCategoryForDiagnostics,
+  type RefusalTranslationDegradationReporter,
+} from "~/lib/anthropic/refusal-detail"
 
 import {
   //
@@ -127,6 +131,8 @@ export interface AnthropicToResponsesStreamOptions {
    * carrier is omitted). Default (false/absent) = scenario A, full round-trip.
    */
   stripThinkingSignature?: boolean
+  /** Out-of-band marker for refusal category metadata Responses cannot carry. */
+  onDegradation?: RefusalTranslationDegradationReporter
 }
 
 /** Build a per-request {@link AnthropicToResponsesStreamTranslator} (holds ITS OWN running state — no CC accumulator). */
@@ -375,6 +381,13 @@ export function createAnthropicToResponsesStreamTranslator(
 
         case "message_delta": {
           if (event.delta.stop_reason) stopReason = event.delta.stop_reason
+          if (event.delta.stop_reason === "refusal") {
+            opts?.onDegradation?.({
+              kind: "refusal-category-dropped",
+              category: refusalCategoryForDiagnostics((event.delta as { stop_details?: unknown }).stop_details),
+              target: "openai-responses",
+            })
+          }
           const usage = event.usage as AnthropicResponse["usage"] | undefined
           if (usage) terminalUsage = { ...terminalUsage, ...usage } as AnthropicResponse["usage"]
           break

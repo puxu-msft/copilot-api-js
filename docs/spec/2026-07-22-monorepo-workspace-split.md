@@ -31,7 +31,7 @@
 在依赖图上（模块 = `src/lib/<m>` 或 `src/routes/<r>` 或 `src/<top-file>`）实测：
 
 - **34 对模块级双向环**（A→B 且 B→A），遍布核心，不是几条可外科切断的回边。
-- 由此形成**一个 19 模块的巨型 SCC**（强连通分量）：`anthropic` `codec` `config` `context` `diagnostics` `gemini` `history` `models` `observability` `openai` `pipeline` `request` `restart` `telemetry` `token` `transport` `tui` + **部分**散装 `lib/*.ts`（`state`/`tool-name-mapper`/`abort-bridge` 等；注意 `stream.ts` 实测纯、**不属 SCC**、归 foundation）+ `routes/responses`。
+- 由此形成**一个 19 模块的巨型 SCC**（强连通分量）：`anthropic` `codec` `config` `context` `diagnostics` `gemini` `history` `models` `observability` `openai` `pipeline` `request` `restart` `telemetry` `token` `transport` `tui` + **部分**散装 `lib/*.ts`（`tool-name-mapper`/`abort-bridge` 等；注意 `stream.ts` 实测纯、**不属 SCC**、归 foundation。**`state` 曾是这里最大的一员，2026-07-28 已降为叶子并迁入 foundation**，见 §2.1）+ `routes/responses`。
 - **TS project references（`composite`+`references`）与本 spec 拟引入的边界 lint 规则**禁止包间成环——**纯 workspace 包声明本身并不自动强制这一点**（多数包管理器允许甚至能 resolve 循环 workspace 依赖）。所以 workspace 拆分**不是移动文件的活**——在这些环被切断前，这 19 个模块在依赖图上是一个不可分割的整体。这正是「core 当整块」策略的第一性依据。
 
 候选 5 包分区 `foundation ← core ← server ← cli` **在包级几乎已是干净 DAG**：合法向下边 `server→core` 279 / `core→foundation` 147 / `cli→core` 76；**全部跨包回边仅两类**——`core→server` **2 处**（两个放错位置的函数）、`foundation→core` ≤10 处（仅当把 error/ws/system-prompt 上提 foundation 才需切）。
@@ -42,6 +42,9 @@
 - `fetch-utils.ts` **不纯**：import `context/request` 的 `HeadersCapture` type + `models/timeout-resolver` value。
 - `system-prompt/override.ts` **不纯**：import `pipeline/envelope` 的 `ClientFormat` + `types/api/anthropic`；且用户已定 **system-prompt rewrite 未来进 hook、留 core**，foundation 不碰。
 - `state.ts` **本身不是叶子**：反向 import `models/model-name`(value) + `anthropic/recover-refusal`(value) + type 依赖 `models/client`/`config/schema`/`anthropic/sanitize`。state 是 SCC 的核心节点、被 **~83 个 src 文件** `import { state }`（其中 routes 内 20 个；GPT 报告的 94 是「跨域 import-site」计数、口径不同）依赖——**「把 state 沉到 foundation」day-1 走不通**（会拽下半个 SCC），强化「state 实现整个留 core」的正确性。
+  - ✅ **已于 2026-07-28 落地，本条结论作废（推理仍然成立）**。判「day-1 走不通」的**依据**正是上面那几条 value/type 实边；实际做法就是**逐条拆掉这些依据**，然后把 state 降为 foundation 叶子——叶子无出边，谁依赖它都不成环，所以 `~83 个 importer` 从来不是障碍，那几条边才是。**「day-1 走不通」≠「永远不该做」。**
+    - **现状**：`packages/foundation/src/{state,state-defaults,state-vocabulary}.ts`，出边只有 `node:` 与相对路径，由 `tests/architecture/package-boundaries.unit.test.ts` 的**文件级 allowlist** 机器强制（比 foundation 自身的 denylist 更严——后者放行任意裸 npm 包）。全仓 madge 环从 70/63 降到 43/50（口径同时扩到全部 workspace 包，与旧数不可直接比），state 单元参与的环为 **0**。
+    - 拆掉那几条依据的过程见 [plan/2026-07-28-state-to-foundation/HANDOVER.md](../plan/2026-07-28-state-to-foundation/HANDOVER.md)（S1–S7 逐步、每步的验收 oracle 与变异实验）。
 - **state 未来拆分是机械活、非重设计**（利好实证）：`state.ts` 里已存在按功能域命名的 setter（`setHistoryConfig`/`setTelemetryConfig`/`setUpstreamTransportConfig`/`setResponsesConfig`/`setBufferedRetryShared`/`setNegotiationConfig`/`setShutdownConfig`/`setHooksConfig`）——说明它概念上早已是 N 个配置域拼在一个可变对象里，耦合是「物理位置」而非「语义」。这支撑 §5 的窄接口 seam：给 ~83 个消费点一个统一入口不需要先解决「state 该怎么拆」这个难问题。
 
 ## 3. 目标架构：5 包分层
@@ -50,7 +53,7 @@
 graph TD
     cli["@hsupu/ghc-proxy-cli · bin 入口<br/>src/*.ts 顶层 8 文件: main/start/auth/debug/logout/list-claude-code/setup-*（server.ts 归 server 包）"]
     server["@hsupu/ghc-proxy-server · HTTP 面<br/>server.ts（Hono app 组装）+ routes/* 薄路由壳（不含深入 SCC 的 handler）"]
-    core["@hsupu/ghc-proxy-core 【整块·内部仍成环·过渡态】<br/>19 模块 SCC + 散装 lib/*.ts（state 等）+ error/forward + ws + system-prompt"]
+    core["@hsupu/ghc-proxy-core 【整块·内部仍成环·过渡态】<br/>19 模块 SCC + 散装 lib/*.ts + error/forward + ws + system-prompt<br/>（state 已于 2026-07-28 迁出至 foundation）"]
     foundation["@hsupu/ghc-proxy-foundation 【纯·零下游】<br/>utils atomic-fs stream sqlite(driver+compression) process-identity<br/>repetition-detector diff + error 纯基元子集 + ToolDiagnostics 纯类型"]
     uiv4["ui-v4 / ui（已有 workspace 成员）<br/>经 ~backend/* re-export core 纯类型"]
 
@@ -97,9 +100,11 @@ lint 规则集（层序）：foundation 禁 import core/server/cli；core 禁 im
 
 ## 5. state seam（用户裁断：day-1 推进消费端迁移）
 
-**用户选择：day-1 就把 state 消费端逐步迁到窄读接口**（而非「只加 seam 不强迁」的双轨档）。
+> ⚠️ **本节整节已作废（2026-07-28）。** 下面的 reader seam 方案立论于「state 必须留在 core，所以要靠窄接口挡住 SCC」。state 现在是 foundation 叶子，**叶子无出边，依赖它不可能成环**，削环由拓扑直接解决，`core/state/reader-*.ts` 不再需要、也**不要建**。窄读接口本身的封装收益（缩小爆炸半径）若仍想要，请另立独立条目，而不是当作解环手段。保留原文仅为记录当时的推理。
 
-- **落地**：先在 core 内部定义按消费域切分的**窄读接口 seam**（如 `core/state/reader-*.ts`），实现仍是同一 `mutableState` 单例；然后**主动把 ~83 个 `import { state }` 消费端逐域迁到窄接口**（其中 ~63 处在 `src/lib/*` 包内、~20 处在 `routes/*` 跨包），旧表面在迁移完成后移除（不留双轨）。对应阶段 0d（day-1 起步边缘域）+ 阶段 4+（核心域），见 §7.2。
+**用户选择（已作废）：day-1 就把 state 消费端逐步迁到窄读接口**（而非「只加 seam 不强迁」的双轨档）。
+
+- **落地（已作废，勿照做）**：先在 core 内部定义按消费域切分的**窄读接口 seam**（如 `core/state/reader-*.ts`），实现仍是同一 `mutableState` 单例；然后**主动把 ~83 个 `import { state }` 消费端逐域迁到窄接口**（其中 ~63 处在 `src/lib/*` 包内、~20 处在 `routes/*` 跨包），旧表面在迁移完成后移除（不留双轨）。对应阶段 0d（day-1 起步边缘域）+ 阶段 4+（核心域），见 §7.2。
 - **与 CLAUDE.md 的自洽性**：此选择直接兑现 `无向后兼容负担`（强制迁移旧→新、允许短期报错、不留双轨包袱）与 `架构健康 > 回归风险`。它有意排在「避免 worktree 冲突」之前——见 §5.1 的取舍记录。
 - **撞行缓解**（honor 选择的同时把代价降到最低）：① seam 定义是纯新增文件、零撞行，先落；② 消费端迁移**逐域推进**（telemetry/models/token 等边缘域先迁，history/context/pipeline 等烫域协调对应 worktree owner 或等其 land）；③ 一律 isolated worktree + 同文件不重叠行 + 显式 pathspec commit；④ 接受短期编译中间态（单 commit 内），跨 commit 边界 typecheck 绿。
 
@@ -123,7 +128,7 @@ core 是「边界检查器免疫区」，若不设防会熵增成永久泥球。
 
 - **冷区（当前无 worktree 触碰、先切、几乎零撞行）**：`cli` 8 文件（不含 `server.ts`，见 §3.1 修正）、`foundation` 纯基元候选。
 - **烫区（历史活动区、物理搬迁前须现场重核）**：`history`/`context`/`pipeline`/`routes/responses`/`state`/`transport` 等——这些是「core 主体大搬迁」（阶段 3）撞行面最大处，非「零位移改造」阶段的对象。
-- **核心策略**：物理搬迁尽量安排在目标路径无活跃 worktree 提交的窗口；`state` 窄接口迁移（阶段 0d）与脏边下沉（阶段 1）是「零位移/局部」改造、撞行面小、可较早做。
+- **核心策略**：物理搬迁尽量安排在目标路径无活跃 worktree 提交的窗口；脏边下沉（阶段 1）是「零位移/局部」改造、撞行面小、可较早做。（原文并列的「`state` 窄接口迁移（阶段 0d）」已作废——state 已迁入 foundation，见 §2.1。）
 
 ### 7.2 阶段序列（每阶段一组细粒度 pathspec commit）
 
@@ -131,7 +136,7 @@ core 是「边界检查器免疫区」，若不设防会熵增成永久泥球。
   - 0a. 建 `packages/` 骨架；根 workspace 声明追加 `packages/*`；根 tsconfig `~/*`→`src/*` 暂不动。**invariant**：typecheck + `test:backend` 全绿、运行时零行为变化。
   - 0b. 切 `cli` 包：把 **8 个干净顶层文件**（`main`/`auth`/`debug`/`logout`/`list-claude-code`/`setup-claude-code`/`setup-codex`/`start`）迁 `packages/cli/src/`，相对 `./lib/...` 改 `@hsupu/ghc-proxy-core`（显式化 cli→core 边）。**`server.ts` 不在此列**（它 import `./routes`、是 app 组装、归 server 包，见 §3.1）——过渡期 `start.ts` 对 `createServer`/routes 的引用经包名指向 server 包（cli→server 是合法边）。**invariant**：`dist/main.mjs` bin 入口仍产出、`bun run start` 行为逐字节不变。
   - 0c. 切 `foundation` 包：迁已验证纯基元。**invariant**：foundation 包**零** `@hsupu/ghc-proxy-core` import（lint + madge 验证）。
-  - **0d. 建 state 窄接口 seam + 迁边缘域消费端（兑现 §5 的 day-1 承诺）**。**telemetry 与 token 两域已由各自的领域包剥离吸收、不再需要单独走 0d**：token 由 C5 的凭据 store 所有权反转吸收（其早期 `state-readers/token.ts` seam 已随之移除），telemetry 由 2026-07-27 抽包的 T2 composition-root injection 吸收（`TelemetryConfigView` 就是它的窄读接口，且比 reader seam 更强——包对 core 零 import，由边界守卫机器强制）。**剩余 0d 范围 = models 域**。原文：新建 `core/state/reader-*.ts` 窄读接口（纯新增、零撞行），并**立即**把边缘域消费端（telemetry/models/token，§5 优先序）从 `import { state }` 迁到窄接口。**invariant**：已迁域数 ratchet 只增不减；每迁一域 typecheck + `test:backend` 绿、不留双轨旧表面于该域。（与阶段 4+「核心域长期迁移」是不同粒度：0d 是 day-1 起步的边缘域，5+ 是随剥离推进的核心域。）
+  - **~~0d. 建 state 窄接口 seam + 迁边缘域消费端~~ —— ✅ 已作废并被吸收（2026-07-28）**。0d 的立论是「靠窄读接口把 ~83 个消费端与 SCC 隔开」；**state 现在是 foundation 叶子，削环由拓扑直接完成**，reader seam 不再需要，`core/state/reader-*.ts` **不要建**。telemetry / token 两域此前已分别由抽包吸收；剩余的 **models 域也已在同一轮吸收**——不是迁消费端，而是把 models 逻辑从 state 里搬回 `~/lib/models/cache`（见 [plan/2026-07-28-state-to-foundation/HANDOVER.md](../plan/2026-07-28-state-to-foundation/HANDOVER.md) S2）。窄读接口本身的封装/爆炸半径收益若仍想要，请另立独立 backlog 条目，别再当解环手段。
 - **阶段 1 — 消 2 条 core→server 脏边（server 边界前置、中危）**
   - 下沉 `routes/responses/conversation-rebuild::rebuildConversationMessages` → core `lib/`（codec 旁），`codec/openai-responses/codec.ts` 改指 lib。
   - 下沉 `routes/responses/fallback::shouldForceChatCompletionsFallback` → core `lib/pipeline/`，`pipeline/router.ts` 改指 lib。
@@ -139,7 +144,7 @@ core 是「边界检查器免疫区」，若不设防会熵增成永久泥球。
   - **前置**：执行前现场重核 `routes/responses/` 无活跃 worktree 近期提交（截至 2026-07-22 无）；独立 worktree + 逐函数单 commit。
 - **阶段 2 — 切 `server` 包**：server 装 Hono app 组装（`server.ts` + registerHttpRoutes/OpenApi）+ routes 薄壳；深入 SCC 的 handler 留 core。**invariant**：`packages/server`→`@hsupu/ghc-proxy-core` 单向；core 无 `@hsupu/ghc-proxy-server` 运行时 import；`GET /openapi.json` 端点表面逐字节不变。
 - **阶段 3 — core 主体物理搬迁（迁移全程 diff 面积最大、最危险的一步）**：把剩余 `src/lib/*`（~400 文件）搬进 `packages/core/src/`、`src/routes/*` 搬进 `packages/server/src/`，同时**用 `ts-morph` codemod 批量重写 import 路径**（`~/lib/*`→包内相对或 `@hsupu/ghc-proxy-core`，routes 侧 ~280 处 + lib 侧跨域 import 全过一遍）。**必须原子提交**（不能留「移一半」中间态、否则 tsc/test 全灭观察不出回归）、在**独立 worktree/分支**完成后一次性合并（原子性与「细粒度每阶段提交」的例外，`commit-is-error-tolerant` 兜底）。**invariant**：`GET /openapi.json` + `test:backend` 逐字节/逐行为不变；跨包回边只减不增。**合并顺序风险**：此步落地后，其余 worktree 改的文件路径已变（`src/lib/x`→`packages/core/src/lib/x`），无法自动 3-way merge——须**先等目标路径的活跃 worktree land**（现场重核），或用 `git mv` 生成的路径映射脚本对未 land 分支重放 diff。**同步项**：`tests/architecture/*.unit.test.ts` 内硬编码 `import.meta.dir`+`../../src/lib/...` 路径（实测 `generation-engine-boundaries.unit.test.ts` 多处）必须在同一 commit 改到新位置并验证仍定位到真实目录（防搬迁后静默扫空目录假绿）。
-- **阶段 4+ — core 内部增量解环（长期、不设 deadline）**：依托阶段 0d 的 state 窄接口，逐域把核心域从 SCC 剥出（低入度先剥）；每次只剥一个、land 后重评 SCC。测试同置在此阶段随模块迁移增量做（Phase-2，见 §8.2 + deferred-backlog）。**invariant**：跨包回边只减不增。
+- **阶段 4+ — core 内部增量解环（长期、不设 deadline）**：逐域把核心域从 SCC 剥出（原文写「依托阶段 0d 的 state 窄接口」——0d 已作废，state 现在是 foundation 叶子，依赖它不再成环）（低入度先剥）；每次只剥一个、land 后重评 SCC。测试同置在此阶段随模块迁移增量做（Phase-2，见 §8.2 + deferred-backlog）。**invariant**：跨包回边只减不增。
 
 ### 7.3 每 commit 通用 invariant
 
@@ -190,7 +195,7 @@ build 入口留 `cli` 包、仍单入口 `packages/cli/src/main.ts` → `dist/ma
 
 - **按格式域纵切**（anthropic/openai/gemini 各成包）：否决。34 环里 ≥12 对在 anthropic↔openai↔codec↔pipeline，纵切会把这些变成**包间循环依赖**被 TS/lint 直接拒，比横切多切 3-4 倍边。横切（分层）胜出。
 - **server 按 vendor 纵切**（server-anthropic/openai/gemini）：**本 spec 综合提出的未来可选项**（非 architect 原始提议——GPT 提的是 core 解耦后的 core 层 vendor 子包 Phase-2、非 server 层），用户裁断先保持 server 单包。routes/* 之间几乎无横向依赖、server 层纵切技术上成立，但 day-1 工作量、包数量翻倍不值；作为未来可选项保留。
-- **error 整体上提 foundation**：否决。`forward.ts` 依赖 state 单例，硬上提会把 state 拖进 foundation → foundation 不再是叶子。只上提纯基元。
+- **error 整体上提 foundation**：否决——**但 2026-07-28 起理由只剩一半**。原理由是「`forward.ts` 依赖 state 单例，硬上提会把 state 拖进 foundation → foundation 不再是叶子」；state 现在**已经在 foundation 里且本身就是叶子**，所以「拖进 foundation」不再是反对理由。仍然否决的是 `forward.ts` 的**其余**依赖（transport / observability / codec），那些才是它进不了 foundation 的原因。只上提纯基元。
 - **ws 上浮 foundation**：否决。仅为消 2 条无害 type-only 回边而把 history/observability 领域类型拽进 foundation = 污染 foundation「零业务」定位的负交易。
 - **day-1 上 TS project references**：否决（§4）。noEmit + tsdown 栈价值低、`composite` 卡 type-only 回边。
 - **day-1 试图打破 34 对环**：叫停。是 6 个月的活、会无限期阻塞交付。粗粒度先切正是为规避它。

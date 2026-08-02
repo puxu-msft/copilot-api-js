@@ -1,5 +1,7 @@
 # Spec: refusal recovery / error 文本全可配 + 占位符模板
 
+> ⚠️ **部分已过时（2026-07-28）**：本文写作时默认是 `error`、概念名是「thinking-only refusal」。现默认为 `end_turn`（抑制），判据改名 `isContentlessRefusal`，占位符集合也已扩充。**当前契约以 [docs/refusal-recovery.md](../refusal-recovery.md) 为准**；本文保留作为「文案可配置化」这一决策的原始记录。
+
 - **状态**：草案（待用户审 → planning）
 - **日期**：2026-07-13
 - **相关**：[docs/refusal-recovery.md](../refusal-recovery.md)（三模式现状）、[recover-refusal.ts](../../src/lib/anthropic/recover-refusal.ts)、ADR [richest-data-flow](../decisions/2026-07-05-richest-data-flow.md)（合成物打标范围）、skill `ghc-anthropic-upstream`（thinking-only refusal 根因）、记忆 [config-philosophy-separate-compat-and-warn-continue](../memory/feedback-config-philosophy-separate-compat-and-warn-continue.md)

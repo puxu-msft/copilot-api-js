@@ -62,7 +62,7 @@
 - P4 Responses HTTP / P5 CC 升块级+续写（G4 串行已证，用 index 跳变边界）/ P6 Responses WS 升块级+续写（WS 传输门）。
 - P7 退役 whole + 默认翻转（**G1/G2 相关：Anthropic 块级默认 on 须先解决 >300s keepalive 或接受 <300s 限制**）+ doc-sync（DESIGN 活架构现状、streaming.md）+ ADR 定稿 + 合并态审查 + FF 合并 master。
 
-## 7. 收尾状态（session-closeout 五步）
+## 7. 收尾状态（skill `session-closeout`，当时为五步；当前流程以 skill 为准）
 
 - ① subagent audit：**未做**——P1 是行为-oracle 验证（50 测试 + 真 CLI），下一会话进 P2 前建议对 P1 merged-state 派异模型审。
 - ② doc-sync：**未做**（特性未合并 master，DESIGN 回填是 P7 步；本 HANDOFF + plan 已同步分支内状态）。

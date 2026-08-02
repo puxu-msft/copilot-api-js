@@ -20,10 +20,10 @@ import {
 import consola from "consola"
 
 import { getHistory } from "~/lib/history/store"
+import { setModels } from "~/lib/models/cache"
 import {
   //
   setDisabledModels,
-  setModels,
   setStateForTests,
 } from "~/lib/state"
 
@@ -78,7 +78,14 @@ describe("CC v4 — upstream stream truncation detection", () => {
     // content forwarded + error frame + kind=truncated). `chatCompletionsBufferedRetry` defaults to
     // true (2026-07-14 flip) → the buffered path is all-or-nothing (discards the partial on truncation),
     // covered separately in tests/chat-completions/cc-buffered.integration.test.ts.
-    setStateForTests({ copilotToken: "test-token", accountType: "individual", vsCodeVersion: "1.100.0", responseHeaderTimeout: 0, streamIdleTimeout: 0, chatCompletionsBufferedRetry: false })
+    setStateForTests({
+      copilotToken: "test-token",
+      accountType: "individual",
+      vsCodeVersion: "1.100.0",
+      responseHeaderTimeout: 0,
+      streamIdleTimeout: 0,
+      chatCompletionsBufferedRetry: false,
+    })
     applyFetchMock(upstreamFetchMock)
   })
 

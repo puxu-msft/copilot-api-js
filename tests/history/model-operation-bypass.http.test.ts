@@ -14,11 +14,8 @@ import {
   consumeTerminalModelOperation,
   listTerminalModelOperations,
 } from "~/lib/context/lightweight-model-operation"
-import {
-  //
-  setModels,
-  setStateForTests,
-} from "~/lib/state"
+import { setModels } from "~/lib/models/cache"
+import { setStateForTests } from "~/lib/state"
 
 import { mockModel } from "../helpers/factories"
 import { useIsolatedRuntime } from "../helpers/isolated-fixture"
@@ -222,7 +219,7 @@ describe("History V3 bypass ModelOperation HTTP integration", () => {
     expect(consumeTerminalModelOperation(azure.identity.operationId)).toBe(azure)
   })
 
-  test("embeddings transport abort records the actual timeout envelope and aborted terminal", async () => {
+  test("embeddings transport abort records the real cancellation envelope (503, NOT a fabricated header timeout) and the aborted terminal", async () => {
     const marker = "embeddings-abort"
     applyFetchMock(
       mock(async () => {
@@ -234,14 +231,34 @@ describe("History V3 bypass ModelOperation HTTP integration", () => {
       headers: { "content-type": "application/json", "x-test-operation": marker },
       body: JSON.stringify({ model: "text-embedding-3-small", input: "abort me" }),
     })
-    expect(response.status).toBe(504)
+    // An untagged abort proves nothing about WHY it was cancelled, so the boundary must not
+    // claim "upstream timed out before sending response headers" (it used to, for every abort).
+    expect(response.status).toBe(503)
     const clientEnvelope = await response.json()
+    expect(JSON.stringify(clientEnvelope)).not.toContain("timed out before sending response headers")
 
     const record = onlyTerminal("embeddings", marker)
     expect(record.attempts[0]).toMatchObject({ verdict: "failed", error: { name: "AbortError", message: "request aborted" } })
     expect(payload(record, record.egress?.client.payload as string)).toEqual(clientEnvelope)
-    expect(record.egress?.client.status).toBe(504)
+    expect(record.egress?.client.status).toBe(503)
     expect(record.terminal).toMatchObject({ outcome: "aborted", error: { name: "AbortError", message: "request aborted" } })
+  })
+
+  test("embeddings response-header timeout DOES get the 504 header-timeout envelope (TimeoutError is the evidence)", async () => {
+    const marker = "embeddings-header-timeout"
+    applyFetchMock(
+      mock(async () => {
+        throw new DOMException("upstream header watchdog", "TimeoutError")
+      }),
+    )
+    const response = await app.request("/v1/embeddings", {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-test-operation": marker },
+      body: JSON.stringify({ model: "text-embedding-3-small", input: "time me out" }),
+    })
+    expect(response.status).toBe(504)
+    expect(JSON.stringify(await response.json())).toContain("timed out before sending response headers")
+    expect(onlyTerminal("embeddings", marker).egress?.client.status).toBe(504)
   })
 
   test("embeddings upstream failure captures wire, full error response, client envelope, and failed terminal", async () => {

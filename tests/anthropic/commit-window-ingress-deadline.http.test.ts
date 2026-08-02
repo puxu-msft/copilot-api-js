@@ -22,11 +22,16 @@ import {
   test,
 } from "bun:test"
 
+import type { TokenRuntime } from "~/lib/token"
+
+import { setModels } from "~/lib/models/cache"
+import { setStateForTests } from "~/lib/state"
 import {
   //
-  setModels,
-  setStateForTests,
-} from "~/lib/state"
+  installTokenRuntime,
+  resetTokenRuntimeForTests,
+} from "~/lib/token"
+import { createServer } from "~/server"
 
 import { mockModel } from "../helpers/factories"
 import { FakeClock } from "../helpers/fake-clock"
@@ -130,6 +135,43 @@ describe("delayed-commit window is a deadline from ingress, not a handler-local 
     expect(res.status).toBe(200)
     expect(res.headers.get("content-type")).toContain("text/event-stream")
   })
+
+  test("PRODUCTION assembly stamps it — not just the test app's own middleware", async () => {
+    // The wiring guard. The three tests above build their own preMiddleware, so they stay green even
+    // if `createServer()` stops stamping — they only prove the handler's arithmetic. This one drives
+    // the REAL server, and makes its config/token middleware slow through the same seam production
+    // uses (`installTokenRuntime`), so the subtraction is observable end to end.
+    const runtime = {
+      ensureValidCopilotToken: async () => {
+        gateReached()
+        await gateOpenP
+      },
+      dispose: async () => {},
+    } as unknown as TokenRuntime
+    installTokenRuntime(runtime)
+    try {
+      const server = createServer()
+      const resP = server.request("/v1/messages", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ model: MODEL, messages: [{ role: "user", content: "hi" }], max_tokens: 256, stream: true }),
+      })
+      await gateReachedP
+      // NOTE: production's middleware calls applyConfigToState() on every request, which overwrites
+      // setStateForTests — so the window here is the SHIPPED default (180s), not this file's 10s.
+      // That overwrite is itself part of what makes this a production-assembly test.
+      await clock.advance(190_000)
+      openGate()
+      await drain()
+
+      // No further advance: a handler-local timer would still be waiting out its own 10s.
+      const res = await resP
+      expect(res.status).toBe(200)
+      expect(res.headers.get("content-type")).toContain("text/event-stream")
+    } finally {
+      await resetTokenRuntimeForTests()
+    }
+  }, 20_000)
 
   test("an unstamped request keeps the old behaviour — the window is not silently zeroed", async () => {
     // Positive control for the test above: without the stamp the handler must still WAIT, so the

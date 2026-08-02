@@ -213,15 +213,20 @@ History is persisted to a content-addressed SQLite store (`history-v3.db`): ever
 
 ## Hosting the Web UI
 
-The main server is API-only: it never serves, proxies, or builds `ui/` (legacy Vue) or `ui-v4/` (React, the actively developed History UI). Both workspaces are kept in this repo and are meant to be built and hosted **independently** by ops, with a reverse proxy in front routing API traffic to the backend (default `localhost:4141`):
+The main server is API-only: it never serves, proxies, or builds `ui/` (legacy Vue) or `ui-v4/` (React, the actively developed History UI). Both frontends are kept in this repo and are meant to be built and hosted **independently** by ops, with a reverse proxy in front routing API traffic to the backend (default `localhost:4141`):
 
 ```sh
 # Build the UI you want to serve (ui-v4 is the actively developed one)
 bun run build:ui-v4   # → ui-v4/dist
-# bun run build:ui    # → ui/dist (legacy Vue, being retired — see docs/vue-ui-retirement.md)
 
 # Serve ui-v4/dist with any static file server, e.g.:
 npx serve ui-v4/dist
+```
+
+`ui-v4/` is a workspace member, so the root `bun install` already provisioned it. The legacy Vue `ui/` is not: it was detached from the repo-wide toolchain (see [`docs/vue-ui-retirement.md`](docs/vue-ui-retirement.md)) and carries its own lockfile, so it needs an install of its own before it will build:
+
+```sh
+cd ui && bun install && bun run build   # → ui/dist
 ```
 
 Then put a reverse proxy in front that forwards these paths to the backend (`localhost:4141` by default):
@@ -231,11 +236,11 @@ Then put a reverse proxy in front that forwards these paths to the backend (`loc
 | `/api/*` | HTTP | Management API |
 | `/history/api/*` | HTTP | History REST |
 | `/ws` | WebSocket | History/live-request push |
-| `/models` | HTTP | OpenAI-compatible model list (consumed by the UI) |
+| `/models` | HTTP | OpenAI-compatible model list. Consumed by API clients, **not** by either UI — both call `/api/models`, already covered by the row above. Proxy it only if you also want vendor API traffic reaching the backend through this host |
 
 Everything else (the UI's own static assets, index.html, client-side routes) is served by the static file server, not the backend.
 
-**Base path caveat**: `ui-v4/vite.config.ts` bakes in `base: "/ui-v4/"` for production builds, and the legacy `ui/vite.config.ts` bakes in `base: "/ui/"`. If you host either workspace at a different path prefix (or at the domain root), adjust that workspace's `base` before building, or configure your reverse proxy to strip/rewrite the prefix accordingly.
+**Base path caveat**: `ui-v4/vite.config.ts` bakes in `base: "/ui-v4/"` for production builds, and the legacy `ui/vite.config.ts` bakes in `base: "/ui/"`. If you host either at a different path prefix (or at the domain root), adjust that project's `base` before building, or configure your reverse proxy to strip/rewrite the prefix accordingly.
 
 ---
 

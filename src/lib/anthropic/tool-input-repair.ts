@@ -254,7 +254,21 @@ export function tryJsonRepair(input: string): string | undefined {
  * the config ITEM name only for `tags`/`strip`).
  */
 export const REPAIR_ITEMS = ["tags", "unicode", "jsonrepair", "unicode-lossy"] as const
-export type RepairItem = (typeof REPAIR_ITEMS)[number]
+/**
+ * The union lives in `~/lib/state-vocabulary` (a zero-import leaf) because `state` stores the enabled
+ * items and must not import this module. `REPAIR_ITEMS` stays the source of truth for the CASCADE
+ * ORDER, which a union cannot express; the two are pinned element-equivalent in both directions.
+ */
+import type {
+  //
+  AssertAssignable,
+  RepairItem,
+} from "~/lib/state-vocabulary"
+
+export type { RepairItem } from "~/lib/state-vocabulary"
+
+/** Fails to compile unless the array and the union describe the same set. Types only. */
+export type RepairItemMatchesArray = [AssertAssignable<(typeof REPAIR_ITEMS)[number], RepairItem>, AssertAssignable<RepairItem, (typeof REPAIR_ITEMS)[number]>]
 
 /** Outcome of a layered repair attempt. `layer` names which layer produced the fix. */
 export type RepairResult = { repaired: unknown; layer: "strip" | "unicode" | "jsonrepair" | "unicode-lossy" } | { unrepairable: true }

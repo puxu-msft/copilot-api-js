@@ -118,6 +118,7 @@ import {
   renderResponseNonStreamingVia,
   type ReverseStreamTranslator,
 } from "~/lib/pipeline/hub-translate"
+import { STREAM_ERROR_KIND_MESSAGES } from "~/lib/stream"
 import { applyInboundSystemPrompt } from "~/lib/system-prompt"
 
 import {
@@ -196,7 +197,9 @@ export function createOpenAiCcCodec(args?: CreateOpenAiCcCodecArgs): OpenAiCcCod
     let reverseTranslator: ReverseStreamTranslator | undefined
     const ensureReverseTranslator = (env: RequestEnvelope): ReverseStreamTranslator => {
       const modelId = (env.model as Model | undefined)?.id ?? (env.body as { model?: string }).model ?? ""
-      return (reverseTranslator ??= createReverseStreamTranslator(CLIENT_FORMAT, modelId))
+      return (reverseTranslator ??= createReverseStreamTranslator(CLIENT_FORMAT, modelId, undefined, {
+        onDegradation: ({ category, target }) => env.ctx.recordFeature("translated-refusal-category-dropped", { category, target }),
+      }))
     }
     return {
       renderResponse(frame, env) {
@@ -279,7 +282,12 @@ export function createOpenAiCcCodec(args?: CreateOpenAiCcCodecArgs): OpenAiCcCod
 
     renderResponseNonStreaming(upstream, env) {
       // REVERSE `@messages` leg (Phase 5): the upstream is Anthropic → CC-canonical (the hub reverse render).
-      if (env.targetEndpoint === ENDPOINT.MESSAGES) return renderResponseNonStreamingVia(ENDPOINT.MESSAGES, upstream).rendered
+      // CC cannot carry `stop_details.category`; the raw Anthropic leg remains intact in History, while
+      // this feature marker makes the client-wire degradation directly queryable.
+      if (env.targetEndpoint === ENDPOINT.MESSAGES)
+        return renderResponseNonStreamingVia(ENDPOINT.MESSAGES, upstream, {
+          onDegradation: ({ category, target }) => env.ctx.recordFeature("translated-refusal-category-dropped", { category, target }),
+        }).rendered
       if (env.targetEndpoint === ENDPOINT.CHAT_COMPLETIONS) return upstream
       return translateResponsesResponseToCC(upstream as ResponsesResponse)
     },
@@ -429,18 +437,8 @@ function parseContentLength(header: string | null): number | undefined {
  * (driver S7 wiring, which holds the raw error) reconciles this across all
  * codecs — likely by passing the raw error/message into the frame.
  */
-/** Kind-derived error-frame messages (see P2.2-D4 — raw message is unavailable). */
-const STREAM_ERROR_MESSAGES: Record<ClassifiedStreamError, string> = {
-  "idle-timeout": "Stream idle timeout",
-  shutdown: "Server is shutting down",
-  "client-abort": "Client disconnected",
-  "reaper-cancel": "Request cancelled by stale-request reaper",
-  "dispatch-cancel": "Upstream dispatch cancelled",
-  other: "Stream error",
-}
-
 function formatOpenAiCcError(err: ClassifiedStreamError): ClientFrame {
-  return { event: "error", data: JSON.stringify({ error: { message: STREAM_ERROR_MESSAGES[err], type: streamErrorKindToOpenAIErrorType(err) } }) }
+  return { event: "error", data: JSON.stringify({ error: { message: STREAM_ERROR_KIND_MESSAGES[err], type: streamErrorKindToOpenAIErrorType(err) } }) }
 }
 
 // ============================================================================

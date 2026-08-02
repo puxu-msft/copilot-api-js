@@ -22,6 +22,8 @@
 
 **前后端「严格拆分」与 TS6 无关**：FE/BE split 是「ui 作 bun workspace 成员」，`typescript`/`eslint`/`tsdown` 等仓库级 dev 工具**仍单一留在 root**，未按端拆分 TS 版本。故「只给后端升 TS6」不成立（一个共享 tsc）；TS6 是 repo-wide 决策。
 
+> **[2026-07-28 事实订正，不改本 ADR 结论]** 上段「ui 作 bun workspace 成员 / 一个共享 tsc」对**旧 Vue `ui/`** 已不成立：它已整体脱离主编译链（非 workspace 成员、自有 `bun.lock`、`vue-tsc` 连带自己的 `typescript`），见 [vue-ui-retirement.md](../vue-ui-retirement.md) §0。**结论不变**：真正的 TS6 阻塞是 `@types/bun`，而后端 + `ui-v4/` + `packages/*` 仍共用 root 的单一 tsc，TS6 依旧是 repo-wide 决策。只是「repo-wide」的范围现在不再包含 `ui/`——那个目录正在退役，不应参与 TS6 评估。
+
 ## 复核 / 退出条件（将来重新评估时的复现手段）
 
 Bun 发新 `@types/bun`（声称 TS6 兼容）后，按此实测复核阻塞是否解除：

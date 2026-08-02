@@ -29,11 +29,8 @@ import {
   test,
 } from "bun:test"
 
-import {
-  //
-  setModels,
-  setStateForTests,
-} from "~/lib/state"
+import { setModels } from "~/lib/models/cache"
+import { setStateForTests } from "~/lib/state"
 
 import { mockModel } from "../../helpers/factories"
 import { FakeClock } from "../../helpers/fake-clock"

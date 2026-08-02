@@ -1,6 +1,11 @@
 # 交接：keepalive 300s、合成分隔符、顺序不变量审计（2026-07-27）
 
-**给接手会话**：本文是这一轮的**唯一入口**。按「先读什么 → 已定事实 → 待办与判据」的顺序写；每条待办都带**验收判据**与**证伪方式**，不带「大概」「也许」。
+> **状态**：进行中——**T1 已完成**（2026-07-28，见 §3 T1）；T2–T4 用户已批准、未开工；T5 待用户裁决顺序；T6 待用户一句话。
+> **核验基线**：`847f8bc8`（2026-07-28 12:10）——晚于此的 peer 提交可能已作废下面的结论；上一次就栽在这里（见 §5）。
+> **工作区**：master 共享主树，**并发会话活跃**——本文核验时工作区有大量他人未提交改动（`src/lib/transport/*`、`packages/foundation/*`、多份 `docs/memory/*` 等），我方改动已全部提交，未留未追踪产物。**后续代码改动一律进隔离 worktree**（用户 2026-07-27 决定）。
+> **已跑门禁**：`bun scripts/parallel-test.ts unit it http` 绿（2026-07-27）；`bun run test:backend` 现已等价于该命令（`1b8bdf2f` 起不再前置 `build:history-search`）；`bun run lint:all` 常年红（退役的 `ui/`，用户已推迟）。门禁现状最易腐，**接手第一件事是复验而非采信**。
+
+**给接手会话**：本文是这一轮的**唯一入口**。按「先读什么 → 已定事实 → 待办与判据」的顺序写；每条待办都带**验收判据**与**证伪方式**，不带「大概」「也许」。交接文档本身的写法见 skill `session-closeout` §6 与其 `handover.md` 模板。
 
 会话起因：用户贴来一条 `API Error: 400 ... does not support assistant message prefill`，要求修复。查下去牵出三条独立的线：C3 布局约束（已收官）、**keepalive 300s 死线（线上损伤，部分已修）**、顺序不变量缺守卫（审计完成，未动手）。
 
@@ -85,7 +90,21 @@
 
 ## 3. 待办（按优先级，每条带验收判据）
 
-### T1【用户已批】commit 时机推迟到首个真实块 —— 前提是不能弄坏 CC↔proxy 连接
+### T1【已完成 2026-07-28】commit 时机推迟 —— 测量与落地都做完了
+
+> **状态：DONE，合并在 master `da59c586`。** 剩下的不在本条。
+>
+> **测量（Q1 闭合）**：CC pre-header 容忍度 ≈ **300s**，归 undici 默认 `headersTimeout`（不是 SDK 的 1200/1250s request timer，也不是 CC 响应头后才武装的 stream-idle watchdog）。附测：`API_FORCE_IDLE_TIMEOUT=0` 能把它整个关掉（静默 600s 仍单次成功）——但那是**客户端侧**开关，我方取值一律按「客户端没设」来定。证据 `exp/silence-recovery-gates/FINDINGS.md` §「Q1 续测」/§「Q1 附测」。
+>
+> **落地**：`streamCommitAfterSec` 默认 20 → **180**（用户 2026-07-28 拍板）、`COMMIT_WINDOW_MAX_SEC` → **240**（~300s 减余量）、窗口改为**从请求 ingress 起算的 deadline**（合并态审查抓出：handler-局部计时会把 pre-handler 的 token 刷新时间花两次、吃掉 ceiling 承诺的余量）。B1 的 clamp 拆分是 cherry-pick 自 `feat/upstream-silence-recovery`，非重写。
+>
+> **两条别再重新推导的边界**：① 180 只覆盖事故带 126-206s 的**前半段**，180-206s 段仍先 commit、归 B2；② **不存在「总预算 T+300s / ~600s 天花板」**——commit 后那个 300s 是可重置的 idle watchdog，且我方 `streamKeepaliveEscalateSec`（默认 200s）本就在主动重置它。本文档早先版本写过那条算术，是错的。
+>
+> **已知暴露面**（已入 `docs/todo/deferred-backlog.md`）：窗口是全局的，但安全上限只在两个 Node 客户端上实测过；pre-header 容忍度落在 `(20s, 180s)` 的其它 Anthropic 客户端会被这个默认打破。长远形状是客户端感知的 commit policy。
+
+<details>
+<summary>原始 T1 条目（保留供追溯）</summary>
+
 
 > **⚠ 2026-07-27 续会话更新：T1 的无上限形式已被实测否定，且它不是空地。**
 >
@@ -104,6 +123,8 @@
 - **仍未查的风险面**：代理侧 `stream_commit_after_sec` 与 pre-response 重试/错误整形的交互（上游错误在 commit 前还能以真 HTTP 状态码返回，commit 后就只能走 SSE 内错误——这是**收益的一部分**，也是风险面）。
 - **必须与 `docs/spec/2026-07-23-upstream-silence-commit-timing.md` 合并设计**，别另起炉灶。
 - **验收**：① 真 CLI e2e：上游静默 T+250s 后才出首块，客户端完整收尾；② 上游在 commit 前报错时客户端拿到**真 HTTP 状态码**；③ 现有 pre-response 相关测试全绿。
+
+</details>
 
 ### T2【用户已批】W3（已 commit、无开块）兜底手段 —— **要做实验**
 
@@ -138,31 +159,20 @@
 - **`.codex`**：仓库根 0 字节空文件，归档没意义。留着还是删，等用户一句话。
 - **`docs/DESIGN.md:305-306`** 曾写 `empty_text` 是默认（陈旧、误导过我）。`68a3b3f5` 可能已改，**接手时核一遍**。
 - **两条 load-sensitive 测试**：`tests/architecture/telemetry-domain-surface.unit.test.ts`（本会话已给 30s 预算）和 `tests/history/v3/canonical-performance.unit.test.ts`（**未处理**，并行负载下会假红，单跑 3/3 绿）。
-- **`bun run test:backend` 在本机跑不起来**：它先跑 `build:history-search`，而 rustup 没配默认 toolchain。绕过方式：`bun scripts/parallel-test.ts unit it http`。用户已明确**推迟**此项，不算任务。
+- **`bun run test:backend` 可以直接跑**（**订正于 2026-07-28 12:40**）：`1b8bdf2f`（07-28 09:30 commit date）已把 `build:history-search` 从它前面拿掉，它现在就是 `bun scripts/parallel-test.ts unit it http`。本文早先写它"跑不起来、请用 parallel-test 替代"——那句**写于 `de9ca1e8`（07-27 21:26）、当时属实**，12 小时后被上述提交作废而无人回头改。真跑 native history-search 才需要 `bun run build:history-search`（本机 rustup 未配默认 toolchain），相关测试已改为有产物才跑、没有则显式 skip。
 - **`lint:all` 常年红**（400 errors，主要在退役的 `ui/`）。同样已推迟。
 
 ---
 
 ## 4. 工作方式：**后续改动一律在隔离 worktree 进行**（用户 2026-07-27 决定）
 
-本轮全程在共享主树上作业，代价已经具体地付出来了：
+**how-to 不在这里** —— 见 skill `session-closeout` §6（交接与 worktree 分工的单一源）与 skill `git-preference:isolating-from-a-shared-git-worktree`。这里只记本轮为「在共享主树上作业」实付的代价，作为该决定的证据：
 
-- 三份研究报告在提交前被并发会话的清理**从工作区抹掉**（原件恰好还在 `/tmp` 才救回来，已提交）；
+- 三份研究报告在提交前被并发会话的清理**从工作区抹掉**（原件恰好还在 `/tmp` 才救回，已提交）；
 - 我对丢失层的结论被 peer 早 6 小时的 `883e0533` 推翻，因为在共享树上**很难察觉别人已经动过同一块**；
-- 每次提交都要写显式 pathspec 绕开别人的脏文件，`eslint --fix` 得逐文件点名，否则会把别人的在飞改动裹进来。
+- 每次提交都要写显式 pathspec 绕开别人的脏文件，`eslint --fix` 得逐文件点名。
 
-所以接手会话**不要再在主树上改代码**：
-
-```bash
-# 起隔离 worktree（放 ./.worktrees/，项目约定）
-git worktree add .worktrees/<topic> -b feat/<topic>
-cd .worktrees/<topic>
-bun install            # 新 worktree 没有 node_modules，pre-commit/eslint 会 exit 127
-```
-
-参见 skill `git-preference:isolating-from-a-shared-git-worktree`。收尾时合回 master 走 `git merge`（三方合并自动合非冲突行），**合并前先 `git log --oneline master ..` 看 peer 在同一区域落了什么**——本轮的教训就是这条。
-
-文档类改动（本目录下的交接/研究报告）**可以**继续在主树直接改并即时提交：它们是接手会话的入口，滞留在特性分支上等于没写。这与项目的 `docs-merge-before-execute` 一致——**定稿文档先合主线，执行再开分支**。
+一句话结论：**代码进 worktree，本目录的交接/研究文档留主树即时提交**。
 
 ---
 

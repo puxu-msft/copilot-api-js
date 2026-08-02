@@ -1,12 +1,18 @@
-# Bun config for the `ui` workspace.
+# Bun config for the legacy Vue `ui/` project.
 #
-# Sole purpose: make `bun test` run from this workspace (cwd = ui/, via
-# `bun run --filter copilot-api-ui test:bun`) inherit the SAME fs sandbox as the
-# backend suite. Bun loads the *nearest* bunfig.toml, so without this file ui's
-# bun tests would pick up the root bunfig but resolve its `preload` relative to
-# cwd (→ ui/tests/helpers/sandbox-paths.ts, which does not exist) and silently
-# skip sandboxing. The path below is resolved relative to THIS file (ui/), so it
+# Sole purpose: make `bun test` run from here (cwd = ui/, via `cd ui && bun run
+# test:bun`) inherit the SAME fs sandbox as the backend suite. Bun loads the
+# *nearest* bunfig.toml, so without this file ui's bun tests would pick up the
+# root bunfig but resolve its `preload` relative to cwd (→
+# ui/tests/helpers/sandbox-paths.ts, which does not exist) and silently skip
+# sandboxing. The path below is resolved relative to THIS file (ui/), so it
 # correctly points at the shared preload. Keeps the "no test touches the real
 # ~/.local/share/copilot-api / ~/.codex" floor intact for ui bun tests too.
+#
+# Note this reaches UP into the repo's tests/ helpers — one of the two ties this
+# project keeps to the repo after the 2026-07-28 toolchain detachment (the other
+# being `~backend/*`). It is deliberate: the sandbox floor matters more than
+# self-containment, and it is a one-file, one-direction dependency (ui → repo
+# helper, never the reverse).
 [test]
 preload = ["../tests/helpers/sandbox-paths.ts"]

@@ -87,6 +87,19 @@ describe("buildAnthropicResponseData", () => {
     expect(result.model).toBe("fallback-model")
   })
 
+  test("preserves raw stop_details without normalizing category:null", () => {
+    const expectedBytes =
+      '{"type":"refusal","category":null,"explanation":"API integrators: you can reduce refusals...","recommended_model":"future-model"}'
+    const acc = makeAnthropicAcc({
+      stopReason: "refusal",
+      stopDetails: JSON.parse(expectedBytes),
+    })
+
+    const result = buildAnthropicResponseData(acc, "fallback-model")
+
+    expect(JSON.stringify(result.stopDetails)).toBe(expectedBytes)
+  })
+
   test("includes cache tokens when present", () => {
     const acc = makeAnthropicAcc({
       cacheReadTokens: 30,

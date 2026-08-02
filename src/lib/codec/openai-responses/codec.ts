@@ -58,7 +58,10 @@ import type {
   ResolvedModel,
   UpstreamEndpoint,
 } from "~/lib/pipeline/envelope"
-import type { ReverseStreamTranslator } from "~/lib/pipeline/hub-translate"
+import type {
+  ReasoningRoundTripOptions,
+  ReverseStreamTranslator,
+} from "~/lib/pipeline/hub-translate"
 import type { RequestState } from "~/lib/pipeline/request-state"
 import type {
   //
@@ -135,6 +138,7 @@ import {
   createReverseStreamTranslator,
 } from "~/lib/pipeline/hub-translate"
 import { state } from "~/lib/state"
+import { STREAM_ERROR_KIND_MESSAGES } from "~/lib/stream"
 import { applyInboundSystemPrompt } from "~/lib/system-prompt"
 import { rebuildConversationMessages } from "~/routes/responses/conversation-rebuild"
 
@@ -195,9 +199,12 @@ function genShortId(): string {
  * concept) — passing it unconditionally on every reverse call site is harmless (the CC-family
  * factories in hub-translate.ts simply ignore an opts param they never read).
  */
-function reasoningRoundTripOpts(env: RequestEnvelope): { stripThinkingSignature: boolean } {
+function reasoningRoundTripOpts(env: RequestEnvelope): ReasoningRoundTripOptions {
   const modelId = modelIdFor(env.model as Model | undefined, (env.body as { model?: string }).model)
-  return { stripThinkingSignature: stripThinkingSignatureFor("openai-responses", modelId, "anthropic-messages") }
+  return {
+    stripThinkingSignature: stripThinkingSignatureFor("openai-responses", modelId, "anthropic-messages"),
+    onDegradation: ({ category, target }) => env.ctx.recordFeature("translated-refusal-category-dropped", { category, target }),
+  }
 }
 
 /**
@@ -489,18 +496,8 @@ function parseContentLength(header: string | null): number | undefined {
 // S7 — formatError
 // ============================================================================
 
-/** Kind-derived error-frame messages (P2.2-D4 parity — raw message is unavailable here). */
-const STREAM_ERROR_MESSAGES: Record<ClassifiedStreamError, string> = {
-  "idle-timeout": "Stream idle timeout",
-  shutdown: "Server is shutting down",
-  "client-abort": "Client disconnected",
-  "reaper-cancel": "Request cancelled by stale-request reaper",
-  "dispatch-cancel": "Upstream dispatch cancelled",
-  other: "Stream error",
-}
-
 function formatOpenAiResponsesError(err: ClassifiedStreamError): ClientFrame {
-  return { event: "error", data: JSON.stringify({ error: { message: STREAM_ERROR_MESSAGES[err], type: streamErrorKindToOpenAIErrorType(err) } }) }
+  return { event: "error", data: JSON.stringify({ error: { message: STREAM_ERROR_KIND_MESSAGES[err], type: streamErrorKindToOpenAIErrorType(err) } }) }
 }
 
 // ============================================================================

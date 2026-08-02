@@ -1,190 +1,35 @@
 import type {
   //
-  AssistantBlockLayoutStrategy,
-  SeparatorCarrier,
-} from "~/lib/anthropic/sanitize/assistant-block-layout"
-import type { ThinkingBlockSanitizeMode } from "~/lib/anthropic/sanitize/content-blocks"
-import type { RepairItem } from "~/lib/anthropic/tool-input-repair"
-import type { ModelTranslation } from "~/lib/config/schema"
-import type {
-  //
   Model,
   ModelsResponse,
-} from "~/lib/models/client"
+} from "./ghc-model-types"
 import type {
   //
-  CopilotTokenInfo,
-  TokenInfo,
-} from "~/lib/token/types"
+  AdaptiveRateLimiterConfig,
+  AssistantBlockLayoutStrategy,
+  BufferedRetryCaps,
+  BufferedRetryContinuation,
+  CacheControlMode,
+  CacheTtl,
+  CompiledRewriteRule,
+  CompiledSystemPromptEntry,
+  ContextEditingMode,
+  LoggingConfigState,
+  MaxTokensContinuationConfig,
+  MaxTokensContinuationOverride,
+  ModelTranslation,
+  RepairItem,
+  SeparatorCarrier,
+  ThinkingBlockSanitizeMode,
+  ThinkingBlockMessagePolicy,
+  UnknownEndpointLogging,
+  WarmupPolicy,
+} from "./state-vocabulary"
 
-import { normalizeForMatching } from "~/lib/models/model-name"
-import {
-  //
-  restoreTokenStoreForTests,
-  setStoreCopilotToken,
-  setStoreCopilotTokenInfo,
-  setStoreGithubToken,
-  setStoreTokenInfo,
-  snapshotTokenStoreForTests,
-  type TokenStoreSnapshot,
-} from "~/lib/token/store"
-
-import type { AdaptiveRateLimiterConfig } from "./adaptive-rate-limiter"
-
-/**
- * Server-side context editing mode.
- * Controls how Anthropic's context_management trims older context when input grows large.
- * Mirrors VSCode Copilot Chat's `chat.anthropic.contextEditing.mode` setting.
- */
-export type ContextEditingMode = "off" | "clear-thinking" | "clear-tooluse" | "clear-both"
-
-/**
- * Cache control mode for Anthropic requests.
- * Controls how cache_control fields are handled in the wire payload.
- */
-export type CacheControlMode = "disabled" | "passthrough" | "sanitize" | "proxied"
-
-/**
- * Per-layer prompt-cache TTL for the extended-cache-ttl feature. `"5m"` is Anthropic's default
- * (emitted as a bare `{type:"ephemeral"}`); `"1h"` emits `{type:"ephemeral", ttl:"1h"}` and requires
- * the `extended-cache-ttl-2025-04-11` beta. Mirrors GHC's per-layer 5m-vs-1h choice.
- */
-export type CacheTtl = "5m" | "1h"
-
-/**
- * Policy for handling Claude Code "Warmup" requests.
- *
- * - `"allow"`  — pass through normally (default)
- * - `"reject"` — return HTTP 429 error
- * - `"drop"`   — return minimal empty success response without forwarding upstream
- * - `"fake"`   — return a realistic fake response with cache_creation_input_tokens
- */
-export type WarmupPolicy = "allow" | "reject" | "drop" | "fake"
-
-/**
- * Policy for assistant messages that contain `thinking` / `redacted_thinking` blocks.
- *
- * Empirically, Anthropic thinking `signature`s are self-contained — they encrypt the
- * thinking content itself (the upstream decrypts and rebuilds it) and do NOT bind to
- * surrounding context or array position. The only real constraints are that thinking blocks
- * must be echoed verbatim, kept in relative order, and never dropped (their adjacency,
- * however, is not preserved — see `preserve` below).
- *
- * - `preserve` — Keep thinking blocks verbatim, preserve their relative order, and never
- *                drop them, but allow all surrounding cleanup (drop orphan tools, downgrade
- *                server tools, edit/drop non-thinking blocks). Thinking *adjacency* is NOT
- *                protected: the de-stack pass (sanitize/assistant-block-layout.ts) may
- *                insert non-thinking blocks between consecutive thinking blocks to satisfy
- *                the upstream "no two thinking blocks adjacent" rule.
- * - `stripped` — Actively delete thinking blocks from old messages; delete the message if
- *                empty after stripping.
- */
-export type ThinkingBlockMessagePolicy = "preserve" | "stripped"
-
-/** A compiled rewrite rule (regex pre-compiled from config string) */
-export interface CompiledRewriteRule {
-  /** Pattern to match (regex in regex mode, string in line mode) */
-  from: RegExp | string
-  /** Replacement string (supports $0, $1, etc. in regex mode) */
-  to: string
-  /** Match method: "regex" (default) or "line" */
-  method?: "regex" | "line"
-  /** Compiled regex for model name filtering. undefined = apply to all models. */
-  modelPattern?: RegExp
-  /** Endpoint-scope set (ClientFormat values). undefined = apply to all endpoints. */
-  endpointSet?: ReadonlySet<string>
-}
-
-/**
- * A compiled system-prompt prepend/append entry: the literal `text` plus the
- * pre-compiled model/endpoint scope (same two-axis AND semantics as
- * {@link CompiledRewriteRule}). A plain-string config entry compiles to
- * `{ text, modelPattern: undefined, endpointSet: undefined }` (unscoped).
- */
-export interface CompiledSystemPromptEntry {
-  /** The prepend/append text. */
-  text: string
-  /** Compiled regex for model name filtering. undefined = apply to all models. */
-  modelPattern?: RegExp
-  /** Endpoint-scope set (ClientFormat values). undefined = apply to all endpoints. */
-  endpointSet?: ReadonlySet<string>
-}
-
-/**
- * Resolved buffered-retry caps for one vendor (`resolveBufferedCaps` return
- * shape). `maxRetries` = transport-close/truncation retry cap (loop/cost guard);
- * `bufferCapBytes` = OOM guard before retreating to live forwarding (0 =
- * unlimited); `heartbeatSec` = forced keepalive interval during the buffer window.
- */
-export interface BufferedRetryCaps {
-  maxRetries: number
-  bufferCapBytes: number
-  heartbeatSec: number
-}
-
-/**
- * Resolved continuation-retry settings for one vendor (`resolveContinuation` return). After the first
- * block commits, a mid-stream RST triggers a synthetic continuation turn (spec
- * 2026-07-22-continuation-retry-and-sequential-anchor §4). `enabled` gates it per vendor; `message` is
- * the synthetic user-turn text. Resolution mirrors caps: per-vendor override > shared > built-in
- * default (`{ enabled: true, message: "network issue. please continue" }`).
- */
-export interface BufferedRetryContinuation {
-  enabled: boolean
-  message: string
-}
-
-export type MaxTokensContinuationTextStrategy = "continue" | "passthrough"
-export type MaxTokensContinuationToolUseStrategy = "continue" | "passthrough"
-export type MaxTokensContinuationThinkingStrategy = "passthrough" | "retry_with_budget"
-export type MaxTokensContinuationVisibility = "transparent" | "passthrough" | "marker"
-
-/**
- * Resolved max_tokens continuation policy for one vendor. P0 only resolves and records this
- * policy; P1 is the first phase allowed to consume it for continuation behavior.
- */
-export interface MaxTokensContinuationConfig {
-  enabled: boolean
-  maxRounds: number
-  classes: {
-    text: MaxTokensContinuationTextStrategy
-    toolUse: MaxTokensContinuationToolUseStrategy
-    thinking: MaxTokensContinuationThinkingStrategy
-  }
-  message: string
-  visibility: MaxTokensContinuationVisibility
-  thinkingRetryBudget: number | null
-}
-
-export interface EffectiveMaxTokensContinuationConfig extends MaxTokensContinuationConfig {
-  diagnostics: Array<"strategy-prevented-stitch">
-}
-
-/** Partial vendor override; class fields resolve independently so one override need not repeat every strategy. */
-export interface MaxTokensContinuationOverride extends Omit<Partial<MaxTokensContinuationConfig>, "classes"> {
-  classes?: Partial<MaxTokensContinuationConfig["classes"]>
-}
-
-/** unknown HTTP endpoint 日志级别（silent = 不打）。值须与 config/schema.ts 的 LOG_LEVELS 一致。 */
-export type LogLevel = "silent" | "debug" | "info" | "warn" | "error"
-
-/** unknown HTTP endpoint 按状态码分类的日志级别（404 = notFound / 405 = methodNotAllowed）。 */
-export interface UnknownEndpointLogging {
-  notFound: LogLevel
-  methodNotAllowed: LogLevel
-}
-
-export type DiagnosticLogLevel = "silent" | "trace" | "debug" | "info" | "warn" | "error" | "fatal"
-
-export interface LoggingConfigState {
-  terminalLevel: DiagnosticLogLevel
-  fileLevel: DiagnosticLogLevel
-  fileEnabled: boolean
-  fileDirectory: string
-  fileMaxSizeMb: number
-  fileMaxFilesPerProcess: number
-  retentionDays: number
-}
+// Re-exported for back-compat: the bundled defaults live in ./state-defaults (single-responsibility
+// split); existing `import { CONFIG_MANAGED_DEFAULTS | DEFAULT_MODEL_MAPPINGS | DEFAULT_MODEL_TRANSLATION }
+// from "~/lib/state"` consumers keep working.
+export { CONFIG_MANAGED_DEFAULTS, DEFAULT_MODEL_MAPPINGS, DEFAULT_MODEL_TRANSLATION } from "./state-defaults"
 
 export interface State {
   /** unknown HTTP endpoint（未匹配任何业务路由）按状态码分类的日志级别。默认 warn/warn。 */
@@ -268,10 +113,10 @@ export interface State {
   /** 修复上游发出的畸形 tool_use input（非法 JSON），仅作用于 Anthropic 转发流。可叠加的修复项目集（`tags`=结构感知剥 antml 标签、`jsonrepair`=jsonrepair 结构修复、`unicode`=修空白打断的 `\uXXXX` 转义），按固定规范顺序级联。空数组=关（默认）。history 保留上游原始字节。 */
   readonly toolRepairMalformedInput: ReadonlyArray<RepairItem>
 
-  /** 上游 thinking-only refusal（stop_reason:"refusal" 仅有 thinking 块）的处理策略：`refusal`=透传不改写、`end_turn`=合成 text 块改 end_turn、`error`=发 error SSE 帧并记请求失败（ctx.fail）。默认 `error`。 */
+  /** 上游 contentless refusal（`stop_reason:"refusal"` 且无 client-visible `text`/`tool_use`）的**客户端呈现**策略：`end_turn`=**抑制**（合成 text 块 + 改 end_turn + 补 message_stop，客户端拿到正常完成轮、对话不中断）、`refusal`=原样透传、`error`=发 error SSE 帧。默认 `end_turn`——首要目标是不中断客户端对话轮次（透传与 error 都会让 CC 结束当前轮）。**三种模式请求终态一律 `failed`**：抑制是呈现策略，不改变「上游拒绝、本轮无真实产出」这一事实。 */
   readonly refusalSseRewrite: "refusal" | "end_turn" | "error"
 
-  /** `end_turn` 模式注入的 recovery text 模板（会被客户端 baked 进下一轮请求）。占位符 `{model}`/`{request_id}`/`{thinking_tokens}`，未知占位符原样保留；空串=不追加 text 块（仅改 end_turn）。默认见 `DEFAULT_REFUSAL_END_TURN_TEXT`。 */
+  /** `end_turn`（抑制）模式注入的 text 模板（会被客户端 baked 进下一轮请求）。占位符 `{model}`/`{request_id}`/`{thinking_tokens}`/`{output_tokens}`/`{refusal_category}`/`{refusal_explanation}`，未知值渲染成 `unknown`（`category` 为上游显式 null 时渲染 `uncategorized`），未知占位符原样保留；**空串=不追加 text 块**——实测会让 Claude Code 空转一轮，等于放弃抑制的保护。默认见 `DEFAULT_REFUSAL_END_TURN_TEXT`。 */
   readonly refusalEndTurnText: string
   /** `error` 模式合成 error 帧的 message 模板（客户端 `APIError.message`）。占位符同上。默认见 `DEFAULT_REFUSAL_ERROR_MESSAGE`。 */
   readonly refusalErrorMessage: string
@@ -1179,15 +1024,102 @@ type MutableState = {
 }
 
 /**
- * A per-test snapshot of BOTH the mutable state and the token domain's
- * credential store (the credentials moved out of `state` into `~/lib/token`'s
- * store in the monorepo split; the snapshot composes them so the existing
- * per-test state snapshot/restore atomically covers credentials too — no
- * separate fixture wiring or resetter needed).
+ * A per-test snapshot of the mutable state PLUS one opaque slice per registered participant.
+ *
+ * Treat it as opaque: hand it back to {@link restoreStateForTests} and read nothing out of it. The
+ * participant slices are typed `unknown` on purpose — this module must not know what any domain
+ * keeps in its slice, which is the whole point of the registry (see
+ * {@link registerSnapshotParticipant}).
  */
 export interface StateSnapshot {
   readonly state: MutableState
-  readonly tokenStore: TokenStoreSnapshot
+  readonly participants: ReadonlyMap<string, unknown>
+}
+
+/**
+ * The extra keys {@link setStateForTests} accepts beyond `State`'s own fields, contributed by
+ * whichever domains registered a snapshot participant.
+ *
+ * Declared EMPTY here and filled in by declaration merging from the owning domain's core-side
+ * composition module (`src/lib/token-runtime.ts` adds the four credential keys). That indirection is
+ * not decoration: this module is being reduced to a leaf that depends on nothing but language
+ * builtins, so it cannot name `TokenInfo` or `CopilotTokenInfo` — and `packages/token` already
+ * depends on foundation, so importing them would make the final package graph
+ * foundation → token → foundation. Merging keeps every call site fully typed anyway: a typo in a
+ * credential key is still a compile error.
+ */
+// eslint-disable-next-line @typescript-eslint/no-empty-object-type -- filled by declaration merging; see above
+export interface StateTestPatchExtensions {}
+
+/**
+ * A domain that owns test-visible state living OUTSIDE `mutableState`, and therefore has to join the
+ * per-test snapshot/restore/patch cycle.
+ *
+ * Registered rather than imported because the import would run the wrong way: the domains concerned
+ * (token today) sit BELOW state in the package graph. Registration inverts that — state offers a
+ * slot, the domain's core-side composition module fills it.
+ */
+export interface SnapshotParticipant<S = unknown> {
+  /** Stable identity. Re-registering the same name replaces the entry rather than duplicating it. */
+  readonly name: string
+  /**
+   * The {@link setStateForTests} patch keys this participant owns. A key claimed by nobody is a
+   * hard error, NOT a silent no-op — see {@link setStateForTests}.
+   */
+  readonly claims: ReadonlyArray<string>
+  snapshot: () => S
+  restore: (slice: S) => void
+  /** Apply the claimed keys present in a test patch. Only receives keys this participant claims. */
+  applyTestPatch: (patch: Readonly<Record<string, unknown>>) => void
+}
+
+const snapshotParticipants = new Map<string, SnapshotParticipant>()
+
+/**
+ * `State`'s OPTIONAL fields, which are absent from `mutableState` until something writes them.
+ *
+ * `key in mutableState` is the cheap runtime test for "is this a state field", and for these three it
+ * answers false on a fresh process — so a `setStateForTests({ models })` would be misrouted as a key
+ * nobody owns and throw. Listing them closes that hole;
+ * `tests/state/test-patch-routing.unit.test.ts` re-derives the optional fields from the `State`
+ * declaration and fails if this list drifts, so it cannot silently rot as fields come and go.
+ */
+const OPTIONAL_STATE_FIELDS: ReadonlySet<string> = new Set(["models", "vsCodeVersion", "adaptiveRateLimitConfig"])
+
+const isStateField = (key: string): boolean => key in mutableState || OPTIONAL_STATE_FIELDS.has(key)
+
+/**
+ * Register (or replace) a snapshot participant. Idempotent by `name`, so the composition modules
+ * that call it from several entry points — CLI commands, server bootstrap, the bun test preload —
+ * can call it freely.
+ */
+export function registerSnapshotParticipant<S>(participant: SnapshotParticipant<S>): void {
+  // A key claimed by two DIFFERENT participants is rejected rather than resolved by order. The
+  // routing below picks the first claimant it finds, so without this the second domain to register
+  // would silently never receive its keys while snapshot/restore still ran for both — a test-
+  // isolation bug that shows up as one domain mysteriously not being reset. Only the token domain
+  // registers today, so this can only fire for the next one; that is exactly when it is useful.
+  //
+  // The same NAME is a replacement, so it is skipped rather than deleted first: a participant must
+  // not collide with its own previous registration, and an earlier version of this did the skipping
+  // by `delete`-ing before the scan — which made a REJECTED replacement destroy the live entry it
+  // failed to replace. A throwing register must leave the registry exactly as it found it, or the
+  // caller that catches the error is left holding keys nobody claims.
+  for (const existing of snapshotParticipants.values()) {
+    if (existing.name === participant.name) continue
+    const overlap = participant.claims.filter((claim) => existing.claims.includes(claim))
+    if (overlap.length > 0) {
+      throw new Error(
+        `registerSnapshotParticipant: "${participant.name}" and "${existing.name}" both claim ${overlap.map((claim) => `\`${claim}\``).join(", ")}. A patch key must have exactly one owner.`,
+      )
+    }
+  }
+  snapshotParticipants.set(participant.name, participant as SnapshotParticipant)
+}
+
+/** Test-only: drop every registration. Exists so a test can prove the unclaimed-key error fires. */
+export function clearSnapshotParticipantsForTests(): void {
+  snapshotParticipants.clear()
 }
 
 /** Epoch ms when the server started (set once in runServer) */
@@ -1414,69 +1346,45 @@ export function setTokenBasedBilling(tokenBasedBilling: boolean): void {
 }
 
 /**
- * Last unfiltered models response from the upstream `/models` endpoint.
- * Kept so a config reload of `disabledModels` can re-filter without
- * requiring another network round-trip. Module-scoped (not part of public
- * State) — consumers always read the filtered view via `state.models`.
+ * Rebuild the two derived lookup indexes from `state.models`.
+ *
+ * Pure derivation over this module's OWN fields — it reads `models.data` and writes `modelIndex` /
+ * `modelIds`, and knows nothing about the models domain beyond `Model` having an `id`. That is why
+ * it stayed here when the catalog CACHE moved to `~/lib/models/cache`: the disabled-id matching,
+ * the raw upstream response and the re-filter policy are model knowledge, but "my two indexes agree
+ * with my model list" is this module's own invariant. Keeping it here is also what lets
+ * `setStateForTests` maintain that invariant without importing the models domain — which would
+ * close the very cycle this whole migration exists to remove
+ * (docs/plan/2026-07-28-state-to-foundation/HANDOVER.md).
  */
-let rawModels: ModelsResponse | undefined
-
-function applyDisabledFilter(models: ModelsResponse | undefined): ModelsResponse | undefined {
-  if (!models) return undefined
-  const disabled = mutableState.disabledModels
-  if (disabled.length === 0) return models
-  // Normalize both sides so a config entry like "claude-opus-4-8" disables the
-  // upstream id "claude-opus-4.8" (dot/hyphen/case spelling is irrelevant).
-  const disabledSet = new Set(disabled.map((id) => normalizeForMatching(id)))
-  return { ...models, data: models.data.filter((m) => !disabledSet.has(normalizeForMatching(m.id))) }
-}
-
-export function setModels(models: ModelsResponse | undefined): void {
-  rawModels = models
-  updateState({ models: applyDisabledFilter(models) })
-  rebuildModelIndex()
-}
-
-/** Last unfiltered upstream `/models` response (includes disabled entries). */
-export function getRawModels(): ModelsResponse | undefined {
-  return rawModels
+export function rebuildModelIndex(): void {
+  const data = mutableState.models?.data ?? []
+  updateState({
+    modelIndex: new Map(data.map((m) => [m.id, m])),
+    modelIds: new Set(data.map((m) => m.id)),
+  })
 }
 
 /**
- * The upstream ids that `config.disabled_models` currently removes from the usable
- * set — computed from the cached raw catalog with the SAME normalized match as
- * {@link applyDisabledFilter} (so config `claude-opus-4-8` reports the actual
- * catalog id `claude-opus-4.8`). Empty when nothing disabled / no catalog yet.
- * Consumed by the internal `/api/models` route to annotate the full catalog.
- */
-export function getConfigDisabledIds(): Array<string> {
-  const raw = rawModels
-  if (!raw) return []
-  const disabled = mutableState.disabledModels
-  if (disabled.length === 0) return []
-  const disabledSet = new Set(disabled.map((id) => normalizeForMatching(id)))
-  return raw.data.filter((m) => disabledSet.has(normalizeForMatching(m.id))).map((m) => m.id)
-}
-
-/**
- * Reset the module-scoped `rawModels` cache (for tests). `rawModels` lives
- * OUTSIDE `mutableState`, so `snapshotStateForTests`/`restoreStateForTests`
- * cannot reach it — without this, a `setModels()` in one test leaks its raw
- * response into the next (a later `setDisabledModels` would re-filter from the
- * stale cache). The unified test fixture calls this in afterEach.
- */
-export function resetRawModelsForTests(): void {
-  rawModels = undefined
-}
-
-/**
- * Update the disabled model ID list and re-filter `state.models` from the
- * cached raw response. Hot-reloadable from config.yaml.
+ * Publish the disabled model ID list. A PLAIN field setter, like the other config-managed setters
+ * on this module — it does NOT re-filter `state.models`, because filtering needs the cached raw
+ * catalog and the normalized id match, both of which live in `~/lib/models/cache`.
+ *
+ * Callers that change this list must follow it with `refreshCatalogView()` from that module. The
+ * config layer does so unconditionally at the end of `applyConfigToState()`, which covers both the
+ * hot-reload path and `resetConfigManagedState()` (production always pairs the reset with a
+ * re-apply — `src/routes/config/route.ts` PUT /api/config).
  */
 export function setDisabledModels(disabledModels: ReadonlyArray<string>): void {
   updateState({ disabledModels: [...disabledModels] })
-  updateState({ models: applyDisabledFilter(rawModels) })
-  rebuildModelIndex()
+}
+
+/**
+ * Publish a filtered catalog view. Called ONLY by `~/lib/models/cache`, which owns the filtering
+ * policy; split out so this module never has to know what "disabled" means.
+ */
+export function setFilteredModels(models: ModelsResponse | undefined): void {
+  updateState({ models })
 }
 
 export function setUnknownEndpointLogging(value: UnknownEndpointLogging): void {
@@ -1864,36 +1772,6 @@ export function setBufferedRetryContinuationOverride(vendor: string, patch: Part
   })
 }
 
-/**
- * Resolve the effective buffered-retry caps for one vendor. Priority (highest
- * first): per-vendor override ({@link State.bufferedRetryOverrides}) > shared
- * caps ({@link State.bufferedRetryShared}) > built-in default. Every consumer of
- * `maxRetries` / `bufferCapBytes` / `heartbeatSec` MUST route through this (no
- * direct scalar-field reads — single resolution point).
- */
-export function resolveBufferedCaps(vendor: string): BufferedRetryCaps {
-  const o = state.bufferedRetryOverrides[vendor] ?? {}
-  const s = state.bufferedRetryShared
-  return {
-    maxRetries: o.maxRetries ?? s.maxRetries,
-    bufferCapBytes: o.bufferCapBytes ?? s.bufferCapBytes,
-    heartbeatSec: o.heartbeatSec ?? s.heartbeatSec,
-  }
-}
-
-/**
- * Resolve continuation-retry settings for `vendor` (per-vendor override > shared > built-in default).
- * Single resolution point — mirrors {@link resolveBufferedCaps}.
- */
-export function resolveContinuation(vendor: string): BufferedRetryContinuation {
-  const o = state.bufferedRetryContinuationOverrides[vendor] ?? {}
-  const s = state.bufferedRetryContinuationShared
-  return {
-    enabled: o.enabled ?? s.enabled,
-    message: o.message ?? s.message,
-  }
-}
-
 /** Set the shared max_tokens continuation policy. P0 resolves it but does not consume it in the driver. */
 export function setMaxTokensContinuationShared(patch: MaxTokensContinuationOverride): void {
   const { classes, ...scalarPatch } = patch
@@ -1934,94 +1812,71 @@ export function setMaxTokensContinuationOverride(vendor: string, patch: MaxToken
   })
 }
 
-/** Resolve max_tokens continuation settings with per-vendor values taking precedence over shared values. */
-export function resolveMaxTokensContinuation(vendor: string): MaxTokensContinuationConfig {
-  const override = state.maxTokensContinuationOverrides[vendor] ?? {}
-  const shared = state.maxTokensContinuationShared
-  return {
-    enabled: override.enabled ?? shared.enabled,
-    maxRounds: override.maxRounds ?? shared.maxRounds,
-    classes: {
-      text: override.classes?.text ?? shared.classes.text,
-      toolUse: override.classes?.toolUse ?? shared.classes.toolUse,
-      thinking: override.classes?.thinking ?? shared.classes.thinking,
-    },
-    message: override.message ?? shared.message,
-    visibility: override.visibility ?? shared.visibility,
-    thinkingRetryBudget: override.thinkingRetryBudget ?? shared.thinkingRetryBudget,
-  }
-}
-
 /**
- * Enforce the wire-level constraint that passthrough terminates the stream and therefore cannot stitch.
- * P1 must consume this resolved form before it ever enables continuation behavior.
- */
-export function resolveEffectiveMaxTokensContinuation(vendor: string): EffectiveMaxTokensContinuationConfig {
-  const config = resolveMaxTokensContinuation(vendor)
-  if (config.visibility !== "passthrough") return { ...config, diagnostics: [] }
-
-  const prevented = config.classes.text === "continue" || config.classes.toolUse === "continue" || config.classes.thinking === "retry_with_budget"
-  if (!prevented) return { ...config, diagnostics: [] }
-  return {
-    ...config,
-    classes: { text: "passthrough", toolUse: "passthrough", thinking: "passthrough" },
-    diagnostics: ["strategy-prevented-stitch"],
-  }
-}
-
-/**
- * Capture a deep-enough clone of state for test restoration.
- * Tests should prefer this over direct mutation snapshots so State can stay readonly.
+ * Capture a deep-enough clone of state, plus every registered participant's slice, for test
+ * restoration. Tests should prefer this over direct mutation snapshots so State can stay readonly.
  */
 export function snapshotStateForTests(): StateSnapshot {
-  return { state: cloneState(mutableState), tokenStore: snapshotTokenStoreForTests() }
+  const participants = new Map<string, unknown>()
+  for (const participant of snapshotParticipants.values()) participants.set(participant.name, participant.snapshot())
+  return { state: cloneState(mutableState), participants }
 }
 
 /**
- * Controlled test-only mutation path.
- * Keeps readonly State in application code while allowing tests to set fixtures.
+ * Controlled test-only mutation path. Keeps readonly State in application code while allowing tests
+ * to set fixtures.
  *
- * The token credentials moved out of `state` into `~/lib/token`'s store; this
- * shim still accepts the four credential keys and forwards them to the store so
- * the ~137 existing `setStateForTests({ copilotToken, ... })` call sites keep
- * working unchanged (test-only convenience, not a production write path).
+ * Keys that are not `State` fields are routed to whichever participant claims them (credentials live
+ * in the token domain's store, not in `state`). **An unclaimed key throws.** That is the load-bearing
+ * decision here: the obvious alternative — ignore what nobody claims — turns a missing registration
+ * into a green test suite that has quietly stopped isolating credentials between tests, which is
+ * exactly the failure this shim exists to prevent.
  */
-export function setStateForTests(
-  patch: Partial<MutableState> & {
-    githubToken?: string
-    copilotToken?: string
-    tokenInfo?: TokenInfo
-    copilotTokenInfo?: CopilotTokenInfo
-  },
-): void {
-  const { githubToken, copilotToken, tokenInfo, copilotTokenInfo, ...statePatch } = patch
-  if ("githubToken" in patch) setStoreGithubToken(githubToken)
-  if ("copilotToken" in patch) setStoreCopilotToken(copilotToken)
-  if ("tokenInfo" in patch) setStoreTokenInfo(tokenInfo)
-  if ("copilotTokenInfo" in patch) setStoreCopilotTokenInfo(copilotTokenInfo)
-  updateState(cloneStatePatch(statePatch))
+export function setStateForTests(patch: Partial<MutableState> & Partial<StateTestPatchExtensions>): void {
+  const statePatch: Record<string, unknown> = {}
+  const claimed = new Map<string, Record<string, unknown>>()
+  const unclaimed: Array<string> = []
+
+  for (const [key, value] of Object.entries(patch)) {
+    if (isStateField(key)) {
+      statePatch[key] = value
+      continue
+    }
+    const owner = [...snapshotParticipants.values()].find((participant) => participant.claims.includes(key))
+    if (!owner) {
+      unclaimed.push(key)
+      continue
+    }
+    const slice = claimed.get(owner.name) ?? {}
+    slice[key] = value
+    claimed.set(owner.name, slice)
+  }
+
+  if (unclaimed.length > 0) {
+    const registered = [...snapshotParticipants.keys()].join(", ") || "(none)"
+    throw new Error(
+      `setStateForTests: no snapshot participant claims ${unclaimed.map((key) => `\`${key}\``).join(", ")}. `
+        + `Registered participants: ${registered}. `
+        + `A domain that keeps test-visible state outside \`state\` must call registerSnapshotParticipant() `
+        + `from its core-side composition module (see src/lib/token-runtime.ts), and the bun test preload must reach that module.`,
+    )
+  }
+
+  for (const [name, slice] of claimed) snapshotParticipants.get(name)?.applyTestPatch(slice)
+  updateState(cloneStatePatch(statePatch as Partial<MutableState>))
   if ("models" in patch && !("modelIndex" in patch) && !("modelIds" in patch)) {
     rebuildModelIndex()
   }
 }
 
-/** Restore state + token store from a snapshot captured by snapshotStateForTests(). */
+/** Restore state + every participant's slice from a snapshot captured by snapshotStateForTests(). */
 export function restoreStateForTests(snapshot: StateSnapshot): void {
   updateState(cloneState(snapshot.state))
-  restoreTokenStoreForTests(snapshot.tokenStore)
+  for (const participant of snapshotParticipants.values()) {
+    if (snapshot.participants.has(participant.name)) participant.restore(snapshot.participants.get(participant.name))
+  }
 }
 
-/**
- * Rebuild model lookup indexes from state.models.
- * Called by cacheModels() in production; call directly in tests after setting state.models.
- */
-export function rebuildModelIndex(): void {
-  const data = mutableState.models?.data ?? []
-  updateState({
-    modelIndex: new Map(data.map((m) => [m.id, m])),
-    modelIds: new Set(data.map((m) => m.id)),
-  })
-}
 import {
   //
   CONFIG_MANAGED_DEFAULTS,
@@ -2029,10 +1884,35 @@ import {
   DEFAULT_MODEL_TRANSLATION,
 } from "./state-defaults"
 
-// Re-exported for back-compat: the bundled defaults live in ./state-defaults (single-responsibility
-// split); existing `import { CONFIG_MANAGED_DEFAULTS | DEFAULT_MODEL_MAPPINGS | DEFAULT_MODEL_TRANSLATION }
-// from "~/lib/state"` consumers keep working.
-export { CONFIG_MANAGED_DEFAULTS, DEFAULT_MODEL_MAPPINGS, DEFAULT_MODEL_TRANSLATION } from "./state-defaults"
+/**
+ * The config vocabulary lives in `./state-vocabulary` (a zero-import leaf) and is re-exported here so
+ * every existing `import type { CacheTtl } from "~/lib/state"` keeps working. This re-export is safe
+ * BECAUSE the target is a leaf with no edge back — the same shape would have been a cycle if the
+ * vocabulary had been parked in `state-defaults` instead.
+ */
+export type {
+  //
+  BufferedRetryCaps,
+  BufferedRetryContinuation,
+  CacheControlMode,
+  CacheTtl,
+  CompiledRewriteRule,
+  CompiledSystemPromptEntry,
+  ContextEditingMode,
+  DiagnosticLogLevel,
+  EffectiveMaxTokensContinuationConfig,
+  LoggingConfigState,
+  LogLevel,
+  MaxTokensContinuationConfig,
+  MaxTokensContinuationOverride,
+  MaxTokensContinuationTextStrategy,
+  MaxTokensContinuationThinkingStrategy,
+  MaxTokensContinuationToolUseStrategy,
+  MaxTokensContinuationVisibility,
+  ThinkingBlockMessagePolicy,
+  UnknownEndpointLogging,
+  WarmupPolicy,
+} from "./state-vocabulary"
 
 export function resetConfigManagedState(): void {
   setUnknownEndpointLogging({ ...CONFIG_MANAGED_DEFAULTS.unknownEndpointLogging })

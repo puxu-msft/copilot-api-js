@@ -20,6 +20,46 @@
     "paths": {
       "@/*": ["src/*"],
       "~backend/*": ["../src/*"],
+
+      // Backend package aliases, mirrored from the root tsconfig.json (the SSOT).
+      // `~backend/*` pulls backend source into this project's type graph, and that
+      // source imports the extracted workspace packages through `~/lib/...` aliases
+      // the root tsconfig defines. More specific patterns win over `~/*`, so these
+      // must be listed for the backend files to resolve at all. Only the library
+      // packages are mirrored — never the cli entry aliases (`~/main`, `~/start`, …):
+      // a frontend that transitively reaches cli code is a bug worth failing on.
+      //
+      // This is the one compile-chain coupling ui/ deliberately keeps (2026-07-28
+      // decoupling). It is NOT machine-guarded — backend refactors can rot it
+      // silently, and only an explicit `bun run typecheck` / `bun run test` here
+      // surfaces the rot. See ../docs/vue-ui-retirement.md §0.
+      "@hsupu/ghc-proxy-foundation": ["../packages/foundation/src/index.ts"],
+      "@hsupu/ghc-proxy-foundation/*": ["../packages/foundation/src/*"],
+      // Telemetry is mapped ONLY at its pure-type barrel, never the package root:
+      // the root index carries runtime exports (consola, DDSketch, bun:sqlite), and
+      // `src/types.ts` exists precisely so a frontend can re-export the snapshot
+      // shapes without any of that entering its graph. Mirrors ui-v4/tsconfig.json.
+      "@hsupu/ghc-proxy-telemetry/types": ["../packages/telemetry/src/types.ts"],
+      "~/lib/atomic-fs": ["../packages/foundation/src/atomic-fs"],
+      "~/lib/diff/*": ["../packages/foundation/src/diff/*"],
+      "~/lib/error/classify": ["../packages/foundation/src/error/classify"],
+      "~/lib/error/http-error": ["../packages/foundation/src/error/http-error"],
+      "~/lib/error/parsing": ["../packages/foundation/src/error/parsing"],
+      "~/lib/error/tool-diagnostics-types": ["../packages/foundation/src/error/tool-diagnostics-types"],
+      "~/lib/error/transport-reason": ["../packages/foundation/src/error/transport-reason"],
+      "~/lib/error/utils": ["../packages/foundation/src/error/utils"],
+      "~/lib/ghc-http-primitives": ["../packages/foundation/src/ghc-http-primitives"],
+      "~/lib/process-identity": ["../packages/foundation/src/process-identity"],
+      "~/lib/repetition-detector": ["../packages/foundation/src/repetition-detector"],
+      "~/lib/sqlite/compression": ["../packages/foundation/src/sqlite/compression"],
+      "~/lib/sqlite/driver": ["../packages/foundation/src/sqlite/driver"],
+      "~/lib/stream": ["../packages/foundation/src/stream"],
+      "~/lib/token": ["../packages/token/src/index"],
+      "~/lib/token/*": ["../packages/token/src/*"],
+      "~/lib/tui/sensitive-output": ["../packages/foundation/src/sensitive-output"],
+      "~/lib/util/*": ["../packages/foundation/src/util/*"],
+      "~/lib/utils": ["../packages/foundation/src/utils"],
+
       "~/*": ["../src/*"]
     }
   },
@@ -31,6 +71,10 @@
     "vitest/**/*.ts",
     "vitest.config.ts",
     "auto-imports.d.ts",
-    "components.d.ts"
+    "components.d.ts",
+    // Backend ambient declarations (e.g. the `pino-roll` module shim). Backend
+    // source reached through `~backend/*` needs them; without this the whole
+    // transitive graph reports TS7016. Mirrors ui-v4/tsconfig.json.
+    "../src/types/*.d.ts"
   ]
 }

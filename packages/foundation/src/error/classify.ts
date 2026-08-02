@@ -92,6 +92,15 @@ export function classifyError(error: unknown): ApiError {
           // Truncated body after headers — never a pre-response retry. Terminal.
           return { type: "bad_request", status: 0, message: formatErrorWithCause(error), raw: error }
         }
+        case "pool-closed": {
+          // Our own session pool went away (shutdown force-close / finalize). It is a
+          // CANCELLATION, so it classifies like every other abort — an in-process retry
+          // would only hit the same closed pool. Reached only if a producer ever tags
+          // `pool-closed` onto an error that is NOT AbortError-named: the isAbortError
+          // branch above wins for the ones http2-client currently produces. Kept explicit
+          // (not folded into `default`) so the exhaustiveness guard keeps its teeth.
+          return { type: "aborted", status: 0, message: formatErrorWithCause(error), raw: error }
+        }
         default: {
           // Exhaustiveness: a new TransportErrorReason must add its case above.
           const _never: never = reason

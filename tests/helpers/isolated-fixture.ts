@@ -54,8 +54,10 @@ import {
 } from "~/lib/history/v3/store"
 import { resetModelOperationTerminalBusForTests } from "~/lib/history/v3/terminal-bus"
 import { clearRecentModelOperationTerminalsForTests } from "~/lib/history/v3/terminal-bus"
+import { resetRawModelsForTests } from "~/lib/models/cache"
 import { resetAllLimitsForTesting } from "~/lib/models/calibration/engine"
 import { resetModelsEtagForTests } from "~/lib/models/client"
+import { resetAbortProvenanceGapsForTests } from "~/lib/observability/abort-provenance-gaps"
 import { resetReaperDiagnosticsForTests } from "~/lib/observability/reaper-diagnostics"
 import { resetRetryGiveUpsForTests } from "~/lib/observability/retry-giveups"
 import { resetRetryStrategyFiresForTests } from "~/lib/observability/retry-strategy-fires"
@@ -74,7 +76,6 @@ import {
 import { resetProcessIdentityForTests } from "~/lib/process-identity"
 import {
   //
-  resetRawModelsForTests,
   restoreStateForTests,
   type StateSnapshot,
   snapshotStateForTests,
@@ -141,6 +142,7 @@ export const RESETTERS: ReadonlyArray<{ name: string; reset: () => void | Promis
   { name: "resetAbortableDelayScaleForTests", reset: resetAbortableDelayScaleForTests },
   { name: "resetReaperDiagnosticsForTests", reset: resetReaperDiagnosticsForTests },
   { name: "resetRetryStrategyFiresForTests", reset: resetRetryStrategyFiresForTests },
+  { name: "resetAbortProvenanceGapsForTests", reset: resetAbortProvenanceGapsForTests },
   { name: "resetRetryGiveUpsForTests", reset: resetRetryGiveUpsForTests },
   { name: "_resetConfigValidationWarnTrackingForTests", reset: _resetConfigValidationWarnTrackingForTests },
   { name: "resetBundledConfigCacheForTests", reset: resetBundledConfigCacheForTests },

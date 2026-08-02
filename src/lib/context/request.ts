@@ -7,6 +7,9 @@
  */
 
 import type { ApiError } from "~/lib/error"
+import type { RefusalPolicy } from "~/lib/anthropic/refusal-policy"
+
+import { DEFAULT_REFUSAL_ERROR_TYPE } from "~/lib/anthropic/refusal-policy"
 import type {
   //
   EndpointType,
@@ -28,6 +31,11 @@ import type { ToolNameMapper } from "~/lib/tool-name-mapper"
 
 import { getErrorMessage } from "~/lib/error"
 import { HTTPError } from "~/lib/error"
+import {
+  //
+  cancellationAbortError,
+  REQUEST_DEADLINE_CANCEL_REASON,
+} from "~/lib/error/cancellation-reason"
 import { acquireRawCaptureLease } from "~/lib/history/raw/manager"
 import { publishModelOperationTerminal } from "~/lib/history/v3/terminal-bus"
 import { normalizeModelId } from "~/lib/models/resolver"
@@ -177,6 +185,7 @@ export function legFromUpstreamResponse(r: ResponseData): HistoryUpstreamRespons
     ...(r.responseId !== undefined && { responseId: r.responseId }),
     ...(r.copilotAnnotations && { copilotAnnotations: r.copilotAnnotations }),
     ...(r.toolSearchRequests !== undefined && { toolSearchRequests: r.toolSearchRequests }),
+    ...(r.stopDetails !== undefined && { stopDetails: r.stopDetails }),
   }
 }
 
@@ -215,6 +224,27 @@ export function synthesizeAttemptErrorResponse(a: Attempt): ResponseData | undef
     content: null,
     responseText: raw.responseText,
   }
+}
+
+/**
+ * TEST-ONLY registry of each context's lifecycle controller.
+ *
+ * Exists so a test can abort the lifecycle WITHOUT a cause tag — i.e. impersonate a producer that
+ * skipped the `cancellationAbortError` contract. No production path does that any more, which is
+ * precisely why the seam is needed: the boundaries answer `unknown-cancel` / `unknown-abort` for it
+ * and the gap counter records it, and the only way to exercise that is to be the bad producer on
+ * purpose. A test aborting a bare controller of its own would prove nothing about how OUR context
+ * behaves.
+ *
+ * Kept off the `RequestContext` interface deliberately: putting a test-only mutator there makes it
+ * callable by every production consumer and forces any future implementation to provide it, for a
+ * capability that must never run in production.
+ */
+const lifecycleControllers = new WeakMap<RequestContext, AbortController>()
+
+/** @see lifecycleControllers — TEST-ONLY. Aborts `ctx.lifecycleSignal` with no cause tag. */
+export function abortLifecycleUntaggedForTests(ctx: RequestContext): void {
+  lifecycleControllers.get(ctx)?.abort()
 }
 
 export function createRequestContext(opts: {
@@ -327,6 +357,8 @@ export function createRequestContext(opts: {
   let _endTime: number | null = null
   /** Per-attempt tool-input repair outcomes (reset by resetRepairOutcomesForAttempt on L2 retry). */
   const _repairOutcomes: Array<RepairOutcomeRecord> = []
+  /** Frozen on first read (stream start) so every layer of this request sees the same disposition. */
+  let _refusalPolicy: RefusalPolicy | null = null
 
   // History V3 generation recorder. The mutable recorder stays private to RequestContext;
   // consumers see only immutable snapshots / the canonical terminal record.
@@ -776,6 +808,7 @@ export function createRequestContext(opts: {
             ...(response.error === undefined ? {} : { error: response.error }),
             ...(response.responseId === undefined ? {} : { responseId: response.responseId }),
             ...(response.toolSearchRequests === undefined ? {} : { toolSearchRequests: response.toolSearchRequests }),
+            ...(response.stopDetails === undefined ? {} : { stopDetails: response.stopDetails }),
             ...(response.copilotAnnotations === undefined ? {} : { copilotAnnotations: response.copilotAnnotations }),
           },
         }),
@@ -987,7 +1020,7 @@ export function createRequestContext(opts: {
       return lifecycleAbort.signal
     },
     reapInFlight() {
-      lifecycleAbort.abort()
+      lifecycleAbort.abort(cancellationAbortError("stale-reaper", "Request cancelled by the stale-request reaper"))
     },
     // ─── C5 operation lifecycle (RFC §3.3) — NEW API, no production callers yet ───
     // `operationSignal` is the per-request cancel signal (reaper/deadline/cancel all abort
@@ -1009,7 +1042,11 @@ export function createRequestContext(opts: {
       if (_cancelled) return
       _cancelled = true
       _cancelReason = reason
-      lifecycleAbort.abort()
+      // The reason travels ON the abort, not just in this closure: everything downstream of the
+      // fetch signal (transport → driver → client boundary) sees only the thrown error, and a
+      // bare abort there is indistinguishable from a header timeout. The hard deadline is a
+      // TIMEOUT, so it gets its own cause rather than the generic cancel one.
+      lifecycleAbort.abort(cancellationAbortError(reason === REQUEST_DEADLINE_CANCEL_REASON ? "request-deadline" : "request-cancel", reason))
     },
     trackOperationBody(p) {
       operationScope.trackOperationBody(p)
@@ -1057,6 +1094,21 @@ export function createRequestContext(opts: {
     },
     get unrepairableToolInput() {
       return _repairOutcomes.find((r) => r.outcome === "unrepairable")?.tool ?? null
+    },
+    get refusalPolicy() {
+      // Lazily frozen: the first reader is the S5 rewriter at stream start, before any concurrent
+      // request can reload config into the middle of THIS stream. Deliberately NOT reset per attempt
+      // — a buffered retry / continuation of the same request must keep the same disposition.
+      _refusalPolicy ??= {
+        mode: appState.refusalSseRewrite,
+        endTurnText: appState.refusalEndTurnText,
+        errorMessage: appState.refusalErrorMessage,
+        // Resolve the empty-string fallback HERE so the snapshot is the final value. Otherwise every
+        // consumer has to remember the same `"" -> api_error` rule, and one that forgets emits an
+        // error frame with an empty `type`.
+        errorType: appState.refusalErrorType === "" ? DEFAULT_REFUSAL_ERROR_TYPE : appState.refusalErrorType,
+      }
+      return _refusalPolicy
     },
     resetRepairOutcomesForAttempt() {
       _repairOutcomes.length = 0
@@ -1718,6 +1770,7 @@ export function createRequestContext(opts: {
           content: partial?.content ?? null,
           ...(partial?.sourceBody !== undefined && { sourceBody: partial.sourceBody }),
           ...(partial?.stop_reason !== undefined && { stop_reason: partial.stop_reason }),
+          ...(partial?.stopDetails !== undefined && { stopDetails: partial.stopDetails }),
         }
         _failureReason = errorMsg
       } else {
@@ -1731,6 +1784,7 @@ export function createRequestContext(opts: {
           content: partial?.content ?? null,
           ...(partial?.sourceBody !== undefined && { sourceBody: partial.sourceBody }),
           ...(partial?.stop_reason !== undefined && { stop_reason: partial.stop_reason }),
+          ...(partial?.stopDetails !== undefined && { stopDetails: partial.stopDetails }),
         }
 
         // Preserve upstream HTTP error details as structured fields
@@ -1795,6 +1849,7 @@ export function createRequestContext(opts: {
         error: "client disconnected",
         content: null,
         ...(partial?.stop_reason !== undefined && { stop_reason: partial.stop_reason }),
+        ...(partial?.stopDetails !== undefined && { stopDetails: partial.stopDetails }),
       }
 
       // P2.5 producer alignment: land the aborted verdict on the final attempt
@@ -2151,5 +2206,6 @@ export function createRequestContext(opts: {
     },
   }
 
+  lifecycleControllers.set(ctx, lifecycleAbort)
   return ctx
 }

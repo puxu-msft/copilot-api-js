@@ -36,6 +36,7 @@ import {
   getNativeHistorySearch,
   type NativeHistoryIndex,
 } from "~/lib/history/search-native"
+import { isNativeHistorySearchAvailable } from "~/lib/history/search-native"
 import {
   //
   createHistorySearchDaemon,
@@ -101,7 +102,13 @@ afterEach(() => {
   for (const dir of tmpDirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true })
 })
 
-describe("history-search sidecar daemon (Phase 1, standalone)", () => {
+// The native Tantivy `.node` is a gitignored build product and is no longer built by `bun install`
+// (2026-07-28). These suites drive the real index, so they gate on its presence rather than fail:
+// an environmental red is too easy to wave away as "pre-existing" — which is exactly what happened.
+// Run them for real with `bun run build:history-search` first (CI's `test:ci` does).
+const NATIVE = isNativeHistorySearchAvailable()
+
+describe.skipIf(!NATIVE)("history-search sidecar daemon (Phase 1, standalone)", () => {
   test("tails, hydrates, and indexes conversation + response text — excludes upstream-only frames", async () => {
     const dbDir = freshDir("daemon-basic-db-")
     const dbPath = path.join(dbDir, "history-v3.db")
@@ -278,7 +285,7 @@ describe("history-search sidecar daemon (Phase 1, standalone)", () => {
   })
 })
 
-describe("merged-state review blockers (2026-07-22) — silent permanent data loss, real probes", () => {
+describe.skipIf(!NATIVE)("merged-state review blockers (2026-07-22) — silent permanent data loss, real probes", () => {
   test("BLOCKER 1: a single poisoned manifest (bad format version) permanently wedges the tail -- every HEALTHY row after it is silently never indexed, forever, even across restarts", async () => {
     const dbDir = freshDir("daemon-poison-db-")
     const dbPath = path.join(dbDir, "history-v3.db")

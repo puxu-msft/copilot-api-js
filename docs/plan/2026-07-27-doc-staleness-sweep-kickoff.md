@@ -76,4 +76,4 @@ PY
 
 ## 收尾
 
-按 skill `session-closeout` 五步：① subagent 独立核验 ② doc-sync + 跨文档 grep 验证 ③ 归档 plan（本 kickoff 与交接文档加实施状态注解）④ 提炼教训维护记忆库 ⑤ 细粒度阶段提交（conventional commits、显式 pathspec、不加模型署名）。
+按 skill `session-closeout` 走完收尾（步数与内容以 skill 为准，勿在此冻结）；本任务特有的落点：本 kickoff 与交接文档要加实施状态注解，提交用 conventional commits、显式 pathspec、不加模型署名。

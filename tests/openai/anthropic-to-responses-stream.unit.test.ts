@@ -344,10 +344,28 @@ describe("anthropic-to-responses-stream — stop_reason → status (IMPROVEMENT 
     expect(meta.incompleteReason).toBe("pause_turn")
   })
 
-  test("refusal (Anthropic-only) → incomplete + an HONEST 'refusal' reason (NOT content_filter)", () => {
-    const { meta } = renderAllWithMeta([messageStart(), textBlockStart(0), textDelta(0, ""), blockStop(0), messageDelta("refusal"), messageStop()])
+  test("refusal (Anthropic-only) → incomplete + honest reason and category-loss degradation marker", () => {
+    const degradations: Array<unknown> = []
+    const t = createAnthropicToResponsesStreamTranslator("claude-x", ctx, {
+      onDegradation: (degradation) => degradations.push(degradation),
+    })
+    const events = [
+      messageStart(),
+      textBlockStart(0),
+      textDelta(0, ""),
+      blockStop(0),
+      anthropicEvent({
+        type: "message_delta",
+        delta: { stop_reason: "refusal", stop_details: { type: "refusal", category: "bio" }, stop_sequence: null },
+        usage: {},
+      }),
+      messageStop(),
+    ]
+    for (const event of events) t.renderFrame(event)
+    const meta = t.getMeta()
     expect(meta.status).toBe("incomplete")
     expect(meta.incompleteReason).toBe("refusal")
+    expect(degradations).toEqual([{ kind: "refusal-category-dropped", category: "bio", target: "openai-responses" }])
   })
 
   test("tool_use forces completed regardless of downstream stop_reason quirks", () => {

@@ -11,20 +11,26 @@
  * `error.type` literal IS what Claude Code / the Anthropic SDK display + branch on — see
  * exp/q2-oracle/REPORT.md). They are unit-tested in isolation here; the C3b COMMIT dispatch wires them.
  *
- * Discrimination uses SIGNAL STATE, never `error.name`: a pre-response client-abort, a stale-reaper
- * cancel, and a header-wait timeout are ALL synthesized by the http2 client as a generic AbortError
- * (the signal reason is discarded), and a pre-response reaper-cancel is a plain AbortError — NOT a
- * `StreamReaperCancelError` (that type only exists inside the stream-drain guard). See RFC §4.2.1.
+ * Discrimination is EVIDENCE-BASED: the abort's own reason (`TimeoutError` identity for the
+ * response-header watchdog, the `pool-closed` transport tag, the cancellation-cause tag carried by
+ * `ctx.cancel` / the reaper / a dispatch teardown) decides the kind, with signal state as the
+ * fallback for aborts nobody tagged. It used to be signal-state ONLY — because the http2 client
+ * discarded the signal reason, every cause arrived as one indistinguishable generic AbortError —
+ * which meant a hard-deadline cancellation was reported to the client as a stale-reaper cancel.
+ * See RFC §4.2.1 and `~/lib/error/cancellation-reason`.
  */
 
 import type { ClientFrame } from "~/lib/pipeline/types"
 
+import { streamErrorKindToAnthropicErrorType } from "~/lib/anthropic/error-shaping"
 import {
   //
   type ErrorWireFormat,
   HTTPError,
   mapHttpErrorToEnvelope,
 } from "~/lib/error"
+import { getCancellationCause } from "~/lib/error/cancellation-reason"
+import { isShutdownCausedAbort } from "~/lib/shutdown"
 
 const ANTHROPIC: ErrorWireFormat = "anthropic"
 
@@ -94,16 +100,94 @@ export function anthropicErrorFrame(type: string, message: string): ClientFrame 
   return { event: "error", data: JSON.stringify({ type: "error", error: { type, message } }) }
 }
 
-/** A POST-COMMIT abort classified by SIGNAL STATE (precedence: client > reaper > timeout). */
-export type PostCommitAbortKind = "client-abort" | "reaper-cancel" | "timeout"
+/** A POST-COMMIT abort, classified by the abort's own provenance (signal state is the fallback). */
+export type PostCommitAbortKind =
+  | "client-abort"
+  | "shutdown"
+  | "header-timeout"
+  | "request-deadline"
+  | "reaper-cancel"
+  | "request-cancel"
+  | "dispatch-cancel"
+  | "unknown-abort"
+
+/** The terminal SSE error-frame message for each abort kind (`client-abort` writes nothing — the client is gone). */
+const POST_COMMIT_ABORT_MESSAGE: Record<Exclude<PostCommitAbortKind, "client-abort">, string> = {
+  shutdown: "Server is shutting down",
+  "header-timeout": "Upstream timed out before sending response headers",
+  "request-deadline": "Request exceeded its hard deadline",
+  "reaper-cancel": "Request cancelled by the stale-request reaper",
+  "request-cancel": "Request cancelled",
+  "dispatch-cancel": "Upstream dispatch cancelled",
+  "unknown-abort": "Request aborted (no cause recorded)",
+}
 
 /**
- * Discriminate a POST-COMMIT abort by which controller flipped — NEVER by `error.name` (all three
- * are generic AbortErrors, §4.2.1). Client-abort wins (round-2 H-1: the client is gone, no reader);
- * then reaper-cancel (stale-request reaper aborted the in-flight upstream); else a header-wait timeout.
+ * Terminal `event: error` frame for a post-commit abort of `kind`.
+ *
+ * The `error.type` comes from the SHARED Anthropic cause table, not a local literal. It
+ * used to hardcode `api_error` for every kind, so the same hard deadline reached the
+ * client as `api_error` here and `timeout_error` from the post-header pump — the answer
+ * depended on whether upstream response headers had happened to arrive, which is not a
+ * fact about what ended the request.
  */
-export function classifyPostCommitAbort(clientAborted: boolean, reaperAborted: boolean): PostCommitAbortKind {
+export function postCommitAbortFrame(kind: Exclude<PostCommitAbortKind, "client-abort">): ClientFrame {
+  return anthropicErrorFrame(streamErrorKindToAnthropicErrorType(kind), POST_COMMIT_ABORT_MESSAGE[kind])
+}
+
+/**
+ * Discriminate a POST-COMMIT abort. Evidence first, signal state only as a fallback:
+ *
+ * 1. `clientAborted` — the client is gone; nothing else matters, there is no reader left.
+ * 2. shutdown provenance (Phase 3 abort reason identity / `pool-closed` transport tag).
+ * 3. `TimeoutError` — the response-header watchdog itself fired (`AbortSignal.timeout`).
+ * 4. the cancellation-cause tag on the error — hard deadline vs stale reaper vs explicit
+ *    cancel vs dispatch teardown.
+ * 5. the same tag read off `lifecycleSignal.reason`, for transports that synthesize a fresh
+ *    error instead of surfacing the reason they were cancelled with.
+ * 6. nothing at all → `unknown-abort`.
+ *
+ * Steps 5 and 6 are where this used to answer `reaper-cancel` for ANY fired lifecycle signal,
+ * on the theory that a bare lifecycle abort means the reaper. Every producer tags its reason
+ * now, so an untagged one means a producer skipped the contract — the same correction
+ * `guardSseIterable` already made. Naming a cause we cannot evidence is the exact failure this
+ * classifier exists to end (a 609ms request once shipped as a 900s header timeout), and an
+ * `unknown-abort` in the wild is a signal in its own right: some path is not carrying its
+ * provenance yet.
+ *
+ * Takes the SIGNAL rather than a `reaperAborted` boolean precisely so step 5 is possible — a
+ * boolean has already thrown away the only thing that could answer "which one".
+ */
+export function classifyPostCommitAbort(clientAborted: boolean, lifecycleSignal: AbortSignal | undefined, error?: unknown): PostCommitAbortKind {
   if (clientAborted) return "client-abort"
-  if (reaperAborted) return "reaper-cancel"
-  return "timeout"
+  const fromCause = (candidate: unknown): PostCommitAbortKind | undefined => {
+    switch (getCancellationCause(candidate)) {
+      case "request-deadline": {
+        return "request-deadline"
+      }
+      case "stale-reaper": {
+        return "reaper-cancel"
+      }
+      case "request-cancel": {
+        return "request-cancel"
+      }
+      case "dispatch-cancel": {
+        return "dispatch-cancel"
+      }
+      default: {
+        return undefined
+      }
+    }
+  }
+  if (error !== undefined) {
+    if (isShutdownCausedAbort(error)) return "shutdown"
+    if (error instanceof Error && error.name === "TimeoutError") return "header-timeout"
+    const tagged = fromCause(error)
+    if (tagged !== undefined) return tagged
+  }
+  if (lifecycleSignal?.aborted === true) {
+    const tagged = fromCause(lifecycleSignal.reason)
+    if (tagged !== undefined) return tagged
+  }
+  return "unknown-abort"
 }

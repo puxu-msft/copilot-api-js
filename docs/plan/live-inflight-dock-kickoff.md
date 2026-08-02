@@ -16,4 +16,4 @@
 - 每 Task 收尾:`bun run typecheck && bun run lint:all && bun test`;前端改动追加 `bun run build:ui-v4`。
 - 遇既有测试失败/类型错误不当「与我无关」,先读实际代码确认根因再修。
 
-**收尾(全部 Task 完成后)**:走 `session-closeout` —— ① subagent 交付前独立核验 ② doc-sync(更新 [docs/DESIGN.md](../DESIGN.md) 活的架构现状表,加 LiveDock 行 + active-request-wire 类型 SSOT 节;spec 头部标实施状态)③ 登记推迟项到 [docs/todo/deferred-backlog.md](../todo/deferred-backlog.md)(per-group 折叠 / 终态淡出动画 / 面板内 abort / 展开态焦点被遮自动滚入)④ 提炼教训维护记忆库 ⑤ 细粒度提交。
+**收尾(全部 Task 完成后)**:按 skill `session-closeout` 走完收尾(步数与内容以 skill 为准,勿在此冻结)。本任务特有落点:doc-sync 要更新 [docs/DESIGN.md](../DESIGN.md) 活的架构现状表,加 LiveDock 行 + active-request-wire 类型 SSOT 节,spec 头部标实施状态;推迟项登记到 [docs/todo/deferred-backlog.md](../todo/deferred-backlog.md)(per-group 折叠 / 终态淡出动画 / 面板内 abort / 展开态焦点被遮自动滚入)。

@@ -1,8 +1,7 @@
 <script setup lang="ts">
 import {
   //
-  decodeToolUseInput,
-  type DecodeToolInputConfig,
+  tryDecodeJsonString,
 } from "~backend/lib/anthropic/decode-tool-input-core"
 import { computed } from "vue"
 import VueJsonPretty from "vue-json-pretty"
@@ -63,11 +62,34 @@ const inputJson = computed(() => {
  * leaving the store data and the copy text (`inputJson`) on the original form —
  * history stays faithful, only the rendering is friendlier. The raw-unparsed
  * branch is short-circuited so a truncated fragment is never decoded.
+ *
+ * Implemented here rather than via the backend's `decodeToolUseInput`: that
+ * helper's decode-every-field mode (`DecodeToolInputConfig.all`) was removed
+ * from the backend in `c9a22b9b` as "no live consumer" — this view WAS the
+ * consumer. Only the `tryDecodeJsonString` primitive is borrowed; the semantics
+ * below are the removed `all: true` path verbatim (decode each top-level string
+ * field that parses to an object/array, keep every other value as-is, and
+ * return the ORIGINAL reference when nothing changed).
  */
-const DISPLAY_DECODE_CONFIG: DecodeToolInputConfig = { fields: {}, all: true }
+function decodeAllStringFields(input: unknown): unknown {
+  if (typeof input !== "object" || input === null || Array.isArray(input)) return input
+
+  const obj = input as Record<string, unknown>
+  let result: Record<string, unknown> | undefined
+  for (const field of Object.keys(obj)) {
+    const value = obj[field]
+    if (typeof value !== "string") continue
+    const decoded = tryDecodeJsonString(value)
+    if (decoded === undefined) continue
+    if (!result) result = { ...obj }
+    result[field] = decoded
+  }
+  return result ?? input
+}
+
 const displayInput = computed(() => {
   if (rawUnparsed.value !== null) return props.block.input
-  return decodeToolUseInput(props.block.name, props.block.input, DISPLAY_DECODE_CONFIG)
+  return decodeAllStringFields(props.block.input)
 })
 
 const isObjectInput = computed(() => {

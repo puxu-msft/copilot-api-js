@@ -1,15 +1,23 @@
 ---
 name: session-closeout
-description: 当 copilot-api-js 会话/阶段收尾时使用（交付/报告/ExitPlanMode/提交前）——收尾五步完整清单、how-to 与判定纪律的单一源：plan 归档到 docs/plan 及四档状态注解模板、doc-sync 跨文档 grep 验证、记忆库提炼与维护、subagent 交付前独立核验、细粒度阶段提交。走完整流程须读正文。
+description: 当 copilot-api-js 会话/阶段收尾时使用——交付、汇报、ExitPlanMode、提交前，或任务要跨会话继续。触发症状：「这轮做不完了」「上下文快满了」「compact 之前要做什么」「给下个会话写个交接」「新会话怎么接手」「归档一下」；即使用户只说「先记一下进度」也用本 skill。正文是收尾六步（subagent 独立核验 / doc-sync / 归档 plan 与实验产物 / 提炼教训与维护记忆 / 细粒度提交 / 跨会话交接）的 how-to、判定纪律与模板的单一源——**可执行细节只在正文，必须读正文**。
 ---
 
 # 会话/阶段收尾任务
 
-收尾 == “完成”的一部分：按序走完下面五步、**无需用户提醒**（CLAUDE.md `always-on-not-background` 最易漏的正是它——「能复述规则 ≠ 落笔前过了一遍」）。CLAUDE.md `session-closeout` 是 always-on 触发器（五步名 + 指向本 skill）；本 skill 是每步 how-to、判定纪律、plan 状态注解模板的**单一源**。战例（why/失败形态）在各 `feedback-*` 记忆，本 skill 只放 how-to。
+收尾 == “完成”的一部分：按序走完下面六步、**无需用户提醒**（CLAUDE.md `session-closeout` 明写「按序做完无需提醒」，最易漏的正是它——「能复述规则 ≠ 落笔前过了一遍」）。CLAUDE.md `session-closeout` 是 always-on 触发器（六步名 + 指向本 skill）；本 skill 是每步 how-to、判定纪律与模板（[complete-plan.md](complete-plan.md) / [handover.md](handover.md)）的**单一源**。战例（why/失败形态）在各 `feedback-*` 记忆，本 skill 只放 how-to。
+
+**唯一的顺序例外：触发原因是「上下文将满」时，§6 先做、其余顺延。** 交接是六步里**唯一不可重做**的产物——§1–§5 的成果丢了下个会话还能重来，交接丢了整轮工作无人接得上；而 §1（派 subagent 并逐条复核 `file:line`）与 §2（跨文档 grep）恰是六步里上下文开销最大的两步，按序走必然烧光预算走不到 §6。先把 HANDOVER/KICKOFF 落盘提交（**头部状态标「草稿·未评审」**——未评审的档案不自报，接手方会当成已核验的），再按剩余预算回头补 §1–§5，补不完的作为待办写进 HANDOVER。
+
+**用完本 skill 欠一笔账**：文末「自验」节列着若干条**尚未被实战检验**的断言，验法都是你走流程时顺手就能观察到的。走完收尾后，至少给你能观察到的那几条各往 [verification-log.md](verification-log.md) 写一行。这是这份 skill 唯一的实战反馈通道——静态自洽已被跨模型评审确认，**它在真实压力下会不会被照做只能靠那里累积**。
 
 ## 1. subagent audit —— 交付前独立核验
 
 交付/报告/ExitPlanMode/采信任何声音权威前，**永远派 subagent** 多视角对抗核验，不在主会话直接做。prompt 里显式写裁判轴「长远正确 + 完整」（subagent 默认 ROI/YAGNI，与本项目冲突）。吸收其客观事实，对其「无消费者/已通过/可安全删除」等绝对断言**亲自对照代码/实测复核、读它引用的每个 `file:line`**，绝不照搬。详见 CLAUDE.md `subagent-explicit-rubric`、skill `empirical-verification`、user-level skill `verifying-authoritative-claims`。
+
+**「多视角」不是派两个人读同一遍。** 派活前按**这类产物的失败面**写出正交视角，每个视角在 prompt 里写死**它的主责与证据义务**。主责是**覆盖保证，不是禁言令**——遇到别人主责范围内的 BLOCKER 照报，压重叠率从来不是目标。
+
+**整改之后恢复原 reviewer 复审**（`SendMessage`，别重派），复核范围 = 原发现 + 整改 diff + 受影响的相邻契约，直到各视角均无 BLOCKER/MAJOR。**你为修复上一轮而新写的东西会引入新缺陷。** **每个视角一份可追加的报告，落盘提交**（不只留在 return 正文，见 [[methodology-background-agent-result-surfacing-failure]]）；它记着每条被证伪判据的原始措辞，后来人看到形状古怪的验收判据能查到什么东西从中间走过去了。
 
 ## 2. doc-sync + 验证
 
@@ -19,9 +27,9 @@ description: 当 copilot-api-js 会话/阶段收尾时使用（交付/报告/Exi
 - `grep -rln '<新端点/新字段/新机制关键词>' docs/ README.md` —— 逐个核对该提的都提了。
 - broken-link / L1 守卫测试绿。
 
-只改最显眼处必漏其余（DESIGN 可能多行、README 多表、模块文档、RFC 汇总行、记忆正文）。旧 slug 名 `completion-includes-doc-sync`（历史文档仍用此名引用本步）。战例：2026-06-24 曾漏 5 处未 doc-sync（原 memory `feedback-completion-updates-docs` 已并入本步 + user-rule 70）。
+只改最显眼处必漏其余（DESIGN 可能多行、README 多表、模块文档、RFC 汇总行、记忆正文）。旧 slug 名 `completion-includes-doc-sync`（历史文档仍用此名引用本步）。战例：2026-06-24 曾漏 5 处未 doc-sync（原 memory `feedback-completion-updates-docs` 已并入本步 + user-rule `41-doc-mgmt`）。
 
-## 3. 归档 plan —— 迁 docs/plan + 头部实施状态注解
+## 3. 归档 plan 与实验产物 —— 迁 `docs/plan/`、就地 `exp/<topic>/` + 状态/边界注解
 
 把 `.claude/plans/` 与 `~/.claude/plans/` 里**属于本项目**的 plan 迁进 `docs/plan/<meaningful-name>.md`，并加头部实施状态注解。
 
@@ -29,15 +37,84 @@ description: 当 copilot-api-js 会话/阶段收尾时使用（交付/报告/Exi
 - **迁移**：项目本地 `.claude/plans/`（git 追踪）→ `git mv` 保留历史（显示为 rename）；全局非仓库文件 → `mv`。命名从 plan 首个 `#`/`##` 标题派生 kebab-ASCII slug、弃随机 codename；移动前 collision guard（脚本逐个校验源存在 + 目标不存在，零覆盖），别与既有 `docs/plan/*.md` 碰撞。
 - **subagent `-agent-XXXX.md` 审查伴随文件**：迁为 `<parent-slug>-review.md`；同父多份按 **mtime 升序** `-review`/`-review-2`；研究型（非审查，如 OTel 选型）记 `-research`（用户 2026-07-04 明确选“一并移动为独立文件”）。
 - **只搬不删不去重**：与既有手工精选 plan（`*-plan.md` + `*_prompt.md`）主题重叠也保留两份原始存档，删/合并交用户定夺。
+- **实验/探针产物同样归档**：`exp/<topic>/` + README 写清「回答什么问题 / 结论 / **它没有证明什么** / 复跑配方」。「没有证明什么」是必填项——探针的配置决定了它只激活一条路径，不写边界，下一个人（含三小时后的自己）会当成全覆盖（范式：`exp/keepalive-escalation-wire/README.md`；失效模式见 skill `empirical-verification`）。
 - **头部实施状态注解**：四档（已完成/部分完成/未实施/仅研究）+ 配套文件类型注解 + 判定纪律，格式与四档示例见本 skill 的模板 [complete-plan.md](complete-plan.md)。判定是**事实性主张**，靠证据（DESIGN 状态表 / archive RFC / `git log -S` / 生效 config 键）不凭标题；否定性核验用正样本证明 grep 触达（空≠不存在）。
 
 ## 4. 提炼教训 + 维护记忆库
 
-边界（phase/会话/交接）主动 distill 可复用经验（按 CLAUDE.md `knowledge-routing` 判归属），顺手体检既有库：陈旧→修、近义→互链、冗余→删。**判断某记忆是否已覆盖时 deep-read 正文、别只看索引钩子**（钩子会掩盖「写窄/写偏」）。记忆正文/description/索引钩子一律中文（保留 slug、`file:line`、wiki 链接、技术标识符）。详见 CLAUDE.md 风格偏好 `memory` 行、user-rule 70（原 memory `feedback-distill-lessons-at-boundaries` 已并入此步 + user-rule 70）。
+边界（phase/会话/交接）主动 distill 可复用经验（按 CLAUDE.md「文档路由」节判归属），顺手体检既有库：陈旧→修、近义→互链、冗余→删。**判断某记忆是否已覆盖时 deep-read 正文、别只看索引钩子**（钩子会掩盖「写窄/写偏」）。记忆正文/description/索引钩子一律中文（保留 slug、`file:line`、wiki 链接、技术标识符）。详见 CLAUDE.md「文本风格偏好」的记忆语言约定行、user-rule `41-doc-mgmt`（原 memory `feedback-distill-lessons-at-boundaries` 已并入此步）。
 
 ## 5. 细粒度提交
 
-阶段完成即主动 commit（贯穿全程、不问“要我提交吗”），收尾把 2–4 产生的文档/plan/记忆改动一并提交。**严格细粒度暂存、绝不整仓暂存、提交前 stat 复核只含本次改动**——具体命令黑白名单（`git add -p`/pathspec vs 禁 `git add -A`/`-am`）与并发会话行级共存技法见 CLAUDE.md `fine-grained-staging-per-phase-commit`/`concurrent-sessions-line-coexistence`、user-level skill `git-preference:coordinating-a-shared-git-worktree`（单一源，勿在此复述以免漂移）。conventional commits、不加 Claude 署名。战例：完成即提交、不问“要我提交吗”（原 memory `feedback-act-comprehensively-commit-on-done` 已并入本步 + user-rule 60）。
+阶段完成即主动 commit（贯穿全程、不问“要我提交吗”），收尾把 2–4 产生的文档/plan/记忆改动一并提交。**严格细粒度暂存、绝不整仓暂存、提交前 stat 复核只含本次改动**——具体命令黑白名单（`git add -p`/显式 pathspec vs 禁 `git add -A`/`-am`）与并发会话行级共存技法见 CLAUDE.md「细粒度、每阶段提交」/「concurrent-sessions 行级共存」两条、user-level skill `git-preference:coordinating-a-shared-git-worktree`（单一源，勿在此复述以免漂移）。conventional commits、不加 Claude 署名。战例：完成即提交、不问“要我提交吗”（原 memory `feedback-act-comprehensively-commit-on-done` 已并入本步 + user-rule `21-git-workflow` 的 `commit-when-meaningful`）。
+
+## 6. 跨会话交接 —— HANDOVER + KICKOFF
+
+触发：任务跨会话（用户要求 / 上下文将满 / 阶段收尾但任务未完）。user-rule `01-core-principles` 的 `handover-if-context-window-almost-full` 管 **when**，本节是 **how**：这里写**必含什么、为什么必含、以及判定纪律**，可照抄的形状在同目录模板 [handover.md](handover.md)（与 §3 ↔ [complete-plan.md](complete-plan.md) 同一分工）。
+
+**两份文档的分工判据**（不写清必然写重，而重复的那份一定先陈旧）。**用正向归属，不用「绝不复述」这种做不到的禁令**——KICKOFF 本来就要写工作方式、批准状态、坑、门禁：
+
+- **HANDOVER** = 完整档案、唯一事实源，按需查阅可以长：**事实、证据、理由、数字、命令、完整步骤**归它。
+- **KICKOFF** = 能整段复制成新会话第一条消息的提示词（user-rule `40-dev-workflow`：*for the user to copy*）：只放**启动前的 gate、第一步动作、批准状态、指向 HANDOVER 的小节号**。
+- **允许的重复只有一种**：一个执行 gate 可以逐字重复（指针形式容易被跳过），但该 gate 的**理由、命令细节、数字、后续步骤只留在 HANDOVER**。
+
+**位置**：`docs/plan/<date>-<topic>/HANDOVER.md` + `KICKOFF.md`（目录式）。本仓另有一批历史扁平式命名（`<date>-handover-<topic>.md`、`<topic>-kickoff.md`、`HANDOFF.md` 三种混用）——**目录式是新约定，旧的不追溯迁移**（MEMORY.md 多条指针指向扁平式路径，迁了会全断）。**在主树改、不进特性分支**——入口文档滞留在特性分支上等于没写（与 CLAUDE.md `docs-merge-before-execute` 同源）。**提交时机以模板的落盘闭环为准**：正常路径是评审放行后与评审报告、`docs/` 入口一次精确 pathspec 提交；只有「上下文将满」的紧急路径才即时提交（且头部须标「草稿·未评审」）。**代码改动才进隔离 worktree**：命令与技法以 skill `git-preference:isolating-from-a-shared-git-worktree` 为准（勿在此复制），只记本仓的两条实测——`.worktrees/` 建在仓库内部、**向上解析主树 `node_modules`，不是依赖隔离环境**；真正会咬的是新树缺 gitignored 构建产物导致的稳定假红（见 [[reference-worktree-bun-add-needs-main-tree-install-after-merge]]）。
+
+**HANDOVER 必含**（缺一条就会让接手会话重走弯路）：
+
+- **头部状态行**：`草稿·未评审 / 进行中 / 已被接手（谁）/ 已完成（落地 commit）/ 已失效（原因）` + **核验基线 `<sha>` 与日期** + 当前分支/worktree + 未提交与未追踪清单 + 已跑门禁及其结果。**陈旧的交接危害大于没有交接**——接手方会照着一份看起来权威、实则失效的档案行动；状态行就是防陈旧的机制本身。没有它，面对 `docs/plan/` 下二十多份交接，判断不出哪份是活的。**「草稿·未评审」是紧急路径的合法状态、过完评审必须改掉**——未评审的档案不自报，接手方会当成已核验的。
+- **入口指引**：先读什么、每份材料在什么时机读。
+- **已确证的硬事实**，逐条标证据等级（实测 / 源码读证 / 推断），并写明「别再重新推导」。**计数事实必须同时写对象、集合边界、基线与生成命令**，缺任一项降级为「未核实」——「N 个文件」和「N 个调用点」是不同的量，而读者照着你写的那个词估工。
+- **审计 / 计数 / 否定 / 完备性结论，必须写它回答的是哪个问题、集合边界与排除项。** 触发词：「全部、只剩、无、N 个、完整、能通过」。同一批事实换个问题问，答案就不一样（「哪些边让它成环」与「它还剩哪些跨界出边」不是同一个集合）。普通事实不必填。
+- **与冻结的 spec / ADR / backlog 冲突时，必须对账**——不写，接手方面对两个互相矛盾的权威，正确动作只剩「停下来问人」。三句：① 上游当时判死的**依据**；② 本轮哪几步在拆那个依据（**前提变了 ≠ 推翻裁断**）；③ 落地后要同步哪几处——**并列成一条正式待办**（§2 管本会话已落地的，这里管下个会话落地后要回填的，容易两头落空）。**声称「无冲突」要附检索证据**（查了哪些上游文档、用了哪些术语），单关键词空结果不成立。
+- **每条待办带验收判据 + 证伪方式**，不写「大概/也许」；用户已批准的、已裁决的、仍待裁决的分叉分开标。**每条新判据写明鉴别力正控**（要引入什么变异让它变红；已跑就附命令与输出，没跑写「待执行期正控」）。方法与四类判据形状见 [[methodology-new-oracle-discriminating-power-is-experimental]]。
+- **自己犯过的错与其成因**，**每条绑一个「复发点：T\<n\> 的哪个具体动作」**。绑不上任何待办的那条是纯自我检讨，压成一行或删——不绑步骤的教训读时点头、做时照踩。
+
+**交接本身要过 §1 的评审**——它是交付物，而且是**唯一不可重做**的那个；别在主会话自审，**你写不出的东西正是你看不见的东西**。**HANDOVER/KICKOFF 的默认两视角**（每个视角的主责，不是禁言令）：
+
+| 视角 | 主责 | 每条发现必须回答 |
+|---|---|---|
+| **判据证伪** | 数字与口径对不对；**每条 oracle 真咬得住它声称要抓的失败吗** | 我跑了什么命令、得到什么输出 |
+| **接手方第一人称走查** | **对文档让你做的每一个动作，实地去仓库查那个位置存不存在、长什么样**——不是读文档挑毛病 | **「接手方会因此做出什么错误动作」**（没有这一栏的发现不算发现） |
+
+第二格是可替换槽位：产物不是交接时，换成「**实际执行方 / 使用方**第一人称走查」。
+
+**每轮整改完 HANDOVER，立刻回查 KICKOFF**——失效几乎全发生在「修复落进 HANDOVER、KICKOFF 留在原地」，不在初次写作。机械自查：把 KICKOFF 里每个命令、数字、步骤编号拎出来逐个回 HANDOVER 对，对不上的不是「改一下」，是**这段本来就该是指针**。
+
+**产物必须进仓库并提交**（这一条踩过实亏——`/tmp` 一重启就没，共享 worktree 的未追踪文件离一次 `git clean` 只差一步）：**被引用的既有产物先提交**（`git add` 之后立刻 `git commit -F <msgfile> -- <精确路径>`；只 `git add` 会留在共享 index 被 peer 的无-pathspec 提交卷走），**subagent 结论落进产物文件而非只靠 return 正文**（见 [[methodology-background-agent-result-surfacing-failure]]）。
+
+**写之前先查 peer，并且要写清查完做什么**：
+
+- 检索：**主力是路径口径** `git log --oneline ..master -- <你改动或下结论涉及的路径>`（**方向别写反**：`master..` 列的是你自己的提交）。`git log -S` **要搜你预期被改动的那一行里的字面量，别搜模块名/函数名**——它找的是「增删了该字符串出现次数」的提交，不是「改了它行为」的提交（实测与反例见 skill `empirical-verification` §②）。`-20` 这种无 path 限定的条数截断，在并发八个 worktree 时只覆盖两三小时。
+- 命中后的动作：受影响的**硬事实**重新核验，核不动就降级为「待验证假设」；受影响的**待办**改写或标注「已被 `<sha>` 作废」。本轮就有一条根因结论被 peer 早 6 小时（author date）的提交悄悄作废。
+- 落盘时把**核验基线 `<sha>`** 写进头部状态行，让接手方一眼看出新鲜度。
+
+**KICKOFF 的写法**：① 工作方式硬性要求放最前（worktree、文档例外、合并前查 peer）；② 待办含用户批准状态与优先级，未裁决的明确标「需用户先定」；③ 这一轮反复踩的坑；④ 测试门禁现状与禁区（哪些命令在本机跑不起来、哪些是用户已明确推迟的、绝不碰的东西）——**这类信息最易腐**（写下时正确、十几小时后被 peer 修好就此腐烂，而你从它旁边经过也未必发现），**必须标「核验于 `<日期>` / `<sha>`」并写明「接手第一件事是复验而非采信」**——没有核验日期，接手方无从判断该不该信它。
+
+**交接要在 `docs/` 里有可发现入口**（**入口本身也是评审对象**，随两份文档一起进 §1 的闭环）：按项目文档路由挑**一个**权威落点（该主题已有的 DESIGN 活架构条目 / backlog 条目 / spec 小节），更新它、状态标 `[wip]`；其余相关文档只放**指向该权威入口的短指针，不复制状态与事实**（三处各写一份 `[wip]` 就是三处要同步的漂移面）。**不存在的条目不新造占位。** 接手往往不是拿着 KICKOFF 发生的——没有入口，按 `docs/` 常规路径读进来的人一路读到旧方案，**永远走不到你那个目录**。顺带这也是并发撞车的预警。
+
+**任务收尾后回来关掉交接**：待办全部关闭时把状态行改成「已完成 + 落地 commit」，被新交接取代时写 `superseded-by`，**不删**（按 §3 的归档纪律处理）。同主题已有活交接时更新它或建立显式取代链，**禁止两份并列自称唯一入口**。
+
+## 自验：本 skill 里尚未实战检验的断言（**用本 skill 时顺手验，验完落 [verification-log.md](verification-log.md)**）
+
+指令文本的静态自洽不等于它在真实压力下会被照做。下面每条都是**尚未被实战证实**的断言；验法都设计成**在你正常走完收尾的过程中顺手观察**，不额外做实验。**每次用完本 skill，至少给能观察到的那几条各写一行**（写清判据命中与否、日期、sha）——一条断言被三次独立会话证实即可从表里毕业，被证伪就当场改正文。
+
+| # | 断言 | 怎么验（顺手观察，不额外做实验） | 证伪长什么样 |
+|---|---|---|---|
+| V1 | 触发链（description + CLAUDE.md 第 54 行）能在**「上下文快满、任务没完」的时刻**把本 skill 唤出来 | 你是**怎么**用上本 skill 的？自动浮现 / 读 CLAUDE.md 想起来 / 用户点名 / 事后才发现该用——照实写。**负样本要在它发生的那一刻记**：用户提醒你走收尾、或你事后才意识到该走，当场补一行，别指望"没想起来的会话"回来自首 | 「用户点名」「事后才发现」占多数 ＝ 触发链没覆盖真实触发词。注意本仓 CLAUDE.md 常驻并指向本 skill，**测的是整条触发链、不是 description 单独的效力** |
+| V2a | 上下文将满时，**写方**真能先走到 §6 | 触发原因确实是上下文将满时：你有没有先做 §6？**写完 KICKOFF 顺手记这一行**（此时还有余量，等收尾结束就没有了） | 仍然烧光预算走不到 §6 ＝ 例外的位置不够靠前 |
+| V2b | 产出的交接，**接手方**读得懂、接得上 | 你是接手会话时：读完 HANDOVER 到能动手，中间需要回头问人或重新调查吗？记一行并标视角=接手 | 接手方仍需重新调查已写进"硬事实"的东西 ＝ 必含项选错了 |
+| V3 | [handover.md](handover.md) 的骨架**照抄即可填**，不需要临场发明结构 | 填的时候有没有出现「这段该放哪」的犹豫？三个最易漏的槽（证据等级 / 验收判据+证伪方式 / 自己犯过的错）是否**空着就显眼** | 你又自造了一套结构，或某个槽被无声跳过 ＝ 骨架不合用 |
+| V4 | §6 的查-peer 配方在本仓真的抓得到东西 | 跑完记录：命中几条 peer 提交？其中**几条真的影响了你要交接的结论**？ | 长期零命中 ＝ 配方或口径不对（本仓八个活跃 worktree，长期零命中本身可疑）。**2026-07-28 首跑即修正过一次口径**：`-S` 要搜被改动那行的字面量、不是模块名 |
+| V6 | HANDOVER/KICKOFF 的**归属分工**做得到 | 写完自查一次、**每轮改完 HANDOVER 再自查一次**：KICKOFF 里有没有重复事实/理由/数字/命令/完整步骤？允许逐字重复的那个 gate 是否带了 HANDOVER 指针？ | 出现归属越界 ＝ 判据说不清或不可行。**已知高危**：失效几乎全发生在「改完 HANDOVER 忘了改 KICKOFF」，不在初次写作 |
+| V8 | 分派正交视角比派两个泛读的**带来增量覆盖** | 每个视角是否**执行了 prompt 指定的方法**；各自**独有**且会改变执行动作的 BLOCKER/MAJOR 有几条；**某个视角若不派，会漏掉什么** | 某视角未执行其指定方法，或**同一产物类型连续 3 次**（与本表毕业阈值同）没有任何独有且改变动作的发现——别拿 HANDOVER 的观测去取消 spec 的视角。**重叠只记数据、不设阈值**——两个正交视角从不同路径撞见同一个致命问题，是结论稳健的证据，不是失败 |
+| V9 | 「每条新判据写鉴别力正控」**改变了判据的写法** | 数交接里的新 detector/oracle：几条写明了目标变异？**已实现的**有没有记录「变异后真的变红」的观测？未实现的有没有明确留成执行期 gate？ | 三种都算证伪：① 判据只有「它专门咬 X」这类意图声明而无目标变异；② **已实现却没有「变异后真的变红」的观测**；③ 未实现且未留执行期正控 gate。⚠️ **写了一句变异 ≠ 鉴别力已验证**——形式合规与主张成立是两件事 |
+| V10 | 「与冻结上游文档对账」**会被触发** | 候选上游文档（CLAUDE.md 文档路由 + 现有 plan 的引用 + DESIGN 活路径 + backlog 条目，`rg` 只做补漏）是否**逐份 disposition**？检索词与范围是否落盘？ | 已引用/已命中的上游文档未对账，或声称「无冲突」却没有检索证据。⚠️ **单关键词空结果不能支持「无」**——主题会改名、旧文档只出现旧方案术语 |
+| V7 | 闭环的两个提交时点**都被照做** | **机械判定，不靠自我报告**：① **起草前**——**目录型产物（`exp/<topic>/` 等）先展开成逐文件清单**（`find <dir> -type f`，别拿目录当 pathspec：`ls-files --error-unmatch` 只要目录里**有一个**文件被追踪就命中，而 `status -uall` **看不见 ignored 文件**，于是「一个已提交 + 一个被忽略」的目录两项全绿），再对**每个文件**三条都过：`git ls-files --error-unmatch -- <路径>` **命中**（证明已追踪）＋ `git status --porcelain --untracked-files=all -- <路径>` **为空**（无未提交改动）＋ `git check-ignore <路径>` **不命中**。⚠️ **单看 status 空是三种情况的并集**：路径不存在、被 gitignore 且未追踪、真的已提交——前两种都会假绿，探针产物最常落在第二种；② **最终提交后**——`git diff-tree --no-commit-id --name-only -r HEAD` 的输出**包含**两份文档 + 本轮各评审报告 + `docs/` 入口的每一个路径。⚠️ **②不能用 `git status`**：它比的是工作区相对 HEAD，**证不了文件在这个提交里**（几个提交前入库、本次漏提，status 照样干净）| ①「起草时引用了未提交的既有产物」；②「最终提交漏掉闭环产物」。⚠️ 评审报告在起草**之后**产生，整改期间未提交是**合法的**，别按①判红。这是 §6 的**起源事故**（三份研究报告差点丢），最该被机械盯住 |
+
+**定期度量（非自验，不适用毕业规则）**：新交接带状态行的比例。分母只取**本约定生效后新建的**交接（`git log --diff-filter=A --since=2026-07-28 -- docs/plan/` 里 `*handover*/*handoff*/*kickoff*` 且 `! -iname '*review*'`），判据是「**新建交接合规率 < 100% 即说明规则没落地**」。**不要用全仓比例**——§6 明写「旧的不追溯迁移」，三十多份历史文档被政策豁免、永远没有状态行，全仓比例长期不动是政策的必然结果，拿它当证伪判据会去修一条没坏的规则。全仓基线仅供参考：2026-07-28 用 `find docs/plan -iname '*handover*.md' -o -iname '*handoff*.md' -o -iname '*kickoff*.md'` 逐个 `head -8` 找状态词，得 17/47（含 3 份评审报告的噪声）。
+
+判据本身也可能是错的——若你发现某条**验法**根本观察不到它要观察的东西（正样本对照不过），改验法比改结论优先。
 
 ## 判定纪律（贯穿全步）
 

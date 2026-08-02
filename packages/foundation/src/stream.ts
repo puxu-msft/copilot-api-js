@@ -5,6 +5,8 @@
  * and are used by Anthropic, OpenAI Chat Completions, and Responses handlers.
  */
 
+import { getCancellationCause } from "./error/cancellation-reason"
+
 // ============================================================================
 // Stream idle timeout
 // ============================================================================
@@ -75,8 +77,77 @@ export class StreamDispatchCancelError extends Error {
   }
 }
 
+/**
+ * The per-request HARD DEADLINE (`request_deadline`) fired mid-stream. It shares
+ * `ctx.lifecycleSignal` with the stale reaper, so before the cancellation cause was
+ * carried ON the abort reason this was indistinguishable from a reaper cancel and
+ * got reported to the client as one. It is a TIMEOUT, not an age-based reap.
+ */
+export class StreamRequestDeadlineError extends Error {
+  constructor(reason?: string) {
+    super(reason ?? "Request exceeded its hard deadline")
+    this.name = "StreamRequestDeadlineError"
+  }
+}
+
+/** An explicit `ctx.cancel(reason)` that is neither the reaper nor the hard deadline. */
+export class StreamRequestCancelError extends Error {
+  constructor(reason?: string) {
+    super(reason ?? "Request cancelled")
+    this.name = "StreamRequestCancelError"
+  }
+}
+
+/**
+ * The request lifecycle signal fired, but its reason carried NO cancellation tag —
+ * so we know a lifecycle cancellation happened and genuinely do not know which one.
+ *
+ * This exists instead of defaulting to the reaper. Every in-repo producer now tags
+ * its reason (`request.ts` reaper/deadline/explicit-cancel, the dispatch scheduler),
+ * so an untagged reason no longer means "the reaper, as always" — it means some
+ * producer skipped the contract. Naming it honestly turns that into a visible
+ * signal instead of a confident lie, exactly like `unknown-abort` at the post-commit
+ * boundary. (The two names differ deliberately: here we DO know it was a lifecycle
+ * cancel; `unknown-abort` does not even know that much.)
+ */
+export class StreamUnknownCancelError extends Error {
+  constructor() {
+    super("Request aborted without a recorded cause")
+    this.name = "StreamUnknownCancelError"
+  }
+}
+
 /** Coarse classification of a stream lifecycle error, protocol-agnostic. */
-export type StreamErrorKind = "idle-timeout" | "shutdown" | "client-abort" | "reaper-cancel" | "dispatch-cancel" | "other"
+export type StreamErrorKind =
+  | "idle-timeout"
+  | "shutdown"
+  | "client-abort"
+  | "reaper-cancel"
+  | "request-deadline"
+  | "request-cancel"
+  | "dispatch-cancel"
+  | "unknown-cancel"
+  | "other"
+
+/**
+ * Kind-derived error-frame messages, shared by every protocol codec.
+ *
+ * Single source on purpose: this table used to be copy-pasted verbatim into all four
+ * codecs, so adding a kind meant editing four identical Records and any site that was
+ * missed kept compiling. The `Record<StreamErrorKind, string>` here makes a new kind a
+ * compile error in exactly one place.
+ */
+export const STREAM_ERROR_KIND_MESSAGES: Record<StreamErrorKind, string> = {
+  "idle-timeout": "Stream idle timeout",
+  shutdown: "Server is shutting down",
+  "client-abort": "Client disconnected",
+  "reaper-cancel": "Request cancelled by stale-request reaper",
+  "request-deadline": "Request exceeded its hard deadline",
+  "request-cancel": "Request cancelled",
+  "dispatch-cancel": "Upstream dispatch cancelled",
+  "unknown-cancel": "Request aborted without a recorded cause",
+  other: "Stream error",
+}
 
 /**
  * Classify a streaming error into a protocol-agnostic kind. Every SSE handler
@@ -95,7 +166,10 @@ export function classifyStreamError(error: unknown): StreamErrorKind {
   if (error instanceof StreamShutdownError) return "shutdown"
   if (error instanceof StreamClientAbortError) return "client-abort"
   if (error instanceof StreamReaperCancelError) return "reaper-cancel"
+  if (error instanceof StreamRequestDeadlineError) return "request-deadline"
+  if (error instanceof StreamRequestCancelError) return "request-cancel"
   if (error instanceof StreamDispatchCancelError) return "dispatch-cancel"
+  if (error instanceof StreamUnknownCancelError) return "unknown-cancel"
   return "other"
 }
 
@@ -105,6 +179,40 @@ export function classifyStreamError(error: unknown): StreamErrorKind {
 
 /** Sentinel value returned when shutdown abort signal fires during iterator.next() */
 export const STREAM_ABORTED = Symbol("STREAM_ABORTED")
+
+/**
+ * Pick the stream error for a request-lifecycle cancellation from the abort REASON.
+ *
+ * `ctx.lifecycleSignal` is shared by the stale reaper, the hard request deadline and
+ * any explicit `ctx.cancel(reason)`, so "the lifecycle signal fired" alone cannot say
+ * which one it was — before the cause travelled on the reason, this branch answered
+ * "reaper" for all three and a hard-deadline timeout reached the client as a reap.
+ *
+ * An UNTAGGED reason gets `StreamUnknownCancelError`, not the reaper: every producer
+ * in this repo now tags, so untagged means a producer skipped the contract, and
+ * answering "reaper" would re-hide exactly the kind of gap this whole taxonomy exists
+ * to surface. The reaper keeps its own arm, reached only by its own tag.
+ */
+function requestLifecycleStreamError(reason: unknown): Error {
+  const message = reason instanceof Error ? reason.message : undefined
+  switch (getCancellationCause(reason)) {
+    case "stale-reaper": {
+      return new StreamReaperCancelError()
+    }
+    case "request-deadline": {
+      return new StreamRequestDeadlineError(message)
+    }
+    case "request-cancel": {
+      return new StreamRequestCancelError(message)
+    }
+    case "dispatch-cancel": {
+      return new StreamDispatchCancelError()
+    }
+    default: {
+      return new StreamUnknownCancelError()
+    }
+  }
+}
 
 /**
  * Combine multiple abort signals into one.
@@ -332,7 +440,7 @@ export function guardSseIterable<T>(
             // client + reaper → StreamReaperCancelError → `stream-error` → frame.
             if (shutdownSignal?.aborted) throw new StreamShutdownError()
             if (clientSignal?.aborted) throw new StreamClientAbortError()
-            if (reaperSignal?.aborted) throw new StreamReaperCancelError()
+            if (reaperSignal?.aborted) throw requestLifecycleStreamError(reaperSignal.reason)
             if (dispatchSignal?.aborted) throw new StreamDispatchCancelError()
             return { value: undefined as unknown as T, done: true }
           }

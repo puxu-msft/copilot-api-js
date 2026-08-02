@@ -35,6 +35,11 @@ import { getTelemetryRuntime } from "@hsupu/ghc-proxy-telemetry"
 
 import {
   //
+  type AbortProvenanceGapCount,
+  getAbortProvenanceGapCounts,
+} from "./observability/abort-provenance-gaps"
+import {
+  //
   getRetryGiveUpCounts,
   type RetryGiveUpCount,
 } from "./observability/retry-giveups"
@@ -98,6 +103,7 @@ export function renderPrometheusMetrics(
   acceptedSinceStart: number,
   retryStrategyFires: Readonly<Record<string, number>> = {},
   retryGiveUps: ReadonlyArray<RetryGiveUpCount> = [],
+  abortProvenanceGaps: ReadonlyArray<AbortProvenanceGapCount> = [],
 ): string {
   const lines: Array<string> = [
     "# Each settled request is counted under EVERY dimension (model/endpoint/client/agentKind/tool);",
@@ -185,6 +191,21 @@ export function renderPrometheusMetrics(
     ...giveUpSamples,
   )
 
+  // A cancellation that reached a boundary with NO recorded cause. Unlike the counters above this
+  // is not a rate to watch — ANY non-zero value is an action item: some producer aborts without
+  // calling `cancellationAbortError`, or some transport rebuilds the error and drops the cause
+  // chain. Until it was counted, such a gap was indistinguishable on the wire from any other
+  // generic failure (see observability/abort-provenance-gaps.ts).
+  const gapName = `${METRIC_PREFIX}abort_provenance_gaps_total`
+  const gapSamples = abortProvenanceGaps.map(
+    ({ phase, surface, count }) => `${gapName}{phase="${escapeLabelValue(phase)}",surface="${escapeLabelValue(surface)}"} ${formatValue(count)}`,
+  )
+  lines.push(
+    `# HELP ${gapName} Cumulative cancellations that reached a client boundary with no recorded cause, per (phase,surface). Any non-zero value means some cancellation source is not tagging its abort reason.`,
+    `# TYPE ${gapName} counter`,
+    ...gapSamples,
+  )
+
   // Prometheus requires a trailing newline.
   return `${lines.join("\n")}\n`
 }
@@ -194,5 +215,5 @@ export function buildMetricsExposition(now = Date.now()): string {
   const telemetry = getTelemetryRuntime()
   const breakdowns = TELEMETRY_DIMENSION_NAMES.map((dimension) => telemetry.getDimensionBreakdown(dimension, "sinceStart", ALL_KEYS_LIMIT, now))
   const acceptedSinceStart = telemetry.getSnapshot(now).acceptedSinceStart
-  return renderPrometheusMetrics(breakdowns, acceptedSinceStart, getRetryStrategyFireCounts(), getRetryGiveUpCounts())
+  return renderPrometheusMetrics(breakdowns, acceptedSinceStart, getRetryStrategyFireCounts(), getRetryGiveUpCounts(), getAbortProvenanceGapCounts())
 }

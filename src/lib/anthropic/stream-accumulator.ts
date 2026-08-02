@@ -122,6 +122,13 @@ export interface AnthropicStreamAccumulator extends BaseStreamAccumulator {
    * cleared). Observability only; summarized via `summarizeAppliedEdits`.
    */
   appliedContextEdits: Array<unknown>
+  /**
+   * RAW `stop_details` from the final `message_delta`, verbatim. Normalization happens at the
+   * consumers ({@link extractRefusalDetail}) — storing the parsed view here would make a lossy
+   * projection the persistence boundary and destroy the `null` / absent / malformed distinction
+   * (richest-data-flow). Mirrors the `appliedContextEdits` raw-sibling precedent.
+   */
+  stopDetails?: unknown
 }
 
 /** Create a fresh Anthropic stream accumulator */
@@ -394,6 +401,9 @@ interface MessageDeltaUsage {
  */
 function handleMessageDelta(delta: MessageDelta, usage: MessageDeltaUsage | undefined, acc: AnthropicStreamAccumulator) {
   if (delta.stop_reason) acc.stopReason = delta.stop_reason
+  // Capture verbatim (including an explicit `null` category — a real observed shape).
+  const stopDetails = (delta as { stop_details?: unknown }).stop_details
+  if (stopDetails !== undefined) acc.stopDetails = stopDetails
   if (usage) {
     // output_tokens in message_delta is the final output count
     acc.outputTokens = usage.output_tokens

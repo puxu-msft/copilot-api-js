@@ -34,7 +34,12 @@ import {
   createResponseHeaderTimeoutSignal,
   captureHttpHeaders,
 } from "~/lib/fetch-utils"
-import { getShutdownSignal } from "~/lib/shutdown"
+import {
+  //
+  getShutdownSignal,
+  isShutdownCausedAbort,
+  SHUTDOWN_ABORT_MESSAGE,
+} from "~/lib/shutdown"
 import { state } from "~/lib/state"
 import { combineAbortSignals } from "~/lib/stream"
 import { getTokenCredentials } from "~/lib/token"
@@ -91,11 +96,20 @@ export async function postAnthropicUpstream(args: PostAnthropicUpstreamArgs): Pr
     // A shutdown-caused abort becomes a retryable 529 (overloaded) so the
     // client backs off and retries against the restarted instance, rather than
     // surfacing a raw AbortError as a generic 500.
-    if (getShutdownSignal().aborted && error instanceof Error && isAbortError(error)) {
+    //
+    // The gate is CAUSAL, not temporal (same contract as send.ts): "the shutdown
+    // signal has fired" would also be true for a stale-reaper or hard-deadline
+    // cancellation that merely landed inside the drain window, and calling those
+    // "Server is shutting down" is the same fabrication this classifier family
+    // exists to stop. `isShutdownCausedAbort` matches the Phase 3 reason object
+    // itself; the caller's own signal reason is the second probe for transports
+    // that synthesize a fresh error instead of surfacing `signal.reason`.
+    const shutdownCaused = isShutdownCausedAbort(error) || (args.signal?.aborted === true && isShutdownCausedAbort(args.signal.reason))
+    if (shutdownCaused && error instanceof Error && isAbortError(error)) {
       throw new HTTPError(
-        "Server is shutting down",
+        SHUTDOWN_ABORT_MESSAGE,
         529,
-        JSON.stringify({ type: "error", error: { type: "overloaded_error", message: "Server is shutting down" } }),
+        JSON.stringify({ type: "error", error: { type: "overloaded_error", message: SHUTDOWN_ABORT_MESSAGE } }),
         args.model,
       )
     }

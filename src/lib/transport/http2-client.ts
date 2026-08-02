@@ -320,7 +320,7 @@ function wakeOriginSlotWaiter(origin: string): void {
 function waitForOriginSlot(origin: string, signal: AbortSignal | undefined): Promise<void> {
   return new Promise<void>((resolve, reject) => {
     if (signal?.aborted) {
-      reject(abortError())
+      reject(abortError(signal))
       return
     }
     const cleanup = (): void => {
@@ -338,7 +338,7 @@ function waitForOriginSlot(origin: string, signal: AbortSignal | undefined): Pro
     }
     const onAbort = (): void => {
       cleanup()
-      reject(abortError())
+      reject(abortError(signal))
     }
     const q = originSlotWaiters.get(origin)
     if (q) q.push(waiter)
@@ -495,17 +495,16 @@ async function createAndAdmitBornReserved(origin: string): Promise<H2SessionEntr
     // the shutdown-race close below, an eventual socket RST — against an orphaned
     // 'error' → uncaughtException → server crash. See crash-safety.ts.
     const session = withErrorSink(await sessionFactory(origin))
-    // If closeHttp2Sessions() ran while this session was being established (shutdown
-    // drain racing a new tunnel handshake), don't re-insert it into the just-cleared
-    // pool — close it and throw (no reservation exists yet to leak). The caller's
-    // request fails, which is correct during a graceful-shutdown drain.
+    // If closeHttp2Sessions() ran while this session was being established (Step 4 /
+    // finalize teardown racing a new tunnel handshake), don't re-insert it into the
+    // just-cleared pool — close it and throw (no reservation exists yet to leak).
     if (poolEpoch !== epochAtStart) {
       try {
         session.close()
       } catch {
         /* best-effort */
       }
-      throw abortError()
+      throw poolClosedError()
     }
     // A reconcile ran while sessionFactory's connect was in flight. The
     // connection-level params (keepAliveMs/connectTimeoutMs) are fixed at
@@ -604,8 +603,8 @@ async function acquireSession(origin: string, signal: AbortSignal | undefined): 
   const startEpoch = poolEpoch
 
   for (;;) {
-    if (signal?.aborted) throw abortError()
-    if (poolEpoch !== startEpoch) throw abortError() // pool was torn down under us
+    if (signal?.aborted) throw abortError(signal)
+    if (poolEpoch !== startEpoch) throw poolClosedError() // pool was torn down under us
     const n = getConfiguredMaxStreamsPerSession()
 
     const reused = tryReserveLiveSession(origin, n)
@@ -615,7 +614,7 @@ async function acquireSession(origin: string, signal: AbortSignal | undefined): 
       // may have rejected already, so nobody downstream will release it).
       if (signal?.aborted) {
         releaseReservation(reused)
-        throw abortError()
+        throw abortError(signal)
       }
       return reused
     }
@@ -678,7 +677,7 @@ async function acquireSession(origin: string, signal: AbortSignal | undefined): 
     // independent of any peer sharing the joined session (each holds its own +1).
     if (signal?.aborted) {
       releaseReservation(entry)
-      throw abortError()
+      throw abortError(signal)
     }
     return entry
   }
@@ -856,11 +855,42 @@ export function setConnectTimeoutForTests(ms: number | undefined): void {
   connectTimeoutOverrideMs = ms
 }
 
-/** An AbortError-named Error (the WHATWG abort convention consumers check via `err.name`). */
-function abortError(): Error {
+/**
+ * The AbortError to reject/throw with when `signal` fired.
+ *
+ * The signal's OWN `reason` is returned verbatim whenever it is an Error, because
+ * that reason is the only surviving evidence of WHO cancelled: the upstream
+ * response-header watchdog (`AbortSignal.timeout` → a `TimeoutError`), the stale
+ * reaper, the hard request deadline, a dispatch teardown or the Phase 3 shutdown
+ * abort all arrive here folded into one composite signal (`AbortSignal.any`
+ * propagates the first aborted source's reason object unchanged — verified on
+ * Bun). Synthesizing a fresh generic AbortError here — which this function used
+ * to do unconditionally — erased that identity and left the client boundaries
+ * guessing; they guessed "upstream header timeout" for all of them (2026-07-28:
+ * a 609ms request reported against a 900s timeout).
+ *
+ * The synthesized fallback remains for a signal aborted without a reason.
+ */
+function abortError(signal?: AbortSignal): Error {
+  const reason = signal?.reason as unknown
+  if (reason instanceof Error) return reason
   const err = new Error("The operation was aborted.")
   err.name = "AbortError"
   return err
+}
+
+/**
+ * The pool was torn down (shutdown Step 4 / finalize, or a test reset) under a
+ * request that was still acquiring or creating its session. Distinct from a
+ * signal-driven abort: no signal fired, this is OUR pool going away, so it gets
+ * its own structured reason instead of masquerading as a generic cancellation.
+ * Still `name: "AbortError"` — it IS a cancellation, and the handlers' abort
+ * branches must keep recognising it.
+ */
+function poolClosedError(): Error {
+  const err = new Error("[http2] upstream session pool closed")
+  err.name = "AbortError"
+  return tagTransportError(err, "pool-closed")
 }
 
 /**
@@ -885,7 +915,7 @@ function raceAbort<T>(p: Promise<T>, signal: AbortSignal | undefined, onAbandone
     const onAbort = (): void => {
       if (settled) return
       settled = true
-      reject(abortError())
+      reject(abortError(signal))
     }
     // ALWAYS attach a handler to p (even when already aborted below): its outcome
     // must never be unhandled, and a post-abort RESOLVE is reclaimed exactly once
@@ -945,7 +975,11 @@ export function http2Fetch(url: string | URL, init: UpstreamFetchInit): Promise<
  */
 async function runHttp2Fetch(u: URL, init: UpstreamFetchInit): Promise<Response> {
   const signal = init.signal
-  if (signal?.aborted) throw abortError()
+  // Preflight: the composite signal can ALREADY be aborted before we get here (e.g. the
+  // response-header watchdog fired while an earlier await held the turn). Pass `signal` so
+  // that reason — a `TimeoutError` in exactly that case — survives; a bare abort here used
+  // to make a genuine header timeout indistinguishable from every other cancellation.
+  if (signal?.aborted) throw abortError(signal)
 
   // Acquire a reserved session+entry (honoring the per-session concurrent-stream
   // cap). raceAbort cancels only THIS request's wait — the underlying
@@ -961,7 +995,7 @@ async function runHttp2Fetch(u: URL, init: UpstreamFetchInit): Promise<Response>
   // early exit so an abort in the connect window doesn't leak a slot (PATH 2).
   if (signal?.aborted) {
     releaseReservation(entry)
-    throw abortError()
+    throw abortError(signal)
   }
 
   return new Promise<Response>((resolve, reject) => {
@@ -1023,7 +1057,7 @@ async function runHttp2Fetch(u: URL, init: UpstreamFetchInit): Promise<Response>
     // stream) is wired inside the `response` handler below.
     const onPreResponseAbort = (): void => {
       req.close(http2.constants.NGHTTP2_CANCEL)
-      rejectAfterRequestClosed(abortError())
+      rejectAfterRequestClosed(abortError(signal))
     }
     signal?.addEventListener("abort", onPreResponseAbort, { once: true })
 

@@ -1,6 +1,7 @@
 import {
   //
   finalUpstreamResponse,
+  resolveRefusalDetail,
   resolveResponseError,
 } from "~backend/lib/history/entry-view"
 import { useState } from "react"
@@ -111,6 +112,45 @@ function UpstreamBody({ content, rawBody, error, code }: { content: UpstreamCont
   return <RawPre>{fallback}</RawPre>
 }
 
+/** Human-readable refusal diagnostics plus the lossless raw object retained on the upstream leg. */
+function RefusalDiagnostic({ entry }: { entry: HistoryEntry }) {
+  const detail = resolveRefusalDetail(entry)
+  const raw = finalUpstreamResponse(entry)?.stopDetails
+  if (!detail || raw === undefined || raw === null) return null
+
+  // Mirrors the backend `CategoryProvenance` union exactly — the value the derivation returns for
+  // "we could not read an answer" is `unknown`, covering both an absent field and a malformed one.
+  let provenance = "named by upstream"
+  if (detail.categoryProvenance === "uncategorized") provenance = "explicit null from upstream"
+  else if (detail.categoryProvenance === "unknown") provenance = "absent or unreadable"
+
+  return (
+    <LegShell label="Refusal diagnostic (upstream)">
+      <div className="mono grid gap-3 text-[13px] text-[var(--content-secondary)]">
+        <div className="grid gap-1 sm:grid-cols-[120px_minmax(0,1fr)]">
+          <span className="text-[var(--content-muted)]">category</span>
+          <div className="flex flex-wrap items-baseline gap-x-2">
+            <span className="font-semibold text-[var(--signal-fail)]">{detail.category}</span>
+            <span className="text-[11px] text-[var(--content-dim)]">{provenance}</span>
+          </div>
+        </div>
+        <div className="grid gap-1 sm:grid-cols-[120px_minmax(0,1fr)]">
+          <span className="text-[var(--content-muted)]">explanation</span>
+          <pre className="mono whitespace-pre-wrap break-words text-[13px] text-[var(--content-value)]">{detail.explanation ?? "(not provided)"}</pre>
+        </div>
+        {detail.invalid ?
+          <div className="text-[var(--signal-warn)]">Malformed stop_details fields were preserved in the raw view.</div>
+        : null}
+        <RawJsonView
+          value={raw}
+          label="Raw stop_details"
+          className="border-t border-[var(--surface-border)] pt-2"
+        />
+      </div>
+    </LegShell>
+  )
+}
+
 /** Forwarded (proxy → client) leg body — rendered (reconstructed content) or code (message object as JSON). */
 function ForwardedBody({ entry, code }: { entry: HistoryEntry; code: boolean }) {
   // New leg `clientResponse` (legacy `inboundResponse` removed in P4c).
@@ -180,6 +220,7 @@ export function ResponseSegment({ entry }: { entry: HistoryEntry }) {
   const upstreamRawBody = upstream?.rawBody
   // Response-side error home: final attempt's `error`.
   const upstreamError = resolveResponseError(entry)
+  const refusal = resolveRefusalDetail(entry)
   const hasUpstream = Boolean(upstream)
   const forwardedFrames = entry.clientResponse?.sseEvents ?? []
   const hasForwarded = entry.clientResponse?.body !== undefined || forwardedFrames.length > 0
@@ -217,6 +258,9 @@ export function ResponseSegment({ entry }: { entry: HistoryEntry }) {
             {verdict}
           </pre>
         </LegShell>
+      : null}
+      {refusal ?
+        <RefusalDiagnostic entry={entry} />
       : null}
       {hasUpstream ?
         <LegShell label="Upstream (upstream → proxy)">

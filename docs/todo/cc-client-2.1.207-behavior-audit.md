@@ -211,7 +211,7 @@ CC 2.1.207 对 `stop_reason:"refusal"` 有**两处**（流式 + 非流式）对�
 - `refusal` = **passthrough**（byte-identical 透传真 `stop_reason:refusal`）。
 - `end_turn` = 追加合成 text + 改写 `stop_reason→end_turn`。
 - `error` = 发 `event: error` 帧 + ctx.fail。
-- **默认 = `error`**（[state.ts:1496](../../src/lib/state.ts#L1496)、[config.yaml:755](../../config.yaml#L755)）。
+- ~~**默认 = `error`**~~ → **2026-07-28 起默认 = `end_turn`（抑制）**，见 [docs/refusal-recovery.md](../refusal-recovery.md)。下文 F10 的结论因此**更强**，不是变弱：抢占 CC 原生 fallback 的从「少数显式配 `error` 的用户」变成**所有用户的默认路径**。
 - refusals **带 content** 的一律透传不碰；history `sseEvents` 始终保留上游原始 refusal。
 
 ### F10（MEDIUM）— 默认 `error`/`end_turn` 恢复**抢占**了 CC 原生 refusal-fallback
@@ -238,7 +238,7 @@ CC 2.1.207 对 `stop_reason:"refusal"` 有**两处**（流式 + 非流式）对�
 
 ### 本轮结论
 
-本项目 refusal 恢复设计**成熟**（三模式 + 配置化文案 + history 忠实 + 只碰 thinking-only）。唯一新洞见是**与 CC 2.1.207 原生 refusal-fallback 的交互**（F10，中）：默认 `error` 抢占了少数用户配置的 `refusalFallbackModel`。优先做**文档化交互 + 实测**，默认值是否改需产品判断（不自行拍板）。
+本项目 refusal 处理设计**成熟**（三模式 + 配置化文案 + history 忠实）。唯一新洞见是**与 CC 2.1.207 原生 refusal-fallback 的交互**（F10，中）。**2026-07-28 更新**：默认已由用户裁定改为 `end_turn`（抑制），首要目标是不中断客户端对话轮次；于是「抢占 CC fallback」从少数人的配置问题变成**全量默认行为**——这是**明知的取舍**，不是遗漏（CC fallback 依赖用户已配 `refusalFallbackModel`，且其失败终点仍是结束当前轮）。可操作结论已写进 `docs/refusal-recovery.md`：想保留 CC 原生 fallback 的用户须显式设 `refusal_sse_rewrite: refusal`。代理侧自己做 fallback 重试记在 `deferred-backlog.md`。
 
 ---
 

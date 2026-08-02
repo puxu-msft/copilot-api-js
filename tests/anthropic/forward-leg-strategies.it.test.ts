@@ -36,10 +36,10 @@ import { createBetaProbe } from "~/lib/anthropic/pipeline"
 import { preprocessAnthropicMessages } from "~/lib/anthropic/sanitize"
 import { createAnthropicCodec } from "~/lib/codec/anthropic/codec"
 import { withCapturingManager } from "~/lib/context/manager"
+import { setModels } from "~/lib/models/cache"
 import { ENDPOINT } from "~/lib/models/endpoint"
 import { resolveCellAssembly } from "~/lib/pipeline/cell-assembly"
 import { createPipelineDriver } from "~/lib/pipeline/driver"
-import { setModels } from "~/lib/state"
 
 import { mockModel } from "../helpers/factories"
 import { useIsolatedRuntime } from "../helpers/isolated-fixture"
@@ -162,7 +162,13 @@ describe("T7.2 — the anthropic forward @cc/@responses cell assembly returns a 
   // The anthropic FORWARD leg reads env.body (the hub-translated CC body) as the retry baseline —
   // clientFormat "anthropic" selects that branch in buildCcFamilyLegStrategies (no requestState needed).
   const ccLegEnv = (leg: (typeof ENDPOINT)["CHAT_COMPLETIONS"] | (typeof ENDPOINT)["RESPONSES"]): RequestEnvelope =>
-    ({ clientFormat: "anthropic", targetEndpoint: leg, body: { model: "claude-x", messages: [] }, model: { id: "claude-x" }, requestState: {} }) as unknown as RequestEnvelope
+    ({
+      clientFormat: "anthropic",
+      targetEndpoint: leg,
+      body: { model: "claude-x", messages: [] },
+      model: { id: "claude-x" },
+      requestState: {},
+    }) as unknown as RequestEnvelope
 
   test("a CC-target env yields the CC stack (network→server-error→token-refresh) — NOT a throw", () => {
     const stack = resolveCellAssembly("anthropic", ENDPOINT.CHAT_COMPLETIONS).buildStrategies(ccLegEnv(ENDPOINT.CHAT_COMPLETIONS))

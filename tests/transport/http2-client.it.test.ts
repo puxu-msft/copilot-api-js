@@ -20,6 +20,7 @@ import {
 import http2 from "node:http2"
 import net from "node:net"
 
+import { getTransportErrorReason } from "~/lib/error/transport-reason"
 import { setUpstreamTransportConfig } from "~/lib/state"
 import {
   //
@@ -176,6 +177,43 @@ describe("http2-client", () => {
     }
     const res = http2Fetch(`${url}/x`, { signal: AbortSignal.abort() })
     await expect(res).rejects.toThrow(/abort/i)
+  })
+
+  // The transport is the last place an abort's provenance still exists: everything above it
+  // sees only the thrown error. It used to synthesize a fresh generic AbortError, which made a
+  // response-header timeout, a reaper cancel and a client hangup indistinguishable — and the
+  // client boundary then reported all of them as "upstream header timeout". Both entry points
+  // are covered because they are separate branches: the PREFLIGHT check (signal already aborted
+  // when the fetch is called — e.g. the header watchdog fired while an earlier await held the
+  // turn) and the MID-WAIT listener.
+  test("preserves the signal's reason: PRE-ABORTED TimeoutError keeps its identity", async () => {
+    handler = (stream) => {
+      stream.respond({ ":status": 200 })
+      stream.end("ok")
+    }
+    const reason = new DOMException("upstream header watchdog", "TimeoutError")
+    const err = await http2Fetch(`${url}/x`, { signal: AbortSignal.abort(reason) }).then(
+      () => undefined,
+      (e: unknown) => e,
+    )
+    expect(err).toBe(reason) // same object — not a synthesized stand-in
+    expect((err as Error).name).toBe("TimeoutError")
+  })
+
+  test("preserves the signal's reason: MID-WAIT abort surfaces the reason object", async () => {
+    handler = () => {
+      // Accept the request but never send response headers.
+    }
+    const reason = new DOMException("Request cancelled by the stale-request reaper", "AbortError")
+    const abort = new AbortController()
+    const pending = http2Fetch(`${url}/pending-headers`, { signal: abort.signal })
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    abort.abort(reason)
+    const err = await pending.then(
+      () => undefined,
+      (e: unknown) => e,
+    )
+    expect(err).toBe(reason)
   })
 
   test("pre-response abort rejects only after the owned h2 stream close callback", async () => {
@@ -720,7 +758,12 @@ describe("http2-client pool (per-origin session HARD cap — block until a slot 
     expect(openStreams.length).toBe(1) // blocked at cap
     // Tear the pool down. The blocked waiter must reject — NOT open a 2nd session.
     closeHttp2Sessions()
-    await expect(blocked).rejects.toThrow(/abort/i)
+    const blockedErr = await blocked.then(
+      () => undefined,
+      (e: unknown) => e,
+    )
+    expect((blockedErr as Error).name).toBe("AbortError") // still a cancellation for the handlers' abort branches
+    expect(getTransportErrorReason(blockedErr)).toBe("pool-closed") // …but STRUCTURALLY attributable to our own teardown
     await new Promise((r) => setTimeout(r, 50))
     expect(factoryCalls).toBe(1) // no new session opened by the woken waiter
     await held.catch(() => {})
@@ -763,7 +806,11 @@ describe("http2-client pool (per-origin session HARD cap — block until a slot 
       // Release A: it hits the epoch bump → aborts → releases only its OWN lease →
       // wakes B, which now creates its own session.
       gates[0]?.()
-      await expect(a).rejects.toThrow(/abort/i)
+      const aErr = await a.then(
+        () => undefined,
+        (e: unknown) => e,
+      )
+      expect(getTransportErrorReason(aErr)).toBe("pool-closed")
       await waitUntil(() => factoryCalls === 2, { timeout: 2000, label: "B proceeds after A frees its lease" })
       // C: must be blocked behind B's lease (cap still 1).
       const c = http2Fetch(`${url}/c`, {})

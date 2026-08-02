@@ -1,6 +1,6 @@
 ---
 name: debugging-claude-client-connection
-description: 当调试 copilot-api-js 与 Claude Code CLI 客户端之间的连接/流式行为时使用——CC 请求超时两层（60s byte-idle 任意字节/ping 重置 + 300s no-real-content 只有真实 content_block_delta 重置，长 pre-content thinking 静默撞第二层断连）、keepalive 发空 content-delta 而非裸 ping、合成帧必须打 synthetic 标记 + 必带 event: 行（否则 @anthropic-ai/sdk SSEDecoder 静默丢帧）、SDK 对 200+SSE-error 走裸 APIError 零重试；以及事后判别一条 `[FAIL] … The operation was aborted.`/断流 incident 是 client-abort vs reaper vs header-timeout（三类都抛同一字面量、靠 History `state`(failed≠aborted)/上游 0 帧 status null/durationMs≈300 vs 600 判，附 offsetMs commit-relative 时间基陷阱）。下游客户端行为，区别于上游传输（skill debugging-ghc-api-upstream-transport）与上游 Anthropic wire（skill ghc-anthropic-upstream）。
+description: 当调试 copilot-api-js 与 Claude Code CLI 客户端之间的连接/流式行为时使用——CC 请求超时三层（响应头到达前只有 undici 默认 headersTimeout ~300s、可被客户端 API_FORCE_IDLE_TIMEOUT=0 关掉；头到达后 60s byte-idle 任意字节/ping 重置 + 300s event-idle 任何非-ping 事件都重置，长 pre-content thinking 静默撞它断连）、keepalive 发空 content-delta 而非裸 ping、合成帧必须打 synthetic 标记 + 必带 event: 行（否则 @anthropic-ai/sdk SSEDecoder 静默丢帧）、SDK 对 200+SSE-error 走裸 APIError 零重试；以及事后判别一条 `[FAIL] … The operation was aborted.`/断流 incident 的中止方（2026-07-28 起 abort 自带 provenance：先读 `err.name==="TimeoutError"`/`pool-closed` tag/`isShutdownCausedAbort`/`getCancellationCause`，History `state`(failed≠aborted)/上游 0 帧 status null/durationMs 只作 fallback，附 offsetMs commit-relative 时间基陷阱）。下游客户端行为，区别于上游传输（skill debugging-ghc-api-upstream-transport）与上游 Anthropic wire（skill ghc-anthropic-upstream）。
 ---
 
 # Claude Code 客户端连接与流式行为
@@ -11,26 +11,66 @@ description: 当调试 copilot-api-js 与 Claude Code CLI 客户端之间的连�
 
 真实客户端作独立 oracle（[[feedback-pass-null-clean-not-self-validating]]）+ 受控 mock 上游 + prod-faithful 接线（harness `exp/q2-oracle/`、`exp/cc-idle-280s/`）。驱动 headless CC 打到自定义 mock：`claude -p ... --settings <json>`（命令行优先级盖过 `~/.claude/settings.json` 的 `env.ANTHROPIC_BASE_URL`）+ `--strict-mcp-config`；`--output-format json` 出 `is_error`/`result`/`duration_ms`。SDK 层裁决用 `@anthropic-ai/sdk`（CC 同款）消费受控 mock 流。通用方法论见 skill `empirical-verification` 的「客户端 SDK oracle」节。
 
-## 请求超时：两层 idle watchdog（都是 idle 型、非 total）
+## 请求超时：三层（一层 pre-header + 两层 post-header idle）
 
-CC 对 `/v1/messages` 流式请求关掉 SDK 的 600s 总超时（`API_TIMEOUT_MS`），改由 **两层 idle watchdog** 管（实测 2.1.185 + 2.1.201）：
+> **2026-07-28 订正**：本节原写「两层」且称 CC「关掉了 SDK 的 600s 总超时」。**都不准确**。600s 那个 client-level timer 确实存在（2.1.220 实装亦是 `API_TIMEOUT_MS || 6e5`），但它**从来没机会触发**——响应头到达之前，更低一层的 undici 默认 `headersTimeout` 在 ~300s 就掐断了。下面第 0 层是本轮新增的。
+
+- **第 0 层 pre-header ≈ 300s（响应头到达之前）**：我方 delayed-commit 期间一个字节都不发，此时**只有这一层在跑**（下面两层要等响应头到达才武装）。实测真 CC 2.1.220 四次尝试落在 299.667–300.280s；裸 `fetch`（剥掉 SDK 与 CC）同样在 ~300.9s 抛 `UND_ERR_HEADERS_TIMEOUT`；裸 TCP socket 打同一 handler 420.1s 未被关（排除服务端）。**归属 undici 默认 `headersTimeout`，不是 Anthropic 层**——CC 自称的 `x-stainless-timeout: 1200` 与 SDK 显式 `timeout` 都够不着它。撞上后 CC **原生重试**（观测 4 个完整周期，backoff ≈0.55/1.05/2.16/4.06s；最大次数未测）。
+  - **可被客户端侧关掉**：`API_FORCE_IDLE_TIMEOUT=0` 走到 `fetchOptions.timeout = false`，一次性关掉 undici 的 headers+body 两个超时——实测静默 600s 仍单次尝试干净成功。**这是客户端环境变量，代理设不了**；我方 `stream_commit_after_sec` 的默认/上限一律按「客户端没设它」来定。
+  - **作用域**：这是**某个 runtime 的默认值**（本机 CC 2.1.220 + 其内置 Node v26.3.0），可被 dispatcher 覆盖、随版本变，**不是协议常量**——换客户端/runtime 版本要重测。
+  - 证据与全部对照臂：`exp/silence-recovery-gates/FINDINGS.md` §「Q1 续测」/§「Q1 附测」+ `results/q1-firstfail/`。
+
+响应头到达之后，改由 **两层 idle watchdog** 管（实测 2.1.185 + 2.1.201）：
 
 - **第一层 byte-idle ≈ 60s**：每收**任意字节/帧**重置 deadline，无字节 60s → abort + **自动重试**（≥6× 60s-spaced）。`event: ping`（连 message_start 之前也算字节）重置它 → keepalive 只需 ping 间隔 < 60s；**heartbeat ≥ 60s（如 120s）无效**。first-party 与 prod-faithful 两路径一致（8 样本全 60.0–60.2s）。
-- **第二层 no-real-content ≈ 300s**：一定时间内必须收到**真实 content chunk**（`content_block_delta`），否则断，报 `API Error: Stream idle timeout - no chunks received`（字面精确：no real content chunks）。**`event: ping` 与 SSE comment 都不算 chunk**——纯 ping 压住 60s 层却撞 300s 层断（复现用户 incident）。长 opus pre-content thinking 静默数百秒撞第二层。first-party 与 prod-faithful 一致（`duration_ms=300169/300187`），**不能从 60s 层跨层外推、须独立复测**。
+- **第二层 event-idle ≈ 300s**（**2026-07-28 订正：原写「no-real-content、只有真实 `content_block_delta` 能重置」，不准确**）：真实判据是「**任何 `data.type !== "ping"` 的 SSE 事件都重置**」——`content_block_start` / `content_block_stop` / `message_delta` **全都算**，不必是 content delta（源码读证：CC 消费循环对 ping `continue`、其余一律调 `he()` 重新武装；`~/.claude/refs/claude-code-2.1.207/app.pretty.js:298198-298204`）。一定时间内没有任何可重置事件则断，报 `API Error: Stream idle timeout - no chunks received`（字面精确：no real content chunks）。**`event: ping` 与 SSE comment 都不算 chunk**——纯 ping 压住 60s 层却撞 300s 层断（复现用户 incident）。长 opus pre-content thinking 静默数百秒撞第二层。first-party 与 prod-faithful 一致（`duration_ms=300169/300187`），**不能从 60s 层跨层外推、须独立复测**。
 - **空 `content_block_delta` 算 chunk**：`thinking_delta{thinking:""}` / `text_delta{text:""}` / `input_json_delta{partial_json:""}` 三种空 delta 全部实测保活到 340s 完整收尾（SDK 累积它们无害，SDK oracle 验）。
 - 注：incident 报的 ~292s 单次断开**非**自动超时——是用户中断（孪生双请求同时断）或 headless 重试风暴（~5×60s）。
 
 ## 事后判别 `[FAIL] … The operation was aborted.`：client-abort vs reaper vs timeout
 
-一条 `[FAIL] POST /v1/messages … 301.0s ↑1.7MB ↑0 ↓0: The operation was aborted.` 的中止方，**不能凭错误串猜**——三类中止（下游客户端断开 / stale-request reaper / 上游 header-wait 超时）在 h2 路径上**都**抛字面量 `"The operation was aborted."`（[http2-client.ts](../../../src/lib/transport/http2-client.ts) `raceAbort` 的 `abortError()`，`name:"AbortError"`），归类由**信号状态**决定、非 `error.name`（`classifyPostCommitAbort(clientAbort.signal.aborted, ctx.lifecycleSignal.aborted)`，优先级 client > reaper > timeout，见 `src/routes/messages/post-commit-error.ts`）。
+> **2026-07-28 大幅订正：先读错误身份，别再从 `durationMs` 猜。** 本节原来的前提——「三类中止都抛同一条字面量、归类只能靠信号状态」——已被修掉：`http2-client.ts` 的 `abortError()` 过去**丢弃 `signal.reason`**，现在原样透传；每个取消方也都带上了具名 reason。于是**中止方的身份现在直接写在错误对象上**：
+>
+> | 证据 | 含义 |
+> |---|---|
+> | `err.name === "TimeoutError"` | 响应头看门狗（`AbortSignal.timeout`）真的开火了——**只有这个**才配叫 header 超时 |
+> | `getTransportErrorReason(err) === "pool-closed"` | 我方 h2 池被拆（关机 Step 4 / finalize） |
+> | `isShutdownCausedAbort(err)` | 关机 Step 3 的具名 abort reason（对象身份比对） |
+> | `getCancellationCause(err)` = `stale-reaper` / `request-deadline` / `request-cancel` / `dispatch-cancel` | 逐个取消方自报家门 |
+> | 以上全无 | 一条**没人打标签**的 abort——这本身就是线索（哪条路径没接上 provenance） |
+>
+> 相应地，客户端拿到的东西也不再撒谎：pre-commit 走有序 precedence（499 client / 529 shutdown / 504 TimeoutError / 504 request-deadline / 503 其余并附真实 reason 原文），post-commit 的 `classifyPostCommitAbort(clientAborted, reaperAborted, error)` 也吃错误对象，`PostCommitAbortKind` 扩到八种、每种自己的终端 frame 文案——**没有证据时给 `unknown-abort` 而不是默认宣称 header 超时**（看到 `unknown-abort` 本身就是线索：某条路径还没接上 provenance）。
+>
+> **post-header（流式 body）同样已接通**：`guardSseIterable` 过去对 `ctx.lifecycleSignal` 一律抛 `StreamReaperCancelError`，于是 mid-stream 的 `request_deadline` 在**所有**流式端点上都被说成 stale reaper；现在按 reason 上的 cause tag 分派到 `StreamRequestDeadlineError` / `StreamRequestCancelError` / `StreamDispatchCancelError` / `StreamUnknownCancelError`。Responses 上游 WS 侧则把握手/请求取消改成**保留该层 message + 把 reason 挂 `cause`**（两个 provenance 读取器都走 cause 链），first-event 看门狗直接透传 `TimeoutError`。
+>
+> **无 tag 的 lifecycle abort 现在是 `unknown-cancel`，不再冒充 reaper**——每个 producer 都打 tag 之后，untagged 只意味着某条路径漏了契约。**在野看到 `unknown-cancel`/`unknown-abort` 就去补那条 producer 的 tag**，别当噪声。
+>
+> **改 kind → wire 的映射时，改的是这四张共享表，不是 codec 私有副本**（2026-07-28 第三轮：codec 的 `formatError` 无生产调用者，四份表全填而 wire 照旧输出旧值）：
 
-**唯一可信的裁决走 History**（4141 `GET /history/api/entries/:id`，独立 oracle；日志串本身信息不足）。逐字段判：
+| 表 | 位置 |
+|---|---|
+| 帧文案 | `packages/foundation/src/stream.ts:STREAM_ERROR_KIND_MESSAGES` |
+| Anthropic `error.type` | `src/lib/anthropic/error-shaping.ts:ANTHROPIC_STREAM_ERROR_TYPE` |
+| Gemini `{code,status}` | `src/lib/gemini/stream-error.ts`（code 由 status 经规范 gRPC↔HTTP 表推导，不独立硬编码） |
+| OpenAI `error.type` | `src/lib/openai/stream-error.ts:OPENAI_STREAM_ERROR_TYPE` |
+
+> 分组判据三协议一致：**我方跑完的时钟**（idle 看门狗 / hard deadline / reaper——`stale_request_max_age` 到期本质是 deadline）都报 timeout；`shutdown` 是唯一「立刻重试」；取消类在有字面量的协议用它（Gemini `CANCELLED`）、没有的诚实退化到通用桶。验收要从真实入口驱动读客户端字节（`tests/streaming/stream-error-wire-provenance.http.test.ts`），把 kind 喂给 formatter 的测试证明不了活路径在读表。
+>
+> **下面的 History 逐字段表退为 fallback**（错误对象拿不到、或看的是修复前的旧记录时用）。
+>
+> 促成本次修正的反例：History `req_1785234916721_3573` —— 一条 **609ms** 的请求被报成 `504 Upstream timed out before sending response headers`，而当时 `response_header` 配的是 **900s**。真凶是关机 Step 1 拆 h2 池（详见 [docs/lifecycle.md](../../../docs/lifecycle.md) Step 1 注）。**看到 duration 与所声称的超时值对不上，就别再往超时上套。**
+
+一条 `[FAIL] POST /v1/messages … 301.0s ↑1.7MB ↑0 ↓0: The operation was aborted.` 的中止方，**不能凭错误串猜**——（修复前）三类中止（下游客户端断开 / stale-request reaper / 上游 header-wait 超时）在 h2 路径上**都**抛字面量 `"The operation was aborted."`（[http2-client.ts](../../../src/lib/transport/http2-client.ts) `raceAbort` 的 `abortError()`，`name:"AbortError"`），归类只能由**信号状态**决定。
+
+**错误对象不在手上时，裁决走 History**（4141 `GET /history/api/entries/:id`，独立 oracle；日志串本身信息不足）。逐字段判：
 
 | 字段 | client-abort | reaper-cancel | header-timeout |
 |---|---|---|---|
 | `state`（**首要判据**） | `aborted` | `failed` | `failed` |
 | `attempts[].upstreamResponse.status` + `.sseEvents` | 可能已有帧 | 视时机 | **`null` + `[]`（0 帧）= 上游从未回响应头** |
-| entry-relative `durationMs` | 任意（客户端何时走） | ≈ `staleRequestMaxAge`（默认 **600s**） | ≈ `responseHeaderTimeout`/`streamIdleTimeout`（默认 **300s**） |
+| entry-relative `durationMs` | 任意（客户端何时走） | ≈ `staleRequestMaxAge`（**shipped 1200s**；代码 fallback 600s） | ≈ `responseHeaderTimeout`/`streamIdleTimeout`（**shipped 均 600s**；代码 fallback 均 300s） |
+
+> **⚠ 2026-07-28 订正——归因前先看清用的是哪套数**：本表原写「默认 600s / 默认 300s」，那是 `src/lib/state-defaults.ts` 的**代码 fallback**。真实运行读的是 shipped `config.yaml`：`response_header: 600` / `stream_idle: 600` / `stale_request_max_age: 1200` / `request_deadline: 1200`。拿 300/600 去套一条 600s 的 incident 会把 header-timeout 误判成 reaper。**判之前先读该实例生效的 config**，别凭本表的数字。
 | 下游终端 error 帧文案 | 无（客户端已走，零字节） | `Request cancelled by the stale-request reaper` | `Upstream timed out before sending response headers` |
 
 - `state:"failed"`（非 `aborted`）**当场排除 client-abort**：客户端断开走 `StreamClientAbortError` → driver `settled-abort` → state `aborted`；reaper/timeout 走 `ctx.fail` → `failed`。机制佐证 [forward.ts:521-530](../../../src/lib/error/forward.ts)——client-abort 会 abort `c.req.raw.signal`，header-timeout 只 abort **fetch 信号**、留 `raw.signal` 未 abort。
@@ -41,7 +81,7 @@ CC 对 `/v1/messages` 流式请求关掉 SDK 的 600s 总超时（`API_TIMEOUT_M
 
 ## keepalive 修复 + 合成帧必须可辨识
 
-**修复（本项目落地）**：config `anthropic.stream_keepalive_mode: content_delta`（默认）——keepalive 发匹配当前 open block 的**空 content delta**（thinking→thinking_delta / text→text_delta / tool_use→input_json_delta）而非裸 ping，重置 300s 层；覆盖 pre-response/mid-stream/buffered 全程。实现 `src/lib/anthropic/keepalive-frame.ts`（sink + web_search legacy heartbeat 共用）。覆盖矩阵+四臂对照 `exp/cc-idle-280s/REPORT.md`。
+**修复（本项目落地，2026-07-28 校正到当前实现）**：`stream_keepalive_mode` 的当前默认是 **`ping`**（可选值 `ping` / `enveloped_ping` / `empty_text`；原文写的 `content_delta` **已不是合法值**，「默认发空 content delta」也已被 ADR 2026-07-22 D2 反转——常态 wire 不该长期挂一个合成 text 块）。改为**按需升级**：`stream_keepalive_escalate_sec`（默认 **200s**）到点才发匹配当前 open block 的空 content delta（thinking→thinking_delta / text→text_delta / tool_use→input_json_delta），pre-content 无开块时惰性开锚点；日常仍是纯 ping、零污染。实现 `src/lib/anthropic/keepalive-frame.ts`（sink + web_search legacy heartbeat 共用）。覆盖矩阵+四臂对照 `exp/cc-idle-280s/REPORT.md`。
 
 **合成帧必须打可辨识标记（关键，别漏）**：所有 keepalive（含 ping）在 forwarded 轨打 `SseEventRecord.synthetic:"keepalive"` 标记，否则空 delta **伪装成真实内容**、把上游沉默掩盖成正常 streaming。**上游轨 `sseEvents` 绝不含 keepalive、始终忠实**；合成物只进 forwarded 轨且打标记；下游据标记区分显示。见 [[feedback-synthetic-data-must-be-distinguishable-from-real]]（richest-data-flow 对称面）。
 

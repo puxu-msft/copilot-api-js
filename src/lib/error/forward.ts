@@ -5,6 +5,7 @@ import consola from "consola"
 
 import type { RequestContext } from "~/lib/context/request"
 
+import { getCancellationCause } from "~/lib/error/cancellation-reason"
 import { isAbortError } from "~/lib/error/classify"
 import { HTTPError } from "~/lib/error/http-error"
 import {
@@ -18,6 +19,16 @@ import {
   looksLikeHtml,
   parseRetryAfterHeader,
 } from "~/lib/error/utils"
+import {
+  //
+  gapSurfaceForPath,
+  recordAbortProvenanceGap,
+} from "~/lib/observability/abort-provenance-gaps"
+import {
+  //
+  isShutdownCausedAbort,
+  SHUTDOWN_ABORT_MESSAGE,
+} from "~/lib/shutdown"
 import { state } from "~/lib/state"
 import { logToolDiagnostics } from "~/lib/upstream-diagnostics"
 
@@ -537,13 +548,17 @@ export function forwardError(c: Context, error: unknown, format: ErrorWireFormat
 
   const errorMessage = error instanceof Error ? formatErrorWithCause(error) : String(error)
 
-  // Aborts (client cancel or upstream response-header timeout) are EXPECTED
-  // operational conditions, not "unexpected" server bugs — classify them out of
-  // the generic 500 catch-all below. Discriminate by the inbound request signal:
-  // a client disconnect aborts `c.req.raw.signal`; a response-header timeout fires
-  // on the fetch signal only, leaving `raw.signal` un-aborted. `error.name` can't
-  // be used — the http2 client synthesizes a generic AbortError (dropping the
-  // AbortSignal.timeout TimeoutError identity); see classify.ts / http2-client.ts.
+  // Aborts (client hangup, shutdown, header timeout, reaper, hard deadline, dispatch
+  // teardown) are EXPECTED operational conditions, not "unexpected" server bugs — they
+  // are classified out of the generic 500 catch-all below.
+  //
+  // This is an ORDERED PRECEDENCE, not a partition: several arms can be true at once
+  // (a client can hang up during a shutdown; a header timeout can fire while the pool
+  // is closing). Each arm demands POSITIVE evidence of its own cause. What it must
+  // never go back to is the previous fall-through — "an abort whose client signal is
+  // un-aborted" was reported as a response-header timeout regardless of who actually
+  // cancelled, which produced claims like a 609ms request blamed on a 900s timeout
+  // (2026-07-28 incident) and made every post-mortem a durationMs guessing game.
   if (error instanceof Error && isAbortError(error)) {
     // `c.req.raw.signal` is the inbound request signal; cast to optional for
     // defensive test contexts (mirrors abort-bridge.ts).
@@ -552,8 +567,40 @@ export function forwardError(c: Context, error: unknown, format: ErrorWireFormat
       consola.debug(`Client disconnected (pre-response) in ${c.req.method} ${c.req.path}`)
       return finalizeErrorDelivery(c, helpers.defaultError("Client closed request", false, 499), 499 as ContentfulStatusCode)
     }
-    consola.warn(`Upstream response-header timeout in ${c.req.method} ${c.req.path} (${state.responseHeaderTimeout}s)`)
-    return finalizeErrorDelivery(c, helpers.defaultError("Upstream timed out before sending response headers", true, 504), 504 as ContentfulStatusCode)
+    if (isShutdownCausedAbort(error)) {
+      // Our own shutdown cancelled it. 529 (overloaded) is retryable, so the client backs
+      // off and lands on the restarted instance — same contract as the send layer's
+      // `rewriteShutdownAbort`, applied here for the callers that don't opt into it.
+      consola.warn(`[shutdown] Cancelled in-flight ${c.req.method} ${c.req.path} during shutdown`)
+      return finalizeErrorDelivery(c, helpers.defaultError(SHUTDOWN_ABORT_MESSAGE, true, 529), 529 as ContentfulStatusCode)
+    }
+    if (error.name === "TimeoutError") {
+      // The response-header watchdog itself fired (`AbortSignal.timeout` → TimeoutError,
+      // preserved end-to-end by http2-client's abortError). This is the ONLY evidence that
+      // justifies naming the header timeout.
+      consola.warn(`Upstream response-header timeout in ${c.req.method} ${c.req.path} (${state.responseHeaderTimeout}s)`)
+      return finalizeErrorDelivery(c, helpers.defaultError("Upstream timed out before sending response headers", true, 504), 504 as ContentfulStatusCode)
+    }
+    const cancellation = getCancellationCause(error)
+    if (cancellation === "request-deadline" || cancellation === "stale-reaper") {
+      // Both are OUR clock running out, not a generic unavailability: `request_deadline` is
+      // the precise per-request one, `stale_request_max_age` the leak-safety net above it
+      // (its config even carries a TODO to rename it `upstream_request_deadline`). They keep
+      // 504 and say WHICH clock ran out — the same grouping the SSE `error.type` tables use,
+      // so a cause does not change category depending on where it was caught.
+      const clock = cancellation === "request-deadline" ? `request deadline ${state.requestDeadline}s` : `stale-request reaper ${state.staleRequestMaxAge}s`
+      consola.warn(`Request cancelled by our own clock (${clock}) in ${c.req.method} ${c.req.path}: ${errorMessage}`)
+      return finalizeErrorDelivery(c, helpers.defaultError(errorMessage, true, 504), 504 as ContentfulStatusCode)
+    }
+    // Dispatch teardown, an explicit cancel, or an abort nobody tagged. Report the real
+    // reason verbatim (internal-tool posture) rather than inventing a cause we cannot evidence.
+    if (cancellation === undefined) {
+      // Untagged: every producer tags now, so this is a WIRING GAP, not a normal outcome. Count it
+      // so a leak is visible on /metrics instead of only in an individual History entry.
+      recordAbortProvenanceGap("pre-commit", gapSurfaceForPath(c.req.path))
+    }
+    consola.warn(`Request cancelled (${cancellation ?? "untagged abort"}) in ${c.req.method} ${c.req.path}: ${errorMessage}`)
+    return finalizeErrorDelivery(c, helpers.defaultError(errorMessage, true, 503), 503 as ContentfulStatusCode)
   }
 
   consola.error(`Unexpected non-HTTP error in ${c.req.method} ${c.req.path}:`, errorMessage)

@@ -16,6 +16,7 @@ import {
 
 import type { Model } from "~/lib/models/client"
 
+import { setModels } from "~/lib/models/cache"
 import { getModels } from "~/lib/models/client"
 import {
   //
@@ -26,7 +27,6 @@ import {
 import {
   //
   restoreStateForTests,
-  setModels,
   setStateForTests,
   snapshotStateForTests,
 } from "~/lib/state"

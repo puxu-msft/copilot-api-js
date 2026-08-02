@@ -62,6 +62,7 @@ export interface SettledMeasures {
   recovery_candidates?: number
   cancelled_dispatches?: number
   unknown_usage_dispatches?: number
+  upstream_leg_success_count?: number
 }
 
 /** 全部可加度量列名（tel_* 表共用；DRY 生成 UPSERT SQL）。 */
@@ -91,6 +92,7 @@ export const SETTLED_MEASURE_COLUMN_NAMES: ReadonlyArray<keyof SettledMeasures> 
   "recovery_candidates",
   "cancelled_dispatches",
   "unknown_usage_dispatches",
+  "upstream_leg_success_count",
 ]
 
 const COLS = SETTLED_MEASURE_COLUMN_NAMES

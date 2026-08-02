@@ -11,7 +11,10 @@ import {
   test,
 } from "bun:test"
 
+import { streamErrorKindToAnthropicErrorType } from "~/lib/anthropic/error-shaping"
 import { HTTPError } from "~/lib/error"
+import { cancellationAbortError } from "~/lib/error/cancellation-reason"
+import { tagTransportError } from "~/lib/error/transport-reason"
 
 import {
   //
@@ -19,6 +22,7 @@ import {
   anthropicHttpErrorFrame,
   anthropicRejectErrorFrame,
   classifyPostCommitAbort,
+  postCommitAbortFrame,
   toAnthropicSseErrorData,
 } from "../../src/routes/messages/post-commit-error"
 
@@ -106,17 +110,111 @@ describe("anthropicErrorFrame", () => {
   })
 })
 
-describe("classifyPostCommitAbort — signal-state precedence (client > reaper > timeout)", () => {
-  test("client-abort wins even if reaper also fired", () => {
-    expect(classifyPostCommitAbort(true, true)).toBe("client-abort")
-    expect(classifyPostCommitAbort(true, false)).toBe("client-abort")
+/** A fired lifecycle signal carrying `reason` — what production actually hands the classifier. */
+function lifecycle(reason?: unknown): AbortSignal {
+  return reason === undefined ? AbortSignal.abort() : AbortSignal.abort(reason)
+}
+const notFired = new AbortController().signal
+
+describe("classifyPostCommitAbort — evidence first, signal reason second, honest unknown last", () => {
+  test("client-abort wins even if the lifecycle signal also fired", () => {
+    expect(classifyPostCommitAbort(true, lifecycle(cancellationAbortError("stale-reaper", "reaped")))).toBe("client-abort")
+    expect(classifyPostCommitAbort(true, notFired)).toBe("client-abort")
   })
 
-  test("reaper-cancel when only the lifecycle (reaper) signal flipped", () => {
-    expect(classifyPostCommitAbort(false, true)).toBe("reaper-cancel")
+  test("a fired lifecycle signal with an UNTAGGED reason is unknown-abort, not a fabricated reaper", () => {
+    // This is where a bare `reaperAborted` boolean used to answer "reaper" for anything that
+    // flipped the lifecycle signal. Every producer tags now, so untagged means a producer
+    // skipped the contract — the same correction guardSseIterable already made. Answering
+    // "reaper" would put a specific, unearned cause on the wire.
+    expect(classifyPostCommitAbort(false, lifecycle())).toBe("unknown-abort")
   })
 
-  test("timeout when neither signal flipped (header-wait elapsed)", () => {
-    expect(classifyPostCommitAbort(false, false)).toBe("timeout")
+  test("no signal, no evidence → unknown-abort, NOT an invented header timeout", () => {
+    // The old fallback answered "timeout" here on the theory that nothing else was
+    // left. That theory is how a 609ms request got shipped as a 900s header timeout;
+    // pre-commit already refuses to guess, and this is the same refusal.
+    expect(classifyPostCommitAbort(false, notFired)).toBe("unknown-abort")
+    expect(classifyPostCommitAbort(false, undefined)).toBe("unknown-abort")
+  })
+
+  test("the signal's own reason answers when the transport threw a fresh error instead", () => {
+    // Real transports (h2/undici) synthesize their own AbortError rather than surfacing
+    // `signal.reason`. Taking the SIGNAL rather than a boolean is what makes this arm
+    // possible at all — a boolean has already discarded the only thing that could answer.
+    const untaggedFromTransport = new Error("The operation was aborted.")
+    untaggedFromTransport.name = "AbortError"
+    expect(classifyPostCommitAbort(false, lifecycle(cancellationAbortError("request-deadline", "request_deadline")), untaggedFromTransport)).toBe(
+      "request-deadline",
+    )
+    expect(classifyPostCommitAbort(false, lifecycle(cancellationAbortError("stale-reaper", "reaped")), untaggedFromTransport)).toBe("reaper-cancel")
+  })
+})
+
+describe("classifyPostCommitAbort — provenance beats signal state", () => {
+  function abortNamed(name: string, message = "The operation was aborted."): Error {
+    const e = new Error(message)
+    e.name = name
+    return e
+  }
+  const reaperFired = lifecycle(cancellationAbortError("stale-reaper", "Request cancelled by the stale-request reaper"))
+
+  test("shutdown teardown is NOT reported as a reaper cancel, even with the lifecycle signal up", () => {
+    const e = tagTransportError(abortNamed("AbortError", "[http2] upstream session pool closed"), "pool-closed")
+    expect(classifyPostCommitAbort(false, reaperFired, e)).toBe("shutdown")
+  })
+
+  test("the header watchdog is identified by its TimeoutError, not by elapsed time", () => {
+    expect(classifyPostCommitAbort(false, notFired, abortNamed("TimeoutError"))).toBe("header-timeout")
+  })
+
+  test("the hard deadline is NOT reported as a reaper cancel — the regression this fixes", () => {
+    // Both fire the SAME lifecycle signal, so signal state alone answers "reaper" for both;
+    // only the tagged reason can tell them apart.
+    const deadline = cancellationAbortError("request-deadline", "request_deadline")
+    expect(classifyPostCommitAbort(false, reaperFired, deadline)).toBe("request-deadline")
+    expect(classifyPostCommitAbort(false, reaperFired, cancellationAbortError("stale-reaper", "reaped"))).toBe("reaper-cancel")
+  })
+
+  test("a dispatch teardown is its own kind", () => {
+    expect(classifyPostCommitAbort(false, notFired, cancellationAbortError("dispatch-cancel", "lost hedge race"))).toBe("dispatch-cancel")
+  })
+
+  test("client-abort still wins over every provenance", () => {
+    const e = tagTransportError(abortNamed("AbortError"), "pool-closed")
+    expect(classifyPostCommitAbort(true, reaperFired, e)).toBe("client-abort")
+  })
+
+  test("an untagged abort on an untagged signal stays unknown-abort", () => {
+    expect(classifyPostCommitAbort(false, lifecycle(), abortNamed("AbortError"))).toBe("unknown-abort")
+    expect(classifyPostCommitAbort(false, notFired, abortNamed("AbortError"))).toBe("unknown-abort")
+  })
+})
+
+describe("postCommitAbortFrame", () => {
+  test("each kind names its own cause on the wire — no shared fiction", () => {
+    expect(parse(postCommitAbortFrame("shutdown")).error?.message).toBe("Server is shutting down")
+    expect(parse(postCommitAbortFrame("header-timeout")).error?.message).toBe("Upstream timed out before sending response headers")
+    expect(parse(postCommitAbortFrame("request-deadline")).error?.message).toContain("hard deadline")
+    expect(parse(postCommitAbortFrame("reaper-cancel")).error?.message).toContain("stale-request reaper")
+    expect(parse(postCommitAbortFrame("dispatch-cancel")).error?.message).toContain("dispatch cancelled")
+    expect(parse(postCommitAbortFrame("unknown-abort")).error?.message).not.toContain("timed out before sending response headers")
+  })
+
+  test("the SDK-facing error.type comes from the SHARED table, not a local literal", () => {
+    // This used to answer `api_error` for every kind, so the same hard deadline reached the
+    // client as `api_error` from here and `timeout_error` from the post-header pump — the
+    // answer decided by whether upstream response headers had arrived, which is not a fact
+    // about what ended the request. Asserting against the shared table (rather than repeating
+    // the literals) is what makes a future local hardcode impossible to sneak back in.
+    const kinds = ["shutdown", "header-timeout", "request-deadline", "reaper-cancel", "request-cancel", "dispatch-cancel", "unknown-abort"] as const
+    for (const kind of kinds) {
+      expect(parse(postCommitAbortFrame(kind)).error?.type).toBe(streamErrorKindToAnthropicErrorType(kind))
+    }
+    // And spot-check the grouping itself, so a table that goes uniformly wrong is still caught.
+    expect(parse(postCommitAbortFrame("request-deadline")).error?.type).toBe("timeout_error")
+    expect(parse(postCommitAbortFrame("reaper-cancel")).error?.type).toBe("timeout_error")
+    expect(parse(postCommitAbortFrame("shutdown")).error?.type).toBe("overloaded_error")
+    expect(parse(postCommitAbortFrame("unknown-abort")).error?.type).toBe("api_error")
   })
 })

@@ -12,6 +12,7 @@ import consola from "consola"
 import fs from "node:fs/promises"
 import { z } from "zod"
 
+import { resolveBufferedCaps } from "~/lib/config/model-overrides"
 import { setV3PersistRetryConfig } from "~/lib/history/v3"
 import { recordConfigReloadTimeoutDiff } from "~/lib/observability/reaper-diagnostics"
 import {
@@ -21,7 +22,6 @@ import {
   type CompiledRewriteRule,
   type CompiledSystemPromptEntry,
   DEFAULT_MODEL_MAPPINGS,
-  resolveBufferedCaps,
   setAnthropicBehavior,
   setBufferedRetryContinuationOverride,
   setBufferedRetryContinuationShared,
@@ -30,7 +30,6 @@ import {
   setBufferedRetryOverride,
   setBufferedRetryShared,
   setChatCompletionsConfig,
-  setDisabledModels,
   setForwardClientQuery,
   setHistoryConfig,
   setGenerationRuntimeConfig,
@@ -58,6 +57,11 @@ import type {
   SystemPromptEntry,
 } from "./schema"
 
+import {
+  //
+  applyDisabledModels,
+  refreshCatalogView,
+} from "../models/cache"
 import { syncModelRefreshLoop } from "../models/refresh-loop"
 import {
   //
@@ -679,532 +683,549 @@ let lastAppliedMtimeMs = 0
 export async function applyConfigToState(): Promise<Config> {
   const config = await loadConfig()
 
-  // Anthropic settings (scalar: override only when present)
-  if (config.anthropic) {
-    const a = config.anthropic
-    if (a.use_upstream_count_tokens !== undefined) setAnthropicBehavior({ useUpstreamCountTokens: a.use_upstream_count_tokens })
-    if (a.strict_response_headers !== undefined) setAnthropicBehavior({ strictResponseHeaders: a.strict_response_headers })
-    if (a.response_header_blacklist !== undefined) setAnthropicBehavior({ responseHeaderBlacklist: a.response_header_blacklist })
-    if (a.response_header_whitelist !== undefined) setAnthropicBehavior({ responseHeaderWhitelist: a.response_header_whitelist })
-    if (a.strict_request_headers !== undefined) setAnthropicBehavior({ strictRequestHeaders: a.strict_request_headers })
-    if (a.request_header_blacklist !== undefined) setAnthropicBehavior({ requestHeaderBlacklist: a.request_header_blacklist })
-    if (a.request_header_whitelist !== undefined) setAnthropicBehavior({ requestHeaderWhitelist: a.request_header_whitelist })
-    if (a.strip_attribution_header !== undefined) setAnthropicBehavior({ stripAttributionHeader: a.strip_attribution_header })
-    if (a.stream_keepalive_ping_sec !== undefined) setAnthropicBehavior({ streamKeepalivePingSec: clampKeepaliveCadence(a.stream_keepalive_ping_sec) })
-    if (a.stream_keepalive_escalate_sec !== undefined) setAnthropicBehavior({ streamKeepaliveEscalateSec: a.stream_keepalive_escalate_sec })
-    if (a.stream_keepalive_mode !== undefined) setAnthropicBehavior({ streamKeepaliveMode: a.stream_keepalive_mode })
-    if (a.stream_commit_after_sec !== undefined) setAnthropicBehavior({ streamCommitAfterSec: clampCommitWindowSec(a.stream_commit_after_sec) })
-    if (a.protect_streaming_generation !== undefined) setAnthropicBehavior({ protectStreamingGeneration: a.protect_streaming_generation })
-    // Per-vendor buffered-retry cap override for Anthropic (legacy
-    // protect_streaming_{max_retries,heartbeat,buffer_cap_bytes} migrate here via
-    // CONFIG_MIGRATIONS). `enabled` is ignored — Anthropic's mode switch is
-    // protect_streaming_generation above.
-    if (a.buffered_retry) setBufferedRetryOverride("anthropic", mapBufferedCaps(a.buffered_retry))
-    if (a.buffered_retry) {
-      const cont = mapContinuation(a.buffered_retry)
-      if (cont) setBufferedRetryContinuationOverride("anthropic", cont)
-    }
-    if (a.max_tokens_continuation) setMaxTokensContinuationOverride("anthropic", mapMaxTokensContinuation(a.max_tokens_continuation))
-    if (a.protect_streaming_escalate_context !== undefined) setAnthropicBehavior({ protectStreamingEscalateContext: a.protect_streaming_escalate_context })
-    // Model-capability allowlists (retain-on-absence per sub-key; an explicit empty list clears).
-    if (a.model_capabilities) {
-      const mc = a.model_capabilities
-      if (mc.context_editing !== undefined) setAnthropicBehavior({ contextEditingModels: mc.context_editing })
-      if (mc.interleaved_thinking !== undefined) setAnthropicBehavior({ interleavedThinkingModels: mc.interleaved_thinking })
-      if (mc.adaptive_thinking !== undefined) setAnthropicBehavior({ adaptiveThinkingModels: mc.adaptive_thinking })
-      if (mc.extended_cache_ttl !== undefined) setAnthropicBehavior({ extendedCacheTtlModels: mc.extended_cache_ttl })
-      if (mc.memory !== undefined) setAnthropicBehavior({ memoryModels: mc.memory })
-      if (mc.tool_search_overrides !== undefined)
+  // Everything below runs inside a try whose `finally` re-derives the catalog view. That view is a
+  // FUNCTION of the disabled list, so any exit path that leaves the list changed but the view stale
+  // publishes a contradiction: a model named as disabled yet still served, or reset to enabled yet
+  // still hidden. Both reachable, and by different routes — a `generation` validation throw between
+  // the `disabled_models` branch and the end of this function, and `PUT /api/config`, which calls
+  // `resetConfigManagedState()` (list back to default, no re-filter) immediately before calling us
+  // and would strand that reset if we then threw. `finally` covers every such path at once,
+  // including ones added later, which a second call before each `throw` would not.
+  try {
+    // Anthropic settings (scalar: override only when present)
+    if (config.anthropic) {
+      const a = config.anthropic
+      if (a.use_upstream_count_tokens !== undefined) setAnthropicBehavior({ useUpstreamCountTokens: a.use_upstream_count_tokens })
+      if (a.strict_response_headers !== undefined) setAnthropicBehavior({ strictResponseHeaders: a.strict_response_headers })
+      if (a.response_header_blacklist !== undefined) setAnthropicBehavior({ responseHeaderBlacklist: a.response_header_blacklist })
+      if (a.response_header_whitelist !== undefined) setAnthropicBehavior({ responseHeaderWhitelist: a.response_header_whitelist })
+      if (a.strict_request_headers !== undefined) setAnthropicBehavior({ strictRequestHeaders: a.strict_request_headers })
+      if (a.request_header_blacklist !== undefined) setAnthropicBehavior({ requestHeaderBlacklist: a.request_header_blacklist })
+      if (a.request_header_whitelist !== undefined) setAnthropicBehavior({ requestHeaderWhitelist: a.request_header_whitelist })
+      if (a.strip_attribution_header !== undefined) setAnthropicBehavior({ stripAttributionHeader: a.strip_attribution_header })
+      if (a.stream_keepalive_ping_sec !== undefined) setAnthropicBehavior({ streamKeepalivePingSec: clampKeepaliveCadence(a.stream_keepalive_ping_sec) })
+      if (a.stream_keepalive_escalate_sec !== undefined) setAnthropicBehavior({ streamKeepaliveEscalateSec: a.stream_keepalive_escalate_sec })
+      if (a.stream_keepalive_mode !== undefined) setAnthropicBehavior({ streamKeepaliveMode: a.stream_keepalive_mode })
+      if (a.stream_commit_after_sec !== undefined) setAnthropicBehavior({ streamCommitAfterSec: clampCommitWindowSec(a.stream_commit_after_sec) })
+      if (a.protect_streaming_generation !== undefined) setAnthropicBehavior({ protectStreamingGeneration: a.protect_streaming_generation })
+      // Per-vendor buffered-retry cap override for Anthropic (legacy
+      // protect_streaming_{max_retries,heartbeat,buffer_cap_bytes} migrate here via
+      // CONFIG_MIGRATIONS). `enabled` is ignored — Anthropic's mode switch is
+      // protect_streaming_generation above.
+      if (a.buffered_retry) setBufferedRetryOverride("anthropic", mapBufferedCaps(a.buffered_retry))
+      if (a.buffered_retry) {
+        const cont = mapContinuation(a.buffered_retry)
+        if (cont) setBufferedRetryContinuationOverride("anthropic", cont)
+      }
+      if (a.max_tokens_continuation) setMaxTokensContinuationOverride("anthropic", mapMaxTokensContinuation(a.max_tokens_continuation))
+      if (a.protect_streaming_escalate_context !== undefined) setAnthropicBehavior({ protectStreamingEscalateContext: a.protect_streaming_escalate_context })
+      // Model-capability allowlists (retain-on-absence per sub-key; an explicit empty list clears).
+      if (a.model_capabilities) {
+        const mc = a.model_capabilities
+        if (mc.context_editing !== undefined) setAnthropicBehavior({ contextEditingModels: mc.context_editing })
+        if (mc.interleaved_thinking !== undefined) setAnthropicBehavior({ interleavedThinkingModels: mc.interleaved_thinking })
+        if (mc.adaptive_thinking !== undefined) setAnthropicBehavior({ adaptiveThinkingModels: mc.adaptive_thinking })
+        if (mc.extended_cache_ttl !== undefined) setAnthropicBehavior({ extendedCacheTtlModels: mc.extended_cache_ttl })
+        if (mc.memory !== undefined) setAnthropicBehavior({ memoryModels: mc.memory })
+        if (mc.tool_search_overrides !== undefined)
+          setAnthropicBehavior({
+            toolSearchOverrides: normalizeModelKeyedRecord(mc.tool_search_overrides, "anthropic.model_capabilities.tool_search_overrides"),
+          })
+      }
+      if (a.tool_inject_claude_code !== undefined) {
+        setAnthropicBehavior({ injectClaudeCodeOfficialTools: a.tool_inject_claude_code })
+      }
+      if (a.thinking_block_message_policy !== undefined) {
+        setAnthropicBehavior({ thinkingBlockMessagePolicy: a.thinking_block_message_policy })
+      }
+      if (a.separator_carrier !== undefined) {
+        setAnthropicBehavior({ separatorCarrier: a.separator_carrier })
+      }
+      if (a.separator_accept_extra !== undefined) {
+        setAnthropicBehavior({ separatorAcceptExtra: a.separator_accept_extra })
+      }
+      if (a.assistant_block_layout_strategy !== undefined) {
+        setAnthropicBehavior({ assistantBlockLayoutStrategy: a.assistant_block_layout_strategy })
+      }
+      if (a.strip_thinking_on_reject !== undefined) {
+        setAnthropicBehavior({ stripThinkingOnReject: a.strip_thinking_on_reject })
+      }
+      if (a.poisoned_thinking_quarantine !== undefined) {
+        setAnthropicBehavior({ poisonedThinkingQuarantine: a.poisoned_thinking_quarantine })
+      }
+      if (a.poisoned_thinking_ttl_hours !== undefined) {
+        setAnthropicBehavior({ poisonedThinkingTtlHours: a.poisoned_thinking_ttl_hours })
+      }
+      if (a.thinking_block_sanitize !== undefined) {
+        setAnthropicBehavior({ thinkingBlockSanitizeCheck: a.thinking_block_sanitize })
+      }
+      if (a.thinking_coerce_adaptive !== undefined) {
+        setAnthropicBehavior({ coerceAdaptiveThinking: a.thinking_coerce_adaptive })
+      }
+      if (a.system_default_mode !== undefined) {
+        setAnthropicBehavior({ systemDefaultMode: a.system_default_mode })
+      }
+      if (a.system_reject_models !== undefined) setAnthropicBehavior({ systemRejectModels: a.system_reject_models })
+      if (a.system_reject_mode !== undefined) setAnthropicBehavior({ systemRejectMode: a.system_reject_mode })
+      if (a.thinking_signature_compat !== undefined) {
+        setAnthropicBehavior({ thinkingSignatureCompat: a.thinking_signature_compat })
+      }
+      if (a.tool_dedup_calls !== undefined) {
+        // Normalize: true → "input" for backward compatibility, false → false
+        setAnthropicBehavior({ dedupToolCalls: a.tool_dedup_calls === true ? "input" : a.tool_dedup_calls })
+      }
+      if (a.tool_strip_read_result_tags !== undefined) setAnthropicBehavior({ stripReadToolResultTags: a.tool_strip_read_result_tags })
+      if (a.context_editing !== undefined) setAnthropicBehavior({ contextEditingMode: a.context_editing })
+      if (a.context_editing_trigger !== undefined) setAnthropicBehavior({ contextEditingTrigger: a.context_editing_trigger })
+      if (a.context_editing_keep_tools !== undefined) setAnthropicBehavior({ contextEditingKeepTools: a.context_editing_keep_tools })
+      if (a.context_editing_keep_thinking !== undefined) setAnthropicBehavior({ contextEditingKeepThinking: a.context_editing_keep_thinking })
+      if (a.tool_search !== undefined) setAnthropicBehavior({ toolSearchEnabled: a.tool_search })
+      if (a.server_tool_memory !== undefined) setAnthropicBehavior({ memoryToolEnabled: a.server_tool_memory })
+      if (a.cache_control !== undefined) {
+        setAnthropicBehavior({ cacheControlMode: a.cache_control })
+      }
+      if (a.extended_cache_ttl) {
+        const ect = a.extended_cache_ttl
+        if (ect.enabled !== undefined) setAnthropicBehavior({ extendedCacheTtlEnabled: ect.enabled })
+        if (ect.tools_system_ttl !== undefined) setAnthropicBehavior({ extendedCacheTtlToolsSystem: ect.tools_system_ttl })
+        if (ect.messages_ttl !== undefined) setAnthropicBehavior({ extendedCacheTtlMessages: ect.messages_ttl })
+      }
+      if (a.tool_search_non_deferred !== undefined) setAnthropicBehavior({ nonDeferredTools: a.tool_search_non_deferred })
+      if (a.warmup !== undefined) setAnthropicBehavior({ warmupPolicy: a.warmup })
+      // Collection fields: retain-on-absence semantic — a missing key keeps the
+      // current runtime value; an explicit `{}` overwrites with empty. To revert
+      // to built-in defaults, call resetConfigManagedState() (PUT /api/config).
+      if (a.effort_overrides !== undefined)
         setAnthropicBehavior({
-          toolSearchOverrides: normalizeModelKeyedRecord(mc.tool_search_overrides, "anthropic.model_capabilities.tool_search_overrides"),
+          effortsOverrides: normalizeModelKeyedRecord(a.effort_overrides, "anthropic.effort_overrides"),
         })
-    }
-    if (a.tool_inject_claude_code !== undefined) {
-      setAnthropicBehavior({ injectClaudeCodeOfficialTools: a.tool_inject_claude_code })
-    }
-    if (a.thinking_block_message_policy !== undefined) {
-      setAnthropicBehavior({ thinkingBlockMessagePolicy: a.thinking_block_message_policy })
-    }
-    if (a.separator_carrier !== undefined) {
-      setAnthropicBehavior({ separatorCarrier: a.separator_carrier })
-    }
-    if (a.separator_accept_extra !== undefined) {
-      setAnthropicBehavior({ separatorAcceptExtra: a.separator_accept_extra })
-    }
-    if (a.assistant_block_layout_strategy !== undefined) {
-      setAnthropicBehavior({ assistantBlockLayoutStrategy: a.assistant_block_layout_strategy })
-    }
-    if (a.strip_thinking_on_reject !== undefined) {
-      setAnthropicBehavior({ stripThinkingOnReject: a.strip_thinking_on_reject })
-    }
-    if (a.poisoned_thinking_quarantine !== undefined) {
-      setAnthropicBehavior({ poisonedThinkingQuarantine: a.poisoned_thinking_quarantine })
-    }
-    if (a.poisoned_thinking_ttl_hours !== undefined) {
-      setAnthropicBehavior({ poisonedThinkingTtlHours: a.poisoned_thinking_ttl_hours })
-    }
-    if (a.thinking_block_sanitize !== undefined) {
-      setAnthropicBehavior({ thinkingBlockSanitizeCheck: a.thinking_block_sanitize })
-    }
-    if (a.thinking_coerce_adaptive !== undefined) {
-      setAnthropicBehavior({ coerceAdaptiveThinking: a.thinking_coerce_adaptive })
-    }
-    if (a.system_default_mode !== undefined) {
-      setAnthropicBehavior({ systemDefaultMode: a.system_default_mode })
-    }
-    if (a.system_reject_models !== undefined) setAnthropicBehavior({ systemRejectModels: a.system_reject_models })
-    if (a.system_reject_mode !== undefined) setAnthropicBehavior({ systemRejectMode: a.system_reject_mode })
-    if (a.thinking_signature_compat !== undefined) {
-      setAnthropicBehavior({ thinkingSignatureCompat: a.thinking_signature_compat })
-    }
-    if (a.tool_dedup_calls !== undefined) {
-      // Normalize: true → "input" for backward compatibility, false → false
-      setAnthropicBehavior({ dedupToolCalls: a.tool_dedup_calls === true ? "input" : a.tool_dedup_calls })
-    }
-    if (a.tool_strip_read_result_tags !== undefined) setAnthropicBehavior({ stripReadToolResultTags: a.tool_strip_read_result_tags })
-    if (a.context_editing !== undefined) setAnthropicBehavior({ contextEditingMode: a.context_editing })
-    if (a.context_editing_trigger !== undefined) setAnthropicBehavior({ contextEditingTrigger: a.context_editing_trigger })
-    if (a.context_editing_keep_tools !== undefined) setAnthropicBehavior({ contextEditingKeepTools: a.context_editing_keep_tools })
-    if (a.context_editing_keep_thinking !== undefined) setAnthropicBehavior({ contextEditingKeepThinking: a.context_editing_keep_thinking })
-    if (a.tool_search !== undefined) setAnthropicBehavior({ toolSearchEnabled: a.tool_search })
-    if (a.server_tool_memory !== undefined) setAnthropicBehavior({ memoryToolEnabled: a.server_tool_memory })
-    if (a.cache_control !== undefined) {
-      setAnthropicBehavior({ cacheControlMode: a.cache_control })
-    }
-    if (a.extended_cache_ttl) {
-      const ect = a.extended_cache_ttl
-      if (ect.enabled !== undefined) setAnthropicBehavior({ extendedCacheTtlEnabled: ect.enabled })
-      if (ect.tools_system_ttl !== undefined) setAnthropicBehavior({ extendedCacheTtlToolsSystem: ect.tools_system_ttl })
-      if (ect.messages_ttl !== undefined) setAnthropicBehavior({ extendedCacheTtlMessages: ect.messages_ttl })
-    }
-    if (a.tool_search_non_deferred !== undefined) setAnthropicBehavior({ nonDeferredTools: a.tool_search_non_deferred })
-    if (a.warmup !== undefined) setAnthropicBehavior({ warmupPolicy: a.warmup })
-    // Collection fields: retain-on-absence semantic — a missing key keeps the
-    // current runtime value; an explicit `{}` overwrites with empty. To revert
-    // to built-in defaults, call resetConfigManagedState() (PUT /api/config).
-    if (a.effort_overrides !== undefined)
-      setAnthropicBehavior({
-        effortsOverrides: normalizeModelKeyedRecord(a.effort_overrides, "anthropic.effort_overrides"),
-      })
-    if (a.beta_strip_headers !== undefined)
-      setAnthropicBehavior({
-        stripBetaHeaders: normalizeModelKeyedRecord(a.beta_strip_headers, "anthropic.beta_strip_headers"),
-      })
-    if (a.cache_control_strip_subfields !== undefined)
-      setAnthropicBehavior({
-        stripCacheControlSubfields: normalizeModelKeyedRecord(a.cache_control_strip_subfields, "anthropic.cache_control_strip_subfields"),
-      })
-    if (a.partner_strip_features !== undefined)
-      setAnthropicBehavior({
-        stripPartnerFeatures: normalizeModelKeyedRecord(a.partner_strip_features, "anthropic.partner_strip_features"),
-      })
-    if (a.tool_strip_fields !== undefined)
-      setAnthropicBehavior({
-        stripToolFields: normalizeModelKeyedRecord(a.tool_strip_fields, "anthropic.tool_strip_fields"),
-      })
-    if (a.tool_keep_fields !== undefined)
-      setAnthropicBehavior({
-        keepToolFields: normalizeModelKeyedRecord(a.tool_keep_fields, "anthropic.tool_keep_fields"),
-      })
-    if (a.retry_reject_body_fields !== undefined)
-      setAnthropicBehavior({
-        rejectBodyFields: normalizeModelKeyedRecord(a.retry_reject_body_fields, "anthropic.retry_reject_body_fields"),
-      })
-    // Tool-name-keyed: keys are tool names, matched verbatim. Do NOT normalize
-    // (normalizeModelKeyedRecord folds case/separators and is model-specific).
-    // cloneStatePatch deep-clones the record, so passing the parsed value is safe.
-    // Response-wire fixes live under the `response_text_fix` / `response_tool_use_fix` sections.
-    const textFix = a.response_text_fix
-    const toolUseFix = a.response_tool_use_fix
-    if (textFix?.invoke_in_text !== undefined) setAnthropicBehavior({ recoverToolCallText: textFix.invoke_in_text })
-    if (toolUseFix?.decode_top_level_field !== undefined) setAnthropicBehavior({ decodeToolInputFields: toolUseFix.decode_top_level_field })
-    if (toolUseFix?.malformed_input !== undefined) setAnthropicBehavior({ toolRepairMalformedInput: toolUseFix.malformed_input })
-    if (toolUseFix?.send_message_to_missing !== undefined) setAnthropicBehavior({ fixSendMessageRecipient: toolUseFix.send_message_to_missing })
-    if (toolUseFix?.ask_user_question_question_missing !== undefined)
-      setAnthropicBehavior({ backfillQuestionFromHeader: toolUseFix.ask_user_question_question_missing })
-    if (a.refusal_sse_rewrite !== undefined) setAnthropicBehavior({ refusalSseRewrite: a.refusal_sse_rewrite })
-    if (a.refusal_end_turn_text !== undefined) setAnthropicBehavior({ refusalEndTurnText: a.refusal_end_turn_text })
-    if (a.refusal_error_message !== undefined) setAnthropicBehavior({ refusalErrorMessage: a.refusal_error_message })
-    if (a.refusal_error_type !== undefined) setAnthropicBehavior({ refusalErrorType: a.refusal_error_type })
-    if (a.error_shaping_enabled !== undefined) setAnthropicBehavior({ errorShapingEnabled: a.error_shaping_enabled })
-    if (a.error_ask_user_question !== undefined) setAnthropicBehavior({ errorAskUserQuestion: a.error_ask_user_question })
-    if (a.error_auq_template !== undefined) setAnthropicBehavior({ errorAuqTemplate: a.error_auq_template })
-    if (a.error_selfheal_delegate !== undefined) setAnthropicBehavior({ errorSelfhealDelegate: a.error_selfheal_delegate })
-    if (a.system_rewrite_reminders !== undefined) {
-      // Collection: entire replacement — deleted rules disappear
-      if (typeof a.system_rewrite_reminders === "boolean") {
-        setAnthropicBehavior({ rewriteSystemReminders: a.system_rewrite_reminders })
-      } else {
-        setAnthropicBehavior({ rewriteSystemReminders: compileRewriteRules(a.system_rewrite_reminders) })
+      if (a.beta_strip_headers !== undefined)
+        setAnthropicBehavior({
+          stripBetaHeaders: normalizeModelKeyedRecord(a.beta_strip_headers, "anthropic.beta_strip_headers"),
+        })
+      if (a.cache_control_strip_subfields !== undefined)
+        setAnthropicBehavior({
+          stripCacheControlSubfields: normalizeModelKeyedRecord(a.cache_control_strip_subfields, "anthropic.cache_control_strip_subfields"),
+        })
+      if (a.partner_strip_features !== undefined)
+        setAnthropicBehavior({
+          stripPartnerFeatures: normalizeModelKeyedRecord(a.partner_strip_features, "anthropic.partner_strip_features"),
+        })
+      if (a.tool_strip_fields !== undefined)
+        setAnthropicBehavior({
+          stripToolFields: normalizeModelKeyedRecord(a.tool_strip_fields, "anthropic.tool_strip_fields"),
+        })
+      if (a.tool_keep_fields !== undefined)
+        setAnthropicBehavior({
+          keepToolFields: normalizeModelKeyedRecord(a.tool_keep_fields, "anthropic.tool_keep_fields"),
+        })
+      if (a.retry_reject_body_fields !== undefined)
+        setAnthropicBehavior({
+          rejectBodyFields: normalizeModelKeyedRecord(a.retry_reject_body_fields, "anthropic.retry_reject_body_fields"),
+        })
+      // Tool-name-keyed: keys are tool names, matched verbatim. Do NOT normalize
+      // (normalizeModelKeyedRecord folds case/separators and is model-specific).
+      // cloneStatePatch deep-clones the record, so passing the parsed value is safe.
+      // Response-wire fixes live under the `response_text_fix` / `response_tool_use_fix` sections.
+      const textFix = a.response_text_fix
+      const toolUseFix = a.response_tool_use_fix
+      if (textFix?.invoke_in_text !== undefined) setAnthropicBehavior({ recoverToolCallText: textFix.invoke_in_text })
+      if (toolUseFix?.decode_top_level_field !== undefined) setAnthropicBehavior({ decodeToolInputFields: toolUseFix.decode_top_level_field })
+      if (toolUseFix?.malformed_input !== undefined) setAnthropicBehavior({ toolRepairMalformedInput: toolUseFix.malformed_input })
+      if (toolUseFix?.send_message_to_missing !== undefined) setAnthropicBehavior({ fixSendMessageRecipient: toolUseFix.send_message_to_missing })
+      if (toolUseFix?.ask_user_question_question_missing !== undefined)
+        setAnthropicBehavior({ backfillQuestionFromHeader: toolUseFix.ask_user_question_question_missing })
+      if (a.refusal_sse_rewrite !== undefined) setAnthropicBehavior({ refusalSseRewrite: a.refusal_sse_rewrite })
+      if (a.refusal_end_turn_text !== undefined) setAnthropicBehavior({ refusalEndTurnText: a.refusal_end_turn_text })
+      if (a.refusal_error_message !== undefined) setAnthropicBehavior({ refusalErrorMessage: a.refusal_error_message })
+      if (a.refusal_error_type !== undefined) setAnthropicBehavior({ refusalErrorType: a.refusal_error_type })
+      if (a.error_shaping_enabled !== undefined) setAnthropicBehavior({ errorShapingEnabled: a.error_shaping_enabled })
+      if (a.error_ask_user_question !== undefined) setAnthropicBehavior({ errorAskUserQuestion: a.error_ask_user_question })
+      if (a.error_auq_template !== undefined) setAnthropicBehavior({ errorAuqTemplate: a.error_auq_template })
+      if (a.error_selfheal_delegate !== undefined) setAnthropicBehavior({ errorSelfhealDelegate: a.error_selfheal_delegate })
+      if (a.system_rewrite_reminders !== undefined) {
+        // Collection: entire replacement — deleted rules disappear
+        if (typeof a.system_rewrite_reminders === "boolean") {
+          setAnthropicBehavior({ rewriteSystemReminders: a.system_rewrite_reminders })
+        } else {
+          setAnthropicBehavior({ rewriteSystemReminders: compileRewriteRules(a.system_rewrite_reminders) })
+        }
       }
     }
-  }
 
-  // Shared (vendor-neutral) buffered-retry caps. Applied regardless of the
-  // anthropic section — it is the base layer every vendor's per-vendor override
-  // falls through to (resolveBufferedCaps). `enabled` is ignored (no shared mode switch).
-  if (config.buffered_retry) setBufferedRetryShared(mapBufferedCaps(config.buffered_retry))
-  if (config.buffered_retry) {
-    const cont = mapContinuation(config.buffered_retry)
-    if (cont) setBufferedRetryContinuationShared(cont)
-  }
-  if (config.max_tokens_continuation) setMaxTokensContinuationShared(mapMaxTokensContinuation(config.max_tokens_continuation))
+    // Shared (vendor-neutral) buffered-retry caps. Applied regardless of the
+    // anthropic section — it is the base layer every vendor's per-vendor override
+    // falls through to (resolveBufferedCaps). `enabled` is ignored (no shared mode switch).
+    if (config.buffered_retry) setBufferedRetryShared(mapBufferedCaps(config.buffered_retry))
+    if (config.buffered_retry) {
+      const cont = mapContinuation(config.buffered_retry)
+      if (cont) setBufferedRetryContinuationShared(cont)
+    }
+    if (config.max_tokens_continuation) setMaxTokensContinuationShared(mapMaxTokensContinuation(config.max_tokens_continuation))
 
-  // L2 cross-field guard: buffered streaming with NO keepalive heartbeat = clients idle out.
-  // Checked on the EFFECTIVE state (post-apply, so bundled defaults + hot-reload retain are reflected).
-  warnProtectStreamingHeartbeatOnce({
-    protectStreamingGeneration: state.protectStreamingGeneration,
-    fakeHeartbeat: state.streamKeepalivePingSec,
-    protectHeartbeat: resolveBufferedCaps("anthropic").heartbeatSec,
-  })
-
-  // System prompt overrides (collection: entire replacement)
-  if (config.system_prompt_overrides !== undefined) {
-    setAnthropicBehavior({
-      systemPromptOverrides: config.system_prompt_overrides.length > 0 ? compileRewriteRules(config.system_prompt_overrides) : [],
+    // L2 cross-field guard: buffered streaming with NO keepalive heartbeat = clients idle out.
+    // Checked on the EFFECTIVE state (post-apply, so bundled defaults + hot-reload retain are reflected).
+    warnProtectStreamingHeartbeatOnce({
+      protectStreamingGeneration: state.protectStreamingGeneration,
+      fakeHeartbeat: state.streamKeepalivePingSec,
+      protectHeartbeat: resolveBufferedCaps("anthropic").heartbeatSec,
     })
-  }
 
-  // System prompt prepend/append (scoped entries: entire replacement per key).
-  if (config.system_prompt_prepend !== undefined) {
-    setAnthropicBehavior({ systemPromptPrepend: compileSystemPromptEntries(config.system_prompt_prepend) })
-  }
-  if (config.system_prompt_append !== undefined) {
-    setAnthropicBehavior({ systemPromptAppend: compileSystemPromptEntries(config.system_prompt_append) })
-  }
-
-  // Model mapping: retain-on-absence. An explicit `model_mappings: {}` (or
-  // any present map) replaces the live mapping merged on top of defaults;
-  // omitting the key keeps the prior runtime value.
-  if (config.model_mappings !== undefined) {
-    setModelMappings(normalizeModelKeyedRecord({ ...DEFAULT_MODEL_MAPPINGS, ...config.model_mappings }, "model_mappings"))
-  }
-
-  // model_translation: retain-on-absence (mirrors model_mappings). An explicit
-  // `model_translation: {}` clears to defaults (empty — every pair falls back to
-  // scenario A); missing key keeps the prior runtime value.
-  if (config.model_translation !== undefined) {
-    setModelTranslation(config.model_translation)
-  }
-
-  // Disabled models: retain-on-absence. An explicit empty list clears; missing
-  // key keeps the prior runtime value. Re-filters `state.models` from cached raw.
-  if (config.disabled_models !== undefined) {
-    setDisabledModels(normalizeModelNameList(config.disabled_models, "disabled_models"))
-  }
-
-  // Shared reactive-retry budget (was auto_truncate.max_retries) + per-strategy registry opt-out
-  // (RFC 2026-07-21-retry-strategy-registry §3.4 / plan Task 4). `strategies` is a whole-map REPLACE
-  // (retain-on-absence: an absent `retry.strategies` key on a later reload keeps the prior runtime
-  // value — resetConfigManagedState() is the only reset path, mirroring every other Record-typed
-  // config-managed field, e.g. anthropic.error_selfheal_delegate).
-  if (config.retry?.max_reactive_retries !== undefined || config.retry?.strategies !== undefined) {
-    setReactiveRetryConfig({
-      ...(config.retry.max_reactive_retries !== undefined && { maxReactiveRetries: config.retry.max_reactive_retries }),
-      ...(config.retry.strategies !== undefined && { retryStrategies: config.retry.strategies }),
-    })
-  }
-  if (config.retry?.strategies !== undefined) warnDisabledSharedRetryStrategies(config.retry.strategies)
-  const generation = config.generation
-  if (generation) {
-    const patch = {
-      ...(generation.hedge?.enabled !== undefined && { generationHedgeEnabled: generation.hedge.enabled }),
-      ...(generation.hedge?.threshold_sec !== undefined && { generationHedgeThresholdSec: generation.hedge.threshold_sec }),
-      ...(generation.hedge?.max_secondary_candidates !== undefined && { generationHedgeMaxSecondaryCandidates: generation.hedge.max_secondary_candidates }),
-      ...(generation.hedge?.allow_server_tools !== undefined && { generationHedgeAllowServerTools: generation.hedge.allow_server_tools }),
-      ...(generation.recovery?.max_candidates !== undefined && { generationRecoveryMaxCandidates: generation.recovery.max_candidates }),
-      ...(generation.max_active_candidates !== undefined && { generationMaxActiveCandidates: generation.max_active_candidates }),
-      ...(generation.max_active_dispatches !== undefined && { generationMaxActiveDispatches: generation.max_active_dispatches }),
-      ...(generation.max_total_candidates !== undefined && { generationMaxTotalCandidates: generation.max_total_candidates }),
-      ...(generation.max_total_dispatches !== undefined && { generationMaxTotalDispatches: generation.max_total_dispatches }),
-      ...(generation.cleanup_grace_sec !== undefined && { generationCleanupGraceSec: generation.cleanup_grace_sec }),
-    }
-    const next = { ...state, ...patch }
-    if (next.generationMaxTotalCandidates < next.generationMaxActiveCandidates) {
-      throw new Error("generation.max_total_candidates must be >= generation.max_active_candidates")
-    }
-    if (next.generationMaxTotalDispatches < next.generationMaxActiveDispatches) {
-      throw new Error("generation.max_total_dispatches must be >= generation.max_active_dispatches")
-    }
-    if (next.generationMaxActiveCandidates < 1 + next.generationHedgeMaxSecondaryCandidates) {
-      throw new Error("generation.max_active_candidates must allow the primary plus max_secondary_candidates")
-    }
-    setGenerationRuntimeConfig(patch)
-  }
-
-  // Tool-name sanitization (cross-protocol top-level toggle; scalar override)
-  if (config.sanitize_tool_names !== undefined) setAnthropicBehavior({ sanitizeToolNames: config.sanitize_tool_names })
-
-  // Client query-string forwarding (cross-protocol top-level toggle + extra exclude list)
-  if (config.forward_client_query !== undefined) setForwardClientQuery({ forwardClientQuery: config.forward_client_query })
-  if (config.forward_client_query_exclude !== undefined) setForwardClientQuery({ forwardClientQueryExclude: config.forward_client_query_exclude })
-
-  // History settings (nested: override only when present)
-  if (config.history) {
-    const h = config.history
-    if (h.enabled !== undefined) {
-      if (!hasApplied) {
-        setHistoryConfig({ historyEnabled: h.enabled })
-      } else if (h.enabled !== state.historyEnabled) {
-        consola.warn(
-          `[config] history.enabled=${h.enabled} requires a restart to take effect (running instance stays ${state.historyEnabled}); ignoring for now`,
-        )
-      }
-    }
-    if (h.raw_capture?.enabled !== undefined) setHistoryConfig({ historyRawCaptureEnabled: h.raw_capture.enabled })
-    if (h.raw_capture?.db_path !== undefined) setHistoryConfig({ historyRawCaptureDbPath: h.raw_capture.db_path })
-    if (h.raw_capture?.max_object_bytes !== undefined) setHistoryConfig({ historyRawCaptureMaxObjectBytes: h.raw_capture.max_object_bytes })
-    // DI-5 transient retry budget — consumed only by the V3 store drain (no state
-    // field / listener needed), so feed the module setter directly like the other
-    // module-local config knobs (setReactiveRetryConfig above). `max_total_ms`
-    // (DI-5-followup-2) defaults inside the setter when omitted.
-    if (h.persist_retry?.max_attempts !== undefined || h.persist_retry?.backoff_ms !== undefined || h.persist_retry?.max_total_ms !== undefined) {
-      setV3PersistRetryConfig({
-        maxAttempts: h.persist_retry.max_attempts ?? 3,
-        backoffMs: h.persist_retry.backoff_ms ?? 10,
-        maxTotalMs: h.persist_retry.max_total_ms,
+    // System prompt overrides (collection: entire replacement)
+    if (config.system_prompt_overrides !== undefined) {
+      setAnthropicBehavior({
+        systemPromptOverrides: config.system_prompt_overrides.length > 0 ? compileRewriteRules(config.system_prompt_overrides) : [],
       })
     }
-  }
 
-  // Telemetry settings (telemetry.*, nested: override only when present). Business-layer
-  // validation (T2.3) does warn-continue fallbacks — never fail-fast on hot-reload.
-  if (config.telemetry) {
-    const t = config.telemetry
-    if (t.enabled !== undefined) setTelemetryConfig({ telemetryEnabled: t.enabled })
-    if (t.db_path !== undefined) setTelemetryConfig({ telemetryDbPath: t.db_path })
-    if (t.persist_interval !== undefined) setTelemetryConfig({ telemetryPersistInterval: t.persist_interval })
-    if (t.rollup_interval !== undefined) setTelemetryConfig({ telemetryRollupInterval: t.rollup_interval })
-    if (t.cardinality_cap !== undefined) setTelemetryConfig({ telemetryCardinalityCap: t.cardinality_cap })
-    if (t.cumulative !== undefined) setTelemetryConfig({ telemetryCumulative: t.cumulative })
-    // γ 下限 ~0.005：更紧会触发 DDSketch bin 塌缩（PoC：0.001→6909 bin>2048）→ 警告回落 0.01。
-    if (t.sketch_gamma !== undefined) {
-      if (t.sketch_gamma < 0.005) {
-        consola.warn(`[config] telemetry.sketch_gamma=${t.sketch_gamma} 低于下限 0.005（会触发 DDSketch bin 塌缩）——回落到默认 0.01`)
-        setTelemetryConfig({ telemetrySketchGamma: 0.01 })
-      } else {
-        setTelemetryConfig({ telemetrySketchGamma: t.sketch_gamma })
-      }
+    // System prompt prepend/append (scoped entries: entire replacement per key).
+    if (config.system_prompt_prepend !== undefined) {
+      setAnthropicBehavior({ systemPromptPrepend: compileSystemPromptEntries(config.system_prompt_prepend) })
     }
-    if (t.tiers?.raw?.resolution_minutes !== undefined) {
-      // raw 分辨率须整除 60（hourly rollup 上卷前提）→ 非整除警告回落 5。
-      const res = t.tiers.raw.resolution_minutes
-      if (res <= 0 || 60 % res !== 0) {
-        consola.warn(`[config] telemetry.tiers.raw.resolution_minutes=${res} 非 60 的整除因子（hourly rollup 要求）——回落到默认 5`)
-        setTelemetryConfig({ telemetryRawResolutionMinutes: 5 })
-      } else {
-        setTelemetryConfig({ telemetryRawResolutionMinutes: res })
-      }
+    if (config.system_prompt_append !== undefined) {
+      setAnthropicBehavior({ systemPromptAppend: compileSystemPromptEntries(config.system_prompt_append) })
     }
-    if (t.tiers?.raw?.retention_days !== undefined) setTelemetryConfig({ telemetryRawRetentionDays: t.tiers.raw.retention_days })
-    if (t.tiers?.hourly?.retention_days !== undefined) setTelemetryConfig({ telemetryHourlyRetentionDays: t.tiers.hourly.retention_days })
-    if (t.tiers?.daily?.retention_days !== undefined) setTelemetryConfig({ telemetryDailyRetentionDays: t.tiers.daily.retention_days })
-  }
 
-  // Upstream hook module (nested: override only when present). Declarative only — writes
-  // state so start.ts (and, in future phases, a reload API) can decide whether/what to load;
-  // never triggers the module load itself.
-  if (config.hooks) {
-    const hk = config.hooks
-    if (hk.upstream_module !== undefined) setHooksConfig({ hooksUpstreamModule: hk.upstream_module })
-    if (hk.enabled !== undefined) setHooksConfig({ hooksEnabled: hk.enabled })
-  }
-
-  // Shutdown timing (scalar: override only when present)
-  if (config.shutdown) {
-    const s = config.shutdown
-    if (s.graceful_wait !== undefined) setShutdownConfig({ shutdownGracefulWait: s.graceful_wait })
-    if (s.abort_wait !== undefined) setShutdownConfig({ shutdownAbortWait: s.abort_wait })
-  }
-
-  // Timeouts section (scalar: override only when present)
-  if (config.timeouts) {
-    // RC2 diagnostics: snapshot timeout scalars before/after apply so a config reload that
-    // changes staleRequestMaxAge (while the reaper cadence stays frozen) is observable rather
-    // than inferred. Pure observation — reads state, records a diff, no behavior change.
-    const timeoutBefore = {
-      staleRequestMaxAge: state.staleRequestMaxAge,
-      responseHeaderTimeout: state.responseHeaderTimeout,
-      streamIdleTimeout: state.streamIdleTimeout,
+    // Model mapping: retain-on-absence. An explicit `model_mappings: {}` (or
+    // any present map) replaces the live mapping merged on top of defaults;
+    // omitting the key keeps the prior runtime value.
+    if (config.model_mappings !== undefined) {
+      setModelMappings(normalizeModelKeyedRecord({ ...DEFAULT_MODEL_MAPPINGS, ...config.model_mappings }, "model_mappings"))
     }
-    const t = config.timeouts
-    if (t.response_header !== undefined) setTimeoutConfig({ responseHeaderTimeout: t.response_header })
-    if (t.stream_idle !== undefined) setTimeoutConfig({ streamIdleTimeout: t.stream_idle })
-    if (t.stale_request_max_age !== undefined) setTimeoutConfig({ staleRequestMaxAge: t.stale_request_max_age })
-    if (t.request_deadline !== undefined) setTimeoutConfig({ requestDeadline: t.request_deadline })
-    // Per-model override maps (already bundled+user per-key merged upstream).
-    // Replace semantics per field; app-guard only (no dispatcher rebuild).
-    if (t.stream_idle_overrides !== undefined) {
-      setTimeoutOverridesConfig({ streamIdleTimeoutOverrides: normalizeModelKeyedRecord(t.stream_idle_overrides, "timeouts.stream_idle_overrides") })
+
+    // model_translation: retain-on-absence (mirrors model_mappings). An explicit
+    // `model_translation: {}` clears to defaults (empty — every pair falls back to
+    // scenario A); missing key keeps the prior runtime value.
+    if (config.model_translation !== undefined) {
+      setModelTranslation(config.model_translation)
     }
-    if (t.response_header_overrides !== undefined) {
-      setTimeoutOverridesConfig({
-        responseHeaderTimeoutOverrides: normalizeModelKeyedRecord(t.response_header_overrides, "timeouts.response_header_overrides"),
+
+    // Disabled models: retain-on-absence. An explicit empty list clears; missing
+    // key keeps the prior runtime value. Re-filters `state.models` from cached raw.
+    if (config.disabled_models !== undefined) {
+      applyDisabledModels(normalizeModelNameList(config.disabled_models, "disabled_models"))
+    }
+
+    // Shared reactive-retry budget (was auto_truncate.max_retries) + per-strategy registry opt-out
+    // (RFC 2026-07-21-retry-strategy-registry §3.4 / plan Task 4). `strategies` is a whole-map REPLACE
+    // (retain-on-absence: an absent `retry.strategies` key on a later reload keeps the prior runtime
+    // value — resetConfigManagedState() is the only reset path, mirroring every other Record-typed
+    // config-managed field, e.g. anthropic.error_selfheal_delegate).
+    if (config.retry?.max_reactive_retries !== undefined || config.retry?.strategies !== undefined) {
+      setReactiveRetryConfig({
+        ...(config.retry.max_reactive_retries !== undefined && { maxReactiveRetries: config.retry.max_reactive_retries }),
+        ...(config.retry.strategies !== undefined && { retryStrategies: config.retry.strategies }),
       })
     }
-    recordConfigReloadTimeoutDiff(timeoutBefore, {
-      staleRequestMaxAge: state.staleRequestMaxAge,
-      responseHeaderTimeout: state.responseHeaderTimeout,
-      streamIdleTimeout: state.streamIdleTimeout,
-    })
-  }
-  if (config.model_refresh_interval !== undefined) setTimeoutConfig({ modelRefreshInterval: config.model_refresh_interval })
-
-  // Upstream transport (outbound to GHC): TCP keepalive / h2 ping+connect-timeout /
-  // WS pool idle-timeout+soft-cap (scalar: override only when present).
-  const upstreamTransport = config.upstream_transport
-  if (upstreamTransport) {
-    if (upstreamTransport.tcp_keepalive_probe_delay !== undefined)
-      setUpstreamTransportConfig({ upstreamKeepaliveDelay: upstreamTransport.tcp_keepalive_probe_delay })
-    if (upstreamTransport.http2?.ping_interval !== undefined) setUpstreamTransportConfig({ upstreamH2PingInterval: upstreamTransport.http2.ping_interval })
-    if (upstreamTransport.http2?.favor !== undefined) {
-      setUpstreamTransportConfig({ upstreamH2Favor: upstreamTransport.http2.favor })
-      // Honored literally on both runtimes, but favor:false routes https upstreams
-      // through undici, whose HTTP/1.1 parser hangs forever on GHC's chunked
-      // responses under Bun (the reason h2 is the default). Warn loudly so a Bun
-      // operator who bricks every https request understands why.
-      if (!upstreamTransport.http2.favor && typeof Bun !== "undefined")
-        consola.warn(
-          "[config] upstream_transport.http2.favor=false routes https upstreams through undici (HTTP/1.1), which hangs forever on GitHub Copilot's chunked responses under Bun — every https request will stall. favor:false is only usable on Node (dist/main.mjs).",
-        )
+    if (config.retry?.strategies !== undefined) warnDisabledSharedRetryStrategies(config.retry.strategies)
+    const generation = config.generation
+    if (generation) {
+      const patch = {
+        ...(generation.hedge?.enabled !== undefined && { generationHedgeEnabled: generation.hedge.enabled }),
+        ...(generation.hedge?.threshold_sec !== undefined && { generationHedgeThresholdSec: generation.hedge.threshold_sec }),
+        ...(generation.hedge?.max_secondary_candidates !== undefined && { generationHedgeMaxSecondaryCandidates: generation.hedge.max_secondary_candidates }),
+        ...(generation.hedge?.allow_server_tools !== undefined && { generationHedgeAllowServerTools: generation.hedge.allow_server_tools }),
+        ...(generation.recovery?.max_candidates !== undefined && { generationRecoveryMaxCandidates: generation.recovery.max_candidates }),
+        ...(generation.max_active_candidates !== undefined && { generationMaxActiveCandidates: generation.max_active_candidates }),
+        ...(generation.max_active_dispatches !== undefined && { generationMaxActiveDispatches: generation.max_active_dispatches }),
+        ...(generation.max_total_candidates !== undefined && { generationMaxTotalCandidates: generation.max_total_candidates }),
+        ...(generation.max_total_dispatches !== undefined && { generationMaxTotalDispatches: generation.max_total_dispatches }),
+        ...(generation.cleanup_grace_sec !== undefined && { generationCleanupGraceSec: generation.cleanup_grace_sec }),
+      }
+      const next = { ...state, ...patch }
+      if (next.generationMaxTotalCandidates < next.generationMaxActiveCandidates) {
+        throw new Error("generation.max_total_candidates must be >= generation.max_active_candidates")
+      }
+      if (next.generationMaxTotalDispatches < next.generationMaxActiveDispatches) {
+        throw new Error("generation.max_total_dispatches must be >= generation.max_active_dispatches")
+      }
+      if (next.generationMaxActiveCandidates < 1 + next.generationHedgeMaxSecondaryCandidates) {
+        throw new Error("generation.max_active_candidates must allow the primary plus max_secondary_candidates")
+      }
+      setGenerationRuntimeConfig(patch)
     }
-    if (upstreamTransport.http2?.session_connect_timeout !== undefined)
-      setUpstreamTransportConfig({ sessionConnectTimeout: upstreamTransport.http2.session_connect_timeout })
-    if (upstreamTransport.http2?.max_concurrent_streams_per_session !== undefined)
-      setUpstreamTransportConfig({ maxConcurrentStreamsPerSession: upstreamTransport.http2.max_concurrent_streams_per_session })
-    if (upstreamTransport.http2?.idle_session_timeout !== undefined)
-      setUpstreamTransportConfig({ h2IdleSessionTimeout: upstreamTransport.http2.idle_session_timeout })
-    if (upstreamTransport.http2?.max_sessions_per_origin !== undefined)
-      setUpstreamTransportConfig({ maxSessionsPerOrigin: upstreamTransport.http2.max_sessions_per_origin })
-    if (upstreamTransport.websocket?.pooled_connection_idle_timeout !== undefined)
-      setUpstreamTransportConfig({ pooledConnectionIdleTimeout: upstreamTransport.websocket.pooled_connection_idle_timeout })
-    if (upstreamTransport.websocket?.soft_max_connections !== undefined)
-      setUpstreamTransportConfig({ softMaxUpstreamWsConnections: upstreamTransport.websocket.soft_max_connections })
-  }
 
-  // Reactive-learning TTL lifecycle (top-level section). Days → ms; 0/≤0 → never
-  // (Infinity). ttl_days is keyed by internal category id (camelCase). The whole
-  // overrides map is replaced when present (replace semantic); default is retained
-  // on absence, reset via resetConfigManagedState().
-  if (config.negotiation_learning) {
-    const nl = config.negotiation_learning
-    const toMs = (days: number): number => (days <= 0 ? Number.POSITIVE_INFINITY : days * 86_400_000)
-    if (typeof nl.default_ttl_days === "number") setNegotiationConfig({ negotiationDefaultTtlMs: toMs(nl.default_ttl_days) })
-    if (nl.ttl_days) {
-      const overrides: Record<string, number> = {}
-      for (const [cat, days] of Object.entries(nl.ttl_days)) overrides[cat] = toMs(days)
-      setNegotiationConfig({ negotiationTtlOverridesMs: overrides })
+    // Tool-name sanitization (cross-protocol top-level toggle; scalar override)
+    if (config.sanitize_tool_names !== undefined) setAnthropicBehavior({ sanitizeToolNames: config.sanitize_tool_names })
+
+    // Client query-string forwarding (cross-protocol top-level toggle + extra exclude list)
+    if (config.forward_client_query !== undefined) setForwardClientQuery({ forwardClientQuery: config.forward_client_query })
+    if (config.forward_client_query_exclude !== undefined) setForwardClientQuery({ forwardClientQueryExclude: config.forward_client_query_exclude })
+
+    // History settings (nested: override only when present)
+    if (config.history) {
+      const h = config.history
+      if (h.enabled !== undefined) {
+        if (!hasApplied) {
+          setHistoryConfig({ historyEnabled: h.enabled })
+        } else if (h.enabled !== state.historyEnabled) {
+          consola.warn(
+            `[config] history.enabled=${h.enabled} requires a restart to take effect (running instance stays ${state.historyEnabled}); ignoring for now`,
+          )
+        }
+      }
+      if (h.raw_capture?.enabled !== undefined) setHistoryConfig({ historyRawCaptureEnabled: h.raw_capture.enabled })
+      if (h.raw_capture?.db_path !== undefined) setHistoryConfig({ historyRawCaptureDbPath: h.raw_capture.db_path })
+      if (h.raw_capture?.max_object_bytes !== undefined) setHistoryConfig({ historyRawCaptureMaxObjectBytes: h.raw_capture.max_object_bytes })
+      // DI-5 transient retry budget — consumed only by the V3 store drain (no state
+      // field / listener needed), so feed the module setter directly like the other
+      // module-local config knobs (setReactiveRetryConfig above). `max_total_ms`
+      // (DI-5-followup-2) defaults inside the setter when omitted.
+      if (h.persist_retry?.max_attempts !== undefined || h.persist_retry?.backoff_ms !== undefined || h.persist_retry?.max_total_ms !== undefined) {
+        setV3PersistRetryConfig({
+          maxAttempts: h.persist_retry.max_attempts ?? 3,
+          backoffMs: h.persist_retry.backoff_ms ?? 10,
+          maxTotalMs: h.persist_retry.max_total_ms,
+        })
+      }
     }
-  }
 
-  // unknown HTTP endpoint 日志级别（scalar: override only when present; retain-on-absence）。
-  if (config.unknown_endpoint_logging) {
-    const u = config.unknown_endpoint_logging
-    setUnknownEndpointLogging({
-      notFound: u.not_found ?? state.unknownEndpointLogging.notFound,
-      methodNotAllowed: u.method_not_allowed ?? state.unknownEndpointLogging.methodNotAllowed,
-    })
-  }
-
-  if (config.logging) {
-    const logging = config.logging
-    setLoggingConfig({
-      ...(logging.terminal_level !== undefined && { terminalLevel: logging.terminal_level }),
-      ...(logging.file_level !== undefined && { fileLevel: logging.file_level }),
-      ...(!hasApplied && logging.file?.enabled !== undefined && { fileEnabled: logging.file.enabled }),
-      ...(!hasApplied && logging.file?.directory !== undefined && { fileDirectory: logging.file.directory }),
-      ...(!hasApplied && logging.file?.max_size_mb !== undefined && { fileMaxSizeMb: logging.file.max_size_mb }),
-      ...(!hasApplied && logging.file?.max_files_per_process !== undefined && { fileMaxFilesPerProcess: logging.file.max_files_per_process }),
-      ...(!hasApplied && logging.file?.retention_days !== undefined && { retentionDays: logging.file.retention_days }),
-    })
-    if (hasApplied && logging.file) {
-      const differs =
-        (logging.file.enabled !== undefined && logging.file.enabled !== state.logging.fileEnabled)
-        || (logging.file.directory !== undefined && logging.file.directory !== state.logging.fileDirectory)
-        || (logging.file.max_size_mb !== undefined && logging.file.max_size_mb !== state.logging.fileMaxSizeMb)
-        || (logging.file.max_files_per_process !== undefined && logging.file.max_files_per_process !== state.logging.fileMaxFilesPerProcess)
-        || (logging.file.retention_days !== undefined && logging.file.retention_days !== state.logging.retentionDays)
-      if (differs) consola.warn("[config] logging.file.* changes require a restart; keeping the active writer configuration")
+    // Telemetry settings (telemetry.*, nested: override only when present). Business-layer
+    // validation (T2.3) does warn-continue fallbacks — never fail-fast on hot-reload.
+    if (config.telemetry) {
+      const t = config.telemetry
+      if (t.enabled !== undefined) setTelemetryConfig({ telemetryEnabled: t.enabled })
+      if (t.db_path !== undefined) setTelemetryConfig({ telemetryDbPath: t.db_path })
+      if (t.persist_interval !== undefined) setTelemetryConfig({ telemetryPersistInterval: t.persist_interval })
+      if (t.rollup_interval !== undefined) setTelemetryConfig({ telemetryRollupInterval: t.rollup_interval })
+      if (t.cardinality_cap !== undefined) setTelemetryConfig({ telemetryCardinalityCap: t.cardinality_cap })
+      if (t.cumulative !== undefined) setTelemetryConfig({ telemetryCumulative: t.cumulative })
+      // γ 下限 ~0.005：更紧会触发 DDSketch bin 塌缩（PoC：0.001→6909 bin>2048）→ 警告回落 0.01。
+      if (t.sketch_gamma !== undefined) {
+        if (t.sketch_gamma < 0.005) {
+          consola.warn(`[config] telemetry.sketch_gamma=${t.sketch_gamma} 低于下限 0.005（会触发 DDSketch bin 塌缩）——回落到默认 0.01`)
+          setTelemetryConfig({ telemetrySketchGamma: 0.01 })
+        } else {
+          setTelemetryConfig({ telemetrySketchGamma: t.sketch_gamma })
+        }
+      }
+      if (t.tiers?.raw?.resolution_minutes !== undefined) {
+        // raw 分辨率须整除 60（hourly rollup 上卷前提）→ 非整除警告回落 5。
+        const res = t.tiers.raw.resolution_minutes
+        if (res <= 0 || 60 % res !== 0) {
+          consola.warn(`[config] telemetry.tiers.raw.resolution_minutes=${res} 非 60 的整除因子（hourly rollup 要求）——回落到默认 5`)
+          setTelemetryConfig({ telemetryRawResolutionMinutes: 5 })
+        } else {
+          setTelemetryConfig({ telemetryRawResolutionMinutes: res })
+        }
+      }
+      if (t.tiers?.raw?.retention_days !== undefined) setTelemetryConfig({ telemetryRawRetentionDays: t.tiers.raw.retention_days })
+      if (t.tiers?.hourly?.retention_days !== undefined) setTelemetryConfig({ telemetryHourlyRetentionDays: t.tiers.hourly.retention_days })
+      if (t.tiers?.daily?.retention_days !== undefined) setTelemetryConfig({ telemetryDailyRetentionDays: t.tiers.daily.retention_days })
     }
-  }
-  if (config.tui?.enabled !== undefined) {
-    if (!hasApplied) setTuiEnabled(config.tui.enabled)
-    else if (config.tui.enabled !== state.tuiEnabled) consola.warn("[config] tui.enabled changes require a restart; keeping the active terminal capability")
-  }
 
-  // Responses API settings (scalar: override only when present)
-  const responsesConfig = config.openai_responses
-  if (responsesConfig && responsesConfig.normalize_call_ids !== undefined) setResponsesConfig({ normalizeResponsesCallIds: responsesConfig.normalize_call_ids })
-  if (responsesConfig && responsesConfig.upstream_ws !== undefined) setResponsesConfig({ upstreamWebSocket: responsesConfig.upstream_ws })
-  // buffered_retry: boolean shorthand = `enabled`; map = `{ enabled, caps }` where
-  // caps override the shared buffered_retry.* for the `responses` vendor.
-  if (responsesConfig && responsesConfig.buffered_retry !== undefined) {
-    applyVendorBufferedRetry(responsesConfig.buffered_retry, "responses", (enabled) => setResponsesConfig({ responsesBufferedRetry: enabled }))
-  }
-  if (responsesConfig?.max_tokens_continuation) setMaxTokensContinuationOverride("responses", mapMaxTokensContinuation(responsesConfig.max_tokens_continuation))
-  if (responsesConfig && responsesConfig.fix_stream_ids !== undefined) setResponsesConfig({ fixResponsesStreamIds: responsesConfig.fix_stream_ids })
-  if (responsesConfig && responsesConfig.strip_image_generation_tool !== undefined)
-    setResponsesConfig({ stripImageGenerationTool: responsesConfig.strip_image_generation_tool })
-  if (responsesConfig && responsesConfig.buffered_merge) {
-    const bm = responsesConfig.buffered_merge
-    if (bm.event_compaction !== undefined) setResponsesConfig({ responsesBufferedMergeEventCompaction: bm.event_compaction })
-    if (bm.completed_output !== undefined) setResponsesConfig({ responsesBufferedMergeCompletedOutput: bm.completed_output })
-  }
+    // Upstream hook module (nested: override only when present). Declarative only — writes
+    // state so start.ts (and, in future phases, a reload API) can decide whether/what to load;
+    // never triggers the module load itself.
+    if (config.hooks) {
+      const hk = config.hooks
+      if (hk.upstream_module !== undefined) setHooksConfig({ hooksUpstreamModule: hk.upstream_module })
+      if (hk.enabled !== undefined) setHooksConfig({ hooksEnabled: hk.enabled })
+    }
 
-  // Client-facing Responses WS ingress limits (scalar: override only when present).
-  const responsesWsIngress = config.server?.responses_ws
-  if (responsesWsIngress) {
-    if (responsesWsIngress.keep_open !== undefined) setResponsesWsIngressConfig({ clientWebsocketKeepOpen: responsesWsIngress.keep_open })
-    if (responsesWsIngress.max_frame_bytes !== undefined) setResponsesWsIngressConfig({ maxWsFrameBytes: responsesWsIngress.max_frame_bytes })
-    if (responsesWsIngress.max_connections !== undefined) setResponsesWsIngressConfig({ maxClientWsConnections: responsesWsIngress.max_connections })
-  }
+    // Shutdown timing (scalar: override only when present)
+    if (config.shutdown) {
+      const s = config.shutdown
+      if (s.graceful_wait !== undefined) setShutdownConfig({ shutdownGracefulWait: s.graceful_wait })
+      if (s.abort_wait !== undefined) setShutdownConfig({ shutdownAbortWait: s.abort_wait })
+    }
 
-  // Chat Completions settings. buffered_retry: boolean shorthand = `enabled`; map =
-  // `{ enabled, caps }` where caps override the shared buffered_retry.* for the
-  // `chat_completions` vendor. Default off (P3 flips the default to true).
-  const chatCompletionsConfig = config.chat_completions
-  if (chatCompletionsConfig && chatCompletionsConfig.buffered_retry !== undefined) {
-    applyVendorBufferedRetry(chatCompletionsConfig.buffered_retry, "chat_completions", (enabled) =>
-      setChatCompletionsConfig({ chatCompletionsBufferedRetry: enabled }),
-    )
-  }
-  if (chatCompletionsConfig?.max_tokens_continuation) {
-    setMaxTokensContinuationOverride("chat_completions", mapMaxTokensContinuation(chatCompletionsConfig.max_tokens_continuation))
-  }
+    // Timeouts section (scalar: override only when present)
+    if (config.timeouts) {
+      // RC2 diagnostics: snapshot timeout scalars before/after apply so a config reload that
+      // changes staleRequestMaxAge (while the reaper cadence stays frozen) is observable rather
+      // than inferred. Pure observation — reads state, records a diff, no behavior change.
+      const timeoutBefore = {
+        staleRequestMaxAge: state.staleRequestMaxAge,
+        responseHeaderTimeout: state.responseHeaderTimeout,
+        streamIdleTimeout: state.streamIdleTimeout,
+      }
+      const t = config.timeouts
+      if (t.response_header !== undefined) setTimeoutConfig({ responseHeaderTimeout: t.response_header })
+      if (t.stream_idle !== undefined) setTimeoutConfig({ streamIdleTimeout: t.stream_idle })
+      if (t.stale_request_max_age !== undefined) setTimeoutConfig({ staleRequestMaxAge: t.stale_request_max_age })
+      if (t.request_deadline !== undefined) setTimeoutConfig({ requestDeadline: t.request_deadline })
+      // Per-model override maps (already bundled+user per-key merged upstream).
+      // Replace semantics per field; app-guard only (no dispatcher rebuild).
+      if (t.stream_idle_overrides !== undefined) {
+        setTimeoutOverridesConfig({ streamIdleTimeoutOverrides: normalizeModelKeyedRecord(t.stream_idle_overrides, "timeouts.stream_idle_overrides") })
+      }
+      if (t.response_header_overrides !== undefined) {
+        setTimeoutOverridesConfig({
+          responseHeaderTimeoutOverrides: normalizeModelKeyedRecord(t.response_header_overrides, "timeouts.response_header_overrides"),
+        })
+      }
+      recordConfigReloadTimeoutDiff(timeoutBefore, {
+        staleRequestMaxAge: state.staleRequestMaxAge,
+        responseHeaderTimeout: state.responseHeaderTimeout,
+        streamIdleTimeout: state.streamIdleTimeout,
+      })
+    }
+    if (config.model_refresh_interval !== undefined) setTimeoutConfig({ modelRefreshInterval: config.model_refresh_interval })
 
-  syncModelRefreshLoop()
+    // Upstream transport (outbound to GHC): TCP keepalive / h2 ping+connect-timeout /
+    // WS pool idle-timeout+soft-cap (scalar: override only when present).
+    const upstreamTransport = config.upstream_transport
+    if (upstreamTransport) {
+      if (upstreamTransport.tcp_keepalive_probe_delay !== undefined)
+        setUpstreamTransportConfig({ upstreamKeepaliveDelay: upstreamTransport.tcp_keepalive_probe_delay })
+      if (upstreamTransport.http2?.ping_interval !== undefined) setUpstreamTransportConfig({ upstreamH2PingInterval: upstreamTransport.http2.ping_interval })
+      if (upstreamTransport.http2?.favor !== undefined) {
+        setUpstreamTransportConfig({ upstreamH2Favor: upstreamTransport.http2.favor })
+        // Honored literally on both runtimes, but favor:false routes https upstreams
+        // through undici, whose HTTP/1.1 parser hangs forever on GHC's chunked
+        // responses under Bun (the reason h2 is the default). Warn loudly so a Bun
+        // operator who bricks every https request understands why.
+        if (!upstreamTransport.http2.favor && typeof Bun !== "undefined")
+          consola.warn(
+            "[config] upstream_transport.http2.favor=false routes https upstreams through undici (HTTP/1.1), which hangs forever on GitHub Copilot's chunked responses under Bun — every https request will stall. favor:false is only usable on Node (dist/main.mjs).",
+          )
+      }
+      if (upstreamTransport.http2?.session_connect_timeout !== undefined)
+        setUpstreamTransportConfig({ sessionConnectTimeout: upstreamTransport.http2.session_connect_timeout })
+      if (upstreamTransport.http2?.max_concurrent_streams_per_session !== undefined)
+        setUpstreamTransportConfig({ maxConcurrentStreamsPerSession: upstreamTransport.http2.max_concurrent_streams_per_session })
+      if (upstreamTransport.http2?.idle_session_timeout !== undefined)
+        setUpstreamTransportConfig({ h2IdleSessionTimeout: upstreamTransport.http2.idle_session_timeout })
+      if (upstreamTransport.http2?.max_sessions_per_origin !== undefined)
+        setUpstreamTransportConfig({ maxSessionsPerOrigin: upstreamTransport.http2.max_sessions_per_origin })
+      if (upstreamTransport.websocket?.pooled_connection_idle_timeout !== undefined)
+        setUpstreamTransportConfig({ pooledConnectionIdleTimeout: upstreamTransport.websocket.pooled_connection_idle_timeout })
+      if (upstreamTransport.websocket?.soft_max_connections !== undefined)
+        setUpstreamTransportConfig({ softMaxUpstreamWsConnections: upstreamTransport.websocket.soft_max_connections })
+    }
 
-  // Log when config actually changes (skip initial startup load)
-  const currentMtime = getConfigMtimeMs()
-  if (hasApplied && currentMtime !== lastAppliedMtimeMs) {
-    consola.info("[config] Reloaded config.yaml")
-  }
+    // Reactive-learning TTL lifecycle (top-level section). Days → ms; 0/≤0 → never
+    // (Infinity). ttl_days is keyed by internal category id (camelCase). The whole
+    // overrides map is replaced when present (replace semantic); default is retained
+    // on absence, reset via resetConfigManagedState().
+    if (config.negotiation_learning) {
+      const nl = config.negotiation_learning
+      const toMs = (days: number): number => (days <= 0 ? Number.POSITIVE_INFINITY : days * 86_400_000)
+      if (typeof nl.default_ttl_days === "number") setNegotiationConfig({ negotiationDefaultTtlMs: toMs(nl.default_ttl_days) })
+      if (nl.ttl_days) {
+        const overrides: Record<string, number> = {}
+        for (const [cat, days] of Object.entries(nl.ttl_days)) overrides[cat] = toMs(days)
+        setNegotiationConfig({ negotiationTtlOverridesMs: overrides })
+      }
+    }
 
-  // Guardrail: an upstream silence-guard timeout explicitly set to 0 is DISABLED.
-  // With `response_header: 0` the TTFB abort signal is undefined, so a silently
-  // hung GHC upstream keeps a single streaming request pending for MINUTES until
-  // the upstream itself 502s (observed: a 691s pre-response hang; the timeout
-  // mechanism itself is sound — disabling it is the footgun, see
-  // exp/ttfb-timeout-queued/report.md). `stream_idle: 0` is the same class
-  // (mid-stream silence unbounded). Warn at first apply / on actual change only —
-  // gated like the reload log so the per-request hot-reload path never spams.
-  if (!hasApplied || currentMtime !== lastAppliedMtimeMs) {
-    const disabledGuards: Array<string> = []
-    if (config.timeouts?.response_header === 0) disabledGuards.push("response_header (TTFB / time-to-first-byte)")
-    if (config.timeouts?.stream_idle === 0) disabledGuards.push("stream_idle (mid-stream silence)")
-    if (disabledGuards.length > 0) {
-      consola.warn(
-        `[config] upstream silence guard(s) DISABLED: ${disabledGuards.join(", ")}. `
-          + `A hung upstream (e.g. GHC overload) will keep a request pending until the upstream itself responds/closes `
-          + `(observed hundreds of seconds). Set a positive timeout unless you are deliberately debugging long silences.`,
+    // unknown HTTP endpoint 日志级别（scalar: override only when present; retain-on-absence）。
+    if (config.unknown_endpoint_logging) {
+      const u = config.unknown_endpoint_logging
+      setUnknownEndpointLogging({
+        notFound: u.not_found ?? state.unknownEndpointLogging.notFound,
+        methodNotAllowed: u.method_not_allowed ?? state.unknownEndpointLogging.methodNotAllowed,
+      })
+    }
+
+    if (config.logging) {
+      const logging = config.logging
+      setLoggingConfig({
+        ...(logging.terminal_level !== undefined && { terminalLevel: logging.terminal_level }),
+        ...(logging.file_level !== undefined && { fileLevel: logging.file_level }),
+        ...(!hasApplied && logging.file?.enabled !== undefined && { fileEnabled: logging.file.enabled }),
+        ...(!hasApplied && logging.file?.directory !== undefined && { fileDirectory: logging.file.directory }),
+        ...(!hasApplied && logging.file?.max_size_mb !== undefined && { fileMaxSizeMb: logging.file.max_size_mb }),
+        ...(!hasApplied && logging.file?.max_files_per_process !== undefined && { fileMaxFilesPerProcess: logging.file.max_files_per_process }),
+        ...(!hasApplied && logging.file?.retention_days !== undefined && { retentionDays: logging.file.retention_days }),
+      })
+      if (hasApplied && logging.file) {
+        const differs =
+          (logging.file.enabled !== undefined && logging.file.enabled !== state.logging.fileEnabled)
+          || (logging.file.directory !== undefined && logging.file.directory !== state.logging.fileDirectory)
+          || (logging.file.max_size_mb !== undefined && logging.file.max_size_mb !== state.logging.fileMaxSizeMb)
+          || (logging.file.max_files_per_process !== undefined && logging.file.max_files_per_process !== state.logging.fileMaxFilesPerProcess)
+          || (logging.file.retention_days !== undefined && logging.file.retention_days !== state.logging.retentionDays)
+        if (differs) consola.warn("[config] logging.file.* changes require a restart; keeping the active writer configuration")
+      }
+    }
+    if (config.tui?.enabled !== undefined) {
+      if (!hasApplied) setTuiEnabled(config.tui.enabled)
+      else if (config.tui.enabled !== state.tuiEnabled) consola.warn("[config] tui.enabled changes require a restart; keeping the active terminal capability")
+    }
+
+    // Responses API settings (scalar: override only when present)
+    const responsesConfig = config.openai_responses
+    if (responsesConfig && responsesConfig.normalize_call_ids !== undefined)
+      setResponsesConfig({ normalizeResponsesCallIds: responsesConfig.normalize_call_ids })
+    if (responsesConfig && responsesConfig.upstream_ws !== undefined) setResponsesConfig({ upstreamWebSocket: responsesConfig.upstream_ws })
+    // buffered_retry: boolean shorthand = `enabled`; map = `{ enabled, caps }` where
+    // caps override the shared buffered_retry.* for the `responses` vendor.
+    if (responsesConfig && responsesConfig.buffered_retry !== undefined) {
+      applyVendorBufferedRetry(responsesConfig.buffered_retry, "responses", (enabled) => setResponsesConfig({ responsesBufferedRetry: enabled }))
+    }
+    if (responsesConfig?.max_tokens_continuation)
+      setMaxTokensContinuationOverride("responses", mapMaxTokensContinuation(responsesConfig.max_tokens_continuation))
+    if (responsesConfig && responsesConfig.fix_stream_ids !== undefined) setResponsesConfig({ fixResponsesStreamIds: responsesConfig.fix_stream_ids })
+    if (responsesConfig && responsesConfig.strip_image_generation_tool !== undefined)
+      setResponsesConfig({ stripImageGenerationTool: responsesConfig.strip_image_generation_tool })
+    if (responsesConfig && responsesConfig.buffered_merge) {
+      const bm = responsesConfig.buffered_merge
+      if (bm.event_compaction !== undefined) setResponsesConfig({ responsesBufferedMergeEventCompaction: bm.event_compaction })
+      if (bm.completed_output !== undefined) setResponsesConfig({ responsesBufferedMergeCompletedOutput: bm.completed_output })
+    }
+
+    // Client-facing Responses WS ingress limits (scalar: override only when present).
+    const responsesWsIngress = config.server?.responses_ws
+    if (responsesWsIngress) {
+      if (responsesWsIngress.keep_open !== undefined) setResponsesWsIngressConfig({ clientWebsocketKeepOpen: responsesWsIngress.keep_open })
+      if (responsesWsIngress.max_frame_bytes !== undefined) setResponsesWsIngressConfig({ maxWsFrameBytes: responsesWsIngress.max_frame_bytes })
+      if (responsesWsIngress.max_connections !== undefined) setResponsesWsIngressConfig({ maxClientWsConnections: responsesWsIngress.max_connections })
+    }
+
+    // Chat Completions settings. buffered_retry: boolean shorthand = `enabled`; map =
+    // `{ enabled, caps }` where caps override the shared buffered_retry.* for the
+    // `chat_completions` vendor. Default off (P3 flips the default to true).
+    const chatCompletionsConfig = config.chat_completions
+    if (chatCompletionsConfig && chatCompletionsConfig.buffered_retry !== undefined) {
+      applyVendorBufferedRetry(chatCompletionsConfig.buffered_retry, "chat_completions", (enabled) =>
+        setChatCompletionsConfig({ chatCompletionsBufferedRetry: enabled }),
       )
     }
+    if (chatCompletionsConfig?.max_tokens_continuation) {
+      setMaxTokensContinuationOverride("chat_completions", mapMaxTokensContinuation(chatCompletionsConfig.max_tokens_continuation))
+    }
+
+    syncModelRefreshLoop()
+
+    // Log when config actually changes (skip initial startup load)
+    const currentMtime = getConfigMtimeMs()
+    if (hasApplied && currentMtime !== lastAppliedMtimeMs) {
+      consola.info("[config] Reloaded config.yaml")
+    }
+
+    // Guardrail: an upstream silence-guard timeout explicitly set to 0 is DISABLED.
+    // With `response_header: 0` the TTFB abort signal is undefined, so a silently
+    // hung GHC upstream keeps a single streaming request pending for MINUTES until
+    // the upstream itself 502s (observed: a 691s pre-response hang; the timeout
+    // mechanism itself is sound — disabling it is the footgun, see
+    // exp/ttfb-timeout-queued/report.md). `stream_idle: 0` is the same class
+    // (mid-stream silence unbounded). Warn at first apply / on actual change only —
+    // gated like the reload log so the per-request hot-reload path never spams.
+    if (!hasApplied || currentMtime !== lastAppliedMtimeMs) {
+      const disabledGuards: Array<string> = []
+      if (config.timeouts?.response_header === 0) disabledGuards.push("response_header (TTFB / time-to-first-byte)")
+      if (config.timeouts?.stream_idle === 0) disabledGuards.push("stream_idle (mid-stream silence)")
+      if (disabledGuards.length > 0) {
+        consola.warn(
+          `[config] upstream silence guard(s) DISABLED: ${disabledGuards.join(", ")}. `
+            + `A hung upstream (e.g. GHC overload) will keep a request pending until the upstream itself responds/closes `
+            + `(observed hundreds of seconds). Set a positive timeout unless you are deliberately debugging long silences.`,
+        )
+      }
+    }
+
+    hasApplied = true
+    lastAppliedMtimeMs = currentMtime
+
+    return config
+  } finally {
+    // `state` cannot re-filter for itself — that needs the raw catalog and the normalized id match,
+    // both owned by `~/lib/models/cache`, and having `state` call into the models domain is exactly
+    // the import cycle docs/plan/2026-07-28-state-to-foundation/HANDOVER.md exists to remove.
+    refreshCatalogView()
   }
-
-  hasApplied = true
-  lastAppliedMtimeMs = currentMtime
-
-  return config
 }
 
 /** Exposed for testing: reset the apply-tracking state */

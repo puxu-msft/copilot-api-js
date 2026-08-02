@@ -72,6 +72,7 @@ import type {
   MessagesPayload,
 } from "~/types/api/anthropic"
 
+import { streamErrorKindToAnthropicErrorType } from "~/lib/anthropic/error-shaping"
 import { runAnthropicPayloadRewrites } from "~/lib/anthropic/payload-rewrites"
 import { createBetaProbe } from "~/lib/anthropic/pipeline"
 import {
@@ -111,6 +112,7 @@ import {
   type ForwardStreamTranslator,
   renderResponseNonStreamingVia,
 } from "~/lib/pipeline/hub-translate"
+import { STREAM_ERROR_KIND_MESSAGES } from "~/lib/stream"
 import { applyInboundSystemPrompt } from "~/lib/system-prompt"
 
 import { createAnthropicSanitizeRewrite } from "./request-rewrite-adapter"
@@ -474,40 +476,21 @@ function parseContentLength(header: string | null): number | undefined {
 // S7 — formatError
 // ============================================================================
 
-/** Kind-derived error-frame messages (raw upstream message unavailable — see P2.2-D4). */
-const STREAM_ERROR_MESSAGES: Record<ClassifiedStreamError, string> = {
-  "idle-timeout": "Stream idle timeout",
-  shutdown: "Server is shutting down",
-  "client-abort": "Client disconnected",
-  "reaper-cancel": "Request cancelled by stale-request reaper",
-  "dispatch-cancel": "Upstream dispatch cancelled",
-  other: "Stream error",
-}
-
-/** Map the classified kind to Anthropic's error `type` (mirrors legacy anthropicStreamErrorType). */
-function anthropicErrorType(err: ClassifiedStreamError): string {
-  switch (err) {
-    case "idle-timeout": {
-      return "timeout_error"
-    }
-    case "shutdown":
-    case "reaper-cancel": {
-      return "overloaded_error"
-    }
-    default: {
-      return "api_error"
-    } // client-abort + other
-  }
-}
-
 /**
  * Shape a classified stream-lifecycle error into an Anthropic SSE `error` frame.
  * Anthropic's frame is double-typed: `{ type: "error", error: { type, message } }`
  * (distinct from OpenAI's `{ error: { message, type } }`). The handler builds the
  * mid-stream error frame inline with the raw message; this is the codec's fallback.
+ *
+ * Both the `type` and the `message` come from shared tables (`~/lib/anthropic/error-shaping`
+ * and `~/lib/stream`) that the LIVE handler path uses too — this file used to keep private
+ * copies of both, which is how the codec and the wire disagreed about a hard deadline.
  */
 function formatAnthropicError(err: ClassifiedStreamError): ClientFrame {
-  return { event: "error", data: JSON.stringify({ type: "error", error: { type: anthropicErrorType(err), message: STREAM_ERROR_MESSAGES[err] } }) }
+  return {
+    event: "error",
+    data: JSON.stringify({ type: "error", error: { type: streamErrorKindToAnthropicErrorType(err), message: STREAM_ERROR_KIND_MESSAGES[err] } }),
+  }
 }
 
 // ============================================================================

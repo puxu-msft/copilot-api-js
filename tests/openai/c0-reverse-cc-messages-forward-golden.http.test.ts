@@ -25,10 +25,10 @@ import {
 } from "bun:test"
 
 import { getHistory } from "~/lib/history"
+import { setModels } from "~/lib/models/cache"
 import {
   //
   setDisabledModels,
-  setModels,
   setStateForTests,
 } from "~/lib/state"
 
@@ -66,13 +66,34 @@ function anthropicUpstreamFrames(model: string): Array<string> {
   ]
 }
 
+let nonStreamingRefusal = false
+
 const upstreamFetchMock = mock((input: string | URL | Request, init?: RequestInit) => {
   const url =
     typeof input === "string" ? input
     : input instanceof URL ? input.href
     : input.url
   const payload = typeof init?.body === "string" ? (JSON.parse(init.body) as { model?: string }) : {}
-  if (url.endsWith("/v1/messages")) return Promise.resolve(createSseResponse(anthropicUpstreamFrames(payload.model ?? CLAUDE)))
+  if (url.endsWith("/v1/messages")) {
+    if (nonStreamingRefusal)
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({
+            id: "msg_refusal",
+            type: "message",
+            role: "assistant",
+            model: payload.model ?? CLAUDE,
+            content: [],
+            stop_reason: "refusal",
+            stop_details: { type: "refusal", category: "cyber", explanation: "diagnostic only" },
+            stop_sequence: null,
+            usage: { input_tokens: 20, output_tokens: 1 },
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        ),
+      )
+    return Promise.resolve(createSseResponse(anthropicUpstreamFrames(payload.model ?? CLAUDE)))
+  }
   throw new Error(`unexpected upstream URL in mock: ${url}`)
 })
 
@@ -88,6 +109,7 @@ describe("C0 golden (b) — reverse @messages forwarded CC bytes (Anthropic→CC
   useIsolatedRuntime()
 
   beforeEach(() => {
+    nonStreamingRefusal = false
     upstreamFetchMock.mockClear()
     applyFetchMock(upstreamFetchMock)
     setStateForTests({ copilotToken: "tok", streamKeepalivePingSec: 0, streamCommitAfterSec: 0 })
@@ -134,5 +156,25 @@ describe("C0 golden (b) — reverse @messages forwarded CC bytes (Anthropic→CC
 
     const entry = getHistory({ endpoint: "openai-chat-completions", sessionId: "c0-reverse-cc", limit: 5 }).entries[0]
     expect(entry?.state).toBe("completed")
+  })
+
+  test("cc client @messages non-streaming refusal preserves raw stop_details in History", async () => {
+    nonStreamingRefusal = true
+    setStateForTests({ refusalSseRewrite: "refusal" })
+    injectModels()
+    const res = await app.request("/chat/completions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-session-id": "c0-reverse-refusal-ns" },
+      body: JSON.stringify({ model: `${CLAUDE}@messages`, messages: [{ role: "user", content: "probe" }] }),
+    })
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as { choices: Array<{ finish_reason: string }> }
+    expect(body.choices[0]?.finish_reason).toBe("content_filter")
+    const entry = getHistory({ endpoint: "openai-chat-completions", sessionId: "c0-reverse-refusal-ns", limit: 5 }).entries[0]
+    expect(entry?.attempts?.at(-1)?.upstreamResponse?.stopDetails).toEqual({
+      type: "refusal",
+      category: "cyber",
+      explanation: "diagnostic only",
+    })
   })
 })

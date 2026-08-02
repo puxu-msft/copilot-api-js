@@ -19,11 +19,8 @@ import {
 import type { RepairItem } from "~/lib/anthropic/tool-input-repair"
 
 import { getHistory } from "~/lib/history/store"
-import {
-  //
-  setModels,
-  setStateForTests,
-} from "~/lib/state"
+import { setModels } from "~/lib/models/cache"
+import { setStateForTests } from "~/lib/state"
 
 import { mockModel } from "../helpers/factories"
 import { useIsolatedRuntime } from "../helpers/isolated-fixture"

@@ -1,11 +1,57 @@
 # Vue `ui/` 退役路线图（增量迁移到 React `ui-v4/`）
 
-> **[2026-07-22 时效性警告]** 本文写作时的前提是「主服务器同时挂载 `/ui`（Vue）+ `/ui-v4`（React）两条路由，退役 = 删主服务器路由」（见 §1 现状锚点原文）。**该前提已被 UI 外置改动推翻**：主服务器不再服务/代理/构建任何前端 UI，两个 workspace 都保留、都由运维独立托管（见 [DESIGN.md](DESIGN.md)「前端子项目」+ README「Hosting the Web UI」）。因此「退役」的含义从「删主服务器的 `/ui` mount」变成「决定运维还托管哪个/哪些静态产物、`ui/` workspace 本身是否/何时整体删除」——**下文逐页迁移方法论、退役检查清单（§2/§3）、已完成退役日志（§4）作为方法论历史仍完整有效**（models 页退役的实测经验、共享件教训依然适用于任何后续页面迁移），但**§1「现状锚点」一段（主服务器双 mount 的表述）与「删主服务器路由」的隐含前提已过时**，读者应以 DESIGN.md「活的架构现状」为准核对当前主服务器路由挂载事实。
+> **[2026-07-22 时效性警告]** 本文写作时的前提是「主服务器同时挂载 `/ui`（Vue）+ `/ui-v4`（React）两条路由，退役 = 删主服务器路由」（见 §1 现状锚点原文）。**该前提已被 UI 外置改动推翻**：主服务器不再服务/代理/构建任何前端 UI，两个前端都保留、都由运维独立托管（见 [DESIGN.md](DESIGN.md)「前端子项目」+ README「Hosting the Web UI」）。因此「退役」的含义从「删主服务器的 `/ui` mount」变成「决定运维还托管哪个/哪些静态产物、`ui/` 本身是否/何时整体删除」——**下文逐页迁移方法论、退役检查清单（§2/§3）、已完成退役日志（§4）作为方法论历史仍完整有效**（models 页退役的实测经验、共享件教训依然适用于任何后续页面迁移），但**§1「现状锚点」一段（主服务器双 mount 的表述）与「删主服务器路由」的隐含前提已过时**，读者应以 DESIGN.md「活的架构现状」为准核对当前主服务器路由挂载事实。（**2026-07-28 二次订正**：本段原写「两个 workspace 都保留」——`ui/` 已于当日移出 bun workspaces，不再是 workspace 成员，见 §0。）
 
 - 创建：2026-07-10
 - 归属：前端子项目退役跟踪。**这是「哪些 Vue 页面还能删、怎么删」的单一事实源。**
 - ~~现状锚点：`ui-v4/` 是**当前活的** React History UI（`/ui-v4`）；`ui/` 是**旧 Vue** UI（`/ui`），正被逐页退役。两者并行挂载见 [DESIGN.md](DESIGN.md)「活的架构现状」+ `src/routes/index.ts`（`/ui` + `/ui-v4` 双 mount）。~~ （已过时，见上方警告——主服务器已不挂载任一 UI）
 - 相关：[ui/CLAUDE.md](../ui/CLAUDE.md)、models 退役 spec [spec/2026-07-08-ui-v4-models-list-parity.md](spec/2026-07-08-ui-v4-models-list-parity.md) + [spec/2026-07-08-ui-v4-raw-json-dual-view.md](spec/2026-07-08-ui-v4-raw-json-dual-view.md)。
+
+## 0. 工具链脱钩（2026-07-28，已完成）
+
+**退役的第一步不是删页，是让 `ui/` 不再拖累主线。** 逐页 parity 审计（§1–§3）是笔慢账，在它走完之前，一个没人开发的前端不该继续占用每次 `bun install` 和每次 `eslint .`。故先把编译链切断，页面按原节奏慢慢退。
+
+用户 2026-07-28 拍板的三条边界：
+
+| 链路 | 脱钩后 | 说明 |
+|---|---|---|
+| bun workspace | **移出** | 根 `workspaces` 不再含 `ui`；`ui/` 自带 `bun.lock`，须 `cd ui && bun install` |
+| root `eslint .` | **整体 ignore** | `ui/**` 不再 lint。连带移除根三个纯 Vue devDep（`eslint-plugin-vue`/`@vue/eslint-config-typescript`/`vue-eslint-parser`）与 `defineConfigWithVueTs` 包裹 |
+| root `knip` | **整体 ignore** | 新建 `knip.json` 排除 `ui/**`。**反直觉**：移出 workspaces 不会让 knip 忽略该目录，反而把 `ui/` 从「有自己 entry point 的 workspace」降级成「一堆没人引用的散文件」——脱钩当天 knip 因此把 97 个 ui 文件报成 unused |
+| 根 `*:ui` 脚本 | **保留，改 `cd` 形式** | 9 个入口名不变，实现从 `--filter copilot-api-ui`（已不能解析）改为 `cd ui && bun run …` |
+| `~backend/*` | **保留** | 刻意留下的主要耦合，见下方「代价」 |
+| `ui/bunfig.toml` preload | **保留** | 向上引用仓库的 `tests/helpers/sandbox-paths.ts`（测试期 fs 沙箱地板）。单向、单文件，沙箱比自足重要 |
+
+已经无需处理的：根 `build`（2026-07-22 UI 外置时就不链 UI 了）、根 `tsconfig`（`include` 从来不含 `ui/`）、后端测试档位（`tests/infra/test-discovery-matrix.unit.test.ts` 已禁止聚合前端套件）。经异模型 reviewer 逐个入口核查后确认未拉链的还有：`bunfig.toml`（root 与 ui 各一份）、`tsdown.config.ts`、`prettier.config.mjs`、`prepare`/`prepack`/`release` 生命周期、发布 `files`（实跑 `npm pack --dry-run` 得 8 个文件、UI 为 0）、`scripts/**`、`.gitignore`、`.claude/`、`contrib/`。
+
+脱钩后 root lint 问题数 395 → 368，正好少掉 `ui/` 的 27 个，其余目录一个不增；root knip 的 `ui/` 条目 97 → 0，其余 10158 条逐条不变（集合恒等）。机器护栏见 `tests/infra/ui-v3-decoupling.unit.test.ts`（workspaces / tsconfig / eslint ignore / knip ignore / `--filter` 残留五项，含「ui 目录仍存在」的非空转前提校验与变异正样本对照）。
+
+> **附带发现（不在本次范围，未处理）**：root `knip` 本身目前是不可用的噪音源——它没有任何配置（`knip.json` 是本次为排除 ui 才新建的），总计报出 10255 条，其中 `refs/`（vendored 的 Claude Code 参考源码）独占 9403 条、`tests/` 707 条。要让 `bun run knip` 重新成为有意义的门，需要单独一轮配置工作（各 workspace 的 entry point、忽略 `refs/` 等），属独立工作项。
+
+### 代价：`~backend` 会静默烂掉，且没有护栏
+
+保留 `~backend/*` 意味着 `ui/` 仍编译后端源码，但**没有任何自动机制会在后端重构打断它时报警**——它不在根 tsconfig 里，不进任何测试档位。脱钩当天实测发现它已经断了三处，全都无人知晓：
+
+- **telemetry / foundation 拆包**：`~backend/lib/request-telemetry` 与一批 `~/lib/…` 别名全部 TS2307，`typecheck:ui` 早已红。
+- **`DecodeToolInputConfig.all` 被删**（commit `c9a22b9b`，理由写的是「default-off, no live consumer」）：真正且唯一的消费者就是 Vue 详情页的 tool_use 显示解码。删除时 ui 侧类型错 + vitest 红，但没人看见。这是「无消费者」类绝对断言必须跨全部树核实的又一个实例（→ `verifying-authoritative-claims`）。
+- **`@types/node` 版本**：`ui/` 独立安装会把 vite/vitest 的可选 peer 解析到 26.x，其 Buffer 类型让后端源码编不过。故 `ui/package.json` 把 `@types/node` 钉死在后端同款 `24.6.2`——保留 `~backend` 就必须共用后端的类型环境，这个 pin 是代价的落点。
+
+三处均已修复，`build:ui` / `typecheck:ui` / `test:ui`（248 bun + 78 vitest）当前三绿。**但这只是一次性的**：以后动后端、想确认没打断 Vue 前端，只能显式跑 `bun run typecheck:ui` + `bun run test:ui`。真正终结这笔账的是走完 §1–§3 把 `ui/` 删掉，而不是给它加护栏。
+
+### 「独立」到什么程度（实测边界，非推断）
+
+脱钩当天在**仓库外**（`/tmp` 的 detached worktree，无任何 root `node_modules`，故 node 解析无法向上借到主树）实测过三条脚本，结论不对称：
+
+| 脚本 | 仓库外裸跑 | 原因 |
+|---|---|---|
+| `bun run build` | ✅ 通过 | vite 只需 `ui/` 自有依赖；`~backend` 那几个模块是纯的，且类型导入被擦除 |
+| `bun run test` | ✅ 通过（248 bun + 78 vitest） | 同上 |
+| `bun run typecheck` | ❌ 一片 TS2307 | `~backend/*` 把后端源码拖进类型图，而后端自己的依赖（`consola`/`fetch-event-stream`/`jsonrepair`/`@datadog/sketches-js`/`@anthropic-ai/sdk`…）装在**仓库根** |
+
+即：**`ui/` 独立的是「前端依赖图」，不是「类型环境」**。只要 `~backend/*` 还在，typecheck 就必须在仓库内、且根已 `bun install` 过才能跑。这不是缺陷而是那条耦合的定义，写在这里是为了别把「ui 已独立」误读成「把 ui 目录拷出去就能用」。
+
+这次实测还捞到一个静态扫描漏掉的洞：`ui/src/utils/block-diff.ts` 用了 `diff` 包，但 `ui/package.json` 从来没声明过它——workspace hoist 一直在替它兜底，脱钩后裸跑立刻 `Rollup failed to resolve import "diff"`。已补 `diff` + `@types/diff` + `@types/bun`。**教训**：判断「一个子项目要哪些依赖」不能靠 grep import 语句（多行 import、模板语法都会骗过正则），只有仓库外裸装裸跑才是 oracle。
+
 
 ## 1. 逐页退役状态
 

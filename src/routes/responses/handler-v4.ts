@@ -52,10 +52,18 @@ import { bridgeClientAbort } from "~/lib/abort-bridge"
 import { createBetaProbe } from "~/lib/anthropic/pipeline"
 import {
   //
+  extractRefusalDetail,
+  isContentlessRefusalResponse,
+  refusalCategoryForDiagnostics,
+  refusalSummary,
+} from "~/lib/anthropic/recover-refusal"
+import {
+  //
   createReverseAnthropicMapperHolder,
 } from "~/lib/codec/openai-cc/reverse-anthropic-rewrite"
 import { createOpenAiResponsesCodec } from "~/lib/codec/openai-responses/codec"
 import { responsesKeepaliveFrame } from "~/lib/codec/openai-responses/keepalive"
+import { resolveBufferedCaps } from "~/lib/config/model-overrides"
 import { HTTPError } from "~/lib/error"
 import {
   //
@@ -84,11 +92,7 @@ import {
   buildResponsesResponseData,
 } from "~/lib/request/recording"
 import { usageFromTotalInput } from "~/lib/request/usage-normalize"
-import {
-  //
-  resolveBufferedCaps,
-  state,
-} from "~/lib/state"
+import { state } from "~/lib/state"
 import { resolveInboundQuery } from "~/lib/transport/query-forward"
 import { createUpstreamResponsesTransport } from "~/lib/transport/responses-transport"
 import {
@@ -525,8 +529,10 @@ function renderReverseNonStreamingV4(c: Context, env: RequestEnvelope, resp: Res
   env.ctx.setClientResponseStatus(httpResponse.status)
 
   const truncationReason = anthropicNonStreamingTruncation(anthropicUpstream.stop_reason)
+  const refusalReason = isContentlessRefusalResponse(anthropicUpstream) ? refusalSummary(extractRefusalDetail(anthropicUpstream.stop_details)) : null
+  const failureReason = refusalReason ?? truncationReason
   const responseData = {
-    success: !truncationReason,
+    success: !failureReason,
     model: anthropicUpstream.model,
     usage: {
       input_tokens: anthropicUpstream.usage.input_tokens,
@@ -535,15 +541,23 @@ function renderReverseNonStreamingV4(c: Context, env: RequestEnvelope, resp: Res
       cache_creation_input_tokens: anthropicUpstream.usage.cache_creation_input_tokens ?? undefined,
     },
     stop_reason: anthropicUpstream.stop_reason ?? undefined,
+    stopDetails: (anthropicUpstream as { stop_details?: unknown }).stop_details,
     content: { role: "assistant" as const, content: anthropicUpstream.content },
     responseText: JSON.stringify(anthropicUpstream),
   }
-  if (truncationReason) {
-    env.ctx.fail(anthropicUpstream.model, new Error(truncationReason), {
-      usage: responseData.usage,
-      stop_reason: responseData.stop_reason,
-      content: responseData.content,
-    })
+  if (failureReason) {
+    if (refusalReason) env.ctx.recordFeature("refusal-passthrough", { category: refusalCategoryForDiagnostics(anthropicUpstream.stop_details) })
+    env.ctx.fail(
+      anthropicUpstream.model,
+      new Error(failureReason),
+      {
+        usage: responseData.usage,
+        stop_reason: responseData.stop_reason,
+        stopDetails: responseData.stopDetails,
+        content: responseData.content,
+      },
+      refusalReason ? { upstreamSucceeded: true } : undefined,
+    )
   } else {
     env.ctx.complete(responseData)
   }
@@ -643,6 +657,14 @@ async function pumpReverseAnthropicLegV4(opts: PumpReverseAnthropicLegOptions): 
     await sink.writeSynthetic?.(openAIStreamErrorFrame(truncErr)).catch(() => undefined)
     recordForwarded()
     env.ctx.fail(anthropicAcc.model || model, truncErr, buildAnthropicResponseData(anthropicAcc, model))
+    sink.finalize?.()
+    return
+  }
+  if (terminal.kind === "contentless-refusal") {
+    const summary = refusalSummary(extractRefusalDetail(anthropicAcc.stopDetails))
+    env.ctx.recordFeature("refusal-passthrough", { category: refusalCategoryForDiagnostics(anthropicAcc.stopDetails) })
+    recordForwarded()
+    env.ctx.fail(anthropicAcc.model || model, new Error(summary), buildAnthropicResponseData(anthropicAcc, model), { upstreamSucceeded: true })
     sink.finalize?.()
     return
   }

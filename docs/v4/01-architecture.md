@@ -138,7 +138,9 @@ driver.runResponse）                     ▼
 | **S4** | Exchange | env → `UpstreamStream` | 错误驱动重试循环：`prepareWire(env)` → 纯收发 → 失败则 strategy 改 env 重入。采样每 attempt `wireRequest`+headers+`sseEvents`(上游原始) | strategies + 纯 client + `request-preparation`(降为 prepareWire) | `pipeline.ts`+`client.ts`+`request-preparation.ts` |
 | **S5** | Rewrite-out | frames → frames | 响应改写链（逐帧/累积）：server-tool 过滤、工具名还原、tool-input decode、thinking-sig compat、心跳。采样 `forwardedSseEvents` | ResponseRewrite registry | handler 流式 pump |
 | **S6** | Translate-out | frames → frames | 翻译回客户端协议（CC→Gemini、Responses→CC；透传=identity） | `codec.renderResponse` | `gemini/convert-stream`、`translate/*-stream` |
-| **S7** | Egress | frames → HTTP/WS | `streamSSE`/`ws.send` 写回；终止/错误帧成形 | `codec.formatError` | handler streamSSE |
+| **S7** | Egress | frames → HTTP/WS | `streamSSE`/`ws.send` 写回；终止/错误帧成形 | —（**handler 持有**，见下注） | handler streamSSE |
+
+> **S7 的错误帧成形归 handler，不经 codec**（此行原写 `codec.formatError`，与实现和后续裁决都不符）。`FormatCodec.formatError` 至今**零生产调用**，且 finalize-stream 重设计已明确裁决**不**把终态成形收进 driver：WS 的错误/截断走传输级 `sendErrorAndClose`+1011，表达不成 `ClientFrame`；codec 只拿得到 kind、拿不到上游 raw message，接线会逐字节回归。协议映射由共享表提供（`~/lib/anthropic/error-shaping`、`~/lib/gemini/stream-error`、`~/lib/openai/stream-error`），handler 与 codec 同调，所以两边不会再漂移。裁决见 [archive/2606-landed-rfcs/response-pipeline/finalize-stream-redesign.md §③](../archive/2606-landed-rfcs/response-pipeline/finalize-stream-redesign.md)；死方法本身的去留记在 [todo/deferred-backlog.md](../todo/deferred-backlog.md)。
 
 **非流式**走同一 codec/registry 的非流式分支（现状已有 `*NonStreaming*` 对应函数），driver 用同一阶段定义、不同执行器。
 

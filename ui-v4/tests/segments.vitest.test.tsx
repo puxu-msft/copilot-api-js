@@ -171,6 +171,29 @@ describe("detail segments", () => {
     render(<HeadersSegment entry={e} />)
     expect(screen.getByText(/x-test/)).toBeDefined()
   })
+  it("MetaSegment shows the refusal category without flattening it into failureReason", () => {
+    const e = {
+      ...base,
+      _index: { derived: { failureReason: "upstream contentless refusal" } },
+      attempts: [
+        {
+          index: 0,
+          durationMs: 0,
+          upstreamResponse: {
+            success: true,
+            stopReason: "refusal",
+            stopDetails: { category: "cyber", explanation: "full upstream explanation" },
+          },
+        },
+      ],
+    } as unknown as HistoryEntry
+
+    render(<MetaSegment entry={e} />)
+    expect(screen.getByText("refusal category")).toBeDefined()
+    expect(screen.getByText("cyber")).toBeDefined()
+    expect(screen.queryByText("full upstream explanation")).toBeNull()
+  })
+
   it("MetaSegment shows strategy + warnings", () => {
     const e = {
       ...base,

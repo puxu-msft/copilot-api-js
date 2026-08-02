@@ -1,12 +1,12 @@
 import type { ContentBlockParam } from "~/types/api/anthropic"
 
-/**
- * Pure contract leaf for the assistant block-layout repair: the strategy enum, the separator
- * carrier table, and the separator predicate. Deliberately imports NOTHING but types — `state-defaults`
- * reads its default carrier and strategy type, so any state import here would close an import cycle
- * (the SCC ratchet guard caught exactly that).
- */
-export type AssistantBlockLayoutStrategy = "passthrough" | "move_blocks"
+import type { SeparatorCarrier } from "./separator-carrier"
+
+import {
+  //
+  isSyntheticSeparatorText,
+  separatorText,
+} from "./separator-carrier"
 
 /**
  * Synthetic separator sentinel — TWO INDEPENDENT AXES, because emitting and recognising carry
@@ -32,52 +32,42 @@ export type AssistantBlockLayoutStrategy = "passthrough" | "move_blocks"
  * `tests/anthropic/synthetic-separator-identity.unit.test.ts` fails the build if any other src
  * module compares against a carrier literal or imports the emit constant.
  */
-const SYNTHETIC_SEPARATOR_PREFIX = "[copilot-api:thinking-separator"
+export {
+  //
+  DEFAULT_SEPARATOR_CARRIER,
+  isSyntheticSeparatorText,
+  SEPARATOR_CARRIERS,
+  separatorText,
+  SYNTHETIC_SEPARATOR_PREFIX,
+} from "./separator-carrier"
 
+export type { SeparatorCarrier } from "./separator-carrier"
 /**
- * The EMIT axis. Only real-upstream-proven carriers belong here. `marker_v1` is the visible
- * versioned marker (the sole carrier confirmed 200 by upstream replay, spec 2026-07-26). A minimal
- * invisible-Unicode carrier is a candidate but must first clear the cross-model / mutation / wire /
- * client-round-trip PoC — until then it is deliberately absent rather than offered untested.
- */
-export const SEPARATOR_CARRIERS = {
-  marker_v1: `${SYNTHETIC_SEPARATOR_PREFIX}:v1]`,
-} as const
-
-export type SeparatorCarrier = keyof typeof SEPARATOR_CARRIERS
-
-/** The carrier emitted when config says nothing. */
-export const DEFAULT_SEPARATOR_CARRIER: SeparatorCarrier = "marker_v1"
-
-/**
- * Spellings emitted by earlier builds. Built into the ACCEPT axis so an operator never has to
- * configure the project's own history: `[copilot-api: thinking separator]` was the only spelling
- * before 2026-07-27. Operator-pinned extras (`separatorAcceptExtra`) are unioned on top.
- */
-const BUILTIN_ACCEPTED_SEPARATORS: ReadonlySet<string> = new Set(["[copilot-api: thinking separator]"])
-
-/**
- * The literal for a carrier. The parameter is typed to the closed enum, so an unknown value can only
- * arrive from a config path that already validated it against the same enum — no runtime fallback is
- * added here, because silently substituting the default would hide such a validation hole.
- */
-export function separatorText(carrier: SeparatorCarrier = DEFAULT_SEPARATOR_CARRIER): string {
-  return SEPARATOR_CARRIERS[carrier]
-}
-
-/**
- * Is this block one of OUR synthetic separators? Recognises, in order: the built-in prefix family
- * (so a future carrier version is understood by an older build), the spellings older builds emitted,
- * and any literal an operator pinned via `anthropic.separator_accept_extra`.
+ * Pure contract leaf for the assistant block-layout repair: the strategy enum and the block-shaped
+ * separator adapters. Deliberately imports NOTHING but types and the zero-import separator
+ * vocabulary — `state-defaults` reads the default carrier and strategy type, so any state import
+ * here would close an import cycle (the SCC ratchet guard caught exactly that).
  *
- * `extraAccepted` is supplied by the caller (which owns the state read) — this module stays a
- * pure leaf so it can be imported by `state-defaults` without forming an import cycle.
+ * The separator VOCABULARY itself (carrier table, `SeparatorCarrier`, `DEFAULT_SEPARATOR_CARRIER`,
+ * `separatorText`, the text predicate) lives in `./separator-carrier`, which imports nothing at all;
+ * this file adds only the two functions that need `ContentBlockParam`, and re-exports every name so
+ * both historical public paths keep working. Why the split had to happen: the
+ * `~/types/api/anthropic` import on line 1 is enough to disqualify this file as a leaf, and
+ * `state-defaults`'s VALUE edge into it kept `state` inside 50 of the repo's 70 import cycles. See
+ * docs/plan/2026-07-28-state-to-foundation/HANDOVER.md §3.7 #11.
+ */
+export type { AssistantBlockLayoutStrategy } from "~/lib/state-vocabulary"
+
+/**
+ * Is this BLOCK one of OUR synthetic separators? The block-shaped adapter over
+ * {@link isSyntheticSeparatorText} — a non-text block can never be one.
+ *
+ * `extraAccepted` is supplied by the caller (which owns the state read) — this module stays free of
+ * state imports so it can be imported by `state-defaults` without forming an import cycle.
  */
 export function isSyntheticThinkingSeparator(block: ContentBlockParam, extraAccepted: ReadonlyArray<string> = []): boolean {
   if (block.type !== "text" || typeof block.text !== "string") return false
-  const text = block.text.trim()
-  if (text.length === 0) return false
-  return text.startsWith(SYNTHETIC_SEPARATOR_PREFIX) || BUILTIN_ACCEPTED_SEPARATORS.has(text) || extraAccepted.includes(text)
+  return isSyntheticSeparatorText(block.text, extraAccepted)
 }
 
 /** Build a fresh synthetic separator block (the single producer). */

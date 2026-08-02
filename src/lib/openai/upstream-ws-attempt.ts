@@ -145,26 +145,38 @@ export async function attemptUpstreamResponsesWs(
   // the same callback also owns connection disposal so quiescence cannot depend on a consumer
   // ever starting the prefetched-frame generator.
   let disposeAfterHandle: ((reason: string) => void) | undefined
-  const onExternalAbort = () => {
-    requestAbort.abort()
-    disposeAfterHandle?.("Request aborted")
+  // Forward the REASON of whichever source fired, so the cancelling party's identity
+  // (shutdown reason object / cancellation-cause tag / TimeoutError) survives into
+  // `requestAbort` — the local controller is where all four converge, and aborting it
+  // empty-handed drops the provenance every consumer downstream needs.
+  const externalAbortSources: Array<[AbortSignal, () => void]> = []
+  const forwardExternalAbort = (source: AbortSignal | undefined): void => {
+    if (!source) return
+    const handler = (): void => {
+      requestAbort.abort(source.reason)
+      disposeAfterHandle?.("Request aborted")
+    }
+    externalAbortSources.push([source, handler])
+    source.addEventListener("abort", handler, { once: true })
   }
-  shutdownSignal.addEventListener("abort", onExternalAbort, { once: true })
-  clientAbortSignal?.addEventListener("abort", onExternalAbort, { once: true })
-  reaperSignal?.addEventListener("abort", onExternalAbort, { once: true })
-  dispatchSignal?.addEventListener("abort", onExternalAbort, { once: true })
+  forwardExternalAbort(shutdownSignal)
+  forwardExternalAbort(clientAbortSignal)
+  forwardExternalAbort(reaperSignal)
+  forwardExternalAbort(dispatchSignal)
+  const detachExternalAbortSources = (): void => {
+    for (const [source, handler] of externalAbortSources) source.removeEventListener("abort", handler)
+  }
 
   const fetchSignal = createResponseHeaderTimeoutSignal(wire.model)
   const onFetchTimeout = () => {
-    requestAbort.abort(new Error("Upstream WebSocket first-event timeout"))
+    // Carry the watchdog's own TimeoutError: the boundaries only call something a
+    // header/first-event timeout when they can see that identity.
+    requestAbort.abort(fetchSignal?.reason instanceof Error ? fetchSignal.reason : new Error("Upstream WebSocket first-event timeout"))
   }
   fetchSignal?.addEventListener("abort", onFetchTimeout, { once: true })
 
   const detachExternal = () => {
-    shutdownSignal.removeEventListener("abort", onExternalAbort)
-    clientAbortSignal?.removeEventListener("abort", onExternalAbort)
-    reaperSignal?.removeEventListener("abort", onExternalAbort)
-    dispatchSignal?.removeEventListener("abort", onExternalAbort)
+    detachExternalAbortSources()
     fetchSignal?.removeEventListener("abort", onFetchTimeout)
   }
 
@@ -260,10 +272,7 @@ export async function attemptUpstreamResponsesWs(
         reaperSignal,
         idleTimeoutMs: resolveStreamIdleTimeoutMs(wire.model),
         onComplete: async (naturalCompletion) => {
-          shutdownSignal.removeEventListener("abort", onExternalAbort)
-          clientAbortSignal?.removeEventListener("abort", onExternalAbort)
-          reaperSignal?.removeEventListener("abort", onExternalAbort)
-          dispatchSignal?.removeEventListener("abort", onExternalAbort)
+          detachExternalAbortSources()
           if (naturalCompletion && !disposing) resolveQuiesced()
           else await ensureDisposal("WS response consumer stopped before natural completion")
         },

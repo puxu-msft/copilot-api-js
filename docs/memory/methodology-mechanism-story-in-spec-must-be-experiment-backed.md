@@ -1,0 +1,19 @@
+---
+name: methodology-mechanism-story-in-spec-must-be-experiment-backed
+description: 在 spec 里把「机制性解释」当既成事实写下，最容易被实测直接证伪——本轮两条断言全错
+metadata:
+  type: feedback
+---
+
+写设计文档时，最危险的不是数据错，而是**给观测到的现象配一个听起来合理的机制解释，然后把这个解释当事实用**——后续所有设计决策都建立在它上面。
+
+2026-07-28 refusal 抑制这一轮，我的草案写了两条：
+
+- 「带 `category` 的 refusal 多在推理前拦截」→ 被 `req_1783947618475_731` 直接证伪：它 `category:"bio"`，却**烧了 25,636 个 thinking token 之后**才拒绝。
+- 「重发相同内容必再被拒」→ 三个样本**一次重放实验都没做过**；官方文档也只说 "usually"。
+
+两条都不是笔误，是**从「有 category = 分类器命中」这个直觉顺推出来的机制故事**。它们撑着草案里「按 category 分型 + 3 个新 config 键」的整套设计——前提一倒，设计跟着废掉（两位评审独立判为过度设计）。
+
+**Why:** 观测到的相关性（有 category / 无 category）是事实；「所以它是推理前拦截、所以重试无用」是**推断**。把推断写成陈述句，读者（和后来的自己）无法再分辨哪些经过验证。更糟的是：分型这类设计的全部价值就建立在「两类行为真的不同」上，而这恰恰是没验的那一条。
+
+**How to apply:** 写 spec 时对每条「因为 X 所以 Y」自问「我做过哪个实验？」——没有就显式写成「**待验证假设**」并标注证伪方式，绝不用它推导配置键、类型命名或默认值。特别地：**行为分型（按某字段分流处理）必须有行为差异的实验证据**，仅有该字段的取值差异只够支撑**诊断**分型（照实记录、不同呈现），不够支撑**策略**分型。相关：[[feedback-verify-facts-before-superlative-completeness-verdict]]、[[feedback-pass-null-clean-not-self-validating]]。
