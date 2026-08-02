@@ -81,9 +81,42 @@
 
 ---
 
+## 0.5 用户裁决 + 第六轮双方设计论证（2026-07-29）
+
+**用户裁决两项（A 级，不由我裁）**：
+1. **idle hook 并入本次** —— P1.5 那个未决的 rewrite 契约扩展由本 spec 一并闭合（落点 §4.3.1）。
+2. **跨格式降级分两阶段，但写进同一份 spec** —— 不推给边界模糊的 Phase 6（落点 §3.1 / §3.4）。
+
+**第六轮不是复评，是设计论证**：用户对「spec 的方案长期最优吗」的追问触发。我把「provenance 是否该在 source 侧记录」同时交给**跑完 5 轮的 GPT reviewer**（有上下文，但它刚批准过现方案、算半个当事方）与**一个未卷入的 Claude architect-advisor**（异底座、独立）。
+
+| 议题 | 结论 | 落点 |
+|---|---|---|
+| 我提的「source 侧记录 provenance」 | **两方都判我押错了「谁拥有那个事实」**：注入点（S3）只知道自己**提议**了什么，不知道 `stripServerTools`（S4-pre）之后上游**看到**了什么。以它为 SoT = 把意图当事实 | §4.3.0 |
+| 那该用什么 | **wire ∩ originalRequest 求交** —— 两份本就活到 sink、都不会撒谎的记录。不需新载体、不可能 stale、同名冲突自动按客户端优先收敛 | §4.3.0 |
+| 是否推翻 §4 | **不推翻**（正式裁决）。§4 的判定机器（判据表、两陷阱、graph 继承、first-match、缓冲子状态机、idle hook）在**任何**形状下都必须存在；两个形状只在 `classifyByDeclaration` 的**一个输入**上分岔。我把它称作「结构性选择」是**高估**。且 §4 已吸收 5 轮评审的真 bug 修复，推翻重来会把它们置于重新论证的风险 —— 这是**正确性**论据，不是成本论据 | §4 保留，三处外科修正 |
+| 私有字段方案 | **已实测证伪**：字符串字段被 `structuredClone` 保留并直达上游；Symbol 被丢弃、承载不了 | §11-9 |
+| 我对独立方一条断言的反驳 | **反驳成立、对方已撤回**：它称「客户端声明了但被 learned strip 删掉 → 误判 CLIENT_DECLARED → 下轮 orphan 400」。我指出声明既被 strip、上游就看不到该工具、不会发出对应块，**路径不可达**。已降格为「形状更干净、不修可复现 bug」 | —— |
+| §3.2 的收窄论证 | **一条已死、一条被用反**（我实读确认：`text` 块能过两条翻译腿，被丢的只有 server-tool 块）。收窄只支持 passthrough，**降级到 text 与客户端格式无关** | §3.2 全表重写 |
+| 三张分类表并存且漂移 | 仓库已有正确的 server/client 二分（`hedge-policy.ts:3-4`），本 spec **不造第三张**，抽共享 primitive | §4.2、§12.1 |
+
+**独立方明确标注的未验证项**（原样转录，不美化）：三个入站 schema 是否真表达不出 Anthropic typed server tool（推断，未逐一比对）；两条翻译腿的**流式**腿未读（第 4 条对流式是外推）；SDK 的 6 类结果块与 caller 白名单它未打开 `node_modules` 复核（采信本 spec 自述实读）；§4.3.1 缓冲子状态机自身的正确性它未逐行审。**前两项已写进 §3.4 作为阶段二的前置核实项。**
+
+## 0.6 第七轮复评处置表（改动触及已定稿章节后的复评）
+
+结论：**0 blocker / 3 major**，报告见 [评审合集](2026-07-26-server-tool-provenance-routing-review.md)「第 7 轮」。3 条**全部采纳**。其中 R7-M1 **推翻了独立方的一个论断、也推翻了我转述给用户的一条「收益」**。全部 C 级。
+
+| # | 发现 | 处置 | 级别 | 落点 |
+|---|---|---|---|---|
+| R7-M1 | 求交按 `name+type` 存在性匹配，**同名重复声明下 provenance 不可判**；「客户端优先自动收敛」不成立 | **全采纳**。响应块只带 `name`、**没有 declaration identity**，无法知道由哪条声明触发 → 可能把我方注入的 invocation 判成 `CLIENT_DECLARED` 而原样转发，**违反决策 1**。且 `"Tool names must be unique"` 是**真实上游约束**（交接文档 §5-6 实测）。**歧义必须在 S3 消灭**：客户端已声明同名合法 typed server tool 时不得再注入；wire 对 server-tool name 强制唯一。**§11-11 从「不修、单独立项」升为必修** | C | §4.3.0、§11-11、§12.1、§10-17 |
+| R7-M2 | 非流式腿的 wire 接线**描述错误**：`renderNonStreamingV4` 拿到的 `env` 里没有 `PreparedRequest` | **全采纳**。已核：[handler-v4.ts:528](../../src/routes/messages/handler-v4.ts#L528) 只解构 `{upstream, env}`，[driver.ts:1562](../../src/lib/pipeline/driver.ts#L1562) 的 `runResponseWhole` 也只收 env，wire 在 candidate ready/result 上。§12 改为写明：wire 作**独立参数**贯通、扩展 driver 返回契约、**绝不塞回 env 冒充 request 状态**，并补上第二个调用点 [dry-run-pipeline.ts:463](../../src/routes/debug/dry-run-pipeline.ts#L463) | C | §12.1 |
+| R7-M3 | idle hook 是本次新增的**核心契约**，§12 却完全没列它的生产接线与测试 | **全采纳** —— 这正是「改了正文、没改指向它的清单」那类漏。§12 补 `rewrite-registry.ts`（契约字段）与 `response-processor.ts`（定时器/serializer 实际归属，现在那里只有 `for await` + `finally` flush），§10 补 AC18 五条竞态测试 | C | §12.1、§10-18 |
+
+**其余结论**：求交只用于 direct 根、嵌套走继承，与 `forcedDowngradeIndices` 的锁存作用域**自洽**，未发现新的 graph/replay 问题；§3 的两阶段与诚实度**通过**。
+
+
+
+
 ## 1. 问题
-
-
 
 ### 1.1 事故因果链（已实证）
 
@@ -136,38 +169,59 @@ L1 destack / L2 strip-all / L3 quarantine **全部是在下游收拾这个 filte
 
 ---
 
-## 3. 范围：收窄到 `clientFormat === "anthropic"`（CRITICAL-3）
+## 3. 范围：两阶段，阶段一收窄到 `clientFormat === "anthropic"`（CRITICAL-3）
 
-### 3.1 双轴门与四象限
+> **2026-07-29 修订**：v2 前稿把这个收窄写得像**信息上做不到**，那是错的（独立评审查出、我实读代码确认）。它其实是**我们选择分两阶段做**。用户 2026-07-29 裁决：**两个阶段都写进本 spec**，不推给边界模糊的 Phase 6。
 
-现有 filter 的 `appliesTo` 是单轴的 `ANTHROPIC = (env) => env.targetEndpoint === ENDPOINT.MESSAGES`（[response-rewrite-adapters.ts:110](../../src/lib/codec/anthropic/response-rewrite-adapters.ts#L110)），即「上游走 Anthropic wire」。而 provenance 分流需要的是「**客户端**是不是 Anthropic 客户端」—— 这是另一根轴 `env.clientFormat`（[envelope.ts:90](../../src/lib/pipeline/envelope.ts#L90)）。
+### 3.1 阶段划分
 
-v2 的门 = **保留 rewrite 的注册与 `appliesTo` 不变**（仍是 `targetEndpoint === /v1/messages`），在 rewrite **内部**按 `clientFormat` 分支：
-
-| `clientFormat` | `targetEndpoint` | v2 行为 |
+| 阶段 | 覆盖 | 状态 |
 |---|---|---|
-| `anthropic` | `/v1/messages` | **本 spec 的新逻辑**：provenance 分流（原样转发 / 降级为 text） |
-| `openai-cc` | `/v1/messages` | **与今天逐字节一致**：无条件 suppress + 索引压密 |
-| `openai-responses` | `/v1/messages` | 同上 |
-| `gemini` | `/v1/messages` | 同上 |
-| 任意 | 非 `/v1/messages` | rewrite 不注册（与今天一致） |
+| **一** | `clientFormat === "anthropic"`：provenance 分流（原样转发 / 降级为 text） | 本 spec 主体，可立即实施 |
+| **二** | 降级分支扩到 `openai-cc` / `openai-responses` / `gemini` | 本 spec §3.4，带验收与触发条件 |
 
-**为什么是「内部分支」而不是「把 `appliesTo` 收窄成两轴」**：若收窄 `appliesTo`，翻译腿上的 server-tool 块就会带着上游索引空间直接流进 S6 翻译器 —— 那是一次**行为改变**，而本 spec 无意也无证据支撑去改它。内部分支保证了「非 anthropic 客户端的转发字节完全不动」，可以用现有 golden 逐字节锁定（§10-9）。
+阶段一的门 = **保留 rewrite 的注册与 `appliesTo` 不变**（仍是 `targetEndpoint === /v1/messages`），在 rewrite **内部**按 `clientFormat` 分支：
 
-### 3.2 为什么必须收窄（三条独立理由，任一条都足够）
+| `clientFormat` | 阶段一行为 | 阶段二行为 |
+|---|---|---|
+| `anthropic` | provenance 分流（转发 / 降级） | 不变 |
+| `openai-cc` / `openai-responses` / `gemini` | **与今天逐字节一致**：无条件 suppress + 索引压密（`legacy-suppress` 模式） | **降级为 text**（passthrough 仍不开放） |
+| 任意，`targetEndpoint` 非 `/v1/messages` | rewrite 不注册（与今天一致） | 不变 |
 
-1. **provenance 的判据源在非 Anthropic 客户端上是有损的。** 分流依赖客户端原始 `tools` 声明里的 `type` 字段。Anthropic codec 存的是完整原始数组（[codec.ts:422](../../src/lib/codec/anthropic/codec.ts#L422) `tools: originalSnapshot.tools`），而 CC codec 存的是投影 `{name, description}`（[codec.ts:383](../../src/lib/codec/openai-cc/codec.ts#L383)）—— **`type` 已经不在了**，判据在信息上无法计算。
-2. **翻译腿本来就丢弃 server-tool 块。** [anthropic-to-cc.ts:99-101](../../src/lib/openai/translate/anthropic-to-cc.ts#L99)、[anthropic-to-responses.ts:122-125](../../src/lib/openai/translate/anthropic-to-responses.ts#L122) 的 `default:` 分支直接 drop，后者的注释原文就写着 `server-tool passthrough is Phase 6 scope`。即便 filter 放行，下游也接不住。
-3. **语义未定。** 「GPT/Gemini 客户端声明了 server tool，我方该怎么把 Anthropic 的 `server_tool_use` 映射过去」是一个独立的、需要实测支撑的设计问题，不是本 spec 的事故所要求的。
+### 3.2 收窄的真实理由（前稿三条：一条已死、一条被用反 —— 重写）
 
-### 3.3 Phase 6 交接清单（本 spec 明确不做，但不静默丢弃）
+| 前稿理由 | 复核结论 |
+|---|---|
+| ① provenance 判据源在非 Anthropic 客户端上有损（CC codec 的 `originalRequest.tools` 只有 `{name, description}`，丢了 `type`） | **已死**。判据源已改为「本次 dispatch 的 `wire.body.tools` ∩ `ctx.originalRequest.tools`」（§4.3），而 `wire.body.tools` 是 **Anthropic 原生、完整、与客户端格式无关**的数组。这条理由不再成立 |
+| ② 翻译腿本来就丢弃 server-tool 块 | **被用反了**。实读 [anthropic-to-cc.ts:106-109](../../src/lib/openai/translate/anthropic-to-cc.ts#L106)（`case "text": textParts.push(block.text)`）与 [anthropic-to-responses.ts:117-125](../../src/lib/openai/translate/anthropic-to-responses.ts#L117)（`case "text"` → `output_text` item）：**`text` 块能正常通过两条翻译腿**，被 `default:` 丢掉的**只有 server-tool 块**。所以这条只支持收窄 **passthrough**，**不支持**让这些客户端继续走无条件剥离 —— **降级成 text 恰恰是让它们第一次拿到这段信息的办法** |
+| ③ 跨格式语义未定 | **仍成立，但同样只覆盖 passthrough**（「客户端声明的 server tool 如何跨格式表达」确实未定；而「降级成 text」不需要任何跨格式语义） |
 
-移交给 Phase 6 的 server-tool 跨格式 spec，逐条列出以免遗漏（`no-silently-cut-but-defer`）：
+**正确的分解**：**降级到 text 与客户端格式无关；passthrough 才是 anthropic-only。**
 
-- CC/Responses/Gemini 客户端声明 server tool 时，我方 `originalRequest.tools` 需要保留 `type`（三个 codec 的投影都要改，或改走 `originalRequest.payload`）。
-- Anthropic `server_tool_use` + `*_tool_result` → CC `tool_calls` / Responses `output_item` / Gemini `functionCall` 的映射（或明确「降级为 text」也是跨格式的答案）。
-- 反向腿（CC/Responses 客户端 → `/v1/messages` 上游）上，客户端的 server-tool 声明如何翻译成 Anthropic typed tool。
-- 上述任一项落地时，本 spec §3.1 表里的三行「与今天逐字节一致」就要重新裁决。
+**因此必须诚实写明的代价**：维持阶段一 = 在 **3/4 的象限里原样保留 §1.3 那个信息丢失病灶**（今天 CC/Responses/Gemini 客户端是静默丢块，模型说「我搜到了 Task」而上下文没有任何搜索痕迹）。这不是做不到，是**排期**。
+
+### 3.3 阶段一为什么仍然值得先做（不是妥协，是可验证性）
+
+- 阶段一有**真实冻结 fixture**（`req_1785016247905_895` 的生产帧）与**两轮 e2e**（§10-10）可验证；阶段二在本部署语料里**没有**对应的真实样本（CC/Responses/Gemini 客户端撞上 server-tool 块的记录为 0）。
+- 阶段一的转发字节改变**只发生在 anthropic 象限**，另外三个象限可用现有 golden 逐字节锁定（§10-9），把回归面压到最小。
+- 阶段二会**删掉** `legacy-suppress` 模式与 §3.1 的分支表 —— 那是净简化，但要重新冻结三份 golden，适合作为独立的一次改动。
+
+### 3.4 阶段二：跨格式降级（写实，不是占位）
+
+**做什么**：`legacy-suppress` 模式整个删除；所有 `clientFormat` 走同一条降级路径。
+
+**为什么届时不需要 `clientFormat` 分支**：在 §4.3 的求交规则下，非 anthropic 客户端的 wire typed 声明**按构造**都不在其 `originalRequest.tools` 里（CC/Responses/Gemini 的入站 schema 表达不出 Anthropic typed server tool）→ 求交为空 → **自动全部落到降级分支**。分支表因此可以删掉，而不是改写。
+
+> **未验证标注**：「三个入站 schema 都表达不出 Anthropic typed server tool」由独立评审基于 schema 印象推断，**未逐一比对**。阶段二实施前必须逐个 schema 核实；若某个入站格式其实能表达，则该格式的 passthrough 语义要单独裁决。
+
+**验收（阶段二）**：
+- CC / Responses / Gemini 三个象限各一条：上游返回 server-tool pair → 断言客户端收到**降级后的 text**（CC 折进 `content`、Responses 产 `output_text` item、Gemini 对应字段），而不是块被静默丢弃。
+- 三份 golden 重新冻结，且**冻结前后 diff 必须逐条可解释**（只应出现新增的 transcript 文本，不应有其它字节变化）。
+- 流式腿单独验：**未验证标注** —— 独立评审只读了两条翻译腿的**非流式**折叠函数，流式腿（新 index 的 text 块如何映射成增量）未读，阶段二实施前必须补读并补测。
+
+**触发条件**：阶段一 landed 且其 e2e 稳定后即可启动；**不设额外前置**（不依赖任何探针结论）。
+
+
 
 ---
 
@@ -185,9 +239,15 @@ v2 的门 = **保留 rewrite 的注册与 `appliesTo` 不变**（仍是 `targetE
 
 **判据不是「有没有 `type`」**，而是「Anthropic 是否把这个具体工具划为服务端执行」。本 spec 只处理第三类。
 
-### 4.2 typed-declaration 判据表
+### 4.2 typed-declaration 判据表（**复用既有表，不造第三张**）
 
-`server_tool_use.name` 的取值域来自 SDK（`node_modules/@anthropic-ai/sdk/.../messages.d.ts` 的 `ServerToolUseBlock.name`，本次实读）。判据表如下 —— **`name` 匹配还不够，客户端声明里的 `type` 必须落在该 name 允许的前缀集合内**：
+> **2026-07-29 修订**：v2 前稿要新建一张 server-tool 分类表。独立评审查出**仓库里已经有两张、且已经漂移**，我复核确认：
+> - [hedge-policy.ts:3-4](../../src/lib/pipeline/generation/hedge-policy.ts#L3)：`ANTHROPIC_SERVER_TOOL_PREFIXES = [web_search_, web_fetch_, code_execution_, tool_search_]` / `ANTHROPIC_CLIENT_TOOL_PREFIXES = [text_editor_, computer_, bash_, memory_]` —— **这正是 ADR 的 server/client 二分**，是仓库里已有的**正确**表。
+> - [message-tools.ts:337](../../src/lib/anthropic/message-tools.ts#L337)：`API_DEFINED_TOOL_TYPE_PREFIXES` 把两类**混成一张**「API-defined」表（10 项，server 与 client 执行的混在一起）—— 它服务的是另一个目的（判断要不要动 `input_schema`），本身不算错，但与上表**成员不一致**。
+>
+> 再加一张就是三处并存 —— 正是 `fix-all-comparison-sites` 的形状。**本 spec 不新建表**：抽出单一共享 primitive（建议落在 `server-tool-provenance.ts`），`hedge-policy.ts` 与本 spec 共同消费；`API_DEFINED_TOOL_TYPE_PREFIXES` 保留其原用途但注释指向 primitive，说明二者语义不同、不要混用。
+
+`server_tool_use.name` 的取值域来自 SDK（`ServerToolUseBlock.name`，本次实读）。判据表如下 —— **`name` 匹配还不够，客户端声明里的 `type` 必须落在该 name 允许的前缀集合内**：
 
 | `server_tool_use.name` | 允许的客户端声明 `type` | 可被客户端直接声明？ |
 |---|---|---|
@@ -203,6 +263,37 @@ v2 的门 = **保留 rewrite 的注册与 `appliesTo` 不变**（仍是 `targetE
 
 1. **同名 custom function 不算声明。** 客户端可以合法地声明一个 `{name:"web_search", input_schema:{…}}` 的**自定义 client tool**（没有 `type`，由客户端自己执行）。它与 server tool `web_search` 同名但语义完全不同 —— 判据必须要求 `type` 存在且落在表内前缀，否则会把「客户端自己实现的 web_search」误判成「客户端要的 server tool」，从而把一个它根本不认识的 `server_tool_use` 块原样转发过去。
 2. **`bash` / `str_replace_based_edit_tool` 与 `bash_code_execution` / `text_editor_code_execution` 是不同的东西。** 前两者是**客户端执行**的内置 tool（产 `tool_use`），后两者是 `code_execution` 沙箱内的**服务端**子工具（产 `server_tool_use`）。按 name 做子串匹配必然把它们混起来 —— 判据只用**全等**，不用 `includes`/`startsWith`。
+
+### 4.3.0 `classifyByDeclaration` 的判据源：**wire ∩ originalRequest**（2026-07-29 修订）
+
+v2 前稿只拿 `ctx.originalRequest.tools`（客户端意图）判。独立评审指出**那押错了「谁拥有那个事实」**，我复核后采纳：
+
+> 注入点（`preprocessTools`，S3）只知道自己**提议**了什么；一条声明能不能上 wire 由 **S4-pre 的 `stripServerTools`** 决定（[request-preparation.ts:579](../../src/lib/anthropic/request-preparation.ts#L579)，读 learned 缓存 + `prepareHints.excludeServerToolTypes`）。**以注入点为事实源 = 把意图当事实。**
+
+**判据源 = 两份都已经活到 sink、且都不会撒谎的记录求交**：
+
+| 记录 | 是什么 | 出处 |
+|---|---|---|
+| ① `wire.body.tools` | **本次 dispatch** 上游真正看到的 typed 声明全集（post-strip） | `CandidateReady.wire`（[candidate.ts:41](../../src/lib/pipeline/generation/candidate.ts#L41)） |
+| ② `ctx.originalRequest.tools` | 客户端原始声明数组（未经我方注入/改写） | [codec.ts:422](../../src/lib/codec/anthropic/codec.ts#L422) |
+
+| 判定 | 规则 |
+|---|---|
+| `CLIENT_DECLARED` | name 在 ① 里有合法 typed 声明（§4.2）**且** 同一 name+type 也在 ② 里 |
+| `NOT_DECLARED`（我方注入 → 降级） | 在 ① 有、② 无 |
+| `NOT_DECLARED`（未声明 → 降级） | 不在 ① |
+
+**这个规则只作用于 `caller.type === "direct"` 的根 invocation**；嵌套子调用（`bash_code_execution` 等**永远**不在任何声明集里）走 §4.3 的 graph 继承、**不**参与求交 —— 否则会把客户端明确声明的 `code_execution` 整棵树切碎。（此边界经独立评审确认。）
+
+**三个连带收益**：
+- **不需要新载体**：两份记录本就活到 sink，不必往 `ctx` / `requestState` / `prepareHints` 上挂新字段（三者各有致命问题，见 §11-9）。
+- **不可能 stale**：wire 与 response 同属**一次 dispatch**。响应处理只发生在获胜 attempt 上（`createProcessor` 在 `scheduler.run()` 成功返回后才调用），`createState(env)` 每 candidate 只跑一次（[response-processor.ts:65-71](../../src/lib/pipeline/stream/response-processor.ts#L65)，注释原文 "isolated from every sibling candidate"）。
+- **同名歧义必须在 S3 消灭，而不是靠求交「收敛」**（第七轮复评 R7-M1 推翻了前稿的说法）：[message-tools.ts:178-205](../../src/lib/anthropic/message-tools.ts#L178) 先无条件 push 我方 `tool_search_tool_regex` 声明，再**无 dedupe** 地追加客户端 tools。若客户端也声明了同 `name`：
+  - wire 上出现**两条同形声明**，而响应里的根块**只携带 `name`、没有 declaration identity** —— 从信息上就**无法**判断这次 invocation 是由哪一条触发的。前稿写「求交天然给出安全答案：客户端声明优先」是**错的**：它可能来自我方注入的那条，判成 `CLIENT_DECLARED` 原样转发就**违反决策 1**。
+  - 而且 `"Tool names must be unique"` 是**真实的上游约束**（交接文档 §5 第 6 条实测记录：重放 upstream body 前必须剔除我方注入的工具，否则撞这个 400）—— 两条同名声明本身就可能被上游直接拒。
+  - **因此本 spec 必须修它**（从「单独立项」升为**必修**，见 §11-11）：**S3 若发现客户端已声明同 `name` 的合法 typed server tool，就不得再注入我方同名声明**；同 `name` 但 `type` 不同、或同名 custom function 的冲突也要有明确策略，**绝不允许两条同名声明同时上 wire**。最终 wire 对 server-tool `name` **强制唯一** —— 否则 provenance 在信息论上不可判。
+
+**明确否掉「在 sink 里重算判据」**：`stripServerTools` 读的 `getUnsupportedServerToolTypes` 是**带 TTL 的全局可变缓存**，响应期重算可能与发请求时给出不同答案，且 TTL 到期那一支是**不安全方向**（重算说「声明还在」→ 误转发）。**捕获，不重算** —— 这才是 `abort-provenance-tag-at-source-not-guess-at-boundary` 那条教训在本案里真正适用的部分。
 
 ### 4.3 invocation graph 与 `caller.tool_id` 嵌套传播
 
@@ -221,9 +312,9 @@ classify(block, visited = {}):
   if block.caller == null or typeof block.caller !== "object" or
      typeof block.caller.type !== "string":               return MALFORMED_CALLER
 
-  # ── 1. 直接调用 ──
+  # ── 1. 直接调用：判据源见 §4.3.0 ──
   if block.caller.type === "direct":
-      return classifyByDeclaration(block.name)            # §4.2 判据表（含未知 name → UNKNOWN_NAME）
+      return classifyByDeclaration(block.name)            # 求交规则，含未知 name → UNKNOWN_NAME
 
   # ── 2. 嵌套调用：caller.type 必须在白名单内 ──
   if block.caller.type ∉ NESTED_CALLER_TYPES:             return UNKNOWN_CALLER
@@ -267,23 +358,41 @@ v2 初稿选的是「保守降级」，理由写的是「缓冲要连带扣住�
 
 故改为**局部缓冲**，并补上评审未考虑、但本项目有实测教训的一条：**缓冲必须有上界**。
 
-#### 上界的可执行接线（第三轮复评 R3-M1 修正了一个不可实现的写法）
+#### 上界的可执行接线（R3-M1 修正了不可实现的写法；2026-07-29 用户裁决扩大为真时长上界）
 
-v2 前稿写了「缓冲累计**时长** 5s 触顶」。**这条在当前契约下没有执行点** —— `ResponseRewrite` 只有由上游帧驱动的同步 `transform` 与流末 `flush`（[rewrite-registry.ts:101-125](../../src/lib/pipeline/rewrite-registry.ts#L101)），该接口的文档注释里就记着这个**未决问题**：
+v2 前稿写了「缓冲累计**时长** 5s 触顶」。**这条在当时的契约下没有执行点** —— `ResponseRewrite` 只有由上游帧驱动的同步 `transform` 与流末 `flush`（[rewrite-registry.ts:101-125](../../src/lib/pipeline/rewrite-registry.ts#L101)），该接口的文档注释里就记着这个**未决问题**：
 
 > timer-driven `heartbeat` … injects during upstream SILENCE — no frame arrives to drive `transform`. A pure per-frame `transform` cannot express that. **P1.5 must decide**: keep heartbeat as a handler-side bypass, or **extend this interface with an idle/timer hook**.
 
-即：上游若真的沉默 300s，「5s 触顶」永远等不到检查点，恰好在最需要它的场景下失效。**本 spec 选定的接线**（在不扩展核心契约的前提下可立即实施）：
+**用户 2026-07-29 裁决：并入本次，扩展 idle hook**（决策记录见 §0.5）。即 P1.5 这个未决问题由本 spec 一并闭合，而不是绕开它。
 
-| 上界 | 检查点 | 是否可执行 |
-|---|---|---|
-| 缓冲累计**帧数**（200）/ **字节**（1 MiB） | 每次 `transform` 收到新帧时 | ✅ 帧驱动，天然有检查点 |
-| **距进入缓冲的时长**（5s） | **同样在下一帧到达时惰性检查**（不是定时器） | ✅ 但语义是「下一帧到达时若已超时则立即触顶」 |
-| EOF / 上游抛错 | `flush`（在 `finally` 内，必跑） | ✅ |
+**契约扩展**：
 
-**残余风险与它为什么是有界的（诚实标注）**：惰性时长检查**管不了「进入缓冲后上游彻底沉默」**。但这种情形下客户端经历的沉默**主要来自上游本身**（没有新帧可转发），缓冲额外贡献的只是「已缓冲的那几帧本可以更早送达」这一段。也就是说，缓冲把客户端 last-byte 时刻**提前**了最多一个缓冲窗口的量 —— 风险真实但有界，且远小于「无上界缓冲」。
+```ts
+interface ResponseRewrite {
+  /**
+   * 上游静默期的执行点。由 processor 的 idle 定时器驱动，`idleMs` = 距上一帧到达的时长。
+   * 返回要注入的帧（空数组 = 什么都不做）。可选 —— 不实现的 rewrite 完全不受影响。
+   */
+  onIdle?(state: RewriteState, idleMs: number): Array<UpstreamFrame>
+}
+```
 
-**升级路径（记录依赖，不静默丢弃）**：真正的时长硬上界需要一个 idle/timer 执行点，即上面引用的 P1.5 未决问题。**本 spec 不单方面扩展核心 rewrite 契约**（那是跨模块架构决策，影响面远超本 spec，应独立裁决）。**触发条件写死在这里**：一旦生产上观测到「进入缓冲后上游长沉默」这一组合，就把 P1.5 那个未决问题作为本 spec 的前置依赖提上来，按 idle hook 方案实现真正的时长上界。
+**三条必须写死的接线约束**（否则会引入比它修的问题更严重的问题）：
+
+1. **串行化**：`onIdle` 产出的帧必须走与 `transform`/`flush` **同一个发射路径**，并与之**互斥执行**。sink 早已因为「synthetic 与 real 帧绝不能字节交错」而实现了 `writeSerialized`（[client-sink.ts](../../src/lib/pipeline/client-sink.ts)），本扩展必须复用同一纪律，不得另开一条发射路径。
+2. **竞态单一赢家**：`onIdle` 触发与「新帧到达 / flush」同时发生时，**帧到达与 flush 优先**；`onIdle` 若发现自己已被抢先（缓冲区已被重放），**必须无副作用返回**。exactly-once 仍由 `emitted: Set<upstreamIndex>` 兜底（§6.2）。
+3. **不与 heartbeat 打架**：sink 已有一个 forward-idle racer 在跑 keepalive。两个定时器**必须各自独立、互不重置对方**（sink 那两个 racer 就是按「deliberately SEPARATE」设计的，本扩展遵循同一原则）。`onIdle` 注入的是**真实内容帧**（transcript），会自然重置客户端的 no-real-content 计时器 —— 这是收益，不是冲突。
+
+**上界表（扩展后全部可执行）**：
+
+| 上界 | 检查点 |
+|---|---|
+| 缓冲累计**帧数**（200）/ **字节**（1 MiB） | 每次 `transform` 收到新帧 |
+| **距进入缓冲的时长**（5s） | `onIdle` —— **真 wall-clock 上界**，不再是「下一帧到达时惰性检查」 |
+| EOF / 上游抛错 | `flush`（在 `finally` 内，必跑） |
+
+**这条扩展的收益不止本 spec**：它闭合了 P1.5 记录的未决问题，让「上游静默期需要动作」这一整类需求（heartbeat 的 handler-side bypass、未来任何 buffering rewrite）都有正规表达方式，而不是各自绕开契约。这也是本次把它并入的理由 —— 若只为本 spec 打一个局部补丁，下一个遇到同样问题的人还要再绕一次。
 
 **上界不是防御性洁癖**：缓冲期客户端收不到已到达的字节，而这段沉默落在**首块提交之后**的区间 —— 按并发会话在飞的 [inter-block-keepalive-carrier spec](2026-07-27-inter-block-keepalive-carrier.md)（其状态以该文档自身为准）记录的 live 取证，那正是 keepalive 目前**失守**的窗口，且已观测到两条约 300s 的 open-block 请求**被客户端掐断**。
 
@@ -692,6 +801,9 @@ transcript 三元组的**每一帧**都打标（不只 start）：中途只看�
 | 15 | emission identity（§6.2 红框） | 三条：同一响应内**重复** `server_tool_use.id` 两个单元、同一 `tool_use_id` 的**两个** result、两者组合。断言**每个单元都发射了**、一个不少。**positive control**：把去重键改回 `serverToolUseId`（即前稿写法）→ 三条必须全红。**fixture 前提**：三组都必须走 downgrade transcript 路径并逐 upstream-index 计数，否则 passthrough 样本会绕开 `emitted` 让 mutation 失去分辨力（第三轮复评指出） |
 | 16 | 畸形输入 + 未知 caller 不被误放行（§4.3 入口校验 + 白名单） | 逐个构造：缺 `caller`、`caller: null`、**未知 `caller.type` 且带合法 `tool_id` 指向一个 client-declared 根**（必须判 `UNKNOWN_CALLER` → **降级**，**不得**继承成 passthrough —— 这是 R3-M3 指出的绕过口子）、`tool_id` 空串/非字符串、`id` 空串。断言：全部不抛、按 §4.4 first-match 归到预期分支、warn 归因唯一 |
 
+| 17 | wire 的 server-tool `name` 唯一性（§4.3.0 的前提） | 三组：客户端声明**同 name 同 type**、**同 name 不同 typed variant**、**同 name 的 custom function**。断言最终 wire 上该 name **只有一条**声明，且 provenance 判定确定。**positive control**：恢复无条件注入（即今天的行为）→ 三组必须全红 |
+| 18 | idle hook 契约与竞态（§4.3.1，用户 A 级裁决） | fake timer 驱动，逐条：**无任何新帧时 5s 主动触发**（这是惰性检查做不到、必须靠 hook 的那条）、frame-vs-idle 单一赢家、flush-vs-idle 单一赢家、两个定时器互不重置、`onIdle` 产物**仍继续过后续 rewrite**（order > 300 的 refusal 腿）。**positive control**：把 `onIdle` 改成 no-op → 第一条必须红 |
+
 **关于 positive control 的元要求**（不写会得到假的安心）：每一条 positive control 都必须**先确认 mutation 真的生效了** —— 断言没变红有两种解释：测试没咬住，或者 mutation 根本没打到运行路径（改错文件、改到没被调用的分支、被缓存挡住）。**必须先证明「改动确实进入了被测代码路径」，再解读红/绿。**
 
 **需要更新的既有 golden（预期会变，属正常）**：
@@ -711,6 +823,14 @@ transcript 三元组的**每一帧**都打标（不只 start）：中途只看�
 6. **架构张力记录**：「代理侧优化的副产品要不要对客户端可见」—— 本 spec 选择「不可见但不丢信息（降级）」。tool_search 已裁决保留，故这条张力会长期存在。
 7. **`memory` 工具的请求侧重写**（[request-preparation.ts:983](../../src/lib/anthropic/request-preparation.ts#L983)，把客户端的 `{name:"memory"}` 改写成 typed `memory_20250818`）是我方对客户端声明的改写，但 memory 是**客户端执行**的（产 `tool_use` 而非 `server_tool_use`），不在本 spec 判据范围内。记录于此，免得后人误以为漏了一条 provenance 路径。
 8. **缓冲上界（§4.3.1）先做成具名常量，不做成 config** —— 它守的是一条可能永不触发的异常路径，此刻做成 config 等于给运维多一个无从判断怎么调的旋钮。**触发条件明确写在这里**：一旦生产上观测到缓冲触顶计数非零，立即按 §12.4 的全链把它提升为 config。这是**延后**，不是取消。
+9. **三个「给 provenance 找载体」的方案已被逐一否决**（记录理由，免得后人重走）：
+   - `ctx`：请求域、**跨 candidate 共享**，hedge / recovery candidate 会互相覆写 —— 正中既有教训 `request-scoped-mutable-verdict-poisoned-by-hedge-candidates`。
+   - `requestState`：契约是 request-lifecycle-**STABLE**，`with()` 在 retry 时从不 patch 它；把 per-attempt 事实塞进 per-request 载体是语义倒挂。**更有一个静默陷阱**：[candidate-state.ts:102-113](../../src/lib/pipeline/generation/candidate-state.ts#L102) 的 `snapshotStableState` 是**字段白名单**（5 项），新增纯数据字段在 candidate fork 时**被静默丢弃**；而 [:91-100](../../src/lib/pipeline/generation/candidate-state.ts#L91) 的 `validateOpaqueFactories` 只硬编码 4 项 opaque 检查，**纯数据字段触发不了它** —— 护栏在这里接不住。
+   - `prepareHints`：replace 语义，第一个带 hint 的 retry 就整个覆盖（这正是 `requestState` 当初被拆出来的原因）。
+   - 往 tool 对象上打**私有字段**：已实测两头堵 —— 字符串字段**被 `structuredClone` 保留**并经 `buildWirePayload` 直达上游（`stripToolFields` 只删 strip 集合里的键，不是未知字段清扫），撞 `Extra inputs are not permitted` 400；Symbol **被 `structuredClone` 丢弃**，跨 S3→S4 承载不了。
+   - **结论**：§4.3.0 的求交规则**不需要任何新载体**，这是它胜出的主要原因之一。
+10. **`tool_search` 注入事实上关闭了 hedge**（附带发现，**不重开** §1.4 的裁决，只补记）：[hedge-policy.ts:132-135](../../src/lib/pipeline/generation/hedge-policy.ts#L132) 用 `classifyServerExecutionRisk(wire)` 判定，wire 带 `tool_search_` 前缀即算 server-executed，而 `allow_server_tools` 默认 false → **几乎所有带 tools 的 Claude Code 请求都 hedge 不合格**。§1.4 那份「保留 tool_search」的成本收益量化**没有把这一项算进去**。建议单独立项评估，不阻塞本 spec。
+11. ~~**同名声明无 dedupe** 是独立于本 spec 的既有隐患，本 spec 不修、建议单独立项。~~ **2026-07-29 升为必修**（第七轮复评 R7-M1）：它不只是「隐患」—— 两条同名声明会让 provenance **在信息论上不可判**（响应块只带 `name`，没有 declaration identity），且 `"Tool names must be unique"` 是真实的上游 400 约束。**wire 对 server-tool `name` 强制唯一**是 §4.3.0 求交规则成立的**前提条件**，不是可选优化。落点见 §4.3.0 与 §10-17。
 
 ---
 
@@ -730,6 +850,15 @@ transcript 三元组的**每一帧**都打标（不只 start）：中途只看�
 | `src/lib/anthropic/message-tools.ts` / `request-preparation.ts` | 抽 `resolveEffectiveServerToolDeclarations`，`stripServerTools` 改用它（§7.3） |
 | `src/lib/anthropic/sanitize/index.ts` | pair-downgrade 改为消费共享判据（§7.4 矩阵） |
 | `src/lib/codec/anthropic/request-rewrite-adapter.ts` | 把 `env.prepareHints` 透进 `AnthropicRewriteContext` |
+| `src/lib/pipeline/generation/candidate.ts` | **`createProcessor` 入参加 `wire`**（[:65](../../src/lib/pipeline/generation/candidate.ts#L65) 签名、[:103](../../src/lib/pipeline/generation/candidate.ts#L103) 调用点）—— `CandidateReady.wire` 已存在（[:41](../../src/lib/pipeline/generation/candidate.ts#L41)），只是没传下去 |
+| `src/lib/pipeline/rewrite-registry.ts` | **① `ResponseRewrite` 新增 `onIdle?(state, idleMs)`**（idle hook 契约，§4.3.1）；**② `createState` / `transformWhole` 需要拿到 `wire`** —— 契约签名变更，所有实现方受影响 |
+| `src/lib/pipeline/stream/response-processor.ts` | **idle 定时器 + serializer 的实际归属**：现只有上游 `for await` 与 `finally` flush（[:146-217](../../src/lib/pipeline/stream/response-processor.ts#L146)），没有任何 idle 驱动。要新增定时器、与 `transform`/`flush` 的互斥、以及 `onIdle` 产物继续过后续 rewrite 的链路 |
+| `src/lib/pipeline/driver.ts` | **`runResponseWhole` 与 driver 公开结果契约**：现签名只收 `env`（[:1562](../../src/lib/pipeline/driver.ts#L1562)），成功 dispatch 的 `PreparedRequest` 在 candidate ready/result 上、**不在 env 里**。须把它作为**独立参数**贯通，并扩展 driver 的返回类型让上层拿得到 —— **绝不把 wire 塞回 `env` 冒充 request 状态** |
+| `src/routes/messages/handler-v4.ts` | [:528](../../src/routes/messages/handler-v4.ts#L528) 现只解构 `{ upstream, env }`，须一并取 wire 并透传给 `renderNonStreamingV4` → `runResponseWhole` |
+| `src/routes/debug/dry-run-pipeline.ts` | [:463](../../src/routes/debug/dry-run-pipeline.ts#L463) 是 `runResponseWhole` 的**第二个调用点**，签名变更必须同步 |
+| `src/lib/anthropic/message-tools.ts`（注入点 178-205） | **wire 上 server-tool `name` 强制唯一**：客户端已声明同名合法 typed server tool 时不得再注入（§4.3.0 的前提条件） |
+| `src/lib/pipeline/generation/hedge-policy.ts` | 与新 primitive **共同消费**同一份 server/client 前缀分类（§4.2），消除三表并存 |
+| `src/lib/anthropic/message-tools.ts`（`API_DEFINED_TOOL_TYPE_PREFIXES`） | 保留原用途，加注释指向 primitive 并说明二者语义不同、不要混用 |
 
 ### 12.2 共享 helper 的既有消费者（改签名/语义前必须逐个看）✅
 
