@@ -49,13 +49,23 @@ anchor@2（测试经 owner API 落）→ real@3（上游1，生产分配）→ o
 | # | commit | 内容 | 终态不变量 | 可满足的门 |
 |---|---|---|---|---|
 | **M1** | `feat(delivery): repeatable anchor lifecycle and close authority in the wire owner` | ① `openAnchorIndex` 状态机 + `closeOpenAnchor` API 落在 owner；② **8 个 handler close 站点 + driver 2 处**迁到 owner close（逐站点见下方迁移表）；③ **只新增不删**旧字段 —— `anchorBlockOpen`/`anchorClosed` 保留，由 owner 在 open/close 时**一并维护**（迁移期双写）；④ 未迁移腿（S2/S3）改用 **bridge 判据** | **可编译、行为等价**：旧字段仍在且被 owner 同步维护，旧分支照常工作；生产行为零变化（心跳门未动，仍只开 ≤1 anchor） | owner 单元测试（连续两轮 open/close、close 幂等、终局 exactly-once）+ 8+2 站点各自的 close 路径回归 + **O-6 字节等价**（证零行为变化） |
-| **M2** | `refactor(driver): allocate and remap buffered-flush blocks via the frontier owner` | S1（`driver.ts:1185`）分配 + remap | S1 走 frontier；S2/S3 走 bridge（数值等价，见上方证明）；**S1 的 bridge 已删** | Task 3.1 的 offset≥2 测试（M1 已使第二 anchor 能被生产正确关闭）；S1 两维 mutation 均红；O-1/O-2/O-6；**承接 P2 C11 移入项：History generation 轨断言 buffered-flush real frame 使用该 primary/recovery leg 的真实 candidateId/dispatchId，非 `"legacy"`** |
+| **M2** | `refactor(driver): allocate and remap buffered-flush blocks via the frontier owner` | S1（`driver.ts:1185`）分配 + remap | S1 走 frontier；S2/S3 走 bridge（数值等价，见上方证明）；**S1 的 bridge 已删**；winner 一致性由同一 selected source 依次驱动 `beginLeg` + `noteWinner`，winner 帧继续走装饰 sink，旧 `commitWinnerBlock` / `writeWinnerFrame` API 不得复活 | Task 3.1 的 offset≥2 测试（M1 已使第二 anchor 能被生产正确关闭）；S1 两维 mutation 均红；O-1/O-2/O-6；**承接 P2 C11 移入项：History generation 轨断言 buffered-flush real frame 使用该 primary/recovery leg 的真实 candidateId/dispatchId，非 `"legacy"`** |
 | **M3** | `refactor(driver): allocate and remap retreat write-through blocks via the frontier owner` | S2（`driver.ts:1242`） | S2 走 frontier；**S2 的 bridge 已删**；S3 仍走 bridge | Task 3.2 + S2 两维 mutation；O-1/O-2/O-6；**承接 P2 C11 移入项：History generation 轨断言 retreat real frame 沿用原 leg 的真实 candidateId/dispatchId，非 `"legacy"`** |
 | **M4** | `refactor(live-reconcile): allocate, close off and remap live blocks in one wire transaction` | S3（装饰器 + envelope factory，见「S3 专节」） | **三腿全部走 frontier**；bridge 判据零命中；`tests/architecture/anchor-remap-single-authority.unit.test.ts` 的 AST `REMAP_CALL_ALLOWLIST` 中 **`legacy:*` 条目必须清零**（含 variable-offset continuation 旧站点） | Task 3.3 + S3 两维 mutation + 「transaction 内不可插入」断言；O-1/O-2/O-6；**legacy allowlist 清零后 ratchet 仍绿，临时新增 literal/变量 offset/直调 primitive 任一 remap 必红；承接 P2 C11 live 腿断言，并做 merged-state 三腿统一 oracle：primary/recovery/continuation real frame 各带真实 candidateId/dispatchId、均非 `"legacy"`、主腿 ≠ 续写腿。M4 未完成此统一断言即视为未完成** |
 | **M5** | `fix(continuation): retire the dual offsets and the legacy anchor state fields` | plan-4 Task 4.1/4.2/4.3：退役双偏移、接 `beginLeg(kind, source)`；**并删除 M1 保留的 `anchorBlockOpen`/`anchorClosed`**（此时已无消费者） | `continuationOffset`/`wireDeliveredBlocks`/`anchorBlockOpen`/`anchorClosed` **全部零残留** | 4.1 **两条**撞车 oracle（分支二此时可满足）+ 两个 positive control + `beginLeg` 两格 mutation |
 | **M6** | `feat(keepalive): allow gap anchors after the first committed block` | plan-5 Task 5.1/5.3：per-gap latch + gap injector + **删 `semanticBlockCount===0` 门**（特性开门）；**承接 P2.2b 因该门而不可达的后半：P6 boundary 恢复后的 tick 必须真实调用 `allocateAndWriteAnchor`** | 生产可开多 anchor——**此时三腿已全部走 frontier**，故无半坏 | O-3 精确形状 + **P2.2b 移入部分 red→green**：删门前只见 ping/不分配，删门后同一恢复 tick 进入 owner 分配；加回门 mutation 必红 + 架构守卫 mutation（裸 `allocateAnchor` 必红） |
 | **M7** | `test(anchor): cover the continuation-leg × gap-anchor integration seam` | plan-5 Task 5.4 交叉缝 | 交叉行为被锁 | O-9 交叉 mutation 矩阵（同一测试对两侧 mutation 以**不同可辨识原因**失败）+ 两条单侧 control |
 | **M8** | `test(anchor): multi-gap coverage and shipped-default byte equivalence` | plan-5 Task 5.5/5.6 | 默认配置零 anchor、字节等价 | 多 gap × 混合块类型（含 tool_use 不被推迟）；O-6 |
+
+### M2 前置条件：legacy 瞬时撕裂必须随 S1 owner 化一并消失
+
+**现象**：P2 的 `wireTorn` 只封锁 owner 五入口；当前 legacy buffered/live 写出仍可在一次非 client 瞬时 write failure 后，绕 owner 写出孤儿 `content_block_stop@0`，handler 最终把该流记成功。若首个真实 start 尚未 owner 化，owner 看不到 legacy byte write，自然无法把它纳入 C9 commit/tear 裁决。
+
+**为何当前第二次分配不可达、M2 后立即可达**：P2 生产分配调用方只有一次性 anchor injector，其 latch 使同 generation 的第二次 owner 分配不可达；M2 把每个真实 `content_block_start` 接入 `withAllocatedRealBlock` 后，同一 generation 会发生后续热路径分配，若 legacy撕裂未迁走便会把 index洞与孤儿 stop 带入真实流。
+
+**M2 必须消除什么**：S1 的 start 分配、delta/stop mapping 查询、实际 write 与失败裁决必须全部进入同一 owner serializer；非 client post-commit failure 置 `wireTorn`，后续 start分配被拒，terminal error/close/finalize仍由 delivery完成。不得只迁 start分配、仍把 delta/stop或成功 settle留在 legacy write路径。
+
+**若 M2 拆分执行，满足点**：只有在 S1 的 start/delta/stop 三类帧均 owner 化、legacy S1 bridge/write零残留，并且具名 oracle复现“瞬时非 client撕裂 → 无孤儿 stop → 后续 real allocation 被 `wire-torn` 拒绝 → 请求不记成功”后，本前置条件才算满足；此前任何中间commit不得宣称 M2完成或开启 M6。
 
 ### M1 的迁移 bridge（**round-4 blocker：原方案「M1 删字段」会让 M2–M4 期间无法编译**）
 
