@@ -65,7 +65,7 @@ test("a closed session refuses an operation without allocating", async () => {
   expect(await port.allocateAndWriteAnchor(({ wireIndex, envelope }) => [envelope.anchor(anchorStart(wireIndex))])).toEqual({
     ok: false,
     reason: "client-gone",
-    committed: true,
+    committed: false,
   })
   expect(wireState.allocator.nextAnchorIndex()).toBe(0)
   expect(wireState.allocator.anchorsOpened()).toBe(0)
@@ -98,7 +98,7 @@ test("a failed first frame permanently consumes its index and terminates deliver
   expect(await port.allocateAndWriteAnchor(({ wireIndex, envelope }) => [envelope.anchor(anchorStart(wireIndex))])).toEqual({
     ok: false,
     reason: "client-gone",
-    committed: true,
+    committed: false,
   })
   expect(wireState.allocator.nextAnchorIndex()).toBe(1)
 })
@@ -155,7 +155,7 @@ test("a queued operation reserves nothing and rechecks state when execution begi
   parked.resolve()
 
   expect(ownerValue(await running)).toBe(0)
-  expect(await queued).toEqual({ ok: false, reason: "client-gone", committed: true })
+  expect(await queued).toEqual({ ok: false, reason: "client-gone", committed: false })
   await termination
   expect(wireState.allocator.nextAnchorIndex()).toBe(1)
 })

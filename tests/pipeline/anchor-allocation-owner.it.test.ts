@@ -101,7 +101,7 @@ test("first attempted write consumes the index and terminates delivery on failur
   expect(await port.allocateAndWriteAnchor(({ wireIndex, envelope }) => [envelope.anchor(anchorStart(wireIndex))])).toEqual({
     ok: false,
     reason: "client-gone",
-    committed: true,
+    committed: false,
   })
 })
 
