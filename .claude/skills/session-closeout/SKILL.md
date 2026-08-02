@@ -1,6 +1,6 @@
 ---
 name: session-closeout
-description: 当 copilot-api-js 会话/阶段收尾时使用——交付、汇报、ExitPlanMode、提交前，或任务要跨会话继续。触发症状：「这轮做不完了」「上下文快满了」「compact 之前要做什么」「给下个会话写个交接」「新会话怎么接手」「归档一下」；即使用户只说「先记一下进度」也用本 skill。正文是收尾六步（subagent 独立核验 / doc-sync / 归档 plan 与实验产物 / 提炼教训与维护记忆 / 细粒度提交 / 跨会话交接）的 how-to、判定纪律与模板的单一源——**可执行细节只在正文，必须读正文**。
+description: 当 copilot-api-js 会话/阶段收尾时使用——交付、汇报、ExitPlanMode、提交前，或任务要跨会话继续。触发症状：「这轮做不完了」「上下文快满了」「compact 之前要做什么」「给下个会话写个交接」「新会话怎么接手」「归档一下」；即使用户只说「先记一下进度」也用本 skill。**另一个非收尾触发：准备派 implementer 执行多语义 commit、或单 commit 但历时长/需试错的工作时（派活前读 §6b，不是收尾时）**——症状：「派个 agent 去实现」「让它按 plan 执行」「起个 worktree 做这个相位」。正文是收尾六步（subagent 独立核验 / doc-sync / 归档 plan 与实验产物 / 提炼教训与维护记忆 / 细粒度提交 / 跨会话交接）＋ §6b 派活前进度文件的 how-to、判定纪律与模板的单一源——**可执行细节只在正文，必须读正文**。
 ---
 
 # 会话/阶段收尾任务
@@ -79,6 +79,52 @@ description: 当 copilot-api-js 会话/阶段收尾时使用——交付、汇�
 
 第二格是可替换槽位：产物不是交接时，换成「**实际执行方 / 使用方**第一人称走查」。
 
+### 6b. 派 implementer 时的进度文件 —— HANDOVER 的上游
+
+**触发时机是「派活前」，不是收尾时**——所以它写在这里但不属于收尾六步；description 里有对应的独立触发词。**完整二分，判据是可恢复性不是 commit 数**：任务只要**产出多于一个语义 commit**、或**单 commit 但历时长／不确定性高**（需要试错、可能改变方向），就**必须**建；只有**一次成型、无试错空间**的改动不建（此时理由与作废路线本来就不存在，不是「藏在 diff 里」——diff 只保存结果，从不保存「为什么不选另一条路」）。
+
+为什么派活前就要定：agent 被打断、transcript 撞上恢复闸门、API 中断时，它脑子里的东西一起没了。**本仓实测**：打断一个 implementer 时 3 个 commit 完好无损，而 4 个未提交文件里的在途意图全丢。
+
+- **一 agent 一文件**，`docs/tmp/<date>-<topic>-progress-<slug>.md`。**`<slug>` 由派活方在派活时指定**（如 `impl-1`／`impl-2`／`m2-migrate`），**必须是 kebab-ASCII**（小写字母、数字、连字符——对账脚本按行解析路径，含空格/换行的名字会破坏它）；**不能用 agent id**——agent id 要 spawn 之后才存在，而路径必须写进派活消息里；agent 自身环境也读不到它。**agent id 落 frontmatter**（拿到后回填即可），文件名只需在同一 topic 内不撞。一文件一写者=零写冲突。**slug 放后缀不放开头**：`ls docs/tmp` 要按日期+主题归组（该目录现有 9/9 文件都是 `<date>-<topic>-<限定词>.md` 形状，`progress-<slug>` 是在限定词槽位上新增一类，**不是另立排序体系**；尚无同形先例）。头部 frontmatter 必含：slug、**任务起始 SHA（`<base>`）**、分支、worktree 路径、对应 plan 文档，以及拿到后回填的 agent id / session id。
+- **更新触发 = 每个 commit，不是「适当时候」。**「适当」是自评条件，赶工时第一个被跳过。**机械对账口径**（缺了起始 SHA 就做不了，所以上面要求写进 frontmatter）。**唯一命令形态**——必须 `--first-parent` 遍历，否则会把 peer 分支的祖先卷进来、且 merge commit 的 diff 语义随遍历方式而变：
+
+```bash
+BASE=<进度文件 frontmatter 里的任务起始 SHA>      # 必须显式设，下面三道守卫会在缺失/无效/非祖先时大声失败
+PROGRESS=docs/tmp/<date>-<topic>-progress-<slug>.md
+[ -n "$BASE" ] || { echo "BASE 未设置——对账未执行（别把空输出当合规）"; exit 2; }
+git rev-parse --verify -q "$BASE^{commit}" >/dev/null || { echo "BASE 无效"; exit 2; }
+git merge-base --is-ancestor "$BASE" HEAD || { echo "BASE 不是 HEAD 的祖先——审计集合会错"; exit 2; }
+git log --first-parent --format=%H "$BASE"..HEAD | while read -r sha; do
+  files=$(git show --first-parent --name-only --format= "$sha" | sed '/^$/d')
+  [ -z "$files" ] && continue                                  # 空 commit 跳过
+  other=$(printf '%s\n' "$files"   | grep -vxF "$PROGRESS" | head -1)
+  touched=$(printf '%s\n' "$files" | grep  -xF "$PROGRESS" | head -1)
+  if [ -n "$other" ] && [ -z "$touched" ]; then echo "缺进度更新: $sha"; fi
+done
+```
+
+**判据是上面这条输出为空**（每个实现 commit 都伴随了进度更新）。**五个写法都是承重的，别简化**：`--first-parent` 防止把 peer 分支祖先卷进来、并固定 merge 的 diff 语义；`grep -xF`（精确整行）防止 `…progress-<slug>.md.extra` 这类**前缀碰撞被误判**；`sed '/^$/d'` + 空列表跳过防止**空 commit 被误判**；末尾用 `if…then…fi` **而不是 `&&` 链**——否则最后一个 commit 若不满足条件，循环会以非零状态收尾，**`set -e` 下输出明明正确却中断**；三道 `BASE` 守卫缺一不可，尤其**祖先检查**（随手粘一个无关分支的 SHA 也能通过前两道，然后安静地审计错误的集合）。⚠️ **最危险的仍是不设 `BASE`**：循环 0 次、输出为空，**看起来像合规**。（以上形态 2026-08-02 在临时仓库对「实现+进度／只有实现／只有进度且在末位／空 commit／前缀碰撞文件／无关分支 SHA」六种情形逐个实测通过，非推断。）
+
+**约束 `<slug>` 必须是 kebab-ASCII**（小写字母、数字、连字符）——路径含换行会破坏按行解析，用命名约束排除比改写成 NUL 分隔脚本省事得多。
+
+**反向的 progress-only commit 不是缺陷**：单独补写、收口时标 `已被 HANDOVER 取代`，都会合法产生它。**诚实边界**：这条证明的是「实现 commit 都伴随了进度更新」，**不证明**内容真实或及时。**所有已知绕过都属同一族——历史改写或历史聚合**，四个实例：① `amend`／`rebase` 把进度改动塞进既有实现 commit；② **merge commit**——精确条件是「该 merge **相对第一父的净 diff** 含进度文件」（不是「被合入分支曾碰过它」）时它同时算 I 和 P，故该判据**对 merge commit 无鉴别力**；③ **squash merge / 手工 squash**——多个实现 commit 塌缩成一个，末次带上进度文件就全绿；④ `cherry-pick -n` 攒改动后一次提交。**相位内若大量工作以 merge/squash 形式落地，这条对账基本失效，改用别的方式核。**
+- **必须随 commit 一起提交。** 只躺在工作区的进度文件，在中断面前和没写一样。
+- **记 git 记不下来的三样**，别复述「我干了什么」（git log 已经有了）：① **剩余项**，每项带验收判据；② **在途意图**——当前改到一半的文件为什么改成这样、原打算改成什么；③ **已作废的路子**——试过、否掉了、别再试第二遍。
+- **两种收口，别混**（不定这条就会留下两份同时存活、必然先后陈旧的事实源，违反 §6 自己的单一事实源原则）：
+  - **跨会话交接时**：先把进度文件的三样折进 HANDOVER（§6 的必含项收编它们），**然后立刻在进度文件头部标 `已被 HANDOVER 取代 → <路径>` 并停止更新**。此后唯一权威是 HANDOVER。
+  - **相位彻底完成时**：把持久结论折进 `docs/plan/<feature>/` 的正式计划文档，删掉或归档 `docs/tmp/` 的散件。
+  - 不做这一步，文件数随 agent 数线性长，半年后是垃圾场。
+
+**配套的两条调度纪律（措辞按被引用正文校准，别扩大）**：
+- **存在任何 mutation writer 时不得共树**——精确条件是「同一 worktree 同期只允许一个写者」「mutation probe 不得与权威测试跑并发」。**严格只读的并行审查共用一棵树是安全的**，别读成「多 agent 一律不得共树」。→ [[methodology-concurrent-agents-must-not-share-worktree-for-mutation]]
+- **判活优先看 output 文件 mtime，但 mtime 只是弱信号**（长时间不写仍可能在正常工作），要配「远超该任务合理时长」或明确失败信号才下结论。**不为判活发空探测**——理由是**收益低于风险**（空探测换不到可靠的活/死判定，却多一次无意义的 steering／恢复操作）；真要唤醒只在确有失败信号时发**带完整指令的正式消息**。⚠️ **别把理由写成「探测会打断运行中的 agent」**：2026-08-02 本仓一度这么记，已被时间线证伪——被打断 agent 的 `[Request interrupted by user]` 早于主会话发出探测 **118 秒**，且探测那次因恢复闸门返回 `No transcript found`、根本没送达。**已证的只有「探测不是原因」这一条**；至于真因是什么，当时宿主在同一分钟报了一次失败的 fork resume 并在 fork 会话目录建了符号链接，**这只是时间相关性、没有 source tag 佐证，属待验证假设，不得当结论用**。[[feedback-proactive-liveness-dead-check-on-background-agents]] 关于「resume 会排队、不打断」的原始表述**未被该事故反驳**，不得据此改写。**这是「在边界猜成因」的双重反面教材**（→ [[methodology-abort-provenance-tag-at-source-not-guess-at-boundary]]）：第一次凭时间相邻认定探测是元凶；**纠正时又立刻把另一个时间相邻的事件认定成真因**——同一个错误形态，两小时内犯了两次。教训不是「换个更像的原因」，而是**没有产生点标签就只写「已排除什么」，不写「真因是什么」**。
+
+**范围按容量定标，但阈值带版本与环境前提**：subagent transcript 超 **5 MiB** 后 `SendMessage` 恢复失败（报「No transcript found」但文件在磁盘上），**已观测于 CC `2.1.207` 的源码路径**，且官方留有 `CLAUDE_CODE_DISABLE_PRECOMPACT_SKIP=1` 可跳过该闸门（需重启 CC 生效）。**这不是无版本永真事实**——用之前先核当前 `claude --version` 与该阈值是否仍成立（核验方式见 [[reference-subagent-transcript-5mib-gate-blocks-resume]]）。
+- **别把「切分给多个 implementer」当默认解**：本仓实测，一个带完整相位上下文的 implementer 连续抓出三个计划内部冲突（验收项被写在能力就位之前），换成新实例大概率只会照着错的验收项打勾。判据是**接缝**不是大小——上下文不需要跨越的接缝才切分。
+- **接缝不存在但预计越界时怎么办**（不留这条就等于没给动作）：在逼近阈值前**预设停止点**，让 agent 提交一个完整 checkpoint（代码 + 进度文件），再由**新实例按 checkpoint 接续**。⚠️ **诚实说明**：这是**可恢复交接，不是原上下文续命**——新实例拿不到原 transcript 的连续性，进度文件的质量决定接得上接不上。所以越是这种任务，上面三样内容越要写足。
+
+**一条自评式判断的处置**：「这个接缝要不要跨越上下文」由调度方自己判断、自己立即行动，属同一方既当运动员又当裁判。**按 record-now-adjudicate-later 降级**：当场把分类与理由写进进度文件头部（写明判为「可切分」还是「须连续」及依据），**相位收口时随该批产物一起交给独立评审核对**，不在决策当刻自证。
+
 **每轮整改完 HANDOVER，立刻回查 KICKOFF**——失效几乎全发生在「修复落进 HANDOVER、KICKOFF 留在原地」，不在初次写作。机械自查：把 KICKOFF 里每个命令、数字、步骤编号拎出来逐个回 HANDOVER 对，对不上的不是「改一下」，是**这段本来就该是指针**。
 
 **产物必须进仓库并提交**（这一条踩过实亏——`/tmp` 一重启就没，共享 worktree 的未追踪文件离一次 `git clean` 只差一步）：**被引用的既有产物先提交**（`git add` 之后立刻 `git commit -F <msgfile> -- <精确路径>`；只 `git add` 会留在共享 index 被 peer 的无-pathspec 提交卷走），**subagent 结论落进产物文件而非只靠 return 正文**（见 [[methodology-background-agent-result-surfacing-failure]]）。
@@ -111,6 +157,11 @@ description: 当 copilot-api-js 会话/阶段收尾时使用——交付、汇�
 | V9 | 「每条新判据写鉴别力正控」**改变了判据的写法** | 数交接里的新 detector/oracle：几条写明了目标变异？**已实现的**有没有记录「变异后真的变红」的观测？未实现的有没有明确留成执行期 gate？ | 三种都算证伪：① 判据只有「它专门咬 X」这类意图声明而无目标变异；② **已实现却没有「变异后真的变红」的观测**；③ 未实现且未留执行期正控 gate。⚠️ **写了一句变异 ≠ 鉴别力已验证**——形式合规与主张成立是两件事 |
 | V10 | 「与冻结上游文档对账」**会被触发** | 候选上游文档（CLAUDE.md 文档路由 + 现有 plan 的引用 + DESIGN 活路径 + backlog 条目，`rg` 只做补漏）是否**逐份 disposition**？检索词与范围是否落盘？ | 已引用/已命中的上游文档未对账，或声称「无冲突」却没有检索证据。⚠️ **单关键词空结果不能支持「无」**——主题会改名、旧文档只出现旧方案术语 |
 | V7 | 闭环的两个提交时点**都被照做** | **机械判定，不靠自我报告**：① **起草前**——**目录型产物（`exp/<topic>/` 等）先展开成逐文件清单**（`find <dir> -type f`，别拿目录当 pathspec：`ls-files --error-unmatch` 只要目录里**有一个**文件被追踪就命中，而 `status -uall` **看不见 ignored 文件**，于是「一个已提交 + 一个被忽略」的目录两项全绿），再对**每个文件**三条都过：`git ls-files --error-unmatch -- <路径>` **命中**（证明已追踪）＋ `git status --porcelain --untracked-files=all -- <路径>` **为空**（无未提交改动）＋ `git check-ignore <路径>` **不命中**。⚠️ **单看 status 空是三种情况的并集**：路径不存在、被 gitignore 且未追踪、真的已提交——前两种都会假绿，探针产物最常落在第二种；② **最终提交后**——`git diff-tree --no-commit-id --name-only -r HEAD` 的输出**包含**两份文档 + 本轮各评审报告 + `docs/` 入口的每一个路径。⚠️ **②不能用 `git status`**：它比的是工作区相对 HEAD，**证不了文件在这个提交里**（几个提交前入库、本次漏提，status 照样干净）| ①「起草时引用了未提交的既有产物」；②「最终提交漏掉闭环产物」。⚠️ 评审报告在起草**之后**产生，整改期间未提交是**合法的**，别按①判红。这是 §6 的**起源事故**（三份研究报告差点丢），最该被机械盯住 |
+
+| V11 | §6b 的触发链能在**派活那一刻**唤出本 skill（而不是等到收尾才读到） | 你**派 implementer 之前**有没有读到 §6b？照实写触发来源：description 自动浮现 / CLAUDE.md 想起来 / 用户点名 / **派完才想起来**。⚠️ 负样本要在发生当刻记——「派完才想起来」是本条最重要的观测 | 「派完才想起来」或「事后补建」占多数 ＝ 触发词没覆盖派活场景（§6b 的触发时机与本 skill 其余部分相反，是已知高危） |
+| V12 | 「每 commit 更新」真的发生，且对账口径可机械执行 | 相位结束时**照抄正文那段 `--first-parent` 脚本跑一次**，记下「缺进度更新」的输出行数与内容 | ① frontmatter 没写 `<base>` 导致**对账根本做不了**（这是最可能的失效，比漏写更隐蔽）；② 输出非空且集中在末尾 ＝ 实为一次性补写。⚠️ **输出为空不证明内容及时或真实**，也挡不住 `amend`／`rebase` 改写历史，别把它读成「进度文件质量已验证」 |
+| V13 | 进度文件真能让**中断后的接手方**不重新调查 | 发生中断/换实例时：接手方只读进度文件＋git log，能否直接续上？需要回头问人或重读 transcript 的有几处？记一行并标视角=接手 | 接手方仍需重新调查「在途意图」或「已作废的路子」＝ 这两栏写成了流水账而非决策记录 |
+| V14 | 两种收口真的消除了双事实源 | 收口后查：进度文件是否已标 `已被 HANDOVER 取代` 或已归档？HANDOVER/plan 里是否确实收编了那三样？ | 进度文件与 HANDOVER 同时活着且内容分岔 ＝ 转移规则没被照做（§6 自己的单一事实源原则被本节破坏，属自伤） |
 
 **定期度量（非自验，不适用毕业规则）**：新交接带状态行的比例。分母只取**本约定生效后新建的**交接（`git log --diff-filter=A --since=2026-07-28 -- docs/plan/` 里 `*handover*/*handoff*/*kickoff*` 且 `! -iname '*review*'`），判据是「**新建交接合规率 < 100% 即说明规则没落地**」。**不要用全仓比例**——§6 明写「旧的不追溯迁移」，三十多份历史文档被政策豁免、永远没有状态行，全仓比例长期不动是政策的必然结果，拿它当证伪判据会去修一条没坏的规则。全仓基线仅供参考：2026-07-28 用 `find docs/plan -iname '*handover*.md' -o -iname '*handoff*.md' -o -iname '*kickoff*.md'` 逐个 `head -8` 找状态词，得 17/47（含 3 份评审报告的噪声）。
 
