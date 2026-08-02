@@ -30,6 +30,7 @@ import {
   anchorStopFrame,
   remapAnthropicBlockIndex,
   createGenerationWireIndexAllocator,
+  createGenerationWireState,
 } from "~/lib/anthropic/keepalive-anchor"
 import { makeReconcilingSink } from "~/lib/anthropic/live-reconcile"
 import { createBetaProbe } from "~/lib/anthropic/pipeline"
@@ -78,7 +79,7 @@ describe("translate-leg flush frames + live reconcile (empty_text anchor +1 rema
     // Simulate an injected empty_text anchor prelude: message_start + anchor content_block@0 already
     // forwarded, so the live reconcile drops the translator's message_start and shifts real blocks +1.
     const anchorState: AnchorState = {
-      allocator: createGenerationWireIndexAllocator(),
+      wireState: createGenerationWireState(createGenerationWireIndexAllocator()),
       injected: true,
       messageStartForwarded: true,
       anchorBlockOpen: true,
@@ -136,7 +137,7 @@ describe("translate-leg flush frames + live reconcile (empty_text anchor +1 rema
     const env = translateLegEnv()
     // Fast path: no stall → no anchor injected.
     const anchorState: AnchorState = {
-      allocator: createGenerationWireIndexAllocator(),
+      wireState: createGenerationWireState(createGenerationWireIndexAllocator()),
       injected: false,
       messageStartForwarded: false,
       anchorBlockOpen: false,

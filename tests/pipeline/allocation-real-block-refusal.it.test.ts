@@ -28,6 +28,7 @@ import {
   createGenerationWireState,
 } from "~/lib/anthropic/keepalive-anchor"
 import { createDownstreamDeliverySession } from "~/lib/pipeline/delivery/session"
+import { StreamClientAbortError } from "~/lib/stream"
 
 import { ownerValue } from "../helpers/owner-result"
 
@@ -39,6 +40,13 @@ const delta = (index: number): ClientFrame => ({
   event: "content_block_delta",
   data: JSON.stringify({ type: "content_block_delta", index, delta: { type: "text_delta", text: "x" } }),
 })
+
+function setupWithSink(sink: ClientSink) {
+  const writes: Array<ClientFrame> = []
+  const wireState = createGenerationWireState(createGenerationWireIndexAllocator())
+  const delivery = createDownstreamDeliverySession({ sink, wireState })
+  return { writes, wireState, delivery, port: delivery.allocationPort }
+}
 
 function setup() {
   const writes: Array<ClientFrame> = []
@@ -104,6 +112,44 @@ test("a terminated session refuses a REAL-block allocation without allocating or
   expect(writes).toEqual([])
   expect(wireState.allocator.nextRealIndex()).toBe(0)
   expect(wireState.mappings.get(leg)?.get(0)).toBeUndefined()
+})
+
+test("a REAL-block first-write abort consumes the mapping and terminates delivery", async () => {
+  const sink: ClientSink = {
+    async write() {
+      throw new StreamClientAbortError()
+    },
+    close() {},
+  }
+  const { wireState, delivery, port } = setupWithSink(sink)
+  const leg = ownerValue(await port.beginLeg("primary", PRIMARY))
+
+  expect(await port.withAllocatedRealBlock(0, ({ mapping, envelope }) => [envelope.real(mapping.remap(start(0)))])).toEqual({
+    ok: false,
+    reason: "delivery-finished",
+  })
+  expect(wireState.allocator.nextRealIndex()).toBe(1)
+  expect(wireState.mappings.get(leg)?.get(0)?.wireIndex).toBe(0)
+  expect(delivery.snapshot.state).toBe("closed")
+})
+
+test("a REAL-block build success followed by a second-frame abort never reuses the visible mapping", async () => {
+  let writes = 0
+  const sink: ClientSink = {
+    async write() {
+      if (++writes === 2) throw new StreamClientAbortError()
+    },
+    close() {},
+  }
+  const { wireState, delivery, port } = setupWithSink(sink)
+  const leg = ownerValue(await port.beginLeg("primary", PRIMARY))
+
+  expect(
+    await port.withAllocatedRealBlock(0, ({ mapping, envelope }) => [envelope.real(mapping.remap(start(0))), envelope.real(mapping.remap(delta(0)))]),
+  ).toEqual({ ok: false, reason: "delivery-finished" })
+  expect(wireState.allocator.nextRealIndex()).toBe(1)
+  expect(wireState.mappings.get(leg)?.get(0)?.wireIndex).toBe(0)
+  expect(delivery.snapshot.state).toBe("closed")
 })
 
 test("a terminated session refuses writeBlockFrame instead of emitting an unremapped frame", async () => {

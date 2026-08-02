@@ -38,7 +38,6 @@ test("the pre-content anchor advances the shared allocator from wire index 0", a
   const wireState = createGenerationWireState(allocator)
   const state: AnchorState = {
     wireState,
-    allocator,
     injected: false,
     messageStartForwarded: false,
     anchorBlockOpen: false,
@@ -69,7 +68,7 @@ test("the pre-content anchor advances the shared allocator from wire index 0", a
   })
 
   expect(await inject()).toBe(true)
-  expect(state.allocator).toBe(allocator)
+  expect(state.wireState.allocator).toBe(allocator)
   expect(allocator.anchorsOpened()).toBe(1)
   expect(allocator.nextAnchorIndex()).toBe(1)
   expect(frames.slice(1).map(({ kind, data }) => ({ kind, index: JSON.parse(data).index }))).toEqual([

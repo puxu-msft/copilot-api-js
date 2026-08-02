@@ -18,11 +18,11 @@ import { getDownstreamDeliverySession } from "~/lib/pipeline/delivery/session"
 import { anthropicSseFrame } from "./sse-frame"
 
 /**
- * Reserved index of the synthetic empty-text keepalive ANCHOR block injected in buffered
- * pre-commit (spec 2026-07-08-buffered-keepalive-empty-text-anchor). The anchor occupies
- * index 0; all real content blocks flush at index+1 (see remapAnthropicBlockIndex).
+ * Readable alias for the generation frontier's initial value in the pre-content anchor scenario.
+ * It is not a protocol-wide fixed index: later anchors receive whichever monotonic wire index the
+ * generation owner allocates. The name remains useful in legacy close/remap sites until P3M migrates them.
  *
- * NOTE (spec 2026-07-22 §3.3): this fixed "anchor@0, real blocks at +1" model is the COEXIST shape.
+ * NOTE (spec 2026-07-22 §3.3): the former fixed "anchor@0, real blocks at +1" model is the COEXIST shape.
  * The SEQUENTIAL-anchor shape (CLI-safe) needs runtime-incrementing indices instead — see
  * {@link createGenerationWireIndexAllocator}, which supersedes the fixed offset at the sink/driver seam.
  */

@@ -23,6 +23,7 @@ import {
   //
   anchorStopFrame,
   createGenerationWireIndexAllocator,
+  createGenerationWireState,
   remapAnthropicBlockIndex,
 } from "~/lib/anthropic/keepalive-anchor"
 import {
@@ -55,12 +56,24 @@ function hooks(): ReconcileHooks {
 function injectedState(): AnchorState {
   // The post-injection shared state the handler's empty_text anchor injector leaves behind (message_start +
   // anchor block@0 + empty delta already sent → anchorBlockOpen=true).
-  return { allocator: createGenerationWireIndexAllocator(), injected: true, messageStartForwarded: true, anchorBlockOpen: true, anchorClosed: false }
+  return {
+    wireState: createGenerationWireState(createGenerationWireIndexAllocator()),
+    injected: true,
+    messageStartForwarded: true,
+    anchorBlockOpen: true,
+    anchorClosed: false,
+  }
 }
 
 /** The post-injection state the enveloped_ping ENVELOPE-ONLY injector leaves behind (message_start only, no block). */
 function envelopeInjectedState(): AnchorState {
-  return { allocator: createGenerationWireIndexAllocator(), injected: true, messageStartForwarded: true, anchorBlockOpen: false, anchorClosed: false }
+  return {
+    wireState: createGenerationWireState(createGenerationWireIndexAllocator()),
+    injected: true,
+    messageStartForwarded: true,
+    anchorBlockOpen: false,
+    anchorClosed: false,
+  }
 }
 
 /** Map a frame to `type@index` (index omitted when absent) for compact sequence assertions. */
@@ -74,7 +87,7 @@ function key(fr: ClientFrame): string {
 describe("reconcileLiveFrame", () => {
   test("NOT injected → every frame passes through byte-identically (fast-response equivalence)", () => {
     const state: AnchorState = {
-      allocator: createGenerationWireIndexAllocator(),
+      wireState: createGenerationWireState(createGenerationWireIndexAllocator()),
       injected: false,
       messageStartForwarded: false,
       anchorBlockOpen: false,
@@ -99,7 +112,7 @@ describe("reconcileLiveFrame", () => {
 
   test("NOT injected + no message_start (pure content) → state stays fully pure", () => {
     const state: AnchorState = {
-      allocator: createGenerationWireIndexAllocator(),
+      wireState: createGenerationWireState(createGenerationWireIndexAllocator()),
       injected: false,
       messageStartForwarded: false,
       anchorBlockOpen: false,
@@ -304,7 +317,7 @@ describe("makeReconcilingSink", () => {
   test("NOT injected: write forwards each frame verbatim to inner.write (no anchor routing)", async () => {
     const { sink, calls } = stubSink()
     const state: AnchorState = {
-      allocator: createGenerationWireIndexAllocator(),
+      wireState: createGenerationWireState(createGenerationWireIndexAllocator()),
       injected: false,
       messageStartForwarded: false,
       anchorBlockOpen: false,

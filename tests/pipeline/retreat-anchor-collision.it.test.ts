@@ -205,7 +205,6 @@ function buildAnchoredSink(stream: Parameters<typeof makeDeliverySseSink>[0]): {
   const wireState = createGenerationWireState(allocator)
   const anchorState: AnchorState = {
     wireState,
-    allocator,
     injected: false,
     messageStartForwarded: false,
     anchorBlockOpen: false,

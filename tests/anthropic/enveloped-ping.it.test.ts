@@ -39,6 +39,7 @@ import {
   remapAnthropicBlockIndex,
   syntheticMessageStartFrame,
   createGenerationWireIndexAllocator,
+  createGenerationWireState,
 } from "~/lib/anthropic/keepalive-anchor"
 import { resolveAnthropicKeepalive } from "~/lib/anthropic/keepalive-frame"
 import { makeReconcilingSink } from "~/lib/anthropic/live-reconcile"
@@ -87,7 +88,7 @@ function buildOnStream(
   reqId: string,
 ): { sink: ClientSink; anchorState: AnchorState; anchor: AnchorHooks } {
   const anchorState: AnchorState = {
-    allocator: createGenerationWireIndexAllocator(),
+    wireState: createGenerationWireState(createGenerationWireIndexAllocator()),
     injected: false,
     messageStartForwarded: false,
     anchorBlockOpen: false,

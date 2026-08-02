@@ -1108,7 +1108,7 @@ export async function runResponseBufferedSink(
   // before). `anchorState` falls back to a driver-local object when the caller does not thread one (e.g. a
   // `ping`-mode buffered stream that never injects).
   const anchor = opts.anchor
-  const anchorState: AnchorState = opts.anchorState ?? {
+  const anchorState: Pick<AnchorState, "injected" | "messageStartForwarded" | "anchorBlockOpen" | "anchorClosed" | "capturedMessageStart"> = opts.anchorState ?? {
     injected: false,
     messageStartForwarded: false,
     anchorBlockOpen: false,

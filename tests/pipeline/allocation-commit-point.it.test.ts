@@ -127,6 +127,7 @@ test("a visible first frame is never rolled back when the second frame fails", a
   expect(attempts.map((frame) => JSON.parse(frame.data as string).type)).toEqual(["content_block_start", "content_block_delta"])
   expect(JSON.parse(attempts[0].data as string).index).toBe(0)
   expect(wireState.allocator.nextAnchorIndex()).toBe(1)
+  expect(wireState.openAnchorIndex).toBe(0)
   expect(delivery.snapshot.state).toBe("closed")
 })
 
