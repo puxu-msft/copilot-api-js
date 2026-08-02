@@ -87,7 +87,7 @@
 - [响应改写器的 lookahead 不得吞协议有效空帧](../todo/2026-07-22-client-proxy-keepalive-300s.md) — 空载荷不等于无语义；先 curl -N 逐层抓字节
 - [架构图优化 Agent 上下文经济](feedback-architecture-map-optimize-agent-context-economy.md) — 价值轴=上下文经济+可信度
 - [交用户前先 subagent review（含 in-chat 提案）/ 用户对齐只证方向非细节最优](feedback-subagent-review-before-any-user-facing-proposal.md) — 审查门适用任何交付物含对话里直接呈现的设计；[用户对齐](feedback-user-alignment-confirms-direction-not-detail-optimality.md) 逐节点头≠细节最优
-- [后台 agent 运维两条：抖动只 SendMessage resume / 等待期用 stat mtime 判活](feedback-backend-flakiness-must-sendmessage-resume-no-alternatives.md) — 强制单一路径 resume 原 agent、绝不重派或换模型；[dead check](feedback-proactive-liveness-dead-check-on-background-agents.md) 看 output mtime，**绝不发探测消息**（会打断正在工作的 agent）
+- [后台 agent 运维两条：抖动只 SendMessage resume / 等待期用 stat mtime 判活](feedback-backend-flakiness-must-sendmessage-resume-no-alternatives.md) — 强制单一路径 resume 原 agent、绝不重派或换模型；[dead check](feedback-proactive-liveness-dead-check-on-background-agents.md) mtime 只是**弱信号**、须配「远超合理时长」或明确失败信号；不为判活发空探测（收益低于风险），但**「探测会打断运行中 agent」是 2026-08-02 的误判、已被时间线证伪**（中断早于探测 118 秒且探测未送达）——**只证得了「不是探测」，真因未定**，别再补第二个猜测
 - [计划红绿 mutation 预测可能错、执行期真跑验证](methodology-plan-red-green-mutation-prediction-can-be-wrong-verify.md) — plan「注释 X→变红」可能不咬
 - [git commit -- pathspec 取工作区非 index / 共享 worktree 绝不 amend](git-commit-pathspec-commits-worktree-not-index.md) — 共享 worktree 最终提交一律 pathspec；[amend](git-amend-in-shared-worktree-clobbers-peer-commit.md) peer 在你 commit 与 amend 之间提交→你静默改写对方 commit，reflog 取回原 message 立刻还原(先验 tree 一致)
 - [语义合并冲突暴露对方 timing 潜伏 bug / 别合进 peer 多提交重构中间态](methodology-semantic-merge-conflict-exposes-latent-bug-via-timing.md) — 两边各绿合并却坏；[中间态](methodology-dont-merge-into-midflight-multicommit-refactor.md) rename/usages 跨提交
