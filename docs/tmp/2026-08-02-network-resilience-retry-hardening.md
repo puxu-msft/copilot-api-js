@@ -22,9 +22,9 @@
 
 ### 2.1 三腿现状
 
-- **C1**（确证）三条腿全挂在 `runResponseBufferedSink` 上；Anthropic 开关 `protectStreamingGeneration` 内置默认 `false`（`state-defaults.ts:124`），shipped `config.yaml:771` 亦为 `false`，用户 override（`~/.local/share/copilot-api/config.yaml`）未覆盖该键 → 走 live 分支（`messages/handler-v4.ts:1367`）→ **情形 1/2/3 对 Claude Code 一条都不生效**。
+- **C1**（确证）三条腿全挂在 `runResponseBufferedSink` 上；Anthropic 开关 `protectStreamingGeneration` 内置默认 `false`（`state-defaults.ts:124`），shipped `config.yaml:771` 亦为 `false`，用户 override（`~/.local/share/copilot-api/config.yaml`）未覆盖该键 → 走 live 分支（`messages/handler-v4.ts:1374`）→ **情形 1/2/3 对 Claude Code 一条都不生效**。
 - **C2**（确证）情形 2 今天与 ADR 不符：`driver.ts:1544` 落 `partial-degrade` → `messages/handler-v4.ts:1388-1416` 给客户端写 `event: error`；ADR D3 明写「不续写，**正常终止**」。
-- **C3**（确证）续写腿只有 Anthropic 接线（ledger + extractor + continuation 三件套，`messages/handler-v4.ts:1328-1340`）；Responses 侧三件套全无 → driver 续写分支对 Responses 恒 inert。
+- **C3**（确证）续写腿只有 Anthropic 接线（ledger + extractor + continuation 三件套，`messages/handler-v4.ts:1335-1347`）；Responses 侧三件套全无 → driver 续写分支对 Responses 恒 inert。
 - **C4**（确证 + 修正）Responses-HTTP 已块级；WS 故意 terminal-only。**修正**：该分发不在 `ws.ts`，而在 `responses/candidate-response-session.ts:140` 的 `transport === "http"` 门 —— 改动点在此，`ws.ts:372-385` 只是注释说明。
 
 ### 2.2 预算现状（v1 此节大面积失实）
@@ -56,19 +56,19 @@
   **后果：`StreamIdleTimeoutError` 无论是否已提交块，既不透明重试也不续写，直接落错误帧。而「上游长时间零帧」正是本仓库文档化的 GHC 主要病理**（`config.yaml:246-249`：「观察到 gpt-5.5 (effort=high) 爆发前有 266–462s 的零帧静默期」）。9 次预算在这个形态下一次都用不上。
 - **C15**（新增）buffered 路径**结构性跳过 hedge**：`driver.ts:823-825` `if (outerOpts && "retryCap" in outerOpts) return undefined`，而 Anthropic buffered 分支恒带 `retryCap`（`messages/handler-v4.ts:1344`）。hedge 在用户 config 里是开的，注释自述用途正是「the Claude Code no-real-content watchdog tail」（`config.yaml:968-973`）。
 - **C16**（新增）`bufferedBytes` 在块级 commit 后**不清零**：全文件仅 `driver.ts:1227` 初始化 / `:1274` 累加 / `:1275` 判定，块级 commit 只做 `buffer.length = 0`。于是这个「OOM 护栏」度量的是**整条腿累计渲染字节**而非**驻留内存**。且 `retreated` 分支在 `driver.ts:1375-1385` **短路 return，排在三腿之前** → 一旦 retreat，三腿全部不可达。
-- **C17**（新增）`liveReconcilingSink` 有**第二个消费者**：`messages/handler-v4.ts:1665` 的 translate leg（`/v1/messages` 打到 `@cc`/`@responses` 模型）。该 leg **结构上不能 buffered**（代码自述 `:1640-1646`：`sawMessageStop` 读的 Anthropic 终止符由 `flushResponse` 在渲染循环**之后**合成）→ 它在范围内却是**零条腿**。
+- **C17**（新增）`liveReconcilingSink` 有**第二个消费者**：`messages/handler-v4.ts:1678` 的 translate leg（`/v1/messages` 打到 `@cc`/`@responses` 模型）。该 leg **结构上不能 buffered**（代码自述 `:1640-1646`：`sawMessageStop` 读的 Anthropic 终止符由 `flushResponse` 在渲染循环**之后**合成）→ 它在范围内却是**零条腿**。
 - **C18**（新增，v2-r2 收窄）**两份 ADR 对 Responses-WS 的规范结论直接冲突**：ADR `2026-07-11-block-level-buffered-retry.md:30,34` 说 terminal-only 且「这个非对称是**正确性要求**，不是妥协」；ADR `2026-07-22-…:51-55` D4 说「Responses WS 升块级」。后者较新，且其 `:6` 已声明「修订：2026-07-11…（前 spec）在 Anthropic 上未完成的部分」——**是笼统修订关系，但旧 ADR 的 Responses-WS 条目未标注被 D4 取代，仍保留相反的 Accepted 规范文本**。
 
 ### 2.5 客户端保活边界（v1 数据过期 + 覆盖面高估）
 
 - **C10**（修正）300s event-idle 与「ping 不重置、任意非-ping 事件重置」在 CC 2.1.207 源码中成立。但 **byte-idle 不是 60s**：first-party 默认 180s、其他路径基准 300s，可被 `CLAUDE_BYTE_STREAM_IDLE_TIMEOUT_MS` / remote setting 覆盖，clamp 10s–1800s。v1 的 60s 是旧版本实测值。
-- **C21**（新增，承重）**当前 content 升级被限死在 pre-content**：`delivery/session.ts:126-129` 的 `semanticBlockCount === 0` 门，注释自述「After the first committed block, a no-open window needs the future monotone index allocator」。旧 sink 同门（`client-sink.ts:429`）。
+- **C21**（新增，承重）**当前 content 升级被限死在 pre-content**：`delivery/session.ts:174` 的 `semanticBlockCount === 0` 门，注释自述「After the first committed block, a no-open window needs the future monotone index allocator」。旧 sink 同门（`client-sink.ts` 同门）。
 
   **后果：块级下首块提交后的长静默，客户端轨上无 open block，只能发裸 ping，撞 300s watchdog 必断。** 本设计三条腿全部作用在 post-content，所以 v1 那条「保活撑得住」的承重因果链**在主战场上是断的**。
 - **C22**（新增）该缺口是**已冻结的硬前置门**，不是敞口：
   - ADR `2026-07-22-…:27`（2026-07-27 修订）：「完整覆盖依赖独立方案 A（generation-scoped 单调 wire-index allocator），**并是 Anthropic 块级默认翻转的硬前置门**」
   - spec `2026-07-27-inter-block-keepalive-carrier.md:16,157,193`：三处同义，`:193` 作「**硬门**：A 必须在 Anthropic 块级 buffered 默认翻转前落地」
-  - plan `2026-07-27-inter-block-anchor-allocator/`：9 相位。**master 已落 P0 基线与 P6**（`1bf9bf89` / `a15ea821` / `2e1041e8`）；**P1 / P2 已在分支 `feat/anchor-allocator-p1p2` 完成待合并**（`035d37c8` / `79551d06`，`git merge-base --is-ancestor 035d37c8 master` 为 false，分支上 README 自述「P0 / P1 / P2 / P6 已完成」）；**P3M / P7 / P8 未完成**。
+  - plan `2026-07-27-inter-block-anchor-allocator/`：9 相位。**P0 / P1 / P2 / P6 已 landed master**（P1+P2 经四轮异模型审查后由同伴会话合并，merge commit `88e47cef`，2026-08-02）；**P3M（M1–M8）/ P7 / P8 未启动**。硬门本身仍在代码里：`delivery/session.ts:174` 的 `semanticBlockCount === 0` 依旧钉着 anchor，**由 P3M 的 M6 解除**（M6 硬序晚于 M2–M4）。当前 legacy remap 站点尚存 4 条（`tests/architecture/anchor-remap-single-authority.unit.test.ts:45-48` 的 allowlist），M4 验收要求清空。
 
 ### 2.6 已闭合的两个原敞口
 
@@ -94,12 +94,12 @@
 
 | 阶段 | 内容 | 依据 |
 |---|---|---|
-| **阶段 0（前置）** | allocator 方案 A：`docs/plan/2026-07-27-inter-block-anchor-allocator/` 的 **P1/P2 分支合并 + P3M / P7 / P8** | 用户裁决「先做 allocator 再动本特性」。C22 的硬门 |
+| **阶段 0（前置）** | allocator 方案 A 的剩余相位：**P3M（M1–M8，唯一硬序 M6 晚于 M2–M4）→ P7 → P8**。P0/P1/P2/P6 已 landed master（`88e47cef`） | 用户裁决「先做 allocator 再动本特性」。C22 的硬门 |
 | **阶段 1** | 本 spec 全部内容 | 阶段 0 完成后启动 |
 
 **本 spec 不重复阶段 0 的设计** —— 其唯一权威是 [inter-block-keepalive-carrier spec](../spec/2026-07-27-inter-block-keepalive-carrier.md) 与同名 plan 目录。本节只声明依赖与解除条件。
 
-**解除条件**：阶段 0 的 P8 端到端验收通过（含真 CC 首块后 >315s 静默不断流），且 `delivery/session.ts:126-129` 的 `semanticBlockCount === 0` 门被 allocator frontier 取代。
+**解除条件**：阶段 0 的 P8 端到端验收通过（含真 CC 首块后 >315s 静默不断流），且 `delivery/session.ts:174` 的 `semanticBlockCount === 0` 门被 allocator frontier 取代（M6）。**阶段 0 自带两条硬前置**（见同伴会话交接件 `docs/plan/2026-07-27-handover-max-tokens-and-keepalive.md`）：M2 的 torn-wire 前置条件四条满足点、M4 必须清空 AST allowlist 的全部 `legacy:*` 条目。
 
 **唯一例外**：§4.6 的硬闸参数化（B2）与阶段 0 **正交** —— 已核实：反应式重试只在 dispatch 开启阶段触发（`dispatch-scheduler.ts:288` 在 `response.error` 上调 `decideRetry`），**不在流中**，因此抬高网络族预算不产生客户端可见的重复内容，也不触碰 allocator / 块级改动面。可在阶段 0 期间独立先行交付，是用户头号诉求的最快落点。
 
@@ -243,8 +243,8 @@ Anthropic 已 landed。**Responses 新增**：注册 continuation builder（`con
 | # | 路径 | 现状 | 改为 |
 |---|---|---|---|
 | 1 | `anthropic.protect_streaming_generation` | `false`(默认) / `"on"` / `"tool_use_only"` | `anthropic.delivery: "block"`(默认) / `"response"`(实验)；compat 层 warn-once 强制迁移 |
-| 2 | `messages/handler-v4.ts:1367` direct leg live 分支 | 默认路径 | 删除 |
-| 3 | **translate leg**（`messages/handler-v4.ts:1665`，C17） | 结构上不能 buffered，零条腿 | 块级化，见下 |
+| 2 | `messages/handler-v4.ts:1374` direct leg live 分支 | 默认路径 | 删除 |
+| 3 | **translate leg**（`messages/handler-v4.ts:1678`，C17） | 结构上不能 buffered，零条腿 | 块级化，见下 |
 | 4 | `openai_responses.buffered_retry: false` 退回 live | 可选 | 删除；`responses/handler-v4.ts:395` live 分支删除 |
 | 5 | Responses-WS terminal-only | `candidate-response-session.ts:140` 的 `transport === "http"` 门 | 升块级（改这个门，**不是改 `ws.ts`**） |
 | 6 | **`retreated` 退回 live 写透**（C16） | 短路 return，三腿全失效 | `bufferedBytes` 每次边界 flush 后清零（根因修复）；retreat 保留为**单块** OOM 兜底，其后截断走 §4.1 表而非直接 error |
@@ -269,6 +269,8 @@ Anthropic 已 landed。**Responses 新增**：注册 continuation builder（`con
 ### 4.10 观测与验收指标
 
 新终态（`tool-boundary-terminated` / `budget-exhausted-truncation` / `recovery-budget-exhausted`）进 telemetry + History 终局枚举 + `ui-v4` 展示 + `docs/DESIGN.md` 活架构表。counters bag 是开放 `Record`，加维度零版本 bump。
+
+**`ui-v4` 那一项带已知前置**：`typecheck:ui-v4` **在 master 基线上就是红的**（`~/lib/sqlite/compression` 等解析失败，疑似 monorepo 拆包余波，同伴会话交接件记录、尚未立项）。故本设计不得把「ui-v4 绿」写成验收判据——要么先修基线，要么显式声明该项排除并记 backlog。
 
 **验收指标**（v1 缺失，没有它无法回答「这个特性有没有用」）：改动前后的「客户端收到 error 帧的请求占比」与「三腿各自救回的次数」。这也是 §4.3 记账口径的下游消费者。
 
