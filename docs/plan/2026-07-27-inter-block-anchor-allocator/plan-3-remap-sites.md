@@ -85,6 +85,8 @@ anchor@2（测试经 owner API 落）→ real@3（上游1，生产分配）→ o
 
 M1–M4 期间 owner 是 legacy 字段的**唯一写者**；下表规定每个 owner 操作**结束后**四个状态的取值。任何偏离即 bug，不留解释空间。
 
+**原子迁移红线（第二轮实现审查补充）**：同一 close 站点的 legacy `sink.writeAnchor(stop)` 与 owner `closeOpenAnchor` **不得在任何可提交中间态并存**，否则同一 anchor 会双写 stop。M1 迁每个站点必须在同一 commit 内「删 legacy write + 接 owner close + 加 exactly-once oracle」；未迁站点保持纯 legacy，已迁站点保持纯 owner。`openAnchorIndex` 只写不读的 P2 地基在第一个站点迁入时才变成活状态，不得先接 owner close 再留旧 write。
+
 | owner 操作 | `openAnchorIndex` | `anchorBlockOpen` | `anchorClosed` | `injected` |
 |---|---|---|---|---|
 | 初始（generation 开始） | `undefined` | `false` | `false` | `false` |

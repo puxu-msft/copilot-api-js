@@ -145,7 +145,7 @@ export interface WireBlockAllocationPort {
 }
 ```
 
-**实施期补充裁决（2026-07-28）**：五个入口对 session 非 open 统一返回 `{ok:false, reason:"delivery-finished"}`；只有这一种预期终态进入 `OwnerResult`。未配置 `wireState`、reservation 重入、无 active leg 写 real 等接线错误继续 throw。driver 的四个 `beginLeg` 站点显式 narrow `OwnerResult`，delivery-finished 映射为 `settled-abort`。live 装饰器不注册成 owner：handler 从未装饰 raw delivery sink 取得 port，经 `RunResponseOpts.wireAllocationPort` 显式下传给 driver（production live oracle 锁住）。
+**实施期补充裁决（2026-07-28，第二轮复审修订）**：五个入口统一返回 `OwnerResult<T>`；失败原因在产生点区分 `client-gone`、`session-terminating`、`no-mapping`，并携 `committed:boolean`。只有 `client-gone` 映射 `settled-abort`；`session-terminating` 映射独立 `delivery-finished` outcome；missing mapping 是 `ok:false`，绝不伪装写成功。未配置 `wireState`、reservation 重入、无 active leg 写 real 等接线错误继续 throw，非 client wire error 以 `DeliveryOwnerError.committed` 显式传播。live 装饰器不注册成 owner：handler 从未装饰 raw delivery sink 取得 port，经 `RunResponseOpts.wireAllocationPort` 显式下传给 driver。**首版 `live-owner-port.it.test.ts` 只锁 driver 消费、自造 port，不能证明 handler 供给，原“production live oracle 锁住”结论已作废**；返工后由真实 HTTP `c0-live-anchored-direct-stream-golden.http.test.ts` 捕获 handler 创建的 session，完整复现“从 decorated sink 取 port”的 mutation 后实际失败为 `Expected primary / Received undefined`。hedge winner 在 winner 选定后、任一 frame 写出前同样 `beginLeg("primary", winner source)`。
 
 ### mapping token 的生命周期（**round-4 major：四点冻结**）
 
@@ -233,7 +233,7 @@ handler-v4.ts  makeAnchoredSseSink()
 
 **守卫（防第二个 allocator 实例）**：
 
-- [x] identity oracle：一次请求中，driver、live 装饰器、injector、session port 四处读到的 allocator **是同一引用**（`toBe` 引用相等，非值相等）。
+- [x] identity / supply oracle（返工后重新完成）：首版 `anchor-allocation-owner` 的 identity 断言由同一 setup 同时供两边，且 `live-owner-port.it.test.ts` 自造并传 port，均不能证明 handler↔driver 接缝。现保留 driver 消费单元门，并新增真实 HTTP live 请求 oracle，observer 捕获 handler 创建的 session，断言其 active primary source 为真实 handles；将 handler 改回从 decorated sink 取 port 后该 HTTP oracle实际转红。
 - [x] 架构守卫：`src/` 下 `createGenerationWireIndexAllocator(` 的调用点**有且仅有** `handler-v4.ts` 一处（带正样本对照——故意加第二处应转红）。
 
 **冻结的语义要点**（实施期不得自行改，要改回主会话）：

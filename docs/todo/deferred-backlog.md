@@ -1032,3 +1032,16 @@ registry（`docs/rfc/2026-07-21-retry-strategy-registry.md`）6 commit 全 lande
 - **理想架构 / 若做需改什么**：两条候选，都换判据而非继续扩「跳过构造」名单——① **窄 sequencing helper + runtime spy**：抽一个只拥有这三个动作、依赖回调注入的薄编排函数，`runServer` 调它；测试注入 spy 断言**真实执行顺序与 await 语义**（initialize 的 promise 未 resolve 前 listen 不得被调用）。代价：`runServer` 里三个 milestone 相隔约 200 行其它启动逻辑，helper 要吞掉中间段，可读性变差——需先设计好形状。② **booted-server e2e**：让 telemetry runtime 记录自身相位跃迁，起真实服务器（非 4141 端口）后断言记录到的顺序。代价：进 `test:e2e` 档、不在默认 `test:backend` 里。
 - ~~**为何暂缓**~~ → **✅ 已解决（2026-07-27，`e170566c`），但走的是第三条路**：既没做 ① 也没做 ②，而是**把不变量搬进 runtime 自己**——`markServerListening()` 在 `initialize()` 未完成时 fail-fast，`runJsonBackfill()` 在标记之前被**延迟到标记时**而不是提前执行。于是「调用写反了」不再能破坏契约（延迟保证了它仍在 listen 之后吸收），oracle 退化成一个普通 runtime 单测。教训：**当守卫追不上的时候，正解往往是换不变量的存放位置，而不是造更强的守卫**——`docs/plan/monorepo-split/plan-telemetry-package.md` 与 `tests/architecture/telemetry-startup-order.unit.test.ts` 的注释记录了完整推导。
 - **残余（已知且刻意）**：source 守卫仍保留一个窄职责——断言 `markServerListening()` 真的接在 listen 与 backfill 之间（runtime 自己证不了「有没有人调我」），这一条仍是语法层判断。真实回归形态（挪调用、删 hook、去 await、死分支、死 helper、注释掉）均已实测转红。
+
+
+## delivery owner 合同抽成无依赖 `pipeline/wire-contracts.ts`（2026-07-28，allocator 第二轮实现审查）
+
+- **根因 / 当前行为**：为避免 `pipeline/types.ts → delivery/types.ts → stream/frame-envelope.ts` 把 delivery 文件拉进核心 SCC，`OwnerResult` / `WireBlockAllocationPort` / `WireWriteSpec` 当前定义在 `pipeline/types.ts`，`delivery/types.ts` 反向 re-export。SCC 正确、类型只有一个定义，但“delivery owner 合同”在职责命名上更接近 delivery 域，归属仍不够干净。
+- **理想架构**：抽一个不依赖 `delivery/*`、`stream/*` 的 `src/lib/pipeline/wire-contracts.ts`，只拥有纯 owner/wire 类型；`pipeline/types.ts` 与 `delivery/types.ts` 都从它 import/re-export。迁移必须保持 SCC ratchet 与 package boundary 守卫不增边。
+- **为何暂缓**：这是纯结构归位，不改变本轮 P1/P2 行为，且后续 P3M M1-M4 会持续修改同一批合同；现在搬一次、M4 后再搬一次只制造无语义 churn。**触发条件**：P3M M4 三条 real-block 路径收敛、owner 合同稳定后同 commit 或紧随其后提取。
+
+## remap allowlist 的能力轴升级（2026-07-28，allocator 第二轮实现审查）
+
+- **根因 / 当前行为**：AST allowlist 已覆盖直接 `.remap(...)` 与 `remapAnthropicBlockIndex(...)` 调用，能抓 literal/变量 offset/直接 primitive，注释不误伤；但别名提取（`const r=hooks.remap; r(...)`）、计算属性（`hooks["remap"](...)`）、import rename 仍是合法绕法。
+- **理想架构**：不要继续枚举拼写。P3M 收敛后把 offset 计算能力从公开类型上拿走：生产调用方只提交 `WireBlockMapping`/block identity，由 owner 内部完成 remap；外部不再拿到任意 offset primitive。守卫改问“目标能力是否只由 owner 持有”，而不是 callee 怎么拼。
+- **为何暂缓**：当前合法 legacy S1/S2/S3/continuation 站点仍需要旧 remap 形状，能力尚不能移除。**触发条件**：M4 清空 `REMAP_CALL_ALLOWLIST` 的 `legacy:*` 条目时同步实施；若此前再发现一种绕法，立即停止补 AST 形态，提前执行能力轴迁移。
