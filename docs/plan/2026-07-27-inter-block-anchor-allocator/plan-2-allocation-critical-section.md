@@ -1,6 +1,6 @@
 # P2 — 分配临界区（heartbeat vs flush 的并发缝）
 
-> **实施状态（2026-07-28）**：P2 已完成（Task 2.1–2.3），owner/C9/C10/C11 leg fence 与架构守卫均落地；标准 `unit it http` 在隔离 worktree、16 shards、复制同基线 native history-search artifact 后连续三轮 `6550/6550`，三组时序 oracle 各 15/15。后续 debugger 在独立 worktree 连跑 40 轮（含 `load=35` 过载与禁 transpiler cache），固定 17 条 anchor 失败簇出现 0 次；review 阶段曾见的同簇来自两个审查任务共用 worktree 时的生产源码 mutation 污染，不记为 flaky、不改变排空/时序结构。两个原不可达 oracle 已按主会话裁决移到真实可达相位：P2.2b 的“恢复 tick 真分配”→M6；C11 History 三腿 merged-state→M2/M3/M4（M4 统一收口）。
+> **实施状态（2026-07-28）**：P2 已完成（Task 2.1–2.3），owner/C9/C10/C11 leg fence 与架构守卫均落地；第二轮返工后标准 `unit it http` 在隔离 worktree、16 shards、复制同基线 native history-search artifact 后连续三轮 `6567/6567`，三组时序 oracle 各 15/15。后续 debugger 在独立 worktree 连跑 40 轮（含 `load=35` 过载与禁 transpiler cache），固定 17 条 anchor 失败簇出现 0 次；review 阶段曾见的同簇来自两个审查任务共用 worktree 时的生产源码 mutation 污染，不记为 flaky、不改变排空/时序结构。两个原不可达 oracle 已按主会话裁决移到真实可达相位：P2.2b 的“恢复 tick 真分配”→M6；C11 History 三腿 merged-state→M2/M3/M4（M4 统一收口）。
 >
 > **前置**：P1 + **P6**（plan review major：两者共享 `delivery/session.ts` 的 heartbeat 生命周期语义，见 Task 2.2b）。**产出**：唯一 owner API，使 index 分配与 wire 写出在同一 serializer operation 内原子完成。
 > **承重项 4**（设计 §4.4 第 4 点 / 审查 F7）。
@@ -75,7 +75,7 @@ export interface WireEnvelopeFactory {
  */
 export type OwnerResult<T> =
   | { readonly ok: true; readonly value: T }
-  | { readonly ok: false; readonly reason: "delivery-finished" }
+  | { readonly ok: false; readonly reason: "client-gone" | "session-terminating" | "no-mapping"; readonly committed: boolean }
 
 export interface WireBlockAllocationPort {
   /** Allocate the next wire index for a SYNTHETIC anchor and write its frames in one operation. */
@@ -204,7 +204,7 @@ if (unhedgedBinding) env.ctx.selectGenerationWinner(unhedgedBinding.candidate.ca
 > **为何 synthetic 帧不需要等 leg**：它们的 provenance 是 `{kind:"synthetic", syntheticKind}`，本就与 candidate 无关（C7）。这也正是 pre-response anchor 能在 binding 之前合法写出的原因——**没有被退化的身份，只有本就不适用的字段**。
 
 - [x] **接线**：`GenerationWireState` 承载「当前 leg 的 candidate/dispatch」，**唯一写入点是 `beginLeg`**；owner 铸造 `real` 信封时读它。
-- [x] **oracle（三腿全覆盖，按真实相位可达性拆分；2026-07-28 主会话裁决）**：P2 已完成 owner 三腿 provenance、production 三腿 `beginLeg` 接线、无 active leg 拒绝、`"legacy"` 唯一边界守卫；**History generation 轨的 production merged-state oracle 移入 P3M M2/M3/M4**。理由：P2 时 S1/S2/S3 仍走旧 `sink.write` / live decorator，真实块要到 M2/M3/M4 才分别迁入 `withAllocatedRealBlock` / `writeBlockFrame`；此时手工写 History 只能自证 owner、不能证 production 接线。M2 补 buffered-flush 腿、M3 补 retreat 腿、M4 补 live 腿并统一断言 primary/recovery/continuation 三腿均为真实 candidate/dispatch、均非 `"legacy"`、主腿 ≠ 续写腿；**M4 未完成统一断言即视为未完成**。另单测 delayed-commit 路径：pre-response anchor 在 `beginLeg` 之前写出且带 `synthetic` provenance（不是退化的 candidate 身份）。
+- [x] **oracle（四类生产腿全覆盖，按真实相位可达性拆分；2026-07-28 主会话裁决 + 第二轮复审补 hedge）**：P2 已完成 owner provenance、ordinary primary / hedge winner / recovery / continuation 四类 production `beginLeg` 接线、无 active leg 拒绝、`"legacy"` 唯一边界守卫；**History generation 轨的 production merged-state oracle 移入 P3M M2/M3/M4**。理由：P2 时 S1/S2/S3 仍走旧 `sink.write` / live decorator，真实块要到 M2/M3/M4 才分别迁入 `withAllocatedRealBlock` / `writeBlockFrame`；此时手工写 History 只能自证 owner、不能证 production 接线。M2 补 buffered-flush 腿、M3 补 retreat 腿、M4 补 live 腿并统一断言 primary/recovery/continuation 三腿均为真实 candidate/dispatch、均非 `"legacy"`、主腿 ≠ 续写腿；**M4 未完成统一断言即视为未完成**。另单测 delayed-commit 路径：pre-response anchor 在 `beginLeg` 之前写出且带 `synthetic` provenance（不是退化的 candidate 身份）。
 - [x] **负样本**：无活跃 leg 时调 `withAllocatedRealBlock` / `writeBlockFrame` **必须拒绝**（不得退化为 placeholder 身份）。
 - [x] **守卫**：`src/` 下 `"legacy"` 字面量的出现有且仅有既有兼容 helper 一处（带正样本对照）。
 
