@@ -51,6 +51,8 @@
 - [极度倾向全面 async/await 别围堵](feedback-prefer-async-await-uniform-over-sync-isolation.md) — 接口统一 async、爆炸半径主动铺开非规避
 - [面向用户永久只用中文禁日语](feedback-chinese-only-never-japanese.md) — 输出层自检语言；内部推理无所谓
 - [闻到怪味永远大声报警绝不粉饰](feedback-never-paper-over-smells-warn-loudly.md) — 名实不符当场停下显眼报警
+- [block-level 交付是项目公理绝不逐 token 流式](feedback-block-level-delivery-is-project-axiom.md) — 冲突方案要摧毁非并存；混合「只缓冲 tool_use」已被当场推翻
+- [结论一律落盘绝不只活在对话里](feedback-conclusions-must-land-in-docs-not-chat.md) — 提议/spec/plan/review/investigation/交接草稿；草案与评审报告进 docs/tmp/
 - [写 plan 引用现有接线须核实位置与桥接](methodology-plan-verify-interface-location-and-wiring-channel.md) — 同名 interface 核确切文件
 - [畸形 tool_use 全人群扫描法](methodology-malformed-tooluse-full-population-scan.md) — 查全 decode error
 - [GHC Responses item.id 每事件重加密](reference-ghc-responses-item-id-reencrypted-per-event.md) — 跨事件关联用 output_index/call_id
