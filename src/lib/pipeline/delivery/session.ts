@@ -7,6 +7,10 @@
  * owner in the next task.
  */
 
+import consola from "consola"
+
+import { classifyStreamError } from "~/lib/stream"
+
 import type {
   //
   ClientFrame,
@@ -25,6 +29,7 @@ import type {
   DeliverySnapshot,
   DeliverySyntheticKind,
   DeliveryTerminalCommand,
+  OwnerResult,
   WireBlockAllocationPort,
   WireEnvelopeFactory,
   WireWriteSpec,
@@ -233,6 +238,9 @@ export function createDownstreamDeliverySession(options: CreateDownstreamDeliver
     })
   }
 
+  const deliveryFinished = <T>(): OwnerResult<T> => Object.freeze({ ok: false, reason: "delivery-finished" })
+  const ownerSuccess = <T>(value: T): OwnerResult<T> => Object.freeze({ ok: true, value })
+
   const terminateAfterWireFailure = (): void => {
     state = "closed"
     closeHeartbeat()
@@ -243,10 +251,11 @@ export function createDownstreamDeliverySession(options: CreateDownstreamDeliver
     specs: ReadonlyArray<WireWriteSpec>,
     reservation: WireIndexReservation<number | WireBlockMapping>,
     source?: LegSource,
-  ): Promise<boolean> => {
+    onCommit?: () => void,
+  ): Promise<OwnerResult<true>> => {
     if (specs.length === 0) {
       reservation.rollback()
-      return false
+      throw new Error("[delivery] allocation build produced no wire frames")
     }
     let committed = false
     try {
@@ -255,6 +264,7 @@ export function createDownstreamDeliverySession(options: CreateDownstreamDeliver
         if (!committed) {
           // C9 commit point: synchronously consume the index BEFORE invoking the first external write.
           reservation.commit()
+          onCommit?.()
           committed = true
         }
         applyPendingFrame(entry)
@@ -265,11 +275,13 @@ export function createDownstreamDeliverySession(options: CreateDownstreamDeliver
         if (isContentDelta(entry.frame)) lastContentDeltaAtMonotonic = writtenAt
         writeCount++
       }
-      return true
-    } catch {
+      return ownerSuccess(true)
+    } catch (error) {
       if (!committed) reservation.rollback()
       else terminateAfterWireFailure()
-      return false
+      if (classifyStreamError(error) === "client-abort") return deliveryFinished()
+      consola.error("[delivery] owner wire write failed", error)
+      throw error
     }
   }
 
@@ -277,7 +289,7 @@ export function createDownstreamDeliverySession(options: CreateDownstreamDeliver
     wireState,
     allocateAndWriteAnchor: (build) =>
       serializer.enqueue(async () => {
-        if (state !== "open") return undefined
+        if (state !== "open") return deliveryFinished()
         const current = requireWireState()
         const reservation = current.allocator.reserveAnchor()
         let specs: ReadonlyArray<WireWriteSpec>
@@ -287,14 +299,15 @@ export function createDownstreamDeliverySession(options: CreateDownstreamDeliver
           reservation.rollback()
           throw error
         }
-        const written = await writeAllocationFrames(specs, reservation, current.activeLeg?.source)
-        if (!written) return undefined
-        current.openAnchorIndex = reservation.value
-        return reservation.value
+        const written = await writeAllocationFrames(specs, reservation, current.activeLeg?.source, () => {
+          current.openAnchorIndex = reservation.value
+        })
+        if (!written.ok) return written
+        return ownerSuccess(reservation.value)
       }),
     withAllocatedRealBlock: (upstreamIndex, build) =>
       serializer.enqueue(async () => {
-        if (state !== "open") return undefined
+        if (state !== "open") return deliveryFinished()
         const current = requireWireState()
         if (!current.activeLeg) throw new Error("[delivery] cannot allocate a real block without an active leg")
         const reservation = current.allocator.reserveRealBlock(upstreamIndex)
@@ -305,16 +318,17 @@ export function createDownstreamDeliverySession(options: CreateDownstreamDeliver
           reservation.rollback()
           throw error
         }
-        const written = await writeAllocationFrames(specs, reservation, current.activeLeg.source)
-        if (!written) return undefined
-        const perLeg = current.mappings.get(reservation.value.leg) ?? new Map<number, WireBlockMapping>()
-        perLeg.set(upstreamIndex, reservation.value)
-        current.mappings.set(reservation.value.leg, perLeg)
-        return reservation.value
+        const written = await writeAllocationFrames(specs, reservation, current.activeLeg.source, () => {
+          const perLeg = current.mappings.get(reservation.value.leg) ?? new Map<number, WireBlockMapping>()
+          perLeg.set(upstreamIndex, reservation.value)
+          current.mappings.set(reservation.value.leg, perLeg)
+        })
+        if (!written.ok) return written
+        return ownerSuccess(reservation.value)
       }),
     beginLeg: (kind, source) =>
       serializer.enqueue(() => {
-        if (state !== "open") throw new Error("[delivery] cannot begin a leg after delivery termination")
+        if (state !== "open") return deliveryFinished()
         const current = requireWireState()
         const token = current.allocator.beginLeg(kind, source)
         current.activeLeg = Object.freeze({
@@ -324,12 +338,13 @@ export function createDownstreamDeliverySession(options: CreateDownstreamDeliver
         })
         current.legSources.set(token, current.activeLeg.source)
         current.mappings.set(token, new Map())
-        return token
+        return ownerSuccess(token)
       }),
     closeOpenAnchor: (buildStop, mode) =>
       serializer.enqueue(async () => {
+        if (state !== "open") return deliveryFinished()
         const current = requireWireState()
-        if (current.openAnchorIndex === undefined) return "none"
+        if (current.openAnchorIndex === undefined) return ownerSuccess("none" as const)
         if (mode === "terminal") closeHeartbeat()
         const index = current.openAnchorIndex
         const entry = frameForSpec(buildStop(index, envelope))
@@ -339,19 +354,20 @@ export function createDownstreamDeliverySession(options: CreateDownstreamDeliver
           applyWireFrame(entry)
           current.openAnchorIndex = undefined
           writeCount++
-          return "closed"
-        } catch {
+          return ownerSuccess("closed" as const)
+        } catch (error) {
           terminateAfterWireFailure()
-          return "write-error"
+          if (classifyStreamError(error) === "client-abort") return deliveryFinished()
+          consola.error("[delivery] owner anchor close failed", error)
+          throw error
         }
       }),
     writeBlockFrame: (leg, upstreamIndex, frame) =>
       serializer.enqueue(async () => {
-        if (state !== "open") return "write-error"
+        if (state !== "open") return deliveryFinished()
         const current = requireWireState()
-        if (!current.activeLeg) throw new Error("[delivery] cannot write a real block without an active leg")
         const mapping = current.mappings.get(leg)?.get(upstreamIndex)
-        if (!mapping) return "no-mapping"
+        if (!mapping) return ownerSuccess("no-mapping" as const)
         const source = current.legSources.get(leg)
         if (!source) throw new Error("[delivery] block mapping has no leg provenance")
         const entry = frameForSpec(envelope.real(mapping.remap(frame)), source)
@@ -361,10 +377,12 @@ export function createDownstreamDeliverySession(options: CreateDownstreamDeliver
           applyWireFrame(entry)
           writeCount++
           if (parsePayload(frame.data)?.type === "content_block_stop") current.mappings.get(leg)?.delete(upstreamIndex)
-          return "written"
-        } catch {
+          return ownerSuccess("written" as const)
+        } catch (error) {
           terminateAfterWireFailure()
-          return "write-error"
+          if (classifyStreamError(error) === "client-abort") return deliveryFinished()
+          consola.error("[delivery] owner block write failed", error)
+          throw error
         }
       }),
   }

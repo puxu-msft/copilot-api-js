@@ -963,12 +963,13 @@ async function runResponseSink(
   const unhedgedBinding = generation?.bindings.get(upstream)
   if (unhedgedBinding) {
     env.ctx.selectGenerationWinner(unhedgedBinding.candidate.candidate, unhedgedBinding.candidate.dispatch)
-    const allocationPort = getDownstreamDeliverySession(sink)?.allocationPort
+    const allocationPort = opts?.wireAllocationPort ?? getDownstreamDeliverySession(sink)?.allocationPort
     if (allocationPort?.wireState) {
-      await allocationPort.beginLeg("primary", {
+      const leg = await allocationPort.beginLeg("primary", {
         candidateId: String(unhedgedBinding.candidate.candidate),
         dispatchId: String(unhedgedBinding.candidate.dispatch),
       })
+      if (!leg.ok) return { kind: "settled-abort" }
     }
   }
   const effectiveOpts = currentCandidateResponseOpts(generation, upstream, opts) as RunResponseOpts
@@ -1049,12 +1050,13 @@ export async function runResponseBufferedSink(
   const unhedgedBinding = generation?.bindings.get(upstream)
   if (unhedgedBinding) {
     env.ctx.selectGenerationWinner(unhedgedBinding.candidate.candidate, unhedgedBinding.candidate.dispatch)
-    const allocationPort = getDownstreamDeliverySession(sink)?.allocationPort
+    const allocationPort = opts.wireAllocationPort ?? getDownstreamDeliverySession(sink)?.allocationPort
     if (allocationPort?.wireState) {
-      await allocationPort.beginLeg("primary", {
+      const leg = await allocationPort.beginLeg("primary", {
         candidateId: String(unhedgedBinding.candidate.candidate),
         dispatchId: String(unhedgedBinding.candidate.dispatch),
       })
+      if (!leg.ok) return { kind: "settled-abort" }
     }
   }
   const cap = opts.retryCap ?? 0
@@ -1465,10 +1467,11 @@ export async function runResponseBufferedSink(
         currentEnv.ctx.selectGenerationWinner(recovered.candidate, recovered.dispatch)
         const recoveryAllocationPort = getDownstreamDeliverySession(sink)?.allocationPort
         if (recoveryAllocationPort?.wireState) {
-          await recoveryAllocationPort.beginLeg("recovery", {
+          const leg = await recoveryAllocationPort.beginLeg("recovery", {
             candidateId: String(recovered.candidate),
             dispatchId: String(recovered.dispatch),
           })
+          if (!leg.ok) return { kind: "settled-abort" }
         }
         current = recovered.upstream
         currentEnv = recovered.env
@@ -1523,10 +1526,11 @@ export async function runResponseBufferedSink(
           currentEnv.ctx.selectGenerationWinner(continued.candidate, continued.dispatch)
           const continuationAllocationPort = getDownstreamDeliverySession(sink)?.allocationPort
           if (continuationAllocationPort?.wireState) {
-            await continuationAllocationPort.beginLeg("continuation", {
+            const leg = await continuationAllocationPort.beginLeg("continuation", {
               candidateId: String(continued.candidate),
               dispatchId: String(continued.dispatch),
             })
+            if (!leg.ok) return { kind: "settled-abort" }
           }
           current = continued.upstream
           currentEnv = continued.env

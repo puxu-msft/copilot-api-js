@@ -303,6 +303,7 @@ export function makeSyntheticAnchorInjector(args: {
   return async (): Promise<boolean> => {
     const sink = getSink()
     if (!sink || (independentContentLatch ? state.contentAnchorInjected : state.injected)) return false
+    const previousContentAnchorInjected = state.contentAnchorInjected
     if (independentContentLatch) state.contentAnchorInjected = true
     if (independentContentLatch && state.injected) state.messageStartForwarded = true
     const port = getDownstreamDeliverySession(sink)?.allocationPort
@@ -319,6 +320,7 @@ export function makeSyntheticAnchorInjector(args: {
       messageStartForwarded: state.messageStartForwarded,
       anchorBlockOpen: state.anchorBlockOpen,
     }
+    const anchorsBefore = port.wireState.allocator.anchorsOpened()
     state.injected = true
     state.messageStartForwarded = true
     state.anchorBlockOpen = true
@@ -331,10 +333,16 @@ export function makeSyntheticAnchorInjector(args: {
       specs.push(envelope.anchor(anchor.startFrame(wireIndex)), envelope.keepalive(anchor.deltaFrame(wireIndex)))
       return specs
     })
-    if (allocated === undefined) {
-      state.injected = previous.injected
-      state.messageStartForwarded = previous.messageStartForwarded
-      state.anchorBlockOpen = previous.anchorBlockOpen
+    if (!allocated.ok) {
+      // Only a pre-commit refusal leaves the frontier unchanged and may roll the migration bridge back.
+      // A post-commit client abort has already made the anchor externally visible; its mirror state is
+      // therefore irreversible and must remain available to terminal close-off.
+      if (port.wireState.allocator.anchorsOpened() === anchorsBefore) {
+        state.injected = previous.injected
+        state.messageStartForwarded = previous.messageStartForwarded
+        state.anchorBlockOpen = previous.anchorBlockOpen
+        state.contentAnchorInjected = previousContentAnchorInjected
+      }
       return false
     }
     return true

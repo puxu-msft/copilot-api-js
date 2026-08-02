@@ -17,6 +17,7 @@ import {
 } from "~/lib/anthropic/keepalive-anchor"
 import { createDownstreamDeliverySession } from "~/lib/pipeline/delivery/session"
 
+import { ownerValue } from "../helpers/owner-result"
 import {
   //
   assertBlockProtocolState,
@@ -57,7 +58,7 @@ test("an anchor write parked at the sink cannot interleave with a real-block all
   }
   const wireState = createGenerationWireState(createGenerationWireIndexAllocator())
   const port = createDownstreamDeliverySession({ sink, wireState }).allocationPort
-  await port.beginLeg("primary", { candidateId: "candidate", dispatchId: "dispatch" })
+  ownerValue(await port.beginLeg("primary", { candidateId: "candidate", dispatchId: "dispatch" }))
 
   const anchor = port.allocateAndWriteAnchor(({ wireIndex, envelope }) => [envelope.anchor(start(wireIndex)), envelope.anchor(stop(wireIndex))])
   await entered.promise
@@ -66,8 +67,8 @@ test("an anchor write parked at the sink cannot interleave with a real-block all
   // The anchor reached C9's commit point, but the queued real operation has not reserved anything yet.
   expect(wireState.allocator.nextRealIndex()).toBe(1)
   parked.release()
-  expect(await anchor).toBe(0)
-  expect((await real)?.wireIndex).toBe(1)
+  expect(ownerValue(await anchor)).toBe(0)
+  expect(ownerValue(await real).wireIndex).toBe(1)
   assertMonotonicWireIndices(frames)
   assertBlockProtocolState(frames)
 })

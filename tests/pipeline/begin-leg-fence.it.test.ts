@@ -17,6 +17,8 @@ import {
 } from "~/lib/anthropic/keepalive-anchor"
 import { createDownstreamDeliverySession } from "~/lib/pipeline/delivery/session"
 
+import { ownerValue } from "../helpers/owner-result"
+
 const start = (index: number): ClientFrame => ({
   event: "content_block_start",
   data: JSON.stringify({ type: "content_block_start", index, content_block: { type: "text", text: "" } }),
@@ -56,8 +58,8 @@ test("beginLeg fences after previous queued writes and before next-leg allocatio
     close() {},
   }
   const { wireState, port } = setup(sink)
-  const primary = await port.beginLeg("primary", { candidateId: "candidate-primary", dispatchId: "dispatch-primary" })
-  await port.withAllocatedRealBlock(0, ({ mapping, envelope }) => [envelope.real(mapping.remap(start(0)))])
+  const primary = ownerValue(await port.beginLeg("primary", { candidateId: "candidate-primary", dispatchId: "dispatch-primary" }))
+  ownerValue(await port.withAllocatedRealBlock(0, ({ mapping, envelope }) => [envelope.real(mapping.remap(start(0)))]))
 
   const priorWrite = port.writeBlockFrame(primary, 0, delta(0))
   await entered.promise
@@ -69,9 +71,9 @@ test("beginLeg fences after previous queued writes and before next-leg allocatio
   expect(wireState.activeLeg?.token).toBe(primary)
   release.resolve()
 
-  expect(await priorWrite).toBe("written")
-  const continuation = await continuationFence
-  expect((await nextAllocation)?.leg).toBe(continuation)
+  expect(ownerValue(await priorWrite)).toBe("written")
+  const continuation = ownerValue(await continuationFence)
+  expect(ownerValue(await nextAllocation).leg).toBe(continuation)
   expect(order).toEqual(["write:content_block_start@0", "write:content_block_delta@0", "allocate:1", "write:content_block_start@1"])
 })
 
@@ -95,7 +97,7 @@ test("anchor-before-begin and begin-before-anchor both preserve submission order
     const second = orderKind === "anchor-first" ? begin() : anchor()
     await first
     await second
-    const mapping = await port.withAllocatedRealBlock(0, ({ mapping: allocated, envelope }) => [envelope.real(allocated.remap(start(0)))])
+    const mapping = ownerValue(await port.withAllocatedRealBlock(0, ({ mapping: allocated, envelope }) => [envelope.real(allocated.remap(start(0)))]))
 
     expect(mapping?.wireIndex).toBe(1)
     expect(order).toEqual(["content_block_start", "content_block_start"])

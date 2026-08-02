@@ -294,6 +294,8 @@ export interface RawHttpRequest {
 
 /** Per-call hooks for {@link PipelineDriver.runResponse}. */
 export interface RunResponseOpts {
+  /** Explicit generation owner for a decorated live sink; never register wrapper objects as owners. */
+  wireAllocationPort?: import("./delivery/types").WireBlockAllocationPort
   /**
    * Invoked at the response loop top with each UPSTREAM-ORIGINAL frame (raw,
    * verbatim — BEFORE the S5 rewrite chain), at the same point/condition the driver

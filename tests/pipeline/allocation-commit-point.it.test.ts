@@ -16,6 +16,9 @@ import {
   createGenerationWireState,
 } from "~/lib/anthropic/keepalive-anchor"
 import { createDownstreamDeliverySession } from "~/lib/pipeline/delivery/session"
+import { StreamClientAbortError } from "~/lib/stream"
+
+import { ownerValue } from "../helpers/owner-result"
 
 const anchorStart = (index: number): ClientFrame => ({
   event: "content_block_start",
@@ -59,7 +62,10 @@ test("a closed session refuses an operation without allocating", async () => {
   const { wireState, delivery, port } = setup()
   await delivery.terminate({ kind: "client-aborted" })
 
-  expect(await port.allocateAndWriteAnchor(({ wireIndex, envelope }) => [envelope.anchor(anchorStart(wireIndex))])).toBeUndefined()
+  expect(await port.allocateAndWriteAnchor(({ wireIndex, envelope }) => [envelope.anchor(anchorStart(wireIndex))])).toEqual({
+    ok: false,
+    reason: "delivery-finished",
+  })
   expect(wireState.allocator.nextAnchorIndex()).toBe(0)
   expect(wireState.allocator.anchorsOpened()).toBe(0)
 })
@@ -69,22 +75,28 @@ test("a failed first frame permanently consumes its index and terminates deliver
   const sink: ClientSink = {
     async write(frame) {
       attempts.push(frame)
-      throw new Error("first write failed")
+      throw new StreamClientAbortError()
     },
     async writeAnchor(frame) {
       attempts.push(frame)
-      throw new Error("first write failed")
+      throw new StreamClientAbortError()
     },
     close() {},
   }
   const { wireState, delivery, port } = setup(sink)
 
-  expect(await port.allocateAndWriteAnchor(({ wireIndex, envelope }) => [envelope.anchor(anchorStart(wireIndex))])).toBeUndefined()
+  expect(await port.allocateAndWriteAnchor(({ wireIndex, envelope }) => [envelope.anchor(anchorStart(wireIndex))])).toEqual({
+    ok: false,
+    reason: "delivery-finished",
+  })
   expect(attempts).toHaveLength(1)
   expect(wireState.allocator.nextAnchorIndex()).toBe(1)
   expect(wireState.allocator.anchorsOpened()).toBe(1)
   expect(delivery.snapshot.state).toBe("closed")
-  expect(await port.allocateAndWriteAnchor(({ wireIndex, envelope }) => [envelope.anchor(anchorStart(wireIndex))])).toBeUndefined()
+  expect(await port.allocateAndWriteAnchor(({ wireIndex, envelope }) => [envelope.anchor(anchorStart(wireIndex))])).toEqual({
+    ok: false,
+    reason: "delivery-finished",
+  })
   expect(wireState.allocator.nextAnchorIndex()).toBe(1)
 })
 
@@ -94,15 +106,15 @@ test("a visible first frame is never rolled back when the second frame fails", a
   const sink: ClientSink = {
     async write(frame) {
       attempts.push(frame)
-      if (++count === 2) throw new Error("second write failed")
+      if (++count === 2) throw new StreamClientAbortError()
     },
     async writeAnchor(frame) {
       attempts.push(frame)
-      if (++count === 2) throw new Error("second write failed")
+      if (++count === 2) throw new StreamClientAbortError()
     },
     async writeKeepalive(frame) {
       attempts.push(frame)
-      if (++count === 2) throw new Error("second write failed")
+      if (++count === 2) throw new StreamClientAbortError()
     },
     close() {},
   }
@@ -110,7 +122,7 @@ test("a visible first frame is never rolled back when the second frame fails", a
 
   expect(
     await port.allocateAndWriteAnchor(({ wireIndex, envelope }) => [envelope.anchor(anchorStart(wireIndex)), envelope.keepalive(anchorDelta(wireIndex))]),
-  ).toBeUndefined()
+  ).toEqual({ ok: false, reason: "delivery-finished" })
 
   expect(attempts.map((frame) => JSON.parse(frame.data as string).type)).toEqual(["content_block_start", "content_block_delta"])
   expect(JSON.parse(attempts[0].data as string).index).toBe(0)
@@ -138,8 +150,8 @@ test("a queued operation reserves nothing and rechecks state when execution begi
   const termination = delivery.terminate({ kind: "client-aborted" })
   parked.resolve()
 
-  expect(await running).toBe(0)
-  expect(await queued).toBeUndefined()
+  expect(ownerValue(await running)).toBe(0)
+  expect(await queued).toEqual({ ok: false, reason: "delivery-finished" })
   await termination
   expect(wireState.allocator.nextAnchorIndex()).toBe(1)
 })
@@ -148,7 +160,7 @@ test("an abort while the first write promise is pending is post-commit", async (
   const abort = new AbortController()
   const entered = deferred()
   const pending = deferred()
-  abort.signal.addEventListener("abort", () => pending.reject(new Error("client aborted while write pending")), { once: true })
+  abort.signal.addEventListener("abort", () => pending.reject(new StreamClientAbortError()), { once: true })
   const sink: ClientSink = {
     async write() {},
     async writeAnchor() {
@@ -164,7 +176,7 @@ test("an abort while the first write promise is pending is post-commit", async (
   expect(wireState.allocator.nextAnchorIndex()).toBe(1)
   abort.abort()
 
-  expect(await operation).toBeUndefined()
+  expect(await operation).toEqual({ ok: false, reason: "delivery-finished" })
   expect(wireState.allocator.nextAnchorIndex()).toBe(1)
   expect(delivery.snapshot.state).toBe("closed")
 })

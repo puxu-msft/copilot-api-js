@@ -16,6 +16,9 @@ import {
   createGenerationWireState,
 } from "~/lib/anthropic/keepalive-anchor"
 import { createDownstreamDeliverySession } from "~/lib/pipeline/delivery/session"
+import { StreamClientAbortError } from "~/lib/stream"
+
+import { ownerValue } from "../helpers/owner-result"
 
 const anchorStart = (index: number): ClientFrame => ({
   event: "content_block_start",
@@ -52,13 +55,15 @@ function setup(sink?: ClientSink) {
 
 test("allocation and every consuming frame run in one serializer operation", async () => {
   const { port, wireState, writes } = setup()
-  const leg = await port.beginLeg("primary", { candidateId: "candidate-primary", dispatchId: "dispatch-primary" })
+  const leg = ownerValue(await port.beginLeg("primary", { candidateId: "candidate-primary", dispatchId: "dispatch-primary" }))
   expect(wireState.activeLeg?.token).toBe(leg)
 
   expect(
-    await port.allocateAndWriteAnchor(({ wireIndex, envelope }) => [envelope.anchor(anchorStart(wireIndex)), envelope.keepalive(anchorDelta(wireIndex))]),
+    ownerValue(
+      await port.allocateAndWriteAnchor(({ wireIndex, envelope }) => [envelope.anchor(anchorStart(wireIndex)), envelope.keepalive(anchorDelta(wireIndex))]),
+    ),
   ).toBe(0)
-  const mapping = await port.withAllocatedRealBlock(0, ({ mapping: allocated, envelope }) => [envelope.real(allocated.remap(realStart(0)))])
+  const mapping = ownerValue(await port.withAllocatedRealBlock(0, ({ mapping: allocated, envelope }) => [envelope.real(allocated.remap(realStart(0)))]))
 
   expect(mapping?.wireIndex).toBe(1)
   expect(writes.map(({ method, frame }) => `${method}@${JSON.parse(frame.data as string).index}`)).toEqual(["anchor@0", "keepalive@0", "real@1"])
@@ -78,18 +83,24 @@ test("build failure before the first write rolls back the frontier", async () =>
 test("first attempted write consumes the index and terminates delivery on failure", async () => {
   const sink: ClientSink = {
     write: async () => {
-      throw new Error("wire failed")
+      throw new StreamClientAbortError()
     },
     writeAnchor: async () => {
-      throw new Error("wire failed")
+      throw new StreamClientAbortError()
     },
     close() {},
   }
   const { port, wireState, delivery } = setup(sink)
-  expect(await port.allocateAndWriteAnchor(({ wireIndex, envelope }) => [envelope.anchor(anchorStart(wireIndex))])).toBeUndefined()
+  expect(await port.allocateAndWriteAnchor(({ wireIndex, envelope }) => [envelope.anchor(anchorStart(wireIndex))])).toEqual({
+    ok: false,
+    reason: "delivery-finished",
+  })
   expect(wireState.allocator.nextAnchorIndex()).toBe(1)
   expect(delivery.snapshot.state).toBe("closed")
-  expect(await port.allocateAndWriteAnchor(({ wireIndex, envelope }) => [envelope.anchor(anchorStart(wireIndex))])).toBeUndefined()
+  expect(await port.allocateAndWriteAnchor(({ wireIndex, envelope }) => [envelope.anchor(anchorStart(wireIndex))])).toEqual({
+    ok: false,
+    reason: "delivery-finished",
+  })
 })
 
 test("primary, recovery, and continuation legs retain distinct real provenance", async () => {
@@ -101,8 +112,8 @@ test("primary, recovery, and continuation legs retain distinct real provenance",
   ]
   const legs = []
   for (const source of sources) {
-    const leg = await port.beginLeg(source.kind, source)
-    const mapping = await port.withAllocatedRealBlock(0, ({ mapping: allocated, envelope }) => [envelope.real(allocated.remap(realStart(0)))])
+    const leg = ownerValue(await port.beginLeg(source.kind, source))
+    const mapping = ownerValue(await port.withAllocatedRealBlock(0, ({ mapping: allocated, envelope }) => [envelope.real(allocated.remap(realStart(0)))]))
     expect(mapping?.leg).toBe(leg)
     expect(wireState.legSources.get(leg)).toEqual({ candidateId: source.candidateId, dispatchId: source.dispatchId })
     legs.push(leg)
@@ -126,16 +137,18 @@ test("handler anchor state and delivery port share the exact GenerationWireState
 
 test("closeOpenAnchor passes the allocated index explicitly and is idempotent", async () => {
   const { wireState, writes, port } = setup()
-  expect(await port.allocateAndWriteAnchor(({ wireIndex, envelope }) => [envelope.anchor(anchorStart(wireIndex))])).toBe(0)
+  expect(ownerValue(await port.allocateAndWriteAnchor(({ wireIndex, envelope }) => [envelope.anchor(anchorStart(wireIndex))]))).toBe(0)
   const seen: Array<number> = []
 
   expect(
-    await port.closeOpenAnchor((index, envelope) => {
-      seen.push(index)
-      return envelope.anchor(anchorStop(index))
-    }, "before-real"),
+    ownerValue(
+      await port.closeOpenAnchor((index, envelope) => {
+        seen.push(index)
+        return envelope.anchor(anchorStop(index))
+      }, "before-real"),
+    ),
   ).toBe("closed")
-  expect(await port.closeOpenAnchor((index, envelope) => envelope.anchor(anchorStop(index)), "before-real")).toBe("none")
+  expect(ownerValue(await port.closeOpenAnchor((index, envelope) => envelope.anchor(anchorStop(index)), "before-real"))).toBe("none")
   expect(seen).toEqual([0])
   expect(wireState.openAnchorIndex).toBeUndefined()
   expect(writes.map(({ frame }) => JSON.parse(frame.data as string).type)).toEqual(["content_block_start", "content_block_stop"])

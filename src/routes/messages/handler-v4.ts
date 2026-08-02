@@ -138,6 +138,7 @@ import {
 import { makeDeliverySseSink } from "~/lib/pipeline/client-sink"
 import { createCommittedBlocksLedger } from "~/lib/pipeline/committed-blocks-ledger"
 import { getContinuationBuilder } from "~/lib/pipeline/continuation-request-builder"
+import { getDownstreamDeliverySession } from "~/lib/pipeline/delivery/session"
 import { createPipelineDriver } from "~/lib/pipeline/driver"
 import {
   //
@@ -1331,7 +1332,9 @@ async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): 
               }),
           }),
         })
-      : await driver.runResponseSink(upstream, env, liveReconcilingSink(sink, anchorHooks, anchorState))
+      : await driver.runResponseSink(upstream, env, liveReconcilingSink(sink, anchorHooks, anchorState), {
+          wireAllocationPort: getDownstreamDeliverySession(sink)?.allocationPort,
+        })
 
     const candidate = anthropicCandidateSnapshot(driver, upstream)
     if (candidate.kind !== "anthropic-direct") throw new Error("[Anthropic:v4] wrong candidate response session kind")
@@ -1617,7 +1620,9 @@ async function pumpTranslateLegStreamingV4(opts: PumpAnthropicStreamingDispatchO
     // mismatch / dangling block) under `empty_text` anchor. reconcile leaves index-less message_delta /
     // message_stop unchanged, and is a transparent passthrough when no anchor was injected (byte-equivalent).
     const clientSink = liveReconcilingSink(sink, anchorHooks, anchorState)
-    const outcome = await driver.runResponseSink(upstream, env, clientSink)
+    const outcome = await driver.runResponseSink(upstream, env, clientSink, {
+      wireAllocationPort: getDownstreamDeliverySession(sink)?.allocationPort,
+    })
 
     const candidate = anthropicCandidateSnapshot(driver, upstream)
     if (candidate.kind !== "anthropic-translate") throw new Error("[Anthropic:v4:translate] wrong candidate response session kind")

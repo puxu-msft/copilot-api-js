@@ -28,19 +28,21 @@ export interface WireEnvelopeFactory {
   keepalive(frame: ClientFrame): WireWriteSpec
 }
 
+export type OwnerResult<T> = Readonly<{ ok: true; value: T }> | Readonly<{ ok: false; reason: "delivery-finished" }>
+
 export interface WireBlockAllocationPort {
   readonly wireState?: GenerationWireState
-  allocateAndWriteAnchor(build: (ctx: { wireIndex: number; envelope: WireEnvelopeFactory }) => ReadonlyArray<WireWriteSpec>): Promise<number | undefined>
+  allocateAndWriteAnchor(build: (ctx: { wireIndex: number; envelope: WireEnvelopeFactory }) => ReadonlyArray<WireWriteSpec>): Promise<OwnerResult<number>>
   withAllocatedRealBlock(
     upstreamIndex: number,
     build: (ctx: { mapping: WireBlockMapping; envelope: WireEnvelopeFactory }) => ReadonlyArray<WireWriteSpec>,
-  ): Promise<WireBlockMapping | undefined>
-  beginLeg(kind: "primary" | "continuation" | "recovery", source: LegSource): Promise<LegToken>
+  ): Promise<OwnerResult<WireBlockMapping>>
+  beginLeg(kind: "primary" | "continuation" | "recovery", source: LegSource): Promise<OwnerResult<LegToken>>
   closeOpenAnchor(
     buildStop: (index: number, envelope: WireEnvelopeFactory) => WireWriteSpec,
     mode: "before-real" | "terminal",
-  ): Promise<"closed" | "none" | "write-error">
-  writeBlockFrame(leg: LegToken, upstreamIndex: number, frame: ClientFrame): Promise<"written" | "no-mapping" | "write-error">
+  ): Promise<OwnerResult<"closed" | "none">>
+  writeBlockFrame(leg: LegToken, upstreamIndex: number, frame: ClientFrame): Promise<OwnerResult<"written" | "no-mapping">>
 }
 
 /** One already client-shaped frame waiting to enter the unique wire serializer. */
