@@ -7,10 +7,15 @@
 运行：
 
 ```bash
-./exp/inter-block-anchor-allocator/byte-equivalence.sh
+./exp/inter-block-anchor-allocator/byte-equivalence.sh          # 门：捕获到临时文件，与 fixture 比较
+RECAPTURE=1 ./exp/inter-block-anchor-allocator/byte-equivalence.sh   # 有意重捕：改写 fixture
 ```
 
-脚本默认让内核选择非 4141 的空闲高位端口，启动隔离测试服务器并使用 `deterministic-hook.ts` 产出固定的单 text block 响应。readiness 必须同时满足三条：启动日志没有 bind failure、`ss -ltnp` 证明监听进程是本次 spawn 的 PID 或其后代、捕获内容带 hook 独有的 `msg_allocator_baseline` 与 `allocator baseline` 标记；任一不满足即非零退出。完整 SSE 保存为 `pre-change-wire.sse`，脚本输出 SHA-256、字节数及监听 PID，并按 PID 精确停止自己启动的服务器。
+脚本默认让内核选择非 4141 的空闲高位端口，启动隔离测试服务器并使用 `deterministic-hook.ts` 产出固定的单 text block 响应。readiness 必须同时满足三条：启动日志没有 bind failure、`ss -ltnp` 证明监听进程是本次 spawn 的 PID 或其后代、捕获内容带 hook 独有的 `msg_allocator_baseline` 与 `allocator baseline` 标记；任一不满足即非零退出。捕获写到 `$WORK_DIR/current-wire.sse`，脚本输出 SHA-256、字节数及监听 PID，并按 PID 精确停止自己启动的服务器。
+
+**默认行为是比较，不是捕获**：脚本末尾对捕获与 `pre-change-wire.sse` 做 `cmp`，一致则 `O-6 PASS` 退出 0，不一致则 `O-6 FAIL` 退出 9 并打印首个差异位置。**只有 `RECAPTURE=1` 才会改写那份权威 fixture**，且会显眼提示要与实现改动分开提交。
+
+> 2026-08-03 修正：此前 `CAPTURE` 默认就指向被跟踪的 `pre-change-wire.sse`，而脚本里只有 `sha256sum`、**没有任何比较**——把它当门跑，等于用当前输出覆盖权威基线再打印自己刚写的 hash，永远为绿。正样本对照已补：未改动树 PASS 且 fixture 字节不变；向 fixture 注入一字节后 FAIL（rc=9）。
 
 实施 base `5c84a1e011e5d8b12ebde764ef0d8486b9952d6f` 经上述归属门重新捕获的权威结果：
 

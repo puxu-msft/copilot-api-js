@@ -6,7 +6,11 @@ REPO="${REPO_OVERRIDE:-$(cd "$DIR/../.." && pwd)}"
 PORT="${PORT:-}"
 WORK_DIR="${WORK_DIR:-/tmp/inter-block-anchor-allocator-baseline}"
 APP_DIR="$WORK_DIR/copilot-api"
-CAPTURE="${CAPTURE_OVERRIDE:-$DIR/pre-change-wire.sse}"
+# The authoritative O-6 fixture. Capturing writes somewhere else and then compares, because a gate
+# whose default action is to overwrite its own baseline can only ever pass.
+BASELINE="$DIR/pre-change-wire.sse"
+RECAPTURE="${RECAPTURE:-0}"
+CAPTURE="${CAPTURE_OVERRIDE:-$WORK_DIR/current-wire.sse}"
 LOG="$WORK_DIR/server.log"
 PID_FILE="$WORK_DIR/server.pid"
 HOOK_MARKER='msg_allocator_baseline'
@@ -160,3 +164,23 @@ sha256sum "$CAPTURE"
 wc -c "$CAPTURE"
 printf 'port=%s listener_pid=%s spawn_pid=%s\n' "$PORT" "$(ss -ltnp "sport = :$PORT" | grep -oP 'pid=\K[0-9]+' | sort -u)" "$pid"
 printf 'capture=%s\n' "$CAPTURE"
+
+if [[ "$RECAPTURE" == "1" ]]; then
+  cp "$CAPTURE" "$BASELINE"
+  printf 'RECAPTURE=1: rewrote the authoritative fixture %s — commit this separately from any implementation change.\n' "$BASELINE"
+  exit 0
+fi
+
+if [[ ! -f "$BASELINE" ]]; then
+  printf 'no baseline at %s; run once with RECAPTURE=1 to establish one\n' "$BASELINE" >&2
+  exit 8
+fi
+
+if cmp -s "$CAPTURE" "$BASELINE"; then
+  printf 'O-6 PASS: captured wire is byte-identical to %s\n' "$BASELINE"
+  exit 0
+fi
+
+printf 'O-6 FAIL: captured wire differs from %s\n' "$BASELINE" >&2
+cmp "$CAPTURE" "$BASELINE" >&2 || true
+exit 9
