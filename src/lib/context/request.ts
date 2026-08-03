@@ -6,10 +6,8 @@
  * Each retry creates a new Attempt in the attempts array.
  */
 
-import type { ApiError } from "~/lib/error"
 import type { RefusalPolicy } from "~/lib/anthropic/refusal-policy"
-
-import { DEFAULT_REFUSAL_ERROR_TYPE } from "~/lib/anthropic/refusal-policy"
+import type { ApiError } from "~/lib/error"
 import type {
   //
   EndpointType,
@@ -29,6 +27,7 @@ import type {
 } from "~/lib/observability"
 import type { ToolNameMapper } from "~/lib/tool-name-mapper"
 
+import { DEFAULT_REFUSAL_ERROR_TYPE } from "~/lib/anthropic/refusal-policy"
 import { getErrorMessage } from "~/lib/error"
 import { HTTPError } from "~/lib/error"
 import {
