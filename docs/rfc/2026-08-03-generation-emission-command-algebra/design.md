@@ -543,7 +543,15 @@ C1～C11矩阵没有“语义变更”。已知需要更新的C2、C5、C6、C7�
 
 **闭包的种子**是capability类型本身，无论它声明在哪个文件：`ClientSink`（`src/lib/pipeline/types.ts:747`）、`OwnerRawSink`（`delivery/types.ts:12`）、`AnchorState`（`types.ts:529`）、`GenerationWireState`（`types.ts:496`）、`WireBlockAllocationPort`（`types.ts:319`）、`DownstreamDeliverySession`（`delivery/session.ts:57`）。**注意种子里有一半不在`delivery/`目录内**——早先把根写成“`delivery/`与`client-sink.ts`的全部exports”正是漏在这里：`ClientSink`声明在`pipeline/types.ts`，`delivery/types.ts`对它只是`import type`而非re-export，于是“capability经函数签名传递”这一整类（例如`live-reconcile.ts:138`的`makeReconcilingSink(inner: ClientSink, …): ClientSink`与两个injector工厂）的根符号落在根外，fail-loud永远不触发。
 
-**闭包的推进规则**：任一production声明只要其**参数类型、返回类型、属性类型或type argument**中出现已在闭包内的符号，该声明即进入闭包；其调用点与引用点一并进入。迭代至不动点。终止性由符号集有限保证——每轮只增不减，且上界是`src/**`的全部声明。
+**闭包的推进规则是双向不动点**，两个方向缺一不可：
+
+- **向上（消费者方向）**：任一production声明只要其**参数类型、返回类型、属性类型或type argument**中出现已在闭包内的符号，该声明即进入闭包；其调用点与引用点一并进入。
+- **向下（成员方向）**：闭包内任一类型的**成员类型**（属性类型、方法的参数与返回类型），只要该成员**能改变authorization state或产生wire effect**，即加入种子集。加这个限定是为了不把`number`／`string`／`symbol`等无能力类型灌进来；判据是该成员是否出现在§4.2的Authorization层或能触达emission。
+- 两个方向**交替迭代至不动点**。
+
+**只做向上会漏掉「作为种子成员而存在的能力」**，这是实测出来的：`GenerationWireIndexAllocator`（`pipeline/types.ts:504`，成员为`allocateAnchor`／`allocateRealBlock`／`reserveAnchor`／`reserveRealBlock`／`beginLeg`，§4.2明列在Authorization层）只是`GenerationWireState:497`的一个属性，本身从不是种子；它的工厂`keepalive-anchor.ts:52 createGenerationWireIndexAllocator()`**零参数、返回类型不是种子**，于是它与调用点`handler-v4.ts:1160`（handler直接持有裸allocator）都进不了闭包、落不进A／B／C／D，fail-loud永不触发。对照同文件`:44`的`createGenerationWireState(allocator: GenerationWireIndexAllocator): GenerationWireState`——它因**返回种子**而会进闭包；两者只差一层，正好标出单向规则的边界。同形态还有`WireEnvelopeFactory`（`types.ts:313`）、`WireBlockMapping`（`:477`）、`LegToken`（`:474`）与`DeliveryHeartbeat`（`delivery/types.ts:55`的`injectScaffold`）。**这些名字只作sanity check，冻结的种子集以双向闭包的输出为准——手写名单正是本条要取代的东西。**
+
+终止性由符号集有限保证——两个方向都只增不减，且上界是`src/**`的全部声明与类型。
 
 再**反向**加入所有client-facing `writeSSE`／`ws.send`词法点，它们不经delivery符号也能产生wire effect，是闭包够不到的另一入口。
 
@@ -566,9 +574,9 @@ C1～C11矩阵没有“语义变更”。已知需要更新的C2、C5、C6、C7�
 | Commit边界 | A集wire／coordination状态 | B集旧session consumer状态 | C集construction／resolution状态 | D集签名传递状态 | 唯一目标／约束 |
 |---|---|---|---|---|---|
 | Commit 0结束 | 全部原样存活 | `noteWinner` 1点存活；其余零consumer definitions保留 | 旧lookup／factory definitions与全部production references原样存活 | 闭包输出冻结为基线；全部声明原样存活 | 完整legacy path；新core不存在 |
-| Commit 1～3结束 | 与Commit 0机械相等 | 与Commit 0机械相等 | 与Commit 0机械相等；准备factory不得接live roots | 与Commit 0机械相等；准备期新增声明不得把capability类型放进签名 | 准备代码不改变任何production capability |
+| Commit 1～3结束 | 与Commit 0机械相等 | 与Commit 0机械相等 | 与Commit 0机械相等；准备factory不得接live roots | 与Commit 0机械相等；准备期新增声明不得把**闭包内任何符号**放进签名（不限于种子类型） | 准备代码不改变任何production capability |
 | **Commit 4 authority发布结束** | **A集production调用population为零** | **B集production consumer population为零**；`noteWinner`迁`selectWinner`窄command | **C集resolution population为零**；construction只在composition-root私有allowlist，sink→session lookup不可达 | **D集声明只接／只返回command port与窄observer，或退化为纯transform**；运行期无路径可从其取得emission能力 | producers→profile commands；winner／round→窄observer；composition root直接供给port；physical bytes只到private emitter |
-| Commit 5～8结束 | A集持续为零 | B集持续为零 | C集持续满足resolution零＋construction allowlist精确相等 | D集持续满足；新增声明若把capability类型放进签名即落入unclassified红集 | 只增强telemetry、删definitions／exports、审计goldens与同步docs |
+| Commit 5～8结束 | A集持续为零 | B集持续为零 | C集持续满足resolution零＋construction allowlist精确相等 | D集持续满足；新增声明若把**闭包内任何符号**放进签名即落入unclassified红集 | 只增强telemetry、删definitions／exports、审计goldens与同步docs |
 
 A／B／C／D四集均按symbol identity冻结，不要求历史文档字面零命中。任何仍存活的旧wire call、旧session consumer、sink→session resolution、allowlist外construction，或仍能经签名交出capability的声明，都阻止authority发布；不能补`legacy_adapted`通行证或让driver从已传出的值回收authority。
 
