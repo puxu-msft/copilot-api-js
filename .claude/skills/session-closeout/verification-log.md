@@ -82,3 +82,23 @@
 - **V9 鉴别力正控** — ✅ 修正上一条会话的 ❌。本轮为交接新写的判据**全部带目标变异且实跑**：`baseline-runs.sh` 十四条正样本对照（含三条假红对照）、`q1-locations.sh` 四条 + 载体轴三条 + 一次完整的裁决落地模拟。**两次「红得不是目标机制」被当场识破**：① 删 EXPECTED 行那次首跑 rc=2，实为副本脚本推导 `REPO` 失败、找不到文档；② 红路径正控首跑 rc=1，实为 `TEST_CMD` 无引号展开被词分割导致的 bash 语法错误 rc=2，**不是我注入的 `exit 7`**。两次都靠「日志里记的退出码是不是我注入的那个」区分开。
 - **V16 property → acceptance 对账** — ⚠️ 仍未按四项机械核对逐条跑，但**跑了其中的孤儿 ID 一项**（RFC 正文 ↔ §10.2 ↔ §10.3 ↔ §10.4，R-1～R-14 / O-1～O-9），零孤儿。**第一版脚本报出 20 个假孤儿**——`\b` 在 Python 里 Unicode-aware、CJK 属 `\w`，紧邻中文的 ID 一个都匹配不到；修好后给脚本加了 `assert`「已知存在的 R-14／O-4 必须被识别」，否则第二版同样没有理由相信。
 - **新增负样本（不在自验表内，建议入表）** — **「编辑 + 验证 + 提交写在同一次调用」会让提交信息描述没发生的事**，本轮中两次（`5a71607f`、`88171b3b`）。两次都是 python heredoc 的 `assert` 在写盘之前，失败即丢弃全部改动而 `git commit` 照跑；**两次都不是我自查到的，第一次是评审去找产物抓到的**。已立记忆 [[methodology-edit-then-verify-then-commit-never-one-call]]。**与 V7 的关系**：V7 盯的是「产物有没有进提交」，这条盯的是「产物有没有存在过」——V7 的②在这里会通过，因为文件确实进了提交，只是内容不是提交信息说的那个。
+
+## 2026-08-03 · always-on 规则 root-each-bash-call 落地 + 姊妹 skill 同源缺陷（sha `8e1f0cc7`）
+
+- **V1 触发链** — ❌ **负样本，当场记**。本轮做完 §4（记忆维护）与 §5（细粒度提交）**都没有载入本 skill**——我是凭 CLAUDE.md 那行的印象手工走的。真正调用它，是**用户问「本会话还有哪些事情没做」之后**。证伪形态命中（「事后才发现该用」）。**与本表已有的两次负样本合看，形态在收窄**：2026-07-28 那次是「收口后走到一半才想起」，2026-08-03 上游传输那次是「自己判定该做了却仍请示」，本轮是「把六步中的两步手工做完、根本没想起有 how-to」。三次的共同点是**触发词偏向「上下文将满」，而实际触发场景是「任务完成/阶段收口」**——2026-07-28 那条已建议补这一档触发词，本轮是**第 3 次同向观测**，够改正文了。
+- **V7 闭环提交时点** — ✅ **①②都跑了机械检查，原样输出粘在下面**（上一条会话在此假绿过，教训是「粘不出输出就等于没跑」，本轮照做）：
+  ```
+  docs/tmp/2026-08-03-root-each-bash-call-review.md      ls-files=OK  status -uall=空  check-ignore=未忽略
+  docs/tmp/2026-08-03-selfverify-mechanism-review.md     ls-files=OK  status -uall=空  check-ignore=未忽略
+  docs/memory/methodology-downgrading-a-gate-needs-a-reachable-trigger.md  同上三项 OK
+  # ② git diff-tree --no-commit-id --name-only -r 8e1f0cc7
+  docs/memory/MEMORY.md
+  docs/memory/methodology-downgrading-a-gate-needs-a-reachable-trigger.md
+  docs/memory/methodology-mechanism-story-in-spec-must-be-experiment-backed.md
+  docs/tmp/2026-08-03-selfverify-mechanism-review.md
+  ```
+- **V8 正交视角** — ⚠️ **本轮只派了一个视角**（先 Claude `reviewer` 审规则本体，后 GPT `gpt-souls:reviewer` 连跑五轮 + 姊妹 skill 一轮），是**跨模型串行**而非正交视角并行，**不计入 V8 分母**。但有一条独立观测值得记：**同一 reviewer 逐轮 resume 的增量发现依次为 3major → 4major+1minor → 2major+3minor → 1major+1minor → 0 → 1minor+1nit**，没有提前衰减；且**第 3、4 轮的 major 都在推翻我为修上一轮而新写的东西**（第 3 轮推翻我加的触发指针「只裁得了三条断言里的一条」，第 4 轮推翻我自作主张的「V1/V1R 永不毕业」）。「为修复上一轮而新写的东西会引入新缺陷」**本轮连续命中两次**。
+- **V15 逐条落盘** — ⚠️ **混合结果，其中一次符合免责条款**。六次派发里观测到 **2 次中断**：① 首轮 Claude reviewer 因 `NGHTTP2_CANCEL` 中断，**当时我还没给 `REPORT_FILE`**，它中断在「正在核实我给的证据基线」这一步、零落盘——**这是 V15 的正向证据（没给 REPORT_FILE 就丢）而非证伪**；② 第四轮 GPT reviewer `Server error mid-response`，报告文件停在 149 行、第四轮内容整份为空。**②不算证伪**：无法确认它中断前是否已闭合过 finding，按「第一条 finding 闭合前被中断不算证伪」记 **数据不足**。其余四次派发全部逐条落盘、报告从 149 → 244 行只增不减。
+- **V17 紧急纠错例外** — ❌ **补记一次证伪（发生在本会话早段，此前漏记）**。撤回 `MEMORY.md` 里「探测消息打断了 agent」这条被时间线证伪的因果时（中断早于探测 118 秒），我**在同一次撤回里立刻把「宿主一次失败的 fork resume」写成了真因**，而那同样只有时间相关性、没有产生点标签。**命中证伪条款③（根因未定时不得顺手写入新的因果解释）**，由后续评审抓出、已降级为「只写已排除什么」。SKILL.md §6 的正文已把这次写成反面教材，但**当时没在本日志记账**——两处记录的漂移本身也是本轮学到的（见下条）。
+- **新增观测（不在自验表内，建议入表）** — **「手工维护的汇总 + 明细，两个可独立写的点，没有对账门就必然漂」**。本轮在姊妹 skill `reshaping-a-bypassed-guard` 的 verification-log 里实测到：三张票写进了「逐条记录」，而「票数」小节纹丝不动停在 `0 证实`。修法不是提醒自己细心，而是**指定明细为唯一事实源、汇总降为派生视图**，并规定同一次编辑内更新 + 提交前重数对账。**本日志天然免疫**（它只有记录、没有汇总小节）——但上面 V17 那条「当时没记账」说明**另一种漂移仍在**：SKILL.md 正文写了教训、本日志没记票，同一事实的两个载体分岔。已并入记忆 [[methodology-downgrading-a-gate-needs-a-reachable-trigger]]。
+- **新增观测** — **reviewer 在同一份报告里自我推翻了刚提的一条 major**（按「第 3 行」字面 hash 报指纹不匹配 → 继续枚举 canonicalization 后确认作者记的值正是「含行尾 LF」版，当场自撤降为 nit）。这是「每闭合一条立刻落盘」的一个**副作用收益**：逐条写下来之后，它自己回头看得见前一条的判据取法。值得在派活模板里保留「允许并鼓励当场撤回自己的 finding」这层意思。
