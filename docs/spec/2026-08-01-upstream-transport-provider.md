@@ -33,40 +33,44 @@
 
 被否的两条顺带记录：`llhttp` 官方 npm 包是**代码生成器**而非运行时解析器（要用需自维护 WASM 构建与 glue，代价接近一个小型原生组件）；现成可用的纯 JS 解析器是 `http-parser-js@0.5.10`（chunked + trailers 状态机完整，且 trailers 先于 message-complete 交付）。若将来放弃原生路线，它是 h1 的首选底座。
 
-### 0.2 分发：不发布产物，本地构建（用户裁决）
+### 0.2 分发：per-platform 可选包发布产物（用户裁决 2026-08-03，**取代 2026-08-01 的「本地构建」**）
 
-沿用 `native/history-search` 的模式——**产物不进 npm tarball，由使用者在自己机器上 `cargo build`**。不建 CI 交叉编译矩阵、不发 per-platform sibling 包。
+采用 napi-rs 生态的标准做法，与 esbuild / SWC 同型：
 
-**因此产生一条强制推论**：
+- CI 交叉编译矩阵产出各平台 `.node`，各自发一个 sibling npm 包（`@hsupu/copilot-api-linux-x64-gnu`、`-linux-x64-musl`、`-linux-arm64-gnu`、`-linux-arm64-musl`、`-darwin-x64`、`-darwin-arm64`、`-win32-x64-msvc` …）。
+- 每个 sibling 包声明 `os` / `cpu` / `libc`；主包在 **`optionalDependencies`** 里列出全部，包管理器只装匹配当前平台的那一个。
+- **`bun x` 下开箱可用**——已实测：`bun x esbuild --version` 输出 `0.28.1`，而 esbuild 的 bin 是 JS shim、必须调起原生二进制才能打印版本，故这证明 `bun x` 会解析并安装平台专属 `optionalDependencies` 并成功调用。
 
-> **默认 provider 必须保持 `node:http2`（零依赖）。** 产物不发布 ⇒ npm 安装者没有原生模块 ⇒ 若 Rust provider 是默认，则「缺失即启动失败」会让所有 npm 安装者开箱即挂。
+**napi 是 N-API（ABI 稳定），同一个 `.node` 同时服务 Bun 与 Node**，不像 `node-libcurl` 那样按 Node ABI 版本切产物——运行时维度不让产物数量翻倍，矩阵只按 OS×CPU×libc 展开。
 
-故最终形态：
+#### 这条裁决解除了什么约束
 
-- **默认 `auto`**：`https` → `node:http2`（**与今天完全一致，npm 安装者无感**）。
-- **Rust provider 为 opt-in**：显式选中且产物不在 → **启动即失败**（§8 已定的语义不变，只是触发条件收窄为「你显式选了它」）。
-- **明文 `http://` 上游**：`auto` 下若 origin inventory 中存在明文 origin，则需要 Rust provider；产物不在则启动失败并明示补救方式。**不静默回落 undici**（它在 Bun 下必挂）。
-- **npm 安装者因此没有 h1 能力**——但**这不是回退**：他们今天也没有（undici 在 Bun 下必挂，且唯一的明文上游 SearXNG 是幽灵，见 §4.3）。
+2026-08-01 的「不发布产物」曾强制推出「默认必须保持 `node:http2`」（否则 npm 安装者开箱即挂）。**产物随包分发后，该强制约束消失**——Rust provider 具备成为默认的技术条件。是否真的把它设为默认是**独立决策**，见 §0.2.1。
 
-一个对我们有利的事实：napi 是 **N-API（ABI 稳定）**，**同一个 `.node` 同时服务 Bun 与 Node**，不像 `node-libcurl` 那样按 Node ABI 版本切产物——运行时维度不会让产物数量翻倍。
+#### 这条裁决**没有**解除什么
+
+- **矩阵未覆盖的平台仍然拿不到产物**，且 `optionalDependencies` 的缺失是**静默**的（包管理器不会报错）。故 loader 必须在**启动时大声失败**并指明是平台不受支持，绝不拖到第一个请求、绝不静默降级。受支持平台清单须是 spec 的一部分。
+- **版本锁步**：sibling 包与主包必须同版本发布，主包 `optionalDependencies` 用精确版本（非 range），否则会出现主包与产物 ABI/接口错配。
+- **绝对路径覆盖仍然保留**——`bun x` 场景已不再依赖它，但开发期（改 Rust 代码后即时验证）与矩阵外平台自建产物仍需要它。
+
+### 0.2.1 待定：Rust provider 是否成为默认
+
+产物随包分发后，两种形态都可行，**需用户裁决**：
+
+- **保持 `node:http2` 为默认**：热路径不引入原生模块，Rust provider 显式 opt-in。风险最小，但「通用 provider」的能力（h1、经代理的长 thinking 保活）默认不生效。
+- **Rust provider 设为默认**：默认即获得 h1+h2+PING 的完整能力；代价是原生模块进入所有人的热路径，且矩阵外平台必须显式失败并引导切回 `node:http2`。
 
 ### 0.3 打包接线（现状与需改动处）
 
-现状：`prepack` / `prepare` = `bun run build` = `tsdown`（只打后端 bundle）；`build:history-search` **不在**其中（2026-07-28 纪律：没 Rust 的机器 `bun install` 也要能过）。`files: ["dist", ...]` 虽含 `dist/`，但因 prepack 不构建原生产物，**发布的 tarball 里从来没有 `.node`**。
+现状：`prepack` / `prepare` = `bun run build` = `tsdown`（只打后端 bundle）；`build:history-search` **不在**其中（2026-07-28 纪律：没 Rust 的机器 `bun install` 也要能过）。`files: ["dist", ...]`，当前发布的 tarball 里没有任何 `.node`。
 
 需改动：
 
-1. `tsdown.config.ts` 的 `deps.neverBundle` 加入原生模块说明符（同 `bun:sqlite` / `node:sqlite` 的既有处理），否则 bundler 会在构建期尝试解析它。
-2. **`prepack` 不接原生构建**——保持与 history-search 一致的纪律。
-3. 加载器沿用 `src/lib/history/search-native.ts:30-47` 的形态：`createRequire(import.meta.url)` + 多候选路径（开发树 `native/<crate>/*.node`、分发 `dist/<name>.node`），全失败则抛。
-4. **与 history-search 的关键差异**：搜索缺产物走 `describe.skipIf` 显式 skip；**传输层不可 skip**——未选中时不加载，选中而缺失则**启动失败**，绝不静默降级。
-5. **必须提供绝对路径覆盖**（配置项 + 环境变量），指向本地构建的 `.node`。**这在 `bun x` 场景下不是便利项而是必需项**：`bun x` 是临时安装、跑完即弃，`import.meta.dirname` 指向那个临时目录，用户自己树里 `cargo build` 的产物**永远不在推算出的候选路径上**。没有绝对路径覆盖，「本地构建」这个分发模式在 `bun x` 下完全不可用。
-
-### 0.3.1 `bun x` 的实测行为
-
-`bun x` **会**解析并安装匹配当前平台的 `optionalDependencies`——实测 `bun x esbuild --version` 输出 `0.28.1`（esbuild 的 bin 是 JS shim，必须调起原生二进制才能打印版本，故这证明平台子包被装上并被调用）。
-
-⇒ 「per-platform 子包」形态在 `bun x` 下开箱可用；但**本 spec 选择的是不发布产物**，故 `bun x` 用户只能跑默认的 `node:http2`，除非用上条的绝对路径覆盖指向自建产物。
+1. `tsdown.config.ts` 的 `deps.neverBundle` 加入原生包说明符（同 `bun:sqlite` / `node:sqlite` 的既有处理），否则 bundler 会在构建期尝试解析它。
+2. **CI 交叉编译矩阵 + sibling 包发布流水线**（napi-rs CLI 提供 `napi build` / `napi create-npm-dirs` / `napi prepublish`）。这是本次新增的**长期维护义务**，不是一次性成本。
+3. `prepack` 仍**不**接原生构建——原生产物由 CI 矩阵产出并单独发布，不走本地 prepack（保持「没 Rust 的机器 `bun install` 能过」这条纪律）。
+4. 加载器沿用 `src/lib/history/search-native.ts:30-47` 的形态（`createRequire(import.meta.url)` + 多候选），候选顺序为：**绝对路径覆盖 → 平台 sibling 包 → 开发树 `native/<crate>/*.node`**，全失败则抛。
+5. **与 history-search 的关键差异**：搜索缺产物走 `describe.skipIf` 显式 skip；**传输层不可 skip**——未选中时不加载，选中而缺失则**启动失败**，绝不静默降级。
 
 ### 0.4 本机 Rust 状态
 
