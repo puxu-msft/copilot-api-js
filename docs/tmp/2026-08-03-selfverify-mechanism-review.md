@@ -206,3 +206,39 @@
 ### 总体 verdict
 
 **可以收口。Blocker：0；Major：0；Minor：0。** A 的两项修复闭合；B 的双语等价、事实边界、runtime 能力限定、规则分工、skill 关系与登记均成立。仅保留上述非阻断精简建议。
+
+
+## 姊妹 skill 同源缺陷复审
+
+### 评审范围与证据
+
+- 冻结提交：`/home/xp/.claude` 的 `a987cc00eb1321beb51ced6d9b86d09ef1fb42e0`；评审 `/home/xp/.claude/skills/reshaping-a-bypassed-guard/{SKILL.md,verification-log.md}` 与 `/home/xp/.claude/skills/proving-where-a-command-ran/verification-log.md` 的复用标注。
+- 每个 load-bearing 命令均在同一调用打印 repo top-level、当前 HEAD 与冻结 SHA；下文按命题闭合后立即追加。
+
+### 1．三票同源与当前票数
+
+- **补法正确，且没有把三张不同断言的票误合成一张。** 原规则的计数单位是“某一断言 × independent session”：同一会话可以分别为 V1、V2、V3 各提供一次针对不同 oracle 的观察，但不可能为同一断言贡献三个独立会话。旧文件 `/home/xp/.claude/skills/reshaping-a-bypassed-guard/verification-log.md@a987cc0^:31-38` 明确只有同一 2026-07-31 场景下 V1/V2/V3 各一条，因此新 log `/home/xp/.claude/skills/reshaping-a-bypassed-guard/verification-log.md:15-18,23-25,62-64` 将三者分别记为 `1 证实`，各自距离三会话毕业还差两个，符合原“三次独立会话”语义。新增第 64 行是在补足原规则未说透的 sample-independence 边界，不改变 V1/V2/V3 的真实状态；它只纠正了旧 tally 未消费既有记录的错位。
+
+### 2．description 窗口锚点
+
+- **成立，本次无需重置窗口。** `git diff a987cc0^ a987cc0 -- SKILL.md` 的首个 hunk 从第 99 行开始，第 3 行无改动；parent 与 `a987cc0` 的 description sha256 前 16 位均为 `6643f1eda71d2f01`。`git blame -L 1,5 a987cc0` 把第 3 行归于 `1f8909a`，`git log -G '^description:'` 也只返回该提交；`git show -s` 给出 committer timestamp `2026-07-30T08:56:43+00:00`。因此 `/home/xp/.claude/skills/reshaping-a-bypassed-guard/verification-log.md:36-40` 以 description 最后变更时刻起窗是正确的。
+
+[major] `/home/xp/.claude/skills/reshaping-a-bypassed-guard/verification-log.md:38` — 记录的 description sha256 前缀错误，会让审计前核对必然失败 — 实测当前第 3 行完整文本（包含 `description: `）sha256 前 16 位为 `6643f1eda71d2f01`，文件却写 `8ba8938bbecbe5cf`。若作者意图只 hash YAML value，也必须明确定义 canonical bytes；按当前“description（SKILL.md 第 3 行）的 sha256”字面，独立执行者会 hash 整行。修复建议：明确 canonicalization（推荐 UTF-8 编码的第 3 行、不含行尾换行）并记录 `6643f1eda71d2f01`；修后重跑同命令。窗口本身不需重置，因为 description 内容确实未变。
+
+**即时更正上一条 finding：撤销该 major。** 继续枚举 canonicalization 后确认 `8ba8938bbecbe5cf` 正是第 3 行**连同行尾 LF**的 sha256 前 16 位；`6643…` 是去掉 LF 后的另一种值。该记录并非错误，但 `/home/xp/.claude/skills/reshaping-a-bypassed-guard/verification-log.md:38` 没写是否含 LF，存在轻微复现歧义。记为 nit：补成“UTF-8 编码的第 3 行，包含一个 LF”或直接给出复验命令 `sed -n '3p' SKILL.md | sha256sum`。不影响窗口与本轮收口。
+
+### 3．跨 skill 复用 manifest 方法
+
+- **复用方向正确，消除了第三份实现性副本；未形成无标注的脆弱依赖。** 姊妹 log `/home/xp/.claude/skills/reshaping-a-bypassed-guard/verification-log.md:36-42` 只拥有自己的窗口、description hash、exposure 判据与记账，并把通用 manifest／ragged-edge／positive-control 方法指向 `proving-where-a-command-ran/verification-log.md`；源 log `/home/xp/.claude/skills/proving-where-a-command-ran/verification-log.md:46-51` 反向标明 steps 1-3 被姊妹 skill 复用、修改应留在源处。机械搜索确认 event timestamp、跨窗、无 timestamp 与扫描正控的完整规则只在源 log，姊妹处仅有依赖摘要。双向标注使未来移动／归档时可发现消费者；而窗口与 exposure 没被错误共享。当前依赖是有意 SSOT，不构成缺陷。
+
+### 4．记账错位的根因
+
+[minor] `/home/xp/.claude/skills/reshaping-a-bypassed-guard/verification-log.md:13-27,31-35` — “追加型日志天然往文件尾写”描述了事故形状，但不是已证实的根因，当前修法也未消除真正的双写漂移 — `git show 99a00df` 只能证明当时 commit 把三条记录追加在文件末尾第 36-38 行，并保留第 15-17 行旧 tally；它不能区分“工具只会 append”“该会话没读完整文件”“知道 tally 但漏更新”。更简单且被 diff 直接证明的机制根因是：一张票同时要求更新**逐条记录与手工 tally 两个可独立写点**，协议当时没有对账门，故发生 dual-write drift。把记录区移到协议前提高可见性，但未来若仍按字面 append 文件末尾，或只改记录不改 tally，缺陷照样复发；新 `/home/xp/.claude/skills/reshaping-a-bypassed-guard/verification-log.md:31-35` 也未明确要求两处原子更新／对账。修复建议：删除因果断言或标为“可能机制”；并规定每次投票必须同时更新 `逐条记录` 与 `票数`，提交前从记录重算 tally 对账。更稳妥的是让 tally 成为可生成视图而非第二事实源。
+
+### 5．协议单一权威
+
+- **协议双写已清零。** 机械搜索 `/home/xp/.claude/skills/reshaping-a-bypassed-guard/SKILL.md:100-112` 只命中第 102 行的所有权指针；谁记／何时、独立会话、作者排除、四态、V1/V1R 同行、清零与毕业动作均只在 `verification-log.md:31-74`。`SKILL.md:106-110` 的 V1/V1R/V2/V3/V4 表仅定义 claim 和可观察正反例；第 112 行“证伪比证实值得记”是价值说明，不足以独立决定投票、样本或结算，不构成第二协议。
+
+### 总体 verdict
+
+**修复 minor 后可收口。Blocker：0；Major：0；Minor：1；Nit：1。** V1R／cohort、三票状态、description 窗口、跨 skill SSOT、协议归一与毕业动作均成立；仅记账根因仍是未证实叙事，且 dual-write tally 缺少对账门。description hash 只需补 canonicalization 说明。
