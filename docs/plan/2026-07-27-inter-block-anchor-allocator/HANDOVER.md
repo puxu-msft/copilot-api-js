@@ -9,7 +9,7 @@
 
 **worktree**：`/home/xp/src/copilot-api-js/.worktrees/anchor-alloc`
 **未提交 / 未追踪**：本工作的产物已于 `6cfa0e89` 全部提交（此前两份评审报告曾是 untracked，被交接评审抓出）；主树另有并发会话的未提交改动，与本工作无关
-**已跑门禁**：master 全套件 `unit+it+http` 连跑 21 次全绿（6845 pass / 0 fail，代码状态 `cc909c81`），记录在 `docs/tmp/2026-08-03-baseline-run-log.md`；`bun run typecheck` 绿。
+**已跑门禁**：master 上 `unit+it+http` 三档连跑 21 次全绿（6845 pass / 0 fail，代码状态 `cc909c81`），记录在 `docs/tmp/2026-08-03-baseline-run-log.md`；`bun run typecheck` 绿。
 > ⚠️ **证据等级：自我报告，非独立可核验。** 那份记录是逐次**摘要**（无时间戳、无单次耗时、无完整 stdout），形式上区分不了「真跑了 21 次」与「手写了 21 行」——判据证伪评审两轮维持此为 major，我接受。**别拿它当门禁已过的证据**；RFC §7.1 的入场条件本来就要求在**当时的 entry commit** 上重跑，那次用 `exp/inter-block-anchor-allocator/baseline-runs.sh` 保留每次的原始输出文件。
 > ⚠️ **那份记录里的「修复前」那批不是受控前后对照**：它跑在 feature `2c339784`（**6848** tests），而 21 次跑在 master `cc909c81`（**6845** tests），`git merge-base --is-ancestor cc909c81 2c339784` = **NO**，互不为祖先。**跨树观测只支持「聚合层面改善」，不得用来顶 T3 的修复 AC**——那需要同一棵树上的逆 mutation。（这条纠正本身就是同类复发：它是我在修「基准锚定分裂」那个 blocker 时新引入的。）
 

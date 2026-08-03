@@ -1,5 +1,9 @@
 #!/usr/bin/env bash
-# Capture N independent full-suite runs as verifiable artifacts.
+# Record N repeated invocations of one test command at one commit, each with its
+# own provenance. Read the CLAIMS section below before quoting a green result:
+# this deliberately does NOT say "full-suite" or "verifiable" -- an earlier
+# version of this very line said both, twelve lines above the paragraph denying
+# them, and review flagged the contradiction.
 #
 # Why this exists as a script rather than a recipe in a handover: the handover
 # originally described the provenance ("record date, HEAD, dirty state, full
