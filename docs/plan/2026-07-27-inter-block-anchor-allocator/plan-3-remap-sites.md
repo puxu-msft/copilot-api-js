@@ -95,17 +95,43 @@ anchor@2（测试经 owner API 落）→ real@3（上游1，生产分配）→ o
 
 M1–M4 期间 owner 是 legacy 字段的**唯一写者**；下表规定每个 owner 操作**结束后**四个状态的取值。任何偏离即 bug，不留解释空间。
 
+**M1 的供给缝（2026-08-02 第十三轮新发现，调查 task 必须覆盖）**：本节要求「owner 在 open/close 时一并维护 legacy 字段（迁移期双写）」，但 **owner 够不到那些字段**——`AnchorState`（持有 `anchorBlockOpen`/`anchorClosed`/`injected`）是 **handler 持有的**，而 delivery session 的入参只有 `wireState?: GenerationWireState`（`session.ts:46`）。**这与本轮另外三次翻车同型：给一条缝规定行为，而没读过缝的两侧。** M1 的调查 task 必须连这条一起定：是 **(a)** 把 `AnchorState` 也交给 owner（扩入参），还是 **(b)** 建一个 **handler 持有的 mirror port，同时中介 open 与全部 close 站点**、owner 只管 wire 状态。⚠️ **(b) 不能写成「mirror 写留在 synthetic injector wrapper 层」**（2026-08-03 更正）——那个 wrapper **只覆盖 open**，而 11 个 close 站点不经过它，`anchorClosed` 根本更新不到；(b) 成立的前提是该 port **同时**是 open 与 close 的唯一中介。**两种都可以，但必须选一个并写进 plan，且该选择同样受上面的评审+合主线硬门约束**。在此之前，本节凡说「owner 维护 legacy 字段」的表述都按「**待 M1 定供给方式**」理解。
+
+**M1 必须先完成「调查 → 定稿 → 评审 → 合主线」闭环，再迁站点（2026-08-02 第九/十轮两次改判后的定稿）**。
+
+**改判过程记在这里，因为它本身是教训**：我先写「10 个站点各自 narrow `OwnerResult` 后自行处理」→ 评审指出会各自发明；改写成「交给既有映射」→ 评审指出 `ownerFailureOutcome` 是 `driver.ts` **私有**、handler 够不到；再改写成一个我自拟签名的 adapter → 评审指出该签名**缺 `env.clientFormat`**（保不住 `streamErrorOutcome` 的 provenance-gap 语义）、且 `return d.outcome` **对返回 `Promise<void>` 的 handler pump 不适用**。**三次都是在没读过调用点两侧的情况下跨缝规定行为。** 故本节**不再规定签名**——签名要读完 10 个站点与各 pump 的返回类型才能定，那是 M1 实施者的工作。
+
+**本节只冻结必须成立的性质**（实现自由，但违反任一条即 M1 未完成）：
+
+1. **唯一翻译点**：owner failure → 终局决定的翻译**只有一处实现**，driver 与各 handler 共用。**不得每个站点一份**。
+2. **穷尽**：翻译对 `OwnerFailureReason` 穷尽，**加第四个 reason 必须编译失败**（`OwnerFailureReason` 现有且仅有三个：`client-gone` / `session-terminating` / `wire-torn`，见 `types.ts:295`；用 `Record`/`satisfies`，不用 `default` 兜底）。
+3. **保住 provenance-gap 语义**：现行 `streamErrorOutcome` 在 `classifyStreamError === "unknown-cancel"` 时记 gap，且**需要 `env.clientFormat`**。翻译层产出 stream-error 时必须走同一入口（master 有守卫「stream-error minted in exactly one place」），故其入参**必须够得着 clientFormat**。
+4. **短路**：站点拿到「终局决定」后**必须立即结束本站点的终局路径**，不得再补第二个终局帧。⚠️ **各 pump 的返回类型不一致**（有的返回 `ResponseOutcome`，有的返回 `Promise<void>`），故「怎么短路」按站点定，但「短路」这个性质不可协商。
+5. **ctx 侧收尾仍归 pump**：owner 的 `finalizeAfterClientGone()` **只 finalize sink**，`ctx` 的 abort/settle 与 forwarded snapshot **必须由 pump 完成**——翻译层不做、也做不了。
+6. **终态分类按 reason 分，不得一律 aborted**：`client-gone` → **aborted**；`wire-torn` → **failed**；`session-terminating` → ctx 未 settle 时 loud `stream-error`、已 settle 时 `delivery-finished`。
+7. **partial-delivery 必须落到持久载体**：`client-gone` 的两个来源——preflight（`committed:false`，**零字节已写**）与 write catch（`committed:true`，**stop 可能已部分上线**）——动作相同但**证据不同**。**M1 必须冻结一个 request-scoped diagnostic／History 投影字段来承载它**，不得留给站点各自选择表达方式。
+8. **`reason × committed` 共六种组合**：本节只对 `client-gone` 的两种给了差异化处置；**M1 必须对六种组合逐一 disposition 并写进 plan**：**可达的**——各配一条 oracle（不是「每个 reason 一条」，是**每个组合一条**）；**不可达的**——给出机制性证明（哪一行代码使它不可能），**并配两腿 positive control**：**腿一（producer 侧）**——临时破坏该机制（即让 producer 真的产出这个组合），必须有测试转红；**若 producer 边界同样由类型排除该组合**，腿一也允许 compile-red（`@ts-expect-error`），不强求运行时真产出它；**腿二（translator 侧）**——直接构造该非法组合喂给翻译层，它必须 **loud fail**（不得静默走某个相邻分支）。⚠️ **若最终的类型设计已在类型层排除该组合（构造不出来），腿二改为类型级负测**（`@ts-expect-error` 断言该构造不可编译）即可——**不得为了满足「能构造」而把公共入参放宽成更松的类型**，那是用测试倒逼生产接口变差。⚠️ **只做腿一证明的是相邻性质**（「producer 不产它」），证不了「万一产了会被抓住」；两腿都有才算「不可达」被钉住。
+
+**M1 的第一个 task 因此是「读 10 个站点 + 各 pump 返回类型 → 定翻译层的签名与模块位置 → 停下回报」**，不是直接动手迁站点。**硬门**：调查结论回填本节后，**必须经独立评审放行、且回填后的 plan 精确 pathspec 提交并合回主线，才能继续迁站点**——新定的签名、模块位置与 partial-delivery 载体字段**本身就是指令文本**（后续每个站点都照它做），适用「指令类文本必须评审」+「docs-merge-before-execute」，不得由实施者自审后径直开工、也不得把定稿滞留在未提交的 worktree 里继续干。
+
+**验收分两层，别混**：
+- **翻译层自身**（unit）：穷尽性编译检查（加第四个 reason 必须红）+ **逐组合**分类正确——**是六个 `reason × committed` 组合各一格，不是三个 reason 各一格**（只测 3 格即宣称完成，是本节明令禁止的假完成）。⚠️ **unit 证不了 aborted／failed／snapshot／settle**。
+- **站点接线**（真实 HTTP 档）：**每个可达组合**一条从真实入口驱动的 oracle（同上，按组合不按 reason），断言**零追加字节**、**settle 恰好一次**、**终态分类正确**（按第 6 条分类）、**forwarded snapshot 保留**（只能经 History/ctx oracle 查，owner unit 无从证明）。
+
 **原子迁移红线（第二轮实现审查补充）**：同一 close 站点的 legacy `sink.writeAnchor(stop)` 与 owner `closeOpenAnchor` **不得在任何可提交中间态并存**，否则同一 anchor 会双写 stop。M1 迁每个站点必须在同一 commit 内「删 legacy write + 接 owner close + 加 exactly-once oracle」；未迁站点保持纯 legacy，已迁站点保持纯 owner。`openAnchorIndex` 只写不读的 P2 地基在第一个站点迁入时才变成活状态，不得先接 owner close 再留旧 write。
 
 | owner 操作 | `openAnchorIndex` | `anchorBlockOpen` | `anchorClosed` | `injected` |
 |---|---|---|---|---|
 | 初始（generation 开始） | `undefined` | `false` | `false` | `false` |
 | `allocateAndWriteAnchor` **成功**（pre-content 或 gap） | `= 分配的 index` | `true` | **`false`**（重新武装——旧语义是一次性，多 anchor 下每次开新 anchor 都要复位） | `true` |
-| `allocateAndWriteAnchor` **失败**（pre-commit） | 不变 | 不变 | 不变 | 不变 |
-| `allocateAndWriteAnchor` **失败**（post-commit） | `undefined`（该 anchor 不再可关） | `true`（历史 shift 已产生，**不得回退**） | `true` | `true` |
-| `closeOpenAnchor` 返回 `"closed"` | `undefined` | **`true`**（**关键**：它表示「历史上保留过 wire shift」，**关闭后仍为 true**——这正是 bridge 等价性依赖的那一位） | `true` | 不变 |
-| `closeOpenAnchor` 返回 `"none"` | `undefined`（本就是） | 不变 | 不变 | 不变 |
-| `closeOpenAnchor` 返回 `"write-error"` | `undefined` | 不变（`true`） | `true` | 不变 |
+| `allocateAndWriteAnchor` **preflight 拒绝**：`ownerUnavailable()` 早返回 `{ok:false,reason:"client-gone"｜"session-terminating"｜"wire-torn",committed:false}`（`session.ts:289-292,340-341`——`finishReason` 可为 `client-gone`，**三种都要处理**） | 不变 | 不变 | 不变 | 不变 |
+| `allocateAndWriteAnchor` **build callback 抛错**：`reservation.rollback()` 后**原样重抛**（`session.ts:345-349`，**不是 OwnerResult**——接线错误不进 failure union） | 不变 | 不变 | 不变 | 不变 |
+| `allocateAndWriteAnchor` **post-commit 写失败**（⚠️ 右侧 legacy 字段只适用于经 synthetic injector wrapper 的调用——裸调 owner API 时 owner **够不到** `AnchorState`，见下方「M1 的供给缝」） | **`= reservation.value`（例如 `0`），不是 `undefined`**（`session.ts:351-352`：commit 回调在首帧写出前置位，post-commit 失败不回退——**该 anchor 仍可关**） | `true`（历史 shift 已产生，**不得回退**） | **`false`**（2026-08-02 第十三轮更正：`anchorClosed` 的语义是「`stop@0` 是否已发出」（`types.ts:536`），而 `committed` 只表示**首次 write 已尝试**——post-commit 失败时 stop **并未发出**，置 `true` 是伪语义、且会把它当 poison bit 用） | `true` |
+| `closeOpenAnchor` 成功关闭，返回 `{ok:true,value:"closed"}`（2026-08-02 补正：不是裸 `"closed"`；调用方须 narrow 后取 `.value`，否则会静默丢掉 failure result） | `undefined` | **`true`**（**关键**：它表示「历史上保留过 wire shift」，**关闭后仍为 true**——这正是 bridge 等价性依赖的那一位） | `true` | 不变 |
+| `closeOpenAnchor` 无 open anchor，返回 `{ok:true,value:"none"}`（2026-08-02 补正，同上） | `undefined`（本就是） | 不变 | 不变 | 不变 |
+| `closeOpenAnchor` **client-gone**：返回 `{ok:false,reason:"client-gone",**committed:true**}`（2026-08-02 复核 `session.ts:411-413` 实测：**`committed` 为 true**，且 `openAnchorIndex` **不被清空**——清空只发生在成功路径 `:407`） | **不变**（仍指向未关的 anchor） | 不变 | 不变 | 不变 |
+| `closeOpenAnchor` **非 client 写失败**：置 `wireTorn` 并 **throw `DeliveryOwnerError`**（`session.ts:415`） | 不变 | 不变 | 不变 | 不变 |
+| `closeOpenAnchor` **preflight 拒绝**：`ownerUnavailable()` 早返回 `{ok:false,reason:"client-gone"｜"session-terminating"｜"wire-torn",committed:false}`（`session.ts:289-292,396-397`——`finishReason` 可为 `client-gone`，**三种都要处理**；与上方「六组合」性质一致） | 不变（**根本没走到写**） | 不变 | 不变 | 不变 |
 | `withAllocatedRealBlock` / `beginLeg`（任何结果） | 不变 | 不变 | 不变 | 不变 |
 
 **三条承重解读**（写出来防实施期误解）：
@@ -133,7 +159,7 @@ reviewer 核实（planner 复核确认）：**所有 close 调用点都在 sink 
 
 **要点**：
 - `"terminal"` 模式与 **P6 的永久 heartbeat stop 合成一个 owner command**——否则 stop 帧与新 tick 可能交错。
-- **exactly-once 由 API 保证**：第二个调用者见 `openAnchorIndex === undefined` 得 `"none"`。这取代了原先跨站点共享 `anchorClosed` 的手工幂等。
+- **exactly-once 由 API 保证**：第二个调用者见 `openAnchorIndex === undefined` 得 `{ok:true,value:"none"}`（2026-08-02 补正：**迁移站点必须 narrow `OwnerResult`**，把 `{ok:false}` 当成「已关过」会静默吞掉 client-gone / wire-torn）。这取代了原先跨站点共享 `anchorClosed` 的手工幂等。
 - **架构守卫**：生产代码**不得**在 owner 外读写 `openAnchorIndex` 或直接写 anchor stop 帧（带正样本对照）。
 
 **若某 commit 的门实测不可满足**（例如 M2 的 offset≥2 场景仍拿不到红），**停下回报**——那意味着仍有未识别的依赖，**不得**靠手工补状态硬凑绿。
@@ -161,8 +187,10 @@ reviewer 核实（planner 复核确认）：**所有 close 调用点都在 sink 
 withAllocatedRealBlock(
   upstreamIndex: number,
   build: (ctx: { mapping: WireBlockMapping; envelope: WireEnvelopeFactory }) => ReadonlyArray<WireWriteSpec>,
-): Promise<WireBlockMapping | undefined>
+): Promise<OwnerResult<WireBlockMapping>>
 ```
+
+> **2026-08-02 补正（P1+P2 落地后的实际契约，以 `src/lib/pipeline/types.ts` 与 README C9/C10 为准）**：返回类型不再是 `WireBlockMapping | undefined`，而是 `OwnerResult<WireBlockMapping> = {ok:true,value} | {ok:false,reason,committed}`，`reason ∈ {"client-gone","session-terminating","wire-torn"}`；接线错误（未配置 wireState、reservation 重入、无 active leg 写 real 帧、**missing mapping**）**照旧 throw、不进这个 union**。**非 start 帧不再由调用方自己 `resolveRemappedFrame` 后普通 write**，而是走 owner 的 `writeBlockFrame(leg, upstreamIndex, frame)`——leg 显式传入、查表与 remap 都在 owner 内（README C10）。下方各处旧措辞**已于同日逐处改写**，不再需要靠本段兜底。
 
 **round-3 major 修正——callback 不返回 `DeliveryFrame`，返回 owner 定义的窄 write spec**：
 
@@ -209,7 +237,7 @@ owner 按 `kind` 路由到既有的 `write` / `writeAnchor` / `writeKeepalive`�
 
 - Modify: `src/lib/pipeline/driver.ts`（S1 + S2）
 - Modify: `src/lib/anthropic/live-reconcile.ts`（S3）
-- Modify: `src/lib/pipeline/types.ts`（若 `ReconcileHooks` 需要携 allocator 访问）
+- Modify: `src/lib/pipeline/types.ts`（2026-08-02 补正：**`ReconcileHooks` 不需要携 allocator**——分配与 remap 都在 owner 内，装饰器只经 port 调 `withAllocatedRealBlock` / `writeBlockFrame`）
 - Test: 改写 `tests/pipeline/retreat-anchor-collision.it.test.ts`、`tests/pipeline/live-reconcile-collision.it.test.ts`、`tests/pipeline/anchor-multiblock-lifecycle.it.test.ts` 的 index 断言；新 `tests/pipeline/remap-sites-mutation.it.test.ts`
 
 ---
@@ -235,7 +263,7 @@ test("S1 buffered flush allocates and remaps real blocks itself at frontier offs
 ```
 
 - [ ] **Step 2**：跑，红。
-- [ ] **Step 3**：实现——start 帧经 owner API `withAllocatedRealBlock`；非 start 帧走 `resolveRemappedFrame`。
+- [ ] **Step 3**：实现——start 帧经 owner API `withAllocatedRealBlock`（返回 `OwnerResult<WireBlockMapping>`，须 narrow 后取 `.value`）；**非 start 帧走 owner 的 `writeBlockFrame(leg, upstreamIndex, frame)`**，leg 显式传入、查表与 remap 都在 owner 内（2026-08-02 补正：旧文写「走 `resolveRemappedFrame`」是 P1 期的形状）。
 - [ ] **Step 4**：跑，绿；`anchor-multiblock-lifecycle.it.test.ts` 预期仍绿（pre-content-only 场景 offset 仍是 1）。
 - [ ] **Step 5: 提交** → `refactor(driver): allocate and remap buffered-flush blocks via the frontier owner`
 
@@ -245,7 +273,7 @@ test("S1 buffered flush allocates and remaps real blocks itself at frontier offs
 
 - [ ] **Step 1: 写失败测试**：retreat 发生在 **gap anchor 已开过一次之后**，断言写穿的真实块 index 走 frontier；**并断言 retreat 前已 flush 的块没有被二次分配**（frontier 无跳号）。
 - [ ] **Step 2**：跑，红。
-- [ ] **Step 3**：实现——start 帧经 owner API 分配（**原 plan 漏此步**），其余帧走 `resolveRemappedFrame`。
+- [ ] **Step 3**：实现——start 帧经 owner API 分配（**原 plan 漏此步**）；其余帧走 **`writeBlockFrame(leg, upstreamIndex, frame)`**（2026-08-02 补正，同 M2）。
 - [ ] **Step 4**：跑，绿 + `retreat-anchor-collision.it.test.ts` 回归。若该文件的断言写死了 `+1`，**改写为 frontier 断言（非删除）**。
 - [ ] **Step 5: 提交** → `refactor(driver): allocate and remap retreat write-through blocks via the frontier owner`
 
@@ -260,10 +288,9 @@ test("S1 buffered flush allocates and remaps real blocks itself at frontier offs
 - [ ] **Step 2**：跑，红。
 - [ ] **Step 3**：实现——
   - **取 port**：装饰器经 `getDownstreamDeliverySession(inner)` 拿 session 的 allocation port。`inner` 就是原 delivery sink（`handler-v4.ts:1206-1207` → `makeDeliverySseSink` 返回的 `delivery.clientSink`，正是 `deliveryBySink` 的 key，`session.ts:262`），故可达。
-  - **一个 transaction 出两帧**：装饰器在见到真实 `content_block_start` 时调 `withAllocatedRealBlock(upstreamIndex, ({ remap }) => [...])`，callback 返回**带 provenance 的 `DeliveryFrame`**：需要 close-off 时返回 `[anchorStop(synthetic:"anchor"), remap(start)(真实)]`，否则只返回 `[remap(start)]`。owner 按 provenance 路由到 `writeAnchor` / `write`，**不再靠数组位置猜**。
-  - **`reconcileLiveFrame` 保持纯函数**：它继续负责「要不要 close-off」+ remap 变换，只是 remap 改用绑定到本块 mapping 的 `resolveRemappedFrame`；**副作用（分配 + 写）全在装饰器的 transaction 内**。
-  - **非 start 帧**（delta/stop/终止符）仍走装饰器的普通 write 路径，remap 按该块 mapping 查。
-  - **注意 `hooks` 是 `ReconcileHooks` 不是 `AnchorHooks`**：核实两者 `remap` 签名一致后直接复用；若不一致，扩 `ReconcileHooks` 而非在 live 侧另写判断逻辑（单一权威）。
+  - **一个 transaction 出两帧**：装饰器在见到真实 `content_block_start` 时调 `withAllocatedRealBlock(upstreamIndex, ({ mapping, envelope }) => [...])`，callback 返回 **owner 定义的窄 `WireWriteSpec` 数组，不是 `DeliveryFrame`**（round-3 major 修正，判据与理由见本文件上方「callback 不返回 `DeliveryFrame`」节；**本行 2026-08-02 补正**——此前仍写着旧契约，与上方修正自相矛盾）：需要 close-off 时返回 `[envelope.anchor(anchorStop), envelope.real(mapping.remap(start))]`，否则只返回 `[envelope.real(mapping.remap(start))]`。**信封由 owner 铸造**（sequence / observedAtMonotonic / provenance 都是 owner 的时钟与身份），owner 按 `spec.kind` 路由到 `writeAnchor` / `write`，**不再靠数组位置猜、也不由装饰器自填 provenance**。
+  - **`reconcileLiveFrame` 保持纯函数**：它继续负责「要不要 close-off」的判定，**但 remap 不再由它做**——**start 帧**用 owner transaction callback 里拿到的 reservation `mapping` 做 remap，**非 start 帧**走 `writeBlockFrame(leg, upstreamIndex, frame)` 由 owner 查表并 remap（2026-08-02 补正：此前笼统写成「都在 `writeBlockFrame` 内」不准确）；**副作用（分配 + 写）全在装饰器的 transaction 内**。
+  - **非 start 帧**（delta/stop/终止符）走 owner 的 `writeBlockFrame(leg, upstreamIndex, frame)`，**不再由装饰器自己 remap 后普通 write**（2026-08-02 补正）。
 - [ ] **Step 4**：跑，绿 + `live-reconcile-collision.it.test.ts` / `live-post-commit-anchor-closeoff.http.test.ts` 回归（结构断言按需改写）。
 - [ ] **Step 5**：mutation——把两帧拆成两次独立写（今天的形状），确认「transaction 内不可插入」的断言转红。
 - [ ] **Step 6: 提交** → `refactor(live-reconcile): allocate, close off and remap live blocks in one wire transaction`
@@ -272,7 +299,7 @@ test("S1 buffered flush allocates and remaps real blocks itself at frontier offs
 
 - [ ] **Step 1**：把 P1 的 `anchor-allocator-bridge.it.test.ts` 从「offset 恒等于固定 1」改写为「offset 等于 frontier 记账值」（**改写非删除**，它现在锁的是 C4）。
 - [ ] **Step 2**：建 **6 格** mutation 矩阵——三条腿 × 两个维度（plan review major：只 mutate remap 不足以证明分配已接线）：
-  - **维度 A（remap）**：把该站点的 `resolveRemappedFrame` 改回硬编码 `anchor.remap(frame, 1)`。
+  - **维度 A（remap）**：把该站点交给 owner 的 `writeBlockFrame` 改回**调用方自算**的硬编码 `anchor.remap(frame, 1)`（S3 是装饰器自算，S1/S2 是 driver 自算）（2026-08-02 补正：mutation 的对照形状随契约一起变了）。
   - **维度 B（allocate）**：**删除**该站点的 `withAllocatedRealBlock` 调用（保留 remap）。这一维专门咬「mapping 从未被创建」的漏接线——原 plan 完全没有它。
   - 每格逐一确认**至少一条测试转红**，并记录是哪条。某格不打红 → 该维度无覆盖，补测试，不得跳过（`plan 红绿预测可能错、执行期真跑验证`）。
 - [ ] **Step 3**：把矩阵结果写进本文件下方表。
