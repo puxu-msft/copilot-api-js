@@ -91,3 +91,35 @@
 - 总体 verdict：**修复 major 后可进入下一阶段，不可定稿**。
 - blocker 数量：**0**。
 - 计数：**major 2，minor 1，nit 0**。
+
+## 复核轮（commit `1cccb846`）
+
+- 范围：仅复核上一轮两个 major；调查中。
+
+
+### 复核 1：`message_stop` 首 terminator oracle
+
+**已解决。** 在 `/tmp/gpt-m1-rereview`（detached `1cccb846033c22e5c924f40eb2c871bfa66efeab`）把 `/tmp/gpt-m1-rereview/src/lib/anthropic/live-reconcile.ts` 的 `isMessageTerminator` 改为只接受 `message_delta`，并先断言 mutation 确已写入。具名测试 `/tmp/gpt-m1-rereview/tests/pipeline/live-reconcile-collision.it.test.ts` 的 `message_stop as the first terminator closes anchor@0 exactly once before forwarding it` 实际缺失 `content_block_stop@0#anchor`，`0 pass / 1 fail`，退出码 1；恢复源码后同一测试退出码 0，且目标文件 `git diff --exit-code` 通过。该 major 关闭。
+
+### 复核 2：anchor-write 能力边界
+
+**未解决，仍为 major。** 原多行变量提取 witness 的确已失效：删除 `/tmp/gpt-m1-rereview/tests/architecture/package-boundaries.unit.test.ts:594` 的 `@ts-expect-error` 后，`bun run typecheck` 实际报 TS2339：`Property 'writeAnchor' does not exist on type 'ClientSink'`，退出码 2；恢复后 typecheck 退出码 0。
+
+但换轴没有结构性闭合，仍可交出合法 witness：在 production `handler-v4.ts` 中写
+
+```ts
+const legacyStop = anchorHooks.stopFrame(0)
+await (sink as import("~/lib/pipeline/delivery/types").OwnerRawSink).writeAnchor?.(legacyStop)
+```
+
+该 witness 符合冻结计划所禁的“owner 外直接写 anchor stop”，却因 `/tmp/gpt-m1-rereview/src/lib/pipeline/delivery/types.ts:12-13` 公开导出 `OwnerRawSink` 而可编译；实测 `bun run typecheck` 退出码 0，两个相关架构测试仍 `2 pass / 0 fail`。此外 `/tmp/gpt-m1-rereview/src/lib/pipeline/client-sink.ts:188` 公开导出的 `makeSseSink` 直接返回 `OwnerRawSink`，生产消费者甚至可以不经 assertion 获得能力。全仓 production import 审计当前只有 `client-sink.ts` 与 `delivery/session.ts` 使用 `OwnerRawSink`，但“当前没人用”不构成能力边界闭合。
+
+接线正控本身有效：删除 `OwnerRawSink` 对 `writeAnchor` 的声明后，typecheck 在 `client-sink.ts`、`delivery/session.ts` 等真实消费者产生 TS2353／TS2339，退出码 2；恢复后 typecheck 退出码 0。问题不是判据没接线，而是 capability type 与 raw factory 仍可被 owner 外 import／调用。
+
+[major] `/home/xp/src/copilot-api-js/.worktrees/anchor-alloc/src/lib/pipeline/delivery/types.ts:11-13`、`/home/xp/src/copilot-api-js/.worktrees/anchor-alloc/src/lib/pipeline/client-sink.ts:188` — `OwnerRawSink` 和返回它的 raw factory 仍是公开、可导入能力，类型断言或直接调用 factory 均可让 owner 外合法获得 `writeAnchor`，因此冻结计划要求的“谁拿得到能力”未闭合 — 将 raw capability 放入只有 delivery owner／低层 adapter 能取得的不可导出词法作用域，或用 module/package 边界机器禁止 owner 外 import `OwnerRawSink` 与调用 `makeSseSink`，并把上述 `as OwnerRawSink` production witness 植入真实扫描入口作为正控；不得回到匹配 `writeAnchor(stopFrame(...))` 拼写。
+
+### 复核 verdict
+
+- 范围：仅复核上一轮两个 major；未扩展新议题。
+- 总体 verdict：**仍有 1 个 major，不可定稿**。
+- 计数：blocker 0，major 1；`message_stop` major 已关闭，能力边界 major 仍成立。
