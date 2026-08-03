@@ -1,6 +1,7 @@
 # Plan: generation-scoped 单调 wire-index allocator（方案 A 全链接线）
 
-- 状态：**计划已定稿；P0 / P1 / P2 / P6 已完成，P3M / P7 / P8 待执行**（P1+P2 实施分支 `feat/anchor-allocator-p1p2`，完成时间 2026-07-28）。设计已定稿并过审，用户已裁决选方案 A。
+- 状态：**P0 / P1 / P2 / P6 已完成；本计划的 P3M（M2～M4）已被 [2026-08-03 的 emission command algebra RFC](../../rfc/2026-08-03-generation-emission-command-algebra/design.md) supersede**——用户 2026-08-03 裁决把 real-block 接线纳入该 RFC 的 cutover 范围。**接手入口是 [HANDOVER.md](HANDOVER.md)，不是本文件。**
+- 仍然有效的部分：冻结契约 C1–C11（RFC §6 逐条对账过）、验收 oracle O-1～O-9（RFC §10.3 逐条对账过）、P7 / P8 的待办与 M5～M8 中的 gap lifecycle／特性开门／多 gap。
 - 日期：2026-07-27
 - 冻结设计（唯一权威）：[docs/spec/2026-07-27-inter-block-keepalive-carrier.md](../../spec/2026-07-27-inter-block-keepalive-carrier.md)（分支 `fix/client-proxy-keepalive-300s` commit `dcaf72a6`；合并 master 前用绝对路径 `/home/xp/src/copilot-api-js/.worktrees/keepalive-300s/docs/spec/2026-07-27-inter-block-keepalive-carrier.md`）
 - 配套审查：同目录 `2026-07-27-inter-block-keepalive-carrier-review-claude.md`（其 blocker/major 已逐条映射进下方承重表）
