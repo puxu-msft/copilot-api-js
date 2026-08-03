@@ -48,7 +48,7 @@ DOC="${DOC:-$REPO/docs/rfc/2026-08-03-generation-emission-command-algebra/design
 # HONEST BOUNDARY -- read this before quoting the exit code as proof.
 # This predicate is natural language, so it is evadable: a future section could
 # discuss the same question using "跨轴过滤", "cube", "tuple" or wording nobody
-# has thought of, and this script would call the set complete. Terms named by
+# has thought of, and this script would stay green. Terms named by
 # review are folded in below, but folding in the ones we thought of does not
 # make the set closed.
 # So what exit 0 means is "no NEW section matches a frozen predicate", i.e. a
@@ -141,7 +141,8 @@ while IFS='|' read -r sec pre post kind pat note; do
   printf '%-6s %-16s %-16s %s\n' "$sec" "$want" "$got" "$verdict"
 done <<< "$EXPECTED"
 
-# The load-bearing check: has a seventh location appeared?
+# The load-bearing check: has a section outside the frozen list started using
+# the frozen vocabulary? (Green here means no such drift, not a closed set.)
 extra="$(hits | awk '{print $1}' | sort -u | while read -r s; do
   case " $known " in *" $s "*) ;; *) echo "$s" ;; esac
 done)"

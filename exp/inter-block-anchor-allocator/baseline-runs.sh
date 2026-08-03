@@ -33,14 +33,20 @@
 #   ALLOW_DIRTY  set to 1 to run against a dirty tree; the dirt is still recorded
 #                and every log is marked DIRTY. Do not use this for a gate.
 #   STOP_ON_FAIL set to 0 to keep going after a red run, default 1
-#   MIN_TESTS    a run whose summary line reports fewer than this many tests is
-#                counted as failed, default 1. Set it to the expected baseline
-#                count for a gate. Reason: a fake `bun` earlier on PATH runs
-#                zero tests, leaves the recorded command text unchanged, and the
-#                batch reports green. This does not defend against a hostile
-#                PATH -- nothing here can -- but it turns "silently green" into
-#                "green with an implausible record", and the resolved binary and
-#                its version go into every log so the record can be challenged.
+#   MIN_TESTS    REQUIRED, no default: a run whose summary line reports fewer
+#                than this many tests is not counted green. Set it to the test
+#                count you expect at this commit.
+#                There is deliberately no default. A default of 1 is a paper
+#                floor -- a degenerate selector reporting "1 tests · 1 pass"
+#                walks straight past it, which is exactly how the fake-`bun`
+#                construction came back after the first fix. Making the caller
+#                name the number forces the floor to be frozen per entry commit
+#                instead of inherited from whatever this script happened to ship
+#                with. Use MIN_TESTS=0 only when smoke-testing this script.
+#                None of this defends against a hostile PATH -- nothing local
+#                can -- but the resolved binary, its version and PATH go into
+#                every log, and every run in a batch must report the SAME count,
+#                so a batch that quietly degrades partway through turns red.
 
 set -uo pipefail
 
@@ -51,7 +57,14 @@ if [ "$#" -gt 0 ]; then CMD=("$@"); else CMD=(bun scripts/parallel-test.ts unit 
 CMD_DISPLAY="$(printf '%q ' "${CMD[@]}")"
 ALLOW_DIRTY="${ALLOW_DIRTY:-0}"
 STOP_ON_FAIL="${STOP_ON_FAIL:-1}"
-MIN_TESTS="${MIN_TESTS:-1}"
+if [ -z "${MIN_TESTS:-}" ]; then
+  printf 'baseline-runs: MIN_TESTS is required -- name the test count you expect at this commit.\n' >&2
+  printf 'There is no default on purpose: MIN_TESTS=1 passes a degenerate run reporting "1 tests".\n' >&2
+  printf 'Smoke-testing this script rather than gating? MIN_TESTS=0.\n' >&2
+  exit 2
+fi
+case "$MIN_TESTS" in ''|*[!0-9]*) printf 'baseline-runs: MIN_TESTS must be a non-negative integer, got %s\n' "$MIN_TESTS" >&2; exit 2 ;; esac
+first_ntests=""
 
 case "$RUNS" in ''|*[!0-9]*) printf 'baseline-runs: RUNS must be a non-negative integer, got %s\n' "$RUNS" >&2; exit 2 ;; esac
 case "$MIN_RUNS" in ''|*[!0-9]*) printf 'baseline-runs: MIN_RUNS must be a non-negative integer, got %s\n' "$MIN_RUNS" >&2; exit 2 ;; esac
@@ -145,11 +158,25 @@ for i in $(seq 1 "$RUNS"); do
   # cheapest thing that distinguishes "the suite ran" from "something printed
   # nothing and exited 0".
   ntests="$(printf '%s' "$tail_line" | grep -aoE '[0-9]+ tests' | head -1 | grep -aoE '[0-9]+')"
+  printf '=== tests seen   : %s\n' "${ntests:-none}" >> "$log"
   if [ "${ntests:-0}" -lt "$MIN_TESTS" ] 2>/dev/null; then
     printf '=== too few tests: reported %s, MIN_TESTS=%s\n' "${ntests:-none}" "$MIN_TESTS" >> "$log"
     if [ "$drift" != 1 ]; then failed=$((failed + 1)); fi
     printf 'baseline-runs: run %02d reported %s tests (MIN_TESTS=%s); not counting it green.\n' \
       "$i" "${ntests:-no}" "$MIN_TESTS" >&2
+    if [ "$STOP_ON_FAIL" = "1" ]; then exit 1; fi
+  fi
+
+  # Every run in a batch must report the same count. A batch that starts honest
+  # and degrades partway -- a selector narrowing, a shard silently dropping --
+  # clears a fixed floor while measuring less and less.
+  if [ -z "$first_ntests" ]; then
+    first_ntests="${ntests:-none}"
+  elif [ "${ntests:-none}" != "$first_ntests" ]; then
+    printf '=== count drift  : run 01 reported %s, this run %s\n' "$first_ntests" "${ntests:-none}" >> "$log"
+    if [ "$drift" != 1 ]; then failed=$((failed + 1)); fi
+    printf 'baseline-runs: run %02d reported %s tests but run 01 reported %s; the batch is not measuring one thing.\n' \
+      "$i" "${ntests:-none}" "$first_ntests" >&2
     if [ "$STOP_ON_FAIL" = "1" ]; then exit 1; fi
   fi
   printf 'run %02d  rc=%d  %ds  drift=%s  %s\n' \

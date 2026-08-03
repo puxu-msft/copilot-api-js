@@ -14,7 +14,9 @@ FORCE_COLOR=0 bun scripts/parallel-test.ts unit it http
 > **将来那次跑用 `exp/inter-block-anchor-allocator/baseline-runs.sh`，别再照散文配方手搓**：`OUT=docs/tmp/<date>-entry-runs RUNS=15 exp/inter-block-anchor-allocator/baseline-runs.sh`。单次约 38s（实测于 `21103e86`）。
 > 散文配方的第一版有三个缺陷，全是判据证伪评审当场指出的，脚本逐个堵死并做了正样本对照：**① provenance 与运行不在同一次执行里**（脚本把 `date -Is` / `HEAD` / `status --porcelain` 写进与该次运行同一个文件、同一个 shell）；**② 不查脏树**（脏树直接 `exit 3` 拒绝，除非显式 `ALLOW_DIRTY=1`，那时每份日志被标 `DIRTY` 且不满足门禁）；**③ `cmd | tee log` 报的是 tee 的退出码，红跑看起来是绿的**（脚本不用管道，追加重定向后单独记录 `=== exit code`）。
 > 正样本对照（**九条，均实测**）：脏树→rc=3／注入 `exit 7`→脚本 rc=1 且日志记 `exit code : 7`／`STOP_ON_FAIL=0` 跑满 3 次仍报非零／绿路径 rc=0／向已有批次目录写入→rc=2／带空格的引号参数不被打碎／**`RUNS=0` 与低于 `MIN_RUNS`→rc=2**（此前会打印 `0/0 green` 并 exit 0——**在空人口上通过的判据**）／**运行中改脏 tracked file→`drift=YES:worktree`、rc=1**／**运行中 commit→`drift=YES:HEAD`、rc=1**。
-> **第十条**：`PATH` 上放一个假 `bun`（`exit 0`）时，命令文字不变、零测试、批次照样报绿。现在每份日志记 `=== resolves to`（`command -v` 解析到的真实二进制）、`=== version`、`=== PATH`，并要求汇总行给出 ≥ `MIN_TESTS` 个用例；实测假 `bun` → `too few tests: reported none` + rc=1，`MIN_TESTS=6845` 时连「3 tests」的假汇总也红，真汇总行仍绿。**这挡不住敌意 PATH**——本地没有东西能挡——它把「静默变绿」变成「记录不可信的绿」。
+> **第十条**：`PATH` 上放一个假 `bun`（`exit 0`）时，命令文字不变、零测试、批次照样报绿。现在每份日志记 `=== resolves to`（`command -v` 解析到的真实二进制）、`=== version`、`=== PATH`、`=== tests seen`，并要求汇总行给出 ≥ `MIN_TESTS` 个用例。
+> **第十一～十三条**：上面那条修完，同一构造**变形后又成立了**——假 `bun` 改成报「1 tests · 1 pass」就能走过当时默认的 `MIN_TESTS=1`。所以：**`MIN_TESTS` 取消默认值、未设即 `exit 2`**（正控 11），**冻结下限 6845 时退化 selector 转红**（正控 12），**批次内用例数必须一致**——中途从 100 掉到 42 报 `count drift` 并转红（正控 13），配假红对照（每次都报 100、下限 10 → rc=0）。
+> **诚实边界**：这挡不住敌意 `PATH`——本地没有东西能挡——它把「静默变绿」变成「记录不可信的绿」。**「默认 1」这个纸面下限是我自己加的**，它让第一次修复看起来闭合而实际没有；教训是**下限必须由调用方按当次 commit 冻结，不能由脚本携带一个能被平凡满足的默认**。
 > 上一条是判据证伪评审第二轮才发现的：只比 `status` 时，**运行中落一个 commit 会让前后都是空**，HEAD 却已移动，批次照样报绿。现在每次运行前后各取一次 `HEAD` 与 `status`，任一变动即判该次无效。它在一次性临时仓库里做了正控（`drift=YES:HEAD`，且运行结束时工作树确实是干净的），**没有在共享主树上做 mutation**。
 > **诚实边界**：脚本**证不了**这些运行真的发生过——本地没有任何东西能对第三方证明这件事。它只消除上面三种失效，并让「手写伪造」的成本变高（每次的墙钟、shard 耗时、完整 stdout）。摘要表只作索引，**不得替代原始文件**。
 

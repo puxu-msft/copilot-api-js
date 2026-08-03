@@ -102,7 +102,15 @@
 - **事实**：`History V3 store performance > prepare and commit do not depend on prior session history length`，21 次连跑未再现，**但按其约 1/15 的原始复现率，这只有约 0.24 的概率意义**。详见 `docs/tmp/2026-08-03-baseline-flake-status.md`。
 - **验收拆两段，缺一不可**（交接评审指出原表述可在「成功复现但完全没修」时判通过）：
   - **诊断 AC**：定出根因，并给出**确定性 reproducer**（在受控条件下必现）。
-  - **修复 AC**：① 逆 mutation（把修复改回原形态）在该 reproducer 下**转红**；② 修复后在同等负载下**转绿**；③ false-red 对照绿（正确实现不被误伤）；④ 在 entry commit 上连跑 ≥15 次全绿并**保存每次的原始输出文件**——用 `OUT=docs/tmp/<date>-entry-runs RUNS=15 exp/inter-block-anchor-allocator/baseline-runs.sh`，**别照散文配方手搓**（它拒绝脏树、拒绝空批次、把 provenance 与运行绑在同一次执行、保证退出码不被管道吞掉，并在**每次运行前后各取一次 `HEAD` 与 `status`**——两者任一变动即判该次无效；九条正样本对照见 run-log 末尾）。**本轮那 21 次不满足④**，它只有摘要——别拿它顶。
+  - **修复 AC**：① 逆 mutation（把修复改回原形态）在该 reproducer 下**转红**；② 修复后在同等负载下**转绿**；③ false-red 对照绿（正确实现不被误伤）；④ 在 entry commit 上连跑 ≥15 次全绿并**保存每次的原始输出文件**，命令是：
+
+```bash
+OUT=docs/tmp/<date>-entry-runs RUNS=15 MIN_TESTS=<在该 commit 上实测到的用例数> \
+  exp/inter-block-anchor-allocator/baseline-runs.sh
+```
+
+  **`MIN_TESTS` 必须显式给，脚本没有默认值**——这是有意的：默认 1 是纸面下限，一个退化的 selector 报「1 tests · 1 pass」就能走过去，而**假 `bun` 的构造正是这样在第一次修复后卷土重来的**。先在该 commit 上跑一次拿到真实用例数，再把它冻进命令里。
+  **别照散文配方手搓**。脚本拒绝脏树、拒绝空批次、拒绝未设 `MIN_TESTS`；把 provenance（含 `command -v` 解析到的二进制、版本、`PATH`）与运行绑在同一次执行；保证退出码不被管道吞掉；**每次运行前后各取一次 `HEAD` 与 `status`**，任一变动即判该次无效；**并要求批次内每次报告的用例数相同**（批次中途退化会清得过固定下限却越测越少）。十三条正样本对照见 run-log 末尾。**本轮那 21 次不满足④**，它只有摘要——别拿它顶。
 - **证伪**：只做到「复现成功」就标验收完成——复现恰恰证明缺陷仍在；或因为「最近没见到」宣布已修；或只有汇总数字而无逐次记录。
 - **注意**：RFC §7.1 要求在**当时的 entry commit** 上连跑 ≥15 次，旧读数不顶替。
 
