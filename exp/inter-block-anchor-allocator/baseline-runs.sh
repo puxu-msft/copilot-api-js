@@ -33,6 +33,14 @@
 #   ALLOW_DIRTY  set to 1 to run against a dirty tree; the dirt is still recorded
 #                and every log is marked DIRTY. Do not use this for a gate.
 #   STOP_ON_FAIL set to 0 to keep going after a red run, default 1
+#   MIN_TESTS    a run whose summary line reports fewer than this many tests is
+#                counted as failed, default 1. Set it to the expected baseline
+#                count for a gate. Reason: a fake `bun` earlier on PATH runs
+#                zero tests, leaves the recorded command text unchanged, and the
+#                batch reports green. This does not defend against a hostile
+#                PATH -- nothing here can -- but it turns "silently green" into
+#                "green with an implausible record", and the resolved binary and
+#                its version go into every log so the record can be challenged.
 
 set -uo pipefail
 
@@ -43,6 +51,7 @@ if [ "$#" -gt 0 ]; then CMD=("$@"); else CMD=(bun scripts/parallel-test.ts unit 
 CMD_DISPLAY="$(printf '%q ' "${CMD[@]}")"
 ALLOW_DIRTY="${ALLOW_DIRTY:-0}"
 STOP_ON_FAIL="${STOP_ON_FAIL:-1}"
+MIN_TESTS="${MIN_TESTS:-1}"
 
 case "$RUNS" in ''|*[!0-9]*) printf 'baseline-runs: RUNS must be a non-negative integer, got %s\n' "$RUNS" >&2; exit 2 ;; esac
 case "$MIN_RUNS" in ''|*[!0-9]*) printf 'baseline-runs: MIN_RUNS must be a non-negative integer, got %s\n' "$MIN_RUNS" >&2; exit 2 ;; esac
@@ -89,6 +98,9 @@ for i in $(seq 1 "$RUNS"); do
     printf '=== tree         : %s\n' "$([ -n "$(git -C "$REPO" status --porcelain)" ] && echo DIRTY || echo clean)"
     git -C "$REPO" status --porcelain | sed 's/^/=== dirt         : /'
     printf '=== command      : %s\n' "$CMD_DISPLAY"
+    printf '=== resolves to  : %s\n' "$(command -v "${CMD[0]}" 2>/dev/null || echo '<not on PATH>')"
+    printf '=== version      : %s\n' "$("${CMD[0]}" --version 2>&1 | head -1)"
+    printf '=== PATH         : %s\n' "$PATH"
     printf '=== stdout+stderr follows\n\n'
   } > "$log"
 
@@ -128,6 +140,18 @@ for i in $(seq 1 "$RUNS"); do
   } >> "$log"
 
   tail_line="$(grep -a 'parallel-test' "$log" | tail -1)"
+
+  # A run that executed no tests is not a green run. Reported test count is the
+  # cheapest thing that distinguishes "the suite ran" from "something printed
+  # nothing and exited 0".
+  ntests="$(printf '%s' "$tail_line" | grep -aoE '[0-9]+ tests' | head -1 | grep -aoE '[0-9]+')"
+  if [ "${ntests:-0}" -lt "$MIN_TESTS" ] 2>/dev/null; then
+    printf '=== too few tests: reported %s, MIN_TESTS=%s\n' "${ntests:-none}" "$MIN_TESTS" >> "$log"
+    if [ "$drift" != 1 ]; then failed=$((failed + 1)); fi
+    printf 'baseline-runs: run %02d reported %s tests (MIN_TESTS=%s); not counting it green.\n' \
+      "$i" "${ntests:-no}" "$MIN_TESTS" >&2
+    if [ "$STOP_ON_FAIL" = "1" ]; then exit 1; fi
+  fi
   printf 'run %02d  rc=%d  %ds  drift=%s  %s\n' \
     "$i" "$rc" "$((end - start))" "$([ "$drift" = 1 ] && echo "YES:$drift_why" || echo no)" "${tail_line:-<no summary line>}"
 

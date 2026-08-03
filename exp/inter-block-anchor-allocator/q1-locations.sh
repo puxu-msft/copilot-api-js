@@ -12,13 +12,19 @@
 #
 # So this checks two different things, and the second is the load-bearing one:
 #   1. each known location still holds the state it is supposed to hold;
-#   2. NO OTHER section matches the Q1 content predicate -- i.e. the list is
-#      still complete. Adding a location anywhere must turn this red.
+#   2. no section OUTSIDE the frozen list matches the frozen predicate. This is
+#      a drift tripwire, NOT a completeness proof: it turns red when a new
+#      section starts using the vocabulary we froze, and stays green when one
+#      participates in Q1 through vocabulary we did not anticipate.
 #
-# Check 2 earned its keep on first run: it found 4.12, whose escalation clause
-# ("if review shows the existing registry cannot express the required joint
-# query, go back to the main session") is a Q1 member that five hand-written
-# lists in a row had missed.
+# Check 2 has earned its keep twice, and each time by finding a member no
+# hand-written list had: 4.12, whose escalation clause ("if review shows the
+# existing registry cannot express the required joint query, go back to the
+# main session") went unnoticed by five successive lists. And it has also been
+# beaten once: 4.8 constrains which options exist at all (":392 forbids dynamic
+# compound names for the `command` dimension") while sharing no vocabulary with
+# the rest -- review found it by asking a structural question instead. That is
+# the standing evidence that this scan does not close the set.
 #
 # After Q1 is ruled, update EXPECTED below in the same commit that updates the
 # RFC. A ruling that lands in some sections but not others shows up here as a
@@ -52,23 +58,40 @@ DOC="${DOC:-$REPO/docs/rfc/2026-08-03-generation-emission-command-algebra/design
 # telemetry discussion still owes a human read.
 PREDICATE='Q1|联合查询|joint query|compound dimension|multidimensional|多轴|跨轴|cube|tuple'
 
-# Two kinds of member, do not conflate them:
-#   statement  -- says something about Q1 today; expected "declares-open"
-#   destination -- silent today by design, must be FILLED by the ruling;
-#                  expected "absent" now, and the ruling must flip it
+# Members of the Q1 set, one per line:
+#   section | state-before-ruling | state-after-ruling | kind | match-pattern | note
 #
-# section | expected-now | kind | responsibility / what the ruling must do to it
+# "match-pattern" is how THIS member is recognised; "-" means use PREDICATE.
+# Section 4.8 needs its own: its participation is a naming constraint on the
+# compound dimension, and it shares no vocabulary with the rest. Widening
+# PREDICATE to catch it (bare "compound") matches 18 sections and turns the
+# drift scan into noise, so precision lives per member instead.
+#
+# Three kinds, do not conflate:
+#   statement  -- says something about Q1 today
+#   destination -- empty by design today; the ruling must FILL it. Reading that
+#                  emptiness as "already in sync" is the easy mistake.
+#   constraint -- constrains which options are even available; the ruling has to
+#                 say how it resolves the tension, not quietly pick a reading.
+#
+# PHASE=pre (default) checks the before column; PHASE=post checks the after
+# column. Both columns live on the same line so "updated the RFC, forgot the
+# script" cannot happen by omission -- flipping PHASE is the whole update.
 EXPECTED='
-4.7|absent|destination|per-command telemetry 接入形状；裁决后必须写死所选方案的 key 形状
-4.9|declares-open|statement|compound phase／partial measures；逐字写着选项 A 与 B，却从不写 "Q1"
-4.12|declares-open|statement|遥测不是闭合oracle；含升级条款「既有registry无法表达必需联合查询→回主会话裁决」
-7.8|declares-open|statement|Commit 5 前置停门；裁决后改为已裁 + 具体迁移任务
-9.1|declares-open|statement|问题陈述 + 选项 A/B/C + 推荐
-9.2|absent|destination|已裁决表，裁决落盘的正主；裁决后必须含 Q1
-9.4|declares-open|statement|停点表；裁决后撤销该停点
+4.7|absent|ruled|destination|-|per-command telemetry 接入形状；裁决后必须写死所选方案的 key 形状
+4.8|mentions|ruled|constraint|动态compound名称|:392 禁止 `command` 维使用动态 compound 名称，与选项 A 的 generation_command_outcome 正面相关；裁决必须写明如何化解
+4.9|declares-open|ruled|statement|-|compound phase／partial measures；逐字写着选项 A 与 B，却从不写 "Q1"
+4.12|declares-open|ruled|statement|-|遥测不是闭合oracle；含升级条款「既有registry无法表达必需联合查询→回主会话裁决」
+7.8|declares-open|ruled|statement|-|Commit 5 前置停门；裁决后改为已裁 + 具体迁移任务
+9.1|declares-open|ruled|statement|-|问题陈述 + 选项 A/B/C + 推荐
+9.2|absent|ruled|destination|-|已裁决表，裁决落盘的正主；裁决后必须含 Q1
+9.4|declares-open|ruled|statement|-|停点表；裁决后撤销该停点
 '
 
-# Emit "<section-number>\t<line-no>\t<line>" for every predicate hit.
+PHASE="${PHASE:-pre}"
+case "$PHASE" in pre|post) ;; *) printf 'q1-locations: PHASE must be pre or post\n' >&2; exit 2 ;; esac
+
+# Emit "<section-number>\t<line-no>\t<line>" for every PREDICATE hit.
 hits() {
   awk -v pred="$PREDICATE" '
     BEGIN { cur = "(preamble)" }
@@ -81,27 +104,39 @@ hits() {
   ' "$DOC"
 }
 
-state_of() {
-  local sec="$1" body
-  body="$(awk -v want="$sec" '
+section_body() {
+  awk -v want="$1" '
     /^#{2,4} /{ if (match($0, /[0-9]+\.[0-9]+/)) { cur = substr($0, RSTART, RLENGTH); insec = (cur == want) } }
     insec { print }
-  ' "$DOC")"
-  if [ -z "$(printf '%s' "$body" | grep -aE "$PREDICATE")" ]; then printf 'absent'; return; fi
-  # Keep this set wide. A narrow one misfiled 9.1 -- the open-questions section
-  # itself -- as merely mentioning the cube, because it says "需人裁" rather
-  # than "open question".
-  if printf '%s' "$body" | grep -aqE 'open question|保持open|仍open|必须已裁|需人裁|不裁决会怎样|回主会话裁决|待主会话'; then printf 'declares-open'; return; fi
-  printf 'silent-on-cube'
+  ' "$DOC"
+}
+
+# Classify from the MATCHING LINES only, never the whole section. Judging the
+# whole body let 9.2's boilerplate ("以下不是open questions：") decide its state:
+# once a ruling lands there, that unrelated sentence would report the ruling
+# section as "still open" -- the exact opposite of the truth.
+state_of() {
+  local sec="$1" pat="$2" lines
+  [ "$pat" = "-" ] && pat="$PREDICATE"
+  lines="$(section_body "$sec" | grep -aE "$pat")"
+  if [ -z "$lines" ]; then printf 'absent'; return; fi
+  # Order matters: 7.8 says "Q1必须已裁", which is a precondition, not a ruling.
+  if printf '%s' "$lines" | grep -aqE 'open question|保持open|仍open|必须已裁|需人裁|不裁决会怎样|回主会话裁决|待主会话'; then
+    printf 'declares-open'; return
+  fi
+  if printf '%s' "$lines" | grep -aqE '已裁决|已裁|裁决为|裁定'; then printf 'ruled'; return; fi
+  printf 'mentions'
 }
 
 known=""
 rc=0
 printf '%-6s %-16s %-16s %s\n' SECTION EXPECTED ACTUAL VERDICT
-while IFS='|' read -r sec want kind note; do
+printf 'PHASE=%s\n' "$PHASE"
+while IFS='|' read -r sec pre post kind pat note; do
   [ -z "$sec" ] && continue
   known="$known $sec"
-  got="$(state_of "$sec")"
+  [ "$PHASE" = "post" ] && want="$post" || want="$pre"
+  got="$(state_of "$sec" "$pat")"
   if [ "$got" = "$want" ]; then verdict="ok ($kind)"; else verdict="DRIFT ($kind) — $note"; rc=1; fi
   printf '%-6s %-16s %-16s %s\n' "$sec" "$want" "$got" "$verdict"
 done <<< "$EXPECTED"
