@@ -1,12 +1,14 @@
 # HANDOVER —— inter-block anchor allocator，M1 已实施待复评收口
 
-**状态**：进行中 · **M1 实现已落、三条走查 Major 已修，但验收判据这一层有系统性问题，等第三方裁决** —— **不得据本文件宣称 M1 已定稿或可合并**
-**核验基线**：分支 `feat/inter-block-anchor-allocator` @ `6fb9ed67`（2026-08-03）；主线 master @ `1b8712b4`
+**状态**：**已交接（会话 2026-08-03 收尾，待接手）** · M1 实现已落分支但**未合并**；形状之争已裁决完毕，下一步是把已定稿的边界设计变成 RFC + 分相位计划再实施
+**核验基线**：分支 `feat/inter-block-anchor-allocator` @ `6fb9ed67`（M1 实现）；主线 master 含全部 plan / 设计 / 评审 / 裁决，`src/` **零改动**
 **worktree**：`/home/xp/src/copilot-api-js/.worktrees/anchor-alloc`
-**未提交 / 未追踪**：无（worktree clean）
-**已跑门禁**：`bun run typecheck` 绿；`FORCE_COLOR=0 bun scripts/parallel-test.ts unit it http` = **6848 pass / 0 fail**（基线 6824 → M1 首版 6828 → 评审修复后 6848）
+**未提交 / 未追踪**：无
+**已跑门禁**：`bun run typecheck` 绿；`FORCE_COLOR=0 bun scripts/parallel-test.ts unit it http` = **6848 pass / 0 fail**
 
-> ⚠️ **门禁全绿不代表 M1 可定稿**——下面「M1 未闭合的判据问题」那节列的三处，全部是「实现落了但锁不住它」的形态，`test:fast` 与 `typecheck` 对它们结构性失明。
+> ⚠️ **门禁全绿不代表 M1 可定稿**——「M1 未闭合的判据问题」那节的三处全是「实现落了但锁不住它」，`test:fast` 与 `typecheck` 对它们结构性失明。**M1 不合并是有意的**：合进去等于把一个宣称覆盖面大于实际的守卫写进主线。
+
+> **接手第一步不是写代码**：形状已定（全量 command algebra），但它还只是一份设计文档。按本项目纪律，这个体量（生产 11 写点 / 12–18 文件；测试 35–50 文件 / 80–120 点位 / 10–20 个 oracle 需重设计）要走 **RFC-first + commit invariants**（skill `large-refactor`），先出 RFC 与分相位计划、过评审、合主线，再动手。
 
 > 隔离 worktree 里 `bun run test` 会因 rustup 前置失败，**用上面那条 `parallel-test.ts` 命令**。核验于 2026-08-03 @ `6fb9ed67`；接手第一件事是复验而非采信。
 
