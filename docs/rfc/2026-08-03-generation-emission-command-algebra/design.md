@@ -546,8 +546,12 @@ C1～C11矩阵没有“语义变更”。已知需要更新的C2、C5、C6、C7�
 **闭包的推进规则是双向不动点**，两个方向缺一不可：
 
 - **向上（消费者方向）**：任一production声明只要其**参数类型、返回类型、属性类型或type argument**中出现已在闭包内的符号，该声明即进入闭包；其调用点与引用点一并进入。
-- **向下（成员方向）**：闭包内任一类型的**成员类型**（属性类型、方法的参数与返回类型），只要该成员**能改变authorization state或产生wire effect**，即加入种子集。加这个限定是为了不把`number`／`string`／`symbol`等无能力类型灌进来；判据是该成员是否出现在§4.2的Authorization层或能触达emission。
+- **向下（成员方向）**：闭包内任一类型的**成员类型**（属性类型、方法的参数与返回类型）无条件加入种子集，**传播在结构上停止，不靠语义判断**：只对 `src/**` 内声明的**具名非原始类型**继续传播，遇到 TypeScript 原始与内置类型（`number`／`string`／`boolean`／`symbol`／`bigint`／`null`／`undefined`／`void`／`never`、字面量类型）、`node:` 内置类型与第三方 `node_modules` 类型即停止。
 - 两个方向**交替迭代至不动点**。
+
+> **不要在向下方向加「该成员是否有能力」这类过滤器。** 本文先前写过一版「只有能改变 authorization state 或产生 wire effect 的成员才入种子」，评审判定它是**把手写名单换成了手写判断**：该谓词由实施者自评、无外部 oracle、判错时**静默**（漏判 → 该成员不入种子 → 其工厂与调用点永不进闭包 → fail-loud 不触发），与「根画小了」是同一失效路径，只是判断点搬了家。它还自我循环——要判断某成员能否触达 emission，得先知道 emission 面，而 emission 面正是这个闭包要产出的东西。
+> **最有力的反证是它连本节的 sanity 清单都过不了**：`WireBlockMapping`（`types.ts:477`，成员只有 `wireIndex`／`upstreamIndex`／`leg` 与一个看似纯变换的 `remap(frame)`）与 `LegToken`（`:474`，branded string）都可被判成「无能力」而排除，**而它们正是 C10 与 C3／C11 的授权事实本身**。
+> 两个方向的错误代价不对称：**过度纳入只是多几条可见的处置项**（落进 unclassified，需要具名 disposition，而 disposition 是被评审的记录）；**纳入不足是隐形的**。因此「我认为它无能力」只能作为**入种子之后的 disposition**，不能作为入种子之前的过滤器。
 
 **只做向上会漏掉「作为种子成员而存在的能力」**，这是实测出来的：`GenerationWireIndexAllocator`（`pipeline/types.ts:504`，成员为`allocateAnchor`／`allocateRealBlock`／`reserveAnchor`／`reserveRealBlock`／`beginLeg`，§4.2明列在Authorization层）只是`GenerationWireState:497`的一个属性，本身从不是种子；它的工厂`keepalive-anchor.ts:52 createGenerationWireIndexAllocator()`**零参数、返回类型不是种子**，于是它与调用点`handler-v4.ts:1160`（handler直接持有裸allocator）都进不了闭包、落不进A／B／C／D，fail-loud永不触发。对照同文件`:44`的`createGenerationWireState(allocator: GenerationWireIndexAllocator): GenerationWireState`——它因**返回种子**而会进闭包；两者只差一层，正好标出单向规则的边界。同形态还有`WireEnvelopeFactory`（`types.ts:313`）、`WireBlockMapping`（`:477`）、`LegToken`（`:474`）与`DeliveryHeartbeat`（`delivery/types.ts:55`的`injectScaffold`）。**这些名字只作sanity check，冻结的种子集以双向闭包的输出为准——手写名单正是本条要取代的东西。**
 
@@ -568,6 +572,8 @@ C1～C11矩阵没有“语义变更”。已知需要更新的C2、C5、C6、C7�
 - **B集，旧`DownstreamDeliverySession` public consumers：** public面9项为`identity`、`snapshot`、`clientSink`、`allocationPort`、`writeScaffold`、`noteWinner`、`noteUpstreamRoundEnded`、`noteUpstreamRoundStarted`、`terminate`。当前production消费者中`noteWinner`恰有1点（`src/lib/pipeline/driver.ts:888`）；round start／end与`writeScaffold`为零。Commit 4将winner candidate／dispatch provenance迁入新owner的窄observation command，例如`selectWinner(source)`；若保留窄observer，它只能接收不可变observation facts，不返回session、port、raw handle或emission methods，因而不构成第二authority。Commit 4后，旧session public consumer的B集population必须为零。
 - **C集，旧session construction／resolution capability：** 定义包含exported `getDownstreamDeliverySession(sink)`（`session.ts:90`）、`getDeliverySessionForAllocationPort(port)`（`:95`）与`createDownstreamDeliverySession(options)`（`:100`），以及任何等价WeakMap lookup／factory export。当前production引用人口按checker冻结：driver `:883,888,1012,1097`及本地helper`:940-944`，Messages handler`:1112,1422,1772`，live reconcile`:139`，keepalive anchor`:280`，client-sink constructors`:497,699`。Commit 4后，composition root之外不得存在从sink／wrapper／allocation port反查session或authority的路径；`createDownstreamDeliverySession`只由composition root内部调用。若保留construction helper，它必须词法私有或只接private emitter＋profile并只返回command port／窄observer，不能返回完整session、sink lookup key或raw authority。C集production resolution population必须为零，construction population只能等于冻结的composition-root allowlist。
 - **D集，capability经函数签名传递：** 闭包推进规则命中的全部声明——参数类型、返回类型、属性类型或type argument中出现种子符号的production函数、工厂与装饰器，以及它们的调用点。当前已知成员至少包括：`live-reconcile.ts:138`的`makeReconcilingSink(inner: ClientSink, …): ClientSink`、`keepalive-anchor.ts`的两个injector工厂（`makeSyntheticAnchorInjector`／`makeSyntheticEnvelopeInjector`，其options含`getSink: () => ClientSink | undefined`）、`client-sink.ts`各raw factory的返回类型、以及driver／handler中形参或返回值带`ClientSink`／`AnchorState`／`WireBlockAllocationPort`的helper。**这一集不能靠列举穷尽，必须由闭包产出**——本条只给已知成员作sanity check，冻结的集合以Commit 0的闭包输出为准。
+
+- **C集与D集的tie-break（两者在每个factory上必然相交，必须有归属规则）：** C集的判据是「取得旧session的能力」，D集是「签名里出现闭包符号」——**任何返回session／port／sink的factory同时满足两者**。归属规则：**construction／resolution语义优先**——凡其存在理由是「产出或找回一个旧session／allocation port」的声明归**C集**（例如`createDownstreamDeliverySession`、`getDownstreamDeliverySession`、`getDeliverySessionForAllocationPort`、raw factory）；其余仅因签名触碰闭包符号而入闭包的声明归**D集**（例如`makeReconcilingSink`、injector工厂、带capability形参的helper）。一个声明只计入一集，另一集在审计表里以「见C集」交叉引用而不重复计数。归属有疑义时**入C集**——C集的归零要求更严（resolution必须为零、construction只等于composition-root allowlist），按错误代价不对称的同一理由取严。
 
   Commit 4后的目标状态：这些声明要么改为只接受／只返回profile-shaped command port与窄observer，要么退化为纯transform（不接收也不返回任何capability）。**判据不是“签名里不再出现`ClientSink`这个名字”**——那会被局部同构interface再cast绕过（本项目已实测过这种绕法），而是**运行期没有任何生产路径能从这些声明拿到emission能力**：由§2.4的composition-root witness与physical recorder裁决，签名扫描只作presence ratchet。
 
@@ -594,7 +600,7 @@ A／B／C／D四集均按symbol identity冻结，不要求历史文档字面零�
 
 **准备commit（Commit 1～3）共同的越界判据，两条缺一不可：**
 1. `git diff`中无production call-site切换。
-2. **存在性分派的解析结果不变。** 第1条是必要非充分——`session.ts:581-602`那类`sink.writeAnchor ?? sink.write`的分派**只要方法是否存在变了就会改行为，而call-site一行不动**。所以准备commit还必须证明：没有新增或删除任何可选方法、没有改变任何optional chaining／`??`／`in`判断的命中结果。判据是对种子capability类型及其实现对象的**属性存在性快照**逐commit比对，快照由checker产出而非人工列举。
+2. **存在性分派的解析结果不变。** 第1条是必要非充分——`session.ts:581-602`那类`sink.writeAnchor ?? sink.write`的分派**只要方法是否存在变了就会改行为，而call-site一行不动**。所以准备commit还必须证明：没有新增或删除任何可选方法、没有改变任何optional chaining／`??`／`in`判断的命中结果。判据是**属性存在性快照**逐commit比对，快照由checker产出而非人工列举。**快照口径必须覆盖闭包内全部类型、它们的实现对象，以及构造它们的options字面量**——不能只取种子：`client-sink.ts:503-512`的`injectAnchor → injectScaffold → session.ts:209`是一条**两跳**存在性链，链根在options字面量上，只快照种子类型会漏掉它。
 
 ### 7.5 Commit 2 — Owner state、serializer与coordination primitives准备
 
@@ -624,7 +630,7 @@ A／B／C／D四集均按symbol identity冻结，不要求历史文档字面零�
   9. 收口C集construction／resolution：删除production `getDownstreamDeliverySession(sink)`及等价lookup引用；driver、handler、decorator、injector改由composition root显式供给command port／窄observer。`createDownstreamDeliverySession`只留composition-root私有construction allowlist，不导出可从sink回收session的能力。
   10. 收口D集签名传递：闭包命中的每个声明（`makeReconcilingSink`、两个injector工厂、各raw factory返回类型、driver／handler中带capability类型的helper等）改为只接／只返回command port与窄observer，或退化为纯transform。判据是**运行期拿不到emission能力**，不是签名里不再出现某个类型名——后者可被局部同构interface再cast绕过，本项目已实测过。
   11. 同步迁移raw／heartbeat 11文件、common／indexed／terminal／finalize／WS、winner observation与session-resolution tests；任何guard删除或放宽有独立裁决记录。
-  11. 独立O-1／O-2／真SDK先绿，再在本commit同步更新Q5批准范围内的anchor／heartbeat goldens；O-6 fixture永不重捕。
+  12. 独立O-1／O-2／真SDK先绿，再在本commit同步更新Q5批准范围内的anchor／heartbeat goldens；O-6 fixture永不重捕。
 - **终态不变量：** A集旧wire／coordination calls、B集旧session consumers、C集sink→session resolution的production population均为零；C集construction精确等于composition-root私有allowlist。每个physical send有registered command family与command id；一个serializer／timer／sampling／emit；winner／round provenance完整且不授予第二authority；C1～C11、Q5、terminal与WS ownership同时成立。
 - **验证：** R-1～R-8、O-1／O-2、3 kinds×4 scenarios×5 sites mapping矩阵、shared-predicate mutation、production registration collision、terminal跳过anchor balancing mutation、winner observation正负样本、A／B／C三集AST／checker审计、恢复sink lookup的authority-leak mutation、unpark N×interval＋parked ticks、Q5 goldens、O-6、确定性全套。
 - **为何现在可满足：** raw authority与所有producer在同一semantic commit发布，不存在旧路径已禁而新command尚不可用的中间状态。准备commits已经让代码与tests可预审，但没有提前改变行为。
@@ -765,7 +771,7 @@ Q1保持open并在Commit 5前停；Q2在Commit 8前停且默认不改ADR；Q3／
 
 ### 10.4 完成判定
 
-本RFC cutover完成要求R-1～R-13中标为“本RFC必须／gate”的项目全部具备positive与negative controls；辅助类型／遥测门失败同样阻止交付，但其通过不升级behavior等级。O-3／O-5／O-7／O-9以及O-4完整验收明确留给后续M2～M8／P7／P8，不得因“不属于本RFC”从roadmap删除。执行者必须在验收记录中逐项写`PASS / FAIL / NOT-YET-IN-SCOPE`和证据命令；不能用一条“全套件绿”折叠全表。
+本RFC cutover完成要求R-1～R-14中标为“本RFC必须／gate”的项目全部具备positive与negative controls；**R-14与其余必过项同级**——它是非Anthropic candidate provenance的唯一守卫，漏掉它等于让§3.3已认定“缺了会全绿交付”的回归照常交付；辅助类型／遥测门失败同样阻止交付，但其通过不升级behavior等级。O-3／O-5／O-7／O-9以及O-4完整验收明确留给后续M2～M8／P7／P8，不得因“不属于本RFC”从roadmap删除。执行者必须在验收记录中逐项写`PASS / FAIL / NOT-YET-IN-SCOPE`和证据命令；不能用一条“全套件绿”折叠全表。
 
 ## 11. 诚实边界：本设计证不了什么
 
