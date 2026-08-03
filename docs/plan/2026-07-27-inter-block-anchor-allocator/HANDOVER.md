@@ -42,7 +42,7 @@
 
 | 事实 | 证据等级 | 出处 / 复算方式（tree = feature `2c339784`，除非另注） |
 |---|---|---|
-| P0 / P1 / P2 / P6 均已 landed master | 实测（上轮） | 本轮未变 |
+| P0 / P1 / P2 / P6 均已 landed master | **实测（本轮重验）** | `git merge-base --is-ancestor <sha> master`：P0=`1bf9bf89` YES、P6=`d8f7546d` YES；P1 三原子提交与 P2 三 task 的状态注解在各自 plan 文档头部。**`docs/DESIGN.md:75` 此前只写「P1+P2 已完成」、漏了 P0／P6，已于 `88171b3b` 一并修正** |
 | M1 代码在分支上**未合并**，由本次 cutover 一并重塑（用户裁决） | 实测 | `git log master..feat/inter-block-anchor-allocator` |
 | `ClientSink` 声明在 `src/lib/pipeline/types.ts:747`，**不在 `delivery/` 目录内**；`delivery/types.ts` 对它只是 `import type`、非 re-export | 实测 | 这是 RFC 闭包根必须是传递闭包的成因（§7.2） |
 | `beginLeg` 只在 `allocationPort?.wireState` 为真时调用（**只有 Anthropic 有**）；`noteWinner` **不受该门控**（但仍受 optional chaining 约束——反查不到 session 时不调用） | 实测 | `driver.ts:882-888`。这是 R-14 存在的唯一理由。**「无条件」不是绝对必调用**，别按字面理解 |
