@@ -1,4 +1,9 @@
-# Kick-off 提示词
+# Kick-off 提示词（**已陈旧，别照它起会话**）
+
+> 🔴 **superseded-by [KICKOFF.md](KICKOFF.md)（注意是全大写那份）。**
+> 本目录下同时存在 `kickoff.md`（本文件）与 `KICKOFF.md`，`ls` 时都会看到；**本文件是旧的**。
+> 它写于 P3M 被 [2026-08-03 emission command algebra RFC](../../rfc/2026-08-03-generation-emission-command-algebra/design.md) supersede 之前，其中「先从 P0 开始」等指引**已不成立**——P0/P1/P2/P6 均已 landed，当前卡在用户裁决「是否起执行」。
+> **接手入口是 [HANDOVER.md](HANDOVER.md)**，启动 gate 在 `KICKOFF.md`。本文件仅作历史留存，**不追溯修改正文**。
 
 > 本计划分 9 个相位（P0–P8），依赖图见 [README.md](README.md)。下方提供**整体 kick-off**（一个执行主体从头做到尾）与**分相位 kick-off**（并行/分派时用）。由谁在哪执行（当前会话 / 新会话 / subagent）是编排决策，本文档只提供可直接复制的提示词。
 

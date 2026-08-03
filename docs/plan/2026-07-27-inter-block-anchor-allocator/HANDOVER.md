@@ -5,6 +5,8 @@
 - **文档落地基线**：master。**本文件自身的提交 SHA 不写死**（写下的那一刻就会被下一次改动作废——上一版写 `dafa31d8`，实际落在 `8ea97bec`）；要它就现算：`git -C /home/xp/src/copilot-api-js log -1 --format='%h %ad' --date=short -- docs/plan/2026-07-27-inter-block-anchor-allocator/HANDOVER.md`。
 - **代码事实基线**：**未合并分支** `feat/inter-block-anchor-allocator` @ `2c339784`（M1 实现，有意不合并）。**下面「硬事实」表里的每一个 `file:line` 都锚在这棵树上，在 master 上对不上**——master 的 `src/` 下 `closeAnchorViaOwner` **零命中**，`ClientSink` 在 `types.ts:737` 而非 `:747`。复算前先 `cd .worktrees/anchor-alloc`。
 
+**已知遗留 minor（评审判为不阻塞，写在这里免得被当成新发现）**：① KICKOFF:52 仍复述「21 次」这个数字，但同句自带「那是自我报告的摘要、不是独立可核验的、别当门禁已过」；② 同目录曾并存陈旧的 `kickoff.md` 与现行 `KICKOFF.md`，`ls` 时都会看到——**已给前者加 superseded 横幅**，不再依赖「README 有正确入口」这种缓解。
+
 **worktree**：`/home/xp/src/copilot-api-js/.worktrees/anchor-alloc`
 **未提交 / 未追踪**：本工作的产物已于 `6cfa0e89` 全部提交（此前两份评审报告曾是 untracked，被交接评审抓出）；主树另有并发会话的未提交改动，与本工作无关
 **已跑门禁**：master 全套件 `unit+it+http` 连跑 21 次全绿（6845 pass / 0 fail，代码状态 `cc909c81`），记录在 `docs/tmp/2026-08-03-baseline-run-log.md`；`bun run typecheck` 绿。
