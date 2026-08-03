@@ -1,10 +1,13 @@
 # HANDOVER —— generation emission command algebra RFC 已定稿，实施未开工
 
 **状态**：**草稿·未评审**（本文件本身尚未过 subagent 评审；RFC 已过六轮评审）· RFC 已定稿、无未决 blocker/major；实施一行未写；等用户拍板「是否起执行」。
-**核验基线**：master `98e6875e`（2026-08-03）；分支 `feat/inter-block-anchor-allocator` @ `2c339784`（M1 实现，**有意不合并**）
+**两个基线，别混**（交接评审的核心 blocker 就是这里）：
+- **文档落地基线**：master `dafa31d8` 及其后（本文件所在提交）。
+- **代码事实基线**：**未合并分支** `feat/inter-block-anchor-allocator` @ `2c339784`（M1 实现，有意不合并）。**下面「硬事实」表里的每一个 `file:line` 都锚在这棵树上，在 master 上对不上**——master 的 `src/` 下 `closeAnchorViaOwner` **零命中**，`ClientSink` 在 `types.ts:737` 而非 `:747`。复算前先 `cd .worktrees/anchor-alloc`。
+
 **worktree**：`/home/xp/src/copilot-api-js/.worktrees/anchor-alloc`
-**未提交 / 未追踪**：本工作的产物全部已提交；主树另有并发会话的未提交改动（`docs/memory/*`、`.claude/settings.json` 等），与本工作无关
-**已跑门禁**：master 全套件 `unit+it+http` **连跑 21 次全绿**（6845 pass / 0 fail，代码状态 `cc909c81`）；`bun run typecheck` 绿
+**未提交 / 未追踪**：本工作的产物已于 `6cfa0e89` 全部提交（此前两份评审报告曾是 untracked，被交接评审抓出）；主树另有并发会话的未提交改动，与本工作无关
+**已跑门禁**：master 全套件 `unit+it+http` **连跑 21 次全绿**（6845 pass / 0 fail，代码状态 `cc909c81`）——**逐次原始记录见 `docs/tmp/2026-08-03-baseline-run-log.md`**（含修复前的对照：同一 HEAD 未修 flaky 时 6 次里 2 次有红）；`bun run typecheck` 绿
 
 > **接手第一步不是写代码，也不是继续评审——是等用户裁决「是否起执行」。** 按 CLAUDE.md `docs-merge-before-execute`，定稿文档合主线后，执行是**独立**决策。RFC 已在 master 上。
 
@@ -14,24 +17,26 @@
 
 | 产物 | 位置 | 状态 |
 |---|---|---|
-| RFC（11 节，786 行） | `docs/rfc/2026-08-03-generation-emission-command-algebra/design.md` | **定稿**，六轮评审收敛至 0 blocker / 0 major |
+| RFC（§0～§11） | `docs/rfc/2026-08-03-generation-emission-command-algebra/design.md` | **定稿**，六轮评审收敛至 0 blocker / 0 major。**不在此写行数**——它每轮都在漂，交接评审已抓到我写的 786 行实际是 818 行 |
 | 两路评审报告（各含六轮追加） | `docs/tmp/2026-08-03-command-algebra-rfc-review-{claude,gpt}.md` | 完整证据链，**别删**——形状古怪的验收判据能在这里查到什么东西从中间走过去了 |
 | emission 面 inventory | `docs/tmp/2026-08-03-emission-surface-inventory.md` | 两法交叉验证，**推翻了原设计的 4 个数字**；后补「owner allocation-port 发射点」一节 |
 | 三条主会话硬门裁决 | `docs/tmp/2026-08-03-owner-boundary-hard-gate-rulings.md` | 已并入 RFC |
-| 基线 flaky 现状 | `docs/tmp/2026-08-03-baseline-flake-status.md` | 3 条修 2 条；第 3 条记为**未证实已修** |
+| 基线 flaky 现状 | `docs/tmp/2026-08-03-baseline-flake-status.md` | 3 条修 2 条；**未证实已修的是第 1 条**（`History V3 store performance > prepare and commit do not depend on prior session history length`），第 2、3 条已修 |
 
 顺带修掉的三处既有缺陷（都在主线）：`4f7a3989` O-6 字节门此前**恒真**（脚本覆盖自己的基线、全脚本无 `cmp`）；`200aba8b` 一条 AST 守卫撞 5s 默认超时的假红；`51b1e1c9`+`cc909c81` 两条基线 flaky。
 
 ## 已确证的硬事实（别再重新推导）
 
-| 事实 | 证据等级 | 出处 / 复算方式 |
+> **除首行外，全部锚在 feature `2c339784`**（`cd /home/xp/src/copilot-api-js/.worktrees/anchor-alloc` 后复算）。**在 master 上复算会失败，那不是事实错误而是走错了树。**
+
+| 事实 | 证据等级 | 出处 / 复算方式（tree = feature `2c339784`，除非另注） |
 |---|---|---|
 | P0 / P1 / P2 / P6 均已 landed master | 实测（上轮） | 本轮未变 |
 | M1 代码在分支上**未合并**，由本次 cutover 一并重塑（用户裁决） | 实测 | `git log master..feat/inter-block-anchor-allocator` |
 | `ClientSink` 声明在 `src/lib/pipeline/types.ts:747`，**不在 `delivery/` 目录内**；`delivery/types.ts` 对它只是 `import type`、非 re-export | 实测 | 这是 RFC 闭包根必须是传递闭包的成因（§7.2） |
-| `beginLeg` 只在 `allocationPort?.wireState` 为真时调用（**只有 Anthropic 有**），而 `noteWinner` **无条件**调用 | 实测 | `driver.ts:882-888`。这是 R-14 存在的唯一理由 |
+| `beginLeg` 只在 `allocationPort?.wireState` 为真时调用（**只有 Anthropic 有**）；`noteWinner` **不受该门控**（但仍受 optional chaining 约束——反查不到 session 时不调用） | 实测 | `driver.ts:882-888`。这是 R-14 存在的唯一理由。**「无条件」不是绝对必调用**，别按字面理解 |
 | `closeAnchorViaOwner(..., "terminal")` 生产调用点**恰 10 处** | 实测（未截断） | handler 8：`messages/handler-v4.ts:702,1464,1584,1623,1688,1808,1848,1893`；driver 2：`driver.ts:1436,1611` |
-| `getDownstreamDeliverySession(sink)` 让**任何持有 `ClientSink` 者反查回完整 session**；生产引用 5 文件约 10 点 | 实测 | RFC §7.2 C 集。这条使「只给窄 port」在收口前是空话 |
+| `getDownstreamDeliverySession(sink)` 让**任何持有 `ClientSink` 者反查回完整 session**；生产**调用**点 **9 处／4 文件**（另有定义 1 处，不计入引用） | 实测（AST 枚举 CallExpression） | RFC §7.2 C 集。这条使「只给窄 port」在收口前是空话。交接评审复算得 9/4，我原写「5 文件约 10 点」把**定义文件混进了引用集合** |
 | `streamKeepaliveMode` 默认是 **`"ping"`**，不是 `empty_text` | 实测 | `packages/foundation/src/state-defaults.ts:122`。但 `injectContentAnchor` 由 `onDemandEscalation` 决定、**不看 mode**，故 `keepalive-anchor.ts:306` 在**默认配置**下经 200s 升级即可达 |
 | O-6 门此前恒真，已修并有正样本对照 | 实测 | 未改动树 PASS 且 fixture 字节不变；注入一字节 FAIL(rc=9) |
 
@@ -54,6 +59,8 @@
 
 ### T1 —— 用户拍板：是否起执行（**当前就卡在这里**）
 - **两条路径**：(a) 直接按 RFC §7 起执行；(b) 先补三层结构的 plan + prompts 层（见 T4）再执行。
+- **验收**：记录**用户明确表态的原话 + 日期 + 所选路径**，落盘进本文件的「用户已裁决」表。裁决必须针对**执行时机**，不能拿已有的「形状 = 全量 command algebra」裁决顶替——那裁的是做什么，不是何时开始做。
+- **证伪**（三者任一即未获批准）：① 只有本文件作者的推断而无用户原话；② 用户沉默被当作默许；③ 引用的是 2026-08-03 那批**形状/范围**裁决而非执行时机裁决。
 - **不裁决的后果**：无损失，RFC 已在主线随时可起。
 
 ### T2 —— Q1 未裁决（阻塞 Commit 5，**不**阻塞 Commit 0–4）
@@ -63,8 +70,10 @@
 
 ### T3 —— 基线 flaky 第 1 条未证实已修
 - **事实**：`History V3 store performance > prepare and commit do not depend on prior session history length`，21 次连跑未再现，**但按其约 1/15 的原始复现率，这只有约 0.24 的概率意义**。详见 `docs/tmp/2026-08-03-baseline-flake-status.md`。
-- **验收**：从机制上确认或排除「与第 3 条同因（`package-boundaries` 写盘造成 I/O 抖动）」，或在人为 I/O 负载下定向复现。
-- **证伪**：因为「最近没见到」就宣布已修。
+- **验收拆两段，缺一不可**（交接评审指出原表述可在「成功复现但完全没修」时判通过）：
+  - **诊断 AC**：定出根因，并给出**确定性 reproducer**（在受控条件下必现）。
+  - **修复 AC**：① 逆 mutation（把修复改回原形态）在该 reproducer 下**转红**；② 修复后在同等负载下**转绿**；③ false-red 对照绿（正确实现不被误伤）；④ 在 entry commit 上连跑 ≥15 次全绿并**保存逐次结果**。
+- **证伪**：只做到「复现成功」就标验收完成——复现恰恰证明缺陷仍在；或因为「最近没见到」宣布已修；或只有汇总数字而无逐次记录。
 - **注意**：RFC §7.1 要求在**当时的 entry commit** 上连跑 ≥15 次，旧读数不顶替。
 
 ### T4 —— 分相位计划（plan + prompts 层）未写
@@ -84,14 +93,18 @@
 - O-4 真 SDK 累积顺序 / O-5 真 CC inter-block >300s（连跑 ≥3 次 + `escalate=0` 对照组）/ O-6 与捕获字节 `cmp`。
 - **ADR D2 第 3 点仍待改**：措辞需从「真实块的严格 index 顺序」扩到「真实 + 合成块统一 frontier」。**停点在写文件之前**——只产出逐段 replacement 草案，获用户明确同意后才改 ADR。
 - Q5 的 `wireIndex(i) = i + anchorShift + continuationOffset` 公式要作废，判据是**分类审计**（每个命中判为「已作废历史记录」或「仍具规范性」），**不是字面零命中**。
-- **收口清单现在是 O-1 ~ O-9 加 R-1 ~ R-14**；RFC §10.3 有 O-1~O-9 的逐条对账（沿用 / 需修改 / 被取代 / 仍待补），别漏 O-9 交叉缝。
+- **收口清单是 O-1 ~ O-9 加 R-1 ~ R-14，共 23 项**。RFC §10.3 有 O-1~O-9 的逐条对账（沿用 / 需修改 / 被取代 / 仍待补）。
+- **验收**：产出一张 **23 行的 acceptance ledger**，每行含 scope、归属 commit、可复跑命令、正样本、目标 mutation、产物路径、verdict（`PASS / FAIL / NOT-YET-IN-SCOPE`）。RFC §10.4 已要求逐项写 verdict 与证据命令，**不得用一句「全套件绿」折叠全表**。
+- **证伪**：ledger 少于 23 行；或某行 verdict 无对应命令输出；或 O-9（续写腿 × gap anchor 交叉缝）只被点名提醒而没有可执行命令——那正是最容易被漏的一项。
+- **注意**：O-5 的 `escalate=0` 对照组必须证明**客户端在 >300s 时确实失败**，而不只是证明测试跑了三次。
 
 ## 与冻结上游文档的对账
 
 - **README 冻结契约 C1–C11**：RFC §6 逐条过，判定**无一需语义重裁**；C2/C5/C6/C7/C9/C10/C11 属「措辞需扩展」。**落地后需回填 README 的 C 表**——已列为 RFC Commit 8 的任务，别落空。
 - **anchor 精确帧序**是 C1–C11 **之外**的独立可观察契约（Q5 已裁决接受）。RFC §6 新增一节说明它为何**不**属于 C2（C2 只要求 `maxOpen<=1` 且 anchor stop 先于 real start，中间多一帧合法 keepalive 仍成立）也不属于 C7（C7 不规定 synthetic 帧相对 real start 的精确位置）。
 - **旧 plan 的 M2～M4** 被本 RFC supersede（范围扩大裁决所致）；M5～M8 中 gap lifecycle / 开门 / 多 gap 保留并需重锚。RFC §8 已写明。
-- 检索证据：范围 `docs/spec/`、`docs/decisions/`、`docs/plan/2026-07-27-inter-block-anchor-allocator/`，检索词 `wireTorn`／`closeOpenAnchor`／`command algebra`／`帧序`／`selectWinner`；除上述外无冲突命中。
+- ⚠️ **「除上述外无冲突」这个否定性断言目前不成立，别照信。** 交接评审实测：上述三个范围共 **122 份 Markdown**，而我那五个检索词只命中 **21 份**；未命中的里面恰恰包括承载 C1/C4/C6/C7/C8、D2、continuation offset、anchor 生命周期与 P7/P8 的核心文档（`decisions/2026-07-22-continuation-retry-sequential-anchor.md`、`spec/2026-07-08-buffered-keepalive-empty-text-anchor.md`、`spec/2026-07-22-continuation-retry-and-sequential-anchor.md`、`plan-1/4/6/7/8` 等）。**五个词多是新 RFC 术语，而旧冻结文档正是用旧术语表达冲突的**——少命中不能证明无冲突。
+- **待办（接手方需完成）**：先冻结一份权威文档 manifest，再**按契约轴而非新 API 名**检索——index allocation/order/reuse/offset、anchor open/close/lifecycle、serializer/write/emit、synthetic provenance、winner/candidate/dispatch、heartbeat/escalation、continuation/recovery、History/telemetry；对 manifest 里**每一份**给 disposition，并对 C1–C11 与用户裁决做双向 trace。**在此之前，本节只能说「已核对的部分无冲突」，不能说「无冲突」。**
 
 ## 我这轮犯过的错，与它们的复发点
 
@@ -111,13 +124,17 @@
 **可机械化的核对判据**（秒级、不依赖判断报告语气）：
 
 ```bash
-git log --oneline -1 <声称的 SHA>            # 不存在即作废
-git branch --list <声称的分支>
+git -C <repo> log --oneline -1 <声称的 SHA>            # 不存在即作废
+git -C <repo> branch --list <声称的分支>
 ls <声称的报告路径>
-git -C <它自己的 worktree> status --short    # 空 = 没动过
-git -C <它自己的 worktree> log --oneline -1  # 与基线同 = 零提交
-git diff --stat                              # 声称的每一项都要能在 diff 里指出来
+git -C <它自己的 worktree> status --short             # 空 = 没动过
+git -C <它自己的 worktree> log --oneline -1           # 与基线同 = 零提交
+git -C <它自己的 worktree> diff --stat                # 声称的每一项都要能在 diff 里指出来
 ```
+
+**每条都绑目录根**（`git -C`）——交接评审实测原版最后一条不绑根、在错误 cwd 下 `rc=129`。
+
+**这几条抓得住什么、抓不住什么**（别当万能）：前五条抓的是「声称的产物根本不存在」——本轮第一次造假正是这一型。**第六条抓的是「已提交但内容与声称不符」**，需要 agent 已经提交才有对象；若它一次都没提交，判据落在前五条。**都抓不住的**是「提交了、diff 也对，但结论是错的」——那要靠内容评审，不是存在性核对。
 
 **派活时前置这条要求**：让它在回报里**贴出 `git log --oneline -1` 与 `git show --stat HEAD` 的原样输出**。本轮第 2、3 条 flaky 正是这样拿到真实产出的。
 
@@ -131,6 +148,9 @@ git diff --stat                              # 声称的每一项都要能在 di
 
 **记忆索引 `~/.claude/projects/-home-xp-src-copilot-api-js/memory/MEMORY.md` 已超读取上限。** 2026-08-03 收尾时实测 **32.4KB**，而读取上限约 24.4KB——**超限意味着整个索引读不出来**，那等于记忆库失去入口。
 
-上一会话**有意没有压缩它**：压缩 agent 读取快照后、写盘前撞上 API 抖动；重试期间发现该文件正被**并发会话**追加（几分钟内从 22.1KB 涨到 32.4KB，新增内容属于另一条工作线）。让一个持旧快照的 agent 重写整个文件，会静默丢掉它从未见过的 peer 条目——记忆不在 git 里，覆盖即永久丢失。
+上一会话**有意没有压缩它**：压缩 agent 读取快照后、写盘前撞上 API 抖动；重试期间发现该文件正被**并发会话**追加（几分钟内从 22.1KB 涨到 32.4KB，新增内容属于另一条工作线）。让一个持旧快照的 agent 重写整个文件，会静默丢掉它从未见过的 peer 条目。
+
+> ⚠️ **上一会话给的理由「记忆不在 git 里，覆盖即永久丢失」是错的，我照抄时也没核。** 实测：`~/.claude/projects/-home-xp-src-copilot-api-js/memory/MEMORY.md` 与被 git 追踪的 `docs/memory/MEMORY.md` **是同一个 inode**（2158870），内容逐字节相同。**覆盖是可以从 git 恢复的。**
+> **但「不要并发重写」这个结论仍然成立**，理由换成：持旧快照的 agent 会丢掉 peer 新增条目，而**恢复需要有人发现丢了**——一个没人注意到的静默删除，git 有备份也没用。
 
 **接手处置**：确认无并发写者后再压，规则是——**绝不删条目、绝不删链接**（每个正文 `.md` 必须保留入口），只压钩子字数；优先砍正文里已有的机制细节、括号内实现细节、多条共用的长解释（抽到节顶写一次）；**必须保住**触发症状词、否定式警告、以及具体数字/文件名/命令。目标 < 17.1KB，改完 `wc -c` 实测。

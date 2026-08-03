@@ -11,7 +11,7 @@ RFC 在 docs/rfc/2026-08-03-generation-emission-command-algebra/design.md。
 ## 启动前的硬 gate（照做，理由在 HANDOVER）
 
 1. **不要直接写代码。** 当前状态是「RFC 定稿、实施未开工」，卡在用户裁决「是否起执行」（HANDOVER T1）。没有该裁决前不动 src/。
-2. **复验而非采信。** HANDOVER 头部的核验基线是 master 98e6875e / 2026-08-03。接手第一件事是重新核对 git log、git status、分支与 worktree 列表——本仓常有并发会话，读数会变。
+2. **复验而非采信，并注意有两个基线。** HANDOVER 头部区分了「文档落地基线（master）」与「代码事实基线（未合并分支 feat/inter-block-anchor-allocator @ 2c339784）」——**硬事实表里的 file:line 全部锚在后者，在 master 上复算会一条都对不上**。接手第一件事是重新核对 git log、git status、分支与 worktree 列表。
 3. **若已获准起执行**：入场条件在 RFC §7.1——在**当时的** entry commit 上连跑 ≥15 次
    `FORCE_COLOR=0 bun scripts/parallel-test.ts unit it http` 且次次全绿。旧读数不顶替，任一次失败都不得开始 cutover。
 4. **每条 Bash 调用自己绑定目录根**（`cd <绝对路径> && ...` 或 `git -C <绝对路径>`），绝不依赖上一条命令留下的 cwd。
@@ -49,7 +49,7 @@ RFC 在 docs/rfc/2026-08-03-generation-emission-command-algebra/design.md。
 
 ## 测试门禁现状（核验于 2026-08-03 / master cc909c81；接手第一件事是复验而非采信）
 
-- master 全套件 unit+it+http：连跑 21 次全绿（6845 pass / 0 fail）。
-- 隔离 worktree 里 `bun run test` 会因 rustup 前置失败——用上面那条 parallel-test.ts 命令。
+- master 全套件 unit+it+http：连跑 21 次全绿（6845 pass / 0 fail，代码状态 cc909c81），逐次记录在 docs/tmp/2026-08-03-baseline-run-log.md。起执行前仍须按 RFC §7.1 在当时的 entry commit 上重跑并保存逐次结果——旧读数不顶替。
+- **注意 `bun run test` 的档位**：它是 `test:fast` = `parallel-test.ts unit http`，**不含 `it` 档**。要 unit+it+http 用 `bun run test:backend` 或显式写 `bun scripts/parallel-test.ts unit it http`。（上一版这里写「会因 rustup 前置失败」——**那是错的**，只有 `test:ci` 会先 `build:history-search`；交接评审实测推翻。）
 - exp/inter-block-anchor-allocator/byte-equivalence.sh 现在是**比较**不是捕获：一致 O-6 PASS 退出 0、不一致退出 9；本 cutover 全程禁用 RECAPTURE=1。
 ```
