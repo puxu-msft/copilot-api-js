@@ -428,3 +428,79 @@ bun -e 'import ts from "typescript"; const cfg=ts.readConfigFile("tsconfig.json"
 - direct transport 等价物额外搜索了 `sendText`、`sendBinary`、`writeText`、`publish`，范围为 `src/**/*.{ts,tsx}` 非测试。`publish` 命中均为内部 observability/event bus，`socket.send` 命中 `src/lib/openai/upstream-ws-connection.ts:470` 是**上游** GHC transport，二者不属于 client-visible generation emission；没有额外下游点。
 - `stopFrame` 同时搜索了 identifier call 与 property call；没有第四个 production 调用点。
 - 本 inventory 的“完整”限于静态可达的 production lexical sites；动态 property access／反射式 transport emission 未找到。检索词包括 `writeSSE`、`ws.send`、`rawWs.send`、`sendText`、`sendBinary`、`writeText`、`publish`、`ClientSink`、`OwnerRawSink`、全部 named sink APIs。
+
+### 12. 补充轮审计锚点与 owner allocation-port 发射点
+
+- 补充轮被审 HEAD：`2c3397847b3d85eebfe32e794d3ad700cb00e1f4`。`git diff --stat 854421d4e9765491f840e4daba9f42a36127fd3f..HEAD -- src` 为空，因此第一轮所有 `src/**` 行号仍有效。
+- 第一轮遗漏本类，原因是检索类目按已知 API 名枚举，而 `WireBlockAllocationPort` 是另一条 owner command 发射面；以下从 `src/lib/pipeline/types.ts:319-332` 的完整接口定义反推全部方法，不再以协调者列出的名字为边界。
+
+**取数命令（可复跑）**
+
+```bash
+rg -n 'interface WireBlockAllocationPort|^[[:space:]]+(allocateAndWriteAnchor|withAllocatedRealBlock|beginLeg|closeOpenAnchor|writeBlockFrame)\(' src/lib/pipeline/types.ts
+rg -n --glob 'src/**/*.ts' --glob '!src/**/*.test.ts' '\.(allocateAndWriteAnchor|withAllocatedRealBlock|beginLeg|closeOpenAnchor|writeBlockFrame)\s*\(' src
+bun -e 'import ts from "typescript";import{readdirSync,readFileSync,statSync}from"fs";import{join}from"path";const names=new Set(["allocateAndWriteAnchor","withAllocatedRealBlock","beginLeg","closeOpenAnchor","writeBlockFrame"]),fs=[];const w=d=>{for(const n of readdirSync(d)){const p=join(d,n),s=statSync(p);if(s.isDirectory())w(p);else if(/\.tsx?$/.test(n)&&!/[.-](?:test|spec)\.tsx?$/.test(n))fs.push(p)}};w("src");const counts={};for(const f of fs){const sf=ts.createSourceFile(f,readFileSync(f,"utf8"),ts.ScriptTarget.Latest,true);const v=n=>{if(ts.isCallExpression(n)&&ts.isPropertyAccessExpression(n.expression)&&names.has(n.expression.name.text)){const x=n.expression.name.text,q=sf.getLineAndCharacterOfPosition(n.getStart());counts[x]=(counts[x]??0)+1;console.log(`${f}:${q.line+1}\t${x}\t${n.expression.expression.getText(sf)}`)}ts.forEachChild(n,v)};v(sf)}console.error(JSON.stringify(counts))'
+```
+
+- 方法 A（完整 `rg`）与方法 B（AST）均得到：`allocateAndWriteAnchor` 1、`withAllocatedRealBlock` 0、port-level `beginLeg` 5、`closeOpenAnchor` 3、`writeBlockFrame` 0。AST 另命中 `src/lib/pipeline/delivery/session.ts:407` 的 `current.allocator.beginLeg`，receiver 是底层 allocator，不是 allocation port，明确排除。
+- 正样本对照：普通 `empty_text` 与默认配置 on-demand escalation 共用的 `src/lib/anthropic/keepalive-anchor.ts:306` 被两法命中；已知 live close 的 `src/lib/anthropic/live-reconcile.ts:144` 也被两法命中。
+- 接口完整性对照：`src/lib/pipeline/types.ts:319-332` 只有 `wireState` 属性与上述 5 个方法；不存在第六个 port method。
+
+| port 命令／file:line | production 调用点与实际发射 | 模式／结论 |
+|---|---|---|
+| `allocateAndWriteAnchor`／`src/lib/anthropic/keepalive-anchor.ts:306` | 单次调用写 **2～3 帧**：若 `message_start` 未转发，先写捕获到的真实 `message_start`，否则写 fabricated `message_start`；随后恒写 `anchor.startFrame(wireIndex)` 与 `anchor.deltaFrame(wireIndex)`。若 envelope 已转发则只有后两帧。 | 普通 `empty_text` prelude；同时由 `messages/handler-v4.ts:1183` 的 on-demand content escalation 使用。当前默认配置为 `ping + 200s escalation`，故默认可达；`enveloped_ping` 普通 prelude 不走此点，但启用 escalation 时也复用。 |
+| `closeOpenAnchor`／`src/lib/anthropic/live-reconcile.ts:144` | 若 open anchor 存在，写 **1 帧** `hooks.stopFrame(index)`；无 open anchor 写 0 帧。触发于真实 block start 或 message/error terminal 前。 | 普通 `empty_text`／live；默认 `ping` 或 `enveloped_ping` 在 escalation content anchor 后也可达；没有 open anchor 时 inert。 |
+| `closeOpenAnchor`／`src/lib/pipeline/driver.ts:1185` | 若 open anchor 存在，写 **1 帧** `anchor.stopFrame(index)`；无 open anchor 写 0 帧。用于 buffered flush 的 before-real／terminal close。 | 普通 `empty_text`／buffered；默认 `ping` 或 `enveloped_ping` 在 escalation anchor 后也可达；没有 open anchor 时 inert。 |
+| `closeOpenAnchor`／`src/routes/messages/handler-v4.ts:1116` | 若 open anchor 存在，写 **1 帧** `anchorHooks.stopFrame(index)`；无 open anchor 写 0 帧。用于 handler terminal/error close-off。 | 普通 `empty_text`／terminal；默认 `ping` 或 `enveloped_ping` 在 escalation anchor 后也可达；没有 open anchor 时 inert。 |
+| `withAllocatedRealBlock` | **零 production 调用者；当前写出 0 帧。** 接口若被调用可由 build callback 供应任意非空 `WireWriteSpec[]`，但今天没有生产对象。 | 尚未接线。 |
+| `writeBlockFrame` | **零 production 调用者；当前写出 0 帧。** 接口若被调用会 remap 并写恰好 1 个 real block frame。 | 尚未接线。 |
+| `beginLeg`／`src/lib/pipeline/driver.ts:885,1014,1102,1521,1579` | 5 个 port 调用点，只建立 primary／recovery／continuation leg 与 provenance，**自身写 0 帧**。 | 所有 owner-backed generation 模式；非 emission command。 |
+| `wireState` | 只读属性，不是命令，**写 0 帧**。 | 状态读取。 |
+
+本类新增的**实际 production 发射词法点为 4 个**：1 个 `allocateAndWriteAnchor` + 3 个 `closeOpenAnchor`。其中 `allocateAndWriteAnchor` 是第一轮完全遗漏的默认路径发射点；3 个 close 点虽已在第一轮 `stopFrame` 类出现，但当时按 frame-builder API 分类，没有显式标识它们通过 owner allocation port 写 wire。
+
+### 13. 从 wire sink 反向追踪的发射面复查
+
+本轮不再从已知 public API 名出发，而从两个 physical client byte sinks 反向追踪：`client-sink.ts:209 stream.writeSSE` 与 `:645 ws.send` ← `writeToSink(:581)`／owner-local `write(:127)` ← 所有可调用 owner command、heartbeat callback、decorator／hook。另独立复扫 pre-owner direct transport。
+
+**取数命令（可复跑）**
+
+```bash
+rg -n --glob 'src/**/*.ts' --glob '!src/**/*.test.ts' 'writeToSink\s*\(|\bwrite\(makeEnvelope\(|writeAllocationFrames\s*\(|writeScaffold\s*\(|\.terminate\s*\(|injectScaffold\s*\(|injectContentScaffold\s*\(' src/lib/pipeline src/lib/anthropic src/routes
+rg -n --glob 'src/**/*.ts' --glob '!src/**/*.test.ts' '\.writeScaffold\s*\(|\.writeAnchor\s*\(|\.terminate\s*\(' src
+rg -n --glob 'src/**/*.ts' --glob '!src/**/*.test.ts' '(stream|ws|rawWs)\.(writeSSE|send)\s*\(' src
+```
+
+反向追踪确认第一轮除 allocation-port 外没有第二个遗漏的生产 caller 类，但发现需要显式登记的 **owner-internal producer**：
+
+| file:line | client-visible 效果 | 与第一轮关系 |
+|---|---|---|
+| `src/lib/pipeline/delivery/session.ts:175` | content deadline 到期且 real block open 时，写 **1 个** `heartbeat.contentFrame(ledger)`；Anthropic 为当前 open block 的 empty content delta。 | 第一轮只列了下游 `writeKeepalive` dispatch，没有列 timer producer。 |
+| `src/lib/pipeline/delivery/session.ts:184` | content deadline 到期且无 open block／无 semantic block 时调用 `injectContentScaffold`；实际进入 `makeSyntheticAnchorInjector` → allocation-port `:306`，写 2～3 帧。 | 由第 12 节新增点覆盖。 |
+| `src/lib/pipeline/delivery/session.ts:209` | normal forward-idle 且允许 scaffold 时调用 `injectScaffold`；`empty_text` 进入 allocation port，`enveloped_ping` 进入第一轮 `keepalive-anchor.ts:375/:382`。 | 两轮合并后覆盖。 |
+| `src/lib/pipeline/delivery/session.ts:219` | normal forward-idle 写 **1 个** `heartbeat.frame(ledger)`；Anthropic 默认配置是 bare ping，Responses/CC/Gemini 使用各自固定 keepalive。 | 第一轮 physical adapter 已覆盖，但未单列 timer producer。 |
+| `src/lib/pipeline/delivery/session.ts:519` | `writeScaffold(frames)` 可写输入数组中的 **N 帧**。 | **零 production 调用者**；仅定义，当前无 client-visible 写出。 |
+| `src/lib/pipeline/delivery/session.ts:532-540` | `terminate(command)` 可写 `command.frames` 的 **N 帧**；当前唯一 production caller `:544` 恒传 `{kind:"complete"}`、无 frames，因此当前写 **0 帧**。 | 第一轮第 7 节已列 terminate，但现补充 emission 语义。 |
+| `src/lib/pipeline/delivery/session.ts:491` | owner raw `writeAnchor` 可写 1 帧。 | **零 production caller**；allocation port 直接调内部 `writeToSink`，不经该 public-ish raw method。 |
+
+**正样本对照：**反向 owner grep 命中已知 heartbeat byte producer `session.ts:219`，direct-transport grep 命中已知 raw adapter `client-sink.ts:209`；因此“无其他类”不是空扫描。`writeScaffold`／raw `writeAnchor` 的零 production caller 结论来自完整 `src/**` `rg`，不是只搜单目录。
+
+**默认模式事实修正：**当前仓库 `config.yaml:764` 的普通 `stream_keepalive_mode` 默认是 `ping`，不是 `empty_text`；但 `config.yaml:754` 的 `stream_keepalive_escalate_sec: 200` 默认开启，`messages/handler-v4.ts:1182-1190,1213-1217` 因而默认接线 `makeSyntheticAnchorInjector` 作为 content-deadline escalation。故 `keepalive-anchor.ts:306` 确实是**默认配置可达路径**，但准确说是“默认 `ping` + 200s on-demand empty-text escalation”，而非普通模式默认值为 `empty_text`。
+
+### 14. 更新后的既有文档差异摘要
+
+本表追加而不覆写第 10 节；第 10 节仍是第一轮结论快照。**本轮补充的 allocation-port 类目是第一轮遗漏，遗漏原因是检索类目按已知 API 名枚举，而不是从 physical client byte sinks 反向枚举全部 owner commands。**
+
+| 项目 | 既有文档／第一轮 | 补充轮权威结果 | 差异 |
+|---|---:|---:|---|
+| owner allocation-port 实际 production 发射点 | 未列 | 4 个词法点：1 allocate + 3 close | 第一轮类目缺口；其中 allocate 是新增默认可达发射，3 close 与既有 `stopFrame` 点重叠。 |
+| `allocateAndWriteAnchor` | 未列 | 1 caller，单次 2～3 帧 | `keepalive-anchor.ts:306`；默认配置通过 200s escalation 可达。 |
+| `withAllocatedRealBlock` | 未列 | 0 production callers | 当前迁移工作尚无调用对象。 |
+| `writeBlockFrame` | 未列 | 0 production callers | 当前迁移工作尚无调用对象。 |
+| port `beginLeg` | 未列 | 5 callers，0 帧 | 状态/provenance command，不是 emission。 |
+| `closeOpenAnchor` | 间接按 3 个 `stopFrame` 列出 | 3 callers，各 0～1 帧 | 现在明确归属 owner port。 |
+| owner heartbeat producer | 只列下游 sink API／physical adapter | `session.ts:175,219` 各自每 tick 1 帧；`:184,209` 触发 scaffold injector | 发射 producer 补充，未改变 physical sink 数。 |
+| `writeScaffold`／raw `writeAnchor` | 未列 | 均 0 production callers | 接口存在但今天无生产消费者。 |
+| 当前普通 keepalive 默认值 | 协调消息称 `empty_text` 默认 | `config.yaml:764` 为 `ping`；`:754` escalation 200s 默认启用 | `:306` 默认可达结论成立，机制是 on-demand escalation。 |
+
+第一轮数字经两路评审独立核验仍保留：`ClientSink.write` 10、三 synthetic API 28、`[DONE]` 3、direct transport 9、`stopFrame` 3、constructor 14（outer 10）、termination 53、raw-handle 23、test fake 92／40 文件、sink API code-reference 57、raw factory 65。
