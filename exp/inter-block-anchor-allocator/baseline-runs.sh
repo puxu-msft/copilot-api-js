@@ -10,9 +10,25 @@
 # own provenance and its own exit code into the same file, in the same shell,
 # around the same invocation.
 #
-# It still does not prove the runs were real to a third party -- nothing local
-# can. It only removes the failure modes above and makes the artifacts costly
-# to fabricate by hand (per-run wall clock, shard timings, full stdout).
+# WHAT THIS SCRIPT CLAIMS, precisely:
+#   "the named command was invoked N times at one commit, with per-run
+#    provenance recorded, and its self-reported test count was stable and above
+#    a floor the caller named."
+# WHAT IT DOES NOT CLAIM:
+#   "the full backend suite executed."
+# The gap is not a wording nicety. MIN_TESTS and the number it checks come from
+# the same place -- the command's own summary line -- so a selector that
+# silently narrowed will "measure" 6800, the caller will freeze MIN_TESTS=6800
+# from that measurement, and every run then agrees with itself. Review built
+# exactly that and it stayed green here. Closing it needs an execution-evidence
+# channel independent of the runner's own tally: have the run emit junit
+# (scripts/parallel-test.ts already drives `--reporter=junit` for timings) and
+# compare the testsuite names against a disk-side glob of *.{unit,it,http}.test.ts.
+# That is separate work, recorded as T3-b in the handover.
+#
+# It also does not prove the runs were real to a third party -- nothing local
+# can. It removes the failure modes above and makes the artifacts costly to
+# fabricate by hand (per-run wall clock, shard timings, full stdout).
 #
 # Usage:
 #   OUT=docs/tmp/2026-08-04-entry-runs RUNS=15 exp/inter-block-anchor-allocator/baseline-runs.sh
