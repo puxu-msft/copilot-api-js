@@ -47,9 +47,26 @@
 1. **采纳「全量：现在就重写 emission 面」**——不拆、不排后面。M1 的范围因此从「关闭权威」扩展为 owner command algebra + 13 个出口逐个收口（driver live/buffered/retreat、live 装饰器退回纯 transform、handler 终局、heartbeat 归属、terminate/finalize、Responses WS 终局路径、测试 sink 改注入式）。
 2. **该设计必须先过评审再定排期**——理由：它要改经六轮评审冻结的 API，而它自己一轮评审都没过。
 
-**评审在跑**（两路正交）：`docs/tmp/2026-08-03-m1-boundary-design-review-claude.md`（对抗闭合主张：13 格闭合等级判定、独立枚举出口对账、有无更小闭合方案、自证型断言）与 `-review-gpt.md`（可行性与爆炸半径：删无条件 `write` 的调用点计数、测试改造是否让某些测试**失去判别力**、三个异域 writer 的域隔离是否为真、**与 P6 心跳修复是否冲突**、每 commit 可编译的迁移切分是否存在）。
+**评审已收口**（两路：`docs/tmp/2026-08-03-m1-boundary-design-review-claude.md` 对抗闭合主张 3 Blocker / 6 Major；`-review-gpt.md` 可行性实测无 blocker）。设计已修订，B1–B3 闭合、每行闭合等级绑运行时 witness。
 
-**接手须知**：在这两路评审收口前，**不要开始实施边界重写**，也不要按旧形状继续推进 M2——M2 的三腿接线会大量建立在即将被改掉的 API 上。
+### 形状之争已裁决：**全量 command algebra**（2026-08-03，未卷入第三方）
+
+修订轮推翻了设计自己的必要性前提：**「全量是唯一闭合方案」不成立**——候选 A（保留 `write(frame)`，owner 内把匹配 active lease 的 close-block 提升为 anchor close command）**同样能闭合**；候选 B 不能。用户据此重新裁决，未卷入第三方裁定 `docs/tmp/2026-08-03-m1-shape-adjudication-full-vs-a.md`：
+
+**全量长期更优，但主会话给出的三条理由全部只是「部分成立」**（接手别照抄那三条，它们被修正过）：
+- classifier **两种形状都需要**，A 不是「前四次拼写推断」的同一种病。真正的差别：全量有**两个独立输入**（caller 声明的 command intent + classifier 观测的 actual effect），不一致时可在 external write 前报 `CommandEffectMismatchError`；推断从唯一权威降为交叉验证的一条腿。
+- A 依赖的是「**授权 record 对同一 index 至多一个**」，不是完整 C1；C1 只是充分条件，A 可在双命中时 fail loud。
+- 「每个写腿的人都得知道魔法」过满——集中 classifier 会兜底；真实代价是**评审者无法从 call site 区分故意 close 与误发 close**。
+- 决定性的第四条（主会话未想到）：**可观测性**。A 只有 `write` + 推断 effect，区分不了「故意请求 close」与「本想 generic 却误发 close」；补 intent 字段让它可区分，它就收敛成 command algebra。
+
+**对实施的硬指令**：public command port 必须**按 capability 分型**——共同 port 只含 generic / keepalive / terminal，Anthropic profile 额外提供 indexed-block commands。**不得**给所有格式暴露一个巨型 union 再在 runtime 抛「不支持」。
+
+### 用户立的通用约定（2026-08-03）
+
+> 出现「小改动能闭合 vs 全量重写」的分叉时：**先评审 → 达成共识 → 按共识走**。
+
+主会话补充的可执行判据（**待用户确认落点：CLAUDE.md 还是 skill**）：当一个方案的理由包含「这是唯一可行/唯一能闭合的」时，**该唯一性本身是可核验命题，必须写进评审的核验清单**，并要求评审给出「找过哪些更小方案、各自漏在哪」；**未记录被否决方案的必要性主张，不得进入用户裁决**。本轮正是它缺位，才让一个错误前提直达用户。注意本项目 CLAUDE.md 已有近似条款（「结构性重写可接受的不做理由仅两种」）与 user-rule `one-option-or-the-best-option` / `record-not-adopted`——**本轮失败不是缺规则，是规则没被触发**，补的应是触发点而非第四条规则。
+
 
 
 
