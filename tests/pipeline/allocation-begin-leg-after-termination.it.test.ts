@@ -22,10 +22,10 @@ import {
   test,
 } from "bun:test"
 
+import type { OwnerRawSink } from "~/lib/pipeline/delivery/types"
 import type {
   //
   ClientFrame,
-  ClientSink,
 } from "~/lib/pipeline/types"
 
 import {
@@ -45,7 +45,7 @@ const PRIMARY = { candidateId: "candidate-primary", dispatchId: "dispatch-primar
 const RECOVERY = { candidateId: "candidate-recovery", dispatchId: "dispatch-recovery" }
 
 test("all owner entries return delivery-finished after a wire failure closes the session", async () => {
-  const sink: ClientSink = {
+  const sink: OwnerRawSink = {
     write: async () => {
       throw new StreamClientAbortError()
     },

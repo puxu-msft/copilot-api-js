@@ -45,6 +45,7 @@ import type {
 import { createDownstreamDeliverySession } from "~/lib/pipeline/delivery/session"
 import { readSyntheticKind } from "~/lib/pipeline/frame-origin"
 
+import type { OwnerRawSink } from "./delivery/types"
 import type {
   //
   ClientFrame,
@@ -184,7 +185,7 @@ function frameType(frame: ClientFrame): string {
 }
 
 /** SSE sink — writes through Hono's `streamSSE` API (the Anthropic/CC/Responses/Gemini HTTP path). */
-export function makeSseSink(stream: SSEStreamingApi, opts: SseSinkOptions = {}): ClientSink {
+export function makeSseSink(stream: SSEStreamingApi, opts: SseSinkOptions = {}): OwnerRawSink {
   const {
     heartbeat,
     onForwarded,

@@ -4,10 +4,10 @@ import {
   test,
 } from "bun:test"
 
+import type { OwnerRawSink } from "~/lib/pipeline/delivery/types"
 import type {
   //
   ClientFrame,
-  ClientSink,
 } from "~/lib/pipeline/types"
 
 import {
@@ -36,7 +36,7 @@ function deferred() {
   return { promise, resolve }
 }
 
-function setup(sink: ClientSink) {
+function setup(sink: OwnerRawSink) {
   const wireState = createGenerationWireState(createGenerationWireIndexAllocator())
   const port = createDownstreamDeliverySession({ sink, wireState }).allocationPort
   return { wireState, port }
@@ -46,7 +46,7 @@ test("beginLeg fences after previous queued writes and before next-leg allocatio
   const order: Array<string> = []
   const entered = deferred()
   const release = deferred()
-  const sink: ClientSink = {
+  const sink: OwnerRawSink = {
     async write(frame) {
       const payload = JSON.parse(frame.data as string) as { type: string; index: number }
       order.push(`write:${payload.type}@${payload.index}`)
@@ -80,7 +80,7 @@ test("beginLeg fences after previous queued writes and before next-leg allocatio
 test("anchor-before-begin and begin-before-anchor both preserve submission order", async () => {
   for (const orderKind of ["anchor-first", "begin-first"] as const) {
     const order: Array<string> = []
-    const sink: ClientSink = {
+    const sink: OwnerRawSink = {
       async write(frame) {
         order.push(JSON.parse(frame.data as string).type)
       },

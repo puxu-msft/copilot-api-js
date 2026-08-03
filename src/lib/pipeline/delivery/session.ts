@@ -9,6 +9,8 @@
 
 import consola from "consola"
 
+import type { PipelineInfo } from "~/lib/history"
+
 import { classifyStreamError } from "~/lib/stream"
 
 import type {
@@ -22,7 +24,6 @@ import type {
   WireBlockMapping,
   WireIndexReservation,
 } from "../types"
-import type { PipelineInfo } from "~/lib/history"
 import type {
   //
   ClientBlockLedger,
@@ -30,6 +31,7 @@ import type {
   DeliveryFrame,
   DeliveryHeartbeat,
   DeliverySnapshot,
+  OwnerRawSink,
   DeliverySyntheticKind,
   DeliveryTerminalCommand,
   OwnerResult,
@@ -42,7 +44,7 @@ import { createDeliverySerializer } from "./serializer"
 
 /** Construction options for one generation delivery. */
 export interface CreateDownstreamDeliverySessionOptions {
-  readonly sink: ClientSink
+  readonly sink: OwnerRawSink
   readonly monotonicNow?: () => number
   readonly heartbeat?: DeliveryHeartbeat
   readonly wireState?: GenerationWireState
@@ -478,7 +480,7 @@ export function createDownstreamDeliverySession(options: CreateDownstreamDeliver
       }),
   }
 
-  const clientSink: ClientSink = {
+  const clientSink: OwnerRawSink = {
     write: async (frame) => {
       if (!winnerCandidateId) winnerCandidateId = "sole"
       await write(winnerSource ? candidateDeliveryFrame(frame, winnerSource, monotonicNow()) : asDeliveryFrame(frame))
@@ -576,7 +578,7 @@ function asDeliveryFrame(value: DeliveryFrame | DeliveryFrame["frame"]): Deliver
     )
 }
 
-async function writeToSink(sink: ClientSink, entry: DeliveryFrame): Promise<void> {
+async function writeToSink(sink: OwnerRawSink, entry: DeliveryFrame): Promise<void> {
   switch (syntheticKind(entry)) {
     case "anchor": {
       await (sink.writeAnchor ?? sink.write)(entry.frame)

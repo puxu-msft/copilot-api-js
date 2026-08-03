@@ -4,10 +4,10 @@ import {
   test,
 } from "bun:test"
 
+import type { OwnerRawSink } from "~/lib/pipeline/delivery/types"
 import type {
   //
   ClientFrame,
-  ClientSink,
 } from "~/lib/pipeline/types"
 
 import {
@@ -26,7 +26,7 @@ const start = (index: number, type = "text"): ClientFrame => ({
 
 function setup() {
   const writes: Array<ClientFrame> = []
-  const sink: ClientSink = {
+  const sink: OwnerRawSink = {
     async write(frame) {
       writes.push(frame)
     },

@@ -781,17 +781,6 @@ export interface ClientSink {
    */
   writeSyntheticEnvelope?(frame: ClientFrame): Promise<void>
   /**
-   * Write a proxy-synthesized buffered-anchor STRUCTURAL frame (the empty-text anchor's
-   * `content_block_start@0` / `content_block_stop@0`) to the wire AND sample it into the forwarded
-   * track WITH a `synthetic:"anchor"` marker — so history/UI/logs never mistake the injected anchor
-   * block for real upstream content. Unlike {@link writeKeepalive} this ALSO updates the sink's
-   * open-block state (lights `openBlock={0,text}` on the start so the next heartbeat tick picks a
-   * block-aware empty text_delta; clears it on the stop), exactly as {@link write} does. The anchor's
-   * OWN empty text_delta is a heartbeat → written via {@link writeKeepalive}, not this. Omitted by
-   * sinks with no heartbeat (WS/array) — callers fall back to {@link write}.
-   */
-  writeAnchor?(frame: ClientFrame): Promise<void>
-  /**
    * RECOVERABLY stop the currently armed heartbeat timer without closing the sink. A later
    * {@link resumeHeartbeat} after {@link suspendHeartbeat} MUST be able to arm a fresh interval.
    * Freeze alone does not fence a tick that was already queued or whose async write is in flight;

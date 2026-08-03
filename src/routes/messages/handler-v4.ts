@@ -39,6 +39,7 @@ import type {
 } from "~/lib/history/store"
 import type { Model } from "~/lib/models/client"
 import type { FeatureKind } from "~/lib/observability"
+import type { OwnerTerminalDecision } from "~/lib/pipeline/delivery/owner-failure"
 import type { RequestEnvelope } from "~/lib/pipeline/envelope"
 import type {
   //
@@ -150,8 +151,6 @@ import {
 import { makeDeliverySseSink } from "~/lib/pipeline/client-sink"
 import { createCommittedBlocksLedger } from "~/lib/pipeline/committed-blocks-ledger"
 import { getContinuationBuilder } from "~/lib/pipeline/continuation-request-builder"
-import type { OwnerTerminalDecision } from "~/lib/pipeline/delivery/owner-failure"
-
 import { classifyOwnerFailure } from "~/lib/pipeline/delivery/owner-failure"
 import {
   //
@@ -200,6 +199,7 @@ import {
   shapePostcommitErrorFrame,
   shapeRawStreamErrorFrame,
 } from "./error-shaping-glue"
+import { settleMessagesOwnerFailure } from "./owner-failure-settlement"
 import {
   //
   anthropicErrorFrame,
@@ -1102,17 +1102,6 @@ function buildAnthropicAnchorHooks(enabled: boolean): AnchorHooks | undefined {
  * `stream_keepalive_mode` is not `empty_text` the injector + hooks are undefined and the heartbeat is a
  * plain ping (byte-identical to before); `heartbeatSec <= 0` omits the heartbeat entirely.
  */
-function settleFromOwnerFailure(
-  decision: OwnerTerminalDecision | undefined,
-  actions: { recordForwarded: () => void; abort: () => void; fail: (error: Error) => void },
-): boolean {
-  if (!decision || (decision.kind === "fail-loud" && decision.reason === "wire-torn")) return false
-  actions.recordForwarded()
-  if (decision.kind === "client-aborted") actions.abort()
-  else if (decision.kind === "fail-loud") actions.fail(decision.error)
-  return true
-}
-
 async function closeAnchorViaOwner(
   sink: ClientSink,
   anchorHooks: AnchorHooks | undefined,
@@ -1471,13 +1460,17 @@ async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): 
       // reconcileLiveFrame never got to close the anchor, so it is still OPEN. Close it off (stop@0) BEFORE
       // the error frame or the client is left with a dangling block. Idempotent + inert (shared anchorClosed
       // guard): a no-op when reconcile already closed it, or when no anchor was injected.
+      const partial = buildAnthropicResponseData(acc, model)
       const ownerDecision = await closeAnchorViaOwner(sink, anchorHooks, env.ctx, "terminal")
       if (
-        settleFromOwnerFailure(ownerDecision, {
+        settleMessagesOwnerFailure(
+          ownerDecision,
+          env,
+          acc.model || model,
           recordForwarded,
-          abort: () => env.ctx.abort(acc.model || model, { usage: { input_tokens: acc.inputTokens, output_tokens: acc.outputTokens }, stop_reason: acc.stopReason || undefined }),
-          fail: (ownerError) => env.ctx.fail(acc.model || model, ownerError),
-        })
+          { usage: partial.usage, stop_reason: partial.stop_reason, stopDetails: partial.stopDetails, content: partial.content },
+          { cause: error },
+        )
       )
         return
       await sink
@@ -1497,7 +1490,6 @@ async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): 
       recordForwarded()
       // C1: preserve the partial content accumulated before the throw (mirrors the
       // truncation/refusal branches) so pre-abort thinking blocks aren't lost to null.
-      const partial = buildAnthropicResponseData(acc, model)
       env.ctx.fail(acc.model || model, error, {
         usage: partial.usage,
         stop_reason: partial.stop_reason,
@@ -1589,7 +1581,18 @@ async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): 
       // §10.5 close-off (I-1): balance any still-open anchor before the error terminus. Almost always inert
       // here — an unrepairable tool_use requires a real content_block_start (which reconcile already closed
       // the anchor at) — but the shared idempotent guard keeps every error-frame terminus uniformly safe.
-      await closeAnchorViaOwner(sink, anchorHooks, env.ctx, "terminal")
+      const ownerDecision = await closeAnchorViaOwner(sink, anchorHooks, env.ctx, "terminal")
+      if (
+        settleMessagesOwnerFailure(
+          ownerDecision,
+          env,
+          acc.model || model,
+          recordForwarded,
+          { usage: partial.usage, stop_reason: partial.stop_reason, stopDetails: partial.stopDetails, content: partial.content },
+          { upstreamSucceeded: true, cause: new Error(`unrepairable malformed tool_use input (tool=${tool})`) },
+        )
+      )
+        return
       await sink
         .writeSynthetic?.(anthropicErrorFrame("invalid_request_error", `Tool call input for ${tool} was malformed and could not be repaired`))
         .catch(() => undefined)
@@ -1616,7 +1619,19 @@ async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): 
       // content_block_start — a delayed-commit stall injected the anchor, then the upstream closed silently.
       // reconcile never closed the anchor, so close it off (stop@0) before the error frame. Idempotent (a
       // real first block already closed it → no-op) + inert (no anchor injected → byte-equivalent).
-      await closeAnchorViaOwner(sink, anchorHooks, env.ctx, "terminal")
+      const truncationError = new Error("upstream stream truncated: closed without message_stop")
+      const ownerDecision = await closeAnchorViaOwner(sink, anchorHooks, env.ctx, "terminal")
+      if (
+        settleMessagesOwnerFailure(
+          ownerDecision,
+          env,
+          acc.model || model,
+          recordForwarded,
+          { usage: partial.usage, stop_reason: partial.stop_reason, stopDetails: partial.stopDetails, content: partial.content },
+          { cause: truncationError },
+        )
+      )
+        return
       await sink
         .writeSynthetic?.(
           shapeRawStreamErrorFrame(
@@ -1632,7 +1647,7 @@ async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): 
         )
         .catch(() => undefined)
       recordForwarded()
-      env.ctx.fail(acc.model || model, new Error("upstream stream truncated: closed without message_stop"), {
+      env.ctx.fail(acc.model || model, truncationError, {
         usage: partial.usage,
         stop_reason: partial.stop_reason,
         stopDetails: partial.stopDetails,
@@ -1670,7 +1685,18 @@ async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): 
     const msg = error instanceof Error ? error.message : String(error)
     // §10.5 close-off (I-1): an unexpected throw is also an error terminus — balance any open anchor before
     // the synthetic error frame (idempotent + inert via the shared anchorClosed guard).
-    await closeAnchorViaOwner(sink, anchorHooks, env.ctx, "terminal")
+    const ownerDecision = await closeAnchorViaOwner(sink, anchorHooks, env.ctx, "terminal")
+    if (
+      settleMessagesOwnerFailure(
+        ownerDecision,
+        env,
+        acc.model || model,
+        recordForwarded,
+        { usage: { input_tokens: acc.inputTokens, output_tokens: acc.outputTokens }, stop_reason: acc.stopReason || undefined },
+        { cause: error },
+      )
+    )
+      return
     await sink.writeSynthetic?.({ event: "error", data: JSON.stringify({ type: "error", error: { type: "api_error", message: msg } }) }).catch(() => undefined)
     recordForwarded()
     env.ctx.fail(acc.model || model, error, {
@@ -1779,7 +1805,8 @@ async function pumpTranslateLegStreamingV4(opts: PumpAnthropicStreamingDispatchO
         acc: { inputTokens: errUsage?.input_tokens ?? 0, outputTokens: errUsage?.output_tokens ?? 0 },
         sseEvents: diag.sseEvents,
       })
-      await closeAnchorViaOwner(sink, anchorHooks, env.ctx, "terminal")
+      const ownerDecision = await closeAnchorViaOwner(sink, anchorHooks, env.ctx, "terminal")
+      if (settleMessagesOwnerFailure(ownerDecision, env, model, recordForwarded, outboundResponseData(), { cause: error })) return
       // G-3 (FIX-2): the translate leg's client IS an Anthropic /v1/messages client, so its H3 error
       // terminator is owned by the same canonical builder (byte-identical to the former hand-built JSON;
       // CF-2 golden-locked off).
@@ -1817,7 +1844,9 @@ async function pumpTranslateLegStreamingV4(opts: PumpAnthropicStreamingDispatchO
     if (meta?.stopReason === undefined) {
       // The processor finish boundary already forwarded block-close frames through the reconciling
       // sink and suppressed clean message terminators.
-      await closeAnchorViaOwner(sink, anchorHooks, env.ctx, "terminal")
+      const truncationError = new Error("upstream stream truncated: closed without finish_reason")
+      const ownerDecision = await closeAnchorViaOwner(sink, anchorHooks, env.ctx, "terminal")
+      if (settleMessagesOwnerFailure(ownerDecision, env, model, recordForwarded, outboundResponseData(), { cause: truncationError })) return
       // G-3 (FIX-2): translate-leg truncation terminator via the canonical builder (byte-identical to the
       // former hand-built JSON — note the translate leg's message says "no finish_reason", the CC/Responses
       // terminator, distinct from the direct pump's "no message_stop"; CF-2 golden-locked off).
@@ -1844,7 +1873,7 @@ async function pumpTranslateLegStreamingV4(opts: PumpAnthropicStreamingDispatchO
         acc: { inputTokens: truncUsage?.input_tokens ?? 0, outputTokens: truncUsage?.output_tokens ?? 0 },
         sseEvents: diag.sseEvents,
       })
-      env.ctx.fail(model, new Error("upstream stream truncated: closed without finish_reason"), outboundResponseData())
+      env.ctx.fail(model, truncationError, outboundResponseData())
       sink.finalize?.()
       return
     }
@@ -1861,7 +1890,8 @@ async function pumpTranslateLegStreamingV4(opts: PumpAnthropicStreamingDispatchO
     const { ccAcc, respAcc } = failedCandidate
     const failedResponseData = (): ReturnType<typeof buildOpenAIResponseData> =>
       ccAcc ? buildOpenAIResponseData(ccAcc, model) : buildResponsesResponseData(respAcc as NonNullable<typeof respAcc>, model)
-    await closeAnchorViaOwner(sink, anchorHooks, env.ctx, "terminal")
+    const ownerDecision = await closeAnchorViaOwner(sink, anchorHooks, env.ctx, "terminal")
+    if (settleMessagesOwnerFailure(ownerDecision, env, model, recordForwarded, failedResponseData(), { cause: error })) return
     await sink
       .writeSynthetic?.({
         event: "error",

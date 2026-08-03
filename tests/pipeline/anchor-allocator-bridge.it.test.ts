@@ -4,11 +4,11 @@ import {
   test,
 } from "bun:test"
 
+import type { OwnerRawSink } from "~/lib/pipeline/delivery/types"
 import type {
   //
   AnchorHooks,
   AnchorState,
-  ClientSink,
 } from "~/lib/pipeline/types"
 
 import {
@@ -44,7 +44,7 @@ test("the pre-content anchor advances the shared allocator from wire index 0", a
     anchorClosed: false,
   }
   const frames: Array<{ kind: string; data: string }> = []
-  const sink: ClientSink = {
+  const sink: OwnerRawSink = {
     write: async (frame) => {
       frames.push({ kind: "real", data: frame.data ?? "" })
     },

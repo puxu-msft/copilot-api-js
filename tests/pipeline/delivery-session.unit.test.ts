@@ -6,7 +6,7 @@ import {
   test,
 } from "bun:test"
 
-import type { ClientSink } from "~/lib/pipeline/types"
+import type { OwnerRawSink } from "~/lib/pipeline/delivery/types"
 
 import { createDeliverySerializer } from "~/lib/pipeline/delivery/serializer"
 import { createDownstreamDeliverySession } from "~/lib/pipeline/delivery/session"
@@ -38,7 +38,7 @@ async function drain(n = 20): Promise<void> {
   for (let i = 0; i < n; i++) await Promise.resolve()
 }
 
-function arraySink(writes: Array<{ method: string; frame: unknown }>): ClientSink {
+function arraySink(writes: Array<{ method: string; frame: unknown }>): OwnerRawSink {
   return {
     async write(value) {
       writes.push({ method: "write", frame: value })
@@ -179,7 +179,7 @@ describe("P3-T1 downstream delivery session", () => {
 
     delivery.clientSink.suspendHeartbeat?.()
     delivery.clientSink.close?.()
-    await delivery.clientSink.writeAnchor?.(frame("content_block_stop", 0))
+    await (delivery.clientSink as OwnerRawSink).writeAnchor?.(frame("content_block_stop", 0))
     delivery.clientSink.resumeHeartbeat?.()
     for (let i = 0; i < 4; i++) {
       await clock.advance(20_000)
@@ -263,7 +263,7 @@ describe("P3-T1 downstream delivery session", () => {
           scaffoldCalls++
           const current = deliveryHolder.current
           if (!current) throw new Error("delivery not bound")
-          await current.clientSink.writeAnchor?.(frame("content_block_start", 0, "text"))
+          await (current.clientSink as OwnerRawSink).writeAnchor?.(frame("content_block_start", 0, "text"))
           await current.clientSink.writeKeepalive?.({
             event: "content_block_delta",
             data: '{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":""}}',

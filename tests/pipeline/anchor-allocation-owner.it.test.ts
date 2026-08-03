@@ -4,10 +4,10 @@ import {
   test,
 } from "bun:test"
 
+import type { OwnerRawSink } from "~/lib/pipeline/delivery/types"
 import type {
   //
   ClientFrame,
-  ClientSink,
 } from "~/lib/pipeline/types"
 
 import {
@@ -37,7 +37,7 @@ const realStart = (index: number): ClientFrame => ({
   data: JSON.stringify({ type: "content_block_start", index, content_block: { type: "thinking", thinking: "" } }),
 })
 
-function recordingSink(writes: Array<{ method: string; frame: ClientFrame }>): ClientSink {
+function recordingSink(writes: Array<{ method: string; frame: ClientFrame }>): OwnerRawSink {
   return {
     write: async (frame) => void writes.push({ method: "real", frame }),
     writeAnchor: async (frame) => void writes.push({ method: "anchor", frame }),
@@ -46,7 +46,7 @@ function recordingSink(writes: Array<{ method: string; frame: ClientFrame }>): C
   }
 }
 
-function setup(sink?: ClientSink) {
+function setup(sink?: OwnerRawSink) {
   const wireState = createGenerationWireState(createGenerationWireIndexAllocator())
   const writes: Array<{ method: string; frame: ClientFrame }> = []
   const delivery = createDownstreamDeliverySession({ sink: sink ?? recordingSink(writes), wireState })
@@ -81,7 +81,7 @@ test("build failure before the first write rolls back the frontier", async () =>
 })
 
 test("first attempted write consumes the index and terminates delivery on failure", async () => {
-  const sink: ClientSink = {
+  const sink: OwnerRawSink = {
     write: async () => {
       throw new StreamClientAbortError()
     },
@@ -173,7 +173,7 @@ test("closeOpenAnchor passes the allocated index explicitly and is idempotent", 
 test("wire-torn blocks frontier progress but still closes the already allocated anchor exactly once", async () => {
   let failWrite = false
   const writes: Array<ClientFrame> = []
-  const sink: ClientSink = {
+  const sink: OwnerRawSink = {
     async write(frame) {
       if (failWrite) throw new TypeError("tear after anchor commit")
       writes.push(frame)

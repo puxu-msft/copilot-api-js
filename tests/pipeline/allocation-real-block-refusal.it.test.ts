@@ -16,10 +16,10 @@ import {
   test,
 } from "bun:test"
 
+import type { OwnerRawSink } from "~/lib/pipeline/delivery/types"
 import type {
   //
   ClientFrame,
-  ClientSink,
 } from "~/lib/pipeline/types"
 
 import {
@@ -42,7 +42,7 @@ const delta = (index: number): ClientFrame => ({
 })
 const stop = (index: number): ClientFrame => ({ event: "content_block_stop", data: JSON.stringify({ type: "content_block_stop", index }) })
 
-function setupWithSink(sink: ClientSink) {
+function setupWithSink(sink: OwnerRawSink) {
   const writes: Array<ClientFrame> = []
   const wireState = createGenerationWireState(createGenerationWireIndexAllocator())
   const delivery = createDownstreamDeliverySession({ sink, wireState })
@@ -51,7 +51,7 @@ function setupWithSink(sink: ClientSink) {
 
 function setup() {
   const writes: Array<ClientFrame> = []
-  const sink: ClientSink = {
+  const sink: OwnerRawSink = {
     async write(frame) {
       writes.push(frame)
     },
@@ -71,7 +71,7 @@ test("a post-commit non-client tear poisons future allocations but keeps termina
   const writes: Array<ClientFrame> = []
   let failFirstAnchor = true
   let finalized = 0
-  const sink: ClientSink = {
+  const sink: OwnerRawSink = {
     async write(frame) {
       writes.push(frame)
     },
@@ -166,7 +166,7 @@ test("a terminated session refuses a REAL-block allocation without allocating or
 })
 
 test("a REAL-block first-write abort consumes the mapping and terminates delivery", async () => {
-  const sink: ClientSink = {
+  const sink: OwnerRawSink = {
     async write() {
       throw new StreamClientAbortError()
     },
@@ -187,7 +187,7 @@ test("a REAL-block first-write abort consumes the mapping and terminates deliver
 
 test("a REAL-block build success followed by a second-frame abort never reuses the visible mapping", async () => {
   let writes = 0
-  const sink: ClientSink = {
+  const sink: OwnerRawSink = {
     async write() {
       if (++writes === 2) throw new StreamClientAbortError()
     },
@@ -205,7 +205,7 @@ test("a REAL-block build success followed by a second-frame abort never reuses t
 })
 
 test("writeBlockFrame abort preserves mapping and terminates delivery", async () => {
-  const sink: ClientSink = {
+  const sink: OwnerRawSink = {
     async write(frame) {
       if (JSON.parse(frame.data ?? "{}").type === "content_block_stop") throw new StreamClientAbortError()
     },
@@ -223,7 +223,7 @@ test("writeBlockFrame abort preserves mapping and terminates delivery", async ()
 test("writeBlockFrame non-client errors remain writable for a terminal frame and finalize once", async () => {
   const writes: Array<string> = []
   let finalized = 0
-  const sink: ClientSink = {
+  const sink: OwnerRawSink = {
     async write(frame) {
       const type = JSON.parse(frame.data ?? "{}").type as string
       writes.push(type)

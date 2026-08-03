@@ -4,10 +4,10 @@ import {
   test,
 } from "bun:test"
 
+import type { OwnerRawSink } from "~/lib/pipeline/delivery/types"
 import type {
   //
   ClientFrame,
-  ClientSink,
 } from "~/lib/pipeline/types"
 
 import {
@@ -39,7 +39,7 @@ function deferred() {
   return { promise, resolve, reject }
 }
 
-function setup(sink: ClientSink = { write: async () => {}, close() {} }) {
+function setup(sink: OwnerRawSink = { write: async () => {}, close() {} }) {
   const wireState = createGenerationWireState(createGenerationWireIndexAllocator())
   const delivery = createDownstreamDeliverySession({ sink, wireState })
   return { wireState, delivery, port: delivery.allocationPort }
@@ -73,7 +73,7 @@ test("a closed session refuses an operation without allocating", async () => {
 
 test("a failed first frame permanently consumes its index and terminates delivery", async () => {
   const attempts: Array<ClientFrame> = []
-  const sink: ClientSink = {
+  const sink: OwnerRawSink = {
     async write(frame) {
       attempts.push(frame)
       throw new StreamClientAbortError()
@@ -106,7 +106,7 @@ test("a failed first frame permanently consumes its index and terminates deliver
 test("a visible first frame is never rolled back when the second frame fails", async () => {
   const attempts: Array<ClientFrame> = []
   let count = 0
-  const sink: ClientSink = {
+  const sink: OwnerRawSink = {
     async write(frame) {
       attempts.push(frame)
       if (++count === 2) throw new StreamClientAbortError()
@@ -137,7 +137,7 @@ test("a visible first frame is never rolled back when the second frame fails", a
 test("a queued operation reserves nothing and rechecks state when execution begins", async () => {
   const entered = deferred()
   const parked = deferred()
-  const sink: ClientSink = {
+  const sink: OwnerRawSink = {
     async write() {},
     async writeAnchor() {
       entered.resolve()
@@ -165,7 +165,7 @@ test("an abort while the first write promise is pending is post-commit", async (
   const entered = deferred()
   const pending = deferred()
   abort.signal.addEventListener("abort", () => pending.reject(new StreamClientAbortError()), { once: true })
-  const sink: ClientSink = {
+  const sink: OwnerRawSink = {
     async write() {},
     async writeAnchor() {
       entered.resolve()

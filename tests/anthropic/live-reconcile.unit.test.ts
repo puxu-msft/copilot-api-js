@@ -12,6 +12,7 @@ import {
   test,
 } from "bun:test"
 
+import type { OwnerRawSink } from "~/lib/pipeline/delivery/types"
 import type {
   //
   AnchorState,
@@ -261,9 +262,9 @@ describe("reconcileLiveFrame", () => {
 // ── makeReconcilingSink — the decorator ─────────────────────────────────────
 
 /** A stub inner sink recording (method, frame) tuples in order. */
-function stubSink(): { sink: ClientSink; calls: Array<{ m: string; frame?: ClientFrame }> } {
+function stubSink(): { sink: ClientSink; rawSink: OwnerRawSink; calls: Array<{ m: string; frame?: ClientFrame }> } {
   const calls: Array<{ m: string; frame?: ClientFrame }> = []
-  const sink: ClientSink = {
+  const sink: OwnerRawSink = {
     write: (frame) => (calls.push({ m: "write", frame }), Promise.resolve()),
     writeSynthetic: (frame) => (calls.push({ m: "writeSynthetic", frame }), Promise.resolve()),
     writeKeepalive: (frame) => (calls.push({ m: "writeKeepalive", frame }), Promise.resolve()),
@@ -272,7 +273,7 @@ function stubSink(): { sink: ClientSink; calls: Array<{ m: string; frame?: Clien
     freezeHeartbeat: () => calls.push({ m: "freezeHeartbeat" }),
     close: () => calls.push({ m: "close" }),
   }
-  return { sink, calls }
+  return { sink, rawSink: sink, calls }
 }
 
 describe("makeReconcilingSink", () => {
@@ -309,14 +310,14 @@ describe("makeReconcilingSink", () => {
     ])
   })
 
-  test("every non-write method forwards to the inner sink", async () => {
-    const { sink, calls } = stubSink()
+  test("every public non-write method forwards to the inner sink while owner-only anchor capability stays hidden", async () => {
+    const { sink, rawSink, calls } = stubSink()
     const dec = makeReconcilingSink(sink, injectedState(), hooks())
     const err = f("error")
     await dec.writeSynthetic?.(err)
     await dec.writeKeepalive?.(err)
     await dec.writeSyntheticEnvelope?.(err)
-    await dec.writeAnchor?.(err)
+    await rawSink.writeAnchor?.(err)
     dec.freezeHeartbeat?.()
     dec.close?.()
     expect(calls.map((c) => c.m)).toEqual(["writeSynthetic", "writeKeepalive", "writeSyntheticEnvelope", "writeAnchor", "freezeHeartbeat", "close"])
@@ -326,7 +327,7 @@ describe("makeReconcilingSink", () => {
     const bare: ClientSink = { write: () => Promise.resolve() }
     const dec = makeReconcilingSink(bare, injectedState(), hooks())
     expect(dec.writeSynthetic).toBeUndefined()
-    expect(dec.writeAnchor).toBeUndefined()
+    expect("writeAnchor" in dec).toBe(false)
     expect(dec.freezeHeartbeat).toBeUndefined()
     expect(dec.close).toBeUndefined()
   })

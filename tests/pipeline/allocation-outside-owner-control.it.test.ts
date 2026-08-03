@@ -17,10 +17,10 @@ import {
   test,
 } from "bun:test"
 
+import type { OwnerRawSink } from "~/lib/pipeline/delivery/types"
 import type {
   //
   ClientFrame,
-  ClientSink,
 } from "~/lib/pipeline/types"
 
 import {
@@ -51,7 +51,7 @@ function gate() {
   return { promise, release }
 }
 
-function setup(sink: ClientSink) {
+function setup(sink: OwnerRawSink) {
   const wireState = createGenerationWireState(createGenerationWireIndexAllocator())
   const delivery = createDownstreamDeliverySession({ sink, wireState })
   return { wireState, delivery, port: delivery.allocationPort }
@@ -61,7 +61,7 @@ const PRIMARY = { candidateId: "candidate-primary", dispatchId: "dispatch-primar
 
 test("POSITIVE CONTROL on the REAL session: a peek-then-write anchor outside the owner duplicates a wire index the oracle rejects", async () => {
   const frames: Array<ClientFrame> = []
-  const sink: ClientSink = {
+  const sink: OwnerRawSink = {
     async write(frame) {
       frames.push(frame)
     },
@@ -76,8 +76,8 @@ test("POSITIVE CONTROL on the REAL session: a peek-then-write anchor outside the
   // 非法形状：直接向 allocator peek 一个 index，然后用【另外的】write 调用把帧发出去，
   // 从不 commit —— 正是架构守卫禁止的 "队列外分配 + 两个 operation"。
   const stolen = wireState.allocator.nextAnchorIndex()
-  await delivery.clientSink.writeAnchor!(start(stolen))
-  await delivery.clientSink.writeAnchor!(stop(stolen))
+  await (delivery.clientSink as OwnerRawSink).writeAnchor!(start(stolen))
+  await (delivery.clientSink as OwnerRawSink).writeAnchor!(stop(stolen))
 
   // 合法的 owner 分配随后拿到【同一个】index —— frontier 从没被非法路径推进过。
   const mapping = ownerValue(
@@ -99,7 +99,7 @@ test("POSITIVE CONTROL on the REAL session: an out-of-owner allocation interleav
   const entered = gate()
   const frames: Array<ClientFrame> = []
   let anchorWrites = 0
-  const sink: ClientSink = {
+  const sink: OwnerRawSink = {
     async write(frame) {
       frames.push(frame)
     },
@@ -127,8 +127,8 @@ test("POSITIVE CONTROL on the REAL session: an out-of-owner allocation interleav
   const stalePeek = 0
   parked.release()
   expect(ownerValue(await legal)).toBe(0)
-  await delivery.clientSink.writeAnchor!(start(stalePeek))
-  await delivery.clientSink.writeAnchor!(stop(stalePeek))
+  await (delivery.clientSink as OwnerRawSink).writeAnchor!(start(stalePeek))
+  await (delivery.clientSink as OwnerRawSink).writeAnchor!(stop(stalePeek))
 
   expect(() => assertMonotonicWireIndices(frames)).toThrow()
 })

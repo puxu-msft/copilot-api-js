@@ -4,10 +4,10 @@ import {
   test,
 } from "bun:test"
 
+import type { OwnerRawSink } from "~/lib/pipeline/delivery/types"
 import type {
   //
   ClientFrame,
-  ClientSink,
 } from "~/lib/pipeline/types"
 
 import {
@@ -43,7 +43,7 @@ test("an anchor write parked at the sink cannot interleave with a real-block all
   const entered = gate()
   const frames: Array<ClientFrame> = []
   let writes = 0
-  const sink: ClientSink = {
+  const sink: OwnerRawSink = {
     async write(frame) {
       frames.push(frame)
     },

@@ -588,6 +588,15 @@ describe("package import boundaries", () => {
  * slip past text matching, and the whole point of this guard is that a bypass leaves no other trace.
  */
 describe("delivery owner close and legacy anchor mirrors have single authorities", () => {
+  test("non-owner production sinks cannot spell an anchor write, including extracted-frame witnesses", () => {
+    const tryLegacyAnchorWrite = async (sink: import("~/lib/pipeline/types").ClientSink, anchorHooks: import("~/lib/pipeline/types").AnchorHooks): Promise<void> => {
+      const legacyStop = anchorHooks.stopFrame(0)
+      // @ts-expect-error ClientSink deliberately withholds the owner-only anchor write capability.
+      await sink.writeAnchor?.(legacyStop)
+    }
+    expect(tryLegacyAnchorWrite).toBeFunction()
+  })
+
   test("owner-failure stays pure and legacy anchor state writes stay on the migration allowlist", async () => {
     const srcRoot = path.join(repoRoot, "src")
     const ownerFailurePath = path.join(srcRoot, "lib/pipeline/delivery/owner-failure.ts")
@@ -603,7 +612,6 @@ describe("delivery owner close and legacy anchor mirrors have single authorities
       const text = await readFile(file, "utf8")
       if (text.includes("closeOpenAnchor(")) ownerCloseCalls += 1
       if (/anchorClosed\s*=/.test(text) && !allowedAnchorClosedWriters.has(relative)) offenders.push(relative)
-      if (relative !== "lib/pipeline/delivery/session.ts" && /(?:writeAnchor\?\.|writeAnchor\s*\?\?|\.writeAnchor\()\s*\(?[^\n]*stopFrame/.test(text)) offenders.push(`${relative}:anchor-stop`)
     }
     expect(ownerCloseCalls).toBeGreaterThan(0)
     expect(offenders).toEqual([])

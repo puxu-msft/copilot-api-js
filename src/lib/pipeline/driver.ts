@@ -20,14 +20,14 @@ import type {
   DispatchHandle,
 } from "~/lib/context/model-operation-record"
 import type { RequestContext } from "~/lib/context/request"
+import type { OwnerFailure } from "~/lib/pipeline/delivery/owner-failure"
 import type { FrozenHedgePolicy } from "~/lib/pipeline/generation/hedge-policy"
 
+import { LiveOwnerFailureError } from "~/lib/anthropic/live-reconcile"
 import { classifyError } from "~/lib/error"
 import { recordAbortProvenanceGap } from "~/lib/observability/abort-provenance-gaps"
 import { recordRetryGiveUp } from "~/lib/observability/retry-giveups"
 import { recordRetryStrategyFire } from "~/lib/observability/retry-strategy-fires"
-import type { OwnerFailure } from "~/lib/pipeline/delivery/owner-failure"
-
 import { classifyOwnerFailure } from "~/lib/pipeline/delivery/owner-failure"
 import {
   //
@@ -1057,6 +1057,7 @@ async function runResponseSink(
     // A client disconnect (the transport guard's StreamClientAbortError, or any error
     // classified client-abort) settles as abort — the handler writes nothing further.
     if (classifyStreamError(error) === "client-abort") return { kind: "settled-abort" }
+    if (error instanceof LiveOwnerFailureError) return ownerFailureOutcome(error.failure, "close-anchor-before-real", env)
     // Otherwise surface the RAW error (richest-data-flow): the format handler classifies
     // it, shapes its protocol error frame, logs diagnostics, and settles ctx.fail.
     return streamErrorOutcome(error, env)
@@ -1434,7 +1435,10 @@ export async function runResponseBufferedSink(
         // before the retreat) → close it before surfacing the stream-error.
         const closeOutcome = await closeAnchorViaOwner("terminal")
         if (closeOutcome && closeOutcome.kind !== "stream-error") return closeOutcome
-        return closeOutcome ?? streamErrorOutcome(thrown ?? new Error("upstream stream truncated: closed without message_stop"), env, thrown === null || thrown === undefined)
+        return (
+          closeOutcome
+          ?? streamErrorOutcome(thrown ?? new Error("upstream stream truncated: closed without message_stop"), env, thrown === null || thrown === undefined)
+        )
       }
 
       // COMMIT on a clean drain that reached a TERMINAL upstream state: `message_stop` (success),
@@ -1615,7 +1619,10 @@ export async function runResponseBufferedSink(
       const committedDegrade = continuationCount > 0 ? "continuation-exhausted" : "partial-degrade"
       const degradeOutcome = committedAny ? committedDegrade : "exhausted"
       notifyBufferedResolve?.(degradeOutcome, attempt, { vendor, ...(continuationCount > 0 && { continuationRetries: continuationCount }) })
-      return closeOutcome ?? streamErrorOutcome(thrown ?? new Error("upstream stream truncated: closed without message_stop"), env, thrown === null || thrown === undefined)
+      return (
+        closeOutcome
+        ?? streamErrorOutcome(thrown ?? new Error("upstream stream truncated: closed without message_stop"), env, thrown === null || thrown === undefined)
+      )
     }
   } finally {
     sink.close?.()
