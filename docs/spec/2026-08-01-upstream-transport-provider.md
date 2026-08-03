@@ -53,12 +53,25 @@
 - **版本锁步**：sibling 包与主包必须同版本发布，主包 `optionalDependencies` 用精确版本（非 range），否则会出现主包与产物 ABI/接口错配。
 - **绝对路径覆盖仍然保留**——`bun x` 场景已不再依赖它，但开发期（改 Rust 代码后即时验证）与矩阵外平台自建产物仍需要它。
 
-### 0.2.1 待定：Rust provider 是否成为默认
+### 0.2.1 默认 provider：`auto` 探测（用户裁决 2026-08-03）
 
-产物随包分发后，两种形态都可行，**需用户裁决**：
+**`auto` = 有原生产物就用 Rust provider，没有就回落 `node:http2`。**
 
-- **保持 `node:http2` 为默认**：热路径不引入原生模块，Rust provider 显式 opt-in。风险最小，但「通用 provider」的能力（h1、经代理的长 thinking 保活）默认不生效。
-- **Rust provider 设为默认**：默认即获得 h1+h2+PING 的完整能力；代价是原生模块进入所有人的热路径，且矩阵外平台必须显式失败并引导切回 `node:http2`。
+这与 §0.2 的「绝不静默降级」不冲突，因为**回落不得静默**。三条强制要求：
+
+1. **启动期大声告警**：产物不存在时打一条明确的 `consola.warn`，指出原生产物缺失、因此**当前平台不受支持或未安装**，且 **h1 能力与经代理的长 thinking 保活默认不可用**，并给出补救方式。
+2. **`/api/status` 可见**：Rust provider 的 `availability` 为 `{ level: "unavailable", detail: <原因> }`，`selection.routes` 如实反映实际生效的 provider——诊断消费方必须能区分「回落了」与「本来就选的 node:http2」。
+3. **显式选择不享受回落**：`provider: rust` 被显式配置而产物缺失时 **启动即失败**，绝不回落。回落只是 `auto` 的语义，不是缺失产物的通用兜底。
+
+理由：`auto` 的语义本就是「在当前环境下选最好的可用实现」，回落是它的正常行为而非降级事故；而显式指名一个 provider 是一项要求，要求不被满足就该失败。区分二者，「绝不静默降级」这条纪律才不会被稀释成「反正会回落」。
+
+### 0.2.2 构建前提：`RUSTUP_HOME` 必须显式传递
+
+本机 Rust 装在**非默认位置**：`RUSTUP_HOME=/home/xp/.local/rustup`（`stable-x86_64-unknown-linux-gnu`，rustc 1.97.1 / cargo 1.97.1，已安装 target 仅 `x86_64-unknown-linux-gnu`）。
+
+⚠ **不继承交互 shell 环境的进程（构建脚本、CI、subagent 的工具 shell）会看到 `rustup toolchain list → no installed toolchains`，从而得出「没装 Rust」的假阴性**——本会话就踩了一次。构建脚本与 CI 必须显式设置 `RUSTUP_HOME`，或先探测多个候选位置再报错。
+
+交叉编译矩阵还需 `rustup target add` 各目标三元组——本机目前只有 `x86_64-unknown-linux-gnu` 一个。
 
 ### 0.3 打包接线（现状与需改动处）
 
