@@ -93,38 +93,46 @@ for i in $(seq 1 "$RUNS"); do
   } > "$log"
 
   before_tree="$(git -C "$REPO" status --porcelain)"
+  before_head="$(git -C "$REPO" rev-parse HEAD)"
   start=$(date +%s)
   # No pipe into tee: tee's status would mask the suite's. Append, then read back.
   ( cd "$REPO" && FORCE_COLOR=0 "${CMD[@]}" ) >> "$log" 2>&1
   rc=$?
   end=$(date +%s)
   after_tree="$(git -C "$REPO" status --porcelain)"
+  after_head="$(git -C "$REPO" rev-parse HEAD)"
 
   # A per-run header snapshot taken before the run says nothing about what the
   # tree looked like during it. Someone editing a tracked file mid-run used to
   # leave the batch reporting green against a commit it never actually measured.
+  #
+  # Comparing only `status` is not enough, and this was a real hole: a commit
+  # landing mid-run leaves the porcelain output empty on both sides while HEAD
+  # moves underneath, so the batch reported green for a commit it never ran.
+  # Both axes are checked; either moving invalidates the run.
   drift=0
-  if [ "$before_tree" != "$after_tree" ]; then
-    drift=1
-    failed=$((failed + 1))
-  fi
+  drift_why=""
+  if [ "$before_tree" != "$after_tree" ]; then drift=1; drift_why="worktree"; fi
+  if [ "$before_head" != "$after_head" ]; then drift=1; drift_why="${drift_why:+$drift_why+}HEAD"; fi
+  if [ "$drift" = 1 ]; then failed=$((failed + 1)); fi
 
   {
     printf '\n=== exit code    : %d\n' "$rc"
     printf '=== finished     : %s\n' "$(date -Is)"
     printf '=== elapsed      : %ds\n' "$((end - start))"
-    printf '=== tree drift   : %s\n' "$([ "$drift" = 1 ] && echo YES || echo no)"
+    printf '=== drift        : %s\n' "$([ "$drift" = 1 ] && echo "YES ($drift_why)" || echo no)"
+    printf '=== head after   : %s\n' "$after_head"
     if [ "$drift" = 1 ]; then
-      printf '%s\n' "$after_tree" | sed 's/^/=== after        : /'
+      printf '%s\n' "$after_tree" | sed 's/^/=== tree after   : /'
     fi
   } >> "$log"
 
   tail_line="$(grep -a 'parallel-test' "$log" | tail -1)"
   printf 'run %02d  rc=%d  %ds  drift=%s  %s\n' \
-    "$i" "$rc" "$((end - start))" "$([ "$drift" = 1 ] && echo YES || echo no)" "${tail_line:-<no summary line>}"
+    "$i" "$rc" "$((end - start))" "$([ "$drift" = 1 ] && echo "YES:$drift_why" || echo no)" "${tail_line:-<no summary line>}"
 
   if [ "$drift" = 1 ]; then
-    printf 'baseline-runs: the working tree changed during run %02d; this run measured no single commit.\n' "$i" >&2
+    printf 'baseline-runs: %s changed during run %02d; this run measured no single commit.\n' "$drift_why" "$i" >&2
     if [ "$STOP_ON_FAIL" = "1" ]; then
       printf 'baseline-runs: stopping. Log: %s\n' "$log" >&2
       exit 1

@@ -87,7 +87,8 @@
 
   **两类成员别混**：`statement` 今天就说了 Q1 的事；`destination` 今天**按设计是空的**，裁决必须把它填上——把 destination 的空当成「已同步」正是最容易犯的错。
   ⚠️ **本文件上一版在这里连错三处，值得留着当反例**：① 把 key 形状的落点写成 §4.9（实为 §4.7）；② 断言「§4.9 全文一次都没提 Q1」——**字面为真、结论为假**，§4.9:414 逐字写着选项 A 与 B，那句话还会**主动把接手方推离**这一节；③ 整份清单漏了 §4.12。三处同源：**拿「按某查询没找到」当「不存在」**，即本文件自己命名的 `verified-by-a-wrong-query`，**同型第三次复发**。
-- **验收**：`q1-locations.sh` 退出 0（七处状态全部符合预期，且**没有第八处**），且七处指向同一方案、引用同一决策 id。
+- **验收**：`q1-locations.sh` 退出 0（七处状态全部符合预期，且**没有未登记的第八处**），且七处指向同一方案、引用同一决策 id。
+  ⚠️ **别把这个退出码当完备性证明。** 谓词是自然语言（`Q1|联合查询|joint query|compound dimension|multidimensional|多轴|跨轴|cube|tuple`），**可被没人想到的措辞绕过**——评审点名的 `跨轴／cube／tuple` 已折进去，但「把想到的折进去」不等于集合闭合。`rc=0` 的意思是「**没有新小节命中这条冻结谓词**」，即**漂移绊线**，不是「Q1 只出现在这七处」。按本项目 `freeze-hit-set-not-zero-hits`，**存档的是那份冻结命中集合，不是零漏断言**；扩写 RFC 遥测部分的人仍欠一次人工通读。
 - **证伪**（任一成立即未闭合）：① Commit 5 开工时 telemetry schema 仍无定形；② 七处只同步了一部分（destination 仍为 absent 也算没同步）；③ 都写了但互相矛盾；④ **判据自己漏掉了某一处**。
 - **鉴别力正控（已实跑，非计划）**：在未登记小节注入一句 Q1 陈述 → 报 `UNLISTED 4.8`、rc=1；把 §9.2 填成已裁 → 报 `9.2 absent → declares-open` DRIFT、rc=1；从 EXPECTED 删掉 4.12 那行 → 报 `UNLISTED 4.12`、rc=1；**假红对照**：在同一小节写一句与裁决无关的话 → 仍 rc=0。
   （一条脚手架教训：删行那次首跑得 rc=2，是副本脚本推导 `REPO` 失败、找不到文档——**红的不是目标机制**，显式给 `DOC=` 重跑才算数。）
@@ -97,7 +98,7 @@
 - **事实**：`History V3 store performance > prepare and commit do not depend on prior session history length`，21 次连跑未再现，**但按其约 1/15 的原始复现率，这只有约 0.24 的概率意义**。详见 `docs/tmp/2026-08-03-baseline-flake-status.md`。
 - **验收拆两段，缺一不可**（交接评审指出原表述可在「成功复现但完全没修」时判通过）：
   - **诊断 AC**：定出根因，并给出**确定性 reproducer**（在受控条件下必现）。
-  - **修复 AC**：① 逆 mutation（把修复改回原形态）在该 reproducer 下**转红**；② 修复后在同等负载下**转绿**；③ false-red 对照绿（正确实现不被误伤）；④ 在 entry commit 上连跑 ≥15 次全绿并**保存每次的原始输出文件**——用 `OUT=docs/tmp/<date>-entry-runs RUNS=15 exp/inter-block-anchor-allocator/baseline-runs.sh`，**别照散文配方手搓**（它会拒绝脏树、把 provenance 与运行绑在同一次执行、并保证测试的退出码不被管道吞掉；六条正样本对照见 run-log 末尾）。**本轮那 21 次不满足④**，它只有摘要——别拿它顶。
+  - **修复 AC**：① 逆 mutation（把修复改回原形态）在该 reproducer 下**转红**；② 修复后在同等负载下**转绿**；③ false-red 对照绿（正确实现不被误伤）；④ 在 entry commit 上连跑 ≥15 次全绿并**保存每次的原始输出文件**——用 `OUT=docs/tmp/<date>-entry-runs RUNS=15 exp/inter-block-anchor-allocator/baseline-runs.sh`，**别照散文配方手搓**（它拒绝脏树、拒绝空批次、把 provenance 与运行绑在同一次执行、保证退出码不被管道吞掉，并在**每次运行前后各取一次 `HEAD` 与 `status`**——两者任一变动即判该次无效；九条正样本对照见 run-log 末尾）。**本轮那 21 次不满足④**，它只有摘要——别拿它顶。
 - **证伪**：只做到「复现成功」就标验收完成——复现恰恰证明缺陷仍在；或因为「最近没见到」宣布已修；或只有汇总数字而无逐次记录。
 - **注意**：RFC §7.1 要求在**当时的 entry commit** 上连跑 ≥15 次，旧读数不顶替。
 

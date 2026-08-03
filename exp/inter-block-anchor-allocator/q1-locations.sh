@@ -26,6 +26,7 @@
 #
 # Usage: exp/inter-block-anchor-allocator/q1-locations.sh [--table]
 # Exit:  0 all listed sections match expectation and no unlisted one matches
+#          the frozen predicate (a tripwire result, not a completeness proof)
 #        1 drift (state mismatch, or an unlisted section matches)
 #        2 usage / file problems
 
@@ -37,7 +38,19 @@ DOC="${DOC:-$REPO/docs/rfc/2026-08-03-generation-emission-command-algebra/design
 
 # Content predicate for "this line participates in Q1". Deliberately NOT just
 # "Q1": section 4.9 is a member and never spells it.
-PREDICATE='Q1|联合查询|compound dimension|multidimensional'
+#
+# HONEST BOUNDARY -- read this before quoting the exit code as proof.
+# This predicate is natural language, so it is evadable: a future section could
+# discuss the same question using "跨轴过滤", "cube", "tuple" or wording nobody
+# has thought of, and this script would call the set complete. Terms named by
+# review are folded in below, but folding in the ones we thought of does not
+# make the set closed.
+# So what exit 0 means is "no NEW section matches a frozen predicate", i.e. a
+# drift tripwire -- not "Q1 appears in exactly these seven places". Per the
+# project's freeze-hit-set-not-zero-hits rule, the artifact of record is the
+# frozen hit set below, not a zero-miss claim. Anyone extending the RFC's
+# telemetry discussion still owes a human read.
+PREDICATE='Q1|联合查询|joint query|compound dimension|multidimensional|多轴|跨轴|cube|tuple'
 
 # Two kinds of member, do not conflate them:
 #   statement  -- says something about Q1 today; expected "declares-open"
