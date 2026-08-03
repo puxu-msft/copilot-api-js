@@ -37,7 +37,20 @@
 
 对「连续换轴是否说明不变量不在这一层」的正面回答：**成立，但理由不是次数**。两次 witness 利用的是同一事实——判据在观察表示层，而真正的违规是「绕过 owner canonical state 后仍能产生 client-visible wire effect」。
 
-**下一步（已在进行）**：`gpt-souls:architect-advisor` 冻结 owner/wire 边界形状（产出 `docs/tmp/2026-08-03-m1-owner-wire-boundary-design.md`），**明确禁止再产出任何源码扫描/类型名匹配类判据**；边界冻结后才交实施者。G2/G3 的行为 oracle 另由 verifier 从冻结契约独立推导。**在边界冻结前不要动手改 G1。**
+**下一步（已在进行）**：`gpt-souls:architect-advisor` 已冻结 owner/wire 边界形状，产出 `docs/tmp/2026-08-03-m1-owner-wire-boundary-design.md`。
+
+### ⚠️ 边界设计触发了范围变更，**用户已裁决**（2026-08-03）
+
+设计结论：正确形状**要求回开 P2 已冻结的 owner API**，并把整个客户端 emission 面重塑成 command algebra。三个缺口是实施细节补不平的——① `WireEnvelopeFactory.anchor(frame)` 让调用方**自己声称** anchor provenance；② `closeOpenAnchor` 与随后的 real start 分属两个 operation，表达不了「close→real-start 同一 callback」（**plan 的 S3 节早就要求过这个 transaction，当时没发现 API 表达不了**）；③ 公共 `ClientSink.write` 是无条件 wire capability，不动它就没法让所有 emission 先过 effect 校验——**这是同字节 stop 旁路的根**。
+
+**用户裁决**：
+1. **采纳「全量：现在就重写 emission 面」**——不拆、不排后面。M1 的范围因此从「关闭权威」扩展为 owner command algebra + 13 个出口逐个收口（driver live/buffered/retreat、live 装饰器退回纯 transform、handler 终局、heartbeat 归属、terminate/finalize、Responses WS 终局路径、测试 sink 改注入式）。
+2. **该设计必须先过评审再定排期**——理由：它要改经六轮评审冻结的 API，而它自己一轮评审都没过。
+
+**评审在跑**（两路正交）：`docs/tmp/2026-08-03-m1-boundary-design-review-claude.md`（对抗闭合主张：13 格闭合等级判定、独立枚举出口对账、有无更小闭合方案、自证型断言）与 `-review-gpt.md`（可行性与爆炸半径：删无条件 `write` 的调用点计数、测试改造是否让某些测试**失去判别力**、三个异域 writer 的域隔离是否为真、**与 P6 心跳修复是否冲突**、每 commit 可编译的迁移切分是否存在）。
+
+**接手须知**：在这两路评审收口前，**不要开始实施边界重写**，也不要按旧形状继续推进 M2——M2 的三腿接线会大量建立在即将被改掉的 API 上。
+
 
 
 
