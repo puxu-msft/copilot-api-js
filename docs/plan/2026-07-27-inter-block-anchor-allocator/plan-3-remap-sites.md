@@ -42,13 +42,13 @@ anchor@2（测试经 owner API 落）→ real@3（上游1，生产分配）→ o
 > - 未迁移腿走 **M1 引入的 bridge 判据**（`anchorsOpened() > 0 ? +1 : +0`），已迁移腿走 frontier mapping；
 > - 两者**逐块相等**（bridge 的等价性证明见下方「M1 的迁移 bridge」，含 `enveloped_ping` 分支）。差异**只在 ≥2 个 anchor 时显现**，而生产开出第二个 anchor 的唯一途径是 **M6 打开心跳门**。
 >
-> 故 M2–M5 期间即便三腿迁移进度不一，除下方“wire-torn close”待用户裁决分支外，生产 wire 逐字节不变（O-6 每个 commit 都跑作为实证）。多-anchor 状态只存在于测试进程内，不是可交付的生产行为；**完整行为等价结论在该开放项裁决前不得宣称**。
+> 故 M2–M5 期间即便三腿迁移进度不一，生产 wire 逐字节不变（O-6 每个 commit 都跑作为实证）。多-anchor 状态只存在于测试进程内，不是可交付的生产行为。M1 对 wire-torn 后关闭 的行为也已按 README C9 定稿为“close 例外可写”，因此行为等价不再有开放门控。
 >
 > **本序列唯一的硬序约束：M6 必须晚于 M2–M4 全部完成。** 违反它才会产生真正的半坏窗口（生产已开多 anchor 而某腿仍算 +1）。
 
 | # | commit | 内容 | 终态不变量 | 可满足的门 |
 |---|---|---|---|---|
-| **M1** | `feat(delivery): repeatable anchor lifecycle and close authority in the wire owner` | ① `openAnchorIndex` 状态机 + `closeOpenAnchor` API 落在 owner；② **13 个关闭者全部迁到 owner close**，其中三个 close-before-real 只迁关闭、各腿的分配 + remap 仍归 M2/M3/M4；③ legacy 字段保留到 M5，owner 镜像 `anchorClosed`，injector 维持开侧同步发布，live 层零 `anchorClosed` 读写；④ `closeOpenAnchor` / `writeBlockFrame` 补 heartbeat 时钟；⑤ 未迁移腿用 bridge 判据；⑥纯 owner-failure 翻译、`PipelineInfo` partial-delivery 诊断与 `OwnerResult` 收紧在同一 commit 落地 | **可编译、关闭权威唯一**：同一 anchor 不跨 legacy / owner 双轨；生产仍至多开一个 anchor；handler／driver 原有 settle、snapshot 与 heartbeat 时钟语义保留。**行为等价受 wire-torn close 待用户裁决门控，裁决前不得宣称成立** | owner 单元测试（连续两轮 open/close、close 幂等、终局 exactly-once）+ **13 站点关闭回归** + owner→owner 组合 oracle（第二个关闭者得 `"none"`、wire 仅一个 `stop@0`）+ 任一关闭者改回 legacy 即转红的 mutation control + 两个 owner 写入口 heartbeat 时钟 oracle + live per-frame serializer 接线／O-6 wire 等价 + 四格可达／两格非法组合分层 oracle + `PipelineInfo` History round-trip + 类型级正负测 + owner-failure 边界守卫。**O-6 只证无-anchor 主腿；有-anchor 行为还受待用户裁决项约束**（m-1、T-A、T-B） |
+| **M1** | `feat(delivery): repeatable anchor lifecycle and close authority in the wire owner` | ① `openAnchorIndex` 状态机 + `closeOpenAnchor` API 落在 owner；② **13 个关闭者全部迁到 owner close**，其中三个 close-before-real 只迁关闭、各腿的分配 + remap 仍归 M2/M3/M4；③ legacy 字段保留到 M5，owner 镜像 `anchorClosed`，injector 维持开侧同步发布，live 层零 `anchorClosed` 读写；④ `closeOpenAnchor` / `writeBlockFrame` 补 heartbeat 时钟；⑤ `wireTorn` 只封锁四个 frontier 入口，close 例外仍可写；⑥ 未迁移腿用 bridge 判据；⑦纯 owner-failure 翻译、`PipelineInfo` partial-delivery 诊断与 `OwnerResult` 收紧在同一 commit 落地 | **可编译、行为等价、关闭权威唯一**：同一 anchor 不跨 legacy / owner 双轨；生产仍至多开一个 anchor；handler／driver 原有 settle、snapshot、heartbeat 时钟与 wire-torn 终局块平衡语义保留 | owner 单元测试（连续两轮 open/close、close 幂等、终局 exactly-once）+ **13 站点关闭回归** + owner→owner 组合 oracle（第二个关闭者得 `"none"`、wire 仅一个 `stop@0`）+ 任一关闭者改回 legacy 即转红的 mutation control + wire-torn 后 close 仍写 stop 的 oracle／反向 mutation + 两个 owner 写入口 heartbeat 时钟 oracle + live per-frame serializer 接线／O-6 wire 等价 + 四格可达／两格非法组合分层 oracle + `PipelineInfo` History round-trip + 类型级正负测 + owner-failure 边界守卫。**O-6 只证无-anchor 主腿；有-anchor 零变化由站点回归、exactly-once 与 wire-torn 后关闭 oracle 证明**（m-1、T-A、T-B） |
 | **M2** | `refactor(driver): allocate and remap buffered-flush blocks via the frontier owner` | S1（`driver.ts:1185`）分配 + remap | S1 走 frontier；S2/S3 走 bridge（数值等价，见上方证明）；**S1 的 bridge 已删**；winner 一致性由同一 selected source 依次驱动 `beginLeg` + `noteWinner`，winner 帧继续走装饰 sink，旧 `commitWinnerBlock` / `writeWinnerFrame` API 不得复活 | Task 3.1 的 offset≥2 测试（M1 已使第二 anchor 能被生产正确关闭）；S1 两维 mutation 均红；O-1/O-2/O-6；**承接 P2 C11 移入项：History generation 轨断言 buffered-flush real frame 使用该 primary/recovery leg 的真实 candidateId/dispatchId，非 `"legacy"`** |
 | **M3** | `refactor(driver): allocate and remap retreat write-through blocks via the frontier owner` | S2（`driver.ts:1242`） | S2 走 frontier；**S2 的 bridge 已删**；S3 仍走 bridge | Task 3.2 + S2 两维 mutation；O-1/O-2/O-6；**承接 P2 C11 移入项：History generation 轨断言 retreat real frame 沿用原 leg 的真实 candidateId/dispatchId，非 `"legacy"`** |
 | **M4** | `refactor(live-reconcile): allocate, close off and remap live blocks in one wire transaction` | S3 分配 + remap；把 M1 已迁入 owner 的 close-before-real 与 real allocation/write **融合**进一个 transaction（不是到 M4 才迁关闭权威） | **三腿全部走 frontier**；bridge 判据零命中；legacy 字段 allowlist 仍是 M1 已达成的 owner + injector 两处；`tests/architecture/anchor-remap-single-authority.unit.test.ts` 的 AST `REMAP_CALL_ALLOWLIST` 中 `legacy:*` 条目清零 | Task 3.3 + S3 两维 mutation + “transaction 内不可插入”断言；O-1/O-2/O-6；legacy remap allowlist 清零后 ratchet 仍绿，临时新增 literal／变量 offset／直调 primitive 任一 remap 必红；承接 P2 C11 live 腿断言，并做 merged-state 三腿统一 oracle：primary/recovery/continuation real frame 各带真实 candidateId/dispatchId、均非 `"legacy"`、主腿 ≠ 续写腿。M4 未完成此统一断言即视为未完成 |
@@ -59,7 +59,7 @@ anchor@2（测试经 owner API 落）→ real@3（上游1，生产分配）→ o
 
 ### M2 前置条件：legacy 瞬时撕裂必须随 S1 owner 化一并消失
 
-**现象**：P2 的 `wireTorn` 只封锁 owner 五入口；当前 legacy buffered/live 写出仍可在一次非 client 瞬时 write failure 后，绕 owner 写出孤儿 `content_block_stop@0`，handler 最终把该流记成功。若首个真实 start 尚未 owner 化，owner 看不到 legacy byte write，自然无法把它纳入 C9 commit/tear 裁决。
+**现象**：P2 的 `wireTorn` 只封锁四个推进 frontier 的 owner 入口（`allocateAndWriteAnchor` / `withAllocatedRealBlock` / `beginLeg` / `writeBlockFrame`）；`closeOpenAnchor` 例外，仍可平衡已分配 anchor。当前 legacy buffered/live 写出仍可在一次非 client 瞬时 write failure 后，绕 owner 写出孤儿 `content_block_stop@0`，handler 最终把该流记成功。若首个真实 start 尚未 owner 化，owner 看不到 legacy byte write，自然无法把它纳入 C9 commit/tear 裁决。
 
 **为何当前第二次分配不可达、M2 后立即可达**：P2 生产分配调用方只有一次性 anchor injector，其 latch 使同 generation 的第二次 owner 分配不可达；M2 把每个真实 `content_block_start` 接入 `withAllocatedRealBlock` 后，同一 generation 会发生后续热路径分配，若 legacy撕裂未迁走便会把 index洞与孤儿 stop 带入真实流。
 
@@ -87,7 +87,7 @@ anchor@2（测试经 owner API 落）→ real@3（上游1，生产分配）→ o
    - `anchorsOpened()===0` ⟺ 从未开 anchor → 旧门为假 → 两者都给 `+0`；
    - `enveloped_ping` 模式：只注入 message_start envelope、**不开 anchor 块**，故 `anchorsOpened()===0` 且旧门的 `anchorBlockOpen` 为 false → 两者都给 `+0`（**这条最易漏，已核实**：`keepalive-anchor.ts` 的 envelope injector 置 `injected` 但不置 `anchorBlockOpen`）。
 
-   三种情形逐块相等 → bridge 与旧门在 remap 论域内行为等价，M2–M4 期间相应 wire 字节不变（O-6 每 commit 实证）；不覆盖下方待用户裁决的 wire-torn close 分支。
+   三种情形逐块相等 → bridge 与旧门在 remap 论域内行为等价，M2–M4 期间相应 wire 字节不变（O-6 每 commit 实证）。wire-torn 后关闭 已按 README C9 定稿为 close 例外可写，不再构成本证明的开放项。
 3. **逐腿删除**：每迁完一腿立刻删该腿 bridge；**M4 收口后全仓 bridge 零命中**（`rg -n "anchorsOpened\(\) > 0" src/` 为空），旧字段随 M5 一并退役。
 4. **架构守卫**：bridge 判据只允许出现在**尚未迁移**的站点；M4 之后出现任何 bridge 命中即 fail。
 
@@ -202,14 +202,13 @@ export function classifyOwnerFailure(failure: OwnerFailure, operation: OwnerOper
 
 - **穷尽性**：内部用 `satisfies Readonly<Record<OwnerFailureReason, …>>`，加第四个 reason 编译失败，不写 `default`。
 - **分类规则**：`client-gone` → `client-aborted`；`wire-torn` → `fail-loud`；`session-terminating` → `ctx.settled ? delivery-finished : fail-loud`，沿用 `driver.ts:938-940` 的现行判据。调用方没有 ctx 时传 `{ settled: false }`，即站点 1 的 `ctx === undefined` 必须视为未 settle、loud fail，不得静默吞。（M-1）
-### 待用户裁决：`wire-torn` 时 close 与终局错误帧的冲突
+### 已裁决：`wireTorn` 只禁止推进 frontier，`closeOpenAnchor` 仍可关闭已分配 anchor
 
-C9 的两句冻结文字给出相反方向：一方面要求五个 owner 入口在 `wire-torn` 时统一拒绝，故 `closeOpenAnchor` 无法补 `stop@0`；另一方面又说“禁止后续分配但不关闭 session，因此 terminal error / close / finalize 仍可完成”。性质 4 当前按 reason 规定 `wire-torn` 不短路并继续写 handler 终局错误帧，于是客户端会看到**未闭合的 `block@0` + error**；这相对今天 legacy 关闭仍会写 `stop@0` 是 M1 引入的可见回归，也与 §10.5“错误终局前平衡块结构”的立法理由冲突。
+用户 2026-08-03 选择读法 B，并已同步冻结到 README C9：`wireTorn` 后，四个推进 frontier 的入口 `allocateAndWriteAnchor` / `withAllocatedRealBlock` / `beginLeg` / `writeBlockFrame` 返回 `{ok:false,reason:"wire-torn",committed:false}`；`closeOpenAnchor` 是例外，仍照常写出已分配 anchor 的 stop 帧。关闭不推进任何 index；若拒绝关闭，客户端会收到未闭合的 `block@0` 紧跟 error，既违反 §10.5“错误终局前平衡块结构”，也是相对 legacy 行为的回归。
 
-- **读法 A：五入口统一拒绝优先。** `wire-torn` 后 owner close 返回拒绝；handler 仍写 error。客户端得到未闭合 block + error，保留“普通终局写仍可完成”，但牺牲块结构平衡与 M1 行为等价。
-- **读法 B：“close 仍可完成”优先。** close 必须有一条不受 allocation 封锁的 owner 终局路径，先写 `stop@0` 再写 error。客户端得到闭合 block + error，保持 §10.5 与 legacy 可见行为，但需要用户明确 C9 中“统一拒绝”的例外或边界，计划不得自行改 C9。
+**对 preflight 的具体要求**：通用 `ownerUnavailable()` 不能直接用于 `closeOpenAnchor`，或必须支持 close 专用模式。close preflight 在 `wireTorn` 时不得拒绝，应继续读取既有 `openAnchorIndex` 并尝试 stop；`client-gone` / `session-terminating` 仍拒绝，因为这两种状态下写通道确已不可用。close 成功后按正常路径清 `openAnchorIndex`、置 mirror `anchorClosed = true`、更新时间戳；非 client close write 再失败仍抛 `DeliveryOwnerError`。
 
-**门控**：未获用户裁决前，M1 不得宣称“行为等价”，也不得由实施者自行选择 A/B 或修改 C9。其余已冻结工作可规划，但该分支的最终 oracle 与实现形状保持阻塞。
+该裁决不改变 outcome 映射：四个 frontier 入口返回的 `wire-torn` failure 仍映射为 `fail-loud` / driver `stream-error`；它只改变 `closeOpenAnchor` 的 preflight 是否因 `wireTorn` 拒绝。性质 4 因而落实为：先由 owner 补 `stop@0`，再由站点写终局 error，客户端得到闭合的 block + error。
 - **driver 适配器**：私有 `ownerFailureOutcome`（`driver.ts:937-942`）改收 `OwnerFailure + OwnerOperation`，消费 decision 后分别返回 `settled-abort`、`delivery-finished` 或调用既有 `streamErrorOutcome(decision.error, env)`；后者保留 `env.clientFormat` 与 provenance-gap 语义。更新的是 `ownerFailureOutcome` 的 5 个调用点（`driver.ts:878/1022/1109/1523/1581`），它们恰好都位于 `beginLeg` 失败分支，不是修改 `beginLeg` 自身。（m-3）
 - **pump 侧助手**：`closeAnchorViaOwner(sink, anchorHooks, anchorState, ctx, mode)` 的 `ctx` 类型允许 `undefined`；成功／`"none"`／无 owner 返回 `undefined`，returned failure 或捕获到的 `DeliveryOwnerError` 返回 decision。`settleFromOwnerFailure` 的 options 必须一次吸收 8 站点差异：`model` 的三种来源、`partial` 的不同构造来源、可选 `upstreamSucceeded`（站点 3 为 `true`）、可选站点原始 `cause` 及站点 1 的自定义 settle 闭包；站点不得在调用处重新发明 reason 分类。owner failure error 是终态错误，站点原始诊断保留为 `cause`，不得丢弃。（M-8）
 - **收尾顺序按站点分两种写法**，共同不变量是 snapshot 必须在 settle 前完成（M-2、m-4）：
@@ -289,6 +288,8 @@ export type OwnerOperation =
 
 **M1 新增 exactly-once 组合 oracle**（B-B，第二轮修正）：同一个 anchor 的两个 owner 关闭者依次调用，第二个必须得到 `{ok:true,value:"none"}`，wire 上只有一个 `stop@0`。再加 mutation control：把 13 个关闭者中任意一处改回 legacy stop 写出，该 oracle 必须转红，证明它会咬住“漏迁一处”。原表述“legacy 关过后 owner 再关应得 `none`”是照着采纳 (c) **之前**的问题陈述写 oracle；在 (c) 落地后正确实现里已不存在 legacy 关闭者，而且 legacy 关闭从不清 `openAnchorIndex`，故该旧 oracle 只会逼实现者复活已否决的修法 (b)，必须废弃。现存 `anchor-multiblock-lifecycle.it.test.ts:494` 的 legacy↔legacy 两次关闭也不能冒充本 oracle。
 
+**M1 新增 wire-torn 后关闭 oracle**（用户裁决）：先让非 client post-commit 撕裂置 `wireTorn`，再驱动终局关闭；`closeOpenAnchor` 必须仍写出 `stop@0`，随后站点写 error，客户端观测为“闭合的 `block@0` + error”。mutation control：让 `closeOpenAnchor` 也在 `wireTorn` preflight 返回拒绝，该 oracle 必须因缺 stop／块未闭合而转红。
+
 **原子迁移红线按 anchor 定义**（B-B、建议 2）：同一个 anchor 的所有关闭者不得跨 legacy / owner 两套机制并存；不同站点也可能关闭同一个 anchor，故不能按“单站点内不双写”放行。M1 必须在同一个 commit 内迁完 13 个关闭者，删除所有 legacy anchor-stop 写出，接 owner close，并加入 owner→owner 组合 exactly-once oracle及“任一关闭者改回 legacy 即转红”的 mutation control；不得先接部分 owner close、让其余关闭者继续 legacy 写 stop。`openAnchorIndex` 只写不读的 P2 地基在该原子 commit 后成为唯一关闭权威。
 
 | owner 操作 | `openAnchorIndex` | `anchorBlockOpen` | `anchorClosed` | `injected` |
@@ -302,7 +303,7 @@ export type OwnerOperation =
 | `closeOpenAnchor` 无 open anchor，返回 `{ok:true,value:"none"}`（2026-08-02 补正，同上） | `undefined`（本就是） | 不变 | 不变 | 不变 |
 | `closeOpenAnchor` **client-gone**：返回 `{ok:false,reason:"client-gone",**committed:true**}`（2026-08-02 复核 `session.ts:411-413` 实测：**`committed` 为 true**，且 `openAnchorIndex` **不被清空**——清空只发生在成功路径 `:407`） | **不变**（仍指向未关的 anchor） | 不变 | 不变 | 不变 |
 | `closeOpenAnchor` **非 client 写失败**：置 `wireTorn` 并 **throw `DeliveryOwnerError`**（`session.ts:415`） | 不变 | 不变 | 不变 | 不变 |
-| `closeOpenAnchor` **preflight 拒绝**：`ownerUnavailable()` 早返回 `{ok:false,reason:"client-gone"｜"session-terminating"｜"wire-torn",committed:false}`（`session.ts:289-292,396-397`——`finishReason` 可为 `client-gone`，**三种都要处理**；与上方「六组合」性质一致） | 不变（**根本没走到写**） | 不变 | 不变 | 不变 |
+| `closeOpenAnchor` **preflight**：`client-gone` / `session-terminating` 返回 `{ok:false,...,committed:false}`；`wireTorn` **不拒绝**，继续关闭既有 `openAnchorIndex`（通用 `ownerUnavailable()` 须拆出 close 专用判据） | client/session 拒绝时不变；wire-torn 后关闭 成功时变 `undefined` | client/session 拒绝时不变；wire-torn 后关闭 成功后仍 `true` | client/session 拒绝时不变；wire-torn 后关闭 成功后 `true` | 不变 |
 | `withAllocatedRealBlock` / `beginLeg`（任何结果） | 不变 | 不变 | 不变 | 不变 |
 | `writeBlockFrame`（任何结果） | 不变 | 不变 | 不变 | 不变 |
 
