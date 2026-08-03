@@ -71,3 +71,15 @@
 - V4：符合 always-on 绑定规则，作为第 1 个独立 qualifying-session confirming record 候选；若维护 tally，应由规则所有者将该记录追加到 `/home/xp/.claude/skills/proving-where-a-command-ran/verification-log.md` 并重算派生视图。
 - V5：未观察到 self-exemption，按协议不投票。
 - V1R：**falsifying，23/23 misses**。这不是到 2026-09-02 才运行的完整跨会话 cohort audit，而是用户明确要求的本 transcript 分母走查；它已足够提供反例，但不能冒充整个 30 天 cohort 的 manifest 审计。
+
+---
+
+## 裁决后的修正（2026-08-03，由未卷入的第三方 arbiter 作出）
+
+主会话对 V1R 的 exposure 判据范围提出异议，交第三方裁决，结果见
+`docs/tmp/2026-08-03-v1r-scope-arbitration.md`。**本节不改写上面的原始发现**，只并列记下被裁定的部分：
+
+- **V1R 的计数由 23/23 修正为 6/6。** 当时的 bullet 2 是**封闭枚举**（test / lint / build / benchmark / mutation），故上文 §V1R 里 16 处 acceptance（`git show`、`git status`、keyword 计数、采信 reviewer 结论）不命中该 bullet；7 处 delegation 中有 1 处（line 3452 的本次审计委托）读的是跨两仓的绝对路径、并不要求执行落在某一棵特定树上，亦不成立。**其余 6 处 delegation 成立，且确为 miss——V1R 的证伪结论不变。**
+- **撤回上文第 67 行的一项推论**：那里写「delegated execution tree 未由本 skill 的 gate 证明」，事实相反——受托 reviewer 自己执行了 gate（`…/subagents/agent-ac98e4ac8c7a1a6a4.jsonl` 里逐条 `cd /home/xp/.claude`、打印 `pwd -P` / top-level / HEAD 并断言冻结 SHA）。**它救的是那些结果的 provenance，救不了委托方的 recall miss**——`cwd` / `isolation` 只能由委托方在交出工作前设置。两件事必须分开记。
+- **主会话的另一条异议被驳回，值得留证**：「`/home/xp/.claude` 只有一份，不存在第二棵候选树」不成立——snap-back 的落点是**启动会话那棵树**，所以两个候选落点始终存在。
+- **判据文本已据此修订**（bullet 2 改为「其含义取决于跑在哪棵树上的结果」+ 五类降为 for example，并声明四条 bullet 是 canonical trigger set）。**本次审计仍按修订前、冻结于 `34d3a8d` 的文本裁决，不按新口径追溯重算**；今后每次 cohort 必须记下所依据的文本版本。
