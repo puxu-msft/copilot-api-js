@@ -293,7 +293,17 @@ export interface RawHttpRequest {
 }
 
 export type OwnerFailureReason = "client-gone" | "session-terminating" | "wire-torn"
-export type OwnerResult<T> = Readonly<{ ok: true; value: T }> | Readonly<{ ok: false; reason: OwnerFailureReason; committed: boolean }>
+export type OwnerOperation =
+  | "allocate-anchor"
+  | "allocate-real-block"
+  | "begin-leg"
+  | "close-anchor-before-real"
+  | "close-anchor-terminal"
+  | "write-block-frame"
+export type OwnerResult<T> =
+  | Readonly<{ ok: true; value: T }>
+  | Readonly<{ ok: false; reason: "client-gone"; committed: boolean }>
+  | Readonly<{ ok: false; reason: "session-terminating" | "wire-torn"; committed: false }>
 
 export type WireWriteSpec =
   | Readonly<{ kind: "real"; frame: ClientFrame }>

@@ -30,6 +30,18 @@ describe("RequestContext.recordMaxTokensTruncation", () => {
   })
 })
 
+describe("RequestContext.recordWirePartialDelivery", () => {
+  test("persists owner post-commit diagnostics and survives a later full pipeline replacement", () => {
+    const ctx = createRequestContext({ endpoint: "anthropic-messages" })
+    ctx.recordWirePartialDelivery({ operation: "close-anchor-terminal", cause: "client-gone", committed: true })
+    ctx.setPipelineInfo({ preprocessing: { strippedReadTagCount: 0, dedupedToolCallCount: 0 } })
+
+    expect(ctx.pipelineInfo?.wirePartialDelivery).toEqual({ operation: "close-anchor-terminal", cause: "client-gone", committed: true })
+    ctx.abort("m")
+    expect(ctx.toHistoryEntry().pipelineInfo?.wirePartialDelivery).toEqual({ operation: "close-anchor-terminal", cause: "client-gone", committed: true })
+  })
+})
+
 describe("RequestContext.recordBufferedMergeInfo", () => {
   test("merges into pipelineInfo without requiring setPipelineInfo to have been called", () => {
     const ctx = createRequestContext({ endpoint: "openai-responses" })

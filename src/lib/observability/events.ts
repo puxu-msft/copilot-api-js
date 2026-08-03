@@ -132,6 +132,8 @@ export type FeatureKind =
   | "dropped-params"
   /** request used a non-default transport — `detail: { kind: TransportKind }` */
   | "transport"
+  /** downstream owner crossed its wire commit point before delivery failed */
+  | "wire-partial-delivery"
   /** recoverer rebuilt tool_use(s) from downgraded upstream text — `detail: { tools: string[] }` (the recovered tool names, in call order) */
   | "tool-call-recovered"
   /** suppression mode: a contentless upstream refusal was rewritten into a normal completed turn so

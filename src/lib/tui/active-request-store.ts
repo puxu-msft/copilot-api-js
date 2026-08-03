@@ -207,6 +207,7 @@ function featureTag(feature: Exclude<FeatureKind, "thinking">, detail?: Record<s
     case "via-chat-completions-fallback":
     case "via-responses":
     case "dropped-params":
+    case "wire-partial-delivery":
     case "tool-call-recovered":
     case "refusal-recovered":
     case "refusal-errored":

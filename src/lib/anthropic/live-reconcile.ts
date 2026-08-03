@@ -23,6 +23,8 @@ import type {
   ClientSink,
 } from "~/lib/pipeline/types"
 
+import { getDownstreamDeliverySession } from "~/lib/pipeline/delivery/session"
+
 /** Is this rendered client frame a real `content_block_start`? (parses the JSON `type`; non-JSON → false). */
 function isContentBlockStart(frame: ClientFrame): boolean {
   if (typeof frame.data !== "string") return false
@@ -125,21 +127,7 @@ export function reconcileLiveFrame(frame: ClientFrame, state: AnchorState, hooks
   // content frames pass through at their ORIGINAL index (no +1 remap) and no close-off is ever written.
   if (!state.anchorBlockOpen) return [frame]
 
-  const out: Array<ClientFrame> = []
-  if ((isContentBlockStart(frame) || isErrorEvent(frame) || isMessageTerminator(frame)) && !state.anchorClosed) {
-    // Close the anchor (stop@0) BEFORE this frame so the client's block structure stays balanced. Triggers:
-    //   - first real `content_block_start` → then shift the real block +1 (below);
-    //   - a terminal `error` event before any real block (H2 upstream error / refusal→error rewrite, §10.5);
-    //   - a `message_delta` / `message_stop` before any real block (ZERO-CONTENT completion — symmetry with
-    //     the buffered commit close-off, so the anchor closes on EVERY terminus, not only failures).
-    // All three are non-anchor-block frames, so `remap` below leaves them unchanged; a content_block_start is
-    // then shifted +1. The `!anchorClosed` guard makes this fire at most once (a normal ≥1-block stream
-    // closed at its first content_block_start → later message_delta/stop pass through untouched).
-    state.anchorClosed = true
-    out.push(hooks.stopFrame(0))
-  }
-  out.push(hooks.remap(frame, 1)) // content_block_* → +1; message_delta / message_stop / error pass through
-  return out
+  return [hooks.remap(frame, state.wireState.allocator.anchorsOpened() > 0 ? 1 : 0)]
 }
 
 /**
@@ -162,19 +150,14 @@ export function reconcileLiveFrame(frame: ClientFrame, state: AnchorState, hooks
  * state (clears `openBlock={0,text}`), exactly as a real `write` would.
  */
 export function makeReconcilingSink(inner: ClientSink, state: AnchorState, hooks: ReconcileHooks): ClientSink {
+  const port = getDownstreamDeliverySession(inner)?.allocationPort
   return {
     write: async (frame: ClientFrame): Promise<void> => {
-      const wasClosed = state.anchorClosed
-      const frames = reconcileLiveFrame(frame, state, hooks)
-      // reconcile just closed the anchor (false → true): its FIRST output is the synthetic close-off
-      // stopFrame → write it via `writeAnchor` (synthetic:"anchor" marker + open-block clear); the
-      // remaining outputs are the real remapped block frames (unmarked).
-      if (!wasClosed && state.anchorClosed && frames.length > 0) {
-        await (inner.writeAnchor ?? inner.write)(frames[0])
-        for (let i = 1; i < frames.length; i++) await inner.write(frames[i])
-        return
+      if (port?.wireState && state.anchorBlockOpen && (isContentBlockStart(frame) || isErrorEvent(frame) || isMessageTerminator(frame))) {
+        const closed = await port.closeOpenAnchor((index, envelope) => envelope.anchor(hooks.stopFrame(index)), isContentBlockStart(frame) ? "before-real" : "terminal")
+        if (!closed.ok) throw new Error(`[delivery] live anchor close rejected: ${closed.reason}`)
       }
-      for (const f of frames) await inner.write(f)
+      for (const f of reconcileLiveFrame(frame, state, hooks)) await inner.write(f)
     },
     // Forward every non-write method to the inner sink. The inner methods are closures over the sink's
     // state (not `this`-bound), so an optional-call wrapper forwards safely; a missing optional method

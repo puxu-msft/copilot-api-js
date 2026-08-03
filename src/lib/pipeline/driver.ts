@@ -26,15 +26,23 @@ import { classifyError } from "~/lib/error"
 import { recordAbortProvenanceGap } from "~/lib/observability/abort-provenance-gaps"
 import { recordRetryGiveUp } from "~/lib/observability/retry-giveups"
 import { recordRetryStrategyFire } from "~/lib/observability/retry-strategy-fires"
+import type { OwnerFailure } from "~/lib/pipeline/delivery/owner-failure"
+
+import { classifyOwnerFailure } from "~/lib/pipeline/delivery/owner-failure"
 import {
   //
+  DeliveryOwnerError,
   getDeliverySessionForAllocationPort,
   getDownstreamDeliverySession,
 } from "~/lib/pipeline/delivery/session"
 import { readSyntheticKind } from "~/lib/pipeline/frame-origin"
 import { createGenerationBudget } from "~/lib/pipeline/generation/generation-budget"
 import { getUpstreamHook } from "~/lib/pipeline/hooks/loader"
-import { classifyStreamError } from "~/lib/stream"
+import {
+  //
+  classifyStreamError,
+  StreamClientAbortError,
+} from "~/lib/stream"
 import {
   //
   getUpstreamAdmissionController,
@@ -57,7 +65,7 @@ import type {
   RawHttpRequest,
   RequestInspectStage,
   RequestInspection,
-  OwnerFailureReason,
+  OwnerOperation,
   ResponseOutcome,
   RetryAction,
   RetryStrategy,
@@ -875,7 +883,7 @@ async function maybeRunHedgedResponseSink(
     const allocationPort = outerOpts?.wireAllocationPort ?? getDownstreamDeliverySession(sink)?.allocationPort
     if (allocationPort?.wireState) {
       const leg = await allocationPort.beginLeg("primary", source)
-      if (!leg.ok) return ownerFailureOutcome(leg.reason, env)
+      if (!leg.ok) return ownerFailureOutcome(leg, "begin-leg", env)
     }
     getDownstreamDeliverySessionForPortOrSink(outerOpts?.wireAllocationPort, sink)?.noteWinner(source)
     if (raced.kind === "terminal") {
@@ -922,23 +930,11 @@ function withCandidateResponseOpts(
   }
 }
 
-// Owner-failure → outcome, one factory per reason so the diagnostic `Error` (and its stack) is
-// built per request rather than shared process-wide. `satisfies Record<OwnerFailureReason, …>`
-// keeps it exhaustive: a new reason fails to compile until it gets an entry here. The
-// stream-error arms go through `streamErrorOutcome` so the abort-provenance gap counter stays
-// the single mint point (these are our own synthetic Errors, so `classifyStreamError` returns
-// "other" and no gap is recorded — the counter only fires for genuine unknown-cancel aborts).
-const OWNER_FAILURE_OUTCOME_FACTORIES = {
-  "client-gone": (): ResponseOutcome => ({ kind: "settled-abort" }),
-  "session-terminating": (): ResponseOutcome => ({ kind: "delivery-finished" }),
-  "wire-torn": (env: RequestEnvelope): ResponseOutcome => streamErrorOutcome(new Error("[delivery] wire transaction is torn"), env),
-} satisfies Readonly<Record<OwnerFailureReason, (env: RequestEnvelope) => ResponseOutcome>>
-
-function ownerFailureOutcome(reason: OwnerFailureReason, env: RequestEnvelope): ResponseOutcome {
-  if (reason === "session-terminating" && !env.ctx.settled) {
-    return streamErrorOutcome(new Error("[delivery] session terminated before request context settled"), env)
-  }
-  return OWNER_FAILURE_OUTCOME_FACTORIES[reason](env)
+function ownerFailureOutcome(failure: OwnerFailure, operation: OwnerOperation, env: RequestEnvelope): ResponseOutcome {
+  const decision = classifyOwnerFailure(failure, operation, { settled: env.ctx.settled })
+  if (decision.kind === "client-aborted") return { kind: "settled-abort" }
+  if (decision.kind === "delivery-finished") return { kind: "delivery-finished" }
+  return streamErrorOutcome(decision.error, env)
 }
 
 function getDownstreamDeliverySessionForPortOrSink(
@@ -1019,7 +1015,7 @@ async function runResponseSink(
         candidateId: String(unhedgedBinding.candidate.candidate),
         dispatchId: String(unhedgedBinding.candidate.dispatch),
       })
-      if (!leg.ok) return ownerFailureOutcome(leg.reason, env)
+      if (!leg.ok) return ownerFailureOutcome(leg, "begin-leg", env)
     }
   }
   const effectiveOpts = currentCandidateResponseOpts(generation, upstream, opts) as RunResponseOpts
@@ -1106,7 +1102,7 @@ export async function runResponseBufferedSink(
         candidateId: String(unhedgedBinding.candidate.candidate),
         dispatchId: String(unhedgedBinding.candidate.dispatch),
       })
-      if (!leg.ok) return ownerFailureOutcome(leg.reason, env)
+      if (!leg.ok) return ownerFailureOutcome(leg, "begin-leg", env)
     }
   }
   const cap = opts.retryCap ?? 0
@@ -1178,17 +1174,18 @@ export async function runResponseBufferedSink(
   // LOAD-BEARING for cross-site coordination (spec §10.5): after this returns `stream-error`, the pump's
   // own terminal-branch `closeAnchorIfOpen` reads the SAME shared `anchorClosed` and short-circuits, so the
   // buffered exhaustion path emits exactly ONE stop@0 (driver's), not a second from the pump.
-  const closeAnchorIfOpen = async (): Promise<void> => {
-    sink.close?.()
-    // Only `empty_text` (anchorBlockOpen) reserved a content_block@0 that needs balancing; `enveloped_ping`
-    // injected a message_start-only envelope (no block) → nothing to close off.
-    if (anchorState.injected && anchor && anchorState.anchorBlockOpen && !anchorState.anchorClosed) {
-      anchorState.anchorClosed = true
-      try {
-        await (sink.writeAnchor ?? sink.write)(anchor.stopFrame(0)) // "anchor" marker (structural close-off)
-      } catch {
-        /* client gone mid-close — best-effort, nothing else to do */
-      }
+  const closeAnchorViaOwner = async (mode: "before-real" | "terminal"): Promise<ResponseOutcome | undefined> => {
+    if (mode === "terminal") sink.close?.()
+    if (!anchor) return undefined
+    const port = allocationPort
+    if (!port?.wireState) return undefined
+    const operation: OwnerOperation = mode === "terminal" ? "close-anchor-terminal" : "close-anchor-before-real"
+    try {
+      const closed = await port.closeOpenAnchor((index, envelope) => envelope.anchor(anchor.stopFrame(index)), mode)
+      return closed.ok ? undefined : ownerFailureOutcome(closed, operation, env)
+    } catch (error) {
+      if (!(error instanceof DeliveryOwnerError)) throw error
+      return streamErrorOutcome(error, env)
     }
   }
 
@@ -1220,8 +1217,6 @@ export async function runResponseBufferedSink(
     transformBufferedFlush?: RunBufferedOpts["transformBufferedFlush"],
   ): Promise<FlushResult> => {
     sink.freezeHeartbeat?.()
-    const injected = anchorState.injected
-    const anchorBlockOpen = anchorState.anchorBlockOpen
     try {
       // SEQUENTIAL anchor (spec 2026-07-22 §3.3): close the pre-content anchor (empty-text
       // content_block_stop@0) BEFORE the first real content block — NOT at the terminal flush — so no two
@@ -1237,10 +1232,9 @@ export async function runResponseBufferedSink(
       // empty deltas now pass through, while the current default remains bare ping by the D2 decision.
       // <300s gaps + the 60s byte-idle are covered by the bare ping.
       const closeAnchorBeforeReal = async (): Promise<void> => {
-        if (injected && anchor && anchorBlockOpen && !anchorState.anchorClosed) {
-          anchorState.anchorClosed = true
-          await (sink.writeAnchor ?? sink.write)(anchor.stopFrame(0)) // "anchor" marker
-        }
+        const closeOutcome = await closeAnchorViaOwner("before-real")
+        if (closeOutcome?.kind === "settled-abort") throw new StreamClientAbortError()
+        if (closeOutcome?.kind === "stream-error") throw closeOutcome.error
       }
       // Zero-content terminal (message_delta/stop or error before ANY real block): close the anchor here so
       // it never dangles open (symmetry with live-reconcile's terminal close-off).
@@ -1261,7 +1255,8 @@ export async function runResponseBufferedSink(
         // (continuationOffset), so continuation blocks continue the client's index sequence. Inert on the
         // primary leg (offset 0). Applied on top of any anchor remap (mutually exclusive in practice — the
         // continuation path is anchor-dormant).
-        let outFrame = injected && anchor && anchorBlockOpen ? anchor.remap(frame, 1) : frame
+        const anchorShift = allocationPort?.wireState?.allocator.anchorsOpened() ?? 0
+        let outFrame = anchor && anchorShift > 0 ? anchor.remap(frame, 1) : frame
         if (continuation && continuationOffset > 0) outFrame = continuation.remap(outFrame, continuationOffset)
         // Count every content block delivered to the client (incl. thinking) — the offset for the NEXT
         // continuation leg (C3: wire count, not ledger length).
@@ -1314,11 +1309,13 @@ export async function runResponseBufferedSink(
             // duplicate message_start (H1 — the injector already forwarded it). Inert (byte-identical to the raw
             // forward) when no anchor was injected — `injected`/`anchorBlockOpen` stay false.
             if (anchor && anchorState.messageStartForwarded && anchor.isMessageStart(toWrite)) continue // H1 dedup
-            if (anchor?.isContentBlockStart(toWrite) && anchorState.injected && anchorState.anchorBlockOpen && !anchorState.anchorClosed) {
-              anchorState.anchorClosed = true
-              await (sink.writeAnchor ?? sink.write)(anchor.stopFrame(0)) // "anchor" — close before the real block (sequential)
+            if (anchor?.isContentBlockStart(toWrite)) {
+              const closeOutcome = await closeAnchorViaOwner("before-real")
+              if (closeOutcome?.kind === "settled-abort") return closeOutcome
+              if (closeOutcome?.kind === "stream-error") return closeOutcome
             }
-            await sink.write(anchorState.injected && anchor && anchorState.anchorBlockOpen ? anchor.remap(toWrite, 1) : toWrite)
+            const anchorShift = allocationPort?.wireState?.allocator.anchorsOpened() ?? 0
+            await sink.write(anchor && anchorShift > 0 ? anchor.remap(toWrite, 1) : toWrite)
             continue
           }
           // Capture the FIRST message_start (before buffering it) into the SHARED anchorState so the
@@ -1435,8 +1432,9 @@ export async function runResponseBufferedSink(
         if (drained) return { kind: "complete", headers: current.headers, ...(finish && { finish }) }
         // M1: a post-retreat truncation still leaves the anchor open (it was injected during an idle stall
         // before the retreat) → close it before surfacing the stream-error.
-        await closeAnchorIfOpen()
-        return streamErrorOutcome(thrown ?? new Error("upstream stream truncated: closed without message_stop"), env, thrown === null || thrown === undefined)
+        const closeOutcome = await closeAnchorViaOwner("terminal")
+        if (closeOutcome && closeOutcome.kind !== "stream-error") return closeOutcome
+        return closeOutcome ?? streamErrorOutcome(thrown ?? new Error("upstream stream truncated: closed without message_stop"), env, thrown === null || thrown === undefined)
       }
 
       // COMMIT on a clean drain that reached a TERMINAL upstream state: `message_stop` (success),
@@ -1520,7 +1518,7 @@ export async function runResponseBufferedSink(
             candidateId: String(recovered.candidate),
             dispatchId: String(recovered.dispatch),
           })
-          if (!leg.ok) return ownerFailureOutcome(leg.reason, env)
+          if (!leg.ok) return ownerFailureOutcome(leg, "begin-leg", env)
         }
         current = recovered.upstream
         currentEnv = recovered.env
@@ -1578,7 +1576,7 @@ export async function runResponseBufferedSink(
               candidateId: String(continued.candidate),
               dispatchId: String(continued.dispatch),
             })
-            if (!leg.ok) return ownerFailureOutcome(leg.reason, env)
+            if (!leg.ok) return ownerFailureOutcome(leg, "begin-leg", env)
           }
           current = continued.upstream
           currentEnv = continued.env
@@ -1606,7 +1604,8 @@ export async function runResponseBufferedSink(
       // structure is balanced when the handler appends its error frame.
       // 穷尽/非重试：最终失败 attempt 也 finalize duration，供终端汇总行 last（截断路径无 setter）。
       currentEnv.ctx.finalizeCurrentAttemptDuration()
-      await closeAnchorIfOpen()
+      const closeOutcome = await closeAnchorViaOwner("terminal")
+      if (closeOutcome && closeOutcome.kind !== "stream-error") return closeOutcome
       // Block-level degrade (P0) / continuation-exhausted (spec §5.3): a boundary block was ALREADY
       // committed live, then the stream truncated (un-retryable). If continuation was ATTEMPTED but ran out
       // of budget (or the final continuation leg was itself cut), this is `continuation-exhausted` — distinct
@@ -1616,7 +1615,7 @@ export async function runResponseBufferedSink(
       const committedDegrade = continuationCount > 0 ? "continuation-exhausted" : "partial-degrade"
       const degradeOutcome = committedAny ? committedDegrade : "exhausted"
       notifyBufferedResolve?.(degradeOutcome, attempt, { vendor, ...(continuationCount > 0 && { continuationRetries: continuationCount }) })
-      return streamErrorOutcome(thrown ?? new Error("upstream stream truncated: closed without message_stop"), env, thrown === null || thrown === undefined)
+      return closeOutcome ?? streamErrorOutcome(thrown ?? new Error("upstream stream truncated: closed without message_stop"), env, thrown === null || thrown === undefined)
     }
   } finally {
     sink.close?.()

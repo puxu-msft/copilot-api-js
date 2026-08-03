@@ -19,6 +19,7 @@ import type {
 } from "~/lib/anthropic/decode-tool-input-core"
 import type { BlockLayoutRepairStats } from "~/lib/anthropic/sanitize/assistant-block-layout"
 import type { BufferedMergeDiag } from "~/lib/codec/openai-responses/buffered-merge-reducer"
+import type { OwnerOperation } from "~/lib/pipeline/types"
 import type {
   //
   CandidateRole,
@@ -212,6 +213,8 @@ export interface PipelineInfo {
   truncation?: TruncationInfo
   /** Faithful server-side max_tokens terminal diagnostics, independent of client-visible wire shaping. */
   maxTokensContinuation?: MaxTokensContinuationDiag
+  /** A generation owner crossed the external-write commit point before downstream delivery failed. */
+  wirePartialDelivery?: Readonly<{ operation: OwnerOperation; cause: "client-gone" | "wire-error"; committed: true }>
   preprocessing?: PreprocessInfo
   sanitization?: Array<SanitizationInfo>
   messageMapping?: Array<number>
