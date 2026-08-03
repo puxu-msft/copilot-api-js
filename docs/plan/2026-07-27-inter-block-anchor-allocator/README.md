@@ -178,6 +178,8 @@ raw sink（`makeSseSink`）的 `freezeHeartbeat` 只 `clearTimeout` 不置 stopp
 
 **对计划的影响**：P7 的定位从「实现兜底清洗」降级为「**核实**既有清洗在 gap-anchor 回传形状下确实触达 + 真 CC 多轮实证」。这不是砍范围——若核实发现不触达（例如 CC 回传的形状绕过该 rewrite、或跨格式桥接腿不走 Anthropic sanitize），兜底实现仍在 P7 范围内，见 P7.2 的分叉。审查该条的**风险方向仍成立**（多轮回传从未实测），只是补救成本很可能已为零。
 
+> **⚠️ 2026-08-03 追加核实：上面这条「无条件」只对 direct 腿成立。** 再往外一层是有门的——`codec/anthropic/request-rewrite-adapter.ts:65` 的 `appliesTo: (env) => env.targetEndpoint === ENDPOINT.MESSAGES`，故 **forward translate 腿（`@cc` / `@responses`）不跑这条清洗**，而它同样会产出 gap anchor 空块（`handler-v4.ts:1248-1254` 把 anchor 状态一并传给 translate pump）。即 F4 的**方向在 translate 腿上是成立的**。尚未证明这就是缺口（还差「翻译是否丢空块」与「CC/Responses 上游是否校验」两跳实测）。细节与 2×2 核实矩阵见 [plan-7](plan-7-multi-turn-replay.md) 的同名小节。
+
 ## 不采纳记录
 
 - **方案 B（延迟 `content_block_stop`）**：CC 是 eager per-block 工具执行（`app.pretty.js:298301-298310, 293787, 291016-291028`），扣 stop = 确定性推迟整段 gap 的工具执行。**复活条件**（审查要求落账）：若未来 CC 改为非 eager 执行，或 A 落地后只想给 text/thinking 加更干净载体，B 值得重估（它无合成块、失败模式可见）。

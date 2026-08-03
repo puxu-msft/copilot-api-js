@@ -17,6 +17,26 @@ A 注入的空 text block 会进入 CC 的对话历史，下一轮原样发回�
 
 **这不减小本相位范围**：风险方向（多轮回传从未实测）仍成立；只是补救成本很可能已为零。本相位因此从「实现兜底」重定位为「**核实既有清洗在 gap-anchor 回传形状下确实触达** + 真 CC 多轮实证」，并保留 FAIL 分叉下的兜底实现。
 
+### ⚠️ 但这条清洗**只覆盖 direct 腿**——translate 腿实测被门挡在外面（2026-08-03 核实）
+
+上面那条「无条件」只在 `sanitize-messages` **这个 rewrite 内部**成立；再往外一层是**有门的**：
+
+```ts
+// src/lib/codec/anthropic/request-rewrite-adapter.ts:57-67
+name: "anthropic-sanitize",
+// 「the sanitize chain produces the UPSTREAM Anthropic `/v1/messages` wire, so it gates on the
+//   OUTBOUND leg (`targetEndpoint`), not the inbound `clientFormat`」
+appliesTo: (env) => env.targetEndpoint === ENDPOINT.MESSAGES,
+```
+
+即 **`targetEndpoint` 是 `CHAT_COMPLETIONS` / `RESPONSES` / `WS_RESPONSES` 的 forward translate 腿（`@cc` / `@responses`）根本不跑这条清洗**。而 translate 腿恰恰**也**用同一套 anchored keepalive sink 与 live reconcile（`handler-v4.ts:1248-1254` 的 dispatch 把 `anchorHooks` / `anchorState` 一并传给 `pumpTranslateLegStreamingV4`），所以它同样会产出 gap anchor 的空 text block。
+
+**对 P7 的影响**（这是 Task 7.1「跨格式桥接腿也要核实」那条要求的直接回答，不是新增范围）：
+- F4 的**方向**在 translate 腿上**是成立的**——存在一条腿不过这道清洗。原「补救成本很可能已为零」只对 direct 腿有效。
+- 但**尚未证明这就是缺口**：还差两跳没核（Task 7.1 必须实测，不得凭结构推断下结论）——① Anthropic→CC/Responses 的**翻译**本身是否会丢掉空 text block（若会，则空块到不了上游）；② CC / Responses 上游对空 text/content part 的**实际**校验行为（direct 腿的 400 校验是 Anthropic 上游的，不能直接外推）。
+- 因此 Task 7.1 的核实矩阵是 **2 条腿 × 上述 2 跳**，`direct` 腿与 `translate` 腿**各要一条 oracle**；只测 direct 腿就宣称「清洗已覆盖」是本节明令禁止的假完成。
+- 若 translate 腿实证为真缺口，兜底走 α（把清洗接线补到 translate 腿，例如让空块过滤在 `targetEndpoint` 门**之前**运行）——**这仍是 α 不是 β**，不触发 Task 7.2 的停点（β 才是改 anchor 载体、需要产品裁决）。
+
 ## Files
 
 - Test（主体）: 新 `tests/anthropic/empty-anchor-replay-sanitize.it.test.ts`；新 `exp/inter-block-anchor-allocator/multi-turn-replay.ts`
