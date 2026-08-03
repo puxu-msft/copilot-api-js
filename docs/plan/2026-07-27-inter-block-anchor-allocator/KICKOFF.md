@@ -1,51 +1,55 @@
-# KICKOFF —— 接手 inter-block anchor allocator（P3M 及之后）
+# KICKOFF —— generation emission command algebra
 
-> 整段复制为新会话第一条消息。事实、证据、理由、完整步骤**都在 [HANDOVER.md](HANDOVER.md)**，本文件只放启动 gate 与第一步。
+> 整段复制为新会话第一条消息。事实、证据、理由、数字、完整步骤**都在 [HANDOVER.md](HANDOVER.md)**，本文件只放启动 gate、第一步与批准状态。
 
 ```text
-接手 inter-block anchor allocator 的实施。
+接手 copilot-api-js 的 generation emission command algebra 工作。
 
-先读 docs/plan/2026-07-27-inter-block-anchor-allocator/HANDOVER.md（状态行 + 「接手先读什么」两节），再按它的待办 T1→T5 推进。
+先读 docs/plan/2026-07-27-inter-block-anchor-allocator/HANDOVER.md（唯一事实源：核验基线、硬事实、用户裁决、待办与证伪方式）。
+RFC 在 docs/rfc/2026-08-03-generation-emission-command-algebra/design.md。
 
 ## 启动前的硬 gate（照做，理由在 HANDOVER）
 
-1. **别信任何文档里的相位进度，先用 git 核**。该目录的 kickoff.md 顶部「先从 P0 开始」是 2026-07-27 的陈旧文本；P0/P1/P2/P6 早已 landed master。判据：`git merge-base --is-ancestor <sha> master`。
-2. **每条 Bash 调用自己绑定目录根**（`cd <绝对路径> && ...` 或 `git -C <绝对路径>`），绝不依赖上一条命令留下的 cwd——本轮已因此查错过一次树。
-3. **隔离 worktree 里不要用 `bun run test`**（rustup 前置会失败），用 `FORCE_COLOR=0 bun scripts/parallel-test.ts unit it http`。
-4. **绝不碰 4141 端口的用户主服务器**。需要真服务器就自起非 4141 实例，按 PID 精确 kill，绝不 pkill/killall。
-5. **下任何全套件断言前，先确认没有 peer agent 在同一棵树跑测试或做 mutation**——本轮一次全套件 4 条失败全是并发污染，隔离复跑全绿。
-6. **mutation 探针一律在自建的 scratch worktree 做**，做完还原并复跑确认真还原了。
+1. **不要直接写代码。** 当前状态是「RFC 定稿、实施未开工」，卡在用户裁决「是否起执行」（HANDOVER T1）。没有该裁决前不动 src/。
+2. **复验而非采信。** HANDOVER 头部的核验基线是 master 98e6875e / 2026-08-03。接手第一件事是重新核对 git log、git status、分支与 worktree 列表——本仓常有并发会话，读数会变。
+3. **若已获准起执行**：入场条件在 RFC §7.1——在**当时的** entry commit 上连跑 ≥15 次
+   `FORCE_COLOR=0 bun scripts/parallel-test.ts unit it http` 且次次全绿。旧读数不顶替，任一次失败都不得开始 cutover。
+4. **每条 Bash 调用自己绑定目录根**（`cd <绝对路径> && ...` 或 `git -C <绝对路径>`），绝不依赖上一条命令留下的 cwd。
+5. **绝不碰 4141 端口的用户主服务器**（kill/pkill/killall 一律禁止）。需要真服务器就自起非 4141 实例，按 PID 精确停。
+6. **下任何全套件断言前，先确认没有 peer agent 在同一棵树跑测试或做 mutation。**
+7. **agent 的「已完成」报告可能与磁盘不符**（本轮两个 agent 各中过一次）。任何声称「已提交/已写文件」的报告，
+   先按 HANDOVER「委派可靠性」那一节的六条命令核实；派活时要求回报里贴 `git log --oneline -1` 与 `git show --stat HEAD` 的原样输出。
 
-## 第一步
+## 第一步（按用户裁决分支）
 
-**不是写代码。** 形状之争已裁决完毕（全量 command algebra，未卷入第三方裁定），但它目前只是一份设计文档 `docs/tmp/2026-08-03-m1-owner-wire-boundary-design.md`。
-
-按本项目纪律，这个体量要走 **RFC-first**（skill `large-refactor`）：
-1. 读 HANDOVER 的「形状之争已裁决」与「M1 未闭合的判据问题」两节。
-2. 把设计变成 `docs/rfc/` 的 RFC + 分相位计划（含每相位的 commit invariants 与行为 witness）。
-3. 过评审 → 合主线 → **停下等用户拍板是否起执行**（`docs-merge-before-execute`）。
-4. 实施时 M1 那三处未闭合判据（G1/G2/G3）随新边界一并解决，不要单独去补旧守卫。
-
-⚠️ **门禁全绿不等于 M1 可定稿**，也**不要**急着把 `feat/inter-block-anchor-allocator` 合主线：它的 6848 pass 对那三处结构性失明，不合并是有意的决定。
-
-⚠️ **不要按旧 API 形状推进 M2–M8**——三腿接线会大量建立在即将被重塑的 API 上。
-
-
+- 裁决 = 直接起执行  → 读 RFC §7（Commit 0–8）与 §9.4 停点表，从 Commit 0 开始；Commit 0 之前先过入场条件。
+- 裁决 = 先补计划层  → 走 HANDOVER 的 T4：按 skill large-refactor §5 三层结构写 plan + prompts。
+- 尚未裁决          → 把 HANDOVER 的 T1 摆给用户，不要自行选一条往下走。
 
 ## 批准状态
 
-- **用户已批准**：M1 直接开工做完再报；wire-torn 时 `closeOpenAnchor` 放行（已写进 C9）。
-- **需用户先定**：P8.4 的 ADR D2 改动——**停点在写文件之前**，只出逐段草案，获明确同意才改。
-- **不得自行拍板**：P7.2 若必须改 anchor 载体（β 方案），停下回报。
+- 已裁决、不得重开：见 HANDOVER「用户已裁决」表（8 条：形状 / 起点 / 帧序 / 范围 / flaky 处置 / History schema / Q3 / wire-torn close）。
+- 仍待裁决：Q1（telemetry 联合查询能力）——阻塞 Commit 5，不阻塞 Commit 0–4，见 HANDOVER T2。
+- 未定性：基线 flaky 第 1 条（T3）、P7 translate 腿缺口（T5）。
+- 停点（不得自行拍板）：ADR D2 改动——只出逐段 replacement 草案，获用户明确同意才改文件。
 
-## 唯一的硬序约束
+## 工作方式
 
-M6（特性开门、删 `semanticBlockCount === 0` 那道门）**必须晚于 M2–M4 全部完成**。开门前两种记账算法数值等价，开门后才会产出多 anchor。
+- 代码改动走隔离 worktree；**文档在主树改**（入口文档滞留特性分支等于没写）。
+- 提交用显式 pathspec（`git commit -F <msgfile> -- <精确路径>`），conventional commits，不加模型署名。
+- 派 subagent 时在 prompt 里显式写裁判轴「长远正确 + 完整」——它们默认持 ROI/YAGNI，与本项目冲突。
+- API 抖动缓解：派活一次只做一节、写完立即返回、边验证边落盘、回复压到 3–5 行；中断后用 SendMessage 续跑**同一个** agent，别重派。
 
-## 这一轮反复踩的坑（HANDOVER 有完整表与复发点）
+## 这一轮反复踩的坑（完整表与复发点在 HANDOVER）
 
-- 否定性/完备性断言（「共 N 个」「没有别的」）不能建立在被 `head` 截断的输出上。
-- 新写的 oracle 可能在你**这次采纳的形状**下必红——写之前先问「正确实现会不会也红」。
-- 给守卫补第二种拼写之前先自己写一个合法绕过 witness；写得出就换轴。
-- 「落到持久载体」要核到 HistoryEntryData 字段与投影为止，别停在「它进了 observability 事件」。
+- 人口/清单按单一轴枚举必漏——本轮同一形态出现四次。先定义完整能力面再切分，别从类目起手。
+- 为闭合而加的机制，自己要过同等强度的检验——本轮新加的过滤器与 oracle 各自带过缺陷。
+- 确定性结论要带次数与概率口径；两次成功证明不了可复现。
+- 引用任何「门」之前亲手跑一次，看它在错误状态下会不会红——本轮发现 O-6 门此前恒真。
+
+## 测试门禁现状（核验于 2026-08-03 / master cc909c81；接手第一件事是复验而非采信）
+
+- master 全套件 unit+it+http：连跑 21 次全绿（6845 pass / 0 fail）。
+- 隔离 worktree 里 `bun run test` 会因 rustup 前置失败——用上面那条 parallel-test.ts 命令。
+- exp/inter-block-anchor-allocator/byte-equivalence.sh 现在是**比较**不是捕获：一致 O-6 PASS 退出 0、不一致退出 9；本 cutover 全程禁用 RECAPTURE=1。
 ```

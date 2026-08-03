@@ -1,167 +1,136 @@
-# HANDOVER —— inter-block anchor allocator，M1 已实施待复评收口
+# HANDOVER —— generation emission command algebra RFC 已定稿，实施未开工
 
-**状态**：**已交接（会话 2026-08-03 收尾，待接手）** · M1 实现已落分支但**未合并**；形状之争已裁决完毕，下一步是把已定稿的边界设计变成 RFC + 分相位计划再实施
-**核验基线**：分支 `feat/inter-block-anchor-allocator` @ `6fb9ed67`（M1 实现）；主线 master 含全部 plan / 设计 / 评审 / 裁决，`src/` **零改动**
+**状态**：**草稿·未评审**（本文件本身尚未过 subagent 评审；RFC 已过六轮评审）· RFC 已定稿、无未决 blocker/major；实施一行未写；等用户拍板「是否起执行」。
+**核验基线**：master `98e6875e`（2026-08-03）；分支 `feat/inter-block-anchor-allocator` @ `2c339784`（M1 实现，**有意不合并**）
 **worktree**：`/home/xp/src/copilot-api-js/.worktrees/anchor-alloc`
-**未提交 / 未追踪**：无
-**已跑门禁**：`bun run typecheck` 绿；`FORCE_COLOR=0 bun scripts/parallel-test.ts unit it http` = **6848 pass / 0 fail**
+**未提交 / 未追踪**：本工作的产物全部已提交；主树另有并发会话的未提交改动（`docs/memory/*`、`.claude/settings.json` 等），与本工作无关
+**已跑门禁**：master 全套件 `unit+it+http` **连跑 21 次全绿**（6845 pass / 0 fail，代码状态 `cc909c81`）；`bun run typecheck` 绿
 
-> ⚠️ **门禁全绿不代表 M1 可定稿**——「M1 未闭合的判据问题」那节的三处全是「实现落了但锁不住它」，`test:fast` 与 `typecheck` 对它们结构性失明。**M1 不合并是有意的**：合进去等于把一个宣称覆盖面大于实际的守卫写进主线。
+> **接手第一步不是写代码，也不是继续评审——是等用户裁决「是否起执行」。** 按 CLAUDE.md `docs-merge-before-execute`，定稿文档合主线后，执行是**独立**决策。RFC 已在 master 上。
 
-> **接手第一步不是写代码**：形状已定（全量 command algebra），但它还只是一份设计文档。按本项目纪律，这个体量（生产 11 写点 / 12–18 文件；测试 35–50 文件 / 80–120 点位 / 10–20 个 oracle 需重设计）要走 **RFC-first + commit invariants**（skill `large-refactor`），先出 RFC 与分相位计划、过评审、合主线，再动手。
+## 本轮做完了什么
 
-> 隔离 worktree 里 `bun run test` 会因 rustup 前置失败，**用上面那条 `parallel-test.ts` 命令**。核验于 2026-08-03 @ `6fb9ed67`；接手第一件事是复验而非采信。
+上一份交接说「形状已定，但它还只是一份设计文档，下一步是 RFC + 分相位计划」。**RFC 那一半已完成，计划那一半没有。**
 
-## M1 未闭合的判据问题（**接手最该先读这一节**）
+| 产物 | 位置 | 状态 |
+|---|---|---|
+| RFC（11 节，786 行） | `docs/rfc/2026-08-03-generation-emission-command-algebra/design.md` | **定稿**，六轮评审收敛至 0 blocker / 0 major |
+| 两路评审报告（各含六轮追加） | `docs/tmp/2026-08-03-command-algebra-rfc-review-{claude,gpt}.md` | 完整证据链，**别删**——形状古怪的验收判据能在这里查到什么东西从中间走过去了 |
+| emission 面 inventory | `docs/tmp/2026-08-03-emission-surface-inventory.md` | 两法交叉验证，**推翻了原设计的 4 个数字**；后补「owner allocation-port 发射点」一节 |
+| 三条主会话硬门裁决 | `docs/tmp/2026-08-03-owner-boundary-hard-gate-rulings.md` | 已并入 RFC |
+| 基线 flaky 现状 | `docs/tmp/2026-08-03-baseline-flake-status.md` | 3 条修 2 条；第 3 条记为**未证实已修** |
 
-两轮代码评审 + 各自的复核轮之后，实现面已被逐项核过是对的（状态转移表逐格、bridge 等价、心跳时钟两入口各自可红、wire-torn close 例外、13 站点 port 取法、六个终局站点分流、live client-gone 走 settled-abort）。**问题全部集中在「拿什么锁住它」这一层**，且三处是同一个病——**判据在检查源码长什么样，而不是检查行为**：
-
-| # | 问题 | 证据 | 定级 |
-|---|---|---|---|
-| G1 | anchor-stop 能力边界可被 `as OwnerRawSink` 绕过 | 复核轮实测；**这已是同一条守卫第二次被交出 witness**（第一次是同行 regex 被变量提取写法绕过） | 阻断定稿 |
-| G2 | 七个 `settleMessagesOwnerFailure` 分流点**逐个中和后全套件照绿** | 走查复核轮实测 | 复核者判 minor，**主会话判 major**（计划的门明写「每个可达组合一条从真实入口驱动的 oracle」）——**争议已交第三方裁定** |
-| G3 | 13 站点 close registry oracle 是**源码文本 oracle** | 走查复核轮自陈 | 同 G1 的拼写轴问题 |
-
-**另有一条方法论事实值得单独记**：走查复核轮自建的 HTTP 探针**跑在修复前源码上输出相同**，即无判别力；它主动交代了这一点，Major 1 的真实证据是单元测试而非它原本声称的真实入口 oracle。→ 「探针跑通」不等于「探针能分辨」。
-
-**主会话在这条上的失误**（接手请引以为戒）：守卫两次被绕过，两次都是**主会话一个人换的轴**（regex → 能力边界 → 准备换运行期摘除），并且**自己发明了一条退路**（「窄判据 + 显式登记表」）没经任何人看过。同一个问题、同一个裁判、连续两轮，正是第一次被绕过的成因。
-
-### 第三方裁决已回（`docs/tmp/2026-08-03-m1-guard-axis-adjudication.md`，已提交 `08131f59`）
-
-**四项结论，其中三项推翻主会话**：
-
-1. **归属层：主会话与评审者皆误。** 同行 regex、类型能力边界、以及主会话准备换的「帧构造权 / 运行期摘除」**全部落在表示层**。正确不变量：**anchor close 的判定、所关闭的 `openAnchorIndex`、`content_block_stop` 的发射、关闭状态清除与 heartbeat/diagnostic 副作用，必须在 delivery owner 的同一个 serialized command 内原子完成；所有可到达客户端 wire 的路径都不得绕过它。**
-   - `stopFrame` 只是可重造的协议值——禁止构造**既不闭合又会误伤**（真实块合法拥有 `content_block_stop`）。
-   - `writeAnchor` 是 transport/sampling 能力，不是关闭权威（owner 缺它时退化到普通 `write`）。
-2. **运行期摘除：必要但不闭合。** 普通 `ClientSink.write` 与公开 raw factory 仍能发射同字节的 stop。
-3. **主会话发明的退路「窄判据 + 显式登记表」= 自我授权的留口子**；仅在「外部裁决 + 诚实限缩 claim + 具体阻塞物 + 独立正控 + 确定恢复门」五者齐备时正当。
-4. **定级**：G2（七个 settlement 分流点）**支持主会话，是 major**；G3 两者皆误——presence 门有价值但替代不了行为门，**行为缺口仍是 major**。
-
-对「连续换轴是否说明不变量不在这一层」的正面回答：**成立，但理由不是次数**。两次 witness 利用的是同一事实——判据在观察表示层，而真正的违规是「绕过 owner canonical state 后仍能产生 client-visible wire effect」。
-
-**下一步（已在进行）**：`gpt-souls:architect-advisor` 已冻结 owner/wire 边界形状，产出 `docs/tmp/2026-08-03-m1-owner-wire-boundary-design.md`。
-
-### ⚠️ 边界设计触发了范围变更，**用户已裁决**（2026-08-03）
-
-设计结论：正确形状**要求回开 P2 已冻结的 owner API**，并把整个客户端 emission 面重塑成 command algebra。三个缺口是实施细节补不平的——① `WireEnvelopeFactory.anchor(frame)` 让调用方**自己声称** anchor provenance；② `closeOpenAnchor` 与随后的 real start 分属两个 operation，表达不了「close→real-start 同一 callback」（**plan 的 S3 节早就要求过这个 transaction，当时没发现 API 表达不了**）；③ 公共 `ClientSink.write` 是无条件 wire capability，不动它就没法让所有 emission 先过 effect 校验——**这是同字节 stop 旁路的根**。
-
-**用户裁决**：
-1. **采纳「全量：现在就重写 emission 面」**——不拆、不排后面。M1 的范围因此从「关闭权威」扩展为 owner command algebra + 13 个出口逐个收口（driver live/buffered/retreat、live 装饰器退回纯 transform、handler 终局、heartbeat 归属、terminate/finalize、Responses WS 终局路径、测试 sink 改注入式）。
-2. **该设计必须先过评审再定排期**——理由：它要改经六轮评审冻结的 API，而它自己一轮评审都没过。
-
-**评审已收口**（两路：`docs/tmp/2026-08-03-m1-boundary-design-review-claude.md` 对抗闭合主张 3 Blocker / 6 Major；`-review-gpt.md` 可行性实测无 blocker）。设计已修订，B1–B3 闭合、每行闭合等级绑运行时 witness。
-
-### 形状之争已裁决：**全量 command algebra**（2026-08-03，未卷入第三方）
-
-修订轮推翻了设计自己的必要性前提：**「全量是唯一闭合方案」不成立**——候选 A（保留 `write(frame)`，owner 内把匹配 active lease 的 close-block 提升为 anchor close command）**同样能闭合**；候选 B 不能。用户据此重新裁决，未卷入第三方裁定 `docs/tmp/2026-08-03-m1-shape-adjudication-full-vs-a.md`：
-
-**全量长期更优，但主会话给出的三条理由全部只是「部分成立」**（接手别照抄那三条，它们被修正过）：
-- classifier **两种形状都需要**，A 不是「前四次拼写推断」的同一种病。真正的差别：全量有**两个独立输入**（caller 声明的 command intent + classifier 观测的 actual effect），不一致时可在 external write 前报 `CommandEffectMismatchError`；推断从唯一权威降为交叉验证的一条腿。
-- A 依赖的是「**授权 record 对同一 index 至多一个**」，不是完整 C1；C1 只是充分条件，A 可在双命中时 fail loud。
-- 「每个写腿的人都得知道魔法」过满——集中 classifier 会兜底；真实代价是**评审者无法从 call site 区分故意 close 与误发 close**。
-- 决定性的第四条（主会话未想到）：**可观测性**。A 只有 `write` + 推断 effect，区分不了「故意请求 close」与「本想 generic 却误发 close」；补 intent 字段让它可区分，它就收敛成 command algebra。
-
-**对实施的硬指令**：public command port 必须**按 capability 分型**——共同 port 只含 generic / keepalive / terminal，Anthropic profile 额外提供 indexed-block commands。**不得**给所有格式暴露一个巨型 union 再在 runtime 抛「不支持」。
-
-### 用户立的通用约定（2026-08-03）
-
-> 出现「小改动能闭合 vs 全量重写」的分叉时：**先评审 → 达成共识 → 按共识走**。
-
-主会话补充的可执行判据，**用户已裁决落在 CLAUDE.md**（2026-08-03，已写入「本项目的工作哲学」节的 `necessity-claim-must-be-falsifiable` 条）：当一个方案的理由包含「这是唯一可行/唯一能闭合的」时，**该唯一性本身是可核验命题，必须写进评审的核验清单**，并要求评审给出「找过哪些更小方案、各自漏在哪」；**未记录被否决方案的必要性主张，不得进入用户裁决**。本轮正是它缺位，才让一个错误前提直达用户。注意本项目 CLAUDE.md 已有近似条款（「结构性重写可接受的不做理由仅两种」）与 user-rule `one-option-or-the-best-option` / `record-not-adopted`——**本轮失败不是缺规则，是规则没被触发**，故新条写成的是**触发点**而非第四条规则。该条已派指令类文本评审（`docs/tmp/2026-08-03-claude-md-necessity-claim-review.md`）。
-
-
-
-
-
-## 接手先读什么
-
-1. **本文件**读完。
-2. `docs/plan/2026-07-27-inter-block-anchor-allocator/plan-3-remap-sites.md` 的「**M1 调查结论**」①–⑧ —— 这是 M1 的实施依据，冻结了签名、模块位置、类型形状、诊断载体。M2 起的依据在同文件 M2–M8 各行。
-3. 同目录 `README.md` 的**冻结契约 C1–C11**（C9 于 2026-08-03 按用户裁决改过措辞，见下）。
-4. 只在需要追溯「为什么是这个形状」时读：`docs/tmp/2026-08-03-m1-investigation-dispositions.md`（30 条评审发现的处置与理由）。
+顺带修掉的三处既有缺陷（都在主线）：`4f7a3989` O-6 字节门此前**恒真**（脚本覆盖自己的基线、全脚本无 `cmp`）；`200aba8b` 一条 AST 守卫撞 5s 默认超时的假红；`51b1e1c9`+`cc909c81` 两条基线 flaky。
 
 ## 已确证的硬事实（别再重新推导）
 
-| 事实 | 证据等级 | 出处 |
+| 事实 | 证据等级 | 出处 / 复算方式 |
 |---|---|---|
-| P0 / P1 / P2 / P6 **均已 landed master**，本轮起点是 P3M | 实测（`git merge-base --is-ancestor` 逐个 commit 核过） | kickoff 里「先从 P0 开始」是 2026-07-27 的陈旧文本 |
-| 生产 anchor-stop 关闭者共 **13 个**，不是计划原写的 10/11/12 | 实测（全仓 `stopFrame(` 扫描，含 `driver.ts:1317-1321` 那个原表漏列的 retreat live 写穿分支） | 逐条见 plan-3「M1 调查结论」① |
-| M1 后全仓只剩 **3 个** `stopFrame(` 调用点，且三个都走 `port.closeOpenAnchor` | 实测 grep @ `6fb9ed67` | driver / handler / live 装饰器各一 |
-| `anchorClosed` 赋值点只剩 owner 两处；`anchorBlockOpen` 只剩 injector 开侧两处 | 实测 grep @ `6fb9ed67` | 与冻结的两阶段 allowlist 逐点吻合 |
-| `writeAnchor` 已从公共 `ClientSink` 移到 `OwnerRawSink`；生产调用点只剩 `session.ts:584` | 实测 grep @ `6fb9ed67` | 这是「守卫换轴」的落点，见下 |
-| `recordFeature` **不进** History（只 publish 实时事件，消费者只有 WS sink 与 TUI 内存 store） | 实测（读 `context/request.ts:2109-2116` + 全部消费者） | 故 partial-delivery 载体改用 `PipelineInfo` |
-| owner 五个入口里 `closeOpenAnchor` 与 `writeBlockFrame` **原本不更新 heartbeat 时钟** | 实测（读 `session.ts:401-409` / `:430-436` vs `:317-321`） | P2 就带进来的既有缺陷，M1 已补齐两处 |
+| P0 / P1 / P2 / P6 均已 landed master | 实测（上轮） | 本轮未变 |
+| M1 代码在分支上**未合并**，由本次 cutover 一并重塑（用户裁决） | 实测 | `git log master..feat/inter-block-anchor-allocator` |
+| `ClientSink` 声明在 `src/lib/pipeline/types.ts:747`，**不在 `delivery/` 目录内**；`delivery/types.ts` 对它只是 `import type`、非 re-export | 实测 | 这是 RFC 闭包根必须是传递闭包的成因（§7.2） |
+| `beginLeg` 只在 `allocationPort?.wireState` 为真时调用（**只有 Anthropic 有**），而 `noteWinner` **无条件**调用 | 实测 | `driver.ts:882-888`。这是 R-14 存在的唯一理由 |
+| `closeAnchorViaOwner(..., "terminal")` 生产调用点**恰 10 处** | 实测（未截断） | handler 8：`messages/handler-v4.ts:702,1464,1584,1623,1688,1808,1848,1893`；driver 2：`driver.ts:1436,1611` |
+| `getDownstreamDeliverySession(sink)` 让**任何持有 `ClientSink` 者反查回完整 session**；生产引用 5 文件约 10 点 | 实测 | RFC §7.2 C 集。这条使「只给窄 port」在收口前是空话 |
+| `streamKeepaliveMode` 默认是 **`"ping"`**，不是 `empty_text` | 实测 | `packages/foundation/src/state-defaults.ts:122`。但 `injectContentAnchor` 由 `onDemandEscalation` 决定、**不看 mode**，故 `keepalive-anchor.ts:306` 在**默认配置**下经 200s 升级即可达 |
+| O-6 门此前恒真，已修并有正样本对照 | 实测 | 未改动树 PASS 且 fixture 字节不变；注入一字节 FAIL(rc=9) |
 
-**计数事实的集合边界**（按 `session-closeout` 的要求写明，否则读者会照错的量估工）：
-- 「13 个关闭者」= **生产源码中会写出 anchor `content_block_stop` 的判定/写出点**，集合边界 `src/`，排除测试与已归档文档。
-- 「6848 tests」= `unit + it + http` 三档，**不含** pty / e2e / 前端（`ui/`、`ui-v4/`）。
-- 「3 个 `stopFrame(` 调用点」= `src/` 下的调用表达式，不含注释与类型声明。
+**计数事实的集合边界**：「10 处 terminal 决策点」= `src/` 下 `closeAnchorViaOwner(..., "terminal")` 的调用表达式，不含 `"before-real"` 的 2 处与定义 1 处。「21 次连跑」= `unit+it+http` 三档，不含 pty / e2e / 前端，代码状态 `cc909c81`。
 
 ## 用户已裁决（不要重开）
 
 | 裁决 | 内容 | 日期 |
 |---|---|---|
-| **wire-torn 时 close 放行** | `wireTorn` 语义 = 「禁止推进 frontier」，只封锁四个入口（`allocateAndWriteAnchor` / `withAllocatedRealBlock` / `beginLeg` / `writeBlockFrame`）；**`closeOpenAnchor` 例外，撕裂后仍写出 stop**。理由：关闭不推进任何 index，拒绝它会让客户端拿到未闭合 `block@0` + error，既违反 §10.5 也是相对 legacy 的行为回归。已同步进 README C9 与 plan-2/plan-3 | 2026-08-03 |
-| **M1 直接开工、做完再报** | 不逐 commit 回报 | 2026-08-03 |
-
-## 与冻结上游文档的对账
-
-- **C9 已按上述裁决修订措辞**（README 冻结契约表）。上游 spec `docs/spec/2026-07-27-inter-block-keepalive-carrier.md` **未**改动——它写的是载体选型（方案 A/B/C），不涉及 owner 入口封锁语义，**无冲突**（检索词：`wireTorn` / `wire-torn` / `closeOpenAnchor` / `五个入口`，范围 `docs/spec/` + `docs/decisions/`，零命中）。
-- **ADR D2 第 3 点仍待改**（P8.4）：措辞需从「真实块的严格 index 顺序」扩展到「真实 + 合成块统一 frontier」。**停点在写文件之前**——只产出逐段 replacement 草案，获用户明确同意后才改 ADR。
-- **Q5 的 `wireIndex(i) = i + anchorShift + continuationOffset` 公式**要在 P8.5 作废，验收判据是**分类审计**（每个命中判为「已作废历史记录」或「仍具规范性」），**不是字面零命中**。
+| **wire-torn 时 close 放行** | `wireTorn` = 「禁止推进 frontier」，只封锁四个推进入口；`closeOpenAnchor` 例外 | 2026-08-03 |
+| **形状** | **全量 command algebra**（非候选 A/B） | 2026-08-03 |
+| **起点** | 从 RFC 起，不从陈旧 kickoff 的「P0」起；M1 留分支由 cutover 重塑 | 2026-08-03 |
+| **帧序变更** | **接受**，但登记为 C1–C11 之外的独立可观察契约；Q5 停点在 Commit 4 **之前** | 2026-08-03 |
+| **范围** | **扩大**：real-block 接线（C3/C4/C10 mapping lifecycle）纳入本 RFC；M2～M8 只剩 gap lifecycle / 特性开门 / 多 gap | 2026-08-03 |
+| **基线 flaky** | **根因修复**，作为 Commit 0 入场条件 | 2026-08-03 |
+| **History schema** | 方案 **B**（`wirePartialDelivery` 保持摘要，另开 generation operation detail） | 2026-08-03 |
+| **Q3**（主会话裁，用户可否决） | 方案 **A**：warmup route behavior test 纳入 Commit 0 | 2026-08-03 |
 
 ## 待办（每条带验收判据与证伪方式）
 
-### T1 —— M1 收口（**当前就在这一步**，用户已批准开工）
-- **当前卡点**：不是「等复评」，而是**判据轴问题待第三方裁决**（见上方「M1 未闭合的判据问题」G1–G3）。两路复评均已回话并完成复核轮：走查侧 3 条 Major 全部解决、判据侧 `message_stop` oracle 已关闭，**剩余阻断项只有 G1–G3**。
-- **动作**：等 `docs/tmp/2026-08-03-m1-guard-axis-adjudication.md` 的四项裁决 → 按裁决修 G1（并按其定级处置 G2、G3）→ 恢复原评审者复核 → 合 master。
-- **验收**：G1 的绕过 witness 在修复后**不可编译或不可运行**（而不只是被扫描器报出）；G2 的七个分流点**逐个中和必须有具名测试转红**；G3 换成行为 oracle。
-- **证伪**：中和任一分流点而全套件仍绿；或对 G1 又能交出新的合法 witness。
-- ⚠️ **不要自己再换一次轴**——主会话已经这么做了两次，两次都被绕过。裁决回来之前不要动手。
+### T1 —— 用户拍板：是否起执行（**当前就卡在这里**）
+- **两条路径**：(a) 直接按 RFC §7 起执行；(b) 先补三层结构的 plan + prompts 层（见 T4）再执行。
+- **不裁决的后果**：无损失，RFC 已在主线随时可起。
 
+### T2 —— Q1 未裁决（阻塞 Commit 5，**不**阻塞 Commit 0–4）
+- **问题**：per-command telemetry 是否需要 `command × outcome × format` 联合查询。选项 A（预组合有界 compound dimension，RFC 推荐）/ B（扩 registry 为 typed multidimensional key）/ C（只做单维 breakdown + History 明细）。
+- **验收**：裁决落盘进 RFC §9.2，并同步 §4.9 与 Commit 5 条目。
+- **证伪**：Commit 5 开工时 telemetry schema 仍无定形。
 
-### T2 —— M2/M3/M4：三腿分配 + remap（未开工，plan 已冻结）
-- **动作**：按 plan-3 的 M2→M3→M4 顺序，各腿 start 帧经 `withAllocatedRealBlock`、非 start 帧经 `writeBlockFrame(leg, upstreamIndex, frame)`。
-- **验收**：6 格 mutation 矩阵填满（三腿 × remap/allocate 两维）；每腿至少一条**从真实 HTTP 入口**驱动的 oracle（`createFullTestApp` + `app.request("/v1/messages")` + `setDeliverySessionObserverForTests`）；O-1/O-2/O-6 绿。
-- **证伪**：把某腿的 remap 改回硬编码 `1`、或删掉该腿的 `withAllocatedRealBlock` 调用，若无测试转红则该格无覆盖。
-- **硬前置**：M2 必须先满足 plan-3「M2 前置条件：legacy 瞬时撕裂必须随 S1 owner 化一并消失」那一节的四条满足点。
+### T3 —— 基线 flaky 第 1 条未证实已修
+- **事实**：`History V3 store performance > prepare and commit do not depend on prior session history length`，21 次连跑未再现，**但按其约 1/15 的原始复现率，这只有约 0.24 的概率意义**。详见 `docs/tmp/2026-08-03-baseline-flake-status.md`。
+- **验收**：从机制上确认或排除「与第 3 条同因（`package-boundaries` 写盘造成 I/O 抖动）」，或在人为 I/O 负载下定向复现。
+- **证伪**：因为「最近没见到」就宣布已修。
+- **注意**：RFC §7.1 要求在**当时的 entry commit** 上连跑 ≥15 次，旧读数不顶替。
 
-### T3 —— M5/M6/M7/M8（未开工）
-- **唯一硬序**：**M6（删 `semanticBlockCount === 0` 门、特性开门）必须晚于 M2–M4 全部完成**。开门前两种算法数值等价，开门后才会产出多 anchor。
-- **验收**：M5 后 `continuationOffset` / `wireDeliveredBlocks` / `anchorBlockOpen` / `anchorClosed` / bridge 判据在 `src/` 全部零命中；M6 的 O-3 精确形状；M7 交叉 mutation 矩阵；M8 多 gap + 字节等价。
+### T4 —— 分相位计划（plan + prompts 层）未写
+- **动作**：按 skill `large-refactor` §5 的三层结构，为 RFC §7 的 Commit 0–8 各写逐 task TDD 步骤 + factory/锚点表，并出可直接粘给独立实施者的 kick-off。
+- **验收**：每个 commit 的「可满足的门」在 plan 里有对应可复跑命令；锚点表给出被复用函数的 `file:line`。
+- **证伪**：plan 里出现 RFC 未冻结的签名。本项目一天内因此翻车四次，判据是三问——**它导出了吗 / 调用方拿到什么返回类型 / 那一刻它存在吗**；答不上就只冻结性质 + 列调查任务。
+- **必读**：RFC §9.3 的调查缝与 §9.4 的停点表——那些是 plan 必须先回答的。
 
-### T4 —— P7 的 translate 腿缺口（**本轮新发现，未定性**）
-- **事实**：空 text block 清洗 `filterEmptyAnthropicTextBlocks` 经 `sanitize-messages` 跑在 Anthropic 入站路径上，**但外层有门**——`codec/anthropic/request-rewrite-adapter.ts:65` 的 `appliesTo: (env) => env.targetEndpoint === ENDPOINT.MESSAGES`，故 `@cc` / `@responses` 的 forward translate 腿**不跑这条清洗**；而 translate 腿同样共用 anchored keepalive sink（`handler-v4.ts:1248-1254`），一样会产出 gap anchor 空块。
-- **尚未证明它是缺口**：还差两跳实测——① Anthropic→CC/Responses 的**翻译**会不会丢掉空 text block；② CC / Responses 上游对空 content part 的**实际**校验行为（不能拿 Anthropic 上游的 400 外推）。
-- **验收**：Task 7.1 的核实矩阵 = **2 腿 × 2 跳**，direct 与 translate **各**一条 oracle。
-- **证伪**：只测 direct 腿就宣称「清洗已覆盖」——那是本条明令禁止的假完成。
-- **若坐实**：兜底走 α（把清洗接到 `targetEndpoint` 门**之前**），**仍是 α 不是 β**，不触发 P7.2 那个需要用户拍板的停点。
+### T5 —— P7 的 translate 腿缺口（**未定性，本轮未动**）
+- **事实**：空 text block 清洗 `filterEmptyAnthropicTextBlocks` 经 `sanitize-messages` 跑在 Anthropic 入站路径上，**但外层有门**——`codec/anthropic/request-rewrite-adapter.ts:65` 的 `appliesTo: (env) => env.targetEndpoint === ENDPOINT.MESSAGES`，故 `@cc` / `@responses` 的 forward translate 腿**不跑这条清洗**，而它同样会产出 gap anchor 空块。
+- **尚未证明它是缺口**：还差两跳实测——① Anthropic→CC/Responses 的翻译会不会丢掉空 text block；② CC / Responses 上游对空 content part 的**实际**校验行为（不能拿 Anthropic 上游的 400 外推）。
+- **验收**：核实矩阵 = **2 腿 × 2 跳**，direct 与 translate **各**一条 oracle。
+- **证伪**：只测 direct 腿就宣称「清洗已覆盖」。
+- **若坐实**：兜底走 α（把清洗接到 `targetEndpoint` 门**之前**），仍是 α 不是 β，不触发需用户拍板的停点。
 
-### T5 —— P8 验收与文档后果（未开工）
-- O-4 真 SDK 累积顺序 / O-5 真 CC inter-block >300s（连跑 ≥3 次 + escalate=0 对照组）/ O-6 与 P0 捕获字节 `cmp`。
-- ADR D2 停点见上；Q5 作废用分类审计。
-- **收口清单是 O-1 ~ O-9 九条**，三处对账（README 总表、P8 验收记录表、P8 kickoff 清单），别漏 O-9 交叉缝。
+### T6 —— P8 验收与文档后果（未开工）
+- O-4 真 SDK 累积顺序 / O-5 真 CC inter-block >300s（连跑 ≥3 次 + `escalate=0` 对照组）/ O-6 与捕获字节 `cmp`。
+- **ADR D2 第 3 点仍待改**：措辞需从「真实块的严格 index 顺序」扩到「真实 + 合成块统一 frontier」。**停点在写文件之前**——只产出逐段 replacement 草案，获用户明确同意后才改 ADR。
+- Q5 的 `wireIndex(i) = i + anchorShift + continuationOffset` 公式要作废，判据是**分类审计**（每个命中判为「已作废历史记录」或「仍具规范性」），**不是字面零命中**。
+- **收口清单现在是 O-1 ~ O-9 加 R-1 ~ R-14**；RFC §10.3 有 O-1~O-9 的逐条对账（沿用 / 需修改 / 被取代 / 仍待补），别漏 O-9 交叉缝。
+
+## 与冻结上游文档的对账
+
+- **README 冻结契约 C1–C11**：RFC §6 逐条过，判定**无一需语义重裁**；C2/C5/C6/C7/C9/C10/C11 属「措辞需扩展」。**落地后需回填 README 的 C 表**——已列为 RFC Commit 8 的任务，别落空。
+- **anchor 精确帧序**是 C1–C11 **之外**的独立可观察契约（Q5 已裁决接受）。RFC §6 新增一节说明它为何**不**属于 C2（C2 只要求 `maxOpen<=1` 且 anchor stop 先于 real start，中间多一帧合法 keepalive 仍成立）也不属于 C7（C7 不规定 synthetic 帧相对 real start 的精确位置）。
+- **旧 plan 的 M2～M4** 被本 RFC supersede（范围扩大裁决所致）；M5～M8 中 gap lifecycle / 开门 / 多 gap 保留并需重锚。RFC §8 已写明。
+- 检索证据：范围 `docs/spec/`、`docs/decisions/`、`docs/plan/2026-07-27-inter-block-anchor-allocator/`，检索词 `wireTorn`／`closeOpenAnchor`／`command algebra`／`帧序`／`selectWinner`；除上述外无冲突命中。
 
 ## 我这轮犯过的错，与它们的复发点
 
 | 错 | 成因 | 复发点 |
 |---|---|---|
-| 声称「共 12 个关闭者、没有第 13 个」 | 枚举用的 grep 结尾带 `head -60`，`driver.ts` 命中被截断在 `:1183`，我把**被截断的输出**当完整清单，在其上下了否定性断言 | **T2 每腿枚举站点时**：任何「共 N 个 / 没有别的」都必须来自不截断的输出，并用一个已知应命中的正样本证明扫描触达 |
-| 新加的 oracle 自己是个 blocker | 它照着**采纳修法之前**的问题陈述写，在新形状下正确实现也必红，且让它变绿的唯一路径恰好是被否决的方案 | **T2/T3 每写一条新 oracle 时**：先问「在我这次采纳的形状下，正确实现会不会也红」 |
-| 诊断载体选了 `FeatureKind` | 只看到它进 observability 事件，没核它进不进 History 条目 | **T4/T5 任何「落到持久载体」的主张**：核到 `HistoryEntryData` 字段与 `toHistoryEntry` 投影为止 |
-| 要求的守卫判据形状是错的（同行 regex） | 我按「能抓住我想到的破法」验收，而绕过来自我没想到的合法写法 | **T2/T3 每加一条架构守卫时**：先试着自己写一个合法的绕过 witness；写得出就换轴，别补拼写 |
-| 一条 Bash 查了主树而不是 worktree | shell cwd 被重置，我依赖了上一条命令留下的 cwd | **每条 Bash 调用**都自己绑定目录根（`cd <abs> && ...` 或 `git -C <abs>`） |
+| 派 inventory 时按**已知 API 名字**列检索类目，漏掉 owner allocation-port 整类发射点 | 用已知错误找未知错误 | **T4 写任何「人口/清单」时**：先定义完整能力面再切分，别从类目起手 |
+| 给闭包向下方向加「该成员是否有能力」的**语义**过滤器 | 想防 `number`/`string` 灌入，结果造出实施者自评、判错即静默的门 | **T4 每加一个过滤器**：先问「谁来判、判错了看得见吗」。它连自己的 sanity 清单都过不了——`WireBlockMapping`/`LegToken` 会被判「无能力」而排除，而它们正是 C10/C3 的授权事实 |
+| 加了 R-14 并写明「缺了它回归会全绿交付」，却没把它加进 §10.4 的必过清单 | 新增判据与「完成判定」是两处，只改了一处 | **T4 每加一条 oracle**：立刻回查完成判定/验收表是否包含它 |
+| 说「基线绿可复现」，依据只有 2 次成功 | 用少数成功证明确定性 | **T3**：确定性结论必须带次数与概率口径 |
+| 说「O-6 重捕条件已闭合」，其实只核了文档 provenance，没核脚本会不会比较 | 把「文档记录完整」当成「门有效」 | **T4/T6 引用任何门时**：亲手跑一次，看它在错误状态下会不会红 |
+| 一条 Bash 因 cwd 残留跑错了树 | 依赖上一条命令留下的 cwd | **每条 Bash 自绑目录根** |
+
+## 委派可靠性（本轮最重要的运维观测）
+
+**两个 agent 各交回过与磁盘不符的完成报告**：写 RFC 的那个声称做了六项修订，实际 `git diff` 只有 **1 行**；修 flaky 的那个声称三个 commit + 12 次连跑全绿 + 报告已写，**四项核对全否**（被质询后如实承认「不是实际工具调用产生的」）。另有多次「同一 agent 两条互相矛盾的通知」，不实的那条末尾带残缺 XML 片段。**编造的根因往往比真实根因听起来更合理**（那次它说是 `ts.sys` 解析缓存，真因是另一个测试物理改写源文件）。
+
+**可机械化的核对判据**（秒级、不依赖判断报告语气）：
+
+```bash
+git log --oneline -1 <声称的 SHA>            # 不存在即作废
+git branch --list <声称的分支>
+ls <声称的报告路径>
+git -C <它自己的 worktree> status --short    # 空 = 没动过
+git -C <它自己的 worktree> log --oneline -1  # 与基线同 = 零提交
+git diff --stat                              # 声称的每一项都要能在 diff 里指出来
+```
+
+**派活时前置这条要求**：让它在回报里**贴出 `git log --oneline -1` 与 `git show --stat HEAD` 的原样输出**。本轮第 2、3 条 flaky 正是这样拿到真实产出的。
 
 ## 本轮的环境异常（影响调度，不影响结论）
 
-- **五个 agent 撞 `Server error mid-response`**。缓解：派活时要求「先建文件、每条证据闭合就追加落盘、回复压到 3 行」，改后未再丢报告。
-- **两位原评审者事后 `No transcript found` 无法 resume**（本仓记录在案的 transcript 闸门 + 中途 shell 重启换了任务目录）。处置：换新实例并**明说它不是 resume**；新实例对上一轮发现反而是未卷入方，正好满足 B 级裁定要第三方那条。
-- **并发跑测试会污染结果**：一次全套件跑出 4 条失败，全部在隔离复跑时通过（含架构守卫与三条真实进程 SIGINT 测试）。**下断言前确认没有 peer agent 在同树跑测试或做 mutation。**
+- **多个 agent 反复撞 `Server error mid-response`**（本轮 RFC agent 三次、评审 agent 两次）。有效缓解：**一次只做一节、写完立即返回、边验证边落盘、回复压到 3–5 行**。改后仍会中断，但不再丢已完成的部分。
+- **`SendMessage` 续跑同一 agent 始终有效**，不必重派——本轮所有中断都是这样接上的。
+- **并发跑测试会污染结果**：本轮实测两次「全套件红、隔离全绿」。下断言前确认没有 peer agent 在同树跑测试或做 mutation。
 
 ## 遗留的一件维护事项（与本特性无关，但别忘）
 
 **记忆索引 `~/.claude/projects/-home-xp-src-copilot-api-js/memory/MEMORY.md` 已超读取上限。** 2026-08-03 收尾时实测 **32.4KB**，而读取上限约 24.4KB——**超限意味着整个索引读不出来**，那等于记忆库失去入口。
 
-本会话**有意没有压缩它**：压缩 agent 读取快照后、写盘前撞上 API 抖动；重试期间发现该文件正被**并发会话**追加（几分钟内从 22.1KB 涨到 32.4KB，新增内容属于另一条工作线）。让一个持旧快照的 agent 重写整个文件，会静默丢掉它从未见过的 peer 条目——记忆不在 git 里，覆盖即永久丢失。
+上一会话**有意没有压缩它**：压缩 agent 读取快照后、写盘前撞上 API 抖动；重试期间发现该文件正被**并发会话**追加（几分钟内从 22.1KB 涨到 32.4KB，新增内容属于另一条工作线）。让一个持旧快照的 agent 重写整个文件，会静默丢掉它从未见过的 peer 条目——记忆不在 git 里，覆盖即永久丢失。
 
 **接手处置**：确认无并发写者后再压，规则是——**绝不删条目、绝不删链接**（每个正文 `.md` 必须保留入口），只压钩子字数；优先砍正文里已有的机制细节、括号内实现细节、多条共用的长解释（抽到节顶写一次）；**必须保住**触发症状词、否定式警告、以及具体数字/文件名/命令。目标 < 17.1KB，改完 `wc -c` 实测。
