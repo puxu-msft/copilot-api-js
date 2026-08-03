@@ -194,6 +194,8 @@ type FormatDeliveryProfile =
 interface CommonGenerationCommandPort<P extends FormatDeliveryProfile> {
   readonly profile: P
 
+  selectWinner(source: LegSource): OwnerCommandResult<"selected">
+  noteUpstreamRound(event: UpstreamRoundObservation): OwnerCommandResult<"recorded">
   emitGeneric(command: GenericEmissionCommand): Promise<OwnerCommandResult<"emitted">>
   emitKeepalive(command: GenericKeepaliveCommand): Promise<OwnerCommandResult<"emitted">>
   runEmissionBatch(command: SerializedEmissionBatchCommand<P>): Promise<OwnerCommandResult<BatchOutcome>>
@@ -204,6 +206,7 @@ interface CommonGenerationCommandPort<P extends FormatDeliveryProfile> {
 
 共同port只表达每种streaming格式都真实拥有的intent：
 
+- `selectWinner`／`noteUpstreamRound`只接收winner candidate／dispatch与round lifecycle等不可变observation facts，更新owner snapshot／telemetry所需状态；它们不发frame、不返回raw／session capability。当前`driver.ts:888 noteWinner`迁`selectWinner`；零consumer的旧round methods若未来需要接线，只能走该窄observation command。
 - `emitGeneric`冻结三态：①structured payload parse failure在external write前拒绝；②已登记为owner-governed、terminal或indexed-block的effect若误走generic，在external write前报`CommandEffectMismatchError`；③payload可解析、但其effect尚未登记时，按richest-data-flow默认允许发送，使用bounded `actualEffect=unknown`并把原始type／frame detail写入trace／History。未知effect不是已知generic的证明，也不是默认拒绝理由；后续registry识别其owner语义时必须新增command compatibility与回归，而不能重解释历史样本。
 - `emitKeepalive`：只表达无indexed target的generic ping／application keepalive。Anthropic anchor／real-block target keepalive不走它，而走indexed capability的pulse commands。
 - `runEmissionBatch`：owner-scoped coordination API；在一个serializer callback内`suspend heartbeat → 全量build／validate → 顺序执行一批commands → fresh interval重臂`。它承载buffered boundary／retreat的可恢复flush，替代caller直接`freezeHeartbeat`／`suspendHeartbeat`／`resumeHeartbeat`；若batch包含terminal则不得重臂。caller拿不到timer控制方法。
@@ -532,16 +535,19 @@ C1～C11矩阵没有“语义变更”。已知需要更新的C2、C5、C6、C7�
 
 ### 7.2 每个commit边界的旧API population
 
-| Commit边界 | production旧generation API存活状态 | 唯一发送目标／约束 |
-|---|---|---|
-| Commit 0结束 | 现有`ClientSink.write*`、`WireBlockAllocationPort`、heartbeat controls、handler terminal／finalize全部原样存活 | 仍只走当前legacy owner／raw路径；新command core不存在，不做适配 |
-| Commit 1结束 | 与Commit 0相同 | 新types／profiles只供compile tests；production无factory、无owner instance、无副作用 |
-| Commit 2结束 | 与Commit 0相同 | 新owner primitives只由unit tests直接驱动；production不写shadow state、不铸command id、不采样 |
-| Commit 3结束 | 与Commit 0相同 | producer-specific command builders／cutover harness已可测试，但production call sites仍未切换；禁止注册到live roots |
-| **Commit 4 authority发布结束** | **所有production旧generation write调用population为零**：10个`ClientSink.write`、28个named synthetic API调用、3个handler `[DONE]`写、allocation-port旧commands、caller heartbeat controls、旧terminal／finalize调用均已迁移 | ordinary→`emitGeneric`；generic ping→`emitKeepalive`；envelope-only→`openMessageEnvelope`；anchor／real lifecycle→indexed commands；flush coordination→`runEmissionBatch`；terminal→`terminate`，settle后→`finalize(result)`；physical bytes只到private raw emitter |
-| Commit 5～8结束 | production旧调用population持续为零 | 后续只增强telemetry、删definitions／exports、审计goldens与同步docs，不重新引入适配器 |
+旧population拆为两张由TypeScript AST／checker机械冻结的集合，不能再用“旧generation API”一词混数：
 
-Commit 4后的“population为零”按AST／type checker冻结调用集合，不要求历史文档字面零命中。任何仍存活的production旧调用都阻止authority发布；不能给它补`legacy_adapted`通行证，因为那会恢复已否决的隐式facade。
+- **A集，wire-effect／coordination calls：** 10个`ClientSink.write`、28个named synthetic calls、3个handler `[DONE]`写、旧allocation commands、caller heartbeat controls、旧terminal／finalize calls。Commit 4发布后，A集production调用population必须为零。
+- **B集，旧`DownstreamDeliverySession` public consumers：** public面9项为`identity`、`snapshot`、`clientSink`、`allocationPort`、`writeScaffold`、`noteWinner`、`noteUpstreamRoundEnded`、`noteUpstreamRoundStarted`、`terminate`。当前production消费者中`noteWinner`恰有1点（`src/lib/pipeline/driver.ts:888`）；round start／end与`writeScaffold`为零。Commit 4将winner candidate／dispatch provenance迁入新owner的窄observation command，例如`selectWinner(source)`；若保留窄observer，它只能接收不可变observation facts，不返回session、port、raw handle或emission methods，因而不构成第二authority。Commit 4后，旧session public consumer的B集population也必须为零。
+
+| Commit边界 | A集wire／coordination状态 | B集旧session consumer状态 | 唯一目标／约束 |
+|---|---|---|---|
+| Commit 0结束 | 全部原样存活 | `noteWinner` 1点存活；其余零consumer definitions保留 | 完整legacy path；新core不存在 |
+| Commit 1～3结束 | 与Commit 0机械相等 | 与Commit 0机械相等 | 准备代码不接live roots、不影响winner observation |
+| **Commit 4 authority发布结束** | **A集production调用population为零** | **B集production consumer population为零**；`noteWinner`迁`selectWinner`窄command，零consumer methods不再暴露给driver | ordinary→`emitGeneric`；ping→`emitKeepalive`；envelope／anchor／real→profile commands；flush→`runEmissionBatch`；terminal→`terminate`／`finalize(result)`；winner／round facts→窄observation commands；physical bytes只到private emitter |
+| Commit 5～8结束 | A集持续为零 | B集持续为零 | 只增强telemetry、删definitions／exports、审计goldens与同步docs |
+
+A／B两集均按symbol identity冻结，不要求历史文档字面零命中。任何仍存活的production旧调用或旧session consumer都阻止authority发布；不能补`legacy_adapted`通行证或让driver继续拿旧session handle。
 
 ### 7.3 Commit 0 — Legacy基线、旧缺陷characterization与oracle分型
 
@@ -579,10 +585,11 @@ Commit 4后的“population为零”按AST／type checker冻结调用集合，�
   5. 所有`freezeHeartbeat`／`suspendHeartbeat`／`resumeHeartbeat`／`close`切`runEmissionBatch`或terminal；owner成为唯一timer。
   6. 20个handler synthetic terminal、3个`[DONE]`、normal terminal、Responses WS post-owner errors切`terminate → recordForwarded → ctx settle → finalize(result)`；10个anchor terminal-close decisions被`terminate`吸收，result表达`emitted | suppressed_client_gone | suppressed_session_terminating`；socket composition最后执行close intent。
   7. Responses WS control-with-inflight先协调active owner；真正pre-owner writers保持独立且observer证零owner。
-  8. 同步迁移raw／heartbeat 11文件、common／indexed／terminal／finalize／WS tests；任何guard删除或放宽有独立裁决记录。
-  9. 独立O-1／O-2／真SDK先绿，再在本commit同步更新Q5批准范围内的anchor／heartbeat goldens；O-6 fixture永不重捕。
-- **终态不变量：** production旧generation write API调用population为零；每个physical send有registered command family与command id；一个serializer／timer／sampling／emit；C1～C11、anchor精确帧序Q5、terminal顺序和WS socket ownership同时成立。
-- **验证：** R-1～R-8、O-1／O-2、3 kinds×4 scenarios×5 sites mapping矩阵、shared-predicate mutation、production registration collision、terminal跳过anchor balancing mutation、unpark N×interval活性＋parked ticks、Q5 goldens、O-6、确定性全套。
+  8. 迁移旧session observation／provenance consumers：`driver.ts:888 noteWinner`改用新owner `selectWinner(source)`或等价窄observation command；`noteUpstreamRoundStarted`／`noteUpstreamRoundEnded`与`writeScaffold`当前零production consumers，不继续暴露给driver。新observer不得返回session／command port／raw handle，也不得产生wire effect。
+  9. 同步迁移raw／heartbeat 11文件、common／indexed／terminal／finalize／WS与winner observation tests；任何guard删除或放宽有独立裁决记录。
+  10. 独立O-1／O-2／真SDK先绿，再在本commit同步更新Q5批准范围内的anchor／heartbeat goldens；O-6 fixture永不重捕。
+- **终态不变量：** A集旧wire／coordination调用与B集旧session consumers的production population均为零；每个physical send有registered command family与command id；一个serializer／timer／sampling／emit；winner／round provenance完整且不授予第二authority；C1～C11、anchor精确帧序Q5、terminal顺序和WS socket ownership同时成立。
+- **验证：** R-1～R-8、O-1／O-2、3 kinds×4 scenarios×5 sites mapping矩阵、shared-predicate mutation、production registration collision、terminal跳过anchor balancing mutation、winner observation正负样本、A／B两集AST population归零、unpark N×interval活性＋parked ticks、Q5 goldens、O-6、确定性全套。
 - **为何现在可满足：** raw authority与所有producer在同一semantic commit发布，不存在旧路径已禁而新command尚不可用的中间状态。准备commits已经让代码与tests可预审，但没有提前改变行为。
 
 ### 7.8 Commit 5 — Per-command telemetry与History generation operation detail
@@ -593,8 +600,8 @@ Commit 4后的“population为零”按AST／type checker冻结调用集合，�
 
 ### 7.9 Commit 6 — Legacy definitions／exports删除与population审计
 
-- **目标：** 删除已零调用的`ClientSink.write*`generation surface、`WireBlockAllocationPort`、`writeScaffold`、caller envelope factory、legacy anchor fields／bridge、`commandPortActivation`与raw production exports。
-- **终态不变量／为何可满足：** production调用population自Commit 4已为零，本commit只删definitions／test壳并做AST审计；四类test oracle与adversarial旧边界positive control保留。R-10、O-6、全套与独立guard裁决记录齐全。
+- **目标：** 删除A集已零调用的`ClientSink.write*`generation surface、`WireBlockAllocationPort`、caller envelope factory、legacy anchor fields／bridge、`commandPortActivation`与raw production exports；删除B集已零consumer的旧`DownstreamDeliverySession` public surface，包括`writeScaffold`、`noteWinner`、`noteUpstreamRoundStarted`、`noteUpstreamRoundEnded`及不再需要的session lookup。若`identity`／`snapshot`被新owner内部保留，它们不得继续作为旧session handle暴露给driver。
+- **终态不变量／为何可满足：** A集调用与B集consumer population自Commit 4已为零，本commit只删definitions／test壳并对两张symbol集合分别做AST／checker审计；四类test oracle与adversarial旧边界positive control保留。R-10、O-6、全套与独立guard裁决记录齐全。
 
 ### 7.10 Commit 7 — Golden／oracle纯审计与旧fixture清理
 
@@ -702,7 +709,7 @@ Q1保持open并在Commit 5前停；Q2在Commit 8前停且默认不改ADR；Q3／
 | R-10 | legacy surface归零且四类test oracle保留，旧边界positive control未被“合法化”掉 | 类型／测试架构＋behavior正控 | Commit 6 inventory AST重跑；test-only adversarial seam仍能造旧分裂，新production route拒绝 | 把`allocation-outside-owner-control`改走合法owner或删adversarial seam，coverage gate必须红 | owner-backed array adapter与raw transport byte units合法存在，不被零命中guard误杀 | 本RFC必须；Commit 6 |
 | R-11 | 无anchor主腿wire逐字节等价 | 字节golden | 非4141隔离server运行master `4f7a3989`后的`byte-equivalence.sh`；默认temp capture并内建`cmp`，须打印`O-6 PASS`、退出0，且fixture blob未变；本RFC禁止`RECAPTURE=1` | 改SSE event／data／id／retry、frame顺序或terminal bytes，脚本必须退出9 | continuation／recovery或有anchor流允许按mapping改变index，不被错误纳入O-6 | 沿用原O-6；本RFC每commit共同门 |
 | R-12 | 设计性anchor golden更新前，独立wire state与SDK oracle先证明正确 | producer全序＋golden | Commit 4前过Q5预测diff停门；Commit 4内先跑O-1／O-2／真SDK，再同步更新对应golden并复跑；Commit 7只审计／清理 | 注入duplicate index、orphan delta、悬挂block，必须先由O-1／O-2红，不能只靠新golden自洽 | 仅Q5逐帧批准的anchor顺序变化允许更新；超出预测即停；O-6 fixture永不重捕 | 本RFC golden纪律；Commit 4更新、Commit 7审计 |
-| R-13 | warmup fake／drop、AUQ、non-streaming与stream owner互斥 | route behavior | 真实route断言完整响应一次、upstream／owner population符合边界 | 提前创建owner、双写或漏event mutation必须红 | upstream／ctx存在但client wire未commit的AUQ仍可零owner；non-streaming正常零stream owner | 本RFC gate；Commit 0，Q3待裁 |
+| R-13 | warmup fake／drop、AUQ、non-streaming与stream owner互斥 | route behavior | Q3已裁方案A：Commit 0真实route断言warmup fake／drop完整响应一次、upstream零调用、delivery observer零session；AUQ／non-streaming按各自边界验证 | 提前创建owner、双写或漏event mutation必须红 | upstream／ctx存在但client wire未commit的AUQ仍可零owner；non-streaming正常零stream owner | Q3已裁A；本RFC Commit 0硬门 |
 
 ### 10.3 与原O-1～O-9对账
 
@@ -750,7 +757,7 @@ Q1保持open并在Commit 5前停；Q2在Commit 8前停且默认不改ADR；Q3／
 | Responses WS真正pre-operation rejection | 对该`response.create` operation，generation owner尚未创建 | 独立socket-control writer；observer证明零owner；协议route oracle通过 |
 | Responses WS control与active operation共存 | socket composition可持raw `ws`，但不能跳过active owner协调 | R-8通过后才可保留control domain；当前现状不可接受 |
 | AUQ fallback SSE | upstream／ctx可能存在，但client wire未commit且delivery owner未创建 | operation observer零owner；完整SSE一次；settle顺序正确 |
-| warmup fake／drop | driver／owner前同步返回独立完整响应 | Q3 test纳入并通过；缺test时保持“仅降低概率” |
+| warmup fake／drop | driver／owner前同步返回独立完整响应 | Q3已裁方案A；Commit 0真实route硬门必须证明完整字节、upstream零调用、delivery observer零session、一次响应及mutation转红 |
 | non-streaming JSON | 没有streaming anchor lifecycle | route observer零stream owner且响应一次 |
 | test raw adapter | 注入owner时只用于validated envelope／observation／transport-byte单元；不得裁决绕过owner的physical uniqueness | 仅test entrypoint，不export production capability；physical-uniqueness recorder必须包裹composition root的真实`stream`／`ws` handle并位于raw emitter之下 |
 
