@@ -1,5 +1,7 @@
 # P6 — 心跳生命周期修复（**现网缺陷**，可独立于 A 先行落地）
 
+> **实施状态（核验于 2026-08-03 `a20e1bfb`）**：**已完成并在 master**——合并态评审发现已闭合于 `d8f7546d` `test(pipeline): close P6 merged-state review findings`（`git merge-base --is-ancestor d8f7546d master` = YES）。
+
 > **前置**：P0。**必须先于 P2 与 P5**（**不是**「与 P1–P4 无代码重叠可并行」——那是 plan review 坐实的事实错误：P2 与本相位都改 `delivery/session.ts` 的 heartbeat 生命周期语义，见 README 并行机会小节与 Task 2.2b 交叉门）。可与 **P1** 并行。
 > **本相位不在冻结设计与审查报告里** —— 是 planner 在读码 + 实测中发现的缺陷。它不改变设计的目标或架构方向。
 >

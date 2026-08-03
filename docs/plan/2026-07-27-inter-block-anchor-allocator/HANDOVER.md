@@ -1,6 +1,13 @@
 # HANDOVER —— generation emission command algebra RFC 已定稿，实施未开工
 
-**状态**：**草稿·未评审**（本文件本身尚未过 subagent 评审；RFC 已过六轮评审）· RFC 已定稿、无未决 blocker/major；实施一行未写；等用户拍板「是否起执行」。
+**状态**：**已评审放行 · 等用户裁决「是否起执行」**（T1）。RFC 已定稿、实施一行未写。
+
+**本文件的评审情况**（别再重跑，也别当成未核验的档案）：
+- **判据证伪视角**：**12 轮**，结论「剩余项应记为已知边界而非缺陷；**无未决 blocker/major**」。报告：`docs/tmp/2026-08-03-handover-review-criteria.md`。
+- **接手方第一人称走查**：**8 轮**，提出的 1 blocker + 13 major 全部闭合并经实地复核，结论「**无未决 blocker/major**」。报告：`docs/tmp/2026-08-03-handover-review-successor.md`。
+- ⚠️ **评审范围是本文件与 KICKOFF.md，不含 RFC 本体**。RFC 只有被本文件引用到的位置被顺带核过（§4.6/4.7/4.8/4.9/4.12/6.x/7.x/9.x/10.2/10.3/10.4）；**RFC 自己的六轮评审是另一条证据链**，在 `docs/tmp/2026-08-03-command-algebra-rfc-review-{claude,gpt}.md`。
+- **两条遗留 minor 记在下面「已知遗留 minor」一行**，评审判为不阻塞。
+- **核验基线**：`a20e1bfb`（2026-08-03）。此后若本文件再被修改，**上面这两个结论只覆盖到该 commit**。
 **两个基线，别混**（交接评审的核心 blocker 就是这里）：
 - **文档落地基线**：master。**本文件自身的提交 SHA 不写死**（写下的那一刻就会被下一次改动作废——上一版写 `dafa31d8`，实际落在 `8ea97bec`）；要它就现算：`git -C /home/xp/src/copilot-api-js log -1 --format='%h %ad' --date=short -- docs/plan/2026-07-27-inter-block-anchor-allocator/HANDOVER.md`。
 - **代码事实基线**：**未合并分支** `feat/inter-block-anchor-allocator` @ `2c339784`（M1 实现，有意不合并）。**下面「硬事实」表里的每一个 `file:line` 都锚在这棵树上，在 master 上对不上**——master 的 `src/` 下 `closeAnchorViaOwner` **零命中**，`ClientSink` 在 `types.ts:737` 而非 `:747`。复算前先 `cd .worktrees/anchor-alloc`。
