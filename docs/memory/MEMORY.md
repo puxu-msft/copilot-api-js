@@ -29,7 +29,7 @@
 - [连续多轮「修复引入新回归且照绿」→ 去找那条测试看不见的缝](methodology-each-fix-round-introduces-green-passing-regression-at-the-same-seam.md) — 判据=把修复改回完整原 bug 形态仍全绿即无裁决力；根因常是测试自造 sink/session 看不到 handler↔装饰器↔driver 缝，验收必须走真实 HTTP 入口；**转述评审意见时限定语与严重度是内容不是修辞**
 - [plan 陈旧程度 ∝ 实现返工轮数，须逐契约对账](methodology-plan-drift-scales-with-rework-reconcile-per-contract.md) — 四轮返工的相位其 plan 积了 13 处旧契约、十四轮评审每轮还能再找出一处；**按已知形态 grep 结构性查不全**（用已知错误找未知错误），方向要从 types.ts 逐签名出发；五类藏身处（签名/散文/表格/mutation 对照/文件清单）逐类过；别用顶层一句兜住相反 checkbox；改文档用内容匹配非行号
 - [别跨一条你没读过的缝规定行为](methodology-dont-specify-across-a-seam-you-havent-read.md) — 一天四次同形翻车（agent id 尚不存在／目标函数是 private／pump 返回 `Promise<void>`／owner 够不到 AnchorState）；**动机都是「定死以消除歧义」而假指令比留白更坏**；写形状前先答三问（导出了吗·调用方返回什么·那一刻它存在吗），答不上就只冻结性质 + 调查 task + 停下回报硬门；候选方案也要过同一道检查；证据不同就不能合并同类项。**缝不只是代码缝**——另有角色边界／数据可得性／数据格式三型（2026-08-03），推广三问：执行者有这权限吗·是行为拿不到还是数据拿不到·落到具体字段是哪个
-- [降级自评闸门要有可达触发点](methodology-downgrading-a-gate-needs-a-reachable-trigger.md) — 判官与记录位置好补、**触发点最容易只写成一句陈述**；判据=未来会话在必经流程里会不会真走到；连打回三次（搬进 skill 只修好三分之二·指针字面只裁得了三条里的一条·没写 leaf 转交分支）；还要查触发点的宿主会不会先于断言消失；**「永不闭合」不是安全的保守选项**
+- [降级自评闸门要有可达触发点](methodology-downgrading-a-gate-needs-a-reachable-trigger.md) — 判官与记录位置好补、**触发点最容易只写成一句陈述**；判据=未来会话在必经流程里会不会真走到；连打回三次（搬进 skill 只修好三分之二·指针字面只裁得了三条里的一条·没写 leaf 转交分支）；还要查触发点的宿主会不会先于断言消失；**「永不闭合」不是安全的保守选项**。另含两条配套：**手工汇总+明细无对账门必漂**（指定明细为 SSOT、汇总降派生视图）·**写进文档的指纹要给可复跑命令别给裸值**
 - [skill 里要实战检验的断言必须内置自验](feedback-skill-claims-needing-field-proof-must-self-verify.md) — 自验表+verification-log；作者不能给自己投证实票；范式=skill `session-closeout`
 - [外部机制写进设计前先跑探针](methodology-probe-external-mechanism-before-writing-it-into-design.md) — 核实自己写下的机制（对偶于核实他人断言）
 - [下完备性判断前先实测每个支撑事实](feedback-verify-facts-before-superlative-completeness-verdict.md) — absence/negative 断言最易凭结构推断而错
@@ -67,10 +67,10 @@
 - [编译错误：补符号 vs 删引用](methodology-broken-reference-supply-vs-delete.md) — 按消费者契约+独立 oracle 裁决，别反射式让它编译
 - [复用共享原语选完整版非小版](methodology-full-primitive-not-partial-else-silent-field-drop.md) — 否则静默丢字段+单测假绿；映射测须构造每个非平凡字段
 - [「别继承退化」只在目标真有对应值时成立](methodology-degradation-advice-scoped-to-target-has-equivalent.md) — 目标无对应值→诚实退化+marker
-- [守卫被合法写法绕过 / 新 oracle「一定咬得住」只是推理](methodology-relocate-invariant-when-guard-cannot-keep-up.md) — 又准备补一种等价写法时**停止补形态**，方法权威见 skill `reshaping-a-bypassed-guard`（三-oracle witness 交得出→换轴；结构性闭合证明→继续；两者都无→不提交）；[新 oracle](methodology-new-oracle-discriminating-power-is-experimental.md) 失效主形态是「相邻」非「离谱」，两问=什么变异让它红·这个绿会不会由「通过但不是我要的」产生
+- [守卫被合法写法绕过 / 新 oracle「一定咬得住」只是推理](methodology-relocate-invariant-when-guard-cannot-keep-up.md) — 又准备补一种等价写法时**停止补形态** → skill `reshaping-a-bypassed-guard`；**第三例新增**：信号是「几次 witness 利用同一事实」非次数、推断型判据要**加独立 intent 输入**而非换一种推断、**轴的选择本身也要交未卷入方**；[新 oracle](methodology-new-oracle-discriminating-power-is-experimental.md) 失效主形态是「相邻」非「离谱」
 - [用例名集合 diff 必须运行时枚举 / mutation control 自身要自证改到了代码](methodology-test-name-audit-must-enumerate-at-runtime.md) — grep 扫 `test("...")` 对参数化+模板名结构性失明，方法不可靠而结论碰巧对时没有任何信号；[mutation 生效](methodology-verify-the-mutation-actually-applied.md) 「没变红」有两解=测试没咬住 vs mutation 根本没生效
 - [迁 oracle 到生产构造时绝不顺手削断言](methodology-migrating-an-oracle-must-not-weaken-its-assertions.md) — 「新构造下不再产生」几乎总是驱动少了一拍；删既有断言须扫参数证性质不存在；注释与断言自相矛盾是最廉价探测器
-- [spec 里的机制性解释必须有实验背书](methodology-mechanism-story-in-spec-must-be-experiment-backed.md) — 给现象配的合理机制别当事实写
+- [spec 里的机制性解释必须有实验背书](methodology-mechanism-story-in-spec-must-be-experiment-backed.md) — 给现象配的合理机制别当事实写；**事后归因同形**（diff 只证明结果、区分不了三种机制），分辨判据=我的解释能预测出别的可观测后果吗；编出来的根因会连带产出不防复发的修法
 - [ctx 共享可变裁决会被落败 hedge candidate 污染](methodology-request-scoped-mutable-verdict-poisoned-by-hedge-candidates.md) — hedge 默认开
 - [「一个终态」≠「一个完整终止符」](reference-exactly-one-terminal-is-not-exactly-one-complete-terminus.md) — 合成 end_turn 不补 message_stop 真 SDK 抛 stream ended
 - [中止成因在产生点打标签、别在边界猜](methodology-abort-provenance-tag-at-source-not-guess-at-boundary.md) — fall-through 猜原因=日志/History/客户端三处一致撒谎(609ms 报成 900s 超时)；AbortSignal.any 本就透传 reason 是传输层扔的；preflight 与 mid-wait 两分支须分别 mutation；边界写有序 precedence、每臂要正向证据
