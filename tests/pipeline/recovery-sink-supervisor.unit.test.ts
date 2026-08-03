@@ -203,7 +203,7 @@ describe("recovery sink lifetime supervisor", () => {
     expect(finalizeCalls).toBe(1)
   })
 
-  test("keeps the generation heartbeat alive between attempts and stops it at final settlement", async () => {
+  test("keeps the generation heartbeat resumable between attempts and stops it at final settlement", async () => {
     clock.install()
     const writes: Array<string> = []
     let rawCloseCalls = 0

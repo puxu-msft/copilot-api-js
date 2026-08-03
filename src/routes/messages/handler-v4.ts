@@ -39,6 +39,7 @@ import type {
 } from "~/lib/history/store"
 import type { Model } from "~/lib/models/client"
 import type { FeatureKind } from "~/lib/observability"
+import type { DownstreamDeliverySession } from "~/lib/pipeline/delivery/session"
 import type { RequestEnvelope } from "~/lib/pipeline/envelope"
 import type {
   //
@@ -83,7 +84,6 @@ import {
   makeAnthropicKeepaliveFrame,
   resolveAnthropicKeepalive,
 } from "~/lib/anthropic/keepalive-frame"
-import { makeReconcilingSink } from "~/lib/anthropic/live-reconcile"
 import { buildMessageMapping } from "~/lib/anthropic/message-mapping"
 import { createBetaProbe } from "~/lib/anthropic/pipeline"
 import { recordProtectStreamingOutcome } from "~/lib/anthropic/protect-streaming-stats"
@@ -142,11 +142,6 @@ import {
 import { makeDeliverySseSink } from "~/lib/pipeline/client-sink"
 import { createCommittedBlocksLedger } from "~/lib/pipeline/committed-blocks-ledger"
 import { getContinuationBuilder } from "~/lib/pipeline/continuation-request-builder"
-import {
-  //
-  getDownstreamDeliverySession,
-  type DownstreamDeliverySession,
-} from "~/lib/pipeline/delivery/session"
 import { createPipelineDriver } from "~/lib/pipeline/driver"
 import {
   //
@@ -154,7 +149,6 @@ import {
   type CandidateResponseSession,
   type CandidateResponseSessionFactory,
 } from "~/lib/pipeline/generation/candidate-response-session"
-import { createRecoverySinkSupervisor } from "~/lib/pipeline/generation/recovery-sink-supervisor"
 import { createRuntimeHedgePolicy } from "~/lib/pipeline/generation/runtime-policy"
 import {
   //
@@ -202,6 +196,7 @@ import {
   anthropicRejectErrorFrame,
   classifyPostCommitAbort,
 } from "./post-commit-error"
+import { createPreContentRecoverySinkChain } from "./precontent-recovery-sink-chain"
 import { retryMetaFeature } from "./retry-meta-feature"
 import {
   //
@@ -1308,33 +1303,6 @@ async function pumpAnthropicStreamingDispatch(opts: PumpAnthropicStreamingDispat
  * the RAW sink unchanged when the anchor is inert (no hooks / no shared state — `ping`), keeping the live path
  * byte-equivalent. The transform itself branches on `anchorState.anchorBlockOpen` (§10.6).
  */
-function liveReconcilingSink(sink: ClientSink, anchorHooks: AnchorHooks | undefined, anchorState: AnchorState | undefined): ClientSink {
-  return anchorHooks && anchorState ? makeReconcilingSink(sink, anchorState, anchorHooks) : sink
-}
-
-function createPreContentRecoverySinkChain(
-  rawSink: ClientSink,
-  anchorHooks: AnchorHooks | undefined,
-  anchorState: AnchorState,
-): {
-  readonly sink: ClientSink
-  readonly rawSink: ClientSink
-  readonly liveSink: ClientSink
-  readonly deliverySession: DownstreamDeliverySession
-  settleFinal(): Promise<void>
-} {
-  const deliverySession = getDownstreamDeliverySession(rawSink)
-  if (!deliverySession) throw new Error("[Anthropic:v4] raw delivery sink has no generation-owned session")
-  const supervisor = createRecoverySinkSupervisor(rawSink)
-  return {
-    sink: supervisor.sink,
-    rawSink,
-    liveSink: liveReconcilingSink(supervisor.sink, anchorHooks, anchorState),
-    deliverySession,
-    settleFinal: () => supervisor.settleFinal(),
-  }
-}
-
 /**
  * Stream pump for the v4 Anthropic path — **owns-the-sink** (Stage B Anthropic cut-over).
  * The driver now OWNS the client write-out: it applies the S5 response-rewrite chain
@@ -1360,7 +1328,7 @@ function createPreContentRecoverySinkChain(
  * modified tools are reflected (via `createState(env)`).
  */
 async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): Promise<void> {
-  const { sink, rawSink, liveSink, buffered, forwardedSseEvents, driver, upstream, env, anchorHooks, anchorState } = opts
+  const { sink, liveSink, buffered, forwardedSseEvents, driver, upstream, env, anchorHooks, anchorState } = opts
   const anthropicPayload = env.body as MessagesPayload
   const model = anthropicPayload.model
 
@@ -1386,7 +1354,7 @@ async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): 
   try {
     const outcome =
       buffered ?
-        await driver.runResponseBufferedSink(upstream, env, rawSink, {
+        await driver.runResponseBufferedSink(upstream, env, opts.rawSink, {
           // Buffered synthetic-prelude keepalive (spec 2026-07-08 / §10.6): the handler's injector lazily
           // forwards a message_start prelude via the sink's heartbeat.injectAnchor during a pre-commit stall.
           // On commit the driver dedups the buffered message_start and — for `empty_text` (anchorBlockOpen) —
