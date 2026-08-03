@@ -1,0 +1,16 @@
+Crate versions and API evidence checked on 2026-08-02:
+https://docs.rs/crate/reqwest/0.13.4
+https://docs.rs/reqwest/0.13.4/reqwest/struct.ClientBuilder.html
+https://docs.rs/reqwest/0.13.4/reqwest/struct.Body.html
+https://docs.rs/http-body-util/latest/http_body_util/trait.BodyExt.html
+https://docs.rs/crate/napi/3.12.0
+https://docs.rs/crate/napi-derive/3.6.2
+https://docs.rs/crate/napi-build/2.4.0
+
+Expected verification after installing a Rust toolchain:
+1. ./build.sh
+2. Start: node oracle.mjs
+3. Bun: bun load.mjs http://127.0.0.1:19471/events
+4. Node: node load.mjs http://127.0.0.1:19471/events
+5. Fetch http://127.0.0.1:19471/stats and require pingCount > 0.
+6. Positive control: set http2_keep_alive_interval(None), rebuild, and require pingCount == 0.

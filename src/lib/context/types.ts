@@ -3,8 +3,8 @@ import type {
   AskNormalizationDiag,
   SendMessageNormalizationDiag,
 } from "~/lib/anthropic/decode-tool-input-core"
-import type { BufferedMergeDiag } from "~/lib/codec/openai-responses/buffered-merge-reducer"
 import type { RefusalPolicy } from "~/lib/anthropic/refusal-policy"
+import type { BufferedMergeDiag } from "~/lib/codec/openai-responses/buffered-merge-reducer"
 import type { ApiError } from "~/lib/error"
 import type {
   //

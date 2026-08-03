@@ -28,7 +28,8 @@
 - [通过/空/干净/自洽/doc-vs-code 不自证](feedback-pass-null-clean-not-self-validating.md) — verification 簇根
 - [连续多轮「修复引入新回归且照绿」→ 去找那条测试看不见的缝](methodology-each-fix-round-introduces-green-passing-regression-at-the-same-seam.md) — 判据=把修复改回完整原 bug 形态仍全绿即无裁决力；根因常是测试自造 sink/session 看不到 handler↔装饰器↔driver 缝，验收必须走真实 HTTP 入口；**转述评审意见时限定语与严重度是内容不是修辞**
 - [plan 陈旧程度 ∝ 实现返工轮数，须逐契约对账](methodology-plan-drift-scales-with-rework-reconcile-per-contract.md) — 四轮返工的相位其 plan 积了 13 处旧契约、十四轮评审每轮还能再找出一处；**按已知形态 grep 结构性查不全**（用已知错误找未知错误），方向要从 types.ts 逐签名出发；五类藏身处（签名/散文/表格/mutation 对照/文件清单）逐类过；别用顶层一句兜住相反 checkbox；改文档用内容匹配非行号
-- [别跨一条你没读过的缝规定行为](methodology-dont-specify-across-a-seam-you-havent-read.md) — 一天四次同形翻车（agent id 尚不存在／目标函数是 private／pump 返回 `Promise<void>`／owner 够不到 AnchorState）；**动机都是「定死以消除歧义」而假指令比留白更坏**；写形状前先答三问（导出了吗·调用方返回什么·那一刻它存在吗），答不上就只冻结性质 + 调查 task + 停下回报硬门；候选方案也要过同一道检查；证据不同就不能合并同类项
+- [别跨一条你没读过的缝规定行为](methodology-dont-specify-across-a-seam-you-havent-read.md) — 一天四次同形翻车（agent id 尚不存在／目标函数是 private／pump 返回 `Promise<void>`／owner 够不到 AnchorState）；**动机都是「定死以消除歧义」而假指令比留白更坏**；写形状前先答三问（导出了吗·调用方返回什么·那一刻它存在吗），答不上就只冻结性质 + 调查 task + 停下回报硬门；候选方案也要过同一道检查；证据不同就不能合并同类项。**缝不只是代码缝**——另有角色边界／数据可得性／数据格式三型（2026-08-03），推广三问：执行者有这权限吗·是行为拿不到还是数据拿不到·落到具体字段是哪个
+- [降级自评闸门要有可达触发点](methodology-downgrading-a-gate-needs-a-reachable-trigger.md) — 判官与记录位置好补、**触发点最容易只写成一句陈述**；判据=未来会话在必经流程里会不会真走到；连打回三次（搬进 skill 只修好三分之二·指针字面只裁得了三条里的一条·没写 leaf 转交分支）；还要查触发点的宿主会不会先于断言消失；**「永不闭合」不是安全的保守选项**
 - [skill 里要实战检验的断言必须内置自验](feedback-skill-claims-needing-field-proof-must-self-verify.md) — 自验表+verification-log；作者不能给自己投证实票；范式=skill `session-closeout`
 - [外部机制写进设计前先跑探针](methodology-probe-external-mechanism-before-writing-it-into-design.md) — 核实自己写下的机制（对偶于核实他人断言）
 - [下完备性判断前先实测每个支撑事实](feedback-verify-facts-before-superlative-completeness-verdict.md) — absence/negative 断言最易凭结构推断而错
