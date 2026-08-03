@@ -18,10 +18,14 @@
 
 ## 第一步
 
-看 HANDOVER 的 T1：M1 的两路复评是否已回话。
-- **已回且无 blocker/major** → 处置完 minor，把 `feat/inter-block-anchor-allocator` 合回 master，然后进 T2（M2/M3/M4）。
-- **仍有 major** → 先修，修完 SendMessage 恢复**原评审者**复核（别重派，它记得上一轮）。
-- **无法判断复评状态** → 看 `docs/tmp/2026-08-03-m1-code-review-oracles.md` 与 `-walkthrough.md` 末尾有没有「复核轮」一节。
+看 HANDOVER 的「**M1 未闭合的判据问题**」那一节（G1–G3）与 T1。当前卡点**不是**等复评（两路复评都已回话并完成复核轮），而是**判据轴问题待第三方裁决**。
+
+- **裁决已回**（`docs/tmp/2026-08-03-m1-guard-axis-adjudication.md` 有四项结论）→ 按裁决修 G1、按其定级处置 G2/G3 → SendMessage 恢复**原评审者**复核（别重派）→ 合 master → 进 T2。
+- **裁决未回** → 等，**不要自己再换一次判据轴**。主会话已经自己换过两次，两次都被交出绕过 witness；轴的选择已经交出去了，别收回来。
+- **裁决产物不存在或只有头部** → 那个 agent 中途撞了 API 抖动，用 SendMessage 续跑（它记得上下文），别重派。
+
+⚠️ **门禁全绿不等于 M1 可定稿**：`typecheck` 绿 + 6848 pass 对 G1–G3 三处结构性失明——它们都是「实现落了但锁不住它」。
+
 
 ## 批准状态
 
