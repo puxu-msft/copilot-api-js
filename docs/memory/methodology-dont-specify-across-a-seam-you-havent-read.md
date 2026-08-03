@@ -18,7 +18,20 @@ metadata:
 **缝不只是代码缝**（2026-08-03 三个新实例，同一形状、不同介质，全部由外部证据打回、自审一次都没抓到）：
 5. **角色边界缝** —— 规则写「收尾时交给一个 agent 审」，而全局硬规则禁止 leaf executor 派 agent。我写指令时**默认自己是能派 agent 的那种会话**，于是给一部分执行者写了条物理上执行不了的指令。修法是补转交分支（义务转移、不消灭）。
 6. **数据可得性缝** —— 我判定「没有任何人能构造出包含『静默从未用过它』那批会话的分母」，据此把两条断言改成永不毕业。实际 transcript 对**每个**会话都落盘，与它调用过什么无关，本机 1030 主 + 2276 subagent 可直接枚举。**我把「不会主动来报告」错当成了「无法被枚举」**——行为不可得 ≠ 数据不可得。
-7. **数据格式缝** —— 写「events 落在 `[start, cutoff)` 内」却没定义用哪个时间字段。实测 ~107 万条事件里 **~8.56 万条没有顶层 `timestamp`**，且长会话跨窗（本会话窗前 1750 / 窗内 630）；文件 mtime、首条 timestamp、「整文件是否命中」三种取法会选出三个不同的 population。
+7. **数据格式缝** —— 写「events 落在 `[start, cutoff)` 内」却没定义用哪个时间字段。实测**大量事件根本没有顶层 `timestamp`**（`last-prompt`、`ai-title`、`file-history-snapshot` 等），且长会话跨窗；文件 mtime、首条 timestamp、「整文件是否命中」三种取法会选出三个不同的 population。**口径与复跑命令**（数字必须带这两样，否则正是本条批评的那种断言——初版这里写的「窗前 1750 / 窗内 630」用的是 UTC 00:00 边界，而冻结窗口是 `08:44:41Z`，**一条讲「你没定义边界」的教训自己没定义边界**，由评审抓出）：语料 = `~/.claude/projects/*/*.jsonl` 与 `*/subagents/agent-*.jsonl`，边界 = `2026-08-03T08:44:41Z`（提交 `828b442` 的 committer timestamp）。单看本会话那一份，2026-08-03 复算得窗前 2289 / 窗内 508 / 无 timestamp 770——**transcript 是活的、仍在增长，任何计数只在取数那一刻成立**，所以给命令而不是背数字：
+   ```bash
+   python3 -c 'import json,sys;B="2026-08-03T08:44:41Z";a=b=n=0
+   for l in open(sys.argv[1],encoding="utf-8",errors="replace"):
+     l=l.strip()
+     if not l: continue
+     try: o=json.loads(l)
+     except Exception: continue
+     t=o.get("timestamp")
+     if not isinstance(t,str): n+=1
+     elif t>=B: a+=1
+     else: b+=1
+   print("before",b,"in-window",a,"no-timestamp",n)' <transcript.jsonl>
+   ```
 
 **How to apply:**
 - **动手写「怎么调」之前先问：这个函数导出了吗？调用方的返回类型是什么？这个 id/对象在那一刻存在吗？** 三个问题任一答不上来，就不要写形状。
