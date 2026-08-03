@@ -125,7 +125,11 @@ test("all production remap calls are explicitly allowlisted", async () => {
     `New remap call(s) bypass the single authority. Add only a justified authority/owner call; legacy sites must shrink through P3M and be empty after M4. New calls:\n${additions.map((site) => `${site.file}: ${site.call}`).join("\n")}`,
   ).toEqual([])
   expect(current).toEqual([...REMAP_CALL_ALLOWLIST].sort((a, b) => `${a.file}:${a.call}`.localeCompare(`${b.file}:${b.call}`)))
-})
+  // Builds a full TypeScript AST for every production source file, which costs ~3s on its own. Under
+  // the 16-way sharding of `scripts/parallel-test.ts` that lands inside bun's 5s default and turns a
+  // correct guard into a false red — and a gate that fails at random teaches people to ignore it. The
+  // budget is raised rather than the scan narrowed: detection semantics stay exactly as they were.
+}, 30_000)
 
 test("no source file gates a remap on anchorsOpened()", async () => {
   const violations: Array<string> = []
