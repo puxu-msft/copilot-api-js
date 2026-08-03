@@ -1139,6 +1139,15 @@ registry（`docs/rfc/2026-07-21-retry-strategy-registry.md`）6 commit 全 lande
 - **2026-07-30 新数据点（fast 档也中招，扩大了嫌疑面）**：`tests/infra/atomic-fs.unit.test.ts` 的 `atomicWriteJson > crash during writeFile leaves the previous target intact` 在 `bun run test`（**fast 档**，`unit http`）下 6 次跑红 2 次（4757 pass / 1 fail），**单文件隔离连跑 8 次全绿**。此前记录的三例都在 `test:backend`（16 分片）下——现在 fast 档同样复现，说明嫌疑面是**分片机制本身**（片内共享缓存 / 进程级单例），不是 backend 档特有的资源竞争。该文件末次改动 `85937f27`，与 B2 系列无关。发现方：Task 4.2 评审的邻域观测。
 - **为何暂缓**：与本轮（abort 归因）因果链无关，且**门本身仍是可信的**——失败是真失败、退出码正确，坏的只是「一次全绿不等于确定性全绿」。定位它需要独立的二分实验，塞进本轮会让本轮的因果链变糊。**触发条件（值得做）**：频率上升到影响交付判断、或某次真回归被当成 flaky 挥手放过（**这正是最危险的失效形态**——本轮就差点把一次环境性红当成「既有失败」）。**发现方**：abort 归因收尾期间连跑六次全量的对照观测（2026-07-28）。
 
+## `parallel-test.ts` 的汇总用例数在同一 commit 上逐次漂移（2026-07-30，B2 Task 4.3a 收口复评）
+
+- **根因 / 现状**：**未定位**。同一棵树、同一 HEAD、同一条 `bun run test:backend` 连跑四次，汇总行的总数为 **6631 / 5741 / 6164 / 5810**，全部 `0 fail`；而不经分片脚本的直接发现稳定在 `Ran 6642 tests across 649 files`。此前 2026-07-28 已记过「系统性欠计 ~25%」（ANSI 修复之后仍欠），本条是新信息：**欠计量不是常数，逐次随机漂移**，说明各分片汇总存在丢失或竞争，而非某类文件被稳定漏读。
+- **当前行为**：**门本身仍可信**——退出码由各 shard 决定，真失败照样红（本轮多次实测）。坏的只是「跑了多少条」这个仪表。
+- **危害（本轮实际踩到）**：把汇总数当作「用例数不减」的验收证据是**用会漂的尺子量 2 毫米**。B2 系列多轮用过 `6630 → 6631 → 6633` 这类差值，结论碰巧都对（另有运行时名字枚举佐证），但推理不成立。
+- **理想架构 / 若做需改什么**：让分片脚本汇总 **junit reporter 的用例名集合**而非解析 stdout 数字；或至少在汇总行标注「计数不可靠，验收请用 `--reporter=junit` 枚举」。修好后应有守卫：同一 commit 连跑 3 次汇总数必须一致。
+- **为何暂缓**：与 B2 因果链无关；且**验收有可靠替代**（junit 名字集合枚举，本轮已在用）。**触发条件（值得做）**：① 有人再次用汇总数做增减验收；② 排查分片污染时需要可信基数；③ 顺手修 `parallel-test.ts` 时。
+- **发现方**：Task 4.3a 收口复评的邻域实测（连跑四次对照）。**配套纪律**：凡「用例数增减」类验收，一律用 junit 枚举或名字集合 diff，**别用分片汇总数**——与记忆 `methodology-test-name-audit-must-enumerate-at-runtime` 同一族（那条讲别用 grep，这条讲别用汇总数）。
+
 ## 仓库内 worktree 里，裸包名 `@hsupu/ghc-proxy-{token,cli}` 解析到**主树**源码（2026-07-29，worktree 委派 gate 评审的邻域实测）
 
 - **根因 / 现状**：`.worktrees/<name>/node_modules` 是指向**主树** `node_modules` 的软链，而其中 `@hsupu/ghc-proxy-*` 又软链回**主树**的 `packages/*`。是否逃逸取决于 tsconfig `paths` 有没有把该 specifier 拦下来：`@hsupu/ghc-proxy-foundation` 与 `@hsupu/ghc-proxy-telemetry` 有裸包名别名（`tsconfig.json:21-22`/`:51-52`）→ 解析回 worktree ✅；`token` / `cli` **只有树内形式的别名**（`~/lib/token`、`~/main` 等）、没有裸包名别名 → 裸名解析到**主树** ❌。逐包实测（worktree 内 `Bun.resolveSync`）：foundation → worktree、telemetry → worktree、token → **主树** `packages/token/src/index.ts`、cli → **主树** `packages/cli/src/main.ts`。
