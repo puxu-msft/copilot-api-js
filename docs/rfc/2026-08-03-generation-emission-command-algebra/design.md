@@ -279,7 +279,7 @@ anthropicOwner.commandPort.openAnchor(/* ... */)  // compile-green
 
 禁止的退化形状是：`interface AllCommands { openAnchor?: ... }`、`indexedBlockLifecycle: boolean`后返回同一个大接口，或把所有command做成巨型union再在runtime抛`unsupported`。这些形状让Responses／Chat Completions／Gemini调用点在类型层仍看见Anthropic allocator，第三方裁决所说的“过度设计”反论会重新成立。runtime classifier仍须验证effect，但它负责防payload／state错误，不负责弥补错误capability已经被供给出去。
 
-若调用方持有宽化后的`FormatDeliveryProfile` union，必须先按`profile.indexedBlockLifecycle`或`profile.format`收窄，才能取得indexed methods；不得用`as AnthropicGenerationCommandPort`。正常production composition应从已知route／codec literal直接构造具体profile，避免无意义宽化。
+调用方持有宽化后的`FormatDeliveryProfile` union时，必须**先收窄profile，再调用factory**；factory因此接收concrete literal并返回相关的command port。TypeScript 5.9.3 PoC已证实这条路径可行。不得先用union profile构造owner、再检查嵌套的`owner.profile.indexedBlockLifecycle`来收窄sibling `commandPort`——TypeScript不会建立这种相关性；那条路径已被PoC证否，除非把discriminant重复到owner顶层，而本RFC不采纳重复事实源。不得使用`as AnthropicGenerationCommandPort`。
 
 ### 3.6 跨格式 profile 矩阵
 
@@ -300,7 +300,8 @@ Responses output-item boundary的精确effect taxonomy尚未在现有codec中以
 1. 正样本：四类non-Anthropic concrete profile均能调用`emitGeneric`／`emitKeepalive`／`terminate`，Anthropic concrete profile能调用common与每个indexed command。
 2. 负样本：在Responses HTTP、Responses WS、Chat Completions／Azure和Gemini owner上分别引用`openAnchor`、`openRealBlock`、`writeRealBlockFrame`，由`@ts-expect-error`锁定property不存在；移除注解时`tsc`必须失败。
 3. 判别正控：故意把factory返回值退化成共同大接口，负样本必须因“unused @ts-expect-error”或显式compile-failure harness转红；否则测试没有触达目标类型。
-4. 宽化对照：`FormatDeliveryProfile` union未narrow时不可直接调用indexed command，narrow到`indexedBlockLifecycle === "anthropic"`后正确调用必须compile-green。
+4. Union profile正负样本：未收窄的`FormatDeliveryProfile`不能传给要求Anthropic-specific factory wrapper或取得indexed port；先以`profile.indexedBlockLifecycle === "anthropic"`收窄profile、再调用generic factory，所得owner的indexed command必须compile-green；`none`分支仍compile-red。
+5. 反例锁定：factory先接收union profile、再检查嵌套`owner.profile.indexedBlockLifecycle`的样例必须保留为compile-red characterization，防实施者误以为它能相关收窄sibling `commandPort`。
 
 这组门只证明正常静态调用面按capability分型，等级为**仅降低概率**。TypeScript的`as`、局部同构interface、`unknown`双重cast与raw factory import都可绕过它；本项目已经实测过这种失效，故不得称结构性闭合。真正的**结构性闭合候选**仍是§2 composition-root行为witness＋owner runtime validation：non-Anthropic真实route只能获得common port；任何owner-governed effect误走`emitGeneric`都在external write前失败；任何raw direct send都会被physical-send command-id oracle抓住。类型门是presence ratchet，不计behavior witness。
 
@@ -527,7 +528,7 @@ C1～C11矩阵没有“语义变更”。已知需要更新的C2、C5、C6、C7�
 
 每个commit结束都必须满足：`bun run typecheck`绿；`FORCE_COLOR=0 bun scripts/parallel-test.ts unit it http`确定性全绿；O-6脚本默认temp capture＋内建`cmp`打印`O-6 PASS`，fixture blob不变，禁止`RECAPTURE=1`；本commit已激活的witness正样本绿、production mutation红、false-red对照绿。Authority发布前，production仍完整走旧路径，新core不得shadow-send、shadow-sample、维护shadow authorization或启动timer；authority发布后，每个operation只有一个serializer、一个heartbeat owner、一次sampling、一次physical emit。
 
-**整个序列的入场条件位于Commit 0之前：** 根因修复已知baseline flakes，包括History V3性能、root-eslint-ignore超时、state→foundation ratchet；完整集合以entry时N次`unit+it+http`实测枚举为准。在实际entry commit `<sha>` 连跑N次确定性全绿并保存每次runtime结果，任一次失败都不得开始cutover。Master `200aba8b`只修一条AST guard timeout false-red，不证明其余flakes已闭合。
+**整个序列的入场条件位于Commit 0之前：** 根因修复已知baseline flakes，包括History V3性能、root-eslint-ignore超时、state→foundation ratchet；完整集合以entry实测枚举为准。在实际entry commit `<sha>` 连跑**至少15次**`unit+it+http`，每次都确定性全绿并保存runtime结果，任一次失败都不得开始cutover。15次来自评审累计9次运行中观察到1次2-fail（约1/9）：N=5不足以把这类低频flake与健康基线区分。Master `200aba8b`只修一条AST guard timeout false-red，不证明其余flakes已闭合。
 
 ### 7.2 每个commit边界的旧API population
 
@@ -650,18 +651,11 @@ Authority publish Commit 4是唯一可观察切换点。若PoC证明全部produc
 - **推荐：** A，作为加性澄清，不重裁richest-data-flow本身。
 - **不裁决会怎样：** 不阻塞实现；阻塞Commit 8对ADR的任何编辑，默认走B且不得暗改。
 
-#### Q3. 是否把warmup fake／drop真实route behavior test纳入本次cutover？
-
-- **为什么需人裁：** 现有边界设计把它标为未验证出口；它本身是pre-owner完整响应，不需要command rewrite，但缺test时无法证明composition反转没有提前创建owner或双写。若排除，会留下§5唯一明确没有现成behavior route witness的边界。
-- **选项A：** 纳入Commit 0，补fake／drop完整字节、upstream零调用、delivery observer零session、一次响应及mutation。后果是本RFC可诚实覆盖完整pre-owner边界。
-- **选项B：** 保留为独立blocker，command cutover完成但不得宣称全inventory边界已验证，后续单独补test后再升级该行等级。
-- **推荐：** A。它是本RFC composition-root互斥的gatekeeper test，不是可选功能扩张。
-- **不裁决会怎样：** 阻塞Commit 0 witness population冻结及最终“所有inventory出口已处置”的声明；不阻塞纯类型草案，但不应进入实现合并。
-
 ### 9.2 已裁决、不得重开的事项
 
 以下不是open questions：full command algebra胜出；public port按capability分型；classifier仍保留作intent／effect交叉验证；`wireTorn`只禁止推进frontier且compound command close-only返回`closedThenWireTorn`；delivery只依赖codec实现并由composition注入的窄profile；authorization与observation双层分离；M1代码在分支上被重塑而非丢弃或原样冻结。
 
+- **Q3 warmup fake／drop已裁决采用方案A：** 真实route behavior test纳入Commit 0，覆盖完整字节、upstream零调用、delivery observer零session、一次响应及提前创建owner／双写mutation。它是§5唯一没有现成behavior witness的出口，也是composition-root互斥性的gatekeeper；本项目禁止静默砍掉gatekeeper requirement，因此不留作后续可选项。
 - **Q4 History schema已裁决采用方案B：** `wirePartialDelivery`保持稳定摘要`operation + cause + committed`；另在generation operation detail中保存完整per-command records，包含command、phaseReached、outcome、expected／actual effect、state before／after及高基数identity。Commit 5同步后端SSOT schema、ui-v4 re-export与相关tests，不再等待Q4。
 - **Q5 anchor精确帧序已裁决接受变更，但保留前置停门：** authority发布允许改变anchor路径forwarded／wire精确帧序，包括消除close与real-start之间的heartbeat交织及heartbeat coordination迁owner产生的逐tick位置变化；这不改C2／C7。未来执行会话在进入Commit 4发布前必须产出旧golden→预测新序列的逐帧diff，逐项标明保留／删除／移动及理由，并与Q5批准范围核对；缺diff或实测超出预测即停止。Golden期望随Commit 4同步更新，不等后续审计补记账。
 
@@ -682,7 +676,7 @@ Authority publish Commit 4是唯一可观察切换点。若PoC证明全部produc
 
 ### 9.4 裁决与调查的可达停点
 
-Q1在Commit 5前停；Q2在Commit 8前停且默认不改ADR；Q3在Commit 0 witness冻结前停；Q4已裁决、不再设停点；Q5的必经触发点是Commit 4 authority publish前的逐帧diff审查，缺材料不得进入该commit。
+Q1保持open并在Commit 5前停；Q2在Commit 8前停且默认不改ADR；Q3／Q4已裁决、不再设停点；Q5的必经触发点是Commit 4 authority publish前的逐帧diff审查，缺材料不得进入该commit。
 
 本节是调查停点的单一事实源：第1／2／3／4／5／7／8项及already-rendered builder、LegHandle、heartbeat逐点映射全部在Commit 4发布前；其中types／unit实现所需的最小子集可提前供Commit 1～3准备，但最终证据槽在publish kickoff必须齐全。第6项在Commit 5前。未来执行会话到达commit kickoff时先读取证据槽；没有file:line或PoC结论就交付已完成部分与具体缺口、结束本轮，不生成猜测签名。
 
