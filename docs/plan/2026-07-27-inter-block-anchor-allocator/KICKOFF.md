@@ -49,7 +49,8 @@ RFC 在 docs/rfc/2026-08-03-generation-emission-command-algebra/design.md。
 
 ## 测试门禁现状（核验于 2026-08-03 / master cc909c81；接手第一件事是复验而非采信）
 
-- master 全套件 unit+it+http：连跑 21 次全绿（6845 pass / 0 fail，代码状态 cc909c81），逐次记录在 docs/tmp/2026-08-03-baseline-run-log.md。起执行前仍须按 RFC §7.1 在当时的 entry commit 上重跑并保存逐次结果——旧读数不顶替。
+- master 全套件 unit+it+http 连跑 21 次全绿（6845 pass / 0 fail，代码状态 cc909c81）——**但那是自我报告的摘要、不是独立可核验的原始输出，别当门禁已过**。理由与将来那次跑的取证配方见 HANDOVER 头部「已跑门禁」与 T3 的修复 AC ④。
+- 起执行前必须按 RFC §7.1 在**当时的 entry commit** 上重跑 ≥15 次，**每次留一个原始输出文件**；旧读数不顶替。
 - **注意 `bun run test` 的档位**：它是 `test:fast` = `parallel-test.ts unit http`，**不含 `it` 档**。要 unit+it+http 用 `bun run test:backend` 或显式写 `bun scripts/parallel-test.ts unit it http`。（上一版这里写「会因 rustup 前置失败」——**那是错的**，只有 `test:ci` 会先 `build:history-search`；交接评审实测推翻。）
 - exp/inter-block-anchor-allocator/byte-equivalence.sh 现在是**比较**不是捕获：一致 O-6 PASS 退出 0、不一致退出 9；本 cutover 全程禁用 RECAPTURE=1。
 ```

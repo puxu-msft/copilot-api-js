@@ -7,7 +7,8 @@
 
 **worktree**：`/home/xp/src/copilot-api-js/.worktrees/anchor-alloc`
 **未提交 / 未追踪**：本工作的产物已于 `6cfa0e89` 全部提交（此前两份评审报告曾是 untracked，被交接评审抓出）；主树另有并发会话的未提交改动，与本工作无关
-**已跑门禁**：master 全套件 `unit+it+http` **连跑 21 次全绿**（6845 pass / 0 fail，代码状态 `cc909c81`）——**逐次原始记录见 `docs/tmp/2026-08-03-baseline-run-log.md`**；`bun run typecheck` 绿。
+**已跑门禁**：master 全套件 `unit+it+http` 连跑 21 次全绿（6845 pass / 0 fail，代码状态 `cc909c81`），记录在 `docs/tmp/2026-08-03-baseline-run-log.md`；`bun run typecheck` 绿。
+> ⚠️ **证据等级：自我报告，非独立可核验。** 那份记录是逐次**摘要**（无时间戳、无单次耗时、无完整 stdout），形式上区分不了「真跑了 21 次」与「手写了 21 行」——判据证伪评审两轮维持此为 major，我接受。**别拿它当门禁已过的证据**；RFC §7.1 的入场条件本来就要求在**当时的 entry commit** 上重跑，那次必须按 run-log 末尾的配方保留每次的原始输出文件。
 > ⚠️ **那份记录里的「修复前」那批不是受控前后对照**：它跑在 feature `2c339784`（**6848** tests），而 21 次跑在 master `cc909c81`（**6845** tests），`git merge-base --is-ancestor cc909c81 2c339784` = **NO**，互不为祖先。**跨树观测只支持「聚合层面改善」，不得用来顶 T3 的修复 AC**——那需要同一棵树上的逆 mutation。（这条纠正本身就是同类复发：它是我在修「基准锚定分裂」那个 blocker 时新引入的。）
 
 > **接手第一步不是写代码，也不是继续评审——是等用户裁决「是否起执行」。** 按 CLAUDE.md `docs-merge-before-execute`，定稿文档合主线后，执行是**独立**决策。RFC 已在 master 上。
@@ -75,39 +76,50 @@
 - **验收**（三处必须**同时**指向同一个方案，缺一不算裁决落盘）：RFC §9.2 记裁决本身（选中的字母 + 用户原话 + 日期）、§4.9 记该方案对应的 **key 形状**、Commit 5 条目记该方案对应的**迁移任务**。三处引用同一个决策 id（`Q1`），不得各自复述。
 - **证伪**（任一成立即未闭合）：① Commit 5 开工时 telemetry schema 仍无定形；② **三处只同步了其中一两处**；③ **三处都写了但互相矛盾**（比如 §9.2 选 A 而 §4.9 写的是 B 的多维 key）。
 - **鉴别力正控**（写 plan 时执行）：把三处之一改成另一个方案的形状 → 对账必须报冲突。**只检查「最新时点有没有定形」的判据在正确状态下永不触发，等于没有判据**——②③ 才是它真正要抓的失败面。
+- ⚠️ **证伪③在本文件写下它的那一刻就已经成立过一次，别以为它是假想的**：RFC §7.8 首行原写「Q1**已裁**」（与同行「Q4已裁决方案B」并列，读者只会理解成已裁），而 §9.1／§9.4／§4.9 三处写 Q1 仍 open。**KICKOFF 的第一步就是「读 RFC §7」，接手方会先撞见那句、跳过本条 T2，把 Commit 5 建在未定形的 telemetry schema 上。** 已改为「Q1**必须已裁**——截至本 RFC 交付时仍 open，这是入场条件不是状态」。**动过任何 Q1 相关文字后必须重跑一次四处一致性检查**（§7.8 / §9.1 / §9.4 / §4.9）。
 
 ### T3 —— 基线 flaky 第 1 条未证实已修
 - **事实**：`History V3 store performance > prepare and commit do not depend on prior session history length`，21 次连跑未再现，**但按其约 1/15 的原始复现率，这只有约 0.24 的概率意义**。详见 `docs/tmp/2026-08-03-baseline-flake-status.md`。
 - **验收拆两段，缺一不可**（交接评审指出原表述可在「成功复现但完全没修」时判通过）：
   - **诊断 AC**：定出根因，并给出**确定性 reproducer**（在受控条件下必现）。
-  - **修复 AC**：① 逆 mutation（把修复改回原形态）在该 reproducer 下**转红**；② 修复后在同等负载下**转绿**；③ false-red 对照绿（正确实现不被误伤）；④ 在 entry commit 上连跑 ≥15 次全绿并**保存逐次结果**。
+  - **修复 AC**：① 逆 mutation（把修复改回原形态）在该 reproducer 下**转红**；② 修复后在同等负载下**转绿**；③ false-red 对照绿（正确实现不被误伤）；④ 在 entry commit 上连跑 ≥15 次全绿并**保存每次的原始输出文件**（一次一个文件，含 `date -Is` / `git rev-parse HEAD` / `git status --porcelain` / 完整 stdout；摘要表只作索引）。**本轮那 21 次不满足④**，它只有摘要——别拿它顶。
 - **证伪**：只做到「复现成功」就标验收完成——复现恰恰证明缺陷仍在；或因为「最近没见到」宣布已修；或只有汇总数字而无逐次记录。
 - **注意**：RFC §7.1 要求在**当时的 entry commit** 上连跑 ≥15 次，旧读数不顶替。
 
 ### T4 —— 分相位计划（plan + prompts 层）未写
 - **动作**：按 skill `large-refactor` §5 的三层结构，为 RFC §7 的 Commit 0–8 各写逐 task TDD 步骤 + factory/锚点表，并出可直接粘给独立实施者的 kick-off。
 - **验收**：产出一张**双向可追溯矩阵**，覆盖 RFC 的 Commit 0–8 × R-1～R-14 × O-1～O-9 × §9.3 调查缝 × §9.4 停点。
-  - **正向**（RFC → plan）：每一项**恰好一个**归属 commit、一条可复跑命令、一个正样本、一个目标 mutation，且指出它在**生产入口**上的可达路径。
+  - **正向**（RFC → plan）：每一项**至少一个**归属 commit、一条可复跑命令、一个正样本、一个目标 mutation，且指出它在**生产入口**上的可达路径。
+    ⚠️ **不得写成「恰好一个」**——RFC §10.2 里 R-1／R-2／R-5／R-6／R-12 本就是**两段式**（辅助门在早期 commit、production 硬门在 Commit 4），**R-11 更是「本 RFC 每 commit 共同门」**。要求单一归属会把这 6 条判红，而最省事的「修法」正好是把 RFC 六轮评审建立起来的**分级压平**——那是拿判据去破坏它要保护的东西。**多归属必须显式标出每段的阶段与等级**（辅助门 / production 硬门 / 每 commit 共同门），压平即不合格。
   - **反向**（plan → RFC）：每个 plan task 都能指回一个 RFC 出处；指不回的要么是 RFC 漏了、要么是 task 多余，**两种都得当场裁**。
   - 锚点表给出被复用函数的 `file:line`（注明树）。
 - **证伪**（任一成立即不合格）：① plan 里出现 RFC 未冻结的签名；② **矩阵有孤儿**——某条 R/O 没有归属 commit，或某个 task 指不回 RFC；③ 某条门被排在**它所依赖的能力就位之前**的 commit（本仓已实测过这一型：验收项写在能力之前，换新实例只会照着错的验收项打勾）；④ 某条只有 `file:line` 而没有「这条缝会被哪个生产入口驱动」的答案。
-- **鉴别力正控**：从矩阵里删掉 R-14、或把 O-9 挪到 Commit 2（其依赖尚未就位），对账脚本／评审必须报红。**只防「虚构签名」的旧判据防不住漏任务、漏门、错接线——本轮我自己就漏过一次（R-14 加了却没进 §10.4 必过清单）。**
+- **鉴别力正控**（两条，各打一型）：
+  - **打「孤儿」**：从矩阵里删掉 R-14 → 反向 trace 必须报「R-14 无归属 task」。
+  - **打「门排在其依赖能力之前」**：把 **R-5 的 production 硬门**从 Commit 4 挪到 Commit 2 → 必须报红，因为 §4.6（`design.md:378`）写明 `withAllocatedRealBlock`／`writeBlockFrame` 当前**零 production 调用者**、双命中 mutation 在 cutover 前不可达，而 §10.2 的 R-5 行把它记为「辅助门 Commit 1；production 硬门 Commit 4」。（评审给的指针写作「§7.7:378」，**章节号是错的**，378 行在 §4.6——行号对、章节名不对，别照抄。）
+  ⚠️ **别拿 O-9 当这条的 mutation**（本文件上一版就这么写，是错的）：§10.3 判它「仍待 M7」、§10.4 明列 `NOT-YET-IN-SCOPE`，**它在本 RFC 内根本没有归属 commit**，「其依赖尚未就位」这个前提对它恒成立——**用一个永远在范围外的项做正控，证不了判据有牙**。
+- **旧判据为什么不够**：只防「虚构签名」防不住漏任务、漏门、错接线——本轮我自己就漏过一次（R-14 加了却没进 §10.4 必过清单）。
 - 签名三问仍然适用：**它导出了吗 / 调用方拿到什么返回类型 / 那一刻它存在吗**；答不上就只冻结性质 + 列调查任务。
 - **必读**：RFC §9.3 的调查缝与 §9.4 的停点表——那些是 plan 必须先回答的。
 
 ### T5 —— P7 的 translate 腿缺口（**未定性，本轮未动**）
 - **事实**：空 text block 清洗 `filterEmptyAnthropicTextBlocks` 经 `sanitize-messages` 跑在 Anthropic 入站路径上，**但外层有门**——`codec/anthropic/request-rewrite-adapter.ts:65` 的 `appliesTo: (env) => env.targetEndpoint === ENDPOINT.MESSAGES`，故 `@cc` / `@responses` 的 forward translate 腿**不跑这条清洗**，而它同样会产出 gap anchor 空块。
 - **尚未证明它是缺口**：还差两跳实测——① Anthropic→CC/Responses 的翻译会不会丢掉空 text block；② CC / Responses 上游对空 content part 的**实际**校验行为（不能拿 Anthropic 上游的 400 外推）。
-- **验收**：矩阵是 **2 腿 × 2 跳 = 4 格，逐格具名**，每格写死四样——输入 fixture、期望的空 text block 归宿（保留 / 被清洗）、oracle 类型、上游实测响应码：
+- **验收**：矩阵是 **3 腿 × 2 跳 = 6 格，逐格具名**，每格写死四样——输入 fixture、期望的空 text block 归宿（保留 / 被清洗）、oracle 类型、上游**实测**响应码：
 
   | # | 腿 | 跳 | 要回答的问题 |
   |---|---|---|---|
   | 1 | direct（`targetEndpoint === MESSAGES`） | 清洗跳 | 空块是否被 `filterEmptyAnthropicTextBlocks` 清掉 |
-  | 2 | direct | 上游跳 | 真 Anthropic 上游对残留空 content part 的**实测**响应码 |
-  | 3 | translate（`@cc` / `@responses`） | 翻译跳 | Anthropic→CC/Responses 的翻译**是否自行丢弃**空 text block |
-  | 4 | translate | 上游跳 | CC / Responses 上游对空 content part 的**实测**响应码（**不得从 Anthropic 的 400 外推**） |
+  | 2 | direct | 上游跳 | 上游对残留空 content part 的实测响应码 |
+  | 3 | translate → **`@cc`**（Chat Completions） | 翻译跳 | Anthropic→CC 的翻译**是否自行丢弃**空 text block |
+  | 4 | translate → `@cc` | 上游跳 | **CC** 上游对空 content part 的实测响应码 |
+  | 5 | translate → **`@responses`** | 翻译跳 | Anthropic→Responses 的翻译是否自行丢弃空 text block |
+  | 6 | translate → `@responses` | 上游跳 | **Responses** 上游对空 content part 的实测响应码 |
 
-- **证伪**（任一成立即未闭合）：① 只测 direct 腿就宣称「清洗已覆盖」；② **只给 2 条 oracle 就声称覆盖 4 格**（「direct 与 translate 各一条」正是这一型——它把跳这一维折叠掉了）；③ 第 4 格用推断代替实测。
+  ⚠️ **`@cc` 与 `@responses` 必须分开成四格，不得合并**：它们是两个不同的目标端点、两条不同的翻译路径、两个不同的上游校验实现。合成一格时，「只破坏 Responses 腿、保留 CC 腿」的实现会假绿——本文件上一版正是这么写的。
+- **上游二跳（第 2/4/6 格）怎么取实测**（不点名路线，接手方会卡在「禁止推断」与「4141 禁令」之间，或退而用主服务器的旧响应码得假结论）：走 skill `live-ghc-e2e-verification` —— **自起非 4141 隔离实例 + 真 GHC 凭据 + 独立 history.db**，跑完按 PID 精确停。**绝不碰 4141 主服务器。**
+  另注意术语：本项目所谓「Anthropic 上游」指的是 **GHC 的 Anthropic 兼容端点**，不是 Anthropic 官方 API；三条腿的上游校验行为互不可外推。
+- **证伪**（任一成立即未闭合）：① 只测 direct 腿就宣称「清洗已覆盖」；② **oracle 条数 < 6 却声称覆盖全矩阵**（「direct 与 translate 各一条」把跳这一维折叠掉、「translate 一条」把端点这一维折叠掉，两型都算）；③ 上游跳用推断代替实测；④ 拿其中一条腿的响应码外推到另一条。
 - **若坐实**：兜底走 α（把清洗接到 `targetEndpoint` 门**之前**），仍是 α 不是 β，不触发需用户拍板的停点。
 
 ### T6 —— P8 验收与文档后果（未开工）

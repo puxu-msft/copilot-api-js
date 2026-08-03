@@ -7,6 +7,12 @@ FORCE_COLOR=0 bun scripts/parallel-test.ts unit it http
 
 口径：`unit+it+http` 三档，不含 pty / e2e / 前端。代码状态 `cc909c81`（其后至 `b7504c51` 的提交经 `git log --name-status` 核实均为纯文档）。
 
+> ⚠️ **这份记录的证据等级是「自我报告的逐次摘要」，不是原始输出。** 下面每行都是我从运行结果里摘出来重新排版的，**没有时间戳、没有单次耗时、没有 shard 明细**——判据证伪评审据此指出：它在形式上**区分不了「真跑了 21 次」与「手写了 21 行」**，这个批评成立。
+> **它能支持的**：结合修 flaky 那两条的独立正样本对照（`51b1e1c9`、`cc909c81` 各自注入→转红→撤销→复绿），聚合层面的改善有旁证。
+> **它不能支持的**：任何需要**独立可核验**运行证据的判定，包括 RFC §7.1 的入场条件。
+> **今天没有重跑补齐的原因**（写下来免得被读成疏忽）：共享主树此刻有并发会话在 `src/lib/anthropic/sanitize/tool-name-sanitize.ts` 等 4 个文件上的未提交改动，此刻重跑测的是 peer 的 WIP、不是 master 基线。
+> **将来那次跑必须留原始输出**：单次一个文件（`FORCE_COLOR=0 bun scripts/parallel-test.ts unit it http 2>&1 | tee run-NN.log`），每个文件自带 `date -Is`、`git rev-parse HEAD`、`git status --porcelain` 与完整 stdout（单次约 38s，实测于 `21103e86`）。摘要表只作索引，**不得替代原始文件**。
+
 ## 第一批（6 次）
 ```
 cwd=/home/xp/src/copilot-api-js head=cc909c81

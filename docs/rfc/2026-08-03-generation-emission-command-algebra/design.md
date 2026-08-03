@@ -642,7 +642,7 @@ A／B／C／D四集均按symbol identity冻结，不要求历史文档字面零�
 
 ### 7.8 Commit 5 — Per-command telemetry与History generation operation detail
 
-- **前置停门：** Q1已裁；request-scoped accumulator与settle freeze point已核实。Q4已裁决方案B。
+- **前置停门：** Q1**必须已裁**——**截至本RFC交付时Q1仍open**（见§9.1／§9.4），这是本commit的入场条件、不是已完成的状态；与同行`Q4已裁决方案B`的语气不同，别读成同一件事。request-scoped accumulator与settle freeze point已核实。
 - **目标：** 独立generation operation detail保存rich per-command records并关联稳定`wirePartialDelivery`摘要；TelemetrySink投影bounded dimensions／measures，迁telemetry.db四层读写。
 - **终态不变量／为何可满足：** production旧API持续为零；telemetry不新增emission或state authority，wire不变。R-9、四层round-trip、O-6与全套同commit更新相关SSOT／ui-v4 tests。
 
