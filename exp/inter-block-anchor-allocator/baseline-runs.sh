@@ -43,6 +43,10 @@
 #                name the number forces the floor to be frozen per entry commit
 #                instead of inherited from whatever this script happened to ship
 #                with. Use MIN_TESTS=0 only when smoke-testing this script.
+#                DERIVE THE FLOOR FROM SOMETHING OTHER THAN THE COMMAND YOU ARE
+#                ABOUT TO RUN. Measuring it with the same possibly-degraded
+#                selector makes the floor validate itself; see the claim
+#                section above.
 #                None of this defends against a hostile PATH -- nothing local
 #                can -- but the resolved binary, its version and PATH go into
 #                every log, and every run in a batch must report the SAME count,

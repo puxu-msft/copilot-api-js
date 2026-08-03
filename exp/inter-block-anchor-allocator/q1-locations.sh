@@ -88,6 +88,33 @@ EXPECTED='
 9.4|declares-open|ruled|statement|-|停点表；裁决后撤销该停点
 '
 
+# Q1 does not live only in the RFC. The entry documents state its status too,
+# and they are what a successor actually reads first -- KICKOFF is pasted in as
+# the opening message of a new session. Syncing the RFC and leaving KICKOFF
+# saying "still undecided" sends the next session to re-ask a settled question.
+# Review found this by changing axis a third time: not vocabulary, not
+# structure, but carrier.
+#
+#   path | status-line pattern | before-ruling | after-ruling | note
+#
+# Each carrier names the ONE line that declares Q1's status. Classifying whole
+# files does not work here and the first draft of this table proved it: any
+# document that discusses the question at all keeps sentences about the
+# pre-ruling state -- T2 will always contain the words "未裁决" as history --
+# so a whole-file verdict reports declares-open forever. That is a false-red
+# generator, which is the failure this whole exercise exists to avoid.
+# The RFC is deliberately NOT a carrier row: it is already covered section by
+# section above, and a whole-file verdict over it would be strictly worse.
+#
+# Scope is this feature's ENTRY SET, deliberately not the repository. The
+# predicate matches 80+ files under docs/ (Q1 as a bare token, "tuple", etc.),
+# so a repo-wide carrier scan is noise, not a tripwire. Documents outside this
+# set that discuss Q1 are out of scope here and stay a human responsibility.
+CARRIERS='
+docs/plan/2026-07-27-inter-block-anchor-allocator/KICKOFF.md|裁决：Q1|declares-open|ruled|新会话贴进去的第一条消息；漏改它会让下个会话拿一个已裁的问题去重新问用户
+docs/plan/2026-07-27-inter-block-anchor-allocator/HANDOVER.md|^### T2 ——|declares-open|ruled|T2 的标题行即状态声明
+'
+
 PHASE="${PHASE:-pre}"
 case "$PHASE" in pre|post) ;; *) printf 'q1-locations: PHASE must be pre or post\n' >&2; exit 2 ;; esac
 
@@ -128,6 +155,18 @@ state_of() {
   printf 'mentions'
 }
 
+# Same classification as state_of, over a whole file rather than one section.
+file_state() {
+  local lines
+  lines="$(grep -aE "$2" "$1")"
+  if [ -z "$lines" ]; then printf 'absent'; return; fi
+  if printf '%s' "$lines" | grep -aqE 'open question|保持open|仍open|必须已裁|需人裁|不裁决会怎样|回主会话裁决|待主会话|仍待裁决|未裁决'; then
+    printf 'declares-open'; return
+  fi
+  if printf '%s' "$lines" | grep -aqE '已裁决|已裁|裁决为|裁定'; then printf 'ruled'; return; fi
+  printf 'mentions'
+}
+
 known=""
 rc=0
 printf '%-6s %-16s %-16s %s\n' SECTION EXPECTED ACTUAL VERDICT
@@ -155,10 +194,24 @@ if [ -n "$extra" ]; then
   done
 fi
 
+# Carrier axis: does each entry document say what it should about Q1?
+printf '\n%-62s %-16s %-16s %s\n' CARRIER EXPECTED ACTUAL VERDICT
+while IFS='|' read -r path pat pre post note; do
+  [ -z "$path" ] && continue
+  [ "$PHASE" = "post" ] && want="$post" || want="$pre"
+  if [ ! -f "$REPO/$path" ]; then
+    printf '%-62s %-16s %-16s %s\n' "$path" "$want" "<missing>" "DRIFT — 文件不在了"
+    rc=1; continue
+  fi
+  got="$(file_state "$REPO/$path" "$pat")"
+  if [ "$got" = "$want" ]; then verdict="ok"; else verdict="DRIFT — $note"; rc=1; fi
+  printf '%-62s %-16s %-16s %s\n' "$path" "$want" "$got" "$verdict"
+done <<< "$CARRIERS"
+
 [ "${1:-}" = "--table" ] && { printf '\nAll predicate hits:\n'; hits | sed 's/^/  /'; }
 
 if [ "$rc" -eq 0 ]; then
-  printf '\nq1-locations: %d/%d as expected, no unlisted section\n' \
-    "$(printf '%s' "$EXPECTED" | grep -c '|')" "$(printf '%s' "$EXPECTED" | grep -c '|')"
+  printf '\nq1-locations: PHASE=%s — %d RFC sections + %d carriers all as expected, no unlisted section\n' \
+    "$PHASE" "$(printf '%s' "$EXPECTED" | grep -c '|')" "$(printf '%s' "$CARRIERS" | grep -c '|')"
 fi
 exit "$rc"
