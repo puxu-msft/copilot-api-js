@@ -34,7 +34,7 @@
 | 2 | curl（exe 与进程内 libcurl 两形态）**都发不出**周期 h2 PING | **实测** | `exp/curl-transport-exe/FINDINGS.md` §6（五条独立证据 + 正样本对照）、`exp/curl-transport-libcurl/FINDINGS.md`（66 次 upkeep / 0 帧） | 回答的是「**当前受支持的 curl CLI 公共接口 + 本机 libcurl API 表面**能否配置周期 PING」。**排除**：未来版本、私有 patch、直调 nghttp2、改 curl 源码 |
 | 3 | Bun 1.3.14 支持 napi-rs 的 TSFN 跨线程回调 | **实测** | `exp/napi-http-spike/`，Node 与 Bun 各 5 次按序回调；正控=预期改 4 次即变红 | **主会话只独立复核了 Node-host 腿**；Bun-host 腿沿用 spike 报告 |
 | 4 | 「Bun 的 node:http2 对 clean server RST 交付合成 clean end」**不成立** | **实测** | `exp/curl-transport-rst-arbitration/FINDINGS.md`：`stream.close(code)` 不放 RST 帧；改 `stream.destroy(err)` 后**四客户端全部**检测到 `rst=2` | 只废 **RST 那半**。**「整连接 drop」那半仍成立**（原探针用 `session.destroy()`，忠实） |
-| 5 | 注释里的「唯一明文 `http://` 上游（本地 SearXNG）」**不存在** | **源码读证** | 全仓 `rg -i searxng` 命中**全部是注释**（`state.ts:751,1500`、`schema.ts:1099`、`proxy.ts:7,12`、`upstream-fetch.ts:62,83`、`timeout-resolver.ts:13`）；无 URL 配置、无请求实现 | 回答「**生产代码中**是否存在 SearXNG 上游」。**集合边界**：`src/` + `packages/`。**排除**：用户自行把 `ghc_api_base_url` 配成 `http://` 的情形（仍可能产生明文上游，且它是**启动期字段**） |
+| 5 | 注释里的「唯一明文 `http://` 上游（本地 SearXNG）」**不存在** | **源码读证** | `src/`+`packages/` 的 `rg -i searxng` 命中全是注释（`state.ts:751,1500`、`schema.ts:1099`、`proxy.ts:7,12`、`upstream-fetch.ts:62,83`、`timeout-resolver.ts:13`）；**无上游请求实现**。⚠️ **「全仓全部是注释」是错的**（评审证伪）：`tests/config/config-compat.unit.test.ts:242` 有 `backend:"searxng"`，即**配置兼容层仍有残留表面** | 回答「是否存在**发往 SearXNG 的上游请求实现**」。**集合边界**：`src/`+`packages/`（**不含** `tests/`——那里有 config-compat 残留）。**排除**：① 配置兼容层的 legacy `web_search.backend` 键；② 用户自行把 `ghc_api_base_url` 配成 `http://`（仍可能产生明文上游，且它是**启动期字段**） |
 | 6 | `TransportErrorReason` **没有** unknown 成员，且 `classify.ts:151` 会把未识别 Error 判为可重试 | **源码读证** | `packages/foundation/src/error/transport-reason.ts:38` 只有四值；`classify.ts:151` 宽泛 `isNetworkError` → `network_error` → `network-retry.ts:27-41` 重试 | 决定 spec §7.5 的 `unknown-transport` **必须是结构化成员**，否则该条契约不可执行 |
 | 7 | 本机 Rust 在**非默认位置** | **实测** | `RUSTUP_HOME=/home/xp/.local/rustup` → `stable-x86_64-unknown-linux-gnu`，rustc/cargo 1.97.1；已装 target **仅** `x86_64-unknown-linux-gnu` | ⚠️ **不继承交互 shell 的进程会看到 `no installed toolchains`**，本会话踩过一次假阴性 |
 | 8 | `bun x` 会解析并安装平台专属 `optionalDependencies` | **实测** | `bun x esbuild --version` → `0.28.1`（esbuild 的 bin 是 JS shim，无原生二进制打不出版本） | 回答「`bun x` 是否支持 per-platform 可选包模型」。未测**缺失**该平台包时 `bun x` 的行为 |
@@ -54,14 +54,14 @@
 
 - **要做什么**：按 skill §1 派**两个正交视角**评审本 HANDOVER + KICKOFF + `docs/` 入口（判据证伪 / 接手方第一人称走查），派活时给 `REPORT_FILE` 绝对路径并要求**每条 finding 闭合即追加落盘**；整改后 `SendMessage` 恢复原 reviewer 复审。
 - **验收判据**：两视角均无 BLOCKER/MAJOR；HANDOVER 头部状态行改为「进行中」；评审报告与入口一次精确 pathspec 提交。
-- **鉴别力正控**：**待执行期正控** —— 在 HANDOVER 里植入一处已知错误的 `file:line`，确认「接手方第一人称走查」视角能抓出来。
+- **鉴别力正控**：**在副本上做，绝不改权威文档**——`cp HANDOVER.md /tmp/ho-mutant.md` 后在副本里植入一处已知错误的 `file:line`，派一个一次性 agent 只审该副本，确认「走查」视角能抓出；**跑完删副本**。⚠️ v1 曾写成「在 HANDOVER 里植入」——那会污染权威文档且无清除闭环，已撤回。
 - **证伪方式**：reviewer 只给措辞建议、未逐条实地核对 `file:line` ⇒ 该轮不算完成（skill §1 的退化判据）。
 - **已知约束**：本轮 reviewer 连续四次被后端 API 错误掐断，**必须**要求逐条落盘 + 只回摘要。恢复一律 `SendMessage`，**绝不重派**。
 
 ### T2 建 `docs/` 权威入口　【已裁决 —— skill §6 强制】
 
 - **要做什么**：在 [docs/DESIGN.md](../../DESIGN.md)「活的架构现状」表加一行 provider 化条目，状态标 `[wip]`，指向本交接与 spec。**只建一个权威落点**，其余文档只放短指针。
-- **验收判据**：`rg -n "upstream-transport-provider" docs/` 能从 DESIGN.md 走到 spec。
+- **验收判据**：**不是**「grep 到字符串」（那只证明字符存在）。判据是：① DESIGN.md「活的架构现状」表存在该行且状态为 `[wip]`；② 该行的相对链接 `docs/DESIGN.md` → spec、→ HANDOVER **实际可解析**（用 markdown link checker 或逐个 `test -f`）；③ 「上游 fetch / keepalive」行含指向该权威行的指针且**不复制状态事实**。
 - **鉴别力正控**：**待执行期正控**。
 - **证伪方式**：按 `docs/` 常规路径读进来的人读到的仍是旧方案（h2-only）⇒ 入口没建对。
 - **已知约束**：**不存在的条目不新造占位**。
@@ -77,20 +77,20 @@
 ### T4 §11/§12 按 v3 更新　【我的建议】
 
 - **要做什么**：§11 的七条断言里，与 curl 相关的（如「curl 无 h2 PING 是否穷尽」）已随选型作废，需替换为 Rust 路径的待证伪项（reqwest 默认注入哪些 header、trailers 时机与 API、错误分类映射、代理隧道内 PING 是否保留）；§12 补 v3 处置行。
-- **验收判据**：§11 无一条引用已否决的 curl 路径。
+- **验收判据**：`rg -n "curl" docs/spec/2026-08-01-upstream-transport-provider.md` 的**每一条命中**都能归入以下两类之一：§3.2/§6 的**否决记录**、§12 的**历史处置表**。出现在 §4/§7/§8/§9/§10/§11 的即为残留。（v3 首轮正是漏了 §8/§9/§10/§11，被评审判 BLOCKER。）
 - **鉴别力正控**：**待执行期正控**。
 - **证伪方式**：更新后仍能在 §11 找到 curl 专属断言。
 
 ### T5 backlog 记录「进程内 libcurl 暂缓非否决」　【我的建议】
 
 - **要做什么**：`docs/todo/deferred-backlog.md` 加条目（根因/当前行为/理想架构/为何暂缓/若做需改什么）。
-- **验收判据**：条目存在且写明重评触发条件。
-- **证伪方式**：无。
+- **验收判据**：条目含五要素（根因 / 当前行为 / 理想架构 / 为何暂缓 / 若做需改什么）**且**写明**可观测的重评触发条件**（如「出现 Bun+Node 双可用绑定」或「libcurl 侧 upkeep 能触达在途 transfer」），而非「以后再看」。
+- **证伪方式**：条目只写「暂缓」而无触发条件 ⇒ 等于永久搁置，不算完成。
 
 ### T6 实现期必须闭合的实测项（**spike 明列未覆盖**）　【已裁决 —— spec §3.3】
 
 - **要做什么**：跨请求连接复用、真实 GHC 上游、**代理隧道内的 h2 PING**、reqwest 默认注入的 header 逐项、trailers 时机与 API、错误分类映射、并发与池容量、shutdown barrier、addon unload 与 TSFN closing 竞态。
-- **验收判据**：spec §10 的「约束→测试」追踪表逐行有对应测试且绿。
+- **验收判据**：spec §10 的「约束→测试」追踪表逐行有对应测试且绿。⚠️ **该表须先随 T4 改写为 Rust 路径**——v3 首轮它仍绑 curl 专属约束（`-D` fd、argv、exit code），照它实现会做错东西。
 - **鉴别力正控**：每条 `unsupported`/`supported` 的能力声明**都要正反双向 oracle**（spec §10 已写死；`true` 一样会假绿）。
 - **证伪方式**：任一条只有「推理安全」而无实测 ⇒ 不算闭合。
 - **已知约束**：⚠️ **本条曾写错并已撤回**——`exp/http2-refused-retry/` 早已存在且实测闭合（Node 服务端 pre-response `stream.close(REFUSED)` 发真帧，Bun 客户端 `rstCode=7`、message 与生产日志逐字一致）。**真正未闭合的是 reqwest/hyper 侧如何 surface REFUSED**，别去重建已有探针。两条沿用约束：`err.code` 区分不了 REFUSED 与 INTERNAL_ERROR（须按 message 子串）；服务端夹具必须是真 Node h2 server，跑在 `bun test` 进程内的 Bun server 会退回「不发真帧」陷阱。

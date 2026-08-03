@@ -3,9 +3,9 @@
 ## 评审元数据
 
 - **评审范围**：`HANDOVER.md`、`KICKOFF.md`，以提交基线 `5a7805e4` 为准；主责为数字、口径与 oracle 鉴别力。
-- **已读取/执行的证据**：已完整读取两份目标文档；已确认 `HEAD=5a7805e45dc7`、`5a7805e4` 为 commit、目标文件相对该基线无差异，且两文件均由该提交引入。后续每条发现单列实际命令与输出。
-- **总体 verdict**：评审进行中；最终结论见文末“最终汇总”。
-- **blocker 数量**：评审进行中。
+- **已读取/执行的证据**：完整读取两份目标文档、spec v3、`session-closeout` §6/模板及相关 PoC/FINDINGS；逐 SHA 执行 `git cat-file/show`；逐条复跑 h2 PING、full napi spike、curl/libcurl PING、faithful RST、REFUSED_STREAM、Rust 环境、bunx 空 cache、classification 与全仓/分域 grep。每条发现均单列实际命令与输出。
+- **总体 verdict**：**存在 blocker**。交接件当前不可作为下一阶段入口；须先修复完整 v3 契约/复评 gate 与 REFUSED oracle 事实错误，再修 major。
+- **blocker 数量**：**2**（另有 7 major、9 minor、0 nit）。
 
 ## 事实性发现
 
@@ -79,3 +79,99 @@
 - **得到什么输出**：状态显示 `?? .../review-oracle-falsification.md` 与 `?? .../review-successor-walkthrough.md`，两者都是当前 T1 评审产物，不是写交接时的 peer WIP；但文档仍断言“工作区里所有未提交改动与未追踪文件都是 peer 的”。
 - **修复建议**：改成带核验时点和精确路径清单的 ownership snapshot；明确“接手后由本会话新建/修改的路径按实际写者归属”。KICKOFF 只保留安全 gate：“不要改动接手前快照列出的 peer paths；提交始终精确 pathspec”。
 
+### [minor] `HANDOVER.md:35` — 事实 3 的“Node 与 Bun 各 5 次”成立，但输出自身把 Bun host 伪装成 `node v24.3.0`
+
+- **问题**：TSFN 行为确实在两个 host 各跑一次并通过，但探针用 `process.release.name/process.version` 标 runtime；Bun 兼容层返回 `node v24.3.0`，所以 stdout 不能独立证明第二腿由 Bun 执行，只能靠调用命令。交接把这项列为实测时应绑定命令与输出，不应只引用“Node 与 Bun”标签。
+- **我跑了什么命令**：`node exp/napi-http-spike/probe-tsfn.cjs`；`bun exp/napi-http-spike/probe-tsfn.cjs`；查看 `run-all.sh:5-6` 与 `probe-tsfn.cjs:12-14`。
+- **得到什么输出**：Node 命令输出 `runtime:"node v24.16.0" ... 5 entries ... ok:true`；Bun 命令输出 `runtime:"node v24.3.0" ... 5 entries ... ok:true`。`run-all.sh` 的确分别调用 `node`、`bun`，但 JSON 没有 `typeof Bun` 身份。
+- **修复建议**：探针输出改为 `typeof Bun === "undefined" ? node : bun`，文档证据附两条命令。事实边界“主会话只独立复核 Node-host”也应更新：本次评审已完整复跑 `run-all.sh`，Bun-host 实际绿，但 mutation 正控仍只沿用历史报告、未在本轮重做。
+
+### [minor] `KICKOFF.md:38-44` — “踩坑”段复制了事实、数字、理由与完整动作，违反 HANDOVER/KICKOFF 单一归属契约
+
+- **问题**：KICKOFF 可以列坑的短 gate，但现文复制了“三方同错”“两小时内两次”“连续四次”、具体 `stream.destroy/close` 机制，以及 `REPORT_FILE + 逐条落盘 + SendMessage` 完整程序。按 `session-closeout` §6，这些数字、理由、命令细节和后续步骤只能归 HANDOVER；KICKOFF 应是一行症状词加指针。
+- **我跑了什么命令**：`rg -n 'HANDOVER.*事实|KICKOFF.*gate|允许的重复只有' .claude/skills/session-closeout/SKILL.md .claude/skills/session-closeout/handover.md`；`rg -n '两小时|四次|stream\.destroy|REPORT_FILE|SendMessage' KICKOFF.md HANDOVER.md`。
+- **得到什么输出**：权威 skill 第 59–61 行规定 HANDOVER 收“事实、证据、理由、数字、命令、完整步骤”，KICKOFF 只收 gate/第一步/批准状态/指针，唯一可重复的是带指针的执行 gate；KICKOFF 命中上述全部细节。
+- **修复建议**：压成五条短 gate，例如“h2 故障夹具先证 wire 忠实（见 HANDOVER §4#1）”；把数字与具体 mutation/恢复程序只留 HANDOVER。硬性“不 kill 4141”可逐字重复，但应补“见 HANDOVER §6”指针。
+
+### [minor] `HANDOVER.md:38` — 事实 6 把“未识别 Error”说得过宽；真正会被重判的是消息命中 network patterns 的 transport-like Error
+
+- **问题**：`classify.ts:151` 并非把任意未识别 `Error` 判为可重试；普通未知 Error 落 `bad_request`。spec 的风险只针对新 `unknown-transport` tag 若未在 structured switch 抢先消费、其 message 又命中 network patterns。
+- **我跑了什么命令**：`bun --eval 'import { classifyError } ...; classifyError(new Error("completely novel failure")); classifyError(new Error("socket closed unexpectedly"))'`；读取 `packages/foundation/src/error/classify.ts:148-165,362-368` 和 `network-retry.ts:40-44`。
+- **得到什么输出**：普通未知消息输出 `{type:"bad_request",status:0}`；`socket closed unexpectedly` 输出 `{type:"network_error",status:0}`；network retry 的 `canHandle` 对 `network_error` 返回路径成立。
+- **修复建议**：事实改为：“`TransportErrorReason` 无 unknown；未在 structured switch 先处理的 transport-like Error 若消息命中宽泛 network patterns，会在 `classify.ts:151` 变为 `network_error` 并被 retry。”行号与四值本身在基线均准确。
+
+### [major] `HANDOVER.md:57` — T1 正控直接污染权威 HANDOVER，且没有“命中指定 mutation + 还原验证”闭环
+
+- **问题**：正控要求在正式交接件植入假 `file:line`，但没有规定隔离副本、精确 mutation 标识、reviewer 必须点名该项、以及最终移除证明。后端中断正是已知条件；假信息可能随精确 pathspec 进入正式档案。
+- **我跑了什么命令**：`git -C /home/xp/src/copilot-api-js show 5a7805e4:.../HANDOVER.md | nl -ba | sed -n '53,60p'`；读取 `.claude/skills/session-closeout/SKILL.md:22,130` 的报告恢复与 KICKOFF 回查规则。
+- **得到什么输出**：T1 只写“在 HANDOVER 里植入已知错误 file:line，确认走查能抓”，随后直接“整改、复审、精确提交”；没有任何还原命令或残留检查。
+- **修复建议**：在临时副本或可逆 patch 上跑正控；记录唯一 marker，要求 reviewer 的报告点名 marker；随后反向应用 patch，并以 `rg <marker>` 0 hits 加 `git diff` 人工核验最终目标无 mutation。正控记录与正式 finding 分开。
+
+### [minor] `HANDOVER.md:84-88` — T5 没有鉴别力正控且“证伪方式：无”，空壳条目也能过“存在”验收
+
+- **问题**：T5 要求五段内容与重评触发条件，但验收只有“条目存在且写明重评触发条件”，没有检查五段、没有点名两个承重触发条件，也缺模板要求的正控栏。
+- **我跑了什么命令**：读取 HANDOVER 84–88 行；`git -C /home/xp/src/copilot-api-js grep -n -I -E 'libcurl|napi-rs|Rust provider|transport provider' 5a7805e4 -- docs/todo/deferred-backlog.md`。
+- **得到什么输出**：基线 backlog 为 0 hits，证明确实待新增；T5 只有“条目存在且写明重评触发条件”，下一行“证伪方式：无”，且完全缺“鉴别力正控”。
+- **修复建议**：列出验收 checklist：根因、当前行为、理想架构、为何暂缓、若做需改、Bun/Node 双可用 binding、libcurl h2 PING 成立；正控为删除任一承重项后 checklist 必须红。
+
+### [major] `KICKOFF.md:19,23-32` — 阶段序列从 spec gate 直接落到实现期 T6，缺实施计划、计划评审、文档先合主线和用户批准执行 gate
+
+- **问题**：项目纪律要求 spec 定稿后另写 TDD plan、评审、合主线，再停下等用户决定是否执行；当前目录只有 HANDOVER/KICKOFF，KICKOFF 却只说 T1/T3 后可动手实现，并把 T6 排为末项。
+- **我跑了什么命令**：`git -C /home/xp/src/copilot-api-js ls-tree -r --name-only 5a7805e4 -- docs/plan | rg 'upstream-transport-provider|transport-provider'`；读取项目 `CLAUDE.md` 的 `docs-merge-before-execute` 与 KICKOFF 19、23–32 行。
+- **得到什么输出**：基线只列 `.../HANDOVER.md` 与 `.../KICKOFF.md`，无 implementation plan；KICKOFF 写“动手实现前先过 T1 与 T3”，没有 plan 或用户执行批准步骤。
+- **修复建议**：在 v3 全文复评后增加明确阶段：spec 定稿并合主线 → 编写分阶段 TDD plan/kick-off → 独立评审 plan → 合主线 → 停下等用户批准执行 → 获批后才建隔离 worktree。T6 应成为 plan 的验收矩阵，不是本交接可直接执行的最后一步。
+
+### [minor] `HANDOVER.md:36` — 事实 4 的“四客户端全部检测到 `rst=2`”混淆了 wire reason 与各客户端 surface
+
+- **问题**：四客户端都检测到 INTERNAL_ERROR 截断成立，但只有 Node/Bun `node:http2` surface `rstCode=2`；curl exe surface exit 92 + 文本 `err 2`，Bun FFI libcurl 只 surface code 92/通用 framing error。统一写成“四客户端检测到 rst=2”会误导错误映射设计。
+- **我跑了什么命令**：启动 `oracle-faithful-rst.mjs` 后，分别运行 curl exe、Node/Bun `node:http2` client 和 Bun FFI `Libcurl.perform()` 请求 `/b`。
+- **得到什么输出**：curl：`exit=92 ... INTERNAL_ERROR (err 2)`；Node/Bun：`error:ERR_HTTP2_STREAM_ERROR, close:rst=2`；FFI：`{"code":92,"error":"Stream error in the HTTP/2 framing layer"}`。
+- **修复建议**：改为“四客户端都检测到忠实 INTERNAL_ERROR 截断；surface 分别为 curl/libcurl code 92 与 node:http2 rstCode 2”，并保留“只废 RST 半、connection drop 半仍成立”的边界。
+
+## §1 SHA 逐项核验记录
+
+- **我跑了什么命令**：对表中 15 个 SHA 逐个运行 `git cat-file -t <sha>`、`git show -s --format='%H%n%s' <sha>`、`git show --stat --oneline --format= <sha>`。
+- **得到什么输出**：15 个 SHA 全部输出 `commit`。`5f5923fb` 增 3 个 curl PoC 共 75 files/2488 insertions；`cc12bc64` 新增 curl spec v1；`7d0776b1` 改 RFC 6 行；`89d2d22c` 增 faithful-RST oracle；`b72c5c28`、`0083baaa`、`5d1b1ebe`、`7ef99722`、`29a7f870` 均只改当时的 provider-curl spec，commit subjects 分别对应六契约、SearXNG 纠错、删 capability、terminal ordering、第二轮 disposition；`02d2af36` 选 hyper；`549b1457` 改分发；`dd6476ed` 改 auto；`db284175` 增 napi spike 16 files/721 insertions；`36dafc48` 重写 Rust 章节。唯一描述不完整的是 `a16bcc68`，已列为 finding。
+- **结论**：除 `a16bcc68` 的捆绑内容漏报外，SHA 存在性与摘要均成立；“v2 两轮评审 21/22 采纳”可由 §12 的首轮 17 行中 16 个全/部分采纳 + 第二轮 8 行中 8 个采纳还原为 24/25，而不是直观 21/22；该表述口径不透明，建议直接写“两轮处置仅 1 条不采纳，其余全/部分采纳”，避免读者重算歧义。
+
+## §2 八条硬事实逐项核验记录
+
+| # | 结论 | 我跑了什么命令 | 得到什么输出 / 边界裁决 |
+|---|---|---|---|
+| 1 | 成立 | 设 `RUSTUP_HOME`/`PATH` 后运行 `bun exp/napi-http-spike/run-h2-probe.cjs` | summary 为 `totalPings:6, controlPings:1, rustPings:5`；确实只证本地直连 TLS h2。 |
+| 2 | 在文档限定边界内成立 | curl CLI 对 held-open h2 流跑 7 秒并数 oracle ping；运行 libcurl `run-keepalive-probe.sh` 与 `run-ping-oracle-control.sh` | CLI：`hold_events=1` 且 ping count 0；libcurl：`upkeepCalls:66, upkeepErrors:0` 且 `observed_h2_ping_count=0`；独立 Node control 输出一个 `h2-ping`。只支持当前 CLI/API surface，不外推未来/patch/nghttp2。 |
+| 3 | 行为成立，证据身份标签有缺陷 | 完整运行 `bash exp/napi-http-spike/run-all.sh`，另分别直接运行 Node/Bun TSFN probe | run-all exit 0；两腿各 5 个按序 callback、`ok:true`。Bun 输出自称 `node v24.3.0`，需靠调用命令证明 host，已列 minor。 |
+| 4 | 核心结论成立，surface 措辞需收窄 | 对 faithful `/b` 同时跑 curl、libcurl FFI、Node/Bun node:http2 | 四方均检测截断；surface 不都叫 `rst=2`，已列 minor。边界“只废 RST 半、drop 半沿用旧差分”与 FINDINGS 一致。 |
+| 5 | “生产实现不存在”成立；“全仓全注释”不成立 | 对基线全仓及 `src/packages/ui-v4/scripts/config*.yaml` 分域 `git grep`，查 removal history | `src/packages` 无 URL/backend，`34eaa90e` 为删除提交；但 docs/UI/test 有非注释命中，已列 major。 |
+| 6 | 四值与行号成立，措辞过宽 | 基线 `nl -ba` 查 transport reason/classify/network retry，并以两个 Error 实跑 `classifyError` | type 在 37 行且四值；宽匹配在 151 行；network retry 在 41 行接 `network_error`。普通未知 Error 是 `bad_request`，transport-like 文本才变 network，已列 minor。 |
+| 7 | 完全成立 | 分别在有/无 `RUSTUP_HOME` 下运行 `rustup toolchain list`、`rustc/cargo --version`、`rustup target list --installed` | 有环境：stable、rustc/cargo 1.97.1、仅 x86_64 target；无环境：`no installed toolchains` 与 rustup error。 |
+| 8 | 能力成立，exact version 不稳定 | 仓库根与空 cache `/tmp` 各跑 bunx，并检查 cache 的平台包 | 仓库根 0.27.4；空 cache resolve 2 packages、0.28.1 且出现 `@esbuild/linux-x64/.../bin/esbuild`。已列 minor。 |
+
+## KICKOFF ↔ HANDOVER 对账记录
+
+- **我跑了什么命令**：抽取 KICKOFF 全部命令、数字、T 编号与 § 指针；对照 HANDOVER 对应行、spec §3.3、`session-closeout` §6；运行 `git show -s` 核 `0a2e3bdf`，运行 full spike 核 exit 0。
+- **得到什么输出**：`0a2e3bdf` 存在且早于 handover commit；KICKOFF 的 T1–T6 名称/批准状态、建议顺序与 HANDOVER 表面一致；spec §3.3 确实列 spike 未覆盖项；full spike exit 0。实质不一致有三类：T6 指向仍为 curl 的 §10、阶段序列漏 plan/用户批准、T2 已被后续提交完成；均已列 finding。
+- **归属越界结果**：KICKOFF 的 Rust 环境、4141 禁区、T1/T3 gate 属允许重复的执行 gate，但前两者应带 HANDOVER 指针；“踩坑”五条携带事实/数字/机制/完整程序，违反唯一归属，已列 minor。
+
+## 主观建议
+
+[建议] `HANDOVER.md:29` — “别再重新推导”宜改成“优先复跑留存探针，不要凭印象重做研究” — 预期影响：避免把硬事实冻结成不可质疑权威；本轮 REFUSED 绝对断言正说明交接事实也会错 — 推荐做法：保留证据等级与边界，但明确接手时若代码/提交已越过核验基线，先复验再采信。
+
+### [minor] `HANDOVER.md:24` — “两轮评审 21/22 采纳”没有对象口径，无法从唯一可见的 §12 处置表复算
+
+- **问题**：这是计数事实，却未说明分母是 findings、处置行、需改项还是排除“确认无需改动”的行。仓库又没有本主题的原始 review report，接手者只能从 §12 猜。
+- **我跑了什么命令**：`git grep -n -I -E '21/22|0 Critical|10 High|3 Medium|全部 8 条|评审处置表' 5a7805e4 -- docs exp`；用脚本枚举 spec §12 的 `| <number> |` 与 `| R<number> |` 行。
+- **得到什么输出**：唯一 `21/22` 命中是 HANDOVER 自身；§12 有首轮 17 行、第二轮 8 行，共 25 行；其中 #17 明写“不采纳”，R1 是“确认，无需改动”，其余为全/部分采纳。按“处置行”是 24/25，按“要求改动的 finding”又需排除 R1，均不能推出 21/22。
+- **修复建议**：删掉不可复算数字，或明确写“对象集合、排除项、生成方法”，并链接原始评审报告；若只想表达处置状态，写“§12 中唯一不采纳的是 #17，R1 为确认无需改动，其余全/部分采纳”更诚实。
+
+> **更正前文 §1 核验记录**：其中“21/22 可还原为 24/25”的句子仅能说明按 §12 处置行计数得到 24/25，不能裁定作者原本的 22 个对象是什么；以紧接其后的本条 finding 为准。
+
+## 最终汇总
+
+- **Verdict**：存在 blocker。
+- **计数**：2 blocker / 7 major / 9 minor / 0 nit。
+- **最严重问题 1**：所谓“唯一权威” spec 仍同时冻结 Rust §0 与 curl §4/§8/§9/§10 两套互斥契约，而交接漏掉完整重写及 v3 全文复评 gate。
+- **最严重问题 2**：“忠实 REFUSED_STREAM 夹具不存在”被 `exp/http2-refused-retry/probe-x.mjs` 现场复跑直接证伪。
+- **硬事实总体**：事实 1、2、3 核心行为、4 核心行为、6 的四值/行号、7、8 核心能力成立；事实 5 的全仓口径错误；3/4/6/8 有证据或措辞边界缺陷。
+- **oracle 总体**：T2、T4、T5 均可假绿；T1 正控缺 mutation 清除闭环；T3 正控不具体；T6 绑定已否决的 curl 测试表。
+- **下一修复方**：spec/契约由 `gpt-souls:architect-advisor`；HANDOVER/KICKOFF 与 DESIGN/backlog 对账由 `gpt-souls:doc-writer`；修完后恢复原两位 reviewer 复审。
