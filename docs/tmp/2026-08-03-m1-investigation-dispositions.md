@@ -105,6 +105,43 @@ owner 封锁的是**分配**，不是普通写；而各站点的错误帧走的�
 
 **声明**：这条我用了「引用一手裁决后直接执行」而不是回问用户（skill `adopting-agent-findings` A 级的第二支）。若用户认为 C9 那句「terminal error 仍可完成」指的是 owner 的 terminal command 而非 handler 的错误帧，这条裁决作废、回到统一短路——**这是本轮唯一一处我按自己的读法解释了冻结契约，特此显式留痕以便否决。**
 
+## 第二轮：未卷入第三方对 B-B 的裁决（2026-08-03，报告 `2026-08-03-m1-scope-adjudication.md`）
+
+**裁决结果：维持 (c)，无更优第四案。** 它复核了否决 (a)/(b) 的理由并确认成立；也确认三个 close-before-real 站点都够得到 owner、`"before-real"` 确实不停心跳（`session.ts:400` 只有 `"terminal"` 才 `closeHeartbeat`）、顺序由同一 serializer FIFO 保证。
+
+但它抓出**两项 M1 必须同时修的落地陷阱**，都不构成放弃 (c) 的理由，都已复核成立：
+
+| # | 陷阱 | 处置 | 级别 |
+|---|---|---|---|
+| T-A | `closeOpenAnchor` 成功后**不更新 heartbeat 的 last-write 时钟** | **采纳，且扩大范围** | C |
+| T-B | live 纯函数在 owner 关闭成功**之前**就把 `anchorClosed` 预置为 true | **采纳，取更彻底的修法** | C |
+
+### T-A：不是 close 一处的问题，是 owner 的两个入口都漏了（我复核时扩大的范围）
+
+legacy 关闭经 `clientSink.writeAnchor` 进入通用 `write()`，成功后更新 `lastWriteAtMonotonic`（`session.ts:120-130`）。而 owner 侧：
+
+- `closeOpenAnchor` 成功路径（`session.ts:401-409`）只清 `openAnchorIndex` + `writeCount++`，**不更新时钟**；
+- **`writeBlockFrame` 成功路径（`session.ts:430-436`）同样不更新**——裁决者只点了 close，我对照时发现 real 帧写出这条也漏了；
+- 而 `writeAllocationFrames`（`:317-321`）是更新的。
+
+即 P2 落地的 owner 里，**五个入口有两个不更新 heartbeat 时钟**，这本身就是既有缺陷（今天不可观测，是因为这两个入口在生产上还没有调用者）。M1 把 stop 写出迁进 `closeOpenAnchor` 会让它**当场可观测**：刚写出的 stop 不算一次 forward activity，heartbeat 会按旧时钟过早排队。
+
+**处置**：M1 一并补齐 `closeOpenAnchor` 与 `writeBlockFrame` 的时钟更新（与 `writeAllocationFrames` 同形，含 `isContentDelta` 时的 `lastContentDeltaAtMonotonic`）。理由是「关闭 API 完整接管写出」的必要组成，不是顺手改无关代码——不补则 M1 的「行为等价」不变量当场为假。
+
+### T-B：取比裁决者建议更彻底的修法——live 层**完全不碰** `anchorClosed`
+
+裁决者给了两条，我取它自己说的「更简单的等价形状」：**对触发帧（真实 start / error / terminator）无条件请求 owner close，由 owner 的 `"none"` 分支做幂等，live 层不再读也不再写 `anchorClosed`。**
+
+理由：另一条（「纯函数只产出意图、不预提交」）仍然把「是否已关」的判定留在 live 层，等于保留第二个事实源；而 owner 的 `"none"` 本来就是为幂等设计的，用它才是让 owner 真正成为关闭权威。
+
+**连带好处（必须同步改 ④）**：`live-reconcile.ts:138` 的 `anchorClosed = true` 写点因此在 **M1 就消失**，不必等 M4。故 allowlist 简化为：**M1 后 = owner + injector 开侧；M5 后归零**——原来的三阶段变两阶段。
+
+**连带风险（必须写进计划）**：live 装饰器现在**每个**触发帧都要进一次 serializer operation（哪怕没有 open anchor 只是拿回 `"none"`）。这在无 anchor 的默认路径上是新增的 per-frame 入队开销，必须：① 在 O-6 字节等价里确认 wire 无变化；② 明确记录这条开销是有意接受的（换来单一关闭权威），不是没注意到。
+
+### T-B 连带：装饰器不得再把 `frames[0]` 交给 `inner.writeAnchor`
+
+裁决者 2.4 指出：若只替换写出方式而纯函数仍返回 stop 帧、仍走 `inner.writeAnchor`，则 (c) 根本没落地——实际 stop 仍在 owner 之外写出。修订稿必须写死：**站点 12 的 stop 由 owner 写出，index 取自 owner 的 `openAnchorIndex` 而非硬编码 `0`**，且 port 必须从 raw `inner` 取（对 wrapper sink 查 session 会得到 `undefined`——这是 P1+P2 期间已经踩过一次的坑）。
+
 ## 无驳回
 
 本轮 **28 条发现无一驳回**（唯一非「照办」的是 M-6：事实采纳、但处置动作是「记录 + 回用户」而非我自行改 C9）。故无「暂定驳回」需要事后合议。
