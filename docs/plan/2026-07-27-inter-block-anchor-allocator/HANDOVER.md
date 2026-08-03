@@ -2,12 +2,13 @@
 
 **状态**：**草稿·未评审**（本文件本身尚未过 subagent 评审；RFC 已过六轮评审）· RFC 已定稿、无未决 blocker/major；实施一行未写；等用户拍板「是否起执行」。
 **两个基线，别混**（交接评审的核心 blocker 就是这里）：
-- **文档落地基线**：master `dafa31d8` 及其后（本文件所在提交）。
+- **文档落地基线**：master。**本文件自身的提交 SHA 不写死**（写下的那一刻就会被下一次改动作废——上一版写 `dafa31d8`，实际落在 `8ea97bec`）；要它就现算：`git -C /home/xp/src/copilot-api-js log -1 --format='%h %ad' --date=short -- docs/plan/2026-07-27-inter-block-anchor-allocator/HANDOVER.md`。
 - **代码事实基线**：**未合并分支** `feat/inter-block-anchor-allocator` @ `2c339784`（M1 实现，有意不合并）。**下面「硬事实」表里的每一个 `file:line` 都锚在这棵树上，在 master 上对不上**——master 的 `src/` 下 `closeAnchorViaOwner` **零命中**，`ClientSink` 在 `types.ts:737` 而非 `:747`。复算前先 `cd .worktrees/anchor-alloc`。
 
 **worktree**：`/home/xp/src/copilot-api-js/.worktrees/anchor-alloc`
 **未提交 / 未追踪**：本工作的产物已于 `6cfa0e89` 全部提交（此前两份评审报告曾是 untracked，被交接评审抓出）；主树另有并发会话的未提交改动，与本工作无关
-**已跑门禁**：master 全套件 `unit+it+http` **连跑 21 次全绿**（6845 pass / 0 fail，代码状态 `cc909c81`）——**逐次原始记录见 `docs/tmp/2026-08-03-baseline-run-log.md`**（含修复前的对照：同一 HEAD 未修 flaky 时 6 次里 2 次有红）；`bun run typecheck` 绿
+**已跑门禁**：master 全套件 `unit+it+http` **连跑 21 次全绿**（6845 pass / 0 fail，代码状态 `cc909c81`）——**逐次原始记录见 `docs/tmp/2026-08-03-baseline-run-log.md`**；`bun run typecheck` 绿。
+> ⚠️ **那份记录里的「修复前」那批不是受控前后对照**：它跑在 feature `2c339784`（**6848** tests），而 21 次跑在 master `cc909c81`（**6845** tests），`git merge-base --is-ancestor cc909c81 2c339784` = **NO**，互不为祖先。**跨树观测只支持「聚合层面改善」，不得用来顶 T3 的修复 AC**——那需要同一棵树上的逆 mutation。（这条纠正本身就是同类复发：它是我在修「基准锚定分裂」那个 blocker 时新引入的。）
 
 > **接手第一步不是写代码，也不是继续评审——是等用户裁决「是否起执行」。** 按 CLAUDE.md `docs-merge-before-execute`，定稿文档合主线后，执行是**独立**决策。RFC 已在 master 上。
 
@@ -40,7 +41,13 @@
 | `streamKeepaliveMode` 默认是 **`"ping"`**，不是 `empty_text` | 实测 | `packages/foundation/src/state-defaults.ts:122`。但 `injectContentAnchor` 由 `onDemandEscalation` 决定、**不看 mode**，故 `keepalive-anchor.ts:306` 在**默认配置**下经 200s 升级即可达 |
 | O-6 门此前恒真，已修并有正样本对照 | 实测 | 未改动树 PASS 且 fixture 字节不变；注入一字节 FAIL(rc=9) |
 
-**计数事实的集合边界**：「10 处 terminal 决策点」= `src/` 下 `closeAnchorViaOwner(..., "terminal")` 的调用表达式，不含 `"before-real"` 的 2 处与定义 1 处。「21 次连跑」= `unit+it+http` 三档，不含 pty / e2e / 前端，代码状态 `cc909c81`。
+**计数事实的集合边界**（每条各自带树，**别跨条借用**）：
+
+| 计数 | 集合 | 排除项 | 树 / 代码状态 |
+|---|---|---|---|
+| 10 处 terminal 决策点 | feature 工作树 `.worktrees/anchor-alloc` 的 `src/**` 下 `closeAnchorViaOwner(..., "terminal")` 的**调用表达式** | `"before-real"` 的 2 处、定义 1 处、`tests/**` | feature `2c339784` |
+| 9 处 / 4 文件 `getDownstreamDeliverySession` | 同上 `src/**` 的 CallExpression | 定义 1 处、`tests/**` | feature `2c339784` |
+| 21 次连跑 | `unit+it+http` 三档 | pty / e2e / 前端 | **master `cc909c81`**（≠ 上面两行的树） |
 
 ## 用户已裁决（不要重开）
 
@@ -65,8 +72,9 @@
 
 ### T2 —— Q1 未裁决（阻塞 Commit 5，**不**阻塞 Commit 0–4）
 - **问题**：per-command telemetry 是否需要 `command × outcome × format` 联合查询。选项 A（预组合有界 compound dimension，RFC 推荐）/ B（扩 registry 为 typed multidimensional key）/ C（只做单维 breakdown + History 明细）。
-- **验收**：裁决落盘进 RFC §9.2，并同步 §4.9 与 Commit 5 条目。
-- **证伪**：Commit 5 开工时 telemetry schema 仍无定形。
+- **验收**（三处必须**同时**指向同一个方案，缺一不算裁决落盘）：RFC §9.2 记裁决本身（选中的字母 + 用户原话 + 日期）、§4.9 记该方案对应的 **key 形状**、Commit 5 条目记该方案对应的**迁移任务**。三处引用同一个决策 id（`Q1`），不得各自复述。
+- **证伪**（任一成立即未闭合）：① Commit 5 开工时 telemetry schema 仍无定形；② **三处只同步了其中一两处**；③ **三处都写了但互相矛盾**（比如 §9.2 选 A 而 §4.9 写的是 B 的多维 key）。
+- **鉴别力正控**（写 plan 时执行）：把三处之一改成另一个方案的形状 → 对账必须报冲突。**只检查「最新时点有没有定形」的判据在正确状态下永不触发，等于没有判据**——②③ 才是它真正要抓的失败面。
 
 ### T3 —— 基线 flaky 第 1 条未证实已修
 - **事实**：`History V3 store performance > prepare and commit do not depend on prior session history length`，21 次连跑未再现，**但按其约 1/15 的原始复现率，这只有约 0.24 的概率意义**。详见 `docs/tmp/2026-08-03-baseline-flake-status.md`。
@@ -78,15 +86,28 @@
 
 ### T4 —— 分相位计划（plan + prompts 层）未写
 - **动作**：按 skill `large-refactor` §5 的三层结构，为 RFC §7 的 Commit 0–8 各写逐 task TDD 步骤 + factory/锚点表，并出可直接粘给独立实施者的 kick-off。
-- **验收**：每个 commit 的「可满足的门」在 plan 里有对应可复跑命令；锚点表给出被复用函数的 `file:line`。
-- **证伪**：plan 里出现 RFC 未冻结的签名。本项目一天内因此翻车四次，判据是三问——**它导出了吗 / 调用方拿到什么返回类型 / 那一刻它存在吗**；答不上就只冻结性质 + 列调查任务。
+- **验收**：产出一张**双向可追溯矩阵**，覆盖 RFC 的 Commit 0–8 × R-1～R-14 × O-1～O-9 × §9.3 调查缝 × §9.4 停点。
+  - **正向**（RFC → plan）：每一项**恰好一个**归属 commit、一条可复跑命令、一个正样本、一个目标 mutation，且指出它在**生产入口**上的可达路径。
+  - **反向**（plan → RFC）：每个 plan task 都能指回一个 RFC 出处；指不回的要么是 RFC 漏了、要么是 task 多余，**两种都得当场裁**。
+  - 锚点表给出被复用函数的 `file:line`（注明树）。
+- **证伪**（任一成立即不合格）：① plan 里出现 RFC 未冻结的签名；② **矩阵有孤儿**——某条 R/O 没有归属 commit，或某个 task 指不回 RFC；③ 某条门被排在**它所依赖的能力就位之前**的 commit（本仓已实测过这一型：验收项写在能力之前，换新实例只会照着错的验收项打勾）；④ 某条只有 `file:line` 而没有「这条缝会被哪个生产入口驱动」的答案。
+- **鉴别力正控**：从矩阵里删掉 R-14、或把 O-9 挪到 Commit 2（其依赖尚未就位），对账脚本／评审必须报红。**只防「虚构签名」的旧判据防不住漏任务、漏门、错接线——本轮我自己就漏过一次（R-14 加了却没进 §10.4 必过清单）。**
+- 签名三问仍然适用：**它导出了吗 / 调用方拿到什么返回类型 / 那一刻它存在吗**；答不上就只冻结性质 + 列调查任务。
 - **必读**：RFC §9.3 的调查缝与 §9.4 的停点表——那些是 plan 必须先回答的。
 
 ### T5 —— P7 的 translate 腿缺口（**未定性，本轮未动**）
 - **事实**：空 text block 清洗 `filterEmptyAnthropicTextBlocks` 经 `sanitize-messages` 跑在 Anthropic 入站路径上，**但外层有门**——`codec/anthropic/request-rewrite-adapter.ts:65` 的 `appliesTo: (env) => env.targetEndpoint === ENDPOINT.MESSAGES`，故 `@cc` / `@responses` 的 forward translate 腿**不跑这条清洗**，而它同样会产出 gap anchor 空块。
 - **尚未证明它是缺口**：还差两跳实测——① Anthropic→CC/Responses 的翻译会不会丢掉空 text block；② CC / Responses 上游对空 content part 的**实际**校验行为（不能拿 Anthropic 上游的 400 外推）。
-- **验收**：核实矩阵 = **2 腿 × 2 跳**，direct 与 translate **各**一条 oracle。
-- **证伪**：只测 direct 腿就宣称「清洗已覆盖」。
+- **验收**：矩阵是 **2 腿 × 2 跳 = 4 格，逐格具名**，每格写死四样——输入 fixture、期望的空 text block 归宿（保留 / 被清洗）、oracle 类型、上游实测响应码：
+
+  | # | 腿 | 跳 | 要回答的问题 |
+  |---|---|---|---|
+  | 1 | direct（`targetEndpoint === MESSAGES`） | 清洗跳 | 空块是否被 `filterEmptyAnthropicTextBlocks` 清掉 |
+  | 2 | direct | 上游跳 | 真 Anthropic 上游对残留空 content part 的**实测**响应码 |
+  | 3 | translate（`@cc` / `@responses`） | 翻译跳 | Anthropic→CC/Responses 的翻译**是否自行丢弃**空 text block |
+  | 4 | translate | 上游跳 | CC / Responses 上游对空 content part 的**实测**响应码（**不得从 Anthropic 的 400 外推**） |
+
+- **证伪**（任一成立即未闭合）：① 只测 direct 腿就宣称「清洗已覆盖」；② **只给 2 条 oracle 就声称覆盖 4 格**（「direct 与 translate 各一条」正是这一型——它把跳这一维折叠掉了）；③ 第 4 格用推断代替实测。
 - **若坐实**：兜底走 α（把清洗接到 `targetEndpoint` 门**之前**），仍是 α 不是 β，不触发需用户拍板的停点。
 
 ### T6 —— P8 验收与文档后果（未开工）

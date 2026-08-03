@@ -39,7 +39,7 @@ run15: 6845 tests · 6845 pass · 0 fail
 done
 ```
 
-## 修复前的对照（同一 HEAD，未修 flaky 时）
+## 修复前的观测（⚠️ **不同的树，不是受控前后对照**）
 ```
 cwd=/home/xp/src/copilot-api-js/.worktrees/anchor-alloc head=2c339784
 run1 rc=0  6848 pass · 0 fail
@@ -57,4 +57,10 @@ run6 rc=1  6847 pass · 1 fail
       1 (fail) History V3 store performance > prepare and commit do not depend on prior session history length 
 ```
 
-> 对照的意义：修复前 6 次里 2 次有红（三条互不相同的 flaky），修复后 21 次零红。**聚合层面的证据强，但对单独第 1 条 flaky 仍只是弱证据**——见 `2026-08-03-baseline-flake-status.md` 的概率口径。
+> ⚠️ **这不是受控前后实验，别拿它顶 T3 的修复 AC。** 三批跑在**两棵不同的树**上：
+> - 修复前那批 `head=2c339784`（feature 分支，含 M1，**6848** tests）
+> - 修复后两批 `head=cc909c81`（master，**6845** tests）
+> - `git merge-base --is-ancestor cc909c81 2c339784` = **NO**——互不为祖先。测试总数 6848 vs 6845 本身就是破绽。
+>
+> **它支持的结论**：修复前 6 次里 2 次有红（三条互不相同的 flaky），修复后 21 次零红——**聚合层面**的改善是真实的，因为两条被修的 flaky（`51b1e1c9`、`cc909c81`）的机制已被独立正样本对照证明。
+> **它不支持的结论**：任何「同一代码状态下修复前后」的因果断言，尤其**不能**用来给第 1 条 flaky 定性。要做那个判断，必须在**同一棵树**上跑逆 mutation。
