@@ -159,7 +159,7 @@ RFC `docs/spec/upstream-http2-transport.md:7-10` 记有「Bun 的 `node:http2` �
 
 ⇒ **「curl 比现役更诚实地报截断」这个动机只在「整连接 drop」一格成立**，而该场景对 SSE 已有应用层 `message_stop` / `[DONE]` 兜底。curl 的价值应按 **h1 能力**评估，不按「更诚实的 h2」评估。
 
-> 教训：Node h2 服务端的 `stream.close(code)` 在「已写过 DATA、未 END_STREAM」形态下不在 wire 上放出 RST 帧。项目 skill 原只记载 Bun 服务端不忠实——**Node 服务端在此形态下同样不忠实**。本轮两个 PoC 加主会话三方全被它骗过。须写进 skill `debugging-ghc-api-upstream-transport`（该 caveat 现有归属，见 §8 注）。
+> 教训：Node h2 服务端的 `stream.close(code)` 在「已写过 DATA、未 END_STREAM」形态下不在 wire 上放出 RST 帧。**限定很重要**：同一 API 在 **pre-response** 调用时**确实发真帧**（`exp/http2-refused-retry/report.md` 实测），别把本条读成「`stream.close(code)` 一律不忠实」。项目 skill 原只记载 Bun 服务端不忠实——**Node 服务端在此形态下同样不忠实**。本轮两个 PoC 加主会话三方全被它骗过。须写进 skill `debugging-ghc-api-upstream-transport`（该 caveat 现有归属，见 §8 注）。
 
 ### 3.2 Rust provider 的实证能力（spike，2026-08-03）
 
@@ -412,7 +412,13 @@ type TerminalCause =
 
 `unknown-transport` 仍须作为**结构化** `TransportErrorReason` 成员加入 `packages/foundation/src/error/transport-reason.ts` 并在 `classifyError` 的结构化 `switch` 中显式判为非 retryable、且**先于**宽泛的 `isNetworkError`（`classify.ts:151`）处理——否则它会被重新判为可重试。这是对 foundation 的**破坏性扩充**，须同步穷尽性守卫。
 
-> **未闭合项（自 v2 沿用）**：忠实 `REFUSED_STREAM(0x7)` 夹具仍不存在。子优先级第 1 档在实测前**不得**上线为可重试契约。夹具纪律见 §10 注。
+> **勘误（2026-08-03，评审证伪）**：v2/v3 曾写「忠实 `REFUSED_STREAM(0x7)` 夹具不存在、第 1 档不得上线」——**该断言错误**。`exp/http2-refused-retry/`（`probe-x.mjs` + `report.md`）早已实测闭合：Node 服务端 **pre-response** `stream.close(NGHTTP2_REFUSED_STREAM)` **发真 RST 帧**，Bun 客户端收到 `rstCode=7` 且 message 与生产日志**逐字一致**（`ERR_HTTP2_STREAM_ERROR` / `Stream closed with error code NGHTTP2_REFUSED_STREAM`）。
+>
+> **与 §3.1 的调和**（两条都成立，区别在时机）：`stream.close(code)` **pre-response** 发真帧；**已写过 DATA、未 END_STREAM 时**不发真帧（§3.1 的裁决）。REFUSED 按协议定义就是 pre-response，故正落在能发真帧的那一格。
+>
+> **仍然成立的两条约束**（来自该报告，非我方新增）：① `err.code` **区分不了** REFUSED 与 INTERNAL_ERROR（都是 `ERR_HTTP2_STREAM_ERROR`），必须按 **message 子串**匹配；② 服务端夹具**必须是真 Node h2 server**——若 server 跑在 `bun test` 进程内（Bun `http2.createServer`）会退回「不发真帧」陷阱。
+>
+> **对 Rust provider 的剩余未知**：上述结论是对 `node:http2` 客户端的。**reqwest/hyper 侧如何 surface REFUSED（错误类型与可区分性）仍须实测**——这是真正未闭合的部分，不要与「夹具不存在」混为一谈。
 
 ### 7.6 生命周期与 shutdown（从子进程改为 Tokio 任务）
 
@@ -432,21 +438,22 @@ type TerminalCause =
 
 ```yaml
 upstream_transport:
-  provider: auto        # auto | http2 | curl | undici
-  curl:
-    binary: curl
+  provider: auto        # auto | http2 | rust | undici
+  rust:
+    # 绝对路径覆盖，指向自建的 .node（开发期与矩阵外平台用；见 §0.3）
+    native_module_path: ""
     http_version: auto  # auto | h1 | h2
 ```
 
-- `auto` = **https → http2，明文 http → curl**。**不改变任何现有 https 上游的传输**（评审复核：当前 HTTPS + 默认 `favor:true` 已走 `http2`）。
-- 显式 `curl` = 全部上游走 curl，含 https h2。
+- `auto` = **有原生产物用 rust provider，无则告警回落 `node:http2`**（§0.2.1）；明文 `http://` 需 rust provider。**不改变任何现有 https 上游的传输**（评审复核：当前 HTTPS + 默认 `favor:true` 已走 `http2`）。
+- 显式 `rust` = 全部上游走 rust provider，含 https h2；产物缺失则**启动即失败**（不享受回落）。
 - **全局单选**，不做 per-origin 覆盖（用户 2026-08-01 裁决）。
 - **新旧键优先级（冻结）**：显式 `provider` **始终胜出**；`http2.favor` 仅在 `provider` 缺失时作为兼容输入；两者同时出现**继续启动 + 打印一次冲突警告**。此语义直接沿用 `config/compat.ts:16-18` 已确立的惯例——「user-set new key always wins over the migrated legacy value」。
-- `favor: false` → `provider: curl`；`favor: true` → `provider: auto`（须在迁移消息中说明其 HTTP 行为变化）。
+- `favor: false` → `provider: rust`；`favor: true` → `provider: auto`（须在迁移消息中说明其 HTTP 行为变化）。
 - **`provider: http2` 遇 `http://` URL** → 选路阶段返回明确的配置错误，**绝不静默 fallback**。
 - **`provider: undici` 在 Bun 下** → 按项目配置兼容政策**警告继续**（`config.ts:1073-1083` 已有先例），**不**冒充 binary unavailable 而启动失败。
-- **选中的 provider 不可用则启动即失败**（用户裁决）。可达性判定见 §4.3——默认安装不会仅因 `auto` 就强制要求 curl。
-- 选中 curl 且配了 `http2.ping_interval > 0` → 启动告警，文案按 §5。
+- **选中的 provider 不可用则启动即失败**（用户裁决）。可达性判定见 §4.3；`auto` 因有回落语义，不会仅因它就强制要求原生产物。
+- 回落到 `node:http2` 时 → 启动告警，文案按 §5（**只说 h1 不可用，不得暗示 h2 或保活受影响**）。
 
 ## 9. `/api/status` 的新形状（冻结）
 
@@ -461,7 +468,7 @@ interface UpstreamTransportStatus {
     capabilities: ProviderCapabilities
     effectiveConfiguration: Record<string, number | string | null>
     activeOperations: number
-    /** provider 自定：h2 是 session rows + reconcile；curl 是在途 child（pid/origin/protocol/startedAt） */
+    /** provider 自定：h2 是 session rows + reconcile；rust 是连接池状态 + 在途请求数 + 原生产物来源路径 */
     details: ProviderStatusDetails
   }>
 }
@@ -478,8 +485,8 @@ v1 的「真起 Node oracle 跑 h1/h2、流式、trailers、故障注入、abort
 | §7.1 stdout EOF 不终止 Response；exit 决定终态 | 注入非零 exit，断言 consumer 见 error 而非成功 | it |
 | §7.1 trailers 在 body terminal 前、且进 settle 快照 | trailers → ctx → 持久化 terminal 全链断言 | it |
 | §7.2 三种 `http_version` × scheme 的参数映射 | 参数构造 + oracle 侧实际协商协议 | unit + it |
-| §7.3 curl 自动 header 被抑制、`accept-encoding: identity` 保持 | **oracle 断言收到的完整 header 集**（不是断言参数数组） | it |
-| §7.3 curl 不读代理环境变量 | 设 `HTTP_PROXY` 但选路判定不走代理，断言未经代理 | it |
+| §7.3 reqwest 自动注入的 header 被抑制、`accept-encoding: identity` 保持 | **oracle 断言收到的完整 header 集**（不是断言参数数组） | it |
+| §7.3 reqwest 不读代理环境变量（须 `no_proxy()` 或显式 `proxy()`）| 设 `HTTP_PROXY` 但选路判定不走代理，断言未经代理 | it |
 | §7.3 `socks5` vs `socks5h` DNS 语义 | 分别断言解析位置 | it |
 | §7.3 空值 header `;` vs 移除 `:` | oracle 断言 wire | it |
 | §7.4 `Response` 在 body 完成**前** resolve | 断言 headers 到达即 resolve，body 仍在流 | it |
@@ -501,7 +508,9 @@ v1 的「真起 Node oracle 跑 h1/h2、流式、trailers、故障注入、abort
 
 1. §1.1 的九类耦合面是否**仍不完整**？
 2. §4.3 的「可达性」判定是否会漏掉某条运行期才出现的明文上游路径（配置热重载后新增）？
-3. §4.4 的维度拆分是否仍在按 curl 反向拟合？换 `undici` 或未来的进程内 libcurl 进来是否够用？
+3. §4.4 的维度拆分换 `undici` 或 rust provider 进来是否够用？（原「是否仍按 curl 反向拟合」已随选型作废）
+3b. **reqwest/hyper 如何 surface `REFUSED_STREAM`**——错误类型是什么、能否与其他 h2 流错误区分？（`exp/http2-refused-retry/` 只覆盖了 `node:http2` 客户端）
+3c. **reqwest 默认注入哪些 header**、`no_proxy()` 是否真能阻断环境变量读取？
 4. §7.1 冻结的六步顺序，是否与现役 `dispatch-lifecycle.ts` / `guardSseIterable` 的终止语义相容？
 5. §7.5 的五级优先级是否存在两条同时命中且顺序错误的组合？
 6. §8 的 `favor: true → provider: auto` 映射是否真的行为等价？

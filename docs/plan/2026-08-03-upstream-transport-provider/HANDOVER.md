@@ -1,6 +1,6 @@
 # 上游传输 Provider 化 + Rust/napi-rs 实现 交接
 
-> **状态**：**草稿·未评审** —— 因「上下文将满」走 skill `session-closeout` §6 的紧急路径落盘。**过完评审闭环后必须改成正式状态**（见 T1）。
+> **状态**：**草稿·评审中（已收到 2 BLOCKER + 7 MAJOR，正在处置）** —— 因「上下文将满」走 skill `session-closeout` §6 的紧急路径落盘。**过完评审闭环后必须改成正式状态**（见 T1）。
 > **核验基线**：`0a2e3bdf`（2026-08-03）——晚于此的 peer 提交可能已作废下面的结论。⚠️ **`0a2e3bdf` 是 peer 会话的提交**（inter-block anchor allocator 线），本轮最后一个自有提交是 `36dafc48`。
 > **工作区**：分支 `master`（**共享 worktree，有并发 peer 会话**）/ 无独立 worktree；**未提交改动与未追踪文件全部属于 peer**（`src/lib/*/tool-name-sanitize.ts`、`tests/*tool-name-sanitize*`、`docs/memory/*`、`docs/tmp/2026-08-03-*` 等）——**本轮零改动留在工作区，全部已提交**。
 > **已跑门禁**：`exp/napi-http-spike/run-all.sh` → exit 0（2026-08-03）；主会话独立复跑 h2 PING 探针 → `rustPings:5 / controlPings:1`（2026-08-03）。`bun run test:backend` / `typecheck` / `lint` **未跑**——本轮**零生产代码改动**，只有 `docs/` 与 `exp/`。
@@ -93,7 +93,7 @@
 - **验收判据**：spec §10 的「约束→测试」追踪表逐行有对应测试且绿。
 - **鉴别力正控**：每条 `unsupported`/`supported` 的能力声明**都要正反双向 oracle**（spec §10 已写死；`true` 一样会假绿）。
 - **证伪方式**：任一条只有「推理安全」而无实测 ⇒ 不算闭合。
-- **已知约束**：**忠实 `REFUSED_STREAM(0x7)` 夹具仍不存在**，spec §7.5 子优先级第 1 档在它到位前**不得**上线为可重试契约。
+- **已知约束**：⚠️ **本条曾写错并已撤回**——`exp/http2-refused-retry/` 早已存在且实测闭合（Node 服务端 pre-response `stream.close(REFUSED)` 发真帧，Bun 客户端 `rstCode=7`、message 与生产日志逐字一致）。**真正未闭合的是 reqwest/hyper 侧如何 surface REFUSED**，别去重建已有探针。两条沿用约束：`err.code` 区分不了 REFUSED 与 INTERNAL_ERROR（须按 message 子串）；服务端夹具必须是真 Node h2 server，跑在 `bun test` 进程内的 Bun server 会退回「不发真帧」陷阱。
 
 ## 4. 我犯过的错与成因
 
