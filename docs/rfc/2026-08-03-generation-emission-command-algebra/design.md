@@ -34,7 +34,7 @@
 | D8 | `src/lib/pipeline/delivery/session.ts:581-601` | owner→raw dispatch按 synthetic kind回落到多个 raw sink方法，最后仍以裸 frame 调用 `sink.write`；validated command identity、expected／actual effect与authorization record没有进入 envelope。 | physical emitter 无法证明每次发送来自哪个 command，也无法在 History／trace 中区分 intentional command、classifier result与 accidental payload。 | 每次 physical emit必须携 owner-minted command identity和validated effect；一帧一次采样，任何无 command identity 的 generation send为零。 |
 | D9 | `src/routes/responses/ws.ts:133-178`、`src/routes/responses/ws.ts:434-506` | 同一个 `sendErrorAndClose` 同时服务 pre-owner rejection与 post-owner stream-error／truncation；post-owner分支仍直接 `ws.send`／`ws.close`，之后另行 finalize sink。 | 一个词法 capability跨越两个不同 authority domain；generation owner已存在时，terminal frame、anchor balancing、observation、settle与socket close不在同一事务。 | active operation 的terminal effect必须先经 owner并返回 typed socket close intent；socket composition只能在该 intent之后关闭连接。 |
 | D10 | `src/routes/responses/ws.ts:634-683` | 坏 JSON／超长 frame 在 `inFlight` 协调之前直接 error+close；并发 `response.create` 在已有 operation 时直接 `ws.send`，随后还会 arm idle timer。 | socket-control输入并非天然 pre-owner：这些分支可与一个已打开 anchor、仍在 generation 的 operation 共存，direct close／timer可撕裂活 owner。 | control-with-inflight必须先协调 typed abort／terminal与owner seal，不得留下 orphan anchor或由idle timer误杀活operation。 |
-| D11 | `src/routes/chat-completions/handler-v4.ts:636-665`、`src/lib/pipeline/driver.ts:984-988` | driver明确丢弃 upstream `[DONE]`，handler再通过 `sink.write`补一个 terminal；同类 synthetic error仍经可选 `writeSynthetic`。 | terminal intent只存在于 handler控制流，不在 command类型中；generic／synthetic方法无法强制“active anchor先平衡、terminal一次、settle前已采样”。 | terminal必须是 owner command：同一callback内平衡active anchor、发terminal、seal heartbeat／operation，并保持 `recordForwarded → settle` 顺序。 |
+| D11 | `src/routes/chat-completions/handler-v4.ts:636-665`、`src/lib/pipeline/driver.ts:1036` | driver明确丢弃 upstream `[DONE]`，handler再通过 `sink.write`补一个 terminal；同类 synthetic error仍经可选 `writeSynthetic`。 | terminal intent只存在于 handler控制流，不在 command类型中；generic／synthetic方法无法强制“active anchor先平衡、terminal一次、settle前已采样”。 | terminal必须是 owner command：同一callback内平衡active anchor、发terminal、seal heartbeat／operation，并保持 `recordForwarded → settle` 顺序。 |
 | D12 | `src/lib/pipeline/delivery/session.ts:531-544` | `terminate` 复用内部 generic `write` 发最后 frames，并在同一方法里直接 finalize raw sink；`clientSink.finalize`又被改绑为 `terminate({kind:"complete"})`。 | terminal emission与资源封存语义混合，调用者无法区分“发最后帧”与“仅 finalize”；并发 finalize与pending terminal send缺少显式 typed结果。 | first terminal command wins；terminal frame exactly once；finalize只seal／callback once，不能成为第二个 emission入口。 |
 | D13 | `src/routes/messages/error-shaping-glue.ts:128-147`、`src/lib/anthropic/warmup.ts:209-247` | AUQ fallback和warmup fake／drop在 generation owner创建前直接写完整 SSE。 | 它们不是 generation-owner旁路，但当前缺少operation级互斥事实；若未来构造顺序漂移，complete-response writer可能与delivery owner双写。 | 对这些明确范围外的pre-client-commit路径，必须由observer证明该operation零delivery owner且完整响应只写一次；不能用“代码位置看起来较早”代替行为门。 |
 | D14 | `src/lib/pipeline/delivery/types.ts:35-64`、`src/lib/pipeline/delivery/session.ts:221-245` | post-wire ledger由已写frame派生，并同时供heartbeat选择目标；authorization的mapping／anchor state另存于`GenerationWireState`。 | ledger是“尝试／成功写过什么”的observation，不是“现在谁有权被写”的authorization。若以ledger替代mapping，旁路帧会为自己制造授权；两层的回滚语义也相反。 | mapping／lease与post-wire ledger必须双层分离；`pulseOpenBlock`从active mapping授权，ledger只做diagnostic与O-2 observation。 |
@@ -106,7 +106,7 @@ owner只seal一个response operation，不拥有可复用socket。generation ter
 | 语义唯一 | generation producer没有无条件`ClientSink.write(ClientFrame)`；每次发送先选择类型允许的command，owner再以classifier交叉验证actual effect。 | 真实HTTP与WS production path分别发送generic、keepalive、terminal及适用的block effect；adversarial `emitGeneric(block-stop)`必须在external write前以`CommandEffectMismatchError`失败。mutation恢复generic passthrough后，wire／owner-state双oracle转红。 |
 | 排序唯一 | 所有commands共用owner的一个serializer；raw SSE／WS adapter不得再有第二个generation serializer。 | FakeClock把heartbeat、compound close→real-start与terminal并发，让点后wire全序仍符合command顺序且无插帧；mutation在raw adapter恢复独立queue或拆成两个enqueue必须转红。 |
 | 供给唯一 | runner、driver、terminal helper、decorator只获得profile-shaped command port；raw handle和emitter不进入参数、closure返回值或可恢复registry。 | 从真实composition callback走一遍第一人称capability审计，并用test-only adversarial runner证明无法direct send；mutation把`stream`／`ws`或raw emitter重新传给runner后，production witness必须复现wire／state分裂。源码／类型扫描只作presence ratchet。 |
-| 物理唯一 | transport handle只由composition root闭包持有；raw factory、raw type和emitter不export、不挂returned object。 | runtime fault adapter记录每次physical send的`commandId`，断言每个validated frame恰好一次、无`commandId`的generation send为零；模块边界守卫阻止production import并带故意违规的正样本。私有化单独只算降低概率，须与composition witness联合裁决。 |
+| 物理唯一 | transport handle只由composition root闭包持有；raw factory、raw type和emitter不export、不挂returned object。 | physical fault recorder必须包裹composition root实际取得的`stream`／`ws` handle，位于raw emitter之下，记录该响应／socket上的全部physical sends；先经test-only direct-send seam自检recorder确实看得见绕过owner的发送，再断言每个validated frame恰好一次、无`commandId`的generation send为零。注入owner的test raw adapter只能测envelope／observation，不能裁决physical uniqueness。模块边界守卫另阻止production import并带违规正样本；私有化单独只算降低概率。 |
 
 这四项是同一边界的不同失效方向，不能以其中一项替代其余三项。尤其“物理私有”不自动带来语义正确，“command显式”也不自动带来唯一physical emit。
 
@@ -133,9 +133,9 @@ owner只seal一个response operation，不拥有可复用socket。generation ter
 
 ### 2.7 必要性主张的可证伪边界
 
-本文不主张“全量command algebra是唯一能闭合anchor原子性的方案”；候选A已被证明也能闭合。已考察的更小方案是：保留`write(frame)`，由owner classifier吸收匹配active authorization的close；它漏掉的是独立caller intent，无法区分intentional close与accidental payload，长期可维护性和因果可观测性较弱。已考察的更大方案是：把transport writer移到独立进程／受控RPC；它可增强“恶意同进程代码也无法取得handle”的威胁模型，但超出本内部工具已声明的信任边界，不是本RFC要证明的性质。原候选B只收block effect而保留terminal／WS teardown旁路，漏掉active anchor后direct terminal／close的行为反例。
+本文不主张“全量command algebra是唯一能闭合anchor原子性的方案”；候选A已被证明也能闭合。已考察的更小方案是：保留`write(frame)`，由owner classifier吸收匹配active authorization的close。full相对它稳定多保留独立intent的范围必须准确限定：proxy自己合成的anchor、keepalive、terminal、`[DONE]`与error emission在构造frame前已有业务intent；profile级capability分型也独立于单帧payload。对上游转发腿，producer往往用与classifier同族的frame谓词选择command，intent是classifier-derived，二者交叉验证退化为一致性检查，不能声称信息源独立；该腿必须由不复用共享谓词的O-2状态机、wire golden或真实SDK oracle兜底。已考察的更大方案是把transport writer移到独立进程／受控RPC；它可增强“恶意同进程代码也无法取得handle”的威胁模型，但超出本内部工具已声明的信任边界。原候选B只收block effect而保留terminal／WS teardown旁路，漏掉active anchor后direct terminal／close的行为反例。
 
-可被评审证伪的精确命题是：在已裁决裁判轴下，full方案比候选A额外保留caller已有的semantic intent，并能在external write前与classified effect和canonical authorization交叉验证；若评审能证明production producer在frame构造前并不拥有真实intent，或A能在不引入等价command discriminator的前提下保留该独立事实，则本节的长期优势论证不成立，应回主会话重裁。
+可被评审证伪的精确命题是：在proxy自合成emission与profile capability边界上，full比候选A额外保留frame构造前已存在的semantic intent，并能在external write前与classified effect和canonical authorization交叉验证；在转发腿上，full的收益主要是显式command surface、fail-loud一致性检查与可观测性，而非独立双源证明。若A能在不引入等价command discriminator的前提下保留前述独立事实，或production自合成腿在frame构造前也不存在真实intent，则该长期优势论证不成立，应回主会话重裁。
 
 ## 3. Capability-shaped command port 的类型形状
 
@@ -203,7 +203,7 @@ interface CommonGenerationCommandPort<P extends FormatDeliveryProfile> {
 
 共同port只表达每种streaming格式都真实拥有的intent：
 
-- `emitGeneric`：仅允许profile classifier证明不会改变owner-governed state的metadata／ordinary event；structured parse failure、terminal或indexed-block effect均在external write前报`CommandEffectMismatchError`。
+- `emitGeneric`冻结三态：①structured payload parse failure在external write前拒绝；②已登记为owner-governed、terminal或indexed-block的effect若误走generic，在external write前报`CommandEffectMismatchError`；③payload可解析、但其effect尚未登记时，按richest-data-flow默认允许发送，使用bounded `actualEffect=unknown`并把原始type／frame detail写入trace／History。未知effect不是已知generic的证明，也不是默认拒绝理由；后续registry识别其owner语义时必须新增command compatibility与回归，而不能重解释历史样本。
 - `emitKeepalive`：只表达无indexed target的generic ping／application keepalive。Anthropic anchor／real-block target keepalive不走它，而走indexed capability的pulse commands。
 - `terminate`：携带complete、upstream exhausted／nonretryable、request cancelled或client-aborted等terminal intent；owner负责在同一command内平衡active anchor、发terminal frames、永久停止heartbeat并seal operation。
 - `finalize`：只等待／封存已决定的terminal与delivery-finalized callback，不构造或发送frame，因而不是第四种emission入口。
@@ -216,6 +216,7 @@ interface CommonGenerationCommandPort<P extends FormatDeliveryProfile> {
 interface AnthropicIndexedBlockCommands {
   beginLeg(command: BeginLegCommand): Promise<OwnerCommandResult<LegHandle>>
 
+  openMessageEnvelope(command: OpenMessageEnvelopeCommand): Promise<OwnerCommandResult<"opened" | "already-open">>
   openAnchor(command: OpenAnchorCommand): Promise<OwnerCommandResult<AnchorOpened>>
   pulseAnchor(command: PulseAnchorCommand): Promise<OwnerCommandResult<"pulsed" | "none">>
   closeOpenAnchor(command: CloseOpenAnchorCommand): Promise<OwnerCommandResult<"closed" | "none">>
@@ -245,7 +246,8 @@ interface GenerationDeliveryOwner<P extends FormatDeliveryProfile> {
 各indexed command冻结以下职责：
 
 - `beginLeg`绑定primary／continuation／recovery与真实candidate／dispatch来源，返回opaque `LegHandle`；无active leg时real block命令fail loud。
-- `openAnchor`只接收prelude来源discriminator与builder所需业务数据。`prelude.kind`至少区分`captured`与`fabricated`；owner分配index、建立private active lease、铸造anchor或`synthetic-message-start` provenance。
+- `openMessageEnvelope`只处理envelope-only prelude：接收`captured`或`fabricated`来源事实，owner铸candidate或`synthetic-message-start` provenance，但不分配block index、不创建anchor lease；用于`enveloped_ping`及其他经profile明确允许的message envelope intent。
+- `openAnchor`只接收prelude来源discriminator与builder所需业务数据。`prelude.kind`至少区分`captured`与`fabricated`；owner分配index、建立private active lease，并在需要时先通过同一command保证message envelope存在，再铸造anchor provenance。
 - `pulseAnchor`不接caller-supplied index；owner读取active anchor lease并由codec构造对应delta。
 - `closeOpenAnchor`不接caller-supplied index／provenance；用于明确的close-only intent。terminal balancing通常由`terminate`内部完成，不要求handler手动先close再terminate。
 - `openRealBlock`用于没有active anchor的real start；caller提交opaque leg handle、upstream index与format-native start数据，ownerreserve／commit mapping并铸real provenance。
@@ -343,7 +345,7 @@ owner canonical state分成两个职责相反的层，已由主会话裁决为�
 3. **pre-write rollback**：让compound command的第二段builder／classifier在阶段A失败，断言wire零attempt、reservation rollback、lease与mapping不变。
 4. **post-commit不可回滚**：让首次physical send调用后失败，断言attempt／partial diagnostic保留、已commit index不复用；authorization只更新已经确认成功的state transition，不伪装后续段完成。
 
-类型上把`AuthorizationState`与`PostWireLedger`分成不同private fields只能算presence ratchet；行为witness才是结构性闭合候选。更小方案是保留裸`openAnchorIndex`并补旁表存diagnostic，但会产生两个必须锁步的anchor事实源，无法用单record identity验证generation／epoch；更大方案是event-sourced owner，把每个authorization transition与observation event都持久化后replay，它能提供更强审计，但本RFC没有需要跨进程恢复generation owner state的契约。可被评审证伪的必要性命题仅限：在当前in-process owner模型中，authorization与observation因回滚语义相反而不能由同一事实同时充当两种authority；若能给出一个状态模型，在不靠分支例外的情况下同时满足pre-write全回滚与post-attempt不可撤销，评审可推翻本节的双层形状。
+类型上把`AuthorizationState`与`PostWireLedger`分成不同private fields只能算presence ratchet；行为witness才是结构性闭合候选。更小方案是保留裸`openAnchorIndex`并补旁表存diagnostic，但会产生两个必须锁步的anchor事实源，无法用单record identity验证generation／epoch。更大方案是append-only／event-sourced owner：authorization是record stream的fold，observation是不可变事件本身；它确实可以同时满足pre-write不追加／rollback与post-attempt不可撤销，而不靠错误的回滚例外，但只有需要跨进程恢复／replay owner state时才值得引入，本RFC没有该契约。可被评审证伪的有界命题仅限：在本RFC采用的朴素in-process可变状态模型下，把authorization与observation塞进同一可变事实会迫使一侧接受错误回滚语义，因此保持双层；这不是对所有可能状态模型的“不可能”主张。
 
 ### 4.4 Authorization cardinality 不变量
 
@@ -361,9 +363,9 @@ C1的唯一generation-scoped单调frontier、committed index永不复用，是au
 
 ### 4.6 双命中 mutation oracle
 
-首选正控必须改变production代码而非测试手工翻state：在隔离worktree构造一份exact mutation，使production reservation／registration路径把一个新real mapping的`wireIndex`错误地改成当前active anchor lease的index，或使第二个real mapping复用第一个active mapping的index；然后从真实Anthropic HTTP production path驱动“先打开anchor，再开始real block”或“同腿／跨腿保留两个active real blocks”的可达序列。fault raw emitter记录external-attempt次数与command id。预期是`AuthorizationCardinalityError`在阶段A抛出、external attempt为0、anchor lease／已有mapping保持不变、reservation rollback、frontier不额外commit。恢复cardinality check的mutation必须使该production缺陷无法静默发出；移除check则wire／owner-state oracle转红。
+首选正控必须改变production代码而非测试手工翻state：在隔离worktree构造一份exact mutation，使production reservation／registration路径把一个新real mapping的`wireIndex`错误地改成当前active anchor lease的index，或使第二个real mapping复用第一个active mapping的index；然后从真实Anthropic HTTP production path驱动“先打开anchor，再开始real block”或“同腿／跨腿保留两个active real blocks”的可达序列。external-attempt recorder必须包裹composition root的真实`stream` handle并位于raw emitter之下；先用test-only direct-send seam自检该recorder确实可见physical attempt。预期是`AuthorizationCardinalityError`在阶段A抛出、external attempt为0、anchor lease／已有mapping保持不变、reservation rollback、frontier不额外commit。恢复cardinality check的mutation必须使该production缺陷无法静默发出；移除check则wire／owner-state oracle转红。
 
-这里有一个尚待PoC核实的缝：当前allocator reservation value是frozen mapping，且现有production尚未完成所有real-block接线；直接在某个注册点改index是否能经真实route稳定造出双命中，需实施计划先验证。若production mutation在当前过渡基线物理不可达，退而求其次可使用test-only owner construction seam注入一份预损坏registry，再调用真实owner command并断言pre-write拒绝；它只能证明assertion逻辑，对“production注册路径真的受保护”没有证明力，等级为辅助正控。不得把测试直接`Map.set`后抛错冒充最终behavior witness；最终验收仍要求在real-block cutover完成后补production registration mutation。
+当前基线的`withAllocatedRealBlock`／`writeBlockFrame`为零production调用者，所以双命中registration mutation在cutover前不可达；但用户已裁决把四生产腿mapping lifecycle接线纳入本RFC。故Commit 4终态必须从真实`openRealBlock` registration path稳定造出双命中：若采用分散lease／mapping容器，mutation令新mapping复用active anchor或既有real index；若采用单一拒重复key registry，mutation破坏insert-conflict守卫。test-only预损坏registry只能在Commit 1证明assertion逻辑，不能替代Commit 4 production witness。不得把测试直接`Map.set`后抛错冒充最终behavior oracle。
 
 更小方案是只依赖C1并把碰撞视为“按设计不可能”，它对frontier／bridge自身bug没有第二道独立拒绝，漏掉本节要守的state-corruption故障。更大方案是以运行时唯一索引表取代分开的lease／per-leg mappings，让注册原语从容器结构上拒绝重复key；这值得实施时优先评估，但不能删掉command边界的assertion，因为迁移期legacy状态、错误释放与registry内部损坏仍需fail loud。可被评审证伪的命题是：只要active authorization仍分布于anchor lease与一个或多个mapping容器，就必须在pre-write边界对其并集做cardinality validation；若实现能证明所有active records由单一拒绝重复key的private registry原子拥有，评审可把全量扫描收敛为该registry的结构不变量加边界assert，而不是取消不变量。
 
@@ -371,7 +373,7 @@ C1的唯一generation-scoped单调frontier、committed index永不复用，是au
 
 本RFC不新建第二套遥测存储。现有架构已经把dimension names／cardinality放在telemetry包，把依赖`HistoryEntryData`／ctx的extractor下沉到core sink层；穷尽`Record<TelemetryDimensionName,...>`使新增spec但漏extractor时compile-red（`packages/telemetry/src/dimension-names.ts:19-64`、`src/lib/observability/telemetry-dimensions.ts:1-25,141-170`）。settled-request聚合叶只收resolved key bag与measure inputs，使用开放`Record<string, number>` counters（`packages/telemetry/src/request-telemetry.ts:337-407`），现有feature measures由单一name registry初始化并累加（`packages/telemetry/src/request-telemetry.ts:115-149,856-931`）。持久化继续走同一pending-delta outbox和`telemetry.db`的`tel_raw → tel_hourly → tel_daily` rollup及`tel_cumulative`，rollup对可加columns泛型迭代（`packages/telemetry/src/telemetry/store.ts:34-95,104-133`、`packages/telemetry/src/telemetry/rollup.ts:1-20,95-147`）。
 
-因此接入形状是：owner在operation期间把每个command observation追加到request-scoped、bounded的`GenerationCommandTelemetryAccumulator`；request settle时，现有`TelemetrySink`从History entry／ctx snapshot提取低基数keys和预聚合的per-command additive measures，再调用既有`TelemetryRuntime.recordSettled`。今天该sink已经是completed／failed请求的唯一registry feed（`src/lib/observability/sinks/telemetry.ts:31-43,49-103`），而runtime public surface只有per-settled-request `recordSettled`（`packages/telemetry/src/runtime.ts:67-100,145-150`）；故不从owner热路径直接新增telemetry package free-function或SQLite writer。具体accumulator落在`PipelineInfo`新字段、独立History detail还是ctx snapshot，需实施计划沿settle冻结点核实后决定；承重性质是owner先保留rich command observations，sink在末端投影，且失败与成功都走同一个normalizer。
+因此接入形状是：owner在operation期间把每个command observation追加到request-scoped、bounded的`GenerationCommandTelemetryAccumulator`；request settle时，现有`TelemetrySink`从History entry／ctx snapshot提取低基数keys和预聚合的per-command additive measures，再调用既有`TelemetryRuntime.recordSettled`。今天该sink已经是completed／failed请求的唯一registry feed（`src/lib/observability/sinks/telemetry.ts:31-43,49-103`），而runtime唯一的settled-request记录入口是`recordSettled`（`packages/telemetry/src/runtime.ts:67-100,145-150`）；故不从owner热路径直接新增telemetry package free-function或SQLite writer。具体accumulator落在`PipelineInfo`新字段、独立History detail还是ctx snapshot，需实施计划沿settle冻结点核实后决定；承重性质是owner先保留rich command observations，sink在末端投影，且失败与成功都走同一个normalizer。
 
 ### 4.8 字段基数与存储分界
 
@@ -397,7 +399,7 @@ C1的唯一generation-scoped单调frontier、committed index永不复用，是au
 
 每个compound command保留一个bounded `phase`：`validated | stop_sent | real_start_sent | terminal_sent`。`validated`表示阶段A全部build／effect／authorization validation完成但尚未external attempt；其余值表示对应physical segment的external send已成功，按真实前缀单调推进，不可回退。普通command使用`phase: none`，避免把“不适用”与“尚未validated”混淆。
 
-partial failure不能只记`outcome=wire_error`。最细不可重算因子必须在聚合前拆开：至少分别累加`validatedCount`、`stopSentCount`、`realStartSentCount`、`terminalSentCount`、`committedCount`与各outcome count；这样聚合后仍能回答“stop成功但real start失败”而不是只剩一个失败总数。History detail则保留单command的`phaseReached`、attempted segment、成功segments与error；例如`phase=stop_sent, outcome=wire_error, committed=true`明确表示anchor已平衡、real start未成功。`closedThenWireTorn`固定表达`stop_sent + committed=true + wireTorn=true + outcome=closed_then_wire_torn`，不能降成普通`ok:false`。
+partial failure不能只记`outcome=wire_error`。最细不可重算因子必须在聚合前拆开：至少分别累加`validatedCount`、`stopSentCount`、`realStartSentCount`、`terminalSentCount`、`committedCount`与各outcome count；这样聚合后仍能回答“stop成功但real start失败”而不是只剩一个失败总数。History持久形状已裁决为双层：`wirePartialDelivery`继续保持稳定摘要`operation + cause + committed`；独立generation operation detail保存完整per-command records，包括`phaseReached`、attempted segment、成功segments与error，并以operation／command identity关联摘要。例如`phase=stop_sent, outcome=wire_error, committed=true`明确表示anchor已平衡、real start未成功。`closedThenWireTorn`固定表达`stop_sent + committed=true + wireTorn=true + outcome=closed_then_wire_torn`，不能降成普通`ok:false`。
 
 现有SQLite schema按固定additive columns持久化，增加上述measure仍需要同步`FEATURE_MEASURE_NAMES`、`SettledMeasures`、column registry与read projection；“开放counters bag零版本bump”不等于SQLite无需schema migration。计划必须按telemetry.db现行Umzug／store约定增加列并验证raw／hourly／daily／cumulative四腿，而不是重新建command event表。command／format／effect／outcome等维度如何组合查询受现有“一次settle对每个dimension key累加同一measure bag”模型限制：它原生支持单维breakdown，不支持任意多维cube。RFC最低要求是各bounded field可分别breakdown、per-command phase／outcome measures可回答核心诊断；若产品要求`command × outcome × format`联合查询，现registry不兼容，该项作为open question交主会话选择“预组合一个有界compound dimension”或扩展registry为typed multidimensional key，不能私建旁路表。
 
@@ -434,22 +436,24 @@ per-command telemetry是诊断与长期趋势设施，不是边界验收oracle�
 
 | 边界单元与inventory证据 | 处置 | 当前闭合等级 | 升级所需behavior witness与mutation正控 |
 |---|---|---|---|
-| owner→raw唯一physical emit：现有`src/lib/pipeline/delivery/session.ts:600`调用`OwnerRawSink.write`，raw adapters在`src/lib/pipeline/client-sink.ts:209,645`分别physical SSE／WS（inventory `:24-41,123-126`） | 词法私有`RawTransportEmitter.emit(validatedEnvelope)`成为owner之后唯一generation physical入口；删除raw第二serializer，attempt前单点sampling，success后更新post-wire state。 | 仅降低概率 | 真实HTTP SSE与Responses WS各发送generic／synthetic／terminal，fault adapter按`commandId`记录physical send，断言每个validated frame恰好一次、无command id发送为零；mutation在owner外加direct send或raw第二queue后必须出现多帧／错序／state分裂。 |
+| owner→raw唯一physical emit：现有`src/lib/pipeline/delivery/session.ts:600`调用`OwnerRawSink.write`，raw adapters在`src/lib/pipeline/client-sink.ts:209,645`分别physical SSE／WS（inventory `:24-41,123-126`） | 词法私有`RawTransportEmitter.emit(validatedEnvelope)`成为owner之后唯一generation physical入口；删除raw第二serializer，attempt前单点sampling，success后更新post-wire state。 | 仅降低概率 | recorder必须包裹composition root实际`stream`／`ws` handle、位于raw emitter之下；先用已知test-only direct-send seam证明它看得见绕过owner的发送，再由真实HTTP SSE与Responses WS发送generic／synthetic／terminal，断言每个validated frame恰好一次、无command id发送为零。注入owner的raw adapter不用于本门；owner外direct-send／raw第二queue mutation必须出现无id、多帧或错序。 |
 | generic generation writes：10点／4文件，含driver winner／live／buffered／retreat、injector、decorator及CC terminal（inventory `:24-39`） | 删除production裸`ClientSink.write`；各producer按profile选择`emitGeneric`、indexed command或`terminate`，classifier复核actual effect。 | 仅降低概率 | 从真实route覆盖ordinary primary、hedge winner、buffered boundary、retreat与terminal；mutation逐一改回legacy passthrough，O-1／O-2、lease／mapping与History provenance至少一项转红。adversarial generic block effect必须pre-write mismatch。 |
 | driver live／winner／hedge：`src/lib/pipeline/driver.ts:948,952,1048`（inventory `:28-32`） | winner helpers与live drain接command port，不接sink；每个rendered frame由profile dispatcher产生显式intent。 | 仅降低概率 | 真实HTTP ordinary primary与hedge winner各跑anchor→real序列，断言command intent、candidate provenance和wire全序；mutation仅把winner helper或live drain恢复`write`，必须复现duplicate／orphan stop或lease未清。 |
 | driver buffered／retreat：`src/lib/pipeline/driver.ts:1265,1319`（inventory `:33-34`） | buffered flush按frame effect批量预分类；anchor close→real start用compound command；retreat后继续使用同一mapping authority，不回落raw write。 | 仅降低概率 | production boundary flush与buffer-cap retreat各造anchor→real→stop，断言mapping登记／释放、lease、O-1／O-2；mutation任一分支恢复legacy write或拆开compound operation必须转红。 |
-| live reconciler：`src/lib/anthropic/live-reconcile.ts:145,157`分别build stop并写real frame（inventory `:35-36,149-153`） | decorator退化为纯decision／transform；close→real-start由owner一个compound command完成，不转发任何emission capability。 | 仅降低概率 | FakeClock把heartbeat tick停在旧两operation之间；新production live HTTP只见相邻`stop@leaseIndex → real-start@next`且`maxOpen<=1`；mutation拆回两个enqueue必须产生插帧并红。 |
-| anchor scaffold／prelude injectors：captured message start在`src/lib/anthropic/keepalive-anchor.ts:375`，fabricated envelope fallback在`:382`（inventory `:35,84-86`） | `openAnchor`具名接收`prelude.kind`为`captured`或`fabricated`与format data，owner分配lease并铸candidate或`synthetic-message-start` provenance；injector只拿Anthropic indexed port。 | 仅降低概率 | delayed-commit真实route分别驱动captured／fabricated prelude，断言wire可等价而History provenance一真一synthetic；交换discriminator或让caller自报marker的mutation必须转红。 |
+| live reconciler：`src/lib/anthropic/live-reconcile.ts:145,157`分别build stop并写real frame（inventory `:35-36,149-153`） | decorator退化为纯decision／transform；close→real-start由owner一个compound command完成，不转发任何emission capability。 | 仅降低概率 | FakeClock先在unpark对照推进N×interval并观察恰好N个keepalive，证明新owner timer活；再把tick停在旧两operation之间，新production live HTTP只见相邻`stop@leaseIndex → real-start@next`且`maxOpen<=1`；mutation拆回两个enqueue必须产生插帧并红。 |
+| 默认配置可达的on-demand anchor allocation-port发射：`src/lib/anthropic/keepalive-anchor.ts:306-314`的`allocateAndWriteAnchor`一次构造captured／fabricated `message_start`、anchor start与delta。正常mode默认是`ping`，常规`injectAnchor`不构造；但200s `onDemandEscalation`的`injectContentAnchor`不看mode，仍调用同一`makeSyntheticAnchorInjector`，故该点在默认配置可达。补全inventory口径为`allocateAndWriteAnchor` 1点 | `openAnchor`具名接收`prelude.kind`为`captured`或`fabricated`与format data，owner分配lease并铸candidate或`synthetic-message-start` provenance；injector只拿Anthropic indexed port。 | 仅降低概率 | 默认`ping`＋on-demand escalation真实route分别驱动captured／fabricated prelude，断言wire sequence、lease和History provenance；交换discriminator、漏start／delta或让caller自报marker的mutation必须转红。 |
+| 非默认`enveloped_ping` envelope-only prelude：`src/lib/anthropic/keepalive-anchor.ts:375,382`只写captured／fabricated `message_start`，不分配block index、不建lease | 增加Anthropic专用`openMessageEnvelope` command：owner铸candidate或`synthetic-message-start` provenance，但不reserve index、不创建`OpenAnchorLease`；不能路由到`openAnchor`。 | 仅降低概率 | 以`tests/anthropic/enveloped-ping.it.test.ts`为正样本基座，断言exactly-one message envelope、零anchor block／stop、real block不remap；mutation误走`openAnchor`必须因多block／index shift／extra stop转红。 |
+| owner allocation-port其余population：`closeOpenAnchor` 3个production调用点、`beginLeg` 5点但发0帧；`withAllocatedRealBlock`与`writeBlockFrame`当前均为0个production调用者（补全inventory owner allocation-port节） | 3个close sites迁owner close／compound commands；5个leg starts保留来源绑定并把opaque handle贯穿到后续real commands；本RFC新增三腿`openRealBlock`／`writeRealBlockFrame`接线，使C3／C4／C10不再只有接口无consumer。 | 仅降低概率 | 三腿真实route分别证明leg handle→mapping登记→delta／stop→释放；删除任一open／write接线或恢复caller offset算术必须由O-1／O-2／cross-leg oracle转红。零调用者是迁移起点，不是“无需处理”。 |
 | 三个anchor stop builder调用：driver、live、handler各一（inventory `:137-153`） | stop frame builder仍可保留为format纯函数，但只能由owner command在读取current lease后调用；handler／driver不传index或provenance。 | 仅降低概率 | §6所述真实consumer旁路witness同时观察wire与owner lease；合法close exactly once，错误index／无record零wire；mutation让普通generic stop直通时两oracle共同红。builder私有化或调用点归零不算行为证据。 |
-| synthetic APIs：22个`writeSynthetic`、3个`writeKeepalive`、3个`writeSyntheticEnvelope`，共28点／7文件（inventory `:43-86`） | handler errors迁`terminate`，generic ping迁`emitKeepalive`，anchor／block-targeting pulse迁indexed commands，prelude迁`openAnchor`；owner→raw fallback methods消失。 | 仅降低概率 | 每个vendor direct／reverse真实route造H3、truncation、keepalive与适用prelude，断言command intent、synthetic marker、attempt前sampling和terminal顺序；逐类mutation恢复旧named sink API必须转红。 |
+| synthetic APIs：22个`writeSynthetic`、3个`writeKeepalive`、3个`writeSyntheticEnvelope`，共28点／7文件（inventory `:43-86`） | handler errors迁`terminate`，generic ping迁`emitKeepalive`，anchor／block-targeting pulse迁indexed commands，envelope-only prelude迁`openMessageEnvelope`；owner→raw fallback methods消失。 | 仅降低概率 | 每个vendor direct／reverse真实route造H3、truncation、keepalive与适用prelude，断言command intent、synthetic marker、attempt前sampling和terminal顺序；逐类mutation恢复旧named sink API必须转红。 |
 | `[DONE]`：CC direct／reverse共3点（inventory `:88-106`） | 作为Chat Completions profile的terminal effect进入`terminate`，不再由handler以generic frame尾追加；exactly-one由owner terminal state保证。 | 仅降低概率 | direct、reverse normal及contentless-refusal route分别断言`[DONE]`恰好一次、在所有content之后、settle之前已sample；任一站点恢复handler `write`或owner重复terminal mutation必须转红。 |
-| heartbeat：现有owner heartbeat与raw SSE／WS heartbeat实现并存，raw APIs仍由28点中的keepalive fallback与raw adapter承载（inventory `:80-86,123-126`） | owner唯一timer，保留`freeze`／`suspend`／terminal-close三态；generic与indexed pulse均进入同一serializer；删除raw heartbeat／block-tracking死分支。 | 仅降低概率 | 保留Anthropic与Responses HTTP现有P6 production regressions；另用parked tick证suspend阻止flush中插帧，terminal后推进clock证in-flight finally不复活；`freeze→close`、恢复raw timer或双timer mutation必须红。 |
+| heartbeat：现有owner heartbeat与raw SSE／WS heartbeat实现并存，raw APIs仍由28点中的keepalive fallback与raw adapter承载（inventory `:80-86,123-126`） | owner唯一timer，保留`freeze`／`suspend`／terminal-close三态；generic与indexed pulse均进入同一serializer；删除raw heartbeat／block-tracking死分支。 | 仅降低概率 | 先在unpark对照推进N×interval并断言恰有N个keepalive，证明FakeClock驱动新owner timer；再保留Anthropic与Responses HTTP P6 regressions，以parked tick证suspend阻止插帧、terminal后不复活；`freeze→close`、恢复raw timer或双timer mutation必须红。 |
 
 ### 5.3 Terminal、finalize与composition出口
 
 | 边界单元与inventory证据 | 处置 | 当前闭合等级 | 升级所需behavior witness与mutation正控 |
 |---|---|---|---|
-| handler terminal／synthetic error：各vendor共21个直接handler `writeSynthetic`点，另有3个CC `[DONE]`点（inventory `:57-79,102-106`） | 所有post-owner terminal frames进profile `terminate`；active anchor在同一command先平衡，terminal后seal。pre-owner complete responses另域处理。 | 仅降低概率 | Anthropic direct／translate、CC direct／reverse、Responses HTTP、Gemini各从真实route造normal、H3与truncation；断言anchor stop如适用恰好一次且先于terminal、terminal一次、settle一次。逐handler恢复旧write mutation必须红。 |
+| handler terminal／synthetic error：各vendor共20个直接handler `writeSynthetic`点（22个总调用点扣除decorator转发1点与owner→raw fallback 1点），另有3个CC `[DONE]`点（inventory `:57-79,102-106`） | 所有post-owner terminal frames进profile `terminate`；active anchor在同一command先平衡，terminal后seal。pre-owner complete responses另域处理。 | 仅降低概率 | Anthropic direct／translate、CC direct／reverse、Responses HTTP、Gemini各从真实route造normal、H3与truncation；断言anchor stop如适用恰好一次且先于terminal、terminal一次、settle一次。逐handler恢复旧write mutation必须红。 |
 | `terminate`／`finalize`：52个`finalize`＋1个`terminate`adapter，共53点／6文件（inventory `:187-214`） | `terminate`决定并可发最后帧；`finalize`只等待seal与callback once，不直接发帧。收敛51个handler finalize调用到operation result的统一消费，但不以减少调用点本身作验收。 | 仅降低概率 | 真实route让terminal physical send pending并发两次finalize，断言terminal一次、callback一次、raw不被提前close；mutation令finalize发帧、双callback或先close raw必须红。 |
 | 外层composition roots：10点／5文件；内部factory chaining另4点（inventory `:155-185`） | 每个outer root创建profile、private raw emitter与owner，只向runner返回capability-shaped port。Anthropic落在`makeAnchoredSseSink`层；WS落在socket operation composition。 | 仅降低概率 | 对10个outer roots做真实route observer：streaming operation恰建一个owner、runner参数无raw capability、所有physical sends有command id；任一root mutation回传raw handle／sink必须被production bypass witness咬住。 |
 | raw handle供给：23个emission-relevant闭包／函数点／8文件；并非都应消失（inventory `:216-257`） | 保留raw adapter与socket lifetime composition持handle；Anthropic／CC／Responses／Gemini pumps、generation handler与mixed helper不持handle。 | 仅降低概率 | 逐root第一人称走查＋runtime adversarial runner：合法generation代码只能调用command port；mutation重新给pump传`stream`／`ws`并direct send，必须由command-id／wire-state oracle转红。静态参数扫描只作辅助。 |
@@ -477,7 +481,7 @@ per-command telemetry是诊断与长期趋势设施，不是边界验收oracle�
 
 ### 6.1 分类口径
 
-本节的三态定义如下：**语义不变**表示contract的可观察性质、授权事实与失败语义均不变，只是由新command／owner state承载；**措辞需扩展**表示既有方向与用户裁决不变，但旧API名、旧容器形状或contract适用对象不足以描述full command algebra；**语义变更**表示会改变被冻结的可观察要求或允许／拒绝集合，必须回用户重裁。逐条核对后，本RFC未发现必须进入第三态的条目；若评审证明下表任一“措辞需扩展”实际改变允许／拒绝语义，该项自动升级为open question，不得由实施者自行降级。
+本节的三态定义如下：**语义不变**表示contract的可观察性质、授权事实与失败语义均不变，只是由新command／owner state承载；**措辞需扩展**表示既有方向与用户裁决不变，但旧API名、旧容器形状或contract适用对象不足以描述full command algebra；**语义变更**表示会改变被冻结的可观察要求或允许／拒绝集合，必须回用户重裁。逐条核对后，C1～C11本身无一需要语义重裁；但评审发现anchor路径的forwarded／wire精确帧序不受C1～C11覆盖，而command cutover会改变它。用户已按§9.2 Q5接受该独立可观察变更，并保留Commit 4前的逐帧diff停门。若评审证明下表任一“措辞需扩展”实际改变允许／拒绝语义，该项仍自动升级为open question，不得由实施者自行降级。
 
 ### 6.2 一致性矩阵
 
@@ -495,17 +499,23 @@ per-command telemetry是诊断与长期趋势设施，不是边界验收oracle�
 | C10 mapping token生命周期 | 措辞需扩展 | 存放、登记、精确查询、同腿多块、stop成功释放、retreat沿用与missing mapping直接throw均不变。旧措辞把容器物理形状钉成`Map<LegToken,Map<upstreamIndex,...>>`且要求caller显式传`leg`给`writeBlockFrame`；新port让caller传owner验证的opaque leg／block handle，owner内部仍以`(leg, upstreamIndex)`或等价private registry精确查。command algebra吸收query／remap／release，且cardinality assertion补充state-corruption防线。若要改变“同腿多块并存”或missing-mapping throw才是语义变更，本RFC未提议。 | README C10将公共签名与物理容器改为性质描述，保留精确identity和lifecycle；plan-2／P3M旧`writeBlockFrame`步骤由新commands替代；cross-leg mapping oracle保留。 |
 | C11 provenance不无条件退化 | 措辞需扩展 | real provenance仍来自`beginLeg(kind, source)`，primary、hedge winner、continuation、recovery全覆盖；无active leg拒绝，绝不退化`legacy`。需增加owner-minted规则：real provenance从active leg＋mapping铸造，anchor provenance从private lease铸造，pre-response anchor可先于leg；caller只提交真实source或不可推导来源事实。终态不保留production legacy helper。 | README C11；plan-2 provenance section、三腿oracle与legacy唯一出现点guard；History detail同步command／lease来源。 |
 
-### 6.3 C3与C8的逐commit可满足性
+### 6.3 C1～C11之外的已冻结可观察量
+
+**Anchor路径的forwarded／wire精确帧序**——包括anchor close与相邻real start之间是否允许heartbeat插帧——今天由`buffered-anchor-golden`与`c0-live-anchored-direct-stream-golden`冻结，却不属于C1～C11。C2只要求`maxOpen<=1`且anchor stop先于real start；即使两者之间多一帧合法keepalive，C2仍可成立。C7只要求synthetic marker与forwarded／upstream轨归属，不规定synthetic帧相对real start的精确位置。因此不能把删掉那一拍heartbeat包装成C2／C7的“实现细节”。
+
+用户已裁决接受command cutover带来的该帧序变化，但要求把它登记为独立客户端可观察契约，并在Commit 4改变wire之前提交“变化前后逐帧diff预测”复核；golden更新发生在同一semantic commit，不能等后续审计commit再补记账。若实测diff超出已预测的close／real-start交织变化，停下回用户重裁，不得借已接受Q5吞并额外wire漂移。
+
+### 6.4 C3与C8的逐commit可满足性
 
 C3与C8在cutover中必须联锁，而不是一个为另一个让路。无anchor主腿由allocator得到identity mapping，owner阶段A允许profile builder返回原frame对象，所以wire golden可保持逐字节不变；continuation／recovery即使没有anchor也会得到non-identity mapping，必须remap，不能为过O-6而错误短路。每个commit的单向facade必须在进入新owner前保留producer intent，并让新owner成为唯一physical path；如果某commit需要新旧路径双发后再比较，就违反“一次sampling／一次physical emit”，该commit切分无效，必须重排而不能暂时放宽C8。
 
 O-6只证明无anchor主腿的字节不漂移，不证明anchor路径、mapping、provenance或command boundary正确；它必须与O-1／O-2和各command mutation共同使用。反向也一样：新owner行为witness全绿不授权重捕golden掩盖无anchor字节漂移。
 
-### 6.4 需要重裁的契约检查
+### 6.5 需要重裁的契约检查
 
-当前矩阵没有“语义变更”。已知需要更新的C2、C5、C6、C7、C9、C10、C11均分类为“措辞需扩展”，因为它们保留原可观察性质，只替换旧API／authority描述或扩大到已裁决复合形状。RFC评审必须逐项挑战该分类：若C10 opaque handle使caller无法表达冻结的同腿多块identity、C9 typed outcome改变既有允许／拒绝集合，或C8在某commit客观不可满足，则不得把它包装成措辞更新；应在§open questions新增醒目的“冻结契约语义变更，需用户重裁”，并停止进入实施计划。
+C1～C11矩阵没有“语义变更”。已知需要更新的C2、C5、C6、C7、C9、C10、C11均分类为“措辞需扩展”，因为它们保留原可观察性质，只替换旧API／authority描述或扩大到已裁决复合形状。Anchor精确帧序是矩阵外独立契约，已由Q5单独裁决，不能据此反推C2／C7语义已变。RFC评审仍必须逐项挑战分类：若C10 opaque handle使caller无法表达冻结的同腿多块identity、C9 typed outcome改变既有允许／拒绝集合，或C8在某commit客观不可满足，则不得包装成措辞更新；应新增醒目的冻结契约语义变更问题并停止实施。
 
-更小方案是只在README机械改旧method名，它会遗漏compound command、owner-minted provenance与capability profiles；更大方案是重写原keepalive carrier spec与全部ADR，但其中多数决策语义未变，会制造无意义双源。可被评审证伪的命题是：本表所有“措辞需扩展”均可在不改变既有behavior witnesses预期结果的前提下完成；只要某条旧witness的正确期望必须改变，该项就属于语义变更而非措辞更新。
+更小方案是只在README机械改旧method名，它会遗漏compound command、owner-minted provenance与capability profiles；更大方案是重写原keepalive carrier spec与全部ADR，但其中多数决策语义未变，会制造无意义双源。可被评审证伪的命题是：表内所有“措辞需扩展”均不改变对应C1～C11 behavior expectations；表外anchor精确帧序只允许Q5逐帧diff明确批准的变化。任何额外正确期望改变都必须重裁。
 
 ## 7. Cutover 计划：按 commit 组织
 
@@ -516,8 +526,8 @@ O-6只证明无anchor主腿的字节不漂移，不证明anchor路径、mapping�
 1. production每个operation只有**一个serializer、一个heartbeat owner、一次forwarded／History sampling、一次physical emit**；不存在旧新双写、双timer、owner与raw各采一次。
 2. 所有仍存在的旧API只可单向调用新owner语义；新command绝不回落旧raw writer。未迁consumer可走legacy facade，但facade的终点仍是同一个owner command serializer／validated emitter。
 3. 不允许半坏态落盘：不能出现一部分出口已按command更新lease／mapping，另一部分仍按旧ledger／mirror记账且两者可能分岔。无法原子迁移的共享state转换必须留在同一commit。
-4. `bun run typecheck`绿；隔离worktree运行`FORCE_COLOR=0 bun scripts/parallel-test.ts unit it http`全绿。已知对照快照是feature分支`2c339784`的6848 pass／0 fail，主线6845 pass／0 fail；数字口径均为unit＋it＋http、不含pty／e2e／前端，执行时以该commit实际runtime枚举为准，不用硬编码数量诱导删测试。
-5. 运行`exp/inter-block-anchor-allocator/byte-equivalence.sh`，在非4141端口启动自己的server并按PID精确停止；输出与`exp/inter-block-anchor-allocator/pre-change-wire.sse`逐字节`cmp`，即O-6无anchor主腿保持base `5c84a1e0`捕获的764-byte fixture。脚本的PID／hook marker归属门必须通过。
+4. `bun run typecheck`绿；隔离worktree运行`FORCE_COLOR=0 bun scripts/parallel-test.ts unit it http`全绿。基线必须锚定到实际entry commit `<sha>`、口径`unit+it+http`、并在Commit 0之前连跑N次确定性全绿；已观测的History V3性能、root-eslint-ignore超时族与state→foundation ratchet flakes必须先完成根因修复。单次6848／0只是点态结果，不能冒充确定性基线；执行时记录每次runtime枚举，不硬编码数量诱导删测试。
+5. 运行master `4f7a3989`后的`exp/inter-block-anchor-allocator/byte-equivalence.sh`：脚本默认捕获到`$WORK_DIR/current-wire.sse`并与tracked fixture执行`cmp`，一致打印`O-6 PASS`并退出0，不一致退出9；只有显式`RECAPTURE=1`才允许改写fixture，而本RFC cutover全程禁止该模式。脚本仍须在非4141端口启动自己的server、通过PID／hook归属门并按PID精确停止；O-6 fixture永不重捕。
 6. 本commit新增／迁移的behavior witness正样本为绿，目标production mutation为红；mutation未生效、正确样本过不了、或门预测不成立时**停下回报**。禁止手工补owner state、放宽判据、改fixture或把mutation全绿解释成实现正确。
 
 下文用“共同门”指以上六项，但每个commit条目仍明确本次额外终态与无害机制。
@@ -531,13 +541,14 @@ cutover只允许两个临时控制，均是production代码中的typed construct
 
 两个option的docstring与对应commit message必须同时写明生命周期，例如“Commit 2～6 enabled；Commit 7删除”。若实现拆分导致编号变化，两处一起改，不能让陈旧编号成为长期flag借口。不能采用“新port已挂但现在没人调用所以无害”；`reject`与单向facade分别给未授权调用和迁移调用一个可运行的显式行为。
 
-### 7.3 Commit 0 — 冻结基线、行为population与测试分型
+### 7.3 Commit 0 — 冻结legacy基线、旧缺陷characterization与测试分型
 
-- **目标：** 在改production前固定O-1／O-2／O-6、§5每类route witness骨架、command-id physical fault adapter，以及inventory snapshot；只加测试／fixture／observer，不改wire行为。
-- **文件面：** inventory的10个outer roots作为observer population；测试面92个fake constructs／40文件、57个sink API code-reference文件、65个raw factory calls／14文件先分类，不在本commit机械全改。
-- **终态不变量：** 共同门；旧production仍是唯一writer；所有新增gate在正确旧行为上可绿，并至少有一个test-only adversarial seam能复现“wire stop已写、owner lease仍open”的旧边界正控。
-- **验证：** O-6脚本；现有O-1／O-2；逐route正样本；fault adapter自测；对每个新gate做目标mutation与mutation-applied assertion。
-- **过渡态无害：** 零production接线、零新timer／sampling／writer。若任何计划中的witness在旧边界无法造出预期正控，停下修oracle设计，不进入Commit 1。
+- **入场条件：** 在Commit 0之前，先根因修复已观测的三族baseline flakes（History V3性能、root-eslint-ignore超时、state→foundation ratchet），再把实际entry commit `<sha>` 的`unit+it+http`连跑N次并记录为确定性全绿；任何一次失败都不得开始Commit 0。`anchor-remap-single-authority` AST guard的预算已在master `200aba8b`放宽到30s，检测面与正控未变，这只修false-red、不豁免其余flakes。
+- **目标：** 在不改production的前提下冻结O-1／O-2／O-6 legacy行为、现有goldens、warmup／AUQ／non-streaming route基线、test population分类，以及旧边界“wire stop已写、owner lease仍open”的**red characterization**。只搭handle-level physical recorder并用已知direct-send seam自检探测深度；不要求尚不存在的command id／profile／cardinality目标架构正样本转绿。
+- **文件面：** inventory的10个outer roots作为未来observer population；测试面92个fake constructs／40文件、57个sink API code-reference文件、65个raw factory calls／14文件先分类，不机械全改。
+- **终态不变量：** 共同门中production单写、typecheck、确定性全套与O-6成立；旧production仍是唯一writer。目标架构production witnesses仅登记预期与future activation commit，不在Commit 0伪装可达。
+- **验证：** 修复后的O-6脚本默认temp capture＋内建`cmp`＋fixture blob未变；现有O-1／O-2；legacy goldens；physical recorder direct-send自检；旧缺陷characterization必须稳定红，正确legacy样本稳定绿。
+- **过渡态无害：** 零production接线、零新timer／sampling／writer。若旧缺陷characterization造不出或baseline不能确定性全绿，停下修oracle／flake，不进入Commit 1。
 
 ### 7.4 Commit 1 — 引入profile、command types、private authorization model与disabled core
 
@@ -565,15 +576,15 @@ cutover只允许两个临时控制，均是production代码中的typed construct
 
 ### 7.7 Commit 4 — 原子迁移Anthropic indexed lifecycle并重塑M1
 
-- **目标：** 一次性切换anchor injector、live reconcile、buffered boundary／retreat、primary／hedge／continuation／recovery real-block legs到`beginLeg`、`openAnchor`、`pulseAnchor`、`openRealBlock`、`closeAnchorBeforeRealAndOpenBlock`、`writeRealBlockFrame`与`pulseOpenBlock`；移除caller index／provenance铸造和旧block passthrough。
-- **文件面：** inventory的3个`stopFrame`调用点、driver 5个generation writes、injector／live decorator、Anthropic composition root与allocator／mapping core；共享driver涉及的测试同步迁移。
-- **终态不变量：** 共同门；C1～C7、C9～C11均由新commands承载；close→real-start一个callback；authorization／observation双层；同wire index cardinality<=1；`wireTorn` compound返回`closedThenWireTorn`且不推进frontier。
-- **验证：** O-1／O-2／O-3／O-9、live FakeClock、三腿×allocate／remap mutation、cross-leg mapping、cardinality production mutation、wire-torn四断言、P6 heartbeat mutations及O-6。
+- **目标：** 一次性切换默认on-demand／`empty_text` anchor injector、`enveloped_ping` envelope-only prelude、live reconcile、buffered boundary／retreat，以及primary／hedge／continuation／recovery real-block legs到`beginLeg`、`openMessageEnvelope`、`openAnchor`、`pulseAnchor`、`openRealBlock`、`closeAnchorBeforeRealAndOpenBlock`、`writeRealBlockFrame`与`pulseOpenBlock`；C3／C4／C10 mapping lifecycle及删除caller offset算术明确属于本RFC，不再留给M2～M8。
+- **文件面：** 补全inventory的allocation-port population（`allocateAndWriteAnchor` 1、`closeOpenAnchor` 3、`beginLeg` 5、`withAllocatedRealBlock` 0、`writeBlockFrame` 0）、driver 5个generation writes、injectors／live decorator、Anthropic composition root与allocator／mapping core；共享driver及对应golden tests在本commit同步迁移。
+- **终态不变量：** 共同门；C1～C7、C9～C11均由新commands承载；四生产腿完成mapping登记／查询／释放，O-1完整可达；close→real-start一个callback；authorization／observation双层；同wire index cardinality<=1；`wireTorn` compound返回`closedThenWireTorn`且不推进frontier。
+- **验证：** Commit 4开始前必须通过Q5逐帧diff停门；O-1／O-2、live FakeClock、三腿×allocate／remap mutation、cross-leg mapping、可达的cardinality production registration mutation、wire-torn四断言、P6 heartbeat mutations及O-6。O-3／O-9只做机制准备，真实gap feature仍待后续M2～M8开门。独立oracle先绿后，在本semantic commit同步更新确有设计性变化的anchor goldens；O-6 fixture永不重捕。
 - **过渡态无害：** 这是不可拆的共享state切换commit。M1保留owner close authority、client-gone／wire-torn classification、13站点调查证据、heartbeat clock修复与partial diagnostic；重塑`openAnchorIndex`为lease、五命令port为full indexed algebra、close＋real-start为compound；删除caller-minted envelope、legacy mirror写法与源码presence门冒充behavior门。若单commit门不可满足，停下重排内部实现但不提交半迁状态。
 
 ### 7.8 Commit 5 — 原子迁移terminal、finalize与Responses WS socket协调
 
-- **目标：** 21个handler `writeSynthetic` terminal points、3个`[DONE]`写点及normal terminals改走`terminate`；51个handler finalize调用收敛为typed operation result消费；post-owner WS error／truncation经owner并返回socket close intent；control-with-inflight先协调active owner。
+- **目标：** 20个handler `writeSynthetic` terminal points（22个总调用点扣除decorator转发1点与owner→raw fallback 1点）、3个`[DONE]`写点及normal terminals改走`terminate`；51个handler finalize调用收敛为typed operation result消费；post-owner WS error／truncation经owner并返回socket close intent；control-with-inflight先协调active owner。
 - **文件面：** inventory 28 synthetic points中的terminal类、3 `[DONE]`、53 termination calls／6文件、9 direct transport中的mixed WS helper与in-flight control、所有vendor direct／reverse handlers。
 - **终态不变量：** 共同门；active anchor先平衡、terminal exactly once、`recordForwarded→settle`、finalize callback once；pre-owner writer与post-owner terminal capability物理分型；WS owner只拥有operation、socket composition拥有close。
 - **验证：** 各vendor normal／H2／H3／truncation真实routes；terminal pending×并发finalize；WS stream-error／truncation及坏JSON／超长／并发create-with-inflight mutations；O-6。
@@ -589,7 +600,7 @@ cutover只允许两个临时控制，均是production代码中的typed construct
 
 ### 7.10 Commit 7 — 删除legacy surface、私有化raw并重建测试四类oracle
 
-- **目标：** 删除`ClientSink.write`generation surface、named synthetic APIs、`WireBlockAllocationPort`、caller envelope factory、legacy anchor fields／bridge、facade及其flag；raw types／factories移出production exports。完成测试surface迁移。
+- **目标：** 删除`ClientSink.write`generation surface、named synthetic APIs、`WireBlockAllocationPort`、`DownstreamDeliverySession.writeScaffold`（当前零production调用者）、caller envelope factory、legacy anchor fields／bridge、facade及其flag；raw types／factories移出production exports。完成测试surface迁移。
 - **文件面：** production旧API definitions与guards；测试92个fake constructs／40文件、57个compile references、65个raw factory calls／14文件。
 - **终态不变量：** 共同门；production只有profile-shaped port；test分为四类且边界明确：owner-backed array adapter、raw transport字节／observation unit、owner→adapter production seam、test-only adversarial旧边界positive control。
 - **验证：** package/import/type guards双控；完整test inventory重跑；明确检查`allocation-outside-owner-control`仍能通过test-only seam在旧模型造分裂，不能改成合法owner调用后继续自称正控；raw heartbeat tests退役后，P6 production `freeze→close`／parked-tick mutations承担正控；全套与O-6。
@@ -624,7 +635,7 @@ cutover只允许两个临时控制，均是production代码中的typed construct
 | 把owner effect classifier扩展为所有vendor streaming protocol的完整状态机 | 本RFC只冻结影响generation authority的block、keepalive、terminal、operation envelope与明确generic effects。把每个vendor全部event payload、字段约束和客户端状态机都纳入，会把“谁有权emit”与“完整协议验证器”混成一个职责；classifier正确性仍由per-format fixtures／SDK oracle校准。 | 长期协议健康度进入`docs/todo/deferred-backlog.md`；每个vendor可另立spec，不能阻塞本RFC承重effects。 |
 | 为pre-generation writers建立统一`CompleteResponseEmitter` | AUQ、warmup、真正pre-operation WS rejection共享“零generation owner”性质，但协议、transport、ctx存在时点与socket policy不同。统一成一个大接口容易让pre-owner capability泄漏回post-owner operation；本RFC只用observer锁各自互斥。 | 可记录到`docs/todo/deferred-backlog.md`作为减少direct writer分散的独立重构；不得与`GenerationDeliveryOwner`合并。 |
 | 把transport writer移入独立进程／受控RPC | 当前威胁模型只要求合法production供给不把raw handle交给runner，不证明恶意同进程代码无法重新取得handle。进程隔离会引入IPC授权、backpressure、failure recovery与部署边界，是另一项架构决策。 | 如用户提升威胁模型，另立ADR＋RFC；当前internal-tool security posture不要求该强度。 |
-| inter-block anchor allocator原计划M2～M8本体 | M2～M8负责三腿real-block allocation／remap、continuation frontier、gap anchor lifecycle、feature gate、多gap和后续收口；本RFC负责先把emission authority、command algebra、composition root和行为oracles塑成它们可依赖的边界。两者目标相关但不可混写：先完成并合并本RFC cutover，再基于新port重写M2～M8计划并实施。 | `docs/plan/2026-07-27-inter-block-anchor-allocator/`的新修订计划；旧步骤中依赖`ClientSink.write`／`WireBlockAllocationPort`的内容需标记被本RFC supersede，contract与O-1～O-9继续继承。 |
+| inter-block anchor allocator原计划M2～M8的剩余feature本体 | 本RFC范围已扩大，明确包含C3／C4／C10 mapping lifecycle接线：primary、hedge、continuation、recovery三腿迁入`openRealBlock`／`writeRealBlockFrame`，删除caller offset算术并让production registration mutation可达。M2～M8仍范围外的只有gap anchor lifecycle、feature gate开门与multi-gap行为；它们消费本RFC已接好的mapping authority。先完成并合并本RFC cutover，再按新port实施这些剩余feature。 | `docs/plan/2026-07-27-inter-block-anchor-allocator/`的新修订计划；旧M2～M4 mapping步骤由本RFC supersede，M5～M8中gap lifecycle／开门／multi-gap保留并重锚；O-1～O-9继续继承。 |
 | 原计划P7多轮回传translate腿缺口 | P7要实测Anthropic→CC／Responses翻译是否保留空anchor块及对应上游校验；它是入站回传／translation行为，不是downstream generation owner authority。 | 继续归`plan-7-multi-turn-replay.md`；本RFC不预判2腿×2跳结果，也不删除其α／β分叉。 |
 | 原计划P8真客户端端到端验收与文档后果 | P8包含真SDK、真Claude Code >300s、多轮回传、ADR D2与Q5公式作废等allocator全链验收。RFC cutover只提供前置边界witness，不能冒充feature已交付。 | 继续归`plan-8-acceptance-and-docs.md`；在M2～M8完成后执行。 |
 | 改变non-streaming JSON pipeline | non-streaming没有streaming anchor lifecycle；只需observer证明它不创建stream owner，不应为了接口统一把它强塞command port。 | 现有per-format non-streaming codec／route contract；若未来统一response emission，另立spec。 |
@@ -662,17 +673,14 @@ cutover只允许两个临时控制，均是production代码中的typed construct
 - **推荐：** A。它是本RFC composition-root互斥的gatekeeper test，不是可选功能扩张。
 - **不裁决会怎样：** 阻塞Commit 0 witness population冻结及最终“所有inventory出口已处置”的声明；不阻塞纯类型草案，但不应进入实现合并。
 
-#### Q4. 是否接受扩展History `wirePartialDelivery.operation`后端SSOT schema？
-
-- **为什么需人裁：** compound commands、phaseReached与`closedThenWireTorn`超出现有`OwnerOperation + cause + committed`，选择会改变持久History格式、后端public types及ui-v4 re-export contract。项目无向后兼容负担，但公共／持久契约仍需用户确认。
-- **选项A：** 加性扩展`wirePartialDelivery`为command detail：canonical command、phaseReached、outcome、expected／actual effect、state before／after及高基数detail引用；旧三字段保留或由新字段可投影后一次迁移删除。后果是History能回答partial发生在哪段，并与telemetry同源。
-- **选项B：** 保持`wirePartialDelivery`简表，另在generation operation detail中存完整per-command records，以引用关联。后果是避免单字段膨胀，但新增一条History子结构与读取路径。
-- **推荐：** B。richest-data-flow要求完整明细，而`wirePartialDelivery`适合作为稳定摘要；command population独立detail可覆盖成功、mismatch与partial，不把只在失败时存在的字段变成全量事件容器。
-- **不裁决会怎样：** 阻塞Commit 6 History／telemetry接线与相关backend SSOT tests；不阻塞Commit 0～5，但Commit 5只能暂存request-scoped observations，不能定稿持久schema。
-
 ### 9.2 已裁决、不得重开的事项
 
-以下不是open questions：full command algebra胜出；public port按capability分型；classifier仍保留作intent／effect交叉验证；`wireTorn`只禁止推进frontier且compound command close-only返回`closedThenWireTorn`；delivery只依赖codec实现并由composition注入的窄profile；authorization与observation双层分离；M1代码在分支上被重塑而非丢弃或原样冻结。评审若发现既有裁决内部矛盾，应把证据交主会话，不得由implementer默选另一方案。
+以下不是open questions：full command algebra胜出；public port按capability分型；classifier仍保留作intent／effect交叉验证；`wireTorn`只禁止推进frontier且compound command close-only返回`closedThenWireTorn`；delivery只依赖codec实现并由composition注入的窄profile；authorization与observation双层分离；M1代码在分支上被重塑而非丢弃或原样冻结。
+
+- **Q4 History schema已裁决采用方案B：** `wirePartialDelivery`保持稳定摘要`operation + cause + committed`；另在generation operation detail中保存完整per-command records，包含command、phaseReached、outcome、expected／actual effect、state before／after及高基数identity。Commit 6同步后端SSOT schema、ui-v4 re-export与相关tests，不再等待Q4。
+- **Q5 anchor精确帧序已裁决接受变更，但保留前置停门：** command cutover允许改变anchor路径forwarded／wire精确帧序，包括消除close与real-start之间的heartbeat交织；这不改C2／C7。未来执行会话在进入Commit 4前必须产出旧golden→预测新序列的逐帧diff，逐项标明保留／删除／移动及理由，并与Q5批准范围核对；缺diff或实测超出预测即停止，不得进入Commit 4。Golden期望随真正改变wire的semantic commit同步更新，不等后续审计补记账。
+
+评审若发现既有裁决内部矛盾，应把证据交主会话，不得由implementer默选另一方案。
 
 ### 9.3 实施前必须调查的缝
 
@@ -682,36 +690,38 @@ cutover只允许两个临时控制，均是production代码中的typed construct
 2. HTTP／WS generation runner实际可返回的typed operation result是什么；WS close intent产生时是否已具备keep-open、code与reason，socket composition在哪个时点消费。
 3. 每个indexed command调用时，producer实际持有的format-native data、opaque leg／block handle和builder是否已export；owner能从state推导的字段不得重复让caller提交。
 4. Responses output-item boundary的精确effect taxonomy；必须从HTTP／WS renderer、terminal fixtures与真实client oracle推导，不按名称猜event集合。
-5. production mutation能否稳定构造authorization双命中；若当前M2～M8未接线导致不可达，何时从test-only辅助正控升级为真实registration mutation。
+5. production authorization双命中mutation的精确注入点：本RFC已纳入三腿mapping lifecycle接线，因此Commit 4终态必须可从真实registration path构造双命中并在pre-write拒绝；调查只决定改哪一个production registration primitive，不再决定“是否可达”。若完成mapping接线后仍不可达，必须点名是单一拒重复key registry从结构上消除了该状态，还是witness未触达；前者改用registry insert-conflict production mutation，后者停下修oracle。
 6. per-command rich records最合适的request-scoped owner与settle冻结点：`PipelineInfo`摘要、generation operation detail或ctx snapshot；必须保证success／failure同源且settle前冻结。
 7. Commit 2单向legacy facade能否表达所有28个synthetic APIs与terminal calls而不双采样；任何无法表达的consumer必须与相邻commit原子合并，不能反向调用legacy writer。
 8. raw factory test imports如何迁到test-only entrypoint，确保65个raw factory tests仍覆盖transport bytes／observation而production barrel不泄漏capability。
 
-### 9.4 不裁决时的默认停点
+### 9.4 裁决与调查的可达停点
 
-Q1与Q4分别在Commit 6前停；Q2在Commit 9前停且默认不改ADR；Q3在Commit 0 witness冻结前停。调查项在对应implementation plan落签名前必须有file:line或PoC证据；没有证据就停下回报具体缺口，不把“待调查”悄悄变成实现者自由裁量。
+Q1在Commit 6前停；Q2在Commit 9前停且默认不改ADR；Q3在Commit 0 witness冻结前停；Q4已裁决、不再设停点；Q5的必经触发点是Commit 4开始前的逐帧diff审查，缺材料不得进入该commit。
+
+实施计划必须列出调查项→停点表：第1／2／7项在Commit 2前；第4项在Commit 3前；第3／5项在Commit 4前；第6项在Commit 6前；第8项在Commit 7前。未来执行会话到达每个commit kickoff时，先读取该行证据槽；没有file:line或PoC结论就把已完成部分与具体缺口回报主会话并结束本轮，不生成猜测签名、不把调查降为实现者自由裁量。
 
 ## 10. 验证策略总表
 
 ### 10.1 双向判别原则
 
-每条会阻断cutover的oracle都必须同时证明两个方向：**false-green control**把目标production缺陷注入后必须转红，且先证明mutation确实生效；**false-red control**在已知正确、协议允许的相邻样本上必须为绿。静态扫描、类型门和telemetry只作辅助，不能替代真实production behavior witness。下表“归属commit”沿用§7编号；“本RFC关系”区分本边界cutover必须交付与后续allocator／P7／P8才交付。
+每条会阻断cutover的oracle都必须同时证明两个方向：**false-green control**把目标production缺陷注入后必须转红，且先证明mutation确实生效；**false-red control**在已知正确、协议允许的相邻样本上必须为绿。探测深度必须与被测对象对齐：裁决“这个HTTP响应／socket上的全部physical bytes”时，recorder必须包裹composition root拿到的真实`stream`／`ws` handle并位于raw emitter之下；注入owner的raw adapter看不见绕过owner的direct send，只能用于envelope／observation单元。所有FakeClock否定断言还必须先有unpark活性对照，证明新owner timer真实触发。静态扫描、类型门和telemetry只作辅助，不能替代真实production behavior witness。下表“归属commit”沿用§7编号；“本RFC关系”区分本边界cutover必须交付与后续allocator／P7／P8才交付。
 
 ### 10.2 汇总验收清单
 
 | ID | 断言什么 | 层级 | 怎么测 | mutation正控（防false-green） | false-red对照 | 本RFC关系／归属commit |
 |---|---|---|---|---|---|---|
-| R-1 | 每个generation frame有且只有一个owner command id、一次sampling、一次physical emit；无command id发送为零 | producer全序／HTTP＋WS | 真实四vendor HTTP roots与Responses WS root，fault raw emitter记录validated envelope、sampling与send全序 | 在owner外恢复direct `stream.writeSSE`／`ws.send`或raw第二serializer，必须出现无id／重复／错序 | 合法pre-owner AUQ／warmup／connection-cap writer不创建owner，仍能完整响应且不被误报 | 本RFC必须；Commit 0／2／5／7 |
-| R-2 | intent × classified effect × profile compatibility在external write前匹配 | producer全序 | 每profile从真实route发送generic、keepalive、terminal与适用indexed effects，记录attempt count | 把block stop送`emitGeneric`、terminal送generic或structured parse降generic，必须pre-write `CommandEffectMismatchError` | ordinary metadata／合法opaque payload在声明允许的profile上成功发送；unknown不等于一律拒绝 | 本RFC必须；Commit 1／3／4 |
+| R-1 | 每个generation frame有且只有一个owner command id、一次sampling、一次physical emit；无command id发送为零 | producer全序／HTTP＋WS | recorder包裹composition root实际`stream`／`ws` handle，位于raw emitter之下；先通过test-only direct-send seam自检recorder可见绕过owner的发送，再跑四vendor HTTP roots与Responses WS的zero／exactly-once断言。注入owner的raw adapter不用于本判定 | 在owner外恢复direct `stream.writeSSE`／`ws.send`或raw第二serializer，必须被handle-level recorder记为无id／重复／错序 | 合法pre-owner AUQ／warmup／connection-cap writer仍完整响应；recorder自检先看见已知direct send，防zero断言平凡为真 | 本RFC必须；Commit 0／2／5／7 |
+| R-2 | intent × classified effect × profile compatibility在external write前匹配 | producer全序 | 每profile从真实route发送generic、keepalive、terminal与适用indexed effects；转发腿另由不复用共享谓词的O-2状态机／wire golden／真SDK检查实际wire | 除wrong-command mutations外，直接破坏producer与classifier共用的frame谓词，使其漏一种合法block shape；O-2／wire／SDK oracle必须转红 | ordinary metadata与合法opaque payload成功发送；注入全新、可解析但未登记的vendor event，断言照常送达、`actualEffect=unknown`且detail可见 | 本RFC必须；Commit 1／3／4 |
 | R-3 | anchor close的wire stop、lease清除、heartbeat／diagnostic更新同command原子发生 | producer全序 | 真实Anthropic live consumer先交付real block再开gap anchor，按actual lease index走非法generic stop与合法close，联合wire O-2＋owner snapshot | 恢复legacy generic passthrough，必须复现“wire closed、lease still open”或duplicate stop | 合法real block stop同字节但按mapping command处理，不被误判anchor；错误index样本明确标成未触达active lease | 本RFC必须；Commit 0／4 |
-| R-4 | close→real-start compound不可被heartbeat插入，阶段A失败零wire，partial phase诚实 | producer全序／FakeClock | parked heartbeat＋compound command；fault emitter分别在validation、stop后、real-start后失败 | 把compound拆成两个enqueue，或把第二段validation移到首写后，必须出现插帧／partial误报 | 无active anchor时compound仍可合法open real block；terminal-only close不被强迫open real | 本RFC必须；Commit 4 |
+| R-4 | close→real-start compound不可被heartbeat插入，阶段A失败零wire，partial phase诚实 | producer全序／FakeClock | 先在不park的对照中推进N×interval并断言恰有N个keepalive，证明clock驱动新owner timer；再park heartbeat运行compound command，并在validation、stop后、real-start后注入失败 | 把compound拆成两个enqueue，或把第二段validation移到首写后，必须出现插帧／partial误报 | 无active anchor时compound仍可合法open real block；terminal-only close不被强迫open real；unpark活性对照防timer零触发假绿 | 本RFC必须；Commit 4 |
 | R-5 | authorization registry同wire index至多一个record，mapping／lease而非ledger授权pulse | producer全序／owner state | production registration mutation造anchor＋real或两个real双命中；另造ledger有记录但mapping已释放后pulse | 破坏allocator／registration复用index；把`pulseOpenBlock`改读ledger，必须pre-write红 | 跨leg相同upstream index映到不同wire index合法；released mapping后的`none`不是失败 | 本RFC必须；Commit 4；若当前production接线不可达先辅助正控，M2后补真实mutation |
 | R-6 | capability-shaped ports：non-Anthropic拿不到indexed methods，delivery不import concrete codec | 类型／架构 | compile fixtures覆盖四non-Anthropic common-green、Anthropic indexed-green、union narrow；import guard带违规样本 | factory退化大接口或delivery加concrete codec import时，unused `@ts-expect-error`／guard必须红 | 正确profile与合法narrow compile-green；不以`as`绕过作为“正确样本” | 本RFC辅助门；Commit 1／7，不计behavior闭合 |
 | R-7 | terminal exactly once、active anchor先平衡、finalize callback once、WS close intent后执行 | producer全序／HTTP＋WS | 各vendor direct／reverse normal、H2、H3、truncation；terminal send pending时并发finalize | 恢复handler尾写、post-owner `sendErrorAndClose`、finalize发帧或双callback | pre-owner rejection合法独立；无anchor terminal不额外生成stop；keep-open WS合法不close | 本RFC必须；Commit 5 |
-| R-8 | control-with-inflight不会绕过active WS owner或让idle timer误杀 | WS integration／FakeClock | parked Responses WS generation打开operation，再发送坏JSON、超长、并发create并推进idle clock | 恢复direct send／close／arm timer旧路径，必须出现orphan authority或活operation被close | 真正pre-operation坏输入与connection-cap rejection仍可直接由socket composition处理 | 本RFC必须；Commit 5 |
+| R-8 | control-with-inflight不会绕过active WS owner或让idle timer误杀 | WS integration／FakeClock | 先在无park、keep-open对照中推进N×interval并断言N个app keepalive／预期idle activity，证明clock接到新owner与socket timer；再park generation、打开operation，发送坏JSON、超长、并发create并推进idle clock | 恢复direct send／close／arm timer旧路径，必须出现orphan authority或活operation被close | 真正pre-operation坏输入与connection-cap rejection仍可直接由socket composition处理；unpark活性对照防timer零触发假绿 | 本RFC必须；Commit 5 |
 | R-9 | per-command schema在成功／失败同口径，compound partial可诊断，四层持久round-trip | 遥测／History | 同command驱动success、preflight、wire partial；比较canonical key集合，读raw／hourly／daily／cumulative与History detail | 失败路径改用raw function／route string，或只存`committed`不存phase，必须产生额外key／诊断缺口 | outcome／phase／stateAfter本应不同而允许不同；telemetry缺失不反判wire错误 | 本RFC辅助诊断门；Commit 6，不计behavior闭合 |
 | R-10 | legacy facade归零且四类test oracle保留，旧边界positive control未被“合法化”掉 | 类型／测试架构＋behavior正控 | inventory AST重跑；test-only adversarial seam仍能造旧分裂，新production route拒绝 | 把`allocation-outside-owner-control`改走合法owner或删adversarial seam，coverage gate必须红 | owner-backed array adapter与raw transport byte units合法存在，不被零命中guard误杀 | 本RFC必须；Commit 7 |
-| R-11 | 无anchor主腿wire逐字节等价 | 字节golden | 非4141隔离server运行`byte-equivalence.sh`并与764-byte `pre-change-wire.sse`做`cmp` | 改SSE event／data／id／retry、frame顺序或terminal bytes，必须diff | continuation／recovery或有anchor流允许按mapping改变index，不被错误纳入O-6 | 沿用原O-6；本RFC每commit共同门 |
+| R-11 | 无anchor主腿wire逐字节等价 | 字节golden | 非4141隔离server运行master `4f7a3989`后的`byte-equivalence.sh`；默认temp capture并内建`cmp`，须打印`O-6 PASS`、退出0，且fixture blob未变；本RFC禁止`RECAPTURE=1` | 改SSE event／data／id／retry、frame顺序或terminal bytes，脚本必须退出9 | continuation／recovery或有anchor流允许按mapping改变index，不被错误纳入O-6 | 沿用原O-6；本RFC每commit共同门 |
 | R-12 | 设计性anchor golden更新前，独立wire state与SDK oracle先证明正确 | producer全序＋golden | Commit 7状态先跑O-1／O-2／真SDK，再在独立Commit 8 recapture并复跑 | 注入duplicate index、orphan delta、悬挂block，必须先由O-1／O-2红，不能只靠新golden自洽 | 合法新anchor顺序在独立oracle绿后允许golden变化；O-6 fixture不重捕 | 本RFC golden纪律；Commit 8 |
 | R-13 | warmup fake／drop、AUQ、non-streaming与stream owner互斥 | route behavior | 真实route断言完整响应一次、upstream／owner population符合边界 | 提前创建owner、双写或漏event mutation必须红 | upstream／ctx存在但client wire未commit的AUQ仍可零owner；non-streaming正常零stream owner | 本RFC gate；Commit 0，Q3待裁 |
 
@@ -719,7 +729,7 @@ Q1与Q4分别在Commit 6前停；Q2在Commit 9前停且默认不改ADR；Q3在Co
 
 | 原oracle | 本RFC处理 | 说明与归属 |
 |---|---|---|
-| O-1 wire index单调、无复用、健康流无跳号 | **需修改并沿用** | owner command port替代旧`runResponseBufferedSink + sink`接线，但producer全序断言不变；本RFC Commit 4先锁boundary，M2～M8完成所有real legs后才算完整feature验收。 |
+| O-1 wire index单调、无复用、健康流无跳号 | **需修改并沿用** | owner command port替代旧`runResponseBufferedSink + sink`接线，但producer全序断言不变；本RFC Commit 4纳入primary／hedge／continuation／recovery三腿mapping lifecycle并完成all-real-legs接线，因此O-1的allocator／remap部分在本RFC内成为完整硬门。后续M2～M8只在gap lifecycle／feature gate／multi-gap开门后复用O-1验证新场景。 |
 | O-2 block协议状态完整性 | **沿用** | max-open、delta／stop target、终局空集合完全不变；本RFC R-3／R-4／R-7直接使用，是anchor authority的主behavior oracle。 |
 | O-3 `real@0 → gap-anchor@1 → real@2` | **仍待后续补** | 本RFC只让command algebra能够表达该序列，不负责M6 feature gate与gap injection开门；归M2～M8中的gap lifecycle实施。Commit 4可用受控owner sequence验证机制，但不能宣称O-3 feature已交付。 |
 | O-4 真Anthropic SDK累积顺序与wire一致 | **仍待P8，RFC可靶向复用** | 本RFC若改变anchor／terminal wire，Commit 8前应跑一条靶向SDK oracle防错误recapture；原P8完整真SDK验收仍不属于本RFC。 |
@@ -739,7 +749,7 @@ Q1与Q4分别在Commit 6前停；Q2在Commit 9前停且默认不改ADR；Q3在Co
 
 - **不证明恶意同进程代码无法重新取得transport handle。** Composition反转证明合法production供给不把`stream`／`ws`／raw emitter交给generation runner，不是进程沙箱。JavaScript reflection、未来新import或主动破坏模块边界仍可造旁路；要证明更强性质需独立writer进程／受控RPC与capability token。
 - **不证明client完整收到send promise所代表的字节。** C9仍以首次external attempt为不可逆commit；promise成功最多证明本地transport接受，promise失败也不证明远端零接收。中途断开只能诚实记录partial delivery。
-- **不证明classifier天然正确。** 显式command提供independent intent，但actual effect仍依赖per-format classifier。Builder与classifier若共享同一个错误假设，自洽测试会一起绿；必须用独立fixtures、真实SDK／client或协议状态机校准。本文列出的effect taxonomy也会随vendor协议演进而增长。
+- **不证明classifier天然正确，也不证明producer intent与classifier相互独立。** Proxy自合成emission的业务intent可独立于payload分类，但上游转发腿常以与classifier同族的frame谓词选择command；共享谓词漏形态时，两侧会共因判绿。Builder／producer predicate与classifier若共享错误假设，自洽测试会一起绿；必须用不复用该谓词的O-2状态机、wire golden、独立fixtures或真实SDK／client校准。本文列出的effect taxonomy也会随vendor协议演进而增长。
 - **不证明pre-owner complete-response writer的协议正确性。** AUQ、warmup fake／drop、connection-cap与真正pre-operation WS rejection各有自己的route／wire oracle；“零owner”只证明authority domain互斥，不证明响应帧顺序、字段或客户端接受度正确。
 - **不证明任意transport teardown都能补齐wire。** Client abort、process shutdown、socket failure或内核断开可在anchor open时截断；owner应记录真实active authorization与partial attempt，不能伪造stop已到达client。Terminal command只能在transport仍允许attempt时尽力平衡。
 - **不证明History等于客户端实际完整接收。** Observation在attempt前记录是为了不丢partial事实；History表示proxy尝试发送的richest track，不是delivery receipt。`committed`／`partial`字段必须保留，UI／诊断不得把forwarded record解读为远端ack。
@@ -763,7 +773,7 @@ Q1与Q4分别在Commit 6前停；Q2在Commit 9前停且默认不改ADR；Q3在Co
 | AUQ fallback SSE | upstream／ctx可能存在，但client wire未commit且delivery owner未创建 | operation observer零owner；完整SSE一次；settle顺序正确 |
 | warmup fake／drop | driver／owner前同步返回独立完整响应 | Q3 test纳入并通过；缺test时保持“仅降低概率” |
 | non-streaming JSON | 没有streaming anchor lifecycle | route observer零stream owner且响应一次 |
-| test raw adapter | 只为byte／fault oracle注入owner | 仅test entrypoint，不export production capability；不构成production边界证明 |
+| test raw adapter | 注入owner时只用于validated envelope／observation／transport-byte单元；不得裁决绕过owner的physical uniqueness | 仅test entrypoint，不export production capability；physical-uniqueness recorder必须包裹composition root的真实`stream`／`ws` handle并位于raw emitter之下 |
 
 ### 11.4 不可接受残余
 
