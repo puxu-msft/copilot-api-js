@@ -10,7 +10,7 @@ RFC 在 docs/rfc/2026-08-03-generation-emission-command-algebra/design.md。
 
 ## 启动前的硬 gate（照做，理由在 HANDOVER）
 
-1. **不要直接写代码。** 当前状态是「RFC 定稿、实施未开工」，卡在用户裁决「是否起执行」（HANDOVER T1）。没有该裁决前不动 src/。
+1. **不要直接写代码。** T1 已由用户裁决（2026-08-03）：**先补计划层再执行**。当前工作是 T4——按 skill `large-refactor` §5 的三层结构写 plan + prompts；**plan 定稿并过评审之前不动 `src/`**。
 2. **复验而非采信，并注意有两个基线。** HANDOVER 头部区分了「文档落地基线（master）」与「代码事实基线（未合并分支 feat/inter-block-anchor-allocator @ 2c339784）」——**硬事实表里的 file:line 全部锚在后者，在 master 上复算会一条都对不上**。接手第一件事是重新核对 git log、git status、分支与 worktree 列表。
 3. **若已获准起执行**：入场条件在 RFC §7.1——在**当时的** entry commit 上连跑 ≥15 次
    `FORCE_COLOR=0 bun scripts/parallel-test.ts unit it http` 且次次全绿。旧读数不顶替，任一次失败都不得开始 cutover。
@@ -22,9 +22,8 @@ RFC 在 docs/rfc/2026-08-03-generation-emission-command-algebra/design.md。
 
 ## 第一步（按用户裁决分支）
 
-- 裁决 = 直接起执行  → 读 RFC §7（Commit 0–8）与 §9.4 停点表，从 Commit 0 开始；Commit 0 之前先过入场条件。
-- 裁决 = 先补计划层  → 走 HANDOVER 的 T4：按 skill large-refactor §5 三层结构写 plan + prompts。
-- 尚未裁决          → 把 HANDOVER 的 T1 摆给用户，不要自行选一条往下走。
+**已裁决（2026-08-03）：先补计划层。** 走 HANDOVER 的 T4——按 skill `large-refactor` §5 三层结构写 plan + prompts，产出经评审后再单独决定何时开工。
+（另两条分支已作废，留此备查：「直接起执行」= 读 RFC §7 与 §9.4 停点表从 Commit 0 开始；「尚未裁决」= 把 T1 摆给用户。**别再照它们走。**）
 
 ## 批准状态
 
