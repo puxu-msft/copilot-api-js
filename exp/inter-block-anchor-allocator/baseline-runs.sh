@@ -25,7 +25,11 @@
 #
 # Env:
 #   OUT          required, output directory (created; must not already hold run-*.log)
-#   RUNS         number of runs, default 15
+#   RUNS         number of runs, default 15; must be >= MIN_RUNS
+#   MIN_RUNS     floor, default 15 -- a batch smaller than this cannot report green.
+#                Lower it deliberately when smoke-testing this script itself; never
+#                for a gate. RUNS=0 previously reported "0/0 green" with rc 0, which
+#                is a criterion that passes on an empty population.
 #   ALLOW_DIRTY  set to 1 to run against a dirty tree; the dirt is still recorded
 #                and every log is marked DIRTY. Do not use this for a gate.
 #   STOP_ON_FAIL set to 0 to keep going after a red run, default 1
@@ -34,10 +38,19 @@ set -uo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 RUNS="${RUNS:-15}"
+MIN_RUNS="${MIN_RUNS:-15}"
 if [ "$#" -gt 0 ]; then CMD=("$@"); else CMD=(bun scripts/parallel-test.ts unit it http); fi
 CMD_DISPLAY="$(printf '%q ' "${CMD[@]}")"
 ALLOW_DIRTY="${ALLOW_DIRTY:-0}"
 STOP_ON_FAIL="${STOP_ON_FAIL:-1}"
+
+case "$RUNS" in ''|*[!0-9]*) printf 'baseline-runs: RUNS must be a non-negative integer, got %s\n' "$RUNS" >&2; exit 2 ;; esac
+case "$MIN_RUNS" in ''|*[!0-9]*) printf 'baseline-runs: MIN_RUNS must be a non-negative integer, got %s\n' "$MIN_RUNS" >&2; exit 2 ;; esac
+if [ "$RUNS" -lt "$MIN_RUNS" ]; then
+  printf 'baseline-runs: RUNS=%s is below MIN_RUNS=%s; a batch this small cannot report green.\n' "$RUNS" "$MIN_RUNS" >&2
+  printf 'A zero-length batch would otherwise print "0/0 green" and exit 0 -- green on an empty population.\n' >&2
+  exit 2
+fi
 
 if [ -z "${OUT:-}" ]; then
   printf 'baseline-runs: set OUT to an output directory\n' >&2
@@ -79,23 +92,47 @@ for i in $(seq 1 "$RUNS"); do
     printf '=== stdout+stderr follows\n\n'
   } > "$log"
 
+  before_tree="$(git -C "$REPO" status --porcelain)"
   start=$(date +%s)
   # No pipe into tee: tee's status would mask the suite's. Append, then read back.
   ( cd "$REPO" && FORCE_COLOR=0 "${CMD[@]}" ) >> "$log" 2>&1
   rc=$?
   end=$(date +%s)
+  after_tree="$(git -C "$REPO" status --porcelain)"
+
+  # A per-run header snapshot taken before the run says nothing about what the
+  # tree looked like during it. Someone editing a tracked file mid-run used to
+  # leave the batch reporting green against a commit it never actually measured.
+  drift=0
+  if [ "$before_tree" != "$after_tree" ]; then
+    drift=1
+    failed=$((failed + 1))
+  fi
 
   {
     printf '\n=== exit code    : %d\n' "$rc"
     printf '=== finished     : %s\n' "$(date -Is)"
     printf '=== elapsed      : %ds\n' "$((end - start))"
+    printf '=== tree drift   : %s\n' "$([ "$drift" = 1 ] && echo YES || echo no)"
+    if [ "$drift" = 1 ]; then
+      printf '%s\n' "$after_tree" | sed 's/^/=== after        : /'
+    fi
   } >> "$log"
 
   tail_line="$(grep -a 'parallel-test' "$log" | tail -1)"
-  printf 'run %02d  rc=%d  %ds  %s\n' "$i" "$rc" "$((end - start))" "${tail_line:-<no summary line>}"
+  printf 'run %02d  rc=%d  %ds  drift=%s  %s\n' \
+    "$i" "$rc" "$((end - start))" "$([ "$drift" = 1 ] && echo YES || echo no)" "${tail_line:-<no summary line>}"
+
+  if [ "$drift" = 1 ]; then
+    printf 'baseline-runs: the working tree changed during run %02d; this run measured no single commit.\n' "$i" >&2
+    if [ "$STOP_ON_FAIL" = "1" ]; then
+      printf 'baseline-runs: stopping. Log: %s\n' "$log" >&2
+      exit 1
+    fi
+  fi
 
   if [ "$rc" -ne 0 ]; then
-    failed=$((failed + 1))
+    if [ "$drift" != 1 ]; then failed=$((failed + 1)); fi
     if [ "$STOP_ON_FAIL" = "1" ]; then
       printf 'baseline-runs: run %02d exited %d; stopping. Log: %s\n' "$i" "$rc" "$log" >&2
       exit 1
@@ -104,7 +141,11 @@ for i in $(seq 1 "$RUNS"); do
 done
 
 if [ "$failed" -ne 0 ]; then
-  printf 'baseline-runs: %d of %d runs failed\n' "$failed" "$RUNS" >&2
+  printf 'baseline-runs: %d of %d runs failed or drifted\n' "$failed" "$RUNS" >&2
   exit 1
+fi
+if [ "$RUNS" -lt 1 ]; then
+  printf 'baseline-runs: refusing to report green on an empty batch\n' >&2
+  exit 2
 fi
 printf 'baseline-runs: %d/%d green at %s; artifacts in %s\n' "$RUNS" "$RUNS" "${head_sha:0:8}" "$OUT_DIR"
