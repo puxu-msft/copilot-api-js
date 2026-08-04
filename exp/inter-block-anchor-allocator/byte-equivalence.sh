@@ -120,6 +120,20 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
+# Which tree this gate measured. Without it the answer is unobtainable after the
+# fact: the capture is pure SSE bytes and the EXIT trap kills the server before
+# anyone could read /proc/<pid>/cwd. A plan step that told an executor to derive
+# the tree "from the O-6 capture" was therefore unexecutable, and the only
+# remaining options were to assert "I cd'd correctly" -- which the same step
+# forbade -- or to edit this script from inside a cutover commit.
+# `cd` does not move it: REPO comes from this file's own location, so the gate
+# measures whichever tree holds the copy you invoked.
+printf 'repo=%s\n' "$REPO"
+printf 'server_entry=%s\n' "$REPO/packages/cli/src/main.ts"
+printf 'head=%s tree=%s\n' \
+  "$(git -C "$REPO" rev-parse --short HEAD 2>/dev/null || echo '<not a repo>')" \
+  "$([ -n "$(git -C "$REPO" status --porcelain 2>/dev/null)" ] && echo DIRTY || echo clean)"
+
 XDG_DATA_HOME="$WORK_DIR" NODE_ENV=production bun run "$REPO/packages/cli/src/main.ts" start --port "$PORT" > "$LOG" 2>&1 &
 pid=$!
 printf '%s\n' "$pid" > "$PID_FILE"
@@ -177,7 +191,7 @@ if [[ ! -f "$BASELINE" ]]; then
 fi
 
 if cmp -s "$CAPTURE" "$BASELINE"; then
-  printf 'O-6 PASS: captured wire is byte-identical to %s\n' "$BASELINE"
+  printf 'O-6 PASS: captured wire is byte-identical to %s (repo=%s)\n' "$BASELINE" "$REPO"
   exit 0
 fi
 
