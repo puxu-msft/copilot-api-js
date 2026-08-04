@@ -603,7 +603,7 @@ production 旧 API population **持续为零**；telemetry **不新增 emission 
 | `getDeliverySessionForAllocationPort` | `delivery/session.ts:95` | C 集 |
 | `createDownstreamDeliverySession` | `delivery/session.ts:100` | C 集 construction，**只留 composition-root allowlist** |
 | `OwnerRawSink` | `delivery/types.ts:12` | raw production export（M1 引入） |
-| `ClientSink.write*` generation surface | `types.ts:747` 起 | 含 `write`／`writeSynthetic`／`writeKeepalive`／`writeSyntheticEnvelope`／`writeAnchor`（`:783`） |
+| `ClientSink.write*` generation surface | `types.ts:747` 起 | 含 `write`／`writeSynthetic`／`writeKeepalive`／`writeSyntheticEnvelope`。⚠️ **`writeAnchor` 不在 `ClientSink` 上**——它是 `OwnerRawSink` 的成员（`delivery/types.ts:13`），随该 interface 一并删除 |
 | 架构守卫既有位置 | `tests/architecture/` | T6.6 的 import guard 归属目录；同目录已有 `package-boundaries`／`circular-deps-ratchet`／`anchor-remap-single-authority` |
 
 ### 本 commit 的门
