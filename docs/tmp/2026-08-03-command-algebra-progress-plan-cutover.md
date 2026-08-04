@@ -24,8 +24,24 @@ session_id: 046d7295-e5ce-470b-a284-c721c6ce1cb8
 - [x] `traceability-check.py` rc=0 —— **整改轮复跑仍 rc=0**。⚠️ 它已被修成双向（`6ce493e5`），**会咬悬空引用**：本轮新增 T0.10／T0.11／T4.0a–d 时它当场报 `cited by no matrix row`，补进矩阵 §6 后才转绿。**这不是形式，是它第一次真的抓到东西。**
 - [x] **整改轮（2026-08-04）**：两路评审的 5 blocker + 7 major 已修，见下「本轮修了什么」
 - [x] **执行方复评整改（2026-08-04）**：无 blocker、4 major。R-1 由协调者在脚本层修（`e00b7aff`），R-2／R-3／R-5 + minor R-4 + nit R-6 已修。**锚点抽查 44/56 零错**，`writeAnchor` 那处自报修正被独立确认。
-- [ ] **判据证伪那一路的复评未回** —— 可能还有一批。
+- [x] **判据证伪复评（5 blocker / 5 major / 1 minor）已整改** —— 见下「判据证伪复评整改」。两条不归我：checker 的 suffix-ID 盲区（`aee088d7`）与 `design.md:5,46` 陈旧基线（`4a35e745`）由协调者修。
+- [ ] 🔴 **`design.md:597,750` 的 `red characterization` 未改** —— **这是唯一「必须改冻结 RFC 才能开工」的项**，见 plan §0.4b 第 3 项，已挂进 C0 门表。走 open question 机制交主会话／用户，**不是 T8.1 的回填**。
+- [ ] **复评**：本轮改动需再过一轮。
 - [ ] **未决裁决**：plan §11 状态表——#2／#3（Q1 与 §4.8）／#5（R-5 归属）／#6（`OwnerTerminalDecision`）。**#6 的触发点本轮从 Commit 4 提前到 T1.6**。
+
+## 判据证伪复评整改（第三轮）修了什么
+
+- **T0.11／T6.5 恒存判据（blocker）** —— 新加的门自己没过检验，**与上轮 T0.10 同型**。seam 直接 import `OwnerRawSink`（`:20`）与 `createDownstreamDeliverySession`（`:31`），而 T6.2／T6.4 的正事就是删它们 → **正确迁移会被自己的门判红**。改成「identity + 迁移关系槽位」，C4（T4.15）填 replacement，C6 判「仍存在且仅 test 可达 **或** 有具名 replacement」，并补第二条 false-red 对照（按计划退役必须绿）。
+- **#5／#6 触发点仍过晚（两个 blocker，同型）** —— **可达 ≠ 在分叉前可达**。#5 候选②要改的正是 C1 的内容，而触发点挂在 Commit 2 门表——到那时 C1 已提交并通过 invariant，只剩「改写已落盘的 C1／重排历史／接受缺门」三条都没授权的路。两者都前移到 **Commit 1 kickoff**，Commit 2 那行降为「复核已被贯彻」。
+- **#6 框错了（blocker 的实质部分）** —— 上一版说两者「处理同一件事」，**实测不成立**：`ownerFailureOutcome`（`driver.ts:933`）把**任意** owner command 失败都送进 `classifyOwnerFailure`，调用点 `:886,1018,1106,1525,1583` 全是 `beginLeg`、`:1060` 是 `close-anchor-before-real`。**它答「request 怎么 settle」，`TerminalEmissionResult` 答「terminal frame 发了没」——正交轴，不是同一判别函数的两个名字。** 据旧框法，候选①会**静默丢掉非-terminal 的 caller action**、候选③覆盖不了两个轴。已补**候选④**（保留正交职责 + 只桥接 terminate-failure 那一格 + exhaustive mapping／顺序测试防双 settle），并标明**先由 architect-advisor 出重框提案**（职责边界属架构合同）。
+- **T0.6 三份 SSOT 相反（blocker）** —— plan／矩阵已改绿口径，**冻结 RFC `:597,750` 仍写 red**。新增 §0.4b 写死「谁在哪个 commit 改」，并挂进 C0 门表：**未改则 C0 不得开工**。**语义澄清**：`red characterization` 的 red 指「被观察到的产品缺陷仍在」，**不修饰测试退出码**——上一版按字面读成后者，才产生终态互斥。
+- **T0.1 的 JUnit 来自另一次运行（blocker）** —— `refreshTimings()`（`:61-70`）是 `--update` 时**另起**的一次 run，真正的门运行在 `:120` 用**裸 `bun test`**、无 reporter。**磁盘 vs 一次 refresh JUnit 只证明 `discover()` 当时完整**，证不了 `balance()` 之后／spawn／那 15 次没漏文件——**而 plan 自己的正控恰恰打在这一层**。已改为「每次门运行的 shards 各自产 JUnit + 每次双向比集合」，正控移到 `balance()` 之后。
+- **`MIN_TESTS` 口径（major）** —— 两边**现在是相反的**：Bun JUnit `tests` **含** skipped/todo，`parallel-test.ts:148-167` 的 `tests` = `passSum+failSum`（**不含**）。冻结为 **`executed = tests - skipped`**；这也顺带吸收了「主树有 native 产物而隔离树没有、那 18 条会 skip」的差——原始总数两处不同，`executed` 才稳定。
+- **T5.1 双腿（major）** —— 只承诺不保证：History 若从 bounded accumulator 读，`cap+1` 之后已经没了。冻结两条独立腿 + **第二条 mutation**（History 复用 truncated buffer 必须红）——只有第一条时「两条腿其实是一条」会全绿交付。
+- **T7.3 `scripts/` 一刀切（major，我上轮的直接后果）** —— 该目录四类混住，只有两类是 production；`test-timings.json` 自称 perf hint、`update-circular-deps-baseline.ts` 只写 tests baseline，而 **C7 的正事就是删 fixture、随后同步 timings 是合法测试审计**。改为逐文件枚举 + 「新增文件必须显式归类」+ production 类脚本的正控。
+- **T2.4（minor，上轮遗留）** —— 自死锁典型表现是 promise 永不 settle 而非同步 throw，「确认它当场炸」不可判。改为 barrier + 短确定性 deadline + queue-state probe。
+
+**变异复跑（读 FAIL 消息，不只看 rc）**：`T4.0d→T4.0z` 报 `matrix cites plan task T4.0z, which p.md does not define` **且** `T4.0d is cited by no matrix row`；注入 `R-99` 报 `invented acceptance id`；未变异副本与真实文档均 rc=0。**协调者的 checker 修复对 suffix ID 与 extra ID 两个方向都咬得住。**
 
 ## 本轮（复评整改）修了什么
 
