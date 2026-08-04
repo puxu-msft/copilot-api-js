@@ -23,7 +23,34 @@ session_id: 046d7295-e5ce-470b-a284-c721c6ce1cb8
 - [x] 回填矩阵 `traceability.md`，消掉全部 `_TBD_`
 - [x] `traceability-check.py` rc=0 —— **整改轮复跑仍 rc=0**。⚠️ 它已被修成双向（`6ce493e5`），**会咬悬空引用**：本轮新增 T0.10／T0.11／T4.0a–d 时它当场报 `cited by no matrix row`，补进矩阵 §6 后才转绿。**这不是形式，是它第一次真的抓到东西。**
 - [x] **整改轮（2026-08-04）**：两路评审的 5 blocker + 7 major 已修，见下「本轮修了什么」
-- [ ] **复评**：整改后需再过一轮（`multi-round-before-consensus`）。**未决项清单见 plan §11 的状态表**：#2／#3／#5／#6 未裁，各有必经触发点。
+- [x] **执行方复评整改（2026-08-04）**：无 blocker、4 major。R-1 由协调者在脚本层修（`e00b7aff`），R-2／R-3／R-5 + minor R-4 + nit R-6 已修。**锚点抽查 44/56 零错**，`writeAnchor` 那处自报修正被独立确认。
+- [ ] **判据证伪那一路的复评未回** —— 可能还有一批。
+- [ ] **未决裁决**：plan §11 状态表——#2／#3（Q1 与 §4.8）／#5（R-5 归属）／#6（`OwnerTerminalDecision`）。**#6 的触发点本轮从 Commit 4 提前到 T1.6**。
+
+## 本轮（复评整改）修了什么
+
+- **R-2 门跑在哪棵树** —— 原来只是 T0.10 一次性仪式（哨兵还要「再撤除」、`rg` 全文 3 处、C1–C8 无一要求重证），**而失效是逐次调用发生的**。升为**每 commit 共同门第 ④ 条**，九张门表各加一行。能这么写是因为 `e00b7aff` 让脚本真的打 `repo=`／`server_entry=`／`head=`／`tree=`。<br>**判据只能取 `repo=` 行，不能取进程 cwd**——脚本从不 `cd`，写法 B 下 cwd 与被测树无关。这条是评审的附带观察，我原本会写成「cwd 或可执行路径」，那在写法 B 上给错答案。
+- **R-3 用刚改过的尺子量基线** —— T7.3 刚实测证伪「只扫 `src/` 不够」，Commit 0 的 invariant 却还是 `src/ packages/`，**缺 `scripts/`**；而 T0.1②／T0.11② 的 junit 枚举最自然的实现就是改 `scripts/parallel-test.ts`。**处置不是在两处各写一份路径清单**（两份必漂）——新增 §0.4a 定义一次 MANIFEST，Commit 0 invariant 与 T7.3 都引用它。另写明：若 junit 真需要动 `scripts/`，那是**先于 Commit 0 的独立基础设施改动**，不能夹进 cutover 任何 commit。
+- **R-5 #6 触发点太晚** —— T1.6 就把三态写进类型层加穷尽性断言，**形状那时已定死**，T2.7／T3.5／T4.10 全建在上面。触发点前移到 T1.6，Commit 4 停门第 4 项降为兜底。**理由不只是「早点裁更好」**：拖到 C4 才裁，候选①要连带推翻三个 commit 的类型层工作，**成本栏会被沉没成本污染**——与上一轮 #4「merge 有冲突」（实测零冲突）是同一种病。
+- **R-4（minor，但差点丢掉一个探测器）** —— C4 门表的 R-3 行还写着「T0.6 在此转绿」，那是**重写前**的口径；新口径下 T0.6 在 C0 就是绿的、C4 必须**反转**它才继续绿。照旧口径干 → 测试红 → **在十几个 mutation 同时在跑的 C4，删掉一条「过时的 characterization」看起来非常合理**，而它正是「authority 发布了但没生效」的探测器。已改 C4 门表 + 把反转动作写进 T4.5 的实现列。
+
+## 在途意图
+
+- **对派活指令的一处反驳被采纳**：协调者上一轮要求「三个脚本各自怎么绑根要逐个写清」，我据此判定 `traceability-check.py`／`q1-locations.sh` **本来就该留在 master**（它们审的是文档，文档在主线上），而非跟着 `$TREE` 走。复评确认这个判断成立。**教训是：把「逐个写清」执行成「逐个绑到 $TREE」才是新错**——绑根的正确答案取决于每个脚本审的是什么，不是统一动作。
+- **F-7 仍只做一半**：`prompts/` 本轮仍不写（第三层另派），纪律已并入 §0.5，文首写实「`prompts/` 尚未存在、本文即最终派发件」。
+
+## 已作废的路子
+
+- **想用 `fd` 找 golden 文件** —— 本机没装，用 `rg -l`。
+- **想按已知 API 名去数 emission 面** —— 漏过 owner allocation-port 整类。改为引用 T0.7 闭包输出。
+- **想把 `commandPortActivation` 当既有符号给 `file:line`** —— 实测 `src/` 零命中。
+- **想用 `withAllocatedRealBlock`／`writeBlockFrame` 现有签名当终态签名** —— §3.4 要 opaque handle，现有签名是迁移起点。
+- **想在锚点表保留「树」列** —— merge 后只会误导（该列此前把「行号只查了一棵树」与「符号只在一棵树有」用同一标记表达）。
+- **想给 T0.6 加 `skip`／`todo` 让共同门变绿** —— 会让 R-3 的 C0 段假绿。
+- **想在 §11 #5 只写「若评审认为构成漂移则上诉」** —— 无触发点等于永不发生。
+- **想把 T0.10 的取证写成「从 O-6 capture 取 server 的 cwd／可执行路径」** —— **物理不可执行**：capture 是纯 SSE 字节，`trap cleanup` 在返回前就杀了进程。已改为读脚本新打的 provenance 行。
+- **想在 T7.3 与 Commit 0 invariant 各写一份 production 路径清单** —— 两份必漂（本目录已因「同一事实两处并存」栽过）。改为 §0.4a 定义一次。
+- **想把 R-2 的门写成「断言进程 cwd 落在 `$TREE` 下」** —— 脚本从不 `cd`，写法 B 下 cwd 与被测树无关，会给出错误答案。只能取 `repo=`。
 
 ## 本轮（整改）修了什么 —— 只记判断，改动本身看 git log
 
@@ -39,18 +66,7 @@ session_id: 046d7295-e5ce-470b-a284-c721c6ce1cb8
 
 **新提 #6**（本轮唯一新增待裁）：`OwnerTerminalDecision`（M1 带进来的，三份文档零命中）与 Commit 4 的 `TerminalEmissionResult` 是**竞争抽象**。T3.5 让实施者映射「原散落的提前返回」，但合并后它们**已经被 `classifyOwnerFailure` 收敛了**——照旧描述干会造出第二个 terminal 分类器。
 
-## 在途意图
+## 在途意图（上一轮，保留）
 
 - **F-7 只做一半是有意的**：本轮**没有**写 `prompts/`（第三层另派），但把它该承载的提交纪律 + 进度文件要求并进了 plan §0.5，并在文首把「`prompts/` 尚未存在、本文即最终派发件」写实。**Commit 4 的 checkpoint 约定单独强调**——16 个 task 同属一个 semantic commit、中途不产生 commit，是全 plan 唯一「中断即全丢」的结构。
 - **两处评审建议未采纳，理由记在这里**：①「把 R/O/task 收敛成结构化 manifest 再生成 Markdown」——方向正确但属工具重构，超出本轮整改范围，且会与正在用的 `traceability-check.py` 撞车；②「plan 只引用 machine-readable acceptance row、不复制判据」——本轮已把 T4.10 漏掉的逐 handler mutation 补回，但**彻底去重复需要先有那个 manifest**，同①。两条都该记进 backlog 而非本轮硬塞。
-
-## 已作废的路子
-
-- **想用 `fd` 找 golden 文件** —— 本机没装（`fd: command not found`），用 `rg -l` 代替。
-- **想按已知 API 名去数 emission 面** —— HANDOVER 记的本轮已犯错误（漏掉 owner allocation-port 整类）。plan 改为引用 T0.7 的闭包输出，四集成员一律「以闭包输出为准，别照抄本表」。
-- **想把 `commandPortActivation` 当既有符号写进删除清单并给 `file:line`** —— 实测 `src/` 零命中。改为「先确认存在再删，不存在就回报」。
-- **想用 `withAllocatedRealBlock`／`writeBlockFrame` 的现有签名当终态签名** —— §3.4 明确终态应暴露 opaque handle，现有签名是迁移起点。
-- **想把两树行号「按固定偏移换算」** —— 已随 merge 作废；教训仍成立（偏移不是常数，`client-sink.ts` 同文件内就有 +9 与 +11 两种）。
-- **想在锚点表保留「树」列** —— merge 后它只会误导：那一列此前把「行号我只查了一棵树」和「符号只在一棵树有」用同一个标记表达，两者后果完全不同（评审 F-5 正是这个）。
-- **想给 T0.6 加 `skip`／`todo` 让共同门变绿** —— 见上，会让 R-3 的 C0 段假绿。
-- **想只在 §11 #5 写「若评审认为构成漂移则上诉」** —— 无触发点等于永不发生，`downgrading-a-gate-needs-a-reachable-trigger` 的教科书形态。
