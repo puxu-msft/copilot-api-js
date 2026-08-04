@@ -2,7 +2,7 @@
 
 > 状态：草案，待主会话／用户确认 open questions 后进入实施计划。
 >
-> 设计基线：代码树 `/home/xp/src/copilot-api-js/.worktrees/anchor-alloc`，分支 `feat/inter-block-anchor-allocator`，HEAD `854421d4`。本文承载已定稿边界设计、两轮评审与后续用户裁决；不重开已裁决的全量 command algebra 路线。
+> 设计基线：**master**（2026-08-04 起）。⚠️ **本行原写「代码树 `.worktrees/anchor-alloc`，分支 `feat/inter-block-anchor-allocator`，HEAD `854421d4`」——那棵树已于 `8125f123` merge 进 master，该分支不再是权威基线**；照旧文走会与 `cutover-plan.md`／`traceability.md` 相反。本文正文中的 `file:line` 写于合并前，**引用前请按 master 复算**（`cutover-plan.md` 的锚点表已逐条重锚，可作交叉参考）。本文承载已定稿边界设计、两轮评审与后续用户裁决；不重开已裁决的全量 command algebra 路线。
 
 ## 0. 摘要与规范用语
 
@@ -43,7 +43,7 @@
 
 截至 `854421d4e9765491f840e4daba9f42a36127fd3f`，production范围为 `src/**/*.{ts,tsx}`、排除测试。独立 inventory 使用两种原理交叉核对：完整 `rg` 清单后逐处确认receiver类型，以及TypeScript AST枚举property calls后按symbol定义归类；两者均得到 **10 个 `ClientSink.write` 调用点／4 个production文件**，另有 **1 个 owner→raw `OwnerRawSink.write` physical调用点**。完整inventory还核实了synthetic API、`[DONE]`、direct transport、composition roots、termination、raw-handle supply与测试面；复现命令、正样本对照和逐点清单见 `/home/xp/src/copilot-api-js/docs/tmp/2026-08-03-emission-surface-inventory.md:15-429`。本文只引用该inventory已交叉验证的数字，不从设计估算补造总数。
 
-这些数字描述迁移表面，不是范围裁剪依据。M1已落实现保留在 `feat/inter-block-anchor-allocator` 上，本次cutover是在该基线上重塑边界，而不是从零重写，也不是保持M1不动。
+这些数字描述迁移表面，不是范围裁剪依据。M1已落实现**已于 2026-08-04 merge 进 master（`8125f123`）**，不再保留在 `feat/inter-block-anchor-allocator` 上；本次cutover是在**合并后的 master**基线上重塑边界，而不是从零重写，也不是保持M1不动。（用户 2026-08-04 重裁，取代此前「M1 留分支由 cutover 重塑」；理由与实测见 `HANDOVER.md` 的已裁决表。）
 
 ## 2. 目标架构、依赖方向与唯一 choke point
 
