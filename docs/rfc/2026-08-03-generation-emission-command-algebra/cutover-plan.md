@@ -117,7 +117,9 @@ O-6 PASS: captured wire is byte-identical to <baseline> (repo=<被测树>)
 
 > **为什么这条必须是门而不是 task**：T0.10 只在 Commit 0 建立判据；**若不进每 commit 共同门，Commit 1～8 就没有任何一步要求重证**，而上面四种失效方式在每个 commit 都能重新发生。
 
-第 ② 条即 **R-11／O-6**，第 ④ 条是它的树向绑定；**本文各节的「门」表只写 id，不重复这四段。** 另外每个 commit 结束还须满足 §7.1 的两条状态断言：本 commit 已激活的 witness 正样本绿、production mutation 红、false-red 对照绿。
+第 ② 条即 **R-11／O-6**，第 ④ 条是它的树向绑定；**本文各节的「门」表只写 id，不重复这四段。**
+
+⚠️ **这四条门管的是 suite 终态，不管 mutation probe 的退出码。** 本文各处「mutation 必须红」指的是**隔离运行的探针**——它们本就该非零退出，**不受共同门约束**（详见 §0.4c）。把「全绿」推广到探针会把全部正控判成违规。 另外每个 commit 结束还须满足 §7.1 的两条状态断言：本 commit 已激活的 witness 正样本绿、production mutation 红、false-red 对照绿。
 
 ### 0.3b `baseline-runs.sh` 的三个硬约束（T0.1 会撞上）
 
@@ -232,6 +234,30 @@ FROM=$(git -C "$TREE" rev-parse HEAD^)       # 它的父 commit
 
 ⚠️ **收口趟必须真的重跑，不能引用开发趟的结果**。差别不只是 `head=`：提交动作本身可能带进未预期的文件（`git add` 的 pathspec 写宽了），而开发趟的绿证明不了这一点。
 
+#### 🔴 证据落盘位置 —— 不写清则「收口趟 `tree=clean`」不可达
+
+**三条要求在朴素读法下数学上互斥**（实测确认，别以为是措辞问题）：
+
+1. T0.1 的 `OUT=docs/tmp/…` 是**相对路径** → `baseline-runs.sh:105-107` 解析成 `$REPO/$OUT` ⇒ 15 份 `run-*.log` 落在 **`$TREE` 内**；
+2. `byte-equivalence.sh:135` 的 `git status --porcelain` **计未跟踪文件**（`/tmp` 一次性仓库实测：未跟踪的 `out/run-1.log` 使 porcelain 输出 `?? out/` ⇒ `tree=DIRTY`）；
+3. §0.4b 收口趟要求 `tree=clean`。
+
+**执行者最可能的动作，正是本节想避免的那条**：删掉判据 3，或删掉那批最贵的证据。
+
+**处置：证据随它所证明的那个 commit 一起提交**（已实测走得通——`/tmp` 探针里 `git add -- src/a.ts out/run-1.log` 后 porcelain 为空、`tree=clean`）：
+
+| 证据 | 归谁提交 | 落点 |
+|---|---|---|
+| **T0.1 的 15 份 `run-*.log`** | **前置基础设施那个 commit**（它早于 Commit 0，且 entry sha 由它确定——见本节下方相位归属） | `docs/tmp/<date>-entry-runs/` |
+| 各 commit 的门输出、mutation 记录、审计表 | **该 commit 自己**（与 `src/` 改动同一 commit，用显式 pathspec 分别 `git add`） | `docs/tmp/` 或 plan 指定处 |
+| 进度文件 | 随每个 commit（§0.5） | `docs/tmp/…-progress-<slug>.md` |
+
+**因此收口趟的 `tree=clean` 是可达的**：该 commit 该带的东西都已在 commit 里，工作区自然干净。**若收口趟发现 `tree=DIRTY`，那是真信号**——有东西该提交而没提交，或有不该产生的产物。
+
+⚠️ **`docs/` 在 §0.4a 的排除表里**，所以提交这些证据**不会**让 production 判据变红——两条判据互不干扰，这是有意的。
+
+⚠️ **`baseline-runs.sh` 拒绝混批次**（`OUT_DIR` 已有 `run-*.log` 即 rc=2）：重跑必须换 `OUT` 目录，**且旧批会原样留在盘上、脚本不打作废标记**。**旧批必须当场手工标注作废**（在其目录内写一个 `SUPERSEDED.md`，注明被哪个 sha 的哪一批取代），否则后来者会看到两批日志而无法判断哪批有效——**这正是 entry sha 变更后最容易出事的地方**（见下方相位归属：旧 sha 那批**已作废**）。
+
 ---
 
 ### 0.4c T0.6 的退出语义 —— **三份 SSOT 已对齐（2026-08-04），此处只留口径**
@@ -277,7 +303,7 @@ FROM=$(git -C "$TREE" rev-parse HEAD^)       # 它的父 commit
 | id | 先写什么失败测试 → 预期怎么红 | 实现什么 → 预期怎么绿 |
 |---|---|---|
 | **T0.1** | **入场条件，不是测试。** 🔴 **本条依赖一件尚不存在的基础设施，见右栏——先建它，别硬跑。**<br>**① `MIN_TESTS` 不能从待测命令自己取**（`baseline-runs.sh:23-25` 逐字点名的假绿：selector 悄悄缩窄，「实测」出 6800，下限也冻成 6800，此后每次都与自己一致）。<br>**② 口径必须先定死：`MIN_TESTS` 比的是 `executed = tests - skipped`，不是 JUnit 的 `tests`。** 两边口径**现在是相反的**——Bun JUnit 的 `<testsuites tests=N>` **含 skipped／todo**，而 `parallel-test.ts:148-167` 把 `tests` 定义为 `passSum + failSum`（**不含 skipped**）。**照 JUnit 总数取 floor，正确状态必然过不了**：仓库现有整文件 `describe.skip`、native `skipIf`、`test.todo`；且 **native 产物在主树存在而在新建隔离树天然没有**，那批测试在 `$TREE` 会 skip——**同一 commit 在两处的 `tests` 数不同，`executed` 才稳定**。 | 🔴 **前置基础设施（本 task 无法绕过，也不得夹进 cutover 任何 commit —— 见 §0.4a）**：<br>**`parallel-test.ts` 当前不为门运行产出 file identity**。它的 JUnit 只存在于 `refreshTimings()`（`:61-70`，`--update` 时**另起一次**独立 run），而真正的门运行在 `:120` 用**裸 `bun test`** 起 shards、无 reporter，`:148-167` 只聚合 pass/fail 总数。<br>⚠️ **因此「磁盘 glob vs 一次 refresh JUnit」只能证明 `discover()` 当时完整**——它**证不了** `balance()` 之后、bucket spawn、以及那 15 次实际运行没有静默漏 shard／漏文件。**而 plan 自己的正控恰恰是「让某个 shard 静默少跑文件」**，用另一次运行的证据给这次运行背书，正是前几轮反复在堵的形态。<br>**要做的**：让**每一次**门运行的实际 shards 各自产 JUnit，runner 内合并 file identity；**每次**都与独立磁盘 manifest 双向比集合，缺一文件即 rc≠0，并**分别输出 `executed` 与 `skipped` 两数**。<br>**正控**：在 **`balance()` 之后、spawn 之前**从某 bucket 删一个文件 → 必须报出**缺失的文件名**（打在 `discover()` 上的正控抓不到这一层）。<br>**false-red 对照**：整文件 skip、native 不可用而 skip、`todo` 文件——实测 Bun JUnit **仍为它们输出 file-level `<testsuite>`**，故「被发现」成立、合法为绿。<br>
-🔴 **但「另记 skipped 数」不够——必须逐次核对 skipped 的 identity set**：只比数量时，**把一条 runnable test 改成 skip、同时另一条 skip 改回 runnable，总数不变而 floor 被悄悄降低**。判据是**每次运行的 skipped test identity 集合**与冻结集合相等；不等时必须报出**具体是哪几条变了**，再逐条 disposition（`freeze-hit-set-not-zero-hits`）。<br>
+🔴 **但「另记 skipped 数」不够——必须逐次核对 skipped 的 identity set**：只比数量时，**把一条 runnable test 改成 skip、同时另一条 skip 改回 runnable，总数不变而 floor 被悄悄降低**。判据是**每次运行的 skipped test identity multiset**与冻结集合相等；不等时必须报出**具体是哪几条变了**，再逐条 disposition（`freeze-hit-set-not-zero-hits`）。<br>**identity key 定义**（缺任一项都会把不同的 case 混成一条）：`file` + `classname` + `name` + **`ordinal`**（同名 case 在同文件内的出现序号——参数化与模板名会产生同名项，只用前三项会把它们折叠）。**用 multiset 不用 set**，理由同上。<br>
 **mutation**：把任意一条 runnable test 改成 `skip` → 必须报出**该条的 identity**（只比 executed 数的版本会因为 floor 是 `>=` 而放过它）。<br>
 ⚠️ **native 那批要具名，不能混进「正常 skip」当背景噪声**：`history-search` 的 `.node` 产物**主树有、新建隔离树天然没有**，故 `describe.skipIf(!isNativeHistorySearchAvailable())` 那批（本文写作时 **18 条**，**执行时按上述 identity set 实测重取，别引用这个快照数**）在 `$TREE` 会 skip 而在主树会执行。**按项目契约这是可接受的**（CLAUDE.md 明写不得强制构建 native、有产物就真跑没有就显式 skip），**但必须在冻结集合里单列一类具名审核**——否则「环境性的 skip」会成为掩护，本项目 2026-07-28 已因此把环境性的红当「既有失败」挥手放过一次。<br>**然后**才是 15 次：`cd "$TREE" && OUT=docs/tmp/<date>-entry-runs RUNS=15 MIN_TESTS=<executed 口径的数> exp/inter-block-anchor-allocator/baseline-runs.sh`，rc=0 且保存每次原始输出。<br>⚠️ 必须在 **`$TREE`（干净的隔离 worktree）** 里跑**树内那份**脚本（`REPO` 由脚本位置推导、无 override，见 §0.3b）。**`ALLOW_DIRTY=1` 禁止用于通过本条**。重跑换 `OUT` 目录。<br>⚠️ **这就是 HANDOVER 的 T3-b**。它落地前本条只能按缩小版命题引用，**不得表述成「全后端套件已验证」**。 |
 | **T0.2** | 先把 O-6 脚本在**未改动的 `$TREE`** 上跑一次，确认打印 `O-6 PASS`、rc=0、fixture blob 未变；再注入一字节，确认 rc=9。**这是 false-red／false-green 双向自检，不是形式**——该门此前恒真（脚本覆盖自己的基线、全脚本无 `cmp`），`4f7a3989` 才修好。 | 把这两条写进每 commit 检查清单，绑根方式照 §0.3 ②。**禁止 `RECAPTURE=1`**。<br>**先确认手上是修好的那份**：`grep -c 'O-6 PASS' exp/inter-block-anchor-allocator/byte-equivalence.sh` ≥1（**看文件存在不够**）。 |
@@ -733,7 +759,7 @@ production 旧 API population **持续为零**；telemetry **不新增 emission 
 | **T6.2** | 删除 **A 集**已零调用的定义：`ClientSink.write*` generation surface、`WireBlockAllocationPort`、caller envelope factory、legacy anchor fields／bridge、`commandPortActivation`、raw production exports。**删之前先跑一遍全套确认真的零引用**（TypeScript 会替你找剩余引用，别猜）。 | typecheck 与全套绿。<br>⚠️ **`commandPortActivation` 在合并后 master 的 `src/` 零命中**（实测）。它要么是 Commit 1～4 期间新引入的名字，要么是 RFC 的前瞻性命名——**到达本 commit 时先确认它存在再删，不存在就在 plan 里标注并回报**，别为了让清单成立而发明一个符号。 |
 | **T6.3** | 删除 **B 集**已零 consumer 的旧 `DownstreamDeliverySession` public surface：`writeScaffold`、`noteWinner`、`noteUpstreamRoundStarted`、`noteUpstreamRoundEnded`。**先确认 `identity`／`snapshot` 若内部保留，它们不作为旧 session handle 暴露给 driver。** | 绿。 |
 | **T6.4** | 删除 **C 集**已零 resolution consumer 的 exported `getDownstreamDeliverySession`、等价 WeakMap lookup 及 allowlist 外 construction exports。 | 绿。 |
-| **T6.5** | **R-10 硬门**：test-only adversarial seam **仍能在旧边界造出分裂**，而新 production route **拒绝同一行为**。<br>🔴 **「coverage gate 必须红」此前没有定义任何 gate**——默认 runner 对「删掉一条测试」是**绿**的（少跑一条而已），T6.1 的 production AST 审计也看不见 test-only seam，所以这条预测按原样必然落空。<br>**gate 的实现是一条独立架构测试**，断言 **T0.11 冻结的 manifest 三样仍成立**：①那些测试文件仍存在；②它们**运行时枚举**出的 test name 集合仍等于冻结集合（用 `--reporter=junit`，**不用 `rg` 扫 `test("...")`**）；③**每个旧 identity 要么仍存在且仅 test 可达，要么其 replacement 通过下面**三条**可执行判据**（C4 在 T4.15 填的迁移关系）。⚠️ **不是「恒存」**，见 T0.11。<br>
+| **T6.5** | **R-10 硬门**：test-only adversarial seam **仍能在旧边界造出分裂**，而新 production route **拒绝同一行为**。<br>🔴 **「coverage gate 必须红」此前没有定义任何 gate**——默认 runner 对「删掉一条测试」是**绿**的（少跑一条而已），T6.1 的 production AST 审计也看不见 test-only seam，所以这条预测按原样必然落空。<br>**gate 的实现是一条独立架构测试**，断言 **T0.11 冻结的 manifest 三样仍成立**：①那些测试文件仍存在；②它们**运行时枚举**出的 test name 集合仍等于冻结集合（用 `--reporter=junit`，**不用 `rg` 扫 `test("...")`**）；③**每个旧 identity 要么 (i) 仍存在且仅 test 可达，要么 (ii) 其 replacement 通过下面三条可执行判据**（C4 在 T4.15 填的迁移关系）。⚠️ **不是「恒存」**，见 T0.11。<br>🔴 **(i) 这条岔路不得用来保留 T6.2／T6.4 明令删除的 legacy export**——否则「仅 test 可达」就成了它们的避难所，C6 的归零变成纸面。**(i) 仅适用于本 commit 删除清单之外的 identity**；凡出现在 T6.2／T6.4 清单上的（`OwnerRawSink`／`WireBlockAllocationPort`／`createDownstreamDeliverySession`／`getDownstreamDeliverySession` 等），**只能走 (ii)**。<br>**正控**：把某个删除清单上的 identity 保留下来、只是收窄成 test 可达 → **门必须红**（这条专打本岔路）。<br>
 🔴 **「具名一个 replacement」本身不构成豁免**——只写名字就是万能逃生舱。**三条缺一不可，且都要可执行**：<br>
 **(a) 实际被使用**：adversarial seam 的 **runtime import／调用图**里出现该 replacement（**从运行时取，不是 grep 源码文本**——参数化与再导出会骗过文本扫描）。**正控**：把 seam 改成不碰 replacement（例如改用自建 stub）→ 门必须红。<br>
 **(b) 语义等价（按 seam 需要的那部分）**：该 seam 用旧 identity **造出 wire／state 分裂的那条行为路径**，换成 replacement 后**仍能造出同一分裂**。**这是行为判据，不是签名判据**——`(a)` 只证明它被引用了。**正控**：把 replacement 换成一个签名相同但不产生分裂的空壳 → 门必须红。<br>
