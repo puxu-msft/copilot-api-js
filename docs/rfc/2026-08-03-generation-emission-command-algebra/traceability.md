@@ -124,9 +124,11 @@
 
 | plan task | RFC 出处 | 它在那里承担什么 |
 |---|---|---|
-| T0.1 | §7.1「整个序列的入场条件位于 Commit 0 之前」 | entry commit 上连跑 ≥15 次；**本 plan §11 待裁项 #4 另提「entry 落在哪棵树」这一 RFC 未回答的缝** |
+| T0.1 | §7.1「整个序列的入场条件位于 Commit 0 之前」 | entry commit 上连跑 ≥15 次。**entry 树已裁（2026-08-04：隔离 worktree，从合并后 master 起）**；`MIN_TESTS` 的取值路径见 plan T0.1（不得与被测命令同源） |
 | T0.7 | §7.2 全节（双向不动点闭包、A／B／C／D 四集、C-D tie-break） | 冻结旧 generation delivery 的完整能力面；**Commit 0 与 Commit 4 均 fail loud** 的判据来源 |
 | T0.9 | §7.10 + §9.2 Q5 | 冻结 goldens 清单，作为 Commit 4 逐帧预测 diff 的比对基座与 Commit 7 审计对象 |
+| **T0.10** | §7.1 每 commit 共同门 + user-rule `proving-where-a-command-ran` | **证明三条共同门确实跑在 entry worktree 上**。§7.1 要求「每个 commit 结束都必须满足：typecheck 绿／全套绿／O-6 PASS」，但**门跑在哪棵树这个前提本身没有 oracle**——三个脚本的根推导方式各不相同（`byte-equivalence.sh` 与 `baseline-runs.sh` 按脚本位置推导，`cd` 不管用）。没有本 task，后续 8 个 commit 的所有绿都没有归属 |
+| **T0.11** | §7.3「把 92 个 fake constructs／40 文件…分为…adversarial 旧边界四类」+ §10.2 R-10 行 | **冻结 test-oracle manifest**（文件路径 + 运行时枚举的 test name 集合 + seam 依赖的 production symbol identity），供 T6.5 的 coverage gate 断言。R-10 要求「test-only adversarial seam 仍能造出旧分裂」，而**默认 runner 对「删掉一条测试」是绿的**——没有 manifest，该 mutation 的预测必然落空 |
 | T1.7 / T2.9 / T3.7 | §7.4「准备commit（Commit 1～3）共同的越界判据」第 2 条 | 属性存在性快照逐 commit 比对（`sink.writeAnchor ?? sink.write` 那类分派，方法存在性变了就改行为而 call-site 一行不动） |
 | T2.1 | §4.1 `OpenAnchorLease` + §7.5 目标清单 | 把裸 `openAnchorIndex` 升级为 canonical record；lease 默认不暴露成 caller 传回的 public token |
 | T2.4 | §7.5 目标清单「non-enqueue internal command primitives、owner serializer」+ §2.4「排序唯一」 | 所有 commands 共用一个 serializer |
@@ -135,6 +137,7 @@
 | T2.7 | §3.3 `terminate`／`finalize(result)` + §7.5 | first terminal wins、terminal exactly once、finalize 不是第二 emission 入口 |
 | T2.8 | §2.2 唯一 choke point + §7.5「raw emitter 接口」 | raw emitter 只消费 validated envelope |
 | T3.6 | §7.6 目标清单「10-root cutover harness 与 test-only handle recorder」 | isolated test composition 中完整演练，production 侧零变化 |
+| **T4.0a／T4.0b／T4.0c／T4.0d** | §9.3 第 1／2／5／8 项 + §7.12 | **把「完整证据槽」从一个时刻变成一个负责人**。C1／C3 对这四条只被要求交「最小子集／候选／方案」，而 §7.7 的 T4.2／T4.11／T4.9／T4.15 直接消费它们的完整结论；§7.12 的「不生成猜测签名、结束本轮」此前只写在 Commit 3 |
 | T4.12 | §7.7 切换清单第 9／10 项（收口 C 集与 D 集） | resolution 归零、construction 收敛 allowlist；D 集判据是**运行期拿不到 emission 能力**而非签名不含某类型名 |
 | T5.2 | §4.8 字段基数与存储分界 | bounded 字段的 canonical registry／normalizer；`wireIndex`／`commandId` 只进 detail |
 | T5.4 | §4.9 compound command phase 与 partial 表达 | `phase` 四值 + 各 count measures；`closedThenWireTorn` 不得降成普通 `ok:false` |
@@ -142,14 +145,14 @@
 | T6.2 / T6.3 / T6.4 | §7.9 目标清单（A／B／C 三集的 definitions／exports 删除） | 分别对应 A 集、B 集、C 集 |
 | T6.7 | §7.7 切换清单第 11 项「任何guard删除或放宽有独立裁决记录」+ CLAUDE.md `[hard]` | 删除或放宽既有 guard 必须交独立 reviewer 或用户裁决 |
 | T7.2 | §7.10「删除确被取代的旧fixture／helper」 | 删前先确认它守的不变量已由新 oracle 承载 |
-| T7.3 | §7.10「不改production、不首次recapture」 | `git diff -- src/` 为空 |
-| T8.1 | §6.2 一致性矩阵末列「需要同步的权威位置」+ §7.11 | README C1～C11 回填；C1／C3／C4／C8 语义不变 |
+| T7.3 | §7.10「不改production、不首次recapture」 | production 零改动。**判据是 path manifest 而非只扫 `src/`**——§4.7 自己把 production 分布到 `packages/telemetry/**` |
+| T8.1 | §6.2 一致性矩阵末列「需要同步的权威位置」+ §7.11 | README C1～C11 回填；C1／C3／C4／C8 语义不变。**另含 RFC §10.2 R-6 行的分段改写**（2026-08-04 裁决）与「辅助门同样阻断交付」的措辞对齐 |
 | T8.2 | §6.3「C1～C11之外的已冻结可观察量」 | anchor 精确帧序登记为独立契约，**不得包装成 C2／C7 的实现细节** |
 | T8.3 | §7.11 目标清单「DESIGN」 | 活的架构现状表与类型架构节 |
 | T8.4 | §8 范围外表的 M2～M8 行 + §10.3 O-9「绝不删除」 | 旧 plan supersede 关系；supersede ≠ 删除 |
 | T8.5 | §7.11「旧plan supersede关系」+ §7.9 population 审计 | 权威文档 manifest + 按契约轴检索 + 双向 trace |
 | T8.6 | §8 范围外表前两行 | 两项 deferred 记入 `docs/todo/deferred-backlog.md` |
-| T8.7 | §7.11「独立merged-state review」 | 跨 phase 集成缝、doc↔code 对账 |
+| T8.7 | §7.11「独立merged-state review」 | 跨 phase 集成缝、doc↔code 对账。**必查项含「§11 各未裁项都已在触发点被真正裁掉」** |
 
 **机械校验**（由 `traceability-check.py` 执行，不接受人工声称）：
 

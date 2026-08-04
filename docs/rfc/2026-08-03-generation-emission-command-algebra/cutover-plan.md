@@ -280,10 +280,11 @@ production 源码与运行时行为**逐字节不变**（`git diff -- src/ packa
 
 | id | 段与等级 | 可复跑命令 |
 |---|---|---|
-| R-5 | C1 段 `辅助门`（**test-only 预损坏 state**）在 T2.3 落地 | T2.3 落盘的测试路径 |
+| R-5 | **段归属未裁，见 §11 #5** —— T2.3 在本 commit 实现，矩阵记 C1 | T2.3 落盘的测试路径 |
+| — | **§11 #5 的必经触发点** | **未裁则本 commit 不得收口。** 把 #5 连同三个候选交主会话／用户，裁定后同步 RFC／矩阵／本文三处 |
 | R-11 / O-6 | 每 commit 共同门 | §0.3 ② |
 
-> R-5 的 C1 辅助门段在**本 commit**（Commit 2）实现，因为 cardinality assertion 属于 owner state primitives。矩阵把它记在 C1，**这不是错配**：矩阵的「归属 commit」指该门**最早生效**的边界，而 Commit 1 与 Commit 2 之间旧 API population 机械相等、行为等价，门在哪一个准备 commit 落地不改变可达性。**若评审认为这构成漂移，按 §11 待裁项 #5 处理，别自行改矩阵。**
+> **为什么必须挂成一行门**：`traceability-check.py` 只校验「production 硬门不早于其依赖能力」，**辅助门段落在 C1 还是 C2 它不判**（该格已逐字写明）。所以这里没有机械绊线，只能靠一个必经的人工触发点——**「若评审认为构成漂移」不是触发点**，没有任何流程保证有人会去看。
 
 ### commit invariant
 
@@ -364,6 +365,7 @@ production **不构造新 owner**；**不维护 shadow lease／mapping／ledger�
 1. **Q5 逐帧预测 diff 已复核**（§9.2 Q5、§6.3）：产出旧 golden → 预测新序列的逐帧 diff，逐项标明保留／删除／移动及理由，与 Q5 批准范围核对。**若 heartbeat 重臂时点无法证明逐 tick 中性，其预测 diff 必须纳入 Q5 批准范围。** 缺 diff 或实测超出预测即停止，**不得借已接受的 Q5 吞并额外 wire 漂移**。
 2. **§9.3 全部调查证据齐全**——见下面的 **T4.0a～T4.0d**。⚠️ **Commit 3 对第 1／2／5／8 项只被要求交「最小子集／候选／方案」，「完整证据槽」那一列的值是「C4 publish kickoff」——那是一个时刻，不是一个负责人。** 因此这四条在本 commit 有显式 task，**不得在 kickoff 时口头判「C3 交的就是它被要求交的，所以齐全」**。
 3. **§7.2 的 A／B／C／D 四集闭包输出仍是最新**（T0.7 产物在 Commit 1～3 期间机械相等）。
+4. 🔴 **§11 #6 已裁**——`OwnerTerminalDecision`（M1 引入，`delivery/owner-failure.ts:11`）与本 commit 要引入的 `TerminalEmissionResult` 是竞争抽象，**未裁则不得进入 T4.10**。三个候选见 §11 #6。**由实施者边做边定会造出第二条 terminal 分流路径**，直接撞本 commit 的「first terminal command wins、terminal frame exactly once」。
 
 ### 逐 task
 
@@ -655,13 +657,13 @@ production 零改动（**按 T7.3 的 manifest 判，不是只扫 `src/`**）；
 
 | id | 先写什么失败测试 → 预期怎么红 | 实现什么 → 预期怎么绿 |
 |---|---|---|
-| **T8.1** | README 的 C1～C11 回填：C2／C5／C6／C7／C9／C10／C11 属「措辞需扩展」，逐条按 §6.2 末列的「需要同步的权威位置」改。**先跑一遍 doc-vs-code claims 检查确认现状对不上**。 | 回填完成。**C1／C3／C4／C8 语义不变，不得顺手改语义。** |
+| **T8.1** | README 的 C1～C11 回填：C2／C5／C6／C7／C9／C10／C11 属「措辞需扩展」，逐条按 §6.2 末列的「需要同步的权威位置」改。**先跑一遍 doc-vs-code claims 检查确认现状对不上**。<br>**另有两处 RFC 本体的同步，别落空**：①**RFC §10.2 的 R-6 行末列**仍是无分段的 `本RFC辅助门；Commit 1／6`，须按 2026-08-04 的裁决改成两段（C1 `辅助门` compile fixtures／C6 `production 硬门` import guard）；②凡描述「辅助门」处，措辞须与 §10.4 一致——**辅助门失败同样阻止交付**，两档差别只在能否升级 closure 等级。 | 回填完成。**C1／C3／C4／C8 语义不变，不得顺手改语义。** |
 | **T8.2** | 把 **anchor 精确帧序**登记为 C1～C11 **之外**的独立可观察契约（§6.3）：它不属于 C2（C2 只要求 `maxOpen<=1` 且 anchor stop 先于 real start，中间多一帧合法 keepalive 仍成立），也不属于 C7（C7 不规定 synthetic 帧相对 real start 的精确位置）。**先确认没有人把它包装成 C2／C7 的「实现细节」。** | 契约落盘。 |
 | **T8.3** | 同步 `docs/DESIGN.md` 的「活的架构现状」表与类型架构节。**先跑一次跨文档 grep 验证**（session-closeout §2）。 | 同步完成。 |
 | **T8.4** | 旧 plan supersede 关系：`docs/plan/2026-07-27-inter-block-anchor-allocator/` 的 M2～M4 mapping 步骤被本 RFC supersede；M5～M8 中 gap lifecycle／开门／多 gap **保留并重锚**；O-1～O-9 继续继承。**别把 supersede 写成删除**——§10.3 明写 O-9「绝不删除」。 | 注解完成。 |
 | **T8.5** | **旧 API disposition 与 doc-vs-code claims 审计**：对 §0.1 两棵树的合并结果逐项确认。**并完成 HANDOVER 遗留的那件事**：先冻结一份权威文档 manifest（三个范围共 **122 份 Markdown**），再**按契约轴而非新 API 名**检索——index allocation/order/reuse/offset、anchor open/close/lifecycle、serializer/write/emit、synthetic provenance、winner/candidate/dispatch、heartbeat/escalation、continuation/recovery、History/telemetry；对 manifest 里**每一份**给 disposition，并对 C1–C11 与用户裁决做双向 trace。<br>⚠️ **「除上述外无冲突」这个否定性断言在本 plan 写作时并不成立**：HANDOVER 记录的五个检索词只命中 21／122 份，未命中的里面恰恰包括承载 C1／C4／C6／C7／C8、D2、continuation offset、anchor 生命周期与 P7／P8 的核心文档。**少命中不能证明无冲突。** | 审计表落盘。 |
 | **T8.6** | telemetry／History 文档与 deferred items 同步；`docs/todo/deferred-backlog.md` 记入 §8「范围外」表里归属它的两项（vendor 协议完整状态机、统一 `CompleteResponseEmitter`）。 | 同步完成。 |
-| **T8.7** | 独立 **merged-state review**（`review-merged-state`）：跨 phase 集成缝、doc↔code 对账、commit message 与内容是否相符。 | review 记录落盘。 |
+| **T8.7** | 独立 **merged-state review**（`review-merged-state`）：跨 phase 集成缝、doc↔code 对账、commit message 与内容是否相符。<br>**必查项**：①§11 各未裁项**都已在其触发点被真正裁掉**（不是「一路走过来没人拦」）；②RFC §10.2 的 R-6 行已按裁决改写（T8.1）；③本文与 RFC／矩阵三处对「辅助门是否阻断交付」的措辞一致。 | review 记录落盘。 |
 
 ### 本 commit 的门
 
@@ -688,25 +690,28 @@ O-3／O-5／O-7／O-9 以及 O-4 的完整验收明确留给后续 M2～M8／P7�
 
 ---
 
-## 11. 待裁项 —— 本文不解决，如实转述并标为待裁
+## 11. 裁决项 —— 已裁的记结论，未裁的如实转述
 
-> 以下五项**都不是实施者可自判的**。走 RFC §9.1／§9.4 的 open question 机制交主会话／用户，按 `scope-ambiguity-then-ask` 摆带量化影响的选项而非 yes/no。
+> **未裁项（#2／#3／#5／#6）不是实施者可自判的。** 走 RFC §9.1／§9.4 的 open question 机制交主会话／用户，按 `scope-ambiguity-then-ask` 摆带量化影响的选项而非 yes/no。
 >
-> **#1～#3 是 RFC 与已有裁决自带的停点**（如实转述，不解决）；**#4／#5 是本 plan 撰写过程中新发现的**，RFC 里没有对应停点。
+> **每一条未裁项都必须有一个「一定会到达」的触发点**（`downgrading-a-gate-needs-a-reachable-trigger`）——「若评审认为……」这种条件性上诉**不是触发点**，因为没有任何流程保证有人会去看。下表每条的触发点写在各自小节里，并同时挂进对应 commit 的门表或 T8.7 的 merged-state review 必查项。
 
-### #1 R-6 的等级读不出来（**RFC 既有缺口**）
-
-§10.2 末列 14 条里 13 条可直接读出等级，**唯独 R-6 是 `本RFC辅助门；Commit 1／6` —— 两个 commit、一个等级、没有分段**。
-
-**自行推断没有 RFC 出处；两段同填「辅助门」则是矩阵 §0 明确禁止的压平**（把六轮评审建立起来的分级压平，等于拿判据去破坏它要保护的东西）。
-
-| 候选 | 拆法 | 量化影响 |
+| # | 状态 | 触发点 |
 |---|---|---|
-| 1 | compile fixtures → C1（§7.4）、import guard → C6（§7.9），两段各自定级 | 与其余 4 条两段式判据（R-1／R-2／R-5／R-12）形状一致；**需要 RFC 补一句分段措辞** |
-| 2 | 两段同为 `辅助门`（维持 §10.2 末列字面读法） | 改动最小；**代价是 C6 的 import guard 失去阻断力**——`delivery` 不 import concrete codec 这条分层边界破了，R-6 的价值就没了 |
-| 3 | C6 那段升 `production 硬门` | 守住分层边界；**代价是 C6 的通过条件变严**，且与「类型门只作 presence ratchet、不计 behavior 闭合」（§3.7）的措辞需要协调 |
+| #1 R-6 等级 | ✅ **已裁 2026-08-04**（候选 1，按判据列拆） | — |
+| #2 Q1 telemetry 联合查询 | ⏳ **未裁** | **Commit 5 全节不可开工** |
+| #3 §4.8 与选项 A 的冲突 | ⏳ **未裁**（绑进 #2 的裁决材料） | 同 #2；`q1-locations.sh PHASE=post` 要求 §4.8 变 `ruled` |
+| #4 entry 落在哪棵树 | ✅ **已裁 2026-08-04**（隔离 worktree，从合并后 master 起） | — |
+| #5 R-5 的 C1／C2 归属 | ⏳ **未裁**（本轮已撤回自裁） | **Commit 2 的门表**：未裁则本 commit 不得收口 |
+| #6 `OwnerTerminalDecision` vs `TerminalEmissionResult` | ⏳ **未裁**（本轮新提） | **Commit 4 前置停门**：与 §9.3 证据槽同级 |
 
-**本 plan 的处置**：矩阵与本文的 R-6 行一律写「等级未定，见待裁项 #1」，**不填**。
+### #1 R-6 的等级 —— ✅ **已裁 2026-08-04：候选 1，按判据列拆**
+
+**用户裁决**：compile fixtures → **C1 `辅助门`**（§7.4）、import guard → **C6 `production 硬门`**（§7.9），两段各自定级。矩阵与本文 T1／T6 的门表已按此填。
+
+⚠️ **裁决前本节列出的「候选 2 代价是辅助门失去阻断力」是错的**，一并记在这里免得复发：**辅助门失败同样阻止交付**（RFC §10.4 与本文 §10 都这么写），两档的真实差别只在**能否升级 behavior／closure 等级**——`production 硬门`通过可支撑「结构性闭合候选」，`辅助门`只作 presence ratchet。用一个不存在的阻断差异去塑造裁决，会诱导用户为了拿回一个它本来就有的效果而升档。
+
+**遗留同步项**：RFC §10.2 的 R-6 行末列仍是无分段的 `本RFC辅助门；Commit 1／6` → **T8.1**。
 
 ### #2 Q1 —— telemetry 联合查询能力（**用户裁的是时机，不是内容**）
 
@@ -714,7 +719,7 @@ O-3／O-5／O-7／O-9 以及 O-4 的完整验收明确留给后续 M2～M8／P7�
 
 选项（RFC §9.1）：**A** 预组合一个严格有界的 compound dimension（RFC 推荐）／**B** 扩展 registry 为 typed multidimensional key／**C** 只提供单维 breakdowns 与 History 明细。
 
-**Commit 5 的所有 task 写成「Q1 未裁则本节不可开工」**，见 §Commit 5 的前置停门。Q1 **不**阻塞 Commit 0～4。
+**触发点**：**Commit 5 全节（T5.1～T5.7）在裁定前不可开工**，见该节前置停门。Q1 **不**阻塞 Commit 0～4。
 
 ### #3 §4.8 与选项 A 的冲突（**由实施者自判是无出处的自裁**）
 
@@ -729,28 +734,44 @@ O-3／O-5／O-7／O-9 以及 O-4 的完整验收明确留给后续 M2～M8／P7�
 - A 的 key 由 canonical registry **笛卡尔积**生成、是**静态有界**的，未必算「动态」；
 - 也可能这条禁令本就覆盖它。
 
-**处置**：把这个冲突连同两种读法一起摆进 Q1 的裁决材料，**由主会话／用户在裁 A/B/C 时一并裁掉**。裁完 §4.8 那一行必须写明结论，`q1-locations.sh` 的 `PHASE=post` 会要求它从 `mentions` 变成 `ruled`。
+**触发点**：绑进 #2 的裁决材料，**由主会话／用户在裁 A/B/C 时一并裁掉**。裁完 §4.8 那一行必须写明结论，`q1-locations.sh` 的 `PHASE=post` 会要求它从 `mentions` 变成 `ruled`。
 
 ⚠️ **这一处不被 Q1 谓词命中**（命中数 0），是评审换轴提结构性问题找出来的。**取材只抄 A/B/C 那一行，就会把它漏在十几行之后。**
 
-### #4 cutover 的 entry commit 落在哪棵树（**本 plan 新提，非 RFC 既有停点**）
+### #4 Entry 落在哪棵树 —— ✅ **已裁 2026-08-04：隔离 worktree，从合并后 master 起**
 
-见 §0.2。两棵树都不能直接当 entry，而 RFC §7.1 只说「实际 entry commit」，没说树。
+M1 已 merge 进 master（`8125f123`），**「两棵树」不再存在**。cutover 在隔离 worktree 里做、从合并后的 master 起，**没有「先合一次」那一步**。执行形状见 §0.2，门的绑根见 §0.3。
 
-| 候选 | 做法 | 量化影响 |
-|---|---|---|
-| 1 | 把 feature `2c339784` merge 进 master，以 merge commit 为 entry | M1 与缺陷修复都在；**代价是 merge 本身会引入需要解决的语义冲突**（feature 改了 `driver.ts` 106 行、`handler-v4.ts` 124 行、`session.ts` 64 行，master 同期前进数十个 commit），且 merge 后须重跑入场条件的 15 次 |
-| 2 | 把 master rebase 到 feature 上（或 cherry-pick 缺陷修复到 feature），以结果为 entry | 同样得到两者；**代价是 rebase 数十个 commit 的冲突面比 merge 大**，且改写了已发布的 master 历史（本项目共享主树，**不可接受**） |
-| 3 | 在 master 上从零重塑 M1（不复用 feature 树代码） | 无 merge 冲突；**代价是丢弃 M1 的实现与其 8 个 commit 的测试，与用户裁决「M1 由 cutover 重塑而非丢弃」相冲突**——「重塑」不是「重写」 |
-| 4 | 起隔离 worktree、以 feature 为基先合入 master，再在该 worktree 上做 entry 与全部 8 个 commit | 冲突在隔离树内解决、不污染共享主树；**代价是 cutover 期间 master 会继续前进，最终合回时有第二次 merge**——但这正是本项目 `docs-merge-before-execute` 的既定形状（文档先合主线，执行走隔离 worktree 新分支） |
+⚠️ **裁决前本节的候选 1 量化影响写着「merge 会引入需要解决的语义冲突」，实测是错的**：`git merge-tree --write-tree` rc=0、冲突列表为空，master 自 merge-base 起**未触及 feature 改过的任何一个文件**。**这条错误成本差点把裁决推向另一边**——记在这里当反例：**量化影响栏里的每个成本都要有可复跑命令，没实测过的不要写成事实**（`anchor-numbers-to-commits`）。
 
-**本 plan 的倾向是候选 4**，理由是它与本项目已确立的执行形状一致，且把 merge 冲突关在隔离树内。**但这是调度决策，交主会话裁。T0.1 在裁定前不可开工。**
+### #5 R-5 的 C1／C2 归属 —— ⏳ **未裁（本轮撤回自裁）**
 
-### #5 R-5 的 C1 辅助门段实际落在 Commit 2（**次要，本 plan 已如实标注**）
+⚠️ **本 plan 上一版在正文里断言「这不是错配」并按 C1 记账，同时在本节称「待裁」——那是实质自裁。** 本轮撤回该断言，**在裁决前不得声称任何一方成立**。
 
-矩阵把 R-5 的辅助门段记在 C1，本 plan 把它排在 Commit 2（T2.3），理由是 cardinality assertion 属于 owner state primitives（RFC §7.5 的目标清单里逐字含「cardinality assertion」，而 §7.4 的 Commit 1 目标清单里没有）。
+**事实**（双方都可查）：
 
-**Commit 1 与 Commit 2 之间旧 API population 机械相等、行为等价**，门落在哪一个准备 commit 不改变可达性，因此本 plan 判为**如实标注即可、不改矩阵**。若评审认为这构成漂移，**交主会话裁**，别自行改矩阵——`traceability-check.py` 只校验「production 硬门不早于其依赖能力」，辅助门段落在 C1 还是 C2 它不判，**正因如此才更需要人来看一眼**。
+- **矩阵** `traceability.md:35` 把 R-5 的辅助门段记为 **C1**；矩阵 §0 把「归属 commit」定义为**该门生效的 commit**。
+- **本 plan** 把 cardinality assertion 的实现排在 **Commit 2**（T2.3），依据是 RFC §7.5 的 Commit 2 目标清单**逐字含「cardinality assertion」**，而 §7.4 的 Commit 1 清单**没有**。
+- 因此按矩阵的定义，**C1 终态并不存在该辅助门**——「Commit 1 与 Commit 2 行为等价」不能让一个尚未实现的门追溯生效。
+
+**候选**：①矩阵改成 C2（与 RFC §7.5 一致，本 plan 认为证据最强，但**不自行改**）；②plan 把 T2.3 前移到 Commit 1（与 RFC §7.5 的目标清单冲突）；③RFC §7.4／§7.5 补一句说明该 assertion 跨两个准备 commit。
+
+**触发点**：**挂进 Commit 2 的门表——未裁则本 commit 不得收口。** 机械校验帮不上忙：`traceability-check.py` 只校验「production 硬门不早于其依赖能力」，辅助门段落在 C1 还是 C2 **它不判**，所以这里只能靠一个必经的人工触发点。
+
+### #6 `OwnerTerminalDecision` 与 `TerminalEmissionResult` 是竞争抽象（**本轮新提**）
+
+M1 合入主线时带来了两个**三份文档都从未提到**的模块：
+
+- `delivery/owner-failure.ts:11` 的 `OwnerTerminalDecision`——三态 `client-aborted` / `delivery-finished` / `fail-loud`，由 `:41` 的 `classifyOwnerFailure` 产出；
+- `messages/owner-failure-settlement.ts:4` 的 `settleMessagesOwnerFailure`，直接调 `env.ctx.abort`／`env.ctx.fail`。
+
+而本 RFC 要在 Commit 4 引入的 `TerminalEmissionResult` 带 `terminalFrameDisposition` **三态** `emitted` / `suppressed_client_gone` / `suppressed_session_terminating`。**两者处理的是同一件事**——terminal 时刻按 client-gone／session-terminating／wire-torn 分流并决定 settle 形态，词汇高度重叠但不同构。
+
+**为什么不能由实施者自裁**：T3.5 要求把「原 client-gone／session-terminating 提前返回」映射到 `terminalFrameDisposition`，但**在合并后的主线上，那些提前返回已经不是散落的了**——M1 已把它们收敛进 `classifyOwnerFailure`。照 RFC 的旧描述干，会在 `settleMessagesOwnerFailure` 之外**再造一条 terminal 分流路径**，于是同一个 terminal 时刻有两个分类器，直接撞 Commit 4 的「first terminal command wins、terminal frame exactly once」。**这是「同一件事写两遍且其中一遍弱一档」的结构怪味**，不是可以边做边定的细节。
+
+**候选**：①`TerminalEmissionResult` **取代** `OwnerTerminalDecision`，M1 那两个模块在 Commit 4 一并重塑（范围最大，但与「M1 由 cutover 重塑」的既有裁决一致）；②`OwnerTerminalDecision` **保留为 owner 内部分类器**，`TerminalEmissionResult` 只做它的对外投影（改动小，但两套三态必须锁步，是双事实源）；③二者合并成一个三态（需要 RFC §3.3 改 `TerminalEmissionResult` 的冻结形状，**属契约变更，要回 architect-advisor**）。
+
+**触发点**：**Commit 4 前置停门第 2 项，与 §9.3 各证据槽同级**——未裁则不得进入 T4.10。
 
 ---
 
@@ -759,10 +780,17 @@ O-3／O-5／O-7／O-9 以及 O-4 的完整验收明确留给后续 M2～M8／P7�
 | 未采纳 | 为什么 |
 |---|---|
 | 把 Commit 4 拆成「先收 raw authority、后迁 producer」两个 commit | RFC §7.1 明确否定该分段；拆开必然产生「旧路径已禁而新 command 尚不可用」的中间态，或需要一个按 payload 猜 intent 的临时 adapter——§7.13 逐字禁止 |
-| 在锚点表里只写一棵树的行号，另一棵「读者自己换算」 | 两棵树互不为祖先，行号偏移**不是常数**——实测：`client-sink.ts` 偏 +9 或 +11（**同一文件内就不一致**）、`handler-v4.ts` 偏 +7／+8／+38／+40、`driver.ts` 有正有负（+8／−4／−3／+2）。换算必错 |
-| 把 R-6 两段都填「辅助门」以消掉待裁项 | 矩阵 §0 明确禁止压平；这是「最省事的修法正好破坏它要保护的东西」的典型 |
-| 自行判定 §4.8 的「动态 compound 名称」不涵盖选项 A | 无 RFC 出处的自裁（HANDOVER T4 证伪①）。两种读法都成立时，实施者的判断没有外部 oracle |
-| 把 `commandPortActivation` 当成既有符号写进删除清单并给 `file:line` | **实测两棵树的 `src/` 都零命中**。给一个不存在的符号编行号，正是「跨一条没读过的缝规定行为」 |
+| 把 T0.6 写成「提交一个红测试，红到 Commit 4」 | 与共同门「该档确定性全绿」**终态互斥**。改用 rc=0 的 characterization（绿 = 缺陷仍在）。**也不用 `skip`／`todo` 排除它**——跳过的测试永远不会告诉你缺陷是否还在，那让 R-3 的 C0 段可被假绿 |
+| 把 `5 sites × 3 kinds × 4 scenarios` 当笛卡尔积逐格断言 | kind 在五个 site 上是**字面量写死的**（`driver.ts:885/1014/1102` = primary，`:1521` = recovery，`:1579` = continuation）。要求 primary-only site 驱动 recovery，只能伪造入口或错误扩宽 production site——**两种做法都在削弱门** |
+| 把 10 个 composition 点当成 10 个并列 root 各建一个 owner | Anthropic 的 `:574`／`:658` 与 `:1192` 是**同一条链的两层**，各建会让单请求出现两个 owner，撞「一个 serializer／一个 timer」 |
+| 只用一条「`terminate` 跳过 balancing」的 mutation 代替逐 handler mutation | 它只证明 owner 内部会平衡，**证不了每个 handler 已从旧 write 迁入**，也覆盖不到无 anchor 的 CC／Responses／Gemini terminal。RFC §5.3 逐字要求逐 handler |
+| 用 `git diff -- src/` 作为 Commit 7 的「production 零改动」门 | 本 RFC 自己把 production 分布到 `packages/telemetry/**`，只扫 `src/` 时在那里改一字节仍判绿 |
+| 从待测命令自己取 `MIN_TESTS` | 正是 `baseline-runs.sh:23-25` 点名的假绿：selector 缩窄后「实测」值同步变小，下限与被测对象同源、永远自洽 |
+| 用 `ALLOW_DIRTY=1` 让 T0.1 在共享脏树上跑起来 | 脚本自己声明那批日志「do not satisfy a gate」。正确出路是隔离 worktree（已裁的 entry 形状天然满足） |
+| 自行判定 §4.8 的「动态 compound 名称」不涵盖选项 A | 无 RFC 出处的自裁。两种读法都成立时，实施者的判断没有外部 oracle |
+| 在 #5 上一边声称「待裁」一边在正文断言「这不是错配」 | 那是实质自裁。**已撤回**，并给了必经触发点（Commit 2 门表） |
+| 把 `commandPortActivation` 当成既有符号写进删除清单并给 `file:line` | **实测 `src/` 零命中**。给一个不存在的符号编行号，正是「跨一条没读过的缝规定行为」 |
 | 用 `withAllocatedRealBlock`／`writeBlockFrame` 的现有签名作为 `openRealBlock`／`writeRealBlockFrame` 的终态签名 | RFC §3.4 明确：终态 public port 应暴露 owner 验证的 **opaque handle**，不把 mutable registry 或 mapping 实现对象交给 caller。现有签名是**迁移起点，不是终点** |
 | 为 O-3／O-5／O-7／O-9 硬塞一个归属 commit 好让矩阵没有孤儿 | §10.4 明写「不得因『不属于本 RFC』从 roadmap 删除」，§10.3 明写 O-9「绝不删除」。硬塞与删除是同一错误的两个方向 |
+| 把裁决材料的量化影响栏写成未实测的估计 | #4 候选 1 的「merge 有语义冲突」实测为**零文本冲突**，而候选 4 的卖点整个建立在「把冲突关在隔离树内」。**用错的成本对照做出的裁决，方向可能正好相反** |
 
