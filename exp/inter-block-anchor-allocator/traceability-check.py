@@ -91,6 +91,15 @@ def main() -> int:
         fail(f"{missing} is in the RFC but has no row in the matrix (orphan: acceptance with no owner)")
     for missing in sorted(rfc_o - set(o_rows), key=lambda s: int(s[2:])):
         fail(f"{missing} is in the RFC but has no row in the matrix (orphan)")
+    # And the other direction. Only RFC->matrix was implemented, so a row for an
+    # id the RFC does not define passed silently. A first attempt to test this
+    # appeared to catch it, but the run went red because the injected row had an
+    # extra column -- red for the wrong reason reads exactly like a catch, which
+    # is why the message matters more than the exit code.
+    for invented in sorted(set(r_rows) - rfc_r, key=lambda s: int(s[2:])):
+        fail(f"matrix has a row for {invented}, which the RFC does not define (invented acceptance id)")
+    for invented in sorted(set(o_rows) - rfc_o, key=lambda s: int(s[2:])):
+        fail(f"matrix has a row for {invented}, which the RFC does not define (invented oracle id)")
 
     # --- 2. in-scope rows must own at least one commit ---
     for rid, cells in r_rows.items():
@@ -152,8 +161,14 @@ def main() -> int:
         if tbd:
             fail(f"cutover-plan.md exists but {tbd} matrix row(s) still say _TBD_ for their plan task")
         plan = PLAN.read_text(encoding="utf-8")
-        task_ids = set(re.findall(r"\bT\d+\.\d+\b", plan))
-        cited = set(re.findall(r"\bT\d+\.\d+\b", matrix))
+        # The suffix is not decorative: the plan really does name tasks T4.0a
+        # through T4.0d, and \bT\d+\.\d+\b matches none of them -- \b fails
+        # between "0" and "a". Both sides were therefore invisible to this
+        # check at once, so neither an orphan nor a dangling reference could
+        # ever be reported for the four tasks added to close a review finding.
+        TASK = r"(?<![0-9A-Za-z.])T\d+\.\d+[a-z]?(?![0-9A-Za-z.])"
+        task_ids = set(re.findall(TASK, plan))
+        cited = set(re.findall(TASK, matrix))
         for orphan in sorted(task_ids - cited):
             fail(f"plan task {orphan} is cited by no matrix row (task with no RFC source)")
         # The other direction, which this check claimed to cover and did not:
