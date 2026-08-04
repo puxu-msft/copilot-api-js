@@ -15,7 +15,14 @@
 | **master**（文档树） | `/home/xp/src/copilot-api-js` | 随时前进 | 本文与 RFC、矩阵都落在这里 |
 | **feature**（M1 代码树） | `/home/xp/src/copilot-api-js/.worktrees/anchor-alloc` | `2c339784`（`src/` 与 RFC 设计基线 `854421d4` 逐字节相同，见 inventory §12） | **未合并**，用户裁决由本次 cutover 一并重塑 |
 
-**两棵树互不为祖先**（实测 `git merge-base --is-ancestor master feat/inter-block-anchor-allocator` = NO；merge-base `200aba8b`；master 领先 47 commit，feature 领先 8 commit）。
+**两棵树互不为祖先**（实测 `git merge-base --is-ancestor master feat/inter-block-anchor-allocator` = NO；merge-base `200aba8b`）。
+
+**两树的 commit 差数不写死**——master 每天前进，写下的那一刻就开始过期（本文初稿写「master 领先 47」，通读复算时已是 56）。要它就现算：
+
+```bash
+cd /home/xp/src/copilot-api-js && git rev-list --count feat/inter-block-anchor-allocator..master   # master 领先
+cd /home/xp/src/copilot-api-js && git rev-list --count master..feat/inter-block-anchor-allocator   # feature 领先（M1 的 8 个 commit，稳定）
+```
 
 **因此本文每张锚点表的每一行都标树。** 混写的具体后果，已实测两例：
 
@@ -27,7 +34,7 @@
 RFC §7.1 要求「在实际 entry commit `<sha>` 连跑至少 15 次」，但**没有说 entry commit 属于哪棵树**。而两棵树都不能直接当 entry：
 
 - 在 master 上起 → M1 不在（`closeAnchorViaOwner` 零命中、`OwnerRawSink` 零命中），RFC §7.2 的 A／C／D 集人口与 §5 的 inventory 全部对不上，而用户已裁决「M1 由 cutover 重塑而非丢弃」。
-- 在 feature 上起 → 落后 master 47 commit，其中含本轮修掉的三处既有缺陷（`4f7a3989` O-6 恒真、`200aba8b` AST 守卫假红、`51b1e1c9`+`cc909c81` 两条基线 flaky）——而这三处正是 RFC §7.1 入场条件要求已闭合的东西。
+- 在 feature 上起 → 落后 master 数十个 commit（现算见上），其中含本轮修掉的既有缺陷——而它们正是 RFC §7.1 入场条件要求已闭合的东西。**逐个实测归属**（`git merge-base --is-ancestor <sha> <ref>`）：`4f7a3989`（O-6 字节门此前恒真）**在 master 不在 feature**；`51b1e1c9`＋`cc909c81`（两条基线 flaky）**在 master 不在 feature**；而 `200aba8b`（AST 守卫假红）**两树皆有**——它就是 merge-base，**不属于「feature 缺的那批」，别照 HANDOVER 的并列写法把它算进来**。
 
 **这是一条调度决策，不是实施者可自裁的技术细节**，见 §11「待裁项 #4」。**T0.1 在它裁定前不可开工**——`MIN_TESTS` 与 15 次连跑都必须锚在最终 entry commit 上，锚错树等于整条入场证据链作废。
 
@@ -85,14 +92,14 @@ RFC §7.4 的两条，**缺一不可**，每个准备 commit 结束时都要跑�
 | `createGenerationWireIndexAllocator()` | `keepalive-anchor.ts:52` | 两树同行 | 同上，零参数工厂，只做向上会漏 |
 | `createGenerationWireState(allocator)` | `keepalive-anchor.ts:44` | 两树同行 | 对照组：**因返回种子**而会进闭包 |
 | `WireBlockMapping` / `LegToken` | `types.ts:467` / `:464`（master）；`:477` / `:474`（feature） | 两树皆有 | §7.2 明确点名：它们是 C10／C3 的授权事实本身，**不得被「无能力」过滤器排除** |
-| `setDeliverySessionObserverForTests` | `delivery/session.ts:74` | feature | **T0.4／T0.5 的 observer 接入点**；master 上须先核实是否存在（见 T0.4 调查） |
+| `setDeliverySessionObserverForTests` | `delivery/session.ts:67`（master）／`:74`（feature） | **两树皆有**（已实测） | **T0.4／T0.5 的 observer 接入点** |
 | warmup 三个 direct write | `warmup.ts:214,230,243` | 两树同行 | T0.4 被测对象 |
 | AUQ direct write | `error-shaping-glue.ts:131` | 两树同行 | T0.5 被测对象 |
-| raw SSE physical adapter | `client-sink.ts:209`（feature）／`:200` 附近（master 待核） | 两树 | T0.3 recorder 必须**位于它之下** |
-| raw WS physical adapter | `client-sink.ts:645`（feature） | feature | 同上 |
+| raw SSE physical `stream.writeSSE` | `client-sink.ts:200`（master）／`:209`（feature） | 两树 | T0.3 recorder 必须**位于它之下** |
+| raw WS physical `ws.send` | `client-sink.ts:634`（master）／`:645`（feature） | 两树 | 同上 |
 | 10 个 outer composition roots | 见 §Commit 4 锚点表 | 两树行号不同 | T0.3 recorder 包裹点 |
 
-> ⚠️ **master 侧行号只在本文写作时（master `fcf10eca`）成立**，且 master 每天前进。**引用前重取，别引用本表的快照值**：
+> ⚠️ **本文所有 master 侧行号已在 master `c259dd9d` 上逐条实测复核**（`src/` 与 `packages/` 自 `fcf10eca` 起未变）。master 每天前进，**引用前重取，别引用本表的快照值**：
 > ```bash
 > cd /home/xp/src/copilot-api-js && rg -n '^export interface ClientSink|^export interface AnchorState' src/lib/pipeline/types.ts
 > ```
@@ -132,9 +139,9 @@ production 源码与运行时行为**逐字节不变**（`git diff -- src/` 只�
 
 | 符号 | `file:line` | **树** | 用途 |
 |---|---|---|---|
-| `ClientFormat`（四值 union） | `src/lib/pipeline/envelope.ts:19-23` | 两树 | profile discriminant 的 `format` 取值来源 |
-| `FormatCodec` | `src/lib/pipeline/types.ts:942-1031`（feature） | feature（master 行号待重取） | RFC §2.6 的既有格式抽象；本次沿用「格式方提供知识、delivery 消费窄口」的依赖方向 |
-| `DeliveryTerminalCommand` | `delivery/types.ts:67-74`（feature） | feature | 迁移**输入**；其 `frames?: DeliveryFrame[]` 允许 caller 提交已铸 provenance，**不能原样成为终态公共签名** |
+| `ClientFormat`（四值 union） | `src/lib/pipeline/envelope.ts:21` | 两树同行 | profile discriminant 的 `format` 取值来源 |
+| `FormatCodec` | `src/lib/pipeline/types.ts:949`（master）／`:948`（feature） | 两树 | RFC §2.6 的既有格式抽象；本次沿用「格式方提供知识、driver／delivery 消费窄口」的依赖方向 |
+| `DeliveryTerminalCommand` | `delivery/types.ts:60`（master）／`:69`（feature） | 两树 | 迁移**输入**；其 `frames?: ReadonlyArray<DeliveryFrame>` 允许 caller 提交已铸 provenance，**不能原样成为终态公共签名** |
 | `ClientBlockLedger` | `delivery/types.ts:28`（master）／`:37`（feature） | 两树 | observation 层既有形状，T1.5 的对照 |
 | `WireBlockAllocationPort` 五方法 | `types.ts:309-322`（master）／`:319-332`（feature） | 两树 | **被替换的双面能力**，不是可继续扩展的终态 |
 
@@ -240,8 +247,8 @@ production **不构造新 owner**；**不维护 shadow lease／mapping／ledger�
 |---|---|---|---|
 | 5 个 `beginLeg` production lexical sites | `driver.ts:877, 1018, 1105, 1519, 1577` | **master** | T3.3 的五个格位。**feature 树对应 `:885, 1014, 1102, 1521, 1579`——两树都别混用** |
 | `beginLeg` 被 `wireState` 门挡住 | `driver.ts:875-880`（master）／`:883-888`（feature） | 两树 | **R-14 存在的唯一理由**：`beginLeg` 包在 `if (allocationPort?.wireState)` 里而 `wireState` 只有 Anthropic 有；`noteWinner` 不受该门控（但仍受 optional chaining 约束——反查不到 session 时不调用，**「无条件」不是绝对必调用**） |
-| anchor frame builders | `keepalive-anchor.ts:155`（start）、`:164`（delta）、`:173`（stop）、`:186`（synthetic message_start）、`:207`（remap）、`:232`（`resolveRemappedFrame`） | feature（master 行号待重取） | T3.1 的**纯函数核心，复用不重写**（skill `large-refactor` §5「保算法核、丢渲染壳」）。终态它们**只能由 owner command 在读取 current lease 后调用** |
-| `reconcileLiveFrame` | `live-reconcile.ts:90`（feature）／`:139` 附近（master） | 两树 | T3.1：decorator 要**退化为纯 decision／transform** 的目标形状 |
+| anchor frame builders | `keepalive-anchor.ts:155`（start）、`:164`（delta）、`:173`（stop）、`:186`（synthetic message_start）、`:207`（remap）、`:232`（`resolveRemappedFrame`） | **两树同行**（已实测） | T3.1 的**纯函数核心，复用不重写**（skill `large-refactor` §5「保算法核、丢渲染壳」）。终态它们**只能由 owner command 在读取 current lease 后调用** |
+| `reconcileLiveFrame` | `live-reconcile.ts:107`（master）／`:90`（feature） | 两树 | T3.1：decorator 要**退化为纯 decision／transform** 的目标形状 |
 | `makeReconcilingSink(inner: ClientSink, …): ClientSink` | `live-reconcile.ts:164`（master）／`:138`（feature） | 两树 | **D 集头号成员**（§7.2 逐字点名）。T3.4 的对照 |
 | 两个 injector 工厂 | `keepalive-anchor.ts:297`（anchor）、`:382`（envelope），master；feature `:266` / `:351` | 两树 | D 集成员；其 options 含 `getSink: () => ClientSink \| undefined` |
 | `stopFrame` 三个 production 调用点 | 见 Commit 4 锚点表 | — | T3.5 的 terminal-close 映射对象 |
@@ -297,7 +304,7 @@ production **不构造新 owner**；**不维护 shadow lease／mapping／ledger�
 
 ### factory／锚点表
 
-> **本表的 master 行号取于 master `fcf10eca`，feature 行号取于 `2c339784`。** master 每天前进，**引用前重取**。
+> **本表的 master 行号取于 master `c259dd9d`（`src/` 自 `fcf10eca` 起未变），feature 行号取于 `2c339784`；两侧均已逐条实测。** master 每天前进，**引用前重取**。
 
 #### 10 个 outer composition roots（T4.2）
 
@@ -316,19 +323,19 @@ production **不构造新 owner**；**不维护 shadow lease／mapping／ledger�
 
 **Anthropic 的 composition root 必须落在 `makeAnchoredSseSink` 所在层**（master `handler-v4.ts:1086`／feature `:1124`），**不能只下沉到 `makeDeliverySseSink`**——只有这一层同时拥有 allocator／wire state／anchor state／injector、History callbacks 和 raw `stream`。它返回 `{ sink; anchorState; anchorHooks }`（master `:1101` 的返回类型标注）。
 
-内部 factory chaining 另 4 点（feature `client-sink.ts:496,497,698,699`；master 对应 `:487` 附近，**重取**）。
+内部 factory chaining 另 4 点：**master** `client-sink.ts:487`（`makeSseSink`）、`:488`（`createDownstreamDeliverySession`）、`:687`（`makeWsSink`）、`:688`（`createDownstreamDeliverySession`）；**feature** `:496,497,698,699`。
 
 #### raw factory 与 physical adapter（T4.2／T4.3）
 
 | 符号 | master | feature | 处置 |
 |---|---|---|---|
 | `makeSseSink(stream): OwnerRawSink` | `client-sink.ts:179`（返回类型在 master 是 `ClientSink`，**feature 才是 `OwnerRawSink`**） | `:188` | 私有化：**不 export、不挂 returned object** |
-| raw SSE physical `stream.writeSSE` | `client-sink.ts` 内（重取） | `:209` | recorder 必须**位于它之下** |
+| raw SSE physical `stream.writeSSE` | `client-sink.ts:200` | `:209` | recorder 必须**位于它之下** |
 | `makeWsSink(ws)` | `client-sink.ts:608` | `:619` | 同上 |
-| raw WS physical `ws.send` | `client-sink.ts` 内（重取） | `:645` | 同上 |
+| raw WS physical `ws.send` | `client-sink.ts:634` | `:645` | 同上 |
 | `makeDeliverySseSink` | `client-sink.ts:485` | `:494` | 被 composition root 反转取代 |
 | `makeDeliveryWsSink` | `client-sink.ts:685` | `:696` | 同上 |
-| `makeArraySink` | `client-sink.ts:720`（feature） | `:720` | **test 面**：Commit 0 分四类时归 owner-backed array adapter |
+| `makeArraySink` | `client-sink.ts:709` | `:720` | **test 面**：Commit 0 分四类时归 owner-backed array adapter |
 
 #### 10 个 anchor terminal-close 决策（T4.10）
 
@@ -345,14 +352,14 @@ feature 树另有 `"before-real"` 模式 2 处，**不计入这 10 个 terminal 
 
 | 集合 | 人口（口径见 inventory） | master 锚点抽样 |
 |---|---|---|
-| A-1 `ClientSink.write` | **10 点／4 文件** | `driver.ts:952, 956, 1052, 1269, 1321`；`keepalive-anchor.ts:406`；`live-reconcile.ts:174, 177`（master 是两处循环写，feature 是 `:157` 一处——**形状不同**）；`chat-completions/handler-v4.ts:662, 833, 839` |
+| A-1 `ClientSink.write` | ⚠️ **两树人口不同，RFC 的「10 点／4 文件」锚在 feature**：**master 11 点／4 文件**、**feature 10 点／4 文件**。差在 live reconciler——master 是两处循环写（`:174,:177`），feature 合成一处（`:157`）。两树都另有 1 处 `OwnerRawSink.write` physical call（master `session.ts:566`／feature `:600`），**按 inventory 口径不计入本类** | **master**：`driver.ts:952, 956, 1052, 1269, 1321`；`keepalive-anchor.ts:406`；`live-reconcile.ts:174, 177`；`chat-completions/handler-v4.ts:662, 833, 839`<br>**feature**：`driver.ts:948, 952, 1048, 1265, 1319`；`keepalive-anchor.ts:375`；`live-reconcile.ts:157`；`chat-completions/handler-v4.ts:662, 833, 839` |
 | A-1 子集：`[DONE]` **3 点** | 是 A-1 的**子集**，不重复计数 | `chat-completions/handler-v4.ts:662, 833, 839`。目标是 `terminate` 而非 `emitGeneric` |
-| A-2 named synthetic APIs | **28 点／7 文件**（`writeSynthetic` 22 / `writeKeepalive` 3 / `writeSyntheticEnvelope` 3） | 20 个直接 handler 点 + decorator 转发 3 点（`live-reconcile.ts:183,184,185` master／`:160,161,162` feature）+ owner→raw fallback 3 点（feature `session.ts:588,592,596`）+ 2 个 fallback 调用点 |
-| A-3 allocation／anchor commands、caller heartbeat controls、旧 terminal／finalize | 见 T4.8／T4.10；`terminate`+`finalize` 共 **53 点／6 文件** | `driver.ts:1222`（freeze）、`:1348,1350,1372,1405`（suspend／resume）；51 个 handler `finalize` |
-| A-4 client-facing direct transport 的 **post-owner** 成员 | 9 个 direct transport 词法点中的 2 个 | `responses/ws.ts:165`（error／truncation，混合 helper）、`:667`（control-with-inflight） |
+| A-2 named synthetic APIs | **28 点／7 文件**（`writeSynthetic` 22 / `writeKeepalive` 3 / `writeSyntheticEnvelope` 3）。**两树 AST 实测同为 28／7**，这一类不因树而异 | 20 个直接 handler 点 + decorator 转发 3 点（master `live-reconcile.ts:183,184,185`／feature `:160,161,162`）+ owner→raw fallback 3 点（master `session.ts:554,558,562`／feature `:588,592,596`）+ 2 个 fallback 调用点 |
+| A-3 allocation／anchor commands、caller heartbeat controls、旧 terminal／finalize | 见 T4.8／T4.10；`terminate`+`finalize` 共 **53 点／6 文件**（**两树 AST 实测相同**：session 2、messages 15、CC 11、Responses HTTP 11、WS 4、Gemini 10） | `driver.ts:1222`（freeze）、`:1348,1372`（suspend）、`:1350,1405`（resume）——均为 master 行号；51 个 handler `finalize` |
+| A-4 client-facing direct transport 的 **post-owner** 成员 | 9 个 generation direct transport 词法点中的 2 个（**两树实测各 11 个 `writeSSE`／`ws.send` 调用，扣掉 `ws/broadcast.ts` 的 2 个管理 broadcast 后为 9**） | `responses/ws.ts:165`（error／truncation，混合 helper）、`:667`（control-with-inflight）——两树同行 |
 | **pre-owner allowlist（不得归零）** | | `responses/ws.ts:595`（connection-cap admission）、`messages/error-shaping-glue.ts:131`（AUQ）、`warmup.ts:214,230,243` |
 | B 集 | 旧 session public 面 9 项；production consumer 当前 **`noteWinner` 1 点** | `driver.ts:880`（master）／`:888`（feature） |
-| C 集 | `getDownstreamDeliverySession` production **调用点 9 处／4 文件**（定义 1 处不计入） | master 定义 `delivery/session.ts:83`；调用 `driver.ts:875, 880, 1016, 1100` + 本地 helper `:944-948`，`messages/handler-v4.ts`、`live-reconcile.ts`、`keepalive-anchor.ts` 各若干（**逐点以 T0.7 的 AST 输出为准，别照抄本表**） |
+| C 集 | `getDownstreamDeliverySession` production **调用点**（定义 1 处不计入）。⚠️ **两树人口不同**：**master 7 处／4 文件**、**feature 9 处／4 文件**——HANDOVER 记的「9 处／4 文件」锚在 **feature** 树，别拿它对 master 计数 | **master 定义** `delivery/session.ts:83`；调用 `driver.ts:875, 948, 1016, 1100`、`messages/handler-v4.ts:1375, 1680`、`keepalive-anchor.ts:311`（**`driver.ts:880` 是 `noteWinner`，走 `getDownstreamDeliverySessionForPortOrSink`，属 B 集不属 C 集**；master 的 `live-reconcile.ts` **没有** lookup）<br>**feature** 定义 `:90`；调用 `driver.ts:883, 944, 1012, 1097`、`messages/handler-v4.ts:1112, 1422, 1772`、`live-reconcile.ts:139`、`keepalive-anchor.ts:280`<br>**逐点以 T0.7 的 AST 输出为准，别照抄本表** |
 | D 集 | **不能靠列举穷尽，以 T0.7 闭包输出为准** | sanity 成员：`makeReconcilingSink`（master `live-reconcile.ts:164`）、两个 injector 工厂（master `keepalive-anchor.ts:297, 382`）、各 raw factory 返回类型、driver／handler 中带 capability 类型的 helper |
 
 ### 本 commit 的门
@@ -409,7 +416,11 @@ feature 树另有 `"before-real"` 模式 2 处，**不计入这 10 个 terminal 
 cd /home/xp/src/copilot-api-js && PHASE=post exp/inter-block-anchor-allocator/q1-locations.sh
 ```
 
-必须 rc=0。**裁决之后照默认 `PHASE=pre` 跑会全红；那不是脚本坏了，是跑错了相位。** 八处位置分三类，**别混**：`statement`（今天就说了 Q1 的事）／`destination`（今天**按设计是空的**，裁决必须把它填上——把 destination 的空当成「已同步」正是最容易犯的错）／`constraint`（限制有哪些选项可选，即 §4.8）。
+必须 rc=0。**裁决之后照默认 `PHASE=pre` 跑会全红；那不是脚本坏了，是跑错了相位。**
+
+脚本冻结的位置有两组，**别只顾 RFC**：**RFC 内 8 个小节**（`EXPECTED`：§4.7／§4.8／§4.9／§4.12／§7.8／§9.1／§9.2／§9.4）＋ **2 份载体文档**（`CARRIERS`：`KICKOFF.md` 的「裁决：Q1」行、`HANDOVER.md` 的 T2 标题行）。载体漏改的后果具体而实在——KICKOFF 是新会话贴进去的第一条消息，它还写着「未裁」就会让下个会话拿一个已裁的问题去重新问用户。
+
+RFC 内 8 处分三类，**别混**：`statement`（今天就说了 Q1 的事）／`destination`（今天**按设计是空的**，裁决必须把它填上——把 destination 的空当成「已同步」正是最容易犯的错，§4.7 与 §9.2 属此类）／`constraint`（限制有哪些选项可选，即 §4.8）。
 
 ⚠️ **`rc=0` 不是完备性证明，已有反例。** 谓词是自然语言，可被没人想到的措辞绕过——**§4.8 至今不被该谓词命中**（命中数 0），它是评审换一条结构性问题找出来的。`rc=0` 的意思只是「冻结名单之外没有新小节开始使用我们冻结的词汇」，即**漂移绊线**。扩写 RFC 遥测部分的人**仍欠一次人工通读**，且**换轴提问比加词有效**。
 
@@ -433,18 +444,18 @@ per-command rich records 最合适的 request-scoped owner（`PipelineInfo` 摘�
 
 | 符号 | `file:line` | **树** | 用途 |
 |---|---|---|---|
-| dimension names 与 cardinality | `packages/telemetry/src/dimension-names.ts:19-64` | 两树（RFC 锚在 feature，master 需重取） | T5.2 的 registry；**穷尽 `Record<TelemetryDimensionName,...>` 使新增 spec 但漏 extractor 时 compile-red** |
+| dimension names 与 cardinality | `packages/telemetry/src/dimension-names.ts:19-64`（`TelemetryDimensionName` 定义在 `:56`） | **两树同行**——`packages/telemetry` 与 `src/lib/observability` 在两树间**无差异**（`git diff --name-only master...feat` 不含它们） | T5.2 的 registry；**穷尽 `Record<TelemetryDimensionName,...>` 使新增 spec 但漏 extractor 时 compile-red** |
 | extractor（依赖 `HistoryEntryData`／ctx） | `src/lib/observability/telemetry-dimensions.ts:1-25,141-170` | 同上 | T5.2 |
 | settled-request 聚合叶 | `packages/telemetry/src/request-telemetry.ts:337-407` | 同上 | 只收 resolved key bag 与 measure inputs，开放 `Record<string, number>` counters |
-| feature measures 单一 name registry | `packages/telemetry/src/request-telemetry.ts:115-149,856-931` | 同上 | T5.6 的 `FEATURE_MEASURE_NAMES` |
+| feature measures 单一 name registry | `packages/telemetry/src/request-telemetry.ts:115-149`（`FEATURE_MEASURE_NAMES` 在 `:124`）、`:856-931` | 同上 | T5.6 的 `FEATURE_MEASURE_NAMES` |
 | telemetry store / rollup | `packages/telemetry/src/telemetry/store.ts:34-95,104-133`、`rollup.ts:1-20,95-147` | 同上 | T5.6 的四层；rollup 对可加 columns 泛型迭代 |
 | `TelemetrySink`（唯一 registry feed） | `src/lib/observability/sinks/telemetry.ts:31-43,49-103` | 同上 | T5.1 的接入点 |
-| `recordSettled`（runtime 唯一入口） | `packages/telemetry/src/runtime.ts:67-100,145-150` | 同上 | 同上 |
+| `recordSettled`（runtime 唯一入口） | `packages/telemetry/src/runtime.ts:67-100`（`recordSettled` 签名在 `:86`）、`:145-150` | 同上 | 同上 |
 | 现状 generic write 失败日志 | `delivery/session.ts:311-355` | feature | §4.10 的「答不了」对照：统一记 `[delivery] owner wire write failed` |
 | 现状 snapshot | `delivery/types.ts:44-51` | feature | 只有 state／winner／wire ledger／rounds／总 `writeCount` |
-| 现状 partial History | `src/lib/history/types.ts:212-218` | 两树 | 只有 `operation + cause + committed` |
+| 现状 partial History | `src/lib/history/types.ts:217`（**feature only**——`wirePartialDelivery` 在 master 的 `src/` 零命中，是 M1 引入的） | feature `2c339784` | 只有 `operation + cause + committed` |
 
-> ⚠️ **上表 `packages/telemetry/**` 与 `observability/**` 的行号取自 RFC §4.7（锚在 feature `854421d4`）。master 上必须重取**：
+> ⚠️ **上表 `packages/telemetry/**` 与 `observability/**` 的行号取自 RFC §4.7（原锚在 feature `854421d4`），已在 master `c259dd9d` 上逐条复核在范围内且命中目标符号**；这两个目录在两树间无差异。master 每天前进，**引用前重取**：
 > ```bash
 > cd /home/xp/src/copilot-api-js && rg -n "TelemetryDimensionName|FEATURE_MEASURE_NAMES|recordSettled" packages/telemetry/src src/lib/observability
 > ```
@@ -475,7 +486,7 @@ production 旧 API population **持续为零**；telemetry **不新增 emission 
 | **T6.2** | 删除 **A 集**已零调用的定义：`ClientSink.write*` generation surface、`WireBlockAllocationPort`、caller envelope factory、legacy anchor fields／bridge、`commandPortActivation`、raw production exports。**删之前先跑一遍全套确认真的零引用**（TypeScript 会替你找剩余引用，别猜）。 | typecheck 与全套绿。<br>⚠️ **`commandPortActivation` 在两棵树的 `src/` 都零命中**（实测）。它要么是 Commit 1～4 期间新引入的名字，要么是 RFC 的前瞻性命名——**到达本 commit 时先确认它存在再删，不存在就在 plan 里标注并回报**，别为了让清单成立而发明一个符号。 |
 | **T6.3** | 删除 **B 集**已零 consumer 的旧 `DownstreamDeliverySession` public surface：`writeScaffold`、`noteWinner`、`noteUpstreamRoundStarted`、`noteUpstreamRoundEnded`。**先确认 `identity`／`snapshot` 若内部保留，它们不作为旧 session handle 暴露给 driver。** | 绿。 |
 | **T6.4** | 删除 **C 集**已零 resolution consumer 的 exported `getDownstreamDeliverySession`、等价 WeakMap lookup 及 allowlist 外 construction exports。 | 绿。 |
-| **T6.5** | **R-10 硬门**：test-only adversarial seam **仍能在旧边界造出分裂**，而新 production route **拒绝同一行为**。**mutation：把 `allocation-outside-owner-control` 改走合法 owner，或删掉 adversarial seam——coverage gate 必须红。** | 绿。<br>false-red 对照：**owner-backed array adapter 与 raw transport byte units 合法存在，不被零命中 guard 误杀**。<br>锚点：`tests/pipeline/allocation-outside-owner-control.it.test.ts`（feature 树存在，master 需核实）。 |
+| **T6.5** | **R-10 硬门**：test-only adversarial seam **仍能在旧边界造出分裂**，而新 production route **拒绝同一行为**。**mutation：把 `allocation-outside-owner-control` 改走合法 owner，或删掉 adversarial seam——coverage gate 必须红。** | 绿。<br>false-red 对照：**owner-backed array adapter 与 raw transport byte units 合法存在，不被零命中 guard 误杀**。<br>锚点：`tests/pipeline/allocation-outside-owner-control.it.test.ts`（**两树皆存在**，已实测）。 |
 | **T6.6** | **R-6 的 C6 段**：import guard 断言 `src/lib/pipeline/delivery/**` 对 concrete codec 模块零 import，**并提供一条故意加入违规 import 的正样本，确认守卫真实转红**。**单纯 `rg` 零命中不自证。** | 绿。<br>🔴 **本段等级未定，见 §11 待裁项 #1。** 若裁为 `辅助门`，则 import guard 失去阻断力；若裁为 `production 硬门`，Commit 6 通过条件变严。**别自己填。** |
 | **T6.7** | 独立 guard 裁决记录齐全：本 commit 删除或放宽的每一条 guard 都有独立 reviewer 或用户裁决记录（CLAUDE.md `[hard]`）。 | 记录落盘。 |
 
@@ -578,7 +589,9 @@ O-3／O-5／O-7／O-9 以及 O-4 的完整验收明确留给后续 M2～M8／P7�
 
 ## 11. 待裁项 —— 本文不解决，如实转述并标为待裁
 
-> 以下四项**都不是实施者可自判的**。走 RFC §9.1／§9.4 的 open question 机制交主会话／用户，按 `scope-ambiguity-then-ask` 摆带量化影响的选项而非 yes/no。
+> 以下五项**都不是实施者可自判的**。走 RFC §9.1／§9.4 的 open question 机制交主会话／用户，按 `scope-ambiguity-then-ask` 摆带量化影响的选项而非 yes/no。
+>
+> **#1～#3 是 RFC 与已有裁决自带的停点**（如实转述，不解决）；**#4／#5 是本 plan 撰写过程中新发现的**，RFC 里没有对应停点。
 
 ### #1 R-6 的等级读不出来（**RFC 既有缺口**）
 
@@ -625,8 +638,8 @@ O-3／O-5／O-7／O-9 以及 O-4 的完整验收明确留给后续 M2～M8／P7�
 
 | 候选 | 做法 | 量化影响 |
 |---|---|---|
-| 1 | 把 feature `2c339784` merge 进 master，以 merge commit 为 entry | M1 与三处缺陷修复都在；**代价是 merge 本身会引入需要解决的语义冲突**（feature 改了 `driver.ts` 106 行、`handler-v4.ts` 124 行、`session.ts` 64 行，master 同期前进 47 commit），且 merge 后须重跑入场条件的 15 次 |
-| 2 | 把 master rebase 到 feature 上（或 cherry-pick 三处缺陷修复到 feature），以结果为 entry | 同样得到两者；**代价是 rebase 47 commit 的冲突面比 merge 大**，且改写了已发布的 master 历史（本项目共享主树，**不可接受**） |
+| 1 | 把 feature `2c339784` merge 进 master，以 merge commit 为 entry | M1 与缺陷修复都在；**代价是 merge 本身会引入需要解决的语义冲突**（feature 改了 `driver.ts` 106 行、`handler-v4.ts` 124 行、`session.ts` 64 行，master 同期前进数十个 commit），且 merge 后须重跑入场条件的 15 次 |
+| 2 | 把 master rebase 到 feature 上（或 cherry-pick 缺陷修复到 feature），以结果为 entry | 同样得到两者；**代价是 rebase 数十个 commit 的冲突面比 merge 大**，且改写了已发布的 master 历史（本项目共享主树，**不可接受**） |
 | 3 | 在 master 上从零重塑 M1（不复用 feature 树代码） | 无 merge 冲突；**代价是丢弃 M1 的实现与其 8 个 commit 的测试，与用户裁决「M1 由 cutover 重塑而非丢弃」相冲突**——「重塑」不是「重写」 |
 | 4 | 起隔离 worktree、以 feature 为基先合入 master，再在该 worktree 上做 entry 与全部 8 个 commit | 冲突在隔离树内解决、不污染共享主树；**代价是 cutover 期间 master 会继续前进，最终合回时有第二次 merge**——但这正是本项目 `docs-merge-before-execute` 的既定形状（文档先合主线，执行走隔离 worktree 新分支） |
 
@@ -645,7 +658,7 @@ O-3／O-5／O-7／O-9 以及 O-4 的完整验收明确留给后续 M2～M8／P7�
 | 未采纳 | 为什么 |
 |---|---|
 | 把 Commit 4 拆成「先收 raw authority、后迁 producer」两个 commit | RFC §7.1 明确否定该分段；拆开必然产生「旧路径已禁而新 command 尚不可用」的中间态，或需要一个按 payload 猜 intent 的临时 adapter——§7.13 逐字禁止 |
-| 在锚点表里只写一棵树的行号，另一棵「读者自己换算」 | 两棵树互不为祖先，行号偏移**不是常数**（`client-sink.ts` 偏 9 行、`handler-v4.ts` 偏 7～40 行不等、`driver.ts` 有正有负）。换算必错 |
+| 在锚点表里只写一棵树的行号，另一棵「读者自己换算」 | 两棵树互不为祖先，行号偏移**不是常数**——实测：`client-sink.ts` 偏 +9 或 +11（**同一文件内就不一致**）、`handler-v4.ts` 偏 +7／+8／+38／+40、`driver.ts` 有正有负（+8／−4／−3／+2）。换算必错 |
 | 把 R-6 两段都填「辅助门」以消掉待裁项 | 矩阵 §0 明确禁止压平；这是「最省事的修法正好破坏它要保护的东西」的典型 |
 | 自行判定 §4.8 的「动态 compound 名称」不涵盖选项 A | 无 RFC 出处的自裁（HANDOVER T4 证伪①）。两种读法都成立时，实施者的判断没有外部 oracle |
 | 把 `commandPortActivation` 当成既有符号写进删除清单并给 `file:line` | **实测两棵树的 `src/` 都零命中**。给一个不存在的符号编行号，正是「跨一条没读过的缝规定行为」 |
