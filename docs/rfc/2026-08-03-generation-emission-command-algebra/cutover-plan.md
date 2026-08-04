@@ -357,26 +357,34 @@ production **不构造新 owner**；**不维护 shadow lease／mapping／ledger�
 
 ### 前置停门（缺任一项不得发布）
 
+> 🔴 **RFC §7.12 那句同样适用于本 commit，逐字照抄**（Commit 3 有它、Commit 4 此前没有，而**压力全在这里**——Commit 4 被反复强调「唯一原子发布点、不许拆」，最容易在缺证据时现场编一个签名）：
+>
+> **到达本 commit kickoff 时先读证据槽；没有 `file:line` 或 PoC 结论，就交付已完成部分与具体问题、结束本轮，不生成猜测签名。**
+
 1. **Q5 逐帧预测 diff 已复核**（§9.2 Q5、§6.3）：产出旧 golden → 预测新序列的逐帧 diff，逐项标明保留／删除／移动及理由，与 Q5 批准范围核对。**若 heartbeat 重臂时点无法证明逐 tick 中性，其预测 diff 必须纳入 Q5 批准范围。** 缺 diff 或实测超出预测即停止，**不得借已接受的 Q5 吞并额外 wire 漂移**。
-2. **所有 Commit 3 调查证据齐全**（§9.3 第 1／2／3／4／5／7／8 项 + already-rendered builder／LegHandle／heartbeat 逐点映射），每项有 `file:line` 或 PoC 结论。
+2. **§9.3 全部调查证据齐全**——见下面的 **T4.0a～T4.0d**。⚠️ **Commit 3 对第 1／2／5／8 项只被要求交「最小子集／候选／方案」，「完整证据槽」那一列的值是「C4 publish kickoff」——那是一个时刻，不是一个负责人。** 因此这四条在本 commit 有显式 task，**不得在 kickoff 时口头判「C3 交的就是它被要求交的，所以齐全」**。
 3. **§7.2 的 A／B／C／D 四集闭包输出仍是最新**（T0.7 产物在 Commit 1～3 期间机械相等）。
 
 ### 逐 task
 
-> **顺序说明**：T4.1～T4.3 是停门与骨架，T4.4～T4.12 是 §7.7「完整切换清单」的 12 项，T4.13～T4.16 是验收。**它们在同一个 semantic commit 内完成**，task 划分是施工顺序，不是发布粒度。
+> **顺序说明**：**T4.0a～T4.0d 补齐调查**，T4.1～T4.3 是停门与骨架，T4.4～T4.12 是 §7.7「完整切换清单」的 12 项，T4.13～T4.16 是验收。**它们在同一个 semantic commit 内完成**，task 划分是施工顺序，不是发布粒度。**中途不产生 commit ⇒ 进度文件必须逐 task 更新并单独提交**（§0.5）。
 
 | id | 先写什么失败测试 → 预期怎么红 | 实现什么 → 预期怎么绿 |
 |---|---|---|
+| **T4.0a** | **§9.3 第 1 项补完**（C1／C3 只取了最小子集）：最终 composition factory **是否需要 export**；哪些调用方拿 `GenerationDeliveryOwner<P>`、哪些只拿 `CommandsFor<P>`；returned object **不得**能恢复 raw emitter。**这是 T4.2 第一步就要写的东西**——答不上就按上面那句停下回报。 | 结论带 `file:line` 或 PoC 落盘。 |
+| **T4.0b** | **§9.3 第 2 项补完**：HTTP／WS generation runner 实际可返回的 typed operation result 是什么；**WS close intent 产生时是否已具备 keep-open／code／reason**；socket composition 在哪个时点消费它。**T4.11 依赖它。** | 同上。 |
+| **T4.0c** | **§9.3 第 5 项补完**（C3 只要求「记录候选」）：production authorization 双命中 mutation 的**精确注入点**——改哪一个 production registration primitive。**T4.9 的 R-5 production 硬门依赖它。** | 同上。**若完成 mapping 接线后仍不可达**，必须点名是「单一拒重复 key registry 从结构上消除了该状态」还是「witness 未触达」——前者改用 registry insert-conflict production mutation，**后者停下修 oracle**。 |
+| **T4.0d** | **§9.3 第 8 项补完**（C3 只要求「记录迁移方案」）：raw factory test imports 如何迁到 test-only entrypoint，**65 个 raw factory tests 仍覆盖 transport bytes／observation**，而 production barrel 不泄漏 capability。**T4.15 依赖它。** | 同上。 |
 | **T4.1** | **Q5 停门**（非测试）。产出逐帧 diff 预测，含 heartbeat 重臂时点的逐 tick 比较（输入来自 T3.5）。**先拿 T0.9 冻结的 goldens 做基座**。 | diff 落盘并复核。缺材料**不得进入后续 task**。 |
-| **T4.2** | 10 个 outer roots 创建唯一 owner 与 private raw emitter。**先断言「recorder 包裹的是 composition root 实际取得的 `stream`／`ws` handle」**——用 T0.3 的 direct-send seam 复验它仍看得见绕过 owner 的发送。**注入 owner 的 test raw adapter 不用于本判定。** | 10 roots 切换；**删除 raw 第二 serializer 与 raw heartbeat**。转绿。 |
+| **T4.2** | **8 个 sink 构造点**创建唯一 owner 与 private raw emitter；**2 个 Anthropic 接线点**改为接收 owner／command port（**不自己构造**）。⚠️ **别读成「10 个并列 root 各建一个 owner」**——`messages/handler-v4.ts:574`／`:658` 与 `:1192` 是**同一条链上的两层**（前两者调用 `makeAnchoredSseSink`，后者在其内部），照 10 个各建会让**单条 Anthropic 请求出现两个 owner**，直接违反本 commit 的「一个 serializer／一个 timer／一次 sampling／一次 emit」。<br>**先断言「recorder 包裹的是 composition root 实际取得的 `stream`／`ws` handle」**——用 T0.3 的 direct-send seam 复验它仍看得见绕过 owner 的发送。**注入 owner 的 test raw adapter 不用于本判定。** | 8 构造 + 2 接线切换；**删除 raw 第二 serializer 与 raw heartbeat**。转绿。<br>**验收计数是 `8 + 2`，不是裸 `10`**——R-1 的覆盖面按 8 个构造点核对（四 vendor HTTP + WS），Anthropic 那 2 个接线点单独断言「未构造 owner」。 |
 | **T4.3** | 断言 runner／driver／terminal helper／decorator 参数里**没有** raw handle、closure 返回值与可恢复 registry 里也没有；且**不存在能从已传出的 sink／wrapper／observer 反查完整 session、allocation port 或 raw authority 的 lookup**。**先用 test-only adversarial runner 试着 resolve 回 session，确认它做不到**——窄 port 若可被 lookup 还原，只是形式收窄。 | 转绿。**源码／类型扫描只作 presence ratchet**。 |
 | **T4.4** | 所有 ordinary／winner／live common producers 切 `emitGeneric`；generic pings 切 `emitKeepalive`；可解析未知 event 按 unknown passthrough。**先写 adversarial `emitGeneric(block-stop)`，断言它在 external write 前以 `CommandEffectMismatchError` 失败。** | 转绿。mutation 恢复 generic passthrough 后，**wire／owner-state 双 oracle 转红**。 |
 | **T4.5** | 默认 on-demand／`empty_text` 切 `openAnchor`，`enveloped_ping` 切 `openMessageEnvelope`，anchor pulse／close 切 indexed commands。**先写「`enveloped_ping` 误走 `openAnchor`」的 mutation**，断言它因多 block／index shift／extra stop 转红——以 `tests/anthropic/enveloped-ping.it.test.ts` 为正样本基座。 | 转绿。`openMessageEnvelope` **不分配 block index、不创建 lease**；`openAnchor` 的 `prelude.kind` 至少区分 `captured` 与 `fabricated`，**owner 铸 provenance，caller 不自报 marker**。 |
-| **T4.6** | 5 个 `beginLeg` lexical sites 按 3 kinds × 4 scenarios 接好 LegHandle；primary、hedge winner、continuation、recovery 的 real start／delta／stop 全部切 `openRealBlock`／`writeRealBlockFrame`。**先删掉 caller offset 算术再跑 O-1**，确认没有第二条 legacy arithmetic 旁路（C4 双偏移作废）。 | 转绿。**删除任一 open／write 接线或恢复 caller offset 算术，必须由 O-1／O-2／cross-leg oracle 转红。** |
+| **T4.6** | 5 个 `beginLeg` lexical sites 按 **T3.3 的关系覆盖表**（**不是 60 格笛卡尔积**，见 T3.3）接好 LegHandle；primary、hedge winner、continuation、recovery 的 real start／delta／stop 全部切 `openRealBlock`／`writeRealBlockFrame`。**先删掉 caller offset 算术再跑 O-1**，确认没有第二条 legacy arithmetic 旁路（C4 双偏移作废）。 | 转绿，覆盖判据沿用 T3.3 的三条（5 site 各有正向 witness／3 kind 全覆盖／4 scenario 全覆盖；不适用格具名 `N/A` + 控制流证据）。<br>**mutation 逐 site**：删除任一 site 的 open／write 接线或恢复 caller offset 算术，**该 site 专属的生产路径**必须由 O-1／O-2／cross-leg oracle 转红。 |
 | **T4.7** | close→real-start 用 **compound command**。**先在不 park 的对照中推进 N×interval 断言恰有 N 个 keepalive**（活性对照，缺它则下一条是假绿）；再把 tick 停在旧两 operation 之间，断言新 production live HTTP 只见相邻 `stop@leaseIndex → real-start@next` 且 `maxOpen<=1`。 | 转绿。**mutation 拆回两个 enqueue 必须产生插帧并红**；`wireTorn` 时按已裁决语义只 close、不 reserve／不写 real start，返回 typed `ClosedThenWireTorn`——调用方**不得**把它误解为「零副作用失败」。 |
 | **T4.8** | 所有 `freezeHeartbeat`／`suspendHeartbeat`／`resumeHeartbeat`／`close` 切 `runEmissionBatch` 或 terminal；owner 成为唯一 timer。**先写「双 timer」与「恢复 raw timer」两条 mutation 确认它们红。** | 转绿。**caller 拿不到 timer 控制方法。** |
 | **T4.9** | **production 双命中 mutation**（R-5 硬门）：改 production reservation／registration 路径，使新 real mapping 的 `wireIndex` 错误地等于当前 active anchor lease 的 index，或第二个 real mapping 复用第一个的 index；然后从**真实 Anthropic HTTP production path** 驱动「先打开 anchor 再开始 real block」或「同腿／跨腿保留两个 active real blocks」。 | 预期 `AuthorizationCardinalityError` 在阶段 A 抛出、**external attempt 为 0**、anchor lease／已有 mapping 不变、reservation rollback、frontier 不额外 commit。<br>⚠️ **若采用单一拒重复 key registry**，mutation 改为破坏 insert-conflict 守卫。**若完成 mapping 接线后仍不可达**，必须点名是「registry 从结构上消除了该状态」还是「witness 未触达」——前者改用 registry insert-conflict production mutation，**后者停下修 oracle**（§9.3 第 5 项）。 |
-| **T4.10** | 20 个 handler synthetic terminal、3 个 `[DONE]`、normal terminal、Responses WS post-owner errors 切 `terminate → recordForwarded → ctx settle → finalize(result)`；**10 个 anchor terminal-close 决策被 `terminate` 吸收**。**先写「`terminate` 跳过 active anchor balancing」的 mutation**，断言 O-2 出现终局悬挂 block。 | 转绿。result 表达 `emitted \| suppressed_client_gone \| suppressed_session_terminating`；socket composition **最后**执行 close intent。**不再在 caller 先 close。** |
+| **T4.10** | 20 个 handler synthetic terminal、3 个 `[DONE]`、normal terminal、Responses WS post-owner errors 切 `terminate → recordForwarded → ctx settle → finalize(result)`；**10 个 anchor terminal-close 决策被 `terminate` 吸收**。<br>🔴 **一条「`terminate` 跳过 active anchor balancing」的 mutation 不够**——它只证明 owner 内部会平衡，**证不了每个 handler 都已从旧 write 迁入 owner**，更覆盖不到无 anchor 的 CC／Responses／Gemini terminal。RFC §5.3 逐字要求「**逐 handler** 恢复旧 write mutation 必须红」，并单列 3 个 `[DONE]` **任一站点**恢复 handler write 必须红。<br>**因此先冻结 site manifest**：20 synthetic terminal + 3 `[DONE]` + normal terminal + WS post-owner，**每个 site 一行**，各配一条 production-route witness。 | 转绿。result 表达 `emitted \| suppressed_client_gone \| suppressed_session_terminating`；socket composition **最后**执行 close intent。**不再在 caller 先 close。**<br>**mutation 逐 site**：对每个 site 分别删除其 command 接线、或恢复它的旧 write，**该 site 专属的 witness 必须转红**。<br>**另加一条 owner 内部 mutation**：`terminate` 跳过 active anchor balancing → O-2 出现终局悬挂 block。<br>⚠️ **A 集静态归零继续保留，但不得替代行为 mutation**——它只证明旧 symbol 不出现，证不了某站点没有漏发 terminal 或改用了等价 direct transport。<br>⚠️ **`OwnerTerminalDecision`／`settleMessagesOwnerFailure` 已经在做 terminal 分流**（M1 引入），本 task 与它的关系见 §11 #6，**别在它之外再造一条**。 |
 | **T4.11** | Responses WS direct transport 按 authority 分域：post-owner error／truncation 不再 direct send，改走 `terminate` ＋ typed socket close intent；control-with-inflight 先协调 active owner。**先在 keep-open socket 上启动 parked generation 并打开 anchor，再发坏 JSON、超长、并发 create，并推进 idle clock**——断言无 orphan anchor、active operation 先被协调、**无 5 分钟 idle timer 误杀**。 | 转绿。**真正 pre-owner admission／AUQ／warmup writers 保持独立且 observer 证零 owner，不纳入归零集。** |
 | **T4.12** | 收口 **C 集**：删除 production `getDownstreamDeliverySession(sink)` 及等价 lookup 引用。**先写「恢复 sink lookup」的 authority-leak mutation**，确认 production bypass witness 咬得住。<br>收口 **D 集**：闭包命中的每个声明改为只接／只返回 command port 与窄 observer，或退化为纯 transform。**判据不是「签名里不再出现 `ClientSink` 这个名字」**——那会被局部同构 interface 再 cast 绕过（本项目已实测过），而是**运行期没有任何生产路径能从这些声明拿到 emission 能力**。 | 转绿。`createDownstreamDeliverySession` 只留 composition-root 私有 construction allowlist。 |
 | **T4.13** | 迁移旧 session observation／provenance consumers：`noteWinner` 改用 `selectWinner(source)` 或等价窄 observation command。**先写 FF-2 描述的退化实现**——让 `selectWinner` 只更新 snapshot／telemetry 而不参与 provenance 铸造——断言 CC／Azure／Responses HTTP／Responses WS／Gemini **五种 profile 的 forwarded provenance 全部转为 `legacy`** 并使 R-14 转红。 | 转绿：五种 profile 各从真实 route 跑一次**有 winner 的 generation**，断言 forwarded 记录携带**真实** candidate／dispatch identity 且与该请求实际胜出的 candidate 一致；同一断言在 **hedge winner 场景重跑一次**。<br>false-red 对照：Anthropic profile 经 `beginLeg` 得到 provenance 仍绿；**无 winner 的路径（pre-owner 拒绝、warmup）不要求 candidate provenance，不得被本条误伤**。<br>`noteUpstreamRoundStarted`／`noteUpstreamRoundEnded`／`writeScaffold` 当前零 production consumers，**不继续暴露给 driver**。新 observer 不得返回 session／command port／raw handle，也不得产生 wire effect。 |
@@ -386,63 +394,74 @@ production **不构造新 owner**；**不维护 shadow lease／mapping／ledger�
 
 ### factory／锚点表
 
-> **本表的 master 行号取于 master `c259dd9d`（`src/` 自 `fcf10eca` 起未变），feature 行号取于 `2c339784`；两侧均已逐条实测。** master 每天前进，**引用前重取**。
+> 全部锚 **master `80a4b6fc`**（merge 后），路径简写见 §0.1a。master 每天前进，**引用前重取**。
 
-#### 10 个 outer composition roots（T4.2）
+#### composition 点：**8 个构造 + 2 个接线**（T4.2）
 
-| # | `file:line`（**master**） | `file:line`（feature `2c339784`） | 说明 |
-|---|---|---|---|
-| 1 | `routes/messages/handler-v4.ts:567` | `:574` | delayed-commit Anthropic anchored composition |
-| 2 | `routes/messages/handler-v4.ts:650` | `:658` | immediate Anthropic anchored composition |
-| 3 | `routes/chat-completions/handler-v4.ts:523` | `:523` | direct CC SSE delivery |
-| 4 | `routes/chat-completions/handler-v4.ts:760` | `:760` | reverse CC SSE delivery |
-| 5 | `routes/responses/handler-v4.ts:351` | `:351` | direct Responses SSE delivery |
-| 6 | `routes/responses/handler-v4.ts:600` | `:600` | reverse Responses SSE delivery |
-| 7 | `routes/gemini/handler-v4.ts:429` | `:429` | direct Gemini SSE delivery |
-| 8 | `routes/gemini/handler-v4.ts:634` | `:634` | reverse Gemini SSE delivery |
-| 9 | `routes/responses/ws.ts:358` | `:358` | Responses WS delivery |
-| 10 | `routes/messages/handler-v4.ts:1152` | `:1192` | `makeAnchoredSseSink` 内创建 delivery sink（outer-layer helper） |
+⚠️ **别把它读成 10 个并列 root。** Anthropic 那条链是**两层**：`:574`／`:658` 调用私有 helper `makeAnchoredSseSink`（定义 `messages/handler-v4.ts:1124`），helper 在 `:1192` 内部调 `makeDeliverySseSink`。**一次 Anthropic 请求走 `(:574 或 :658) → :1192`。**
 
-**Anthropic 的 composition root 必须落在 `makeAnchoredSseSink` 所在层**（master `handler-v4.ts:1086`／feature `:1124`），**不能只下沉到 `makeDeliverySseSink`**——只有这一层同时拥有 allocator／wire state／anchor state／injector、History callbacks 和 raw `stream`。它返回 `{ sink; anchorState; anchorHooks }`（master `:1101` 的返回类型标注）。
+**A. sink 构造点 —— owner 在此构造，共 8 个**
 
-内部 factory chaining 另 4 点：**master** `client-sink.ts:487`（`makeSseSink`）、`:488`（`createDownstreamDeliverySession`）、`:687`（`makeWsSink`）、`:688`（`createDownstreamDeliverySession`）；**feature** `:496,497,698,699`。
+| # | `file:line` | 说明 |
+|---|---|---|
+| 1 | `chat-completions/handler-v4.ts:523` | direct CC SSE delivery |
+| 2 | `chat-completions/handler-v4.ts:760` | reverse CC SSE delivery |
+| 3 | `responses/handler-v4.ts:351` | direct Responses SSE delivery |
+| 4 | `responses/handler-v4.ts:600` | reverse Responses SSE delivery |
+| 5 | `gemini/handler-v4.ts:429` | direct Gemini SSE delivery |
+| 6 | `gemini/handler-v4.ts:634` | reverse Gemini SSE delivery |
+| 7 | `responses/ws.ts:358` | Responses WS delivery |
+| 8 | `messages/handler-v4.ts:1192` | **Anthropic**：`makeAnchoredSseSink` 内部创建 delivery sink |
+
+**B. Anthropic 调用点 —— 改为接收 owner／command port，共 2 个**
+
+| # | `file:line` | 说明 |
+|---|---|---|
+| 9 | `messages/handler-v4.ts:574` | delayed-commit：`const { sink, anchorState, anchorHooks } = makeAnchoredSseSink(stream, …)` |
+| 10 | `messages/handler-v4.ts:658` | immediate：同上 |
+
+**Anthropic 的 composition root 必须落在 `makeAnchoredSseSink` 这一层**（定义 `messages/handler-v4.ts:1124`，返回类型标注在 `:1140`），**不能只下沉到 `makeDeliverySseSink`**——只有这一层同时拥有 allocator／wire state／anchor state／injector、History callbacks 和 raw `stream`。**它是 #8 的宿主函数，不是第 11 个 root。**
+
+内部 factory chaining 另 4 点：`client-sink.ts:496`（`makeSseSink`）、`:497`（`createDownstreamDeliverySession`）、`:698`（`makeWsSink`）、`:699`（`createDownstreamDeliverySession`）。
 
 #### raw factory 与 physical adapter（T4.2／T4.3）
 
-| 符号 | master | feature | 处置 |
-|---|---|---|---|
-| `makeSseSink(stream): OwnerRawSink` | `client-sink.ts:179`（返回类型在 master 是 `ClientSink`，**feature 才是 `OwnerRawSink`**） | `:188` | 私有化：**不 export、不挂 returned object** |
-| raw SSE physical `stream.writeSSE` | `client-sink.ts:200` | `:209` | recorder 必须**位于它之下** |
-| `makeWsSink(ws)` | `client-sink.ts:608` | `:619` | 同上 |
-| raw WS physical `ws.send` | `client-sink.ts:634` | `:645` | 同上 |
-| `makeDeliverySseSink` | `client-sink.ts:485` | `:494` | 被 composition root 反转取代 |
-| `makeDeliveryWsSink` | `client-sink.ts:685` | `:696` | 同上 |
-| `makeArraySink` | `client-sink.ts:709` | `:720` | **test 面**：Commit 0 分四类时归 owner-backed array adapter |
+| 符号 | `file:line` | 处置 |
+|---|---|---|
+| `makeSseSink(stream): OwnerRawSink` | `client-sink.ts:188` | 私有化：**不 export、不挂 returned object** |
+| raw SSE physical `stream.writeSSE` | `client-sink.ts:209` | recorder 必须**位于它之下** |
+| `makeWsSink(ws)` | `client-sink.ts:619` | 同上 |
+| raw WS physical `ws.send` | `client-sink.ts:645` | 同上 |
+| `makeDeliverySseSink` | `client-sink.ts:494` | 被 composition root 反转取代 |
+| `makeDeliveryWsSink` | `client-sink.ts:696` | 同上 |
+| `makeArraySink` | `client-sink.ts:720` | **test 面**：T0.8 归 owner-backed array adapter |
 
 #### 10 个 anchor terminal-close 决策（T4.10）
 
-⚠️ **两棵树用的是不同的原语，名字与行号都不同——这是本表最容易混写的一格。**
+原语是 `closeAnchorViaOwner(sink, anchorHooks, ctx, "terminal")`（**M1 引入**，定义 `messages/handler-v4.ts:1105`；driver 侧是局部 helper，定义 `driver.ts:1178`）。
 
-| 树 | 原语 | handler 8 处 | driver 2 处 |
-|---|---|---|---|
-| **master** | `closeAnchorIfOpen(sink, anchorHooks, anchorState)`（定义 `keepalive-anchor.ts:259`） | `messages/handler-v4.ts:693, 1416, 1526, 1553, 1607, 1716, 1754, 1798` | `driver.ts:1438, 1609`（局部 helper 定义在 `:1181`） |
-| **feature `2c339784`** | `closeAnchorViaOwner(..., "terminal")` | `messages/handler-v4.ts:702, 1464, 1584, 1623, 1688, 1808, 1848, 1893` | `driver.ts:1436, 1611`（helper 定义在 `:1178`） |
+| 位置 | `file:line` |
+|---|---|
+| handler 8 处 | `messages/handler-v4.ts:702, 1464, 1584, 1623, 1688, 1808, 1848, 1893` |
+| driver 2 处 | `driver.ts:1436, 1611` |
 
-feature 树另有 `"before-real"` 模式 2 处，**不计入这 10 个 terminal 决策**（HANDOVER 计数事实的集合边界）。
+另有 `"before-real"` 模式 2 处（`driver.ts:1236, 1314`），**不计入这 10 个 terminal 决策**。
 
 #### 旧 emission API 的归零对象（T4.4／T4.10／T4.12）
 
-| 集合 | 人口（口径见 inventory） | master 锚点抽样 |
+| 集合 | 人口（**已在 merge 后 master 上实测**） | 锚点 |
 |---|---|---|
-| A-1 `ClientSink.write` | ⚠️ **两树人口不同，RFC 的「10 点／4 文件」锚在 feature**：**master 11 点／4 文件**、**feature 10 点／4 文件**。差在 live reconciler——master 是两处循环写（`:174,:177`），feature 合成一处（`:157`）。两树都另有 1 处 `OwnerRawSink.write` physical call（master `session.ts:566`／feature `:600`），**按 inventory 口径不计入本类** | **master**：`driver.ts:952, 956, 1052, 1269, 1321`；`keepalive-anchor.ts:406`；`live-reconcile.ts:174, 177`；`chat-completions/handler-v4.ts:662, 833, 839`<br>**feature**：`driver.ts:948, 952, 1048, 1265, 1319`；`keepalive-anchor.ts:375`；`live-reconcile.ts:157`；`chat-completions/handler-v4.ts:662, 833, 839` |
+| A-1 `ClientSink.write` | **10 点／4 文件**。另有 1 处 `OwnerRawSink.write` physical call（`delivery/session.ts:600`），**按 inventory 口径不计入本类** | `driver.ts:948, 952, 1048, 1265, 1319`；`keepalive-anchor.ts:375`；`live-reconcile.ts:157`；`chat-completions/handler-v4.ts:662, 833, 839` |
 | A-1 子集：`[DONE]` **3 点** | 是 A-1 的**子集**，不重复计数 | `chat-completions/handler-v4.ts:662, 833, 839`。目标是 `terminate` 而非 `emitGeneric` |
-| A-2 named synthetic APIs | **28 点／7 文件**（`writeSynthetic` 22 / `writeKeepalive` 3 / `writeSyntheticEnvelope` 3）。**两树 AST 实测同为 28／7**，这一类不因树而异 | 20 个直接 handler 点 + decorator 转发 3 点（master `live-reconcile.ts:183,184,185`／feature `:160,161,162`）+ owner→raw fallback 3 点（master `session.ts:554,558,562`／feature `:588,592,596`）+ 2 个 fallback 调用点 |
-| A-3 allocation／anchor commands、caller heartbeat controls、旧 terminal／finalize | 见 T4.8／T4.10；`terminate`+`finalize` 共 **53 点／6 文件**（**两树 AST 实测相同**：session 2、messages 15、CC 11、Responses HTTP 11、WS 4、Gemini 10） | `driver.ts:1222`（freeze）、`:1348,1372`（suspend）、`:1350,1405`（resume）——均为 master 行号；51 个 handler `finalize` |
-| A-4 client-facing direct transport 的 **post-owner** 成员 | 9 个 generation direct transport 词法点中的 2 个（**两树实测各 11 个 `writeSSE`／`ws.send` 调用，扣掉 `ws/broadcast.ts` 的 2 个管理 broadcast 后为 9**） | `responses/ws.ts:165`（error／truncation，混合 helper）、`:667`（control-with-inflight）——两树同行 |
-| **pre-owner allowlist（不得归零）** | | `responses/ws.ts:595`（connection-cap admission）、`messages/error-shaping-glue.ts:131`（AUQ）、`warmup.ts:214,230,243` |
-| B 集 | 旧 session public 面 9 项；production consumer 当前 **`noteWinner` 1 点** | `driver.ts:880`（master）／`:888`（feature） |
-| C 集 | `getDownstreamDeliverySession` production **调用点**（定义 1 处不计入）。⚠️ **两树人口不同**：**master 7 处／4 文件**、**feature 9 处／4 文件**——HANDOVER 记的「9 处／4 文件」锚在 **feature** 树，别拿它对 master 计数 | **master 定义** `delivery/session.ts:83`；调用 `driver.ts:875, 948, 1016, 1100`、`messages/handler-v4.ts:1375, 1680`、`keepalive-anchor.ts:311`（**`driver.ts:880` 是 `noteWinner`，走 `getDownstreamDeliverySessionForPortOrSink`，属 B 集不属 C 集**；master 的 `live-reconcile.ts` **没有** lookup）<br>**feature** 定义 `:90`；调用 `driver.ts:883, 944, 1012, 1097`、`messages/handler-v4.ts:1112, 1422, 1772`、`live-reconcile.ts:139`、`keepalive-anchor.ts:280`<br>**逐点以 T0.7 的 AST 输出为准，别照抄本表** |
-| D 集 | **不能靠列举穷尽，以 T0.7 闭包输出为准** | sanity 成员：`makeReconcilingSink`（master `live-reconcile.ts:164`）、两个 injector 工厂（master `keepalive-anchor.ts:297, 382`）、各 raw factory 返回类型、driver／handler 中带 capability 类型的 helper |
+| A-2 named synthetic APIs | **28 点／7 文件**（`writeSynthetic` 22 / `writeKeepalive` 3 / `writeSyntheticEnvelope` 3，AST 实测） | 20 个直接 handler 点 + decorator 转发 3 点（`live-reconcile.ts:160,161,162`）+ owner→raw fallback 3 点（`delivery/session.ts:588,592,596`）+ 2 个 fallback 调用点 |
+| A-3 allocation／anchor commands、caller heartbeat controls、旧 terminal／finalize | 见 T4.8／T4.10；`terminate`+`finalize` 共 **53 点／6 文件**（AST 实测：session 2、messages 15、CC 11、Responses HTTP 11、WS 4、Gemini 10） | `driver.ts:1220`（freeze）、`:1346,1370`（suspend）、`:1348,1403`（resume）；51 个 handler `finalize` |
+| A-4 client-facing direct transport 的 **post-owner** 成员 | 9 个 generation direct transport 词法点中的 2 个（**实测 11 个 `writeSSE`／`ws.send` 调用，扣掉 `src/lib/ws/broadcast.ts` 的 2 个管理 broadcast**——注意第二个是 `rawWs.send`，用 `\bws\.send\(` 会漏） | `responses/ws.ts:165`（error／truncation，混合 helper）、`:667`（control-with-inflight） |
+| **pre-owner allowlist（不得归零）** | | `responses/ws.ts:595`（connection-cap admission）、`error-shaping-glue.ts:131`（AUQ）、`warmup.ts:214,230,243` |
+| B 集 | 旧 session public 面 9 项（`delivery/session.ts:57-67`）；production consumer 当前 **`noteWinner` 1 点** | `driver.ts:888`（经 `getDownstreamDeliverySessionForPortOrSink`，定义 `:940`） |
+| C 集 | `getDownstreamDeliverySession` production **调用点 9 处／4 文件**（定义 1 处不计入）。⚠️ **`driver.ts:888` 是 `noteWinner`，属 B 集不属 C 集** | 定义 `delivery/session.ts:90`；调用 `driver.ts:883, 944, 1012, 1097`、`messages/handler-v4.ts:1112, 1422, 1772`、`live-reconcile.ts:139`、`keepalive-anchor.ts:280`。<br>**逐点以 T0.7 的 AST 输出为准，别照抄本表** |
+| D 集 | **不能靠列举穷尽，以 T0.7 闭包输出为准** | sanity 成员：`makeReconcilingSink`（`live-reconcile.ts:138`）、两个 injector 工厂（`keepalive-anchor.ts:266, 351`）、各 raw factory 返回类型、driver／handler 中带 capability 类型的 helper |
+
+> ⚠️ **这些计数是本轮在 `80a4b6fc` 上的实测快照，不是冻结契约。** 按 `freeze-hit-set-not-zero-hits`，**执行时以 T0.7／T0.11 的机器输出（冻结命中集合）为准**，本表只作 sanity 对照；数字与集合冲突时以集合为准并修本文。
 
 ### 本 commit 的门
 
