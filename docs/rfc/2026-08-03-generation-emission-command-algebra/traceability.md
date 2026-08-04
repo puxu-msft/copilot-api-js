@@ -28,20 +28,20 @@
 
 | ID | 归属 commit · 等级 | 依赖能力就位于 | 生产入口（可达路径） | plan task | 状态 |
 |---|---|---|---|---|---|
-| R-1 | C0 `辅助门`（recorder 自检）· C4 `production 硬门` | C4 authority publish | 四 vendor HTTP root + Responses WS | _TBD_ | IN-SCOPE |
-| R-2 | C1 `辅助门`（classifier 三态 unit）· C4 `production 硬门` | C4 authority publish | 每 profile 从真实 route 发 generic／keepalive／terminal | _TBD_ | IN-SCOPE |
-| R-3 | C0 `辅助门`（旧缺陷 characterization，红）· C4 `production 硬门` | C4 indexed 接线 | 真实 Anthropic live consumer | _TBD_ | IN-SCOPE |
-| R-4 | C4 `production 硬门` | C4 compound command | FakeClock + 真实 route | _TBD_ | IN-SCOPE |
-| R-5 | C1 `辅助门`（test-only 预损坏 state）· C4 `production 硬门` | **C4 mapping 接线**——§4.6 `design.md:378` 写明 `withAllocatedRealBlock`／`writeBlockFrame` 当前**零 production 调用者**，双命中 mutation 在 cutover 前**不可达** | production registration mutation | _TBD_ | IN-SCOPE |
-| R-6 | C1 · C6 · **等级未定，见 §5** | C1 types / C6 import guard | compile fixtures + import guard | _TBD_ | IN-SCOPE |
-| R-7 | C4 `production 硬门` | C4 typed terminal result | 各 vendor direct／reverse、H2、H3、truncation | _TBD_ | IN-SCOPE |
-| R-8 | C4 `production 硬门` | C4 WS owner + FakeClock seam | Responses WS control-with-inflight | _TBD_ | IN-SCOPE |
-| R-9 | C5 `辅助门`（诊断，不计 behavior 等级） | C5 telemetry schema（**Q1 未裁则本段不可开工**） | 同 command 驱动 success／preflight／wire partial | _TBD_ | IN-SCOPE |
-| R-10 | C6 `production 硬门` | C6 legacy 删除完成 | inventory AST 重跑 + test-only adversarial seam | _TBD_ | IN-SCOPE |
-| R-11 | **每 commit 共同门**（C0～C8 各一次） | 无（沿用现有 fixture） | `exp/inter-block-anchor-allocator/byte-equivalence.sh` | _TBD_ | IN-SCOPE |
-| R-12 | C4 `production 硬门`（更新 golden）· C7 `辅助门`（审计） | C4 前先过 Q5 逐帧 diff 停门 | O-1／O-2／真 SDK 先跑，再同步 golden | _TBD_ | IN-SCOPE |
-| R-13 | C0 `production 硬门`（Q3 已裁 A） | 无（现有 route 即可） | 真实 warmup route | _TBD_ | IN-SCOPE |
-| R-14 | C4 `production 硬门` | C4 authority publish + `selectWinner` provenance | Chat Completions／Azure／Responses HTTP／Responses WS／Gemini **各一次有 winner 的 generation**，hedge winner 场景重跑 | _TBD_ | IN-SCOPE |
+| R-1 | C0 `辅助门`（recorder 自检）· C4 `production 硬门` | C4 authority publish | 四 vendor HTTP root + Responses WS | T0.3 · T4.2 T4.3 | IN-SCOPE |
+| R-2 | C1 `辅助门`（classifier 三态 unit）· C4 `production 硬门` | C4 authority publish | 每 profile 从真实 route 发 generic／keepalive／terminal | T1.4 · T4.4 T4.14 | IN-SCOPE |
+| R-3 | C0 `辅助门`（旧缺陷 characterization，红）· C4 `production 硬门` | C4 indexed 接线 | 真实 Anthropic live consumer | T0.6 · T4.5 T4.7 | IN-SCOPE |
+| R-4 | C4 `production 硬门` | C4 compound command | FakeClock + 真实 route | T4.7 | IN-SCOPE |
+| R-5 | C1 `辅助门`（test-only 预损坏 state）· C4 `production 硬门` | **C4 mapping 接线**——§4.6 `design.md:378` 写明 `withAllocatedRealBlock`／`writeBlockFrame` 当前**零 production 调用者**，双命中 mutation 在 cutover 前**不可达** | production registration mutation | T2.3 · T4.9 | IN-SCOPE |
+| R-6 | C1 · C6 · **等级未定，见 §5** | C1 types / C6 import guard | compile fixtures + import guard | T1.1 T1.2 T1.3 · T6.6 | IN-SCOPE |
+| R-7 | C4 `production 硬门` | C4 typed terminal result | 各 vendor direct／reverse、H2、H3、truncation | T4.10 | IN-SCOPE |
+| R-8 | C4 `production 硬门` | C4 WS owner + FakeClock seam | Responses WS control-with-inflight | T4.11 | IN-SCOPE |
+| R-9 | C5 `辅助门`（诊断，不计 behavior 等级） | C5 telemetry schema（**Q1 未裁则本段不可开工**） | 同 command 驱动 success／preflight／wire partial | T5.3 T5.7 | IN-SCOPE |
+| R-10 | C6 `production 硬门` | C6 legacy 删除完成 | inventory AST 重跑 + test-only adversarial seam | T6.1 T6.5 | IN-SCOPE |
+| R-11 | **每 commit 共同门**（C0～C8 各一次） | 无（沿用现有 fixture） | `exp/inter-block-anchor-allocator/byte-equivalence.sh` | T0.2 | IN-SCOPE |
+| R-12 | C4 `production 硬门`（更新 golden）· C7 `辅助门`（审计） | C4 前先过 Q5 逐帧 diff 停门 | O-1／O-2／真 SDK 先跑，再同步 golden | T4.1 T4.16 · T7.1 | IN-SCOPE |
+| R-13 | C0 `production 硬门`（Q3 已裁 A） | 无（现有 route 即可） | 真实 warmup route | T0.4 T0.5 | IN-SCOPE |
+| R-14 | C4 `production 硬门` | C4 authority publish + `selectWinner` provenance | Chat Completions／Azure／Responses HTTP／Responses WS／Gemini **各一次有 winner 的 generation**，hedge winner 场景重跑 | T4.13 | IN-SCOPE |
 
 **R-14 单独说一句**：`R-1～R-13 无一断言非 Anthropic 的 candidate provenance`，缺它则该回归**全绿交付**。它曾经被加进 §10.2 却**没有进 §10.4 的必过清单**——「新增判据」与「完成判定」是两处，只改一处就是这个后果。本表的反向 trace 就是为了让这类孤儿自动变红。
 
@@ -69,17 +69,17 @@
 
 **单一事实源是 RFC §9.4**，本表只做归属映射，不复制停点措辞。
 
-| # | 缝（摘） | 证据槽齐全于 | 可提前供 |
-|---|---|---|---|
-| 1 | 最终 composition factory 是否需要 export、谁拿 owner 谁只拿 command port | **C4 publish kickoff** | C1～C3 取最小子集 |
-| 2 | HTTP／WS runner 可返回的 typed operation result；WS close intent 产生时是否已具备 | **C4 publish kickoff** | C1～C3 |
-| 3 | 每个 indexed command 调用时 producer 实际持有的 format-native data／handle／builder | **C4 publish kickoff** | C1～C3 |
-| 4 | Responses output-item boundary 的精确 effect taxonomy | **C4 publish kickoff** | C1～C3 |
-| 5 | production authorization 双命中 mutation 的精确注入点 | **C4 publish kickoff** | C1～C3 |
-| 6 | per-command rich records 的 request-scoped owner 与 settle 冻结点 | **C5 之前** | — |
-| 7 | C4 authority publish 的逐点可表达性（五类 handler、8 个 anchor terminal-close、2 个 driver） | **C4 publish kickoff** | C1～C3 |
-| 8 | raw factory test imports 迁到 test-only entrypoint，65 个 raw factory tests 仍覆盖 transport bytes | **C4 publish kickoff** | C1～C3 |
-| + | already-rendered builder / LegHandle / heartbeat 逐点映射 | **C4 publish kickoff** | C1～C3 |
+| # | 缝（摘） | 证据槽齐全于 | 可提前供 | plan task |
+|---|---|---|---|---|
+| 1 | 最终 composition factory 是否需要 export、谁拿 owner 谁只拿 command port | **C4 publish kickoff** | C1～C3 取最小子集 | T1.5 · T4.2 |
+| 2 | HTTP／WS runner 可返回的 typed operation result；WS close intent 产生时是否已具备 | **C4 publish kickoff** | C1～C3 | T1.6 · T4.11 |
+| 3 | 每个 indexed command 调用时 producer 实际持有的 format-native data／handle／builder | **C4 publish kickoff** | C1～C3 | T3.3 · T4.6 |
+| 4 | Responses output-item boundary 的精确 effect taxonomy | **C4 publish kickoff** | C1～C3 | T3.2 |
+| 5 | production authorization 双命中 mutation 的精确注入点 | **C4 publish kickoff** | C1～C3 | T2.2 · T4.9 |
+| 6 | per-command rich records 的 request-scoped owner 与 settle 冻结点 | **C5 之前** | — | T5.1 · T5.5 |
+| 7 | C4 authority publish 的逐点可表达性（五类 handler、8 个 anchor terminal-close、2 个 driver） | **C4 publish kickoff** | C1～C3 | T3.5 · T4.10 |
+| 8 | raw factory test imports 迁到 test-only entrypoint，65 个 raw factory tests 仍覆盖 transport bytes | **C4 publish kickoff** | C1～C3 | T0.8 · T4.15 |
+| + | already-rendered builder / LegHandle / heartbeat 逐点映射 | **C4 publish kickoff** | C1～C3 | T3.1 · T3.4 · T4.8 |
 
 **到达 commit kickoff 时先读证据槽；没有 `file:line` 或 PoC 结论，就交付已完成部分与具体问题、结束本轮，不生成猜测签名。**
 
@@ -111,9 +111,40 @@
 
 **每个 plan task 必须能指回一个 RFC 出处**；指不回的，要么是 RFC 漏了、要么是 task 多余，**两种都得当场裁，不得默默保留**。
 
-本节在 `cutover-plan.md` 写成后由 `traceability-check.py` 校验：
+上面 §1／§3 已经覆盖了由 **R-\*／O-\* 验收判据**驱动的 task。但 plan 里还有一类 task **不由任何验收 id 驱动**，而由 RFC §7 的 **commit invariant／越界判据／归零审计／文档同步**驱动——它们同样必须指回 RFC，否则就是「task 多余」。下表补齐这一类，**逐条给出处**。
 
-- 上面各表的 `plan task` 列不得留 `_TBD_`；
+| plan task | RFC 出处 | 它在那里承担什么 |
+|---|---|---|
+| T0.1 | §7.1「整个序列的入场条件位于 Commit 0 之前」 | entry commit 上连跑 ≥15 次；**本 plan §11 待裁项 #4 另提「entry 落在哪棵树」这一 RFC 未回答的缝** |
+| T0.7 | §7.2 全节（双向不动点闭包、A／B／C／D 四集、C-D tie-break） | 冻结旧 generation delivery 的完整能力面；**Commit 0 与 Commit 4 均 fail loud** 的判据来源 |
+| T0.9 | §7.10 + §9.2 Q5 | 冻结 goldens 清单，作为 Commit 4 逐帧预测 diff 的比对基座与 Commit 7 审计对象 |
+| T1.7 / T2.9 / T3.7 | §7.4「准备commit（Commit 1～3）共同的越界判据」第 2 条 | 属性存在性快照逐 commit 比对（`sink.writeAnchor ?? sink.write` 那类分派，方法存在性变了就改行为而 call-site 一行不动） |
+| T2.1 | §4.1 `OpenAnchorLease` + §7.5 目标清单 | 把裸 `openAnchorIndex` 升级为 canonical record；lease 默认不暴露成 caller 传回的 public token |
+| T2.4 | §7.5 目标清单「non-enqueue internal command primitives、owner serializer」+ §2.4「排序唯一」 | 所有 commands 共用一个 serializer |
+| T2.5 | §3.3 `runEmissionBatch` + §7.5 | owner-scoped coordination；caller 拿不到 timer 控制方法 |
+| T2.6 | §10.1「所有 FakeClock 否定断言还必须先有 unpark 活性对照」+ §5.2 heartbeat 行 | 活性对照是 parked 否定断言的前置，缺它则假绿 |
+| T2.7 | §3.3 `terminate`／`finalize(result)` + §7.5 | first terminal wins、terminal exactly once、finalize 不是第二 emission 入口 |
+| T2.8 | §2.2 唯一 choke point + §7.5「raw emitter 接口」 | raw emitter 只消费 validated envelope |
+| T3.6 | §7.6 目标清单「10-root cutover harness 与 test-only handle recorder」 | isolated test composition 中完整演练，production 侧零变化 |
+| T4.12 | §7.7 切换清单第 9／10 项（收口 C 集与 D 集） | resolution 归零、construction 收敛 allowlist；D 集判据是**运行期拿不到 emission 能力**而非签名不含某类型名 |
+| T5.2 | §4.8 字段基数与存储分界 | bounded 字段的 canonical registry／normalizer；`wireIndex`／`commandId` 只进 detail |
+| T5.4 | §4.9 compound command phase 与 partial 表达 | `phase` 四值 + 各 count measures；`closedThenWireTorn` 不得降成普通 `ok:false` |
+| T5.6 | §4.9 末段「现有SQLite schema按固定additive columns持久化」 | 增列并验证 raw／hourly／daily／cumulative 四腿；不重建 command event 表 |
+| T6.2 / T6.3 / T6.4 | §7.9 目标清单（A／B／C 三集的 definitions／exports 删除） | 分别对应 A 集、B 集、C 集 |
+| T6.7 | §7.7 切换清单第 11 项「任何guard删除或放宽有独立裁决记录」+ CLAUDE.md `[hard]` | 删除或放宽既有 guard 必须交独立 reviewer 或用户裁决 |
+| T7.2 | §7.10「删除确被取代的旧fixture／helper」 | 删前先确认它守的不变量已由新 oracle 承载 |
+| T7.3 | §7.10「不改production、不首次recapture」 | `git diff -- src/` 为空 |
+| T8.1 | §6.2 一致性矩阵末列「需要同步的权威位置」+ §7.11 | README C1～C11 回填；C1／C3／C4／C8 语义不变 |
+| T8.2 | §6.3「C1～C11之外的已冻结可观察量」 | anchor 精确帧序登记为独立契约，**不得包装成 C2／C7 的实现细节** |
+| T8.3 | §7.11 目标清单「DESIGN」 | 活的架构现状表与类型架构节 |
+| T8.4 | §8 范围外表的 M2～M8 行 + §10.3 O-9「绝不删除」 | 旧 plan supersede 关系；supersede ≠ 删除 |
+| T8.5 | §7.11「旧plan supersede关系」+ §7.9 population 审计 | 权威文档 manifest + 按契约轴检索 + 双向 trace |
+| T8.6 | §8 范围外表前两行 | 两项 deferred 记入 `docs/todo/deferred-backlog.md` |
+| T8.7 | §7.11「独立merged-state review」 | 跨 phase 集成缝、doc↔code 对账 |
+
+**机械校验**（由 `traceability-check.py` 执行，不接受人工声称）：
+
+- §1／§3 各表的 `plan task` 列不得留 `_TBD_`；
 - plan 里的每个 task id 必须在本文件被引用至少一次；
 - 两个方向的差集都必须为空。
 
