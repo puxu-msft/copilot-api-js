@@ -293,7 +293,17 @@ export interface RawHttpRequest {
 }
 
 export type OwnerFailureReason = "client-gone" | "session-terminating" | "wire-torn"
-export type OwnerResult<T> = Readonly<{ ok: true; value: T }> | Readonly<{ ok: false; reason: OwnerFailureReason; committed: boolean }>
+export type OwnerOperation =
+  | "allocate-anchor"
+  | "allocate-real-block"
+  | "begin-leg"
+  | "close-anchor-before-real"
+  | "close-anchor-terminal"
+  | "write-block-frame"
+export type OwnerResult<T> =
+  | Readonly<{ ok: true; value: T }>
+  | Readonly<{ ok: false; reason: "client-gone"; committed: boolean }>
+  | Readonly<{ ok: false; reason: "session-terminating" | "wire-torn"; committed: false }>
 
 export type WireWriteSpec =
   | Readonly<{ kind: "real"; frame: ClientFrame }>
@@ -770,17 +780,6 @@ export interface ClientSink {
    * Omitted by sinks with no heartbeat (WS/array) — callers fall back to {@link write}.
    */
   writeSyntheticEnvelope?(frame: ClientFrame): Promise<void>
-  /**
-   * Write a proxy-synthesized buffered-anchor STRUCTURAL frame (the empty-text anchor's
-   * `content_block_start@0` / `content_block_stop@0`) to the wire AND sample it into the forwarded
-   * track WITH a `synthetic:"anchor"` marker — so history/UI/logs never mistake the injected anchor
-   * block for real upstream content. Unlike {@link writeKeepalive} this ALSO updates the sink's
-   * open-block state (lights `openBlock={0,text}` on the start so the next heartbeat tick picks a
-   * block-aware empty text_delta; clears it on the stop), exactly as {@link write} does. The anchor's
-   * OWN empty text_delta is a heartbeat → written via {@link writeKeepalive}, not this. Omitted by
-   * sinks with no heartbeat (WS/array) — callers fall back to {@link write}.
-   */
-  writeAnchor?(frame: ClientFrame): Promise<void>
   /**
    * RECOVERABLY stop the currently armed heartbeat timer without closing the sink. A later
    * {@link resumeHeartbeat} after {@link suspendHeartbeat} MUST be able to arm a fresh interval.

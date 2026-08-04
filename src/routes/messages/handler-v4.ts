@@ -39,6 +39,7 @@ import type {
 } from "~/lib/history/store"
 import type { Model } from "~/lib/models/client"
 import type { FeatureKind } from "~/lib/observability"
+import type { OwnerTerminalDecision } from "~/lib/pipeline/delivery/owner-failure"
 import type { RequestEnvelope } from "~/lib/pipeline/envelope"
 import type {
   //
@@ -47,6 +48,7 @@ import type {
   ClientFrame,
   ClientSink,
   DriverRequestResult,
+  OwnerOperation,
   UpstreamStream,
 } from "~/lib/pipeline/types"
 import type {
@@ -69,7 +71,6 @@ import {
   anchorDeltaFrame,
   anchorStartFrame,
   anchorStopFrame,
-  closeAnchorIfOpen,
   createGenerationWireIndexAllocator,
   createGenerationWireState,
   isAnthropicContentBlockStart,
@@ -150,7 +151,12 @@ import {
 import { makeDeliverySseSink } from "~/lib/pipeline/client-sink"
 import { createCommittedBlocksLedger } from "~/lib/pipeline/committed-blocks-ledger"
 import { getContinuationBuilder } from "~/lib/pipeline/continuation-request-builder"
-import { getDownstreamDeliverySession } from "~/lib/pipeline/delivery/session"
+import { classifyOwnerFailure } from "~/lib/pipeline/delivery/owner-failure"
+import {
+  //
+  DeliveryOwnerError,
+  getDownstreamDeliverySession,
+} from "~/lib/pipeline/delivery/session"
 import { createPipelineDriver } from "~/lib/pipeline/driver"
 import {
   //
@@ -193,6 +199,7 @@ import {
   shapePostcommitErrorFrame,
   shapeRawStreamErrorFrame,
 } from "./error-shaping-glue"
+import { settleMessagesOwnerFailure } from "./owner-failure-settlement"
 import {
   //
   anthropicErrorFrame,
@@ -571,6 +578,7 @@ async function runMessagesDriver(c: Context, args: RunMessagesDriverArgs): Promi
         clientAbortSignal: clientAbort.signal,
         resolvedName,
         reqId: codec.getContext()?.id ?? "unknown",
+        ctx: env.ctx,
         ...clientFirstRealSinkOpts(env),
       })
       try {
@@ -654,6 +662,7 @@ async function runMessagesDriver(c: Context, args: RunMessagesDriverArgs): Promi
       clientAbortSignal: clientAbort.signal,
       resolvedName,
       reqId: codec.getContext()?.id ?? "unknown",
+      ctx: commitCtx,
       // 首包埋点：/v1/messages 客户端格式恒 "anthropic"（延迟提交路径无 env 变量在 scope）。
       ...(commitCtx && clientFirstRealSinkOpts({ clientFormat: "anthropic", ctx: commitCtx })),
     })
@@ -665,7 +674,7 @@ async function runMessagesDriver(c: Context, args: RunMessagesDriverArgs): Promi
     // synthetic empty-text anchor block during the stall (§10.1.5 C1) and the request THEN fails
     // POST-COMMIT, the client is otherwise left with an OPEN content_block@0 — a protocol-incomplete
     // stream. Every branch below that writes an `event: error` frame first closes the anchor off via the
-    // SHARED {@link closeAnchorIfOpen} primitive (stop@0, synthetic:"anchor") so the block structure stays
+    // SHARED owner close primitive (allocated stop index, synthetic:"anchor") so the block structure stays
     // balanced. The SAME primitive collapses the pre-pump (here) + pump terminal (pumpAnthropicStreamingV4)
     // + live-reconcile + driver-buffered close-off sites onto one `anchorState.anchorClosed` guard — the
     // anchor is closed exactly once no matter which terminus fires first (idempotent; inert when no anchor
@@ -690,7 +699,17 @@ async function runMessagesDriver(c: Context, args: RunMessagesDriverArgs): Promi
       // write-attempt time ("recorded == attempted-to-send"), so the snapshot is complete regardless.
       const writeTerminalThenSettle = async (ctx: ReturnType<typeof codec.getContext>, frame: ClientFrame | undefined, settle: () => void): Promise<void> => {
         try {
-          await closeAnchorIfOpen(sink, anchorHooks, anchorState) // balance an open pre-response anchor before the error terminus (§10.5)
+          const decision = await closeAnchorViaOwner(sink, anchorHooks, ctx, "terminal")
+          if (decision && decision.kind !== "fail-loud") {
+            ctx?.setForwardedResponse({ sseEvents: [...forwardedSseEvents] })
+            if (decision.kind === "client-aborted") ctx?.abort(resolvedName)
+            return
+          }
+          if (decision?.kind === "fail-loud" && decision.reason === "session-terminating") {
+            ctx?.setForwardedResponse({ sseEvents: [...forwardedSseEvents] })
+            ctx?.fail(resolvedName, decision.error)
+            return
+          }
           if (frame) await sink.writeSynthetic?.(frame)
         } catch {
           // best-effort terminal write — fall through to snapshot + settle
@@ -1083,6 +1102,25 @@ function buildAnthropicAnchorHooks(enabled: boolean): AnchorHooks | undefined {
  * `stream_keepalive_mode` is not `empty_text` the injector + hooks are undefined and the heartbeat is a
  * plain ping (byte-identical to before); `heartbeatSec <= 0` omits the heartbeat entirely.
  */
+async function closeAnchorViaOwner(
+  sink: ClientSink,
+  anchorHooks: AnchorHooks | undefined,
+  ctx: RequestEnvelope["ctx"] | undefined,
+  mode: "before-real" | "terminal",
+): Promise<OwnerTerminalDecision | undefined> {
+  if (!anchorHooks) return undefined
+  const port = getDownstreamDeliverySession(sink)?.allocationPort
+  if (!port?.wireState) return undefined
+  const operation: OwnerOperation = mode === "terminal" ? "close-anchor-terminal" : "close-anchor-before-real"
+  try {
+    const closed = await port.closeOpenAnchor((index, envelope) => envelope.anchor(anchorHooks.stopFrame(index)), mode)
+    return closed.ok ? undefined : classifyOwnerFailure(closed, operation, { settled: ctx?.settled ?? false })
+  } catch (error) {
+    if (!(error instanceof DeliveryOwnerError)) throw error
+    return classifyOwnerFailure({ ok: false, reason: "wire-torn", committed: false }, operation, { settled: ctx?.settled ?? false })
+  }
+}
+
 function makeAnchoredSseSink(
   stream: Parameters<typeof makeDeliverySseSink>[0],
   args: {
@@ -1092,6 +1130,7 @@ function makeAnchoredSseSink(
     clientAbortSignal: AbortSignal
     resolvedName: string
     reqId: string
+    ctx: RequestEnvelope["ctx"] | undefined
     // 首包埋点（spec 2026-07-14 §3.2）：客户端首个真实内容帧 → ctx firstReal（透传给 makeSseSink）。
     isRealContentFrame?: (frame: ClientFrame) => boolean
     onFirstRealContent?: () => void
@@ -1106,6 +1145,7 @@ function makeAnchoredSseSink(
     clientAbortSignal,
     resolvedName,
     reqId,
+    ctx,
     isRealContentFrame,
     onFirstRealContent,
     onGenerationFrame,
@@ -1151,6 +1191,13 @@ function makeAnchoredSseSink(
     : undefined
   const sink = makeDeliverySseSink(stream, {
     wireState,
+    legacyAnchorMirror: anchorState,
+    ...(ctx && {
+      recordWirePartialDelivery: (diag) => {
+        ctx.recordWirePartialDelivery(diag)
+        ctx.recordFeature("wire-partial-delivery", diag)
+      },
+    }),
     onForwarded,
     streamStartMs,
     ...(isRealContentFrame && { isRealContentFrame }),
@@ -1413,7 +1460,19 @@ async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): 
       // reconcileLiveFrame never got to close the anchor, so it is still OPEN. Close it off (stop@0) BEFORE
       // the error frame or the client is left with a dangling block. Idempotent + inert (shared anchorClosed
       // guard): a no-op when reconcile already closed it, or when no anchor was injected.
-      await closeAnchorIfOpen(sink, anchorHooks, anchorState)
+      const partial = buildAnthropicResponseData(acc, model)
+      const ownerDecision = await closeAnchorViaOwner(sink, anchorHooks, env.ctx, "terminal")
+      if (
+        settleMessagesOwnerFailure(
+          ownerDecision,
+          env,
+          acc.model || model,
+          recordForwarded,
+          { usage: partial.usage, stop_reason: partial.stop_reason, stopDetails: partial.stopDetails, content: partial.content },
+          { cause: error },
+        )
+      )
+        return
       await sink
         .writeSynthetic?.(
           shapeRawStreamErrorFrame(
@@ -1431,7 +1490,6 @@ async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): 
       recordForwarded()
       // C1: preserve the partial content accumulated before the throw (mirrors the
       // truncation/refusal branches) so pre-abort thinking blocks aren't lost to null.
-      const partial = buildAnthropicResponseData(acc, model)
       env.ctx.fail(acc.model || model, error, {
         usage: partial.usage,
         stop_reason: partial.stop_reason,
@@ -1523,7 +1581,18 @@ async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): 
       // §10.5 close-off (I-1): balance any still-open anchor before the error terminus. Almost always inert
       // here — an unrepairable tool_use requires a real content_block_start (which reconcile already closed
       // the anchor at) — but the shared idempotent guard keeps every error-frame terminus uniformly safe.
-      await closeAnchorIfOpen(sink, anchorHooks, anchorState)
+      const ownerDecision = await closeAnchorViaOwner(sink, anchorHooks, env.ctx, "terminal")
+      if (
+        settleMessagesOwnerFailure(
+          ownerDecision,
+          env,
+          acc.model || model,
+          recordForwarded,
+          { usage: partial.usage, stop_reason: partial.stop_reason, stopDetails: partial.stopDetails, content: partial.content },
+          { upstreamSucceeded: true, cause: new Error(`unrepairable malformed tool_use input (tool=${tool})`) },
+        )
+      )
+        return
       await sink
         .writeSynthetic?.(anthropicErrorFrame("invalid_request_error", `Tool call input for ${tool} was malformed and could not be repaired`))
         .catch(() => undefined)
@@ -1550,7 +1619,19 @@ async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): 
       // content_block_start — a delayed-commit stall injected the anchor, then the upstream closed silently.
       // reconcile never closed the anchor, so close it off (stop@0) before the error frame. Idempotent (a
       // real first block already closed it → no-op) + inert (no anchor injected → byte-equivalent).
-      await closeAnchorIfOpen(sink, anchorHooks, anchorState)
+      const truncationError = new Error("upstream stream truncated: closed without message_stop")
+      const ownerDecision = await closeAnchorViaOwner(sink, anchorHooks, env.ctx, "terminal")
+      if (
+        settleMessagesOwnerFailure(
+          ownerDecision,
+          env,
+          acc.model || model,
+          recordForwarded,
+          { usage: partial.usage, stop_reason: partial.stop_reason, stopDetails: partial.stopDetails, content: partial.content },
+          { cause: truncationError },
+        )
+      )
+        return
       await sink
         .writeSynthetic?.(
           shapeRawStreamErrorFrame(
@@ -1566,7 +1647,7 @@ async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): 
         )
         .catch(() => undefined)
       recordForwarded()
-      env.ctx.fail(acc.model || model, new Error("upstream stream truncated: closed without message_stop"), {
+      env.ctx.fail(acc.model || model, truncationError, {
         usage: partial.usage,
         stop_reason: partial.stop_reason,
         stopDetails: partial.stopDetails,
@@ -1604,7 +1685,18 @@ async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): 
     const msg = error instanceof Error ? error.message : String(error)
     // §10.5 close-off (I-1): an unexpected throw is also an error terminus — balance any open anchor before
     // the synthetic error frame (idempotent + inert via the shared anchorClosed guard).
-    await closeAnchorIfOpen(sink, anchorHooks, anchorState)
+    const ownerDecision = await closeAnchorViaOwner(sink, anchorHooks, env.ctx, "terminal")
+    if (
+      settleMessagesOwnerFailure(
+        ownerDecision,
+        env,
+        acc.model || model,
+        recordForwarded,
+        { usage: { input_tokens: acc.inputTokens, output_tokens: acc.outputTokens }, stop_reason: acc.stopReason || undefined },
+        { cause: error },
+      )
+    )
+      return
     await sink.writeSynthetic?.({ event: "error", data: JSON.stringify({ type: "error", error: { type: "api_error", message: msg } }) }).catch(() => undefined)
     recordForwarded()
     env.ctx.fail(acc.model || model, error, {
@@ -1713,7 +1805,8 @@ async function pumpTranslateLegStreamingV4(opts: PumpAnthropicStreamingDispatchO
         acc: { inputTokens: errUsage?.input_tokens ?? 0, outputTokens: errUsage?.output_tokens ?? 0 },
         sseEvents: diag.sseEvents,
       })
-      await closeAnchorIfOpen(sink, anchorHooks, anchorState)
+      const ownerDecision = await closeAnchorViaOwner(sink, anchorHooks, env.ctx, "terminal")
+      if (settleMessagesOwnerFailure(ownerDecision, env, model, recordForwarded, outboundResponseData(), { cause: error })) return
       // G-3 (FIX-2): the translate leg's client IS an Anthropic /v1/messages client, so its H3 error
       // terminator is owned by the same canonical builder (byte-identical to the former hand-built JSON;
       // CF-2 golden-locked off).
@@ -1751,7 +1844,9 @@ async function pumpTranslateLegStreamingV4(opts: PumpAnthropicStreamingDispatchO
     if (meta?.stopReason === undefined) {
       // The processor finish boundary already forwarded block-close frames through the reconciling
       // sink and suppressed clean message terminators.
-      await closeAnchorIfOpen(sink, anchorHooks, anchorState)
+      const truncationError = new Error("upstream stream truncated: closed without finish_reason")
+      const ownerDecision = await closeAnchorViaOwner(sink, anchorHooks, env.ctx, "terminal")
+      if (settleMessagesOwnerFailure(ownerDecision, env, model, recordForwarded, outboundResponseData(), { cause: truncationError })) return
       // G-3 (FIX-2): translate-leg truncation terminator via the canonical builder (byte-identical to the
       // former hand-built JSON — note the translate leg's message says "no finish_reason", the CC/Responses
       // terminator, distinct from the direct pump's "no message_stop"; CF-2 golden-locked off).
@@ -1778,7 +1873,7 @@ async function pumpTranslateLegStreamingV4(opts: PumpAnthropicStreamingDispatchO
         acc: { inputTokens: truncUsage?.input_tokens ?? 0, outputTokens: truncUsage?.output_tokens ?? 0 },
         sseEvents: diag.sseEvents,
       })
-      env.ctx.fail(model, new Error("upstream stream truncated: closed without finish_reason"), outboundResponseData())
+      env.ctx.fail(model, truncationError, outboundResponseData())
       sink.finalize?.()
       return
     }
@@ -1795,7 +1890,8 @@ async function pumpTranslateLegStreamingV4(opts: PumpAnthropicStreamingDispatchO
     const { ccAcc, respAcc } = failedCandidate
     const failedResponseData = (): ReturnType<typeof buildOpenAIResponseData> =>
       ccAcc ? buildOpenAIResponseData(ccAcc, model) : buildResponsesResponseData(respAcc as NonNullable<typeof respAcc>, model)
-    await closeAnchorIfOpen(sink, anchorHooks, anchorState)
+    const ownerDecision = await closeAnchorViaOwner(sink, anchorHooks, env.ctx, "terminal")
+    if (settleMessagesOwnerFailure(ownerDecision, env, model, recordForwarded, failedResponseData(), { cause: error })) return
     await sink
       .writeSynthetic?.({
         event: "error",

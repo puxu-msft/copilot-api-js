@@ -326,8 +326,9 @@ export function createRequestContext(opts: {
   let _sendMessageNormalization: PipelineInfo["sendMessageNormalization"] | null = null
   let _bufferedMergeInfo: PipelineInfo["bufferedMerge"] | null = null
   let _maxTokensContinuationInfo: PipelineInfo["maxTokensContinuation"] | null = null
+  let _wirePartialDeliveryInfo: PipelineInfo["wirePartialDelivery"] | null = null
   const mergedPipelineInfo = (): PipelineInfo | null => {
-    if (!_pipelineInfo && !_streamTimeouts && !_askNormalization && !_sendMessageNormalization && !_bufferedMergeInfo && !_maxTokensContinuationInfo)
+    if (!_pipelineInfo && !_streamTimeouts && !_askNormalization && !_sendMessageNormalization && !_bufferedMergeInfo && !_maxTokensContinuationInfo && !_wirePartialDeliveryInfo)
       return null
     return {
       ..._pipelineInfo,
@@ -336,6 +337,7 @@ export function createRequestContext(opts: {
       ...(_sendMessageNormalization && { sendMessageNormalization: _sendMessageNormalization }),
       ...(_bufferedMergeInfo && { bufferedMerge: _bufferedMergeInfo }),
       ...(_maxTokensContinuationInfo && { maxTokensContinuation: _maxTokensContinuationInfo }),
+      ...(_wirePartialDeliveryInfo && { wirePartialDelivery: _wirePartialDeliveryInfo }),
     }
   }
   let _sseEvents: Array<SseEventRecord> | null = null
@@ -1079,6 +1081,10 @@ export function createRequestContext(opts: {
       // Persist through mergedPipelineInfo at terminal settle, not through a transient context event.
       _maxTokensContinuationInfo = diag
       recordAttemptDiagnostic("max_tokens.truncation", "info", diag)
+    },
+    recordWirePartialDelivery(diag) {
+      _wirePartialDeliveryInfo = diag
+      recordAttemptDiagnostic("delivery.wire_partial", "error", diag)
     },
     recordBufferedMergeInfo(diag) {
       // Mirrors recordSendMessageNormalization's real shape (request.context_updated was removed in

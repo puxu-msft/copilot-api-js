@@ -4,12 +4,12 @@ import {
   test,
 } from "bun:test"
 
+import type { OwnerRawSink } from "~/lib/pipeline/delivery/types"
 import type {
   //
   AnchorHooks,
   AnchorState,
   ClientFrame,
-  ClientSink,
 } from "~/lib/pipeline/types"
 
 import {
@@ -36,7 +36,7 @@ const hooks = (synthetic = true): AnchorHooks => ({
   remap: remapAnthropicBlockIndex,
 })
 
-function setup(sink: ClientSink, injected = false) {
+function setup(sink: OwnerRawSink, injected = false) {
   const wireState = createGenerationWireState(createGenerationWireIndexAllocator())
   const state: AnchorState = {
     wireState,
@@ -50,7 +50,7 @@ function setup(sink: ClientSink, injected = false) {
   return { state, deliverySink: delivery.clientSink }
 }
 
-function injector(state: AnchorState, deliverySink: ClientSink, anchor: AnchorHooks) {
+function injector(state: AnchorState, deliverySink: OwnerRawSink, anchor: AnchorHooks) {
   return makeSyntheticAnchorInjector({
     anchor,
     state,
@@ -71,7 +71,7 @@ test("an unsatisfied independent-content precondition leaves its latch untouched
 
 test("a pre-commit owner throw restores every legacy mirror flag", async () => {
   const writes: Array<ClientFrame> = []
-  const sink: ClientSink = {
+  const sink: OwnerRawSink = {
     async write(frame) {
       writes.push(frame)
     },
@@ -95,7 +95,7 @@ test("a pre-commit owner throw restores every legacy mirror flag", async () => {
 })
 
 test("a post-commit keepalive abort preserves irreversible anchor mirror state", async () => {
-  const sink: ClientSink = {
+  const sink: OwnerRawSink = {
     async write() {},
     async writeAnchor() {},
     async writeKeepalive() {

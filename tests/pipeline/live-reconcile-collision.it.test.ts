@@ -26,6 +26,7 @@ import {
 
 import type { SseEventRecord } from "~/lib/history"
 import type { OpenBlock } from "~/lib/pipeline/client-sink"
+import type { OwnerRawSink } from "~/lib/pipeline/delivery/types"
 import type { RequestEnvelope } from "~/lib/pipeline/envelope"
 import type {
   //
@@ -54,12 +55,17 @@ import {
 import { makeReconcilingSink } from "~/lib/anthropic/live-reconcile"
 import { createRequestContext } from "~/lib/context/request"
 import { makeDeliverySseSink } from "~/lib/pipeline/client-sink"
-import { getDownstreamDeliverySession } from "~/lib/pipeline/delivery/session"
+import {
+  //
+  createDownstreamDeliverySession,
+  getDownstreamDeliverySession,
+} from "~/lib/pipeline/delivery/session"
 import {
   //
   createPipelineDriver,
   type DriverDeps,
 } from "~/lib/pipeline/driver"
+import { StreamClientAbortError } from "~/lib/stream"
 
 import { FakeClock } from "../helpers/fake-clock"
 
@@ -345,6 +351,61 @@ describe("live-reconcile collision elimination — injected prelude + live resum
   // The early message_start streams through the reconciling sink BEFORE any idle tick (injected=false →
   // passthrough), which now records `messageStartForwarded`. When the idle tick fires, the injector must
   // open ONLY the anchor (NOT a second message_start). Before the fix the client saw TWO message_starts.
+  test("message_stop as the first terminator closes anchor@0 exactly once before forwarding it", async () => {
+    const env = makeEnv()
+    env.ctx.beginAttempt({})
+    const { stream: up, release } = makeSilentThenResume([f("message_start", { message: { id: "msg_zero" } }), f("message_stop")])
+    const driver = makeDriver()
+    const { stream: sseStream, written } = stubSseStream()
+    const forwarded: Array<SseEventRecord> = []
+    const { pumpSink } = buildLiveStack(sseStream, (record) => forwarded.push(record), "claude-opus-4.8", "req_zero")
+
+    const outcomeP = driver.runResponseSink(up, env, pumpSink, { onUpstreamFrame: () => {} })
+    await drain(30)
+    await clock.advance(15_000)
+    await flush()
+    release()
+
+    expect((await outcomeP).kind).toBe("complete")
+    expect(forwardedSeq(forwarded)).toEqual([
+      "message_start#synthetic-message-start",
+      "content_block_start@0#anchor",
+      "content_block_delta@0#keepalive",
+      "content_block_stop@0#anchor",
+      "message_stop",
+    ])
+    const types = written.map((frame) => JSON.parse(frame.data).type as string)
+    expect(types.filter((type) => type === "content_block_stop")).toHaveLength(1)
+    expect(types.indexOf("content_block_stop")).toBeLessThan(types.indexOf("message_stop"))
+  })
+
+  test("live owner client-gone close is classified as settled-abort, not stream-error", async () => {
+    const env = makeEnv()
+    env.ctx.beginAttempt({})
+    const wireState = createGenerationWireState(createGenerationWireIndexAllocator())
+    let abortClose = false
+    const rawSink: OwnerRawSink = {
+      async write() {},
+      async writeAnchor() {
+        if (abortClose) throw new StreamClientAbortError()
+      },
+      close() {},
+    }
+    const delivery = createDownstreamDeliverySession({ sink: rawSink, wireState })
+    const state: AnchorState = { wireState, injected: true, messageStartForwarded: true, anchorBlockOpen: true, anchorClosed: false }
+    await delivery.allocationPort.allocateAndWriteAnchor(({ wireIndex, envelope }) => [envelope.anchor(anchorStartFrame(wireIndex))])
+    abortClose = true
+    const decorated = makeReconcilingSink(delivery.clientSink, state, anchorHooks())
+    const upstream: UpstreamStream = {
+      headers: new Headers(),
+      frames: (async function* () {
+        yield f("content_block_start", { index: 0, content_block: { type: "text", text: "" } })
+      })(),
+    }
+
+    expect((await makeDriver().runResponseSink(upstream, env, decorated, { onUpstreamFrame: () => {} })).kind).toBe("settled-abort")
+  })
+
   test("early real message_start + reasoning silence + resume → exactly ONE message_start (no double envelope)", async () => {
     const env = makeEnv()
     env.ctx.beginAttempt({})

@@ -4,10 +4,10 @@ import {
   test,
 } from "bun:test"
 
+import type { OwnerRawSink } from "~/lib/pipeline/delivery/types"
 import type {
   //
   ClientFrame,
-  ClientSink,
 } from "~/lib/pipeline/types"
 
 import {
@@ -37,7 +37,7 @@ test("client-gone racing an in-flight terminate finalizes the raw sink exactly o
   const writeEntered = deferred()
   const pendingWrite = deferred()
   let finalizeCount = 0
-  const sink: ClientSink = {
+  const sink: OwnerRawSink = {
     async writeAnchor() {
       writeEntered.resolve()
       await pendingWrite.promise

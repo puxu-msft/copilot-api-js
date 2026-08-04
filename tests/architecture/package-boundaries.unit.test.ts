@@ -585,6 +585,37 @@ describe("package import boundaries", () => {
  * AST rather than a line regex: `{ kind:\n "stream-error" }`, a spread, or a second file would all
  * slip past text matching, and the whole point of this guard is that a bypass leaves no other trace.
  */
+describe("delivery owner close and legacy anchor mirrors have single authorities", () => {
+  test("non-owner production sinks cannot spell an anchor write, including extracted-frame witnesses", () => {
+    const tryLegacyAnchorWrite = async (sink: import("~/lib/pipeline/types").ClientSink, anchorHooks: import("~/lib/pipeline/types").AnchorHooks): Promise<void> => {
+      const legacyStop = anchorHooks.stopFrame(0)
+      // @ts-expect-error ClientSink deliberately withholds the owner-only anchor write capability.
+      await sink.writeAnchor?.(legacyStop)
+    }
+    expect(tryLegacyAnchorWrite).toBeFunction()
+  })
+
+  test("owner-failure stays pure and legacy anchor state writes stay on the migration allowlist", async () => {
+    const srcRoot = path.join(repoRoot, "src")
+    const ownerFailurePath = path.join(srcRoot, "lib/pipeline/delivery/owner-failure.ts")
+    const ownerFailureSource = await readFile(ownerFailurePath, "utf8")
+    expect(ownerFailureSource).toContain('from "../types"')
+    expect(ownerFailureSource).not.toMatch(/from ["'](?:\.\.\/driver|~\/lib\/pipeline\/driver|~\/routes|~\/lib\/context)/)
+
+    const allowedAnchorClosedWriters = new Set(["lib/pipeline/delivery/session.ts"])
+    const offenders: Array<string> = []
+    let ownerCloseCalls = 0
+    for (const file of await sourceFiles(srcRoot)) {
+      const relative = path.relative(srcRoot, file)
+      const text = await readFile(file, "utf8")
+      if (text.includes("closeOpenAnchor(")) ownerCloseCalls += 1
+      if (/anchorClosed\s*=/.test(text) && !allowedAnchorClosedWriters.has(relative)) offenders.push(relative)
+    }
+    expect(ownerCloseCalls).toBeGreaterThan(0)
+    expect(offenders).toEqual([])
+  })
+})
+
 describe("stream-error outcomes are minted in exactly one place", () => {
   test('no object literal with `kind: "stream-error"` outside `streamErrorOutcome`', async () => {
     const srcRoot = path.join(repoRoot, "src")

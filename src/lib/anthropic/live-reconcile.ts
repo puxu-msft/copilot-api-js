@@ -8,13 +8,15 @@
  * injector already synthesized a prelude (fabricated message_start + anchor block@0 + empty text_delta)
  * during the pre-response silence window.
  *
- * {@link reconcileLiveFrame} is the pure transform; {@link makeReconcilingSink} is the sink decorator
- * that wires it onto the live pump's `write` (§10.1.5 C2 — applied ONLY to the live path so it never
- * double-remaps the buffered path, whose remap lives inside the driver). Both read the SHARED
- * handler-owned {@link AnchorState} (§10.1.5 H1), so `injected` / `messageStartForwarded` / `anchorClosed`
- * observed here are the same object the injector flips.
+ * {@link reconcileLiveFrame} is the pure envelope-drop/remap transform. {@link makeReconcilingSink} is the
+ * live-only decorator that asks the generation owner to close any open anchor before a real start, error,
+ * or message terminator, then forwards the pure transform result. The decorator never mints or writes an
+ * anchor frame itself; the owner selects the allocated index, synthetic marker, serializer, and failure
+ * classification. Both layers read the handler-owned {@link AnchorState} only for the temporary M1–M4
+ * injection/remap bridge; close idempotency lives exclusively in the owner.
  */
 
+import type { OwnerFailure } from "~/lib/pipeline/delivery/owner-failure"
 import type {
   //
   AnchorHooks,
@@ -22,6 +24,13 @@ import type {
   ClientFrame,
   ClientSink,
 } from "~/lib/pipeline/types"
+
+import {
+  //
+  DeliveryOwnerError,
+  getDownstreamDeliverySession,
+} from "~/lib/pipeline/delivery/session"
+import { StreamClientAbortError } from "~/lib/stream"
 
 /** Is this rendered client frame a real `content_block_start`? (parses the JSON `type`; non-JSON → false). */
 function isContentBlockStart(frame: ClientFrame): boolean {
@@ -72,37 +81,11 @@ function isMessageTerminator(frame: ClientFrame): boolean {
 export type ReconcileHooks = Pick<AnchorHooks, "isMessageStart" | "stopFrame" | "remap">
 
 /**
- * Reconcile ONE real upstream frame against the injected prelude (spec §10.3 / §10.6). Returns the frame
- * sequence to write (0, 1, or 2 frames). The `anchorBlockOpen` flag on the shared {@link AnchorState}
- * discriminates the two injected preludes:
- *
- *   - NOT injected → `[frame]` (transparent passthrough — byte-identical to the no-anchor live path; a
- *     fast response that produced real content before the first idle tick never injected, so `injected`
- *     stays false and every frame flows through untouched).
- *   - injected + `message_start` → `[]` (DROP it: the client already received the injected message_start,
- *     and the protocol forbids a second one — the "already forwarded a message_start → skip any later one"
- *     rule, unifying live + the buffered commit dedup). Applies to BOTH preludes. Flips `messageStartForwarded`.
- *   - injected + `anchorBlockOpen` (`empty_text`) — the injector reserved a synthetic anchor block@0:
- *       - FIRST real `content_block_start` (anchor not yet closed) → `[stopFrame, remap(frame, 1)]` (close the
- *         anchor off at index 0, then emit the real block shifted to index+1 so it can't collide with the
- *         anchor's reserved index 0). Flips `anchorClosed`.
- *       - a terminal `error` event before any real block (anchor not yet closed) → `[stopFrame, frame]` (close
- *         the anchor off BEFORE the forwarded error so the client never sees an OPEN block straight into an
- *         error — H2 upstream error / refusal→error rewrite, spec §10.5). `remap` leaves the non-block error
- *         frame unchanged. Flips `anchorClosed`.
- *       - a `message_delta` / `message_stop` before any real block (anchor not yet closed) → `[stopFrame, frame]`
- *         (ZERO-CONTENT completion: no real block ever opened, so close the anchor off before the message
- *         terminator — symmetry with the buffered commit close-off). Flips `anchorClosed`.
- *       - any other `content_block_*` → `[remap(frame, 1)]` (shift by +1; the anchor still occupies index 0).
- *       - `message_delta` / `message_stop` AFTER the anchor was already closed by a real block → `[remap(frame, 1)]`
- *         — `remap` returns index-less frames unchanged, so the real `stop_reason` + `usage` reach the client verbatim.
- *   - injected + `!anchorBlockOpen` (`enveloped_ping`) — only a message_start envelope was injected, NO anchor
- *     block reserved index 0 → every non-message_start frame passes through VERBATIM (`[frame]`): real content
- *     blocks keep their ORIGINAL index, and no close-off `stop@0` is written (there is no block to balance).
- *
- * PURE except for the state-flag flips (`messageStartForwarded` / `anchorClosed`) that the shared
- * {@link AnchorState} carries; it does NOT touch the sink or the heartbeat (the decorator owns writing +
- * the synthetic-marker routing of the close-off frame).
+ * Reconcile one upstream frame against the injected prelude. This pure transform has only three outcomes:
+ * passthrough before injection, drop a duplicate `message_start`, or apply the temporary allocator-backed
+ * bridge remap after an empty-text anchor reserved a wire index. It never creates a stop frame and never
+ * mutates `anchorClosed`; close authority and idempotency belong to the delivery owner invoked by the
+ * decorator. `enveloped_ping` leaves `anchorBlockOpen` false and therefore remains byte-identical.
  */
 export function reconcileLiveFrame(frame: ClientFrame, state: AnchorState, hooks: ReconcileHooks): Array<ClientFrame> {
   if (!state.injected) {
@@ -125,21 +108,7 @@ export function reconcileLiveFrame(frame: ClientFrame, state: AnchorState, hooks
   // content frames pass through at their ORIGINAL index (no +1 remap) and no close-off is ever written.
   if (!state.anchorBlockOpen) return [frame]
 
-  const out: Array<ClientFrame> = []
-  if ((isContentBlockStart(frame) || isErrorEvent(frame) || isMessageTerminator(frame)) && !state.anchorClosed) {
-    // Close the anchor (stop@0) BEFORE this frame so the client's block structure stays balanced. Triggers:
-    //   - first real `content_block_start` → then shift the real block +1 (below);
-    //   - a terminal `error` event before any real block (H2 upstream error / refusal→error rewrite, §10.5);
-    //   - a `message_delta` / `message_stop` before any real block (ZERO-CONTENT completion — symmetry with
-    //     the buffered commit close-off, so the anchor closes on EVERY terminus, not only failures).
-    // All three are non-anchor-block frames, so `remap` below leaves them unchanged; a content_block_start is
-    // then shifted +1. The `!anchorClosed` guard makes this fire at most once (a normal ≥1-block stream
-    // closed at its first content_block_start → later message_delta/stop pass through untouched).
-    state.anchorClosed = true
-    out.push(hooks.stopFrame(0))
-  }
-  out.push(hooks.remap(frame, 1)) // content_block_* → +1; message_delta / message_stop / error pass through
-  return out
+  return [hooks.remap(frame, state.wireState.allocator.anchorsOpened() > 0 ? 1 : 0)]
 }
 
 /**
@@ -149,41 +118,48 @@ export function reconcileLiveFrame(frame: ClientFrame, state: AnchorState, hooks
  * applied twice. One request is EITHER buffered OR live (the pump branches once), so the two remaps are
  * naturally mutually exclusive; this is NOT a blind decorator over a single shared sink.
  *
- * Only `write` is transformed. Every OTHER method forwards to the inner sink unchanged: the injector's
- * `writeSyntheticEnvelope` / `writeAnchor` / `writeKeepalive` (the prelude), the heartbeat, the handler's
- * terminal `writeSynthetic` error frame, `freezeHeartbeat`, and `close` all write straight to the inner
- * sink and share its single serializer, so injected + reconciled frames never byte-interleave. The inner
- * sink methods are closures (they capture the sink's state, not `this`), so forwarding by reference is safe.
- *
- * The synthetic close-off `stopFrame` reconcile emits ahead of the first real block is routed through the
- * inner sink's `writeAnchor` (not `write`) so the forwarded track marks it `synthetic:"anchor"` — richest-
- * data-flow (a proxy-injected structural frame must be distinguishable from real content) and symmetric
- * with the buffered commit's close-off (buffered-anchor-golden). `writeAnchor` also updates the open-block
- * state (clears `openBlock={0,text}`), exactly as a real `write` would.
+ * Only `write` is transformed. Public non-write methods forward to the inner sink unchanged. The owner-only
+ * anchor write capability is deliberately absent from {@link ClientSink}, so the decorator cannot regain a
+ * second close authority by aliasing or extracting a stop frame. On a trigger frame it first invokes
+ * `closeOpenAnchor`; the owner writes and marks the stop in the same serializer, then the decorator forwards
+ * the remapped real frame. Client-gone becomes `StreamClientAbortError`; other owner failures retain a typed
+ * {@link LiveOwnerFailureError} for the handler/driver boundary to classify without string parsing.
  */
+export class LiveOwnerFailureError extends Error {
+  readonly failure: OwnerFailure
+
+  constructor(failure: OwnerFailure) {
+    super(`[delivery] live anchor close rejected: ${failure.reason}`)
+    this.name = "LiveOwnerFailureError"
+    this.failure = failure
+  }
+}
+
 export function makeReconcilingSink(inner: ClientSink, state: AnchorState, hooks: ReconcileHooks): ClientSink {
+  const port = getDownstreamDeliverySession(inner)?.allocationPort
   return {
     write: async (frame: ClientFrame): Promise<void> => {
-      const wasClosed = state.anchorClosed
-      const frames = reconcileLiveFrame(frame, state, hooks)
-      // reconcile just closed the anchor (false → true): its FIRST output is the synthetic close-off
-      // stopFrame → write it via `writeAnchor` (synthetic:"anchor" marker + open-block clear); the
-      // remaining outputs are the real remapped block frames (unmarked).
-      if (!wasClosed && state.anchorClosed && frames.length > 0) {
-        await (inner.writeAnchor ?? inner.write)(frames[0])
-        for (let i = 1; i < frames.length; i++) await inner.write(frames[i])
-        return
+      if (port?.wireState && (isContentBlockStart(frame) || isErrorEvent(frame) || isMessageTerminator(frame))) {
+        try {
+          const closed = await port.closeOpenAnchor(
+            (index, envelope) => envelope.anchor(hooks.stopFrame(index)),
+            isContentBlockStart(frame) ? "before-real" : "terminal",
+          )
+          if (!closed.ok) {
+            if (closed.reason === "client-gone") throw new StreamClientAbortError()
+            throw new LiveOwnerFailureError(closed)
+          }
+        } catch (error) {
+          if (error instanceof DeliveryOwnerError && error.committed) throw new LiveOwnerFailureError({ ok: false, reason: "wire-torn", committed: false })
+          throw error
+        }
       }
-      for (const f of frames) await inner.write(f)
+      for (const f of reconcileLiveFrame(frame, state, hooks)) await inner.write(f)
     },
-    // Forward every non-write method to the inner sink. The inner methods are closures over the sink's
-    // state (not `this`-bound), so an optional-call wrapper forwards safely; a missing optional method
-    // stays undefined so callers' feature-detection (`sink.writeAnchor ?? sink.write`) still works
-    // (array / WS sinks omit the heartbeat + out-of-band writes).
+    // Forward every PUBLIC non-write method. The owner-only anchor capability is intentionally withheld.
     writeSynthetic: inner.writeSynthetic ? (frame) => inner.writeSynthetic?.(frame) ?? Promise.resolve() : undefined,
     writeKeepalive: inner.writeKeepalive ? (frame) => inner.writeKeepalive?.(frame) ?? Promise.resolve() : undefined,
     writeSyntheticEnvelope: inner.writeSyntheticEnvelope ? (frame) => inner.writeSyntheticEnvelope?.(frame) ?? Promise.resolve() : undefined,
-    writeAnchor: inner.writeAnchor ? (frame) => inner.writeAnchor?.(frame) ?? Promise.resolve() : undefined,
     freezeHeartbeat: inner.freezeHeartbeat ? () => inner.freezeHeartbeat?.() : undefined,
     close: inner.close ? () => inner.close?.() : undefined,
   }

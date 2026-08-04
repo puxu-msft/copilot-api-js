@@ -4,10 +4,10 @@ import {
   test,
 } from "bun:test"
 
+import type { OwnerRawSink } from "~/lib/pipeline/delivery/types"
 import type {
   //
   ClientFrame,
-  ClientSink,
 } from "~/lib/pipeline/types"
 
 import {
@@ -37,7 +37,7 @@ const realStart = (index: number): ClientFrame => ({
   data: JSON.stringify({ type: "content_block_start", index, content_block: { type: "thinking", thinking: "" } }),
 })
 
-function recordingSink(writes: Array<{ method: string; frame: ClientFrame }>): ClientSink {
+function recordingSink(writes: Array<{ method: string; frame: ClientFrame }>): OwnerRawSink {
   return {
     write: async (frame) => void writes.push({ method: "real", frame }),
     writeAnchor: async (frame) => void writes.push({ method: "anchor", frame }),
@@ -46,7 +46,7 @@ function recordingSink(writes: Array<{ method: string; frame: ClientFrame }>): C
   }
 }
 
-function setup(sink?: ClientSink) {
+function setup(sink?: OwnerRawSink) {
   const wireState = createGenerationWireState(createGenerationWireIndexAllocator())
   const writes: Array<{ method: string; frame: ClientFrame }> = []
   const delivery = createDownstreamDeliverySession({ sink: sink ?? recordingSink(writes), wireState })
@@ -81,7 +81,7 @@ test("build failure before the first write rolls back the frontier", async () =>
 })
 
 test("first attempted write consumes the index and terminates delivery on failure", async () => {
-  const sink: ClientSink = {
+  const sink: OwnerRawSink = {
     write: async () => {
       throw new StreamClientAbortError()
     },
@@ -145,8 +145,14 @@ test("handler anchor state and delivery port share the exact GenerationWireState
 })
 
 test("closeOpenAnchor passes the allocated index explicitly and is idempotent", async () => {
-  const { wireState, writes, port } = setup()
+  const legacyMirror = { anchorClosed: true }
+  const wireState = createGenerationWireState(createGenerationWireIndexAllocator())
+  const writes: Array<{ method: string; frame: ClientFrame }> = []
+  const delivery = createDownstreamDeliverySession({ sink: recordingSink(writes), wireState, legacyAnchorMirror: legacyMirror })
+  const { allocationPort: port } = delivery
+
   expect(ownerValue(await port.allocateAndWriteAnchor(({ wireIndex, envelope }) => [envelope.anchor(anchorStart(wireIndex))]))).toBe(0)
+  expect(legacyMirror.anchorClosed).toBe(false)
   const seen: Array<number> = []
 
   expect(
@@ -157,8 +163,59 @@ test("closeOpenAnchor passes the allocated index explicitly and is idempotent", 
       }, "before-real"),
     ),
   ).toBe("closed")
+  expect(legacyMirror.anchorClosed).toBe(true)
   expect(ownerValue(await port.closeOpenAnchor((index, envelope) => envelope.anchor(anchorStop(index)), "before-real"))).toBe("none")
   expect(seen).toEqual([0])
   expect(wireState.openAnchorIndex).toBeUndefined()
   expect(writes.map(({ frame }) => JSON.parse(frame.data as string).type)).toEqual(["content_block_start", "content_block_stop"])
+})
+
+test("wire-torn blocks frontier progress but still closes the already allocated anchor exactly once", async () => {
+  let failWrite = false
+  const writes: Array<ClientFrame> = []
+  const sink: OwnerRawSink = {
+    async write(frame) {
+      if (failWrite) throw new TypeError("tear after anchor commit")
+      writes.push(frame)
+    },
+    async writeAnchor(frame) {
+      writes.push(frame)
+    },
+    close() {},
+  }
+  const { port, wireState } = setup(sink)
+  expect(ownerValue(await port.allocateAndWriteAnchor(({ wireIndex, envelope }) => [envelope.anchor(anchorStart(wireIndex))]))).toBe(0)
+  const leg = ownerValue(await port.beginLeg("primary", { candidateId: "candidate", dispatchId: "dispatch" }))
+  failWrite = true
+  await expect(port.withAllocatedRealBlock(0, ({ mapping, envelope }) => [envelope.real(mapping.remap(realStart(0)))])).rejects.toThrow("tear after anchor commit")
+  failWrite = false
+
+  expect(await port.beginLeg("recovery", { candidateId: "recovery", dispatchId: "recovery-dispatch" })).toEqual({
+    ok: false,
+    reason: "wire-torn",
+    committed: false,
+  })
+  expect(await port.writeBlockFrame(leg, 0, anchorStop(0))).toEqual({ ok: false, reason: "wire-torn", committed: false })
+  expect(ownerValue(await port.closeOpenAnchor((index, envelope) => envelope.anchor(anchorStop(index)), "terminal"))).toBe("closed")
+  expect(ownerValue(await port.closeOpenAnchor((index, envelope) => envelope.anchor(anchorStop(index)), "terminal"))).toBe("none")
+  expect(wireState.openAnchorIndex).toBeUndefined()
+  expect(writes.map((frame) => JSON.parse(frame.data as string).type)).toEqual(["content_block_start", "content_block_stop"])
+})
+
+test("owner block and anchor-close writes advance the heartbeat activity clock", async () => {
+  let now = 10
+  const wireState = createGenerationWireState(createGenerationWireIndexAllocator())
+  const delivery = createDownstreamDeliverySession({ sink: recordingSink([]), wireState, monotonicNow: () => now })
+  const port = delivery.allocationPort
+  expect(ownerValue(await port.allocateAndWriteAnchor(({ wireIndex, envelope }) => [envelope.anchor(anchorStart(wireIndex))]))).toBe(0)
+  now = 20
+  expect(ownerValue(await port.closeOpenAnchor((index, envelope) => envelope.anchor(anchorStop(index)), "before-real"))).toBe("closed")
+  expect(delivery.snapshot.ledger.lastWriteAtMonotonic).toBe(20)
+
+  const leg = ownerValue(await port.beginLeg("primary", { candidateId: "candidate", dispatchId: "dispatch" }))
+  now = 30
+  expect(ownerValue(await port.withAllocatedRealBlock(0, ({ mapping, envelope }) => [envelope.real(mapping.remap(realStart(0))) ]))).toBeDefined()
+  now = 40
+  expect(ownerValue(await port.writeBlockFrame(leg, 0, anchorStop(0)))).toBe("written")
+  expect(delivery.snapshot.ledger.lastWriteAtMonotonic).toBe(40)
 })

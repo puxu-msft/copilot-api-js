@@ -234,37 +234,6 @@ export function resolveRemappedFrame(frame: ClientFrame, mapping: WireBlockMappi
 }
 
 /**
- * Close off an injected empty-text keepalive anchor block before a TERMINAL error frame (spec
- * 2026-07-08-buffered-keepalive-empty-text-anchor §10.5 / §3.4). When the handler-owned unique injector
- * lit a synthetic empty-text anchor `content_block_start@0` during a pre-response / mid-stream silence
- * window (`empty_text` mode) and the request THEN fails, the client is otherwise left with an OPEN
- * `content_block@0` immediately followed by an `event: error` — a protocol-incomplete stream. Emitting the
- * anchor's `content_block_stop@0` (`anchorHooks.stopFrame`, routed via `writeAnchor` → `synthetic:"anchor"`)
- * BEFORE the error frame keeps the block structure balanced (empty-text block → known-benign, §3.6).
- *
- * `close()` first: a terminal failure has NO subsequent real stream (this is an error terminus,
- * UNLIKE the live-reconcile close-off §10.3, which still has real blocks streaming after it → must NOT
- * close), so permanent shutdown is correct AND prevents a heartbeat tick racing the error frame.
- *
- * `anchorState.anchorClosed` is the UNIVERSAL idempotency guard shared across every close-off site (this
- * primitive at the handler pre-pump branches + the pump terminal branches, the live-reconcile
- * `reconcileLiveFrame`, and the driver's buffered commit/terminal close-off — all set/check it), so the
- * anchor is closed EXACTLY once no matter which terminus fires first. Inert (byte-equivalent to the
- * no-anchor path) when no anchor was injected (`injected` false), when only a message_start envelope was
- * injected (`enveloped_ping` → `anchorBlockOpen` false: no block to balance), or when the anchor is
- * already closed. The `writeAnchor`/`close` optional-chaining tolerates array/WS sinks (no-op).
- * `anchorState` is optional so the pump's `ping`-mode terminal branches (which thread an undefined
- * `anchorState`) can call it unconditionally — undefined short-circuits to a no-op.
- */
-export async function closeAnchorIfOpen(sink: ClientSink, anchorHooks: AnchorHooks | undefined, anchorState: AnchorState | undefined): Promise<void> {
-  if (anchorHooks && anchorState?.injected && anchorState.anchorBlockOpen && !anchorState.anchorClosed) {
-    anchorState.anchorClosed = true
-    sink.close?.()
-    await sink.writeAnchor?.(anchorHooks.stopFrame(PRE_CONTENT_ANCHOR_INDEX))
-  }
-}
-
-/**
  * The UNIQUE synthetic keepalive injector (spec 2026-07-08-buffered-keepalive-empty-text-anchor §10.1.5
  * C1). The Anthropic handler builds ONE per streaming request and attaches it to the sink's
  * `heartbeat.injectAnchor` at sink construction — so it fires on an idle heartbeat tick with NO open

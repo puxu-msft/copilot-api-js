@@ -9,6 +9,8 @@
 
 import consola from "consola"
 
+import type { PipelineInfo } from "~/lib/history"
+
 import { classifyStreamError } from "~/lib/stream"
 
 import type {
@@ -18,6 +20,7 @@ import type {
   GenerationWireState,
   LegSource,
   LegToken,
+  OwnerOperation,
   WireBlockMapping,
   WireIndexReservation,
 } from "../types"
@@ -28,6 +31,7 @@ import type {
   DeliveryFrame,
   DeliveryHeartbeat,
   DeliverySnapshot,
+  OwnerRawSink,
   DeliverySyntheticKind,
   DeliveryTerminalCommand,
   OwnerResult,
@@ -40,10 +44,13 @@ import { createDeliverySerializer } from "./serializer"
 
 /** Construction options for one generation delivery. */
 export interface CreateDownstreamDeliverySessionOptions {
-  readonly sink: ClientSink
+  readonly sink: OwnerRawSink
   readonly monotonicNow?: () => number
   readonly heartbeat?: DeliveryHeartbeat
   readonly wireState?: GenerationWireState
+  /** Migration-only close-side mirror; removed with AnchorState legacy fields at M5. */
+  readonly legacyAnchorMirror?: { anchorClosed: boolean }
+  readonly recordWirePartialDelivery?: (diag: NonNullable<PipelineInfo["wirePartialDelivery"]>) => void
 }
 
 /** Generation-scoped delivery port consumed by the retry/competition engine. */
@@ -265,9 +272,12 @@ export function createDownstreamDeliverySession(options: CreateDownstreamDeliver
     })
   }
 
-  const ownerFailure = <T>(reason: "client-gone" | "session-terminating" | "wire-torn", committed: boolean): OwnerResult<T> =>
-    Object.freeze({ ok: false, reason, committed })
+  const ownerFailure = <T>(failure: Extract<OwnerResult<T>, { ok: false }>): OwnerResult<T> => Object.freeze(failure)
   const ownerSuccess = <T>(value: T): OwnerResult<T> => Object.freeze({ ok: true, value })
+  const recordPartialDelivery = (operation: OwnerOperation, cause: "client-gone" | "wire-error"): void => {
+    const detail = Object.freeze({ operation, cause, committed: true as const })
+    options.recordWirePartialDelivery?.(detail)
+  }
 
   const finalizeSinkOnce = (): Promise<void> => {
     finalized ??= Promise.resolve().then(async () => {
@@ -287,14 +297,22 @@ export function createDownstreamDeliverySession(options: CreateDownstreamDeliver
   }
 
   const ownerUnavailable = <T>(): OwnerResult<T> | undefined => {
-    if (wireTorn) return ownerFailure<T>("wire-torn", false)
-    if (state !== "open") return ownerFailure<T>(finishReason ?? "session-terminating", false)
-    return undefined
+    if (wireTorn) return ownerFailure<T>({ ok: false, reason: "wire-torn", committed: false })
+    if (state === "open") return undefined
+    if (finishReason === "client-gone") return ownerFailure<T>({ ok: false, reason: "client-gone", committed: false })
+    return ownerFailure<T>({ ok: false, reason: "session-terminating", committed: false })
+  }
+
+  const closeUnavailable = <T>(): OwnerResult<T> | undefined => {
+    if (state === "open" || wireTorn) return undefined
+    if (finishReason === "client-gone") return ownerFailure<T>({ ok: false, reason: "client-gone", committed: false })
+    return ownerFailure<T>({ ok: false, reason: "session-terminating", committed: false })
   }
 
   const writeAllocationFrames = async (
     specs: ReadonlyArray<WireWriteSpec>,
     reservation: WireIndexReservation<number | WireBlockMapping>,
+    operation: "allocate-anchor" | "allocate-real-block",
     source?: LegSource,
     onCommit?: () => void,
   ): Promise<OwnerResult<true>> => {
@@ -324,10 +342,14 @@ export function createDownstreamDeliverySession(options: CreateDownstreamDeliver
     } catch (error) {
       if (!committed) reservation.rollback()
       if (classifyStreamError(error) === "client-abort") {
+        if (committed) recordPartialDelivery(operation, "client-gone")
         await finalizeAfterClientGone()
-        return ownerFailure("client-gone", committed)
+        return ownerFailure(committed ? { ok: false, reason: "client-gone", committed: true } : { ok: false, reason: "client-gone", committed: false })
       }
-      if (committed) wireTorn = true
+      if (committed) {
+        wireTorn = true
+        recordPartialDelivery(operation, "wire-error")
+      }
       consola.error("[delivery] owner wire write failed", error)
       throw new DeliveryOwnerError(error, committed)
     }
@@ -348,8 +370,9 @@ export function createDownstreamDeliverySession(options: CreateDownstreamDeliver
           reservation.rollback()
           throw error
         }
-        const written = await writeAllocationFrames(specs, reservation, current.activeLeg?.source, () => {
+        const written = await writeAllocationFrames(specs, reservation, "allocate-anchor", current.activeLeg?.source, () => {
           current.openAnchorIndex = reservation.value
+          if (options.legacyAnchorMirror) options.legacyAnchorMirror.anchorClosed = false
         })
         if (!written.ok) return written
         return ownerSuccess(reservation.value)
@@ -368,7 +391,7 @@ export function createDownstreamDeliverySession(options: CreateDownstreamDeliver
           reservation.rollback()
           throw error
         }
-        const written = await writeAllocationFrames(specs, reservation, current.activeLeg.source, () => {
+        const written = await writeAllocationFrames(specs, reservation, "allocate-real-block", current.activeLeg.source, () => {
           const perLeg = current.mappings.get(reservation.value.leg) ?? new Map<number, WireBlockMapping>()
           perLeg.set(upstreamIndex, reservation.value)
           current.mappings.set(reservation.value.leg, perLeg)
@@ -393,7 +416,7 @@ export function createDownstreamDeliverySession(options: CreateDownstreamDeliver
       }),
     closeOpenAnchor: (buildStop, mode) =>
       serializer.enqueue(async () => {
-        const unavailable = ownerUnavailable<"closed" | "none">()
+        const unavailable = closeUnavailable<"closed" | "none">()
         if (unavailable) return unavailable
         const current = requireWireState()
         if (current.openAnchorIndex === undefined) return ownerSuccess("none" as const)
@@ -405,14 +428,20 @@ export function createDownstreamDeliverySession(options: CreateDownstreamDeliver
           await writeToSink(sink, entry)
           applyWireFrame(entry)
           current.openAnchorIndex = undefined
+          if (options.legacyAnchorMirror) options.legacyAnchorMirror.anchorClosed = true
+          const writtenAt = monotonicNow()
+          lastWriteAtMonotonic = writtenAt
+          if (isContentDelta(entry.frame)) lastContentDeltaAtMonotonic = writtenAt
           writeCount++
           return ownerSuccess("closed" as const)
         } catch (error) {
           if (classifyStreamError(error) === "client-abort") {
+            recordPartialDelivery(mode === "terminal" ? "close-anchor-terminal" : "close-anchor-before-real", "client-gone")
             await finalizeAfterClientGone()
-            return ownerFailure("client-gone", true)
+            return ownerFailure({ ok: false, reason: "client-gone", committed: true })
           }
           wireTorn = true
+          recordPartialDelivery(mode === "terminal" ? "close-anchor-terminal" : "close-anchor-before-real", "wire-error")
           consola.error("[delivery] owner anchor close failed", error)
           throw new DeliveryOwnerError(error, true)
         }
@@ -431,22 +460,27 @@ export function createDownstreamDeliverySession(options: CreateDownstreamDeliver
           applyPendingFrame(entry)
           await writeToSink(sink, entry)
           applyWireFrame(entry)
+          const writtenAt = monotonicNow()
+          lastWriteAtMonotonic = writtenAt
+          if (isContentDelta(entry.frame)) lastContentDeltaAtMonotonic = writtenAt
           writeCount++
           if (parsePayload(frame.data)?.type === "content_block_stop") current.mappings.get(leg)?.delete(upstreamIndex)
           return ownerSuccess("written" as const)
         } catch (error) {
           if (classifyStreamError(error) === "client-abort") {
+            recordPartialDelivery("write-block-frame", "client-gone")
             await finalizeAfterClientGone()
-            return ownerFailure("client-gone", true)
+            return ownerFailure({ ok: false, reason: "client-gone", committed: true })
           }
           wireTorn = true
+          recordPartialDelivery("write-block-frame", "wire-error")
           consola.error("[delivery] owner block write failed", error)
           throw new DeliveryOwnerError(error, true)
         }
       }),
   }
 
-  const clientSink: ClientSink = {
+  const clientSink: OwnerRawSink = {
     write: async (frame) => {
       if (!winnerCandidateId) winnerCandidateId = "sole"
       await write(winnerSource ? candidateDeliveryFrame(frame, winnerSource, monotonicNow()) : asDeliveryFrame(frame))
@@ -544,7 +578,7 @@ function asDeliveryFrame(value: DeliveryFrame | DeliveryFrame["frame"]): Deliver
     )
 }
 
-async function writeToSink(sink: ClientSink, entry: DeliveryFrame): Promise<void> {
+async function writeToSink(sink: OwnerRawSink, entry: DeliveryFrame): Promise<void> {
   switch (syntheticKind(entry)) {
     case "anchor": {
       await (sink.writeAnchor ?? sink.write)(entry.frame)
