@@ -164,15 +164,28 @@ RFC §7.4 的两条，**缺一不可**，每个准备 commit 结束时都要跑�
 
 **MANIFEST**（本 plan 各处「production 未改动」一律指它）：
 
+🔴 **`scripts/` 不能整目录一刀切**——它混着四类东西，只有前两类是 production：
+
+| 类 | 成员 | 在 MANIFEST 里？ |
+|---|---|---|
+| production／ops | `recover-history-v3-projections.ts`、`generate-config-json-schema.ts`、`build-history-search.ts`、`probe-tui-observability-load.ts` | **是** |
+| **测试门自己的实现** | `parallel-test.ts` | **是**——改它就是改尺子（T0.1／T0.11 的 junit 枚举正要动它） |
+| 生成的 test artifact | `test-timings.json`（其头部 `:23` 自称「perf hint, not correctness」） | **否** |
+| test baseline 工具 | `update-circular-deps-baseline.ts`（只写 `tests/architecture/circular-deps-baseline.json`） | **否** |
+
 ```bash
-MANIFEST='src/ packages/ scripts/ config.schema.json package.json tsconfig.json bunfig.toml'
+MANIFEST='src/ packages/ config.schema.json package.json tsconfig.json bunfig.toml
+          scripts/parallel-test.ts scripts/recover-history-v3-projections.ts
+          scripts/generate-config-json-schema.ts scripts/build-history-search.ts
+          scripts/probe-tui-observability-load.ts scripts/eslint-rules/'
 cd "$TREE" && git diff --stat <from>..<to> -- $MANIFEST     # 必须为空
 ```
 
-⚠️ **`scripts/` 在里面不是凑数**——`scripts/parallel-test.ts` 是**测试门自己的实现**，改它就是改尺子。若 T0.1／T0.11 的 junit 枚举确实需要动它，那是一次**独立的、先于 Commit 0 的基础设施改动**（连同它自己的验证），**不能夹在 cutover 的任何 commit 里**。
+⚠️ **`parallel-test.ts` 在里面是有意的**：若 T0.1／T0.11 的 junit 枚举确实需要动它，那是一次**独立的、先于 Commit 0 的基础设施改动**（连同它自己的验证），**不能夹在 cutover 的任何 commit 里**。
+⚠️ **`test-timings.json` 与 `update-circular-deps-baseline.ts` 被排除也是有意的**：Commit 7 的正事就是删 tests／fixtures，**随之同步 timings 或重冻架构 baseline 是合法的测试审计**；整目录一刀切会把它误判成 production 改动（这是上一版把整个 `scripts/` 塞进来的直接后果）。**新增 `scripts/` 文件时必须显式归类，别默认落在门外。**
 
-**mutation 正控**：分别在 `packages/telemetry/`、`scripts/` 各加一字节 → 门必须红（只扫 `src/` 的版本对两者都判绿，**T7.3 已实测证伪过 `packages/` 那一半**）。
-**false-red 对照**：`tests/`／fixtures／`docs/` 的合法改动仍绿——Commit 0 的正事（写 characterization、recorder、manifest）全落在 `tests/` 与 `docs/`。
+**mutation 正控（两条）**：①`packages/telemetry/` 加一字节 → 红；②**`scripts/recover-history-v3-projections.ts` 加一字节 → 红**（证明 production 类脚本确实在门内）。
+**false-red 对照（两条）**：①`tests/`／fixtures／`docs/` 的合法改动仍绿；②**删 fixture 后同步 `test-timings.json` 必须绿**（但需单独 review，见 T7.2）。
 
 ### 0.5 提交与进度纪律（`prompts/` 尚未存在，本节代其承载）
 
@@ -316,7 +329,7 @@ production 源码与运行时行为**逐字节不变**（**按 §0.4a 的 MANIFE
 | **T2.1** | owner private authorization registry 与 `OpenAnchorLease` 的 unit：断言 record identity 与授权字段**不可变**（除 `lastPulseAtMonotonic` 随成功 pulse 更新外），lifecycle 只由 owner commands 创建／读取／清除。**先写一条「caller 传回 lease token 即可关闭」的测试确认它被拒绝**——lease 默认**不**暴露成 caller 必须传回的 public token。 | 按 §4.1 的性质草案实现（`generationIdentity` / `wireIndex` / `leaseId` / `anchorKind` / `openedAtMonotonic` / `lastPulseAtMonotonic`）。caller 只能说「关闭当前 open anchor」，owner 在 serialized command 内读 private current lease。**单靠 TypeScript brand 不算数**——`as`／同构 interface 即可绕过，必须有 runtime identity 校验。 |
 | **T2.2** | **authorization／observation 双层分离**的 unit，四条 mutation（§4.3）：①把 `pulseOpenBlock` 改成从 post-wire ledger 选 target，构造「ledger 仍有该 block 历史记录、但真实 block stop 已成功、mapping 已释放」的状态 → 正确实现必须拒绝／返回 `none`；②注入一个被 observation 看见但从未进 mapping／lease registry 的 block frame → 所有 indexed commands 仍须 fail loud 或返回无 target；③阶段 A 失败 → wire 零 attempt、reservation rollback、lease 与 mapping 不变；④首次 physical send 后失败 → attempt／partial diagnostic 保留、已 commit index 不复用。**每条 mutation 先跑，确认它真的红。** | 双层分离转绿。**类型上分成不同 private fields 只算 presence ratchet**，本条要的是行为 witness。 |
 | **T2.3** | cardinality assertion 的**辅助**正控（§4.4）：用 **test-only 预损坏 state** 造「同一 wire index 同时命中 anchor lease 与 real mapping」以及「两个 real mappings 同 index」，断言抛具名 `AuthorizationCardinalityError`（RFC 草案名）、零 wire 副作用、reservation rollback、lease／mapping／frontier 保持阶段 A 进入前状态。 | 检查放在**每个**可能创建、查找、pulse、close 或释放 indexed authorization 的 command 阶段 A：lifecycle preflight 之后、第一次 external write 之前。输入必须来自 **owner private registries 的完整 population**，不得只查当前 leg 或先 anchor 后 mapping 短路。compound close→real-start 要对「关闭前 active 集合」与「按预验证顺序应用后的拟议集合」**都**验证。<br>⚠️ **本 task 只是辅助门。** production 双命中 mutation 在 cutover 前**不可达**（`withAllocatedRealBlock`／`writeBlockFrame` 当前零 production 调用者，`design.md:378`），硬门在 T4.9。**test-only 预损坏 registry 不能替代 Commit 4 production witness，也不得把测试直接 `Map.set` 后抛错冒充最终 behavior oracle。** |
-| **T2.4** | owner serializer 与 non-enqueue internal command primitives 的 unit：断言所有 commands 共用**一个** serializer，且 internal primitive 不重复入队（否则 compound command 会自死锁或产生第二个排序点）。**先写一条「在已持锁时再入队」的测试确认它当场炸**——不许改用可重入锁把自锁掩盖过去。 | 转绿。 |
+| **T2.4** | owner serializer 与 non-enqueue internal command primitives 的 unit：断言所有 commands 共用**一个** serializer，且 internal primitive 不重复入队（否则 compound command 会自死锁或产生第二个排序点）。<br>🔴 **「确认它当场炸」不可判**：非可重入 serializer 在持锁时再入队的**典型表现是 promise 永不 settle，不是同步 throw**。测试若不 await 它会悄悄绿；若直接 await 会挂到全局 timeout，**分不清目标自锁与环境慢**。<br>**可判形状**：用**可控 barrier** 把执行停在 serializer callback 内部 → 触发 internal primitive → 断言它**同步走 non-enqueue 路径并完成**（正确实现）。 | 转绿。<br>**mutation**：把该 internal primitive 改走 **public enqueue** → 以**短的、确定性的测试级 deadline + queue-state probe** 断言目标 callback **未前进**。<br>⚠️ **不得依赖全套测试的默认超时**作为判据——那既慢又分不清成因。<br>⚠️ **不许改用可重入锁把自锁掩盖过去**：那是把错误藏起来，不是修好（保持非可重入，让它当场可观测）。 |
 | **T2.5** | `runEmissionBatch` 的 unit：断言在**一个** serializer callback 内完成「suspend heartbeat → 全量 build／validate → 顺序执行一批 commands → fresh interval 重臂」；若 batch 含 terminal 则**不得**重臂。**先写一条「caller 直接拿到 timer 控制方法」的测试确认它拿不到。** | 转绿。它替代 caller 直接 `freezeHeartbeat`／`suspendHeartbeat`／`resumeHeartbeat`。 |
 | **T2.6** | heartbeat **unpark 活性对照**（RFC §10.1 硬性要求）：在**不 park** 的对照中推进 N×interval，断言恰有 N 个 keepalive。**这条必须先于任何 parked 否定断言**——没有它，「parked 后没有插帧」可能只是 timer 根本没触发的假绿。 | 活性对照转绿；再写 parked unit tests 断言 suspend 阻止插帧、terminal 后不复活、`freeze→close` 与「恢复 raw timer」「双 timer」mutation 必须红。 |
 | **T2.7** | `terminate`／`finalize(result)` 状态机 unit：断言 first terminal command wins、terminal frame exactly once、`finalize` 只 seal／callback once **且不是第二个 emission 入口**。**先写一条「finalize 发帧」的 mutation 确认它红**；再写一条「无 result 调 finalize」确认只有 client-aborted／零 terminal-frame 的显式分支被允许。 | 转绿。**`terminate` 不调用 ctx settle、不运行 delivery-finalized callback**——顺序 `anchor balance／terminal attempt／sampling → recordForwarded → ctx.fail／complete → finalize` 由 route 保持。 |
@@ -603,7 +616,7 @@ per-command rich records 最合适的 request-scoped owner（`PipelineInfo` 摘�
 
 | id | 先写什么失败测试 → 预期怎么红 | 实现什么 → 预期怎么绿 |
 |---|---|---|
-| **T5.1** | request-scoped、**bounded** 的 command telemetry accumulator。<br>🔴 **「有界」不是可判定的判据，「无界增长 mutation」按字面无法转红**——普通 `Array.push` 在任何有限测试里长度都恰为 N，删掉 cap 后测出来还是 N。**先冻结可执行性质，再写测试**：`MAX_COMMAND_RECORDS` 的具体值、**达到上限后的行为**（`droppedCount` 计数／`truncated` marker／首尾保留规则），以及**完整记录去哪**（按 Q4 已裁的方案 B，完整 per-command records 进 generation operation detail，聚合侧只保 bounded 投影）。<br>⚠️ **这些值属 Q1 裁决的下游**——Q1 未裁则本 task 连同本节一起停（见前置停门）。 | 测试驱动 **`cap-1` / `cap` / `cap+1` / 多倍 `cap`** 四档。<br>**mutation**：移除截断、或移除 `droppedCount`／`truncated` marker → 必须红（`cap+1` 那档看得见）。<br>**false-red 对照**：低流量（远小于 cap）的正确实现必须绿，**不得因测试自行假定某个 cap 而误红**。<br>**不从 owner 热路径直接新增 telemetry package free-function 或 SQLite writer**——`TelemetrySink` 已是 completed／failed 请求的唯一 registry feed，runtime 唯一的 settled-request 记录入口是 `recordSettled`。 |
+| **T5.1** | request-scoped、**bounded** 的 command telemetry accumulator。<br>🔴 **「有界」不是可判定的判据，「无界增长 mutation」按字面无法转红**——普通 `Array.push` 在任何有限测试里长度都恰为 N，删掉 cap 后测出来还是 N。**先冻结可执行性质，再写测试**：`MAX_COMMAND_RECORDS` 的具体值、**达到上限后的行为**（`droppedCount` 计数／`truncated` marker／首尾保留规则），以及**完整记录去哪**。<br>🔴 **两条腿必须分别冻结，否则「telemetry 有界」与「History 完整」不能同时成立**：Q4 已裁方案 B 要求完整 per-command records 进 generation operation detail，**若 History detail 在 settle 时从这个 bounded accumulator 读取，`cap+1` 之后的 records 已经没了**——「完整」就是假的。<br>**因此**：①**bounded telemetry projection** 只存可加聚合与 drop diagnostics；②**History detail 从独立的 append-only request record source 取完整 records**，其 owner、写入时点、失败语义与双腿一致性都要一并冻结（RFC §9.3 第 6 项的调查槽正是这个）。<br>⚠️ **若裁定 History 也可截断，那是 Q4 已裁契约的变更，须回用户重裁**——不是实施者可定的。<br>⚠️ **这些值属 Q1 裁决的下游**——Q1 未裁则本 task 连同本节一起停（见前置停门）。 | 测试驱动 **`cap-1` / `cap` / `cap+1` / 多倍 `cap`** 四档。<br>**四档在两条腿上都要断言**：telemetry 侧有界且 drop 可见；**History 侧在 `cap+1`／多倍 cap 下 command id 集合、顺序与 error chain 仍完整**。<br>**mutation（两条）**：①移除截断或移除 `droppedCount`／`truncated` marker → 必须红（`cap+1` 那档看得见）；②**让 History detail 复用 truncated telemetry buffer** → 必须红。**只有第 ① 条时，「两条腿其实是一条」这个缺陷会全绿交付。**<br>**false-red 对照**：低流量（远小于 cap）的正确实现必须绿，**不得因测试自行假定某个 cap 而误红**。<br>**不从 owner 热路径直接新增 telemetry package free-function 或 SQLite writer**——`TelemetrySink` 已是 completed／failed 请求的唯一 registry feed，runtime 唯一的 settled-request 记录入口是 `recordSettled`。 |
 | **T5.2** | bounded 字段的 canonical registry／normalizer unit，按 §4.8 逐字段：`command`／`formatProfile`／`expectedEffect`／`actualEffect`／`targetKind`／`legKind`／`outcome`／`committed`／`wireTorn`／`stateBefore`／`stateAfter`。**先写一条「`wireIndex` 进 label」的 mutation 确认它红**——`wireIndex` 与 `commandId` 只进 trace／History detail。 | 转绿。`formatProfile` 用 canonical 枚举（`anthropic_messages`／`responses_http`／`responses_ws`／`chat_completions`／`azure_chat_completions`／`gemini`），**不直接用 route path 或 client 输入**。 |
 | **T5.3** | **单一口径分裂判据**（§4.11，本项目已栽过一次：model 维成功腿用规范名、失败腿回落客户端别名）：对同一 `formatProfile + command + expectedEffect + targetKind + legKind` 驱动一次成功与一次 pre-write／wire 失败，断言除 `outcome`／`committed`／`phase`／`stateAfter` 等本就应变的字段外，**其余 canonical keys 完全相等**。**mutation 让失败路径回落函数名／route path／raw effect string，必须产生额外 key 并使断言转红。** | 转绿。再用 alias route（OpenAI 与 Azure 同 command family）验证**只在已声明的 `formatProfile` 轴分开**。<br>⚠️ **比较冻结 key 集合，不用总数凑巧相等。** |
 | **T5.4** | compound `phase`（`validated \| stop_sent \| real_start_sent \| terminal_sent`）与 partial measures 的 unit：至少分别累加 `validatedCount`／`stopSentCount`／`realStartSentCount`／`terminalSentCount`／`committedCount` 与各 outcome count。**先写「partial failure 只记 `outcome=wire_error`」的 mutation** 确认聚合后答不出「stop 成功但 real start 失败」。 | 转绿。普通 command 用 `phase: none`（**避免把「不适用」与「尚未 validated」混淆**）；`closedThenWireTorn` 固定表达 `stop_sent + committed=true + wireTorn=true + outcome=closed_then_wire_torn`，**不能降成普通 `ok:false`**。 |
