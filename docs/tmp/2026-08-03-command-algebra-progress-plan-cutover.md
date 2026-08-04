@@ -18,31 +18,39 @@ session_id: 046d7295-e5ce-470b-a284-c721c6ce1cb8
 
 ## 剩余项
 
-- [x] Commit 0～8 的逐 task TDD 步骤（每 task 一个 `T<commit>.<n>` id）—— **72 个 task，`T0.1`～`T8.7`**
-- [x] factory／锚点表：被复用函数的 `file:line`，每条注明树
-- [x] 回填矩阵 `traceability.md` 各表的 `plan task` 列，消掉全部 `_TBD_`
-- [x] `traceability-check.py` rc=0 —— **已实跑，且四条 mutation 正控各自打中目标机制**（删 R-14 行 → `R-14 … no row in the matrix`；R-5 硬门挪 C2 → `production gate at C2 precedes the capability it depends on (C4)`；plan 加不被引用的 task → `plan task T9.1 is cited by no matrix row`；未变异 → rc=0）。变异跑在 `/tmp` 副本上（`MATRIX=`／`PLAN=` 覆盖），**真实文档未被改动**
-- [x] **全文通读 + 逐条取证**（`reread-docs-after-writing` `[hard]`）—— 已完成，见 `368a9208`。**通读只抓到 2 处**（§11 说「四项」实为五项、Q1 门只数了 RFC 8 节而漏了脚本冻结的 2 份载体文档）；**其余 12 处全部是重新取证抓到的**，通读一次也看不出来——那 12 处每一处读起来都完全通顺。这正是「通读不能替代事实证伪」的当场实证。
-  - **已知未验证项（不得当成已核）**：①`commandPortActivation` 两树零命中，无法确认它是 Commit 1～4 期间新引入还是 RFC 前瞻性命名——已在 T6.2 与 §12 标注；②所有「Commit N 时该断言会红／会绿」的预测都是**计划期预测**，未实跑（本轮不动 `src/`）；③RFC §7.2 的双向闭包**未实跑**，A／B／C／D 四集的具体成员以 T0.7 输出为准，本 plan 的锚点表只是 sanity 抽样。
-- [ ] 交付回报：贴 `git log --oneline -1` 与 `git show --stat HEAD` 的原样输出（协调者的硬性核对项，理由见 HANDOVER「委派可靠性」——本轮此前有两个 agent 交回过与磁盘不符的完成报告）
+- [x] Commit 0～8 的逐 task TDD 步骤（每 task 一个 `T<commit>.<n>` id）—— **78 个 task**（整改轮新增 T0.10／T0.11／T4.0a–d）
+- [x] factory／锚点表 —— **整改轮已全部重锚合并后 master `80a4b6fc`，「树」列删除**
+- [x] 回填矩阵 `traceability.md`，消掉全部 `_TBD_`
+- [x] `traceability-check.py` rc=0 —— **整改轮复跑仍 rc=0**。⚠️ 它已被修成双向（`6ce493e5`），**会咬悬空引用**：本轮新增 T0.10／T0.11／T4.0a–d 时它当场报 `cited by no matrix row`，补进矩阵 §6 后才转绿。**这不是形式，是它第一次真的抓到东西。**
+- [x] **整改轮（2026-08-04）**：两路评审的 5 blocker + 7 major 已修，见下「本轮修了什么」
+- [ ] **复评**：整改后需再过一轮（`multi-round-before-consensus`）。**未决项清单见 plan §11 的状态表**：#2／#3／#5／#6 未裁，各有必经触发点。
+
+## 本轮（整改）修了什么 —— 只记判断，改动本身看 git log
+
+**前提变更**：M1 已 merge（`8125f123`），**「两棵树」整体消失**。因此评审的 F-2 失效、F-5 需重做而非按原意修、F-6 大部分失效、F-10 已闭合。**#1（R-6 等级）与 #4（entry 树）已裁**。
+
+**五个 blocker 的处置判断**：
+
+1. **F-1 门绑根** —— 不是「加一句 `cd $TREE`」就完。**三个脚本的根推导方式各不相同**，必须逐个写：`byte-equivalence.sh` 与 `baseline-runs.sh` 按**脚本自身位置**推导 `REPO`（`cd` 完全不管用），前者有 `REPO_OVERRIDE` 旋钮而后者**没有**；`traceability-check.py`／`q1-locations.sh` 同样按位置推导，但它们审的是**文档**，文档在 master 主线上，所以它们**本来就该留在 master 侧**——把它们也指向 `$TREE` 才是错的。另加 T0.10：**「我 cd 对了」不是证据**，门跑在哪棵树这个前提本身需要 oracle。
+2. **T0.6 红绿互斥** —— 关键判断是**不能用 `skip`／`todo` 绕开**。跳过的测试永远不会告诉你缺陷是否还在，那让 R-3 的 C0 段可被假绿。改成 rc=0 的 characterization：**绿 = 缺陷仍在**，并要求文件头落盘「何时必须反转」。
+3. **T3.3 笛卡尔积** —— 实测五个 site 的 kind 是**字面量写死的**（`driver.ts:885/1014/1102` primary、`:1521` recovery、`:1579` continuation）。改成关系覆盖表 + **逐 site mutation**（一条聚合断言证不了五个都接上了）。
+4. **T0.1 自我认证** —— 取值路径必须**不同原理**：磁盘 glob 与 junit suite 集合**逐文件**比较（不是比总数——总数相等而集合不同正是这类退化的形态）。另加 F-13：脏树 rc=3、`ALLOW_DIRTY=1` 被脚本自己声明不满足门。
+5. **#5 实质自裁** —— 撤回「这不是错配」的断言。**并给了必经触发点**（Commit 2 门表），因为 `traceability-check.py` 对「辅助门落 C1 还是 C2」结构性不判——没有机械绊线时，「若评审认为……」等于永不触发。
+
+**新提 #6**（本轮唯一新增待裁）：`OwnerTerminalDecision`（M1 带进来的，三份文档零命中）与 Commit 4 的 `TerminalEmissionResult` 是**竞争抽象**。T3.5 让实施者映射「原散落的提前返回」，但合并后它们**已经被 `classifyOwnerFailure` 收敛了**——照旧描述干会造出第二个 terminal 分类器。
 
 ## 在途意图
 
-- **被打断的位置**：`3512301d`（矩阵回填）已落盘，接着要做进度文件与全文通读。API `Server error mid-response` 打断在这两者之间，**已提交的部分完好，未提交的只有这份进度文件**——与 §6b 记的本仓实测形态一致。
-- **三处停点为什么写成「待裁」而不是给答案**：R-6 等级、Q1、§4.8 与选项 A 的冲突，三者都**没有 RFC 出处**可依。写进 `cutover-plan.md` §11，各附 3 个带量化影响的候选（`scope-ambiguity-then-ask` 要的是选项不是 yes/no），矩阵的 R-6 行也一律写「等级未定，见 §5」而不填。**自行推断撞证伪①（无 RFC 出处），两段同填「辅助门」撞矩阵 §0 明禁的压平**——后者尤其危险，因为它是「最省事的修法正好破坏判据要保护的东西」。
-- **§11 新增了两条 RFC 里没有的待裁项，这是有意的**，不是越权：
-  - **#4 entry commit 落在哪棵树**——RFC §7.1 只说「实际 entry commit」，没说树；而两棵树都不能直接当 entry（master 无 M1，feature 落后 47 commit、缺三处已修缺陷）。这是调度决策不是技术细节，`T0.1` 写成「在它裁定前不可开工」。倾向候选 4（隔离 worktree 先合 master），理由是与本项目 `docs-merge-before-execute` 的既定形状一致。
-  - **#5 R-5 的 C1 辅助门段实际落在 Commit 2**——理由是 cardinality assertion 属 owner state primitives（§7.5 目标清单逐字含它，§7.4 没有）。判为**如实标注即可、不改矩阵**：`traceability-check.py` 只校验「production 硬门不早于其依赖能力」，辅助门落 C1 还是 C2 它不判，**正因如此才更需要人看一眼**。
-- **矩阵 §6 为什么要新增一张表**：72 个 task 里有 30 个**不由任何 R-\*／O-\* 驱动**，而由 §7 的 commit invariant／越界判据／归零审计／文档同步驱动。不给它们出处，`traceability-check.py` 的「plan task 无出处」就会变成例行报错、失去鉴别力。**这不是为了让脚本变绿而编出处**——每条都指回具体的 §7.x／§4.x 小节。
-- **锚点表为什么坚持两树并列而不给换算规则**：偏移**不是常数**（`client-sink.ts` 偏 9 行、`handler-v4.ts` 偏 7～40 行不等、`driver.ts` 有正有负）。写进 §12「未采纳」。
+- **F-7 只做一半是有意的**：本轮**没有**写 `prompts/`（第三层另派），但把它该承载的提交纪律 + 进度文件要求并进了 plan §0.5，并在文首把「`prompts/` 尚未存在、本文即最终派发件」写实。**Commit 4 的 checkpoint 约定单独强调**——16 个 task 同属一个 semantic commit、中途不产生 commit，是全 plan 唯一「中断即全丢」的结构。
+- **两处评审建议未采纳，理由记在这里**：①「把 R/O/task 收敛成结构化 manifest 再生成 Markdown」——方向正确但属工具重构，超出本轮整改范围，且会与正在用的 `traceability-check.py` 撞车；②「plan 只引用 machine-readable acceptance row、不复制判据」——本轮已把 T4.10 漏掉的逐 handler mutation 补回，但**彻底去重复需要先有那个 manifest**，同①。两条都该记进 backlog 而非本轮硬塞。
 
 ## 已作废的路子
 
-- **想用 `fd` 找 golden 文件** —— 本机没装（`/bin/bash: fd: command not found`），用 `rg -l` 代替。别再试。
-- **想按已知 API 名去数 emission 面** —— 这正是 HANDOVER 记的本轮已犯错误（漏掉 owner allocation-port 整类发射点，inventory §12 才补上）。plan 里改为**引用 T0.7 的闭包输出**，A／B／C／D 四集的具体成员一律写「以闭包输出为准，别照抄本表」。
-- **想把 `commandPortActivation` 当既有符号写进 Commit 6 删除清单并给 `file:line`** —— **实测两棵树的 `src/` 都零命中**。改为在 T6.2 标注「到达本 commit 时先确认它存在再删，不存在就回报」，并写进 §12。给不存在的符号编行号，正是「跨一条没读过的缝规定行为」。
-- **想直接照 RFC §7.2 的行号写 master 侧锚点** —— RFC 的种子行号全部锚在 feature 树（`ClientSink` 写的是 `types.ts:747`），master 上是 `:737`。已在 §0.1 与各锚点表显式并列，并加了「引用前重取」的命令。
-- **想用 `withAllocatedRealBlock`／`writeBlockFrame` 的现有签名当 `openRealBlock`／`writeRealBlockFrame` 的终态签名** —— §3.4 明确终态应暴露 owner 验证的 opaque handle，现有签名是**迁移起点不是终点**。写进 §12。
-- **想「两树只写一棵、另一棵按固定偏移换算」** —— 实测偏移**不是常数**，`client-sink.ts` 同一文件内就有 +9 与 +11 两种。已写进 §12。
-- **想把两树的计数写成同一个数** —— 初稿照 RFC／HANDOVER 抄了「`ClientSink.write` 10 点」「`getDownstreamDeliverySession` 9 处」，两者都锚在 feature；master 实际是 11 与 7。**RFC 与 HANDOVER 的计数没错，错在我没标它们锚在哪棵树**。改为逐树并列。
-- **想把 `wirePartialDelivery` 标成「两树皆有」** —— master 的 `src/` 零命中，它是 M1 引入的。同类陷阱：凡是 RFC §4.x 引用的「现状」锚点，都要先确认那个「现状」属于哪棵树。
+- **想用 `fd` 找 golden 文件** —— 本机没装（`fd: command not found`），用 `rg -l` 代替。
+- **想按已知 API 名去数 emission 面** —— HANDOVER 记的本轮已犯错误（漏掉 owner allocation-port 整类）。plan 改为引用 T0.7 的闭包输出，四集成员一律「以闭包输出为准，别照抄本表」。
+- **想把 `commandPortActivation` 当既有符号写进删除清单并给 `file:line`** —— 实测 `src/` 零命中。改为「先确认存在再删，不存在就回报」。
+- **想用 `withAllocatedRealBlock`／`writeBlockFrame` 的现有签名当终态签名** —— §3.4 明确终态应暴露 opaque handle，现有签名是迁移起点。
+- **想把两树行号「按固定偏移换算」** —— 已随 merge 作废；教训仍成立（偏移不是常数，`client-sink.ts` 同文件内就有 +9 与 +11 两种）。
+- **想在锚点表保留「树」列** —— merge 后它只会误导：那一列此前把「行号我只查了一棵树」和「符号只在一棵树有」用同一个标记表达，两者后果完全不同（评审 F-5 正是这个）。
+- **想给 T0.6 加 `skip`／`todo` 让共同门变绿** —— 见上，会让 R-3 的 C0 段假绿。
+- **想只在 §11 #5 写「若评审认为构成漂移则上诉」** —— 无触发点等于永不发生，`downgrading-a-gate-needs-a-reachable-trigger` 的教科书形态。
