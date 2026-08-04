@@ -143,42 +143,44 @@ RFC §7.4 的两条，**缺一不可**，每个准备 commit 结束时都要跑�
 
 | id | 先写什么失败测试 → 预期怎么红 | 实现什么 → 预期怎么绿 |
 |---|---|---|
-| **T0.1** | **入场条件，不是测试**。在 §11 待裁项 #4 裁定的 entry commit 上，先跑一次 `unit+it+http` 取真实用例数，再把它作为 `MIN_TESTS` 冻进命令。**`MIN_TESTS` 的取值必须来自你即将运行的那条命令之外**，否则下限自我认证（HANDOVER T3 🔴）。 | `OUT=docs/tmp/<date>-entry-runs RUNS=15 MIN_TESTS=<实测数> exp/inter-block-anchor-allocator/baseline-runs.sh`，rc=0 且保存每次原始输出。任一次失败即不得开始 cutover。**在 T3-b 落地前，本条结果只能按缩小版命题引用**：「具名命令在同一 commit 上被调用了 15 次，每次带 provenance，自报用例数稳定且高于调用方指定的下限」——不得表述成「全后端套件已验证」。 |
-| **T0.2** | 先把 O-6 脚本在**未改动树**上跑一次，确认打印 `O-6 PASS`、rc=0、fixture blob 未变；再注入一字节，确认 rc=9。**这是 false-red／false-green 双向自检，不是形式**——该门此前恒真（脚本覆盖自己的基线、全脚本无 `cmp`），`4f7a3989` 才修好。 | 把这两条写进 cutover 的每 commit 检查清单。**禁止 `RECAPTURE=1`**。 |
+| **T0.1** | **入场条件，不是测试。** 🔴 **`MIN_TESTS` 不能从待测命令自己取**——那正是脚本 `:23-25` 逐字点名的假绿形态（selector 悄悄缩窄，「实测」出 6800，下限也冻成 6800，此后每次都与自己一致）。**取值路径必须与被测命令不同原理**：<br>① 从**磁盘**枚举 `tests/**/*.{unit,it,http}.test.ts` 得文件集（不经 runner）；② 用 `--reporter=junit`（`scripts/parallel-test.ts:64` 已为刷新计时驱动过它）跑一次，取 **testsuite 名／文件集**；③ **两个集合逐文件比较**——不是比总数，**总数相等而集合不同正是这类退化最可能的形态**；④ 相等后，把该次运行的用例数冻成 `MIN_TESTS`。 | `cd "$TREE" && OUT=docs/tmp/<date>-entry-runs RUNS=15 MIN_TESTS=<③ 通过后取得的数> exp/inter-block-anchor-allocator/baseline-runs.sh`，rc=0 且保存每次原始输出。<br>⚠️ **必须在 `$TREE`（干净的隔离 worktree）里跑**，用**树内那份**脚本（`REPO` 由脚本位置推导、无 override，见 §0.3b）。**`ALLOW_DIRTY=1` 禁止用于通过本条**——脚本自己声明那批日志「do not satisfy a gate」。重跑换 `OUT` 目录。<br>⚠️ **①～③ 就是 HANDOVER T3-b 的 full-suite oracle。** 它落地前，本条只能按缩小版命题引用：「具名命令在同一 commit 上被调用了 15 次，每次带 provenance，自报用例数稳定且高于下限」——**不得表述成「全后端套件已验证」**。<br>**mutation 正控**：让某个 shard 静默少跑若干文件，③ 必须**报出缺失的文件名**（只比总数的版本抓不到）。 |
+| **T0.2** | 先把 O-6 脚本在**未改动的 `$TREE`** 上跑一次，确认打印 `O-6 PASS`、rc=0、fixture blob 未变；再注入一字节，确认 rc=9。**这是 false-red／false-green 双向自检，不是形式**——该门此前恒真（脚本覆盖自己的基线、全脚本无 `cmp`），`4f7a3989` 才修好。 | 把这两条写进每 commit 检查清单，绑根方式照 §0.3 ②。**禁止 `RECAPTURE=1`**。<br>**先确认手上是修好的那份**：`grep -c 'O-6 PASS' exp/inter-block-anchor-allocator/byte-equivalence.sh` ≥1（**看文件存在不够**）。 |
 | **T0.3** | 写 handle-level physical recorder，**先让它在「什么都没包住」的状态下断言零 direct send**——此时断言平凡为真，是**假绿**。 | recorder 必须包裹 composition root 实际取得的 `stream`／`ws` handle 并**位于 raw emitter 之下**；再加一条 test-only direct-send seam，断言 recorder **确实看得见**绕过 owner 的发送。看不见就说明探测层装错了深度（RFC §10.1「探测深度必须与被测对象对齐」）。**注入 owner 的 test raw adapter 不用于本判定**。 |
-| **T0.4** | 对 warmup fake／drop 写真实 route behavior test：断言完整字节、upstream 零调用、delivery observer **零 session**、一次响应。**先在缺失 observer 的状态下跑**，确认「零 session」这条断言此刻还够不到 delivery 层。 | 接上 delivery session observer（feature 树已有 `setDeliverySessionObserverForTests`，见锚点表），四条断言转绿；mutation「提前创建 owner」或「双写」必须红。这是 **Q3 已裁方案 A**，是 §5 唯一没有现成 behavior witness 的出口，也是 composition-root 互斥性的 gatekeeper。 |
+| **T0.4** | 对 warmup fake／drop 写真实 route behavior test：断言完整字节、upstream 零调用、delivery observer **零 session**、一次响应。**先在缺失 observer 的状态下跑**，确认「零 session」这条断言此刻还够不到 delivery 层。 | 接上 delivery session observer（`delivery/session.ts:74` 的 `setDeliverySessionObserverForTests`，**已存在，不用自己造**），四条断言转绿；mutation「提前创建 owner」或「双写」必须红。这是 **Q3 已裁方案 A**，是 §5 唯一没有现成 behavior witness 的出口，也是 composition-root 互斥性的 gatekeeper。 |
 | **T0.5** | 对 AUQ fallback SSE 与四格式 non-streaming JSON 各写一条 route observer 基线：断言该 operation 零 delivery owner、完整响应只写一次。**先构造「提前创建 owner」的 mutation 确认它会红**。 | 基线转绿。注意 AUQ 的正确状态是 **upstream／ctx 可能已存在但 client wire 未 commit**——不得把「有 upstream」误判成「有 owner」。 |
-| **T0.6** | 在**旧边界**上写 red characterization：让一个与 active anchor index 同字节的 stop 走普通 generic `write`，断言「wire 已 closed 而 owner lease 仍 open」这一分裂**稳定复现**。**这条测试在 Commit 0 就是红的，而且必须一直红到 Commit 4。** | 不修它。把它标成 R-3 的旧缺陷 characterization，并在 Commit 4 转绿时同步改写断言方向。**「现在是红的」本身要落盘**，否则 Commit 4 会把它当成新引入的失败。 |
-| **T0.7** | 实现 §7.2 的**双向不动点闭包**并先跑一次：种子 = §7.2 列出的 6 个 capability 类型（**按 declaration identity 取，不按文件路径也不按名字文本**）；向上（消费者）+ 向下（成员，含**声明**的参数与返回类型）交替迭代。**先构造一个反例确认判据有牙**：`createGenerationWireIndexAllocator()` 零参数、返回类型不是种子——只做向上方向时它与调用点 `handler-v4.ts` 都进不了闭包，**必须**由向下方向捞进来。 | 输出完整 symbol hit set（不是数字），再切成互不相交的 A／B／C／D 四集。四条结构停止点写死（原始／内置类型、`node:`、`node_modules`、别名解析后判断），`any`／`unknown` **不是停止点**、落入 unclassified 并具名 disposition。C／D 相交时按 §7.2 tie-break：**construction／resolution 语义优先归 C，有疑义入 C**。任何 export／production reference 既未进 A／B／C、也未被具名判为合法 pre-owner／test-only，**Commit 0 与 Commit 4 均 fail loud**。 |
-| **T0.8** | 把测试面分四类（owner-backed array adapter／raw transport 字节与 observation unit／owner→adapter seam／**test-only adversarial 旧边界正控**）。**先验证第四类真的还能在旧边界造出 wire／state 分裂**——造不出来说明它已经被「合法化」掉了，那正是 R-10 要防的。 | 四类分档落盘（口径来自 inventory §9：92 个 fake 构造点／40 文件、57 个编译期 sink API 依赖文件、65 个 raw factory 调用／14 文件）。**不得机械把所有 fake 改成合法 owner 路径后丢掉 positive control**。 |
+| **T0.6** | 🔴 **本条的形状被重写过，别照「提交一个红测试」执行**——那与共同门「`unit it http` 确定性全绿」**终态互斥**（RFC §7.1 同样要求每 commit 全绿）。<br>**正确形状：写一条进程退出码为 0 的 characterization test**，它**断言旧缺陷被稳定观察到**：让一个与 active anchor index 同字节的 stop 走普通 generic `write`，然后断言「wire 已 closed **且** owner lease 仍 open」这一分裂**确实发生**。**测试绿 = 缺陷在**。<br>**先把断言写反**（断言 lease 已被清除）跑一遍确认它红——否则这条 characterization 可能根本没触达那条分裂。 | 转绿（`rc=0`），并在测试文件头**落盘三样**：①它守的是什么（R-3 的旧缺陷现状）；②**它为什么现在是绿的**（绿 = 缺陷仍在，不是「已修」）；③**何时必须反转**——Commit 4 的 T4.5／T4.7 把 authority 发布后，本测试**必须**改成相反的正确性断言，届时「维持原样仍绿」即说明 authority 没生效。<br>⚠️ **不得用 `skip`／`todo` 把它排除出默认发现集**——那样 R-3 的 C0 辅助门可被假绿（跳过的测试永远不会告诉你缺陷是否还在）。 |
+| **T0.7** | 实现 §7.2 的**双向不动点闭包**并先跑一次：种子 = §7.2 列出的 6 个 capability 类型（**按 declaration identity 取，不按文件路径也不按名字文本**）；向上（消费者）+ 向下（成员，含**声明**的参数与返回类型）交替迭代。**先构造一个反例确认判据有牙**：`createGenerationWireIndexAllocator()` 零参数、返回类型不是种子——只做向上方向时它与调用点 `messages/handler-v4.ts:1160` 都进不了闭包，**必须**由向下方向捞进来。 | 输出完整 symbol hit set（不是数字），再切成互不相交的 A／B／C／D 四集。四条结构停止点写死（原始／内置类型、`node:`、`node_modules`、别名解析后判断），`any`／`unknown` **不是停止点**、落入 unclassified 并具名 disposition。C／D 相交时按 §7.2 tie-break：**construction／resolution 语义优先归 C，有疑义入 C**。任何 export／production reference 既未进 A／B／C、也未被具名判为合法 pre-owner／test-only，**Commit 0 与 Commit 4 均 fail loud**。 |
+| **T0.8** | 把测试面分四类（owner-backed array adapter／raw transport 字节与 observation unit／owner→adapter seam／**test-only adversarial 旧边界正控**）。**先验证第四类真的还能在旧边界造出 wire／state 分裂**——造不出来说明它已经被「合法化」掉了，那正是 R-10 要防的。 | 四类分档落盘。<br>⚠️ **口径数字（92 fake 构造点／40 文件、57 编译期 sink API 依赖文件、65 raw factory 调用／14 文件）来自 `docs/tmp/2026-08-03-emission-surface-inventory.md` §9，锚在 `854421d4`（= 合并前的 feature `src/`，与今日 master 的 `src/` 逐字节相同，但 `tests/` 已随 merge 变化）。本 task 必须在 `$TREE` 上重算这三个数并记差异**，别照抄。<br>**不得机械把所有 fake 改成合法 owner 路径后丢掉 positive control**。 |
 | **T0.9** | 冻结现有 anchor／terminal goldens 的文件清单与当前哈希；对每份写明它锁的是什么。**先挑一份注入帧重排，确认它会红**——不会红的 golden 是摆设。 | 清单落盘，作为 Commit 4 「Q5 逐帧预测 diff」的比对基座与 Commit 7 审计对象。 |
+| **T0.10** | **证明门跑在 `$TREE`**（§0.3 ④，user-rule `proving-where-a-command-ran`）。**「我 `cd` 对了」不是证据**：先在**不做任何绑定**的情况下跑一次 O-6，确认它起的是 master 的 server——这就是 F-1 那 24 次假绿的实物。 | 建立取证步骤：O-6 的 capture 里断言 server 进程的可执行路径／cwd 落在 `$TREE` 下；typecheck／测试则在 `$TREE` 里植入**只在该树存在**的哨兵（一条会失败的临时断言），确认门看得见它，再撤除。**这一条建立的是「门跑在正确的树上」这个前提本身的 oracle**——没有它，后面 8 个 commit 的所有绿都没有归属。 |
+| **T0.11** | **test-oracle manifest**（T6.5 的 coverage gate 依赖它，见 §Commit 6）。**先确认默认 runner 对「删掉一条测试」是绿的**——那正是 T6.5 的 mutation 需要被咬住的形态。 | 冻结三样并落盘：①四类分档里 **adversarial 旧边界正控**的测试**文件路径**；②这些文件**运行时枚举**出的 test name 集合（**用 `--reporter=junit` 取，不用 `rg` 扫 `test("...")`**——后者对参数化与模板名结构性失明）；③该 seam 依赖的 production symbol identity。<br>锚点：`tests/pipeline/allocation-outside-owner-control.it.test.ts`（已存在）。 |
 
 ### factory／锚点表
 
-| 符号 | `file:line` | **树** | 在本 commit 的用途 |
-|---|---|---|---|
-| `ClientSink` | `src/lib/pipeline/types.ts:737` | **master** | 闭包种子。**RFC §7.2 写的 `:747` 是 feature 树的行号** |
-| `ClientSink` | `src/lib/pipeline/types.ts:747` | feature `2c339784` | 同上；RFC 引用的就是这一行 |
-| `OwnerRawSink` | `src/lib/pipeline/delivery/types.ts:12` | **feature only**（master 零命中） | 闭包种子 |
-| `AnchorState` | `types.ts:519`（master）／`:529`（feature） | 两树皆有 | 闭包种子 |
-| `GenerationWireState` | `types.ts:486`（master）／`:496`（feature） | 两树皆有 | 闭包种子 |
-| `WireBlockAllocationPort` | `types.ts:309`（master）／`:319`（feature） | 两树皆有 | 闭包种子 |
-| `DownstreamDeliverySession` | `delivery/session.ts:50`（master）／`:57`（feature） | 两树皆有 | 闭包种子；public 面 9 项 |
-| `GenerationWireIndexAllocator` | `types.ts:494`（master）／`:504`（feature） | 两树皆有 | **T0.7 的向下方向反例**：它只是 `GenerationWireState` 的一个属性 |
-| `createGenerationWireIndexAllocator()` | `keepalive-anchor.ts:52` | 两树同行 | 同上，零参数工厂，只做向上会漏 |
-| `createGenerationWireState(allocator)` | `keepalive-anchor.ts:44` | 两树同行 | 对照组：**因返回种子**而会进闭包 |
-| `WireBlockMapping` / `LegToken` | `types.ts:467` / `:464`（master）；`:477` / `:474`（feature） | 两树皆有 | §7.2 明确点名：它们是 C10／C3 的授权事实本身，**不得被「无能力」过滤器排除** |
-| `setDeliverySessionObserverForTests` | `delivery/session.ts:67`（master）／`:74`（feature） | **两树皆有**（已实测） | **T0.4／T0.5 的 observer 接入点** |
-| warmup 三个 direct write | `warmup.ts:214,230,243` | 两树同行 | T0.4 被测对象 |
-| AUQ direct write | `error-shaping-glue.ts:131` | 两树同行 | T0.5 被测对象 |
-| raw SSE physical `stream.writeSSE` | `client-sink.ts:200`（master）／`:209`（feature） | 两树 | T0.3 recorder 必须**位于它之下** |
-| raw WS physical `ws.send` | `client-sink.ts:634`（master）／`:645`（feature） | 两树 | 同上 |
-| 10 个 outer composition roots | 见 §Commit 4 锚点表 | 两树行号不同 | T0.3 recorder 包裹点 |
+> 全部锚 **master `80a4b6fc`**（merge 后），路径简写见 §0.1a。
 
-> ⚠️ **本文所有 master 侧行号已在 master `c259dd9d` 上逐条实测复核**（`src/` 与 `packages/` 自 `fcf10eca` 起未变）。master 每天前进，**引用前重取，别引用本表的快照值**：
-> ```bash
-> cd /home/xp/src/copilot-api-js && rg -n '^export interface ClientSink|^export interface AnchorState' src/lib/pipeline/types.ts
-> ```
+| 符号 | `file:line` | 在本 commit 的用途 |
+|---|---|---|
+| `ClientSink` | `types.ts:747` | 闭包种子 |
+| `OwnerRawSink` | `delivery/types.ts:12` | 闭包种子（M1 引入） |
+| `AnchorState` | `types.ts:529` | 闭包种子 |
+| `GenerationWireState` | `types.ts:496` | 闭包种子 |
+| `WireBlockAllocationPort` | `types.ts:319-332` | 闭包种子；五方法 + `wireState` |
+| `DownstreamDeliverySession` | `delivery/session.ts:57-67` | 闭包种子；public 面 9 项 |
+| `GenerationWireIndexAllocator` | `types.ts:504` | **T0.7 的向下方向反例**：它只是 `GenerationWireState` 的一个属性 |
+| `createGenerationWireIndexAllocator()` | `keepalive-anchor.ts:52` | 同上，零参数工厂，只做向上会漏；调用点 `messages/handler-v4.ts:1160` |
+| `createGenerationWireState(allocator)` | `keepalive-anchor.ts:44` | 对照组：**因返回种子**而会进闭包 |
+| `WireBlockMapping` / `LegToken` | `types.ts:477` / `:474` | §7.2 明确点名：它们是 C10／C3 的授权事实本身，**不得被「无能力」过滤器排除** |
+| `OwnerFailureReason` | `types.ts:295` | `client-gone`／`session-terminating`／`wire-torn`；`OwnerTerminalDecision` 的输入 |
+| `classifyOwnerFailure` / `OwnerTerminalDecision` | `delivery/owner-failure.ts:41` / `:11` | **M1 新模块**，与 Commit 4 的 `TerminalEmissionResult` 竞争，见 §11 #6 |
+| `settleMessagesOwnerFailure` | `messages/owner-failure-settlement.ts:4` | 同上；直接调 `env.ctx.abort`／`env.ctx.fail` |
+| `setDeliverySessionObserverForTests` | `delivery/session.ts:74` | **T0.4／T0.5 的 observer 接入点** |
+| warmup 三个 direct write | `warmup.ts:214,230,243` | T0.4 被测对象 |
+| AUQ direct write | `error-shaping-glue.ts:131` | T0.5 被测对象 |
+| raw SSE physical `stream.writeSSE` | `client-sink.ts:209` | T0.3 recorder 必须**位于它之下** |
+| raw WS physical `ws.send` | `client-sink.ts:645` | 同上 |
+| adversarial 旧边界正控 | `tests/pipeline/allocation-outside-owner-control.it.test.ts` | T0.8 第四类／T0.11 manifest |
+| 8 个 sink 构造点 + 2 个 Anthropic 接线点 | 见 §Commit 4 锚点表 | T0.3 recorder 包裹点 |
 
 ### 本 commit 的门
 
@@ -186,12 +188,12 @@ RFC §7.4 的两条，**缺一不可**，每个准备 commit 结束时都要跑�
 |---|---|---|
 | R-13 | C0 `production 硬门`（Q3 已裁 A） | 见 T0.4／T0.5 落盘的测试路径 |
 | R-1 | C0 `辅助门`（recorder 自检） | 见 T0.3 |
-| R-3 | C0 `辅助门`（旧缺陷 characterization，**红**） | 见 T0.6 |
-| R-11 / O-6 | 每 commit 共同门 | `exp/inter-block-anchor-allocator/byte-equivalence.sh` |
+| R-3 | C0 `辅助门`（旧缺陷 characterization，**绿=缺陷在**） | 见 T0.6 |
+| R-11 / O-6 | 每 commit 共同门 | §0.3 ② |
 
 ### commit invariant
 
-production 源码与运行时行为**逐字节不变**（`git diff -- src/` 只允许为空）；A／B／C／D 四集全部原样存活；新 core 不存在；旧边界的「wire stop 已写、owner lease 仍 open」稳定为红；typecheck 绿、`unit it http` 确定性全绿、O-6 PASS。
+production 源码与运行时行为**逐字节不变**（`git diff -- src/ packages/` 只允许为空）；A／B／C／D 四集全部原样存活；新 core 不存在；**T0.6 的 characterization 绿**（绿 = 旧边界的 wire／lease 分裂仍在，其头部三样已落盘）；typecheck 绿、`unit it http` 确定性全绿、O-6 PASS；**T0.10 已证明这三条门跑在 `$TREE`**。
 
 ---
 
