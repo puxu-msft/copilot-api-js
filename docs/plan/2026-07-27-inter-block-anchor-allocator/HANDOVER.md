@@ -68,6 +68,8 @@
 | **形状** | **全量 command algebra**（非候选 A/B） | 2026-08-03 |
 | **起点** | 从 RFC 起，不从陈旧 kickoff 的「P0」起；~~M1 留分支由 cutover 重塑~~ | 2026-08-03 |
 | **M1 合并（重裁，取代上一行的后半句）** | **把 `feat/inter-block-anchor-allocator` merge 进 master**，cutover 仍在隔离 worktree 做 | **2026-08-04** |
+| **entry tree** | cutover 在**隔离 worktree** 里做。⚠️ **合并已完成，这条的形状随之变了**：原裁决是「以 feature 为基起 worktree、先把 master 合进去」，现在 M1 已在 master，所以是「**从合并后的 master 起隔离 worktree，直接做 8 个 commit**」，不再有「先合一次」那一步 | **2026-08-04** |
+| **R-6 等级** | **按判据列拆**：compile fixtures → Commit 1（RFC §7.4）、import guard → Commit 6（§7.9），**两段各自定级**。与其余 4 条两段式判据（R-1／R-2／R-5／R-12）形状一致；**需要给 RFC §10.2 的 R-6 行补一句分段措辞** | **2026-08-04** |
 | **帧序变更** | **接受**，但登记为 C1–C11 之外的独立可观察契约；Q5 停点在 Commit 4 **之前** | 2026-08-03 |
 | **范围** | **扩大**：real-block 接线（C3/C4/C10 mapping lifecycle）纳入本 RFC；M2～M8 只剩 gap lifecycle / 特性开门 / 多 gap | 2026-08-03 |
 | **基线 flaky** | **根因修复**，作为 Commit 0 入场条件 | 2026-08-03 |

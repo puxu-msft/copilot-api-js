@@ -33,7 +33,7 @@
 | R-3 | C0 `辅助门`（旧缺陷 characterization，红）· C4 `production 硬门` | C4 indexed 接线 | 真实 Anthropic live consumer | T0.6 · T4.5 T4.7 | IN-SCOPE |
 | R-4 | C4 `production 硬门` | C4 compound command | FakeClock + 真实 route | T4.7 | IN-SCOPE |
 | R-5 | C1 `辅助门`（test-only 预损坏 state）· C4 `production 硬门` | **C4 mapping 接线**——§4.6 `design.md:378` 写明 `withAllocatedRealBlock`／`writeBlockFrame` 当前**零 production 调用者**，双命中 mutation 在 cutover 前**不可达** | production registration mutation | T2.3 · T4.9 | IN-SCOPE |
-| R-6 | C1 · C6 · **等级未定，见 §5** | C1 types / C6 import guard | compile fixtures + import guard | T1.1 T1.2 T1.3 · T6.6 | IN-SCOPE |
+| R-6 | C1 `辅助门`（compile fixtures，§7.4）· C6 `production 硬门`（import guard，§7.9） | C1 types / C6 import guard | compile fixtures + import guard | T1.1 T1.2 T1.3 · T6.6 | IN-SCOPE |
 | R-7 | C4 `production 硬门` | C4 typed terminal result | 各 vendor direct／reverse、H2、H3、truncation | T4.10 | IN-SCOPE |
 | R-8 | C4 `production 硬门` | C4 WS owner + FakeClock seam | Responses WS control-with-inflight | T4.11 | IN-SCOPE |
 | R-9 | C5 `辅助门`（诊断，不计 behavior 等级） | C5 telemetry schema（**Q1 未裁则本段不可开工**） | 同 command 驱动 success／preflight／wire partial | T5.3 T5.7 | IN-SCOPE |
@@ -93,7 +93,14 @@
 | **Q5**（anchor 帧序逐帧 diff） | **C4 authority publish 之前**（必经） | 用户已裁「接受帧序变更」；**逐帧 diff 审查仍是必经触发点，缺材料不得进入 C4** |
 | **§7.13 不可满足停门** | C4 | 若 PoC 证明无法在同一 semantic commit 切换，**不得发布部分 authority、不得引入 `legacy_adapted`／payload-guessing facade、不得让 new command 回落** |
 
-## 5. 已知缺口：R-6 的等级读不出来（**停下来问，别自己填**）
+## 5. ~~已知缺口~~ **已裁决（2026-08-04）**：R-6 按判据列拆，两段各自定级
+
+**用户裁决**：候选 1 ——`compile fixtures → C1`（RFC §7.4）、`import guard → C6`（§7.9），**两段各自定级**。上表 R-6 行已按此填写。
+**仍需做的一件事**：RFC §10.2 的 R-6 行末列仍是无分段的 `本RFC辅助门；Commit 1／6`，**要补一句分段措辞**，否则本表与 RFC 各说各话——这是 Commit 8 文档同步的一项，别落空。
+⚠️ **C6 那段升为 production 硬门是有后果的**：判据证伪评审指出 plan 里「辅助门不阻断交付」的措辞与 RFC §10.4「辅助类型／遥测门失败同样阻止交付」冲突，整改时要一并对齐。
+
+<details><summary>裁决前的记录（保留备查，别再照它当未决处理）</summary>
+
 
 §10.2 末列 14 条里 13 条可直接读出等级，**唯独 R-6 是 `本RFC辅助门；Commit 1／6` —— 两个 commit、一个等级、没有分段**。
 
@@ -106,6 +113,8 @@
 | 1 | compile fixtures → C1、import guard → C6，两段各自定级 | 与其余 4 条两段式判据形状一致；需要 RFC 补一句分段措辞 |
 | 2 | 两段同为 `辅助门`（维持末列字面读法） | 改动最小；**代价是 C6 的 import guard 失去阻断力** |
 | 3 | C6 那段升 `production 硬门` | §7.9 的 import guard 守的是「delivery 不 import concrete codec」这条分层边界，破了它 R-6 的价值就没了；**代价是 C6 通过条件变严** |
+
+</details>
 
 ## 6. 反向：plan task → RFC 出处
 
