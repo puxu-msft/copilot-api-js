@@ -215,13 +215,14 @@ production 源码与运行时行为**逐字节不变**（`git diff -- src/ packa
 
 ### factory／锚点表
 
-| 符号 | `file:line` | **树** | 用途 |
-|---|---|---|---|
-| `ClientFormat`（四值 union） | `src/lib/pipeline/envelope.ts:21` | 两树同行 | profile discriminant 的 `format` 取值来源 |
-| `FormatCodec` | `src/lib/pipeline/types.ts:949`（master）／`:948`（feature） | 两树 | RFC §2.6 的既有格式抽象；本次沿用「格式方提供知识、driver／delivery 消费窄口」的依赖方向 |
-| `DeliveryTerminalCommand` | `delivery/types.ts:60`（master）／`:69`（feature） | 两树 | 迁移**输入**；其 `frames?: ReadonlyArray<DeliveryFrame>` 允许 caller 提交已铸 provenance，**不能原样成为终态公共签名** |
-| `ClientBlockLedger` | `delivery/types.ts:28`（master）／`:37`（feature） | 两树 | observation 层既有形状，T1.5 的对照 |
-| `WireBlockAllocationPort` 五方法 | `types.ts:309-322`（master）／`:319-332`（feature） | 两树 | **被替换的双面能力**，不是可继续扩展的终态 |
+| 符号 | `file:line` | 用途 |
+|---|---|---|
+| `ClientFormat`（四值 union） | `src/lib/pipeline/envelope.ts:21` | profile discriminant 的 `format` 取值来源 |
+| `FormatCodec` | `types.ts:948` | RFC §2.6 的既有格式抽象；沿用「格式方提供知识、driver／delivery 消费窄口」的依赖方向 |
+| `DeliveryTerminalCommand` | `delivery/types.ts:69` | 迁移**输入**；其 `frames?: ReadonlyArray<DeliveryFrame>` 允许 caller 提交已铸 provenance，**不能原样成为终态公共签名** |
+| `OwnerTerminalDecision` 三态 | `delivery/owner-failure.ts:11` | **T1.6 必读**：`TerminalEmissionResult` 的 `terminalFrameDisposition` 三态与它论域重叠，取舍见 §11 #6 |
+| `ClientBlockLedger` | `delivery/types.ts:37` | observation 层既有形状，T1.5 的对照 |
+| `WireBlockAllocationPort` 五方法 | `types.ts:319-332` | **被替换的双面能力**，不是可继续扩展的终态 |
 
 > **调查任务（本 commit 内必须回答，答不上就只冻结性质）**：`makeDeliverySseSink`／`makeDeliveryWsSink` 当前都是 exported function 且返回静态 `ClientSink`；新 composition factory **是否需要 export**、哪些调用方拿 `GenerationDeliveryOwner<P>`、哪些只拿 `CommandsFor<P>`——RFC §9.3 第 1 项，**最终证据槽在 Commit 4 publish kickoff**，Commit 1 只取最小子集。
 
@@ -259,17 +260,19 @@ production 源码与运行时行为**逐字节不变**（`git diff -- src/ packa
 
 ### factory／锚点表
 
-| 符号 | `file:line` | **树** | 用途 |
-|---|---|---|---|
-| `openAnchorIndex`（裸 number） | `types.ts:486-493`（master）／`:496-502`（feature） | 两树 | **被 `OpenAnchorLease` 取代的现状**：裸 index 回答不了「属于哪个 generation／哪一次 anchor／是否仍 current」 |
-| owner close 读写 `openAnchorIndex` | `delivery/session.ts:422-430`（feature） | feature | T2.1 的现状对照：读 index，physical write 成功后清成 `undefined` |
-| generic `write` 只更新 ledger／clocks | `delivery/session.ts:127-137`（feature） | feature | **D1 的分裂证据**：它**不**清 `openAnchorIndex` |
-| `ClientBlockLedger`（observation） | `delivery/types.ts:28`（master）／`:37`（feature） | 两树 | T2.2 双层分离的 observation 侧既有形状 |
-| owner serializer 现状（`write` → `writeToSink`） | `delivery/session.ts:127,131,334`（feature） | feature | T2.4 的迁移起点 |
-| heartbeat 三个 producer | `delivery/session.ts:175`（content frame）、`:184`（`injectContentScaffold`）、`:209`（`injectScaffold`）、`:219`（normal ping） | feature | T2.6 被测对象；inventory §13 已单列这四个 **owner-internal producer** |
-| `DeliveryHeartbeat` | `delivery/types.ts:46`（master）／`:55`（feature） | 两树 | 含 `injectScaffold`；§7.2 点名它是闭包 sanity 成员 |
-| `OwnerResult` 三个失败 reason | `delivery/session.ts:300-309`（feature） | feature | `client-gone` / `session-terminating` / `wire-torn` 生命周期失败通道。**`AuthorizationCardinalityError` 与 `CommandEffectMismatchError` 不走这条通道，直接 throw** |
-| commit point（`committed` 翻转） | `delivery/session.ts:323-354`（feature） | feature | C9 现状；T2.2 ③④ 的注入点 |
+| 符号 | `file:line` | 用途 |
+|---|---|---|
+| `openAnchorIndex`（裸 number） | `types.ts:496-502` | **被 `OpenAnchorLease` 取代的现状**：裸 index 回答不了「属于哪个 generation／哪一次 anchor／是否仍 current」 |
+| owner close 读写 `openAnchorIndex` | `delivery/session.ts:422-430` | T2.1 的现状对照：读 index，physical write 成功后清成 `undefined` |
+| generic `write` 只更新 ledger／clocks | `delivery/session.ts:127-137` | **D1 的分裂证据**：它**不**清 `openAnchorIndex` |
+| `ClientBlockLedger`（observation） | `delivery/types.ts:37` | T2.2 双层分离的 observation 侧既有形状 |
+| owner serializer 现状（`write` → `writeToSink`） | `delivery/session.ts:127,131`；`writeToSink` 定义 `:581` | T2.4 的迁移起点 |
+| heartbeat **四个** producer | `delivery/session.ts:175`（`contentFrame`）、`:184`（`injectContentScaffold`）、`:209`（`injectScaffold`）、`:219`（normal ping） | T2.6 被测对象；inventory §13 单列这四个 **owner-internal producer**（**是四个不是三个**） |
+| `DeliveryHeartbeat` | `delivery/types.ts:55` | 含 `injectScaffold`；§7.2 点名它是闭包 sanity 成员 |
+| `OwnerFailureReason` 三值 | `types.ts:295` | `client-gone` / `session-terminating` / `wire-torn` 生命周期失败通道。**`AuthorizationCardinalityError` 与 `CommandEffectMismatchError` 不走这条通道，直接 throw** |
+| `ownerFailure` / `classifyOwnerFailure` | `delivery/session.ts:300-309` / `delivery/owner-failure.ts:41` | 同上；**M1 已把散落的提前返回收敛成 `OwnerTerminalDecision`**，T2.7 写 `terminate` 状态机前必读，别再造第二个分类器（§11 #6） |
+| commit point（`committed` 翻转） | `delivery/session.ts:323-354` | C9 现状；T2.2 ③④ 的注入点 |
+| owner→raw 存在性分派 | `delivery/session.ts:584-596` | §0.4 第 2 条快照的必覆盖对象（`sink.writeAnchor ?? sink.write` 四处） |
 
 > **调查任务（RFC §9.3 第 6 项，证据槽在 Commit 5 之前，但 T2.x 需要最小子集）**：per-command rich records 的 request-scoped owner 是 `PipelineInfo` 新字段、独立 History detail 还是 ctx snapshot；settle 冻结点在哪。**答不上就只冻结「owner 先保留 rich command observations、sink 在末端投影、成功与失败走同一 normalizer」这三条性质**，不写字段表。
 
@@ -312,8 +315,8 @@ production **不构造新 owner**；**不维护 shadow lease／mapping／ledger�
 | id | 先写什么失败测试 → 预期怎么红 | 实现什么 → 预期怎么绿 |
 |---|---|---|
 | **T3.1** | 各 profile 的 pure builders 与 classifiers，用**真实 vendor bytes** 做 unit／SDK 校准。**先用一份合成 fixture 跑通、再换成真实上游字节确认它仍绿**——合成 fixture 与 builder 共享同一份错误假设时会一起绿（RFC §11.1）。 | builders 转绿。**转发腿的 producer 谓词与 classifier 若共享谓词，两侧会共因判绿**——因此本 task 的绿**不计** behavior 闭合，兜底由 O-2 状态机／wire golden／真 SDK 承担（见 T4.13）。 |
-| **T3.2** | Responses output-item boundary 的 effect taxonomy：从 **HTTP／WS renderer、terminal fixtures 与真实 client oracle** 推导完整 expected-effect 集合。**先按 RFC §3.6 那句话臆造一个 event 枚举跑一遍，确认它对不上真实 renderer**——RFC 明确禁止照那一句话猜。 | taxonomy 落盘 + unit 转绿。RFC 只冻结「由 Responses profile 明确分类，不创建 Anthropic allocator」。 |
-| **T3.3** | opaque LegHandle 在 candidate binding 中的承载：按 **5 个 production `beginLeg` lexical sites × 3 种 leg kind（primary／continuation／recovery）× 4 种 source scenario（sole primary／hedge winner／continuation／recovery）** 逐格写数据流断言。**先写一格「hedge winner 是第四种 leg kind」的错误映射确认它红**——RFC §9.3 第 3 项明确：**hedge winner 属于 primary kind，不是第四种 leg kind**。 | 3 kinds × 4 scenarios × 5 sites 的映射矩阵落盘、unit 转绿。**owner 能从 state 推导的字段不得重复让 caller 提交。** |
+| **T3.2** | Responses output-item boundary 的 effect taxonomy：从 **HTTP renderer、WS renderer、terminal fixtures** 三个来源分别枚举 **runtime 观测到的** event／effect 命中集合，每项记 canonical family 与依据。**先冻结这三份 hit set**，别从 RFC §3.6 那一句话猜 enum。 | taxonomy 落盘 + unit 转绿。<br>**mutation 正控（三条，各打一个来源）**：分别删掉一个 **HTTP-only**、一个 **WS-only**、一个 **terminal-only** 的 effect，要求**对应的真实入口**转红——这能区分「taxonomy 漏了某来源」与「命名不同」。<br>**false-red 对照**：允许**多个 wire event 映射到同一个冻结 effect family**，不得因聚合而误红。<br>⚠️ **比集合与映射，不比名称文本**。「随手臆造一个 enum 看它不匹配」不是稳定 mutation——它可能碰巧与当前 renderer 一致，也可能只因命名差异而红。 |
+| **T3.3** | opaque LegHandle 在 candidate binding 中的承载。<br>🔴 **这不是 `5 × 3 × 4 = 60` 格笛卡尔积**——**RFC §9.3 第 3 项冻结的是三个独立覆盖轴的人口口径，不是组合可达性**。实测五个 site 的 kind 是**字面量写死的**：`driver.ts:885/1014/1102` 固定 `"primary"`、`:1521` 固定 `"recovery"`、`:1579` 固定 `"continuation"`。要求在 primary-only site 驱动 recovery，只能靠伪造入口或错误扩宽 production site，**三种做法都在削弱门**。<br>**正确形状是关系覆盖表**：先为每个 site 列出它**可达**的 leg kind／source scenario，不适用的格**具名 `N/A` 并附控制流证据**（哪一行的字面量／哪个分支决定了它不可达）。 | 覆盖判据（三条同时成立，缺一不可）：<br>① **5 个 site 各至少一条正向 witness**；<br>② **3 种 leg kind 的全集**各至少被一个适用 site 覆盖；<br>③ **4 种 source scenario 的全集**（sole primary／hedge winner／continuation／recovery）各至少被一个适用 site 覆盖。<br>**mutation 正控**：**逐 site** 删掉它的 LegHandle 接线，**该 site 专属的生产路径**必须转红（这才证明五个 site 都真的接上了；一条聚合断言做不到）。<br>⚠️ **hedge winner 属于 primary kind，不是第四种 leg kind**（§9.3 第 3 项）——它是 source scenario 轴上的值。**先写一格「hedge winner 是第四种 leg kind」的错误映射，确认它红。**<br>**owner 能从 state 推导的字段不得重复让 caller 提交。** |
 | **T3.4** | producer-to-command 转换 helpers 的 unit。**先写一条「helper 接收或返回闭包内任何符号」的检查确认它红**——准备期新增声明**不得**把闭包内任何符号放进签名（RFC §7.2 表，注意是「闭包内任何符号」而非只有种子类型）。 | 转绿。 |
 | **T3.5** | 逐点可表达性演练（§9.3 第 7 项）：五类 handler、**8 个 handler anchor terminal-close 决策 + 2 个 driver 决策**如何产出 `TerminalEmissionResult` 并保持顺序；`terminalFrameDisposition` 三态如何映射原 client-gone／session-terminating 提前返回；driver 所有 `freezeHeartbeat`／`suspendHeartbeat`／`resumeHeartbeat`／`close` 如何映射到 `runEmissionBatch` 或 terminal。**任何无法表达的点都使 Commit 4 停门**（§7.13），**不得反向调用 legacy writer**。 | 逐点映射表落盘。**还须逐 tick 比较旧／新重臂时点并输入 Q5 diff**（T4.1）。 |
 | **T3.6** | 10-root cutover harness 与 test-only handle recorder：在**isolated test composition** 中完整演练一遍 publish。**先确认 harness 跑完后 production route goldens、O-6 与全套保持原样**——演练泄漏到 production 就是越界。 | harness 转绿，production 侧零变化。 |
@@ -321,15 +324,16 @@ production **不构造新 owner**；**不维护 shadow lease／mapping／ledger�
 
 ### factory／锚点表
 
-| 符号 | `file:line` | **树** | 用途 |
-|---|---|---|---|
-| 5 个 `beginLeg` production lexical sites | `driver.ts:877, 1018, 1105, 1519, 1577` | **master** | T3.3 的五个格位。**feature 树对应 `:885, 1014, 1102, 1521, 1579`——两树都别混用** |
-| `beginLeg` 被 `wireState` 门挡住 | `driver.ts:875-880`（master）／`:883-888`（feature） | 两树 | **R-14 存在的唯一理由**：`beginLeg` 包在 `if (allocationPort?.wireState)` 里而 `wireState` 只有 Anthropic 有；`noteWinner` 不受该门控（但仍受 optional chaining 约束——反查不到 session 时不调用，**「无条件」不是绝对必调用**） |
-| anchor frame builders | `keepalive-anchor.ts:155`（start）、`:164`（delta）、`:173`（stop）、`:186`（synthetic message_start）、`:207`（remap）、`:232`（`resolveRemappedFrame`） | **两树同行**（已实测） | T3.1 的**纯函数核心，复用不重写**（skill `large-refactor` §5「保算法核、丢渲染壳」）。终态它们**只能由 owner command 在读取 current lease 后调用** |
-| `reconcileLiveFrame` | `live-reconcile.ts:107`（master）／`:90`（feature） | 两树 | T3.1：decorator 要**退化为纯 decision／transform** 的目标形状 |
-| `makeReconcilingSink(inner: ClientSink, …): ClientSink` | `live-reconcile.ts:164`（master）／`:138`（feature） | 两树 | **D 集头号成员**（§7.2 逐字点名）。T3.4 的对照 |
-| 两个 injector 工厂 | `keepalive-anchor.ts:297`（anchor）、`:382`（envelope），master；feature `:266` / `:351` | 两树 | D 集成员；其 options 含 `getSink: () => ClientSink \| undefined` |
-| `stopFrame` 三个 production 调用点 | 见 Commit 4 锚点表 | — | T3.5 的 terminal-close 映射对象 |
+| 符号 | `file:line` | 用途 |
+|---|---|---|
+| 5 个 `beginLeg` production lexical sites | `driver.ts:885`（primary，hedge race winner）、`:1014`（primary，unhedged binding）、`:1102`（primary，unhedged binding）、`:1521`（**recovery**）、`:1579`（**continuation**） | T3.3 的五个 site。**kind 是字面量写死的**——这正是「不是 60 格笛卡尔积」的证据 |
+| `beginLeg` 被 `wireState` 门挡住 | `driver.ts:883-885`（`if (allocationPort?.wireState)`） | **R-14 存在的唯一理由**：`wireState` 只有 Anthropic 有；`noteWinner`（`:888`）不受该门控（但仍受 optional chaining 约束——反查不到 session 时不调用，**「无条件」不是绝对必调用**） |
+| anchor frame builders | `keepalive-anchor.ts:155`（start）、`:164`（delta）、`:173`（stop）、`:186`（synthetic message_start）、`:207`（remap）、`:232`（`resolveRemappedFrame`） | T3.1 的**纯函数核心，复用不重写**（skill `large-refactor` §5「保算法核、丢渲染壳」）。终态它们**只能由 owner command 在读取 current lease 后调用** |
+| `reconcileLiveFrame` | `live-reconcile.ts:90` | T3.1：decorator 要**退化为纯 decision／transform** 的目标形状 |
+| `makeReconcilingSink(inner: ClientSink, …): ClientSink` | `live-reconcile.ts:138` | **D 集头号成员**（§7.2 逐字点名）。T3.4 的对照 |
+| 两个 injector 工厂 | `keepalive-anchor.ts:266`（anchor）／`:351`（envelope） | D 集成员；其 options 含 `getSink: () => ClientSink \| undefined` |
+| `classifyOwnerFailure` → `settleMessagesOwnerFailure` | `delivery/owner-failure.ts:41` → `messages/owner-failure-settlement.ts:4` | **T3.5 必读**：M1 已把「client-gone／session-terminating 提前返回」收敛到这里，**不再是散落的提前返回**。照旧描述干会造出第二条 terminal 分流路径，撞 Commit 4 的「first terminal command wins」。取舍见 §11 #6 |
+| 10 个 anchor terminal-close 决策 | 见 §Commit 4 锚点表 | T3.5 的映射对象 |
 
 ### 本 commit 的门
 
