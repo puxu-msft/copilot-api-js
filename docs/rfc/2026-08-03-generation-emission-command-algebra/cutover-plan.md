@@ -586,7 +586,7 @@ production 旧 API population **持续为零**；telemetry **不新增 emission 
 | id | 先写什么失败测试 → 预期怎么红 | 实现什么 → 预期怎么绿 |
 |---|---|---|
 | **T6.1** | 重跑 T0.7 的闭包与 inventory AST，断言 A／B／C 三集 population 仍为零（C 集 construction 仍精确等于 allowlist）。**先手工加回一个旧调用点确认审计会红。** | 审计绿。 |
-| **T6.2** | 删除 **A 集**已零调用的定义：`ClientSink.write*` generation surface、`WireBlockAllocationPort`、caller envelope factory、legacy anchor fields／bridge、`commandPortActivation`、raw production exports。**删之前先跑一遍全套确认真的零引用**（TypeScript 会替你找剩余引用，别猜）。 | typecheck 与全套绿。<br>⚠️ **`commandPortActivation` 在两棵树的 `src/` 都零命中**（实测）。它要么是 Commit 1～4 期间新引入的名字，要么是 RFC 的前瞻性命名——**到达本 commit 时先确认它存在再删，不存在就在 plan 里标注并回报**，别为了让清单成立而发明一个符号。 |
+| **T6.2** | 删除 **A 集**已零调用的定义：`ClientSink.write*` generation surface、`WireBlockAllocationPort`、caller envelope factory、legacy anchor fields／bridge、`commandPortActivation`、raw production exports。**删之前先跑一遍全套确认真的零引用**（TypeScript 会替你找剩余引用，别猜）。 | typecheck 与全套绿。<br>⚠️ **`commandPortActivation` 在合并后 master 的 `src/` 零命中**（实测）。它要么是 Commit 1～4 期间新引入的名字，要么是 RFC 的前瞻性命名——**到达本 commit 时先确认它存在再删，不存在就在 plan 里标注并回报**，别为了让清单成立而发明一个符号。 |
 | **T6.3** | 删除 **B 集**已零 consumer 的旧 `DownstreamDeliverySession` public surface：`writeScaffold`、`noteWinner`、`noteUpstreamRoundStarted`、`noteUpstreamRoundEnded`。**先确认 `identity`／`snapshot` 若内部保留，它们不作为旧 session handle 暴露给 driver。** | 绿。 |
 | **T6.4** | 删除 **C 集**已零 resolution consumer 的 exported `getDownstreamDeliverySession`、等价 WeakMap lookup 及 allowlist 外 construction exports。 | 绿。 |
 | **T6.5** | **R-10 硬门**：test-only adversarial seam **仍能在旧边界造出分裂**，而新 production route **拒绝同一行为**。<br>🔴 **「coverage gate 必须红」此前没有定义任何 gate**——默认 runner 对「删掉一条测试」是**绿**的（少跑一条而已），T6.1 的 production AST 审计也看不见 test-only seam，所以这条预测按原样必然落空。<br>**gate 的实现是一条独立架构测试**，断言 **T0.11 冻结的 manifest 三样仍成立**：①那些测试文件仍存在；②它们**运行时枚举**出的 test name 集合仍等于冻结集合（用 `--reporter=junit`，**不用 `rg` 扫 `test("...")`**）；③该 seam 依赖的 production symbol identity 仍存在。 | 绿。<br>**mutation（两条，各打一型）**：①在副本里**删掉**该 test 文件或其中一条 case → manifest 门必须报出**缺失的具体 name／文件**；②把它**改走合法 owner** → 行为门必须红（seam 不再能造出分裂）。<br>**false-red 对照**：owner-backed array adapter 与 raw transport byte units 合法存在，**不被零命中 guard 误杀**。<br>锚点：`tests/pipeline/allocation-outside-owner-control.it.test.ts`。 |
@@ -661,7 +661,7 @@ production 零改动（**按 T7.3 的 manifest 判，不是只扫 `src/`**）；
 | **T8.2** | 把 **anchor 精确帧序**登记为 C1～C11 **之外**的独立可观察契约（§6.3）：它不属于 C2（C2 只要求 `maxOpen<=1` 且 anchor stop 先于 real start，中间多一帧合法 keepalive 仍成立），也不属于 C7（C7 不规定 synthetic 帧相对 real start 的精确位置）。**先确认没有人把它包装成 C2／C7 的「实现细节」。** | 契约落盘。 |
 | **T8.3** | 同步 `docs/DESIGN.md` 的「活的架构现状」表与类型架构节。**先跑一次跨文档 grep 验证**（session-closeout §2）。 | 同步完成。 |
 | **T8.4** | 旧 plan supersede 关系：`docs/plan/2026-07-27-inter-block-anchor-allocator/` 的 M2～M4 mapping 步骤被本 RFC supersede；M5～M8 中 gap lifecycle／开门／多 gap **保留并重锚**；O-1～O-9 继续继承。**别把 supersede 写成删除**——§10.3 明写 O-9「绝不删除」。 | 注解完成。 |
-| **T8.5** | **旧 API disposition 与 doc-vs-code claims 审计**：对 §0.1 两棵树的合并结果逐项确认。**并完成 HANDOVER 遗留的那件事**：先冻结一份权威文档 manifest（三个范围共 **122 份 Markdown**），再**按契约轴而非新 API 名**检索——index allocation/order/reuse/offset、anchor open/close/lifecycle、serializer/write/emit、synthetic provenance、winner/candidate/dispatch、heartbeat/escalation、continuation/recovery、History/telemetry；对 manifest 里**每一份**给 disposition，并对 C1–C11 与用户裁决做双向 trace。<br>⚠️ **「除上述外无冲突」这个否定性断言在本 plan 写作时并不成立**：HANDOVER 记录的五个检索词只命中 21／122 份，未命中的里面恰恰包括承载 C1／C4／C6／C7／C8、D2、continuation offset、anchor 生命周期与 P7／P8 的核心文档。**少命中不能证明无冲突。** | 审计表落盘。 |
+| **T8.5** | **旧 API disposition 与 doc-vs-code claims 审计**：对 M1 合入后的主线状态逐项确认（§0.1 列出的 M1 到货物是必查起点）。**并完成 HANDOVER 遗留的那件事**：先冻结一份权威文档 manifest（三个范围共 **122 份 Markdown**），再**按契约轴而非新 API 名**检索——index allocation/order/reuse/offset、anchor open/close/lifecycle、serializer/write/emit、synthetic provenance、winner/candidate/dispatch、heartbeat/escalation、continuation/recovery、History/telemetry；对 manifest 里**每一份**给 disposition，并对 C1–C11 与用户裁决做双向 trace。<br>⚠️ **「除上述外无冲突」这个否定性断言在本 plan 写作时并不成立**：HANDOVER 记录的五个检索词只命中 21／122 份，未命中的里面恰恰包括承载 C1／C4／C6／C7／C8、D2、continuation offset、anchor 生命周期与 P7／P8 的核心文档。**少命中不能证明无冲突。** | 审计表落盘。 |
 | **T8.6** | telemetry／History 文档与 deferred items 同步；`docs/todo/deferred-backlog.md` 记入 §8「范围外」表里归属它的两项（vendor 协议完整状态机、统一 `CompleteResponseEmitter`）。 | 同步完成。 |
 | **T8.7** | 独立 **merged-state review**（`review-merged-state`）：跨 phase 集成缝、doc↔code 对账、commit message 与内容是否相符。<br>**必查项**：①§11 各未裁项**都已在其触发点被真正裁掉**（不是「一路走过来没人拦」）；②RFC §10.2 的 R-6 行已按裁决改写（T8.1）；③本文与 RFC／矩阵三处对「辅助门是否阻断交付」的措辞一致。 | review 记录落盘。 |
 
@@ -680,7 +680,16 @@ runtime、API population 与 goldens 已稳定；**docs 不承担推迟迁移**�
 
 ## 10. 完成判定（RFC §10.4）
 
-R-1～R-14 中标为「本 RFC 必须／gate」的项目**全部**具备 positive 与 negative controls。**R-14 与其余必过项同级**——它是非 Anthropic candidate provenance 的唯一守卫，漏掉它等于让 §3.3 已认定「缺了会全绿交付」的回归照常交付。辅助类型／遥测门失败**同样阻止交付**，但其通过**不升级** behavior 等级。
+R-1～R-14 中标为「本 RFC 必须／gate」的项目**全部**具备 positive 与 negative controls。**R-14 与其余必过项同级**——它是非 Anthropic candidate provenance 的唯一守卫，漏掉它等于让 §3.3 已认定「缺了会全绿交付」的回归照常交付。
+
+🔴 **「辅助门」不是「不阻断」**（RFC §10.4 逐字：辅助类型／遥测门失败**同样阻止交付**）。两档的唯一差别是**能否升级 closure 等级**：
+
+| 档 | 失败时 | 通过时 |
+|---|---|---|
+| `production 硬门` | **阻止交付** | 可支撑该 witness 覆盖范围内的「结构性闭合候选」升级 |
+| `辅助门` | **同样阻止交付** | **不升级** behavior／closure 等级，只作 presence ratchet |
+
+**本文任何地方若出现「辅助门失去阻断力」「升 production 硬门才变严」之类措辞，都是错的**——那种说法会诱导用户为了拿回一个本来就有的阻断效果而升档。R-6 的裁决材料曾犯过这个错，记在 §11 #1。
 
 O-3／O-5／O-7／O-9 以及 O-4 的完整验收明确留给后续 M2～M8／P7／P8，**不得因「不属于本 RFC」从 roadmap 删除**。
 
@@ -789,7 +798,7 @@ M1 合入主线时带来了两个**三份文档都从未提到**的模块：
 | 用 `ALLOW_DIRTY=1` 让 T0.1 在共享脏树上跑起来 | 脚本自己声明那批日志「do not satisfy a gate」。正确出路是隔离 worktree（已裁的 entry 形状天然满足） |
 | 自行判定 §4.8 的「动态 compound 名称」不涵盖选项 A | 无 RFC 出处的自裁。两种读法都成立时，实施者的判断没有外部 oracle |
 | 在 #5 上一边声称「待裁」一边在正文断言「这不是错配」 | 那是实质自裁。**已撤回**，并给了必经触发点（Commit 2 门表） |
-| 把 `commandPortActivation` 当成既有符号写进删除清单并给 `file:line` | **实测 `src/` 零命中**。给一个不存在的符号编行号，正是「跨一条没读过的缝规定行为」 |
+| 把 `commandPortActivation` 当成既有符号写进删除清单并给 `file:line` | **实测合并后 master 的 `src/` 零命中**。给一个不存在的符号编行号，正是「跨一条没读过的缝规定行为」 |
 | 用 `withAllocatedRealBlock`／`writeBlockFrame` 的现有签名作为 `openRealBlock`／`writeRealBlockFrame` 的终态签名 | RFC §3.4 明确：终态 public port 应暴露 owner 验证的 **opaque handle**，不把 mutable registry 或 mapping 实现对象交给 caller。现有签名是**迁移起点，不是终点** |
 | 为 O-3／O-5／O-7／O-9 硬塞一个归属 commit 好让矩阵没有孤儿 | §10.4 明写「不得因『不属于本 RFC』从 roadmap 删除」，§10.3 明写 O-9「绝不删除」。硬塞与删除是同一错误的两个方向 |
 | 把裁决材料的量化影响栏写成未实测的估计 | #4 候选 1 的「merge 有语义冲突」实测为**零文本冲突**，而候选 4 的卖点整个建立在「把冲突关在隔离树内」。**用错的成本对照做出的裁决，方向可能正好相反** |
