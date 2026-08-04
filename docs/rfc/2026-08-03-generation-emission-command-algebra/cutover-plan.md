@@ -138,66 +138,72 @@ RFC §7.4 的两条，**缺一不可**，每个准备 commit 结束时都要跑�
 
 第 2 条的快照工具本身是 **T0.7** 的产物。
 
-### 0.4a production path manifest（**一处定义，全 plan 共用**）
+### 0.4a production 变更判据 —— **tracked 全集 减 显式排除表**（一处定义，全 plan 共用）
 
-多个 commit 的 invariant 都要断言「production 未改动」。**这些断言必须用同一把尺子**，否则会出现「用刚改过的尺子量基线」——具体形态：T0.1／T0.11 要求 junit 枚举，而**最自然的实现就是改 `scripts/parallel-test.ts`**（`:64` 已为刷新计时驱动过 junit）；若 invariant 扫不到它，**改尺子那次会被判绿**。
+多个 commit 的 invariant 都要断言「production 未改动」。**这些断言必须用同一把尺子**，否则会出现「用刚改过的尺子量基线」——T0.1／T0.11 要求 junit 枚举，而最自然的实现就是改 `scripts/parallel-test.ts`（`:64` 已为刷新计时驱动过 junit）；若门扫不到它，**改尺子那次会被判绿**。
 
-> 🔴 **这份清单已经错过三次，每次换个范围**：先是只扫 `src/`（漏 `packages/`），再是整个 `scripts/` 一刀切（误杀 test artifact），第三次漏掉前端两个目录与根级构建输入。**所以下面先写「怎么得到这份清单」，再写清单本身**——照着回忆列一遍必然还有第四次。
+> 🔴 **这份清单错过四次，每次换个范围**：只扫 `src/`（漏 `packages/`）→ 整个 `scripts/` 一刀切（误杀 test artifact）→ 漏 `ui-v4/` 与根级构建输入 → 漏 `ui/` 的二级条目。
+>
+> **第四次的成因与前三次不同，值得单独记**：第三次之后我加了导出命令 `git ls-files | awk -F/ 'NF>1{print $1"/"}'`，但它**只枚举到顶层**；而 `ui/`／`ui-v4/`／`scripts/` 是嵌套项目，**它们的二级条目我又回到「凭想到的列」**——`ui-v4` 列了 6 条、`ui` 列了 3 条，漏的正是没想到的那几个。评审的措辞precise：**「第三次是我没想到，第四次是我以为机器替我想了。」**
 
-**导出方法（可复跑，别凭记忆列）**：
+**因此本轮反转判据方向，而不是把导出命令递归下去。**
+
+**为什么不选「递归到嵌套目录」**（评审候选 a，已考虑并否决）：它仍是 allowlist，**第五个嵌套项目出现时同样静默**——`ui-v5/`、新的 `packages/*`、或某个现有目录长出二级结构，都不会有人被提醒去更新递归清单。**它修的是这一次的实例，不是复发机制。**
+
+**失败方向不对称，这才是选型依据**：
+
+| 形状 | 漏一项时会怎样 | 可见性 |
+|---|---|---|
+| allowlist（枚举 production） | 漏掉的**默认在门外** → production 改动被判绿 | **静默假绿**，已发生四次 |
+| **exclusion（tracked 全集 减 排除表）** | 漏掉的**默认在门内** → 合法的非-production 改动被判红 | **误红一次、当场可见**，加进排除表即可 |
+
+**判据（全 plan 统一，不在别处另立）**：
 
 ```bash
-# ① 枚举全部 tracked 顶层条目（目录带 /，文件不带）——这是必须逐条表态的全集
-git ls-files | awk -F/ 'NF>1{print $1"/"} NF==1{print $1}' | sort -u
-# ② 与下表逐条对账：新出现的条目 = 未表态，门必须报错而不是默默放过
+# production 未改动 == 下面这条命令输出为空（FROM/TO 见 §0.4b）
+cd "$TREE" && git diff --stat "$FROM".."$TO" -- . \
+  ':(exclude)docs/' ':(exclude)tests/' ':(exclude)exp/' ':(exclude)refs/' \
+  ':(exclude).claude/' ':(exclude).agents/' ':(exclude).workflow/' \
+  ':(exclude).serena/' ':(exclude).superpowers/' ':(exclude).vscode/' \
+  ':(exclude)*.md' ':(exclude)LICENSE' ':(exclude)*.gitignore' ':(exclude).gitattributes' \
+  ':(exclude)skills-lock.json' ':(exclude)eslint.config.js' ':(exclude)prettier.config.mjs' ':(exclude)knip.json' \
+  ':(exclude)config.yaml' ':(exclude)config.example.yaml' \
+  ':(exclude)scripts/test-timings.json' ':(exclude)scripts/update-circular-deps-baseline.ts' \
+  ':(exclude)ui/tests/' ':(exclude)ui-v4/tests/' ':(exclude)ui/vitest/' \
+  ':(exclude)ui/vitest.config.ts' ':(exclude)ui-v4/vitest.config.ts' \
+  ':(exclude)ui/playwright.config.ts' ':(exclude)ui-v4/docs/'
 ```
 
-**判据不是「我想到了哪些」，而是「① 的输出里每一条都在下表出现」。** 新增顶层条目时**必须显式归类**，默认落在门外是不可接受的——这正是前三次复发的机制。
+**排除表逐条理由**（**只需为「排除」举证；不在表里的一律在门内，无需列举**——这正是反转的价值）：
 
-**逐条表态（锚 master `54dbd4f3`，共 37 条）**：
+| 排除项 | 为什么不算 production |
+|---|---|
+| `docs/`／`*.md`／`LICENSE`／`refs/` | 文档与参考资料 |
+| `tests/`／`ui/tests/`／`ui-v4/tests/`／`ui/vitest/` | 测试面——cutover 的正事就在这里 |
+| `ui/vitest.config.ts`／`ui-v4/vitest.config.ts`／`ui/playwright.config.ts` | 测试 runner 配置（⚠️ **`vite.config.ts` 不在此列**，它是构建配置、在门内） |
+| `ui-v4/docs/` | 前端文档 |
+| `exp/` | 实验与本 plan 的门脚本；**改门脚本要单独 review**，不走本判据 |
+| `scripts/test-timings.json` | 生成的 test artifact，自称「perf hint, not correctness」；C7 删 fixture 后同步它是合法审计 |
+| `scripts/update-circular-deps-baseline.ts` | 只写 `tests/architecture/circular-deps-baseline.json` |
+| `config.yaml`／`config.example.yaml` | 用户本地状态与样例 |
+| `eslint.config.js`／`prettier.config.mjs`／`knip.json` | 工具配置，不改运行时产物 |
+| `.claude/`／`.agents/`／`.workflow/`／`.serena/`／`.superpowers/`／`.vscode/` | agent／编辑器配置 |
+| `*.gitignore`／`.gitattributes`／`skills-lock.json` | 仓库元数据 |
 
-| 条目 | 类 | 在 MANIFEST？ | 理由 |
+**门内因此自动包含**（无需维护清单，实测 `git ls-files` 减排除表后的根：`src/`、`packages/`、`ui/`、`ui-v4/`、`scripts/`、`native/`、`hooks/`、`contrib/`、`config.schema.json`、`package.json`、`bun.lock`、`bunfig.toml`、`tsconfig.json`、`tsdown.config.ts`、`start.bat`）。**`ui/` 与 `ui-v4/` 的二级条目现在自动对称**——实测两边都是 `src`／`index.html`／`package.json`／`vite.config.ts`／`tsconfig.json`（＋各自的 `bun.lock`／`bunfig.toml`／`components.json`），**不再需要我逐条想全**。
+
+⚠️ **`scripts/parallel-test.ts` 在门内是有意的**：若 T0.1／T0.11 的 junit 枚举要动它，那是一次**独立的、先于 Commit 0 的基础设施改动**（相位归属见 §0.4b），**不能夹在 cutover 任何 commit 里**。
+
+**四条对照已实跑**（`/tmp` 一次性仓库，未碰本仓）：
+
+| # | 注入 | 期望 | 实测 |
 |---|---|---|---|
-| `src/` | production | **是** | 后端主体 |
-| `packages/` | production | **是** | `foundation`／`token`／`cli`／`telemetry`，T5.6 要改 |
-| `ui-v4/` | **production（前端）** | **是** | **393 个跟踪文件**；经 `~backend/*` re-export 后端类型（`vite.config.ts:24`、`tsconfig.json:22`），**T5.5 明确要改它**。⚠️ 排除 `ui-v4/tests/`（117）——那是 test 面 |
-| `ui/` | **production（前端，旧）** | **是** | 177 个跟踪文件；同理排除 `ui/tests/`（27）与 `ui/vitest/`（20） |
-| `native/` | production | **是** | `history-search` 的 Rust 源；产物 gitignored、默认不构建，**但源码改动是 production 改动** |
-| `hooks/` | production | **是** | `strip-todowrite.ts` 是**运行时加载的 client.inbound hook**，不是文档示例 |
-| `contrib/` | ops | **是** | systemd unit／deploy 脚本／pm2 配置——改它影响部署 |
-| `scripts/parallel-test.ts` | **测试门自己的实现** | **是** | 改它就是改尺子 |
-| `scripts/{recover-history-v3-projections,generate-config-json-schema,build-history-search,probe-tui-observability-load}.ts` | production／ops | **是** | |
-| `scripts/eslint-rules/` | production（lint 规则） | **是** | |
-| `scripts/test-timings.json` | 生成的 test artifact | **否** | 头部 `:23` 自称「perf hint, not correctness」；C7 删 fixture 后同步它是合法审计 |
-| `scripts/update-circular-deps-baseline.ts` | test baseline 工具 | **否** | 只写 `tests/architecture/circular-deps-baseline.json` |
-| `config.schema.json` | production | **是** | 由 `.describe()` 生成，是对外契约 |
-| `package.json`／`bun.lock` | production（依赖与脚本） | **是** | **`bun.lock` 是构建输入**——依赖变了就不是同一个 production |
-| `tsconfig.json`／`bunfig.toml`／`tsdown.config.ts` | production（构建配置） | **是** | `tsdown.config.ts` 的 entry 是 `packages/cli/src/main.ts` |
-| `eslint.config.js`／`prettier.config.mjs`／`knip.json` | 工具配置 | **否** | 不改运行时产物；改动应单独 review |
-| `config.yaml`／`config.example.yaml` | 本地配置／样例 | **否** | `config.yaml` 是用户本地状态（每请求覆盖测试态，见 CLAUDE.md） |
-| `start.bat` | ops | **是** | 启动入口 |
-| `tests/` | 测试面 | **否** | cutover 的正事就在这里 |
-| `docs/`／`exp/`／`refs/` | 文档／实验／参考 | **否** | `exp/` 含本 plan 的门脚本；改门脚本要单独 review，不走本 manifest |
-| `.claude/`／`.agents/`／`.workflow/`／`.serena/`／`.superpowers/`／`.vscode/` | agent／编辑器配置 | **否** | |
-| `.gitignore`／`.gitattributes`／`skills-lock.json` | 仓库元数据 | **否** | |
-| `AGENTS.md`／`CLAUDE.md`／`README.md`／`README.zh.md`／`LICENSE` | 文档 | **否** | |
+| M1 | 改 `ui/package.json` | 红 | ✅ `1 file changed` |
+| M2 | 改 `ui/bun.lock` | 红 | ✅ `1 file changed` |
+| FR1 | 同时改 `ui/tests/`＋`tests/`＋`docs/`＋`test-timings.json` | 绿 | ✅ 输出为空 |
+| **FR2** | **新增嵌套项目 `ui-v5/src/x.ts`** | **默认在门内 → 红** | ✅ `1 file changed` |
 
-```bash
-MANIFEST='src/ packages/ native/ hooks/ contrib/ start.bat
-          config.schema.json package.json bun.lock tsconfig.json bunfig.toml tsdown.config.ts
-          scripts/parallel-test.ts scripts/recover-history-v3-projections.ts
-          scripts/generate-config-json-schema.ts scripts/build-history-search.ts
-          scripts/probe-tui-observability-load.ts scripts/eslint-rules/
-          ui-v4/src/ ui-v4/index.html ui-v4/package.json ui-v4/vite.config.ts ui-v4/tsconfig.json ui-v4/components.json
-          ui/src/ ui/vite.config.ts ui/tsconfig.json'
-cd "$TREE" && git diff --stat "$FROM".."$TO" -- $MANIFEST     # 必须为空（FROM/TO 见 §0.4b）
-```
-
-⚠️ **`parallel-test.ts` 在门内是有意的**：若 T0.1／T0.11 的 junit 枚举确实要动它，那是一次**独立的、先于 Commit 0 的基础设施改动**（相位归属见 §0.4b），**不能夹在 cutover 任何 commit 里**。
-⚠️ **`test-timings.json` 与 `update-circular-deps-baseline.ts` 在门外也是有意的**：C7 的正事就是删 tests／fixtures，**随之同步 timings 或重冻架构 baseline 是合法测试审计**；整目录一刀切会把它误判成 production 改动。
-
-**mutation 正控（四条，各打一类）**：①`packages/telemetry/` 加一字节 → 红；②`scripts/recover-history-v3-projections.ts` 加一字节 → 红（production 类脚本确在门内）；③**`ui-v4/src/` 加一字节 → 红**（前端不是 test 面）；④**`bun.lock` 改一行 → 红**（依赖是构建输入）。
-**false-red 对照（三条）**：①`tests/`／fixtures／`docs/` 的合法改动仍绿；②**删 fixture 后同步 `scripts/test-timings.json` 必须绿**（但需单独 review，见 T7.2）；③**`ui-v4/tests/` 的改动必须绿**——前端测试面不属 production。
+**FR2 就是「为什么第五次不会静默复发」的答案**：新出现的东西默认被门看见。它可能误红一次——那时把它归类进排除表，**而那次误红是可见的、当场处理的**，不是四个月后才发现 production 改动一直没被门量到。
 
 ### 0.4b 门与提交的时序 —— **两趟，别混**（`FROM`／`TO` 在这里定义）
 
@@ -324,7 +330,7 @@ FROM=$(git -C "$TREE" rev-parse HEAD^)       # 它的父 commit
 
 ### commit invariant
 
-production 源码与运行时行为**逐字节不变**（**按 §0.4a 的 MANIFEST 判**，不是只扫 `src/ packages/`——`scripts/` 里就住着测试门自己的实现）；A／B／C／D 四集全部原样存活；新 core 不存在；**T0.6 的 characterization 绿**（绿 = 旧边界的 wire／lease 分裂仍在，其头部三样已落盘）；typecheck 绿、`unit it http` 确定性全绿、O-6 PASS；**T0.10 已证明这三条门跑在 `$TREE`**。
+production 源码与运行时行为**逐字节不变**（**按 §0.4a 的判据**：tracked 全集减排除表，输出为空）；A／B／C／D 四集全部原样存活；新 core 不存在；**T0.6 的 characterization 绿**（绿 = 旧边界的 wire／lease 分裂仍在，其头部三样已落盘）；typecheck 绿、`unit it http` 确定性全绿、O-6 PASS；**T0.10 已证明这三条门跑在 `$TREE`**。
 
 ---
 
@@ -773,7 +779,7 @@ A 集 calls、B 集 consumers、C 集 resolution population 自 Commit 4 起持�
 |---|---|---|
 | **T7.1** | 逐份复核 Commit 4 更新过的 golden：每份都要指出**它的 Q5 diff 条目**与**独立 oracle 证据**（O-1／O-2／真 SDK 中的哪一条先绿）。**没有独立 oracle 证据的 golden 一律标红**——只靠新 golden 自洽等于把新代码的行为编码成期望。 | 复核表落盘。 |
 | **T7.2** | 删除确被取代的旧 fixture／helper。**删之前先确认它守的不变量已由新 oracle 承载**（CLAUDE.md：改测试前先落盘记录该断言守的不变量是什么、依据来自哪里、本次为何这样处置）。 | 全套仍绿。 |
-| **T7.3** | **断言本 commit 未改动 production**。<br>🔴 **`git diff -- src/` 不够**——本 RFC 自己把 production 代码分布到 `packages/telemetry/**`（Commit 5 就要改它），只扫 `src/` 时在 `packages/` 里改一个字节该命令仍输出空。**先在 `packages/telemetry/src/request-telemetry.ts` 加一字节，确认只扫 `src/` 的版本判绿**——那就是漏洞的实物。 | **用 §0.4a 的 MANIFEST 与 §0.4b 的 `FROM`／`TO`**（都不在这里另立，两处并存必漂）：`cd "$TREE" && git diff --stat "$FROM".."$TO" -- $MANIFEST`，**必须为空**。本 commit 的 `FROM` 即 C6 的 sha。<br>**mutation**：在 `packages/telemetry` 与 `scripts/` 各加一字节 → 都必须红。<br>**false-red 对照**：合法的 `tests/`／fixtures／`docs/` 清理仍绿（本 commit 的正事就是删旧 fixture）。 |
+| **T7.3** | **断言本 commit 未改动 production**。<br>🔴 **不要自己列 production 路径**——那份清单已经错过四次（见 §0.4a）。**用 §0.4a 的反转判据**：tracked 全集减排除表。**先在 `packages/telemetry/src/request-telemetry.ts` 加一字节，确认只扫 `src/` 的旧写法判绿**——那就是漏洞的实物。 | **用 §0.4a 的判据与 §0.4b 的 `FROM`／`TO`**（都不在这里另立，两处并存必漂）：跑 §0.4a 那条 `git diff --stat ... ':(exclude)...'`，**输出必须为空**。本 commit 的 `FROM` 即 C6 的 sha。<br>**mutation**：在 `packages/telemetry` 与 `scripts/` 各加一字节 → 都必须红。<br>**false-red 对照**：合法的 `tests/`／fixtures／`docs/` 清理仍绿（本 commit 的正事就是删旧 fixture）。 |
 
 ### 本 commit 的门
 
