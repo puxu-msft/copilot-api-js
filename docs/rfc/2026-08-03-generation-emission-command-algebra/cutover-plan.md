@@ -193,32 +193,64 @@ FROM=$(git -C "$TREE" rev-parse HEAD^)       # 它的父 commit
 
 ### 0.4a production path manifest（**一处定义，全 plan 共用**）
 
-多个 commit 的 invariant 都要断言「production 未改动」。**这些断言必须用同一把尺子**，否则会出现「用刚改过的尺子量基线」——具体形态：T0.1 ②与 T0.11 ②都要求用 `--reporter=junit` 枚举，而**最自然的实现就是改 `scripts/parallel-test.ts`**（它 `:64` 已经为刷新计时驱动过 junit）；若 invariant 只扫 `src/ packages/`，**改测试基础设施本身的那次改动会被判绿**，而 Commit 0 的立场恰恰是「production 与运行时行为逐字节不变」。
+多个 commit 的 invariant 都要断言「production 未改动」。**这些断言必须用同一把尺子**，否则会出现「用刚改过的尺子量基线」——具体形态：T0.1／T0.11 要求 junit 枚举，而**最自然的实现就是改 `scripts/parallel-test.ts`**（`:64` 已为刷新计时驱动过 junit）；若 invariant 扫不到它，**改尺子那次会被判绿**。
 
-**MANIFEST**（本 plan 各处「production 未改动」一律指它）：
+> 🔴 **这份清单已经错过三次，每次换个范围**：先是只扫 `src/`（漏 `packages/`），再是整个 `scripts/` 一刀切（误杀 test artifact），第三次漏掉前端两个目录与根级构建输入。**所以下面先写「怎么得到这份清单」，再写清单本身**——照着回忆列一遍必然还有第四次。
 
-🔴 **`scripts/` 不能整目录一刀切**——它混着四类东西，只有前两类是 production：
-
-| 类 | 成员 | 在 MANIFEST 里？ |
-|---|---|---|
-| production／ops | `recover-history-v3-projections.ts`、`generate-config-json-schema.ts`、`build-history-search.ts`、`probe-tui-observability-load.ts` | **是** |
-| **测试门自己的实现** | `parallel-test.ts` | **是**——改它就是改尺子（T0.1／T0.11 的 junit 枚举正要动它） |
-| 生成的 test artifact | `test-timings.json`（其头部 `:23` 自称「perf hint, not correctness」） | **否** |
-| test baseline 工具 | `update-circular-deps-baseline.ts`（只写 `tests/architecture/circular-deps-baseline.json`） | **否** |
+**导出方法（可复跑，别凭记忆列）**：
 
 ```bash
-MANIFEST='src/ packages/ config.schema.json package.json tsconfig.json bunfig.toml
+# ① 枚举全部 tracked 顶层条目（目录带 /，文件不带）——这是必须逐条表态的全集
+git ls-files | awk -F/ 'NF>1{print $1"/"} NF==1{print $1}' | sort -u
+# ② 与下表逐条对账：新出现的条目 = 未表态，门必须报错而不是默默放过
+```
+
+**判据不是「我想到了哪些」，而是「① 的输出里每一条都在下表出现」。** 新增顶层条目时**必须显式归类**，默认落在门外是不可接受的——这正是前三次复发的机制。
+
+**逐条表态（锚 master `54dbd4f3`，共 37 条）**：
+
+| 条目 | 类 | 在 MANIFEST？ | 理由 |
+|---|---|---|---|
+| `src/` | production | **是** | 后端主体 |
+| `packages/` | production | **是** | `foundation`／`token`／`cli`／`telemetry`，T5.6 要改 |
+| `ui-v4/` | **production（前端）** | **是** | **393 个跟踪文件**；经 `~backend/*` re-export 后端类型（`vite.config.ts:24`、`tsconfig.json:22`），**T5.5 明确要改它**。⚠️ 排除 `ui-v4/tests/`（117）——那是 test 面 |
+| `ui/` | **production（前端，旧）** | **是** | 177 个跟踪文件；同理排除 `ui/tests/`（27）与 `ui/vitest/`（20） |
+| `native/` | production | **是** | `history-search` 的 Rust 源；产物 gitignored、默认不构建，**但源码改动是 production 改动** |
+| `hooks/` | production | **是** | `strip-todowrite.ts` 是**运行时加载的 client.inbound hook**，不是文档示例 |
+| `contrib/` | ops | **是** | systemd unit／deploy 脚本／pm2 配置——改它影响部署 |
+| `scripts/parallel-test.ts` | **测试门自己的实现** | **是** | 改它就是改尺子 |
+| `scripts/{recover-history-v3-projections,generate-config-json-schema,build-history-search,probe-tui-observability-load}.ts` | production／ops | **是** | |
+| `scripts/eslint-rules/` | production（lint 规则） | **是** | |
+| `scripts/test-timings.json` | 生成的 test artifact | **否** | 头部 `:23` 自称「perf hint, not correctness」；C7 删 fixture 后同步它是合法审计 |
+| `scripts/update-circular-deps-baseline.ts` | test baseline 工具 | **否** | 只写 `tests/architecture/circular-deps-baseline.json` |
+| `config.schema.json` | production | **是** | 由 `.describe()` 生成，是对外契约 |
+| `package.json`／`bun.lock` | production（依赖与脚本） | **是** | **`bun.lock` 是构建输入**——依赖变了就不是同一个 production |
+| `tsconfig.json`／`bunfig.toml`／`tsdown.config.ts` | production（构建配置） | **是** | `tsdown.config.ts` 的 entry 是 `packages/cli/src/main.ts` |
+| `eslint.config.js`／`prettier.config.mjs`／`knip.json` | 工具配置 | **否** | 不改运行时产物；改动应单独 review |
+| `config.yaml`／`config.example.yaml` | 本地配置／样例 | **否** | `config.yaml` 是用户本地状态（每请求覆盖测试态，见 CLAUDE.md） |
+| `start.bat` | ops | **是** | 启动入口 |
+| `tests/` | 测试面 | **否** | cutover 的正事就在这里 |
+| `docs/`／`exp/`／`refs/` | 文档／实验／参考 | **否** | `exp/` 含本 plan 的门脚本；改门脚本要单独 review，不走本 manifest |
+| `.claude/`／`.agents/`／`.workflow/`／`.serena/`／`.superpowers/`／`.vscode/` | agent／编辑器配置 | **否** | |
+| `.gitignore`／`.gitattributes`／`skills-lock.json` | 仓库元数据 | **否** | |
+| `AGENTS.md`／`CLAUDE.md`／`README.md`／`README.zh.md`／`LICENSE` | 文档 | **否** | |
+
+```bash
+MANIFEST='src/ packages/ native/ hooks/ contrib/ start.bat
+          config.schema.json package.json bun.lock tsconfig.json bunfig.toml tsdown.config.ts
           scripts/parallel-test.ts scripts/recover-history-v3-projections.ts
           scripts/generate-config-json-schema.ts scripts/build-history-search.ts
-          scripts/probe-tui-observability-load.ts scripts/eslint-rules/'
+          scripts/probe-tui-observability-load.ts scripts/eslint-rules/
+          ui-v4/src/ ui-v4/index.html ui-v4/package.json ui-v4/vite.config.ts ui-v4/tsconfig.json ui-v4/components.json
+          ui/src/ ui/vite.config.ts ui/tsconfig.json'
 cd "$TREE" && git diff --stat "$FROM".."$TO" -- $MANIFEST     # 必须为空（FROM/TO 见 §0.5a）
 ```
 
-⚠️ **`parallel-test.ts` 在里面是有意的**：若 T0.1／T0.11 的 junit 枚举确实需要动它，那是一次**独立的、先于 Commit 0 的基础设施改动**（连同它自己的验证），**不能夹在 cutover 的任何 commit 里**。
-⚠️ **`test-timings.json` 与 `update-circular-deps-baseline.ts` 被排除也是有意的**：Commit 7 的正事就是删 tests／fixtures，**随之同步 timings 或重冻架构 baseline 是合法的测试审计**；整目录一刀切会把它误判成 production 改动（这是上一版把整个 `scripts/` 塞进来的直接后果）。**新增 `scripts/` 文件时必须显式归类，别默认落在门外。**
+⚠️ **`parallel-test.ts` 在门内是有意的**：若 T0.1／T0.11 的 junit 枚举确实要动它，那是一次**独立的、先于 Commit 0 的基础设施改动**（相位归属见 §0.5a），**不能夹在 cutover 任何 commit 里**。
+⚠️ **`test-timings.json` 与 `update-circular-deps-baseline.ts` 在门外也是有意的**：C7 的正事就是删 tests／fixtures，**随之同步 timings 或重冻架构 baseline 是合法测试审计**；整目录一刀切会把它误判成 production 改动。
 
-**mutation 正控（两条）**：①`packages/telemetry/` 加一字节 → 红；②**`scripts/recover-history-v3-projections.ts` 加一字节 → 红**（证明 production 类脚本确实在门内）。
-**false-red 对照（两条）**：①`tests/`／fixtures／`docs/` 的合法改动仍绿；②**删 fixture 后同步 `test-timings.json` 必须绿**（但需单独 review，见 T7.2）。
+**mutation 正控（四条，各打一类）**：①`packages/telemetry/` 加一字节 → 红；②`scripts/recover-history-v3-projections.ts` 加一字节 → 红（production 类脚本确在门内）；③**`ui-v4/src/` 加一字节 → 红**（前端不是 test 面）；④**`bun.lock` 改一行 → 红**（依赖是构建输入）。
+**false-red 对照（三条）**：①`tests/`／fixtures／`docs/` 的合法改动仍绿；②**删 fixture 后同步 `scripts/test-timings.json` 必须绿**（但需单独 review，见 T7.2）；③**`ui-v4/tests/` 的改动必须绿**——前端测试面不属 production。
 
 ### 0.5 提交与进度纪律（`prompts/` 尚未存在，本节代其承载）
 
