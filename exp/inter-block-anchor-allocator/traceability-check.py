@@ -156,6 +156,13 @@ def main() -> int:
         cited = set(re.findall(r"\bT\d+\.\d+\b", matrix))
         for orphan in sorted(task_ids - cited):
             fail(f"plan task {orphan} is cited by no matrix row (task with no RFC source)")
+        # The other direction, which this check claimed to cover and did not:
+        # a matrix row may cite a task id that the plan does not define. Adding
+        # T9.9 beside two real ids used to pass silently, because only the
+        # plan->matrix direction was implemented while the file called itself
+        # bidirectional -- a check advertising more coverage than it has.
+        for dangling in sorted(cited - task_ids):
+            fail(f"matrix cites plan task {dangling}, which {PLAN.name} does not define (dangling reference)")
     else:
         NOTES.append(f"reverse trace pending: {PLAN.name} does not exist yet ({tbd} rows marked _TBD_)")
 
