@@ -30,7 +30,7 @@
 |---|---|---|---|---|---|
 | R-1 | C0 `辅助门`（recorder 自检）· C4 `production 硬门` | C4 authority publish | 四 vendor HTTP root + Responses WS | T0.3 · T4.2 T4.3 | IN-SCOPE |
 | R-2 | C1 `辅助门`（classifier 三态 unit）· C4 `production 硬门` | C4 authority publish | 每 profile 从真实 route 发 generic／keepalive／terminal | T1.4 · T4.4 T4.14 | IN-SCOPE |
-| R-3 | C0 `辅助门`（旧缺陷 characterization，红）· C4 `production 硬门` | C4 indexed 接线 | 真实 Anthropic live consumer | T0.6 · T4.5 T4.7 | IN-SCOPE |
+| R-3 | C0 `辅助门`（旧缺陷 characterization，**rc=0；绿=缺陷仍在**）· C4 `production 硬门`（**反转断言**） | C4 indexed 接线 | 真实 Anthropic live consumer | T0.6 · T4.5 T4.7 | IN-SCOPE |
 | R-4 | C4 `production 硬门` | C4 compound command | FakeClock + 真实 route | T4.7 | IN-SCOPE |
 | R-5 | C1 `辅助门`（test-only 预损坏 state）· C4 `production 硬门` | **C4 mapping 接线**——§4.6 `design.md:378` 写明 `withAllocatedRealBlock`／`writeBlockFrame` 当前**零 production 调用者**，双命中 mutation 在 cutover 前**不可达** | production registration mutation | T2.3 · T4.9 | IN-SCOPE |
 | R-6 | C1 `辅助门`（compile fixtures，§7.4）· C6 `production 硬门`（import guard，§7.9） | C1 types / C6 import guard | compile fixtures + import guard | T1.1 T1.2 T1.3 · T6.6 | IN-SCOPE |

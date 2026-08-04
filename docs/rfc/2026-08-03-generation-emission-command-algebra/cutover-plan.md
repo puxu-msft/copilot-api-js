@@ -134,6 +134,30 @@ RFC §7.4 的两条，**缺一不可**，每个准备 commit 结束时都要跑�
 
 第 2 条的快照工具本身是 **T0.7** 的产物。
 
+### 0.4b 🔴 三份 SSOT 对 T0.6 的退出语义相反 —— **必须在 Commit 0 开工前解决，不能等 Commit 8**
+
+| 文档 | 现在写的 | 状态 |
+|---|---|---|
+| **本 plan** T0.6／C0 门表／C0 invariant | **rc=0 的 characterization，绿 = 缺陷仍在**；C4 反转断言 | 已改（本轮） |
+| **矩阵** `traceability.md` R-3 行 | 同上 | 已改（本轮） |
+| **冻结 RFC** `design.md:597`（§7.3 终态不变量）、`:750`（§10.2 R-3 行） | 「稳定作为 **red** characterization」「Commit 0 只冻结旧边界分裂的 **red** characterization」 | **仍是相反要求** |
+
+**为什么不能推给 Commit 8 的文档同步**：执行者被要求以 **RFC 为契约 SSOT**，而 **Commit 0 当场就要决定这条门是红还是绿**——两份文档给出相反的退出码要求时，他只能二选一，选错任一边都会在 C0 的共同门上炸。**T8.1 那类「事后回填」对本条无效。**
+
+**处置形状**（谁在哪个 commit 改，写死）：
+
+| # | 谁 | 改什么 | 何时 |
+|---|---|---|---|
+| 1 | **本 plan（已完成）** | T0.6 形状、C0 门表、C0 invariant、§12 未采纳项 | 本轮 |
+| 2 | **矩阵（已完成）** | R-3 行的等级描述 | 本轮 |
+| 3 | 🔴 **`design.md:597` 与 `:750`** —— **冻结文档，不由实施者自行改** | 把 `red characterization` 改为 **`rc=0 的 defect-present characterization；C4 反转 assertion`**，并写明「**red 只可修饰被观察到的产品状态，不得修饰测试退出码**」 | **Commit 0 kickoff 之前**，走 §9.1／§9.4 的 open question 机制交主会话／用户；**不是 Commit 8** |
+
+⚠️ **第 3 项是本 plan 唯一一处「必须改冻结 RFC 才能开工」的地方。** 它不属于 T8.1（那是落地后的回填）。**未改则 Commit 0 不得开工**——已挂进 C0 的门表。
+
+**语义澄清（三份文档统一采用）**：**「red characterization」里的 red 指的是「被观察到的产品缺陷仍在」，不是「测试进程返回非零」。** 上一版按字面读成后者，才产生了「必须红」与「该档确定性全绿」的终态互斥。
+
+---
+
 ### 0.4a production path manifest（**一处定义，全 plan 共用**）
 
 多个 commit 的 invariant 都要断言「production 未改动」。**这些断言必须用同一把尺子**，否则会出现「用刚改过的尺子量基线」——具体形态：T0.1 ②与 T0.11 ②都要求用 `--reporter=junit` 枚举，而**最自然的实现就是改 `scripts/parallel-test.ts`**（它 `:64` 已经为刷新计时驱动过 junit）；若 invariant 只扫 `src/ packages/`，**改测试基础设施本身的那次改动会被判绿**，而 Commit 0 的立场恰恰是「production 与运行时行为逐字节不变」。
@@ -222,6 +246,7 @@ cd "$TREE" && git diff --stat <from>..<to> -- $MANIFEST     # 必须为空
 
 | id | 段与等级 | 可复跑命令 |
 |---|---|---|
+| — | 🔴 **§0.4b 第 3 项：RFC 的 `red characterization` 已同步** | **未改则本 commit 不得开工**——`design.md:597,750` 与本 plan 对 T0.6 的退出语义**相反**，而 C0 当场就要决定门是红是绿 |
 | R-13 | C0 `production 硬门`（Q3 已裁 A） | 见 T0.4／T0.5 落盘的测试路径 |
 | R-1 | C0 `辅助门`（recorder 自检） | 见 T0.3 |
 | R-3 | C0 `辅助门`（旧缺陷 characterization，**绿=缺陷在**） | 见 T0.6 |
