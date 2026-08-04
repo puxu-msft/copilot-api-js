@@ -16,7 +16,7 @@
 
 M1 带进主线的东西（**别以为 master 上还没有**）：`closeAnchorViaOwner`（`src/routes/messages/handler-v4.ts:1105` 定义）、`OwnerRawSink`（`src/lib/pipeline/delivery/types.ts:12`）、`wirePartialDelivery`（`src/lib/history/types.ts:217`）、以及两个**新模块** `src/lib/pipeline/delivery/owner-failure.ts`（导出 `OwnerFailure`／`OwnerTerminalDecision`／`OwnerFailureContext`／`classifyOwnerFailure`）与 `src/routes/messages/owner-failure-settlement.ts`（导出 `settleMessagesOwnerFailure`）。
 
-> 🔴 **`OwnerTerminalDecision` 与本 RFC 要引入的 `TerminalEmissionResult` 是竞争抽象**，两者都在 terminal 时刻按 `client-gone`／`session-terminating`／`wire-torn` 分流。**这不是实施者可自裁的合并取舍**，见 §11 #6——**它的触发点在 Commit 1 的 T1.6，不是 Commit 4**（形状在类型层就定死了）。
+> 🔴 **`OwnerTerminalDecision` 与本 RFC 要引入的 `TerminalEmissionResult` 是两个正交轴，不是同一件事的两种命名**：前者是**任意 owner command 失败**（`beginLeg`、`close-anchor-before-real`…）的 caller action，后者只是 `terminate` 的结果。**这不是实施者可自裁的职责边界**，见 §11 #6——**触发点在 Commit 1 kickoff 之前，不是 Commit 4**。
 
 **行号会随 master 前进而漂。** 本文所有行号取于 **master `80a4b6fc`**（`src/` 与 `packages/` 自 merge `8125f123` 起未变，实测 `git diff --stat 8125f123..80a4b6fc -- src/ packages/` 为空）。**引用前重取**：
 
@@ -208,7 +208,7 @@ cd "$TREE" && git diff --stat <from>..<to> -- $MANIFEST     # 必须为空
 | `createGenerationWireState(allocator)` | `keepalive-anchor.ts:44` | 对照组：**因返回种子**而会进闭包 |
 | `WireBlockMapping` / `LegToken` | `types.ts:477` / `:474` | §7.2 明确点名：它们是 C10／C3 的授权事实本身，**不得被「无能力」过滤器排除** |
 | `OwnerFailureReason` | `types.ts:295` | `client-gone`／`session-terminating`／`wire-torn`；`OwnerTerminalDecision` 的输入 |
-| `classifyOwnerFailure` / `OwnerTerminalDecision` | `delivery/owner-failure.ts:41` / `:11` | **M1 新模块**，与 Commit 4 的 `TerminalEmissionResult` 竞争，见 §11 #6 |
+| `classifyOwnerFailure` / `OwnerTerminalDecision` | `delivery/owner-failure.ts:41` / `:11` | **M1 新模块**。⚠️ **它管的是任意 owner command 失败**（经 `driver.ts:933 ownerFailureOutcome`，调用点 `:886,1018,1060,1106,1186,1525,1583` 多数是 `beginLeg`），**不只 terminal**——与 `TerminalEmissionResult` 是正交轴，见 §11 #6 |
 | `settleMessagesOwnerFailure` | `messages/owner-failure-settlement.ts:4` | 同上；直接调 `env.ctx.abort`／`env.ctx.fail` |
 | `setDeliverySessionObserverForTests` | `delivery/session.ts:74` | **T0.4／T0.5 的 observer 接入点** |
 | warmup 三个 direct write | `warmup.ts:214,230,243` | T0.4 被测对象 |
@@ -257,7 +257,7 @@ production 源码与运行时行为**逐字节不变**（**按 §0.4a 的 MANIFE
 | `ClientFormat`（四值 union） | `src/lib/pipeline/envelope.ts:21` | profile discriminant 的 `format` 取值来源 |
 | `FormatCodec` | `types.ts:948` | RFC §2.6 的既有格式抽象；沿用「格式方提供知识、driver／delivery 消费窄口」的依赖方向 |
 | `DeliveryTerminalCommand` | `delivery/types.ts:69` | 迁移**输入**；其 `frames?: ReadonlyArray<DeliveryFrame>` 允许 caller 提交已铸 provenance，**不能原样成为终态公共签名** |
-| `OwnerTerminalDecision` 三态 | `delivery/owner-failure.ts:11` | **T1.6 必读**：`TerminalEmissionResult` 的 `terminalFrameDisposition` 三态与它论域重叠，取舍见 §11 #6 |
+| `OwnerTerminalDecision` 三态 | `delivery/owner-failure.ts:11-14` | **T1.6 必读**：它与 `terminalFrameDisposition` **论域不同**（任意 command failure 的 caller action vs terminate 的 effect），**别当成同一三态的两种命名**。职责边界见 §11 #6 |
 | `ClientBlockLedger` | `delivery/types.ts:37` | observation 层既有形状，T1.5 的对照 |
 | `WireBlockAllocationPort` 五方法 | `types.ts:319-332` | **被替换的双面能力**，不是可继续扩展的终态 |
 
@@ -269,7 +269,8 @@ production 源码与运行时行为**逐字节不变**（**按 §0.4a 的 MANIFE
 |---|---|---|
 | R-6 | C1 `辅助门`（compile fixtures，**已裁 2026-08-04**） | `cd "$TREE" && bun run typecheck` + compile fixture harness（T1.1～T1.3） |
 | R-2 | C1 `辅助门`（classifier 三态 unit） | T1.4 落盘的测试路径 |
-| — | **§11 #6 的必经触发点** | **未裁则 T1.6 不可开工**（`terminalFrameDisposition` 三态在 T1.6 写进类型层即定死形状）。把三个候选交主会话／用户 |
+| — | **§11 #5 的必经触发点** | **未裁则本 commit 不得开工**——候选②要改的正是 C1 的内容（把 T2.3 前移进来）。裁后同步 RFC／矩阵／plan 三处 |
+| — | **§11 #6 的必经触发点** | **未裁则本 commit 不得开工**（不只是 T1.6）——T1.6 冻结类型、T2.7 实现状态机、T3.5 产出映射，**取代／合并类候选到 C4 才裁就要重写 C1～C3**。把**四个**候选交主会话／用户 |
 | R-11 / O-6 | 每 commit 共同门 | §0.3 ② |
 | — | **每 commit 共同门：门跑在哪棵树** | §0.3 ④ —— 断言 O-6 打出的 `repo=` 等于 `$TREE`（**不取 cwd**） |
 
@@ -320,7 +321,7 @@ production 源码与运行时行为**逐字节不变**（**按 §0.4a 的 MANIFE
 | id | 段与等级 | 可复跑命令 |
 |---|---|---|
 | R-5 | **段归属未裁，见 §11 #5** —— T2.3 在本 commit 实现，矩阵记 C1 | T2.3 落盘的测试路径 |
-| — | **§11 #5 的必经触发点** | **未裁则本 commit 不得收口。** 把 #5 连同三个候选交主会话／用户，裁定后同步 RFC／矩阵／本文三处 |
+| — | **§11 #5 的复核**（首次裁决在 **Commit 1 kickoff**，不在这里） | 复核裁决已被贯彻：RFC／矩阵／plan 三处对 R-5 辅助段的归属一致 |
 | R-11 / O-6 | 每 commit 共同门 | §0.3 ② |
 | — | **每 commit 共同门：门跑在哪棵树** | §0.3 ④ —— 断言 O-6 打出的 `repo=` 等于 `$TREE`（**不取 cwd**） |
 
@@ -757,8 +758,8 @@ O-3／O-5／O-7／O-9 以及 O-4 的完整验收明确留给后续 M2～M8／P7�
 | #2 Q1 telemetry 联合查询 | ⏳ **未裁** | **Commit 5 全节不可开工** |
 | #3 §4.8 与选项 A 的冲突 | ⏳ **未裁**（绑进 #2 的裁决材料） | 同 #2；`q1-locations.sh PHASE=post` 要求 §4.8 变 `ruled` |
 | #4 entry 落在哪棵树 | ✅ **已裁 2026-08-04**（隔离 worktree，从合并后 master 起） | — |
-| #5 R-5 的 C1／C2 归属 | ⏳ **未裁**（本轮已撤回自裁） | **Commit 2 的门表**：未裁则本 commit 不得收口 |
-| #6 `OwnerTerminalDecision` vs `TerminalEmissionResult` | ⏳ **未裁** | **Commit 1 的 T1.6 之前**——它在那里就咬人；Commit 4 前置停门第 **4** 项是兜底 |
+| #5 R-5 的 C1／C2 归属 | ⏳ **未裁** | **Commit 1 kickoff 之前**——候选②要改的正是 C1 的内容 |
+| #6 两个正交轴的职责边界 | ⏳ **未裁**（**本轮重框**：不是「同一件事的两种命名」） | **Commit 1 kickoff 之前**——T1.6 一写就冻结形状；C4 停门第 4 项是兜底 |
 
 ### #1 R-6 的等级 —— ✅ **已裁 2026-08-04：候选 1，按判据列拆**
 
@@ -811,24 +812,44 @@ M1 已 merge 进 master（`8125f123`），**「两棵树」不再存在**。cuto
 
 **候选**：①矩阵改成 C2（与 RFC §7.5 一致，本 plan 认为证据最强，但**不自行改**）；②plan 把 T2.3 前移到 Commit 1（与 RFC §7.5 的目标清单冲突）；③RFC §7.4／§7.5 补一句说明该 assertion 跨两个准备 commit。
 
-**触发点**：**挂进 Commit 2 的门表——未裁则本 commit 不得收口。** 机械校验帮不上忙：`traceability-check.py` 只校验「production 硬门不早于其依赖能力」，辅助门段落在 C1 还是 C2 **它不判**，所以这里只能靠一个必经的人工触发点。
+**触发点**：**Commit 1 kickoff 之前——未裁则 C1 不得开工。**
 
-### #6 `OwnerTerminalDecision` 与 `TerminalEmissionResult` 是竞争抽象（**本轮新提**）
+⚠️ **上一轮把它挂在 Commit 2 门表是「可达但过晚」**：候选②是「把 T2.3 前移到 Commit 1」，而执行者走到 Commit 2 的门时 **C1 已经作为 semantic commit 提交并通过了它自己的 invariant**。那时才裁只剩三条路——改写已落盘的 C1、重排历史、或接受 C1 终态缺门，**plan 三条都没授权**。**触发点必须早于「该裁决还能无成本执行」的那一刻**，不是「流程一定会看到它」。
 
-M1 合入主线时带来了两个**三份文档都从未提到**的模块：
+机械校验帮不上忙：`traceability-check.py` 只校验「production 硬门不早于其依赖能力」，辅助门段落在 C1 还是 C2 **它不判**，所以只能靠人工触发点。Commit 2 的门表**保留一行，但降为「复核裁决已被贯彻」**，不再承担首次裁决。
 
-- `delivery/owner-failure.ts:11` 的 `OwnerTerminalDecision`——三态 `client-aborted` / `delivery-finished` / `fail-loud`，由 `:41` 的 `classifyOwnerFailure` 产出；
-- `messages/owner-failure-settlement.ts:4` 的 `settleMessagesOwnerFailure`，直接调 `env.ctx.abort`／`env.ctx.fail`。
+### #6 两个**正交轴**的职责边界（**本轮重框；上一版把它们误称为「同一件事」**）
 
-而本 RFC 要在 Commit 4 引入的 `TerminalEmissionResult` 带 `terminalFrameDisposition` **三态** `emitted` / `suppressed_client_gone` / `suppressed_session_terminating`。**两者处理的是同一件事**——terminal 时刻按 client-gone／session-terminating／wire-torn 分流并决定 settle 形态，词汇高度重叠但不同构。
+⚠️ **上一版说这两者「处理的是同一件事、词汇高度重叠但不同构」——那个框法不成立**，据它做的裁决会丢东西。实测：
 
-**为什么不能由实施者自裁**：T3.5 要求把「原 client-gone／session-terminating 提前返回」映射到 `terminalFrameDisposition`，但**在合并后的主线上，那些提前返回已经不是散落的了**——M1 已把它们收敛进 `classifyOwnerFailure`。照 RFC 的旧描述干，会在 `settleMessagesOwnerFailure` 之外**再造一条 terminal 分流路径**，于是同一个 terminal 时刻有两个分类器，直接撞 Commit 4 的「first terminal command wins、terminal frame exactly once」。**这是「同一件事写两遍且其中一遍弱一档」的结构怪味**，不是可以边做边定的细节。
+| | `OwnerTerminalDecision`（M1 引入） | `TerminalEmissionResult`（本 RFC 要引入） |
+|---|---|---|
+| **论域** | **任意 owner command 失败 → caller 该做什么** | **`terminate` 这一个 command 的结果** |
+| **三态** | `client-aborted` / `delivery-finished` / `fail-loud`（`delivery/owner-failure.ts:11-14`） | `emitted` / `suppressed_client_gone` / `suppressed_session_terminating` |
+| **回答的问题** | request 怎么 settle | terminal frame 发了没、哪些 segment 成功、socket close intent 是什么 |
+| **实际调用面** | **不只 terminal**：`driver.ts:886,1018,1106,1525,1583` 全是 `beginLeg` 失败，`:1060` 是 `close-anchor-before-real`，`:1186` 是 close；经 `ownerFailureOutcome`（`:933`）→ `classifyOwnerFailure` | 只在 terminate 路径 |
 
-**候选**：①`TerminalEmissionResult` **取代** `OwnerTerminalDecision`，M1 那两个模块在 Commit 4 一并重塑（范围最大，但与「M1 由 cutover 重塑」的既有裁决一致）；②`OwnerTerminalDecision` **保留为 owner 内部分类器**，`TerminalEmissionResult` 只做它的对外投影（改动小，但两套三态必须锁步，是双事实源）；③二者合并成一个三态（需要 RFC §3.3 改 `TerminalEmissionResult` 的冻结形状，**属契约变更，要回 architect-advisor**）。
+**两者在 lifecycle reason（`client-gone`／`session-terminating`／`wire-torn`）上相邻，但不是同一判别函数的两个名字。** 因此：
 
-**触发点**：**Commit 1 的 T1.6 之前**——未裁则 T1.6 不可开工；Commit 4 前置停门第 4 项保留为**兜底**。
+- **候选①「Result 取代 Decision」会丢掉非-terminal command failure 的 caller action**——`beginLeg` 失败时没有 terminal frame 可言，却仍要决定 settle 形态。
+- **候选③「合并成一个三态」覆盖不了两个正交轴**——一个是「caller 该做什么」，一个是「terminal effect 是什么」，笛卡尔积不是三态。
 
-⚠️ **为什么不能放在 Commit 4**：T1.6 就要把 `terminalFrameDisposition` 三态写进类型层并加穷尽性断言，**形状在 Commit 1 已经定死**；T2.7 的 `terminate` 状态机、T3.5 的逐点映射都建在它上面。**等 C1～C3 干完再端候选出去，成本栏会被沉没成本污染**——候选①（`TerminalEmissionResult` 取代 `OwnerTerminalDecision`，一并重塑 M1 两模块）届时要连带推翻三个 commit 的类型层工作，看起来会比它实际的长远代价贵得多。**上一轮 #4 的「merge 有语义冲突」正是这样把裁决推向另一边的**（实测零冲突）。
+**四个候选**（第 ④ 个是本轮新增，也是重框后最自然的那个）：
+
+| 候选 | 形状 | 代价／风险 |
+|---|---|---|
+| ① | `TerminalEmissionResult` 取代 `OwnerTerminalDecision`，M1 两模块一并重塑 | **已知会丢非-terminal 的 caller action**，除非另建一套；范围最大 |
+| ② | `OwnerTerminalDecision` 保留为 owner 内部分类器，`TerminalEmissionResult` 只做它的对外投影 | 改动小；**但两套三态论域不同，「投影」关系并不成立**——非 terminal 的那些态投影到什么？ |
+| ③ | 二者合并成一个三态 | **覆盖不了两个正交轴**；且要改 RFC §3.3 冻结形状，属契约变更 |
+| ④ **（新增，推荐由 architect-advisor 确认）** | **保留正交职责**：`OwnerCommandFailureDisposition`（任意 command failure → caller action，即今天的 `OwnerTerminalDecision`，建议改名以免读者继续误以为它只管 terminal）与 `TerminalEmissionResult`（terminate 的 effect／result）各司其职，**只在「terminate 自身失败」这一格架一条具名映射桥** | 不丢任何一侧论域；**需要 exhaustive mapping 测试 + 顺序测试防双 settle**（同一失败既走 disposition 又走 result 时，settle 必须恰好一次） |
+
+**为什么不能由实施者自裁**：T3.5 要求把「原 client-gone／session-terminating 提前返回」映射到 `terminalFrameDisposition`，但合并后主线上**那些提前返回已经被 `classifyOwnerFailure` 收敛了**，且**其中大部分根本不是 terminal**。照旧描述干，会在 `settleMessagesOwnerFailure` 之外再造一条分流路径，撞 Commit 4 的「first terminal command wins、terminal frame exactly once」。
+
+**触发点**：**Commit 1 kickoff 之前——未裁则 C1 不得开工**（不只是 T1.6）。C4 前置停门第 4 项保留为**兜底**。
+
+⚠️ **为什么必须早于 C1 而不是 C4**：T1.6 冻结 `TerminalEmissionResult` 类型并加穷尽性断言、T2.7 实现 `terminate`／`finalize` 状态机、T3.5 产出逐点映射——**取代／合并类候选（①③）到 C4 才裁就要重写 C1～C3**。**等干完再端候选出去，成本栏会被沉没成本污染**：候选①届时要连带推翻三个 commit 的类型层工作，看起来会比它实际的长远代价贵得多。**上一轮 #4 的「merge 有语义冲突」正是这样把裁决推向另一边的**（实测零冲突）。
+
+**建议由 `architect-advisor` 先出重框提案**（两个轴的职责边界属架构合同，不是 plan 层可定的），再交主会话／用户裁。
 
 ---
 
