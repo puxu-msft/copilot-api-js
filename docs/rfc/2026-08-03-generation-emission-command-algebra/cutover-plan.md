@@ -67,7 +67,7 @@ cd "$TREE" && FORCE_COLOR=0 bun scripts/parallel-test.ts unit it http
 
 **② `byte-equivalence.sh`（= R-11／O-6）—— 它的 `REPO` 由脚本自身位置推导，`cd` 不管用**
 
-`byte-equivalence.sh:5` 是 `REPO="${REPO_OVERRIDE:-$(cd "$DIR/../.." && pwd)}"`，`:123` 用 `bun run "$REPO/packages/cli/src/main.ts" start` 起服务器。**即使 `cd "$TREE"`，跑 `/home/xp/src/copilot-api-js/exp/…/byte-equivalence.sh` 起的仍是 master 的代码。** 两条正确写法：
+`byte-equivalence.sh:5` 是 `REPO="${REPO_OVERRIDE:-$(cd "$DIR/../.." && pwd)}"`，`:137` 用 `bun run "$REPO/packages/cli/src/main.ts" start` 起服务器。**即使 `cd "$TREE"`，跑 `/home/xp/src/copilot-api-js/exp/…/byte-equivalence.sh` 起的仍是 master 的代码。** 两条正确写法：
 
 ```bash
 # 写法 A（推荐）：用树内那份脚本——REPO 自然推导到 $TREE
@@ -108,7 +108,11 @@ O-6 PASS: captured wire is byte-identical to <baseline> (repo=<被测树>)
 
 1. **`repo=` 的值必须等于 `$TREE`**。⚠️ **只能取 `repo=` 这一行，不能取进程 cwd**——脚本从不 `cd`，写法 B 下**它的 cwd 与被测树无关**；用 cwd 判会在写法 B 上给出错误答案。
 2. `server_entry=` 落在 `$TREE` 下（同源交叉核对，防 `REPO` 被部分覆盖）。
-3. `head=` 等于本 commit 的 sha，`tree=clean`（脏树意味着门测的不是它声称的那个 commit）。
+3. **`head=` 与 `tree=` —— 判据分两趟，别在开发趟上判**（见 §0.5a 的时序定义）：<br>
+   • **开发趟**（写完代码 → 跑门 → 再提交）：`tree=DIRTY` 且 `head=` 还是**上一个** commit —— **这是正常的，不判**。<br>
+   • **收口趟**（commit 生成后重跑）：断言 `head=` 等于**本 commit 的 sha**、`tree=clean`。<br>
+   🔴 **这条区分不是措辞讲究。** 脚本对这两个值**只报不判**（`tree=DIRTY` 照样 rc=0，实测），所以若把判据写成「每次都要 `clean` + 本 commit sha」，**在自然时序下它每次都假红**——而每次假红的门，**第一次收口就会被当噪声删掉，删掉的正好是「门量的是另一个 commit」这道检查**。<br>
+   ⚠️ **不要改脚本让它对 DIRTY 判红**：跑门本来就在提交前，那会把正常流程堵死。要定的是**时序**，不是脚本行为。
 4. typecheck／测试侧：`bun run typecheck` 与 `parallel-test.ts` 读 cwd，所以 `cd "$TREE"` 已经绑定；**但同样要有一次可复算的证据**——见 T0.10 的哨兵法，它建立的是**判据本身**，不是一次性通过。
 
 > **为什么这条必须是门而不是 task**：T0.10 只在 Commit 0 建立判据；**若不进每 commit 共同门，Commit 1～8 就没有任何一步要求重证**，而上面四种失效方式在每个 commit 都能重新发生。
@@ -158,6 +162,35 @@ RFC §7.4 的两条，**缺一不可**，每个准备 commit 结束时都要跑�
 
 ---
 
+### 0.5a 门与提交的时序 —— **两趟，别混**（`<from>`／`<to>` 在这里定义）
+
+本 plan 全文的门分**两趟跑**。**不写死它，第 ④ 条判据 3 与 T7.3 的 `<from>..<to>` 都无从判断。**
+
+| 趟 | 何时 | 树状态 | 跑什么 | 判什么 |
+|---|---|---|---|---|
+| **开发趟** | 写完代码、**提交之前** | `tree=DIRTY`、`head=` 还是**上一个** commit | ①typecheck ②全套 ③O-6 ④`repo=`／`server_entry=` | 功能是否正确、门是否跑在 `$TREE`。**不判 `head=`／`tree=`** |
+| **收口趟** | **commit 生成之后**，进入下一个 commit 之前 | `tree=clean`、`head=` 本 commit | **重跑 ①②③④** + 本 commit 的 invariant + population 审计 | 全部判据，**含 `head=` 等于本 commit、`tree=clean`** |
+
+**`<from>`／`<to>` 的定义（全 plan 统一，不在别处另立）**：
+
+```bash
+TO=$(git -C "$TREE" rev-parse HEAD)          # 本 commit（收口趟才存在）
+FROM=$(git -C "$TREE" rev-parse HEAD^)       # 它的父 commit
+```
+
+- **落哪棵树**：`$TREE`（entry worktree），**不是 master**——被审的是 cutover 的产物。
+- **Commit 0 的 `FROM`** 就是 entry commit 本身；**entry commit 的 sha 在前置基础设施落地后必须重取**（见下）。
+
+🔴 **前置基础设施改动的相位归属**：§0.4a 说 `parallel-test.ts` 的 junit 改造「先于 Commit 0、不能夹进 cutover 任何 commit」。**它落地后 entry commit 就变了**，因此：
+
+1. 基础设施改动在 `$TREE` 上先提交；
+2. **重取 entry commit sha**，T0.1 的 15 次连跑锚在**这个新 sha** 上（锚在旧 sha 上跑的那批作废——它测的是没有 file identity 的 runner）；
+3. Commit 0 的 `FROM` = 该 entry commit。
+
+⚠️ **收口趟必须真的重跑，不能引用开发趟的结果**。差别不只是 `head=`：提交动作本身可能带进未预期的文件（`git add` 的 pathspec 写宽了），而开发趟的绿证明不了这一点。
+
+---
+
 ### 0.4a production path manifest（**一处定义，全 plan 共用**）
 
 多个 commit 的 invariant 都要断言「production 未改动」。**这些断言必须用同一把尺子**，否则会出现「用刚改过的尺子量基线」——具体形态：T0.1 ②与 T0.11 ②都要求用 `--reporter=junit` 枚举，而**最自然的实现就是改 `scripts/parallel-test.ts`**（它 `:64` 已经为刷新计时驱动过 junit）；若 invariant 只扫 `src/ packages/`，**改测试基础设施本身的那次改动会被判绿**，而 Commit 0 的立场恰恰是「production 与运行时行为逐字节不变」。
@@ -178,7 +211,7 @@ MANIFEST='src/ packages/ config.schema.json package.json tsconfig.json bunfig.to
           scripts/parallel-test.ts scripts/recover-history-v3-projections.ts
           scripts/generate-config-json-schema.ts scripts/build-history-search.ts
           scripts/probe-tui-observability-load.ts scripts/eslint-rules/'
-cd "$TREE" && git diff --stat <from>..<to> -- $MANIFEST     # 必须为空
+cd "$TREE" && git diff --stat "$FROM".."$TO" -- $MANIFEST     # 必须为空（FROM/TO 见 §0.5a）
 ```
 
 ⚠️ **`parallel-test.ts` 在里面是有意的**：若 T0.1／T0.11 的 junit 枚举确实需要动它，那是一次**独立的、先于 Commit 0 的基础设施改动**（连同它自己的验证），**不能夹在 cutover 的任何 commit 里**。
@@ -203,6 +236,7 @@ cd "$TREE" && git diff --stat <from>..<to> -- $MANIFEST     # 必须为空
 - frontmatter 必含 **`base`（任务起始 SHA）**、分支、worktree 路径、对应 plan 文档，以及拿到后回填的 agent／session id。**缺 `base` 就做不了 `--first-parent` 对账。**
 - **只记 git 记不下的三样**：剩余项（带验收判据）／在途意图／已作废的路子。别复述 git log。
 - **随每个实现 commit 一起提交。**
+- **收口证据在 commit 生成后重跑**（§0.5a 的收口趟）：`head=` 等于本 commit、`tree=clean` 只有那时才成立，且提交动作本身可能带进未预期的文件。**开发趟的绿不能当收口证据引用。**
 
 > 🔴 **Commit 4 是本 plan 唯一「中断即全丢」的结构**：16 个 task 同属一个 semantic commit，中途按设计**不产生 commit**，所以 git log 上什么都没有。**因此 Commit 4 的进度文件必须逐 task 更新并单独提交**（进度文件在 `docs/tmp/`，与 `src/` 改动分开 pathspec，不破坏「Commit 4 不拆」）。每完成 T4.x 就写一行：做完了什么、下一个 task 需要的前置在哪、已经否掉了哪条路。
 
@@ -713,7 +747,7 @@ A 集 calls、B 集 consumers、C 集 resolution population 自 Commit 4 起持�
 |---|---|---|
 | **T7.1** | 逐份复核 Commit 4 更新过的 golden：每份都要指出**它的 Q5 diff 条目**与**独立 oracle 证据**（O-1／O-2／真 SDK 中的哪一条先绿）。**没有独立 oracle 证据的 golden 一律标红**——只靠新 golden 自洽等于把新代码的行为编码成期望。 | 复核表落盘。 |
 | **T7.2** | 删除确被取代的旧 fixture／helper。**删之前先确认它守的不变量已由新 oracle 承载**（CLAUDE.md：改测试前先落盘记录该断言守的不变量是什么、依据来自哪里、本次为何这样处置）。 | 全套仍绿。 |
-| **T7.3** | **断言本 commit 未改动 production**。<br>🔴 **`git diff -- src/` 不够**——本 RFC 自己把 production 代码分布到 `packages/telemetry/**`（Commit 5 就要改它），只扫 `src/` 时在 `packages/` 里改一个字节该命令仍输出空。**先在 `packages/telemetry/src/request-telemetry.ts` 加一字节，确认只扫 `src/` 的版本判绿**——那就是漏洞的实物。 | **用 §0.4a 已定义的 MANIFEST**（不在这里另立一份，两处并存必漂）：`cd "$TREE" && git diff --stat <C6-sha>..<C7-sha> -- $MANIFEST`，**必须为空**。<br>**mutation**：在 `packages/telemetry` 与 `scripts/` 各加一字节 → 都必须红。<br>**false-red 对照**：合法的 `tests/`／fixtures／`docs/` 清理仍绿（本 commit 的正事就是删旧 fixture）。 |
+| **T7.3** | **断言本 commit 未改动 production**。<br>🔴 **`git diff -- src/` 不够**——本 RFC 自己把 production 代码分布到 `packages/telemetry/**`（Commit 5 就要改它），只扫 `src/` 时在 `packages/` 里改一个字节该命令仍输出空。**先在 `packages/telemetry/src/request-telemetry.ts` 加一字节，确认只扫 `src/` 的版本判绿**——那就是漏洞的实物。 | **用 §0.4a 的 MANIFEST 与 §0.5a 的 `FROM`／`TO`**（都不在这里另立，两处并存必漂）：`cd "$TREE" && git diff --stat "$FROM".."$TO" -- $MANIFEST`，**必须为空**。本 commit 的 `FROM` 即 C6 的 sha。<br>**mutation**：在 `packages/telemetry` 与 `scripts/` 各加一字节 → 都必须红。<br>**false-red 对照**：合法的 `tests/`／fixtures／`docs/` 清理仍绿（本 commit 的正事就是删旧 fixture）。 |
 
 ### 本 commit 的门
 
