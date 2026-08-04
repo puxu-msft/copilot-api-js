@@ -422,7 +422,7 @@ production **不构造新 owner**；**不维护 shadow lease／mapping／ledger�
 | **T4.2** | **8 个 sink 构造点**创建唯一 owner 与 private raw emitter；**2 个 Anthropic 接线点**改为接收 owner／command port（**不自己构造**）。⚠️ **别读成「10 个并列 root 各建一个 owner」**——`messages/handler-v4.ts:574`／`:658` 与 `:1192` 是**同一条链上的两层**（前两者调用 `makeAnchoredSseSink`，后者在其内部），照 10 个各建会让**单条 Anthropic 请求出现两个 owner**，直接违反本 commit 的「一个 serializer／一个 timer／一次 sampling／一次 emit」。<br>**先断言「recorder 包裹的是 composition root 实际取得的 `stream`／`ws` handle」**——用 T0.3 的 direct-send seam 复验它仍看得见绕过 owner 的发送。**注入 owner 的 test raw adapter 不用于本判定。** | 8 构造 + 2 接线切换；**删除 raw 第二 serializer 与 raw heartbeat**。转绿。<br>**验收计数是 `8 + 2`，不是裸 `10`**——R-1 的覆盖面按 8 个构造点核对（四 vendor HTTP + WS），Anthropic 那 2 个接线点单独断言「未构造 owner」。 |
 | **T4.3** | 断言 runner／driver／terminal helper／decorator 参数里**没有** raw handle、closure 返回值与可恢复 registry 里也没有；且**不存在能从已传出的 sink／wrapper／observer 反查完整 session、allocation port 或 raw authority 的 lookup**。**先用 test-only adversarial runner 试着 resolve 回 session，确认它做不到**——窄 port 若可被 lookup 还原，只是形式收窄。 | 转绿。**源码／类型扫描只作 presence ratchet**。 |
 | **T4.4** | 所有 ordinary／winner／live common producers 切 `emitGeneric`；generic pings 切 `emitKeepalive`；可解析未知 event 按 unknown passthrough。**先写 adversarial `emitGeneric(block-stop)`，断言它在 external write 前以 `CommandEffectMismatchError` 失败。** | 转绿。mutation 恢复 generic passthrough 后，**wire／owner-state 双 oracle 转红**。 |
-| **T4.5** | 默认 on-demand／`empty_text` 切 `openAnchor`，`enveloped_ping` 切 `openMessageEnvelope`，anchor pulse／close 切 indexed commands。**先写「`enveloped_ping` 误走 `openAnchor`」的 mutation**，断言它因多 block／index shift／extra stop 转红——以 `tests/anthropic/enveloped-ping.it.test.ts` 为正样本基座。 | 转绿。`openMessageEnvelope` **不分配 block index、不创建 lease**；`openAnchor` 的 `prelude.kind` 至少区分 `captured` 与 `fabricated`，**owner 铸 provenance，caller 不自报 marker**。 |
+| **T4.5** | 默认 on-demand／`empty_text` 切 `openAnchor`，`enveloped_ping` 切 `openMessageEnvelope`，anchor pulse／close 切 indexed commands。**先写「`enveloped_ping` 误走 `openAnchor`」的 mutation**，断言它因多 block／index shift／extra stop 转红——以 `tests/anthropic/enveloped-ping.it.test.ts` 为正样本基座。 | 转绿。<br>🔴 **同时反转 T0.6 的 characterization**（按其头部第③条）：断言方向从「wire closed 且 lease 仍 open」改成相反的正确性断言。**反转后绿；若维持原样仍绿，说明 authority 没生效**——这是 T0.6 特意留的探测器。**不许删掉它当过时测试**（C4 同时在跑十几个 mutation，删一条「过时的 characterization」看起来会很合理，但那会永久丢掉这个探测器）。`openMessageEnvelope` **不分配 block index、不创建 lease**；`openAnchor` 的 `prelude.kind` 至少区分 `captured` 与 `fabricated`，**owner 铸 provenance，caller 不自报 marker**。 |
 | **T4.6** | 5 个 `beginLeg` lexical sites 按 **T3.3 的关系覆盖表**（**不是 60 格笛卡尔积**，见 T3.3）接好 LegHandle；primary、hedge winner、continuation、recovery 的 real start／delta／stop 全部切 `openRealBlock`／`writeRealBlockFrame`。**先删掉 caller offset 算术再跑 O-1**，确认没有第二条 legacy arithmetic 旁路（C4 双偏移作废）。 | 转绿，覆盖判据沿用 T3.3 的三条（5 site 各有正向 witness／3 kind 全覆盖／4 scenario 全覆盖；不适用格具名 `N/A` + 控制流证据）。<br>**mutation 逐 site**：删除任一 site 的 open／write 接线或恢复 caller offset 算术，**该 site 专属的生产路径**必须由 O-1／O-2／cross-leg oracle 转红。 |
 | **T4.7** | close→real-start 用 **compound command**。**先在不 park 的对照中推进 N×interval 断言恰有 N 个 keepalive**（活性对照，缺它则下一条是假绿）；再把 tick 停在旧两 operation 之间，断言新 production live HTTP 只见相邻 `stop@leaseIndex → real-start@next` 且 `maxOpen<=1`。 | 转绿。**mutation 拆回两个 enqueue 必须产生插帧并红**；`wireTorn` 时按已裁决语义只 close、不 reserve／不写 real start，返回 typed `ClosedThenWireTorn`——调用方**不得**把它误解为「零副作用失败」。 |
 | **T4.8** | 所有 `freezeHeartbeat`／`suspendHeartbeat`／`resumeHeartbeat`／`close` 切 `runEmissionBatch` 或 terminal；owner 成为唯一 timer。**先写「双 timer」与「恢复 raw timer」两条 mutation 确认它们红。** | 转绿。**caller 拿不到 timer 控制方法。** |
@@ -512,7 +512,7 @@ production **不构造新 owner**；**不维护 shadow lease／mapping／ledger�
 |---|---|---|
 | R-1 | C4 `production 硬门` | 四 vendor HTTP root + Responses WS 的 zero／exactly-once 断言（T4.2／T4.3） |
 | R-2 | C4 `production 硬门` | 每 profile 从真实 route 发 generic／keepalive／terminal（T4.4）＋ T4.14 |
-| R-3 | C4 `production 硬门` | 真实 Anthropic live consumer（T4.5／T4.7）；T0.6 的 characterization 在此转绿 |
+| R-3 | C4 `production 硬门` | 真实 Anthropic live consumer（T4.5／T4.7）；**T0.6 的 characterization 在此按其头部第③条反转为正确性断言**（反转后绿；⚠️ **维持原样仍绿 = authority 没生效**——那正是它要抓的） |
 | R-4 | C4 `production 硬门` | FakeClock + 真实 route（T4.7） |
 | R-5 | C4 `production 硬门` | production registration mutation（T4.9） |
 | R-7 | C4 `production 硬门` | 各 vendor direct／reverse、H2、H3、truncation（T4.10） |
@@ -758,7 +758,7 @@ O-3／O-5／O-7／O-9 以及 O-4 的完整验收明确留给后续 M2～M8／P7�
 | #3 §4.8 与选项 A 的冲突 | ⏳ **未裁**（绑进 #2 的裁决材料） | 同 #2；`q1-locations.sh PHASE=post` 要求 §4.8 变 `ruled` |
 | #4 entry 落在哪棵树 | ✅ **已裁 2026-08-04**（隔离 worktree，从合并后 master 起） | — |
 | #5 R-5 的 C1／C2 归属 | ⏳ **未裁**（本轮已撤回自裁） | **Commit 2 的门表**：未裁则本 commit 不得收口 |
-| #6 `OwnerTerminalDecision` vs `TerminalEmissionResult` | ⏳ **未裁** | **Commit 1 的 T1.6 之前**——它在那里就咬人，不是 Commit 4 |
+| #6 `OwnerTerminalDecision` vs `TerminalEmissionResult` | ⏳ **未裁** | **Commit 1 的 T1.6 之前**——它在那里就咬人；Commit 4 前置停门第 **4** 项是兜底 |
 
 ### #1 R-6 的等级 —— ✅ **已裁 2026-08-04：候选 1，按判据列拆**
 
