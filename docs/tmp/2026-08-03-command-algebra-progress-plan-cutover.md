@@ -22,9 +22,8 @@ session_id: 046d7295-e5ce-470b-a284-c721c6ce1cb8
 - [x] factory／锚点表：被复用函数的 `file:line`，每条注明树
 - [x] 回填矩阵 `traceability.md` 各表的 `plan task` 列，消掉全部 `_TBD_`
 - [x] `traceability-check.py` rc=0 —— **已实跑，且四条 mutation 正控各自打中目标机制**（删 R-14 行 → `R-14 … no row in the matrix`；R-5 硬门挪 C2 → `production gate at C2 precedes the capability it depends on (C4)`；plan 加不被引用的 task → `plan task T9.1 is cited by no matrix row`；未变异 → rc=0）。变异跑在 `/tmp` 副本上（`MATRIX=`／`PLAN=` 覆盖），**真实文档未被改动**
-- [ ] **全文通读 + 逐条取证**（`reread-docs-after-writing` `[hard]`）——**当前正在做的就是这一步**。验收判据两段，缺一不可：
-  - **通读能查的四样**：标题↔内容相符、上下文自洽、**声称改了的地方正文真的改了**、无整行／整段重复。
-  - **通读查不了、必须重新取证的**：每个 `file:line`、每个数字、每处「某符号已存在／已导出」的断言。**最高危的一类是两棵树的行号混写**——feature `2c339784` 的行号在 master 上对不上，而 plan 里两树的行号并排出现。判据：**逐条打开文件或跑命令**，不得用「我全文读过了」当已核验。核不动的必须显式标「未验证」，不得用断言语气写出。
+- [x] **全文通读 + 逐条取证**（`reread-docs-after-writing` `[hard]`）—— 已完成，见 `368a9208`。**通读只抓到 2 处**（§11 说「四项」实为五项、Q1 门只数了 RFC 8 节而漏了脚本冻结的 2 份载体文档）；**其余 12 处全部是重新取证抓到的**，通读一次也看不出来——那 12 处每一处读起来都完全通顺。这正是「通读不能替代事实证伪」的当场实证。
+  - **已知未验证项（不得当成已核）**：①`commandPortActivation` 两树零命中，无法确认它是 Commit 1～4 期间新引入还是 RFC 前瞻性命名——已在 T6.2 与 §12 标注；②所有「Commit N 时该断言会红／会绿」的预测都是**计划期预测**，未实跑（本轮不动 `src/`）；③RFC §7.2 的双向闭包**未实跑**，A／B／C／D 四集的具体成员以 T0.7 输出为准，本 plan 的锚点表只是 sanity 抽样。
 - [ ] 交付回报：贴 `git log --oneline -1` 与 `git show --stat HEAD` 的原样输出（协调者的硬性核对项，理由见 HANDOVER「委派可靠性」——本轮此前有两个 agent 交回过与磁盘不符的完成报告）
 
 ## 在途意图
@@ -44,3 +43,6 @@ session_id: 046d7295-e5ce-470b-a284-c721c6ce1cb8
 - **想把 `commandPortActivation` 当既有符号写进 Commit 6 删除清单并给 `file:line`** —— **实测两棵树的 `src/` 都零命中**。改为在 T6.2 标注「到达本 commit 时先确认它存在再删，不存在就回报」，并写进 §12。给不存在的符号编行号，正是「跨一条没读过的缝规定行为」。
 - **想直接照 RFC §7.2 的行号写 master 侧锚点** —— RFC 的种子行号全部锚在 feature 树（`ClientSink` 写的是 `types.ts:747`），master 上是 `:737`。已在 §0.1 与各锚点表显式并列，并加了「引用前重取」的命令。
 - **想用 `withAllocatedRealBlock`／`writeBlockFrame` 的现有签名当 `openRealBlock`／`writeRealBlockFrame` 的终态签名** —— §3.4 明确终态应暴露 owner 验证的 opaque handle，现有签名是**迁移起点不是终点**。写进 §12。
+- **想「两树只写一棵、另一棵按固定偏移换算」** —— 实测偏移**不是常数**，`client-sink.ts` 同一文件内就有 +9 与 +11 两种。已写进 §12。
+- **想把两树的计数写成同一个数** —— 初稿照 RFC／HANDOVER 抄了「`ClientSink.write` 10 点」「`getDownstreamDeliverySession` 9 处」，两者都锚在 feature；master 实际是 11 与 7。**RFC 与 HANDOVER 的计数没错，错在我没标它们锚在哪棵树**。改为逐树并列。
+- **想把 `wirePartialDelivery` 标成「两树皆有」** —— master 的 `src/` 零命中，它是 M1 引入的。同类陷阱：凡是 RFC §4.x 引用的「现状」锚点，都要先确认那个「现状」属于哪棵树。
