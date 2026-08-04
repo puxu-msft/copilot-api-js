@@ -89,11 +89,31 @@ cd /home/xp/src/copilot-api-js && PHASE=pre exp/inter-block-anchor-allocator/q1-
 
 （`traceability-check.py` 支持 `MATRIX=`／`DESIGN=`／`PLAN=` 覆盖，只用于把 mutation 正控跑在副本上；`q1-locations.sh` 支持 `DOC=`。**不要**用它们把门指向 `$TREE` 里的文档副本。）
 
-**④ 证明门确实跑在 `$TREE`（Commit 0 必须建立，见 T0.10）**
+> 🔴 **③ 的两条命令与 ② 的写法 B 共享同一个绝对路径前缀 `/home/xp/src/copilot-api-js/exp/inter-block-anchor-allocator/`，而语义相反**——③ **必须**是 master，② 的写法 B 里那个前缀只是「脚本放在哪」、被测树由 `REPO_OVERRIDE` 决定。**照着上下文复制粘贴，很容易把 ② 敲成没有 `REPO_OVERRIDE` 的版本，于是量的是 master。** 第 ④ 条门就是抓这个的。
 
-「我 `cd` 对了」不是证据（user-rule `proving-where-a-command-ran`）。O-6 的 capture 里应能取到 server 进程的可执行路径／cwd，断言它落在 `$TREE` 下；typecheck／测试则可在 `$TREE` 里植入一个**只在该树存在**的哨兵（如一条会失败的临时断言）确认门看得见它，再撤除。
+**④ 门跑在哪棵树 —— 每 commit 共同门的第四条（不是一次性仪式）**
 
-第 ② 条即 **R-11／O-6**，每个 commit 都跑；**本文各节的「门」表只写 id，不重复这四段。** 另外每个 commit 结束还须满足 §7.1 的两条状态断言：本 commit 已激活的 witness 正样本绿、production mutation 红、false-red 对照绿。
+「我 `cd` 对了」不是证据（user-rule `proving-where-a-command-ran`），**而且失效是逐次调用发生的**：写法 B 少打一个 `REPO_OVERRIDE`、复制到 ③ 的行、`$TREE` 变量在新 shell 里没设——每一次都可能悄悄回到 master。**因此本条与 ①～③ 同频，每个 commit 都要。**
+
+`byte-equivalence.sh` 现在会在 spawn 前打三行 provenance、并在 PASS 行重复 `repo=`（`:131-133`、`:194`）：
+
+```text
+repo=<被测树>
+server_entry=<被测树>/packages/cli/src/main.ts
+head=<短 sha> tree=clean|DIRTY
+O-6 PASS: captured wire is byte-identical to <baseline> (repo=<被测树>)
+```
+
+**判据（每 commit）**：
+
+1. **`repo=` 的值必须等于 `$TREE`**。⚠️ **只能取 `repo=` 这一行，不能取进程 cwd**——脚本从不 `cd`，写法 B 下**它的 cwd 与被测树无关**；用 cwd 判会在写法 B 上给出错误答案。
+2. `server_entry=` 落在 `$TREE` 下（同源交叉核对，防 `REPO` 被部分覆盖）。
+3. `head=` 等于本 commit 的 sha，`tree=clean`（脏树意味着门测的不是它声称的那个 commit）。
+4. typecheck／测试侧：`bun run typecheck` 与 `parallel-test.ts` 读 cwd，所以 `cd "$TREE"` 已经绑定；**但同样要有一次可复算的证据**——见 T0.10 的哨兵法，它建立的是**判据本身**，不是一次性通过。
+
+> **为什么这条必须是门而不是 task**：T0.10 只在 Commit 0 建立判据；**若不进每 commit 共同门，Commit 1～8 就没有任何一步要求重证**，而上面四种失效方式在每个 commit 都能重新发生。
+
+第 ② 条即 **R-11／O-6**，第 ④ 条是它的树向绑定；**本文各节的「门」表只写 id，不重复这四段。** 另外每个 commit 结束还须满足 §7.1 的两条状态断言：本 commit 已激活的 witness 正样本绿、production mutation 红、false-red 对照绿。
 
 ### 0.3b `baseline-runs.sh` 的三个硬约束（T0.1 会撞上）
 
@@ -152,7 +172,7 @@ RFC §7.4 的两条，**缺一不可**，每个准备 commit 结束时都要跑�
 | **T0.7** | 实现 §7.2 的**双向不动点闭包**并先跑一次：种子 = §7.2 列出的 6 个 capability 类型（**按 declaration identity 取，不按文件路径也不按名字文本**）；向上（消费者）+ 向下（成员，含**声明**的参数与返回类型）交替迭代。**先构造一个反例确认判据有牙**：`createGenerationWireIndexAllocator()` 零参数、返回类型不是种子——只做向上方向时它与调用点 `messages/handler-v4.ts:1160` 都进不了闭包，**必须**由向下方向捞进来。 | 输出完整 symbol hit set（不是数字），再切成互不相交的 A／B／C／D 四集。四条结构停止点写死（原始／内置类型、`node:`、`node_modules`、别名解析后判断），`any`／`unknown` **不是停止点**、落入 unclassified 并具名 disposition。C／D 相交时按 §7.2 tie-break：**construction／resolution 语义优先归 C，有疑义入 C**。任何 export／production reference 既未进 A／B／C、也未被具名判为合法 pre-owner／test-only，**Commit 0 与 Commit 4 均 fail loud**。 |
 | **T0.8** | 把测试面分四类（owner-backed array adapter／raw transport 字节与 observation unit／owner→adapter seam／**test-only adversarial 旧边界正控**）。**先验证第四类真的还能在旧边界造出 wire／state 分裂**——造不出来说明它已经被「合法化」掉了，那正是 R-10 要防的。 | 四类分档落盘。<br>⚠️ **口径数字（92 fake 构造点／40 文件、57 编译期 sink API 依赖文件、65 raw factory 调用／14 文件）来自 `docs/tmp/2026-08-03-emission-surface-inventory.md` §9，锚在 `854421d4`（= 合并前的 feature `src/`，与今日 master 的 `src/` 逐字节相同，但 `tests/` 已随 merge 变化）。本 task 必须在 `$TREE` 上重算这三个数并记差异**，别照抄。<br>**不得机械把所有 fake 改成合法 owner 路径后丢掉 positive control**。 |
 | **T0.9** | 冻结现有 anchor／terminal goldens 的文件清单与当前哈希；对每份写明它锁的是什么。**先挑一份注入帧重排，确认它会红**——不会红的 golden 是摆设。 | 清单落盘，作为 Commit 4 「Q5 逐帧预测 diff」的比对基座与 Commit 7 审计对象。 |
-| **T0.10** | **证明门跑在 `$TREE`**（§0.3 ④，user-rule `proving-where-a-command-ran`）。**「我 `cd` 对了」不是证据**：先在**不做任何绑定**的情况下跑一次 O-6，确认它起的是 master 的 server——这就是 F-1 那 24 次假绿的实物。 | 建立取证步骤：O-6 的 capture 里断言 server 进程的可执行路径／cwd 落在 `$TREE` 下；typecheck／测试则在 `$TREE` 里植入**只在该树存在**的哨兵（一条会失败的临时断言），确认门看得见它，再撤除。**这一条建立的是「门跑在正确的树上」这个前提本身的 oracle**——没有它，后面 8 个 commit 的所有绿都没有归属。 |
+| **T0.10** | **建立「门跑在哪棵树」的判据**（§0.3 ④，user-rule `proving-where-a-command-ran`）。**先在不做任何绑定的情况下跑一次 O-6**，读它打出的 `repo=` —— 那一行会指向 master，**这就是 F-1 那 24 次假绿的实物**。 | 判据落盘，并**进入每 commit 共同门第 ④ 条**（不是本 commit 一次性做完）：<br>**O-6 侧** —— 断言 `repo=`／`server_entry=`／`head=`／PASS 行的 `repo=` 四项（判据全文见 §0.3 ④）。⚠️ **只取 `repo=` 行，不取进程 cwd**：脚本从不 `cd`，写法 B 下 cwd 与被测树无关。<br>**typecheck／测试侧** —— 在 `$TREE` 里植入一条**只在该树存在**的哨兵（会失败的临时断言），确认门看得见它，再撤除。<br>⚠️ **哨兵是「建立判据」的一次性动作，不是判据本身**——判据是「每个 commit 都按 §0.3 ④ 核对 `repo=`」。**别把 T0.10 读成「Commit 0 做完就不用管了」**：写法 B 少打 `REPO_OVERRIDE`、把 ② 敲成 ③ 的形状、新 shell 里 `$TREE` 没设——这三种失效**每个 commit 都能重新发生**。 |
 | **T0.11** | **test-oracle manifest**（T6.5 的 coverage gate 依赖它，见 §Commit 6）。**先确认默认 runner 对「删掉一条测试」是绿的**——那正是 T6.5 的 mutation 需要被咬住的形态。 | 冻结三样并落盘：①四类分档里 **adversarial 旧边界正控**的测试**文件路径**；②这些文件**运行时枚举**出的 test name 集合（**用 `--reporter=junit` 取，不用 `rg` 扫 `test("...")`**——后者对参数化与模板名结构性失明）；③该 seam 依赖的 production symbol identity。<br>锚点：`tests/pipeline/allocation-outside-owner-control.it.test.ts`（已存在）。 |
 
 ### factory／锚点表
@@ -190,6 +210,7 @@ RFC §7.4 的两条，**缺一不可**，每个准备 commit 结束时都要跑�
 | R-1 | C0 `辅助门`（recorder 自检） | 见 T0.3 |
 | R-3 | C0 `辅助门`（旧缺陷 characterization，**绿=缺陷在**） | 见 T0.6 |
 | R-11 / O-6 | 每 commit 共同门 | §0.3 ② |
+| — | **每 commit 共同门：门跑在哪棵树** | §0.3 ④ —— 断言 O-6 打出的 `repo=` 等于 `$TREE`（**不取 cwd**） |
 
 ### commit invariant
 
@@ -233,6 +254,7 @@ production 源码与运行时行为**逐字节不变**（`git diff -- src/ packa
 | R-6 | C1 `辅助门`（compile fixtures，**已裁 2026-08-04**） | `cd "$TREE" && bun run typecheck` + compile fixture harness（T1.1～T1.3） |
 | R-2 | C1 `辅助门`（classifier 三态 unit） | T1.4 落盘的测试路径 |
 | R-11 / O-6 | 每 commit 共同门 | §0.3 ② |
+| — | **每 commit 共同门：门跑在哪棵树** | §0.3 ④ —— 断言 O-6 打出的 `repo=` 等于 `$TREE`（**不取 cwd**） |
 
 ### commit invariant
 
@@ -283,6 +305,7 @@ production 源码与运行时行为**逐字节不变**（`git diff -- src/ packa
 | R-5 | **段归属未裁，见 §11 #5** —— T2.3 在本 commit 实现，矩阵记 C1 | T2.3 落盘的测试路径 |
 | — | **§11 #5 的必经触发点** | **未裁则本 commit 不得收口。** 把 #5 连同三个候选交主会话／用户，裁定后同步 RFC／矩阵／本文三处 |
 | R-11 / O-6 | 每 commit 共同门 | §0.3 ② |
+| — | **每 commit 共同门：门跑在哪棵树** | §0.3 ④ —— 断言 O-6 打出的 `repo=` 等于 `$TREE`（**不取 cwd**） |
 
 > **为什么必须挂成一行门**：`traceability-check.py` 只校验「production 硬门不早于其依赖能力」，**辅助门段落在 C1 还是 C2 它不判**（该格已逐字写明）。所以这里没有机械绊线，只能靠一个必经的人工触发点——**「若评审认为构成漂移」不是触发点**，没有任何流程保证有人会去看。
 
@@ -341,6 +364,7 @@ production **不构造新 owner**；**不维护 shadow lease／mapping／ledger�
 | id | 段与等级 | 可复跑命令 |
 |---|---|---|
 | R-11 / O-6 | 每 commit 共同门 | §0.3 ② |
+| — | **每 commit 共同门：门跑在哪棵树** | §0.3 ④ —— 断言 O-6 打出的 `repo=` 等于 `$TREE`（**不取 cwd**） |
 
 **本 commit 无新增 R-* 段。** builders 的 SDK 校准与 harness 演练都在 isolated test composition 中，不构成 production witness——RFC §7.6 明确「production route goldens、O-6 与全套保持原样」。
 
@@ -483,6 +507,7 @@ production **不构造新 owner**；**不维护 shadow lease／mapping／ledger�
 | O-4 | C4 **靶向复用**（完整真 SDK 验收归 P8，不在本 RFC） | T4.16 |
 | O-8 | C4 authority publish | T4.8 的 unpark 活性对照 + parked ticks |
 | R-11 / O-6 | 每 commit 共同门 | §0.3 ② |
+| — | **每 commit 共同门：门跑在哪棵树** | §0.3 ④ —— 断言 O-6 打出的 `repo=` 等于 `$TREE`（**不取 cwd**） |
 
 ### commit invariant
 
@@ -570,6 +595,7 @@ per-command rich records 最合适的 request-scoped owner（`PipelineInfo` 摘�
 | R-9 | C5 `辅助门`（诊断，**不计 behavior 等级**） | T5.3／T5.7 落盘的测试路径 + 四层 round-trip（T5.6） |
 | — | Q1 相位守卫 | `PHASE=post exp/inter-block-anchor-allocator/q1-locations.sh` |
 | R-11 / O-6 | 每 commit 共同门 | §0.3 ② |
+| — | **每 commit 共同门：门跑在哪棵树** | §0.3 ④ —— 断言 O-6 打出的 `repo=` 等于 `$TREE`（**不取 cwd**） |
 
 ### commit invariant
 
@@ -613,6 +639,7 @@ production 旧 API population **持续为零**；telemetry **不新增 emission 
 | R-10 | C6 `production 硬门` | inventory AST 重跑（T6.1）+ manifest 门与行为门（T6.5） |
 | R-6 | C6 `production 硬门`（import guard，**已裁 2026-08-04**） | import guard + 违规正样本（T6.6） |
 | R-11 / O-6 | 每 commit 共同门 | §0.3 ② |
+| — | **每 commit 共同门：门跑在哪棵树** | §0.3 ④ —— 断言 O-6 打出的 `repo=` 等于 `$TREE`（**不取 cwd**） |
 
 ### commit invariant
 
@@ -638,6 +665,7 @@ A 集 calls、B 集 consumers、C 集 resolution population 自 Commit 4 起持�
 |---|---|---|
 | R-12 | C7 `辅助门`（审计） | T7.1 的复核表 |
 | R-11 / O-6 | 每 commit 共同门 | §0.3 ② |
+| — | **每 commit 共同门：门跑在哪棵树** | §0.3 ④ —— 断言 O-6 打出的 `repo=` 等于 `$TREE`（**不取 cwd**） |
 
 ### commit invariant
 
@@ -670,6 +698,7 @@ production 零改动（**按 T7.3 的 manifest 判，不是只扫 `src/`**）；
 | id | 段与等级 | 可复跑命令 |
 |---|---|---|
 | R-11 / O-6 | 每 commit 共同门 | §0.3 ② |
+| — | **每 commit 共同门：门跑在哪棵树** | §0.3 ④ —— 断言 O-6 打出的 `repo=` 等于 `$TREE`（**不取 cwd**） |
 | — | 完成判定 | 见 §10 |
 
 ### commit invariant
