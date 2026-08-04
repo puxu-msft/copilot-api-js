@@ -230,9 +230,9 @@ production 源码与运行时行为**逐字节不变**（`git diff -- src/ packa
 
 | id | 段与等级 | 可复跑命令 |
 |---|---|---|
-| R-6 | C1 段，**等级未定见 §11 待裁项 #1** | `bun run typecheck` + compile fixture harness（T1.1～T1.3） |
+| R-6 | C1 `辅助门`（compile fixtures，**已裁 2026-08-04**） | `cd "$TREE" && bun run typecheck` + compile fixture harness（T1.1～T1.3） |
 | R-2 | C1 `辅助门`（classifier 三态 unit） | T1.4 落盘的测试路径 |
-| R-11 / O-6 | 每 commit 共同门 | 同 §0.3 |
+| R-11 / O-6 | 每 commit 共同门 | §0.3 ② |
 
 ### commit invariant
 
@@ -281,7 +281,7 @@ production 源码与运行时行为**逐字节不变**（`git diff -- src/ packa
 | id | 段与等级 | 可复跑命令 |
 |---|---|---|
 | R-5 | C1 段 `辅助门`（**test-only 预损坏 state**）在 T2.3 落地 | T2.3 落盘的测试路径 |
-| R-11 / O-6 | 每 commit 共同门 | 同 §0.3 |
+| R-11 / O-6 | 每 commit 共同门 | §0.3 ② |
 
 > R-5 的 C1 辅助门段在**本 commit**（Commit 2）实现，因为 cardinality assertion 属于 owner state primitives。矩阵把它记在 C1，**这不是错配**：矩阵的「归属 commit」指该门**最早生效**的边界，而 Commit 1 与 Commit 2 之间旧 API population 机械相等、行为等价，门在哪一个准备 commit 落地不改变可达性。**若评审认为这构成漂移，按 §11 待裁项 #5 处理，别自行改矩阵。**
 
@@ -339,7 +339,7 @@ production **不构造新 owner**；**不维护 shadow lease／mapping／ledger�
 
 | id | 段与等级 | 可复跑命令 |
 |---|---|---|
-| R-11 / O-6 | 每 commit 共同门 | 同 §0.3 |
+| R-11 / O-6 | 每 commit 共同门 | §0.3 ② |
 
 **本 commit 无新增 R-* 段。** builders 的 SDK 校准与 harness 演练都在 isolated test composition 中，不构成 production witness——RFC §7.6 明确「production route goldens、O-6 与全套保持原样」。
 
@@ -480,7 +480,7 @@ production **不构造新 owner**；**不维护 shadow lease／mapping／ledger�
 | O-2 | C4（R-3／R-4／R-7 直接使用） | T4.5／T4.7／T4.10 |
 | O-4 | C4 **靶向复用**（完整真 SDK 验收归 P8，不在本 RFC） | T4.16 |
 | O-8 | C4 authority publish | T4.8 的 unpark 活性对照 + parked ticks |
-| R-11 / O-6 | 每 commit 共同门 | 同 §0.3 |
+| R-11 / O-6 | 每 commit 共同门 | §0.3 ② |
 
 ### commit invariant
 
@@ -533,7 +533,7 @@ per-command rich records 最合适的 request-scoped owner（`PipelineInfo` 摘�
 
 | id | 先写什么失败测试 → 预期怎么红 | 实现什么 → 预期怎么绿 |
 |---|---|---|
-| **T5.1** | request-scoped、**bounded** 的 command telemetry accumulator 的 unit：断言 owner 在 operation 期间追加每个 command observation，且 accumulator 有界。**先写一条「无界增长」的 mutation 确认它红。** | 转绿。**不从 owner 热路径直接新增 telemetry package free-function 或 SQLite writer**——今天 `TelemetrySink` 已是 completed／failed 请求的唯一 registry feed，runtime 唯一的 settled-request 记录入口是 `recordSettled`。 |
+| **T5.1** | request-scoped、**bounded** 的 command telemetry accumulator。<br>🔴 **「有界」不是可判定的判据，「无界增长 mutation」按字面无法转红**——普通 `Array.push` 在任何有限测试里长度都恰为 N，删掉 cap 后测出来还是 N。**先冻结可执行性质，再写测试**：`MAX_COMMAND_RECORDS` 的具体值、**达到上限后的行为**（`droppedCount` 计数／`truncated` marker／首尾保留规则），以及**完整记录去哪**（按 Q4 已裁的方案 B，完整 per-command records 进 generation operation detail，聚合侧只保 bounded 投影）。<br>⚠️ **这些值属 Q1 裁决的下游**——Q1 未裁则本 task 连同本节一起停（见前置停门）。 | 测试驱动 **`cap-1` / `cap` / `cap+1` / 多倍 `cap`** 四档。<br>**mutation**：移除截断、或移除 `droppedCount`／`truncated` marker → 必须红（`cap+1` 那档看得见）。<br>**false-red 对照**：低流量（远小于 cap）的正确实现必须绿，**不得因测试自行假定某个 cap 而误红**。<br>**不从 owner 热路径直接新增 telemetry package free-function 或 SQLite writer**——`TelemetrySink` 已是 completed／failed 请求的唯一 registry feed，runtime 唯一的 settled-request 记录入口是 `recordSettled`。 |
 | **T5.2** | bounded 字段的 canonical registry／normalizer unit，按 §4.8 逐字段：`command`／`formatProfile`／`expectedEffect`／`actualEffect`／`targetKind`／`legKind`／`outcome`／`committed`／`wireTorn`／`stateBefore`／`stateAfter`。**先写一条「`wireIndex` 进 label」的 mutation 确认它红**——`wireIndex` 与 `commandId` 只进 trace／History detail。 | 转绿。`formatProfile` 用 canonical 枚举（`anthropic_messages`／`responses_http`／`responses_ws`／`chat_completions`／`azure_chat_completions`／`gemini`），**不直接用 route path 或 client 输入**。 |
 | **T5.3** | **单一口径分裂判据**（§4.11，本项目已栽过一次：model 维成功腿用规范名、失败腿回落客户端别名）：对同一 `formatProfile + command + expectedEffect + targetKind + legKind` 驱动一次成功与一次 pre-write／wire 失败，断言除 `outcome`／`committed`／`phase`／`stateAfter` 等本就应变的字段外，**其余 canonical keys 完全相等**。**mutation 让失败路径回落函数名／route path／raw effect string，必须产生额外 key 并使断言转红。** | 转绿。再用 alias route（OpenAI 与 Azure 同 command family）验证**只在已声明的 `formatProfile` 轴分开**。<br>⚠️ **比较冻结 key 集合，不用总数凑巧相等。** |
 | **T5.4** | compound `phase`（`validated \| stop_sent \| real_start_sent \| terminal_sent`）与 partial measures 的 unit：至少分别累加 `validatedCount`／`stopSentCount`／`realStartSentCount`／`terminalSentCount`／`committedCount` 与各 outcome count。**先写「partial failure 只记 `outcome=wire_error`」的 mutation** 确认聚合后答不出「stop 成功但 real start 失败」。 | 转绿。普通 command 用 `phase: none`（**避免把「不适用」与「尚未 validated」混淆**）；`closedThenWireTorn` 固定表达 `stop_sent + committed=true + wireTorn=true + outcome=closed_then_wire_torn`，**不能降成普通 `ok:false`**。 |
@@ -543,20 +543,20 @@ per-command rich records 最合适的 request-scoped owner（`PipelineInfo` 摘�
 
 ### factory／锚点表
 
-| 符号 | `file:line` | **树** | 用途 |
-|---|---|---|---|
-| dimension names 与 cardinality | `packages/telemetry/src/dimension-names.ts:19-64`（`TelemetryDimensionName` 定义在 `:56`） | **两树同行**——`packages/telemetry` 与 `src/lib/observability` 在两树间**无差异**（`git diff --name-only master...feat` 不含它们） | T5.2 的 registry；**穷尽 `Record<TelemetryDimensionName,...>` 使新增 spec 但漏 extractor 时 compile-red** |
-| extractor（依赖 `HistoryEntryData`／ctx） | `src/lib/observability/telemetry-dimensions.ts:1-25,141-170` | 同上 | T5.2 |
-| settled-request 聚合叶 | `packages/telemetry/src/request-telemetry.ts:337-407` | 同上 | 只收 resolved key bag 与 measure inputs，开放 `Record<string, number>` counters |
-| feature measures 单一 name registry | `packages/telemetry/src/request-telemetry.ts:115-149`（`FEATURE_MEASURE_NAMES` 在 `:124`）、`:856-931` | 同上 | T5.6 的 `FEATURE_MEASURE_NAMES` |
-| telemetry store / rollup | `packages/telemetry/src/telemetry/store.ts:34-95,104-133`、`rollup.ts:1-20,95-147` | 同上 | T5.6 的四层；rollup 对可加 columns 泛型迭代 |
-| `TelemetrySink`（唯一 registry feed） | `src/lib/observability/sinks/telemetry.ts:31-43,49-103` | 同上 | T5.1 的接入点 |
-| `recordSettled`（runtime 唯一入口） | `packages/telemetry/src/runtime.ts:67-100`（`recordSettled` 签名在 `:86`）、`:145-150` | 同上 | 同上 |
-| 现状 generic write 失败日志 | `delivery/session.ts:311-355` | feature | §4.10 的「答不了」对照：统一记 `[delivery] owner wire write failed` |
-| 现状 snapshot | `delivery/types.ts:44-51` | feature | 只有 state／winner／wire ledger／rounds／总 `writeCount` |
-| 现状 partial History | `src/lib/history/types.ts:217`（**feature only**——`wirePartialDelivery` 在 master 的 `src/` 零命中，是 M1 引入的） | feature `2c339784` | 只有 `operation + cause + committed` |
+| 符号 | `file:line` | 用途 |
+|---|---|---|
+| dimension names 与 cardinality | `packages/telemetry/src/dimension-names.ts:19-64`（`TelemetryDimensionName` 定义在 `:56`） | T5.2 的 registry；**穷尽 `Record<TelemetryDimensionName,...>` 使新增 spec 但漏 extractor 时 compile-red** |
+| extractor（依赖 `HistoryEntryData`／ctx） | `src/lib/observability/telemetry-dimensions.ts:1-25,141-170` | T5.2 |
+| settled-request 聚合叶 | `packages/telemetry/src/request-telemetry.ts:337-407` | 只收 resolved key bag 与 measure inputs，开放 `Record<string, number>` counters |
+| feature measures 单一 name registry | `packages/telemetry/src/request-telemetry.ts:115-149`（`FEATURE_MEASURE_NAMES` 在 `:124`）、`:856-931` | T5.6 的 `FEATURE_MEASURE_NAMES` |
+| telemetry store / rollup | `packages/telemetry/src/telemetry/store.ts:34-95,104-133`、`rollup.ts:1-20,95-147` | T5.6 的四层；rollup 对可加 columns 泛型迭代 |
+| `TelemetrySink`（唯一 registry feed） | `src/lib/observability/sinks/telemetry.ts:31-43,49-103` | T5.1 的接入点 |
+| `recordSettled`（runtime 唯一入口） | `packages/telemetry/src/runtime.ts:67-100`（签名在 `:86`）、`:145-150` | 同上 |
+| 现状 generic write 失败日志 | `delivery/session.ts:311-355`（`consola.error("[delivery] owner wire write failed", …)`） | §4.10 的「答不了」对照 |
+| 现状 snapshot | `delivery/types.ts:44-51` | 只有 state／winner／wire ledger／rounds／总 `writeCount` |
+| 现状 partial History | `src/lib/history/types.ts:217` | 只有 `operation + cause + committed`（M1 引入） |
 
-> ⚠️ **上表 `packages/telemetry/**` 与 `observability/**` 的行号取自 RFC §4.7（原锚在 feature `854421d4`），已在 master `c259dd9d` 上逐条复核在范围内且命中目标符号**；这两个目录在两树间无差异。master 每天前进，**引用前重取**：
+> ⚠️ 上表行号锚 master `80a4b6fc`。**引用前重取**：
 > ```bash
 > cd /home/xp/src/copilot-api-js && rg -n "TelemetryDimensionName|FEATURE_MEASURE_NAMES|recordSettled" packages/telemetry/src src/lib/observability
 > ```
@@ -567,7 +567,7 @@ per-command rich records 最合适的 request-scoped owner（`PipelineInfo` 摘�
 |---|---|---|
 | R-9 | C5 `辅助门`（诊断，**不计 behavior 等级**） | T5.3／T5.7 落盘的测试路径 + 四层 round-trip（T5.6） |
 | — | Q1 相位守卫 | `PHASE=post exp/inter-block-anchor-allocator/q1-locations.sh` |
-| R-11 / O-6 | 每 commit 共同门 | 同 §0.3 |
+| R-11 / O-6 | 每 commit 共同门 | §0.3 ② |
 
 ### commit invariant
 
@@ -587,30 +587,30 @@ production 旧 API population **持续为零**；telemetry **不新增 emission 
 | **T6.2** | 删除 **A 集**已零调用的定义：`ClientSink.write*` generation surface、`WireBlockAllocationPort`、caller envelope factory、legacy anchor fields／bridge、`commandPortActivation`、raw production exports。**删之前先跑一遍全套确认真的零引用**（TypeScript 会替你找剩余引用，别猜）。 | typecheck 与全套绿。<br>⚠️ **`commandPortActivation` 在两棵树的 `src/` 都零命中**（实测）。它要么是 Commit 1～4 期间新引入的名字，要么是 RFC 的前瞻性命名——**到达本 commit 时先确认它存在再删，不存在就在 plan 里标注并回报**，别为了让清单成立而发明一个符号。 |
 | **T6.3** | 删除 **B 集**已零 consumer 的旧 `DownstreamDeliverySession` public surface：`writeScaffold`、`noteWinner`、`noteUpstreamRoundStarted`、`noteUpstreamRoundEnded`。**先确认 `identity`／`snapshot` 若内部保留，它们不作为旧 session handle 暴露给 driver。** | 绿。 |
 | **T6.4** | 删除 **C 集**已零 resolution consumer 的 exported `getDownstreamDeliverySession`、等价 WeakMap lookup 及 allowlist 外 construction exports。 | 绿。 |
-| **T6.5** | **R-10 硬门**：test-only adversarial seam **仍能在旧边界造出分裂**，而新 production route **拒绝同一行为**。**mutation：把 `allocation-outside-owner-control` 改走合法 owner，或删掉 adversarial seam——coverage gate 必须红。** | 绿。<br>false-red 对照：**owner-backed array adapter 与 raw transport byte units 合法存在，不被零命中 guard 误杀**。<br>锚点：`tests/pipeline/allocation-outside-owner-control.it.test.ts`（**两树皆存在**，已实测）。 |
-| **T6.6** | **R-6 的 C6 段**：import guard 断言 `src/lib/pipeline/delivery/**` 对 concrete codec 模块零 import，**并提供一条故意加入违规 import 的正样本，确认守卫真实转红**。**单纯 `rg` 零命中不自证。** | 绿。<br>🔴 **本段等级未定，见 §11 待裁项 #1。** 若裁为 `辅助门`，则 import guard 失去阻断力；若裁为 `production 硬门`，Commit 6 通过条件变严。**别自己填。** |
+| **T6.5** | **R-10 硬门**：test-only adversarial seam **仍能在旧边界造出分裂**，而新 production route **拒绝同一行为**。<br>🔴 **「coverage gate 必须红」此前没有定义任何 gate**——默认 runner 对「删掉一条测试」是**绿**的（少跑一条而已），T6.1 的 production AST 审计也看不见 test-only seam，所以这条预测按原样必然落空。<br>**gate 的实现是一条独立架构测试**，断言 **T0.11 冻结的 manifest 三样仍成立**：①那些测试文件仍存在；②它们**运行时枚举**出的 test name 集合仍等于冻结集合（用 `--reporter=junit`，**不用 `rg` 扫 `test("...")`**）；③该 seam 依赖的 production symbol identity 仍存在。 | 绿。<br>**mutation（两条，各打一型）**：①在副本里**删掉**该 test 文件或其中一条 case → manifest 门必须报出**缺失的具体 name／文件**；②把它**改走合法 owner** → 行为门必须红（seam 不再能造出分裂）。<br>**false-red 对照**：owner-backed array adapter 与 raw transport byte units 合法存在，**不被零命中 guard 误杀**。<br>锚点：`tests/pipeline/allocation-outside-owner-control.it.test.ts`。 |
+| **T6.6** | **R-6 的 C6 段（已裁为 `production 硬门`，2026-08-04）**：import guard 断言 `src/lib/pipeline/delivery/**` 对 concrete codec 模块零 import，**并提供一条故意加入违规 import 的正样本，确认守卫真实转红**。**单纯 `rg` 零命中不自证。** | 绿。<br>**用户裁决（候选 1，按判据列拆）**：compile fixtures → C1 `辅助门`（§7.4）、**import guard → C6 `production 硬门`**（§7.9）。<br>⚠️ **「辅助门」不等于「不阻断交付」**——RFC §10.4 与本文 §10 都写明**辅助类型／遥测门失败同样阻止交付**，两档的差别只在**能否升级 behavior／closure 等级**：`production 硬门`的通过可支撑「结构性闭合候选」，`辅助门`只作 presence ratchet。<br>**RFC §10.2 的 R-6 行末列仍是无分段的 `本RFC辅助门；Commit 1／6`**，与本裁决不一致——**已列入 T8.1 的文档同步，别落空**。 |
 | **T6.7** | 独立 guard 裁决记录齐全：本 commit 删除或放宽的每一条 guard 都有独立 reviewer 或用户裁决记录（CLAUDE.md `[hard]`）。 | 记录落盘。 |
 
 ### factory／锚点表
 
-| 删除对象 | master | feature | 备注 |
-|---|---|---|---|
-| `WireBlockAllocationPort` | `types.ts:309-322` | `:319-332` | 五方法 + `wireState` |
-| `DownstreamDeliverySession` public 面 9 项 | `delivery/session.ts:50-59` | `:57-67` | B 集 |
-| `getDownstreamDeliverySession` | `delivery/session.ts:83` | `:90` | C 集 |
-| `getDeliverySessionForAllocationPort` | `delivery/session.ts:88` | `:95` | C 集 |
-| `createDownstreamDeliverySession` | `delivery/session.ts:93` | `:100` | C 集 construction，**只留 composition-root allowlist** |
-| `OwnerRawSink` | **master 零命中** | `delivery/types.ts:12` | raw production export |
-| `ClientSink.write*` generation surface | `types.ts:737` 起 | `:747` 起 | 含 `write`／`writeSynthetic`／`writeKeepalive`／`writeSyntheticEnvelope`／`writeAnchor` |
-| 架构守卫既有位置 | `tests/architecture/` | 同 | T6.6 的 import guard 归属目录；同目录已有 `package-boundaries`／`circular-deps-ratchet`／`anchor-remap-single-authority` 等 |
+| 删除对象 | `file:line` | 备注 |
+|---|---|---|
+| `WireBlockAllocationPort` | `types.ts:319-332` | 五方法 + `wireState` |
+| `DownstreamDeliverySession` public 面 9 项 | `delivery/session.ts:57-67` | B 集 |
+| `getDownstreamDeliverySession` | `delivery/session.ts:90` | C 集 |
+| `getDeliverySessionForAllocationPort` | `delivery/session.ts:95` | C 集 |
+| `createDownstreamDeliverySession` | `delivery/session.ts:100` | C 集 construction，**只留 composition-root allowlist** |
+| `OwnerRawSink` | `delivery/types.ts:12` | raw production export（M1 引入） |
+| `ClientSink.write*` generation surface | `types.ts:747` 起 | 含 `write`／`writeSynthetic`／`writeKeepalive`／`writeSyntheticEnvelope`／`writeAnchor`（`:783`） |
+| 架构守卫既有位置 | `tests/architecture/` | T6.6 的 import guard 归属目录；同目录已有 `package-boundaries`／`circular-deps-ratchet`／`anchor-remap-single-authority` |
 
 ### 本 commit 的门
 
 | id | 段与等级 | 可复跑命令 |
 |---|---|---|
-| R-10 | C6 `production 硬门` | inventory AST 重跑（T6.1）+ test-only adversarial seam（T6.5） |
-| R-6 | C6 段，**等级未定见 §11 待裁项 #1** | import guard + 违规正样本（T6.6） |
-| R-11 / O-6 | 每 commit 共同门 | 同 §0.3 |
+| R-10 | C6 `production 硬门` | inventory AST 重跑（T6.1）+ manifest 门与行为门（T6.5） |
+| R-6 | C6 `production 硬门`（import guard，**已裁 2026-08-04**） | import guard + 违规正样本（T6.6） |
+| R-11 / O-6 | 每 commit 共同门 | §0.3 ② |
 
 ### commit invariant
 
@@ -628,18 +628,18 @@ A 集 calls、B 集 consumers、C 集 resolution population 自 Commit 4 起持�
 |---|---|---|
 | **T7.1** | 逐份复核 Commit 4 更新过的 golden：每份都要指出**它的 Q5 diff 条目**与**独立 oracle 证据**（O-1／O-2／真 SDK 中的哪一条先绿）。**没有独立 oracle 证据的 golden 一律标红**——只靠新 golden 自洽等于把新代码的行为编码成期望。 | 复核表落盘。 |
 | **T7.2** | 删除确被取代的旧 fixture／helper。**删之前先确认它守的不变量已由新 oracle 承载**（CLAUDE.md：改测试前先落盘记录该断言守的不变量是什么、依据来自哪里、本次为何这样处置）。 | 全套仍绿。 |
-| **T7.3** | 断言本 commit `git diff -- src/` 为空。 | 空。 |
+| **T7.3** | **断言本 commit 未改动 production**。<br>🔴 **`git diff -- src/` 不够**——本 RFC 自己把 production 代码分布到 `packages/telemetry/**`（Commit 5 就要改它），只扫 `src/` 时在 `packages/` 里改一个字节该命令仍输出空。**先在 `packages/telemetry/src/request-telemetry.ts` 加一字节，确认只扫 `src/` 的版本判绿**——那就是漏洞的实物。 | 冻结一份 **production path manifest**，至少覆盖 `src/`、`packages/`、`scripts/`、`config.schema.json` 与其他构建输入（`package.json`／`tsconfig*.json`／`bunfig.toml`）。门写成 `cd "$TREE" && git diff --stat <C6-sha>..<C7-sha> -- <manifest 全部路径>`，**必须为空**。<br>**mutation**：在 `packages/telemetry` 加一字节 → 必须红。<br>**false-red 对照**：合法的 `tests/`／fixtures／`docs/` 清理仍绿（本 commit 的正事就是删旧 fixture）。 |
 
 ### 本 commit 的门
 
 | id | 段与等级 | 可复跑命令 |
 |---|---|---|
 | R-12 | C7 `辅助门`（审计） | T7.1 的复核表 |
-| R-11 / O-6 | 每 commit 共同门 | 同 §0.3 |
+| R-11 / O-6 | 每 commit 共同门 | §0.3 ② |
 
 ### commit invariant
 
-production 零改动；O-1／O-2／真 SDK／goldens／O-6／全套均保持绿；**O-6 fixture 永不重捕**。
+production 零改动（**按 T7.3 的 manifest 判，不是只扫 `src/`**）；O-1／O-2／真 SDK／goldens／O-6／全套均保持绿；**O-6 fixture 永不重捕**。
 
 ---
 
@@ -667,7 +667,7 @@ production 零改动；O-1／O-2／真 SDK／goldens／O-6／全套均保持绿�
 
 | id | 段与等级 | 可复跑命令 |
 |---|---|---|
-| R-11 / O-6 | 每 commit 共同门 | 同 §0.3 |
+| R-11 / O-6 | 每 commit 共同门 | §0.3 ② |
 | — | 完成判定 | 见 §10 |
 
 ### commit invariant
