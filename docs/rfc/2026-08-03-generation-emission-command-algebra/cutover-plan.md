@@ -108,7 +108,7 @@ O-6 PASS: captured wire is byte-identical to <baseline> (repo=<被测树>)
 
 1. **`repo=` 的值必须等于 `$TREE`**。⚠️ **只能取 `repo=` 这一行，不能取进程 cwd**——脚本从不 `cd`，写法 B 下**它的 cwd 与被测树无关**；用 cwd 判会在写法 B 上给出错误答案。
 2. `server_entry=` 落在 `$TREE` 下（同源交叉核对，防 `REPO` 被部分覆盖）。
-3. **`head=` 与 `tree=` —— 判据分两趟，别在开发趟上判**（见 §0.5a 的时序定义）：<br>
+3. **`head=` 与 `tree=` —— 判据分两趟，别在开发趟上判**（见 §0.4b 的时序定义）：<br>
    • **开发趟**（写完代码 → 跑门 → 再提交）：`tree=DIRTY` 且 `head=` 还是**上一个** commit —— **这是正常的，不判**。<br>
    • **收口趟**（commit 生成后重跑）：断言 `head=` 等于**本 commit 的 sha**、`tree=clean`。<br>
    🔴 **这条区分不是措辞讲究。** 脚本对这两个值**只报不判**（`tree=DIRTY` 照样 rc=0，实测），所以若把判据写成「每次都要 `clean` + 本 commit sha」，**在自然时序下它每次都假红**——而每次假红的门，**第一次收口就会被当噪声删掉，删掉的正好是「门量的是另一个 commit」这道检查**。<br>
@@ -137,59 +137,6 @@ RFC §7.4 的两条，**缺一不可**，每个准备 commit 结束时都要跑�
 2. **存在性分派的解析结果不变**——属性存在性快照逐 commit 比对，快照由 checker 产出而非人工列举，口径覆盖闭包内全部类型、它们的实现对象、以及构造它们的 options 字面量。**理由是实测出来的**：`delivery/session.ts:584-596` 那类 `sink.writeAnchor ?? sink.write` 的分派，只要方法是否存在变了就会改行为，而 call-site 一行不动。
 
 第 2 条的快照工具本身是 **T0.7** 的产物。
-
-### 0.4b 🔴 三份 SSOT 对 T0.6 的退出语义相反 —— **必须在 Commit 0 开工前解决，不能等 Commit 8**
-
-| 文档 | 现在写的 | 状态 |
-|---|---|---|
-| **本 plan** T0.6／C0 门表／C0 invariant | **rc=0 的 characterization，绿 = 缺陷仍在**；C4 反转断言 | 已改（本轮） |
-| **矩阵** `traceability.md` R-3 行 | 同上 | 已改（本轮） |
-| **冻结 RFC** `design.md:597`（§7.3 终态不变量）、`:750`（§10.2 R-3 行） | 「稳定作为 **red** characterization」「Commit 0 只冻结旧边界分裂的 **red** characterization」 | **仍是相反要求** |
-
-**为什么不能推给 Commit 8 的文档同步**：执行者被要求以 **RFC 为契约 SSOT**，而 **Commit 0 当场就要决定这条门是红还是绿**——两份文档给出相反的退出码要求时，他只能二选一，选错任一边都会在 C0 的共同门上炸。**T8.1 那类「事后回填」对本条无效。**
-
-**处置形状**（谁在哪个 commit 改，写死）：
-
-| # | 谁 | 改什么 | 何时 |
-|---|---|---|---|
-| 1 | **本 plan（已完成）** | T0.6 形状、C0 门表、C0 invariant、§12 未采纳项 | 本轮 |
-| 2 | **矩阵（已完成）** | R-3 行的等级描述 | 本轮 |
-| 3 | 🔴 **`design.md:597` 与 `:750`** —— **冻结文档，不由实施者自行改** | 把 `red characterization` 改为 **`rc=0 的 defect-present characterization；C4 反转 assertion`**，并写明「**red 只可修饰被观察到的产品状态，不得修饰测试退出码**」 | **Commit 0 kickoff 之前**，走 §9.1／§9.4 的 open question 机制交主会话／用户；**不是 Commit 8** |
-
-⚠️ **第 3 项是本 plan 唯一一处「必须改冻结 RFC 才能开工」的地方。** 它不属于 T8.1（那是落地后的回填）。**未改则 Commit 0 不得开工**——已挂进 C0 的门表。
-
-**语义澄清（三份文档统一采用）**：**「red characterization」里的 red 指的是「被观察到的产品缺陷仍在」，不是「测试进程返回非零」。** 上一版按字面读成后者，才产生了「必须红」与「该档确定性全绿」的终态互斥。
-
----
-
-### 0.5a 门与提交的时序 —— **两趟，别混**（`<from>`／`<to>` 在这里定义）
-
-本 plan 全文的门分**两趟跑**。**不写死它，第 ④ 条判据 3 与 T7.3 的 `<from>..<to>` 都无从判断。**
-
-| 趟 | 何时 | 树状态 | 跑什么 | 判什么 |
-|---|---|---|---|---|
-| **开发趟** | 写完代码、**提交之前** | `tree=DIRTY`、`head=` 还是**上一个** commit | ①typecheck ②全套 ③O-6 ④`repo=`／`server_entry=` | 功能是否正确、门是否跑在 `$TREE`。**不判 `head=`／`tree=`** |
-| **收口趟** | **commit 生成之后**，进入下一个 commit 之前 | `tree=clean`、`head=` 本 commit | **重跑 ①②③④** + 本 commit 的 invariant + population 审计 | 全部判据，**含 `head=` 等于本 commit、`tree=clean`** |
-
-**`<from>`／`<to>` 的定义（全 plan 统一，不在别处另立）**：
-
-```bash
-TO=$(git -C "$TREE" rev-parse HEAD)          # 本 commit（收口趟才存在）
-FROM=$(git -C "$TREE" rev-parse HEAD^)       # 它的父 commit
-```
-
-- **落哪棵树**：`$TREE`（entry worktree），**不是 master**——被审的是 cutover 的产物。
-- **Commit 0 的 `FROM`** 就是 entry commit 本身；**entry commit 的 sha 在前置基础设施落地后必须重取**（见下）。
-
-🔴 **前置基础设施改动的相位归属**：§0.4a 说 `parallel-test.ts` 的 junit 改造「先于 Commit 0、不能夹进 cutover 任何 commit」。**它落地后 entry commit 就变了**，因此：
-
-1. 基础设施改动在 `$TREE` 上先提交；
-2. **重取 entry commit sha**，T0.1 的 15 次连跑锚在**这个新 sha** 上（锚在旧 sha 上跑的那批作废——它测的是没有 file identity 的 runner）；
-3. Commit 0 的 `FROM` = 该 entry commit。
-
-⚠️ **收口趟必须真的重跑，不能引用开发趟的结果**。差别不只是 `head=`：提交动作本身可能带进未预期的文件（`git add` 的 pathspec 写宽了），而开发趟的绿证明不了这一点。
-
----
 
 ### 0.4a production path manifest（**一处定义，全 plan 共用**）
 
@@ -243,14 +190,55 @@ MANIFEST='src/ packages/ native/ hooks/ contrib/ start.bat
           scripts/probe-tui-observability-load.ts scripts/eslint-rules/
           ui-v4/src/ ui-v4/index.html ui-v4/package.json ui-v4/vite.config.ts ui-v4/tsconfig.json ui-v4/components.json
           ui/src/ ui/vite.config.ts ui/tsconfig.json'
-cd "$TREE" && git diff --stat "$FROM".."$TO" -- $MANIFEST     # 必须为空（FROM/TO 见 §0.5a）
+cd "$TREE" && git diff --stat "$FROM".."$TO" -- $MANIFEST     # 必须为空（FROM/TO 见 §0.4b）
 ```
 
-⚠️ **`parallel-test.ts` 在门内是有意的**：若 T0.1／T0.11 的 junit 枚举确实要动它，那是一次**独立的、先于 Commit 0 的基础设施改动**（相位归属见 §0.5a），**不能夹在 cutover 任何 commit 里**。
+⚠️ **`parallel-test.ts` 在门内是有意的**：若 T0.1／T0.11 的 junit 枚举确实要动它，那是一次**独立的、先于 Commit 0 的基础设施改动**（相位归属见 §0.4b），**不能夹在 cutover 任何 commit 里**。
 ⚠️ **`test-timings.json` 与 `update-circular-deps-baseline.ts` 在门外也是有意的**：C7 的正事就是删 tests／fixtures，**随之同步 timings 或重冻架构 baseline 是合法测试审计**；整目录一刀切会把它误判成 production 改动。
 
 **mutation 正控（四条，各打一类）**：①`packages/telemetry/` 加一字节 → 红；②`scripts/recover-history-v3-projections.ts` 加一字节 → 红（production 类脚本确在门内）；③**`ui-v4/src/` 加一字节 → 红**（前端不是 test 面）；④**`bun.lock` 改一行 → 红**（依赖是构建输入）。
 **false-red 对照（三条）**：①`tests/`／fixtures／`docs/` 的合法改动仍绿；②**删 fixture 后同步 `scripts/test-timings.json` 必须绿**（但需单独 review，见 T7.2）；③**`ui-v4/tests/` 的改动必须绿**——前端测试面不属 production。
+
+### 0.4b 门与提交的时序 —— **两趟，别混**（`FROM`／`TO` 在这里定义）
+
+本 plan 全文的门分**两趟跑**。**不写死它，第 ④ 条判据 3 与 T7.3 的 `<from>..<to>` 都无从判断。**
+
+| 趟 | 何时 | 树状态 | 跑什么 | 判什么 |
+|---|---|---|---|---|
+| **开发趟** | 写完代码、**提交之前** | `tree=DIRTY`、`head=` 还是**上一个** commit | ①typecheck ②全套 ③O-6 ④`repo=`／`server_entry=` | 功能是否正确、门是否跑在 `$TREE`。**不判 `head=`／`tree=`** |
+| **收口趟** | **commit 生成之后**，进入下一个 commit 之前 | `tree=clean`、`head=` 本 commit | **重跑 ①②③④** + 本 commit 的 invariant + population 审计 | 全部判据，**含 `head=` 等于本 commit、`tree=clean`** |
+
+**`<from>`／`<to>` 的定义（全 plan 统一，不在别处另立）**：
+
+```bash
+TO=$(git -C "$TREE" rev-parse HEAD)          # 本 commit（收口趟才存在）
+FROM=$(git -C "$TREE" rev-parse HEAD^)       # 它的父 commit
+```
+
+- **落哪棵树**：`$TREE`（entry worktree），**不是 master**——被审的是 cutover 的产物。
+- **Commit 0 的 `FROM`** 就是 entry commit 本身；**entry commit 的 sha 在前置基础设施落地后必须重取**（见下）。
+
+🔴 **前置基础设施改动的相位归属**：§0.4a 说 `parallel-test.ts` 的 junit 改造「先于 Commit 0、不能夹进 cutover 任何 commit」。**它落地后 entry commit 就变了**，因此：
+
+1. 基础设施改动在 `$TREE` 上先提交；
+2. **重取 entry commit sha**，T0.1 的 15 次连跑锚在**这个新 sha** 上（锚在旧 sha 上跑的那批作废——它测的是没有 file identity 的 runner）；
+3. Commit 0 的 `FROM` = 该 entry commit。
+
+⚠️ **收口趟必须真的重跑，不能引用开发趟的结果**。差别不只是 `head=`：提交动作本身可能带进未预期的文件（`git add` 的 pathspec 写宽了），而开发趟的绿证明不了这一点。
+
+---
+
+### 0.4c T0.6 的退出语义 —— **三份 SSOT 已对齐（2026-08-04），此处只留口径**
+
+| 文档 | 现在写的 | 状态 |
+|---|---|---|
+| **本 plan** T0.6／C0 门表／C0 invariant | **rc=0 的 characterization，绿 = 缺陷仍在**；C4 反转断言 | ✅ 已改 |
+| **矩阵** `traceability.md` R-3 行 | 同上 | ✅ 已改 |
+| **冻结 RFC** `design.md:597`（§7.3）、`:750`（§10.2 R-3 行） | 已补澄清：**「red」修饰「缺陷仍在」，测试自身 rc=0**；并写明按字面读成「测试必须失败」会与共同门互斥、使 C0 终态不可满足 | ✅ 已改（`93e300d3`） |
+
+**统一口径**：**「red characterization」里的 red 指「被观察到的产品缺陷仍在」，不是「测试进程返回非零」。** 上一版按字面读成后者，才产生了「必须红」与「该档确定性全绿」的终态互斥。
+
+⚠️ **这个口径的论域是「进入 Commit 0 默认 suite 的测试」，不要放大**：RFC §7.1 的共同门管的是 **suite 终态**（`unit it http` 确定性全绿），**不管隔离运行的 mutation probe 的退出码**。**本 plan 各处 mutation「必须红」指的正是那类隔离探针——它们本就该非零退出，不受本口径约束。** 把「一律 rc=0」推广到 mutation 探针会把所有正控判成违规。
 
 ### 0.5 提交与进度纪律（`prompts/` 尚未存在，本节代其承载）
 
@@ -268,7 +256,7 @@ cd "$TREE" && git diff --stat "$FROM".."$TO" -- $MANIFEST     # 必须为空（F
 - frontmatter 必含 **`base`（任务起始 SHA）**、分支、worktree 路径、对应 plan 文档，以及拿到后回填的 agent／session id。**缺 `base` 就做不了 `--first-parent` 对账。**
 - **只记 git 记不下的三样**：剩余项（带验收判据）／在途意图／已作废的路子。别复述 git log。
 - **随每个实现 commit 一起提交。**
-- **收口证据在 commit 生成后重跑**（§0.5a 的收口趟）：`head=` 等于本 commit、`tree=clean` 只有那时才成立，且提交动作本身可能带进未预期的文件。**开发趟的绿不能当收口证据引用。**
+- **收口证据在 commit 生成后重跑**（§0.4b 的收口趟）：`head=` 等于本 commit、`tree=clean` 只有那时才成立，且提交动作本身可能带进未预期的文件。**开发趟的绿不能当收口证据引用。**
 
 > 🔴 **Commit 4 是本 plan 唯一「中断即全丢」的结构**：16 个 task 同属一个 semantic commit，中途按设计**不产生 commit**，所以 git log 上什么都没有。**因此 Commit 4 的进度文件必须逐 task 更新并单独提交**（进度文件在 `docs/tmp/`，与 `src/` 改动分开 pathspec，不破坏「Commit 4 不拆」）。每完成 T4.x 就写一行：做完了什么、下一个 task 需要的前置在哪、已经否掉了哪条路。
 
@@ -282,7 +270,10 @@ cd "$TREE" && git diff --stat "$FROM".."$TO" -- $MANIFEST     # 必须为空（F
 
 | id | 先写什么失败测试 → 预期怎么红 | 实现什么 → 预期怎么绿 |
 |---|---|---|
-| **T0.1** | **入场条件，不是测试。** 🔴 **本条依赖一件尚不存在的基础设施，见右栏——先建它，别硬跑。**<br>**① `MIN_TESTS` 不能从待测命令自己取**（`baseline-runs.sh:23-25` 逐字点名的假绿：selector 悄悄缩窄，「实测」出 6800，下限也冻成 6800，此后每次都与自己一致）。<br>**② 口径必须先定死：`MIN_TESTS` 比的是 `executed = tests - skipped`，不是 JUnit 的 `tests`。** 两边口径**现在是相反的**——Bun JUnit 的 `<testsuites tests=N>` **含 skipped／todo**，而 `parallel-test.ts:148-167` 把 `tests` 定义为 `passSum + failSum`（**不含 skipped**）。**照 JUnit 总数取 floor，正确状态必然过不了**：仓库现有整文件 `describe.skip`、native `skipIf`、`test.todo`；且 **native 产物在主树存在而在新建隔离树天然没有**，那批测试在 `$TREE` 会 skip——**同一 commit 在两处的 `tests` 数不同，`executed` 才稳定**。 | 🔴 **前置基础设施（本 task 无法绕过，也不得夹进 cutover 任何 commit —— 见 §0.4a）**：<br>**`parallel-test.ts` 当前不为门运行产出 file identity**。它的 JUnit 只存在于 `refreshTimings()`（`:61-70`，`--update` 时**另起一次**独立 run），而真正的门运行在 `:120` 用**裸 `bun test`** 起 shards、无 reporter，`:148-167` 只聚合 pass/fail 总数。<br>⚠️ **因此「磁盘 glob vs 一次 refresh JUnit」只能证明 `discover()` 当时完整**——它**证不了** `balance()` 之后、bucket spawn、以及那 15 次实际运行没有静默漏 shard／漏文件。**而 plan 自己的正控恰恰是「让某个 shard 静默少跑文件」**，用另一次运行的证据给这次运行背书，正是前几轮反复在堵的形态。<br>**要做的**：让**每一次**门运行的实际 shards 各自产 JUnit，runner 内合并 file identity；**每次**都与独立磁盘 manifest 双向比集合，缺一文件即 rc≠0，并**分别输出 `executed` 与 `skipped` 两数**。<br>**正控**：在 **`balance()` 之后、spawn 之前**从某 bucket 删一个文件 → 必须报出**缺失的文件名**（打在 `discover()` 上的正控抓不到这一层）。<br>**false-red 对照**：整文件 skip、native 不可用而 skip、`todo` 文件——实测 Bun JUnit **仍为它们输出 file-level `<testsuite>`**，故「被发现」成立、合法为绿，但 verdict 要**另记 skipped 数**。<br>**然后**才是 15 次：`cd "$TREE" && OUT=docs/tmp/<date>-entry-runs RUNS=15 MIN_TESTS=<executed 口径的数> exp/inter-block-anchor-allocator/baseline-runs.sh`，rc=0 且保存每次原始输出。<br>⚠️ 必须在 **`$TREE`（干净的隔离 worktree）** 里跑**树内那份**脚本（`REPO` 由脚本位置推导、无 override，见 §0.3b）。**`ALLOW_DIRTY=1` 禁止用于通过本条**。重跑换 `OUT` 目录。<br>⚠️ **这就是 HANDOVER 的 T3-b**。它落地前本条只能按缩小版命题引用，**不得表述成「全后端套件已验证」**。 |
+| **T0.1** | **入场条件，不是测试。** 🔴 **本条依赖一件尚不存在的基础设施，见右栏——先建它，别硬跑。**<br>**① `MIN_TESTS` 不能从待测命令自己取**（`baseline-runs.sh:23-25` 逐字点名的假绿：selector 悄悄缩窄，「实测」出 6800，下限也冻成 6800，此后每次都与自己一致）。<br>**② 口径必须先定死：`MIN_TESTS` 比的是 `executed = tests - skipped`，不是 JUnit 的 `tests`。** 两边口径**现在是相反的**——Bun JUnit 的 `<testsuites tests=N>` **含 skipped／todo**，而 `parallel-test.ts:148-167` 把 `tests` 定义为 `passSum + failSum`（**不含 skipped**）。**照 JUnit 总数取 floor，正确状态必然过不了**：仓库现有整文件 `describe.skip`、native `skipIf`、`test.todo`；且 **native 产物在主树存在而在新建隔离树天然没有**，那批测试在 `$TREE` 会 skip——**同一 commit 在两处的 `tests` 数不同，`executed` 才稳定**。 | 🔴 **前置基础设施（本 task 无法绕过，也不得夹进 cutover 任何 commit —— 见 §0.4a）**：<br>**`parallel-test.ts` 当前不为门运行产出 file identity**。它的 JUnit 只存在于 `refreshTimings()`（`:61-70`，`--update` 时**另起一次**独立 run），而真正的门运行在 `:120` 用**裸 `bun test`** 起 shards、无 reporter，`:148-167` 只聚合 pass/fail 总数。<br>⚠️ **因此「磁盘 glob vs 一次 refresh JUnit」只能证明 `discover()` 当时完整**——它**证不了** `balance()` 之后、bucket spawn、以及那 15 次实际运行没有静默漏 shard／漏文件。**而 plan 自己的正控恰恰是「让某个 shard 静默少跑文件」**，用另一次运行的证据给这次运行背书，正是前几轮反复在堵的形态。<br>**要做的**：让**每一次**门运行的实际 shards 各自产 JUnit，runner 内合并 file identity；**每次**都与独立磁盘 manifest 双向比集合，缺一文件即 rc≠0，并**分别输出 `executed` 与 `skipped` 两数**。<br>**正控**：在 **`balance()` 之后、spawn 之前**从某 bucket 删一个文件 → 必须报出**缺失的文件名**（打在 `discover()` 上的正控抓不到这一层）。<br>**false-red 对照**：整文件 skip、native 不可用而 skip、`todo` 文件——实测 Bun JUnit **仍为它们输出 file-level `<testsuite>`**，故「被发现」成立、合法为绿。<br>
+🔴 **但「另记 skipped 数」不够——必须逐次核对 skipped 的 identity set**：只比数量时，**把一条 runnable test 改成 skip、同时另一条 skip 改回 runnable，总数不变而 floor 被悄悄降低**。判据是**每次运行的 skipped test identity 集合**与冻结集合相等；不等时必须报出**具体是哪几条变了**，再逐条 disposition（`freeze-hit-set-not-zero-hits`）。<br>
+**mutation**：把任意一条 runnable test 改成 `skip` → 必须报出**该条的 identity**（只比 executed 数的版本会因为 floor 是 `>=` 而放过它）。<br>
+⚠️ **native 那批要具名，不能混进「正常 skip」当背景噪声**：`history-search` 的 `.node` 产物**主树有、新建隔离树天然没有**，故 `describe.skipIf(!isNativeHistorySearchAvailable())` 那批（本文写作时 **18 条**，**执行时按上述 identity set 实测重取，别引用这个快照数**）在 `$TREE` 会 skip 而在主树会执行。**按项目契约这是可接受的**（CLAUDE.md 明写不得强制构建 native、有产物就真跑没有就显式 skip），**但必须在冻结集合里单列一类具名审核**——否则「环境性的 skip」会成为掩护，本项目 2026-07-28 已因此把环境性的红当「既有失败」挥手放过一次。<br>**然后**才是 15 次：`cd "$TREE" && OUT=docs/tmp/<date>-entry-runs RUNS=15 MIN_TESTS=<executed 口径的数> exp/inter-block-anchor-allocator/baseline-runs.sh`，rc=0 且保存每次原始输出。<br>⚠️ 必须在 **`$TREE`（干净的隔离 worktree）** 里跑**树内那份**脚本（`REPO` 由脚本位置推导、无 override，见 §0.3b）。**`ALLOW_DIRTY=1` 禁止用于通过本条**。重跑换 `OUT` 目录。<br>⚠️ **这就是 HANDOVER 的 T3-b**。它落地前本条只能按缩小版命题引用，**不得表述成「全后端套件已验证」**。 |
 | **T0.2** | 先把 O-6 脚本在**未改动的 `$TREE`** 上跑一次，确认打印 `O-6 PASS`、rc=0、fixture blob 未变；再注入一字节，确认 rc=9。**这是 false-red／false-green 双向自检，不是形式**——该门此前恒真（脚本覆盖自己的基线、全脚本无 `cmp`），`4f7a3989` 才修好。 | 把这两条写进每 commit 检查清单，绑根方式照 §0.3 ②。**禁止 `RECAPTURE=1`**。<br>**先确认手上是修好的那份**：`grep -c 'O-6 PASS' exp/inter-block-anchor-allocator/byte-equivalence.sh` ≥1（**看文件存在不够**）。 |
 | **T0.3** | 写 handle-level physical recorder，**先让它在「什么都没包住」的状态下断言零 direct send**——此时断言平凡为真，是**假绿**。 | recorder 必须包裹 composition root 实际取得的 `stream`／`ws` handle 并**位于 raw emitter 之下**；再加一条 test-only direct-send seam，断言 recorder **确实看得见**绕过 owner 的发送。看不见就说明探测层装错了深度（RFC §10.1「探测深度必须与被测对象对齐」）。**注入 owner 的 test raw adapter 不用于本判定**。 |
 | **T0.4** | 对 warmup fake／drop 写真实 route behavior test：断言完整字节、upstream 零调用、delivery observer **零 session**、一次响应。**先在缺失 observer 的状态下跑**，确认「零 session」这条断言此刻还够不到 delivery 层。 | 接上 delivery session observer（`delivery/session.ts:74` 的 `setDeliverySessionObserverForTests`，**已存在，不用自己造**），四条断言转绿；mutation「提前创建 owner」或「双写」必须红。这是 **Q3 已裁方案 A**，是 §5 唯一没有现成 behavior witness 的出口，也是 composition-root 互斥性的 gatekeeper。 |
@@ -325,7 +316,6 @@ cd "$TREE" && git diff --stat "$FROM".."$TO" -- $MANIFEST     # 必须为空（F
 
 | id | 段与等级 | 可复跑命令 |
 |---|---|---|
-| — | 🔴 **§0.4b 第 3 项：RFC 的 `red characterization` 已同步** | **未改则本 commit 不得开工**——`design.md:597,750` 与本 plan 对 T0.6 的退出语义**相反**，而 C0 当场就要决定门是红是绿 |
 | R-13 | C0 `production 硬门`（Q3 已裁 A） | 见 T0.4／T0.5 落盘的测试路径 |
 | R-1 | C0 `辅助门`（recorder 自检） | 见 T0.3 |
 | R-3 | C0 `辅助门`（旧缺陷 characterization，**绿=缺陷在**） | 见 T0.6 |
@@ -783,7 +773,7 @@ A 集 calls、B 集 consumers、C 集 resolution population 自 Commit 4 起持�
 |---|---|---|
 | **T7.1** | 逐份复核 Commit 4 更新过的 golden：每份都要指出**它的 Q5 diff 条目**与**独立 oracle 证据**（O-1／O-2／真 SDK 中的哪一条先绿）。**没有独立 oracle 证据的 golden 一律标红**——只靠新 golden 自洽等于把新代码的行为编码成期望。 | 复核表落盘。 |
 | **T7.2** | 删除确被取代的旧 fixture／helper。**删之前先确认它守的不变量已由新 oracle 承载**（CLAUDE.md：改测试前先落盘记录该断言守的不变量是什么、依据来自哪里、本次为何这样处置）。 | 全套仍绿。 |
-| **T7.3** | **断言本 commit 未改动 production**。<br>🔴 **`git diff -- src/` 不够**——本 RFC 自己把 production 代码分布到 `packages/telemetry/**`（Commit 5 就要改它），只扫 `src/` 时在 `packages/` 里改一个字节该命令仍输出空。**先在 `packages/telemetry/src/request-telemetry.ts` 加一字节，确认只扫 `src/` 的版本判绿**——那就是漏洞的实物。 | **用 §0.4a 的 MANIFEST 与 §0.5a 的 `FROM`／`TO`**（都不在这里另立，两处并存必漂）：`cd "$TREE" && git diff --stat "$FROM".."$TO" -- $MANIFEST`，**必须为空**。本 commit 的 `FROM` 即 C6 的 sha。<br>**mutation**：在 `packages/telemetry` 与 `scripts/` 各加一字节 → 都必须红。<br>**false-red 对照**：合法的 `tests/`／fixtures／`docs/` 清理仍绿（本 commit 的正事就是删旧 fixture）。 |
+| **T7.3** | **断言本 commit 未改动 production**。<br>🔴 **`git diff -- src/` 不够**——本 RFC 自己把 production 代码分布到 `packages/telemetry/**`（Commit 5 就要改它），只扫 `src/` 时在 `packages/` 里改一个字节该命令仍输出空。**先在 `packages/telemetry/src/request-telemetry.ts` 加一字节，确认只扫 `src/` 的版本判绿**——那就是漏洞的实物。 | **用 §0.4a 的 MANIFEST 与 §0.4b 的 `FROM`／`TO`**（都不在这里另立，两处并存必漂）：`cd "$TREE" && git diff --stat "$FROM".."$TO" -- $MANIFEST`，**必须为空**。本 commit 的 `FROM` 即 C6 的 sha。<br>**mutation**：在 `packages/telemetry` 与 `scripts/` 各加一字节 → 都必须红。<br>**false-red 对照**：合法的 `tests/`／fixtures／`docs/` 清理仍绿（本 commit 的正事就是删旧 fixture）。 |
 
 ### 本 commit 的门
 
