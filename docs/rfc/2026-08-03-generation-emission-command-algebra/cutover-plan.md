@@ -218,21 +218,29 @@ cd "$TREE" && git diff --stat "$FROM".."$TO" -- . \
 3. **临时豁免只在开发趟有效**：收口趟**不接受任何残留豁免**；
 4. **§0.4a 的排除表只由裁决结果修改**——它是被评审的产物，不是执行者的草稿纸。
 
-**收口命令如何机械拒绝残留豁免**（不是写一句「须已裁决」）：临时豁免**必须以一个具名文件承载**（`docs/tmp/<date>-pending-exclusions-<commit-slug>.txt`，一行一条 pathspec），收口趟的第一步是：
+**收口命令如何机械拒绝残留豁免**
 
-```bash
-PEND="docs/tmp/$(date +%F)-pending-exclusions-<commit-slug>.txt"
-# 收口趟：残留豁免即失败，且报出具体是哪几条
-if [ -s "$PEND" ]; then
-  printf 'closeout refused: %d unadjudicated exclusion(s) still in effect:\n' "$(wc -l < "$PEND")" >&2
-  cat "$PEND" >&2
-  exit 1
-fi
-```
+⚠️ **上一版写 `[ -s "$PEND" ]` 即失败，可被绕**：改文件名、直接往命令里追加 `:(exclude)`、收口前清空或 `rm` 掉 `$PEND`，四种都放行且不留痕（实测：`rm PEND.txt` 后该检查直接 pass）。**同一个病**——它在**推断**「有没有残留豁免」，而让那个文件不存在就绕开了。
 
-**并且 production 判据在收口趟必须以「无豁免」的形态重跑**——即 §0.4a 那条命令**原样**跑，不追加任何来自 `$PEND` 的 `:(exclude)`。裁决通过的条目此时已经在 §0.4a 表里了，**没通过的就该让它红**。
+**形状：exclusion 只能经单一 wrapper 应用，收口四者对账。**
 
-**正控**：留一条未裁决的豁免进 `$PEND` → 收口必须 `exit 1` **并列出该条**；`$PEND` 为空或不存在 → 放行。
+1. **单一 wrapper**：production 判据**不许手敲**，一律经一个具名 wrapper 调用。任何临时 exclusion **只能作为该 wrapper 的参数传入**，wrapper 负责两件事——把 exclusion 追加进 **applied ledger**（append-only），并把**本次实际执行的完整命令**规范化后取 **`canonical_command_hash`** 一并记下。
+2. **收口对账四者**（缺一即拒绝，且必须报出**具体差异**而不只是失败）：
+
+   | 对账项 | 回答什么 |
+   |---|---|
+   | **pending ledger** | 声称还有哪些未裁决 |
+   | **applied ledger**（wrapper 写的） | **实际被应用过**哪些 exclusion——**它不受 `$PEND` 被删的影响** |
+   | **裁决回执** | 每条 applied exclusion 是否有对应的独立裁决记录 |
+   | **`canonical_command_hash`** | **收口趟跑的到底是不是那条「无豁免」的命令**——把执行者的自述换成可核对的事实 |
+
+3. **`canonical_command_hash` 是这里的承重件**：收口趟必须跑 §0.4a 的**无豁免**形态，其规范化命令的 hash 是一个**固定常量**（该 commit 的 `FROM`／`TO` 已知），**与冻结值不符即拒绝**。这样「我跑的是干净那条」不再是自述——追加了任何 `:(exclude)` 都会改变 hash。
+4. **applied ledger 非空但裁决回执缺失 → 拒绝**；**`$PEND` 被删而 applied ledger 有条目 → 拒绝**（这正是绕过 `[ -s ]` 的那条路，现在会被 applied ledger 抓住）。
+
+**正控（四条，各打一条绕法）**：①留一条未裁决豁免 → 拒绝并列出该条；②`rm $PEND` 但 applied ledger 有条目 → 拒绝；③收口趟手动追加一个 `:(exclude)` → **hash 不符**而拒绝；④改文件名另起一份 pending → applied ledger 与裁决回执对不上而拒绝。
+**false-red 对照**：全部 exclusion 均已裁决并并入 §0.4a、applied ledger 本 commit 为空、hash 与冻结值相符 → 放行。
+
+🔴 **诚实边界（不得省略）**：**wrapper、两个 ledger 与回执都由执行者自己运行和维护**——它们把「随手绕过」变成「必须动手伪造多份互相印证的记录」，**但不构成执行者无法伪造的证明**。真正独立的一环是**裁决回执来自独立 reviewer 或用户**（§0.4a 要求的那次裁决）。**本项目对此的定性**：这是 `downgrade-self-adjudicated-gates` 意义上的「记录在先、事后裁决」，**不是密码学意义的不可抵赖**。把它写成后者就是假绿。
 
 ⚠️ **别把这条读成「不许加排除表」**：反转的前提就是排除表会增长。要防的是**增长过程无人复核**——那会让反转带来的可见性一点点漏回静默。
 
@@ -303,15 +311,25 @@ FROM=$(git -C "$TREE" rev-parse HEAD^)       # 它的父 commit
 
 > **凡内容含「本 commit sha」的产物，一律落 `$TREE` 外，并把 `measured_sha=<该 sha>` 冻结进 plan 或产物自身的文件名；树内只放不自指的产物。**
 
-**机械判据（不许靠执行者当场判断「这份算不算自指」——那又是自评）**：
+**判据形状：产生方声明，门读声明——不是让门去 grep 猜**
 
-```bash
-# 对每份候选提交的产物，跑这条；命中即不得进树
-SHA=$(git -C "$TREE" rev-parse HEAD); SHORT=$(git -C "$TREE" rev-parse --short HEAD)
-grep -qE "\b($SHA|$SHORT)\b" <artifact>  &&  echo "SELF-REFERENTIAL: keep outside \$TREE"
-```
+⚠️ **上一版用 `grep -qE "\b($SHA|$SHORT)\b"` 判「这份算不算自指」，两向都漏**：假阴——`HEAD` 字样、**不同长度的 sha prefix**、大写 sha 都能穿过去；假阳——合法的历史说明里碰巧引用当前短 sha 就被误判。**再补第三种模式仍是同一个错**：`grep` 在**推断**产物的性质，而绕过它只需换一种写法。
 
-实测两向：含 `head=<sha>` 的 O-6 输出被判出，纯命令／计数的审计表判为可提交。
+> **推断型判据的正确升级方向不是换一种推断，是加一个独立的 intent 输入**（记忆 `methodology-relocate-invariant-when-guard-cannot-keep-up`）。
+
+**因此：产物由脚本生成时写结构化标记，门读标记。** 这里**产生方是脚本、不是被门约束的执行者**，所以标记是真正独立的输入（对比 §0.4a 的 pending ledger，那里产生方就是执行者本人——见该节的诚实标注）。
+
+**对 `byte-equivalence.sh`／`baseline-runs.sh` 的字段需求**（⚠️ **脚本由协调者维护，本 plan 只提需求、不自行改脚本**——两份分叉比缺字段更糟）：
+
+| 字段 | 取值 | 含义 |
+|---|---|---|
+| `evidence_timing` | `dev` \| `closeout` | 这份产物出自开发趟还是收口趟 |
+| `measured_sha` | 完整 40 位 sha | **这次测的是哪个 commit**（取代靠 `head=` 反推） |
+| `claims_current_head` | `true` \| `false` | **产物内容是否断言「measured_sha 就是当前 HEAD」**——`true` 即自指，**不得进树** |
+
+**门的判据变成**：读 `claims_current_head`，为 `true` 则该产物必须落 `$TREE` 外并把 `measured_sha` 冻结进 plan。**没有标记的产物一律按 `true` 处理**（fail-closed：缺声明不等于安全）。
+
+**执行者手写的产物**（审计表、覆盖表、mutation 记录）**在文件头自己写这三行**——它们由执行者产生，所以这一条**不是独立输入而是自述**；对应的诚实边界见 §0.4a 末尾。
 
 **因此可以随 commit 提交的，是判据为空的那些**：mutation 记录、逐 site 覆盖表、纯命令与计数的审计表、进度文件（它记的是意图不是 sha）。`docs/` 在 §0.4a 排除表里，提交它们不会让 production 判据变红。
 
