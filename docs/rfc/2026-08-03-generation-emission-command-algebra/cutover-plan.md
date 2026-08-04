@@ -1,6 +1,8 @@
 # Cutover 实施计划 —— generation emission command algebra
 
-> **这是三层结构的第二层**（skill `large-refactor` §5）：`design.md` 回答 WHY + 契约，本文回答 HOW + 锚在哪，`prompts/` 回答实施者照着干。
+> **这是三层结构的第二层**（skill `large-refactor` §5）：`design.md` 回答 WHY + 契约，本文回答 HOW + 锚在哪。
+>
+> ⚠️ **第三层 `prompts/` 尚未产出**（`ls docs/rfc/2026-08-03-generation-emission-command-algebra/` 只有三个 `.md`）。**在它出现之前，本文即最终派发件**——所以 §0.5 的提交与进度纪律写在这里，而不是留给 prompts。若日后补了 `prompts/`，那节应迁过去，本文只留指针。
 >
 > **本文不冻结任何 RFC 未冻结的签名。** RFC §3 的接口是**草案**（`design.md:146` 逐字写明「本文不伪造这些尚未存在的源码签名」）。凡本文出现形似签名的文字，一律标注「RFC 草案名」或「性质冻结，签名待调查」。写下任何形状前过三问——**它导出了吗 / 调用方拿到什么返回类型 / 那一刻它存在吗**——答不上就只冻结性质 + 列一条调查 task。
 >
@@ -8,54 +10,128 @@
 
 ## 0. 使用前必读
 
-### 0.1 两棵树，行号不通用
+### 0.1 只有一棵树了（2026-08-04 起）
 
-| 树 | 路径 | HEAD | 状态 |
-|---|---|---|---|
-| **master**（文档树） | `/home/xp/src/copilot-api-js` | 随时前进 | 本文与 RFC、矩阵都落在这里 |
-| **feature**（M1 代码树） | `/home/xp/src/copilot-api-js/.worktrees/anchor-alloc` | `2c339784`（`src/` 与 RFC 设计基线 `854421d4` 逐字节相同，见 inventory §12） | **未合并**，用户裁决由本次 cutover 一并重塑 |
+**M1 已 merge 进 master**（merge commit `8125f123`），`feat/inter-block-anchor-allocator` 的内容全在主线。**本文此前的「两棵树」口径整体作废**——锚点表不再有「树」列，**所有 `file:line` 一律锚合并后的 master**，本轮已逐条复算。
 
-**两棵树互不为祖先**（实测 `git merge-base --is-ancestor master feat/inter-block-anchor-allocator` = NO；merge-base `200aba8b`）。
+M1 带进主线的东西（**别以为 master 上还没有**）：`closeAnchorViaOwner`（`src/routes/messages/handler-v4.ts:1105` 定义）、`OwnerRawSink`（`src/lib/pipeline/delivery/types.ts:12`）、`wirePartialDelivery`（`src/lib/history/types.ts:217`）、以及两个**新模块** `src/lib/pipeline/delivery/owner-failure.ts`（导出 `OwnerFailure`／`OwnerTerminalDecision`／`OwnerFailureContext`／`classifyOwnerFailure`）与 `src/routes/messages/owner-failure-settlement.ts`（导出 `settleMessagesOwnerFailure`）。
 
-**两树的 commit 差数不写死**——master 每天前进，写下的那一刻就开始过期（本文初稿写「master 领先 47」，通读复算时已是 56）。要它就现算：
+> 🔴 **`OwnerTerminalDecision` 与本 RFC 要在 Commit 4 引入的 `TerminalEmissionResult` 是竞争抽象**，两者都在 terminal 时刻按 `client-gone`／`session-terminating`／`wire-torn` 分流。**这不是实施者可自裁的合并取舍**，见 §11 待裁项 #6。
 
-```bash
-cd /home/xp/src/copilot-api-js && git rev-list --count feat/inter-block-anchor-allocator..master   # master 领先
-cd /home/xp/src/copilot-api-js && git rev-list --count master..feat/inter-block-anchor-allocator   # feature 领先（M1 的 8 个 commit，稳定）
-```
-
-**因此本文每张锚点表的每一行都标树。** 混写的具体后果，已实测两例：
-
-- `closeAnchorViaOwner` 在 feature 树 `src/` 有 14 处命中，在 **master 上零命中**——它是 M1 引入的。
-- `ClientSink` 在 feature 树是 `src/lib/pipeline/types.ts:747`，在 master 上是 **`:737`**。RFC §7.2 的闭包种子行号全部锚在 feature 树。
-
-### 0.2 Commit 0 之前还有一件事没有归属：cutover 在哪棵树上起
-
-RFC §7.1 要求「在实际 entry commit `<sha>` 连跑至少 15 次」，但**没有说 entry commit 属于哪棵树**。而两棵树都不能直接当 entry：
-
-- 在 master 上起 → M1 不在（`closeAnchorViaOwner` 零命中、`OwnerRawSink` 零命中），RFC §7.2 的 A／C／D 集人口与 §5 的 inventory 全部对不上，而用户已裁决「M1 由 cutover 重塑而非丢弃」。
-- 在 feature 上起 → 落后 master 数十个 commit（现算见上），其中含本轮修掉的既有缺陷——而它们正是 RFC §7.1 入场条件要求已闭合的东西。**逐个实测归属**（`git merge-base --is-ancestor <sha> <ref>`）：`4f7a3989`（O-6 字节门此前恒真）**在 master 不在 feature**；`51b1e1c9`＋`cc909c81`（两条基线 flaky）**在 master 不在 feature**；而 `200aba8b`（AST 守卫假红）**两树皆有**——它就是 merge-base，**不属于「feature 缺的那批」，别照 HANDOVER 的并列写法把它算进来**。
-
-**这是一条调度决策，不是实施者可自裁的技术细节**，见 §11「待裁项 #4」。**T0.1 在它裁定前不可开工**——`MIN_TESTS` 与 15 次连跑都必须锚在最终 entry commit 上，锚错树等于整条入场证据链作废。
-
-### 0.3 每个 commit 的共同门（RFC §7.1，不在各节重复）
+**行号会随 master 前进而漂。** 本文所有行号取于 **master `80a4b6fc`**（`src/` 与 `packages/` 自 merge `8125f123` 起未变，实测 `git diff --stat 8125f123..80a4b6fc -- src/ packages/` 为空）。**引用前重取**：
 
 ```bash
-cd /home/xp/src/copilot-api-js && bun run typecheck
-cd /home/xp/src/copilot-api-js && FORCE_COLOR=0 bun scripts/parallel-test.ts unit it http
-cd /home/xp/src/copilot-api-js && exp/inter-block-anchor-allocator/byte-equivalence.sh   # 须打印 O-6 PASS、rc=0；禁止 RECAPTURE=1
+cd /home/xp/src/copilot-api-js && rg -n '^export interface ClientSink' src/lib/pipeline/types.ts
 ```
 
-第三条即 **R-11／O-6**，每个 commit 都跑，**本文不在各节重复列它**。另外每个 commit 结束还须满足 §7.1 的两条状态断言：本 commit 已激活的 witness 正样本绿、production mutation 红、false-red 对照绿。
+### 0.1a 路径前缀约定（避免踩空）
+
+本仓库有 **9 个 `types.ts`**、2 个 `driver.ts`（`src/lib/pipeline/driver.ts` 与 `packages/foundation/src/sqlite/driver.ts`）、2 个 `session.ts`、2 个 `ws.ts`。本文简写只在下表内成立：
+
+| 简写 | 完整路径 |
+|---|---|
+| `types.ts` | `src/lib/pipeline/types.ts` |
+| `driver.ts` | `src/lib/pipeline/driver.ts` |
+| `client-sink.ts` | `src/lib/pipeline/client-sink.ts` |
+| `delivery/{types,session,owner-failure}.ts` | `src/lib/pipeline/delivery/…` |
+| `keepalive-anchor.ts`／`live-reconcile.ts`／`warmup.ts` | **`src/lib/anthropic/…`**（**不在 `pipeline/` 下**） |
+| `messages/handler-v4.ts`／`error-shaping-glue.ts`／`owner-failure-settlement.ts` | `src/routes/messages/…` |
+| `{chat-completions,responses,gemini}/handler-v4.ts`、`responses/ws.ts` | `src/routes/…` |
+
+### 0.2 Entry：隔离 worktree，从合并后的 master 起（**已裁决 2026-08-04**）
+
+**用户已裁**：cutover 在**隔离 worktree** 里做，**从合并后的 master 起**，不再有「先合一次」那一步。原待裁项 #4 关闭。
+
+因此**执行形状固定为**：
+
+```bash
+cd /home/xp/src/copilot-api-js && git worktree add ./.worktrees/<name> -b <branch>   # 从当前 master
+```
+
+后续所有命令绑到该树根，记作 `$TREE`。**这不是可选风格**——共享主树常有并发 agent 的未提交改动（本文写作时 `git status --porcelain` 有 18 行、含 4 个 peer 的 `src/`／`tests/` 改动），而 T0.1 的脚本对脏树是**硬拒**（见 §0.3b）。
+
+### 0.3 每个 commit 的共同门 —— **三个脚本各自怎么绑根，逐个写清**
+
+> 🔴 **这一节是本 plan 最容易造成结构性假绿的地方。** 三条门若跑在 master 而你的代码在 `$TREE`，8 commit × 3 门 = **24 次假绿**，且 Commit 4 那个唯一原子发布点的 O-6 也在其中。**三个脚本的根推导方式各不相同，别假设一致。**
+
+```bash
+TREE=/home/xp/src/copilot-api-js/.worktrees/<name>     # 本次 cutover 的 entry worktree
+```
+
+**① typecheck 与测试 —— 用 `cd "$TREE"`，它们读 cwd**
+
+```bash
+cd "$TREE" && bun run typecheck
+cd "$TREE" && FORCE_COLOR=0 bun scripts/parallel-test.ts unit it http
+```
+
+**② `byte-equivalence.sh`（= R-11／O-6）—— 它的 `REPO` 由脚本自身位置推导，`cd` 不管用**
+
+`byte-equivalence.sh:5` 是 `REPO="${REPO_OVERRIDE:-$(cd "$DIR/../.." && pwd)}"`，`:123` 用 `bun run "$REPO/packages/cli/src/main.ts" start` 起服务器。**即使 `cd "$TREE"`，跑 `/home/xp/src/copilot-api-js/exp/…/byte-equivalence.sh` 起的仍是 master 的代码。** 两条正确写法：
+
+```bash
+# 写法 A（推荐）：用树内那份脚本——REPO 自然推导到 $TREE
+cd "$TREE" && exp/inter-block-anchor-allocator/byte-equivalence.sh
+# 写法 B：用任意位置的脚本 + 显式覆盖
+REPO_OVERRIDE="$TREE" /home/xp/src/copilot-api-js/exp/inter-block-anchor-allocator/byte-equivalence.sh
+```
+
+⚠️ **写法 B 有一个必须知道的分裂**：`BASELINE`（`:11` `$DIR/pre-change-wire.sse`）与 `deterministic-hook.ts` 跟着**脚本位置**走，而被测代码跟着 `REPO` 走。**这正是想要的**（fixture 是权威基线，不该随被测树变），但你必须知道它是这样，否则会误以为「树里的 fixture 没生效」。**须打印 `O-6 PASS`、rc=0、fixture blob 不变；禁止 `RECAPTURE=1`。**
+
+**③ `traceability-check.py` 与 `q1-locations.sh` —— 根同样由脚本位置推导，但它们审的是文档**
+
+两者都是 `parents[2]`／`$DIR/../..`。**文档在 master 主线上**（CLAUDE.md `docs-merge-before-execute`），所以这两个**本来就该在 master 侧跑**，不要覆盖到 `$TREE`：
+
+```bash
+cd /home/xp/src/copilot-api-js && python3 exp/inter-block-anchor-allocator/traceability-check.py
+cd /home/xp/src/copilot-api-js && PHASE=pre exp/inter-block-anchor-allocator/q1-locations.sh
+```
+
+（`traceability-check.py` 支持 `MATRIX=`／`DESIGN=`／`PLAN=` 覆盖，只用于把 mutation 正控跑在副本上；`q1-locations.sh` 支持 `DOC=`。**不要**用它们把门指向 `$TREE` 里的文档副本。）
+
+**④ 证明门确实跑在 `$TREE`（Commit 0 必须建立，见 T0.10）**
+
+「我 `cd` 对了」不是证据（user-rule `proving-where-a-command-ran`）。O-6 的 capture 里应能取到 server 进程的可执行路径／cwd，断言它落在 `$TREE` 下；typecheck／测试则可在 `$TREE` 里植入一个**只在该树存在**的哨兵（如一条会失败的临时断言）确认门看得见它，再撤除。
+
+第 ② 条即 **R-11／O-6**，每个 commit 都跑；**本文各节的「门」表只写 id，不重复这四段。** 另外每个 commit 结束还须满足 §7.1 的两条状态断言：本 commit 已激活的 witness 正样本绿、production mutation 红、false-red 对照绿。
+
+### 0.3b `baseline-runs.sh` 的三个硬约束（T0.1 会撞上）
+
+| 约束 | 脚本位置 | 后果 |
+|---|---|---|
+| **`REPO` 由脚本位置推导**，无 `REPO_OVERRIDE` 旋钮 | `:77` | 必须跑 **`$TREE` 里那份**脚本，否则测的是 master |
+| **脏树硬拒 rc=3** | `:115-122` | 共享主树几乎总是脏的；隔离 worktree 天然干净。**`ALLOW_DIRTY=1` 的日志被脚本自己声明「do not satisfy a gate」——禁止用它通过 T0.1** |
+| **`OUT_DIR` 已有 `run-*.log` 即 rc=2** | `:106-113` | 重跑要换目录，别往同一个目录里混批次 |
+
+`MIN_TESTS` 无默认值、缺失即 rc=2（`:84-90`），默认 CMD 是 `bun scripts/parallel-test.ts unit it http`（`:80`）。
 
 ### 0.4 准备 commit（1～3）的越界判据
 
 RFC §7.4 的两条，**缺一不可**，每个准备 commit 结束时都要跑：
 
 1. `git diff` 中无 production call-site 切换。
-2. **存在性分派的解析结果不变**——属性存在性快照逐 commit 比对，快照由 checker 产出而非人工列举，口径覆盖闭包内全部类型、它们的实现对象、以及构造它们的 options 字面量。**理由是实测出来的**：feature 树 `session.ts:581-602` 那类 `sink.writeAnchor ?? sink.write` 的分派，只要方法是否存在变了就会改行为，而 call-site 一行不动。
+2. **存在性分派的解析结果不变**——属性存在性快照逐 commit 比对，快照由 checker 产出而非人工列举，口径覆盖闭包内全部类型、它们的实现对象、以及构造它们的 options 字面量。**理由是实测出来的**：`delivery/session.ts:584-596` 那类 `sink.writeAnchor ?? sink.write` 的分派，只要方法是否存在变了就会改行为，而 call-site 一行不动。
 
 第 2 条的快照工具本身是 **T0.7** 的产物。
+
+### 0.5 提交与进度纪律（`prompts/` 尚未存在，本节代其承载）
+
+**提交**（CLAUDE.md + user-rule `21-git-workflow`）：
+
+- **一律显式 pathspec**：`git add -- <精确路径>`、`git commit -F <msgfile> -- <精确路径>`。**绝不 `git add -A`／`.`／`commit -am`**——`$TREE` 虽是隔离树，但每次 merge 回主线时同样纪律适用，且养成 pathspec 习惯是本项目的硬要求。
+- **conventional commits**（`refactor:`／`test:`／`feat:`／`docs:`／`fix:`），**不加模型署名**（无 `Co-authored-by`）。
+- **每条 message 点名它对应本文哪一节**（如 `refactor: publish generation authority (cutover-plan Commit 4)`），否则 merged-state review 无法把 commit 与 plan 对账。
+- **绝不 `git push`** —— user-rule `never-push--the-user-does-that` 是 `[hard]`。发布是用户的事。
+- 每个 Commit 0～8 是**一个 semantic commit**；准备期的中途状态可以先 WIP 提交再整理，但**Commit 4 不许拆**（§7.7）。
+
+**进度文件**（skill `session-closeout` §6b，本 cutover 是它的教科书触发条件——9 个 semantic commit、大量试错、必然跨会话）：
+
+- 路径 `docs/tmp/<date>-command-algebra-progress-<slug>.md`，`<slug>` 由派活方指定、kebab-ASCII，**一 agent 一文件**。
+- frontmatter 必含 **`base`（任务起始 SHA）**、分支、worktree 路径、对应 plan 文档，以及拿到后回填的 agent／session id。**缺 `base` 就做不了 `--first-parent` 对账。**
+- **只记 git 记不下的三样**：剩余项（带验收判据）／在途意图／已作废的路子。别复述 git log。
+- **随每个实现 commit 一起提交。**
+
+> 🔴 **Commit 4 是本 plan 唯一「中断即全丢」的结构**：16 个 task 同属一个 semantic commit，中途按设计**不产生 commit**，所以 git log 上什么都没有。**因此 Commit 4 的进度文件必须逐 task 更新并单独提交**（进度文件在 `docs/tmp/`，与 `src/` 改动分开 pathspec，不破坏「Commit 4 不拆」）。每完成 T4.x 就写一行：做完了什么、下一个 task 需要的前置在哪、已经否掉了哪条路。
 
 ---
 
