@@ -134,6 +134,22 @@ RFC §7.4 的两条，**缺一不可**，每个准备 commit 结束时都要跑�
 
 第 2 条的快照工具本身是 **T0.7** 的产物。
 
+### 0.4a production path manifest（**一处定义，全 plan 共用**）
+
+多个 commit 的 invariant 都要断言「production 未改动」。**这些断言必须用同一把尺子**，否则会出现「用刚改过的尺子量基线」——具体形态：T0.1 ②与 T0.11 ②都要求用 `--reporter=junit` 枚举，而**最自然的实现就是改 `scripts/parallel-test.ts`**（它 `:64` 已经为刷新计时驱动过 junit）；若 invariant 只扫 `src/ packages/`，**改测试基础设施本身的那次改动会被判绿**，而 Commit 0 的立场恰恰是「production 与运行时行为逐字节不变」。
+
+**MANIFEST**（本 plan 各处「production 未改动」一律指它）：
+
+```bash
+MANIFEST='src/ packages/ scripts/ config.schema.json package.json tsconfig.json bunfig.toml'
+cd "$TREE" && git diff --stat <from>..<to> -- $MANIFEST     # 必须为空
+```
+
+⚠️ **`scripts/` 在里面不是凑数**——`scripts/parallel-test.ts` 是**测试门自己的实现**，改它就是改尺子。若 T0.1／T0.11 的 junit 枚举确实需要动它，那是一次**独立的、先于 Commit 0 的基础设施改动**（连同它自己的验证），**不能夹在 cutover 的任何 commit 里**。
+
+**mutation 正控**：分别在 `packages/telemetry/`、`scripts/` 各加一字节 → 门必须红（只扫 `src/` 的版本对两者都判绿，**T7.3 已实测证伪过 `packages/` 那一半**）。
+**false-red 对照**：`tests/`／fixtures／`docs/` 的合法改动仍绿——Commit 0 的正事（写 characterization、recorder、manifest）全落在 `tests/` 与 `docs/`。
+
 ### 0.5 提交与进度纪律（`prompts/` 尚未存在，本节代其承载）
 
 **提交**（CLAUDE.md + user-rule `21-git-workflow`）：
@@ -214,7 +230,7 @@ RFC §7.4 的两条，**缺一不可**，每个准备 commit 结束时都要跑�
 
 ### commit invariant
 
-production 源码与运行时行为**逐字节不变**（`git diff -- src/ packages/` 只允许为空）；A／B／C／D 四集全部原样存活；新 core 不存在；**T0.6 的 characterization 绿**（绿 = 旧边界的 wire／lease 分裂仍在，其头部三样已落盘）；typecheck 绿、`unit it http` 确定性全绿、O-6 PASS；**T0.10 已证明这三条门跑在 `$TREE`**。
+production 源码与运行时行为**逐字节不变**（**按 §0.4a 的 MANIFEST 判**，不是只扫 `src/ packages/`——`scripts/` 里就住着测试门自己的实现）；A／B／C／D 四集全部原样存活；新 core 不存在；**T0.6 的 characterization 绿**（绿 = 旧边界的 wire／lease 分裂仍在，其头部三样已落盘）；typecheck 绿、`unit it http` 确定性全绿、O-6 PASS；**T0.10 已证明这三条门跑在 `$TREE`**。
 
 ---
 
@@ -657,7 +673,7 @@ A 集 calls、B 集 consumers、C 集 resolution population 自 Commit 4 起持�
 |---|---|---|
 | **T7.1** | 逐份复核 Commit 4 更新过的 golden：每份都要指出**它的 Q5 diff 条目**与**独立 oracle 证据**（O-1／O-2／真 SDK 中的哪一条先绿）。**没有独立 oracle 证据的 golden 一律标红**——只靠新 golden 自洽等于把新代码的行为编码成期望。 | 复核表落盘。 |
 | **T7.2** | 删除确被取代的旧 fixture／helper。**删之前先确认它守的不变量已由新 oracle 承载**（CLAUDE.md：改测试前先落盘记录该断言守的不变量是什么、依据来自哪里、本次为何这样处置）。 | 全套仍绿。 |
-| **T7.3** | **断言本 commit 未改动 production**。<br>🔴 **`git diff -- src/` 不够**——本 RFC 自己把 production 代码分布到 `packages/telemetry/**`（Commit 5 就要改它），只扫 `src/` 时在 `packages/` 里改一个字节该命令仍输出空。**先在 `packages/telemetry/src/request-telemetry.ts` 加一字节，确认只扫 `src/` 的版本判绿**——那就是漏洞的实物。 | 冻结一份 **production path manifest**，至少覆盖 `src/`、`packages/`、`scripts/`、`config.schema.json` 与其他构建输入（`package.json`／`tsconfig*.json`／`bunfig.toml`）。门写成 `cd "$TREE" && git diff --stat <C6-sha>..<C7-sha> -- <manifest 全部路径>`，**必须为空**。<br>**mutation**：在 `packages/telemetry` 加一字节 → 必须红。<br>**false-red 对照**：合法的 `tests/`／fixtures／`docs/` 清理仍绿（本 commit 的正事就是删旧 fixture）。 |
+| **T7.3** | **断言本 commit 未改动 production**。<br>🔴 **`git diff -- src/` 不够**——本 RFC 自己把 production 代码分布到 `packages/telemetry/**`（Commit 5 就要改它），只扫 `src/` 时在 `packages/` 里改一个字节该命令仍输出空。**先在 `packages/telemetry/src/request-telemetry.ts` 加一字节，确认只扫 `src/` 的版本判绿**——那就是漏洞的实物。 | **用 §0.4a 已定义的 MANIFEST**（不在这里另立一份，两处并存必漂）：`cd "$TREE" && git diff --stat <C6-sha>..<C7-sha> -- $MANIFEST`，**必须为空**。<br>**mutation**：在 `packages/telemetry` 与 `scripts/` 各加一字节 → 都必须红。<br>**false-red 对照**：合法的 `tests/`／fixtures／`docs/` 清理仍绿（本 commit 的正事就是删旧 fixture）。 |
 
 ### 本 commit 的门
 
