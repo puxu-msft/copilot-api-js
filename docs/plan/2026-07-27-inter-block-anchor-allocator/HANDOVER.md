@@ -1,6 +1,6 @@
 # HANDOVER —— generation emission command algebra RFC 已定稿，实施未开工
 
-**状态**：**已评审放行 · T1 已裁「先补计划层再执行」· 当前工作是 T4（写 plan + prompts）**。RFC 已定稿、实施一行未写。
+**状态**：**已评审放行 · T1 已裁「先补计划层再执行」· plan 已写但两路评审各报 blocker，整改中 · M1 已于 2026-08-04 合入 master（`8125f123`）**。RFC 已定稿、cutover 实施一行未写。
 
 **本文件的评审情况**（别再重跑，也别当成未核验的档案）：
 - **判据证伪视角**：**12 轮**，结论「剩余项应记为已知边界而非缺陷；**无未决 blocker/major**」。报告：`docs/tmp/2026-08-03-handover-review-criteria.md`。
@@ -8,9 +8,10 @@
 - ⚠️ **评审范围是本文件与 KICKOFF.md，不含 RFC 本体**。RFC 只有被本文件引用到的位置被顺带核过（§4.6/4.7/4.8/4.9/4.12/6.x/7.x/9.x/10.2/10.3/10.4）；**RFC 自己的六轮评审是另一条证据链**，在 `docs/tmp/2026-08-03-command-algebra-rfc-review-{claude,gpt}.md`。
 - **两条遗留 minor 记在下面「已知遗留 minor」一行**，评审判为不阻塞。
 - **核验基线**：`a20e1bfb`（2026-08-03）。此后若本文件再被修改，**上面这两个结论只覆盖到该 commit**。
-**两个基线，别混**（交接评审的核心 blocker 就是这里）：
-- **文档落地基线**：master。**本文件自身的提交 SHA 不写死**（写下的那一刻就会被下一次改动作废——上一版写 `dafa31d8`，实际落在 `8ea97bec`）；要它就现算：`git -C /home/xp/src/copilot-api-js log -1 --format='%h %ad' --date=short -- docs/plan/2026-07-27-inter-block-anchor-allocator/HANDOVER.md`。
-- **代码事实基线**：**未合并分支** `feat/inter-block-anchor-allocator` @ `2c339784`（M1 实现，有意不合并）。**下面「硬事实」表里的每一个 `file:line` 都锚在这棵树上，在 master 上对不上**——master 的 `src/` 下 `closeAnchorViaOwner` **零命中**，`ClientSink` 在 `types.ts:737` 而非 `:747`。复算前先 `cd .worktrees/anchor-alloc`。
+**基线已合一（2026-08-04）**：`feat/inter-block-anchor-allocator` @ `2c339784` 已 merge 进 master（merge commit `8125f123`）。
+- **此前本节写着「两个基线，别混」，现在那条警告本身是错的**——它会把接手方支去看一棵已经合并的分支。**下面「硬事实」表里的 `file:line` 现在全部锚在 master**，不再需要 `cd .worktrees/anchor-alloc`。
+- **本文件自身的提交 SHA 不写死**（写下的那一刻就会被下一次改动作废——曾写 `dafa31d8`，实际落在 `8ea97bec`）；要它就现算：`git -C /home/xp/src/copilot-api-js log -1 --format='%h %ad' --date=short -- docs/plan/2026-07-27-inter-block-anchor-allocator/HANDOVER.md`。
+- **合并的动机正是消灭这一整类错误**：交接评审里最高频的缺陷族就是「树混写」——同一符号在两树计数不同（`getDownstreamDeliverySession` master 7 / feature 9）、plan 通读时修了 10 处错树错行、评审反复复算树标注。**合并后这一类在物理上不再可能发生**，不是靠警告防住的。
 
 **已知遗留 minor（评审判为不阻塞，写在这里免得被当成新发现）**：① KICKOFF:52 仍复述「21 次」这个数字，但同句自带「那是自我报告的摘要、不是独立可核验的、别当门禁已过」；② 同目录曾并存陈旧的 `kickoff.md` 与现行 `KICKOFF.md`，`ls` 时都会看到——**已给前者加 superseded 横幅**，不再依赖「README 有正确入口」这种缓解。
 
@@ -38,7 +39,7 @@
 
 ## 已确证的硬事实（别再重新推导）
 
-> **除首行外，全部锚在 feature `2c339784`**（`cd /home/xp/src/copilot-api-js/.worktrees/anchor-alloc` 后复算）。**在 master 上复算会失败，那不是事实错误而是走错了树。**
+> **2026-08-04 起全部锚在 master**（merge `8125f123` 之后）。此前本表锚在未合并的 feature 树，**下面若有行号对不上，那才是事实错误，不再是「走错了树」**——那个借口随合并一起消失了。**表内行号尚未逐条按合并后的 master 复算**，引用前请自行核对。
 
 | 事实 | 证据等级 | 出处 / 复算方式（tree = feature `2c339784`，除非另注） |
 |---|---|---|
@@ -65,7 +66,8 @@
 |---|---|---|
 | **wire-torn 时 close 放行** | `wireTorn` = 「禁止推进 frontier」，只封锁四个推进入口；`closeOpenAnchor` 例外 | 2026-08-03 |
 | **形状** | **全量 command algebra**（非候选 A/B） | 2026-08-03 |
-| **起点** | 从 RFC 起，不从陈旧 kickoff 的「P0」起；M1 留分支由 cutover 重塑 | 2026-08-03 |
+| **起点** | 从 RFC 起，不从陈旧 kickoff 的「P0」起；~~M1 留分支由 cutover 重塑~~ | 2026-08-03 |
+| **M1 合并（重裁，取代上一行的后半句）** | **把 `feat/inter-block-anchor-allocator` merge 进 master**，cutover 仍在隔离 worktree 做 | **2026-08-04** |
 | **帧序变更** | **接受**，但登记为 C1–C11 之外的独立可观察契约；Q5 停点在 Commit 4 **之前** | 2026-08-03 |
 | **范围** | **扩大**：real-block 接线（C3/C4/C10 mapping lifecycle）纳入本 RFC；M2～M8 只剩 gap lifecycle / 特性开门 / 多 gap | 2026-08-03 |
 | **基线 flaky** | **根因修复**，作为 Commit 0 入场条件 | 2026-08-03 |

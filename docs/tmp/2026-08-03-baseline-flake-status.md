@@ -46,6 +46,20 @@
 
 **给起执行时的提醒**：RFC §7.1 的入场条件要求在**当时的 entry commit** 上连跑 ≥15 次。上面这 21 次跑的是 `cc909c81` 的代码状态，其后提交均为纯文档；但真正开工时必须在那一刻的 HEAD 上重新连跑，旧读数不顶替。
 
+## 第 4 条（2026-08-04 新发现）：同族的第二条性能 flaky
+
+`History V3 canonical capture performance > capture cost follows new work rather than growing superlinearly`（`tests/history/v3/canonical-performance.unit.test.ts:80`）。
+
+**判据**：`expect(conversationRatio).toBeLessThan(8)`——一条**比值型性能断言**。实测失败值 `8.75`。
+
+**复现率（同机、同时段、逐树 8 次孤立跑）**：master **2/8 红**、合并后的探针树 **2/8 红**。**同一比率，且合并没碰这条用例、没碰 history 实现**（合并给 `history/types.ts` 加的 3 行是纯类型：一个 `import type` 与一个可选字段声明）。**结论：既有缺陷，不是合并回归。**
+
+**它对既有读数的影响，比它本身更重要**：一条约 25% 复现率的用例，与「master 连跑 21 次全绿」**无法共存**。这说明那 21 次所处的负载条件与现在不同，**那串绿不能当作确定性证据**——`baseline-flake-status.md` 此前对第 1 条的概率论证同样受此影响。
+
+**它挡住的东西**：RFC §7.1 的入场条件要求「在 entry commit 上连跑 ≥15 次全绿」。按当前机器状态（多个并发会话），这道门大概率过不去，**而原因不在 cutover，在这两条性能断言本身**。
+
+⚠️ **不得为消 flaky 放宽阈值**。它守的是「捕获成本不随历史长度超线性增长」这个真实不变量，放宽等于永久废掉它（同 `red-tests-may-be-guarding-something`）。正确方向是**改成对机器负载不敏感的形态**——但那需要单独定性，不在本文处置范围。
+
 ## 纪律提醒（写给接手者）
 
 - **每条修完都要正样本对照**：注入它本应抓到的缺陷 → 必须转红 → 撤销 → 复绿。只证明「不再 flaky」不够，那可以靠削弱断言达成。
