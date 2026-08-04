@@ -16,7 +16,7 @@
 
 M1 带进主线的东西（**别以为 master 上还没有**）：`closeAnchorViaOwner`（`src/routes/messages/handler-v4.ts:1105` 定义）、`OwnerRawSink`（`src/lib/pipeline/delivery/types.ts:12`）、`wirePartialDelivery`（`src/lib/history/types.ts:217`）、以及两个**新模块** `src/lib/pipeline/delivery/owner-failure.ts`（导出 `OwnerFailure`／`OwnerTerminalDecision`／`OwnerFailureContext`／`classifyOwnerFailure`）与 `src/routes/messages/owner-failure-settlement.ts`（导出 `settleMessagesOwnerFailure`）。
 
-> 🔴 **`OwnerTerminalDecision` 与本 RFC 要在 Commit 4 引入的 `TerminalEmissionResult` 是竞争抽象**，两者都在 terminal 时刻按 `client-gone`／`session-terminating`／`wire-torn` 分流。**这不是实施者可自裁的合并取舍**，见 §11 待裁项 #6。
+> 🔴 **`OwnerTerminalDecision` 与本 RFC 要引入的 `TerminalEmissionResult` 是竞争抽象**，两者都在 terminal 时刻按 `client-gone`／`session-terminating`／`wire-torn` 分流。**这不是实施者可自裁的合并取舍**，见 §11 #6——**它的触发点在 Commit 1 的 T1.6，不是 Commit 4**（形状在类型层就定死了）。
 
 **行号会随 master 前进而漂。** 本文所有行号取于 **master `80a4b6fc`**（`src/` 与 `packages/` 自 merge `8125f123` 起未变，实测 `git diff --stat 8125f123..80a4b6fc -- src/ packages/` 为空）。**引用前重取**：
 
@@ -247,7 +247,7 @@ production 源码与运行时行为**逐字节不变**（**按 §0.4a 的 MANIFE
 | **T1.3** | **判别正控**：故意把 factory 返回值退化成共同大接口，负样本必须因「unused `@ts-expect-error`」或显式 compile-failure harness **转红**。再写 union profile 正负样本：未收窄的 `FormatDeliveryProfile` 不能取得 indexed port；先 `profile.indexedBlockLifecycle === "anthropic"` 收窄再调 generic factory，所得 owner 的 indexed command 必须 compile-green，`none` 分支仍 compile-red。 | 保留 §3.5 的**反例锁定**：factory 先接 union profile、再检查嵌套 `owner.profile.indexedBlockLifecycle` 的样例**必须保留为 compile-red characterization**（该路径已被 TypeScript 5.9.3 PoC 证否）。**不得用 `as AnthropicGenerationCommandPort` 作正确样本。** |
 | **T1.4** | classifier 三态 unit：①structured payload parse failure 在 external write 前拒绝；②已登记为 owner-governed／terminal／indexed-block 的 effect 误走 generic → `CommandEffectMismatchError`；③payload 可解析但 effect 未登记 → **按 richest-data-flow 默认允许发送**，`actualEffect=unknown`，原始 type／frame detail 进 trace／History。**第三态先写成「拒绝」跑一遍确认它会红**——默认拒绝是最容易写错的方向。 | 三态转绿。**未知 effect 不是已知 generic 的证明，也不是默认拒绝理由。** |
 | **T1.5** | command input／result types、`ValidatedDeliveryEnvelope`、`command × profile` compatibility registry 的 unit：断言 envelope 至少保留 §2.2 冻结的性质集合（原始 frame、`command`＋per-operation 唯一 `commandId`、format profile、expected／actual effect、owner-minted provenance、target kind、authorization 引用的 wire index／leg kind／owner state version、candidate／dispatch identity、observation time、C9 committed、compound phase）。 | 转绿。**这些是最小性质集合，不预先规定扁平字段／嵌套对象／opaque token**——具体形状由 T3.1 沿真实 caller 调查后定。 |
-| **T1.6** | `openMessageEnvelope`／`runEmissionBatch`／typed `TerminalEmissionResult` 的**类型层**存在性与 `terminalFrameDisposition` 三态（`emitted` / `suppressed_client_gone` / `suppressed_session_terminating`）穷尽性 unit。 | 转绿。**`finalize(result)` 只能消费本 owner 签发的 opaque result**——类型层先把「无 result 时只允许 client-aborted／零 terminal-frame 分支」表达出来。 |
+| **T1.6** | `openMessageEnvelope`／`runEmissionBatch`／typed `TerminalEmissionResult` 的**类型层**存在性与 `terminalFrameDisposition` 三态（`emitted` / `suppressed_client_gone` / `suppressed_session_terminating`）穷尽性 unit。 | 转绿。**`finalize(result)` 只能消费本 owner 签发的 opaque result**——类型层先把「无 result 时只允许 client-aborted／零 terminal-frame 分支」表达出来。<br>🔴 **前置停门：§11 #6 未裁则本 task 不可开工。** M1 的 `OwnerTerminalDecision`（`delivery/owner-failure.ts:11`）已经有一套三态，**本 task 一旦把 `terminalFrameDisposition` 三态写进类型层并加穷尽性断言，形状就定死了**——之后 T2.7／T3.5／T4.10 全建在它上面。**这是 #6 最早咬人的地方，不是 Commit 4。** |
 | **T1.7** | 属性存在性快照工具（§0.4 第 2 条）在 Commit 0→1 之间跑一次。**先手工加一个 optional 方法确认它会红。** | 快照相等，rc=0。 |
 
 ### factory／锚点表
@@ -269,6 +269,7 @@ production 源码与运行时行为**逐字节不变**（**按 §0.4a 的 MANIFE
 |---|---|---|
 | R-6 | C1 `辅助门`（compile fixtures，**已裁 2026-08-04**） | `cd "$TREE" && bun run typecheck` + compile fixture harness（T1.1～T1.3） |
 | R-2 | C1 `辅助门`（classifier 三态 unit） | T1.4 落盘的测试路径 |
+| — | **§11 #6 的必经触发点** | **未裁则 T1.6 不可开工**（`terminalFrameDisposition` 三态在 T1.6 写进类型层即定死形状）。把三个候选交主会话／用户 |
 | R-11 / O-6 | 每 commit 共同门 | §0.3 ② |
 | — | **每 commit 共同门：门跑在哪棵树** | §0.3 ④ —— 断言 O-6 打出的 `repo=` 等于 `$TREE`（**不取 cwd**） |
 
@@ -405,7 +406,7 @@ production **不构造新 owner**；**不维护 shadow lease／mapping／ledger�
 1. **Q5 逐帧预测 diff 已复核**（§9.2 Q5、§6.3）：产出旧 golden → 预测新序列的逐帧 diff，逐项标明保留／删除／移动及理由，与 Q5 批准范围核对。**若 heartbeat 重臂时点无法证明逐 tick 中性，其预测 diff 必须纳入 Q5 批准范围。** 缺 diff 或实测超出预测即停止，**不得借已接受的 Q5 吞并额外 wire 漂移**。
 2. **§9.3 全部调查证据齐全**——见下面的 **T4.0a～T4.0d**。⚠️ **Commit 3 对第 1／2／5／8 项只被要求交「最小子集／候选／方案」，「完整证据槽」那一列的值是「C4 publish kickoff」——那是一个时刻，不是一个负责人。** 因此这四条在本 commit 有显式 task，**不得在 kickoff 时口头判「C3 交的就是它被要求交的，所以齐全」**。
 3. **§7.2 的 A／B／C／D 四集闭包输出仍是最新**（T0.7 产物在 Commit 1～3 期间机械相等）。
-4. 🔴 **§11 #6 已裁**——`OwnerTerminalDecision`（M1 引入，`delivery/owner-failure.ts:11`）与本 commit 要引入的 `TerminalEmissionResult` 是竞争抽象，**未裁则不得进入 T4.10**。三个候选见 §11 #6。**由实施者边做边定会造出第二条 terminal 分流路径**，直接撞本 commit 的「first terminal command wins、terminal frame exactly once」。
+4. 🔴 **§11 #6 已裁**——`OwnerTerminalDecision`（M1 引入，`delivery/owner-failure.ts:11`）与本 commit 的 `TerminalEmissionResult` 是竞争抽象，**未裁则不得进入 T4.10**。<br>⚠️ **这里只是兜底，真正的触发点在 T1.6（Commit 1）**：那一步就要把三个态写进类型层并加穷尽性断言，形状在那时已经定死。**若拖到这里才发现未裁，C1～C3 的沉没成本已经在了**——那会污染候选①（「一并重塑」）的成本栏，与上一轮 #4「merge 有冲突」是同一种病。
 
 ### 逐 task
 
@@ -757,7 +758,7 @@ O-3／O-5／O-7／O-9 以及 O-4 的完整验收明确留给后续 M2～M8／P7�
 | #3 §4.8 与选项 A 的冲突 | ⏳ **未裁**（绑进 #2 的裁决材料） | 同 #2；`q1-locations.sh PHASE=post` 要求 §4.8 变 `ruled` |
 | #4 entry 落在哪棵树 | ✅ **已裁 2026-08-04**（隔离 worktree，从合并后 master 起） | — |
 | #5 R-5 的 C1／C2 归属 | ⏳ **未裁**（本轮已撤回自裁） | **Commit 2 的门表**：未裁则本 commit 不得收口 |
-| #6 `OwnerTerminalDecision` vs `TerminalEmissionResult` | ⏳ **未裁**（本轮新提） | **Commit 4 前置停门**：与 §9.3 证据槽同级 |
+| #6 `OwnerTerminalDecision` vs `TerminalEmissionResult` | ⏳ **未裁** | **Commit 1 的 T1.6 之前**——它在那里就咬人，不是 Commit 4 |
 
 ### #1 R-6 的等级 —— ✅ **已裁 2026-08-04：候选 1，按判据列拆**
 
@@ -825,7 +826,9 @@ M1 合入主线时带来了两个**三份文档都从未提到**的模块：
 
 **候选**：①`TerminalEmissionResult` **取代** `OwnerTerminalDecision`，M1 那两个模块在 Commit 4 一并重塑（范围最大，但与「M1 由 cutover 重塑」的既有裁决一致）；②`OwnerTerminalDecision` **保留为 owner 内部分类器**，`TerminalEmissionResult` 只做它的对外投影（改动小，但两套三态必须锁步，是双事实源）；③二者合并成一个三态（需要 RFC §3.3 改 `TerminalEmissionResult` 的冻结形状，**属契约变更，要回 architect-advisor**）。
 
-**触发点**：**Commit 4 前置停门第 2 项，与 §9.3 各证据槽同级**——未裁则不得进入 T4.10。
+**触发点**：**Commit 1 的 T1.6 之前**——未裁则 T1.6 不可开工；Commit 4 前置停门第 4 项保留为**兜底**。
+
+⚠️ **为什么不能放在 Commit 4**：T1.6 就要把 `terminalFrameDisposition` 三态写进类型层并加穷尽性断言，**形状在 Commit 1 已经定死**；T2.7 的 `terminate` 状态机、T3.5 的逐点映射都建在它上面。**等 C1～C3 干完再端候选出去，成本栏会被沉没成本污染**——候选①（`TerminalEmissionResult` 取代 `OwnerTerminalDecision`，一并重塑 M1 两模块）届时要连带推翻三个 commit 的类型层工作，看起来会比它实际的长远代价贵得多。**上一轮 #4 的「merge 有语义冲突」正是这样把裁决推向另一边的**（实测零冲突）。
 
 ---
 
