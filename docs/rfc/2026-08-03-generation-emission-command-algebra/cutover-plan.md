@@ -56,7 +56,7 @@ test "$(git -C "$TREE" rev-parse HEAD)" = "$ENTRY_SHA"
 
 **Git 图消费门**（T0.0d 也验证）：`git -C /home/xp/src/copilot-api-js merge-base --is-ancestor "$ENTRY_SHA" "$POINTER_SHA"` 必须成功；它证明 A 是 P 的祖先。**不允许把 `POINTER_SHA` 当 entry，也不允许把 P 合回执行分支来重定义 A。**
 
-后续所有命令绑到该树根，记作 `$TREE`。**这不是可选风格**——共享主树常有并发 agent 的未提交改动，而 T0.1 的脚本对脏树是**硬拒**（见 §0.3b）。
+后续所有命令绑到该树根，记作 `$TREE`。**这不是可选风格**——共享主树常有并发 agent 的未提交改动，而 T0.0f 调用的 evidence producer／baseline 脚本对脏树是**硬拒**（见 §0.3b）。
 
 ### 0.3 每个 commit 的共同门 —— **三个脚本各自怎么绑根，逐个写清**
 
@@ -204,7 +204,7 @@ cd "$TREE" && git diff --stat "$FROM".."$TO" -- . \
 
 **门内因此自动包含**（无需维护清单，实测 `git ls-files` 减排除表后的根：`src/`、`packages/`、`ui/`、`ui-v4/`、`scripts/`、`native/`、`hooks/`、`contrib/`、`config.schema.json`、`package.json`、`bun.lock`、`bunfig.toml`、`tsconfig.json`、`tsdown.config.ts`、`start.bat`）。**`ui/` 与 `ui-v4/` 的二级条目现在自动对称**——实测两边都是 `src`／`index.html`／`package.json`／`vite.config.ts`／`tsconfig.json`（＋各自的 `bun.lock`／`bunfig.toml`／`components.json`），**不再需要我逐条想全**。
 
-⚠️ **`scripts/parallel-test.ts` 在门内是有意的**：若 T0.1／T0.11 的 junit 枚举要动它，那是一次**独立的、先于 Commit 0 的基础设施改动**（相位归属见 §0.4b），**不能夹在 cutover 任何 commit 里**。
+⚠️ **`scripts/parallel-test.ts` 在门内是有意的**：Commit -1 的 T0.0a～c 要为真实 shards 建 JUnit/file-identity oracle，T0.11 后续消费其 runtime 枚举；这些是**独立的、先于 Commit 0 的基础设施改动**（相位归属见 §0.4b），**不能夹在 cutover 任何 commit 里**。
 
 **四条对照已实跑**（`/tmp` 一次性仓库，未碰本仓）：
 
@@ -535,8 +535,8 @@ cd /home/xp/src/copilot-api-js && bun run scripts/validate-entry-evidence.ts \
 
 - `ENTRY_SHA`／`POINTER_SHA` 必须是完整 40 位小写 SHA；`TREE` 是从 `ENTRY_SHA` 显式创建的 cutover worktree 绝对路径。
 - validator **只能**从 `git show "$POINTER_SHA":docs/plan/2026-07-27-inter-block-anchor-allocator/HANDOVER.md` 读取 pointer，禁止简写成不存在的 `:HANDOVER`、读取工作区文件或用 blame 猜 P。
-- 稳定退出码：`0`=全部通过且 receipt 已原子写入；`2`=CLI／schema 错；`3`=pointer／Git 图错（C1～C4）；`4`=manifest 缺失／hash 错（C5）；`5`=run artifact 数量／hash 错（C6）；`6`=JUnit identity／skip／executed 错（C7～C8）；`7`=command／intent／verdict／派生 artifact hash 错（C9～C10）；`8`=receipt 写入失败。stderr 必须以对应的 `FAIL C<n>:` 稳定前缀开头（见 EV 表），不得只给通用 `validation failed`。
-- `--receipt-out` 必须是 `$TREE` 外的绝对路径；validator **只在 C1～C10 全部通过后**以临时文件 + atomic rename 写入，失败时不得留下旧/半份 receipt。stdout 只打印 `receipt=<绝对路径>` 与 `receipt_sha256=<hex>`，不得把自然语言 stdout 当 receipt。
+- 稳定退出码：`0`=**C1～C11 全部通过**且 receipt 已原子写入；`2`=CLI／schema 错；`3`=pointer／Git 图错（C1～C4）；`4`=manifest 缺失／hash 错（C5）；`5`=run artifact 数量／hash 错（C6）；`6`=JUnit identity／skip／executed 错（C7～C8）；`7`=command／intent／verdict／派生 artifact／discovery baseline trust 错（C9～C11）；`8`=receipt 写入失败。stderr 必须以对应的 `FAIL C<n>:` 稳定前缀开头（见 EV 表），不得只给通用 `validation failed`。
+- `--receipt-out` 必须是 `$TREE` 外的绝对路径；validator **只在 C1～C11 全部通过后**以临时文件 + atomic rename 写入，失败时不得留下旧/半份 receipt。特别是 C11 失败时**绝不能先写 green receipt 再报错**。stdout 只打印 `receipt=<绝对路径>` 与 `receipt_sha256=<hex>`，不得把自然语言 stdout 当 receipt。
 
 **`entry-evidence-receipt.json` v1 的完整 schema**（额外字段 fail-closed；这是 T0.1 的唯一输入）：
 

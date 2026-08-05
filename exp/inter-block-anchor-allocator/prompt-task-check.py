@@ -85,6 +85,22 @@ def plan_task_definitions(text: str) -> list[tuple[str, str]]:
     return out
 
 
+def task_id_owner(task: str) -> str:
+    """Derive the only legal phase owner from the frozen task-id grammar.
+
+    Parent headings are not sufficient: a whole live-looking table can be moved
+    beneath the wrong Commit heading. The id prefix is an independent axis.
+    """
+    if re.fullmatch(r"T0\.0[abce]", task):
+        return "commit-minus-1.md"
+    if re.fullmatch(r"T0\.0[df]", task):
+        return "post-merge-preflight.md"
+    match = re.fullmatch(r"T([0-8])\.\d+[a-z]?", task)
+    if not match:
+        raise ValueError(f"task id has no owner rule: {task}")
+    return f"commit-{match.group(1)}.md"
+
+
 def main() -> int:
     if not PLAN.is_file() or not PROMPTS.is_dir():
         print("prompt-task-check: missing cutover plan or prompts directory", file=sys.stderr)
@@ -95,12 +111,19 @@ def main() -> int:
     duplicate_definitions = sorted(task for task, count in Counter(definition_ids).items() if count > 1)
     plan_tasks = set(definition_ids)
     expected_owner = dict(definitions)
+    invalid_plan_owners = sorted(
+        f"{task}: table={owner}, id-rule={task_id_owner(task)}"
+        for task, owner in definitions
+        if owner != task_id_owner(task)
+    )
     prompt_files = {p.name for p in PROMPTS.glob("*.md") if p.name != "README.md"}
     missing_files = EXPECTED_PROMPTS - prompt_files
     extra_files = prompt_files - EXPECTED_PROMPTS
     failures: list[str] = []
     if duplicate_definitions:
         failures.append(f"duplicate plan task definitions: {duplicate_definitions}")
+    if invalid_plan_owners:
+        failures.append(f"plan task definitions under wrong phases: {invalid_plan_owners}")
     if missing_files:
         failures.append(f"missing prompt files: {sorted(missing_files)}")
     if extra_files:

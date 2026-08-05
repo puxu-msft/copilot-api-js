@@ -15,7 +15,7 @@ session_id: 046d7295-e5ce-470b-a284-c721c6ce1cb8
 
 ## 剩余项
 
-- [ ] **独立评审整改中**：首轮执行方 4 blocker/5 major、判据侧 1 blocker/5 major；二轮执行方 3 blocker/2 major/1 minor、判据侧 1 blocker/2 major；三轮执行方 2 blocker/1 major/2 minor、判据侧 1 blocker/2 major；四轮执行方 1 blocker/1 major/2 minor、判据侧 1 blocker/2 major；五轮执行方 0 blocker/0 major/1 minor、判据侧 0 blocker/2 major。已冻结 producer/validator/receipt/discovery-baseline 完整信任链、Q5 T4.2 边界；checker 校验 live task table + phase owner；D2 保持 P8；待六轮复评。
+- [ ] **独立评审整改中**：首轮执行方 4 blocker/5 major、判据侧 1 blocker/5 major；二轮执行方 3 blocker/2 major/1 minor、判据侧 1 blocker/2 major；三轮执行方 2 blocker/1 major/2 minor、判据侧 1 blocker/2 major；四轮执行方 1 blocker/1 major/2 minor、判据侧 1 blocker/2 major；五轮执行方 0 blocker/0 major/1 minor、判据侧 0 blocker/2 major；六轮执行方 0 blocker/1 major/1 minor、判据侧 0 blocker/2 major。已将 discovery baseline path/hash/runner blob 纳入 manifest/receipt/C11 信任链；checker 同时校验 live table、父 phase 与 task-id owner；C11 receipt 硬门/Q5摘要/T0.1旧归属已修；待七轮复评。
 - [x] `prompts/README.md`：导航、阶段依赖 DAG、可并行边界、共享文件／合并顺序、通用红线
 - [x] Commit -1 self-contained prompt（T0.0a/b/c/e；独立 worktree；mutation hard rule；合 master）
 - [x] post-merge entry-evidence preflight prompt（A／15 runs／manifest／P／T0.0d）
