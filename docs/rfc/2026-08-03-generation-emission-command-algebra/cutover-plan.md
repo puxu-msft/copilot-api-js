@@ -1,6 +1,6 @@
 # Cutover 实施计划 —— generation emission command algebra
 
-> **状态（核验于 `bd25b847`）**：**第二层已评审放行**。判据证伪 9 轮、执行方第一人称走查 8 轮，最终均为 **0 blocker / 0 major**；报告分别在 `docs/tmp/2026-08-04-cutover-plan-review-{criteria,executor}.md`。**放行范围是本文 + `traceability.md` + `d7f6c222` 的 evidence 脚本能力**；第三层 `prompts/` 尚未产出，故整个计划层尚未完成。
+> **状态（第二层核验于 `bd25b847`）**：**第二层已评审放行**。判据证伪 9 轮、执行方第一人称走查 8 轮，最终均为 **0 blocker / 0 major**；报告分别在 `docs/tmp/2026-08-04-cutover-plan-review-{criteria,executor}.md`。**放行范围是本文 + `traceability.md` + `d7f6c222` 的 evidence 脚本能力**；第三层 `prompts/` 已产出，**待独立评审**，因此整个计划层尚未最终放行。
 >
 > **这是三层结构的第二层**（skill `large-refactor` §5）：`design.md` 回答 WHY + 契约，本文回答 HOW + 锚在哪。
 >
