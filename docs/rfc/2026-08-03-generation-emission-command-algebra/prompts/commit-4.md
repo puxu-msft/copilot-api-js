@@ -15,11 +15,11 @@
 
 ## 前置/停点
 
-1. Q5 逐帧预测 diff 已审，超出预测即停。
-2. `T4.0a`～`T4.0d` 补齐 §9.3 #1/#2/#5/#8；没有 file:line 或 PoC，结束本轮，**不生成猜测签名**。
-3. A/B/C/D closure 输出未漂。
-4. §11 #6 已裁；未裁不得进入 terminal migration。
-5. 此 commit 的合成/production mutations 按 plan §0.4e，不能在 entry tree 做破坏性恢复。
+1. C4 kickoff 先补 `T4.0a`～`T4.0d` 的 §9.3 #1/#2/#5/#8；没有 file:line 或 PoC，结束本轮，**不生成猜测签名**。
+2. A/B/C/D closure 输出未漂。
+3. §11 #6 已裁；未裁不得进入 terminal migration。
+4. 此 commit 的合成/production mutations 按 plan §0.4e，不能在 entry tree 做破坏性恢复。
+5. **Q5 不要求在 C4 kickoff 前已完成**：先执行 `T4.1` 生成/审查逐帧预测 diff；**T4.2 authority publish 前**必须已审完且在批准范围内，缺材料或实测超出预测即停。
 
 ## 改动锚点
 

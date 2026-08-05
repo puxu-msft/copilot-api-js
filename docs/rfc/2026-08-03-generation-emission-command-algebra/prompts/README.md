@@ -23,7 +23,7 @@
 | `commit-2.md` | owner state / serializer primitives | Commit 1；§11 #5/#6 已裁 | Commit 3 | 严格串行 |
 | `commit-3.md` | builders / LegHandle / publish harness | Commit 2 | Commit 4 | 严格串行 |
 | `commit-4.md` | atomic authority publish | Commit 3；§9.3 evidence slots；Q5；§11 #6 已裁 | Commit 5/6/7/8 | **唯一 authority publish，绝对不可拆** |
-| `commit-5.md` | telemetry + History detail | Commit 4；**Q1 已裁** | Commit 6/7/8 | 严格串行 |
+| `commit-5.md` | telemetry + History detail | Commit 4；**Q1 内容裁决 + `PHASE=post` gate** | Commit 6/7/8 | 严格串行 |
 | `commit-6.md` | legacy deletion / audits | Commit 5 | Commit 7/8 | 严格串行 |
 | `commit-7.md` | golden/oracle audit | Commit 6 | Commit 8 | 严格串行；production 零改动 |
 | `commit-8.md` | docs sync / merged-state closeout | Commit 7；Q2/ADR 边界 | 执行结束 | 严格串行 |
