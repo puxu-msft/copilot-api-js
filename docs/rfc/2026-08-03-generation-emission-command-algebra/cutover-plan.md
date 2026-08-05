@@ -1,5 +1,7 @@
 # Cutover 实施计划 —— generation emission command algebra
 
+> **状态（核验于 `bd25b847`）**：**第二层已评审放行**。判据证伪 9 轮、执行方第一人称走查 8 轮，最终均为 **0 blocker / 0 major**；报告分别在 `docs/tmp/2026-08-04-cutover-plan-review-{criteria,executor}.md`。**放行范围是本文 + `traceability.md` + `d7f6c222` 的 evidence 脚本能力**；第三层 `prompts/` 尚未产出，故整个计划层尚未完成。
+>
 > **这是三层结构的第二层**（skill `large-refactor` §5）：`design.md` 回答 WHY + 契约，本文回答 HOW + 锚在哪。
 >
 > ⚠️ **第三层 `prompts/` 尚未产出**（`ls docs/rfc/2026-08-03-generation-emission-command-algebra/` 只有三个 `.md`）。**在它出现之前，本文即最终派发件**——所以 §0.5 的提交与进度纪律写在这里，而不是留给 prompts。若日后补了 `prompts/`，那节应迁过去，本文只留指针。

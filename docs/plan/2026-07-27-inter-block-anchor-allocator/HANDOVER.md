@@ -1,6 +1,6 @@
 # HANDOVER —— generation emission command algebra RFC 已定稿，实施未开工
 
-**状态**：**已评审放行 · T1 已裁「先补计划层再执行」· plan 已写但两路评审各报 blocker，整改中 · M1 已于 2026-08-04 合入 master（`8125f123`）**。RFC 已定稿、cutover 实施一行未写。
+**状态**：**已评审放行 · T1 已裁「先补计划层再执行」· 第二层 `cutover-plan.md` 已评审放行（判据 9 轮 + 执行方 8 轮，最终均 0 blocker / 0 major）· 第三层 `prompts/` 待写 · M1 已于 2026-08-04 合入 master（`8125f123`）**。RFC 已定稿、cutover 实施一行未写。
 
 **本文件的评审情况**（别再重跑，也别当成未核验的档案）：
 - **判据证伪视角**：**12 轮**，结论「剩余项应记为已知边界而非缺陷；**无未决 blocker/major**」。报告：`docs/tmp/2026-08-03-handover-review-criteria.md`。
