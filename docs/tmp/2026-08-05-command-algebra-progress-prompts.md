@@ -10,18 +10,24 @@ session_id: 046d7295-e5ce-470b-a284-c721c6ce1cb8
 
 # 进度 —— command algebra 第三层 prompts
 
-> 派活前建立，按 skill `session-closeout` §6b。预计多文件、多 commit、需把 82 个 task 分派到 Commit -1／post-merge preflight／Commit 0～8，属于必须建进度文件的形状。
+> 派活前建立，按 skill `session-closeout` §6b。预计多文件、多 commit、需把 `cutover-plan.md` 的**实际 task 集合**分派到 Commit -1／post-merge preflight／Commit 0～8，属于必须建进度文件的形状。**不写死数量**：prompt population checker 从 plan 解析集合；当前运行输出 83，仅作快照，不是 SSOT。陈旧「82」与冻结集合冲突时，正确处置是信集合，不为凑数删/排 task。
 > **只记 git 记不下来的三样**：剩余项（带验收判据）／在途意图／已作废的路子。每个语义 commit 一起更新并提交。
 
 ## 剩余项
 
-- [ ] `prompts/README.md`：导航、阶段依赖 DAG、可并行边界、共享文件／合并顺序、通用红线
-- [ ] Commit -1 self-contained prompt（T0.0a/b/c/e；独立 worktree；mutation hard rule；合 master）
-- [ ] post-merge entry-evidence preflight prompt（A／15 runs／manifest／P／T0.0d）
-- [ ] Commit 0～8 共 9 份 self-contained prompt
-- [ ] 每份 prompt 引用正确的 design／plan／traceability／progress 路径，含目标、锚点、TDD、门、提交指引、红线指针
-- [ ] prompt task 人口与 `cutover-plan.md` 双向对账，82 个 task 恰好各归一个执行 prompt
-- [ ] `traceability-check.py` rc=0，prompt 专用 task-population checker rc=0
+- [x] `prompts/README.md`：导航、阶段依赖 DAG、可并行边界、共享文件／合并顺序、通用红线
+- [x] Commit -1 self-contained prompt（T0.0a/b/c/e；独立 worktree；mutation hard rule；合 master）
+- [x] post-merge entry-evidence preflight prompt（A／15 runs／manifest／P／T0.0d）
+- [ ] Commit 0～8 共 9 份 self-contained prompt（Commit 0～8 已落盘，尚需人口对账/通读）
+- [x] 每份 prompt 引用正确的 design／plan／traceability／progress 路径，含目标、锚点、TDD、门、提交指引、红线指针
+- [ ] prompt task 人口与 `cutover-plan.md` 双向对账：**不写死数量；checker 从 plan 解析实际集合（当前 83）**，每 task 恰归一个执行 prompt
+- [ ] `traceability-check.py` rc=0，prompt 专用 task-population checker rc=0（checker 是 `exp/` 代码，超出本 agent 仅写 Plan/kick-off 边界；README 已写实现契约，交协调者/实现侧落地）
+
+## 本轮进度
+
+- 第一批已落盘：`README.md`、`commit-minus-1.md`、`post-merge-preflight.md`、`commit-0.md`。入口图/因果分相位是第三层最容易漂的部分，先单独提交。
+- Commit 1～8 prompts 已写入工作树，待实际集合对账与全量通读后提交。
+- 陈旧「82」已按协调者裁定撤除：plan 实际解析 83，集合才是 SSOT。不得为凑旧数字排除 post-merge `T0.0d`。
 
 ## 在途意图
 
