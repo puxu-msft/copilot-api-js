@@ -74,7 +74,11 @@ import type {
 } from "~/types/api/openai-responses"
 
 import { isApiDefinedToolType } from "~/lib/anthropic/message-tools"
-import { extractEncryptedReasoning, isSyntheticReasoningSignature } from "~/lib/anthropic/synthetic-reasoning"
+import {
+  //
+  extractEncryptedReasoning,
+  isSyntheticReasoningSignature,
+} from "~/lib/anthropic/synthetic-reasoning"
 import { budgetToEffort } from "~/lib/anthropic/thinking-coercion"
 
 import {
@@ -352,10 +356,10 @@ function mapServerToolType(anthropicType: string): ResponsesBuiltinToolType | un
   return SERVER_TOOL_MAPPING.find((entry) => anthropicType.startsWith(entry.anthropicPrefix))?.responsesType
 }
 
-type ResponsesNamedToolChoice = Exclude<ResponsesToolChoice, string>
+type AnthropicTranslatedNamedToolChoice = { type: "function"; name: string } | { type: ResponsesBuiltinToolType }
 
 /** Map one Anthropic tool declaration to the Responses choice category that names it. */
-function translateNamedToolChoice(tool: AnthropicTool): ResponsesNamedToolChoice | undefined {
+function translateNamedToolChoice(tool: AnthropicTool): AnthropicTranslatedNamedToolChoice | undefined {
   if (!isApiDefinedToolType(tool.type)) return { type: "function", name: tool.name }
   const mapped = tool.type ? mapServerToolType(tool.type) : undefined
   return mapped ? { type: mapped } : undefined

@@ -727,7 +727,7 @@ function translateToolsToCC(tools: Array<ResponsesTool>): Array<Tool> {
 
 function translateToolChoiceToCC(choice: ResponsesToolChoice, tools: Array<Tool> | undefined): NonNullable<ChatCompletionsPayload["tool_choice"]> | undefined {
   if (typeof choice === "string") return choice === "required" && (!tools || tools.length === 0) ? undefined : choice
-  if (choice.type !== "function" || !tools?.some((tool) => tool.function.name === choice.name)) return undefined
+  if ((choice.type !== "function" && choice.type !== "custom") || !tools?.some((tool) => tool.function.name === choice.name)) return undefined
   return {
     type: "function",
     function: { name: choice.name },

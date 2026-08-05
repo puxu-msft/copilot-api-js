@@ -125,6 +125,30 @@ describe("translateResponsesToChatCompletions", () => {
     expect(result.tool_choice).toEqual({ type: "function", function: { name: "f" } })
   })
 
+  test("degrades a forced custom tool choice with its declaration to the same CC function choice", () => {
+    const result = translateResponsesToChatCompletions({
+      model: "m",
+      input: "x",
+      tools: [{ type: "custom", name: "apply_patch", description: "Edit files via patch" }],
+      tool_choice: { type: "custom", name: "apply_patch" },
+    } satisfies ResponsesPayload)
+
+    expect(result.tools?.map((tool) => tool.function.name)).toEqual(["apply_patch"])
+    expect(result.tool_choice).toEqual({ type: "function", function: { name: "apply_patch" } })
+  })
+
+  test("drops a forced custom tool choice when no translated CC tool has that name", () => {
+    const result = translateResponsesToChatCompletions({
+      model: "m",
+      input: "x",
+      tools: [{ type: "custom", name: "present" }],
+      tool_choice: { type: "custom", name: "missing" },
+    } satisfies ResponsesPayload)
+
+    expect(result.tools?.map((tool) => tool.function.name)).toEqual(["present"])
+    expect(result.tool_choice).toBeUndefined()
+  })
+
   test("drops a builtin tool choice when the corresponding builtin tool is unsupported by the CC fallback", () => {
     const result = translateResponsesToChatCompletions({
       model: "m",
