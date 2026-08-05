@@ -65,7 +65,7 @@ function reasoningItem(summaryText: string, encrypted?: string): ResponsesOutput
   }
 }
 
-function webSearchCallItem(query: string, status = "completed"): ResponsesOutputItem {
+function webSearchCallItem(query: string, status: "in_progress" | "searching" | "completed" | "failed" = "completed"): ResponsesOutputItem {
   return { type: "web_search_call", id: "ws1", status, action: { type: "search", query } }
 }
 
@@ -142,7 +142,7 @@ describe("translateResponsesResponseToAnthropic — web_search_call → readable
       responsesResponse([webSearchCallItem("official Bun runtime website"), messageItem("https://bun.com/")]),
     )
     expect(response.content).toEqual([
-      { type: "text", text: '[web_search: "official Bun runtime website"] (status: completed)' },
+      { type: "text", text: '[web_search: "official Bun runtime website"] (id: ws1, status: completed)' },
       { type: "text", text: "https://bun.com/" },
     ])
   })
@@ -174,15 +174,22 @@ describe("translateResponsesResponseToAnthropic — web_search_call → readable
   })
 
   test("an incomplete web_search_call without action degrades to readable unknown-query text instead of throwing", () => {
-    const item: ResponsesOutputItem = { type: "web_search_call", id: "ws_incomplete", status: "incomplete" }
+    const item = { type: "web_search_call", id: "ws_incomplete", status: "incomplete" } satisfies ResponsesOutputItem
     const { response } = translateResponsesResponseToAnthropic(responsesResponse([item]))
-    expect(response.content).toEqual([{ type: "text", text: '[web_search: "(unknown query)"] (status: incomplete)' }])
+    expect(response.content).toEqual([{ type: "text", text: '[web_search: "(unknown query)"] (id: ws_incomplete, status: incomplete)' }])
+  })
+
+  test("a malformed completed web_search_call without action still degrades safely at runtime", () => {
+    // @ts-expect-error completed calls require action; renderer remains defensive at the untyped wire boundary.
+    const invalid: ResponsesOutputItem = { type: "web_search_call", id: "ws_completed_missing", status: "completed" }
+    const { response } = translateResponsesResponseToAnthropic(responsesResponse([invalid]))
+    expect(response.content).toEqual([{ type: "text", text: '[web_search: "(unknown query)"] (id: ws_completed_missing, status: completed)' }])
   })
 
   test("web_search_call with only `action.queries` (array form, no singular `query`) still renders readable text", () => {
     const item: ResponsesOutputItem = { type: "web_search_call", id: "ws2", status: "completed", action: { type: "search", queries: ["query a", "query b"] } }
     const { response } = translateResponsesResponseToAnthropic(responsesResponse([item]))
-    expect(response.content).toEqual([{ type: "text", text: '[web_search: "query a, query b"] (status: completed)' }])
+    expect(response.content).toEqual([{ type: "text", text: '[web_search: "query a, query b"] (id: ws2, status: completed)' }])
   })
 
   test("web_search_call alongside tool_use — stop_reason still reflects the real function_call, web_search_call never counted as a tool_use", () => {

@@ -215,15 +215,31 @@ export interface ResponsesReasoningOutput {
  * forces R-NO-REVIVE's response-side degradation (no signed carrier to round-trip into an Anthropic
  * `web_search_tool_result` block).
  */
+interface ResponsesWebSearchAction {
+  type: string
+  query?: string
+  queries?: Array<string>
+  [key: string]: unknown
+}
+
+/** A regular web-search call follows the Responses contract and always carries an action. */
 export interface ResponsesWebSearchCallOutput {
   type: "web_search_call"
   id: string
-  status: string
-  action?: { type: string; query?: string; queries?: Array<string>; [key: string]: unknown }
+  status: "in_progress" | "searching" | "completed" | "failed"
+  action: ResponsesWebSearchAction
+}
+
+/** GHC may emit an incomplete terminal record before the search action is available. */
+export interface ResponsesIncompleteWebSearchCallOutput {
+  type: "web_search_call"
+  id: string
+  status: "incomplete"
+  action?: ResponsesWebSearchAction
 }
 
 /** Union of all output item types */
-export type ResponsesOutputItem = ResponsesMessageOutput | ResponsesFunctionCallOutput | ResponsesReasoningOutput | ResponsesWebSearchCallOutput
+export type ResponsesOutputItem = ResponsesMessageOutput | ResponsesFunctionCallOutput | ResponsesReasoningOutput | ResponsesWebSearchCallOutput | ResponsesIncompleteWebSearchCallOutput
 
 /** Usage statistics */
 export interface ResponsesUsage {

@@ -311,7 +311,7 @@ describe("responses-to-anthropic-stream — web_search_call → readable text (R
     const stops = frames.filter((f) => data(f).type === "content_block_stop")
     expect(stops.map((f) => data(f).index)).toEqual([0, 1])
     const textDelta_ = frames.find((f) => data(f).type === "content_block_delta" && (data(f).delta as { type: string }).type === "text_delta")
-    expect(textDelta_ && (data(textDelta_).delta as { text: string }).text).toBe('[web_search: "official Bun runtime website"] (status: completed)')
+    expect(textDelta_ && (data(textDelta_).delta as { text: string }).text).toBe('[web_search: "official Bun runtime website"] (id: ws_0, status: completed)')
   })
 
   test("an incomplete web_search_call without action emits readable unknown-query text instead of throwing", () => {
@@ -322,7 +322,7 @@ describe("responses-to-anthropic-stream — web_search_call → readable text (R
     })
     const frames = renderAll([created(), incomplete, completed({ input_tokens: 1, output_tokens: 1, total_tokens: 2 }, "incomplete")])
     const textDeltas = frames.filter((f) => data(f).type === "content_block_delta" && (data(f).delta as { type: string }).type === "text_delta")
-    expect(textDeltas.map((f) => (data(f).delta as { text: string }).text)).toEqual(['[web_search: "(unknown query)"] (status: incomplete)'])
+    expect(textDeltas.map((f) => (data(f).delta as { text: string }).text)).toEqual(['[web_search: "(unknown query)"] (id: ws_incomplete, status: incomplete)'])
   })
 
   test("NEGATIVE SAMPLE (R-NO-REVIVE load-bearing assertion): the streamed wire NEVER contains a web_search_tool_result type or any encrypted_content for this item", () => {

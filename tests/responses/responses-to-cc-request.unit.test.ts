@@ -85,6 +85,7 @@ describe("translateResponsesToChatCompletions", () => {
       model: "m",
       input: "x",
       tools: [{ type: "custom", name: "apply_patch", description: "Edit files via patch" }],
+      tool_choice: { type: "custom", name: "apply_patch" },
     } satisfies ResponsesPayload)
 
     expect(result.tools).toEqual([
@@ -101,6 +102,7 @@ describe("translateResponsesToChatCompletions", () => {
         },
       },
     ])
+    expect(result.tool_choice).toEqual({ type: "function", function: { name: "apply_patch" } })
   })
 
   test("drops unsupported builtin tools but keeps function/custom siblings", () => {
