@@ -1,0 +1,9 @@
+{
+  "name": "github-enterprise-auth-host-probe",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@octokit/auth-oauth-device": "8.0.4",
+    "@octokit/request": "10.0.13"
+  }
+}
