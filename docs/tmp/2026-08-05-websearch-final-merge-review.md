@@ -44,7 +44,7 @@
 - Master 在操作前为 `b8372966`，integration 为 `6e9e9439`，fast-forward 成功且未产生 merge commit。
 - 仅 `exp/anthropic-responses-direct/FINDINGS.md` 被 stash 到固定 SHA `c832cb10db24d7b60890fb32759f867b101951b3`；使用 `stash apply <sha>`，未 pop，apply 无冲突，stash 仍保留。
 - 除该文件外，tracked WIP patch 与 untracked 文件 hash 清单在 fast-forward 前后逐字节相同。
-- 恢复后的 `FINDINGS.md` diff 仅为原 Probe-e 31 行 WIP；已提交的 WebSearch incomplete/action 证据仍在。最终文档进一步收窄为“仅 `status:"incomplete"` 可缺 action”，常规状态仍要求 action。
+- `FINDINGS.md` 的整份 raw patch 因 fast-forward 改变了已提交 blob/context，不能直接作字节 oracle；改用两种独立口径核验恢复：① fast-forward 前后 patch 的纯新增 payload 均为 31 行且逐行相等；② 当前 Probe-e 段与明确 stash `be309915a69d0d9d967edff227d9adac55a90290` 中的 Probe-e 段逐字相同。已提交的 WebSearch incomplete/action 证据仍在，并收窄为“仅 `status:"incomplete"` 可缺 action”，常规状态仍要求 action。
 
 ## Round 5
 
