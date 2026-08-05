@@ -26,7 +26,7 @@
 | `commit-5.md` | telemetry + History detail | Commit 4；**Q1 内容首次裁决 + `PHASE=post` gate** | Commit 6 | 严格串行 |
 | `commit-6.md` | legacy deletion / audits | Commit 5 | Commit 7 | 严格串行 |
 | `commit-7.md` | golden/oracle audit | Commit 6 | Commit 8 | 严格串行；production 零改动 |
-| `commit-8.md` | docs sync / merged-state closeout | Commit 7；Q2/ADR 边界 | 执行结束 | 严格串行 |
+| `commit-8.md` | docs sync / merged-state closeout | Commit 7；Q2；continuation ADR D2 的 P8 待办不得删除 | 执行结束 | 严格串行 |
 
 ### 依赖 DAG
 

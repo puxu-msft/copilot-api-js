@@ -90,7 +90,7 @@
 | **Q1**（telemetry 联合查询能力） | **C5 之前** | **open**——用户 2026-08-03 裁的是「现在不裁」，**不是**裁了 A/B/C。守卫：`exp/inter-block-anchor-allocator/q1-locations.sh`（`PHASE=pre`） |
 | **Q2** | **C8 之前**，默认不改 ADR | open |
 | **Q3／Q4** | — | 已裁决，不再设停点 |
-| **Q5**（anchor 帧序逐帧 diff） | **C4 authority publish 之前**（必经） | 用户已裁「接受帧序变更」；**逐帧 diff 审查仍是必经触发点，缺材料不得进入 C4** |
+| **Q5**（anchor 帧序逐帧 diff） | **C4 内 T4.2 authority publish 之前**（必经） | 用户已裁「接受帧序变更」；可先完成 T4.0a～d／T4.1，**逐帧 diff 未审完不得进入 T4.2** |
 | **§7.13 不可满足停门** | C4 | 若 PoC 证明无法在同一 semantic commit 切换，**不得发布部分 authority、不得引入 `legacy_adapted`／payload-guessing facade、不得让 new command 回落** |
 
 ## 5. ~~已知缺口~~ **已裁决（2026-08-04）**：R-6 按判据列拆，两段各自定级

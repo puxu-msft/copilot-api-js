@@ -38,16 +38,22 @@ def prompt_tasks(text: str) -> set[str]:
 
 
 def plan_task_definitions(text: str) -> list[str]:
-    """Parse task definitions, not arbitrary historical/cross-reference mentions.
+    """Parse only rows in explicitly headed ``逐 task`` tables.
 
-    A task is defined only by the first cell of a Markdown task table row:
-    ``| **T4.0a** ... |``. Scanning the whole plan made a deleted definition
-    stay alive whenever an archive note or rejected approach still mentioned
-    its old id -- a population gate with no ability to distinguish definition
-    from prose.
+    Row shape alone is not a definition boundary. A rejected/historical section
+    can preserve a whole former task row verbatim; treating that as live made a
+    definition movable into section 12 without changing the population. The
+    plan now names every live definition table with a heading containing
+    ``逐 task`` (including the post-merge table in section 0.4f).
     """
     out: list[str] = []
+    in_table = False
     for line in text.splitlines():
+        if re.match(r"^#{3,4} ", line):
+            in_table = "逐 task" in line
+            continue
+        if not in_table:
+            continue
         match = re.match(r"^\| \*\*(T\d+\.\d+[a-z]?)\*\*(?:[^|]*)\|", line)
         if match:
             out.append(match.group(1))

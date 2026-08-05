@@ -622,7 +622,7 @@ A／B／C／D四集均按symbol identity冻结，不要求历史文档字面零�
 
 ### 7.7 Commit 4 — 原子发布全部generation authority与producer commands
 
-- **前置停门：** Q5逐帧预测diff已复核；所有Commit 3调查证据齐全；若heartbeat重臂时点无法证明逐tick中性，则其预测diff必须纳入Q5批准范围。缺任一项不得发布。
+- **分阶段停门：** 可进入Commit 4先完成T4.0a～d证据槽与T4.1逐帧预测diff；**T4.2 authority publish之前**，Q5 diff必须已复核、所有调查证据齐全。若heartbeat重臂时点无法证明逐tick中性，则其预测diff必须纳入Q5批准范围；缺任一项不得进入T4.2。**不是要求kickoff前已有尚由T4.1产出的diff**——那会形成producer／consumer环。
 - **完整切换清单：**
   1. 10个outer roots创建唯一owner与private raw emitter，recorder包裹真实`stream`／`ws` handle；删除raw第二serializer／raw heartbeat。
   2. 所有ordinary／winner／live common producers切`emitGeneric`；generic pings切`emitKeepalive`；可解析未知event按unknown passthrough。
@@ -712,7 +712,7 @@ Authority publish Commit 4是唯一可观察切换点。若PoC证明全部produc
 
 - **Q3 warmup fake／drop已裁决采用方案A：** 真实route behavior test纳入Commit 0，覆盖完整字节、upstream零调用、delivery observer零session、一次响应及提前创建owner／双写mutation。它是§5唯一没有现成behavior witness的出口，也是composition-root互斥性的gatekeeper；本项目禁止静默砍掉gatekeeper requirement，因此不留作后续可选项。
 - **Q4 History schema已裁决采用方案B：** `wirePartialDelivery`保持稳定摘要`operation + cause + committed`；另在generation operation detail中保存完整per-command records，包含command、phaseReached、outcome、expected／actual effect、state before／after及高基数identity。Commit 5同步后端SSOT schema、ui-v4 re-export与相关tests，不再等待Q4。
-- **Q5 anchor精确帧序已裁决接受变更，但保留前置停门：** authority发布允许改变anchor路径forwarded／wire精确帧序，包括消除close与real-start之间的heartbeat交织及heartbeat coordination迁owner产生的逐tick位置变化；这不改C2／C7。未来执行会话在进入Commit 4发布前必须产出旧golden→预测新序列的逐帧diff，逐项标明保留／删除／移动及理由，并与Q5批准范围核对；缺diff或实测超出预测即停止。Golden期望随Commit 4同步更新，不等后续审计补记账。
+- **Q5 anchor精确帧序已裁决接受变更，但保留publish前停门：** authority发布允许改变anchor路径forwarded／wire精确帧序，包括消除close与real-start之间的heartbeat交织及heartbeat coordination迁owner产生的逐tick位置变化；这不改C2／C7。未来执行会话可进入Commit 4先完成证据任务并由T4.1产出旧golden→预测新序列的逐帧diff；**进入T4.2 authority publish前**必须逐项标明保留／删除／移动及理由、与Q5批准范围核对并完成复核，缺diff或实测超出预测即停止。Golden期望随Commit 4同步更新，不等后续审计补记账。
 
 评审若发现既有裁决内部矛盾，应把证据交主会话，不得由implementer默选另一方案。
 
@@ -731,7 +731,7 @@ Authority publish Commit 4是唯一可观察切换点。若PoC证明全部produc
 
 ### 9.4 裁决与调查的可达停点
 
-Q1保持open并在Commit 5前停；Q2在Commit 8前停且默认不改ADR；Q3／Q4已裁决、不再设停点；Q5的必经触发点是Commit 4 authority publish前的逐帧diff审查，缺材料不得进入该commit。
+Q1保持open并在Commit 5前停；Q2在Commit 8前停且默认不改ADR；Q3／Q4已裁决、不再设停点；Q5的必经触发点是**Commit 4 内 T4.2 authority publish前**的逐帧diff审查——可先进入该phase完成T4.0a～d／T4.1，缺材料不得进入T4.2。
 
 本节是调查停点的单一事实源：第1／2／3／4／5／7／8项及already-rendered builder、LegHandle、heartbeat逐点映射全部在Commit 4发布前；其中types／unit实现所需的最小子集可提前供Commit 1～3准备，但最终证据槽在publish kickoff必须齐全。第6项在Commit 5前。未来执行会话到达commit kickoff时先读取证据槽；没有file:line或PoC结论就交付已完成部分与具体缺口、结束本轮，不生成猜测签名。
 

@@ -131,12 +131,12 @@ O-6 PASS: captured wire is byte-identical to <baseline> (repo=<被测树>)
 
 ⚠️ **这四条门管的是 suite 终态，不管 mutation probe 的退出码。** 本文各处「mutation 必须红」指的是**隔离运行的探针**——它们本就该非零退出，**不受共同门约束**（详见 §0.4c）。把「全绿」推广到探针会把全部正控判成违规。 另外每个 commit 结束还须满足 §7.1 的两条状态断言：本 commit 已激活的 witness 正样本绿、production mutation 红、false-red 对照绿。
 
-### 0.3b `baseline-runs.sh` 的三个硬约束（T0.1 会撞上）
+### 0.3b `baseline-runs.sh` 的三个硬约束（post-merge evidence producer T0.0f 会撞上）
 
 | 约束 | 脚本位置 | 后果 |
 |---|---|---|
 | **`REPO` 由脚本位置推导**，无 `REPO_OVERRIDE` 旋钮 | `:77` | 必须跑 **`$TREE` 里那份**脚本，否则测的是 master |
-| **脏树硬拒 rc=3** | `:115-122` | 共享主树几乎总是脏的；隔离 worktree 天然干净。**`ALLOW_DIRTY=1` 的日志被脚本自己声明「do not satisfy a gate」——禁止用它通过 T0.1** |
+| **脏树硬拒 rc=3** | `:115-122` | 共享主树几乎总是脏的；隔离 worktree 天然干净。**`ALLOW_DIRTY=1` 的日志被脚本自己声明「do not satisfy a gate」——禁止用它通过 T0.0f** |
 | **`OUT_DIR` 已有 `run-*.log` 即 rc=2** | `:106-113` | 重跑要换目录，别往同一个目录里混批次 |
 
 `MIN_TESTS` 无默认值、缺失即 rc=2（`:84-90`），默认 CMD 是 `bun scripts/parallel-test.ts unit it http`（`:80`）。
@@ -152,7 +152,7 @@ RFC §7.4 的两条，**缺一不可**，每个准备 commit 结束时都要跑�
 
 ### 0.4a production 变更判据 —— **tracked 全集 减 显式排除表**（一处定义，全 plan 共用）
 
-多个 commit 的 invariant 都要断言「production 未改动」。**这些断言必须用同一把尺子**，否则会出现「用刚改过的尺子量基线」——T0.1／T0.11 要求 junit 枚举，而最自然的实现就是改 `scripts/parallel-test.ts`（`:64` 已为刷新计时驱动过 junit）；若门扫不到它，**改尺子那次会被判绿**。
+多个 commit 的 invariant 都要断言「production 未改动」。**这些断言必须用同一把尺子**，否则会出现「用刚改过的尺子量基线」——Commit -1 的 T0.0a～c 要求 junit 枚举，而最自然的实现就是改 `scripts/parallel-test.ts`（`:64` 已为刷新计时驱动过 junit）；若门扫不到它，**改尺子那次会被判绿**。
 
 > 🔴 **这份清单错过四次，每次换个范围**：只扫 `src/`（漏 `packages/`）→ 整个 `scripts/` 一刀切（误杀 test artifact）→ 漏 `ui-v4/` 与根级构建输入 → 漏 `ui/` 的二级条目。
 >
@@ -487,12 +487,32 @@ cd /home/xp/src/copilot-api-js && bun run scripts/validate-entry-evidence.ts \
   --entry-sha "$ENTRY_SHA" \
   --pointer-sha "$POINTER_SHA" \
   --tree "$TREE" \
-  --handover docs/plan/2026-07-27-inter-block-anchor-allocator/HANDOVER.md
+  --handover docs/plan/2026-07-27-inter-block-anchor-allocator/HANDOVER.md \
+  --receipt-out "$RECEIPT"
 ```
 
 - `ENTRY_SHA`／`POINTER_SHA` 必须是完整 40 位小写 SHA；`TREE` 是从 `ENTRY_SHA` 显式创建的 cutover worktree 绝对路径。
 - validator **只能**从 `git show "$POINTER_SHA":docs/plan/2026-07-27-inter-block-anchor-allocator/HANDOVER.md` 读取 pointer，禁止简写成不存在的 `:HANDOVER`、读取工作区文件或用 blame 猜 P。
-- 稳定退出码：`0`=全部通过；`2`=CLI／schema 错；`3`=pointer／Git 图错（C1～C4）；`4`=manifest 缺失／hash 错（C5）；`5`=run artifact 数量／hash 错（C6）；`6`=JUnit identity／skip／executed 错（C7～C8）；`7`=command／intent／verdict／派生 artifact hash 错（C9～C10）。stderr 必须以对应的 `FAIL C<n>:` 稳定前缀开头（见 EV 表），不得只给通用 `validation failed`。
+- 稳定退出码：`0`=全部通过且 receipt 已原子写入；`2`=CLI／schema 错；`3`=pointer／Git 图错（C1～C4）；`4`=manifest 缺失／hash 错（C5）；`5`=run artifact 数量／hash 错（C6）；`6`=JUnit identity／skip／executed 错（C7～C8）；`7`=command／intent／verdict／派生 artifact hash 错（C9～C10）；`8`=receipt 写入失败。stderr 必须以对应的 `FAIL C<n>:` 稳定前缀开头（见 EV 表），不得只给通用 `validation failed`。
+- `--receipt-out` 必须是 `$TREE` 外的绝对路径；validator **只在 C1～C10 全部通过后**以临时文件 + atomic rename 写入，失败时不得留下旧/半份 receipt。stdout 只打印 `receipt=<绝对路径>` 与 `receipt_sha256=<hex>`，不得把自然语言 stdout 当 receipt。
+
+**`entry-evidence-receipt.json` v1 的完整 schema**（额外字段 fail-closed；这是 T0.1 的唯一输入）：
+
+```json
+{
+  "schema_version": 1,
+  "validator_path": "scripts/validate-entry-evidence.ts",
+  "validator_git_blob": "<40位git blob id>",
+  "entry_sha": "<A>",
+  "pointer_sha": "<P>",
+  "manifest_path": "<树外绝对路径>",
+  "manifest_sha256": "<64位小写hex>",
+  "validated_at": "<RFC3339时间>",
+  "verdict": "green"
+}
+```
+
+receipt 自身**不声称它所在文件对应当前 HEAD**，必须落 `$TREE` 外；T0.1 重算 receipt hash、读取这些字段，并验证 `entry_sha == git -C "$TREE" rev-parse HEAD`、`pointer_sha` 仍由 master 可达、manifest hash 未变。任何字段缺失／额外／不等、`verdict != green`、validator blob 与 entry tree 中版本不等，均在 T0.2 前 fail-closed。T0.0e 合成测试必须覆盖成功原子写入、写入失败无残留、篡改 receipt 三类。
 
 **HANDOVER pointer block v1 的完整语法**（全文恰好一块；值均单行、不加引号）：
 
@@ -539,10 +559,12 @@ archive_path=<可为空；归档副本不定义 entry>
 
 > ⚠️ **T0.0d 不能列在 Commit -1 收口门里，也不能负责生成自己要验证的 evidence**：A／15 logs／P 只在 Commit -1 合 master**之后**存在；15-run 的唯一生产 task 是同一 post-merge phase 里排在它之前的 T0.0f。把 T0.1 留作 evidence 生产者会形成 `T0.0d 等 T0.1、T0.1 又被 T0.0d 禁止开工` 的无起点环。
 
+#### Post-merge 逐 task
+
 | id | 先写什么失败测试 → 预期怎么红 | 实现什么 → 预期怎么绿 |
 |---|---|---|
 | **T0.0f**（post-merge evidence production） | 在完整 `ENTRY_SHA=A`、干净的 A worktree 与 T0.0e 已交付 runner/validator 上，**先证明没有真实 15-run artifacts 时 T0.0d 必须 fail-closed**；再按 §0.4b 的绝对树外 `OUT` 运行 15 次实际 shards，任一 run 非绿、identity/skip 集漂移、HEAD/tree 漂移都必须中止，**不得生成 pointer P**。 | 生成树外 15 份 run log/JUnit 与 versioned evidence manifest（冻结 `measured_sha=A`、artifact hashes、canonical command 与集合 hashes）；随后在 master 的 HANDOVER 写唯一 `entry-evidence-pointer:v1` block 并提交得到 **P**。机械证明 `A` 是 `P` 祖先，P 不合回执行分支、不定义 entry。 |
-| **T0.0d**（post-merge evidence validation） | **消费 T0.0e 已交付/版本化的 validator**：对 T0.0f 的真实 A／P／树外 manifest／15 原始 logs 跑绿；真实 evidence 缺失/不等即 fail-closed。**不在此实现 validator、不生成 15-run、不重跑其合成 EV mutation。** | validator 绿后产出可引用的 entry-evidence verdict/receipt，才允许执行树开始 T0.1／Commit 0。pointer 缺失／树外 manifest 缺失**一律 fail-closed，不是 warning**。 |
+| **T0.0d**（post-merge evidence validation） | **消费 T0.0e 已交付/版本化的 validator**：按 §0.4f 唯一 CLI 传入 T0.0f 的真实 A／P／树外 manifest／15 原始 logs 与绝对 `--receipt-out`，真实 evidence 缺失/不等即 fail-closed。**不在此实现 validator、不生成 15-run、不重跑其合成 EV mutation。** | validator C1～C10 全绿后原子写 `entry-evidence-receipt.json` v1；记录 receipt path/hash，才允许执行树开始 T0.1／Commit 0。pointer／manifest／receipt 任一缺失**一律 fail-closed，不是 warning**。 |
 
 **单一 validator 的输入**：
 
@@ -631,7 +653,7 @@ orphan IDs: none
 
 | id | 先写什么失败测试 → 预期怎么红 | 实现什么 → 预期怎么绿 |
 |---|---|---|
-| **T0.1** | **Commit 0 入场确认，不生成第二批 evidence。** 读取 T0.0d 的 versioned verdict/receipt，先注入一份 receipt 的 `ENTRY_SHA` 与当前执行树 HEAD 不同，必须在任何 C0 测试/实现前 fail-closed；再注入 receipt 缺失、validator verdict 非绿，各自必须点名阻断。 | 正确状态只做三项确认：① receipt 来自已版本化 T0.0e validator 对 T0.0f 真实 evidence 的 T0.0d 消费；② receipt 的 `ENTRY_SHA=A` 等于 `git -C "$TREE" rev-parse HEAD`；③当前树仍 clean。三项绿即允许开始 T0.2；**不在此重跑 15 次、不生成 manifest、不提交 pointer P**——这些唯一归属 T0.0f，避免两套 evidence 与因果环。 |
+| **T0.1** | **Commit 0 入场确认，不生成第二批 evidence。** 从 T0.0d stdout 记录的树外绝对路径读取 `entry-evidence-receipt.json` v1，重算 receipt hash；先分别注入 receipt 缺失、`entry_sha` 与当前执行树 HEAD 不同、`pointer_sha` 不可由 master 到达、manifest hash 漂移、validator blob 不同、`verdict != green`，必须在任何 C0 测试/实现前点名 fail-closed。 | 正确状态验证 receipt schema 严格、receipt hash 与 T0.0d 记录一致、`entry_sha=A == git -C "$TREE" rev-parse HEAD`、pointer/manifest/validator 版本仍一致、tree clean。全部绿才允许 T0.2；**不在此重跑 15 次、不生成 manifest/P/receipt**——T0.0f 生产 evidence/P，T0.0d 生产 receipt，避免双源与因果环。 |
 | **T0.2** | 先把 O-6 脚本在**未改动的 `$TREE`** 上跑一次，确认打印 `O-6 PASS`、rc=0、fixture blob 未变；再注入一字节，确认 rc=9。**这是 false-red／false-green 双向自检，不是形式**——该门此前恒真（脚本覆盖自己的基线、全脚本无 `cmp`），`4f7a3989` 才修好。 | 把这两条写进每 commit 检查清单，绑根方式照 §0.3 ②。**禁止 `RECAPTURE=1`**。<br>**先确认手上是修好的那份**：`grep -c 'O-6 PASS' exp/inter-block-anchor-allocator/byte-equivalence.sh` ≥1（**看文件存在不够**）。 |
 | **T0.3** | 写 handle-level physical recorder，**先让它在「什么都没包住」的状态下断言零 direct send**——此时断言平凡为真，是**假绿**。 | recorder 必须包裹 composition root 实际取得的 `stream`／`ws` handle 并**位于 raw emitter 之下**；再加一条 test-only direct-send seam，断言 recorder **确实看得见**绕过 owner 的发送。看不见就说明探测层装错了深度（RFC §10.1「探测深度必须与被测对象对齐」）。**注入 owner 的 test raw adapter 不用于本判定**。 |
 | **T0.4** | 对 warmup fake／drop 写真实 route behavior test：断言完整字节、upstream 零调用、delivery observer **零 session**、一次响应。**先在缺失 observer 的状态下跑**，确认「零 session」这条断言此刻还够不到 delivery 层。 | 接上 delivery session observer（`delivery/session.ts:74` 的 `setDeliverySessionObserverForTests`，**已存在，不用自己造**），四条断言转绿；mutation「提前创建 owner」或「双写」必须红。这是 **Q3 已裁方案 A**，是 §5 唯一没有现成 behavior witness 的出口，也是 composition-root 互斥性的 gatekeeper。 |
@@ -1162,7 +1184,7 @@ production 零改动（**按 T7.3 的 manifest 判，不是只扫 `src/`**）；
 | **T8.1** | README 的 C1～C11 回填：C2／C5／C6／C7／C9／C10／C11 属「措辞需扩展」，逐条按 §6.2 末列的「需要同步的权威位置」改。**先跑一遍 doc-vs-code claims 检查确认现状对不上**。<br>**另有两处 RFC 本体的同步，别落空**：①**RFC §10.2 的 R-6 行末列**仍是无分段的 `本RFC辅助门；Commit 1／6`，须按 2026-08-04 的裁决改成两段（C1 `辅助门` compile fixtures／C6 `production 硬门` import guard）；②凡描述「辅助门」处，措辞须与 §10.4 一致——**辅助门失败同样阻止交付**，两档差别只在能否升级 closure 等级。 | 回填完成。**C1／C3／C4／C8 语义不变，不得顺手改语义。** |
 | **T8.2** | 把 **anchor 精确帧序**登记为 C1～C11 **之外**的独立可观察契约（§6.3）：它不属于 C2（C2 只要求 `maxOpen<=1` 且 anchor stop 先于 real start，中间多一帧合法 keepalive 仍成立），也不属于 C7（C7 不规定 synthetic 帧相对 real start 的精确位置）。**先确认没有人把它包装成 C2／C7 的「实现细节」。** | 契约落盘。 |
 | **T8.3** | 同步 `docs/DESIGN.md` 的「活的架构现状」表与类型架构节。**先跑一次跨文档 grep 验证**（session-closeout §2）。 | 同步完成。 |
-| **T8.4** | 旧 plan supersede 关系：`docs/plan/2026-07-27-inter-block-anchor-allocator/` 的 M2～M4 mapping 步骤被本 RFC supersede；M5～M8 中 gap lifecycle／开门／多 gap **保留并重锚**；O-1～O-9 继续继承。**别把 supersede 写成删除**——§10.3 明写 O-9「绝不删除」。 | 注解完成。 |
+| **T8.4** | 旧 plan supersede 关系：`docs/plan/2026-07-27-inter-block-anchor-allocator/` 的 M2～M4 mapping 步骤被本 RFC supersede；M5～M8 中 gap lifecycle／开门／多 gap **保留并重锚**；O-1～O-9 继续继承。**别把 supersede 写成删除**——§10.3 明写 O-9「绝不删除」。同理，continuation ADR D2 的 replacement／审批仍归原计划 P8（design §8），本 RFC C8 **只核待办仍在，不出草案、不改 ADR、不把它当本次 closeout 停门**。 | 注解完成，P8 D2 待办仍可达。 |
 | **T8.5** | **旧 API disposition 与 doc-vs-code claims 审计**：对 M1 合入后的主线状态逐项确认（§0.1 列出的 M1 到货物是必查起点）。**并完成 HANDOVER 遗留的那件事**：先冻结一份权威文档 manifest（三个范围共 **122 份 Markdown**），再**按契约轴而非新 API 名**检索——index allocation/order/reuse/offset、anchor open/close/lifecycle、serializer/write/emit、synthetic provenance、winner/candidate/dispatch、heartbeat/escalation、continuation/recovery、History/telemetry；对 manifest 里**每一份**给 disposition，并对 C1–C11 与用户裁决做双向 trace。<br>⚠️ **「除上述外无冲突」这个否定性断言在本 plan 写作时并不成立**：HANDOVER 记录的五个检索词只命中 21／122 份，未命中的里面恰恰包括承载 C1／C4／C6／C7／C8、D2、continuation offset、anchor 生命周期与 P7／P8 的核心文档。**少命中不能证明无冲突。** | 审计表落盘。 |
 | **T8.6** | telemetry／History 文档与 deferred items 同步；`docs/todo/deferred-backlog.md` 记入 §8「范围外」表里归属它的两项（vendor 协议完整状态机、统一 `CompleteResponseEmitter`）。 | 同步完成。 |
 | **T8.7** | 独立 **merged-state review**（`review-merged-state`）：跨 phase 集成缝、doc↔code 对账、commit message 与内容是否相符。<br>**必查项**：①§11 各未裁项**都已在其触发点被真正裁掉**（不是「一路走过来没人拦」）；②RFC §10.2 的 R-6 行已按裁决改写（T8.1）；③本文与 RFC／矩阵三处对「辅助门是否阻断交付」的措辞一致。 | review 记录落盘。 |

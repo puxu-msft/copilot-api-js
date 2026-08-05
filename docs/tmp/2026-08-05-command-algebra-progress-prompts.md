@@ -15,7 +15,7 @@ session_id: 046d7295-e5ce-470b-a284-c721c6ce1cb8
 
 ## 剩余项
 
-- [ ] **首轮独立评审整改中**：执行方 4 blocker/5 major、判据侧 1 blocker/5 major。已回流第二层并修 T0.0f 因果归属、validator §0.4f 接口、Q5 T4.2 边界；纯 prompt 路径/DAG/停点/命令/checker 已在主会话整改，待复评。
+- [ ] **独立评审整改中**：首轮执行方 4 blocker/5 major、判据侧 1 blocker/5 major；二轮执行方 3 blocker/2 major/1 minor、判据侧 1 blocker/2 major。已回流第二层：T0.0f 因果归属、validator §0.4f CLI/schema/receipt、Q5 T4.2 边界；纯 prompt 路径/DAG/停点/命令/checker 已由主会话整改，待三轮复评。
 - [x] `prompts/README.md`：导航、阶段依赖 DAG、可并行边界、共享文件／合并顺序、通用红线
 - [x] Commit -1 self-contained prompt（T0.0a/b/c/e；独立 worktree；mutation hard rule；合 master）
 - [x] post-merge entry-evidence preflight prompt（A／15 runs／manifest／P／T0.0d）
