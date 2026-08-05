@@ -25,7 +25,7 @@
  * added; run `--update` occasionally to refresh.
  */
 import { Glob } from "bun"
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs"
 import os from "node:os"
 import path from "node:path"
 
@@ -117,21 +117,47 @@ if (update) await refreshTimings(files)
 const timings = await loadTimings()
 const n = Math.min(files.length, os.cpus().length)
 const buckets = balance(files, timings, n)
-const artifactDir = process.env.PARALLEL_TEST_ARTIFACT_DIR ?? mkdtempSync(path.join(os.tmpdir(), "parallel-test-"))
-mkdirSync(artifactDir, { recursive: true })
+const requestedArtifactDir = process.env.PARALLEL_TEST_ARTIFACT_DIR
+const artifactDir = requestedArtifactDir ?? mkdtempSync(path.join(os.tmpdir(), "parallel-test-"))
+if (requestedArtifactDir) {
+  if (!path.isAbsolute(requestedArtifactDir)) {
+    console.error("[parallel-test] PARALLEL_TEST_ARTIFACT_DIR must be absolute")
+    process.exit(2)
+  }
+  if (existsSync(requestedArtifactDir) && readdirSync(requestedArtifactDir).length > 0) {
+    console.error(`[parallel-test] PARALLEL_TEST_ARTIFACT_DIR must be absent or empty: ${requestedArtifactDir}`)
+    process.exit(2)
+  }
+  mkdirSync(requestedArtifactDir, { recursive: true })
+}
 
 const start = performance.now()
 const procs = buckets.map((bucket, index) => {
-  const junitPath = path.join(artifactDir, `shard-${String(index + 1).padStart(2, "0")}.xml`)
-  return Bun.spawn(["bun", "test", "--reporter=junit", `--reporter-outfile=${junitPath}`, ...bucket], { cwd: REPO_ROOT, stdout: "pipe", stderr: "pipe" })
+  const junitName = `shard-${String(index + 1).padStart(2, "0")}.xml`
+  const junitPath = path.join(artifactDir, junitName)
+  const temporaryJunitPath = path.join(artifactDir, `.${junitName}.tmp`)
+  return {
+    bucket,
+    junitPath,
+    temporaryJunitPath,
+    process: Bun.spawn(["bun", "test", "--reporter=junit", `--reporter-outfile=${temporaryJunitPath}`, ...bucket], {
+      cwd: REPO_ROOT,
+      stdout: "pipe",
+      stderr: "pipe",
+    }),
+  }
 })
 const results = await Promise.all(
-  procs.map(async (p, i) => ({
-    bucket: buckets[i],
-    code: await p.exited,
-    junitPath: path.join(artifactDir, `shard-${String(i + 1).padStart(2, "0")}.xml`),
-    err: (await new Response(p.stderr).text()) + (await new Response(p.stdout).text()),
-  })),
+  procs.map(async ({ bucket, junitPath, temporaryJunitPath, process }) => {
+    const code = await process.exited
+    if (existsSync(temporaryJunitPath)) renameSync(temporaryJunitPath, junitPath)
+    return {
+      bucket,
+      code,
+      junitPath,
+      err: (await new Response(process.stderr).text()) + (await new Response(process.stdout).text()),
+    }
+  }),
 )
 const wall = ((performance.now() - start) / 1000).toFixed(2)
 
@@ -151,6 +177,12 @@ for (const r of crashed) {
   )
   const rerun = Bun.spawnSync(["bun", "test", "--isolate", ...r.bucket], { cwd: REPO_ROOT, stdout: "inherit", stderr: "inherit" })
   if (rerun.exitCode !== 0) process.stderr.write(`[parallel-test] isolated re-run of crashed bucket exited ${rerun.exitCode}\n`)
+}
+
+function writeArtifactAtomically(filePath: string, body: string): void {
+  const temporaryPath = path.join(path.dirname(filePath), `.${path.basename(filePath)}.tmp`)
+  writeFileSync(temporaryPath, body)
+  renameSync(temporaryPath, filePath)
 }
 
 const identities = results.map((result) => {
@@ -173,8 +205,11 @@ if (fileComparison.missing.length > 0 || fileComparison.unexpected.length > 0) {
 const executed = parsedIdentities.reduce((sum, identity) => sum + identity.executed, 0)
 const skipped = parsedIdentities.reduce((sum, identity) => sum + identity.skipped, 0)
 const skippedIdentities = parsedIdentities.flatMap((identity) => identity.skippedIdentities)
-writeFileSync(path.join(artifactDir, "runtime-identity.json"), `${JSON.stringify({ files: [...runtimeFiles].sort() }, null, 2)}\n`)
-writeFileSync(path.join(artifactDir, "skipped-multiset.json"), `${JSON.stringify({ executed, skipped, skipped_identities: skippedIdentities }, null, 2)}\n`)
+writeArtifactAtomically(path.join(artifactDir, "runtime-identity.json"), `${JSON.stringify({ files: [...runtimeFiles].sort() }, null, 2)}\n`)
+writeArtifactAtomically(
+  path.join(artifactDir, "skipped-multiset.json"),
+  `${JSON.stringify({ executed, skipped, skipped_identities: skippedIdentities }, null, 2)}\n`,
+)
 
 // Aggregate the per-shard pass/fail tallies. `tests` is derived from pass+fail so it
 // can never disagree with them (bun prints pass/fail on their own lines per shard).

@@ -81,6 +81,11 @@ if [ "$#" -gt 0 ]; then CMD=("$@"); else CMD=(bun scripts/parallel-test.ts unit 
 CMD_DISPLAY="$(printf '%q ' "${CMD[@]}")"
 ALLOW_DIRTY="${ALLOW_DIRTY:-0}"
 STOP_ON_FAIL="${STOP_ON_FAIL:-1}"
+REQUIRE_TEST_ARTIFACTS="${REQUIRE_TEST_ARTIFACTS:-0}"
+case "$REQUIRE_TEST_ARTIFACTS" in
+  0|1) ;;
+  *) printf 'baseline-runs: REQUIRE_TEST_ARTIFACTS must be 0 or 1, got %s\n' "$REQUIRE_TEST_ARTIFACTS" >&2; exit 2 ;;
+esac
 if [ -z "${MIN_TESTS:-}" ]; then
   printf 'baseline-runs: MIN_TESTS is required -- name the test count you expect at this commit.\n' >&2
   printf 'There is no default on purpose: MIN_TESTS=1 passes a degenerate run reporting "1 tests".\n' >&2
@@ -142,6 +147,14 @@ printf 'baseline-runs: %s runs of [%s] at %s (%s)\n' \
 failed=0
 for i in $(seq 1 "$RUNS"); do
   log="$(printf '%s/run-%02d.log' "$OUT_DIR" "$i")"
+  artifact_dir=""
+  if [ "$REQUIRE_TEST_ARTIFACTS" = "1" ]; then
+    artifact_dir="$(printf '%s/run-%02d-artifacts' "$OUT_DIR" "$i")"
+    if [ -e "$artifact_dir" ]; then
+      printf 'baseline-runs: artifact directory already exists: %s\n' "$artifact_dir" >&2
+      exit 2
+    fi
+  fi
   {
     printf 'evidence_timing=%s\n' "$EVIDENCE_TIMING"
     printf 'measured_sha=%s\n' "$head_sha"
@@ -153,6 +166,7 @@ for i in $(seq 1 "$RUNS"); do
     printf '=== tree         : %s\n' "$([ -n "$(git -C "$REPO" status --porcelain)" ] && echo DIRTY || echo clean)"
     git -C "$REPO" status --porcelain | sed 's/^/=== dirt         : /'
     printf '=== command      : %s\n' "$CMD_DISPLAY"
+    if [ "$REQUIRE_TEST_ARTIFACTS" = "1" ]; then printf 'artifact_dir=%s\n' "$artifact_dir"; fi
     printf '=== resolves to  : %s\n' "$(command -v "${CMD[0]}" 2>/dev/null || echo '<not on PATH>')"
     printf '=== version      : %s\n' "$("${CMD[0]}" --version 2>&1 | head -1)"
     printf '=== PATH         : %s\n' "$PATH"
@@ -163,7 +177,11 @@ for i in $(seq 1 "$RUNS"); do
   before_head="$(git -C "$REPO" rev-parse HEAD)"
   start=$(date +%s)
   # No pipe into tee: tee's status would mask the suite's. Append, then read back.
-  ( cd "$REPO" && FORCE_COLOR=0 "${CMD[@]}" ) >> "$log" 2>&1
+  if [ "$REQUIRE_TEST_ARTIFACTS" = "1" ]; then
+    ( cd "$REPO" && FORCE_COLOR=0 PARALLEL_TEST_ARTIFACT_DIR="$artifact_dir" "${CMD[@]}" ) >> "$log" 2>&1
+  else
+    ( cd "$REPO" && FORCE_COLOR=0 "${CMD[@]}" ) >> "$log" 2>&1
+  fi
   rc=$?
   end=$(date +%s)
   after_tree="$(git -C "$REPO" status --porcelain)"
@@ -237,6 +255,15 @@ for i in $(seq 1 "$RUNS"); do
     if [ "$STOP_ON_FAIL" = "1" ]; then
       printf 'baseline-runs: run %02d exited %d; stopping. Log: %s\n' "$i" "$rc" "$log" >&2
       exit 1
+    fi
+  fi
+
+  if [ "$rc" -eq 0 ] && [ "$REQUIRE_TEST_ARTIFACTS" = "1" ]; then
+    shard_count="$(find "$artifact_dir" -maxdepth 1 -type f -name 'shard-*.xml' | wc -l)"
+    if [ ! -d "$artifact_dir" ] || [ "$shard_count" -lt 1 ] || [ ! -f "$artifact_dir/runtime-identity.json" ] || [ ! -f "$artifact_dir/skipped-multiset.json" ]; then
+      failed=$((failed + 1))
+      printf 'baseline-runs: run %02d missing required test artifacts in %s\n' "$i" "$artifact_dir" >&2
+      if [ "$STOP_ON_FAIL" = "1" ]; then exit 1; fi
     fi
   fi
 done
