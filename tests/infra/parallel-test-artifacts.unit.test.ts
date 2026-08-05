@@ -15,6 +15,15 @@ describe("parallel-test JUnit artifact parsing", () => {
     })
   })
 
+  test("retains a whole-suite skipped file that has no testcase rows", () => {
+    const identities = parseJUnit(
+      `<?xml version="1.0"?><testsuites><testsuite name="tests/native.unit.test.ts" file="tests/native.unit.test.ts" tests="0" skipped="1"/></testsuites>`,
+      "/repo",
+    )
+
+    expect(identities.files).toEqual(["tests/native.unit.test.ts"])
+  })
+
   test("assigns ordinal and skip identity from real JUnit testcase rows", () => {
     const identities = parseJUnit(
       `<?xml version="1.0"?><testsuites><testsuite name="suite"><testcase classname="suite" name="same" file="/repo/tests/a.unit.test.ts"/><testcase classname="suite" name="same" file="/repo/tests/a.unit.test.ts"><skipped/></testcase></testsuite></testsuites>`,

@@ -40,6 +40,13 @@ export function parseJUnit(xml: string, repoRoot: string): JUnitIdentities {
   let executed = 0
   let skippedCount = 0
 
+  // Bun represents a fully skipped file as a testsuite with no testcase rows. The
+  // suite-level file attribute is therefore part of the runtime file identity set.
+  for (const suite of xml.matchAll(/<testsuite\b([^>]*)\/?\>/g)) {
+    const rawFile = attribute(suite[1], "file")
+    if (rawFile) files.add(toRepoRelative(rawFile, repoRoot))
+  }
+
   for (const testcase of xml.matchAll(/<testcase\b([^>]*?)(?:\/>|>([\s\S]*?)<\/testcase>)/g)) {
     const attributes = testcase[1]
     const body = testcase[2] ?? ""
