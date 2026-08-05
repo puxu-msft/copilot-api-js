@@ -529,8 +529,12 @@ cd /home/xp/src/copilot-api-js && bun run scripts/capture-entry-evidence.ts \
 - `minimum_executed`：非负整数，由 Commit -1 的独立 discovery/JUnit oracle 在**正确正样本**上冻结；不得读 T0.0f 的 15-run 输出生成。
 - `runner_git_blob` 必须等于 entry A 中 `scripts/parallel-test.ts` 的 `git rev-parse "${ENTRY_SHA}:scripts/parallel-test.ts"`；不等说明用另一把尺子量 evidence。
 - 文件编码 UTF-8、LF、2-space JSON、末尾单个 `\n`；顶层 key 顺序固定为上例，条目 key 顺序固定为上例。消费者既验证解析语义，也对原始 bytes 取 hash；禁止“语义相同就重写 baseline”绕过审计。
-- producer 机械确认 `git -C "$TREE" rev-parse HEAD == ENTRY_SHA` 且 tree clean；每次实际 shard 生成 JUnit，逐次与 discovery baseline 对账；显式调用树内 `baseline-runs.sh`（`EVIDENCE_TIMING=closeout`、`RUNS=15`、`MIN_TESTS=minimum_executed`）。
-- 全部 15 次绿后才原子写 `OUT/evidence-manifest.json` v1；任何 run／identity／skip／HEAD/tree 漂移时非零退出且**不得留下 manifest**。稳定退出码：`0`=manifest 原子写入；`2`=CLI/path/schema；`3`=entry/tree；`4`=discovery baseline；`5`=run/JUnit/identity；`6`=manifest 写入。stdout 只打印 `manifest=<绝对路径>` 与 `manifest_sha256=<hex>`。
+- **runner→baseline wrapper→producer 的 artifact transfer 是冻结接口，不是实现细节**：
+  1. `scripts/parallel-test.ts` 接受环境变量 `PARALLEL_TEST_ARTIFACT_DIR=<绝对路径>`。设置时，该目录必须在启动前不存在或为空；runner 创建它，并原子写 `shard-01.xml`…`shard-NN.xml`、`runtime-identity.json`、`skipped-multiset.json`。未设置时可使用临时目录，但该次输出**不得**用于 entry evidence。
+  2. `baseline-runs.sh` 在 `REQUIRE_TEST_ARTIFACTS=1` 时，对第 `NN` 次运行设置 `PARALLEL_TEST_ARTIFACT_DIR="$OUT/run-NN-artifacts"`，在同一份 `run-NN.log` 写 `artifact_dir=<绝对路径>`；command rc=0 后仍须核该目录存在、至少一份 shard JUnit 以及两个派生 JSON，缺失即该 run fail。未设置 `REQUIRE_TEST_ARTIFACTS=1` 时维持普通重复运行语义。
+  3. `capture-entry-evidence.ts` **必须**以 `REQUIRE_TEST_ARTIFACTS=1` 调用树内 `baseline-runs.sh`，只接受每份 log 声明的 artifact dir；不得扫描 `/tmp` 猜目录、复用 `refreshTimings()` JUnit、或把 runner stdout 当 file identity。每个 run 的 manifest 条目列出该目录下全部 shard JUnit path/hash，以及 runtime/skipped JSON path/hash。
+- producer 机械确认 `git -C "$TREE" rev-parse HEAD == ENTRY_SHA` 且 tree clean；每次实际 shard 生成 JUnit，逐次与 discovery baseline 对账；显式调用树内 `baseline-runs.sh`（`EVIDENCE_TIMING=closeout`、`REQUIRE_TEST_ARTIFACTS=1`、`RUNS=15`、`MIN_TESTS=minimum_executed`）。
+- 全部 15 次绿且 artifact transfer 完整后才原子写 `OUT/evidence-manifest.json` v1；任何 run／identity／skip／artifact／HEAD/tree 漂移时非零退出且**不得留下 manifest**。稳定退出码：`0`=manifest 原子写入；`2`=CLI/path/schema；`3`=entry/tree；`4`=discovery baseline；`5`=run/JUnit/identity/artifact transfer；`6`=manifest 写入。stdout 只打印 `manifest=<绝对路径>` 与 `manifest_sha256=<hex>`。
 - producer **不修改 HANDOVER、不执行 git commit**。T0.0f 在 producer rc=0 后，按下方 pointer v1 语法更新 master HANDOVER 并显式提交 P。
 
 **版本化 validator 路径与 CLI（由 T0.0e 在 Commit -1 实现，T0.0d 原样消费；prompts 不得另造接口）**：
@@ -602,8 +606,12 @@ archive_path=<可为空；归档副本不定义 entry>
       "ordinal": 1,
       "log_path": "<绝对路径>",
       "log_sha256": "<hex>",
-      "junit_path": "<绝对路径>",
-      "junit_sha256": "<hex>",
+      "artifact_dir": "<绝对路径>",
+      "junit_artifacts": [
+        { "path": "<绝对路径/shard-01.xml>", "sha256": "<hex>" }
+      ],
+      "runtime_identity": { "path": "<绝对路径/runtime-identity.json>", "sha256": "<hex>" },
+      "skipped_multiset": { "path": "<绝对路径/skipped-multiset.json>", "sha256": "<hex>" },
       "executed": 0,
       "skipped": 0,
       "verdict": "green"
@@ -612,7 +620,7 @@ archive_path=<可为空；归档副本不定义 entry>
 }
 ```
 
-`runs` **恰 15 项**，`ordinal` 恰为 1～15 且不重复。file identity 与 skipped identity 不信 manifest 摘要，由 validator 从每份原始 JUnit 重算；`canonical_command`、三 intent 字段与 verdict 从每份原始 log 重取。pointer／manifest／raw artifacts 任一缺失即 fail-closed。
+`runs` **恰 15 项**，`ordinal` 恰为 1～15 且不重复。每项 `junit_artifacts` 非空、path 唯一并按 basename bytewise 排序；`artifact_dir` 必须是该 run 的树外目录，全部 JUnit/runtime/skipped path 必须位于其下。file identity 与 skipped identity 不信 manifest 摘要，由 validator 从每份原始 shard JUnit 和两个派生 JSON 重算；`canonical_command`、三 intent 字段、`artifact_dir` 与 verdict 从每份原始 log 重取。pointer／manifest／raw artifacts 任一缺失即 fail-closed。
 
 **因果相位（已裁 Git 图）**：Commit -1 在独立树收口 → 合 master 得 **A** → 从 A 建 cutover worktree → **T0.0f 在 A 上生成树外 15-run/JUnit／manifest，并在 master 提交 pointer P** → **T0.0d 消费这些真实 evidence** → 才允许执行树进入 T0.1／Commit 0。
 

@@ -17,7 +17,7 @@ session_id: 046d7295-e5ce-470b-a284-c721c6ce1cb8
 
 - [ ] T0.0a：真实 shard JUnit file identity 与独立 disk manifest 双向对账；post-balance 删文件 mutation 点名红
 - [~] T0.0b：已裁 canonical skipped representation 为判别联合：testcase skip=`file+classname+name+ordinal`，whole-suite skip=`file+suite_name`，禁止伪造 sentinel；implementer 继续完成 multiset/baseline/mutations
-- [ ] T0.0c：reporter/merge wiring mutations；实现/version `scripts/capture-entry-evidence.ts` 与 discovery baseline v1
+- [~] T0.0c：已裁 runner→wrapper→producer artifact transfer：`PARALLEL_TEST_ARTIFACT_DIR` / `REQUIRE_TEST_ARTIFACTS=1` / per-run artifact_dir 日志；继续 reporter/merge mutations、producer 与 baseline v1
 - [ ] T0.0e：实现/version `scripts/validate-entry-evidence.ts`；合成 git/evidence fixtures；EV-01～EV-28
 - [ ] Commit -1 门表：typecheck、基础设施 tests、全部目标 mutation、test:backend、独立 review
 
