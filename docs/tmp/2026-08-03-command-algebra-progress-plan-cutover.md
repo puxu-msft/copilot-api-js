@@ -29,6 +29,20 @@ session_id: 046d7295-e5ce-470b-a284-c721c6ce1cb8
 - [ ] **复评**：本轮改动需再过一轮。
 - [ ] **未决裁决**：plan §11 状态表——#2／#3（Q1 与 §4.8）／#5（R-5 归属）／#6（`OwnerTerminalDecision`）。**#6 的触发点本轮从 Commit 4 提前到 T1.6**。
 
+## 第十二轮整改（用户裁 Commit -1 拓扑 + 执行方第 6 轮 2 major）
+
+- **用户裁已落两处**：plan §11 #4 与 HANDOVER「用户已裁决」表，来源严格保留 AskUserQuestion 选项文本 **「Commit -1 先合 master（推荐）」**。图不是口号，写成可检验 sequence：-1 独立 tree 过门 → 合 master → A → A 的 cutover tree → 外置 15 次 → master P，且 `A` 是 `P` 祖先、P 不合回执行分支。
+- **Commit -1 mutation protocol**：T0.0a/b/c 不在将成为 entry 的 `$TREE` 上变异；A 路径是含真实实现的第二隔离 worktree／`/tmp` repo，B 路径是 exact patch + `git apply --reverse --check` + 恢复后 diff。**先证 hunk 真变，再读 FAIL 来自目标机制**，只看 rc 不算。
+- **evidence 消费侧 fail-closed 门补为 T0.0d**：validator 逐条验证 master HANDOVER pointer、树外 manifest existence/hash、`manifest.measured_sha == progress.base == A`、恰 15 logs hash/字段/绿 verdict、集合 hash；manifest 被清理即 blocker。并拆成四个可解析 task ID 行，checker 差集为空。
+- **显式 timing**：O-6 开发／收口命令均设 `EVIDENCE_TIMING=dev|closeout`，baseline 15 次显式 `closeout`，不依赖默认值。
+
+## 第十一轮整改（用户裁 Commit -1 拓扑 + 执行方第 6 轮 2 major）
+
+- **用户裁决已落 §11 + HANDOVER**：来源严格写 AskUserQuestion 选项文本 **「Commit -1 先合 master（推荐）」**，不编自由文本。图固定：Commit -1 独立 worktree 过自身门 → 先合 master → 合入后 master SHA=A 建 cutover worktree → 树外 OUT 对 A 跑 15 次 → master 提交 pointer P（`A` 是 `P` 祖先）→ cutover 仍从 A 开始 C0、**P 不合回执行分支**。旧 15 次作废。
+- **Commit -1 不再是 T0.1 右栏的一句话**：显式 `T0.0a/b/c`、独立 TDD／门表／收口。三类 mutation 都必须走 §0.4e 共同 protocol：**包含真实实现的第二隔离树／`/tmp` repo，或 exact patch + reverse check**；先证 hunk 真变、再读目标 FAIL；禁止从不含实现的基线恢复、禁止共享树整文件覆盖。它们使用 parseable task ID，矩阵拆成三行，checker plan/matrix task 差集为空。
+- **evidence 消费门**：树外 manifest 的结构、pointer 的固定路径与语义已经写清；尚需执行期实际生成后按 plan 的 fail-closed validator 消费（pointer/manifest hash/A=progress.base/15 logs 三字段与 hashes）。**缺树外 manifest 不是 warning，是 blocker**。
+- **timing 默认已排除**：所有 plan 运行命令显式 `EVIDENCE_TIMING=dev|closeout`；不依赖 baseline closeout／O-6 dev 的不同默认。
+
 ## 第十轮整改（协调者前置脚本已落 + 执行方第 5 轮 2 major）
 
 - **`d7f6c222` 已实装结构化 intent**：plan 不再写「字段需求」，改为实际格式 `evidence_timing=dev|closeout`／`measured_sha=<40 位小写 SHA>`／`claims_current_head=true`。baseline 两模式 stdout + 每 run log 字段 SHA=HEAD 已验证；O-6 真请求两次 HTTP 500，故只声称**字段路径正确**，不借成完整 PASS。
