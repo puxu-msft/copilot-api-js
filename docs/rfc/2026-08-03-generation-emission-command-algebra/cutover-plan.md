@@ -612,7 +612,7 @@ archive_path=<可为空；归档副本不定义 entry>
 | id | 先写什么失败测试 → 预期怎么红 | 实现什么 → 预期怎么绿 |
 |---|---|---|
 | **T0.0f**（post-merge evidence production） | 在完整 `ENTRY_SHA=A`、干净的 A worktree 与 Commit -1 已交付 producer/runner/validator 上，先证明没有真实 manifest 时 T0.0d fail-closed；再**原样调用 §0.4f 冻结 CLI**：`bun run scripts/capture-entry-evidence.ts --tree "$TREE" --entry-sha "$ENTRY_SHA" --out "$OUT" --runs 15 --discovery-baseline tests/infra/entry-test-discovery-baseline.json`。任一 run 非绿、identity/skip 集漂移、HEAD/tree 漂移都必须中止，**不得留下 manifest 或生成 pointer P**。 | producer rc=0 后取得树外 `evidence-manifest.json` 与 hash；在 master HANDOVER 写唯一 `entry-evidence-pointer:v1` block并显式提交得到 **P**。机械证明 A 是 P 祖先，P 不合回执行分支、不定义 entry。**T0.0f 不现场实现 producer/schema。** |
-| **T0.0d**（post-merge evidence validation） | **消费 T0.0e 已交付/版本化的 validator**：按 §0.4f 唯一 CLI 传入 T0.0f 的真实 A／P／树外 manifest／15 原始 logs 与绝对 `--receipt-out`，真实 evidence 缺失/不等即 fail-closed。**不在此实现 validator、不生成 15-run、不重跑其合成 EV mutation。** | validator C1～C10 全绿后原子写 `entry-evidence-receipt.json` v1；记录 receipt path/hash，才允许执行树开始 T0.1／Commit 0。pointer／manifest／receipt 任一缺失**一律 fail-closed，不是 warning**。 |
+| **T0.0d**（post-merge evidence validation） | **消费 T0.0e 已交付/版本化的 validator**：按 §0.4f 唯一 CLI 传入 T0.0f 的真实 A／P／树外 manifest／15 原始 logs 与绝对 `--receipt-out`，真实 evidence 缺失/不等即 fail-closed。**不在此实现 validator、不生成 15-run、不重跑其合成 EV mutation。** | validator **C1～C11 全绿后**原子写 `entry-evidence-receipt.json` v1；C11 失败时不得留下 green/半份 receipt；记录 receipt path/hash，才允许执行树开始 T0.1／Commit 0。pointer／manifest／receipt 任一缺失**一律 fail-closed，不是 warning**。 |
 
 **单一 validator 的输入**：
 

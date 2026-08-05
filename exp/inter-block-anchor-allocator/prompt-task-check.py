@@ -58,7 +58,7 @@ def plan_task_definitions(text: str) -> list[tuple[str, str]]:
             in_table = False
             continue
         if line.startswith("### ") and not line.startswith("#### "):
-            if "逐 task" in line:
+            if line == "### 逐 task":
                 commit = commit_h2.match(current_h2)
                 in_table = bool(commit)
                 table_owner = (
@@ -67,14 +67,17 @@ def plan_task_definitions(text: str) -> list[tuple[str, str]]:
                     else ""
                 )
             else:
+                # "历史逐 task 表" is intentionally not a live definition
+                # source. Substring matching let a same-Commit archive table
+                # keep a removed task alive.
                 current_h3 = line
                 in_table = False
                 table_owner = ""
             continue
         if line.startswith("#### "):
-            # Post-merge tasks live under the one non-Commit definition owner,
-            # section 0.4f. No other h4 "逐 task" heading is authoritative.
-            in_table = "逐 task" in line and current_h3.startswith("### 0.4f ")
+            # The post-merge table has one exact canonical heading. A historical
+            # heading that merely contains these words is not authoritative.
+            in_table = line == "#### Post-merge 逐 task" and current_h3.startswith("### 0.4f ")
             table_owner = "post-merge-preflight.md" if in_table else ""
             continue
         if not in_table:

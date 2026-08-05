@@ -30,7 +30,7 @@ T0.0f 任一 run 非绿、identity/skip 集漂移、HEAD/tree 漂移时立即停
 | baseline structured log fields | `exp/inter-block-anchor-allocator/baseline-runs.sh:134-148` | 每 run 的 `evidence_timing`/`measured_sha`/`claims_current_head` 原始格式 |
 | HANDOVER 已裁图 | `docs/plan/2026-07-27-inter-block-anchor-allocator/HANDOVER.md`「用户已裁决」表 | pointer P 的唯一状态线 |
 
-完整十行 validator 条件/EV mapping 的唯一事实源是 `docs/rfc/2026-08-03-generation-emission-command-algebra/cutover-plan.md` §0.4f。
+完整十一行 validator 条件/EV mapping（含 discovery baseline C11） 的唯一事实源是 `docs/rfc/2026-08-03-generation-emission-command-algebra/cutover-plan.md` §0.4f。
 
 ## 本 phase task 集合（唯一归属）
 
