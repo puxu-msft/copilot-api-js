@@ -12,6 +12,19 @@ BASELINE="$DIR/pre-change-wire.sse"
 RECAPTURE="${RECAPTURE:-0}"
 CAPTURE="${CAPTURE_OVERRIDE:-$WORK_DIR/current-wire.sse}"
 LOG="$WORK_DIR/server.log"
+EVIDENCE_TIMING="${EVIDENCE_TIMING:-dev}"
+case "$EVIDENCE_TIMING" in
+  dev|closeout) ;;
+  *)
+    printf 'EVIDENCE_TIMING must be dev or closeout, got %s\n' "$EVIDENCE_TIMING" >&2
+    exit 2
+    ;;
+esac
+MEASURED_SHA="$(git -C "$REPO" rev-parse HEAD 2>/dev/null || true)"
+if [[ ! "$MEASURED_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+  printf 'cannot resolve a full measured_sha from %s\n' "$REPO" >&2
+  exit 2
+fi
 PID_FILE="$WORK_DIR/server.pid"
 HOOK_MARKER='msg_allocator_baseline'
 HOOK_TEXT='allocator baseline'
@@ -128,10 +141,17 @@ trap cleanup EXIT INT TERM
 # forbade -- or to edit this script from inside a cutover commit.
 # `cd` does not move it: REPO comes from this file's own location, so the gate
 # measures whichever tree holds the copy you invoked.
+# Structured evidence intent. Consumers MUST read these exact fields rather
+# than infer self-reference by grepping prose for a SHA spelling. The output
+# claims the current HEAD by construction, so it is self-referential and must
+# stay outside the measured tree if it is archived verbatim.
+printf 'evidence_timing=%s\n' "$EVIDENCE_TIMING"
+printf 'measured_sha=%s\n' "$MEASURED_SHA"
+printf 'claims_current_head=true\n'
 printf 'repo=%s\n' "$REPO"
 printf 'server_entry=%s\n' "$REPO/packages/cli/src/main.ts"
 printf 'head=%s tree=%s\n' \
-  "$(git -C "$REPO" rev-parse --short HEAD 2>/dev/null || echo '<not a repo>')" \
+  "$MEASURED_SHA" \
   "$([ -n "$(git -C "$REPO" status --porcelain 2>/dev/null)" ] && echo DIRTY || echo clean)"
 
 XDG_DATA_HOME="$WORK_DIR" NODE_ENV=production bun run "$REPO/packages/cli/src/main.ts" start --port "$PORT" > "$LOG" 2>&1 &

@@ -121,6 +121,21 @@ if [ -n "$dirty" ] && [ "$ALLOW_DIRTY" != "1" ]; then
 fi
 
 head_sha="$(git -C "$REPO" rev-parse HEAD)"
+if [[ ! "$head_sha" =~ ^[0-9a-f]{40}$ ]]; then
+  printf 'baseline-runs: expected a full 40-character measured sha, got %s\n' "$head_sha" >&2
+  exit 2
+fi
+EVIDENCE_TIMING="${EVIDENCE_TIMING:-closeout}"
+case "$EVIDENCE_TIMING" in
+  dev|closeout) ;;
+  *) printf 'baseline-runs: EVIDENCE_TIMING must be dev or closeout, got %s\n' "$EVIDENCE_TIMING" >&2; exit 2 ;;
+esac
+# Structured intent: every log produced by this batch asserts that its
+# measured_sha was HEAD at generation time. Archive these logs outside the
+# measured tree; copying them into a later commit does not redefine entry.
+printf 'evidence_timing=%s\n' "$EVIDENCE_TIMING"
+printf 'measured_sha=%s\n' "$head_sha"
+printf 'claims_current_head=true\n'
 printf 'baseline-runs: %s runs of [%s] at %s (%s)\n' \
   "$RUNS" "$CMD_DISPLAY" "${head_sha:0:8}" "$([ -n "$dirty" ] && echo DIRTY || echo clean)"
 
@@ -128,6 +143,9 @@ failed=0
 for i in $(seq 1 "$RUNS"); do
   log="$(printf '%s/run-%02d.log' "$OUT_DIR" "$i")"
   {
+    printf 'evidence_timing=%s\n' "$EVIDENCE_TIMING"
+    printf 'measured_sha=%s\n' "$head_sha"
+    printf 'claims_current_head=true\n'
     printf '=== run          : %d of %d\n' "$i" "$RUNS"
     printf '=== started      : %s\n' "$(date -Is)"
     printf '=== repo         : %s\n' "$REPO"
