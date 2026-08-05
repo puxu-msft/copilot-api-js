@@ -65,6 +65,42 @@ describe("translateResponsesToAnthropicRequest — top-level envelope", () => {
     const result = translateResponsesToAnthropicRequest(payload)
     expect(result.messages).toEqual([{ role: "user", content: "hello there" }])
   })
+
+  test("drops a builtin tool choice when the corresponding builtin tool has no Anthropic mapping", () => {
+    const result = translateResponsesToAnthropicRequest(
+      responsesPayload([userMessage("search")], {
+        tools: [{ type: "web_search" }],
+        tool_choice: { type: "web_search" },
+      }),
+    )
+
+    expect(result.tools).toBeUndefined()
+    expect(result.tool_choice).toBeUndefined()
+  })
+
+  test("drops required when every Responses tool is unsupported on the Anthropic leg", () => {
+    const result = translateResponsesToAnthropicRequest(
+      responsesPayload([userMessage("search")], {
+        tools: [{ type: "web_search" }],
+        tool_choice: "required",
+      }),
+    )
+
+    expect(result.tools).toBeUndefined()
+    expect(result.tool_choice).toBeUndefined()
+  })
+
+  test("drops a named function choice when no translated Anthropic tool has that name", () => {
+    const result = translateResponsesToAnthropicRequest(
+      responsesPayload([userMessage("x")], {
+        tools: [{ type: "function", name: "present", parameters: { type: "object" } }],
+        tool_choice: { type: "function", name: "missing" },
+      }),
+    )
+
+    expect(result.tools).toEqual([{ name: "present", input_schema: { type: "object" } }])
+    expect(result.tool_choice).toBeUndefined()
+  })
 })
 
 describe("translateResponsesToAnthropicRequest — FOLD correctness (critical, phase-2-audit §③ new finding)", () => {
@@ -341,10 +377,15 @@ describe("translateResponsesToAnthropicRequest — tools / tool_choice (equivale
   })
 
   test("tool_choice vocabulary: auto/required/none/named", () => {
-    expect(translateResponsesToAnthropicRequest(responsesPayload([userMessage("x")], { tool_choice: "auto" })).tool_choice).toEqual({ type: "auto" })
-    expect(translateResponsesToAnthropicRequest(responsesPayload([userMessage("x")], { tool_choice: "required" })).tool_choice).toEqual({ type: "any" })
-    expect(translateResponsesToAnthropicRequest(responsesPayload([userMessage("x")], { tool_choice: "none" })).tool_choice).toEqual({ type: "none" })
-    expect(translateResponsesToAnthropicRequest(responsesPayload([userMessage("x")], { tool_choice: { type: "function", name: "f" } })).tool_choice).toEqual({
+    const withFunction = (toolChoice: ResponsesPayload["tool_choice"]) =>
+      responsesPayload([userMessage("x")], {
+        tools: [{ type: "function", name: "f", parameters: { type: "object" } }],
+        tool_choice: toolChoice,
+      })
+    expect(translateResponsesToAnthropicRequest(withFunction("auto")).tool_choice).toEqual({ type: "auto" })
+    expect(translateResponsesToAnthropicRequest(withFunction("required")).tool_choice).toEqual({ type: "any" })
+    expect(translateResponsesToAnthropicRequest(withFunction("none")).tool_choice).toEqual({ type: "none" })
+    expect(translateResponsesToAnthropicRequest(withFunction({ type: "function", name: "f" })).tool_choice).toEqual({
       type: "tool",
       name: "f",
     })

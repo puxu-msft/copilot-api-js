@@ -118,10 +118,47 @@ describe("translateResponsesToChatCompletions", () => {
     const result = translateResponsesToChatCompletions({
       model: "m",
       input: "x",
+      tools: [{ type: "function", name: "f", parameters: { type: "object" } }],
       tool_choice: { type: "function", name: "f" },
     } satisfies ResponsesPayload)
 
     expect(result.tool_choice).toEqual({ type: "function", function: { name: "f" } })
+  })
+
+  test("drops a builtin tool choice when the corresponding builtin tool is unsupported by the CC fallback", () => {
+    const result = translateResponsesToChatCompletions({
+      model: "m",
+      input: "x",
+      tools: [{ type: "web_search" }],
+      tool_choice: { type: "web_search" },
+    } satisfies ResponsesPayload)
+
+    expect(result.tools).toBeUndefined()
+    expect(result.tool_choice).toBeUndefined()
+  })
+
+  test("drops required when every Responses tool is unsupported by the CC fallback", () => {
+    const result = translateResponsesToChatCompletions({
+      model: "m",
+      input: "x",
+      tools: [{ type: "web_search" }],
+      tool_choice: "required",
+    } satisfies ResponsesPayload)
+
+    expect(result.tools).toBeUndefined()
+    expect(result.tool_choice).toBeUndefined()
+  })
+
+  test("drops a named function choice when no translated CC tool has that name", () => {
+    const result = translateResponsesToChatCompletions({
+      model: "m",
+      input: "x",
+      tools: [{ type: "function", name: "present", parameters: { type: "object" } }],
+      tool_choice: { type: "function", name: "missing" },
+    } satisfies ResponsesPayload)
+
+    expect(result.tools?.map((tool) => tool.function.name)).toEqual(["present"])
+    expect(result.tool_choice).toBeUndefined()
   })
 
   test("maps function_call and function_call_output input items", () => {

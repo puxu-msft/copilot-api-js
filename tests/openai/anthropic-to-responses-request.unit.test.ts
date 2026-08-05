@@ -136,6 +136,64 @@ describe("translateAnthropicToResponses — server-tool request-side passthrough
     expect(result.tools).toEqual([{ type: "web_search" }])
   })
 
+  test("a forced web_search choice uses the same Responses builtin category as the translated tool", () => {
+    const result = translateAnthropicToResponses(
+      payload([{ role: "user", content: "x" }], {
+        tools: [{ name: "web_search", type: "web_search_20250305" }],
+        tool_choice: { type: "tool", name: "web_search" },
+      }),
+    )
+
+    expect(result.tools).toEqual([{ type: "web_search" }])
+    expect(result.tool_choice).toEqual({ type: "web_search" })
+  })
+
+  test("a forced choice for an unmapped typed tool is dropped with that tool instead of becoming a dangling function choice", () => {
+    const warnSpy = spyOn(consola, "warn").mockImplementation((() => undefined) as unknown as typeof consola.warn)
+    try {
+      const result = translateAnthropicToResponses(
+        payload([{ role: "user", content: "x" }], {
+          tools: [{ name: "code_exec", type: "code_execution_20250522" }],
+          tool_choice: { type: "tool", name: "code_exec" },
+        }),
+      )
+
+      expect(result.tools).toBeUndefined()
+      expect(result.tool_choice).toBeUndefined()
+    } finally {
+      warnSpy.mockRestore()
+    }
+  })
+
+  test("an any choice is dropped when every declared tool is stripped from the Responses request", () => {
+    const warnSpy = spyOn(consola, "warn").mockImplementation((() => undefined) as unknown as typeof consola.warn)
+    try {
+      const result = translateAnthropicToResponses(
+        payload([{ role: "user", content: "x" }], {
+          tools: [{ name: "code_exec", type: "code_execution_20250522" }],
+          tool_choice: { type: "any" },
+        }),
+      )
+
+      expect(result.tools).toBeUndefined()
+      expect(result.tool_choice).toBeUndefined()
+    } finally {
+      warnSpy.mockRestore()
+    }
+  })
+
+  test("a named choice with no matching declaration is dropped instead of becoming a dangling function choice", () => {
+    const result = translateAnthropicToResponses(
+      payload([{ role: "user", content: "x" }], {
+        tools: [{ name: "get_weather", input_schema: { type: "object" } }],
+        tool_choice: { type: "tool", name: "missing_tool" },
+      }),
+    )
+
+    expect(result.tools).toEqual([{ type: "function", name: "get_weather", parameters: { type: "object" } }])
+    expect(result.tool_choice).toBeUndefined()
+  })
+
   test("an unmapped server-tool type (code_execution — no probed Responses request shape yet) is STRIPPED + WARNED, never silently dropped", () => {
     const warnSpy = spyOn(consola, "warn").mockImplementation((() => undefined) as unknown as typeof consola.warn)
     try {
@@ -248,7 +306,13 @@ describe("translateAnthropicToResponses — basic content translation (equivalen
   })
 
   test("tool_choice mapping: auto→auto, any→required, none→none, tool→{type:function,name}", () => {
-    const tc = (choice: MessagesPayload["tool_choice"]) => translateAnthropicToResponses(payload([{ role: "user", content: "x" }], { tool_choice: choice })).tool_choice
+    const tc = (choice: MessagesPayload["tool_choice"]) =>
+      translateAnthropicToResponses(
+        payload([{ role: "user", content: "x" }], {
+          tools: [{ name: "f", input_schema: { type: "object" } }],
+          tool_choice: choice,
+        }),
+      ).tool_choice
     expect(tc({ type: "auto" })).toBe("auto")
     expect(tc({ type: "any" })).toBe("required")
     expect(tc({ type: "none" })).toBe("none")

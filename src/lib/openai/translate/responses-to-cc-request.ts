@@ -102,7 +102,7 @@ export function translateResponsesToChatCompletions(payload: ResponsesPayload): 
   }
 
   const tools = payload.tools ? translateToolsToCC(payload.tools) : undefined
-  const toolChoice = payload.tool_choice ? translateToolChoiceToCC(payload.tool_choice) : undefined
+  const toolChoice = payload.tool_choice ? translateToolChoiceToCC(payload.tool_choice, tools) : undefined
   const responseFormat = payload.text?.format ? translateResponseFormatToCC(payload.text.format) : undefined
   const streamOptions = buildStreamOptions(payload)
 
@@ -725,8 +725,9 @@ function translateToolsToCC(tools: Array<ResponsesTool>): Array<Tool> {
   return out
 }
 
-function translateToolChoiceToCC(choice: ResponsesToolChoice): NonNullable<ChatCompletionsPayload["tool_choice"]> {
-  if (typeof choice === "string") return choice
+function translateToolChoiceToCC(choice: ResponsesToolChoice, tools: Array<Tool> | undefined): NonNullable<ChatCompletionsPayload["tool_choice"]> | undefined {
+  if (typeof choice === "string") return choice === "required" && (!tools || tools.length === 0) ? undefined : choice
+  if (choice.type !== "function" || !tools?.some((tool) => tool.function.name === choice.name)) return undefined
   return {
     type: "function",
     function: { name: choice.name },

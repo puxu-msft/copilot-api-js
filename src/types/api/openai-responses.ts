@@ -120,7 +120,7 @@ export interface ResponsesReasoning {
 }
 
 /** Tool choice for Responses API */
-export type ResponsesToolChoice = "auto" | "none" | "required" | { type: "function"; name: string }
+export type ResponsesToolChoice = "auto" | "none" | "required" | { type: "function"; name: string } | { type: ResponsesBuiltinTool["type"] }
 
 /** Context management configuration (e.g. compaction) */
 export interface ResponsesContextManagement {
