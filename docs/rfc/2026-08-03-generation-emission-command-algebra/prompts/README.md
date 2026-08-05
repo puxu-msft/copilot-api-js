@@ -1,5 +1,7 @@
 # generation emission command algebra —— 第三层 kick-off 导航
 
+> **状态（核验于 `528c1785`）**：**第三层已评审放行**。判据证伪 8 轮，最终 0 blocker / 0 major；执行方第一人称走查 8 轮，最终 0 blocker / 0 major / 0 minor / 0 nit。报告：`docs/tmp/2026-08-05-command-algebra-prompts-review-{criteria,executor}.md`。Task population：plan/prompt 84/84、duplicates/orphans/unassigned/wrong-phase 均 none（数字为 checker 派生快照，不是 SSOT）。
+>
 > 本目录是 skill `large-refactor` §5 的第三层：`docs/rfc/2026-08-03-generation-emission-command-algebra/design.md` 冻结 WHY + 契约，`docs/rfc/2026-08-03-generation-emission-command-algebra/cutover-plan.md` 冻结 HOW + 锚点与 task，本文与同目录 prompt 是面向独立执行者的派发件。**所有路径均从仓库根解析**，不按 prompt 文件所在目录解析。
 >
 > **Task 人口 SSOT 是 cutover plan 的 task 定义表集合，不是本文的数字。** 当前 checker 派生多少就必须分派多少；新增 task 时 prompts 随集合增长，绝不为凑旧数字排除 `T0.0d`／`T0.0f` 或其他已放行 task。

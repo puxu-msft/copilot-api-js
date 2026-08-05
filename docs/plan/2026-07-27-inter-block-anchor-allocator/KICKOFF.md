@@ -10,10 +10,9 @@ RFC 在 docs/rfc/2026-08-03-generation-emission-command-algebra/design.md。
 
 ## 启动前的硬 gate（照做，理由在 HANDOVER）
 
-1. **不要直接写代码。** T1 已由用户裁决：**先补计划层再执行**。第二层 `cutover-plan.md` 已经判据证伪 9 轮 + 执行方走查 8 轮放行；**当前只剩第三层 `prompts/`**。prompts 定稿并过评审之前不动 `src/`。
+1. **不要直接写代码，先取得本次开工裁决。** 三层计划已全部评审放行；按 docs-merge-before-execute，文档定稿后执行仍是独立决定。获准后从 `docs/rfc/2026-08-03-generation-emission-command-algebra/prompts/README.md` 的 Commit -1 起，不从旧 P0 或直接 C0 起。
 2. **复验而非采信；已经只有一个代码基线。** M1 已于 `8125f123` merge 进 master，此前「文档基线 vs 未合并 feature 代码基线」的双树口径**整体作废**。当前 `file:line` 一律锚 master；接手第一件事仍是重新核对 HEAD、git status、分支与 worktree 列表。
-3. **若已获准起执行**：入场条件在 RFC §7.1——在**当时的** entry commit 上连跑 ≥15 次
-   `FORCE_COLOR=0 bun scripts/parallel-test.ts unit it http` 且次次全绿。旧读数不顶替，任一次失败都不得开始 cutover。
+3. **入场证据不得手工拼一条 test 命令代替。** 正确链是 Commit -1 交付真实 shard oracle + producer + validator并先合 master得 A → 从 A 建执行树 → T0.0f 用冻结 producer CLI 生成树外 15-run evidence/manifest/P → T0.0d 写 receipt → T0.1 入场确认。旧读数、旧 raw `parallel-test` 连跑或缺 receipt 的绿都不顶替，任一门失败不得开始 Commit 0。
 4. **每条 Bash 调用自己绑定目录根**（`cd <绝对路径> && ...` 或 `git -C <绝对路径>`），绝不依赖上一条命令留下的 cwd。
 5. **绝不碰 4141 端口的用户主服务器**（kill/pkill/killall 一律禁止）。需要真服务器就自起非 4141 实例，按 PID 精确停。
 6. **下任何全套件断言前，先确认没有 peer agent 在同一棵树跑测试或做 mutation。**
@@ -22,7 +21,7 @@ RFC 在 docs/rfc/2026-08-03-generation-emission-command-algebra/design.md。
 
 ## 第一步（按用户裁决分支）
 
-**已裁决：先补计划层。第二层已完成并评审放行；当前只写第三层 `prompts/`。** 按 skill `large-refactor` §5，为 Commit -1、post-merge preflight、Commit 0～8 各出可直接粘给独立执行者的 self-contained kick-off，并用一个 `prompts/README.md` 集中承载 DAG 与通用红线。prompts 评审放行后再单独决定何时开工。
+**已裁决的「先补计划层」已完成：三层均评审放行。** 当前下一步只剩用户决定是否/何时开工；获准后按 `docs/rfc/2026-08-03-generation-emission-command-algebra/prompts/README.md` 的严格串行 DAG，从 Commit -1 prompt 起。
 （另两条分支已作废，留此备查：「直接起执行」= 读 RFC §7 与 §9.4 停点表从 Commit 0 开始；「尚未裁决」= 把 T1 摆给用户。**别再照它们走。**）
 
 ## 批准状态
@@ -30,7 +29,7 @@ RFC 在 docs/rfc/2026-08-03-generation-emission-command-algebra/design.md。
 - 已裁决、不得重开：见 HANDOVER「用户已裁决」表（8 条：形状 / 起点 / 帧序 / 范围 / flaky 处置 / History schema / Q3 / wire-torn close）。
 - 仍待裁决：Q1（telemetry 联合查询能力）——阻塞 Commit 5，不阻塞 Commit 0–4，见 HANDOVER T2。
 - 未定性：基线 flaky 第 1 条（T3）、P7 translate 腿缺口（T5）。
-- 停点（不得自行拍板）：ADR D2 改动——只出逐段 replacement 草案，获用户明确同意才改文件。
+- continuation ADR D2 的 replacement／审批仍归原计划 P8，本 RFC 实施不执行、不删除该待办；Q1 等本 RFC 未裁项只在各自 prompt 触发点取得首次裁决。
 
 ## 工作方式
 

@@ -1,10 +1,10 @@
 # Cutover 实施计划 —— generation emission command algebra
 
-> **状态（第二层核验于 `bd25b847`）**：**第二层已评审放行**。判据证伪 9 轮、执行方第一人称走查 8 轮，最终均为 **0 blocker / 0 major**；报告分别在 `docs/tmp/2026-08-04-cutover-plan-review-{criteria,executor}.md`。**放行范围是本文 + `traceability.md` + `d7f6c222` 的 evidence 脚本能力**；第三层 `prompts/` 已产出，**待独立评审**，因此整个计划层尚未最终放行。
+> **状态（核验于 `528c1785`）**：**三层计划全部评审放行，计划层完成**。第二层：判据证伪 9 轮、执行方走查 8 轮，最终均 0 blocker / 0 major（`docs/tmp/2026-08-04-cutover-plan-review-{criteria,executor}.md`）；第三层：判据证伪 8 轮最终 0 blocker / 0 major、执行方走查 8 轮最终 0 blocker / 0 major / 0 minor / 0 nit（`docs/tmp/2026-08-05-command-algebra-prompts-review-{criteria,executor}.md`）。放行范围含本文、`traceability.md`、`prompts/`、三个 checker 与 `d7f6c222` 结构化 evidence 能力。**实现尚未开工**；按 docs-merge-before-execute，开工仍是独立决定。
 >
 > **这是三层结构的第二层**（skill `large-refactor` §5）：`design.md` 回答 WHY + 契约，本文回答 HOW + 锚在哪。
 >
-> 第三层 `prompts/` **已产出，待独立评审**。§0.5 的提交与进度纪律仍保留在第二层作为执行真相源；prompts 只引用它，避免 12 份派发件各自复制一份会漂的纪律。
+> 第三层 `prompts/` 已放行。§0.5 的提交与进度纪律仍由第二层作为执行真相源；prompts 只引用它，避免 12 份派发件各自复制一份会漂的纪律。
 >
 > **本文不冻结任何 RFC 未冻结的签名。** RFC §3 的接口是**草案**（`design.md:146` 逐字写明「本文不伪造这些尚未存在的源码签名」）。凡本文出现形似签名的文字，一律标注「RFC 草案名」或「性质冻结，签名待调查」。写下任何形状前过三问——**它导出了吗 / 调用方拿到什么返回类型 / 那一刻它存在吗**——答不上就只冻结性质 + 列一条调查 task。
 >

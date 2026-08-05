@@ -1,6 +1,6 @@
 # HANDOVER —— generation emission command algebra RFC 已定稿，实施未开工
 
-**状态**：**已评审放行 · T1 已裁「先补计划层再执行」· 第二层 `cutover-plan.md` 已评审放行（判据 9 轮 + 执行方 8 轮，最终均 0 blocker / 0 major）· 第三层 `prompts/` 待写 · M1 已于 2026-08-04 合入 master（`8125f123`）**。RFC 已定稿、cutover 实施一行未写。
+**状态**：**三层计划已全部评审放行 · T1 已裁「先补计划层再执行」· 第二层判据 9 轮 + 执行方 8 轮最终均 0 blocker / 0 major · 第三层 prompts 判据 8 轮最终 0 blocker / 0 major，执行方 8 轮最终 0 blocker / 0 major / 0 minor / 0 nit · M1 已于 2026-08-04 合入 master（`8125f123`）**。RFC 与执行派发件均定稿，cutover 实施尚未开工；按 docs-merge-before-execute，开工仍是独立决定。
 
 **本文件的评审情况**（别再重跑，也别当成未核验的档案）：
 - **判据证伪视角**：**12 轮**，结论「剩余项应记为已知边界而非缺陷；**无未决 blocker/major**」。报告：`docs/tmp/2026-08-03-handover-review-criteria.md`。
@@ -15,7 +15,7 @@
 
 **已知遗留 minor（评审判为不阻塞，写在这里免得被当成新发现）**：① KICKOFF:52 仍复述「21 次」这个数字，但同句自带「那是自我报告的摘要、不是独立可核验的、别当门禁已过」；② 同目录曾并存陈旧的 `kickoff.md` 与现行 `KICKOFF.md`，`ls` 时都会看到——**已给前者加 superseded 横幅**，不再依赖「README 有正确入口」这种缓解。
 
-**worktree**：`/home/xp/src/copilot-api-js/.worktrees/anchor-alloc`
+**历史 worktree（只作 M1 取证，不是执行入口）**：`/home/xp/src/copilot-api-js/.worktrees/anchor-alloc`。正式执行按已裁图：先在独立 worktree 完成/合并 Commit -1，合入后 master SHA=A，再**显式从 `ENTRY_SHA=A` 创建新的 cutover worktree**。
 **未提交 / 未追踪**：本工作的产物已于 `6cfa0e89` 全部提交（此前两份评审报告曾是 untracked，被交接评审抓出）；主树另有并发会话的未提交改动，与本工作无关
 **已跑门禁**：master 上 `unit+it+http` 三档连跑 21 次全绿（6845 pass / 0 fail，代码状态 `cc909c81`），记录在 `docs/tmp/2026-08-03-baseline-run-log.md`；`bun run typecheck` 绿。
 > ⚠️ **证据等级：自我报告，非独立可核验。** 那份记录是逐次**摘要**（无时间戳、无单次耗时、无完整 stdout），形式上区分不了「真跑了 21 次」与「手写了 21 行」——判据证伪评审两轮维持此为 major，我接受。**别拿它当门禁已过的证据**；RFC §7.1 的入场条件本来就要求在**当时的 entry commit** 上重跑，那次用 `exp/inter-block-anchor-allocator/baseline-runs.sh` 保留每次的原始输出文件。
