@@ -67,9 +67,11 @@ export function parseJUnit(xml: string, repoRoot: string): JUnitIdentities {
     files.add(file)
     if (attribute(suite[1], "tests") !== "0" || attribute(suite[1], "skipped") === "0" || !rawName) continue
 
-    const suiteIdentity: SuiteSkippedIdentity = { kind: "suite", file, suite_name: unescapeXml(rawName), count: 1 }
+    const count = Number(attribute(suite[1], "skipped"))
+    if (!Number.isSafeInteger(count) || count <= 0) continue
+    const suiteIdentity: SuiteSkippedIdentity = { kind: "suite", file, suite_name: unescapeXml(rawName), count }
     skipped.set(skippedIdentityKey(suiteIdentity), suiteIdentity)
-    skippedCount += 1
+    skippedCount += count
   }
 
   for (const testcase of xml.matchAll(/<testcase\b([^>]*?)(?:\/>|>([\s\S]*?)<\/testcase>)/g)) {

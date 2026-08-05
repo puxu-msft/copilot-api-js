@@ -17,13 +17,13 @@ describe("parallel-test JUnit artifact parsing", () => {
 
   test("retains a whole-suite skipped file that has no testcase rows", () => {
     const identities = parseJUnit(
-      `<?xml version="1.0"?><testsuites><testsuite name="tests/native.unit.test.ts" file="tests/native.unit.test.ts" tests="0" skipped="1"/></testsuites>`,
+      `<?xml version="1.0"?><testsuites><testsuite name="tests/native.unit.test.ts" file="tests/native.unit.test.ts" tests="0" skipped="2"/></testsuites>`,
       "/repo",
     )
 
     expect(identities.files).toEqual(["tests/native.unit.test.ts"])
-    expect(identities.skipped).toBe(1)
-    expect(identities.skippedIdentities).toEqual([{ kind: "suite", file: "tests/native.unit.test.ts", suite_name: "tests/native.unit.test.ts", count: 1 }])
+    expect(identities.skipped).toBe(2)
+    expect(identities.skippedIdentities).toEqual([{ kind: "suite", file: "tests/native.unit.test.ts", suite_name: "tests/native.unit.test.ts", count: 2 }])
   })
 
   test("does not treat a passing suite's skipped assertion count as a whole-suite skip", () => {
