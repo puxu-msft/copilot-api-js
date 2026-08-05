@@ -18,7 +18,7 @@ execution_location: tool-bound nested worktree；成果通过 commit 集成，�
 
 - [~] T0.0a：真实 shard JUnit file identity 与独立 disk manifest 双向对账已实现；仍需 post-balance 删文件 mutation 点名红及进程级回归测试
 - [~] T0.0b：v1 判别联合 parser、whole-suite false-red 与 multiplicity对照已实现；仍缺 runnable→skip mutation 与 native/todo disposition审计。
-- [~] T0.0c：已实现/version `scripts/capture-entry-evidence.ts` 和 675-file／6497-executed discovery baseline v1；仍缺三个隔离 mutation 与 producer 合成测试。
+- [~] T0.0c：已实现/version `scripts/capture-entry-evidence.ts` 和 675-file／6497-executed discovery baseline v1；producer 合成正/缺artifact测试已通过，仍缺三个隔离 mutation。
 - [ ] T0.0e：明确留待后续实现 `scripts/validate-entry-evidence.ts`、合成 fixtures 与 EV-01～EV-28。
 - [ ] Commit -1 门表：T0.0c mutations、producer fixtures、typecheck、基础设施 tests、test:backend、独立 review。
 

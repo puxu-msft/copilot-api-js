@@ -34,7 +34,8 @@
 - T0.0c baseline schema RED：新增 schema 测试初次失败于缺少 `scripts/entry-evidence-schema`。GREEN：实现 strict v1 parser，接受排序正确的 testcase/suite union，拒绝 suite 的 fabricated testcase field；`bun test tests/infra/entry-evidence-schema.unit.test.ts` 为 `2 pass, 0 fail`，`bun run typecheck` 与 Prettier 通过。原测试也暴露 canonical order 是 `(kind,file,...)` 的 UTF-8 bytewise 顺序，修正 fixture 后才绿。
 - 全套 runner 的性能失败调查：首次完整 unit runner 中 `canonical-performance.unit.test.ts:80` 观测 `sseRatio=8.5025`，高于 `<8`；立即单独复跑同一文件则 `sseRatio=6.8364` 且 `3 pass`。这已证明其具有时序／资源竞争敏感性，尚未完成 10～25 次确定性核验；不将其归因于本次 runner 改动，也不会放宽测试。
 - T0.0c discovery oracle：实际执行 `PARALLEL_TEST_ARTIFACT_DIR=/tmp/commit-minus-1-discovery-artifacts bun scripts/parallel-test.ts unit it http`，结果为 16 shards、6872 pass、6497 executed、27 skipped；从 runtime identity 和 JUnit 交叉冻结 675 files，runner blob 为 `201996e18033d27e1214cb0f8d688f6850d89840`。该命令不是 T0.0f 的15-run evidence。
-- T0.0c producer RED：schema test先因 `scripts/entry-evidence-schema` 不存在红。GREEN：strict parser 验 union、raw 2-space canonical bytes、runner blob与排序；`bun test tests/infra/entry-evidence-schema.unit.test.ts` 绿（3 pass）、`bun run typecheck`绿。producer已实现但尚缺合成tests和三个隔离mutation。
+- T0.0c producer RED：schema test先因 `scripts/entry-evidence-schema` 不存在红。GREEN：strict parser 验 union、raw 2-space canonical bytes、runner blob与排序；`bun test tests/infra/entry-evidence-schema.unit.test.ts` 绿（3 pass）、`bun run typecheck`绿。
+- T0.0c producer fixtures：合成 temporary Git tree 的 15-run positive control 验证 manifest 原子写入、每 run artifact paths/hashes；单一缺 transfer artifact mutation 稳定 rc=5、stderr 含 `run artifact transfer is incomplete`、无 manifest。`bun test tests/infra/capture-entry-evidence.unit.test.ts` 绿（2 pass）。仍缺 runner target mutations。
 - 尚未执行 mutation。每个 mutation 的注入／恢复证据会在对应 task 完成时追加。
 
 ## 结构怪味扫描
