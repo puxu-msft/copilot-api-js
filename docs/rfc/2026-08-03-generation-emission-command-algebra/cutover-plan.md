@@ -490,22 +490,73 @@ T0.0a、T0.0b、T0.0c 的三类正控都要**主动改坏 runner／test**。若�
 
 **validator 必须逐条验证，任一缺失／不等即非零退出。** 🔴 **不接受「manifest 内部自洽」当证据**：一次错误生成 manifest 与 artifact 可以一起错；必须从**原始 artifact 独立重算**再比 manifest。
 
-| # | 机械检查（从何处独立重算） | fail-closed 条件 | 目标 mutation |
+#### Validator condition → mutation ID 对账
+
+**condition 表只定义被测性质；最后一列只引用稳定 mutation ID。** 不再把「缺／多／hash 不等」这类不同机制折进同一个 action。
+
+| # | 机械检查（从何处独立重算） | fail-closed 条件 | mutation IDs |
 |---|---|---|---|
-| 1 | `POINTER_SHA` 是完整 SHA 且当前 master 状态线包含 P：`git merge-base --is-ancestor "$POINTER_SHA" master` 成功；再 `git show "$POINTER_SHA":HANDOVER` | P 缺失／不是 master 可达状态线／`git show` 失败 → fail；**不许猜 P=当前 master HEAD** | 传入不存在／不可达的 `POINTER_SHA` |
-| 2 | 从 `git show "$POINTER_SHA":HANDOVER` 提取**唯一** `entry-evidence-pointer:v1` block | block 缺失／多于一个 → fail；不靠未规定格式的 blame／自然语言 grep | 删除／复制 pointer block |
-| 3 | pointer block 含 `entry_sha`、manifest path、manifest sha256 | 任一字段缺失 → fail | 删除各字段之一 |
-| 4 | pointer block 的 `entry_sha == ENTRY_SHA == A`；preflight 中 `git -C "$TREE" rev-parse HEAD == ENTRY_SHA`；`git merge-base --is-ancestor ENTRY_SHA POINTER_SHA` 成功 | 任一不等／Git 图关系不成立 → fail；**P 是 A 的后代，不许拿 P 代替 A** | 传错 `ENTRY_SHA`／让执行树 HEAD 偏离 A |
-| 5 | pointer 的 manifest path 存在；从原始 manifest bytes 重算 `sha256(manifest)` = pointer block 冻结 hash | 树外 manifest 被清理／覆盖／hash 不等 → **fail，不是 warning**；pointer 不能凭空恢复它 | 删除 manifest／改 pointer hash |
-| 6 | manifest 的 run log 列表**恰 15 个**；每个原始 log 存在且独立 `sha256(log)` = manifest 记录 | 缺／多／hash 不等 → fail | 删一份 log／改一份 log |
-| 7 | 从每份**原始 JUnit**重算 file identity 集合；15 次逐次比较，并与磁盘 manifest／manifest 记录比对 | 任一 run 缺／多文件或与 manifest 不等 → fail | 从某 run 的 JUnit 移除一个文件 identity |
-| 8 | 从每份原始 JUnit + log 重算 skipped identity multiset（`file+classname+name+ordinal`）与 `executed`；15 次逐次比较，并与 manifest 记录比对 | 任一 skip identity／executed 不等 → fail | 把一条 runnable 改 skip，或篡改一份 JUnit 的 skipped case |
-| 9 | 从每份原始 log 重取 canonical command、`evidence_timing=closeout`、完整 `measured_sha=A`、`claims_current_head=true` 与 run verdict | 任一字段缺失／不等／verdict 非绿 → fail | 分别篡改 `evidence_timing`、单份 log 的 `measured_sha`、`claims_current_head`、verdict、canonical command |
-| 10 | 从原始 disk manifest / runtime identity manifest / skipped multiset artifact **重算各自 hash**，再比 evidence manifest 记录 | 任一空值／hash 不等 → fail | 分别置空／篡改三个 manifest hash |
+| 1 | `POINTER_SHA` 是完整 SHA 且当前 master 状态线包含 P：`git merge-base --is-ancestor "$POINTER_SHA" master` 成功；再 `git show "$POINTER_SHA":HANDOVER` | P 缺失／不是 master 可达状态线／`git show` 失败 → fail；**不许猜 P=当前 master HEAD** | `EV-01`, `EV-02` |
+| 2 | 从 `git show "$POINTER_SHA":HANDOVER` 提取**唯一** `entry-evidence-pointer:v1` block | block 缺失／多于一个 → fail；不靠未规定格式的 blame／自然语言 grep | `EV-03`, `EV-04` |
+| 3 | pointer block 含 `entry_sha`、manifest path、manifest sha256 | 任一字段缺失 → fail | `EV-05`, `EV-06`, `EV-07` |
+| 4 | pointer block 的 `entry_sha == ENTRY_SHA == A`；preflight 中 `git -C "$TREE" rev-parse HEAD == ENTRY_SHA`；`git merge-base --is-ancestor ENTRY_SHA POINTER_SHA` 成功 | 任一不等／Git 图关系不成立 → fail；**P 是 A 的后代，不许拿 P 代替 A** | `EV-08`, `EV-09`, `EV-10` |
+| 5 | pointer 的 manifest path 存在；从原始 manifest bytes 重算 `sha256(manifest)` = pointer block 冻结 hash | 树外 manifest 被清理／覆盖／hash 不等 → **fail，不是 warning**；pointer 不能凭空恢复它 | `EV-11`, `EV-12` |
+| 6 | manifest 的 run log 列表**恰 15 个**；每个原始 log 存在且独立 `sha256(log)` = manifest 记录 | 缺／多／hash 不等 → fail | `EV-13`, `EV-14`, `EV-15` |
+| 7 | 从每份**原始 JUnit**重算 file identity 集合；15 次逐次比较，并与磁盘 manifest／manifest 记录比对 | 任一 run 缺／多文件或与 manifest 不等 → fail | `EV-16` |
+| 8 | 从每份原始 JUnit + log 重算 skipped identity multiset（`file+classname+name+ordinal`）与 `executed`；15 次逐次比较，并与 manifest 记录比对 | 任一 skip identity／executed 不等 → fail | `EV-17` |
+| 9 | 从每份原始 log 重取 canonical command、`evidence_timing=closeout`、完整 `measured_sha=A`、`claims_current_head=true` 与 run verdict | 任一字段缺失／不等／verdict 非绿 → fail | `EV-18`, `EV-19`, `EV-20`, `EV-21`, `EV-22` |
+| 10 | 从原始 disk manifest、runtime identity manifest、skipped multiset artifact **重算各自 hash**，再比 evidence manifest 记录 | 任一空值／hash 不等 → fail | `EV-23`, `EV-24`, `EV-25` |
+
+#### Evidence validator mutation 表（**每个 ID 只改一个输入**）
+
+| ID | condition # | 单一 action | 唯一预期 FAIL |
+|---|---:|---|---|
+| `EV-01` | 1 | 提供不存在的 `POINTER_SHA` | `FAIL C1: pointer SHA does not resolve` |
+| `EV-02` | 1 | 提供不在 master 祖先链的 `POINTER_SHA` | `FAIL C1: pointer SHA is not master-reachable` |
+| `EV-03` | 2 | 删除 pointer block | `FAIL C2: pointer block missing` |
+| `EV-04` | 2 | 添加第二个 pointer block | `FAIL C2: pointer block is not unique` |
+| `EV-05` | 3 | 删除 pointer block 的 `entry_sha` 字段 | `FAIL C3: entry_sha missing` |
+| `EV-06` | 3 | 删除 pointer block 的 manifest path 字段 | `FAIL C3: manifest path missing` |
+| `EV-07` | 3 | 删除 pointer block 的 manifest sha256 字段 | `FAIL C3: manifest sha256 missing` |
+| `EV-08` | 4 | 把 pointer block 的 `entry_sha` 改为 B | `FAIL C4: pointer entry SHA differs from ENTRY_SHA` |
+| `EV-09` | 4 | 让 `$TREE` checkout 到 B | `FAIL C4: execution HEAD differs from ENTRY_SHA` |
+| `EV-10` | 4 | 提供包含 pointer block 但不含 A 的 `POINTER_SHA` | `FAIL C4: ENTRY_SHA is not an ancestor of POINTER_SHA` |
+| `EV-11` | 5 | 删除树外 evidence manifest | `FAIL C5: evidence manifest missing` |
+| `EV-12` | 5 | 修改 pointer block 的 manifest sha256 | `FAIL C5: evidence manifest hash mismatch` |
+| `EV-13` | 6 | 删除 manifest 列出的一个 run log | `FAIL C6: run log missing` |
+| `EV-14` | 6 | 向 manifest 添加第十六个 run log 条目 | `FAIL C6: run log count is not 15` |
+| `EV-15` | 6 | 修改一个原始 run log 的字节 | `FAIL C6: run log hash mismatch` |
+| `EV-16` | 7 | 从一个原始 JUnit 移除文件 identity | `FAIL C7: JUnit file identity mismatch` |
+| `EV-17` | 8 | 把一个 runnable JUnit case 标成 skipped | `FAIL C8: skipped identity multiset mismatch` |
+| `EV-18` | 9 | 修改一个原始 log 的 canonical command | `FAIL C9: canonical command mismatch` |
+| `EV-19` | 9 | 修改一个原始 log 的 `evidence_timing` | `FAIL C9: evidence timing mismatch` |
+| `EV-20` | 9 | 修改一个原始 log 的 `measured_sha` | `FAIL C9: measured SHA mismatch` |
+| `EV-21` | 9 | 修改一个原始 log 的 `claims_current_head` | `FAIL C9: current-head claim mismatch` |
+| `EV-22` | 9 | 修改一个原始 log 的 verdict | `FAIL C9: run verdict is not green` |
+| `EV-23` | 10 | 修改 disk manifest hash | `FAIL C10: disk manifest hash mismatch` |
+| `EV-24` | 10 | 修改 runtime identity manifest hash | `FAIL C10: runtime identity manifest hash mismatch` |
+| `EV-25` | 10 | 修改 skipped multiset hash | `FAIL C10: skipped multiset hash mismatch` |
+
+#### Mutation table mechanical reconciliation
+
+**本对账由 Commit -1 validator 的测试辅助脚本执行；不接受人工声称。** 它必须输出四项：
+
+```text
+condition coverage: C1=2 C2=2 C3=3 C4=3 C5=2 C6=3 C7=1 C8=1 C9=5 C10=3
+mutation ownership: 25 IDs each map to exactly one condition
+duplicate IDs: none
+orphan IDs: none
+```
+
+- 每个 condition 至少一个 ID；
+- 每个 ID **恰好**属于一个 condition；
+- `EV-01`…`EV-25` 无重复；
+- 不存在 condition 表未引用的 ID，也不存在 mutation 表未列出的 ID；
+- **action 列**动作文本扫描 `／|分别|之一|任一` 必须 **0 命中**——这些词出现时说明又把多个机制合进一个 action；说明文字可用这些词，action 列不可用。
 
 **正样本**：正确 `ENTRY_SHA=A`、正确 Git 图、15 原始 logs/JUnit、三类 hash 与每次独立重算一致为绿。
 
-> ⚠️ 这是**消费门的需求与验收形状**，不在本 plan 内发明 validator 脚本实现。它由 Commit -1 基础设施交付者交付、独立评审；直到它实际存在并通过上表每行 mutation 前，**T0.1 不能开工**。
+> ⚠️ 这是**消费门的需求与验收形状**，不在本 plan 内发明 validator 脚本实现。它由 Commit -1 基础设施交付者交付、独立评审；直到它实际存在并通过上表每个 `EV-*` mutation 前，**T0.1 不能开工**。
 
 ---
 

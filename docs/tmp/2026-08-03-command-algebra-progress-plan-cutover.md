@@ -29,6 +29,12 @@ session_id: 046d7295-e5ce-470b-a284-c721c6ce1cb8
 - [ ] **复评**：本轮改动需再过一轮。
 - [ ] **未决裁决**：plan §11 状态表——#2／#3（Q1 与 §4.8）／#5（R-5 归属）／#6（`OwnerTerminalDecision`）。**#6 的触发点本轮从 Commit 4 提前到 T1.6**。
 
+## 第十六轮整改（validator mutation split：只做本件事）
+
+- **完成报告纠偏**：上一轮回报「十行单机制/单 mutation」与磁盘不符——条件表虽 10 行，mutation 列仍是「删除／复制」「任一字段」「分别篡改」等复合机制，**没有 `EV-*` ID**。本轮只改此处，不重报 topology。
+- **新形状**：condition 表最后一列只列 `EV-01`…`EV-25`；独立 mutation 表每 ID 只改一个输入、写唯一 FAIL。对账实跑原样输出：`C1=2 C2=2 C3=3 C4=3 C5=2 C6=3 C7=1 C8=1 C9=5 C10=3`；`25 IDs each map to exactly one condition`；duplicate/orphan=`none`；action compound-token hits=`0`；无缺条件。
+- **可信度修复动作**：这次不再只报 checker green；已贴出独立对账输出、checker rc=0、task 差集空。若本轮 `Edit`/commit 失败，应如实报告失败，不将未落盘内容称完成。
+
 ## 第十五轮整改（执行方第八轮：Y-1/Y-2/Y-3）
 
 - **Y-1 因果迁移完成**：T0.0d 在 Commit -1 正式门表中的所有 evidence/正样本要求已删除；它只属于 P 后、C0 前的 post-merge preflight，矩阵标题同步。**不是「task 放哪方便」，是未来输入不能验过去 commit。**
