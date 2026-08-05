@@ -26,6 +26,15 @@ describe("parallel-test JUnit artifact parsing", () => {
     expect(identities.skippedIdentities).toEqual([{ kind: "suite", file: "tests/native.unit.test.ts", suite_name: "tests/native.unit.test.ts", count: 1 }])
   })
 
+  test("does not treat a passing suite's skipped assertion count as a whole-suite skip", () => {
+    const identities = parseJUnit(
+      `<?xml version="1.0"?><testsuites><testsuite name="tests/passing.unit.test.ts" file="tests/passing.unit.test.ts" tests="1" skipped="0"><testcase classname="suite" name="passes" file="tests/passing.unit.test.ts"/></testsuite></testsuites>`,
+      "/repo",
+    )
+
+    expect(identities.skippedIdentities).toEqual([])
+  })
+
   test("assigns ordinal and skip identity from real JUnit testcase rows", () => {
     const identities = parseJUnit(
       `<?xml version="1.0"?><testsuites><testsuite name="suite"><testcase classname="suite" name="same" file="/repo/tests/a.unit.test.ts"/><testcase classname="suite" name="same" file="/repo/tests/a.unit.test.ts"><skipped/></testcase></testsuite></testsuites>`,

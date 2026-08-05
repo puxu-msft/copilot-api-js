@@ -26,6 +26,7 @@
 - T0.0a/b whole-suite-skip RED：新增 suite-only JUnit fixture后 parser 返回 `[]` 而非 `['tests/native.unit.test.ts']`。GREEN：解析 testsuite `file` attribute；同一测试转为 `3 pass, 0 fail`，`bun run typecheck` 与 Prettier 通过。
 - T0.0b plan seam：whole-suite skip 的 JUnit `<testsuite file=... skipped=.../>` 没有 testcase `classname`、`name` 或 ordinal。主执行分支 `7c5891d0` 已裁 v1 修订为判别联合：`kind="testcase"` 使用 `file,classname,name,ordinal,count,reason`，`kind="suite"` 使用且只使用 `file,suite_name,count,reason`。继续实施时不得伪造空字符串、suite-as-classname 或人工 ordinal。
 - T0.0b union RED：将 parser 测试期望改为 `kind="suite"` 和 `kind="testcase"` 后失败，suite skipped count 为 0 且 testcase identity 缺 `kind`。GREEN：parser 以 testsuite 的真实 `file+name` 产生 suite variant、以 testcase 产生 testcase variant；`bun test tests/infra/parallel-test-artifacts.unit.test.ts` 为 `3 pass, 0 fail`，`bun run typecheck` 通过。
+- T0.0b false-red control：测试先构造含 testcase 的 passing suite；若仅依据 suite `skipped` attribute 会误报 suite skip。实现限定 suite variant 为 `tests="0"` 的真实 whole-suite skip；测试转为 `4 pass, 0 fail`，`bun run typecheck` 通过。
 - 全套 runner 的性能失败调查：首次完整 unit runner 中 `canonical-performance.unit.test.ts:80` 观测 `sseRatio=8.5025`，高于 `<8`；立即单独复跑同一文件则 `sseRatio=6.8364` 且 `3 pass`。这已证明其具有时序／资源竞争敏感性，尚未完成 10～25 次确定性核验；不将其归因于本次 runner 改动，也不会放宽测试。
 - 尚未执行 mutation。每个 mutation 的注入／恢复证据会在对应 task 完成时追加。
 

@@ -65,7 +65,7 @@ export function parseJUnit(xml: string, repoRoot: string): JUnitIdentities {
 
     const file = toRepoRelative(rawFile, repoRoot)
     files.add(file)
-    if (attribute(suite[1], "skipped") === "0" || !rawName) continue
+    if (attribute(suite[1], "tests") !== "0" || attribute(suite[1], "skipped") === "0" || !rawName) continue
 
     const suiteIdentity: SuiteSkippedIdentity = { kind: "suite", file, suite_name: unescapeXml(rawName), count: 1 }
     skipped.set(skippedIdentityKey(suiteIdentity), suiteIdentity)
