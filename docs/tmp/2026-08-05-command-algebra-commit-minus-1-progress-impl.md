@@ -28,6 +28,7 @@ execution_location: tool-bound nested worktree；成果通过 commit 集成，�
 - T0.0a 在途：`scripts/parallel-test.ts` 已让真实 shard 输出 JUnit，写出 `runtime-identity.json`，并以独立磁盘发现集双向比对。仍缺 post-balance mutation 与进程级回归测试。
 - T0.0b：主执行分支 `7c5891d0` 已裁 suite-only skip 的 v1 canonical representation。当前树遵守该契约：`kind="suite"` 仅产出 `file,suite_name,count,reason`，禁止 testcase 字段；`kind="testcase"` 才可含 `classname,name,ordinal`。suite multiset 的 `count` 取 JUnit suite 的真实 `skipped` 数，且仅 self-closing suite 可成为 suite variant。
 - T0.0c artifact transfer：主执行分支 `f197c8b5` 已冻结 `PARALLEL_TEST_ARTIFACT_DIR` 和 `REQUIRE_TEST_ARTIFACTS=1`。当前实现将 runner artifacts 原子落盘，wrapper 每 run 设置树外 `run-NN-artifacts` 并记录 `artifact_dir=`，成功 runner 缺 JUnit/runtime/skipped artifact 即将该 run 判失败。仍须 producer/validator 严格消费该 transfer。
+- T0.0c baseline schema：已新增 `scripts/entry-evidence-schema.ts`，严格解析 v1 baseline 的 testcase/suite 判别联合、field order、reason 和 bytewise ordering；尚需在 capture producer 中将 entry tree 原始 baseline bytes 及 runner blob 绑定到 manifest，并生成最终版本化 baseline。
 - Commit -1 只交付 runner oracle、producer、validator；**不生成真实 A/P/15-run evidence**。
 - 所有 mutation 在包含真实实现的第二隔离树或 `/tmp` repo 运行；若用 exact patch，先构造冻结 patch，恢复前 reverse-check，恢复后 diff。
 - `d7f6c222` 的结构化 evidence 字段是已存在能力，不重写第二套。

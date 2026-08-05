@@ -31,6 +31,7 @@
 - T0.0b discrimination correction：真实 whole-suite 形态的冻结条件是 self-closing `<testsuite .../>`，不是推断 `tests="0"`。负控把 non-self-closing、含 testcase 的 suite 设为 `skipped="1"`，仍不得生成 suite variant。测试与 typecheck 通过。
 - 进程级 runner harness 曾尝试在临时 tree 执行真实 script；Bun 在 test worker 内嵌套同步 spawn 时超过 30 秒，属于 harness 资源模型失败，未提交也未保留。真实 full runner 命令先前已实际生成 shard JUnit 和 artifacts；后续 mutation 将按 §0.4e 在独立 `/tmp` repo/second worktree 进行。
 - T0.0c/e artifact transfer seam 已由主执行分支 `f197c8b5` 裁定：runner 接受绝对 `PARALLEL_TEST_ARTIFACT_DIR`，空/不存在目录才可用，shard JUnit 与两个 JSON 原子写入；`baseline-runs.sh` 的 `REQUIRE_TEST_ARTIFACTS=1` 记录每 run `artifact_dir=` 并在 rc=0 后核验 artifact population。当前实现已接线，`bun run typecheck`、`bash -n exp/inter-block-anchor-allocator/baseline-runs.sh` 与 parser tests 通过；producer/validator 尚未实现。实现还修正了 wrapper 的缺目录分支：先判 `-d` 再 `find`，使缺 transfer artifact 走明确 failed run 而不是 `find` 的旁路错误。
+- T0.0c baseline schema RED：新增 schema 测试初次失败于缺少 `scripts/entry-evidence-schema`。GREEN：实现 strict v1 parser，接受排序正确的 testcase/suite union，拒绝 suite 的 fabricated testcase field；`bun test tests/infra/entry-evidence-schema.unit.test.ts` 为 `2 pass, 0 fail`，`bun run typecheck` 与 Prettier 通过。原测试也暴露 canonical order 是 `(kind,file,...)` 的 UTF-8 bytewise 顺序，修正 fixture 后才绿。
 - 全套 runner 的性能失败调查：首次完整 unit runner 中 `canonical-performance.unit.test.ts:80` 观测 `sseRatio=8.5025`，高于 `<8`；立即单独复跑同一文件则 `sseRatio=6.8364` 且 `3 pass`。这已证明其具有时序／资源竞争敏感性，尚未完成 10～25 次确定性核验；不将其归因于本次 runner 改动，也不会放宽测试。
 - 尚未执行 mutation。每个 mutation 的注入／恢复证据会在对应 task 完成时追加。
 
