@@ -109,5 +109,13 @@ export function parseDiscoveryBaseline(raw: string): DiscoveryBaseline {
   const keys = allowed_skipped.map(skipSortKey)
   if (new Set(keys).size !== keys.length || keys.some((key, index) => index > 0 && compareStrings(keys[index - 1], key) >= 0))
     fail("allowed_skipped are not unique bytewise sorted")
-  return { schema_version: 1, runner_git_blob: baseline.runner_git_blob, minimum_executed: baseline.minimum_executed as number, files, allowed_skipped }
+  const parsed: DiscoveryBaseline = {
+    schema_version: 1,
+    runner_git_blob: baseline.runner_git_blob,
+    minimum_executed: baseline.minimum_executed as number,
+    files,
+    allowed_skipped,
+  }
+  if (raw !== `${JSON.stringify(parsed, null, 2)}\n`) fail("raw bytes are not canonical")
+  return parsed
 }

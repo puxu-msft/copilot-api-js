@@ -23,6 +23,12 @@ describe("entry evidence discovery baseline v1", () => {
     expect(parseDiscoveryBaseline(raw).allowed_skipped).toHaveLength(2)
   })
 
+  test("rejects a semantically valid baseline with non-canonical JSON bytes", () => {
+    const raw = `{"schema_version":1,"runner_git_blob":"${"a".repeat(40)}","minimum_executed":1,"files":["tests/a.unit.test.ts"],"allowed_skipped":[]}\n`
+
+    expect(() => parseDiscoveryBaseline(raw)).toThrow("raw bytes are not canonical")
+  })
+
   test("rejects a suite skip that fabricates testcase fields", () => {
     const raw =
       JSON.stringify(
