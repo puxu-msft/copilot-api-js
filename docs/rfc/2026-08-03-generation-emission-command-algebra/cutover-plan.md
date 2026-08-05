@@ -441,7 +441,8 @@ T0.0a、T0.0b、T0.0c 的三类正控都要**主动改坏 runner／test**。若�
 | **T0.0a** | 从**独立磁盘 manifest** 枚举 `tests/**/*.{unit,it,http}.test.ts`，再让真实 shard 执行产出 file-level JUnit identity。**先在 `balance()` 之后、spawn 之前从某 bucket 删一个文件**——必须报出**缺失的具体文件名**。⚠️ 打在 `discover()` 的 mutation 不够，它抓不到这层。 | 每一次门运行的实际 shards 各自产 JUnit，runner 合并 file identity；**每次**与磁盘 manifest 双向比较，缺／多任一文件即 rc≠0。正确状态绿。 |
 | **T0.0b** | skipped identity multiset：整文件 skip、native 不可用 skip、todo 文件各一；**mutation 把一条 runnable test 改 skip**，必须报它的 `file+classname+name+ordinal`，不许只报少了一个数。 | 输出 `executed`／`skipped` 两数与 skipped identity multiset；native history-search 这类环境 skip 独立具名 disposition。 |
 | **T0.0c** | runner 自身 mutation control：把 JUnit reporter 只加在 `refreshTimings()` 而不加真实 shards → file identity 门必须红；把 JUnit 合并器丢一个 shard → 门必须红。 | 真实 shard 的 identity 被收集，mutation 都红；正确 full run 绿。 |
-| **T0.0d** | entry evidence 消费 validator：先对正确 pointer／树外 manifest／A／15 logs 跑一遍绿；再逐一注入 pointer hash 错、删除 manifest、改 `progress.base`、删一份 log、篡改 `claims_current_head`。 | 每条 mutation 必须点名表 §0.4f 对应行并非零退出；正确状态绿。pointer 缺失／树外 manifest 缺失**一律 fail-closed，不是 warning**。 |
+
+> ⚠️ **T0.0d 不属于 Commit -1**：它需要 A／15 logs／pointer P，而这些输入只在 Commit -1 合 master之后才存在。把它列为 Commit -1 自己的收口门，等于**用未来输入验过去 commit**——因果不可达。它已移到 §0.4f 的 **post-merge entry-evidence preflight**。
 
 ### 本 commit 的门（前置基础设施自己的门）
 
@@ -461,36 +462,44 @@ T0.0a、T0.0b、T0.0c 的三类正控都要**主动改坏 runner／test**。若�
 3. 原始日志落 `$TREE` 外（§0.4b），脚本结构化字段中的 `measured_sha` 必须 = A；
 4. 建立**树外 evidence manifest**（推荐 `OUT/evidence-manifest.json`），至少含：`measured_sha`、`evidence_timing`、绝对 `OUT`、run log 文件清单、磁盘 manifest hash、运行时 identity manifest hash、`executed`／`skipped` multiset hash、命令与时间；它是「这 15 次测了什么」的权威，不在 git 工作树里；
 5. **master 状态文档只放指针**：执行时更新 `docs/plan/2026-07-27-inter-block-anchor-allocator/HANDOVER.md` 的「entry evidence」状态行（这是 master 上的状态真相源），写 `measured_sha=A`、树外 manifest 的绝对路径／hash、归档副本的位置、以及「该 pointer commit 不定义 entry」这一句。**该指针只回答「证据在哪里」，绝不写「当前 HEAD=A」或反向定义 entry**；pointer commit 是 A 的后代，不改变 A 是 entry 的事实；
-6. 进度文件 frontmatter 的 `base` 更新为 A，并引用**HANDOVER pointer 所在 master commit P**。这样接手方可从主线找到证据，**但不会把 P 误当 entry**。
+6. 进度文件 frontmatter `base` **保留任务起始基线／plan 工作起点**，不冒充 entry truth；HANDOVER pointer P 只在 master 状态线被引用。接手方通过 validator 的外部 `ENTRY_SHA=A` 与 P 的 Git 图关系找到证据，**不要求 A tree 自含未来 P**。
 
 > **为什么不用把 `measured_sha=A` 直接写进 `$TREE` 的 plan**：写 plan 会产生新 commit B，entry 就从 A 前移到 B，而日志仍测 A——循环重现。**树外 manifest 冻结 A，master 指针只定位 manifest；归档动作不重新定义 entry。**
 
-### 0.4f Entry evidence 消费门 —— **fail-closed，pointer 不是「曾经通过」的自述**
+### Post-merge entry-evidence preflight —— **P 后、Commit 0 前；不是 Commit -1 收口门，也不是 cutover commit**
 
-**触发点**：Commit -1 已合 master、A 已测、master pointer P 已提交之后；**从 A 建 cutover worktree、进入 Commit 0 之前**。缺任一证据就停，**不得把 HANDOVER pointer 读成「以前有人通过过」的自述继续开工。**
+**因果相位（已裁 Git 图）**：Commit -1 在独立树收口 → 合 master 得 **A** → 从 A 建 cutover worktree → 树外跑 15 次／生成 manifest → master 提交 pointer **P** → **此处运行 T0.0d** → 才允许执行树进入 T0.1／Commit 0。
+
+> ⚠️ **T0.0d 不能列在 Commit -1 收口门里**：它需要 A／15 logs／P，而这些输入只在 Commit -1 合 master**之后**存在。把未来输入拿去验过去 commit 是因果不可达；这不是「task 放哪方便」的排版问题。
+
+| id | 先写什么失败测试 → 预期怎么红 | 实现什么 → 预期怎么绿 |
+|---|---|---|
+| **T0.0d**（post-merge preflight） | entry evidence 消费 validator：先对正确 A／P／树外 manifest／15 原始 logs 跑一遍绿；再按下表**逐行**注入 mutation。 | validator 绿后才允许执行树开始 T0.1／Commit 0。pointer 缺失／树外 manifest 缺失**一律 fail-closed，不是 warning**。 |
 
 **单一 validator 的输入**：
 
 - master 状态真相源 `docs/plan/2026-07-27-inter-block-anchor-allocator/HANDOVER.md` 的 entry-evidence pointer 行；
 - pointer 指向的**树外** `evidence-manifest.json`；
-- cutover worktree 的进度文件 frontmatter `base=A`；
-- manifest 记录的 15 份 `run-*.log`。
+- validator 调用方提供的**外部参数** `ENTRY_SHA=A`（不写进 A tree）；
+- manifest 记录的 15 份原始 `run-*.log` 与每次真实 shard JUnit artifact。
 
-**validator 必须逐条验证，任一缺失／不等即非零退出**：
+**validator 必须逐条验证，任一缺失／不等即非零退出。** 🔴 **不接受「manifest 内部自洽」当证据**：一次错误生成 manifest 与 artifact 可以一起错；必须从**原始 artifact 独立重算**再比 manifest。
 
-| # | 机械检查 | fail-closed 条件 |
-|---|---|---|
-| 1 | HANDOVER pointer 存在、处在 master 状态文档中 | pointer 缺失或不在 HANDOVER → fail |
-| 2 | pointer 的 manifest path 存在 | 树外 manifest 被清理／覆盖 → **fail，不是 warning**；pointer 不能凭空恢复它 |
-| 3 | `sha256(manifest)` = pointer 冻结 hash | hash 不等 → fail |
-| 4 | `manifest.measured_sha == progress.base == A` | 三者任一不等 → fail；**P 不是 A，不许拿 P 比** |
-| 5 | manifest 的 run log 列表**恰 15 个**，每个文件存在且 `sha256(log)` = manifest 记录 | 缺／多／hash 不等 → fail |
-| 6 | 每份 log 结构化字段：`evidence_timing=closeout`、`measured_sha=A`（完整 40 位）、`claims_current_head=true`；其退出码／文件集合／executed-skipped verdict 全为绿 | 任一字段缺失／值不等／verdict 非绿 → fail |
-| 7 | manifest 的磁盘 manifest hash、运行时 identity manifest hash、skipped multiset hash 与 manifest 内互相一致 | 任一空值／不等 → fail |
+| # | 机械检查（从何处独立重算） | fail-closed 条件 | 目标 mutation |
+|---|---|---|---|
+| 1 | HANDOVER pointer 存在、处在 master 状态文档中 | pointer 缺失或不在 HANDOVER → fail | 删除／移动 pointer 行 |
+| 2 | pointer 的 manifest path 存在 | 树外 manifest 被清理／覆盖 → **fail，不是 warning**；pointer 不能凭空恢复它 | 删除 manifest |
+| 3 | 从原始 manifest bytes 重算 `sha256(manifest)` = pointer 冻结 hash | hash 不等 → fail | 改 pointer hash |
+| 4 | `manifest.measured_sha == ENTRY_SHA == A`；在 cutover worktree 的 preflight 时 `git rev-parse HEAD == ENTRY_SHA`；在 master 状态线 `git merge-base --is-ancestor ENTRY_SHA P` | 任一不等／Git 图关系不成立 → fail；**P 是 A 的后代，不许拿 P 代替 A** | 传错 `ENTRY_SHA`／让执行树 HEAD 偏离 A |
+| 5 | manifest 的 run log 列表**恰 15 个**；每个原始 log 存在且独立 `sha256(log)` = manifest 记录 | 缺／多／hash 不等 → fail | 删一份 log／改一份 log |
+| 6 | 从每份**原始 JUnit**重算 file identity 集合；15 次逐次比较，并与磁盘 manifest／manifest 记录比对 | 任一 run 缺／多文件或与 manifest 不等 → fail | 从某 run 的 JUnit 移除一个文件 identity |
+| 7 | 从每份原始 JUnit + log 重算 skipped identity multiset（`file+classname+name+ordinal`）与 `executed`；15 次逐次比较，并与 manifest 记录比对 | 任一 skip identity／executed 不等 → fail | 把一条 runnable 改 skip，或篡改一份 JUnit 的 skipped case |
+| 8 | 从每份原始 log 重取 canonical command、`evidence_timing=closeout`、完整 `measured_sha=A`、`claims_current_head=true` 与 run verdict | 任一字段缺失／不等／verdict 非绿 → fail | 分别篡改 `evidence_timing`、单份 log 的 `measured_sha`、`claims_current_head`、verdict、canonical command |
+| 9 | 从原始 disk manifest / runtime identity manifest / skipped multiset artifact **重算各自 hash**，再比 evidence manifest 记录 | 任一空值／hash 不等 → fail | 分别置空／篡改三个 manifest hash |
 
-**正控**（消费侧，别只测生成侧）：各自注入 pointer hash 错、删除树外 manifest、改 `progress.base`、删一份 run log、把一份 log 的 `claims_current_head` 改 `false`，**每条必须因表中对应行红**。正确 A／15 logs／三字段一致为绿。
+**正样本**：正确 `ENTRY_SHA=A`、正确 Git 图、15 原始 logs/JUnit、三类 hash 与每次独立重算一致为绿。
 
-> ⚠️ 这是**消费门的需求与验收形状**，不在本 plan 内发明 validator 脚本实现。它由 Commit -1 基础设施交付者随 runner oracle 一并实现、独立评审；直到它实际存在并通过上表正控之前，**T0.1 不能开工**。
+> ⚠️ 这是**消费门的需求与验收形状**，不在本 plan 内发明 validator 脚本实现。它由 Commit -1 基础设施交付者交付、独立评审；直到它实际存在并通过上表每行 mutation 前，**T0.1 不能开工**。
 
 ---
 

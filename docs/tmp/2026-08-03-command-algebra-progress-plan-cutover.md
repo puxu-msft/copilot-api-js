@@ -29,6 +29,13 @@ session_id: 046d7295-e5ce-470b-a284-c721c6ce1cb8
 - [ ] **复评**：本轮改动需再过一轮。
 - [ ] **未决裁决**：plan §11 状态表——#2／#3（Q1 与 §4.8）／#5（R-5 归属）／#6（`OwnerTerminalDecision`）。**#6 的触发点本轮从 Commit 4 提前到 T1.6**。
 
+## 第十三轮整改（判据侧最终 1 blocker/1 major + 执行侧最终 1 blocker/1 major/1 minor）
+
+- **T0.0d 因果倒序已修**：它从 Commit -1 的收口门移到明确命名的 **post-merge entry-evidence preflight**（P 后、Commit 0 前）。已裁图顺序是 -1 收口→合 master 得 A→A 的执行树→15 次/manifest→P→**T0.0d**→T0.1/C0。**不能用未来 A/15/P 去验过去 Commit -1**。矩阵标题与 plan gate 表同步，T0.0d task ID 不变、差集为空。
+- **X-2 Git 自指已修**：`progress.base=A` 是不可能的（写 A tree 内 progress→B，A 不再 HEAD；P 还在 A 后）。entry A 改为 validator **外部参数** `ENTRY_SHA=A`；Git 图机械证明执行树 HEAD=A 且 A 是 P 祖先。progress.base 回归它本来的「任务起始基线/plan 工作起点」，不冒充 entry truth；P 只走 master 状态线。
+- **X-3 原始 artifact 重算**：T0.0d 不再只验 manifest 内部自洽。9 行 validator 表逐条从原始 JUnit/log/disk manifest/runtime identity/skipped multiset 重算：每 run identity、每 run skipped multiset+executed、canonical command+三字段+verdict、三类 hash，再比 manifest。每行都有目标 mutation；正样本必须 15 次逐次一致。
+- **Commit -1 mutation protocol 未被相位搬迁冲淡**：a/b/c 仍在 Commit -1 自身门；d 是 P 后消费门，**不为了改摘要数字把 d 混回 -1**。
+
 ## 第十二轮整改（用户裁 Commit -1 拓扑 + 执行方第 6 轮 2 major）
 
 - **用户裁已落两处**：plan §11 #4 与 HANDOVER「用户已裁决」表，来源严格保留 AskUserQuestion 选项文本 **「Commit -1 先合 master（推荐）」**。图不是口号，写成可检验 sequence：-1 独立 tree 过门 → 合 master → A → A 的 cutover tree → 外置 15 次 → master P，且 `A` 是 `P` 祖先、P 不合回执行分支。
