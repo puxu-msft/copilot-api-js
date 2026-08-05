@@ -39,6 +39,13 @@
 - Latest master 已吸收 forced-custom 与 incomplete-call 的重复修复；rebase 后最终代码差异仅保留 Anthropic→CC 存活性、WebSearch opaque id／类型收窄及对应测试。
 - Dirty master 与集成路径的未提交交集仍仅 `exp/anthropic-responses-direct/FINDINGS.md`。安全门：只 stash 该文件并保存 stash SHA → `git merge --ff-only websearch-final-integration` → 按 SHA `stash apply`（不 pop）→ 冲突即停 → 核 Probe-e 与 WebSearch action/incomplete 两段均存在、恢复后 diff 等于原 WIP → 才删除 stash。
 
-## Round 4
+## Round 4（操作门执行记录）
 
-待上述操作门执行后复审。
+- Master 在操作前为 `b8372966`，integration 为 `6e9e9439`，fast-forward 成功且未产生 merge commit。
+- 仅 `exp/anthropic-responses-direct/FINDINGS.md` 被 stash 到固定 SHA `c832cb10db24d7b60890fb32759f867b101951b3`；使用 `stash apply <sha>`，未 pop，apply 无冲突，stash 仍保留。
+- 除该文件外，tracked WIP patch 与 untracked 文件 hash 清单在 fast-forward 前后逐字节相同。
+- 恢复后的 `FINDINGS.md` diff 仅为原 Probe-e 31 行 WIP；已提交的 WebSearch incomplete/action 证据仍在。最终文档进一步收窄为“仅 `status:"incomplete"` 可缺 action”，常规状态仍要求 action。
+
+## Round 5
+
+待 reviewer 核实际 master 状态后最终放行。

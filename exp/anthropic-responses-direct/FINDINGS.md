@@ -50,7 +50,7 @@
    - `(openai-responses 客户端, responses 模型)` = passthrough，web_search 原生 round-trip（无本 RFC 直接桥问题）。
    - `(anthropic 客户端, responses 模型)` = 本 RFC 前向直接桥，web_search 结果渲染 anthropic 须**降级为 tool_use/text**（无真密文可搬）。
 
-**对 RFC 的影响**：§5 降级结论对 anthropic-facing 成立且须精化措辞；R-NO-REVIVE 精确到「anthropic-facing 渲染不合成 web_search_tool_result」。2026-08-05 的补充探针还校准了消费契约：`action` 是可选字段，缺失时保留 `status` 并显示 `(unknown query)`。
+**对 RFC 的影响**：§5 降级结论对 anthropic-facing 成立且须精化措辞；R-NO-REVIVE 精确到「anthropic-facing 渲染不合成 web_search_tool_result」。2026-08-05 的补充探针还校准了消费契约：`status:"incomplete"` 变体可能缺 `action`，此时保留 opaque `id` 与 `status` 并显示 `(unknown query)`；常规 completed/searching/failed 变体仍按 Responses 契约要求 `action`。
 
 **补充探针没有证明什么**：它没有证明每个 `status:"incomplete"` 的调用都缺 `action`，也没有穷举未来可能新增的 action 类型；它只以真实 GHC 响应证明“缺 `action`”是消费者必须接受的输入形状。
 
