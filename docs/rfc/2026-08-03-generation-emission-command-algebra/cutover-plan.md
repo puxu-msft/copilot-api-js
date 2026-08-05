@@ -451,7 +451,7 @@ T0.0a、T0.0b、T0.0c 的正控会**主动改坏 runner／test**；T0.0e 的正�
 | **T0.0a** | 从**独立磁盘 manifest** 枚举 `tests/**/*.{unit,it,http}.test.ts`，再让真实 shard 执行产出 file-level JUnit identity。**先在 `balance()` 之后、spawn 之前从某 bucket 删一个文件**——必须报出**缺失的具体文件名**。⚠️ 打在 `discover()` 的 mutation 不够，它抓不到这层。 | 每一次门运行的实际 shards 各自产 JUnit，runner 合并 file identity；**每次**与磁盘 manifest 双向比较，缺／多任一文件即 rc≠0。正确状态绿。 |
 | **T0.0b** | skipped identity multiset：整文件 skip、native 不可用 skip、todo 文件各一；**mutation 把一条 runnable test 改 skip**，必须报它的 `file+classname+name+ordinal`，不许只报少了一个数。 | 输出 `executed`／`skipped` 两数与 skipped identity multiset；native history-search 这类环境 skip 独立具名 disposition。 |
 | **T0.0c** | runner 自身 mutation control：把 JUnit reporter 只加在 `refreshTimings()` 而不加真实 shards → file identity 门必须红；把 JUnit 合并器丢一个 shard → 门必须红。 | 真实 shard 的 identity 被收集，mutation 都红；正确 full run 绿。**同时实现并版本化 §0.4f 的 `scripts/capture-entry-evidence.ts` 与 `tests/infra/entry-test-discovery-baseline.json` v1**；producer 合成 fixture 覆盖树外 OUT、entry/tree、15-run/JUnit 对账、失败无 manifest 与原子写入。 |
-| **T0.0e** | **按 §0.4f 冻结接口实现并版本化 `scripts/validate-entry-evidence.ts`**：用**合成 fixtures**构造临时 git 图、合成 A/P、唯一 pointer block、树外 manifest、15 原始 logs/JUnit。先跑完整 fixture 绿；再通过同一 CLI 跑 `EV-01`…`EV-25`，每个 action 只改一个合成输入，验证稳定 exit code 与 `FAIL C<n>:` message。**不需要未来真实 A/P。** | validator 随 Commit -1 进入版本控制并通过自身正/负控；CLI、pointer block v1、manifest v1、退出码契约**只能来自 §0.4f**，不得由实现者另选 env/flags/schema。T0.0d 只用同一 CLI **消费**真实 evidence。 |
+| **T0.0e** | **按 §0.4f 冻结接口实现并版本化 `scripts/validate-entry-evidence.ts`**：用**合成 fixtures**构造临时 git 图、合成 A/P、唯一 pointer block、树外 manifest、15 原始 logs/JUnit。先跑完整 fixture 绿；再通过同一 CLI 跑 `EV-01`…`EV-28`，每个 action 只改一个合成输入，验证稳定 exit code 与 `FAIL C<n>:` message。**不需要未来真实 A/P。** | validator 随 Commit -1 进入版本控制并通过自身正/负控；CLI、pointer block v1、manifest v1、退出码契约**只能来自 §0.4f**，不得由实现者另选 env/flags/schema。T0.0d 只用同一 CLI **消费**真实 evidence。 |
 
 > ⚠️ **T0.0d 不属于 Commit -1**：它需要 A／15 logs／pointer P，而这些输入只在 Commit -1 合 master之后才存在。把它列为 Commit -1 自己的收口门，等于**用未来输入验过去 commit**——因果不可达。它已移到 §0.4f 的 **post-merge entry-evidence preflight**；**validator 本体由 T0.0e 在 Commit -1 实现/版本化**。
 
@@ -462,7 +462,7 @@ T0.0a、T0.0b、T0.0c 的正控会**主动改坏 runner／test**；T0.0e 的正�
 | shard 漏文件正控 | T0.0a 在 `balance()` 后删文件 → rc≠0 且点名该文件 |
 | skipped 多集正控 | T0.0b 把 runnable 改 skip → rc≠0 且点名该 identity |
 | runner 接线正控 | T0.0c 两条 reporter／merge mutation 各自因目标机制红 |
-| validator 合成 fixture 门 | T0.0e：合成 A/P/pointer/manifest/15 logs/JUnit 正样本绿；`EV-01`…`EV-25` 每条因唯一预期 fail code/message 红 |
+| validator 合成 fixture 门 | T0.0e：合成 A/P/pointer/manifest/15 logs/JUnit 正样本绿；`EV-01`…`EV-28` 每条因唯一预期 fail code/message 红 |
 | 收口 | `bun run typecheck` 绿、前置基础设施自己的测试绿、T0.0a/b/c runner mutation 红、T0.0e 的 25 条合成 fixture mutation 红；**此 commit 本身不得被 T0.0f 的 15 次自洽运行替代验收**。T0.0f／T0.0d 属于合 master 之后的 post-merge phase，**不在本 commit 验** |
 
 ### 收口与 entry 重锚（不可省略）
@@ -549,6 +549,9 @@ cd /home/xp/src/copilot-api-js && bun run scripts/validate-entry-evidence.ts \
   "pointer_sha": "<P>",
   "manifest_path": "<树外绝对路径>",
   "manifest_sha256": "<64位小写hex>",
+  "discovery_baseline_path": "tests/infra/entry-test-discovery-baseline.json",
+  "discovery_baseline_sha256": "<64位小写hex>",
+  "discovery_runner_git_blob": "<40位git blob id>",
   "validated_at": "<RFC3339时间>",
   "verdict": "green"
 }
@@ -577,6 +580,9 @@ archive_path=<可为空；归档副本不定义 entry>
   "claims_current_head": true,
   "out_dir": "<绝对树外路径>",
   "canonical_command": "<规范化后的完整命令>",
+  "discovery_baseline_path": "tests/infra/entry-test-discovery-baseline.json",
+  "discovery_baseline_sha256": "<64位小写hex>",
+  "discovery_runner_git_blob": "<40位git blob id>",
   "disk_manifest": { "path": "<绝对路径>", "sha256": "<hex>" },
   "runtime_identity_manifest": { "path": "<绝对路径>", "sha256": "<hex>" },
   "skipped_multiset": { "path": "<绝对路径>", "sha256": "<hex>" },
@@ -633,6 +639,7 @@ archive_path=<可为空；归档副本不定义 entry>
 | 8 | 从每份原始 JUnit + log 重算 skipped identity multiset（`file+classname+name+ordinal`）与 `executed`；15 次逐次比较，并与 manifest 记录比对 | 任一 skip identity／executed 不等 → fail | `EV-17` |
 | 9 | 从每份原始 log 重取 canonical command、`evidence_timing=closeout`、完整 `measured_sha=A`、`claims_current_head=true` 与 run verdict | 任一字段缺失／不等／verdict 非绿 → fail | `EV-18`, `EV-19`, `EV-20`, `EV-21`, `EV-22` |
 | 10 | 从原始 disk manifest、runtime identity manifest、skipped multiset artifact **重算各自 hash**，再比 evidence manifest 记录 | 任一空值／hash 不等 → fail | `EV-23`, `EV-24`, `EV-25` |
+| 11 | 从 `ENTRY_SHA` 的 git object 读取 `tests/infra/entry-test-discovery-baseline.json` 原始 bytes 与 `scripts/parallel-test.ts` blob；重算 baseline sha256，严格解析 v1 schema/canonical ordering，并验证 `manifest.discovery_baseline_*` 与 entry 中 path/hash/blob 一致 | baseline 不存在／schema或canonical编码错／hash或runner blob不等／manifest 未绑定该 baseline → fail；**不得接受调用方另给一个更宽 baseline** | `EV-26`, `EV-27`, `EV-28` |
 
 #### Evidence validator mutation 表（**每个 ID 只改一个输入**）
 
@@ -663,27 +670,30 @@ archive_path=<可为空；归档副本不定义 entry>
 | `EV-23` | 10 | 修改 disk manifest hash | `FAIL C10: disk manifest hash mismatch` |
 | `EV-24` | 10 | 修改 runtime identity manifest hash | `FAIL C10: runtime identity manifest hash mismatch` |
 | `EV-25` | 10 | 修改 skipped multiset hash | `FAIL C10: skipped multiset hash mismatch` |
+| `EV-26` | 11 | 把 manifest 的 discovery baseline path 改为另一文件 | `FAIL C11: discovery baseline path differs from entry` |
+| `EV-27` | 11 | 修改 entry 中 discovery baseline bytes 但保留 manifest 旧 hash | `FAIL C11: discovery baseline hash mismatch` |
+| `EV-28` | 11 | 让 manifest 记录另一份 runner git blob | `FAIL C11: discovery runner blob mismatch` |
 
 #### Mutation table mechanical reconciliation
 
 **本对账由 Commit -1 validator 的测试辅助脚本执行；不接受人工声称。** 它必须输出四项：
 
 ```text
-condition coverage: C1=2 C2=2 C3=3 C4=3 C5=2 C6=3 C7=1 C8=1 C9=5 C10=3
-mutation ownership: 25 IDs each map to exactly one condition
+condition coverage: C1=2 C2=2 C3=3 C4=3 C5=2 C6=3 C7=1 C8=1 C9=5 C10=3 C11=3
+mutation ownership: 28 IDs each map to exactly one condition
 duplicate IDs: none
 orphan IDs: none
 ```
 
 - 每个 condition 至少一个 ID；
 - 每个 ID **恰好**属于一个 condition；
-- `EV-01`…`EV-25` 无重复；
+- `EV-01`…`EV-28` 无重复；
 - 不存在 condition 表未引用的 ID，也不存在 mutation 表未列出的 ID；
 - **action 列**动作文本扫描 `／|分别|之一|任一` 必须 **0 命中**——这些词出现时说明又把多个机制合进一个 action；说明文字可用这些词，action 列不可用。
 
 **正样本**：正确 `ENTRY_SHA=A`、正确 Git 图、15 原始 logs/JUnit、三类 hash 与每次独立重算一致为绿。
 
-> ⚠️ validator 本体的实现/版本化归属 **T0.0e（Commit -1）**；T0.0e 用合成 fixtures 跑 `EV-01`…`EV-25`，独立评审。T0.0d 只对未来真实 A/P/15 logs 消费该已交付 validator。直到 **T0.0e 的合成门**与 **T0.0d 的真实消费门**都通过前，**T0.1 不能开工**。
+> ⚠️ validator 本体的实现/版本化归属 **T0.0e（Commit -1）**；T0.0e 用合成 fixtures 跑 `EV-01`…`EV-28`，独立评审。T0.0d 只对未来真实 A/P/15 logs 消费该已交付 validator。直到 **T0.0e 的合成门**与 **T0.0d 的真实消费门**都通过前，**T0.1 不能开工**。
 
 ---
 

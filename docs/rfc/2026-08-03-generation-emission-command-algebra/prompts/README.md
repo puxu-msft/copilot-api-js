@@ -80,8 +80,8 @@ cd /home/xp/src/copilot-api-js && python3 exp/inter-block-anchor-allocator/promp
 
 - 从 cutover plan 各 Commit「逐 task」表第一列的结构化 task definition 解析完整 grammar `T\d+\.\d+[a-z]?`，**不扫描全文历史 mention／交叉引用**；
 - 从 `prompts/commit-minus-1.md`、`post-merge-preflight.md`、`commit-0.md`…`commit-8.md` 的「本 phase task 集合」双 marker 解析 task 集合；marker 两份不一致也红，但每 prompt 只计一份归属；
-- 要求集合精确相等、每个 task 在 prompts 恰出现一次、无孤儿 prompt task；
-- 输出 `plan tasks: N`、`prompt tasks: N`、`duplicates: none`、`orphans: none`、`unassigned: none`；N 从 plan 派生，**不得硬编码 83**；
+- 要求集合精确相等、每个 task 在 prompts 恰出现一次、无孤儿 prompt task，且**prompt owner 与 plan 的父级 phase 一致**（把 T2.8 搬到 Commit 3 表必须报 wrong-phase）；
+- 输出 `plan tasks: N`、`prompt tasks: N`、`duplicates: none`、`orphans: none`、`unassigned: none`、`wrong-phase: none`；N 从 plan 派生，**不得硬编码**；
 - 支持 `PLAN=`／`PROMPTS=` 覆盖路径，在副本上跑 mutation；
 - 已实跑字母后缀正控：`T4.0d→T4.0z` 报 `orphan prompt tasks: ['T4.0z']` + `unassigned plan tasks: ['T4.0d']`；删除 `T0.0e` 报 `unassigned plan tasks: ['T0.0e']`；未变异正确集合绿。
 
