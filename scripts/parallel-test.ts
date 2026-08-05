@@ -25,9 +25,11 @@
  * added; run `--update` occasionally to refresh.
  */
 import { Glob } from "bun"
-import { existsSync } from "node:fs"
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs"
 import os from "node:os"
 import path from "node:path"
+
+import { compareFileIdentities, parseJUnit } from "./parallel-test-artifacts"
 
 const REPO_ROOT = path.resolve(import.meta.dir, "..")
 const TIMINGS_PATH = path.join(REPO_ROOT, "scripts/test-timings.json")
@@ -115,13 +117,19 @@ if (update) await refreshTimings(files)
 const timings = await loadTimings()
 const n = Math.min(files.length, os.cpus().length)
 const buckets = balance(files, timings, n)
+const artifactDir = process.env.PARALLEL_TEST_ARTIFACT_DIR ?? mkdtempSync(path.join(os.tmpdir(), "parallel-test-"))
+mkdirSync(artifactDir, { recursive: true })
 
 const start = performance.now()
-const procs = buckets.map((b) => Bun.spawn(["bun", "test", ...b], { cwd: REPO_ROOT, stdout: "pipe", stderr: "pipe" }))
+const procs = buckets.map((bucket, index) => {
+  const junitPath = path.join(artifactDir, `shard-${String(index + 1).padStart(2, "0")}.xml`)
+  return Bun.spawn(["bun", "test", "--reporter=junit", `--reporter-outfile=${junitPath}`, ...bucket], { cwd: REPO_ROOT, stdout: "pipe", stderr: "pipe" })
+})
 const results = await Promise.all(
   procs.map(async (p, i) => ({
     bucket: buckets[i],
     code: await p.exited,
+    junitPath: path.join(artifactDir, `shard-${String(i + 1).padStart(2, "0")}.xml`),
     err: (await new Response(p.stderr).text()) + (await new Response(p.stdout).text()),
   })),
 )
@@ -145,6 +153,29 @@ for (const r of crashed) {
   if (rerun.exitCode !== 0) process.stderr.write(`[parallel-test] isolated re-run of crashed bucket exited ${rerun.exitCode}\n`)
 }
 
+const identities = results.map((result) => {
+  if (!existsSync(result.junitPath)) {
+    console.error(`[parallel-test] missing JUnit artifact for shard: ${result.junitPath}`)
+    return undefined
+  }
+  return parseJUnit(readFileSync(result.junitPath, "utf8"), REPO_ROOT)
+})
+if (identities.some((identity) => identity === undefined)) process.exit(1)
+const parsedIdentities = identities as Array<NonNullable<(typeof identities)[number]>>
+
+const runtimeFiles = new Set(parsedIdentities.flatMap((identity) => identity.files))
+const fileComparison = compareFileIdentities(files, [...runtimeFiles])
+if (fileComparison.missing.length > 0 || fileComparison.unexpected.length > 0) {
+  for (const file of fileComparison.missing) console.error(`[parallel-test] missing runtime file identity: ${file}`)
+  for (const file of fileComparison.unexpected) console.error(`[parallel-test] unexpected runtime file identity: ${file}`)
+}
+
+const executed = parsedIdentities.reduce((sum, identity) => sum + identity.executed, 0)
+const skipped = parsedIdentities.reduce((sum, identity) => sum + identity.skipped, 0)
+const skippedIdentities = parsedIdentities.flatMap((identity) => identity.skippedIdentities)
+writeFileSync(path.join(artifactDir, "runtime-identity.json"), `${JSON.stringify({ files: [...runtimeFiles].sort() }, null, 2)}\n`)
+writeFileSync(path.join(artifactDir, "skipped-multiset.json"), `${JSON.stringify({ executed, skipped, skipped_identities: skippedIdentities }, null, 2)}\n`)
+
 // Aggregate the per-shard pass/fail tallies. `tests` is derived from pass+fail so it
 // can never disagree with them (bun prints pass/fail on their own lines per shard).
 // Bun colors that summary EVEN WHEN ITS STDOUT IS A PIPE, so the line actually reads
@@ -163,7 +194,8 @@ for (const r of results) {
 }
 
 console.error(
-  `\n[parallel-test] ${buckets.length} shards · ${passSum + failSum} tests · `
-    + `${passSum} pass · ${failSum} fail${crashed.length > 0 ? ` · ${crashed.length} shard(s) crashed (see isolated re-run above)` : ""} · ${wall}s`,
+  `\n[parallel-test] ${buckets.length} shards · ${passSum + failSum} tests · ` +
+    `${passSum} pass · ${failSum} fail · ${executed} executed · ${skipped} skipped${crashed.length > 0 ? ` · ${crashed.length} shard(s) crashed (see isolated re-run above)` : ""} · ${wall}s`,
 )
-process.exit(failed.length > 0 ? 1 : 0)
+console.error(`[parallel-test] artifacts=${artifactDir}`)
+process.exit(failed.length > 0 || fileComparison.missing.length > 0 || fileComparison.unexpected.length > 0 ? 1 : 0)
