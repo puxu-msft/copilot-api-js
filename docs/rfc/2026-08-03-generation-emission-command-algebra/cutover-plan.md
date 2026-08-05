@@ -502,10 +502,18 @@ cd /home/xp/src/copilot-api-js && bun run scripts/capture-entry-evidence.ts \
   "files": ["tests/example.unit.test.ts"],
   "allowed_skipped": [
     {
+      "kind": "testcase",
       "file": "tests/example.unit.test.ts",
       "classname": "suite",
       "name": "case",
       "ordinal": 1,
+      "count": 1,
+      "reason": "todo"
+    },
+    {
+      "kind": "suite",
+      "file": "tests/native.unit.test.ts",
+      "suite_name": "tests/native.unit.test.ts",
       "count": 1,
       "reason": "native-unavailable"
     }
@@ -514,7 +522,10 @@ cd /home/xp/src/copilot-api-js && bun run scripts/capture-entry-evidence.ts \
 ```
 
 - `files`：repo-root 相对 POSIX 路径、无 `./`／`..`、唯一、按 UTF-8 bytewise 升序；每项后缀恰为 `.unit.test.ts`／`.it.test.ts`／`.http.test.ts`，且磁盘存在。
-- `allowed_skipped`：multiset 的规范表示，不用重复对象表达重复次数；key 是 `file+classname+name+ordinal`，`count` 为正整数，`ordinal` 为同 file/classname/name 的 1-based 出现序号；按 `(file, classname, name, ordinal)` UTF-8 bytewise 升序且 key 唯一。`reason` 只允许冻结枚举 `native-unavailable | todo | whole-suite-skip | reviewed-environment`，未知 reason fail-closed。
+- `allowed_skipped`：**判别联合**，只保存 Bun JUnit 真提供的数据，禁止为空缺字段造 sentinel：
+  - `kind="testcase"`：JUnit 有 `<testcase>` 时，key=`file+classname+name+ordinal`；`ordinal` 是同 file/classname/name 的 1-based 出现序号。
+  - `kind="suite"`：整文件 skip 只有 self-closing `<testsuite file=... name=... skipped=.../>`、没有 testcase；key=`file+suite_name`，**不得伪造 classname/name/ordinal**。
+  两种 entry 的 `count` 均为正整数，以 multiset count 表达重复；分别按 `(kind, file, classname, name, ordinal)` 或 `(kind, file, suite_name)` UTF-8 bytewise 升序且 key 唯一。`reason` 只允许 `native-unavailable | todo | whole-suite-skip | reviewed-environment`；`suite` 通常只允许 `native-unavailable | whole-suite-skip | reviewed-environment`，未知组合 fail-closed。
 - `minimum_executed`：非负整数，由 Commit -1 的独立 discovery/JUnit oracle 在**正确正样本**上冻结；不得读 T0.0f 的 15-run 输出生成。
 - `runner_git_blob` 必须等于 entry A 中 `scripts/parallel-test.ts` 的 `git rev-parse "${ENTRY_SHA}:scripts/parallel-test.ts"`；不等说明用另一把尺子量 evidence。
 - 文件编码 UTF-8、LF、2-space JSON、末尾单个 `\n`；顶层 key 顺序固定为上例，条目 key 顺序固定为上例。消费者既验证解析语义，也对原始 bytes 取 hash；禁止“语义相同就重写 baseline”绕过审计。
