@@ -8,10 +8,10 @@ Commit 7 不改 production、不首次 recapture。它审 Commit 4 的 golden �
 
 ## 必读
 
-- `../design.md`：§6.3、§7.10、§10.2 R-12。
-- `../cutover-plan.md`：Commit 7、§0.4a production 判据、§0.4b 收口趟。
-- `../traceability.md`：R-12、T7.*。
-- `README.md` 与进度文件。
+- `docs/rfc/2026-08-03-generation-emission-command-algebra/design.md`：§6.3、§7.10、§10.2 R-12。
+- `docs/rfc/2026-08-03-generation-emission-command-algebra/cutover-plan.md`：Commit 7、§0.4a production 判据、§0.4b 收口趟。
+- `docs/rfc/2026-08-03-generation-emission-command-algebra/traceability.md`：R-12、T7.*。
+- `docs/rfc/2026-08-03-generation-emission-command-algebra/prompts/README.md` 与进度文件。
 
 ## 前置/停点
 
@@ -41,4 +41,4 @@ R-12 C7 auxiliary、R-11/O-6 和共同门。Commit invariant：production 零改
 
 ## 红线
 
-见 `README.md`。不以新 golden 自证、不 recapture O-6、不误把 `scripts/test-timings.json`/test baseline 当 production、不碰 4141。
+见 `docs/rfc/2026-08-03-generation-emission-command-algebra/prompts/README.md`。不以新 golden 自证、不 recapture O-6、不误把 `scripts/test-timings.json`/test baseline 当 production、不碰 4141。

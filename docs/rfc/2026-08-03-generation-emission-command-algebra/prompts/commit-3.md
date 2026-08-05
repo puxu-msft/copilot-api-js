@@ -8,10 +8,10 @@ Commit 3 把各 format builders/classifiers、LegHandle 数据流、terminal 可
 
 ## 必读
 
-- `../design.md`：§3.4/§3.6、§5、§7.6、§9.3、§9.4、§10.1。
-- `../cutover-plan.md`：Commit 3、Commit 4 preflight、§0.4e mutation protocol。
-- `../traceability.md`：调查缝 #1～#8 与 T3.*。
-- progress 文件与 `README.md`。
+- `docs/rfc/2026-08-03-generation-emission-command-algebra/design.md`：§3.4/§3.6、§5、§7.6、§9.3、§9.4、§10.1。
+- `docs/rfc/2026-08-03-generation-emission-command-algebra/cutover-plan.md`：Commit 3、Commit 4 preflight、§0.4e mutation protocol。
+- `docs/rfc/2026-08-03-generation-emission-command-algebra/traceability.md`：调查缝 #1～#8 与 T3.*。
+- progress 文件与 `docs/rfc/2026-08-03-generation-emission-command-algebra/prompts/README.md`。
 
 ## 前置/停点
 
@@ -51,4 +51,4 @@ Commit 3 把各 format builders/classifiers、LegHandle 数据流、terminal 可
 
 ## 红线
 
-见 `README.md`。不把 T3 最小子集冒充 C4 完整证据；不以 helper/harness 变成 production shadow path；不重新合并 M1 failure/terminal 两轴。
+见 `docs/rfc/2026-08-03-generation-emission-command-algebra/prompts/README.md`。不把 T3 最小子集冒充 C4 完整证据；不以 helper/harness 变成 production shadow path；不重新合并 M1 failure/terminal 两轴。

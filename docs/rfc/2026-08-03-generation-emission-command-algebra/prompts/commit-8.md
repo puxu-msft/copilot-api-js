@@ -8,27 +8,29 @@ Commit 8 只在 runtime/API population/goldens 已稳定后同步 live docs、su
 
 ## 必读
 
-- `../design.md`：§6、§7.11、§8、§9.1 Q2、§10.4。
-- `../cutover-plan.md`：Commit 8、§0.4d、§11 状态表。
-- `../traceability.md`：T8.* 反向出处。
+- `docs/rfc/2026-08-03-generation-emission-command-algebra/design.md`：§6、§7.11、§8、§9.1 Q2、§10.4。
+- `docs/rfc/2026-08-03-generation-emission-command-algebra/cutover-plan.md`：Commit 8、§0.4d、§11 状态表。
+- `docs/rfc/2026-08-03-generation-emission-command-algebra/traceability.md`：T8.* 反向出处。
 - `docs/plan/2026-07-27-inter-block-anchor-allocator/HANDOVER.md`：上游/已裁决。
-- `README.md` 与进度文件。
+- `docs/rfc/2026-08-03-generation-emission-command-algebra/prompts/README.md` 与进度文件。
 
 ## 前置/停点
 
 - Commit 7 已收口。
-- Q2（ADR richest-data-flow owner-minted provenance）在此之前停：默认不改 ADR；未经用户明确同意不得改 ADR D2。
-- 所有 §11 未裁项应已在各自触发点裁掉；T8.7 要独立核对这一点。
+- **Q2（richest-data-flow ADR）**：是否给 `docs/decisions/2026-07-05-richest-data-flow.md` 补 owner-minted provenance 说明；默认不改，未经用户明确同意不得编辑。
+- **ADR D2 是另一道独立停门，不能与 Q2 混写**：它指 `docs/decisions/2026-07-22-continuation-retry-sequential-anchor.md` 的 D2 第 3 点「块级递送严格按 index 顺序输出」。本 phase 只产出逐段 replacement 草案；获用户明确同意前**不得写 ADR 文件，也不得声称 docs closeout 完成**。
+- 所有 §11 未裁项应已在各自触发点取得首次裁决；T8.7 要独立核对这一点。
 
 ## 改动锚点
 
 | 文档 | 用途 |
 |---|---|
-| `README.md` | C1～C11 live contract |
+| `docs/rfc/2026-08-03-generation-emission-command-algebra/prompts/README.md` | C1～C11 live contract |
 | `docs/DESIGN.md` | 活架构现状/类型架构 |
 | `docs/plan/2026-07-27-inter-block-anchor-allocator/` | M2～M4 supersede、M5～M8 重锚 |
 | `docs/todo/deferred-backlog.md` | §8 范围外 deferred |
-| `docs/decisions/2026-07-05-richest-data-flow.md` | **仅 Q2 用户同意后**可编辑 |
+| `docs/decisions/2026-07-05-richest-data-flow.md` | **仅 Q2 用户同意后**可编辑 owner-minted provenance 说明 |
+| `docs/decisions/2026-07-22-continuation-retry-sequential-anchor.md` D2 第 3 点 | **独立于 Q2**；先出 replacement 草案，用户明确同意后才可编辑 ADR |
 
 ## 本 phase task 集合（唯一归属）
 
@@ -48,8 +50,8 @@ R-11/O-6 与共同门；完成判定按 plan §10 逐项 verdict/证据，不能
 
 ## 提交指引
 
-精确 pathspec、Conventional Commit、无署名、绝不 push；文档/progress 同 phase commit。ADR 若未获用户同意，不把「默认 B」写成用户裁决。
+精确 pathspec、Conventional Commit、无署名、绝不 push；文档/progress 同 phase commit。Q2 若未获用户同意，不把「默认 B」写成用户裁决；ADR D2 未获用户同意时**只提交 replacement 草案，不提交 ADR 修改，并把 docs closeout 标为未完成**。
 
 ## 红线
 
-见 `README.md`。特别禁止：擅改 ADR D2、把 supersede 写成删除、声称「除列举外无冲突」却未做 T8.5 manifest 审计。
+见 `docs/rfc/2026-08-03-generation-emission-command-algebra/prompts/README.md`。特别禁止：擅改 ADR D2、把 supersede 写成删除、声称「除列举外无冲突」却未做 T8.5 manifest 审计。

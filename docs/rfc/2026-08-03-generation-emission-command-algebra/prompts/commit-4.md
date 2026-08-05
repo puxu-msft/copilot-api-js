@@ -8,10 +8,10 @@
 
 ## 必读
 
-- `../design.md`：§2、§3、§4、§5、§7.7、§7.13、§9.2 Q5、§9.3、§10.1/§10.2。
-- `../cutover-plan.md`：Commit 4 完整段、§0.3/§0.4b/§0.4e、§11 #6。
-- `../traceability.md`：R-1～R-8/R-12/R-14、O-1/O-2/O-4/O-8、调查缝。
-- progress 文件与 `README.md`。
+- `docs/rfc/2026-08-03-generation-emission-command-algebra/design.md`：§2、§3、§4、§5、§7.7、§7.13、§9.2 Q5、§9.3、§10.1/§10.2。
+- `docs/rfc/2026-08-03-generation-emission-command-algebra/cutover-plan.md`：Commit 4 完整段、§0.3/§0.4b/§0.4e、§11 #6。
+- `docs/rfc/2026-08-03-generation-emission-command-algebra/traceability.md`：R-1～R-8/R-12/R-14、O-1/O-2/O-4/O-8、调查缝。
+- progress 文件与 `docs/rfc/2026-08-03-generation-emission-command-algebra/prompts/README.md`。
 
 ## 前置/停点
 
@@ -57,4 +57,4 @@ R-1～R-8、R-12、R-14、O-1/O-2/O-4 targeted/O-8、R-11/O-6。O-6 byte-critica
 
 ## 红线
 
-见 `README.md`。不发布部分 authority、不使用 payload guessing facade、不让 new command 回落旧 writer、不现场编签名、不碰 4141。
+见 `docs/rfc/2026-08-03-generation-emission-command-algebra/prompts/README.md`。不发布部分 authority、不使用 payload guessing facade、不让 new command 回落旧 writer、不现场编签名、不碰 4141。

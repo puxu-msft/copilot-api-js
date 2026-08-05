@@ -8,10 +8,10 @@ Commit 2 在 test adapter 下建立 owner private state、authorization/observat
 
 ## 必读
 
-- `../design.md`：§2.4/§2.5、§3.3、§4.1～§4.6、§7.5、§10.1/§10.2 R-5。
-- `../cutover-plan.md`：§0.4/§0.4d/§0.4e、Commit 2、§11 #5/#6。
-- `../traceability.md`：R-5 与 T2.* 反向出处。
-- progress 文件与 `README.md`。
+- `docs/rfc/2026-08-03-generation-emission-command-algebra/design.md`：§2.4/§2.5、§3.3、§4.1～§4.6、§7.5、§10.1/§10.2 R-5。
+- `docs/rfc/2026-08-03-generation-emission-command-algebra/cutover-plan.md`：§0.4/§0.4d/§0.4e、Commit 2、§11 #5/#6。
+- `docs/rfc/2026-08-03-generation-emission-command-algebra/traceability.md`：R-5 与 T2.* 反向出处。
+- progress 文件与 `docs/rfc/2026-08-03-generation-emission-command-algebra/prompts/README.md`。
 
 ## 前置/停点
 
@@ -56,4 +56,4 @@ R-5 的阶段归属以 `traceability.md` 和 §11 #5 已裁结果为准；R-11/O
 
 ## 红线
 
-见 `README.md`。不以 RLock 掩自锁；不把 ledger 当 authority；不在此接 route/driver；不自行决定 #5/#6。
+见 `docs/rfc/2026-08-03-generation-emission-command-algebra/prompts/README.md`。不以 RLock 掩自锁；不把 ledger 当 authority；不在此接 route/driver；不自行决定 #5/#6。

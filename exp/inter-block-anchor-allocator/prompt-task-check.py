@@ -32,8 +32,26 @@ EXPECTED_PROMPTS = {
 }
 
 
-def tasks(text: str) -> set[str]:
+def prompt_tasks(text: str) -> set[str]:
+    """Task references inside prompt ownership markers."""
     return set(TASK_RE.findall(text))
+
+
+def plan_task_definitions(text: str) -> list[str]:
+    """Parse task definitions, not arbitrary historical/cross-reference mentions.
+
+    A task is defined only by the first cell of a Markdown task table row:
+    ``| **T4.0a** ... |``. Scanning the whole plan made a deleted definition
+    stay alive whenever an archive note or rejected approach still mentioned
+    its old id -- a population gate with no ability to distinguish definition
+    from prose.
+    """
+    out: list[str] = []
+    for line in text.splitlines():
+        match = re.match(r"^\| \*\*(T\d+\.\d+[a-z]?)\*\*(?:[^|]*)\|", line)
+        if match:
+            out.append(match.group(1))
+    return out
 
 
 def main() -> int:
@@ -41,11 +59,15 @@ def main() -> int:
         print("prompt-task-check: missing cutover plan or prompts directory", file=sys.stderr)
         return 2
 
-    plan_tasks = tasks(PLAN.read_text(encoding="utf-8"))
+    definitions = plan_task_definitions(PLAN.read_text(encoding="utf-8"))
+    duplicate_definitions = sorted(task for task, count in Counter(definitions).items() if count > 1)
+    plan_tasks = set(definitions)
     prompt_files = {p.name for p in PROMPTS.glob("*.md") if p.name != "README.md"}
     missing_files = EXPECTED_PROMPTS - prompt_files
     extra_files = prompt_files - EXPECTED_PROMPTS
     failures: list[str] = []
+    if duplicate_definitions:
+        failures.append(f"duplicate plan task definitions: {duplicate_definitions}")
     if missing_files:
         failures.append(f"missing prompt files: {sorted(missing_files)}")
     if extra_files:
@@ -57,7 +79,7 @@ def main() -> int:
         if len(markers) != 2:
             failures.append(f"{name}: expected exactly 2 task markers, got {len(markers)}")
             continue
-        first, second = tasks(markers[0]), tasks(markers[1])
+        first, second = prompt_tasks(markers[0]), prompt_tasks(markers[1])
         if first != second:
             failures.append(
                 f"{name}: heading/task-section markers disagree "
@@ -66,10 +88,10 @@ def main() -> int:
         for task in first:
             ownership[task] += 1
 
-    prompt_tasks = set(ownership)
+    prompt_task_set = set(ownership)
     duplicates = sorted(task for task, count in ownership.items() if count != 1)
-    orphans = sorted(prompt_tasks - plan_tasks)
-    unassigned = sorted(plan_tasks - prompt_tasks)
+    orphans = sorted(prompt_task_set - plan_tasks)
+    unassigned = sorted(plan_tasks - prompt_task_set)
     if duplicates:
         failures.append(f"duplicate prompt owners: {duplicates}")
     if orphans:
@@ -78,7 +100,7 @@ def main() -> int:
         failures.append(f"unassigned plan tasks: {unassigned}")
 
     print(f"plan tasks: {len(plan_tasks)}")
-    print(f"prompt tasks: {len(prompt_tasks)}")
+    print(f"prompt tasks: {len(prompt_task_set)}")
     print(f"duplicates: {'none' if not duplicates else duplicates}")
     print(f"orphans: {'none' if not orphans else orphans}")
     print(f"unassigned: {'none' if not unassigned else unassigned}")

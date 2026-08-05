@@ -8,10 +8,10 @@ C4 已让 A/B/C legacy population 归零；Commit 6 才删除 definitions/export
 
 ## 必读
 
-- `../design.md`：§2.6、§7.9、§10.2 R-6/R-10。
-- `../cutover-plan.md`：Commit 6、§0.4a/§0.4e、§11。
-- `../traceability.md`：R-6 C6、R-10、T6.*。
-- `README.md` 与进度文件。
+- `docs/rfc/2026-08-03-generation-emission-command-algebra/design.md`：§2.6、§7.9、§10.2 R-6/R-10。
+- `docs/rfc/2026-08-03-generation-emission-command-algebra/cutover-plan.md`：Commit 6、§0.4a/§0.4e、§11。
+- `docs/rfc/2026-08-03-generation-emission-command-algebra/traceability.md`：R-6 C6、R-10、T6.*。
+- `docs/rfc/2026-08-03-generation-emission-command-algebra/prompts/README.md` 与进度文件。
 
 ## 前置/停点
 
@@ -49,4 +49,4 @@ R-10 production hard、R-6 C6 production hard、R-11/O-6 和共同门。four tes
 
 ## 红线
 
-见 `README.md`。不整文件恢复、不删除 adversarial seam 来让测试绿、不把 legacy export 伪装 test-only、不自行放宽 guard。
+见 `docs/rfc/2026-08-03-generation-emission-command-algebra/prompts/README.md`。不整文件恢复、不删除 adversarial seam 来让测试绿、不把 legacy export 伪装 test-only、不自行放宽 guard。

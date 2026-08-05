@@ -8,16 +8,16 @@ Commit 0 不改 production。它冻结旧 generation delivery 的完整能力面
 
 ## 必读
 
-1. `../design.md`：§7.1/§7.2/§7.3、§10.1/§10.2 R-1/R-3/R-11/R-13。
-2. `../cutover-plan.md`：§0.2～§0.4f、Commit 0、Commit -1/post-merge 依赖。
-3. `../traceability.md`：R-1/R-3/R-11/R-13 与 T0.* 反向出处。
+1. `docs/rfc/2026-08-03-generation-emission-command-algebra/design.md`：§7.1/§7.2/§7.3、§10.1/§10.2 R-1/R-3/R-11/R-13。
+2. `docs/rfc/2026-08-03-generation-emission-command-algebra/cutover-plan.md`：§0.2～§0.4f、Commit 0、Commit -1/post-merge 依赖。
+3. `docs/rfc/2026-08-03-generation-emission-command-algebra/traceability.md`：R-1/R-3/R-11/R-13 与 T0.* 反向出处。
 4. `docs/plan/2026-07-27-inter-block-anchor-allocator/HANDOVER.md`：entry A/P 图、已裁事项。
-5. `README.md`：集中红线。
+5. `docs/rfc/2026-08-03-generation-emission-command-algebra/prompts/README.md`：集中红线。
 
 ## 前置与停止条件
 
-- T0.0d post-merge preflight 必须绿；显式 `ENTRY_SHA=A` 执行树 HEAD=A。
-- Commit -1 runner oracle/validator 未交付或真实 evidence 消费门未过，**不得开始 T0.1**。
+- T0.0f 已在 A 上生成唯一 15-run evidence/manifest/P；T0.0d post-merge preflight 已消费验证并产出绿 receipt；显式 `ENTRY_SHA=A` 执行树 HEAD=A。
+- Commit -1 runner oracle/validator 未交付、T0.0f evidence 未生成或 T0.0d 消费门未过，**不得开始 T0.1**。
 - T0.6 的 RFC/plan/matrix exit 语义已对齐：red 描述缺陷仍在，测试自身 rc=0；不要重新引入红测试 vs 全绿的终态冲突。
 
 ## 改动锚点
@@ -32,7 +32,7 @@ Commit 0 不改 production。它冻结旧 generation delivery 的完整能力面
 | AUQ writer | `src/routes/messages/error-shaping-glue.ts:131` | T0.5 pre-owner witness |
 | observer seam | `src/lib/pipeline/delivery/session.ts:74` | delivery session observer |
 
-完整 factory/锚点表以 `../cutover-plan.md` Commit 0 为准。
+完整 factory/锚点表以 `docs/rfc/2026-08-03-generation-emission-command-algebra/cutover-plan.md` Commit 0 为准。
 
 ## 本 phase task 集合（唯一归属）
 
@@ -40,7 +40,7 @@ Commit 0 不改 production。它冻结旧 generation delivery 的完整能力面
 
 | Task | TDD 施工顺序 |
 |---|---|
-| `T0.1` | 只在 Commit -1 oracle 与 post-merge preflight 已绿后，对 A 跑树外 15-run batch；执行/skip 口径、manifest/pointer 由 plan §0.4f validator 消费。 |
+| `T0.1` | **不跑第二批 15-run。** 读取 T0.0d 的 versioned verdict/receipt，确认 receipt 的 `ENTRY_SHA=A` 等于当前执行树 HEAD、tree clean、validator verdict 绿；任一不等在 T0.2 前 fail-closed。 |
 | `T0.2` | O-6 未改动树正样本与一字节 mutation 双控；显式 timing，禁止 recapture。 |
 | `T0.3` | 先验证零 direct-send 是平凡假绿，再让 recorder 包 composition root 实 handle，test-only direct-send seam 必须被看见。 |
 | `T0.4` | warmup fake/drop route：完整字节、upstream 零调用、observer 零 session、一次响应；提前 owner/双写 mutation 红。 |
@@ -64,4 +64,4 @@ Commit 0 不改 production。它冻结旧 generation delivery 的完整能力面
 
 ## 红线
 
-集中红线见 `README.md`。特别禁止：在 `$TREE` 做 T0.0 mutation、重捕 O-6、把 pre-owner writer 强塞 owner、碰 4141。
+集中红线见 `docs/rfc/2026-08-03-generation-emission-command-algebra/prompts/README.md`。特别禁止：在 `$TREE` 做 T0.0 mutation、重捕 O-6、把 pre-owner writer 强塞 owner、碰 4141。
