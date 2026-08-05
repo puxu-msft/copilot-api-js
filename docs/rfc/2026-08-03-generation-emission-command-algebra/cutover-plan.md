@@ -395,9 +395,11 @@ FROM=$(git -C "$TREE" rev-parse HEAD^)       # 它的父 commit
 
 ---
 
-### 0.4e Mutation 共同协议 —— **Commit -1 的 T0.0a、T0.0b、T0.0c 必须走隔离，不得在将成为 entry 的 `$TREE` 上变异**
+### 0.4e Mutation 共同协议 —— **Commit -1 的 T0.0a、T0.0b、T0.0c、T0.0e 必须走隔离，不得在将成为 entry 的 `$TREE` 上变异**
 
-T0.0a、T0.0b、T0.0c 的三类正控都要**主动改坏 runner／test**。若在将成为 entry 的 `$TREE` 上做，会出现两种已知灾难：①从**不含真实实现**的基线恢复，把刚写好的 runner 一起抹掉；②共享／执行树上整文件覆盖恢复，抹掉同伴或尚未提交的真实 WIP，或把残余 mutation 提交成 entry A。**这不是「小心一点」能解决的风险，是 `mutation-baseline-must-contain-the-real-impl` `[hard]`。**
+T0.0a、T0.0b、T0.0c 的正控会**主动改坏 runner／test**；T0.0e 的正控会**主动篡改合成 evidence fixture**。两者都不得在将成为 entry 的 `$TREE` 上做。否则会出现两种已知灾难：①从**不含真实实现**的基线恢复，把刚写好的 runner/validator 一起抹掉；②共享／执行树上整文件覆盖恢复，抹掉同伴或尚未提交的真实 WIP，或把残余 mutation 提交成 entry A。**这不是「小心一点」能解决的风险，是 `mutation-baseline-must-contain-the-real-impl` `[hard]`。**
+
+> T0.0e 的 validator 测试使用**临时 git 图与合成 pointer/A/P/manifest/raw logs/JUnit artifacts**，不引用未来真实 A/P；这里的「真实实现」指已写好的 validator，而不是未来 evidence。
 
 **允许路径二选一**：
 
@@ -447,8 +449,9 @@ T0.0a、T0.0b、T0.0c 的三类正控都要**主动改坏 runner／test**。若�
 | **T0.0a** | 从**独立磁盘 manifest** 枚举 `tests/**/*.{unit,it,http}.test.ts`，再让真实 shard 执行产出 file-level JUnit identity。**先在 `balance()` 之后、spawn 之前从某 bucket 删一个文件**——必须报出**缺失的具体文件名**。⚠️ 打在 `discover()` 的 mutation 不够，它抓不到这层。 | 每一次门运行的实际 shards 各自产 JUnit，runner 合并 file identity；**每次**与磁盘 manifest 双向比较，缺／多任一文件即 rc≠0。正确状态绿。 |
 | **T0.0b** | skipped identity multiset：整文件 skip、native 不可用 skip、todo 文件各一；**mutation 把一条 runnable test 改 skip**，必须报它的 `file+classname+name+ordinal`，不许只报少了一个数。 | 输出 `executed`／`skipped` 两数与 skipped identity multiset；native history-search 这类环境 skip 独立具名 disposition。 |
 | **T0.0c** | runner 自身 mutation control：把 JUnit reporter 只加在 `refreshTimings()` 而不加真实 shards → file identity 门必须红；把 JUnit 合并器丢一个 shard → 门必须红。 | 真实 shard 的 identity 被收集，mutation 都红；正确 full run 绿。 |
+| **T0.0e** | **实现并版本化 entry-evidence validator**：用**合成 fixtures**构造临时 git 图、合成 A/P、唯一 pointer block、树外 manifest、15 原始 logs/JUnit。先跑完整 fixture 绿；再跑 `EV-01`…`EV-25`，每个 action 只改一个合成输入，验证稳定 fail code/message。**不需要未来真实 A/P。** | validator 随 Commit -1 进入版本控制并通过自身正/负控；它的输入契约固定为 `ENTRY_SHA`／`POINTER_SHA`／versioned pointer block／manifest／raw artifacts。T0.0d 只**消费**这个已交付 validator。 |
 
-> ⚠️ **T0.0d 不属于 Commit -1**：它需要 A／15 logs／pointer P，而这些输入只在 Commit -1 合 master之后才存在。把它列为 Commit -1 自己的收口门，等于**用未来输入验过去 commit**——因果不可达。它已移到 §0.4f 的 **post-merge entry-evidence preflight**。
+> ⚠️ **T0.0d 不属于 Commit -1**：它需要 A／15 logs／pointer P，而这些输入只在 Commit -1 合 master之后才存在。把它列为 Commit -1 自己的收口门，等于**用未来输入验过去 commit**——因果不可达。它已移到 §0.4f 的 **post-merge entry-evidence preflight**；**validator 本体由 T0.0e 在 Commit -1 实现/版本化**。
 
 ### 本 commit 的门（前置基础设施自己的门）
 
@@ -457,8 +460,8 @@ T0.0a、T0.0b、T0.0c 的三类正控都要**主动改坏 runner／test**。若�
 | shard 漏文件正控 | T0.0a 在 `balance()` 后删文件 → rc≠0 且点名该文件 |
 | skipped 多集正控 | T0.0b 把 runnable 改 skip → rc≠0 且点名该 identity |
 | runner 接线正控 | T0.0c 两条 reporter／merge mutation 各自因目标机制红 |
-| 正样本 | 正确真实 shard run：磁盘 manifest＝运行时 identity；executed／skipped 口径一致 |
-| 收口 | `bun run typecheck` 绿、前置基础设施自己的测试绿、上面三种 mutation 红；**此 commit 本身不得被 T0.1 的 15 次自洽运行替代验收**。T0.0d 的 evidence 消费门属于 P 后的 post-merge preflight，**不在本 commit 验** |
+| validator 合成 fixture 门 | T0.0e：合成 A/P/pointer/manifest/15 logs/JUnit 正样本绿；`EV-01`…`EV-25` 每条因唯一预期 fail code/message 红 |
+| 收口 | `bun run typecheck` 绿、前置基础设施自己的测试绿、T0.0a/b/c runner mutation 红、T0.0e 的 25 条合成 fixture mutation 红；**此 commit 本身不得被 T0.1 的 15 次自洽运行替代验收**。T0.0d 的真实 evidence 消费门属于 P 后的 post-merge preflight，**不在本 commit 验** |
 
 ### 收口与 entry 重锚（不可省略）
 
@@ -479,7 +482,7 @@ T0.0a、T0.0b、T0.0c 的三类正控都要**主动改坏 runner／test**。若�
 
 | id | 先写什么失败测试 → 预期怎么红 | 实现什么 → 预期怎么绿 |
 |---|---|---|
-| **T0.0d**（post-merge preflight） | entry evidence 消费 validator：先对正确 A／P／树外 manifest／15 原始 logs 跑一遍绿；再按下表**逐行**注入 mutation。 | validator 绿后才允许执行树开始 T0.1／Commit 0。pointer 缺失／树外 manifest 缺失**一律 fail-closed，不是 warning**。 |
+| **T0.0d**（post-merge preflight） | **消费 T0.0e 已交付/版本化的 validator**：对真实 A／P／树外 manifest／15 原始 logs 跑绿；真实 evidence 缺失/不等即 fail-closed。**不在此实现 validator、也不重跑其合成 EV mutation。** | validator 绿后才允许执行树开始 T0.1／Commit 0。pointer 缺失／树外 manifest 缺失**一律 fail-closed，不是 warning**。 |
 
 **单一 validator 的输入**：
 
@@ -556,7 +559,7 @@ orphan IDs: none
 
 **正样本**：正确 `ENTRY_SHA=A`、正确 Git 图、15 原始 logs/JUnit、三类 hash 与每次独立重算一致为绿。
 
-> ⚠️ 这是**消费门的需求与验收形状**，不在本 plan 内发明 validator 脚本实现。它由 Commit -1 基础设施交付者交付、独立评审；直到它实际存在并通过上表每个 `EV-*` mutation 前，**T0.1 不能开工**。
+> ⚠️ validator 本体的实现/版本化归属 **T0.0e（Commit -1）**；T0.0e 用合成 fixtures 跑 `EV-01`…`EV-25`，独立评审。T0.0d 只对未来真实 A/P/15 logs 消费该已交付 validator。直到 **T0.0e 的合成门**与 **T0.0d 的真实消费门**都通过前，**T0.1 不能开工**。
 
 ---
 

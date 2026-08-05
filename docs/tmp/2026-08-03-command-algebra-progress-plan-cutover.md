@@ -29,6 +29,12 @@ session_id: 046d7295-e5ce-470b-a284-c721c6ce1cb8
 - [ ] **复评**：本轮改动需再过一轮。
 - [ ] **未决裁决**：plan §11 状态表——#2／#3（Q1 与 §4.8）／#5（R-5 归属）／#6（`OwnerTerminalDecision`）。**#6 的触发点本轮从 Commit 4 提前到 T1.6**。
 
+## 第十七轮整改（validator 生产点：只做本件事）
+
+- **最终 blocker 修复**：T0.0d 被正确移动到 P 后，却没有 task **实现/版本化** validator；若等 P 后才实现，HEAD 前移、A 图破坏。新增 **T0.0e（Commit -1）**：用合成 git 图/合成 A/P/pointer/manifest/15 logs/JUnit 跑正样本 + `EV-01..EV-25`，实现 validator 本体但**不引用未来真实 A/P**。
+- **相位分工**：Commit -1 门表现在只有 a/b/c/e；T0.0d 是 post-merge preflight，只消费 T0.0e 已交付 validator 对真实 A/P/15 artifacts 跑绿，不实现 validator、不重跑合成 EV。矩阵拆为四行，task 差集空。
+- **生产点验收**：`rg T0.0e` 覆盖 plan/matrix；checker rc=0；工具残留扫描又抓到一行注入文本，唯一前缀清理后为 0。**checker 绿仍不代替 prose scan。**
+
 ## 第十六轮整改（validator mutation split：只做本件事）
 
 - **完成报告纠偏**：上一轮回报「十行单机制/单 mutation」与磁盘不符——条件表虽 10 行，mutation 列仍是「删除／复制」「任一字段」「分别篡改」等复合机制，**没有 `EV-*` ID**。本轮只改此处，不重报 topology。

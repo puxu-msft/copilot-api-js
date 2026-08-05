@@ -127,7 +127,8 @@
 | **T0.0a**（Commit -1 基础设施） | §7.1「整个序列的入场条件位于 Commit 0 之前」+ HANDOVER T3-b | 真实 shard JUnit file identity；`balance()` 后静默漏文件必须点名红。不是 cutover commit；它收口后 entry sha 重取，旧 15 次作废 |
 | **T0.0b**（Commit -1 基础设施） | 同上 | skipped identity multiset 与 native／todo false-red 对照 |
 | **T0.0c**（Commit -1 基础设施） | 同上 | reporter／merge wiring mutation；证明 file identity 来自实际 shards 而非 refresh run |
-| **T0.0d**（**post-merge entry-evidence preflight**，P 后、Commit 0 前） | §7.1 entry 前稳定基线 + HANDOVER T3-b | 树外 entry evidence 的**消费侧 fail-closed validator**：pointer/hash/A/15 原始 logs/JUnit/结构化字段任一不等即停，pointer 不是「曾经通过」的自述。**不属于 Commit -1 收口**：A/15 logs/P 只在 Commit -1 合 master之后存在 |
+| **T0.0e**（Commit -1 基础设施） | §7.1 entry 前稳定基线 + HANDOVER T3-b | **实现并版本化** entry-evidence validator；合成 git 图/合成 A/P/pointer/manifest/15 logs/JUnit 正样本 + `EV-01`…`EV-25` 一动作一 FAIL。**不消费未来真实 A/P。** |
+| **T0.0d**（**post-merge entry-evidence preflight**，P 后、Commit 0 前） | §7.1 entry 前稳定基线 + HANDOVER T3-b | **消费 T0.0e 已交付 validator**，对真实 A/P/15 原始 logs/JUnit fail-closed；pointer/hash/A/字段任一不等即停。**不属于 Commit -1 收口**：A/15 logs/P 只在 Commit -1 合 master之后存在 |
 | T0.1 | §7.1「整个序列的入场条件位于 Commit 0 之前」 | entry A 上连跑 ≥15 次。**entry 图已裁**：Commit -1 合 master得 A，P 后执行树显式从 `ENTRY_SHA=A` 建，不能从当前 master/P 起；`MIN_TESTS` 的取值路径见 plan T0.1（不得与被测命令同源） |
 | T0.7 | §7.2 全节（双向不动点闭包、A／B／C／D 四集、C-D tie-break） | 冻结旧 generation delivery 的完整能力面；**Commit 0 与 Commit 4 均 fail loud** 的判据来源 |
 | T0.9 | §7.10 + §9.2 Q5 | 冻结 goldens 清单，作为 Commit 4 逐帧预测 diff 的比对基座与 Commit 7 审计对象 |
