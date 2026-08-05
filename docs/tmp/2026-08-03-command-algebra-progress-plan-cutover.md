@@ -18,7 +18,9 @@ session_id: 046d7295-e5ce-470b-a284-c721c6ce1cb8
 
 ## 剩余项
 
-- [x] Commit 0～8 的逐 task TDD 步骤（每 task 一个 `T<commit>.<n>` id）—— **78 个 task**（整改轮新增 T0.10／T0.11／T4.0a–d）
+- [ ] **第三层首轮 blocker 回流（主会话接手）**：新增 post-merge evidence 生产 task `T0.0f`，解除 `T0.0d ↔ T0.1` 的 15-run 因果环；同步 matrix/prompts/checkers。原 planner transcript 已被平台销毁（`SendMessage` 返回 `No transcript found`），不是主动换 agent。
+- [ ] **第三层首轮 plan 缺陷**：冻结 validator CLI/schema、正式 §0.4f heading、修完整 HANDOVER git path；Q5 边界改为 T4.2 publish 前。
+- [x] Commit 0～8 的逐 task TDD 步骤（每 task 一个 `T<commit>.<n>` id）—— task 总数不写死，以 checker 集合为 SSOT（新增 T0.0f 后会派生变化）
 - [x] factory／锚点表 —— **整改轮已全部重锚合并后 master `80a4b6fc`，「树」列删除**
 - [x] 回填矩阵 `traceability.md`，消掉全部 `_TBD_`
 - [x] `traceability-check.py` rc=0 —— **整改轮复跑仍 rc=0**。⚠️ 它已被修成双向（`6ce493e5`），**会咬悬空引用**：本轮新增 T0.10／T0.11／T4.0a–d 时它当场报 `cited by no matrix row`，补进矩阵 §6 后才转绿。**这不是形式，是它第一次真的抓到东西。**

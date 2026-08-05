@@ -128,8 +128,9 @@
 | **T0.0b**（Commit -1 基础设施） | 同上 | skipped identity multiset 与 native／todo false-red 对照 |
 | **T0.0c**（Commit -1 基础设施） | 同上 | reporter／merge wiring mutation；证明 file identity 来自实际 shards 而非 refresh run |
 | **T0.0e**（Commit -1 基础设施） | §7.1 entry 前稳定基线 + HANDOVER T3-b | **实现并版本化** entry-evidence validator；合成 git 图/合成 A/P/pointer/manifest/15 logs/JUnit 正样本 + `EV-01`…`EV-25` 一动作一 FAIL。**不消费未来真实 A/P。** |
-| **T0.0d**（**post-merge entry-evidence preflight**，P 后、Commit 0 前） | §7.1 entry 前稳定基线 + HANDOVER T3-b | **消费 T0.0e 已交付 validator**，对真实 A/P/15 原始 logs/JUnit fail-closed；pointer/hash/A/字段任一不等即停。**不属于 Commit -1 收口**：A/15 logs/P 只在 Commit -1 合 master之后存在 |
-| T0.1 | §7.1「整个序列的入场条件位于 Commit 0 之前」 | entry A 上连跑 ≥15 次。**entry 图已裁**：Commit -1 合 master得 A，P 后执行树显式从 `ENTRY_SHA=A` 建，不能从当前 master/P 起；`MIN_TESTS` 的取值路径见 plan T0.1（不得与被测命令同源） |
+| **T0.0f**（**post-merge evidence production**，A 后、T0.0d 前） | §7.1 entry 前稳定基线 + HANDOVER T3-b | 在显式 `ENTRY_SHA=A` 的干净执行树生成唯一 15-run/JUnit 与树外 manifest，并在 master 写 pointer P。**它是 entry evidence 的唯一生产者**，不属于 Commit 0。 |
+| **T0.0d**（**post-merge evidence validation**，P 后、Commit 0 前） | §7.1 entry 前稳定基线 + HANDOVER T3-b | **消费 T0.0e 已交付 validator**，对 T0.0f 的真实 A/P/15 原始 logs/JUnit fail-closed；pointer/hash/A/字段任一不等即停。**不生成 evidence，不属于 Commit -1/C0 收口。** |
+| T0.1 | §7.1 Commit 0 入场边界 | 消费 T0.0d 的 versioned verdict/receipt，确认执行树仍 `HEAD=ENTRY_SHA=A` 且 clean，随后才允许开始 C0 其余 task。**不再运行 15 次、不生成 manifest/P。** |
 | T0.7 | §7.2 全节（双向不动点闭包、A／B／C／D 四集、C-D tie-break） | 冻结旧 generation delivery 的完整能力面；**Commit 0 与 Commit 4 均 fail loud** 的判据来源 |
 | T0.9 | §7.10 + §9.2 Q5 | 冻结 goldens 清单，作为 Commit 4 逐帧预测 diff 的比对基座与 Commit 7 审计对象 |
 | **T0.10** | §7.1 每 commit 共同门 + user-rule `proving-where-a-command-ran` | **证明三条共同门确实跑在 entry worktree 上**。§7.1 要求「每个 commit 结束都必须满足：typecheck 绿／全套绿／O-6 PASS」，但**门跑在哪棵树这个前提本身没有 oracle**——三个脚本的根推导方式各不相同（`byte-equivalence.sh` 与 `baseline-runs.sh` 按脚本位置推导，`cd` 不管用）。没有本 task，后续 8 个 commit 的所有绿都没有归属 |
