@@ -24,6 +24,7 @@ execution_location: tool-bound nested worktree；成果通过 commit 集成，�
 
 ## 在途意图
 
+- 进度纪律偏差：`56a32ea9` 误漏本 progress 文件；未改写历史。下一提交单独记录该偏差，后续每个语义 commit 继续携带本文件，最终对账将标注这一处例外。
 - T0.0a 在途：`scripts/parallel-test.ts` 已让真实 shard 输出 JUnit，写出 `runtime-identity.json`，并以独立磁盘发现集双向比对。仍缺 post-balance mutation 与进程级回归测试。
 - T0.0b：主执行分支 `7c5891d0` 已裁 suite-only skip 的 v1 canonical representation。当前树遵守该契约：`kind="suite"` 仅产出 `file,suite_name,count,reason`，禁止 testcase 字段；`kind="testcase"` 才可含 `classname,name,ordinal`。T0.0c/e 仍须实现 producer/validator 对修订 schema 的严格消费。
 - Commit -1 只交付 runner oracle、producer、validator；**不生成真实 A/P/15-run evidence**。
