@@ -38,4 +38,11 @@ Typed web_search 在 Anthropic→CC `translateTools` 被剥离后，named choice
 
 ## Round 2
 
-待原 reviewer 复审。
+**可合并。** Blocker：0；Major：0。Reviewer 在集成分支 commit `dd42124163df5c6401623b09cecb38c38a66f2e3` 复核 Round 1 四项整改，`tsc --noEmit` 通过，精确焦点测试 6 文件 **177 pass / 0 fail**。
+
+1. Named custom choice 已在同名 custom tool 降级为 CC function 后保留。
+2. Anthropic→CC named/required 只引用翻译后存活工具，function/auto/none 正样本未 false-red。
+3. WebSearch discriminated union 只对 `status:"incomplete"` 放宽 action；completed missing action 由 `@ts-expect-error` 锁住，runtime renderer 对不可信 wire 仍防御性容错。
+4. 流式/非流式共享 formatter 均保留 opaque id 与 status。
+
+结构怪味复核未发现新的 BLOCKER/MAJOR；三条 request translator 的 translated-tools→choice 接缝均有矩阵测试，WebSearch 两条响应腿共享 formatter。
