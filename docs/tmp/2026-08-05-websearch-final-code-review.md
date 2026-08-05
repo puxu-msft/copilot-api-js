@@ -46,3 +46,7 @@ Typed web_search 在 Anthropic→CC `translateTools` 被剥离后，named choice
 4. 流式/非流式共享 formatter 均保留 opaque id 与 status。
 
 结构怪味复核未发现新的 BLOCKER/MAJOR；三条 request translator 的 translated-tools→choice 接缝均有矩阵测试，WebSearch 两条响应腿共享 formatter。
+
+## Round 3（latest master 合并态）
+
+**可合并。** Blocker：0；Major：0。Integration branch rebase 到 master `b8372966` 后 HEAD `50c463e7`；焦点测试 6 文件 **179 pass / 0 fail**，typecheck 与 `git diff --check` 通过。Latest master 已含 Responses custom choice 等超集，rebase 未回退它；原整改 `dd421241` 在新历史中对应 `dc1288ea`（代码整改）与 `50c463e7`（评审闭环），四项 finding 均保持关闭。

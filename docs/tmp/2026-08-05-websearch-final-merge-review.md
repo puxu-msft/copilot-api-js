@@ -34,4 +34,11 @@
 
 ## Round 3
 
-待 master WIP 保全与实际集成后复审。
+- **代码可合并；唯一剩余操作门是保全并恢复 master 的 `FINDINGS.md` WIP。**
+- 新基线：master `b8372966`，integration `50c463e7`，merge-base 正是 `b8372966`；`master..integration` 恰为 `cd858544 → 70e2dbe5 → dc1288ea → 50c463e7` 四提交，无 anchor allocator 提交。
+- Latest master 已吸收 forced-custom 与 incomplete-call 的重复修复；rebase 后最终代码差异仅保留 Anthropic→CC 存活性、WebSearch opaque id／类型收窄及对应测试。
+- Dirty master 与集成路径的未提交交集仍仅 `exp/anthropic-responses-direct/FINDINGS.md`。安全门：只 stash 该文件并保存 stash SHA → `git merge --ff-only websearch-final-integration` → 按 SHA `stash apply`（不 pop）→ 冲突即停 → 核 Probe-e 与 WebSearch action/incomplete 两段均存在、恢复后 diff 等于原 WIP → 才删除 stash。
+
+## Round 4
+
+待上述操作门执行后复审。
