@@ -29,6 +29,20 @@ session_id: 046d7295-e5ce-470b-a284-c721c6ce1cb8
 - [ ] **复评**：本轮改动需再过一轮。
 - [ ] **未决裁决**：plan §11 状态表——#2／#3（Q1 与 §4.8）／#5（R-5 归属）／#6（`OwnerTerminalDecision`）。**#6 的触发点本轮从 Commit 4 提前到 T1.6**。
 
+## 第十轮整改（协调者前置脚本已落 + 执行方第 5 轮 2 major）
+
+- **`d7f6c222` 已实装结构化 intent**：plan 不再写「字段需求」，改为实际格式 `evidence_timing=dev|closeout`／`measured_sha=<40 位小写 SHA>`／`claims_current_head=true`。baseline 两模式 stdout + 每 run log 字段 SHA=HEAD 已验证；O-6 真请求两次 HTTP 500，故只声称**字段路径正确**，不借成完整 PASS。
+- **Commit -1 前置基础设施变成一等相位**：`T0.0a/b/c`、独立 TDD、独立门表；它不是 cutover commit，**一收口 entry sha=A 就变，旧 15 次全部作废**。该 phase 的本体是 runner 自身 mutation，不是 15 次自洽运行：`balance()` 后删文件必须点名红、真实 shard JUnit identity 必须逐次对账、skip multiset 与 reporter/merge mutation 各有正控。
+- **证据拓扑最终定形**：树外 evidence manifest 冻结 A；固定 master 指针 `docs/tmp/<date>-entry-evidence-pointer.md` 只定位 manifest/hash，**不写「当前 HEAD=A」**；进度文件引用 pointer commit。归档只是副本，不重定义 entry。
+- **任务 ID**：Commit -1 使用 `T0.0a/b/c`（而非 `T-1.*`），避免绕过 checker grammar；plan/matrix task 集合差集实测为空。
+
+## 第九轮整改（协调者前置脚本已落 + 执行方第 5 轮 2 major）
+
+- **结构化 intent 已从「plan 需求」变成 `d7f6c222` 的真实前置能力**：`byte-equivalence.sh`／`baseline-runs.sh` 现输出精确三行 `evidence_timing=dev|closeout`／`measured_sha=<40 位小写 SHA>`／`claims_current_head=true`；无效 timing 与非完整 SHA fail-closed。baseline 两模式 stdout + 每 run log 都经协调者验证字段 SHA=HEAD。**O-6 真请求连续两次 HTTP 500**，所以计划只声称**结构化字段路径正确**，不盗借成「完整 O-6 PASS」。4141 未受影响。
+- **Commit -1 不再是 T0.1 右栏里一句「先建它」**：前置基础设施现在有 `T0.0a/b/c`、独立 TDD、门表、收口和 entry 重锚规则。它不是 cutover commit；它收口后 entry sha=A 变化、旧 15 次全部作废。**`T0.0*` 刻意用可解析 grammar**（而非 `T-1.*`），矩阵 §6 已映射，双向 checker 实测 plan/matrix task 差集均为空。
+- **`measured_sha=A` 的落点**：树外 evidence manifest 是权威；master 状态文档只放 `A`、manifest 路径/hash、归档副本位置的**指针**，不写「当前 HEAD=A」、不反向定义 entry；进度文件引用这个状态指针所在 master commit。这里上轮「写进 plan」的表述已全扫改掉——写 `$TREE` plan 会造 B、循环重现。
+- **自指类从前置需求切换到已实现**：plan 使用实际字段格式，缺标记 fail-closed；不改脚本。真 O-6 请求 500 的诚实边界明记。
+
 ## 第八轮整改（判据证伪第七轮：2 blocker + 元判断）
 
 - **blocker-1：sha grep 是推断，且两向都漏** —— 假阴：`HEAD`、不同长度 prefix、大写 sha；假阳：合法历史说明恰好引用当前短 sha。**再补一种 regex 仍是推断型判据换形态**，不采纳。按项目已有记忆 `methodology-relocate-invariant-when-guard-cannot-keep-up` 换轴：**让产生方声明 intent，门读声明**。对协调者维护的 `byte-equivalence.sh`／`baseline-runs.sh`，plan 只提结构化字段需求（不改脚本）：`evidence_timing`／`measured_sha`／`claims_current_head`；缺标记 fail-closed。**关键独立性已写清**：脚本产生，产生方不是被门约束的执行者。手写审计表的同字段只是自述，不冒充机械输入。
