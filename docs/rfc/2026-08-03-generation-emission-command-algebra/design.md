@@ -491,7 +491,7 @@ per-command telemetry是诊断与长期趋势设施，不是边界验收oracle�
 
 ### 6.1 分类口径
 
-本节的三态定义如下：**语义不变**表示contract的可观察性质、授权事实与失败语义均不变，只是由新command／owner state承载；**措辞需扩展**表示既有方向与用户裁决不变，但旧API名、旧容器形状或contract适用对象不足以描述full command algebra；**语义变更**表示会改变被冻结的可观察要求或允许／拒绝集合，必须回用户重裁。逐条核对后，C1～C11本身无一需要语义重裁；但评审发现anchor路径的forwarded／wire精确帧序不受C1～C11覆盖，而command cutover会改变它。用户已按§9.2 Q5接受该独立可观察变更，并保留Commit 4前的逐帧diff停门。若评审证明下表任一“措辞需扩展”实际改变允许／拒绝语义，该项仍自动升级为open question，不得由实施者自行降级。
+本节的三态定义如下：**语义不变**表示contract的可观察性质、授权事实与失败语义均不变，只是由新command／owner state承载；**措辞需扩展**表示既有方向与用户裁决不变，但旧API名、旧容器形状或contract适用对象不足以描述full command algebra；**语义变更**表示会改变被冻结的可观察要求或允许／拒绝集合，必须回用户重裁。逐条核对后，C1～C11本身无一需要语义重裁；但评审发现anchor路径的forwarded／wire精确帧序不受C1～C11覆盖，而command cutover会改变它。用户已按§9.2 Q5接受该独立可观察变更，并保留**Commit 4内T4.2 authority publish前**的逐帧diff停门；允许先进入该phase完成T4.0a～d与T4.1。若评审证明下表任一“措辞需扩展”实际改变允许／拒绝语义，该项仍自动升级为open question，不得由实施者自行降级。
 
 ### 6.2 一致性矩阵
 

@@ -476,9 +476,7 @@ T0.0a、T0.0b、T0.0c 的正控会**主动改坏 runner／test**；T0.0e 的正�
 
 > **为什么不用把 `measured_sha=A` 直接写进 `$TREE` 的 plan**：写 plan 会产生新 commit B，entry 就从 A 前移到 B，而日志仍测 A——循环重现。**树外 manifest 冻结 A，master 指针只定位 manifest；归档动作不重新定义 entry。**
 
-### Post-merge entry-evidence preflight —— **P 后、Commit 0 前；不是 Commit -1 收口门，也不是 cutover commit**
-
-### 0.4f Post-merge entry-evidence preflight —— **validator 接口与 evidence schema 的唯一事实源**
+### 0.4f Post-merge entry-evidence phase —— **A 后生成 P、验证后进入 Commit 0；producer／validator 接口与 evidence schema 的唯一事实源**
 
 **版本化 evidence producer 路径与 CLI（由 T0.0a～c 在 Commit -1 交付，T0.0f 原样消费；prompts 不得另造接口）**：
 
@@ -492,7 +490,34 @@ cd /home/xp/src/copilot-api-js && bun run scripts/capture-entry-evidence.ts \
 ```
 
 - `--out` 必须是 `$TREE` 外的绝对空目录；已有 `run-*.log` 或路径落在 `$TREE` 内即 `exit 2`。
-- `--discovery-baseline` 是 Commit -1 版本化的独立 oracle 输出，schema v1 至少含：disk file identity 集合、允许的 skipped identity multiset、`minimum_executed` 与生成它的 runner git blob。**`minimum_executed` 不得从本次 15-run 命令输出反推**；T0.0a/b/c 的 mutation 门证明该基线会在 shard 漏文件／runnable→skip／reporter 漏接线时红。
+- `--discovery-baseline` 是 Commit -1 版本化的独立 oracle 输出，**严格使用下面的 v1 schema；额外／缺失字段一律 fail-closed**。`minimum_executed` 不得从本次 15-run 命令输出反推；T0.0a/b/c 的 mutation 门证明该基线会在 shard 漏文件／runnable→skip／reporter 漏接线时红。
+
+**`entry-test-discovery-baseline.json` v1 完整 schema 与 canonical encoding**：
+
+```json
+{
+  "schema_version": 1,
+  "runner_git_blob": "<scripts/parallel-test.ts 的完整 git blob id>",
+  "minimum_executed": 0,
+  "files": ["tests/example.unit.test.ts"],
+  "allowed_skipped": [
+    {
+      "file": "tests/example.unit.test.ts",
+      "classname": "suite",
+      "name": "case",
+      "ordinal": 1,
+      "count": 1,
+      "reason": "native-unavailable"
+    }
+  ]
+}
+```
+
+- `files`：repo-root 相对 POSIX 路径、无 `./`／`..`、唯一、按 UTF-8 bytewise 升序；每项后缀恰为 `.unit.test.ts`／`.it.test.ts`／`.http.test.ts`，且磁盘存在。
+- `allowed_skipped`：multiset 的规范表示，不用重复对象表达重复次数；key 是 `file+classname+name+ordinal`，`count` 为正整数，`ordinal` 为同 file/classname/name 的 1-based 出现序号；按 `(file, classname, name, ordinal)` UTF-8 bytewise 升序且 key 唯一。`reason` 只允许冻结枚举 `native-unavailable | todo | whole-suite-skip | reviewed-environment`，未知 reason fail-closed。
+- `minimum_executed`：非负整数，由 Commit -1 的独立 discovery/JUnit oracle 在**正确正样本**上冻结；不得读 T0.0f 的 15-run 输出生成。
+- `runner_git_blob` 必须等于 entry A 中 `scripts/parallel-test.ts` 的 `git rev-parse "${ENTRY_SHA}:scripts/parallel-test.ts"`；不等说明用另一把尺子量 evidence。
+- 文件编码 UTF-8、LF、2-space JSON、末尾单个 `\n`；顶层 key 顺序固定为上例，条目 key 顺序固定为上例。消费者既验证解析语义，也对原始 bytes 取 hash；禁止“语义相同就重写 baseline”绕过审计。
 - producer 机械确认 `git -C "$TREE" rev-parse HEAD == ENTRY_SHA` 且 tree clean；每次实际 shard 生成 JUnit，逐次与 discovery baseline 对账；显式调用树内 `baseline-runs.sh`（`EVIDENCE_TIMING=closeout`、`RUNS=15`、`MIN_TESTS=minimum_executed`）。
 - 全部 15 次绿后才原子写 `OUT/evidence-manifest.json` v1；任何 run／identity／skip／HEAD/tree 漂移时非零退出且**不得留下 manifest**。稳定退出码：`0`=manifest 原子写入；`2`=CLI/path/schema；`3`=entry/tree；`4`=discovery baseline；`5`=run/JUnit/identity；`6`=manifest 写入。stdout 只打印 `manifest=<绝对路径>` 与 `manifest_sha256=<hex>`。
 - producer **不修改 HANDOVER、不执行 git commit**。T0.0f 在 producer rc=0 后，按下方 pointer v1 语法更新 master HANDOVER 并显式提交 P。
