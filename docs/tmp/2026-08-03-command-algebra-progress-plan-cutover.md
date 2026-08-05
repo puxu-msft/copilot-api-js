@@ -29,6 +29,12 @@ session_id: 046d7295-e5ce-470b-a284-c721c6ce1cb8
 - [ ] **复评**：本轮改动需再过一轮。
 - [ ] **未决裁决**：plan §11 状态表——#2／#3（Q1 与 §4.8）／#5（R-5 归属）／#6（`OwnerTerminalDecision`）。**#6 的触发点本轮从 Commit 4 提前到 T1.6**。
 
+## 第八轮整改（判据证伪第七轮：2 blocker + 元判断）
+
+- **blocker-1：sha grep 是推断，且两向都漏** —— 假阴：`HEAD`、不同长度 prefix、大写 sha；假阳：合法历史说明恰好引用当前短 sha。**再补一种 regex 仍是推断型判据换形态**，不采纳。按项目已有记忆 `methodology-relocate-invariant-when-guard-cannot-keep-up` 换轴：**让产生方声明 intent，门读声明**。对协调者维护的 `byte-equivalence.sh`／`baseline-runs.sh`，plan 只提结构化字段需求（不改脚本）：`evidence_timing`／`measured_sha`／`claims_current_head`；缺标记 fail-closed。**关键独立性已写清**：脚本产生，产生方不是被门约束的执行者。手写审计表的同字段只是自述，不冒充机械输入。
+- **blocker-2：`[ -s "$PEND" ]` 仍是推断** —— 改文件名、直接追加 pathspec、清空／删除文件都可绕。**同一解药，但此处没有独立产生方**：wrapper 是唯一应用 exclusion 的入口，收口对账 pending + applied ledger + 裁决回执 + `canonical_command_hash`。hash 是承重件：无豁免 canonical command 的 hash 固定，手动追加 `:(exclude)` 必改 hash。**诚实边界已写**：wrapper/ledger 仍由执行者跑，能提高绕过成本、不构成不可伪造证明；独立性只在 reviewer/user 回执。不是继续加 regex。
+- **元判断（先取数据）**：收敛，不是无限加固。数据：首两轮是 RFC/plan 实体矛盾与不可达；后几轮 blocker 逐步收缩到**上一轮新加 meta-gate 的自作者问题**（证据落点→自指→grep/pending）。原 cutover contract 已闭合，剩下的是「能否机械证明执行者确实照做」这个不同问题。plan §0.4d 把机械/纪律边界显式列出：**剩余项应记为已知边界，交执行期的人守**；无独立 intent/外部 oracle 时，禁止继续加推断 gate。若后续评审只剩这些已登记边界，**可放行执行，不为还能再造一个推断门无限阻塞**。
+
 ## 第七轮整改（判据证伪第六轮：2 blocker）
 
 **两条 blocker 各命中我上一轮的一处，且都是「刻画对了但只落到一个实例」。**
