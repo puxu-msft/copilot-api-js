@@ -209,16 +209,17 @@ export interface ResponsesReasoningOutput {
 /**
  * A web-search-call output item — the upstream's own native server-tool execution record (RFC
  * 2026-07-14-anthropic-responses-direct-bridge §5, Phase 6). Confirmed shape (Phase 0 probe (c),
- * `exp/anthropic-responses-direct/FINDINGS.md`): `action.query`/`action.queries` carry the search
- * query text; there is NO `encrypted_content` field (unlike `ResponsesReasoningOutput`) — this is the
- * physical constraint that forces R-NO-REVIVE's response-side degradation (no signed carrier to
- * round-trip into an Anthropic `web_search_tool_result` block).
+ * `exp/anthropic-responses-direct/FINDINGS.md`): completed calls carry the search query text in
+ * `action.query`/`action.queries`; an incomplete call may omit `action` entirely. There is NO
+ * `encrypted_content` field (unlike `ResponsesReasoningOutput`) — this is the physical constraint that
+ * forces R-NO-REVIVE's response-side degradation (no signed carrier to round-trip into an Anthropic
+ * `web_search_tool_result` block).
  */
 export interface ResponsesWebSearchCallOutput {
   type: "web_search_call"
   id: string
   status: string
-  action: { type: string; query?: string; queries?: Array<string>; [key: string]: unknown }
+  action?: { type: string; query?: string; queries?: Array<string>; [key: string]: unknown }
 }
 
 /** Union of all output item types */

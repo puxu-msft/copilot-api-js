@@ -138,7 +138,9 @@ describe("translateResponsesResponseToAnthropic — function_call → tool_use (
 
 describe("translateResponsesResponseToAnthropic — web_search_call → readable text (R-NO-REVIVE, RFC §5.1/§9, Phase 6 subtask Q)", () => {
   test("a web_search_call output item degrades to a readable text block carrying the query", () => {
-    const { response } = translateResponsesResponseToAnthropic(responsesResponse([webSearchCallItem("official Bun runtime website"), messageItem("https://bun.com/")]))
+    const { response } = translateResponsesResponseToAnthropic(
+      responsesResponse([webSearchCallItem("official Bun runtime website"), messageItem("https://bun.com/")]),
+    )
     expect(response.content).toEqual([
       { type: "text", text: '[web_search: "official Bun runtime website"] (status: completed)' },
       { type: "text", text: "https://bun.com/" },
@@ -158,12 +160,23 @@ describe("translateResponsesResponseToAnthropic — web_search_call → readable
     // The prior negative sample only proves 'never invents' (input had no encrypted_content). This one
     // plants a fake signed blob in the input's `action` (its `[key:string]:unknown` index signature allows it)
     // and proves the downgrade renderer never SMUGGLES it out — reads only query/status, per Phase 0 probe c.
-    const item = { type: "web_search_call", id: "ws_adv", status: "completed", action: { type: "search", query: "q", encrypted_content: "FAKE_SIGNED_BLOB" } } as unknown as ResponsesOutputItem
+    const item = {
+      type: "web_search_call",
+      id: "ws_adv",
+      status: "completed",
+      action: { type: "search", query: "q", encrypted_content: "FAKE_SIGNED_BLOB" },
+    } as unknown as ResponsesOutputItem
     const { response } = translateResponsesResponseToAnthropic(responsesResponse([item]))
     const wire = JSON.stringify(response.content)
     expect(wire).not.toContain("web_search_tool_result")
     expect(wire).not.toContain("FAKE_SIGNED_BLOB")
     expect(wire).not.toContain("encrypted_content")
+  })
+
+  test("an incomplete web_search_call without action degrades to readable unknown-query text instead of throwing", () => {
+    const item: ResponsesOutputItem = { type: "web_search_call", id: "ws_incomplete", status: "incomplete" }
+    const { response } = translateResponsesResponseToAnthropic(responsesResponse([item]))
+    expect(response.content).toEqual([{ type: "text", text: '[web_search: "(unknown query)"] (status: incomplete)' }])
   })
 
   test("web_search_call with only `action.queries` (array form, no singular `query`) still renders readable text", () => {
@@ -208,7 +221,9 @@ describe("translateResponsesResponseToAnthropic — reasoning passthrough (IMPRO
 
 describe("translateResponsesResponseToAnthropic — RFC §4.3 scenario A/B (Phase 5 model_translation wiring)", () => {
   test("scenario B (stripThinkingSignature=true) never embeds encrypted_content into the sentinel signature — plaintext still renders as a bare-prefix sentinel", async () => {
-    const { response } = translateResponsesResponseToAnthropic(responsesResponse([reasoningItem("still shown", "SHOULD-NOT-BE-CARRIED")]), { stripThinkingSignature: true })
+    const { response } = translateResponsesResponseToAnthropic(responsesResponse([reasoningItem("still shown", "SHOULD-NOT-BE-CARRIED")]), {
+      stripThinkingSignature: true,
+    })
     const thinking = response.content[0] as { type: "thinking"; thinking: string; signature: string }
     expect(thinking.thinking).toBe("still shown")
     const { extractEncryptedReasoning } = await import("~/lib/anthropic/synthetic-reasoning")
