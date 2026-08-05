@@ -128,7 +128,7 @@
 | **T0.0b**（Commit -1 基础设施） | 同上 | skipped identity multiset 与 native／todo false-red 对照 |
 | **T0.0c**（Commit -1 基础设施） | 同上 | reporter／merge wiring mutation；证明 file identity 来自实际 shards 而非 refresh run |
 | **T0.0d**（**post-merge entry-evidence preflight**，P 后、Commit 0 前） | §7.1 entry 前稳定基线 + HANDOVER T3-b | 树外 entry evidence 的**消费侧 fail-closed validator**：pointer/hash/A/15 原始 logs/JUnit/结构化字段任一不等即停，pointer 不是「曾经通过」的自述。**不属于 Commit -1 收口**：A/15 logs/P 只在 Commit -1 合 master之后存在 |
-| T0.1 | §7.1「整个序列的入场条件位于 Commit 0 之前」 | entry commit 上连跑 ≥15 次。**entry 树已裁（2026-08-04：隔离 worktree，从合并后 master 起）**；`MIN_TESTS` 的取值路径见 plan T0.1（不得与被测命令同源） |
+| T0.1 | §7.1「整个序列的入场条件位于 Commit 0 之前」 | entry A 上连跑 ≥15 次。**entry 图已裁**：Commit -1 合 master得 A，P 后执行树显式从 `ENTRY_SHA=A` 建，不能从当前 master/P 起；`MIN_TESTS` 的取值路径见 plan T0.1（不得与被测命令同源） |
 | T0.7 | §7.2 全节（双向不动点闭包、A／B／C／D 四集、C-D tie-break） | 冻结旧 generation delivery 的完整能力面；**Commit 0 与 Commit 4 均 fail loud** 的判据来源 |
 | T0.9 | §7.10 + §9.2 Q5 | 冻结 goldens 清单，作为 Commit 4 逐帧预测 diff 的比对基座与 Commit 7 审计对象 |
 | **T0.10** | §7.1 每 commit 共同门 + user-rule `proving-where-a-command-ran` | **证明三条共同门确实跑在 entry worktree 上**。§7.1 要求「每个 commit 结束都必须满足：typecheck 绿／全套绿／O-6 PASS」，但**门跑在哪棵树这个前提本身没有 oracle**——三个脚本的根推导方式各不相同（`byte-equivalence.sh` 与 `baseline-runs.sh` 按脚本位置推导，`cd` 不管用）。没有本 task，后续 8 个 commit 的所有绿都没有归属 |

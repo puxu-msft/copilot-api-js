@@ -68,7 +68,7 @@
 | **形状** | **全量 command algebra**（非候选 A/B） | 2026-08-03 |
 | **起点** | 从 RFC 起，不从陈旧 kickoff 的「P0」起；~~M1 留分支由 cutover 重塑~~ | 2026-08-03 |
 | **M1 合并（重裁，取代上一行的后半句）** | **把 `feat/inter-block-anchor-allocator` merge 进 master**，cutover 仍在隔离 worktree 做 | **2026-08-04** |
-| **entry tree** | cutover 在**隔离 worktree**里做。⚠️ **合并已完成，这条的形状随之变了**：原裁决是「以 feature 为基起 worktree、先把 master 合进去」，现在 M1 已在 master，所以是「从合并后的 master 起隔离 worktree，直接做 8 个 commit」，不再有「先合一次」那一步 | **2026-08-04** |
+| **entry tree** | cutover 在**隔离 worktree**里做。原裁决的「从合并后的 master 起」经 Commit -1 拓扑细化：Commit -1 先合 master 得 entry **A**，master 后续提交 pointer **P**；执行树必须显式 `git worktree add … "$ENTRY_SHA"` 从 **A** 起，**不得从当前 master/P 起**，P 不合回执行分支。 | **2026-08-04/05** |
 | **Commit -1 拓扑** | 用户通过 AskUserQuestion 选项 **「Commit -1 先合 master（推荐）」**裁定：Commit -1 在独立 worktree 实现并过自身 TDD／mutation 门 → **先合 master** → 以合入后 master SHA 为 entry **A** 建 cutover worktree → 树外 OUT 对 A 跑 15 次、manifest 冻结 `measured_sha=A` → master 再提交 pointer **P**，满足 `git merge-base --is-ancestor A P`。cutover 仍从 **A** 开始 Commit 0；**P 不合回执行分支、不重新定义 A**；Commit -1 后旧 15 次作废、必须重取 A。 | **2026-08-05** |
 | **R-6 等级** | **按判据列拆**：compile fixtures → Commit 1（RFC §7.4）、import guard → Commit 6（§7.9），**两段各自定级**。与其余 4 条两段式判据（R-1／R-2／R-5／R-12）形状一致；**需要给 RFC §10.2 的 R-6 行补一句分段措辞** | **2026-08-04** |
 | **帧序变更** | **接受**，但登记为 C1–C11 之外的独立可观察契约；Q5 停点在 Commit 4 **之前** | 2026-08-03 |

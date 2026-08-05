@@ -29,6 +29,14 @@ session_id: 046d7295-e5ce-470b-a284-c721c6ce1cb8
 - [ ] **复评**：本轮改动需再过一轮。
 - [ ] **未决裁决**：plan §11 状态表——#2／#3（Q1 与 §4.8）／#5（R-5 归属）／#6（`OwnerTerminalDecision`）。**#6 的触发点本轮从 Commit 4 提前到 T1.6**。
 
+## 第十四轮整改（判据侧第九轮 + 执行侧第八轮）
+
+- **Y-1 因果相位**：T0.0d 已从 Commit -1 正式门表**彻底删除**，迁入独立 **post-merge entry-evidence preflight**（P 后、C0 前）。全 plan/矩阵 grep disposition：它只在 preflight 与其「不属于 -1」说明里出现；Commit -1 只收口 a/b/c。**用未来 A/15/P 验过去 -1 是因果不可达，不是排版问题。**
+- **Y-2 `POINTER_SHA=P`**：validator 现在显式输入 `ENTRY_SHA=A`／`POINTER_SHA=P`（完整 SHA），用 `git show "$POINTER_SHA":HANDOVER` 读**唯一机器定位 pointer block**，再验 `ENTRY_SHA` 是 P 祖先、执行树 HEAD=A、当前 master 包含 P。**不猜 P=当前 master HEAD，不靠未规定 blame 格式。**
+- **Y-3 十行 validator mutation**：原九行复合机制拆为十行；每行一个条件/一个 mutation 类型（P 可达、唯一 block、字段、Git 图、manifest hash、15 logs、JUnit identity、skip multiset、log 字段、artifact hashes）。原始 artifact 独立重算保持，不信 manifest 自洽。
+- **minor timing**：O-6 dev/closeout 与 baseline closeout 均显式 `EVIDENCE_TIMING`。执行方确认其余树 clean/MANIFEST/exclusion/intent 未拆坏。
+- **工具残留事故**：本轮编辑工具曾在 Commit -1 收口表行末注入 `to=functions.Edit …` 残留；checker 不会抓这类人类文档污染。用唯一前缀单行重写后，额外跑 `tool-residue` 扫描（0 命中）+ checker 复验。**教训：结构 checker 绿不等于 prose 无污染，产物还要过内容特异扫描。**
+
 ## 第十三轮整改（判据侧最终 1 blocker/1 major + 执行侧最终 1 blocker/1 major/1 minor）
 
 - **T0.0d 因果倒序已修**：它从 Commit -1 的收口门移到明确命名的 **post-merge entry-evidence preflight**（P 后、Commit 0 前）。已裁图顺序是 -1 收口→合 master 得 A→A 的执行树→15 次/manifest→P→**T0.0d**→T0.1/C0。**不能用未来 A/15/P 去验过去 Commit -1**。矩阵标题与 plan gate 表同步，T0.0d task ID 不变、差集为空。

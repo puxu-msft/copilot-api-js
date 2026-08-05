@@ -38,17 +38,23 @@ cd /home/xp/src/copilot-api-js && rg -n '^export interface ClientSink' src/lib/p
 | `messages/handler-v4.ts`／`error-shaping-glue.ts`／`owner-failure-settlement.ts` | `src/routes/messages/…` |
 | `{chat-completions,responses,gemini}/handler-v4.ts`、`responses/ws.ts` | `src/routes/…` |
 
-### 0.2 Entry：隔离 worktree，从合并后的 master 起（**已裁决 2026-08-04**）
+### 0.2 Entry：隔离 worktree，**显式从 `ENTRY_SHA=A` 建**（已裁 Git 图）
 
-**用户已裁**：cutover 在**隔离 worktree** 里做，**从合并后的 master 起**，不再有「先合一次」那一步。原待裁项 #4 关闭。
+**用户已裁**：Commit -1 在独立 worktree 实现并合 master，合入后产生 entry **A**；cutover 在隔离 worktree 里做，**从 A 起**。master 随后会提交 pointer **P**，所以**「从当前 master 起」在 P 已存在时是错的**——那会从 P 起步，把所有「从 A 开始」变成口头。
 
-因此**执行形状固定为**：
+**执行形状固定为**（`ENTRY_SHA` 是 post-merge preflight 的外部参数，来自已裁图与 HANDOVER pointer，不是猜当前 master HEAD）：
 
 ```bash
-cd /home/xp/src/copilot-api-js && git worktree add ./.worktrees/<name> -b <branch>   # 从当前 master
+ENTRY_SHA=<A 的完整 40 位 SHA>
+cd /home/xp/src/copilot-api-js && git worktree add ./.worktrees/<name> -b <branch> "$ENTRY_SHA"
+TREE=/home/xp/src/copilot-api-js/.worktrees/<name>
+# 机械确认：执行树真的从 A 起，不是从 P 或当前 master 起
+test "$(git -C "$TREE" rev-parse HEAD)" = "$ENTRY_SHA"
 ```
 
-后续所有命令绑到该树根，记作 `$TREE`。**这不是可选风格**——共享主树常有并发 agent 的未提交改动（本文写作时 `git status --porcelain` 有 18 行、含 4 个 peer 的 `src/`／`tests/` 改动），而 T0.1 的脚本对脏树是**硬拒**（见 §0.3b）。
+**Git 图消费门**（T0.0d 也验证）：`git -C /home/xp/src/copilot-api-js merge-base --is-ancestor "$ENTRY_SHA" "$POINTER_SHA"` 必须成功；它证明 A 是 P 的祖先。**不允许把 `POINTER_SHA` 当 entry，也不允许把 P 合回执行分支来重定义 A。**
+
+后续所有命令绑到该树根，记作 `$TREE`。**这不是可选风格**——共享主树常有并发 agent 的未提交改动，而 T0.1 的脚本对脏树是**硬拒**（见 §0.3b）。
 
 ### 0.3 每个 commit 的共同门 —— **三个脚本各自怎么绑根，逐个写清**
 
@@ -451,9 +457,8 @@ T0.0a、T0.0b、T0.0c 的三类正控都要**主动改坏 runner／test**。若�
 | shard 漏文件正控 | T0.0a 在 `balance()` 后删文件 → rc≠0 且点名该文件 |
 | skipped 多集正控 | T0.0b 把 runnable 改 skip → rc≠0 且点名该 identity |
 | runner 接线正控 | T0.0c 两条 reporter／merge mutation 各自因目标机制红 |
-| evidence 消费正控 | T0.0d 的 pointer/hash/A/log/字段五类 mutation 各自点名红 |
-| 正样本 | 正确真实 shard run：磁盘 manifest＝运行时 identity；executed／skipped 口径一致；§0.4f validator 绿 |
-| 收口 | `bun run typecheck` 绿、前置基础设施自己的测试绿、上面三种 mutation 红；**此 commit 本身不得被 T0.1 的 15 次自洽运行替代验收** |
+| 正样本 | 正确真实 shard run：磁盘 manifest＝运行时 identity；executed／skipped 口径一致 |
+| 收口 | `bun run typecheck` 绿、前置基础设施自己的测试绿、上面三种 mutation 红；**此 commit 本身不得被 T0.1 的 15 次自洽运行替代验收**。T0.0d 的 evidence 消费门属于 P 后的 post-merge preflight，**不在本 commit 验** |
 
 ### 收口与 entry 重锚（不可省略）
 
@@ -478,24 +483,25 @@ T0.0a、T0.0b、T0.0c 的三类正控都要**主动改坏 runner／test**。若�
 
 **单一 validator 的输入**：
 
-- master 状态真相源 `docs/plan/2026-07-27-inter-block-anchor-allocator/HANDOVER.md` 的 entry-evidence pointer 行；
-- pointer 指向的**树外** `evidence-manifest.json`；
-- validator 调用方提供的**外部参数** `ENTRY_SHA=A`（不写进 A tree）；
+- validator 调用方提供的外部参数 **`ENTRY_SHA=A`** 与 **`POINTER_SHA=P`**（均为完整 40 位 SHA；不写进 A tree）；
+- 由 `git show "$POINTER_SHA":docs/plan/2026-07-27-inter-block-anchor-allocator/HANDOVER.md` 读取的**唯一、机器可定位的 entry-evidence pointer block**（格式固定为 `<!-- entry-evidence-pointer:v1 -->` 到 `<!-- /entry-evidence-pointer:v1 -->`）；
+- pointer block 指向的**树外** `evidence-manifest.json`；
 - manifest 记录的 15 份原始 `run-*.log` 与每次真实 shard JUnit artifact。
 
 **validator 必须逐条验证，任一缺失／不等即非零退出。** 🔴 **不接受「manifest 内部自洽」当证据**：一次错误生成 manifest 与 artifact 可以一起错；必须从**原始 artifact 独立重算**再比 manifest。
 
 | # | 机械检查（从何处独立重算） | fail-closed 条件 | 目标 mutation |
 |---|---|---|---|
-| 1 | HANDOVER pointer 存在、处在 master 状态文档中 | pointer 缺失或不在 HANDOVER → fail | 删除／移动 pointer 行 |
-| 2 | pointer 的 manifest path 存在 | 树外 manifest 被清理／覆盖 → **fail，不是 warning**；pointer 不能凭空恢复它 | 删除 manifest |
-| 3 | 从原始 manifest bytes 重算 `sha256(manifest)` = pointer 冻结 hash | hash 不等 → fail | 改 pointer hash |
-| 4 | `manifest.measured_sha == ENTRY_SHA == A`；在 cutover worktree 的 preflight 时 `git rev-parse HEAD == ENTRY_SHA`；在 master 状态线 `git merge-base --is-ancestor ENTRY_SHA P` | 任一不等／Git 图关系不成立 → fail；**P 是 A 的后代，不许拿 P 代替 A** | 传错 `ENTRY_SHA`／让执行树 HEAD 偏离 A |
-| 5 | manifest 的 run log 列表**恰 15 个**；每个原始 log 存在且独立 `sha256(log)` = manifest 记录 | 缺／多／hash 不等 → fail | 删一份 log／改一份 log |
-| 6 | 从每份**原始 JUnit**重算 file identity 集合；15 次逐次比较，并与磁盘 manifest／manifest 记录比对 | 任一 run 缺／多文件或与 manifest 不等 → fail | 从某 run 的 JUnit 移除一个文件 identity |
-| 7 | 从每份原始 JUnit + log 重算 skipped identity multiset（`file+classname+name+ordinal`）与 `executed`；15 次逐次比较，并与 manifest 记录比对 | 任一 skip identity／executed 不等 → fail | 把一条 runnable 改 skip，或篡改一份 JUnit 的 skipped case |
-| 8 | 从每份原始 log 重取 canonical command、`evidence_timing=closeout`、完整 `measured_sha=A`、`claims_current_head=true` 与 run verdict | 任一字段缺失／不等／verdict 非绿 → fail | 分别篡改 `evidence_timing`、单份 log 的 `measured_sha`、`claims_current_head`、verdict、canonical command |
-| 9 | 从原始 disk manifest / runtime identity manifest / skipped multiset artifact **重算各自 hash**，再比 evidence manifest 记录 | 任一空值／hash 不等 → fail | 分别置空／篡改三个 manifest hash |
+| 1 | `POINTER_SHA` 是完整 SHA 且当前 master 状态线包含 P：`git merge-base --is-ancestor "$POINTER_SHA" master` 成功；再 `git show "$POINTER_SHA":HANDOVER` | P 缺失／不是 master 可达状态线／`git show` 失败 → fail；**不许猜 P=当前 master HEAD** | 传入不存在／不可达的 `POINTER_SHA` |
+| 2 | 从 `git show "$POINTER_SHA":HANDOVER` 提取**唯一** `entry-evidence-pointer:v1` block | block 缺失／多于一个 → fail；不靠未规定格式的 blame／自然语言 grep | 删除／复制 pointer block |
+| 3 | pointer block 含 `entry_sha`、manifest path、manifest sha256 | 任一字段缺失 → fail | 删除各字段之一 |
+| 4 | pointer block 的 `entry_sha == ENTRY_SHA == A`；preflight 中 `git -C "$TREE" rev-parse HEAD == ENTRY_SHA`；`git merge-base --is-ancestor ENTRY_SHA POINTER_SHA` 成功 | 任一不等／Git 图关系不成立 → fail；**P 是 A 的后代，不许拿 P 代替 A** | 传错 `ENTRY_SHA`／让执行树 HEAD 偏离 A |
+| 5 | pointer 的 manifest path 存在；从原始 manifest bytes 重算 `sha256(manifest)` = pointer block 冻结 hash | 树外 manifest 被清理／覆盖／hash 不等 → **fail，不是 warning**；pointer 不能凭空恢复它 | 删除 manifest／改 pointer hash |
+| 6 | manifest 的 run log 列表**恰 15 个**；每个原始 log 存在且独立 `sha256(log)` = manifest 记录 | 缺／多／hash 不等 → fail | 删一份 log／改一份 log |
+| 7 | 从每份**原始 JUnit**重算 file identity 集合；15 次逐次比较，并与磁盘 manifest／manifest 记录比对 | 任一 run 缺／多文件或与 manifest 不等 → fail | 从某 run 的 JUnit 移除一个文件 identity |
+| 8 | 从每份原始 JUnit + log 重算 skipped identity multiset（`file+classname+name+ordinal`）与 `executed`；15 次逐次比较，并与 manifest 记录比对 | 任一 skip identity／executed 不等 → fail | 把一条 runnable 改 skip，或篡改一份 JUnit 的 skipped case |
+| 9 | 从每份原始 log 重取 canonical command、`evidence_timing=closeout`、完整 `measured_sha=A`、`claims_current_head=true` 与 run verdict | 任一字段缺失／不等／verdict 非绿 → fail | 分别篡改 `evidence_timing`、单份 log 的 `measured_sha`、`claims_current_head`、verdict、canonical command |
+| 10 | 从原始 disk manifest / runtime identity manifest / skipped multiset artifact **重算各自 hash**，再比 evidence manifest 记录 | 任一空值／hash 不等 → fail | 分别置空／篡改三个 manifest hash |
 
 **正样本**：正确 `ENTRY_SHA=A`、正确 Git 图、15 原始 logs/JUnit、三类 hash 与每次独立重算一致为绿。
 
@@ -1096,7 +1102,7 @@ O-3／O-5／O-7／O-9 以及 O-4 的完整验收明确留给后续 M2～M8／P7�
 | #1 R-6 等级 | ✅ **已裁 2026-08-04**（候选 1，按判据列拆） | — |
 | #2 Q1 telemetry 联合查询 | ⏳ **未裁** | **Commit 5 全节不可开工** |
 | #3 §4.8 与选项 A 的冲突 | ⏳ **未裁**（绑进 #2 的裁决材料） | 同 #2；`q1-locations.sh PHASE=post` 要求 §4.8 变 `ruled` |
-| #4 entry 落在哪棵树 | ✅ **已裁 2026-08-04**（隔离 worktree，从合并后 master 起） | — |
+| #4 entry 拓扑 | ✅ **已裁 2026-08-04/05**（Commit -1 先合 master得 A；P 后执行树显式从 `ENTRY_SHA=A` 建） | — |
 | #5 R-5 的 C1／C2 归属 | ⏳ **未裁** | **Commit 1 kickoff 之前**——候选②要改的正是 C1 的内容 |
 | #6 两个正交轴的职责边界 | ⏳ **未裁**（**本轮重框**：不是「同一件事的两种命名」） | **Commit 1 kickoff 之前**——T1.6 一写就冻结形状；C4 停门第 4 项是兜底 |
 
@@ -1133,7 +1139,7 @@ O-3／O-5／O-7／O-9 以及 O-4 的完整验收明确留给后续 M2～M8／P7�
 
 ⚠️ **这一处不被 Q1 谓词命中**（命中数 0），是评审换轴提结构性问题找出来的。**取材只抄 A/B/C 那一行，就会把它漏在十几行之后。**
 
-### #4 Entry 落在哪棵树 —— ✅ **已裁 2026-08-04：隔离 worktree，从合并后 master 起**
+### #4 Entry 拓扑 —— ✅ **已裁 2026-08-04/05：Commit -1 先合 master 得 A，P 后从 `ENTRY_SHA=A` 建执行树**
 
 M1 已 merge 进 master（`8125f123`），**「两棵树」不再存在**。用户已通过 AskUserQuestion 选项 **「Commit -1 先合 master（推荐）」**裁定完整图：
 
