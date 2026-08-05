@@ -259,7 +259,8 @@ for i in $(seq 1 "$RUNS"); do
   fi
 
   if [ "$rc" -eq 0 ] && [ "$REQUIRE_TEST_ARTIFACTS" = "1" ]; then
-    shard_count="$(find "$artifact_dir" -maxdepth 1 -type f -name 'shard-*.xml' | wc -l)"
+    shard_count=0
+    if [ -d "$artifact_dir" ]; then shard_count="$(find "$artifact_dir" -maxdepth 1 -type f -name 'shard-*.xml' | wc -l)"; fi
     if [ ! -d "$artifact_dir" ] || [ "$shard_count" -lt 1 ] || [ ! -f "$artifact_dir/runtime-identity.json" ] || [ ! -f "$artifact_dir/skipped-multiset.json" ]; then
       failed=$((failed + 1))
       printf 'baseline-runs: run %02d missing required test artifacts in %s\n' "$i" "$artifact_dir" >&2
