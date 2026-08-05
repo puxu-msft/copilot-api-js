@@ -39,7 +39,7 @@
 | R-9 | C5 `辅助门`（诊断，不计 behavior 等级） | C5 telemetry schema（**Q1 未裁则本段不可开工**） | 同 command 驱动 success／preflight／wire partial | T5.3 T5.7 | IN-SCOPE |
 | R-10 | C6 `production 硬门` | C6 legacy 删除完成 | inventory AST 重跑 + test-only adversarial seam | T6.1 T6.5 | IN-SCOPE |
 | R-11 | **每 commit 共同门**（C0～C8 各一次） | 无（沿用现有 fixture） | `exp/inter-block-anchor-allocator/byte-equivalence.sh` | T0.2 | IN-SCOPE |
-| R-12 | C4 `production 硬门`（更新 golden）· C7 `辅助门`（审计） | C4 前先过 Q5 逐帧 diff 停门 | O-1／O-2／真 SDK 先跑，再同步 golden | T4.1 T4.16 · T7.1 | IN-SCOPE |
+| R-12 | C4 `production 硬门`（更新 golden）· C7 `辅助门`（审计） | **C4 内 T4.2 authority publish 前**先过 Q5 逐帧 diff 停门 | O-1／O-2／真 SDK 先跑，再同步 golden | T4.1 T4.16 · T7.1 | IN-SCOPE |
 | R-13 | C0 `production 硬门`（Q3 已裁 A） | 无（现有 route 即可） | 真实 warmup route | T0.4 T0.5 | IN-SCOPE |
 | R-14 | C4 `production 硬门` | C4 authority publish + `selectWinner` provenance | Chat Completions／Azure／Responses HTTP／Responses WS／Gemini **各一次有 winner 的 generation**，hedge winner 场景重跑 | T4.13 | IN-SCOPE |
 

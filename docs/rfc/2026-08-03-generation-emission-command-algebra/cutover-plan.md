@@ -450,7 +450,7 @@ T0.0a、T0.0b、T0.0c 的正控会**主动改坏 runner／test**；T0.0e 的正�
 |---|---|---|
 | **T0.0a** | 从**独立磁盘 manifest** 枚举 `tests/**/*.{unit,it,http}.test.ts`，再让真实 shard 执行产出 file-level JUnit identity。**先在 `balance()` 之后、spawn 之前从某 bucket 删一个文件**——必须报出**缺失的具体文件名**。⚠️ 打在 `discover()` 的 mutation 不够，它抓不到这层。 | 每一次门运行的实际 shards 各自产 JUnit，runner 合并 file identity；**每次**与磁盘 manifest 双向比较，缺／多任一文件即 rc≠0。正确状态绿。 |
 | **T0.0b** | skipped identity multiset：整文件 skip、native 不可用 skip、todo 文件各一；**mutation 把一条 runnable test 改 skip**，必须报它的 `file+classname+name+ordinal`，不许只报少了一个数。 | 输出 `executed`／`skipped` 两数与 skipped identity multiset；native history-search 这类环境 skip 独立具名 disposition。 |
-| **T0.0c** | runner 自身 mutation control：把 JUnit reporter 只加在 `refreshTimings()` 而不加真实 shards → file identity 门必须红；把 JUnit 合并器丢一个 shard → 门必须红。 | 真实 shard 的 identity 被收集，mutation 都红；正确 full run 绿。 |
+| **T0.0c** | runner 自身 mutation control：把 JUnit reporter 只加在 `refreshTimings()` 而不加真实 shards → file identity 门必须红；把 JUnit 合并器丢一个 shard → 门必须红。 | 真实 shard 的 identity 被收集，mutation 都红；正确 full run 绿。**同时实现并版本化 §0.4f 的 `scripts/capture-entry-evidence.ts` 与 `tests/infra/entry-test-discovery-baseline.json` v1**；producer 合成 fixture 覆盖树外 OUT、entry/tree、15-run/JUnit 对账、失败无 manifest 与原子写入。 |
 | **T0.0e** | **按 §0.4f 冻结接口实现并版本化 `scripts/validate-entry-evidence.ts`**：用**合成 fixtures**构造临时 git 图、合成 A/P、唯一 pointer block、树外 manifest、15 原始 logs/JUnit。先跑完整 fixture 绿；再通过同一 CLI 跑 `EV-01`…`EV-25`，每个 action 只改一个合成输入，验证稳定 exit code 与 `FAIL C<n>:` message。**不需要未来真实 A/P。** | validator 随 Commit -1 进入版本控制并通过自身正/负控；CLI、pointer block v1、manifest v1、退出码契约**只能来自 §0.4f**，不得由实现者另选 env/flags/schema。T0.0d 只用同一 CLI **消费**真实 evidence。 |
 
 > ⚠️ **T0.0d 不属于 Commit -1**：它需要 A／15 logs／pointer P，而这些输入只在 Commit -1 合 master之后才存在。把它列为 Commit -1 自己的收口门，等于**用未来输入验过去 commit**——因果不可达。它已移到 §0.4f 的 **post-merge entry-evidence preflight**；**validator 本体由 T0.0e 在 Commit -1 实现/版本化**。
@@ -479,6 +479,23 @@ T0.0a、T0.0b、T0.0c 的正控会**主动改坏 runner／test**；T0.0e 的正�
 ### Post-merge entry-evidence preflight —— **P 后、Commit 0 前；不是 Commit -1 收口门，也不是 cutover commit**
 
 ### 0.4f Post-merge entry-evidence preflight —— **validator 接口与 evidence schema 的唯一事实源**
+
+**版本化 evidence producer 路径与 CLI（由 T0.0a～c 在 Commit -1 交付，T0.0f 原样消费；prompts 不得另造接口）**：
+
+```bash
+cd /home/xp/src/copilot-api-js && bun run scripts/capture-entry-evidence.ts \
+  --tree "$TREE" \
+  --entry-sha "$ENTRY_SHA" \
+  --out "$OUT" \
+  --runs 15 \
+  --discovery-baseline tests/infra/entry-test-discovery-baseline.json
+```
+
+- `--out` 必须是 `$TREE` 外的绝对空目录；已有 `run-*.log` 或路径落在 `$TREE` 内即 `exit 2`。
+- `--discovery-baseline` 是 Commit -1 版本化的独立 oracle 输出，schema v1 至少含：disk file identity 集合、允许的 skipped identity multiset、`minimum_executed` 与生成它的 runner git blob。**`minimum_executed` 不得从本次 15-run 命令输出反推**；T0.0a/b/c 的 mutation 门证明该基线会在 shard 漏文件／runnable→skip／reporter 漏接线时红。
+- producer 机械确认 `git -C "$TREE" rev-parse HEAD == ENTRY_SHA` 且 tree clean；每次实际 shard 生成 JUnit，逐次与 discovery baseline 对账；显式调用树内 `baseline-runs.sh`（`EVIDENCE_TIMING=closeout`、`RUNS=15`、`MIN_TESTS=minimum_executed`）。
+- 全部 15 次绿后才原子写 `OUT/evidence-manifest.json` v1；任何 run／identity／skip／HEAD/tree 漂移时非零退出且**不得留下 manifest**。稳定退出码：`0`=manifest 原子写入；`2`=CLI/path/schema；`3`=entry/tree；`4`=discovery baseline；`5`=run/JUnit/identity；`6`=manifest 写入。stdout 只打印 `manifest=<绝对路径>` 与 `manifest_sha256=<hex>`。
+- producer **不修改 HANDOVER、不执行 git commit**。T0.0f 在 producer rc=0 后，按下方 pointer v1 语法更新 master HANDOVER 并显式提交 P。
 
 **版本化 validator 路径与 CLI（由 T0.0e 在 Commit -1 实现，T0.0d 原样消费；prompts 不得另造接口）**：
 
@@ -563,7 +580,7 @@ archive_path=<可为空；归档副本不定义 entry>
 
 | id | 先写什么失败测试 → 预期怎么红 | 实现什么 → 预期怎么绿 |
 |---|---|---|
-| **T0.0f**（post-merge evidence production） | 在完整 `ENTRY_SHA=A`、干净的 A worktree 与 T0.0e 已交付 runner/validator 上，**先证明没有真实 15-run artifacts 时 T0.0d 必须 fail-closed**；再按 §0.4b 的绝对树外 `OUT` 运行 15 次实际 shards，任一 run 非绿、identity/skip 集漂移、HEAD/tree 漂移都必须中止，**不得生成 pointer P**。 | 生成树外 15 份 run log/JUnit 与 versioned evidence manifest（冻结 `measured_sha=A`、artifact hashes、canonical command 与集合 hashes）；随后在 master 的 HANDOVER 写唯一 `entry-evidence-pointer:v1` block 并提交得到 **P**。机械证明 `A` 是 `P` 祖先，P 不合回执行分支、不定义 entry。 |
+| **T0.0f**（post-merge evidence production） | 在完整 `ENTRY_SHA=A`、干净的 A worktree 与 Commit -1 已交付 producer/runner/validator 上，先证明没有真实 manifest 时 T0.0d fail-closed；再**原样调用 §0.4f 冻结 CLI**：`bun run scripts/capture-entry-evidence.ts --tree "$TREE" --entry-sha "$ENTRY_SHA" --out "$OUT" --runs 15 --discovery-baseline tests/infra/entry-test-discovery-baseline.json`。任一 run 非绿、identity/skip 集漂移、HEAD/tree 漂移都必须中止，**不得留下 manifest 或生成 pointer P**。 | producer rc=0 后取得树外 `evidence-manifest.json` 与 hash；在 master HANDOVER 写唯一 `entry-evidence-pointer:v1` block并显式提交得到 **P**。机械证明 A 是 P 祖先，P 不合回执行分支、不定义 entry。**T0.0f 不现场实现 producer/schema。** |
 | **T0.0d**（post-merge evidence validation） | **消费 T0.0e 已交付/版本化的 validator**：按 §0.4f 唯一 CLI 传入 T0.0f 的真实 A／P／树外 manifest／15 原始 logs 与绝对 `--receipt-out`，真实 evidence 缺失/不等即 fail-closed。**不在此实现 validator、不生成 15-run、不重跑其合成 EV mutation。** | validator C1～C10 全绿后原子写 `entry-evidence-receipt.json` v1；记录 receipt path/hash，才允许执行树开始 T0.1／Commit 0。pointer／manifest／receipt 任一缺失**一律 fail-closed，不是 warning**。 |
 
 **单一 validator 的输入**：

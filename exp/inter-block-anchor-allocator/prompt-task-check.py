@@ -48,9 +48,29 @@ def plan_task_definitions(text: str) -> list[str]:
     """
     out: list[str] = []
     in_table = False
+    current_h2 = ""
+    current_h3 = ""
+    commit_h2 = re.compile(r"^## Commit (?:-1|[0-8])(?:\s|$)")
     for line in text.splitlines():
-        if re.match(r"^#{3,4} ", line):
-            in_table = "逐 task" in line
+        if line.startswith("## ") and not line.startswith("### "):
+            current_h2 = line
+            current_h3 = ""
+            in_table = False
+            continue
+        if line.startswith("### ") and not line.startswith("#### "):
+            if "逐 task" in line:
+                # Live commit task tables only. A verbatim task table moved to
+                # section 12 (even under a heading named "历史逐 task 表") is
+                # historical prose, not a definition source.
+                in_table = bool(commit_h2.match(current_h2))
+            else:
+                current_h3 = line
+                in_table = False
+            continue
+        if line.startswith("#### "):
+            # Post-merge tasks live under the one non-Commit definition owner,
+            # section 0.4f. No other h4 "逐 task" heading is authoritative.
+            in_table = "逐 task" in line and current_h3.startswith("### 0.4f ")
             continue
         if not in_table:
             continue
