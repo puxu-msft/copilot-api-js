@@ -124,6 +124,7 @@
 
 | plan task | RFC 出处 | 它在那里承担什么 |
 |---|---|---|
+| **T0.0a／T0.0b／T0.0c**（Commit -1 基础设施；三个 ID 均遵循既有 task grammar） | §7.1「整个序列的入场条件位于 Commit 0 之前」+ HANDOVER T3-b | **让 T0.1 的入场证据有独立 runtime oracle**：真实 shard JUnit file identity、skipped multiset、runner 自身 mutation。不是 cutover commit；它收口后 entry sha 重取，旧 15 次作废 |
 | T0.1 | §7.1「整个序列的入场条件位于 Commit 0 之前」 | entry commit 上连跑 ≥15 次。**entry 树已裁（2026-08-04：隔离 worktree，从合并后 master 起）**；`MIN_TESTS` 的取值路径见 plan T0.1（不得与被测命令同源） |
 | T0.7 | §7.2 全节（双向不动点闭包、A／B／C／D 四集、C-D tie-break） | 冻结旧 generation delivery 的完整能力面；**Commit 0 与 Commit 4 均 fail loud** 的判据来源 |
 | T0.9 | §7.10 + §9.2 Q5 | 冻结 goldens 清单，作为 Commit 4 逐帧预测 diff 的比对基座与 Commit 7 审计对象 |

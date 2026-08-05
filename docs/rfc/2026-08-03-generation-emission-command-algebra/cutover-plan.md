@@ -267,7 +267,7 @@ FROM=$(git -C "$TREE" rev-parse HEAD^)       # 它的父 commit
 
 1. 基础设施改动在 `$TREE` 上先提交；
 2. **重取 entry commit sha = A**，T0.1 的 15 次连跑锚在 **A** 上（锚在旧 sha 上跑的那批作废——它测的是没有 file identity 的 runner）；
-3. **日志落 `$TREE` 外**，把 `measured_sha=A` 冻结进本 plan（见下方「证据落盘位置」）；
+3. **日志落 `$TREE` 外**，把 `measured_sha=A` 冻结进**树外 evidence manifest**，master 状态文档只放指针（见 Commit -1 收口与 §0.4b「证据落盘位置」）；
 4. Commit 0 的 `FROM` = **A**。
 
 ⚠️ **第 3 步之后不得再有任何「为了安放证据」而产生的 commit** —— 那会让 entry 从 A 前移，**日志随即不再描述 entry**，而这正是上一版的循环缺陷。事后归档到 `docs/tmp/` 是允许的，**但它只是副本，不重新定义 entry**（实测：归档后 A 仍是 `HEAD` 的祖先、日志正文 `measured_sha` 不变）。
@@ -291,7 +291,7 @@ FROM=$(git -C "$TREE" rev-parse HEAD^)       # 它的父 commit
 | # | 要求 | 为什么 |
 |---|---|---|
 | 1 | **原始日志落 `$TREE` 外**：`OUT=/abs/path/outside/tree`（`:105-107` 的 `/*)` 分支支持绝对路径，实测 `OUT_DIR` 直接取该值、不拼 `$REPO`） | 树内不产生未跟踪文件 ⇒ `tree=clean` 成立，**且 entry sha 不被证据动作改变** |
-| 2 | **冻结 `measured_sha=<A>` 写进 plan**（连同 `OUT` 绝对路径、日期、批次） | 它是「这 15 次测的是哪个 commit」的**权威记录**；实测 `A` 与事后 `HEAD` 相等 |
+| 2 | **冻结 `measured_sha=<A>` 写进树外 evidence manifest**（连同 `OUT` 绝对路径、日期、批次） | 它是「这 15 次测的是哪个 commit」的**权威记录**；master 状态文档只放指针，**不反向定义 entry** |
 | 3 | **证据可事后归档进仓库**（如 `docs/tmp/<date>-entry-runs/`），但**归档动作产生的 commit 与 entry 无关，绝不反向定义 entry** | 实测：归档后 `HEAD` 前进，但 `A` 仍是 `HEAD` 的祖先、日志正文的 `measured_sha` 不变——**它只是多了一份副本，没有重新定义任何东西** |
 
 **因此收口趟的 `tree=clean` 可达**：证据不在树里，工作区自然干净。**若收口趟发现 `tree=DIRTY`，那是真信号**——有该提交而未提交的东西，或有不该产生的产物。
@@ -309,7 +309,7 @@ FROM=$(git -C "$TREE" rev-parse HEAD^)       # 它的父 commit
 
 **通用规则（按类，不按实例）**：
 
-> **凡内容含「本 commit sha」的产物，一律落 `$TREE` 外，并把 `measured_sha=<该 sha>` 冻结进 plan 或产物自身的文件名；树内只放不自指的产物。**
+> **凡内容含「本 commit sha」的产物，一律落 `$TREE` 外，并把 `measured_sha=<该 sha>` 冻结进树外 evidence manifest；master 状态文档只放指针；树内只放不自指的产物。**
 
 **判据形状：产生方声明，门读声明——不是让门去 grep 猜**
 
@@ -319,15 +319,17 @@ FROM=$(git -C "$TREE" rev-parse HEAD^)       # 它的父 commit
 
 **因此：产物由脚本生成时写结构化标记，门读标记。** 这里**产生方是脚本、不是被门约束的执行者**，所以标记是真正独立的输入（对比 §0.4a 的 pending ledger，那里产生方就是执行者本人——见该节的诚实标注）。
 
-**对 `byte-equivalence.sh`／`baseline-runs.sh` 的字段需求**（⚠️ **脚本由协调者维护，本 plan 只提需求、不自行改脚本**——两份分叉比缺字段更糟）：
+**脚本字段前置基础设施已实现**（协调者 commit `d7f6c222`，本 plan 不改脚本，避免 script／plan 两份分叉）：
 
-| 字段 | 取值 | 含义 |
+| 字段 | 实际格式／验证 | 含义 |
 |---|---|---|
-| `evidence_timing` | `dev` \| `closeout` | 这份产物出自开发趟还是收口趟 |
-| `measured_sha` | 完整 40 位 sha | **这次测的是哪个 commit**（取代靠 `head=` 反推） |
-| `claims_current_head` | `true` \| `false` | **产物内容是否断言「measured_sha 就是当前 HEAD」**——`true` 即自指，**不得进树** |
+| `evidence_timing` | `evidence_timing=dev` 或 `evidence_timing=closeout` | 这份产物出自开发趟还是收口趟；其他值脚本 `exit 2` |
+| `measured_sha` | `measured_sha=<完整 40 位小写 SHA>` | **这次测的是哪个 commit**（取代靠 `head=` 反推）；非完整 SHA fail-closed |
+| `claims_current_head` | `claims_current_head=true` | 产物断言「`measured_sha` 就是生成时的 HEAD」；故它**自指，必须出树** |
 
-**门的判据变成**：读 `claims_current_head`，为 `true` 则该产物必须落 `$TREE` 外并把 `measured_sha` 冻结进 plan。**没有标记的产物一律按 `true` 处理**（fail-closed：缺声明不等于安全）。
+`baseline-runs.sh` 在 stdout 与**每一份** `run-*.log` 输出这三行；两种 timing 的正控已 rc=0、字段 SHA=HEAD。`byte-equivalence.sh` 两种 timing 的**结构化输出路径**已验证；但真请求连续两次 HTTP 500，**因此只声称字段路径正确，不声称完整 O-6 PASS**（4141 未受影响）。
+
+**门的判据变成**：读 `claims_current_head`，为 `true` 则该产物必须落 `$TREE` 外并把 `measured_sha` 冻结进外置 evidence manifest。**没有标记的产物一律按 `true` 处理**（fail-closed：缺声明不等于安全）。
 
 **执行者手写的产物**（审计表、覆盖表、mutation 记录）**在文件头自己写这三行**——它们由执行者产生，所以这一条**不是独立输入而是自述**；对应的诚实边界见 §0.4a 末尾。
 
@@ -407,6 +409,43 @@ FROM=$(git -C "$TREE" rev-parse HEAD^)       # 它的父 commit
 
 ---
 
+## Commit -1 — Entry test-discovery oracle 基础设施（**不是 cutover commit，必须先收口**）
+
+**目标**：让实际 `parallel-test` shard 的运行时 file identity 与独立磁盘 manifest 逐次对账；没有它，T0.1 的 15 次只会证明 runner 自己报告一致，**证明不了 shard 静默漏文件时门会红**。
+
+> ⚠️ **`d7f6c222` 只实现了结构化 evidence intent，没实现这个 oracle。** 当前 `parallel-test.ts` 的 JUnit 只在 `refreshTimings()`（`:61-70`，`--update` 的另一次 run）；真实 shards 在 `:120` 跑裸 `bun test`，`:157-167` 只正则聚合 pass/fail。**前置基础设施当前不能声称已过门。**
+
+### 逐 task
+
+| id | 先写什么失败测试 → 预期怎么红 | 实现什么 → 预期怎么绿 |
+|---|---|---|
+| **T0.0a** | 从**独立磁盘 manifest** 枚举 `tests/**/*.{unit,it,http}.test.ts`，再让真实 shard 执行产出 file-level JUnit identity。**先在 `balance()` 之后、spawn 之前从某 bucket 删一个文件**——必须报出**缺失的具体文件名**。⚠️ 打在 `discover()` 的 mutation 不够，它抓不到这层。 | 每一次门运行的实际 shards 各自产 JUnit，runner 合并 file identity；**每次**与磁盘 manifest 双向比较，缺／多任一文件即 rc≠0。正确状态绿。 |
+| **T0.0b** | skipped identity multiset：整文件 skip、native 不可用 skip、todo 文件各一；**mutation 把一条 runnable test 改 skip**，必须报它的 `file+classname+name+ordinal`，不许只报少了一个数。 | 输出 `executed`／`skipped` 两数与 skipped identity multiset；native history-search 这类环境 skip 独立具名 disposition。 |
+| **T0.0c** | runner 自身 mutation control：把 JUnit reporter 只加在 `refreshTimings()` 而不加真实 shards → file identity 门必须红；把 JUnit 合并器丢一个 shard → 门必须红。 | 真实 shard 的 identity 被收集，mutation 都红；正确 full run 绿。 |
+
+### 本 commit 的门（前置基础设施自己的门）
+
+| 门 | 判据 |
+|---|---|
+| shard 漏文件正控 | T0.0a 在 `balance()` 后删文件 → rc≠0 且点名该文件 |
+| skipped 多集正控 | T0.0b 把 runnable 改 skip → rc≠0 且点名该 identity |
+| runner 接线正控 | T0.0c 两条 reporter／merge mutation 各自因目标机制红 |
+| 正样本 | 正确真实 shard run：磁盘 manifest＝运行时 identity；executed／skipped 口径一致 |
+| 收口 | `bun run typecheck` 绿、前置基础设施自己的测试绿、上面三种 mutation 红；**此 commit 本身不得被 T0.1 的 15 次自洽运行替代验收** |
+
+### 收口与 entry 重锚（不可省略）
+
+1. 本 commit 收口后，**重取 entry sha = A**；
+2. T0.1 的 15 次只对 **A** 有效；任何在此之前跑出的 15 次作废；
+3. 原始日志落 `$TREE` 外（§0.4b），脚本结构化字段中的 `measured_sha` 必须 = A；
+4. 建立**树外 evidence manifest**（推荐 `OUT/evidence-manifest.json`），至少含：`measured_sha`、`evidence_timing`、绝对 `OUT`、run log 文件清单、磁盘 manifest hash、运行时 identity manifest hash、`executed`／`skipped` multiset hash、命令与时间；它是「这 15 次测了什么」的权威，不在 git 工作树里；
+5. **master 状态文档只放指针**：固定路径 `docs/tmp/<date>-entry-evidence-pointer.md`（与本 plan 同一次执行建、提交到 master 状态线），写 `measured_sha=A`、树外 manifest 的绝对路径／hash、归档副本的位置、以及「该指针 commit 不定义 entry」这一句。**该指针只回答「证据在哪里」，绝不写「当前 HEAD=A」或反向定义 entry**；指针 commit 是 A 的后代，不改变 A 是 entry 的事实；
+6. 进度文件 frontmatter 的 `base` 更新为 A，并引用**状态指针所在 master commit**。这样接手方可从主线找到证据，**但不会把指针 commit 误当 entry**。
+
+> **为什么不用把 `measured_sha=A` 直接写进 `$TREE` 的 plan**：写 plan 会产生新 commit B，entry 就从 A 前移到 B，而日志仍测 A——循环重现。**树外 manifest 冻结 A，master 指针只定位 manifest；归档动作不重新定义 entry。**
+
+---
+
 ## Commit 0 — Legacy 基线、旧缺陷 characterization 与 oracle 分型
 
 **目标**（RFC §7.3）：不改 production；冻结 O-1／O-2／O-6 与现有 goldens、搭建 handle-level physical recorder 并自检、把测试面分四类、并把「旧生成 delivery 的完整能力面」按 §7.2 的双向闭包冻结成 A／B／C／D 四集。
@@ -418,7 +457,7 @@ FROM=$(git -C "$TREE" rev-parse HEAD^)       # 它的父 commit
 | **T0.1** | **入场条件，不是测试。** 🔴 **本条依赖一件尚不存在的基础设施，见右栏——先建它，别硬跑。**<br>**① `MIN_TESTS` 不能从待测命令自己取**（`baseline-runs.sh:23-25` 逐字点名的假绿：selector 悄悄缩窄，「实测」出 6800，下限也冻成 6800，此后每次都与自己一致）。<br>**② 口径必须先定死：`MIN_TESTS` 比的是 `executed = tests - skipped`，不是 JUnit 的 `tests`。** 两边口径**现在是相反的**——Bun JUnit 的 `<testsuites tests=N>` **含 skipped／todo**，而 `parallel-test.ts:148-167` 把 `tests` 定义为 `passSum + failSum`（**不含 skipped**）。**照 JUnit 总数取 floor，正确状态必然过不了**：仓库现有整文件 `describe.skip`、native `skipIf`、`test.todo`；且 **native 产物在主树存在而在新建隔离树天然没有**，那批测试在 `$TREE` 会 skip——**同一 commit 在两处的 `tests` 数不同，`executed` 才稳定**。 | 🔴 **前置基础设施（本 task 无法绕过，也不得夹进 cutover 任何 commit —— 见 §0.4a）**：<br>**`parallel-test.ts` 当前不为门运行产出 file identity**。它的 JUnit 只存在于 `refreshTimings()`（`:61-70`，`--update` 时**另起一次**独立 run），而真正的门运行在 `:120` 用**裸 `bun test`** 起 shards、无 reporter，`:148-167` 只聚合 pass/fail 总数。<br>⚠️ **因此「磁盘 glob vs 一次 refresh JUnit」只能证明 `discover()` 当时完整**——它**证不了** `balance()` 之后、bucket spawn、以及那 15 次实际运行没有静默漏 shard／漏文件。**而 plan 自己的正控恰恰是「让某个 shard 静默少跑文件」**，用另一次运行的证据给这次运行背书，正是前几轮反复在堵的形态。<br>**要做的**：让**每一次**门运行的实际 shards 各自产 JUnit，runner 内合并 file identity；**每次**都与独立磁盘 manifest 双向比集合，缺一文件即 rc≠0，并**分别输出 `executed` 与 `skipped` 两数**。<br>**正控**：在 **`balance()` 之后、spawn 之前**从某 bucket 删一个文件 → 必须报出**缺失的文件名**（打在 `discover()` 上的正控抓不到这一层）。<br>**false-red 对照**：整文件 skip、native 不可用而 skip、`todo` 文件——实测 Bun JUnit **仍为它们输出 file-level `<testsuite>`**，故「被发现」成立、合法为绿。<br>
 🔴 **但「另记 skipped 数」不够——必须逐次核对 skipped 的 identity set**：只比数量时，**把一条 runnable test 改成 skip、同时另一条 skip 改回 runnable，总数不变而 floor 被悄悄降低**。判据是**每次运行的 skipped test identity multiset**与冻结集合相等；不等时必须报出**具体是哪几条变了**，再逐条 disposition（`freeze-hit-set-not-zero-hits`）。<br>**identity key 定义**（缺任一项都会把不同的 case 混成一条）：`file` + `classname` + `name` + **`ordinal`**（同名 case 在同文件内的出现序号——参数化与模板名会产生同名项，只用前三项会把它们折叠）。**用 multiset 不用 set**，理由同上。<br>
 **mutation**：把任意一条 runnable test 改成 `skip` → 必须报出**该条的 identity**（只比 executed 数的版本会因为 floor 是 `>=` 而放过它）。<br>
-⚠️ **native 那批要具名，不能混进「正常 skip」当背景噪声**：`history-search` 的 `.node` 产物**主树有、新建隔离树天然没有**，故 `describe.skipIf(!isNativeHistorySearchAvailable())` 那批（本文写作时 **18 条**，**执行时按上述 identity set 实测重取，别引用这个快照数**）在 `$TREE` 会 skip 而在主树会执行。**按项目契约这是可接受的**（CLAUDE.md 明写不得强制构建 native、有产物就真跑没有就显式 skip），**但必须在冻结集合里单列一类具名审核**——否则「环境性的 skip」会成为掩护，本项目 2026-07-28 已因此把环境性的红当「既有失败」挥手放过一次。<br>**然后**才是 15 次：`cd "$TREE" && OUT=/abs/path/outside/tree/<date>-entry-runs RUNS=15 MIN_TESTS=<executed 口径的数> exp/inter-block-anchor-allocator/baseline-runs.sh`，rc=0 且保存每次原始输出。<br>🔴 **`OUT` 必须是 `$TREE` 之外的绝对路径**——相对路径会解析成 `$REPO/$OUT`（`:105-107`），日志落进树里就再也回不到 `tree=clean`，而「把它们提交进去」是**循环的**（见 §0.4b「证据落盘位置」）。**跑完把 `measured_sha=<当时的 HEAD>` 连同 `OUT` 路径与批次冻结进本 plan**。<br>⚠️ 必须在 **`$TREE`（干净的隔离 worktree）** 里跑**树内那份**脚本（`REPO` 由脚本位置推导、无 override，见 §0.3b）。**`ALLOW_DIRTY=1` 禁止用于通过本条**。重跑换 `OUT` 目录。<br>⚠️ **这就是 HANDOVER 的 T3-b**。它落地前本条只能按缩小版命题引用，**不得表述成「全后端套件已验证」**。 |
+⚠️ **native 那批要具名，不能混进「正常 skip」当背景噪声**：`history-search` 的 `.node` 产物**主树有、新建隔离树天然没有**，故 `describe.skipIf(!isNativeHistorySearchAvailable())` 那批（本文写作时 **18 条**，**执行时按上述 identity set 实测重取，别引用这个快照数**）在 `$TREE` 会 skip 而在主树会执行。**按项目契约这是可接受的**（CLAUDE.md 明写不得强制构建 native、有产物就真跑没有就显式 skip），**但必须在冻结集合里单列一类具名审核**——否则「环境性的 skip」会成为掩护，本项目 2026-07-28 已因此把环境性的红当「既有失败」挥手放过一次。<br>**然后**才是 15 次：`cd "$TREE" && OUT=/abs/path/outside/tree/<date>-entry-runs RUNS=15 MIN_TESTS=<executed 口径的数> exp/inter-block-anchor-allocator/baseline-runs.sh`，rc=0 且保存每次原始输出。<br>🔴 **`OUT` 必须是 `$TREE` 之外的绝对路径**——相对路径会解析成 `$REPO/$OUT`（`:105-107`），日志落进树里就再也回不到 `tree=clean`，而「把它们提交进去」是**循环的**（见 §0.4b「证据落盘位置」）。**跑完把 `measured_sha=<当时的 HEAD>` 连同 `OUT` 路径与批次冻结进树外 evidence manifest，并由 master 状态文档只放指针**。<br>⚠️ 必须在 **`$TREE`（干净的隔离 worktree）** 里跑**树内那份**脚本（`REPO` 由脚本位置推导、无 override，见 §0.3b）。**`ALLOW_DIRTY=1` 禁止用于通过本条**。重跑换 `OUT` 目录。<br>⚠️ **这就是 HANDOVER 的 T3-b**。它落地前本条只能按缩小版命题引用，**不得表述成「全后端套件已验证」**。 |
 | **T0.2** | 先把 O-6 脚本在**未改动的 `$TREE`** 上跑一次，确认打印 `O-6 PASS`、rc=0、fixture blob 未变；再注入一字节，确认 rc=9。**这是 false-red／false-green 双向自检，不是形式**——该门此前恒真（脚本覆盖自己的基线、全脚本无 `cmp`），`4f7a3989` 才修好。 | 把这两条写进每 commit 检查清单，绑根方式照 §0.3 ②。**禁止 `RECAPTURE=1`**。<br>**先确认手上是修好的那份**：`grep -c 'O-6 PASS' exp/inter-block-anchor-allocator/byte-equivalence.sh` ≥1（**看文件存在不够**）。 |
 | **T0.3** | 写 handle-level physical recorder，**先让它在「什么都没包住」的状态下断言零 direct send**——此时断言平凡为真，是**假绿**。 | recorder 必须包裹 composition root 实际取得的 `stream`／`ws` handle 并**位于 raw emitter 之下**；再加一条 test-only direct-send seam，断言 recorder **确实看得见**绕过 owner 的发送。看不见就说明探测层装错了深度（RFC §10.1「探测深度必须与被测对象对齐」）。**注入 owner 的 test raw adapter 不用于本判定**。 |
 | **T0.4** | 对 warmup fake／drop 写真实 route behavior test：断言完整字节、upstream 零调用、delivery observer **零 session**、一次响应。**先在缺失 observer 的状态下跑**，确认「零 session」这条断言此刻还够不到 delivery 层。 | 接上 delivery session observer（`delivery/session.ts:74` 的 `setDeliverySessionObserverForTests`，**已存在，不用自己造**），四条断言转绿；mutation「提前创建 owner」或「双写」必须红。这是 **Q3 已裁方案 A**，是 §5 唯一没有现成 behavior witness 的出口，也是 composition-root 互斥性的 gatekeeper。 |
