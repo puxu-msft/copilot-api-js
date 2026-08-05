@@ -81,7 +81,7 @@ https://copilot-api.msft.ghe.com
 - 不含 credentials、path、query 或 fragment。
 - hostname 经 URL parser 做 IDNA 与小写规范化，并移除末尾的 DNS root dot。
 
-校验顺序必须先检查原始输入结构，再交给 URL parser canonicalize。对带 scheme 的输入，authority 后只允许空字符串或单个尾 `/`；对裸 hostname，hostname 后不得有 `/`、`?` 或 `#`。因此 `/a/..`、`/a/%2e%2e`、`/%2e/`、`//` 与重复 slash 即使会被 URL parser 归一化成 `/`，仍须按原始 path 被拒绝。完成这道检查后，才使用 URL parser 的 hostname/port/credentials 结果做 canonicalization。
+校验顺序必须先检查原始输入结构，再交给 URL parser canonicalize。所有用户提供的 GitHub Web/API/Copilot URL 与 `enterprise_host` 均先拒绝任意反斜杠、ASCII C0 控制字符 `U+0000–U+001F` 和 `U+007F`；不得先 `trim()` 或依赖 WHATWG URL parser，因为 special-scheme URL 会把 `\` 当 `/`，并会静默移除 TAB、LF、CR 以及首尾空白控制字符。对带 scheme 的 `enterprise_host`／Web origin，authority 后只允许空字符串或单个尾 `/`；对裸 `enterprise_host` hostname，hostname 后不得有 `/`、`\`、`?` 或 `#`。因此 `/a/..`、`/a/%2e%2e`、`/%2e/`、`//`、重复 slash 与任何反斜杠即使会被 parser 归一化成另一个合法形状，仍须按原始输入被拒绝。完成这道检查后，才使用 URL parser 的 hostname/port/credentials 结果做 canonicalization。显式 API/Copilot endpoint 仍可包含正常的正斜杠 base path，例如 `/api/v3`。
 
 不满足条件时，token-aware 命令在任何 token 文件、proxy 或网络访问之前失败。不得静默退回公共 GitHub。
 
@@ -141,20 +141,21 @@ GitHub Web/API endpoint、authority 和 token path 在 token runtime 生命周�
 4. 对 raw mapping 中存在的 `github` 子树运行 strict、原子 `GitHubConfigSchema`；整个 section 通过或整个命令失败。
 5. bundled config 的 `github` 子树采用同一 strict 校验，失败视为打包缺陷。
 6. 严格 GitHub 校验通过后，完整 mapping 进入现有 deprecated migration、`validateConfig()` warn-strip 与 schema-driven bundled/user merge。
-7. `applyEffectiveConfigToState(effective)` 应用一般配置，不重新读取文件。
-8. 从 effective config 与 CLI override 解析 endpoint snapshot。
-9. 此后才执行 storage action、proxy policy 与 token runtime 安装。
+7. `prepareConfigApplication(effective, currentRuntime)` 在零副作用阶段完成全部 normalization、正则/映射编译、跨字段约束和 restart-only 差异计算，产出不可变 `ConfigApplicationPlan`；任何错误都在这里抛出。
+8. `commitConfigApplication(plan)` 在一个同步配置事务中应用预计算 patch。commit 路径必须 no-throw；各 domain 的同步 change listener 在事务内只登记变化，事务结束后基于完整 before/after 状态 coalesce 发布，不能在半提交状态重建 dispatcher 或观察其它 domain。
+9. commit 成功后才同时发布 effective config cache、accepted content generation/mtime 与诊断状态；之后从 committed effective config 与 CLI override 解析 endpoint snapshot。
+10. 此后才执行 storage action、proxy policy 与 token runtime 安装。
 
 `loadConfig()` 与 `applyConfigToState()` 复用上述 raw parser、validation 和 merge primitives，并保留现有 mtime cache 与一般配置热重载。GitHub snapshot 不随热重载改变。
 
 启动与运行期采用不同失败反应，但共享同一 strict validator：
 
 - 首次启动或一次性 CLI 命令没有 last-known-good（最后已知有效）状态。YAML 或 `github` 子树无效时直接失败，不能回退 bundled defaults。
-- 运行中的进程发现用户文件 mtime 改变后，先在临时值上完成 raw parse、strict GitHub、一般 validation 与 bundled merge，全部成功才原子发布新的 effective config。若 YAML 或 `github` 无效，继续使用最后已知有效 effective config 与当前 endpoint snapshot，记录 `pending-invalid` 诊断；不得把全部用户配置退回 bundled defaults，也不得让每个请求重复抛错。
-- 对同一失败 mtime 只记录一次诊断。文件再次变化且恢复有效后，清除 `pending-invalid`，一般 hot-reload 字段从新 effective config 生效；GitHub endpoint 变化仍只标记 pending-restart，不替换当前 snapshot。
-- `PUT /api/config/yaml` 在写盘前走 hard-fail validation，因此非法 GitHub 配置不会落盘，也不会进入 `pending-invalid`。
+- 运行中的进程发现用户文件 mtime 改变后，先对候选内容完成 raw parse、strict GitHub、一般 validation、bundled merge 与 `prepareConfigApplication()`。只有 prepare 全绿才进入 no-throw commit；若任何阶段失败，继续使用最后已知有效 effective config、全部 runtime domain state 与当前 endpoint snapshot，记录 `pending-invalid` 诊断。不得先更新 cache/mtime，不得把全部用户配置退回 bundled defaults，也不得让每个请求重复抛错。
+- 失败内容以内容 generation（至少包含 mtime + size + 内容摘要）去重，而不是只用 mtime；这避免编辑器在同一时间戳内重写时把已修复文件误判为旧失败。下一次内容 generation 有效后，清除 `pending-invalid`，一般 hot-reload 字段从新 committed plan 生效；GitHub endpoint 变化仍只标记 pending-restart，不替换当前 snapshot。
+- `PUT /api/config/yaml` 必须先在内存中把 disk-only migration patch、请求 payload 与 bundled defaults 合成最终 candidate，运行 strict validation + `prepareConfigApplication()`；全绿后才原子写配置文件。写盘成功后执行同一个 no-throw commit plan，不得再 reset 全局 state 后重新读取/重新验证；若写盘失败，runtime state 不变。
 
-测试覆盖三段状态：有效配置生效→手工写入无效 GitHub/YAML 后 last-known-good 保持→修复文件后一般配置恢复热更新而 endpoint 仍待重启。
+测试覆盖三段状态：有效配置生效→手工写入会在 apply-time 才失败的 generation 交叉约束或无效 GitHub/YAML 后，config cache、Anthropic/retry/model/generation 等所有 runtime domain 与 endpoint snapshot 均保持 last-known-good→修复文件后一般配置一次性发布而 endpoint 仍待重启。另用 listener 探针断言事务期间没有观察到混合 before/after 状态，且每个 domain 每次事务最多收到一次合并通知。
 
 ## 8. Token 按 authority 隔离
 
@@ -199,8 +200,10 @@ ensureAppDirectory
 → parse raw YAML
 → strict github validation
 → general validation + bundled merge
-→ apply effective config
-→ resolve immutable snapshot
+→ prepare no-side-effect application plan
+→ no-throw transactional commit
+→ publish effective config/cache/generation
+→ resolve immutable endpoint snapshot
 → authority-specific storage action
 → per-origin proxy policy
 → install token runtime(snapshot)
@@ -274,6 +277,7 @@ CLI --proxy
 
 - `enterprise_host` 使用 HTTP、非默认端口、credentials、path、query、fragment、裸 `ghe.com` 或非 `*.ghe.com`。
 - `enterprise_host` 与 Web base URL 的原始输入含可被 parser 洗掉的 path：`/a/..`、`/a/%2e%2e`、`/%2e/`、`/%2e%2e/`、`//` 或重复 slash。
+- 任一 GitHub Web/API/Copilot URL 或 `enterprise_host` 含反斜杠、TAB、LF、CR、其它 `U+0000–U+001F` 或 `U+007F`；覆盖字符在 hostname 中间与输入首尾两类位置。
 - Web base URL 含 path、query、fragment 或 credentials。
 - API/Copilot base URL 使用非 HTTP(S)、credentials、query 或 fragment。
 - route suffix 含 query、fragment、scheme 或 authority。
@@ -284,7 +288,9 @@ CLI --proxy
 - 其它无效配置字段继续 warn-strip，合法 GitHub snapshot 仍可构造。
 - bundled/user merge、deprecated migration 与 sparse override 保持现有语义。
 - CLI override 只覆盖对应 effective config，不绕过 strict GitHub 校验。
-- HTTP PUT 非法 GitHub 配置返回 structured 400；合法变更标记重启后生效，live snapshot 不变。
+- `prepareConfigApplication()` 覆盖现有所有 apply-time failure：generation 三条交叉约束、所有 normalization/compile 与 restart-only 计算；prepare 失败时 cache、mtime、全部 runtime domain state 和 listener 调用次数保持不变。
+- commit 期间 listener 看不到中间态；事务结束后只收到完整 before/after 的合并通知。注入“先发布 cache”“在第一个 setter 后通知 listener”“generation 校验留在 setter 之后”三种缺陷时测试必须变红。
+- HTTP PUT 在写盘前对最终 candidate 执行 prepare；prepare 失败时磁盘与 runtime 均不变。写盘成功后复用同一个 plan，一次 no-throw commit；合法 endpoint 变更标记重启后生效，live snapshot 不变。
 
 ### 13.4 入口矩阵
 

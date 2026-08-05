@@ -4,7 +4,7 @@
 - 评审对象：[2026-08-05-github-enterprise-auth-host.md](./2026-08-05-github-enterprise-auth-host.md)
 - reviewer：独立 GPT reviewer，隔离 worktree，固定基线 `7dc82aaf1e84d3907a0e563377f9c6f656cfdaa9`
 - 前一书面版本结论：`PASS：可进入书面规格阶段。`
-- 当前状态：fresh review 后已重写 OAuth 调度、hot reload、debug policy、origin 校验与实验证据，等待同一 fresh reviewer 复评
+- 当前状态：fresh review 的五项 major 已逐项修复并复核通过；等待修订提交的合并态一致性评审
 
 ## 1. 可核验命题
 
@@ -62,7 +62,7 @@ reviewer 指出显式 `api_base_url` 若被当作 origin，会误拒绝标准 GH
 
 reviewer 指出 token bootstrap 不能只解析 `github`，否则 proxy 与其它命令配置会绕过 bundled defaults、deprecated migration 与 warn-strip。
 
-处置：固定 raw YAML→strict GitHub→一般 validation→bundled merge→apply effective config→snapshot 的单一管线。
+早期处置：固定 raw YAML→strict GitHub→一般 validation→bundled merge→apply effective config→snapshot 的单一管线。该形状随后被 fresh re-review 证明仍会部分发布，已由 §6 的 prepare→no-throw transactional commit 两阶段事务取代，不是当前方案。
 
 进一步复核发现 `loadRawConfigFile()` 当前已调用 `validateConfig()`，所以 strict GitHub 不能简单放在该函数之后。规格要求拆开 raw YAML parser 与 Zod validation，在两者之间裁决原始 `github` 子树。
 
@@ -84,12 +84,12 @@ reviewer 指出 token bootstrap 不能只解析 `github`，否则 proxy 与其�
 已提交书面版本的独立复评又发现五处 major，并均纳入当前规格：
 
 1. 高层 `auth-oauth-device` 的内部 sleep 不可取消。改用低层 `oauth-methods` + 项目 abortable scheduler。
-2. 运行时 mtime reload 遇到无效 GitHub/YAML 时，既不能整体退 bundled defaults，也不能每请求抛错。改为 last-known-good + `pending-invalid`，修复文件后恢复一般 hot reload。
+2. 运行时 mtime reload 遇到无效 GitHub/YAML 时，既不能整体退 bundled defaults，也不能每请求抛错。首版改为 last-known-good + `pending-invalid`，但 fresh re-review 指出当前 `applyConfigToState()` 会先发布 cache、逐项修改 singleton，后面才可能因 generation 交叉约束抛错，仍会留下混合状态。最终规格改为两阶段配置事务：零副作用 `prepareConfigApplication()` 覆盖所有可能失败的 normalization/compile/cross-field check；no-throw `commitConfigApplication()` 延迟/coalesce listener；commit 后才发布 cache/content generation。PUT 在写盘前 prepare 最终 candidate，写盘后复用同一 plan。
 3. `debug info` 与 `debug models/usage` 不能共用含 device fallback 的 read-only policy。前者纯只读；后两者只接受 CLI/env/file token，缺失时提示先 login。
-4. URL parser 会把 `/a/..` 与编码 dot-segment 洗成 `/`。origin validator 必须先检查原始输入是否携带 path，再 canonicalize。
+4. URL parser 会把 `/a/..` 与编码 dot-segment 洗成 `/`。首轮修订只检查 `/ ? #`，复评又发现 WHATWG 会把反斜杠当 `/`，并静默移除 TAB/LF/CR。最终 validator 在 parser 前对所有 URL 字段拒绝 `\`、`U+0000–U+001F`、`U+007F`；origin 另外检查严格 raw path grammar，再 canonicalize。Node/Bun 探针对两种行为给出一致结果。
 5. 跨-authority 401 探针缺公共正向控制。脚本现先要求同一 token 的公共 `/user` 为 `200 + login`，再运行企业请求；结论限定为该枚 token 与该 tenant。
 
-这些修改属于重写后的新版本，必须再次交同一 fresh reviewer 复评，不能沿用上一版结论。
+这些修改属于重写后的新版本，已重新触发独立复评。原 fresh reviewer 的 transcript 被平台清理、无法恢复，因此由一名未参与前轮的新 reviewer 接手，只复核这五项修订；该 reviewer 首次长回复遇 API 中断后，按同一上下文分段续跑，最终逐项判定 OAuth、两阶段配置事务、debug/storage policy、raw URL guard 与实验证据均为 `FIXED`，未留 blocker/major。
 
 ## 7. 双向判据
 
