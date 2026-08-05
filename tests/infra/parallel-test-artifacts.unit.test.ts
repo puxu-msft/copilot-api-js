@@ -28,7 +28,7 @@ describe("parallel-test JUnit artifact parsing", () => {
 
   test("does not treat a passing suite's skipped assertion count as a whole-suite skip", () => {
     const identities = parseJUnit(
-      `<?xml version="1.0"?><testsuites><testsuite name="tests/passing.unit.test.ts" file="tests/passing.unit.test.ts" tests="1" skipped="0"><testcase classname="suite" name="passes" file="tests/passing.unit.test.ts"/></testsuite></testsuites>`,
+      `<?xml version="1.0"?><testsuites><testsuite name="tests/passing.unit.test.ts" file="tests/passing.unit.test.ts" tests="1" skipped="1"><testcase classname="suite" name="passes" file="tests/passing.unit.test.ts"/></testsuite></testsuites>`,
       "/repo",
     )
 

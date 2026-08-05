@@ -28,6 +28,7 @@
 - T0.0b union RED：将 parser 测试期望改为 `kind="suite"` 和 `kind="testcase"` 后失败，suite skipped count 为 0 且 testcase identity 缺 `kind`。GREEN：parser 以 testsuite 的真实 `file+name` 产生 suite variant、以 testcase 产生 testcase variant；`bun test tests/infra/parallel-test-artifacts.unit.test.ts` 为 `3 pass, 0 fail`，`bun run typecheck` 通过。
 - T0.0b false-red control：测试先构造含 testcase 的 passing suite；若仅依据 suite `skipped` attribute 会误报 suite skip。实现限定 suite variant 为 `tests="0"` 的真实 whole-suite skip；测试转为 `4 pass, 0 fail`，`bun run typecheck` 通过。
 - T0.0b multiplicity RED：将 whole-suite fixture 的 JUnit `skipped` 从 1 改为 2 后，parser 仍报告 count 1。GREEN：suite variant 的 `count` 和 aggregate `skipped` 读取 JUnit 的真实 `skipped` attribute；同一测试为 `4 pass, 0 fail`，`bun run typecheck` 与 Prettier 通过。未引入 testcase 哨兵字段。
+- T0.0b discrimination correction：真实 whole-suite 形态的冻结条件是 self-closing `<testsuite .../>`，不是推断 `tests="0"`。负控把 non-self-closing、含 testcase 的 suite 设为 `skipped="1"`，仍不得生成 suite variant。测试与 typecheck 通过。
 - 进程级 runner harness 曾尝试在临时 tree 执行真实 script；Bun 在 test worker 内嵌套同步 spawn 时超过 30 秒，属于 harness 资源模型失败，未提交也未保留。真实 full runner 命令先前已实际生成 shard JUnit 和 artifacts；后续 mutation 将按 §0.4e 在独立 `/tmp` repo/second worktree 进行。
 - 全套 runner 的性能失败调查：首次完整 unit runner 中 `canonical-performance.unit.test.ts:80` 观测 `sseRatio=8.5025`，高于 `<8`；立即单独复跑同一文件则 `sseRatio=6.8364` 且 `3 pass`。这已证明其具有时序／资源竞争敏感性，尚未完成 10～25 次确定性核验；不将其归因于本次 runner 改动，也不会放宽测试。
 - 尚未执行 mutation。每个 mutation 的注入／恢复证据会在对应 task 完成时追加。

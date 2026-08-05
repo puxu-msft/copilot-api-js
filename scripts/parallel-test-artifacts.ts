@@ -65,7 +65,7 @@ export function parseJUnit(xml: string, repoRoot: string): JUnitIdentities {
 
     const file = toRepoRelative(rawFile, repoRoot)
     files.add(file)
-    if (attribute(suite[1], "tests") !== "0" || attribute(suite[1], "skipped") === "0" || !rawName) continue
+    if (!suite[0].endsWith("/>") || attribute(suite[1], "skipped") === "0" || !rawName) continue
 
     const count = Number(attribute(suite[1], "skipped"))
     if (!Number.isSafeInteger(count) || count <= 0) continue
