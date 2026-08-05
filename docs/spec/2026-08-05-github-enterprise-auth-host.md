@@ -18,7 +18,7 @@ GitHub API: https://api.msft.ghe.com
 Copilot API:https://copilot-api.msft.ghe.com
 ```
 
-公共 GitHub token 不能跨 authority 使用。2026-08-05 的实测中，现有公共 token 请求 `https://api.msft.ghe.com/user`、`/copilot_internal/v2/token` 与 `/copilot_internal/user` 均得到 `401 Bad credentials`。因此，支持企业主机不仅要求改 URL，还要求把 endpoint identity、token persistence、CLI bootstrap 与 proxy 选择放进同一套契约。
+2026-08-05 的实测先确认现有 token 请求 `https://api.github.com/user` 得到 `200` 且含登录名；同一枚当时公共有效的 token 随后请求 `https://api.msft.ghe.com/user`、`/copilot_internal/v2/token` 与 `/copilot_internal/user` 均得到 `401 Bad credentials`。该单样本证明 token persistence 不能把公共文件无条件回退给这个 tenant；它不构成“所有公共 token 在协议上都不能跨 authority”的全称结论。因此，支持企业主机不仅要求改 URL，还要求把 endpoint identity、token persistence、CLI bootstrap 与 proxy 选择放进同一套契约。
 
 ## 2. 用户已裁决的范围
 
@@ -80,6 +80,8 @@ https://copilot-api.msft.ghe.com
 - hostname 规范化后严格属于 `*.ghe.com`，且不能等于 `ghe.com`。
 - 不含 credentials、path、query 或 fragment。
 - hostname 经 URL parser 做 IDNA 与小写规范化，并移除末尾的 DNS root dot。
+
+校验顺序必须先检查原始输入结构，再交给 URL parser canonicalize。对带 scheme 的输入，authority 后只允许空字符串或单个尾 `/`；对裸 hostname，hostname 后不得有 `/`、`?` 或 `#`。因此 `/a/..`、`/a/%2e%2e`、`/%2e/`、`//` 与重复 slash 即使会被 URL parser 归一化成 `/`，仍须按原始 path 被拒绝。完成这道检查后，才使用 URL parser 的 hostname/port/credentials 结果做 canonicalization。
 
 不满足条件时，token-aware 命令在任何 token 文件、proxy 或网络访问之前失败。不得静默退回公共 GitHub。
 
@@ -145,6 +147,15 @@ GitHub Web/API endpoint、authority 和 token path 在 token runtime 生命周�
 
 `loadConfig()` 与 `applyConfigToState()` 复用上述 raw parser、validation 和 merge primitives，并保留现有 mtime cache 与一般配置热重载。GitHub snapshot 不随热重载改变。
 
+启动与运行期采用不同失败反应，但共享同一 strict validator：
+
+- 首次启动或一次性 CLI 命令没有 last-known-good（最后已知有效）状态。YAML 或 `github` 子树无效时直接失败，不能回退 bundled defaults。
+- 运行中的进程发现用户文件 mtime 改变后，先在临时值上完成 raw parse、strict GitHub、一般 validation 与 bundled merge，全部成功才原子发布新的 effective config。若 YAML 或 `github` 无效，继续使用最后已知有效 effective config 与当前 endpoint snapshot，记录 `pending-invalid` 诊断；不得把全部用户配置退回 bundled defaults，也不得让每个请求重复抛错。
+- 对同一失败 mtime 只记录一次诊断。文件再次变化且恢复有效后，清除 `pending-invalid`，一般 hot-reload 字段从新 effective config 生效；GitHub endpoint 变化仍只标记 pending-restart，不替换当前 snapshot。
+- `PUT /api/config/yaml` 在写盘前走 hard-fail validation，因此非法 GitHub 配置不会落盘，也不会进入 `pending-invalid`。
+
+测试覆盖三段状态：有效配置生效→手工写入无效 GitHub/YAML 后 last-known-good 保持→修复文件后一般配置恢复热更新而 endpoint 仍待重启。
+
 ## 8. Token 按 authority 隔离
 
 公共 authority `https://github.com` 精确沿用现有 `PATHS.GITHUB_TOKEN_PATH`，不迁移、不复制，也不改变现有用户文件。
@@ -195,28 +206,35 @@ ensureAppDirectory
 → install token runtime(snapshot)
 ```
 
-storage action 按命令区分：
+storage action 与 provider policy 按命令区分：
 
-- `read-write`：准备 token 目录与文件，供 start/login/setup 使用。
-- `read-only`：只检查或读取现有文件，不创建空 token，供 debug 使用。
-- `delete`：直接删除当前 authority 文件，`ENOENT` 视为已退出；不得先创建再删除。
+- `login`：`write-on-success`。启动时不预创建空 token；device auth 成功后原子创建 authority 目录并以 `0600` 写 token。
+- `start`／`setup-*`：`read-or-write-on-device-success`。先只读 CLI/env/当前 authority 文件；若均无 token，可进入 device flow，并只在成功后原子创建目录写盘。
+- `debug info`：`read-only`。只报告当前 authority、token path 与文件是否存在，不构造会发网络请求的 token manager，也不创建空文件。
+- `debug models`／`debug usage`：`read-only-noninteractive`。只接受 CLI token、环境 token或当前 authority 文件，禁止回落 device provider；缺 token 时明确提示先运行 `copilot-api login`，不创建目录或文件。
+- `logout`：`delete`。直接删除当前 authority 文件，`ENOENT` 视为已退出；不得先创建再删除。
+
+File provider 不再依赖预创建的空文件：缺失与空文件都表示 unavailable。device auth persistence 使用临时文件加原子 rename，成功前不改变旧 token；创建目录和文件后设置 owner-only 权限。
 
 入口不得自行复制配置、proxy 或 runtime 装配步骤。`cacheVSCodeVersion()` 继续访问公共 `api.github.com/repos/microsoft/vscode`，因为它读取公共软件版本，不代表当前用户 identity。
 
-## 10. OAuth device flow 采用 Octokit
+## 10. OAuth device flow 采用 Octokit 低层 methods
 
-采用设计阶段核验时的最新稳定版本 `@octokit/auth-oauth-device@8.0.4`，并使用其依赖族兼容的 `@octokit/request`。实施时重新查询 latest stable，不从本规格猜测未来版本。
+采用设计阶段核验时的最新稳定版本 `@octokit/oauth-methods@6.0.3`，并使用其依赖族兼容的 `@octokit/request`。实施时重新查询 latest stable，不从本规格猜测未来版本。
 
-项目仍拥有 endpoint、authority、persistence、timeout 与 transport；Octokit 只拥有 OAuth device-flow 协议状态机：
+不采用 `@octokit/auth-oauth-device` 高层状态机。锁定版本的高层实现以不可注入、无 signal 的 `setTimeout` 递归等待；外层 `Promise.race` 只能让调用方先返回，不能清除内部 sleeper，不满足本项目“deadline 后无遗留 timer/promise”的生命周期契约。
 
-- 申请 device/user code。
-- 按服务端 `interval` 轮询。
-- 正确处理 HTTP 200 body 中的 `authorization_pending` 与 `slow_down`。
-- 返回 OAuth token 与 scopes。
+项目使用官方低层 `createDeviceCode` 与 `exchangeDeviceCode`，并自己拥有可取消调度：
 
-composition root 使用 `request.defaults({ baseUrl: snapshot.webBaseUrl, request: { fetch: tokenFetchAdapter } })` 构造 OAuth request。`tokenFetchAdapter` 转发到既有 `TokenFetch`／`upstreamFetch`，保留 HTTP/2、proxy、测试 mock 与错误观测 seam。
+- `createDeviceCode` 申请 device/user code并返回 `verification_uri`、`expires_in` 与初始 `interval`。
+- 项目展示 verification payload，并为该展示 callback 传入 cancellation signal；callback 必须响应取消。
+- 项目调用 `exchangeDeviceCode`。它把 HTTP 200 body 中的 `authorization_pending` 与 `slow_down` 暴露为带 `response.data.error` 的结构化错误。
+- `authorization_pending` 后用当前 interval 等待；`slow_down` 后先把后续 interval 增加 7 秒，再等待；其它协议错误立即传播。
+- 等待使用项目的 abortable scheduler，而不是裸 `setTimeout`；scheduler 同时服从 caller cancellation 与 `expires_in` 绝对 deadline。
+- 每次 fetch 另有 15 秒单请求 timeout，并与 caller/deadline signal 合并。
+- 成功、失败或取消后 scheduler、deadline timer 与在途 fetch 全部 settle，不允许 detached sleeper。
 
-Octokit 当前轮询实现没有以 `expires_in` 终止递归。项目 wrapper 必须拥有 device-flow deadline 与取消：从收到 verification payload 起计算绝对过期时间；deadline 同时覆盖 `onVerification` 等待、Octokit 内部 polling sleep 与每次 fetch，不能只等下一次请求才观察取消。adapter 将 caller signal、单请求 15 秒 timeout 与 flow deadline 合并；成功、失败或取消后清理 timer，不得遗留后台轮询。若 Octokit API 不暴露中断内部 sleep 的 seam，wrapper 必须用与 deadline 竞争的外层 promise 保证调用方按时返回，并让 adapter 拒绝 deadline 后的任何新请求。
+composition root 使用 `request.defaults({ baseUrl: snapshot.webBaseUrl, request: { fetch: tokenFetchAdapter } })` 构造 OAuth request。`tokenFetchAdapter` 转发到既有 `TokenFetch`／`upstreamFetch`，保留 HTTP/2、proxy、测试 mock 与错误观测 seam。Octokit 拥有 OAuth request/response 解析；项目拥有 endpoint、authority、persistence、poll cadence、deadline、取消与 transport。
 
 ## 11. Per-origin proxy policy
 
@@ -235,7 +253,7 @@ CLI --proxy
 
 ## 12. 错误处理与可观测性
 
-- 无效 `github` section、无法派生的 `enterprise_host`、无效 identity origin 或 endpoint URL：在网络与 token 文件 I/O 前失败，错误点名配置路径与被拒原因。
+- 首次启动与一次性命令遇到无效 `github` section、无法派生的 `enterprise_host`、无效 identity origin 或 endpoint URL：在网络与 token 文件 I/O 前失败，错误点名配置路径与被拒原因。运行中的 mtime reload 失败则遵守 §7 的 last-known-good／`pending-invalid` 契约。
 - device flow 使用服务端返回的 `verification_uri`，不硬编码展示 URL。
 - OAuth deadline、用户拒绝、过期、网络错误与协议错误保持不同错误原因；不得吞掉为“没有 token”。
 - 日志显示当前 authority、最终三个 base URL 和 token path；不显示 token、device code 或完整 OAuth 响应。
@@ -255,6 +273,7 @@ CLI --proxy
 ### 13.2 纯解析负样本
 
 - `enterprise_host` 使用 HTTP、非默认端口、credentials、path、query、fragment、裸 `ghe.com` 或非 `*.ghe.com`。
+- `enterprise_host` 与 Web base URL 的原始输入含可被 parser 洗掉的 path：`/a/..`、`/a/%2e%2e`、`/%2e/`、`/%2e%2e/`、`//` 或重复 slash。
 - Web base URL 含 path、query、fragment 或 credentials。
 - API/Copilot base URL 使用非 HTTP(S)、credentials、query 或 fragment。
 - route suffix 含 query、fragment、scheme 或 authority。
@@ -287,9 +306,10 @@ CLI --proxy
 
 ### 13.6 OAuth 与 transport
 
-- 使用真实 Octokit 状态机和受控 fetch boundary，先返回 HTTP 200 `authorization_pending`／`slow_down`，再成功；断言轮询次数、间隔与最终 token。
+- 使用真实 Octokit 低层 methods 和受控 fetch boundary，先返回 HTTP 200 `authorization_pending`／`slow_down`，再成功；断言项目 scheduler 的轮询次数、5→12 秒 interval 变化与最终 token。
 - adapter 捕获的 OAuth URL 全部落在 `webBaseUrl`，GitHub API client URL 全部落在 `apiBaseUrl`。
-- deadline、单请求 timeout、主动取消均停止后续请求且不遗留 timer。
+- fake clock 下分别把 deadline/主动取消停在 verification callback、pending sleep、slow-down sleep 与在途 fetch；每种场景均断言调用方 settle、后续请求为零、timer 为零。
+- 单请求 timeout 只终止该 fetch；若总 deadline 尚未到，协议策略可按错误类型决定是否继续，不能把两种 timeout 混为同一错误。
 - Node 与 Bun 双运行时执行 adapter smoke test。
 
 ### 13.7 Proxy 正反控制
@@ -320,9 +340,9 @@ mock 与匿名状态码不得冒充这条正向链成功。
 | `GET https://api.msft.ghe.com/user`，匿名 | `401 Must authenticate` | API host/path 存在，不证明有权 token 成功 |
 | `GET https://api.msft.ghe.com/copilot_internal/v2/token`，匿名 | `401 Must authenticate` | token exchange host/path 存在，不证明 exchange 成功 |
 | `GET https://copilot-api.msft.ghe.com/models`，匿名 | `403` | Copilot host/path 可达，不证明 entitlement 或 token 可用 |
-| 现有公共 token 请求企业 GitHub API | 三个请求均为 `401 Bad credentials` | token 不能跨 authority 使用 |
+| 同一枚 token 先过公共 `/user` 正向控制，再请求企业 GitHub API | 公共 `/user` 为 `200 + login`；企业三个请求均为 `401 Bad credentials` | 这枚当时公共有效的 token 被该 tenant 拒绝；不外推到所有 token |
 
-当前用户无权访问 `msft.ghe.com/login/device`，因此没有取得企业 GitHub token。成功 `/user`、token exchange 与 `/models` 仍是明确的未验证项。
+2026-08-05 本次尝试使用的账号当时无权访问 `msft.ghe.com/login/device`，因此没有取得企业 GitHub token。成功 `/user`、token exchange 与 `/models` 仍是明确的未验证项；账号权限以后可能变化，应以重新运行 live probe 的结果为准。
 
 ## 15. 不采用的方案
 
@@ -340,11 +360,11 @@ mock 与匿名状态码不得冒充这条正向链成功。
 
 ### 15.4 单一 token 文件
 
-不采用。公共 token 对企业 API 的实测 `401` 已证明跨 authority 共用会产生错误身份状态。
+不采用。同一枚 token 的公共 `/user` 正向控制为 `200 + login`，而该 tenant 的三条 API 请求均为 `401`；这已证明对当前 tenant 无条件回退公共 token 文件会产生错误身份状态。
 
 ### 15.5 继续完全手写 OAuth polling
 
-不采用。Octokit 已维护 `authorization_pending` 与 `slow_down` 协议状态；项目只补自己必须拥有的 endpoint adapter、deadline、transport 与 persistence。
+不采用。Octokit 低层 methods 已维护 OAuth request/response 解析并暴露结构化协议错误；项目只实现自己必须拥有且上游高层包无法取消的 scheduler、deadline、endpoint adapter、transport 与 persistence。
 
 ## 16. 结构性改进
 
@@ -368,7 +388,7 @@ mock 与匿名状态码不得冒充这条正向链成功。
 3. GHES 显式 Web/API 配置保留 `/api/v3` 等 base path。
 4. 无效 GitHub 配置在任何身份相关 I/O 前 fail-closed，其它配置继续既有容错。
 5. token、logout 与 debug 都按 authority 工作，不发生跨 authority fallback。
-6. OAuth 使用 Octokit 协议状态机，同时保留项目 transport、deadline 与取消契约。
+6. OAuth 使用 Octokit 低层 methods 解析协议，轮询由项目可取消 scheduler 驱动，并保留项目 transport、deadline 与零遗留 timer 契约。
 7. proxy 逐 origin 求值，并通过 env/config/NO_PROXY 双向控制。
 8. Node、Bun、backend 测试与架构守卫通过。
 9. 有权 live probe 若仍因账号权限阻塞，交付必须明确标记未验证，不得把 mock 写成全链成功。

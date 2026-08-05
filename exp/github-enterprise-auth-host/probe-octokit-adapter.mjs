@@ -1,7 +1,8 @@
-import { createOAuthDeviceAuth } from "@octokit/auth-oauth-device"
+import { createDeviceCode, exchangeDeviceCode } from "@octokit/oauth-methods"
 import { request } from "@octokit/request"
 
 const calls = []
+const delays = []
 let polls = 0
 
 const tokenFetchAdapter = async (url, init) => {
@@ -18,7 +19,7 @@ const tokenFetchAdapter = async (url, init) => {
         user_code: "ABCD-EFGH",
         verification_uri: "https://msft.ghe.com/login/device",
         expires_in: 899,
-        interval: 0,
+        interval: 5,
       }),
       { status: 200, headers: { "content-type": "application/json" } },
     )
@@ -38,7 +39,7 @@ const tokenFetchAdapter = async (url, init) => {
     }
     return new Response(JSON.stringify({ access_token: "enterprise-token", token_type: "bearer", scope: "read:user" }), {
       status: 200,
-      headers: { "content-type": "application/json" },
+      headers: { "content-type": "application/json", date: new Date(0).toUTCString() },
     })
   }
 
@@ -50,27 +51,47 @@ const oauthRequest = request.defaults({
   request: { fetch: tokenFetchAdapter },
 })
 
-let verification
-const auth = createOAuthDeviceAuth({
+const { data: verification } = await createDeviceCode({
   clientType: "oauth-app",
   clientId: "Iv1.b507a08c87ecfe98",
   scopes: ["read:user"],
   request: oauthRequest,
-  onVerification(value) {
-    verification = {
-      uri: value.verification_uri,
-      codePresent: Boolean(value.user_code),
-    }
-  },
 })
 
-const result = await auth({ type: "oauth" })
+let pollingInterval = verification.interval
+let token
+while (!token) {
+  try {
+    const result = await exchangeDeviceCode({
+      clientType: "oauth-app",
+      clientId: "Iv1.b507a08c87ecfe98",
+      code: verification.device_code,
+      request: oauthRequest,
+    })
+    token = result.authentication.token
+  } catch (error) {
+    const errorType = error?.response?.data?.error
+    if (errorType === "slow_down") {
+      pollingInterval += 7
+    } else if (errorType !== "authorization_pending") {
+      throw error
+    }
+    delays.push(pollingInterval)
+    // Production injects an abortable scheduler. The PoC records the delay and
+    // yields once so it remains deterministic and fast.
+    await Promise.resolve()
+  }
+}
+
 console.log(
   JSON.stringify({
-    verification,
+    verification: {
+      uri: verification.verification_uri,
+      codePresent: Boolean(verification.user_code),
+    },
     calls,
+    delays,
     polls,
-    tokenReturned: result.token === "enterprise-token",
-    scopes: result.scopes,
+    tokenReturned: token === "enterprise-token",
   }),
 )

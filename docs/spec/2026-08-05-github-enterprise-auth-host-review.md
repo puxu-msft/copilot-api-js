@@ -3,7 +3,8 @@
 - 日期：2026-08-05
 - 评审对象：[2026-08-05-github-enterprise-auth-host.md](./2026-08-05-github-enterprise-auth-host.md)
 - reviewer：独立 GPT reviewer，隔离 worktree，固定基线 `7dc82aaf1e84d3907a0e563377f9c6f656cfdaa9`
-- 最终结论：`PASS：可进入书面规格阶段。`
+- 前一书面版本结论：`PASS：可进入书面规格阶段。`
+- 当前状态：fresh review 后已重写 OAuth 调度、hot reload、debug policy、origin 校验与实验证据，等待同一 fresh reviewer 复评
 
 ## 1. 可核验命题
 
@@ -39,9 +40,9 @@
 - 两者使用同一个 injected request，正好应绑定 Web/OAuth origin。
 - `/user` 与 `/copilot_internal/*` 不交给该 OAuth request。
 
-随后在 Node 24.16.0 与 Bun 1.3.14 上运行受控 PoC。自定义 fetch adapter 捕获到一次 device-code 与两次 token poll，三个 URL 均为 `https://msft.ghe.com/...`；第一次 poll 返回 HTTP 200 body `slow_down`，库正确再次轮询并返回 token/scopes。
+随后在 Node 24.16.0 与 Bun 1.3.14 上运行受控 PoC。首版 PoC 证明高层包可经自定义 fetch adapter 把一次 device-code 与两次 token poll 全部送往 `https://msft.ghe.com/...`，并处理 HTTP 200 body `slow_down`。
 
-最终处置：采用 `@octokit/auth-oauth-device` 管理 OAuth 协议状态；项目继续管理三端点、authority、persistence、deadline、transport 与 proxy。
+书面规格 fresh review 随后发现，高层包的 polling sleep 使用不可注入、无 signal 的裸 `setTimeout`。外层 deadline race 无法清除 sleeper，与本项目“取消后零遗留 timer/promise”契约冲突。最终处置因此进一步收敛：采用 `@octokit/oauth-methods@6.0.3` 的 `createDeviceCode`／`exchangeDeviceCode` 维护 OAuth wire 解析，由项目自己的 abortable scheduler 处理 `authorization_pending`、`slow_down` cadence、deadline 与取消；项目继续管理三端点、authority、persistence、transport 与 proxy。修订版 PoC 在 Node/Bun 上验证低层 methods 同样只访问 Web origin，并把 `slow_down` 暴露给项目 scheduler。
 
 ## 4. 复评发现与处置
 
@@ -78,7 +79,19 @@ reviewer 指出 token bootstrap 不能只解析 `github`，否则 proxy 与其�
 
 最终原文：`PASS：可进入书面规格阶段。`
 
-## 6. 双向判据
+## 6. 书面规格 fresh review 的新增处置
+
+已提交书面版本的独立复评又发现五处 major，并均纳入当前规格：
+
+1. 高层 `auth-oauth-device` 的内部 sleep 不可取消。改用低层 `oauth-methods` + 项目 abortable scheduler。
+2. 运行时 mtime reload 遇到无效 GitHub/YAML 时，既不能整体退 bundled defaults，也不能每请求抛错。改为 last-known-good + `pending-invalid`，修复文件后恢复一般 hot reload。
+3. `debug info` 与 `debug models/usage` 不能共用含 device fallback 的 read-only policy。前者纯只读；后两者只接受 CLI/env/file token，缺失时提示先 login。
+4. URL parser 会把 `/a/..` 与编码 dot-segment 洗成 `/`。origin validator 必须先检查原始输入是否携带 path，再 canonicalize。
+5. 跨-authority 401 探针缺公共正向控制。脚本现先要求同一 token 的公共 `/user` 为 `200 + login`，再运行企业请求；结论限定为该枚 token 与该 tenant。
+
+这些修改属于重写后的新版本，必须再次交同一 fresh reviewer 复评，不能沿用上一版结论。
+
+## 7. 双向判据
 
 评审要求测试同时防两类失败：
 

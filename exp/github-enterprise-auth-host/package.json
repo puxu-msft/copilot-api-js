@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "dependencies": {
-    "@octokit/auth-oauth-device": "8.0.4",
+    "@octokit/oauth-methods": "6.0.3",
     "@octokit/request": "10.0.13"
   }
 }
