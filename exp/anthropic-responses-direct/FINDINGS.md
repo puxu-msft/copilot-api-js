@@ -81,7 +81,7 @@
 
 - **Phase 5 前向 reasoning**：捕 **`output_item.done`/completed 的 encrypted_content**（非现有 CC 桥的 added），回喂上游续接（无 400 风险）。
 - **Phase 5 反向 reasoning**：新建「真 Claude signature ↔ responses reasoning item」primitive；端到端 round-trip 待桥就位复验；Claude 上游侧靠真签名不篡改过 quarantine。
-- **Phase 6 server-tool**：请求侧 anthropic web_search → responses web_search_preview 透传可行；anthropic-facing 结果渲染**降级 tool_use/text**（web_search_call 无 encrypted_content、合成撞 Anthropic 400 墙）。
+- **Phase 6 server-tool**：请求侧 anthropic web_search → Responses 裸 builtin `{type:"web_search"}` 透传可行；anthropic-facing 结果渲染**降级 tool_use/text**（web_search_call 无 encrypted_content、合成撞 Anthropic 400 墙）。
 
 ## 4141 保护
 测试服务器起在 **4157**、独立 history.db，实测后按 PID 精确清理；4141 主服务器全程未 kill、复核 healthy。
