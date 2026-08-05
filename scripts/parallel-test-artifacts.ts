@@ -1,10 +1,20 @@
-export interface SkippedIdentity {
+export interface TestcaseSkippedIdentity {
+  kind: "testcase"
   file: string
   classname: string
   name: string
   ordinal: number
   count: number
 }
+
+export interface SuiteSkippedIdentity {
+  kind: "suite"
+  file: string
+  suite_name: string
+  count: number
+}
+
+export type SkippedIdentity = TestcaseSkippedIdentity | SuiteSkippedIdentity
 
 export interface JUnitIdentities {
   files: Array<string>
@@ -29,8 +39,14 @@ function toRepoRelative(file: string, repoRoot: string): string {
   return unescaped.startsWith(prefix) ? unescaped.slice(prefix.length) : unescaped
 }
 
-function identityKey(file: string, classname: string, name: string, ordinal?: number): string {
-  return [file, classname, name, ordinal].filter((part) => part !== undefined).join(IDENTITY_SEPARATOR)
+function testcaseKey(file: string, classname: string, name: string, ordinal?: number): string {
+  return ["testcase", file, classname, name, ordinal].filter((part) => part !== undefined).join(IDENTITY_SEPARATOR)
+}
+
+function skippedIdentityKey(identity: SkippedIdentity): string {
+  return identity.kind === "testcase"
+    ? testcaseKey(identity.file, identity.classname, identity.name, identity.ordinal)
+    : ["suite", identity.file, identity.suite_name].join(IDENTITY_SEPARATOR)
 }
 
 export function parseJUnit(xml: string, repoRoot: string): JUnitIdentities {
@@ -44,7 +60,16 @@ export function parseJUnit(xml: string, repoRoot: string): JUnitIdentities {
   // suite-level file attribute is therefore part of the runtime file identity set.
   for (const suite of xml.matchAll(/<testsuite\b([^>]*)\/?\>/g)) {
     const rawFile = attribute(suite[1], "file")
-    if (rawFile) files.add(toRepoRelative(rawFile, repoRoot))
+    const rawName = attribute(suite[1], "name")
+    if (!rawFile) continue
+
+    const file = toRepoRelative(rawFile, repoRoot)
+    files.add(file)
+    if (attribute(suite[1], "skipped") === "0" || !rawName) continue
+
+    const suiteIdentity: SuiteSkippedIdentity = { kind: "suite", file, suite_name: unescapeXml(rawName), count: 1 }
+    skipped.set(skippedIdentityKey(suiteIdentity), suiteIdentity)
+    skippedCount += 1
   }
 
   for (const testcase of xml.matchAll(/<testcase\b([^>]*?)(?:\/>|>([\s\S]*?)<\/testcase>)/g)) {
@@ -59,13 +84,14 @@ export function parseJUnit(xml: string, repoRoot: string): JUnitIdentities {
     const classname = unescapeXml(rawClassname)
     const name = unescapeXml(rawName)
     files.add(file)
-    const key = identityKey(file, classname, name)
+    const key = testcaseKey(file, classname, name)
     const ordinal = (ordinals.get(key) ?? 0) + 1
     ordinals.set(key, ordinal)
 
     if (/<skipped\b/.test(body)) {
       skippedCount += 1
-      skipped.set(identityKey(file, classname, name, ordinal), { file, classname, name, ordinal, count: 1 })
+      const testcaseIdentity: TestcaseSkippedIdentity = { kind: "testcase", file, classname, name, ordinal, count: 1 }
+      skipped.set(skippedIdentityKey(testcaseIdentity), testcaseIdentity)
     } else {
       executed += 1
     }
@@ -75,9 +101,7 @@ export function parseJUnit(xml: string, repoRoot: string): JUnitIdentities {
     files: [...files].sort(),
     executed,
     skipped: skippedCount,
-    skippedIdentities: [...skipped.values()].sort((a, b) =>
-      identityKey(a.file, a.classname, a.name, a.ordinal).localeCompare(identityKey(b.file, b.classname, b.name, b.ordinal)),
-    ),
+    skippedIdentities: [...skipped.values()].sort((a, b) => skippedIdentityKey(a).localeCompare(skippedIdentityKey(b))),
   }
 }
 

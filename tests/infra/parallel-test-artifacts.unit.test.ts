@@ -22,6 +22,8 @@ describe("parallel-test JUnit artifact parsing", () => {
     )
 
     expect(identities.files).toEqual(["tests/native.unit.test.ts"])
+    expect(identities.skipped).toBe(1)
+    expect(identities.skippedIdentities).toEqual([{ kind: "suite", file: "tests/native.unit.test.ts", suite_name: "tests/native.unit.test.ts", count: 1 }])
   })
 
   test("assigns ordinal and skip identity from real JUnit testcase rows", () => {
@@ -32,6 +34,6 @@ describe("parallel-test JUnit artifact parsing", () => {
 
     expect(identities.executed).toBe(1)
     expect(identities.skipped).toBe(1)
-    expect(identities.skippedIdentities).toEqual([{ file: "tests/a.unit.test.ts", classname: "suite", name: "same", ordinal: 2, count: 1 }])
+    expect(identities.skippedIdentities).toEqual([{ kind: "testcase", file: "tests/a.unit.test.ts", classname: "suite", name: "same", ordinal: 2, count: 1 }])
   })
 })
