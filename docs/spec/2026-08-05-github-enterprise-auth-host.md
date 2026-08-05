@@ -296,10 +296,20 @@ CLI --proxy
 
 对第 9 节列出的每个 token-aware 命令，断言最终 URL、authority、token path 与 proxy decision。期望值由测试独立写死，不调用生产 resolver 生成 expected。
 
-测试必须能抓住两类 mutation：
+provider policy 另有独立的无 token 入口矩阵，不能用有 token 的成功路径代替：
+
+- `debug info` 在 CLI/env/file token 均缺失时仍成功输出 authority、token path 与 `tokenExists=false`；断言 token manager 构造次数、device provider 调用、network 请求和文件写入全部为零。
+- `debug models` 与 `debug usage` 在 CLI/env/file token 均缺失时以确定性非零退出码失败，错误明确提示先运行 `copilot-api login`；断言 device provider、OAuth URL、network 请求和文件写入全部为零。
+- 同两条 debug 命令在 CLI、env、当前 authority file 三种 token 来源下分别成功，证明禁止 device fallback 没有误伤合法非交互来源。
+- `login`／`start`／`setup-*` 的无 token 对照仍允许 device provider，证明 provider restriction 只作用于 debug policy，而非全局删除交互能力。
+
+测试必须能抓住以下 mutation：
 
 1. 整个 bootstrap 被绕过。
 2. 只有一个入口漏接 bootstrap。
+3. `debug info` 偷偷构造或调用 network-capable manager。
+4. `debug models/usage` 重新启用 device fallback。
+5. debug 的非交互 provider restriction 被错误扩散到 login/start/setup。
 
 ### 13.5 Token persistence
 

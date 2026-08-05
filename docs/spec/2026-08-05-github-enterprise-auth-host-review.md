@@ -4,7 +4,8 @@
 - 评审对象：[2026-08-05-github-enterprise-auth-host.md](./2026-08-05-github-enterprise-auth-host.md)
 - reviewer：独立 GPT reviewer，隔离 worktree，固定基线 `7dc82aaf1e84d3907a0e563377f9c6f656cfdaa9`
 - 前一书面版本结论：`PASS：可进入书面规格阶段。`
-- 当前状态：fresh review 的五项 major 已逐项修复并复核通过；等待修订提交的合并态一致性评审
+- 最终状态：合并态评审与最后一项 debug 负向验收复核均通过
+- 最终结论：`PASS：规格可交用户审阅`
 
 ## 1. 可核验命题
 
@@ -89,9 +90,22 @@ reviewer 指出 token bootstrap 不能只解析 `github`，否则 proxy 与其�
 4. URL parser 会把 `/a/..` 与编码 dot-segment 洗成 `/`。首轮修订只检查 `/ ? #`，复评又发现 WHATWG 会把反斜杠当 `/`，并静默移除 TAB/LF/CR。最终 validator 在 parser 前对所有 URL 字段拒绝 `\`、`U+0000–U+001F`、`U+007F`；origin 另外检查严格 raw path grammar，再 canonicalize。Node/Bun 探针对两种行为给出一致结果。
 5. 跨-authority 401 探针缺公共正向控制。脚本现先要求同一 token 的公共 `/user` 为 `200 + login`，再运行企业请求；结论限定为该枚 token 与该 tenant。
 
-这些修改属于重写后的新版本，已重新触发独立复评。原 fresh reviewer 的 transcript 被平台清理、无法恢复，因此由一名未参与前轮的新 reviewer 接手，只复核这五项修订；该 reviewer 首次长回复遇 API 中断后，按同一上下文分段续跑，最终逐项判定 OAuth、两阶段配置事务、debug/storage policy、raw URL guard 与实验证据均为 `FIXED`，未留 blocker/major。
+这些修改属于重写后的新版本，已重新触发独立复评。原 fresh reviewer 的 transcript 被平台清理、无法恢复，因此由一名未参与前轮的新 reviewer 接手，只复核这五项修订；该 reviewer 首次长回复遇 API 中断后，按同一上下文分段续跑，最终逐项判定 OAuth、两阶段配置事务、debug/storage policy、raw URL guard 与实验证据均为 `FIXED`。合并态评审随后发现 debug policy 虽有行为契约，却缺少无 token 分支的独立验收；最终规格补上 `debug info` 零 manager/network/write、`debug models/usage` 零 device fallback、合法 CLI/env/file 正样本与反向 mutation，闭合最后一处 criteria seam。
 
-## 7. 双向判据
+## 7. 合并态评审与最终收口
+
+合并态 reviewer 对固定提交 `b4864d8c5f400d883f4d5a6f30251a8c687206d3` 的主规格、评审记录与实验产物做整体对账。两阶段配置事务、PUT、OAuth scheduler、raw URL guard、per-origin proxy 与实验证据相互一致；唯一剩余 major 是 debug provider policy 缺少无 token 分支的可判别验收。
+
+规格随后补充：
+
+- `debug info` 无 token 时断言 manager、device、network、write 全为零。
+- `debug models/usage` 无 token 时断言非零退出、login 提示以及 device/OAuth/network/write 全为零。
+- CLI、env、current-authority file 三个成功样本防 false-red。
+- login/start/setup 的 device 成功样本与三类 mutation 防 provider restriction 误扩散。
+
+同一 reviewer 复核后判定该补丁同时覆盖正确状态与错误状态，最终原文为：`PASS：规格可交用户审阅`。
+
+## 8. 双向判据
 
 评审要求测试同时防两类失败：
 
