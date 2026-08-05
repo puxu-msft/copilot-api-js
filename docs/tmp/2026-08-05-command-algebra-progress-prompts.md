@@ -18,10 +18,17 @@ session_id: 046d7295-e5ce-470b-a284-c721c6ce1cb8
 - [x] `prompts/README.md`：导航、阶段依赖 DAG、可并行边界、共享文件／合并顺序、通用红线
 - [x] Commit -1 self-contained prompt（T0.0a/b/c/e；独立 worktree；mutation hard rule；合 master）
 - [x] post-merge entry-evidence preflight prompt（A／15 runs／manifest／P／T0.0d）
-- [ ] Commit 0～8 共 9 份 self-contained prompt（Commit 0～8 已落盘，尚需人口对账/通读）
+- [x] Commit 0～8 共 9 份 self-contained prompt
 - [x] 每份 prompt 引用正确的 design／plan／traceability／progress 路径，含目标、锚点、TDD、门、提交指引、红线指针
-- [ ] prompt task 人口与 `cutover-plan.md` 双向对账：**不写死数量；checker 从 plan 解析实际集合（当前 83）**，每 task 恰归一个执行 prompt
-- [ ] `traceability-check.py` rc=0，prompt 专用 task-population checker rc=0（checker 是 `exp/` 代码，超出本 agent 仅写 Plan/kick-off 边界；README 已写实现契约，交协调者/实现侧落地）
+- [x] prompt task 人口与 `cutover-plan.md` 双向对账：**不写死数量；checker 从 plan 解析实际集合（当前输出 83）**，每 task 恰归一个执行 prompt
+- [x] `traceability-check.py` rc=0，prompt 专用 task-population checker rc=0（checker 位于 `exp/inter-block-anchor-allocator/prompt-task-check.py`；支持 `PLAN=`/`PROMPTS=` 副本正控）
+
+## 完成前核验
+
+- prompt checker 正样本原样输出：`plan tasks: 83`、`prompt tasks: 83`、`duplicates: none`、`orphans: none`、`unassigned: none`、`prompt-task-check: OK`。
+- suffix mutation：`T4.0d→T4.0z` 明确报 orphan `T4.0z` + unassigned `T4.0d`；删除 `T0.0e` 明确报 unassigned `T0.0e`。两条都在 `/tmp` 副本运行，真实 prompts 未被改。
+- 全部 12 prompt（README + -1 + preflight + C0…C8）完整通读；修正 README 标题为固定骨架的 `## 红线（集中）`。所有 prompt residue scan 0、`git diff --check` 0。
+- **未验证**：prompt 只是派发件，未实际执行任何 phase；其中的 `file:line`/当前状态锚在已放行 plan，执行前仍须按各 prompt 的「引用 plan 锚点表」重取。O-6 真请求近期 HTTP 500，prompts 不声称其完整 PASS，仅引用已验证的结构化 evidence 路径。
 
 ## 本轮进度
 

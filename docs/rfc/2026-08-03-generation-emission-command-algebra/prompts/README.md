@@ -57,7 +57,7 @@ flowchart LR
 | Commit 5 | `packages/telemetry/**`、`src/lib/observability/**`、History、`ui-v4/` re-export/tests | Q1 前不可动；先明确 schema/查询裁决 |
 | Commit 6～8 | legacy surfaces、architecture guards、goldens、README/DESIGN/plan/ADR references | 先删定义再审 golden，最后同步文档；不要倒序 |
 
-## 集中红线
+## 红线（集中）
 
 1. **只执行已放行的 plan。** 不新增签名、不重裁 Q1/Q2/#5/#6、不把已知边界伪装成机械闭合；签名三问答不上就按 plan 停门，交付已完成部分与具体缺口。
 2. **Commit -1 与 post-merge preflight 不得因果倒置。** `T0.0a/b/c/e` 在 Commit -1 生产 runner oracle/validator；`T0.0d` 只在 P 后消费真实 A/P/15 artifacts。
@@ -72,12 +72,17 @@ flowchart LR
 
 ## Prompt task-population checker 契约
 
-`exp/inter-block-anchor-allocator/prompt-task-check.py` 是本层要求的机械 checker，但**本 prompt author 的写入边界只允许 Plan/kick-off 文档，不能创建 `exp/` 代码文件**。协调者/实现侧应按下列契约创建并在 prompts 定稿前执行：
+`exp/inter-block-anchor-allocator/prompt-task-check.py` 是本层的机械 checker，已随 prompts 落盘。运行：
+
+```bash
+cd /home/xp/src/copilot-api-js && python3 exp/inter-block-anchor-allocator/prompt-task-check.py
+```
 
 - 从 `../cutover-plan.md` 解析完整 grammar `T\d+\.\d+[a-z]?` 的 task **集合**；
-- 从 `prompts/commit-minus-1.md`、`post-merge-preflight.md`、`commit-0.md`…`commit-8.md` 的「本 phase task 集合」唯一 ID 行解析 task 集合；
+- 从 `prompts/commit-minus-1.md`、`post-merge-preflight.md`、`commit-0.md`…`commit-8.md` 的「本 phase task 集合」双 marker 解析 task 集合；marker 两份不一致也红，但每 prompt 只计一份归属；
 - 要求集合精确相等、每个 task 在 prompts 恰出现一次、无孤儿 prompt task；
-- 输出 `plan tasks: N`、`prompt tasks: N`、`duplicates: none`、`orphans: none`；N 从 plan 派生，**不得硬编码 83**；
-- 对字母后缀 task（如 `T0.0a`／`T4.0d`）做正控：改为不存在 suffix 或删除一个 suffix task 必须报目标 ID；未变异正确集合必须绿。
+- 输出 `plan tasks: N`、`prompt tasks: N`、`duplicates: none`、`orphans: none`、`unassigned: none`；N 从 plan 派生，**不得硬编码 83**；
+- 支持 `PLAN=`／`PROMPTS=` 覆盖路径，在副本上跑 mutation；
+- 已实跑字母后缀正控：`T4.0d→T4.0z` 报 `orphan prompt tasks: ['T4.0z']` + `unassigned plan tasks: ['T4.0d']`；删除 `T0.0e` 报 `unassigned plan tasks: ['T0.0e']`；未变异正确集合绿。
 
-在 checker 到位前，prompt 人口的机械门尚未完成；不许用「人工数过」冒充通过。
+不许用「人工数过」冒充通过。

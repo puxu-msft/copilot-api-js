@@ -1,0 +1,55 @@
+# Kick-off：Commit 8 —— 文档同步与 merged-state 收口
+
+<!-- prompt-task-ids: T8.1 T8.2 T8.3 T8.4 T8.5 T8.6 T8.7 -->
+
+## 背景 + 为什么
+
+Commit 8 只在 runtime/API population/goldens 已稳定后同步 live docs、supersede 关系、deferred items 与 merged-state review。文档不承担推迟迁移；也不能用文档重写替代未裁用户决定。
+
+## 必读
+
+- `../design.md`：§6、§7.11、§8、§9.1 Q2、§10.4。
+- `../cutover-plan.md`：Commit 8、§0.4d、§11 状态表。
+- `../traceability.md`：T8.* 反向出处。
+- `docs/plan/2026-07-27-inter-block-anchor-allocator/HANDOVER.md`：上游/已裁决。
+- `README.md` 与进度文件。
+
+## 前置/停点
+
+- Commit 7 已收口。
+- Q2（ADR richest-data-flow owner-minted provenance）在此之前停：默认不改 ADR；未经用户明确同意不得改 ADR D2。
+- 所有 §11 未裁项应已在各自触发点裁掉；T8.7 要独立核对这一点。
+
+## 改动锚点
+
+| 文档 | 用途 |
+|---|---|
+| `README.md` | C1～C11 live contract |
+| `docs/DESIGN.md` | 活架构现状/类型架构 |
+| `docs/plan/2026-07-27-inter-block-anchor-allocator/` | M2～M4 supersede、M5～M8 重锚 |
+| `docs/todo/deferred-backlog.md` | §8 范围外 deferred |
+| `docs/decisions/2026-07-05-richest-data-flow.md` | **仅 Q2 用户同意后**可编辑 |
+
+## 本 phase task 集合（唯一归属）
+
+<!-- prompt-task-ids: T8.1 T8.2 T8.3 T8.4 T8.5 T8.6 T8.7 -->
+
+- `T8.1`：README C1～C11 + RFC R-6 分段文字同步；辅助门同样阻断交付的措辞对齐。
+- `T8.2`：anchor 精确帧序作为 C1～C11 外独立契约。
+- `T8.3`：DESIGN 活架构/类型架构同步。
+- `T8.4`：旧 plan supersede，不删除 O-9/后续路线。
+- `T8.5`：权威文档 manifest + 契约轴 disposition。
+- `T8.6`：telemetry/History docs 与 deferred items。
+- `T8.7`：独立 merged-state review，核 §11 触发点裁决、doc↔code、commit↔plan。
+
+## 验收 gate
+
+R-11/O-6 与共同门；完成判定按 plan §10 逐项 verdict/证据，不能用一条全套绿折叠。生产变更判据按 plan §0.4a。
+
+## 提交指引
+
+精确 pathspec、Conventional Commit、无署名、绝不 push；文档/progress 同 phase commit。ADR 若未获用户同意，不把「默认 B」写成用户裁决。
+
+## 红线
+
+见 `README.md`。特别禁止：擅改 ADR D2、把 supersede 写成删除、声称「除列举外无冲突」却未做 T8.5 manifest 审计。
