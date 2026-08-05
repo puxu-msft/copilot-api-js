@@ -18,8 +18,9 @@ session_id: 046d7295-e5ce-470b-a284-c721c6ce1cb8
 
 ## 剩余项
 
-- [ ] **第三层首轮 blocker 回流（主会话接手）**：新增 post-merge evidence 生产 task `T0.0f`，解除 `T0.0d ↔ T0.1` 的 15-run 因果环；同步 matrix/prompts/checkers。原 planner transcript 已被平台销毁（`SendMessage` 返回 `No transcript found`），不是主动换 agent。
-- [ ] **第三层首轮 plan 缺陷**：冻结 validator CLI/schema、正式 §0.4f heading、修完整 HANDOVER git path；Q5 边界改为 T4.2 publish 前。
+- [x] **第三层首轮 blocker 回流（主会话接手）**：新增 post-merge evidence 生产 task `T0.0f`，解除 `T0.0d ↔ T0.1` 的 15-run 因果环；同步 plan/matrix。原 planner transcript 已被平台销毁（`SendMessage` 返回 `No transcript found`），不是主动换 agent。**prompts/checker 尚待下一提交同步，当前 prompt checker 按预期只报 unassigned T0.0f。**
+- [x] **第三层首轮 plan 缺陷**：冻结 `scripts/validate-entry-evidence.ts` CLI + pointer/manifest v1 schema + exit contract；正式 §0.4f heading；修完整 HANDOVER git path；Q5 边界改为 T4.2 publish 前。
+- [ ] **第三层纯 prompt 整改**：T0.0f 归 preflight prompt；统一仓库根路径；同步 §0.4f/validator CLI；README DAG 后继链；Q1/Q2/#5/#6 首裁措辞；Q2 与 ADR D2 分拆；可执行命令；checker 改结构化 task definition SSOT。
 - [x] Commit 0～8 的逐 task TDD 步骤（每 task 一个 `T<commit>.<n>` id）—— task 总数不写死，以 checker 集合为 SSOT（新增 T0.0f 后会派生变化）
 - [x] factory／锚点表 —— **整改轮已全部重锚合并后 master `80a4b6fc`，「树」列删除**
 - [x] 回填矩阵 `traceability.md`，消掉全部 `_TBD_`

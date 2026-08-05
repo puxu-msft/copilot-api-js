@@ -451,7 +451,7 @@ T0.0a、T0.0b、T0.0c 的正控会**主动改坏 runner／test**；T0.0e 的正�
 | **T0.0a** | 从**独立磁盘 manifest** 枚举 `tests/**/*.{unit,it,http}.test.ts`，再让真实 shard 执行产出 file-level JUnit identity。**先在 `balance()` 之后、spawn 之前从某 bucket 删一个文件**——必须报出**缺失的具体文件名**。⚠️ 打在 `discover()` 的 mutation 不够，它抓不到这层。 | 每一次门运行的实际 shards 各自产 JUnit，runner 合并 file identity；**每次**与磁盘 manifest 双向比较，缺／多任一文件即 rc≠0。正确状态绿。 |
 | **T0.0b** | skipped identity multiset：整文件 skip、native 不可用 skip、todo 文件各一；**mutation 把一条 runnable test 改 skip**，必须报它的 `file+classname+name+ordinal`，不许只报少了一个数。 | 输出 `executed`／`skipped` 两数与 skipped identity multiset；native history-search 这类环境 skip 独立具名 disposition。 |
 | **T0.0c** | runner 自身 mutation control：把 JUnit reporter 只加在 `refreshTimings()` 而不加真实 shards → file identity 门必须红；把 JUnit 合并器丢一个 shard → 门必须红。 | 真实 shard 的 identity 被收集，mutation 都红；正确 full run 绿。 |
-| **T0.0e** | **实现并版本化 entry-evidence validator**：用**合成 fixtures**构造临时 git 图、合成 A/P、唯一 pointer block、树外 manifest、15 原始 logs/JUnit。先跑完整 fixture 绿；再跑 `EV-01`…`EV-25`，每个 action 只改一个合成输入，验证稳定 fail code/message。**不需要未来真实 A/P。** | validator 随 Commit -1 进入版本控制并通过自身正/负控；它的输入契约固定为 `ENTRY_SHA`／`POINTER_SHA`／versioned pointer block／manifest／raw artifacts。T0.0d 只**消费**这个已交付 validator。 |
+| **T0.0e** | **按 §0.4f 冻结接口实现并版本化 `scripts/validate-entry-evidence.ts`**：用**合成 fixtures**构造临时 git 图、合成 A/P、唯一 pointer block、树外 manifest、15 原始 logs/JUnit。先跑完整 fixture 绿；再通过同一 CLI 跑 `EV-01`…`EV-25`，每个 action 只改一个合成输入，验证稳定 exit code 与 `FAIL C<n>:` message。**不需要未来真实 A/P。** | validator 随 Commit -1 进入版本控制并通过自身正/负控；CLI、pointer block v1、manifest v1、退出码契约**只能来自 §0.4f**，不得由实现者另选 env/flags/schema。T0.0d 只用同一 CLI **消费**真实 evidence。 |
 
 > ⚠️ **T0.0d 不属于 Commit -1**：它需要 A／15 logs／pointer P，而这些输入只在 Commit -1 合 master之后才存在。把它列为 Commit -1 自己的收口门，等于**用未来输入验过去 commit**——因果不可达。它已移到 §0.4f 的 **post-merge entry-evidence preflight**；**validator 本体由 T0.0e 在 Commit -1 实现/版本化**。
 
@@ -478,6 +478,63 @@ T0.0a、T0.0b、T0.0c 的正控会**主动改坏 runner／test**；T0.0e 的正�
 
 ### Post-merge entry-evidence preflight —— **P 后、Commit 0 前；不是 Commit -1 收口门，也不是 cutover commit**
 
+### 0.4f Post-merge entry-evidence preflight —— **validator 接口与 evidence schema 的唯一事实源**
+
+**版本化 validator 路径与 CLI（由 T0.0e 在 Commit -1 实现，T0.0d 原样消费；prompts 不得另造接口）**：
+
+```bash
+cd /home/xp/src/copilot-api-js && bun run scripts/validate-entry-evidence.ts \
+  --entry-sha "$ENTRY_SHA" \
+  --pointer-sha "$POINTER_SHA" \
+  --tree "$TREE" \
+  --handover docs/plan/2026-07-27-inter-block-anchor-allocator/HANDOVER.md
+```
+
+- `ENTRY_SHA`／`POINTER_SHA` 必须是完整 40 位小写 SHA；`TREE` 是从 `ENTRY_SHA` 显式创建的 cutover worktree 绝对路径。
+- validator **只能**从 `git show "$POINTER_SHA":docs/plan/2026-07-27-inter-block-anchor-allocator/HANDOVER.md` 读取 pointer，禁止简写成不存在的 `:HANDOVER`、读取工作区文件或用 blame 猜 P。
+- 稳定退出码：`0`=全部通过；`2`=CLI／schema 错；`3`=pointer／Git 图错（C1～C4）；`4`=manifest 缺失／hash 错（C5）；`5`=run artifact 数量／hash 错（C6）；`6`=JUnit identity／skip／executed 错（C7～C8）；`7`=command／intent／verdict／派生 artifact hash 错（C9～C10）。stderr 必须以对应的 `FAIL C<n>:` 稳定前缀开头（见 EV 表），不得只给通用 `validation failed`。
+
+**HANDOVER pointer block v1 的完整语法**（全文恰好一块；值均单行、不加引号）：
+
+```text
+<!-- entry-evidence-pointer:v1 -->
+entry_sha=<40位小写SHA A>
+manifest_path=<树外 evidence-manifest.json 的绝对路径>
+manifest_sha256=<64位小写hex>
+archive_path=<可为空；归档副本不定义 entry>
+<!-- /entry-evidence-pointer:v1 -->
+```
+
+**`evidence-manifest.json` v1 的完整字段**（额外字段 fail-closed，避免两个执行者扩出不同协议）：
+
+```json
+{
+  "schema_version": 1,
+  "measured_sha": "<A>",
+  "evidence_timing": "closeout",
+  "claims_current_head": true,
+  "out_dir": "<绝对树外路径>",
+  "canonical_command": "<规范化后的完整命令>",
+  "disk_manifest": { "path": "<绝对路径>", "sha256": "<hex>" },
+  "runtime_identity_manifest": { "path": "<绝对路径>", "sha256": "<hex>" },
+  "skipped_multiset": { "path": "<绝对路径>", "sha256": "<hex>" },
+  "runs": [
+    {
+      "ordinal": 1,
+      "log_path": "<绝对路径>",
+      "log_sha256": "<hex>",
+      "junit_path": "<绝对路径>",
+      "junit_sha256": "<hex>",
+      "executed": 0,
+      "skipped": 0,
+      "verdict": "green"
+    }
+  ]
+}
+```
+
+`runs` **恰 15 项**，`ordinal` 恰为 1～15 且不重复。file identity 与 skipped identity 不信 manifest 摘要，由 validator 从每份原始 JUnit 重算；`canonical_command`、三 intent 字段与 verdict 从每份原始 log 重取。pointer／manifest／raw artifacts 任一缺失即 fail-closed。
+
 **因果相位（已裁 Git 图）**：Commit -1 在独立树收口 → 合 master 得 **A** → 从 A 建 cutover worktree → **T0.0f 在 A 上生成树外 15-run/JUnit／manifest，并在 master 提交 pointer P** → **T0.0d 消费这些真实 evidence** → 才允许执行树进入 T0.1／Commit 0。
 
 > ⚠️ **T0.0d 不能列在 Commit -1 收口门里，也不能负责生成自己要验证的 evidence**：A／15 logs／P 只在 Commit -1 合 master**之后**存在；15-run 的唯一生产 task 是同一 post-merge phase 里排在它之前的 T0.0f。把 T0.1 留作 evidence 生产者会形成 `T0.0d 等 T0.1、T0.1 又被 T0.0d 禁止开工` 的无起点环。
@@ -502,8 +559,8 @@ T0.0a、T0.0b、T0.0c 的正控会**主动改坏 runner／test**；T0.0e 的正�
 
 | # | 机械检查（从何处独立重算） | fail-closed 条件 | mutation IDs |
 |---|---|---|---|
-| 1 | `POINTER_SHA` 是完整 SHA 且当前 master 状态线包含 P：`git merge-base --is-ancestor "$POINTER_SHA" master` 成功；再 `git show "$POINTER_SHA":HANDOVER` | P 缺失／不是 master 可达状态线／`git show` 失败 → fail；**不许猜 P=当前 master HEAD** | `EV-01`, `EV-02` |
-| 2 | 从 `git show "$POINTER_SHA":HANDOVER` 提取**唯一** `entry-evidence-pointer:v1` block | block 缺失／多于一个 → fail；不靠未规定格式的 blame／自然语言 grep | `EV-03`, `EV-04` |
+| 1 | `POINTER_SHA` 是完整 SHA 且当前 master 状态线包含 P：`git merge-base --is-ancestor "$POINTER_SHA" master` 成功；再 `git show "$POINTER_SHA":docs/plan/2026-07-27-inter-block-anchor-allocator/HANDOVER.md` | P 缺失／不是 master 可达状态线／`git show` 失败 → fail；**不许猜 P=当前 master HEAD** | `EV-01`, `EV-02` |
+| 2 | 从 `git show "$POINTER_SHA":docs/plan/2026-07-27-inter-block-anchor-allocator/HANDOVER.md` 提取**唯一** `entry-evidence-pointer:v1` block | block 缺失／多于一个 → fail；不靠未规定格式的 blame／自然语言 grep | `EV-03`, `EV-04` |
 | 3 | pointer block 含 `entry_sha`、manifest path、manifest sha256 | 任一字段缺失 → fail | `EV-05`, `EV-06`, `EV-07` |
 | 4 | pointer block 的 `entry_sha == ENTRY_SHA == A`；preflight 中 `git -C "$TREE" rev-parse HEAD == ENTRY_SHA`；`git merge-base --is-ancestor ENTRY_SHA POINTER_SHA` 成功 | 任一不等／Git 图关系不成立 → fail；**P 是 A 的后代，不许拿 P 代替 A** | `EV-08`, `EV-09`, `EV-10` |
 | 5 | pointer 的 manifest path 存在；从原始 manifest bytes 重算 `sha256(manifest)` = pointer block 冻结 hash | 树外 manifest 被清理／覆盖／hash 不等 → **fail，不是 warning**；pointer 不能凭空恢复它 | `EV-11`, `EV-12` |
@@ -793,14 +850,14 @@ production **不构造新 owner**；**不维护 shadow lease／mapping／ledger�
 
 > 🔴 **这是唯一可观察切换点，也是唯一的不可满足停门（§7.13）。** 若 PoC 证明全部 producer 无法在同一 semantic commit 切到可授权 commands，或 typed terminal result／heartbeat coordination 不能覆盖真实顺序：**允许继续增加无行为准备 commit，但不得发布部分 authority、不得引入 `legacy_adapted`／payload-guessing facade、不得让 new command 回落旧 writer。**
 
-### 前置停门（缺任一项不得发布）
+### 分阶段停门（**kickoff 可进入 T4.0a～T4.1；缺任一项不得进入 T4.2 authority publish**）
 
 > 🔴 **RFC §7.12 那句同样适用于本 commit，逐字照抄**（Commit 3 有它、Commit 4 此前没有，而**压力全在这里**——Commit 4 被反复强调「唯一原子发布点、不许拆」，最容易在缺证据时现场编一个签名）：
 >
 > **到达本 commit kickoff 时先读证据槽；没有 `file:line` 或 PoC 结论，就交付已完成部分与具体问题、结束本轮，不生成猜测签名。**
 
-1. **Q5 逐帧预测 diff 已复核**（§9.2 Q5、§6.3）：产出旧 golden → 预测新序列的逐帧 diff，逐项标明保留／删除／移动及理由，与 Q5 批准范围核对。**若 heartbeat 重臂时点无法证明逐 tick 中性，其预测 diff 必须纳入 Q5 批准范围。** 缺 diff 或实测超出预测即停止，**不得借已接受的 Q5 吞并额外 wire 漂移**。
-2. **§9.3 全部调查证据齐全**——见下面的 **T4.0a～T4.0d**。⚠️ **Commit 3 对第 1／2／5／8 项只被要求交「最小子集／候选／方案」，「完整证据槽」那一列的值是「C4 publish kickoff」——那是一个时刻，不是一个负责人。** 因此这四条在本 commit 有显式 task，**不得在 kickoff 时口头判「C3 交的就是它被要求交的，所以齐全」**。
+1. **Q5 边界不是 Commit 4 kickoff 前**：本 phase 先执行 T4.0a～T4.0d 补齐证据，再由 T4.1 产出并复核逐帧预测 diff（旧 golden → 新序列，逐项标保留／删除／移动及理由，与 Q5 批准范围核对）。**T4.2 authority publish 之前**，T4.1 必须已完成并在批准范围内；若 heartbeat 重臂时点无法证明逐 tick 中性，必须纳入 Q5 批准范围。缺 diff 或实测超出预测即停，**不得借已接受的 Q5 吞并额外 wire 漂移**。
+2. **§9.3 全部调查证据齐全**——见下面的 **T4.0a～T4.0d**。kickoff 时允许这些证据尚待本 phase 补齐；**T4.2 前必须全部闭合**。⚠️ **Commit 3 对第 1／2／5／8 项只被要求交「最小子集／候选／方案」，「完整证据槽」那一列的值是「C4 publish kickoff」——那是一个时刻，不是一个负责人。** 因此这四条在本 commit 有显式 task，**不得在 kickoff 时口头判「C3 交的就是它被要求交的，所以齐全」**。
 3. **§7.2 的 A／B／C／D 四集闭包输出仍是最新**（T0.7 产物在 Commit 1～3 期间机械相等）。
 4. 🔴 **§11 #6 已裁**——`OwnerTerminalDecision`（M1 引入，`delivery/owner-failure.ts:11`）与本 commit 的 `TerminalEmissionResult` 是竞争抽象，**未裁则不得进入 T4.10**。<br>⚠️ **这里只是兜底，真正的触发点在 T1.6（Commit 1）**：那一步就要把三个态写进类型层并加穷尽性断言，形状在那时已经定死。**若拖到这里才发现未裁，C1～C3 的沉没成本已经在了**——那会污染候选①（「一并重塑」）的成本栏，与上一轮 #4「merge 有冲突」是同一种病。
 
