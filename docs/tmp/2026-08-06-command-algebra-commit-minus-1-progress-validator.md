@@ -16,8 +16,8 @@ session_id: 046d7295-e5ce-470b-a284-c721c6ce1cb8
 ## 剩余项
 
 - [ ] 完成 C7～C11 的原始 artifact 独立重算及 EV-16～EV-28；C1～C6 checkpoint 已实现但尚未独立审查。
-- [ ] 补 EV-14／EV-15 的单输入 mutation test；当前 C6 已有 production check，但这两条测试被临时移除以避免 fixture Git 图重置造成的非目标失败。
-- [ ] 让 validator 仅在 C1～C11 全绿后调用 receipt writer，并覆盖 strict receipt schema；当前 writer 是独立、无调用方的基础设施，刻意不会生成 checkpoint receipt。
+- [ ] 补 EV-01、EV-14、EV-15 的单输入 mutation test；C6 的 duplicate-log-path guard 已覆盖额外 reviewer finding，但原 plan 的三条 mutation 仍需独立断言。
+- [ ] 让 validator 仅在 C1～C11 全绿后调用 receipt writer，并覆盖 strict receipt schema；writer 已改为 invocation-unique `O_EXCL` temporary + no-replace `linkSync` publish，当前仍无调用方且刻意不会生成 checkpoint receipt。
 - [ ] 完成 prettier、`bun run test:backend`、独立 task review；不得将当前局部 `typecheck`／focused test 作为完成验收。
 
 ## 当前在途

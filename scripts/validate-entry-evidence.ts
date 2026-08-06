@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 import { createHash } from "node:crypto"
-import { existsSync, readFileSync } from "node:fs"
+import { existsSync, readFileSync, realpathSync } from "node:fs"
 import path from "node:path"
 
 interface Options {
@@ -10,13 +10,13 @@ interface Options {
   handover: string
   receiptOut: string
 }
-
 interface RunLog {
   ordinal: number
   log_path: string
   log_sha256: string
 }
 
+const HANDOVER_PATH = "docs/plan/2026-07-27-inter-block-anchor-allocator/HANDOVER.md"
 const POINTER_BEGIN = "<!-- entry-evidence-pointer:v1 -->"
 const POINTER_END = "<!-- /entry-evidence-pointer:v1 -->"
 const MANIFEST_KEYS = [
@@ -51,21 +51,30 @@ function fail(condition: number, message: string, exitCode: number): never {
   console.error(`FAIL C${condition}: ${message}`)
   process.exit(exitCode)
 }
-
 function cliFail(): never {
   process.exit(2)
 }
-
 function isSha(value: unknown, length: number): value is string {
   return typeof value === "string" && new RegExp(`^[0-9a-f]{${length}}$`).test(value)
 }
-
 function sha256(filePath: string): string {
   return createHash("sha256").update(readFileSync(filePath)).digest("hex")
 }
-
 function exactKeys(value: Record<string, unknown>, keys: Array<string>): boolean {
-  return Object.keys(value).join("\0") === keys.join("\0")
+  const actual = Object.keys(value)
+  return actual.length === keys.length && actual.every((key) => keys.includes(key))
+}
+function git(tree: string, args: Array<string>): string | undefined {
+  const result = Bun.spawnSync(["git", "-C", tree, ...args], { stdout: "pipe", stderr: "pipe" })
+  return result.exitCode === 0 ? result.stdout.toString().trim() : undefined
+}
+function canonicalInside(candidate: string, tree: string): boolean {
+  try {
+    const relative = path.relative(realpathSync(tree), realpathSync(candidate))
+    return relative === "" || (!relative.startsWith(`..${path.sep}`) && relative !== ".." && !path.isAbsolute(relative))
+  } catch {
+    return false
+  }
 }
 
 function parseOptions(argv: Array<string>): Options {
@@ -83,13 +92,8 @@ function parseOptions(argv: Array<string>): Options {
   const tree = values.get("--tree")!
   const handover = values.get("--handover")!
   const receiptOut = values.get("--receipt-out")!
-  if (!isSha(entrySha, 40) || !isSha(pointerSha, 40) || !path.isAbsolute(tree) || !path.isAbsolute(receiptOut) || path.isAbsolute(handover)) cliFail()
+  if (!isSha(entrySha, 40) || !isSha(pointerSha, 40) || !path.isAbsolute(tree) || !path.isAbsolute(receiptOut) || handover !== HANDOVER_PATH) cliFail()
   return { entrySha, pointerSha, tree, handover, receiptOut }
-}
-
-function git(tree: string, args: Array<string>): string | undefined {
-  const result = Bun.spawnSync(["git", "-C", tree, ...args], { stdout: "pipe", stderr: "pipe" })
-  return result.exitCode === 0 ? result.stdout.toString().trim() : undefined
 }
 
 function parsePointer(raw: string): { entrySha: string; manifestPath: string; manifestSha: string } {
@@ -97,9 +101,11 @@ function parsePointer(raw: string): { entrySha: string; manifestPath: string; ma
   const ends = raw.split(POINTER_END).length - 1
   if (starts === 0 || ends === 0) fail(2, "pointer block missing", 3)
   if (starts !== 1 || ends !== 1) fail(2, "pointer block is not unique", 3)
-  const body = raw.slice(raw.indexOf(POINTER_BEGIN) + POINTER_BEGIN.length, raw.indexOf(POINTER_END)).trim()
   const fields = new Map<string, string>()
-  for (const line of body.split("\n")) {
+  for (const line of raw
+    .slice(raw.indexOf(POINTER_BEGIN) + POINTER_BEGIN.length, raw.indexOf(POINTER_END))
+    .trim()
+    .split("\n")) {
     const index = line.indexOf("=")
     if (index <= 0 || fields.has(line.slice(0, index))) cliFail()
     fields.set(line.slice(0, index), line.slice(index + 1))
@@ -123,9 +129,9 @@ function parseManifest(raw: string): Array<RunLog> {
     cliFail()
   }
   if (!value || typeof value !== "object" || Array.isArray(value) || !exactKeys(value as Record<string, unknown>, MANIFEST_KEYS)) cliFail()
-  const manifest = value as Record<string, unknown>
-  if (manifest.schema_version !== 1 || !Array.isArray(manifest.runs)) cliFail()
-  return manifest.runs.map((candidate) => {
+  const runs = (value as Record<string, unknown>).runs
+  if (!Array.isArray(runs)) cliFail()
+  return runs.map((candidate) => {
     if (!candidate || typeof candidate !== "object" || Array.isArray(candidate) || !exactKeys(candidate as Record<string, unknown>, RUN_KEYS)) cliFail()
     const run = candidate as Record<string, unknown>
     if (!Number.isSafeInteger(run.ordinal) || typeof run.log_path !== "string" || !path.isAbsolute(run.log_path) || !isSha(run.log_sha256, 64)) cliFail()
@@ -134,7 +140,6 @@ function parseManifest(raw: string): Array<RunLog> {
 }
 
 const options = parseOptions(process.argv.slice(2))
-
 if (!existsSync(options.tree) || git(options.tree, ["cat-file", "-e", `${options.pointerSha}^{commit}`]) === undefined)
   fail(1, "pointer SHA does not resolve", 3)
 if (git(options.tree, ["merge-base", "--is-ancestor", options.pointerSha, "master"]) === undefined) fail(1, "pointer SHA is not master-reachable", 3)
@@ -145,8 +150,10 @@ if (pointer.entrySha !== options.entrySha) fail(4, "pointer entry SHA differs fr
 if (git(options.tree, ["rev-parse", "HEAD"]) !== options.entrySha) fail(4, "execution HEAD differs from ENTRY_SHA", 3)
 if (git(options.tree, ["merge-base", "--is-ancestor", options.entrySha, options.pointerSha]) === undefined)
   fail(4, "ENTRY_SHA is not an ancestor of POINTER_SHA", 3)
+if (canonicalInside(pointer.manifestPath, options.tree)) fail(5, "evidence manifest must be outside TREE", 4)
 if (!existsSync(pointer.manifestPath)) fail(5, "evidence manifest missing", 4)
 if (sha256(pointer.manifestPath) !== pointer.manifestSha) fail(5, "evidence manifest hash mismatch", 4)
+if (canonicalInside(options.receiptOut, options.tree)) cliFail()
 const runs = parseManifest(readFileSync(pointer.manifestPath, "utf8"))
 if (
   runs.length !== 15 ||
@@ -156,10 +163,9 @@ if (
     .every((ordinal, index) => ordinal === index + 1)
 )
   fail(6, "run log count is not 15", 5)
+if (new Set(runs.map((run) => run.log_path)).size !== runs.length) fail(6, "run log paths are not unique", 5)
 for (const run of runs) {
   if (!existsSync(run.log_path)) fail(6, "run log missing", 5)
   if (sha256(run.log_path) !== run.log_sha256) fail(6, "run log hash mismatch", 5)
 }
-
-// C7-C11 remain deliberately unavailable in this checkpoint. The receipt writer is versioned separately but is not callable until every condition is implemented.
 fail(7, "JUnit identity validation is not implemented in this checkpoint", 6)

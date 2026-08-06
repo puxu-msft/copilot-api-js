@@ -2,11 +2,11 @@
 
 ## Checkpoint scope
 
-This checkpoint versions the frozen validator CLI parser plus C1-C6: pointer object/master reachability, unique pointer block and required fields, entry/tree/ancestry relation, external manifest raw hash, and the strict 15-log existence/hash check. It also versions an atomic receipt writer that uses a deterministic temporary sibling plus rename and preserves an existing collision target on failure.
+This checkpoint versions the frozen validator CLI parser plus C1-C6: pointer object/master reachability, unique pointer block and required fields, entry/tree/ancestry relation, external manifest raw hash, and the strict 15-log existence/hash check. It freezes the HANDOVER path, rejects canonical tree-contained manifest/receipt paths, and rejects duplicate run log paths. The receipt writer uses an invocation-unique exclusive temporary and no-replace hard-link publish; it cleans up only its own created temporary and preserves existing receipt or foreign temporary bytes.
 
 ## Evidence
 
-- `bun test tests/infra/validate-entry-evidence.unit.test.ts` passed: three synthetic temporary-repository tests cover the C1-C6 positive path to the explicit C7 stop, EV-02 through EV-13 failure messages, and receipt collision preservation.
+- `bun test tests/infra/validate-entry-evidence.unit.test.ts` passed: five synthetic temporary-repository tests cover the C1-C6 positive path to the explicit C7 stop, pointer failures, duplicate logs, unordered legal manifest keys, frozen HANDOVER/path containment, and receipt collision preservation.
 - `bun run typecheck` passed.
 - `bunx prettier --check scripts/validate-entry-evidence.ts scripts/entry-evidence-receipt.ts tests/infra/validate-entry-evidence.unit.test.ts` passed.
 

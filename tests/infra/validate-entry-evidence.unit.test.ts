@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { createHash } from "node:crypto"
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
 import os from "node:os"
 import path from "node:path"
 
@@ -192,14 +192,72 @@ describe("validate-entry-evidence C1-C6", () => {
       clean(fixture)
     }
   })
-  test("receipt writer preserves collision target and removes temporary file", () => {
+  test("rejects duplicate log paths and accepts a permuted manifest key set", () => {
+    const fixture = createFixture()
+    try {
+      const manifest = JSON.parse(readFileSync(fixture.manifestPath, "utf8"))
+      manifest.runs[1].log_path = manifest.runs[0].log_path
+      manifest.runs[1].log_sha256 = manifest.runs[0].log_sha256
+      const permuted = Object.fromEntries(Object.entries(manifest).reverse())
+      permuted.runs = manifest.runs.map((run: Record<string, unknown>) => Object.fromEntries(Object.entries(run).reverse()))
+      writeJson(fixture.manifestPath, permuted)
+      const pointerSha = amendPointer(fixture, (text) => text.replace(/manifest_sha256=[0-9a-f]{64}/, `manifest_sha256=${sha256(fixture.manifestPath)}`))
+      expectFail(fixture, "FAIL C6: run log paths are not unique\n", pointerSha)
+    } finally {
+      clean(fixture)
+    }
+  })
+
+  test("rejects a non-frozen handover and tree-contained pointer paths", () => {
+    const fixture = createFixture()
+    try {
+      const nonFrozen = Bun.spawnSync(
+        [
+          "bun",
+          VALIDATOR,
+          "--entry-sha",
+          fixture.entrySha,
+          "--pointer-sha",
+          fixture.pointerSha,
+          "--tree",
+          fixture.tree,
+          "--handover",
+          "docs/other.md",
+          "--receipt-out",
+          path.join(fixture.out, "receipt.json"),
+        ],
+        { stdout: "pipe", stderr: "pipe" },
+      )
+      expect(nonFrozen.exitCode).toBe(2)
+      const treeManifest = path.join(fixture.tree, "manifest.json")
+      writeFileSync(treeManifest, "{}\n")
+      expectFail(
+        fixture,
+        "FAIL C5: evidence manifest must be outside TREE\n",
+        amendPointer(fixture, (text) => text.replace(/manifest_path=.*/, `manifest_path=${treeManifest}`)),
+      )
+      const linked = path.join(fixture.out, "tree-link")
+      symlinkSync(fixture.tree, linked)
+      expectFail(
+        fixture,
+        "FAIL C5: evidence manifest must be outside TREE\n",
+        amendPointer(fixture, (text) => text.replace(/manifest_path=.*/, `manifest_path=${path.join(linked, "manifest.json")}`)),
+      )
+    } finally {
+      clean(fixture)
+    }
+  })
+
+  test("receipt writer preserves existing temp and regular receipt targets", () => {
     const root = mkdtempSync(path.join(os.tmpdir(), "receipt-"))
     const receipt = path.join(root, "receipt.json")
-    mkdirSync(receipt)
-    writeFileSync(path.join(receipt, "sentinel"), "preserve\n")
+    const existingTemp = path.join(root, ".receipt.json.foreign.tmp")
+    writeFileSync(receipt, "old receipt\n")
+    writeFileSync(existingTemp, "foreign temp\n")
     try {
       expect(() => writeReceiptAtomically(receipt, "new\n")).toThrow()
-      expect(readFileSync(path.join(receipt, "sentinel"), "utf8")).toBe("preserve\n")
+      expect(readFileSync(receipt, "utf8")).toBe("old receipt\n")
+      expect(readFileSync(existingTemp, "utf8")).toBe("foreign temp\n")
       expect(existsSync(path.join(root, ".receipt.json.tmp"))).toBe(false)
     } finally {
       rmSync(root, { recursive: true, force: true })
