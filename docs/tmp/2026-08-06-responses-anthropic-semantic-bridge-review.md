@@ -1,6 +1,6 @@
 # Responses ↔ Anthropic 语义桥规格评审记录
 
-> **状态**：进行中，第二轮整改已完成，待提交与架构 reviewer 复审
+> **状态**：进行中，第三轮整改已完成，待提交与架构 reviewer 复审
 >
 > **评审对象**：`docs/spec/2026-08-06-responses-anthropic-semantic-bridge.md`
 >
@@ -138,3 +138,43 @@
 4. carrier affinity 是否足以支持 echo 后兼容裁决。
 5. streaming compatibility error 的三个 commit 阶段是否与当前 handler seam 一致。
 6. 若无 BLOCKER／MAJOR，明确写“可定稿”。
+
+## 第二轮复审结果
+
+- 架构 reviewer：0 BLOCKER、3 MAJOR。M7–M10 的方向继续成立，但 source typing、request diagnostics freeze/reference 与 retry gate 尚未闭合。
+
+## 第三轮发现与处置
+
+### M11. Stateful handler 的 source 仍经 `unknown`
+
+- **原级别**：MAJOR。
+- **处置**：采纳（C）。
+- **事实复核**：第二轮 factory 已闭包封装 State，但业务 callback 仍接统一 `SemanticLifecycleEvent.source:unknown`；Web Search source map 也只列常规 complete 类型，漏 incomplete union。
+- **整改**：分离 `WholeSourceByKind` 与 `LifecycleByKind`；lifecycle event 按 semantic kind／phase 映射 typed source，Web Search whole source包含 complete/incomplete union，progress source 使用三种官方专用 event union。两个 typed factory 把具体 source／State 封进统一 bound closure；唯一异构类型擦除限制在 bridge-core factory，并由 runtime kind guard + mutation 保护。
+
+### M12. Request diagnostics 缺 freeze/reference 状态机
+
+- **原级别**：MAJOR。
+- **处置**：采纳（C）。
+- **事实复核**：S2 在 candidate 前执行；第二轮只有 append API 与结果形状，未定义 reject／throw 如何冻结、hash 输入或 reference 载体。
+- **整改**：定义 open→frozen collector；S2 `try/finally` 在 success／compatibility reject／unexpected throw 三路恰好 freeze 一次；canonical `{version,records}` hash 不含 id。Frozen diagnostics 放入 `RequestState`，candidate fork 继承 deep-frozen 值，dispatch metadata 只引用 id/hash；无 candidate 的 S2 reject 仍投影 request History。
+
+### M13. `BridgeCompatibilityError` 会被 buffered retry 重放
+
+- **原级别**：MAJOR。
+- **处置**：采纳（C）。
+- **事实复核**：当前 buffered catch 对非 client-abort throw 先记 `thrown`，后续 `classifyStreamError==="other" && !committedAny` 会重试；compatibility error 是永久语义错误，不应重开上游。
+- **整改**：error 增 `retryable:false` 与 type guard；buffered catch 在 transport 分类前立即返回 typed stream-error，不增加 attempt／reset／escalate／exchange／continuation；semantic retry registry 不 claim。正控固定 request error=0 dispatch、response error=1 dispatch，mutation 把它重新送入 transport retry 必红。
+
+## 第三轮整改新增验收
+
+- WholeSource／LifecycleByKind 映射覆盖 complete/incomplete Web Search 与三种 progress event；业务 callback 不接 unknown source／state。
+- Request diagnostics 三出口恰好冻结一次，canonical hash 稳定，candidate 只引用 id/hash。
+- Compatibility error 永不进入 buffered／semantic retry；dispatch 计数与原 typed error 传递可观测。
+
+## 第三轮待复审命题
+
+1. M11–M13 是否闭合，且 typed source 没有把 cast 移到 adapter／业务边界。
+2. Request diagnostics success／reject／throw 的 freeze/reference／History 时序是否完整。
+3. Compatibility error 是否在所有 retry／continuation gate 之前 fail-fast。
+4. 若无 BLOCKER／MAJOR，明确写“可定稿”。

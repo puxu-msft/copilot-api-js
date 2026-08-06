@@ -132,12 +132,20 @@ source stream event → protocol lifecycle adapter │
 请求 item 与响应 item 的职责不同，不能共用一张含糊的 registry。实现必须提供四张静态方向表，每张表拥有自己的 source union 和 handler 签名：
 
 ```ts
+interface SemanticItemLifecycleEvent {
+  kind: "item-open" | "item-progress" | "item-delta" | "item-close"
+  key: SemanticItemKey
+  semanticKind: string
+  /** Erased only at the bridge-core dispatch boundary; typed factories validate before business callbacks. */
+  source: unknown
+}
+
 type RequestHandlerRegistry<SourceByKind extends object, E> = Readonly<{
   [K in keyof SourceByKind]: RequestSemanticHandler<SourceByKind[K], E>
 }>
 
-type ResponseHandlerRegistry<SourceByKind extends object, E> = Readonly<{
-  [K in keyof SourceByKind]: ResponseSemanticHandler<SourceByKind[K], E>
+type ResponseHandlerRegistry<WholeSourceByKind extends object, LifecycleByKind extends { [K in keyof WholeSourceByKind]: SemanticItemLifecycleEvent }, E> = Readonly<{
+  [K in keyof WholeSourceByKind]: ResponseSemanticHandler<WholeSourceByKind[K], LifecycleByKind[K], E>
 }>
 
 interface RequestBridgeContext {
@@ -186,10 +194,15 @@ interface RequestBridgeProfile<Payload, TargetPayload, SourceByKind extends obje
   readonly unknownPolicy: "passthrough" | "reject"
 }
 
-interface ResponseBridgeProfile<SourceByKind extends object, Emission, TargetWhole> {
+interface ResponseBridgeProfile<
+  WholeSourceByKind extends object,
+  LifecycleByKind extends { [K in keyof WholeSourceByKind]: SemanticItemLifecycleEvent },
+  Emission,
+  TargetWhole,
+> {
   readonly sourceFormat: "openai-responses" | "anthropic-messages"
   readonly targetFormat: "anthropic-messages" | "openai-responses"
-  readonly itemHandlers: ResponseHandlerRegistry<SourceByKind, Emission>
+  readonly itemHandlers: ResponseHandlerRegistry<WholeSourceByKind, LifecycleByKind, Emission>
   readonly lifecycleAdapter: ProtocolLifecycleAdapter<unknown>
   readonly renderWhole: WholeRenderer<Emission, TargetWhole>
   readonly renderStream: StreamRenderer<Emission>
@@ -240,34 +253,34 @@ interface RequestSemanticHandler<Source, Emission> {
 
 ```ts
 interface BoundResponseItemHandler<Emission> {
-  consume(event: SemanticLifecycleEvent, ctx: ResponseBridgeContext): LifecycleDecision<Emission>
+  consume(event: SemanticItemLifecycleEvent, ctx: ResponseBridgeContext): LifecycleDecision<Emission>
   finalize(ctx: ResponseBridgeContext): BridgeDecision<Emission>
 }
 
-interface ResponseSemanticHandler<Source, Emission> {
-  mapWhole(item: Source, ctx: ResponseBridgeContext): BridgeDecision<Emission>
+interface ResponseSemanticHandler<WholeSource, Lifecycle extends SemanticItemLifecycleEvent, Emission> {
+  mapWhole(item: WholeSource, ctx: ResponseBridgeContext): BridgeDecision<Emission>
   bindStream(ctx: ResponseBridgeContext): BoundResponseItemHandler<Emission>
 }
 
-interface WholeItemOnDoneHandlerSpec<Source, Emission> {
-  mapWhole(item: Source, ctx: ResponseBridgeContext): BridgeDecision<Emission>
-  sourceFromClose(event: SemanticLifecycleEvent): Source | BridgeCompatibilityError
+interface WholeItemOnDoneHandlerSpec<WholeSource, Lifecycle extends SemanticItemLifecycleEvent, Emission> {
+  mapWhole(item: WholeSource, ctx: ResponseBridgeContext): BridgeDecision<Emission>
+  sourceFromClose(event: Extract<Lifecycle, { kind: "item-close" }>): WholeSource | BridgeCompatibilityError
 }
 
-interface StatefulResponseHandlerSpec<Source, Emission, State> {
-  mapWhole(item: Source, ctx: ResponseBridgeContext): BridgeDecision<Emission>
+interface StatefulResponseHandlerSpec<WholeSource, Lifecycle extends SemanticItemLifecycleEvent, Emission, State> {
+  mapWhole(item: WholeSource, ctx: ResponseBridgeContext): BridgeDecision<Emission>
   createState(ctx: ResponseBridgeContext): State
-  consume(event: SemanticLifecycleEvent, state: State, ctx: ResponseBridgeContext): LifecycleDecision<Emission>
+  consume(event: Lifecycle, state: State, ctx: ResponseBridgeContext): LifecycleDecision<Emission>
   finalize(state: State, ctx: ResponseBridgeContext): BridgeDecision<Emission>
 }
 
-declare function defineWholeItemOnDoneHandler<Source, Emission>(
-  spec: WholeItemOnDoneHandlerSpec<Source, Emission>,
-): ResponseSemanticHandler<Source, Emission>
+declare function defineWholeItemOnDoneHandler<WholeSource, Lifecycle extends SemanticItemLifecycleEvent, Emission>(
+  spec: WholeItemOnDoneHandlerSpec<WholeSource, Lifecycle, Emission>,
+): ResponseSemanticHandler<WholeSource, Lifecycle, Emission>
 
-declare function defineStatefulResponseHandler<Source, Emission, State>(
-  spec: StatefulResponseHandlerSpec<Source, Emission, State>,
-): ResponseSemanticHandler<Source, Emission>
+declare function defineStatefulResponseHandler<WholeSource, Lifecycle extends SemanticItemLifecycleEvent, Emission, State>(
+  spec: StatefulResponseHandlerSpec<WholeSource, Lifecycle, Emission, State>,
+): ResponseSemanticHandler<WholeSource, Lifecycle, Emission>
 ```
 
 不使用 first-match filter chain。支持集合与 handler 表由同一个穷尽 Record 约束：
@@ -277,7 +290,14 @@ interface ResponsesToAnthropicResponseSourceByKind {
   message: ResponsesMessageOutput
   function_call: ResponsesFunctionCallOutput
   reasoning: ResponsesReasoningOutput
-  web_search_call: ResponsesWebSearchCallOutput
+  web_search_call: ResponsesWebSearchCallOutput | ResponsesIncompleteWebSearchCallOutput
+}
+
+interface ResponsesToAnthropicLifecycleByKind {
+  message: ResponsesMessageLifecycleEvent
+  function_call: ResponsesFunctionCallLifecycleEvent
+  reasoning: ResponsesReasoningLifecycleEvent
+  web_search_call: ResponsesWebSearchLifecycleEvent
 }
 
 const RESPONSES_TO_ANTHROPIC_RESPONSE_HANDLERS = {
@@ -285,7 +305,7 @@ const RESPONSES_TO_ANTHROPIC_RESPONSE_HANDLERS = {
   function_call: functionCallHandler,
   reasoning: reasoningHandler,
   web_search_call: webSearchCallHandler,
-} satisfies ResponseHandlerRegistry<ResponsesToAnthropicResponseSourceByKind, BridgeEmission>
+} satisfies ResponseHandlerRegistry<ResponsesToAnthropicResponseSourceByKind, ResponsesToAnthropicLifecycleByKind, BridgeEmission>
 ```
 
 handler 内部确有多步标准化时，可以使用私有、有序 transform sequence；所有权分派本身不得依赖 matcher 顺序。
@@ -393,11 +413,56 @@ type ContinuationDecision =
 共同层不直接读取 Responses 或 Anthropic wire，而接收两个协议 adapter 产生的生命周期 algebra：
 
 ```ts
+type ItemLifecycleEvent<SemanticKind extends string, WholeSource, ProgressSource = never, DeltaSource = never> =
+  | { kind: "item-open"; key: SemanticItemKey; semanticKind: SemanticKind; source: WholeSource }
+  | { kind: "item-progress"; key: SemanticItemKey; semanticKind: SemanticKind; phase: string; source: ProgressSource }
+  | { kind: "item-delta"; key: SemanticItemKey; semanticKind: SemanticKind; deltaKind: string; source: DeltaSource }
+  | { kind: "item-close"; key: SemanticItemKey; semanticKind: SemanticKind; source: WholeSource }
+
+interface ResponsesWebSearchProgressEvent {
+  type: "response.web_search_call.in_progress" | "response.web_search_call.searching" | "response.web_search_call.completed"
+  item_id: string
+  output_index: number
+  sequence_number: number
+}
+
+type ResponsesMessageLifecycleEvent = ItemLifecycleEvent<"message", ResponsesMessageOutput, never, OutputTextDeltaEvent>
+type ResponsesFunctionCallLifecycleEvent = ItemLifecycleEvent<
+  "function_call",
+  ResponsesFunctionCallOutput,
+  never,
+  FunctionCallArgumentsDeltaEvent
+>
+type ResponsesReasoningLifecycleEvent = ItemLifecycleEvent<
+  "reasoning",
+  ResponsesReasoningOutput,
+  ReasoningSummaryPartAddedEvent | ReasoningSummaryPartDoneEvent,
+  ReasoningTextDeltaEvent | ReasoningSummaryTextDeltaEvent
+>
+type ResponsesWebSearchLifecycleEvent = ItemLifecycleEvent<
+  "web_search_call",
+  ResponsesWebSearchCallOutput | ResponsesIncompleteWebSearchCallOutput,
+  ResponsesWebSearchProgressEvent
+>
+
+type AnthropicMessageLifecycleEvent =
+  | ItemLifecycleEvent<"message", TextBlock, never, Extract<StreamEvent, { type: "content_block_delta"; delta: { type: "text_delta" } }>>
+  | ItemLifecycleEvent<
+      "function_call",
+      ToolUseBlock,
+      never,
+      Extract<StreamEvent, { type: "content_block_delta"; delta: { type: "input_json_delta" } }>
+    >
+  | ItemLifecycleEvent<
+      "reasoning",
+      ThinkingBlock,
+      never,
+      Extract<StreamEvent, { type: "content_block_delta"; delta: { type: "thinking_delta" | "signature_delta" } }>
+    >
+
 type SemanticLifecycleEvent =
-  | { kind: "item-open"; key: SemanticItemKey; semanticKind: string; source: unknown }
-  | { kind: "item-progress"; key: SemanticItemKey; phase: string; source: unknown }
-  | { kind: "item-delta"; key: SemanticItemKey; deltaKind: string; source: unknown }
-  | { kind: "item-close"; key: SemanticItemKey; source: unknown }
+  | ResponsesToAnthropicLifecycleByKind[keyof ResponsesToAnthropicLifecycleByKind]
+  | AnthropicMessageLifecycleEvent
   | { kind: "response-terminal"; status: string; source: unknown }
 
 type SemanticItemKey =
@@ -430,7 +495,7 @@ interface SemanticLifecycleRouter {
 }
 ```
 
-两个 typed factory 都在 `bindStream` 时返回统一的 `BoundResponseItemHandler`，router 从不保存泛型 `ResponseSemanticHandler` 或裸 state。`defineStatefulResponseHandler` 用闭包捕获具体 `State`；`defineWholeItemOnDoneHandler` 用闭包捕获 typed `sourceFromClose` 与 `mapWhole`。业务 handler 不接收 `unknown state`／`unknown source`，不需要 `any`／cast。
+两个 typed factory 都在 `bindStream` 时返回统一的 `BoundResponseItemHandler`，router 从不保存泛型 `ResponseSemanticHandler` 或裸 state。`defineStatefulResponseHandler` 用闭包捕获具体 `State`；`defineWholeItemOnDoneHandler` 用闭包捕获 typed `sourceFromClose` 与 `mapWhole`。adapter 必须先按 wire discriminator 与 `semanticKind` 校验并构造对应的 typed lifecycle event，再交给 factory。异构容器所需的唯一类型擦除封闭在 bridge-core 的 `define*Handler` 实现内部，并由 runtime kind guard + 正负控制保护；业务 handler、registry 声明和 router 调用面不得出现 `any`、unknown source/state cast。
 
 Responses adapter 负责 `output_index`、`output_item.added/.done` 与各专用 event family；Anthropic adapter 负责 content block `index`、`content_block_start/delta/stop` 与 `message_stop`。Router 只管理共同不变量：
 
@@ -612,7 +677,10 @@ interface BridgeCompatibilityError extends Error {
   readonly wireType: string
   readonly requestId?: string
   readonly suggestedHttpStatus: 400 | 422 | 502
+  readonly retryable: false
 }
+
+declare function isBridgeCompatibilityError(error: unknown): error is BridgeCompatibilityError
 ```
 
 - Identity Responses→Responses 路径原样透传；
@@ -623,6 +691,8 @@ interface BridgeCompatibilityError extends Error {
 - streaming **headers-committed／body-uncommitted**：丢弃尚未 flush 的 candidate body buffer，经 `formatTerminal` 写目标协议 typed terminal error；客户端仍见 HTTP 200，但没有 partial semantic content；
 - streaming **body-committed**：保留已发送 partial content，经 `formatTerminal` 追加 typed terminal error；forwarded 轨同时保留 partial 与 error；
 - `runResponseSink`／`runResponseBufferedSink` 不把 `BridgeCompatibilityError` 降为普通字符串：`stream-error` outcome 保留原 Error 对象、结构化字段和 `bodyCommitted` 布尔值；
+- `BridgeCompatibilityError.retryable` 恒为 false。Buffered catch 先用 `isBridgeCompatibilityError` 分流并立即返回 typed `stream-error`；它不得进入 `classifyStreamError(error)==="other"` 的 transport retry gate，不增加 attempt，不调用 `onAttemptReset`／`escalate`，不重开 exchange，也不进入 continuation generation；
+- semantic retry registry 不得 claim `BridgeCompatibilityError`；若错误在 S2 request bridge 产生，上游 dispatch 数必须为 0；若在 response bridge 产生，当前 dispatch 总数必须保持 1；
 - handler 使用两个显式状态：`httpHeadersCommitted`（进入 `streamSSE` 即 true）与 `bodyCommitted`（sink 首次 external body write 后 true）。candidate buffer 的 `committedAny` 只用于 retry／partial 判定，不能冒充 HTTP commit；
 - unknown raw value 只进入受保护的 History upstream 轨，不写普通日志；
 - 不把未知 JSON 编成普通文本继续成功。
@@ -671,6 +741,13 @@ interface RequestBridgeDiagnostics {
   records: readonly RequestBridgeDispositionRecord[]
 }
 
+interface RequestBridgeDiagnosticsCollector {
+  readonly state: "open" | "frozen"
+  append(record: RequestBridgeDispositionRecord): void
+  freeze(): RequestBridgeDiagnostics
+  frozen(): RequestBridgeDiagnostics | undefined
+}
+
 interface CandidateBridgeDiagnostics {
   candidateId: string
   requestDiagnostics: Pick<RequestBridgeDiagnostics, "id" | "hash">
@@ -680,16 +757,19 @@ interface CandidateBridgeDiagnostics {
 
 所有权与写入规则：
 
-1. **Request bridge SSOT**：S2 request translation 发生在 generation candidate 创建前。它使用 request-level append-only collector，API 为 `appendRequestBridgeDisposition(record)`；禁止伪造 primary candidate 或把同一请求记录复制到所有候选。
-2. Request coordinator 完成后冻结 `RequestBridgeDiagnostics { id, records, hash }`。每个后续 candidate／dispatch 只记录该 frozen diagnostics 的 `id/hash` 引用，表示它消费了哪一版已翻译请求；request records 本体只存一份。
-3. **Response bridge SSOT**：每个 generation candidate 创建自己的 append-only response disposition collector，API 为 `appendCandidateBridgeDisposition(candidateHandle, record)`。
-4. 每处理一个 known response item、lifecycle 或 compatibility error，追加一条 record；同一 candidate 的多 item 不得互相覆盖。
-5. 每个 candidate 的完整 response records 进入该 candidate／attempt 诊断轨，包含 loser、failed、cancelled；因此可解释落败候选，但不会污染胜者事实。
-6. `selectGenerationWinner(candidate, dispatch)` 后，顶层 `pipelineInfo.bridgeDispositions` 由 request records + winner response records 派生；无 winner 的失败请求只投影 request records，不能伪造 response winner。
-7. RequestContext 新增上述两个窄 append API；不得复用 `recordFeature` 或现有单值 `recordTranslationDegradation`。
-8. History `PipelineInfo` 新增 append-only `bridgeDispositions?: BridgeDispositionRecord[]`；request diagnostics 与 attempt/candidate response diagnostics 是明细 SSOT，顶层仅为派生视图。
-9. upstream 轨保留原始 source item／event；forwarded 轨保留客户端实收 wire；synthetic presentation 使用 `bridge-degradation` provenance；carrier 只记录 scheme/version/kinds，不记录 opaque payload。
-10. request diagnostics 在 S2 完成后冻结；response disposition 在 candidate settle 前冻结；winner 投影在 winner selection 后、terminal History snapshot 前完成。测试必须覆盖 request-only reject、hedge loser 先写、winner 后写以及无 winner 失败四种顺序。
+1. **Request bridge SSOT**：S2 request translation 发生在 generation candidate 创建前。它使用 request-level `RequestBridgeDiagnosticsCollector`；禁止伪造 primary candidate 或把同一请求记录复制到所有候选。
+2. S2 以 `try/finally` 驱动 collector：item／coordinator 每产生一个 disposition 就 `append`；无论成功、`BridgeCompatibilityError` reject 或意外 throw，`finally` 都恰好一次 `freeze()`。freeze 后 append／再次 freeze 必须 fail-loud。
+3. `freeze()` 生成稳定 id，并对 canonical JSON 计算 hash。Canonical input 精确为 `{version:1, records}`：对象 key 按字典序、array 保序、undefined 字段省略、UTF-8 编码；id 不进入 hash。测试用同 records 不同对象构造顺序证明 hash 相同，record 顺序变化证明 hash 不同。
+4. Frozen `RequestBridgeDiagnostics {id,hash,records}` 挂入 `RequestState.requestBridgeDiagnostics`。`snapshotStableState` 与 candidate fork 原样共享该 deep-frozen 值；每个 candidate／dispatch metadata 只投影 `id/hash`，表示它消费了哪一版已翻译请求。
+5. S2 reject 没有 candidate：route failure settle 仍从 `RequestState`／RequestContext 取得 frozen diagnostics，把 request records 投影到失败 History；不得因没有 candidate 丢记录。
+6. **Response bridge SSOT**：每个 generation candidate 创建自己的 append-only response disposition collector，API 为 `appendCandidateBridgeDisposition(candidateHandle, record)`。
+7. 每处理一个 known response item、lifecycle 或 compatibility error，追加一条 record；同一 candidate 的多 item 不得互相覆盖。
+8. 每个 candidate 的完整 response records 进入该 candidate／attempt 诊断轨，包含 loser、failed、cancelled；因此可解释落败候选，但不会污染胜者事实。
+9. `selectGenerationWinner(candidate, dispatch)` 后，顶层 `pipelineInfo.bridgeDispositions` 由 request records + winner response records 派生；无 winner 的失败请求只投影 request records，不能伪造 response winner。
+10. RequestContext 新增 `appendRequestBridgeDisposition`、`freezeRequestBridgeDiagnostics`、`appendCandidateBridgeDisposition` 三个窄 API；不得复用 `recordFeature` 或现有单值 `recordTranslationDegradation`。
+11. History `PipelineInfo` 新增 append-only `bridgeDispositions?: BridgeDispositionRecord[]`；request diagnostics 与 attempt/candidate response diagnostics 是明细 SSOT，顶层仅为派生视图。
+12. upstream 轨保留原始 source item／event；forwarded 轨保留客户端实收 wire；synthetic presentation 使用 `bridge-degradation` provenance；carrier 只记录 scheme/version/kinds，不记录 opaque payload。
+13. response disposition 在 candidate settle 前冻结；winner 投影在 winner selection 后、terminal History snapshot 前完成。测试必须覆盖 request success、request reject、unexpected throw、hedge loser 先写、winner 后写以及无 winner 失败六种顺序。
 
 ## 13. Phase 0 探针
 
@@ -820,7 +900,10 @@ oracle 同时观察内部与外层：
 - stream body-committed compatibility error 被错误声明为真实 HTTP 4xx；
 - request disposition 被伪造为 primary candidate-local 或复制到每个 candidate；
 - carrier envelope 删除 affinity／compatibilityKey 后仍被跨模型恢复；
-- headers-committed/body-uncommitted 错误尝试调用 `c.json` 改写 HTTP status。
+- headers-committed/body-uncommitted 错误尝试调用 `c.json` 改写 HTTP status；
+- buffered catch 把 `BridgeCompatibilityError` 当作 `classifyStreamError==="other"` 并重开第二次 dispatch；
+- request coordinator reject 绕过 `finally freeze`，导致失败 History 无 request dispositions；
+- request diagnostics hash 把 id 纳入或使用非 canonical object key 顺序。
 
 每次 mutation 必须确认失败来自目标机制，而非旁路断言。
 
@@ -836,7 +919,9 @@ oracle 同时观察内部与外层：
 - request dispositions 只存一次，后续 candidates 引用同一 frozen id/hash，不复制 records；
 - hedge loser、cancelled candidate 的 response disposition 保留在明细，但不污染顶层 winner 投影；
 - 同一 resolved model 的不同 alias 能恢复 carrier，不同 compatibilityKey 默认剥离；
-- streaming headers-committed/body-uncommitted 返回 HTTP 200 typed terminal error 且无 partial semantic content。
+- streaming headers-committed/body-uncommitted 返回 HTTP 200 typed terminal error 且无 partial semantic content；
+- response compatibility error 只发生一次 dispatch，request compatibility error 发生零次 dispatch；
+- request success／reject／unexpected throw 都恰好冻结一次 diagnostics；相同 records 不同对象构造顺序产生相同 hash。
 
 ### 15.4 端到端
 
@@ -867,9 +952,12 @@ Responses response
 12. unknown translation 路径必须 fail-loud，并区分 request／whole／stream headers-committed/body-uncommitted／stream body-committed；
 13. request disposition collector 必须 request-level append-only 并在 candidate 前冻结；response collector 必须 candidate-local append-only；顶层由 request + winner response 派生；
 14. 每个 non-identity profile 必须有 `CompatibilityErrorRenderer`；stream error outcome 必须保留 typed error 与 `bodyCommitted`；
-15. whole-on-done／stateful response handler 都必须经 typed factory 生成 `BoundResponseItemHandler`；router 不保存泛型 handler 或裸 state，业务 handler 不得接收 unknown source／state；
+15. whole-on-done／stateful response handler 都必须经 typed factory 生成 `BoundResponseItemHandler`；router 不保存泛型 handler 或裸 state；业务 handler／registry／router 调用面不得 cast。唯一类型擦除只允许在 bridge-core factory 内，并必须有 runtime kind guard 与错误 kind mutation；
 16. 删除注册项或把 degraded 改成空 emission 的 mutation 必须变红；
-17. 正确样本必须证明守卫不会 false-red。
+17. `BridgeCompatibilityError` 必须在 buffered／semantic retry 之前 fail-fast；request error=0 dispatch，response error=1 dispatch；
+18. request diagnostics collector 必须用 try/finally 恰好冻结一次，canonical hash 不含 id；
+19. lifecycle source map 必须按 semantic kind／phase 给业务 handler typed source；Web Search whole source包含 complete/incomplete union；
+20. 正确样本必须证明守卫不会 false-red。
 
 ## 17. 必要性命题与架构选择
 
@@ -946,7 +1034,9 @@ ADR 旧决策和当时证据保留原文，新注解只说明后续事实如何�
 - AC12：未知 translation item fail-loud，identity item passthrough；request／whole／stream headers-committed/body-uncommitted／stream body-committed 四条错误路径的 status、wire、typed error 与 `bodyCommitted` 均符合规格；
 - AC13：History upstream／forwarded 轨与 disposition 记录可对账；request records 只存一次并由 candidates 引用，candidate response 明细 append-only，顶层由 request + winner response 派生；
 - AC14：carrier wire 编码 affinity／compatibilityKey；同实际模型 alias 可恢复，不兼容 source 默认剥离；
-- AC15：whole-on-done／stateful handler 均经 typed factory 生成 bound closure；业务 handler 无 `any`／unknown source/state cast；
-- AC16：所有目标 mutation 变红，所有正确状态对照保持绿；
-- AC17：旧 per-structure translator 分支在对应 family 迁移提交中删除，无长期双轨；
-- AC18：typecheck、精确 lint、架构守卫、backend 档和客户端 E2E 全部通过。
+- AC15：whole-on-done／stateful handler 均经 typed factory 生成 bound closure；adapter 给每个 semantic kind／phase 提供 typed source，complete/incomplete Web Search 均纳入；业务 handler／registry／router 调用面无 cast，唯一 core 擦除点有 runtime kind guard 与错误 kind mutation；
+- AC16：request diagnostics 在 success／reject／unexpected throw 三路恰好冻结一次，以 canonical records 计算 hash并经 `RequestState` 引用；
+- AC17：`BridgeCompatibilityError` 不进入 buffered／semantic retry；request error=0 dispatch，response error=1 dispatch，原 typed error 到达 handler；
+- AC18：所有目标 mutation 变红，所有正确状态对照保持绿；
+- AC19：旧 per-structure translator 分支在对应 family 迁移提交中删除，无长期双轨；
+- AC20：typecheck、精确 lint、架构守卫、backend 档和客户端 E2E 全部通过。
