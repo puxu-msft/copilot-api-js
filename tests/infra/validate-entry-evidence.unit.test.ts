@@ -1,5 +1,6 @@
 import { afterAll, describe, expect, test } from "bun:test"
 import { createHash } from "node:crypto"
+import { type EntryEvidenceReceiptV1Expected, validateEntryEvidenceReceiptV1 } from "../../scripts/entry-evidence-receipt"
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, renameSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs"
 import os from "node:os"
 import path from "node:path"
@@ -151,6 +152,24 @@ function invoke(f: ReturnType<typeof fixture>): ReturnType<typeof Bun.spawnSync>
 
 function error(result: ReturnType<typeof Bun.spawnSync>): string {
   return new TextDecoder().decode(result.stderr).replaceAll(/\x1b\[[0-9;]*m/g, "")
+}
+
+function receiptExpected(f: ReturnType<typeof fixture>, receiptRaw = readFileSync(f.receipt, "utf8")): EntryEvidenceReceiptV1Expected {
+  return {
+    entrySha: f.entry,
+    currentHeadSha: f.entry,
+    pointerReachableFromMaster: true,
+    manifestSha256: hash(path.join(f.out, "evidence-manifest.json")),
+    validatorGitBlob: git(f.tree, ["rev-parse", `${f.entry}:scripts/validate-entry-evidence.ts`]),
+    receiptSha256: createHash("sha256").update(receiptRaw).digest("hex"),
+    tree: f.tree,
+  }
+}
+
+function receiptRawWith(f: ReturnType<typeof fixture>, change: (receipt: Record<string, unknown>) => void): string {
+  const receipt = JSON.parse(readFileSync(f.receipt, "utf8")) as Record<string, unknown>
+  change(receipt)
+  return `${JSON.stringify(receipt, null, 2)}\n`
 }
 
 function refreshLogHash(f: ReturnType<typeof fixture>): void {
@@ -340,6 +359,43 @@ describe("entry evidence validator C7-C9", () => {
       ])
       expect(receipt).toMatchObject({ schema_version: 1, entry_sha: f.entry, pointer_sha: f.pointer, verdict: "green" })
       expect(receipt.validated_at).toMatch(/^\d{4}-\d{2}-\d{2}T.*Z$/)
+    } finally {
+      cleanup(f)
+    }
+  })
+
+  test("rejects receipt v1 tampering against independently supplied T0.1 facts", () => {
+    const f = fixture()
+    try {
+      expect(invoke(f).exitCode).toBe(0)
+      const correct = readFileSync(f.receipt, "utf8")
+      expect(validateEntryEvidenceReceiptV1(correct, receiptExpected(f))).toMatchObject({ valid: true, errors: [] })
+
+      const tampering: Array<[string, (receipt: Record<string, unknown>) => void]> = [
+        ["missing field", (receipt) => delete receipt.verdict],
+        ["extra field", (receipt) => (receipt.unexpected = true)],
+        ["wrong schema version", (receipt) => (receipt.schema_version = 2)],
+        ["wrong validator path", (receipt) => (receipt.validator_path = "scripts/other.ts")],
+        ["relative manifest path", (receipt) => (receipt.manifest_path = "evidence-manifest.json")],
+        ["tree-contained manifest path", (receipt) => (receipt.manifest_path = path.join(f.tree, "evidence-manifest.json"))],
+        ["invalid RFC3339 timestamp", (receipt) => (receipt.validated_at = "2026-15-06T99:99:99Z")],
+        ["verdict", (receipt) => (receipt.verdict = "red")],
+        ["invalid validator blob", (receipt) => (receipt.validator_git_blob = "invalid")],
+        ["validator blob", (receipt) => (receipt.validator_git_blob = "0".repeat(40))],
+        ["invalid entry SHA", (receipt) => (receipt.entry_sha = "invalid")],
+        ["entry SHA", (receipt) => (receipt.entry_sha = "0".repeat(40))],
+        ["invalid manifest hash", (receipt) => (receipt.manifest_sha256 = "invalid")],
+        ["manifest hash", (receipt) => (receipt.manifest_sha256 = "0".repeat(64))],
+      ]
+      expect(validateEntryEvidenceReceiptV1("{", receiptExpected(f)).valid).toBe(false)
+      expect(validateEntryEvidenceReceiptV1(`${correct}\n`, receiptExpected(f)).valid).toBe(false)
+      for (const [label, tamper] of tampering) {
+        const raw = receiptRawWith(f, tamper)
+        expect(validateEntryEvidenceReceiptV1(raw, receiptExpected(f, raw)).valid, label).toBe(false)
+      }
+      expect(validateEntryEvidenceReceiptV1(correct, { ...receiptExpected(f), receiptSha256: "0".repeat(64) }).valid).toBe(false)
+      expect(validateEntryEvidenceReceiptV1(correct, { ...receiptExpected(f), currentHeadSha: "0".repeat(40) }).valid).toBe(false)
+      expect(validateEntryEvidenceReceiptV1(correct, { ...receiptExpected(f), pointerReachableFromMaster: false }).valid).toBe(false)
     } finally {
       cleanup(f)
     }
