@@ -74,6 +74,13 @@ function compareSummaryNewestFirst(a: EntrySummary, b: EntrySummary): number {
   return b.startedAt - a.startedAt || b.id.localeCompare(a.id)
 }
 
+export class InvalidSummaryCursorError extends Error {
+  constructor(cursor: string) {
+    super(`Unknown or filtered summary cursor: ${cursor}`)
+    this.name = "InvalidSummaryCursorError"
+  }
+}
+
 function isOnCursorSide(summary: EntrySummary, cursor: EntrySummary | undefined, direction: "older" | "newer"): boolean {
   if (!cursor) return true
   const cmp = compareSummaryNewestFirst(summary, cursor)
@@ -151,13 +158,43 @@ function persistedCandidates(
   return { rows, total }
 }
 
+function resolveSummaryCursor(options: QueryOptions, operationKind: NonNullable<QueryOptions["operationKind"]>): EntrySummary | undefined {
+  const cursor = options.cursor
+  if (!cursor) return undefined
+
+  const inFlight = getInFlight(cursor)
+  if (inFlight) {
+    const summary = toEntrySummary(inFlight)
+    if (summaryMatchesOperationKind(summary, operationKind) && summaryMatchesFilters(summary, options) && inFlightMatchesSearch(inFlight, options.search))
+      return summary
+    throw new InvalidSummaryCursorError(cursor)
+  }
+
+  const recent = getRecentModelOperationTerminal(cursor)
+  if (recent) {
+    const entry = recordToHistoryEntry(recent)
+    if (recordMatchesQuery(recent, { ...options, operationKind }) && inFlightMatchesSearch(entry, options.search)) return recordToEntrySummary(recent)
+    throw new InvalidSummaryCursorError(cursor)
+  }
+
+  const db = getDatabase()
+  const projectionReady = isSummaryProjectionReady(db)
+  const persisted = projectionReady ? getPersistedSummary(db, cursor) : undefined
+  if (persisted && summaryMatchesOperationKind(persisted, operationKind) && summaryMatchesFilters(persisted, options) && !options.search) return persisted
+  if (!projectionReady) {
+    const stored = getV3StoredOperation(cursor)
+    if (stored && recordMatchesQuery(stored.record, { ...options, operationKind }) && !options.search) return recordToEntrySummary(stored.record, stored)
+  }
+  throw new InvalidSummaryCursorError(cursor)
+}
+
 function persistedSummaryCandidates(
   options: QueryOptions,
   operationKind: NonNullable<QueryOptions["operationKind"]>,
   capacity: number,
+  cursor: EntrySummary | undefined,
 ): { rows: Array<EntrySummary>; total: number; nextCursor: string | null; prevCursor: string | null } {
   const db = getDatabase()
-  const cursor = options.cursor ? getSummary(options.cursor) : undefined
   if (isSummaryProjectionReady(db)) {
     const page = querySummaryPage(db, { ...options, operationKind }, capacity, cursor)
     return { rows: page.entries, total: page.total, nextCursor: page.nextCursor, prevCursor: page.prevCursor }
@@ -247,14 +284,15 @@ export function getHistory(options: QueryOptions = {}): HistoryResult {
 }
 
 export function getHistorySummaries(options: QueryOptions = {}): SummaryResult {
-  const { limit = 50, cursor, terminalOnly } = options
+  const { limit = 50, terminalOnly } = options
 
   const inFlightSummaries = listInFlight()
     .filter((entry) => inFlightMatchesSearch(entry, options.search))
     .map((entry) => toEntrySummary(entry))
     .filter((summary) => summaryMatchesFilters(summary, options))
   const operationKind = options.operationKind ?? "generation"
-  const stored = persistedSummaryCandidates(options, operationKind, limit + 256 + inFlightSummaries.length + 1)
+  const cursorSummary = resolveSummaryCursor(options, operationKind)
+  const stored = persistedSummaryCandidates(options, operationKind, limit + 256 + inFlightSummaries.length + 1, cursorSummary)
   const persistedSummaries = [
     ...listRecentModelOperationTerminals()
       .filter((record) => recordMatchesQuery(record, { ...options, operationKind }))
@@ -283,7 +321,6 @@ export function getHistorySummaries(options: QueryOptions = {}): SummaryResult {
   // eager-persisted `streaming` SQLite head row, and keeps terminal entries
   // regardless of which source they came from.
   const visible = terminalOnly ? merged.filter((summary) => !isInFlightSummary(summary)) : merged
-  const cursorSummary = cursor ? getSummary(cursor) : undefined
   const direction = options.direction ?? "older"
   const onPageSide = visible.filter((summary) => isOnCursorSide(summary, cursorSummary, direction)).sort(compareSummaryNewestFirst)
   const entries = direction === "newer" ? onPageSide.slice(Math.max(0, onPageSide.length - limit)) : onPageSide.slice(0, limit)

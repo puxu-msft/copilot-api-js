@@ -15,6 +15,7 @@ import {
   type QueryOptions,
   type SearchSource,
 } from "~/lib/history"
+import { InvalidSummaryCursorError } from "~/lib/history/queries"
 import { compressAsync } from "~/lib/sqlite/compression"
 
 /**
@@ -66,8 +67,12 @@ export function handleGetEntries(c: Context) {
     terminalOnly: query.terminalOnly === "true" ? true : undefined,
   }
 
-  const result = getHistorySummaries(options)
-  return c.json(result)
+  try {
+    return c.json(getHistorySummaries(options))
+  } catch (error) {
+    if (error instanceof InvalidSummaryCursorError) return c.json({ error: error.message }, 400)
+    throw error
+  }
 }
 
 /**
