@@ -380,30 +380,45 @@ describe("entry evidence validator C7-C9", () => {
       const tampering: Array<[string, (receipt: Record<string, unknown>) => void]> = [
         ["missing field", (receipt) => delete receipt.verdict],
         ["extra field", (receipt) => (receipt.unexpected = true)],
-        ["wrong schema version", (receipt) => (receipt.schema_version = 2)],
-        ["wrong validator path", (receipt) => (receipt.validator_path = "scripts/other.ts")],
-        ["relative manifest path", (receipt) => (receipt.manifest_path = "evidence-manifest.json")],
-        ["tree-contained manifest path", (receipt) => (receipt.manifest_path = path.join(f.tree, "evidence-manifest.json"))],
-        ["invalid RFC3339 timestamp", (receipt) => (receipt.validated_at = "2026-15-06T99:99:99Z")],
-        ["verdict", (receipt) => (receipt.verdict = "red")],
-        ["invalid validator blob", (receipt) => (receipt.validator_git_blob = "invalid")],
-        ["validator blob", (receipt) => (receipt.validator_git_blob = "0".repeat(40))],
-        ["invalid entry SHA", (receipt) => (receipt.entry_sha = "invalid")],
-        ["entry SHA", (receipt) => (receipt.entry_sha = "0".repeat(40))],
-        ["invalid pointer SHA", (receipt) => (receipt.pointer_sha = "invalid")],
-        ["pointer SHA type", (receipt) => (receipt.pointer_sha = 7)],
-        ["pointer SHA", (receipt) => (receipt.pointer_sha = "0".repeat(40))],
-        ["invalid manifest hash", (receipt) => (receipt.manifest_sha256 = "invalid")],
-        ["manifest hash", (receipt) => (receipt.manifest_sha256 = "0".repeat(64))],
+        ["schema_version type", (receipt) => (receipt.schema_version = "1")],
+        ["schema_version", (receipt) => (receipt.schema_version = 2)],
+        ["validator_path type", (receipt) => (receipt.validator_path = 7)],
+        ["validator_path", (receipt) => (receipt.validator_path = "scripts/other.ts")],
+        ["validator_git_blob type", (receipt) => (receipt.validator_git_blob = 7)],
+        ["validator_git_blob", (receipt) => (receipt.validator_git_blob = "0".repeat(40))],
+        ["entry_sha type", (receipt) => (receipt.entry_sha = 7)],
+        ["entry_sha", (receipt) => (receipt.entry_sha = "0".repeat(40))],
+        ["pointer_sha type", (receipt) => (receipt.pointer_sha = 7)],
+        ["pointer_sha", (receipt) => (receipt.pointer_sha = "0".repeat(40))],
+        ["manifest_path type", (receipt) => (receipt.manifest_path = 7)],
+        ["manifest_path", (receipt) => (receipt.manifest_path = path.join(f.tree, "evidence-manifest.json"))],
+        ["manifest_sha256 type", (receipt) => (receipt.manifest_sha256 = 7)],
+        ["manifest_sha256", (receipt) => (receipt.manifest_sha256 = "0".repeat(64))],
         ["baseline path type", (receipt) => (receipt.discovery_baseline_path = 7)],
         ["baseline path", (receipt) => (receipt.discovery_baseline_path = "tests/other.json")],
         ["baseline hash type", (receipt) => (receipt.discovery_baseline_sha256 = 7)],
         ["baseline hash", (receipt) => (receipt.discovery_baseline_sha256 = "0".repeat(64))],
         ["runner blob type", (receipt) => (receipt.discovery_runner_git_blob = 7)],
         ["runner blob", (receipt) => (receipt.discovery_runner_git_blob = "0".repeat(40))],
+        ["validated_at type", (receipt) => (receipt.validated_at = 7)],
+        ["validated_at", (receipt) => (receipt.validated_at = "2026-02-30T00:00:00Z")],
+        ["verdict type", (receipt) => (receipt.verdict = 7)],
+        ["verdict", (receipt) => (receipt.verdict = "red")],
       ]
       expect(validateEntryEvidenceReceiptV1("{", receiptExpected(f)).valid).toBe(false)
       expect(validateEntryEvidenceReceiptV1(`${correct}\n`, receiptExpected(f)).valid).toBe(false)
+      for (const timestamp of [
+        "2023-02-29T00:00:00Z",
+        "2026-02-30T00:00:00Z",
+        "2024-02-30T00:00:00Z",
+        "2026-01-01T00:00:00+24:00",
+        "2026-01-01T00:00:00+01:60",
+      ]) {
+        const raw = receiptRawWith(f, (receipt) => (receipt.validated_at = timestamp))
+        expect(validateEntryEvidenceReceiptV1(raw, receiptExpected(f, raw)).valid, timestamp).toBe(false)
+      }
+      const leapDayRaw = receiptRawWith(f, (receipt) => (receipt.validated_at = "2024-02-29T00:00:00+05:30"))
+      expect(validateEntryEvidenceReceiptV1(leapDayRaw, receiptExpected(f, leapDayRaw)).valid).toBe(true)
       for (const [label, tamper] of tampering) {
         const raw = receiptRawWith(f, tamper)
         expect(validateEntryEvidenceReceiptV1(raw, receiptExpected(f, raw)).valid, label).toBe(false)
@@ -452,6 +467,18 @@ describe("entry evidence validator C7-C9", () => {
           manifestPath: path.join(insideLink, "missing-manifest.json"),
         }).valid,
       ).toBe(false)
+
+      const nonexistentManifest = path.join(f.out, "missing-manifest.json")
+      const nonexistentReceiptRaw = receiptRawWith(f, (receipt) => (receipt.manifest_path = nonexistentManifest))
+      expect(
+        validateEntryEvidenceReceiptV1(nonexistentReceiptRaw, { ...receiptExpected(f, nonexistentReceiptRaw), manifestPath: nonexistentManifest }).valid,
+      ).toBe(false)
+
+      const directoryReceiptRaw = receiptRawWith(f, (receipt) => (receipt.manifest_path = f.out))
+      expect(validateEntryEvidenceReceiptV1(directoryReceiptRaw, { ...receiptExpected(f, directoryReceiptRaw), manifestPath: f.out }).valid).toBe(false)
+
+      const treeReceiptRaw = receiptRawWith(f, (receipt) => (receipt.manifest_path = f.tree))
+      expect(validateEntryEvidenceReceiptV1(treeReceiptRaw, { ...receiptExpected(f, treeReceiptRaw), manifestPath: f.tree }).valid).toBe(false)
 
       const outsideLink = path.join(f.out, "outside-link")
       symlinkSync(f.out, outsideLink)

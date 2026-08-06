@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto"
-import { closeSync, constants, existsSync, linkSync, openSync, realpathSync, rmSync, unlinkSync, writeFileSync } from "node:fs"
+import { closeSync, constants, linkSync, openSync, realpathSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs"
 import path from "node:path"
 
 const RECEIPT_KEYS = [
@@ -101,24 +101,13 @@ function parseReceiptObject(value: unknown): EntryEvidenceReceiptValidation {
   return { valid: true, receipt: receipt as unknown as EntryEvidenceReceiptV1, errors: [] }
 }
 
-function canonicalPathWithExistingAncestor(value: string): string | undefined {
-  let candidate = path.resolve(value)
-  const unresolvedSegments: string[] = []
-  while (!existsSync(candidate)) {
-    const parent = path.dirname(candidate)
-    if (parent === candidate) return undefined
-    unresolvedSegments.unshift(path.basename(candidate))
-    candidate = parent
-  }
+function canonicalRegularFile(value: string): string | undefined {
   try {
-    return path.join(realpathSync(candidate), ...unresolvedSegments)
+    const canonicalPath = realpathSync(value)
+    return statSync(canonicalPath).isFile() ? canonicalPath : undefined
   } catch {
     return undefined
   }
-}
-
-function isCanonicalDescendant(child: string, parent: string): boolean {
-  return child.startsWith(`${parent}${path.sep}`)
 }
 
 export function parseEntryEvidenceReceiptV1(raw: string): EntryEvidenceReceiptValidation {
@@ -134,15 +123,22 @@ export function validateEntryEvidenceReceiptV1(raw: string, expected: EntryEvide
   if (!parsed.valid || parsed.receipt === undefined) return parsed
   const receipt = parsed.receipt
   const errors: string[] = []
-  const canonicalTree = canonicalPathWithExistingAncestor(expected.tree)
-  const canonicalManifest = canonicalPathWithExistingAncestor(receipt.manifest_path)
-  const canonicalExpectedManifest = canonicalPathWithExistingAncestor(expected.manifestPath)
+  const canonicalTree = (() => {
+    try {
+      return realpathSync(expected.tree)
+    } catch {
+      return undefined
+    }
+  })()
+  const canonicalManifest = canonicalRegularFile(receipt.manifest_path)
+  const canonicalExpectedManifest = canonicalRegularFile(expected.manifestPath)
   if (
     canonicalTree === undefined ||
     canonicalManifest === undefined ||
     canonicalExpectedManifest === undefined ||
     canonicalManifest !== canonicalExpectedManifest ||
-    isCanonicalDescendant(canonicalManifest, canonicalTree)
+    canonicalManifest === canonicalTree ||
+    canonicalManifest.startsWith(`${canonicalTree}${path.sep}`)
   )
     errors.push("manifest_path is invalid for tree")
   if (receipt.entry_sha !== expected.entrySha) errors.push("entry_sha differs from expected entry")
