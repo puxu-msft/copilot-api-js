@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import os from "node:os"
 import path from "node:path"
 
@@ -57,7 +57,9 @@ function createFixture(options: { omitArtifacts?: boolean; skippedKind?: SkipKin
     : `printf '<testsuites>${testcase}</testsuites>\\n' > "$d/shard-01.xml"
 printf '{\\n  "files": [\\n    "tests/a.unit.test.ts"\\n  ]\\n}\\n' > "$d/runtime-identity.json"
 printf '{\\n  "executed": 1,\\n  "skipped": ${options.skippedKind ? 1 : 0},\\n  "skipped_identities": ${skippedIdentity}\\n}\\n' > "$d/skipped-multiset.json"`
-  const manifestCollision = options.manifestDirectory ? 'mkdir "$OUT/evidence-manifest.json"' : ""
+  const manifestCollision = options.manifestDirectory
+    ? 'mkdir "$OUT/evidence-manifest.json"\nprintf "preserve me\\n" > "$OUT/evidence-manifest.json/sentinel.txt"'
+    : ""
   writeFileSync(
     path.join(tree, "exp/inter-block-anchor-allocator/baseline-runs.sh"),
     `#!/usr/bin/env bash
@@ -174,13 +176,18 @@ describe("capture-entry-evidence", () => {
     }
   }, 30_000)
 
-  test("uses rc 6 and leaves no manifest when atomic manifest write fails", () => {
+  test("uses rc 6 without replacing or deleting a pre-existing manifest target", () => {
     const fixture = createFixture({ manifestDirectory: true })
+    const target = path.join(fixture.out, "evidence-manifest.json")
+    const sentinel = path.join(target, "sentinel.txt")
+    const temporary = path.join(fixture.out, ".evidence-manifest.json.tmp")
     try {
       const result = runCapture(fixture)
       expect(result.exitCode).toBe(6)
       expect(new TextDecoder().decode(result.stderr)).toContain("manifest write failed")
-      expect(() => readFileSync(path.join(fixture.out, "evidence-manifest.json"), "utf8")).toThrow()
+      expect(readFileSync(sentinel, "utf8")).toBe("preserve me\n")
+      expect(existsSync(target)).toBe(true)
+      expect(existsSync(temporary)).toBe(false)
     } finally {
       clean(fixture)
     }

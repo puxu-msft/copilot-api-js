@@ -76,8 +76,15 @@ function isUnder(child: string, parent: string): boolean {
 
 function atomicWrite(filePath: string, body: string): void {
   const temporary = path.join(path.dirname(filePath), `.${path.basename(filePath)}.tmp`)
-  writeFileSync(temporary, body)
-  renameSync(temporary, filePath)
+  try {
+    writeFileSync(temporary, body)
+    renameSync(temporary, filePath)
+  } catch (error) {
+    // Only this invocation's deterministic temporary path is ours to remove.
+    // The target may predate this invocation and must never be touched on failure.
+    rmSync(temporary, { force: true })
+    throw error
+  }
 }
 
 function discover(tree: string): Array<string> {
@@ -224,7 +231,6 @@ try {
       `${JSON.stringify({ schema_version: 1, measured_sha: options.entrySha, evidence_timing: "closeout", claims_current_head: true, out_dir: options.out, canonical_command: "bun scripts/parallel-test.ts unit it http", discovery_baseline_path: options.discoveryBaseline, discovery_baseline_sha256: baselineHash, discovery_runner_git_blob: runnerBlob, disk_manifest: { path: diskManifestPath, sha256: sha256(diskManifestPath) }, runtime_identity_manifest: { path: runtimeIdentityManifestPath, sha256: sha256(runtimeIdentityManifestPath) }, skipped_multiset: { path: skippedMultisetManifestPath, sha256: sha256(skippedMultisetManifestPath) }, runs }, null, 2)}\n`,
     )
   } catch (error) {
-    rmSync(manifestPath, { recursive: true, force: true })
     fail(6, `manifest write failed: ${error instanceof Error ? error.message : String(error)}`)
   }
   console.log(`manifest=${manifestPath}`)
