@@ -246,7 +246,7 @@ describe("h2 generation-based retire-and-replace", () => {
   })
 
   test("reconcile reschedules a RETIRING session's PING timer to a NEW positive interval — old cadence stops, new cadence starts, in-flight stream still drains intact (spec §7 HIGH addition, A3)", async () => {
-    setUpstreamTransportConfig({ upstreamH2PingInterval: 0.5 }) // 500ms — slow enough it will not have fired yet at the assertion point below
+    setUpstreamTransportConfig({ upstreamH2PingInterval: 0.5 })
     const pingSpy = mock((cb: () => void) => cb())
     setHttp2SessionFactoryForTests(() => {
       const s = http2.connect(url)
@@ -258,32 +258,45 @@ describe("h2 generation-based retire-and-replace", () => {
     const serverStreamReleased = new Promise<void>((resolve) => {
       releaseServerStream = resolve
     })
+    const streamOpened = Promise.withResolvers<void>()
     handler = (stream) => {
       stream.respond({ ":status": 200 })
       stream.write("first-chunk")
+      streamOpened.resolve()
       void serverStreamReleased.then(() => stream.end("last-chunk"))
     }
 
     const responsePromise = http2Fetch(`${url}/reschedule-to-new-positive`, {})
-    await sleep(30)
-    expect(pingSpy.mock.calls.length).toBe(0) // the 500ms cadence has not ticked yet
+    await streamOpened.promise
 
-    setUpstreamTransportConfig({ upstreamH2PingInterval: 0.015 }) // 15ms — much faster new cadence
-    reconcileH2SessionsForConfigChange()
+    const setIntervalSpy = spyOn(globalThis, "setInterval")
+    const clearIntervalSpy = spyOn(globalThis, "clearInterval")
+    setIntervalSpy.mockClear()
+    clearIntervalSpy.mockClear()
+
+    // The production onUpstreamTransportChange subscription performs the
+    // reconcile synchronously; do not invoke it a second time in the test.
+    setUpstreamTransportConfig({ upstreamH2PingInterval: 0.015 })
 
     const retiring = getH2SessionStatusSnapshot()
+    const clearCount = clearIntervalSpy.mock.calls.length
+    const scheduled = [...setIntervalSpy.mock.calls]
+    setIntervalSpy.mockRestore()
+    clearIntervalSpy.mockRestore()
+
     expect(retiring).toHaveLength(1)
     expect(retiring[0].lifecycle).toBe("retiring")
     expect(retiring[0].effectivePingIntervalMs).toBe(15)
     expect(retiring[0].activeStreamCount).toBe(1)
+    expect(clearCount).toBe(1)
+    expect(scheduled).toHaveLength(1)
+    expect(scheduled[0][1]).toBe(15)
 
-    // ~3 ticks at the NEW 15ms cadence within this window proves the OLD
-    // 500ms timer was actually replaced (not merely left running alongside
-    // a second one, which this assertion would also fail to distinguish
-    // from — but a stale 500ms timer contributes 0 calls in this window
-    // regardless, so >=2 calls here is solely attributable to the new timer).
-    await sleep(55)
-    expect(pingSpy.mock.calls.length).toBeGreaterThanOrEqual(2)
+    const callsBeforeManualTicks = pingSpy.mock.calls.length
+    const newCadence = scheduled[0][0] as () => void
+    newCadence()
+    newCadence()
+    expect(pingSpy.mock.calls.length).toBeGreaterThanOrEqual(callsBeforeManualTicks + 2)
 
     releaseServerStream?.()
     const res = await responsePromise
