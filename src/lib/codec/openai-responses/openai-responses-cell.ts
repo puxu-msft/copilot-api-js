@@ -93,7 +93,11 @@ function makeResponsesLeg(targetEndpoint: typeof ENDPOINT.RESPONSES | typeof END
       // translated body's ACTUAL shape differs per clientFormat, so it is NOT named `ccBody` (nit fix
       // post-subtask-C review: that name was misleading for the anthropic branch, which produces
       // Responses-shaped output, not CC).
-      const translatedBody = translateRequestVia(env.clientFormat, ENDPOINT.RESPONSES, env.body, { model: env.model as Model | undefined, reqId: env.ctx.id })
+      const translatedBody = translateRequestVia(env.clientFormat, ENDPOINT.RESPONSES, env.body, {
+        model: env.model as Model | undefined,
+        reqId: env.ctx.id,
+        onAnthropicToResponsesDegradation: (degradation) => env.ctx.recordTranslationDegradation(degradation),
+      })
       return env.with({ body: translatedBody })
     },
 

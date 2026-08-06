@@ -19,7 +19,6 @@ import type {
 } from "~/lib/anthropic/decode-tool-input-core"
 import type { BlockLayoutRepairStats } from "~/lib/anthropic/sanitize/assistant-block-layout"
 import type { BufferedMergeDiag } from "~/lib/codec/openai-responses/buffered-merge-reducer"
-import type { OwnerOperation } from "~/lib/pipeline/types"
 import type {
   //
   CandidateRole,
@@ -27,6 +26,8 @@ import type {
   DispatchVerdict,
   OperationSyntheticKind,
 } from "~/lib/context/model-operation-record"
+import type { AnthropicToResponsesTranslationDegradation } from "~/lib/pipeline/translation-degradation"
+import type { OwnerOperation } from "~/lib/pipeline/types"
 import type { ProcessIdentity } from "~/lib/process-identity"
 import type { CopilotAnnotations } from "~/types/api/anthropic"
 
@@ -216,6 +217,8 @@ export interface PipelineInfo {
   /** A generation owner crossed the external-write commit point before downstream delivery failed. */
   wirePartialDelivery?: Readonly<{ operation: OwnerOperation; cause: "client-gone" | "wire-error"; committed: true }>
   preprocessing?: PreprocessInfo
+  /** Request-side protocol degradations grouped by concrete translation pair. */
+  translation?: { anthropicToResponses?: AnthropicToResponsesTranslationDegradation }
   sanitization?: Array<SanitizationInfo>
   messageMapping?: Array<number>
   /** passthrough 剥掉的 GHC 未支持 cache_control 子字段（如 scope）。持久化到 history 供运维审计缓存语义降级（spec §8）。 */

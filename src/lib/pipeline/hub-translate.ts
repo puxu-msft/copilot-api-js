@@ -37,6 +37,7 @@ import type {
   ClientFormat,
   UpstreamEndpoint,
 } from "~/lib/pipeline/envelope"
+import type { AnthropicToResponsesTranslationDegradationReporter } from "~/lib/pipeline/translation-degradation"
 import type {
   //
   ClientFrame,
@@ -90,6 +91,8 @@ export interface HubTranslateContext {
   model?: Model
   /** The originating request id (`ctx.id`) — threaded to TAG the anthropic→cc lossy-drop warnings so they are traceable to their request. */
   reqId?: string
+  /** Request-side Anthropic→Responses protocol-degradation sink. */
+  onAnthropicToResponsesDegradation?: AnthropicToResponsesTranslationDegradationReporter
 }
 
 /**
@@ -143,7 +146,11 @@ const anthropicToChatCompletionsBridge: RequestBridge = (body, ctx) =>
  * refactor — the three call sites were updated together, RFC §2.3 three-point corner).
  */
 const anthropicToResponsesBridge: RequestBridge = (body, ctx) =>
-  translateAnthropicToResponses(body as MessagesPayload, { model: ctx?.model, reqId: ctx?.reqId })
+  translateAnthropicToResponses(body as MessagesPayload, {
+    model: ctx?.model,
+    reqId: ctx?.reqId,
+    onTranslationDegradation: ctx?.onAnthropicToResponsesDegradation,
+  })
 
 /** `openai-cc | gemini → /v1/messages`: CC-canonical → Anthropic Messages (shared — no gemini-held Anthropic sub-codec). */
 const ccToAnthropicRequestBridge: RequestBridge = (body) => translateChatCompletionsToAnthropic(body as ChatCompletionsPayload)

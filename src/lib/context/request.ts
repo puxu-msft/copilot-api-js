@@ -325,10 +325,20 @@ export function createRequestContext(opts: {
   let _askNormalization: PipelineInfo["askUserQuestionNormalization"] | null = null
   let _sendMessageNormalization: PipelineInfo["sendMessageNormalization"] | null = null
   let _bufferedMergeInfo: PipelineInfo["bufferedMerge"] | null = null
+  let _translationDegradation: NonNullable<PipelineInfo["translation"]>["anthropicToResponses"] | null = null
   let _maxTokensContinuationInfo: PipelineInfo["maxTokensContinuation"] | null = null
   let _wirePartialDeliveryInfo: PipelineInfo["wirePartialDelivery"] | null = null
   const mergedPipelineInfo = (): PipelineInfo | null => {
-    if (!_pipelineInfo && !_streamTimeouts && !_askNormalization && !_sendMessageNormalization && !_bufferedMergeInfo && !_maxTokensContinuationInfo && !_wirePartialDeliveryInfo)
+    if (
+      !_pipelineInfo
+      && !_streamTimeouts
+      && !_askNormalization
+      && !_sendMessageNormalization
+      && !_bufferedMergeInfo
+      && !_translationDegradation
+      && !_maxTokensContinuationInfo
+      && !_wirePartialDeliveryInfo
+    )
       return null
     return {
       ..._pipelineInfo,
@@ -336,6 +346,7 @@ export function createRequestContext(opts: {
       ...(_askNormalization && { askUserQuestionNormalization: _askNormalization }),
       ...(_sendMessageNormalization && { sendMessageNormalization: _sendMessageNormalization }),
       ...(_bufferedMergeInfo && { bufferedMerge: _bufferedMergeInfo }),
+      ...(_translationDegradation && { translation: { ..._pipelineInfo?.translation, anthropicToResponses: _translationDegradation } }),
       ...(_maxTokensContinuationInfo && { maxTokensContinuation: _maxTokensContinuationInfo }),
       ...(_wirePartialDeliveryInfo && { wirePartialDelivery: _wirePartialDeliveryInfo }),
     }
@@ -1076,6 +1087,10 @@ export function createRequestContext(opts: {
       // (under buffered-retry may reflect a discarded attempt; forwarded-wire correctness unaffected).
       _sendMessageNormalization = { ..._sendMessageNormalization, ...diag }
       recordAttemptDiagnostic("repair.send_message_normalization", "warning", diag)
+    },
+    recordTranslationDegradation(diag) {
+      _translationDegradation = diag
+      recordAttemptDiagnostic("translation.anthropic_to_responses", "info", diag)
     },
     recordMaxTokensTruncation(diag) {
       // Persist through mergedPipelineInfo at terminal settle, not through a transient context event.
