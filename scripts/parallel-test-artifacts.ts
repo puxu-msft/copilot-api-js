@@ -80,7 +80,7 @@ export function parseJUnit(xml: string, repoRoot: string): JUnitIdentities {
     const rawFile = attribute(attributes, "file")
     const rawClassname = attribute(attributes, "classname")
     const rawName = attribute(attributes, "name")
-    if (!rawFile || !rawClassname || !rawName) continue
+    if (rawFile === undefined || rawClassname === undefined || rawName === undefined) continue
 
     const file = toRepoRelative(rawFile, repoRoot)
     const classname = unescapeXml(rawClassname)

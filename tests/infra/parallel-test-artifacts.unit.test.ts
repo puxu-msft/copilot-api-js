@@ -35,6 +35,16 @@ describe("parallel-test JUnit artifact parsing", () => {
     expect(identities.skippedIdentities).toEqual([])
   })
 
+  test("keeps a runnable testcase whose classname and name are legitimate empty strings", () => {
+    const identities = parseJUnit(
+      `<?xml version="1.0"?><testsuites><testsuite name="suite"><testcase classname="" name="" file="/repo/tests/empty.unit.test.ts"/></testsuite></testsuites>`,
+      "/repo",
+    )
+
+    expect(identities.files).toEqual(["tests/empty.unit.test.ts"])
+    expect(identities.executed).toBe(1)
+  })
+
   test("assigns ordinal and skip identity from real JUnit testcase rows", () => {
     const identities = parseJUnit(
       `<?xml version="1.0"?><testsuites><testsuite name="suite"><testcase classname="suite" name="same" file="/repo/tests/a.unit.test.ts"/><testcase classname="suite" name="same" file="/repo/tests/a.unit.test.ts"><skipped/></testcase></testsuite></testsuites>`,
