@@ -1,40 +1,47 @@
 ---
 slug: commit-minus-1-impl
 base: 87679f35d346cad94abd32d62133b40fee79fe7a
-branch: agent-ad78d9a173920b14a
-worktree: /home/xp/src/copilot-api-js/.worktree/agent-ad78d9a173920b14a
+branch: command-algebra-commit-minus-1
+worktree: /home/xp/src/copilot-api-js/.worktree/command-algebra-commit-minus-1
 plan: docs/rfc/2026-08-03-generation-emission-command-algebra/prompts/commit-minus-1.md
-agent_id: agent-ad78d9a173920b14a
-session_id: 046d7295-e5ce-470b-a284-c721c6ce1cb8
-execution_location: tool-bound nested worktree；成果通过 commit 集成，不直接写主执行树
+execution_head: 3b5ac1e41d87ab089becd55afe38f788643a4390
+status: Commit -1 implementation complete in the integration execution tree; post-merge phases remain deliberately unopened
 ---
 
 # 进度 —— generation emission command algebra Commit -1
 
-> 派 implementer 前建立。T0.0a/b/c/e 共享 `scripts/parallel-test.ts`、producer/validator CLI 与同一 evidence schema，是一个不可并行的基础设施 semantic unit；由一个实现者连续完成，task 之间仍按 TDD 与语义 commit 分段。
-> **每个实现 commit 同步更新并提交本文件。** 只记 git log 记不下的三样：剩余项、在途意图、已作废路径。
+## 完成状态
 
-## 剩余项
+- [x] T0.0a：真实 shard JUnit file identity 与独立 disk manifest 双向对账。
+- [x] T0.0b：executed/skipped 与 strict testcase/suite skipped identity multiset；已删除已退役的 V2 FIFO skip。
+- [x] T0.0c：artifact transfer、producer、v1 baseline、reporter/collection/post-balance mutation controls。
+- [x] T0.0e：entry-evidence validator C1～C11、receipt v1、EV-01～EV-28 synthetic controls。
+- [x] Commit -1 集成门：focused controls、typecheck、Prettier、diff-check、完整 backend 已完成；最终集成证据见下。
+- [ ] whole-branch merged-state review：下一项，不是实现缺口。
+- [ ] merge Commit -1 to `master`：只在 merged-state review 通过后执行。
 
-- [x] T0.0a：真实 shard JUnit file identity 与独立 disk manifest 双向对账已实现；second isolated repo 的 post-balance/pre-spawn exact-patch mutation以具体 `tests/alpha.unit.test.ts` 等 missing runtime identities 红，已 reverse-check/恢复。
-- [x] T0.0b：FIFO skip 删除已获独立 reviewer APPROVE：V2 in-memory FIFO contract 已退役，V3 持久化取代该内存上限且当前 maintenance 不按数量淘汰存活行；不进入 `allowed_skipped`。实际 discovery 为 6880 executed／26 skipped：18 `native-unavailable`、1 `todo`、7 `whole-suite-skip`，无 catch-all；canonical baseline 已重冻并集成。
-- [x] T0.0c：producer 逐 run 比较 testcase/suite skipped multiset，manifest 含 `runtime_identity_manifest`／`skipped_multiset` 聚合 artifacts，manifest write failure 为 rc=6且只清理本 invocation temp；second isolated repo 的 reporter-only-refresh／dropped-shard／post-balance mutations均目标红并恢复。Task review spec ✅ / quality approved。
-- [ ] T0.0e：明确留待后续实现 `scripts/validate-entry-evidence.ts`、合成 fixtures 与 EV-01～EV-28。
-- [ ] Commit -1 门表：T0.0c mutations、producer fixtures、typecheck、基础设施 tests、test:backend、独立 review。
+T0.0f、T0.0d、真实 A/P/P receipt 消费与 T0.1 均是 `master` merge 后的后续阶段；它们不属于 Commit -1 未完成项，且本阶段没有生成或消费真实 future A/P evidence。
 
-## 在途意图
+## 已确证集成证据
 
-- 进度纪律偏差：`56a32ea9` 误漏本 progress 文件；未改写历史。下一提交单独记录该偏差，后续每个语义 commit 继续携带本文件，最终对账将标注这一处例外。
-- T0.0a/c isolated mutation evidence：`/home/xp/.claude/jobs/046d7295/tmp/runner-mutation-probe` 是一次性 git repo，基线 commit `7b35c00418aa6eb019ab2eeb04b4fdb127604107` 含当前 runner/artifact implementation及64真实 `.unit.test.ts`，通过真实 `bun scripts/parallel-test.ts unit` 进程链绿（16 shards／64 executed）；node_modules 解析为该临时目录自身路径。三个 independent exact patches各自注入→hunk diff确认→运行→读目标FAIL→`git apply --reverse --check`→reverse apply→`git diff`空：post-balance bucket drop red为 `missing runtime file identity: tests/alpha.unit.test.ts`（另15项）；reporter-only-refresh red为 `missing JUnit artifact for shard: .../shard-01.xml`；collection drop red为同一具体 shard artifact。此前全backend超时 probe不作正控证据。
-- T0.0b：主执行分支 `7c5891d0` 已裁 suite-only skip 的 v1 canonical representation。当前树遵守该契约：`kind="suite"` 仅产出 `file,suite_name,count,reason`，禁止 testcase 字段；`kind="testcase"` 才可含 `classname,name,ordinal`。suite multiset 的 `count` 取 JUnit suite 的真实 `skipped` 数，且仅 self-closing suite 可成为 suite variant。
-- T0.0c artifact transfer：主执行分支 `f197c8b5` 已冻结 `PARALLEL_TEST_ARTIFACT_DIR` 和 `REQUIRE_TEST_ARTIFACTS=1`。当前实现将 runner artifacts 原子落盘，wrapper 每 run 设置树外 `run-NN-artifacts` 并记录 `artifact_dir=`，成功 runner 缺 JUnit/runtime/skipped artifact 即将该 run 判失败。仍须 producer/validator 严格消费该 transfer。
-- T0.0c baseline/producer：独立真实 shard oracle 在 empty identity 修复与 obsolete FIFO 删除后重冻结 676 files、6880 executed、26 classified skips（18 native、1 todo、7 whole-suite）与当前 runner blob。`capture-entry-evidence.ts` 严格解析 baseline、绑定 entry tree 的原始 bytes/hash/blob、以 REQUIRE_TEST_ARTIFACTS 消费 wrapper 记录的 transfer artifacts，并逐次核 runtime identity、testcase/suite skipped multiset。manifest 含 deterministic aggregate runtime/skipped artifacts；success、两种 union、runnable→skip、缺 transfer 和 rc=6 write-failure fixtures都已覆盖；collision 只清理本 invocation temp，保留既存 target/sentinel。
-- Commit -1 只交付 runner oracle、producer、validator；**不生成真实 A/P/15-run evidence**。
-- 所有 mutation 在包含真实实现的第二隔离树或 `/tmp` repo 运行；若用 exact patch，先构造冻结 patch，恢复前 reverse-check，恢复后 diff。
-- `d7f6c222` 的结构化 evidence 字段是已存在能力，不重写第二套。
+执行树是 `/home/xp/src/copilot-api-js/.worktree/command-algebra-commit-minus-1`，集成 HEAD 为 `3b5ac1e41d87ab089becd55afe38f788643a4390`。协调方在该集成 HEAD 报告的最终 backend 证据为：`bun run test:backend`（unit、it、http，16 shards）执行 `6728 pass，0 fail，6915 executed，26 skipped，36.68s`。`bun run typecheck` 与 canonical focused `bun test tests/history/v3/canonical-performance.unit.test.ts --rerun-each=20` 也为绿。
 
-## 已作废的路子
+历史上 `canonical-performance.unit.test.ts` 的小样本 wall-clock ratio 在并发下曾红；该历史没有删除。它已由 `fcec6f32`／`3b5ac1e4` 的递归 freeze 与 sealed arena-copy deterministic work oracle 取代为非 gate 诊断输出。当前 4× workload 的 deterministic ratios 是 conversation `101→389`（`3.8515×`）与 SSE `1029→4101`（`3.9854×`）；同一生产 copy path 的 quadratic mutation 为 conversation `1125→16773`（`14.9093×`）与 SSE `263173→4198405`（`15.9530×`），会目标变红并已 exact reverse restore。
 
-- 不用 refreshTimings 的独立 JUnit 给真实 shards 背书。
-- 不从被测 15-run 自报数生成 `minimum_executed`。
-- 不在将成为 entry 的权威树里注入 mutation 后整文件恢复。
+## 已落地机制
+
+- runner `scripts/parallel-test.ts` 将每 shard JUnit 与 runtime/skipped artifacts 原子写入 run artifact directory；producer 从原始 artifacts 对 discovery baseline、runtime identities 与 skipped multiset 独立对账。
+- validator `scripts/validate-entry-evidence.ts` 对 pointer、manifest、15 runs、strict artifacts、manifest/raw/entry 三方关系、ENTRY tree/object bytes、runtime import closure 与 atomic receipt publication 执行 C1～C11；所有 fixture 是 `/tmp` synthetic git graph。
+- receipt publication no-replace，遇冲突返回 rc=8，不能覆盖既有 receipt。
+- shutdown PTY harness 以真实 `ICANON|ECHO` cooked 状态与六秒 READY condition gate 驱动第二信号；旧日志即 readiness 的假设已废。
+- in-flight summary 与 canonical capture 均从 wall-clock budget 改为在 shared base 的 deterministic operation count；test observer 均进 shared resetter registry。
+
+## 剩余动作与边界
+
+1. 对 integration branch 做 whole-branch merged-state review，特别检查 runner→producer→validator evidence seam、PTY lifecycle seam、summary／capture observer isolation 及各 commit message 与 diff。
+2. review 无 blocker/major 后，将 Commit -1 integration branch merge 到 `master`。
+3. 仅在 `master` 含 Commit -1 后，单独启动真实 T0.0f/T0.0d/P/T0.1；真实 A/P 仍须在该阶段按冻结 plan 生成和消费。
+
+## 历史路径说明
+
+本文件最初由 `/home/xp/src/copilot-api-js/.worktree/agent-ad78d9a173920b14a` 写入；该 agent 路径和其分支仅是历史实现位置，不是当前执行真相源。当前状态以上述 integration execution tree 与 HEAD 为准。

@@ -1,58 +1,46 @@
-# Commit -1 实施报告
+# Commit -1 final implementation report
 
-## 执行位置
+## Integrated execution state
 
-- 状态：进行中。
-- 实施树：`/home/xp/src/copilot-api-js/.worktree/agent-ad78d9a173920b14a`。
-- 分支：`agent-ad78d9a173920b14a`。
-- 实施基线：`87679f35d346cad94abd32d62133b40fee79fe7a`。
-- 上游 anchor：`6e9e9439b10fd7031f774c1441e9ab628946a28b` 是实施基线祖先。
-- 位置说明：tool-bound nested worktree；成果通过 commit 集成，不直接写主执行树。
+Commit -1 T0.0a/b/c/e is complete in the integration execution tree `/home/xp/src/copilot-api-js/.worktree/command-algebra-commit-minus-1` at HEAD `3b5ac1e41d87ab089becd55afe38f788643a4390`. Earlier agent worktrees named below are historical execution locations only; they are not current state sources.
 
-## 计划对照
+Final integrated evidence supplied by the coordinator: `bun run test:backend` on that HEAD ran unit/it/http in 16 shards with `6728 pass，0 fail，6915 executed，26 skipped，36.68s`. `bun run typecheck` is green. Focused canonical capture `bun test tests/history/v3/canonical-performance.unit.test.ts --rerun-each=20` is green. These numbers supersede all earlier branch-local backend counts.
 
-- [ ] T0.0a：真实 shard JUnit identity 与 disk manifest 双向对账。
-- [x] T0.0b：executed/skipped 与 skipped identity multiset。
-- [ ] T0.0c：reporter/merge 正控、producer 与 v1 baseline。
-- [ ] T0.0e：validator、合成 fixtures 与 EV-01～EV-28。
-- [ ] 收口：mutations、typecheck、基础设施 tests、test:backend、独立 review。
+## Plan completion
 
-## TDD 和 mutation 记录
+- [x] T0.0a：实际 shard JUnit identity 与 runtime file identity 对账。
+- [x] T0.0b：executed/skipped 与 strict testcase/suite skipped identity multiset；已退役不再成立的 V2 FIFO skip。
+- [x] T0.0c：runner artifact transfer、producer、v1 discovery baseline、manifest atomicity，及 post-balance／reporter／collection target mutations。
+- [x] T0.0e：validator C1～C11、receipt v1、EV-01～EV-28 synthetic fixtures 和 runtime closure provenance。
+- [x] Commit -1 integrated gates：focused controls、typecheck、format/diff checks 和 backend。
+- [ ] whole-branch merged-state review。
+- [ ] 将 Commit -1 merge 到 `master`。
 
-- T0.0a/b RED：`bun test tests/infra/parallel-test-artifacts.unit.test.ts` 在 helper 尚不存在时失败，目标失败为 `Cannot find module '../../scripts/parallel-test-artifacts'`。
-- T0.0a/b parser RED：初版 parser 运行同一测试时第二断言因实际 parser bug 失败，目标失败为 `Expected: 1; Received: 0`，证明 self-closing `<testcase/>` 被错误跳过。
-- T0.0a/b parser GREEN：修正 testcase parser 后，`bun test tests/infra/parallel-test-artifacts.unit.test.ts` 为 `2 pass, 0 fail`；`bun run typecheck` 通过。
-- T0.0a/b runner 集成：真实 `PARALLEL_TEST_ARTIFACT_DIR=/tmp/commit-minus-1-runner-artifacts bun scripts/parallel-test.ts unit` 已生成 16 份实际 shard JUnit、`runtime-identity.json`、`skipped-multiset.json`，但 suite 因既有 `tests/history/v3/canonical-performance.unit.test.ts:80` 的性能阈值 `8.5025 < 8` 失败。该失败不是 identity gate；尚需按项目纪律根因化。
-- T0.0a/b whole-suite-skip RED：新增 suite-only JUnit fixture后 parser 返回 `[]` 而非 `['tests/native.unit.test.ts']`。GREEN：解析 testsuite `file` attribute；同一测试转为 `3 pass, 0 fail`，`bun run typecheck` 与 Prettier 通过。
-- T0.0b plan seam：whole-suite skip 的 JUnit `<testsuite file=... skipped=.../>` 没有 testcase `classname`、`name` 或 ordinal。主执行分支 `7c5891d0` 已裁 v1 修订为判别联合：`kind="testcase"` 使用 `file,classname,name,ordinal,count,reason`，`kind="suite"` 使用且只使用 `file,suite_name,count,reason`。继续实施时不得伪造空字符串、suite-as-classname 或人工 ordinal。
-- T0.0b union RED：将 parser 测试期望改为 `kind="suite"` 和 `kind="testcase"` 后失败，suite skipped count 为 0 且 testcase identity 缺 `kind`。GREEN：parser 以 testsuite 的真实 `file+name` 产生 suite variant、以 testcase 产生 testcase variant；`bun test tests/infra/parallel-test-artifacts.unit.test.ts` 为 `3 pass, 0 fail`，`bun run typecheck` 通过。
-- T0.0b false-red control：测试先构造含 testcase 的 passing suite；若仅依据 suite `skipped` attribute 会误报 suite skip。实现限定 suite variant 为 `tests="0"` 的真实 whole-suite skip；测试转为 `4 pass, 0 fail`，`bun run typecheck` 通过。
-- T0.0b multiplicity RED：将 whole-suite fixture 的 JUnit `skipped` 从 1 改为 2 后，parser 仍报告 count 1。GREEN：suite variant 的 `count` 和 aggregate `skipped` 读取 JUnit 的真实 `skipped` attribute；同一测试为 `4 pass, 0 fail`，`bun run typecheck` 与 Prettier 通过。未引入 testcase 哨兵字段。
-- T0.0b discrimination correction：真实 whole-suite 形态的冻结条件是 self-closing `<testsuite .../>`，不是推断 `tests="0"`。负控把 non-self-closing、含 testcase 的 suite 设为 `skipped="1"`，仍不得生成 suite variant。测试与 typecheck 通过。
-- 进程级 runner harness 曾尝试在临时 tree 执行真实 script；Bun 在 test worker 内嵌套同步 spawn 时超过 30 秒，属于 harness 资源模型失败，未提交也未保留。真实 full runner 命令先前已实际生成 shard JUnit 和 artifacts；后续 mutation 将按 §0.4e 在独立 `/tmp` repo/second worktree 进行。
-- T0.0c/e artifact transfer seam 已由主执行分支 `f197c8b5` 裁定：runner 接受绝对 `PARALLEL_TEST_ARTIFACT_DIR`，空/不存在目录才可用，shard JUnit 与两个 JSON 原子写入；`baseline-runs.sh` 的 `REQUIRE_TEST_ARTIFACTS=1` 记录每 run `artifact_dir=` 并在 rc=0 后核验 artifact population。当前实现已接线，`bun run typecheck`、`bash -n exp/inter-block-anchor-allocator/baseline-runs.sh` 与 parser tests 通过；producer/validator 尚未实现。实现还修正了 wrapper 的缺目录分支：先判 `-d` 再 `find`，使缺 transfer artifact 走明确 failed run 而不是 `find` 的旁路错误。
-- T0.0c baseline schema RED：新增 schema 测试初次失败于缺少 `scripts/entry-evidence-schema`。GREEN：实现 strict v1 parser，接受排序正确的 testcase/suite union，拒绝 suite 的 fabricated testcase field；`bun test tests/infra/entry-evidence-schema.unit.test.ts` 为 `2 pass, 0 fail`，`bun run typecheck` 与 Prettier 通过。原测试也暴露 canonical order 是 `(kind,file,...)` 的 UTF-8 bytewise 顺序，修正 fixture 后才绿。
-- 全套 runner 的性能失败调查：首次完整 unit runner 中 `canonical-performance.unit.test.ts:80` 观测 `sseRatio=8.5025`，高于 `<8`；立即单独复跑同一文件则 `sseRatio=6.8364` 且 `3 pass`。这已证明其具有时序／资源竞争敏感性，尚未完成 10～25 次确定性核验；不将其归因于本次 runner 改动，也不会放宽测试。
-- T0.0c discovery oracle：初次实际执行 `PARALLEL_TEST_ARTIFACT_DIR=/tmp/commit-minus-1-discovery-artifacts bun scripts/parallel-test.ts unit it http`，结果为 16 shards、6872 pass、6497 executed、27 skipped；该读数后来被 empty-identity parser 缺陷证伪，不能继续用作 baseline。修复后重跑相同独立 discovery 命令，得到 16 shards、5863 pass、6875 executed、27 skipped、676 files；当前 baseline 使用后者和同一 `scripts/parallel-test.ts` blob `201996e18033d27e1214cb0f8d688f6850d89840`。两次均不是 T0.0f 的15-run evidence。
-- T0.0c producer RED：schema test先因 `scripts/entry-evidence-schema` 不存在红。GREEN：strict parser 验 union、raw 2-space canonical bytes、runner blob与排序；`bun test tests/infra/entry-evidence-schema.unit.test.ts` 绿（3 pass）、`bun run typecheck`绿。
-- Review C1：JUnit parser 将 legitimate empty `classname`／`name` 误作缺字段，导致 runnable cases 被静默丢弃。RED：empty attribute fixture 未计入 executed；GREEN：只拒 `undefined`，接受 `""`，parser test 为 5 pass。重新独立运行真实 shards，基线更新为 676 files／6875 executed／27 skips，不从15-run evidence反推。
-- Review C2/C3：producer 现在逐 run 比较 baseline 与 runtime testcase/suite skipped identity multiset，失败消息列具体 missing/unexpected/count mismatch；manifest 新增 deterministic `runtime_identity_manifest` 与 `skipped_multiset` path/hash。Fixtures覆盖两种合法 union、runnable→skip两种 union均 rc=5、完整schema及缺 artifact。
-- Review I1 RED：原 collision fixture仅断言“没有 manifest”，实际实现会递归删除既存 target；增强 fixture 后 sentinel `evidence-manifest.json/sentinel.txt` 变 ENOENT。GREEN：`atomicWrite()` 仅删除其 deterministic temporary path，manifest failure handler不再触碰 target；fixture断言 rc=6、sentinel字节仍为 `preserve me\n`、target仍存在、temporary已移除，6 pass。仍缺 runner target mutations。
-- T0.0a/c mutation setup：全 backend mutation被超时淹没后，改用一次性 `/home/xp/.claude/jobs/046d7295/tmp/runner-mutation-probe` git repo。基线 `7b35c00418aa6eb019ab2eeb04b4fdb127604107` 包含当前真实 `scripts/parallel-test.ts`／`parallel-test-artifacts.ts`与64个真实 `.unit.test.ts`；真实 runner 进程链绿为16 shards／64 pass／64 executed。dependency resolve记录为临时repo自身 `node_modules` 路径。
-- T0.0b source audit：当前 native artifact probe `find native/history-search -name '*.node'` 无输出；18条 history-search identities 由 `const NATIVE = isNativeHistorySearchAvailable()` + `describe.skipIf(!NATIVE)` 控制，故为 `native-unavailable`。`tests/openai/cc-to-anthropic-stream.unit.test.ts:275` 是 `test.todo`，故为 `todo`。`tests/routes/messages/postcommit-truncation-shaping.it.test.ts:5-8,92` 是未实现 P1 Task 6 的 contract skeleton `describe.skip`，7条为 `whole-suite-skip`。已按根因裁决删除 `tests/history/history-summary.it.test.ts` 的 FIFO skip：`initHistory()` 的 `_legacyMaxEntries` 被有意忽略，V2 in-memory FIFO contract 已在 SQLite V3 migration 退役；V3 持久化取代该内存缓存上限，当前 maintenance **不按数量自动淘汰存活行**。持久化读取与显式删除一致性由 V3 read-cutover 及本文件现存 delete-summary tests 覆盖，但不存在需要伪造的 FIFO 替代不变量；它不进入 `allowed_skipped`。重新 discovery 得 6880 executed、26 skipped，baseline 不含 `reviewed-environment`。schema RED/ GREEN 覆盖 `todo` 不得伪装成 suite reason；canonical baseline 已按真实分类重冻。
-- T0.0a post-balance：`post-balance.patch` 将 balance 后每个 bucket `slice(1)`；hunk diff已读，运行 rc=1并明确报 `missing runtime file identity: tests/alpha.unit.test.ts`（以及另15个具体文件）。`git apply --reverse --check`无输出，reverse apply后 `git diff`为空。
-- T0.0c reporter-only-refresh：`reporter-only-refresh.patch` 删除真实 shard `--reporter=junit`；运行 rc=1并逐个报 `missing JUnit artifact for shard: .../shard-01.xml` 至 `shard-16.xml`。reverse-check无输出，reverse apply后 diff为空。
-- T0.0c merge/collection drop：`drop-shard-collection.patch` 使 collection丢第一 shard；运行 rc=1并点名 `missing JUnit artifact for shard: .../shard-01.xml`。reverse-check无输出，reverse apply后 diff为空。
-- 三个 mutation均未在权威树落盘或整文件恢复；临时repo仅未追踪 patch/helper，不进仓。T0.0e未开始。
+T0.0f、T0.0d、真实 A/P/P receipt 消费与 T0.1 都是 `master` merge 后的独立阶段，不是 Commit -1 未完成项；本阶段没有生成或消费真实 future A/P evidence。
 
-## 结构怪味扫描
+## TDD、mutation 与历史证据
 
-- `scripts/parallel-test.ts:60-83`：职责错位——`refreshTimings()` 是唯一 JUnit producer，而门运行路径缺少运行 identity artifact。处置：本轮修复，按 T0.0a/c 将实际 shard 的 JUnit 收集与独立对账加入 runner。
-- `scripts/parallel-test.ts:147-168`：证据只聚合 pass/fail tally，无法区分 runnable case 变 skip。处置：本轮修复，按 T0.0b 由原始 JUnit 派生 executed/skipped 与 identity multiset。
-- `scripts/parallel-test.ts:60-83`：timing 采集的 JUnit 不能作为 entry evidence，若复用将构成同源弱 oracle。处置：本轮不复用，producer/validator 均消费真实 shard artifacts。
+早期 parser、baseline schema、producer 和 validator 均按 RED→GREEN 落地。target mutations 保留为实现鉴别力证据：runner 的 post-balance bucket drop、reporter-only refresh、collection drop；validator C1～C11/EV-01～EV-28 arms；PTY raw/cooked 与 startup condition；同 entry summary WeakMap hit removal；以及 canonical capture sealed-arena quadratic traversal。每项 mutation 均使用 exact patch，reverse-check 后 reverse apply，未整文件恢复共享树。
 
-## 反思
+历史 wall-clock flake 未删除：`canonical-performance.unit.test.ts` 曾在 backend contention 下收到 `sseRatio=8.5025`／`10.3039`，而 standalone 同类运行可以通过。这不是 runner identity 回归。当前它由 deterministic recorder-work gate 替代：4× conversation 为 `101→389`（`3.8515×`），4× SSE 为 `1029→4101`（`3.9854×`）；生产 sealed-arena quadratic mutation 分别为 `14.9093×` 与 `15.9530×`，均精确变红。wall-clock 输出仅保留为诊断。
 
-- 更好的内部替代：不从 runner stdout 推导测试完整性；使用真实 shard JUnit 与磁盘发现集两个独立来源。
-- 判据判别力：runner 与 validator 需要目标 mutation 控制，分别证明漏文件、skip、reporter/merge 和 EV-01～EV-28 会红。
-- 第三方方案：JUnit XML 解析需求仅限 Bun 生成的稳定 testcase attributes，当前没有需要引入第三方 XML 解析器的复杂 XML 需求；若实现中发现可变 namespace／CDATA 结构，停止并评估成熟 XML parser。
+## Structural-smell scan
+
+- `scripts/parallel-test.ts:121-235` — artifact producer 与 shard result 可能漂移。处置：本轮以原子 JUnit/runtime/skipped artifacts 与 producer/validator independent reparse 修复。
+- `scripts/capture-entry-evidence.ts:147-217`、`scripts/validate-entry-evidence.ts:292-429` — trust policy 两处实现。处置：保留为刻意的独立 evidence legs；validator 不信 manifest 自述，最终合并态审查该接缝。
+- `scripts/validate-entry-evidence.ts:92-357` — dynamic runtime dependency drift。处置：ENTRY_SHA closure provenance 在 receipt 前阻断，并有 helper mutation。
+- `tests/shutdown/fixtures/two_signal_pty.py:13-67` — log 被误当 lifecycle readiness。处置：以 READY 和 terminal lflag condition gate 修复。
+- `src/lib/history/in-flight.ts:42,108,148` — test observer 泄漏。处置：已纳入 shared resetter，same/fresh instance deterministic tests 覆盖。
+- `src/lib/context/model-operation-record.ts:595-613,811-813` — observer 与 recursive freeze algorithm 漂移。处置：仅一个 production recursive primitive，并有 source-shape guard。
+
+扫描范围是 runner／producer／validator／shutdown／history observers；判据为重复算法、职责错位、同源弱 oracle、module-global test leakage、动态 import drift、condition/log readiness 混淆。未发现上述处置之外的新结构怪味。
+
+## Reflection
+
+- 更好的内部替代：复用 runner artifacts、canonical recorder 和 shared resetter，不建立第二套性能或 evidence pipeline。
+- 判据判别力：关键 gate 均有 target mutation；正确状态与错误状态分别经 exact patch green/red 验证，且 current capture gate 明确不覆盖 fixture 未变化的 metadata/extensions/headers 或 dispatch/candidate/transform copy paths。
+- 成熟第三方方案：没有为 Bun-stable JUnit shape 或 narrow recorder work count 引入 XML parser/profiler；前者没有复杂 XML 需求，后者会带回 sampling/scheduling 噪声。若将来引入 namespace/CDATA input 或新的 capture scaling axis，需重新评估。
+
+## Current action
+
+先执行 whole-branch merged-state review，review 无 blocker/major 后 merge Commit -1 到 `master`；只有 merge 后才能开始真实 T0.0f/T0.0d/P/T0.1。
