@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
 import os from "node:os"
 import path from "node:path"
 
@@ -105,7 +105,66 @@ function clean(fixture: { tree: string; out: string }): void {
   rmSync(fixture.out, { recursive: true, force: true })
 }
 
+function expectPathFailure(fixture: { tree: string; out: string; entrySha: string }): void {
+  const result = runCapture(fixture)
+  expect(result.exitCode).toBe(2)
+  expect(new TextDecoder().decode(result.stderr)).toContain("--out must be outside --tree")
+  expect(existsSync(path.join(fixture.out, "evidence-manifest.json"))).toBe(false)
+}
+
+function replaceOut(fixture: { tree: string; out: string; entrySha: string }, out: string): void {
+  fixture.out = out
+}
+
 describe("capture-entry-evidence", () => {
+  test("rejects a lexical outside symlink parent whose missing child resolves inside TREE", () => {
+    const fixture = createFixture()
+    const lexicalOutside = mkdtempSync(path.join(os.tmpdir(), "capture-entry-evidence-link-"))
+    try {
+      const insideLink = path.join(lexicalOutside, "inside-tree")
+      symlinkSync(fixture.tree, insideLink)
+      replaceOut(fixture, path.join(insideLink, "new-child"))
+      expectPathFailure(fixture)
+      expect(existsSync(path.join(fixture.tree, "new-child"))).toBe(false)
+    } finally {
+      clean(fixture)
+      rmSync(lexicalOutside, { recursive: true, force: true })
+    }
+  })
+
+  test("rejects canonical --out paths inside TREE before creating evidence", () => {
+    for (const mode of ["exact", "symlink", "symlink-child"] as const) {
+      const fixture = createFixture()
+      const lexicalOutside = mkdtempSync(path.join(os.tmpdir(), "capture-entry-evidence-link-"))
+      try {
+        const insideLink = path.join(lexicalOutside, "inside-tree")
+        symlinkSync(fixture.tree, insideLink)
+        replaceOut(fixture, mode === "exact" ? fixture.tree : mode === "symlink" ? insideLink : path.join(insideLink, "new-child"))
+        expectPathFailure(fixture)
+      } finally {
+        clean(fixture)
+        rmSync(lexicalOutside, { recursive: true, force: true })
+      }
+    }
+  })
+
+  test("accepts a lexical outside symlink resolving outside TREE", () => {
+    const fixture = createFixture()
+    const lexicalOutside = mkdtempSync(path.join(os.tmpdir(), "capture-entry-evidence-link-"))
+    const realOutside = mkdtempSync(path.join(os.tmpdir(), "capture-entry-evidence-real-"))
+    try {
+      const outLink = path.join(lexicalOutside, "outside-link")
+      symlinkSync(realOutside, outLink)
+      replaceOut(fixture, outLink)
+      expect(runCapture(fixture).exitCode).toBe(0)
+      expect(existsSync(path.join(realOutside, "evidence-manifest.json"))).toBe(true)
+    } finally {
+      clean(fixture)
+      rmSync(lexicalOutside, { recursive: true, force: true })
+      rmSync(realOutside, { recursive: true, force: true })
+    }
+  }, 30_000)
+
   test("writes complete manifest with deterministic aggregation artifacts", () => {
     const fixture = createFixture()
     try {

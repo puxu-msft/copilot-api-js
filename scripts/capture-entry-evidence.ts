@@ -1,6 +1,20 @@
 #!/usr/bin/env bun
-import { createHash } from "node:crypto"
-import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs"
+import { createHash, randomUUID } from "node:crypto"
+import {
+  closeSync,
+  constants,
+  existsSync,
+  linkSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  readdirSync,
+  realpathSync,
+  rmSync,
+  statSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs"
 import path from "node:path"
 
 import { Glob } from "bun"
@@ -69,20 +83,42 @@ function git(tree: string, args: Array<string>): string {
   return result.stdout.toString().trim()
 }
 
-function isUnder(child: string, parent: string): boolean {
-  const relative = path.relative(parent, child)
-  return relative !== "" && !relative.startsWith(`..${path.sep}`) && relative !== ".." && !path.isAbsolute(relative)
+function canonicalPathWithExistingAncestor(value: string): string | undefined {
+  let candidate = path.resolve(value)
+  const unresolvedSegments: string[] = []
+  while (!existsSync(candidate)) {
+    const parent = path.dirname(candidate)
+    if (parent === candidate) return undefined
+    unresolvedSegments.unshift(path.basename(candidate))
+    candidate = parent
+  }
+  try {
+    return path.join(realpathSync(candidate), ...unresolvedSegments)
+  } catch {
+    return undefined
+  }
+}
+
+function sameOrUnder(child: string, parent: string): boolean {
+  return child === parent || child.startsWith(`${parent}${path.sep}`)
 }
 
 function atomicWrite(filePath: string, body: string): void {
-  const temporary = path.join(path.dirname(filePath), `.${path.basename(filePath)}.tmp`)
+  const temporary = path.join(path.dirname(filePath), `.${path.basename(filePath)}.${randomUUID()}.tmp`)
+  let created = false
   try {
-    writeFileSync(temporary, body)
-    renameSync(temporary, filePath)
+    const descriptor = openSync(temporary, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY, 0o600)
+    created = true
+    try {
+      writeFileSync(descriptor, body)
+    } finally {
+      closeSync(descriptor)
+    }
+    // link(2) atomically publishes only if the target does not already exist.
+    linkSync(temporary, filePath)
+    unlinkSync(temporary)
   } catch (error) {
-    // Only this invocation's deterministic temporary path is ours to remove.
-    // The target may predate this invocation and must never be touched on failure.
-    rmSync(temporary, { force: true })
+    if (created) rmSync(temporary, { force: true })
     throw error
   }
 }
@@ -135,6 +171,7 @@ function assertSkippedMultiset(expected: Array<TestcaseSkip | SuiteSkip>, actual
 
 function readRunArtifact(
   tree: string,
+  canonicalOut: string,
   out: string,
   ordinal: number,
   baselineFiles: Array<string>,
@@ -145,7 +182,14 @@ function readRunArtifact(
   if (!existsSync(logPath)) throw new Error("run log is missing")
   const log = readFileSync(logPath, "utf8")
   const artifactDir = readLogField(log, "artifact_dir")
-  if (!artifactDir || !path.isAbsolute(artifactDir) || !isUnder(artifactDir, out) || !existsSync(artifactDir))
+  const expectedArtifactDir = path.join(canonicalOut, `run-${String(ordinal).padStart(2, "0")}-artifacts`)
+  let canonicalArtifactDir: string | undefined
+  try {
+    canonicalArtifactDir = artifactDir === undefined ? undefined : realpathSync(artifactDir)
+  } catch {
+    canonicalArtifactDir = undefined
+  }
+  if (!artifactDir || !path.isAbsolute(artifactDir) || canonicalArtifactDir !== expectedArtifactDir || !statSync(canonicalArtifactDir).isDirectory())
     throw new Error("run artifact transfer is missing")
   const junitPaths = readdirSync(artifactDir)
     .filter((name) => /^shard-\d+\.xml$/.test(name))
@@ -177,8 +221,11 @@ function readRunArtifact(
 
 const options = parseOptions(process.argv.slice(2))
 try {
+  const canonicalTree = canonicalPathWithExistingAncestor(options.tree)
+  const canonicalOutBeforeMkdir = canonicalPathWithExistingAncestor(options.out)
+  if (canonicalTree === undefined || canonicalOutBeforeMkdir === undefined || sameOrUnder(canonicalOutBeforeMkdir, canonicalTree))
+    fail(2, "--out must be outside --tree")
   if (existsSync(options.out) && readdirSync(options.out).length > 0) fail(2, "--out must be absent or empty")
-  if (isUnder(options.out, options.tree)) fail(2, "--out must be outside --tree")
   if (git(options.tree, ["rev-parse", "HEAD"]) !== options.entrySha || git(options.tree, ["status", "--porcelain"]) !== "")
     fail(3, "entry tree does not match a clean entry SHA")
 
@@ -191,6 +238,16 @@ try {
   if (baseline.runner_git_blob !== runnerBlob || !compareSets(baseline.files, discover(options.tree))) fail(4, "discovery baseline differs from entry tree")
 
   mkdirSync(options.out, { recursive: true })
+  const canonicalOut = (() => {
+    try {
+      return realpathSync(options.out)
+    } catch {
+      return undefined
+    }
+  })()
+  if (canonicalOut === undefined || canonicalOut !== canonicalOutBeforeMkdir || sameOrUnder(canonicalOut, canonicalTree))
+    fail(2, "--out must remain outside --tree")
+
   const diskManifestPath = path.join(options.out, "disk-manifest.json")
   atomicWrite(diskManifestPath, `${JSON.stringify({ files: baseline.files }, null, 2)}\n`)
   const wrapper = path.join(options.tree, "exp/inter-block-anchor-allocator/baseline-runs.sh")
@@ -213,7 +270,7 @@ try {
 
   const runs: Array<RunArtifact> = []
   for (let ordinal = 1; ordinal <= options.runs; ordinal += 1)
-    runs.push(readRunArtifact(options.tree, options.out, ordinal, baseline.files, baseline.minimum_executed, baseline.allowed_skipped))
+    runs.push(readRunArtifact(options.tree, canonicalOut, options.out, ordinal, baseline.files, baseline.minimum_executed, baseline.allowed_skipped))
   const runtimeIdentityManifestPath = path.join(options.out, "runtime-identity-manifest.json")
   const skippedMultisetManifestPath = path.join(options.out, "skipped-multiset-manifest.json")
   atomicWrite(
