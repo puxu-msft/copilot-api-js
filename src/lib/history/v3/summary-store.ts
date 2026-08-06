@@ -1,4 +1,10 @@
 import type { Database } from "~/lib/history/sqlite/connection"
+import type {
+  //
+  EntrySummary,
+  QueryOptions,
+  SummaryResult,
+} from "~/lib/history/types"
 
 import {
   //
@@ -107,10 +113,151 @@ BEGIN
 END;
 `
 
+interface SummaryWhere {
+  sql: string
+  params: Array<unknown>
+}
+
+const LIKE_ESCAPE = String.fromCodePoint(92)
+
+function escapeLike(value: string): string {
+  return value.replaceAll(LIKE_ESCAPE, LIKE_ESCAPE.repeat(2)).replaceAll("%", `${LIKE_ESCAPE}%`).replaceAll("_", `${LIKE_ESCAPE}_`)
+}
+
+function compileSummaryWhere(options: QueryOptions): SummaryWhere {
+  const terms = ["projection_status='ready'"]
+  const params: Array<unknown> = []
+  const kind = options.operationKind ?? "generation"
+  if (kind === "generation") {
+    terms.push("operation_kind IN ('generation','responses_ws')")
+  } else if (kind !== "all") {
+    terms.push("operation_kind=?")
+    params.push(kind)
+  }
+  if (options.model) {
+    terms.push(`(lower(request_model) LIKE ? ESCAPE '${LIKE_ESCAPE}' OR lower(response_model) LIKE ? ESCAPE '${LIKE_ESCAPE}')`)
+    const needle = `%${escapeLike(options.model.toLowerCase())}%`
+    params.push(needle, needle)
+  }
+  if (options.endpoint) {
+    terms.push("endpoint=?")
+    params.push(options.endpoint)
+  }
+  if (options.state) {
+    terms.push("state=?")
+    params.push(options.state)
+  } else if (options.success !== undefined) {
+    terms.push(options.success ? "state='completed'" : "state='failed'")
+  }
+  if (options.from !== undefined) {
+    terms.push("started_at>=?")
+    params.push(options.from)
+  }
+  if (options.to !== undefined) {
+    terms.push("started_at<=?")
+    params.push(options.to)
+  }
+  if (options.sessionId) {
+    terms.push("session_id=?")
+    params.push(options.sessionId)
+  }
+  if (options.agentId) {
+    terms.push("agent_id=?")
+    params.push(options.agentId)
+  } else if (options.mainAgentOnly) {
+    terms.push("agent_id IS NULL")
+  }
+  if (options.pid !== undefined) {
+    terms.push("pid=?")
+    params.push(options.pid)
+  }
+  return { sql: terms.join(" AND "), params }
+}
+
+function parseSummaryJson(row: { summary_json: string; pinned: number }): EntrySummary {
+  return { ...(JSON.parse(row.summary_json) as EntrySummary), active: false, pinned: row.pinned === 1 }
+}
+
+export function getPersistedSummary(db: Database, operationId: string): EntrySummary | undefined {
+  const row = db.prepare("SELECT summary_json,pinned FROM v3_operation_summaries WHERE operation_id=? AND projection_status='ready'").get(operationId) as
+    | { summary_json: string; pinned: number }
+    | undefined
+  return row ? parseSummaryJson(row) : undefined
+}
+
+export function hasPersistedSummaryMatching(db: Database, operationId: string, options: QueryOptions): boolean {
+  const where = compileSummaryWhere(options)
+  return Boolean(db.prepare(`SELECT 1 FROM v3_operation_summaries WHERE operation_id=? AND ${where.sql} LIMIT 1`).get(operationId, ...where.params))
+}
+
+function summaryPageIndex(options: QueryOptions): string {
+  const kind = options.operationKind ?? "generation"
+  return kind === "all" || kind === "generation" ? "idx_v3_operation_summaries_created" : "idx_v3_operation_summaries_kind_created"
+}
+
+function summaryPageSql(options: QueryOptions, where: SummaryWhere, boundary: string, order: string, explain = false): string {
+  const prefix = explain ? "EXPLAIN QUERY PLAN " : ""
+  return `${prefix}SELECT summary_json,pinned FROM v3_operation_summaries INDEXED BY ${summaryPageIndex(options)} WHERE ${where.sql}${boundary} ORDER BY ${order} LIMIT ?`
+}
+
+export function explainSummaryPagePlan(db: Database, options: QueryOptions, limit: number): Array<string> {
+  const where = compileSummaryWhere(options)
+  const order = options.direction === "newer" ? "started_at ASC,operation_id ASC" : "started_at DESC,operation_id DESC"
+  return (db.prepare(summaryPageSql(options, where, "", order, true)).all(...where.params, limit) as Array<{ detail: string }>).map((row) => row.detail)
+}
+
+export function querySummaryPage(db: Database, options: QueryOptions, limit: number, cursorSummary?: EntrySummary): SummaryResult {
+  const where = compileSummaryWhere(options)
+  const cursor = cursorSummary ?? (options.cursor ? getPersistedSummary(db, options.cursor) : undefined)
+  if (options.cursor && !cursor) throw new Error(`Unknown summary cursor: ${options.cursor}`)
+  const direction = options.direction ?? "older"
+  let boundary = ""
+  if (cursor) {
+    boundary = direction === "newer" ? " AND (started_at>? OR (started_at=? AND operation_id>?))" : " AND (started_at<? OR (started_at=? AND operation_id<?))"
+  }
+  const boundaryParams = cursor ? [cursor.startedAt, cursor.startedAt, cursor.id] : []
+  const order = direction === "newer" ? "started_at ASC,operation_id ASC" : "started_at DESC,operation_id DESC"
+  const rows = db.prepare(summaryPageSql(options, where, boundary, order)).all(...where.params, ...boundaryParams, Math.max(0, limit)) as Array<{
+    summary_json: string
+    pinned: number
+  }>
+  const entries = rows.map((row) => parseSummaryJson(row))
+  if (direction === "newer") entries.reverse()
+  const total = (db.prepare(`SELECT COUNT(*) AS n FROM v3_operation_summaries WHERE ${where.sql}`).get(...where.params) as { n: number }).n
+
+  const newest = entries.at(0)
+  const oldest = entries.at(-1)
+  let hasNewer = false
+  if (newest) {
+    hasNewer = Boolean(
+      db
+        .prepare(`SELECT 1 FROM v3_operation_summaries WHERE ${where.sql} AND (started_at>? OR (started_at=? AND operation_id>?)) LIMIT 1`)
+        .get(...where.params, newest.startedAt, newest.startedAt, newest.id),
+    )
+  }
+  let hasOlder = false
+  if (oldest) {
+    hasOlder = Boolean(
+      db
+        .prepare(`SELECT 1 FROM v3_operation_summaries WHERE ${where.sql} AND (started_at<? OR (started_at=? AND operation_id<?)) LIMIT 1`)
+        .get(...where.params, oldest.startedAt, oldest.startedAt, oldest.id),
+    )
+  }
+  let nextCursor: string | null = null
+  if (hasOlder && oldest) nextCursor = oldest.id
+  let prevCursor: string | null = null
+  if (hasNewer && newest) prevCursor = newest.id
+  return { entries, total, nextCursor, prevCursor }
+}
+
 export interface SummaryProjectionReadiness {
   ready: boolean
   pending: number
   poisoned: number
+}
+
+export function isSummaryProjectionReady(db: Database): boolean {
+  return getMeta(db, SUMMARY_PROJECTION_READY_KEY) === "1"
 }
 
 export function getSummaryProjectionReadiness(db: Database): SummaryProjectionReadiness {

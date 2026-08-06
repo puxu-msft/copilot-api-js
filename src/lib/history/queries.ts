@@ -17,6 +17,7 @@ import {
 } from "./in-flight"
 import { isActiveState } from "./lifecycle-state"
 import { extractInboundSearchText } from "./normalize-message"
+import { getDatabase } from "./sqlite/connection"
 import {
   //
   recordMatchesQuery,
@@ -26,9 +27,16 @@ import {
 import {
   //
   getV3StoredOperation,
-  visitV3Summaries,
   visitV3StoredOperations,
+  visitV3Summaries,
 } from "./v3/store"
+import {
+  //
+  getPersistedSummary,
+  hasPersistedSummaryMatching,
+  isSummaryProjectionReady,
+  querySummaryPage,
+} from "./v3/summary-store"
 import {
   //
   getRecentModelOperationTerminal,
@@ -60,6 +68,16 @@ function matchesFilters(entry: HistoryEntry, opts: QueryOptions): boolean {
  */
 function isInFlightSummary(summary: EntrySummary): boolean {
   return summary.active === true || (summary.state !== undefined && isActiveState(summary.state))
+}
+
+function compareSummaryNewestFirst(a: EntrySummary, b: EntrySummary): number {
+  return b.startedAt - a.startedAt || b.id.localeCompare(a.id)
+}
+
+function isOnCursorSide(summary: EntrySummary, cursor: EntrySummary | undefined, direction: "older" | "newer"): boolean {
+  if (!cursor) return true
+  const cmp = compareSummaryNewestFirst(summary, cursor)
+  return direction === "newer" ? cmp < 0 : cmp > 0
 }
 
 function summaryMatchesFilters(summary: EntrySummary, opts: QueryOptions): boolean {
@@ -137,21 +155,33 @@ function persistedSummaryCandidates(
   options: QueryOptions,
   operationKind: NonNullable<QueryOptions["operationKind"]>,
   capacity: number,
-): { rows: Array<EntrySummary>; total: number } {
-  const rows: Array<EntrySummary> = []
-  let total = 0
+): { rows: Array<EntrySummary>; total: number; nextCursor: string | null; prevCursor: string | null } {
+  const db = getDatabase()
   const cursor = options.cursor ? getSummary(options.cursor) : undefined
+  if (isSummaryProjectionReady(db)) {
+    const page = querySummaryPage(db, { ...options, operationKind }, capacity, cursor)
+    return { rows: page.entries, total: page.total, nextCursor: page.nextCursor, prevCursor: page.prevCursor }
+  }
+
+  const all: Array<EntrySummary> = []
   visitV3Summaries(
     (summary) => {
-      if (!summaryMatchesOperationKind(summary, operationKind) || !summaryMatchesFilters(summary, options)) return
-      total++
-      const olderThanCursor =
-        cursor === undefined || summary.startedAt < cursor.startedAt || (summary.startedAt === cursor.startedAt && summary.id.localeCompare(cursor.id) < 0)
-      if (olderThanCursor && rows.length < capacity) rows.push(summary)
+      if (summaryMatchesOperationKind(summary, operationKind) && summaryMatchesFilters(summary, options)) all.push(summary)
     },
     operationKind === "all" || operationKind === "generation" ? undefined : operationKind,
   )
-  return { rows, total }
+  all.sort(compareSummaryNewestFirst)
+  const direction = options.direction ?? "older"
+  const candidates = all.filter((summary) => isOnCursorSide(summary, cursor, direction))
+  const rows = direction === "newer" ? candidates.slice(Math.max(0, candidates.length - capacity)) : candidates.slice(0, capacity)
+  const newest = rows.at(0)
+  const oldest = rows.at(-1)
+  return {
+    rows,
+    total: all.length,
+    nextCursor: oldest && all.some((summary) => compareSummaryNewestFirst(summary, oldest) > 0) ? oldest.id : null,
+    prevCursor: newest && all.some((summary) => compareSummaryNewestFirst(summary, newest) < 0) ? newest.id : null,
+  }
 }
 
 export function getEntry(id: string): HistoryEntry | undefined {
@@ -168,6 +198,8 @@ export function getSummary(id: string): EntrySummary | undefined {
   if (inflight) return toEntrySummary(inflight)
   const recent = getRecentModelOperationTerminal(id)
   if (recent) return recordToEntrySummary(recent)
+  const db = getDatabase()
+  if (isSummaryProjectionReady(db)) return getPersistedSummary(db, id)
   const stored = getV3StoredOperation(id)
   return stored ? recordToEntrySummary(stored.record, stored) : undefined
 }
@@ -251,20 +283,22 @@ export function getHistorySummaries(options: QueryOptions = {}): SummaryResult {
   // eager-persisted `streaming` SQLite head row, and keeps terminal entries
   // regardless of which source they came from.
   const visible = terminalOnly ? merged.filter((summary) => !isInFlightSummary(summary)) : merged
+  const cursorSummary = cursor ? getSummary(cursor) : undefined
+  const direction = options.direction ?? "older"
+  const onPageSide = visible.filter((summary) => isOnCursorSide(summary, cursorSummary, direction)).sort(compareSummaryNewestFirst)
+  const entries = direction === "newer" ? onPageSide.slice(Math.max(0, onPageSide.length - limit)) : onPageSide.slice(0, limit)
 
-  visible.sort((a, b) => b.startedAt - a.startedAt || b.id.localeCompare(a.id))
-
-  const persistedIds = new Set(stored.rows.map((summary) => summary.id))
-  const transientCount = visible.filter((summary) => !persistedIds.has(summary.id)).length
+  const db = getDatabase()
+  const transientCount = visible.filter((summary) => !hasPersistedSummaryMatching(db, summary.id, { ...options, operationKind })).length
   const total = stored.total + transientCount
-  let startIdx = 0
-  if (cursor) {
-    const cursorIdx = visible.findIndex((entry) => entry.id === cursor)
-    if (cursorIdx !== -1) startIdx = cursorIdx + 1
-  }
-  const entries = visible.slice(startIdx, startIdx + limit)
-  const nextCursor = startIdx + limit < total ? (entries.at(-1)?.id ?? null) : null
-  const prevCursor = cursor || startIdx > 0 ? (entries[0]?.id ?? null) : null
+  const newest = entries.at(0)
+  const oldest = entries.at(-1)
+  const hasNewerCandidate = newest ? visible.some((summary) => compareSummaryNewestFirst(summary, newest) < 0) : false
+  const hasOlderCandidate = oldest ? visible.some((summary) => compareSummaryNewestFirst(summary, oldest) > 0) : false
+  let nextCursor: string | null = null
+  if (oldest && (hasOlderCandidate || stored.nextCursor !== null)) nextCursor = oldest.id
+  let prevCursor: string | null = null
+  if (newest && (hasNewerCandidate || stored.prevCursor !== null)) prevCursor = newest.id
 
   return { entries, total, nextCursor, prevCursor }
 }
