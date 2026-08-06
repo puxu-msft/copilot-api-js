@@ -9,8 +9,12 @@ import termios
 import time
 
 fixture = sys.argv[1] if len(sys.argv) > 1 else "tests/shutdown/fixtures/two-signal-process.ts"
+startup_delay_ms = int(os.environ.get("TWO_SIGNAL_READY_DELAY_MS", "0"))
+READY_TIMEOUT = 6.0
 pid, fd = pty.fork()
 if pid == 0:
+    if startup_delay_ms:
+        time.sleep(startup_delay_ms / 1000)
     os.execvp("bun", ["bun", fixture])
 
 output = bytearray()
@@ -19,18 +23,29 @@ output = bytearray()
 def read_until(needle: bytes, timeout: float = 2.0) -> None:
     deadline = time.monotonic() + timeout
     while needle not in output and time.monotonic() < deadline:
+        waited, status = os.waitpid(pid, os.WNOHANG)
+        if waited == pid:
+            raise RuntimeError(
+                f"child exited before {needle!r}: exit={os.waitstatus_to_exitcode(status)} output={bytes(output)!r}"
+            )
         ready, _, _ = select.select([fd], [], [], 0.05)
         if not ready:
             continue
         try:
             chunk = os.read(fd, 4096)
         except OSError:
-            break
+            waited, status = os.waitpid(pid, 0)
+            raise RuntimeError(
+                f"child closed PTY before {needle!r}: pid={waited} exit={os.waitstatus_to_exitcode(status)} output={bytes(output)!r}"
+            )
         if not chunk:
-            break
+            waited, status = os.waitpid(pid, 0)
+            raise RuntimeError(
+                f"child closed PTY before {needle!r}: pid={waited} exit={os.waitstatus_to_exitcode(status)} output={bytes(output)!r}"
+            )
         output.extend(chunk)
     if needle not in output:
-        raise RuntimeError(f"missing {needle!r} in {bytes(output)!r}")
+        raise RuntimeError(f"timed out waiting for {needle!r}: output={bytes(output)!r}")
 
 
 def wait_for_cooked_mode(timeout: float = 2.0) -> None:
@@ -45,7 +60,7 @@ def wait_for_cooked_mode(timeout: float = 2.0) -> None:
 
 
 try:
-    read_until(b"READY")
+    read_until(b"READY", READY_TIMEOUT)
     os.write(fd, b"\x03")
     read_until(b"graceful shutdown started")
     first_alive = os.waitpid(pid, os.WNOHANG)[0] == 0

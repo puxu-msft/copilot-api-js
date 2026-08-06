@@ -61,12 +61,17 @@ test("real foreground SIGINT exits 1 when the production diagnostic barrier has 
   }
 })
 
-test("real foreground SIGINT: first starts graceful shutdown, second exits immediately", () => {
-  const proc = Bun.spawnSync(["python3", "tests/shutdown/fixtures/two_signal_pty.py"], {
+function runTwoSignalHarness(fixture?: string, env: Record<string, string | undefined> = {}): ReturnType<typeof Bun.spawnSync> {
+  return Bun.spawnSync(["python3", "tests/shutdown/fixtures/two_signal_pty.py", ...(fixture ? [fixture] : [])], {
     cwd: process.cwd(),
+    env: { ...process.env, ...env },
     stdout: "pipe",
     stderr: "pipe",
   })
+}
+
+test("real foreground SIGINT: first starts graceful shutdown, second exits immediately", () => {
+  const proc = runTwoSignalHarness()
   const stderr = new TextDecoder().decode(proc.stderr)
   expect(proc.exitCode, stderr).toBe(0)
 
@@ -75,14 +80,29 @@ test("real foreground SIGINT: first starts graceful shutdown, second exits immed
   expect(result.exitCode).toBe(130)
   expect(result.output).toContain("graceful shutdown started")
   expect(result.output).toContain("Press Ctrl+C again to exit immediately")
+}, 12_000)
+
+test("two-signal PTY preserves READY observation through delayed child startup", () => {
+  const proc = runTwoSignalHarness(undefined, { TWO_SIGNAL_READY_DELAY_MS: "2100" })
+  const stderr = new TextDecoder().decode(proc.stderr)
+  expect(proc.exitCode, stderr).toBe(0)
+
+  const result = JSON.parse(new TextDecoder().decode(proc.stdout)) as { firstAlive: boolean; exitCode: number; output: string }
+  expect(result.firstAlive).toBe(true)
+  expect(result.exitCode).toBe(130)
+  expect(result.output).toContain("READY")
+}, 12_000)
+
+test("two-signal PTY reports a child startup exit before READY", () => {
+  const proc = runTwoSignalHarness("tests/shutdown/fixtures/missing-two-signal-process.ts")
+  const stderr = new TextDecoder().decode(proc.stderr)
+  expect(proc.exitCode).toBe(1)
+  expect(stderr).toContain("child closed PTY before b'READY'")
+  expect(stderr).toContain("exit=1")
 })
 
 test("real TerminalUi raw Ctrl+C restores cooked mode before the second signal", () => {
-  const proc = Bun.spawnSync(["python3", "tests/shutdown/fixtures/two_signal_pty.py", "tests/shutdown/fixtures/two-signal-tui-process.ts"], {
-    cwd: process.cwd(),
-    stdout: "pipe",
-    stderr: "pipe",
-  })
+  const proc = runTwoSignalHarness("tests/shutdown/fixtures/two-signal-tui-process.ts")
   const stderr = new TextDecoder().decode(proc.stderr)
   expect(proc.exitCode, stderr).toBe(0)
 
@@ -100,4 +120,4 @@ test("real TerminalUi raw Ctrl+C restores cooked mode before the second signal",
   expect(result.canonical).toBe(true)
   expect(result.echo).toBe(true)
   expect(result.output).toContain("graceful shutdown started")
-})
+}, 12_000)
