@@ -97,52 +97,144 @@ Claude Code 注册外层 client tool `WebSearch`。执行该 tool 时，客户�
 
 Responses `web_search_call` 是搜索执行记录，最终文本和 citations 位于其他 message item。Anthropic 成功的 `web_search_tool_result` 包含结果级 title、URL、page age 与由 Anthropic 服务端签发的 `encrypted_content`。代理不能从 Responses `web_search_call` 伪造该签名数据。
 
-### F8. `output_index` 是流式生命周期主键
+### F8. `output_index` 是 Responses 流式生命周期主键
 
-GHC 会对同一逻辑 item 的 opaque `item.id` 逐事件重新加密。跨事件关联必须使用稳定的 `output_index` 或协议明确的 `call_id`。
+GHC 会对同一逻辑 item 的 opaque `item.id` 逐事件重新加密。Responses 跨事件关联必须使用稳定的 `output_index` 或协议明确的 `call_id`。Anthropic 流使用自己的 content block `index`，不能强行套入 Responses envelope。
+
+### F9. Web Search 有独立的流式 lifecycle event
+
+当前 OpenAI SDK 将 `response.web_search_call.in_progress`、`response.web_search_call.searching`、`response.web_search_call.completed` 纳入 `ResponseStreamEvent`；三者携带稳定 `output_index`。本地 `ResponsesStreamEvent` 尚未建模，现有 translator 会忽略。新 bridge 必须把它们当作 `web_search_call` handler 的 known lifecycle input，而不是 unknown compatibility error。
 
 ## 5. 架构
 
 ```text
-source whole item / source stream event
-                  │
-                  ▼
-       BridgeLifecycleRouter
-  output_index、known/unknown、finalize
-                  │
-                  ▼
-       typed SemanticHandler
- normalize source semantic + make decision
-                  │
-                  ▼
-          BridgeDecision
- presentation + continuation 两个正交平面
-                  │
-       ┌──────────┴──────────┐
-       ▼                     ▼
- narrow BridgeEmission   ContinuationCollector
-       │                     │
-       ▼                     ▼
- target whole/SSE renderer   versioned carrier
+source whole item ───────────────────────────────┐
+source stream event → protocol lifecycle adapter │
+                         → lifecycle algebra ─────┤
+                                                ▼
+                                     typed SemanticHandler
+                               normalize semantic + make decision
+                                                │
+                                                ▼
+                                         BridgeDecision
+                              presentation + continuation 双平面
+                                                │
+                              ┌─────────────────┴─────────────────┐
+                              ▼                                   ▼
+                    narrow BridgeEmission              ContinuationCollector
+                              │                                   │
+                              ▼                                   ▼
+                    target whole/SSE renderer            versioned carrier
 ```
 
-### 5.1 Bridge profile
+### 5.1 四张方向表
 
-每个方向由静态 profile 描述：
+请求 item 与响应 item 的职责不同，不能共用一张含糊的 registry。实现必须提供四张静态方向表，每张表拥有自己的 source union 和 handler 签名：
 
 ```ts
-interface SemanticBridgeProfile<SourceKind extends string> {
+type RequestHandlerRegistry<SourceByKind extends Record<string, unknown>, E> = Readonly<{
+  [K in keyof SourceByKind]: RequestSemanticHandler<SourceByKind[K], E>
+}>
+
+type ResponseHandlerRegistry<SourceByKind extends Record<string, unknown>, E> = Readonly<{
+  [K in keyof SourceByKind]: ResponseSemanticHandler<SourceByKind[K], E>
+}>
+
+interface RequestBridgeContext {
+  requestId: string
+  sourceAffinity: SourceAffinity
+  targetAffinity: SourceAffinity
+}
+
+interface ResponseBridgeContext extends RequestBridgeContext {
+  candidateId: string
+  transport: "whole" | "stream"
+}
+
+interface RequestPayloadCoordinator<Payload, Emission, TargetPayload> {
+  coordinate(input: {
+    payload: Payload
+    itemEmissions: readonly Emission[]
+    context: RequestBridgeContext
+  }): TargetPayload | BridgeCompatibilityError
+}
+
+interface WholeRenderer<E, Target> {
+  render(input: ResponseRenderInput<E>): Target
+}
+
+interface StreamRenderer<E> {
+  render(decisions: readonly LifecycleDecision<E>[], context: ResponseBridgeContext): readonly ClientFrame[]
+  flush(input: ResponseRenderInput<E>): readonly ClientFrame[]
+}
+
+interface RequestBridgeProfile<Payload, TargetPayload, SourceByKind extends Record<string, unknown>, Emission> {
   readonly sourceFormat: "openai-responses" | "anthropic-messages"
   readonly targetFormat: "anthropic-messages" | "openai-responses"
-  readonly direction: "request" | "response"
-  readonly handlers: SemanticHandlerRegistry<SourceKind>
+  readonly itemHandlers: RequestHandlerRegistry<SourceByKind, Emission>
+  readonly coordinatePayload: RequestPayloadCoordinator<Payload, Emission, TargetPayload>
+  readonly unknownPolicy: "passthrough" | "reject"
+}
+
+interface ResponseBridgeProfile<SourceByKind extends Record<string, unknown>, Emission, TargetWhole> {
+  readonly sourceFormat: "openai-responses" | "anthropic-messages"
+  readonly targetFormat: "anthropic-messages" | "openai-responses"
+  readonly itemHandlers: ResponseHandlerRegistry<SourceByKind, Emission>
+  readonly lifecycleAdapter: ProtocolLifecycleAdapter<unknown>
+  readonly renderWhole: WholeRenderer<Emission, TargetWhole>
+  readonly renderStream: StreamRenderer<Emission>
   readonly unknownPolicy: "passthrough" | "reject"
 }
 ```
 
+四张生产表分别是：
+
+```text
+ANTHROPIC_TO_RESPONSES_REQUEST
+RESPONSES_TO_ANTHROPIC_REQUEST
+ANTHROPIC_TO_RESPONSES_RESPONSE
+RESPONSES_TO_ANTHROPIC_RESPONSE
+```
+
 Identity 路径不进入 semantic bridge，未知结构原样透传。发生格式转换的 profile 使用 `unknownPolicy:"reject"`。
 
-### 5.2 精确 handler 表
+### 5.2 请求 handler 与 payload coordinator
+
+请求 handler 只处理 item／content block 语义，不返回 response-oriented presentation／continuation 决策：
+
+```ts
+type RequestItemDecision<E> =
+  | { kind: "native"; emissions: readonly E[] }
+  | { kind: "degraded"; emissions: readonly E[]; reason: string; lostFields: readonly string[] }
+  | { kind: "rejected"; error: BridgeCompatibilityError }
+
+interface RequestSemanticHandler<Source, Emission> {
+  map(item: Source, ctx: RequestBridgeContext): RequestItemDecision<Emission>
+}
+```
+
+`RequestPayloadCoordinator` 拥有 item handler 无法独立完成的 payload 级不变量：
+
+- `tools[]` 与 `tool_choice` 由同一映射结果产生；
+- 顶层 scalar／instructions／system 映射；
+- Responses flat input → Anthropic turn fold，或 Anthropic turn → Responses flat item 展开；
+- continuation carrier 识别、affinity 校验与 source item reconstruction；
+- 聚合 item degradation，生成一次 payload 级 compatibility error 或诊断。
+
+请求 profile 若只给 item registry、没有 coordinator，不得接入生产。
+
+### 5.3 响应 handler 与精确分派
+
+响应 handler 同时决定本轮展示与下一轮续接：
+
+```ts
+interface ResponseSemanticHandler<Source, Emission, State = never> {
+  mapWhole(item: Source, ctx: ResponseBridgeContext): BridgeDecision<Emission>
+  createStreamState?(ctx: ResponseBridgeContext): State
+  consumeLifecycle?(event: SemanticLifecycleEvent, state: State, ctx: ResponseBridgeContext): LifecycleDecision<Emission>
+  finalize?(state: State, ctx: ResponseBridgeContext): BridgeDecision<Emission>
+}
+```
 
 不使用 first-match filter chain。支持集合与 handler 表由同一个穷尽 Record 约束：
 
@@ -152,25 +244,72 @@ const RESPONSES_TO_ANTHROPIC_RESPONSE_HANDLERS = {
   function_call: functionCallHandler,
   reasoning: reasoningHandler,
   web_search_call: webSearchCallHandler,
-} satisfies Record<SupportedResponsesResponseKind, SemanticHandler>
+} satisfies Record<SupportedResponsesResponseKind, ResponseSemanticHandler>
 ```
 
 handler 内部确有多步标准化时，可以使用私有、有序 transform sequence；所有权分派本身不得依赖 matcher 顺序。
 
-### 5.3 窄 IR
+### 5.4 窄 IR
 
-IR 只表达桥接需要的目标无关语义：
+IR 只表达桥接需要的目标无关语义，并区分 client tool 与 server tool：
 
 ```ts
+interface BridgeCitation {
+  kind: "url"
+  url: string
+  title?: string
+  startIndex?: number
+  endIndex?: number
+}
+
 type BridgeEmission =
   | { kind: "text"; text: string; citations?: readonly BridgeCitation[] }
-  | { kind: "tool-call"; id: string; name: string; input: unknown }
-  | { kind: "tool-result"; callId: string; output: unknown; isError: boolean }
+  | { kind: "client-tool-call"; id: string; name: string; input: unknown }
+  | { kind: "client-tool-result"; callId: string; output: unknown; isError: boolean }
   | { kind: "reasoning"; text: string }
   | { kind: "server-tool-use"; id: string; name: string; input: unknown; status?: string }
+  | {
+      kind: "server-tool-result"
+      toolUseId: string
+      name: string
+      status: "succeeded" | "failed"
+      result: unknown
+      sourceSigned: boolean
+    }
 ```
 
-IR 不代替 source raw item。每个 handler 可在 continuation record 中保留完整 source value。
+`server-tool-result` 只有 source wire 真实提供结果语义时才能产生；不得把普通 client `tool-result` 或 citation 冒充成 server result。IR 不代替 source raw item。每个 handler可在 continuation record 中保留完整 source value。
+
+### 5.5 Continuation collector 与 affinity
+
+```ts
+interface SourceAffinity {
+  sourceFormat: "openai-responses" | "anthropic-messages"
+  resolvedModel: string
+  outboundEndpoint: string
+  provider?: string
+}
+
+interface ContinuationCollector {
+  add(decision: ContinuationDecision, source: { outputIndex?: number; itemId?: string }): void
+  finalize(): ContinuationBundle
+}
+
+interface ContinuationBundle {
+  affinity: SourceAffinity
+  records: readonly ContinuationRecord[]
+}
+
+interface ResponseRenderInput<E> {
+  presentation: readonly E[]
+  continuation: ContinuationBundle
+  dispositions: readonly BridgeDispositionRecord[]
+}
+```
+
+Whole translation 为每个 source item 调 handler，将 presentation emissions 与 continuation records 分别聚合，最后一次调用 whole renderer。Stream translation 为每个 candidate 创建独立 collector；handler finalize 后追加 record，source terminal 时冻结 bundle，再由 stream renderer／carrier strategy 消费。Handler、renderer 或 translator closure 不得另藏一份 continuation 状态。
+
+Carrier reconstruction 必须比较当前目标与 `SourceAffinity`：同一兼容 source 才恢复 opaque state；不兼容模型／provider／endpoint 只保留 presentation semantic 并记录剥离 disposition。具体兼容判据复用并扩展 `model_translation` 的既有稳定模型／切换模型裁决，由 Phase 0 冻结。
 
 ## 6. 双平面决策 DSL
 
@@ -206,34 +345,77 @@ type ContinuationDecision =
 4. 带 opaque source state 的 handler 若返回 continuation `none`，必须有实测证明源上游续接不依赖该 state；否则属于缺陷。
 5. `carrier` 必须版本化、可识别、可逆，并有真实源上游接受性 oracle。
 
-## 7. 生命周期 router
+## 7. 生命周期 algebra 与协议 adapter
+
+共同层不直接读取 Responses 或 Anthropic wire，而接收两个协议 adapter 产生的生命周期 algebra：
 
 ```ts
-interface BridgeStreamRouter {
-  readonly items: Map<number, ItemEnvelope>
-  readonly finalized: Set<number>
-}
+type SemanticLifecycleEvent =
+  | { kind: "item-open"; key: SemanticItemKey; semanticKind: string; source: unknown }
+  | { kind: "item-progress"; key: SemanticItemKey; phase: string; source: unknown }
+  | { kind: "item-delta"; key: SemanticItemKey; deltaKind: string; source: unknown }
+  | { kind: "item-close"; key: SemanticItemKey; source: unknown }
+  | { kind: "response-terminal"; status: string; source: unknown }
+
+type SemanticItemKey =
+  | { protocol: "openai-responses"; outputIndex: number }
+  | { protocol: "anthropic-messages"; blockIndex: number }
+```
+
+```ts
+type LifecycleDecision<E> =
+  | { kind: "emissions"; emissions: readonly E[] }
+  | { kind: "lifecycle-only"; phase: string }
+  | { kind: "finalized"; decision: BridgeDecision<E> }
+  | { kind: "rejected"; error: BridgeCompatibilityError }
 
 interface ItemEnvelope {
-  outputIndex: number
-  wireType: string
-  owner:
-    | { kind: "known"; handler: SemanticHandler; state: unknown }
-    | { kind: "unknown"; firstEvent: unknown }
+  key: SemanticItemKey
+  semanticKind: string
+  owner: ResponseSemanticHandler<unknown, BridgeEmission, unknown>
+  state: unknown
   status: "open" | "finalized"
+}
+
+interface ProtocolLifecycleAdapter<WireEvent> {
+  classify(event: WireEvent): readonly SemanticLifecycleEvent[] | BridgeCompatibilityError
+}
+
+interface SemanticLifecycleRouter {
+  readonly items: Map<string, ItemEnvelope>
+  route(event: SemanticLifecycleEvent): readonly LifecycleDecision<BridgeEmission>[]
+  flush(): readonly LifecycleDecision<BridgeEmission>[]
 }
 ```
 
-Router 只管理共同生命周期：
+`ItemEnvelope.owner` 在伪代码中写成 `unknown` 只是异构 Map 的擦除边界；注册表取得 owner 时必须先按 `semanticKind` 完成类型安全分派，业务 handler 内不得依赖该 erased 类型做 cast。
 
-- `output_item.added` 到来时按精确 kind 取得 owner；
-- 允许没有 `.added`、直接出现 `.done` 的结构；
-- 后续 event 按 `output_index` 交给 owner；
-- 禁止同一个 `output_index` 中途改变 semantic kind；
-- `.done` 与专用 done event 只能 exactly-once finalize；
-- stream 结束时每个 open item 必须 flush 或 reject；
+Responses adapter 负责 `output_index`、`output_item.added/.done` 与各专用 event family；Anthropic adapter 负责 content block `index`、`content_block_start/delta/stop` 与 `message_stop`。Router 只管理共同不变量：
+
+- open 时按精确 semantic kind 取得 owner；
+- 允许只有 close／whole-on-done 的结构，adapter 须先合成 `item-open`；
+- 后续 progress／delta／close 按协议自有稳定 key 交给 owner；
+- 禁止同一 key 中途改变 semantic kind；
+- 通用 done 与专用 completed event 只能 exactly-once finalize；
+- source stream 结束时每个 open item 必须 flush 或 reject；
 - 未知 item／event 不进入 `default: break`；
 - Router 不推断未知结构应映射成 text、tool 或 reasoning。
+
+### 7.1 Web Search lifecycle disposition
+
+Responses adapter 必须将以下四类输入归给同一个 `web_search_call` handler：
+
+| Source event | Algebra | Handler effect |
+|---|---|---|
+| `response.output_item.added` item=`web_search_call` | `item-open` | 创建 state，保存 `output_index` 与 source item |
+| `response.web_search_call.in_progress` | `item-progress` phase=`in_progress` | `presentation` lifecycle-only；更新状态，不 finalize |
+| `response.web_search_call.searching` | `item-progress` phase=`searching` | `presentation` lifecycle-only；允许生成 progress emission，但不伪造 query |
+| `response.web_search_call.completed` | `item-progress` phase=`completed` | 标记 server-tool 执行完成，不替代权威 item close |
+| `response.output_item.done` item=`web_search_call` | `item-close` | 用权威完整 item 生成 presentation／continuation，exactly-once finalize |
+
+若真实流没有 `.added`、直接出现专用 progress 或 `.done`，adapter 以同一 `output_index` 合成 open。三种专用 lifecycle event 是已知结构，不能进入 unknown fail-loud，也不能无记录地忽略。
+
+正控必须构造完整合法序列 `added → in_progress → searching → completed → output_item.done`；反向控制包括缺 `added`、重复 completed、completed 与 done 颠倒，以及同一 `output_index` 中途改 type。
 
 ## 8. Continuation carrier
 
@@ -366,17 +548,36 @@ continuation: {
 
 候选只有在 presentation、continuation、whole、stream 和测试全部闭合后，才进入 `SupportedKind`。官方 SDK 中仅存在、当前生产面未出现的结构不注册空 handler。
 
-## 11. 未知结构
+## 11. 未知结构与 compatibility error 路由
+
+### 11.1 Typed error
+
+```ts
+interface BridgeCompatibilityError extends Error {
+  readonly name: "BridgeCompatibilityError"
+  readonly sourceFormat: string
+  readonly targetFormat: string
+  readonly direction: "request" | "response"
+  readonly wireType: string
+  readonly requestId?: string
+}
+```
 
 - Identity Responses→Responses 路径原样透传；
-- Translation request 在发送上游前返回 `BridgeCompatibilityError`；
-- Translation response pre-commit 返回真实 HTTP compatibility error；
-- Translation response post-commit 发送目标协议合法 terminal error 并停止；
-- error 必须包含 source format、target format、direction、wire type 和 request id；
+- Translation request 在发送上游前抛出 typed error，由 route 的既有 request-error 路径返回真实 HTTP 4xx；
+- Non-streaming translation response 在 `c.json` 前抛出 typed error，由 handler 返回真实 HTTP compatibility error；
+- Buffered streaming 在 buffer 尚未 flush 到 sink 时仍属 wire-uncommitted，可丢弃候选 buffer，并由 handler 返回／写出 profile 指定的 compatibility error；
+- Live streaming 的 handler 已进入 `streamSSE`，renderer 发现未知上游 event 时只能返回 `stream-error` outcome，由 Messages／Responses handler 生成目标协议合法的 typed terminal error；规格不宣称此时还能改回真实 pre-commit HTTP status；
+- `runResponseSink`／`runResponseBufferedSink` 不把 `BridgeCompatibilityError` 降为普通字符串：`stream-error` outcome 保留原 Error 对象与结构化字段；
+- handler 使用显式 wire commit state（buffer 是否 flush／sink 是否已首次 external write），不以“是否看到某种业务帧”猜 commit；
 - unknown raw value 只进入受保护的 History upstream 轨，不写普通日志；
 - 不把未知 JSON 编成普通文本继续成功。
 
-## 12. 可观测性
+### 11.2 错误路径验收
+
+必须分别测试 request、whole response、buffered-uncommitted、live-committed 四格；每格都断言客户端 wire、HTTP status／terminal frame、History failure reason 和 typed fields。只断言“抛错”不满足验收。
+
+## 12. 可观测性与候选所有权
 
 ```ts
 interface BridgeDispositionRecord {
@@ -395,13 +596,23 @@ interface BridgeDispositionRecord {
   outputIndex?: number
   sourceItemId?: string
 }
+
+interface CandidateBridgeDiagnostics {
+  candidateId: string
+  records: readonly BridgeDispositionRecord[]
+}
 ```
 
-- upstream 轨保留原始 source item／event；
-- forwarded 轨保留客户端实收 wire；
-- synthetic presentation 使用 `bridge-degradation` provenance；
-- carrier 只记录元数据，不记录 opaque payload；
-- rejected 结构必须进入结构化诊断，不能只写 console warning。
+所有权与写入规则：
+
+1. 每个 generation candidate 创建自己的 append-only disposition collector；禁止写 request-global 单值槽。
+2. 每处理一个 known item 或 compatibility error，追加一条 record；同一 candidate 的多 item 不得互相覆盖。
+3. 每个 candidate 的完整 records 进入该 candidate／attempt 的诊断轨，包含 loser、failed、cancelled；因此可解释落败候选，但不会污染胜者事实。
+4. `selectGenerationWinner(candidate, dispatch)` 后，只有 winner 的 records 投影到顶层 `pipelineInfo.bridgeDispositions`；无 winner 的失败请求不生成伪 winner 投影。
+5. RequestContext 新增窄 API：`appendCandidateBridgeDisposition(candidateHandle, record)`；不得复用 `recordFeature` 或现有单值 `recordTranslationDegradation`。
+6. History `PipelineInfo` 新增 append-only `bridgeDispositions?: BridgeDispositionRecord[]`；attempt/candidate 诊断仍是明细 SSOT，顶层仅为 winner 派生视图。
+7. upstream 轨保留原始 source item／event；forwarded 轨保留客户端实收 wire；synthetic presentation 使用 `bridge-degradation` provenance；carrier 只记录 scheme/version/kinds，不记录 opaque payload。
+8. disposition 在 candidate settle 前冻结，winner 投影在 winner selection 后、terminal History snapshot 前完成；测试必须覆盖 hedge loser 先写、winner 后写以及无 winner 失败三种顺序。
 
 ## 13. Phase 0 探针
 
@@ -430,17 +641,32 @@ interface BridgeDispositionRecord {
 - restart 后是否仍可恢复；
 - malformed／foreign prefix 不抛错、不误认。
 
-### P0-3. Claude Code WebSearch E2E
+### P0-3. Claude Code WebSearch 外层 E2E
 
-用真实 Claude Code client tool 和 mock Responses upstream，断言：
+测试必须从真实 Claude Code 工具 registry 中的 `WebSearch.call()`／等价 CLI tool-use 入口启动，不能直接调用其内部 Messages 子请求。mock Responses upstream 按合法协议发出：
+
+```text
+response.output_item.added(web_search_call)
+response.web_search_call.in_progress
+response.web_search_call.searching
+response.web_search_call.completed
+response.output_item.done(web_search_call)
+message/output_text/citations
+response.completed
+```
+
+oracle 同时观察内部与外层：
 
 - 内部子请求声明并强制选择 web search；
-- query 与 progress 可见；
-- `searchCount` 正确；
-- 最终 links／text 进入外层普通 `tool_result`；
-- incomplete 无 action 不崩溃；
+- 三种 Web Search lifecycle event 均由同一 handler 消费，不触发 unknown error；
+- query update 与 search-results progress callback 可见；
+- `WebSearch.call()` 最终 `data.searchCount`、`data.results`、`data.query` 与 duration 正确；
+- `mapToolResultToToolResultBlockParam` 生成的外层普通 `tool_result` 含 links／text，并实际进入下一轮主 agent loop；
+- incomplete 无 action 不崩溃、不虚构 query；
 - continuation carrier 不触发额外 client tool 执行；
-- 下一轮 echo 能恢复 Responses continuation。
+- 客户端 echo 后，Anthropic→Responses request bridge 恢复 continuation，真实／协议级 Responses oracle 接受。
+
+正控必须让 mock 发出至少一次 `server_tool_use` 展示和一个可观察 link；负控删除 semantic server-tool-use emission 时，`searchCount`／progress 断言必须变红。只看内部 HTTP 200、只看 Anthropic wire，或直接构造外层 `data` 都不满足本 E2E。
 
 ### P0-4. 流式时序
 
@@ -510,7 +736,11 @@ interface BridgeDispositionRecord {
 - degraded presentation 没有 synthetic provenance；
 - direct Claude leg 不剥 Responses carrier；
 - forced custom choice 被错误删除；
-- stream 与 whole 调用不同 mapper。
+- stream 与 whole 调用不同 mapper；
+- `response.web_search_call.searching` 被送入 unknown handler；
+- request item mapper 更新 tools，却绕过 payload coordinator 留下旧 choice；
+- hedge loser 的 disposition 被投影成顶层 winner 事实；
+- live-committed compatibility error 被错误声明为真实 HTTP 4xx。
 
 每次 mutation 必须确认失败来自目标机制，而非旁路断言。
 
@@ -520,7 +750,10 @@ interface BridgeDispositionRecord {
 - auto／none／required 与合法 named choice 不被误删；
 - identity Responses 路径未知 item 原样通过；
 - error-shaped Anthropic server-tool result 不被成功结果规则误伤；
-- 无 opaque state 的 item 合法返回 continuation none。
+- 无 opaque state 的 item 合法返回 continuation none；
+- Web Search `in_progress/searching/completed` 合法返回 lifecycle-only／progress，不被 unknown 拒绝；
+- request／whole／buffered-uncommitted／live-committed 四种 compatibility error 均走各自合法 wire；
+- hedge loser、cancelled candidate 的 disposition 保留在明细，但不污染顶层 winner 投影。
 
 ### 15.4 端到端
 
@@ -537,20 +770,23 @@ Responses response
 
 ## 16. 机器守卫
 
-1. `SupportedKind` 与 handler 表精确相等；
-2. 已知 handler 必须返回 presentation 与 continuation；
-3. 已知结构不得进入 unknown handler；
-4. whole 与 stream 引用同一 semantic mapper；
-5. 声明有 stream family 的 handler 必须实现 state adapter，或显式声明 `whole-item-on-done`；
-6. opaque state handler 不得无证据返回 continuation none；
-7. degraded presentation 必须有 reason、lost fields 和 provenance；
-8. carrier 必须有 scheme、version 和 decoder；
-9. v1 carrier decoder 在 v2 落地后仍有 fixture；
-10. unknown translation 路径必须 fail-loud；
-11. 删除注册项或把 degraded 改成空 emission 的 mutation 必须变红；
-12. 正确样本必须证明守卫不会 false-red。
+1. 四张方向表各自的 `SupportedKind` 与 handler 表精确相等；request 与 response kind 不得混表；
+2. request profile 必须同时提供 item registry 与 payload coordinator；
+3. response known handler 必须返回 presentation 与 continuation；
+4. 已知结构及其 known lifecycle event 不得进入 unknown handler；
+5. whole 与 stream 引用同一 semantic mapper；
+6. 声明有 stream family 的 handler 必须实现 lifecycle adapter/state，或显式声明 `whole-item-on-done`；
+7. Responses adapter 使用 `output_index`，Anthropic adapter 使用 block `index`；不得跨协议偷换主键；
+8. opaque state handler 不得无证据返回 continuation none；
+9. degraded presentation 必须有 reason、lost fields 和 provenance；
+10. carrier 必须有 scheme、version、affinity 和 decoder；
+11. v1 carrier decoder 在 v2 落地后仍有 fixture；
+12. unknown translation 路径必须 fail-loud，并区分 request／whole／buffered-uncommitted／live-committed；
+13. disposition collector 必须 candidate-local append-only；顶层只投影 winner；
+14. 删除注册项或把 degraded 改成空 emission 的 mutation 必须变红；
+15. 正确样本必须证明守卫不会 false-red。
 
-## 17. 必要性命题与替代方案
+## 17. 必要性命题与架构选择
 
 ### N1. 必须分离 presentation 与 continuation
 
@@ -562,26 +798,31 @@ Responses response
 | 双平面 `BridgeDecision` | 是 | 无 |
 | 分散在 renderer 与 request translator 的隐式 side effect | 否 | whole／stream／echo 无单一所有者，机器无法检查 |
 
-### N2. 必须有窄 IR 或等价的目标无关 emission
+### D1. 窄 IR 是择优方案，不是唯一可行方案
 
-若 handler 直接返回 Anthropic block，whole／stream 会再次分别决定业务语义，反向桥也无法复用。窄 IR 只覆盖已支持语义，不建立全局协议模型。
+必须满足的性质是：whole 与 stream 只维护一份 semantic mapping，renderer 只做目标 wire 组装。以下三种方案可闭合：
 
-| 替代方案 | 是否闭合 | 违反项 |
+| 方案 | 可行性 | 取舍 |
 |---|---|---|
-| handler 直接返回 whole block | 否 | stream 需复制业务映射 |
-| handler 同时返回 whole block 与 SSE frames | 否 | 两份表示可漂移 |
-| 目标无关 emission + 两个 renderer | 是 | 无 |
-| 全局万能 IR | 可行但不采用 | 超出目标，重复现有 Envelope／codec 职责 |
+| 方向专属 normalized semantic value + whole／stream 两 renderer | 可行 | 范围最小，但 Responses→Anthropic 与 Anthropic→Responses 会各有一组近义 value |
+| 本规格的窄目标无关 `BridgeEmission` | 可行，**采用** | 用一个小 union 复用 text/tool/reasoning/server-tool 语义，类型判别力与扩展性更好；不取代 Envelope／codec |
+| 全局万能 IR | 可行，不采用 | 能力更强，但重复现有 Envelope／codec 职责，扩大所有协议的迁移面 |
+| handler 同时返回 whole block 与 SSE frames | 不闭合 | 两份目标 wire 表示仍会漂移 |
 
-### N3. 必须有共同生命周期 router
+采用窄 IR 的理由是长期维护、双向复用与机器守卫判别力更强，不是因为较小的方向专属 normalized value 不可行。若实施 PoC 证明两方向共享 union 反而制造大量不安全 union／cast，可改用方向专属 normalized value，但必须保留双平面 decision 与 whole／stream 单一 semantic source。
 
-每个 item 自建完整状态机可工作，但会重复 added／done／flush／exactly-once 与 unknown 处理；已发生过用不稳定 item id 做公共去重的真实缺陷。共同 router 只拥有共性，不拥有业务字段。
+### D2. 生命周期 algebra + 双 adapter 是择优方案
 
-| 替代方案 | 是否闭合 | 违反项 |
+必须满足的性质是：协议各自的稳定 key、type 一致性、exactly-once finalize、flush 与 unknown policy 有明确 owner。以下方案均可行：
+
+| 方案 | 可行性 | 取舍 |
 |---|---|---|
-| 每个 handler 独立完整状态机 | 可行但不采用 | 重复公共不变量，容易不对称 |
-| 通用 router + handler 私有 state | 是 | 无 |
-| 不处理未知 item | 否 | silent drop／错序／假完整 |
+| 每个 handler 独立完整状态机 | 可行 | 无公共抽象，但重复 added／done／flush／unknown，不利于统一守卫 |
+| Responses router + Anthropic router 两套独立实现 | 可行 | 保留协议自然形状，公共不变量仍重复 |
+| 本规格的 protocol lifecycle adapter → 小 algebra → handler 私有 state | 可行，**采用** | 协议 key 留在 adapter，公共 router 只管共性；类型和正负控制可集中 |
+| 把 Anthropic block 强行改造成 Responses `output_index` envelope | 不闭合 | 丢失协议自身生命周期并制造假同构 |
+
+采用 adapter + 小 algebra 是长期一致性选择，不是唯一实现。Phase 1 PoC 必须拿 Responses Web Search、Responses function call、Anthropic thinking、Anthropic tool_use 四个异形样本验证：若 algebra 只能靠大量 optional 字段或 raw cast 才承载，应退回两套协议 router，并以共享 invariant test suite 代替共享实现。
 
 ### N4. 不能用外部 hook 承担语义桥
 
@@ -606,18 +847,19 @@ ADR 旧决策和当时证据保留原文，新注解只说明后续事实如何�
 
 ## 19. 验收标准
 
-- AC1：六个方向面均由明确 profile 驱动；
+- AC1：四张方向表均有各自 source union、handler registry 与 coordinator／renderer，六个方向面全部接入；
 - AC2：第一批支持集合没有 silent drop；
-- AC3：whole／stream 对同一 source semantic 产生相同 presentation decision；
+- AC3：whole／stream 对同一 source semantic 调用同一 mapper，并由协议 adapter 保留各自生命周期主键；
 - AC4：展示 degraded 与 continuation carrier 可同时成立并分别记录；
-- AC5：真实 Claude Code WebSearch 经 Responses 模型成功返回，query、progress、searchCount、links／text 正确；
+- AC5：从真实 Claude Code `WebSearch.call()`／等价 CLI 外层入口运行 E2E；query、progress、`data.searchCount`、`data.results`、links／text 与主 loop `tool_result` 正确；
 - AC6：Web Search incomplete 无 action 不崩溃、不虚构 query；
 - AC7：不伪造 Anthropic `web_search_result.encrypted_content`；
 - AC8：Responses opaque continuation 经过 Anthropic wire 与客户端 echo 后被 Responses upstream 接受；
 - AC9：reasoning 继续使用权威 `.done` opaque state，v1 carrier 不回归；
-- AC10：流式关联使用 `output_index`，不使用变化的 opaque item id；
-- AC11：未知 translation item fail-loud，identity item passthrough；
-- AC12：History upstream／forwarded 轨与 disposition 记录可对账；
-- AC13：所有目标 mutation 变红，所有正确状态对照保持绿；
-- AC14：旧 per-structure translator 分支在对应 family 迁移提交中删除，无长期双轨；
-- AC15：typecheck、精确 lint、架构守卫、backend 档和客户端 E2E 全部通过。
+- AC10：Responses 流式关联使用 `output_index`，Anthropic 使用 block `index`；不使用变化的 opaque item id；
+- AC11：`response.web_search_call.in_progress/searching/completed` 是 known lifecycle，完整序列与缺 added／重复／乱序控制均通过；
+- AC12：未知 translation item fail-loud，identity item passthrough；request／whole／buffered-uncommitted／live-committed 四格错误 wire 均符合规格；
+- AC13：History upstream／forwarded 轨与 disposition 记录可对账；candidate 明细 append-only，顶层只含 winner 投影；
+- AC14：所有目标 mutation 变红，所有正确状态对照保持绿；
+- AC15：旧 per-structure translator 分支在对应 family 迁移提交中删除，无长期双轨；
+- AC16：typecheck、精确 lint、架构守卫、backend 档和客户端 E2E 全部通过。
