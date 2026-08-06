@@ -28,6 +28,8 @@ import {
 } from "~/lib/history/v3/store"
 import {
   //
+  backfillExistingSummaryRows,
+  explainSummaryBackfillPlan,
   SUMMARY_PROJECTION_READY_KEY,
   tryMarkSummaryProjectionReady,
 } from "~/lib/history/v3/summary-store"
@@ -138,6 +140,50 @@ describe("History V3 summary projection migration", () => {
     db.prepare("UPDATE v3_operation_summaries SET endpoint='drifted' WHERE operation_id=?").run("historical-summary-op")
     expect(tryMarkSummaryProjectionReady(db)).toEqual({ ready: false, pending: 0, poisoned: 0 })
     expect(getMeta(db, SUMMARY_PROJECTION_READY_KEY)).toBeNull()
+  })
+
+  test("checks whole-projection readiness only once after a multi-batch backfill drains", async () => {
+    const db = getDatabase()
+    for (const id of ["readiness-once-a", "readiness-once-b", "readiness-once-c"]) commitV3HistoryEntry(entry(id))
+    await applyForwardMigrations(db)
+
+    let checks = 0
+    startV3SummaryBackfill(db, 1, (database) => {
+      checks++
+      return tryMarkSummaryProjectionReady(database)
+    })
+    await drainV3SummaryBackfill()
+
+    expect(checks).toBe(1)
+    expect(getMeta(db, SUMMARY_PROJECTION_READY_KEY)).toBe("1")
+  })
+
+  test("backfill pages advance by keyset and use the created-at index boundary", async () => {
+    const db = getDatabase()
+    for (const [id, startedAt] of [
+      ["keyset-c", 3_000],
+      ["keyset-a", 1_000],
+      ["keyset-b", 2_000],
+    ] as const) {
+      commitV3HistoryEntry({ ...entry(id), startedAt, endedAt: startedAt + 250 })
+    }
+    await applyForwardMigrations(db)
+
+    const first = backfillExistingSummaryRows(db, 1)
+    const second = backfillExistingSummaryRows(db, 1, first.cursor)
+    const third = backfillExistingSummaryRows(db, 1, second.cursor)
+    const exhausted = backfillExistingSummaryRows(db, 1, third.cursor)
+
+    expect(first).toEqual({ inserted: 1, cursor: { createdAt: 1_000, operationId: "keyset-a" } })
+    expect(second).toEqual({ inserted: 1, cursor: { createdAt: 2_000, operationId: "keyset-b" } })
+    expect(third).toEqual({ inserted: 1, cursor: { createdAt: 3_000, operationId: "keyset-c" } })
+    expect(exhausted).toEqual({ inserted: 0, cursor: null })
+    expect(
+      explainSummaryBackfillPlan(db, first.cursor).some(
+        (detail) =>
+          detail.includes("SEARCH v3_operations") && detail.includes("idx_v3_operations_created") && detail.includes("(created_at,operation_id)>(?,?)"),
+      ),
+    ).toBe(true)
   })
 
   test("a typed projection mismatch blocks readiness even when the row is marked ready", async () => {

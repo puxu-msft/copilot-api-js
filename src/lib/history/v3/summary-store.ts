@@ -476,21 +476,51 @@ export function getSummaryProjectionReadiness(db: Database): SummaryProjectionRe
   }
 }
 
-export function backfillExistingSummaryRows(db: Database, limit: number): number {
+export interface SummaryBackfillCursor {
+  createdAt: number
+  operationId: string
+}
+
+export interface SummaryBackfillPage {
+  inserted: number
+  cursor: SummaryBackfillCursor | null
+}
+
+function summaryBackfillPageSql(cursor: SummaryBackfillCursor | null | undefined, explain = false): string {
+  const prefix = explain ? "EXPLAIN QUERY PLAN " : ""
+  const boundary = cursor ? " AND (created_at,operation_id)>(?,?)" : ""
+  return `${prefix}SELECT created_at,operation_id
+    FROM v3_operations INDEXED BY idx_v3_operations_created
+    WHERE NOT EXISTS (
+      SELECT 1 FROM v3_operation_summaries
+      WHERE v3_operation_summaries.operation_id=v3_operations.operation_id
+    )${boundary}
+    ORDER BY created_at,operation_id
+    LIMIT ?`
+}
+
+export function explainSummaryBackfillPlan(db: Database, cursor?: SummaryBackfillCursor | null, limit = 16): Array<string> {
+  const params = cursor ? [cursor.createdAt, cursor.operationId, limit] : [limit]
+  return (db.prepare(summaryBackfillPageSql(cursor, true)).all(...params) as Array<{ detail: string }>).map((row) => row.detail)
+}
+
+export function backfillExistingSummaryRows(db: Database, limit: number, cursor?: SummaryBackfillCursor | null): SummaryBackfillPage {
+  const params = cursor ? [cursor.createdAt, cursor.operationId, limit] : [limit]
+  const rows = db.prepare(summaryBackfillPageSql(cursor)).all(...params) as Array<{ created_at: number; operation_id: string }>
+  if (rows.length === 0) return { inserted: 0, cursor: null }
+
+  const operationIds = rows.map((row) => row.operation_id)
   const result = db
     .prepare(
       `INSERT OR IGNORE INTO v3_operation_summaries(${projectionColumns})
        SELECT ${historicalProjectionValues}
        FROM v3_operations
-       WHERE NOT EXISTS (
-         SELECT 1 FROM v3_operation_summaries
-         WHERE v3_operation_summaries.operation_id=v3_operations.operation_id
-       )
-       ORDER BY created_at,operation_id
-       LIMIT ?`,
+       WHERE operation_id IN (SELECT value FROM json_each(?))`,
     )
-    .run(limit)
-  return result.changes
+    .run(JSON.stringify(operationIds))
+  const last = rows.at(-1)
+  if (!last) return { inserted: result.changes, cursor: null }
+  return { inserted: result.changes, cursor: { createdAt: last.created_at, operationId: last.operation_id } }
 }
 
 export function markSummaryProjectionPoisoned(db: Database, operationId: string, reason: string): void {

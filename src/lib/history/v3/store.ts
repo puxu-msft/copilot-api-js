@@ -1075,12 +1075,21 @@ export function visitV3Summaries(visitor: (summary: EntrySummary) => unknown, ki
   }
 }
 
-export function startV3SummaryBackfill(db: Database = getDatabase(), batchSize = 16): void {
+export function startV3SummaryBackfill(
+  db: Database = getDatabase(),
+  batchSize = 16,
+  checkReadiness: typeof tryMarkSummaryProjectionReady = tryMarkSummaryProjectionReady,
+): void {
   if (summaryBackfill) return
   summaryBackfillStop = false
   summaryBackfill = (async () => {
+    let cursor: Parameters<typeof backfillExistingSummaryRows>[2]
+    let projectionDone = false
     while (!summaryBackfillStop) {
-      const inserted = backfillExistingSummaryRows(db, batchSize)
+      const page: ReturnType<typeof backfillExistingSummaryRows> =
+        projectionDone ? { inserted: 0, cursor: null } : backfillExistingSummaryRows(db, batchSize, cursor)
+      cursor = page.cursor
+      projectionDone = page.cursor === null
       const rows = db
         .prepare(
           `SELECT o.operation_id,o.manifest_gz,o.pinned,o.ended_at,o.timing_source
@@ -1118,8 +1127,8 @@ export function startV3SummaryBackfill(db: Database = getDatabase(), batchSize =
           markSummaryProjectionPoisoned(db, row.operation_id, reason)
         }
       }
-      if (inserted === 0 && rows.length === 0) {
-        tryMarkSummaryProjectionReady(db)
+      if (projectionDone && rows.length === 0) {
+        checkReadiness(db)
         return
       }
       await new Promise<void>((resolve) => setTimeout(resolve, 0))
