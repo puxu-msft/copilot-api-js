@@ -70,6 +70,20 @@ describe("Chat Completions tool-name sanitization", () => {
     expect(out.messages[0].tool_calls?.[0].function.name).toBe("mcp_tool")
   })
 
+  test("renames a forced tool_choice name to match the renamed tool", () => {
+    enable()
+    const payload: ChatCompletionsPayload = {
+      model: "claude-opus-4.8",
+      messages: [],
+      tools: [{ type: "function", function: { name: "mcp.tool" } }],
+      tool_choice: { type: "function", function: { name: "mcp.tool" } },
+    }
+    const mapper = buildChatCompletionsToolNameMapper(payload, "Anthropic")
+    const out = applyChatCompletionsToolNameSanitization(payload, mapper)
+    // Without this, upstream rejects with "Tool 'mcp.tool' not found in provided tools".
+    expect(out.tool_choice).toEqual({ type: "function", function: { name: "mcp_tool" } })
+  })
+
   test("gpt keeps dots (no rename, mapper null)", () => {
     enable()
     const payload: ChatCompletionsPayload = {
@@ -139,6 +153,36 @@ describe("Responses tool-name sanitization", () => {
     expect(tool && "name" in tool ? tool.name : undefined).toBe("mcp_tool")
     const item = Array.isArray(out.input) ? out.input[0] : undefined
     expect(item?.name).toBe("mcp_tool")
+  })
+
+  test("renames a forced tool_choice name to match the renamed tool", () => {
+    enable()
+    const payload: ResponsesPayload = {
+      model: "claude-opus-4.8",
+      input: [],
+      tools: [{ type: "function", name: "mcp.tool" }],
+      tool_choice: { type: "function", name: "mcp.tool" },
+    }
+    const mapper = buildResponsesToolNameMapper(payload, "Anthropic")
+    const out = applyResponsesToolNameSanitization(payload, mapper)
+    expect(out.tool_choice).toEqual({ type: "function", name: "mcp_tool" })
+  })
+
+  test("renames a named custom tool_choice but leaves builtin choices untouched", () => {
+    enable()
+    const customPayload: ResponsesPayload = {
+      model: "claude-opus-4.8",
+      input: [],
+      tools: [{ type: "custom", name: "mcp.tool" }],
+      tool_choice: { type: "custom", name: "mcp.tool" },
+    }
+    const mapper = buildResponsesToolNameMapper(customPayload, "Anthropic")
+    const customOut = applyResponsesToolNameSanitization(customPayload, mapper)
+    expect(customOut.tools).toEqual([{ type: "custom", name: "mcp_tool" }])
+    expect(customOut.tool_choice).toEqual({ type: "custom", name: "mcp_tool" })
+
+    const builtinPayload: ResponsesPayload = { ...customPayload, tool_choice: { type: "web_search" } }
+    expect(applyResponsesToolNameSanitization(builtinPayload, mapper).tool_choice).toEqual({ type: "web_search" })
   })
 
   test("restore non-streaming output function_call names", () => {

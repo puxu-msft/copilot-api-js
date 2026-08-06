@@ -24,7 +24,6 @@ import type {
   //
   ResponsesInputItem,
   ResponsesPayload,
-  ResponsesTool,
 } from "~/types/api/openai-responses"
 
 import { getToolNameRulesForModel } from "~/lib/models/resolver"
@@ -59,7 +58,7 @@ export function buildChatCompletionsToolNameMapper(payload: ChatCompletionsPaylo
  */
 export function buildResponsesToolNameMapper(payload: ResponsesPayload, vendor?: string): ToolNameMapper | null {
   if (!state.sanitizeToolNames) return null
-  const names = (payload.tools ?? []).filter((t): t is Extract<ResponsesTool, { type: "function" }> => t.type === "function").map((t) => t.name)
+  const names = (payload.tools ?? []).filter((tool) => tool.type === "function" || tool.type === "custom").map((tool) => tool.name)
   if (names.length === 0) return null
   const mapper = createToolNameMapper(names, getToolNameRulesForModel(payload.model, vendor))
   return mapper.hasChanges ? mapper : null
@@ -96,12 +95,26 @@ export function applyChatCompletionsToolNameSanitization(payload: ChatCompletion
     mapper.hasOriginal(tool.function.name) ? { ...tool, function: { ...tool.function, name: mapper.toUpstream(tool.function.name) } } : tool,
   )
   const messages = payload.messages.map((m) => renameMessageToolCalls(m, mapper))
+  const toolChoice = renameChatToolChoice(payload.tool_choice, mapper)
 
   return {
     ...payload,
     ...(tools ? { tools } : {}),
+    ...(toolChoice !== payload.tool_choice ? { tool_choice: toolChoice } : {}),
     messages,
   }
+}
+
+/**
+ * Rename a forced Chat Completions tool_choice name to its upstream form.
+ * `{ type: "function", function: { name } }` must track the renamed tool,
+ * otherwise the upstream can't resolve the forced tool. String modes
+ * (`auto`/`none`/`required`) and null pass through.
+ */
+function renameChatToolChoice(toolChoice: ChatCompletionsPayload["tool_choice"], mapper: ToolNameMapper): ChatCompletionsPayload["tool_choice"] {
+  if (!toolChoice || typeof toolChoice !== "object") return toolChoice
+  if (!mapper.hasOriginal(toolChoice.function.name)) return toolChoice
+  return { ...toolChoice, function: { ...toolChoice.function, name: mapper.toUpstream(toolChoice.function.name) } }
 }
 
 // ============================================================================
@@ -182,7 +195,7 @@ export function applyResponsesToolNameSanitization(payload: ResponsesPayload, ma
   if (!mapper) return payload
 
   const tools = payload.tools?.map((tool) =>
-    tool.type === "function" && mapper.hasOriginal(tool.name) ? { ...tool, name: mapper.toUpstream(tool.name) } : tool,
+    (tool.type === "function" || tool.type === "custom") && mapper.hasOriginal(tool.name) ? { ...tool, name: mapper.toUpstream(tool.name) } : tool,
   )
 
   let input = payload.input
@@ -190,11 +203,28 @@ export function applyResponsesToolNameSanitization(payload: ResponsesPayload, ma
     input = input.map((item) => renameResponsesInputItem(item, mapper))
   }
 
+  const toolChoice = renameResponsesToolChoice(payload.tool_choice, mapper)
+
   return {
     ...payload,
     ...(tools ? { tools } : {}),
+    ...(toolChoice !== payload.tool_choice ? { tool_choice: toolChoice } : {}),
     input,
   }
+}
+
+/**
+ * Rename a forced Responses tool_choice name to its upstream form.
+ * `{ type: "function", name }` must track the renamed tool; string modes
+ * (`auto`/`none`/`required`) pass through.
+ */
+function renameResponsesToolChoice(toolChoice: ResponsesPayload["tool_choice"], mapper: ToolNameMapper): ResponsesPayload["tool_choice"] {
+  // String modes and builtin choices carry no name. Named function/custom
+  // choices must track the corresponding renamed declaration.
+  if (!toolChoice || typeof toolChoice !== "object") return toolChoice
+  if (toolChoice.type !== "function" && toolChoice.type !== "custom") return toolChoice
+  if (!mapper.hasOriginal(toolChoice.name)) return toolChoice
+  return { ...toolChoice, name: mapper.toUpstream(toolChoice.name) }
 }
 
 // ============================================================================

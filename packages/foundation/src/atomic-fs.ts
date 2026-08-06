@@ -40,8 +40,8 @@ let tmpSeq = 0
  *
  * Uses a sibling tmp path with `<pid>.<ts>.<seq>.<random>` so multiple
  * processes / same-process concurrent calls never collide. On any failure the
- * temp file is best-effort unlinked (fire-and-forget) and the error is
- * re-thrown. Callers decide whether to log or swallow.
+ * temp file is best-effort unlinked before the promise rejects, then the
+ * original error is re-thrown. Callers decide whether to log or swallow.
  *
  * The temp file lives in the same directory as `targetPath` so the final
  * `rename()` stays within one filesystem and remains atomic. Caller is
@@ -55,7 +55,7 @@ export async function atomicWriteText(targetPath: string, content: string): Prom
     await fs.writeFile(tmpPath, content, "utf8")
     await fs.rename(tmpPath, targetPath)
   } catch (err) {
-    void fs.unlink(tmpPath).catch(() => undefined)
+    await fs.unlink(tmpPath).catch(() => undefined)
     throw err
   }
 }
