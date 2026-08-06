@@ -1,6 +1,6 @@
 # GitHub Enterprise 鉴权主机与端点配置
 
-- 状态：草案，待用户审阅
+- 状态：已批准，待实施计划合入主线后另行决定是否执行
 - 日期：2026-08-05
 - 参考实现：[sxwxs/ghc-api#34](https://github.com/sxwxs/ghc-api/pull/34)
 - 实验证据：[exp/github-enterprise-auth-host/](../../exp/github-enterprise-auth-host/)
