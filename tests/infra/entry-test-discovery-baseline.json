@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "runner_git_blob": "201996e18033d27e1214cb0f8d688f6850d89840",
-  "minimum_executed": 6497,
+  "minimum_executed": 6875,
   "files": [
     "tests/anthropic/anchor-frame-factory.unit.test.ts",
     "tests/anthropic/anthropic-client.it.test.ts",
@@ -290,6 +290,7 @@
     "tests/infra/atomic-fs.unit.test.ts",
     "tests/infra/basic-routes.http.test.ts",
     "tests/infra/broadcast-backpressure.unit.test.ts",
+    "tests/infra/capture-entry-evidence.unit.test.ts",
     "tests/infra/copilot-api.it.test.ts",
     "tests/infra/copilot-client.it.test.ts",
     "tests/infra/debug-calibration-probe.http.test.ts",

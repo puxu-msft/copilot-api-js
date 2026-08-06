@@ -5,8 +5,8 @@ import path from "node:path"
 
 import { Glob } from "bun"
 
-import { parseDiscoveryBaseline } from "./entry-evidence-schema"
-import { parseJUnit } from "./parallel-test-artifacts"
+import { parseDiscoveryBaseline, type SuiteSkip, type TestcaseSkip } from "./entry-evidence-schema"
+import { parseJUnit, type SkippedIdentity } from "./parallel-test-artifacts"
 
 interface Options {
   tree: string
@@ -14,6 +14,24 @@ interface Options {
   out: string
   runs: number
   discoveryBaseline: string
+}
+
+interface ArtifactHash {
+  path: string
+  sha256: string
+}
+
+interface RunArtifact {
+  ordinal: number
+  log_path: string
+  log_sha256: string
+  artifact_dir: string
+  junit_artifacts: Array<ArtifactHash>
+  runtime_identity: ArtifactHash
+  skipped_multiset: ArtifactHash
+  executed: number
+  skipped: number
+  verdict: "green"
 }
 
 function fail(code: number, message: string): never {
@@ -78,6 +96,78 @@ function compareSets(expected: Array<string>, actual: Array<string>): boolean {
   return expected.length === actual.length && expected.every((value, index) => value === actual[index])
 }
 
+function formatIdentity(identity: TestcaseSkip | SuiteSkip | SkippedIdentity): string {
+  return JSON.stringify(identity)
+}
+
+function baselineSkipKey(skip: TestcaseSkip | SuiteSkip): string {
+  return skip.kind === "testcase"
+    ? [skip.kind, skip.file, skip.classname, skip.name, skip.ordinal].join("\0")
+    : [skip.kind, skip.file, skip.suite_name].join("\0")
+}
+
+function runtimeSkipKey(skip: SkippedIdentity): string {
+  return skip.kind === "testcase"
+    ? [skip.kind, skip.file, skip.classname, skip.name, skip.ordinal].join("\0")
+    : [skip.kind, skip.file, skip.suite_name].join("\0")
+}
+
+function assertSkippedMultiset(expected: Array<TestcaseSkip | SuiteSkip>, actual: Array<SkippedIdentity>): void {
+  const expectedByKey = new Map(expected.map((skip) => [baselineSkipKey(skip), skip]))
+  const actualByKey = new Map(actual.map((skip) => [runtimeSkipKey(skip), skip]))
+  const missing = [...expectedByKey.keys()].filter((key) => !actualByKey.has(key)).map((key) => formatIdentity(expectedByKey.get(key)!))
+  const unexpected = [...actualByKey.keys()].filter((key) => !expectedByKey.has(key)).map((key) => formatIdentity(actualByKey.get(key)!))
+  const mismatchedCounts = [...expectedByKey.keys()]
+    .filter((key) => actualByKey.has(key) && expectedByKey.get(key)!.count !== actualByKey.get(key)!.count)
+    .map((key) => `${formatIdentity(expectedByKey.get(key)!)} expected_count=${expectedByKey.get(key)!.count} actual_count=${actualByKey.get(key)!.count}`)
+  if (missing.length > 0 || unexpected.length > 0 || mismatchedCounts.length > 0)
+    throw new Error(
+      `skipped identity multiset mismatch: missing=[${missing.join(", ")}] unexpected=[${unexpected.join(", ")}] count_mismatch=[${mismatchedCounts.join(", ")}]`,
+    )
+}
+
+function readRunArtifact(
+  tree: string,
+  out: string,
+  ordinal: number,
+  baselineFiles: Array<string>,
+  minimumExecuted: number,
+  allowedSkipped: Array<TestcaseSkip | SuiteSkip>,
+): RunArtifact {
+  const logPath = path.join(out, `run-${String(ordinal).padStart(2, "0")}.log`)
+  if (!existsSync(logPath)) throw new Error("run log is missing")
+  const log = readFileSync(logPath, "utf8")
+  const artifactDir = readLogField(log, "artifact_dir")
+  if (!artifactDir || !path.isAbsolute(artifactDir) || !isUnder(artifactDir, out) || !existsSync(artifactDir))
+    throw new Error("run artifact transfer is missing")
+  const junitPaths = readdirSync(artifactDir)
+    .filter((name) => /^shard-\d+\.xml$/.test(name))
+    .sort()
+    .map((name) => path.join(artifactDir, name))
+  const runtimeIdentityPath = path.join(artifactDir, "runtime-identity.json")
+  const skippedMultisetPath = path.join(artifactDir, "skipped-multiset.json")
+  if (junitPaths.length === 0 || !existsSync(runtimeIdentityPath) || !existsSync(skippedMultisetPath)) throw new Error("run artifact transfer is incomplete")
+  const runtimeFiles = JSON.parse(readFileSync(runtimeIdentityPath, "utf8")).files as Array<string>
+  const skipped = JSON.parse(readFileSync(skippedMultisetPath, "utf8")) as { executed: number; skipped: number; skipped_identities: Array<SkippedIdentity> }
+  const junitFiles = new Set<string>()
+  for (const junitPath of junitPaths) for (const file of parseJUnit(readFileSync(junitPath, "utf8"), tree).files) junitFiles.add(file)
+  if (!compareSets(baselineFiles, [...junitFiles].sort()) || !compareSets(baselineFiles, runtimeFiles) || skipped.executed < minimumExecuted)
+    throw new Error("runtime identity differs from discovery baseline")
+  assertSkippedMultiset(allowedSkipped, skipped.skipped_identities)
+  return {
+    ordinal,
+    log_path: logPath,
+    log_sha256: sha256(logPath),
+    artifact_dir: artifactDir,
+    junit_artifacts: junitPaths.map((junitPath) => ({ path: junitPath, sha256: sha256(junitPath) })),
+    runtime_identity: { path: runtimeIdentityPath, sha256: sha256(runtimeIdentityPath) },
+    skipped_multiset: { path: skippedMultisetPath, sha256: sha256(skippedMultisetPath) },
+    executed: skipped.executed,
+    skipped: skipped.skipped,
+    verdict: "green",
+  }
+}
+
 const options = parseOptions(process.argv.slice(2))
 try {
   if (existsSync(options.out) && readdirSync(options.out).length > 0) fail(2, "--out must be absent or empty")
@@ -97,8 +187,7 @@ try {
   const diskManifestPath = path.join(options.out, "disk-manifest.json")
   atomicWrite(diskManifestPath, `${JSON.stringify({ files: baseline.files }, null, 2)}\n`)
   const wrapper = path.join(options.tree, "exp/inter-block-anchor-allocator/baseline-runs.sh")
-  const command = ["bash", wrapper]
-  const wrapperRun = Bun.spawnSync(command, {
+  const wrapperRun = Bun.spawnSync(["bash", wrapper], {
     cwd: options.tree,
     env: {
       ...process.env,
@@ -115,49 +204,29 @@ try {
   })
   if (wrapperRun.exitCode !== 0) fail(5, wrapperRun.stderr.toString().trim() || "baseline runner failed")
 
-  const runs = [] as Array<Record<string, unknown>>
-  for (let ordinal = 1; ordinal <= options.runs; ordinal += 1) {
-    const logPath = path.join(options.out, `run-${String(ordinal).padStart(2, "0")}.log`)
-    if (!existsSync(logPath)) fail(5, "run log is missing")
-    const log = readFileSync(logPath, "utf8")
-    const artifactDir = readLogField(log, "artifact_dir")
-    if (!artifactDir || !path.isAbsolute(artifactDir) || !isUnder(artifactDir, options.out) || !existsSync(artifactDir))
-      fail(5, "run artifact transfer is missing")
-    const junitPaths = readdirSync(artifactDir)
-      .filter((name) => /^shard-\d+\.xml$/.test(name))
-      .sort()
-      .map((name) => path.join(artifactDir, name))
-    const runtimeIdentityPath = path.join(artifactDir, "runtime-identity.json")
-    const skippedMultisetPath = path.join(artifactDir, "skipped-multiset.json")
-    if (junitPaths.length === 0 || !existsSync(runtimeIdentityPath) || !existsSync(skippedMultisetPath)) fail(5, "run artifact transfer is incomplete")
-    const runtimeFiles = JSON.parse(readFileSync(runtimeIdentityPath, "utf8")).files as Array<string>
-    const skipped = JSON.parse(readFileSync(skippedMultisetPath, "utf8")) as {
-      executed: number
-      skipped: number
-      skipped_identities: Array<Record<string, unknown>>
-    }
-    const junitFiles = new Set<string>()
-    for (const junitPath of junitPaths) for (const file of parseJUnit(readFileSync(junitPath, "utf8"), options.tree).files) junitFiles.add(file)
-    if (!compareSets(baseline.files, [...junitFiles].sort()) || !compareSets(baseline.files, runtimeFiles) || skipped.executed < baseline.minimum_executed)
-      fail(5, "runtime identity differs from discovery baseline")
-    runs.push({
-      ordinal,
-      log_path: logPath,
-      log_sha256: sha256(logPath),
-      artifact_dir: artifactDir,
-      junit_artifacts: junitPaths.map((junitPath) => ({ path: junitPath, sha256: sha256(junitPath) })),
-      runtime_identity: { path: runtimeIdentityPath, sha256: sha256(runtimeIdentityPath) },
-      skipped_multiset: { path: skippedMultisetPath, sha256: sha256(skippedMultisetPath) },
-      executed: skipped.executed,
-      skipped: skipped.skipped,
-      verdict: "green",
-    })
-  }
-  const manifestPath = path.join(options.out, "evidence-manifest.json")
+  const runs: Array<RunArtifact> = []
+  for (let ordinal = 1; ordinal <= options.runs; ordinal += 1)
+    runs.push(readRunArtifact(options.tree, options.out, ordinal, baseline.files, baseline.minimum_executed, baseline.allowed_skipped))
+  const runtimeIdentityManifestPath = path.join(options.out, "runtime-identity-manifest.json")
+  const skippedMultisetManifestPath = path.join(options.out, "skipped-multiset-manifest.json")
   atomicWrite(
-    manifestPath,
-    `${JSON.stringify({ schema_version: 1, measured_sha: options.entrySha, evidence_timing: "closeout", claims_current_head: true, out_dir: options.out, canonical_command: "bun scripts/parallel-test.ts unit it http", discovery_baseline_path: options.discoveryBaseline, discovery_baseline_sha256: baselineHash, discovery_runner_git_blob: runnerBlob, disk_manifest: { path: diskManifestPath, sha256: sha256(diskManifestPath) }, runs }, null, 2)}\n`,
+    runtimeIdentityManifestPath,
+    `${JSON.stringify({ runs: runs.map(({ ordinal, runtime_identity }) => ({ ordinal, ...runtime_identity })) }, null, 2)}\n`,
   )
+  atomicWrite(
+    skippedMultisetManifestPath,
+    `${JSON.stringify({ runs: runs.map(({ ordinal, skipped_multiset }) => ({ ordinal, ...skipped_multiset })) }, null, 2)}\n`,
+  )
+  const manifestPath = path.join(options.out, "evidence-manifest.json")
+  try {
+    atomicWrite(
+      manifestPath,
+      `${JSON.stringify({ schema_version: 1, measured_sha: options.entrySha, evidence_timing: "closeout", claims_current_head: true, out_dir: options.out, canonical_command: "bun scripts/parallel-test.ts unit it http", discovery_baseline_path: options.discoveryBaseline, discovery_baseline_sha256: baselineHash, discovery_runner_git_blob: runnerBlob, disk_manifest: { path: diskManifestPath, sha256: sha256(diskManifestPath) }, runtime_identity_manifest: { path: runtimeIdentityManifestPath, sha256: sha256(runtimeIdentityManifestPath) }, skipped_multiset: { path: skippedMultisetManifestPath, sha256: sha256(skippedMultisetManifestPath) }, runs }, null, 2)}\n`,
+    )
+  } catch (error) {
+    rmSync(manifestPath, { recursive: true, force: true })
+    fail(6, `manifest write failed: ${error instanceof Error ? error.message : String(error)}`)
+  }
   console.log(`manifest=${manifestPath}`)
   console.log(`manifest_sha256=${sha256(manifestPath)}`)
 } catch (error) {
