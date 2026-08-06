@@ -538,18 +538,8 @@ describe("entry evidence validator C7-C9", () => {
     }
   })
 
-  test("EV-02 through EV-13 independently reject pointer and evidence mutations", () => {
-    const cases: Array<[string, (text: string, f: ReturnType<typeof fixture>) => string, string]> = [
-      ["EV-03", () => "# no pointer\n", "FAIL C2: pointer block missing\n"],
-      ["EV-04", (text) => `${text}${text}`, "FAIL C2: pointer block is not unique\n"],
-      ["EV-05", (text) => text.replace(/^entry_sha=.*\n/m, ""), "FAIL C3: entry_sha missing\n"],
-      ["EV-06", (text) => text.replace(/^manifest_path=.*\n/m, ""), "FAIL C3: manifest path missing\n"],
-      ["EV-07", (text) => text.replace(/^manifest_sha256=.*\n/m, ""), "FAIL C3: manifest sha256 missing\n"],
-      ["EV-08", (text) => text.replace(/entry_sha=[0-9a-f]{40}/, `entry_sha=${"0".repeat(40)}`), "FAIL C4: pointer entry SHA differs from ENTRY_SHA\n"],
-      ["EV-11", (text, f) => text.replace(/manifest_path=.*/, `manifest_path=${path.join(f.out, "missing.json")}`), "FAIL C5: evidence manifest missing\n"],
-      ["EV-12", (text) => text.replace(/manifest_sha256=[0-9a-f]{64}/, `manifest_sha256=${"0".repeat(64)}`), "FAIL C5: evidence manifest hash mismatch\n"],
-    ]
-    for (const [id, mutate, _expected] of cases) {
+  function rejectPointerMutations(cases: Array<[string, (text: string, f: ReturnType<typeof fixture>) => string]>): void {
+    for (const [id, mutate] of cases) {
       const f = fixture()
       try {
         git(f.tree, ["checkout", "master"])
@@ -564,46 +554,81 @@ describe("entry evidence validator C7-C9", () => {
         cleanup(f)
       }
     }
-    const offMaster = fixture()
+  }
+
+  test("EV-03 through EV-05 reject malformed pointer blocks", () => {
+    rejectPointerMutations([
+      ["EV-03", () => "# no pointer\n"],
+      ["EV-04", (text) => `${text}${text}`],
+      ["EV-05", (text) => text.replace(/^entry_sha=.*\n/m, "")],
+    ])
+  })
+
+  test("EV-06 through EV-08 reject missing or mismatched pointer fields", () => {
+    rejectPointerMutations([
+      ["EV-06", (text) => text.replace(/^manifest_path=.*\n/m, "")],
+      ["EV-07", (text) => text.replace(/^manifest_sha256=.*\n/m, "")],
+      ["EV-08", (text) => text.replace(/entry_sha=[0-9a-f]{40}/, `entry_sha=${"0".repeat(40)}`)],
+    ])
+  })
+
+  test("EV-11 and EV-12 reject absent or mismatched manifests", () => {
+    rejectPointerMutations([
+      ["EV-11", (text, f) => text.replace(/manifest_path=.*/, `manifest_path=${path.join(f.out, "missing.json")}`)],
+      ["EV-12", (text) => text.replace(/manifest_sha256=[0-9a-f]{64}/, `manifest_sha256=${"0".repeat(64)}`)],
+    ])
+  })
+
+  test("EV-02 rejects a pointer outside master", () => {
+    const f = fixture()
     try {
-      git(offMaster.tree, ["checkout", "--orphan", "side"])
-      writeFileSync(path.join(offMaster.tree, "side"), "x\n")
-      git(offMaster.tree, ["add", "side"])
-      git(offMaster.tree, ["commit", "-m", "side"])
-      offMaster.pointer = git(offMaster.tree, ["rev-parse", "HEAD"])
-      git(offMaster.tree, ["checkout", "--detach", offMaster.entry])
-      expectEv("EV-02", invoke(offMaster))
+      git(f.tree, ["checkout", "--orphan", "side"])
+      writeFileSync(path.join(f.tree, "side"), "x\n")
+      git(f.tree, ["add", "side"])
+      git(f.tree, ["commit", "-m", "side"])
+      f.pointer = git(f.tree, ["rev-parse", "HEAD"])
+      git(f.tree, ["checkout", "--detach", f.entry])
+      expectEv("EV-02", invoke(f))
     } finally {
-      cleanup(offMaster)
+      cleanup(f)
     }
-    const graph = fixture()
+  })
+
+  test("EV-10 rejects an unrelated master pointer", () => {
+    const f = fixture()
     try {
-      git(graph.tree, ["checkout", "master"])
-      const pointerText = readFileSync(path.join(graph.tree, HANDOVER), "utf8")
-      git(graph.tree, ["checkout", "--orphan", "replacement"])
-      writeFileSync(path.join(graph.tree, HANDOVER), pointerText)
-      git(graph.tree, ["add", HANDOVER])
-      git(graph.tree, ["commit", "-m", "unrelated pointer"])
-      git(graph.tree, ["branch", "-f", "master", "HEAD"])
-      graph.pointer = git(graph.tree, ["rev-parse", "HEAD"])
-      git(graph.tree, ["checkout", "--detach", graph.entry])
-      expectEv("EV-10", invoke(graph))
+      git(f.tree, ["checkout", "master"])
+      const pointerText = readFileSync(path.join(f.tree, HANDOVER), "utf8")
+      git(f.tree, ["checkout", "--orphan", "replacement"])
+      writeFileSync(path.join(f.tree, HANDOVER), pointerText)
+      git(f.tree, ["add", HANDOVER])
+      git(f.tree, ["commit", "-m", "unrelated pointer"])
+      git(f.tree, ["branch", "-f", "master", "HEAD"])
+      f.pointer = git(f.tree, ["rev-parse", "HEAD"])
+      git(f.tree, ["checkout", "--detach", f.entry])
+      expectEv("EV-10", invoke(f))
     } finally {
-      cleanup(graph)
+      cleanup(f)
     }
-    const head = fixture()
+  })
+
+  test("EV-09 rejects execution on the pointer commit", () => {
+    const f = fixture()
     try {
-      git(head.tree, ["checkout", "master"])
-      expectEv("EV-09", invoke(head))
+      git(f.tree, ["checkout", "master"])
+      expectEv("EV-09", invoke(f))
     } finally {
-      cleanup(head)
+      cleanup(f)
     }
-    const log = fixture()
+  })
+
+  test("EV-13 rejects a missing run log", () => {
+    const f = fixture()
     try {
-      rmSync(path.join(log.out, "run-1.log"))
-      expectEv("EV-13", invoke(log))
+      rmSync(path.join(f.out, "run-1.log"))
+      expectEv("EV-13", invoke(f))
     } finally {
-      cleanup(log)
+      cleanup(f)
     }
   })
 

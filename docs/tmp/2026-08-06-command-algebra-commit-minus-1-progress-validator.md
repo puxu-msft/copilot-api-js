@@ -25,7 +25,8 @@ session_id: 046d7295-e5ce-470b-a284-c721c6ce1cb8
 - reviewer finding ② C7/C8 artifact trust 已补强：缺失 artifact_dir、JUnit、runtime identity 一律 rc=6/C7；缺失 skipped multiset 一律 rc=6/C8，均不泄漏为 rc=1。runtime/skipped JSON fail-closed，testcase/suite discriminated multiset 使用严格 discriminated identity schema 与 UTF-8 bytewise key 比较；非 ASCII reorder false-red 正控、multiplicity 负控、六类 malformed union arm 负控已绿。
 - reviewer finding ③ C9 已处置：manifest top-level intents、per-run verdict、raw log、ENTRY_SHA/frozen command 三方逐 run 对账，错误类型和 artifact_dir 分歧均稳定 fail C9。
 - reviewer finding ④ C11 已处置：baseline 以 binary-safe git object 原始 bytes、fatal UTF-8 和 canonical parse 验证；执行 validator 与其三个 runtime helper（receipt/schema/JUnit parser）各自 canonical path/blob 必等于 ENTRY_SHA object。静态 runtime relative-import 集合必须精确等于 bound dependency set，因而新增 runtime import、缺失 ENTRY dependency object、任何 helper workspace bytes 篡改均在 receipt 前稳定 fail C11。fixture 覆盖 baseline final-newline、执行 validator 与每个 helper source 篡改、以及 import-closure drift。
-- reviewer finding ⑤ 已处置：EV runtime registry 从 frozen plan 解析 28 行、每次 `expectEv` 成功后登记；unfiltered 26-pass run 的 afterAll 输出 28-ID reconciliation 四行，含 literal A2/P2 graph EV-27。
+- reviewer finding ⑤ 已处置：EV runtime registry 从 frozen plan 解析 28 行、每次 `expectEv` 成功后登记；unfiltered 32-pass run 的 afterAll 输出 28-ID reconciliation 四行，含 literal A2/P2 graph EV-27。
+- integration regression 已处置：backend 并行竞争下，原单一 “EV-02 through EV-13” 测试在 5s timeout 内累计构造 12 个临时 git graph，实测 7061ms。已按 pointer field、graph、execution/log 独立语义拆为七个 tests；每个 `expectEv` 仍恰好登记一次，afterAll reconciliation 不变。`bun run test:backend` 已绿。
 - validator 成功仅在 C1～C11 全绿后调用 `writeReceiptAtomically`；receipt 严格 v1 字段与 stdout path/hash 已由合成 fixture 断言。artifact_dir 的 raw log/manifest 字符串相等先于 canonical containment；同一绝对 symlink spelling 指向 TREE 外真实 artifact 目录的正样本已生成 green receipt。C1～C11 仅用 `/tmp` synthetic A/P/15 logs/JUnit/baseline，未消费 future real A/P。
 
 ## 在途意图
