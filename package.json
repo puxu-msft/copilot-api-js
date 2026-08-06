@@ -42,6 +42,7 @@
     "dev:ui": "cd ui && bun run dev",
     "dev:ui-v4": "bun run --filter copilot-api-ui-v4 dev",
     "generate:config-schema": "bun run scripts/generate-config-json-schema.ts",
+    "generate:entry-evidence-runtime-dependencies": "bun run scripts/generate-entry-evidence-runtime-dependencies.ts",
     "knip": "knip-bun",
     "lint": "eslint --cache",
     "lint:all": "eslint .",

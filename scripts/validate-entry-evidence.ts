@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 import { createHash } from "node:crypto"
-import { existsSync, readFileSync, readdirSync, realpathSync } from "node:fs"
+import { existsSync, readFileSync, readdirSync, realpathSync, statSync } from "node:fs"
 import path from "node:path"
 
 import type { DiscoveryBaseline } from "./entry-evidence-schema"
@@ -62,54 +62,211 @@ const RUN_KEYS = [
   "skipped",
   "verdict",
 ]
-const RUNTIME_DEPENDENCIES = [
-  { importSpecifier: "./entry-evidence-receipt", path: "scripts/entry-evidence-receipt.ts" },
-  { importSpecifier: "./entry-evidence-schema", path: "scripts/entry-evidence-schema.ts" },
-  { importSpecifier: "./parallel-test-artifacts", path: "scripts/parallel-test-artifacts.ts" },
-]
+const DEPENDENCY_INTEGRITY_MANIFEST_PATH = "scripts/entry-evidence-runtime-dependencies.json"
+const RUNTIME_EXTENSION_CANDIDATES = [".ts", ".tsx", ".js", ".mjs", ".cjs", ".json"]
+const SAX_LOCK_INTEGRITIES = {
+  saxes: "sha512-xAg7SOnEhrm5zI3puOOKyy1OMcMlIJZYNJY7xLBwSze0UjhPLnWfj2GF2EpT0jmzaJKIWKHLsaSSajf35bcYnA==",
+  xmlchars: "sha512-JZnDKK8B0RCDw84FNdDAIpZK+JuJw+s7Lz8nksI7SIuU3UXJJslUthsi+uWBUYOwPFwW7W7PRLRfUKpxjtjFCw==",
+}
 
-function runtimeImportSpecifiers(source: string): string[] | undefined {
+interface RuntimeDependencyFile {
+  path: string
+  sha256: string
+}
+interface RuntimeDependencyPackage {
+  name: "saxes" | "xmlchars"
+  version: string
+  integrity: string
+  files: RuntimeDependencyFile[]
+}
+interface RuntimeDependencyIntegrityManifest {
+  schema_version: 1
+  packages: RuntimeDependencyPackage[]
+}
+
+function bytewiseSort(values: string[]): string[] {
+  return values.sort((left, right) => Buffer.from(left).compare(Buffer.from(right)))
+}
+
+function runtimeImportSpecifiers(source: string, loader: "ts" | "js"): string[] | undefined {
   try {
-    const scan = new Bun.Transpiler({ loader: "ts" }).scan(source)
-    const localSpecifiers: string[] = []
-    for (const imported of scan.imports) {
-      if (imported.path.startsWith("./")) localSpecifiers.push(imported.path)
-      else if (!imported.path.startsWith("node:")) return undefined
-    }
-    return localSpecifiers.sort((left, right) => Buffer.from(left).compare(Buffer.from(right)))
+    return new Bun.Transpiler({ loader }).scan(source).imports.map((imported) => imported.path)
   } catch {
     return undefined
   }
 }
 
-function matchesEntryObject(tree: string, entrySha: string, runtimePath: string, entryPath: string): boolean {
-  try {
-    const canonicalTree = realpathSync(tree)
-    if (realpathSync(runtimePath) !== path.join(canonicalTree, entryPath)) return false
-  } catch {
-    return false
+function isInside(child: string, parent: string): boolean {
+  const relative = path.relative(parent, child)
+  return relative === "" || (!relative.startsWith(`..${path.sep}`) && relative !== ".." && !path.isAbsolute(relative))
+}
+
+function existingRuntimePath(base: string): string | undefined {
+  for (const candidate of RUNTIME_EXTENSION_CANDIDATES) {
+    const file = `${base}${candidate}`
+    try {
+      if (statSync(file).isFile()) return file
+    } catch {}
   }
+  for (const candidate of RUNTIME_EXTENSION_CANDIDATES) {
+    const file = path.join(base, `index${candidate}`)
+    try {
+      if (statSync(file).isFile()) return file
+    } catch {}
+  }
+  return undefined
+}
+
+function resolveRelativeRuntimeImport(importer: string, specifier: string, canonicalTree: string): string | undefined {
+  if (!specifier.startsWith("./") && !specifier.startsWith("../")) return undefined
+  const resolved = existingRuntimePath(path.resolve(path.dirname(importer), specifier))
+  if (resolved === undefined) return undefined
+  try {
+    const canonical = realpathSync(resolved)
+    return isInside(canonical, canonicalTree) ? canonical : undefined
+  } catch {
+    return undefined
+  }
+}
+
+function entryPathForRuntimeFile(canonicalTree: string, runtimeFile: string): string | undefined {
+  if (!isInside(runtimeFile, canonicalTree)) return undefined
+  const relative = path.relative(canonicalTree, runtimeFile).split(path.sep).join("/")
+  return relative === "" || relative.startsWith("../") ? undefined : relative
+}
+
+function matchesEntryObject(tree: string, entrySha: string, canonicalTree: string, runtimePath: string): boolean {
+  const entryPath = entryPathForRuntimeFile(canonicalTree, runtimePath)
+  if (entryPath === undefined) return false
   const entryBlob = git(tree, ["rev-parse", `${entrySha}:${entryPath}`])
   return entryBlob !== undefined && git(tree, ["hash-object", "--no-filters", runtimePath]) === entryBlob
 }
 
-function runtimeClosureMatchesEntry(tree: string, entrySha: string): boolean {
-  const runtimeValidatorPath = path.resolve(import.meta.path)
-  if (!matchesEntryObject(tree, entrySha, runtimeValidatorPath, "scripts/validate-entry-evidence.ts")) return false
-  let source: string
+function parseRuntimeDependencyManifest(raw: string): RuntimeDependencyIntegrityManifest | undefined {
   try {
-    source = readFileSync(runtimeValidatorPath, "utf8")
+    const parsed = JSON.parse(raw) as Record<string, unknown>
+    if (!exactKeys(parsed, ["schema_version", "packages"]) || parsed.schema_version !== 1 || !Array.isArray(parsed.packages) || parsed.packages.length !== 2)
+      return undefined
+    const packages: RuntimeDependencyPackage[] = []
+    for (const packageEntry of parsed.packages) {
+      if (!packageEntry || typeof packageEntry !== "object" || Array.isArray(packageEntry)) return undefined
+      const value = packageEntry as Record<string, unknown>
+      if (!exactKeys(value, ["name", "version", "integrity", "files"]) || (value.name !== "saxes" && value.name !== "xmlchars")) return undefined
+      if (typeof value.version !== "string" || typeof value.integrity !== "string" || !Array.isArray(value.files) || value.files.length === 0) return undefined
+      const files: RuntimeDependencyFile[] = []
+      for (const fileEntry of value.files) {
+        if (!fileEntry || typeof fileEntry !== "object" || Array.isArray(fileEntry)) return undefined
+        const file = fileEntry as Record<string, unknown>
+        if (
+          !exactKeys(file, ["path", "sha256"]) ||
+          typeof file.path !== "string" ||
+          !/^[^/][^\\]*$/.test(file.path) ||
+          file.path.includes("..") ||
+          !isSha(file.sha256, 64)
+        )
+          return undefined
+        files.push({ path: file.path, sha256: file.sha256 })
+      }
+      if (JSON.stringify(files.map((file) => file.path)) !== JSON.stringify(bytewiseSort(files.map((file) => file.path)))) return undefined
+      packages.push({ name: value.name, version: value.version, integrity: value.integrity, files })
+    }
+    if (JSON.stringify(packages.map((entry) => entry.name)) !== JSON.stringify(["saxes", "xmlchars"])) return undefined
+    return { schema_version: 1, packages }
+  } catch {
+    return undefined
+  }
+}
+
+function expectedPackage(tree: string, entrySha: string, canonicalTree: string, name: "saxes" | "xmlchars"): RuntimeDependencyPackage | undefined {
+  const manifestPath = path.join(canonicalTree, DEPENDENCY_INTEGRITY_MANIFEST_PATH)
+  if (!matchesEntryObject(tree, entrySha, canonicalTree, manifestPath)) return undefined
+  const manifest = readUtf8(manifestPath)
+  const parsed = manifest === undefined ? undefined : parseRuntimeDependencyManifest(manifest)
+  return parsed?.packages.find((entry) => entry.name === name)
+}
+
+function entryPackageFilesMatch(canonicalTree: string, packageEntry: RuntimeDependencyPackage): boolean {
+  return packageEntry.files.every((file) => {
+    const runtimePath = path.join(canonicalTree, "node_modules", packageEntry.name, file.path)
+    return hashMatches(runtimePath, file.sha256)
+  })
+}
+
+function packageMetadataMatches(canonicalTree: string, packageEntry: RuntimeDependencyPackage): boolean {
+  try {
+    const metadata = JSON.parse(readFileSync(path.join(canonicalTree, "node_modules", packageEntry.name, "package.json"), "utf8")) as Record<string, unknown>
+    return metadata.name === packageEntry.name && metadata.version === packageEntry.version
   } catch {
     return false
   }
-  const imports = runtimeImportSpecifiers(source)
-  const expectedImports = RUNTIME_DEPENDENCIES.map(({ importSpecifier }) => importSpecifier).sort((left, right) =>
-    Buffer.from(left).compare(Buffer.from(right)),
+}
+
+function lockfileMatches(canonicalTree: string): boolean {
+  const packageRaw = readUtf8(path.join(canonicalTree, "package.json"))
+  const lockRaw = readUtf8(path.join(canonicalTree, "bun.lock"))
+  if (packageRaw === undefined || lockRaw === undefined) return false
+  try {
+    const packageJson = JSON.parse(packageRaw) as { dependencies?: Record<string, unknown> }
+    if (packageJson.dependencies?.saxes !== "6.0.0") return false
+  } catch {
+    return false
+  }
+  return (
+    lockRaw.includes(`"saxes": ["saxes@6.0.0", "", { "dependencies": { "xmlchars": "^2.2.0" } }, "${SAX_LOCK_INTEGRITIES.saxes}"]`) &&
+    lockRaw.includes(`"xmlchars": ["xmlchars@2.2.0", "", {}, "${SAX_LOCK_INTEGRITIES.xmlchars}"]`)
   )
-  if (imports === undefined || JSON.stringify(imports) !== JSON.stringify(expectedImports)) return false
-  return RUNTIME_DEPENDENCIES.every(({ importSpecifier, path: entryPath }) =>
-    matchesEntryObject(tree, entrySha, path.join(path.dirname(runtimeValidatorPath), `${importSpecifier.slice(2)}.ts`), entryPath),
-  )
+}
+
+function packageGraphMatches(canonicalTree: string, packageEntry: RuntimeDependencyPackage): boolean {
+  if (!packageMetadataMatches(canonicalTree, packageEntry)) return false
+  const packageRoot = path.join(canonicalTree, "node_modules", packageEntry.name)
+  try {
+    for (const file of packageEntry.files) {
+      const specifier = packageEntry.name === "saxes" ? "saxes" : `xmlchars/${file.path.replace(/\.js$/, "")}`
+      const resolved = realpathSync(Bun.resolveSync(specifier, path.join(canonicalTree, "scripts", "parallel-test-artifacts.ts")))
+      if (resolved !== path.join(packageRoot, file.path)) return false
+    }
+    return true
+  } catch {
+    return false
+  }
+}
+
+function runtimeClosureMatchesEntry(tree: string, entrySha: string): boolean {
+  let canonicalTree: string
+  try {
+    canonicalTree = realpathSync(tree)
+  } catch {
+    return false
+  }
+  const validatorPath = path.join(canonicalTree, "scripts", "validate-entry-evidence.ts")
+  if (path.resolve(import.meta.path) !== validatorPath || !matchesEntryObject(tree, entrySha, canonicalTree, validatorPath)) return false
+  const expectedSaxes = expectedPackage(tree, entrySha, canonicalTree, "saxes")
+  const expectedXmlchars = expectedPackage(tree, entrySha, canonicalTree, "xmlchars")
+  if (expectedSaxes === undefined || expectedXmlchars === undefined || !lockfileMatches(canonicalTree)) return false
+  if (!entryPackageFilesMatch(canonicalTree, expectedSaxes) || !entryPackageFilesMatch(canonicalTree, expectedXmlchars)) return false
+  const visited = new Set<string>()
+  const visitLocal = (runtimeFile: string): boolean => {
+    if (visited.has(runtimeFile)) return true
+    visited.add(runtimeFile)
+    if (!matchesEntryObject(tree, entrySha, canonicalTree, runtimeFile)) return false
+    const source = readUtf8(runtimeFile)
+    const imports =
+      source === undefined ? undefined : runtimeImportSpecifiers(source, runtimeFile.endsWith(".ts") || runtimeFile.endsWith(".tsx") ? "ts" : "js")
+    if (imports === undefined) return false
+    for (const specifier of imports) {
+      if (specifier.startsWith("node:")) continue
+      if (specifier.startsWith("./") || specifier.startsWith("../")) {
+        const child = resolveRelativeRuntimeImport(runtimeFile, specifier, canonicalTree)
+        if (child === undefined || !visitLocal(child)) return false
+        continue
+      }
+      if (specifier !== "saxes" || runtimeFile !== path.join(canonicalTree, "scripts", "parallel-test-artifacts.ts")) return false
+      if (!packageGraphMatches(canonicalTree, expectedSaxes) || !packageGraphMatches(canonicalTree, expectedXmlchars)) return false
+    }
+    return true
+  }
+  return visitLocal(validatorPath)
 }
 
 function fail(condition: number, message: string, exitCode: number): never {
