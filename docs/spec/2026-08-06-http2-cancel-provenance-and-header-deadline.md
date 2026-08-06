@@ -142,7 +142,7 @@ local 与 peer 两侧不能追溯到同一生产者：local 由本进程在 clos
 
 #### Recovery 边界
 
-- `peer-rst`/可确认的 session close 可进入现有 transport-cut 分支，但是否透明重试仍受 block-level 已提交边界、server execution risk 和既有预算约束。
+- `peer-rst`/可确认的 session close 可进入现有 transport-cut 分支，但是否透明重试仍受 block-level 已提交边界和既有预算约束。本任务不新增 server-execution-risk gate：当前 buffered recovery 没有该 gate，擅加会改变既有产品契约；相邻的 server-tool 双执行问题仍由其既有独立设计处理。
 - `local-signal`、`local-body-cancel` 不得被当成 upstream cut 重试。
 - `unknown` 保持当前保守终止行为，不因“可能是 peer”扩大重试。
 - `REFUSED_STREAM` 的 RFC 9113 零处理保证保持独立，不被本阶段稀释。
