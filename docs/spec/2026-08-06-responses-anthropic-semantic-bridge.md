@@ -1,6 +1,6 @@
 # OpenAI Responses ↔ Anthropic Messages 语义桥规格
 
-> **状态**：定稿候选；原四轮评审已放行，最新 master 重基增量复核中
+> **状态**：已定稿；协议、架构与最新 master 重基增量复核均无 BLOCKER／MAJOR
 >
 > **核验基线**：`285dc571ed6cd12fc7b5641d719da5516a724646`（2026-08-06；定稿分支重基后的最新 master）
 >

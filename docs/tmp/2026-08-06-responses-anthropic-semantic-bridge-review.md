@@ -1,6 +1,6 @@
 # Responses ↔ Anthropic 语义桥规格评审记录
 
-> **状态**：重基后增量复核中；原四轮评审已放行
+> **状态**：已完成；协议、架构与最新 master 重基增量复核均放行
 >
 > **评审对象**：`docs/spec/2026-08-06-responses-anthropic-semantic-bridge.md`
 >
@@ -232,4 +232,12 @@
 
 规格分支从 `192dce69` 重基到最新 master `285dc571`，两份文档 SHA-256 在重基前后完全一致。新 master 增加 empty-body HTTP 499 → `network_error` → network retry 一次的行为，并确认 retry registry 已是三条生产腿的共享实时来源。该改动不推翻规格，却扩大了“宽错误分类可能误收永久 compatibility error”的相邻风险：`BridgeCompatibilityError` 必须在 `classifyError`、buffered transport retry 与 semantic retry registry 之前由 `isBridgeCompatibilityError` 专门分流。M13 的 `retryable:false`、错误后 dispatch delta=0 与 registry 不 claim 判据继续成立。
 
-待原架构 reviewer 增量复核：最新 master 是否改变 M13 的 error-gate seam，或要求新增验收。
+### 增量复核结果
+
+- 架构 reviewer：**增量复核通过，可定稿**，0 BLOCKER、0 MAJOR。
+- `285dc571` 与 `d2607ec9` 均为重基后规格分支祖先；重基前后两份文档内容哈希一致。
+- `d2607ec9` 只扩大普通 `HTTPError` 的 network retry 分类面；按规格先执行 `isBridgeCompatibilityError` 时，typed compatibility error 不进入 `classifyError`、buffered transport retry、semantic retry registry 或 continuation。
+- M13、mutation、守卫 17 与 AC17 继续充分：错误观测后 dispatch 增量为 0，无 recovery／continuation，原 typed error 到达 handler。
+- 无需新增验收。
+
+至此所有评审与重基增量复核均闭合，无未决 finding。
