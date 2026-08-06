@@ -88,7 +88,7 @@ description: 当在 copilot-api-js 修改进程信号、Ctrl+C、SIGINT/SIGTERM�
 - 第二次在硬超时内 exit 130。
 - 连跑 8–25 次证时序确定性；waitpid 必须有硬 deadline，坏实现不能让测试永久挂。
 
-活测试：`tests/shutdown/shutdown.unit.test.ts`、`tests/shutdown/shutdown-signals.it.test.ts`、`tests/shutdown/fixtures/two_signal_pty.py`。
+活测试：`tests/shutdown/shutdown.unit.test.ts`、`tests/shutdown/shutdown-signals.pty.test.ts`、`tests/shutdown/fixtures/two_signal_pty.py`。
 
 ### 运行实例取证
 
