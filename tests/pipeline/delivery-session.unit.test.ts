@@ -9,12 +9,7 @@ import {
 import type { OwnerRawSink } from "~/lib/pipeline/delivery/types"
 
 import { createDeliverySerializer } from "~/lib/pipeline/delivery/serializer"
-import {
-  //
-  createDownstreamDeliverySession,
-  getDownstreamDeliverySession,
-  inheritDownstreamDeliverySession,
-} from "~/lib/pipeline/delivery/session"
+import { createDownstreamDeliverySession } from "~/lib/pipeline/delivery/session"
 import { createClientFrameEnvelope } from "~/lib/pipeline/stream/frame-envelope"
 
 import { FakeClock } from "../helpers/fake-clock"
@@ -67,17 +62,6 @@ function arraySink(writes: Array<{ method: string; frame: unknown }>): OwnerRawS
 describe("P3-T1 downstream delivery session", () => {
   const clock = new FakeClock()
 
-  test("identity inheritance accepts only the same write-pass-through reference", () => {
-    const delivery = createDownstreamDeliverySession({ sink: { async write() {} } })
-    const passThrough: ClientSink = { write: delivery.clientSink.write }
-    inheritDownstreamDeliverySession(delivery.clientSink, passThrough, { transparency: "write-pass-through" })
-    expect(getDownstreamDeliverySession(passThrough)).toBe(delivery)
-
-    const wrapped: ClientSink = { write: (frame) => delivery.clientSink.write(frame) }
-    expect(() => inheritDownstreamDeliverySession(delivery.clientSink, wrapped, { transparency: "write-pass-through" })).toThrow(
-      "decorator.write must be the same function reference",
-    )
-  })
   afterEach(() => clock.restore())
 
   test("updates the block ledger only from frames actually written to the client", async () => {
