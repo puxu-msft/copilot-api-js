@@ -33,11 +33,24 @@ def read_until(needle: bytes, timeout: float = 2.0) -> None:
         raise RuntimeError(f"missing {needle!r} in {bytes(output)!r}")
 
 
+def wait_for_cooked_mode(timeout: float = 2.0) -> None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        lflag = termios.tcgetattr(fd)[3]
+        if (lflag & termios.ICANON) and (lflag & termios.ECHO):
+            return
+        time.sleep(0.005)
+    lflag = termios.tcgetattr(fd)[3]
+    raise RuntimeError(f"terminal did not restore cooked mode: lflag={lflag} output={bytes(output)!r}")
+
+
 try:
     read_until(b"READY")
     os.write(fd, b"\x03")
     read_until(b"graceful shutdown started")
     first_alive = os.waitpid(pid, os.WNOHANG)[0] == 0
+    wait_for_cooked_mode()
+    cooked_before_second_signal = True
     os.write(fd, b"\x03")
     deadline = time.monotonic() + 2.0
     while True:
@@ -48,7 +61,7 @@ try:
             raise RuntimeError("second Ctrl+C did not exit within 2 seconds")
         time.sleep(0.01)
     lflag = termios.tcgetattr(fd)[3]
-    print(json.dumps({"firstAlive": first_alive, "exitCode": os.waitstatus_to_exitcode(status), "canonical": bool(lflag & termios.ICANON), "echo": bool(lflag & termios.ECHO), "output": output.decode(errors="replace")}))
+    print(json.dumps({"firstAlive": first_alive, "cookedBeforeSecondSignal": cooked_before_second_signal, "exitCode": os.waitstatus_to_exitcode(status), "canonical": bool(lflag & termios.ICANON), "echo": bool(lflag & termios.ECHO), "output": output.decode(errors="replace")}))
 finally:
     try:
         os.kill(pid, signal.SIGKILL)

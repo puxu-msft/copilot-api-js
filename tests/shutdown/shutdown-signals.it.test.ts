@@ -91,9 +91,11 @@ test("real TerminalUi raw Ctrl+C restores cooked mode before the second signal",
     exitCode: number
     canonical: boolean
     echo: boolean
+    cookedBeforeSecondSignal: boolean
     output: string
   }
   expect(result.firstAlive).toBe(true)
+  expect(result.cookedBeforeSecondSignal).toBe(true)
   expect(result.exitCode).toBe(130)
   expect(result.canonical).toBe(true)
   expect(result.echo).toBe(true)
