@@ -4,7 +4,7 @@ import {
   //
   exportHistory,
   getEntry,
-  getHistorySummaries,
+  getHistorySummariesAsync,
   getSessionSummaries,
   getStats,
   isHistoryEnabled,
@@ -15,7 +15,11 @@ import {
   type QueryOptions,
   type SearchSource,
 } from "~/lib/history"
-import { InvalidSummaryCursorError } from "~/lib/history/queries"
+import {
+  //
+  HistorySearchUnavailableError,
+  InvalidSummaryCursorError,
+} from "~/lib/history/queries"
 import { compressAsync } from "~/lib/sqlite/compression"
 
 /**
@@ -49,7 +53,7 @@ function rejectsRetiredArchiveTier(c: Context): Response | undefined {
   return undefined
 }
 
-export function handleGetEntries(c: Context) {
+export async function handleGetEntries(c: Context) {
   if (!isHistoryEnabled()) {
     return c.json({ error: "History recording is not enabled" }, 400)
   }
@@ -67,9 +71,10 @@ export function handleGetEntries(c: Context) {
   }
 
   try {
-    return c.json(getHistorySummaries(options))
+    return c.json(await getHistorySummariesAsync(options))
   } catch (error) {
     if (error instanceof InvalidSummaryCursorError) return c.json({ error: error.message }, 400)
+    if (error instanceof HistorySearchUnavailableError) return c.json({ error: error.message }, 503)
     throw error
   }
 }

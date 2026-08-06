@@ -103,10 +103,19 @@ import type {
   NativeHistoryIndex,
   TantivySearchHit,
 } from "~/lib/history/search-native"
+import type {
+  //
+  HistorySearchListRequest,
+  HistorySearchListResponse,
+} from "~/lib/history/search/protocol"
 import type { Database } from "~/lib/history/sqlite/connection"
 
 import { openDatabaseReadonly } from "~/lib/history/sqlite/connection"
-import { projectSearchableText } from "~/lib/history/v3/projection"
+import {
+  //
+  projectSearchableText,
+  recordToEntrySummary,
+} from "~/lib/history/v3/projection"
 import { hydrateManifest } from "~/lib/history/v3/store"
 
 /**
@@ -126,6 +135,8 @@ export interface TailCursor {
   committedAt: number
   operationId: string
   indexedAtBoundaryMs?: Array<string>
+  /** Poisoned rows already crossed by this durable index frontier. Kept for strict freshness attestation across restarts. */
+  poisoned?: Array<{ operationId: string; committedAt: number }>
 }
 
 const CURSOR_FILE_NAME = "tail-cursor.json"
@@ -143,11 +154,31 @@ function cursorPath(indexPath: string): string {
  */
 export function readTailCursor(indexPath: string): TailCursor | null {
   try {
-    const raw = JSON.parse(fs.readFileSync(cursorPath(indexPath), "utf8")) as Partial<TailCursor>
+    const parsed: unknown = JSON.parse(fs.readFileSync(cursorPath(indexPath), "utf8"))
+    if (typeof parsed !== "object" || parsed === null) return null
+    const raw = parsed as Record<string, unknown>
     if (typeof raw.committedAt !== "number" || typeof raw.operationId !== "string") return null
     const indexedAtBoundaryMs =
       Array.isArray(raw.indexedAtBoundaryMs) && raw.indexedAtBoundaryMs.every((id) => typeof id === "string") ? raw.indexedAtBoundaryMs : undefined
-    return { committedAt: raw.committedAt, operationId: raw.operationId, ...(indexedAtBoundaryMs ? { indexedAtBoundaryMs } : {}) }
+    const poisoned =
+      (
+        Array.isArray(raw.poisoned)
+        && raw.poisoned.every(
+          (entry: unknown) =>
+            typeof entry === "object"
+            && entry !== null
+            && typeof (entry as { operationId?: unknown }).operationId === "string"
+            && typeof (entry as { committedAt?: unknown }).committedAt === "number",
+        )
+      ) ?
+        (raw.poisoned as Array<{ operationId: string; committedAt: number }>)
+      : undefined
+    return {
+      committedAt: raw.committedAt,
+      operationId: raw.operationId,
+      ...(indexedAtBoundaryMs ? { indexedAtBoundaryMs } : {}),
+      ...(poisoned ? { poisoned } : {}),
+    }
   } catch {
     return null // ENOENT / corrupt JSON / missing fields -- treat as "no cursor yet".
   }
@@ -251,8 +282,12 @@ export interface HistorySearchDaemon {
    * concern (mirrors `search-tantivy.ts`'s split between upsert and flush).
    */
   tailOnce: () => Promise<TailRoundResult>
-  /** Current in-memory cursor (mirrors the last-persisted value). */
+  /** Current staged cursor, including upserts not yet durably flushed to Tantivy. */
   getCursor: () => TailCursor | null
+  /** Last cursor whose corresponding index writes have durably flushed. */
+  getFlushedCursor: () => TailCursor | null
+  /** Flush the caller-owned index, then publish exactly the staged cursor captured before that flush. */
+  flush: () => Promise<void>
   /** Release the daemon's own readonly db handle (does NOT touch `options.index` --
    *  the caller constructed it and owns its flush/close lifecycle). */
   close: () => void
@@ -263,6 +298,8 @@ export interface HistorySearchDaemon {
    * first -- the caller decides tail/flush cadence independently of query cadence.
    */
   search: (query: string, operationKind: string | undefined, limit: number) => Promise<Array<TantivySearchHit>>
+  /** Strict list search against the durably flushed index frontier. Throws while lagging. */
+  listSearch: (request: HistorySearchListRequest) => Promise<HistorySearchListResponse["listSearch"]>
 }
 
 /**
@@ -276,6 +313,7 @@ export function createHistorySearchDaemon(options: HistorySearchDaemonOptions): 
   const pageSize = options.pageSize ?? DEFAULT_PAGE_SIZE
   let readonlyDb: Database | undefined
   let cursor: TailCursor | null = readTailCursor(options.indexPath)
+  let flushedCursor: TailCursor | null = cursor
   const warnPoisonOnce = createPoisonLogDeduper()
 
   function db(): Database {
@@ -296,10 +334,20 @@ export function createHistorySearchDaemon(options: HistorySearchDaemonOptions): 
    * this millisecond must be remembered as indexed, or the overlap re-scan would
    * not fully believe either one is done).
    */
-  function advanceCursorPastRow(row: TailRow): void {
+  function advanceCursorPastRow(row: TailRow, isPoisoned = false): void {
     const sameMillisecondAsCursor = cursor !== null && cursor.committedAt === row.committed_at
     const indexedAtBoundaryMs = sameMillisecondAsCursor ? [...(cursor?.indexedAtBoundaryMs ?? []), row.operation_id] : [row.operation_id]
-    cursor = { committedAt: row.committed_at, operationId: row.operation_id, indexedAtBoundaryMs }
+    const poisoned = cursor?.poisoned ?? []
+    const nextPoisoned =
+      isPoisoned && !poisoned.some((entry) => entry.operationId === row.operation_id) ?
+        [...poisoned, { operationId: row.operation_id, committedAt: row.committed_at }]
+      : poisoned
+    cursor = {
+      committedAt: row.committed_at,
+      operationId: row.operation_id,
+      indexedAtBoundaryMs,
+      ...(nextPoisoned.length > 0 ? { poisoned: nextPoisoned } : {}),
+    }
   }
 
   /**
@@ -332,19 +380,36 @@ export function createHistorySearchDaemon(options: HistorySearchDaemonOptions): 
     let poisoned = 0
 
     async function processRow(row: TailRow): Promise<void> {
+      let document: Parameters<NativeHistoryIndex["upsertSummary"]>[0]
       try {
         const record = hydrateManifest(connection, row.manifest_gz)
         const content = projectSearchableText(record)
-        await options.index.upsert(row.operation_id, row.kind, row.created_at, content)
-        processed++
+        const summary = recordToEntrySummary(record)
+        document = {
+          operationId: row.operation_id,
+          operationKind: row.kind,
+          createdAt: row.created_at,
+          committedAt: row.committed_at,
+          content,
+          endpoint: summary.endpoint,
+          state: summary.state,
+          pid: summary.pid,
+          sessionId: summary.sessionId,
+          agentId: summary.agentId,
+          requestModel: summary.requestModel,
+          responseModel: summary.responseModel,
+        }
       } catch (error) {
-        // Poison-row isolation (blocker-1 fix, see module doc): NEVER let one bad
-        // manifest abort the whole round -- count it, log it (deduped), advance the
-        // cursor past it exactly as if it had succeeded, and keep going. The row
-        // simply never becomes searchable; every OTHER row is unaffected.
+        // Only canonical hydrate/projection failures are row-local poison. A native
+        // index write failure is an infrastructure failure and must abort the round
+        // before the cursor advances, so a later retry cannot silently skip the row.
         poisoned++
         warnPoisonOnce(row.operation_id, error)
+        advanceCursorPastRow(row, true)
+        return
       }
+      await options.index.upsertSummary(document)
+      processed++
       advanceCursorPastRow(row)
     }
 
@@ -412,12 +477,23 @@ export function createHistorySearchDaemon(options: HistorySearchDaemonOptions): 
       await drainBoundaryMillisecond()
     }
 
-    if ((processed > 0 || poisoned > 0) && cursor !== null) writeTailCursor(options.indexPath, cursor)
     return { processed, poisoned, cursor }
   }
 
   function getCursor(): TailCursor | null {
     return cursor
+  }
+
+  function getFlushedCursor(): TailCursor | null {
+    return flushedCursor
+  }
+
+  async function flush(): Promise<void> {
+    const cursorToPublish = cursor
+    await options.index.flush()
+    if (cursorToPublish === null) return
+    flushedCursor = cursorToPublish
+    writeTailCursor(options.indexPath, cursorToPublish)
   }
 
   function close(): void {
@@ -429,5 +505,56 @@ export function createHistorySearchDaemon(options: HistorySearchDaemonOptions): 
     return options.index.search(query, operationKind, limit)
   }
 
-  return { tailOnce, getCursor, close, search }
+  async function listSearch(request: HistorySearchListRequest): Promise<HistorySearchListResponse["listSearch"]> {
+    const frontier = flushedCursor
+    const targetCovered =
+      frontier !== null
+      && (frontier.committedAt > request.target.committedAt
+        || (frontier.committedAt === request.target.committedAt
+          && request.target.operationIdsAtBoundary.every((operationId) => frontier.indexedAtBoundaryMs?.includes(operationId))))
+    if (!targetCovered) {
+      throw new Error(
+        `[history-search-daemon] index has not reached frozen target committed_at=${request.target.committedAt} boundary=${request.target.operationIdsAtBoundary.join(",")}`,
+      )
+    }
+    const poison = (frontier.poisoned ?? []).filter(
+      (entry) =>
+        entry.committedAt < request.target.committedAt
+        || (entry.committedAt === request.target.committedAt && request.target.operationIdsAtBoundary.includes(entry.operationId)),
+    )
+    const result = await options.index.listSearch({
+      query: request.query,
+      operationKinds: request.filters.operationKinds,
+      endpoint: request.filters.endpoint,
+      states: request.filters.states ?? [],
+      pid: request.filters.pid,
+      sessionId: request.filters.sessionId,
+      agentId: request.filters.agentId,
+      mainAgentOnly: request.filters.mainAgentOnly,
+      model: request.filters.model,
+      from: request.filters.from,
+      to: request.filters.to,
+      targetCommittedAt: request.target.committedAt,
+      targetOperationIds: request.target.operationIdsAtBoundary,
+      cursorStartedAt: request.cursor?.startedAt,
+      cursorOperationId: request.cursor?.operationId,
+      cursorRequireMatch: request.cursor?.requireMatch,
+      direction: request.cursor?.direction ?? "older",
+      limit: request.limit,
+    })
+    if (result.invalidCursor) {
+      throw Object.assign(new Error(`Unknown or filtered summary cursor: ${request.cursor?.operationId ?? "unknown"}`), { code: "invalid-cursor" as const })
+    }
+    const { invalidCursor: _invalidCursor, ...page } = result
+    return {
+      ...page,
+      attestation: {
+        committedAt: frontier.committedAt,
+        indexedAtBoundaryMs: frontier.indexedAtBoundaryMs ?? [],
+        poison,
+      },
+    }
+  }
+
+  return { tailOnce, getCursor, getFlushedCursor, flush, close, search, listSearch }
 }

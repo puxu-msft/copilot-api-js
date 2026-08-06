@@ -14,7 +14,11 @@ import {
   clearInFlight,
   putInFlight,
 } from "~/lib/history/in-flight"
-import { getHistorySummaries } from "~/lib/history/queries"
+import {
+  //
+  getHistorySummaries,
+  getHistorySummariesAsync,
+} from "~/lib/history/queries"
 import {
   //
   getSessionEntries,
@@ -27,6 +31,7 @@ import {
   openInMemoryDatabase,
 } from "~/lib/history/sqlite/connection"
 import { applyForwardMigrations } from "~/lib/history/sqlite/migrations/run"
+import { setHistorySearchClientForTests } from "~/lib/history/state"
 import { getStats } from "~/lib/history/stats"
 import { ensureV3Schema } from "~/lib/history/v3/store"
 import {
@@ -105,8 +110,57 @@ beforeEach(async () => {
 })
 
 afterEach(() => {
+  setHistorySearchClientForTests(undefined)
   clearInFlight()
   closeDatabase()
+})
+
+describe("persisted list-search facade", () => {
+  test("freezes the authoritative commit target and preserves the sidecar's ordered persisted IDs", async () => {
+    persist({ id: "search-older", startedAt: 100, sessionId: "s1" })
+    persist({ id: "search-newer", startedAt: 200, sessionId: "s1" })
+    expect(tryMarkSummaryProjectionReady(getDatabase()).ready).toBe(true)
+    const targetRow = getDatabase().prepare("SELECT MAX(committed_at) AS committed_at FROM v3_operations").get() as { committed_at: number }
+    const boundaryRows = getDatabase()
+      .prepare("SELECT operation_id FROM v3_operations WHERE committed_at=? ORDER BY operation_id")
+      .all(targetRow.committed_at) as Array<{ operation_id: string }>
+    let captured: unknown
+    setHistorySearchClientForTests({
+      async query() {
+        return []
+      },
+      async getTailStatus() {
+        return { lastSuccessfulTailAt: null, poisonedCount: 0, lastTailError: null }
+      },
+      async listSearch(request) {
+        captured = request
+        return {
+          operationIds: ["search-newer", "search-older"],
+          total: 2,
+          hasOlder: false,
+          hasNewer: false,
+          attestation: {
+            committedAt: targetRow.committed_at,
+            indexedAtBoundaryMs: boundaryRows.map((row) => row.operation_id),
+            poison: [],
+          },
+        }
+      },
+    })
+
+    const result = await getHistorySummariesAsync({ search: "search", sessionId: "s1", limit: 10 })
+
+    expect(result.entries.map((entry) => entry.id)).toEqual(["search-newer", "search-older"])
+    expect(result.total).toBe(2)
+    expect(captured).toMatchObject({
+      query: "search",
+      filters: { operationKinds: ["generation", "responses_ws"], sessionId: "s1" },
+      target: {
+        committedAt: targetRow.committed_at,
+        operationIdsAtBoundary: boundaryRows.map((row) => row.operation_id),
+      },
+    })
+  })
 })
 
 describe("persisted summary SQL query", () => {
@@ -271,9 +325,11 @@ describe("persisted summary SQL query", () => {
       active: false,
       attempts: [{ index: 0, durationMs: 1, upstreamResponse: { success: true, model: "live-model" } }],
     })
+    putInFlight({ ...liveEntry("live-aborted", 100), state: "aborted", active: false })
 
-    expect(getHistorySummaries().entries.map((row) => row.id)).toEqual(["live-failed"])
-    expect(getHistorySummaries({ state: "failed", success: false }).entries.map((row) => row.id)).toEqual(["live-failed"])
+    expect(getHistorySummaries().entries.map((row) => row.id)).toEqual(["live-failed", "live-aborted"])
+    expect(getHistorySummaries({ state: "failed", success: true }).entries.map((row) => row.id)).toEqual(["live-failed"])
+    expect(getHistorySummaries({ success: false }).entries.map((row) => row.id)).toEqual(["live-failed"])
   })
 
   test("the facade merges in-flight rows without corrupting totals or terminal-only pages", () => {

@@ -47,6 +47,7 @@ import { resetBootstrapSpoolForTests } from "~/lib/diagnostics/file/bootstrap-sp
 import { resetHistoryPersistErrorStats } from "~/lib/history/persist-guard"
 import { resetRawCaptureManagerForTests } from "~/lib/history/raw/manager"
 import { setNativeHistorySearchForTests } from "~/lib/history/search-native"
+import { setHistorySearchClientForTests } from "~/lib/history/state"
 import {
   //
   drainV3Writer,
@@ -124,6 +125,7 @@ export const RESETTERS: ReadonlyArray<{ name: string; reset: () => void | Promis
   { name: "resetV3WriterForTests", reset: resetV3WriterForTests },
   { name: "resetRawCaptureManagerForTests", reset: resetRawCaptureManagerForTests },
   { name: "setNativeHistorySearchForTests", reset: () => setNativeHistorySearchForTests(undefined) },
+  { name: "setHistorySearchClientForTests", reset: () => setHistorySearchClientForTests(undefined) },
   { name: "resetResponseSessionStoreForTests", reset: resetResponseSessionStoreForTests },
   { name: "resetProtectStreamingStatsForTests", reset: resetProtectStreamingStatsForTests },
   { name: "resetToolInputRepairStatsForTests", reset: resetToolInputRepairStatsForTests },

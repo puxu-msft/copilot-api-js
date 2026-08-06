@@ -41,6 +41,7 @@ import {
   //
   initHistory,
   shutdownHistory,
+  startHistoryBackfills,
 } from "~/lib/history/state"
 import {
   //
@@ -50,6 +51,7 @@ import {
 import { setHistoryConfig } from "~/lib/state"
 import {
   //
+  handleGetEntries,
   handleSearch,
   handleSearchContains,
 } from "~/routes/history/handler"
@@ -63,6 +65,7 @@ import { waitUntil } from "../../helpers/wait-until"
 beforeAll(primeUdsConnectForBunTest)
 
 const app = new Hono()
+app.get("/api/entries", handleGetEntries)
 app.get("/api/search", handleSearch)
 app.get("/api/search/contains", handleSearchContains)
 
@@ -121,6 +124,37 @@ afterEach(async () => {
 const NATIVE = isNativeHistorySearchAvailable()
 
 describe.skipIf(!NATIVE)("GET /history/api/search — real end-to-end sidecar (Phase 4 cutover)", () => {
+  test("GET entries?search traverses real HTTP -> UDS -> sidecar -> Tantivy and returns the narrow summary page", async () => {
+    const dbDir = freshDir("search-list-cutover-db-")
+    const dbPath = path.join(dbDir, "history-v3.db")
+    const socketPath = path.join(freshDir("search-list-cutover-sock-"), "history-search.sock")
+    const indexPath = path.join(freshDir("search-list-cutover-index-"), "index")
+
+    commitOperation(dbPath, "list-cutover-op", "distinctiveListCutoverNeedle")
+    commitOperation(dbPath, "list-nonmatch-op", "deliberatelyUnrelatedNeedle")
+    PATHS.HISTORY_SEARCH_SOCKET = socketPath
+    setHistoryConfig({ historyDbPath: dbPath })
+    await initHistory(true)
+    startHistoryBackfills()
+
+    const sidecar = spawnSidecar(["--db", dbPath, "--socket", socketPath, "--index", indexPath])
+    spawnedChildren.push(sidecar)
+
+    await waitUntil(
+      async () => {
+        const res = await get("/api/entries?search=distinctiveListCutoverNeedle")
+        if (res.status !== 200) return false
+        const body = await json<{ entries: Array<{ id: string }> }>(res)
+        return body.entries[0]?.id === "list-cutover-op"
+      },
+      { timeout: 15_000, interval: 200, label: "strict list-search sidecar to cover the frozen target" },
+    )
+
+    const res = await get("/api/entries?search=distinctiveListCutoverNeedle")
+    expect(res.status).toBe(200)
+    expect(await json<{ entries: Array<{ id: string }>; total: number }>(res)).toMatchObject({ entries: [{ id: "list-cutover-op" }], total: 1 })
+  }, 20_000)
+
   test("source=inbound with a reachable sidecar returns genuine hits, mapped to full EntrySummary rows", async () => {
     const dbDir = freshDir("search-cutover-db-")
     const dbPath = path.join(dbDir, "history-v3.db")

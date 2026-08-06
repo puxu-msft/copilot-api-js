@@ -11,7 +11,7 @@ import type { MigrationFn } from "umzug"
 
 import type { SqliteDatabase } from "~/lib/sqlite/driver"
 
-import { SUMMARY_PROJECTION_MIGRATION_SQL } from "~/lib/history/v3/summary-store"
+import { SUMMARY_PROJECTION_MIGRATION_SQL } from "~/lib/history/v3/summary-schema"
 
 /**
  * A single forward schema migration.

@@ -27,6 +27,9 @@ import {
   type EndpointType,
   type HistoryEntry,
 } from "~/lib/history"
+import { HistorySearchUdsError } from "~/lib/history/search/uds-client"
+import { setHistorySearchClientForTests } from "~/lib/history/state"
+import { tryMarkSummaryProjectionReady } from "~/lib/history/v3/summary-store"
 import { setStateForTests } from "~/lib/state"
 import { generateId } from "~/lib/utils"
 import {
@@ -119,6 +122,7 @@ beforeEach(async () => {
 })
 
 afterEach(async () => {
+  setHistorySearchClientForTests(undefined)
   clearHistory()
   await shutdownHistory()
   setStateForTests({ historyDbPath: "" })
@@ -218,12 +222,87 @@ describe("GET /api/entries", () => {
     expect(body.total).toBe(1)
   })
 
+  test("serves persisted full-text list results through the strict sidecar contract", async () => {
+    const older = await createEntry("anthropic-messages", "search-model", [{ role: "user", content: "strict needle older" }], { startedAt: 100 })
+    const newer = await createEntry("anthropic-messages", "search-model", [{ role: "user", content: "strict needle newer" }], { startedAt: 200 })
+    await createEntry("anthropic-messages", "search-model", [{ role: "user", content: "deliberately unrelated text" }], { startedAt: 300 })
+    const db = (await import("~/lib/history/sqlite/connection")).getDatabase()
+    expect(tryMarkSummaryProjectionReady(db).ready).toBe(true)
+    const target = db.prepare("SELECT MAX(committed_at) AS committed_at FROM v3_operations").get() as { committed_at: number }
+    const boundary = db.prepare("SELECT operation_id FROM v3_operations WHERE committed_at=? ORDER BY operation_id").all(target.committed_at) as Array<{
+      operation_id: string
+    }>
+    setHistorySearchClientForTests({
+      async query() {
+        return []
+      },
+      async getTailStatus() {
+        return { lastSuccessfulTailAt: null, poisonedCount: 0, lastTailError: null }
+      },
+      async listSearch() {
+        return {
+          operationIds: [newer.id, older.id],
+          total: 2,
+          hasOlder: false,
+          hasNewer: false,
+          attestation: { committedAt: target.committed_at, indexedAtBoundaryMs: boundary.map((row) => row.operation_id), poison: [] },
+        }
+      },
+    })
+
+    const res = await get("/api/entries?search=strict%20needle")
+    expect(res.status).toBe(200)
+    expect(await json<{ entries: Array<{ id: string }>; total: number }>(res)).toMatchObject({ entries: [{ id: newer.id }, { id: older.id }], total: 2 })
+  })
+
+  test("returns 400 when a persisted cursor fails full-text membership", async () => {
+    const cursor = await createEntry("anthropic-messages", "search-model", [{ role: "user", content: "different text" }])
+    const db = (await import("~/lib/history/sqlite/connection")).getDatabase()
+    expect(tryMarkSummaryProjectionReady(db).ready).toBe(true)
+    setHistorySearchClientForTests({
+      async query() {
+        return []
+      },
+      async getTailStatus() {
+        return { lastSuccessfulTailAt: null, poisonedCount: 0, lastTailError: null }
+      },
+      async listSearch() {
+        throw new HistorySearchUdsError("filtered cursor", "invalid-cursor")
+      },
+    })
+
+    const res = await get(`/api/entries?search=needle&cursor=${cursor.id}`)
+    expect(res.status).toBe(400)
+    expect(await json<{ error: string }>(res)).toEqual({ error: `Unknown or filtered summary cursor: ${cursor.id}` })
+  })
+
+  test("returns 503 instead of a false empty list when strict persisted search cannot cover the frozen target", async () => {
+    await createEntry("anthropic-messages", "search-model", [{ role: "user", content: "strict lag needle" }])
+    const db = (await import("~/lib/history/sqlite/connection")).getDatabase()
+    expect(tryMarkSummaryProjectionReady(db).ready).toBe(true)
+    setHistorySearchClientForTests({
+      async query() {
+        return []
+      },
+      async getTailStatus() {
+        return { lastSuccessfulTailAt: null, poisonedCount: 0, lastTailError: null }
+      },
+      async listSearch() {
+        throw new Error("simulated old or lagging sidecar")
+      },
+    })
+
+    const res = await get("/api/entries?search=strict%20lag")
+    expect(res.status).toBe(503)
+    expect((await json<{ error: string }>(res)).error).toContain("could not serve the frozen target")
+  })
+
   test("ignores empty string params", async () => {
     await createEntry("anthropic-messages", "test", [{ role: "user", content: "hello" }])
 
     const res = await get("/api/entries?model=&search=&sessionId=")
     const body = await json<{ total: number }>(res)
-    // Empty strings should not filter — all entries returned
+    // Empty strings should not filter — all entries returned without requiring the sidecar.
     expect(body.total).toBe(1)
   })
 

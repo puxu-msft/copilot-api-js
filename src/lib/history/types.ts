@@ -31,21 +31,25 @@ import type { OwnerOperation } from "~/lib/pipeline/types"
 import type { ProcessIdentity } from "~/lib/process-identity"
 import type { CopilotAnnotations } from "~/types/api/anthropic"
 
-/** Supported API endpoint types */
-export type EndpointType = "anthropic-messages" | "openai-chat-completions" | "openai-responses" | "gemini-generate-content"
+import type {
+  //
+  EndpointType,
+  EntrySummary,
+  RequestLifecycleState,
+} from "./core-types"
+
+export type {
+  //
+  EndpointType,
+  EntrySummary,
+  HistoryStats,
+  QueryOptions,
+  RequestLifecycleState,
+  SessionSummary,
+  SummaryResult,
+} from "./core-types"
 
 export type RequestTransport = "http" | "upstream-ws" | "upstream-ws-fallback"
-/**
- * Lifecycle state of a request, also used as the persisted `status` column.
- *
- * Terminal states: `completed` (upstream 200), `failed` (error), `aborted`
- * (client disconnected mid-stream — distinct from a real upstream failure),
- * `interrupted` (a non-terminal row left by a dead process, reclassified on
- * the next startup / by the runtime stale sweep — see history reaper).
- * Non-terminal (active) states: `pending`, `executing`, `streaming` — these
- * are deliberately excluded from reaper buckets and aggregate counts.
- */
-export type RequestLifecycleState = "pending" | "executing" | "streaming" | "completed" | "failed" | "aborted" | "interrupted"
 
 /** Message types for full content storage */
 export interface MessageContent {
@@ -575,43 +579,6 @@ export interface HistoryState {
   enabled: boolean
 }
 
-export interface QueryOptions {
-  /** Canonical operation kind. Default generation; `all` includes bypass operations. */
-  operationKind?: "generation" | "count_tokens" | "embeddings" | "responses_ws" | "all"
-  cursor?: string
-  limit?: number
-  direction?: "older" | "newer"
-  model?: string
-  endpoint?: EndpointType
-  success?: boolean
-  /**
-   * Filter to an exact lifecycle state (e.g. `aborted`/`interrupted`). More
-   * granular than `success` (which is just completed-vs-failed); when both are
-   * given, `state` wins. Maps to the `status` SQL column, so it filters at the
-   * source and stays correct across cursor pagination.
-   */
-  state?: RequestLifecycleState
-  /**
-   * Exclude active in-flight (non-terminal: pending/executing/streaming) entries
-   * from the result, returning only terminal rows (completed/failed/aborted/
-   * interrupted). The default merges in-flight summaries (richest data — the v3
-   * combined activity view); consumers with a dedicated live lane (ui-v4) pass
-   * `true` so streaming requests don't also appear in the History list. Filters
-   * the merged result by state, so `total` and cursor pagination stay correct.
-   */
-  terminalOnly?: boolean
-  from?: number
-  to?: number
-  search?: string
-  sessionId?: string
-  /** Filter to a specific subagent id (uses the agent_id SQL column). */
-  agentId?: string
-  /** Filter to the main agent only (entries with NULL agent_id). Mutually exclusive with `agentId`; `agentId` wins if both set. */
-  mainAgentOnly?: boolean
-  /** Filter to records produced by a specific process (uses the pid SQL column). */
-  pid?: number
-}
-
 export interface HistoryResult {
   entries: Array<HistoryEntry>
   total: number
@@ -622,113 +589,6 @@ export interface HistoryResult {
 
 export interface CursorResult<T> {
   entries: Array<T>
-  total: number
-  nextCursor: string | null
-  prevCursor: string | null
-}
-
-export interface HistoryStats {
-  totalRequests: number
-  successfulRequests: number
-  failedRequests: number
-  /** Client disconnected mid-stream (distinct from a service failure). */
-  abortedRequests: number
-  /** Non-terminal rows reclaimed from a dead/stuck process (crash orphans). */
-  interruptedRequests: number
-  totalInputTokens: number
-  totalOutputTokens: number
-  averageDurationMs: number
-  modelDistribution: Record<string, number>
-  endpointDistribution: Record<string, number>
-  recentActivity: Array<{ hour: string; count: number }>
-  activeSessions: number
-}
-
-/**
- * Per-session aggregate row (GROUP BY session_id over ready terminal V3 summary rows).
- *
- * `agentCount` is `COUNT(DISTINCT agent_id)`, which by SQL semantics does NOT
- * count NULL — main-agent requests carry a NULL agent_id, so a main-agent-only
- * session yields `agentCount = 0`. This is intentional: it counts the distinct
- * SUBagents that participated in the session.
- */
-export interface SessionSummary {
-  sessionId: string
-  requestCount: number
-  agentCount: number
-  /** Total billed input tokens (fresh input + cache reads + cache creation) — cache dominates agentic traffic, so excluding it understates usage by ~60×. */
-  inputTokens: number
-  outputTokens: number
-  firstStartedAt: number
-  lastStartedAt: number
-  completed: number
-  failed: number
-  /** aborted + interrupted terminal entries; with completed+failed sums to requestCount, so the UI shows every request. */
-  aborted: number
-  models: Array<string>
-  /** First real user message of the earliest (min started_at) entry — the session's opening intent. */
-  firstPreview: string
-  /** Last real user message of the latest (max started_at) entry — where the conversation left off. */
-  preview: string
-}
-
-export interface EntrySummary {
-  id: string
-  operationKind?: "generation" | "count_tokens" | "embeddings" | "responses_ws"
-  sessionId?: string
-  agentId?: string
-  rawPath?: string
-  startedAt: number
-  endedAt?: number
-  endpoint: EndpointType
-  state?: RequestLifecycleState
-  active?: boolean
-  /** Recent terminal has not reached durable V3 storage, or its bounded writer attempt failed. Omitted after successful persistence. */
-  durability?: "pending" | "failed"
-  /** Debug-pin marker — see HistoryEntry.pinned. V3 currently has no automatic reaper; the marker is retained for diagnostics and future retention policy. */
-  pinned?: boolean
-  lastUpdatedAt?: number
-  queueWaitMs?: number
-  attemptCount?: number
-  currentStrategy?: string
-  /** Serving process id (mirrors `process.pid`) — supports the pid filter. */
-  pid?: number
-  requestModel?: string
-  stream?: boolean
-  messageCount: number
-  responseModel?: string
-  responseSuccess?: boolean
-  responseError?: string
-  usage?: {
-    input_tokens: number
-    output_tokens: number
-    cache_read_input_tokens?: number
-    cache_creation_input_tokens?: number
-  }
-  durationMs?: number
-  timing?: { operation?: { source: "canonical" | "storage-commit-upper-bound" | "terminal-log-rounded" | "unavailable" } }
-  /**
-   * Wire byte size of the client→proxy request (↑). DERIVED ON READ in
-   * `toEntrySummary` via {@link deriveRequestBytes} from the stored `clientRequest.body`.
-   * NOT persisted — there is no `request_bytes` column. Absent when no body was captured.
-   */
-  requestBytes?: number
-  /**
-   * Byte size of the proxy→client response (↓): Σ forwarded SSE frame `raw` bytes
-   * (streaming) or the serialized non-streaming body. DERIVED ON READ in
-   * `toEntrySummary` via {@link deriveResponseBytes} from `clientResponse`. NOT
-   * persisted — there is no `response_bytes` column. Absent when no forwarded content was captured.
-   */
-  responseBytes?: number
-  /** Billing multiplier (e.g. 3 for opus) captured at write time. Column-backed. */
-  multiplier?: number
-  previewText: string
-  /** 响应内容预览(工具优先 `[A, B] text`)。派生汇总列 response_preview_text；旧行/在途为 ""。 */
-  responsePreviewText: string
-}
-
-export interface SummaryResult {
-  entries: Array<EntrySummary>
   total: number
   nextCursor: string | null
   prevCursor: string | null

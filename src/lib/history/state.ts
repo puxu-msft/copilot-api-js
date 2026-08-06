@@ -13,11 +13,8 @@ import {
   configureRawCapture,
   shutdownRawCapture,
 } from "./raw/manager"
-import {
-  //
-  createHistorySearchUdsClient,
-  type HistorySearchUdsClient,
-} from "./search/uds-client"
+import { setHistorySearchClient } from "./search/client-registry"
+import { createHistorySearchUdsClient } from "./search/uds-client"
 import {
   //
   closeDatabase,
@@ -52,24 +49,6 @@ let enabled = false
 let unsubscribeV3Terminal: (() => void) | undefined
 let unsubscribeRawCapture: (() => void) | undefined
 let _publisher: ScopedPublisher<"history"> | undefined
-/**
- * UDS client bound to the (independently-started, systemd-managed) history-
- * search sidecar's socket (history-search-out-of-process plan Phase 3′ —
- * 2026-07-21 architecture revision: the sidecar is a genuinely separate,
- * independently-lifecycled SERVICE, not something the main process spawns or
- * supervises — see the plan doc's header for the two production incidents
- * that ruled out the "main process spawns/supervises" model). `undefined`
- * whenever History itself is not enabled/opened.
- *
- * The client is stateless per-query (see uds-client.ts) and NEVER throws:
- * whether the sidecar service is running, down, mid-restart (by systemd), or
- * was simply never started at all, a query against a dead/absent socket
- * degrades to an empty result — this is the entire mechanism by which the
- * main process is physically incapable of being affected by ANY sidecar
- * failure mode, including a native Tantivy abort that immediately kills the
- * sidecar process outright.
- */
-let historySearchClient: HistorySearchUdsClient | undefined
 
 export const historyState = {
   get enabled(): boolean {
@@ -95,8 +74,10 @@ export const historyState = {
  * `status/route.ts` (`history_search` reachability status) and (future
  * Phase 4) the REST search handler.
  */
-export function getHistorySearchClient(): HistorySearchUdsClient | undefined {
-  return historySearchClient
+export { getHistorySearchClient } from "./search/client-registry"
+
+export function setHistorySearchClientForTests(client: Parameters<typeof setHistorySearchClient>[0]): void {
+  setHistorySearchClient(client)
 }
 
 /**
@@ -120,7 +101,7 @@ export async function initHistory(enable: boolean, _legacyMaxEntries?: number): 
   if (!enable) {
     unsubscribeV3Terminal?.()
     unsubscribeV3Terminal = undefined
-    historySearchClient = undefined
+    setHistorySearchClient(undefined)
     unsubscribeRawCapture?.()
     unsubscribeRawCapture = undefined
     stopV3Maintenance()
@@ -158,7 +139,7 @@ export async function initHistory(enable: boolean, _legacyMaxEntries?: number): 
   // independently-started sidecar service read the SAME `PATHS.
   // HISTORY_SEARCH_SOCKET` constant, so they agree on the socket path without
   // any parameter-passing between the two independently-lifecycled processes.
-  historySearchClient = createHistorySearchUdsClient({ socketPath: PATHS.HISTORY_SEARCH_SOCKET })
+  setHistorySearchClient(createHistorySearchUdsClient({ socketPath: PATHS.HISTORY_SEARCH_SOCKET }))
   unsubscribeRawCapture?.()
   unsubscribeRawCapture = onHistoryRawCaptureChange(() => {
     configureRawCapture({
@@ -225,7 +206,7 @@ export async function shutdownHistory(): Promise<void> {
   unsubscribeV3Terminal = undefined
   await drainModelOperationTerminalSubscribers()
   await drainV3Writer()
-  historySearchClient = undefined
+  setHistorySearchClient(undefined)
   await drainV3SummaryBackfill()
   shutdownRawCapture()
   closeDatabase()

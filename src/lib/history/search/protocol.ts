@@ -78,11 +78,49 @@ export class FrameDecoder {
  *  tail-progress status request instead (2026-07-22, merged-state review blocker 3 —
  *  `/api/status` needs to distinguish "sidecar UDS-reachable" from "sidecar tailing
  *  is actually making progress", which a pure connectivity ping cannot see). */
+export interface HistorySearchListFilters {
+  operationKinds: Array<string>
+  endpoint?: string
+  states?: Array<string>
+  pid?: number
+  sessionId?: string
+  agentId?: string
+  mainAgentOnly?: boolean
+  model?: string
+  from?: number
+  to?: number
+}
+
+export interface HistorySearchListCursor {
+  startedAt: number
+  operationId: string
+  direction: "older" | "newer"
+  /** Persisted cursors require sidecar full-text membership; transient cursors were already validated against their rich in-memory text. */
+  requireMatch: boolean
+}
+
+export interface HistorySearchFreshnessTarget {
+  committedAt: number
+  operationIdsAtBoundary: Array<string>
+}
+
+export interface HistorySearchListRequest {
+  type: "list-search"
+  query: string
+  filters: HistorySearchListFilters
+  cursor?: HistorySearchListCursor
+  limit: number
+  target: HistorySearchFreshnessTarget
+}
+
 export interface HistorySearchWireRequest {
-  type?: "status"
+  type?: "status" | "list-search"
   query: string
   operationKind?: string
   limit: number
+  filters?: HistorySearchListFilters
+  cursor?: HistorySearchListCursor
+  target?: HistorySearchFreshnessTarget
 }
 
 /** A successful search response — `rows` carries the FULL `TantivySearchHit` shape
@@ -100,6 +138,20 @@ export interface HistorySearchWireResponse {
  * freshly-started sidecar, or one whose history-v3.db does not exist yet) — NOT an
  * error; a status poll against a daemon in that state is a normal, valid response.
  */
+export interface HistorySearchListResponse {
+  listSearch: {
+    operationIds: Array<string>
+    total: number
+    hasOlder: boolean
+    hasNewer: boolean
+    attestation: {
+      committedAt: number | null
+      indexedAtBoundaryMs: Array<string>
+      poison: Array<{ operationId: string; committedAt: number }>
+    }
+  }
+}
+
 export interface HistorySearchWireStatus {
   status: {
     /** Epoch ms of the last tail round that completed WITHOUT throwing (a round with
@@ -121,9 +173,10 @@ export interface HistorySearchWireStatus {
 /** An error response — the sidecar's search() threw; carries a human-readable message. */
 export interface HistorySearchWireError {
   error: string
+  code?: "invalid-cursor"
 }
 
-export type HistorySearchWireReply = HistorySearchWireResponse | HistorySearchWireStatus | HistorySearchWireError
+export type HistorySearchWireReply = HistorySearchWireResponse | HistorySearchListResponse | HistorySearchWireStatus | HistorySearchWireError
 
 export function isWireError(reply: unknown): reply is HistorySearchWireError {
   return typeof reply === "object" && reply !== null && typeof (reply as { error?: unknown }).error === "string"
@@ -134,4 +187,8 @@ export function isWireError(reply: unknown): reply is HistorySearchWireError {
  *  ambiguously against a plain search response — the `status` key is the unique tell). */
 export function isWireStatus(reply: unknown): reply is HistorySearchWireStatus {
   return typeof reply === "object" && reply !== null && typeof (reply as { status?: unknown }).status === "object"
+}
+
+export function isWireListSearch(reply: unknown): reply is HistorySearchListResponse {
+  return typeof reply === "object" && reply !== null && typeof (reply as { listSearch?: unknown }).listSearch === "object"
 }

@@ -38,6 +38,8 @@ import {
   //
   encodeFrame,
   FrameDecoder,
+  type HistorySearchListRequest,
+  type HistorySearchListResponse,
   type HistorySearchWireError,
   type HistorySearchWireRequest,
   type HistorySearchWireResponse,
@@ -55,6 +57,7 @@ export type HistorySearchQueryFn = (
  *  the tail loop already maintains), so answering a `{type:"status"}` request never
  *  competes with an in-flight tail round or search query for any lock/resource. */
 export type HistorySearchStatusFn = () => HistorySearchWireStatus["status"]
+export type HistorySearchListFn = (request: HistorySearchListRequest) => Promise<HistorySearchListResponse["listSearch"]>
 
 export interface HistorySearchUdsServer {
   /** Start listening on `socketPath`. Unlinks a stale leftover socket FILE first (never a
@@ -145,7 +148,12 @@ function errorText(error: unknown): string {
  *  protocol need not supply one; a `{type:"status"}` request against a server built
  *  without it degrades to a `{error}` wire reply (never a crash), same as any other
  *  malformed/unsupported request. */
-export function createHistorySearchUdsServer(socketPath: string, search: HistorySearchQueryFn, getStatus?: HistorySearchStatusFn): HistorySearchUdsServer {
+export function createHistorySearchUdsServer(
+  socketPath: string,
+  search: HistorySearchQueryFn,
+  getStatus?: HistorySearchStatusFn,
+  listSearch?: HistorySearchListFn,
+): HistorySearchUdsServer {
   const server: net.Server = withErrorSink(net.createServer())
   // Tracked directly (not via `net.Server`'s own connection bookkeeping, which is
   // private) so `close()` can proactively destroy every open connection rather than
@@ -173,7 +181,7 @@ export function createHistorySearchUdsServer(socketPath: string, search: History
         return
       }
       for (const request of requests) {
-        void handleRequest(request, socket, search, getStatus)
+        void handleRequest(request, socket, search, getStatus, listSearch)
       }
     })
   })
@@ -216,7 +224,13 @@ export function createHistorySearchUdsServer(socketPath: string, search: History
   return { listen, close }
 }
 
-async function handleRequest(request: unknown, socket: net.Socket, search: HistorySearchQueryFn, getStatus: HistorySearchStatusFn | undefined): Promise<void> {
+async function handleRequest(
+  request: unknown,
+  socket: net.Socket,
+  search: HistorySearchQueryFn,
+  getStatus: HistorySearchStatusFn | undefined,
+  listSearch: HistorySearchListFn | undefined,
+): Promise<void> {
   try {
     const { type, query, operationKind, limit } = request as Partial<HistorySearchWireRequest>
     if (type === "status") {
@@ -228,6 +242,20 @@ async function handleRequest(request: unknown, socket: net.Socket, search: Histo
       writeReply(socket, status)
       return
     }
+    if (type === "list-search") {
+      if (!listSearch) {
+        writeReply(socket, { error: "[history-search-uds] this server does not support list-search requests" })
+        return
+      }
+      const typed = request as Partial<HistorySearchListRequest>
+      if (typeof typed.query !== "string" || typeof typed.limit !== "number" || !typed.filters || !typed.target) {
+        writeReply(socket, { error: `[history-search-uds] malformed list-search request: ${JSON.stringify(request)}` })
+        return
+      }
+      const response: HistorySearchListResponse = { listSearch: await listSearch(typed as HistorySearchListRequest) }
+      writeReply(socket, response)
+      return
+    }
     if (typeof query !== "string" || typeof limit !== "number") {
       writeReply(socket, { error: `[history-search-uds] malformed request: ${JSON.stringify(request)}` })
       return
@@ -236,12 +264,13 @@ async function handleRequest(request: unknown, socket: net.Socket, search: Histo
     const response: HistorySearchWireResponse = { rows }
     writeReply(socket, response)
   } catch (error) {
-    const reply: HistorySearchWireError = { error: errorText(error) }
+    const code = typeof error === "object" && error !== null && (error as { code?: unknown }).code === "invalid-cursor" ? "invalid-cursor" : undefined
+    const reply: HistorySearchWireError = { error: errorText(error), ...(code ? { code } : {}) }
     writeReply(socket, reply)
   }
 }
 
-function writeReply(socket: net.Socket, reply: HistorySearchWireResponse | HistorySearchWireStatus | HistorySearchWireError): void {
+function writeReply(socket: net.Socket, reply: HistorySearchWireResponse | HistorySearchListResponse | HistorySearchWireStatus | HistorySearchWireError): void {
   // The socket may already be destroyed (peer disconnected mid-request) by the time
   // the async search() call resolves -- writing to a destroyed socket would itself
   // throw/emit 'error'; `.writable` guards that without needing a try/catch around

@@ -17,6 +17,8 @@ import {
 } from "./in-flight"
 import { isActiveState } from "./lifecycle-state"
 import { extractInboundSearchText } from "./normalize-message"
+import { getHistorySearchClient } from "./search/client-registry"
+import { HistorySearchUdsError } from "./search/uds-client"
 import { getDatabase } from "./sqlite/connection"
 import {
   //
@@ -32,6 +34,8 @@ import {
 } from "./v3/store"
 import {
   //
+  freezeHistorySearchTarget,
+  getPersistedSummariesByIds,
   getPersistedSummary,
   hasPersistedSummaryMatching,
   isSummaryProjectionReady,
@@ -87,6 +91,25 @@ export class InvalidSummaryCursorError extends Error {
   }
 }
 
+export class HistorySearchUnavailableError extends Error {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options)
+    this.name = "HistorySearchUnavailableError"
+  }
+}
+
+function operationKindsForSearch(kind: NonNullable<QueryOptions["operationKind"]>): Array<string> {
+  if (kind === "all") return []
+  return kind === "generation" ? ["generation", "responses_ws"] : [kind]
+}
+
+function statesForSearch(options: QueryOptions): Array<string> {
+  if (options.state) return [options.state]
+  if (options.success === true) return ["completed"]
+  if (options.success === false) return ["failed"]
+  return []
+}
+
 function isOnCursorSide(summary: EntrySummary, cursor: EntrySummary | undefined, direction: "older" | "newer"): boolean {
   if (!cursor) return true
   const cmp = compareSummaryNewestFirst(summary, cursor)
@@ -106,8 +129,9 @@ function summaryMatchesFilters(summary: EntrySummary, opts: QueryOptions): boole
   }
   if (opts.state && summary.state !== opts.state) return false
   if (!opts.state && opts.success !== undefined) {
-    const success = summary.state ? summary.state === "completed" : summary.responseSuccess
-    if (success !== opts.success) return false
+    if (summary.state !== undefined) {
+      if (summary.state !== (opts.success ? "completed" : "failed")) return false
+    } else if (summary.responseSuccess !== opts.success) return false
   }
   if (opts.agentId && summary.agentId !== opts.agentId) return false
   if (!opts.agentId && opts.mainAgentOnly && summary.agentId !== undefined) return false
@@ -164,7 +188,11 @@ function persistedCandidates(
   return { rows, total }
 }
 
-function resolveSummaryCursor(options: QueryOptions, operationKind: NonNullable<QueryOptions["operationKind"]>): EntrySummary | undefined {
+function resolveSummaryCursor(
+  options: QueryOptions,
+  operationKind: NonNullable<QueryOptions["operationKind"]>,
+  deferPersistedSearch = false,
+): EntrySummary | undefined {
   const cursor = options.cursor
   if (!cursor) return undefined
 
@@ -186,7 +214,13 @@ function resolveSummaryCursor(options: QueryOptions, operationKind: NonNullable<
   const db = getDatabase()
   const projectionReady = isSummaryProjectionReady(db)
   const persisted = projectionReady ? getPersistedSummary(db, cursor) : undefined
-  if (persisted && summaryMatchesOperationKind(persisted, operationKind) && summaryMatchesFilters(persisted, options) && !options.search) return persisted
+  if (
+    persisted
+    && summaryMatchesOperationKind(persisted, operationKind)
+    && summaryMatchesFilters(persisted, options)
+    && (deferPersistedSearch || !options.search)
+  )
+    return persisted
   if (!projectionReady) {
     const stored = getV3StoredOperation(cursor)
     if (stored && recordMatchesQuery(stored.record, { ...options, operationKind }) && !options.search) return recordToEntrySummary(stored.record, stored)
@@ -286,6 +320,107 @@ export function getHistory(options: QueryOptions = {}): HistoryResult {
     page: 1,
     limit,
     totalPages: Math.ceil(total / limit),
+  }
+}
+
+export async function getHistorySummariesAsync(options: QueryOptions = {}): Promise<SummaryResult> {
+  if (!options.search) return getHistorySummaries(options)
+  const { limit = 50, terminalOnly } = options
+  const operationKind = options.operationKind ?? "generation"
+  const direction = options.direction ?? "older"
+  const inFlightSummaries = listInFlight()
+    .filter((entry) => inFlightMatchesSearch(entry, options.search))
+    .map((entry) => toEntrySummary(entry))
+    .filter((summary) => summaryMatchesOperationKind(summary, operationKind) && summaryMatchesFilters(summary, options))
+  const recentSummaries = listRecentModelOperationTerminals()
+    .filter((record) => recordMatchesQuery(record, { ...options, operationKind }))
+    .filter((record) => inFlightMatchesSearch(recordToHistoryEntry(record), options.search))
+    .map((record) => recentRecordToSummary(record))
+  const cursorSummary = resolveSummaryCursor(options, operationKind, true)
+  const db = getDatabase()
+  if (!isSummaryProjectionReady(db)) {
+    throw new HistorySearchUnavailableError("History summary projection is not ready for persisted full-text search")
+  }
+  const target = freezeHistorySearchTarget(db)
+  let persistedRows: Array<EntrySummary> = []
+  let persistedTotal = 0
+  let persistedHasOlder = false
+  let persistedHasNewer = false
+  if (target) {
+    const client = getHistorySearchClient()
+    if (!client) throw new HistorySearchUnavailableError("History search sidecar client is unavailable")
+    let response: Awaited<ReturnType<typeof client.listSearch>>
+    try {
+      response = await client.listSearch({
+        query: options.search,
+        filters: {
+          operationKinds: operationKindsForSearch(operationKind),
+          endpoint: options.endpoint,
+          states: statesForSearch(options),
+          pid: options.pid,
+          sessionId: options.sessionId,
+          agentId: options.agentId,
+          mainAgentOnly: options.agentId ? undefined : options.mainAgentOnly,
+          model: options.model,
+          from: options.from,
+          to: options.to,
+        },
+        cursor:
+          cursorSummary ?
+            {
+              startedAt: cursorSummary.startedAt,
+              operationId: cursorSummary.id,
+              direction,
+              requireMatch: !getInFlight(cursorSummary.id) && !getRecentModelOperationTerminal(cursorSummary.id),
+            }
+          : undefined,
+        limit: limit + inFlightSummaries.length + recentSummaries.length + 1,
+        target,
+      })
+    } catch (error) {
+      if (error instanceof InvalidSummaryCursorError) throw error
+      if (error instanceof HistorySearchUdsError && error.code === "invalid-cursor") {
+        throw new InvalidSummaryCursorError(options.cursor ?? "unknown")
+      }
+      throw new HistorySearchUnavailableError("History search sidecar could not serve the frozen target", { cause: error })
+    }
+    const boundaryCovered =
+      response.attestation.committedAt !== null
+      && (response.attestation.committedAt > target.committedAt
+        || (response.attestation.committedAt === target.committedAt
+          && target.operationIdsAtBoundary.every((operationId) => response.attestation.indexedAtBoundaryMs.includes(operationId))))
+    if (!boundaryCovered) throw new HistorySearchUnavailableError("History search sidecar attestation does not cover the frozen target")
+    if (response.attestation.poison.length > 0) {
+      throw new HistorySearchUnavailableError(
+        `History search sidecar skipped ${response.attestation.poison.length} operation(s) inside the frozen target: ${response.attestation.poison.map((entry) => entry.operationId).join(", ")}`,
+      )
+    }
+    try {
+      persistedRows = getPersistedSummariesByIds(db, response.operationIds)
+    } catch (error) {
+      throw new HistorySearchUnavailableError("History search sidecar returned a stale summary reference", { cause: error })
+    }
+    persistedTotal = response.total
+    persistedHasOlder = response.hasOlder
+    persistedHasNewer = response.hasNewer
+  }
+
+  const merged = new Map<string, EntrySummary>()
+  for (const summary of [...inFlightSummaries, ...recentSummaries, ...persistedRows]) if (!merged.has(summary.id)) merged.set(summary.id, summary)
+  const visible = terminalOnly ? [...merged.values()].filter((summary) => !isInFlightSummary(summary)) : [...merged.values()]
+  const onPageSide = visible.filter((summary) => isOnCursorSide(summary, cursorSummary, direction)).sort(compareSummaryNewestFirst)
+  const entries = direction === "newer" ? onPageSide.slice(Math.max(0, onPageSide.length - limit)) : onPageSide.slice(0, limit)
+  const transientCount = visible.filter((summary) => !hasPersistedSummaryMatching(db, summary.id, { ...options, operationKind })).length
+  const total = persistedTotal + transientCount
+  const newest = entries.at(0)
+  const oldest = entries.at(-1)
+  const hasNewerCandidate = newest ? visible.some((summary) => compareSummaryNewestFirst(summary, newest) < 0) : false
+  const hasOlderCandidate = oldest ? visible.some((summary) => compareSummaryNewestFirst(summary, oldest) > 0) : false
+  return {
+    entries,
+    total,
+    nextCursor: oldest && (hasOlderCandidate || persistedHasOlder) ? oldest.id : null,
+    prevCursor: newest && (hasNewerCandidate || persistedHasNewer) ? newest.id : null,
   }
 }
 

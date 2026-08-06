@@ -11,7 +11,11 @@
 
 import type { Model } from "~backend/lib/models/client"
 
-import { normalizeModelId } from "~backend/lib/models/normalize-id"
+import {
+  //
+  normalizeModelId,
+  stripRouteSuffix,
+} from "~backend/lib/models/normalize-id"
 
 export interface TelemetryUsage {
   inputTokens: number
@@ -117,11 +121,28 @@ function mergeStats(a: ModelTelemetryStats, b: ModelTelemetryStats): ModelTeleme
   }
 }
 
-/** Aggregate rows by normalizeModelId(row.model); first-seen original key kept for display. */
+const TELEMETRY_DATED_CLAUDE_RE = /^(claude-(?:opus|sonnet|haiku)-\d+-\d{1,2})-\d{8,}$/
+
+/**
+ * Join-only normalization for split model telemetry keys.
+ *
+ * Failed requests retain the verbatim client alias because no resolved model is
+ * available, while successful requests use the catalog-aligned canonical id.
+ * Folding a dated dashed alias here reconnects those two aggregate legs without
+ * restoring the deliberately removed routing behavior that silently remapped
+ * dated model requests globally.
+ */
+function telemetryJoinKey(model: string): string {
+  const { base } = stripRouteSuffix(model)
+  const dated = base.match(TELEMETRY_DATED_CLAUDE_RE)
+  return normalizeModelId(dated?.[1] ?? base)
+}
+
+/** Aggregate rows by telemetry join key; first-seen original key kept for display. */
 function aggregateByNormalizedKey(rows: Array<ModelTelemetryStats>): Map<string, ModelTelemetryStats> {
   const out = new Map<string, ModelTelemetryStats>()
   for (const row of rows) {
-    const key = normalizeModelId(row.model)
+    const key = telemetryJoinKey(row.model)
     const prev = out.get(key)
     out.set(key, prev ? mergeStats(prev, row) : row)
   }
@@ -135,7 +156,7 @@ export function buildModelTelemetryIndex(snapshot: RequestTelemetrySnapshot | nu
 
   const last7d = aggregateByNormalizedKey(snapshot.modelsLast7d)
   const sinceStart = aggregateByNormalizedKey(snapshot.modelsSinceStart)
-  const catalogKeys = new Set(models.map((m) => normalizeModelId(m.id)))
+  const catalogKeys = new Set(models.map((m) => telemetryJoinKey(m.id)))
 
   for (const key of new Set<string>([...last7d.keys(), ...sinceStart.keys()])) {
     const l = last7d.get(key) ?? null
@@ -152,5 +173,5 @@ export function buildModelTelemetryIndex(snapshot: RequestTelemetrySnapshot | nu
 
 /** Look up joined telemetry for a catalog model id (normalizes the id). */
 export function telemetryForId(index: ModelTelemetryIndex, id: string): JoinedModelTelemetry | null {
-  return index.byId.get(normalizeModelId(id)) ?? null
+  return index.byId.get(telemetryJoinKey(id)) ?? null
 }

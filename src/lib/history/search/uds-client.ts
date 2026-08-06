@@ -48,7 +48,10 @@ import {
   encodeFrame,
   FrameDecoder,
   isWireError,
+  isWireListSearch,
   isWireStatus,
+  type HistorySearchListRequest,
+  type HistorySearchListResponse,
   type HistorySearchWireResponse,
   type HistorySearchWireStatus,
 } from "./protocol"
@@ -82,11 +85,23 @@ export interface HistorySearchUdsClient {
    * wire reply, or a server built without `getStatus` wired in).
    */
   getTailStatus: () => Promise<HistorySearchWireStatus["status"]>
+  /** Strict product-list search. Transport/protocol/sidecar failures reject so the HTTP caller can return 503 instead of a false empty page. */
+  listSearch: (request: Omit<HistorySearchListRequest, "type">) => Promise<HistorySearchListResponse["listSearch"]>
 }
 
 /** Outcome of a lightweight reachability probe — unlike `query()`, this DOES
  *  distinguish success from failure (status/diagnostic reporting needs that
  *  distinction; a real search query deliberately does not expose it). */
+export class HistorySearchUdsError extends Error {
+  readonly code?: "invalid-cursor"
+
+  constructor(message: string, code?: "invalid-cursor") {
+    super(message)
+    this.name = "HistorySearchUdsError"
+    this.code = code
+  }
+}
+
 export interface HistorySearchPingResult {
   reachable: boolean
   latencyMs: number
@@ -146,19 +161,20 @@ export function createHistorySearchUdsClient(options: HistorySearchUdsClientOpti
 
   async function getTailStatus(): Promise<HistorySearchWireStatus["status"]> {
     const reply = await sendRequest(options.socketPath, { type: "status", query: "", operationKind: undefined, limit: 0 }, connectTimeoutMs, queryTimeoutMs)
-    if (!isWireStatus(reply)) throw new Error("[history-search-uds] expected a status reply, got a search response")
+    if (!isWireStatus(reply)) throw new Error("[history-search-uds] expected a status reply, got a different response")
     return reply.status
   }
 
-  return { query, getTailStatus }
+  async function listSearch(request: Omit<HistorySearchListRequest, "type">): Promise<HistorySearchListResponse["listSearch"]> {
+    const reply = await sendRequest(options.socketPath, { type: "list-search", ...request }, connectTimeoutMs, queryTimeoutMs)
+    if (!isWireListSearch(reply)) throw new Error("[history-search-uds] expected a list-search reply, got a different response")
+    return reply.listSearch
+  }
+
+  return { query, getTailStatus, listSearch }
 }
 
-interface WireRequestInput {
-  type?: "status"
-  query: string
-  operationKind: string | undefined
-  limit: number
-}
+type WireRequestInput = { type?: "status"; query: string; operationKind: string | undefined; limit: number } | HistorySearchListRequest
 
 /** Send one request over a fresh connection and resolve with the DECODED reply
  *  (either a search response or a status response -- callers narrow via
@@ -170,7 +186,7 @@ function sendRequest(
   request: WireRequestInput,
   connectTimeoutMs: number,
   queryTimeoutMs: number,
-): Promise<HistorySearchWireResponse | HistorySearchWireStatus> {
+): Promise<HistorySearchWireResponse | HistorySearchListResponse | HistorySearchWireStatus> {
   return new Promise((resolve, reject) => {
     // UNCONNECTED socket — `.connect()` is called LAST, only after every listener
     // (error sink, real error, connect, data, close, end) is armed. `net.connect()`
@@ -187,7 +203,7 @@ function sendRequest(
     let queryTimer: ReturnType<typeof setTimeout> | undefined
     const decoder = new FrameDecoder()
 
-    const finish = (value: HistorySearchWireResponse | HistorySearchWireStatus | Error): void => {
+    const finish = (value: HistorySearchWireResponse | HistorySearchListResponse | HistorySearchWireStatus | Error): void => {
       if (settled) return
       settled = true
       clearTimeout(connectTimer)
@@ -224,10 +240,10 @@ function sendRequest(
       if (replies.length === 0) return
       const reply = replies[0]
       if (isWireError(reply)) {
-        finish(new Error(`[history-search-uds] sidecar error: ${reply.error}`))
+        finish(new HistorySearchUdsError(`[history-search-uds] sidecar error: ${reply.error}`, reply.code))
         return
       }
-      finish(reply as HistorySearchWireResponse | HistorySearchWireStatus)
+      finish(reply as HistorySearchWireResponse | HistorySearchListResponse | HistorySearchWireStatus)
     })
 
     socket.on("close", () => finish(new Error("[history-search-uds] connection closed before a response arrived")))
