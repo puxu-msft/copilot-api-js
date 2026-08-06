@@ -1,14 +1,14 @@
 # NGHTTP2_CANCEL 系列交接
 
-> **状态：草稿·未评审**
+> **状态：已评审·交接定稿**
 >
 > **核验基线：** 2026-08-06T20:56:17Z 首次读取本地 `master` 为 `fa2bfd2d902af444517b2fed1a44428c8bb47367`；成稿前刷新为 `17a7f612ba2cfda5c4c212555643b8626eb101d0`，提交时间 2026-08-06T20:56:03+00:00。复现：`git -C /home/xp/src/copilot-api-js rev-parse refs/heads/master` 与 `git -C /home/xp/src/copilot-api-js show -s --format=%cI refs/heads/master`。`c23ed804`、`fa2bfd2d`、`17a7f612` 均在当前 `master` ancestry；Supporting evidence 的代码评审与运行探针锚定 `fa2bfd2d`，`fa2bfd2d..17a7f612` 是否改变其事实结论未在本任务中重新调查，标为 unresolved，接手第一步必须核对。
 >
-> **分支与 worktree：** `fa2bfd2d` 核账时，成果分支 `nghttp2-history-fixes` 位于 `/home/xp/src/copilot-api-js/.worktree/nghttp2-history-fixes`，tip `50941d32fad621395f66d54b35ee837bbbd93598`；承接分支 `nghttp2-resume` 位于 `/home/xp/src/copilot-api-js/.worktree/nghttp2-resume`，tip `c23ed8044e47b3313f74d4fd8d7e4627e0352567`；二者均为当时 `master` 的祖先且相对 `master` 无增量。复现：`git merge-base --is-ancestor <tip> master` 与 `git diff --quiet master...<branch>`。本交接编写 worktree 为 `/home/xp/src/copilot-api-js/.worktree/agent-adfcf471909fc141b`，分支 `agent-adfcf471909fc141b`，基线 `2c8b3d009f6b85c19553431a8a2ad50f3da7d83f`；只写 job tmp，不修改仓库。成稿时 current repo 是 `/home/xp/src/copilot-api-js`；分支 tip 与差异必须现场刷新。
+> **分支与 worktree：** `fa2bfd2d` 核账时，成果分支 `nghttp2-history-fixes` 位于 `/home/xp/src/copilot-api-js/.worktree/nghttp2-history-fixes`，tip `50941d32fad621395f66d54b35ee837bbbd93598`；承接分支 `nghttp2-resume` 位于 `/home/xp/src/copilot-api-js/.worktree/nghttp2-resume`，tip `c23ed8044e47b3313f74d4fd8d7e4627e0352567`；二者均为当时 `master` 的祖先且相对 `master` 无增量。复现：`git merge-base --is-ancestor <tip> master` 与 `git diff --quiet master...<branch>`。初稿由 `0840b929b0d0494b64c2a9ec532d0e859b159d14` 提交；`/home/xp/src/copilot-api-js/.worktree/agent-adfcf471909fc141b` 及其基线只属于历史写作 provenance，不代表接手现场。接手时必须刷新分支 tip、差异与运行状态，不得把本文历史基线当 current master。
 >
 > **未提交 WIP：** 只作指针，不在本文复制易腐清单。接手时分别运行 `git -C /home/xp/src/copilot-api-js status --short`、`git -C /home/xp/src/copilot-api-js/.worktree/nghttp2-resume status --short`，按路径与 hunk 确认归属；不得覆盖、还原、stage 或提交 peer WIP。2026-08-06 运行实例自报 `gitDirty=true`，故运行字节不能等同于 commit tree；当前脏文件明细为 TBD，必须由接手者现场重取。
 
-**阅读顺序：** 先读本文，再读计划的“实施状态”、A4 与 Phase B（`/home/xp/src/copilot-api-js/docs/plan/2026-08-06-history-read-path-and-h2-diagnostics.md`）；随后按问题读取 `/home/xp/src/copilot-api-js/docs/DESIGN.md` 的 transport／History 活架构、`/home/xp/src/copilot-api-js/docs/history.md` 的 History 契约、`/home/xp/src/copilot-api-js/docs/API.md` 的 `/api/status` 与 History REST 契约。计划是阶段契约 SSOT，本文只交接状态、证据、冲突与开工顺序。
+**阅读顺序：** 第一入口是仓库内本文件及同目录 `KICKOFF.md`；再读计划的“实施状态”、A4 与 Phase B（`../2026-08-06-history-read-path-and-h2-diagnostics.md`），随后按问题读取 `../../DESIGN.md` 的 transport／History 活架构、`../../history.md` 的 History 契约、`../../API.md` 的 `/api/status` 与 History REST 契约。计划是阶段契约 SSOT，本文只交接状态、证据、冲突与开工顺序。
 
 **系列承接链：** `4f1f3be9-79eb-4cf1-8185-4ebc1bfd5c79` 完成故障分型并启动 A1/A2，因 context overflow 交给 `2a1071f7-25a6-4c5e-8675-c7ffde1138ff`；后者完成 A2 到 `50941d32`，因 context overflow 交给 `174f2b81-cab9-4415-a3b3-ef61f8033c2a`；后者整合分支并实现 A3 大部，因 context overflow 交给 `2684f077-d2ec-4112-9456-3371f8cb7f9d`；最后一会话提交并合入 A3、收到 `fa2bfd2d` 评审结论，并回到尚未实施的 CANCEL transport 主线。会话数量为 4，口径是 job 名或 transcript title 命中完整系列名；复现命令与排除项见 Supporting evidence 的 `session-inventory.md`。
 
@@ -23,7 +23,154 @@
 
 **Agent dispatch packet：** 新会话主会话拥有编排权。每次分派 agent 时必须逐项填写：任务边界；相关 session IDs；transcript／job／tasks 绝对路径；repo 与目标 worktree；base commit 与 target commit 的 full SHA；必读 Supporting evidence；已有结论及“禁止重查”的范围；允许写入的精确路径；期望验收输出、正控、证伪和报告落盘路径。缺字段必须写 `TBD`，不得让 agent 自猜路径、状态或调查范围。对当前任务，默认禁止重复考古四个会话、重复核账 A1–A3 已落 commits、或把 A4 当作旁支未合并；只有刷新 `17a7f612` 相对 `fa2bfd2d` 的增量与执行未闭合任务属于新调查。
 
-**Supporting evidence：** 以下 job tmp 文件是本交接的逐项证据，后续建议原样归档进仓库同一交接目录，文件名分别为 `session-inventory.md`、`completed-detour.md`、`mainline-evidence.md`、`handover-structure.md`、`review-core-a3.md`、`review-docs-layered-delivery.md`。归档前不得把 point-in-time review 改写成现状结论；应另写 disposition，并让报告保留原 commit／时间锚。当前来源绝对路径依次为 `/home/xp/.claude/jobs/2684f077/tmp/nghttp2-series-session-inventory.md`、`/home/xp/.claude/jobs/2684f077/tmp/nghttp2-series-completed-detour.md`、`/home/xp/.claude/jobs/2684f077/tmp/nghttp2-series-mainline-evidence.md`、`/home/xp/.claude/jobs/2684f077/tmp/nghttp2-series-handover-structure.md`、`/home/xp/.claude/jobs/2684f077/tmp/review-core-a3.md`、`/home/xp/.claude/jobs/2684f077/tmp/review-docs-layered-delivery.md`。
+**Canonical 入口与证据集：** `0840b929b0d0494b64c2a9ec532d0e859b159d14` 锚定当时初稿目录中的 8 个文件：`HANDOVER.md`、`KICKOFF.md`、`session-inventory.md`、`completed-detour.md`、`mainline-evidence.md`、`handover-structure.md`、`review-core-a3.md`、`review-docs-layered-delivery.md`。冻结的 26 项 blob 清单由 `evidence-manifest.sha256` 持有；manifest 不列自身或后续 R10；双 R9 以其原始旧 manifest 声明作为不可改写历史内容进入新 manifest，不构成对新 manifest 的引用。首轮至 R9 是不可改写的历史发现链；R7 证明终态化前技术机制双绿，R8 factual 为 0 blocker／0 major，而 R8 successor 发现 manifest 缺口；R9 继续发现 FINAL 对象类型与全文机器字段缺口。最终收口由同一 `FINAL_COMMIT` 中、不进入 manifest 的 `review-factual-r10.md` 与 `review-successor-r10.md` 双绿证明。job tmp、job state、tasks 与 transcript 只保留为历史 provenance 或必要时深挖的恢复坐标，不是后继执行的必需入口或状态真相源。point-in-time review 保留原 commit／时间锚；后续处置另写 disposition，不改 Supporting evidence 或 review 覆写历史结论。
+
+## 最终提交证据门
+
+本交接的状态头描述文档定稿状态；**提交有效性以本门在调用方明确指定的 `FINAL_COMMIT` 上通过为准**。不得默认使用 `HEAD`，不得从 checkout 目录扫描或反推证据清单。R7 是终态化前技术机制双绿；R8 是终态状态审，其中 factual 为 0 blocker／0 major，successor 发现冻结 manifest 缺口；R9 发现 FINAL 对象类型门与全文机器字段门仍有缺口；首轮至 R9 均为不可改写的历史发现链。R10 只复核修订后的 manifest／gate，必须 factual 与 successor 双绿后才算最终收口。
+
+R10 两份报告顶部必须各自包含以下机器字段，且 manifest hash 取自同一 `FINAL_COMMIT` 中的 manifest blob：
+
+```text
+- evidence-manifest-sha256: <64hex>
+- verdict: 0 blocker / 0 major
+```
+
+调用方显式设置完整 40 位 commit 后，原样运行以下只读 gate：
+
+```bash
+set -euo pipefail
+: "${FINAL_COMMIT:?set FINAL_COMMIT to the exact 40-hex final commit}"
+MANIFEST_PATH='docs/plan/2026-08-06-nghttp2-cancel-series/evidence-manifest.sha256'
+python3 - "$FINAL_COMMIT" "$MANIFEST_PATH" <<'PY_EVIDENCE_GATE'
+import hashlib
+import re
+import subprocess
+import sys
+
+final_commit, manifest_path = sys.argv[1:]
+if not re.fullmatch(r"[0-9a-f]{40}", final_commit):
+    raise SystemExit("FINAL_COMMIT must be an explicit lowercase 40-hex commit")
+
+def git_bytes(*args: str) -> bytes:
+    try:
+        return subprocess.check_output(["git", *args], stderr=subprocess.PIPE)
+    except subprocess.CalledProcessError as exc:
+        detail = exc.stderr.decode("utf-8", "replace").strip()
+        raise SystemExit(f"git {' '.join(args)} failed: {detail}") from exc
+
+def git_text(*args: str) -> str:
+    return git_bytes(*args).decode("utf-8", "strict").strip()
+
+# A 40-hex tree/blob/tag can still serve <object>:<path>; require the exact input object itself to be a commit before reading any evidence blob.
+if git_text("cat-file", "-t", final_commit) != "commit":
+    raise SystemExit("FINAL_COMMIT object type is not commit")
+peeled_commit = git_text("rev-parse", f"{final_commit}^{{commit}}")
+if peeled_commit != final_commit:
+    raise SystemExit(f"FINAL_COMMIT does not resolve exactly to itself as a commit: {peeled_commit}")
+
+expected_paths = (
+    'docs/plan/2026-08-06-nghttp2-cancel-series/HANDOVER.md',
+    'docs/plan/2026-08-06-nghttp2-cancel-series/KICKOFF.md',
+    'docs/plan/2026-08-06-nghttp2-cancel-series/session-inventory.md',
+    'docs/plan/2026-08-06-nghttp2-cancel-series/completed-detour.md',
+    'docs/plan/2026-08-06-nghttp2-cancel-series/mainline-evidence.md',
+    'docs/plan/2026-08-06-nghttp2-cancel-series/handover-structure.md',
+    'docs/plan/2026-08-06-nghttp2-cancel-series/review-core-a3.md',
+    'docs/plan/2026-08-06-nghttp2-cancel-series/review-docs-layered-delivery.md',
+    'docs/plan/2026-08-06-nghttp2-cancel-series/review-factual.md',
+    'docs/plan/2026-08-06-nghttp2-cancel-series/review-successor.md',
+    'docs/plan/2026-08-06-nghttp2-cancel-series/review-factual-r2.md',
+    'docs/plan/2026-08-06-nghttp2-cancel-series/review-factual-r3.md',
+    'docs/plan/2026-08-06-nghttp2-cancel-series/review-factual-r4.md',
+    'docs/plan/2026-08-06-nghttp2-cancel-series/review-factual-r5.md',
+    'docs/plan/2026-08-06-nghttp2-cancel-series/review-factual-r6.md',
+    'docs/plan/2026-08-06-nghttp2-cancel-series/review-factual-r7.md',
+    'docs/plan/2026-08-06-nghttp2-cancel-series/review-factual-r8.md',
+    'docs/plan/2026-08-06-nghttp2-cancel-series/review-successor-r2.md',
+    'docs/plan/2026-08-06-nghttp2-cancel-series/review-successor-r3.md',
+    'docs/plan/2026-08-06-nghttp2-cancel-series/review-successor-r4.md',
+    'docs/plan/2026-08-06-nghttp2-cancel-series/review-successor-r5.md',
+    'docs/plan/2026-08-06-nghttp2-cancel-series/review-successor-r6.md',
+    'docs/plan/2026-08-06-nghttp2-cancel-series/review-successor-r7.md',
+    'docs/plan/2026-08-06-nghttp2-cancel-series/review-successor-r8.md',
+    'docs/plan/2026-08-06-nghttp2-cancel-series/review-factual-r9.md',
+    'docs/plan/2026-08-06-nghttp2-cancel-series/review-successor-r9.md',
+)
+expected_set = set(expected_paths)
+if len(expected_paths) != 26 or len(expected_set) != 26:
+    raise SystemExit("internal evidence path set is not exactly 26 unique literals")
+
+def blob(path: str) -> bytes:
+    try:
+        return git_bytes("show", f"{final_commit}:{path}")
+    except SystemExit as exc:
+        raise SystemExit(f"missing evidence in FINAL_COMMIT: {path}") from exc
+
+manifest_bytes = blob(manifest_path)
+manifest_sha256 = hashlib.sha256(manifest_bytes).hexdigest()
+try:
+    manifest_lines = manifest_bytes.decode("utf-8").splitlines()
+except UnicodeDecodeError as exc:
+    raise SystemExit("evidence manifest is not UTF-8") from exc
+if len(manifest_lines) != 26:
+    raise SystemExit(f"manifest must contain exactly 26 lines, got {len(manifest_lines)}")
+entries = {}
+line_re = re.compile(r"^([0-9a-f]{64})  ([^\r\n]+)$")
+for line in manifest_lines:
+    match = line_re.fullmatch(line)
+    if not match:
+        raise SystemExit(f"invalid sha256sum manifest line: {line!r}")
+    digest, path = match.groups()
+    if path in entries:
+        raise SystemExit(f"duplicate manifest path: {path}")
+    entries[path] = digest
+if set(entries) != expected_set:
+    missing = sorted(expected_set - set(entries))
+    extra = sorted(set(entries) - expected_set)
+    raise SystemExit(f"manifest literal set mismatch; missing={missing}, extra={extra}")
+for path in expected_paths:
+    actual = hashlib.sha256(blob(path)).hexdigest()
+    if actual != entries[path]:
+        raise SystemExit(f"blob hash mismatch for {path}: manifest={entries[path]}, actual={actual}")
+
+r10_paths = (
+    'docs/plan/2026-08-06-nghttp2-cancel-series/review-factual-r10.md',
+    'docs/plan/2026-08-06-nghttp2-cancel-series/review-successor-r10.md',
+)
+manifest_prefix = "- evidence-manifest-sha256:"
+manifest_field = re.compile(r"^- evidence-manifest-sha256: ([0-9a-f]{64})$")
+verdict_prefix = "- verdict:"
+verdict_field = "- verdict: 0 blocker / 0 major"
+for path in r10_paths:
+    try:
+        report_text = blob(path).decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise SystemExit(f"R10 report is not UTF-8: {path}") from exc
+    lines = report_text.splitlines()
+    manifest_lines = [(index, line) for index, line in enumerate(lines) if line.startswith(manifest_prefix)]
+    verdict_lines = [(index, line) for index, line in enumerate(lines) if line.startswith(verdict_prefix)]
+    if len(manifest_lines) != 1:
+        raise SystemExit(f"{path} must contain exactly one full-file manifest field")
+    manifest_index, manifest_line = manifest_lines[0]
+    manifest_match = manifest_field.fullmatch(manifest_line)
+    if manifest_index >= 20 or manifest_match is None or manifest_match.group(1) != manifest_sha256:
+        raise SystemExit(f"{path} manifest field must be exact, unique, and within the first 20 lines")
+    if len(verdict_lines) != 1:
+        raise SystemExit(f"{path} must contain exactly one full-file verdict field")
+    verdict_index, verdict_line = verdict_lines[0]
+    if verdict_index >= 20 or verdict_line != verdict_field:
+        raise SystemExit(f"{path} verdict field must be exact, unique, and within the first 20 lines")
+    findings = [line for line in lines if line.strip().lower().startswith(("[blocker]", "[major]"))]
+    if findings:
+        raise SystemExit(f"{path} contains blocker/major finding markers: {findings}")
+print(f"FINAL_COMMIT={final_commit}")
+print(f"evidence_manifest_sha256={manifest_sha256}")
+print("evidence_paths=26")
+print("r10_verdicts=2x(0 blocker / 0 major)")
+PY_EVIDENCE_GATE
+```
+
 
 # A．偏离 CANCEL 主线但已完成的内容状态
 
@@ -77,11 +224,17 @@ A3 尾项必须作为独立工作单元处置，不得混写成 CANCEL transport
 1. **传输层核心修复没有实施，不是“已实现但未合并”。** `nghttp2-history-fixes`、`nghttp2-resume`、`h2-observability-block-delivery-docs` 三个相关 branch tip 均为 `master@fa2bfd2d` 祖先且相对 master 无增量；自计划提交后，`master` 的 transport／transport-reason／transport tests 无 A4 相关提交。复现命令与搜索范围见 `mainline-evidence.md` §8 与 `completed-detour.md` 的实际核账命令。
 2. **冻结调查窗口确有 23 条 `NGHTTP2_CANCEL`。** population 是 `2026-08-05T03:28:10.512Z..2026-08-06T03:28:10.512Z` 的 3038 个 GPT 请求，其中 57 失败、23 条为该错误；该数字来自 `b6fb0947` 计划记录，本交接未重算。当前 strict History search 返回 503，因此不能把旧数字写成当前运行率。
 3. **现有 transport 已有 TCP keepalive、15 秒 H2 PING、N=1 容量池及 REFUSED／pre-response retry，但它们没有消灭全部 CANCEL。** 运行 PID `3575452` 的 `/api/status` 与 `ss` 在 2026-08-06 探测到 `tcpKeepaliveProbeDelayMs=15000`、`h2PingIntervalMs=15000` 与内核 keepalive timer；新鲜样本 `req_1786048981227_99` 在约 162.6 秒、6031 个 upstream SSE events 后仍报 CANCEL，最后 token 到终止约 121ms。该样本锚定运行指纹 `gitSha=fa2bfd2d`、`gitDirty=true`；只回答“现有机制未消灭全部 CANCEL”，不回答发起方或根因。复跑查询与字段见 `mainline-evidence.md` §8。
-4. **样本至少有活动输出后立即 CANCEL 与活动后长尾静默 CANCEL 两型。** 另两条旧一代样本分别有 3509／5013 events，末 token 到终止约 107.9／114.2 秒。对象、运行代与查询见 `mainline-evidence.md` §3；这组数字不能外推两型占比。
+4. **两条旧一代 CANCEL 只保留为不可独立复跑的历史线索。** 既有记录称它们分别有 3509／5013 events，末 token 到终止约 107.9／114.2 秒，但 Supporting evidence 没有保存稳定 entry/request ID，无法把通用查询模板绑定到具体对象。因此这些数字不是可复跑证据，不能独立承担“两型存在”的结论，也不得从时间相关性推导 peer RST、session lifecycle、event-loop stall 或其他根因。
 5. **4141 仍有间歇性长 stall／排队，但 HTTP 延迟不能单独归因。** 同一 PID 的 `/health` 曾约 1.94～1.98ms，收尾复验一次为 8.691s；`/api/status` 曾约 0.340～0.741s，也曾在 10s 内零字节超时后恢复。population 是该报告记录的点探针，不是持续基准；它证明间歇性失活存在，不证明是 History、event-loop 或 upstream I/O。
 6. **当前诊断不能区分 peer CANCEL 与 local abort。** 本地 pre-response abort、post-response signal abort 与 ReadableStream cancel 都会 `req.close(NGHTTP2_CANCEL)`；session 无稳定 ID，GOAWAY 丢 code／lastStreamID／opaqueData，PING ACK 是 NOOP，stream 诊断未按 explicit dispatch 持久化。源码锚点与 final file:line 见 `mainline-evidence.md` §4、§8。
 
-## B.2 已排除与仍未决线索
+## B.2 并行只读证据工作：被动查找新的可复跑 CANCEL 样本
+
+该工作由 KICKOFF 的只读 evidence agent 执行，可与 A4 实现并行；没有自然产生的新 CANCEL **不阻断 A4**。agent 只被动读取 4141 History，不主动制造 4141 流量，不修改、停止或重启 4141。发现样本时，报告稳定 History entry ID、request ID、observedAt、请求开始与终止时间、请求／解析模型、attempt 序号、终止形态、运行 PID 与代码指纹、读取字段路径，以及可直接重复执行的完整查询命令。若 History 搜索端点不可用，可用只读列表／详情端点定位，但最终命令必须含具体 ID，不能保留 `<id>` 占位符；没有新样本时如实报告 `none observed`，不视为 agent 失败。
+
+新自然样本是 Phase B 因果裁决前置，不是确定性 A4 h2c 双控的前置。进入 Phase B 前，另一执行者必须能仅凭报告的命令与 ID 重读同一 entry／attempt；只有 PID、时间窗口、事件数或通用模板均不满足。任何自然样本的时序都不能直接写成根因。
+
+## B.3 已排除与仍未决线索
 
 **已排除的全称解释：** 不是所有 CANCEL 都由 TCP keepalive 未生效、单 session 多流 blast radius 或全程零帧静默造成；REFUSED 未重试也不是当前缺口。证据分别是内核 timer、新鲜 N=1 形态下 CANCEL、6031-event 样本与当前 retry 分类。这里排除的是全称，不是排除这些机制对部分样本有贡献。
 
@@ -89,7 +242,7 @@ A3 尾项必须作为独立工作单元处置，不得混写成 CANCEL transport
 
 PING ACK 即便正常，也只证明对端 HTTP/2 connection endpoint 回帧；不能证明 DATA stream 可写、flow-control 未耗尽、上游应用健康或随后不会 GOAWAY／RST。当前 ACK callback 被丢弃，所以连这一有限结论也还没有 per-session 时序证据。
 
-## B.3 硬 gate 与环境禁区
+## B.4 硬 gate 与环境禁区
 
 - **绝不 kill、停止或重启用户的 4141 主服务器。** 不用 `kill`／`pkill`／`killall`，不做任何会终止它的操作。测试服务器只用非 4141 端口，并只按 PID 清理自己启动的实例。
 - **先证明运行代码身份。** 接手时记录 listener PID、`/proc/<pid>/{cmdline,cwd,cgroup}`、启动时间、进程持有配置、History detail 的 `process.gitSha/gitDirty` 或等价 build 指纹。配置文件、`is-active`、branch tip 与文档声明不能替代运行态身份。若 `gitDirty=true`，只能写“从该 HEAD 的脏树启动”，不能断言运行字节等于 commit tree。
@@ -97,61 +250,27 @@ PING ACK 即便正常，也只证明对端 HTTP/2 connection endpoint 回帧；�
 - **真实迁移、主库写入、备份覆盖与维护窗口需用户逐项授权。** 性能、迁移与协议实验只用临时副本／非 4141 隔离实例。
 - **每个 correctness gate 同时做正确样本与目标缺陷 mutation。** 绿色结果若未证明命中目标路径，不得作为完成证据。
 
-## B.4 下一步：先 A4，再 Phase B
+## B.5 下一步：先 A4，再 Phase B
 
-### B.4.1 接手现场复验
+### B.5.1 现场复验与并行证据工作
 
-动作：刷新 `master` full SHA/date、branch/worktree、ancestry、各树 WIP 归属，再读取 4141 listener 与运行代码身份；把与本文不一致处标为新事实，不覆盖旧证据。
+先执行 B.4 的 Git／WIP／运行身份 gate。身份与归属闭合后，A4 可直接依靠正式计划的确定性 h2c 双控开工；不要求先出现自然 CANCEL。B.2 的只读 evidence agent 与 A4 并行运行；没有新样本只记 `none observed`。只有 Phase B 因果裁决仍要求至少一条带稳定 ID 与完整只读命令的新自然 CANCEL。
 
-验收：产出一条带 observedAt、PID、full SHA、dirty 状态、配置来源和复跑命令的现场记录；明确本文哪些易腐字段已过期。
+### B.5.2 A4 canonical diagnostics
 
-证伪：PID 或运行指纹拿不到、`gitDirty=true` 却仍声称字节等于 commit、或 ancestry/WIP 未查就开始改文件。
+**目标：** 让最终持久 History 能按 explicit dispatch 区分 stream／session／local-abort，并保留裁决 CANCEL 所需的 canonical 诊断。**当前缺口：** A4 尚未实施，现有 History 无法回答取消发起方或 session 关联。实现范围、schema、ownership、quiescence 与完整双控只以正式计划 [A4. H2 canonical transport diagnostics](../2026-08-06-history-read-path-and-h2-diagnostics.md#A4-H2-canonical-transport-diagnostics) 为准；本文不维护步骤级实现副本。
 
-正控：用当前 `master` full SHA 解析成功作为查询链可用的正确样本；再用一个确定不存在的 SHA／PID 做只读查询，确认探针会失败而不是静默跳过。
+验收边界：最终持久 record 是 oracle；peer CANCEL 与 local abort 可机械区分；session 事件不误归 sibling；诊断不改变 transport 行为；目标缺陷 mutation 转红、正确样本保持绿；独立 reviewer／verifier 与 merged-state review 在同一最终 commit 上闭合。HTTP/2 注入按 Node 官方语义：对端 `stream.close(NGHTTP2_CANCEL)` 发送 peer `RST_STREAM(CANCEL)`，本地 `req.close(NGHTTP2_CANCEL)` 注入 local abort，并核对两端 `rstCode`／事件序列；`stream.destroy(error)` 未预设 code 时属于 INTERNAL_ERROR／destruction 分支，不用于制造 peer CANCEL。
 
-第一步命令：
+### B.5.3 Phase B 预注册缺口与启动门
 
-```bash
-git -C /home/xp/src/copilot-api-js rev-parse refs/heads/master
-git -C /home/xp/src/copilot-api-js show -s --format='%H %cI %s' refs/heads/master
-git -C /home/xp/src/copilot-api-js status --short
-git -C /home/xp/src/copilot-api-js worktree list --porcelain
-ss -ltnp 'sport = :4141'
-```
+Phase B 的分型、实验矩阵、执行顺序和裁决规则只以正式计划 [Phase B — NGHTTP2_CANCEL 根因实验与缓解裁决](../2026-08-06-history-read-path-and-h2-diagnostics.md#Phase-B--NGHTTP2_CANCEL-根因实验与缓解裁决) 为准。A4 合并态未闭合、没有新可复跑样本、或预注册缺口未关闭时，不启动用于因果裁决的实验，也不调整产品行为。
 
-### B.4.2 实施 A4 canonical diagnostics，不改 transport 行为
+现有正式计划尚不足以防止看见结果后改变统计口径。每轮实验 artifact carrier 固定为 `docs/plan/2026-08-06-nghttp2-cancel-series/phase-b/<ROUND_ID>/`，其中 `preregistration.md` 是冻结预注册、`data-manifest.json` 绑定该轮原始数据位置与 digest、`results.md` 保存按预注册方法得到的结果；完整实验契约仍只在正式计划。首次实验前，冻结计划或用户裁决必须补齐并落盘：每个 cell 的目标有效样本量与最大尝试量；主／次指标及分母；CANCEL 分类规则；fresh／pooled 与开关矩阵；置信区间或比较方法；排除规则；超时预算；提前停止／继续／升级触发条件。数值不得由交接文档发明；无人裁决的值保持 TBD，任一 TBD 存在即不得采集裁决数据。正式计划已有的字段只引用，不在预注册或本文重述。
 
-动作：按计划 A4 传递必填 `DispatchHandle`，建立有界 `H2SessionDiagnostic` 与按 explicit dispatch 归属的 `H2StreamDiagnostic`，记录 session identity、RST、GOAWAY、local cancellation provenance、PING seq／ACK／RTT、stream phase 与 settle snapshot，并通过 quiescence barrier 落最终 canonical Attempt/History。不得用 legacy `currentAttempt` 或日志字符串代替归属。
+验收边界：预注册 artifact 早于数据采集并锚定 full commit、配置、运行身份和冻结时间；独立 verifier 不看结果即可判断纳入、分母、分类、比较和停止／升级；结果出现后任何口径修改都开启新一轮预注册，旧结果降为探索性证据。任一字段事后修改、失败尝试被静默排除、secondary metric 替换 primary、正控不咬或负控制造差异，均使该轮因果结论无效。
 
-验收：从最终持久 History record 读取诊断，能区分 peer CANCEL 与 local `req.close(CANCEL)`，GOAWAY/session close 只关联受影响 dispatch，PING ACK 与 RTT 有独立时序；正常 close 与 force-dispose 都 exactly-once release slot，sealed 后迟到 callback 不再写 canonical recorder。完整契约以计划 A4 为 SSOT。
-
-证伪：删除／错绑 dispatch handle 后测试仍绿；local abort 与 peer RST 仍产出同一事实形状；任意 session 事件被复制给所有 sibling；只在内存 callback 看见而最终 History 缺失；timeout 后迟到 close 导致重复减 slot 或写 sealed recorder。
-
-正控：忠实 h2c fake 分别制造正常 end、peer CANCEL、local close(CANCEL)、REFUSED、GOAWAY、session destroy、丢 ACK、ACK 正常但 DATA stall，先确认每个正确样本映射到预期独立诊断；fake 要用真实 Node/Bun `node:http2` 事件序列校准，不能使用已知会假绿的 `stream.close(code)` 代替真实 RST 制造方式。
-
-### B.4.3 A4 独立验收与文档同步
-
-动作：按计划运行 transport/history diagnostic 目标测试、typecheck、lint、backend，并由独立 reviewer/verifier 做错误状态与正确状态双向验收；同步 `docs/API.md` 的加性 detail 字段、`docs/DESIGN.md` transport 活架构和 History schema carrier。报告与 disposition 分开保存。
-
-验收：最终同一 commit 上 0 blocker／0 major；API、DESIGN、History 与代码对账；mutation 能精确咬住 explicit ownership、ACK、barrier、listener fence、seal 顺序和 release primitive。
-
-证伪：评审仍有未处置 blocker/major、文档把 ACK 写成 stream 健康证明、或只跑 isolated callback 测试而没有最终持久 record oracle。
-
-正控：正常请求无 failure diagnostic 但有可关联 session snapshot，且 A4 不改变请求输出、retry、PING cadence 或 session lifecycle。
-
-### B.4.4 Phase B 分型与实验
-
-前置 gate：B.4.2 与 B.4.3 已闭合，并积累可按 explicit dispatch 归属的样本。否则保持诊断，不改行为。
-
-动作顺序：先校准 h2c fake；再在非 4141 固定负载实例做 PING 15s vs disabled；随后独立做 TCP keepalive 15s vs disabled，并用 `ss -tno` 作 L4 oracle；再做正常 vs 等价 History stall 注入、fresh-session-per-request vs pooled；最后才按 pre-content、mid-body pre/post committed block 分型评估 buffered／continuation 恢复。实验正文与“它没有证明什么”落 `exp/nghttp2-cancel/`。
-
-验收：每个数字带 population、命令、full commit、配置、运行身份，并由不同原理交叉验证；分型至少能机械区分 peer RST、session close／GOAWAY、local abort、starvation 与 clean EOF missing terminator；只按计划 B3 的裁决规则提出产品行为变化。
-
-证伪：同时改两个变量、用一次成功裁决、以 `/api/status` 配置值冒充 PING ACK、以 `ss` 冒充 stream 健康、或没有无重复／无丢失／完整终止符 oracle 就启用 mid-body retry。
-
-正控：固定一个已知健康的正常流，确认实验 harness 不把它误分成 CANCEL；再注入已知 peer CANCEL 与 local abort，确认分型和统计分别增加对应桶。
-
-## B.5 unresolved 与 TBD
+## B.6 unresolved 与 TBD
 
 - **unresolved：** A3 frozen filter spec 与当前实现的 `state`／`success` 语义冲突应以哪份已接受裁决为准。reviewer 指向 spec 的 AND 语义，代码与测试采用 precedence；接手者必须回 ADR／frozen spec／用户原话裁决，不能自行改文档迁就代码。
 - **unresolved：** “分层迭代原则必须下沉 skill”是否已有用户决定。只有 reviewer 证明载体缺失，尚无一手决策证据。
