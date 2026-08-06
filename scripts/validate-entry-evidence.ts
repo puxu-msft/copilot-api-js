@@ -292,12 +292,22 @@ function parseAggregateRows(raw: string): Array<{ ordinal: number; path: string;
   } catch {
     return undefined
   }
-  if (!value || typeof value !== "object" || Array.isArray(value) || !exactKeys(value as Record<string, unknown>, ["runs"]) || !Array.isArray((value as Record<string, unknown>).runs))
+  if (
+    !value ||
+    typeof value !== "object" ||
+    Array.isArray(value) ||
+    !exactKeys(value as Record<string, unknown>, ["runs"]) ||
+    !Array.isArray((value as Record<string, unknown>).runs)
+  )
     return undefined
   const rows = (value as { runs: unknown[] }).runs.map((row) => {
     if (!row || typeof row !== "object" || Array.isArray(row) || !exactKeys(row as Record<string, unknown>, ["ordinal", "path", "sha256"])) return undefined
     const entry = row as Record<string, unknown>
-    return Number.isSafeInteger(entry.ordinal) && (entry.ordinal as number) > 0 && typeof entry.path === "string" && path.isAbsolute(entry.path) && isSha(entry.sha256, 64)
+    return Number.isSafeInteger(entry.ordinal) &&
+      (entry.ordinal as number) > 0 &&
+      typeof entry.path === "string" &&
+      path.isAbsolute(entry.path) &&
+      isSha(entry.sha256, 64)
       ? { ordinal: entry.ordinal as number, path: entry.path, sha256: entry.sha256 }
       : undefined
   })
@@ -308,11 +318,20 @@ function uniqueAggregateRows(rows: Array<{ ordinal: number; path: string; sha256
   return new Set(rows.map((row) => row.ordinal)).size === rows.length && new Set(rows.map((row) => row.path)).size === rows.length
 }
 
-function sameAggregateRows(actual: Array<{ ordinal: number; path: string; sha256: string }>, expected: Array<{ ordinal: number; path: string; sha256: string }>): boolean {
+function sameAggregateRows(
+  actual: Array<{ ordinal: number; path: string; sha256: string }>,
+  expected: Array<{ ordinal: number; path: string; sha256: string }>,
+): boolean {
   const key = (row: { ordinal: number; path: string; sha256: string }) => `${row.ordinal}\0${row.path}\0${row.sha256}`
   const actualKeys = actual.map(key).sort((left, right) => Buffer.from(left).compare(Buffer.from(right)))
   const expectedKeys = expected.map(key).sort((left, right) => Buffer.from(left).compare(Buffer.from(right)))
-  return actual.length === 15 && expected.length === 15 && uniqueAggregateRows(actual) && uniqueAggregateRows(expected) && JSON.stringify(actualKeys) === JSON.stringify(expectedKeys)
+  return (
+    actual.length === 15 &&
+    expected.length === 15 &&
+    uniqueAggregateRows(actual) &&
+    uniqueAggregateRows(expected) &&
+    JSON.stringify(actualKeys) === JSON.stringify(expectedKeys)
+  )
 }
 
 function sameBytewiseStrings(left: string[], right: string[]): boolean {
@@ -326,7 +345,14 @@ function parseDiskManifest(raw: string): string[] | undefined {
   } catch {
     return undefined
   }
-  if (!value || typeof value !== "object" || Array.isArray(value) || !exactKeys(value as Record<string, unknown>, ["files"]) || !Array.isArray((value as Record<string, unknown>).files)) return undefined
+  if (
+    !value ||
+    typeof value !== "object" ||
+    Array.isArray(value) ||
+    !exactKeys(value as Record<string, unknown>, ["files"]) ||
+    !Array.isArray((value as Record<string, unknown>).files)
+  )
+    return undefined
   const files = (value as { files: unknown[] }).files
   return files.every((file) => typeof file === "string") ? (files as string[]) : undefined
 }
@@ -546,7 +572,13 @@ for (const run of manifest.runs as Array<Record<string, unknown>>) {
 function topLevelArtifact(label: string, artifact: unknown): { path: string; sha256: string } {
   if (!artifact || typeof artifact !== "object" || !exactKeys(artifact as Record<string, unknown>, ["path", "sha256"])) fail(10, `${label} hash mismatch`, 7)
   const value = artifact as Record<string, unknown>
-  if (typeof value.path !== "string" || !path.isAbsolute(value.path) || !isSha(value.sha256, 64) || !existsSync(value.path) || !hashMatches(value.path, value.sha256))
+  if (
+    typeof value.path !== "string" ||
+    !path.isAbsolute(value.path) ||
+    !isSha(value.sha256, 64) ||
+    !existsSync(value.path) ||
+    !hashMatches(value.path, value.sha256)
+  )
     fail(10, `${label} hash mismatch`, 7)
   return { path: value.path, sha256: value.sha256 }
 }
@@ -559,8 +591,14 @@ const runtimeAggregateRaw = readUtf8(runtimeAggregate.path)
 const skippedAggregateRaw = readUtf8(skippedAggregate.path)
 const runtimeRows = runtimeAggregateRaw === undefined ? undefined : parseAggregateRows(runtimeAggregateRaw)
 const skippedRows = skippedAggregateRaw === undefined ? undefined : parseAggregateRows(skippedAggregateRaw)
-const expectedRuntimeRows = (manifest.runs as Array<Record<string, unknown>>).map((run) => ({ ordinal: run.ordinal as number, ...(run.runtime_identity as { path: string; sha256: string }) }))
-const expectedSkippedRows = (manifest.runs as Array<Record<string, unknown>>).map((run) => ({ ordinal: run.ordinal as number, ...(run.skipped_multiset as { path: string; sha256: string }) }))
+const expectedRuntimeRows = (manifest.runs as Array<Record<string, unknown>>).map((run) => ({
+  ordinal: run.ordinal as number,
+  ...(run.runtime_identity as { path: string; sha256: string }),
+}))
+const expectedSkippedRows = (manifest.runs as Array<Record<string, unknown>>).map((run) => ({
+  ordinal: run.ordinal as number,
+  ...(run.skipped_multiset as { path: string; sha256: string }),
+}))
 if (
   diskFilesRaw === undefined ||
   parseDiskManifest(diskFilesRaw) === undefined ||

@@ -225,39 +225,6 @@ function createEv27EntryGraph(f: ReturnType<typeof fixture>): void {
   git(f.tree, ["checkout", "--detach", f.entry])
 }
 
-function createEntryWithUnexpectedRuntimeImport(f: ReturnType<typeof fixture>): void {
-  const manifestPath = path.join(f.out, "evidence-manifest.json")
-  const validatorPath = path.join(f.tree, "scripts/validate-entry-evidence.ts")
-  git(f.tree, ["checkout", "master"])
-  writeFileSync(path.join(f.tree, "scripts/unexpected-runtime.ts"), "export {}\n")
-  writeFileSync(
-    validatorPath,
-    readFileSync(validatorPath, "utf8").replace(
-      'const junit = await import("./parallel-test-artifacts")',
-      'const junit = await import("./parallel-test-artifacts")\n  await import("./unexpected-runtime")',
-    ),
-  )
-  git(f.tree, ["add", "scripts"])
-  git(f.tree, ["commit", "-m", "entry with unexpected runtime import"])
-  f.entry = git(f.tree, ["rev-parse", "HEAD"])
-  const manifest = JSON.parse(readFileSync(manifestPath, "utf8"))
-  manifest.measured_sha = f.entry
-  for (const run of manifest.runs) {
-    const log = run.log_path as string
-    writeFileSync(log, readFileSync(log, "utf8").replace(/^measured_sha=.*$/m, `measured_sha=${f.entry}`))
-    run.log_sha256 = hash(log)
-  }
-  json(manifestPath, manifest)
-  writeFileSync(
-    path.join(f.tree, HANDOVER),
-    `<!-- entry-evidence-pointer:v1 -->\nentry_sha=${f.entry}\nmanifest_path=${manifestPath}\nmanifest_sha256=${hash(manifestPath)}\narchive_path=\n<!-- /entry-evidence-pointer:v1 -->\n`,
-  )
-  git(f.tree, ["add", HANDOVER])
-  git(f.tree, ["commit", "-m", "pointer for unexpected runtime import"])
-  f.pointer = git(f.tree, ["rev-parse", "HEAD"])
-  git(f.tree, ["checkout", "--detach", f.entry])
-}
-
 function createEntryWithDependencyPathMutation(f: ReturnType<typeof fixture>, entryPath: string): void {
   const manifestPath = path.join(f.out, "evidence-manifest.json")
   const validatorPath = path.join(f.tree, "scripts/validate-entry-evidence.ts")
@@ -447,8 +414,13 @@ describe("entry evidence validator C7-C9", () => {
 
   test("rejects same-line second dynamic and static runtime imports", () => {
     for (const mutate of [
-      (source: string) => source.replace('const junit = await import("./parallel-test-artifacts")', 'const junit = await import("./parallel-test-artifacts"); await import("./unexpected-runtime")'),
-      (source: string) => source.replace('import { createHash } from "node:crypto"', 'import { createHash } from "node:crypto"; import "./entry-evidence-receipt"'),
+      (source: string) =>
+        source.replace(
+          'const junit = await import("./parallel-test-artifacts")',
+          'const junit = await import("./parallel-test-artifacts"); await import("./unexpected-runtime")',
+        ),
+      (source: string) =>
+        source.replace('import { createHash } from "node:crypto"', 'import { createHash } from "node:crypto"; import "./entry-evidence-receipt"'),
     ]) {
       const drift = fixture()
       try {
@@ -864,7 +836,10 @@ describe("entry evidence validator C7-C9", () => {
         const replacement = path.join(nested, basename)
         writeFileSync(replacement, readFileSync(source))
         mutateManifest(f, (manifest) => {
-          const artifact = field === "junit_artifacts" ? ((manifest.runs as Array<Record<string, unknown>>)[0][field] as Array<Record<string, string>>)[0] : ((manifest.runs as Array<Record<string, unknown>>)[0][field] as Record<string, string>)
+          const artifact =
+            field === "junit_artifacts"
+              ? ((manifest.runs as Array<Record<string, unknown>>)[0][field] as Array<Record<string, string>>)[0]
+              : ((manifest.runs as Array<Record<string, unknown>>)[0][field] as Record<string, string>)
           artifact.path = replacement
           artifact.sha256 = hash(replacement)
         })
@@ -932,7 +907,12 @@ describe("entry evidence validator C7-C9", () => {
       for (const field of ["runtime_identity_manifest", "skipped_multiset"] as const) {
         const aggregate = manifest[field] as Record<string, string>
         const runField = field === "runtime_identity_manifest" ? "runtime_identity" : "skipped_multiset"
-        json(aggregate.path, { runs: (manifest.runs as Array<Record<string, unknown>>).map((candidate) => ({ ordinal: candidate.ordinal, ...(candidate[runField] as Record<string, unknown>) })) })
+        json(aggregate.path, {
+          runs: (manifest.runs as Array<Record<string, unknown>>).map((candidate) => ({
+            ordinal: candidate.ordinal,
+            ...(candidate[runField] as Record<string, unknown>),
+          })),
+        })
         aggregate.sha256 = hash(aggregate.path)
       }
       json(manifestPath, manifest)
