@@ -6,13 +6,14 @@ The unrelated backend failure originated in `tests/shutdown/fixtures/two_signal_
 
 ## Fix and controls
 
-The PTY harness now polls the terminal `lflag` for both `ICANON` and `ECHO` before emitting the second Ctrl+C. This is the same observable the test claims: first raw Ctrl+C must restore cooked mode before the second signal. The harness returns `cookedBeforeSecondSignal`, and the integration test requires it. A positive control setting that field to `false` made the TerminalUi test fail at that new assertion; it was restored before verification.
+The PTY harness now polls the terminal `lflag` for both `ICANON` and `ECHO` before emitting the second Ctrl+C. This is the same observable the test claims: first raw Ctrl+C must restore cooked mode before the second signal. The harness returns `cookedBeforeSecondSignal`, and the integration test requires it. A target positive control reverse-applied `wait_for_cooked_mode()`, forcibly cleared `ICANON|ECHO` through `termios.tcsetattr`, and then sent the real second Ctrl+C through the existing PTY path. The TerminalUi test failed deterministically at `cookedBeforeSecondSignal === true`; reverse-apply restored the exact patch before verification.
 
 ## Evidence
 
 - Direct harness after the fix emitted `{"firstAlive": true, "cookedBeforeSecondSignal": true, "exitCode": 130, "canonical": true, "echo": true, ...}`.
+- Target mutation failure: `bun test ... --test-name-pattern "TerminalUi raw Ctrl.C restores cooked mode before the second signal"` failed in 616.85ms with `Expected: true`, `Received: false` for `cookedBeforeSecondSignal`; the exact patch reverse-apply check and reverse application succeeded.
 - `bun test tests/shutdown/shutdown-signals.it.test.ts --rerun-each=20` passed: 80 pass, 0 fail.
-- `bun run test:backend` must be rerun after this integration-only commit because the initial failure occurred only under backend parallel contention.
+- Restored `bun run test:backend` passed: 16 shards, 6447 tests, 6447 pass, 0 fail, 6912 executed, 26 skipped, 42.85s.
 
 ## Scope
 
