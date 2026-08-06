@@ -15,7 +15,11 @@ import {
   putInFlight,
 } from "~/lib/history/in-flight"
 import { getHistorySummaries } from "~/lib/history/queries"
-import { getSessionSummaries } from "~/lib/history/sessions"
+import {
+  //
+  getSessionEntries,
+  getSessionSummaries,
+} from "~/lib/history/sessions"
 import {
   //
   closeDatabase,
@@ -27,6 +31,7 @@ import { getStats } from "~/lib/history/stats"
 import { ensureV3Schema } from "~/lib/history/v3/store"
 import {
   //
+  explainSessionEntryPagePlan,
   explainSummaryPagePlan,
   querySummaryPage,
   tryMarkSummaryProjectionReady,
@@ -172,6 +177,27 @@ describe("persisted summary SQL query", () => {
         preview: "z-session",
       },
     ])
+  })
+
+  test("session entry pages hydrate only the IDs selected by the narrow projection", () => {
+    persist({ id: "page-a", startedAt: 100, sessionId: "paged-session" })
+    persist({ id: "page-b", startedAt: 200, sessionId: "paged-session" })
+    persist({ id: "page-c", startedAt: 300, sessionId: "paged-session" })
+    expect(tryMarkSummaryProjectionReady(getDatabase()).ready).toBe(true)
+    const plan = explainSessionEntryPagePlan(getDatabase(), "paged-session", 2)
+    expect(plan.some((detail) => detail.includes("idx_v3_operation_summaries_session"))).toBe(true)
+    expect(plan.some((detail) => detail.includes("USE TEMP B-TREE"))).toBe(false)
+    expect(plan.some((detail) => detail.includes("v3_operations"))).toBe(false)
+    getDatabase()
+      .prepare("UPDATE v3_operations SET summary_json=NULL,manifest_gz=? WHERE operation_id='page-c'")
+      .run(new Uint8Array([0]))
+
+    expect(getSessionEntries("paged-session", { limit: 2 })).toMatchObject({
+      entries: [{ id: "page-a" }, { id: "page-b" }],
+      total: 3,
+      nextCursor: "page-b",
+      prevCursor: null,
+    })
   })
 
   test("stats preserve the response-success fallback without an overlay exclusion", () => {

@@ -11,12 +11,14 @@ import { getDatabase } from "./sqlite/connection"
 import { recordToHistoryEntry } from "./v3/projection"
 import {
   //
+  getV3StoredOperations,
   visitV3StoredOperations,
   visitV3Summaries,
 } from "./v3/store"
 import {
   //
   isSummaryProjectionReady,
+  querySessionEntryPage,
   querySessionSummaries,
 } from "./v3/summary-store"
 
@@ -142,6 +144,18 @@ export function getCurrentSession(_endpoint: EndpointType, sessionId?: string): 
 
 export function getSessionEntries(sessionId: string, options: { cursor?: string; limit?: number } = {}): CursorResult<HistoryEntry> {
   const { cursor, limit = 50 } = options
+  const db = getDatabase()
+  if (isSummaryProjectionReady(db)) {
+    const page = querySessionEntryPage(db, sessionId, cursor, limit)
+    const stored = getV3StoredOperations(page.operationIds, db)
+    const entries = page.operationIds.map((operationId) => {
+      const operation = stored.get(operationId)
+      if (!operation) throw new Error(`Summary projection references missing canonical operation: ${operationId}`)
+      return recordToHistoryEntry(operation.record, operation)
+    })
+    return { entries, total: page.total, nextCursor: page.nextCursor, prevCursor: page.prevCursor }
+  }
+
   const all: Array<HistoryEntry> = []
   visitV3StoredOperations((stored) => {
     if (stored.record.identity.sessionId === sessionId) all.push(recordToHistoryEntry(stored.record, stored))

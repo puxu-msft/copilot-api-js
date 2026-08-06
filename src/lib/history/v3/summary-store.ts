@@ -252,6 +252,60 @@ export function querySummaryPage(db: Database, options: QueryOptions, limit: num
   return { entries, total, nextCursor, prevCursor }
 }
 
+export interface PersistedSessionEntryPage {
+  operationIds: Array<string>
+  total: number
+  nextCursor: string | null
+  prevCursor: string | null
+}
+
+function sessionEntryPageSql(boundary: string, explain = false): string {
+  const prefix = explain ? "EXPLAIN QUERY PLAN " : ""
+  return `${prefix}SELECT operation_id
+    FROM v3_operation_summaries INDEXED BY idx_v3_operation_summaries_session
+    WHERE session_id=? AND operation_kind='generation' AND projection_status='ready'${boundary}
+    ORDER BY started_at,operation_id
+    LIMIT ?`
+}
+
+export function explainSessionEntryPagePlan(db: Database, sessionId: string, limit: number): Array<string> {
+  return (db.prepare(sessionEntryPageSql("", true)).all(sessionId, limit) as Array<{ detail: string }>).map((row) => row.detail)
+}
+
+export function querySessionEntryPage(db: Database, sessionId: string, cursor: string | undefined, limit: number): PersistedSessionEntryPage {
+  const cursorRow =
+    cursor ?
+      (db
+        .prepare(
+          `SELECT started_at,operation_id
+           FROM v3_operation_summaries
+           WHERE operation_id=? AND session_id=? AND operation_kind='generation' AND projection_status='ready'`,
+        )
+        .get(cursor, sessionId) as { started_at: number; operation_id: string } | undefined)
+    : undefined
+  const boundary = cursorRow ? " AND (started_at>? OR (started_at=? AND operation_id>?))" : ""
+  const boundaryParams = cursorRow ? [cursorRow.started_at, cursorRow.started_at, cursorRow.operation_id] : []
+  const boundedLimit = Math.max(0, limit)
+  const rows = db.prepare(sessionEntryPageSql(boundary)).all(sessionId, ...boundaryParams, boundedLimit + 1) as Array<{ operation_id: string }>
+  const hasMore = rows.length > boundedLimit
+  const operationIds = rows.slice(0, boundedLimit).map((row) => row.operation_id)
+  const total = (
+    db
+      .prepare(
+        `SELECT COUNT(*) AS n
+         FROM v3_operation_summaries
+         WHERE session_id=? AND operation_kind='generation' AND projection_status='ready'`,
+      )
+      .get(sessionId) as { n: number }
+  ).n
+  return {
+    operationIds,
+    total,
+    nextCursor: hasMore ? (operationIds.at(-1) ?? null) : null,
+    prevCursor: cursorRow && operationIds.length > 0 ? operationIds[0] : null,
+  }
+}
+
 interface PersistedSessionAggregate {
   session_id: string
   request_count: number

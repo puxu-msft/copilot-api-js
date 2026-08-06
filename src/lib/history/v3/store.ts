@@ -965,18 +965,47 @@ export function getV3StoreStatus(): V3StoreStatus {
   }
 }
 
-export function getV3StoredOperation(operationId: string, db: Database = getDatabase()): V3StoredOperation | undefined {
-  ensureV3Schema(db)
-  const row = db.prepare("SELECT manifest_gz,pinned,ended_at,timing_source FROM v3_operations WHERE operation_id=?").get(operationId) as
-    | { manifest_gz: Uint8Array; pinned: number; ended_at: number | null; timing_source: V3TimingSource }
-    | undefined
-  if (!row) return undefined
+interface V3StoredOperationRow {
+  manifest_gz: Uint8Array
+  pinned: number
+  ended_at: number | null
+  timing_source: V3TimingSource
+}
+
+function storedOperationFromRow(db: Database, row: V3StoredOperationRow): V3StoredOperation {
   return {
     record: hydrateManifest(db, row.manifest_gz),
     pinned: row.pinned === 1,
     ...(row.ended_at === null ? {} : { endedAt: row.ended_at }),
     timingSource: row.timing_source,
   }
+}
+
+export function getV3StoredOperation(operationId: string, db: Database = getDatabase()): V3StoredOperation | undefined {
+  ensureV3Schema(db)
+  const row = db.prepare("SELECT manifest_gz,pinned,ended_at,timing_source FROM v3_operations WHERE operation_id=?").get(operationId) as
+    | V3StoredOperationRow
+    | undefined
+  return row ? storedOperationFromRow(db, row) : undefined
+}
+
+export function getV3StoredOperations(operationIds: ReadonlyArray<string>, db: Database = getDatabase()): Map<string, V3StoredOperation> {
+  ensureV3Schema(db)
+  if (operationIds.length === 0) return new Map()
+  const rows = db
+    .prepare(
+      `SELECT operation_id,manifest_gz,pinned,ended_at,timing_source
+       FROM v3_operations
+       WHERE operation_id IN (SELECT value FROM json_each(?))`,
+    )
+    .all(JSON.stringify(operationIds)) as Array<{
+    operation_id: string
+    manifest_gz: Uint8Array
+    pinned: number
+    ended_at: number | null
+    timing_source: V3TimingSource
+  }>
+  return new Map(rows.map((row) => [row.operation_id, storedOperationFromRow(db, row)]))
 }
 
 export function getV3Operation(operationId: string): ModelOperationRecord | undefined {
@@ -991,12 +1020,7 @@ export function listV3StoredOperations(kind?: string, limit = 100, db: Database 
         .prepare("SELECT manifest_gz,pinned,ended_at,timing_source FROM v3_operations WHERE kind=? ORDER BY created_at DESC,operation_id DESC LIMIT ?")
         .all(kind, limit)
     : db.prepare("SELECT manifest_gz,pinned,ended_at,timing_source FROM v3_operations ORDER BY created_at DESC,operation_id DESC LIMIT ?").all(limit)
-  return (rows as Array<{ manifest_gz: Uint8Array; pinned: number; ended_at: number | null; timing_source: V3TimingSource }>).map((row) => ({
-    record: hydrateManifest(db, row.manifest_gz),
-    pinned: row.pinned === 1,
-    ...(row.ended_at === null ? {} : { endedAt: row.ended_at }),
-    timingSource: row.timing_source,
-  }))
+  return (rows as Array<V3StoredOperationRow>).map((row) => storedOperationFromRow(db, row))
 }
 
 export function listV3Operations(kind?: string, limit = 100): Array<ModelOperationRecord> {
@@ -1008,12 +1032,7 @@ function summaryFromRow(
   row: { manifest_gz: Uint8Array; summary_json: string | null; pinned: number; ended_at: number | null; timing_source: V3TimingSource },
 ): EntrySummary {
   if (row.summary_json) return { ...(JSON.parse(row.summary_json) as EntrySummary), pinned: row.pinned === 1 }
-  const stored = {
-    record: hydrateManifest(db, row.manifest_gz),
-    pinned: row.pinned === 1,
-    ...(row.ended_at === null ? {} : { endedAt: row.ended_at }),
-    timingSource: row.timing_source,
-  }
+  const stored = storedOperationFromRow(db, row)
   return recordToEntrySummary(stored.record, stored)
 }
 
@@ -1128,12 +1147,7 @@ export function visitV3StoredOperations(visitor: (stored: V3StoredOperation) => 
     if (page.length === 0) return
     offset += page.length
     for (const row of page) {
-      const shouldContinue = visitor({
-        record: hydrateManifest(db, row.manifest_gz),
-        pinned: row.pinned === 1,
-        ...(row.ended_at === null ? {} : { endedAt: row.ended_at }),
-        timingSource: row.timing_source,
-      })
+      const shouldContinue = visitor(storedOperationFromRow(db, row))
       if (shouldContinue === false) return
     }
   }
