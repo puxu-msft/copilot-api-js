@@ -1,6 +1,6 @@
 import { afterAll, describe, expect, test } from "bun:test"
 import { createHash } from "node:crypto"
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, renameSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs"
 import os from "node:os"
 import path from "node:path"
 
@@ -225,6 +225,65 @@ function createEv27EntryGraph(f: ReturnType<typeof fixture>): void {
   git(f.tree, ["checkout", "--detach", f.entry])
 }
 
+function createEntryWithUnexpectedRuntimeImport(f: ReturnType<typeof fixture>): void {
+  const manifestPath = path.join(f.out, "evidence-manifest.json")
+  const validatorPath = path.join(f.tree, "scripts/validate-entry-evidence.ts")
+  git(f.tree, ["checkout", "master"])
+  writeFileSync(path.join(f.tree, "scripts/unexpected-runtime.ts"), "export {}\n")
+  writeFileSync(
+    validatorPath,
+    readFileSync(validatorPath, "utf8").replace(
+      'const junit = await import("./parallel-test-artifacts")',
+      'const junit = await import("./parallel-test-artifacts")\n  await import("./unexpected-runtime")',
+    ),
+  )
+  git(f.tree, ["add", "scripts"])
+  git(f.tree, ["commit", "-m", "entry with unexpected runtime import"])
+  f.entry = git(f.tree, ["rev-parse", "HEAD"])
+  const manifest = JSON.parse(readFileSync(manifestPath, "utf8"))
+  manifest.measured_sha = f.entry
+  for (const run of manifest.runs) {
+    const log = run.log_path as string
+    writeFileSync(log, readFileSync(log, "utf8").replace(/^measured_sha=.*$/m, `measured_sha=${f.entry}`))
+    run.log_sha256 = hash(log)
+  }
+  json(manifestPath, manifest)
+  writeFileSync(
+    path.join(f.tree, HANDOVER),
+    `<!-- entry-evidence-pointer:v1 -->\nentry_sha=${f.entry}\nmanifest_path=${manifestPath}\nmanifest_sha256=${hash(manifestPath)}\narchive_path=\n<!-- /entry-evidence-pointer:v1 -->\n`,
+  )
+  git(f.tree, ["add", HANDOVER])
+  git(f.tree, ["commit", "-m", "pointer for unexpected runtime import"])
+  f.pointer = git(f.tree, ["rev-parse", "HEAD"])
+  git(f.tree, ["checkout", "--detach", f.entry])
+}
+
+function createEntryWithDependencyPathMutation(f: ReturnType<typeof fixture>, entryPath: string): void {
+  const manifestPath = path.join(f.out, "evidence-manifest.json")
+  const validatorPath = path.join(f.tree, "scripts/validate-entry-evidence.ts")
+  git(f.tree, ["checkout", "master"])
+  writeFileSync(validatorPath, readFileSync(validatorPath, "utf8").replace('path: "scripts/entry-evidence-receipt.ts"', `path: "${entryPath}"`))
+  git(f.tree, ["add", "scripts/validate-entry-evidence.ts"])
+  git(f.tree, ["commit", "-m", "entry with dependency path mutation"])
+  f.entry = git(f.tree, ["rev-parse", "HEAD"])
+  const manifest = JSON.parse(readFileSync(manifestPath, "utf8"))
+  manifest.measured_sha = f.entry
+  for (const run of manifest.runs) {
+    const log = run.log_path as string
+    writeFileSync(log, readFileSync(log, "utf8").replace(/^measured_sha=.*$/m, `measured_sha=${f.entry}`))
+    run.log_sha256 = hash(log)
+  }
+  json(manifestPath, manifest)
+  writeFileSync(
+    path.join(f.tree, HANDOVER),
+    `<!-- entry-evidence-pointer:v1 -->\nentry_sha=${f.entry}\nmanifest_path=${manifestPath}\nmanifest_sha256=${hash(manifestPath)}\narchive_path=\n<!-- /entry-evidence-pointer:v1 -->\n`,
+  )
+  git(f.tree, ["add", HANDOVER])
+  git(f.tree, ["commit", "-m", "pointer for dependency path mutation"])
+  f.pointer = git(f.tree, ["rev-parse", "HEAD"])
+  git(f.tree, ["checkout", "--detach", f.entry])
+}
+
 function cleanup(f: ReturnType<typeof fixture>): void {
   rmSync(f.tree, { recursive: true, force: true })
   rmSync(f.out, { recursive: true, force: true })
@@ -363,6 +422,60 @@ describe("entry evidence validator C7-C9", () => {
       expect(error(invoke(f))).toBe("FAIL C11: validator provenance mismatch\n")
     } finally {
       cleanup(f)
+    }
+  })
+
+  test("rejects every missing or modified runtime dependency before receipt publication", () => {
+    for (const dependency of ["entry-evidence-receipt.ts", "entry-evidence-schema.ts", "parallel-test-artifacts.ts"]) {
+      for (const mutate of [
+        (dependencyPath: string) => writeFileSync(dependencyPath, `${readFileSync(dependencyPath, "utf8")}\n// modified\n`),
+        (dependencyPath: string) => unlinkSync(dependencyPath),
+      ]) {
+        const f = fixture()
+        try {
+          mutate(path.join(f.tree, "scripts", dependency))
+          const result = invoke(f)
+          expect(result.exitCode).toBe(7)
+          expect(error(result)).toBe("FAIL C11: validator provenance mismatch\n")
+          expect(existsSync(f.receipt)).toBe(false)
+        } finally {
+          cleanup(f)
+        }
+      }
+    }
+  })
+
+  test("accepts the exact runtime import closure and rejects entry import drift", () => {
+    const green = fixture()
+    try {
+      expect(invoke(green).exitCode).toBe(0)
+    } finally {
+      cleanup(green)
+    }
+    const drift = fixture()
+    try {
+      createEntryWithUnexpectedRuntimeImport(drift)
+      const result = invoke(drift)
+      expect(result.exitCode).toBe(7)
+      expect(error(result)).toBe("FAIL C11: validator provenance mismatch\n")
+      expect(existsSync(drift.receipt)).toBe(false)
+    } finally {
+      cleanup(drift)
+    }
+  })
+
+  test("rejects mutated dependency paths whether their ENTRY object is missing or mismatched", () => {
+    for (const entryPath of ["scripts/missing-entry-object.ts", "scripts/entry-evidence-schema.ts"]) {
+      const f = fixture()
+      try {
+        createEntryWithDependencyPathMutation(f, entryPath)
+        const result = invoke(f)
+        expect(result.exitCode).toBe(7)
+        expect(error(result)).toBe("FAIL C11: validator provenance mismatch\n")
+        expect(existsSync(f.receipt)).toBe(false)
+      } finally {
+        cleanup(f)
+      }
     }
   })
 
@@ -583,6 +696,93 @@ describe("entry evidence validator C7-C9", () => {
       expect(result.exitCode).toBe(8)
       expect(error(result)).toBe("FAIL receipt: receipt write failed\n")
       expect(readFileSync(f.receipt, "utf8")).toBe("old receipt\n")
+    } finally {
+      cleanup(f)
+    }
+  })
+
+  test("maps missing artifact paths to stable C7/C8", () => {
+    for (const [, condition, mutate] of [
+      [
+        "artifact_dir",
+        "C7",
+        (f: ReturnType<typeof fixture>) => {
+          const missing = path.join(f.out, "missing-dir")
+          mutateManifest(f, (manifest) => {
+            ;(manifest.runs as Array<Record<string, unknown>>)[0].artifact_dir = missing
+          })
+          mutateLog(f, "artifact_dir", missing)
+        },
+      ],
+      ["junit", "C7", (f: ReturnType<typeof fixture>) => rmSync(path.join(f.out, "run-1", "shard-01.xml"))],
+      ["runtime", "C7", (f: ReturnType<typeof fixture>) => rmSync(path.join(f.out, "run-1", "runtime-identity.json"))],
+      ["skipped", "C8", (f: ReturnType<typeof fixture>) => rmSync(path.join(f.out, "run-1", "skipped-multiset.json"))],
+    ] as const) {
+      const f = fixture()
+      try {
+        mutate(f)
+        const result = invoke(f)
+        expect(result.exitCode).toBe(6)
+        expect(error(result)).toStartWith(`FAIL ${condition}: `)
+      } finally {
+        cleanup(f)
+      }
+    }
+  })
+
+  test("rejects malformed skipped identity union arms", () => {
+    for (const mutate of [
+      (value: Record<string, unknown>) =>
+        (value.skipped_identities = [{ kind: "testcase", file: "tests/a.unit.test.ts", classname: "x", name: "y", ordinal: 1, count: 1, suite_name: "bad" }]),
+      (value: Record<string, unknown>) =>
+        (value.skipped_identities = [{ kind: "testcase", file: "tests/a.unit.test.ts", classname: "x", name: "y", ordinal: 0, count: 1 }]),
+      (value: Record<string, unknown>) =>
+        (value.skipped_identities = [{ kind: "testcase", file: "tests/a.unit.test.ts", classname: "x", name: "y", ordinal: 1, count: 0 }]),
+      (value: Record<string, unknown>) =>
+        (value.skipped_identities = [{ kind: "suite", file: "tests/a.unit.test.ts", suite_name: "s", count: 1, classname: "bad" }]),
+      (value: Record<string, unknown>) => (value.skipped_identities = [{ kind: "suite", file: "tests/a.unit.test.ts", suite_name: "s", count: 0 }]),
+      (value: Record<string, unknown>) => (value.skipped_identities = [{ kind: "unknown", file: "tests/a.unit.test.ts", count: 1, extra: true }]),
+    ]) {
+      const f = fixture()
+      try {
+        const file = path.join(f.out, "run-1", "skipped-multiset.json")
+        const value = JSON.parse(readFileSync(file, "utf8")) as Record<string, unknown>
+        mutate(value)
+        json(file, value)
+        mutateManifest(f, (manifest) => {
+          ;((manifest.runs as Array<Record<string, unknown>>)[0].skipped_multiset as Record<string, unknown>).sha256 = hash(file)
+        })
+        const result = invoke(f)
+        expect(result.exitCode).toBe(6)
+        expect(error(result)).toBe("FAIL C8: skipped identity multiset mismatch\n")
+      } finally {
+        cleanup(f)
+      }
+    }
+  })
+
+  test("accepts a symlink spelling shared by raw log and manifest artifact_dir", () => {
+    const f = fixture()
+    try {
+      const original = path.join(f.out, "run-1")
+      const real = path.join(f.out, "outside-real")
+      const link = path.join(f.out, "artifact-link")
+      renameSync(original, real)
+      symlinkSync(real, link)
+      const manifestPath = path.join(f.out, "evidence-manifest.json")
+      const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as Record<string, unknown>
+      const run = (manifest.runs as Array<Record<string, unknown>>)[0]
+      run.artifact_dir = link
+      for (const field of ["junit_artifacts", "runtime_identity", "skipped_multiset"] as const) {
+        const artifacts = Array.isArray(run[field]) ? run[field] : [run[field]]
+        for (const artifact of artifacts as Array<Record<string, unknown>>) artifact.path = String(artifact.path).replace(original, link)
+      }
+      json(manifestPath, manifest)
+      mutateLog(f, "artifact_dir", link)
+      const result = invoke(f)
+      expect(error(result)).toBe("")
+      expect(result.exitCode).toBe(0)
+      expect(readFileSync(f.receipt, "utf8")).toContain('"verdict": "green"')
     } finally {
       cleanup(f)
     }

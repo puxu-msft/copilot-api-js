@@ -3,9 +3,21 @@ import { createHash } from "node:crypto"
 import { existsSync, readFileSync, readdirSync, realpathSync } from "node:fs"
 import path from "node:path"
 
-import { writeReceiptAtomically } from "./entry-evidence-receipt"
-import { parseDiscoveryBaseline } from "./entry-evidence-schema"
-import { parseJUnit } from "./parallel-test-artifacts"
+import type { DiscoveryBaseline } from "./entry-evidence-schema"
+import type { JUnitIdentities } from "./parallel-test-artifacts"
+
+let writeReceiptAtomically!: (receiptPath: string, body: string) => void
+let parseDiscoveryBaseline!: (raw: string) => DiscoveryBaseline
+let parseJUnit!: (raw: string, tree: string) => JUnitIdentities
+
+async function loadRuntimeDependencies(): Promise<void> {
+  const receipt = await import("./entry-evidence-receipt")
+  const schema = await import("./entry-evidence-schema")
+  const junit = await import("./parallel-test-artifacts")
+  writeReceiptAtomically = receipt.writeReceiptAtomically
+  parseDiscoveryBaseline = schema.parseDiscoveryBaseline
+  parseJUnit = junit.parseJUnit
+}
 
 interface Options {
   entrySha: string
@@ -50,6 +62,51 @@ const RUN_KEYS = [
   "skipped",
   "verdict",
 ]
+const RUNTIME_DEPENDENCIES = [
+  { importSpecifier: "./entry-evidence-receipt", path: "scripts/entry-evidence-receipt.ts" },
+  { importSpecifier: "./entry-evidence-schema", path: "scripts/entry-evidence-schema.ts" },
+  { importSpecifier: "./parallel-test-artifacts", path: "scripts/parallel-test-artifacts.ts" },
+]
+
+function runtimeImportSpecifiers(source: string): string[] | undefined {
+  const specifiers: string[] = []
+  for (const line of source.split("\n")) {
+    if (/^\s*import\s+type\b/.test(line)) continue
+    const match = /\b(?:from\s+|import\s*\(\s*)["'](\.[^"']+)["']\)?/.exec(line)
+    if (match) specifiers.push(match[1])
+  }
+  return specifiers.sort((left, right) => Buffer.from(left).compare(Buffer.from(right)))
+}
+
+function matchesEntryObject(tree: string, entrySha: string, runtimePath: string, entryPath: string): boolean {
+  try {
+    const canonicalTree = realpathSync(tree)
+    if (realpathSync(runtimePath) !== path.join(canonicalTree, entryPath)) return false
+  } catch {
+    return false
+  }
+  const entryBlob = git(tree, ["rev-parse", `${entrySha}:${entryPath}`])
+  return entryBlob !== undefined && git(tree, ["hash-object", "--no-filters", runtimePath]) === entryBlob
+}
+
+function runtimeClosureMatchesEntry(tree: string, entrySha: string): boolean {
+  const runtimeValidatorPath = path.resolve(import.meta.path)
+  if (!matchesEntryObject(tree, entrySha, runtimeValidatorPath, "scripts/validate-entry-evidence.ts")) return false
+  let source: string
+  try {
+    source = readFileSync(runtimeValidatorPath, "utf8")
+  } catch {
+    return false
+  }
+  const imports = runtimeImportSpecifiers(source)
+  const expectedImports = RUNTIME_DEPENDENCIES.map(({ importSpecifier }) => importSpecifier).sort((left, right) =>
+    Buffer.from(left).compare(Buffer.from(right)),
+  )
+  if (imports === undefined || JSON.stringify(imports) !== JSON.stringify(expectedImports)) return false
+  return RUNTIME_DEPENDENCIES.every(({ importSpecifier, path: entryPath }) =>
+    matchesEntryObject(tree, entrySha, path.join(path.dirname(runtimeValidatorPath), `${importSpecifier.slice(2)}.ts`), entryPath),
+  )
+}
 
 function fail(condition: number, message: string, exitCode: number): never {
   console.error(`FAIL C${condition}: ${message}`)
@@ -68,16 +125,28 @@ function logField(log: string, name: string): string | undefined {
   return new RegExp(`^${name}=([^\\n]+)$`, "m").exec(log)?.[1]
 }
 function identityKey(identity: Record<string, unknown>): string | undefined {
+  const testcaseKeys = ["kind", "file", "classname", "name", "ordinal", "count"]
+  const suiteKeys = ["kind", "file", "suite_name", "count"]
   if (
     identity.kind === "testcase" &&
+    exactKeys(identity, testcaseKeys) &&
     typeof identity.file === "string" &&
     typeof identity.classname === "string" &&
     typeof identity.name === "string" &&
     Number.isSafeInteger(identity.ordinal) &&
-    Number.isSafeInteger(identity.count)
+    (identity.ordinal as number) > 0 &&
+    Number.isSafeInteger(identity.count) &&
+    (identity.count as number) > 0
   )
     return ["testcase", identity.file, identity.classname, identity.name, identity.ordinal, identity.count].join("\0")
-  if (identity.kind === "suite" && typeof identity.file === "string" && typeof identity.suite_name === "string" && Number.isSafeInteger(identity.count))
+  if (
+    identity.kind === "suite" &&
+    exactKeys(identity, suiteKeys) &&
+    typeof identity.file === "string" &&
+    typeof identity.suite_name === "string" &&
+    Number.isSafeInteger(identity.count) &&
+    (identity.count as number) > 0
+  )
     return ["suite", identity.file, identity.suite_name, identity.count].join("\0")
   return undefined
 }
@@ -190,8 +259,13 @@ function parseManifest(raw: string): Array<RunLog> {
 }
 
 function artifactUnder(child: string, parent: string): boolean {
-  const relative = path.relative(realpathSync(parent), realpathSync(child))
-  return relative !== "" && !relative.startsWith(`..${path.sep}`) && relative !== ".." && !path.isAbsolute(relative)
+  if (!existsSync(parent) || !existsSync(child)) return false
+  try {
+    const relative = path.relative(realpathSync(parent), realpathSync(child))
+    return relative !== "" && !relative.startsWith(`..${path.sep}`) && relative !== ".." && !path.isAbsolute(relative)
+  } catch {
+    return false
+  }
 }
 
 function parseRunArtifacts(
@@ -227,7 +301,7 @@ function parseRunArtifacts(
   const junitArtifacts = junit.map(asArtifact)
   const runtimeArtifact = asArtifact(runtime)
   const skippedArtifact = asArtifact(skipped)
-  if (junitArtifacts.some((artifact) => !artifact) || !runtimeArtifact || !skippedArtifact) fail(7, "JUnit file identity mismatch", 6)
+  if (junitArtifacts.some((artifact) => !artifact) || !runtimeArtifact) fail(7, "JUnit file identity mismatch", 6)
   const resolvedJunit = junitArtifacts as Array<{ path: string; sha256: string }>
   const paths = resolvedJunit.map((artifact) => artifact.path)
   const names = paths.map((file) => path.basename(file))
@@ -236,16 +310,25 @@ function parseRunArtifacts(
     names.some((name, index) => index > 0 && Buffer.from(names[index - 1]).compare(Buffer.from(name)) >= 0) ||
     resolvedJunit.some((artifact) => !artifactUnder(artifact.path, artifactDir) || !existsSync(artifact.path) || sha256(artifact.path) !== artifact.sha256) ||
     !artifactUnder(runtimeArtifact.path, artifactDir) ||
-    !artifactUnder(skippedArtifact.path, artifactDir) ||
     !existsSync(runtimeArtifact.path) ||
-    !existsSync(skippedArtifact.path) ||
-    sha256(runtimeArtifact.path) !== runtimeArtifact.sha256 ||
-    sha256(skippedArtifact.path) !== skippedArtifact.sha256
+    sha256(runtimeArtifact.path) !== runtimeArtifact.sha256
   )
     fail(7, "JUnit file identity mismatch", 6)
-  const actualJunit = readdirSync(artifactDir)
-    .filter((name) => /^shard-\d+\.xml$/.test(name))
-    .sort((left, right) => Buffer.from(left).compare(Buffer.from(right)))
+  if (
+    !skippedArtifact ||
+    !artifactUnder(skippedArtifact.path, artifactDir) ||
+    !existsSync(skippedArtifact.path) ||
+    sha256(skippedArtifact.path) !== skippedArtifact.sha256
+  )
+    fail(8, "skipped identity multiset mismatch", 6)
+  let actualJunit: Array<string>
+  try {
+    actualJunit = readdirSync(artifactDir)
+      .filter((name) => /^shard-\d+\.xml$/.test(name))
+      .sort((left, right) => Buffer.from(left).compare(Buffer.from(right)))
+  } catch {
+    fail(7, "JUnit file identity mismatch", 6)
+  }
   if (JSON.stringify(actualJunit) !== JSON.stringify(names)) fail(7, "JUnit file identity mismatch", 6)
   return { junit: resolvedJunit, runtime: runtimeArtifact, skipped: skippedArtifact, artifactDir }
 }
@@ -253,6 +336,12 @@ function parseRunArtifacts(
 const options = parseOptions(process.argv.slice(2))
 if (!existsSync(options.tree) || git(options.tree, ["cat-file", "-e", `${options.pointerSha}^{commit}`]) === undefined)
   fail(1, "pointer SHA does not resolve", 3)
+if (!runtimeClosureMatchesEntry(options.tree, options.entrySha)) fail(11, "validator provenance mismatch", 7)
+try {
+  await loadRuntimeDependencies()
+} catch {
+  fail(11, "validator provenance mismatch", 7)
+}
 if (git(options.tree, ["merge-base", "--is-ancestor", options.pointerSha, "master"]) === undefined) fail(1, "pointer SHA is not master-reachable", 3)
 const handover = git(options.tree, ["show", `${options.pointerSha}:${options.handover}`])
 if (handover === undefined) fail(1, "pointer SHA does not resolve", 3)
@@ -302,8 +391,7 @@ if (createHash("sha256").update(baselineBytes!).digest("hex") !== manifest.disco
 for (const run of manifest.runs as Array<Record<string, unknown>>) {
   if (!exactKeys(run, RUN_KEYS)) fail(7, "JUnit file identity mismatch", 6)
   const log = readFileSync(run.log_path as string, "utf8")
-  if (typeof run.artifact_dir !== "string" || !existsSync(run.artifact_dir) || logField(log, "artifact_dir") !== realpathSync(run.artifact_dir))
-    fail(9, "artifact directory mismatch", 7)
+  if (typeof run.artifact_dir !== "string" || logField(log, "artifact_dir") !== run.artifact_dir) fail(9, "artifact directory mismatch", 7)
   const artifacts = parseRunArtifacts(run, options.tree)
   const junit = artifacts.junit.map((artifact) => parseJUnit(readFileSync(artifact.path, "utf8"), options.tree))
   const files = [...new Set(junit.flatMap((item) => item.files))].sort((left, right) => Buffer.from(left).compare(Buffer.from(right)))
@@ -380,13 +468,7 @@ if (runnerBlob === undefined) fail(11, "discovery baseline hash mismatch", 7)
 if (createHash("sha256").update(baselineBytes!).digest("hex") !== manifest.discovery_baseline_sha256) fail(11, "discovery baseline hash mismatch", 7)
 if (baseline.runner_git_blob !== runnerBlob || manifest.discovery_runner_git_blob !== runnerBlob) fail(11, "discovery runner blob mismatch", 7)
 const validatorBlob = git(options.tree, ["rev-parse", `${options.entrySha}:scripts/validate-entry-evidence.ts`])
-const runtimeValidatorPath = path.resolve(import.meta.path)
-if (
-  validatorBlob === undefined ||
-  runtimeValidatorPath !== path.join(realpathSync(options.tree), "scripts/validate-entry-evidence.ts") ||
-  git(options.tree, ["hash-object", "--no-filters", runtimeValidatorPath]) !== validatorBlob
-)
-  fail(11, "validator provenance mismatch", 7)
+if (validatorBlob === undefined) fail(11, "validator provenance mismatch", 7)
 const receipt = {
   schema_version: 1,
   validator_path: "scripts/validate-entry-evidence.ts",
