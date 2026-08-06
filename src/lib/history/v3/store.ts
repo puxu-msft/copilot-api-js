@@ -1118,8 +1118,10 @@ export function startV3SummaryBackfill(db: Database = getDatabase(), batchSize =
           markSummaryProjectionPoisoned(db, row.operation_id, reason)
         }
       }
-      const readiness = tryMarkSummaryProjectionReady(db)
-      if (readiness.ready || (inserted === 0 && rows.length === 0)) return
+      if (inserted === 0 && rows.length === 0) {
+        tryMarkSummaryProjectionReady(db)
+        return
+      }
       await new Promise<void>((resolve) => setTimeout(resolve, 0))
     }
   })().finally(() => {
