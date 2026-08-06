@@ -77,7 +77,10 @@ function isRfc3339(value: unknown): value is string {
   const minuteNumber = Number(minute)
   const secondNumber = Number(second)
   if (monthNumber < 1 || monthNumber > 12 || hourNumber > 23 || minuteNumber > 59 || secondNumber > 60) return false
-  if (dayNumber < 1 || dayNumber > new Date(Date.UTC(Number(year), monthNumber, 0)).getUTCDate()) return false
+  const yearNumber = Number(year)
+  const leapYear = yearNumber % 4 === 0 && (yearNumber % 100 !== 0 || yearNumber % 400 === 0)
+  const daysInMonth = [31, leapYear ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+  if (dayNumber < 1 || dayNumber > daysInMonth[monthNumber - 1]) return false
   if (zone !== "Z" && (Number(zone.slice(1, 3)) > 23 || Number(zone.slice(4, 6)) > 59)) return false
   return true
 }
