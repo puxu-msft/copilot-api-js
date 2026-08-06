@@ -284,8 +284,8 @@ export interface State {
   readonly streamCommitAfterSec: number
 
   /**
-   * Enables one fresh upstream dispatch after a pre-content failure. This B2-P0
-   * scaffold is deliberately not wired into request handling until P4/P5.
+   * Enables one fresh upstream dispatch after a pre-content failure. The value is wired into runtime state;
+   * the handler's recovery decision and dispatch remain intentionally deferred to Task 4.3b.
    */
   readonly preContentRecovery: { enabled: boolean }
 

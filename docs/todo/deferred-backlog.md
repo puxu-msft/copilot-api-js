@@ -38,14 +38,6 @@
 - **原点已追到（2026-07-28 订正，此前写「没追出来」）**：upstream 轨的 offset 锚在**每个 attempt 自己的 collector epoch** 上——`src/lib/upstream-stream-diagnostics.ts` 明写「the SAME base every `sseEvents[i].offsetMs` is relative to」，且 **buffered retry 会重新绑定一个新 collector**。它既不是 `entry.startedAt` 也不是 commit。**关键：这个 epoch 没有被持久化进 history 类型**，所以 UI 拿不到它——因此该轨现在显示的绝对钟点确实是错的，且**无法靠现有持久化数据修正**。
 - **若做需改什么**（原点已知后，路线变成二选一）：**要么**把 collector 的 anchor epoch **持久化**进 history（per-attempt 一个，注意 buffered retry 会重绑），UI 再按轨渲染绝对时间；**要么**承认拿不到、该轨**只显示 elapsed 或显式「绝对时间不可用」**，`offsetSource === "unavailable"` 已有先例可复用。**别再继续伪造绝对钟点。** 无论走哪条，补一条 UI 回归测试：构造 `streamOpenMs=180000, offsetMs=20000`，断言两轨各自渲染的钟点不同且各自正确。
 - **为何暂缓**：产生侧未定位，属独立调查单元；且 upstream 轨的误差不随本次默认值改动放大，不阻塞交付。
-## `makeReconcilingSink` 未继承 delivery identity，live hedge 胜者写丢失 winner 归属（2026-07-28）
-
-- **根因 / 现状**：透明 `ClientSink` decorator `makeReconcilingSink` 只镜像 write/heartbeat/terminal 方法，没有调用 `inheritDownstreamDeliverySession(inner, decorator)` 继承 generation-owned delivery identity。默认 Anthropic live 接线已确证会把该 decorator 直接传入 `driver.runResponseSink`：`handler-v4.ts:1327` 与 `:1612-1613` → `driver.ts:260` → `runResponseSink:1020` → `maybeRunHedgedResponseSink(...)` → `writeWinnerFrames:971-978`。默认 `streamKeepaliveEscalateSec: 200 > 0` 令 `anchorHooks` 存在，默认 `generationHedgeEnabled: true` + `responseHeaderTimeout: 300` 又令 hedge 可达；探针实证 `getDownstreamDeliverySession(makeReconcilingSink(...)) === undefined`。
-- **当前行为**：hedge 胜者写走 `for (const frame of frames) await sink.write(frame)` 回退支，而不是 `delivery.commitWinnerBlock(candidateId, frames)`。帧仍由 reconciling decorator 写入 inner delivery，进入同一 serializer 与 ledger；缺失的是 winner 断言及 `candidateId` 归属，不是字节绕过 delivery。
-- **理想架构 / 若做需改什么**：最小根因修复是在 `makeReconcilingSink` 创建 decorator 后调用 `inheritDownstreamDeliverySession(inner, decorator)`；更完整的长期形状是统一抽取 `decorateClientSink(inner, overrides)` 原语，使 delivery identity 继承成为所有透明 decorator 的默认行为，而非每个调用方的额外义务。两种方案都必须补 identity seam 回归测试，并覆盖 hedge winner 走 `commitWinnerBlock` 而非逐帧回退支。
-- **为何暂缓**：该缺陷先于 upstream-silence-recovery Task 0.5 存在，不由 supervisor 引入；修复属于独立生产缺陷，而 Task 0.5 的范围是 recovery sink lifetime supervisor 与其 identity 保持。本轮只订正事实并登记，不改 `makeReconcilingSink` 生产代码。
-- **触发条件**：P4/P5 接线时，或下次修改任一 sink decorator 时必须处理。**发现方**：Task 0.5 review（reviewer，2026-07-28）。
-
 ## delayed-commit 窗口是全局的，但它的安全上限只对两个 Node 客户端实测过（2026-07-28）
 
 - **根因**：`stream_commit_after_sec` 对所有流式 `/v1/messages` 请求一视同仁（`handler-v4.ts` 只按 `clientRaw.stream` 分支，不识别客户端）。但窗口的安全上限来自**客户端的** pre-header 容忍度，而我们只实测过两个样本：真 Claude Code 2.1.220（其内置 Node v26.3.0）与 `@anthropic-ai/sdk` 0.106.0 on Node——两者都是 ~300s，因为都落在 undici 默认 `headersTimeout` 上（`exp/silence-recovery-gates/FINDINGS.md`）。

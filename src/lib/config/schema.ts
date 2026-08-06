@@ -719,8 +719,8 @@ export const AnthropicConfigSchema = z
     /**
      * Enables one fresh dispatch after a pre-content upstream failure. It is
      * intentionally independent of buffered_retry because recovery applies to
-     * both live and buffered streaming paths. The B2-P0 scaffold is not yet
-     * wired into request handling. Default true.
+     * both live and buffered streaming paths. The value is wired into runtime state; the handler's recovery
+     * decision and dispatch remain intentionally deferred to Task 4.3b. Default true.
      */
     precontent_recovery: nullableSection(
       z
