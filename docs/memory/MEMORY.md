@@ -11,7 +11,7 @@
 - [持久化 sync→async 三件套](methodology-sync-to-async-persistence-refactor-invariants.md) → skill `persistence-async-invariants` — §1 不变量 / §2 [settle 冻结快照](reference-settle-freezes-history-entry-record-before-fail.md)（新顶层字段三处必改）/ §3 [信号在 committed settle 点记录](methodology-record-signals-at-committed-outcome-not-per-attempt.md)
 - [遥测 registry 三支柱 + model key 成功失败分裂](pattern-extensible-telemetry-registry.md) → `telemetry-architecture` 一/二 — 成功=规范名·失败=别名，见 [key-split](reference-telemetry-model-key-split-success-vs-failure.md)
 - [迁移框架 Umzug hybrid + 内容寻址归一化边界剥离](methodology-migration-framework-hybrid-forward-runner.md) → `history-sqlite-schema` — partial-DDL wedge；另见 [boundary-strip](methodology-content-addressed-normalization-boundary-strip.md)
-- [backfill 协作停+keyset / 派生列靶向非阻塞](methodology-recoverable-backfill-cooperative-stop-and-keyset.md) → `history-backfill` — 别 SELECT *，另见 [derived-column](methodology-derived-column-backfill-targeted-and-nonblocking.md)
+- [backfill 协作停+keyset / 派生列靶向非阻塞](methodology-recoverable-backfill-cooperative-stop-and-keyset.md) → `history-backfill` — 别 SELECT \*，另见 [derived-column](methodology-derived-column-backfill-targeted-and-nonblocking.md)
 - [逐字节等价按消费者校准 / sed 碰过的文件裹入在飞工作](feedback-byte-equivalence-is-proxy-calibrate-by-consumer.md) → `large-refactor` §7/§6 — 逐文件对账，另见 [sed-touched](sed-touched-files-bundle-inflight-work.md)
 - [声称完备前多维度自审 / 探针跑对结论仍可能错的三失效](feedback-multidim-completeness-audit-before-claiming-done.md) → `empirical-verification` — 四维；另见 [probe-scope](methodology-probe-conclusion-scope-and-peer-invalidation.md)
 - [UI 交付必跑 build:ui / 改共享 mock 契约打爆 sibling 测试](feedback-verify-ui-with-build-not-just-typecheck.md) → `debugging-frontend-tests` — 根 typecheck 不覆盖 ui-v4，另见 [shared-mock](methodology-shared-mock-contract-change-breaks-sibling-test-files.md)
@@ -25,6 +25,7 @@
 - [读上游轨投影看不到 forwarded-only 产物](methodology-upstream-original-projection-misses-forwarded-only-rewrite.md) — side channel 旁路传名
 
 ## 精炼保留（verification 簇 / 独有教学价值；触发钩子，细节读正文）
+
 - [通过/空/干净/自洽/doc-vs-code 不自证](feedback-pass-null-clean-not-self-validating.md) — verification 簇根
 - [改文件·验证·提交绝不写在同一次调用](methodology-edit-then-verify-then-commit-never-one-call.md) — 编辑脚本的 assert 在写盘之前→失败即全丢而 commit 照跑，提交信息描述了没发生的事（一天内两次）；`bash -n`／smoke 绿在未编辑文件上同样通过、区分不了两种结果
 - [连续多轮「修复引入新回归且照绿」→ 去找那条测试看不见的缝](methodology-each-fix-round-introduces-green-passing-regression-at-the-same-seam.md) — 判据=把修复改回完整原 bug 形态仍全绿即无裁决力；根因常是测试自造 sink/session 看不到 handler↔装饰器↔driver 缝，验收必须走真实 HTTP 入口；**转述评审意见时限定语与严重度是内容不是修辞**
@@ -91,12 +92,12 @@
 - [响应改写器的 lookahead 不得吞协议有效空帧](../todo/2026-07-22-client-proxy-keepalive-300s.md) — 空载荷不等于无语义；先 curl -N 逐层抓字节
 - [架构图优化 Agent 上下文经济](feedback-architecture-map-optimize-agent-context-economy.md) — 价值轴=上下文经济+可信度
 - [交用户前先 subagent review（含 in-chat 提案）/ 用户对齐只证方向非细节最优](feedback-subagent-review-before-any-user-facing-proposal.md) — 审查门适用任何交付物含对话里直接呈现的设计；[用户对齐](feedback-user-alignment-confirms-direction-not-detail-optimality.md) 逐节点头≠细节最优
-- [后台 agent 运维两条：抖动只 SendMessage resume / 等待期用 stat mtime 判活](feedback-backend-flakiness-must-sendmessage-resume-no-alternatives.md) — 强制单一路径 resume 原 agent、绝不重派或换模型；[dead check](feedback-proactive-liveness-dead-check-on-background-agents.md) mtime 只是**弱信号**、须配「远超合理时长」或明确失败信号；不为判活发空探测（收益低于风险），但**「探测会打断运行中 agent」是 2026-08-02 的误判、已被时间线证伪**（中断早于探测 118 秒且探测未送达）——**只证得了「不是探测」，真因未定**，别再补第二个猜测
+- [后台 agent 运维：瞬时抖动只 SendMessage；context-window 400 停旧 agent、从 transcript/commit/worktree 接力](feedback-backend-flakiness-must-sendmessage-resume-no-alternatives.md) — 强制单一路径 resume 原 agent、绝不重派或换模型；[dead check](feedback-proactive-liveness-dead-check-on-background-agents.md) mtime 只是**弱信号**、须配「远超合理时长」或明确失败信号；不为判活发空探测（收益低于风险），但**「探测会打断运行中 agent」是 2026-08-02 的误判、已被时间线证伪**（中断早于探测 118 秒且探测未送达）——**只证得了「不是探测」，真因未定**，别再补第二个猜测
 - [计划红绿 mutation 预测可能错、执行期真跑验证](methodology-plan-red-green-mutation-prediction-can-be-wrong-verify.md) — plan「注释 X→变红」可能不咬
 - [git commit -- pathspec 取工作区非 index / 共享 worktree 绝不 amend](git-commit-pathspec-commits-worktree-not-index.md) — 共享 worktree 最终提交一律 pathspec；[amend](git-amend-in-shared-worktree-clobbers-peer-commit.md) peer 在你 commit 与 amend 之间提交→你静默改写对方 commit，reflog 取回原 message 立刻还原(先验 tree 一致)
 - [语义合并冲突暴露对方 timing 潜伏 bug / 别合进 peer 多提交重构中间态](methodology-semantic-merge-conflict-exposes-latent-bug-via-timing.md) — 两边各绿合并却坏；[中间态](methodology-dont-merge-into-midflight-multicommit-refactor.md) rename/usages 跨提交
 - [谁合并谁退让但必须合并 / 空 pathspec stash push 会误 pop 别人 WIP](feedback-merger-yields-but-merge-must-happen.md) — 退让=行级共存两份保+备份→选择性 stash→FF→pop 三方合并；[空 pathspec](git-stash-push-empty-pathspec-pops-peer-wip.md) 无改动 path 不建 stash → pop 误弹栈顶别会话 WIP
-- [按 gitBranch 字段找并发 session](find-claude-session-by-git-branch.md) — ~/.claude/projects/<path>/*.jsonl 的 gitBranch 字段精确命中=强信号(+100)
+- [按 gitBranch 字段找并发 session](find-claude-session-by-git-branch.md) — ~/.claude/projects/<path>/\*.jsonl 的 gitBranch 字段精确命中=强信号(+100)
 - [陈旧特性 re-merge 撞底座重写](methodology-remerge-stale-feature-across-subsystem-rewrite.md) — 取 master 结构+重放我的 delta
 - [eslint --fix 宽扫入并发既有 dirt](tooling-eslint-fix-broad-sweeps-concurrent-dirt.md) — 宽集只 check 不 fix
 - [lint-staged 已移除](tooling-lint-staged-revert-blocks-edit.md) — 2026-06-29 起无 pre-commit 门禁
@@ -114,10 +115,11 @@
 - [结构重构提交前跑架构守卫/全 backend](methodology-run-architecture-guards-before-structural-refactor-commit.md) — grep 源码形状/schema 完备性守卫不在直接目录
 - [现有代码无权威、别为将就它降格最佳方案](feedback-existing-code-has-no-authority-dont-accommodate.md) — 诡异症状=设计错证据
 - [剥离成可插拔前先核实抽取程度+缝位](methodology-verify-extraction-state-and-seam-before-pluginizing.md) — 先查是否已纯函数别重包装
-- [恢复 agent 永远 SendMessage 绝不 Agent tool 重派](feedback-resume-agent-always-sendmessage-never-agent-tool.md) — 已终止/完成 subagent 接续永远 SendMessage
-- [subagent transcript 超 5 MiB 就恢复不了](reference-subagent-transcript-5mib-gate-blocks-resume.md) — 报「No transcript found」但文件好端端在；`n7e=5242880` 闸门走 postBoundaryBuf 而子 agent 无 compact 边界→空；**单调越界非抖动**；治本设 `CLAUDE_CODE_DISABLE_PRECOMPACT_SKIP` 重启、治标裁连续尾切片
+- [Agent 恢复与接力分界：可调用上下文用 SendMessage；context-window 终态用新 agent 读旧证据](feedback-resume-agent-always-sendmessage-never-agent-tool.md) — 已终止/完成 subagent 接续永远 SendMessage
+- [Agent 两类容量终态：5 MiB 读取闸门可修；模型 context-window 400 必须换新 agent 接力](reference-subagent-transcript-5mib-gate-blocks-resume.md) — 报「No transcript found」但文件好端端在；`n7e=5242880` 闸门走 postBoundaryBuf 而子 agent 无 compact 边界→空；**单调越界非抖动**；治本设 `CLAUDE_CODE_DISABLE_PRECOMPACT_SKIP` 重启、治标裁连续尾切片
 
 ## project 现状 stub（权威看正式归属；landed 项细节在 docs/DESIGN/git，此处仅触发指针）
+
 - [领域包剥离执行技巧（token·telemetry landed）](methodology-domain-peel-execution-techniques.md) — 两型模板(SoT 反转 / 只读消费+module-split)+共通技巧+ratchet 与守卫两类坑
 - [state 降 foundation 叶子（landed master `9ec79010`, 2026-07-29）](project-state-to-foundation-handover.md) — 环 70/63→43/50·state 零环；**实质产出是判据形状的演化**（十轮复评没改一行 state 代码、全在改守卫怎么判）；方法 → skill `reshaping-a-bypassed-guard`，事故取证 → [[methodology-relocate-invariant-when-guard-cannot-keep-up]]
 - [续写重试（P2 landed master de37feff，P3-P7 待续）](project-continuation-retry-sequential-anchor.md) — 首块后 cut 合成 continuation 缝合
@@ -140,5 +142,6 @@
 - [反应式学习 TTL 生命周期 67afa1af + 后台 agent 结果 surfacing 故障](project-negotiation-learning-lifecycle-landed.md) — per-entry TTL+pin；[surfacing](methodology-background-agent-result-surfacing-failure.md) result 正文空且救不回
 
 ## 已删除记忆的话题去向
+
 通用工作原则 → user-rule + CLAUDE.md + skill `session-closeout` / `git-preference`。已归档完成叙事 → `docs/archive/memory/`。散落调试参考收编为 on-demand skills（`bun-node-runtime-gotchas` / `debugging-*` / `ghc-*`）。
 **两个从未存在的 memory 文件已改指正式归属**（2026-08-02，避免制造双源）：语言规则 `feedback-chinese-only-never-japanese` → user-rule `10-text-formatting`/`01-core-principles`；`project-unknown-endpoint-logging` → [spec/2026-07-14-unknown-endpoint-logging.md](../spec/2026-07-14-unknown-endpoint-logging.md) + `DESIGN.md` 活架构表。

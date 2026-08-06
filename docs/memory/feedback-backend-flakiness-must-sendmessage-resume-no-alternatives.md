@@ -1,14 +1,20 @@
 ---
 name: feedback-backend-flakiness-must-sendmessage-resume-no-alternatives
-description: Agent 因后端抖动失败必须且只能 SendMessage resume 原 agent，绝不派替代/换模型/找其他方案
-metadata: 
+description: 瞬时后端抖动与 context-window 终态必须分流，方法归 global rule 与 session-closeout
+metadata:
   node_type: memory
   type: feedback
   originSessionId: 2d448603-e703-4917-9c68-76e079e8823b
 ---
 
-任何 Agent 因**后端基础设施抖动**（API error、`NGHTTP2_CANCEL`、`Server error mid-response`、Stream closed、早退 terminated）而失败时，**必须且只能** `SendMessage` resume 那个原 agent。**没有余地**：不派替代 agent、不换模型家族兜底、不「找其他方案」、不因为「它老挂」就绕过。
+**事故证据一**：两个 GPT reviewer 因后端抖动各失败两次时，主会话在恢复原 agent 的同时又派 Claude 兜底；原 reviewer 随后正常恢复，兜底只造成重复工作并丢掉跨模型评审意图。
 
-**Why:** 用户明确硬性纠正（「no-self-review，任何后端抖动造成的 Agent 必须 SendMessage，没有余地，不允许寻找其他方案，记住」）。踩坑实况：两个 GPT reviewer 因后端抖动各挂两次，我在 resume 的**同时额外派了 Claude 兜底 reviewer**——那就是「寻找其他方案」的违规。事实证明两个 GPT agent resume 后都跑通了，兜底纯属多余 + 违规 + 浪费 token（4 个 reviewer 干 2 个的活）。后端抖动是**瞬时的**，resume 会从 transcript 恢复原 agent 的完整上下文继续；派替代则丢掉它已建立的心智模型、且违背异模型指派的原意（如 GPT reviewer 换成 Claude 就丢了跨模型对抗多样性）。
+**事故证据二**：另一个 reviewer 连续六次 `Server error mid-response` 后，主会话以成本为由停止恢复；用户纠正“后端被不断打断永远不是问题”，下一次恢复即正常继续。
 
-**How to apply:** 收到 `<task-notification>` status=failed 且 summary 含 API/stream/server error → 立刻 `SendMessage(to: 原agentId, ...)` resume，可在消息里补「精简输出降中断概率」之类提示，但**动作只有 resume 这一个**。反复挂也继续 resume，不设「重试上限后换方案」的逃生口。这是 user-rule 41 `resume-agent-via-SendMessage` 的**强化到无例外**版：常态退出可斟酌，后端抖动退出是**强制单一路径**。与 [[feedback-user-alignment-confirms-direction-not-detail-optimality]] 同属「审查/协作纪律不得便宜行事」。
+**反向边界**：2026-08-06 的明确 `400 … input exceeds the context window` 不是抖动；继续恢复不会缩短历史。该实例必须走新 agent 接力，而非套用本事故的恢复结论。
+
+**Why:** 关键不是失败次数，而是平台给出的机制证据。把瞬时错误误作终态会无谓重派；把容量终态误作瞬时错误会无限空转。
+
+**How to apply:** 错误分类、`SendMessage` 强制路径和 context-window 接力例外只维护在 global rule `61-agent-collaboration`／`31-subagent-economics` 与项目 skill `session-closeout` §6b。
+
+**Related:** [[feedback-resume-agent-always-sendmessage-never-agent-tool]] [[reference-subagent-transcript-5mib-gate-blocks-resume]]
