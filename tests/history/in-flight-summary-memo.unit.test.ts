@@ -92,12 +92,15 @@ describe("toEntrySummary memoization (M4)", () => {
     expect(toEntrySummary(pinned).pinned).toBe(true)
   })
 
-  test("1000 summaries traverse preview text once per entry instance", () => {
-    const messages = Array.from({ length: 200 }, (_, i) => ({
+  test("1000 summaries traverse every preview message and block once per entry instance", () => {
+    const finalPreview = "final preview text"
+    const messages = Array.from({ length: 200 }, (_, messageIndex) => ({
       role: "user" as const,
-      content: Array.from({ length: 10 }, (_, j) => ({
+      content: Array.from({ length: 10 }, (_, blockIndex) => ({
         type: "text" as const,
-        text: `block ${i}-${j} ${"x".repeat(80)}`,
+        // extractPreviewText scans messages from 199 down to 0, while summarizeMessage scans blocks from 0 up.
+        // Only the final block of message 0 is summarizable, forcing one complete 200 × 10 traversal.
+        text: messageIndex === 0 && blockIndex === 9 ? finalPreview : "",
       })),
     }))
     const heavy: HistoryEntry = {
@@ -116,14 +119,17 @@ describe("toEntrySummary memoization (M4)", () => {
     const visits = { messages: 0, blocks: 0 }
     setSummaryPreviewVisitObserverForTests((kind) => visits[kind]++)
     try {
-      for (let i = 0; i < 1000; i++) toEntrySummary(heavy)
-      expect(visits).toEqual({ messages: 1, blocks: 1 })
+      expect(toEntrySummary(heavy).previewText).toBe(finalPreview)
+      expect(visits).toEqual({ messages: 200, blocks: 2000 })
+
+      for (let i = 0; i < 999; i++) toEntrySummary(heavy)
+      expect(visits).toEqual({ messages: 200, blocks: 2000 })
 
       const fresh = updateInFlight("heavy", { _index: { derived: { attemptCount: 2 } } })
       expect(fresh).toBeDefined()
       if (!fresh) return
-      toEntrySummary(fresh)
-      expect(visits).toEqual({ messages: 2, blocks: 2 })
+      expect(toEntrySummary(fresh).previewText).toBe(finalPreview)
+      expect(visits).toEqual({ messages: 400, blocks: 4000 })
     } finally {
       setSummaryPreviewVisitObserverForTests(undefined)
     }
