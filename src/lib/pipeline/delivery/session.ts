@@ -11,6 +11,7 @@ import consola from "consola"
 
 import type { PipelineInfo } from "~/lib/history"
 
+import { readSyntheticKind } from "~/lib/pipeline/frame-origin"
 import { classifyStreamError } from "~/lib/stream"
 
 import type {
@@ -237,7 +238,9 @@ export function createDownstreamDeliverySession(options: CreateDownstreamDeliver
   }
 
   const applyWireFrame = (entry: DeliveryFrame): void => {
-    if (entry.provenance.kind === "candidate" && isRealContentFrame?.(entry.frame)) hasEmittedRealClientContent = true
+    if (entry.provenance.kind === "candidate" && readSyntheticKind(entry.frame) === undefined && isRealContentFrame?.(entry.frame)) {
+      hasEmittedRealClientContent = true
+    }
     const payload = parsePayload(entry.frame.data)
     if (!payload) return
     if (payload.type === "message_start") messageEnvelope = syntheticKind(entry) === "synthetic-message-start" ? "synthetic" : "real"

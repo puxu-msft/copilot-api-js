@@ -11,6 +11,7 @@ import {
   getDownstreamDeliverySession,
   type DownstreamDeliverySession,
 } from "~/lib/pipeline/delivery/session"
+import { tagFrameSynthetic } from "~/lib/pipeline/frame-origin"
 import { hasDeliveredSemanticContent } from "~/lib/pipeline/generation/semantic-content-gate"
 import { isClientContentFrame } from "~/lib/pipeline/request-timing"
 
@@ -81,6 +82,28 @@ describe("semantic-content gate delivery integration", () => {
     // Simulate the upstream RST here: no content_block_stop is sent.
 
     expect(hasDeliveredSemanticContent(session)).toBe(true)
+  })
+
+  test("a tagged synthetic rewrite delta does not close the pre-content recovery window", async () => {
+    const { sink, session } = createDelivery()
+
+    await sink.write(tagFrameSynthetic(contentDelta("proxy-generated"), "refusal-recovery"))
+
+    expect(hasDeliveredSemanticContent(session)).toBe(false)
+  })
+
+  test("a rejected candidate write does not claim client-visible semantic delivery", async () => {
+    const stream = {
+      writeSSE() {
+        return Promise.reject(new Error("client write failed"))
+      },
+    } as unknown as Parameters<typeof makeDeliverySseSink>[0]
+    const sink = makeDeliverySseSink(stream, { isRealContentFrame: (frame) => isClientContentFrame(frame, "anthropic") })
+    const session = getDownstreamDeliverySession(sink)
+    if (!session) throw new Error("delivery sink must expose its generation-owned session")
+
+    await expect(sink.write(contentDelta("not delivered"))).rejects.toThrow("client write failed")
+    expect(hasDeliveredSemanticContent(session)).toBe(false)
   })
 
   test("owner-allocated candidate writes flip the same delivery-scoped signal", async () => {
