@@ -17,7 +17,7 @@ execution_location: tool-bound nested worktree；成果通过 commit 集成，�
 ## 剩余项
 
 - [x] T0.0a：真实 shard JUnit file identity 与独立 disk manifest 双向对账已实现；second isolated repo 的 post-balance/pre-spawn exact-patch mutation以具体 `tests/alpha.unit.test.ts` 等 missing runtime identities 红，已 reverse-check/恢复。
-- [!] T0.0b：已逐一定位27条 skip source。26条有判据：18条为 `describe.skipIf(!isNativeHistorySearchAvailable())`，当前 native `.node` 不存在；1条为 `test.todo`；7条为 gated `describe.skip`。但 `tests/history/history-summary.it.test.ts:860` 的 `test.skip("FIFO eviction removes summary from cache")` 无注释、无条件和无历史说明，不能证明 `reviewed-environment` 或其它冻结 reason。按本任务禁令不得猜；等待此单一 identity 的用户/plan裁决后才能重写 canonical baseline。
+- [x] T0.0b：FIFO skip 已按裁决删除：V2 in-memory FIFO contract 已退役，V3 persistence/reaper 由别处覆盖；不进入 `allowed_skipped`。实际 discovery 重跑为 6880 executed／26 skipped，分类为 18 `native-unavailable`、1 `todo`、7 `whole-suite-skip`，无 `reviewed-environment`；canonical baseline 已重冻。删除待独立 review 后集成。
 - [~] T0.0c：producer 现逐 run 比较 testcase/suite skipped multiset，manifest 含 `runtime_identity_manifest`／`skipped_multiset` 聚合 artifacts，manifest write failure 为 rc=6且不删既存target；second isolated repo 的 reporter-only-refresh与dropped-shard mutations均点名missing JUnit artifact并完成恢复；T0.0e仍待后续。
 - [ ] T0.0e：明确留待后续实现 `scripts/validate-entry-evidence.ts`、合成 fixtures 与 EV-01～EV-28。
 - [ ] Commit -1 门表：T0.0c mutations、producer fixtures、typecheck、基础设施 tests、test:backend、独立 review。

@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "runner_git_blob": "201996e18033d27e1214cb0f8d688f6850d89840",
-  "minimum_executed": 6875,
+  "minimum_executed": 6880,
   "files": [
     "tests/anthropic/anchor-frame-factory.unit.test.ts",
     "tests/anthropic/anthropic-client.it.test.ts",
@@ -682,175 +682,60 @@
   ],
   "allowed_skipped": [
     {
-      "kind": "testcase",
-      "file": "tests/history/history-summary.it.test.ts",
-      "classname": "summary cache consistency",
-      "name": "FIFO eviction removes summary from cache",
-      "ordinal": 1,
-      "count": 1,
-      "reason": "reviewed-environment"
-    },
-    {
-      "kind": "testcase",
+      "kind": "suite",
       "file": "tests/history/search/daemon-entry-status.it.test.ts",
-      "classname": "runHistorySearchDaemon&apos;s tail-progress status (merged-state review blocker 3, 2026-07-22)",
-      "name": "lastSuccessfulTailAt becomes non-null after the daemon's initial catch-up tail round, before any client search has ever been issued",
-      "ordinal": 1,
-      "count": 1,
-      "reason": "reviewed-environment"
+      "suite_name": "runHistorySearchDaemon's tail-progress status (merged-state review blocker 3, 2026-07-22)",
+      "count": 2,
+      "reason": "native-unavailable"
     },
     {
-      "kind": "testcase",
-      "file": "tests/history/search/daemon-entry-status.it.test.ts",
-      "classname": "runHistorySearchDaemon&apos;s tail-progress status (merged-state review blocker 3, 2026-07-22)",
-      "name": "poisonedCount reflects a real poisoned row committed BEFORE the daemon starts (its initial catch-up tail must still isolate it, per B1)",
-      "ordinal": 1,
-      "count": 1,
-      "reason": "reviewed-environment"
-    },
-    {
-      "kind": "testcase",
+      "kind": "suite",
       "file": "tests/history/search/daemon-service.it.test.ts",
-      "classname": "crash isolation (resident-service model): kill -9 an independently-running sidecar, main process untouched",
-      "name": "SIGKILL the sidecar -> this process's own pid unchanged, client degrades to empty (never throws); starting a FRESH sidecar recovers search",
-      "ordinal": 1,
+      "suite_name": "crash isolation (resident-service model): kill -9 an independently-running sidecar, main process untouched",
       "count": 1,
-      "reason": "reviewed-environment"
+      "reason": "native-unavailable"
     },
     {
-      "kind": "testcase",
+      "kind": "suite",
       "file": "tests/history/search/daemon-service.it.test.ts",
-      "classname": "history-search-daemon service command: zero-flag defaults align with PATHS (single source of truth)",
-      "name": "dev form runs with NO flags and serves a query against the real default db/socket/index paths",
-      "ordinal": 1,
-      "count": 1,
-      "reason": "reviewed-environment"
+      "suite_name": "history-search-daemon service command: zero-flag defaults align with PATHS (single source of truth)",
+      "count": 2,
+      "reason": "native-unavailable"
     },
     {
-      "kind": "testcase",
-      "file": "tests/history/search/daemon-service.it.test.ts",
-      "classname": "history-search-daemon service command: zero-flag defaults align with PATHS (single source of truth)",
-      "name": "explicit-args form (temp paths, to stay off the operator's real install) really starts and serves a query",
-      "ordinal": 1,
-      "count": 1,
-      "reason": "reviewed-environment"
-    },
-    {
-      "kind": "testcase",
+      "kind": "suite",
       "file": "tests/history/search/daemon.it.test.ts",
-      "classname": "history-search sidecar daemon (Phase 1, standalone)",
-      "name": "a VACUUM between tail rounds does not lose or duplicate rows (keyset cursor's core justification over rowid)",
-      "ordinal": 1,
-      "count": 1,
-      "reason": "reviewed-environment"
+      "suite_name": "history-search sidecar daemon (Phase 1, standalone)",
+      "count": 5,
+      "reason": "native-unavailable"
     },
     {
-      "kind": "testcase",
+      "kind": "suite",
       "file": "tests/history/search/daemon.it.test.ts",
-      "classname": "history-search sidecar daemon (Phase 1, standalone)",
-      "name": "cursor persists to disk and a fresh daemon instance resumes without reprocessing",
-      "ordinal": 1,
-      "count": 1,
-      "reason": "reviewed-environment"
+      "suite_name": "merged-state review blockers (2026-07-22) — silent permanent data loss, real probes",
+      "count": 4,
+      "reason": "native-unavailable"
     },
     {
-      "kind": "testcase",
-      "file": "tests/history/search/daemon.it.test.ts",
-      "classname": "history-search sidecar daemon (Phase 1, standalone)",
-      "name": "daemon.search() is a thin pass-through to the caller-owned native index's search (Phase 2's uds-server calls this, never the index directly)",
-      "ordinal": 1,
-      "count": 1,
-      "reason": "reviewed-environment"
-    },
-    {
-      "kind": "testcase",
-      "file": "tests/history/search/daemon.it.test.ts",
-      "classname": "history-search sidecar daemon (Phase 1, standalone)",
-      "name": "tails, hydrates, and indexes conversation + response text — excludes upstream-only frames",
-      "ordinal": 1,
-      "count": 1,
-      "reason": "reviewed-environment"
-    },
-    {
-      "kind": "testcase",
-      "file": "tests/history/search/daemon.it.test.ts",
-      "classname": "history-search sidecar daemon (Phase 1, standalone)",
-      "name": "v3_operations is append-once for searchable content — no UPDATE path changes an already-tailed row's projection",
-      "ordinal": 1,
-      "count": 1,
-      "reason": "reviewed-environment"
-    },
-    {
-      "kind": "testcase",
-      "file": "tests/history/search/daemon.it.test.ts",
-      "classname": "merged-state review blockers (2026-07-22) — silent permanent data loss, real probes",
-      "name": "BLOCKER 1: a single poisoned manifest (bad format version) permanently wedges the tail -- every HEALTHY row after it is silently never indexed, forever, even across restarts",
-      "ordinal": 1,
-      "count": 1,
-      "reason": "reviewed-environment"
-    },
-    {
-      "kind": "testcase",
-      "file": "tests/history/search/daemon.it.test.ts",
-      "classname": "merged-state review blockers (2026-07-22) — silent permanent data loss, real probes",
-      "name": "BLOCKER 2 (page-boundary follow-up, 2026-07-22 merged-state review major): THREE same-millisecond rows, with pageSize smaller than that count, are ALL indexed by a SINGLE tailOnce() call -- not left for a second call to finish",
-      "ordinal": 1,
-      "count": 1,
-      "reason": "reviewed-environment"
-    },
-    {
-      "kind": "testcase",
-      "file": "tests/history/search/daemon.it.test.ts",
-      "classname": "merged-state review blockers (2026-07-22) — silent permanent data loss, real probes",
-      "name": "BLOCKER 2 (restart variant): the overlap-dedup state survives a daemon restart -- a fresh instance reading the persisted cursor does not re-lose the same-millisecond row",
-      "ordinal": 1,
-      "count": 1,
-      "reason": "reviewed-environment"
-    },
-    {
-      "kind": "testcase",
-      "file": "tests/history/search/daemon.it.test.ts",
-      "classname": "merged-state review blockers (2026-07-22) — silent permanent data loss, real probes",
-      "name": "BLOCKER 2: two operations committed in the SAME millisecond, indexed in one tail round, then discovered across TWO separate tail rounds in either lexicographic order -- neither is permanently lost",
-      "ordinal": 1,
-      "count": 1,
-      "reason": "reviewed-environment"
-    },
-    {
-      "kind": "testcase",
+      "kind": "suite",
       "file": "tests/history/search/search-rest-cutover.it.test.ts",
-      "classname": "GET /history/api/search — real end-to-end sidecar (Phase 4 cutover)",
-      "name": "History disabled still 400s before ever touching the sidecar client",
-      "ordinal": 1,
-      "count": 1,
-      "reason": "reviewed-environment"
+      "suite_name": "GET /history/api/search — real end-to-end sidecar (Phase 4 cutover)",
+      "count": 4,
+      "reason": "native-unavailable"
     },
     {
-      "kind": "testcase",
-      "file": "tests/history/search/search-rest-cutover.it.test.ts",
-      "classname": "GET /history/api/search — real end-to-end sidecar (Phase 4 cutover)",
-      "name": "a facet other than inbound returns empty + partial even with a reachable sidecar (projection has no data for it)",
-      "ordinal": 1,
-      "count": 1,
-      "reason": "reviewed-environment"
+      "kind": "suite",
+      "file": "tests/routes/messages/postcommit-truncation-shaping.it.test.ts",
+      "suite_name": "streamKeepaliveMode=empty_text (review LOW-1 — both modes required, not just default)",
+      "count": 3,
+      "reason": "whole-suite-skip"
     },
     {
-      "kind": "testcase",
-      "file": "tests/history/search/search-rest-cutover.it.test.ts",
-      "classname": "GET /history/api/search — real end-to-end sidecar (Phase 4 cutover)",
-      "name": "an unreachable sidecar (no process listening) degrades to empty + partial — 200, never 500",
-      "ordinal": 1,
-      "count": 1,
-      "reason": "reviewed-environment"
-    },
-    {
-      "kind": "testcase",
-      "file": "tests/history/search/search-rest-cutover.it.test.ts",
-      "classname": "GET /history/api/search — real end-to-end sidecar (Phase 4 cutover)",
-      "name": "source=inbound with a reachable sidecar returns genuine hits, mapped to full EntrySummary rows",
-      "ordinal": 1,
-      "count": 1,
-      "reason": "reviewed-environment"
+      "kind": "suite",
+      "file": "tests/routes/messages/postcommit-truncation-shaping.it.test.ts",
+      "suite_name": "streamKeepaliveMode=ping (review LOW-1 — both modes required, not just default)",
+      "count": 3,
+      "reason": "whole-suite-skip"
     },
     {
       "kind": "testcase",
@@ -859,7 +744,7 @@
       "name": "interleaved tool args never emit a content_block_delta on an already-stopped block",
       "ordinal": 1,
       "count": 1,
-      "reason": "reviewed-environment"
+      "reason": "todo"
     },
     {
       "kind": "testcase",
@@ -868,61 +753,7 @@
       "name": "(unnamed)",
       "ordinal": 1,
       "count": 1,
-      "reason": "reviewed-environment"
-    },
-    {
-      "kind": "testcase",
-      "file": "tests/routes/messages/postcommit-truncation-shaping.it.test.ts",
-      "classname": "streamKeepaliveMode=empty_text (review LOW-1 — both modes required, not just default) &gt; [GATED — requires block-level buffered-retry P1 Task 6 landed on master] post-commit truncation → defer-to-block-level consumption",
-      "name": "errorShapingEnabled=false → P1's partial-degrade path falls back to P1's own (or current) tail-frame format, untouched by error-shaping (golden lock still holds after P1 lands)",
-      "ordinal": 1,
-      "count": 1,
-      "reason": "reviewed-environment"
-    },
-    {
-      "kind": "testcase",
-      "file": "tests/routes/messages/postcommit-truncation-shaping.it.test.ts",
-      "classname": "streamKeepaliveMode=empty_text (review LOW-1 — both modes required, not just default) &gt; [GATED — requires block-level buffered-retry P1 Task 6 landed on master] post-commit truncation → defer-to-block-level consumption",
-      "name": "post-first-block-commit RST/truncation, block-level partial-degrade (cannot cleanly retry) → terminal failure tail frame MUST be error-shaping's buildCanonicalErrorFrame (G-3), not P1's own hand-built JSON",
-      "ordinal": 1,
-      "count": 1,
-      "reason": "reviewed-environment"
-    },
-    {
-      "kind": "testcase",
-      "file": "tests/routes/messages/postcommit-truncation-shaping.it.test.ts",
-      "classname": "streamKeepaliveMode=empty_text (review LOW-1 — both modes required, not just default) &gt; [GATED — requires block-level buffered-retry P1 Task 6 landed on master] post-commit truncation → defer-to-block-level consumption",
-      "name": "pre-commit-window RST/truncation, block-level judges replayable → replay succeeds, error-shaping decide() is never invoked (block-level absorbs the error in an earlier branch)",
-      "ordinal": 1,
-      "count": 1,
-      "reason": "reviewed-environment"
-    },
-    {
-      "kind": "testcase",
-      "file": "tests/routes/messages/postcommit-truncation-shaping.it.test.ts",
-      "classname": "streamKeepaliveMode=ping (review LOW-1 — both modes required, not just default) &gt; [GATED — requires block-level buffered-retry P1 Task 6 landed on master] post-commit truncation → defer-to-block-level consumption",
-      "name": "errorShapingEnabled=false → P1's partial-degrade path falls back to P1's own (or current) tail-frame format, untouched by error-shaping (golden lock still holds after P1 lands)",
-      "ordinal": 1,
-      "count": 1,
-      "reason": "reviewed-environment"
-    },
-    {
-      "kind": "testcase",
-      "file": "tests/routes/messages/postcommit-truncation-shaping.it.test.ts",
-      "classname": "streamKeepaliveMode=ping (review LOW-1 — both modes required, not just default) &gt; [GATED — requires block-level buffered-retry P1 Task 6 landed on master] post-commit truncation → defer-to-block-level consumption",
-      "name": "post-first-block-commit RST/truncation, block-level partial-degrade (cannot cleanly retry) → terminal failure tail frame MUST be error-shaping's buildCanonicalErrorFrame (G-3), not P1's own hand-built JSON",
-      "ordinal": 1,
-      "count": 1,
-      "reason": "reviewed-environment"
-    },
-    {
-      "kind": "testcase",
-      "file": "tests/routes/messages/postcommit-truncation-shaping.it.test.ts",
-      "classname": "streamKeepaliveMode=ping (review LOW-1 — both modes required, not just default) &gt; [GATED — requires block-level buffered-retry P1 Task 6 landed on master] post-commit truncation → defer-to-block-level consumption",
-      "name": "pre-commit-window RST/truncation, block-level judges replayable → replay succeeds, error-shaping decide() is never invoked (block-level absorbs the error in an earlier branch)",
-      "ordinal": 1,
-      "count": 1,
-      "reason": "reviewed-environment"
+      "reason": "whole-suite-skip"
     }
   ]
 }

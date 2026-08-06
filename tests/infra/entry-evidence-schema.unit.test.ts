@@ -29,6 +29,23 @@ describe("entry evidence discovery baseline v1", () => {
     expect(() => parseDiscoveryBaseline(raw)).toThrow("raw bytes are not canonical")
   })
 
+  test("rejects todo as a suite skip reason", () => {
+    const raw =
+      JSON.stringify(
+        {
+          schema_version: 1,
+          runner_git_blob: "a".repeat(40),
+          minimum_executed: 1,
+          files: ["tests/a.unit.test.ts"],
+          allowed_skipped: [{ kind: "suite", file: "tests/a.unit.test.ts", suite_name: "suite", count: 1, reason: "todo" }],
+        },
+        null,
+        2,
+      ) + "\n"
+
+    expect(() => parseDiscoveryBaseline(raw)).toThrow("suite skip reason is invalid")
+  })
+
   test("rejects a suite skip that fabricates testcase fields", () => {
     const raw =
       JSON.stringify(
