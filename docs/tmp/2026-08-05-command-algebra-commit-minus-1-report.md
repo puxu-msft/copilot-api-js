@@ -36,7 +36,8 @@
 - T0.0c discovery oracle：实际执行 `PARALLEL_TEST_ARTIFACT_DIR=/tmp/commit-minus-1-discovery-artifacts bun scripts/parallel-test.ts unit it http`，结果为 16 shards、6872 pass、6497 executed、27 skipped；从 runtime identity 和 JUnit 交叉冻结 675 files，runner blob 为 `201996e18033d27e1214cb0f8d688f6850d89840`。该命令不是 T0.0f 的15-run evidence。
 - T0.0c producer RED：schema test先因 `scripts/entry-evidence-schema` 不存在红。GREEN：strict parser 验 union、raw 2-space canonical bytes、runner blob与排序；`bun test tests/infra/entry-evidence-schema.unit.test.ts` 绿（3 pass）、`bun run typecheck`绿。
 - T0.0c producer fixtures：合成 temporary Git tree 的 15-run positive control 验证 manifest 原子写入、每 run artifact paths/hashes；单一缺 transfer artifact mutation 稳定 rc=5、stderr 含 `run artifact transfer is incomplete`、无 manifest。`bun test tests/infra/capture-entry-evidence.unit.test.ts` 绿（2 pass）。仍缺 runner target mutations。
-- 尚未执行 mutation。每个 mutation 的注入／恢复证据会在对应 task 完成时追加。
+- T0.0a post-balance mutation：冻结 patch `/tmp/commit-minus-1-post-balance-drop.patch` 注入的唯一 hunk 是 `const buckets = balance(...).map((bucket) => bucket.slice(1))`，`git diff` 已确认生效。后台 `unit it http` 在 300 秒后被 harness 转后台，最终 output 文件为空，未取得 rc 或 `missing runtime file identity: <file>`；因此没有目标 oracle 证据，不能计作 mutation 通过。恢复前 `git apply --reverse --check /tmp/commit-minus-1-post-balance-drop.patch` 成功且无输出；随后 reverse apply 成功，恢复后 `git diff` 为空，`bun test tests/infra/parallel-test-artifacts.unit.test.ts`（4 pass）和 `bun run typecheck` 绿。
+- 尚未执行其余 mutation。每个 mutation 的注入／恢复证据会在对应 task 完成时追加。
 
 ## 结构怪味扫描
 

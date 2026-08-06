@@ -25,7 +25,7 @@ execution_location: tool-bound nested worktree；成果通过 commit 集成，�
 ## 在途意图
 
 - 进度纪律偏差：`56a32ea9` 误漏本 progress 文件；未改写历史。下一提交单独记录该偏差，后续每个语义 commit 继续携带本文件，最终对账将标注这一处例外。
-- T0.0a 在途：`scripts/parallel-test.ts` 已让真实 shard 输出 JUnit，写出 `runtime-identity.json`，并以独立磁盘发现集双向比对。仍缺 post-balance mutation 与进程级回归测试。
+- T0.0a post-balance mutation observation：冻结 patch `/tmp/commit-minus-1-post-balance-drop.patch` 将 `buckets` 改为 `bucket.slice(1)`，已证实 hunk 生效。`unit it http` mutation run 超过 300 秒后 harness 转后台；task output 文件仍为空，未获得最终 rc 或具体缺失 identity，故该 mutation 未被目标 oracle 裁决。已先 reverse-check 再反向应用冻结 patch，恢复后 `git diff` 无 mutation；`parallel-test-artifacts.unit.test.ts` 与 typecheck 绿。不得将此记为正控通过，仍缺可观测的 post-balance mutation 证据。
 - T0.0b：主执行分支 `7c5891d0` 已裁 suite-only skip 的 v1 canonical representation。当前树遵守该契约：`kind="suite"` 仅产出 `file,suite_name,count,reason`，禁止 testcase 字段；`kind="testcase"` 才可含 `classname,name,ordinal`。suite multiset 的 `count` 取 JUnit suite 的真实 `skipped` 数，且仅 self-closing suite 可成为 suite variant。
 - T0.0c artifact transfer：主执行分支 `f197c8b5` 已冻结 `PARALLEL_TEST_ARTIFACT_DIR` 和 `REQUIRE_TEST_ARTIFACTS=1`。当前实现将 runner artifacts 原子落盘，wrapper 每 run 设置树外 `run-NN-artifacts` 并记录 `artifact_dir=`，成功 runner 缺 JUnit/runtime/skipped artifact 即将该 run 判失败。仍须 producer/validator 严格消费该 transfer。
 - T0.0c baseline/producer：独立真实 shard oracle 已冻结 675 files、6497 executed、27 reviewed-environment skips 与 runner blob `201996e18033d27e1214cb0f8d688f6850d89840`。`capture-entry-evidence.ts` 已严格解析 baseline、绑定 entry tree 的原始 bytes/hash/blob、以 REQUIRE_TEST_ARTIFACTS 消费 wrapper 记录的 transfer artifacts；尚未写 producer 合成 tests。
