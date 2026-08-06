@@ -120,6 +120,6 @@
 - **独立审计限制（历史时点）** — 初次记录时会话有“Do not call the AgentTool unless the user requested it”的运行时约束，故当时 §1 subagent audit 未执行；本记录没有把主会话自审冒充独立评审。
 - **限制随后解除、审计已执行并闭环** — 用户明确授权后，派两条正交独立评审：协议/doc↔code 报告 `docs/tmp/2026-08-05-websearch-closeout-review-protocol.md`（Round 1：0 blocker / 3 major；Round 2：剩 1 major；Round 3：0 blocker / 0 major，可定稿）；instruction/Git 报告 `docs/tmp/2026-08-05-websearch-closeout-review-skill.md`（Round 1：2 major，Round 2 剩 1 major，Round 3：0 blocker / 0 major，可定稿）。本轮编辑该 log，按投票规则不投证实票。
 
-## 2026-08-06 · 上游空正文 HTTP 499 有界重试（sha `cde97288`）
+## 2026-08-06 · 上游空正文 HTTP 499 有界重试（sha `d2607ec9`）
 
 - **V9 鉴别力正控** — ⚠️ **强观测但不投证实票**。本轮新增 classifier → production retry registry → driver 三层判据；先观察旧实现因 499 被分类为 `bad_request` 而三层红，再把目标机制精确变异为 `status === 498`，三层测试分别在分类结果、策略认领和 1000ms backoff／第二次 transport 调用处再次变红；反向应用冻结 patch 后三层恢复为绿。负向样本同时锁定非空 499 保持 `bad_request`、空正文 401/403 保持 `auth_expired`。本轮按本 skill 要求追加该 verification log，因而命中投票规则第 11 行“编辑过该目录”，只记录客观观测。｜结论：数据不足（正控已实际改变并验证测试形状）
