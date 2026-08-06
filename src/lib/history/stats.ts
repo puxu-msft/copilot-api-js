@@ -14,8 +14,14 @@ import {
   toEntrySummary,
 } from "./in-flight"
 import { getHistory } from "./queries"
+import { getDatabase } from "./sqlite/connection"
 import { recordToEntrySummary } from "./v3/projection"
 import { visitV3Summaries } from "./v3/store"
+import {
+  //
+  isSummaryProjectionReady,
+  queryPersistedStats,
+} from "./v3/summary-store"
 import { listRecentModelOperationTerminals } from "./v3/terminal-bus"
 
 function formatLocalTimestamp(ts: number): string {
@@ -90,14 +96,27 @@ export function getStats(): HistoryStats {
     recentActivity: [],
     activeSessions: 0,
   }
+  const overlay = [
+    ...listInFlight().map((entry) => toEntrySummary(entry)),
+    ...listRecentModelOperationTerminals().map((record) => recordToEntrySummary(record)),
+  ]
   let totalDurationMs = 0
   const sessions = new Set<string>()
   const seen = new Set<string>()
+  const db = getDatabase()
+  const projectionReady = isSummaryProjectionReady(db)
+  if (projectionReady) {
+    const persisted = queryPersistedStats(db, [...new Set(overlay.map((summary) => summary.id))])
+    Object.assign(stats, persisted.stats)
+    totalDurationMs = persisted.totalDurationMs
+    for (const sessionId of persisted.sessionIds) sessions.add(sessionId)
+  }
   const consume = (summary: ReturnType<typeof toEntrySummary>): void => {
     if (seen.has(summary.id)) return
     seen.add(summary.id)
     stats.totalRequests++
-    switch (requestBucket(summary)) {
+    const bucket = requestBucket(summary)
+    switch (bucket) {
       case "success": {
         stats.successfulRequests++
         break
@@ -117,6 +136,9 @@ export function getStats(): HistoryStats {
       case "none": {
         break
       }
+      default: {
+        bucket satisfies never
+      }
     }
     const usage = summary.usage
     stats.totalInputTokens += usage?.input_tokens ?? 0
@@ -127,9 +149,8 @@ export function getStats(): HistoryStats {
     if (model) stats.modelDistribution[model] = (stats.modelDistribution[model] ?? 0) + 1
     stats.endpointDistribution[summary.endpoint] = (stats.endpointDistribution[summary.endpoint] ?? 0) + 1
   }
-  for (const entry of listInFlight()) consume(toEntrySummary(entry))
-  for (const record of listRecentModelOperationTerminals()) consume(recordToEntrySummary(record))
-  visitV3Summaries(consume)
+  for (const summary of overlay) consume(summary)
+  if (!projectionReady) visitV3Summaries(consume)
   stats.averageDurationMs = stats.totalRequests === 0 ? 0 : totalDurationMs / stats.totalRequests
   stats.activeSessions = sessions.size
   return stats

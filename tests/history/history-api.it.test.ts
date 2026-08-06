@@ -177,6 +177,37 @@ describe("GET /api/entries", () => {
   // Filter logic is thoroughly tested in history-summary.test.ts.
   // API tests focus on query param parsing and passthrough.
 
+  test("rejects an unknown cursor with 400", async () => {
+    const res = await get("/api/entries?cursor=missing-cursor")
+    expect(res.status).toBe(400)
+    expect(await json<{ error: string }>(res)).toEqual({ error: "Unknown or filtered summary cursor: missing-cursor" })
+  })
+
+  test("rejects a cursor that does not satisfy the active filters", async () => {
+    const cursor = await createEntry("anthropic-messages", "cursor-model", [{ role: "user", content: "cursor" }])
+    const res = await get(`/api/entries?cursor=${cursor.id}&model=other-model`)
+    expect(res.status).toBe(400)
+    expect(await json<{ error: string }>(res)).toEqual({ error: `Unknown or filtered summary cursor: ${cursor.id}` })
+  })
+
+  test("accepts an in-flight cursor that satisfies the active filters", async () => {
+    const older = await createEntry("anthropic-messages", "cursor-model", [{ role: "user", content: "older" }])
+    const live: HistoryEntry = {
+      id: generateId(),
+      startedAt: older.startedAt + 1,
+      endpoint: "anthropic-messages",
+      state: "streaming",
+      active: true,
+      model: { requested: "cursor-model" },
+      clientRequest: { format: "anthropic-messages", model: "cursor-model", messages: [{ role: "user", content: "live" }] },
+    }
+    insertEntry(live)
+
+    const res = await get(`/api/entries?cursor=${live.id}&model=cursor-model`)
+    expect(res.status).toBe(200)
+    expect((await json<{ entries: Array<{ id: string }> }>(res)).entries.map((entry) => entry.id)).toContain(older.id)
+  })
+
   test("passes filter params to getHistorySummaries correctly", async () => {
     await createEntry("anthropic-messages", "claude-sonnet-4-20250514", [{ role: "user", content: "quantum" }])
     await createEntry("openai-chat-completions", "gpt-4o", [{ role: "user", content: "poetry" }])

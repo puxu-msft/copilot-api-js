@@ -10,33 +10,34 @@ import {
 import { createModelOperationRecorder } from "~/lib/context/model-operation-record"
 import {
   //
-  compressBytes,
-  decompressBytes,
-} from "~/lib/sqlite/compression"
-import {
-  //
   closeDatabase,
   getDatabase,
   openInMemoryDatabase,
 } from "~/lib/history/sqlite/connection"
+import { applyForwardMigrations } from "~/lib/history/sqlite/migrations/run"
 import {
   //
   clearV3Store,
   commitPreparedOperation,
+  drainV3SummaryBackfill,
   drainV3Writer,
   enqueueModelOperation,
+  ensureV3Schema,
   getV3Operation,
   getV3StoredOperation,
   getV3StoreStatus,
-  ensureV3Schema,
   listV3Operations,
   prepareModelOperation,
   recoverV3Journal,
   resetV3WriterForTests,
   startV3SummaryBackfill,
-  drainV3SummaryBackfill,
   V3_SCHEMA_SQL,
 } from "~/lib/history/v3/store"
+import {
+  //
+  compressBytes,
+  decompressBytes,
+} from "~/lib/sqlite/compression"
 
 function terminalRecord(id: string, shared = "same prompt") {
   const recorder = createModelOperationRecorder({ identity: { operationId: id, kind: "generation", createdAt: 100 } })
@@ -181,6 +182,7 @@ describe("History V3 semantic store", () => {
     }
     expect(before.summary_json).not.toBeNull()
     getDatabase().prepare("UPDATE v3_operations SET summary_json=NULL WHERE operation_id=?").run(record.identity.operationId)
+    await applyForwardMigrations(getDatabase())
 
     startV3SummaryBackfill(getDatabase(), 1)
     await drainV3SummaryBackfill()
