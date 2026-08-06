@@ -40,6 +40,7 @@ import {
   commitPreparedOperation,
   drainV3Writer,
   enqueueModelOperation,
+  enqueueModelOperationWithOutcome,
   getV3StoreStatus,
   prepareModelOperation,
   resetV3WriterForTests,
@@ -165,7 +166,7 @@ describe("persist-guard wired into V3 write path (Phase 4c)", () => {
     // Re-submit the SAME operationId through the production enqueue path with a
     // differing digest — this drives runDrain's conflict-vs-persist-guard branch.
     const record = terminalRecord("op-conflict-drain", { poison: "force-different-digest" })
-    await expect(enqueueModelOperation(record)).resolves.toBeUndefined() // never-throws
+    await expect(enqueueModelOperationWithOutcome(record)).resolves.toBe("conflict")
 
     const status = getV3StoreStatus()
     expect(status.conflicts).toBe(1)

@@ -890,7 +890,7 @@ async function runDrain(): Promise<void> {
                 throw error
               }
             })
-            return { ok: result.ok, transient: result.transient, conflict: attemptConflict }
+            return { ok: result.ok && !attemptConflict, transient: result.transient, conflict: attemptConflict }
           },
           // No shutdown signal here on purpose: importing `~/lib/shutdown` would
           // create a store→shutdown→state require cycle that reorders module init
