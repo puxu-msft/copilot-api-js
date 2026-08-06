@@ -100,8 +100,8 @@ function fixture(options: { unicodeSkips?: boolean; noncanonicalBaseline?: boole
       verdict: "green",
     }
   })
-  json(runtimeAggregate, { runs: [] })
-  json(skippedAggregate, { runs: [] })
+  json(runtimeAggregate, { runs: runs.map(({ ordinal, runtime_identity }) => ({ ordinal, ...runtime_identity })) })
+  json(skippedAggregate, { runs: runs.map(({ ordinal, skipped_multiset }) => ({ ordinal, ...skipped_multiset })) })
   const manifest = path.join(out, "evidence-manifest.json")
   json(manifest, {
     schema_version: 1,
@@ -347,7 +347,7 @@ function reconcileExecuted(planRows: ReadonlyMap<string, PlanMutationRow>, execu
 }
 
 describe("entry evidence validator C7-C9", () => {
-  test("accepts synthetic raw JUnit identities, skips, and logs before C10", () => {
+  test("accepts aggregate disk/runtime/skipped populations that agree with raw artifacts", () => {
     const f = fixture()
     try {
       const result = invoke(f)
@@ -684,6 +684,35 @@ describe("entry evidence validator C7-C9", () => {
     }
   })
 
+  test("rejects aggregate populations that self-hash but disagree with raw artifacts", () => {
+    for (const field of ["disk_manifest", "runtime_identity_manifest", "skipped_multiset"] as const) {
+      const f = fixture()
+      try {
+        const manifestPath = path.join(f.out, "evidence-manifest.json")
+        const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as Record<string, unknown>
+        const aggregatePath = (manifest[field] as Record<string, string>).path
+        const aggregate = JSON.parse(readFileSync(aggregatePath, "utf8")) as Record<string, unknown>
+        if (field === "disk_manifest") aggregate.files = ["tests/coordinated-tamper.unit.test.ts"]
+        else (aggregate.runs as Array<Record<string, unknown>>)[0].path = path.join(f.out, "coordinated-tamper.json")
+        json(aggregatePath, aggregate)
+        ;(manifest[field] as Record<string, string>).sha256 = hash(aggregatePath)
+        json(manifestPath, manifest)
+        git(f.tree, ["checkout", "master"])
+        const pointerPath = path.join(f.tree, HANDOVER)
+        writeFileSync(pointerPath, readFileSync(pointerPath, "utf8").replace(/manifest_sha256=[0-9a-f]{64}/, `manifest_sha256=${hash(manifestPath)}`))
+        git(f.tree, ["add", HANDOVER])
+        git(f.tree, ["commit", "-m", "refresh coordinated aggregate pointer"])
+        f.pointer = git(f.tree, ["rev-parse", "HEAD"])
+        git(f.tree, ["checkout", "--detach", f.entry])
+        const result = invoke(f)
+        expect(result.exitCode).toBe(7)
+        expect(error(result)).toBe("FAIL C10: aggregate artifact mismatch\n")
+      } finally {
+        cleanup(f)
+      }
+    }
+  })
+
   test("EV-23 through EV-25 reject each independently mutated top-level artifact", () => {
     for (const [id, field] of [
       ["EV-23", "disk_manifest"],
@@ -821,6 +850,33 @@ describe("entry evidence validator C7-C9", () => {
     }
   })
 
+  test("rejects nested same-basename artifacts while accepting direct-child symlink targets", () => {
+    for (const [field, condition, message, basename] of [
+      ["junit_artifacts", "C7", "JUnit file identity mismatch", "shard-01.xml"],
+      ["runtime_identity", "C7", "JUnit file identity mismatch", "runtime-identity.json"],
+      ["skipped_multiset", "C8", "skipped identity multiset mismatch", "skipped-multiset.json"],
+    ] as const) {
+      const f = fixture()
+      try {
+        const nested = path.join(f.out, "run-1", "nested")
+        mkdirSync(nested)
+        const source = path.join(f.out, "run-1", basename)
+        const replacement = path.join(nested, basename)
+        writeFileSync(replacement, readFileSync(source))
+        mutateManifest(f, (manifest) => {
+          const artifact = field === "junit_artifacts" ? ((manifest.runs as Array<Record<string, unknown>>)[0][field] as Array<Record<string, string>>)[0] : ((manifest.runs as Array<Record<string, unknown>>)[0][field] as Record<string, string>)
+          artifact.path = replacement
+          artifact.sha256 = hash(replacement)
+        })
+        const result = invoke(f)
+        expect(result.exitCode).toBe(6)
+        expect(error(result)).toBe(`FAIL ${condition}: ${message}\n`)
+      } finally {
+        cleanup(f)
+      }
+    }
+  })
+
   test("maps malformed JUnit content to C7", () => {
     const f = fixture()
     try {
@@ -872,6 +928,12 @@ describe("entry evidence validator C7-C9", () => {
       for (const field of ["junit_artifacts", "runtime_identity", "skipped_multiset"] as const) {
         const artifacts = Array.isArray(run[field]) ? run[field] : [run[field]]
         for (const artifact of artifacts as Array<Record<string, unknown>>) artifact.path = String(artifact.path).replace(original, link)
+      }
+      for (const field of ["runtime_identity_manifest", "skipped_multiset"] as const) {
+        const aggregate = manifest[field] as Record<string, string>
+        const runField = field === "runtime_identity_manifest" ? "runtime_identity" : "skipped_multiset"
+        json(aggregate.path, { runs: (manifest.runs as Array<Record<string, unknown>>).map((candidate) => ({ ordinal: candidate.ordinal, ...(candidate[runField] as Record<string, unknown>) })) })
+        aggregate.sha256 = hash(aggregate.path)
       }
       json(manifestPath, manifest)
       mutateLog(f, "artifact_dir", link)

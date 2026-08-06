@@ -276,14 +276,59 @@ function parseManifest(raw: string): Array<RunLog> {
   })
 }
 
-function artifactUnder(child: string, parent: string): boolean {
+function directArtifactChild(child: string, parent: string): boolean {
   if (!existsSync(parent) || !existsSync(child)) return false
   try {
-    const relative = path.relative(realpathSync(parent), realpathSync(child))
-    return relative !== "" && !relative.startsWith(`..${path.sep}`) && relative !== ".." && !path.isAbsolute(relative)
+    return path.dirname(realpathSync(child)) === realpathSync(parent)
   } catch {
     return false
   }
+}
+
+function parseAggregateRows(raw: string): Array<{ ordinal: number; path: string; sha256: string }> | undefined {
+  let value: unknown
+  try {
+    value = JSON.parse(raw)
+  } catch {
+    return undefined
+  }
+  if (!value || typeof value !== "object" || Array.isArray(value) || !exactKeys(value as Record<string, unknown>, ["runs"]) || !Array.isArray((value as Record<string, unknown>).runs))
+    return undefined
+  const rows = (value as { runs: unknown[] }).runs.map((row) => {
+    if (!row || typeof row !== "object" || Array.isArray(row) || !exactKeys(row as Record<string, unknown>, ["ordinal", "path", "sha256"])) return undefined
+    const entry = row as Record<string, unknown>
+    return Number.isSafeInteger(entry.ordinal) && (entry.ordinal as number) > 0 && typeof entry.path === "string" && path.isAbsolute(entry.path) && isSha(entry.sha256, 64)
+      ? { ordinal: entry.ordinal as number, path: entry.path, sha256: entry.sha256 }
+      : undefined
+  })
+  return rows.some((row) => row === undefined) ? undefined : (rows as Array<{ ordinal: number; path: string; sha256: string }>)
+}
+
+function uniqueAggregateRows(rows: Array<{ ordinal: number; path: string; sha256: string }>): boolean {
+  return new Set(rows.map((row) => row.ordinal)).size === rows.length && new Set(rows.map((row) => row.path)).size === rows.length
+}
+
+function sameAggregateRows(actual: Array<{ ordinal: number; path: string; sha256: string }>, expected: Array<{ ordinal: number; path: string; sha256: string }>): boolean {
+  const key = (row: { ordinal: number; path: string; sha256: string }) => `${row.ordinal}\0${row.path}\0${row.sha256}`
+  const actualKeys = actual.map(key).sort((left, right) => Buffer.from(left).compare(Buffer.from(right)))
+  const expectedKeys = expected.map(key).sort((left, right) => Buffer.from(left).compare(Buffer.from(right)))
+  return actual.length === 15 && expected.length === 15 && uniqueAggregateRows(actual) && uniqueAggregateRows(expected) && JSON.stringify(actualKeys) === JSON.stringify(expectedKeys)
+}
+
+function sameBytewiseStrings(left: string[], right: string[]): boolean {
+  return left.length === right.length && left.every((value, index) => Buffer.from(value).compare(Buffer.from(right[index])) === 0)
+}
+
+function parseDiskManifest(raw: string): string[] | undefined {
+  let value: unknown
+  try {
+    value = JSON.parse(raw)
+  } catch {
+    return undefined
+  }
+  if (!value || typeof value !== "object" || Array.isArray(value) || !exactKeys(value as Record<string, unknown>, ["files"]) || !Array.isArray((value as Record<string, unknown>).files)) return undefined
+  const files = (value as { files: unknown[] }).files
+  return files.every((file) => typeof file === "string") ? (files as string[]) : undefined
 }
 
 function parseRunArtifacts(
@@ -325,18 +370,21 @@ function parseRunArtifacts(
   const names = paths.map((file) => path.basename(file))
   if (
     new Set(paths).size !== paths.length ||
+    !names.every((name) => /^shard-\d{2}\.xml$/.test(name)) ||
     names.some((name, index) => index > 0 && Buffer.from(names[index - 1]).compare(Buffer.from(name)) >= 0) ||
     resolvedJunit.some(
-      (artifact) => !artifactUnder(artifact.path, artifactDir) || !existsSync(artifact.path) || !hashMatches(artifact.path, artifact.sha256),
+      (artifact) => !directArtifactChild(artifact.path, artifactDir) || !existsSync(artifact.path) || !hashMatches(artifact.path, artifact.sha256),
     ) ||
-    !artifactUnder(runtimeArtifact.path, artifactDir) ||
+    path.basename(runtimeArtifact.path) !== "runtime-identity.json" ||
+    !directArtifactChild(runtimeArtifact.path, artifactDir) ||
     !existsSync(runtimeArtifact.path) ||
     !hashMatches(runtimeArtifact.path, runtimeArtifact.sha256)
   )
     fail(7, "JUnit file identity mismatch", 6)
   if (
     !skippedArtifact ||
-    !artifactUnder(skippedArtifact.path, artifactDir) ||
+    path.basename(skippedArtifact.path) !== "skipped-multiset.json" ||
+    !directArtifactChild(skippedArtifact.path, artifactDir) ||
     !existsSync(skippedArtifact.path) ||
     !hashMatches(skippedArtifact.path, skippedArtifact.sha256)
   )
@@ -495,21 +543,34 @@ for (const run of manifest.runs as Array<Record<string, unknown>>) {
   if (logField(log, "claims_current_head") !== String(manifest.claims_current_head)) fail(9, "current-head claim mismatch", 7)
   if (typeof run.verdict !== "string" || run.verdict !== "green" || logField(log, "verdict") !== run.verdict) fail(9, "run verdict is not green", 7)
 }
-for (const [label, artifact] of [
-  ["disk manifest", manifest.disk_manifest],
-  ["runtime identity manifest", manifest.runtime_identity_manifest],
-  ["skipped multiset", manifest.skipped_multiset],
-] as Array<[string, unknown]>) {
-  if (
-    !artifact ||
-    typeof artifact !== "object" ||
-    typeof (artifact as { path?: unknown }).path !== "string" ||
-    typeof (artifact as { sha256?: unknown }).sha256 !== "string"
-  )
+function topLevelArtifact(label: string, artifact: unknown): { path: string; sha256: string } {
+  if (!artifact || typeof artifact !== "object" || !exactKeys(artifact as Record<string, unknown>, ["path", "sha256"])) fail(10, `${label} hash mismatch`, 7)
+  const value = artifact as Record<string, unknown>
+  if (typeof value.path !== "string" || !path.isAbsolute(value.path) || !isSha(value.sha256, 64) || !existsSync(value.path) || !hashMatches(value.path, value.sha256))
     fail(10, `${label} hash mismatch`, 7)
-  const { path: artifactPath, sha256: artifactHash } = artifact as { path: string; sha256: string }
-  if (!artifactPath || !artifactHash || !existsSync(artifactPath) || !hashMatches(artifactPath, artifactHash)) fail(10, `${label} hash mismatch`, 7)
+  return { path: value.path, sha256: value.sha256 }
 }
+
+const diskManifest = topLevelArtifact("disk manifest", manifest.disk_manifest)
+const runtimeAggregate = topLevelArtifact("runtime identity manifest", manifest.runtime_identity_manifest)
+const skippedAggregate = topLevelArtifact("skipped multiset", manifest.skipped_multiset)
+const diskFilesRaw = readUtf8(diskManifest.path)
+const runtimeAggregateRaw = readUtf8(runtimeAggregate.path)
+const skippedAggregateRaw = readUtf8(skippedAggregate.path)
+const runtimeRows = runtimeAggregateRaw === undefined ? undefined : parseAggregateRows(runtimeAggregateRaw)
+const skippedRows = skippedAggregateRaw === undefined ? undefined : parseAggregateRows(skippedAggregateRaw)
+const expectedRuntimeRows = (manifest.runs as Array<Record<string, unknown>>).map((run) => ({ ordinal: run.ordinal as number, ...(run.runtime_identity as { path: string; sha256: string }) }))
+const expectedSkippedRows = (manifest.runs as Array<Record<string, unknown>>).map((run) => ({ ordinal: run.ordinal as number, ...(run.skipped_multiset as { path: string; sha256: string }) }))
+if (
+  diskFilesRaw === undefined ||
+  parseDiskManifest(diskFilesRaw) === undefined ||
+  !sameBytewiseStrings(parseDiskManifest(diskFilesRaw)!, baseline.files) ||
+  runtimeRows === undefined ||
+  skippedRows === undefined ||
+  !sameAggregateRows(runtimeRows, expectedRuntimeRows) ||
+  !sameAggregateRows(skippedRows, expectedSkippedRows)
+)
+  fail(10, "aggregate artifact mismatch", 7)
 const entryBaselinePath = "tests/infra/entry-test-discovery-baseline.json"
 if (manifest.discovery_baseline_path !== entryBaselinePath) fail(11, "discovery baseline path differs from entry", 7)
 const runnerBlob = git(options.tree, ["rev-parse", `${options.entrySha}:scripts/parallel-test.ts`])
