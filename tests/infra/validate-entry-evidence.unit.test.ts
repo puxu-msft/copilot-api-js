@@ -445,22 +445,34 @@ describe("entry evidence validator C7-C9", () => {
     }
   })
 
-  test("accepts the exact runtime import closure and rejects entry import drift", () => {
-    const green = fixture()
-    try {
-      expect(invoke(green).exitCode).toBe(0)
-    } finally {
-      cleanup(green)
-    }
-    const drift = fixture()
-    try {
-      createEntryWithUnexpectedRuntimeImport(drift)
-      const result = invoke(drift)
-      expect(result.exitCode).toBe(7)
-      expect(error(result)).toBe("FAIL C11: validator provenance mismatch\n")
-      expect(existsSync(drift.receipt)).toBe(false)
-    } finally {
-      cleanup(drift)
+  test("rejects same-line second dynamic and static runtime imports", () => {
+    for (const mutate of [
+      (source: string) => source.replace('const junit = await import("./parallel-test-artifacts")', 'const junit = await import("./parallel-test-artifacts"); await import("./unexpected-runtime")'),
+      (source: string) => source.replace('import { createHash } from "node:crypto"', 'import { createHash } from "node:crypto"; import "./entry-evidence-receipt"'),
+    ]) {
+      const drift = fixture()
+      try {
+        const validatorPath = path.join(drift.tree, "scripts/validate-entry-evidence.ts")
+        git(drift.tree, ["checkout", "master"])
+        writeFileSync(validatorPath, mutate(readFileSync(validatorPath, "utf8")))
+        git(drift.tree, ["add", "scripts/validate-entry-evidence.ts"])
+        git(drift.tree, ["commit", "-m", "entry import drift"])
+        drift.entry = git(drift.tree, ["rev-parse", "HEAD"])
+        mutateManifest(drift, (manifest) => {
+          manifest.measured_sha = drift.entry
+          for (const run of manifest.runs as Array<Record<string, unknown>>) {
+            const log = run.log_path as string
+            writeFileSync(log, readFileSync(log, "utf8").replace(/^measured_sha=.*$/m, `measured_sha=${drift.entry}`))
+            run.log_sha256 = hash(log)
+          }
+        })
+        const result = invoke(drift)
+        expect(result.exitCode).toBe(7)
+        expect(error(result)).toBe("FAIL C11: validator provenance mismatch\n")
+        expect(existsSync(drift.receipt)).toBe(false)
+      } finally {
+        cleanup(drift)
+      }
     }
   })
 

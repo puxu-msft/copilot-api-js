@@ -69,13 +69,17 @@ const RUNTIME_DEPENDENCIES = [
 ]
 
 function runtimeImportSpecifiers(source: string): string[] | undefined {
-  const specifiers: string[] = []
-  for (const line of source.split("\n")) {
-    if (/^\s*import\s+type\b/.test(line)) continue
-    const match = /\b(?:from\s+|import\s*\(\s*)["'](\.[^"']+)["']\)?/.exec(line)
-    if (match) specifiers.push(match[1])
+  try {
+    const scan = new Bun.Transpiler({ loader: "ts" }).scan(source)
+    const localSpecifiers: string[] = []
+    for (const imported of scan.imports) {
+      if (imported.path.startsWith("./")) localSpecifiers.push(imported.path)
+      else if (!imported.path.startsWith("node:")) return undefined
+    }
+    return localSpecifiers.sort((left, right) => Buffer.from(left).compare(Buffer.from(right)))
+  } catch {
+    return undefined
   }
-  return specifiers.sort((left, right) => Buffer.from(left).compare(Buffer.from(right)))
 }
 
 function matchesEntryObject(tree: string, entrySha: string, runtimePath: string, entryPath: string): boolean {
