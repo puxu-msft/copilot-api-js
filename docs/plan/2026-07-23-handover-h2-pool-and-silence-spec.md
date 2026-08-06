@@ -1,8 +1,8 @@
 # 会话交接：h2 池事故簇 + 上游静默 spec（2026-07-23）
 
-> **状态：进行中**（B2 实施到 P4 Task 4.0 完成）。**核验基线：** master `c716d921` / 分支 `feat/upstream-silence-recovery` @ `796ef05b`（30 提交），**2026-07-28**。
-> **工作区**：隔离 worktree `.worktrees/upstream-silence-recovery`（**未合回 master**；node_modules 向上解析主树、**不是**依赖隔离）。分支上无未提交改动（除 gitignored 的 `.superpowers/sdd/progress.md` ledger）。主树有并发 peer 的未提交 WIP（`.claude/settings.json`、`docs/lifecycle.md`、`docs/memory/*` 等）——**不是本轮的，别动**。
-> **已跑门禁**（基线时刻）：`typecheck` 绿；`bun test --parallel .unit.test .it.test .http.test` = 6602 pass / 8 skip / 3 fail，**3 个失败单跑全过**（2 个 Bun worker SIGILL + 1 个负载敏感 UDS sidecar）。⚠ **`bun run test:backend` 的汇总计数不可信**（见 §0.2 末尾），取真实数请用上面那条直接命令。
+> **状态：进行中**。B2 基础设施已完成到 P4 Task 4.3a，并于 **2026-08-06** 按渐进策略 fast-forward 到 master `9d97c444`；**4.3b recovery dispatch 尚未接线，所以没有用户可观察的 B2 自动恢复行为**。
+> **工作区**：隔离 worktree `.worktrees/upstream-silence-recovery` 与 master 同为 `9d97c444`；仅剩未提交的 `.superpowers/sdd/progress.md` ledger，未进入主线。主树仍有并发 peer WIP，后续继续用隔离 worktree + 渐进合并。
+> **本阶段门禁**：typecheck、精确 lint、fast、backend 均通过；聚焦 delivery/reconcile/semantic-gate 36/36。History native 首轮因 worktree 加载主树旧构建产物而 18 fail，执行 `bun run build:history-search` 后全消失；随后一次 rate-limiter 负载时序红单跑 5/5 绿、完整重跑 0 fail。⚠ `parallel-test.ts` 汇总数会漂移，只把退出码/0 fail 当门，精确用例集合用 junit reporter。
 >
 > 交接给新会话继续。**最新实施真相在 §0.2（2026-07-28 更新）——先读它**；§0/§0.1 是 2026-07-23 的历史语境，其中「Q1 ≥125s」「B1+B2-P0 可开工」等表述已被 §0.2 supersede。**权威事实以代码 + §0.2 为准**。
 
