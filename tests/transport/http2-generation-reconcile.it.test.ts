@@ -266,42 +266,50 @@ describe("h2 generation-based retire-and-replace", () => {
       void serverStreamReleased.then(() => stream.end("last-chunk"))
     }
 
-    const responsePromise = http2Fetch(`${url}/reschedule-to-new-positive`, {})
-    await streamOpened.promise
-
     const setIntervalSpy = spyOn(globalThis, "setInterval")
     const clearIntervalSpy = spyOn(globalThis, "clearInterval")
-    setIntervalSpy.mockClear()
-    clearIntervalSpy.mockClear()
+    let retiring: ReturnType<typeof getH2SessionStatusSnapshot> = []
+    let oldCadence: ReturnType<typeof setInterval> | undefined
+    let cleared: Array<Parameters<typeof clearInterval>[0]> = []
+    let scheduled: Array<Parameters<typeof setInterval>> = []
+    try {
+      const responsePromise = http2Fetch(`${url}/reschedule-to-new-positive`, {})
+      await streamOpened.promise
+      oldCadence = setIntervalSpy.mock.results[0]?.value as ReturnType<typeof setInterval> | undefined
+      setIntervalSpy.mockClear()
+      clearIntervalSpy.mockClear()
 
-    // The production onUpstreamTransportChange subscription performs the
-    // reconcile synchronously; do not invoke it a second time in the test.
-    setUpstreamTransportConfig({ upstreamH2PingInterval: 0.015 })
+      // The production onUpstreamTransportChange subscription performs the
+      // reconcile synchronously; do not invoke it a second time in the test.
+      setUpstreamTransportConfig({ upstreamH2PingInterval: 0.015 })
+      retiring = getH2SessionStatusSnapshot()
+      cleared = clearIntervalSpy.mock.calls.map(([timer]) => timer)
+      scheduled = [...setIntervalSpy.mock.calls]
 
-    const retiring = getH2SessionStatusSnapshot()
-    const clearCount = clearIntervalSpy.mock.calls.length
-    const scheduled = [...setIntervalSpy.mock.calls]
-    setIntervalSpy.mockRestore()
-    clearIntervalSpy.mockRestore()
+      expect(oldCadence).toBeDefined()
+      expect(cleared).toEqual([oldCadence])
+      expect(scheduled).toHaveLength(1)
+      expect(scheduled[0][1]).toBe(15)
+
+      const callsBeforeManualTicks = pingSpy.mock.calls.length
+      const newCadence = scheduled[0][0] as () => void
+      newCadence()
+      newCadence()
+      expect(pingSpy.mock.calls.length).toBeGreaterThanOrEqual(callsBeforeManualTicks + 2)
+
+      releaseServerStream?.()
+      const res = await responsePromise
+      expect(res.ok).toBe(true)
+      expect(await res.text()).toBe("first-chunklast-chunk")
+    } finally {
+      setIntervalSpy.mockRestore()
+      clearIntervalSpy.mockRestore()
+    }
 
     expect(retiring).toHaveLength(1)
     expect(retiring[0].lifecycle).toBe("retiring")
     expect(retiring[0].effectivePingIntervalMs).toBe(15)
     expect(retiring[0].activeStreamCount).toBe(1)
-    expect(clearCount).toBe(1)
-    expect(scheduled).toHaveLength(1)
-    expect(scheduled[0][1]).toBe(15)
-
-    const callsBeforeManualTicks = pingSpy.mock.calls.length
-    const newCadence = scheduled[0][0] as () => void
-    newCadence()
-    newCadence()
-    expect(pingSpy.mock.calls.length).toBeGreaterThanOrEqual(callsBeforeManualTicks + 2)
-
-    releaseServerStream?.()
-    const res = await responsePromise
-    expect(res.ok).toBe(true)
-    expect(await res.text()).toBe("first-chunklast-chunk")
   })
 
   test("reconcile reschedules each RETIRING session's ping timer exactly ONCE per call, even for a session newly retired in this same call (nit-1 fix: no double clearInterval/setInterval churn)", async () => {
