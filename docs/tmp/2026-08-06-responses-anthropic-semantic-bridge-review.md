@@ -1,6 +1,6 @@
 # Responses ↔ Anthropic 语义桥规格评审记录
 
-> **状态**：最新 master thinking 审计增量的 4 MAJOR 已整改，待第五轮复审
+> **状态**：第五轮复审的 3 MAJOR 已整改，待第六轮复审
 >
 > **评审对象**：`docs/spec/2026-08-06-responses-anthropic-semantic-bridge.md`
 >
@@ -290,11 +290,41 @@
 - **失败场景**：profile 的 item registry 完备，coordinator 仍可删除 structured output／`context_management` 且 AC2 假绿。
 - **整改**：request profile 必填穷尽 `TopLevelCapabilityRegistry`，每字段显式 mapped／degraded／rejected；新增 P0-5 实测与用户／ADR 裁决门，禁止实施者猜 schema name／策略兼容；新增双向正负控制、mutation、守卫 21 与 AC24。
 
-### 第五轮待复审命题
+### 第五轮复审结果
 
-1. M16–M19 是否逐项闭合，且新增 contract 能让 planner／implementer 不临场发明承重规则。
-2. 目标 Responses grammar 是否同时防错误状态假绿，并允许零 delta／多 item／canonical-equivalent JSON 等正确状态通过。
-3. `sourceOrdinal` 与 reasoning 例外是否既保序，又不 false-red 拒绝目标协议的真实顺序约束。
-4. P0-5 是否把 structured-output name 与 `context_management` 策略分叉交给用户／ADR，而非由 implementer 自裁。
-5. 新增 unit、mutation、守卫 21–24 与 AC21–AC24 是否分别对 M16–M19 有判别力。
+- 架构 reviewer：0 BLOCKER、3 MAJOR。M16 已闭合；M17–M19 的方向正确，但仍有三个接口缝使 planner 必须临场补承重规则。
+- 目标 Responses grammar 能同时咬住错误状态并允许零 delta／多 item；P0-5 已把 structured-output name 与 `context_management` 策略分叉交给用户／ADR。
+- Reviewer 结论：**修复 MAJOR 后可合入；当前仍不可宣称“增量复核通过，可合入 master”**。
+
+### M20. Function arguments 专用 done 未进入 typed lifecycle
+
+- **原级别**：MAJOR。
+- **处置**：采纳（C），待复审。
+- **事实复核**：项目 `FunctionCallArgumentsDoneEvent` 已建模并进入 `ResponsesStreamEvent`；既有 accumulator 把专用 done 与 `output_item.done` 视为双终结。第五轮规格却让 function lifecycle progress 为 `never`，业务 handler 无法收到专用 done。
+- **失败场景**：错误实现只比较 delta 与 item-close，漏掉两种 done 冲突仍可通过；正确实现若尝试接专用 done，反而无法类型化。
+- **整改**：把 `FunctionCallArgumentsDoneEvent` 纳入 typed `item-progress` source；state 分别保存 delta、专用 done 与 item-close done，专用 done 不提前 finalize；item close 更新 state 后统一 canonical 比较并 finalize，重复同值幂等、重复异值／冲突／缺 item-close fail-loud；同步 mutation、守卫 24 与 AC23。
+
+### M21. Reasoning 顺序例外没有 profile-owned contract
+
+- **原级别**：MAJOR。
+- **处置**：采纳（C），待复审。
+- **事实复核**：第五轮 `OrderedRequestEmission` 只有 ordinal，profile 没有 ordering policy；散文引用了未定义的“per-pair capability 表”。
+- **失败场景**：实施者只能私设 kind 分桶，守卫无法区分合法 reasoning 前置与任意重排。
+- **整改**：新增 profile-owned、scope 固定为 `within-source-group` 的 `RequestOrderingPolicy<Emission>` 与 core `orderRequestEmissions`；emission 携 `sourceGroupOrdinal/sourceOrdinal`，排序 primitive 返回 branded sequence，coordinator 不能绕过。只允许组内完全保序或组内稳定 reasoning-first，后者在类型上只能移动 `reasoning`，保持两个分区内部顺序且禁止跨 user／assistant turn；同步双向正控、mutation、守卫 22 与 AC22。
+
+### M22. 顶层 registry 与 coordinator 形成双 owner
+
+- **原级别**：MAJOR。
+- **处置**：采纳（C），待复审。
+- **事实复核**：第五轮 coordinator 仍声称映射 scalar／instructions／system；capability rule 可读写整份 target，且没有 patch 边界、执行顺序或冲突裁决。
+- **失败场景**：registry key／disposition 齐全时，coordinator 仍可覆盖结果；两个 rule 冲突可 last-write-wins，AC24 假绿。
+- **整改**：registry 成为 top-level 唯一 owner；rule 只返回受限 patches＋disposition，mapped path 仅从 patches 派生，core 按与 registry key 精确相等的冻结 order 原子应用并拒绝重复 path；`tools+tool_choice` 为单一 capability。Coordinator 不接原始 payload／target，只接 branded ordered emissions并返回 target items；core 通过唯一 `targetItemsField` 最终装配，且 top-level field 与 items field 必须不相交。同步正负控制、mutation、守卫 21 与 AC24。
+
+### 第六轮待复审命题
+
+1. M20–M22 是否逐项闭合，且没有把类型擦除、双 owner 或隐式 policy 移到另一层。
+2. Function typed progress、双 done state 与 item-close finalize 是否同时防漏冲突和 false-red；缺 item-close 或专用 done 晚到的处置是否明确。
+3. `RequestOrderingPolicy` 是否只有两个可执行分支、强制走 branded sequence，reasoning-first 是否只能在同一 source group 内移动 reasoning 并稳定保留两分区顺序。
+4. Capability registry／冻结 order／受限 patches／items-only coordinator／唯一 items assembler 是否机械消除 top-level 双 owner 与 last-write-wins。
+5. 更新后的 mutation、正确状态、守卫 21–24 与 AC22–AC24 是否分别有判别力。
 6. 若无 BLOCKER／MAJOR，明确写“增量复核通过，可合入 master”。

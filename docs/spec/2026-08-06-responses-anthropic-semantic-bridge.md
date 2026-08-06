@@ -1,6 +1,6 @@
 # OpenAI Responses ↔ Anthropic Messages 语义桥规格
 
-> **状态**：最新 master thinking 审计增量的 4 MAJOR 已整改，待第五轮复审
+> **状态**：第五轮复审的 3 MAJOR 已整改，待第六轮复审
 >
 > **核验基线**：`b6fb0947686ea6620bfafb63a4fd151d18599483`（2026-08-06；定稿分支重基后的最新 master）
 >
@@ -160,36 +160,84 @@ interface ResponseBridgeContext extends RequestBridgeContext {
 }
 
 interface OrderedRequestEmission<Emission> {
+  sourceGroupOrdinal: number
   sourceOrdinal: number
   emission: Emission
 }
 
-type TopLevelCapabilityDisposition =
-  | { kind: "mapped"; targetField: string }
-  | { kind: "degraded"; reason: string; lostFields: readonly string[] }
+type RequestOrderingPolicy<Emission extends { kind: string }> =
+  | { kind: "preserve-source-order"; scope: "within-source-group" }
+  | {
+      kind: "reasoning-first"
+      scope: "within-source-group"
+      movableKind: Extract<Emission["kind"], "reasoning">
+      preserveMovableRelativeOrder: true
+      preserveOtherRelativeOrder: true
+    }
 
-type TopLevelCapabilityResult<TargetPayload> =
-  | { kind: "accepted"; target: TargetPayload; disposition: TopLevelCapabilityDisposition }
-  | { kind: "rejected"; error: BridgeCompatibilityError }
+declare const orderedRequestSequenceBrand: unique symbol
 
-interface TopLevelCapabilityRule<Payload, TargetPayload> {
-  map(input: {
-    payload: Payload
-    target: TargetPayload
-    context: RequestBridgeContext
-  }): TopLevelCapabilityResult<TargetPayload>
+type OrderedRequestSequence<Emission> = readonly OrderedRequestEmission<Emission>[] & {
+  readonly [orderedRequestSequenceBrand]: true
 }
 
-type TopLevelCapabilityRegistry<Payload, TargetPayload, KnownField extends string> = Readonly<{
-  [K in KnownField]: TopLevelCapabilityRule<Payload, TargetPayload>
+declare function orderRequestEmissions<Emission extends { kind: string }>(
+  emissions: readonly OrderedRequestEmission<Emission>[],
+  policy: RequestOrderingPolicy<Emission>,
+): OrderedRequestSequence<Emission>
+
+type TopLevelCapabilityDisposition =
+  | { kind: "mapped" }
+  | { kind: "degraded"; reason: string; lostFields: readonly string[] }
+
+interface TargetFieldPatch<TargetField extends string> {
+  path: TargetField
+  value: unknown
+}
+
+type TopLevelCapabilityResult<TargetField extends string> =
+  | {
+      kind: "accepted"
+      patches: readonly TargetFieldPatch<TargetField>[]
+      disposition: TopLevelCapabilityDisposition
+    }
+  | { kind: "rejected"; error: BridgeCompatibilityError }
+
+interface TopLevelCapabilityRule<Payload, TargetField extends string> {
+  map(input: {
+    payload: Payload
+    context: RequestBridgeContext
+  }): TopLevelCapabilityResult<TargetField>
+}
+
+type TopLevelCapabilityRegistry<Payload, Capability extends string, TargetField extends string> = Readonly<{
+  [K in Capability]: TopLevelCapabilityRule<Payload, TargetField>
 }>
 
-interface RequestPayloadCoordinator<Payload, Emission, TargetPayload> {
+declare function applyTopLevelCapabilities<Payload, TargetPayload, Capability extends string, TargetField extends string>(input: {
+  payload: Payload
+  emptyTarget: TargetPayload
+  registry: TopLevelCapabilityRegistry<Payload, Capability, TargetField>
+  order: readonly Capability[]
+  context: RequestBridgeContext
+}): AppliedTopLevelCapabilities<TargetPayload> | BridgeCompatibilityError
+
+declare function assembleRequestPayload<TargetPayload, TargetItem, TargetItemsField extends string>(input: {
+  targetBase: TargetPayload
+  targetItemsField: TargetItemsField
+  items: readonly TargetItem[]
+}): TargetPayload
+
+interface AppliedTopLevelCapabilities<TargetPayload> {
+  targetBase: TargetPayload
+  dispositions: readonly RequestBridgeDispositionRecord[]
+}
+
+interface RequestPayloadCoordinator<Emission, TargetItem> {
   coordinate(input: {
-    payload: Payload
-    itemEmissions: readonly OrderedRequestEmission<Emission>[]
+    itemEmissions: OrderedRequestSequence<Emission>
     context: RequestBridgeContext
-  }): TargetPayload | BridgeCompatibilityError
+  }): readonly TargetItem[] | BridgeCompatibilityError
 }
 
 interface WholeRenderer<E, Target> {
@@ -213,15 +261,21 @@ interface CompatibilityErrorRenderer {
 interface RequestBridgeProfile<
   Payload,
   TargetPayload,
+  TargetItem,
   SourceByKind extends object,
-  Emission,
-  KnownTopLevelField extends string,
+  Emission extends { kind: string },
+  KnownTopLevelCapability extends string,
+  KnownTopLevelTargetField extends string,
+  TargetItemsField extends string,
 > {
   readonly sourceFormat: "openai-responses" | "anthropic-messages"
   readonly targetFormat: "anthropic-messages" | "openai-responses"
   readonly itemHandlers: RequestHandlerRegistry<SourceByKind, Emission>
-  readonly topLevelCapabilities: TopLevelCapabilityRegistry<Payload, TargetPayload, KnownTopLevelField>
-  readonly coordinatePayload: RequestPayloadCoordinator<Payload, Emission, TargetPayload>
+  readonly orderingPolicy: RequestOrderingPolicy<Emission>
+  readonly topLevelCapabilities: TopLevelCapabilityRegistry<Payload, KnownTopLevelCapability, KnownTopLevelTargetField>
+  readonly topLevelCapabilityOrder: readonly KnownTopLevelCapability[]
+  readonly targetItemsField: TargetItemsField
+  readonly coordinatePayload: RequestPayloadCoordinator<Emission, TargetItem>
   readonly errorRenderer: CompatibilityErrorRenderer
   readonly unknownPolicy: "passthrough" | "reject"
 }
@@ -269,19 +323,21 @@ interface RequestSemanticHandler<Source, Emission> {
 }
 ```
 
-`RequestPayloadCoordinator` 拥有 item handler 无法独立完成的 payload 级不变量：
+顶层 capability registry 是 payload 级字段决策的唯一 owner。`applyTopLevelCapabilities` 从空 target 开始，按 profile 冻结的 `topLevelCapabilityOrder` 调每条 rule；rule 只能返回受 `KnownTopLevelTargetField` 限制的 patches 与 disposition，不能读取或修改整份 target。Core 在应用前检查：同一 rule 内或跨 rule 重复写同一 path 一律返回 `BridgeCompatibilityError(code:"invalid-lifecycle")`，不得 last-write-wins；patch 与 disposition 原子提交，失败时两者都不生效。`tools[] + tool_choice` 必须作为一个 capability 原子映射，确保声明与选择同源。
 
-- `tools[]` 与 `tool_choice` 由同一映射结果产生；
-- 顶层 scalar／instructions／system 映射；
+`RequestPayloadCoordinator` 只消费 item emissions，拥有以下剩余组装不变量：
+
 - Responses flat input → Anthropic turn fold，或 Anthropic turn → Responses flat item 展开；
 - continuation carrier 识别、affinity 校验与 source item reconstruction；
-- 聚合 item degradation，生成一次 payload 级 compatibility error 或诊断。
+- 生成目标 item 数组，并把 item degradation 交给 request diagnostics collector。
 
-每个 source block／item 在进入 handler 前分配单调递增且不可重写的 `sourceOrdinal`；handler 的一个 source 可以产生多个共享 ordinal 的 emissions，但 coordinator 必须按 ordinal 稳定发射。除目标协议有经独立 oracle 证实的硬顺序约束外，不得把 text、client-tool-call、client-tool-result 或 server-tool 结构按 kind 分桶后重排。若 reasoning 必须前置，该例外必须在 per-pair capability 表中显式声明，并有 source→target→source 的相对顺序 oracle；不能借此重排非 reasoning 结构。
+Coordinator 不接收原始 payload 或 `targetBase`，返回值只允许是 `readonly TargetItem[]`。Core 先调用 `applyTopLevelCapabilities` 得到无冲突的 `targetBase`，再调用 coordinator 得到 items，最后只通过 `assembleRequestPayload` 把 items 写入 profile 的唯一 `targetItemsField`。`KnownTopLevelTargetField` 不得包含 `TargetItemsField`，该集合相交时 profile machine guard 必须 fail；因此 coordinator 结构上不能重新映射或覆盖 scalar、instructions／system、tools／choice、structured output、`context_management` 等顶层字段，registry 也不能覆盖 items。
 
-已知顶层字段不经过 item unknown policy，因此每个 request profile 必须提供穷尽的 `TopLevelCapabilityRegistry`。第一批 registry 至少覆盖 structured output（Responses `text.format` ↔ Anthropic `output_config.format`）、`context_management`、instructions／system、temperature、top-p、top-k、stop sequences 与 cache-control。每项必须明确 `mapped`／`degraded`／`rejected`；`degraded` 必须进入 request disposition，禁止静默删除。Structured-output 的稳定 schema name，以及两端 `context_management` 策略的兼容表，属于 Phase 0 的用户／ADR 裁决项：实施者只提交候选、wire probe 与推荐，未裁决前不得猜映射，也不得把字段视为无消费者而删除。
+每个 source turn／flat-item group 分配单调递增且不可重写的 `sourceGroupOrdinal`，组内每个 source block／item 再分配 `sourceOrdinal`；一个 source 产生的多个 emissions 共享两者。Profile-owned `orderingPolicy` 只能取两个声明式分支，且 scope 固定为 `within-source-group`：`preserve-source-order` 在每组内完全按 ordinal 稳定发射；`reasoning-first` 只在同一组内把 reasoning emissions 稳定移动到非 reasoning emissions 之前，同时保持 reasoning 内部顺序与所有非 reasoning 结构的相对顺序。组本身始终按 `sourceGroupOrdinal` 保序，任何 emission 不得跨组移动。Coordinator 不得自行按 kind 分桶或添加第三种隐式例外。每个 per-pair profile 必须由独立 source→target→source oracle 冻结其 policy；无硬协议证据时默认 `preserve-source-order`。
 
-请求 profile 若缺 item registry、coordinator 或顶层 capability registry，不得接入生产。
+已知顶层 capability 不经过 item unknown policy，因此每个 request profile 必须提供穷尽的 `TopLevelCapabilityRegistry`。第一批 registry 至少覆盖 `tools+tool_choice`、structured output（Responses `text.format` ↔ Anthropic `output_config.format`）、`context_management`、instructions／system、temperature、top-p、top-k、stop sequences 与 cache-control。每项必须明确 `mapped`／`degraded`／`rejected`；`degraded` 必须进入 request disposition，禁止静默删除。Structured-output 的稳定 schema name，以及两端 `context_management` 策略的兼容表，属于 Phase 0 的用户／ADR 裁决项：实施者只提交候选、wire probe 与推荐，未裁决前不得猜映射，也不得把 capability 视为无消费者而删除。
+
+请求 profile 若缺 item registry、ordering policy、coordinator、顶层 capability registry 或与 registry key 精确相等的冻结 order，不得接入生产。
 
 ### 5.3 响应 handler 与精确分派
 
@@ -466,7 +522,7 @@ type ResponsesMessageLifecycleEvent = ItemLifecycleEvent<"message", ResponsesMes
 type ResponsesFunctionCallLifecycleEvent = ItemLifecycleEvent<
   "function_call",
   ResponsesFunctionCallOutput,
-  never,
+  FunctionCallArgumentsDoneEvent,
   FunctionCallArgumentsDeltaEvent
 >
 type ResponsesReasoningLifecycleEvent = ItemLifecycleEvent<
@@ -559,13 +615,16 @@ Target grammar 由 renderer core 所有，不复制到每个业务 handler。删
 
 ### 7.2 Function-call arguments 的权威终态
 
-Responses function-call state 按 `output_index` 独立保存 delta accumulator 与 `.done`／`output_item.done` 中的完整 `arguments`。终态裁决固定为：
+Responses function-call state 按 `output_index` 独立保存 delta accumulator、专用 `response.function_call_arguments.done` 的完整 `arguments`，以及 `response.output_item.done` whole item 中的完整 `arguments`。Adapter 把专用 done 映射为 typed `item-progress`，`source` 为 `FunctionCallArgumentsDoneEvent`；item close 的 source 仍为 `ResponsesFunctionCallOutput`。专用 done 只更新 state，不以“先到者”为准提前 finalize；`output_item.done` 更新 item-close state 后统一 finalize，若流缺 item-close 则在 source terminal flush 时按 invalid-lifecycle 策略收口。
 
-1. **零 delta**：完整 `.done.arguments` 是权威值，必须生成非空且语义正确的 Anthropic `tool_use.input`；不得因没有 delta 而输出空对象。
-2. **有 delta**：先拼接全部 delta；若 `.done.arguments` 同时存在，把两侧分别解析后按 canonical JSON value 比较。相等时使用 `.done.arguments` 作为权威完整值，delta 仅承担渐进展示；字节／空白不同但 JSON value 相同不得 false-red。
-3. **冲突或损坏**：两侧 JSON value 不同、任一宣称完整的终态无法解析，或 `.done` 与 `output_item.done` 给出不同完整值时，返回 `BridgeCompatibilityError(code:"invalid-lifecycle")`。若目标 body 尚未提交，不发送错误 tool input；若 partial JSON 已发出，按 11.1 的 body-committed typed terminal error 收口，绝不静默选择一侧。
+终态裁决固定为：
 
-Whole response 与 stream finalize 必须调用同一个 complete-arguments mapper。正控覆盖零 delta、有分片 delta且 canonical 等价、多个并行 function calls；反向控制覆盖 delta／done 冲突、两个 done 冲突与非法终态 JSON。把 `.done.arguments` fallback 删除后，零 delta 正控必须精确变红。
+1. **零 delta**：至少一个 done 的完整 `arguments` 是权威值，必须生成非空且语义正确的 Anthropic `tool_use.input`；不得因没有 delta 而输出空对象。
+2. **有 delta**：先拼接全部 delta；把 delta、专用 done 和 item-close done 中实际存在的各值分别解析后按 canonical JSON value 比较。全部相等时优先采用 item-close done，其次专用 done；delta 仅承担渐进展示。字节／空白不同但 JSON value 相同不得 false-red。
+3. **重复 done**：同一 done family 重复且 canonical value 相同视为幂等，不重复 finalize；相同 family 重复但值不同 fail-loud。
+4. **冲突或损坏**：任意两种来源的 JSON value 不同、任一宣称完整的终态无法解析，或 item-close 永不到达时，返回 `BridgeCompatibilityError(code:"invalid-lifecycle")`。若目标 body 尚未提交，不发送错误 tool input；若 partial JSON 已发出，按 11.1 的 body-committed typed terminal error 收口，绝不静默选择一侧。
+
+Whole response 与 stream finalize 必须调用同一个 complete-arguments mapper。正控覆盖零 delta 的“专用 done＋item-close 同值”、无专用 done而由 item-close 单独提供完整值、分片 delta 与两种 done canonical 等价、重复同值专用 done、多个并行 function calls；反向控制覆盖 delta／任一 done 冲突、两种 done 冲突、重复异值专用 done、专用 done 晚于 item-close、非法终态 JSON 与缺 item-close。把专用 done 从 typed lifecycle 删除、忽略 item-close fallback 或恢复先到者 finalize 后，对应正控／冲突 mutation 必须精确变红。
 
 ### 7.3 Web Search lifecycle disposition
 
@@ -982,10 +1041,9 @@ oracle 同时观察内部与外层：
 - Anthropic delta alias 直接对 outer `StreamEvent` 使用 nested `Extract<{delta:{type:…}}>`，使合法 delta 类型化为 `never`；
 - response compatibility error 发生后仍启动 hedge recovery／continuation 或新增 dispatch；
 - 目标 Responses renderer 删除 message `output_item.added`、`content_part.added` 或 reasoning `reasoning_summary_part.added`，或把 incomplete 发成 `response.completed`；
-- request coordinator 按 emission kind 分桶，把 `tool→text` 或 `text→tool→text` 重排；
-- function-call finalize 忽略 `.done.arguments`，使合法零 delta 流生成空 input；
-- function-call delta 与 done 冲突时静默任选一侧；
-- 顶层 capability registry 删除 structured output／`context_management` key，或把 degraded 字段改成无 disposition 的 silent drop。
+- request profile 缺 `orderingPolicy`、coordinator 绕过 `orderRequestEmissions`，或 `reasoning-first` 跨 `sourceGroupOrdinal` 移动、移动非 reasoning kind／破坏任一组内分区相对顺序；
+- function-call lifecycle 删除 `FunctionCallArgumentsDoneEvent` progress source，先到的 done 提前 finalize，忽略 item-close fallback，或 delta／两种 done 冲突时静默任选一侧；
+- 顶层 capability registry 删除 structured output／`context_management` key、冻结 order 缺 key／重复 key、两个 rule 写同一 target path、registry 写 `targetItemsField`、coordinator 返回完整 target 覆盖顶层，或把 degraded capability 改成无 disposition 的 silent drop。
 
 每次 mutation 必须确认失败来自目标机制，而非旁路断言。
 
@@ -1007,9 +1065,9 @@ oracle 同时观察内部与外层：
 - type-level fixture 证明 `NarrowAnthropicDeltaEvent<"text_delta">` 接受 text delta、拒绝 thinking delta，且结果不是 `never`；
 - 有前置 retry／hedge fixture 保留既有 dispatch；compatibility error 发生后的 dispatch delta=0，当前 candidate 无 recovery／continuation；
 - 官方 OpenAI SDK accumulator 接受完整 message／reasoning／function lifecycle，完成态与未完成态订阅各收到匹配 terminal；
-- 双向 `tool→text`、`text→tool→text` 与多工具交错保持非 reasoning block／item 相对顺序；显式 reasoning 顺序例外不重排兄弟 text／tool；
-- function call 零 delta 从 `.done.arguments` 恢复完整 input；分片 delta 与 canonical-equivalent done 不被误拒；
-- structured output／`context_management` 的每个已知字段有 mapped／degraded／rejected disposition，合法的无直接等价字段能带诊断继续，而不是全部 false-red 拒绝。
+- `preserve-source-order` 对双向 `tool→text`、`text→tool→text` 与多工具交错保持组内全序；`reasoning-first` 只在同一 source group 内稳定移动 reasoning 分区，不改变两分区内部顺序或跨 user／assistant turn 移动；
+- function call 零 delta 的“专用 done＋item-close 同值”与“无专用 done、仅 item-close 提供完整值”均恢复完整 input；分片 delta、重复同值专用 done与 canonical-equivalent 三源不被误拒；
+- 顶层 capability 的冻结 order 与 registry key 精确相等；多个 rule 写不同 path 可原子应用，合法 degraded capability 带 disposition 继续；coordinator item 组装不改变任何 top-level patch。
 
 ### 15.4 端到端
 
@@ -1046,10 +1104,10 @@ Responses response
 18. request diagnostics collector 必须用 try/finally 恰好冻结一次，canonical hash 不含 id；
 19. lifecycle source map 必须按 semantic kind／phase 给业务 handler typed source；Web Search whole source包含 complete/incomplete union；Anthropic nested delta 必须先提 outer event、再重建窄 delta，type-level 正控证明非 `never`；
 20. 正确样本必须证明守卫不会 false-red；
-21. request profile 必须提供与已知顶层字段集合精确相等的 `TopLevelCapabilityRegistry`；`degraded` 必须产生 disposition，删除 registry key 或 silent drop mutation 必须变红；
-22. request emissions 必须携带 immutable `sourceOrdinal`，coordinator 稳定保序；只有经 per-pair oracle 冻结的 reasoning 例外可改变顺序，非 reasoning 相对顺序守卫不得被例外绕过；
+21. request profile 的 `TopLevelCapabilityRegistry` key、冻结 order 与已知 capability 集合必须精确相等；rule 只返回受限 patches＋disposition，core 拒绝重复 path、order 重复／遗漏和 top-level field 与 `targetItemsField` 相交；coordinator 只返回 items。任一绕过或 silent drop mutation 必须变红；
+22. request emissions 必须携带 immutable `sourceGroupOrdinal/sourceOrdinal`，profile 必填 scope=`within-source-group` 的 `RequestOrderingPolicy<Emission>`，core 必须先调用 `orderRequestEmissions` 并产出 branded sequence。Policy 仅允许组内完全保序或组内稳定 reasoning-first；跨组移动、移动其他 kind、破坏任一组内分区顺序或绕过 branded sequence 的 mutation 必须变红；
 23. 目标 Responses renderer 必须满足 message／reasoning／function／terminal lifecycle grammar，并通过官方 OpenAI SDK accumulator；删必需 added／done 事件、terminal type/status 不一致的 mutation 必须变红；
-24. function-call finalize 必须把 `.done.arguments` 作为零 delta fallback，并校验 delta／done canonical JSON 一致性；冲突走 `invalid-lifecycle`，忽略 fallback mutation 必须变红。
+24. `ResponsesFunctionCallLifecycleEvent` 必须把 `FunctionCallArgumentsDoneEvent` 作为 typed progress source；state 同时记录 delta、专用 done 与 item-close done，直到 item close 统一 finalize。忽略任一来源、先到者 finalize、异值重复或三源冲突 mutation 必须变红。
 
 ## 17. 必要性命题与架构选择
 
@@ -1133,6 +1191,6 @@ ADR 旧决策和当时证据保留原文，新注解只说明后续事实如何�
 - AC19：旧 per-structure translator 分支在对应 family 迁移提交中删除，无长期双轨；
 - AC20：typecheck、精确 lint、架构守卫、backend 档和客户端 E2E 全部通过；
 - AC21：目标 Responses stream 对 message／reasoning／function call 发出完整 added／delta／done 生命周期，completed／incomplete terminal 的 event type 与 payload status 一致；官方 OpenAI SDK accumulator 与事件订阅正控通过，删任一必需事件的 mutation 变红；
-- AC22：双向 request translation 以 immutable `sourceOrdinal` 保留非 reasoning text／tool 相对顺序；`tool→text`、`text→tool→text`、多工具交错正控通过，按 kind 分桶重排 mutation 变红；
-- AC23：Responses→Anthropic function-call stream 在零 delta 时用 `.done.arguments` 恢复完整 input，在有 delta 时校验 canonical JSON 一致；等价表示不 false-red，冲突返回 `invalid-lifecycle`，忽略 fallback mutation 变红；
-- AC24：每个 request profile 的顶层 capability registry 穷尽已知字段；structured output 与 `context_management` 经 Phase 0 实测和用户／ADR 裁决后双向 mapped／degraded／rejected，无 silent drop；删除 registry key或吞掉 degradation disposition 的 mutation 变红。
+- AC22：双向 request translation 以 immutable `sourceGroupOrdinal/sourceOrdinal` 与 profile-owned scope=`within-source-group` 的 `RequestOrderingPolicy` 排序；无例外 profile 保持组内全序，`reasoning-first` 只在组内稳定移动 reasoning 且保留两个分区内部顺序，组间全序永不改变；缺 policy、绕过 branded core ordering、跨组移动、移动其他 kind 或破坏组内分区顺序的 mutation 变红；
+- AC23：Responses→Anthropic function-call typed lifecycle 接收专用 arguments done progress 与 item-close done；零 delta 的“专用 done＋item-close 同值”与“无专用 done、仅 item-close 提供完整值”、分片 delta／重复同值专用 done／canonical-equivalent 三源均恢复完整 input；冲突、专用 done 晚于 item-close 或缺 item-close 返回 `invalid-lifecycle`，删除 typed done、忽略 item-close fallback 或先到者 finalize mutation 变红；
+- AC24：每个 request profile 的 capability registry／冻结 order／已知 capability 集合精确相等，registry 是 top-level 唯一决策源，rule 只产受限 patch＋disposition，core 原子应用并拒绝 path 冲突；coordinator 只产 items 且 items field 与 top-level fields 不相交。Structured output 与 `context_management` 经 Phase 0 实测和用户／ADR 裁决后双向 mapped／degraded／rejected，无 silent drop；任一双 owner、冲突覆盖或吞 disposition mutation 变红。
