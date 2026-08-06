@@ -10,6 +10,6 @@ This checkpoint versions the frozen validator CLI parser plus C1-C6: pointer obj
 - `bun run typecheck` passed.
 - `bunx prettier --check scripts/validate-entry-evidence.ts scripts/entry-evidence-receipt.ts tests/infra/validate-entry-evidence.unit.test.ts` passed.
 
-## Remaining work
+## Completion status
 
-C7-C11 and EV-16 through EV-28 are deliberately unimplemented. The validator always stops at C7 after C1-C6, never writes a receipt, and therefore cannot be used as a green T0.0e validator. EV-01, EV-14, and EV-15 still need dedicated mutation tests even though their C1/C6 production branches exist. `bun run test:backend` was intentionally not run because this is a partial checkpoint, not task completion.
+C1-C11 are implemented and the positive synthetic graph writes receipt v1 only after all conditions pass. EV-01 through EV-28 each have a focused mutation assertion with the frozen condition message; the structured mutation source mechanically asserts the planned condition counts, unique ownership, no duplicate/orphan IDs, and zero forbidden action terms. Receipt collision returns rc=8 without replacing the pre-existing receipt. `bun run test:backend` remains intentionally unrun because it is a Commit -1 integrated gate, not a T0.0e-only fixture check; C7-C11 are verified solely against synthetic artifacts.

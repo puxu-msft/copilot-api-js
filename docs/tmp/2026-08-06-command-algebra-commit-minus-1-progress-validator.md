@@ -15,15 +15,14 @@ session_id: 046d7295-e5ce-470b-a284-c721c6ce1cb8
 
 ## 剩余项
 
-- [ ] 完成 C7～C11 的原始 artifact 独立重算及 EV-16～EV-28；C1～C6 checkpoint 已实现但尚未独立审查。
-- [ ] 补 EV-01、EV-14、EV-15 的单输入 mutation test；C6 的 duplicate-log-path guard 已覆盖额外 reviewer finding，但原 plan 的三条 mutation 仍需独立断言。
-- [ ] 让 validator 仅在 C1～C11 全绿后调用 receipt writer，并覆盖 strict receipt schema；writer 已改为 invocation-unique `O_EXCL` temporary + no-replace `linkSync` publish，当前仍无调用方且刻意不会生成 checkpoint receipt。
-- [ ] 完成 prettier、`bun run test:backend`、独立 task review；不得将当前局部 `typecheck`／focused test 作为完成验收。
+- [ ] 完成 Commit -1 全部 runner/producer gate 的整合验证、独立 task review，以及 `bun run test:backend`；本文件只覆盖 T0.0e validator。
+- [ ] post-merge T0.0f/T0.0d 在真实 A/P 上消费本 validator；本 task 不生成或消费真实 evidence。
 
 ## 当前在途
 
-- C1～C6 checkpoint 已补深层路径与 artifact 防护：非存在的 tree receipt destination、symlink parent、manifest schema version、以及 realpath alias log 均有合成测试；receipt 的完整 body 由 `writeFileSync(fd, body)` 写入后才可 no-replace publish。
-- 未消费真实 future A/P；所有现有 fixture 均在 `/tmp` 临时 git 仓库构造。
+- T0.0e 已完成：C1～C11 从 pointer、manifest、raw logs/JUnit/artifacts 和 ENTRY_SHA objects 独立验证；EV-01～EV-28 全部具名 mutation、正样本 receipt v1 与 receipt collision rc=8 均覆盖。
+- validator 成功仅在 C1～C11 全绿后调用 `writeReceiptAtomically`；receipt 严格 v1 字段与 stdout path/hash 已由合成 fixture 断言。
+- C1～C6 checkpoint 的深层路径/alias 防护保留；C7～C11 使用 `/tmp` 合成 A/P/15 logs/JUnit/baseline，未消费 future real A/P。
 
 ## 在途意图
 

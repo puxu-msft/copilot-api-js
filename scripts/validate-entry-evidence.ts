@@ -3,6 +3,10 @@ import { createHash } from "node:crypto"
 import { existsSync, readFileSync, realpathSync } from "node:fs"
 import path from "node:path"
 
+import { writeReceiptAtomically } from "./entry-evidence-receipt"
+import { parseDiscoveryBaseline } from "./entry-evidence-schema"
+import { parseJUnit } from "./parallel-test-artifacts"
+
 interface Options {
   entrySha: string
   pointerSha: string
@@ -59,6 +63,12 @@ function isSha(value: unknown, length: number): value is string {
 }
 function sha256(filePath: string): string {
   return createHash("sha256").update(readFileSync(filePath)).digest("hex")
+}
+function sha256Bytes(value: string): string {
+  return createHash("sha256").update(value).digest("hex")
+}
+function logField(log: string, name: string): string | undefined {
+  return new RegExp(`^${name}=([^\\n]+)$`, "m").exec(log)?.[1]
 }
 function exactKeys(value: Record<string, unknown>, keys: Array<string>): boolean {
   const actual = Object.keys(value)
@@ -183,4 +193,93 @@ for (const run of runs) {
   if (sha256(canonicalLogPath) !== run.log_sha256) fail(6, "run log hash mismatch", 5)
 }
 if (new Set(canonicalLogPaths).size !== runs.length) fail(6, "run log paths are not unique", 5)
-fail(7, "JUnit identity validation is not implemented in this checkpoint", 6)
+
+const manifest = JSON.parse(readFileSync(pointer.manifestPath, "utf8")) as Record<string, unknown>
+const baselineRawForRuntime = git(options.tree, ["show", `${options.entrySha}:tests/infra/entry-test-discovery-baseline.json`])
+if (baselineRawForRuntime === undefined) fail(11, "discovery baseline hash mismatch", 7)
+let baseline
+try {
+  baseline = parseDiscoveryBaseline(`${baselineRawForRuntime}\n`)
+} catch {
+  fail(11, "discovery baseline hash mismatch", 7)
+}
+for (const run of manifest.runs as Array<Record<string, unknown>>) {
+  const junitArtifacts = run.junit_artifacts as Array<{ path: string }>
+  const junit = junitArtifacts.map((artifact) => parseJUnit(readFileSync(artifact.path, "utf8"), options.tree))
+  const files = [...new Set(junit.flatMap((item) => item.files))].sort()
+  if (JSON.stringify(files) !== JSON.stringify(baseline.files)) fail(7, "JUnit file identity mismatch", 6)
+  const runtime = JSON.parse(readFileSync((run.runtime_identity as { path: string }).path, "utf8")) as { files: string[] }
+  if (JSON.stringify(runtime.files) !== JSON.stringify(files)) fail(7, "JUnit file identity mismatch", 6)
+  const skipped = JSON.parse(readFileSync((run.skipped_multiset as { path: string }).path, "utf8")) as {
+    executed: number
+    skipped: number
+    skipped_identities: unknown[]
+  }
+  const actualExecuted = junit.reduce((sum, item) => sum + item.executed, 0)
+  const actualSkipped = junit.reduce((sum, item) => sum + item.skipped, 0)
+  const actualIdentities = junit.flatMap((item) => item.skippedIdentities)
+  const expectedIdentities = baseline.allowed_skipped.map(({ reason: _reason, ...identity }) => identity)
+  if (
+    actualExecuted !== skipped.executed ||
+    actualSkipped !== skipped.skipped ||
+    actualExecuted !== run.executed ||
+    actualSkipped !== run.skipped ||
+    JSON.stringify(actualIdentities) !== JSON.stringify(skipped.skipped_identities) ||
+    JSON.stringify(actualIdentities) !== JSON.stringify(expectedIdentities) ||
+    actualExecuted < baseline.minimum_executed
+  )
+    fail(8, "skipped identity multiset mismatch", 6)
+  const log = readFileSync(run.log_path as string, "utf8")
+  if (logField(log, "canonical_command") !== manifest.canonical_command || manifest.canonical_command !== "bun scripts/parallel-test.ts unit it http")
+    fail(9, "canonical command mismatch", 7)
+  if (logField(log, "evidence_timing") !== "closeout") fail(9, "evidence timing mismatch", 7)
+  if (logField(log, "measured_sha") !== options.entrySha) fail(9, "measured SHA mismatch", 7)
+  if (logField(log, "claims_current_head") !== "true") fail(9, "current-head claim mismatch", 7)
+  if (logField(log, "verdict") !== "green") fail(9, "run verdict is not green", 7)
+}
+for (const [label, artifact] of [
+  ["disk manifest", manifest.disk_manifest],
+  ["runtime identity manifest", manifest.runtime_identity_manifest],
+  ["skipped multiset", manifest.skipped_multiset],
+] as Array<[string, unknown]>) {
+  if (
+    !artifact ||
+    typeof artifact !== "object" ||
+    typeof (artifact as { path?: unknown }).path !== "string" ||
+    typeof (artifact as { sha256?: unknown }).sha256 !== "string"
+  )
+    fail(10, `${label} hash mismatch`, 7)
+  const { path: artifactPath, sha256: artifactHash } = artifact as { path: string; sha256: string }
+  if (!artifactPath || !artifactHash || !existsSync(artifactPath) || sha256(artifactPath) !== artifactHash) fail(10, `${label} hash mismatch`, 7)
+}
+const entryBaselinePath = "tests/infra/entry-test-discovery-baseline.json"
+if (manifest.discovery_baseline_path !== entryBaselinePath) fail(11, "discovery baseline path differs from entry", 7)
+const baselineRaw = git(options.tree, ["show", `${options.entrySha}:${entryBaselinePath}`])
+const runnerBlob = git(options.tree, ["rev-parse", `${options.entrySha}:scripts/parallel-test.ts`])
+if (baselineRaw === undefined || runnerBlob === undefined) fail(11, "discovery baseline hash mismatch", 7)
+if (sha256Bytes(`${baselineRaw}\n`) !== manifest.discovery_baseline_sha256) fail(11, "discovery baseline hash mismatch", 7)
+if (baseline.runner_git_blob !== runnerBlob || manifest.discovery_runner_git_blob !== runnerBlob) fail(11, "discovery runner blob mismatch", 7)
+const validatorBlob = git(options.tree, ["rev-parse", `${options.entrySha}:scripts/validate-entry-evidence.ts`])
+if (validatorBlob === undefined) fail(11, "discovery runner blob mismatch", 7)
+const receipt = {
+  schema_version: 1,
+  validator_path: "scripts/validate-entry-evidence.ts",
+  validator_git_blob: validatorBlob,
+  entry_sha: options.entrySha,
+  pointer_sha: options.pointerSha,
+  manifest_path: pointer.manifestPath,
+  manifest_sha256: pointer.manifestSha,
+  discovery_baseline_path: entryBaselinePath,
+  discovery_baseline_sha256: manifest.discovery_baseline_sha256,
+  discovery_runner_git_blob: runnerBlob,
+  validated_at: new Date().toISOString(),
+  verdict: "green",
+}
+try {
+  writeReceiptAtomically(options.receiptOut, `${JSON.stringify(receipt, null, 2)}\n`)
+} catch {
+  console.error("FAIL receipt: receipt write failed")
+  process.exit(8)
+}
+console.log(`receipt=${options.receiptOut}`)
+console.log(`receipt_sha256=${sha256(options.receiptOut)}`)
