@@ -1,6 +1,6 @@
 # Responses ↔ Anthropic 语义桥规格评审记录
 
-> **状态**：协议、架构与既有重基增量复核已放行；最新 master thinking 审计增量待短复核
+> **状态**：最新 master thinking 审计增量的 4 MAJOR 已整改，待第五轮复审
 >
 > **评审对象**：`docs/spec/2026-08-06-responses-anthropic-semantic-bridge.md`
 >
@@ -252,9 +252,49 @@
 
 `d00b0d82` 新增 thinking 翻译审计与真实 GHC Responses carrier 探针；`b6fb0947` 只新增 `docs/plan/2026-08-06-history-read-path-and-h2-diagnostics.md`，不触及本规格的协议、实现接缝或目标文档。主会话初步对账认为：探针只证伪“跨模型旧 `encrypted_content` 必然 400”，而本规格没有采用该机制断言；本规格要求 carrier 按冻结的 affinity／compatibility policy 决定恢复或剥离，并把具体兼容判据留给 Phase 0 冻结。新审计还独立确认 server-tool 四格、per-item lifecycle、多 reasoning 单槽、request carrier policy 与顶层能力诊断缺口；它们是否已被本规格的通用 contract 充分覆盖，交由下述短复核裁决。
 
-### 待短复核命题
+### 增量复核结果
 
-1. `d00b0d82` 的实测是否推翻规格任何 F1–F9、D1–D2、Phase 0 或 AC1–AC20 命题。
-2. “本规格没有声称跨模型密文必然 400，只按 affinity／compatibility policy 裁决”是否与规格正文一致。
-3. 新审计确认的 ordered-turn、server-tool 四格、per-item reasoning／function arguments、structured output 与 context-management 缺口，是否需要新增规格验收，还是已被现有通用 contract 覆盖。
-4. 若无 BLOCKER／MAJOR，明确写“增量复核通过，可合入 master”。
+- 架构 reviewer：0 BLOCKER、4 MAJOR。新证据不推翻 F1–F9 或 D1–D2；规格确实没有声称跨模型 `encrypted_content` 必然 400。Server-tool 四格与多 reasoning per-item owner 已有结构约束，但以下四类只有泛化目标，没有足以判错的 AC／mutation／guard。
+- `b6fb0947` 只新增 History／HTTP2 诊断计划，与本规格无协议或实现接缝。
+- Reviewer 结论：**修复 MAJOR 后可合入；当前不满足“增量复核通过，可合入 master”**。
+
+### M16. 目标 Responses emitter 生命周期未冻结
+
+- **原级别**：MAJOR。
+- **处置**：采纳（C），待复审。
+- **事实复核**：当前 Anthropic→Responses stream 缺 message `output_item.added` 与 reasoning `reasoning_summary_part.added`；官方 OpenAI SDK accumulator 会分别报 missing output／content，而项目自有宽松 accumulator 与既有 62 条测试仍绿。
+- **失败场景**：source lifecycle router 全部正确，目标 renderer 仍可发出官方客户端无法消费的事件序列；现有 AC1–AC20 无法区分。
+- **整改**：新增目标 Responses lifecycle grammar，分别冻结 message text、reasoning summary、function call 与 completed／incomplete terminal 的必需偏序；官方 OpenAI SDK accumulator 与事件订阅作为独立 oracle；新增对应 unit、mutation、守卫 23 与 AC21。
+
+### M17. Request coordinator 未保证 block／item 相对顺序
+
+- **原级别**：MAJOR。
+- **处置**：采纳（C），待复审。
+- **事实复核**：现有双向 translator 均会把 `tool→text` 改写为 `text→tool`；只声明 fold／expand 无法阻止按 kind 分桶。
+- **失败场景**：四张 registry、payload coordinator 和 unknown policy 全部存在，合法 text／tool 仍可被语义重排而所有旧 AC 保持绿。
+- **整改**：请求 handler 输出携 immutable `sourceOrdinal`，coordinator 稳定保序；reasoning 顺序例外必须显式、经 per-pair oracle 冻结且不得重排非 reasoning 兄弟；新增交错正控、重排 mutation、守卫 22 与 AC22。
+
+### M18. Function-call 无 delta 时可丢完整 arguments
+
+- **原级别**：MAJOR。
+- **处置**：采纳（C），待复审。
+- **事实复核**：合法 `output_item.added → output_item.done` 无 arguments delta 的流，当前生成空 `tool_use.input`；handler 虽能看到 delta 和 whole item，规格未裁决权威值。
+- **失败场景**：按现有 lifecycle contract 实现仍可只信 delta，合法无-delta 流静默变空 input。
+- **整改**：`.done.arguments` 作为零 delta 权威 fallback；有 delta 时按 canonical JSON value 与 done 比较，等价表示不误拒，冲突／损坏返回 `invalid-lifecycle`；whole／stream 共用 mapper；新增三格正负控制、mutation、守卫 24 与 AC23。
+
+### M19. 顶层 capability 字段可绕过 unknown-item 守卫静默丢失
+
+- **原级别**：MAJOR。
+- **处置**：采纳（C），待复审。
+- **事实复核**：Responses `text.format` 与 Anthropic `output_config.format` 均存在但 schema 不同；两端 `context_management` 同名不等于策略兼容。它们是已知顶层字段，不会进入 item unknown policy。
+- **失败场景**：profile 的 item registry 完备，coordinator 仍可删除 structured output／`context_management` 且 AC2 假绿。
+- **整改**：request profile 必填穷尽 `TopLevelCapabilityRegistry`，每字段显式 mapped／degraded／rejected；新增 P0-5 实测与用户／ADR 裁决门，禁止实施者猜 schema name／策略兼容；新增双向正负控制、mutation、守卫 21 与 AC24。
+
+### 第五轮待复审命题
+
+1. M16–M19 是否逐项闭合，且新增 contract 能让 planner／implementer 不临场发明承重规则。
+2. 目标 Responses grammar 是否同时防错误状态假绿，并允许零 delta／多 item／canonical-equivalent JSON 等正确状态通过。
+3. `sourceOrdinal` 与 reasoning 例外是否既保序，又不 false-red 拒绝目标协议的真实顺序约束。
+4. P0-5 是否把 structured-output name 与 `context_management` 策略分叉交给用户／ADR，而非由 implementer 自裁。
+5. 新增 unit、mutation、守卫 21–24 与 AC21–AC24 是否分别对 M16–M19 有判别力。
+6. 若无 BLOCKER／MAJOR，明确写“增量复核通过，可合入 master”。
