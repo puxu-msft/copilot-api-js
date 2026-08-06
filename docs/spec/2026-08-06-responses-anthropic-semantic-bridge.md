@@ -445,20 +445,18 @@ type ResponsesWebSearchLifecycleEvent = ItemLifecycleEvent<
   ResponsesWebSearchProgressEvent
 >
 
+type AnthropicContentBlockDeltaEvent = Extract<StreamEvent, { type: "content_block_delta" }>
+type NarrowAnthropicDeltaEvent<K extends AnthropicContentBlockDeltaEvent["delta"]["type"]> = Omit<
+  AnthropicContentBlockDeltaEvent,
+  "delta"
+> & {
+  delta: Extract<AnthropicContentBlockDeltaEvent["delta"], { type: K }>
+}
+
 type AnthropicMessageLifecycleEvent =
-  | ItemLifecycleEvent<"message", TextBlock, never, Extract<StreamEvent, { type: "content_block_delta"; delta: { type: "text_delta" } }>>
-  | ItemLifecycleEvent<
-      "function_call",
-      ToolUseBlock,
-      never,
-      Extract<StreamEvent, { type: "content_block_delta"; delta: { type: "input_json_delta" } }>
-    >
-  | ItemLifecycleEvent<
-      "reasoning",
-      ThinkingBlock,
-      never,
-      Extract<StreamEvent, { type: "content_block_delta"; delta: { type: "thinking_delta" | "signature_delta" } }>
-    >
+  | ItemLifecycleEvent<"message", TextBlock, never, NarrowAnthropicDeltaEvent<"text_delta">>
+  | ItemLifecycleEvent<"function_call", ToolUseBlock, never, NarrowAnthropicDeltaEvent<"input_json_delta">>
+  | ItemLifecycleEvent<"reasoning", ThinkingBlock, never, NarrowAnthropicDeltaEvent<"thinking_delta" | "signature_delta">>
 
 type SemanticLifecycleEvent =
   | ResponsesToAnthropicLifecycleByKind[keyof ResponsesToAnthropicLifecycleByKind]
@@ -692,7 +690,7 @@ declare function isBridgeCompatibilityError(error: unknown): error is BridgeComp
 - streaming **body-committed**：保留已发送 partial content，经 `formatTerminal` 追加 typed terminal error；forwarded 轨同时保留 partial 与 error；
 - `runResponseSink`／`runResponseBufferedSink` 不把 `BridgeCompatibilityError` 降为普通字符串：`stream-error` outcome 保留原 Error 对象、结构化字段和 `bodyCommitted` 布尔值；
 - `BridgeCompatibilityError.retryable` 恒为 false。Buffered catch 先用 `isBridgeCompatibilityError` 分流并立即返回 typed `stream-error`；它不得进入 `classifyStreamError(error)==="other"` 的 transport retry gate，不增加 attempt，不调用 `onAttemptReset`／`escalate`，不重开 exchange，也不进入 continuation generation；
-- semantic retry registry 不得 claim `BridgeCompatibilityError`；若错误在 S2 request bridge 产生，上游 dispatch 数必须为 0；若在 response bridge 产生，当前 dispatch 总数必须保持 1；
+- semantic retry registry 不得 claim `BridgeCompatibilityError`；若错误在 S2 request bridge 产生，上游 dispatch 数必须为 0；若在 response bridge 产生，记录错误观测时的 dispatch／candidate 集合，之后 dispatch 数增量必须为 0，当前 candidate 不启动 recovery／continuation。无前置 retry／hedge 的基准 fixture 额外断言总 dispatch=1；有前置 retry／hedge 的 fixture 保留既有 dispatch，只断言错误后不增长；
 - handler 使用两个显式状态：`httpHeadersCommitted`（进入 `streamSSE` 即 true）与 `bodyCommitted`（sink 首次 external body write 后 true）。candidate buffer 的 `committedAny` 只用于 retry／partial 判定，不能冒充 HTTP commit；
 - unknown raw value 只进入受保护的 History upstream 轨，不写普通日志；
 - 不把未知 JSON 编成普通文本继续成功。
@@ -903,7 +901,9 @@ oracle 同时观察内部与外层：
 - headers-committed/body-uncommitted 错误尝试调用 `c.json` 改写 HTTP status；
 - buffered catch 把 `BridgeCompatibilityError` 当作 `classifyStreamError==="other"` 并重开第二次 dispatch；
 - request coordinator reject 绕过 `finally freeze`，导致失败 History 无 request dispositions；
-- request diagnostics hash 把 id 纳入或使用非 canonical object key 顺序。
+- request diagnostics hash 把 id 纳入或使用非 canonical object key 顺序；
+- Anthropic delta alias 直接对 outer `StreamEvent` 使用 nested `Extract<{delta:{type:…}}>`，使合法 delta 类型化为 `never`；
+- response compatibility error 发生后仍启动 hedge recovery／continuation 或新增 dispatch。
 
 每次 mutation 必须确认失败来自目标机制，而非旁路断言。
 
@@ -920,8 +920,10 @@ oracle 同时观察内部与外层：
 - hedge loser、cancelled candidate 的 response disposition 保留在明细，但不污染顶层 winner 投影；
 - 同一 resolved model 的不同 alias 能恢复 carrier，不同 compatibilityKey 默认剥离；
 - streaming headers-committed/body-uncommitted 返回 HTTP 200 typed terminal error 且无 partial semantic content；
-- response compatibility error 只发生一次 dispatch，request compatibility error 发生零次 dispatch；
-- request success／reject／unexpected throw 都恰好冻结一次 diagnostics；相同 records 不同对象构造顺序产生相同 hash。
+- request compatibility error 发生零次 dispatch；response compatibility error 观测后 dispatch 增量为 0，当前 candidate 无 recovery／continuation；无前置 retry／hedge fixture 的总 dispatch 为 1；
+- request success／reject／unexpected throw 都恰好冻结一次 diagnostics；相同 records 不同对象构造顺序产生相同 hash；
+- type-level fixture 证明 `NarrowAnthropicDeltaEvent<"text_delta">` 接受 text delta、拒绝 thinking delta，且结果不是 `never`；
+- 有前置 retry／hedge fixture 保留既有 dispatch；compatibility error 发生后的 dispatch delta=0，当前 candidate 无 recovery／continuation。
 
 ### 15.4 端到端
 
@@ -954,9 +956,9 @@ Responses response
 14. 每个 non-identity profile 必须有 `CompatibilityErrorRenderer`；stream error outcome 必须保留 typed error 与 `bodyCommitted`；
 15. whole-on-done／stateful response handler 都必须经 typed factory 生成 `BoundResponseItemHandler`；router 不保存泛型 handler 或裸 state；业务 handler／registry／router 调用面不得 cast。唯一类型擦除只允许在 bridge-core factory 内，并必须有 runtime kind guard 与错误 kind mutation；
 16. 删除注册项或把 degraded 改成空 emission 的 mutation 必须变红；
-17. `BridgeCompatibilityError` 必须在 buffered／semantic retry 之前 fail-fast；request error=0 dispatch，response error=1 dispatch；
+17. `BridgeCompatibilityError` 必须在 buffered／semantic retry 之前 fail-fast；request error=0 dispatch；response error 观测后 dispatch 增量=0 且无 recovery／continuation，只有无前置 retry／hedge fixture 断言总数=1；
 18. request diagnostics collector 必须用 try/finally 恰好冻结一次，canonical hash 不含 id；
-19. lifecycle source map 必须按 semantic kind／phase 给业务 handler typed source；Web Search whole source包含 complete/incomplete union；
+19. lifecycle source map 必须按 semantic kind／phase 给业务 handler typed source；Web Search whole source包含 complete/incomplete union；Anthropic nested delta 必须先提 outer event、再重建窄 delta，type-level 正控证明非 `never`；
 20. 正确样本必须证明守卫不会 false-red。
 
 ## 17. 必要性命题与架构选择
@@ -1034,9 +1036,9 @@ ADR 旧决策和当时证据保留原文，新注解只说明后续事实如何�
 - AC12：未知 translation item fail-loud，identity item passthrough；request／whole／stream headers-committed/body-uncommitted／stream body-committed 四条错误路径的 status、wire、typed error 与 `bodyCommitted` 均符合规格；
 - AC13：History upstream／forwarded 轨与 disposition 记录可对账；request records 只存一次并由 candidates 引用，candidate response 明细 append-only，顶层由 request + winner response 派生；
 - AC14：carrier wire 编码 affinity／compatibilityKey；同实际模型 alias 可恢复，不兼容 source 默认剥离；
-- AC15：whole-on-done／stateful handler 均经 typed factory 生成 bound closure；adapter 给每个 semantic kind／phase 提供 typed source，complete/incomplete Web Search 均纳入；业务 handler／registry／router 调用面无 cast，唯一 core 擦除点有 runtime kind guard 与错误 kind mutation；
+- AC15：whole-on-done／stateful handler 均经 typed factory 生成 bound closure；adapter 给每个 semantic kind／phase 提供非 `never` typed source，complete/incomplete Web Search 均纳入；业务 handler／registry／router 调用面无 cast，唯一 core 擦除点有 runtime kind guard 与错误 kind mutation；
 - AC16：request diagnostics 在 success／reject／unexpected throw 三路恰好冻结一次，以 canonical records 计算 hash并经 `RequestState` 引用；
-- AC17：`BridgeCompatibilityError` 不进入 buffered／semantic retry；request error=0 dispatch，response error=1 dispatch，原 typed error 到达 handler；
+- AC17：`BridgeCompatibilityError` 不进入 buffered／semantic／continuation retry；request error=0 dispatch；response error 观测后 dispatch 增量=0、当前 candidate 无 recovery／continuation，原 typed error 到达 handler；无前置 retry／hedge fixture 总 dispatch=1；
 - AC18：所有目标 mutation 变红，所有正确状态对照保持绿；
 - AC19：旧 per-structure translator 分支在对应 family 迁移提交中删除，无长期双轨；
 - AC20：typecheck、精确 lint、架构守卫、backend 档和客户端 E2E 全部通过。

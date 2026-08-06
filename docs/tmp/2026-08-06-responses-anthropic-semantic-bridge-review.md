@@ -1,6 +1,6 @@
 # Responses ↔ Anthropic 语义桥规格评审记录
 
-> **状态**：进行中，第三轮整改已完成，待提交与架构 reviewer 复审
+> **状态**：进行中，第四轮整改已完成，待提交与架构 reviewer 复审
 >
 > **评审对象**：`docs/spec/2026-08-06-responses-anthropic-semantic-bridge.md`
 >
@@ -178,3 +178,35 @@
 2. Request diagnostics success／reject／throw 的 freeze/reference／History 时序是否完整。
 3. Compatibility error 是否在所有 retry／continuation gate 之前 fail-fast。
 4. 若无 BLOCKER／MAJOR，明确写“可定稿”。
+
+## 第三轮复审结果
+
+- 架构 reviewer：0 BLOCKER、2 MAJOR。M11–M13 的主体契约已闭合；剩余问题是 Anthropic nested delta 类型写法会化为 `never`，以及 response dispatch 总数判据过严。
+
+## 第四轮发现与处置
+
+### M14. Anthropic nested delta 的 `Extract` 结果为 `never`
+
+- **原级别**：MAJOR。
+- **处置**：采纳（C）。
+- **事实复核**：SDK 的 outer `RawContentBlockDeltaEvent.delta` 是 union；`Extract<RawMessageStreamEvent,{delta:{type:"text_delta"}}>` 不对嵌套 union 分配。最小 `tsc --strict --noEmit` 探针确认旧类型为 `never`；先提取 outer event、再重建窄 delta 后，text delta 可赋值、thinking delta 被拒绝。
+- **整改**：分离 `WholeSourceByKind` 与 `LifecycleByKind`；用 `ItemLifecycleEvent<Kind,Whole,Progress,Delta>` 给业务 callback 按 phase 提供 typed source。Responses Web Search whole source包含 complete/incomplete union，progress source 使用三种官方事件；Anthropic delta 使用 outer event + 窄 delta 重建。唯一异构擦除只留在 core factory，并有 runtime kind guard／错误 kind mutation。
+
+### M15. Response compatibility error 总 dispatch=1 是 false-red
+
+- **原级别**：MAJOR。
+- **处置**：采纳（C）。
+- **事实复核**：response bridge 运行前可已有 reactive retry、rate-limit 重开或 primary＋hedge dispatch。固定总数 1 会迫使实现禁用合法重试／hedge。
+- **整改**：不变量改成“compatibility error 观测后 dispatch 数不再增长，当前 candidate 不启动 recovery／continuation”；无前置 retry／hedge fixture 仍断言基准值 1。Error 标记 `retryable:false`，buffered catch 在 transport 分类前 fail-fast，semantic retry registry 不 claim。
+
+## 第四轮整改新增验收
+
+- TypeScript assignability 正控：每个 typed lifecycle source 接受合法 phase source，并拒绝 sibling delta。
+- Complete／incomplete Web Search whole source 与三种 progress source 均在 registry 类型中。
+- 无前置重试 fixture：response compatibility error 总 dispatch=1；有前置 retry／hedge fixture：错误出现后的 dispatch delta=0，当前 candidate 无 recovery／continuation。
+
+## 第四轮待复审命题
+
+1. M14／M15 是否闭合，且类型擦除没有泄漏到业务层。
+2. Dispatch 判据是否既防 compatibility retry，又不误禁合法前置 retry／hedge。
+3. 若无 BLOCKER／MAJOR，明确写“可定稿”。
