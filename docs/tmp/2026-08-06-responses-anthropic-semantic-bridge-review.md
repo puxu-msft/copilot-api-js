@@ -1,6 +1,6 @@
 # Responses ↔ Anthropic 语义桥规格评审记录
 
-> **状态**：进行中，第四轮整改已完成，待提交与架构 reviewer 复审
+> **状态**：已完成，协议与架构两条独立评审均放行
 >
 > **评审对象**：`docs/spec/2026-08-06-responses-anthropic-semantic-bridge.md`
 >
@@ -210,3 +210,20 @@
 1. M14／M15 是否闭合，且类型擦除没有泄漏到业务层。
 2. Dispatch 判据是否既防 compatibility retry，又不误禁合法前置 retry／hedge。
 3. 若无 BLOCKER／MAJOR，明确写“可定稿”。
+
+## 第四轮复审结果
+
+- 架构 reviewer：**可定稿**，0 BLOCKER、0 MAJOR。
+- M14 已闭合：WholeSource／LifecycleByKind 分离，complete／incomplete Web Search 与三种 progress event 均有 typed source；Anthropic delta 采用 outer-first Extract + nested delta 重建，type-level 正负控制可判别。
+- M15 已闭合：不抹除 compatibility error 前的合法 retry／hedge dispatch，只禁止错误观测后的新增 dispatch、recovery 与 continuation；无前置 dispatch fixture 单独固定基准总数 1。
+- reviewer 复核本记录对 M14／M15 的事实、级别与处置转录忠实。
+- reviewer 隔离 worktree 结束时 `git status --short` 为空。
+
+## 最终结论
+
+| 视角 | 最终 verdict | 未决 BLOCKER／MAJOR |
+|---|---|---:|
+| 协议与验收判据证伪 | 可定稿 | 0 |
+| 实施者第一人称架构走查 | 可定稿 | 0 |
+
+首轮至第四轮共处置 1 BLOCKER、15 MAJOR，全部采纳并经原 reviewer 复审闭合；无驳回 finding，无待第三方裁决项。

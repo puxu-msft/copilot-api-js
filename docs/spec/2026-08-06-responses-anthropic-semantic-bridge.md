@@ -1,6 +1,6 @@
 # OpenAI Responses ↔ Anthropic Messages 语义桥规格
 
-> **状态**：草案，待独立评审
+> **状态**：已定稿，协议与架构两条独立评审均无 BLOCKER／MAJOR
 >
 > **核验基线**：`192dce69f1bf482b1c3130d519991594a3fe46ab`（2026-08-06）
 >
