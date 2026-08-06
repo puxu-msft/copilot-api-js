@@ -74,7 +74,11 @@ import type {
 } from "~/types/api/openai-responses"
 
 import { isApiDefinedToolType } from "~/lib/anthropic/message-tools"
-import { extractEncryptedReasoning, isSyntheticReasoningSignature } from "~/lib/anthropic/synthetic-reasoning"
+import {
+  //
+  extractEncryptedReasoning,
+  isSyntheticReasoningSignature,
+} from "~/lib/anthropic/synthetic-reasoning"
 import { budgetToEffort } from "~/lib/anthropic/thinking-coercion"
 
 import {
@@ -111,7 +115,7 @@ export function translateAnthropicToResponses(payload: MessagesPayload, opts?: A
   for (const message of payload.messages) input.push(...translateMessage(message, reqId))
 
   const tools = payload.tools ? translateTools(payload.tools, reqId) : undefined
-  const toolChoice = payload.tool_choice ? translateToolChoice(payload.tool_choice) : undefined
+  const toolChoice = payload.tool_choice ? translateToolChoice(payload.tool_choice, payload.tools, tools) : undefined
   const reasoning = translateThinkingToReasoning(payload, opts?.model)
 
   // Intentional drops (Anthropic-only, no Responses equivalent):
@@ -352,6 +356,15 @@ function mapServerToolType(anthropicType: string): ResponsesBuiltinToolType | un
   return SERVER_TOOL_MAPPING.find((entry) => anthropicType.startsWith(entry.anthropicPrefix))?.responsesType
 }
 
+type AnthropicTranslatedNamedToolChoice = { type: "function"; name: string } | { type: ResponsesBuiltinToolType }
+
+/** Map one Anthropic tool declaration to the Responses choice category that names it. */
+function translateNamedToolChoice(tool: AnthropicTool): AnthropicTranslatedNamedToolChoice | undefined {
+  if (!isApiDefinedToolType(tool.type)) return { type: "function", name: tool.name }
+  const mapped = tool.type ? mapServerToolType(tool.type) : undefined
+  return mapped ? { type: mapped } : undefined
+}
+
 /**
  * Anthropic `tools[]` → Responses tools (function + native server-tool passthrough, RFC §5.1/Phase 6).
  * A true server-executed Anthropic tool (`isApiDefinedToolType`) with a {@link SERVER_TOOL_MAPPING}
@@ -363,18 +376,20 @@ function mapServerToolType(anthropicType: string): ResponsesBuiltinToolType | un
 function translateTools(tools: Array<AnthropicTool>, reqId: string | undefined): Array<ResponsesTool> {
   const out: Array<ResponsesTool> = []
   for (const tool of tools) {
-    if (isApiDefinedToolType(tool.type)) {
-      const mapped = tool.type ? mapServerToolType(tool.type) : undefined
-      if (mapped) {
-        out.push({ type: mapped })
-      } else {
-        dropWarn(`dropping native server tool "${tool.name}" (type: ${tool.type}) — no Responses-builtin mapping (unmapped type or a client-executed builtin)`, reqId)
-      }
+    const namedChoice = translateNamedToolChoice(tool)
+    if (!namedChoice) {
+      dropWarn(
+        `dropping native server tool "${tool.name}" (type: ${tool.type}) — no Responses-builtin mapping (unmapped type or a client-executed builtin)`,
+        reqId,
+      )
+      continue
+    }
+    if (namedChoice.type !== "function") {
+      out.push(namedChoice)
       continue
     }
     out.push({
-      type: "function",
-      name: tool.name,
+      ...namedChoice,
       ...(tool.description !== undefined && { description: tool.description }),
       ...(tool.input_schema !== undefined && { parameters: tool.input_schema }),
     } satisfies ResponsesFunctionTool)
@@ -382,21 +397,40 @@ function translateTools(tools: Array<AnthropicTool>, reqId: string | undefined):
   return out
 }
 
-/** Anthropic `tool_choice` → Responses `tool_choice` (same vocabulary as the CC leg's mapping). */
-function translateToolChoice(choice: AnthropicToolChoice): ResponsesToolChoice {
+/**
+ * Anthropic `tool_choice` → Responses `tool_choice`.
+ *
+ * A named choice must follow the same category mapping as its declaration. Custom
+ * tools remain named function choices; a mapped API-defined tool becomes a
+ * Responses builtin choice. If the named declaration was stripped because no
+ * Responses mapping exists, omit the choice too rather than sending a dangling
+ * function choice that the upstream rejects.
+ */
+function translateToolChoice(
+  choice: AnthropicToolChoice,
+  sourceTools: Array<AnthropicTool> | undefined,
+  translatedTools: Array<ResponsesTool> | undefined,
+): ResponsesToolChoice | undefined {
   switch (choice.type) {
     case "auto": {
       return "auto"
     }
     case "any": {
       // Anthropic "any" = must call SOME tool → Responses "required".
-      return "required"
+      return translatedTools && translatedTools.length > 0 ? "required" : undefined
     }
     case "none": {
       return "none"
     }
     case "tool": {
-      return { type: "function", name: choice.name }
+      const selectedTool = sourceTools?.find((tool) => tool.name === choice.name)
+      if (!selectedTool) return undefined
+      const translatedChoice = translateNamedToolChoice(selectedTool)
+      if (!translatedChoice) return undefined
+      const isAvailable = translatedTools?.some((tool) =>
+        translatedChoice.type === "function" ? tool.type === "function" && tool.name === translatedChoice.name : tool.type === translatedChoice.type,
+      )
+      return isAvailable ? translatedChoice : undefined
     }
     default: {
       // Exhaustive over the ToolChoice union; a future variant falls back to "auto".

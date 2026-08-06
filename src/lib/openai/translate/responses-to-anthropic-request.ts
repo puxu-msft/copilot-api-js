@@ -116,7 +116,7 @@ export function translateResponsesToAnthropicRequest(payload: ResponsesPayload):
   )
 
   const tools = payload.tools ? translateTools(payload.tools) : undefined
-  const toolChoice = payload.tool_choice ? translateToolChoice(payload.tool_choice) : undefined
+  const toolChoice = payload.tool_choice ? translateToolChoice(payload.tool_choice, tools) : undefined
   const system = payload.instructions ?? undefined
 
   // Intentional drops / NON-mappings (WARN-E + no Anthropic equivalent):
@@ -432,14 +432,14 @@ function translateTools(tools: ReadonlyArray<{ type: string; name?: string }>): 
 }
 
 /** Responses `tool_choice` → Anthropic `tool_choice` (mirrors the forward leg's same vocabulary, inverted). */
-function translateToolChoice(choice: ResponsesToolChoice): AnthropicToolChoice {
+function translateToolChoice(choice: ResponsesToolChoice, tools: Array<AnthropicTool> | undefined): AnthropicToolChoice | undefined {
   if (typeof choice === "string") {
     switch (choice) {
       case "auto": {
         return { type: "auto" }
       }
       case "required": {
-        return { type: "any" }
+        return tools && tools.length > 0 ? { type: "any" } : undefined
       }
       default: {
         // "none"
@@ -447,5 +447,6 @@ function translateToolChoice(choice: ResponsesToolChoice): AnthropicToolChoice {
       }
     }
   }
-  return { type: "tool", name: choice.name }
+  if (choice.type === "function" && tools?.some((tool) => tool.name === choice.name)) return { type: "tool", name: choice.name }
+  return undefined
 }

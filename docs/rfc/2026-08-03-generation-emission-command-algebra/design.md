@@ -491,7 +491,7 @@ per-command telemetry是诊断与长期趋势设施，不是边界验收oracle�
 
 ### 6.1 分类口径
 
-本节的三态定义如下：**语义不变**表示contract的可观察性质、授权事实与失败语义均不变，只是由新command／owner state承载；**措辞需扩展**表示既有方向与用户裁决不变，但旧API名、旧容器形状或contract适用对象不足以描述full command algebra；**语义变更**表示会改变被冻结的可观察要求或允许／拒绝集合，必须回用户重裁。逐条核对后，C1～C11本身无一需要语义重裁；但评审发现anchor路径的forwarded／wire精确帧序不受C1～C11覆盖，而command cutover会改变它。用户已按§9.2 Q5接受该独立可观察变更，并保留Commit 4前的逐帧diff停门。若评审证明下表任一“措辞需扩展”实际改变允许／拒绝语义，该项仍自动升级为open question，不得由实施者自行降级。
+本节的三态定义如下：**语义不变**表示contract的可观察性质、授权事实与失败语义均不变，只是由新command／owner state承载；**措辞需扩展**表示既有方向与用户裁决不变，但旧API名、旧容器形状或contract适用对象不足以描述full command algebra；**语义变更**表示会改变被冻结的可观察要求或允许／拒绝集合，必须回用户重裁。逐条核对后，C1～C11本身无一需要语义重裁；但评审发现anchor路径的forwarded／wire精确帧序不受C1～C11覆盖，而command cutover会改变它。用户已按§9.2 Q5接受该独立可观察变更，并保留**Commit 4内T4.2 authority publish前**的逐帧diff停门；允许先进入该phase完成T4.0a～d与T4.1。若评审证明下表任一“措辞需扩展”实际改变允许／拒绝语义，该项仍自动升级为open question，不得由实施者自行降级。
 
 ### 6.2 一致性矩阵
 
@@ -622,7 +622,7 @@ A／B／C／D四集均按symbol identity冻结，不要求历史文档字面零�
 
 ### 7.7 Commit 4 — 原子发布全部generation authority与producer commands
 
-- **前置停门：** Q5逐帧预测diff已复核；所有Commit 3调查证据齐全；若heartbeat重臂时点无法证明逐tick中性，则其预测diff必须纳入Q5批准范围。缺任一项不得发布。
+- **分阶段停门：** 可进入Commit 4先完成T4.0a～d证据槽与T4.1逐帧预测diff；**T4.2 authority publish之前**，Q5 diff必须已复核、所有调查证据齐全。若heartbeat重臂时点无法证明逐tick中性，则其预测diff必须纳入Q5批准范围；缺任一项不得进入T4.2。**不是要求kickoff前已有尚由T4.1产出的diff**——那会形成producer／consumer环。
 - **完整切换清单：**
   1. 10个outer roots创建唯一owner与private raw emitter，recorder包裹真实`stream`／`ws` handle；删除raw第二serializer／raw heartbeat。
   2. 所有ordinary／winner／live common producers切`emitGeneric`；generic pings切`emitKeepalive`；可解析未知event按unknown passthrough。
@@ -712,7 +712,7 @@ Authority publish Commit 4是唯一可观察切换点。若PoC证明全部produc
 
 - **Q3 warmup fake／drop已裁决采用方案A：** 真实route behavior test纳入Commit 0，覆盖完整字节、upstream零调用、delivery observer零session、一次响应及提前创建owner／双写mutation。它是§5唯一没有现成behavior witness的出口，也是composition-root互斥性的gatekeeper；本项目禁止静默砍掉gatekeeper requirement，因此不留作后续可选项。
 - **Q4 History schema已裁决采用方案B：** `wirePartialDelivery`保持稳定摘要`operation + cause + committed`；另在generation operation detail中保存完整per-command records，包含command、phaseReached、outcome、expected／actual effect、state before／after及高基数identity。Commit 5同步后端SSOT schema、ui-v4 re-export与相关tests，不再等待Q4。
-- **Q5 anchor精确帧序已裁决接受变更，但保留前置停门：** authority发布允许改变anchor路径forwarded／wire精确帧序，包括消除close与real-start之间的heartbeat交织及heartbeat coordination迁owner产生的逐tick位置变化；这不改C2／C7。未来执行会话在进入Commit 4发布前必须产出旧golden→预测新序列的逐帧diff，逐项标明保留／删除／移动及理由，并与Q5批准范围核对；缺diff或实测超出预测即停止。Golden期望随Commit 4同步更新，不等后续审计补记账。
+- **Q5 anchor精确帧序已裁决接受变更，但保留publish前停门：** authority发布允许改变anchor路径forwarded／wire精确帧序，包括消除close与real-start之间的heartbeat交织及heartbeat coordination迁owner产生的逐tick位置变化；这不改C2／C7。未来执行会话可进入Commit 4先完成证据任务并由T4.1产出旧golden→预测新序列的逐帧diff；**进入T4.2 authority publish前**必须逐项标明保留／删除／移动及理由、与Q5批准范围核对并完成复核，缺diff或实测超出预测即停止。Golden期望随Commit 4同步更新，不等后续审计补记账。
 
 评审若发现既有裁决内部矛盾，应把证据交主会话，不得由implementer默选另一方案。
 
@@ -731,7 +731,7 @@ Authority publish Commit 4是唯一可观察切换点。若PoC证明全部produc
 
 ### 9.4 裁决与调查的可达停点
 
-Q1保持open并在Commit 5前停；Q2在Commit 8前停且默认不改ADR；Q3／Q4已裁决、不再设停点；Q5的必经触发点是Commit 4 authority publish前的逐帧diff审查，缺材料不得进入该commit。
+Q1保持open并在Commit 5前停；Q2在Commit 8前停且默认不改ADR；Q3／Q4已裁决、不再设停点；Q5的必经触发点是**Commit 4 内 T4.2 authority publish前**的逐帧diff审查——可先进入该phase完成T4.0a～d／T4.1，缺材料不得进入T4.2。
 
 本节是调查停点的单一事实源：第1／2／3／4／5／7／8项及already-rendered builder、LegHandle、heartbeat逐点映射全部在Commit 4发布前；其中types／unit实现所需的最小子集可提前供Commit 1～3准备，但最终证据槽在publish kickoff必须齐全。第6项在Commit 5前。未来执行会话到达commit kickoff时先读取证据槽；没有file:line或PoC结论就交付已完成部分与具体缺口、结束本轮，不生成猜测签名。
 
@@ -756,7 +756,7 @@ Q1保持open并在Commit 5前停；Q2在Commit 8前停且默认不改ADR；Q3／
 | R-9 | per-command schema在成功／失败同口径，compound partial可诊断，四层持久round-trip | 遥测／History | 同command驱动success、preflight、wire partial；比较canonical key集合，读raw／hourly／daily／cumulative与generation operation detail | 失败路径改用raw function／route string，或只存`committed`不存phase，必须产生额外key／诊断缺口 | outcome／phase／stateAfter本应不同而允许不同；telemetry缺失不反判wire错误 | 本RFC辅助诊断门；Commit 5，不计behavior闭合 |
 | R-10 | legacy surface归零且四类test oracle保留，旧边界positive control未被“合法化”掉 | 类型／测试架构＋behavior正控 | Commit 6 inventory AST重跑；test-only adversarial seam仍能造旧分裂，新production route拒绝 | 把`allocation-outside-owner-control`改走合法owner或删adversarial seam，coverage gate必须红 | owner-backed array adapter与raw transport byte units合法存在，不被零命中guard误杀 | 本RFC必须；Commit 6 |
 | R-11 | 无anchor主腿wire逐字节等价 | 字节golden | 非4141隔离server运行master `4f7a3989`后的`byte-equivalence.sh`；默认temp capture并内建`cmp`，须打印`O-6 PASS`、退出0，且fixture blob未变；本RFC禁止`RECAPTURE=1` | 改SSE event／data／id／retry、frame顺序或terminal bytes，脚本必须退出9 | continuation／recovery或有anchor流允许按mapping改变index，不被错误纳入O-6 | 沿用原O-6；本RFC每commit共同门 |
-| R-12 | 设计性anchor golden更新前，独立wire state与SDK oracle先证明正确 | producer全序＋golden | Commit 4前过Q5预测diff停门；Commit 4内先跑O-1／O-2／真SDK，再同步更新对应golden并复跑；Commit 7只审计／清理 | 注入duplicate index、orphan delta、悬挂block，必须先由O-1／O-2红，不能只靠新golden自洽 | 仅Q5逐帧批准的anchor顺序变化允许更新；超出预测即停；O-6 fixture永不重捕 | 本RFC golden纪律；Commit 4更新、Commit 7审计 |
+| R-12 | 设计性anchor golden更新前，独立wire state与SDK oracle先证明正确 | producer全序＋golden | **Commit 4内T4.2 authority publish前**过Q5预测diff停门；同一commit内先跑O-1／O-2／真SDK，再同步更新对应golden并复跑；Commit 7只审计／清理 | 注入duplicate index、orphan delta、悬挂block，必须先由O-1／O-2红，不能只靠新golden自洽 | 仅Q5逐帧批准的anchor顺序变化允许更新；超出预测即停；O-6 fixture永不重捕 | 本RFC golden纪律；Commit 4更新、Commit 7审计 |
 | R-13 | warmup fake／drop、AUQ、non-streaming与stream owner互斥 | route behavior | Q3已裁方案A：Commit 0真实route断言warmup fake／drop完整响应一次、upstream零调用、delivery observer零session；AUQ／non-streaming按各自边界验证 | 提前创建owner、双写或漏event mutation必须红 | upstream／ctx存在但client wire未commit的AUQ仍可零owner；non-streaming正常零stream owner | Q3已裁A；本RFC Commit 0硬门 |
 | R-14 | **非Anthropic profile的candidate provenance不退化为`legacy`** | producer全序＋History | Chat Completions、Azure、Responses HTTP、Responses WS、Gemini各从真实route跑一次有winner的generation，断言forwarded记录携带**真实**candidate／dispatch identity，与该请求实际胜出的candidate一致；同一断言在hedge winner场景重跑一次 | 让`selectWinner`只更新snapshot／telemetry而不参与provenance铸造（即FF-2描述的退化实现），五种profile的forwarded provenance必须全部转为`legacy`并使本条转红 | Anthropic profile经`beginLeg`得到provenance仍绿，不因新增本条而重复失败；**无winner的路径（如pre-owner拒绝、warmup）不要求candidate provenance**，不得被本条误伤 | 本RFC必须；Commit 4。**新增理由**：R-1～R-13无一断言非Anthropic的candidate provenance，缺本条则该回归全绿交付 |
 

@@ -1,5 +1,7 @@
 # generation emission command algebra —— 第三层 kick-off 导航
 
+> **状态（核验于 `528c1785`）**：**第三层已评审放行**。判据证伪 8 轮，最终 0 blocker / 0 major；执行方第一人称走查 8 轮，最终 0 blocker / 0 major / 0 minor / 0 nit。报告：`docs/tmp/2026-08-05-command-algebra-prompts-review-{criteria,executor}.md`。Task population：plan/prompt 84/84、duplicates/orphans/unassigned/wrong-phase 均 none（数字为 checker 派生快照，不是 SSOT）。
+>
 > 本目录是 skill `large-refactor` §5 的第三层：`docs/rfc/2026-08-03-generation-emission-command-algebra/design.md` 冻结 WHY + 契约，`docs/rfc/2026-08-03-generation-emission-command-algebra/cutover-plan.md` 冻结 HOW + 锚点与 task，本文与同目录 prompt 是面向独立执行者的派发件。**所有路径均从仓库根解析**，不按 prompt 文件所在目录解析。
 >
 > **Task 人口 SSOT 是 cutover plan 的 task 定义表集合，不是本文的数字。** 当前 checker 派生多少就必须分派多少；新增 task 时 prompts 随集合增长，绝不为凑旧数字排除 `T0.0d`／`T0.0f` 或其他已放行 task。
@@ -26,7 +28,7 @@
 | `commit-5.md` | telemetry + History detail | Commit 4；**Q1 内容首次裁决 + `PHASE=post` gate** | Commit 6 | 严格串行 |
 | `commit-6.md` | legacy deletion / audits | Commit 5 | Commit 7 | 严格串行 |
 | `commit-7.md` | golden/oracle audit | Commit 6 | Commit 8 | 严格串行；production 零改动 |
-| `commit-8.md` | docs sync / merged-state closeout | Commit 7；Q2/ADR 边界 | 执行结束 | 严格串行 |
+| `commit-8.md` | docs sync / merged-state closeout | Commit 7；Q2；continuation ADR D2 的 P8 待办不得删除 | 执行结束 | 严格串行 |
 
 ### 依赖 DAG
 
@@ -80,8 +82,8 @@ cd /home/xp/src/copilot-api-js && python3 exp/inter-block-anchor-allocator/promp
 
 - 从 cutover plan 各 Commit「逐 task」表第一列的结构化 task definition 解析完整 grammar `T\d+\.\d+[a-z]?`，**不扫描全文历史 mention／交叉引用**；
 - 从 `prompts/commit-minus-1.md`、`post-merge-preflight.md`、`commit-0.md`…`commit-8.md` 的「本 phase task 集合」双 marker 解析 task 集合；marker 两份不一致也红，但每 prompt 只计一份归属；
-- 要求集合精确相等、每个 task 在 prompts 恰出现一次、无孤儿 prompt task；
-- 输出 `plan tasks: N`、`prompt tasks: N`、`duplicates: none`、`orphans: none`、`unassigned: none`；N 从 plan 派生，**不得硬编码 83**；
+- 要求集合精确相等、每个 task 在 prompts 恰出现一次、无孤儿 prompt task，且**prompt owner 与 plan 的父级 phase 一致**（把 T2.8 搬到 Commit 3 表必须报 wrong-phase）；
+- 输出 `plan tasks: N`、`prompt tasks: N`、`duplicates: none`、`orphans: none`、`unassigned: none`、`wrong-phase: none`；N 从 plan 派生，**不得硬编码**；
 - 支持 `PLAN=`／`PROMPTS=` 覆盖路径，在副本上跑 mutation；
 - 已实跑字母后缀正控：`T4.0d→T4.0z` 报 `orphan prompt tasks: ['T4.0z']` + `unassigned plan tasks: ['T4.0d']`；删除 `T0.0e` 报 `unassigned plan tasks: ['T0.0e']`；未变异正确集合绿。
 

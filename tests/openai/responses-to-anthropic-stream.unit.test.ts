@@ -28,6 +28,8 @@ import {
   test,
 } from "bun:test"
 
+import type { ResponsesOutputItem } from "~/types/api/openai-responses"
+
 import { createResponsesToAnthropicStreamTranslator } from "~/lib/openai/translate/responses-to-anthropic-stream"
 
 // ── helpers ──────────────────────────────────────────────────────────────────
@@ -297,15 +299,30 @@ describe("responses-to-anthropic-stream — structured-output refusal (never-swa
 
 describe("responses-to-anthropic-stream — web_search_call → readable text (R-NO-REVIVE, RFC §5.1/§9, Phase 6 subtask Q)", () => {
   test("a web_search_call arrives whole on .done (no intermediate deltas) and renders as a complete, self-closed text block", () => {
-    const frames = renderAll([created(), webSearchCallDone(0, "official Bun runtime website"), textDelta("https://bun.com/", 1), completed({ input_tokens: 3, output_tokens: 2, total_tokens: 5 })])
+    const frames = renderAll([
+      created(),
+      webSearchCallDone(0, "official Bun runtime website"),
+      textDelta("https://bun.com/", 1),
+      completed({ input_tokens: 3, output_tokens: 2, total_tokens: 5 }),
+    ])
     const starts = frames.filter((f) => data(f).type === "content_block_start")
     expect(starts.length).toBe(2) // web_search text block + the answer text block
     expect(data(starts[0]).content_block).toMatchObject({ type: "text" })
     const stops = frames.filter((f) => data(f).type === "content_block_stop")
     expect(stops.map((f) => data(f).index)).toEqual([0, 1])
+    const textDelta_ = frames.find((f) => data(f).type === "content_block_delta" && (data(f).delta as { type: string }).type === "text_delta")
+    expect(textDelta_ && (data(textDelta_).delta as { text: string }).text).toBe('[web_search: "official Bun runtime website"] (id: ws_0, status: completed)')
+  })
+
+  test("an incomplete web_search_call without action emits readable unknown-query text instead of throwing", () => {
+    const incomplete = rEvent({
+      type: "response.output_item.done",
+      output_index: 0,
+      item: { type: "web_search_call", id: "ws_incomplete", status: "incomplete" } satisfies ResponsesOutputItem,
+    })
+    const frames = renderAll([created(), incomplete, completed({ input_tokens: 1, output_tokens: 1, total_tokens: 2 }, "incomplete")])
     const textDeltas = frames.filter((f) => data(f).type === "content_block_delta" && (data(f).delta as { type: string }).type === "text_delta")
-    expect(textDeltas[0]).toBeDefined()
-    expect((data(textDeltas[0]).delta as { text: string }).text).toBe('[web_search: "official Bun runtime website"] (status: completed)')
+    expect(textDeltas.map((f) => (data(f).delta as { text: string }).text)).toEqual(['[web_search: "(unknown query)"] (id: ws_incomplete, status: incomplete)'])
   })
 
   test("NEGATIVE SAMPLE (R-NO-REVIVE load-bearing assertion): the streamed wire NEVER contains a web_search_tool_result type or any encrypted_content for this item", () => {
@@ -461,7 +478,13 @@ describe("responses-to-anthropic-stream — reasoning → synthetic thinking blo
 describe("responses-to-anthropic-stream — RFC §4.3 scenario A/B (Phase 5 model_translation wiring)", () => {
   test("scenario B (stripThinkingSignature=true) NEVER embeds encrypted_content into the sentinel — bare-prefix signature only, plaintext still streams", async () => {
     const frames = renderAll(
-      [created(), reasoningAdded(0), reasoningSummaryDelta("still shown", 0), reasoningDone(0, "SHOULD-NOT-BE-CARRIED"), completed({ input_tokens: 1, output_tokens: 1, total_tokens: 2 })],
+      [
+        created(),
+        reasoningAdded(0),
+        reasoningSummaryDelta("still shown", 0),
+        reasoningDone(0, "SHOULD-NOT-BE-CARRIED"),
+        completed({ input_tokens: 1, output_tokens: 1, total_tokens: 2 }),
+      ],
       "gpt-5.5",
       { stripThinkingSignature: true },
     )

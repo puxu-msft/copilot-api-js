@@ -1,6 +1,6 @@
 ---
 name: reference-worktree-bun-add-needs-main-tree-install-after-merge
-description: worktree 的隔离性没你以为的强，四个方向都会咬：① worktree 里 bun add 的依赖不进主树，FF 后主树须补 install；② 新建 worktree 里缺 native/*.node 等构建产物，在其中跑测试会红成一片、极易误判为既有失败；③ 建在仓库内（.worktrees/）的 worktree 仍会向上解析到主树 node_modules，拿它做「裸装能不能跑」的隔离验证是假的；④ 普通 subagent 委派中，仅在 prompt 写 worktree 路径不保证验证命令落在该树，错树跑出的绿与目标提交无关，证据必须与实际 `--show-toplevel` + 完整 HEAD 同链绑定
+description: worktree 的隔离性有五个方向：依赖与 ignored 产物不随树、仓库内树会向上借 node_modules、命令可能跑错树、不同基线的普通 merge 还会夹带无关祖先；集成前须审 ancestry 与补丁范围
 metadata: 
   node_type: memory
   type: reference
@@ -54,4 +54,10 @@ metadata:
 
 **这条自身的教训**：我第一版给的自验点（首条命令贴 `pwd` + `git -C ... rev-parse --short HEAD`）是**推理出来的、没做过绕过测试**的 oracle，评审当场找出四条绕过路径。→ [[methodology-new-oracle-discriminating-power-is-experimental]]、[[methodology-relocate-invariant-when-guard-cannot-keep-up]]（换判据的轴：从「开头自报家门」换成「每条命令自带来源校验」）。
 
-**Related:** worktree SDD 流程见 [[git-commit-pathspec-commits-worktree-not-index]]；no-auto-server 见 CLAUDE.md 工程纪律。实例来自 2026-07-11 列配置特性（dnd-kit reorder）合并后。
+## 第五方向（2026-08-05 新增）：worktree 隔离了文件，不会自动把分支拓扑裁成“只含我的提交”
+
+源 worktree 若从较新的 `master` 建分支，而目标特性分支仍停在较旧基线，`git merge <source>` 会按 Git 图把 source 可达、target 不可达的**全部祖先提交**带入；“source 分支只做了一次语义修复”并不等于“merge 只会带那次修复”。本轮 `fix-websearch-tool-choice` 的目标提交只改 7 个文件，但普通 merge 到 `feat/inter-block-anchor-allocator` 时相对第一父出现 **43 个文件、6875 insertions/231 deletions**——额外内容全来自 source 较新的 master 祖先。merge 无冲突且 exit 0，仍是错误集成。
+
+**触发动作：** 当准备把一个 worktree 分支集成进另一个不同基线的分支，或 clean merge 的文件面超出预期时，必须加载 skill `git-preference:isolating-from-a-shared-git-worktree` 的 “Integrating a branch back” 节；集成单元选择、ancestry 命令、patch-id/path-set 门与安全恢复边界只在该 skill 维护，本 memory 不复述。
+
+**Related:** worktree SDD 流程见 [[git-commit-pathspec-commits-worktree-not-index]]；no-auto-server 见 CLAUDE.md 工程纪律。依赖/产物三向实例来自 2026-07-11 dnd-kit 合并与 2026-07-28 UI/history-search 验证；命令树向与分支拓扑两向实例分别来自 2026-07-29 委派验证和 2026-08-05 WebSearch 集成。

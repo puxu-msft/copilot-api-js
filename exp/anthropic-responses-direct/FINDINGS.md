@@ -3,7 +3,7 @@
 实测时间：2026-07-14｜方式：隔离测试服务器 **4157**（真 GHC auth、独立 history.db `/tmp/copilot-test-4157`、跑当前 worktree master 4f6e77b8）｜4141 主服务器全程未动、实测后复核 healthy。
 用途：为 [RFC 2026-07-14 anthropic↔responses 直接桥](../../docs/rfc/2026-07-14-anthropic-responses-direct-bridge.md) §4/§5/§7.2 的 round-trip 物理可行性提供实测裁决（`empirical-verification`：实测 > 推断）。证据文件同目录 `probe-a-history.json` / `probe-c-websearch.json` / `probe-a-client.sse`。
 
-模型：`gpt-5.5`（responses-native，路由确认 `{requested:"gpt-5.5", resolved:"gpt-5.5", outboundEndpoint:"/responses", translated:true}`）。
+模型：原始 Phase 0 探针使用 `gpt-5.5`（responses-native，路由确认 `{requested:"gpt-5.5", resolved:"gpt-5.5", outboundEndpoint:"/responses", translated:true}`）。2026-08-05 后续探针使用 commit `7dc82aaf` 的隔离服务器 45173 + `gpt-5.6-sol`，用于校准 `web_search_call` 的不完整变体；4141 主服务器全程未动。
 
 ---
 
@@ -39,7 +39,8 @@
 | 观测 | 结果 |
 |---|---|
 | `/responses` + `tools:[{type:"web_search"}]` | **HTTP 200**，输出 items = `[reasoning, web_search_call, message]`（gpt-5.5 先 reason 再搜） |
-| `web_search_call` item 字段 | keys = `action, id, status, type` —— **确无 `encrypted_content` 字段**（**GPT BLOCKER 核心断言属实**）；`id` 是大加密 blob |
+| `web_search_call` item 字段 | 原始 gpt-5.5 完成项 keys = `action, id, status, type` —— **确无 `encrypted_content` 字段**（**GPT BLOCKER 核心断言属实**）；`id` 是大加密 blob |
+| `web_search_call` 不完整变体（2026-08-05，gpt-5.6-sol） | 同一 HTTP 200 响应先返回带 `action.{query,queries}` 的 `status:"completed"` 项，再返回**无 `action`** 的 `status:"incomplete"` 项；Anthropic-facing renderer 必须把后者诚实降级为 unknown-query 文本，不能无条件解引用 `action` |
 | re-inject `web_search_call` 回 round-2（responses→responses） | **HTTP 200 接受**（opaque `id` 作载体、无需 encrypted_content） |
 
 **关键结论（精化 GPT BLOCKER）**：
@@ -49,7 +50,9 @@
    - `(openai-responses 客户端, responses 模型)` = passthrough，web_search 原生 round-trip（无本 RFC 直接桥问题）。
    - `(anthropic 客户端, responses 模型)` = 本 RFC 前向直接桥，web_search 结果渲染 anthropic 须**降级为 tool_use/text**（无真密文可搬）。
 
-**对 RFC 的影响**：§5 降级结论对 anthropic-facing 成立且须精化措辞；R-NO-REVIVE 精确到「anthropic-facing 渲染不合成 web_search_tool_result」。
+**对 RFC 的影响**：§5 降级结论对 anthropic-facing 成立且须精化措辞；R-NO-REVIVE 精确到「anthropic-facing 渲染不合成 web_search_tool_result」。2026-08-05 的补充探针还校准了消费契约：`status:"incomplete"` 变体可能缺 `action`，此时保留 opaque `id` 与 `status` 并显示 `(unknown query)`；常规 completed/searching/failed 变体仍按 Responses 契约要求 `action`。
+
+**补充探针没有证明什么**：它没有证明每个 `status:"incomplete"` 的调用都缺 `action`，也没有穷举未来可能新增的 action 类型；它只以真实 GHC 响应证明“缺 `action`”是消费者必须接受的输入形状。
 
 ---
 
@@ -78,7 +81,7 @@
 
 - **Phase 5 前向 reasoning**：捕 **`output_item.done`/completed 的 encrypted_content**（非现有 CC 桥的 added），回喂上游续接（无 400 风险）。
 - **Phase 5 反向 reasoning**：新建「真 Claude signature ↔ responses reasoning item」primitive；端到端 round-trip 待桥就位复验；Claude 上游侧靠真签名不篡改过 quarantine。
-- **Phase 6 server-tool**：请求侧 anthropic web_search → responses web_search_preview 透传可行；anthropic-facing 结果渲染**降级 tool_use/text**（web_search_call 无 encrypted_content、合成撞 Anthropic 400 墙）。
+- **Phase 6 server-tool**：请求侧 anthropic web_search → Responses 裸 builtin `{type:"web_search"}` 透传可行；anthropic-facing 结果渲染**降级 tool_use/text**（web_search_call 无 encrypted_content、合成撞 Anthropic 400 墙）。
 
 ## 4141 保护
 测试服务器起在 **4157**、独立 history.db，实测后按 PID 精确清理；4141 主服务器全程未 kill、复核 healthy。

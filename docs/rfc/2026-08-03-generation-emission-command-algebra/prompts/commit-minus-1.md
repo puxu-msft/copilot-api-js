@@ -43,16 +43,16 @@
 |---|---|
 | `T0.0a` | 先写 post-`balance()`/pre-spawn 静默删文件的失败正控，预期 rc 非零且点名缺失文件；再让每个真实 shard 产出 JUnit file identity，逐次与独立磁盘 manifest 双向集合对账，正确真实 run 转绿。 |
 | `T0.0b` | 先写 runnable→skip 的失败 mutation，预期点名 `file+classname+name+ordinal`；再输出 executed/skipped 与 skipped multiset，覆盖整文件 skip、native skip、todo 的合法形态。 |
-| `T0.0c` | 先让 reporter 只留在 `refreshTimings()`、或让合并器漏一个 shard，预期 file identity 门因目标机制红；再接通实际 shard JUnit 收集，正确 full run 转绿。 |
-| `T0.0e` | **实现 plan §0.4f 已冻结的唯一接口**：`scripts/validate-entry-evidence.ts`、完整 CLI flags、pointer block v1、evidence-manifest v1 与稳定 exit/`FAIL C<n>:` contract；不得另选 env/flags/schema。先以合成 git 图、A/P、唯一 pointer block、树外 manifest、15 logs/JUnit 跑完整正样本；按 `EV-01`…`EV-25` 每次只篡改一个合成输入，预期唯一稳定 fail code/message。不得引用未来真实 A/P。 |
+| `T0.0c` | 先让 reporter 只留在 `refreshTimings()`、或让合并器漏一个 shard，预期 file identity 门因目标机制红；再接通实际 shard JUnit 收集，正确 full run 转绿。**同时按 plan §0.4f 冻结接口实现/版本化 `scripts/capture-entry-evidence.ts` 与 `tests/infra/entry-test-discovery-baseline.json` v1**；合成 fixture 验树外 OUT、独立 `minimum_executed`、15-run/JUnit 对账、失败无 manifest、成功原子写入。不得另选 producer CLI/schema。 |
+| `T0.0e` | **实现 plan §0.4f 已冻结的唯一接口**：`scripts/validate-entry-evidence.ts`、完整 CLI flags、pointer block v1、evidence-manifest v1 与稳定 exit/`FAIL C<n>:` contract；不得另选 env/flags/schema。先以合成 git 图、A/P、唯一 pointer block、树外 manifest、15 logs/JUnit 跑完整正样本；按 `EV-01`…`EV-28` 每次只篡改一个合成输入，预期唯一稳定 fail code/message。不得引用未来真实 A/P。 |
 
 所有 mutation 按 plan §0.4e：基线含真实实现、第二隔离树/`/tmp` 或 exact patch、先证 hunk 真变、读目标 FAIL、reverse check/恢复后 diff。只看 rc 不算。
 
 ## 验收 gate
 
-1. Commit -1 门表全部通过：T0.0a/b/c 的 runner 正控各因目标机制红；T0.0e 合成正样本绿且 `EV-01`…`EV-25` 一动作一唯一 FAIL。
+1. Commit -1 门表全部通过：T0.0a/b/c 的 runner 正控各因目标机制红；T0.0e 合成正样本绿且 `EV-01`…`EV-28` 一动作一唯一 FAIL。
 2. `bun run typecheck` 绿，基础设施自身测试绿。
-3. Commit -1 不得用 T0.1 的 15 次自洽运行替代自身验证。
+3. Commit -1 不得用未来 T0.0f 的 15 次自洽运行替代自身验证。
 4. 按 `docs/rfc/2026-08-03-generation-emission-command-algebra/cutover-plan.md` §0.4a/§0.4b 重跑适用共同门；不要声称真实 O-6 PASS，除非真实请求实际通过。
 5. 独立 review 后，**先合 master**。合入后重取 A；此前 15-run evidence 全部作废。
 

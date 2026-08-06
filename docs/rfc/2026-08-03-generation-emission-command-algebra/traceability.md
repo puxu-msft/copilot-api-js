@@ -39,7 +39,7 @@
 | R-9 | C5 `辅助门`（诊断，不计 behavior 等级） | C5 telemetry schema（**Q1 未裁则本段不可开工**） | 同 command 驱动 success／preflight／wire partial | T5.3 T5.7 | IN-SCOPE |
 | R-10 | C6 `production 硬门` | C6 legacy 删除完成 | inventory AST 重跑 + test-only adversarial seam | T6.1 T6.5 | IN-SCOPE |
 | R-11 | **每 commit 共同门**（C0～C8 各一次） | 无（沿用现有 fixture） | `exp/inter-block-anchor-allocator/byte-equivalence.sh` | T0.2 | IN-SCOPE |
-| R-12 | C4 `production 硬门`（更新 golden）· C7 `辅助门`（审计） | C4 前先过 Q5 逐帧 diff 停门 | O-1／O-2／真 SDK 先跑，再同步 golden | T4.1 T4.16 · T7.1 | IN-SCOPE |
+| R-12 | C4 `production 硬门`（更新 golden）· C7 `辅助门`（审计） | **C4 内 T4.2 authority publish 前**先过 Q5 逐帧 diff 停门 | O-1／O-2／真 SDK 先跑，再同步 golden | T4.1 T4.16 · T7.1 | IN-SCOPE |
 | R-13 | C0 `production 硬门`（Q3 已裁 A） | 无（现有 route 即可） | 真实 warmup route | T0.4 T0.5 | IN-SCOPE |
 | R-14 | C4 `production 硬门` | C4 authority publish + `selectWinner` provenance | Chat Completions／Azure／Responses HTTP／Responses WS／Gemini **各一次有 winner 的 generation**，hedge winner 场景重跑 | T4.13 | IN-SCOPE |
 
@@ -90,7 +90,7 @@
 | **Q1**（telemetry 联合查询能力） | **C5 之前** | **open**——用户 2026-08-03 裁的是「现在不裁」，**不是**裁了 A/B/C。守卫：`exp/inter-block-anchor-allocator/q1-locations.sh`（`PHASE=pre`） |
 | **Q2** | **C8 之前**，默认不改 ADR | open |
 | **Q3／Q4** | — | 已裁决，不再设停点 |
-| **Q5**（anchor 帧序逐帧 diff） | **C4 authority publish 之前**（必经） | 用户已裁「接受帧序变更」；**逐帧 diff 审查仍是必经触发点，缺材料不得进入 C4** |
+| **Q5**（anchor 帧序逐帧 diff） | **C4 内 T4.2 authority publish 之前**（必经） | 用户已裁「接受帧序变更」；可先完成 T4.0a～d／T4.1，**逐帧 diff 未审完不得进入 T4.2** |
 | **§7.13 不可满足停门** | C4 | 若 PoC 证明无法在同一 semantic commit 切换，**不得发布部分 authority、不得引入 `legacy_adapted`／payload-guessing facade、不得让 new command 回落** |
 
 ## 5. ~~已知缺口~~ **已裁决（2026-08-04）**：R-6 按判据列拆，两段各自定级

@@ -102,7 +102,6 @@
 - **V17 紧急纠错例外** — ❌ **补记一次证伪（发生在本会话早段，此前漏记）**。撤回 `MEMORY.md` 里「探测消息打断了 agent」这条被时间线证伪的因果时（中断早于探测 118 秒），我**在同一次撤回里立刻把「宿主一次失败的 fork resume」写成了真因**，而那同样只有时间相关性、没有产生点标签。**命中证伪条款③（根因未定时不得顺手写入新的因果解释）**，由后续评审抓出、已降级为「只写已排除什么」。SKILL.md §6 的正文已把这次写成反面教材，但**当时没在本日志记账**——两处记录的漂移本身也是本轮学到的（见下条）。
 - **新增观测（不在自验表内，建议入表）** — **「手工维护的汇总 + 明细，两个可独立写的点，没有对账门就必然漂」**。本轮在姊妹 skill `reshaping-a-bypassed-guard` 的 verification-log 里实测到：三张票写进了「逐条记录」，而「票数」小节纹丝不动停在 `0 证实`。修法不是提醒自己细心，而是**指定明细为唯一事实源、汇总降为派生视图**，并规定同一次编辑内更新 + 提交前重数对账。**本日志天然免疫**（它只有记录、没有汇总小节）——但上面 V17 那条「当时没记账」说明**另一种漂移仍在**：SKILL.md 正文写了教训、本日志没记票，同一事实的两个载体分岔。已并入记忆 [[methodology-downgrading-a-gate-needs-a-reachable-trigger]]。
 - **新增观测** — **reviewer 在同一份报告里自我推翻了刚提的一条 major**（按「第 3 行」字面 hash 报指纹不匹配 → 继续枚举 canonicalization 后确认作者记的值正是「含行尾 LF」版，当场自撤降为 nit）。这是「每闭合一条立刻落盘」的一个**副作用收益**：逐条写下来之后，它自己回头看得见前一条的判据取法。值得在派活模板里保留「允许并鼓励当场撤回自己的 finding」这层意思。
-
 ## 2026-08-05 · GitHub Enterprise 鉴权主机规格（sha `75c00185`）
 
 - **V1 触发链** — ⚠️ 本轮触发原因是规格阶段完成、准备交用户审阅；主会话在最终 reviewer PASS 后主动调用本 skill，没有等用户提醒，也没有先宣告完成。但 V1 的现行断言只覆盖“上下文快满、任务没完”，本轮不属于它的适用场景，不能投证实票。｜结论：数据不足
@@ -111,3 +110,12 @@
 - **V8 正交视角** — ⚠️ 本轮是两个先后 reviewer，但第二位承担的是前一位 transcript 物理不可达后的替代复核，不是预先设计的正交视角，因此不计入 V8 分母。逐轮增量仍显著：合并态最后又抓出 debug 无 token 分支缺 oracle。｜结论：数据不足
 - **V9 鉴别力正控** — ⚠️ 规格中的每类新 gate 都写了目标 mutation，尤其合并态评审补出的 debug 三类 mutation、配置事务三类 mutation、proxy 旧预采样 mutation；实现尚未开始，均明确保留为执行期 gate，没有把“写了 mutation”冒充已实测红。事实观察成立，但本轮追加本日志本身已编辑 `.claude/skills/session-closeout/`，按第 11 行投票规则不得投证实票。｜结论：数据不足
 - **投票规则结构缺陷** — 当前第 11 行把“本轮编辑过该目录”一律判为不能投证实票，而本 skill 又要求每次使用后追加本目录内的 `verification-log.md`；两条合用会使任何按要求记录的会话都无法投证实票。该冲突需由独立的规则维护任务裁决：可选方向是明确排除“仅追加 verification-log”，或由外部记录者落票。本轮不修改 instruction text，避免在产品规格收尾中顺手改变全局流程。｜结论：待裁决
+
+## 2026-08-05 · WebSearch tool_choice 修复与 worktree 集成（核验基线 `631578b2`）
+
+- **V1 触发链** — ❌ **负样本**。用户直接说“清理并收尾本会话，更新相关的文档与技能”后才调用本 skill；此前第一次交付 WebSearch 修复时虽主动调用过 skill，但本轮真正的文档／技能收口仍由用户显式触发，属于“用户点名”而非自动浮现。｜结论：证伪（本轮编辑了该目录，不计证实票）
+- **V9 鉴别力正控** — ⚠️ **强观测但不投证实票**。WebSearch 类别修复先写 RED，旧实现稳定产出 `{type:"function",name:"web_search"}`；精确 mutation 把 builtin choice 退回 function 后，目标测试再次按同一差异变红。随后本地对抗审查构造“typed tool 被过滤但 `any/required` 仍存活”与“named choice 无声明”反例，五条新 RED 全命中，促成“choice 只能引用翻译后存活工具”的完整不变量。因本轮编辑 verification log，按投票规则只记数据。｜结论：数据不足（正控方法实际改变了实现范围）
+- **V10 上游文档对账** — ⚠️ **强观测但不投证实票**。候选逐份 disposition：ADR `2026-07-13-server-tool-positioning-and-web-search-retirement` 的“不复活双跳”不变；RFC `2026-07-14-anthropic-responses-direct-bridge` §5.1 的 `web_search_preview` 被代码、Phase 0 FINDINGS 实测表与本轮 live History 三方证伪，改为裸 `{type:"web_search"}`；DESIGN 活架构补 `tools[]`／`tool_choice` 同源存活性；API/README 无端点变化，不改。｜结论：数据不足（对账触发有效）
+- **V7 闭环提交时点** — ✅ 提交后机械核验通过。项目 commit `9c546408` 的 `git diff-tree --no-commit-id --name-only -r` 精确包含 7 份文档／memory/实验更新 + 2 份独立评审报告，零额外路径；全局 skill commit `f9de23f` 精确包含 `isolating-from-a-shared-git-worktree/SKILL.md` 与 `proving-where-a-command-ran/verification-log.md` 两路径。两组集合均与提交前冻结清单逐行相等。｜结论：数据不足（本轮编辑该 log，不投证实票）
+- **独立审计限制（历史时点）** — 初次记录时会话有“Do not call the AgentTool unless the user requested it”的运行时约束，故当时 §1 subagent audit 未执行；本记录没有把主会话自审冒充独立评审。
+- **限制随后解除、审计已执行并闭环** — 用户明确授权后，派两条正交独立评审：协议/doc↔code 报告 `docs/tmp/2026-08-05-websearch-closeout-review-protocol.md`（Round 1：0 blocker / 3 major；Round 2：剩 1 major；Round 3：0 blocker / 0 major，可定稿）；instruction/Git 报告 `docs/tmp/2026-08-05-websearch-closeout-review-skill.md`（Round 1：2 major，Round 2 剩 1 major，Round 3：0 blocker / 0 major，可定稿）。本轮编辑该 log，按投票规则不投证实票。

@@ -277,13 +277,25 @@ describe("translateAnthropicToChatCompletions — tools / tool_choice", () => {
   })
 
   test("tool_choice mapping: auto/any→required/none/tool→function", () => {
-    expect(translateAnthropicToChatCompletions(payload({ tool_choice: { type: "auto" } })).tool_choice).toBe("auto")
-    expect(translateAnthropicToChatCompletions(payload({ tool_choice: { type: "any" } })).tool_choice).toBe("required")
-    expect(translateAnthropicToChatCompletions(payload({ tool_choice: { type: "none" } })).tool_choice).toBe("none")
-    expect(translateAnthropicToChatCompletions(payload({ tool_choice: { type: "tool", name: "f" } })).tool_choice).toEqual({
+    const functionTool = { name: "f", input_schema: { type: "object" } } as const
+    expect(translateAnthropicToChatCompletions(payload({ tools: [functionTool], tool_choice: { type: "auto" } })).tool_choice).toBe("auto")
+    expect(translateAnthropicToChatCompletions(payload({ tools: [functionTool], tool_choice: { type: "any" } })).tool_choice).toBe("required")
+    expect(translateAnthropicToChatCompletions(payload({ tools: [functionTool], tool_choice: { type: "none" } })).tool_choice).toBe("none")
+    expect(translateAnthropicToChatCompletions(payload({ tools: [functionTool], tool_choice: { type: "tool", name: "f" } })).tool_choice).toEqual({
       type: "function",
       function: { name: "f" },
     })
+  })
+
+  test("drops named and required choices when typed server tools are stripped", () => {
+    const tools: NonNullable<MessagesPayload["tools"]> = [{ name: "web_search", type: "web_search_20250305" }]
+    expect(translateAnthropicToChatCompletions(payload({ tools, tool_choice: { type: "tool", name: "web_search" } })).tool_choice).toBeUndefined()
+    expect(translateAnthropicToChatCompletions(payload({ tools, tool_choice: { type: "any" } })).tool_choice).toBeUndefined()
+  })
+
+  test("drops a named function choice when no translated CC tool has that name", () => {
+    const tools: NonNullable<MessagesPayload["tools"]> = [{ name: "present", input_schema: { type: "object" } }]
+    expect(translateAnthropicToChatCompletions(payload({ tools, tool_choice: { type: "tool", name: "missing" } })).tool_choice).toBeUndefined()
   })
 })
 

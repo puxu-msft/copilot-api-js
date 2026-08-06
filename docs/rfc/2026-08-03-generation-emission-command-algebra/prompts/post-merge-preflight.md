@@ -1,4 +1,4 @@
-# Kick-off：post-merge entry-evidence preflight —— P 后、Commit 0 前
+# Kick-off：post-merge entry-evidence phase —— A 后生成 P、验证后进入 Commit 0
 
 <!-- prompt-task-ids: T0.0f T0.0d -->
 
@@ -30,7 +30,7 @@ T0.0f 任一 run 非绿、identity/skip 集漂移、HEAD/tree 漂移时立即停
 | baseline structured log fields | `exp/inter-block-anchor-allocator/baseline-runs.sh:134-148` | 每 run 的 `evidence_timing`/`measured_sha`/`claims_current_head` 原始格式 |
 | HANDOVER 已裁图 | `docs/plan/2026-07-27-inter-block-anchor-allocator/HANDOVER.md`「用户已裁决」表 | pointer P 的唯一状态线 |
 
-完整十行 validator 条件/EV mapping 的唯一事实源是 `docs/rfc/2026-08-03-generation-emission-command-algebra/cutover-plan.md` §0.4f。
+完整十一行 validator 条件/EV mapping（含 discovery baseline C11） 的唯一事实源是 `docs/rfc/2026-08-03-generation-emission-command-algebra/cutover-plan.md` §0.4f。
 
 ## 本 phase task 集合（唯一归属）
 
@@ -38,8 +38,8 @@ T0.0f 任一 run 非绿、identity/skip 集漂移、HEAD/tree 漂移时立即停
 
 | Task | TDD 施工顺序 |
 |---|---|
-| `T0.0f` | 在干净的 `ENTRY_SHA=A` 执行树上，显式 `EVIDENCE_TIMING=closeout`、绝对树外 `OUT` 跑 15 次实际 shards，生成原始 logs/JUnit 与 evidence-manifest v1；任一失败不得写 pointer。全部绿后，在 master HANDOVER 写唯一 pointer block 并提交 P，机械验 A 是 P 祖先、P 不合回执行树。详细 schema/字段只读 plan §0.4f。 |
-| `T0.0d` | **不实现 validator、不生成第二批 evidence、不重跑合成 EV mutation。** 传入完整 `ENTRY_SHA=A` 与 `POINTER_SHA=P`，调用 Commit -1 已版本化的 validator：`cd /home/xp/src/copilot-api-js && bun run scripts/validate-entry-evidence.ts --entry-sha "$ENTRY_SHA" --pointer-sha "$POINTER_SHA" --tree "$TREE" --handover docs/plan/2026-07-27-inter-block-anchor-allocator/HANDOVER.md`。对 T0.0f 的真实 artifacts 跑正样本；任何缺失/不等即停。 |
+| `T0.0f` | **不现场发明 producer。** 原样调用 plan §0.4f 冻结的 `scripts/capture-entry-evidence.ts` CLI（`ENTRY_SHA=A`、干净 `$TREE`、绝对树外 `OUT`、`--runs 15`、versioned discovery baseline）；任一失败不得留下 manifest 或写 pointer。producer rc=0 后，在 master HANDOVER 写唯一 pointer block并提交 P，机械验 A 是 P 祖先、P 不合回执行树。 |
+| `T0.0d` | **不实现 validator、不生成第二批 evidence、不重跑合成 EV mutation。** 设置树外绝对 `RECEIPT`，原样调用 Commit -1 已版本化 CLI：`cd /home/xp/src/copilot-api-js && bun run scripts/validate-entry-evidence.ts --entry-sha "$ENTRY_SHA" --pointer-sha "$POINTER_SHA" --tree "$TREE" --handover docs/plan/2026-07-27-inter-block-anchor-allocator/HANDOVER.md --receipt-out "$RECEIPT"`。rc=0 后重算 receipt hash并记录路径/hash；任何缺失/不等即停。 |
 
 ## 验收 gate
 
