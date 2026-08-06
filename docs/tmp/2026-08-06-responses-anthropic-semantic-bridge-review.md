@@ -248,9 +248,9 @@
 
 ## Thinking 翻译审计增量复核
 
-规格分支再次从 `285dc571` 重基到最新 master `d00b0d82`。重基前后规格与评审记录的 SHA-256 分别保持 `26f27a04ee96d8bcbb1c0e1ea36ccaed7e88edaae2603d47be617a5990b37fd5` 与 `1fb60544362b91a6567487613b50d5c0a989299d7b5ce2f6b5ff96cf7007ebff`，证明重基本身没有改变两份文档。
+规格分支再次从 `285dc571` 重基到 master `d00b0d82`，随后吸收只新增 History／HTTP2 诊断计划的 `b6fb0947`。第一次重基前后规格与评审记录的 SHA-256 分别保持 `26f27a04ee96d8bcbb1c0e1ea36ccaed7e88edaae2603d47be617a5990b37fd5` 与 `1fb60544362b91a6567487613b50d5c0a989299d7b5ce2f6b5ff96cf7007ebff`；第二次重基前后更新后的两份文档 SHA-256 分别保持 `c32ece0b4fd31408bd446002454ab766ac0f3d289740e9d215ab645a69c37014` 与 `afa54605c2ba777aac519f1dcea1e07a019ef9e94dd66a419a611434f8cfdf47`。两次重基本身均未改变文档内容。
 
-`d00b0d82` 新增 thinking 翻译审计与真实 GHC Responses carrier 探针。主会话初步对账认为：探针只证伪“跨模型旧 `encrypted_content` 必然 400”，而本规格没有采用该机制断言；本规格要求 carrier 按冻结的 affinity／compatibility policy 决定恢复或剥离，并把具体兼容判据留给 Phase 0 冻结。新审计还独立确认 server-tool 四格、per-item lifecycle、多 reasoning 单槽、request carrier policy 与顶层能力诊断缺口；它们是否已被本规格的通用 contract 充分覆盖，交由下述短复核裁决。
+`d00b0d82` 新增 thinking 翻译审计与真实 GHC Responses carrier 探针；`b6fb0947` 只新增 `docs/plan/2026-08-06-history-read-path-and-h2-diagnostics.md`，不触及本规格的协议、实现接缝或目标文档。主会话初步对账认为：探针只证伪“跨模型旧 `encrypted_content` 必然 400”，而本规格没有采用该机制断言；本规格要求 carrier 按冻结的 affinity／compatibility policy 决定恢复或剥离，并把具体兼容判据留给 Phase 0 冻结。新审计还独立确认 server-tool 四格、per-item lifecycle、多 reasoning 单槽、request carrier policy 与顶层能力诊断缺口；它们是否已被本规格的通用 contract 充分覆盖，交由下述短复核裁决。
 
 ### 待短复核命题
 

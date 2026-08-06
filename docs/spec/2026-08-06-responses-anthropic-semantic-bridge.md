@@ -2,7 +2,7 @@
 
 > **状态**：已定稿；协议与架构评审无 BLOCKER／MAJOR，最新 master thinking 审计增量待短复核
 >
-> **核验基线**：`d00b0d82a0bde1a7e408c3b0ea012d78018d9292`（2026-08-06；定稿分支重基后的最新 master）
+> **核验基线**：`b6fb0947686ea6620bfafb63a4fd151d18599483`（2026-08-06；定稿分支重基后的最新 master）
 >
 > **适用范围**：OpenAI Responses 与 Anthropic Messages 之间的请求、非流式响应与流式响应双向翻译
 
