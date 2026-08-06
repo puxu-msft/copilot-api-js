@@ -138,10 +138,12 @@ interface PreparedOperation {
   byteLength: number
 }
 
+export type EnqueueModelOperationOutcome = "persisted" | "failed" | "conflict"
+
 interface PendingOperation {
   record: ModelOperationRecord
   estimatedBytes: number
-  resolve: () => void
+  resolve: (outcome: EnqueueModelOperationOutcome) => void
 }
 
 const pending: Array<PendingOperation> = []
@@ -849,6 +851,7 @@ async function runDrain(): Promise<void> {
       if (item === undefined) break
       pendingBytes -= item.estimatedBytes
       status = { ...status, pendingOperations: pending.length, pendingBytes }
+      let outcome: EnqueueModelOperationOutcome = "failed"
       try {
         const prepared = await Promise.resolve().then(() => prepareModelOperation(item.record))
         // Captures a non-conflict thrown error so `lastError` still carries its
@@ -866,6 +869,7 @@ async function runDrain(): Promise<void> {
         const retryOutcome = await runWithTransientRetry(
           async () => {
             nonConflictError = undefined
+            let attemptConflict = false
             const result = await runHistoryWriteAsync("v3-drain", async () => {
               try {
                 commitFailureInjectorForTests?.() // DI-5 test seam: no-op in prod
@@ -873,6 +877,7 @@ async function runDrain(): Promise<void> {
                 if (commitResult === "inserted") status = { ...status, persistedOperations: status.persistedOperations + 1 }
               } catch (error) {
                 if (error instanceof V3OperationConflictError) {
+                  attemptConflict = true
                   // A conflict is a data-contract violation (duplicate operationId,
                   // differing revision/digest), not a SQLite persistence failure —
                   // `commitPreparedOperation` already bumped `status.conflicts`
@@ -885,7 +890,7 @@ async function runDrain(): Promise<void> {
                 throw error
               }
             })
-            return { ok: result.ok, transient: result.transient, conflict: false }
+            return { ok: result.ok, transient: result.transient, conflict: attemptConflict }
           },
           // No shutdown signal here on purpose: importing `~/lib/shutdown` would
           // create a store→shutdown→state require cycle that reorders module init
@@ -895,7 +900,11 @@ async function runDrain(): Promise<void> {
           // accepts a signal for callers that can provide one without the cycle.
           { maxAttempts: persistRetryConfig.maxAttempts, backoffMs: persistRetryConfig.backoffMs, maxTotalMs: persistRetryConfig.maxTotalMs },
         )
-        if (!retryOutcome.ok) {
+        if (retryOutcome.conflict) {
+          outcome = "conflict"
+        } else if (retryOutcome.ok) {
+          outcome = "persisted"
+        } else {
           // Surface WHICH soft cap dropped the entry (attempt ceiling vs time
           // budget) alongside the last error, so an operator can tell a transient
           // storm (max-attempts) from a wedge-guard trip (max-total-ms).
@@ -915,7 +924,7 @@ async function runDrain(): Promise<void> {
           lastError: error instanceof Error ? error.message : String(error),
         }
       } finally {
-        item.resolve()
+        item.resolve(outcome)
       }
       await new Promise<void>((resolve) => realSetTimeout(resolve, 0))
     }
@@ -925,11 +934,11 @@ async function runDrain(): Promise<void> {
   }
 }
 
-/** Enqueue a terminal record; resolves after its commit attempt without throwing. */
-export function enqueueModelOperation(record: ModelOperationRecord): Promise<void> {
+/** Enqueue a terminal record and retain the operation-scoped durability outcome. Never rejects. */
+export function enqueueModelOperationWithOutcome(record: ModelOperationRecord): Promise<EnqueueModelOperationOutcome> {
   const estimatedBytes = estimateRecordBytes(record)
-  let resolve!: () => void
-  const done = new Promise<void>((doneResolve) => {
+  let resolve!: (outcome: EnqueueModelOperationOutcome) => void
+  const done = new Promise<EnqueueModelOperationOutcome>((doneResolve) => {
     resolve = doneResolve
   })
   pending.push({ record, estimatedBytes, resolve })
@@ -940,6 +949,11 @@ export function enqueueModelOperation(record: ModelOperationRecord): Promise<voi
     .finally(() => pendingDrains.delete(drain))
   pendingDrains.add(drain)
   return done
+}
+
+/** Compatibility surface: resolves after the commit attempt and never exposes persistence failure to model delivery. */
+export async function enqueueModelOperation(record: ModelOperationRecord): Promise<void> {
+  await enqueueModelOperationWithOutcome(record)
 }
 
 export async function drainV3Writer(): Promise<void> {

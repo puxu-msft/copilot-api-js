@@ -683,6 +683,8 @@ export interface EntrySummary {
   endpoint: EndpointType
   state?: RequestLifecycleState
   active?: boolean
+  /** Recent terminal has not reached durable V3 storage, or its bounded writer attempt failed. Omitted after successful persistence. */
+  durability?: "pending" | "failed"
   /** Debug-pin flag — see HistoryEntry.pinned. Pinned entries survive the reaper. */
   pinned?: boolean
   lastUpdatedAt?: number

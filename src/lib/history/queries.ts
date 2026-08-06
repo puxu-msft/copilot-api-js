@@ -39,6 +39,7 @@ import {
 } from "./v3/summary-store"
 import {
   //
+  getRecentModelOperationDurability,
   getRecentModelOperationTerminal,
   listRecentModelOperationTerminals,
 } from "./v3/terminal-bus"
@@ -72,6 +73,11 @@ function isInFlightSummary(summary: EntrySummary): boolean {
 
 function compareSummaryNewestFirst(a: EntrySummary, b: EntrySummary): number {
   return b.startedAt - a.startedAt || b.id.localeCompare(a.id)
+}
+
+function recentRecordToSummary(record: NonNullable<ReturnType<typeof getRecentModelOperationTerminal>>): EntrySummary {
+  const durability = getRecentModelOperationDurability(record.identity.operationId)
+  return { ...recordToEntrySummary(record), ...(durability ? { durability } : {}) }
 }
 
 export class InvalidSummaryCursorError extends Error {
@@ -173,7 +179,7 @@ function resolveSummaryCursor(options: QueryOptions, operationKind: NonNullable<
   const recent = getRecentModelOperationTerminal(cursor)
   if (recent) {
     const entry = recordToHistoryEntry(recent)
-    if (recordMatchesQuery(recent, { ...options, operationKind }) && inFlightMatchesSearch(entry, options.search)) return recordToEntrySummary(recent)
+    if (recordMatchesQuery(recent, { ...options, operationKind }) && inFlightMatchesSearch(entry, options.search)) return recentRecordToSummary(recent)
     throw new InvalidSummaryCursorError(cursor)
   }
 
@@ -234,7 +240,7 @@ export function getSummary(id: string): EntrySummary | undefined {
   const inflight = getInFlight(id)
   if (inflight) return toEntrySummary(inflight)
   const recent = getRecentModelOperationTerminal(id)
-  if (recent) return recordToEntrySummary(recent)
+  if (recent) return recentRecordToSummary(recent)
   const db = getDatabase()
   if (isSummaryProjectionReady(db)) return getPersistedSummary(db, id)
   const stored = getV3StoredOperation(id)
@@ -296,7 +302,7 @@ export function getHistorySummaries(options: QueryOptions = {}): SummaryResult {
   const persistedSummaries = [
     ...listRecentModelOperationTerminals()
       .filter((record) => recordMatchesQuery(record, { ...options, operationKind }))
-      .map((record) => recordToEntrySummary(record)),
+      .map((record) => recentRecordToSummary(record)),
     ...stored.rows,
   ]
 

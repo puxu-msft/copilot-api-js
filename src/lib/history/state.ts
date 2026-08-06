@@ -34,7 +34,7 @@ import {
   //
   drainV3Writer,
   drainV3SummaryBackfill,
-  enqueueModelOperation,
+  enqueueModelOperationWithOutcome,
   ensureV3Schema,
   recoverV3Journal,
   startV3SummaryBackfill,
@@ -44,6 +44,7 @@ import {
   //
   clearRecentModelOperationTerminalsForTests,
   drainModelOperationTerminalSubscribers,
+  settleRecentModelOperationDurability,
   subscribeModelOperationTerminals,
 } from "./v3/terminal-bus"
 
@@ -143,7 +144,10 @@ export async function initHistory(enable: boolean, _legacyMaxEntries?: number): 
   await applyForwardMigrations(getDatabase())
   recoverV3Journal(getDatabase())
   unsubscribeV3Terminal?.()
-  unsubscribeV3Terminal = subscribeModelOperationTerminals(enqueueModelOperation)
+  unsubscribeV3Terminal = subscribeModelOperationTerminals(async (record) => {
+    const outcome = await enqueueModelOperationWithOutcome(record)
+    settleRecentModelOperationDurability(record, outcome)
+  })
   // History-search sidecar (Phase 3′): construct ONLY the UDS client — never
   // spawn/supervise a process. The client is a lightweight, stateless-per-
   // query object (see uds-client.ts); constructing it unconditionally here
