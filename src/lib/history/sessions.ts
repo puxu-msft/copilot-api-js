@@ -7,15 +7,24 @@ import type {
   SessionSummary,
 } from "./types"
 
+import { getDatabase } from "./sqlite/connection"
 import { recordToHistoryEntry } from "./v3/projection"
 import {
   //
   visitV3StoredOperations,
   visitV3Summaries,
 } from "./v3/store"
+import {
+  //
+  isSummaryProjectionReady,
+  querySessionSummaries,
+} from "./v3/summary-store"
 
 /** Per-session aggregate projected exclusively from terminal V3 generation records. */
 export function getSessionSummaries(limit = 200): Array<SessionSummary> {
+  const db = getDatabase()
+  if (isSummaryProjectionReady(db)) return querySessionSummaries(db, limit)
+
   const grouped = new Map<string, Array<EntrySummary>>()
   visitV3Summaries((summary) => {
     if (!summary.sessionId) return

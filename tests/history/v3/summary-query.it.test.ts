@@ -15,6 +15,7 @@ import {
   putInFlight,
 } from "~/lib/history/in-flight"
 import { getHistorySummaries } from "~/lib/history/queries"
+import { getSessionSummaries } from "~/lib/history/sessions"
 import {
   //
   closeDatabase,
@@ -139,6 +140,35 @@ describe("persisted summary SQL query", () => {
     ])
     expect(querySummaryPage(getDatabase(), { sessionId: "s1", agentId: "a1" }, 10).entries.map((row) => row.id)).toEqual(["agent-failed"])
     expect(querySummaryPage(getDatabase(), { operationKind: "all", model: "client-a" }, 10).entries.map((row) => row.id)).toEqual(["count-op", "main-complete"])
+  })
+
+  test("session aggregates stay on the narrow projection after read cutover", () => {
+    persist({ id: "a-session", startedAt: 100, requestModel: "model-z", responseModel: "model-z", sessionId: "session-1", agentId: "agent-1" })
+    persist({ id: "z-session", startedAt: 100, requestModel: "model-a", responseModel: "model-a", sessionId: "session-1", state: "failed" })
+    persist({ id: "ws-session", startedAt: 200, operationKind: "responses_ws", requestModel: "ws-model", sessionId: "session-1" })
+    expect(tryMarkSummaryProjectionReady(getDatabase()).ready).toBe(true)
+
+    getDatabase()
+      .prepare("UPDATE v3_operations SET summary_json=NULL,manifest_gz=?")
+      .run(new Uint8Array([0]))
+
+    expect(getSessionSummaries()).toEqual([
+      {
+        sessionId: "session-1",
+        requestCount: 2,
+        agentCount: 1,
+        inputTokens: 0,
+        outputTokens: 0,
+        firstStartedAt: 100,
+        lastStartedAt: 100,
+        completed: 1,
+        failed: 1,
+        aborted: 0,
+        models: ["model-z", "model-a"],
+        firstPreview: "a-session",
+        preview: "z-session",
+      },
+    ])
   })
 
   test("the facade merges in-flight rows without corrupting totals or terminal-only pages", () => {

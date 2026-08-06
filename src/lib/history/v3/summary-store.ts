@@ -3,6 +3,7 @@ import type {
   //
   EntrySummary,
   QueryOptions,
+  SessionSummary,
   SummaryResult,
 } from "~/lib/history/types"
 
@@ -248,6 +249,110 @@ export function querySummaryPage(db: Database, options: QueryOptions, limit: num
   let prevCursor: string | null = null
   if (hasNewer && newest) prevCursor = newest.id
   return { entries, total, nextCursor, prevCursor }
+}
+
+interface PersistedSessionAggregate {
+  session_id: string
+  request_count: number
+  agent_count: number
+  input_tokens: number
+  output_tokens: number
+  first_started_at: number
+  last_started_at: number
+  completed: number
+  failed: number
+  aborted: number
+  models_json: string
+  first_preview: string | null
+  preview: string | null
+}
+
+export function querySessionSummaries(db: Database, limit: number): Array<SessionSummary> {
+  const rows = db
+    .prepare(
+      `WITH generation_rows AS (
+         SELECT *
+         FROM v3_operation_summaries
+         WHERE projection_status='ready'
+           AND operation_kind='generation'
+           AND session_id IS NOT NULL
+       ),
+       grouped AS (
+         SELECT
+           session_id,
+           COUNT(*) AS request_count,
+           COUNT(DISTINCT agent_id) AS agent_count,
+           SUM(COALESCE(input_tokens,0) + COALESCE(cache_read_input_tokens,0) + COALESCE(cache_creation_input_tokens,0)) AS input_tokens,
+           SUM(COALESCE(output_tokens,0)) AS output_tokens,
+           MIN(started_at) AS first_started_at,
+           MAX(started_at) AS last_started_at,
+           SUM(CASE WHEN state='completed' THEN 1 ELSE 0 END) AS completed,
+           SUM(CASE WHEN state='failed' THEN 1 ELSE 0 END) AS failed,
+           SUM(CASE WHEN state IN ('aborted','interrupted') THEN 1 ELSE 0 END) AS aborted
+         FROM generation_rows
+         GROUP BY session_id
+         ORDER BY last_started_at DESC,session_id DESC
+         LIMIT ?
+       ),
+       model_occurrences AS (
+         SELECT
+           session_id,
+           COALESCE(response_model,request_model) AS model,
+           started_at,
+           operation_id,
+           ROW_NUMBER() OVER (
+             PARTITION BY session_id,COALESCE(response_model,request_model)
+             ORDER BY started_at,operation_id
+           ) AS occurrence
+         FROM generation_rows
+         WHERE COALESCE(response_model,request_model) IS NOT NULL
+       ),
+       session_models AS (
+         SELECT
+           session_id,
+           json_group_array(model ORDER BY started_at,operation_id) AS models_json
+         FROM model_occurrences
+         WHERE occurrence=1
+         GROUP BY session_id
+       )
+       SELECT
+         grouped.*,
+         COALESCE(session_models.models_json, '[]') AS models_json,
+         first_row.preview_text AS first_preview,
+         last_row.preview_text AS preview
+       FROM grouped
+       LEFT JOIN session_models ON session_models.session_id=grouped.session_id
+       JOIN generation_rows first_row ON first_row.operation_id=(
+         SELECT operation_id FROM generation_rows
+         WHERE session_id=grouped.session_id
+         ORDER BY started_at,operation_id
+         LIMIT 1
+       )
+       JOIN generation_rows last_row ON last_row.operation_id=(
+         SELECT operation_id FROM generation_rows
+         WHERE session_id=grouped.session_id
+         ORDER BY started_at DESC,operation_id DESC
+         LIMIT 1
+       )
+       ORDER BY grouped.last_started_at DESC,grouped.session_id DESC`,
+    )
+    .all(Math.max(0, limit)) as Array<PersistedSessionAggregate>
+
+  return rows.map((row) => ({
+    sessionId: row.session_id,
+    requestCount: row.request_count,
+    agentCount: row.agent_count,
+    inputTokens: row.input_tokens,
+    outputTokens: row.output_tokens,
+    firstStartedAt: row.first_started_at,
+    lastStartedAt: row.last_started_at,
+    completed: row.completed,
+    failed: row.failed,
+    aborted: row.aborted,
+    models: JSON.parse(row.models_json) as Array<string>,
+    firstPreview: row.first_preview ?? "",
+    preview: row.preview ?? "",
+  }))
 }
 
 export interface SummaryProjectionReadiness {
