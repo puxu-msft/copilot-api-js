@@ -1,6 +1,6 @@
 # Responses ↔ Anthropic 语义桥规格评审记录
 
-> **状态**：进行中，首轮整改已完成，待提交与原 reviewer 复审
+> **状态**：进行中，第二轮整改已完成，待提交与架构 reviewer 复审
 >
 > **评审对象**：`docs/spec/2026-08-06-responses-anthropic-semantic-bridge.md`
 >
@@ -87,3 +87,54 @@
 3. D1／D2 是否正确区分可行性与择优，没有残留伪必要性。
 4. 本报告是否忠实转录两位 reviewer 的首轮发现、严重度与处置。
 5. 若只剩 minor，reviewer 应明确写“可定稿”。
+
+## 第一轮复审结果
+
+- 协议 verifier：**可定稿**。B1、Web Search lifecycle、外层 `WebSearch.call()` oracle 与对应 AC／mutation 已闭合。
+- 架构 reviewer：0 BLOCKER、4 MAJOR。首轮 M1–M6 的方向已采纳，但整改新增接口仍有四个执行接缝。
+
+## 第二轮发现与处置
+
+### M7. 异构 stateful handler 无法类型安全进入 registry／router
+
+- **原级别**：MAJOR。
+- **处置**：采纳（C）。
+- **事实复核**：原 `ResponseHandlerRegistry` 省略 State 泛型，router 又把 state 擦成 unknown；严格实现只能 cast。机器守卫中的 `whole-item-on-done` 也没有对应 contract。
+- **整改**：定义 `defineWholeItemOnDoneHandler`／`defineStatefulResponseHandler` 两个 typed factory；两者在 `bindStream` 时闭包捕获 typed source／State，只向 router 暴露统一 `BoundResponseItemHandler`。Router 不保存泛型 handler 或裸 state。
+
+### M8. Request disposition 发生在 candidate 创建前
+
+- **原级别**：MAJOR。
+- **处置**：采纳（C）。
+- **事实复核**：driver S2 translate-out 在 generation preflight／candidate 创建之前执行；request context 没有 candidate handle。
+- **整改**：拆 request-level 与 response candidate-level 两个 append-only SSOT。Request diagnostics 在 S2 后冻结一次，candidate／dispatch 只引用 frozen id/hash；response records 才写 candidate-local。顶层由 request records + winner response records 派生。
+
+### M9. Affinity 未编码进 carrier wire
+
+- **原级别**：MAJOR。
+- **处置**：采纳（C）。
+- **事实复核**：原 `ContinuationBundle` 有 affinity，但候选 `ResponsesContinuationEnvelopeV2` 只有 version + records，echo 后无法比较来源。
+- **整改**：carrier envelope 编码 resolved model、provider、endpoint 与 compatibilityKey；请求 echo 经当前 route resolution 后比较。相同实际模型的不同 alias 可兼容，不同 provider／protocol family 默认不兼容。
+
+### M10. Buffer 未 flush 不等于 HTTP headers 未提交
+
+- **原级别**：MAJOR。
+- **处置**：采纳（C）。
+- **事实复核**：Responses 与已进入 Messages pump 的 streaming 路径均先进入 `streamSSE`，再调用 buffered／live sink；candidate buffer 状态不能改变已提交的 HTTP 200。
+- **整改**：定义 `CompatibilityErrorRenderer` 与 typed error status/code；区分 request／whole headers-uncommitted、stream headers-committed/body-uncommitted、stream body-committed。后两者都保留 HTTP 200 并写 typed terminal error；driver outcome保留原 Error 与 `bodyCommitted`。
+
+## 第二轮整改新增验收
+
+- Typed handler factory 的 source／State 不经 unknown／any cast。
+- Request dispositions 单份冻结，candidates 只引用 id/hash。
+- Carrier affinity 随 wire 编码；alias 同源正控与跨 source 剥离反控。
+- Streaming error 的 HTTP-header commit 与 body commit 分离，headers-committed/body-uncommitted 不调用 `c.json`。
+
+## 第二轮待复审命题
+
+1. M7–M10 是否闭合，且未在修复中引入同类接口缺口。
+2. typed factory 是否真能承载异构 handler，而非把 cast 移入业务层。
+3. request／response disposition SSOT 与 winner 投影时序是否可执行。
+4. carrier affinity 是否足以支持 echo 后兼容裁决。
+5. streaming compatibility error 的三个 commit 阶段是否与当前 handler seam 一致。
+6. 若无 BLOCKER／MAJOR，明确写“可定稿”。
