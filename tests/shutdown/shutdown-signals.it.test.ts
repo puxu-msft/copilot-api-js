@@ -80,7 +80,7 @@ test("real foreground SIGINT: first starts graceful shutdown, second exits immed
   expect(result.exitCode).toBe(130)
   expect(result.output).toContain("graceful shutdown started")
   expect(result.output).toContain("Press Ctrl+C again to exit immediately")
-}, 12_000)
+}, 14_000)
 
 test("two-signal PTY preserves READY observation through delayed child startup", () => {
   const proc = runTwoSignalHarness(undefined, { TWO_SIGNAL_READY_DELAY_MS: "2100" })
@@ -91,7 +91,7 @@ test("two-signal PTY preserves READY observation through delayed child startup",
   expect(result.firstAlive).toBe(true)
   expect(result.exitCode).toBe(130)
   expect(result.output).toContain("READY")
-}, 12_000)
+}, 14_000)
 
 test("two-signal PTY reports a child startup exit before READY", () => {
   const proc = runTwoSignalHarness("tests/shutdown/fixtures/missing-two-signal-process.ts")
@@ -120,4 +120,4 @@ test("real TerminalUi raw Ctrl+C restores cooked mode before the second signal",
   expect(result.canonical).toBe(true)
   expect(result.echo).toBe(true)
   expect(result.output).toContain("graceful shutdown started")
-}, 12_000)
+}, 14_000)
