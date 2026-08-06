@@ -21,8 +21,12 @@ session_id: 046d7295-e5ce-470b-a284-c721c6ce1cb8
 ## 当前在途
 
 - T0.0e 已完成：C1～C11 从 pointer、manifest、raw logs/JUnit/artifacts 和 ENTRY_SHA objects 独立验证；EV-01～EV-28 全部具名 mutation、正样本 receipt v1 与 receipt collision rc=8 均覆盖。
-- validator 成功仅在 C1～C11 全绿后调用 `writeReceiptAtomically`；receipt 严格 v1 字段与 stdout path/hash 已由合成 fixture 断言。
-- C1～C6 checkpoint 的深层路径/alias 防护保留；C7～C11 使用 `/tmp` 合成 A/P/15 logs/JUnit/baseline，未消费 future real A/P。
+- reviewer finding ① C7 已处置：每 run 严格验证完整 artifact schema、canonical artifact_dir/log 绑定、目录 JUnit 枚举、containment、basename order 与 raw SHA。
+- reviewer finding ② C8 已处置：runtime/skipped JSON fail-closed，testcase/suite discriminated multiset 按 UTF-8 bytewise key 比较；非 ASCII reorder false-red 正控与 multiplicity 负控已绿。
+- reviewer finding ③ C9 已处置：manifest top-level intents、per-run verdict、raw log、ENTRY_SHA/frozen command 三方逐 run 对账，错误类型和 artifact_dir 分歧均稳定 fail C9。
+- reviewer finding ④ C11 已处置：baseline 以 binary-safe git object 原始 bytes、fatal UTF-8 和 canonical parse 验证；执行 validator path/blob 必等于 ENTRY_SHA object。fixture 覆盖 baseline final-newline 与 executing source 篡改。
+- reviewer finding ⑤ 已处置：EV runtime registry 从 frozen plan 解析 28 行、每次 `expectEv` 成功后登记；unfiltered 17-pass run 的 afterAll 输出 28-ID reconciliation 四行，含 literal A2/P2 graph EV-27。
+- validator 成功仅在 C1～C11 全绿后调用 `writeReceiptAtomically`；receipt 严格 v1 字段与 stdout path/hash 已由合成 fixture 断言。C1～C11 仅用 `/tmp` synthetic A/P/15 logs/JUnit/baseline，未消费 future real A/P。
 
 ## 在途意图
 

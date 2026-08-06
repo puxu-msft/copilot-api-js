@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 import { createHash } from "node:crypto"
-import { existsSync, readFileSync, realpathSync } from "node:fs"
+import { existsSync, readFileSync, readdirSync, realpathSync } from "node:fs"
 import path from "node:path"
 
 import { writeReceiptAtomically } from "./entry-evidence-receipt"
@@ -64,11 +64,28 @@ function isSha(value: unknown, length: number): value is string {
 function sha256(filePath: string): string {
   return createHash("sha256").update(readFileSync(filePath)).digest("hex")
 }
-function sha256Bytes(value: string): string {
-  return createHash("sha256").update(value).digest("hex")
-}
 function logField(log: string, name: string): string | undefined {
   return new RegExp(`^${name}=([^\\n]+)$`, "m").exec(log)?.[1]
+}
+function identityKey(identity: Record<string, unknown>): string | undefined {
+  if (
+    identity.kind === "testcase" &&
+    typeof identity.file === "string" &&
+    typeof identity.classname === "string" &&
+    typeof identity.name === "string" &&
+    Number.isSafeInteger(identity.ordinal) &&
+    Number.isSafeInteger(identity.count)
+  )
+    return ["testcase", identity.file, identity.classname, identity.name, identity.ordinal, identity.count].join("\0")
+  if (identity.kind === "suite" && typeof identity.file === "string" && typeof identity.suite_name === "string" && Number.isSafeInteger(identity.count))
+    return ["suite", identity.file, identity.suite_name, identity.count].join("\0")
+  return undefined
+}
+function identityMultiset(identities: unknown[]): string[] | undefined {
+  const keys = identities.map((identity) =>
+    identity && typeof identity === "object" && !Array.isArray(identity) ? identityKey(identity as Record<string, unknown>) : undefined,
+  )
+  return keys.some((key) => key === undefined) ? undefined : (keys as string[]).sort((left, right) => Buffer.from(left).compare(Buffer.from(right)))
 }
 function exactKeys(value: Record<string, unknown>, keys: Array<string>): boolean {
   const actual = Object.keys(value)
@@ -77,6 +94,17 @@ function exactKeys(value: Record<string, unknown>, keys: Array<string>): boolean
 function git(tree: string, args: Array<string>): string | undefined {
   const result = Bun.spawnSync(["git", "-C", tree, ...args], { stdout: "pipe", stderr: "pipe" })
   return result.exitCode === 0 ? result.stdout.toString().trim() : undefined
+}
+function gitBytes(tree: string, args: Array<string>): Uint8Array | undefined {
+  const result = Bun.spawnSync(["git", "-C", tree, ...args], { stdout: "pipe", stderr: "pipe" })
+  return result.exitCode === 0 ? new Uint8Array(result.stdout) : undefined
+}
+function decodeUtf8(bytes: Uint8Array): string | undefined {
+  try {
+    return new TextDecoder("utf-8", { fatal: true }).decode(bytes)
+  } catch {
+    return undefined
+  }
 }
 function canonicalPath(candidate: string): string {
   const absolute = path.resolve(candidate)
@@ -161,6 +189,67 @@ function parseManifest(raw: string): Array<RunLog> {
   })
 }
 
+function artifactUnder(child: string, parent: string): boolean {
+  const relative = path.relative(realpathSync(parent), realpathSync(child))
+  return relative !== "" && !relative.startsWith(`..${path.sep}`) && relative !== ".." && !path.isAbsolute(relative)
+}
+
+function parseRunArtifacts(
+  run: Record<string, unknown>,
+  tree: string,
+): {
+  junit: Array<{ path: string; sha256: string }>
+  runtime: { path: string; sha256: string }
+  skipped: { path: string; sha256: string }
+  artifactDir: string
+} {
+  const artifactDir = run.artifact_dir
+  const junit = run.junit_artifacts
+  const runtime = run.runtime_identity
+  const skipped = run.skipped_multiset
+  if (
+    typeof artifactDir !== "string" ||
+    !path.isAbsolute(artifactDir) ||
+    canonicalInside(artifactDir, tree) ||
+    !Array.isArray(junit) ||
+    junit.length === 0 ||
+    !runtime ||
+    !skipped
+  )
+    fail(7, "JUnit file identity mismatch", 6)
+  const asArtifact = (value: unknown): { path: string; sha256: string } | undefined => {
+    if (!value || typeof value !== "object" || !exactKeys(value as Record<string, unknown>, ["path", "sha256"])) return undefined
+    const artifact = value as Record<string, unknown>
+    return typeof artifact.path === "string" && typeof artifact.sha256 === "string" && isSha(artifact.sha256, 64)
+      ? { path: artifact.path, sha256: artifact.sha256 }
+      : undefined
+  }
+  const junitArtifacts = junit.map(asArtifact)
+  const runtimeArtifact = asArtifact(runtime)
+  const skippedArtifact = asArtifact(skipped)
+  if (junitArtifacts.some((artifact) => !artifact) || !runtimeArtifact || !skippedArtifact) fail(7, "JUnit file identity mismatch", 6)
+  const resolvedJunit = junitArtifacts as Array<{ path: string; sha256: string }>
+  const paths = resolvedJunit.map((artifact) => artifact.path)
+  const names = paths.map((file) => path.basename(file))
+  if (
+    new Set(paths).size !== paths.length ||
+    names.some((name, index) => index > 0 && Buffer.from(names[index - 1]).compare(Buffer.from(name)) >= 0) ||
+    resolvedJunit.some((artifact) => !artifactUnder(artifact.path, artifactDir) || !existsSync(artifact.path) || sha256(artifact.path) !== artifact.sha256) ||
+    !artifactUnder(runtimeArtifact.path, artifactDir) ||
+    !artifactUnder(skippedArtifact.path, artifactDir) ||
+    !existsSync(runtimeArtifact.path) ||
+    !existsSync(skippedArtifact.path) ||
+    sha256(runtimeArtifact.path) !== runtimeArtifact.sha256 ||
+    sha256(skippedArtifact.path) !== skippedArtifact.sha256
+  )
+    fail(7, "JUnit file identity mismatch", 6)
+  const actualJunit = readdirSync(artifactDir)
+    .filter((name) => /^shard-\d+\.xml$/.test(name))
+    .sort((left, right) => Buffer.from(left).compare(Buffer.from(right)))
+  if (JSON.stringify(actualJunit) !== JSON.stringify(names)) fail(7, "JUnit file identity mismatch", 6)
+  return { junit: resolvedJunit, runtime: runtimeArtifact, skipped: skippedArtifact, artifactDir }
+}
+
 const options = parseOptions(process.argv.slice(2))
 if (!existsSync(options.tree) || git(options.tree, ["cat-file", "-e", `${options.pointerSha}^{commit}`]) === undefined)
   fail(1, "pointer SHA does not resolve", 3)
@@ -195,47 +284,79 @@ for (const run of runs) {
 if (new Set(canonicalLogPaths).size !== runs.length) fail(6, "run log paths are not unique", 5)
 
 const manifest = JSON.parse(readFileSync(pointer.manifestPath, "utf8")) as Record<string, unknown>
-const baselineRawForRuntime = git(options.tree, ["show", `${options.entrySha}:tests/infra/entry-test-discovery-baseline.json`])
-if (baselineRawForRuntime === undefined) fail(11, "discovery baseline hash mismatch", 7)
+if (typeof manifest.canonical_command !== "string" || manifest.canonical_command !== "bun scripts/parallel-test.ts unit it http")
+  fail(9, "canonical command mismatch", 7)
+if (typeof manifest.evidence_timing !== "string" || manifest.evidence_timing !== "closeout") fail(9, "evidence timing mismatch", 7)
+if (typeof manifest.measured_sha !== "string" || manifest.measured_sha !== options.entrySha) fail(9, "measured SHA mismatch", 7)
+if (typeof manifest.claims_current_head !== "boolean" || manifest.claims_current_head !== true) fail(9, "current-head claim mismatch", 7)
+const baselineBytes = gitBytes(options.tree, ["show", `${options.entrySha}:tests/infra/entry-test-discovery-baseline.json`])
+const baselineRaw = baselineBytes === undefined ? undefined : decodeUtf8(baselineBytes)
+if (baselineRaw === undefined) fail(11, "discovery baseline hash mismatch", 7)
 let baseline
 try {
-  baseline = parseDiscoveryBaseline(`${baselineRawForRuntime}\n`)
+  baseline = parseDiscoveryBaseline(baselineRaw)
 } catch {
   fail(11, "discovery baseline hash mismatch", 7)
 }
+if (createHash("sha256").update(baselineBytes!).digest("hex") !== manifest.discovery_baseline_sha256) fail(11, "discovery baseline hash mismatch", 7)
 for (const run of manifest.runs as Array<Record<string, unknown>>) {
-  const junitArtifacts = run.junit_artifacts as Array<{ path: string }>
-  const junit = junitArtifacts.map((artifact) => parseJUnit(readFileSync(artifact.path, "utf8"), options.tree))
-  const files = [...new Set(junit.flatMap((item) => item.files))].sort()
+  if (!exactKeys(run, RUN_KEYS)) fail(7, "JUnit file identity mismatch", 6)
+  const log = readFileSync(run.log_path as string, "utf8")
+  if (typeof run.artifact_dir !== "string" || !existsSync(run.artifact_dir) || logField(log, "artifact_dir") !== realpathSync(run.artifact_dir))
+    fail(9, "artifact directory mismatch", 7)
+  const artifacts = parseRunArtifacts(run, options.tree)
+  const junit = artifacts.junit.map((artifact) => parseJUnit(readFileSync(artifact.path, "utf8"), options.tree))
+  const files = [...new Set(junit.flatMap((item) => item.files))].sort((left, right) => Buffer.from(left).compare(Buffer.from(right)))
   if (JSON.stringify(files) !== JSON.stringify(baseline.files)) fail(7, "JUnit file identity mismatch", 6)
-  const runtime = JSON.parse(readFileSync((run.runtime_identity as { path: string }).path, "utf8")) as { files: string[] }
-  if (JSON.stringify(runtime.files) !== JSON.stringify(files)) fail(7, "JUnit file identity mismatch", 6)
-  const skipped = JSON.parse(readFileSync((run.skipped_multiset as { path: string }).path, "utf8")) as {
-    executed: number
-    skipped: number
-    skipped_identities: unknown[]
+  let runtime: unknown
+  let skipped: unknown
+  try {
+    runtime = JSON.parse(readFileSync(artifacts.runtime.path, "utf8"))
+    skipped = JSON.parse(readFileSync(artifacts.skipped.path, "utf8"))
+  } catch {
+    fail(8, "skipped identity multiset mismatch", 6)
   }
+  if (
+    !runtime ||
+    typeof runtime !== "object" ||
+    Array.isArray(runtime) ||
+    !exactKeys(runtime as Record<string, unknown>, ["files"]) ||
+    !Array.isArray((runtime as Record<string, unknown>).files) ||
+    !((runtime as Record<string, unknown>).files as unknown[]).every((file) => typeof file === "string") ||
+    JSON.stringify((runtime as { files: string[] }).files) !== JSON.stringify(files)
+  )
+    fail(7, "JUnit file identity mismatch", 6)
+  if (
+    !skipped ||
+    typeof skipped !== "object" ||
+    Array.isArray(skipped) ||
+    !exactKeys(skipped as Record<string, unknown>, ["executed", "skipped", "skipped_identities"]) ||
+    !Number.isSafeInteger((skipped as Record<string, unknown>).executed) ||
+    !Number.isSafeInteger((skipped as Record<string, unknown>).skipped) ||
+    !Array.isArray((skipped as Record<string, unknown>).skipped_identities)
+  )
+    fail(8, "skipped identity multiset mismatch", 6)
+  const skippedValue = skipped as { executed: number; skipped: number; skipped_identities: unknown[] }
   const actualExecuted = junit.reduce((sum, item) => sum + item.executed, 0)
   const actualSkipped = junit.reduce((sum, item) => sum + item.skipped, 0)
   const actualIdentities = junit.flatMap((item) => item.skippedIdentities)
   const expectedIdentities = baseline.allowed_skipped.map(({ reason: _reason, ...identity }) => identity)
   if (
-    actualExecuted !== skipped.executed ||
-    actualSkipped !== skipped.skipped ||
+    actualExecuted !== skippedValue.executed ||
+    actualSkipped !== skippedValue.skipped ||
     actualExecuted !== run.executed ||
     actualSkipped !== run.skipped ||
-    JSON.stringify(actualIdentities) !== JSON.stringify(skipped.skipped_identities) ||
-    JSON.stringify(actualIdentities) !== JSON.stringify(expectedIdentities) ||
+    identityMultiset(actualIdentities) === undefined ||
+    JSON.stringify(identityMultiset(actualIdentities)) !== JSON.stringify(identityMultiset(skippedValue.skipped_identities)) ||
+    JSON.stringify(identityMultiset(actualIdentities)) !== JSON.stringify(identityMultiset(expectedIdentities)) ||
     actualExecuted < baseline.minimum_executed
   )
     fail(8, "skipped identity multiset mismatch", 6)
-  const log = readFileSync(run.log_path as string, "utf8")
-  if (logField(log, "canonical_command") !== manifest.canonical_command || manifest.canonical_command !== "bun scripts/parallel-test.ts unit it http")
-    fail(9, "canonical command mismatch", 7)
-  if (logField(log, "evidence_timing") !== "closeout") fail(9, "evidence timing mismatch", 7)
-  if (logField(log, "measured_sha") !== options.entrySha) fail(9, "measured SHA mismatch", 7)
-  if (logField(log, "claims_current_head") !== "true") fail(9, "current-head claim mismatch", 7)
-  if (logField(log, "verdict") !== "green") fail(9, "run verdict is not green", 7)
+  if (logField(log, "canonical_command") !== manifest.canonical_command) fail(9, "canonical command mismatch", 7)
+  if (logField(log, "evidence_timing") !== manifest.evidence_timing) fail(9, "evidence timing mismatch", 7)
+  if (logField(log, "measured_sha") !== manifest.measured_sha) fail(9, "measured SHA mismatch", 7)
+  if (logField(log, "claims_current_head") !== String(manifest.claims_current_head)) fail(9, "current-head claim mismatch", 7)
+  if (typeof run.verdict !== "string" || run.verdict !== "green" || logField(log, "verdict") !== run.verdict) fail(9, "run verdict is not green", 7)
 }
 for (const [label, artifact] of [
   ["disk manifest", manifest.disk_manifest],
@@ -254,13 +375,18 @@ for (const [label, artifact] of [
 }
 const entryBaselinePath = "tests/infra/entry-test-discovery-baseline.json"
 if (manifest.discovery_baseline_path !== entryBaselinePath) fail(11, "discovery baseline path differs from entry", 7)
-const baselineRaw = git(options.tree, ["show", `${options.entrySha}:${entryBaselinePath}`])
 const runnerBlob = git(options.tree, ["rev-parse", `${options.entrySha}:scripts/parallel-test.ts`])
-if (baselineRaw === undefined || runnerBlob === undefined) fail(11, "discovery baseline hash mismatch", 7)
-if (sha256Bytes(`${baselineRaw}\n`) !== manifest.discovery_baseline_sha256) fail(11, "discovery baseline hash mismatch", 7)
+if (runnerBlob === undefined) fail(11, "discovery baseline hash mismatch", 7)
+if (createHash("sha256").update(baselineBytes!).digest("hex") !== manifest.discovery_baseline_sha256) fail(11, "discovery baseline hash mismatch", 7)
 if (baseline.runner_git_blob !== runnerBlob || manifest.discovery_runner_git_blob !== runnerBlob) fail(11, "discovery runner blob mismatch", 7)
 const validatorBlob = git(options.tree, ["rev-parse", `${options.entrySha}:scripts/validate-entry-evidence.ts`])
-if (validatorBlob === undefined) fail(11, "discovery runner blob mismatch", 7)
+const runtimeValidatorPath = path.resolve(import.meta.path)
+if (
+  validatorBlob === undefined ||
+  runtimeValidatorPath !== path.join(realpathSync(options.tree), "scripts/validate-entry-evidence.ts") ||
+  git(options.tree, ["hash-object", "--no-filters", runtimeValidatorPath]) !== validatorBlob
+)
+  fail(11, "validator provenance mismatch", 7)
 const receipt = {
   schema_version: 1,
   validator_path: "scripts/validate-entry-evidence.ts",

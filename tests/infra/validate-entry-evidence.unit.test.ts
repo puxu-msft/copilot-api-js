@@ -1,11 +1,10 @@
-import { describe, expect, test } from "bun:test"
+import { afterAll, describe, expect, test } from "bun:test"
 import { createHash } from "node:crypto"
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import os from "node:os"
 import path from "node:path"
 
 const REPO_ROOT = path.resolve(import.meta.dir, "../..")
-const VALIDATOR = path.join(REPO_ROOT, "scripts/validate-entry-evidence.ts")
 const HANDOVER = "docs/plan/2026-07-27-inter-block-anchor-allocator/HANDOVER.md"
 const BASELINE = "tests/infra/entry-test-discovery-baseline.json"
 
@@ -21,8 +20,15 @@ function git(tree: string, args: string[]): string {
   return result.stdout.toString().trim()
 }
 
-function fixture() {
+function fixture(options: { unicodeSkips?: boolean; noncanonicalBaseline?: boolean } = {}) {
   const tree = mkdtempSync(path.join(os.tmpdir(), "entry-validator-"))
+  const unicodeSkips = options.unicodeSkips === true
+  const allowedSkipped = unicodeSkips
+    ? [
+        { kind: "suite", file: "tests/a.unit.test.ts", suite_name: "套件", count: 1, reason: "whole-suite-skip" },
+        { kind: "testcase", file: "tests/a.unit.test.ts", classname: "类", name: "跳过", ordinal: 1, count: 1, reason: "todo" },
+      ].sort((left, right) => Buffer.from(JSON.stringify(left)).compare(Buffer.from(JSON.stringify(right))))
+    : ([] as Array<unknown>)
   const out = mkdtempSync(path.join(os.tmpdir(), "entry-validator-out-"))
   mkdirSync(path.join(tree, path.dirname(HANDOVER)), { recursive: true })
   mkdirSync(path.join(tree, "tests/infra"), { recursive: true })
@@ -30,12 +36,21 @@ function fixture() {
   mkdirSync(path.join(tree, "scripts"), { recursive: true })
   writeFileSync(path.join(tree, "tests/a.unit.test.ts"), "")
   writeFileSync(path.join(tree, "scripts/parallel-test.ts"), "export {}\n")
-  writeFileSync(path.join(tree, "scripts/validate-entry-evidence.ts"), "export {}\n")
+  for (const script of ["validate-entry-evidence.ts", "entry-evidence-receipt.ts", "entry-evidence-schema.ts", "parallel-test-artifacts.ts"])
+    writeFileSync(path.join(tree, "scripts", script), readFileSync(path.join(REPO_ROOT, "scripts", script)))
   git(tree, ["init", "-b", "master"])
   git(tree, ["config", "user.email", "x@example.invalid"])
   git(tree, ["config", "user.name", "Test"])
   const runner = git(tree, ["hash-object", "scripts/parallel-test.ts"])
-  json(path.join(tree, BASELINE), { schema_version: 1, runner_git_blob: runner, minimum_executed: 1, files: ["tests/a.unit.test.ts"], allowed_skipped: [] })
+  const baselinePath = path.join(tree, BASELINE)
+  json(baselinePath, {
+    schema_version: 1,
+    runner_git_blob: runner,
+    minimum_executed: unicodeSkips ? 0 : 1,
+    files: ["tests/a.unit.test.ts"],
+    allowed_skipped: allowedSkipped,
+  })
+  if (options.noncanonicalBaseline) writeFileSync(baselinePath, readFileSync(baselinePath, "utf8").trimEnd())
   git(tree, ["add", "."])
   git(tree, ["commit", "-m", "entry"])
   const entry = git(tree, ["rev-parse", "HEAD"])
@@ -51,9 +66,23 @@ function fixture() {
     const runtime = path.join(dir, "runtime-identity.json")
     const skipped = path.join(dir, "skipped-multiset.json")
     const log = path.join(out, `run-${n}.log`)
-    writeFileSync(junit, '<testsuites><testcase classname="suite" name="case" file="tests/a.unit.test.ts"/></testsuites>\n')
+    writeFileSync(
+      junit,
+      unicodeSkips
+        ? '<testsuites><testsuite file="tests/a.unit.test.ts" name="套件" skipped="1"/><testcase classname="类" name="跳过" file="tests/a.unit.test.ts"><skipped/></testcase></testsuites>\n'
+        : '<testsuites><testcase classname="suite" name="case" file="tests/a.unit.test.ts"/></testsuites>\n',
+    )
     json(runtime, { files: ["tests/a.unit.test.ts"] })
-    json(skipped, { executed: 1, skipped: 0, skipped_identities: [] })
+    json(skipped, {
+      executed: unicodeSkips ? 0 : 1,
+      skipped: unicodeSkips ? 2 : 0,
+      skipped_identities: unicodeSkips
+        ? [
+            { kind: "suite", file: "tests/a.unit.test.ts", suite_name: "套件", count: 1 },
+            { kind: "testcase", file: "tests/a.unit.test.ts", classname: "类", name: "跳过", ordinal: 1, count: 1 },
+          ]
+        : [],
+    })
     writeFileSync(
       log,
       `canonical_command=bun scripts/parallel-test.ts unit it http\nevidence_timing=closeout\nmeasured_sha=${entry}\nclaims_current_head=true\nverdict=green\nartifact_dir=${dir}\n`,
@@ -66,8 +95,8 @@ function fixture() {
       junit_artifacts: [{ path: junit, sha256: hash(junit) }],
       runtime_identity: { path: runtime, sha256: hash(runtime) },
       skipped_multiset: { path: skipped, sha256: hash(skipped) },
-      executed: 1,
-      skipped: 0,
+      executed: unicodeSkips ? 0 : 1,
+      skipped: unicodeSkips ? 2 : 0,
       verdict: "green",
     }
   })
@@ -102,7 +131,20 @@ function fixture() {
 
 function invoke(f: ReturnType<typeof fixture>): ReturnType<typeof Bun.spawnSync> {
   return Bun.spawnSync(
-    ["bun", VALIDATOR, "--entry-sha", f.entry, "--pointer-sha", f.pointer, "--tree", f.tree, "--handover", HANDOVER, "--receipt-out", f.receipt],
+    [
+      "bun",
+      path.join(f.tree, "scripts/validate-entry-evidence.ts"),
+      "--entry-sha",
+      f.entry,
+      "--pointer-sha",
+      f.pointer,
+      "--tree",
+      f.tree,
+      "--handover",
+      HANDOVER,
+      "--receipt-out",
+      f.receipt,
+    ],
     { stdout: "pipe", stderr: "pipe" },
   )
 }
@@ -152,41 +194,98 @@ function mutateManifest(f: ReturnType<typeof fixture>, mutate: (manifest: Record
   git(f.tree, ["checkout", "--detach", f.entry])
 }
 
+function createEv27EntryGraph(f: ReturnType<typeof fixture>): void {
+  const manifestPath = path.join(f.out, "evidence-manifest.json")
+  const manifest = JSON.parse(readFileSync(manifestPath, "utf8"))
+  const oldBaselineHash = manifest.discovery_baseline_sha256
+  git(f.tree, ["checkout", "master"])
+  const baselinePath = path.join(f.tree, BASELINE)
+  const baseline = JSON.parse(readFileSync(baselinePath, "utf8"))
+  baseline.minimum_executed = 2
+  json(baselinePath, baseline)
+  git(f.tree, ["add", BASELINE])
+  git(f.tree, ["commit", "-m", "entry A2"])
+  f.entry = git(f.tree, ["rev-parse", "HEAD"])
+  manifest.measured_sha = f.entry
+  for (const run of manifest.runs) {
+    const log = run.log_path as string
+    writeFileSync(log, readFileSync(log, "utf8").replace(/^measured_sha=.*$/m, `measured_sha=${f.entry}`))
+    run.log_sha256 = hash(log)
+  }
+  manifest.discovery_baseline_sha256 = oldBaselineHash
+  json(manifestPath, manifest)
+  const pointerPath = path.join(f.tree, HANDOVER)
+  writeFileSync(
+    pointerPath,
+    `<!-- entry-evidence-pointer:v1 -->\nentry_sha=${f.entry}\nmanifest_path=${manifestPath}\nmanifest_sha256=${hash(manifestPath)}\narchive_path=\n<!-- /entry-evidence-pointer:v1 -->\n`,
+  )
+  git(f.tree, ["add", HANDOVER])
+  git(f.tree, ["commit", "-m", "pointer P2"])
+  f.pointer = git(f.tree, ["rev-parse", "HEAD"])
+  git(f.tree, ["checkout", "--detach", f.entry])
+}
+
 function cleanup(f: ReturnType<typeof fixture>): void {
   rmSync(f.tree, { recursive: true, force: true })
   rmSync(f.out, { recursive: true, force: true })
 }
 
-const MUTATIONS = [
-  { id: "EV-01", condition: "C1", action: "provide unresolved pointer SHA" },
-  { id: "EV-02", condition: "C1", action: "provide non-master-reachable pointer SHA" },
-  { id: "EV-03", condition: "C2", action: "remove pointer block" },
-  { id: "EV-04", condition: "C2", action: "add second pointer block" },
-  { id: "EV-05", condition: "C3", action: "remove entry SHA field" },
-  { id: "EV-06", condition: "C3", action: "remove manifest path field" },
-  { id: "EV-07", condition: "C3", action: "remove manifest hash field" },
-  { id: "EV-08", condition: "C4", action: "change pointer entry SHA" },
-  { id: "EV-09", condition: "C4", action: "checkout execution tree to B" },
-  { id: "EV-10", condition: "C4", action: "provide pointer excluding A" },
-  { id: "EV-11", condition: "C5", action: "remove external manifest" },
-  { id: "EV-12", condition: "C5", action: "change pointer manifest hash" },
-  { id: "EV-13", condition: "C6", action: "remove listed run log" },
-  { id: "EV-14", condition: "C6", action: "add sixteenth run log entry" },
-  { id: "EV-15", condition: "C6", action: "mutate raw run log byte" },
-  { id: "EV-16", condition: "C7", action: "remove raw JUnit file identity" },
-  { id: "EV-17", condition: "C8", action: "mark runnable JUnit testcase skipped" },
-  { id: "EV-18", condition: "C9", action: "change raw canonical command" },
-  { id: "EV-19", condition: "C9", action: "change raw evidence timing" },
-  { id: "EV-20", condition: "C9", action: "change raw measured SHA" },
-  { id: "EV-21", condition: "C9", action: "change raw current-head claim" },
-  { id: "EV-22", condition: "C9", action: "change raw verdict" },
-  { id: "EV-23", condition: "C10", action: "mutate disk manifest bytes" },
-  { id: "EV-24", condition: "C10", action: "mutate runtime identity manifest bytes" },
-  { id: "EV-25", condition: "C10", action: "mutate skipped multiset bytes" },
-  { id: "EV-26", condition: "C11", action: "change discovery baseline path" },
-  { id: "EV-27", condition: "C11", action: "change discovery baseline hash" },
-  { id: "EV-28", condition: "C11", action: "change discovery runner blob" },
-] as const
+interface PlanMutationRow {
+  id: string
+  condition: string
+  action: string
+  expectedStderr: string
+  expectedExit: number
+}
+const EXPECTED_EXIT: Record<string, number> = { C1: 3, C2: 3, C3: 3, C4: 3, C5: 4, C6: 5, C7: 6, C8: 6, C9: 7, C10: 7, C11: 7 }
+const FROZEN_MUTATION_COUNTS = "condition coverage: C1=2 C2=2 C3=3 C4=3 C5=2 C6=3 C7=1 C8=1 C9=5 C10=3 C11=3"
+const EXECUTED_MUTATIONS: Array<{ id: string; condition: string }> = []
+const PLAN_MUTATIONS = (() => {
+  const plan = readFileSync(path.join(REPO_ROOT, "docs/rfc/2026-08-03-generation-emission-command-algebra/cutover-plan.md"), "utf8")
+  const rows = [...plan.matchAll(/^\| `(?<id>EV-\d{2})` \| (?<condition>\d+) \| (?<action>.*?) \| `(?<stderr>FAIL C\d+: .*?)` \|$/gm)].map((match) => {
+    const condition = `C${match.groups!.condition}`
+    return {
+      id: match.groups!.id,
+      condition,
+      action: match.groups!.action,
+      expectedStderr: `${match.groups!.stderr}\n`,
+      expectedExit: EXPECTED_EXIT[condition],
+    }
+  })
+  if (rows.length !== 28 || new Set(rows.map((row) => row.id)).size !== 28 || rows.some((row) => /／|分别|之一|任一/.test(row.action)))
+    throw new Error("frozen plan mutation table invalid")
+  return new Map(rows.map((row) => [row.id, row]))
+})()
+function expectEv(id: string, result: { exitCode: number; stderr?: Uint8Array }, executions = EXECUTED_MUTATIONS): void {
+  const row = PLAN_MUTATIONS.get(id)
+  if (!row || executions.some((entry) => entry.id === id)) throw new Error(`unknown or duplicate execution: ${id}`)
+  expect(result.exitCode).toBe(row.expectedExit)
+  expect(new TextDecoder().decode(result.stderr ?? new Uint8Array()).replaceAll(/\x1b\[[0-9;]*m/g, "")).toBe(row.expectedStderr)
+  executions.push({ id, condition: row.condition })
+}
+function reconcileExecuted(planRows: ReadonlyMap<string, PlanMutationRow>, executions: ReadonlyArray<{ id: string; condition: string }>): Array<string> {
+  const counts = new Map<string, number>(),
+    ids = new Set<string>(),
+    duplicate = new Set<string>()
+  for (const entry of executions) {
+    if (ids.has(entry.id)) duplicate.add(entry.id)
+    ids.add(entry.id)
+    counts.set(entry.condition, (counts.get(entry.condition) ?? 0) + 1)
+  }
+  const missing = [...planRows.keys()].filter((id) => !ids.has(id)),
+    orphan = [...ids].filter((id) => !planRows.has(id)),
+    wrong = executions.filter((entry) => planRows.get(entry.id)?.condition !== entry.condition)
+  if (missing.length || duplicate.size || orphan.length || wrong.length)
+    throw new Error(
+      `mutation reconciliation failed: missing=${missing.join(",")} duplicate=${[...duplicate].join(",")} orphan=${orphan.join(",")} wrong_condition=${wrong.map((entry) => entry.id).join(",")}`,
+    )
+  return [
+    `condition coverage: ${["C1", "C2", "C3", "C4", "C5", "C6", "C7", "C8", "C9", "C10", "C11"].map((condition) => `${condition}=${counts.get(condition) ?? 0}`).join(" ")}`,
+    `mutation ownership: ${ids.size} IDs each map to exactly one condition`,
+    "duplicate IDs: none",
+    "orphan IDs: none",
+  ]
+}
 
 describe("entry evidence validator C7-C9", () => {
   test("accepts synthetic raw JUnit identities, skips, and logs before C10", () => {
@@ -220,34 +319,87 @@ describe("entry evidence validator C7-C9", () => {
     }
   })
 
-  test("mechanically reconciles the frozen mutation table", () => {
-    const coverage = new Map<string, number>()
-    const ids = new Set<string>()
-    for (const mutation of MUTATIONS) {
-      coverage.set(mutation.condition, (coverage.get(mutation.condition) ?? 0) + 1)
-      expect(ids.has(mutation.id)).toBe(false)
-      ids.add(mutation.id)
-      expect(mutation.action).not.toMatch(/／|分别|之一|任一/)
+  test("accepts reordered non-ASCII testcase and suite skipped identities", () => {
+    const f = fixture({ unicodeSkips: true })
+    try {
+      const result = invoke(f)
+      expect(result.exitCode).toBe(0)
+      expect(error(result)).toBe("")
+    } finally {
+      cleanup(f)
     }
-    const output = [
-      `condition coverage: ${["C1", "C2", "C3", "C4", "C5", "C6", "C7", "C8", "C9", "C10", "C11"].map((condition) => `${condition}=${coverage.get(condition) ?? 0}`).join(" ")}`,
-      `mutation ownership: ${ids.size} IDs each map to exactly one condition`,
-      "duplicate IDs: none",
-      "orphan IDs: none",
-    ]
-    expect(output).toEqual([
-      "condition coverage: C1=2 C2=2 C3=3 C4=3 C5=2 C6=3 C7=1 C8=1 C9=5 C10=3 C11=3",
-      "mutation ownership: 28 IDs each map to exactly one condition",
-      "duplicate IDs: none",
-      "orphan IDs: none",
-    ])
+  })
+
+  test("rejects a non-ASCII skipped identity multiplicity mismatch", () => {
+    const f = fixture({ unicodeSkips: true })
+    try {
+      const skippedPath = path.join(f.out, "run-1", "skipped-multiset.json")
+      const skipped = JSON.parse(readFileSync(skippedPath, "utf8"))
+      skipped.skipped_identities[0].count = 2
+      json(skippedPath, skipped)
+      mutateManifest(f, (manifest) => {
+        ;((manifest.runs as Array<Record<string, unknown>>)[0].skipped_multiset as Record<string, unknown>).sha256 = hash(skippedPath)
+      })
+      expect(error(invoke(f))).toBe("FAIL C8: skipped identity multiset mismatch\n")
+    } finally {
+      cleanup(f)
+    }
+  })
+
+  test("rejects an ENTRY baseline with canonical bytes missing its final newline", () => {
+    const f = fixture({ noncanonicalBaseline: true })
+    try {
+      expect(error(invoke(f))).toBe("FAIL C11: discovery baseline hash mismatch\n")
+    } finally {
+      cleanup(f)
+    }
+  })
+
+  test("rejects an executing validator whose bytes differ from ENTRY_SHA", () => {
+    const f = fixture()
+    try {
+      const validatorPath = path.join(f.tree, "scripts/validate-entry-evidence.ts")
+      writeFileSync(validatorPath, `${readFileSync(validatorPath, "utf8")}\n// modified\n`)
+      expect(error(invoke(f))).toBe("FAIL C11: validator provenance mismatch\n")
+    } finally {
+      cleanup(f)
+    }
+  })
+
+  test("registry infrastructure parses frozen plan and reconciles fake executions", () => {
+    expect(PLAN_MUTATIONS).toHaveLength(28)
+    const fake = [...PLAN_MUTATIONS.values()].map((row) => ({ id: row.id, condition: row.condition }))
+    const output = reconcileExecuted(PLAN_MUTATIONS, fake)
+    expect(output).toEqual([FROZEN_MUTATION_COUNTS, "mutation ownership: 28 IDs each map to exactly one condition", "duplicate IDs: none", "orphan IDs: none"])
+    expect(() => reconcileExecuted(PLAN_MUTATIONS, fake.slice(1))).toThrow("missing=EV-01")
+    expect(() => reconcileExecuted(PLAN_MUTATIONS, [...fake, fake[0]])).toThrow("duplicate=EV-01")
+    expect(() => reconcileExecuted(PLAN_MUTATIONS, [{ ...fake[0], condition: "C2" }, ...fake.slice(1)])).toThrow("wrong_condition=EV-01")
+    expect(() => reconcileExecuted(PLAN_MUTATIONS, [...fake, { id: "EV-99", condition: "C1" }])).toThrow("orphan=EV-99")
+    const forbidden = new Map(PLAN_MUTATIONS)
+    forbidden.set("EV-01", { ...PLAN_MUTATIONS.get("EV-01")!, action: "分别 mutate" })
+    expect(() =>
+      [...forbidden.values()].some(
+        (row) =>
+          /／|分别|之一|任一/.test(row.action) &&
+          (() => {
+            throw new Error(`forbidden action token: ${row.id}`)
+          })(),
+      ),
+    ).toThrow("forbidden action token")
+    const executions: Array<{ id: string; condition: string }> = []
+    const row = PLAN_MUTATIONS.get("EV-01")!
+    expectEv("EV-01", { exitCode: row.expectedExit, stderr: new TextEncoder().encode(row.expectedStderr) }, executions)
+    expect(executions).toEqual([{ id: "EV-01", condition: "C1" }])
+    expect(() => expectEv("EV-01", { exitCode: row.expectedExit, stderr: new TextEncoder().encode(row.expectedStderr) }, executions)).toThrow(
+      "duplicate execution",
+    )
   })
 
   test("EV-01 rejects an unresolved POINTER_SHA", () => {
     const f = fixture()
     try {
       f.pointer = "0".repeat(40)
-      expect(error(invoke(f))).toBe("FAIL C1: pointer SHA does not resolve\n")
+      expectEv("EV-01", invoke(f))
     } finally {
       cleanup(f)
     }
@@ -260,14 +412,14 @@ describe("entry evidence validator C7-C9", () => {
       const manifest = JSON.parse(readFileSync(manifestPath, "utf8"))
       manifest.runs.push({ ...manifest.runs[0], ordinal: 16 })
       mutateManifest(countFixture, (target) => Object.assign(target, manifest))
-      expect(error(invoke(countFixture))).toBe("FAIL C6: run log count is not 15\n")
+      expectEv("EV-14", invoke(countFixture))
     } finally {
       cleanup(countFixture)
     }
     const hashFixture = fixture()
     try {
       writeFileSync(path.join(hashFixture.out, "run-1.log"), "tampered\n")
-      expect(error(invoke(hashFixture))).toBe("FAIL C6: run log hash mismatch\n")
+      expectEv("EV-15", invoke(hashFixture))
     } finally {
       cleanup(hashFixture)
     }
@@ -284,7 +436,7 @@ describe("entry evidence validator C7-C9", () => {
       ["EV-11", (text, f) => text.replace(/manifest_path=.*/, `manifest_path=${path.join(f.out, "missing.json")}`), "FAIL C5: evidence manifest missing\n"],
       ["EV-12", (text) => text.replace(/manifest_sha256=[0-9a-f]{64}/, `manifest_sha256=${"0".repeat(64)}`), "FAIL C5: evidence manifest hash mismatch\n"],
     ]
-    for (const [_id, mutate, expected] of cases) {
+    for (const [id, mutate, _expected] of cases) {
       const f = fixture()
       try {
         git(f.tree, ["checkout", "master"])
@@ -294,7 +446,7 @@ describe("entry evidence validator C7-C9", () => {
         git(f.tree, ["commit", "-m", "mutation"])
         f.pointer = git(f.tree, ["rev-parse", "HEAD"])
         git(f.tree, ["checkout", "--detach", f.entry])
-        expect(error(invoke(f))).toBe(expected)
+        expectEv(id, invoke(f))
       } finally {
         cleanup(f)
       }
@@ -307,7 +459,7 @@ describe("entry evidence validator C7-C9", () => {
       git(offMaster.tree, ["commit", "-m", "side"])
       offMaster.pointer = git(offMaster.tree, ["rev-parse", "HEAD"])
       git(offMaster.tree, ["checkout", "--detach", offMaster.entry])
-      expect(error(invoke(offMaster))).toBe("FAIL C1: pointer SHA is not master-reachable\n")
+      expectEv("EV-02", invoke(offMaster))
     } finally {
       cleanup(offMaster)
     }
@@ -322,68 +474,37 @@ describe("entry evidence validator C7-C9", () => {
       git(graph.tree, ["branch", "-f", "master", "HEAD"])
       graph.pointer = git(graph.tree, ["rev-parse", "HEAD"])
       git(graph.tree, ["checkout", "--detach", graph.entry])
-      expect(error(invoke(graph))).toBe("FAIL C4: ENTRY_SHA is not an ancestor of POINTER_SHA\n")
+      expectEv("EV-10", invoke(graph))
     } finally {
       cleanup(graph)
     }
     const head = fixture()
     try {
       git(head.tree, ["checkout", "master"])
-      expect(error(invoke(head))).toBe("FAIL C4: execution HEAD differs from ENTRY_SHA\n")
+      expectEv("EV-09", invoke(head))
     } finally {
       cleanup(head)
     }
     const log = fixture()
     try {
       rmSync(path.join(log.out, "run-1.log"))
-      expect(error(invoke(log))).toBe("FAIL C6: run log missing\n")
+      expectEv("EV-13", invoke(log))
     } finally {
       cleanup(log)
     }
   })
 
-  test("EV-18 through EV-22 reject one independently refreshed raw log field", () => {
-    for (const [field, value, expected] of [
-      ["canonical_command", "bun scripts/parallel-test.ts unit", "FAIL C9: canonical command mismatch\n"],
-      ["evidence_timing", "before-closeout", "FAIL C9: evidence timing mismatch\n"],
-      ["measured_sha", "0".repeat(40), "FAIL C9: measured SHA mismatch\n"],
-      ["claims_current_head", "false", "FAIL C9: current-head claim mismatch\n"],
-      ["verdict", "red", "FAIL C9: run verdict is not green\n"],
-    ]) {
-      const f = fixture()
-      try {
-        mutateLog(f, field, value)
-        expect(error(invoke(f))).toBe(expected)
-      } finally {
-        cleanup(f)
-      }
-    }
-  })
-
-  test("EV-23 through EV-25 reject each independently mutated top-level artifact", () => {
-    for (const [field, expected] of [
-      ["disk_manifest", "FAIL C10: disk manifest hash mismatch\n"],
-      ["runtime_identity_manifest", "FAIL C10: runtime identity manifest hash mismatch\n"],
-      ["skipped_multiset", "FAIL C10: skipped multiset hash mismatch\n"],
-    ] as const) {
-      const f = fixture()
-      try {
-        mutateTopLevelArtifact(f, field)
-        expect(error(invoke(f))).toBe(expected)
-      } finally {
-        cleanup(f)
-      }
-    }
-  })
-
-  test("EV-26 through EV-28 reject one manifest baseline binding", () => {
+  test("rejects manifest-side C9 intent, verdict, and artifact-dir disagreement", () => {
     for (const [mutate, expected] of [
+      [(manifest: Record<string, unknown>) => (manifest.canonical_command = "wrong"), "FAIL C9: canonical command mismatch\n"],
+      [(manifest: Record<string, unknown>) => (manifest.evidence_timing = "wrong"), "FAIL C9: evidence timing mismatch\n"],
+      [(manifest: Record<string, unknown>) => (manifest.measured_sha = "wrong"), "FAIL C9: measured SHA mismatch\n"],
+      [(manifest: Record<string, unknown>) => (manifest.claims_current_head = false), "FAIL C9: current-head claim mismatch\n"],
+      [(manifest: Record<string, unknown>) => ((manifest.runs as Array<Record<string, unknown>>)[0].verdict = "red"), "FAIL C9: run verdict is not green\n"],
       [
-        (manifest: Record<string, unknown>) => (manifest.discovery_baseline_path = "tests/infra/other.json"),
-        "FAIL C11: discovery baseline path differs from entry\n",
+        (manifest: Record<string, unknown>) => ((manifest.runs as Array<Record<string, unknown>>)[0].artifact_dir = "/tmp/disagrees"),
+        "FAIL C9: artifact directory mismatch\n",
       ],
-      [(manifest: Record<string, unknown>) => (manifest.discovery_baseline_sha256 = "0".repeat(64)), "FAIL C11: discovery baseline hash mismatch\n"],
-      [(manifest: Record<string, unknown>) => (manifest.discovery_runner_git_blob = "0".repeat(40)), "FAIL C11: discovery runner blob mismatch\n"],
     ] as const) {
       const f = fixture()
       try {
@@ -392,6 +513,65 @@ describe("entry evidence validator C7-C9", () => {
       } finally {
         cleanup(f)
       }
+    }
+  })
+
+  test("EV-18 through EV-22 reject one independently refreshed raw log field", () => {
+    for (const [id, field, value] of [
+      ["EV-18", "canonical_command", "bun scripts/parallel-test.ts unit"],
+      ["EV-19", "evidence_timing", "before-closeout"],
+      ["EV-20", "measured_sha", "0".repeat(40)],
+      ["EV-21", "claims_current_head", "false"],
+      ["EV-22", "verdict", "red"],
+    ]) {
+      const f = fixture()
+      try {
+        mutateLog(f, field, value)
+        expectEv(id, invoke(f))
+      } finally {
+        cleanup(f)
+      }
+    }
+  })
+
+  test("EV-23 through EV-25 reject each independently mutated top-level artifact", () => {
+    for (const [id, field] of [
+      ["EV-23", "disk_manifest"],
+      ["EV-24", "runtime_identity_manifest"],
+      ["EV-25", "skipped_multiset"],
+    ] as const) {
+      const f = fixture()
+      try {
+        mutateTopLevelArtifact(f, field)
+        expectEv(id, invoke(f))
+      } finally {
+        cleanup(f)
+      }
+    }
+  })
+
+  test("EV-26 and EV-28 reject manifest baseline bindings", () => {
+    for (const [id, mutate] of [
+      ["EV-26", (manifest: Record<string, unknown>) => (manifest.discovery_baseline_path = "tests/infra/other.json")],
+      ["EV-28", (manifest: Record<string, unknown>) => (manifest.discovery_runner_git_blob = "0".repeat(40))],
+    ] as const) {
+      const f = fixture()
+      try {
+        mutateManifest(f, mutate)
+        expectEv(id, invoke(f))
+      } finally {
+        cleanup(f)
+      }
+    }
+  })
+
+  test("EV-27 changes ENTRY baseline bytes while preserving the manifest hash", () => {
+    const f = fixture()
+    try {
+      createEv27EntryGraph(f)
+      expectEv("EV-27", invoke(f))
+    } finally {
+      cleanup(f)
     }
   })
 
@@ -415,7 +595,7 @@ describe("entry evidence validator C7-C9", () => {
         path.join(f.out, "run-1", "shard-01.xml"),
         '<testsuites><testcase classname="suite" name="case" file="tests/other.unit.test.ts"/></testsuites>\n',
       )
-      expect(error(invoke(f))).toBe("FAIL C7: JUnit file identity mismatch\n")
+      expectEv("EV-16", invoke(f))
     } finally {
       cleanup(f)
     }
@@ -424,13 +604,20 @@ describe("entry evidence validator C7-C9", () => {
   test("EV-17 rejects a runnable raw JUnit testcase converted to skipped", () => {
     const f = fixture()
     try {
-      writeFileSync(
-        path.join(f.out, "run-1", "shard-01.xml"),
-        '<testsuites><testcase classname="suite" name="case" file="tests/a.unit.test.ts"><skipped/></testcase></testsuites>\n',
-      )
-      expect(error(invoke(f))).toBe("FAIL C8: skipped identity multiset mismatch\n")
+      const junitPath = path.join(f.out, "run-1", "shard-01.xml")
+      writeFileSync(junitPath, '<testsuites><testcase classname="suite" name="case" file="tests/a.unit.test.ts"><skipped/></testcase></testsuites>\n')
+      mutateManifest(f, (manifest) => {
+        ;((manifest.runs as Array<Record<string, unknown>>)[0].junit_artifacts as Array<Record<string, unknown>>)[0].sha256 = hash(junitPath)
+      })
+      expectEv("EV-17", invoke(f))
     } finally {
       cleanup(f)
     }
   })
+})
+
+afterAll(() => {
+  const output = reconcileExecuted(PLAN_MUTATIONS, EXECUTED_MUTATIONS)
+  expect(output).toEqual([FROZEN_MUTATION_COUNTS, "mutation ownership: 28 IDs each map to exactly one condition", "duplicate IDs: none", "orphan IDs: none"])
+  console.log(output.join("\n"))
 })
