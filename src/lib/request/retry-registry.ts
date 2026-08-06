@@ -10,8 +10,7 @@
  * env-based `RetryStrategy` shape via {@link adaptPayloadStrategy}; the one NATIVE env strategy —
  * poisoned-thinking — is used as-is).
  *
- * **Pure addition (Task 2 / Commit 2): zero consumers.** The three `buildXxxStrategies` functions are
- * migrated to call `assembleRetryStrategies` in Task 3 (Commit 3) — until then this file is inert.
+ * The three `buildXxxStrategies` functions call `assembleRetryStrategies`, so this registry is the live shared strategy source for Anthropic, OpenAI Chat Completions, and OpenAI Responses codec legs.
  *
  * **appliesTo is `targetEndpoint === ENDPOINT.MESSAGES`, NOT `clientFormat === "anthropic"`** (RFC §3.3
  * — load-bearing). The current `buildAnthropicStrategies` 16-strategy stack serves FOUR `@messages`

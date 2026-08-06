@@ -20,7 +20,7 @@ export type ApiErrorType =
   | "content_filtered" // 422 — Responsible AI Service filtering
   | "quota_exceeded" // 402 — free tier / premium quota exceeded
   | "auth_expired" // Token expired
-  | "network_error" // Connection failure
+  | "network_error" // Retryable transport failure, including an upstream 499 with an empty body
   | "aborted" // Operation cancelled via AbortSignal (shutdown, client cancel, internal timeout)
   | "server_error" // 5xx (non-503-upstream)
   | "upstream_rate_limited" // 503 — upstream provider rate limited
@@ -176,6 +176,18 @@ export function classifyError(error: unknown): ApiError {
 
 function classifyHTTPError(error: HTTPError): ApiError {
   const { status, responseText, message } = error
+
+  // An upstream 499 with no body carries no actionable rejection detail. Treat it like a pre-response transport failure so the shared network strategy retries it once.
+  // A non-empty 499 remains a terminal bad_request below because its body may describe an intentional cancellation that must not be replayed.
+  if (status === 499 && responseText.trim() === "") {
+    return {
+      type: "network_error",
+      status,
+      message,
+      responseHeaders: error.responseHeaders,
+      raw: error,
+    }
+  }
 
   if (status === 422) {
     return {
