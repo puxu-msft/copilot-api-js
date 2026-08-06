@@ -16,6 +16,16 @@ T0.0f, T0.0d, real A/P/P receipt consumption, and T0.1 are post-`master`-merge w
 
 Scan scope was runner, producer, validator, shutdown, and history observers. Criteria were duplicate algorithms, responsibility drift, same-source oracle, module-global leakage, dynamic dependency drift, and log-versus-condition readiness. No new unaddressed smell was found. Better internal alternative: keep raw artifacts and shared recorder primitives rather than add another pipeline. Criterion discriminating power: each retained gate has a target mutation that turns its intended assertion red. Mature third-party alternative: no profiler or XML library is justified for these narrow, Bun-stable paths; such libraries would add sampling noise or unused surface and must be reconsidered only if the input/protocol boundary expands.
 
+## Validator review hardening
+
+The final whole-branch review found three validator trust-boundary gaps and they are fixed without changing the frozen CLI, schema, or exit-code contract. Runtime dependency provenance now uses `Bun.Transpiler.scan()` rather than line regexes; the probe established that it sees static and multiple same-line dynamic imports while excluding `import type`. Controls prove a second same-line dynamic import and an unexpected static runtime import both fail C11 before receipt publication.
+
+Top-level aggregate artifacts are now semantic evidence, not hash-only pointers. `disk_manifest` must be exactly `{files}` and match the ENTRY baseline bytewise. `runtime_identity_manifest` and top-level `skipped_multiset` must be exact 15-row `{runs:[{ordinal,path,sha256}]}` populations with unique ordinals and paths, and agree bidirectionally with manifest run descriptors and the raw per-run files already parsed by C7/C8. Coordinated aggregate content/hash/pointer tampering fails C10 as `aggregate artifact mismatch`.
+
+Per-run artifact containment is now direct-child: canonical parents must equal canonical `artifact_dir`; JUnit names are frozen to `shard-NN.xml`, and runtime/skipped names to `runtime-identity.json` and `skipped-multiset.json`. Nested same-basename substitutions fail C7/C8, while the existing direct-child symlink-OUT spelling remains green.
+
+The three hardening commits are `9ca24c18` for runtime import scanning, `9ec5da94` for initial aggregate and containment enforcement, and `d564212e` for strict aggregate reconciliation. After them, `bun test tests/infra/validate-entry-evidence.unit.test.ts` passed 34 tests with 0 failures; `--rerun-each=20` passed 680 tests with 0 failures. `bun run typecheck`, `bunx prettier --check scripts/validate-entry-evidence.ts tests/infra/validate-entry-evidence.unit.test.ts`, and `git diff --check` also passed. One post-change `bun run test:backend` run passed 16 shards with 6064 pass, 0 fail, 6917 executed, and 26 skipped in 50.02s. A later backend run timed out while the separate shutdown PTY fixture waited for `READY`; that failure is not validator evidence and does not supersede the validator-specific results above.
+
 ## TerminalUi second Ctrl+C
 
 ### Root cause
