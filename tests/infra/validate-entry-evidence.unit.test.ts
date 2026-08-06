@@ -421,7 +421,13 @@ describe("entry evidence validator C7-C9", () => {
       expect(validateEntryEvidenceReceiptV1(leapDayRaw, receiptExpected(f, leapDayRaw)).valid).toBe(true)
       const leapSecondRaw = receiptRawWith(f, (receipt) => (receipt.validated_at = "1990-12-31T23:59:60Z"))
       expect(validateEntryEvidenceReceiptV1(leapSecondRaw, receiptExpected(f, leapSecondRaw)).valid).toBe(true)
+      const offsetLeapSecondRaw = receiptRawWith(f, (receipt) => (receipt.validated_at = "1991-01-01T00:59:60+01:00"))
+      expect(validateEntryEvidenceReceiptV1(offsetLeapSecondRaw, receiptExpected(f, offsetLeapSecondRaw)).valid).toBe(true)
       for (const timestamp of [
+        "2024-01-01T12:34:60Z",
+        "2024-06-30T23:59:60Z",
+        "2024-12-31T23:59:60Z",
+        "1990-12-31T23:58:60Z",
         "2024-01-01T00:00:61Z",
         "2024-01-01T24:00:00Z",
         "2024-01-01T00:00:00+24:00",

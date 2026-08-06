@@ -20,6 +20,42 @@ const RECEIPT_KEYS = [
 const VALIDATOR_PATH = "scripts/validate-entry-evidence.ts"
 const DISCOVERY_BASELINE_PATH = "tests/infra/entry-test-discovery-baseline.json"
 
+// IERS Bulletin C's historical positive UTC leap-second preceding instants through 2016-12-31. A frozen table is required: RFC3339 permits :60 syntactically, but only IERS announces which instants actually exist; this pure parser cannot query a clock service or network.
+const UTC_LEAP_SECOND_PRECEDING_INSTANTS = new Set([
+  "1972-06-30T23:59:59.000Z",
+  "1972-12-31T23:59:59.000Z",
+  "1973-12-31T23:59:59.000Z",
+  "1974-12-31T23:59:59.000Z",
+  "1975-12-31T23:59:59.000Z",
+  "1976-12-31T23:59:59.000Z",
+  "1977-12-31T23:59:59.000Z",
+  "1978-12-31T23:59:59.000Z",
+  "1979-12-31T23:59:59.000Z",
+  "1981-06-30T23:59:59.000Z",
+  "1982-06-30T23:59:59.000Z",
+  "1983-06-30T23:59:59.000Z",
+  "1985-06-30T23:59:59.000Z",
+  "1987-12-31T23:59:59.000Z",
+  "1989-12-31T23:59:59.000Z",
+  "1990-12-31T23:59:59.000Z",
+  "1992-06-30T23:59:59.000Z",
+  "1993-06-30T23:59:59.000Z",
+  "1994-06-30T23:59:59.000Z",
+  "1995-12-31T23:59:59.000Z",
+  "1997-06-30T23:59:59.000Z",
+  "1998-12-31T23:59:59.000Z",
+  "2005-12-31T23:59:59.000Z",
+  "2008-12-31T23:59:59.000Z",
+  "2012-06-30T23:59:59.000Z",
+  "2015-06-30T23:59:59.000Z",
+  "2016-12-31T23:59:59.000Z",
+])
+
+function knownUtcLeapSecond(year: number, month: number, day: number, hour: number, minute: number, offsetMinutes: number): boolean {
+  const utcPrecedingSecond = Date.UTC(year, month - 1, day, hour, minute, 59) - offsetMinutes * 60_000
+  return UTC_LEAP_SECOND_PRECEDING_INSTANTS.has(new Date(utcPrecedingSecond).toISOString())
+}
+
 export interface EntryEvidenceReceiptV1 {
   schema_version: 1
   validator_path: typeof VALIDATOR_PATH
@@ -81,7 +117,9 @@ function isRfc3339(value: unknown): value is string {
   const leapYear = yearNumber % 4 === 0 && (yearNumber % 100 !== 0 || yearNumber % 400 === 0)
   const daysInMonth = [31, leapYear ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
   if (dayNumber < 1 || dayNumber > daysInMonth[monthNumber - 1]) return false
+  const offsetMinutes = zone === "Z" ? 0 : (Number(zone.slice(1, 3)) * 60 + Number(zone.slice(4, 6))) * (zone[0] === "+" ? 1 : -1)
   if (zone !== "Z" && (Number(zone.slice(1, 3)) > 23 || Number(zone.slice(4, 6)) > 59)) return false
+  if (secondNumber === 60) return knownUtcLeapSecond(yearNumber, monthNumber, dayNumber, hourNumber, minuteNumber, offsetMinutes)
   return true
 }
 
