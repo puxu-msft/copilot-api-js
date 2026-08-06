@@ -2,6 +2,7 @@ import type { Database } from "~/lib/history/sqlite/connection"
 import type {
   //
   EntrySummary,
+  HistoryStats,
   QueryOptions,
   SessionSummary,
   SummaryResult,
@@ -355,6 +356,101 @@ export function querySessionSummaries(db: Database, limit: number): Array<Sessio
   }))
 }
 
+interface PersistedStatsAggregate {
+  total_requests: number
+  successful_requests: number | null
+  failed_requests: number | null
+  aborted_requests: number | null
+  interrupted_requests: number | null
+  total_input_tokens: number | null
+  total_output_tokens: number | null
+  total_duration_ms: number | null
+}
+
+function statsExclusion(overlayIds: ReadonlyArray<string>): { sql: string; param: string } {
+  return {
+    sql: overlayIds.length === 0 ? "" : " AND operation_id NOT IN (SELECT value FROM json_each(?))",
+    param: JSON.stringify(overlayIds),
+  }
+}
+
+export function queryPersistedStats(
+  db: Database,
+  overlayIds: ReadonlyArray<string>,
+): { stats: HistoryStats; totalDurationMs: number; sessionIds: Array<string> } {
+  const exclusion = statsExclusion(overlayIds)
+  const baseWhere = `projection_status='ready'${exclusion.sql}`
+  const params = overlayIds.length === 0 ? [] : [exclusion.param]
+  const aggregate = db
+    .prepare(
+      `SELECT
+         COUNT(*) AS total_requests,
+         SUM(CASE
+           WHEN state='completed' THEN 1
+           WHEN state NOT IN ('completed','failed','aborted','interrupted') AND response_success=1 THEN 1
+           WHEN state IS NULL AND response_success=1 THEN 1
+           ELSE 0
+         END) AS successful_requests,
+         SUM(CASE
+           WHEN state='failed' THEN 1
+           WHEN state NOT IN ('completed','failed','aborted','interrupted') AND response_success=0 THEN 1
+           WHEN state IS NULL AND response_success=0 THEN 1
+           ELSE 0
+         END) AS failed_requests,
+         SUM(CASE WHEN state='aborted' THEN 1 ELSE 0 END) AS aborted_requests,
+         SUM(CASE WHEN state='interrupted' THEN 1 ELSE 0 END) AS interrupted_requests,
+         SUM(COALESCE(input_tokens,0)) AS total_input_tokens,
+         SUM(COALESCE(output_tokens,0)) AS total_output_tokens,
+         SUM(COALESCE(duration_ms,0)) AS total_duration_ms
+       FROM v3_operation_summaries
+       WHERE ${baseWhere}`,
+    )
+    .get(...params) as PersistedStatsAggregate
+  const modelRows = db
+    .prepare(
+      `SELECT COALESCE(response_model,request_model) AS key,COUNT(*) AS count
+       FROM v3_operation_summaries
+       WHERE ${baseWhere} AND COALESCE(response_model,request_model) IS NOT NULL
+       GROUP BY key`,
+    )
+    .all(...params) as Array<{ key: string; count: number }>
+  const endpointRows = db
+    .prepare(
+      `SELECT endpoint AS key,COUNT(*) AS count
+       FROM v3_operation_summaries
+       WHERE ${baseWhere}
+       GROUP BY endpoint`,
+    )
+    .all(...params) as Array<{ key: string; count: number }>
+  const sessionRows = db
+    .prepare(
+      `SELECT DISTINCT session_id
+       FROM v3_operation_summaries
+       WHERE ${baseWhere} AND session_id IS NOT NULL`,
+    )
+    .all(...params) as Array<{ session_id: string }>
+  const totalRequests = aggregate.total_requests
+  const totalDurationMs = aggregate.total_duration_ms ?? 0
+  return {
+    stats: {
+      totalRequests,
+      successfulRequests: aggregate.successful_requests ?? 0,
+      failedRequests: aggregate.failed_requests ?? 0,
+      abortedRequests: aggregate.aborted_requests ?? 0,
+      interruptedRequests: aggregate.interrupted_requests ?? 0,
+      totalInputTokens: aggregate.total_input_tokens ?? 0,
+      totalOutputTokens: aggregate.total_output_tokens ?? 0,
+      averageDurationMs: totalRequests === 0 ? 0 : totalDurationMs / totalRequests,
+      modelDistribution: Object.fromEntries(modelRows.map((row) => [row.key, row.count])),
+      endpointDistribution: Object.fromEntries(endpointRows.map((row) => [row.key, row.count])),
+      recentActivity: [],
+      activeSessions: sessionRows.length,
+    },
+    totalDurationMs,
+    sessionIds: sessionRows.map((row) => row.session_id),
+  }
+}
+
 export interface SummaryProjectionReadiness {
   ready: boolean
   pending: number
@@ -362,6 +458,10 @@ export interface SummaryProjectionReadiness {
 }
 
 export function isSummaryProjectionReady(db: Database): boolean {
+  const tables = db.prepare("SELECT name FROM sqlite_schema WHERE type='table' AND name IN ('history_meta','v3_operation_summaries')").all() as Array<{
+    name: string
+  }>
+  if (tables.length !== 2) return false
   return getMeta(db, SUMMARY_PROJECTION_READY_KEY) === "1"
 }
 

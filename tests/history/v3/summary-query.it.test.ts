@@ -23,6 +23,7 @@ import {
   openInMemoryDatabase,
 } from "~/lib/history/sqlite/connection"
 import { applyForwardMigrations } from "~/lib/history/sqlite/migrations/run"
+import { getStats } from "~/lib/history/stats"
 import { ensureV3Schema } from "~/lib/history/v3/store"
 import {
   //
@@ -41,6 +42,8 @@ function persist(input: {
   state?: HistoryEntry["state"]
   requestModel?: string
   responseModel?: string
+  usage?: { input_tokens: number; output_tokens: number; cache_read_input_tokens?: number; cache_creation_input_tokens?: number }
+  durationMs?: number
   sessionId?: string
   agentId?: string
   pid?: number
@@ -65,8 +68,8 @@ function persist(input: {
         [
           {
             index: 0,
-            durationMs: 0,
-            upstreamResponse: { success: true, model: input.responseModel },
+            durationMs: input.durationMs ?? 0,
+            upstreamResponse: { success: input.state !== "failed", model: input.responseModel, usage: input.usage },
           },
         ]
       : [],
@@ -169,6 +172,68 @@ describe("persisted summary SQL query", () => {
         preview: "z-session",
       },
     ])
+  })
+
+  test("stats preserve the response-success fallback without an overlay exclusion", () => {
+    persist({ id: "stats-fallback", startedAt: 100, requestModel: "fallback-model", responseModel: "fallback-model", sessionId: "fallback-session" })
+    expect(tryMarkSummaryProjectionReady(getDatabase()).ready).toBe(true)
+    getDatabase().prepare("UPDATE v3_operation_summaries SET state=NULL,response_success=1,duration_ms=10 WHERE operation_id='stats-fallback'").run()
+    getDatabase()
+      .prepare("UPDATE v3_operations SET summary_json=NULL,manifest_gz=?")
+      .run(new Uint8Array([0]))
+
+    expect(getStats()).toMatchObject({
+      totalRequests: 1,
+      successfulRequests: 1,
+      failedRequests: 0,
+      averageDurationMs: 10,
+      modelDistribution: { "fallback-model": 1 },
+      activeSessions: 1,
+    })
+  })
+
+  test("stats aggregate the narrow projection and let in-flight rows replace the same persisted ID", () => {
+    persist({
+      id: "stats-overlay",
+      startedAt: 100,
+      requestModel: "persisted-model",
+      responseModel: "persisted-model",
+      usage: { input_tokens: 10, output_tokens: 20 },
+      durationMs: 30,
+      sessionId: "stats-session",
+    })
+    persist({
+      id: "stats-failure",
+      startedAt: 200,
+      endpoint: "openai-responses",
+      state: "failed",
+      requestModel: "failed-model",
+      responseModel: "failed-model",
+      usage: { input_tokens: 3, output_tokens: 4, cache_read_input_tokens: 5, cache_creation_input_tokens: 7 },
+      durationMs: 50,
+      sessionId: "stats-session",
+    })
+    expect(tryMarkSummaryProjectionReady(getDatabase()).ready).toBe(true)
+    getDatabase().prepare("UPDATE v3_operation_summaries SET duration_ms=50 WHERE operation_id='stats-failure'").run()
+    putInFlight({ ...liveEntry("stats-overlay", 100), durationMs: 0, sessionId: "stats-session" })
+    getDatabase()
+      .prepare("UPDATE v3_operations SET summary_json=NULL,manifest_gz=?")
+      .run(new Uint8Array([0]))
+
+    expect(getStats()).toEqual({
+      totalRequests: 2,
+      successfulRequests: 0,
+      failedRequests: 1,
+      abortedRequests: 0,
+      interruptedRequests: 0,
+      totalInputTokens: 3,
+      totalOutputTokens: 4,
+      averageDurationMs: 25,
+      modelDistribution: { "live-model": 1, "failed-model": 1 },
+      endpointDistribution: { "anthropic-messages": 1, "openai-responses": 1 },
+      recentActivity: [],
+      activeSessions: 1,
+    })
   })
 
   test("the facade merges in-flight rows without corrupting totals or terminal-only pages", () => {
