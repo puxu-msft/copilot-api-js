@@ -69,7 +69,7 @@ function hasExactKeys(value: Record<string, unknown>): boolean {
 function isRfc3339(value: unknown): value is string {
   if (typeof value !== "string") return false
   const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(Z|[+-]\d{2}:\d{2})$/.exec(value)
-  if (match === null || Number.isNaN(Date.parse(value))) return false
+  if (match === null) return false
   const [, year, month, day, hour, minute, second, zone] = match
   const monthNumber = Number(month)
   const dayNumber = Number(day)

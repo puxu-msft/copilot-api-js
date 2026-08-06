@@ -419,6 +419,19 @@ describe("entry evidence validator C7-C9", () => {
       }
       const leapDayRaw = receiptRawWith(f, (receipt) => (receipt.validated_at = "2024-02-29T00:00:00+05:30"))
       expect(validateEntryEvidenceReceiptV1(leapDayRaw, receiptExpected(f, leapDayRaw)).valid).toBe(true)
+      const leapSecondRaw = receiptRawWith(f, (receipt) => (receipt.validated_at = "1990-12-31T23:59:60Z"))
+      expect(validateEntryEvidenceReceiptV1(leapSecondRaw, receiptExpected(f, leapSecondRaw)).valid).toBe(true)
+      for (const timestamp of [
+        "2024-01-01T00:00:61Z",
+        "2024-01-01T24:00:00Z",
+        "2024-01-01T00:00:00+24:00",
+        "2024-01-01T00:00:00+01:60",
+        "2024-01-01T00:00:00.Z",
+        "2024-01-01T00:00:00. Z",
+      ]) {
+        const raw = receiptRawWith(f, (receipt) => (receipt.validated_at = timestamp))
+        expect(validateEntryEvidenceReceiptV1(raw, receiptExpected(f, raw)).valid, timestamp).toBe(false)
+      }
       for (const [label, tamper] of tampering) {
         const raw = receiptRawWith(f, tamper)
         expect(validateEntryEvidenceReceiptV1(raw, receiptExpected(f, raw)).valid, label).toBe(false)
@@ -458,15 +471,14 @@ describe("entry evidence validator C7-C9", () => {
         }).valid,
       ).toBe(false)
 
+      const insideManifest = path.join(f.tree, "inside-manifest.json")
+      writeFileSync(insideManifest, "{}\n")
       const insideLink = path.join(f.out, "inside-link")
-      symlinkSync(f.tree, insideLink)
-      const insideReceiptRaw = receiptRawWith(f, (receipt) => (receipt.manifest_path = path.join(insideLink, "missing-manifest.json")))
-      expect(
-        validateEntryEvidenceReceiptV1(insideReceiptRaw, {
-          ...receiptExpected(f, insideReceiptRaw),
-          manifestPath: path.join(insideLink, "missing-manifest.json"),
-        }).valid,
-      ).toBe(false)
+      symlinkSync(insideManifest, insideLink)
+      const insideReceiptRaw = receiptRawWith(f, (receipt) => (receipt.manifest_path = insideLink))
+      const insideContainment = validateEntryEvidenceReceiptV1(insideReceiptRaw, { ...receiptExpected(f, insideReceiptRaw), manifestPath: insideLink })
+      expect(insideContainment.valid).toBe(false)
+      expect(insideContainment.errors).toContain("manifest_path is invalid for tree")
 
       const nonexistentManifest = path.join(f.out, "missing-manifest.json")
       const nonexistentReceiptRaw = receiptRawWith(f, (receipt) => (receipt.manifest_path = nonexistentManifest))
