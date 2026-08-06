@@ -73,7 +73,8 @@ HistoryEntry 的轻量摘要版本，用于列表展示和 WebSocket 推送。�
 内容寻址 canonical store，DDL 单一源 = `src/lib/history/v3/store.ts` 的 `V3_SCHEMA_SQL`；表结构与直接查库方法权威见 skill `history-sqlite-schema`。核心表：
 
 - `v3_objects` — semantic object CAS：`hash` PK + zstd 压缩 canonical JSON，跨 operation 去重共享 payload/frame 对象。
-- `v3_operations` — 每个已提交 operation 恰一行：`operation_id` PK、`revision`/`digest`（幂等/冲突判据）、`kind`、zstd manifest、`pinned`（debug-pin，只影响此表）、`committed_at`。**只落终态**——无 V2 那种 pending/executing/streaming 中间态行，故无「误杀在途行」的并发风险维度。
+- `v3_operations` — 每个已提交 operation 恰一行：`operation_id` PK、`revision`/`digest`（幂等/冲突判据）、`kind`、zstd manifest、`pinned`、`committed_at`。**只落终态**——无 V2 那种 pending/executing/streaming 中间态行，故无「误杀在途行」的并发风险维度。
+- `v3_operation_summaries` — forward migration 001 建立的窄型产品读投影；ready marker 后 list 页／列表 total／sessions／stats 和 session 页选 ID 均走 typed SQL，不读取 `manifest_gz`。`/api/status` 总数则直接对 canonical `v3_operations` 做专用 `COUNT(*)`，同样不读 manifest，也不依赖 marker。001 兼容 trigger 与 bounded backfill 保证历史／旧写路径同步；pending／poisoned 通过 `/api/status.memory` 可见。停服 002 单源收敛尚未实现，故宽表旧列和兼容 fallback 当前仍保留。
 - ordered tracks / timeline chunks / 自包含 journal / 可重建 search 投影 —— 详见 skill。
 
 **写路径**：`v3/store.ts::commitPreparedOperation`/`enqueueModelOperation` + `runDrain`。写者由 `state.ts::initHistory` 订阅 `subscribeModelOperationTerminals` 单例驱动（生产不挂任何 sink——V3 终端持久化是 `initHistory` 内建）。
@@ -102,7 +103,7 @@ HistoryEntry 的轻量摘要版本，用于列表展示和 WebSocket 推送。�
 
 ## schema 迁移（Umzug forward-runner，hybrid）
 
-两层。① **地板（conceptual 000）**= `openDatabase` 的 inline 幂等 reconcile（`V3_SCHEMA_SQL`），每次开库跑、**不进账本**；② **前向 001+** = `sqlite/migrations/` 的 Umzug forward-runner（`applyForwardMigrations`，`state.ts::initHistory` 在 `V3_SCHEMA_SQL` exec 与 `recoverV3Journal` 之间跑一次），已应用迁移名记进 `history_meta(schema_migrations)` 账本。`MIGRATIONS` 初始空（地板=当前 schema，本次价值是让管线跑通并有测试证明「下次加 001 迁移时框架真的会执行」）。**失败硬阻断**：迁移抛 → `process.exit(1)`（半迁移 schema 比不启动危险，与数据层 never-throw 相反）。首条真实迁移优先用 `sqlMigration(name, body)`——包 driver `transaction()` 使多语句 DDL all-or-nothing、防 partial-DDL wedge。设计见 [spec/migration-framework-umzug.md](spec/migration-framework-umzug.md)。
+两层。① **地板（conceptual 000）**= `openDatabase` 的 inline 幂等 reconcile（`V3_SCHEMA_SQL`），每次开库跑、**不进账本**；② **前向 001+** = `sqlite/migrations/` 的 Umzug forward-runner（`applyForwardMigrations`，`state.ts::initHistory` 在 `V3_SCHEMA_SQL` exec 与 `recoverV3Journal` 之间跑一次），已应用迁移名记进 `history_meta(schema_migrations)` 账本。当前 `MIGRATIONS` 登记 `001-operation-summary-projection`：事务内创建窄型 `v3_operation_summaries`、索引与 insert／summary-update／pin-update 三条兼容 trigger。**失败硬阻断**：迁移抛 → `process.exit(1)`（半迁移 schema 比不启动危险，与数据层 never-throw 相反）。迁移使用 `sqlMigration(name, body)` 包 driver `transaction()`，使多语句 DDL all-or-nothing、防 partial-DDL wedge。002 停服收敛命令尚未实现；当前仍是保留宽表旧列和 trigger bridge 的兼容态。框架设计见 [spec/migration-framework-umzug.md](spec/migration-framework-umzug.md)，本轮实施边界见 [plan/2026-08-06-history-read-path-and-h2-diagnostics.md](plan/2026-08-06-history-read-path-and-h2-diagnostics.md)。
 
 ## REST API
 
@@ -110,7 +111,7 @@ History 产品读面经 V3 canonical store facade：列表、详情、session �
 
 | 端点 | 说明 |
 |------|------|
-| `GET /history/api/entries` | V3 operation 列表与过滤；默认 generation，`operationKind=all` 可包含 bypass operation。 |
+| `GET /history/api/entries` | V3 operation summary 列表与过滤；默认 generation，`operationKind=all` 可包含 bypass operation。支持 `direction=older|newer` 双向 keyset cursor；ready marker 后持久行走窄表，in-flight／recent terminal 同过滤 overlay。recent 未持久时可带 `durability`。持久全文 `search` 参数当前仍是 A3 缺口。 |
 | `GET /history/api/entries/:id` | V3 canonical record 的 `HistoryEntry` 投影。 |
 | `POST /history/api/entries/:id/pin` | 设置 `v3_operations.pinned=1`，详情与 summary 立即反映。 |
 | `POST /history/api/entries/:id/unpin` | 设置 `v3_operations.pinned=0`。 |
@@ -118,7 +119,8 @@ History 产品读面经 V3 canonical store facade：列表、详情、session �
 | `GET /history/api/stats` | V3 persisted + in-flight 去重合并视图统计。 |
 | `GET /history/api/entries/:id/export` | V3 entry 投影的 `.json.zst` 下载。 |
 | `GET /history/api/export` | V3 全量 JSON / CSV 导出。 |
-| `GET /history/api/search`、`GET /history/api/search/contains` | 兼容端点；当前固定返回空 rows／reqIds，绝不读取 History SQLite 或 Tantivy。 |
+| `GET /history/api/search` | 经 UDS 查询独立 history-search sidecar 的 `source=inbound` Tantivy 投影；其余 legacy facet 或 sidecar 不可达时返回 `partial:true` 空结果，不回退主 SQLite。 |
+| `GET /history/api/search/contains` | 兼容端点；sidecar 无反查索引，当前固定返回空 `reqIds`。 |
 
 字段级端点契约（含参数）见 [API.md](API.md)「History REST」。
 

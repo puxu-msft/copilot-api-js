@@ -469,10 +469,10 @@ export interface HistoryEntry {
   state?: RequestLifecycleState
   active?: boolean
   /**
-   * Debug-pin flag. A pinned entry is exempt from the SQLite reaper — never
-   * evicted and not counted toward the success/failure retention limits — so its
-   * raw request/response data persists across GC while debugging. Backed by the
-   * `entries_v2.pinned` column (not the blob); toggled via setEntryPinned.
+   * Debug-pin marker. History V3 currently has no automatic reaper, so this is a
+   * diagnostic marker and a future retention-policy anchor rather than a live
+   * eviction exemption. In the 001 compatibility schema it is written through
+   * `v3_operations.pinned` and projected into `v3_operation_summaries`.
    */
   pinned?: boolean
   lastUpdatedAt?: number
@@ -645,7 +645,7 @@ export interface HistoryStats {
 }
 
 /**
- * Per-session aggregate row (GROUP BY session_id over terminal entries_v2 rows).
+ * Per-session aggregate row (GROUP BY session_id over ready terminal V3 summary rows).
  *
  * `agentCount` is `COUNT(DISTINCT agent_id)`, which by SQL semantics does NOT
  * count NULL — main-agent requests carry a NULL agent_id, so a main-agent-only
@@ -685,7 +685,7 @@ export interface EntrySummary {
   active?: boolean
   /** Recent terminal has not reached durable V3 storage, or its bounded writer attempt failed. Omitted after successful persistence. */
   durability?: "pending" | "failed"
-  /** Debug-pin flag — see HistoryEntry.pinned. Pinned entries survive the reaper. */
+  /** Debug-pin marker — see HistoryEntry.pinned. V3 currently has no automatic reaper; the marker is retained for diagnostics and future retention policy. */
   pinned?: boolean
   lastUpdatedAt?: number
   queueWaitMs?: number

@@ -1,6 +1,6 @@
 # History V3 SQLite schema
 
-> **状态：活文档。** 本文描述当前生产代码实际创建和读取的 History V3 SQLite schema。DDL 单一事实源是 [`src/lib/history/v3/store.ts`](../src/lib/history/v3/store.ts) 的 `V3_SCHEMA_SQL` 与 [`src/lib/history/raw/manager.ts`](../src/lib/history/raw/manager.ts) 的 `RAW_SCHEMA`。
+> **状态：活文档。** 本文描述当前生产代码实际创建和读取的 History V3 SQLite schema。Canonical floor 的 DDL 单一事实源是 [`src/lib/history/v3/store.ts`](../src/lib/history/v3/store.ts) 的 `V3_SCHEMA_SQL`；summary projection 由 [`src/lib/history/v3/summary-store.ts`](../src/lib/history/v3/summary-store.ts) 的 `SUMMARY_PROJECTION_FIELDS`／`SUMMARY_PROJECTION_MIGRATION_SQL` 经 forward migration 001 创建；raw sidecar 的 DDL 单一事实源是 [`src/lib/history/raw/manager.ts`](../src/lib/history/raw/manager.ts) 的 `RAW_SCHEMA`。
 
 ## 1．数据库命名与职责
 
@@ -10,7 +10,7 @@
 |---|---|---|---|---|
 | Semantic History DB | `history-v3.db` | `$XDG_DATA_HOME/copilot-api/history-v3.db`，未设置 XDG 时为 `~/.local/share/copilot-api/history-v3.db` | 是 | `ModelOperationRecord` 的权威 semantic CAS、manifest、ordered tracks、timeline、journal；**不含全文索引** |
 | Raw capture sidecar | `raw.db` | 与 `history-v3.db` 同目录 | 否 | 可选 exact-byte CAS 与 operation/sequence/track 引用；配置热重载按 store generation 切换 |
-| Search sidecar | `history-search/` | 与 `history-v3.db` 同目录 | 是（磁盘 History） | Tantivy v1 倒排索引；可删除、可重建、非权威；当前兼容 HTTP 搜索接口仍返回空数据 |
+| Search sidecar | `history-search/` | 与 `history-v3.db` 同目录 | 是（磁盘 History） | 独立常驻服务持有的 Tantivy v1 倒排索引；可删除、可重建、非权威。`GET /history/api/search?source=inbound` 经 UDS 查询；不可达时返回 `partial:true` 空结果 |
 | Legacy V2 | `history.db` | 同 `$XDG_DATA_HOME/copilot-api/` 目录 | 否 | 保留原样；不是 V3 schema，不被在线服务触碰 |
 | Legacy tiered archive | `archive.db`、seal files | 原归档目录 | 否 | 内置 archiver 已退役；不是 V3 schema，不被在线服务触碰 |
 
@@ -23,6 +23,7 @@
 ```mermaid
 erDiagram
     HISTORY_STORE_IDENTITY ||--|| V3_META : owns
+    V3_OPERATIONS ||--o| V3_OPERATION_SUMMARIES : projects
     V3_OPERATIONS ||--o{ V3_TRACKS : has
     V3_OPERATIONS ||--o{ V3_TIMELINE_CHUNKS : has
     V3_OBJECTS ||--o{ V3_OPERATIONS : resolved_through_manifest
@@ -98,8 +99,8 @@ Canonical JSON 递归排序 object key，保持 array 顺序；typed-array 转�
 | `ended_at` | `INTEGER` | nullable | terminal epoch ms；旧数据可为空 |
 | `timing_source` | `TEXT` | `NOT NULL` | `canonical`、`storage-commit-upper-bound`、`terminal-log-rounded` 或 `unavailable` |
 | `manifest_gz` | `BLOB` | `NOT NULL` | format-v2 value-free record、handle→hash、payload sequence roots/overlays、`tracksExternal`，zstd 压缩 |
-| `summary_json` | `TEXT` | nullable | list/session/stats 使用的轻量 `EntrySummary`；旧行由 V3-only backfill 补齐 |
-| `pinned` | `INTEGER` | `NOT NULL DEFAULT 0` | 产品 debug pin 投影 |
+| `summary_json` | `TEXT` | nullable | 001 兼容期的旧 summary 载体；trigger／backfill 投影到 `v3_operation_summaries`，ready marker 前也作为慢读 fallback。002 收敛尚未实现，故当前列仍存在 |
+| `pinned` | `INTEGER` | `NOT NULL DEFAULT 0` | 001 兼容期的 debug pin 单写入口；UPDATE trigger 同事务投影到窄表。002 收敛尚未实现，故当前列仍存在 |
 | `committed_at` | `INTEGER` | `NOT NULL` | authoritative commit epoch ms |
 
 索引：
@@ -109,7 +110,29 @@ Canonical JSON 递归排序 object key，保持 array 顺序；typed-array 转�
 
 同一 `operation_id + revision + digest` 重放是幂等 no-op；同 operation ID 出现不同 revision／digest 是冲突，写入失败并增加 `conflicts` 状态计数。
 
-### 3.6 `v3_tracks`
+### 3.6 `v3_operation_summaries`
+
+forward migration `001-operation-summary-projection` 创建的一行一 operation 窄型产品读投影。`operation_id` 以 `ON DELETE CASCADE` FK 指向 `v3_operations`；canonical detail／export 仍以 `v3_operations.manifest_gz` 与 CAS 为权威。
+
+| 列组 | 列 | 语义 |
+|---|---|---|
+| 身份／状态 | `operation_id`、`projection_status`、`projection_error` | `projection_status` 仅允许 `pending`／`ready`／`poisoned`；只有 ready row 进入产品 SQL 查询。repair 失败保留错误而不假装可读 |
+| REST row codec | `summary_json` | `EntrySummary` JSON；list 页只解码选中的小页，不读取 canonical manifest |
+| 排序／分组 | `operation_kind`、`session_id`、`agent_id`、`started_at`、`ended_at` | 支持 operation kind、双向 `(started_at,operation_id)` keyset、session 聚合和 agent 过滤 |
+| 过滤／统计 | `endpoint`、`state`、`pid`、`request_model`、`response_model`、`response_success`、`duration_ms`、四个 token 列 | list／count／sessions／stats 共用的 typed SQL 维度；`state` 优先于兼容 `success` |
+| 展示／可变投影 | `preview_text`、`response_preview_text`、`pinned` | 列表预览与 debug pin；001 兼容期 pin 仍从父表单写并由 trigger 同事务投影 |
+
+索引：
+
+- `idx_v3_operation_summaries_created(started_at DESC, operation_id DESC)`：默认／generation list keyset。
+- `idx_v3_operation_summaries_kind_created(operation_kind, started_at DESC, operation_id DESC)`：指定 bypass kind。
+- `idx_v3_operation_summaries_session(session_id, started_at DESC, operation_id DESC)`：session 明细 keyset 与聚合。
+
+001 兼容期有三条 trigger：父表 INSERT 原子创建 ready／pending 投影；`summary_json` 从 NULL 修复为非 NULL 时原子转 ready 并清错误；`pinned` 更新只同步 pin，不改变 projection 状态。后台 `startV3SummaryBackfill` 小批补历史行，hydrate 失败写 `v3_summary_backlog` 并把投影标 poisoned。`tryMarkSummaryProjectionReady` 在 `BEGIN IMMEDIATE` 内校验 ID 双向覆盖、每个共享字段等价和全部状态 ready，再写 `v3_meta.summary_projection_ready=1`；不满足时删 marker。marker 前 list／sessions／stats 保留宽表兼容读，marker 后切到本窄表；`/api/status` 的总数独立对 canonical `v3_operations` 做专用 `COUNT(*)`，不依赖 marker。`/api/status.memory` 另暴露 ready／pending／poisoned。
+
+当前尚未实现计划中的停服 002 收敛，因此 `v3_operations.summary_json`／`pinned`、compat triggers 与宽表 fallback 仍然存在；不得把 001 ready marker 理解为最终单源 schema 已完成。
+
+### 3.7 `v3_tracks`
 
 每条记录描述一条有序逻辑轨。payload/frame 值不在本表重复保存，`refs_json` 只存 operation-local handle。
 
@@ -138,7 +161,7 @@ Canonical JSON 递归排序 object key，保持 array 顺序；typed-array 转�
 
 format-v2 manifest 中同位置只保留空的结构占位，读取时按 `(track_name, attempt_index)` 从 `track_gz` 恢复完整轨，避免 request/response metadata 在 manifest 中重复。`track_gz IS NULL` 的 format-v1 行仍从 `refs_json` 读取。
 
-### 3.7 `v3_timeline_chunks`
+### 3.8 `v3_timeline_chunks`
 
 按 sequence 排序的生命周期事件块，每块最多 128 个事件。
 
@@ -152,7 +175,7 @@ format-v2 manifest 中同位置只保留空的结构占位，读取时按 `(trac
 
 主键：`(operation_id, chunk_index)`。timeline 包含 payload/frame 注册、transform、attempt 开始、diagnostic、attempt settle、terminal 等事件。
 
-### 3.8 `v3_journal`
+### 3.9 `v3_journal`
 
 单写者的 crash-recovery journal。正常成功提交后对应行被删除，因此健康库通常为空。
 
@@ -171,7 +194,7 @@ format-v2 manifest 中同位置只保留空的结构占位，读取时按 `(trac
 
 提交顺序：事务外 prepare/hash/compress → 先 append 自包含 journal → 单 SQLite 事务写 CAS objects、operation、tracks、timeline → 事务内删除 journal → commit。若 operation 事务失败，journal 独立留存；下次 `initHistory()` 调 `recoverV3Journal()` 查询 `committed_at IS NULL` 的行，重建全部 prepared artifacts，校验 revision/digest 后重放。Tantivy 不参与此事务，其失败绝不回滚 semantic History。
 
-### 3.9 `v3_summary_backlog`
+### 3.10 `v3_summary_backlog`
 
 | 列 | 类型 | 约束 | 语义 |
 |---|---|---|---|
@@ -231,12 +254,12 @@ raw capture 的失败、超大对象或数据库故障不会回滚 semantic V3�
 | Sequence prefixes | `v3_sequence_nodes` | parent/item hash + depth | plain columns |
 | Operation structure/provenance | `v3_operations.manifest_gz` | value-free manifest + handle hashes + sequence roots/overlays | zstd |
 | Ordered logical tracks | `v3_tracks.track_gz` | 完整 `OperationTrack` JSON；`refs_json` 为兼容 fallback | zstd |
-| Product list summary | `v3_operations.summary_json` | `EntrySummary` JSON | plain |
+| Product list summary | `v3_operation_summaries.summary_json` | `EntrySummary` JSON；001 兼容期从父表同源投影 | plain |
 | Timeline | `v3_timeline_chunks.payload_gz` | sequence-ordered JSON chunk | zstd |
 | Crash journal | `v3_journal.payload_gz` | self-contained terminal record JSON | zstd |
 | Raw object | `raw_objects.blob_gz` | exact bytes | zstd |
 
-Detail 读取先解压 manifest，批量读取直接 arena object hashes；每个 extracted sequence root 用 recursive CTE 展开 prefix chain，再批量补读缺失 item objects并应用 occurrence overlays；最后从 `track_gz` 恢复完整轨。对象读取不是逐 item N+1，但当前每个 sequence root 有一次 recursive CTE。`pinned` 来自 `v3_operations` 专列，不写回 manifest。列表/session/stats 在 `summary_json` 可用时不 hydrate canonical payload。
+Detail 读取先解压 manifest，批量读取直接 arena object hashes；每个 extracted sequence root 用 recursive CTE 展开 prefix chain，再批量补读缺失 item objects并应用 occurrence overlays；最后从 `track_gz` 恢复完整轨。对象读取不是逐 item N+1，但当前每个 sequence root 有一次 recursive CTE。001 兼容期 `pinned` 从 `v3_operations` 单写、同步投影到窄表，不写回 manifest。ready marker 后 list／sessions／stats 只读 `v3_operation_summaries`；session detail 先在窄表选一小页 operation ID，再批量 hydrate canonical detail。
 
 ## 6．SQLite connection 约定
 
@@ -256,7 +279,7 @@ Raw generation 连接执行：
 
 当前 raw 连接不设置 `auto_vacuum` 或 `foreign_keys`：schema 本身没有 FK，manager 当前也没有 raw-object 删除路径。若未来加入删除／保留策略，必须同时定义孤儿引用与空间回收协议，不能假定 raw.db 会自动把空闲页归还给 OS。
 
-Bun 使用 `bun:sqlite`，Node 使用 `node:sqlite`，统一抽象在 [`src/lib/history/sqlite/driver.ts`](../src/lib/history/sqlite/driver.ts)。SQLite transaction callback 必须同步，事务内不得跨 `await`。
+Bun 使用 `bun:sqlite`，Node 使用 `node:sqlite`，统一抽象在 [`packages/foundation/src/sqlite/driver.ts`](../packages/foundation/src/sqlite/driver.ts)。SQLite transaction callback 必须同步，事务内不得跨 `await`。
 
 ## 7．运维查询
 
@@ -285,7 +308,16 @@ SELECT operation_id, revision, phase, created_at, committed_at, error
 FROM v3_journal
 ORDER BY created_at;
 
--- summary 派生失败
+-- summary projection readiness 与失败
+SELECT projection_status, COUNT(*) AS operations
+FROM v3_operation_summaries
+GROUP BY projection_status;
+
+SELECT operation_id, projection_status, projection_error
+FROM v3_operation_summaries
+WHERE projection_status <> 'ready'
+ORDER BY started_at, operation_id;
+
 SELECT operation_id, reason, updated_at
 FROM v3_summary_backlog
 ORDER BY updated_at DESC;

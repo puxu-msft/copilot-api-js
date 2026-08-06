@@ -113,10 +113,10 @@ function summaryMatchesFilters(summary: EntrySummary, opts: QueryOptions): boole
   if (!opts.agentId && opts.mainAgentOnly && summary.agentId !== undefined) return false
   if (opts.pid !== undefined && summary.pid !== opts.pid) return false
   // NOTE: the `search` needle is intentionally NOT matched here — for in-flight
-  // (not-yet-indexed) entries it is scanned against the normalized message text
-  // in `inFlightMatchesSearch` (full-text parity with the persisted index), not
-  // against the summary's preview. The persisted list path filters `search` in
-  // SQL (preview_text LIKE).
+  // entries it is scanned against normalized inbound message text by
+  // `inFlightMatchesSearch`. The ready persisted-summary path does not yet apply
+  // full-text search; A3 routes that query through the independent Tantivy
+  // list-search protocol rather than pretending preview_text is equivalent.
   return true
 }
 

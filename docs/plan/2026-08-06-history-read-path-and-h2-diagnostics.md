@@ -1,3 +1,17 @@
+# 实施状态
+
+> **状态：部分完成。** 本表记录计划内各任务的实现证据与偏差，不替代 `docs/DESIGN.md` 的活架构现状。A2 的合并态复验锚定 `2d4f400d50d1061810db284b44bdbf62203dfff7`：目标套件 `108 pass / 1 skip / 0 fail`，`bun run typecheck` 通过，计划内 22 个变更文件的定向 ESLint 通过。该数字只覆盖本计划已实现的 A1/A2 路径，不代表全后端验收。
+
+| 计划任务 | 当前状态与证据 | 与原计划的差异／剩余工作 |
+|---|---|---|
+| A0 基线与计划 | 已完成调查与计划冻结，起点提交 `b6fb0947686ea6620bfafb63a4fd151d18599483`。 | 运行中约 6.3 万行 artifact 的性能数字仍是调查快照；执行验收必须重新取数。 |
+| A1 summary projection | **部分完成。** `92fcc611` 落 `001-operation-summary-projection` 表／索引／兼容 trigger；`a8a9475c` 落 bounded backfill、manifest repair、poison 可见性与原子 ready gate。 | 尚未实现 002 maintenance command、跨进程独占 writer 门、artifact owner generation 升级、删除旧 `summary_json`／`pinned` 列、真实 pre-001 binary 六臂兼容夹具与真实大库迁移 dry-run。当前是受 ready marker 保护的长期兼容态，不是最终单源态。 |
+| A2 SQL 查询基座 | **代码完成，真实大库验收待做。** `8afd3c26..50941d32` 依次落 canonical 专用 status count、双向 keyset list、session／stats SQL 聚合、按页 detail hydrate、manifest-size 性能护栏、filter-aware cursor／overlay 与 recent durability。 | 自动性能护栏使用 512 行、每行 256 KiB manifest，证明读路径与约 128 MiB canonical manifest 解耦；它没有证明真实约 6.3 万行生产副本上的 wall time、WAL／缓存效应或非 4141 HTTP 运行态 max-gap。持久全文 `search` 不属 A2，仍归 A3。 |
+| A3 持久全文 search | 未开始。 | `GET /history/api/entries?search=` 对 ready projection 的持久行仍未实现完整全文过滤；不得把 recent／in-flight 测试绿当作持久契约已满足。 |
+| A4 H2 canonical diagnostics | 未开始。 | 尚无能把 `NGHTTP2_CANCEL` 按 stream／session／local-abort 归因并落到明确 dispatch 的 canonical 诊断。 |
+| A5 文档与独立验收 | 进行中。 | 本轮先对账 A1/A2 live docs；之后仍需代码 review、独立 verifier、全 backend／CI 档位和真实大库验收。 |
+| Phase B 根因实验 | 未开始，受 A4 诊断门阻塞。 | 不在缺 canonical stream/session 证据时预设 PING cadence 或 generic CANCEL retry 是修复。 |
+
 # Context
 
 近期 GPT 请求失败率在冻结窗口 `2026-08-05T03:28:10.512Z..2026-08-06T03:28:10.512Z` 从前一日的 `10/1665 = 0.601%` 升至 `57/3038 = 1.876%`；真实错误字段显示其中 23 条为 `NGHTTP2_CANCEL`。调查同时确认本地确定性放大器：`/api/status` 为得到 History count 调 `getHistorySummaries({limit:1})`，后者经 `visitV3Summaries` 同步遍历全库并读取每行 `manifest_gz`；一次状态请求可冻结 Bun 主线程 26.54s。以下容量/性能数字是 `2026-08-06` 对运行中 artifact 的只读快照，不是实施常量：约6.3万行时，现行扫描在独立只读基准中需6～13s、读取约2.8GB，`dbstat` 的 `v3_operations` 约2.93GB；直接在宽表上做 JSON SQL pushdown 的冷缓存页面查询仍需21.77s。执行时用 `SELECT COUNT(*)`、`dbstat` 和同一 benchmark重新取数并锚定当时 HEAD/config。
@@ -89,7 +103,7 @@
 
 ### Consumer cutover
 
-- `/api/status` 直接走窄表 `COUNT(*)`，不得调用 list facade。
+- `/api/status` 直接对 canonical `v3_operations` 做专用 `COUNT(*)`，不得调用 list facade；它只数 operation 行且不读 manifest，无需依赖 projection readiness。
 - History summaries 只取目标页 JSON，不全库遍历。
 - sessions 用 SQL group aggregate；首/末 preview 通过 window function 或两次 keyset join 取得，不在 JS 持有全量 session entries。
 - stats 用 SQL aggregate/group queries；recent/in-flight 只作增量去重合并。
@@ -97,6 +111,8 @@
 - detail/export 继续按 operation ID hydrate canonical record。
 
 性能验收在固定临时库（≥当前约 6.3 万行，含大 manifest）上测：status count、默认 list page、常用 exact filter page/count、sessions、stats 均不得读取 `manifest_gz`；`EXPLAIN QUERY PLAN` 正样本必须命中预期索引且无默认页 temp B-tree。记录 wall 与 event-loop max-gap，不写硬编码“必须 N ms”作为唯一正确性 gate；以“与行内 manifest 体积解耦＋数量级相对改善”为主，另设宽松绝对 watchdog 防回归。
+
+**已实现的自动护栏边界（`70b7f1c0`）**：`tests/history/v3/summary-query-performance.it.test.ts` 构造 512 行、每行 256 KiB manifest，对 list／sessions／stats／status 做行为等价、wall time 与 event-loop max-gap 对照，并显式执行一次 canonical manifest 全扫作为反样本。它证明这些读取不随约 128 MiB manifest 体积放大，且反样本确实触达大 BLOB；它没有替代上述真实约 6.3 万行副本验收，后者仍是 A5 的交付门。
 
 ## A3. 修复持久全文 search 契约
 

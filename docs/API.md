@@ -122,7 +122,7 @@
 
 | 路由 | 方法 | 说明 |
 |------|------|------|
-| `/history/api/entries` | GET | V3 canonical operation 分页列表（默认 `operationKind=generation`，可显式取 bypass operation）；支持 model / endpoint / state / session / agent / pid / time 过滤与 `terminalOnly=true`。`tier=archive` 明确 400，不回读旧 archive。 |
+| `/history/api/entries` | GET | V3 operation summary 分页列表（默认 `operationKind=generation`，可显式取 bypass operation）；支持 `model`／`endpoint`／`success`／`state`／`from`／`to`／`sessionId`／`agentId`／`mainAgentOnly`／`pid` 结构过滤、`terminalOnly=true`，以及 `(startedAt,id)` 稳定游标的 `direction=older|newer`。返回 `{entries,total,nextCursor,prevCursor}`；未知或不满足当前 filter 的 cursor 返回 400。ready marker 后持久 list 与列表 total 走窄型 `v3_operation_summaries`，in-flight／recent terminal 作为同过滤语义的 overlay；recent 尚未持久时可带 `durability:"pending"|"failed"`，成功持久后字段消失。**当前缺口**：同端点的 `search` 参数尚未对 ready projection 的持久行实现完整全文过滤，A3 将接独立 Tantivy list-search；不得依赖它查询历史持久行。`tier=archive` 明确 400，不回读旧 archive。 |
 | `/history/api/entries/:id` | GET | 从 V3 canonical store 投影完整 entry；`attempts[].timing` 始终含 `source`，并在该 physical dispatch 有采样值时完整带出绝对 epoch 的 `upstreamHeadersAt`、`upstreamMessageStartAt`、`upstreamFirstTokenAt`、`upstreamLastTokenAt`；未知 id 返回 404。 |
 | `/history/api/entries/:id/export` | GET | 将 V3 `getEntry` 投影服务端 zstd 压缩为 `.json.zst` 附件。 |
 | `/history/api/entries/:id/pin`、`.../unpin` | POST | 更新 `v3_operations.pinned` 专列；详情和 summary 均立即反映。 |

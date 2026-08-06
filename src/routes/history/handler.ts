@@ -19,14 +19,13 @@ import { InvalidSummaryCursorError } from "~/lib/history/queries"
 import { compressAsync } from "~/lib/sqlite/compression"
 
 /**
- * 从查询串解析 list / scoped-delete / search 三处共享的结构化 filter 维（11 个）：
+ * 从查询串解析 list 与 search 两处共享的结构化 filter 维（11 个）：
  * model / endpoint / success / state / from / to / search / sessionId / agentId /
  * mainAgentOnly / pid。
  *
- * 抽成单一事实源，因为 list 与 scoped-delete 的 WHERE 必须严格一致：若把解析块散落各
- * handler、将来新增一个维只更新部分 handler，scoped delete 就会无视该维、删掉比列表所示
- * 更大的子集（数据丢失面）。分页维（cursor / limit / direction / terminalOnly）与 search
- * 端点专有的 q / source 不在此列，由各 handler 自行叠加。
+ * 生产 History 删除面已退役，因此这里不再承担 scoped-delete 对齐契约。分页维
+ * （cursor / limit / direction / terminalOnly）与 search 端点专有的 q / source 不在此列，
+ * 由各 handler 自行叠加。
  */
 function parseListFilters(query: Record<string, string>): QueryOptions {
   return {
