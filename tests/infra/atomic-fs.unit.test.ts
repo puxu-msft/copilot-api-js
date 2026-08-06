@@ -142,7 +142,8 @@ describe("atomicWriteJson", () => {
 
       releaseCleanup.resolve()
       const result = await outcome
-      expect(result).toEqual({ kind: "rejected", error: writeError })
+      expect(result.kind).toBe("rejected")
+      if (result.kind === "rejected") expect(result.error).toBe(writeError)
       expect(fs.unlink).toHaveBeenCalledTimes(1)
     } finally {
       ;(fs as any).writeFile = realWriteFile
