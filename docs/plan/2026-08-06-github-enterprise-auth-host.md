@@ -213,7 +213,8 @@ git commit -m "feat(config): resolve GitHub Enterprise endpoints"
 - Create: `src/lib/config/application-plan.ts`
 - Create: `tests/config/config-application-transaction.it.test.ts`
 - Modify: `src/lib/config/config.ts:123-325,356-658,683-1235`
-- Modify: `src/lib/config/validation.ts:102-150`
+- Modify: `src/lib/config/validation.ts:33-150`
+- Modify: `src/lib/config/compat.ts:408-550`
 - Modify: `packages/foundation/src/state.ts:1133,1508-1705`
 - Modify: `src/routes/config/route.ts:109-163`
 - Modify: `src/routes/status/route.ts:59-93,188-205`
@@ -231,6 +232,21 @@ export interface ConfigContentGeneration {
   readonly size: number
   readonly sha256: string
 }
+
+export interface ConfigDiagnostic {
+  readonly dedupKey: string
+  readonly level: "info" | "warn" | "error"
+  readonly message: string
+}
+
+export interface ConfigValidationPlan {
+  readonly value: Config
+  readonly legacyPathsRemoved: ReadonlyArray<string>
+  readonly diagnostics: ReadonlyArray<ConfigDiagnostic>
+}
+
+export function prepareConfigValidation(raw: Record<string, unknown>): ConfigValidationPlan
+export function commitConfigDiagnostics(diagnostics: ReadonlyArray<ConfigDiagnostic>): void
 
 export type ConfigManagedStateKey =
   | keyof typeof CONFIG_MANAGED_DEFAULTS
@@ -266,6 +282,7 @@ export interface PrepareConfigApplicationOptions {
 
 export async function prepareConfigApplication(options: PrepareConfigApplicationOptions): Promise<ConfigApplicationPlan>
 export function commitConfigApplication(plan: ConfigApplicationPlan): Config
+export async function runConfigTransaction<T>(operation: () => Promise<T>): Promise<T>
 export async function loadAndPrepareConfig(options: { mode: "boot" | "reload" }): Promise<ConfigApplicationPlan | null>
 export function getConfigRuntimeStatus(): {
   readonly activeGeneration: ConfigContentGeneration | null
@@ -313,7 +330,9 @@ export async function parseUserConfigYamlRaw(): Promise<Record<string, unknown>>
 export function validateAndMergeConfig(raw: Record<string, unknown>, bundled: Config): Config
 ```
 
-`parseUserConfigYamlRaw()` 不调用 `validateConfig()`；boot/token-aware path 在 warn-strip 前调用 `assertStrictGithubConfig(raw.github)`。Reload 读取整份内容一次，并从同一 bytes 计算 `mtime + size + sha256`，避免 parse/digest 双读 TOCTOU。
+`parseUserConfigYamlRaw()` 不调用 `validateConfig()`；boot/reload/PUT 都在 warn-strip 前把**完整 raw top-level mapping**传给 `assertStrictGithubConfig(raw)`，让它同时检查 `github` 与顶层 `ghc_api_base_url`。Reload 读取整份内容一次，并从同一 bytes 计算 `mtime + size + sha256`，避免 parse/digest 双读 TOCTOU。三路径共享表驱动测试：非法 `github.web_base_url` 与非法顶层 `ghc_api_base_url` 均 fail-closed；mutation 把任一路径调用改成 `assertStrictGithubConfig(raw.github)` 后，顶层 URL 样本必须变红。
+
+把 `extractAndTranslateDeprecatedWithOps` 拆出纯 `prepareDeprecatedConfigMigration()`：返回 value、legacy paths 与 deprecation diagnostics，不写 consola、不修改 warned set。`prepareConfigValidation()` 调纯 migration + Zod safeParse/clean/reparse，返回 `ConfigValidationPlan`；现有 `validateConfig()` 改为兼容 wrapper（prepare 后立即 commit diagnostics），供未迁移的纯读取测试/调用点保持行为。事务路径只在配置 commit 成功后调用 `commitConfigDiagnostics()`，此时才登记 warn-once key 和输出。
 
 - [ ] **Step 4: 把 apply-time 计算移入 prepare**
 
@@ -333,7 +352,9 @@ export function validateAndMergeConfig(raw: Record<string, unknown>, bundled: Co
 
 - [ ] **Step 6: 实现 no-throw commit 和 last-known-good cache**
 
-`commitConfigApplication(plan)` 的同步 commit point 按固定顺序执行：先发布一个不可变 `CommittedConfigSnapshot` 引用（effective config + accepted generation），再调用 `applyConfigManagedStatePatchDeferred(plan.statePatch)` 得到 notification batch，再穷尽解释结构化 `domainPatches`（含 disabled list + catalog view），最后清除 pending-invalid 并调用 `flushConfigStateNotifications(batch)`。这样 listener 同时看到新 cache/generation、完整 state 与新 catalog view。不得用任意函数 closure 充当 patch/effect。之后按枚举 kind 执行 `afterCommitEffects` 和 diagnostics；effect 若抛错，记录 effect kind 和错误但继续后续 effect，配置保持 committed，不允许部分 rollback。Reload prepare 失败时保留 last-known-good，按 content generation 一次性 warn。新增 `resetConfigApplicationStateForTests()` 并登记 RESETTERS。
+所有 config 入口（middleware/handler/system-prompt/CLI/PUT）通过 module-global `runConfigTransaction()` 串行执行 read→prepare→write/commit；它用 rejection-tolerant promise chain，某次失败不毒化下一次。Reload 在 prepare 后、commit 前重新读取磁盘 bytes 并比较完整 content generation；若变化，丢弃 stale plan，在同一队列 operation 中从最新 bytes 重试，设有限重试上限并记录高频 churn。PUT operation 在队列内读取最新 editable doc、合成 candidate、prepare、atomic write、commit，不允许锁外 prepare。
+
+`commitConfigApplication(plan)` 的同步 commit point 按固定顺序执行：先发布一个不可变 `CommittedConfigSnapshot` 引用（effective config + accepted generation），再调用 `applyConfigManagedStatePatchDeferred(plan.statePatch)` 得到 notification batch，再穷尽解释结构化 `domainPatches`（含 disabled list + catalog view），最后清除 pending-invalid、commit validation diagnostics 的 warn-once keys，并调用 `flushConfigStateNotifications(batch)`。这样 listener 同时看到新 cache/generation、完整 state 与新 catalog view。不得用任意函数 closure 充当 patch/effect。之后按枚举 kind 执行 `afterCommitEffects` 和 diagnostics；effect 若抛错，记录 effect kind 和错误但继续后续 effect，配置保持 committed，不允许部分 rollback。Reload prepare 失败时保留 last-known-good，按 content generation 一次性 warn。新增 `resetConfigApplicationStateForTests()` 并登记 RESETTERS。
 
 - [ ] **Step 7: 重构 PUT 为 prepare-before-write，并暴露配置运行态**
 
@@ -345,9 +366,11 @@ export function validateAndMergeConfig(raw: Record<string, unknown>, bundled: Co
 
 测试：
 
-- prepare 失败所有 domain/listener/cache 不变。
+- prepare 失败所有 domain/listener/cache 不变，`consola.warn` 调用与 schema/deprecation warned-key 集也不变；同一候选修正后成功 commit 时 warning 仍会首次输出。
 - commit 后每个 channel 最多通知一次，listener 读取的其它 domain 已是新值。
 - 同 mtime/size 但不同 digest 的修复文件会重试成功。
+- 用 barrier 构造 reload A 读/prepare 后暂停、PUT B 请求到达、A 恢复：共享队列保证 B 等 A 完成；再构造测试 seam 让 A commit 前磁盘 generation 变化，A 必须丢弃 stale plan 并重读，不能覆盖新磁盘内容。
+- 两个并发 `applyConfigToState()` 和一个 PUT 的完成顺序与队列顺序一致；任一 operation 失败不阻塞后续。
 - PUT prepare 失败不写盘；写盘失败不改 runtime；成功复用 plan。
 - 一般非法非 GitHub leaf 仍 warn-strip，GitHub section strict fail。
 - `applyDisabledModels`、`refreshCatalogView`、`syncModelRefreshLoop`、timeout diagnostics 在 prepare 失败时调用次数为 0；成功时只在完整 commit 后调用。
@@ -362,6 +385,8 @@ export function validateAndMergeConfig(raw: Record<string, unknown>, bundled: Co
 1. 在 prepare 前发布 cache。
 2. 让 `setTimeoutConfig` 在事务内立即通知。
 3. 把 generation 交叉约束移回第一个 state setter 之后。
+4. 在 prepare 阶段直接调用 `warnIssueOnce`／deprecated warn wrapper。
+5. 绕过 `runConfigTransaction()` 让 stale reload plan 在 PUT 后 commit。
 
 每次恢复后运行 `bun test tests/config/config-application-transaction.it.test.ts` 为 PASS。
 
@@ -377,7 +402,7 @@ bun run typecheck
 Commit:
 
 ```bash
-git add -- src/lib/config/application-plan.ts src/lib/config/config.ts src/lib/config/validation.ts src/routes/config/route.ts src/routes/status/route.ts packages/foundation/src/state.ts tests/config/config-application-transaction.it.test.ts tests/config/config-hot-reload.it.test.ts tests/config/config-yaml-routes.http.test.ts tests/config/config-effective-route.http.test.ts tests/config/config-apply-catalog-consistency.it.test.ts tests/config/generation-runtime-config.unit.test.ts docs/tmp/2026-08-06-github-enterprise-auth-host-progress-impl.md
+git add -- src/lib/config/application-plan.ts src/lib/config/config.ts src/lib/config/validation.ts src/lib/config/compat.ts src/routes/config/route.ts src/routes/status/route.ts packages/foundation/src/state.ts tests/config/config-application-transaction.it.test.ts tests/config/config-hot-reload.it.test.ts tests/config/config-yaml-routes.http.test.ts tests/config/config-effective-route.http.test.ts tests/config/config-apply-catalog-consistency.it.test.ts tests/config/generation-runtime-config.unit.test.ts docs/tmp/2026-08-06-github-enterprise-auth-host-progress-impl.md
 git commit -m "refactor(config): apply configuration transactionally"
 ```
 
@@ -592,6 +617,10 @@ git commit -m "feat(auth): support authority-scoped GitHub OAuth"
 **Interfaces:**
 
 ```ts
+// setup modules additionally export testable runners; citty commands only map args.
+export async function runSetupCodex(options: SetupCodexOptions): Promise<void>
+export async function runSetupClaudeCode(options: SetupClaudeCodeOptions): Promise<void>
+
 export type TokenCommandPolicy =
   | { kind: "login"; providers: ["device-auth"] }
   | { kind: "interactive"; providers: ["cli", "env", "file", "device-auth"] }
@@ -616,9 +645,11 @@ export interface BootstrappedTokenCommand {
 export async function bootstrapTokenCommand(options: BootstrapTokenCommandOptions): Promise<BootstrappedTokenCommand>
 ```
 
-- [ ] **Step 1: 写全部入口矩阵测试**
+- [ ] **Step 1: 写真实 CLI runner 入口矩阵测试**
 
-列出 login、logout、debug info/models/usage、start、setup-codex、setup-claude-code。每个断言同一 effective config、endpoint snapshot、token path、proxy policy；expected 写死，不调生产 resolver生成。
+测试不得只调用 `bootstrapTokenCommand()`。通过依赖注入 seam 驱动真实导出 `runAuth`、`runLogout`、`runDebug`、`runServer`、`runSetupCodex`、`runSetupClaudeCode`；对每个 runner 记录它传给共享 bootstrap 的 policy/CLI overrides，并断言最终 effective config、endpoint snapshot、token path、proxy policy。Expected 写死，不调生产 resolver 生成。`runServer` 使用 boot dependency seam 在 bootstrap 后立即停止，不监听端口、不初始化 History；setup runners 使用 dry-run/依赖 seam，不写真实客户端配置。
+
+增加 source guard：上述 6 个 CLI 模块不得直接引用 `ensurePaths`、`applyConfigToState`、`initProxy`、`installDefaultTokenRuntime` 或 `getProxyForUrl`；这些符号只允许出现在 `token-bootstrap.ts`。该 guard 与 runtime runner 测试共同证明不是“新 primitive 自己绿、真实入口仍走旧线”。
 
 - [ ] **Step 2: 写 debug 无 token 负向测试**
 
@@ -645,13 +676,16 @@ Expected: FAIL；当前 debug models/usage 会安装包含 DeviceAuthProvider �
 
 Logout 从 snapshot 取 path，unlink 当前 authority。Debug info stat snapshot path，不查 account network。Debug models/usage 调 noninteractive manager；捕获“No valid GitHub token”并转换成稳定错误/退出码，不调用 `process.exit` 以便测试，命令边界再设置 exit code。
 
-- [ ] **Step 7: 运行三类 mutation**
+- [ ] **Step 7: 运行 composition-seam 与 provider mutations**
 
-1. Debug info 构造 runtime：零 manager断言红。
-2. Debug models/usage providers 加 device-auth：零 OAuth断言红。
-3. Login/start providers 删除 device-auth：交互正样本红。
+1. 让一个真实 runner 完全绕过 bootstrap；runner spy/source guard 必须红。
+2. 只让 `setup-codex` 或 `debug usage` 保留旧装配；单入口矩阵必须红，证明不是仅测 shared primitive。
+3. 在 `start.ts` 恢复单 Copilot-origin `getProxyForUrl` 预采样；source guard + Task 3 三-origin oracle 必须红。
+4. Debug info 构造 runtime：零 manager断言红。
+5. Debug models/usage providers 加 device-auth：零 OAuth断言红。
+6. Login/start providers 删除 device-auth：交互正样本红。
 
-恢复后 PASS。
+逐项确认失败来自目标 seam 后恢复，重跑为 PASS。
 
 - [ ] **Step 8: 回归并提交**
 
@@ -776,13 +810,15 @@ git commit -m "docs: document GitHub Enterprise authentication"
 | GHEC 四种输入同源派生 | Task 1 equivalent table | 删除 `api.`/`copilot-api.` 归一化之一，目标样本红 |
 | Raw URL 不被 parser 洗形 | Task 1 C0/backslash/dot-segment negatives | 删除 pre-parser guard，反斜杠/TAB 样本红 |
 | GHES base path 保留 | Task 1 append test | 改成 `new URL("/user", base)`，`/api/v3` 样本红 |
-| Config prepare 失败零副作用 | Task 2 state/cache/listener snapshot | 提前 publish cache 或延后 generation check，测试红 |
+| Config prepare 失败零副作用 | Task 2 state/cache/listener/diagnostic snapshot | 提前 publish cache、延后 generation check或 prepare 内直接 warning，测试红 |
+| Config 入口不提交 stale plan | Task 2 queue + disk-generation barrier test | 绕过 queue/CAS，让旧 reload 在 PUT 后 commit，测试红 |
 | Listener 不见半状态 | Task 2 before/after listener probe | 第一个 setter 后立即 notify，测试红 |
 | Proxy 逐 origin 保持三来源 | Task 3 origin matrix | 恢复单 Copilot origin 预采样，Web/API 样本红 |
 | Token 不跨 authority fallback | Task 4 path/file tests | enterprise path 改回 public，测试红 |
 | OAuth 取消零遗留 timer | Task 4 fake-clock cases | abortable delay 改裸 timeout，timer test 红 |
+| 每个真实 CLI runner 都走共享 bootstrap | Task 5 runner matrix + source guard | 整段绕过或只漏一个 setup/debug 入口，测试红 |
 | Debug 不意外交互 | Task 5 no-token negatives | 加回 DeviceAuthProvider，OAuth/network count 红 |
-| Login/start 仍可交互 | Task 5 interactive positive | 全局删除 device provider，正样本红 |
+| Login/start/setup 仍可交互 | Task 5 interactive positive | 全局删除 device provider，正样本红 |
 | Evidence 不扩大 | Task 6 public positive control + explicit “未证明” | 移除 public `/user` control，probe test/审查红 |
 
 ## 实施顺序与 checkpoint
