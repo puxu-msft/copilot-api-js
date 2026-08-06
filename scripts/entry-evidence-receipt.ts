@@ -52,8 +52,11 @@ const UTC_LEAP_SECOND_PRECEDING_INSTANTS = new Set([
 ])
 
 function knownUtcLeapSecond(year: number, month: number, day: number, hour: number, minute: number, offsetMinutes: number): boolean {
-  const utcPrecedingSecond = Date.UTC(year, month - 1, day, hour, minute, 59) - offsetMinutes * 60_000
-  return UTC_LEAP_SECOND_PRECEDING_INSTANTS.has(new Date(utcPrecedingSecond).toISOString())
+  // Date.UTC maps years 0..99 to 1900..1999. Set the full UTC year after constructing a neutral Date so low years cannot alias a modern leap second.
+  const localPrecedingSecond = new Date(0)
+  localPrecedingSecond.setUTCFullYear(year, month - 1, day)
+  localPrecedingSecond.setUTCHours(hour, minute, 59, 0)
+  return UTC_LEAP_SECOND_PRECEDING_INSTANTS.has(new Date(localPrecedingSecond.getTime() - offsetMinutes * 60_000).toISOString())
 }
 
 export interface EntryEvidenceReceiptV1 {

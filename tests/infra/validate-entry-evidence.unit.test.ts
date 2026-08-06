@@ -424,6 +424,8 @@ describe("entry evidence validator C7-C9", () => {
       const offsetLeapSecondRaw = receiptRawWith(f, (receipt) => (receipt.validated_at = "1991-01-01T00:59:60+01:00"))
       expect(validateEntryEvidenceReceiptV1(offsetLeapSecondRaw, receiptExpected(f, offsetLeapSecondRaw)).valid).toBe(true)
       for (const timestamp of [
+        "0072-06-30T23:59:60Z",
+        "0072-07-01T00:59:60+01:00",
         "2024-01-01T12:34:60Z",
         "2024-06-30T23:59:60Z",
         "2024-12-31T23:59:60Z",
