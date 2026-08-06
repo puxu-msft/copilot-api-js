@@ -1,4 +1,4 @@
-import { closeSync, constants, linkSync, openSync, rmSync, unlinkSync, writeSync } from "node:fs"
+import { closeSync, constants, linkSync, openSync, rmSync, unlinkSync, writeFileSync } from "node:fs"
 import path from "node:path"
 import { randomUUID } from "node:crypto"
 
@@ -9,7 +9,8 @@ export function writeReceiptAtomically(receiptPath: string, body: string): void 
     const descriptor = openSync(temporary, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY, 0o600)
     created = true
     try {
-      writeSync(descriptor, body)
+      // Node's fs.writeFileSync(fd, data) loops until it writes the complete buffer before returning.
+      writeFileSync(descriptor, body)
     } finally {
       closeSync(descriptor)
     }

@@ -22,8 +22,7 @@ session_id: 046d7295-e5ce-470b-a284-c721c6ce1cb8
 
 ## 当前在途
 
-- 已按 TDD 写入 `tests/infra/validate-entry-evidence.unit.test.ts` 的合成正样本和 C11 failure receipt-preservation 骨架；首次运行在 validator 缺失时如预期失败，随后局部测试转绿。
-- 已新增 `scripts/validate-entry-evidence.ts` 初稿并通过 `bun run typecheck`，但它尚未覆盖计划冻结的全契约，不能交付或合并。
+- C1～C6 checkpoint 已补深层路径与 artifact 防护：非存在的 tree receipt destination、symlink parent、manifest schema version、以及 realpath alias log 均有合成测试；receipt 的完整 body 由 `writeFileSync(fd, body)` 写入后才可 no-replace publish。
 - 未消费真实 future A/P；所有现有 fixture 均在 `/tmp` 临时 git 仓库构造。
 
 ## 在途意图

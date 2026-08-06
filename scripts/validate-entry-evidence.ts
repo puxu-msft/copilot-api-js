@@ -68,13 +68,23 @@ function git(tree: string, args: Array<string>): string | undefined {
   const result = Bun.spawnSync(["git", "-C", tree, ...args], { stdout: "pipe", stderr: "pipe" })
   return result.exitCode === 0 ? result.stdout.toString().trim() : undefined
 }
-function canonicalInside(candidate: string, tree: string): boolean {
-  try {
-    const relative = path.relative(realpathSync(tree), realpathSync(candidate))
-    return relative === "" || (!relative.startsWith(`..${path.sep}`) && relative !== ".." && !path.isAbsolute(relative))
-  } catch {
-    return false
+function canonicalPath(candidate: string): string {
+  const absolute = path.resolve(candidate)
+  const suffix: Array<string> = []
+  let existing = absolute
+  while (!existsSync(existing)) {
+    const parent = path.dirname(existing)
+    if (parent === existing) return absolute
+    suffix.unshift(path.basename(existing))
+    existing = parent
   }
+  return path.join(realpathSync(existing), ...suffix)
+}
+
+function canonicalInside(candidate: string, tree: string): boolean {
+  const resolved = canonicalPath(candidate)
+  const relative = path.relative(realpathSync(tree), resolved)
+  return relative === "" || (!relative.startsWith(`..${path.sep}`) && relative !== ".." && !path.isAbsolute(relative))
 }
 
 function parseOptions(argv: Array<string>): Options {
@@ -129,7 +139,9 @@ function parseManifest(raw: string): Array<RunLog> {
     cliFail()
   }
   if (!value || typeof value !== "object" || Array.isArray(value) || !exactKeys(value as Record<string, unknown>, MANIFEST_KEYS)) cliFail()
-  const runs = (value as Record<string, unknown>).runs
+  const manifest = value as Record<string, unknown>
+  if (manifest.schema_version !== 1) cliFail()
+  const runs = manifest.runs
   if (!Array.isArray(runs)) cliFail()
   return runs.map((candidate) => {
     if (!candidate || typeof candidate !== "object" || Array.isArray(candidate) || !exactKeys(candidate as Record<string, unknown>, RUN_KEYS)) cliFail()
@@ -163,9 +175,12 @@ if (
     .every((ordinal, index) => ordinal === index + 1)
 )
   fail(6, "run log count is not 15", 5)
-if (new Set(runs.map((run) => run.log_path)).size !== runs.length) fail(6, "run log paths are not unique", 5)
+const canonicalLogPaths: Array<string> = []
 for (const run of runs) {
   if (!existsSync(run.log_path)) fail(6, "run log missing", 5)
-  if (sha256(run.log_path) !== run.log_sha256) fail(6, "run log hash mismatch", 5)
+  const canonicalLogPath = realpathSync(run.log_path)
+  canonicalLogPaths.push(canonicalLogPath)
+  if (sha256(canonicalLogPath) !== run.log_sha256) fail(6, "run log hash mismatch", 5)
 }
+if (new Set(canonicalLogPaths).size !== runs.length) fail(6, "run log paths are not unique", 5)
 fail(7, "JUnit identity validation is not implemented in this checkpoint", 6)

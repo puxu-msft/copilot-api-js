@@ -196,7 +196,14 @@ describe("validate-entry-evidence C1-C6", () => {
     const fixture = createFixture()
     try {
       const manifest = JSON.parse(readFileSync(fixture.manifestPath, "utf8"))
-      manifest.runs[1].log_path = manifest.runs[0].log_path
+      manifest.schema_version = 2
+      writeJson(fixture.manifestPath, manifest)
+      const versionPointer = amendPointer(fixture, (text) => text.replace(/manifest_sha256=[0-9a-f]{64}/, `manifest_sha256=${sha256(fixture.manifestPath)}`))
+      expect(run(fixture, versionPointer).exitCode).toBe(2)
+      manifest.schema_version = 1
+      const alias = path.join(fixture.out, "run-alias.log")
+      symlinkSync(manifest.runs[0].log_path, alias)
+      manifest.runs[1].log_path = alias
       manifest.runs[1].log_sha256 = manifest.runs[0].log_sha256
       const permuted = Object.fromEntries(Object.entries(manifest).reverse())
       permuted.runs = manifest.runs.map((run: Record<string, unknown>) => Object.fromEntries(Object.entries(run).reverse()))
@@ -236,6 +243,44 @@ describe("validate-entry-evidence C1-C6", () => {
         "FAIL C5: evidence manifest must be outside TREE\n",
         amendPointer(fixture, (text) => text.replace(/manifest_path=.*/, `manifest_path=${treeManifest}`)),
       )
+      const directReceipt = Bun.spawnSync(
+        [
+          "bun",
+          VALIDATOR,
+          "--entry-sha",
+          fixture.entrySha,
+          "--pointer-sha",
+          fixture.pointerSha,
+          "--tree",
+          fixture.tree,
+          "--handover",
+          HANDOVER,
+          "--receipt-out",
+          path.join(fixture.tree, "new-receipt.json"),
+        ],
+        { stdout: "pipe", stderr: "pipe" },
+      )
+      expect(directReceipt.exitCode).toBe(2)
+      const receiptLink = path.join(fixture.out, "receipt-link")
+      symlinkSync(fixture.tree, receiptLink)
+      const linkedReceipt = Bun.spawnSync(
+        [
+          "bun",
+          VALIDATOR,
+          "--entry-sha",
+          fixture.entrySha,
+          "--pointer-sha",
+          fixture.pointerSha,
+          "--tree",
+          fixture.tree,
+          "--handover",
+          HANDOVER,
+          "--receipt-out",
+          path.join(receiptLink, "new-receipt.json"),
+        ],
+        { stdout: "pipe", stderr: "pipe" },
+      )
+      expect(linkedReceipt.exitCode).toBe(2)
       const linked = path.join(fixture.out, "tree-link")
       symlinkSync(fixture.tree, linked)
       expectFail(
@@ -248,12 +293,15 @@ describe("validate-entry-evidence C1-C6", () => {
     }
   })
 
-  test("receipt writer preserves existing temp and regular receipt targets", () => {
+  test("receipt writer publishes the complete body before no-replace collision handling", () => {
     const root = mkdtempSync(path.join(os.tmpdir(), "receipt-"))
     const receipt = path.join(root, "receipt.json")
+    const body = `${"receipt payload ".repeat(8_192)}\n`
+    writeReceiptAtomically(receipt, body)
+    expect(readFileSync(receipt, "utf8")).toBe(body)
     const existingTemp = path.join(root, ".receipt.json.foreign.tmp")
-    writeFileSync(receipt, "old receipt\n")
     writeFileSync(existingTemp, "foreign temp\n")
+    writeFileSync(receipt, "old receipt\n")
     try {
       expect(() => writeReceiptAtomically(receipt, "new\n")).toThrow()
       expect(readFileSync(receipt, "utf8")).toBe("old receipt\n")
