@@ -1,6 +1,6 @@
 # Responses ↔ Anthropic 语义桥规格评审记录
 
-> **状态**：已完成，协议与架构两条独立评审均放行
+> **状态**：重基后增量复核中；原四轮评审已放行
 >
 > **评审对象**：`docs/spec/2026-08-06-responses-anthropic-semantic-bridge.md`
 >
@@ -227,3 +227,9 @@
 | 实施者第一人称架构走查 | 可定稿 | 0 |
 
 首轮至第四轮共处置 1 BLOCKER、15 MAJOR，全部采纳并经原 reviewer 复审闭合；无驳回 finding，无待第三方裁决项。
+
+## 重基后增量复核
+
+规格分支从 `192dce69` 重基到最新 master `285dc571`，两份文档 SHA-256 在重基前后完全一致。新 master 增加 empty-body HTTP 499 → `network_error` → network retry 一次的行为，并确认 retry registry 已是三条生产腿的共享实时来源。该改动不推翻规格，却扩大了“宽错误分类可能误收永久 compatibility error”的相邻风险：`BridgeCompatibilityError` 必须在 `classifyError`、buffered transport retry 与 semantic retry registry 之前由 `isBridgeCompatibilityError` 专门分流。M13 的 `retryable:false`、错误后 dispatch delta=0 与 registry 不 claim 判据继续成立。
+
+待原架构 reviewer 增量复核：最新 master 是否改变 M13 的 error-gate seam，或要求新增验收。

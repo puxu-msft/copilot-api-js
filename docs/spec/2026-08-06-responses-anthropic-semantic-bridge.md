@@ -1,8 +1,8 @@
 # OpenAI Responses ↔ Anthropic Messages 语义桥规格
 
-> **状态**：已定稿，协议与架构两条独立评审均无 BLOCKER／MAJOR
+> **状态**：定稿候选；原四轮评审已放行，最新 master 重基增量复核中
 >
-> **核验基线**：`192dce69f1bf482b1c3130d519991594a3fe46ab`（2026-08-06）
+> **核验基线**：`285dc571ed6cd12fc7b5641d719da5516a724646`（2026-08-06；定稿分支重基后的最新 master）
 >
 > **适用范围**：OpenAI Responses 与 Anthropic Messages 之间的请求、非流式响应与流式响应双向翻译
 
