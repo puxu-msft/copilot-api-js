@@ -108,12 +108,11 @@ describe("HistoryMetaStorage", () => {
 })
 
 describe("applyForwardMigrations", () => {
-  test("empty MIGRATIONS is a no-op on a bare DB (must not throw)", async () => {
-    // Guard: the shipped list is empty (the floor is the baseline).
-    expect(MIGRATIONS).toEqual([])
+  test("an explicitly empty migration list is a no-op on a bare DB", async () => {
+    expect(MIGRATIONS.map((migration) => migration.name)).toEqual(["001-operation-summary-projection"])
 
     const db = freshDb()
-    await applyForwardMigrations(db) // no floor, no migrations → no-op, no throw
+    await applyForwardMigrations(db, [])
 
     expect(await new HistoryMetaStorage(db).executed()).toEqual([])
   })
