@@ -262,6 +262,20 @@ describe("persisted summary SQL query", () => {
     })
   })
 
+  test("in-flight overlays use the same operation-kind and state precedence as persisted SQL", () => {
+    expect(tryMarkSummaryProjectionReady(getDatabase()).ready).toBe(true)
+    putInFlight({ ...liveEntry("live-count", 300), operationKind: "count_tokens" })
+    putInFlight({
+      ...liveEntry("live-failed", 200),
+      state: "failed",
+      active: false,
+      attempts: [{ index: 0, durationMs: 1, upstreamResponse: { success: true, model: "live-model" } }],
+    })
+
+    expect(getHistorySummaries().entries.map((row) => row.id)).toEqual(["live-failed"])
+    expect(getHistorySummaries({ state: "failed", success: false }).entries.map((row) => row.id)).toEqual(["live-failed"])
+  })
+
   test("the facade merges in-flight rows without corrupting totals or terminal-only pages", () => {
     persist({ id: "persisted-a", startedAt: 100 })
     persist({ id: "persisted-b", startedAt: 200 })

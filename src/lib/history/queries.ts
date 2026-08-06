@@ -98,13 +98,13 @@ function summaryMatchesFilters(summary: EntrySummary, opts: QueryOptions): boole
     const res = summary.responseModel?.toLowerCase() ?? ""
     if (!req.includes(needle) && !res.includes(needle)) return false
   }
-  if (opts.success === true && summary.responseSuccess !== true) return false
-  if (opts.success === false && summary.responseSuccess !== false) return false
   if (opts.state && summary.state !== opts.state) return false
+  if (!opts.state && opts.success !== undefined) {
+    const success = summary.state ? summary.state === "completed" : summary.responseSuccess
+    if (success !== opts.success) return false
+  }
   if (opts.agentId && summary.agentId !== opts.agentId) return false
   if (!opts.agentId && opts.mainAgentOnly && summary.agentId !== undefined) return false
-  if (opts.pid !== undefined && summary.pid !== opts.pid) return false
-  if (opts.state && summary.state !== opts.state) return false
   if (opts.pid !== undefined && summary.pid !== opts.pid) return false
   // NOTE: the `search` needle is intentionally NOT matched here — for in-flight
   // (not-yet-indexed) entries it is scanned against the normalized message text
@@ -286,11 +286,11 @@ export function getHistory(options: QueryOptions = {}): HistoryResult {
 export function getHistorySummaries(options: QueryOptions = {}): SummaryResult {
   const { limit = 50, terminalOnly } = options
 
+  const operationKind = options.operationKind ?? "generation"
   const inFlightSummaries = listInFlight()
     .filter((entry) => inFlightMatchesSearch(entry, options.search))
     .map((entry) => toEntrySummary(entry))
-    .filter((summary) => summaryMatchesFilters(summary, options))
-  const operationKind = options.operationKind ?? "generation"
+    .filter((summary) => summaryMatchesOperationKind(summary, operationKind) && summaryMatchesFilters(summary, options))
   const cursorSummary = resolveSummaryCursor(options, operationKind)
   const stored = persistedSummaryCandidates(options, operationKind, limit + 256 + inFlightSummaries.length + 1, cursorSummary)
   const persistedSummaries = [
