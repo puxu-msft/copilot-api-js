@@ -156,3 +156,58 @@
 - 冻结块职责已降为 cohort 历史 oracle，不参与任何成败分支；当前与 `description + 完整 When to use section` 2930 chars 逐字一致。log-only 提交 `f0f3cd7` 不移动 SKILL anchor，符合设计。
 - Tally 仍为当前文本 V1=0、V1R=0；旧 6/6 与旧 V1 票均明确只作历史。反事实、canonical、Not for 与审计协议未发现新分岔。
 - 结构怪味复扫：原三源 dual-write 已消失；剩余 live text／frozen history 双份是有意历史快照，不再承担同步 gate，未发现需继续删减项。
+
+## HANDOVER 状态同步复核
+
+- 评审范围：仅 `/home/xp/src/copilot-api-js/docs/plan/2026-07-27-inter-block-anchor-allocator/HANDOVER.md` 当前 20 行未提交 diff；不重审 RFC／plan／prompts 既有内容。
+- 当前仓库证据：审阅时 HEAD 为 `aa46f2a17bb7fec484e5c4fa9228400f3fe4d2bd`，非派活消息中的旧快照；目标文件为唯一指定 dirty path。
+
+- 命题 1（放行与路径）闭合：`d2e6d81c` 的提交内容明确把 HANDOVER／KICKOFF／cutover plan／prompts README 同步为“三层已评审放行、实施未开工、需新开工裁决”；六个承重路径（design、cutover-plan、traceability、prompts README、Commit -1 prompt、post-merge preflight）均存在。评审证据链分别已提交于 `6cfa0e89`、`bd25b847`、`528c1785`。prompts README `:19-31,35-47` 的表与 Mermaid DAG 均以 Commit -1 为严格串行起点。
+
+- 命题 2（P3M／旧 T4 漂移）闭合但发现仓库级既有漂移：当前 live SSOT `/home/xp/src/copilot-api-js/docs/DESIGN.md:75` 明确“下一步不是 P3M”，目标 HANDOVER 的 T4 修订也正确改为完成态；但另一份未归档 live handover `/home/xp/src/copilot-api-js/docs/plan/2026-07-27-handover-max-tokens-and-keepalive.md:10,16,110` 仍写“P3M 未启动／下一步=P3M”。同主题 README `/home/xp/src/copilot-api-js/docs/plan/2026-07-27-inter-block-anchor-allocator/README.md:3` 已明确 P3M M2～M4 被 command-algebra RFC supersede，故旧 max-tokens handover 是 stale consumer，不应反向推翻 DESIGN SSOT；应由 doc-writer 后续同步或归档。旧 `kickoff.md` 已有 superseded 横幅，不计 live 入口。
+
+- 命题 3（计划完成是否被扩大成实施完成）**不成立，且方向相反**：diff 没有声称实施完成；T4 的“完成”始终限定 plan + prompts 层。但 T1／line 28 把状态写成“尚待决定是否开工”已经落后于实际执行状态，见下一条 major。
+
+[major] `/home/xp/src/copilot-api-js/docs/plan/2026-07-27-inter-block-anchor-allocator/HANDOVER.md:28,87-92,149` — 新文案把“是否现在启动 Commit -1”写成当前唯一问题，但 Commit -1 已经在隔离 worktree 实质实施中 — 独立证据：分支／worktree `command-algebra-commit-minus-1` 存在，基于 `6e9e9439`，其后有完整实现提交链，当前 tip `743338cd`；相对 base 已改 18 文件、约 +3288/-42，含 `scripts/{capture,validate}-entry-evidence.ts` 与对应 tests。`docs/tmp/2026-08-06-command-algebra-commit-minus-1-progress-validator.md:23-30` 明记 T0.0e 已完成、backend 已绿，`:18-19` 只剩整合 review 与 post-merge；validator report `:17-19` 也记 C1-C11／EV-01～28 完成。故“实施未开工／是否启动”是 false-red：把正在进行的正确实施误判为未开始。修复建议：先定位并记录启动 Commit -1 的用户裁决／授权证据；若有授权，T1 改为“Commit -1 已开工，当前进行中，尚未合 master，下一门是 Commit -1 整合 review/merge”；若找不到授权，不能倒推为获批，应显式标“实施已发生但授权证据待核”，由用户裁决如何处置。无论哪种，不能保留“是否现在启动”。
+
+- 命题 4（是否已有授权／实现）部分可判：**Commit -1 实现已确定存在且进行中**；本轮仅凭 git／live progress 无法验证启动它的用户原话，因此“已有用户授权”仍是待验证事实，需 transcript／决策记录。实现事实本身已足以证否当前 T1。
+
+- 命题 5（T2/T3/T5/T6 是否误伤）闭合：按 section 边界从 HEAD 版与工作树版逐字比较，T2、T3、T5、T6 四节均 byte-identical；20 changed lines 只落在 line 28、T1、T4。开放项未被此次 diff 删除、放宽或误标完成。
+
+## Verdict
+
+**修复 major 后可合并。Blocker：0；Major：1；Minor：0。** 三处原定 live-doc 漂移的方向中，T4 与三层完成态正确，T2/T3/T5/T6 无误伤；但执行状态在撰写期间已变化，T1 与 line 28 必须按当前 Commit -1 进行中事实重写。
+
+## 结构怪味扫描
+
+- `/home/xp/src/copilot-api-js/docs/plan/2026-07-27-handover-max-tokens-and-keepalive.md:10,16,110` — 怪味：两个 live handover 对同一“下一步”事实双写且一份陈旧；处置：不在本轮修改，建议归档旧 handover或改为只指向 DESIGN/HANDOVER SSOT，理由是当前 diff 被限定为目标文件 20 行。
+
+## HANDOVER 状态同步复核 r2
+
+- 评审范围：仅四份当前未提交 live-doc diff 与其状态／授权证据；不重审 Commit -1 实施代码。
+
+- 当前实现状态闭合：复核时 `/home/xp/src/copilot-api-js/.worktree/command-algebra-commit-minus-1` 为干净 worktree，branch/tip=`command-algebra-commit-minus-1`/`e1153578475599b937aca3e05dc4c399bed3a473`，base=`6e9e9439b10fd7031f774c1441e9ab628946a28b`，tip 尚非 master 祖先；相对 base 为 18 files、+3316/-42。T0.0a/b/c 的 task-review 完成记录在 `5b305ed3`；T0.0e 经多轮原 reviewer 复审，`743338cd` 获明确 safe-to-integrate，后续 timeout split `e1153578` 也获独立批准。focused 32 pass、typecheck、backend 16 shards/5460 pass 的最新证据在 `docs/tmp/2026-08-06-command-algebra-commit-minus-1-validator-report.md:9-19`。尚未完成的确是 runner/producer/validator 全分支整合门、未卷入 whole-branch review 与 merge；review package 已生成，但随后 backend 暴露 shutdown flaky，整体验收仍在处理。post-merge T0.0f/T0.0d 尚未开始。因此四入口对“当前相位”的主结论准确，未把整相位写成完成。
+
+- 授权链闭合，且无需从旧方案泛化：源 transcript `/home/xp/.claude/projects/-home-xp-src-copilot-api-js/046d7295-e5ce-470b-a284-c721c6ce1cb8.jsonl:6910-6912` 是直接针对“三层计划已全部放行，现在是否开始 Commit -1 实施？”的 AskUserQuestion；用户选择逐字为“现在开始 Commit -1（推荐）”。这比 HANDOVER T1 当前列出的间接四跳更强，直接覆盖当前 Commit -1，不存在把原 P3M 授权扩大到新工作的问题。建议把 HANDOVER `:88` 的授权链补上这条 2026-08-05 直接裁决，并删去或降级 “retry and continue” 作为授权证据——后者只是继续当前 task 的操作指令，不如直接选择清晰；但现有结论仍事实成立，定为 minor 而非 major。
+
+[minor] `/home/xp/src/copilot-api-js/docs/plan/2026-07-27-inter-block-anchor-allocator/HANDOVER.md:3,89` — “T0.0a/b/c/e 实现与各自 task review 已完成”略强于可见证据的分层 — a/b/c 有 `5b305ed3` 明确 runner/producer tasks reviewed；e 有完整 validator task review 链并最终批准。因而“各 task review 已完成”在 task 级别成立。不过当前进度文件 `/home/xp/src/copilot-api-js/.worktree/command-algebra-commit-minus-1/docs/tmp/2026-08-06-command-algebra-commit-minus-1-progress-validator.md:18` 仍把“全部 runner/producer gate 的整合验证、独立 task review，以及 test:backend”列为剩余项，且 source session 随后因整合 backend 的 shutdown flaky 继续调试。读者可能把“各 task review”误读成“整合 review”。修复建议：改成“runner/producer task review 与 validator task review 已完成；跨 task 整合 review 未完成”，与下一句严格分层。
+
+- 四入口一致性闭合：HANDOVER `:1-3,18-24,28,87-91,146-149`、KICKOFF `:13,24`、DESIGN `:75` 均写 Commit -1 进行中，下一门为整合验证／未卷入 review／merge 得 A，随后才 post-merge preflight；没有一处声称 A 已产生或 T0.0f/T0.0d 已开始。旧 max_tokens handover `:3-4,10,16,110` 以显眼 superseded 横幅、历史快照标签及当前 HANDOVER 指针封口，搜索仍会命中 P3M，但上下文明确禁止执行，不再构成误导性 live 入口。
+
+- T2/T3/T5/T6 未误伤：按 section 边界与 HEAD 版逐字比较，四节均 identical。
+
+## Verdict
+
+**可提交。Blocker：0；Major：0；Minor：2。** 两条 minor 均是证据表达精度：T1 应引用直接的 Commit -1 AskUser 裁决；task review 与整合 review 应分层写明。若项目坚持 0 minor 文档收口，改这两句即可；它们不改变当前执行状态、授权或下一门。
+
+## 结构怪味扫描
+
+- 四入口现在形成 DESIGN→HANDOVER→KICKOFF 单向当前态，旧 max_tokens handover 已降历史指针；未发现继续双写“下一步”的活 SSOT。
+
+### HANDOVER 状态同步复核 r2 最终确认
+
+- **Verdict：可提交。Blocker：0；Major：0；Minor：0。**
+- 当前状态断言准确：复核时 Commit -1 tip=`e1153578475599b937aca3e05dc4c399bed3a473`、base=`6e9e9439b10fd7031f774c1441e9ab628946a28b`、worktree clean、18 files／+3316/-42，且 tip 尚未进入 master。runner/producer 与 validator 各自 task review 已完成；跨 task 整合验证／整相位独立 review／merge 仍未完成。
+- 直接授权证据准确：源 transcript `046d7295-e5ce-470b-a284-c721c6ce1cb8:6910-6912` 的结构化 AskUserQuestion 明确选择“现在开始 Commit -1（推荐）”。
+- 四入口一致：DESIGN、HANDOVER、KICKOFF 均指向 Commit -1 进行中及整合→review→merge 得 A；旧 max_tokens handover 已显式 superseded 并只保留历史 P3M 快照，不再是执行入口。
+- HANDOVER 硬事实表已修正 M1=`8125f123` landed master，并把当前 master 真相与 feature 历史计数分表；T2/T3/T5/T6 仍与 HEAD 逐字一致。四文件 `git diff --check` 通过。

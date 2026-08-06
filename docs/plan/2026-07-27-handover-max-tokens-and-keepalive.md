@@ -1,19 +1,19 @@
 # 交接：max_tokens 续传 + client↔proxy keepalive（2026-07-27）
 
-> 接手方式：**先读本文件**，再按「下一步（严格顺序）」执行。权威文档链接见文末。
-> 本文件只记**当前真相 + 顺序**；细节一律指向权威文档，不重复。
+> **状态：已被后续交接取代（superseded）**。本文件冻结 2026-08-02 前后的历史，不再是当前执行入口。**当前真相源**：`docs/DESIGN.md:75`；**当前接手入口**：`docs/plan/2026-07-27-inter-block-anchor-allocator/HANDOVER.md`。M1 已合 master，旧 P3M M2～M4 已被 generation emission command algebra cutover 取代，Commit -1 正在隔离 worktree 实施。**不要按本文件的「下一步」开工。**
+> 以下正文保留历史语境与当时证据，不追溯改写为当前态。
 
 ---
 
 ## 一句话现状
 
-`max_tokens` 续传特性的 **spec/plan/P0 已 landed**；推进 P1 时挖出一条**保活缺陷链**（我方吞空 delta → CC 300s watchdog 掐断），已修根因并落地 pre-content 保活 + **P6 心跳死亡修复**；剩余 **inter-block 保活缺口**需要方案 A（接线 multi-anchor allocator），其 TDD plan 经**六轮异模型审至零 blocker**、已合并 master。**方案 A 的 P1+P2 已于 2026-08-02 合并 master（`88e47cef`），经四轮异模型审查，P3M 未启动。** max_tokens 的 P1 本身未被阻塞，但**块级默认翻转**的硬前置是方案 A。
+`max_tokens` 续传特性的 **spec/plan/P0 已 landed**；推进 P1 时挖出一条**保活缺陷链**（我方吞空 delta → CC 300s watchdog 掐断），已修根因并落地 pre-content 保活 + **P6 心跳死亡修复**；剩余 **inter-block 保活缺口**需要方案 A（接线 multi-anchor allocator），其 TDD plan 经**六轮异模型审至零 blocker**、已合并 master。**方案 A 的 P1+P2 已于 2026-08-02 合并 master（`88e47cef`）；本句原写「P3M 未启动」，那是当时快照，现已 superseded：M1 后续合 master，M2～M4 攀入 command algebra cutover，当前状态只看顶部指向的 HANDOVER。** max_tokens 的 P1 本身未被阻塞，但**块级默认翻转**的硬前置是方案 A。
 
-## 方案 A 实施进度（活状态，接手先看这里）
+## 方案 A 实施进度（历史快照，当前接手不要看这里）
 
 **P1 + P2 已 landed master `88e47cef`**（2026-08-02）。分支 `feat/anchor-allocator-p1p2` 已合并，worktree `.worktrees/alloc-p1p2` 可清理。
 
-**下一步 = P3M（M1–M8，唯一硬序：M6 晚于 M2–M4）→ P7 → P8。**
+**历史顺序（冻结于 2026-08-02，已 superseded）**：当时下一步写作 P3M（M1～M8，M6 晚于 M2～M4）→ P7 → P8；当前不要照此执行，见顶部 HANDOVER 指针。
 
 ### 四轮异模型审查的账（每轮都抓到全套件抓不到的东西）
 
@@ -107,7 +107,7 @@ reviewer 曾报「7 轮里 2 轮出现成员固定的 17 条 anchor 失败簇」
 ## 下一步（严格顺序，用户 2026-07-27 指定「按顺序完成」）
 
 1. ~~**P6：心跳死亡修复**~~ ✅ **已 landed master `2e1041e8`**（含异模型合并态审查 0 blocker）。顺带修了捕获脚本的进程树泄漏（`54a4281d`）。
-2. **方案 A 全相位实施**：~~P1 + P2~~ ✅ **已 landed master `88e47cef`**（2026-08-02，四轮异模型审查）。**下一步 = P3M（M1–M8，唯一硬序：M6 晚于 M2–M4）** → P7 → P8。两条硬前置见上方「交给 P3M 的两条硬前置」。
+2. **方案 A 全相位实施**：~~P1 + P2~~ ✅ **已 landed master `88e47cef`**（2026-08-02，四轮异模型审查）。**历史快照：原下一步为 P3M（M1～M8），现已 superseded；M1 已合 master，M2～M4 由 command algebra cutover 承接** → P7 → P8 的剩余依赖须按当前 HANDOVER 重锚。两条硬前置见上方「交给 P3M 的两条硬前置」。
 3. **Anthropic 块级默认翻转**（姊妹 spec §6.3）——硬前置 = 方案 A 落地。
 4. **P1：max_tokens 成功终端截获续写**（`docs/plan/2026-07-22-max-tokens-continuation/plan-1-anthropic-continuation.md`）。
 
