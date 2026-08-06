@@ -24,6 +24,13 @@ import type { Database } from "../sqlite/connection"
 
 import { getDatabase } from "../sqlite/connection"
 import { recordToEntrySummary } from "./projection"
+import {
+  //
+  backfillExistingSummaryRows,
+  getSummaryProjectionReadiness,
+  markSummaryProjectionPoisoned,
+  tryMarkSummaryProjectionReady,
+} from "./summary-store"
 
 const FORMAT_VERSION = 2
 const SCHEMA_VERSION = "5"
@@ -57,6 +64,9 @@ export interface V3StoreStatus {
   failedOperations: number
   conflicts: number
   summaryBacklog: number
+  summaryProjectionReady: boolean
+  summaryProjectionPending: number
+  summaryProjectionPoisoned: number
   lastError?: string
 }
 
@@ -187,6 +197,9 @@ let status: V3StoreStatus = {
   failedOperations: 0,
   conflicts: 0,
   summaryBacklog: 0,
+  summaryProjectionReady: false,
+  summaryProjectionPending: 0,
+  summaryProjectionPoisoned: 0,
 }
 
 export const V3_SCHEMA_SQL = `
@@ -940,7 +953,16 @@ export function getV3StoreStatus(): V3StoreStatus {
   const db = getDatabase()
   ensureV3Schema(db)
   const summaryBacklog = (db.prepare("SELECT COUNT(*) AS n FROM v3_summary_backlog").get() as { n: number }).n
-  return { ...status, pendingOperations: pending.length, pendingBytes, summaryBacklog }
+  const projection = getSummaryProjectionReadiness(db)
+  return {
+    ...status,
+    pendingOperations: pending.length,
+    pendingBytes,
+    summaryBacklog,
+    summaryProjectionReady: projection.ready,
+    summaryProjectionPending: projection.pending,
+    summaryProjectionPoisoned: projection.poisoned,
+  }
 }
 
 export function getV3StoredOperation(operationId: string, db: Database = getDatabase()): V3StoredOperation | undefined {
@@ -1025,9 +1047,17 @@ export function startV3SummaryBackfill(db: Database = getDatabase(), batchSize =
   summaryBackfillStop = false
   summaryBackfill = (async () => {
     while (!summaryBackfillStop) {
+      const inserted = backfillExistingSummaryRows(db, batchSize)
       const rows = db
         .prepare(
-          "SELECT operation_id,manifest_gz,pinned,ended_at,timing_source FROM v3_operations WHERE summary_json IS NULL AND operation_id NOT IN (SELECT operation_id FROM v3_summary_backlog) ORDER BY created_at,operation_id LIMIT ?",
+          `SELECT o.operation_id,o.manifest_gz,o.pinned,o.ended_at,o.timing_source
+           FROM v3_operations o
+           JOIN v3_operation_summaries s ON s.operation_id=o.operation_id
+           WHERE o.summary_json IS NULL
+             AND s.projection_status='pending'
+             AND o.operation_id NOT IN (SELECT operation_id FROM v3_summary_backlog)
+           ORDER BY o.created_at,o.operation_id
+           LIMIT ?`,
         )
         .all(batchSize) as Array<{
         operation_id: string
@@ -1036,7 +1066,6 @@ export function startV3SummaryBackfill(db: Database = getDatabase(), batchSize =
         ended_at: number | null
         timing_source: V3TimingSource
       }>
-      if (rows.length === 0) return
       for (const row of rows) {
         try {
           const stored = {
@@ -1050,14 +1079,14 @@ export function startV3SummaryBackfill(db: Database = getDatabase(), batchSize =
             row.operation_id,
           )
         } catch (error) {
+          const reason = error instanceof Error ? error.message : String(error)
           consola.error(`[history/v3] summary backfill failed for ${row.operation_id}`, error)
-          db.prepare("INSERT OR REPLACE INTO v3_summary_backlog(operation_id,reason,updated_at) VALUES(?,?,?)").run(
-            row.operation_id,
-            error instanceof Error ? error.message : String(error),
-            Date.now(),
-          )
+          db.prepare("INSERT OR REPLACE INTO v3_summary_backlog(operation_id,reason,updated_at) VALUES(?,?,?)").run(row.operation_id, reason, Date.now())
+          markSummaryProjectionPoisoned(db, row.operation_id, reason)
         }
       }
+      const readiness = tryMarkSummaryProjectionReady(db)
+      if (readiness.ready || (inserted === 0 && rows.length === 0)) return
       await new Promise<void>((resolve) => setTimeout(resolve, 0))
     }
   })().finally(() => {
@@ -1315,5 +1344,15 @@ export function resetV3WriterForTests(): void {
   summaryBackfillStop = true
   summaryBackfill = null
   commitFailureInjectorForTests = null
-  status = { pendingOperations: 0, pendingBytes: 0, persistedOperations: 0, failedOperations: 0, conflicts: 0, summaryBacklog: 0 }
+  status = {
+    pendingOperations: 0,
+    pendingBytes: 0,
+    persistedOperations: 0,
+    failedOperations: 0,
+    conflicts: 0,
+    summaryBacklog: 0,
+    summaryProjectionReady: false,
+    summaryProjectionPending: 0,
+    summaryProjectionPoisoned: 0,
+  }
 }

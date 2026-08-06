@@ -26,6 +26,7 @@ import { getRawCaptureStatus } from "~/lib/history/raw/manager"
 import { pingHistorySearchUdsClient } from "~/lib/history/search/uds-client"
 import { getHistorySearchClient } from "~/lib/history/state"
 import { listInFlightEntries } from "~/lib/history/store"
+import { getV3StoreStatus } from "~/lib/history/v3/store"
 import { peekUpstreamWsManager } from "~/lib/openai/upstream-ws"
 import {
   //
@@ -122,8 +123,15 @@ statusRoutes.openapi(getStatusRoute, async (c) => {
   const upstreamWs = peekUpstreamWsManager()
 
   let historyEntryCount = 0
+  let summaryProjection = { ready: false, pending: 0, poisoned: 0 }
   try {
     historyEntryCount = getHistorySummaries({ operationKind: "all", limit: 1 }).total
+    const historyStatus = getV3StoreStatus()
+    summaryProjection = {
+      ready: historyStatus.summaryProjectionReady,
+      pending: historyStatus.summaryProjectionPending,
+      poisoned: historyStatus.summaryProjectionPoisoned,
+    }
   } catch {
     // DB not opened yet
   }
@@ -243,6 +251,9 @@ statusRoutes.openapi(getStatusRoute, async (c) => {
         historyBackend: "sqlite",
         historyEntryCount,
         inFlightCount,
+        summaryProjectionReady: summaryProjection.ready,
+        summaryProjectionPending: summaryProjection.pending,
+        summaryProjectionPoisoned: summaryProjection.poisoned,
       },
 
       shutdown: {

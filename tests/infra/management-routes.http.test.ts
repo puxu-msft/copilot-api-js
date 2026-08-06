@@ -187,6 +187,14 @@ interface StatusResponseBody {
   }
   transport: TransportStatusSnapshot
   history_search: { enabled: boolean; reachable?: boolean; latencyMs?: number; error?: string }
+  memory: {
+    historyBackend: string
+    historyEntryCount: number
+    inFlightCount: number
+    summaryProjectionReady: boolean
+    summaryProjectionPending: number
+    summaryProjectionPoisoned: number
+  }
 }
 
 function createHistoryEntry(overrides?: {
@@ -325,6 +333,12 @@ describe("management and history HTTP routes", () => {
       resetDate: "2026-04-01",
     })
     expect(body.activeRequests.count).toBe(0)
+    expect(body.memory).toMatchObject({
+      historyBackend: "sqlite",
+      summaryProjectionReady: false,
+      summaryProjectionPending: 0,
+      summaryProjectionPoisoned: 0,
+    })
     // history_search: the sidecar is an independently-started service (Phase 3′) --
     // in this test environment nothing is listening on PATHS.HISTORY_SEARCH_SOCKET,
     // so the main process's own lightweight reachability probe must honestly report

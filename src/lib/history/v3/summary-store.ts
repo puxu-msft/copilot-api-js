@@ -1,3 +1,14 @@
+import type { Database } from "~/lib/history/sqlite/connection"
+
+import {
+  //
+  deleteMeta,
+  getMeta,
+  setMeta,
+} from "~/lib/history/sqlite/meta"
+
+export const SUMMARY_PROJECTION_READY_KEY = "summary_projection_ready"
+
 export interface SummaryProjectionField {
   column: string
   sqlType: string
@@ -56,6 +67,11 @@ const readyAssignments = SUMMARY_PROJECTION_FIELDS.filter(
   .map((field) => `${field.column}=${field.source("NEW")}`)
   .join(",")
 
+const historicalProjectionValues = SUMMARY_PROJECTION_FIELDS.map((field) => field.source("v3_operations")).join(",")
+const projectionEquality = SUMMARY_PROJECTION_FIELDS.filter((field) => !["operation_id", "projection_error", "projection_status"].includes(field.column))
+  .map((field) => `s.${field.column} IS (${field.source("o")})`)
+  .join(" AND ")
+
 export const SUMMARY_PROJECTION_MIGRATION_SQL = `
 CREATE TABLE IF NOT EXISTS v3_operation_summaries (
   ${SUMMARY_PROJECTION_FIELDS.map((field) => `${field.column} ${field.sqlType}`).join(",\n  ")}
@@ -90,3 +106,99 @@ BEGIN
   UPDATE v3_operation_summaries SET pinned=NEW.pinned WHERE operation_id=NEW.operation_id;
 END;
 `
+
+export interface SummaryProjectionReadiness {
+  ready: boolean
+  pending: number
+  poisoned: number
+}
+
+export function getSummaryProjectionReadiness(db: Database): SummaryProjectionReadiness {
+  const table = db.prepare("SELECT 1 FROM sqlite_schema WHERE type='table' AND name='v3_operation_summaries'").get()
+  if (!table) return { ready: false, pending: 0, poisoned: 0 }
+  const statuses = db
+    .prepare(
+      `SELECT
+         SUM(CASE WHEN projection_status='pending' THEN 1 ELSE 0 END) AS pending,
+         SUM(CASE WHEN projection_status='poisoned' THEN 1 ELSE 0 END) AS poisoned
+       FROM v3_operation_summaries`,
+    )
+    .get() as { pending: number | null; poisoned: number | null }
+  return {
+    ready: getMeta(db, SUMMARY_PROJECTION_READY_KEY) === "1",
+    pending: statuses.pending ?? 0,
+    poisoned: statuses.poisoned ?? 0,
+  }
+}
+
+export function backfillExistingSummaryRows(db: Database, limit: number): number {
+  const result = db
+    .prepare(
+      `INSERT OR IGNORE INTO v3_operation_summaries(${projectionColumns})
+       SELECT ${historicalProjectionValues}
+       FROM v3_operations
+       WHERE NOT EXISTS (
+         SELECT 1 FROM v3_operation_summaries
+         WHERE v3_operation_summaries.operation_id=v3_operations.operation_id
+       )
+       ORDER BY created_at,operation_id
+       LIMIT ?`,
+    )
+    .run(limit)
+  return result.changes
+}
+
+export function markSummaryProjectionPoisoned(db: Database, operationId: string, reason: string): void {
+  db.prepare(
+    `UPDATE v3_operation_summaries
+     SET projection_status='poisoned',projection_error=?
+     WHERE operation_id=? AND projection_status<>'ready'`,
+  ).run(reason, operationId)
+}
+
+export function tryMarkSummaryProjectionReady(db: Database): SummaryProjectionReadiness {
+  db.exec("BEGIN IMMEDIATE")
+  try {
+    const divergence = db
+      .prepare(
+        `SELECT COUNT(*) AS n FROM (
+           SELECT o.operation_id
+           FROM v3_operations o
+           LEFT JOIN v3_operation_summaries s ON s.operation_id=o.operation_id
+           WHERE s.operation_id IS NULL OR NOT (${projectionEquality})
+           UNION ALL
+           SELECT s.operation_id
+           FROM v3_operation_summaries s
+           LEFT JOIN v3_operations o ON o.operation_id=s.operation_id
+           WHERE o.operation_id IS NULL
+         )`,
+      )
+      .get() as { n: number }
+    const statuses = db
+      .prepare(
+        `SELECT
+           SUM(CASE WHEN projection_status='pending' THEN 1 ELSE 0 END) AS pending,
+           SUM(CASE WHEN projection_status='poisoned' THEN 1 ELSE 0 END) AS poisoned,
+           SUM(CASE WHEN projection_status<>'ready' THEN 1 ELSE 0 END) AS not_ready
+         FROM v3_operation_summaries`,
+      )
+      .get() as { pending: number | null; poisoned: number | null; not_ready: number | null }
+    const pending = statuses.pending ?? 0
+    const poisoned = statuses.poisoned ?? 0
+    const ready = divergence.n === 0 && (statuses.not_ready ?? 0) === 0
+    if (ready) {
+      if (getMeta(db, SUMMARY_PROJECTION_READY_KEY) !== "1") setMeta(db, SUMMARY_PROJECTION_READY_KEY, "1")
+    } else {
+      deleteMeta(db, SUMMARY_PROJECTION_READY_KEY)
+    }
+    db.exec("COMMIT")
+    return { ready, pending, poisoned }
+  } catch (error) {
+    try {
+      db.exec("ROLLBACK")
+    } catch {
+      // Preserve the gate error when SQLite already rolled the transaction back.
+    }
+    throw error
+  }
+}
