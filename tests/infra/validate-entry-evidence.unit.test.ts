@@ -761,6 +761,65 @@ describe("entry evidence validator C7-C9", () => {
     }
   })
 
+  test("maps per-run directory artifacts to their stable C7/C8 boundaries", () => {
+    for (const [field, condition, message] of [
+      ["junit_artifacts", "C7", "JUnit file identity mismatch"],
+      ["runtime_identity", "C7", "JUnit file identity mismatch"],
+      ["skipped_multiset", "C8", "skipped identity multiset mismatch"],
+    ] as const) {
+      const f = fixture()
+      try {
+        mutateManifest(f, (manifest) => {
+          const run = (manifest.runs as Array<Record<string, unknown>>)[0]
+          if (field === "junit_artifacts") (run[field] as Array<Record<string, unknown>>)[0].path = run.artifact_dir
+          else (run[field] as Record<string, unknown>).path = run.artifact_dir
+        })
+        const result = invoke(f)
+        expect(result.exitCode).toBe(6)
+        expect(error(result)).toBe(`FAIL ${condition}: ${message}\n`)
+        expect(existsSync(f.receipt)).toBe(false)
+      } finally {
+        cleanup(f)
+      }
+    }
+  })
+
+  test("maps malformed JUnit content to C7", () => {
+    const f = fixture()
+    try {
+      const junitPath = path.join(f.out, "run-1", "shard-01.xml")
+      writeFileSync(junitPath, "<testsuite")
+      mutateManifest(f, (manifest) => {
+        ;((manifest.runs as Array<Record<string, unknown>>)[0].junit_artifacts as Array<Record<string, unknown>>)[0].sha256 = hash(junitPath)
+      })
+      const result = invoke(f)
+      expect(result.exitCode).toBe(6)
+      expect(error(result)).toBe("FAIL C7: JUnit file identity mismatch\n")
+      expect(existsSync(f.receipt)).toBe(false)
+    } finally {
+      cleanup(f)
+    }
+  })
+
+  test("maps unreadable top-level artifact directories to C10", () => {
+    for (const field of ["disk_manifest", "runtime_identity_manifest", "skipped_multiset"] as const) {
+      const f = fixture()
+      try {
+        mutateManifest(f, (manifest) => {
+          ;(manifest[field] as Record<string, unknown>).path = f.out
+        })
+        const result = invoke(f)
+        expect(result.exitCode).toBe(7)
+        expect(error(result)).toBe(
+          `FAIL C10: ${field === "disk_manifest" ? "disk manifest" : field === "runtime_identity_manifest" ? "runtime identity manifest" : "skipped multiset"} hash mismatch\n`,
+        )
+        expect(existsSync(f.receipt)).toBe(false)
+      } finally {
+        cleanup(f)
+      }
+    }
+  })
+
   test("accepts a symlink spelling shared by raw log and manifest artifact_dir", () => {
     const f = fixture()
     try {

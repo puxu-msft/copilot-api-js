@@ -21,11 +21,11 @@ session_id: 046d7295-e5ce-470b-a284-c721c6ce1cb8
 ## 当前在途
 
 - T0.0e 已完成：C1～C11 从 pointer、manifest、raw logs/JUnit/artifacts 和 ENTRY_SHA objects 独立验证；EV-01～EV-28 全部具名 mutation、正样本 receipt v1 与 receipt collision rc=8 均覆盖。
-- reviewer finding ① C7 已处置：每 run 严格验证完整 artifact schema、canonical artifact_dir/log 绑定、目录 JUnit 枚举、containment、basename order 与 raw SHA。
+- reviewer finding ① C7/C8 unreadable artifact 边界已处置：每 run 严格验证完整 artifact schema、canonical artifact_dir/log 绑定、目录 JUnit 枚举、containment、basename order 与 raw SHA；JUnit/runtime identity 的 directory/hash/read/parse 失败稳定 rc=6/C7，skipped multiset 对应失败稳定 rc=6/C8，均不会泄漏 rc=1。C10 aggregate artifact 的 directory/hash/read 失败稳定 rc=7/C10。已覆盖三种 per-run directory shape、malformed JUnit 与三种 top-level directory shape。
 - reviewer finding ② C7/C8 artifact trust 已补强：缺失 artifact_dir、JUnit、runtime identity 一律 rc=6/C7；缺失 skipped multiset 一律 rc=6/C8，均不泄漏为 rc=1。runtime/skipped JSON fail-closed，testcase/suite discriminated multiset 使用严格 discriminated identity schema 与 UTF-8 bytewise key 比较；非 ASCII reorder false-red 正控、multiplicity 负控、六类 malformed union arm 负控已绿。
 - reviewer finding ③ C9 已处置：manifest top-level intents、per-run verdict、raw log、ENTRY_SHA/frozen command 三方逐 run 对账，错误类型和 artifact_dir 分歧均稳定 fail C9。
 - reviewer finding ④ C11 已处置：baseline 以 binary-safe git object 原始 bytes、fatal UTF-8 和 canonical parse 验证；执行 validator 与其三个 runtime helper（receipt/schema/JUnit parser）各自 canonical path/blob 必等于 ENTRY_SHA object。静态 runtime relative-import 集合必须精确等于 bound dependency set，因而新增 runtime import、缺失 ENTRY dependency object、任何 helper workspace bytes 篡改均在 receipt 前稳定 fail C11。fixture 覆盖 baseline final-newline、执行 validator 与每个 helper source 篡改、以及 import-closure drift。
-- reviewer finding ⑤ 已处置：EV runtime registry 从 frozen plan 解析 28 行、每次 `expectEv` 成功后登记；unfiltered 23-pass run 的 afterAll 输出 28-ID reconciliation 四行，含 literal A2/P2 graph EV-27。
+- reviewer finding ⑤ 已处置：EV runtime registry 从 frozen plan 解析 28 行、每次 `expectEv` 成功后登记；unfiltered 26-pass run 的 afterAll 输出 28-ID reconciliation 四行，含 literal A2/P2 graph EV-27。
 - validator 成功仅在 C1～C11 全绿后调用 `writeReceiptAtomically`；receipt 严格 v1 字段与 stdout path/hash 已由合成 fixture 断言。artifact_dir 的 raw log/manifest 字符串相等先于 canonical containment；同一绝对 symlink spelling 指向 TREE 外真实 artifact 目录的正样本已生成 green receipt。C1～C11 仅用 `/tmp` synthetic A/P/15 logs/JUnit/baseline，未消费 future real A/P。
 
 ## 在途意图

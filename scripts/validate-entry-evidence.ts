@@ -121,6 +121,20 @@ function isSha(value: unknown, length: number): value is string {
 function sha256(filePath: string): string {
   return createHash("sha256").update(readFileSync(filePath)).digest("hex")
 }
+function hashMatches(filePath: string, expected: string): boolean {
+  try {
+    return sha256(filePath) === expected
+  } catch {
+    return false
+  }
+}
+function readUtf8(filePath: string): string | undefined {
+  try {
+    return readFileSync(filePath, "utf8")
+  } catch {
+    return undefined
+  }
+}
 function logField(log: string, name: string): string | undefined {
   return new RegExp(`^${name}=([^\\n]+)$`, "m").exec(log)?.[1]
 }
@@ -308,17 +322,19 @@ function parseRunArtifacts(
   if (
     new Set(paths).size !== paths.length ||
     names.some((name, index) => index > 0 && Buffer.from(names[index - 1]).compare(Buffer.from(name)) >= 0) ||
-    resolvedJunit.some((artifact) => !artifactUnder(artifact.path, artifactDir) || !existsSync(artifact.path) || sha256(artifact.path) !== artifact.sha256) ||
+    resolvedJunit.some(
+      (artifact) => !artifactUnder(artifact.path, artifactDir) || !existsSync(artifact.path) || !hashMatches(artifact.path, artifact.sha256),
+    ) ||
     !artifactUnder(runtimeArtifact.path, artifactDir) ||
     !existsSync(runtimeArtifact.path) ||
-    sha256(runtimeArtifact.path) !== runtimeArtifact.sha256
+    !hashMatches(runtimeArtifact.path, runtimeArtifact.sha256)
   )
     fail(7, "JUnit file identity mismatch", 6)
   if (
     !skippedArtifact ||
     !artifactUnder(skippedArtifact.path, artifactDir) ||
     !existsSync(skippedArtifact.path) ||
-    sha256(skippedArtifact.path) !== skippedArtifact.sha256
+    !hashMatches(skippedArtifact.path, skippedArtifact.sha256)
   )
     fail(8, "skipped identity multiset mismatch", 6)
   let actualJunit: Array<string>
@@ -352,9 +368,11 @@ if (git(options.tree, ["merge-base", "--is-ancestor", options.entrySha, options.
   fail(4, "ENTRY_SHA is not an ancestor of POINTER_SHA", 3)
 if (canonicalInside(pointer.manifestPath, options.tree)) fail(5, "evidence manifest must be outside TREE", 4)
 if (!existsSync(pointer.manifestPath)) fail(5, "evidence manifest missing", 4)
-if (sha256(pointer.manifestPath) !== pointer.manifestSha) fail(5, "evidence manifest hash mismatch", 4)
+if (!hashMatches(pointer.manifestPath, pointer.manifestSha)) fail(5, "evidence manifest hash mismatch", 4)
 if (canonicalInside(options.receiptOut, options.tree)) cliFail()
-const runs = parseManifest(readFileSync(pointer.manifestPath, "utf8"))
+const manifestRaw = readUtf8(pointer.manifestPath)
+if (manifestRaw === undefined) fail(5, "evidence manifest hash mismatch", 4)
+const runs = parseManifest(manifestRaw)
 if (
   runs.length !== 15 ||
   !runs
@@ -366,13 +384,23 @@ if (
 const canonicalLogPaths: Array<string> = []
 for (const run of runs) {
   if (!existsSync(run.log_path)) fail(6, "run log missing", 5)
-  const canonicalLogPath = realpathSync(run.log_path)
+  let canonicalLogPath: string
+  try {
+    canonicalLogPath = realpathSync(run.log_path)
+  } catch {
+    fail(6, "run log missing", 5)
+  }
   canonicalLogPaths.push(canonicalLogPath)
-  if (sha256(canonicalLogPath) !== run.log_sha256) fail(6, "run log hash mismatch", 5)
+  if (!hashMatches(canonicalLogPath, run.log_sha256)) fail(6, "run log hash mismatch", 5)
 }
 if (new Set(canonicalLogPaths).size !== runs.length) fail(6, "run log paths are not unique", 5)
 
-const manifest = JSON.parse(readFileSync(pointer.manifestPath, "utf8")) as Record<string, unknown>
+let manifest: Record<string, unknown>
+try {
+  manifest = JSON.parse(manifestRaw) as Record<string, unknown>
+} catch {
+  fail(5, "evidence manifest hash mismatch", 4)
+}
 if (typeof manifest.canonical_command !== "string" || manifest.canonical_command !== "bun scripts/parallel-test.ts unit it http")
   fail(9, "canonical command mismatch", 7)
 if (typeof manifest.evidence_timing !== "string" || manifest.evidence_timing !== "closeout") fail(9, "evidence timing mismatch", 7)
@@ -393,14 +421,31 @@ for (const run of manifest.runs as Array<Record<string, unknown>>) {
   const log = readFileSync(run.log_path as string, "utf8")
   if (typeof run.artifact_dir !== "string" || logField(log, "artifact_dir") !== run.artifact_dir) fail(9, "artifact directory mismatch", 7)
   const artifacts = parseRunArtifacts(run, options.tree)
-  const junit = artifacts.junit.map((artifact) => parseJUnit(readFileSync(artifact.path, "utf8"), options.tree))
+  let junit: JUnitIdentities[]
+  try {
+    junit = artifacts.junit.map((artifact) => {
+      const raw = readUtf8(artifact.path)
+      if (raw === undefined) throw new Error("JUnit unreadable")
+      return parseJUnit(raw, options.tree)
+    })
+  } catch {
+    fail(7, "JUnit file identity mismatch", 6)
+  }
   const files = [...new Set(junit.flatMap((item) => item.files))].sort((left, right) => Buffer.from(left).compare(Buffer.from(right)))
   if (JSON.stringify(files) !== JSON.stringify(baseline.files)) fail(7, "JUnit file identity mismatch", 6)
   let runtime: unknown
+  try {
+    const raw = readUtf8(artifacts.runtime.path)
+    if (raw === undefined) throw new Error("runtime identity unreadable")
+    runtime = JSON.parse(raw)
+  } catch {
+    fail(7, "JUnit file identity mismatch", 6)
+  }
   let skipped: unknown
   try {
-    runtime = JSON.parse(readFileSync(artifacts.runtime.path, "utf8"))
-    skipped = JSON.parse(readFileSync(artifacts.skipped.path, "utf8"))
+    const raw = readUtf8(artifacts.skipped.path)
+    if (raw === undefined) throw new Error("skipped multiset unreadable")
+    skipped = JSON.parse(raw)
   } catch {
     fail(8, "skipped identity multiset mismatch", 6)
   }
@@ -459,7 +504,7 @@ for (const [label, artifact] of [
   )
     fail(10, `${label} hash mismatch`, 7)
   const { path: artifactPath, sha256: artifactHash } = artifact as { path: string; sha256: string }
-  if (!artifactPath || !artifactHash || !existsSync(artifactPath) || sha256(artifactPath) !== artifactHash) fail(10, `${label} hash mismatch`, 7)
+  if (!artifactPath || !artifactHash || !existsSync(artifactPath) || !hashMatches(artifactPath, artifactHash)) fail(10, `${label} hash mismatch`, 7)
 }
 const entryBaselinePath = "tests/infra/entry-test-discovery-baseline.json"
 if (manifest.discovery_baseline_path !== entryBaselinePath) fail(11, "discovery baseline path differs from entry", 7)
