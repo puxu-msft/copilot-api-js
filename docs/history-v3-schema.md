@@ -1,6 +1,6 @@
 # History V3 SQLite schema
 
-> **状态：活文档。** 本文描述当前生产代码实际创建和读取的 History V3 SQLite schema。Canonical floor 的 DDL 单一事实源是 [`src/lib/history/v3/store.ts`](../src/lib/history/v3/store.ts) 的 `V3_SCHEMA_SQL`；summary projection 由 [`src/lib/history/v3/summary-store.ts`](../src/lib/history/v3/summary-store.ts) 的 `SUMMARY_PROJECTION_FIELDS`／`SUMMARY_PROJECTION_MIGRATION_SQL` 经 forward migration 001 创建；raw sidecar 的 DDL 单一事实源是 [`src/lib/history/raw/manager.ts`](../src/lib/history/raw/manager.ts) 的 `RAW_SCHEMA`。
+> **状态：活文档。** 本文描述当前生产代码实际创建和读取的 History V3 SQLite schema。Canonical floor 的 DDL 单一事实源是 [`src/lib/history/v3/store.ts`](../src/lib/history/v3/store.ts) 的 `V3_SCHEMA_SQL`；summary projection 由无运行时依赖的 schema 叶子 [`src/lib/history/v3/summary-schema.ts`](../src/lib/history/v3/summary-schema.ts) 中的 `SUMMARY_PROJECTION_FIELDS`／`SUMMARY_PROJECTION_MIGRATION_SQL` 经 forward migration 001 创建，运行时查询／backfill 在 `summary-store.ts` 消费同一字段映射；raw sidecar 的 DDL 单一事实源是 [`src/lib/history/raw/manager.ts`](../src/lib/history/raw/manager.ts) 的 `RAW_SCHEMA`。
 
 ## 1．数据库命名与职责
 

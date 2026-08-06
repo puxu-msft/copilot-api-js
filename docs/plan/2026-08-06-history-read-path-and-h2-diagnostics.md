@@ -7,9 +7,9 @@
 | A0 基线与计划 | 已完成调查与计划冻结，起点提交 `b6fb0947686ea6620bfafb63a4fd151d18599483`。 | 运行中约 6.3 万行 artifact 的性能数字仍是调查快照；执行验收必须重新取数。 |
 | A1 summary projection | **部分完成。** `92fcc611` 落 `001-operation-summary-projection` 表／索引／兼容 trigger；`a8a9475c` 落 bounded backfill、manifest repair、poison 可见性与原子 ready gate。 | 尚未实现 002 maintenance command、跨进程独占 writer 门、artifact owner generation 升级、删除旧 `summary_json`／`pinned` 列、真实 pre-001 binary 六臂兼容夹具与真实大库迁移 dry-run。当前是受 ready marker 保护的长期兼容态，不是最终单源态。 |
 | A2 SQL 查询基座 | **代码完成，真实大库验收待做。** `8afd3c26..50941d32` 依次落 canonical 专用 status count、双向 keyset list、session／stats SQL 聚合、按页 detail hydrate、manifest-size 性能护栏、filter-aware cursor／overlay 与 recent durability。 | 自动性能护栏使用 512 行、每行 256 KiB manifest，证明读路径与约 128 MiB canonical manifest 解耦；它没有证明真实约 6.3 万行生产副本上的 wall time、WAL／缓存效应或非 4141 HTTP 运行态 max-gap。持久全文 `search` 不属 A2，仍归 A3。 |
-| A3 持久全文 search | 未开始。 | `GET /history/api/entries?search=` 对 ready projection 的持久行仍未实现完整全文过滤；不得把 recent／in-flight 测试绿当作持久契约已满足。 |
+| A3 持久全文 search | **代码完成，独立评审待做。** native Tantivy 与 UDS 新增 strict `list-search`：完整全文＋结构 filters、`(startedAt,id)` 双向 keyset、精确 total、冻结 freshness target／同毫秒边界集合／poison attestation；`GET /history/api/entries?search=` 只按返回 IDs 批量读窄表，无法证明完整时 503。 | 目标 History 组、全 backend、ui-v4 Bun／Vitest、根与 ui-v4 typecheck、ui-v4 build、changed-file lint 均通过；mutation control 分别证明提前发布 cursor、删除 native operation-kind filter、handler 退回同步 facade 会精确转红。实施 commit `08046d5c`；尚缺独立 reviewer／verifier 与真实约 6.3 万行副本验收。 |
 | A4 H2 canonical diagnostics | 未开始。 | 尚无能把 `NGHTTP2_CANCEL` 按 stream／session／local-abort 归因并落到明确 dispatch 的 canonical 诊断。 |
-| A5 文档与独立验收 | 进行中。 | 本轮先对账 A1/A2 live docs；之后仍需代码 review、独立 verifier、全 backend／CI 档位和真实大库验收。 |
+| A5 文档与独立验收 | 进行中。 | A3 live docs 已对账；全 backend／ui-v4 tests、typecheck、build 与 changed-file lint 已通过。仍需独立代码 review／verifier、CI 的 PTY/E2E 档位和真实大库验收。 |
 | Phase B 根因实验 | 未开始，受 A4 诊断门阻塞。 | 不在缺 canonical stream/session 证据时预设 PING cadence 或 generic CANCEL retry 是修复。 |
 
 # Context

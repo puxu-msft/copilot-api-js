@@ -111,7 +111,7 @@ History 产品读面经 V3 canonical store facade：列表、详情、session �
 
 | 端点 | 说明 |
 |------|------|
-| `GET /history/api/entries` | V3 operation summary 列表与过滤；默认 generation，`operationKind=all` 可包含 bypass operation。支持 `direction=older|newer` 双向 keyset cursor；ready marker 后持久行走窄表，in-flight／recent terminal 同过滤 overlay。recent 未持久时可带 `durability`。持久全文 `search` 参数当前仍是 A3 缺口。 |
+| `GET /history/api/entries` | V3 operation summary 列表与过滤；默认 generation，`operationKind=all` 可包含 bypass operation。支持 `direction=older|newer` 双向 keyset cursor；ready marker 后持久行走窄表，in-flight／recent terminal 同过滤 overlay。recent 未持久时可带 `durability`。带 `search` 时，持久行经独立 Tantivy sidecar 的 `list-search` 模式执行全文＋结构过滤、稳定双向 keyset 与精确 total；sidecar 不可达、协议不兼容、freshness attestation 未覆盖请求冻结目标或目标内存在 poison 时返回 503，绝不把不完整结果冒充空命中。 |
 | `GET /history/api/entries/:id` | V3 canonical record 的 `HistoryEntry` 投影。 |
 | `POST /history/api/entries/:id/pin` | 设置 `v3_operations.pinned=1`，详情与 summary 立即反映。 |
 | `POST /history/api/entries/:id/unpin` | 设置 `v3_operations.pinned=0`。 |
@@ -124,7 +124,7 @@ History 产品读面经 V3 canonical store facade：列表、详情、session �
 
 字段级端点契约（含参数）见 [API.md](API.md)「History REST」。
 
-以下 `msg_blob`／`req_msg` 子系统只描述保留的 V2 `history.db` schema 与 characterization code，**当前在线服务不打开它，产品搜索也不读取它**。旧 artifact 按“不迁移、不修改”约束保留；当前搜索架构（Tantivy 移出主进程为独立 sidecar 子进程）见 [out-of-process search plan](plan/2026-07-21-history-search-out-of-process.md) 与 [DESIGN.md「活的架构现状」](DESIGN.md)；已退役的 in-process v1 见 [archive/2607-history-search-out-of-process/](archive/2607-history-search-out-of-process/history-search-tantivy-v1-retired.md)。旧设计见 [spec/search-index-content-addressed.md](spec/search-index-content-addressed.md)。
+以下 `msg_blob`／`req_msg` 子系统只描述保留的 V2 `history.db` schema 与 characterization code，**当前在线服务不打开它，产品搜索也不读取它**。旧 artifact 按“不迁移、不修改”约束保留；当前搜索架构（Tantivy 移出主进程为独立、单独启停的 sidecar 服务）见 [out-of-process search plan](plan/2026-07-21-history-search-out-of-process.md) 与 [DESIGN.md「活的架构现状」](DESIGN.md)；已退役的 in-process v1 见 [archive/2607-history-search-out-of-process/](archive/2607-history-search-out-of-process/history-search-tantivy-v1-retired.md)。旧设计见 [spec/search-index-content-addressed.md](spec/search-index-content-addressed.md)。
 
 - **进行中请求** —— 存在于内存 in-flight 映射（`src/lib/history/in-flight.ts` + `entries.ts` in-flight facade），通过 WebSocket 推送 `entry_added`/`entry_updated` 给前端。**in-flight 是前端实时视图的权威源**。
 - **持久化** —— V3 只在请求**终结**时经终端总线落一条不可变 operation record。读取透明合并两源：REST 查询在前拼 in-flight、在后拼 V3 持久，按 `startedAt` DESC 排序、按 id 去重；`getEntry` 优先 in-flight，故 active 请求恒读内存全量。

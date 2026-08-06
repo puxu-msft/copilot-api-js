@@ -1,8 +1,10 @@
 # 待办：让列表端点的 `search` 真正生效（扩展 Tantivy sidecar）
 
-- 状态：backlog，独立立项，未排期
+> **归档状态：已完成。** 本文保留 2026-07-28 拆出的原始缺口与方案比较；实现已由 [`docs/plan/2026-08-06-history-read-path-and-h2-diagnostics.md` A3](../../plan/2026-08-06-history-read-path-and-h2-diagnostics.md#a3-修复持久全文-search-契约) 落地，当前契约见 [`docs/API.md`](../../API.md) 的 `/history/api/entries` 行。
+
+- 原状态：backlog，独立立项，未排期
 - 日期：2026-07-28
-- 来源：[Spec B：History 过滤语义收敛](../spec/2026-07-28-history-filter-semantics.md) §6-1 的裁决把此项拆出
+- 来源：[Spec B：History 过滤语义收敛](../../spec/2026-07-28-history-filter-semantics.md) §6-1 的裁决把此项拆出
 
 ## 根因
 
@@ -41,7 +43,7 @@ Spec B §6-1 已把它改成诚实的降级：
 两条路线，二选一：
 
 - **扩展 sidecar wire 与 index**：支持完整 filters、稳定排序键与 keyset、exact total、显式 availability（区分空结果与不可达）。改动集中在 sidecar 侧，但 wire 协议与索引 schema 都要动。
-- **让 sidecar 只回 ID 集合**：返回完整匹配的 operation ID 流或 bitmap，交由 SQLite 做排序、与其它 filter 求交、以及 `COUNT`。sidecar 侧改动小，但要处理大结果集的传输与内存，且与 [待办 C](history-filtered-exact-total.md) 的 bitmap 方案天然契合——**若 C 采用 bitmap 形状，这条路线可复用同一套基础设施**。
+- **让 sidecar 只回 ID 集合**：返回完整匹配的 operation ID 流或 bitmap，交由 SQLite 做排序、与其它 filter 求交、以及 `COUNT`。sidecar 侧改动小，但要处理大结果集的传输与内存，且与 [待办 C](../../todo/history-filtered-exact-total.md) 的 bitmap 方案天然契合——**若 C 采用 bitmap 形状，这条路线可复用同一套基础设施**。
 
 ## 若做需改什么
 

@@ -1,6 +1,6 @@
 # Spec B：History 过滤语义收敛与 model 过滤可索引化
 
-- 状态：草案，待用户裁决 §6 后冻结
+- 状态：部分冻结——§6 已由用户裁决；§2.1 model membership 设计仍待 PoC 重做；§6-1 拆出的持久全文 search 已实施
 - 日期：2026-07-28
 - 依赖：[Spec A：History 读路径性能核心重构](2026-07-28-history-read-path-core.md) 的派生列与索引基础设施。**B 依赖 A，但 A 不依赖 B**——A 只下推语义已一致的过滤维，`model` / `search` / `success` 三维留给本 spec。
 - 姊妹文档：[待办 C：任意 filter 组合的 exact total](../todo/history-filtered-exact-total.md)
@@ -185,7 +185,7 @@ persisted 一路的过滤收敛为**单一 SQL 谓词定义**；`recordMatchesQu
 - 响应中应有可被前端识别的标记，说明 persisted 全文搜索未在此端点提供、请改用 `/history/api/search`——具体字段名在 plan 阶段定，但**不得静默**
 - 同时删除 `queries.ts:84-88` 那条声称「persisted list path filters search in SQL (`preview_text LIKE`)」的陈旧注释（它指向已退役的 V2 路径）
 
-**扩展 Tantivy sidecar 以真正支持列表端点的 `search`** 记入 backlog 独立立项 → [待办：让列表端点的 search 真正生效](../todo/history-list-search-sidecar.md)。评审已证明现有 sidecar 撑不起列表契约：只有 top-N score 查询，没有 stable keyset、exact total、列表 filters、双向分页，且空 hits 与 sidecar 不可达无法区分（`search.ts:20-24,59-73`、`uds-client.ts:132-145`）。
+**扩展 Tantivy sidecar 以真正支持列表端点的 `search`** 已由 [History read-path 与 H2 diagnostics 计划 A3](../plan/2026-08-06-history-read-path-and-h2-diagnostics.md#a3-修复持久全文-search-契约) 实施：新增与 score-ranked `/history/api/search` 正交的 strict `list-search` wire，提供结构 filters、稳定双向 keyset、精确 total 与 freshness／poison attestation；旧 backlog 已归档到 [历史记录](../archive/plan/history-list-search-sidecar.md)。
 
 **6-2 `success` 的语义边界**：采纳收紧后的 `requestBucket`（§2.2）——`success=true` ⇔ bucket = `success`，`success=false` ⇔ bucket = `failure`，**aborted / interrupted 两边都不匹配**。「被中断」与「失败」在诊断时意义完全不同，合并会丢信息。
 
