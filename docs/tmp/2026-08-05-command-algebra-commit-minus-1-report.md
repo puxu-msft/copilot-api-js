@@ -38,8 +38,11 @@
 - Review C1：JUnit parser 将 legitimate empty `classname`／`name` 误作缺字段，导致 runnable cases 被静默丢弃。RED：empty attribute fixture 未计入 executed；GREEN：只拒 `undefined`，接受 `""`，parser test 为 5 pass。重新独立运行真实 shards，基线更新为 676 files／6875 executed／27 skips，不从15-run evidence反推。
 - Review C2/C3：producer 现在逐 run 比较 baseline 与 runtime testcase/suite skipped identity multiset，失败消息列具体 missing/unexpected/count mismatch；manifest 新增 deterministic `runtime_identity_manifest` 与 `skipped_multiset` path/hash。Fixtures覆盖两种合法 union、runnable→skip两种 union均 rc=5、完整schema及缺 artifact。
 - Review I1 RED：原 collision fixture仅断言“没有 manifest”，实际实现会递归删除既存 target；增强 fixture 后 sentinel `evidence-manifest.json/sentinel.txt` 变 ENOENT。GREEN：`atomicWrite()` 仅删除其 deterministic temporary path，manifest failure handler不再触碰 target；fixture断言 rc=6、sentinel字节仍为 `preserve me\n`、target仍存在、temporary已移除，6 pass。仍缺 runner target mutations。
-- T0.0a post-balance mutation：冻结 patch `/tmp/commit-minus-1-post-balance-drop.patch` 注入的唯一 hunk 是 `const buckets = balance(...).map((bucket) => bucket.slice(1))`，`git diff` 已确认生效。后台 `unit it http` 在 300 秒后被 harness 转后台，最终 output 文件为空，未取得 rc 或 `missing runtime file identity: <file>`；因此没有目标 oracle 证据，不能计作 mutation 通过。恢复前 `git apply --reverse --check /tmp/commit-minus-1-post-balance-drop.patch` 成功且无输出；随后 reverse apply 成功，恢复后 `git diff` 为空，`bun test tests/infra/parallel-test-artifacts.unit.test.ts`（4 pass）和 `bun run typecheck` 绿。
-- 尚未执行其余 mutation。每个 mutation 的注入／恢复证据会在对应 task 完成时追加。
+- T0.0a/c mutation setup：全 backend mutation被超时淹没后，改用一次性 `/home/xp/.claude/jobs/046d7295/tmp/runner-mutation-probe` git repo。基线 `7b35c00418aa6eb019ab2eeb04b4fdb127604107` 包含当前真实 `scripts/parallel-test.ts`／`parallel-test-artifacts.ts`与64个真实 `.unit.test.ts`；真实 runner 进程链绿为16 shards／64 pass／64 executed。dependency resolve记录为临时repo自身 `node_modules` 路径。
+- T0.0a post-balance：`post-balance.patch` 将 balance 后每个 bucket `slice(1)`；hunk diff已读，运行 rc=1并明确报 `missing runtime file identity: tests/alpha.unit.test.ts`（以及另15个具体文件）。`git apply --reverse --check`无输出，reverse apply后 `git diff`为空。
+- T0.0c reporter-only-refresh：`reporter-only-refresh.patch` 删除真实 shard `--reporter=junit`；运行 rc=1并逐个报 `missing JUnit artifact for shard: .../shard-01.xml` 至 `shard-16.xml`。reverse-check无输出，reverse apply后 diff为空。
+- T0.0c merge/collection drop：`drop-shard-collection.patch` 使 collection丢第一 shard；运行 rc=1并点名 `missing JUnit artifact for shard: .../shard-01.xml`。reverse-check无输出，reverse apply后 diff为空。
+- 三个 mutation均未在权威树落盘或整文件恢复；临时repo仅未追踪 patch/helper，不进仓。T0.0e未开始。
 
 ## 结构怪味扫描
 
