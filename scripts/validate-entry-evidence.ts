@@ -9,6 +9,18 @@ import type { JUnitIdentities } from "./parallel-test-artifacts"
 let writeReceiptAtomically!: (receiptPath: string, body: string) => void
 let parseDiscoveryBaseline!: (raw: string) => DiscoveryBaseline
 let parseJUnit!: (raw: string, tree: string) => JUnitIdentities
+let bytewiseSort!: (values: string[]) => string[]
+let discoverRuntimePackageClosure!: typeof import("./entry-evidence-runtime-closure").discoverRuntimePackageClosure
+let packageIdentity!: typeof import("./entry-evidence-runtime-closure").packageIdentity
+let runtimeImportSpecifiers!: typeof import("./entry-evidence-runtime-closure").runtimeImportSpecifiers
+
+async function loadRuntimeClosureDependency(): Promise<void> {
+  const closure = await import("./entry-evidence-runtime-closure")
+  bytewiseSort = closure.bytewiseSort
+  discoverRuntimePackageClosure = closure.discoverRuntimePackageClosure
+  packageIdentity = closure.packageIdentity
+  runtimeImportSpecifiers = closure.runtimeImportSpecifiers
+}
 
 async function loadRuntimeDependencies(): Promise<void> {
   const receipt = await import("./entry-evidence-receipt")
@@ -64,11 +76,6 @@ const RUN_KEYS = [
 ]
 const DEPENDENCY_INTEGRITY_MANIFEST_PATH = "scripts/entry-evidence-runtime-dependencies.json"
 const RUNTIME_EXTENSION_CANDIDATES = [".ts", ".tsx", ".js", ".mjs", ".cjs", ".json"]
-const SAX_LOCK_INTEGRITIES = {
-  saxes: "sha512-xAg7SOnEhrm5zI3puOOKyy1OMcMlIJZYNJY7xLBwSze0UjhPLnWfj2GF2EpT0jmzaJKIWKHLsaSSajf35bcYnA==",
-  xmlchars: "sha512-JZnDKK8B0RCDw84FNdDAIpZK+JuJw+s7Lz8nksI7SIuU3UXJJslUthsi+uWBUYOwPFwW7W7PRLRfUKpxjtjFCw==",
-}
-
 interface RuntimeDependencyFile {
   path: string
   sha256: string
@@ -82,18 +89,6 @@ interface RuntimeDependencyPackage {
 interface RuntimeDependencyIntegrityManifest {
   schema_version: 1
   packages: RuntimeDependencyPackage[]
-}
-
-function bytewiseSort(values: string[]): string[] {
-  return values.sort((left, right) => Buffer.from(left).compare(Buffer.from(right)))
-}
-
-function runtimeImportSpecifiers(source: string, loader: "ts" | "js"): string[] | undefined {
-  try {
-    return new Bun.Transpiler({ loader }).scan(source).imports.map((imported) => imported.path)
-  } catch {
-    return undefined
-  }
 }
 
 function isInside(child: string, parent: string): boolean {
@@ -177,62 +172,48 @@ function parseRuntimeDependencyManifest(raw: string): RuntimeDependencyIntegrity
   }
 }
 
-function expectedPackage(tree: string, entrySha: string, canonicalTree: string, name: "saxes" | "xmlchars"): RuntimeDependencyPackage | undefined {
-  const manifestPath = path.join(canonicalTree, DEPENDENCY_INTEGRITY_MANIFEST_PATH)
-  if (!matchesEntryObject(tree, entrySha, canonicalTree, manifestPath)) return undefined
-  const manifest = readUtf8(manifestPath)
-  const parsed = manifest === undefined ? undefined : parseRuntimeDependencyManifest(manifest)
-  return parsed?.packages.find((entry) => entry.name === name)
-}
-
-function entryPackageFilesMatch(canonicalTree: string, packageEntry: RuntimeDependencyPackage): boolean {
-  return packageEntry.files.every((file) => {
-    const runtimePath = path.join(canonicalTree, "node_modules", packageEntry.name, file.path)
-    return hashMatches(runtimePath, file.sha256)
-  })
-}
-
-function packageMetadataMatches(canonicalTree: string, packageEntry: RuntimeDependencyPackage): boolean {
-  try {
-    const metadata = JSON.parse(readFileSync(path.join(canonicalTree, "node_modules", packageEntry.name, "package.json"), "utf8")) as Record<string, unknown>
-    return metadata.name === packageEntry.name && metadata.version === packageEntry.version
-  } catch {
-    return false
-  }
-}
-
-function lockfileMatches(canonicalTree: string): boolean {
+function lockfileMatches(canonicalTree: string, manifest: RuntimeDependencyIntegrityManifest): boolean {
   const packageRaw = readUtf8(path.join(canonicalTree, "package.json"))
   const lockRaw = readUtf8(path.join(canonicalTree, "bun.lock"))
   if (packageRaw === undefined || lockRaw === undefined) return false
   try {
-    const packageJson = JSON.parse(packageRaw) as { dependencies?: Record<string, unknown> }
-    if (packageJson.dependencies?.saxes !== "6.0.0") return false
-  } catch {
-    return false
-  }
-  return (
-    lockRaw.includes(`"saxes": ["saxes@6.0.0", "", { "dependencies": { "xmlchars": "^2.2.0" } }, "${SAX_LOCK_INTEGRITIES.saxes}"]`) &&
-    lockRaw.includes(`"xmlchars": ["xmlchars@2.2.0", "", {}, "${SAX_LOCK_INTEGRITIES.xmlchars}"]`)
-  )
-}
-
-function packageGraphMatches(canonicalTree: string, packageEntry: RuntimeDependencyPackage): boolean {
-  if (!packageMetadataMatches(canonicalTree, packageEntry)) return false
-  const packageRoot = path.join(canonicalTree, "node_modules", packageEntry.name)
-  try {
-    for (const file of packageEntry.files) {
-      const specifier = packageEntry.name === "saxes" ? "saxes" : `xmlchars/${file.path.replace(/\.js$/, "")}`
-      const resolved = realpathSync(Bun.resolveSync(specifier, path.join(canonicalTree, "scripts", "parallel-test-artifacts.ts")))
-      if (resolved !== path.join(packageRoot, file.path)) return false
-    }
-    return true
+    const packageJson = Bun.JSONC.parse(packageRaw) as { dependencies?: Record<string, unknown> }
+    const lock = Bun.JSONC.parse(lockRaw) as { packages?: Record<string, unknown> }
+    const saxes = manifest.packages.find((entry) => entry.name === "saxes")
+    if (saxes === undefined || packageJson.dependencies?.saxes !== saxes.version || lock.packages === undefined) return false
+    return manifest.packages.every((entry) => {
+      const locked = lock.packages![entry.name]
+      return Array.isArray(locked) && locked.length === 4 && locked[0] === `${entry.name}@${entry.version}` && locked[3] === entry.integrity
+    })
   } catch {
     return false
   }
 }
 
-function runtimeClosureMatchesEntry(tree: string, entrySha: string): boolean {
+async function packageClosureMatches(importer: string, manifest: RuntimeDependencyIntegrityManifest): Promise<boolean> {
+  const closure = await discoverRuntimePackageClosure("saxes", importer)
+  if (closure === undefined) return false
+  const observed = new Map<string, string[]>()
+  for (const file of closure) observed.set(file.packageName, [...(observed.get(file.packageName) ?? []), file.relativePath])
+  return manifest.packages.every((packageEntry) => {
+    const packageFiles = closure.filter((file) => file.packageName === packageEntry.name)
+    const identity = packageFiles.length === 0 ? undefined : packageIdentity(packageFiles[0].resolvedPath)
+    if (
+      identity === undefined ||
+      identity.name !== packageEntry.name ||
+      identity.version !== packageEntry.version ||
+      packageFiles.some((file) => file.packageRoot !== identity.root) ||
+      JSON.stringify(bytewiseSort(observed.get(packageEntry.name) ?? [])) !== JSON.stringify(packageEntry.files.map((file) => file.path))
+    )
+      return false
+    return packageFiles.every((file) => {
+      const expected = packageEntry.files.find((entry) => entry.path === file.relativePath)
+      return expected !== undefined && hashMatches(file.resolvedPath, expected.sha256)
+    })
+  })
+}
+
+async function runtimeClosureMatchesEntry(tree: string, entrySha: string): Promise<boolean> {
   let canonicalTree: string
   try {
     canonicalTree = realpathSync(tree)
@@ -240,13 +221,20 @@ function runtimeClosureMatchesEntry(tree: string, entrySha: string): boolean {
     return false
   }
   const validatorPath = path.join(canonicalTree, "scripts", "validate-entry-evidence.ts")
-  if (path.resolve(import.meta.path) !== validatorPath || !matchesEntryObject(tree, entrySha, canonicalTree, validatorPath)) return false
-  const expectedSaxes = expectedPackage(tree, entrySha, canonicalTree, "saxes")
-  const expectedXmlchars = expectedPackage(tree, entrySha, canonicalTree, "xmlchars")
-  if (expectedSaxes === undefined || expectedXmlchars === undefined || !lockfileMatches(canonicalTree)) return false
-  if (!entryPackageFilesMatch(canonicalTree, expectedSaxes) || !entryPackageFilesMatch(canonicalTree, expectedXmlchars)) return false
+  const manifestPath = path.join(canonicalTree, DEPENDENCY_INTEGRITY_MANIFEST_PATH)
+  if (
+    path.resolve(import.meta.path) !== validatorPath ||
+    !matchesEntryObject(tree, entrySha, canonicalTree, validatorPath) ||
+    !matchesEntryObject(tree, entrySha, canonicalTree, path.join(canonicalTree, "package.json")) ||
+    !matchesEntryObject(tree, entrySha, canonicalTree, path.join(canonicalTree, "bun.lock")) ||
+    !matchesEntryObject(tree, entrySha, canonicalTree, manifestPath)
+  )
+    return false
+  const rawManifest = readUtf8(manifestPath)
+  const dependencyManifest = rawManifest === undefined ? undefined : parseRuntimeDependencyManifest(rawManifest)
+  if (dependencyManifest === undefined || !lockfileMatches(canonicalTree, dependencyManifest)) return false
   const visited = new Set<string>()
-  const visitLocal = (runtimeFile: string): boolean => {
+  const visitLocal = async (runtimeFile: string): Promise<boolean> => {
     if (visited.has(runtimeFile)) return true
     visited.add(runtimeFile)
     if (!matchesEntryObject(tree, entrySha, canonicalTree, runtimeFile)) return false
@@ -258,11 +246,14 @@ function runtimeClosureMatchesEntry(tree: string, entrySha: string): boolean {
       if (specifier.startsWith("node:")) continue
       if (specifier.startsWith("./") || specifier.startsWith("../")) {
         const child = resolveRelativeRuntimeImport(runtimeFile, specifier, canonicalTree)
-        if (child === undefined || !visitLocal(child)) return false
-        continue
+        if (child === undefined || !(await visitLocal(child))) return false
+      } else if (
+        specifier !== "saxes" ||
+        runtimeFile !== path.join(canonicalTree, "scripts", "parallel-test-artifacts.ts") ||
+        !(await packageClosureMatches(runtimeFile, dependencyManifest))
+      ) {
+        return false
       }
-      if (specifier !== "saxes" || runtimeFile !== path.join(canonicalTree, "scripts", "parallel-test-artifacts.ts")) return false
-      if (!packageGraphMatches(canonicalTree, expectedSaxes) || !packageGraphMatches(canonicalTree, expectedXmlchars)) return false
     }
     return true
   }
@@ -587,7 +578,12 @@ function parseRunArtifacts(
 const options = parseOptions(process.argv.slice(2))
 if (!existsSync(options.tree) || git(options.tree, ["cat-file", "-e", `${options.pointerSha}^{commit}`]) === undefined)
   fail(1, "pointer SHA does not resolve", 3)
-if (!runtimeClosureMatchesEntry(options.tree, options.entrySha)) fail(11, "validator provenance mismatch", 7)
+try {
+  await loadRuntimeClosureDependency()
+} catch {
+  fail(11, "validator provenance mismatch", 7)
+}
+if (!(await runtimeClosureMatchesEntry(options.tree, options.entrySha))) fail(11, "validator provenance mismatch", 7)
 try {
   await loadRuntimeDependencies()
 } catch {

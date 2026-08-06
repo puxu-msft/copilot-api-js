@@ -10,6 +10,17 @@ const HANDOVER = "docs/plan/2026-07-27-inter-block-anchor-allocator/HANDOVER.md"
 const BASELINE = "tests/infra/entry-test-discovery-baseline.json"
 const DEPENDENCY_INTEGRITY_MANIFEST = "scripts/entry-evidence-runtime-dependencies.json"
 const SAX_RUNTIME_FILES = ["saxes/saxes.js", "xmlchars/xml/1.0/ed5.js", "xmlchars/xml/1.1/ed2.js", "xmlchars/xmlns/1.0/ed3.js"]
+
+function resolvedPackageRoot(name: string): string {
+  let directory = path.dirname(Bun.resolveSync(name, path.join(REPO_ROOT, "scripts/parallel-test-artifacts.ts")))
+  while (directory !== path.dirname(directory)) {
+    if (existsSync(path.join(directory, "package.json"))) return directory
+    directory = path.dirname(directory)
+  }
+  throw new Error(`package root not found: ${name}`)
+}
+
+const RESOLVED_PACKAGE_ROOTS = { saxes: resolvedPackageRoot("saxes"), xmlchars: resolvedPackageRoot("xmlchars") }
 const SAX_LOCK_INTEGRITY = {
   saxes: "sha512-xAg7SOnEhrm5zI3puOOKyy1OMcMlIJZYNJY7xLBwSze0UjhPLnWfj2GF2EpT0jmzaJKIWKHLsaSSajf35bcYnA==",
   xmlchars: "sha512-JZnDKK8B0RCDw84FNdDAIpZK+JuJw+s7Lz8nksI7SIuU3UXJJslUthsi+uWBUYOwPFwW7W7PRLRfUKpxjtjFCw==",
@@ -23,7 +34,7 @@ function dependencyManifest(): Record<string, unknown> {
         name: "saxes",
         version: "6.0.0",
         integrity: SAX_LOCK_INTEGRITY.saxes,
-        files: ["saxes.js"].map((file) => ({ path: file, sha256: hash(path.join(REPO_ROOT, "node_modules/saxes", file)) })),
+        files: ["saxes.js"].map((file) => ({ path: file, sha256: hash(path.join(RESOLVED_PACKAGE_ROOTS.saxes, file)) })),
       },
       {
         name: "xmlchars",
@@ -31,17 +42,17 @@ function dependencyManifest(): Record<string, unknown> {
         integrity: SAX_LOCK_INTEGRITY.xmlchars,
         files: SAX_RUNTIME_FILES.filter((file) => file.startsWith("xmlchars/")).map((file) => ({
           path: file.slice("xmlchars/".length),
-          sha256: hash(path.join(REPO_ROOT, "node_modules", file)),
+          sha256: hash(path.join(RESOLVED_PACKAGE_ROOTS.xmlchars, file.slice("xmlchars/".length))),
         })),
       },
     ],
   }
 }
 
-function dependencyFixture(tree: string): void {
-  mkdirSync(path.join(tree, "node_modules"), { recursive: true })
-  for (const packageName of ["saxes", "xmlchars"])
-    cpSync(path.join(REPO_ROOT, "node_modules", packageName), path.join(tree, "node_modules", packageName), { recursive: true })
+function dependencyFixture(tree: string, dependencyRoot = tree): void {
+  mkdirSync(path.join(dependencyRoot, "node_modules"), { recursive: true })
+  for (const packageName of ["saxes", "xmlchars"] as const)
+    cpSync(RESOLVED_PACKAGE_ROOTS[packageName], path.join(dependencyRoot, "node_modules", packageName), { recursive: true })
   writeFileSync(path.join(tree, "package.json"), `${JSON.stringify({ dependencies: { saxes: "6.0.0" } }, null, 2)}\n`)
   writeFileSync(
     path.join(tree, "bun.lock"),
@@ -61,7 +72,7 @@ function commitEntryMutation(f: { tree: string; out: string; entry: string; poin
   git(f.tree, ["checkout", "master"])
   mutate()
   git(f.tree, ["add", "--", "package.json", "bun.lock", "scripts", HANDOVER])
-  git(f.tree, ["add", "--force", "--", "node_modules/saxes", "node_modules/xmlchars"])
+  if (existsSync(path.join(f.tree, "node_modules/saxes"))) git(f.tree, ["add", "--force", "--", "node_modules/saxes", "node_modules/xmlchars"])
   git(f.tree, ["commit", "-m", message])
   f.entry = git(f.tree, ["rev-parse", "HEAD"])
   const manifest = JSON.parse(readFileSync(manifestPath, "utf8"))
@@ -94,8 +105,11 @@ function git(tree: string, args: string[]): string {
   return result.stdout.toString().trim()
 }
 
-function fixture(options: { unicodeSkips?: boolean; noncanonicalBaseline?: boolean } = {}) {
-  const tree = mkdtempSync(path.join(os.tmpdir(), "entry-validator-"))
+function fixture(options: { unicodeSkips?: boolean; noncanonicalBaseline?: boolean; dependencyLocation?: "tree" | "ancestor" } = {}) {
+  const sandbox = mkdtempSync(path.join(os.tmpdir(), "entry-validator-"))
+  const tree = path.join(sandbox, "tree")
+  mkdirSync(tree)
+  const dependencyRoot = options.dependencyLocation === "ancestor" ? sandbox : tree
   const unicodeSkips = options.unicodeSkips === true
   const allowedSkipped = unicodeSkips
     ? [
@@ -110,9 +124,15 @@ function fixture(options: { unicodeSkips?: boolean; noncanonicalBaseline?: boole
   mkdirSync(path.join(tree, "scripts"), { recursive: true })
   writeFileSync(path.join(tree, "tests/a.unit.test.ts"), "")
   writeFileSync(path.join(tree, "scripts/parallel-test.ts"), "export {}\n")
-  for (const script of ["validate-entry-evidence.ts", "entry-evidence-receipt.ts", "entry-evidence-schema.ts", "parallel-test-artifacts.ts"])
+  for (const script of [
+    "validate-entry-evidence.ts",
+    "entry-evidence-runtime-closure.ts",
+    "entry-evidence-receipt.ts",
+    "entry-evidence-schema.ts",
+    "parallel-test-artifacts.ts",
+  ])
     writeFileSync(path.join(tree, "scripts", script), readFileSync(path.join(REPO_ROOT, "scripts", script)))
-  dependencyFixture(tree)
+  dependencyFixture(tree, dependencyRoot)
   git(tree, ["init", "-b", "master"])
   git(tree, ["config", "user.email", "x@example.invalid"])
   git(tree, ["config", "user.name", "Test"])
@@ -201,7 +221,7 @@ function fixture(options: { unicodeSkips?: boolean; noncanonicalBaseline?: boole
   git(tree, ["commit", "-m", "pointer"])
   const pointer = git(tree, ["rev-parse", "HEAD"])
   git(tree, ["checkout", "--detach", entry])
-  return { tree, out, entry, pointer, receipt: path.join(out, "receipt.json") }
+  return { tree, dependencyRoot, out, entry, pointer, receipt: path.join(out, "receipt.json") }
 }
 
 function invoke(f: ReturnType<typeof fixture>): ReturnType<typeof Bun.spawnSync> {
@@ -324,7 +344,7 @@ function createEv27EntryGraph(f: ReturnType<typeof fixture>): void {
 }
 
 function cleanup(f: ReturnType<typeof fixture>): void {
-  rmSync(f.tree, { recursive: true, force: true })
+  rmSync(path.dirname(f.tree), { recursive: true, force: true })
   rmSync(f.out, { recursive: true, force: true })
 }
 
@@ -398,6 +418,71 @@ describe("entry evidence validator C7-C9", () => {
       expect(readFileSync(output, "utf8")).toBe(`${JSON.stringify(dependencyManifest(), null, 2)}\n`)
     } finally {
       rmSync(directory, { recursive: true, force: true })
+    }
+  })
+
+  test("accepts an ancestor-resolved SAX package closure", () => {
+    const f = fixture({ dependencyLocation: "ancestor" })
+    try {
+      const result = invoke(f)
+      expect(result.exitCode).toBe(0)
+      expect(error(result)).toBe("")
+    } finally {
+      cleanup(f)
+    }
+  })
+
+  test("accepts a symlink-like SAX package closure by content identity", () => {
+    const f = fixture({ dependencyLocation: "ancestor" })
+    const store = path.join(path.dirname(f.tree), "package-store")
+    try {
+      mkdirSync(store)
+      for (const packageName of ["saxes", "xmlchars"] as const) {
+        renameSync(path.join(f.dependencyRoot, "node_modules", packageName), path.join(store, packageName))
+        symlinkSync(path.join(store, packageName), path.join(f.dependencyRoot, "node_modules", packageName))
+      }
+      const result = invoke(f)
+      expect(result.exitCode).toBe(0)
+      expect(error(result)).toBe("")
+    } finally {
+      cleanup(f)
+    }
+  })
+
+  test("rejects dirty ancestor SAX package bytes", () => {
+    const f = fixture({ dependencyLocation: "ancestor" })
+    try {
+      writeFileSync(path.join(f.dependencyRoot, "node_modules/saxes/saxes.js"), "module.exports = {}\n")
+      const result = invoke(f)
+      expect(result.exitCode).toBe(7)
+      expect(error(result)).toBe("FAIL C11: validator provenance mismatch\n")
+      expect(existsSync(f.receipt)).toBe(false)
+    } finally {
+      cleanup(f)
+    }
+  })
+
+  test("rejects an unmanifested transitive runtime import discovered from actual package bytes", () => {
+    const f = fixture({ dependencyLocation: "ancestor" })
+    try {
+      const packageRoot = path.join(f.dependencyRoot, "node_modules/saxes")
+      writeFileSync(path.join(packageRoot, "unexpected.js"), "module.exports = {}\n")
+      writeFileSync(path.join(packageRoot, "saxes.js"), `${readFileSync(path.join(packageRoot, "saxes.js"), "utf8")}\nrequire("./unexpected")\n`)
+      commitEntryMutation(
+        f,
+        () => {
+          const manifest = JSON.parse(readFileSync(path.join(f.tree, DEPENDENCY_INTEGRITY_MANIFEST), "utf8"))
+          manifest.packages[0].files[0].sha256 = hash(path.join(packageRoot, "saxes.js"))
+          json(path.join(f.tree, DEPENDENCY_INTEGRITY_MANIFEST), manifest)
+        },
+        "bind mutated package entry",
+      )
+      const result = invoke(f)
+      expect(result.exitCode).toBe(7)
+      expect(error(result)).toBe("FAIL C11: validator provenance mismatch\n")
+      expect(existsSync(f.receipt)).toBe(false)
+    } finally {
+      cleanup(f)
     }
   })
 
@@ -625,7 +710,7 @@ describe("entry evidence validator C7-C9", () => {
   })
 
   test("rejects every missing or modified runtime dependency before receipt publication", () => {
-    for (const dependency of ["entry-evidence-receipt.ts", "entry-evidence-schema.ts", "parallel-test-artifacts.ts"]) {
+    for (const dependency of ["entry-evidence-runtime-closure.ts", "entry-evidence-receipt.ts", "entry-evidence-schema.ts", "parallel-test-artifacts.ts"]) {
       for (const mutate of [
         (dependencyPath: string) => writeFileSync(dependencyPath, `${readFileSync(dependencyPath, "utf8")}\n// modified\n`),
         (dependencyPath: string) => unlinkSync(dependencyPath),
