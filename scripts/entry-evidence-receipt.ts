@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto"
-import { closeSync, constants, linkSync, openSync, rmSync, unlinkSync, writeFileSync } from "node:fs"
+import { closeSync, constants, existsSync, linkSync, openSync, realpathSync, rmSync, unlinkSync, writeFileSync } from "node:fs"
 import path from "node:path"
 
 const RECEIPT_KEYS = [
@@ -38,8 +38,13 @@ export interface EntryEvidenceReceiptV1 {
 export interface EntryEvidenceReceiptV1Expected {
   entrySha: string
   currentHeadSha: string
-  pointerReachableFromMaster: boolean | (() => boolean)
+  pointerSha: string
+  pointerReachableFromMaster: (pointerSha: string) => boolean
+  manifestPath: string
   manifestSha256: string
+  discoveryBaselinePath: string
+  discoveryBaselineSha256: string
+  discoveryRunnerGitBlob: string
   validatorGitBlob: string
   receiptSha256: string
   tree: string
@@ -96,6 +101,26 @@ function parseReceiptObject(value: unknown): EntryEvidenceReceiptValidation {
   return { valid: true, receipt: receipt as unknown as EntryEvidenceReceiptV1, errors: [] }
 }
 
+function canonicalPathWithExistingAncestor(value: string): string | undefined {
+  let candidate = path.resolve(value)
+  const unresolvedSegments: string[] = []
+  while (!existsSync(candidate)) {
+    const parent = path.dirname(candidate)
+    if (parent === candidate) return undefined
+    unresolvedSegments.unshift(path.basename(candidate))
+    candidate = parent
+  }
+  try {
+    return path.join(realpathSync(candidate), ...unresolvedSegments)
+  } catch {
+    return undefined
+  }
+}
+
+function isCanonicalDescendant(child: string, parent: string): boolean {
+  return child.startsWith(`${parent}${path.sep}`)
+}
+
 export function parseEntryEvidenceReceiptV1(raw: string): EntryEvidenceReceiptValidation {
   try {
     return parseReceiptObject(JSON.parse(raw))
@@ -109,21 +134,29 @@ export function validateEntryEvidenceReceiptV1(raw: string, expected: EntryEvide
   if (!parsed.valid || parsed.receipt === undefined) return parsed
   const receipt = parsed.receipt
   const errors: string[] = []
+  const canonicalTree = canonicalPathWithExistingAncestor(expected.tree)
+  const canonicalManifest = canonicalPathWithExistingAncestor(receipt.manifest_path)
+  const canonicalExpectedManifest = canonicalPathWithExistingAncestor(expected.manifestPath)
   if (
-    path.resolve(receipt.manifest_path).startsWith(`${path.resolve(expected.tree)}${path.sep}`) ||
-    path.resolve(receipt.manifest_path) === path.resolve(expected.tree)
+    canonicalTree === undefined ||
+    canonicalManifest === undefined ||
+    canonicalExpectedManifest === undefined ||
+    canonicalManifest !== canonicalExpectedManifest ||
+    isCanonicalDescendant(canonicalManifest, canonicalTree)
   )
-    errors.push("manifest_path must be outside tree")
+    errors.push("manifest_path is invalid for tree")
   if (receipt.entry_sha !== expected.entrySha) errors.push("entry_sha differs from expected entry")
   if (receipt.entry_sha !== expected.currentHeadSha) errors.push("entry_sha differs from current HEAD")
-  let pointerReachable = false
+  if (receipt.pointer_sha !== expected.pointerSha) errors.push("pointer_sha differs from expected pointer")
   try {
-    pointerReachable = typeof expected.pointerReachableFromMaster === "function" ? expected.pointerReachableFromMaster() : expected.pointerReachableFromMaster
+    if (!expected.pointerReachableFromMaster(receipt.pointer_sha)) errors.push("pointer_sha is not reachable from master")
   } catch {
     errors.push("pointer reachability oracle failed")
   }
-  if (!pointerReachable) errors.push("pointer_sha is not reachable from master")
   if (receipt.manifest_sha256 !== expected.manifestSha256) errors.push("manifest_sha256 differs from expected manifest")
+  if (receipt.discovery_baseline_path !== expected.discoveryBaselinePath) errors.push("discovery_baseline_path differs from expected baseline")
+  if (receipt.discovery_baseline_sha256 !== expected.discoveryBaselineSha256) errors.push("discovery_baseline_sha256 differs from expected baseline")
+  if (receipt.discovery_runner_git_blob !== expected.discoveryRunnerGitBlob) errors.push("discovery_runner_git_blob differs from expected runner")
   if (receipt.validator_git_blob !== expected.validatorGitBlob) errors.push("validator_git_blob differs from expected validator")
   if (createHash("sha256").update(raw).digest("hex") !== expected.receiptSha256) errors.push("receipt_sha256 differs from expected receipt")
   return { valid: errors.length === 0, receipt, errors }

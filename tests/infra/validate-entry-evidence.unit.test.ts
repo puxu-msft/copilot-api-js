@@ -158,8 +158,13 @@ function receiptExpected(f: ReturnType<typeof fixture>, receiptRaw = readFileSyn
   return {
     entrySha: f.entry,
     currentHeadSha: f.entry,
-    pointerReachableFromMaster: true,
+    pointerSha: f.pointer,
+    pointerReachableFromMaster: (pointerSha) => pointerSha === f.pointer,
+    manifestPath: path.join(f.out, "evidence-manifest.json"),
     manifestSha256: hash(path.join(f.out, "evidence-manifest.json")),
+    discoveryBaselinePath: BASELINE,
+    discoveryBaselineSha256: hash(path.join(f.tree, BASELINE)),
+    discoveryRunnerGitBlob: git(f.tree, ["rev-parse", `${f.entry}:scripts/parallel-test.ts`]),
     validatorGitBlob: git(f.tree, ["rev-parse", `${f.entry}:scripts/validate-entry-evidence.ts`]),
     receiptSha256: createHash("sha256").update(receiptRaw).digest("hex"),
     tree: f.tree,
@@ -369,6 +374,7 @@ describe("entry evidence validator C7-C9", () => {
     try {
       expect(invoke(f).exitCode).toBe(0)
       const correct = readFileSync(f.receipt, "utf8")
+      expect(JSON.parse(correct).pointer_sha).toBe(f.pointer)
       expect(validateEntryEvidenceReceiptV1(correct, receiptExpected(f))).toMatchObject({ valid: true, errors: [] })
 
       const tampering: Array<[string, (receipt: Record<string, unknown>) => void]> = [
@@ -384,8 +390,17 @@ describe("entry evidence validator C7-C9", () => {
         ["validator blob", (receipt) => (receipt.validator_git_blob = "0".repeat(40))],
         ["invalid entry SHA", (receipt) => (receipt.entry_sha = "invalid")],
         ["entry SHA", (receipt) => (receipt.entry_sha = "0".repeat(40))],
+        ["invalid pointer SHA", (receipt) => (receipt.pointer_sha = "invalid")],
+        ["pointer SHA type", (receipt) => (receipt.pointer_sha = 7)],
+        ["pointer SHA", (receipt) => (receipt.pointer_sha = "0".repeat(40))],
         ["invalid manifest hash", (receipt) => (receipt.manifest_sha256 = "invalid")],
         ["manifest hash", (receipt) => (receipt.manifest_sha256 = "0".repeat(64))],
+        ["baseline path type", (receipt) => (receipt.discovery_baseline_path = 7)],
+        ["baseline path", (receipt) => (receipt.discovery_baseline_path = "tests/other.json")],
+        ["baseline hash type", (receipt) => (receipt.discovery_baseline_sha256 = 7)],
+        ["baseline hash", (receipt) => (receipt.discovery_baseline_sha256 = "0".repeat(64))],
+        ["runner blob type", (receipt) => (receipt.discovery_runner_git_blob = 7)],
+        ["runner blob", (receipt) => (receipt.discovery_runner_git_blob = "0".repeat(40))],
       ]
       expect(validateEntryEvidenceReceiptV1("{", receiptExpected(f)).valid).toBe(false)
       expect(validateEntryEvidenceReceiptV1(`${correct}\n`, receiptExpected(f)).valid).toBe(false)
@@ -395,7 +410,58 @@ describe("entry evidence validator C7-C9", () => {
       }
       expect(validateEntryEvidenceReceiptV1(correct, { ...receiptExpected(f), receiptSha256: "0".repeat(64) }).valid).toBe(false)
       expect(validateEntryEvidenceReceiptV1(correct, { ...receiptExpected(f), currentHeadSha: "0".repeat(40) }).valid).toBe(false)
-      expect(validateEntryEvidenceReceiptV1(correct, { ...receiptExpected(f), pointerReachableFromMaster: false }).valid).toBe(false)
+      expect(validateEntryEvidenceReceiptV1(correct, { ...receiptExpected(f), pointerReachableFromMaster: () => false }).valid).toBe(false)
+      expect(validateEntryEvidenceReceiptV1(correct, { ...receiptExpected(f), pointerSha: "0".repeat(40) }).valid).toBe(false)
+
+      const observedPointerShas: string[] = []
+      expect(
+        validateEntryEvidenceReceiptV1(correct, {
+          ...receiptExpected(f),
+          pointerReachableFromMaster: (pointerSha) => {
+            observedPointerShas.push(pointerSha)
+            return pointerSha === f.pointer
+          },
+        }).valid,
+      ).toBe(true)
+      expect(observedPointerShas).toEqual([f.pointer])
+      const tamperedPointerRaw = receiptRawWith(f, (receipt) => (receipt.pointer_sha = "0".repeat(40)))
+      const observedTamperedPointerShas: string[] = []
+      expect(
+        validateEntryEvidenceReceiptV1(tamperedPointerRaw, {
+          ...receiptExpected(f, tamperedPointerRaw),
+          pointerReachableFromMaster: (pointerSha) => {
+            observedTamperedPointerShas.push(pointerSha)
+            return false
+          },
+        }).valid,
+      ).toBe(false)
+      expect(observedTamperedPointerShas).toEqual(["0".repeat(40)])
+      expect(
+        validateEntryEvidenceReceiptV1(tamperedPointerRaw, {
+          ...receiptExpected(f, tamperedPointerRaw),
+          pointerReachableFromMaster: () => true,
+        }).valid,
+      ).toBe(false)
+
+      const insideLink = path.join(f.out, "inside-link")
+      symlinkSync(f.tree, insideLink)
+      const insideReceiptRaw = receiptRawWith(f, (receipt) => (receipt.manifest_path = path.join(insideLink, "missing-manifest.json")))
+      expect(
+        validateEntryEvidenceReceiptV1(insideReceiptRaw, {
+          ...receiptExpected(f, insideReceiptRaw),
+          manifestPath: path.join(insideLink, "missing-manifest.json"),
+        }).valid,
+      ).toBe(false)
+
+      const outsideLink = path.join(f.out, "outside-link")
+      symlinkSync(f.out, outsideLink)
+      const outsideReceiptRaw = receiptRawWith(f, (receipt) => (receipt.manifest_path = path.join(outsideLink, "evidence-manifest.json")))
+      expect(
+        validateEntryEvidenceReceiptV1(outsideReceiptRaw, {
+          ...receiptExpected(f, outsideReceiptRaw),
+          manifestPath: path.join(outsideLink, "evidence-manifest.json"),
+        }).valid,
+      ).toBe(true)
     } finally {
       cleanup(f)
     }
