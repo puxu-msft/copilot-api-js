@@ -44,8 +44,12 @@ import { resetModelOperationTerminalRegistryForTests } from "~/lib/context/light
 import { resetDiagnosticLoggerForTests } from "~/lib/diagnostics"
 import { resetStructuredFileSinkForTests } from "~/lib/diagnostics/file"
 import { resetBootstrapSpoolForTests } from "~/lib/diagnostics/file/bootstrap-spool"
-import { resetHistoryPersistErrorStats } from "~/lib/history/persist-guard"
+import {
+  //
+  resetHistoryPersistErrorStats,
+} from "~/lib/history/persist-guard"
 import { resetRawCaptureManagerForTests } from "~/lib/history/raw/manager"
+import { setSummaryPreviewVisitObserverForTests } from "~/lib/history/in-flight"
 import { setNativeHistorySearchForTests } from "~/lib/history/search-native"
 import {
   //
@@ -123,6 +127,7 @@ export const RESETTERS: ReadonlyArray<{ name: string; reset: () => void | Promis
   { name: "clearRecentModelOperationTerminalsForTests", reset: clearRecentModelOperationTerminalsForTests },
   { name: "resetV3WriterForTests", reset: resetV3WriterForTests },
   { name: "resetRawCaptureManagerForTests", reset: resetRawCaptureManagerForTests },
+  { name: "setSummaryPreviewVisitObserverForTests", reset: () => setSummaryPreviewVisitObserverForTests(undefined) },
   { name: "setNativeHistorySearchForTests", reset: () => setNativeHistorySearchForTests(undefined) },
   { name: "resetResponseSessionStoreForTests", reset: resetResponseSessionStoreForTests },
   { name: "resetProtectStreamingStatsForTests", reset: resetProtectStreamingStatsForTests },

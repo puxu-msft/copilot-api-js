@@ -21,6 +21,14 @@ A distinct full-backend contention failure subsequently affected both `two_signa
 
 The harness accepts the test-only `TWO_SIGNAL_READY_DELAY_MS` before its child `exec`. A 2100ms delay proves that readiness beyond the old two-second threshold still reaches the real two-signal assertions. A missing child fixture proves early process exit reports `child closed PTY before b'READY'` with `exit=1` and captured PTY output immediately. `bun test tests/shutdown/shutdown-signals.it.test.ts --rerun-each=20` passed all 120 executions after the readiness change. A first full backend run after this change passed: 16 shards, 6276 tests, 6276 pass, 0 fail, 6914 executed, 26 skipped, in 43.47s. A later repeat failed only unrelated `tests/history/v3/canonical-performance.unit.test.ts` under parallel load (`sseRatio=10.3039`, threshold `<8`); its standalone run passed (`sseRatio=3.9669`), so this is a separate performance-flake investigation, not a PTY readiness regression.
 
+## Deterministic in-flight summary memoization regression
+
+`tests/history/in-flight-summary-memo.unit.test.ts` previously used an elapsed-time budget (`<50ms`) to infer that 1000 `toEntrySummary()` calls did not re-iterate a 200-message, 10-block-per-message request. That oracle was scheduling-sensitive and did not observe the claimed traversal. The shared preview extraction/cache base now exposes a test-only observer that counts actual message and block visits only while a preview is computed. The deterministic oracle requires exactly `{ messages: 1, blocks: 1 }` for 1000 summaries of one `HistoryEntry` instance, then `{ messages: 2, blocks: 2 }` after `updateInFlight()` creates a fresh instance.
+
+The positive control applied the exact `/tmp/in-flight-summary-disable-weakmap-hit.patch`, changing only the `WeakMap` hit return. The focused test failed at the target assertion with expected `{ messages: 1, blocks: 1 }` and received `{ messages: 1000, blocks: 1000 }`; `git apply --reverse --check` followed by reverse application restored the hit guard with no mutation residue. `bun test tests/history/in-flight-summary-memo.unit.test.ts --rerun-each=20` then passed 80 executions with 0 failures. `tests/history/v3/canonical-performance.unit.test.ts` is deliberately untouched: its wall-clock SSE-ratio flake remains a separate performance investigation.
+
 ## Scope
 
 No production `src/` shutdown behavior changed. The fixes make the existing PTY integration oracle wait for the already-required terminal state and startup byte instead of treating earlier logging or an undersized process-start deadline as lifecycle readiness.
+
+The in-flight change adds no production behavior: with no test observer installed, summary construction retains the existing WeakMap cache path and has no additional externally visible output.
