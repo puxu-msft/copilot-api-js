@@ -2,8 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use `superpowers:subagent-driven-development`（推荐）或 `superpowers:executing-plans` 逐任务实施。所有步骤用 checkbox 跟踪；每个任务完成后先评审再进入下一任务。
 
-- 计划状态：草案，待独立评审
-- 实施状态：未实施
+- 计划状态：已定稿，独立评审通过
+- 实施状态：未实施；按 docs-merge-before-execute，合入 master 后另行决定是否执行
+- 计划评审：[2026-08-06-github-enterprise-auth-host-review.md](./2026-08-06-github-enterprise-auth-host-review.md)
 - 规格：[docs/spec/2026-08-05-github-enterprise-auth-host.md](../spec/2026-08-05-github-enterprise-auth-host.md)
 - 规格评审：[docs/spec/2026-08-05-github-enterprise-auth-host-review.md](../spec/2026-08-05-github-enterprise-auth-host-review.md)
 - Kick-off：[2026-08-06-github-enterprise-auth-host-kickoff.md](./2026-08-06-github-enterprise-auth-host-kickoff.md)
