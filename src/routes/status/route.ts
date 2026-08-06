@@ -21,12 +21,15 @@ import {
 import { getToolInputRepairStats } from "~/lib/anthropic/tool-input-repair-stats"
 import { PATHS } from "~/lib/config/paths"
 import { getRequestContextManager } from "~/lib/context/manager"
-import { getHistorySummaries } from "~/lib/history/queries"
 import { getRawCaptureStatus } from "~/lib/history/raw/manager"
 import { pingHistorySearchUdsClient } from "~/lib/history/search/uds-client"
 import { getHistorySearchClient } from "~/lib/history/state"
 import { listInFlightEntries } from "~/lib/history/store"
-import { getV3StoreStatus } from "~/lib/history/v3/store"
+import {
+  //
+  countV3Operations,
+  getV3StoreStatus,
+} from "~/lib/history/v3/store"
 import { peekUpstreamWsManager } from "~/lib/openai/upstream-ws"
 import {
   //
@@ -125,7 +128,7 @@ statusRoutes.openapi(getStatusRoute, async (c) => {
   let historyEntryCount = 0
   let summaryProjection = { ready: false, pending: 0, poisoned: 0 }
   try {
-    historyEntryCount = getHistorySummaries({ operationKind: "all", limit: 1 }).total
+    historyEntryCount = countV3Operations()
     const historyStatus = getV3StoreStatus()
     summaryProjection = {
       ready: historyStatus.summaryProjectionReady,
