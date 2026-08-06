@@ -601,6 +601,7 @@ export function setCaptureWorkObserverForTests(observer: (() => void) | undefine
 
 function freezeCapturedValue<T>(value: T, seen = new WeakSet<object>()): T {
   if (value === null || typeof value !== "object") return value
+  captureWorkObserver?.()
   const object = value as object
   if (seen.has(object)) return value
   seen.add(object)
@@ -611,23 +612,6 @@ function freezeCapturedValue<T>(value: T, seen = new WeakSet<object>()): T {
     Object.freeze(object)
   }
   return value
-}
-
-function freezeCapturedValueObserved<T>(value: T, seen = new WeakSet<object>()): T {
-  if (value === null || typeof value !== "object") return value
-  captureWorkObserver!()
-  const object = value as object
-  if (seen.has(object)) return value
-  seen.add(object)
-  if (!ArrayBuffer.isView(object)) {
-    for (const nested of Object.values(object)) freezeCapturedValueObserved(nested, seen)
-    Object.freeze(object)
-  }
-  return value
-}
-
-function captureValue<T>(value: T): T {
-  return captureWorkObserver ? freezeCapturedValueObserved(value) : freezeCapturedValue(value)
 }
 
 function freezeExtensions(input: Readonly<Record<string, unknown>> | undefined): OperationExtensions | undefined {
@@ -876,7 +860,7 @@ export function createModelOperationRecorder(input: CreateModelOperationRecorder
       const node: SourceArenaNode<PayloadNodeHandle> = Object.freeze({
         handle,
         ...nextEvent(nodeInput.occurredAt),
-        value: captureValue(value),
+        value: freezeCapturedValue(value),
         origin: freezeOrigin(nodeInput.origin),
         provenance: "source",
         ...(nodeInput.mediaType === undefined ? {} : { mediaType: nodeInput.mediaType }),
@@ -895,7 +879,7 @@ export function createModelOperationRecorder(input: CreateModelOperationRecorder
       const node: DerivedArenaNode<PayloadNodeHandle> = Object.freeze({
         handle,
         ...nextEvent(nodeInput.occurredAt),
-        value: captureValue(value),
+        value: freezeCapturedValue(value),
         origin: freezeOrigin(nodeInput.origin),
         provenance: "derived",
         derivedFrom: nodeInput.derivedFrom,
@@ -914,7 +898,7 @@ export function createModelOperationRecorder(input: CreateModelOperationRecorder
       const node: SourceArenaNode<FrameNodeHandle> = Object.freeze({
         handle,
         ...nextEvent(nodeInput.occurredAt),
-        value: captureValue(value),
+        value: freezeCapturedValue(value),
         origin: freezeOrigin(nodeInput.origin),
         provenance: "source",
         ...(nodeInput.mediaType === undefined ? {} : { mediaType: nodeInput.mediaType }),
@@ -933,7 +917,7 @@ export function createModelOperationRecorder(input: CreateModelOperationRecorder
       const node: DerivedArenaNode<FrameNodeHandle> = Object.freeze({
         handle,
         ...nextEvent(nodeInput.occurredAt),
-        value: captureValue(value),
+        value: freezeCapturedValue(value),
         origin: freezeOrigin(nodeInput.origin),
         provenance: "derived",
         derivedFrom: nodeInput.derivedFrom,

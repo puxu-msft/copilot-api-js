@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs"
+import { join } from "node:path"
+
 import {
   //
   describe,
@@ -44,6 +47,31 @@ function heapDelta(factory: () => unknown): number {
   return Math.max(0, after - before)
 }
 
+function captureWork(factory: () => ReturnType<typeof longConversationFixture>): {
+  readonly record: ReturnType<typeof longConversationFixture>
+  readonly visits: number
+} {
+  let visits = 0
+  setCaptureWorkObserverForTests(() => visits++)
+  try {
+    return { record: factory(), visits }
+  } finally {
+    setCaptureWorkObserverForTests(undefined)
+  }
+}
+
+function population(record: ReturnType<typeof longConversationFixture>): Record<string, number> {
+  return {
+    payloads: record.arena.payloads.length,
+    frames: record.arena.frames.length,
+    dispatches: record.dispatches.length,
+    candidates: record.candidates.length,
+    transforms: record.transforms.length,
+  }
+}
+
+const RECORDER_SOURCE = readFileSync(join(import.meta.dir, "../../../src/lib/context/model-operation-record.ts"), "utf8")
+
 describe("History V3 canonical capture performance", () => {
   test("quantifies CPU and heap for the top-three deterministic workloads", () => {
     const workloads = [
@@ -70,31 +98,37 @@ describe("History V3 canonical capture performance", () => {
     }
   })
 
-  test("capture work follows new conversation and SSE nodes rather than growing superlinearly", () => {
-    const work = { nodes: 0 }
-    setCaptureWorkObserverForTests(() => work.nodes++)
-    try {
-      longConversationFixture("complexity-long-small", 32, 512)
-      const smallConversationWork = work.nodes
-      longConversationFixture("complexity-long-large", 128, 512)
-      const largeConversationWork = work.nodes - smallConversationWork
+  test("recursive captured-value freeze and sealed arena copies scale with new messages and frames", () => {
+    const smallConversation = captureWork(() => longConversationFixture("complexity-long-small", 32, 512))
+    const largeConversation = captureWork(() => longConversationFixture("complexity-long-large", 128, 512))
+    const smallSse = captureWork(() => largeSseFixture("complexity-sse-small", 512, 128))
+    const largeSse = captureWork(() => largeSseFixture("complexity-sse-large", 2_048, 128))
 
-      largeSseFixture("complexity-sse-small", 512, 128)
-      const smallSseWork = work.nodes - smallConversationWork - largeConversationWork
-      largeSseFixture("complexity-sse-large", 2_048, 128)
-      const largeSseWork = work.nodes - smallConversationWork - largeConversationWork - smallSseWork
+    expect(population(smallConversation.record)).toEqual({ payloads: 1, frames: 32, dispatches: 1, candidates: 1, transforms: 0 })
+    expect(population(largeConversation.record)).toEqual({ payloads: 1, frames: 128, dispatches: 1, candidates: 1, transforms: 0 })
+    expect(population(smallSse.record)).toEqual({ payloads: 1, frames: 512, dispatches: 1, candidates: 1, transforms: 0 })
+    expect(population(largeSse.record)).toEqual({ payloads: 1, frames: 2_048, dispatches: 1, candidates: 1, transforms: 0 })
 
-      const conversationRatio = largeConversationWork / smallConversationWork
-      const sseRatio = largeSseWork / smallSseWork
-      console.log(
-        "HISTORY_V3_PERF capture-work",
-        JSON.stringify({ smallConversationWork, largeConversationWork, conversationRatio, smallSseWork, largeSseWork, sseRatio }),
-      )
-      expect(conversationRatio).toBeLessThan(8)
-      expect(sseRatio).toBeLessThan(8)
-    } finally {
-      setCaptureWorkObserverForTests(undefined)
-    }
+    const conversationRatio = largeConversation.visits / smallConversation.visits
+    const sseRatio = largeSse.visits / smallSse.visits
+    console.log(
+      "HISTORY_V3_PERF capture-work",
+      JSON.stringify({
+        smallConversationWork: smallConversation.visits,
+        largeConversationWork: largeConversation.visits,
+        conversationRatio,
+        smallSseWork: smallSse.visits,
+        largeSseWork: largeSse.visits,
+        sseRatio,
+      }),
+    )
+    expect(conversationRatio).toBeLessThan(8)
+    expect(sseRatio).toBeLessThan(8)
+  })
+
+  test("capture work has one recursive freeze implementation", () => {
+    expect(RECORDER_SOURCE.match(/^function freezeCapturedValue(?:Observed)?</gm)).toHaveLength(1)
+    expect(RECORDER_SOURCE.match(/freezeCapturedValue\(nested, seen\)/g)).toHaveLength(1)
   })
 
   test("unchanged upstream, rewrite, and client frames share exactly one arena node", () => {
