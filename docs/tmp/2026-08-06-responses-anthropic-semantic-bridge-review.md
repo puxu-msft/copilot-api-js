@@ -1,6 +1,6 @@
 # Responses ↔ Anthropic 语义桥规格评审记录
 
-> **状态**：第五轮复审的 3 MAJOR 已整改，待第六轮复审
+> **状态**：已完成；协议、架构与最新 master thinking 审计增量复核均放行
 >
 > **评审对象**：`docs/spec/2026-08-06-responses-anthropic-semantic-bridge.md`
 >
@@ -328,3 +328,14 @@
 4. Capability registry／冻结 order／受限 patches／items-only coordinator／唯一 items assembler 是否机械消除 top-level 双 owner 与 last-write-wins。
 5. 更新后的 mutation、正确状态、守卫 21–24 与 AC22–AC24 是否分别有判别力。
 6. 若无 BLOCKER／MAJOR，明确写“增量复核通过，可合入 master”。
+
+### 第六轮复审结果
+
+- 架构 reviewer：**增量复核通过，可合入 master**，0 BLOCKER、0 MAJOR。
+- M20 已闭合：`FunctionCallArgumentsDoneEvent` 进入 typed progress；三源 state 由 item-close 唯一 finalize，缺 close／晚到／冲突 fail-loud，canonical 等价与重复同值不 false-red。
+- M21 已闭合：policy 只有 preserve 与 scope 固定为 `within-source-group` 的 reasoning-first 两支；group／item ordinal 保证组间不动，coordinator 只接受 branded `OrderedRequestSequence`。
+- M22 已闭合：registry 是 top-level 唯一 owner，patch＋disposition 原子应用并拒绝重复 path；coordinator 不接 payload／target，只产 items，唯一 assembler 写入与 top-level fields 不相交的 items field。
+- Mutation、正确状态、守卫 21–24 与 AC22–AC24 对目标缺陷有双向判别力；未发现阻断正确零 delta、多 item、canonical-equivalent JSON 或合法 degraded capability 的 false-red。
+- Reviewer 复核本记录对第五轮结果、M20–M22 的级别、事实、处置与待复审命题转录忠实；隔离 worktree 结束时 `git status --short` 为空。
+
+至此 thinking 审计增量的 7 个 MAJOR 全部采纳并经原 reviewer 复审闭合；连同首轮至第四轮，累计处置 1 BLOCKER、22 MAJOR，无未决 finding。

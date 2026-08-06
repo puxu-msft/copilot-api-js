@@ -1,6 +1,6 @@
 # OpenAI Responses ↔ Anthropic Messages 语义桥规格
 
-> **状态**：第五轮复审的 3 MAJOR 已整改，待第六轮复审
+> **状态**：已定稿；协议、架构与最新 master thinking 审计增量复核均无 BLOCKER／MAJOR
 >
 > **核验基线**：`b6fb0947686ea6620bfafb63a4fd151d18599483`（2026-08-06；定稿分支重基后的最新 master）
 >
