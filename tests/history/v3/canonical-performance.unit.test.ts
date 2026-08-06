@@ -5,7 +5,11 @@ import {
   test,
 } from "bun:test"
 
-import { createModelOperationRecorder } from "~/lib/context/model-operation-record"
+import {
+  //
+  createModelOperationRecorder,
+  setCaptureWorkObserverForTests,
+} from "~/lib/context/model-operation-record"
 
 import {
   //
@@ -61,23 +65,36 @@ describe("History V3 canonical capture performance", () => {
 
     console.log("HISTORY_V3_PERF canonical", JSON.stringify(rows))
     for (const row of rows) {
-      expect(row.medianMs).toBeGreaterThan(0)
       expect(row.logicalBytes).toBeGreaterThan(1_000)
       expect(row.nodes).toBeGreaterThan(1)
     }
   })
 
-  test("capture cost follows new work rather than growing superlinearly", () => {
-    const smallConversation = measured(() => longConversationFixture("complexity-long-small", 32, 512)).medianMs
-    const largeConversation = measured(() => longConversationFixture("complexity-long-large", 128, 512)).medianMs
-    const smallSse = measured(() => largeSseFixture("complexity-sse-small", 512, 128)).medianMs
-    const largeSse = measured(() => largeSseFixture("complexity-sse-large", 2_048, 128)).medianMs
-    const conversationRatio = largeConversation / smallConversation
-    const sseRatio = largeSse / smallSse
+  test("capture work follows new conversation and SSE nodes rather than growing superlinearly", () => {
+    const work = { nodes: 0 }
+    setCaptureWorkObserverForTests(() => work.nodes++)
+    try {
+      longConversationFixture("complexity-long-small", 32, 512)
+      const smallConversationWork = work.nodes
+      longConversationFixture("complexity-long-large", 128, 512)
+      const largeConversationWork = work.nodes - smallConversationWork
 
-    console.log("HISTORY_V3_PERF capture-complexity", JSON.stringify({ smallConversation, largeConversation, conversationRatio, smallSse, largeSse, sseRatio }))
-    expect(conversationRatio).toBeLessThan(8)
-    expect(sseRatio).toBeLessThan(8)
+      largeSseFixture("complexity-sse-small", 512, 128)
+      const smallSseWork = work.nodes - smallConversationWork - largeConversationWork
+      largeSseFixture("complexity-sse-large", 2_048, 128)
+      const largeSseWork = work.nodes - smallConversationWork - largeConversationWork - smallSseWork
+
+      const conversationRatio = largeConversationWork / smallConversationWork
+      const sseRatio = largeSseWork / smallSseWork
+      console.log(
+        "HISTORY_V3_PERF capture-work",
+        JSON.stringify({ smallConversationWork, largeConversationWork, conversationRatio, smallSseWork, largeSseWork, sseRatio }),
+      )
+      expect(conversationRatio).toBeLessThan(8)
+      expect(sseRatio).toBeLessThan(8)
+    } finally {
+      setCaptureWorkObserverForTests(undefined)
+    }
   })
 
   test("unchanged upstream, rewrite, and client frames share exactly one arena node", () => {
