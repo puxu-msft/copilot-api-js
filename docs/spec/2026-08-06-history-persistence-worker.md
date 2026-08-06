@@ -258,13 +258,15 @@ terminal 时 raw commands 与 semantic record 一次投递 Worker。
 - config revision；
 - requested；
 - db path；
-- store ID；
+- 持久化 store ID；
 - max object bytes；
-- generation identity。
+- 可选 worker-local generation token。
 
-主线程只在收到与当前待发布 revision 精确匹配的 ACK 后，才原子替换 admission 可见的 active descriptor。runtime 串行发送 config revision，并为 pending revision 维护一个共享 publication barrier。只要 pending revision 存在，**所有新的模型 admission** 都必须先等待同一个 barrier；不能只让检测到配置变化的那一个请求等待，否则并发请求会在 ACK 前错误冻结旧 descriptor。ACK 到达后先原子发布 descriptor，再 resolve barrier，随后放行 admission。迟到的旧 revision ACK 只计数，不得回退 active descriptor。
+`dbPath + storeId` 是跨 Worker restart 稳定的 artifact identity。worker-local generation token 只用于同一 Worker 生命周期内区分 active／retiring handles；它每次 reopen 可变化，不写入旧 envelope 的跨 restart 校验条件，也不得被描述成持久 generation identity。
 
-Worker restart 的 `initialize` 携主线程最新 desired config revision。`ready` 必须回显该 revision 及已验证 descriptor；revision 不匹配则不进入 ready、不重放。匹配的 `ready` 与 `config-applied` 走同一个原子发布原语，并 resolve crash 前仍 pending 的 config publication barrier。`fatal` 必须 reject barrier 与所有 config update waiter。restart 前已经取得 reservation、并按旧 published descriptor 准入的 operation 仍写入冻结 target；尚未取得 reservation 的请求继续等待 barrier。Worker 收到旧 target envelope 时可按 descriptor 重新打开 artifact，但必须校验 store ID／generation identity，不能把它写进当前 active generation。
+主线程维护 `latestDesiredRevision`、`publishedRevision` 与一个代表“latest desired 已发布”的共享 publication barrier。runtime 可串行发送 A、B 等 config revision，但中间 revision A 的 `config-applied` 只更新 A 对应 update waiter／诊断状态；若此时 `latestDesiredRevision=B`，A ACK **不得**发布 admission descriptor、不得 resolve admission barrier、不得放行模型请求。只有 ACK revision 同时满足 `revision === latestDesiredRevision`，runtime 才先原子设置 `publishedRevision=revision` 与 active descriptor，再 resolve barrier。连续新 revision 到达时，必须在任何旧 barrier continuation 获得调度前，先同步更新 `latestDesiredRevision` 并保持／替换为仍 pending 的 barrier；因此 A→B 之间不存在 admission 窗口。迟到旧 revision ACK 只计数，不得回退 active descriptor。
+
+Worker restart 的 `initialize` 携主线程 `latestDesiredRevision`。`ready` 必须回显该 revision 及已验证 descriptor；revision 不匹配则不进入 ready、不重放。匹配的 `ready` 与 latest `config-applied` 走同一个原子发布原语，并 resolve crash 前仍 pending 的 publication barrier。`fatal` 必须 reject barrier 与所有 config update waiter。restart 前已经取得 reservation、并按旧 published descriptor 准入的 operation 仍写入冻结 target；尚未取得 reservation 的请求继续等待 barrier。Worker 收到旧 target envelope 时可重新打开其 `dbPath`，但只能以持久化 `storeId` 校验 artifact identity；匹配即合法，worker-local generation token 不参与跨 restart 判定。旧 envelope 不能被改写到当前 active descriptor 指向的另一 artifact。
 
 ### 5.4 Semantic 与 raw 失败关系
 
@@ -601,11 +603,13 @@ terminal persistence 仍可使用旧 writer。
 
 - frame→command 字节语义；
 - sequence／track 顺序；
-- config revision 串行、`config-applied` ACK 后才发布 descriptor；
-- pending revision 存在时所有新 admission 等待共享 publication barrier，不能并发冻结旧 descriptor；
-- ACK 原子发布后才 resolve barrier 并放行 operation；
+- config revision 串行，`publishedRevision` 只可推进到 `latestDesiredRevision`；
+- A→B 连续热切时，A ACK 不 resolve admission barrier、不发布 A descriptor；
+- pending latest revision 存在时所有新 admission 等待共享 publication barrier，不能并发冻结中间 descriptor；
+- latest ACK 原子发布后才 resolve barrier 并放行 operation；
 - 迟到旧 revision ACK 不回退 descriptor；
 - Worker restart `ready` revision／descriptor 对账，并恢复 crash 前 pending barrier；
+- 跨 restart 只校验 `dbPath + storeId`，worker-local generation token 变化不误杀合法旧 envelope；
 - config fatal reject barrier／update waiter；
 - operation target 冻结；
 - structured clone；
@@ -763,9 +767,13 @@ fake 不得比真 Worker 更友好：错误码、unknown ACK、crash、close、o
 - fatal 与迟到 ACK 竞态；
 - stale generation ACK；
 - raw config ACK 前／后并发 admission；
+- A、B 连续 revision 中 A ACK 与 admission continuation 交错，只有 B ACK 放行；
+- B 到达时同步安装／保持 latest publication barrier，不出现 A→B 空窗；
 - config update pending 时 Worker crash，matching ready 恢复 publication barrier；
 - config fatal reject barrier；
-- restart ready revision mismatch。
+- restart ready revision mismatch；
+- 同一 `dbPath + storeId` 重开后 worker-local token 改变，旧 envelope 仍合法；
+- 相同 path 但 store ID 不同必须形成 identity failure／raw gap。
 
 ### 12.5 Shutdown
 
