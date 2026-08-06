@@ -258,7 +258,7 @@ describe("h2 generation-based retire-and-replace", () => {
     const serverStreamReleased = new Promise<void>((resolve) => {
       releaseServerStream = resolve
     })
-    const streamOpened = Promise.withResolvers<void>()
+    const streamOpened = Promise.withResolvers<undefined>()
     handler = (stream) => {
       stream.respond({ ":status": 200 })
       stream.write("first-chunk")

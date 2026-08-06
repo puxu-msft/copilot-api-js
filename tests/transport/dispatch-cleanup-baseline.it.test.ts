@@ -268,7 +268,7 @@ describe("adaptive rate-limit queue and backoff cleanup", () => {
 
   test("P5 contract: candidate abort stops a pending 429 backoff replay", async () => {
     let releaseBackoff!: () => void
-    const backoffStarted = Promise.withResolvers<void>()
+    const backoffStarted = Promise.withResolvers<undefined>()
     const limiter = new AdaptiveRateLimiter(
       {
         baseRetryIntervalSeconds: 0.01,
