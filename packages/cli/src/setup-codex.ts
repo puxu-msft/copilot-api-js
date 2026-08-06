@@ -4,6 +4,8 @@ import { promises as fsPromises } from "node:fs"
 import { dirname } from "node:path"
 import invariant from "tiny-invariant"
 
+import type { Model } from "~/lib/models/client"
+
 import { atomicWriteText } from "~/lib/atomic-fs"
 import { applyCodexConfig } from "~/lib/codex-config"
 import { applyConfigToState } from "~/lib/config/config"
@@ -13,11 +15,7 @@ import {
   PATHS,
 } from "~/lib/config/paths"
 import { cacheVSCodeVersion } from "~/lib/copilot-api"
-import {
-  //
-  cacheModels,
-  type Model,
-} from "~/lib/models/client"
+import { cacheModels } from "~/lib/models/cache"
 import { initProxy } from "~/lib/proxy"
 import {
   //

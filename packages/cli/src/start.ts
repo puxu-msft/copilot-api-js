@@ -41,8 +41,9 @@ import {
   setHistoryPublisher,
   startHistoryBackfills,
 } from "~/lib/history"
+import { cacheModels } from "~/lib/models/cache"
+import { getRawModels } from "~/lib/models/cache"
 import { loadPersistedLimits } from "~/lib/models/calibration"
-import { cacheModels } from "~/lib/models/client"
 import { normalizeForMatching } from "~/lib/models/model-name"
 import { startModelRefreshLoop } from "~/lib/models/refresh-loop"
 import { initBus } from "~/lib/observability"
@@ -86,7 +87,6 @@ import {
   setServerStartTime,
   setTokenBasedBilling,
   state,
-  getRawModels,
 } from "~/lib/state"
 import { installDefaultTelemetryRuntime } from "~/lib/telemetry-assembly"
 import { initTokenManagers } from "~/lib/token-runtime"

@@ -88,6 +88,7 @@ import {
   convertGeminiRequestToOpenAI,
   createGeminiStreamTranslator,
 } from "~/lib/gemini"
+import { geminiStreamErrorStatusAndCode } from "~/lib/gemini/stream-error"
 import {
   //
   getAgentIdFromHeaders,
@@ -101,6 +102,7 @@ import {
 import { fillMaxCompletionTokens } from "~/lib/openai/request-preparation"
 import { sanitizeOpenAIMessages } from "~/lib/openai/sanitize"
 import { createCandidateStateFactory } from "~/lib/pipeline/generation/candidate-state"
+import { STREAM_ERROR_KIND_MESSAGES } from "~/lib/stream"
 import { processOpenAIMessages } from "~/lib/system-prompt"
 
 const CLIENT_FORMAT: ClientFormat = "gemini"
@@ -389,30 +391,17 @@ function projectGeminiContentsAsMessages(contents: ReadonlyArray<GeminiContent>,
  * Note (P2.2-D4 parity): the locked signature hands only the classified kind, not
  * the raw message — the handler-v4 builds the richer inline error frame (with the
  * raw message). This is for completeness / driver S7 callers.
+ *
+ * `{code, status}` and the message come from the shared tables in
+ * `~/lib/gemini/stream-error` and `~/lib/stream`, which handler-v4 uses too — this
+ * file used to keep private copies, so the codec and the wire disagreed.
  */
-const STREAM_ERROR_STATUS: Record<ClassifiedStreamError, string> = {
-  "idle-timeout": "DEADLINE_EXCEEDED",
-  shutdown: "UNAVAILABLE",
-  "client-abort": "CANCELLED",
-  "reaper-cancel": "UNAVAILABLE",
-  "dispatch-cancel": "CANCELLED",
-  other: "INTERNAL",
-}
-const STREAM_ERROR_MESSAGES: Record<ClassifiedStreamError, string> = {
-  "idle-timeout": "Stream idle timeout",
-  shutdown: "Server is shutting down",
-  "client-abort": "Client disconnected",
-  "reaper-cancel": "Request cancelled by stale-request reaper",
-  "dispatch-cancel": "Upstream dispatch cancelled",
-  other: "Stream error",
-}
-
 function formatGeminiError(err: ClassifiedStreamError): ClientFrame {
-  const message = STREAM_ERROR_MESSAGES[err]
+  const message = STREAM_ERROR_KIND_MESSAGES[err]
   return {
     data: JSON.stringify({
       candidates: [{ content: { role: "model", parts: [{ text: message }] }, finishReason: "OTHER", index: 0 }],
-      error: { code: err === "shutdown" ? 503 : 500, message, status: STREAM_ERROR_STATUS[err] },
+      error: { ...geminiStreamErrorStatusAndCode(err), message },
     }),
   }
 }

@@ -1,5 +1,7 @@
 # P0 — 基线与守卫
 
+> **实施状态（核验于 2026-08-03 `a20e1bfb`）**：**已完成并在 master**——`1bf9bf89` `test(anchor): establish allocator implementation baselines`（`git merge-base --is-ancestor 1bf9bf89 master` = YES）。本相位建立的 oracle 被后续相位复用；**其中 O-6 字节门此前恒真，已于 `4f7a3989` 修复**（脚本覆盖自己的基线且全脚本无 `cmp`），引用它之前先看 `exp/inter-block-anchor-allocator/README.md`。
+
 > **前置**：无（DAG 根）。**产出**：三条独立 oracle 的 harness + 现有 anchor 套件的红绿基线，后续每相位复用。
 > **为什么先做**：本改造的失败模式是**静默重排**（R1），typecheck 绿 + 单测绿都不足以发现。必须先有能咬住 wire 全序的 oracle，才允许动 index 记账。
 

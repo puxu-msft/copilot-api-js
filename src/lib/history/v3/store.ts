@@ -24,6 +24,13 @@ import type { Database } from "../sqlite/connection"
 
 import { getDatabase } from "../sqlite/connection"
 import { recordToEntrySummary } from "./projection"
+import {
+  //
+  backfillExistingSummaryRows,
+  getSummaryProjectionReadiness,
+  markSummaryProjectionPoisoned,
+  tryMarkSummaryProjectionReady,
+} from "./summary-store"
 
 const FORMAT_VERSION = 2
 const SCHEMA_VERSION = "5"
@@ -57,6 +64,9 @@ export interface V3StoreStatus {
   failedOperations: number
   conflicts: number
   summaryBacklog: number
+  summaryProjectionReady: boolean
+  summaryProjectionPending: number
+  summaryProjectionPoisoned: number
   lastError?: string
 }
 
@@ -128,10 +138,12 @@ interface PreparedOperation {
   byteLength: number
 }
 
+export type EnqueueModelOperationOutcome = "persisted" | "failed" | "conflict"
+
 interface PendingOperation {
   record: ModelOperationRecord
   estimatedBytes: number
-  resolve: () => void
+  resolve: (outcome: EnqueueModelOperationOutcome) => void
 }
 
 const pending: Array<PendingOperation> = []
@@ -187,6 +199,9 @@ let status: V3StoreStatus = {
   failedOperations: 0,
   conflicts: 0,
   summaryBacklog: 0,
+  summaryProjectionReady: false,
+  summaryProjectionPending: 0,
+  summaryProjectionPoisoned: 0,
 }
 
 export const V3_SCHEMA_SQL = `
@@ -836,6 +851,7 @@ async function runDrain(): Promise<void> {
       if (item === undefined) break
       pendingBytes -= item.estimatedBytes
       status = { ...status, pendingOperations: pending.length, pendingBytes }
+      let outcome: EnqueueModelOperationOutcome = "failed"
       try {
         const prepared = await Promise.resolve().then(() => prepareModelOperation(item.record))
         // Captures a non-conflict thrown error so `lastError` still carries its
@@ -853,6 +869,7 @@ async function runDrain(): Promise<void> {
         const retryOutcome = await runWithTransientRetry(
           async () => {
             nonConflictError = undefined
+            let attemptConflict = false
             const result = await runHistoryWriteAsync("v3-drain", async () => {
               try {
                 commitFailureInjectorForTests?.() // DI-5 test seam: no-op in prod
@@ -860,6 +877,7 @@ async function runDrain(): Promise<void> {
                 if (commitResult === "inserted") status = { ...status, persistedOperations: status.persistedOperations + 1 }
               } catch (error) {
                 if (error instanceof V3OperationConflictError) {
+                  attemptConflict = true
                   // A conflict is a data-contract violation (duplicate operationId,
                   // differing revision/digest), not a SQLite persistence failure —
                   // `commitPreparedOperation` already bumped `status.conflicts`
@@ -872,7 +890,7 @@ async function runDrain(): Promise<void> {
                 throw error
               }
             })
-            return { ok: result.ok, transient: result.transient, conflict: false }
+            return { ok: result.ok && !attemptConflict, transient: result.transient, conflict: attemptConflict }
           },
           // No shutdown signal here on purpose: importing `~/lib/shutdown` would
           // create a store→shutdown→state require cycle that reorders module init
@@ -882,7 +900,11 @@ async function runDrain(): Promise<void> {
           // accepts a signal for callers that can provide one without the cycle.
           { maxAttempts: persistRetryConfig.maxAttempts, backoffMs: persistRetryConfig.backoffMs, maxTotalMs: persistRetryConfig.maxTotalMs },
         )
-        if (!retryOutcome.ok) {
+        if (retryOutcome.conflict) {
+          outcome = "conflict"
+        } else if (retryOutcome.ok) {
+          outcome = "persisted"
+        } else {
           // Surface WHICH soft cap dropped the entry (attempt ceiling vs time
           // budget) alongside the last error, so an operator can tell a transient
           // storm (max-attempts) from a wedge-guard trip (max-total-ms).
@@ -902,7 +924,7 @@ async function runDrain(): Promise<void> {
           lastError: error instanceof Error ? error.message : String(error),
         }
       } finally {
-        item.resolve()
+        item.resolve(outcome)
       }
       await new Promise<void>((resolve) => realSetTimeout(resolve, 0))
     }
@@ -912,11 +934,11 @@ async function runDrain(): Promise<void> {
   }
 }
 
-/** Enqueue a terminal record; resolves after its commit attempt without throwing. */
-export function enqueueModelOperation(record: ModelOperationRecord): Promise<void> {
+/** Enqueue a terminal record and retain the operation-scoped durability outcome. Never rejects. */
+export function enqueueModelOperationWithOutcome(record: ModelOperationRecord): Promise<EnqueueModelOperationOutcome> {
   const estimatedBytes = estimateRecordBytes(record)
-  let resolve!: () => void
-  const done = new Promise<void>((doneResolve) => {
+  let resolve!: (outcome: EnqueueModelOperationOutcome) => void
+  const done = new Promise<EnqueueModelOperationOutcome>((doneResolve) => {
     resolve = doneResolve
   })
   pending.push({ record, estimatedBytes, resolve })
@@ -927,6 +949,11 @@ export function enqueueModelOperation(record: ModelOperationRecord): Promise<voi
     .finally(() => pendingDrains.delete(drain))
   pendingDrains.add(drain)
   return done
+}
+
+/** Compatibility surface: resolves after the commit attempt and never exposes persistence failure to model delivery. */
+export async function enqueueModelOperation(record: ModelOperationRecord): Promise<void> {
+  await enqueueModelOperationWithOutcome(record)
 }
 
 export async function drainV3Writer(): Promise<void> {
@@ -940,21 +967,59 @@ export function getV3StoreStatus(): V3StoreStatus {
   const db = getDatabase()
   ensureV3Schema(db)
   const summaryBacklog = (db.prepare("SELECT COUNT(*) AS n FROM v3_summary_backlog").get() as { n: number }).n
-  return { ...status, pendingOperations: pending.length, pendingBytes, summaryBacklog }
+  const projection = getSummaryProjectionReadiness(db)
+  return {
+    ...status,
+    pendingOperations: pending.length,
+    pendingBytes,
+    summaryBacklog,
+    summaryProjectionReady: projection.ready,
+    summaryProjectionPending: projection.pending,
+    summaryProjectionPoisoned: projection.poisoned,
+  }
 }
 
-export function getV3StoredOperation(operationId: string, db: Database = getDatabase()): V3StoredOperation | undefined {
-  ensureV3Schema(db)
-  const row = db.prepare("SELECT manifest_gz,pinned,ended_at,timing_source FROM v3_operations WHERE operation_id=?").get(operationId) as
-    | { manifest_gz: Uint8Array; pinned: number; ended_at: number | null; timing_source: V3TimingSource }
-    | undefined
-  if (!row) return undefined
+interface V3StoredOperationRow {
+  manifest_gz: Uint8Array
+  pinned: number
+  ended_at: number | null
+  timing_source: V3TimingSource
+}
+
+function storedOperationFromRow(db: Database, row: V3StoredOperationRow): V3StoredOperation {
   return {
     record: hydrateManifest(db, row.manifest_gz),
     pinned: row.pinned === 1,
     ...(row.ended_at === null ? {} : { endedAt: row.ended_at }),
     timingSource: row.timing_source,
   }
+}
+
+export function getV3StoredOperation(operationId: string, db: Database = getDatabase()): V3StoredOperation | undefined {
+  ensureV3Schema(db)
+  const row = db.prepare("SELECT manifest_gz,pinned,ended_at,timing_source FROM v3_operations WHERE operation_id=?").get(operationId) as
+    | V3StoredOperationRow
+    | undefined
+  return row ? storedOperationFromRow(db, row) : undefined
+}
+
+export function getV3StoredOperations(operationIds: ReadonlyArray<string>, db: Database = getDatabase()): Map<string, V3StoredOperation> {
+  ensureV3Schema(db)
+  if (operationIds.length === 0) return new Map()
+  const rows = db
+    .prepare(
+      `SELECT operation_id,manifest_gz,pinned,ended_at,timing_source
+       FROM v3_operations
+       WHERE operation_id IN (SELECT value FROM json_each(?))`,
+    )
+    .all(JSON.stringify(operationIds)) as Array<{
+    operation_id: string
+    manifest_gz: Uint8Array
+    pinned: number
+    ended_at: number | null
+    timing_source: V3TimingSource
+  }>
+  return new Map(rows.map((row) => [row.operation_id, storedOperationFromRow(db, row)]))
 }
 
 export function getV3Operation(operationId: string): ModelOperationRecord | undefined {
@@ -969,12 +1034,7 @@ export function listV3StoredOperations(kind?: string, limit = 100, db: Database 
         .prepare("SELECT manifest_gz,pinned,ended_at,timing_source FROM v3_operations WHERE kind=? ORDER BY created_at DESC,operation_id DESC LIMIT ?")
         .all(kind, limit)
     : db.prepare("SELECT manifest_gz,pinned,ended_at,timing_source FROM v3_operations ORDER BY created_at DESC,operation_id DESC LIMIT ?").all(limit)
-  return (rows as Array<{ manifest_gz: Uint8Array; pinned: number; ended_at: number | null; timing_source: V3TimingSource }>).map((row) => ({
-    record: hydrateManifest(db, row.manifest_gz),
-    pinned: row.pinned === 1,
-    ...(row.ended_at === null ? {} : { endedAt: row.ended_at }),
-    timingSource: row.timing_source,
-  }))
+  return (rows as Array<V3StoredOperationRow>).map((row) => storedOperationFromRow(db, row))
 }
 
 export function listV3Operations(kind?: string, limit = 100): Array<ModelOperationRecord> {
@@ -986,12 +1046,7 @@ function summaryFromRow(
   row: { manifest_gz: Uint8Array; summary_json: string | null; pinned: number; ended_at: number | null; timing_source: V3TimingSource },
 ): EntrySummary {
   if (row.summary_json) return { ...(JSON.parse(row.summary_json) as EntrySummary), pinned: row.pinned === 1 }
-  const stored = {
-    record: hydrateManifest(db, row.manifest_gz),
-    pinned: row.pinned === 1,
-    ...(row.ended_at === null ? {} : { endedAt: row.ended_at }),
-    timingSource: row.timing_source,
-  }
+  const stored = storedOperationFromRow(db, row)
   return recordToEntrySummary(stored.record, stored)
 }
 
@@ -1020,14 +1075,31 @@ export function visitV3Summaries(visitor: (summary: EntrySummary) => unknown, ki
   }
 }
 
-export function startV3SummaryBackfill(db: Database = getDatabase(), batchSize = 16): void {
+export function startV3SummaryBackfill(
+  db: Database = getDatabase(),
+  batchSize = 16,
+  checkReadiness: typeof tryMarkSummaryProjectionReady = tryMarkSummaryProjectionReady,
+): void {
   if (summaryBackfill) return
   summaryBackfillStop = false
   summaryBackfill = (async () => {
+    let cursor: Parameters<typeof backfillExistingSummaryRows>[2]
+    let projectionDone = false
     while (!summaryBackfillStop) {
+      const page: ReturnType<typeof backfillExistingSummaryRows> =
+        projectionDone ? { inserted: 0, cursor: null } : backfillExistingSummaryRows(db, batchSize, cursor)
+      cursor = page.cursor
+      projectionDone = page.cursor === null
       const rows = db
         .prepare(
-          "SELECT operation_id,manifest_gz,pinned,ended_at,timing_source FROM v3_operations WHERE summary_json IS NULL AND operation_id NOT IN (SELECT operation_id FROM v3_summary_backlog) ORDER BY created_at,operation_id LIMIT ?",
+          `SELECT o.operation_id,o.manifest_gz,o.pinned,o.ended_at,o.timing_source
+           FROM v3_operations o
+           JOIN v3_operation_summaries s ON s.operation_id=o.operation_id
+           WHERE o.summary_json IS NULL
+             AND s.projection_status='pending'
+             AND o.operation_id NOT IN (SELECT operation_id FROM v3_summary_backlog)
+           ORDER BY o.created_at,o.operation_id
+           LIMIT ?`,
         )
         .all(batchSize) as Array<{
         operation_id: string
@@ -1036,7 +1108,6 @@ export function startV3SummaryBackfill(db: Database = getDatabase(), batchSize =
         ended_at: number | null
         timing_source: V3TimingSource
       }>
-      if (rows.length === 0) return
       for (const row of rows) {
         try {
           const stored = {
@@ -1050,13 +1121,15 @@ export function startV3SummaryBackfill(db: Database = getDatabase(), batchSize =
             row.operation_id,
           )
         } catch (error) {
+          const reason = error instanceof Error ? error.message : String(error)
           consola.error(`[history/v3] summary backfill failed for ${row.operation_id}`, error)
-          db.prepare("INSERT OR REPLACE INTO v3_summary_backlog(operation_id,reason,updated_at) VALUES(?,?,?)").run(
-            row.operation_id,
-            error instanceof Error ? error.message : String(error),
-            Date.now(),
-          )
+          db.prepare("INSERT OR REPLACE INTO v3_summary_backlog(operation_id,reason,updated_at) VALUES(?,?,?)").run(row.operation_id, reason, Date.now())
+          markSummaryProjectionPoisoned(db, row.operation_id, reason)
         }
+      }
+      if (projectionDone && rows.length === 0) {
+        checkReadiness(db)
+        return
       }
       await new Promise<void>((resolve) => setTimeout(resolve, 0))
     }
@@ -1099,12 +1172,7 @@ export function visitV3StoredOperations(visitor: (stored: V3StoredOperation) => 
     if (page.length === 0) return
     offset += page.length
     for (const row of page) {
-      const shouldContinue = visitor({
-        record: hydrateManifest(db, row.manifest_gz),
-        pinned: row.pinned === 1,
-        ...(row.ended_at === null ? {} : { endedAt: row.ended_at }),
-        timingSource: row.timing_source,
-      })
+      const shouldContinue = visitor(storedOperationFromRow(db, row))
       if (shouldContinue === false) return
     }
   }
@@ -1315,5 +1383,15 @@ export function resetV3WriterForTests(): void {
   summaryBackfillStop = true
   summaryBackfill = null
   commitFailureInjectorForTests = null
-  status = { pendingOperations: 0, pendingBytes: 0, persistedOperations: 0, failedOperations: 0, conflicts: 0, summaryBacklog: 0 }
+  status = {
+    pendingOperations: 0,
+    pendingBytes: 0,
+    persistedOperations: 0,
+    failedOperations: 0,
+    conflicts: 0,
+    summaryBacklog: 0,
+    summaryProjectionReady: false,
+    summaryProjectionPending: 0,
+    summaryProjectionPoisoned: 0,
+  }
 }

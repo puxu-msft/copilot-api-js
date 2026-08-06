@@ -30,13 +30,15 @@
 ## 本项目的工作哲学（什么是好的？）
 
 - **长远、泛用优先于短期、将就。** → user-rule `10-core-principles` `long-term-wins` + `60-feat-dev-workflow` `against-yagni-on-feature`。项目增量：架构健康 / 可维护性 / 可观测性 **> 向后兼容、回归风险**；结构性重写**可接受的不做理由仅两种**——债项经查为虚，或重写实证不改善清晰/可扩展/可观测；用户没要求"零改动/字节等价"时**不自设约束**否决正确重构；暂缓项必须完整文档化进 `docs/todo/`。
+- **necessity-claim-must-be-falsifiable。** 凡论证主张「不采用 X 就无法满足目标/不变量」，或据此排除其他用户选项，**无论措辞和载体**，均登记为 `necessity claim`。在设计首次交用户或定稿前的**既有评审**中，把该 claim 与替代方案表列入核验清单；表内覆盖更小、同规模异形与更大方案，并逐项写明违反的已冻结目标/契约/不变量及 `file:line`、实验或契约证据。**独立 reviewer 未明确判定 claim 成立前，不得把它作为事实交用户裁决**；收口沿用 `multi-round-before-consensus`（复审无未决 blocker/major），不得由提出者自称「已共识」。本条只增加既有评审的核验项，**不新增评审轮**。
+- **可行性与择优分开。** 任一替代方案同样闭合，就撤回「唯一/必须」，按 `one-option-or-the-best-option` 比较全部可行方案，并按 `record-not-adopted` 记录取舍。**较小方案可行只推翻唯一性，不自动胜出**；最终推荐依据长远正确 + 完整的具体收益，不依据「小」或「彻底」的标签。
 - **无向后兼容负担。** 本项目对旧版本无硬性兼容义务：破坏性改动是长远正确的形状时可**强制迁移旧→新**、允许短期报错 / 功能不可用，长远计划**不留双轨包袱**（执行期为对照确认临时双轨是合理的）——绝不拿"迁移麻烦"把正确改进降级为"可选/等以后"。
 - **有意义且完整 > 最小能交付。** 分基础/高级等多个执行阶段，但每层都朝真正能用推进（`think-proactively`）；"最小能交付"只在执行阶段是合理判断，不用于砍范围。
 - **best-complete-solution。** 修根本原因非表面症状（→ user-rule `root-cause-over-patch`）；命名反映实际职责（累积 vs 处理、收集 vs 转换）；Lint 服务于可读性——无益的规则禁用它而非扭曲代码；保留已有的有意义注释；同目录文件互相导入用相对路径 `./foo` 而非 `~/lib/...`。约定见 [docs/coding-conventions.md](docs/coding-conventions.md)。
 - **internal-tool-security-posture。** 本项目是开发用途、内部个人使用的工具，默认所有信息**全量暴露**（运维/诊断价值 > 假想泄露风险），绝不为"信息泄露/安全"顾虑阻塞任务或做多余处理；但**不豁免真实安全缺陷**（凭据硬编码、注入、密钥写日志、真实数据丢失）。→ ADR [docs/decisions/2026-07-05-internal-tool-security-posture.md](docs/decisions/2026-07-05-internal-tool-security-posture.md)。
 - **richest-data-flow。** 数据以最丰富形式流动、决策交给末端；后端存储必须完整（永不为 DRY/YAGNI/无消费者裁剪），前端可选择性呈现；注入真实流的合成帧必打可辨识标记。→ ADR [docs/decisions/2026-07-05-richest-data-flow.md](docs/decisions/2026-07-05-richest-data-flow.md)。
 - **single-source-of-truth-types。** 类型只在产生/拥有方定义一次、消费端 re-export（后端类型在后端定义、前端经 `~backend/*` re-export）。→ [docs/DESIGN.md](docs/DESIGN.md)「类型架构」节。
-- **empirical-verification。** 裁决依据是亲手实测（可信度：实测 > 文档推断 > 单方声称；executor/reviewer/文档/记忆都可能错）：flaky/时序测试连跑 10–25 次确认确定性、主张与观测冲突时写最小探针（4141 History API、`ss` 看内核 keepalive）、fake timers + mock 随机源是根因修复非症状掩盖；否定性/通过性/自洽/doc-vs-code 结论**不自证**（先用正样本证检查触达目标、wire 正确性用独立 oracle、文档与代码不一致先确证方向）。→ skill `empirical-verification` / `verifying-authoritative-claims`、实例 [pass-null](docs/memory/feedback-pass-null-clean-not-self-validating.md)。
+- **empirical-verification。** 裁决依据是亲手实测（可信度：实测 > 文档推断 > 单方声称；executor/reviewer/文档/记忆都可能错）：flaky/时序测试连跑 10–25 次确认确定性、主张与观测冲突时写最小探针（4141 History API、`ss` 看内核 keepalive）、fake timers + mock 随机源是根因修复非症状掩盖；否定性/通过性/自洽/doc-vs-code 结论**不自证**（先用正样本证检查触达目标、wire 正确性用独立 oracle、文档与代码不一致先确证方向）。**指令类产物（skill/rules）里需要实战检验的断言必须在该 skill 内置自验表 + 记录文件**，让未来会话在正常使用中顺手证伪，绝不写成交接备注或「留给新会话」——范式见 skill `session-closeout` 的「自验」节与 `verification-log.md`、[[feedback-skill-claims-needing-field-proof-must-self-verify]]。→ skill `empirical-verification` / `verifying-authoritative-claims`、实例 [pass-null](docs/memory/feedback-pass-null-clean-not-self-validating.md)。
 
 ## 本项目的工程纪律
 
@@ -51,7 +53,7 @@
 - **no-premature-stop。** 不因 turn 长度/token 额度**或编译中间态**（删了函数但调用方还引用）停顿、设检查点或延后，推进到下一个 typecheck 绿或完成 checkpoint 再停；独立的跨文件 Edit/工具一律**消息内并行**，绝不串行。
 - **dont-ignore-existing-errors。** 不把已有的测试失败、类型错误、导入缺失当"与我无关"，所有遇到的错误都必须修（放任会掩盖新问题、使回归失去意义）；修前先读实际代码和类型定义确认根因，不猜测。
 - **subagent-explicit-rubric。** 审查/复审**永远派 subagent**、多视角对抗，不在主会话直接做（实现在主线、subagent 作独立核验层）；subagent 默认持 ROI/YAGNI 价值观与本项目冲突，派活必须 prompt 里**显式写裁判轴**（长远正确 + 完整），吸收其客观事实、对其判断谨慎取舍；reviewer 的"无消费者/可安全删除/已通过"等绝对断言**亲自对照代码/实测复核**，行动前读它引用的每个 `file:line`。→ user-rule `40-use-of-agents` + skill `verifying-authoritative-claims`。
-- **session-closeout。** 会话/阶段收尾（交付/报告/ExitPlanMode/提交前/任务跨会话）是"完成"的一部分，按序做完无需提醒——① subagent audit ② doc-sync + 跨文档 grep 验证 ③ 归档 plan 与实验产物（迁 `docs/plan/`、`exp/<topic>/` + 头部实施状态注解）④ 提炼教训 + 维护记忆库 ⑤ 细粒度阶段提交 ⑥ **跨会话交接**（`HANDOVER.md`+`KICKOFF.md` 主树即时提交、`/tmp` 产物先入库再引用、待办带验收判据与证伪方式、把自己犯过的错写进去）。→ skill `session-closeout`（六步 how-to 的单一源）。
+- **session-closeout。** 会话/阶段收尾（交付/报告/ExitPlanMode/提交前/任务跨会话/上下文将满）是"完成"的一部分，按序做完无需提醒——① subagent audit ② doc-sync + 跨文档 grep 验证 ③ 归档 plan（迁 `docs/plan/` + 四档状态注解）与实验产物（就地 `exp/<topic>/`，README 必含「它没有证明什么」）④ 提炼教训 + 维护记忆库 ⑤ 细粒度阶段提交 ⑥ **跨会话交接**（`HANDOVER.md`+`KICKOFF.md` 主树即时提交、产物先提交再引用、待办带验收判据与证伪方式、把自己犯过的错写进去）。**唯一顺序例外：因「上下文将满」触发时 ⑥ 先做**——交接是唯一不可重做的产物。**另有一个非收尾触发：派 implementer 执行**多语义 commit、**或单 commit 但历时长/需试错**的工作时，**派活前先读该 skill 的 §6b**（进度文件：一 agent 一文件、随每个实现 commit 提交、只记 git 记不下的三样；配套的共树/判活/容量三条调度纪律也在那里）——等收尾时才读到就已经晚了。→ skill `session-closeout`（六步 how-to + §6b 与模板的单一源）。
 
 ### 大特性的工作流角色
 

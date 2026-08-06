@@ -104,7 +104,7 @@ export function translateAnthropicToChatCompletions(payload: MessagesPayload, op
   for (const message of payload.messages) messages.push(...translateMessage(message, reqId))
 
   const tools = payload.tools ? translateTools(payload.tools, reqId) : undefined
-  const toolChoice = payload.tool_choice ? translateToolChoice(payload.tool_choice) : undefined
+  const toolChoice = payload.tool_choice ? translateToolChoice(payload.tool_choice, tools) : undefined
   const reasoningEffort = translateThinkingToEffort(payload, opts?.model)
   const stop = normalizeStopSequences(payload.stop_sequences)
 
@@ -339,21 +339,21 @@ function translateTools(tools: Array<AnthropicTool>, reqId: string | undefined):
   return out
 }
 
-/** Anthropic `tool_choice` → CC `tool_choice`. */
-function translateToolChoice(choice: AnthropicToolChoice): NonNullable<ChatCompletionsPayload["tool_choice"]> {
+/** Anthropic `tool_choice` → CC `tool_choice`, constrained to translated tools that survived this leg. */
+function translateToolChoice(choice: AnthropicToolChoice, tools: Array<CCTool> | undefined): NonNullable<ChatCompletionsPayload["tool_choice"]> | undefined {
   switch (choice.type) {
     case "auto": {
       return "auto"
     }
     case "any": {
       // Anthropic "any" = must call SOME tool → CC "required".
-      return "required"
+      return tools && tools.length > 0 ? "required" : undefined
     }
     case "none": {
       return "none"
     }
     case "tool": {
-      return { type: "function", function: { name: choice.name } }
+      return tools?.some((tool) => tool.function.name === choice.name) ? { type: "function", function: { name: choice.name } } : undefined
     }
     default: {
       // Exhaustive over the ToolChoice union; a future variant falls back to "auto" (never silently

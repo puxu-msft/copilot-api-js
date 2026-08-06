@@ -1,0 +1,1 @@
+{"section":"proxy","rows":[{"name":"http-connect","exit":0,"httpVersion":"2","stderr":""},{"name":"https-proxy-h1","exit":0,"httpVersion":"2","stderr":""},{"name":"https-proxy-h2","exit":0,"httpVersion":"2","stderr":""},{"name":"socks5","exit":0,"httpVersion":"2","stderr":""}]}

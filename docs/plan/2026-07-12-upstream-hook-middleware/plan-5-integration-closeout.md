@@ -31,7 +31,7 @@
   - L2 交互（评审 M1/L1）：挂 `onExchange` 计数 hook + 开 `responsesBufferedRetry`，断言调用次数 = L1×L2 符合预期、次序正确。
 - [x] **Step 2：跑绿** → **Step 3：commit**。
 
-## Task 5.4：收尾（session-closeout 五步）
+## Task 5.4：收尾（走 skill `session-closeout`，步数与内容以 skill 为准）
 
 - [x] **doc-sync**：更新 [docs/DESIGN.md](../../DESIGN.md)「活的架构现状」加 hook 挂载点行（driver 编排三挂载点、config-gated、data-URL reload）；配置节加 `hooks` section + 管理 API `/api/hooks` 行。**顺手订正 spec 陈旧路径**（评审 LOW-4）：spec §4.2 写的 `src/lib/anthropic/tool-field-rejection-retry.ts` 真实位置是 `src/lib/request/strategies/tool-field-rejection-retry.ts`，已订正（plan-3 已用正确目录，仅 spec 引用需订正）。
 - [x] **ADR 判定**：hook 机制是新架构层——已补 [docs/decisions/2026-07-12-driver-orchestrated-upstream-hooks.md](../../decisions/2026-07-12-driver-orchestrated-upstream-hooks.md)（记「为何 driver 编排多挂载点而非 transport decorator」+「为何 data-URL 而非 ?v=」）。

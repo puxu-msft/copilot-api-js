@@ -85,33 +85,18 @@ export type {
 } from "./refusal-detail"
 
 /**
- * DEFAULT for `anthropic.refusal_end_turn_text` (the `end_turn`-mode suppression text).
+ * All three `DEFAULT_REFUSAL_*` values are OWNED by the zero-import leaf `./refusal-policy` and only
+ * re-exported here, so this module's public path is unchanged for existing consumers.
  *
- * Reports what happened WITHOUT asserting anything the wire does not support: it does not claim the
- * turn was "thinking-only" (the real `cyber` sample produced ZERO content blocks with thinking
- * disabled), and it does not call the block "transient" (unverified — the `bio` sample refused only
- * after 25,636 thinking tokens). It carries `{refusal_category}` but deliberately NOT
- * `{refusal_explanation}`: this text is a SUCCESSFUL assistant message that the client bakes into
- * conversation history, and the upstream explanation is diagnostic metadata about the request, not
- * the model's answer to the user's task — replaying it as assistant content pollutes the semantic
- * context. The explanation stays fully available in History, logs and the `error`-mode message.
- * Overridable via config; see {@link renderRefusalTemplate}.
+ * Why they live there rather than here: `state-defaults.ts` reads them, and that single value edge
+ * dragged `state` + `state-defaults` into 52 and 50 of the repo's 70 import cycles. A leaf has no
+ * out-edges, so nothing depending on it can close a cycle; redirecting that edge measured 70 cycles
+ * /63 members → 30/43. See docs/plan/2026-07-28-state-to-foundation/HANDOVER.md §3.2. Do NOT
+ * re-declare a copy here to save an import — the single-owner guard in
+ * `tests/architecture/state-defaults-value-owners.unit.test.ts` parses this file's declarations,
+ * precisely because two identical string literals pass every value-equality check.
  */
-export const DEFAULT_REFUSAL_END_TURN_TEXT =
-  "上游模型本轮以「拒绝（refusal）」结束，未产出可用回复（拒绝类别：{refusal_category}）。这是上游安全策略对本次请求的拦截，不代表任务本身有问题。请基于已有上下文换一种表述或拆分步骤后继续；若多次复现，考虑调整措辞、移除可能触发策略的内容，或改用其他模型。"
-
-/**
- * DEFAULT for `anthropic.refusal_error_message` (the message carried by the synthetic Anthropic
- * `error` frame in the opt-in `error` mode; the client SDK surfaces it as the thrown `APIError`'s
- * message). Unlike the end_turn text this DOES carry `{refusal_explanation}` — an error frame is
- * never baked into the conversation history, so the full upstream diagnostic can ride along.
- */
-export const DEFAULT_REFUSAL_ERROR_MESSAGE =
-  "上游模型本轮以「拒绝（refusal）」结束、未产出可用回复（拒绝类别：{refusal_category}）。已按 error 策略中断本次请求。上游说明：{refusal_explanation}"
-
-/** Re-exported from the zero-import leaf, which owns it so the frozen policy can resolve the
- *  empty-string fallback once at construction. */
-export { DEFAULT_REFUSAL_ERROR_TYPE }
+export { DEFAULT_REFUSAL_END_TURN_TEXT, DEFAULT_REFUSAL_ERROR_MESSAGE, DEFAULT_REFUSAL_ERROR_TYPE } from "./refusal-policy"
 
 /**
  * Provenance-preserving normalization of the upstream `stop_details`. The RAW object is stored

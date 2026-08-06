@@ -26,8 +26,8 @@ import {
   createAnthropicCodec,
 } from "~/lib/codec/anthropic/codec"
 import { getRequestContextManager } from "~/lib/context/manager"
+import { setModels } from "~/lib/models/cache"
 import { resolveCellAssembly } from "~/lib/pipeline/cell-assembly"
-import { setModels } from "~/lib/state"
 
 import { mockModel } from "../helpers/factories"
 import { useIsolatedRuntime } from "../helpers/isolated-fixture"

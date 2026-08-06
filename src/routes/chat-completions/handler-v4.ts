@@ -74,6 +74,7 @@ import { createOpenAiCcCodec } from "~/lib/codec/openai-cc/codec"
 import { ccKeepaliveFrame } from "~/lib/codec/openai-cc/keepalive"
 import { createReverseAnthropicMapperHolder } from "~/lib/codec/openai-cc/reverse-anthropic-rewrite"
 import { applyConfigToState } from "~/lib/config/config"
+import { resolveBufferedCaps } from "~/lib/config/model-overrides"
 import { HTTPError } from "~/lib/error"
 import { ENDPOINT } from "~/lib/models/endpoint"
 import { resolveModelTarget } from "~/lib/models/resolver"
@@ -112,11 +113,7 @@ import {
   buildOpenAIResponseData,
   usageFromTotalInput,
 } from "~/lib/request"
-import {
-  //
-  resolveBufferedCaps,
-  state,
-} from "~/lib/state"
+import { state } from "~/lib/state"
 import { createUpstreamHttpTransport } from "~/lib/transport/http-transport"
 import { resolveInboundQuery } from "~/lib/transport/query-forward"
 import {
@@ -564,6 +561,10 @@ async function pumpStreamingV4(opts: PumpStreamingV4Options): Promise<void> {
   if (candidate.kind !== "chat-completions") throw new Error("[ChatCompletions:v4] wrong candidate response session kind")
   const { acc, diag } = candidate
 
+  if (outcome.kind === "delivery-finished") {
+    recordForwarded()
+    return
+  }
   if (outcome.kind === "settled-abort") {
     // Client disconnected mid-stream — write ZERO further bytes (B0-d). Record what was
     // forwarded so far, then settle as aborted (mirrors settleStreamingFailure's abort branch).
@@ -764,6 +765,10 @@ async function pumpReverseAnthropicLegV4(opts: PumpReverseAnthropicLegOptions): 
   if (candidate.kind !== "reverse-anthropic") throw new Error("[ChatCompletions:v4:reverse] wrong candidate response session kind")
   const { anthropicAcc, diag } = candidate
 
+  if (outcome.kind === "delivery-finished") {
+    recordForwarded()
+    return
+  }
   if (outcome.kind === "settled-abort") {
     recordForwarded()
     consola.debug("[ChatCompletions:v4:reverse] Client disconnected mid-stream — recording aborted")
@@ -819,6 +824,15 @@ async function pumpReverseAnthropicLegV4(opts: PumpReverseAnthropicLegOptions): 
     await sink.writeSynthetic?.(openAIStreamErrorFrame(truncErr)).catch(() => undefined)
     recordForwarded()
     env.ctx.fail(anthropicAcc.model || model, truncErr, buildAnthropicResponseData(anthropicAcc, model))
+    await sink.finalize?.()
+    return
+  }
+  if (terminal.kind === "contentless-refusal") {
+    const summary = refusalSummary(extractRefusalDetail(anthropicAcc.stopDetails))
+    env.ctx.recordFeature("refusal-passthrough", { category: refusalCategoryForDiagnostics(anthropicAcc.stopDetails) })
+    await sink.write({ data: "[DONE]" })
+    recordForwarded()
+    env.ctx.fail(anthropicAcc.model || model, new Error(summary), buildAnthropicResponseData(anthropicAcc, model), { upstreamSucceeded: true })
     await sink.finalize?.()
     return
   }

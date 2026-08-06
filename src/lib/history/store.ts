@@ -1,5 +1,5 @@
 export { clearHistory, getInFlightEntry, insertEntry, listInFlightEntries, listInFlightSummaries, setPinned, updateEntry } from "./entries"
-export { getEntry, getHistory, getHistorySummaries, getSummary } from "./queries"
+export { getEntry, getHistory, getHistorySummaries, getHistorySummariesAsync, getSummary } from "./queries"
 export { searchContains, searchHistory } from "./search"
 export { getAgentIdFromHeaders, getCurrentSession, getSessionEntries, getSessionIdFromHeaders, getSessionSummaries } from "./sessions"
 export { historyState, initHistory, isHistoryEnabled, setHistoryPublisher, shutdownHistory, startHistoryBackfills, stopHistoryBackgroundWork } from "./state"

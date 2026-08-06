@@ -1,5 +1,7 @@
 # P2 — 分配临界区（heartbeat vs flush 的并发缝）
 
+> **实施状态（2026-07-28）**：P2 已完成（Task 2.1–2.3），owner/C9/C10/C11 leg fence 与架构守卫均落地；第二轮返工后标准 `unit it http` 在隔离 worktree、16 shards、复制同基线 native history-search artifact 后最终收口后连续三轮 `6574/6574`，三组时序 oracle 各 15/15。后续 debugger 在独立 worktree 连跑 40 轮（含 `load=35` 过载与禁 transpiler cache），固定 17 条 anchor 失败簇出现 0 次；review 阶段曾见的同簇来自两个审查任务共用 worktree 时的生产源码 mutation 污染，不记为 flaky、不改变排空/时序结构。两个原不可达 oracle 已按主会话裁决移到真实可达相位：P2.2b 的“恢复 tick 真分配”→M6；C11 History 三腿 merged-state→M2/M3/M4（M4 统一收口）。
+>
 > **前置**：P1 + **P6**（plan review major：两者共享 `delivery/session.ts` 的 heartbeat 生命周期语义，见 Task 2.2b）。**产出**：唯一 owner API，使 index 分配与 wire 写出在同一 serializer operation 内原子完成。
 > **承重项 4**（设计 §4.4 第 4 点 / 审查 F7）。
 
@@ -71,9 +73,13 @@ export interface WireEnvelopeFactory {
  * transactional — the first frame may already have reached the client when the second fails. The
  * commit point is therefore the FIRST attempted external write; see C9's two-stage semantics.
  */
+export type OwnerResult<T> =
+  | { readonly ok: true; readonly value: T }
+  | { readonly ok: false; readonly reason: "client-gone" | "session-terminating" | "wire-torn"; readonly committed: boolean }
+
 export interface WireBlockAllocationPort {
   /** Allocate the next wire index for a SYNTHETIC anchor and write its frames in one operation. */
-  allocateAndWriteAnchor(build: (ctx: { wireIndex: number; envelope: WireEnvelopeFactory }) => ReadonlyArray<WireWriteSpec>): Promise<number | undefined>
+  allocateAndWriteAnchor(build: (ctx: { wireIndex: number; envelope: WireEnvelopeFactory }) => ReadonlyArray<WireWriteSpec>): Promise<OwnerResult<number>>
   /**
    * Allocate the next wire index for a REAL upstream block and write EVERY frame belonging to the
    * same wire transaction. Lets the live decorator emit `[anchor_stop, real_start]` as ONE
@@ -82,7 +88,7 @@ export interface WireBlockAllocationPort {
   withAllocatedRealBlock(
     upstreamIndex: number,
     build: (ctx: { mapping: WireBlockMapping; envelope: WireEnvelopeFactory }) => ReadonlyArray<WireWriteSpec>,
-  ): Promise<WireBlockMapping | undefined>
+  ): Promise<OwnerResult<WireBlockMapping>>
   /**
    * Open a leg and bind the identity its frames were produced by. Serialized like every other owner
    * operation: establishes AFTER all successful writes of the previous leg and BEFORE any allocation
@@ -93,7 +99,7 @@ export interface WireBlockAllocationPort {
    * skipped it would have to fall back to the placeholder identity, which is precisely the wrong
    * degradation: the driver does hold the real handles.
    */
-  beginLeg(kind: "primary" | "continuation" | "recovery", source: { candidateId: string; dispatchId: string }): Promise<LegToken>
+  beginLeg(kind: "primary" | "continuation" | "recovery", source: { candidateId: string; dispatchId: string }): Promise<OwnerResult<LegToken>>
   /**
    * Close the currently open synthetic anchor, if any — the SINGLE close authority (round-4 blocker).
    *
@@ -112,7 +118,7 @@ export interface WireBlockAllocationPort {
   closeOpenAnchor(
     buildStop: (index: number, envelope: WireEnvelopeFactory) => WireWriteSpec,
     mode: "before-real" | "terminal",
-  ): Promise<"closed" | "none" | "write-error">
+  ): Promise<OwnerResult<"closed" | "none">>
   /**
    * Write a NON-START frame of an already-allocated block — delta / stop / anything carrying a block
    * index that was not itself an allocation (round-5 major).
@@ -135,9 +141,11 @@ export interface WireBlockAllocationPort {
    * registered, so writing the frame unremapped would silently land it on a stale index — the R1
    * silent-reordering failure this plan exists to prevent.
    */
-  writeBlockFrame(leg: LegToken, upstreamIndex: number, frame: ClientFrame): Promise<"written" | "no-mapping" | "write-error">
+  writeBlockFrame(leg: LegToken, upstreamIndex: number, frame: ClientFrame): Promise<OwnerResult<"written">>
 }
 ```
+
+**实施期补充裁决（2026-07-28，第二/三轮复审修订；2026-08-03 补 close 例外）**：五个入口统一返回 `OwnerResult<T>`；生命周期/可恢复失败原因在产生点区分 `client-gone`、`session-terminating`、`wire-torn`，并携 `committed:boolean`。只有 `client-gone` 映射 `settled-abort`；`session-terminating` 仅在 `ctx.settled` 已成立时映射 `delivery-finished`，否则显式 `stream-error`；`wire-torn` 始终 `stream-error`。**这句说的是 failure 的 outcome 映射，不是 `closeOpenAnchor` 的 preflight：`wireTorn` 只封锁四个推进 frontier 的入口（`allocateAndWriteAnchor` / `withAllocatedRealBlock` / `beginLeg` / `writeBlockFrame`），`closeOpenAnchor` 是例外，仍可关闭已分配 anchor。** missing mapping 与未配置 `wireState`、reservation 重入、无 active leg 写 real 同属接线错误，直接 throw。非 client wire error 以 `DeliveryOwnerError.committed` 显式传播；若 post-commit 则置独立 `wireTorn`，封锁后续 frontier 推进而保持 terminal delivery 可写。live 装饰器不注册成 owner：handler 从未装饰 raw delivery sink 取得 port，经 `RunResponseOpts.wireAllocationPort` 显式下传给 driver。**首版 `live-owner-port.it.test.ts` 只锁 driver 消费、自造 port，不能证明 handler 供给，原“production live oracle 锁住”结论已作废**；返工后由真实 HTTP `c0-live-anchored-direct-stream-golden.http.test.ts` 捕获 handler 创建的 session，完整复现“从 decorated sink 取 port”的 mutation 后实际失败为 `Expected primary / Received undefined`。hedge winner 在 winner 选定后、任一 frame 写出前同样 `beginLeg("primary", winner source)`；winner identity 经不写字节的 `noteWinner` 交给 owner，帧仍走原 `sink.write` 经过 live reconcile，禁止为 provenance 改写字节路径。第三轮反向 mutation改回 owner direct write后，真实 HTTP oracle实际因 message_start 从 1 变 2 而转红。post-commit 非 client 撕裂由独立 `wireTorn` 封锁四个 frontier 推进入口，`closeOpenAnchor` 例外；删除置位/四入口守卫后具名 oracle收到 `{ok:true,value:1}` 而非 `wire-torn`，另由 close oracle证明撕裂后仍成功写 stop；session保持 open并成功写 terminal error/finalize。`delivery-finished` 只在 response pump 已在途且另一并发路径已 settle ctx 时允许；session先终结但 ctx仍 pending的 driver oracle必须得到 loud `stream-error`。客户端断开与在途 terminate共用 `finalizeSinkOnce`，删除 latch后 race oracle实际 `Expected 1 / Received 2`；`finishReason ??=` 保证先到的 session-terminating 不被晚到 client-gone 覆写，反向 mutation改回赋值后实际 `Expected session-terminating / Received client-gone`。owner failure outcome由穷尽工厂 `Record` 每次构造新值，两个 torn请求的 Error引用不等；改回模块级共享 Error 后该引用断言转红，另加第四 reason会使 `satisfies Record` 报缺失键。旧 `commitWinnerBlock`/`writeWinnerFrame` 与 helper candidate参数已删除：winner一致性职责迁到同一 selected source依次驱动 `beginLeg` + `noteWinner`，真实 HTTP hedge oracle同时锁身份、dedup与wire index。
 
 ### mapping token 的生命周期（**round-4 major：四点冻结**）
 
@@ -195,10 +203,10 @@ if (unhedgedBinding) env.ctx.selectGenerationWinner(unhedgedBinding.candidate.ca
 
 > **为何 synthetic 帧不需要等 leg**：它们的 provenance 是 `{kind:"synthetic", syntheticKind}`，本就与 candidate 无关（C7）。这也正是 pre-response anchor 能在 binding 之前合法写出的原因——**没有被退化的身份，只有本就不适用的字段**。
 
-- [ ] **接线**：`GenerationWireState` 承载「当前 leg 的 candidate/dispatch」，**唯一写入点是 `beginLeg`**；owner 铸造 `real` 信封时读它。
-- [ ] **oracle（三腿全覆盖）**：驱动一次含 recovery + continuation 的请求，断言 History generation 轨中 **primary / recovery / continuation 三种腿**的真实块 provenance **各自带真实 candidateId/dispatchId**、**均非 `"legacy"`**，且**主腿 ≠ 续写腿**。另单测 delayed-commit 路径：pre-response anchor 在 `beginLeg` 之前写出且带 `synthetic` provenance（不是退化的 candidate 身份）。
-- [ ] **负样本**：无活跃 leg 时调 `withAllocatedRealBlock` / `writeBlockFrame` **必须拒绝**（不得退化为 placeholder 身份）。
-- [ ] **守卫**：`src/` 下 `"legacy"` 字面量的出现有且仅有既有兼容 helper 一处（带正样本对照）。
+- [x] **接线**：`GenerationWireState` 承载「当前 leg 的 candidate/dispatch」，**唯一写入点是 `beginLeg`**；owner 铸造 `real` 信封时读它。
+- [x] **oracle（四类生产腿全覆盖，按真实相位可达性拆分；2026-07-28 主会话裁决 + 第二轮复审补 hedge）**：P2 已完成 owner provenance、ordinary primary / hedge winner / recovery / continuation 四类 production `beginLeg` 接线、无 active leg 拒绝、`"legacy"` 唯一边界守卫；**History generation 轨的 production merged-state oracle 移入 P3M M2/M3/M4**。理由：P2 时 S1/S2/S3 仍走旧 `sink.write` / live decorator，真实块要到 M2/M3/M4 才分别迁入 `withAllocatedRealBlock` / `writeBlockFrame`；此时手工写 History 只能自证 owner、不能证 production 接线。M2 补 buffered-flush 腿、M3 补 retreat 腿、M4 补 live 腿并统一断言 primary/recovery/continuation 三腿均为真实 candidate/dispatch、均非 `"legacy"`、主腿 ≠ 续写腿；**M4 未完成统一断言即视为未完成**。另单测 delayed-commit 路径：pre-response anchor 在 `beginLeg` 之前写出且带 `synthetic` provenance（不是退化的 candidate 身份）。
+- [x] **负样本**：无活跃 leg 时调 `withAllocatedRealBlock` / `writeBlockFrame` **必须拒绝**（不得退化为 placeholder 身份）。
+- [x] **守卫**：`src/` 下 `"legacy"` 字面量的出现有且仅有既有兼容 helper 一处（带正样本对照）。
 
 ### 注入路径（**round-3 major：P1 handler-owned state 与 P2 session-owned port 之间的接线空洞，本轮冻结**）
 
@@ -225,8 +233,8 @@ handler-v4.ts  makeAnchoredSseSink()
 
 **守卫（防第二个 allocator 实例）**：
 
-- [ ] identity oracle：一次请求中，driver、live 装饰器、injector、session port 四处读到的 allocator **是同一引用**（`toBe` 引用相等，非值相等）。
-- [ ] 架构守卫：`src/` 下 `createGenerationWireIndexAllocator(` 的调用点**有且仅有** `handler-v4.ts` 一处（带正样本对照——故意加第二处应转红）。
+- [x] identity / supply oracle（返工后重新完成）：首版 `anchor-allocation-owner` 的 identity 断言由同一 setup 同时供两边，且 `live-owner-port.it.test.ts` 自造并传 port，均不能证明 handler↔driver 接缝。现保留 driver 消费单元门，并新增真实 HTTP live 请求 oracle，observer 捕获 handler 创建的 session，断言其 active primary source 为真实 handles；将 handler 改回从 decorated sink 取 port 后该 HTTP oracle实际转红。
+- [x] 架构守卫：`src/` 下 `createGenerationWireIndexAllocator(` 的调用点**有且仅有** `handler-v4.ts` 一处（带正样本对照——故意加第二处应转红）。
 
 **冻结的语义要点**（实施期不得自行改，要改回主会话）：
 
@@ -270,7 +278,7 @@ handler-v4.ts  makeAnchoredSseSink()
 
 > 这是 owner API 的**底层**：allocator 自身的原子入口。owner API（Task 2.2）在 serializer operation 内调它。
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 ```ts
 // tests/anthropic/sequential-anchor-allocator.unit.test.ts（追加）
@@ -297,17 +305,17 @@ test("a rolled-back allocation leaves no visible mapping", () => {
 })
 ```
 
-- [ ] **Step 2**：跑，红。
-- [ ] **Step 3**：实现原子入口 + leg 语义（同步函数，内部 peek+advance 之间**无 await**）+ reserve/rollback 原语。**分配返回不可变 `WireBlockMapping` token**，delta/stop 按 token 查——**不再有 ambient「current leg」查询**（round-2 major：跨 `await` 的可变全局状态正是 `beginLeg` 竞态的来源）。
-- [ ] **Step 4**：跑，绿。
-- [ ] **Step 5**：架构守卫——`tests/architecture/anchor-remap-single-authority.unit.test.ts`（P1.4 建的）扩一条：`src/` 下除 `keepalive-anchor.ts` 与 `delivery/session.ts` 外不得出现 `nextAnchorIndex(`/`nextRealIndex(`/`onAnchorOpen(`/`onRealBlockOpen(`/`allocateAnchor(`/`allocateRealBlock(`（生产路径只能经 owner API）。带正样本对照。
-- [ ] **提交** → `feat(anchor): atomic allocate entries with leg-local mapping; peek/commit split is test-only`
+- [x] **Step 2**：跑，红。
+- [x] **Step 3**：实现原子入口 + leg 语义（同步函数，内部 peek+advance 之间**无 await**）+ reserve/rollback 原语。**分配返回不可变 `WireBlockMapping` token**，delta/stop 按 token 查——**不再有 ambient「current leg」查询**（round-2 major：跨 `await` 的可变全局状态正是 `beginLeg` 竞态的来源）。
+- [x] **Step 4**：跑，绿。
+- [x] **Step 5**：架构守卫——`tests/architecture/anchor-remap-single-authority.unit.test.ts`（P1.4 建的）扩一条：`src/` 下除 `keepalive-anchor.ts` 与 `delivery/session.ts` 外不得出现 `nextAnchorIndex(`/`nextRealIndex(`/`onAnchorOpen(`/`onRealBlockOpen(`/`allocateAnchor(`/`allocateRealBlock(`（生产路径只能经 owner API）。带正样本对照。
+- [x] **提交** → `feat(anchor): atomic allocate entries with leg-local mapping; peek/commit split is test-only`
 
 ## Task 2.2：owner API 落地 + 让点 oracle
 
 > C5 的唯一合法实现：分配与写出在**同一个 `enqueue` callback** 内。`createDeliverySerializer`（`delivery/serializer.ts`）已是 delivery 的单写者队列，所有 wire 写都过它（`session.ts:73-84`）。
 
-- [ ] **Step 1: 写失败测试** —— FakeClock 让 tick 恰落在 flush 的 `await sink.write` 让点
+- [x] **Step 1: 写失败测试** —— FakeClock 让 tick 恰落在 flush 的 `await sink.write` 让点
 
 ```ts
 // tests/pipeline/anchor-allocation-race.it.test.ts
@@ -333,10 +341,10 @@ test("a FAILED first write consumes the index permanently and refuses further al
 })
 ```
 
-- [ ] **Step 2**：跑，红（至少正样本对照必须红；主测试若**当前就绿**，说明竞态窗口没构造出来——**不得**据此认为安全，调整 harness 直到正样本对照能咬住）。
-- [ ] **Step 3**：实现 owner API（`allocateAndWriteAnchor` / `withAllocatedRealBlock` / `beginLeg`），全部走 `serializer.enqueue` 的单个 operation。
-- [ ] **Step 4**：跑，绿；**连跑 15 次**确认确定性（`for i in {1..15}; do bun test tests/pipeline/anchor-allocation-race.it.test.ts || break; done`）——时序测试必须实证确定性，非跑一次算数。
-- [ ] **Step 5: 提交** → `feat(delivery): atomic wire-index allocation bound to the wire write`
+- [x] **Step 2**：跑，红（至少正样本对照必须红；主测试若**当前就绿**，说明竞态窗口没构造出来——**不得**据此认为安全，调整 harness 直到正样本对照能咬住）。
+- [x] **Step 3**：实现 owner API（`allocateAndWriteAnchor` / `withAllocatedRealBlock` / `beginLeg`），全部走 `serializer.enqueue` 的单个 operation。
+- [x] **Step 4**：跑，绿；**连跑 15 次**确认确定性（`for i in {1..15}; do bun test tests/pipeline/anchor-allocation-race.it.test.ts || break; done`）——时序测试必须实证确定性，非跑一次算数。
+- [x] **Step 5: 提交** → `feat(delivery): atomic wire-index allocation bound to the wire write`
 
 ## Task 2.2b：P2 × P6 交叉门（**plan review major：两者并非无代码重叠**）
 
@@ -344,29 +352,31 @@ test("a FAILED first write consumes the index permanently and refuses further al
 >
 > **依赖裁决**：P2 必须基于**含 P6** 的 base 实施（DAG 已补 `P6 → P2`）。若 P6 独立先合并 master，则 allocator worktree 必须 rebase/merge 到含 P6 的 master 后再做 P2——否则会在旧 heartbeat 生命周期上写竞态 oracle，合并后测试语义失效。
 
-- [ ] **Step 1: 写失败测试** —— 只有在 P6 修复后才可达的状态
+> **实施期可达性拆分（2026-07-28 主会话裁决）**：原测试把两种不同相位才可达的事实合在了一条里。P6 已让 boundary commit 后 heartbeat 恢复，但当前 `semanticBlockCount === 0` 门仍禁止首块后的 tick 调 `allocateAndWriteAnchor`；该门按硬序只能在 P3M **M6**（晚于 M2–M4）删除。故 P2 期要求“恢复后的 tick 真分配 gap anchor”不可满足，不得手工补状态或提前开门。
+>
+> 拆成两层，覆盖不减少：① **P2 留下**当前可达 characterization——boundary 后 heartbeat 确实恢复、当前门仍将 tick 路由成 ping，且 owner serializer 在该恢复状态下继续保持不交错；② **移入 M6 O-3**——删门后同一恢复 tick 必须真实进入 `allocateAndWriteAnchor`，配“加回门” mutation。P3M 权威 `plan-3-remap-sites.md` 的 M6 行同步记录该移入项。
+
+- [x] **Step 1: 写 characterization 测试** —— P6 后、M6 前真实可达状态
 
 ```ts
 // tests/pipeline/allocation-race-after-boundary-commit.it.test.ts
-test("after a boundary commit resumes the heartbeat, a tick landing in the next flush await still allocates safely", async () => {
-  // 这个场景在 P6 之前【不可达】：boundary commit 后心跳已死，tick 根本不会再来
-  // 序列：真实块提交（suspend → freeze → resume）→ 心跳复活 → 下一次 flush 的 await 让点上 tick 触发
-  assertMonotonicWireIndices(frames)
-  assertBlockProtocolState(frames)
-  // 且 anchor 不得插入真实块的 deltas 中间
+test("after a boundary commit resumes heartbeat, the pre-M6 gate emits ping while owner work remains serialized", async () => {
+  // 真实块提交（suspend → freeze → resume）→ 等本 session 自己的 writeCount/ledger 到达 boundary
+  // → 下一 tick 确实发生；M6 前必须是 ping、不得分配 anchor（semanticBlockCount===0 门仍在）
+  // → 与下一 owner operation 交错时 O-1/O-2 仍成立。
 })
 ```
 
-- [ ] **Step 2**：跑，红。
-- [ ] **Step 3**：修（若 P2.2 的 owner API 已正确，此条可能直接绿 → 降级为 characterization 并注明「P6 打开的新可达状态由 owner API 天然覆盖，本测试锁住它」）。
-- [ ] **Step 4**：连跑 15 次。
-- [ ] **提交** → `test(delivery): allocation safety in the heartbeat states P6 makes reachable`
+- [x] **Step 2**：当前代码应直接绿，注明为 characterization；其正向能力由 P6 测试先证明 heartbeat 真恢复，且断言 tick 产出 ping，不能以“无输出”假绿。
+- [x] **Step 3**：连跑 15 次；就绪门只读本 session 自己的 ledger/writeCount，不读全局 timer 计数。
+- [x] **Step 4**：mutation——临时恢复 P6 旧缺陷（让 freeze 永久 stop）时，本测试必须因“恢复 tick 未出现”转红。
+- [x] **提交** → `test(delivery): characterize pre-M6 allocation safety after heartbeat resume`
 
 ## Task 2.2c：commit-point 三档 oracle + recovery 腿（**round-3 blocker 重写**）
 
 > C9 的两段语义必须有**三档**测试，因为「失败」在 commit point 前后行为**相反**：前者要求全回滚、后者要求永不回滚。只测其一会让另一半悄悄反向。
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 ```ts
 // tests/pipeline/allocation-commit-point.it.test.ts
@@ -406,18 +416,19 @@ test("an abort while the first write's promise is PENDING counts as post-commit"
 })
 ```
 
-- [ ] **Step 2**：跑，红。
-- [ ] **Step 3**：实现——reservation 在 operation **开始执行时**才建立（非 enqueue 时）+ **commit 标志在调 `writeToSink` 前同步置位** + 此后只进不退 + 失败终止 delivery。
-- [ ] **Step 4**：跑，绿。
-- [ ] **Step 5**：**双向 mutation**——
+- [x] **Step 2**：跑，红。
+- [x] **Step 3**：实现——reservation 在 operation **开始执行时**才建立（非 enqueue 时）+ **commit 标志在调 `writeToSink` 前同步置位** + 此后只进不退 + 失败终止 delivery。
+- [x] **Step 4**：跑，绿。
+- [x] **Step 5**：**双向 mutation**——
   - 把档 2/3 改成「失败即回滚 index」（即 round-2 的旧契约）→ 档 3 的「绝不复用」断言必须**转红**；
   - 把档 1 改成「不回滚」→ 档 1 断言必须**转红**。
   两个方向都咬得住，才证明两段语义各自有门。
-- [ ] **提交** → `feat(delivery): commit-point allocation semantics with irreversible wire side effects`
+  - **返工补齐 real 腿**：`allocation-real-block-refusal.it.test.ts` 覆盖 build rollback、session refusal、首帧/次帧 abort 与 `writeBlockFrame` abort/非-client error。scratch mutation 将 real build catch 的 `rollback()` 改 `commit()` 后两条具名测试分别 `Expected 0 / Received 1`；删除 real session state guard 后拒绝测试收到 `{ok:true,...}` 而转红；删除 `writeBlockFrame` state guard 后 terminated-session 测试收到 `{ok:true,value:"written"}` 而非 delivery-finished。另以 anchor transaction 产出无 active leg 的 real spec 锁 `writeAllocationFrames` pre-commit catch：将 `rollback()` 改 `commit()` 后 frontier `Expected 0 / Received 1`。所有 mutation 均在独立 scratch worktree 执行。
+- [x] **提交** → `feat(delivery): commit-point allocation semantics with irreversible wire side effects`
 
 ## Task 2.2c-b：recovery 腿 index 语义
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 ```ts
 // tests/pipeline/allocation-recovery-leg.it.test.ts
@@ -436,17 +447,17 @@ test("recovery leg AFTER a pre-content anchor was written: upstream0 -> wire1 (m
 })
 ```
 
-- [ ] **Step 2**：跑，红。
-- [ ] **Step 3**：实现——预留对读者不可见（commit point 之前）+ **三类** upstream round 都调 `beginLeg(kind, source)`（primary 的时机见「primary leg 的初始化时机」）。
-- [ ] **Step 4**：跑，绿。
-- [ ] **Step 5**：mutation——只在 continuation 调 `beginLeg`、recovery 漏调，确认 recovery 第二支转红。
-- [ ] **提交** → `feat(delivery): explicit leg fences on every upstream round`
+- [x] **Step 2**：跑，红。
+- [x] **Step 3**：实现——预留对读者不可见（commit point 之前）+ **三类** upstream round 都调 `beginLeg(kind, source)`（primary 的时机见「primary leg 的初始化时机」）。
+- [x] **Step 4**：跑，绿。
+- [x] **Step 5（返工后重新完成）**：原勾选无效——旧 `allocation-recovery-leg.it.test.ts` 由测试自己调用 `port.beginLeg("recovery")`，只能锁 owner 算术，无法证明 driver 真接线，属于「测试准备替实现完成关键动作」。现改由 `driver-leg-fence.it.test.ts` 走 production binding-present recovery 分支；scratch mutation 删除 `driver.ts` recovery `beginLeg` 后，具名测试实际失败为 `Expected: "recovery" / Received: "primary"`。continuation 同理由 `continuation-flow.it.test.ts` 走真实 driver 分支；删除 production continuation fence 后实际失败为 `Expected: "continuation" / Received: undefined`。
+- [x] **提交** → `feat(delivery): explicit leg fences on every upstream round`
 
 ## Task 2.2c-c：跨腿 mapping 隔离 oracle（**round-6 major**）
 
 > `writeBlockFrame` 的 leg 参数是**显式**的（round-6 收紧）。这条 oracle 证明它真的按传入的 leg 解析，而不是回退到 owner 记住的「当前腿」——后者会让**同一 upstream index 在两条腿上各有一块**时查错 mapping，正是 round-3 决议要消除的 ambient 状态。
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 ```ts
 // tests/pipeline/cross-leg-mapping-isolation.it.test.ts
@@ -463,15 +474,15 @@ test("a stale leg token still resolves its own block after a newer leg opened", 
 })
 ```
 
-- [ ] **Step 2**：跑，红。
-- [ ] **Step 3**：实现——`writeBlockFrame` 按**传入的** `LegToken` 查 registry。
-- [ ] **Step 4**：跑，绿。
-- [ ] **Step 5**：**mutation**——把实现改回「忽略入参 leg、用 owner 的当前腿」，确认两条测试**都转红**。这是本 task 的存在理由：证明显式 leg 不是装饰性参数。
-- [ ] **提交** → `test(delivery): cross-leg mapping isolation via explicit leg tokens`
+- [x] **Step 2**：跑，红。
+- [x] **Step 3**：实现——`writeBlockFrame` 按**传入的** `LegToken` 查 registry。
+- [x] **Step 4**：跑，绿。
+- [x] **Step 5**：**mutation**——把实现改回「忽略入参 leg、用 owner 的当前腿」，确认两条测试**都转红**。这是本 task 的存在理由：证明显式 leg 不是装饰性参数。
+- [x] **提交** → `test(delivery): cross-leg mapping isolation via explicit leg tokens`
 
 ## Task 2.2d：`beginLeg` fence 时序 oracle（**round-2 major**）
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 ```ts
 test("beginLeg fences AFTER the previous leg's queued writes and BEFORE the next leg's allocations", async () => {
@@ -485,24 +496,24 @@ test("an in-flight heartbeat anchor operation interleaved with beginLeg keeps th
 })
 ```
 
-- [ ] **Step 2**：跑，红（同步裸 `beginLeg` 会让前腿排队帧查到新腿）。
-- [ ] **Step 3**：实现——`beginLeg` 改为 serializer command；delta/stop 按**不可变 `WireBlockMapping` token** 查，不查 ambient current leg。
-- [ ] **Step 4**：跑，绿；**连跑 15 次**。
-- [ ] **提交** → `fix(delivery): serialize leg fences and resolve remaps through immutable block mappings`
+- [x] **Step 2**：跑，红（同步裸 `beginLeg` 会让前腿排队帧查到新腿）。
+- [x] **Step 3**：实现——`beginLeg` 改为 serializer command；delta/stop 按**不可变 `WireBlockMapping` token** 查，不查 ambient current leg。
+- [x] **Step 4**：跑，绿；**连跑 15 次**。
+- [x] **提交** → `fix(delivery): serialize leg fences and resolve remaps through immutable block mappings`
 
 ## Task 2.3：`suspendHeartbeat` 与在飞 injector 的交接
 
 > `suspendHeartbeat` 不等待在飞注入。P2.2 把分配移进 serializer 后，在飞的 injector operation 已经排在队列里，flush 的写也排在队列里——**顺序由队列保证**，不会撞 index。但仍需锁住一条不变量：suspend 之后不得有**新的** anchor 被分配。
 
-- [ ] **Step 1: 写失败测试**：suspend 后推进 FakeClock 超过 deadline，断言 `allocator.anchorsOpened()` 不再增长。
-- [ ] **Step 2**：跑（可能已绿——`armHeartbeat` 的 `heartbeatSuspended` 守卫已覆盖）。**若已绿**，降级为 characterization 测试并在此注明「现有守卫已覆盖，本测试锁住它不被回归」，不伪造红。
-- [ ] **Step 3**：若红则实现。
-- [ ] **提交** → `test(anchor): lock that a suspended heartbeat allocates no further anchors`
+- [x] **Step 1: 写失败测试**：suspend 后推进 FakeClock 超过 deadline，断言 `allocator.anchorsOpened()` 不再增长。
+- [x] **Step 2**：跑（可能已绿——`armHeartbeat` 的 `heartbeatSuspended` 守卫已覆盖）。**若已绿**，降级为 characterization 测试并在此注明「现有守卫已覆盖，本测试锁住它不被回归」，不伪造红。
+- [x] **Step 3**：若红则实现。
+- [x] **提交** → `test(anchor): lock that a suspended heartbeat allocates no further anchors`
 
 ## P2 收口
 
-- [ ] `typecheck` + `test:fast` 绿；O-1/O-2/O-6 仍绿。
-- [ ] 并发 oracle（2.2 + 2.2b）各连跑 15 次全绿。
-- [ ] 架构守卫锁住「生产路径只经 owner API 分配」。
-- [ ] **C9 两段语义各有测试**：commit point 前失败 → 全回滚；commit point 后失败 → 永久消费 + 终止 delivery（三档 oracle + 两类边界状态，Task 2.2c）。
-- [ ] **P3.1 原停点已消解**：owner 形状已冻结（若实施中发现站不住，那才是真分叉 → 停下回报）。
+- [x] `typecheck` + `test:fast` 绿；O-1/O-2/O-6 仍绿。
+- [x] 并发 oracle（2.2 + 2.2b）各连跑 15 次全绿。
+- [x] 架构守卫锁住「生产路径只经 owner API 分配」。
+- [x] **C9 两段语义各有测试**：commit point 前失败 → 全回滚；commit point 后失败 → 永久消费，client-gone 完整 finalize，非 client 撕裂置 `wireTorn` 禁止后续 owner 分配但保留 terminal delivery（三档 oracle + 两类边界状态 + 第三轮 tear→second-allocation mutation，Task 2.2c）。
+- [x] **P3.1 原停点已消解**：owner 形状已冻结（若实施中发现站不住，那才是真分叉 → 停下回报）。

@@ -20,13 +20,14 @@ import type {
   Message,
 } from "~/types/api/openai-chat-completions"
 
-import { applyConfigToState } from "../config/config"
 import {
   //
   state,
   type CompiledRewriteRule,
   type CompiledSystemPromptEntry,
-} from "../state"
+} from "~/lib/state"
+
+import { applyConfigToState } from "../config/config"
 
 /**
  * Two-axis scope match (AND). An absent axis matches all; a present axis with no

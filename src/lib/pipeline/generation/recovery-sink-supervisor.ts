@@ -1,7 +1,5 @@
 import type { ClientSink } from "../types"
 
-import { inheritDownstreamDeliverySession } from "../delivery/session"
-
 /**
  * Keeps one downstream delivery alive across an attempt-local failure and its fresh recovery.
  *
@@ -28,7 +26,6 @@ export function createRecoverySinkSupervisor(inner: ClientSink): RecoverySinkSup
     writeSynthetic: inner.writeSynthetic ? (frame) => inner.writeSynthetic?.(frame) ?? Promise.resolve() : undefined,
     writeKeepalive: inner.writeKeepalive ? (frame) => inner.writeKeepalive?.(frame) ?? Promise.resolve() : undefined,
     writeSyntheticEnvelope: inner.writeSyntheticEnvelope ? (frame) => inner.writeSyntheticEnvelope?.(frame) ?? Promise.resolve() : undefined,
-    writeAnchor: inner.writeAnchor ? (frame) => inner.writeAnchor?.(frame) ?? Promise.resolve() : undefined,
     freezeHeartbeat: inner.freezeHeartbeat ? () => inner.freezeHeartbeat?.() : undefined,
     suspendHeartbeat: inner.suspendHeartbeat ? () => inner.suspendHeartbeat?.() : undefined,
     resumeHeartbeat: inner.resumeHeartbeat ? () => inner.resumeHeartbeat?.() : undefined,
@@ -42,11 +39,6 @@ export function createRecoverySinkSupervisor(inner: ClientSink): RecoverySinkSup
     },
     finalize() {},
   }
-  // The driver resolves generation-owned delivery state by sink identity. Keep that capability
-  // when decorating; the fallback still writes into delivery, but loses winner assertions and
-  // candidateId attribution.
-  inheritDownstreamDeliverySession(inner, sink, { transparency: "write-pass-through" })
-
   return {
     sink,
     settleFinal() {

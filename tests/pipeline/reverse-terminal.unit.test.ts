@@ -44,8 +44,19 @@ describe("classifyReverseAnthropicTerminal — reverse-leg terminal-settle prior
     expect(classifyReverseAnthropicTerminal(acc).kind).toBe("truncated")
   })
 
-  test("message_stop seen, no error → complete", () => {
+  test("complete message_stop with contentless refusal → contentless-refusal", () => {
     const acc = createAnthropicStreamAccumulator()
+    acc.stopReason = "refusal"
+    acc.contentBlocks = [{ type: "thinking", thinking: "", signature: "SIG" }]
+    acc.sawMessageStop = true
+
+    expect(classifyReverseAnthropicTerminal(acc).kind).toBe("contentless-refusal")
+  })
+
+  test("message_stop seen with client-visible refusal content → complete", () => {
+    const acc = createAnthropicStreamAccumulator()
+    acc.stopReason = "refusal"
+    acc.contentBlocks = [{ type: "text", text: "I cannot help with that." }]
     acc.sawMessageStop = true
 
     expect(classifyReverseAnthropicTerminal(acc).kind).toBe("complete")

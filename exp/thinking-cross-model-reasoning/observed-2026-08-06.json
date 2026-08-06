@@ -1,0 +1,58 @@
+{
+  "observed_at": "2026-08-06",
+  "commit": "192dce69f1bf482b1c3130d519991594a3fe46ab",
+  "code_materialization": "git archive of the exact commit",
+  "server": {
+    "port": 56235,
+    "isolated_xdg_data_home": true,
+    "independent_history": true,
+    "upstream_hooks_enabled": false,
+    "main_4141_healthy_after": true
+  },
+  "command": "python3 exp/thinking-cross-model-reasoning/probe.py --base-url http://127.0.0.1:56235 --model-a gpt-5.4-mini --model-b gpt-5.6-sol",
+  "initial": {
+    "requested_model": "gpt-5.4-mini",
+    "resolved_model": "gpt-5.4-mini-2026-03-17",
+    "http": 200,
+    "status": "completed",
+    "text": "323",
+    "summary_count": 0,
+    "encrypted_present": true,
+    "encrypted_sha256": "493779131f02ed2f7251b70274f6248de8bff8a1e31d8088d904617e965ca5f1"
+  },
+  "comparisons": {
+    "A-with-A-encrypted": {
+      "http": 200,
+      "model": "gpt-5.4-mini-2026-03-17",
+      "status": "completed",
+      "text": "UNKNOWN"
+    },
+    "A-without-encrypted": {
+      "http": 200,
+      "model": "gpt-5.4-mini-2026-03-17",
+      "status": "completed",
+      "text": "UNKNOWN"
+    },
+    "B-with-A-encrypted": {
+      "http": 200,
+      "model": "gpt-5.6-sol",
+      "status": "completed",
+      "text": "UNKNOWN"
+    },
+    "B-without-encrypted": {
+      "http": 200,
+      "model": "gpt-5.6-sol",
+      "status": "completed",
+      "text": "UNKNOWN"
+    }
+  },
+  "proves": [
+    "The observed GHC Responses endpoints did not reject cross-model encrypted_content with an HTTP 400."
+  ],
+  "does_not_prove": [
+    "encrypted_content is semantically portable across models",
+    "same-model encrypted_content restored the hidden calculation",
+    "stripping encrypted_content has no quality or token impact",
+    "all Responses models and versions behave the same"
+  ]
+}

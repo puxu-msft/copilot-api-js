@@ -12,6 +12,7 @@ import {
   test,
 } from "bun:test"
 
+import type { OwnerRawSink } from "~/lib/pipeline/delivery/types"
 import type {
   //
   AnchorState,
@@ -22,6 +23,8 @@ import type {
 import {
   //
   anchorStopFrame,
+  createGenerationWireIndexAllocator,
+  createGenerationWireState,
   remapAnthropicBlockIndex,
 } from "~/lib/anthropic/keepalive-anchor"
 import {
@@ -51,7 +54,7 @@ function hooks(): ReconcileHooks {
         return false
       }
     },
-    stopFrame: anchorStopFrame(),
+    stopFrame: anchorStopFrame,
     remap: remapAnthropicBlockIndex,
   }
 }
@@ -59,12 +62,26 @@ function hooks(): ReconcileHooks {
 function injectedState(): AnchorState {
   // The post-injection shared state the handler's empty_text anchor injector leaves behind (message_start +
   // anchor block@0 + empty delta already sent → anchorBlockOpen=true).
-  return { injected: true, messageStartForwarded: true, anchorBlockOpen: true, anchorClosed: false }
+  const allocator = createGenerationWireIndexAllocator()
+  allocator.onAnchorOpen()
+  return {
+    wireState: createGenerationWireState(allocator),
+    injected: true,
+    messageStartForwarded: true,
+    anchorBlockOpen: true,
+    anchorClosed: false,
+  }
 }
 
 /** The post-injection state the enveloped_ping ENVELOPE-ONLY injector leaves behind (message_start only, no block). */
 function envelopeInjectedState(): AnchorState {
-  return { injected: true, messageStartForwarded: true, anchorBlockOpen: false, anchorClosed: false }
+  return {
+    wireState: createGenerationWireState(createGenerationWireIndexAllocator()),
+    injected: true,
+    messageStartForwarded: true,
+    anchorBlockOpen: false,
+    anchorClosed: false,
+  }
 }
 
 /** Map a frame to `type@index` (index omitted when absent) for compact sequence assertions. */
@@ -77,7 +94,13 @@ function key(fr: ClientFrame): string {
 
 describe("reconcileLiveFrame", () => {
   test("NOT injected → every frame passes through byte-identically (fast-response equivalence)", () => {
-    const state: AnchorState = { injected: false, messageStartForwarded: false, anchorBlockOpen: false, anchorClosed: false }
+    const state: AnchorState = {
+      wireState: createGenerationWireState(createGenerationWireIndexAllocator()),
+      injected: false,
+      messageStartForwarded: false,
+      anchorBlockOpen: false,
+      anchorClosed: false,
+    }
     const h = hooks()
     const frames = [
       f("message_start", { message: { id: "m" } }),
@@ -92,11 +115,17 @@ describe("reconcileLiveFrame", () => {
     // Passthrough leaves the WIRE byte-identical and touches NO structural flag — except it records that a
     // real message_start already went out (`messageStartForwarded`), so a later idle-tick injector won't
     // fabricate a second one. `injected`/`anchorBlockOpen`/`anchorClosed` stay false (no anchor was injected).
-    expect(state).toEqual({ injected: false, messageStartForwarded: true, anchorBlockOpen: false, anchorClosed: false })
+    expect(state).toMatchObject({ injected: false, messageStartForwarded: true, anchorBlockOpen: false, anchorClosed: false })
   })
 
   test("NOT injected + no message_start (pure content) → state stays fully pure", () => {
-    const state: AnchorState = { injected: false, messageStartForwarded: false, anchorBlockOpen: false, anchorClosed: false }
+    const state: AnchorState = {
+      wireState: createGenerationWireState(createGenerationWireIndexAllocator()),
+      injected: false,
+      messageStartForwarded: false,
+      anchorBlockOpen: false,
+      anchorClosed: false,
+    }
     const h = hooks()
     for (const fr of [
       f("content_block_start", { index: 0, content_block: { type: "text", text: "" } }),
@@ -104,7 +133,7 @@ describe("reconcileLiveFrame", () => {
     ]) {
       expect(reconcileLiveFrame(fr, state, h)).toEqual([fr])
     }
-    expect(state).toEqual({ injected: false, messageStartForwarded: false, anchorBlockOpen: false, anchorClosed: false })
+    expect(state).toMatchObject({ injected: false, messageStartForwarded: false, anchorBlockOpen: false, anchorClosed: false })
   })
 
   test("injected: the real upstream sequence reconciles to [drop MS, stop@0 + block@1, delta@1, stop@1, message_delta, message_stop]", () => {
@@ -121,24 +150,15 @@ describe("reconcileLiveFrame", () => {
     const emitted = upstream.flatMap((fr) => reconcileLiveFrame(fr, state, h))
 
     expect(emitted.map(key)).toEqual([
-      // real message_start → DROPPED (empty), so it never appears
-      "content_block_stop@0", //  anchor close-off inserted before the first real block
-      "content_block_start@1", // real thinking block, remapped +1
-      "content_block_delta@1", // real thinking_delta, remapped +1
-      "content_block_stop@1", //  real content_block_stop, remapped +1
-      "message_delta", //         no index → unchanged
-      "message_stop", //          no index → unchanged
+      // Closing is an owner side effect; this pure transform only drops the duplicate envelope and remaps.
+      "content_block_start@1",
+      "content_block_delta@1",
+      "content_block_stop@1",
+      "message_delta",
+      "message_stop",
     ])
-
-    // Single message_start on the client (0 real ones survive; the injected one is the only message_start).
     expect(emitted.filter((fr) => key(fr) === "message_start")).toHaveLength(0)
-    // No real content_block_* collides with the anchor's reserved index 0 (only the close-off sits at @0).
-    const at0 = emitted.filter((fr) => {
-      const p = JSON.parse(fr.data as string) as { type: string; index?: number }
-      return p.type.startsWith("content_block_") && p.index === 0
-    })
-    expect(at0.map(key)).toEqual(["content_block_stop@0"]) // exactly the close-off, nothing else at @0
-    expect(state.anchorClosed).toBe(true)
+    expect(state.anchorClosed).toBe(false)
   })
 
   test("injected + message_start → dropped ([]), messageStartForwarded stays set", () => {
@@ -147,48 +167,33 @@ describe("reconcileLiveFrame", () => {
     expect(state.messageStartForwarded).toBe(true)
   })
 
-  test("injected + first content_block_start closes the anchor exactly once (later blocks just +1)", () => {
+  test("injected + content blocks are remapped while close state stays owner-owned", () => {
     const state = injectedState()
     const h = hooks()
     const first = reconcileLiveFrame(f("content_block_start", { index: 0, content_block: { type: "text", text: "" } }), state, h)
-    expect(first.map(key)).toEqual(["content_block_stop@0", "content_block_start@1"])
-    expect(state.anchorClosed).toBe(true)
-    // A SECOND real content_block_start (a multi-block response) must NOT re-close the anchor.
     const second = reconcileLiveFrame(f("content_block_start", { index: 1, content_block: { type: "text", text: "" } }), state, h)
-    expect(second.map(key)).toEqual(["content_block_start@2"]) // just +1, no extra stop@0
+    expect(first.map(key)).toEqual(["content_block_start@1"])
+    expect(second.map(key)).toEqual(["content_block_start@2"])
+    expect(state.anchorClosed).toBe(false)
   })
 
-  test("injected: message_delta / message_stop AFTER a real block closed the anchor pass through unchanged (real usage/stop_reason delivered)", () => {
+  test("injected: message terminators pass through while owner owns terminal close", () => {
     const state = injectedState()
     const h = hooks()
-    // A real block already closed the anchor (the normal ≥1-block stream) → later terminators pass through.
-    reconcileLiveFrame(f("content_block_start", { index: 0, content_block: { type: "text", text: "" } }), state, h)
-    expect(state.anchorClosed).toBe(true)
     const md = f("message_delta", { delta: { stop_reason: "end_turn" }, usage: { output_tokens: 9 } })
     const ms = f("message_stop")
     expect(reconcileLiveFrame(md, state, h)).toEqual([md])
     expect(reconcileLiveFrame(ms, state, h)).toEqual([ms])
+    expect(state.anchorClosed).toBe(false)
   })
 
-  // ── zero-content completion: message terminator before any real block (symmetry with buffered commit) ──
-  test("injected: a `message_delta` before any real block (zero-content completion) → [stop@0, message_delta]", () => {
+  test("injected zero-content completion leaves stop emission to the owner", () => {
     const state = injectedState()
     const h = hooks()
     const md = f("message_delta", { delta: { stop_reason: "end_turn" }, usage: { output_tokens: 0 } })
-    const out = reconcileLiveFrame(md, state, h)
-    expect(out.map(key)).toEqual(["content_block_stop@0", "message_delta"]) // anchor closed before the terminator
-    expect(state.anchorClosed).toBe(true)
-    expect(out[1]).toBe(md) // the terminator itself is untouched (no index → remap passthrough)
-    // A following message_stop must NOT re-close (idempotent).
+    expect(reconcileLiveFrame(md, state, h)).toEqual([md])
     expect(reconcileLiveFrame(f("message_stop"), state, h).map(key)).toEqual(["message_stop"])
-  })
-
-  test("injected: a `message_stop` before any real block (no message_delta) → [stop@0, message_stop]", () => {
-    const state = injectedState()
-    const h = hooks()
-    const out = reconcileLiveFrame(f("message_stop"), state, h)
-    expect(out.map(key)).toEqual(["content_block_stop@0", "message_stop"])
-    expect(state.anchorClosed).toBe(true)
+    expect(state.anchorClosed).toBe(false)
   })
 
   test("enveloped_ping (anchorBlockOpen=false): a `message_delta` / `message_stop` before any block passes through, NO stop@0", () => {
@@ -201,27 +206,11 @@ describe("reconcileLiveFrame", () => {
   })
 
   // ── terminal error event before any real block (H2 upstream error / refusal→error rewrite, §10.5) ──────
-  test("injected: a terminal `error` event before any real block → [stop@0, error] (close-off precedes the error)", () => {
+  test("injected terminal errors pass through while owner emits the balancing stop", () => {
     const state = injectedState()
-    const h = hooks()
     const err = f("error", { error: { type: "overloaded_error", message: "overloaded" } })
-    const out = reconcileLiveFrame(err, state, h)
-    // The anchor is closed off (stop@0) BEFORE the forwarded error frame — no OPEN block straight into an error.
-    expect(out.map(key)).toEqual(["content_block_stop@0", "error"])
-    expect(state.anchorClosed).toBe(true)
-    // The error frame itself is untouched (non-content_block_* → remap passes it through verbatim).
-    expect(out[1]).toBe(err)
-  })
-
-  test("injected: `error` after the anchor was already closed by a real block → no second stop@0", () => {
-    const state = injectedState()
-    const h = hooks()
-    // A real block already closed the anchor.
-    reconcileLiveFrame(f("content_block_start", { index: 0, content_block: { type: "text", text: "" } }), state, h)
-    expect(state.anchorClosed).toBe(true)
-    // A later error event must NOT re-close (idempotent) — it just passes through.
-    const err = f("error", { error: { type: "api_error", message: "x" } })
-    expect(reconcileLiveFrame(err, state, h)).toEqual([err])
+    expect(reconcileLiveFrame(err, state, hooks())).toEqual([err])
+    expect(state.anchorClosed).toBe(false)
   })
 
   test("enveloped_ping (anchorBlockOpen=false): a terminal `error` event passes through VERBATIM, NO stop@0", () => {
@@ -278,9 +267,9 @@ describe("reconcileLiveFrame", () => {
 // ── makeReconcilingSink — the decorator ─────────────────────────────────────
 
 /** A stub inner sink recording (method, frame) tuples in order. */
-function stubSink(): { sink: ClientSink; calls: Array<{ m: string; frame?: ClientFrame }> } {
+function stubSink(): { sink: ClientSink; rawSink: OwnerRawSink; calls: Array<{ m: string; frame?: ClientFrame }> } {
   const calls: Array<{ m: string; frame?: ClientFrame }> = []
-  const sink: ClientSink = {
+  const sink: OwnerRawSink = {
     write: (frame) => (calls.push({ m: "write", frame }), Promise.resolve()),
     writeSynthetic: (frame) => (calls.push({ m: "writeSynthetic", frame }), Promise.resolve()),
     writeKeepalive: (frame) => (calls.push({ m: "writeKeepalive", frame }), Promise.resolve()),
@@ -294,33 +283,36 @@ function stubSink(): { sink: ClientSink; calls: Array<{ m: string; frame?: Clien
       calls.push({ m: "finalize" })
     },
   }
-  return { sink, calls }
+  return { sink, rawSink: sink, calls }
 }
 
 describe("makeReconcilingSink", () => {
   test("NOT injected: write forwards each frame verbatim to inner.write (no anchor routing)", async () => {
     const { sink, calls } = stubSink()
-    const state: AnchorState = { injected: false, messageStartForwarded: false, anchorBlockOpen: false, anchorClosed: false }
+    const state: AnchorState = {
+      wireState: createGenerationWireState(createGenerationWireIndexAllocator()),
+      injected: false,
+      messageStartForwarded: false,
+      anchorBlockOpen: false,
+      anchorClosed: false,
+    }
     const dec = makeReconcilingSink(sink, state, hooks())
     const fr = f("content_block_delta", { index: 0, delta: { type: "text_delta", text: "hi" } })
     await dec.write(fr)
     expect(calls).toEqual([{ m: "write", frame: fr }])
   })
 
-  test("injected: write expands the real sequence onto inner; the close-off routes via writeAnchor (synthetic mark)", async () => {
+  test("injected without a delivery owner remaps but emits no out-of-owner anchor stop", async () => {
     const { sink, calls } = stubSink()
-    const state = injectedState()
-    const dec = makeReconcilingSink(sink, state, hooks())
+    const dec = makeReconcilingSink(sink, injectedState(), hooks())
 
-    await dec.write(f("message_start", { message: { id: "real" } })) // dropped → no inner call
+    await dec.write(f("message_start", { message: { id: "real" } }))
     await dec.write(f("content_block_start", { index: 0, content_block: { type: "thinking", thinking: "" } }))
     await dec.write(f("content_block_delta", { index: 0, delta: { type: "thinking_delta", thinking: "r" } }))
     await dec.write(f("content_block_stop", { index: 0 }))
     await dec.write(f("message_stop"))
 
-    // The close-off stop@0 is the ONLY writeAnchor call; everything real goes through write, remapped +1.
     expect(calls.map((c) => `${c.m}:${c.frame ? key(c.frame) : ""}`)).toEqual([
-      "writeAnchor:content_block_stop@0", // synthetic close-off → marked "anchor" on the forwarded track
       "write:content_block_start@1",
       "write:content_block_delta@1",
       "write:content_block_stop@1",
@@ -328,14 +320,14 @@ describe("makeReconcilingSink", () => {
     ])
   })
 
-  test("every non-write method forwards to the inner sink", async () => {
-    const { sink, calls } = stubSink()
+  test("every public non-write method forwards to the inner sink while owner-only anchor capability stays hidden", async () => {
+    const { sink, rawSink, calls } = stubSink()
     const dec = makeReconcilingSink(sink, injectedState(), hooks())
     const err = f("error")
     await dec.writeSynthetic?.(err)
     await dec.writeKeepalive?.(err)
     await dec.writeSyntheticEnvelope?.(err)
-    await dec.writeAnchor?.(err)
+    await rawSink.writeAnchor?.(err)
     dec.freezeHeartbeat?.()
     dec.suspendHeartbeat?.()
     dec.resumeHeartbeat?.()
@@ -367,7 +359,7 @@ describe("makeReconcilingSink", () => {
     const bare: ClientSink = { write: () => Promise.resolve() }
     const dec = makeReconcilingSink(bare, injectedState(), hooks())
     expect(dec.writeSynthetic).toBeUndefined()
-    expect(dec.writeAnchor).toBeUndefined()
+    expect("writeAnchor" in dec).toBe(false)
     expect(dec.freezeHeartbeat).toBeUndefined()
     expect(dec.suspendHeartbeat).toBeUndefined()
     expect(dec.resumeHeartbeat).toBeUndefined()
@@ -375,11 +367,11 @@ describe("makeReconcilingSink", () => {
     expect(dec.finalize).toBeUndefined()
   })
 
-  test("close-off falls back to inner.write when the inner sink has no writeAnchor", async () => {
+  test("a bare sink cannot become a second anchor-close authority", async () => {
     const calls: Array<ClientFrame> = []
     const bare: ClientSink = { write: (frame) => (calls.push(frame), Promise.resolve()) }
     const dec = makeReconcilingSink(bare, injectedState(), hooks())
     await dec.write(f("content_block_start", { index: 0, content_block: { type: "text", text: "" } }))
-    expect(calls.map(key)).toEqual(["content_block_stop@0", "content_block_start@1"]) // both via write
+    expect(calls.map(key)).toEqual(["content_block_start@1"])
   })
 })

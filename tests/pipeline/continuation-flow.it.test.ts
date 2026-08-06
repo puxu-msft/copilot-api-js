@@ -40,12 +40,18 @@ import { extractAnthropicCommittedBlocks } from "~/lib/anthropic/committed-block
 import { buildAnthropicContinuationRequest } from "~/lib/anthropic/continuation-builder"
 import {
   //
+  createGenerationWireIndexAllocator,
+  createGenerationWireState,
+} from "~/lib/anthropic/keepalive-anchor"
+import {
+  //
   isAnthropicContentBlockStart,
   remapAnthropicBlockIndex,
 } from "~/lib/anthropic/keepalive-anchor"
 import { anthropicCommitBoundaries } from "~/lib/codec/anthropic/commit-boundaries"
 import { createRequestContext } from "~/lib/context/request"
 import { createCommittedBlocksLedger } from "~/lib/pipeline/committed-blocks-ledger"
+import { createDownstreamDeliverySession } from "~/lib/pipeline/delivery/session"
 import {
   //
   createPipelineDriver,
@@ -195,14 +201,21 @@ describe("continuation-retry driver FLOW", () => {
       f("message_stop"),
     ])
     const { driver, sendCount, sentBodies } = makeDriver([continuation])
-    const { sink, written } = arraySink()
+    const { sink: rawSink, written } = arraySink()
+    const wireState = createGenerationWireState(createGenerationWireIndexAllocator())
+    const delivery = createDownstreamDeliverySession({ sink: rawSink, wireState })
     const ledger = createCommittedBlocksLedger()
     const tracker = makeStopTracker()
+    const opts = bufferedOpts(ledger, tracker)
+    opts.wireAllocationPort = delivery.allocationPort
 
-    const outcome = await driver.runResponseBufferedSink(initial, env, sink, bufferedOpts(ledger, tracker))
+    const outcome = await driver.runResponseBufferedSink(initial, env, delivery.clientSink, opts)
 
     expect(outcome.kind).toBe("complete") // continuation succeeded, NOT partial-degrade
     expect(sendCount()).toBe(1) // one continuation exchange dispatched
+    expect(wireState.activeLeg?.kind).toBe("continuation")
+    expect(wireState.activeLeg?.source.candidateId).toContain("candidate")
+    expect(wireState.activeLeg?.source.dispatchId).toContain("dispatch")
 
     const s = seq(written)
     // exactly one message_start (the continuation leg's duplicate dropped)

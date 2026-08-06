@@ -29,13 +29,15 @@ import {
   mock,
   test,
 } from "bun:test"
+import { writeFile } from "node:fs/promises"
 
+import type { DownstreamDeliverySession } from "~/lib/pipeline/delivery/session"
+
+import { PATHS } from "~/lib/config/paths"
 import { getHistory } from "~/lib/history/store"
-import {
-  //
-  setModels,
-  setStateForTests,
-} from "~/lib/state"
+import { setModels } from "~/lib/models/cache"
+import { setDeliverySessionObserverForTests } from "~/lib/pipeline/delivery/session"
+import { setStateForTests } from "~/lib/state"
 
 import {
   //
@@ -81,6 +83,7 @@ describe("C0 golden (a) — live-anchored keepalive-ON direct stream (byte-for-b
   useIsolatedRuntime()
   const clock = new FakeClock()
 
+  let observedDelivery: DownstreamDeliverySession | undefined
   let gateReached: () => void
   let gateReachedP: Promise<void>
   let gateOpenP: Promise<void>
@@ -99,6 +102,10 @@ describe("C0 golden (a) — live-anchored keepalive-ON direct stream (byte-for-b
 
   beforeEach(() => {
     clock.install()
+    observedDelivery = undefined
+    setDeliverySessionObserverForTests((session) => {
+      observedDelivery = session
+    })
     gatedFetchMock.mockClear()
     gateReachedP = new Promise<void>((r) => (gateReached = r))
     gateOpenP = new Promise<void>((r) => (openGate = r))
@@ -118,6 +125,95 @@ describe("C0 golden (a) — live-anchored keepalive-ON direct stream (byte-for-b
   })
 
   afterEach(() => clock.restore())
+
+  test("hedge winner still traverses live reconcile after an anchor opens", async () => {
+    await writeFile(
+      PATHS.CONFIG_YAML,
+      [
+        "timeouts:",
+        "  response_header: 1",
+        "generation:",
+        "  hedge:",
+        "    enabled: true",
+        "    threshold_sec: 0",
+        "anthropic:",
+        "  stream_keepalive_mode: empty_text",
+        "  stream_keepalive_ping_sec: 2",
+        "  stream_commit_after_sec: 2",
+      ].join("\n"),
+    )
+    const encoder = new TextEncoder()
+    let calls = 0
+    let firstOpened!: () => void
+    const firstOpenedP = new Promise<void>((resolve) => (firstOpened = resolve))
+    let secondaryOpened!: () => void
+    const secondaryOpenedP = new Promise<void>((resolve) => (secondaryOpened = resolve))
+    let secondaryController: ReadableStreamDefaultController<Uint8Array> | undefined
+    const hedgeFetchMock = mock(() => {
+      const call = calls++
+      if (call === 0) firstOpened()
+      else secondaryOpened()
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          if (call === 0) {
+            controller.enqueue(encoder.encode(messageStartFrame({ id: "msg_primary_stalled", model: MODEL })))
+            controller.enqueue(encoder.encode(textBlockStartFrame(0)))
+            controller.enqueue(encoder.encode(textDeltaFrame(0, "PRIMARY-MUST-NOT-LEAK")))
+          } else {
+            secondaryController = controller
+          }
+        },
+      })
+      return Promise.resolve(new Response(body, { status: 200, headers: { "content-type": "text/event-stream" } }))
+    })
+    applyFetchMock(hedgeFetchMock)
+
+    const { createFullTestApp } = await import("../helpers/test-app")
+    const app = createFullTestApp()
+    const resP = app.request("/v1/messages", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-session-id": "c0-live-anchor-hedge" },
+      body: JSON.stringify({
+        model: MODEL,
+        system: "load hedge config",
+        messages: [{ role: "user", content: "hedge after anchor" }],
+        max_tokens: 256,
+        stream: true,
+      }),
+    })
+    await firstOpenedP
+    await clock.advance(2_000)
+    await drain(120)
+    await clock.advance(2_500)
+    await drain(120)
+    await secondaryOpenedP
+    expect(calls).toBe(2)
+    const res = await resP
+    if (!secondaryController) throw new Error("hedge upstream was not opened")
+    for (const frame of [
+      messageStartFrame({ id: "msg_hedge_winner", model: MODEL }),
+      textBlockStartFrame(0),
+      textDeltaFrame(0, "secondary complete"),
+      blockStopFrame(0),
+      messageDeltaFrame({ stopReason: "end_turn", outputTokens: 3 }),
+      MESSAGE_STOP_FRAME,
+      DONE_FRAME,
+    ])
+      secondaryController.enqueue(encoder.encode(frame))
+    secondaryController.close()
+
+    const text = await res.text()
+    const payloads = text
+      .split("\n")
+      .filter((line) => line.startsWith("data: ") && line !== "data: [DONE]")
+      .map((line) => JSON.parse(line.slice(6)) as { type: string; index?: number })
+    expect(payloads.filter((frame) => frame.type === "message_start")).toHaveLength(1)
+    expect(payloads.filter((frame) => frame.type === "content_block_start").map((frame) => frame.index)).toEqual([0, 1])
+    expect(payloads.filter((frame) => frame.type === "content_block_stop").map((frame) => frame.index)).toEqual([0, 1])
+    expect(payloads.filter((frame) => frame.type === "content_block_delta").map((frame) => frame.index)).toEqual([0, 1])
+    expect(text).not.toContain("PRIMARY-MUST-NOT-LEAK")
+    expect(observedDelivery?.snapshot.ledger.openBlocks).toEqual([])
+  })
 
   test("stall injects the anchor; upstream resumes → commit reconcile remaps real blocks +1 (frozen bytes)", async () => {
     const { createFullTestApp } = await import("../helpers/test-app")
@@ -179,6 +275,10 @@ describe("C0 golden (a) — live-anchored keepalive-ON direct stream (byte-for-b
       sse("message_stop", { type: "message_stop" }),
     ].join("")
     expect(text).toBe(expected)
+    expect(observedDelivery?.allocationPort.wireState?.activeLeg?.kind).toBe("primary")
+    const legSource = observedDelivery?.allocationPort.wireState?.activeLeg?.source
+    expect(legSource?.candidateId).toMatch(/^candidate:/)
+    expect(legSource?.dispatchId).toMatch(/^dispatch:/)
 
     // Cross-check invariants the byte golden already encodes (explicit for regression readability):
     // (1) the anchor prelude keepalive is present (this is the keepalive-ON path, not a bare stream).

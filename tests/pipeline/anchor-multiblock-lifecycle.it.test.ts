@@ -57,11 +57,14 @@ import {
   makeSyntheticEnvelopeInjector,
   remapAnthropicBlockIndex,
   syntheticMessageStartFrame,
+  createGenerationWireIndexAllocator,
+  createGenerationWireState,
 } from "~/lib/anthropic/keepalive-anchor"
 import { resolveAnthropicKeepalive } from "~/lib/anthropic/keepalive-frame"
 import { anthropicCommitBoundaries } from "~/lib/codec/anthropic/commit-boundaries"
 import { createRequestContext } from "~/lib/context/request"
-import { makeSseSink } from "~/lib/pipeline/client-sink"
+import { makeDeliverySseSink } from "~/lib/pipeline/client-sink"
+import { getDownstreamDeliverySession } from "~/lib/pipeline/delivery/session"
 import {
   //
   createPipelineDriver,
@@ -178,11 +181,11 @@ const emptyDeltaFor = (ob?: OpenBlock): ClientFrame => {
   return PING
 }
 
-function stubSseStream(): { stream: Parameters<typeof makeSseSink>[0]; written: Array<{ data: string; event?: string }> } {
+function stubSseStream(): { stream: Parameters<typeof makeDeliverySseSink>[0]; written: Array<{ data: string; event?: string }> } {
   const written: Array<{ data: string; event?: string }> = []
   const stream = {
     writeSSE: (m: { data: string; event?: string }) => (written.push({ data: m.data, ...(m.event !== undefined && { event: m.event }) }), Promise.resolve()),
-  } as unknown as Parameters<typeof makeSseSink>[0]
+  } as unknown as Parameters<typeof makeDeliverySseSink>[0]
   return { stream, written }
 }
 
@@ -193,13 +196,21 @@ const flush = async (): Promise<void> => {
   for (let i = 0; i < 25; i++) await Promise.resolve()
 }
 
-function buildAnchoredSink(stream: Parameters<typeof makeSseSink>[0]): {
+function buildAnchoredSink(stream: Parameters<typeof makeDeliverySseSink>[0]): {
   sink: ClientSink
   anchor: AnchorHooks
   anchorState: AnchorState
   lastInjectResult: () => boolean | undefined
 } {
-  const anchorState: AnchorState = { injected: false, messageStartForwarded: false, anchorBlockOpen: false, anchorClosed: false }
+  const allocator = createGenerationWireIndexAllocator()
+  const wireState = createGenerationWireState(allocator)
+  const anchorState: AnchorState = {
+    wireState,
+    injected: false,
+    messageStartForwarded: false,
+    anchorBlockOpen: false,
+    anchorClosed: false,
+  }
   const anchor: AnchorHooks = {
     isContentBlockStart: (fr: { data?: string }) => {
       try {
@@ -215,9 +226,9 @@ function buildAnchoredSink(stream: Parameters<typeof makeSseSink>[0]): {
         return false
       }
     },
-    startFrame: anchorStartFrame(),
-    stopFrame: anchorStopFrame(),
-    deltaFrame: anchorDeltaFrame(),
+    startFrame: anchorStartFrame,
+    stopFrame: anchorStopFrame,
+    deltaFrame: anchorDeltaFrame,
     syntheticMessageStart: syntheticMessageStartFrame,
     remap: remapAnthropicBlockIndex,
   }
@@ -235,8 +246,9 @@ function buildAnchoredSink(stream: Parameters<typeof makeSseSink>[0]): {
     lastInjectResult = did
     return did
   }
-  const sink = makeSseSink(stream, { heartbeat: { intervalSec: 15, pingFrame: emptyDeltaFor, injectAnchor } })
+  const sink = makeDeliverySseSink(stream, { wireState, heartbeat: { intervalSec: 15, pingFrame: emptyDeltaFor, injectAnchor } })
   sinkHolder.current = sink
+  void getDownstreamDeliverySession(sink)?.allocationPort.beginLeg("primary", { candidateId: "candidate-test", dispatchId: "dispatch-test" })
   return { sink, anchor, anchorState, lastInjectResult: () => lastInjectResult }
 }
 
@@ -249,13 +261,21 @@ function buildAnchoredSink(stream: Parameters<typeof makeSseSink>[0]): {
  * purpose here: preventing a duplicate `message_start` / colliding `content_block_start@0` re-fire
  * once a real block has already opened+closed, independent of which injector is wired.
  */
-function buildEnvelopedPingSink(stream: Parameters<typeof makeSseSink>[0]): {
+function buildEnvelopedPingSink(stream: Parameters<typeof makeDeliverySseSink>[0]): {
   sink: ClientSink
   anchor: AnchorHooks
   anchorState: AnchorState
   lastInjectResult: () => boolean | undefined
 } {
-  const anchorState: AnchorState = { injected: false, messageStartForwarded: false, anchorBlockOpen: false, anchorClosed: false }
+  const allocator = createGenerationWireIndexAllocator()
+  const wireState = createGenerationWireState(allocator)
+  const anchorState: AnchorState = {
+    wireState,
+    injected: false,
+    messageStartForwarded: false,
+    anchorBlockOpen: false,
+    anchorClosed: false,
+  }
   const anchor: AnchorHooks = {
     isContentBlockStart: (fr: { data?: string }) => {
       try {
@@ -271,9 +291,9 @@ function buildEnvelopedPingSink(stream: Parameters<typeof makeSseSink>[0]): {
         return false
       }
     },
-    startFrame: anchorStartFrame(),
-    stopFrame: anchorStopFrame(),
-    deltaFrame: anchorDeltaFrame(),
+    startFrame: anchorStartFrame,
+    stopFrame: anchorStopFrame,
+    deltaFrame: anchorDeltaFrame,
     syntheticMessageStart: syntheticMessageStartFrame,
     remap: remapAnthropicBlockIndex,
   }
@@ -291,8 +311,9 @@ function buildEnvelopedPingSink(stream: Parameters<typeof makeSseSink>[0]): {
     lastInjectResult = did
     return did
   }
-  const sink = makeSseSink(stream, { heartbeat: { intervalSec: 15, pingFrame: resolveAnthropicKeepalive("enveloped_ping"), injectAnchor } })
+  const sink = makeDeliverySseSink(stream, { wireState, heartbeat: { intervalSec: 15, pingFrame: resolveAnthropicKeepalive("enveloped_ping"), injectAnchor } })
   sinkHolder.current = sink
+  void getDownstreamDeliverySession(sink)?.allocationPort.beginLeg("primary", { candidateId: "candidate-test", dispatchId: "dispatch-test" })
   return { sink, anchor, anchorState, lastInjectResult: () => lastInjectResult }
 }
 
@@ -604,7 +625,14 @@ describe("anchor lifecycle across multiple block-level commits — PRODUCER wire
     expect(lastInjectResult()).toBeUndefined() // the anchor never fired (no pre-content stall)
 
     // INTER-BLOCK IDLE: fire an interval. The re-injection guard must hold — a bare ping, no synthetic prelude.
+    // P6 re-arms the heartbeat only after the boundary commit's async flush settles; wait for this test's
+    // own delivery writeCount to reach the known boundary rather than inspecting global timer counts.
+    const deliveryBeforeGap = getDownstreamDeliverySession(sink)
+    for (let i = 0; i < 500 && (deliveryBeforeGap?.snapshot.writeCount ?? 0) < 4; i++) await Promise.resolve()
+    expect(deliveryBeforeGap?.snapshot.writeCount).toBe(4)
+    await drain(40) // let the boundary command return and P6 resume its own heartbeat
     const beforeGap = written.length
+    // boundary resume arms from the settle timestamp; advance a full fresh interval after the owned ledger is settled.
     await clock.advance(15_000)
     await flush()
     const gap = written.slice(beforeGap)
@@ -685,7 +713,12 @@ describe("anchor lifecycle across multiple block-level commits — PRODUCER wire
     // (mirrors test (a)'s deliberate scenario-B assertion: enveloped_ping's honest fallback is a bare ping,
     // NEVER a text_delta — this mode's own keepalive frame is the fixed ANTHROPIC_PING, not the block-aware
     // provider, so there is no text_delta to assert even when a block IS open elsewhere).
+    const deliveryBeforeGap = getDownstreamDeliverySession(sink)
+    for (let i = 0; i < 500 && (deliveryBeforeGap?.snapshot.writeCount ?? 0) < 4; i++) await Promise.resolve()
+    expect(deliveryBeforeGap?.snapshot.writeCount).toBe(4)
+    await drain(40) // let the boundary command return and P6 resume its own heartbeat
     const beforeGap = written.length
+    // boundary resume arms from the settle timestamp; advance a full fresh interval after the owned ledger is settled.
     await clock.advance(15_000)
     await flush()
     const gap = written.slice(beforeGap)

@@ -1,0 +1,20 @@
+node:events:487
+      throw er; // Unhandled 'error' event
+      ^
+
+Error: listen EADDRINUSE: address already in use 127.0.0.1:19471
+    at Http2Server.setupListenHandle [as _listen2] (node:net:2008:16)
+    at listenInCluster (node:net:2065:12)
+    at node:net:2274:7
+    at process.processTicksAndRejections (node:internal/process/task_queues:90:21)
+Emitted 'error' event on Http2Server instance at:
+    at emitErrorNT (node:net:2044:8)
+    at process.processTicksAndRejections (node:internal/process/task_queues:90:21) {
+  code: 'EADDRINUSE',
+  errno: -98,
+  syscall: 'listen',
+  address: '127.0.0.1',
+  port: 19471
+}
+
+Node.js v24.16.0

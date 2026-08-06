@@ -38,6 +38,8 @@ wire/协议正确性别用自洽（自己 encode↔decode，两端共享同一�
 
 改代码后先证明「这条路径**真被执行**」(不是 dead code/被绕过/只活在测试):静态追踪 route→handler→sink→driver(确认调 `runResponseSink` 非 dry-run `runResponse`)+ 端到端正样本(改后的帧真出现在响应)。是 pass-null 的正向版——「改的代码触达目标了吗」,非只「逻辑正确」。**分层意识**:应用层对 ≠ 到达消费者;验证到真正起作用的那层(keepalive 要验到 TCP flush/客户端真感知,不止 `sink.write` 被调;curl -N 看实时字节、ss 看内核 timer)。**mid-stream 时序技法**(测流式 heartbeat 等异步注入):http 测试用 `FakeClock`(拦 setTimeout)+ **test 持有 `ReadableStream` controller** 精确控帧——`ctrl.enqueue(block_start)` → `await Promise.resolve()×N` drain microtask 让 pump 消费到(openBlock 设)→ `clock.advance` 触发 heartbeat → 断言注入帧。**坑**:首跑若 keepalive 落在 block_start **之前**=drain 不够(pump 还没 write)、非 bug;drain 步进后即对(生产中静默发生在 block 已 write 之后)。活案例 tests/anthropic/keepalive-e2e.http。
 
+**同一个问题也要问 mutation：「mutation 不红」有两解**——① 测试没咬住；② **测试根本没执行到被改的分支**。二者的修法完全相反，先分清再动手。2026-07-28 一轮里连撞两次：① 测 first-event 看门狗保留 `TimeoutError` 身份，用了 `readyState=1` 但从不派发 `open` 的假 socket → 卡在**握手**超时，而握手超时**自己也挂 `TimeoutError`**，断言被**同名不同源**的值满足；② 测 upstream-WS 的 gap 计数，fake 只 yield `{type:"response.created"}` 缺 `response` 对象 → 累加器先抛 `undefined is not an object`，观察到的是与被测目标无关的错误。两次都靠**打印实际 cause 链 / 响应 body** 才看清，不是靠再读一遍代码。**推论**：断言一个**类型或名字**（`TimeoutError`、某 Error 子类）时，先问「这条路径上还有谁会产出同名的东西」；断言「计数为 N」时，先确认那条路径真的跑到了记录点。**顺带一条对偶**：mutation 本身也要自证改到了代码（见 [[methodology-verify-the-mutation-actually-applied]]）。
+
 ## 「PASS with WARN」当黄灯,顺因果链
 
 subagent 审计常以「PASS 但有 1 个 WARN」或「WARN 低优先级」收尾。默认诱惑是直接交付——**别这么做**。把 WARN 再往深挖一层,它往往是 subagent 只抓到一半的真实回归的可见冰山一角。subagent 擅长表层检查(grep/type/lint/基础 test),在多步因果链上弱:它标记的某个「死导出」之所以死,可能因为你破坏了调用契约——而调用契约被破坏就是一个回归,只是 subagent 没回溯到。
@@ -71,7 +73,7 @@ subagent 审计常以「PASS 但有 1 个 WARN」或「WARN 低优先级」收�
 
 **① 你查的是「投影」，不是事实。** 判「这些帧带没带 `synthetic` 标记」时，我扫的 History 投影**根本不含该字段**，于是"零个带标记"是投影的产物、不是事实。**先证明这条查询路径能带出你要找的东西**（换个已知一定带标记的样本跑一遍作正样本对照），再用它下否定结论。这是 `feedback-pass-null-clean-not-self-validating` 在**投影/视图**上的特例：空结果同样不自证。
 
-**② 探针测的是「此刻的代码」，而此刻的代码可能刚被别人改过。** 我实测"空 delta 能到达 wire"，据此下结论「丢失不在我方管线」——**错的**：并发会话早 6 小时的提交（`883e0533`）刚修好了真正的丢失层（`recoverToolCallText` 的 marker lookahead 吞帧）。探针量的是修复后的行为，被我读成了原始行为。**下"缺陷不在我方"这类结论前，先 `git log --oneline -20` + `git log -S<关键符号>` 看这块最近有没有被动过。** 与 `feedback-verify-deferred-task-not-already-landed-before-designing` 同源，但更狠：那条讲"功能可能已落地"，这条讲**根因结论会被 peer 的修复悄悄作废**。
+**② 探针测的是「此刻的代码」，而此刻的代码可能刚被别人改过。** 我实测"空 delta 能到达 wire"，据此下结论「丢失不在我方管线」——**错的**：并发会话早 6 小时的提交（`883e0533`）刚修好了真正的丢失层（`recoverToolCallText` 的 marker lookahead 吞帧）。探针量的是修复后的行为，被我读成了原始行为。**下"缺陷不在我方"这类结论前，先按路径查这块最近有没有被动过：`git log --oneline ..master -- <相关路径>`。** 配 `git log -S` 时注意它的语义：它找的是**增删了该字符串出现次数**的提交，不是改了其行为的提交——所以要**搜你预期被改动的那行里的字面量，不要搜模块名**。实测同一个 `883e0533`：`-S'recoverToolCallText'` 与 `-G` 都找不到（那次只在函数体里插了一行守卫，函数名出现次数没变），`-S'delta.text === ""'` 一击命中。 与 `feedback-verify-deferred-task-not-already-landed-before-designing` 同源，但更狠：那条讲"功能可能已落地"，这条讲**根因结论会被 peer 的修复悄悄作废**。
 
 **③ 探针的配置决定了它证明的范围，而范围极易被读宽。** 我用 buffered 配置验 keepalive 升级，静默期客户端视角其实是 pre-content 窗口——**验到的只是 pre-content 路径**，而当时的实现本来就写明是 pre-content-only；块间窗口的缺口纹丝未动。**探针结论必须连"它没有证明什么"一起写进产物**（见 `exp/keepalive-escalation-wire/README.md` 的写法），否则下一个人（包括三小时后的自己）会当成全覆盖。
 

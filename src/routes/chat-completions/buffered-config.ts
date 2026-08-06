@@ -1,8 +1,5 @@
-import {
-  //
-  resolveBufferedCaps,
-  state,
-} from "~/lib/state"
+import { resolveBufferedCaps } from "~/lib/config/model-overrides"
+import { state } from "~/lib/state"
 
 /**
  * Resolve buffered-retry mode + the forced client keepalive interval for the

@@ -6,7 +6,7 @@ import {
 
 import {
   //
-  ANCHOR_INDEX,
+  PRE_CONTENT_ANCHOR_INDEX,
   anchorStartFrame,
   anchorStopFrame,
   anchorDeltaFrame,
@@ -15,7 +15,7 @@ import {
 } from "~/lib/anthropic/keepalive-anchor"
 
 test("anchor start is an empty text content_block_start at index 0 with event line", () => {
-  const f = anchorStartFrame()
+  const f = anchorStartFrame(PRE_CONTENT_ANCHOR_INDEX)
   expect(f.event).toBe("content_block_start")
   expect(JSON.parse(f.data as string)).toEqual({
     type: "content_block_start",
@@ -25,7 +25,7 @@ test("anchor start is an empty text content_block_start at index 0 with event li
 })
 
 test("anchor delta is an empty text_delta at index 0 (resets CC 300s)", () => {
-  const f = anchorDeltaFrame()
+  const f = anchorDeltaFrame(PRE_CONTENT_ANCHOR_INDEX)
   expect(f.event).toBe("content_block_delta")
   expect(JSON.parse(f.data as string)).toEqual({
     type: "content_block_delta",
@@ -35,13 +35,13 @@ test("anchor delta is an empty text_delta at index 0 (resets CC 300s)", () => {
 })
 
 test("anchor stop closes index 0 with event line", () => {
-  const f = anchorStopFrame()
+  const f = anchorStopFrame(PRE_CONTENT_ANCHOR_INDEX)
   expect(f.event).toBe("content_block_stop")
   expect(JSON.parse(f.data as string)).toEqual({ type: "content_block_stop", index: 0 })
 })
 
-test("ANCHOR_INDEX is 0", () => {
-  expect(ANCHOR_INDEX).toBe(0)
+test("PRE_CONTENT_ANCHOR_INDEX is 0", () => {
+  expect(PRE_CONTENT_ANCHOR_INDEX).toBe(0)
 })
 
 test("remap shifts content_block_* index by offset, preserving event line", () => {

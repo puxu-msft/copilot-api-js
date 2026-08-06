@@ -12,11 +12,7 @@ import type {
   ClientSink,
 } from "~/lib/pipeline/types"
 
-import {
-  //
-  createDownstreamDeliverySession,
-  getDownstreamDeliverySession,
-} from "~/lib/pipeline/delivery/session"
+import { createDownstreamDeliverySession } from "~/lib/pipeline/delivery/session"
 import { createRecoverySinkSupervisor } from "~/lib/pipeline/generation/recovery-sink-supervisor"
 
 import { FakeClock } from "../helpers/fake-clock"
@@ -33,7 +29,7 @@ describe("recovery sink lifetime supervisor", () => {
   const clock = new FakeClock()
   afterEach(() => clock.restore())
 
-  test("forwards every write method and recoverable heartbeat control unchanged", async () => {
+  test("forwards every public write method and recoverable heartbeat control unchanged", async () => {
     const calls: Array<{ method: string; frame?: ClientFrame }> = []
     const inner: ClientSink = {
       async write(frame) {
@@ -47,9 +43,6 @@ describe("recovery sink lifetime supervisor", () => {
       },
       async writeSyntheticEnvelope(frame) {
         calls.push({ method: "writeSyntheticEnvelope", frame })
-      },
-      async writeAnchor(frame) {
-        calls.push({ method: "writeAnchor", frame })
       },
       freezeHeartbeat() {
         calls.push({ method: "freezeHeartbeat" })
@@ -67,14 +60,12 @@ describe("recovery sink lifetime supervisor", () => {
       synthetic: namedFrame("synthetic"),
       keepalive: namedFrame("keepalive"),
       envelope: namedFrame("envelope"),
-      anchor: namedFrame("anchor"),
     }
 
     await supervisor.sink.write(frames.write)
     await supervisor.sink.writeSynthetic?.(frames.synthetic)
     await supervisor.sink.writeKeepalive?.(frames.keepalive)
     await supervisor.sink.writeSyntheticEnvelope?.(frames.envelope)
-    await supervisor.sink.writeAnchor?.(frames.anchor)
     supervisor.sink.freezeHeartbeat?.()
     supervisor.sink.suspendHeartbeat?.()
     supervisor.sink.resumeHeartbeat?.()
@@ -84,20 +75,10 @@ describe("recovery sink lifetime supervisor", () => {
       { method: "writeSynthetic", frame: frames.synthetic },
       { method: "writeKeepalive", frame: frames.keepalive },
       { method: "writeSyntheticEnvelope", frame: frames.envelope },
-      { method: "writeAnchor", frame: frames.anchor },
       { method: "freezeHeartbeat" },
       { method: "suspendHeartbeat" },
       { method: "resumeHeartbeat" },
     ])
-  })
-
-  test("preserves the generation-owned delivery session identity for driver writes", async () => {
-    const delivery = createDownstreamDeliverySession({ sink: { async write() {} } })
-    const supervisor = createRecoverySinkSupervisor(delivery.clientSink)
-
-    expect(getDownstreamDeliverySession(supervisor.sink)).toBe(delivery)
-
-    await supervisor.settleFinal()
   })
 
   test("suppresses attempt-local close and finalize until settleFinal", async () => {

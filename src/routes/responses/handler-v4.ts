@@ -63,6 +63,7 @@ import {
 } from "~/lib/codec/openai-cc/reverse-anthropic-rewrite"
 import { createOpenAiResponsesCodec } from "~/lib/codec/openai-responses/codec"
 import { responsesKeepaliveFrame } from "~/lib/codec/openai-responses/keepalive"
+import { resolveBufferedCaps } from "~/lib/config/model-overrides"
 import { HTTPError } from "~/lib/error"
 import {
   //
@@ -91,11 +92,7 @@ import {
   buildResponsesResponseData,
 } from "~/lib/request/recording"
 import { usageFromTotalInput } from "~/lib/request/usage-normalize"
-import {
-  //
-  resolveBufferedCaps,
-  state,
-} from "~/lib/state"
+import { state } from "~/lib/state"
 import { resolveInboundQuery } from "~/lib/transport/query-forward"
 import { createUpstreamResponsesTransport } from "~/lib/transport/responses-transport"
 import {
@@ -401,6 +398,10 @@ async function pumpStreamingV4(opts: PumpStreamingV4Options): Promise<void> {
   if (candidate.kind !== "responses") throw new Error("[Responses:v4] wrong candidate response session kind")
   const { acc, diag } = candidate
 
+  if (outcome.kind === "delivery-finished") {
+    recordForwarded()
+    return
+  }
   if (outcome.kind === "settled-abort") {
     recordForwarded()
     consola.debug("[Responses:v4] Client disconnected mid-stream — recording aborted")
@@ -604,6 +605,10 @@ async function pumpReverseAnthropicLegV4(opts: PumpReverseAnthropicLegOptions): 
   if (candidate.kind !== "reverse-anthropic") throw new Error("[Responses:v4:reverse] wrong candidate response session kind")
   const { anthropicAcc, diag } = candidate
 
+  if (outcome.kind === "delivery-finished") {
+    recordForwarded()
+    return
+  }
   if (outcome.kind === "settled-abort") {
     recordForwarded()
     consola.debug("[Responses:v4:reverse] Client disconnected mid-stream — recording aborted")
@@ -652,6 +657,14 @@ async function pumpReverseAnthropicLegV4(opts: PumpReverseAnthropicLegOptions): 
     await sink.writeSynthetic?.(openAIStreamErrorFrame(truncErr)).catch(() => undefined)
     recordForwarded()
     env.ctx.fail(anthropicAcc.model || model, truncErr, buildAnthropicResponseData(anthropicAcc, model))
+    await sink.finalize?.()
+    return
+  }
+  if (terminal.kind === "contentless-refusal") {
+    const summary = refusalSummary(extractRefusalDetail(anthropicAcc.stopDetails))
+    env.ctx.recordFeature("refusal-passthrough", { category: refusalCategoryForDiagnostics(anthropicAcc.stopDetails) })
+    recordForwarded()
+    env.ctx.fail(anthropicAcc.model || model, new Error(summary), buildAnthropicResponseData(anthropicAcc, model), { upstreamSucceeded: true })
     await sink.finalize?.()
     return
   }

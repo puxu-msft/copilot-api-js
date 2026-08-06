@@ -175,7 +175,8 @@ reasoning round-trip 有两个语义不同的场景，**代理无法自动判定
 ### 5.1 通用策略：请求侧透传无损，结果回显永远降级（物理约束，非妥协）
 
 直接桥对 anthropic 侧 server tool 采用「请求侧能映射就原生透传、结果回显永远降级」：
-- **请求侧（无损）**：anthropic `web_search_20250305`（前缀 type + Anthropic schema）→ responses `web_search_preview`（不同参数，**名称鸿沟映射非零工作**）→ 让 **responses 上游原生执行搜索**。这条腿真无损（上游自己搜）。
+- **请求侧（无损）**：anthropic `web_search_20250305`（前缀 type + Anthropic schema）→ Responses 裸 builtin `{type:"web_search"}` → 让 **Responses 上游原生执行搜索**。这条 wire 形状由 Phase 0 探针与 2026-08-04 强制选择探针共同实测为 HTTP 200；不是 `web_search_preview`。
+- **工具选择与声明同源（承重不变量）**：`tools[]` 与 `tool_choice` 必须由同一映射决策产生。若声明映射为 builtin `{type:"web_search"}`，强制选择也必须是 `{type:"web_search"}`，绝不能伪装成 `{type:"function",name:"web_search"}`；若声明被过滤、named choice 找不到存活声明，或 `any`/`required` 翻译后零工具可用，则 choice 同步省略。此不变量同样约束 Responses→Anthropic 与 Responses→CC 的降级腿，防止留下悬空 choice。
 - **结果回显（永远降级、非妥协）**：Responses 的 `ResponsesOutputItem` union（[openai-responses.ts:204](../../src/types/api/openai-responses.ts)）**没有 web_search 输出 item 类型、搜索结果不带任何 `encrypted_content`**。要回显成 Anthropic `web_search_tool_result` 块多轮存续，`encrypted_content` **只能自己合成** → 撞退役双跳同一堵墙（`encrypted-content-400`）。故结果回显**永远走降级路径**：普通 `tool_use`/`text` 块，**绝不合成 `web_search_tool_result`**。
 - 映射不上的 server tool → 同样降级为普通 tool_use / text。
 

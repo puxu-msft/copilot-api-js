@@ -14,10 +14,10 @@ import type {
 } from "~/lib/history/types"
 
 import { getHistory } from "~/lib/history"
+import { setModels } from "~/lib/models/cache"
 import {
   //
   setModelMappings,
-  setModels,
   setStateForTests,
 } from "~/lib/state"
 

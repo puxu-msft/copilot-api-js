@@ -118,6 +118,7 @@ import {
   renderResponseNonStreamingVia,
   type ReverseStreamTranslator,
 } from "~/lib/pipeline/hub-translate"
+import { STREAM_ERROR_KIND_MESSAGES } from "~/lib/stream"
 import { applyInboundSystemPrompt } from "~/lib/system-prompt"
 
 import {
@@ -436,18 +437,8 @@ function parseContentLength(header: string | null): number | undefined {
  * (driver S7 wiring, which holds the raw error) reconciles this across all
  * codecs — likely by passing the raw error/message into the frame.
  */
-/** Kind-derived error-frame messages (see P2.2-D4 — raw message is unavailable). */
-const STREAM_ERROR_MESSAGES: Record<ClassifiedStreamError, string> = {
-  "idle-timeout": "Stream idle timeout",
-  shutdown: "Server is shutting down",
-  "client-abort": "Client disconnected",
-  "reaper-cancel": "Request cancelled by stale-request reaper",
-  "dispatch-cancel": "Upstream dispatch cancelled",
-  other: "Stream error",
-}
-
 function formatOpenAiCcError(err: ClassifiedStreamError): ClientFrame {
-  return { event: "error", data: JSON.stringify({ error: { message: STREAM_ERROR_MESSAGES[err], type: streamErrorKindToOpenAIErrorType(err) } }) }
+  return { event: "error", data: JSON.stringify({ error: { message: STREAM_ERROR_KIND_MESSAGES[err], type: streamErrorKindToOpenAIErrorType(err) } }) }
 }
 
 // ============================================================================

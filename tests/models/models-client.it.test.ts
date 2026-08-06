@@ -11,12 +11,15 @@ import { HTTPError } from "~/lib/error"
 import {
   //
   cacheModels,
+  resetRawModelsForTests,
+} from "~/lib/models/cache"
+import {
+  //
   getModels,
   resetModelsEtagForTests,
 } from "~/lib/models/client"
 import {
   //
-  resetRawModelsForTests,
   restoreStateForTests,
   setStateForTests,
   snapshotStateForTests,

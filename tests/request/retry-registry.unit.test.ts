@@ -1,10 +1,8 @@
 /**
- * Task 2 (Commit 2) — unit tests for the declarative retry-strategy registry + assembler.
+ * Unit tests for the declarative retry-strategy registry + assembler.
  *
- * Pure addition, zero production consumers yet (Task 3 wires the three `buildXxxStrategies` to
- * `assembleRetryStrategies`). Covers: filter(appliesTo ∧ enabled) → sort(order) → payload/env
- * instantiation branches — and cross-checks the 16-name @messages order against the Task 1 golden
- * (`tests/pipeline/retry-strategy-assembly.golden.it.test.ts`).
+ * The three production `buildXxxStrategies` functions consume `assembleRetryStrategies`.
+ * These tests cover filter(appliesTo ∧ enabled) → sort(order) → payload/env instantiation branches and cross-check the 16-name @messages order against the Task 1 golden (`tests/pipeline/retry-strategy-assembly.golden.it.test.ts`).
  *
  * Task 4 addendum (Commit 4, reviewer suggestion 2 from the Task 3 review): a behavioral regression test
  * for the shared `attemptRef` — `assembleRetryStrategies` constructs ONE `{ value: 0 }` ref per call site
@@ -36,6 +34,11 @@ import type { SanitizeResult } from "~/lib/request/retry-types"
 import type { MessagesPayload } from "~/types/api/anthropic"
 
 import { createBetaProbe } from "~/lib/anthropic/pipeline"
+import {
+  //
+  HTTPError,
+  classifyError,
+} from "~/lib/error"
 import { ENDPOINT } from "~/lib/models/endpoint"
 import {
   //
@@ -264,6 +267,19 @@ function makeFakeEnv(body: unknown): RequestEnvelope {
     },
   } as unknown as RequestEnvelope
 }
+
+describe("HTTP 499 empty-body retry wiring", () => {
+  test("the assembled network strategy retries an empty-body HTTP 499 only once", async () => {
+    const strategy = assembleRetryStrategies(ccDirectCtx, stubDeps(), {}).find((candidate) => candidate.name === "network-retry")
+    const error = classifyError(new HTTPError("Client Closed Request", 499, ""))
+    const env = makeFakeEnv({ model: "test-model" })
+
+    expect(strategy).toBeDefined()
+    expect(strategy!.canHandle(error)).toBe(true)
+    expect(await strategy!.handle(error, env)).toMatchObject({ kind: "retry", env, waitMs: 1000, meta: { networkRetry: true } })
+    expect(strategy!.canHandle(error)).toBe(false)
+  })
+})
 
 describe("attemptRef sharing across assembled payload strategies (behavioral regression)", () => {
   let infoSpy: ReturnType<typeof spyOn>

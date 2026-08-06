@@ -292,8 +292,49 @@ export interface RawHttpRequest {
   readonly clientAbortSignal?: AbortSignal
 }
 
+export type OwnerFailureReason = "client-gone" | "session-terminating" | "wire-torn"
+export type OwnerOperation =
+  | "allocate-anchor"
+  | "allocate-real-block"
+  | "begin-leg"
+  | "close-anchor-before-real"
+  | "close-anchor-terminal"
+  | "write-block-frame"
+export type OwnerResult<T> =
+  | Readonly<{ ok: true; value: T }>
+  | Readonly<{ ok: false; reason: "client-gone"; committed: boolean }>
+  | Readonly<{ ok: false; reason: "session-terminating" | "wire-torn"; committed: false }>
+
+export type WireWriteSpec =
+  | Readonly<{ kind: "real"; frame: ClientFrame }>
+  | Readonly<{ kind: "anchor"; frame: ClientFrame }>
+  | Readonly<{ kind: "keepalive"; frame: ClientFrame }>
+
+export interface WireEnvelopeFactory {
+  real(frame: ClientFrame): WireWriteSpec
+  anchor(frame: ClientFrame): WireWriteSpec
+  keepalive(frame: ClientFrame): WireWriteSpec
+}
+
+export interface WireBlockAllocationPort {
+  readonly wireState?: GenerationWireState
+  allocateAndWriteAnchor(build: (ctx: { wireIndex: number; envelope: WireEnvelopeFactory }) => ReadonlyArray<WireWriteSpec>): Promise<OwnerResult<number>>
+  withAllocatedRealBlock(
+    upstreamIndex: number,
+    build: (ctx: { mapping: WireBlockMapping; envelope: WireEnvelopeFactory }) => ReadonlyArray<WireWriteSpec>,
+  ): Promise<OwnerResult<WireBlockMapping>>
+  beginLeg(kind: "primary" | "continuation" | "recovery", source: LegSource): Promise<OwnerResult<LegToken>>
+  closeOpenAnchor(
+    buildStop: (index: number, envelope: WireEnvelopeFactory) => WireWriteSpec,
+    mode: "before-real" | "terminal",
+  ): Promise<OwnerResult<"closed" | "none">>
+  writeBlockFrame(leg: LegToken, upstreamIndex: number, frame: ClientFrame): Promise<OwnerResult<"written">>
+}
+
 /** Per-call hooks for {@link PipelineDriver.runResponse}. */
 export interface RunResponseOpts {
+  /** Explicit generation owner for a decorated live sink; never register wrapper objects as owners. */
+  wireAllocationPort?: WireBlockAllocationPort
   /**
    * Invoked at the response loop top with each UPSTREAM-ORIGINAL frame (raw,
    * verbatim — BEFORE the S5 rewrite chain), at the same point/condition the driver
@@ -379,12 +420,12 @@ export interface AnchorHooks {
   isMessageStart: (frame: ClientFrame) => boolean
   /** Is this rendered client frame a real `content_block_start`? (drives the sequential anchor close-before-real-block). */
   isContentBlockStart: (frame: ClientFrame) => boolean
-  /** The synthetic anchor `content_block_start{type:"text", text:""}` at index 0 (lights the sink's openBlock). */
-  startFrame: ClientFrame
-  /** The synthetic anchor `content_block_stop` at index 0 — the commit / terminal-failure close-off. */
-  stopFrame: ClientFrame
-  /** The empty `text_delta` anchor keepalive frame — resets CC's 300s watchdog right after the start. */
-  deltaFrame: ClientFrame
+  /** Build the synthetic anchor `content_block_start{type:"text", text:""}` at its allocated wire index. */
+  startFrame: (index: number) => ClientFrame
+  /** Build the synthetic anchor `content_block_stop` at its allocated wire index. */
+  stopFrame: (index: number) => ClientFrame
+  /** Build the empty `text_delta` anchor keepalive frame at its allocated wire index. */
+  deltaFrame: (index: number) => ClientFrame
   /**
    * Fabricate a `message_start` envelope (fake id + zeroed usage) for when the upstream stalls before
    * emitting its own real `message_start`, so the client stream is well-formed enough to open a block.
@@ -427,7 +468,67 @@ export interface ContinuationHooks {
  * in via {@link RunBufferedOpts.anchorState} so both sides observe the SAME injection/close state
  * (no torn snapshot — §3.3 B1 flips `injected` synchronously before the first sink write).
  */
+declare const legTokenBrand: unique symbol
+
+/** Immutable identity of one upstream generation leg. */
+export type LegToken = string & { readonly [legTokenBrand]: true }
+
+/** Immutable handle mapping one upstream block onto its generation-wide wire index. */
+export interface WireBlockMapping {
+  readonly wireIndex: number
+  readonly upstreamIndex: number
+  readonly leg: LegToken
+  remap(frame: ClientFrame): ClientFrame
+}
+
+export interface WireIndexReservation<Value> {
+  readonly value: Value
+  commit(): void
+  rollback(): void
+}
+
+export interface LegSource {
+  readonly candidateId: string
+  readonly dispatchId: string
+}
+
+/** Shared generation state injected into the delivery owner; callers never mutate its registries. */
+export interface GenerationWireState {
+  readonly allocator: GenerationWireIndexAllocator
+  readonly mappings: Map<LegToken, Map<number, WireBlockMapping>>
+  readonly legSources: Map<LegToken, LegSource>
+  activeLeg?: Readonly<{ token: LegToken; kind: "primary" | "continuation" | "recovery"; source: LegSource }>
+  openAnchorIndex?: number
+}
+
+export interface GenerationWireIndexAllocator {
+  /** Peek the wire index the NEXT anchor block will occupy. */
+  nextAnchorIndex: () => number
+  /** Peek the wire index the NEXT real block will occupy. */
+  nextRealIndex: () => number
+  /** Legacy split-phase commit retained until P3M migrates all old call sites. */
+  onAnchorOpen: () => void
+  /** Legacy split-phase commit retained until P3M migrates all old call sites. */
+  onRealBlockOpen: () => void
+  /** Begin one upstream round. The delivery owner serializes this synchronous primitive. */
+  beginLeg: (kind: "primary" | "continuation" | "recovery", source: { candidateId: string; dispatchId: string }) => LegToken
+  /** Atomically allocate and commit one synthetic anchor index. */
+  allocateAnchor: () => number
+  /** Atomically allocate and commit one real block mapping on the active leg. */
+  allocateRealBlock: (upstreamIndex: number) => WireBlockMapping
+  /** Low-level reservation used by the delivery owner's pre-write commit protocol. */
+  reserveAnchor: () => WireIndexReservation<number>
+  /** Low-level reservation used by the delivery owner's pre-write commit protocol. */
+  reserveRealBlock: (upstreamIndex: number) => WireIndexReservation<WireBlockMapping>
+  /** Diagnostic count of allocated synthetic anchors. Never use this as a remap predicate. */
+  anchorsOpened: () => number
+  /** Resolve the offset from an upstream block index to its allocated wire index. */
+  realBlockOffset: (upstreamIndex: number) => number
+}
+
 export interface AnchorState {
+  /** The required generation-scoped wire-state SSOT shared by every anchor and real-block delivery leg. */
+  wireState: GenerationWireState
   /** Any synthetic prelude has been injected onto the forwarded track (message envelope and/or content anchor). */
   injected: boolean
   /** The content anchor itself has been injected. Kept separate so enveloped_ping cannot suppress later content escalation. */
@@ -689,17 +790,6 @@ export interface ClientSink {
    */
   writeSyntheticEnvelope?(frame: ClientFrame): Promise<void>
   /**
-   * Write a proxy-synthesized buffered-anchor STRUCTURAL frame (the empty-text anchor's
-   * `content_block_start@0` / `content_block_stop@0`) to the wire AND sample it into the forwarded
-   * track WITH a `synthetic:"anchor"` marker — so history/UI/logs never mistake the injected anchor
-   * block for real upstream content. Unlike {@link writeKeepalive} this ALSO updates the sink's
-   * open-block state (lights `openBlock={0,text}` on the start so the next heartbeat tick picks a
-   * block-aware empty text_delta; clears it on the stop), exactly as {@link write} does. The anchor's
-   * OWN empty text_delta is a heartbeat → written via {@link writeKeepalive}, not this. Omitted by
-   * sinks with no heartbeat (WS/array) — callers fall back to {@link write}.
-   */
-  writeAnchor?(frame: ClientFrame): Promise<void>
-  /**
    * RECOVERABLY stop the currently armed heartbeat timer without closing the sink. A later
    * {@link resumeHeartbeat} after {@link suspendHeartbeat} MUST be able to arm a fresh interval.
    * Freeze alone does not fence a tick that was already queued or whose async write is in flight;
@@ -768,6 +858,7 @@ export type ResponseOutcome =
   | { kind: "complete"; headers: Headers; finish?: ResponseFinishResult }
   | { kind: "stream-error"; error: unknown; truncated?: boolean }
   | { kind: "settled-abort" }
+  | { kind: "delivery-finished" }
 
 /**
  * Orchestrates the stage sequence, publishing events + sampling raw data at

@@ -29,6 +29,8 @@ import {
   //
   anchorStopFrame,
   remapAnthropicBlockIndex,
+  createGenerationWireIndexAllocator,
+  createGenerationWireState,
 } from "~/lib/anthropic/keepalive-anchor"
 import { makeReconcilingSink } from "~/lib/anthropic/live-reconcile"
 import { createBetaProbe } from "~/lib/anthropic/pipeline"
@@ -41,7 +43,13 @@ const ccChunk = (obj: unknown): { data: string; event: string } => ({ data: JSON
 
 /** The ReconcileHooks the live reconcile needs (mirrors buildAnthropicAnchorHooks). */
 const reconcileHooks = {
-  isContentBlockStart: (fr: { data?: string }) => { try { return (JSON.parse(fr.data ?? "{}") as { type?: unknown }).type === "content_block_start" } catch { return false } },
+  isContentBlockStart: (fr: { data?: string }) => {
+    try {
+      return (JSON.parse(fr.data ?? "{}") as { type?: unknown }).type === "content_block_start"
+    } catch {
+      return false
+    }
+  },
   isMessageStart: (f: ClientFrame): boolean => {
     if (typeof f.data !== "string") return false
     try {
@@ -50,7 +58,7 @@ const reconcileHooks = {
       return false
     }
   },
-  stopFrame: anchorStopFrame(),
+  stopFrame: anchorStopFrame,
   remap: remapAnthropicBlockIndex,
 }
 
@@ -70,7 +78,15 @@ describe("translate-leg flush frames + live reconcile (empty_text anchor +1 rema
 
     // Simulate an injected empty_text anchor prelude: message_start + anchor content_block@0 already
     // forwarded, so the live reconcile drops the translator's message_start and shifts real blocks +1.
-    const anchorState: AnchorState = { injected: true, messageStartForwarded: true, anchorBlockOpen: true, anchorClosed: false }
+    const allocator = createGenerationWireIndexAllocator()
+    allocator.onAnchorOpen()
+    const anchorState: AnchorState = {
+      wireState: createGenerationWireState(allocator),
+      injected: true,
+      messageStartForwarded: true,
+      anchorBlockOpen: true,
+      anchorClosed: false,
+    }
     const { sink, frames } = makeArraySink()
     const clientSink = makeReconcilingSink(sink, anchorState, reconcileHooks)
 
@@ -99,12 +115,11 @@ describe("translate-leg flush frames + live reconcile (empty_text anchor +1 rema
       .map((f) => JSON.parse(f.data ?? "{}") as { type?: string; index?: number })
       .filter((o) => o.type === "content_block_start" || o.type === "content_block_stop")
 
-    // The anchor closed off at index 0 (reconcile's close-off before the first real block), and the real
-    // text block is fully at index 1: start@1 → stop@1. NO content_block_stop@0-dangling-block mismatch.
+    // This unit uses an array sink, so owner-side anchor close is intentionally absent. It still proves
+    // the loop start and flush stop share the same bridge remap; production owner-close coverage lives in
+    // the delivery-session integration tests.
     const starts = blocks.filter((b) => b.type === "content_block_start")
     const stops = blocks.filter((b) => b.type === "content_block_stop")
-    // reconcile emits stop@0 (anchor close-off) + the real block's start@1; flush's stop must be @1.
-    expect(stops.map((s) => s.index)).toContain(0) // anchor close-off
     expect(starts.map((s) => s.index)).toEqual([1]) // real text block remapped +1
     expect(stops.map((s) => s.index)).toContain(1) // the flush's content_block_stop, +1-remapped (THE FIX)
 
@@ -122,7 +137,13 @@ describe("translate-leg flush frames + live reconcile (empty_text anchor +1 rema
     const codec = createAnthropicCodec({ betaProbe: createBetaProbe(undefined), preprocessInfo: { strippedReadTagCount: 0, dedupedToolCallCount: 0 } })
     const env = translateLegEnv()
     // Fast path: no stall → no anchor injected.
-    const anchorState: AnchorState = { injected: false, messageStartForwarded: false, anchorBlockOpen: false, anchorClosed: false }
+    const anchorState: AnchorState = {
+      wireState: createGenerationWireState(createGenerationWireIndexAllocator()),
+      injected: false,
+      messageStartForwarded: false,
+      anchorBlockOpen: false,
+      anchorClosed: false,
+    }
     const { sink, frames } = makeArraySink()
     const clientSink = makeReconcilingSink(sink, anchorState, reconcileHooks)
 

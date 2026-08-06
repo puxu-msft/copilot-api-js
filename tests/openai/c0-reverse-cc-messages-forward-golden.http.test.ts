@@ -25,10 +25,10 @@ import {
 } from "bun:test"
 
 import { getHistory } from "~/lib/history"
+import { setModels } from "~/lib/models/cache"
 import {
   //
   setDisabledModels,
-  setModels,
   setStateForTests,
 } from "~/lib/state"
 

@@ -466,7 +466,7 @@ export function recordMatchesQuery(record: ModelOperationRecord, options: QueryO
   }
   const state = lifecycleState(record)
   if (options.state && state !== options.state) return false
-  if (options.success !== undefined && (state === "completed") !== options.success) return false
+  if (!options.state && options.success !== undefined && state !== (options.success ? "completed" : "failed")) return false
   if (options.from !== undefined && record.identity.createdAt < options.from) return false
   if (options.to !== undefined && record.identity.createdAt > options.to) return false
   return true

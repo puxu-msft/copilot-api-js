@@ -30,10 +30,10 @@ import consola from "consola"
 
 import { getProtectStreamingStats } from "~/lib/anthropic/protect-streaming-stats"
 import { getHistory } from "~/lib/history/store"
+import { setModels } from "~/lib/models/cache"
 import {
   //
   setDisabledModels,
-  setModels,
   setStateForTests,
 } from "~/lib/state"
 

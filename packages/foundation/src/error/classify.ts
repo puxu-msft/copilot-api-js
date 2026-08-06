@@ -20,7 +20,7 @@ export type ApiErrorType =
   | "content_filtered" // 422 — Responsible AI Service filtering
   | "quota_exceeded" // 402 — free tier / premium quota exceeded
   | "auth_expired" // Token expired
-  | "network_error" // Connection failure
+  | "network_error" // Retryable transport failure, including an upstream 499 with an empty body
   | "aborted" // Operation cancelled via AbortSignal (shutdown, client cancel, internal timeout)
   | "server_error" // 5xx (non-503-upstream)
   | "upstream_rate_limited" // 503 — upstream provider rate limited
@@ -91,6 +91,15 @@ export function classifyError(error: unknown): ApiError {
         case "mid-body-close": {
           // Truncated body after headers — never a pre-response retry. Terminal.
           return { type: "bad_request", status: 0, message: formatErrorWithCause(error), raw: error }
+        }
+        case "pool-closed": {
+          // Our own session pool went away (shutdown force-close / finalize). It is a
+          // CANCELLATION, so it classifies like every other abort — an in-process retry
+          // would only hit the same closed pool. Reached only if a producer ever tags
+          // `pool-closed` onto an error that is NOT AbortError-named: the isAbortError
+          // branch above wins for the ones http2-client currently produces. Kept explicit
+          // (not folded into `default`) so the exhaustiveness guard keeps its teeth.
+          return { type: "aborted", status: 0, message: formatErrorWithCause(error), raw: error }
         }
         default: {
           // Exhaustiveness: a new TransportErrorReason must add its case above.
@@ -167,6 +176,18 @@ export function classifyError(error: unknown): ApiError {
 
 function classifyHTTPError(error: HTTPError): ApiError {
   const { status, responseText, message } = error
+
+  // An upstream 499 with no body carries no actionable rejection detail. Treat it like a pre-response transport failure so the shared network strategy retries it once.
+  // A non-empty 499 remains a terminal bad_request below because its body may describe an intentional cancellation that must not be replayed.
+  if (status === 499 && responseText.trim() === "") {
+    return {
+      type: "network_error",
+      status,
+      message,
+      responseHeaders: error.responseHeaders,
+      raw: error,
+    }
+  }
 
   if (status === 422) {
     return {

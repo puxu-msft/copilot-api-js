@@ -34,5 +34,5 @@ Minor roll-up（留最终 whole-branch review 裁定）：0.3 reason 串 pin；0
 
 - 最终 whole-branch review（`superpowers:requesting-code-review` 的 code-reviewer，most-capable model，`scripts/review-package $(git merge-base master HEAD) HEAD`），带上 Minor roll-up 列表裁定。
 - `superpowers:finishing-a-development-branch` 合回 master（本项目行级共存、显式 pathspec）。
-- `session-closeout` 五步：doc-sync 跨文档 grep、归档 plan 头部状态注解、记忆库维护、细粒度提交。
+- 按 skill `session-closeout` 走完收尾（步数与内容以 skill 为准，勿在此冻结）。
 - 待探究点动态捕获（用户约定）：过程中发现的扩展方向落 `docs/todo/deferred-backlog.md` + spec §8 追加 O 指针。

@@ -16,8 +16,18 @@
  * runtime) so the multiple CLI commands + the test floor can call it freely.
  */
 
+import type {
+  //
+  CopilotTokenInfo,
+  TokenInfo,
+} from "~/lib/token/types"
+
 import { PATHS } from "~/lib/config/paths"
-import { state } from "~/lib/state"
+import {
+  //
+  registerSnapshotParticipant,
+  state,
+} from "~/lib/state"
 import {
   //
   createTokenRuntime,
@@ -32,6 +42,16 @@ import {
   type TokenRuntimeDependencies,
   type TokenRuntimeManagers,
 } from "~/lib/token"
+import {
+  //
+  restoreTokenStoreForTests,
+  setStoreCopilotToken,
+  setStoreCopilotTokenInfo,
+  setStoreGithubToken,
+  setStoreTokenInfo,
+  snapshotTokenStoreForTests,
+  type TokenStoreSnapshot,
+} from "~/lib/token/store"
 import { upstreamFetch } from "~/lib/transport/upstream-fetch"
 
 /** Adapt `upstreamFetch` (the live transport indirection, incl. its test seam) to the token port. */
@@ -68,6 +88,7 @@ export function buildTokenRuntimeDependencies(): TokenRuntimeDependencies {
  */
 export function installDefaultTokenDeps(): void {
   installTokenDeps(buildTokenRuntimeDependencies())
+  registerTokenSnapshotParticipant()
 }
 
 /**
@@ -76,6 +97,7 @@ export function installDefaultTokenDeps(): void {
  * server bootstrap, test floor) before any token operation.
  */
 export function installDefaultTokenRuntime(): TokenRuntime {
+  registerTokenSnapshotParticipant()
   const existing = peekTokenRuntime()
   if (existing) return existing
 
@@ -91,4 +113,53 @@ export function installDefaultTokenRuntime(): TokenRuntime {
  */
 export function initTokenManagers(options: InitTokenManagersOptions = {}): Promise<TokenRuntimeManagers> {
   return installDefaultTokenRuntime().initialize(options)
+}
+
+/**
+ * Teach `setStateForTests` about the four credential keys.
+ *
+ * Declaration merging rather than an import in `state.ts`, because the dependency would run the
+ * wrong way: `state` is being reduced to a leaf that depends on nothing but language builtins, and
+ * `packages/token` already depends on foundation — so a `~/lib/token/types` import from `state`
+ * becomes foundation → token → foundation once the move lands, and `import type` is not exempt from
+ * the package boundary guard. This module is CORE and already bridges the two domains, so the
+ * knowledge lives here. Every existing call site stays fully typed: a misspelled credential key is
+ * still a compile error.
+ */
+declare module "~/lib/state" {
+  interface StateTestPatchExtensions {
+    githubToken?: string
+    copilotToken?: string
+    tokenInfo?: TokenInfo
+    copilotTokenInfo?: CopilotTokenInfo
+  }
+}
+
+/**
+ * Join the per-test snapshot/restore/patch cycle so credentials are isolated between tests exactly
+ * as they were when they lived on `state`.
+ *
+ * Idempotent by name, and called from BOTH entry points below — production assembles a runtime, the
+ * bun test preload installs only the ambient ports. Neither path may skip it: an unregistered key
+ * is a hard error in `setStateForTests`, so a missed registration fails loudly on the first test
+ * that sets a credential instead of silently dropping the isolation.
+ *
+ * `"key" in patch` semantics are preserved: an explicitly-passed `undefined` CLEARS the credential,
+ * while an absent key leaves it alone. Collapsing the two would make
+ * `setStateForTests({ copilotToken: undefined })` — the way tests assert the unauthenticated path —
+ * a no-op that silently inherits the previous test's token.
+ */
+function registerTokenSnapshotParticipant(): void {
+  registerSnapshotParticipant<TokenStoreSnapshot>({
+    name: "token-store",
+    claims: ["githubToken", "copilotToken", "tokenInfo", "copilotTokenInfo"],
+    snapshot: snapshotTokenStoreForTests,
+    restore: restoreTokenStoreForTests,
+    applyTestPatch: (patch) => {
+      if ("githubToken" in patch) setStoreGithubToken(patch.githubToken as string | undefined)
+      if ("copilotToken" in patch) setStoreCopilotToken(patch.copilotToken as string | undefined)
+      if ("tokenInfo" in patch) setStoreTokenInfo(patch.tokenInfo as TokenInfo | undefined)
+      if ("copilotTokenInfo" in patch) setStoreCopilotTokenInfo(patch.copilotTokenInfo as CopilotTokenInfo | undefined)
+    },
+  })
 }

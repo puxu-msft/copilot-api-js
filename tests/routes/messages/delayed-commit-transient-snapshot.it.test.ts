@@ -28,12 +28,9 @@ import {
 
 import type { ObservabilityEvent } from "~/lib/observability/events"
 
+import { setModels } from "~/lib/models/cache"
 import { getBus } from "~/lib/observability"
-import {
-  //
-  setModels,
-  setStateForTests,
-} from "~/lib/state"
+import { setStateForTests } from "~/lib/state"
 
 import { mockModel } from "../../helpers/factories"
 import { FakeClock } from "../../helpers/fake-clock"

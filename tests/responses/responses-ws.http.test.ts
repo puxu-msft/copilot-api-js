@@ -25,13 +25,15 @@ import type {
 
 import { getRequestContextManager } from "~/lib/context/manager"
 import { getHistory } from "~/lib/history"
+import { setModels } from "~/lib/models/cache"
+import { getAbortProvenanceGapCounts } from "~/lib/observability/abort-provenance-gaps"
 import { gracefulShutdown } from "~/lib/shutdown"
+import { setStateForTests } from "~/lib/state"
 import {
   //
-  setModels,
-  setStateForTests,
-} from "~/lib/state"
-import { StreamClientAbortError } from "~/lib/stream"
+  StreamClientAbortError,
+  StreamUnknownCancelError,
+} from "~/lib/stream"
 import { closeAllClients } from "~/lib/ws"
 
 import { mockModel } from "../helpers/factories"
@@ -52,12 +54,23 @@ let emitTrailingAfterCompleted = false
 let emitIdMismatch = false
 /** When true, the mock upstream emits created + a text delta then EOF — NO response.completed (truncation). */
 let emitTruncated = false
+/** Upstream fails mid-stream with a cancellation nobody tagged — the wiring gap the counter exists for. */
+let emitUnknownCancel = false
 
 const upstreamFetchMock = mock(async (_input: string | URL | Request, init?: RequestInit) => {
   if (typeof init?.body !== "string") {
     throw new TypeError(`expected string body in mock, got ${typeof init?.body}`)
   }
   capturedPayload = JSON.parse(init.body) as ResponsesPayload
+
+  if (emitUnknownCancel) {
+    const created = JSON.stringify({
+      type: "response.created",
+      sequence_number: 0,
+      response: createBaseResponsesResponse(capturedPayload.model, "in_progress"),
+    })
+    return createSseResponseThenError([`event: response.created\ndata: ${created}\n\n`], new StreamUnknownCancelError())
+  }
 
   if (emitTruncated) {
     // created + a delta, then EOF — no terminal response event, no [DONE].
@@ -227,6 +240,7 @@ describe("Responses WebSocket transport", () => {
     emitTrailingAfterCompleted = false
     emitIdMismatch = false
     emitTruncated = false
+    emitUnknownCancel = false
     upstreamFetchMock.mockClear()
     setStateForTests({
       accountType: "individual",
@@ -701,5 +715,41 @@ describe("Responses WebSocket transport", () => {
     const historyEntry = getHistory({ endpoint: "openai-responses" }).entries[0]
     const inboundToolTypes = (historyEntry?.clientRequest?.tools ?? []).map((t) => (t as { type?: string }).type)
     expect(inboundToolTypes).toEqual(["function", "image_generation", "web_search"])
+  })
+
+  test("a mid-stream cancellation with NO recorded cause is counted for the downstream WS leg too", async () => {
+    // The last cell of the phase x transport matrix, and it was verified by code tracing only —
+    // which is exactly how this counter shipped a deterministic zero for the upstream-WS leg.
+    // Downstream WS has its own sink (`makeDeliveryWsSink`), its own terminator
+    // (`sendErrorAndClose` + 1011) and its own buffered/live split, so no HTTP test speaks for it.
+    setModels({ object: "list", data: [mockModel("gpt-4o", { vendor: "OpenAI", supported_endpoints: ["/chat/completions", "/responses"] })] })
+    emitUnknownCancel = true
+
+    server = startWsServer()
+    const ws = new WebSocket(`${server.url}/responses`)
+    const closePromise = waitForSocketClose(ws)
+    await waitForOpen(ws)
+    ws.send(JSON.stringify({ type: "response.create", response: { model: "gpt-4o", input: "hi" } }))
+
+    const result = await closePromise
+
+    expect(result.code).toBe(1011)
+    expect(result.messages.some((m) => m.type === "error")).toBe(true)
+    expect(getHistory({ endpoint: "openai-responses", limit: 5 }).entries[0]?.state).toBe("failed")
+    expect(getAbortProvenanceGapCounts()).toEqual([{ phase: "post-header", surface: "openai-responses", count: 1 }])
+  })
+
+  test("NEGATIVE: the downstream WS leg counts nothing when the stream ends with a TAGGED cause", async () => {
+    setModels({ object: "list", data: [mockModel("gpt-4o", { vendor: "OpenAI", supported_endpoints: ["/chat/completions", "/responses"] })] })
+    emitTruncated = true
+
+    server = startWsServer()
+    const ws = new WebSocket(`${server.url}/responses`)
+    const closePromise = waitForSocketClose(ws)
+    await waitForOpen(ws)
+    ws.send(JSON.stringify({ type: "response.create", response: { model: "gpt-4o", input: "hi" } }))
+    await closePromise
+
+    expect(getAbortProvenanceGapCounts()).toEqual([])
   })
 })

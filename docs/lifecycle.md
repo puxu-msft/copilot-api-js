@@ -20,7 +20,8 @@
 ### Step 1: Setup（立即）
 - 停止接受新请求
 - 标记服务器为 draining 状态
-- 停止后台服务（token 刷新 `stopRefresh`、关闭 HTTP/2 会话池 `closeHttp2Sessions`、停止新建上游 WebSocket `stopNew`）
+- 停止后台服务（token 刷新 `stopRefresh`、停止新建上游 WebSocket `stopNew`）
+- **h2 会话池此处不动**（2026-07-28 修正）：`closeHttp2Sessions()` 会 `poolEpoch++`，让所有**正在建连**的在途请求当场抛 abort——等于用 Step 1 的手撕掉 Step 2「等在途请求自然完成」的承诺。已建流的请求不受影响（`session.close()` 是 graceful GOAWAY），受害者恰好是还在 TLS/h2 握手中的那些；而默认 `maxConcurrentStreamsPerSession=1` 意味着**只要有并发，每条新请求都在这个窗口里**，所以这是常态不是边缘（incident：History `req_1785234916721_3573` 539ms 被秒杀，随后被谎报成 900s 的 header 超时）。新请求已被 `server.close(false)` + `getIsShuttingDown()` 中间件挡在门外，drain 期不会有人往池里加东西。池改由 **Step 4 / finalize** 关闭，与上游 WS 的 `stopNew()`（Step 1）/ `closeAll()`（Step 4+finalize）拆分对称
 - 停止 history 后台工作（History V3 periodic maintenance tick——checkpoint/incremental-vacuum/optimize，见 skill `history-sqlite-schema`），但**保持 history DB 打开**——异步 finalize 落盘要贯穿 Step 2/3 drain（原 History V2 时代的 `insertCompletedEntry`/`finalizeEntry` 异步两相已随 History V2 removal 删除，现由 V3 终端总线订阅者 + `drainV3Writer` 承担同款 drain-before-close 语义），故 DB 的 drain-未决-再-close 推迟到 `finalizing`（`shutdownHistory`），旧的 Step-1 同步关 DB 会丢 drain 期间 settle 的请求
 - Seal Archive maintenance producer（HOT→tier-1 backlog、tier-1 compaction、tier-2 sealing）：已领取的 session/batch 完成到 crash-safe 提交点，随后检查 stop flag，不再领取下一单元；剩余 backlog 由下次启动按数据库现状继续
 - 排空 rate limiter 队列
@@ -44,13 +45,14 @@
 
 - **为什么稳定**：每个在途流式请求 / 上游 fetch 在发起时就把该信号注册进自己的 abort race。若信号延迟到 Step 1 才创建（返回 `undefined`），一个在 shutdown 开始**之前**就阻塞在停滞上游上的 `iterator.next()` 会捕获 `undefined`，从而**永远观察不到**后来的 Step 3 abort（只能等 idle timeout / Step 4 强杀）。稳定信号消除了这个时序缺陷。
 - **“是否在 shutdown”用 `getIsShuttingDown()` 判断**（Step 1 置位），**不要**用信号是否存在来判断。Step 3 的 abort 用 `getShutdownSignal().aborted` 判断。
+- **“这次中止是不是关机造成的”用 `isShutdownCausedAbort(error)` 判断**（2026-07-28 新增），**不要**用 `getIsShuttingDown()`——后者只说明进程处在关机窗口里，drain 期被 stale reaper 或 hard deadline 取消的请求也会命中它，从而被冒充成 529「Server is shutting down」。判据是**因果证据**：Step 3 的 `abort()` 现在带一个具名 reason 对象，`isShutdownCausedAbort` 比对该对象身份（沿 `cause` 链），外加 h2 池 teardown 打的 `pool-closed` transport tag。
 - **约束：shutdown 不可取消**。eager 单例从不重建（`_resetShutdownState` 仅供测试重置），状态机守卫保证 `gracefulShutdown` 不重入、Step 3 的 `abort()` 只调一次。若未来要支持“取消 shutdown”，需重新设计该单例生命周期。
 - 流式消费者（`guardSseIterable` / `processAnthropicStream`）把该信号 + per-request 客户端断开信号转发进一个 per-stream 本地 controller，并在所有退出路径**显式移除 listener**——共享信号上每个流恰好 1 个 listener、确定性回收，不依赖 GC。
 
 ### Step 4: Force Close
 - 强制关闭所有连接（`server.close(true)`）
 - 关闭浏览器观察者 WS 客户端（`closeAllClients`）——强关路径在此拆；自然 drain 路径则保留到持久化完成，使 dashboard 能观察完整过程
-- 关闭所有上游 WebSocket 连接（`peekUpstreamWsManager().closeAll()`）
+- 关闭所有上游 WebSocket 连接（`peekUpstreamWsManager().closeAll()`）与 **h2 会话池（`closeHttp2Sessions()`）**——先断上游、再拆下游 writer，避免在途数据被推给已死 writer 变成 EPIPE 噪声。自然 drain（Step 2/3 就排空）路径跳过 Step 4，故 `finalizing` 里对两者各再调一次幂等关闭，池不会泄漏
 
 ### Finalizing 与 Stopped
 

@@ -23,6 +23,7 @@ import {
 } from "bun:test"
 
 import { countTotalInputTokens } from "~/lib/anthropic/token-counting"
+import { setModels } from "~/lib/models/cache"
 import {
   //
   calibrate,
@@ -37,7 +38,6 @@ import {
 } from "~/lib/observability/synthetic-request-line"
 import {
   //
-  setModels,
   setStateForTests,
   state,
 } from "~/lib/state"

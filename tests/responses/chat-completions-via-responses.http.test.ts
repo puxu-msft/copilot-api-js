@@ -14,11 +14,8 @@ import consola from "consola"
 import type { ResponsesPayload } from "~/types/api/openai-responses"
 
 import { getHistory } from "~/lib/history"
-import {
-  //
-  setModels,
-  setStateForTests,
-} from "~/lib/state"
+import { setModels } from "~/lib/models/cache"
+import { setStateForTests } from "~/lib/state"
 
 import { mockModel } from "../helpers/factories"
 import { useIsolatedRuntime } from "../helpers/isolated-fixture"

@@ -1,18 +1,13 @@
 /**
- * The contentless-refusal disposition types — a dependency-FREE leaf.
+ * The contentless-refusal disposition types — a dependency-light module whose types are import-free.
  *
  * Split out of `recover-refusal.ts` purely for the module graph: `context/{types,request}.ts` need
- * `RefusalPolicy`, but `recover-refusal.ts` is itself imported by `state.ts` (for the default
- * texts), so importing it from the context would pull it into the 19-module core SCC and trip
- * `circular-deps-ratchet`. A leaf with zero imports cannot join a cycle. Keep it that way: no
- * runtime values beyond bare literals, and NO IMPORTS — the import-freedom is the actual property
- * that keeps this file out of every cycle.
+ * `RefusalPolicy`, but `recover-refusal.ts` is itself heavy, so importing it from the context would
+ * pull those files into the core SCC and trip `circular-deps-ratchet`.
+ *
+ * The three `DEFAULT_REFUSAL_*` constants are re-exported from `~/lib/state-defaults`, which owns
+ * them — see the note at the bottom of this file.
  */
-
-/** The Anthropic error `type` carried by a synthetic refusal `error` frame when config leaves it
- *  empty. Lives on the leaf so the policy snapshot can resolve the fallback ONCE at construction —
- *  otherwise every consumer re-implements the same `"" -> api_error` rule and one of them forgets. */
-export const DEFAULT_REFUSAL_ERROR_TYPE = "api_error"
 
 /** The three client-facing dispositions for a contentless refusal. `refusal` = identity passthrough,
  *  `end_turn` = SUPPRESS (synthesize a normal completed turn — the default),
@@ -39,3 +34,16 @@ export interface RefusalPolicy {
   /** `anthropic.refusal_error_type` (empty falls back to `DEFAULT_REFUSAL_ERROR_TYPE`). */
   errorType: string
 }
+
+/**
+ * The three defaults are OWNED by `~/lib/state-defaults`, which is the module that hands them to
+ * `CONFIG_MANAGED_DEFAULTS`, and re-exported here so this module's public path is unchanged. They
+ * moved because `state-defaults` must end up with no out-edges at all — see
+ * docs/plan/2026-07-28-state-to-foundation/HANDOVER.md.
+ */
+export {
+  //
+  DEFAULT_REFUSAL_END_TURN_TEXT,
+  DEFAULT_REFUSAL_ERROR_MESSAGE,
+  DEFAULT_REFUSAL_ERROR_TYPE,
+} from "~/lib/state-defaults"

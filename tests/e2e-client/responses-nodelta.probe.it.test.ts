@@ -30,19 +30,20 @@ import {
 } from "bun:test"
 import OpenAI from "openai"
 
-import {
-  //
-  setModels,
-  setStateForTests,
-} from "~/lib/state"
+import { setModels } from "~/lib/models/cache"
+import { setStateForTests } from "~/lib/state"
 import { setUpstreamFetchForTests } from "~/lib/transport/upstream-fetch"
 
 import type { BlockFixture } from "../responses/fixtures/buffered-merge-blocks"
 
-import { refusalBlock, reasoningContentBlock, reasoningSummaryBlock } from "../responses/fixtures/buffered-merge-blocks"
-
 import { mockModel } from "../helpers/factories"
 import { useIsolatedRuntime } from "../helpers/isolated-fixture"
+import {
+  //
+  refusalBlock,
+  reasoningContentBlock,
+  reasoningSummaryBlock,
+} from "../responses/fixtures/buffered-merge-blocks"
 import {
   //
   type InProcessProxy,
@@ -64,10 +65,27 @@ const DONE = "data: [DONE]\n\n"
  *  with SSE strings. Convert a fixture's frames to the string form `finalOf` consumes. */
 const fxSse = (fx: BlockFixture): Array<string> => fx.frames.map((f) => `event: ${f.event ?? ""}\ndata: ${f.data ?? ""}\n\n`)
 /** Drop a specific `.added` frame from a fixture (the landmine mutant — its `.done` then throws in the SDK). */
-const fxSseWithout = (fx: BlockFixture, droppedEvent: string): Array<string> => fx.frames.filter((f) => f.event !== droppedEvent).map((f) => `event: ${f.event ?? ""}\ndata: ${f.data ?? ""}\n\n`)
+const fxSseWithout = (fx: BlockFixture, droppedEvent: string): Array<string> =>
+  fx.frames.filter((f) => f.event !== droppedEvent).map((f) => `event: ${f.event ?? ""}\ndata: ${f.data ?? ""}\n\n`)
 
 const created = (): string =>
-  ev({ type: "response.created", sequence_number: 0, response: { id: "resp_up_1", object: "response", created_at: 1, status: "in_progress", model: MODEL, output: [], usage: null, tools: [], tool_choice: "auto", parallel_tool_calls: false, store: false } })
+  ev({
+    type: "response.created",
+    sequence_number: 0,
+    response: {
+      id: "resp_up_1",
+      object: "response",
+      created_at: 1,
+      status: "in_progress",
+      model: MODEL,
+      output: [],
+      usage: null,
+      tools: [],
+      tool_choice: "auto",
+      parallel_tool_calls: false,
+      store: false,
+    },
+  })
 
 /**
  * completed carrying the FULL final output — the OpenAI-spec-correct shape (real OpenAI Responses
@@ -78,7 +96,23 @@ const created = (): string =>
  * tolerance.)
  */
 const completedFull = (seq: number, output: Array<unknown>): string =>
-  ev({ type: "response.completed", sequence_number: seq, response: { id: "resp_up_1", object: "response", created_at: 1, status: "completed", model: MODEL, output, usage: { input_tokens: 5, output_tokens: 3, total_tokens: 8 }, tools: [], tool_choice: "auto", parallel_tool_calls: false, store: false } })
+  ev({
+    type: "response.completed",
+    sequence_number: seq,
+    response: {
+      id: "resp_up_1",
+      object: "response",
+      created_at: 1,
+      status: "completed",
+      model: MODEL,
+      output,
+      usage: { input_tokens: 5, output_tokens: 3, total_tokens: 8 },
+      tools: [],
+      tool_choice: "auto",
+      parallel_tool_calls: false,
+      store: false,
+    },
+  })
 
 const FC_ITEM = { id: "fc_1", type: "function_call", call_id: "call_1", name: "get_weather", arguments: '{"city":"Paris"}', status: "completed" }
 const FC_ITEM_OPEN = { id: "fc_1", type: "function_call", call_id: "call_1", name: "get_weather", arguments: "", status: "in_progress" }
@@ -111,18 +145,36 @@ function fcNoDeltas(): Array<string> {
 }
 
 const MSG_OPEN = { id: "msg_1", type: "message", role: "assistant", status: "in_progress", content: [] as Array<unknown> }
-const MSG_DONE = { id: "msg_1", type: "message", role: "assistant", status: "completed", content: [{ type: "output_text", text: "Hello world", annotations: [] }] }
+const MSG_DONE = {
+  id: "msg_1",
+  type: "message",
+  role: "assistant",
+  status: "completed",
+  content: [{ type: "output_text", text: "Hello world", annotations: [] }],
+}
 
 /** text WITH per-delta frames (positive control). */
 function textWithDeltas(): Array<string> {
   return [
     created(),
     ev({ type: "response.output_item.added", sequence_number: 1, output_index: 0, item: MSG_OPEN }),
-    ev({ type: "response.content_part.added", sequence_number: 2, output_index: 0, content_index: 0, part: { type: "output_text", text: "", annotations: [] } }),
+    ev({
+      type: "response.content_part.added",
+      sequence_number: 2,
+      output_index: 0,
+      content_index: 0,
+      part: { type: "output_text", text: "", annotations: [] },
+    }),
     ev({ type: "response.output_text.delta", sequence_number: 3, output_index: 0, content_index: 0, delta: "Hello " }),
     ev({ type: "response.output_text.delta", sequence_number: 4, output_index: 0, content_index: 0, delta: "world" }),
     ev({ type: "response.output_text.done", sequence_number: 5, output_index: 0, content_index: 0, text: "Hello world" }),
-    ev({ type: "response.content_part.done", sequence_number: 6, output_index: 0, content_index: 0, part: { type: "output_text", text: "Hello world", annotations: [] } }),
+    ev({
+      type: "response.content_part.done",
+      sequence_number: 6,
+      output_index: 0,
+      content_index: 0,
+      part: { type: "output_text", text: "Hello world", annotations: [] },
+    }),
     ev({ type: "response.output_item.done", sequence_number: 7, output_index: 0, item: MSG_DONE }),
     completedFull(8, [MSG_DONE]),
     DONE,
@@ -134,10 +186,22 @@ function textNoDeltasKeepLifecycle(): Array<string> {
   return [
     created(),
     ev({ type: "response.output_item.added", sequence_number: 1, output_index: 0, item: MSG_OPEN }),
-    ev({ type: "response.content_part.added", sequence_number: 2, output_index: 0, content_index: 0, part: { type: "output_text", text: "", annotations: [] } }),
+    ev({
+      type: "response.content_part.added",
+      sequence_number: 2,
+      output_index: 0,
+      content_index: 0,
+      part: { type: "output_text", text: "", annotations: [] },
+    }),
     // NO output_text.delta frames
     ev({ type: "response.output_text.done", sequence_number: 3, output_index: 0, content_index: 0, text: "Hello world" }),
-    ev({ type: "response.content_part.done", sequence_number: 4, output_index: 0, content_index: 0, part: { type: "output_text", text: "Hello world", annotations: [] } }),
+    ev({
+      type: "response.content_part.done",
+      sequence_number: 4,
+      output_index: 0,
+      content_index: 0,
+      part: { type: "output_text", text: "Hello world", annotations: [] },
+    }),
     ev({ type: "response.output_item.done", sequence_number: 5, output_index: 0, item: MSG_DONE }),
     completedFull(6, [MSG_DONE]),
     DONE,
@@ -186,7 +250,15 @@ describe("GATING: Responses no-delta block — openai SDK reconstruction (upstre
   afterAll(() => proxy.close())
 
   beforeEach(() => {
-    setStateForTests({ copilotToken: "tok", accountType: "individual", vsCodeVersion: "1.100.0", responseHeaderTimeout: 0, normalizeResponsesCallIds: true, fixResponsesStreamIds: true, upstreamWebSocket: false })
+    setStateForTests({
+      copilotToken: "tok",
+      accountType: "individual",
+      vsCodeVersion: "1.100.0",
+      responseHeaderTimeout: 0,
+      normalizeResponsesCallIds: true,
+      fixResponsesStreamIds: true,
+      upstreamWebSocket: false,
+    })
     setModels({ object: "list", data: [mockModel(MODEL, { vendor: "OpenAI", supported_endpoints: ["/responses"] })] })
   })
   afterEach(() => setUpstreamFetchForTests(undefined))
@@ -260,7 +332,15 @@ describe("GATING: Responses no-delta block — openai SDK reconstruction (upstre
       created(),
       ev({ type: "response.output_item.added", sequence_number: 1, output_index: 0, item: MSG_OPEN }),
       // NO content_part.added
-      ev({ type: "response.output_text.annotation.added", sequence_number: 2, output_index: 0, content_index: 0, item_id: "msg_1", annotation_index: 0, annotation }),
+      ev({
+        type: "response.output_text.annotation.added",
+        sequence_number: 2,
+        output_index: 0,
+        content_index: 0,
+        item_id: "msg_1",
+        annotation_index: 0,
+        annotation,
+      }),
       ev({ type: "response.output_text.done", sequence_number: 3, output_index: 0, content_index: 0, text: "Hello world" }),
       ev({ type: "response.output_item.done", sequence_number: 4, output_index: 0, item: MSG_DONE }),
       completedFull(5, [MSG_DONE]),

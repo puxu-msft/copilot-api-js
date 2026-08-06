@@ -59,4 +59,35 @@ describe("de-stack terminal-pass wiring", () => {
     expect(content.filter((b) => b.type === "thinking")).toHaveLength(2)
     expect(content.some((b) => b.type === "text" && b.text === separatorText())).toBe(true)
   })
+
+  /**
+   * The OTHER earlier pass that manufactures adjacency: finalize's empty-text cleanup.
+   * Claude Code emits `[T, text(""), T, tool_use]` — it separates its own thinking blocks with an EMPTY text block, which is not a real separator (upstream strips whitespace-only text, so it never satisfies C1) and which our finalize step therefore removes, leaving `[T, T, tool_use]` for the terminal pass to repair.
+   *
+   * Production regression: req_1785276101202_7795 (2026-07-28) — a stale instance predating the C2 fix put `[T, tool_use, T]` on the wire and took a 400 "The final block in an assistant message cannot be `thinking`".
+   * Distinct from the orphan-deletion case above: there the adjacency comes from processToolBlocks, here from empty-text cleanup, and here a real `tool_use` IS available — so the repair must reserve it as the TERMINATOR (C3) and synthesize the separator instead of reusing the tool call as one.
+   */
+  test("client's empty-text separator is stripped by finalize → terminal repair re-separates and still ends on tool_use (production 400 req_1785276101202_7795)", () => {
+    setStateForTests({ assistantBlockLayoutStrategy: "move_blocks" })
+
+    const payload = {
+      model: "claude-opus-5",
+      max_tokens: 100,
+      messages: [
+        { role: "user", content: [{ type: "text", text: "go" }] },
+        { role: "assistant", content: [T("sig-first"), { type: "text", text: "" }, T("sig-second"), tool("toolu_live")] },
+        { role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_live", content: "ok" }] },
+      ],
+    } as unknown as MessagesPayload
+
+    const { payload: sanitized } = sanitizeAnthropicMessages(payload)
+    const content = sanitized.messages[1].content as Array<{ type: string; text?: string; signature?: string }>
+
+    // C1 (separated) + C2 (does not end on thinking) + C3 (ends on the tool call) in one shape.
+    expect(content.map((b) => b.type)).toEqual(["thinking", "text", "thinking", "tool_use"])
+    // The separator is OUR synthetic marker, not the client's stripped empty text.
+    expect(content[1].text).toBe(separatorText())
+    // Thinking blocks are preserved in their original relative order (signatures are position-independent but their ORDER is an upstream constraint).
+    expect(content.filter((b) => b.type === "thinking").map((b) => b.signature)).toEqual(["sig-first", "sig-second"])
+  })
 })

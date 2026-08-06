@@ -11,11 +11,8 @@ import {
 
 import { getHistory } from "~/lib/history"
 import { drainV3Writer } from "~/lib/history/v3/store"
-import {
-  //
-  setModels,
-  setStateForTests,
-} from "~/lib/state"
+import { setModels } from "~/lib/models/cache"
+import { setStateForTests } from "~/lib/state"
 
 import { mockModel } from "../helpers/factories"
 import { useIsolatedRuntime } from "../helpers/isolated-fixture"

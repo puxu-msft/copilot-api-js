@@ -36,13 +36,22 @@
 import type { SSEStreamingApi } from "hono/streaming"
 import type { WSContext } from "hono/ws"
 
-import type { SseEventRecord } from "~/lib/history"
+import type {
+  //
+  PipelineInfo,
+  SseEventRecord,
+} from "~/lib/history"
 
 import { createDownstreamDeliverySession } from "~/lib/pipeline/delivery/session"
 import { readSyntheticKind } from "~/lib/pipeline/frame-origin"
 
-import type { ClientFrame } from "./types"
-import type { ClientSink } from "./types"
+import type { OwnerRawSink } from "./delivery/types"
+import type {
+  //
+  ClientFrame,
+  ClientSink,
+  GenerationWireState,
+} from "./types"
 
 /**
  * The currently-open content block observed on the FORWARDED stream — lets a block-aware
@@ -96,6 +105,12 @@ export interface SseSinkHeartbeat {
 
 /** {@link makeSseSink} options — heartbeat (optional) + forwarded-track sampling (optional). */
 export interface SseSinkOptions {
+  /** Optional Anthropic generation wire state. Only the handler composition root creates it. */
+  wireState?: GenerationWireState
+  /** Migration-only legacy mirror (M1–M4). The owner writes only anchorClosed; deleted at M5. */
+  legacyAnchorMirror?: { anchorClosed: boolean }
+  /** Persist owner failures that occur after the wire commit point without importing RequestContext into delivery. */
+  recordWirePartialDelivery?: (diag: NonNullable<PipelineInfo["wirePartialDelivery"]>) => void
   /** Forward-idle keepalive (omitted / `intervalSec<=0` → no timer). */
   heartbeat?: SseSinkHeartbeat
   /**
@@ -170,7 +185,7 @@ function frameType(frame: ClientFrame): string {
 }
 
 /** SSE sink — writes through Hono's `streamSSE` API (the Anthropic/CC/Responses/Gemini HTTP path). */
-export function makeSseSink(stream: SSEStreamingApi, opts: SseSinkOptions = {}): ClientSink {
+export function makeSseSink(stream: SSEStreamingApi, opts: SseSinkOptions = {}): OwnerRawSink {
   const {
     heartbeat,
     onForwarded,
@@ -477,18 +492,15 @@ export function makeSseSink(stream: SSEStreamingApi, opts: SseSinkOptions = {}):
  * exclusively owns the heartbeat timer and post-wire block ledger across upstream retries.
  */
 export function makeDeliverySseSink(stream: SSEStreamingApi, opts: SseSinkOptions = {}): ClientSink {
-  const { heartbeat, ...rawOptions } = opts
-  const deliveryRef: { current?: ReturnType<typeof createDownstreamDeliverySession> } = {}
-  const rawSink = makeSseSink(stream, {
-    ...rawOptions,
-    onFirstRealContent: () => {
-      deliveryRef.current?.markRealClientContentEmitted()
-      opts.onFirstRealContent?.()
-    },
-  })
+  const { heartbeat, wireState, legacyAnchorMirror, recordWirePartialDelivery, ...rawOptions } = opts
+  const rawSink = makeSseSink(stream, rawOptions)
   const delivery = createDownstreamDeliverySession({
     sink: rawSink,
     monotonicNow: Date.now,
+    ...(opts.isRealContentFrame && { isRealContentFrame: opts.isRealContentFrame }),
+    ...(wireState && { wireState }),
+    ...(legacyAnchorMirror && { legacyAnchorMirror }),
+    ...(recordWirePartialDelivery && { recordWirePartialDelivery }),
     ...(heartbeat
       && heartbeat.intervalSec > 0 && {
         heartbeat: {
@@ -511,7 +523,6 @@ export function makeDeliverySseSink(stream: SSEStreamingApi, opts: SseSinkOption
         },
       }),
   })
-  deliveryRef.current = delivery
   return delivery.clientSink
 }
 
@@ -685,17 +696,11 @@ export function makeWsSink(ws: WSContext, opts: WsSinkOptions = {}): ClientSink 
 /** Generation-owned WS delivery with an application-frame heartbeat independent from upstream attempts. */
 export function makeDeliveryWsSink(ws: WSContext, opts: WsSinkOptions = {}): ClientSink {
   const { heartbeat, ...rawOptions } = opts
-  const deliveryRef: { current?: ReturnType<typeof createDownstreamDeliverySession> } = {}
-  const rawSink = makeWsSink(ws, {
-    ...rawOptions,
-    onFirstRealContent: () => {
-      deliveryRef.current?.markRealClientContentEmitted()
-      opts.onFirstRealContent?.()
-    },
-  })
+  const rawSink = makeWsSink(ws, rawOptions)
   const delivery = createDownstreamDeliverySession({
     sink: rawSink,
     monotonicNow: Date.now,
+    ...(opts.isRealContentFrame && { isRealContentFrame: opts.isRealContentFrame }),
     ...(heartbeat
       && heartbeat.intervalSec > 0 && {
         heartbeat: {
@@ -705,7 +710,6 @@ export function makeDeliveryWsSink(ws: WSContext, opts: WsSinkOptions = {}): Cli
         },
       }),
   })
-  deliveryRef.current = delivery
   return delivery.clientSink
 }
 

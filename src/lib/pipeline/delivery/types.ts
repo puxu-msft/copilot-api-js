@@ -1,8 +1,27 @@
 import type { ClientFrameEnvelope } from "../stream/frame-envelope"
-import type { ClientFrame } from "../types"
+import type {
+  //
+  ClientFrame,
+  ClientSink,
+} from "../types"
 
 /** Synthetic provenance selected by the delivery engine's dedicated sink port. */
 export type DeliverySyntheticKind = "keepalive" | "anchor" | "synthetic-message-start" | "synthetic"
+
+/** Raw sink capability held only inside the delivery owner and its low-level transport adapters. */
+export interface OwnerRawSink extends ClientSink {
+  writeAnchor?(frame: ClientFrame): Promise<void>
+}
+
+export type {
+  //
+  LegToken,
+  OwnerResult,
+  WireBlockAllocationPort,
+  WireBlockMapping,
+  WireEnvelopeFactory,
+  WireWriteSpec,
+} from "../types"
 
 /** One already client-shaped frame waiting to enter the unique wire serializer. */
 export type DeliveryFrame = ClientFrameEnvelope

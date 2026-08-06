@@ -1,0 +1,21 @@
+============================================================
+Bun v1.3.14 (0d9b296a) Linux x64
+WSL Kernel v6.18.33 | glibc v2.39
+CPU: sse42 popcnt avx avx2
+Args: "/home/xp/.volta/tools/image/packages/bun/bin/bun" "/home/xp/src/copilot-api-js/exp/curl-transport-libcurl/node-libcurl-smoke.mjs"
+Features: bunfig dotenv jsc tsconfig tsconfig_paths process_dlopen unsupported_uv_function 
+Builtins: "bun:main" "node:events" "node:module" "node:stream" "node:string_decoder" "node:tls" 
+Elapsed: 53ms | User: 31ms | Sys: 27ms
+RSS: 59.70MB | Peak: 54.45MB | Commit: 59.70MB | Faults: 0 | Machine: 33.63GB
+
+Bun encountered a crash when running a NAPI module that tried to call
+the [31muv_timer_init[0m libuv function.
+
+Bun is actively working on supporting all libuv functions for POSIX
+systems, please see this issue to track our progress:
+
+[36mhttps://github.com/oven-sh/bun/issues/18546[0m
+
+panic(main thread): unsupported uv function: uv_timer_init
+ https://bun.report/1.3.14/la10d9b296gmkIg0ggCknn4qDw00qpE6njktEs1z2D8623Dwz8h6D_stlssCmsrksCwrg1iFsq8z5D+z0z5Ds1k15D_23jssC_23jssCmsrksCwrg1iFsq8z5DA0eNorzSsuLSjILypJTVEoLVNIK81LLsnMz7MCcuJLMnNTi+Iz8zJLACptDzM
+

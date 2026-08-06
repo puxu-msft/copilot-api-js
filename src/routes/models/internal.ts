@@ -11,8 +11,8 @@ import {
   //
   getConfigDisabledIds,
   getRawModels,
-  state,
-} from "~/lib/state"
+} from "~/lib/models/cache"
+import { state } from "~/lib/state"
 
 import { ensureModels } from "./shared"
 

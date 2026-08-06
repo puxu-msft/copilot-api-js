@@ -7,6 +7,11 @@ import {
 
 import type { ClientSink } from "~/lib/pipeline/types"
 
+import {
+  //
+  createGenerationWireIndexAllocator,
+  createGenerationWireState,
+} from "~/lib/anthropic/keepalive-anchor"
 import { makeReconcilingSink } from "~/lib/anthropic/live-reconcile"
 import { makeDeliverySseSink } from "~/lib/pipeline/client-sink"
 import { getDownstreamDeliverySession } from "~/lib/pipeline/delivery/session"
@@ -32,7 +37,7 @@ function realContentDelta(text: string) {
 
 const reconcileHooks = {
   isMessageStart: () => false,
-  stopFrame: { event: "content_block_stop", data: JSON.stringify({ type: "content_block_stop", index: 0 }) },
+  stopFrame: (index: number) => ({ event: "content_block_stop", data: JSON.stringify({ type: "content_block_stop", index }) }),
   remap: (frame: Parameters<ClientSink["write"]>[0]) => frame,
 }
 
@@ -56,7 +61,13 @@ describe("shouldAttemptPreContentRecovery delivery integration", () => {
     const { sink: rawSink } = productionDelivery()
     const decorated = makeReconcilingSink(
       rawSink,
-      { injected: false, messageStartForwarded: false, anchorBlockOpen: false, anchorClosed: false },
+      {
+        wireState: createGenerationWireState(createGenerationWireIndexAllocator()),
+        injected: false,
+        messageStartForwarded: false,
+        anchorBlockOpen: false,
+        anchorClosed: false,
+      },
       reconcileHooks,
     )
     await decorated.write(realContentDelta("already delivered through decorator"))

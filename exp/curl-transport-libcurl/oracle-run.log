@@ -1,0 +1,37 @@
+{"at":1785502734745,"event":"ready","h2Port":32443,"h1Port":32444,"pid":1676111}
+{"at":1785502734849,"event":"h2-session","sessionId":1,"remotePort":55972}
+{"at":1785502734851,"event":"h2-request","path":"/stream-trailers","sessionId":1}
+{"at":1785502735221,"event":"h2-session","sessionId":2,"remotePort":55976}
+{"at":1785502735221,"event":"h2-request","path":"/rst","sessionId":2}
+{"at":1785502735304,"event":"h2-stream-error","path":"/rst","sessionId":2,"code":"ERR_HTTP2_STREAM_ERROR","message":"Stream closed with error code NGHTTP2_INTERNAL_ERROR"}
+{"at":1785502735308,"event":"h2-session","sessionId":3,"remotePort":55980}
+{"at":1785502735309,"event":"h2-request","path":"/destroy","sessionId":3}
+{"at":1785502735400,"event":"h1-request","path":"/chunk-drop","remotePort":49000}
+{"at":1785502735488,"event":"h1-request","path":"/length-drop","remotePort":49004}
+{"at":1785502735574,"event":"h2-session","sessionId":4,"remotePort":55990}
+{"at":1785502735575,"event":"h2-request","path":"/reuse-1","sessionId":4}
+{"at":1785502735577,"event":"h2-request","path":"/reuse-2","sessionId":4}
+{"at":1785502735583,"event":"h2-session","sessionId":5,"remotePort":56002}
+{"at":1785502735583,"event":"h2-request","path":"/hold","sessionId":5}
+{"at":1785502735588,"event":"h2-session","sessionId":6,"remotePort":56008}
+{"at":1785502735589,"event":"h2-request","path":"/hold","sessionId":6}
+{"at":1785502736597,"event":"h2-session","sessionId":7,"remotePort":56020}
+{"at":1785502736598,"event":"h2-request","path":"/hold","sessionId":7}
+{"at":1785502738317,"event":"h2-session","sessionId":8,"remotePort":56030}
+{"at":1785502738318,"event":"h2-request","path":"/stream-trailers","sessionId":8}
+{"at":1785502738701,"event":"h2-session","sessionId":9,"remotePort":56044}
+{"at":1785502738702,"event":"h2-request","path":"/hold","sessionId":9}
+node:internal/http2/core:934
+        throw new ERR_HTTP2_NO_SOCKET_MANIPULATION();
+              ^
+
+Error [ERR_HTTP2_NO_SOCKET_MANIPULATION]: HTTP/2 sockets should not be directly manipulated (e.g. read and written)
+    at Object.get (node:internal/http2/core:934:15)
+    at shutdown (file:///home/xp/src/copilot-api-js/exp/curl-transport-libcurl/oracle.mjs:111:40)
+    at process.<anonymous> (file:///home/xp/src/copilot-api-js/exp/curl-transport-libcurl/oracle.mjs:118:36)
+    at Object.onceWrapper (node:events:631:26)
+    at process.emit (node:events:509:28) {
+  code: 'ERR_HTTP2_NO_SOCKET_MANIPULATION'
+}
+
+Node.js v24.16.0

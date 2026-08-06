@@ -37,27 +37,36 @@ import {
   anchorDeltaFrame,
   anchorStartFrame,
   anchorStopFrame,
+  createGenerationWireIndexAllocator,
+  createGenerationWireState,
   makeSyntheticAnchorInjector,
   remapAnthropicBlockIndex,
   syntheticMessageStartFrame,
 } from "~/lib/anthropic/keepalive-anchor"
 import { resolveAnthropicKeepalive } from "~/lib/anthropic/keepalive-frame"
-import { makeSseSink } from "~/lib/pipeline/client-sink"
+import { makeDeliverySseSink } from "~/lib/pipeline/client-sink"
+import { getDownstreamDeliverySession } from "~/lib/pipeline/delivery/session"
 
 import { FakeClock } from "../helpers/fake-clock"
 
-function stubSseStream(): { stream: Parameters<typeof makeSseSink>[0]; written: Array<{ data: string; event?: string }> } {
+function stubSseStream(): { stream: Parameters<typeof makeDeliverySseSink>[0]; written: Array<{ data: string; event?: string }> } {
   const written: Array<{ data: string; event?: string }> = []
   const stream = {
     writeSSE: (m: { data: string; event?: string }) => (written.push({ data: m.data, ...(m.event !== undefined && { event: m.event }) }), Promise.resolve()),
-  } as unknown as Parameters<typeof makeSseSink>[0]
+  } as unknown as Parameters<typeof makeDeliverySseSink>[0]
   return { stream, written }
 }
 
 /** The AnchorHooks the Anthropic handler supplies (buildAnthropicAnchorWiring), rebuilt here for the unit. */
 function anchorHooks(): AnchorHooks {
   return {
-    isContentBlockStart: (fr: { data?: string }) => { try { return (JSON.parse(fr.data ?? "{}") as { type?: unknown }).type === "content_block_start" } catch { return false } },
+    isContentBlockStart: (fr: { data?: string }) => {
+      try {
+        return (JSON.parse(fr.data ?? "{}") as { type?: unknown }).type === "content_block_start"
+      } catch {
+        return false
+      }
+    },
     isMessageStart: (fr) => {
       try {
         return typeof fr.data === "string" && (JSON.parse(fr.data) as { type?: string }).type === "message_start"
@@ -65,9 +74,9 @@ function anchorHooks(): AnchorHooks {
         return false
       }
     },
-    startFrame: anchorStartFrame(),
-    stopFrame: anchorStopFrame(),
-    deltaFrame: anchorDeltaFrame(),
+    startFrame: anchorStartFrame,
+    stopFrame: anchorStopFrame,
+    deltaFrame: anchorDeltaFrame,
     syntheticMessageStart: syntheticMessageStartFrame,
     remap: remapAnthropicBlockIndex,
   }
@@ -80,16 +89,25 @@ function anchorHooks(): AnchorHooks {
  * CALL time, since sink construction args are evaluated before the sink exists — spec §10.1.5 H1).
  */
 function buildOnStream(
-  stream: Parameters<typeof makeSseSink>[0],
+  stream: Parameters<typeof makeDeliverySseSink>[0],
   onForwarded: (r: SseEventRecord) => void,
   resolvedName: string,
   reqId: string,
 ): { sink: ClientSink; anchorState: AnchorState } {
-  const anchorState: AnchorState = { injected: false, messageStartForwarded: false, anchorBlockOpen: false, anchorClosed: false }
+  const allocator = createGenerationWireIndexAllocator()
+  const wireState = createGenerationWireState(allocator)
+  const anchorState: AnchorState = {
+    wireState,
+    injected: false,
+    messageStartForwarded: false,
+    anchorBlockOpen: false,
+    anchorClosed: false,
+  }
   const anchor = anchorHooks()
   const sinkHolder: { current: ClientSink | undefined } = { current: undefined }
   const injector = makeSyntheticAnchorInjector({ anchor, state: anchorState, getSink: () => sinkHolder.current, resolvedName, reqId })
-  const sink = makeSseSink(stream, {
+  const sink = makeDeliverySseSink(stream, {
+    wireState,
     onForwarded,
     heartbeat: {
       intervalSec: 15,
@@ -151,6 +169,8 @@ describe("live pre-response silence — handler-owned unique injector synthesize
     // anchorState reflects the injection (shared with the driver's live/buffered reconciliation).
     expect(anchorState.injected).toBe(true)
     expect(anchorState.messageStartForwarded).toBe(true)
+    expect(anchorState.wireState?.allocator.anchorsOpened()).toBe(1)
+    expect(anchorState.wireState?.allocator.nextAnchorIndex()).toBe(1)
 
     sink.close?.()
   })
@@ -178,6 +198,8 @@ describe("live pre-response silence — handler-owned unique injector synthesize
     const forwarded: Array<SseEventRecord> = []
     const stub = stubSseStream()
     const { sink, anchorState } = buildOnStream(stub.stream, (r) => forwarded.push(r), "claude-opus-4.8", "req_real")
+    // Simulate the driver establishing the primary leg before a real frame can be emitted.
+    await getDownstreamDeliverySession(sink)?.allocationPort.beginLeg("primary", { candidateId: "candidate-real", dispatchId: "dispatch-real" })
     // Simulate the driver's buffered drain capturing the real message_start into the shared state.
     anchorState.capturedMessageStart = { event: "message_start", data: JSON.stringify({ type: "message_start", message: { id: "msg_real" } }) } as ClientFrame
 

@@ -4,59 +4,129 @@ import type {
   //
   AnchorHooks,
   AnchorState,
+  ClientFrame,
   ClientSink,
+  GenerationWireIndexAllocator,
+  GenerationWireState,
+  LegToken,
+  WireBlockMapping,
+  WireIndexReservation,
 } from "~/lib/pipeline/types"
+
+import {
+  //
+  DeliveryOwnerError,
+  getDownstreamDeliverySession,
+} from "~/lib/pipeline/delivery/session"
 
 import { anthropicSseFrame } from "./sse-frame"
 
 /**
- * Reserved index of the synthetic empty-text keepalive ANCHOR block injected in buffered
- * pre-commit (spec 2026-07-08-buffered-keepalive-empty-text-anchor). The anchor occupies
- * index 0; all real content blocks flush at index+1 (see remapAnthropicBlockIndex).
+ * Readable alias for the generation frontier's initial value in the pre-content anchor scenario.
+ * It is not a protocol-wide fixed index: later anchors receive whichever monotonic wire index the
+ * generation owner allocates. The name remains useful in legacy close/remap sites until P3M migrates them.
  *
- * NOTE (spec 2026-07-22 §3.3): this fixed "anchor@0, real blocks at +1" model is the COEXIST shape.
+ * NOTE (spec 2026-07-22 §3.3): the former fixed "anchor@0, real blocks at +1" model is the COEXIST shape.
  * The SEQUENTIAL-anchor shape (CLI-safe) needs runtime-incrementing indices instead — see
- * {@link createAnchorIndexAllocator}, which supersedes the fixed offset at the sink/driver seam.
+ * {@link createGenerationWireIndexAllocator}, which supersedes the fixed offset at the sink/driver seam.
  */
-export const ANCHOR_INDEX = 0
+export const PRE_CONTENT_ANCHOR_INDEX = 0
 
 /**
  * Runtime index allocator for the SEQUENTIAL-anchor wire (spec 2026-07-22 §3.3). Unlike the fixed
- * `ANCHOR_INDEX=0` + `remap(frame, 1)` coexist model, sequential anchors are interspersed among real
- * blocks (wire indices 0=anchor, 1=real, 2=gap-anchor, 3=real, …) with AT MOST ONE block open at a
- * time — so a real block's final wire index is NOT `upstreamIndex + 1` but depends on how many
- * anchors were opened before it. The allocator hands out monotonically increasing wire indices and
- * records the wire index assigned to each real block (in upstream order) so the sink/driver can remap
- * upstream block frames to their sequential wire index via {@link AnchorIndexAllocator.realBlockOffset}.
+ * `PRE_CONTENT_ANCHOR_INDEX=0` + `remap(frame, 1)` coexist model, sequential anchors are interspersed
+ * among real blocks (wire indices 0=anchor, 1=real, 2=gap-anchor, 3=real, …) with AT MOST ONE block
+ * open at a time — so a real block's final wire index is NOT `upstreamIndex + 1` but depends on how
+ * many anchors were opened before it. The allocator hands out monotonically increasing wire indices
+ * and records the wire index assigned to each real block (in upstream order) so the sink/driver can
+ * remap upstream block frames via {@link GenerationWireIndexAllocator.realBlockOffset}.
  */
-export interface AnchorIndexAllocator {
-  /** Peek the wire index the NEXT anchor block will occupy (pure — advances only on {@link onAnchorOpen}). */
-  nextAnchorIndex: () => number
-  /** Peek the wire index the NEXT real block will occupy (pure — advances only on {@link onRealBlockOpen}). */
-  nextRealIndex: () => number
-  /** Commit an anchor block at the current wire index (advances the counter). */
-  onAnchorOpen: () => void
-  /** Commit a real block at the current wire index (advances the counter; records the mapping). */
-  onRealBlockOpen: () => void
-  /**
-   * The remap offset for the real block that arrived at `upstreamIndex` (upstream's own 0-based block
-   * numbering): `wireIndex(upstreamIndex) − upstreamIndex`. Real blocks are opened in upstream order,
-   * so `upstreamIndex` is the 0-based position of the real block among all real blocks opened so far.
-   */
-  realBlockOffset: (upstreamIndex: number) => number
+export function createGenerationWireState(allocator: GenerationWireIndexAllocator): GenerationWireState {
+  return {
+    allocator,
+    mappings: new Map(),
+    legSources: new Map(),
+  }
 }
 
-export function createAnchorIndexAllocator(): AnchorIndexAllocator {
+export function createGenerationWireIndexAllocator(): GenerationWireIndexAllocator {
   let wireCounter = 0
+  let anchorCount = 0
+  let legSequence = 0
+  let activeLeg: LegToken | undefined
+  let reservationOpen = false
   const realWireIndices: Array<number> = []
+
+  const reserve = <Value>(value: Value, apply: () => void): WireIndexReservation<Value> => {
+    if (reservationOpen) throw new Error("wire-index reservation already open")
+    reservationOpen = true
+    let settled = false
+    const settle = (commit: boolean): void => {
+      if (settled) throw new Error("wire-index reservation already settled")
+      settled = true
+      reservationOpen = false
+      if (commit) apply()
+    }
+    return Object.freeze({
+      value,
+      commit: () => settle(true),
+      rollback: () => settle(false),
+    })
+  }
+
+  const beginLeg = (kind: "primary" | "continuation" | "recovery", source: { candidateId: string; dispatchId: string }): LegToken => {
+    if (reservationOpen) throw new Error("cannot begin a leg while a wire-index reservation is open")
+    activeLeg = `${kind}:${source.candidateId}:${source.dispatchId}:${legSequence++}` as LegToken
+    return activeLeg
+  }
+
+  const reserveAnchor = (): WireIndexReservation<number> =>
+    reserve(wireCounter, () => {
+      anchorCount++
+      wireCounter++
+    })
+
+  const reserveRealBlock = (upstreamIndex: number): WireIndexReservation<WireBlockMapping> => {
+    if (!activeLeg) throw new Error("cannot allocate a real block without an active leg")
+    const wireIndex = wireCounter
+    const leg = activeLeg
+    const mapping: WireBlockMapping = Object.freeze({
+      wireIndex,
+      upstreamIndex,
+      leg,
+      remap: (frame: ClientFrame) => remapAnthropicBlockIndex(frame, wireIndex - upstreamIndex),
+    })
+    return reserve(mapping, () => {
+      realWireIndices[upstreamIndex] = wireIndex
+      wireCounter++
+    })
+  }
+
   return {
     nextAnchorIndex: () => wireCounter,
     nextRealIndex: () => wireCounter,
-    onAnchorOpen: () => void wireCounter++,
+    onAnchorOpen: () => {
+      anchorCount++
+      wireCounter++
+    },
     onRealBlockOpen: () => {
       realWireIndices.push(wireCounter)
       wireCounter++
     },
+    beginLeg,
+    allocateAnchor: () => {
+      const reservation = reserveAnchor()
+      reservation.commit()
+      return reservation.value
+    },
+    allocateRealBlock: (upstreamIndex) => {
+      const reservation = reserveRealBlock(upstreamIndex)
+      reservation.commit()
+      return reservation.value
+    },
+    reserveAnchor,
+    reserveRealBlock,
+    anchorsOpened: () => anchorCount,
     realBlockOffset: (upstreamIndex) => (realWireIndices[upstreamIndex] ?? upstreamIndex) - upstreamIndex,
   }
 }
@@ -81,27 +151,27 @@ export function isAnthropicMessageStart(frame: ServerSentEventMessage): boolean 
   }
 }
 
-/** `content_block_start` opening the empty-text anchor block (lights the sink openBlock={0,text}). */
-export function anchorStartFrame(): ServerSentEventMessage {
+/** `content_block_start` opening the empty-text anchor block at its allocated wire index. */
+export function anchorStartFrame(index: number): ServerSentEventMessage {
   return anthropicSseFrame({
     type: "content_block_start",
-    index: ANCHOR_INDEX,
+    index,
     content_block: { type: "text", text: "" },
   })
 }
 
 /** Empty `text_delta` on the anchor block — the frame that actually resets CC's 300s watchdog. */
-export function anchorDeltaFrame(): ServerSentEventMessage {
+export function anchorDeltaFrame(index: number): ServerSentEventMessage {
   return anthropicSseFrame({
     type: "content_block_delta",
-    index: ANCHOR_INDEX,
+    index,
     delta: { type: "text_delta", text: "" },
   })
 }
 
 /** `content_block_stop` closing the anchor at commit / terminal failure (empty text — known-benign). */
-export function anchorStopFrame(): ServerSentEventMessage {
-  return anthropicSseFrame({ type: "content_block_stop", index: ANCHOR_INDEX })
+export function anchorStopFrame(index: number): ServerSentEventMessage {
+  return anthropicSseFrame({ type: "content_block_stop", index })
 }
 
 /**
@@ -153,34 +223,14 @@ export function remapAnthropicBlockIndex(frame: ServerSentEventMessage, offset: 
 }
 
 /**
- * Close off an injected empty-text keepalive anchor block before a TERMINAL error frame (spec
- * 2026-07-08-buffered-keepalive-empty-text-anchor §10.5 / §3.4). When the handler-owned unique injector
- * lit a synthetic empty-text anchor `content_block_start@0` during a pre-response / mid-stream silence
- * window (`empty_text` mode) and the request THEN fails, the client is otherwise left with an OPEN
- * `content_block@0` immediately followed by an `event: error` — a protocol-incomplete stream. Emitting the
- * anchor's `content_block_stop@0` (`anchorHooks.stopFrame`, routed via `writeAnchor` → `synthetic:"anchor"`)
- * BEFORE the error frame keeps the block structure balanced (empty-text block → known-benign, §3.6).
+ * The single decision point for whether a real block frame needs a wire-index remap.
  *
- * `close()` first: a terminal failure has NO subsequent real stream (this is an error terminus,
- * UNLIKE the live-reconcile close-off §10.3, which still has real blocks streaming after it → must NOT
- * close), so permanent shutdown is correct AND prevents a heartbeat tick racing the error frame.
- *
- * `anchorState.anchorClosed` is the UNIVERSAL idempotency guard shared across every close-off site (this
- * primitive at the handler pre-pump branches + the pump terminal branches, the live-reconcile
- * `reconcileLiveFrame`, and the driver's buffered commit/terminal close-off — all set/check it), so the
- * anchor is closed EXACTLY once no matter which terminus fires first. Inert (byte-equivalent to the
- * no-anchor path) when no anchor was injected (`injected` false), when only a message_start envelope was
- * injected (`enveloped_ping` → `anchorBlockOpen` false: no block to balance), or when the anchor is
- * already closed. The `writeAnchor`/`close` optional-chaining tolerates array/WS sinks (no-op).
- * `anchorState` is optional so the pump's `ping`-mode terminal branches (which thread an undefined
- * `anchorState`) can call it unconditionally — undefined short-circuits to a no-op.
+ * Only an identity mapping may return the original object. An anchor count is not equivalent to mapping
+ * identity: continuation and recovery legs restart upstream indices even when no synthetic anchor opened.
+ * Reading this block's immutable mapping also avoids ambient-leg state changing across an await.
  */
-export async function closeAnchorIfOpen(sink: ClientSink, anchorHooks: AnchorHooks | undefined, anchorState: AnchorState | undefined): Promise<void> {
-  if (anchorHooks && anchorState?.injected && anchorState.anchorBlockOpen && !anchorState.anchorClosed) {
-    anchorState.anchorClosed = true
-    sink.close?.()
-    await sink.writeAnchor?.(anchorHooks.stopFrame)
-  }
+export function resolveRemappedFrame(frame: ClientFrame, mapping: WireBlockMapping): ClientFrame {
+  return mapping.wireIndex === mapping.upstreamIndex ? frame : mapping.remap(frame)
 }
 
 /**
@@ -226,45 +276,51 @@ export function makeSyntheticAnchorInjector(args: {
   return async (): Promise<boolean> => {
     const sink = getSink()
     if (!sink || (independentContentLatch ? state.contentAnchorInjected : state.injected)) return false
+    const previousContentAnchorInjected = state.contentAnchorInjected
+    const port = getDownstreamDeliverySession(sink)?.allocationPort
+    if (!port?.wireState) throw new Error("[anchor] delivery allocation owner is unavailable")
+    const real = state.capturedMessageStart
+    const synthesize = anchor.syntheticMessageStart
+    if (!state.messageStartForwarded && !real && !synthesize) return false
     if (independentContentLatch) state.contentAnchorInjected = true
     if (independentContentLatch && state.injected) state.messageStartForwarded = true
-    if (state.messageStartForwarded) {
-      // A real message_start ALREADY reached the client via the live pump (an early upstream message_start
-      // forwarded before this first idle tick — e.g. /responses `response.created` then a long reasoning
-      // silence, recorded by `reconcileLiveFrame`). The wire forbids a second message_start, so do NOT emit
-      // one: open ONLY the anchor block@0 + first empty text_delta to reset CC's 300s watchdog. Sync-flip
-      // `injected`+`anchorBlockOpen` before the first await (race-free vs the commit snapshot, as below).
-      state.injected = true
-      state.anchorBlockOpen = true
-      await (sink.writeAnchor ?? sink.write)(anchor.startFrame) // "anchor"; noteBlockState → openBlock={0,text}
-      await (sink.writeKeepalive ?? sink.write)(anchor.deltaFrame) // "keepalive": empty text_delta resets CC's 300s watchdog
+
+    // Migration bridge: publish the legacy state intent synchronously before the owner operation queues.
+    // The driver may snapshot these fields while this operation waits behind a flush; the frontier itself
+    // remains private to the serializer. A pre-commit refusal restores all three flags below.
+    const previous = {
+      injected: state.injected,
+      messageStartForwarded: state.messageStartForwarded,
+      anchorBlockOpen: state.anchorBlockOpen,
+    }
+    const restoreMirror = (): void => {
+      state.injected = previous.injected
+      state.messageStartForwarded = previous.messageStartForwarded
+      state.anchorBlockOpen = previous.anchorBlockOpen
+      state.contentAnchorInjected = previousContentAnchorInjected
+    }
+    state.injected = true
+    state.messageStartForwarded = true
+    state.anchorBlockOpen = true
+    try {
+      const allocated = await port.allocateAndWriteAnchor(({ wireIndex, envelope }) => {
+        const specs = []
+        if (!previous.messageStartForwarded) {
+          if (real) specs.push(envelope.real(real))
+          else if (synthesize) specs.push(envelope.anchor(synthesize(resolvedName, reqId)))
+        }
+        specs.push(envelope.anchor(anchor.startFrame(wireIndex)), envelope.keepalive(anchor.deltaFrame(wireIndex)))
+        return specs
+      })
+      if (!allocated.ok) {
+        if (!allocated.committed) restoreMirror()
+        return false
+      }
       return true
+    } catch (error) {
+      if (!(error instanceof DeliveryOwnerError) || !error.committed) restoreMirror()
+      throw error
     }
-    const real = state.capturedMessageStart
-    if (real) {
-      // C1/B1 sync-flip (before the first await — race-free vs the commit snapshot; see docstring).
-      // `anchorBlockOpen` flips HERE too (not after the writeAnchor await): once `injected` is true the
-      // injector is COMMITTED to opening the anchor block@0, so the buffered commit's `injected`+
-      // `anchorBlockOpen` snapshot can never read `injected:true, anchorBlockOpen:false` (which would wrongly
-      // skip the +1 remap). See {@link makeSyntheticEnvelopeInjector} for the enveloped_ping counterpart that
-      // leaves it false.
-      state.injected = true
-      state.messageStartForwarded = true
-      state.anchorBlockOpen = true
-      await sink.write(real) // real captured → forwarded UNMARKED (a real upstream frame)
-    } else {
-      const synthesize = anchor.syntheticMessageStart
-      // Need SOME message_start to open a well-formed prelude; without a synthesizer we cannot (defensive:
-      // `empty_text` always supplies `syntheticMessageStart`) — bail so the tick re-arms to a ping.
-      if (!synthesize) return false
-      state.injected = true
-      state.messageStartForwarded = true
-      state.anchorBlockOpen = true
-      await (sink.writeSyntheticEnvelope ?? sink.write)(synthesize(resolvedName, reqId)) // fabricated → "synthetic-message-start"
-    }
-    await (sink.writeAnchor ?? sink.write)(anchor.startFrame) // "anchor"; noteBlockState → openBlock={0,text}
-    await (sink.writeKeepalive ?? sink.write)(anchor.deltaFrame) // "keepalive": empty text_delta resets CC's 300s watchdog
-    return true
   }
 }
 

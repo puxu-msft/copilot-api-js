@@ -108,6 +108,181 @@ afterEach(() => {
 // Run them for real with `bun run build:history-search` first (CI's `test:ci` does).
 const NATIVE = isNativeHistorySearchAvailable()
 
+describe("history-search tail publication boundary", () => {
+  test("does not publish the tail cursor before the caller durably flushes the index", async () => {
+    const dbPath = path.join(freshDir("daemon-publication-db-"), "history-v3.db")
+    const indexPath = path.join(freshDir("daemon-publication-index-"), "index")
+    commitOperation(dbPath, "publication-op", { conversation: "publicationneedle", responseBody: "resp", upstreamOnly: "up" })
+
+    const staged: Array<string> = []
+    const index: NativeHistoryIndex = {
+      async upsert(operationId) {
+        staged.push(operationId)
+      },
+      async upsertSummary(document) {
+        staged.push(document.operationId)
+      },
+      async flush() {},
+      async search() {
+        return []
+      },
+      async listSearch() {
+        return { operationIds: [], total: 0, hasOlder: false, hasNewer: false, invalidCursor: false }
+      },
+      async close() {},
+    }
+    const daemon = createHistorySearchDaemon({ dbPath, indexPath, index })
+    const result = await daemon.tailOnce()
+
+    expect(staged).toEqual(["publication-op"])
+    expect(result.cursor?.operationId).toBe("publication-op")
+    expect(readTailCursor(indexPath)).toBeNull()
+
+    await daemon.flush()
+    expect(readTailCursor(indexPath)?.operationId).toBe("publication-op")
+
+    daemon.close()
+  })
+})
+
+describe.skipIf(!NATIVE)("history-search native list-search", () => {
+  test("returns the full filtered match set in stable newest-first tuple order with exact total", async () => {
+    const indexPath = path.join(freshDir("native-list-search-index-"), "index")
+    const index = await openIndex(indexPath)
+    const extended = index as NativeHistoryIndex & {
+      upsertSummary: (document: Record<string, unknown>) => Promise<void>
+      listSearch: (request: Record<string, unknown>) => Promise<{ operationIds: Array<string>; total: number; hasOlder: boolean; hasNewer: boolean }>
+    }
+
+    expect(extended.upsertSummary).toBeFunction()
+    expect(extended.listSearch).toBeFunction()
+    await extended.upsertSummary({
+      operationId: "op-a",
+      operationKind: "generation",
+      createdAt: 100,
+      committedAt: 10,
+      content: "native list needle",
+      endpoint: "anthropic-messages",
+      state: "completed",
+      sessionId: "s1",
+      requestModel: "model-a",
+    })
+    await extended.upsertSummary({
+      operationId: "op-b",
+      operationKind: "generation",
+      createdAt: 100,
+      committedAt: 11,
+      content: "native list needle",
+      endpoint: "anthropic-messages",
+      state: "failed",
+      sessionId: "s1",
+      requestModel: "model-b",
+    })
+    await extended.upsertSummary({
+      operationId: "op-c",
+      operationKind: "count_tokens",
+      createdAt: 101,
+      committedAt: 11,
+      content: "native list needle",
+      endpoint: "anthropic-messages",
+      state: "completed",
+      sessionId: "s1",
+      requestModel: "model-a",
+    })
+    await index.flush()
+
+    const result = await extended.listSearch({
+      query: "native list needle",
+      operationKinds: ["generation"],
+      states: [],
+      endpoint: "anthropic-messages",
+      sessionId: "s1",
+      model: "model",
+      targetCommittedAt: 11,
+      targetOperationIds: ["op-b", "op-c"],
+      direction: "older",
+      limit: 10,
+    })
+    expect(result).toEqual({ operationIds: ["op-b", "op-a"], total: 2, hasOlder: false, hasNewer: false, invalidCursor: false })
+
+    await index.close()
+  })
+})
+
+describe.skipIf(!NATIVE)("history-search daemon freshness attestation", () => {
+  test("accepts a covered frozen target and rejects a target beyond the durable flushed frontier", async () => {
+    const dbPath = path.join(freshDir("daemon-attestation-db-"), "history-v3.db")
+    const indexPath = path.join(freshDir("daemon-attestation-index-"), "index")
+    commitOperation(dbPath, "attested-op", { conversation: "attestedneedle", responseBody: "resp", upstreamOnly: "up" })
+    const db = openDatabase(dbPath)
+    const row = db.prepare("SELECT committed_at FROM v3_operations WHERE operation_id=?").get("attested-op") as { committed_at: number }
+    closeDatabase()
+
+    const index = await openIndex(indexPath)
+    const daemon = createHistorySearchDaemon({ dbPath, indexPath, index })
+    await daemon.tailOnce()
+    await daemon.flush()
+
+    const covered = await daemon.listSearch({
+      type: "list-search",
+      query: "attestedneedle",
+      filters: { operationKinds: ["generation"] },
+      limit: 10,
+      target: { committedAt: row.committed_at, operationIdsAtBoundary: ["attested-op"] },
+    })
+    expect(covered.operationIds).toEqual(["attested-op"])
+    expect(covered.attestation).toEqual({ committedAt: row.committed_at, indexedAtBoundaryMs: ["attested-op"], poison: [] })
+
+    await expect(
+      daemon.listSearch({
+        type: "list-search",
+        query: "attestedneedle",
+        filters: { operationKinds: ["generation"] },
+        limit: 10,
+        target: { committedAt: row.committed_at + 1, operationIdsAtBoundary: ["future-op"] },
+      }),
+    ).rejects.toThrow(/has not reached frozen target/)
+
+    daemon.close()
+    await index.close()
+  })
+
+  test("reports a poisoned operation within the frozen target instead of certifying a complete empty result", async () => {
+    const dbPath = path.join(freshDir("daemon-attestation-poison-db-"), "history-v3.db")
+    const indexPath = path.join(freshDir("daemon-attestation-poison-index-"), "index")
+    commitOperation(dbPath, "attested-poison", { conversation: "poisonattestationneedle", responseBody: "resp", upstreamOnly: "up" })
+    const poisonDb = openDatabase(dbPath)
+    const poisonRow = poisonDb.prepare("SELECT manifest_gz,committed_at FROM v3_operations WHERE operation_id=?").get("attested-poison") as {
+      manifest_gz: Uint8Array
+      committed_at: number
+    }
+    const manifest = JSON.parse(new TextDecoder().decode(decompressBytes(poisonRow.manifest_gz))) as { formatVersion: number }
+    manifest.formatVersion = 999
+    poisonDb
+      .prepare("UPDATE v3_operations SET manifest_gz=? WHERE operation_id=?")
+      .run(compressBytes(new TextEncoder().encode(JSON.stringify(manifest))), "attested-poison")
+    closeDatabase()
+
+    const index = await openIndex(indexPath)
+    const daemon = createHistorySearchDaemon({ dbPath, indexPath, index })
+    await daemon.tailOnce()
+    await daemon.flush()
+
+    const result = await daemon.listSearch({
+      type: "list-search",
+      query: "poisonattestationneedle",
+      filters: { operationKinds: ["generation"] },
+      limit: 10,
+      target: { committedAt: poisonRow.committed_at, operationIdsAtBoundary: ["attested-poison"] },
+    })
+    expect(result.operationIds).toEqual([])
+    expect(result.attestation.poison).toEqual([{ operationId: "attested-poison", committedAt: poisonRow.committed_at }])
+
+    daemon.close()
+    await index.close()
+  })
+})
+
 describe.skipIf(!NATIVE)("history-search sidecar daemon (Phase 1, standalone)", () => {
   test("tails, hydrates, and indexes conversation + response text — excludes upstream-only frames", async () => {
     const dbDir = freshDir("daemon-basic-db-")
@@ -169,7 +344,7 @@ describe.skipIf(!NATIVE)("history-search sidecar daemon (Phase 1, standalone)", 
     const daemon1 = createHistorySearchDaemon({ dbPath, indexPath, index: index1 })
     const first = await daemon1.tailOnce()
     expect(first.processed).toBe(1)
-    await index1.flush()
+    await daemon1.flush()
     daemon1.close()
     await index1.close()
 
@@ -190,7 +365,7 @@ describe.skipIf(!NATIVE)("history-search sidecar daemon (Phase 1, standalone)", 
     commitOperation(dbPath, "op-2", { conversation: "secondneedle", responseBody: "secondresp", upstreamOnly: "up2" })
     const third = await daemon2.tailOnce()
     expect(third.processed).toBe(1)
-    await index2.flush()
+    await daemon2.flush()
 
     expect((await index2.search("firstneedle", undefined, 10)).map((hit) => hit.operationId)).toEqual(["op-1"])
     expect((await index2.search("secondneedle", undefined, 10)).map((hit) => hit.operationId)).toEqual(["op-2"])
@@ -217,7 +392,7 @@ describe.skipIf(!NATIVE)("history-search sidecar daemon (Phase 1, standalone)", 
     const daemon1 = createHistorySearchDaemon({ dbPath, indexPath, index: index1 })
     const firstBatch = await daemon1.tailOnce()
     expect(firstBatch.processed).toBe(5)
-    await index1.flush()
+    await daemon1.flush()
     daemon1.close()
     await index1.close()
 
@@ -237,7 +412,7 @@ describe.skipIf(!NATIVE)("history-search sidecar daemon (Phase 1, standalone)", 
     const secondBatch = await daemon2.tailOnce()
     // Must see EXACTLY the one new row — not zero (lost), not 6 (reprocessed everything).
     expect(secondBatch.processed).toBe(1)
-    await index2.flush()
+    await daemon2.flush()
 
     // All 5 pre-VACUUM rows must still be searchable (not lost) and the post-VACUUM
     // row must be searchable too (not skipped) — exactly 6 documents total, no dupes.
@@ -317,7 +492,7 @@ describe.skipIf(!NATIVE)("merged-state review blockers (2026-07-22) — silent p
     // own contract: one call catches everything up to "now") -- it must not throw and
     // abandon rows 2/3 unprocessed just because row 2 is corrupt.
     const result = await daemon.tailOnce()
-    await index.flush()
+    await daemon.flush()
 
     // The healthy row BEFORE the poison must always be searchable (this part never
     // regresses even in the pre-fix code).
@@ -357,7 +532,7 @@ describe.skipIf(!NATIVE)("merged-state review blockers (2026-07-22) — silent p
     const daemon = createHistorySearchDaemon({ dbPath, indexPath, index })
     const firstRound = await daemon.tailOnce()
     expect(firstRound.processed).toBe(1)
-    await index.flush()
+    await daemon.flush()
 
     // Now commit the LEXICOGRAPHICALLY SMALLER operation_id ("aaa-op") -- and force it to
     // share the EXACT SAME committed_at millisecond as "zzz-op-committed-first" (this is
@@ -377,7 +552,7 @@ describe.skipIf(!NATIVE)("merged-state review blockers (2026-07-22) — silent p
     // row-value comparison is lexicographic on the tuple), so this row is silently excluded
     // from EVERY future tail round, forever -- this is the exact permanent-loss scenario.
     const secondRound = await daemon.tailOnce()
-    await index.flush()
+    await daemon.flush()
 
     // THE CORE ASSERTION: "aaa-op-committed-second" must eventually be indexed even though
     // it committed in the same millisecond as, and sorts lexicographically before, a row
@@ -404,7 +579,7 @@ describe.skipIf(!NATIVE)("merged-state review blockers (2026-07-22) — silent p
     const index1 = await openIndex(indexPath)
     const daemon1 = createHistorySearchDaemon({ dbPath, indexPath, index: index1 })
     await daemon1.tailOnce()
-    await index1.flush()
+    await daemon1.flush()
     daemon1.close()
     await index1.close()
 
@@ -422,7 +597,7 @@ describe.skipIf(!NATIVE)("merged-state review blockers (2026-07-22) — silent p
     const index2 = await openIndex(indexPath)
     const daemon2 = createHistorySearchDaemon({ dbPath, indexPath, index: index2 })
     await daemon2.tailOnce()
-    await index2.flush()
+    await daemon2.flush()
 
     expect((await index2.search("aaarestartneedle", undefined, 10)).map((hit) => hit.operationId)).toEqual(["aaa-restart-second"])
     expect((await index2.search("zzzrestartneedle", undefined, 10)).map((hit) => hit.operationId)).toEqual(["zzz-restart-first"])
@@ -472,7 +647,7 @@ describe.skipIf(!NATIVE)("merged-state review blockers (2026-07-22) — silent p
     // finishing incompletely would be a REGRESSION of the "one call always
     // catches up fully" contract, not an acceptable multi-round scenario.
     const result = await daemon.tailOnce()
-    await index.flush()
+    await daemon.flush()
 
     expect(result.processed).toBe(3)
     expect((await index.search("pageboundaryneedleA", undefined, 10)).map((hit) => hit.operationId)).toEqual(["op-a"])

@@ -5,9 +5,9 @@ use std::sync::{Arc, Mutex};
 use napi::{Error, Result, Status};
 use napi_derive::napi;
 use tantivy::collector::TopDocs;
-use tantivy::query::{BooleanQuery, Occur, Query, QueryParser, TermQuery};
+use tantivy::query::{AllQuery, BooleanQuery, Occur, Query, QueryParser, TermQuery};
 use tantivy::schema::{
-    Field, IndexRecordOption, STORED, STRING, Schema, TEXT, TantivyDocument, Value,
+    FAST, Field, IndexRecordOption, STORED, STRING, Schema, TEXT, TantivyDocument, Value,
 };
 use tantivy::{Index, IndexReader, IndexWriter, Term, doc};
 
@@ -15,7 +15,7 @@ use tantivy::{Index, IndexReader, IndexWriter, Term, doc};
 // A directory that carries an OLDER copilot-owned marker is transparently wiped and
 // rebuilt (the index is disposable and never authoritative), so incompatible legacy
 // indexes self-heal instead of degrading forever. See `assert_identity`.
-const FORMAT_MARKER: &str = "copilot-api-history-search-tantivy-v2\n";
+const FORMAT_MARKER: &str = "copilot-api-history-search-tantivy-v3\n";
 const FORMAT_FILE: &str = "FORMAT";
 const WRITER_MEMORY_BYTES: usize = 50_000_000;
 
@@ -26,16 +26,71 @@ pub struct SearchHit {
     pub score: f64,
 }
 
+#[napi(object)]
+pub struct SearchDocument {
+    pub operation_id: String,
+    pub operation_kind: String,
+    pub created_at: i64,
+    pub committed_at: i64,
+    pub content: String,
+    pub endpoint: Option<String>,
+    pub state: Option<String>,
+    pub pid: Option<i64>,
+    pub session_id: Option<String>,
+    pub agent_id: Option<String>,
+    pub request_model: Option<String>,
+    pub response_model: Option<String>,
+}
+
+#[napi(object)]
+pub struct ListSearchRequest {
+    pub query: String,
+    pub operation_kinds: Vec<String>,
+    pub endpoint: Option<String>,
+    pub states: Vec<String>,
+    pub pid: Option<i64>,
+    pub session_id: Option<String>,
+    pub agent_id: Option<String>,
+    pub main_agent_only: Option<bool>,
+    pub model: Option<String>,
+    pub from: Option<i64>,
+    pub to: Option<i64>,
+    pub target_committed_at: i64,
+    pub target_operation_ids: Vec<String>,
+    pub cursor_started_at: Option<i64>,
+    pub cursor_operation_id: Option<String>,
+    pub cursor_require_match: Option<bool>,
+    pub direction: String,
+    pub limit: u32,
+}
+
+#[napi(object)]
+pub struct ListSearchResult {
+    pub operation_ids: Vec<String>,
+    pub total: u32,
+    pub has_older: bool,
+    pub has_newer: bool,
+    pub invalid_cursor: bool,
+}
+
 fn native_error(error: impl std::fmt::Display) -> Error {
     Error::new(Status::GenericFailure, error.to_string())
 }
 
 fn schema() -> Schema {
     let mut builder = Schema::builder();
-    builder.add_text_field("operation_id", STRING | STORED);
+    builder.add_text_field("operation_id", STRING | STORED | FAST);
     builder.add_text_field("operation_kind", STRING | STORED);
     builder.add_text_field("content", TEXT);
-    builder.add_u64_field("created_at", STORED);
+    builder.add_u64_field("created_at", STORED | FAST);
+    builder.add_u64_field("committed_at", STORED | FAST);
+    builder.add_text_field("endpoint", STRING | STORED);
+    builder.add_text_field("state", STRING | STORED);
+    builder.add_i64_field("pid", STORED);
+    builder.add_text_field("session_id", STRING | STORED);
+    builder.add_text_field("agent_id", STRING | STORED);
+    builder.add_text_field("request_model", STRING | STORED);
+    builder.add_text_field("response_model", STRING | STORED);
     builder.build()
 }
 
@@ -85,20 +140,44 @@ fn open_index(path: &Path) -> Result<Index> {
     }
 }
 
-fn fields(index: &Index) -> Result<(Field, Field, Field, Field)> {
+#[derive(Clone, Copy)]
+struct SearchFields {
+    operation_id: Field,
+    operation_kind: Field,
+    content: Field,
+    created_at: Field,
+    committed_at: Field,
+    endpoint: Field,
+    state: Field,
+    pid: Field,
+    session_id: Field,
+    agent_id: Field,
+    request_model: Field,
+    response_model: Field,
+}
+
+fn fields(index: &Index) -> Result<SearchFields> {
     let schema = index.schema();
-    Ok((
-        schema.get_field("operation_id").map_err(native_error)?,
-        schema.get_field("operation_kind").map_err(native_error)?,
-        schema.get_field("content").map_err(native_error)?,
-        schema.get_field("created_at").map_err(native_error)?,
-    ))
+    Ok(SearchFields {
+        operation_id: schema.get_field("operation_id").map_err(native_error)?,
+        operation_kind: schema.get_field("operation_kind").map_err(native_error)?,
+        content: schema.get_field("content").map_err(native_error)?,
+        created_at: schema.get_field("created_at").map_err(native_error)?,
+        committed_at: schema.get_field("committed_at").map_err(native_error)?,
+        endpoint: schema.get_field("endpoint").map_err(native_error)?,
+        state: schema.get_field("state").map_err(native_error)?,
+        pid: schema.get_field("pid").map_err(native_error)?,
+        session_id: schema.get_field("session_id").map_err(native_error)?,
+        agent_id: schema.get_field("agent_id").map_err(native_error)?,
+        request_model: schema.get_field("request_model").map_err(native_error)?,
+        response_model: schema.get_field("response_model").map_err(native_error)?,
+    })
 }
 
 fn search_blocking(
     index: &Index,
     reader: &IndexReader,
-    fields: (Field, Field, Field, Field),
+    fields: SearchFields,
     query_text: String,
     operation_kind: Option<String>,
     limit: usize,
@@ -106,10 +185,9 @@ fn search_blocking(
     if query_text.trim().is_empty() || limit == 0 {
         return Ok(Vec::new());
     }
-    let (id_field, kind_field, content_field, created_field) = fields;
     reader.reload().map_err(native_error)?;
     let searcher = reader.searcher();
-    let parser = QueryParser::for_index(index, vec![content_field]);
+    let parser = QueryParser::for_index(index, vec![fields.content]);
     let content_query = parser.parse_query(&query_text).map_err(native_error)?;
     let query: Box<dyn Query> = match operation_kind {
         Some(kind) => Box::new(BooleanQuery::new(vec![
@@ -117,7 +195,7 @@ fn search_blocking(
             (
                 Occur::Must,
                 Box::new(TermQuery::new(
-                    Term::from_field_text(kind_field, &kind),
+                    Term::from_field_text(fields.operation_kind, &kind),
                     IndexRecordOption::Basic,
                 )),
             ),
@@ -131,13 +209,13 @@ fn search_blocking(
     for (score, address) in top_docs {
         let document: TantivyDocument = searcher.doc(address).map_err(native_error)?;
         let Some(operation_id) = document
-            .get_first(id_field)
+            .get_first(fields.operation_id)
             .and_then(|value| value.as_str())
         else {
             continue;
         };
         let created_at = document
-            .get_first(created_field)
+            .get_first(fields.created_at)
             .and_then(|value| value.as_u64())
             .ok_or_else(|| {
                 native_error(format!("created_at missing for operation {operation_id}"))
@@ -154,6 +232,220 @@ fn search_blocking(
         });
     }
     Ok(hits)
+}
+
+fn document_text(document: &TantivyDocument, field: Field) -> Option<&str> {
+    document.get_first(field).and_then(|value| value.as_str())
+}
+
+fn document_u64(document: &TantivyDocument, field: Field) -> Option<u64> {
+    document.get_first(field).and_then(|value| value.as_u64())
+}
+
+fn document_i64(document: &TantivyDocument, field: Field) -> Option<i64> {
+    document.get_first(field).and_then(|value| value.as_i64())
+}
+
+#[derive(Debug)]
+struct ListCandidate {
+    operation_id: String,
+    created_at: i64,
+}
+
+fn list_search_blocking(
+    index: &Index,
+    reader: &IndexReader,
+    fields: SearchFields,
+    request: ListSearchRequest,
+) -> Result<ListSearchResult> {
+    reader.reload().map_err(native_error)?;
+    let searcher = reader.searcher();
+    let query: Box<dyn Query> = if request.query.trim().is_empty() {
+        Box::new(AllQuery)
+    } else {
+        let parser = QueryParser::for_index(index, vec![fields.content]);
+        parser.parse_query(&request.query).map_err(native_error)?
+    };
+    let document_count = usize::try_from(searcher.num_docs()).map_err(native_error)?;
+    let addresses = if document_count == 0 {
+        Vec::new()
+    } else {
+        searcher
+            .search(
+                &query,
+                &TopDocs::with_limit(document_count).order_by_score(),
+            )
+            .map_err(native_error)?
+    };
+    let target_ids = request
+        .target_operation_ids
+        .iter()
+        .map(String::as_str)
+        .collect::<std::collections::HashSet<_>>();
+    let model_needle = request.model.as_ref().map(|value| value.to_lowercase());
+    let mut matches = Vec::new();
+    for (_, address) in addresses {
+        let document: TantivyDocument = searcher.doc(address).map_err(native_error)?;
+        let Some(operation_id) = document_text(&document, fields.operation_id) else {
+            continue;
+        };
+        let committed_at = document_u64(&document, fields.committed_at).ok_or_else(|| {
+            native_error(format!("committed_at missing for operation {operation_id}"))
+        })?;
+        let committed_at = i64::try_from(committed_at)
+            .map_err(|_| native_error("committed_at out of i64 range"))?;
+        if committed_at > request.target_committed_at
+            || (committed_at == request.target_committed_at && !target_ids.contains(operation_id))
+        {
+            continue;
+        }
+        let Some(operation_kind) = document_text(&document, fields.operation_kind) else {
+            continue;
+        };
+        if !request.operation_kinds.is_empty()
+            && !request
+                .operation_kinds
+                .iter()
+                .any(|kind| kind == operation_kind)
+        {
+            continue;
+        }
+        if request
+            .endpoint
+            .as_deref()
+            .is_some_and(|value| document_text(&document, fields.endpoint) != Some(value))
+        {
+            continue;
+        }
+        if !request.states.is_empty()
+            && !document_text(&document, fields.state)
+                .is_some_and(|state| request.states.iter().any(|value| value == state))
+        {
+            continue;
+        }
+        if request
+            .pid
+            .is_some_and(|value| document_i64(&document, fields.pid) != Some(value))
+        {
+            continue;
+        }
+        if request
+            .session_id
+            .as_deref()
+            .is_some_and(|value| document_text(&document, fields.session_id) != Some(value))
+        {
+            continue;
+        }
+        if request
+            .agent_id
+            .as_deref()
+            .is_some_and(|value| document_text(&document, fields.agent_id) != Some(value))
+        {
+            continue;
+        }
+        if request.main_agent_only.unwrap_or(false)
+            && document_text(&document, fields.agent_id).is_some()
+        {
+            continue;
+        }
+        if let Some(needle) = &model_needle {
+            let request_model = document_text(&document, fields.request_model)
+                .unwrap_or_default()
+                .to_lowercase();
+            let response_model = document_text(&document, fields.response_model)
+                .unwrap_or_default()
+                .to_lowercase();
+            if !request_model.contains(needle) && !response_model.contains(needle) {
+                continue;
+            }
+        }
+        let created_at = document_u64(&document, fields.created_at).ok_or_else(|| {
+            native_error(format!("created_at missing for operation {operation_id}"))
+        })?;
+        let created_at =
+            i64::try_from(created_at).map_err(|_| native_error("created_at out of i64 range"))?;
+        if request.from.is_some_and(|value| created_at < value)
+            || request.to.is_some_and(|value| created_at > value)
+        {
+            continue;
+        }
+        matches.push(ListCandidate {
+            operation_id: operation_id.to_owned(),
+            created_at,
+        });
+    }
+    matches.sort_by(|left, right| {
+        right
+            .created_at
+            .cmp(&left.created_at)
+            .then_with(|| right.operation_id.cmp(&left.operation_id))
+    });
+    let total =
+        u32::try_from(matches.len()).map_err(|_| native_error("list-search total exceeds u32"))?;
+    let cursor = request
+        .cursor_started_at
+        .zip(request.cursor_operation_id.as_deref());
+    if request.cursor_require_match.unwrap_or(true)
+        && let Some((started_at, operation_id)) = cursor
+        && !matches.iter().any(|candidate| {
+            candidate.created_at == started_at && candidate.operation_id == operation_id
+        })
+    {
+        return Ok(ListSearchResult {
+            operation_ids: Vec::new(),
+            total,
+            has_older: false,
+            has_newer: false,
+            invalid_cursor: true,
+        });
+    }
+    let on_requested_side = |candidate: &&ListCandidate| match cursor {
+        None => true,
+        Some((started_at, operation_id)) if request.direction == "newer" => {
+            candidate.created_at > started_at
+                || (candidate.created_at == started_at
+                    && candidate.operation_id.as_str() > operation_id)
+        }
+        Some((started_at, operation_id)) => {
+            candidate.created_at < started_at
+                || (candidate.created_at == started_at
+                    && candidate.operation_id.as_str() < operation_id)
+        }
+    };
+    let mut candidates = matches.iter().filter(on_requested_side).collect::<Vec<_>>();
+    let limit = request.limit as usize;
+    if request.direction == "newer" && candidates.len() > limit {
+        candidates = candidates.split_off(candidates.len() - limit);
+    } else {
+        candidates.truncate(limit);
+    }
+    let operation_ids = candidates
+        .iter()
+        .map(|candidate| candidate.operation_id.clone())
+        .collect::<Vec<_>>();
+    let newest = candidates.first();
+    let oldest = candidates.last();
+    let has_newer = newest.is_some_and(|boundary| {
+        matches.iter().any(|candidate| {
+            candidate.created_at > boundary.created_at
+                || (candidate.created_at == boundary.created_at
+                    && candidate.operation_id > boundary.operation_id)
+        })
+    });
+    let has_older = oldest.is_some_and(|boundary| {
+        matches.iter().any(|candidate| {
+            candidate.created_at < boundary.created_at
+                || (candidate.created_at == boundary.created_at
+                    && candidate.operation_id < boundary.operation_id)
+        })
+    });
+    Ok(ListSearchResult {
+        operation_ids,
+        total,
+        has_older,
+        has_newer,
+        invalid_cursor: false,
+    })
 }
 
 /// Stateful, long-lived full-text index handle.
@@ -174,7 +466,7 @@ pub struct HistoryIndex {
     // `index.writer()` fails with LockBusy.
     writer: Arc<Mutex<Option<IndexWriter>>>,
     reader: IndexReader,
-    fields: (Field, Field, Field, Field),
+    fields: SearchFields,
 }
 
 #[napi]
@@ -208,7 +500,7 @@ impl HistoryIndex {
         let created_at = u64::try_from(created_at)
             .map_err(|_| native_error("created_at must be non-negative"))?;
         let writer = self.writer.clone();
-        let (id_field, kind_field, content_field, created_field) = self.fields;
+        let fields = self.fields;
         tokio::task::spawn_blocking(move || -> Result<()> {
             let guard = writer
                 .lock()
@@ -216,14 +508,72 @@ impl HistoryIndex {
             let writer = guard
                 .as_ref()
                 .ok_or_else(|| native_error("history-search index handle is closed"))?;
-            writer.delete_term(Term::from_field_text(id_field, &operation_id));
+            writer.delete_term(Term::from_field_text(fields.operation_id, &operation_id));
             writer
                 .add_document(doc!(
-                    id_field => operation_id,
-                    kind_field => operation_kind,
-                    content_field => content,
-                    created_field => created_at,
+                    fields.operation_id => operation_id,
+                    fields.operation_kind => operation_kind,
+                    fields.content => content,
+                    fields.created_at => created_at,
+                    fields.committed_at => created_at,
                 ))
+                .map_err(native_error)?;
+            Ok(())
+        })
+        .await
+        .map_err(native_error)?
+    }
+
+    /// Stage a complete product-list search document. Does NOT commit; call `flush`.
+    #[napi]
+    pub async fn upsert_summary(&self, document: SearchDocument) -> Result<()> {
+        let created_at = u64::try_from(document.created_at)
+            .map_err(|_| native_error("created_at must be non-negative"))?;
+        let committed_at = u64::try_from(document.committed_at)
+            .map_err(|_| native_error("committed_at must be non-negative"))?;
+        let writer = self.writer.clone();
+        let fields = self.fields;
+        tokio::task::spawn_blocking(move || -> Result<()> {
+            let guard = writer
+                .lock()
+                .map_err(|_| native_error("history-search writer mutex poisoned"))?;
+            let writer = guard
+                .as_ref()
+                .ok_or_else(|| native_error("history-search index handle is closed"))?;
+            writer.delete_term(Term::from_field_text(
+                fields.operation_id,
+                &document.operation_id,
+            ));
+            let mut tantivy_document = doc!(
+                fields.operation_id => document.operation_id,
+                fields.operation_kind => document.operation_kind,
+                fields.content => document.content,
+                fields.created_at => created_at,
+                fields.committed_at => committed_at,
+            );
+            if let Some(value) = document.endpoint {
+                tantivy_document.add_text(fields.endpoint, value);
+            }
+            if let Some(value) = document.state {
+                tantivy_document.add_text(fields.state, value);
+            }
+            if let Some(value) = document.pid {
+                tantivy_document.add_i64(fields.pid, value);
+            }
+            if let Some(value) = document.session_id {
+                tantivy_document.add_text(fields.session_id, value);
+            }
+            if let Some(value) = document.agent_id {
+                tantivy_document.add_text(fields.agent_id, value);
+            }
+            if let Some(value) = document.request_model {
+                tantivy_document.add_text(fields.request_model, value);
+            }
+            if let Some(value) = document.response_model {
+                tantivy_document.add_text(fields.response_model, value);
+            }
+            writer
+                .add_document(tantivy_document)
                 .map_err(native_error)?;
             Ok(())
         })
@@ -264,10 +614,27 @@ impl HistoryIndex {
         let reader = self.reader.clone();
         let fields = self.fields;
         tokio::task::spawn_blocking(move || {
-            search_blocking(&index, &reader, fields, query, operation_kind, limit as usize)
+            search_blocking(
+                &index,
+                &reader,
+                fields,
+                query,
+                operation_kind,
+                limit as usize,
+            )
         })
         .await
         .map_err(native_error)?
+    }
+
+    #[napi]
+    pub async fn list_search(&self, request: ListSearchRequest) -> Result<ListSearchResult> {
+        let index = self.index.clone();
+        let reader = self.reader.clone();
+        let fields = self.fields;
+        tokio::task::spawn_blocking(move || list_search_blocking(&index, &reader, fields, request))
+            .await
+            .map_err(native_error)?
     }
 
     /// Commit staged documents, then drop the writer to release the Tantivy directory

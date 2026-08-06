@@ -33,7 +33,7 @@ import type {
 } from "./types"
 
 import { getSummary } from "./queries"
-import { getHistorySearchClient } from "./state"
+import { getHistorySearchClient } from "./search/client-registry"
 
 /** Sidecar-served facet — the ONLY source the Tantivy projection can answer (see
  *  module doc). Every other `SearchSource` value degrades to empty + `partial`. */

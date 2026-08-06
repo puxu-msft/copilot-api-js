@@ -7,11 +7,8 @@ import {
 } from "bun:test"
 
 import { HTTPError } from "~/lib/error"
-import {
-  //
-  setModels,
-  setStateForTests,
-} from "~/lib/state"
+import { setModels } from "~/lib/models/cache"
+import { setStateForTests } from "~/lib/state"
 
 import { mockModel } from "../helpers/factories"
 import { useIsolatedRuntime } from "../helpers/isolated-fixture"

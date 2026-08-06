@@ -1,0 +1,2269 @@
+import type {
+  //
+  Model,
+  ModelsResponse,
+} from "./ghc-model-types"
+import type {
+  //
+  AdaptiveRateLimiterConfig,
+  AssistantBlockLayoutStrategy,
+  BufferedRetryCaps,
+  BufferedRetryContinuation,
+  CacheControlMode,
+  CacheTtl,
+  CompiledRewriteRule,
+  CompiledSystemPromptEntry,
+  ContextEditingMode,
+  LoggingConfigState,
+  MaxTokensContinuationConfig,
+  MaxTokensContinuationOverride,
+  ModelTranslation,
+  RepairItem,
+  SeparatorCarrier,
+  ThinkingBlockSanitizeMode,
+  ThinkingBlockMessagePolicy,
+  UnknownEndpointLogging,
+  WarmupPolicy,
+} from "./state-vocabulary"
+
+// Re-exported for back-compat: the bundled defaults live in ./state-defaults (single-responsibility
+// split); existing `import { CONFIG_MANAGED_DEFAULTS | DEFAULT_MODEL_MAPPINGS | DEFAULT_MODEL_TRANSLATION }
+// from "~/lib/state"` consumers keep working.
+export { CONFIG_MANAGED_DEFAULTS, DEFAULT_MODEL_MAPPINGS, DEFAULT_MODEL_TRANSLATION } from "./state-defaults"
+
+export interface State {
+  /** unknown HTTP endpoint（未匹配任何业务路由）按状态码分类的日志级别。默认 warn/warn。 */
+  readonly unknownEndpointLogging: UnknownEndpointLogging
+  readonly logging: LoggingConfigState
+  readonly tuiEnabled: boolean
+
+  readonly accountType: "individual" | "business" | "enterprise"
+  /**
+   * Explicit upstream GHC API base URL (e.g. `https://api.githubcopilot.com`).
+   * Set via `--ghc-api-base-url` or `ghc_api_base_url` in config.yaml. When
+   * set, this overrides the URL derived from `accountType`. Useful for users
+   * routing through a self-hosted GHC proxy or for unusual deployments where
+   * `accountType` → URL doesn't match upstream's expectations.
+   */
+  readonly ghcApiBaseUrl: string
+  readonly models?: ModelsResponse
+  /** O(1) lookup index: model ID → Model object. Rebuilt on cacheModels(). */
+  readonly modelIndex: Map<string, Model>
+  /** O(1) membership check: set of available model IDs. Rebuilt on cacheModels(). */
+  readonly modelIds: Set<string>
+  readonly vsCodeVersion?: string
+
+  /** Show GitHub token in logs */
+  readonly showGitHubToken: boolean
+  readonly verbose: boolean
+
+  /** Adaptive rate limiting configuration */
+  readonly adaptiveRateLimitConfig?: Partial<AdaptiveRateLimiterConfig>
+
+  /**
+   * Shared reactive-retry budget: the per-request cap on ALL reactive retry
+   * strategies (network / server-error / token-refresh / 400-class negotiation
+   * etc.), not truncation-specific. Config `retry.max_reactive_retries`.
+   */
+  readonly maxReactiveRetries: number
+  readonly generationHedgeEnabled: boolean
+  readonly generationHedgeThresholdSec: number
+  readonly generationHedgeMaxSecondaryCandidates: number
+  readonly generationRecoveryMaxCandidates: number
+  readonly generationMaxActiveCandidates: number
+  readonly generationMaxTotalCandidates: number
+  readonly generationMaxActiveDispatches: number
+  readonly generationMaxTotalDispatches: number
+  readonly generationCleanupGraceSec: number
+  readonly generationHedgeAllowServerTools: boolean
+
+  /**
+   * Account is on token-based (PAYG) billing rather than premium-request
+   * multipliers. Populated from `/copilot_internal/user` at startup. When
+   * true, the per-model multiplier suffix in model listings is omitted
+   * (every model is pay-as-you-go, so the badge would be uniform noise).
+   */
+  readonly tokenBasedBilling: boolean
+
+  /**
+   * Sanitize tool names that violate the target model's constraints (illegal
+   * characters, over-length, collisions) into legal names before sending
+   * upstream, restoring the client's original names in the response. Applies
+   * across all three protocol paths (Anthropic, Chat Completions, Responses).
+   * Deterministic + stateless (rebuilt per request). Default false.
+   */
+  readonly sanitizeToolNames: boolean
+
+  /**
+   * 把客户端入站 query string 忠实转发到上游完成端点（Anthropic / Chat Completions /
+   * Responses / Gemini）。格式无关。安全底线键（api-version/key/access_token/alt）始终剥离，
+   * 见 `transport/query-forward.ts` 的 `UPSTREAM_QUERY_EXCLUDE`。默认 true。
+   */
+  readonly forwardClientQuery: boolean
+
+  /**
+   * 在内置安全底线之外，额外剥离的 query 键（大小写不敏感、与底线取并集）。
+   * 对应 config `forward_client_query_exclude`。默认空数组。
+   */
+  readonly forwardClientQueryExclude: ReadonlyArray<string>
+
+  /** 透明恢复上游 tool-call 文本降级（RFC tool-call-text-recovery）。默认 false。 */
+  readonly recoverToolCallText: boolean
+
+  /** 修复上游发出的畸形 tool_use input（非法 JSON），仅作用于 Anthropic 转发流。可叠加的修复项目集（`tags`=结构感知剥 antml 标签、`jsonrepair`=jsonrepair 结构修复、`unicode`=修空白打断的 `\uXXXX` 转义），按固定规范顺序级联。空数组=关（默认）。history 保留上游原始字节。 */
+  readonly toolRepairMalformedInput: ReadonlyArray<RepairItem>
+
+  /** 上游 contentless refusal（`stop_reason:"refusal"` 且无 client-visible `text`/`tool_use`）的**客户端呈现**策略：`end_turn`=**抑制**（合成 text 块 + 改 end_turn + 补 message_stop，客户端拿到正常完成轮、对话不中断）、`refusal`=原样透传、`error`=发 error SSE 帧。默认 `end_turn`——首要目标是不中断客户端对话轮次（透传与 error 都会让 CC 结束当前轮）。**三种模式请求终态一律 `failed`**：抑制是呈现策略，不改变「上游拒绝、本轮无真实产出」这一事实。 */
+  readonly refusalSseRewrite: "refusal" | "end_turn" | "error"
+
+  /** `end_turn`（抑制）模式注入的 text 模板（会被客户端 baked 进下一轮请求）。占位符 `{model}`/`{request_id}`/`{thinking_tokens}`/`{output_tokens}`/`{refusal_category}`/`{refusal_explanation}`，未知值渲染成 `unknown`（`category` 为上游显式 null 时渲染 `uncategorized`），未知占位符原样保留；**空串=不追加 text 块**——实测会让 Claude Code 空转一轮，等于放弃抑制的保护。默认见 `DEFAULT_REFUSAL_END_TURN_TEXT`。 */
+  readonly refusalEndTurnText: string
+  /** `error` 模式合成 error 帧的 message 模板（客户端 `APIError.message`）。占位符同上。默认见 `DEFAULT_REFUSAL_ERROR_MESSAGE`。 */
+  readonly refusalErrorMessage: string
+  /** `error` 帧的 `error.type`（纯字面、不做模板渲染）。空串回落 `api_error`。默认 `api_error`。 */
+  readonly refusalErrorType: string
+
+  /** 上游错误 → 客户端可行动形态整形总开关（`anthropic.error_shaping_enabled`）。关闭时逐字节回退现状。默认 true。 */
+  readonly errorShapingEnabled: boolean
+  /** B 类：content_filtered / 402 / 403(token-refresh 耗尽) 是否合成 AskUserQuestion 轮次而非拍平成错误帧（`anthropic.error_ask_user_question`）。仅交互式部署应开启。默认 false。 */
+  readonly errorAskUserQuestion: boolean
+  /** AUQ 问题文案模板（`anthropic.error_auq_template`），占位符 `{model}`/`{request_id}`/`{error_type}`/`{status}`。空串=内置默认。默认 `""`。 */
+  readonly errorAuqTemplate: string
+  /** D 类：按反应式策略名配置「proxy 自修 vs 透传委派 CC 自愈」（`anthropic.error_selfheal_delegate`）。键=策略 `.name`，值 `"proxy"|"delegate"`。未列=proxy。默认 `{}`。 */
+  readonly errorSelfhealDelegate: Readonly<Record<string, "proxy" | "delegate">>
+
+  /**
+   * 逐策略 retry registry 开关（`retry.strategies.<configKey>.enabled`，RFC 2026-07-21 §3.4 / plan Task 4）。
+   * 键 = registry `configKey`（短驼峰，如 `adaptiveThinkingRejection`——**不是**策略 `.name`，与上面的
+   * `errorSelfhealDelegate` 是正交的第二套开关面，见 RFC §3.4a：`enabled:false` 在 assembler `filter` 阶段
+   * **彻底移除** entry（跨全部 leg 生效），`errorSelfhealDelegate` 只在 direct anthropic + errorShapingEnabled
+   * 时把 `canHandle` 改写恒 false（透传给客户端自愈）。未列 = enabled（`isStrategyEnabled` 缺省 true，保
+   * 16-策略全开的字节等价现状）。默认 `{}`。
+   */
+  readonly retryStrategies: Readonly<Record<string, { enabled?: boolean }>>
+
+  /**
+   * Config-driven model-capability allowlists (`anthropic.model_capabilities`). Each is a list of
+   * model-name patterns; a glob-free entry matches EXACTLY (normalized), and family coverage uses an
+   * explicit glob (`*`/`?`), e.g. `claude-opus-4*`. `!`-prefixed entries subtract (see
+   * `model-pattern.ts:modelMatchesPatternList`). Bundled defaults mirror GHC's capability checks;
+   * editing config adds/removes models without code changes.
+   */
+  readonly contextEditingModels: ReadonlyArray<string>
+  readonly interleavedThinkingModels: ReadonlyArray<string>
+  readonly adaptiveThinkingModels: ReadonlyArray<string>
+
+  /**
+   * Per-model tool-search OVERRIDE table (`anthropic.model_capabilities.tool_search_overrides`).
+   * Keys are model-name substrings (`"*"` = wildcard); values force-enable (`true`) or force-disable
+   * (`false`) tool-search capability for matching models. Checked AFTER declared metadata but BEFORE
+   * the built-in default-allow matcher (Claude ≥4.5, see `features.ts:toolSearchDefaultAllow`), so
+   * operators can pin an individual model without maintaining a whole allowlist. Empty by default —
+   * the default-allow matcher decides. Gated overall by the `toolSearchEnabled` master switch.
+   */
+  readonly toolSearchOverrides: Record<string, boolean>
+
+  /**
+   * Anthropic memory tool (native `memory_20250818` — a client-EXECUTED typed tool, NOT a server
+   * tool: the model drives view/create commands, the client runs `/memories` and feeds results back).
+   * When `memoryToolEnabled` (master switch, default OFF — CAPI acceptance of the typed descriptor is
+   * unverified) AND the model supports memory (`memoryModels`, mirrors GHC modelSupportsMemory), a
+   * client tool named `memory` is rewritten to `{name:"memory", type:"memory_20250818"}` and the
+   * `context-management-2025-06-27` beta is forced. Off → the tool passes through as an ordinary custom tool.
+   */
+  readonly memoryToolEnabled: boolean
+  readonly memoryModels: ReadonlyArray<string>
+
+  /** Forward `/v1/messages/count_tokens` to the GHC upstream (exact). When false, use the local calibrated estimate only. Config `anthropic.use_upstream_count_tokens`. Default true. */
+  readonly useUpstreamCountTokens: boolean
+  /**
+   * Upstream→client response-header forwarding MODE (Anthropic path). `false`
+   * (default) = BLACKLIST mode: forward everything except `responseHeaderBlacklist`.
+   * `true` = WHITELIST mode: forward ONLY headers matching `responseHeaderWhitelist`.
+   * Both modes apply the same security floor first (`PROXY_CONTROLLED_RESPONSE_HEADERS`
+   * always removed). Client-side mirror of `strictRequestHeaders`. See
+   * `lib/anthropic/header-policy/response-header-forward.ts`. Only the non-committed write-out
+   * paths forward (non-streaming + streaming settled-within-window); a delayed-commit stream
+   * that already flushed 200 cannot (upstream headers arrive too late).
+   */
+  readonly strictResponseHeaders: boolean
+  /**
+   * BLACKLIST-mode glob list: upstream response header names stripped from the
+   * forwarded set (active when `strictResponseHeaders` is false). Acts on the
+   * security-floor subset only (never `PROXY_CONTROLLED_RESPONSE_HEADERS`). Default
+   * `[]` strips nothing — equivalent to the old permissive `strict_response_headers:false`.
+   */
+  readonly responseHeaderBlacklist: ReadonlyArray<string>
+  /**
+   * WHITELIST-mode glob list: the ONLY upstream response header names forwarded
+   * (active when `strictResponseHeaders` is true). `[]` forwards nothing (full
+   * isolation). Default = the known-safe allowlist (request-id / x-request-id /
+   * anthropic-ratelimit-* / anthropic-organization-id / retry-after) — equivalent
+   * to the old strict `strict_response_headers:true`.
+   */
+  readonly responseHeaderWhitelist: ReadonlyArray<string>
+
+  /**
+   * Client→upstream request-header forwarding MODE (Anthropic path). `false`
+   * (default) = BLACKLIST mode: forward client headers except `requestHeaderBlacklist`.
+   * `true` = WHITELIST mode: forward ONLY client headers matching `requestHeaderWhitelist`.
+   * Both modes apply the same security floor first (proxy core keys win + sensitive
+   * denylist always removed). Request-side mirror of `strictResponseHeaders`.
+   */
+  readonly strictRequestHeaders: boolean
+  /**
+   * BLACKLIST-mode glob list: client header names stripped from the forwarded set
+   * (active when `strictRequestHeaders` is false). Acts on the security-floor subset
+   * only. Default removes the HTTP-header form of `x-anthropic-billing-header`
+   * (defensive — current Claude Code carries attribution in the body, see
+   * `stripAttributionHeader`).
+   */
+  readonly requestHeaderBlacklist: ReadonlyArray<string>
+  /**
+   * WHITELIST-mode glob list: the ONLY client header names forwarded (active when
+   * `strictRequestHeaders` is true), beyond the proxy's rebuilt core headers. `[]`
+   * forwards nothing (core-only). Listing a true core header is a no-op (stripped by
+   * the security floor, re-injected as core).
+   */
+  readonly requestHeaderWhitelist: ReadonlyArray<string>
+  /**
+   * Strip the Claude Code attribution billing line carried as a `system` block in
+   * the request BODY (current Claude Code injects `x-anthropic-billing-header: …`
+   * as `system[0]`, not as an HTTP header — so `requestHeaderBlacklist` cannot reach
+   * it). `true` (default) removes the leading billing line from the system param.
+   * Anthropic path only. Complements the HTTP-header `requestHeaderBlacklist`.
+   */
+  readonly stripAttributionHeader: boolean
+
+  /**
+   * Client-proxy keepalive ping cadence (seconds) for the streaming Anthropic stream.
+   * `0` disables. Default **20**, clamped < `CLIENT_IDLE_DEADLINE_SEC` (60) — Claude
+   * Code's request timeout is an IDLE watchdog at ~60s (Q2 oracle, exp/q2-oracle/REPORT.md).
+   * After the delayed-commit window opens the 200 SSE stream, a connection-level heartbeat
+   * (decoupled from the upstream) injects an Anthropic `event: ping` whenever no client write
+   * happened for this many seconds — covering mid-stream (adaptive-thinking pauses) + buffered
+   * stalls. When 0, the protect-streaming heartbeat is the fallback. Heartbeats are PROXY-
+   * originated and DO NOT reset the upstream idle-timeout. Recorded in `forwardedSseEvents`.
+   * `forwardedSseEvents` (what the client received), never in raw upstream `sseEvents`.
+   *
+   * Hot-reload note: the cadence is captured at stream-start. In-flight streams keep
+   * their value; new streams pick up the new one. (Renamed from `stream_fake_sse_heartbeat`;
+   * the grace knob became `streamCommitAfterSec` — keepalive starts once the commit window opens 200.)
+   */
+  readonly streamKeepalivePingSec: number
+
+  /**
+   * Seconds without a client-visible Anthropic `content_block_delta` before the normal ping
+   * heartbeat escalates to an empty content delta. `0` disables escalation. Default 200, leaving
+   * ~100s margin before Claude Code's 300s event-idle watchdog. Captured at stream start.
+   */
+  readonly streamKeepaliveEscalateSec: number
+
+  /**
+   * Keepalive frame type for the client-facing Anthropic stream. Default `ping` (a bare `event: ping`).
+   *
+   * NOTE (ADR 2026-07-22 D2, partially reversed 2026-07-27): `empty_text` remains retired as the
+   * NORMAL cadence because a persistent synthetic text block is the wrong everyday wire shape. G2 later
+   * proved the empty delta carrier works; our response rewrite had swallowed it. Default `ping` therefore
+   * gains a separate on-demand escalation (`streamKeepaliveEscalateSec`): only near the 300s deadline does
+   * it emit an empty delta on an existing block, or lazily open the anchor when still pre-content.
+   * Block-level delivery CLI-safety continues to come from strict index-ordered output.
+   */
+  readonly streamKeepaliveMode: "ping" | "enveloped_ping" | "empty_text"
+
+  /**
+   * Delayed-commit window (seconds) for streaming Anthropic requests. The proxy waits up to this long
+   * for runRequest to settle BEFORE opening the 200 SSE stream: if the upstream returns/errors within
+   * the window, the real HTTP status is forwarded (the client keeps its native retry/backoff). If the
+   * window elapses with the upstream still silent (opus pre-response thinking, empirically ≤~13s but
+   * can run longer), the proxy commits a 200 + keepalive and any later error degrades to an SSE frame.
+   * `0` disables (commit immediately at t0). Clamped by `clampCommitWindowSec` to `COMMIT_WINDOW_MAX_SEC`,
+   * which sits under the ~300s pre-header limit (undici's default headersTimeout) — nothing is written
+   * before the commit, so the window runs on the same clock as that limit. Default 180.
+   */
+  readonly streamCommitAfterSec: number
+
+  /**
+   * Enables one fresh upstream dispatch after a pre-content failure. This B2-P0
+   * scaffold is deliberately not wired into request handling until P4/P5.
+   */
+  readonly preContentRecovery: { enabled: boolean }
+
+  /**
+   * L2 — transactional buffered retry for streaming Anthropic generations cut
+   * short by an upstream mid-stream RST (GHC NGHTTP2_CANCEL on large Write/Edit).
+   * `false` (default) = live streaming, no buffering. `"on"` = buffer every
+   * streaming response. `"tool_use_only"` = buffer only when the request carries
+   * `tools`. See docs/archive/2606-landed-rfcs/streaming-upstream-rst-buffered-retry.md.
+   */
+  readonly protectStreamingGeneration: false | "on" | "tool_use_only"
+  /**
+   * Vendor-neutral SHARED buffered-retry caps. Overridden per-vendor by
+   * {@link bufferedRetryOverrides}; resolve via `resolveBufferedCaps(vendor)`.
+   * Built-in default: `{ maxRetries: 3, bufferCapBytes: 16_777_216, heartbeatSec: 15 }`.
+   */
+  readonly bufferedRetryShared: BufferedRetryCaps
+  /**
+   * Per-vendor buffered-retry cap overrides (keyed by vendor: `anthropic` /
+   * `responses` / `chat_completions` / `responses_ws`). Each override sets only
+   * the fields it declares; unset fields fall through to {@link bufferedRetryShared}.
+   */
+  readonly bufferedRetryOverrides: Record<string, Partial<BufferedRetryCaps>>
+  /**
+   * Vendor-neutral SHARED continuation-retry settings. Overridden per-vendor by
+   * {@link bufferedRetryContinuationOverrides}; resolve via `resolveContinuation(vendor)`.
+   * Built-in default: `{ enabled: true, message: "network issue. please continue" }`.
+   */
+  readonly bufferedRetryContinuationShared: BufferedRetryContinuation
+  /**
+   * Per-vendor continuation overrides (keyed by vendor). Each override sets only the fields it
+   * declares; unset fields fall through to {@link bufferedRetryContinuationShared}.
+   */
+  readonly bufferedRetryContinuationOverrides: Record<string, Partial<BufferedRetryContinuation>>
+  /** Vendor-neutral shared max_tokens continuation policy, resolved per vendor below. */
+  readonly maxTokensContinuationShared: MaxTokensContinuationConfig
+  /** Per-vendor max_tokens continuation overrides (partial, merged over the shared policy). */
+  readonly maxTokensContinuationOverrides: Record<string, MaxTokensContinuationOverride>
+  /**
+   * Chat Completions buffered-retry mode switch (P3). `false` (default) keeps the
+   * live streaming path; `true` adopts the terminal-only buffered sink. Caps come
+   * from `resolveBufferedCaps("chat_completions")`.
+   */
+  readonly chatCompletionsBufferedRetry: boolean
+  /** On each buffered retry, force progressively aggressive context_management compression (RFC §8). Default false. */
+  readonly protectStreamingEscalateContext: boolean
+
+  /**
+   * Inject stub definitions for Claude Code's official tool set (Bash, Read,
+   * Write, …) when they appear in message history but not in the request's
+   * tools array. Required for Claude Code clients that drop tool definitions
+   * across turns; counter-productive for non-Claude-Code clients that don't
+   * use those tools (adds prompt budget overhead and biases the model toward
+   * tool-calling for plain Q&A). Default: true (preserves historical behavior).
+   */
+  readonly injectClaudeCodeOfficialTools: boolean
+
+  /**
+   * Policy for assistant messages containing `thinking` / `redacted_thinking`.
+   *
+   * Default: `"preserve"` — keep thinking blocks verbatim while allowing surrounding
+   * cleanup. Set to `"stripped"` to aggressively remove thinking blocks from old messages.
+   */
+  readonly thinkingBlockMessagePolicy: ThinkingBlockMessagePolicy
+  /** Drop corrupt empty thinking blocks before sending upstream (see config `anthropic.thinking_block_sanitize`); `false` disables. Mode names WHICH field being empty triggers the drop — see {@link ThinkingBlockSanitizeMode}. */
+  readonly thinkingBlockSanitizeCheck: false | ThinkingBlockSanitizeMode
+
+  /**
+   * De-stack strategy for adjacent `thinking`/`redacted_thinking` blocks (config
+   * `anthropic.assistant_block_layout_strategy`). Ensures no two thinking blocks are
+   * consecutive in an assistant message — GHC rejects an echoed history with
+   * stacked thinking with a "thinking blocks cannot be modified" 400.
+   *
+   * - `"passthrough"` — leave stacked thinking as-is.
+   * - `"move_blocks"` — interleave thinking with real non-thinking blocks
+   *                     (order-preserving), synthetic marker only when insufficient (default).
+   */
+  readonly assistantBlockLayoutStrategy: AssistantBlockLayoutStrategy
+  /**
+   * EMIT axis (`anthropic.separator_carrier`): which synthetic separator carrier goes on the wire.
+   * Closed enum — only real-upstream-proven carriers.
+   */
+  readonly separatorCarrier: SeparatorCarrier
+  /**
+   * ACCEPT axis (`anthropic.separator_accept_extra`): extra literals ALSO recognised as our
+   * synthetic separator, unioned on top of the built-in prefix family and legacy spellings.
+   * Widening recognition is monotone — it cannot make a payload illegal — which is why this axis
+   * is open while the emit axis is closed.
+   */
+  readonly separatorAcceptExtra: ReadonlyArray<string>
+
+  /**
+   * Reactive strip-all fallback (L2) for the GHC "thinking ... cannot be
+   * modified" 400 that L1 de-stack ({@link assistantBlockLayoutStrategy}) did not
+   * preempt (config `anthropic.strip_thinking_on_reject`). When `true` (default)
+   * the `poisoned-thinking-retry` strategy strips ALL thinking/redacted_thinking
+   * blocks from the echoed history and retries the turn once; `false` lets the
+   * 400 surface unmodified.
+   */
+  readonly stripThinkingOnReject: boolean
+
+  /**
+   * L3 durable quarantine master switch (config `anthropic.poisoned_thinking_quarantine`).
+   * When `true` (default), a successful L2 strip-all retry records the offending
+   * `(session, agent)` conversation in a sidecar store so later turns are stripped
+   * proactively; `false` keeps only the per-turn L2 reaction (no remembering).
+   */
+  readonly poisonedThinkingQuarantine: boolean
+
+  /**
+   * Sliding TTL (hours) of an L3 quarantine entry (config
+   * `anthropic.poisoned_thinking_ttl_hours`, default `72`). Read LIVE on every
+   * quarantine check: the store holds a `() => poisonedThinkingTtlHours * 3600_000`
+   * thunk evaluated per `isPoisoned` call (NOT captured when the quarantine store
+   * singleton is first built), so a hot-reloaded value takes effect immediately
+   * without a restart. A conversation quiet longer than this since its last
+   * poison hit drops out of the quarantine.
+   */
+  readonly poisonedThinkingTtlHours: number
+
+  /**
+   * Coerce legacy `thinking.type="enabled"` to `"adaptive"` when the target
+   * model only supports adaptive thinking (e.g. opus 4.6/4.7/4.8). Solves the
+   * upstream 400 raised when an old client sends `enabled` + `budget_tokens` to
+   * an adaptive-only model (`"thinking.type.enabled" is not supported for this
+   * model`).
+   *
+   * - `false`         — disabled; pass the client config through unchanged.
+   * - `"basic"`       — coerce to plain `{ type: "adaptive" }`, dropping
+   *                     `budget_tokens` (default; mirrors GHC, which never
+   *                     derives effort from budget).
+   * - `"best_effort"` — coerce to adaptive AND map `budget_tokens` to
+   *                     `output_config.effort`, but only when the client did not
+   *                     already send an explicit effort (heuristic enhancement
+   *                     beyond GHC; see request-preparation.ts:budgetToEffort).
+   */
+  readonly coerceAdaptiveThinking: false | "basic" | "best_effort"
+
+  /**
+   * DEFAULT inline-`role:"system"` handling mode — the fallback applied to every
+   * model NOT in `systemRejectModels` (rejecters use the `systemRejectMode`
+   * override instead; both share this mode enum, differing only by model bucket).
+   * Whether an inline system message needs handling is PER UPSTREAM BACKEND: STRICT
+   * backends (empirically claude-sonnet-4.6 / claude-haiku-4.5 here) 400 with
+   * `Unexpected role "system"`, while others (e.g. Opus) accept it. See config
+   * `anthropic.system_default_mode`.
+   *
+   * - `false`         — passthrough (default). Correct for accepters (Opus); a
+   *                     not-yet-known rejecter's first request 400s, then reactive
+   *                     learning marks it (permanent, no TTL) and retries.
+   * - `"drop_invalid"`— remove every inline system message.
+   * - `"merge"`       — append their text to the top-level `system`, drop the messages.
+   * - `"as_user"`     — rewrite role to `"user"` (recommended; preserves position).
+   * - `"as_assistant"`— rewrite role to `"assistant"` (experimental, not recommended).
+   */
+  readonly systemDefaultMode: false | "drop_invalid" | "merge" | "as_user" | "as_assistant"
+
+  /**
+   * Config-declared set of models whose upstream STRICT backend rejects inline
+   * `role:"system"` messages (observed symptom — Vertex is the known cause on
+   * this account but NOT asserted). A substring set matched against the resolved
+   * outbound model name (normalized at match time, NOT here). A matched model
+   * uses `systemRejectMode`; unmatched models fall back to the global
+   * `systemDefaultMode`. Union'd at match time with the runtime-learned
+   * reject set. Default `["claude-sonnet-4.6", "claude-haiku-4.5"]`.
+   */
+  readonly systemRejectModels: Array<string>
+  /**
+   * Effective sanitize mode for models in `systemRejectModels` (∪ the learned
+   * reject set). Reuses the SystemMessagesSanitizeMode enum. Default `"as_user"`
+   * (keeps position — most prompt-cache-friendly).
+   */
+  readonly systemRejectMode: false | "drop_invalid" | "merge" | "as_user" | "as_assistant"
+
+  /**
+   * Client compatibility shim for the thinking frame some Copilot upstreams emit
+   * — `content_block_start {type:"thinking", thinking:"", signature:S}` with NO
+   * trailing signature_delta. The upstream is the protocol authority; standard
+   * clients (Claude Code, Anthropic SDK) just ignore a signature on
+   * content_block_start (taking it only from signature_delta), so they drop it
+   * and echo back a corrupt `{thinking:"", signature:""}` block. This re-shapes
+   * the frame on the client-facing stream only (history keeps the raw upstream).
+   *   "signature_delta" (default): emit an empty thinking start + a synthesized
+   *                                 signature_delta (standard protocol shape).
+   *   "redacted_thinking":         rewrite the block as redacted_thinking{data:S}.
+   *   false:                       passthrough (no compat shim).
+   */
+  readonly thinkingSignatureCompat: false | "signature_delta" | "redacted_thinking"
+
+  /**
+   * Model name mappings: request model → target model.
+   *
+   * Override values can be full model names or short aliases (opus, sonnet, haiku).
+   * If the target is not in available models, it's resolved as an alias.
+   * Defaults to DEFAULT_MODEL_MAPPINGS; config.yaml top-level `model_mappings` replaces entirely.
+   */
+  readonly modelMappings: Record<string, string>
+
+  /**
+   * Per-pair (ingress format → match rule list) translation feature declarations
+   * (RFC 2026-07-14-anthropic-responses-direct-bridge §6.1, Phase 7). Consumed via
+   * `resolveTranslationFeatures()` (~/lib/config/model-translation) by the
+   * format-agnostic bridge-selection layer — NOT read per-cell `translateOut`, to
+   * keep the two round-trip scenarios (stable model vs mid-conversation model
+   * switch) from drifting out of sync across call sites (Phase 5 consumer).
+   * Defaults to `{}` (no declared pairs — every pair resolves to scenario A, full
+   * round-trip, no stripped features). Hot-reloadable: entirely replaced on config
+   * reload (including to `{}` on deletion), mirroring `modelMappings`.
+   */
+  readonly modelTranslation: ModelTranslation
+
+  /**
+   * Model IDs to hide from the available models list, even when Copilot
+   * advertises them. Used to suppress deprecated/legacy models. Matched
+   * against `Model.id` exactly. Applied at `setModels()` time, so
+   * `state.models` / `modelIndex` / `modelIds` only contain non-disabled
+   * entries. Hot-reloadable: re-filters on config reload.
+   */
+  readonly disabledModels: ReadonlyArray<string>
+
+  /**
+   * Deduplicate repeated tool calls: remove duplicate tool_use/tool_result pairs,
+   * keeping only the last occurrence of each matching combination.
+   *
+   * - `false` — disabled (default)
+   * - `"input"` — match by (tool_name, input); different results are still deduped
+   * - `"result"` — match by (tool_name, input, result); only dedup when result is identical
+   */
+  readonly dedupToolCalls: false | "input" | "result"
+
+  /**
+   * Rewrite `<system-reminder>` tags in messages.
+   *
+   * - `false` — disabled, keep all tags unchanged (default)
+   * - `true` — remove ALL system-reminder tags
+   * - `Array<CompiledRewriteRule>` — rewrite rules evaluated top-down, first match wins:
+   *   - If replacement produces the original content → keep tag unchanged
+   *   - If replacement produces an empty string → remove the tag
+   *   - Otherwise → replace tag content with the result
+   */
+  readonly rewriteSystemReminders: boolean | Array<CompiledRewriteRule>
+
+  /**
+   * Strip injected `<system-reminder>` tags from Read tool results.
+   * Reduces context bloat from repeated system reminders in file content.
+   * Disabled by default; enable with config anthropic.tool_strip_read_result_tags.
+   */
+  readonly stripReadToolResultTags: boolean
+
+  /**
+   * Server-side context editing mode.
+   * Controls how Anthropic's context_management trims older context when input grows large.
+   *
+   * - `"off"` — disabled (default). No context_management sent, no beta header added.
+   * - `"clear-thinking"` — clear old thinking blocks, keeping the last N thinking turns.
+   * - `"clear-tooluse"` — clear old tool_use/tool_result pairs when input_tokens exceed threshold.
+   * - `"clear-both"` — apply both clear-thinking and clear-tooluse edits.
+   */
+  readonly contextEditingMode: ContextEditingMode
+
+  /** Input token threshold that triggers clear_tool_uses (default: 100000) */
+  readonly contextEditingTrigger: number
+  /** Number of most recent tool_use pairs to keep after clearing (default: 3) */
+  readonly contextEditingKeepTools: number
+  /** Number of most recent thinking turns to keep after clearing (default: 1) */
+  readonly contextEditingKeepThinking: number
+
+  /** Enable server-side tool search injection (default: true) */
+  readonly toolSearchEnabled: boolean
+  /**
+   * Cache control mode for Anthropic requests.
+   * - "disabled": strip all cache_control fields
+   * - "passthrough": forward client cache_control as-is (default — clients like Claude Code
+   *   send their own well-tuned conversation breakpoints)
+   * - "sanitize": forward but normalize to { type: "ephemeral" } (strip non-standard fields like scope)
+   * - "proxied": proxy controls injection — strip client breakpoints, then re-inject GHC-style
+   *   message-level breakpoints (caching the conversation) + tools/system fallback. For clients
+   *   that don't send their own cache_control. See request-preparation.ts addMessageCacheControl.
+   * Default: "passthrough".
+   */
+  readonly cacheControlMode: CacheControlMode
+  /**
+   * Extended prompt-cache TTL (`extended-cache-ttl-2025-04-11`). Mirrors GHC: upgrade the
+   * cache_control breakpoints the proxy WRITES (proxied/sanitize modes) from the default 5m to 1h.
+   * Gated by `extendedCacheTtlEnabled` (master switch, default off) AND model support
+   * (`extendedCacheTtlModels`, mirrors GHC modelSupportsExtendedCacheTtl) AND an agent-style request
+   * (assistant message present — the closest analog to GHC's Agent-location gate). `toolsSystemTtl`
+   * applies to tool + system breakpoints, `messagesTtl` to rolling message breakpoints; `messagesTtl`
+   * is clamped ≤ `toolsSystemTtl` (Anthropic requires longer TTLs earlier in the tools→system→messages
+   * prefix order). The beta header is emitted iff a 1h ttl was actually written (mirrors the body).
+   */
+  readonly extendedCacheTtlEnabled: boolean
+  readonly extendedCacheTtlToolsSystem: CacheTtl
+  readonly extendedCacheTtlMessages: CacheTtl
+  readonly extendedCacheTtlModels: ReadonlyArray<string>
+  /** Additional tool names that should never be deferred (merged with built-in list) */
+  readonly nonDeferredTools: ReadonlyArray<string>
+
+  /** Pre-compiled system prompt override rules from config.yaml */
+  readonly systemPromptOverrides: Array<CompiledRewriteRule>
+
+  /** Pre-compiled scoped `system_prompt_prepend` entries (top-down; matching ones concatenated). */
+  readonly systemPromptPrepend: Array<CompiledSystemPromptEntry>
+
+  /** Pre-compiled scoped `system_prompt_append` entries (top-down; matching ones concatenated). */
+  readonly systemPromptAppend: Array<CompiledSystemPromptEntry>
+
+  /**
+   * Startup-only master switch for semantic V3 and optional raw capture.
+   * CLI --no-history overrides this config-backed value.
+   */
+  readonly historyEnabled: boolean
+
+  /**
+   * Injected History database path for tests. Production config cannot set it;
+   * an empty string selects PATHS.HISTORY_V3_DB so the online server never opens
+   * the legacy PATHS.HISTORY_DB artifact.
+   */
+  readonly historyDbPath: string
+  /** Optional raw capture is hot-reloadable through artifact generations. */
+  readonly historyRawCaptureEnabled: boolean
+  readonly historyRawCaptureDbPath: string
+  readonly historyRawCaptureMaxObjectBytes: number
+
+  // ── 分层遥测（telemetry.*，独立 telemetry.db）。近期/远期分辨率与保留可配。 ──
+  /** 遥测总开关（默认 true）。 */
+  readonly telemetryEnabled: boolean
+  /** telemetry.db 路径；空串=用 PATHS.TELEMETRY_DB 默认。 */
+  readonly telemetryDbPath: string
+  /** raw 落盘/flush 间隔秒（默认 60）。 */
+  readonly telemetryPersistInterval: number
+  /** rollup 上卷间隔秒（默认 3600，独立于 persist）。 */
+  readonly telemetryRollupInterval: number
+  /** capped 维度（client/tool）key 上限（默认 200）。 */
+  readonly telemetryCardinalityCap: number
+  /** DDSketch 相对误差 γ（默认 0.01；下限 ~0.005，apply 层校验回落）。 */
+  readonly telemetrySketchGamma: number
+  /** 终身累计层开关（默认 true）。 */
+  readonly telemetryCumulative: boolean
+  /** raw 层桶分辨率（分钟，默认 5；须整除 60，apply 层校验回落）。 */
+  readonly telemetryRawResolutionMinutes: number
+  /** raw 层保留天数（默认 7）。 */
+  readonly telemetryRawRetentionDays: number
+  /** hourly 层保留天数（默认 90）。 */
+  readonly telemetryHourlyRetentionDays: number
+  /** daily 层保留天数（默认 0=永久）。 */
+  readonly telemetryDailyRetentionDays: number
+
+  /**
+   * Fetch timeout in seconds.
+   * Time from request start to receiving HTTP response headers.
+   * Applies to both streaming and non-streaming requests.
+   * 0 = no timeout (rely on upstream gateway timeout).
+   */
+  readonly responseHeaderTimeout: number
+
+  /**
+   * Stream idle timeout in seconds.
+   * Maximum time to wait between consecutive SSE events during streaming.
+   * Aborts the stream if no event arrives within this window.
+   * Applies to all streaming paths (Anthropic, Chat Completions, Responses).
+   * 0 = no idle timeout. Default: 300.
+   */
+  readonly streamIdleTimeout: number
+
+  /**
+   * Per-model stream-idle timeout override (seconds), keyed by model-name
+   * substring with `"*"` wildcard (same `findMostSpecific` semantics as
+   * `effortsOverrides`). A match wins over the `streamIdleTimeout` scalar; a
+   * value of 0 means disabled. Bundled default `{ "gpt-5.5": 600 }` (gpt-5.5's
+   * single 400s+ silent-reasoning gap exceeds the 300s scalar). App-guard only —
+   * does NOT touch the undici dispatcher. Hot-reloadable: per-key merged with
+   * bundled, entirely re-applied on config reload. Resolved via
+   * `resolveStreamIdleTimeout*` in `~/lib/models/timeout-resolver`.
+   */
+  readonly streamIdleTimeoutOverrides: Record<string, number>
+
+  /**
+   * Per-model response-header (first-byte) timeout override (seconds), same
+   * keying/merge semantics as `streamIdleTimeoutOverrides`. A match wins over
+   * the `responseHeaderTimeout` scalar; 0 = disabled. Bundled default `{}` (no
+   * built-in value). App-guard only. Resolved via `resolveResponseHeaderTimeout*`.
+   */
+  readonly responseHeaderTimeoutOverrides: Record<string, number>
+
+  /**
+   * Upstream TCP keepalive initial-probe delay in seconds.
+   * Sets `keepAliveInitialDelay` on the undici socket connecting to GHC, so the
+   * kernel emits TCP keepalive probes after this much idle time (and every such
+   * interval thereafter while idle). Prevents NAT/firewall/load-balancer idle
+   * reapers from severing the connection during long upstream silences (e.g.
+   * opus adaptive thinking that goes quiet for tens of seconds after
+   * `content_block_start`). undici's default is 60s — too long for ~30s idle
+   * reapers, so the first probe never fires before the connection is culled.
+   * 0 = use undici's default (do not override). Default: 15.
+   * Also drives `node:tls`' `setKeepAlive` on the h2 socket (http2-client.ts) —
+   * the primary GHC connection path — which works on both Bun and Node (the
+   * undici Agent path above is Node-only, since Bun's global fetch does not
+   * consume the undici dispatcher; see proxy.ts module docstring).
+   */
+  readonly upstreamKeepaliveDelay: number
+
+  /**
+   * Upstream HTTP/2 PING keepalive interval in seconds (0 = disabled).
+   *
+   * The application-layer complement to `upstreamKeepaliveDelay` (TCP keepalive):
+   * GHC's CAPI proxy does NOT forward Anthropic's SSE `event: ping` frames, so a
+   * long thinking silence is a truly idle upstream stream. TCP keepalive keeps L4
+   * alive through NAT but does not defeat a connection-idle reaper (middlebox or
+   * GHC edge) counting application-layer silence; a periodic h2 PING puts a real
+   * frame on the wire. Kept WELL below observed idle-reaper windows (a real cut
+   * fired at ~112s). Default: 15. Works on both Bun and Node (the node:http2
+   * transport is runtime-neutral).
+   */
+  readonly upstreamH2PingInterval: number
+
+  /**
+   * Soft cap on concurrent streams multiplexed onto a SINGLE upstream h2 session
+   * (0 = unlimited). At the cap, a new request opens (or reuses another) session
+   * for the same origin instead of piling on; the capped session stays routable
+   * once its in-flight streams drain. Default 1 — one connection per concurrent
+   * request, so a session-level upstream teardown (GOAWAY / edge drain) takes
+   * down at most one in-flight request instead of every concurrent stream on a
+   * shared connection. 0 restores the old single-session multiplex. Consumed by
+   * http2-client.ts's pool routing; a hot-reload only affects future routing,
+   * never in-flight streams.
+   */
+  readonly maxConcurrentStreamsPerSession: number
+
+  /**
+   * Idle timeout (seconds) for a pooled h2 session with no in-flight streams
+   * before it is proactively closed (0 = never idle-close). Under a finite
+   * `maxConcurrentStreamsPerSession` the pool grows to peak concurrency; this
+   * reaps the surplus once a burst subsides so idle connections don't linger.
+   * Default 300 (mirrors the WS pool's `pooledConnectionIdleTimeout`). Consumed
+   * by http2-client.ts; only ACTIVE idle sessions are reaped (a retiring session
+   * is reclaimed the moment it drains, independently).
+   */
+  readonly h2IdleSessionTimeout: number
+
+  /**
+   * Cap on total live h2 sessions per origin (routable + in-flight creations, 0 =
+   * unlimited). Bounds the sessions a finite `maxConcurrentStreamsPerSession`
+   * accumulates. Enforced as a HARD cap: at cap with every session busy, a new
+   * request BLOCKS until a slot frees (a stream closes or a session is disposed)
+   * rather than growing the pool. The block is UPSTREAM-side — the handler-layer
+   * delayed-commit keepalive keeps the client connection alive; client abort /
+   * reaper / header-wait timeout release the waiter. Counts only ROUTABLE sessions
+   * (not draining retiring ones, so a config reload never blocks behind them).
+   * Max concurrent in-flight streams per origin = this × maxConcurrentStreamsPerSession.
+   * Default 0; `h2IdleSessionTimeout` converges the tail, this bounds pathological
+   * same-origin fan-out. Consumed by http2-client.ts.
+   */
+  readonly maxSessionsPerOrigin: number
+
+  /**
+   * Whether to prefer HTTP/2 (node:http2) for every `https://` upstream.
+   * Default: `true` — the production path all real GHC-fronted upstreams need.
+   *
+   * `false` routes `https://` upstreams through undici (HTTP/1.1) instead. This
+   * is an escape hatch that only works honestly on **Node** (`dist/main.mjs`):
+   * under **Bun** (`dev`/`start`), undici's HTTP/1.1 parser hangs forever on the
+   * Copilot hosts' chunked responses (verified: Node finalizes in 0.4s, Bun
+   * never returns — the exact reason the h2 path is the default; see
+   * transport/upstream-fetch.ts + docs/spec/upstream-http2-transport.md). The
+   * config value is honored literally on both runtimes; config.ts emits a loud
+   * warning when `false` is applied on Bun. Consumed per-request by
+   * upstream-fetch.ts (no h2-session teardown needed — a hot-reload just reroutes
+   * subsequent requests). Plaintext `http://` upstreams (local SearXNG) always
+   * use undici regardless of this flag.
+   */
+  readonly upstreamH2Favor: boolean
+
+  /**
+   * TCP connect + TLS handshake deadline (seconds) for a single h2 session
+   * establishment attempt. Was the hardcoded `CONNECT_TIMEOUT_MS` in
+   * http2-client.ts; wired to real connection attempts in Plan 2. Default 10.
+   */
+  readonly sessionConnectTimeout: number
+  /**
+   * Idle timeout (seconds) for a pooled upstream Responses WS connection
+   * before proactive close. Was the hardcoded `DEFAULT_IDLE_TIMEOUT_MS` in
+   * upstream-ws-connection.ts; wired to real connections in Plan 2. Default 300.
+   */
+  readonly pooledConnectionIdleTimeout: number
+
+  /**
+   * Shutdown Phase 2 timeout in seconds.
+   * Wait for in-flight requests to complete naturally before sending abort signal.
+   * Default: 60.
+   */
+  readonly shutdownGracefulWait: number
+
+  /**
+   * Shutdown Phase 3 timeout in seconds.
+   * After abort signal, wait for handlers to wrap up before force-closing.
+   * Default: 120.
+   */
+  readonly shutdownAbortWait: number
+
+  /**
+   * Maximum age of an active request before the stale reaper forces it to fail (seconds).
+   * Requests exceeding this age are assumed stuck and cleaned up.
+   * 0 = disabled. Default: 600 (10 minutes).
+   */
+  readonly staleRequestMaxAge: number
+
+  /**
+   * Hard total-duration deadline (seconds) for a single request — the user-facing SLA that a
+   * request will be cancelled + settled by, enforced by a per-request monotonic timer (NOT the
+   * periodic stale reaper, which fires late — see reaper-diagnostics / RFC RC2). 0 = disabled,
+   * in which case behavior is byte-identical to the old stale-reaper-only path. Bundled config
+   * ships an explicit value (an intentional product default; the stale reaper stays as the
+   * leak safety-net for anomalies that outlive the deadline).
+   */
+  readonly requestDeadline: number
+
+  /**
+   * Interval in seconds for refreshing the cached model list from Copilot.
+   * 0 = disabled. Default: 600 (10 minutes).
+   */
+  readonly modelRefreshInterval: number
+
+  /**
+   * Normalize function call IDs in Responses API input.
+   * Converts `call_` prefixed IDs (Chat Completions format) to `fc_` prefixed IDs
+   * (Responses API format) before forwarding to upstream.
+   *
+   * Useful when clients send conversation history containing tool call IDs
+   * generated by Chat Completions API to the Responses API endpoint.
+   *
+   * Enabled by default; disable with config openai_responses.normalize_call_ids: false.
+   */
+  readonly normalizeResponsesCallIds: boolean
+
+  /**
+   * Enable upstream WebSocket transport for Responses API when supported.
+   * Disabled by default; enable with config openai_responses.upstream_ws: true.
+   */
+  readonly upstreamWebSocket: boolean
+
+  /**
+   * Opt-in transactional buffered retry for the Responses (SSE/HTTP) streaming
+   * path — the Codex-tier analog of `protectStreamingGeneration`. When `true`,
+   * Responses adopts the driver's `runResponseBufferedSink`: every rendered
+   * frame is buffered until a terminal event and only committed on a clean
+   * drain, so a mid-stream upstream transport close/truncation re-runs the
+   * exchange up to the retry cap and delivers exactly one complete generation.
+   * `false` (default) keeps the live `runResponseSink` path (mid-stream drop →
+   * fail + preserved partial + truncation error frame). Buffering forces a
+   * client keepalive interval (see `resolveResponsesBufferedAndHeartbeat`).
+   * Enable with config openai_responses.buffered_retry: true.
+   */
+  readonly responsesBufferedRetry: boolean
+
+  /**
+   * Keep the client-side Responses WebSocket connection open after a response
+   * terminates, allowing the client to send a follow-up `response.create` on the
+   * same socket (Phase 2 long-lived client WS). When false (default), the
+   * socket is closed with code 1000 after each request, mirroring HTTP semantics.
+   * Enable with config server.responses_ws.keep_open: true.
+   */
+  readonly clientWebsocketKeepOpen: boolean
+
+  /**
+   * Fix inconsistent item IDs between output_item.added and output_item.done events
+   * from GitHub Copilot's Responses API. Without this fix, @ai-sdk/openai breaks
+   * because it expects consistent IDs across the stream lifecycle.
+   * Enabled by default; disable with config openai_responses.fix_stream_ids: false.
+   */
+  readonly fixResponsesStreamIds: boolean
+
+  /**
+   * Responses buffered-merge two orthogonal knobs (spec 2026-07-14-responses-buffered-block-merge §3).
+   * Lazy: only in effect on the buffered path (`responsesBufferedRetry`). `event_compaction` controls
+   * mid-block delta compaction; `completed_output` controls terminal-snapshot reconciliation.
+   */
+  readonly responsesBufferedMergeEventCompaction: "verbatim" | "drop-delta" | "item-summary"
+  readonly responsesBufferedMergeCompletedOutput: "upstream" | "repair-if-incomplete" | "rebuild"
+
+  /**
+   * Strip the `image_generation` builtin tool from inbound Responses requests.
+   * The Copilot upstream rejects it (failing the whole request); some clients
+   * (e.g. Codex CLI) auto-inject it. Default false; enable with config
+   * openai-responses.strip_image_generation_tool.
+   */
+  readonly stripImageGenerationTool: boolean
+
+  /**
+   * Optional cap on inbound WebSocket frame bytes for the client-side /responses WS.
+   * Default 0 = unlimited (the proxy does not self-limit client input; bound heap
+   * pressure at the deployment edge / reverse proxy instead). Set a positive value
+   * to opt into a hard cap on oversized `response.create` payloads.
+   */
+  readonly maxWsFrameBytes: number
+
+  /**
+   * Max concurrent client WebSocket connections to the proxy. Default 256;
+   * set to 0 to disable. Bounds file-descriptor usage when
+   * `server.responses_ws.keep_open` is true.
+   */
+  readonly maxClientWsConnections: number
+
+  /**
+   * Soft cap on upstream WebSocket pool size. Default 32; set to 0 to disable.
+   * When reached and an idle connection exists, the oldest idle is evicted.
+   * When all connections are busy, an overflow connection is allocated with a warn log.
+   */
+  readonly softMaxUpstreamWsConnections: number
+
+  /**
+   * Policy for handling Claude Code "Warmup" requests.
+   * - "allow" — pass through normally (default)
+   * - "reject" — return HTTP 429 error
+   * - "drop" — return minimal empty success response without forwarding upstream
+   * - "fake" — return a realistic fake response with cache_creation_input_tokens
+   */
+  readonly warmupPolicy: WarmupPolicy
+
+  /**
+   * Per-model supported effort levels (whitelist), from config.yaml.
+   * Keys are model name substrings matched against the resolved model name.
+   * Values are arrays of supported effort levels (e.g. ["medium", "high"] or ["medium"]).
+   * If a request's output_config.effort is outside the supported range, it is clamped:
+   *   - above max → max supported; below min → min supported.
+   * Empty record = no constraints from config (default).
+   *
+   * Hot-reloadable: entirely replaced on config reload (including to {} on deletion).
+   */
+  readonly effortsOverrides: Record<string, Array<string>>
+
+  /**
+   * Per-model `anthropic-beta` headers to pre-emptively strip before sending
+   * upstream. Keys are model-name substrings (matched against the resolved
+   * model name); values are lists of beta tokens to remove. The pseudo-key
+   * `"*"` applies to all models.
+   *
+   * Example:
+   *   "claude-opus-4.7-1m-internal": ["context-1m-2025-08-07"]
+   *
+   * Hot-reloadable: entirely replaced on config reload.
+   */
+  readonly stripBetaHeaders: Record<string, Array<string>>
+  /** GHC 未支持的 cache_control 子字段黑名单（per-model + 通配 "*"）。passthrough 模式下剥除。内置 {scope} 在读取端注入，此处仅 config 覆盖。 */
+  readonly stripCacheControlSubfields: Record<string, Array<string>>
+
+  /**
+   * Per-model partner-model feature names (e.g. `structured_outputs`) the upstream
+   * disallows — the config twin of the `partnerFeatures` negotiation cache. The
+   * prepare step strips each disallowed feature's payload (currently only
+   * `structured_outputs` → `output_config.format`); union'd with the runtime cache.
+   * `"*"` applies to all models. Hot-reloadable: entirely replaced on config reload.
+   */
+  readonly stripPartnerFeatures: Record<string, Array<string>>
+
+  /**
+   * Per-model custom-tool top-level field names to STRIP from every tool before
+   * sending upstream (e.g. `eager_input_streaming`). Keys are model-name
+   * substrings; `"*"` applies to all models. ADDITIVE — union'd with the built-in
+   * default (`eager_input_streaming`) and the runtime negotiation cache.
+   * Hot-reloadable: entirely replaced on config reload.
+   */
+  readonly stripToolFields: Record<string, Array<string>>
+
+  /**
+   * Per-model custom-tool field names to KEEP (never strip) — the reversibility
+   * escape hatch that subtracts from the strip set, e.g. to re-enable a field a
+   * future upstream starts supporting. Keys are model-name substrings; `"*"`
+   * applies to all models. Hot-reloadable: entirely replaced on config reload.
+   */
+  readonly keepToolFields: Record<string, Array<string>>
+
+  /**
+   * Per-model body fields to strip from outbound payloads before sending
+   * upstream. Keys are model-name substrings; the pseudo-key `"*"` applies
+   * to all models. Built-in default: `{ "*": ["inference_geo"] }`.
+   *
+   * Hot-reloadable: entirely replaced on config reload, then merged with
+   * the built-in defaults.
+   */
+  readonly rejectBodyFields: Record<string, Array<string>>
+
+  /**
+   * Per-tool list of top-level tool_use input fields to decode from
+   * stringified JSON back to structured form on the response wire. Keys are
+   * tool names (matched verbatim, no normalization); values are field-name
+   * lists. Built-in default: `{ AskUserQuestion: ["questions"] }`.
+   *
+   * Hot-reloadable: entirely replaced on config reload (replace semantic,
+   * like the other anthropic.* records).
+   */
+  readonly decodeToolInputFields: Record<string, Array<string>>
+
+  /**
+   * When true, backfill a missing `AskUserQuestion` `questions[].question` from its `header` on the response wire (Claude Code rejects a question item that has a header but no question).
+   * Only items missing the `question` key are touched; present-but-empty is left alone. History keeps the upstream-original form.
+   * Default true. Runs after `decodeToolInputFields` (so a stringified `questions` array is structured first).
+   */
+  readonly backfillQuestionFromHeader: boolean
+
+  /**
+   * When true, recover a missing SendMessage `to` recipient from a misnamed `agentId` alias on the
+   * response wire (the client rejects a SendMessage call whose required `to` is absent). Only touched
+   * when `to` is absent and `agentId` is a non-empty string; History keeps the upstream-original form.
+   * Default true.
+   */
+  readonly fixSendMessageRecipient: boolean
+
+  /**
+   * Default TTL (ms) for reactive learning records (feature-negotiation cache).
+   * A learned entry auto-expires when `now > lastConfirmedAt + ttl`, unless it is
+   * pinned or its category has a per-category override. `Number.POSITIVE_INFINITY`
+   * = never auto-expire. Hot-reloadable. See `negotiation-lifecycle.ts`.
+   */
+  readonly negotiationDefaultTtlMs: number
+
+  /**
+   * Per-category TTL overrides (ms) for reactive learning records. Keys are
+   * `NegotiationCategory` ids (camelCase, e.g. `toolFields`); values are TTL in ms
+   * (`Number.POSITIVE_INFINITY` = never). A category absent here uses
+   * `negotiationDefaultTtlMs`. Hot-reloadable: entirely replaced on config reload.
+   */
+  readonly negotiationTtlOverridesMs: Record<string, number>
+
+  /**
+   * Path to an ad-hoc TS hook module for mocking/intercepting the upstream transport
+   * (dev/test only). Declarative: this field alone does not load anything — the module is
+   * loaded at startup (`start.ts`, when `hooksEnabled`) or via a future reload API. Empty
+   * string = no module configured. Config-managed (`hooks.upstream_module`).
+   */
+  readonly hooksUpstreamModule: string
+
+  /**
+   * Whether to load the upstream hook module named by `hooksUpstreamModule`. Default false —
+   * the feature is fully off unless explicitly true. Declarative only; see `hooksUpstreamModule`.
+   */
+  readonly hooksEnabled: boolean
+}
+
+type MutableState = {
+  -readonly [K in keyof State]: State[K]
+}
+
+/**
+ * A per-test snapshot of the mutable state PLUS one opaque slice per registered participant.
+ *
+ * Treat it as opaque: hand it back to {@link restoreStateForTests} and read nothing out of it. The
+ * participant slices are typed `unknown` on purpose — this module must not know what any domain
+ * keeps in its slice, which is the whole point of the registry (see
+ * {@link registerSnapshotParticipant}).
+ */
+export interface StateSnapshot {
+  readonly state: MutableState
+  readonly participants: ReadonlyMap<string, unknown>
+}
+
+/**
+ * The extra keys {@link setStateForTests} accepts beyond `State`'s own fields, contributed by
+ * whichever domains registered a snapshot participant.
+ *
+ * Declared EMPTY here and filled in by declaration merging from the owning domain's core-side
+ * composition module (`src/lib/token-runtime.ts` adds the four credential keys). That indirection is
+ * not decoration: this module is being reduced to a leaf that depends on nothing but language
+ * builtins, so it cannot name `TokenInfo` or `CopilotTokenInfo` — and `packages/token` already
+ * depends on foundation, so importing them would make the final package graph
+ * foundation → token → foundation. Merging keeps every call site fully typed anyway: a typo in a
+ * credential key is still a compile error.
+ */
+// eslint-disable-next-line @typescript-eslint/no-empty-object-type -- filled by declaration merging; see above
+export interface StateTestPatchExtensions {}
+
+/**
+ * A domain that owns test-visible state living OUTSIDE `mutableState`, and therefore has to join the
+ * per-test snapshot/restore/patch cycle.
+ *
+ * Registered rather than imported because the import would run the wrong way: the domains concerned
+ * (token today) sit BELOW state in the package graph. Registration inverts that — state offers a
+ * slot, the domain's core-side composition module fills it.
+ */
+export interface SnapshotParticipant<S = unknown> {
+  /** Stable identity. Re-registering the same name replaces the entry rather than duplicating it. */
+  readonly name: string
+  /**
+   * The {@link setStateForTests} patch keys this participant owns. A key claimed by nobody is a
+   * hard error, NOT a silent no-op — see {@link setStateForTests}.
+   */
+  readonly claims: ReadonlyArray<string>
+  snapshot: () => S
+  restore: (slice: S) => void
+  /** Apply the claimed keys present in a test patch. Only receives keys this participant claims. */
+  applyTestPatch: (patch: Readonly<Record<string, unknown>>) => void
+}
+
+const snapshotParticipants = new Map<string, SnapshotParticipant>()
+
+/**
+ * `State`'s OPTIONAL fields, which are absent from `mutableState` until something writes them.
+ *
+ * `key in mutableState` is the cheap runtime test for "is this a state field", and for these three it
+ * answers false on a fresh process — so a `setStateForTests({ models })` would be misrouted as a key
+ * nobody owns and throw. Listing them closes that hole;
+ * `tests/state/test-patch-routing.unit.test.ts` re-derives the optional fields from the `State`
+ * declaration and fails if this list drifts, so it cannot silently rot as fields come and go.
+ */
+const OPTIONAL_STATE_FIELDS: ReadonlySet<string> = new Set(["models", "vsCodeVersion", "adaptiveRateLimitConfig"])
+
+const isStateField = (key: string): boolean => key in mutableState || OPTIONAL_STATE_FIELDS.has(key)
+
+/**
+ * Register (or replace) a snapshot participant. Idempotent by `name`, so the composition modules
+ * that call it from several entry points — CLI commands, server bootstrap, the bun test preload —
+ * can call it freely.
+ */
+export function registerSnapshotParticipant<S>(participant: SnapshotParticipant<S>): void {
+  // A key claimed by two DIFFERENT participants is rejected rather than resolved by order. The
+  // routing below picks the first claimant it finds, so without this the second domain to register
+  // would silently never receive its keys while snapshot/restore still ran for both — a test-
+  // isolation bug that shows up as one domain mysteriously not being reset. Only the token domain
+  // registers today, so this can only fire for the next one; that is exactly when it is useful.
+  //
+  // The same NAME is a replacement, so it is skipped rather than deleted first: a participant must
+  // not collide with its own previous registration, and an earlier version of this did the skipping
+  // by `delete`-ing before the scan — which made a REJECTED replacement destroy the live entry it
+  // failed to replace. A throwing register must leave the registry exactly as it found it, or the
+  // caller that catches the error is left holding keys nobody claims.
+  for (const existing of snapshotParticipants.values()) {
+    if (existing.name === participant.name) continue
+    const overlap = participant.claims.filter((claim) => existing.claims.includes(claim))
+    if (overlap.length > 0) {
+      throw new Error(
+        `registerSnapshotParticipant: "${participant.name}" and "${existing.name}" both claim ${overlap.map((claim) => `\`${claim}\``).join(", ")}. A patch key must have exactly one owner.`,
+      )
+    }
+  }
+  snapshotParticipants.set(participant.name, participant as SnapshotParticipant)
+}
+
+/** Test-only: drop every registration. Exists so a test can prove the unclaimed-key error fires. */
+export function clearSnapshotParticipantsForTests(): void {
+  snapshotParticipants.clear()
+}
+
+/** Epoch ms when the server started (set once in runServer) */
+export let serverStartTime = 0
+
+/** Set the server start time (called once from runServer) */
+export function setServerStartTime(ts: number): void {
+  serverStartTime = ts
+}
+
+function updateState(patch: Partial<MutableState>): void {
+  Object.assign(mutableState, patch)
+}
+
+function cloneModels(models: ModelsResponse | undefined): ModelsResponse | undefined {
+  return models ? { ...models, data: [...models.data] } : undefined
+}
+
+function cloneRewriteRules(rules: boolean | Array<CompiledRewriteRule>): boolean | Array<CompiledRewriteRule> {
+  return Array.isArray(rules) ? [...rules] : rules
+}
+
+function cloneStripBetaHeaders(source: Record<string, Array<string>>): Record<string, Array<string>> {
+  const out: Record<string, Array<string>> = {}
+  for (const [key, value] of Object.entries(source)) {
+    out[key] = [...value]
+  }
+  return out
+}
+
+/** Deep-clone the per-vendor buffered-retry override map (each vendor entry is its own object). */
+function cloneBufferedRetryOverrides(source: Record<string, Partial<BufferedRetryCaps>>): Record<string, Partial<BufferedRetryCaps>> {
+  const out: Record<string, Partial<BufferedRetryCaps>> = {}
+  for (const [vendor, caps] of Object.entries(source)) {
+    out[vendor] = { ...caps }
+  }
+  return out
+}
+
+/** Deep-clone the per-vendor continuation override map (each vendor entry is its own object). */
+function cloneContinuationOverrides(source: Record<string, Partial<BufferedRetryContinuation>>): Record<string, Partial<BufferedRetryContinuation>> {
+  const out: Record<string, Partial<BufferedRetryContinuation>> = {}
+  for (const [vendor, c] of Object.entries(source)) {
+    out[vendor] = { ...c }
+  }
+  return out
+}
+
+function cloneMaxTokensContinuationConfig(source: MaxTokensContinuationConfig): MaxTokensContinuationConfig {
+  return { ...source, classes: { ...source.classes } }
+}
+
+function cloneMaxTokensContinuationOverrides(source: Record<string, MaxTokensContinuationOverride>): Record<string, MaxTokensContinuationOverride> {
+  const out: Record<string, MaxTokensContinuationOverride> = {}
+  for (const [vendor, config] of Object.entries(source)) {
+    out[vendor] = { ...config, ...(config.classes && { classes: { ...config.classes } }) }
+  }
+  return out
+}
+
+/** Deep-clone `modelTranslation` (ingress → rule list, each rule its own object with its own `features` array). */
+function cloneModelTranslation(source: ModelTranslation): ModelTranslation {
+  const out: ModelTranslation = {}
+  for (const [ingress, rules] of Object.entries(source) as Array<[keyof ModelTranslation, NonNullable<ModelTranslation[keyof ModelTranslation]>]>) {
+    out[ingress] = rules.map((rule) => ({ ...rule, features: rule.features ? [...rule.features] : undefined }))
+  }
+  return out
+}
+
+function cloneState(source: MutableState): MutableState {
+  return {
+    ...source,
+    adaptiveRateLimitConfig: source.adaptiveRateLimitConfig ? { ...source.adaptiveRateLimitConfig } : undefined,
+    modelIds: new Set(source.modelIds),
+    modelIndex: new Map(source.modelIndex),
+    modelMappings: { ...source.modelMappings },
+    modelTranslation: cloneModelTranslation(source.modelTranslation),
+    toolSearchOverrides: { ...source.toolSearchOverrides },
+    errorSelfhealDelegate: { ...source.errorSelfhealDelegate },
+    retryStrategies: { ...source.retryStrategies },
+    effortsOverrides: { ...source.effortsOverrides },
+    streamIdleTimeoutOverrides: { ...source.streamIdleTimeoutOverrides },
+    responseHeaderTimeoutOverrides: { ...source.responseHeaderTimeoutOverrides },
+    negotiationTtlOverridesMs: { ...source.negotiationTtlOverridesMs },
+    bufferedRetryShared: { ...source.bufferedRetryShared },
+    bufferedRetryOverrides: cloneBufferedRetryOverrides(source.bufferedRetryOverrides),
+    bufferedRetryContinuationShared: { ...source.bufferedRetryContinuationShared },
+    bufferedRetryContinuationOverrides: cloneContinuationOverrides(source.bufferedRetryContinuationOverrides),
+    maxTokensContinuationShared: cloneMaxTokensContinuationConfig(source.maxTokensContinuationShared),
+    maxTokensContinuationOverrides: cloneMaxTokensContinuationOverrides(source.maxTokensContinuationOverrides),
+    stripBetaHeaders: cloneStripBetaHeaders(source.stripBetaHeaders),
+    stripCacheControlSubfields: cloneStripBetaHeaders(source.stripCacheControlSubfields),
+    stripPartnerFeatures: cloneStripBetaHeaders(source.stripPartnerFeatures),
+    stripToolFields: cloneStripBetaHeaders(source.stripToolFields),
+    keepToolFields: cloneStripBetaHeaders(source.keepToolFields),
+    rejectBodyFields: cloneStripBetaHeaders(source.rejectBodyFields),
+    decodeToolInputFields: cloneStripBetaHeaders(source.decodeToolInputFields),
+    disabledModels: [...source.disabledModels],
+    requestHeaderBlacklist: [...source.requestHeaderBlacklist],
+    requestHeaderWhitelist: [...source.requestHeaderWhitelist],
+    responseHeaderBlacklist: [...source.responseHeaderBlacklist],
+    responseHeaderWhitelist: [...source.responseHeaderWhitelist],
+    models: cloneModels(source.models),
+    rewriteSystemReminders: cloneRewriteRules(source.rewriteSystemReminders),
+    systemPromptOverrides: [...source.systemPromptOverrides],
+    systemPromptPrepend: [...source.systemPromptPrepend],
+    systemPromptAppend: [...source.systemPromptAppend],
+  }
+}
+
+function cloneStatePatch(patch: Partial<MutableState>): Partial<MutableState> {
+  const cloned: Partial<MutableState> = { ...patch }
+
+  if ("adaptiveRateLimitConfig" in patch) {
+    cloned.adaptiveRateLimitConfig = patch.adaptiveRateLimitConfig ? { ...patch.adaptiveRateLimitConfig } : undefined
+  }
+  if ("modelIds" in patch) {
+    cloned.modelIds = patch.modelIds ? new Set(patch.modelIds) : undefined
+  }
+  if ("modelIndex" in patch) {
+    cloned.modelIndex = patch.modelIndex ? new Map(patch.modelIndex) : undefined
+  }
+  if ("modelMappings" in patch) {
+    cloned.modelMappings = patch.modelMappings ? { ...patch.modelMappings } : undefined
+  }
+  if ("modelTranslation" in patch) {
+    cloned.modelTranslation = patch.modelTranslation ? cloneModelTranslation(patch.modelTranslation) : undefined
+  }
+  if ("toolSearchOverrides" in patch) {
+    cloned.toolSearchOverrides = patch.toolSearchOverrides ? { ...patch.toolSearchOverrides } : undefined
+  }
+  if ("errorSelfhealDelegate" in patch) {
+    cloned.errorSelfhealDelegate = patch.errorSelfhealDelegate ? { ...patch.errorSelfhealDelegate } : undefined
+  }
+  if ("retryStrategies" in patch) {
+    cloned.retryStrategies = patch.retryStrategies ? { ...patch.retryStrategies } : undefined
+  }
+  if ("models" in patch) {
+    cloned.models = cloneModels(patch.models)
+  }
+  if ("rewriteSystemReminders" in patch) {
+    cloned.rewriteSystemReminders = patch.rewriteSystemReminders === undefined ? undefined : cloneRewriteRules(patch.rewriteSystemReminders)
+  }
+  if ("systemPromptOverrides" in patch) {
+    cloned.systemPromptOverrides = patch.systemPromptOverrides ? [...patch.systemPromptOverrides] : undefined
+  }
+  if ("systemPromptPrepend" in patch) {
+    cloned.systemPromptPrepend = patch.systemPromptPrepend ? [...patch.systemPromptPrepend] : undefined
+  }
+  if ("systemPromptAppend" in patch) {
+    cloned.systemPromptAppend = patch.systemPromptAppend ? [...patch.systemPromptAppend] : undefined
+  }
+  if ("effortsOverrides" in patch) {
+    cloned.effortsOverrides = patch.effortsOverrides ? { ...patch.effortsOverrides } : undefined
+  }
+  if ("streamIdleTimeoutOverrides" in patch) {
+    cloned.streamIdleTimeoutOverrides = patch.streamIdleTimeoutOverrides ? { ...patch.streamIdleTimeoutOverrides } : undefined
+  }
+  if ("responseHeaderTimeoutOverrides" in patch) {
+    cloned.responseHeaderTimeoutOverrides = patch.responseHeaderTimeoutOverrides ? { ...patch.responseHeaderTimeoutOverrides } : undefined
+  }
+  if ("negotiationTtlOverridesMs" in patch) {
+    cloned.negotiationTtlOverridesMs = patch.negotiationTtlOverridesMs ? { ...patch.negotiationTtlOverridesMs } : undefined
+  }
+  if ("bufferedRetryShared" in patch) {
+    cloned.bufferedRetryShared = patch.bufferedRetryShared ? { ...patch.bufferedRetryShared } : undefined
+  }
+  if ("bufferedRetryOverrides" in patch) {
+    cloned.bufferedRetryOverrides = patch.bufferedRetryOverrides ? cloneBufferedRetryOverrides(patch.bufferedRetryOverrides) : undefined
+  }
+  if ("stripBetaHeaders" in patch) {
+    cloned.stripBetaHeaders = patch.stripBetaHeaders ? cloneStripBetaHeaders(patch.stripBetaHeaders) : undefined
+  }
+  if ("stripCacheControlSubfields" in patch) {
+    cloned.stripCacheControlSubfields = patch.stripCacheControlSubfields ? cloneStripBetaHeaders(patch.stripCacheControlSubfields) : undefined
+  }
+  if ("stripPartnerFeatures" in patch) {
+    cloned.stripPartnerFeatures = patch.stripPartnerFeatures ? cloneStripBetaHeaders(patch.stripPartnerFeatures) : undefined
+  }
+  if ("stripToolFields" in patch) {
+    cloned.stripToolFields = patch.stripToolFields ? cloneStripBetaHeaders(patch.stripToolFields) : undefined
+  }
+  if ("keepToolFields" in patch) {
+    cloned.keepToolFields = patch.keepToolFields ? cloneStripBetaHeaders(patch.keepToolFields) : undefined
+  }
+  if ("rejectBodyFields" in patch) {
+    cloned.rejectBodyFields = patch.rejectBodyFields ? cloneStripBetaHeaders(patch.rejectBodyFields) : undefined
+  }
+  if ("decodeToolInputFields" in patch) {
+    cloned.decodeToolInputFields = patch.decodeToolInputFields ? cloneStripBetaHeaders(patch.decodeToolInputFields) : undefined
+  }
+  if ("disabledModels" in patch) {
+    cloned.disabledModels = patch.disabledModels ? [...patch.disabledModels] : undefined
+  }
+  if ("requestHeaderBlacklist" in patch) {
+    cloned.requestHeaderBlacklist = patch.requestHeaderBlacklist ? [...patch.requestHeaderBlacklist] : undefined
+  }
+  if ("requestHeaderWhitelist" in patch) {
+    cloned.requestHeaderWhitelist = patch.requestHeaderWhitelist ? [...patch.requestHeaderWhitelist] : undefined
+  }
+  if ("responseHeaderBlacklist" in patch) {
+    cloned.responseHeaderBlacklist = patch.responseHeaderBlacklist ? [...patch.responseHeaderBlacklist] : undefined
+  }
+  if ("responseHeaderWhitelist" in patch) {
+    cloned.responseHeaderWhitelist = patch.responseHeaderWhitelist ? [...patch.responseHeaderWhitelist] : undefined
+  }
+  if ("toolRepairMalformedInput" in patch) {
+    cloned.toolRepairMalformedInput = patch.toolRepairMalformedInput ? [...patch.toolRepairMalformedInput] : undefined
+  }
+
+  return cloned
+}
+
+export function setCliState(patch: Partial<Pick<MutableState, "accountType" | "ghcApiBaseUrl" | "showGitHubToken" | "verbose">>): void {
+  updateState(patch)
+}
+
+export function setVSCodeVersion(vsCodeVersion: string | undefined): void {
+  updateState({ vsCodeVersion })
+}
+
+export function setTokenBasedBilling(tokenBasedBilling: boolean): void {
+  updateState({ tokenBasedBilling })
+}
+
+/**
+ * Rebuild the two derived lookup indexes from `state.models`.
+ *
+ * Pure derivation over this module's OWN fields — it reads `models.data` and writes `modelIndex` /
+ * `modelIds`, and knows nothing about the models domain beyond `Model` having an `id`. That is why
+ * it stayed here when the catalog CACHE moved to `~/lib/models/cache`: the disabled-id matching,
+ * the raw upstream response and the re-filter policy are model knowledge, but "my two indexes agree
+ * with my model list" is this module's own invariant. Keeping it here is also what lets
+ * `setStateForTests` maintain that invariant without importing the models domain — which would
+ * close the very cycle this whole migration exists to remove
+ * (docs/plan/2026-07-28-state-to-foundation/HANDOVER.md).
+ */
+export function rebuildModelIndex(): void {
+  const data = mutableState.models?.data ?? []
+  updateState({
+    modelIndex: new Map(data.map((m) => [m.id, m])),
+    modelIds: new Set(data.map((m) => m.id)),
+  })
+}
+
+/**
+ * Publish the disabled model ID list. A PLAIN field setter, like the other config-managed setters
+ * on this module — it does NOT re-filter `state.models`, because filtering needs the cached raw
+ * catalog and the normalized id match, both of which live in `~/lib/models/cache`.
+ *
+ * Callers that change this list must follow it with `refreshCatalogView()` from that module. The
+ * config layer does so unconditionally at the end of `applyConfigToState()`, which covers both the
+ * hot-reload path and `resetConfigManagedState()` (production always pairs the reset with a
+ * re-apply — `src/routes/config/route.ts` PUT /api/config).
+ */
+export function setDisabledModels(disabledModels: ReadonlyArray<string>): void {
+  updateState({ disabledModels: [...disabledModels] })
+}
+
+/**
+ * Publish a filtered catalog view. Called ONLY by `~/lib/models/cache`, which owns the filtering
+ * policy; split out so this module never has to know what "disabled" means.
+ */
+export function setFilteredModels(models: ModelsResponse | undefined): void {
+  updateState({ models })
+}
+
+export function setUnknownEndpointLogging(value: UnknownEndpointLogging): void {
+  mutableState.unknownEndpointLogging = value
+}
+
+export function setLoggingConfig(value: Partial<LoggingConfigState>): void {
+  mutableState.logging = { ...mutableState.logging, ...value }
+}
+
+export function setTuiEnabled(value: boolean): void {
+  mutableState.tuiEnabled = value
+}
+
+export function setAnthropicBehavior(
+  patch: Partial<
+    Pick<
+      MutableState,
+      | "useUpstreamCountTokens"
+      | "strictResponseHeaders"
+      | "strictRequestHeaders"
+      | "requestHeaderBlacklist"
+      | "requestHeaderWhitelist"
+      | "responseHeaderBlacklist"
+      | "responseHeaderWhitelist"
+      | "stripAttributionHeader"
+      | "streamKeepalivePingSec"
+      | "streamKeepaliveEscalateSec"
+      | "streamKeepaliveMode"
+      | "streamCommitAfterSec"
+      | "preContentRecovery"
+      | "protectStreamingGeneration"
+      | "protectStreamingEscalateContext"
+      | "injectClaudeCodeOfficialTools"
+      | "thinkingBlockMessagePolicy"
+      | "thinkingBlockSanitizeCheck"
+      | "assistantBlockLayoutStrategy"
+      | "separatorCarrier"
+      | "separatorAcceptExtra"
+      | "stripThinkingOnReject"
+      | "poisonedThinkingQuarantine"
+      | "poisonedThinkingTtlHours"
+      | "coerceAdaptiveThinking"
+      | "systemDefaultMode"
+      | "systemRejectModels"
+      | "systemRejectMode"
+      | "thinkingSignatureCompat"
+      | "dedupToolCalls"
+      | "stripReadToolResultTags"
+      | "contextEditingMode"
+      | "contextEditingTrigger"
+      | "contextEditingKeepTools"
+      | "contextEditingKeepThinking"
+      | "toolSearchEnabled"
+      | "cacheControlMode"
+      | "extendedCacheTtlEnabled"
+      | "extendedCacheTtlToolsSystem"
+      | "extendedCacheTtlMessages"
+      | "extendedCacheTtlModels"
+      | "nonDeferredTools"
+      | "rewriteSystemReminders"
+      | "systemPromptOverrides"
+      | "systemPromptPrepend"
+      | "systemPromptAppend"
+      | "sanitizeToolNames"
+      | "recoverToolCallText"
+      | "toolRepairMalformedInput"
+      | "refusalSseRewrite"
+      | "refusalEndTurnText"
+      | "refusalErrorMessage"
+      | "refusalErrorType"
+      | "errorShapingEnabled"
+      | "errorAskUserQuestion"
+      | "errorAuqTemplate"
+      | "errorSelfhealDelegate"
+      | "contextEditingModels"
+      | "toolSearchOverrides"
+      | "memoryToolEnabled"
+      | "memoryModels"
+      | "interleavedThinkingModels"
+      | "adaptiveThinkingModels"
+      | "warmupPolicy"
+      | "effortsOverrides"
+      | "streamIdleTimeoutOverrides"
+      | "responseHeaderTimeoutOverrides"
+      | "stripBetaHeaders"
+      | "stripCacheControlSubfields"
+      | "stripPartnerFeatures"
+      | "stripToolFields"
+      | "keepToolFields"
+      | "rejectBodyFields"
+      | "decodeToolInputFields"
+      | "backfillQuestionFromHeader"
+      | "fixSendMessageRecipient"
+    >
+  >,
+): void {
+  updateState(patch)
+}
+
+export function setModelMappings(modelMappings: Record<string, string>): void {
+  updateState({ modelMappings })
+}
+
+export function setModelTranslation(modelTranslation: ModelTranslation): void {
+  updateState({ modelTranslation })
+}
+
+/**
+ * Replace the per-model stream-idle / response-header timeout override maps.
+ * Replace semantics per field (the maps are already per-key merged with the
+ * bundled defaults upstream in `mergeConfigs`). Deliberately does NOT fire
+ * `requestWatchdogListeners` — these are app-guard-only knobs with no bearing
+ * on the undici dispatcher (which serves plaintext SearXNG on the scalar
+ * `streamIdleTimeout`; GHC rides node:http2 with no transport body-idle). See
+ * ADR 2026-07-12-per-model-idle-timeout-is-app-guard-only.
+ */
+export function setTimeoutOverridesConfig(patch: Partial<Pick<MutableState, "streamIdleTimeoutOverrides" | "responseHeaderTimeoutOverrides">>): void {
+  updateState(patch)
+}
+
+export function setHistoryConfig(
+  patch: Partial<
+    Pick<MutableState, "historyEnabled" | "historyDbPath" | "historyRawCaptureEnabled" | "historyRawCaptureDbPath" | "historyRawCaptureMaxObjectBytes">
+  >,
+): void {
+  const rawCaptureChanged =
+    (patch.historyRawCaptureEnabled !== undefined && patch.historyRawCaptureEnabled !== mutableState.historyRawCaptureEnabled)
+    || (patch.historyRawCaptureDbPath !== undefined && patch.historyRawCaptureDbPath !== mutableState.historyRawCaptureDbPath)
+    || (patch.historyRawCaptureMaxObjectBytes !== undefined && patch.historyRawCaptureMaxObjectBytes !== mutableState.historyRawCaptureMaxObjectBytes)
+  updateState(patch)
+  if (rawCaptureChanged) for (const listener of historyRawCaptureListeners) listener()
+}
+
+const historyRawCaptureListeners = new Set<() => void>()
+
+export function onHistoryRawCaptureChange(listener: () => void): () => void {
+  historyRawCaptureListeners.add(listener)
+  listener()
+  return () => historyRawCaptureListeners.delete(listener)
+}
+
+/** 遥测 timer（persist/rollup 间隔）变更监听者——telemetry 模块用它热重载重调周期而不循环 import。 */
+const telemetryConfigListeners = new Set<() => void>()
+
+/**
+ * 应用 telemetry.* 配置补丁到 state。任何影响 persist/rollup timer 的键（间隔/enabled）
+ * 变更时通知监听者重调周期（对齐 setHistoryConfig 的 reaper retune 模式）。
+ */
+export function setTelemetryConfig(
+  patch: Partial<
+    Pick<
+      MutableState,
+      | "telemetryEnabled"
+      | "telemetryDbPath"
+      | "telemetryPersistInterval"
+      | "telemetryRollupInterval"
+      | "telemetryCardinalityCap"
+      | "telemetrySketchGamma"
+      | "telemetryCumulative"
+      | "telemetryRawResolutionMinutes"
+      | "telemetryRawRetentionDays"
+      | "telemetryHourlyRetentionDays"
+      | "telemetryDailyRetentionDays"
+    >
+  >,
+): void {
+  const timerConfigChanged =
+    (patch.telemetryPersistInterval !== undefined && patch.telemetryPersistInterval !== mutableState.telemetryPersistInterval)
+    || (patch.telemetryRollupInterval !== undefined && patch.telemetryRollupInterval !== mutableState.telemetryRollupInterval)
+    || (patch.telemetryEnabled !== undefined && patch.telemetryEnabled !== mutableState.telemetryEnabled)
+  updateState(patch)
+  if (timerConfigChanged) {
+    for (const listener of telemetryConfigListeners) listener()
+  }
+}
+
+/** 订阅 telemetry timer 配置变更（persist/rollup 间隔或 enabled）。返回退订函数。 */
+export function onTelemetryConfigChange(listener: () => void): () => void {
+  telemetryConfigListeners.add(listener)
+  return () => telemetryConfigListeners.delete(listener)
+}
+
+export function setShutdownConfig(patch: Partial<Pick<MutableState, "shutdownGracefulWait" | "shutdownAbortWait">>): void {
+  updateState(patch)
+}
+
+/**
+ * Set the upstream-hook declarative config (`hooksUpstreamModule` / `hooksEnabled`). Declarative
+ * only — never triggers a module (re)load itself; that happens at startup (`start.ts`) or via a
+ * future reload API.
+ */
+export function setHooksConfig(patch: Partial<Pick<MutableState, "hooksUpstreamModule" | "hooksEnabled">>): void {
+  updateState(patch)
+}
+
+/**
+ * Set reactive-learning (feature-negotiation) TTL config. Hot-reloadable.
+ * `negotiationTtlOverridesMs` is replaced wholesale (whole-map replace semantic,
+ * like the other config-managed record fields).
+ */
+export function setNegotiationConfig(patch: Partial<Pick<MutableState, "negotiationDefaultTtlMs" | "negotiationTtlOverridesMs">>): void {
+  updateState(patch)
+}
+
+/**
+ * 客户端 query string 转发配置（格式无关：Anthropic / CC / Responses / Gemini）。
+ * `forwardClientQuery` 总开关（默认 true）、`forwardClientQueryExclude` 额外剥离键。
+ */
+export function setForwardClientQuery(patch: Partial<Pick<MutableState, "forwardClientQuery" | "forwardClientQueryExclude">>): void {
+  updateState(patch)
+}
+
+/** Set the shared reactive-retry budget (`retry.max_reactive_retries`) + per-strategy registry opt-out
+ *  (`retry.strategies`, RFC 2026-07-21 §3.4 / plan Task 4). Both hot-reloadable. `retryStrategies` is a
+ *  whole-map replace (like `errorSelfhealDelegate` and the other config-managed Record fields) — a fresh
+ *  config apply REPLACES the whole map, it does not merge key-by-key. */
+export function setReactiveRetryConfig(patch: Partial<Pick<MutableState, "maxReactiveRetries" | "retryStrategies">>): void {
+  updateState(patch)
+}
+
+export function setGenerationRuntimeConfig(
+  patch: Partial<
+    Pick<
+      MutableState,
+      | "generationHedgeEnabled"
+      | "generationHedgeThresholdSec"
+      | "generationHedgeMaxSecondaryCandidates"
+      | "generationRecoveryMaxCandidates"
+      | "generationMaxActiveCandidates"
+      | "generationMaxTotalCandidates"
+      | "generationMaxActiveDispatches"
+      | "generationMaxTotalDispatches"
+      | "generationCleanupGraceSec"
+      | "generationHedgeAllowServerTools"
+    >
+  >,
+): void {
+  updateState(patch)
+}
+
+export function setTimeoutConfig(
+  patch: Partial<Pick<MutableState, "responseHeaderTimeout" | "streamIdleTimeout" | "staleRequestMaxAge" | "requestDeadline" | "modelRefreshInterval">>,
+): void {
+  const transportChanged =
+    (patch.responseHeaderTimeout !== undefined && patch.responseHeaderTimeout !== mutableState.responseHeaderTimeout)
+    || (patch.streamIdleTimeout !== undefined && patch.streamIdleTimeout !== mutableState.streamIdleTimeout)
+  updateState(patch)
+  if (transportChanged) {
+    for (const listener of requestWatchdogListeners) listener()
+  }
+}
+
+/**
+ * Listeners notified when `responseHeaderTimeout` or `streamIdleTimeout` change.
+ * Used by transport layer (undici dispatcher) to rebuild with new options.
+ */
+const requestWatchdogListeners = new Set<() => void>()
+
+/** Subscribe to request-watchdog-relevant timeout changes (responseHeaderTimeout, streamIdleTimeout). */
+export function onRequestWatchdogChange(listener: () => void): () => void {
+  requestWatchdogListeners.add(listener)
+  return () => requestWatchdogListeners.delete(listener)
+}
+
+/**
+ * Upstream-transport-axis config setter — the outbound-connection counterpart
+ * to `setTimeoutConfig` (protocol-agnostic request watchdogs) and
+ * `setResponsesWsIngressConfig` (inbound client-facing WS limits). Notifies
+ * `onUpstreamTransportChange` listeners on ANY tracked field change, including
+ * `upstreamH2PingInterval` — a pre-existing gap in the old combined
+ * `setTimeoutConfig` (upstreamH2PingInterval changes never notified
+ * `requestWatchdogListeners`) that this split fixes as a side effect.
+ */
+export function setUpstreamTransportConfig(
+  patch: Partial<
+    Pick<
+      MutableState,
+      | "upstreamKeepaliveDelay"
+      | "upstreamH2PingInterval"
+      | "upstreamH2Favor"
+      | "sessionConnectTimeout"
+      | "pooledConnectionIdleTimeout"
+      | "softMaxUpstreamWsConnections"
+      | "maxConcurrentStreamsPerSession"
+      | "h2IdleSessionTimeout"
+      | "maxSessionsPerOrigin"
+    >
+  >,
+): void {
+  // NOTE: `upstreamH2Favor` is deliberately ABSENT from this change-detection.
+  // It is a pure per-request routing flag (upstream-fetch.ts reads it live via
+  // getUpstreamH2Favor on every call), so a favor change needs NO connection
+  // rebuild — firing the listeners here would needlessly retire every active h2
+  // session (http2-client's reconcile), rebuild the undici dispatcher, and
+  // reconcile the WS pool. `updateState(patch)` below still applies the new
+  // value unconditionally, so routing flips on the very next request. Do not add
+  // favor to `changed`.
+  const changed =
+    (patch.upstreamKeepaliveDelay !== undefined && patch.upstreamKeepaliveDelay !== mutableState.upstreamKeepaliveDelay)
+    || (patch.upstreamH2PingInterval !== undefined && patch.upstreamH2PingInterval !== mutableState.upstreamH2PingInterval)
+    || (patch.sessionConnectTimeout !== undefined && patch.sessionConnectTimeout !== mutableState.sessionConnectTimeout)
+    || (patch.pooledConnectionIdleTimeout !== undefined && patch.pooledConnectionIdleTimeout !== mutableState.pooledConnectionIdleTimeout)
+    || (patch.softMaxUpstreamWsConnections !== undefined && patch.softMaxUpstreamWsConnections !== mutableState.softMaxUpstreamWsConnections)
+    || (patch.maxConcurrentStreamsPerSession !== undefined && patch.maxConcurrentStreamsPerSession !== mutableState.maxConcurrentStreamsPerSession)
+    || (patch.h2IdleSessionTimeout !== undefined && patch.h2IdleSessionTimeout !== mutableState.h2IdleSessionTimeout)
+    || (patch.maxSessionsPerOrigin !== undefined && patch.maxSessionsPerOrigin !== mutableState.maxSessionsPerOrigin)
+  updateState(patch)
+  if (changed) {
+    for (const listener of transportUpstreamListeners) listener()
+  }
+}
+
+/** Subscribers notified after a hot-reload changes any `setUpstreamTransportConfig` field. Plan 2/4 (proxy.ts, http2-client.ts, upstream-ws*.ts) subscribe here to rebuild connections/reschedule timers. */
+const transportUpstreamListeners = new Set<() => void>()
+
+export function onUpstreamTransportChange(listener: () => void): () => void {
+  transportUpstreamListeners.add(listener)
+  return () => transportUpstreamListeners.delete(listener)
+}
+
+export function setResponsesConfig(
+  patch: Partial<
+    Pick<
+      MutableState,
+      | "normalizeResponsesCallIds"
+      | "upstreamWebSocket"
+      | "responsesBufferedRetry"
+      | "fixResponsesStreamIds"
+      | "stripImageGenerationTool"
+      | "responsesBufferedMergeEventCompaction"
+      | "responsesBufferedMergeCompletedOutput"
+    >
+  >,
+): void {
+  updateState(patch)
+}
+
+/**
+ * Client-facing Responses WS ingress config — split out of `setResponsesConfig`
+ * (server.responses_ws.* three-axis reorg). Distinct from `setUpstreamTransportConfig`'s
+ * `softMaxUpstreamWsConnections` (that governs the OUTBOUND upstream WS pool cap;
+ * this governs INBOUND client connection limits).
+ */
+export function setResponsesWsIngressConfig(
+  patch: Partial<Pick<MutableState, "clientWebsocketKeepOpen" | "maxWsFrameBytes" | "maxClientWsConnections">>,
+): void {
+  updateState(patch)
+}
+
+/** Chat Completions buffered-retry mode switch (P3). Hot-reloadable. */
+export function setChatCompletionsConfig(patch: Partial<Pick<MutableState, "chatCompletionsBufferedRetry">>): void {
+  updateState(patch)
+}
+
+/**
+ * Set the vendor-neutral SHARED buffered-retry caps (partial merge — only the
+ * declared fields are overwritten, the rest retain their prior value). Hot-reloadable.
+ */
+export function setBufferedRetryShared(patch: Partial<BufferedRetryCaps>): void {
+  updateState({ bufferedRetryShared: { ...state.bufferedRetryShared, ...patch } })
+}
+
+/**
+ * Set a per-vendor buffered-retry cap override (partial merge into that vendor's
+ * existing override). Fields NOT set here fall through to {@link setBufferedRetryShared}
+ * / the built-in default at resolve time. Hot-reloadable.
+ */
+export function setBufferedRetryOverride(vendor: string, patch: Partial<BufferedRetryCaps>): void {
+  const prev = state.bufferedRetryOverrides[vendor] ?? {}
+  updateState({
+    bufferedRetryOverrides: { ...state.bufferedRetryOverrides, [vendor]: { ...prev, ...patch } },
+  })
+}
+
+/** Set the SHARED continuation settings (partial merge). Hot-reloadable. Mirrors {@link setBufferedRetryShared}. */
+export function setBufferedRetryContinuationShared(patch: Partial<BufferedRetryContinuation>): void {
+  updateState({ bufferedRetryContinuationShared: { ...state.bufferedRetryContinuationShared, ...patch } })
+}
+
+/** Set a per-vendor continuation override (partial merge). Hot-reloadable. Mirrors {@link setBufferedRetryOverride}. */
+export function setBufferedRetryContinuationOverride(vendor: string, patch: Partial<BufferedRetryContinuation>): void {
+  const prev = state.bufferedRetryContinuationOverrides[vendor] ?? {}
+  updateState({
+    bufferedRetryContinuationOverrides: { ...state.bufferedRetryContinuationOverrides, [vendor]: { ...prev, ...patch } },
+  })
+}
+
+/** Set the shared max_tokens continuation policy. P0 resolves it but does not consume it in the driver. */
+export function setMaxTokensContinuationShared(patch: MaxTokensContinuationOverride): void {
+  const { classes, ...scalarPatch } = patch
+  updateState({
+    maxTokensContinuationShared: {
+      ...state.maxTokensContinuationShared,
+      ...scalarPatch,
+      ...(classes && {
+        classes: {
+          text: classes.text ?? state.maxTokensContinuationShared.classes.text,
+          toolUse: classes.toolUse ?? state.maxTokensContinuationShared.classes.toolUse,
+          thinking: classes.thinking ?? state.maxTokensContinuationShared.classes.thinking,
+        },
+      }),
+    },
+  })
+}
+
+/** Set a per-vendor max_tokens continuation override. */
+export function setMaxTokensContinuationOverride(vendor: string, patch: MaxTokensContinuationOverride): void {
+  const previous = state.maxTokensContinuationOverrides[vendor] ?? {}
+  const { classes, ...scalarPatch } = patch
+  updateState({
+    maxTokensContinuationOverrides: {
+      ...state.maxTokensContinuationOverrides,
+      [vendor]: {
+        ...previous,
+        ...scalarPatch,
+        ...(classes && {
+          classes: {
+            text: classes.text ?? previous.classes?.text,
+            toolUse: classes.toolUse ?? previous.classes?.toolUse,
+            thinking: classes.thinking ?? previous.classes?.thinking,
+          },
+        }),
+      },
+    },
+  })
+}
+
+/**
+ * Capture a deep-enough clone of state, plus every registered participant's slice, for test
+ * restoration. Tests should prefer this over direct mutation snapshots so State can stay readonly.
+ */
+export function snapshotStateForTests(): StateSnapshot {
+  const participants = new Map<string, unknown>()
+  for (const participant of snapshotParticipants.values()) participants.set(participant.name, participant.snapshot())
+  return { state: cloneState(mutableState), participants }
+}
+
+/**
+ * Controlled test-only mutation path. Keeps readonly State in application code while allowing tests
+ * to set fixtures.
+ *
+ * Keys that are not `State` fields are routed to whichever participant claims them (credentials live
+ * in the token domain's store, not in `state`). **An unclaimed key throws.** That is the load-bearing
+ * decision here: the obvious alternative — ignore what nobody claims — turns a missing registration
+ * into a green test suite that has quietly stopped isolating credentials between tests, which is
+ * exactly the failure this shim exists to prevent.
+ */
+export function setStateForTests(patch: Partial<MutableState> & Partial<StateTestPatchExtensions>): void {
+  const statePatch: Record<string, unknown> = {}
+  const claimed = new Map<string, Record<string, unknown>>()
+  const unclaimed: Array<string> = []
+
+  for (const [key, value] of Object.entries(patch)) {
+    if (isStateField(key)) {
+      statePatch[key] = value
+      continue
+    }
+    const owner = [...snapshotParticipants.values()].find((participant) => participant.claims.includes(key))
+    if (!owner) {
+      unclaimed.push(key)
+      continue
+    }
+    const slice = claimed.get(owner.name) ?? {}
+    slice[key] = value
+    claimed.set(owner.name, slice)
+  }
+
+  if (unclaimed.length > 0) {
+    const registered = [...snapshotParticipants.keys()].join(", ") || "(none)"
+    throw new Error(
+      `setStateForTests: no snapshot participant claims ${unclaimed.map((key) => `\`${key}\``).join(", ")}. `
+        + `Registered participants: ${registered}. `
+        + `A domain that keeps test-visible state outside \`state\` must call registerSnapshotParticipant() `
+        + `from its core-side composition module (see src/lib/token-runtime.ts), and the bun test preload must reach that module.`,
+    )
+  }
+
+  for (const [name, slice] of claimed) snapshotParticipants.get(name)?.applyTestPatch(slice)
+  updateState(cloneStatePatch(statePatch as Partial<MutableState>))
+  if ("models" in patch && !("modelIndex" in patch) && !("modelIds" in patch)) {
+    rebuildModelIndex()
+  }
+}
+
+/** Restore state + every participant's slice from a snapshot captured by snapshotStateForTests(). */
+export function restoreStateForTests(snapshot: StateSnapshot): void {
+  updateState(cloneState(snapshot.state))
+  for (const participant of snapshotParticipants.values()) {
+    if (snapshot.participants.has(participant.name)) participant.restore(snapshot.participants.get(participant.name))
+  }
+}
+
+import {
+  //
+  CONFIG_MANAGED_DEFAULTS,
+  DEFAULT_MODEL_MAPPINGS,
+  DEFAULT_MODEL_TRANSLATION,
+} from "./state-defaults"
+
+/**
+ * The config vocabulary lives in `./state-vocabulary` (a zero-import leaf) and is re-exported here so
+ * every existing `import type { CacheTtl } from "~/lib/state"` keeps working. This re-export is safe
+ * BECAUSE the target is a leaf with no edge back — the same shape would have been a cycle if the
+ * vocabulary had been parked in `state-defaults` instead.
+ */
+export type {
+  //
+  BufferedRetryCaps,
+  BufferedRetryContinuation,
+  CacheControlMode,
+  CacheTtl,
+  CompiledRewriteRule,
+  CompiledSystemPromptEntry,
+  ContextEditingMode,
+  DiagnosticLogLevel,
+  EffectiveMaxTokensContinuationConfig,
+  LoggingConfigState,
+  LogLevel,
+  MaxTokensContinuationConfig,
+  MaxTokensContinuationOverride,
+  MaxTokensContinuationTextStrategy,
+  MaxTokensContinuationThinkingStrategy,
+  MaxTokensContinuationToolUseStrategy,
+  MaxTokensContinuationVisibility,
+  ThinkingBlockMessagePolicy,
+  UnknownEndpointLogging,
+  WarmupPolicy,
+} from "./state-vocabulary"
+
+export function resetConfigManagedState(): void {
+  setUnknownEndpointLogging({ ...CONFIG_MANAGED_DEFAULTS.unknownEndpointLogging })
+  setLoggingConfig({ ...CONFIG_MANAGED_DEFAULTS.logging })
+  setTuiEnabled(CONFIG_MANAGED_DEFAULTS.tuiEnabled)
+  setAnthropicBehavior({
+    useUpstreamCountTokens: CONFIG_MANAGED_DEFAULTS.useUpstreamCountTokens,
+    strictResponseHeaders: CONFIG_MANAGED_DEFAULTS.strictResponseHeaders,
+    strictRequestHeaders: CONFIG_MANAGED_DEFAULTS.strictRequestHeaders,
+    requestHeaderBlacklist: [...CONFIG_MANAGED_DEFAULTS.requestHeaderBlacklist],
+    requestHeaderWhitelist: [...CONFIG_MANAGED_DEFAULTS.requestHeaderWhitelist],
+    responseHeaderBlacklist: [...CONFIG_MANAGED_DEFAULTS.responseHeaderBlacklist],
+    responseHeaderWhitelist: [...CONFIG_MANAGED_DEFAULTS.responseHeaderWhitelist],
+    stripAttributionHeader: CONFIG_MANAGED_DEFAULTS.stripAttributionHeader,
+    streamKeepalivePingSec: CONFIG_MANAGED_DEFAULTS.streamKeepalivePingSec,
+    streamKeepaliveEscalateSec: CONFIG_MANAGED_DEFAULTS.streamKeepaliveEscalateSec,
+    streamKeepaliveMode: CONFIG_MANAGED_DEFAULTS.streamKeepaliveMode,
+    streamCommitAfterSec: CONFIG_MANAGED_DEFAULTS.streamCommitAfterSec,
+    preContentRecovery: { ...CONFIG_MANAGED_DEFAULTS.preContentRecovery },
+    protectStreamingGeneration: CONFIG_MANAGED_DEFAULTS.protectStreamingGeneration,
+    protectStreamingEscalateContext: CONFIG_MANAGED_DEFAULTS.protectStreamingEscalateContext,
+    injectClaudeCodeOfficialTools: CONFIG_MANAGED_DEFAULTS.injectClaudeCodeOfficialTools,
+    thinkingBlockMessagePolicy: CONFIG_MANAGED_DEFAULTS.thinkingBlockMessagePolicy,
+    thinkingBlockSanitizeCheck: CONFIG_MANAGED_DEFAULTS.thinkingBlockSanitizeCheck,
+    assistantBlockLayoutStrategy: CONFIG_MANAGED_DEFAULTS.assistantBlockLayoutStrategy,
+    separatorCarrier: CONFIG_MANAGED_DEFAULTS.separatorCarrier,
+    separatorAcceptExtra: CONFIG_MANAGED_DEFAULTS.separatorAcceptExtra,
+    stripThinkingOnReject: CONFIG_MANAGED_DEFAULTS.stripThinkingOnReject,
+    poisonedThinkingQuarantine: CONFIG_MANAGED_DEFAULTS.poisonedThinkingQuarantine,
+    poisonedThinkingTtlHours: CONFIG_MANAGED_DEFAULTS.poisonedThinkingTtlHours,
+    coerceAdaptiveThinking: CONFIG_MANAGED_DEFAULTS.coerceAdaptiveThinking,
+    systemDefaultMode: CONFIG_MANAGED_DEFAULTS.systemDefaultMode,
+    systemRejectMode: CONFIG_MANAGED_DEFAULTS.systemRejectMode,
+    systemRejectModels: [...CONFIG_MANAGED_DEFAULTS.systemRejectModels],
+    thinkingSignatureCompat: CONFIG_MANAGED_DEFAULTS.thinkingSignatureCompat,
+    dedupToolCalls: CONFIG_MANAGED_DEFAULTS.dedupToolCalls,
+    stripReadToolResultTags: CONFIG_MANAGED_DEFAULTS.stripReadToolResultTags,
+    contextEditingMode: CONFIG_MANAGED_DEFAULTS.contextEditingMode,
+    contextEditingTrigger: CONFIG_MANAGED_DEFAULTS.contextEditingTrigger,
+    contextEditingKeepTools: CONFIG_MANAGED_DEFAULTS.contextEditingKeepTools,
+    contextEditingKeepThinking: CONFIG_MANAGED_DEFAULTS.contextEditingKeepThinking,
+    toolSearchEnabled: CONFIG_MANAGED_DEFAULTS.toolSearchEnabled,
+    cacheControlMode: CONFIG_MANAGED_DEFAULTS.cacheControlMode,
+    extendedCacheTtlEnabled: CONFIG_MANAGED_DEFAULTS.extendedCacheTtlEnabled,
+    extendedCacheTtlToolsSystem: CONFIG_MANAGED_DEFAULTS.extendedCacheTtlToolsSystem,
+    extendedCacheTtlMessages: CONFIG_MANAGED_DEFAULTS.extendedCacheTtlMessages,
+    extendedCacheTtlModels: [...CONFIG_MANAGED_DEFAULTS.extendedCacheTtlModels],
+    nonDeferredTools: [...CONFIG_MANAGED_DEFAULTS.nonDeferredTools],
+    rewriteSystemReminders: CONFIG_MANAGED_DEFAULTS.rewriteSystemReminders,
+    systemPromptOverrides: [...CONFIG_MANAGED_DEFAULTS.systemPromptOverrides],
+    systemPromptPrepend: [...CONFIG_MANAGED_DEFAULTS.systemPromptPrepend],
+    systemPromptAppend: [...CONFIG_MANAGED_DEFAULTS.systemPromptAppend],
+    sanitizeToolNames: CONFIG_MANAGED_DEFAULTS.sanitizeToolNames,
+    recoverToolCallText: CONFIG_MANAGED_DEFAULTS.recoverToolCallText,
+    toolRepairMalformedInput: [...CONFIG_MANAGED_DEFAULTS.toolRepairMalformedInput],
+    refusalSseRewrite: CONFIG_MANAGED_DEFAULTS.refusalSseRewrite,
+    refusalEndTurnText: CONFIG_MANAGED_DEFAULTS.refusalEndTurnText,
+    refusalErrorMessage: CONFIG_MANAGED_DEFAULTS.refusalErrorMessage,
+    refusalErrorType: CONFIG_MANAGED_DEFAULTS.refusalErrorType,
+    errorShapingEnabled: CONFIG_MANAGED_DEFAULTS.errorShapingEnabled,
+    errorAskUserQuestion: CONFIG_MANAGED_DEFAULTS.errorAskUserQuestion,
+    errorAuqTemplate: CONFIG_MANAGED_DEFAULTS.errorAuqTemplate,
+    errorSelfhealDelegate: { ...CONFIG_MANAGED_DEFAULTS.errorSelfhealDelegate },
+    contextEditingModels: [...CONFIG_MANAGED_DEFAULTS.contextEditingModels],
+    toolSearchOverrides: { ...CONFIG_MANAGED_DEFAULTS.toolSearchOverrides },
+    memoryToolEnabled: CONFIG_MANAGED_DEFAULTS.memoryToolEnabled,
+    memoryModels: [...CONFIG_MANAGED_DEFAULTS.memoryModels],
+    interleavedThinkingModels: [...CONFIG_MANAGED_DEFAULTS.interleavedThinkingModels],
+    adaptiveThinkingModels: [...CONFIG_MANAGED_DEFAULTS.adaptiveThinkingModels],
+    warmupPolicy: CONFIG_MANAGED_DEFAULTS.warmupPolicy,
+    effortsOverrides: { ...CONFIG_MANAGED_DEFAULTS.effortsOverrides },
+    streamIdleTimeoutOverrides: { ...CONFIG_MANAGED_DEFAULTS.streamIdleTimeoutOverrides },
+    responseHeaderTimeoutOverrides: { ...CONFIG_MANAGED_DEFAULTS.responseHeaderTimeoutOverrides },
+    stripBetaHeaders: cloneStripBetaHeaders(CONFIG_MANAGED_DEFAULTS.stripBetaHeaders),
+    stripCacheControlSubfields: cloneStripBetaHeaders(CONFIG_MANAGED_DEFAULTS.stripCacheControlSubfields),
+    stripPartnerFeatures: cloneStripBetaHeaders(CONFIG_MANAGED_DEFAULTS.stripPartnerFeatures),
+    stripToolFields: cloneStripBetaHeaders(CONFIG_MANAGED_DEFAULTS.stripToolFields),
+    keepToolFields: cloneStripBetaHeaders(CONFIG_MANAGED_DEFAULTS.keepToolFields),
+    rejectBodyFields: cloneStripBetaHeaders(CONFIG_MANAGED_DEFAULTS.rejectBodyFields),
+    decodeToolInputFields: cloneStripBetaHeaders(CONFIG_MANAGED_DEFAULTS.decodeToolInputFields),
+    backfillQuestionFromHeader: CONFIG_MANAGED_DEFAULTS.backfillQuestionFromHeader,
+    fixSendMessageRecipient: CONFIG_MANAGED_DEFAULTS.fixSendMessageRecipient,
+  })
+  setModelMappings({ ...DEFAULT_MODEL_MAPPINGS })
+  setModelTranslation(cloneModelTranslation(DEFAULT_MODEL_TRANSLATION))
+  setDisabledModels([...CONFIG_MANAGED_DEFAULTS.disabledModels])
+  setTimeoutConfig({
+    responseHeaderTimeout: CONFIG_MANAGED_DEFAULTS.responseHeaderTimeout,
+    streamIdleTimeout: CONFIG_MANAGED_DEFAULTS.streamIdleTimeout,
+    staleRequestMaxAge: CONFIG_MANAGED_DEFAULTS.staleRequestMaxAge,
+    requestDeadline: CONFIG_MANAGED_DEFAULTS.requestDeadline,
+    modelRefreshInterval: CONFIG_MANAGED_DEFAULTS.modelRefreshInterval,
+  })
+  setUpstreamTransportConfig({
+    upstreamKeepaliveDelay: CONFIG_MANAGED_DEFAULTS.upstreamKeepaliveDelay,
+    upstreamH2PingInterval: CONFIG_MANAGED_DEFAULTS.upstreamH2PingInterval,
+    maxConcurrentStreamsPerSession: CONFIG_MANAGED_DEFAULTS.maxConcurrentStreamsPerSession,
+    h2IdleSessionTimeout: CONFIG_MANAGED_DEFAULTS.h2IdleSessionTimeout,
+    maxSessionsPerOrigin: CONFIG_MANAGED_DEFAULTS.maxSessionsPerOrigin,
+    upstreamH2Favor: CONFIG_MANAGED_DEFAULTS.upstreamH2Favor,
+    sessionConnectTimeout: CONFIG_MANAGED_DEFAULTS.sessionConnectTimeout,
+    pooledConnectionIdleTimeout: CONFIG_MANAGED_DEFAULTS.pooledConnectionIdleTimeout,
+    softMaxUpstreamWsConnections: CONFIG_MANAGED_DEFAULTS.softMaxUpstreamWsConnections,
+  })
+  setShutdownConfig({
+    shutdownGracefulWait: CONFIG_MANAGED_DEFAULTS.shutdownGracefulWait,
+    shutdownAbortWait: CONFIG_MANAGED_DEFAULTS.shutdownAbortWait,
+  })
+  setHooksConfig({
+    hooksUpstreamModule: CONFIG_MANAGED_DEFAULTS.hooksUpstreamModule,
+    hooksEnabled: CONFIG_MANAGED_DEFAULTS.hooksEnabled,
+  })
+  setNegotiationConfig({
+    negotiationDefaultTtlMs: CONFIG_MANAGED_DEFAULTS.negotiationDefaultTtlMs,
+    negotiationTtlOverridesMs: { ...CONFIG_MANAGED_DEFAULTS.negotiationTtlOverridesMs },
+  })
+  setHistoryConfig({
+    historyDbPath: CONFIG_MANAGED_DEFAULTS.historyDbPath,
+    historyRawCaptureEnabled: CONFIG_MANAGED_DEFAULTS.historyRawCaptureEnabled,
+    historyRawCaptureDbPath: CONFIG_MANAGED_DEFAULTS.historyRawCaptureDbPath,
+    historyRawCaptureMaxObjectBytes: CONFIG_MANAGED_DEFAULTS.historyRawCaptureMaxObjectBytes,
+  })
+  setTelemetryConfig({
+    telemetryEnabled: CONFIG_MANAGED_DEFAULTS.telemetryEnabled,
+    telemetryDbPath: CONFIG_MANAGED_DEFAULTS.telemetryDbPath,
+    telemetryPersistInterval: CONFIG_MANAGED_DEFAULTS.telemetryPersistInterval,
+    telemetryRollupInterval: CONFIG_MANAGED_DEFAULTS.telemetryRollupInterval,
+    telemetryCardinalityCap: CONFIG_MANAGED_DEFAULTS.telemetryCardinalityCap,
+    telemetrySketchGamma: CONFIG_MANAGED_DEFAULTS.telemetrySketchGamma,
+    telemetryCumulative: CONFIG_MANAGED_DEFAULTS.telemetryCumulative,
+    telemetryRawResolutionMinutes: CONFIG_MANAGED_DEFAULTS.telemetryRawResolutionMinutes,
+    telemetryRawRetentionDays: CONFIG_MANAGED_DEFAULTS.telemetryRawRetentionDays,
+    telemetryHourlyRetentionDays: CONFIG_MANAGED_DEFAULTS.telemetryHourlyRetentionDays,
+    telemetryDailyRetentionDays: CONFIG_MANAGED_DEFAULTS.telemetryDailyRetentionDays,
+  })
+  setForwardClientQuery({
+    forwardClientQuery: CONFIG_MANAGED_DEFAULTS.forwardClientQuery,
+    forwardClientQueryExclude: [...CONFIG_MANAGED_DEFAULTS.forwardClientQueryExclude],
+  })
+  setResponsesConfig({
+    normalizeResponsesCallIds: CONFIG_MANAGED_DEFAULTS.normalizeResponsesCallIds,
+    upstreamWebSocket: CONFIG_MANAGED_DEFAULTS.upstreamWebSocket,
+    responsesBufferedRetry: CONFIG_MANAGED_DEFAULTS.responsesBufferedRetry,
+    fixResponsesStreamIds: CONFIG_MANAGED_DEFAULTS.fixResponsesStreamIds,
+    responsesBufferedMergeEventCompaction: CONFIG_MANAGED_DEFAULTS.responsesBufferedMergeEventCompaction,
+    responsesBufferedMergeCompletedOutput: CONFIG_MANAGED_DEFAULTS.responsesBufferedMergeCompletedOutput,
+    stripImageGenerationTool: CONFIG_MANAGED_DEFAULTS.stripImageGenerationTool,
+  })
+  setResponsesWsIngressConfig({
+    clientWebsocketKeepOpen: CONFIG_MANAGED_DEFAULTS.clientWebsocketKeepOpen,
+    maxWsFrameBytes: CONFIG_MANAGED_DEFAULTS.maxWsFrameBytes,
+    maxClientWsConnections: CONFIG_MANAGED_DEFAULTS.maxClientWsConnections,
+  })
+  // Buffered-retry caps (vendor-neutral shared + per-vendor overrides) + the
+  // chat_completions mode switch. Reset via updateState (whole-object replace of
+  // the shared caps + overrides map, cloned off the frozen defaults).
+  updateState({
+    bufferedRetryShared: { ...CONFIG_MANAGED_DEFAULTS.bufferedRetryShared },
+    bufferedRetryOverrides: cloneBufferedRetryOverrides(CONFIG_MANAGED_DEFAULTS.bufferedRetryOverrides),
+    bufferedRetryContinuationShared: { ...CONFIG_MANAGED_DEFAULTS.bufferedRetryContinuationShared },
+    bufferedRetryContinuationOverrides: cloneContinuationOverrides(CONFIG_MANAGED_DEFAULTS.bufferedRetryContinuationOverrides),
+    maxTokensContinuationShared: cloneMaxTokensContinuationConfig(CONFIG_MANAGED_DEFAULTS.maxTokensContinuationShared),
+    maxTokensContinuationOverrides: cloneMaxTokensContinuationOverrides(CONFIG_MANAGED_DEFAULTS.maxTokensContinuationOverrides),
+    chatCompletionsBufferedRetry: CONFIG_MANAGED_DEFAULTS.chatCompletionsBufferedRetry,
+  })
+  // Shared reactive-retry budget (was auto_truncate.max_retries) + per-strategy registry opt-out.
+  setReactiveRetryConfig({
+    maxReactiveRetries: CONFIG_MANAGED_DEFAULTS.maxReactiveRetries,
+    retryStrategies: { ...CONFIG_MANAGED_DEFAULTS.retryStrategies },
+  })
+  setGenerationRuntimeConfig({
+    generationHedgeEnabled: CONFIG_MANAGED_DEFAULTS.generationHedgeEnabled,
+    generationHedgeThresholdSec: CONFIG_MANAGED_DEFAULTS.generationHedgeThresholdSec,
+    generationHedgeMaxSecondaryCandidates: CONFIG_MANAGED_DEFAULTS.generationHedgeMaxSecondaryCandidates,
+    generationRecoveryMaxCandidates: CONFIG_MANAGED_DEFAULTS.generationRecoveryMaxCandidates,
+    generationMaxActiveCandidates: CONFIG_MANAGED_DEFAULTS.generationMaxActiveCandidates,
+    generationMaxTotalCandidates: CONFIG_MANAGED_DEFAULTS.generationMaxTotalCandidates,
+    generationMaxActiveDispatches: CONFIG_MANAGED_DEFAULTS.generationMaxActiveDispatches,
+    generationMaxTotalDispatches: CONFIG_MANAGED_DEFAULTS.generationMaxTotalDispatches,
+    generationCleanupGraceSec: CONFIG_MANAGED_DEFAULTS.generationCleanupGraceSec,
+    generationHedgeAllowServerTools: CONFIG_MANAGED_DEFAULTS.generationHedgeAllowServerTools,
+  })
+}
+
+const mutableState: MutableState = {
+  unknownEndpointLogging: { ...CONFIG_MANAGED_DEFAULTS.unknownEndpointLogging },
+  logging: { ...CONFIG_MANAGED_DEFAULTS.logging },
+  tuiEnabled: CONFIG_MANAGED_DEFAULTS.tuiEnabled,
+  accountType: "individual",
+  ghcApiBaseUrl: "",
+  // History master switch (startup-phase; see the field doc). NOT in
+  // CONFIG_MANAGED_DEFAULTS so resetConfigManagedState leaves it at the boot
+  // value across hot-reloads.
+  historyEnabled: true,
+  maxReactiveRetries: CONFIG_MANAGED_DEFAULTS.maxReactiveRetries,
+  retryStrategies: { ...CONFIG_MANAGED_DEFAULTS.retryStrategies },
+  generationHedgeEnabled: CONFIG_MANAGED_DEFAULTS.generationHedgeEnabled,
+  generationHedgeThresholdSec: CONFIG_MANAGED_DEFAULTS.generationHedgeThresholdSec,
+  generationHedgeMaxSecondaryCandidates: CONFIG_MANAGED_DEFAULTS.generationHedgeMaxSecondaryCandidates,
+  generationRecoveryMaxCandidates: CONFIG_MANAGED_DEFAULTS.generationRecoveryMaxCandidates,
+  generationMaxActiveCandidates: CONFIG_MANAGED_DEFAULTS.generationMaxActiveCandidates,
+  generationMaxTotalCandidates: CONFIG_MANAGED_DEFAULTS.generationMaxTotalCandidates,
+  generationMaxActiveDispatches: CONFIG_MANAGED_DEFAULTS.generationMaxActiveDispatches,
+  generationMaxTotalDispatches: CONFIG_MANAGED_DEFAULTS.generationMaxTotalDispatches,
+  generationCleanupGraceSec: CONFIG_MANAGED_DEFAULTS.generationCleanupGraceSec,
+  generationHedgeAllowServerTools: CONFIG_MANAGED_DEFAULTS.generationHedgeAllowServerTools,
+  tokenBasedBilling: false,
+  sanitizeToolNames: CONFIG_MANAGED_DEFAULTS.sanitizeToolNames,
+  forwardClientQuery: CONFIG_MANAGED_DEFAULTS.forwardClientQuery,
+  forwardClientQueryExclude: [...CONFIG_MANAGED_DEFAULTS.forwardClientQueryExclude],
+  recoverToolCallText: CONFIG_MANAGED_DEFAULTS.recoverToolCallText,
+  toolRepairMalformedInput: [...CONFIG_MANAGED_DEFAULTS.toolRepairMalformedInput],
+  refusalSseRewrite: CONFIG_MANAGED_DEFAULTS.refusalSseRewrite,
+  refusalEndTurnText: CONFIG_MANAGED_DEFAULTS.refusalEndTurnText,
+  refusalErrorMessage: CONFIG_MANAGED_DEFAULTS.refusalErrorMessage,
+  refusalErrorType: CONFIG_MANAGED_DEFAULTS.refusalErrorType,
+  errorShapingEnabled: CONFIG_MANAGED_DEFAULTS.errorShapingEnabled,
+  errorAskUserQuestion: CONFIG_MANAGED_DEFAULTS.errorAskUserQuestion,
+  errorAuqTemplate: CONFIG_MANAGED_DEFAULTS.errorAuqTemplate,
+  errorSelfhealDelegate: { ...CONFIG_MANAGED_DEFAULTS.errorSelfhealDelegate },
+  contextEditingModels: [...CONFIG_MANAGED_DEFAULTS.contextEditingModels],
+  toolSearchOverrides: { ...CONFIG_MANAGED_DEFAULTS.toolSearchOverrides },
+  memoryToolEnabled: CONFIG_MANAGED_DEFAULTS.memoryToolEnabled,
+  memoryModels: [...CONFIG_MANAGED_DEFAULTS.memoryModels],
+  interleavedThinkingModels: [...CONFIG_MANAGED_DEFAULTS.interleavedThinkingModels],
+  adaptiveThinkingModels: [...CONFIG_MANAGED_DEFAULTS.adaptiveThinkingModels],
+  contextEditingMode: CONFIG_MANAGED_DEFAULTS.contextEditingMode,
+  contextEditingTrigger: CONFIG_MANAGED_DEFAULTS.contextEditingTrigger,
+  contextEditingKeepTools: CONFIG_MANAGED_DEFAULTS.contextEditingKeepTools,
+  contextEditingKeepThinking: CONFIG_MANAGED_DEFAULTS.contextEditingKeepThinking,
+  toolSearchEnabled: CONFIG_MANAGED_DEFAULTS.toolSearchEnabled,
+  cacheControlMode: CONFIG_MANAGED_DEFAULTS.cacheControlMode,
+  extendedCacheTtlEnabled: CONFIG_MANAGED_DEFAULTS.extendedCacheTtlEnabled,
+  extendedCacheTtlToolsSystem: CONFIG_MANAGED_DEFAULTS.extendedCacheTtlToolsSystem,
+  extendedCacheTtlMessages: CONFIG_MANAGED_DEFAULTS.extendedCacheTtlMessages,
+  extendedCacheTtlModels: [...CONFIG_MANAGED_DEFAULTS.extendedCacheTtlModels],
+  nonDeferredTools: [...CONFIG_MANAGED_DEFAULTS.nonDeferredTools],
+  useUpstreamCountTokens: CONFIG_MANAGED_DEFAULTS.useUpstreamCountTokens,
+  strictResponseHeaders: CONFIG_MANAGED_DEFAULTS.strictResponseHeaders,
+  strictRequestHeaders: CONFIG_MANAGED_DEFAULTS.strictRequestHeaders,
+  requestHeaderBlacklist: [...CONFIG_MANAGED_DEFAULTS.requestHeaderBlacklist],
+  requestHeaderWhitelist: [...CONFIG_MANAGED_DEFAULTS.requestHeaderWhitelist],
+  responseHeaderBlacklist: [...CONFIG_MANAGED_DEFAULTS.responseHeaderBlacklist],
+  responseHeaderWhitelist: [...CONFIG_MANAGED_DEFAULTS.responseHeaderWhitelist],
+  stripAttributionHeader: CONFIG_MANAGED_DEFAULTS.stripAttributionHeader,
+  streamKeepalivePingSec: CONFIG_MANAGED_DEFAULTS.streamKeepalivePingSec,
+  streamKeepaliveEscalateSec: CONFIG_MANAGED_DEFAULTS.streamKeepaliveEscalateSec,
+  streamKeepaliveMode: CONFIG_MANAGED_DEFAULTS.streamKeepaliveMode,
+  streamCommitAfterSec: CONFIG_MANAGED_DEFAULTS.streamCommitAfterSec,
+  preContentRecovery: { ...CONFIG_MANAGED_DEFAULTS.preContentRecovery },
+  protectStreamingGeneration: CONFIG_MANAGED_DEFAULTS.protectStreamingGeneration,
+  bufferedRetryShared: { ...CONFIG_MANAGED_DEFAULTS.bufferedRetryShared },
+  bufferedRetryOverrides: cloneBufferedRetryOverrides(CONFIG_MANAGED_DEFAULTS.bufferedRetryOverrides),
+  bufferedRetryContinuationShared: { ...CONFIG_MANAGED_DEFAULTS.bufferedRetryContinuationShared },
+  bufferedRetryContinuationOverrides: cloneContinuationOverrides(CONFIG_MANAGED_DEFAULTS.bufferedRetryContinuationOverrides),
+  maxTokensContinuationShared: cloneMaxTokensContinuationConfig(CONFIG_MANAGED_DEFAULTS.maxTokensContinuationShared),
+  maxTokensContinuationOverrides: cloneMaxTokensContinuationOverrides(CONFIG_MANAGED_DEFAULTS.maxTokensContinuationOverrides),
+  chatCompletionsBufferedRetry: CONFIG_MANAGED_DEFAULTS.chatCompletionsBufferedRetry,
+  protectStreamingEscalateContext: CONFIG_MANAGED_DEFAULTS.protectStreamingEscalateContext,
+  injectClaudeCodeOfficialTools: CONFIG_MANAGED_DEFAULTS.injectClaudeCodeOfficialTools,
+  thinkingBlockMessagePolicy: CONFIG_MANAGED_DEFAULTS.thinkingBlockMessagePolicy,
+  thinkingBlockSanitizeCheck: CONFIG_MANAGED_DEFAULTS.thinkingBlockSanitizeCheck,
+  assistantBlockLayoutStrategy: CONFIG_MANAGED_DEFAULTS.assistantBlockLayoutStrategy,
+  separatorCarrier: CONFIG_MANAGED_DEFAULTS.separatorCarrier,
+  separatorAcceptExtra: CONFIG_MANAGED_DEFAULTS.separatorAcceptExtra,
+  stripThinkingOnReject: CONFIG_MANAGED_DEFAULTS.stripThinkingOnReject,
+  poisonedThinkingQuarantine: CONFIG_MANAGED_DEFAULTS.poisonedThinkingQuarantine,
+  poisonedThinkingTtlHours: CONFIG_MANAGED_DEFAULTS.poisonedThinkingTtlHours,
+  coerceAdaptiveThinking: CONFIG_MANAGED_DEFAULTS.coerceAdaptiveThinking,
+  systemDefaultMode: CONFIG_MANAGED_DEFAULTS.systemDefaultMode,
+  systemRejectMode: CONFIG_MANAGED_DEFAULTS.systemRejectMode,
+  systemRejectModels: [...CONFIG_MANAGED_DEFAULTS.systemRejectModels],
+  thinkingSignatureCompat: CONFIG_MANAGED_DEFAULTS.thinkingSignatureCompat,
+  dedupToolCalls: CONFIG_MANAGED_DEFAULTS.dedupToolCalls,
+  responseHeaderTimeout: CONFIG_MANAGED_DEFAULTS.responseHeaderTimeout,
+  historyDbPath: CONFIG_MANAGED_DEFAULTS.historyDbPath,
+  historyRawCaptureEnabled: CONFIG_MANAGED_DEFAULTS.historyRawCaptureEnabled,
+  historyRawCaptureDbPath: CONFIG_MANAGED_DEFAULTS.historyRawCaptureDbPath,
+  historyRawCaptureMaxObjectBytes: CONFIG_MANAGED_DEFAULTS.historyRawCaptureMaxObjectBytes,
+  telemetryEnabled: CONFIG_MANAGED_DEFAULTS.telemetryEnabled,
+  telemetryDbPath: CONFIG_MANAGED_DEFAULTS.telemetryDbPath,
+  telemetryPersistInterval: CONFIG_MANAGED_DEFAULTS.telemetryPersistInterval,
+  telemetryRollupInterval: CONFIG_MANAGED_DEFAULTS.telemetryRollupInterval,
+  telemetryCardinalityCap: CONFIG_MANAGED_DEFAULTS.telemetryCardinalityCap,
+  telemetrySketchGamma: CONFIG_MANAGED_DEFAULTS.telemetrySketchGamma,
+  telemetryCumulative: CONFIG_MANAGED_DEFAULTS.telemetryCumulative,
+  telemetryRawResolutionMinutes: CONFIG_MANAGED_DEFAULTS.telemetryRawResolutionMinutes,
+  telemetryRawRetentionDays: CONFIG_MANAGED_DEFAULTS.telemetryRawRetentionDays,
+  telemetryHourlyRetentionDays: CONFIG_MANAGED_DEFAULTS.telemetryHourlyRetentionDays,
+  telemetryDailyRetentionDays: CONFIG_MANAGED_DEFAULTS.telemetryDailyRetentionDays,
+  modelIds: new Set(),
+  modelIndex: new Map(),
+  modelMappings: { ...DEFAULT_MODEL_MAPPINGS },
+  modelTranslation: cloneModelTranslation(DEFAULT_MODEL_TRANSLATION),
+  rewriteSystemReminders: CONFIG_MANAGED_DEFAULTS.rewriteSystemReminders,
+  showGitHubToken: false,
+  shutdownAbortWait: CONFIG_MANAGED_DEFAULTS.shutdownAbortWait,
+  shutdownGracefulWait: CONFIG_MANAGED_DEFAULTS.shutdownGracefulWait,
+  staleRequestMaxAge: CONFIG_MANAGED_DEFAULTS.staleRequestMaxAge,
+  requestDeadline: CONFIG_MANAGED_DEFAULTS.requestDeadline,
+  modelRefreshInterval: CONFIG_MANAGED_DEFAULTS.modelRefreshInterval,
+  streamIdleTimeout: CONFIG_MANAGED_DEFAULTS.streamIdleTimeout,
+  upstreamKeepaliveDelay: CONFIG_MANAGED_DEFAULTS.upstreamKeepaliveDelay,
+  upstreamH2PingInterval: CONFIG_MANAGED_DEFAULTS.upstreamH2PingInterval,
+  maxConcurrentStreamsPerSession: CONFIG_MANAGED_DEFAULTS.maxConcurrentStreamsPerSession,
+  h2IdleSessionTimeout: CONFIG_MANAGED_DEFAULTS.h2IdleSessionTimeout,
+  maxSessionsPerOrigin: CONFIG_MANAGED_DEFAULTS.maxSessionsPerOrigin,
+  upstreamH2Favor: CONFIG_MANAGED_DEFAULTS.upstreamH2Favor,
+  sessionConnectTimeout: CONFIG_MANAGED_DEFAULTS.sessionConnectTimeout,
+  pooledConnectionIdleTimeout: CONFIG_MANAGED_DEFAULTS.pooledConnectionIdleTimeout,
+  systemPromptOverrides: [...CONFIG_MANAGED_DEFAULTS.systemPromptOverrides],
+  systemPromptPrepend: [...CONFIG_MANAGED_DEFAULTS.systemPromptPrepend],
+  systemPromptAppend: [...CONFIG_MANAGED_DEFAULTS.systemPromptAppend],
+  stripReadToolResultTags: CONFIG_MANAGED_DEFAULTS.stripReadToolResultTags,
+  normalizeResponsesCallIds: CONFIG_MANAGED_DEFAULTS.normalizeResponsesCallIds,
+  upstreamWebSocket: CONFIG_MANAGED_DEFAULTS.upstreamWebSocket,
+  responsesBufferedRetry: CONFIG_MANAGED_DEFAULTS.responsesBufferedRetry,
+  fixResponsesStreamIds: CONFIG_MANAGED_DEFAULTS.fixResponsesStreamIds,
+  responsesBufferedMergeEventCompaction: CONFIG_MANAGED_DEFAULTS.responsesBufferedMergeEventCompaction,
+  responsesBufferedMergeCompletedOutput: CONFIG_MANAGED_DEFAULTS.responsesBufferedMergeCompletedOutput,
+  stripImageGenerationTool: CONFIG_MANAGED_DEFAULTS.stripImageGenerationTool,
+  clientWebsocketKeepOpen: CONFIG_MANAGED_DEFAULTS.clientWebsocketKeepOpen,
+  maxWsFrameBytes: CONFIG_MANAGED_DEFAULTS.maxWsFrameBytes,
+  maxClientWsConnections: CONFIG_MANAGED_DEFAULTS.maxClientWsConnections,
+  softMaxUpstreamWsConnections: CONFIG_MANAGED_DEFAULTS.softMaxUpstreamWsConnections,
+  warmupPolicy: CONFIG_MANAGED_DEFAULTS.warmupPolicy,
+  effortsOverrides: { ...CONFIG_MANAGED_DEFAULTS.effortsOverrides },
+  streamIdleTimeoutOverrides: { ...CONFIG_MANAGED_DEFAULTS.streamIdleTimeoutOverrides },
+  responseHeaderTimeoutOverrides: { ...CONFIG_MANAGED_DEFAULTS.responseHeaderTimeoutOverrides },
+  stripBetaHeaders: cloneStripBetaHeaders(CONFIG_MANAGED_DEFAULTS.stripBetaHeaders),
+  stripCacheControlSubfields: cloneStripBetaHeaders(CONFIG_MANAGED_DEFAULTS.stripCacheControlSubfields),
+  stripPartnerFeatures: cloneStripBetaHeaders(CONFIG_MANAGED_DEFAULTS.stripPartnerFeatures),
+  stripToolFields: cloneStripBetaHeaders(CONFIG_MANAGED_DEFAULTS.stripToolFields),
+  keepToolFields: cloneStripBetaHeaders(CONFIG_MANAGED_DEFAULTS.keepToolFields),
+  rejectBodyFields: cloneStripBetaHeaders(CONFIG_MANAGED_DEFAULTS.rejectBodyFields),
+  decodeToolInputFields: cloneStripBetaHeaders(CONFIG_MANAGED_DEFAULTS.decodeToolInputFields),
+  backfillQuestionFromHeader: CONFIG_MANAGED_DEFAULTS.backfillQuestionFromHeader,
+  fixSendMessageRecipient: CONFIG_MANAGED_DEFAULTS.fixSendMessageRecipient,
+  negotiationDefaultTtlMs: CONFIG_MANAGED_DEFAULTS.negotiationDefaultTtlMs,
+  negotiationTtlOverridesMs: { ...CONFIG_MANAGED_DEFAULTS.negotiationTtlOverridesMs },
+  disabledModels: [...CONFIG_MANAGED_DEFAULTS.disabledModels],
+  hooksUpstreamModule: CONFIG_MANAGED_DEFAULTS.hooksUpstreamModule,
+  hooksEnabled: CONFIG_MANAGED_DEFAULTS.hooksEnabled,
+  verbose: false,
+}
+
+export const state: State = mutableState

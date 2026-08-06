@@ -14,7 +14,10 @@ describe("History V3 read-consumer cutover guard", () => {
   test("sessions facade has no V2 query, aggregate, stats, or delete dependency", () => {
     const text = source("src/lib/history/sessions.ts")
     expect(text).not.toMatch(/sqlite\/(read|sessions-agg|stats|write)/)
-    expect(text).not.toMatch(/\b(queryEntries|querySessionSummaries|computeStats|deleteSession)\b/)
+    // Guard the retired V2 APIs without rejecting the intentionally same-named
+    // V3 summary-store query. Module provenance distinguishes the contracts;
+    // a bare identifier regex cannot and produced a false red here.
+    expect(text).not.toMatch(/\b(queryEntries|computeStats|deleteSession)\b/)
     expect(text).toContain("visitV3StoredOperations")
     expect(text).toContain("recordToHistoryEntry")
   })

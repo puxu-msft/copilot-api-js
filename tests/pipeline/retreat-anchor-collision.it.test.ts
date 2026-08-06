@@ -48,9 +48,12 @@ import {
   makeSyntheticAnchorInjector,
   remapAnthropicBlockIndex,
   syntheticMessageStartFrame,
+  createGenerationWireIndexAllocator,
+  createGenerationWireState,
 } from "~/lib/anthropic/keepalive-anchor"
 import { createRequestContext } from "~/lib/context/request"
-import { makeSseSink } from "~/lib/pipeline/client-sink"
+import { makeDeliverySseSink } from "~/lib/pipeline/client-sink"
+import { getDownstreamDeliverySession } from "~/lib/pipeline/delivery/session"
 import {
   //
   createPipelineDriver,
@@ -169,11 +172,11 @@ const emptyDeltaFor = (ob?: OpenBlock): ClientFrame => {
   return PING
 }
 
-function stubSseStream(): { stream: Parameters<typeof makeSseSink>[0]; written: Array<{ data: string; event?: string }> } {
+function stubSseStream(): { stream: Parameters<typeof makeDeliverySseSink>[0]; written: Array<{ data: string; event?: string }> } {
   const written: Array<{ data: string; event?: string }> = []
   const stream = {
     writeSSE: (m: { data: string; event?: string }) => (written.push({ data: m.data, ...(m.event !== undefined && { event: m.event }) }), Promise.resolve()),
-  } as unknown as Parameters<typeof makeSseSink>[0]
+  } as unknown as Parameters<typeof makeDeliverySseSink>[0]
   return { stream, written }
 }
 
@@ -192,15 +195,29 @@ function seqOf(written: Array<{ data: string; event?: string }>): Array<string> 
   })
 }
 
-function buildAnchoredSink(stream: Parameters<typeof makeSseSink>[0]): {
+function buildAnchoredSink(stream: Parameters<typeof makeDeliverySseSink>[0]): {
   sink: ClientSink
   anchor: AnchorHooks
   anchorState: AnchorState
   lastInjectResult: () => boolean | undefined
 } {
-  const anchorState: AnchorState = { injected: false, messageStartForwarded: false, anchorBlockOpen: false, anchorClosed: false }
+  const allocator = createGenerationWireIndexAllocator()
+  const wireState = createGenerationWireState(allocator)
+  const anchorState: AnchorState = {
+    wireState,
+    injected: false,
+    messageStartForwarded: false,
+    anchorBlockOpen: false,
+    anchorClosed: false,
+  }
   const anchor: AnchorHooks = {
-    isContentBlockStart: (fr: { data?: string }) => { try { return (JSON.parse(fr.data ?? "{}") as { type?: unknown }).type === "content_block_start" } catch { return false } },
+    isContentBlockStart: (fr: { data?: string }) => {
+      try {
+        return (JSON.parse(fr.data ?? "{}") as { type?: unknown }).type === "content_block_start"
+      } catch {
+        return false
+      }
+    },
     isMessageStart: (fr) => {
       try {
         return typeof fr.data === "string" && (JSON.parse(fr.data) as { type?: string }).type === "message_start"
@@ -208,9 +225,9 @@ function buildAnchoredSink(stream: Parameters<typeof makeSseSink>[0]): {
         return false
       }
     },
-    startFrame: anchorStartFrame(),
-    stopFrame: anchorStopFrame(),
-    deltaFrame: anchorDeltaFrame(),
+    startFrame: anchorStartFrame,
+    stopFrame: anchorStopFrame,
+    deltaFrame: anchorDeltaFrame,
     syntheticMessageStart: syntheticMessageStartFrame,
     remap: remapAnthropicBlockIndex,
   }
@@ -228,8 +245,9 @@ function buildAnchoredSink(stream: Parameters<typeof makeSseSink>[0]): {
     lastInjectResult = did
     return did
   }
-  const sink = makeSseSink(stream, { heartbeat: { intervalSec: 15, pingFrame: emptyDeltaFor, injectAnchor } })
+  const sink = makeDeliverySseSink(stream, { wireState, legacyAnchorMirror: anchorState, heartbeat: { intervalSec: 15, pingFrame: emptyDeltaFor, injectAnchor } })
   sinkHolder.current = sink
+  void getDownstreamDeliverySession(sink)?.allocationPort.beginLeg("primary", { candidateId: "candidate-test", dispatchId: "dispatch-test" })
   return { sink, anchor, anchorState, lastInjectResult: () => lastInjectResult }
 }
 

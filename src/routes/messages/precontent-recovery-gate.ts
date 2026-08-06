@@ -32,8 +32,13 @@ export function shouldAttemptPreContentRecovery(input: PreContentRecoveryGateInp
     case "abort": {
       switch (input.failure.abortKind) {
         case "client-abort":
+        case "shutdown":
+        case "header-timeout":
+        case "request-deadline":
         case "reaper-cancel":
-        case "timeout": {
+        case "request-cancel":
+        case "dispatch-cancel":
+        case "unknown-abort": {
           return false
         }
         default: {

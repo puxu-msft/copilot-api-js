@@ -51,10 +51,19 @@ function canonicalizeCycle(cycle: Array<string>): string {
  * different starting node in future versions.
  */
 export async function computeCircularSnapshot(): Promise<CircularSnapshot> {
-  const graph = await madge(path.join(REPO_ROOT, "src"), {
-    fileExtensions: ["ts"],
-    tsConfig: path.join(REPO_ROOT, "tsconfig.json"),
-  })
+  // Every workspace package is a scan root, not just `src/`. Scanning `src/` alone made the snapshot
+  // BLIND to a file the moment it was extracted into a package: `state.ts` moving into
+  // `packages/foundation` would have dropped out of `members` purely because its path stopped
+  // matching, and "state is no longer in any cycle" would have been a path artefact rather than a
+  // proof (docs/plan/2026-07-28-state-to-foundation/HANDOVER.md S6). madge dedupes by resolved path,
+  // so a file reachable from two roots is still one node.
+  const graph = await madge(
+    [path.join(REPO_ROOT, "src"), ...["foundation", "token", "telemetry", "cli"].map((name) => path.join(REPO_ROOT, "packages", name, "src"))],
+    {
+      fileExtensions: ["ts"],
+      tsConfig: path.join(REPO_ROOT, "tsconfig.json"),
+    },
+  )
   const raw = graph.circular()
   const cycles = raw.map(canonicalizeCycle).sort()
   const members = [...new Set(raw.flat())].sort()

@@ -14,13 +14,16 @@ import {
   resetConfigCache,
   setBundledConfigForTests,
 } from "~/lib/config/config"
+import {
+  //
+  resolveEffectiveMaxTokensContinuation,
+  resolveMaxTokensContinuation,
+} from "~/lib/config/model-overrides"
 import { PATHS } from "~/lib/config/paths"
 import { ConfigSchema } from "~/lib/config/schema"
 import {
   //
   resetConfigManagedState,
-  resolveEffectiveMaxTokensContinuation,
-  resolveMaxTokensContinuation,
   setMaxTokensContinuationOverride,
   setMaxTokensContinuationShared,
 } from "~/lib/state"

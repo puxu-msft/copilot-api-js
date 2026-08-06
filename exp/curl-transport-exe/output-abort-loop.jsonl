@@ -1,0 +1,2 @@
+{"signal":"SIGTERM","n":30,"medianMs":0.8736099999999993,"p95Ms":1.0615120000000005,"maxMs":1.0828129999999874,"beforeFds":12,"afterFds":12,"childStates":[],"zombies":[],"exits":["143/SIGTERM"]}
+{"signal":"SIGKILL","n":30,"medianMs":0.9315110000000004,"p95Ms":3.2764379999999846,"maxMs":4.021445999999969,"beforeFds":12,"afterFds":12,"childStates":[],"zombies":[],"exits":["137/SIGKILL"]}

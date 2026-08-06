@@ -7,13 +7,60 @@ export interface TantivySearchHit {
   score: number
 }
 
+export interface NativeHistorySearchDocument {
+  operationId: string
+  operationKind: string
+  createdAt: number
+  committedAt: number
+  content: string
+  endpoint?: string
+  state?: string
+  pid?: number
+  sessionId?: string
+  agentId?: string
+  requestModel?: string
+  responseModel?: string
+}
+
+export interface NativeHistoryListSearchRequest {
+  query: string
+  operationKinds: Array<string>
+  endpoint?: string
+  states: Array<string>
+  pid?: number
+  sessionId?: string
+  agentId?: string
+  mainAgentOnly?: boolean
+  model?: string
+  from?: number
+  to?: number
+  targetCommittedAt: number
+  targetOperationIds: Array<string>
+  cursorStartedAt?: number
+  cursorOperationId?: string
+  cursorRequireMatch?: boolean
+  direction: "older" | "newer"
+  limit: number
+}
+
+export interface NativeHistoryListSearchResult {
+  operationIds: Array<string>
+  total: number
+  hasOlder: boolean
+  hasNewer: boolean
+  invalidCursor: boolean
+}
+
 /** Stateful handle over one on-disk Tantivy index (napi class instance). */
 export interface NativeHistoryIndex {
-  /** Stage an upsert. Does NOT commit — call `flush` to persist a batch. */
+  /** Legacy score-search upsert. Product list-search uses the complete summary document below. */
   upsert(operationId: string, operationKind: string, createdAt: number, content: string): Promise<void>
+  /** Stage a complete product list-search document. Does NOT commit — call `flush`. */
+  upsertSummary(document: NativeHistorySearchDocument): Promise<void>
   /** Commit all staged documents in a single segment and reload the reader. */
   flush(): Promise<void>
   search(query: string, operationKind: string | undefined, limit: number): Promise<Array<TantivySearchHit>>
+  listSearch(request: NativeHistoryListSearchRequest): Promise<NativeHistoryListSearchResult>
   /** Flush any staged documents before the handle is released. */
   close(): Promise<void>
 }

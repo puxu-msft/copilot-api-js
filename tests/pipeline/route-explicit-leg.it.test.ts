@@ -38,9 +38,9 @@ import type {
   RouteDecision,
 } from "~/lib/pipeline/types"
 
+import { setModels } from "~/lib/models/cache"
 import { ENDPOINT } from "~/lib/models/endpoint"
 import { decideRoute } from "~/lib/pipeline/router"
-import { setModels } from "~/lib/state"
 
 import { mockModel } from "../helpers/factories"
 import { useIsolatedRuntime } from "../helpers/isolated-fixture"

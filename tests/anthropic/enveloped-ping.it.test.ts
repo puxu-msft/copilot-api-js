@@ -38,6 +38,8 @@ import {
   makeSyntheticEnvelopeInjector,
   remapAnthropicBlockIndex,
   syntheticMessageStartFrame,
+  createGenerationWireIndexAllocator,
+  createGenerationWireState,
 } from "~/lib/anthropic/keepalive-anchor"
 import { resolveAnthropicKeepalive } from "~/lib/anthropic/keepalive-frame"
 import { makeReconcilingSink } from "~/lib/anthropic/live-reconcile"
@@ -56,7 +58,13 @@ function stubSseStream(): { stream: Parameters<typeof makeSseSink>[0]; written: 
 /** The AnchorHooks the Anthropic handler supplies for enveloped_ping (full frames; the anchor ones stay unused). */
 function anchorHooks(): AnchorHooks {
   return {
-    isContentBlockStart: (fr: { data?: string }) => { try { return (JSON.parse(fr.data ?? "{}") as { type?: unknown }).type === "content_block_start" } catch { return false } },
+    isContentBlockStart: (fr: { data?: string }) => {
+      try {
+        return (JSON.parse(fr.data ?? "{}") as { type?: unknown }).type === "content_block_start"
+      } catch {
+        return false
+      }
+    },
     isMessageStart: (fr) => {
       try {
         return typeof fr.data === "string" && (JSON.parse(fr.data) as { type?: string }).type === "message_start"
@@ -64,9 +72,9 @@ function anchorHooks(): AnchorHooks {
         return false
       }
     },
-    startFrame: anchorStartFrame(),
-    stopFrame: anchorStopFrame(),
-    deltaFrame: anchorDeltaFrame(),
+    startFrame: anchorStartFrame,
+    stopFrame: anchorStopFrame,
+    deltaFrame: anchorDeltaFrame,
     syntheticMessageStart: syntheticMessageStartFrame,
     remap: remapAnthropicBlockIndex,
   }
@@ -79,7 +87,13 @@ function buildOnStream(
   resolvedName: string,
   reqId: string,
 ): { sink: ClientSink; anchorState: AnchorState; anchor: AnchorHooks } {
-  const anchorState: AnchorState = { injected: false, messageStartForwarded: false, anchorBlockOpen: false, anchorClosed: false }
+  const anchorState: AnchorState = {
+    wireState: createGenerationWireState(createGenerationWireIndexAllocator()),
+    injected: false,
+    messageStartForwarded: false,
+    anchorBlockOpen: false,
+    anchorClosed: false,
+  }
   const anchor = anchorHooks()
   const sinkHolder: { current: ClientSink | undefined } = { current: undefined }
   const injector = makeSyntheticEnvelopeInjector({ anchor, state: anchorState, getSink: () => sinkHolder.current, resolvedName, reqId })

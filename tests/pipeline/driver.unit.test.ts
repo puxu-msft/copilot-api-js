@@ -37,7 +37,9 @@ import type {
   UpstreamFrame,
   UpstreamStream,
 } from "~/lib/pipeline/types"
+import type { ChatCompletionsPayload } from "~/types/api/openai-chat-completions"
 
+import { buildOpenAiCcStrategies } from "~/lib/codec/openai-cc/strategies"
 import { HTTPError } from "~/lib/error"
 import {
   //
@@ -57,6 +59,8 @@ import {
 } from "~/lib/pipeline/driver"
 import { StreamClientAbortError } from "~/lib/stream"
 import { UpstreamTransportFallbackError } from "~/lib/transport/fallback"
+
+import { FakeClock } from "../helpers/fake-clock"
 
 // ── ctx recorder ──────────────────────────────────────────────────────────
 
@@ -372,6 +376,41 @@ describe("driver.runRequest — orchestration", () => {
 })
 
 describe("driver.runExchange — error-driven retry", () => {
+  test("retries an empty-body upstream HTTP 499 through the production network strategy", async () => {
+    const clock = new FakeClock()
+    clock.install()
+    try {
+      const { ctx, calls } = makeCtx()
+      const env = makeEnv(ctx, { model: "test-model", messages: [] } as unknown as ChatCompletionsPayload)
+      const { codec } = makeCodec({ env })
+      let attempts = 0
+      const transport = makeTransport(async () => {
+        attempts++
+        if (attempts === 1) throw new HTTPError("Client Closed Request", 499, "")
+        return okStream()
+      })
+      const driver = createPipelineDriver({
+        ...BASE,
+        codec,
+        decideRoute: (e) => codec.decideRoute(e),
+        transport,
+        strategies: buildOpenAiCcStrategies({ originalPayload: env.body as ChatCompletionsPayload, model: undefined, maxRetries: 3 }),
+      })
+
+      const resultPromise = driver.runRequest({ body: {}, headers: new Headers() })
+      for (let i = 0; i < 50 && clock.liveTimerCount === 0; i++) await Promise.resolve()
+      expect(clock.liveTimerDelaysMs).toEqual([1000])
+      await clock.advance(1000)
+      const result = await resultPromise
+
+      expect(result.ok).toBe(true)
+      expect(attempts).toBe(2)
+      expect(calls.recordAttemptFailure).toEqual([{ willRetry: true, nextStrategy: "network-retry", waitMs: 1000 }])
+    } finally {
+      clock.restore()
+    }
+  })
+
   test("retries once via a strategy, then succeeds", async () => {
     const { ctx, calls } = makeCtx()
     const env = makeEnv(ctx)

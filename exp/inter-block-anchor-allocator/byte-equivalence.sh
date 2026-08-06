@@ -6,8 +6,25 @@ REPO="${REPO_OVERRIDE:-$(cd "$DIR/../.." && pwd)}"
 PORT="${PORT:-}"
 WORK_DIR="${WORK_DIR:-/tmp/inter-block-anchor-allocator-baseline}"
 APP_DIR="$WORK_DIR/copilot-api"
-CAPTURE="${CAPTURE_OVERRIDE:-$DIR/pre-change-wire.sse}"
+# The authoritative O-6 fixture. Capturing writes somewhere else and then compares, because a gate
+# whose default action is to overwrite its own baseline can only ever pass.
+BASELINE="$DIR/pre-change-wire.sse"
+RECAPTURE="${RECAPTURE:-0}"
+CAPTURE="${CAPTURE_OVERRIDE:-$WORK_DIR/current-wire.sse}"
 LOG="$WORK_DIR/server.log"
+EVIDENCE_TIMING="${EVIDENCE_TIMING:-dev}"
+case "$EVIDENCE_TIMING" in
+  dev|closeout) ;;
+  *)
+    printf 'EVIDENCE_TIMING must be dev or closeout, got %s\n' "$EVIDENCE_TIMING" >&2
+    exit 2
+    ;;
+esac
+MEASURED_SHA="$(git -C "$REPO" rev-parse HEAD 2>/dev/null || true)"
+if [[ ! "$MEASURED_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+  printf 'cannot resolve a full measured_sha from %s\n' "$REPO" >&2
+  exit 2
+fi
 PID_FILE="$WORK_DIR/server.pid"
 HOOK_MARKER='msg_allocator_baseline'
 HOOK_TEXT='allocator baseline'
@@ -116,6 +133,27 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
+# Which tree this gate measured. Without it the answer is unobtainable after the
+# fact: the capture is pure SSE bytes and the EXIT trap kills the server before
+# anyone could read /proc/<pid>/cwd. A plan step that told an executor to derive
+# the tree "from the O-6 capture" was therefore unexecutable, and the only
+# remaining options were to assert "I cd'd correctly" -- which the same step
+# forbade -- or to edit this script from inside a cutover commit.
+# `cd` does not move it: REPO comes from this file's own location, so the gate
+# measures whichever tree holds the copy you invoked.
+# Structured evidence intent. Consumers MUST read these exact fields rather
+# than infer self-reference by grepping prose for a SHA spelling. The output
+# claims the current HEAD by construction, so it is self-referential and must
+# stay outside the measured tree if it is archived verbatim.
+printf 'evidence_timing=%s\n' "$EVIDENCE_TIMING"
+printf 'measured_sha=%s\n' "$MEASURED_SHA"
+printf 'claims_current_head=true\n'
+printf 'repo=%s\n' "$REPO"
+printf 'server_entry=%s\n' "$REPO/packages/cli/src/main.ts"
+printf 'head=%s tree=%s\n' \
+  "$MEASURED_SHA" \
+  "$([ -n "$(git -C "$REPO" status --porcelain 2>/dev/null)" ] && echo DIRTY || echo clean)"
+
 XDG_DATA_HOME="$WORK_DIR" NODE_ENV=production bun run "$REPO/packages/cli/src/main.ts" start --port "$PORT" > "$LOG" 2>&1 &
 pid=$!
 printf '%s\n' "$pid" > "$PID_FILE"
@@ -160,3 +198,23 @@ sha256sum "$CAPTURE"
 wc -c "$CAPTURE"
 printf 'port=%s listener_pid=%s spawn_pid=%s\n' "$PORT" "$(ss -ltnp "sport = :$PORT" | grep -oP 'pid=\K[0-9]+' | sort -u)" "$pid"
 printf 'capture=%s\n' "$CAPTURE"
+
+if [[ "$RECAPTURE" == "1" ]]; then
+  cp "$CAPTURE" "$BASELINE"
+  printf 'RECAPTURE=1: rewrote the authoritative fixture %s — commit this separately from any implementation change.\n' "$BASELINE"
+  exit 0
+fi
+
+if [[ ! -f "$BASELINE" ]]; then
+  printf 'no baseline at %s; run once with RECAPTURE=1 to establish one\n' "$BASELINE" >&2
+  exit 8
+fi
+
+if cmp -s "$CAPTURE" "$BASELINE"; then
+  printf 'O-6 PASS: captured wire is byte-identical to %s (repo=%s)\n' "$BASELINE" "$REPO"
+  exit 0
+fi
+
+printf 'O-6 FAIL: captured wire differs from %s\n' "$BASELINE" >&2
+cmp "$CAPTURE" "$BASELINE" >&2 || true
+exit 9

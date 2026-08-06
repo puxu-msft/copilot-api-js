@@ -1,6 +1,6 @@
 ---
 name: reference-worktree-bun-add-needs-main-tree-install-after-merge
-description: worktree 的隔离性没你以为的强，三个方向都会咬：① worktree 里 bun add 的依赖不进主树，FF 后主树须补 install；② 新建 worktree 里缺 native/*.node 等构建产物，在其中跑测试会红成一片、极易误判为既有失败；③ 建在仓库内（.worktrees/）的 worktree 仍会向上解析到主树 node_modules，拿它做「裸装能不能跑」的隔离验证是假的
+description: worktree 的隔离性有五个方向：依赖与 ignored 产物不随树、仓库内树会向上借 node_modules、命令可能跑错树、不同基线的普通 merge 还会夹带无关祖先；集成前须审 ancestry 与补丁范围
 metadata: 
   node_type: memory
   type: reference
@@ -38,4 +38,26 @@ metadata:
 - 同一次实测还证伪了另一条更常犯的推断：**用 grep/正则扫 import 语句来清点依赖是不可靠的**（多行 import 形式、Vue 模板语法都会骗过正则——我的扫描漏掉了 `diff`，却把 `:disabled=` 当成包名）。「这个项目需要哪些依赖」唯一可信的 oracle 是仓库外裸装裸跑。
 - 边界也要如实写：同一次实测里 `build`/`test` 在仓库外能跑，`typecheck` 不能（它经 `~backend/*` 拖入后端源码，后端自己的依赖装在仓库根）。别把不对称的结论压成一句「已独立」。
 
-**Related:** worktree SDD 流程见 [[git-commit-pathspec-commits-worktree-not-index]]；no-auto-server 见 CLAUDE.md 工程纪律。实例来自 2026-07-11 列配置特性（dnd-kit reorder）合并后。
+## 第四方向（2026-07-29 新增）：验证命令实际落在哪棵树，委派消息说了不算
+
+前三条讲**树里有什么**；这条讲**验证命令实际落在哪棵树**。2026-07-29 在 Claude Code 2.1.220 / Claude Agent SDK 0.3.218 的普通 subagent 委派中实测：仅在 prompt 文本里写「工作目录是 `<worktree>`」**不会**改变该 subagent 的初始 Bash cwd，它继承会话启动时的 cwd（本次主会话起于主树 `/home/xp/src/copilot-api-js`，故 subagent 落在主树）。**边界要如实说**：若走显式的 worktree isolation / cwd 启动机制（`Agent` 工具有 `isolation: "worktree"` 参数），或主会话本来就在别的目录，结果会不同；这是环境相关行为，不是跨版本契约，每次都该实测而不是背下结论。
+
+**失效形态取决于目标选择器，不取决于 eslint/typecheck/test 这几个工具名**——我最初把它写成「eslint 必红、测试必绿」，被评审用实测推翻：精确指定一个只存在于 feature 树的文件时，`bunx eslint <该文件>`（exit 2）和 `bun test <该测试文件>`（exit 1）**都会**响亮报未匹配；而指定主树中本就存在的宽目录或全项目入口时（`bun run typecheck`、`bun test tests/routes/`），命令会在主树正常通过（本次实测 112 pass / 0 fail），也可能因主树自身无关问题而失败（宽目录 eslint 撞既有 Prettier 错、`eslint --cache` 另有假绿——见 [[tooling-eslint-cache-false-pass]]）。**要点是：命令的退出状态不能证明它验证了目标树**。这是 [[feedback-pass-null-clean-not-self-validating]] 的一个具体形态：绿证明了某件事，只是不是你要的那件事。
+
+2026-07-29 实例：被审提交 `06dc6c29` 新增 `src/routes/messages/precontent-recovery-splice.ts` 与对应测试，主树当时**没有**这两个文件——所以主树的 typecheck 与宽目录测试即使全绿，验证的也是主树状态、不是 `06dc6c29`。措辞也要收着：无效的是**未与目标树绑定的验证结论**，不是「整轮全部无效」（同一轮里用绝对路径读 feature 提交、核 commit object 的证据仍然有效）。
+
+**How to apply:**
+- **把树向校验绑进每条承重命令的同一个 shell 链**，而不是开头查一次：`cd <绝对 worktree 路径> && test "$(git rev-parse --show-toplevel)" = "<绝对 worktree 路径>" && test "$(git rev-parse HEAD)" = "<完整目标 SHA>" && <实际命令>`。别把 `cd` 单独放在前一次工具调用里。
+- **`git -C <worktree> rev-parse HEAD` 不是树向证据**——不论调用者身处哪棵树它都返回目标 SHA，零区分力。必须用**同一 shell 内**的 `pwd -P` + `git rev-parse --show-toplevel` + **完整** SHA（主树与 worktree 恰好同提交时，只比 SHA 也没有区分力；`--short` 更不适合当来源标识）。命令若带绝对路径、`--cwd` 或别的目录覆盖参数，还要核对它们仍指向目标树。
+- **主会话收到绿报告先看树向绑定再看结论**。同理适用于评审 agent：它复跑 mutation 若跑在错树，「变红」同样无效，`git checkout --` 甚至可能还原错树。
+- 泛化：任何「agent 在非默认目录/非默认环境里干活」的委派（另一个仓库、`/tmp` 探针目录、容器内），都要求证据**随命令**携带来源，而不是相信委派消息里写过。
+
+**这条自身的教训**：我第一版给的自验点（首条命令贴 `pwd` + `git -C ... rev-parse --short HEAD`）是**推理出来的、没做过绕过测试**的 oracle，评审当场找出四条绕过路径。→ [[methodology-new-oracle-discriminating-power-is-experimental]]、[[methodology-relocate-invariant-when-guard-cannot-keep-up]]（换判据的轴：从「开头自报家门」换成「每条命令自带来源校验」）。
+
+## 第五方向（2026-08-05 新增）：worktree 隔离了文件，不会自动把分支拓扑裁成“只含我的提交”
+
+源 worktree 若从较新的 `master` 建分支，而目标特性分支仍停在较旧基线，`git merge <source>` 会按 Git 图把 source 可达、target 不可达的**全部祖先提交**带入；“source 分支只做了一次语义修复”并不等于“merge 只会带那次修复”。本轮 `fix-websearch-tool-choice` 的目标提交只改 7 个文件，但普通 merge 到 `feat/inter-block-anchor-allocator` 时相对第一父出现 **43 个文件、6875 insertions/231 deletions**——额外内容全来自 source 较新的 master 祖先。merge 无冲突且 exit 0，仍是错误集成。
+
+**触发动作：** 当准备把一个 worktree 分支集成进另一个不同基线的分支，或 clean merge 的文件面超出预期时，必须加载 skill `git-preference:isolating-from-a-shared-git-worktree` 的 “Integrating a branch back” 节；集成单元选择、ancestry 命令、patch-id/path-set 门与安全恢复边界只在该 skill 维护，本 memory 不复述。
+
+**Related:** worktree SDD 流程见 [[git-commit-pathspec-commits-worktree-not-index]]；no-auto-server 见 CLAUDE.md 工程纪律。依赖/产物三向实例来自 2026-07-11 dnd-kit 合并与 2026-07-28 UI/history-search 验证；命令树向与分支拓扑两向实例分别来自 2026-07-29 委派验证和 2026-08-05 WebSearch 集成。

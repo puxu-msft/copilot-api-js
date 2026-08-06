@@ -21,11 +21,8 @@ import type { ModelOperationRecord } from "~/lib/context/model-operation-record"
 import type { RequestContext } from "~/lib/context/request"
 
 import { getRequestContextManager } from "~/lib/context/manager"
-import {
-  //
-  setModels,
-  setStateForTests,
-} from "~/lib/state"
+import { setModels } from "~/lib/models/cache"
+import { setStateForTests } from "~/lib/state"
 
 import { mockModel } from "../helpers/factories"
 import { FakeClock } from "../helpers/fake-clock"

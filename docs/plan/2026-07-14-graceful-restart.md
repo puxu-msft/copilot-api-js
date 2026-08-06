@@ -1728,7 +1728,7 @@ git commit -m "docs(restart): flip lifecycle.md to landed + DESIGN.md live-arch 
 
 - [ ] **Step 1: 复核 backlog persistence-service 条目仍准确（保留）**
 
-- [ ] **Step 2: 按 skill `session-closeout` 走收尾五步（subagent audit / doc-sync / 归档 plan / 提炼教训 / 细粒度提交）**
+- [ ] **Step 2: 按 skill `session-closeout` 走完收尾（步数与内容以 skill 为准，勿在此冻结）**
 
 - [ ] **Step 3: Commit**
 

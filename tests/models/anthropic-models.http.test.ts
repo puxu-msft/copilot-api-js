@@ -8,7 +8,7 @@ import {
 
 import type { Model } from "~/lib/models/client"
 
-import { setModels } from "~/lib/state"
+import { setModels } from "~/lib/models/cache"
 
 import { useIsolatedRuntime } from "../helpers/isolated-fixture"
 import { createFullTestApp } from "../helpers/test-app"

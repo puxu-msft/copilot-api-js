@@ -15,11 +15,8 @@ import {
   test,
 } from "bun:test"
 
-import {
-  //
-  setModels,
-  setStateForTests,
-} from "~/lib/state"
+import { setModels } from "~/lib/models/cache"
+import { setStateForTests } from "~/lib/state"
 
 import {
   //

@@ -11,20 +11,32 @@
 - **为何暂缓**：live 路径 Task 4.1～4.5 尚未接线，此刻确定 buffered fresh attempt 如何重入循环、如何复用 splice 与簿记，缺少实际语境，容易提前固化错误形态。
 - **触发条件**：live 路径接线完成，即 Task 4.3/4.5 之后。**发现方**：Task 4.0 review（reviewer，2026-07-28）。
 
+> **⚠️ 全局更正（2026-08-02）**：下方若干条目的「为何暂缓」把「**buffered 默认 OFF，缺省无差异**」当作论据。该前提**已不成立**——`responsesBufferedRetry` 与 `chatCompletionsBufferedRetry` 已于 **2026-07-14 翻转为默认 `true`**（仅 Anthropic 的 `protectStreamingGeneration` 仍默认 `false`；权威 = `packages/foundation/src/state-defaults.ts`）。这些条目的**判断日期与理由原文保留不改写**（它们在写下时是对的），但**重新评估任何一条时必须先用当前默认值重算 blast radius**——「默认 OFF 所以缺省无差异」这句话今天对 Responses/CC 是错的。
+
 ## reverse `@messages` 非流式跨协议 refusal 抑制（2026-07-28，合并态复审后拆出）
 
-- **根因**：Anthropic whole-response refusal rewrite 位于 Anthropic wire 层；reverse `@messages` 的 Chat Completions / Responses / Gemini codec 随后把原始 Anthropic response 翻成目标协议，而三个 route settle 点此前只调用 `anthropicNonStreamingTruncation(stop_reason)`。`stop_reason:"refusal"` 是有效终止符，因此旧代码直接 `ctx.complete()`；本批已用共享 `isContentlessRefusalResponse()` 修正裁决，但没有把 Anthropic 三模式呈现策略提升为跨协议机制。
-- **当前行为**：三条 reverse 非流式腿命中 contentless refusal 时统一 `ctx.fail(refusalSummary(...), ..., {upstreamSucceeded:true})`，记录 `refusal-passthrough`，History / `/api/stats` / telemetry / TUI 的失败口径一致；客户端仍收到现有目标协议翻译：Chat Completions 的 `finish_reason:"content_filter"`、Responses 的 `status:"incomplete"` + `incomplete_details.reason:"refusal"`、Gemini 的对应 content-filter 完成原因。配置的默认 `anthropic.refusal_sse_rewrite="end_turn"` 对这三条非流式腿尚不产生抑制 wire。
-- **理想架构**：把 refusal disposition 抽成协议无关的、请求级冻结的终态决策，先基于原始 Anthropic response 判定 passthrough / suppression / error，再由 CC / Responses / Gemini 各自把该决策渲染成合法且不会中断客户端轮次的正常完成形态；raw upstream response 与 `stopDetails` 继续原样进 History，上游腿继续 `success:true`，请求裁决继续 `failed`。
-- **为何暂缓**：本批的 HIGH 缺陷是后端裁决与计数口径错误，已可独立闭合；真正抑制会改变三种公开协议的客户端 wire，需要决定每种协议的合成文本位置、完成原因、error 模式、usage 与 response id 保持方式，并补真实 SDK / CLI 消费 oracle。把这些协议设计夹进 settle 修复会产生未经规格裁决的新公共行为。
-- **若做需改什么**：① 把 `RefusalPolicy` + detail/template vars 形成跨协议 whole-response disposition；② 在 `openai-cc` / `openai-responses` / Gemini reverse renderer 中分别实现 `end_turn`、`refusal`、`error` 三模式；③ 保证目标协议 exactly-one terminus 与 raw/forwarded 双轨；④ feature 从当前固定 `refusal-passthrough` 改为实际 mode 对应值；⑤ 为三条非流式腿各补 byte golden + 官方 SDK 消费 oracle，并补至少一条同 session 后续轮继续的客户端测试。
+## reverse `@messages` **非流式**三格没跑 whole-response 改写链（2026-07-28 实测重定范围）
+
+- **实测订正（原条目范围是错的）**：这条 backlog 原本写成「六格 wire 抑制都没做」。2026-07-28 实测推翻——**流式三格已经在抑制**，客户端拿到的是正常轮（CC `finish_reason:"stop"` + end_turn 正文 + `[DONE]`；Gemini `finishReason:"STOP"` + 文本 part；Responses `response.completed`）。原因是 per-frame 改写链的门是 `targetEndpoint === /v1/messages`，reverse 腿正好命中，Anthropic 帧在 reverse 翻译器看到之前就被改写了。oracle 与逐格字节见 `tests/routes/reverse-refusal-default-wire.it.test.ts`。
+- **根因（比原描述小得多，也宽得多）**：不是「三套协议呈现逻辑没写」，而是**少调了一次**。whole-response 改写链在 `driver.runResponseWhole`（`src/lib/pipeline/driver.ts:1562`），它是 `transformWhole` 的**唯一**驱动点，而它在生产代码里**只有一个调用点**——直连 Anthropic handler（`src/routes/messages/handler-v4.ts:894`）。三条 reverse 非流式路径只调 `driver.runResponseNonStreaming`（`codec.renderResponseNonStreaming`，纯 render）。
+- **因此波及面不止 refusal**：`recover-tool-call` / `tool-input-decode` / `server-tool-filter` / `recover-refusal` 四个 `transformWhole` 钩子在 reverse 非流式腿上**全部落空**（`appliesTo` 都命中，只是链没被驱动）。refusal 只是被观测到的那一个；另外三个尚无 oracle，**做这条时应一并建**。
+- **当前行为**：六格裁决口径已统一（`ctx.fail(refusalSummary(...), ..., {upstreamSucceeded:true})` + `refusal-passthrough`，上游腿 `success:true`）。wire 上非流式三格仍是 CC `finish_reason:"content_filter"`+`content:null` / Responses `status:"incomplete"`+`incomplete_details.reason:"refusal"` / Gemini `finishReason:"SAFETY"`+空 parts。
+- **若做需改什么**：① reverse 非流式路径在翻译成目标协议**之前**，先对 Anthropic body 跑 `driver.runResponseWhole`（流式腿等价于已经这么做了，所以这是**对齐**而非新机制）；② 确认 `renderReverseNonStreamingV4` 的 settle 判据仍读**链前** upstream-original（`isRefusal` 读 `response` 而非 `finalResponse` 是抑制后 settlement 正确的原因，别改反）；③ feature 从写死的 `refusal-passthrough` 改成实际 mode；④ 把 `tests/routes/reverse-refusal-default-wire.it.test.ts` 的三条非流式期望翻成与流式一致（它们就是本任务的落地信号），并补另三个 whole 钩子的 oracle；⑤ 补至少一条同 session 后续轮可继续的真实客户端测试。
+- **为何暂缓**：改动会改变三种公开协议的客户端 wire，需要逐协议裁定合成文本位置、完成原因、error 模式、usage 与 response id 的保持方式。不阻塞任何已交付行为。
+
+## 两条顺序不变量只有注释守着（2026-07-28，来自顺序不变量审计 #3 / #5）
+
+来源：`docs/plan/2026-07-27-keepalive-and-separator/research-order-invariant-audit.md` 的发现 3 与发现 5。**这两条不是「已经错了」，是「今天对、但没有东西拦住明天改错」**——同一份审计里的 #1/#2（已发生的漂移）与 #4/#6（CRITICAL/假守卫）优先级更高，故这两条降为 backlog；**记在这里是为了不被静默丢掉**。
+
+- **#3（HIGH）delayed-commit SSE 的 abort listener 必须先于首个 ping。** 不变量原文在 `src/routes/messages/handler-v4.ts` 的 `stream.onAbort(...) // register BEFORE the first ping`。谁能破坏：把 `onAbort` 移到 `await sink.writeKeepalive(...)` 之后，或在两者间插入任何可 await 的写/初始化。后果：commit 瞬间断开会漏掉 disconnect，上游请求在无人消费后继续持有连接/accumulator/buffer——**表现是资源滞留而非即时报错**。建议守卫：抽成 `attachAbortThenEmitInitialKeepalive` 原子 helper，用可控 stream 在第一次 write 同步触发 abort，断言 `clientAbort.signal.aborted === true`。
+- **#5（MED）`createFullTestApp` 宣称镜像生产 server，但装配面没有 parity 守卫。** 生产 `src/server.ts` 与 `tests/helpers/test-app.ts` 是两份手写装配；后者仍缺 config/token middleware、unknownEndpointFinalizer、CORS、trimTrailingSlash。谁能破坏：在生产加/重排全局 middleware 而不手改 test app，大量 `.http.test.ts` 继续给假绿。**本轮已部分缓解**（给 `createFullTestApp` 加了生产同位的 `preMiddleware` 槽），但没有 parity 守卫。建议：抽共享 `configureBaseApp(app, deps)` 让两边只注入依赖差异；暂不抽则加结构守卫对两者的基础 route + middleware 注册序列做声明式对账 + 显式 allowlist。
 
 ## History 详情页 SSE 帧的绝对时间：upstream 轨的原点未证（2026-07-28）
 
 - **根因**：`clientResponse.sseEvents[].offsetMs` 是 **commit 相对**的（`client-sink.ts:216` 用 `Date.now() - streamStartMs`），而 UI 的 `FrameList` 两条轨原本都传 `entry.startedAt` 当原点（`ui-v4/src/components/detail/segments/SseEventsSegment.tsx`）。
 - **已修（2026-07-28）**：forwarded 轨改用 `entry.startedAt + (entry.timing?.client?.streamOpenMs ?? 0)`。这条有证据——生产者在 commit 时刻写 `setClientTimingEpoch("streamOpen", commitInstant)`，与 sink 的 `streamStartMs` 同源。延迟-commit 窗口默认从 20s 抬到 180s 后，这个误差被放大到约 3 分钟，所以先修它。
-- **仍未证 / 本条要做的**：**upstream 轨的 offset 原点是什么，没追出来**。合并态评审指出它未必是 `entry.startedAt`（可能是 attempt/collector 自己的原点）。若确实不是，现在这条轨显示的绝对钟点同样是错的，只是没有被本次默认值改动放大。
-- **若做需改什么**：① 追出 `attempts[].upstreamResponse.sseEvents[].offsetMs` 的写入点与其时间基（`model-operation-record.ts` / `context/request.ts:610,1594` 是消费侧，产生侧待定）；② 若原点可证 → 按轨传对应 epoch；③ 若持久化记录里**没有**可证明的原点 → 该轨只显示 elapsed 或显式「绝对时间不可用」，**不要继续伪造绝对钟点**（已有 `offsetSource === "unavailable"` 的先例可复用）；④ 补一条 UI 回归测试，构造 `streamOpenMs=180000, offsetMs=20000` 断言两轨各自渲染的钟点。
+- **原点已追到（2026-07-28 订正，此前写「没追出来」）**：upstream 轨的 offset 锚在**每个 attempt 自己的 collector epoch** 上——`src/lib/upstream-stream-diagnostics.ts` 明写「the SAME base every `sseEvents[i].offsetMs` is relative to」，且 **buffered retry 会重新绑定一个新 collector**。它既不是 `entry.startedAt` 也不是 commit。**关键：这个 epoch 没有被持久化进 history 类型**，所以 UI 拿不到它——因此该轨现在显示的绝对钟点确实是错的，且**无法靠现有持久化数据修正**。
+- **若做需改什么**（原点已知后，路线变成二选一）：**要么**把 collector 的 anchor epoch **持久化**进 history（per-attempt 一个，注意 buffered retry 会重绑），UI 再按轨渲染绝对时间；**要么**承认拿不到、该轨**只显示 elapsed 或显式「绝对时间不可用」**，`offsetSource === "unavailable"` 已有先例可复用。**别再继续伪造绝对钟点。** 无论走哪条，补一条 UI 回归测试：构造 `streamOpenMs=180000, offsetMs=20000`，断言两轨各自渲染的钟点不同且各自正确。
 - **为何暂缓**：产生侧未定位，属独立调查单元；且 upstream 轨的误差不随本次默认值改动放大，不阻塞交付。
 ## `makeReconcilingSink` 未继承 delivery identity，live hedge 胜者写丢失 winner 归属（2026-07-28）
 
@@ -290,7 +302,7 @@ registry（`docs/rfc/2026-07-21-retry-strategy-registry.md`）6 commit 全 lande
 
 ## 陈旧交叉引用 `state.ts:384` 指向已迁移的 `budgetToEffort`
 
-- **根因**：本次把 `budgetToEffort` 从 `request-preparation.ts` 迁到新 leaf `src/lib/anthropic/thinking-coercion.ts`，但 `src/lib/state.ts:384` 注释仍写「见 request-preparation.ts budgetToEffort」。
+- **根因**：本次把 `budgetToEffort` 从 `request-preparation.ts` 迁到新 leaf `src/lib/anthropic/thinking-coercion.ts`，但 `state.ts:384`（现 `packages/foundation/src/state.ts`）注释仍写「见 request-preparation.ts budgetToEffort」。
 - **当前行为**：注释指向失效（函数已不在该文件）；纯文档陈旧，无功能影响。
 - **为何暂缓**：`state.ts` 此刻正被并发会话改动（工作区有未提交外来改动），本会话按 concurrent-sessions 纪律**不碰该文件**（pathspec 提交会连带其未提交改动，违「绝不提交他人在飞工作」）。属并发协作让路，非范围降级。
 - **若做需改什么**：待 `state.ts` 并发改动落定后，把该注释指针更新为 `src/lib/anthropic/thinking-coercion.ts`。一行 doc-sync。发现方：typescript-reviewer NIT（2026-07-08）。
@@ -387,7 +399,7 @@ registry（`docs/rfc/2026-07-21-retry-strategy-registry.md`）6 commit 全 lande
 
 ## `disabled_models` 实际只在 Anthropic 路径拦截，CC/Gemini/Responses 放行（可用性语义不一致）
 
-- **现状（2026-07-08 对抗审查实测，spec `docs/spec/2026-07-08-models-drawer-and-disabled-visibility.md` HIGH-1）**：`config.disabled_models` 经 `applyDisabledFilter`（[state.ts:996](../../src/lib/state.ts#L996)）把模型从 `state.models`/`state.modelIndex` 滤除，其**自述职责是「从列表隐藏 / 压制废弃项」**（[state.ts:461-468](../../src/lib/state.ts) 注释），**不是全局可用性拦截**。实测请求路径：
+- **现状（2026-07-08 对抗审查实测，spec `docs/spec/2026-07-08-models-drawer-and-disabled-visibility.md` HIGH-1）**：`config.disabled_models` 经 `applyDisabledFilter`（**2026-07-28 起在 `src/lib/models/cache.ts`**，原 `src/lib/state.ts:996`）把模型从 `state.models`/`state.modelIndex` 滤除，其**自述职责是「从列表隐藏 / 压制废弃项」**（原 `state.ts:461-468` 注释，现 `packages/foundation/src/state.ts`），**不是全局可用性拦截**。实测请求路径：
   - **Anthropic `/v1/messages`**：`supportsDirectAnthropicApi(id)`（[features.ts:38](../../src/lib/anthropic/features.ts#L38)）→ `modelIndex.get` 返 undefined → vendor≠Anthropic → **reject 400**。此路径拦截成立。
   - **OpenAI CC / Gemini / Responses**：`isEndpointSupported(undefined, …)`（[endpoint.ts:47](../../src/lib/models/endpoint.ts#L47)）对不在 index 的模型**返回 true**（legacy fallback）→ passthrough → 用禁用模型准确 id **直发上游、能成功使用**（三 codec：[openai-cc/codec.ts:354](../../src/lib/codec/openai-cc/codec.ts)、[openai-gemini/codec.ts:158](../../src/lib/codec/openai-gemini/codec.ts)、[openai-responses/codec.ts:381](../../src/lib/codec/openai-responses/codec.ts)）。
 - **为何记录**：模型抽屉可见性 spec 把 config-disabled 模型暴露到 UI 可见 + 可深链复制 id；结合上述，用户从抽屉拿到禁用 id 即可经 CC/Gemini/Responses 使用。对**内部个人工具**（internal-tool-security-posture ADR：全量暴露、运维价值 > 假想泄露）这本身不是缺陷；但「disabled 在 4 条路径里 3 条不 disable」是**语义不一致**，值得用户决定是否统一。
@@ -492,7 +504,7 @@ registry（`docs/rfc/2026-07-21-retry-strategy-registry.md`）6 commit 全 lande
 
 ## ~~protect_streaming 遥测无端点归因（Anthropic + Responses 共享全局计数器）~~ 已关闭
 
-> **已关闭（2026-07-14，P2/P3/P4 default-on 收尾）**：block-level-buffered-retry P0（`protect-streaming-stats.ts`）已把下方「理想架构」的 `format`/`endpoint` 维度落地为 `Record<string, ProtectStreamingStats>`（`byVendor`），`recordProtectStreamingOutcome(outcome, retries, { vendor })` 接受 vendor 参数；P2/P3/P4 三端点各自 `telemetryVendor: "responses"` / `"chat_completions"` / `"responses_ws"` 接线完毕（`src/routes/{responses,chat-completions}/handler-v4.ts`、`src/routes/responses/ws.ts`），`/api/status.protect_streaming.by_vendor` 已能按端点分列，**且 P2/P3/P4 三者默认已翻转 ON**（`src/lib/state.ts` `CONFIG_MANAGED_DEFAULTS`，2026-07-14）——vendor 归因 + default-on 两个前置条件均已满足。**Anthropic 侧**（`messages/handler-v4.ts:1145`）也已传 `telemetryVendor: "anthropic"`（P0 落地时一并接好，为 P1 块级机制铺路）——vendor 维度本身对 Anthropic 已就位，且 **P1 的 `commitBoundaries` 接线已 landed**（756387cf 起 handler-v4.ts:1134 buffered 分支传 `commitBoundaries: anthropicCommitBoundaries`，`partial-degrade` 对 Anthropic 已可达）。**P1 默认仍 OFF**——非 vendor-归因/default-on 维度的问题，而是真实 Claude Code CLI 门测（`tests/e2e-client/anthropic-coexist-cli.e2e.test.ts`）实测块级 anchor-coexist 形状导致 CLI 静默丢内容，须先做形状修复（见本文件另条 P1 专属 backlog）才能翻转；P1 的 vendor 归因本身不受此阻塞，仅其 buffered 重试尚未默认启用。
+> **已关闭（2026-07-14，P2/P3/P4 default-on 收尾）**：block-level-buffered-retry P0（`protect-streaming-stats.ts`）已把下方「理想架构」的 `format`/`endpoint` 维度落地为 `Record<string, ProtectStreamingStats>`（`byVendor`），`recordProtectStreamingOutcome(outcome, retries, { vendor })` 接受 vendor 参数；P2/P3/P4 三端点各自 `telemetryVendor: "responses"` / `"chat_completions"` / `"responses_ws"` 接线完毕（`src/routes/{responses,chat-completions}/handler-v4.ts`、`src/routes/responses/ws.ts`），`/api/status.protect_streaming.by_vendor` 已能按端点分列，**且 P2/P3/P4 三者默认已翻转 ON**（`CONFIG_MANAGED_DEFAULTS`，2026-07-14；该文件 2026-07-28 迁至 `packages/foundation/src/state-defaults.ts`）——vendor 归因 + default-on 两个前置条件均已满足。**Anthropic 侧**（`messages/handler-v4.ts:1145`）也已传 `telemetryVendor: "anthropic"`（P0 落地时一并接好，为 P1 块级机制铺路）——vendor 维度本身对 Anthropic 已就位，且 **P1 的 `commitBoundaries` 接线已 landed**（756387cf 起 handler-v4.ts:1134 buffered 分支传 `commitBoundaries: anthropicCommitBoundaries`，`partial-degrade` 对 Anthropic 已可达）。**P1 默认仍 OFF**——非 vendor-归因/default-on 维度的问题，而是真实 Claude Code CLI 门测（`tests/e2e-client/anthropic-coexist-cli.e2e.test.ts`）实测块级 anchor-coexist 形状导致 CLI 静默丢内容，须先做形状修复（见本文件另条 P1 专属 backlog）才能翻转；P1 的 vendor 归因本身不受此阻塞，仅其 buffered 重试尚未默认启用。
 - **根因**：`recordProtectStreamingOutcome(outcome, retries)`（`src/lib/anthropic/protect-streaming-stats.ts:31`）是一个**无维度**的进程内全局聚合计数器（saved/exhausted/retreated 各一个数）。Anthropic buffered（`messages/handler-v4.ts`）+ Responses buffered（`routes/responses/handler-v4.ts:387` `onBufferedResolve`）**都喂同一个计数器**，`/api/status.protect_streaming` 快照无法区分某次 L2 engagement 来自哪个端点；per-entry `recordFeature("protect-streaming-retry", {outcome, retries})` 同样不带端点/格式维度。
 - **当前行为（已核实无害，大部分已修复见上方部分解决注）**：~~`/api/status.protect_streaming` 显示的是 Anthropic + Responses 合计的 L2 命中计数（saved/exhausted/retreated），诊断「buffered 重试整体是否在起作用」够用；但无法回答「Responses 的 buffered 命中率 vs Anthropic」。~~per-entry feature tag 仍在 history（可事后按 entry 的 endpoint 聚合），**vendor 维度已落地**（见上方部分解决注），仅 Anthropic 侧 P1 块级机制未接线。
 - **理想架构**：给计数器加 `format`/`endpoint` 维度（`Record<format, ProtectStreamingStats>` 或 counters bag 泛型化，见 skill `telemetry-architecture` 的可扩展 registry 三支柱），`recordProtectStreamingOutcome(outcome, retries, format)` 各端点传自己的 format，`/api/status.protect_streaming` 按端点分列；`recordFeature` 的 meta 补 `format`。**已落地**（见上方部分解决注）。
@@ -650,12 +662,12 @@ registry（`docs/rfc/2026-07-21-retry-strategy-registry.md`）6 commit 全 lande
 
 ## Anthropic（P1）块级缓冲重试默认仍 OFF——block-level anchor-coexist 形状对真实 Claude Code CLI 不安全（2026-07-14）
 
-- **背景**：block-level-buffered-retry 特性四端点中，P2（Responses-HTTP）/P3（Chat-Completions）/P4（Responses-WS）已于 2026-07-14 把默认值从 `false` 翻转为 `true`（`src/lib/state.ts` `CONFIG_MANAGED_DEFAULTS.{responsesBufferedRetry,chatCompletionsBufferedRetry}`）。**P1 Anthropic（`protectStreamingGeneration`）本轮刻意未被翻转，继续保持默认 `false`**——这不是「跟其它三个一样等 keepalive 实证门」的临时性延后，而是一个**已被真实工具实测证伪**的阻断。
+- **背景**：block-level-buffered-retry 特性四端点中，P2（Responses-HTTP）/P3（Chat-Completions）/P4（Responses-WS）已于 2026-07-14 把默认值从 `false` 翻转为 `true`（`CONFIG_MANAGED_DEFAULTS.{responsesBufferedRetry,chatCompletionsBufferedRetry}`，现 `packages/foundation/src/state-defaults.ts`）。**P1 Anthropic（`protectStreamingGeneration`）本轮刻意未被翻转，继续保持默认 `false`**——这不是「跟其它三个一样等 keepalive 实证门」的临时性延后，而是一个**已被真实工具实测证伪**的阻断。
 - **实测证据**：`tests/e2e-client/anthropic-coexist-cli.e2e.test.ts`（P1 Task 5 第二段 PoC 门产物，Tier-2 真实 CLI e2e）用真实 `claude` CLI 驱动一个 hook-mock 的代理，让上游发出 P1 块级机制的「anchor-coexist」wire 形状（一个空文本锚点块@0 在两个真实文本块之间全程保持 open，只在终态才收口）。**结果：真实 CLI 把最终结果吃成空字符串**（`r.result` 收到 `""`，未含预期的 `COEXIST_OK_MARKER`）——推断根因是 CLI 的 agent-loop 状态机按「最后关闭的内容块」取生成结果，而 anchor@0 恰好是最后收口的块，真实文本块的内容因而被 CLI 侧丢弃（并非代理侧丢帧——SDK-only 的 Tier-1 测试 `anthropic-buffered.it.test.ts` 已证明 `@anthropic-ai/sdk` 的底层累加器本身能正确接受这个 wire 形状，问题出在 CLI 自己的更高层状态机）。本次任务重新跑了这个 gated e2e 测试（`claude` 在 PATH 上、门控条件满足），确认失败依旧复现，与本次的 P2/P3/P4 翻转无关（该测试自带的 config 显式设 `protect_streaming_generation: false`，不受本次默认值改动影响）。
 - **当前行为**：P1 的块级提交机制（`content_block_stop` 谓词 + sink 块栈 + 心跳 suspend/resume + retreat 修复）代码本身已全部 landed 并通过独立 review（见 `.superpowers/sdd/progress.md` P1 Task 1-4/7），`commitBoundaries: anthropicCommitBoundaries` 的 handler 接线也已完成（P1 Task 6），但 **`protectStreamingGeneration` 的默认值维持 `false`**——用户必须显式 opt-in（`anthropic.protect_streaming_generation: "on"` 或 `"tool_use_only"`）才会启用，且**启用后会撞上这个真实 CLI 内容丢失缺陷**，故不建议在形状修复前手动开启。
 - **理想架构**：修复块级 anchor-coexist 形状，让锚点块@0 不再是「最后收口」的块——候选方向包括：①锚点块提前在某个真实块提交时就收口（而非全程 hold 到终态），让最后收口的永远是最后一个真实内容块；②改用 P1 Task 5 PoC 报告里记录的「备选形状」（每块 close@0 重开，而非单一常驻 anchor@0）；③若 SDK/CLI 生态确认「按最后收口块取结果」是不可变更的既定行为，则从根本上放弃 anchor-coexist 路线，Anthropic 走「兜底」形状（整响应缓冲，同 Responses/CC 特性交付前的 L2 前身），牺牲 P1 的块级增量流式收益换 CLI 兼容性。**用户裁决（2026-07-14）：「保全 > 流式体验，能保 block 粒度就保」——故方向锁定 ① 或 ②（二者均保留 block 粒度、只改锚点收口时机），③（退回整响应、丢 block 粒度）不采纳。** 关键实证锚点：CLI gate 测试的隔离对照 (b)（把锚点收口排到最后一个真实块**之前** → `result` 恢复非空）+ live 路径 reconcile 本就在**首个真实块**处收口 anchor@0（故 live 一直 CLI-safe）——证明「让真实内容最后收口」即安全，① 就是把 buffered 路径对齐到这个已被证安全的 live 收口时机。**⚠️ 选定的具体子形状必须用 gated CLI 测试实测复验（`r.result` 含 marker + numTurns===1），绝不凭推理判安全**——本特性的教训正是「离线+capstone 都判安全、真 CLI 却 FAIL」。
 - **为何暂缓**：形状修复是一个独立的设计问题（需要重新设计 anchor 生命周期或收口时机，牵动 `client-sink.ts`/`driver.ts` 的锚点状态机核心），不是本次「翻转默认值」任务的范围；且该缺陷是**用真实 CLI 实测出来的**、必须先决定修复方向才能继续，贸然翻默认值会让默认路径下的用户遇到内容丢失（比现状「opt-in 才可能踩坑」更差）。
-- **若做需改什么**：① 用户决策三分支之一（提前收口 / 每块重开 / 放弃 anchor-coexist 走整响应兜底）；② 按选定方向改 anchor 生命周期机制（`src/lib/pipeline/driver.ts` 的 `flushBufferedFrames`/`closeAnchorIfOpen`、`src/lib/anthropic/keepalive-anchor.ts`）；③ 重跑 `tests/e2e-client/anthropic-coexist-cli.e2e.test.ts` 确认 `r.result` 含 `COEXIST_OK_MARKER` 且 `r.numTurns===1`；④ 确认后再翻转 `CONFIG_MANAGED_DEFAULTS.protectStreamingGeneration`（`src/lib/state.ts`）。发现方：P1 Task 5 第二段 PoC 门 + 本次（2026-07-14）P2/P3/P4 default-on 收尾时重跑验证复现。
+- **若做需改什么**：① 用户决策三分支之一（提前收口 / 每块重开 / 放弃 anchor-coexist 走整响应兜底）；② 按选定方向改 anchor 生命周期机制（`src/lib/pipeline/driver.ts` 的 `flushBufferedFrames`/`closeAnchorIfOpen`、`src/lib/anthropic/keepalive-anchor.ts`）；③ 重跑 `tests/e2e-client/anthropic-coexist-cli.e2e.test.ts` 确认 `r.result` 含 `COEXIST_OK_MARKER` 且 `r.numTurns===1`；④ 确认后再翻转 `CONFIG_MANAGED_DEFAULTS.protectStreamingGeneration`（现 `packages/foundation/src/state-defaults.ts`）。发现方：P1 Task 5 第二段 PoC 门 + 本次（2026-07-14）P2/P3/P4 default-on 收尾时重跑验证复现。
 ## 上游错误→客户端整形（Phase 3 收尾发现，2026-07-13）
 
 来自 `docs/plan/2026-07-13-upstream-error-client-shaping/` Phase 3 合并态审查，裁定「刻意正确/非阻塞」但值得记录的两项。
@@ -1012,7 +1024,8 @@ registry（`docs/rfc/2026-07-21-retry-strategy-registry.md`）6 commit 全 lande
 - **当前行为**：测试与被测包不同置——拆分后「每包 src/tests 内聚」这个目标在测试侧尚未兑现（day-1 有意不搬，654 文件位移是仅次于 core 主体搬迁的高危撞行面）。
 - **理想架构 / 若做需改什么**：测试随 core 内部模块剥离（spec 阶段 4+）逐包物理下沉到 `packages/*/src` 旁；若走每包各自 `bun test`，各包 `bunfig` 各自 `[test].preload` 但**指向同一份共享 sandbox-paths**（放 foundation 或新建 `packages/test-harness`、各包 re-export、绝不各包复制）；`RESETTERS` 表随单例分包、L1 守卫 `resetters-complete.unit.test.ts` 改成每包各自枚举本包 `*ForTests`；同步改 `tests/architecture/*.unit.test.ts` 内硬编码 `import.meta.dir`+`../../src/lib/...` 路径。
 - **为何暂缓**：巨量撞行面、依赖 core 内部先解环到位；是「同置收尾」层、落在结构搬迁之后。**触发条件（值得做）**：core 已剥出真子包、需把对应测试随之下沉时。
-- **关联：core 内部解环排序清单**（spec §6 措施 3，随剥离长期存活）：**state 第一**（~83 importer、SCC 入口）、**anthropic/openai/gemini 第二**（state 解耦后可提 core 层 vendor 纵切）、**pipeline/codec 局部环第三**（cell-assembly 三方环）。每次只剥一个、land 后重评 SCC + madge 环快照只减不增。
+- **关联：core 内部解环排序清单**（spec §6 措施 3，随剥离长期存活）：~~**state 第一**~~ ✅ **已完成（2026-07-28）**——state 不是「解耦」而是**整体降为 foundation 叶子**并迁出 core（`packages/foundation/src/{state,state-defaults,state-vocabulary}.ts`），叶子无出边故谁依赖它都不成环，`~83 个 importer` 从来不是障碍。下一个是 **anthropic/openai/gemini**（现在可以提 core 层 vendor 纵切了）、再下一个 **pipeline/codec 局部环**（cell-assembly 三方环）。每次只剥一个、land 后重评 SCC + madge 环快照只减不增。
+  - **✅ 已落地（2026-07-28）**：S1–S7 全部完成，权威记录 [docs/plan/2026-07-28-state-to-foundation/HANDOVER.md](../plan/2026-07-28-state-to-foundation/HANDOVER.md)（每步的验收 oracle、变异实验与踩过的坑）。**spec §5 的 reader seam 方案与 §7.2 阶段 0d 均已作废，`core/state/reader-*.ts` 不要建**——削环已由「state 成为叶子」这个拓扑事实解决。窄读接口本身的封装收益若仍想要，是一条独立的、尚未立项的条目。
 
 ## 聚合指标迁 Prometheus/Grafana、退役 /api/stats 自建聚合（2026-07-22，ADR 2026-07-22-metrics-via-prometheus-grafana）
 
@@ -1065,6 +1078,18 @@ registry（`docs/rfc/2026-07-21-retry-strategy-registry.md`）6 commit 全 lande
 - ~~**为何暂缓**~~ → **✅ 已解决（2026-07-27，`e170566c`），但走的是第三条路**：既没做 ① 也没做 ②，而是**把不变量搬进 runtime 自己**——`markServerListening()` 在 `initialize()` 未完成时 fail-fast，`runJsonBackfill()` 在标记之前被**延迟到标记时**而不是提前执行。于是「调用写反了」不再能破坏契约（延迟保证了它仍在 listen 之后吸收），oracle 退化成一个普通 runtime 单测。教训：**当守卫追不上的时候，正解往往是换不变量的存放位置，而不是造更强的守卫**——`docs/plan/monorepo-split/plan-telemetry-package.md` 与 `tests/architecture/telemetry-startup-order.unit.test.ts` 的注释记录了完整推导。
 - **残余（已知且刻意）**：source 守卫仍保留一个窄职责——断言 `markServerListening()` 真的接在 listen 与 backfill 之间（runtime 自己证不了「有没有人调我」），这一条仍是语法层判断。真实回归形态（挪调用、删 hook、去 await、死分支、死 helper、注释掉）均已实测转红。
 
+
+## delivery owner 合同抽成无依赖 `pipeline/wire-contracts.ts`（2026-07-28，allocator 第二轮实现审查）
+
+- **根因 / 当前行为**：为避免 `pipeline/types.ts → delivery/types.ts → stream/frame-envelope.ts` 把 delivery 文件拉进核心 SCC，`OwnerResult` / `WireBlockAllocationPort` / `WireWriteSpec` 当前定义在 `pipeline/types.ts`，`delivery/types.ts` 反向 re-export。SCC 正确、类型只有一个定义，但“delivery owner 合同”在职责命名上更接近 delivery 域，归属仍不够干净。
+- **理想架构**：抽一个不依赖 `delivery/*`、`stream/*` 的 `src/lib/pipeline/wire-contracts.ts`，只拥有纯 owner/wire 类型；`pipeline/types.ts` 与 `delivery/types.ts` 都从它 import/re-export。迁移必须保持 SCC ratchet 与 package boundary 守卫不增边。
+- **为何暂缓**：这是纯结构归位，不改变本轮 P1/P2 行为，且后续 P3M M1-M4 会持续修改同一批合同；现在搬一次、M4 后再搬一次只制造无语义 churn。**触发条件**：P3M M4 三条 real-block 路径收敛、owner 合同稳定后同 commit 或紧随其后提取。
+
+## remap allowlist 的能力轴升级（2026-07-28，allocator 第二轮实现审查）
+
+- **根因 / 当前行为**：AST allowlist 已覆盖直接 `.remap(...)` 与 `remapAnthropicBlockIndex(...)` 调用，能抓 literal/变量 offset/直接 primitive，注释不误伤；但别名提取（`const r=hooks.remap; r(...)`）、计算属性（`hooks["remap"](...)`）、import rename 仍是合法绕法。
+- **理想架构**：不要继续枚举拼写。P3M 收敛后把 offset 计算能力从公开类型上拿走：生产调用方只提交 `WireBlockMapping`/block identity，由 owner 内部完成 remap；外部不再拿到任意 offset primitive。守卫改问“目标能力是否只由 owner 持有”，而不是 callee 怎么拼。
+- **为何暂缓**：当前合法 legacy S1/S2/S3/continuation 站点仍需要旧 remap 形状，能力尚不能移除。**触发条件**：M4 清空 `REMAP_CALL_ALLOWLIST` 的 `legacy:*` 条目时同步实施；若此前再发现一种绕法，立即停止补 AST 形态，提前执行能力轴迁移。
 ## 代理侧 refusal fallback 重试（换模型重发）—— 未采纳，非「不值得」而是本轮范围外（2026-07-28，contentless refusal 抑制期间）
 
 - **根因 / 现状**：上游 contentless refusal 时，代理目前只能**抑制**（合成一个说明性的正常完成轮，见 [docs/refusal-recovery.md](../refusal-recovery.md)）。抑制达成了首要目标——客户端对话轮次不被中断——但**本轮没有产出任何真实内容**：agent 读到的是一句「上游拒绝了」，得自己决定下一步。真正「轮次不中断**且**真的有产出」的做法是换一个模型重发。
@@ -1086,3 +1111,84 @@ registry（`docs/rfc/2026-07-21-retry-strategy-registry.md`）6 commit 全 lande
 - **当前行为**：**今天字节等价、无实际影响**——三条 leg（anthropic/openai-cc/openai-responses）都明确「No preSend」（auto-truncate 已移除），故 recovery wire 与 primary wire 一致。
 - **理想架构 / 若做需改什么**：把 `rememberPreReadyFailure` 存的 env 改为 `preflight`（primary 实际 dispatch 用的那份，已 transform、无需重跑 preflight 副作用），使 recovery wire 与 primary wire 恒等；或在 recovery 路径显式对齐 preflight。这样任何 leg 未来重新引入 `preSend`（如 truncation 类前置处理）时 recovery 不会悄悄绕过它。
 - **为何暂缓**：今天无可观测差异；正确的 env 选择在 P4/P5 接 handler 时语境更清晰（届时 recovery env 的实际使用具体化）。**触发条件（值得做）**：B2 P4/P5 接线 `runPreContentRecovery`（届时一并核实/对齐 env），或任何 leg 重新引入 `preSend`。发现方：Task 0.4 review（reviewer，2026-07-23）。**姊妹 nit**：gate 探测的 `outboundPrepareWire` 非纯（`recordFeature` 双发），可控无正确性影响；若精确处理参照 `inspectRequest` 的 `withCapturingManagerAsync` 隔离写法。
+
+## `parallel-test.ts` 的用例汇总仍系统性欠计（2026-07-28，紧随 ANSI 修复）
+
+- **根因 / 现状**：`scripts/parallel-test.ts` 汇总各 shard 的 `N pass` / `N fail` 时曾因 bun **即使输出到管道也上色**（`\x1b[0m\x1b[32m 26 pass\x1b[0m`）而恒报 `0 tests`，已修（`5454616b`，strip SGR 后正样本对照 0 → 4243）。但修复后**数字仍与直接命令不一致**：同一棵树上 `bun run test:backend`（= `parallel-test.ts unit it http`）报 **4749 tests**，而 `bun test --parallel .unit.test .it.test .http.test` 报 **6614 tests / 644 files**；单 `unit` 档同样差（4007 vs 4304）。已排除的假设：① 不是发现缺口——`tests/` 内 `.unit.test.ts` 计 414、全仓同样 414，`tests/` 之外只有一个 `exp/` 实验文件（本就不该进门）；② 不是别的 CSI 序列——实测 bun 输出的 CSI final byte 只有 `m`。
+- **当前行为**：**门本身（退出码）是对的**——它由各 shard 自己的 exit code 决定，真失败照样红；坏的是**汇总证据行**：交付报告引用的「N pass」系统性偏小约 25%，且无法与直接命令对账。
+- **理想架构 / 若做需改什么**：给 parallel-test 加一条自检——把各 shard 的 `pass+fail+skip` 之和与「预期用例总数」对账，不一致就**显式告警而非静默出数**；或直接改用 `--reporter=junit`（脚本 `refreshTimings` 已经在用 junit XML，逐 `<testcase>` 计数是精确的）取代脆弱的 stdout 文本解析。后者更根治：文本汇总格式随 bun 版本变化的历史已经踩过两次。
+- **为何暂缓**：门的正确性不受影响（exit code 正确），属证据可信度问题；且正确修法（改 junit 计数）值得单独一个改动 + 正样本对照，不该塞进特性分支。**触发条件**：下次有人需要引用精确用例数做交付证据，或第三次被 bun 输出格式变化咬到。**发现方**：upstream-silence 特性分支第二次合并 master 时的对账（2026-07-28）。
+
+## Step 1 还有两个「停后台服务」可能同样饿死 drain 期的在途请求（2026-07-28，h2 池 teardown 修复的邻域审查）
+
+- **根因 / 现状**：关机 Step 1 的 `closeHttp2Sessions()` 已被证明会秒杀正在建连的在途请求（本轮修掉，见 [docs/lifecycle.md](../lifecycle.md) Step 1 注）。**同一行代码的邻居没查**：`stopRefresh()`（= `peekTokenRuntime()?.dispose()`，停 token 刷新）与 `peekUpstreamWsManager()?.stopNew()`（停新建上游 WS）都在 Step 1 执行，而 Step 2/3 还要给在途请求 60s+120s 自然完成。若某个在途请求在 drain 期**需要**刷新 token（长 drain + 短 token 有效期）或**需要**新建一条上游 WS（Responses 腿），它会在 Step 1 之后的窗口里失败——与 h2 那条完全同构。
+- **当前行为**：未观测到 incident。WS 侧有 `ws-before-first-event` → HTTP fallback 兜底，风险较低；token 侧取决于 `dispose()` 是否只停周期刷新（无害）还是也拒绝按需刷新（有害）——**未核实，别当已知**。
+- **理想架构 / 若做需改什么**：逐个回答「这个 stop 会不会让一条已被接纳的在途请求失败？」——会的就照 h2 的办法挪到 Step 4/finalize，只保留真正的「停止**新增**工作」语义。`stopRefresh` 需要读 `packages/token/src/runtime.ts` 的 `dispose()` 判断是停 timer 还是关整个 runtime。
+- **为何暂缓**：本轮范围是 h2 那条已被 incident 证实的路径；把两个未证实的同构猜想一起改会让本次改动的因果链变糊，且 token 侧要先做事实核查而不是改代码。**触发条件（值得做）**：观测到关机窗口内的 token 刷新失败 / WS 建连失败 incident，或下次触碰 shutdown Step 1。**发现方**：h2 池 teardown 修复的 `learn-by-analogy` 邻域审查（2026-07-28）。
+
+## driver 的 `No retry strategy claimed this <type>` 对 `aborted` 是噪声（2026-07-28）
+
+- **根因 / 现状**：[driver.ts:562-566](../../src/lib/pipeline/driver.ts#L562-L566) 在没有任何 retry 策略认领错误时打一条 `consola.warn` + 计数器。它的**本职**是抓「我们的 400 matcher 与上游实际措辞漂移了」（注释写明两次 illegal-thinking-layout incident 就藏在这里）。但 `type: "aborted"` 也会走到这里——而中止**本来就不该有 retry 策略**（客户端走了 / 关机 / reaper 取消，重试毫无意义）。于是每一次正常的取消都在这条本该稀有的 warn 上刷一次，稀释它的信号价值。
+- **当前行为**：功能无影响，纯观测噪声；本轮修复后关机造成的那部分已经消失（在 send 层就变成 529 了），剩下的主要是 client-abort。
+- **理想架构 / 若做需改什么**：按 `error.type` 分级——`aborted` 走 `consola.debug` + 单独的计数维度（仍然可观测、但不占用「matcher 漂移」这条告警通道），其余保持 warn。须同时确认 `recordRetryGiveUp("unclaimed", type)` 的消费方（`/api/stats`）不会因为分级而丢维度。
+- **为何暂缓**：与本轮的因果链无关（本轮改的是归因，不是日志分级），值得单独一个小改动 + 确认 stats 消费面。**触发条件**：这条 warn 的噪声影响到实际排障，或下次触碰 driver 的 give-up 路径。**发现方**：incident `req_1785234916721_3573` 的日志正是这条 warn（2026-07-28）。
+
+## `FormatCodec.formatError` 是与已冻结架构相反的死契约（2026-07-28，共享映射表收敛的邻域审查）
+
+- **根因 / 现状**：`FormatCodec` 仍要求四个 codec 实现 `formatError(err, env): ClientFrame`，全仓**零生产调用**（只有 4 处测试调用）。这不是「P2.3 还没接线」的普通债项——finalize-stream 重设计**已裁决不要这样接线**，理由写在 [archive/2606-landed-rfcs/response-pipeline/finalize-stream-redesign.md §③](../archive/2606-landed-rfcs/response-pipeline/finalize-stream-redesign.md)：WS 的错误/截断走传输级 `sendErrorAndClose`+1011，表达不成 `ClientFrame`；codec 只拿得到 kind、拿不到上游 raw message，接线会逐字节回归。而 `docs/v4/05-progress.md` 顶部已声明 v4 P0–P3 整体完成。
+- **当前行为**：**不再有映射正确性危害**——2026-07-28 的收敛让它与活路径读同一张共享表（`~/lib/anthropic/error-shaping` / `~/lib/gemini/stream-error` / `~/lib/openai/stream-error`），所以它即使被调用也不会说出与 wire 不同的话。剩下的纯粹是**契约撒谎**：接口方法看起来像架构入口、注释还写着「driver S7 callers」，实际架构已决定不走它。`docs/v4/01-architecture.md` 的 S7 行本轮已改正（原写 `codec.formatError`，与 `docs/DESIGN.md:53` 的「handler 写回」自相矛盾）。
+- **理想架构 / 若做需改什么**：① 从 `FormatCodec`（`src/lib/pipeline/types.ts:919-920`）删 `formatError`；② 删四个 codec 的实现（各自的 `formatXxxError` + `formatError` 成员）；③ 删 4 处测试调用（`anthropic-codec.unit.test.ts:69`、`openai-cc-codec.unit.test.ts:300/309/315`）。**它们不是删除的前置障碍**（我原本这么写，经复审核实说错了）：它们是「codec 这个方法本身」的唯一调用测试，但**不是共享表的唯一覆盖**——共享表已由 `error-shaping.unit.test.ts`（Anthropic 逐 kind 全 taxonomy 对账）、`post-commit-error.unit.test.ts`（delayed-commit 扩展 taxonomy 对照共享表）和 `stream-error-wire-provenance.http.test.ts`（三协议真实 wire）覆盖。反过来这 4 处自己也不完整：只测 Anthropic 4 种 + OpenAI CC 3 种，Gemini 与 OpenAI Responses 的 `formatError` 根本没测。要保留的是**共享 mapper 全 taxonomy 单测 + 三协议 production wire oracle**；若想验证 codec 引用了共享表，用静态 import / 架构守卫，别继续调用一个已裁决删除的死方法；④ `docs/v4/03-spec/codec.md` 与 `05-progress.md` 把 P2.2-D4 标为「已被最终架构裁决 superseded」，而非继续写「P2.3 接线时复核」。
+- **为何暂缓**：**不是因为「无消费者所以删」**——本项目明确禁止以清理死代码为名擅自删（CLAUDE.md `no-destructive-workspace-loss`）。理由是这属于**接口契约变更**，超出本轮「abort 归因」的因果链，且需要用户拍板：删掉意味着 `FormatCodec` 不再为「终态错误成形」保留任何位置，未来若真要收进 driver 得重新开这个口子。**触发条件（值得做）**：用户认可删除、或下次触碰 `FormatCodec` 接口 / v4 codec spec 时顺手做掉。**发现方**：第三轮异模型复审（2026-07-28），我核实其引用的每处 `file:line` 与归档裁决后确认属实。
+
+## `applyConfigToState()` 不是两阶段：校验抛错会留下部分应用的配置（2026-07-28，state→foundation 复审的邻域发现）
+
+- **根因 / 现状**：[config.ts:680](../../src/lib/config/config.ts#L680) 的 `applyConfigToState()` 是**边解析边写 state** 的一趟流程：19 个 config-managed 域按源码顺序逐个 `set*()`，而 generation 段的三条跨字段校验（`max_total_candidates >= max_active_candidates` 等）夹在中间**抛错**。于是一份 generation 段非法的配置，会把它**之前**的所有域（`anthropic.*`、`model_mappings`、`disabled_models`、`model_translation`…）写进运行时，把它**之后**的域（retry、timeouts、transport、history、telemetry…）留在旧值。热重载与 `PUT /api/config` 都走这条路径。
+- **当前行为**：**目录/禁用列表这一对已经在本轮修好并有回归测试**（`applyDisabledModels()` 把「设列表」与「重推导视图」焊成一步，见 [tests/config/config-apply-catalog-consistency.it.test.ts](../../tests/config/config-apply-catalog-consistency.it.test.ts)）。剩下的是**跨域**的半应用：没有任何机制保证「域 A 的新值」与「域 B 的旧值」放在一起是有意义的配置。**未观测到 incident**，也**没有做过**跨域矛盾的普查——别把「没听说过」当成「不会发生」。
+- **理想架构 / 若做需改什么**：改成**先全量校验、后原子 commit** 两阶段——第一阶段把整份 config 解析成一个「待应用的 patch 集合」并跑完所有跨字段校验（纯函数，不碰 state），第二阶段无条件把 patch 集合刷进 state。落地要点：① 那三条 generation 校验必须挪进 schema 层或一个独立的 `validateConfig(config)`，不能继续留在写 state 的路径上；② 19 个 `set*()` 调用点需要能被收集成 patch 而不是立即执行——最小改法是让第一阶段构造一个 `Array<() => void>` 的 thunk 列表，第二阶段依次执行；③ 需要一条测试断言「任何一条校验失败 ⇒ state 与调用前逐字段全等」，而不只是本轮那条目录一致性。
+- **状态**：**确定要做的待实施项**，不是「等出事再说」——两位独立评审都确认了边界划分（本分支只需消除自己引入的目录自相矛盾，含 reset→throw 那条反向路径，已完成），但都认为全量两阶段本身该做。**为何不在本轮做**：本轮范围是 state 降 foundation 叶子，而这个形状**早于本分支就存在**（master 上同样如此，`git show master:src/lib/config/config.ts` 可核）——本轮只是因为拆分 `setDisabledModels` 差点让它多长出一个新实例，那个实例已修。把 19 个域的写入路径改成两阶段是独立的结构性改动，塞进特性分支会让本轮的因果链无法审查。**触发条件（值得做）**：观测到一次「配置改坏后服务处于半新半旧状态」的排障，或下次触碰 `applyConfigToState` 的结构。**发现方**：state→foundation 分支的异模型对抗性复审（2026-07-28）——它报的是我引入的那个新实例，我核实后确认底层形状是既有的。
+
+## 另外两个架构守卫仍按「specifier 拼写」而非「解析后目标」判边界（2026-07-29，state→foundation 复审的邻域发现）
+
+- **根因 / 现状**：`~/lib/x` 与 `../../lib/x` 是**同一个模块**，但按前缀/正则匹配拼写的守卫只认得其中一种写法。本轮已在三个消费者上修掉这个形状（state 闭包 containment、core→server ratchet、state 出边 ratchet 的 edge identity），**剩下两个守卫仍是旧形状**：
+    - [tests/architecture/telemetry-domain-surface.unit.test.ts](../../tests/architecture/telemetry-domain-surface.unit.test.ts)：deep-import 判据是 `specifier.startsWith("@hsupu/ghc-proxy-telemetry")`。**实测**：`import type { RequestTelemetrySnapshot } from "../../packages/telemetry/src/request-telemetry"` 放进 `src/lib/telemetry-assembly.ts`，typecheck 0 error，telemetry + package 两个守卫合计 **26 pass / 0 fail**——它绕过包名拼写直接摸到包内部文件。附带：该守卫的生产扫描仍只覆盖 `.ts/.tsx`，`.mts` deep import 同样全绿。
+    - [tests/architecture/generation-engine-boundaries.unit.test.ts](../../tests/architecture/generation-engine-boundaries.unit.test.ts)：六条边界全部是**对源码文本跑正则**、逐条枚举路径拼写（`/from ["'](?:~\/lib\/pipeline\/generation|\.\.\/generation|…)/`），且 `sourceFiles()` 只收 `.ts`。任何等价但未被枚举的拼法（多一段 `./`、相对深度不同、`.mts`）都能穿过去。
+- **当前行为**：**没有已知的实际违规**——两个守卫今天都是绿的，且各自领域的边界目前确实成立。坏的是**保证强度**：它们声称「某某不依赖某某」，实际检查的是「源码里没出现我列举的那几种拼法」。
+- **理想架构 / 若做需改什么**：本轮已经把工具做好了——`tests/architecture/source-ast.ts` 的 `createSpecifierResolver(repoRoot)`（用项目自己的 compilerOptions 解析）+ `allModuleSpecifiers()`（AST 枚举全部 import 形态）。两个守卫改成：AST 取 specifier → 解析 → 判断规范化目标是否落在目标目录内；扫描面同时扩到 `.ts/.tsx/.mts/.cts` + `.js` 家族（参考 `package-boundaries` 的 `SOURCE_EXTENSIONS` 与 core ratchet 的 `SOURCE_GLOB`，两处都已有持久 oracle 可抄）。telemetry 那条还要把「只允许 `index.ts` / `types.ts`」表达成解析后的目标文件判断。**每改一条都要配一个 live oracle**：把判据 mutation 回拼写匹配后必须变红——本轮的教训是「primitive 有测试 ≠ 守卫接了线」，而这两个守卫的等价拼法探针此前全绿。
+- **为何暂缓**：这两个守卫**不属于本分支的因果链**（state 降 foundation 叶子），覆盖的是 telemetry 包边界与 generation/delivery/transport 分层，各有六条以上独立边界规则，改判据后每一条都需要重新确认仍然成立并重新冻结——那是一次独立的、需要自己的评审的改动。把它塞进本分支会让「state 搬迁做了什么」变得无法审查，这与本轮把「config 两阶段」留在 backlog 的判断同源（两位评审均认可那个边界）。**触发条件（值得做）**：下次触碰这两个守卫、或 telemetry/generation 领域出现一次「守卫全绿但边界实际被破坏」的事故。**发现方**：state→foundation 分支第十轮复审（2026-07-29），我逐条复现确认属实。
+## `stream-error` outcome 的唯一产出点靠测试守卫、而非类型系统（2026-07-28，abort 归因收口）
+
+- **根因 / 现状**：post-header 的 abort-provenance gap 计数只在 `src/lib/pipeline/driver.ts:streamErrorOutcome()` 里打。任何别处 mint 一个 `{ kind: "stream-error", … }` 都会绕过它，而**绕过是不可见的**——outcome 照样正确，只有计数静默少报，于是「零」被读成「没有 gap」。这不是假想：该计数器的第一版放在 `dispatch-lifecycle`，完整漏掉了 Responses upstream-WS 腿，读出确定性的零。当前的护栏是 `tests/architecture/package-boundaries.unit.test.ts` 的 AST 扫描。
+- **当前行为**：守卫遍历 `src/**/*.ts` 的对象字面量，识别 identifier / string-literal / computed 三种属性名，值侧解包 `as` / 括号 / `satisfies`，并解析指向**同文件** `const` 的 identifier 与 shorthand。四种绕过形态各有 mutation 实测变红。**已知盲区**（注释里点名、不外推）：从别的模块 import 来的值、函数返回值，以及由这两者派生的 spread / `Object.assign` / 多级别名——都需要跨表达式常量求值才能判定。
+- **理想架构 / 若做需改什么**：给 `ResponseOutcome` 的 stream-error variant 加一个**只有 `streamErrorOutcome()` 能构造**的 opaque brand/token（例如模块私有 symbol 或 unique-symbol 品牌字段），让类型系统直接拒绝其它构造点。做完之后 AST 守卫可以降级为冗余或删除。需改：`src/lib/pipeline/types.ts` 的 outcome union、driver 内 8 处产出点（已全部走 helper，故改动集中）、以及所有以结构化字面量断言该 outcome 的测试。
+- **为何暂缓**：直接静态 mint 已被守卫覆盖，剩余盲区都需要有人**刻意**绕道才会踩到；而 brand 是一次公开类型契约变更，值得单独一个改动 + 正样本对照，不该塞进 abort 归因这条因果链。**在测试里手写半个 TypeScript 常量求值器是明确不采纳的选项**（异模型复审建议，我同意：那会把守卫变成新的维护负担与新的假绿来源）。**触发条件（值得做）**：观测到 gap 计数与实际 incident 数对不上、或有人真的在别处 mint 了这个 outcome、或下次触碰 `ResponseOutcome` 的类型定义。**发现方**：第八轮异模型复审（2026-07-28），它同时指出「一个宣称覆盖面大于实际覆盖面的守卫本身就是假绿」。
+
+## `test:backend` 并发档位存在低频污染型 flaky（2026-07-28，abort 归因收尾期间六次全量的观测）
+
+- **根因 / 现状**：**未定位**。现象是 `bun run test:backend`（`scripts/parallel-test.ts`，16 分片）偶发挂 1 条，**每次挂的是不同的测试**，且**单跑必过**。这是典型的跨文件状态污染或分片间资源竞争，不是被测代码的缺陷。
+- **当前行为（六次全量的原始数据，同一棵树、同一 sha）**：run1 ✅ / run2 ✅ / run3 ❌ `tests/pipeline/hooks/loader.unit.test.ts` 的 4 条 `loadUpstreamHook` / run4 ✅ / run5 ❌ 架构测试「legacy Vue `ui/` stays detached from the main chain」/ run6 ✅。`loader.unit.test.ts` 单跑连过 **5/5**。更早在本轮中段还观测到一次 `tests/diagnostics/multiprocess-rotation.it.test.ts`（单跑 3/3 过、全量重跑绿）。**三个互不相关的文件**，指向档位机制而非某个测试。
+- **理想架构 / 若做需改什么**：先用 `test:fast:isolated`（已存在，退回非分片）对照确认「污染只在分片模式下发生」；再按 skill `debugging-test-pollution` 的 playbook 二分定位——嫌疑面是**分片间共享的进程级单例**（`loadUpstreamHook` 正是单例 + 版本号语义、`ui/` 那条读文件系统），以及 `scripts/parallel-test.ts` 的**片内共享缓存**是否让同片内的文件互相看见彼此的模块态。修好后应有一条守卫：同一分片内连跑 N 次仍绿。
+- **2026-07-30 新数据点（fast 档也中招，扩大了嫌疑面）**：`tests/infra/atomic-fs.unit.test.ts` 的 `atomicWriteJson > crash during writeFile leaves the previous target intact` 在 `bun run test`（**fast 档**，`unit http`）下 6 次跑红 2 次（4757 pass / 1 fail），**单文件隔离连跑 8 次全绿**。此前记录的三例都在 `test:backend`（16 分片）下——现在 fast 档同样复现，说明嫌疑面是**分片机制本身**（片内共享缓存 / 进程级单例），不是 backend 档特有的资源竞争。该文件末次改动 `85937f27`，与 B2 系列无关。发现方：Task 4.2 评审的邻域观测。
+- **为何暂缓**：与本轮（abort 归因）因果链无关，且**门本身仍是可信的**——失败是真失败、退出码正确，坏的只是「一次全绿不等于确定性全绿」。定位它需要独立的二分实验，塞进本轮会让本轮的因果链变糊。**触发条件（值得做）**：频率上升到影响交付判断、或某次真回归被当成 flaky 挥手放过（**这正是最危险的失效形态**——本轮就差点把一次环境性红当成「既有失败」）。**发现方**：abort 归因收尾期间连跑六次全量的对照观测（2026-07-28）。
+
+## `parallel-test.ts` 的汇总用例数在同一 commit 上逐次漂移（2026-07-30，B2 Task 4.3a 收口复评）
+
+- **根因 / 现状**：**未定位**。同一棵树、同一 HEAD、同一条 `bun run test:backend` 连跑四次，汇总行的总数为 **6631 / 5741 / 6164 / 5810**，全部 `0 fail`；而不经分片脚本的直接发现稳定在 `Ran 6642 tests across 649 files`。此前 2026-07-28 已记过「系统性欠计 ~25%」（ANSI 修复之后仍欠），本条是新信息：**欠计量不是常数，逐次随机漂移**，说明各分片汇总存在丢失或竞争，而非某类文件被稳定漏读。
+- **当前行为**：**门本身仍可信**——退出码由各 shard 决定，真失败照样红（本轮多次实测）。坏的只是「跑了多少条」这个仪表。
+- **危害（本轮实际踩到）**：把汇总数当作「用例数不减」的验收证据是**用会漂的尺子量 2 毫米**。B2 系列多轮用过 `6630 → 6631 → 6633` 这类差值，结论碰巧都对（另有运行时名字枚举佐证），但推理不成立。
+- **理想架构 / 若做需改什么**：让分片脚本汇总 **junit reporter 的用例名集合**而非解析 stdout 数字；或至少在汇总行标注「计数不可靠，验收请用 `--reporter=junit` 枚举」。修好后应有守卫：同一 commit 连跑 3 次汇总数必须一致。
+- **为何暂缓**：与 B2 因果链无关；且**验收有可靠替代**（junit 名字集合枚举，本轮已在用）。**触发条件（值得做）**：① 有人再次用汇总数做增减验收；② 排查分片污染时需要可信基数；③ 顺手修 `parallel-test.ts` 时。
+- **发现方**：Task 4.3a 收口复评的邻域实测（连跑四次对照）。**配套纪律**：凡「用例数增减」类验收，一律用 junit 枚举或名字集合 diff，**别用分片汇总数**——与记忆 `methodology-test-name-audit-must-enumerate-at-runtime` 同一族（那条讲别用 grep，这条讲别用汇总数）。
+
+## 仓库内 worktree 里，裸包名 `@hsupu/ghc-proxy-{token,cli}` 解析到**主树**源码（2026-07-29，worktree 委派 gate 评审的邻域实测）
+
+- **根因 / 现状**：`.worktrees/<name>/node_modules` 是指向**主树** `node_modules` 的软链，而其中 `@hsupu/ghc-proxy-*` 又软链回**主树**的 `packages/*`。是否逃逸取决于 tsconfig `paths` 有没有把该 specifier 拦下来：`@hsupu/ghc-proxy-foundation` 与 `@hsupu/ghc-proxy-telemetry` 有裸包名别名（`tsconfig.json:21-22`/`:51-52`）→ 解析回 worktree ✅；`token` / `cli` **只有树内形式的别名**（`~/lib/token`、`~/main` 等）、没有裸包名别名 → 裸名解析到**主树** ❌。逐包实测（worktree 内 `Bun.resolveSync`）：foundation → worktree、telemetry → worktree、token → **主树** `packages/token/src/index.ts`、cli → **主树** `packages/cli/src/main.ts`。
+- **当前行为**：**今天没有实际危害**——全仓没有任何真实导入使用 `@hsupu/ghc-proxy-token` / `@hsupu/ghc-proxy-cli` 裸名（`rg` 命中的全是 `tests/architecture/package-boundaries.unit.test.ts` 与 `telemetry-domain-surface.unit.test.ts` 里的**字符串字面量**，用于断言边界规则本身）；生产消费者走 `~/lib/token` / `~/main`，解析在树内。所以这是**潜伏**缺口，不是活的缺陷。
+- **理想架构 / 若做需改什么**：给 `token` / `cli` 补裸包名 `paths` 别名（与 foundation/telemetry 对称，两行一个包）；更根本的是加一条守卫——**每个 workspace 包的裸包名都必须在 tsconfig `paths` 里有别名**，否则新拆的包天然带着这个逃逸。守卫应有正样本对照（删掉某个别名要变红）。注意别名只解决 tsc/bun 的 specifier 解析，**不解决** worktree 缺 gitignored 构建产物那一类问题（见记忆 `reference-worktree-bun-add-needs-main-tree-install-after-merge` 前三向）。
+- **为何暂缓**：当前零消费者 → 改了也无可观测差异，且它与本轮（B2 上游静默恢复）因果链无关；补别名本身很小，但**配套的守卫**才是真正值钱的部分，值得单独一个改动 + 正样本对照，不该塞进特性分支。**触发条件（值得做）**：① monorepo 拆包推进到「用裸包名消费 token/cli」（`package-boundaries.unit.test.ts:111` 的注释已经预告了这个方向）；② 任何新 workspace 包落地时；③ 在 worktree 里出现「改了包源码但测试行为不变」的诡异症状——那正是这个逃逸的典型表征。
+- **发现方**：给用户级 skill `git-preference:isolating-from-a-shared-git-worktree` 补「委派命令树向 gate」时，评审实测出「gate 全绿 + 测试全绿 + 加载的是主树源码」这条通用逃逸（依赖解析向上逃出嵌套 worktree），随后在本仓库逐包复核得到上述不对称。**教训本身**（gate 证 cwd/树/commit，**不证解析根**）已写进该 skill 与记忆第四方向。
+
+## delivery identity 继承已被 explicit allocation-port 架构取代（2026-08-06 渐进合并时关闭）
+
+- **原问题**：B2 分支曾用模块级 `inheritDownstreamDeliverySession(source, decorator, contract)` 把 wrapper 注册进 `deliveryBySink`；改写型 decorator 一旦继承身份，hedge winner 会绕过 reconcile，产生重复 `message_start`、anchor index 冲突与 close-off 丢失。
+- **关闭方式**：master 已把 owner 能力改成显式 `wireAllocationPort`，driver 从 `RunResponseOpts.wireAllocationPort` 找 owner，并通过 `getDeliverySessionForAllocationPort()` 取 session；wrapper 不再需要、也不应继承 identity。渐进合并时保留 master 架构，删除旧 workaround 及其 allowlist 守卫。
+- **长期形状**：owner 能力通过端口显式穿参，rewriting decorator 只改写 public frame port；这已达成原 backlog 的「让违规不可表达」目标，无剩余待办。原事故与判据保留在 git 历史和 Task 4.1′ plan 注解中。

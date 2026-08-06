@@ -3,8 +3,8 @@ import type {
   AskNormalizationDiag,
   SendMessageNormalizationDiag,
 } from "~/lib/anthropic/decode-tool-input-core"
-import type { BufferedMergeDiag } from "~/lib/codec/openai-responses/buffered-merge-reducer"
 import type { RefusalPolicy } from "~/lib/anthropic/refusal-policy"
+import type { BufferedMergeDiag } from "~/lib/codec/openai-responses/buffered-merge-reducer"
 import type { ApiError } from "~/lib/error"
 import type {
   //
@@ -522,8 +522,12 @@ export interface RequestContext {
   whenModelOperationFinalized(): Promise<ModelOperationRecord>
   setToolNameMapper(mapper: ToolNameMapper | null): void
   setPipelineInfo(info: PipelineInfo): void
+  /** Persist request-side protocol degradation independently of full-replace pipeline-info writers. */
+  recordTranslationDegradation(diag: NonNullable<NonNullable<PipelineInfo["translation"]>["anthropicToResponses"]>): void
   /** Persist max_tokens terminal diagnostics independently of full-replace pipeline-info writers. */
   recordMaxTokensTruncation(diag: NonNullable<PipelineInfo["maxTokensContinuation"]>): void
+  /** Persist a downstream owner failure that occurred after the first external wire write was attempted. */
+  recordWirePartialDelivery(diag: NonNullable<PipelineInfo["wirePartialDelivery"]>): void
   /** Merge Responses buffered-merge diagnostics into `pipelineInfo` (independent slot — survives the gated `setPipelineInfo` full-replace calls, mirrors the existing `_streamTimeouts`/`_sendMessageNormalization` pattern). */
   recordBufferedMergeInfo(diag: BufferedMergeDiag): void
   /** Record the per-model effective timeouts for this request (merged into `pipelineInfo`, survives the gated `setPipelineInfo` full-replace calls). */

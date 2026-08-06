@@ -27,6 +27,7 @@ import type {
   ScopedPublisher,
 } from "~/lib/observability"
 
+import { REQUEST_DEADLINE_CANCEL_REASON } from "~/lib/error/cancellation-reason"
 import { recordReaperTick } from "~/lib/observability/reaper-diagnostics"
 import { state } from "~/lib/state"
 
@@ -413,7 +414,7 @@ export function createRequestContextManager(options?: RequestContextManagerOptio
           consola.warn(
             `[context] Request ${ctx.id} exceeded hard deadline ${state.requestDeadline}s (model: ${ctx.originalRequest?.model ?? "unknown"}, state: ${ctx.state}) — cancelling`,
           )
-          ctx.cancel("request_deadline")
+          ctx.cancel(REQUEST_DEADLINE_CANCEL_REASON)
           ctx.fail(
             ctx.originalRequest?.model ?? "unknown",
             new Error(`Request exceeded hard deadline of ${state.requestDeadline}s (request_deadline)`),

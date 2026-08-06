@@ -33,19 +33,18 @@ import {
   initHistory,
   insertEntry,
 } from "~/lib/history"
+import { getDatabase } from "~/lib/history/sqlite/connection"
+import { setModels } from "~/lib/models/cache"
 import {
   //
   resetUpstreamWsManagerForTests,
   setUpstreamWsConnectionFactoryForTests,
 } from "~/lib/openai/upstream-ws"
-import {
-  //
-  setModels,
-  setStateForTests,
-} from "~/lib/state"
+import { setStateForTests } from "~/lib/state"
 import { generateId } from "~/lib/utils"
 
 import { mockModel } from "../helpers/factories"
+import { commitV3HistoryEntry } from "../helpers/history-v3-fixtures"
 import { useIsolatedRuntime } from "../helpers/isolated-fixture"
 import {
   //
@@ -190,6 +189,14 @@ interface StatusResponseBody {
   }
   transport: TransportStatusSnapshot
   history_search: { enabled: boolean; reachable?: boolean; latencyMs?: number; error?: string }
+  memory: {
+    historyBackend: string
+    historyEntryCount: number
+    inFlightCount: number
+    summaryProjectionReady: boolean
+    summaryProjectionPending: number
+    summaryProjectionPoisoned: number
+  }
 }
 
 function createHistoryEntry(overrides?: {
@@ -328,6 +335,12 @@ describe("management and history HTTP routes", () => {
       resetDate: "2026-04-01",
     })
     expect(body.activeRequests.count).toBe(0)
+    expect(body.memory).toMatchObject({
+      historyBackend: "sqlite",
+      summaryProjectionReady: false,
+      summaryProjectionPending: 0,
+      summaryProjectionPoisoned: 0,
+    })
     // history_search: the sidecar is an independently-started service (Phase 3′) --
     // in this test environment nothing is listening on PATHS.HISTORY_SEARCH_SOCKET,
     // so the main process's own lightweight reachability probe must honestly report
@@ -354,6 +367,25 @@ describe("management and history HTTP routes", () => {
     })
     expect(body.requestTelemetry.modelsLast7d[0]?.buckets).toHaveLength(1)
     expect(copilotUsageHits).toBe(1)
+  })
+
+  test("GET /api/status counts persisted operations without parsing summary payloads", async () => {
+    commitV3HistoryEntry(
+      createHistoryEntry({
+        id: "status-count-corrupt-summary",
+        upstreamResponse: { success: true, model: "claude-sonnet-4.6", usage: { input_tokens: 1, output_tokens: 1 } },
+        state: "completed",
+      }),
+    )
+    // Model a pre-trigger/corrupt historical artifact: the count path must only
+    // count operation rows, while the old list facade would try to parse this.
+    getDatabase().exec("DROP TRIGGER v3_operation_summaries_after_summary_update")
+    getDatabase().prepare("UPDATE v3_operations SET summary_json='{broken' WHERE operation_id=?").run("status-count-corrupt-summary")
+
+    const res = await app.request("/api/status")
+    const body = (await res.json()) as StatusResponseBody
+    expect(res.status).toBe(200)
+    expect(body.memory.historyEntryCount).toBe(1)
   })
 
   test("GET /history/api/stats returns history stats through the full app route", async () => {

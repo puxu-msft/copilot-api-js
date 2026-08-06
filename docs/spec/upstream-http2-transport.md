@@ -6,7 +6,11 @@
 
 > **v3 修订(用户指示 + 实现期发现):**
 > - **(用户)`https` 全走 h2**:用户指示"支持 HTTP2 的都优先 HTTP2"。已验证所有 https 上游皆 h2,故路由从 v2 的"仅 GHC host"放宽为"全 https → node:http2"(更主动)。SearXNG 明文 http:// 保留 undici(用户确认其有需求)。
-> - **(实现期实测,CRITICAL 限制)Bun 的 node:http2 客户端对任何中途连接终止都交付 synthetic clean `end`**(`response→data→end→close`,rstCode=0)——clean server RST 与完整连接 drop 皆然(exp/ 实证)。故 **mid-stream truncation 在 Bun 下无法在传输层检测**。`error`/`close-before-end` 兜底在 Node 下有效;Bun 下的残余靠 app 层(SSE 缺失终止事件 message_stop/[DONE])。**仍严格优于被替换的 undici**——后者在 Bun 下对这些 host 是永久 hang(比截断更糟)。
+> - ~~**(实现期实测,CRITICAL 限制)Bun 的 node:http2 客户端对任何中途连接终止都交付 synthetic clean `end`**(`response→data→end→close`,rstCode=0)——clean server RST 与完整连接 drop 皆然(exp/ 实证)。故 **mid-stream truncation 在 Bun 下无法在传输层检测**。~~ `error`/`close-before-end` 兜底在 Node 下有效;Bun 下的残余靠 app 层(SSE 缺失终止事件 message_stop/[DONE])。**仍严格优于被替换的 undici**——后者在 Bun 下对这些 host 是永久 hang(比截断更糟)。
+>
+>   ⚠ **2026-08-01 勘误(部分作废)**:上面划掉的部分**只有「完整连接 drop」那半成立**。两个原始探针用了不同的故障制造方式:`exp/upstream-models-hang/probe-drop-events.mjs:4` 用 `session.destroy()`(**忠实**,该半结论成立);而 `probe-rst-events.mjs:3` 用 `stream.close(NGHTTP2_INTERNAL_ERROR)`,**该 API 在「已写过 DATA、未 END_STREAM」形态下根本不在 wire 上放出 RST 帧**,故「clean server RST 也交付 synthetic end」是夹具假象。改用 `stream.destroy(new Error())` 造出忠实 RST 后,在无 Content-Length 的 SSE 流上 **Bun 的 node:http2 检测得到 `rst=2`**,与 curl / 进程内 libcurl / Node 一致(四方全中)。取证见 `exp/curl-transport-rst-arbitration/FINDINGS.md` 与其 `oracle-faithful-rst.mjs`。
+>
+>   **连带的测试纪律**:造 h2 RST 的夹具**必须**用 `stream.destroy(err)`,**绝不**用 `stream.close(code)`——后者会让整套截断测试假绿(本轮两个 PoC 加主会话三方全被它骗过)。skill `debugging-ghc-api-upstream-transport` 原只记载 Bun **服务端**不忠实,**Node 服务端在此形态下同样不忠实**,适用范围比原记载更宽。
 
 
 > **v2 修订(对抗 review 2026-06-19,已采纳):**

@@ -1,17 +1,16 @@
 import { randomUUID } from "node:crypto"
 
+import type { State } from "~/lib/state"
+
 import {
   //
   EDITOR_PLUGIN_VERSION,
   standardHeaders,
   USER_AGENT,
 } from "~/lib/ghc-http-primitives"
+import { setVSCodeVersion } from "~/lib/state"
 import { getTokenCredentials } from "~/lib/token"
 import { upstreamFetch } from "~/lib/transport/upstream-fetch"
-
-import type { State } from "./state"
-
-import { setVSCodeVersion } from "./state"
 
 /** Copilot Chat API version (for chat/completions requests) */
 const COPILOT_API_VERSION = "2025-05-01"

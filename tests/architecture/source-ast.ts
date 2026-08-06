@@ -15,11 +15,58 @@
  * dependency (the repo's own typecheck runs on it).
  */
 
+import { realpathSync } from "node:fs"
+import path from "node:path"
 import ts from "typescript"
 
 /** Parse one source file syntactically (no program, no type checker). */
 export function parseSource(filePath: string, source: string): ts.SourceFile {
   return ts.createSourceFile(filePath, source, ts.ScriptTarget.Latest, /* setParentNodes */ true, ts.ScriptKind.TSX)
+}
+
+/**
+ * Cheap pre-filter for the guards that AST-walk a whole tree: may `text` contain `needle` ONCE THE
+ * PARSER HAS DECODED IT? Files that answer no can skip the parse.
+ *
+ * Three tiers, cheapest first, each sound on its own:
+ *
+ *  1. the raw text contains it — parse, nothing to decide;
+ *  2. the raw text has no backslash — skip. Without escapes a string literal's value and an
+ *     identifier's name are VERBATIM substrings of the source, so a decoded-only occurrence needs an
+ *     escape, and every escape needs a backslash;
+ *  3. otherwise LEX it. The scanner decodes literals and identifiers without building an AST, which
+ *     is what makes this affordable.
+ *
+ * The tiers exist because the two cheaper criteria I tried first were both unsound and both looked
+ * finished:
+ *
+ *  - `text.includes(needle)` alone, shipped with a comment claiming it could not miss.
+ *    `"\x7e/routes/x"` IS `~/routes/x` to the parser while the raw text contains neither.
+ *  - then `|| /\\[ux]/`, on the theory that producing an arbitrary character takes a hex or unicode
+ *    escape. It does not: `"~/rout\es"` decodes to `~/routes` because `\e` is an identity escape,
+ *    and a backslash-newline line continuation splices the needle across two lines. Both parse with
+ *    zero diagnostics. The recurring lesson — a filter's soundness is a claim about the LANGUAGE,
+ *    and enumerating the forms you happen to think of does not establish it. Only the lexer knows.
+ *
+ * Measured over `src/lib` (371 files): parse everything 585ms, tier-2 alone 126ms, these three
+ * tiers 27ms. Cost matters because ~1.3s in isolation blows the default 5s timeout under 16-way
+ * sharding, and a guard that times out intermittently is one people learn to ignore.
+ *
+ * Still invisible: text never spelled as a single token (`obj["SEPARATOR_" + "CARRIERS"]`). That is
+ * a limit of the AST criterion the callers apply, not of this filter.
+ */
+export function mayContainDecoded(text: string, needle: string): boolean {
+  if (text.includes(needle)) return true
+  if (!text.includes("\\")) return false
+
+  const scanner = ts.createScanner(ts.ScriptTarget.Latest, /* skipTrivia */ true, ts.LanguageVariant.JSX, text)
+  for (let token = scanner.scan(); token !== ts.SyntaxKind.EndOfFileToken; token = scanner.scan()) {
+    // `getTokenValue()` is the DECODED text for the kinds that can carry an escape; for anything
+    // else it is the raw token, which tier 1 already ruled out. Checking it unconditionally means a
+    // token kind added to the language later cannot silently fall out of this filter.
+    if (scanner.getTokenValue()?.includes(needle) === true) return true
+  }
+  return false
 }
 
 /**
@@ -109,6 +156,7 @@ export function valueStarReExports(sourceFile: ts.SourceFile): Array<string> {
  */
 export function importedModuleSpecifiers(sourceFile: ts.SourceFile): Array<string> {
   const specifiers: Array<string> = []
+  const loaderNames = loaderBindingNames(sourceFile)
   const visit = (node: ts.Node): void => {
     if (ts.isImportDeclaration(node) && !node.importClause?.isTypeOnly && ts.isStringLiteral(node.moduleSpecifier)) {
       specifiers.push(node.moduleSpecifier.text)
@@ -116,16 +164,204 @@ export function importedModuleSpecifiers(sourceFile: ts.SourceFile): Array<strin
     if (ts.isExportDeclaration(node) && !node.isTypeOnly && node.moduleSpecifier && ts.isStringLiteral(node.moduleSpecifier)) {
       specifiers.push(node.moduleSpecifier.text)
     }
-    if (ts.isCallExpression(node)) {
-      const isDynamicImport = node.expression.kind === ts.SyntaxKind.ImportKeyword
-      const isRequire = ts.isIdentifier(node.expression) && node.expression.text === "require"
+    if (ts.isCallExpression(node) && couldLoadModule(node, sourceFile, loaderNames)) {
       const [firstArgument] = node.arguments
-      if ((isDynamicImport || isRequire) && firstArgument && ts.isStringLiteral(firstArgument)) specifiers.push(firstArgument.text)
+      if (firstArgument && ts.isStringLiteralLike(firstArgument)) specifiers.push(firstArgument.text)
     }
     ts.forEachChild(node, visit)
   }
   visit(sourceFile)
   return specifiers
+}
+
+/**
+ * Dynamic `import()` / `require()` calls whose module target CANNOT be determined statically —
+ * `import(`${target}`)`, `import(path)`, `require(candidate)` — reported as their source text.
+ *
+ * This is the companion to `allModuleSpecifiers`, and the pair only makes sense together. That
+ * function deliberately reports nothing for an opaque target, because inventing a specifier would be
+ * a lie; but a guard that consumes only the specifier list then reads "no edge" where the honest
+ * answer is "unknowable", and a claim like "this module imports only `node:` builtins" quietly
+ * becomes "…plus whatever that expression resolves to at runtime".
+ *
+ * A guard asserting an ABSOLUTE property has to treat these as violations. A guard freezing a
+ * specific edge set can instead register the known ones, so a NEW opaque call still surfaces.
+ */
+/**
+ * Every construct in this file that COULD load a module, and its target when that is knowable.
+ *
+ * The callee test is deliberately an OVER-APPROXIMATION — `import(…)`, anything whose callee text
+ * mentions `require`/`createRequire`, and `<x>.require(…)` — because the precise question ("does
+ * this name resolve to a module loader?") requires a binder, and four rounds of review established
+ * that hand-rolling one does not converge:
+ *
+ *  - matching the literal callee `require` missed `createRequire`-minted loaders entirely;
+ *  - tracking `createRequire` bindings file-wide let a nested parameter named `require` switch the
+ *    ambient loader off for the whole file;
+ *  - resolving lexically by walking parent scopes still got `var` wrong, because `var` hoists to the
+ *    function and my binder left it in the block — and `createRequire(import.meta.url)("consola")`
+ *    slipped through anyway, since its callee is a call rather than an identifier.
+ *
+ * Each fix closed the demonstrated case and the next probe found another. The pattern is the same
+ * one that has recurred throughout these guards: a criterion that must enumerate legal forms will
+ * always be one form behind. So the criterion stops being "is this a loader" and becomes "could this
+ * be one" — a question with no dependence on scope, hoisting, or callee shape.
+ *
+ * The cost is false positives: `require.resolve(x)`, a local helper that happens to be named
+ * `require`, and the `createRequire(url)` call that only MINTS a loader are all reported. That is
+ * the right direction to be wrong in. A guard asserting an absolute property rejects them outright
+ * (the state unit has zero); a ratchet registers them once, with a note saying why each is benign.
+ *
+ * The ARGUMENT stays precise: a string-literal target is reported as an edge, anything else as
+ * unknowable. Over-approximating there would invent module names that do not exist.
+ */
+export interface ModuleLoadSite {
+  /** The call as written, for a registry row or an error message. */
+  text: string
+  /** The module it loads, when that is a literal; `undefined` when the target is computed. */
+  specifier: string | undefined
+}
+
+export function moduleLoadSites(sourceFile: ts.SourceFile): Array<ModuleLoadSite> {
+  const sites: Array<ModuleLoadSite> = []
+  const loaderNames = loaderBindingNames(sourceFile)
+  const visit = (node: ts.Node): void => {
+    if (ts.isCallExpression(node) && couldLoadModule(node, sourceFile, loaderNames)) {
+      const [argument] = node.arguments
+      sites.push({
+        text: node.getText(sourceFile).replace(/\s+/g, " "),
+        specifier: argument !== undefined && ts.isStringLiteralLike(argument) ? argument.text : undefined,
+      })
+    }
+    ts.forEachChild(node, visit)
+  }
+  visit(sourceFile)
+  return sites
+}
+
+/** `require`/`createRequire` as a whole word — not `requireAuth`, not `myRequirements`. */
+const LOADER_CALLEE = /(?:^|[^\p{ID_Continue}$])(?:require|createRequire)(?![\p{ID_Continue}$])/u
+
+/**
+ * Names bound to something that LOOKS like a loader factory — `const load = createRequire(url)` —
+ * so that calling `load(…)` counts too.
+ *
+ * File-wide and scope-blind ON PURPOSE, and the distinction from the version this replaces is the
+ * whole lesson: that one was also file-wide, but it under-approximated (one nested parameter named
+ * `require` switched the ambient loader off everywhere), and an under-approximating guard is silently
+ * blind. This one over-approximates — a same-named binding in an unrelated scope is also treated as
+ * a loader — so being scope-blind can only ever produce an extra row to explain, never a miss.
+ */
+function loaderBindingNames(sourceFile: ts.SourceFile): ReadonlySet<string> {
+  const names = new Set<string>()
+  const visit = (node: ts.Node): void => {
+    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer && LOADER_CALLEE.test(node.initializer.getText(sourceFile))) {
+      names.add(node.name.text)
+    }
+    ts.forEachChild(node, visit)
+  }
+  visit(sourceFile)
+  return names
+}
+
+function couldLoadModule(node: ts.CallExpression, sourceFile: ts.SourceFile, loaderNames: ReadonlySet<string>): boolean {
+  if (node.expression.kind === ts.SyntaxKind.ImportKeyword) return true
+  // `(load)("x")` is the same call as `load("x")`; the parentheses are not a different construct.
+  let callee: ts.Expression = node.expression
+  while (ts.isParenthesizedExpression(callee)) callee = callee.expression
+  if (ts.isIdentifier(callee) && loaderNames.has(callee.text)) return true
+  return LOADER_CALLEE.test(callee.getText(sourceFile))
+}
+
+/**
+ * The string-literal first argument of EVERY call in the file, whatever the callee.
+ *
+ * Deliberately callee-blind. Naming the loader is what keeps failing — `(nodeRequire)("…")`, a
+ * computed member access, a two-hop alias — and each dodge is about the CALLEE, never the target.
+ * A caller looking for edges to a specific place can therefore ask this instead and stop caring how
+ * the call is spelled.
+ *
+ * It over-reports by construction (any function taking a string that happens to look like a
+ * specifier), which is why it is a building block rather than a guard: the caller filters by a
+ * prefix that means something in its own domain.
+ */
+export function callArgumentLiterals(sourceFile: ts.SourceFile): Array<{ text: string; argument: string }> {
+  const literals: Array<{ text: string; argument: string }> = []
+  const visit = (node: ts.Node): void => {
+    if (ts.isCallExpression(node)) {
+      const [argument] = node.arguments
+      if (argument !== undefined && ts.isStringLiteralLike(argument)) {
+        literals.push({ text: node.getText(sourceFile).replace(/\s+/g, " "), argument: argument.text })
+      }
+    }
+    ts.forEachChild(node, visit)
+  }
+  visit(sourceFile)
+  return literals
+}
+
+/**
+ * Sites where a file ACQUIRES the ability to load modules at runtime.
+ *
+ * This is what makes the load-site scan sound, and it exists because tracking loaders by name never
+ * became sound no matter how it was written. The last attempt over-approximated the CALL but still
+ * seeded from names whose initializer text mentioned `createRequire`, so a renamed import
+ * (`import { createRequire as mint }`) or a factory alias (`const mint = createRequire`) walked
+ * straight through — an under-approximation wearing an over-approximation's clothes. A reviewer had
+ * to point that out; the shape looked right to me.
+ *
+ * Acquisition is a different kind of question. Aliasing is unbounded, but the CAPABILITY enters a
+ * module through a small, syntactically visible set of doors: importing `node:module` (in any form
+ * — that is the only place `createRequire` comes from) or calling `process.getBuiltinModule`. You
+ * cannot alias what you never obtained, so guarding the doors needs no provenance analysis at all.
+ *
+ * Out of reach, and stated rather than implied: `eval`, `new Function`, and anything reached through
+ * a value handed in from outside the module. Static analysis loses to those in general — these
+ * guards catch drift, not an adversary with commit access.
+ */
+export function moduleCapabilityAcquisitions(sourceFile: ts.SourceFile): Array<string> {
+  const acquisitions: Array<string> = []
+  const isModuleSpecifier = (text: string): boolean => /^(?:node:)?module$/.test(text)
+
+  const visit = (node: ts.Node): void => {
+    if (ts.isImportDeclaration(node) && ts.isStringLiteralLike(node.moduleSpecifier) && isModuleSpecifier(node.moduleSpecifier.text)) {
+      acquisitions.push(node.getText(sourceFile).replace(/\s+/g, " "))
+    }
+    if (ts.isExportDeclaration(node) && node.moduleSpecifier && ts.isStringLiteralLike(node.moduleSpecifier) && isModuleSpecifier(node.moduleSpecifier.text)) {
+      acquisitions.push(node.getText(sourceFile).replace(/\s+/g, " "))
+    }
+    if (ts.isImportEqualsDeclaration(node) && ts.isExternalModuleReference(node.moduleReference) && ts.isStringLiteralLike(node.moduleReference.expression) && isModuleSpecifier(node.moduleReference.expression.text)) {
+      acquisitions.push(node.getText(sourceFile).replace(/\s+/g, " "))
+    }
+    if (ts.isCallExpression(node)) {
+      // The CALLEE has to be a loader too, otherwise `console.log("module")` counts as acquiring the
+      // module-loading capability — which drowns the registry in noise and, worse, trains people to
+      // add rows without reading them. Same for `getBuiltinModule`: it is `process`'s, and only when
+      // asked for `module` itself.
+      const [argument] = node.arguments
+      const target = argument !== undefined && ts.isStringLiteralLike(argument) ? argument.text : undefined
+      const calleeText = node.expression.getText(sourceFile)
+      const isLoaderCallee = node.expression.kind === ts.SyntaxKind.ImportKeyword || LOADER_CALLEE.test(calleeText)
+      const isProcessBuiltinGetter = /(?:^|[^\p{ID_Continue}$])process\.getBuiltinModule$/u.test(calleeText)
+      if (target !== undefined && isModuleSpecifier(target) && (isLoaderCallee || isProcessBuiltinGetter)) {
+        acquisitions.push(node.getText(sourceFile).replace(/\s+/g, " "))
+      }
+    }
+    ts.forEachChild(node, visit)
+  }
+  visit(sourceFile)
+  return acquisitions
+}
+
+/**
+ * Files pulled in by a triple-slash `/// <reference path="…" />`.
+ *
+ * A dependency the module graph never mentions: no import statement, no specifier, yet the types it
+ * brings in are usable and the coupling is real. This guard already counts type-only imports as
+ * coupling, so leaving these out would make the claim stronger than the check — again.
+ */
+export function referencedFilePaths(sourceFile: ts.SourceFile): Array<string> {
+  return sourceFile.referencedFiles.map((reference) => reference.fileName)
 }
 
 /**
@@ -135,9 +371,21 @@ export function importedModuleSpecifiers(sourceFile: ts.SourceFile): Array<strin
  * bundling concerns): a type-only import still couples the two modules, still shows up as a cycle
  * edge in the madge SCC snapshot, and was exactly the edge T4 had to sever to get telemetry out of
  * the core SCC. A boundary that ignored type imports would call a coupled package "clean".
+ *
+ * **`isStringLiteralLike` at the CALL sites, `isStringLiteral` everywhere else**, and the asymmetry
+ * is load-bearing rather than sloppy: a dynamic `import()` / `require()` takes an EXPRESSION, so
+ * ``import(`consola`)`` compiles clean and slipped past every guard built on this — the state unit
+ * looked free of bare packages and the core→server ratchet looked frozen. The declaration forms take
+ * a grammar-level StringLiteral, so ``import m from `x` ``, ``export * from `x` ``,
+ * ``import m = require(`x`)`` and ``import(`x`).T`` are all TS1141 "String literal expected"
+ * (checked with tsc, not assumed). Widening those would advertise a form that cannot exist.
+ *
+ * Template literals WITH substitutions stay out on purpose: `` import(`~/${name}`) `` has no static
+ * specifier to report, and inventing one would be a lie rather than a gap.
  */
 export function allModuleSpecifiers(sourceFile: ts.SourceFile): Array<string> {
   const specifiers: Array<string> = []
+  const loaderNames = loaderBindingNames(sourceFile)
   const visit = (node: ts.Node): void => {
     if (ts.isImportDeclaration(node) && ts.isStringLiteral(node.moduleSpecifier)) specifiers.push(node.moduleSpecifier.text)
     if (ts.isExportDeclaration(node) && node.moduleSpecifier && ts.isStringLiteral(node.moduleSpecifier)) specifiers.push(node.moduleSpecifier.text)
@@ -145,11 +393,9 @@ export function allModuleSpecifiers(sourceFile: ts.SourceFile): Array<string> {
     if (ts.isImportEqualsDeclaration(node) && ts.isExternalModuleReference(node.moduleReference) && ts.isStringLiteral(node.moduleReference.expression)) {
       specifiers.push(node.moduleReference.expression.text)
     }
-    if (ts.isCallExpression(node)) {
-      const isDynamicImport = node.expression.kind === ts.SyntaxKind.ImportKeyword
-      const isRequire = ts.isIdentifier(node.expression) && node.expression.text === "require"
+    if (ts.isCallExpression(node) && couldLoadModule(node, sourceFile, loaderNames)) {
       const [firstArgument] = node.arguments
-      if ((isDynamicImport || isRequire) && firstArgument && ts.isStringLiteral(firstArgument)) specifiers.push(firstArgument.text)
+      if (firstArgument && ts.isStringLiteralLike(firstArgument)) specifiers.push(firstArgument.text)
     }
     // `import type X from "y"` inside a type position (`import("y").T`).
     if (ts.isImportTypeNode(node) && ts.isLiteralTypeNode(node.argument) && ts.isStringLiteral(node.argument.literal)) {
@@ -309,4 +555,85 @@ export function isFunctionCall(call: ts.CallExpression, fn: string): boolean {
 export function methodCallReceiver(call: ts.CallExpression): string | null {
   if (!ts.isPropertyAccessExpression(call.expression)) return null
   return ts.isIdentifier(call.expression.expression) ? call.expression.expression.text : null
+}
+
+/**
+ * Resolve a specifier with the PROJECT's compiler options, so a guard and `tsc` agree on what it
+ * denotes. Built once per repo root; resolution itself is cheap.
+ *
+ * Guards that match specifier TEXT are testing a spelling, not a dependency: `~/routes/x` and
+ * `../../routes/x` are the same module, and a guard that only knows the first reports the second as
+ * no edge at all. That mistake was made and fixed in the state closure, and then left standing in
+ * the core ratchet for four more rounds because nobody carried the lesson across.
+ *
+ * `convertCompilerOptionsFromJson`, not `parseJsonConfigFileContent`: the latter also expands the
+ * `include` globs (~380ms) and these guards run in a sharded tier.
+ */
+export function createSpecifierResolver(repoRoot: string): (fromFile: string, specifier: string) => string | undefined {
+  const configPath = path.join(repoRoot, "tsconfig.json")
+  const raw = ts.readConfigFile(configPath, ts.sys.readFile)
+  const converted = ts.convertCompilerOptionsFromJson((raw.config as { compilerOptions?: unknown }).compilerOptions, repoRoot, configPath)
+  if (converted.errors.length > 0) throw new Error(`tsconfig.json compilerOptions failed to parse: ${converted.errors.map((error) => error.messageText).join("; ")}`)
+  return (fromFile, specifier) => ts.resolveModuleName(specifier, fromFile, converted.options, ts.sys).resolvedModule?.resolvedFileName
+}
+
+/**
+ * References to the ambient `require` binding — not just calls to it.
+ *
+ * For a unit whose claim is "static imports only", a MENTION is already the violation: `const a =
+ * require` hands the loader to any name at all, `Reflect.apply(require, …, ["consola"])` never
+ * writes a call with `require` as its callee, and both type-check. Chasing those through alias
+ * chains is the losing game this file has already lost four times; refusing the identifier outright
+ * is one line and admits no chain, because every chain must start by naming it.
+ *
+ * Only meaningful for a unit that genuinely never loads anything at runtime — the state closure has
+ * zero mentions today. Anywhere else this would be far too blunt.
+ *
+ * `import.meta.require` counts as well, and excluding it was a real hole: the capability gate never
+ * sees it either (nothing is imported), so `const r = import.meta.require` handed the loader to a
+ * name with nothing left to notice. Other property accesses stay excluded — `foo.require` is
+ * someone else's member, not a loader.
+ */
+export function ambientRequireReferences(sourceFile: ts.SourceFile): Array<string> {
+  const references: Array<string> = []
+  const record = (node: ts.Node): void => {
+    references.push(node.getText(sourceFile).replace(/\s+/g, " ").slice(0, 80))
+  }
+  const visit = (node: ts.Node): void => {
+    // `import.meta.require` — a loader that exists without any import, like the ambient global.
+    if (ts.isPropertyAccessExpression(node) && node.name.text === "require" && ts.isMetaProperty(node.expression)) {
+      record(node)
+    } else if (ts.isIdentifier(node) && node.text === "require") {
+      const isMemberName = ts.isPropertyAccessExpression(node.parent) && node.parent.name === node
+      const isDeclarationName = (ts.isVariableDeclaration(node.parent) || ts.isParameter(node.parent) || ts.isBindingElement(node.parent)) && node.parent.name === node
+      if (!isMemberName && !isDeclarationName) record(node.parent)
+    }
+    ts.forEachChild(node, visit)
+  }
+  visit(sourceFile)
+  return references
+}
+
+/**
+ * Is `target` inside `root`? Both canonicalised, and compared per path SEGMENT.
+ *
+ * Two mistakes folded into one helper because each was made twice. `startsWith(root)` also matches
+ * a sibling `root-other/`, and `relative.startsWith("..")` also matches the legal filename
+ * `..review.ts`. And without `realpath`, a symlink under `root` pointing outside it has an inside
+ * SPELLING and an outside IDENTITY — which is how a `/// <reference>` walked out of `src/routes`
+ * while the guard stayed green. The state closure got this right and the core ratchet was still
+ * comparing lexical paths, because the fix lived in one consumer instead of here.
+ */
+export function containedIn(root: string, target: string): boolean {
+  // A target that does not exist cannot be canonicalised; compare it lexically rather than throwing
+  // ENOENT and taking the whole guard down instead of reporting the edge.
+  const canonical = (candidate: string): string => {
+    try {
+      return realpathSync(candidate)
+    } catch {
+      return candidate
+    }
+  }
+  const relative = path.relative(canonical(root), canonical(target))
+  return relative !== "" && relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative)
 }

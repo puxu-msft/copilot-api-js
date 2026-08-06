@@ -85,3 +85,43 @@
 - **blocker 数量：0（文档评审口径）**。前文 `[blocker]` 标在 D1 #1 上，是确认**生产代码本身**存在 blocker 级缺陷，不是说交接文档在该事实上的陈述错误；该项从本文档缺陷计数中排除。文档事实性发现计数为 **major 21、minor 10**，另有多条 confirmed 证据。
 - **最终当前基线复跑**：评审收尾时 HEAD 已到 `1fa01c6b45aa1c0ca01d81cb25496c5e70c7255c`，相对 `1b8bdf2f` 为 51 commits。`bun run test:backend` 当前输出 `6575 tests · 6574 pass · 1 fail`；失败为 `/home/xp/src/copilot-api-js/tests/transport/h2-keepalive-ping.unit.test.ts:64`，55ms 内期望至少 2 tick、实际 1 tick，属于 timing-sensitive failure。它进一步证明交接顶部的任何“当前全绿”都必须按执行时刻刷新，且不能用 historical 6485 代替当前 gate；本评审未对该并发出现的测试失败做根因定性。
 - **推荐修复路由**：交接文档的决策/依赖/验收重写交给 `gpt-souls:planner`；D4/D6 实验设计若需补 spec，交给 `gpt-souls:architect-advisor`；canonical performance oracle 交给 `gpt-souls:perf-engineer`；D1 代码缺陷按明确改法交给 `gpt-souls:implementer`。修后应做一次 merged-state 文档复审，特别对照 D1 backlog、D3/D4 既定批准状态、worktree 新 tip 与当前 backend gate。
+
+
+## 最新修订复审（HEAD `b3dc851d`）
+
+### §5 与并发分支的文件冲突
+
+- **[major] `/home/xp/src/copilot-api-js/docs/plan/2026-07-28-handover-open-work.md:244-252` 把 D3 实验与 D1 剩余项插在两个活跃分支之间，却没有给所有权/合并门，顺序不自洽。** 我对当前 master 与两分支做 changed-path 求交：B2 分支 `master...feat/upstream-silence-recovery` 的 36 个改动路径包含 `src/lib/pipeline/driver.ts` 和 `src/lib/config/config.ts`；allocator 分支 `master...feat/anchor-allocator-p1p2` 的 37 个路径包含 `src/lib/anthropic/keepalive-anchor.ts`、`src/lib/pipeline/delivery/session.ts`、`src/lib/pipeline/driver.ts`、`src/routes/messages/handler-v4.ts`。D3 的实验若只改 `exp/` 不冲突，但实验失败后的 D-i 接线正落 allocator 四个核心路径；D1 #2 的长期正确修法也改 `driver.ts`；D1 #3/#4 涉及 `handler-v4.ts`/WS。修复建议：把顺序写成“#1（独立 Responses WS 文件）可立即做；D3 **只做实验**；实验后不要在 master 实现 D-i，交给 allocator 分支 owner或等其合并；#2 在 B2/allocator 共同底座稳定后再改共享 stage runner；每一步先算 `merge-base` + path intersection”。
+- **[confirmed] D1 #1 本身与 B2/allocator 的当前 changed paths没有文本冲突。** #1 修改 `/home/xp/src/copilot-api-js/src/routes/responses/ws.ts`；B2 当前 diff 不含该文件，allocator 当前 diff也不含该文件。它可以维持第一优先级。但应跑 Responses WS 专测与 backend merged-state gate，因为 `driver.ts` 共享行为可能被两分支后续合并间接影响。
+
+
+### §4 时间基与环境判据复审
+
+- **[major] `/home/xp/src/copilot-api-js/docs/plan/2026-07-28-handover-open-work.md:234` 的 `git check-ignore` 仍不是归因“环境噪声”的充分判据。** `git check-ignore -v native/history-search/history_search.node native/history-search/*.node` 只证明 `/home/xp/src/copilot-api-js/.gitignore:13` 忽略该产物；它不证明目标 worktree 缺文件，也不证明 14 条失败由缺文件造成。完整因果闭环是：`check-ignore -v` 证不随 Git 复制 + `test -e`/`isNativeHistorySearchAvailable()` 证该树缺失 + 构建/链接同一 artifact 后重跑由红转绿。commit `1b8bdf2f` 后相关 suites 缺 artifact 会 visible skip，`test:ci` 才先 build；所以还应提醒“backend 全绿可能跳过 native search，不是完整验证”。
+- **[major] `/home/xp/src/copilot-api-js/docs/plan/2026-07-28-handover-open-work.md:235` 的“`offsetMs` 是 commit 相对”仍把 forwarded 与 upstream 混为一谈。** ingress-relative 只改变 commit deadline 的起算，不改变 forwarded producer：`/home/xp/src/copilot-api-js/src/routes/messages/handler-v4.ts:637-648` 在 commit callback 新建 `streamStartMs`，`/home/xp/src/copilot-api-js/src/lib/pipeline/client-sink.ts:215-216` 写 `Date.now()-streamStartMs`，所以 **clientResponse/forwarded offset 仍是 stream-open/commit 相对**。但 upstream producer `/home/xp/src/copilot-api-js/src/lib/pipeline/stream/response-processor.ts:96-100,146-155` 自己在 processor 启动时新建另一 `streamStartMs`；它不是 client commit epoch，也不是 ingress epoch。文档 §2 已承认 upstream 原点未证，故本句必须写成“forwarded offset commit-relative；upstream offset processor/attempt-relative，不能共用原点”，而不是泛称全部 offset。
+- **[confirmed with scope] `/home/xp/src/copilot-api-js/docs/plan/2026-07-28-handover-open-work.md:236` 的 1200/1250/600 三数与原始记录一致。** CC request 原始记录 `/home/xp/src/copilot-api-js/exp/silence-recovery-gates/results/q1-firstfail/firstfail.observations.json:26-36` 为 `x-stainless-timeout:1200`；SDK runner `/home/xp/src/copilot-api-js/exp/silence-recovery-gates/q1-runner.ts:10-15` 显式 1,250,000ms，server 记录 `sdkcontrol.observations.json:24-34` 为 1250；CC 2.1.207 打包源码 `/home/xp/.claude/refs/claude-code-2.1.207/app.pretty.js:88111` 默认 `6e5`。`FINDINGS.md:31-63` 的 CC/SDK/裸 fetch 均约 300s，裸 fetch cause `UND_ERR_HEADERS_TIMEOUT`，raw socket 420.1s 排除服务端。建议将“真正掐断的是 undici 300s 默认”保持为有作用域的表述：“直接触发器与所测 Node/undici 栈默认 `headersTimeout` 一致”，不是协议常量。
+
+
+### §2 最新可操作性复审
+
+- **[confirmed] 三项现状独立复核成立。** 根目录 `.codex` 不存在；`/home/xp/src/copilot-api-js/tests/architecture/telemetry-domain-surface.unit.test.ts:239-254` 的全源码扫描测试以 `30_000` 作 per-test timeout；`/home/xp/src/copilot-api-js/tests/history/v3/canonical-performance.unit.test.ts:42-100` 三个 test 均无第三参数预算。canonical 定向单跑三次均 3/3 绿，但 ratio 一次达到 7.6448、接近 `<8` 门，不能证明并发稳定。
+- **[major] `/home/xp/src/copilot-api-js/docs/plan/2026-07-28-handover-open-work.md:197` 仍把“给个预算”和“改判据”并列成近似修法，容易引导错误实施。** `canonical-performance.unit.test.ts:69-80` 的敏感点是 wall-clock ratio，不是只会撞 Bun 默认 5s；加 test timeout 不能消除调度噪声导致的 ratio 假红。应给可操作完成定义：预热、交错采样/多轮分位或 deterministic work oracle；25 次 backend 并行无假红；故意引入超线性实现能稳定转红。该项建议交 perf-engineer，不应让普通 implementer只加 `30_000`。
+- **[minor] `/home/xp/src/copilot-api-js/docs/plan/2026-07-28-handover-open-work.md:198` 的 upstream 时间基待办已有 fallback 与 UI oracle，但 producer 起点写得不够准确。** 实际 producer 已可定位为 `/home/xp/src/copilot-api-js/src/lib/pipeline/stream/response-processor.ts:96-100,146-155`：processor 启动时创建 `streamStartMs`，逐帧写 offset；随后 `/home/xp/src/copilot-api-js/src/lib/context/request.ts:610-624,718-724` 进入 attempt frame observations，再由 `/home/xp/src/copilot-api-js/src/lib/history/v3/projection.ts:69-83` 投影。修复建议把这条链直接写进交接/backlog，并让 UI 使用 attempt/processor epoch；若该 epoch未持久化，则只显示 elapsed/“绝对时间不可用”。这样读者无需再次从消费侧盲搜。
+
+
+### 跨切最终复审
+
+- **[major] D6 B1 把“`x-stainless-runtime: node`”当作已实测 Node SDK 的充分识别条件，allowlist 过宽。** 原始 SDK 正样本 `/home/xp/src/copilot-api-js/exp/silence-recovery-gates/results/q1-firstfail/sdkcontrol.observations.json:24-34` 还包含 `user-agent: Anthropic/JS 0.106.0` 与 `x-stainless-package-version:0.106.0`。仅凭 runtime=node 会把其它 Stainless Node 客户端或不同 SDK 版本也提升到 180s，而 ground truth 只覆盖这一版本。修复建议 fingerprint 至少绑定 SDK family + package/runtime version，并为未知版本回退 20；明确它是版本化 allowlist，不是永久“Node SDK”类别。
+- **[major] D6 B1 不是“可以直接落地的小项”，它与 B2 分支存在确定文件冲突且需要 ADR/契约。** 当前实现只有全局 `state.streamCommitAfterSec`（`/home/xp/src/copilot-api-js/src/routes/messages/handler-v4.ts:581-601`）；B1 要新增 request-header 分类、per-request window 与 `unknown_client_commit_after_sec` config。B2 分支当前同时修改 `src/lib/config/config.ts`、`src/lib/config/schema.ts`、`config.yaml`、`config.schema.json`、`src/lib/pipeline/driver.ts`，且落后 master 63。§5 把 B1排在 D1 后直接落地却没要求协调，会制造同文件三方合并与行为契约冲突。修复建议先定 ADR/fingerprint 与 config owner，再由 B2 owner吸收或等其合并后实施。
+- **[major] D1 的推荐与 §5 仍自相矛盾。** D1 说“先修两条已经错的 #1/#2”，显式顺序又是 `#1→#6→#2→#4`；最新 §5 是 `#1→D3→D4→#6/#2/#4`。如果优先级依据是生产错误，#2 不应被两个研究实验和 #6 推后；如果依据是低冲突/低成本，应明说并修改 D1 文案。推荐顺序：#1 独立落地；D3/D4 的**只读/exp 前两级**可并行；#6 独立 `server.ts` 守卫可落；#2 等共享 `driver.ts` 分支协调后落；#4 与 allocator WS/handler ownership协调。不要给一个虚假的全序。
+- **[major] “#3/#5 转 backlog”仍没有落入 `/home/xp/src/copilot-api-js/docs/todo/deferred-backlog.md`。** 否定性检索 `inspectRequest.*client.inbound|createFullTestApp|delayed-commit.*abort|stream.onAbort.*ping|liveness.*middleware` 覆盖该文件为空；同文件 `stream_commit_after_sec` 正样本能命中，证明检索触达。唯一入口里声称已转却不写 SSOT，会静默丢任务。应先落 backlog 再从执行顺序删除。
+
+
+## 最终复审 verdict（最新文档）
+
+- **评审范围**：最新修订的 `/home/xp/src/copilot-api-js/docs/plan/2026-07-28-handover-open-work.md` 全文，重点复审 §2、§4、§5 与 B2/allocator 分支交叉；证据包括生产 producer 链、原始 timeout JSON、detached historical baseline、当前 worktree changed-path 求交与定向/全量测试。
+- **总体 verdict：修复 major 后可进入下一阶段。** 文档已吸收前几轮大量事实纠正，但仍不宜作为唯一入口直接定稿：§5 缺分支所有权门；D6 B1 的 Node SDK fingerprint 过宽且与 B2 config 文件冲突；`offsetMs` 仍泛化错误；#3/#5 声称转 backlog但未落 SSOT。
+- **blocker 数量：0（文档缺陷）**。前文唯一 `[blocker]` 是对生产代码 D1 #1 严重度的确认，不是交接文档陈述错误，故不计文档 blocker。
+- **当前未被后续修订消解的发现计数：major 10、minor 3。** 这是按最新文档去重后的开放项，不是报告全文历史标签总数。开放 major：canonical perf 完成定义；upstream producer 起点；`git check-ignore` 归因闭环；offset 轨区分；§5 分支所有权；D6 fingerprint；D6/B2 config 冲突；D1/#5 顺序自洽；#3/#5 backlog 落盘；shared-index 指令安全性。开放 minor：native suite skip 边界；timeout 作用域措辞；upstream 时间基 fallback 的 UI oracle细化。
+- **最新验证**：收尾时 HEAD `d3a2f5468255`，`bun run test:backend` 输出 `6575 tests · 6575 pass · 0 fail · 52.63s`。早先同一评审期间 HEAD `1fa01c6b` 曾因 `/home/xp/src/copilot-api-js/tests/transport/h2-keepalive-ping.unit.test.ts:64` 的 55ms timing 断言出现 1 fail，随后当前 HEAD 复跑全绿；因此文档应记录“最后复核 hash+时间”，不要把移动 master 的一次绿当永久事实。
+- **修复路由**：交接结构/依赖/执行顺序由 `gpt-souls:planner`；D6 fingerprint 与 client policy 属架构契约，交 `gpt-souls:architect-advisor`；canonical perf oracle 交 `gpt-souls:perf-engineer`；D1 #1/#6 等明确代码修复交 `gpt-souls:implementer`。修后需再做一次 merged-state 文档复审。

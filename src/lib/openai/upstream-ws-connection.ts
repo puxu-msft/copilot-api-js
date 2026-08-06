@@ -389,10 +389,21 @@ export function createUpstreamWsConnection(opts: CreateUpstreamWsConnectionOptio
       // rejection without affecting the shared handshake (other joined callers
       // continue waiting for the real outcome).
       return new Promise<void>((resolve, reject) => {
+        // Keep the WS-specific message (it says WHERE this died, which the generic reason
+        // does not) but chain the signal's own reason as `cause`: this handshake sits on the
+        // same composite signal as the h2 path (client / reaper / hard deadline / dispatch /
+        // shutdown), and dropping the reason entirely erases WHICH of them cancelled — the
+        // boundary then has to guess, which is the failure mode this family of fixes exists
+        // to end. Both provenance readers (`getCancellationCause`, `isShutdownCausedAbort`)
+        // walk the cause chain, so chaining preserves them.
+        const connectAborted = (): Error =>
+          signal.reason instanceof Error ?
+            new Error("Upstream WebSocket connection aborted", { cause: signal.reason })
+          : new Error("Upstream WebSocket connection aborted")
         const onAbort = guardCallback(
           () => {
             signal.removeEventListener("abort", onAbort)
-            reject(new Error("Upstream WebSocket connection aborted"))
+            reject(connectAborted())
           },
           (error) => {
             consola.warn(`[upstream-ws] handshake callback threw (model=${opts.model}): ${toError(error).message}`)
@@ -401,7 +412,7 @@ export function createUpstreamWsConnection(opts: CreateUpstreamWsConnectionOptio
           },
         )
         if (signal.aborted) {
-          reject(new Error("Upstream WebSocket connection aborted"))
+          reject(connectAborted())
           return
         }
         signal.addEventListener("abort", onAbort, { once: true })
@@ -439,7 +450,13 @@ export function createUpstreamWsConnection(opts: CreateUpstreamWsConnectionOptio
         // next same-conversation request queue. Quarantine synchronously, fail the owned queue,
         // then close the socket; its close event lets the pool owner remove it.
         markUnusable()
-        failRequest(new Error("Upstream WebSocket request aborted"))
+        // Same rule as the handshake above: keep this layer's message, chain the cancelling
+        // party's reason so the provenance readers can still find it.
+        failRequest(
+          abortSignal?.reason instanceof Error ?
+            new Error("Upstream WebSocket request aborted", { cause: abortSignal.reason })
+          : new Error("Upstream WebSocket request aborted"),
+        )
         closeUpstreamWs(socket, "Request aborted")
       }, onCallbackEscape)
 

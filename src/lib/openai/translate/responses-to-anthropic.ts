@@ -260,8 +260,8 @@ function functionCallToToolUseBlock(item: Extract<ResponsesOutputItem, { type: "
  * being shared with the streaming translator).
  */
 export function webSearchCallToText(item: Extract<ResponsesOutputItem, { type: "web_search_call" }>): string {
-  const query = item.action.query ?? item.action.queries?.join(", ") ?? "(unknown query)"
-  return `[web_search: "${query}"] (status: ${item.status})`
+  const query = item.action?.query ?? item.action?.queries?.join(", ") ?? "(unknown query)"
+  return `[web_search: "${query}"] (id: ${item.id}, status: ${item.status})`
 }
 
 /**

@@ -6,10 +6,8 @@
  * Each retry creates a new Attempt in the attempts array.
  */
 
-import type { ApiError } from "~/lib/error"
 import type { RefusalPolicy } from "~/lib/anthropic/refusal-policy"
-
-import { DEFAULT_REFUSAL_ERROR_TYPE } from "~/lib/anthropic/refusal-policy"
+import type { ApiError } from "~/lib/error"
 import type {
   //
   EndpointType,
@@ -29,8 +27,14 @@ import type {
 } from "~/lib/observability"
 import type { ToolNameMapper } from "~/lib/tool-name-mapper"
 
+import { DEFAULT_REFUSAL_ERROR_TYPE } from "~/lib/anthropic/refusal-policy"
 import { getErrorMessage } from "~/lib/error"
 import { HTTPError } from "~/lib/error"
+import {
+  //
+  cancellationAbortError,
+  REQUEST_DEADLINE_CANCEL_REASON,
+} from "~/lib/error/cancellation-reason"
 import { acquireRawCaptureLease } from "~/lib/history/raw/manager"
 import { publishModelOperationTerminal } from "~/lib/history/v3/terminal-bus"
 import { normalizeModelId } from "~/lib/models/resolver"
@@ -221,6 +225,27 @@ export function synthesizeAttemptErrorResponse(a: Attempt): ResponseData | undef
   }
 }
 
+/**
+ * TEST-ONLY registry of each context's lifecycle controller.
+ *
+ * Exists so a test can abort the lifecycle WITHOUT a cause tag — i.e. impersonate a producer that
+ * skipped the `cancellationAbortError` contract. No production path does that any more, which is
+ * precisely why the seam is needed: the boundaries answer `unknown-cancel` / `unknown-abort` for it
+ * and the gap counter records it, and the only way to exercise that is to be the bad producer on
+ * purpose. A test aborting a bare controller of its own would prove nothing about how OUR context
+ * behaves.
+ *
+ * Kept off the `RequestContext` interface deliberately: putting a test-only mutator there makes it
+ * callable by every production consumer and forces any future implementation to provide it, for a
+ * capability that must never run in production.
+ */
+const lifecycleControllers = new WeakMap<RequestContext, AbortController>()
+
+/** @see lifecycleControllers — TEST-ONLY. Aborts `ctx.lifecycleSignal` with no cause tag. */
+export function abortLifecycleUntaggedForTests(ctx: RequestContext): void {
+  lifecycleControllers.get(ctx)?.abort()
+}
+
 export function createRequestContext(opts: {
   endpoint: EndpointType
   sessionId?: string
@@ -300,9 +325,20 @@ export function createRequestContext(opts: {
   let _askNormalization: PipelineInfo["askUserQuestionNormalization"] | null = null
   let _sendMessageNormalization: PipelineInfo["sendMessageNormalization"] | null = null
   let _bufferedMergeInfo: PipelineInfo["bufferedMerge"] | null = null
+  let _translationDegradation: NonNullable<PipelineInfo["translation"]>["anthropicToResponses"] | null = null
   let _maxTokensContinuationInfo: PipelineInfo["maxTokensContinuation"] | null = null
+  let _wirePartialDeliveryInfo: PipelineInfo["wirePartialDelivery"] | null = null
   const mergedPipelineInfo = (): PipelineInfo | null => {
-    if (!_pipelineInfo && !_streamTimeouts && !_askNormalization && !_sendMessageNormalization && !_bufferedMergeInfo && !_maxTokensContinuationInfo)
+    if (
+      !_pipelineInfo
+      && !_streamTimeouts
+      && !_askNormalization
+      && !_sendMessageNormalization
+      && !_bufferedMergeInfo
+      && !_translationDegradation
+      && !_maxTokensContinuationInfo
+      && !_wirePartialDeliveryInfo
+    )
       return null
     return {
       ..._pipelineInfo,
@@ -310,7 +346,9 @@ export function createRequestContext(opts: {
       ...(_askNormalization && { askUserQuestionNormalization: _askNormalization }),
       ...(_sendMessageNormalization && { sendMessageNormalization: _sendMessageNormalization }),
       ...(_bufferedMergeInfo && { bufferedMerge: _bufferedMergeInfo }),
+      ...(_translationDegradation && { translation: { ..._pipelineInfo?.translation, anthropicToResponses: _translationDegradation } }),
       ...(_maxTokensContinuationInfo && { maxTokensContinuation: _maxTokensContinuationInfo }),
+      ...(_wirePartialDeliveryInfo && { wirePartialDelivery: _wirePartialDeliveryInfo }),
     }
   }
   let _sseEvents: Array<SseEventRecord> | null = null
@@ -994,7 +1032,7 @@ export function createRequestContext(opts: {
       return lifecycleAbort.signal
     },
     reapInFlight() {
-      lifecycleAbort.abort()
+      lifecycleAbort.abort(cancellationAbortError("stale-reaper", "Request cancelled by the stale-request reaper"))
     },
     // ─── C5 operation lifecycle (RFC §3.3) — NEW API, no production callers yet ───
     // `operationSignal` is the per-request cancel signal (reaper/deadline/cancel all abort
@@ -1016,7 +1054,11 @@ export function createRequestContext(opts: {
       if (_cancelled) return
       _cancelled = true
       _cancelReason = reason
-      lifecycleAbort.abort()
+      // The reason travels ON the abort, not just in this closure: everything downstream of the
+      // fetch signal (transport → driver → client boundary) sees only the thrown error, and a
+      // bare abort there is indistinguishable from a header timeout. The hard deadline is a
+      // TIMEOUT, so it gets its own cause rather than the generic cancel one.
+      lifecycleAbort.abort(cancellationAbortError(reason === REQUEST_DEADLINE_CANCEL_REASON ? "request-deadline" : "request-cancel", reason))
     },
     trackOperationBody(p) {
       operationScope.trackOperationBody(p)
@@ -1046,10 +1088,18 @@ export function createRequestContext(opts: {
       _sendMessageNormalization = { ..._sendMessageNormalization, ...diag }
       recordAttemptDiagnostic("repair.send_message_normalization", "warning", diag)
     },
+    recordTranslationDegradation(diag) {
+      _translationDegradation = diag
+      recordAttemptDiagnostic("translation.anthropic_to_responses", "info", diag)
+    },
     recordMaxTokensTruncation(diag) {
       // Persist through mergedPipelineInfo at terminal settle, not through a transient context event.
       _maxTokensContinuationInfo = diag
       recordAttemptDiagnostic("max_tokens.truncation", "info", diag)
+    },
+    recordWirePartialDelivery(diag) {
+      _wirePartialDeliveryInfo = diag
+      recordAttemptDiagnostic("delivery.wire_partial", "error", diag)
     },
     recordBufferedMergeInfo(diag) {
       // Mirrors recordSendMessageNormalization's real shape (request.context_updated was removed in
@@ -2183,5 +2233,6 @@ export function createRequestContext(opts: {
     },
   }
 
+  lifecycleControllers.set(ctx, lifecycleAbort)
   return ctx
 }

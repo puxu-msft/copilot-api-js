@@ -38,9 +38,9 @@ import { createAnthropicCodec } from "~/lib/codec/anthropic/codec"
 import { withCapturingManager } from "~/lib/context/manager"
 import { mapHttpErrorToEnvelope } from "~/lib/error"
 import { HTTPError } from "~/lib/error/http-error"
+import { setModels } from "~/lib/models/cache"
 import { ENDPOINT } from "~/lib/models/endpoint"
 import { createPipelineDriver } from "~/lib/pipeline/driver"
-import { setModels } from "~/lib/state"
 
 import { mockModel } from "../helpers/factories"
 import { useIsolatedRuntime } from "../helpers/isolated-fixture"
@@ -111,7 +111,11 @@ describe("T3.3 — @cc leg end-to-end round-trip (mock CC upstream)", () => {
           index: 1,
           finish_reason: "tool_calls",
           logprobs: null,
-          message: { role: "assistant", content: null, tool_calls: [{ id: "toolu_01SRN", type: "function", function: { name: "get_weather", arguments: '{"city":"SF"}' } }] },
+          message: {
+            role: "assistant",
+            content: null,
+            tool_calls: [{ id: "toolu_01SRN", type: "function", function: { name: "get_weather", arguments: '{"city":"SF"}' } }],
+          },
         },
       ],
       usage: { prompt_tokens: 50, completion_tokens: 12, total_tokens: 62 },
@@ -126,7 +130,13 @@ describe("T3.3 — @cc leg end-to-end round-trip (mock CC upstream)", () => {
     expect(Array.isArray((sentWire?.body as { messages?: unknown }).messages)).toBe(true)
 
     // The RESPONSE is a well-formed Anthropic message with BOTH the text and the tool_use folded in.
-    const anthropic = rendered as { type: string; role: string; content: Array<{ type: string; text?: string; id?: string; name?: string; input?: unknown }>; stop_reason: string; usage: unknown }
+    const anthropic = rendered as {
+      type: string
+      role: string
+      content: Array<{ type: string; text?: string; id?: string; name?: string; input?: unknown }>
+      stop_reason: string
+      usage: unknown
+    }
     expect(anthropic.type).toBe("message")
     expect(anthropic.role).toBe("assistant")
     expect(anthropic.content).toEqual([
@@ -173,7 +183,13 @@ describe("T3.3 — @responses leg FOUR-HOP round-trip oracle (mock Responses ups
       model: "claude-x",
       status: "completed",
       output: [
-        { type: "message", id: "m1", role: "assistant", status: "completed", content: [{ type: "output_text", text: "Checking the weather.", annotations: [] }] },
+        {
+          type: "message",
+          id: "m1",
+          role: "assistant",
+          status: "completed",
+          content: [{ type: "output_text", text: "Checking the weather.", annotations: [] }],
+        },
         { type: "function_call", id: "fc1", call_id: "call_KQVd6", name: "get_weather", arguments: '{"city":"SF"}', status: "completed" },
       ],
       usage: { input_tokens: 30, output_tokens: 9, total_tokens: 39 },
@@ -187,7 +203,12 @@ describe("T3.3 — @responses leg FOUR-HOP round-trip oracle (mock Responses ups
     expect(Array.isArray((sentWire?.body as { input?: unknown }).input)).toBe(true)
 
     // Hop 3-4 (response): Responses → CC → Anthropic, text + tool_use folded into one Anthropic message.
-    const anthropic = rendered as { type: string; content: Array<{ type: string; text?: string; id?: string; name?: string; input?: unknown }>; stop_reason: string; usage: unknown }
+    const anthropic = rendered as {
+      type: string
+      content: Array<{ type: string; text?: string; id?: string; name?: string; input?: unknown }>
+      stop_reason: string
+      usage: unknown
+    }
     expect(anthropic.type).toBe("message")
     expect(anthropic.content).toEqual([
       { type: "text", text: "Checking the weather." },
@@ -215,8 +236,20 @@ describe("T3.3 — OQ4 non-streaming error passthrough (upstream CC error → An
     const messages = [{ role: "user" as const, content: "hi" }]
     const pre = preprocessAnthropicMessages(messages as never)
     const codec = createAnthropicCodec({ betaProbe: createBetaProbe(undefined), preprocessInfo: { strippedReadTagCount: 0, dedupedToolCallCount: 0 } })
-    const driver = createPipelineDriver({ codec, transport: throwingTransport, strategies: [], maxRetries: 0, maxLearningRetries: 0, requestRewrites: codec.getRequestRewrites() })
-    const raw = { body: { model: "claude-x@cc", max_tokens: 64, messages: pre.messages, stream: false }, headers: new Headers(), path: "/v1/messages", method: "POST" } as unknown as RawHttpRequest
+    const driver = createPipelineDriver({
+      codec,
+      transport: throwingTransport,
+      strategies: [],
+      maxRetries: 0,
+      maxLearningRetries: 0,
+      requestRewrites: codec.getRequestRewrites(),
+    })
+    const raw = {
+      body: { model: "claude-x@cc", max_tokens: 64, messages: pre.messages, stream: false },
+      headers: new Headers(),
+      path: "/v1/messages",
+      method: "POST",
+    } as unknown as RawHttpRequest
 
     const error = await withCapturingManager(async () => {
       try {

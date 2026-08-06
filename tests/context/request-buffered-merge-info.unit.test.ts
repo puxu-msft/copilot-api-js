@@ -30,6 +30,54 @@ describe("RequestContext.recordMaxTokensTruncation", () => {
   })
 })
 
+describe("RequestContext.recordWirePartialDelivery", () => {
+  test("persists owner post-commit diagnostics and survives a later full pipeline replacement", () => {
+    const ctx = createRequestContext({ endpoint: "anthropic-messages" })
+    ctx.recordWirePartialDelivery({ operation: "close-anchor-terminal", cause: "client-gone", committed: true })
+    ctx.setPipelineInfo({ preprocessing: { strippedReadTagCount: 0, dedupedToolCallCount: 0 } })
+
+    expect(ctx.pipelineInfo?.wirePartialDelivery).toEqual({ operation: "close-anchor-terminal", cause: "client-gone", committed: true })
+    ctx.abort("m")
+    expect(ctx.toHistoryEntry().pipelineInfo?.wirePartialDelivery).toEqual({ operation: "close-anchor-terminal", cause: "client-gone", committed: true })
+  })
+})
+
+describe("RequestContext.recordTranslationDegradation", () => {
+  test("persists Anthropic→Responses thinking-drop diagnostics across later pipeline replacement and terminal history", () => {
+    const ctx = createRequestContext({ endpoint: "anthropic-messages" })
+    ctx.recordTranslationDegradation({
+      droppedThinkingBlockCount: 3,
+      sourceSignedThinkingBlockCount: 3,
+      unsignedThinkingBlockCount: 0,
+      reason: "thinking-signature-not-portable",
+    })
+
+    expect(ctx.pipelineInfo?.translation?.anthropicToResponses).toEqual({
+      droppedThinkingBlockCount: 3,
+      sourceSignedThinkingBlockCount: 3,
+      unsignedThinkingBlockCount: 0,
+      reason: "thinking-signature-not-portable",
+    })
+
+    ctx.setPipelineInfo({ preprocessing: { strippedReadTagCount: 0, dedupedToolCallCount: 0 } })
+    expect(ctx.pipelineInfo?.translation?.anthropicToResponses).toEqual({
+      droppedThinkingBlockCount: 3,
+      sourceSignedThinkingBlockCount: 3,
+      unsignedThinkingBlockCount: 0,
+      reason: "thinking-signature-not-portable",
+    })
+    expect(ctx.pipelineInfo?.preprocessing).toBeDefined()
+
+    ctx.complete({ success: true, model: "gpt", usage: { input_tokens: 1, output_tokens: 1 }, content: null, stop_reason: "completed" })
+    expect(ctx.toHistoryEntry().pipelineInfo?.translation?.anthropicToResponses).toEqual({
+      droppedThinkingBlockCount: 3,
+      sourceSignedThinkingBlockCount: 3,
+      unsignedThinkingBlockCount: 0,
+      reason: "thinking-signature-not-portable",
+    })
+  })
+})
+
 describe("RequestContext.recordBufferedMergeInfo", () => {
   test("merges into pipelineInfo without requiring setPipelineInfo to have been called", () => {
     const ctx = createRequestContext({ endpoint: "openai-responses" })

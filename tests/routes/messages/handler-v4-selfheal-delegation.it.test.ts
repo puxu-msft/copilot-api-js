@@ -39,13 +39,10 @@ import type { RawHttpRequest } from "~/lib/pipeline/types"
 import { createBetaProbe } from "~/lib/anthropic/pipeline"
 import { createAnthropicCodec } from "~/lib/codec/anthropic/codec"
 import { withCapturingManager } from "~/lib/context/manager"
+import { setModels } from "~/lib/models/cache"
 import { ENDPOINT } from "~/lib/models/endpoint"
 import { resolveCellAssembly } from "~/lib/pipeline/cell-assembly"
-import {
-  //
-  setModels,
-  setStateForTests,
-} from "~/lib/state"
+import { setStateForTests } from "~/lib/state"
 
 import { mockModel } from "../../helpers/factories"
 import { useIsolatedRuntime } from "../../helpers/isolated-fixture"

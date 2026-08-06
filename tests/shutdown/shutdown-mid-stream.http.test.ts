@@ -28,12 +28,12 @@ import {
   test,
 } from "bun:test"
 
+import { setModels } from "~/lib/models/cache"
 import { gracefulShutdown } from "~/lib/shutdown"
 import {
   //
   type StateSnapshot,
   restoreStateForTests,
-  setModels,
   setStateForTests,
   snapshotStateForTests,
 } from "~/lib/state"

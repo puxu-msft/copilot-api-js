@@ -1,4 +1,9 @@
-# Kick-off 提示词
+# Kick-off 提示词（**已陈旧，别照它起会话**）
+
+> 🔴 **superseded-by [KICKOFF.md](KICKOFF.md)（注意是全大写那份）。**
+> 本目录下同时存在 `kickoff.md`（本文件）与 `KICKOFF.md`，`ls` 时都会看到；**本文件是旧的**。
+> 它写于 P3M 被 [2026-08-03 emission command algebra RFC](../../rfc/2026-08-03-generation-emission-command-algebra/design.md) supersede 之前，其中「先从 P0 开始」等指引**已不成立**——P0/P1/P2/P6 均已 landed，当前卡在用户裁决「是否起执行」。
+> **接手入口是 [HANDOVER.md](HANDOVER.md)**，启动 gate 在 `KICKOFF.md`。本文件仅作历史留存，**不追溯修改正文**。
 
 > 本计划分 9 个相位（P0–P8），依赖图见 [README.md](README.md)。下方提供**整体 kick-off**（一个执行主体从头做到尾）与**分相位 kick-off**（并行/分派时用）。由谁在哪执行（当前会话 / 新会话 / subagent）是编排决策，本文档只提供可直接复制的提示词。
 
@@ -125,6 +130,26 @@ AnchorState.allocator 设为**必填**而非可选——让类型系统逼出全
 
 ```text
 执行合并相位 P3M。**权威 = docs/plan/2026-07-27-inter-block-anchor-allocator/plan-3-remap-sites.md**（commit 序列 M1–M8、三腿矩阵、S3 专节）；任务细节分列于 plan-4（M5）与 plan-5（M1/M6/M7/M8）——**三份文件是一个相位**，别当三个阶段做。前置 P1 + P2。
+
+=== 起步 gate（2026-08-02：P1+P2 已落地，本段只放 gate 与指针，事实一律回权威文档看） ===
+
+**前置已满足**：P1+P2 已在 master 上（合并提交 `88e47cef`，方向是 master 合入 feature 分支后 fast-forward，四轮异模型审查收敛）。**从当前 master 起隔离 worktree**，不要基于任何旧分支。
+
+**开工前按序读三样**：
+1. `README.md` 的**冻结契约表 C1–C11** —— **P1+P2 期间 C9/C10/C11 已按实现更新**（`wireTorn`、missing mapping 直接 throw、四条生产腿的 provenance 入口）。**这三条是权威，本 kickoff 不复述**——复述必然先陈旧。
+2. `plan-3-remap-sites.md` 的 **「M2 前置条件：legacy 瞬时撕裂必须随 S1 owner 化一并消失」** 专节 —— **P3M 最容易被漏掉的一条**，含四条满足点；未满足不得宣称 M2 完成、也不得开启 M6。
+3. `docs/plan/2026-07-27-handover-max-tokens-and-keepalive.md` —— 四轮审查各抓到什么、合并时处理的语义冲突、交给 P3M 的两条硬前置。
+
+**一条承重教训，直接决定 P3M 的验收形态**（这不是事实复述，是方法约束，故留在此）：P1+P2 连续三轮出现「本轮修复引入一个全套件抓不到的新回归」，共同根因是**测试自己构造 sink，因此结构上看不到 handler↔装饰器↔driver 这条缝**。
+- **判据**：把某个修复**完整改回原 bug 形态**，全套件仍绿 → 该修复没有裁决力。加断言没用，要换验收入口。
+- **因此 M2–M4 每一腿的验收，至少要有一条从真实 HTTP 入口驱动的 oracle**（`createFullTestApp` + `app.request("/v1/messages")`，配 `setDeliverySessionObserverForTests` 捕获生产代码实际创建的 delivery session）。自造 sink 的单元门可以留，但不能作为该腿的唯一证据。
+- 细节见 `docs/memory/methodology-each-fix-round-introduces-green-passing-regression-at-the-same-seam.md`。
+
+**运维两条**（本轮实测踩过）：mutation probe 一律在**自建的独立 scratch worktree** 做，绝不在特性 worktree 改生产源码（存在 mutation writer 时同一 worktree 同期只允许一个写者，否则会产生成员固定、可复现的伪缺陷簇）；跑测试用 `FORCE_COLOR=0 bun scripts/parallel-test.ts unit it http`。
+
+**M4 的验收判据已随守卫形状改变**：remap 守卫从字面量 blocklist 换成 AST 调用点 allowlist，故 M4 的门是 **`REMAP_CALL_ALLOWLIST` 中所有 `legacy:*` 条目清零**（不再是「baseline 清空」）。判据原文以 `plan-3` 与 `tests/architecture/anchor-remap-single-authority.unit.test.ts` 为准。
+
+=== 以下为原有 P3M 指引，仍然有效 ===
 
 **为什么合并**（round-3 blocker，用户拍板）：两轮尝试都证明「remap 记账」与「anchor 生命周期」在测试可满足性上不可分。第一轮 gap anchor 在后一相位 → 造不出 offset>1；第二轮改用生产 owner API 落第二个 anchor 解决了「谁触发」，但没解决「谁关闭」——可重复的 openAnchorIndex 状态机仍在后面，第二个 anchor 无法由生产 close-before-real 关掉，O-2 会先于 remap 失败，拿不到可归因的红绿门。硬拆只会让门失真。
 

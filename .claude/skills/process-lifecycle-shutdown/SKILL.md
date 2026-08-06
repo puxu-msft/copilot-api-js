@@ -34,6 +34,22 @@ description: 当在 copilot-api-js 修改进程信号、Ctrl+C、SIGINT/SIGTERM�
 
 `waitForShutdown()` 必须是真 latch：多个早期 waiter 全部 resolve；成功后新 waiter 立即 resolve。不能是“最后一个 resolver”槽。失败路径不 resolve 成功 latch。
 
+## Step 1 停的是「新增工作」，不是「在途请求正在用的资源」
+
+四步流水线里 Step 1 = stop ingress，Step 2/3 承诺给在途请求 60s+120s 自然完成。**任何在 Step 1 拆掉在途请求还要用的资源的动作，都是用 Step 1 的手撕毁 Step 2 的承诺**——而且症状不像关机 bug：客户端看到的是一条几百毫秒就失败的普通请求。
+
+2026-07-28 事故：Step 1 调 `closeHttp2Sessions()`（`poolEpoch++` + 清池），把**正在建 session** 的在途请求当场打死。`maxConcurrentStreamsPerSession=1` 下每条并发请求都得新建 session，所以这不是边缘情况。已建流的请求靠 `session.close()` 的 GOAWAY 语义活得好好的——**正是这一点让它难查**：同刻的兄弟请求正常完成，看起来不像全局 teardown。修法是把 `closeHttp2Sessions()` 移到 Step 4 + `finalize()`（幂等），Step 1 对 h2 不做任何事。
+
+**判据**（改 shutdown 任一 step 时逐个问）：这个 stop 会不会让一条**已被接纳**的在途请求失败？会 → 它属于 Step 4/finalize，Step 1 只保留「停止新增工作」的语义。
+
+**红旗信号**：同族资源的处理不对称。上游 WS 一直是 `stopNew()`（Step 1）/ `closeAll()`（Step 4）两分，h2 却只有一个 `closeHttp2Sessions()` ——这个不对称本身就该引起怀疑，早于任何 incident。
+
+**取证手法**：看**同刻的兄弟请求是否存活**。全局 teardown 会一起死；只杀「正在握手」的那条会留下「早 76ms 起的那条跑完了 7.5s」这种签名。再用「新进程启动时刻 − incident 时刻 ≈ gracefulWait + abortWait + finalize」确认走的是完整优雅关机。
+
+**邻域未查项**（同构、未证实）：Step 1 的 `stopRefresh()` 与 `peekUpstreamWsManager()?.stopNew()` 是否同样饿死 drain 期需要刷 token / 新建上游 WS 的在途请求——记在 `docs/todo/deferred-backlog.md`，别当已排除。
+
+详见 `docs/plan/2026-07-28-shutdown-h2-teardown-and-abort-provenance.md` Phase 1 与记忆 [[methodology-shutdown-step1-stop-new-vs-kill-inflight]]。
+
 ## 持久化与后台维护分流
 
 不要把“异步”误等于“可 detached”：`main.ts` 在命令返回后会 `process.exit(0)`，纯 fire-and-forget 会被截断。

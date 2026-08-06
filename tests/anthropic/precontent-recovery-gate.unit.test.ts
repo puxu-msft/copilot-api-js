@@ -52,7 +52,15 @@ describe("shouldAttemptPreContentRecovery", () => {
     ).toBe(false)
   })
 
-  for (const abortKind of ["reaper-cancel", "timeout"] satisfies ReadonlyArray<PostCommitAbortKind>) {
+  for (const abortKind of [
+    "shutdown",
+    "header-timeout",
+    "request-deadline",
+    "reaper-cancel",
+    "request-cancel",
+    "dispatch-cancel",
+    "unknown-abort",
+  ] satisfies ReadonlyArray<PostCommitAbortKind>) {
     test(`${abortKind} is deliberately excluded by the user-owned never-false-kill constraint`, () => {
       expect(
         shouldAttemptPreContentRecovery({

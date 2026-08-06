@@ -21,8 +21,13 @@ export interface PreContentRecoverySinkChain {
   settleFinal(): Promise<void>
 }
 
-function liveReconcilingSink(sink: ClientSink, anchorHooks: AnchorHooks | undefined, anchorState: AnchorState): ClientSink {
-  return anchorHooks ? makeReconcilingSink(sink, anchorState, anchorHooks) : sink
+function liveReconcilingSink(
+  sink: ClientSink,
+  anchorHooks: AnchorHooks | undefined,
+  anchorState: AnchorState,
+  deliverySession: DownstreamDeliverySession,
+): ClientSink {
+  return anchorHooks ? makeReconcilingSink(sink, anchorState, anchorHooks, deliverySession.allocationPort) : sink
 }
 
 /** Build the one request-owned raw→supervisor→rewriting sink chain. */
@@ -37,7 +42,7 @@ export function createPreContentRecoverySinkChain(
   return {
     sink: supervisor.sink,
     rawSink,
-    liveSink: liveReconcilingSink(supervisor.sink, anchorHooks, anchorState),
+    liveSink: liveReconcilingSink(supervisor.sink, anchorHooks, anchorState, deliverySession),
     deliverySession,
     settleFinal: () => supervisor.settleFinal(),
   }

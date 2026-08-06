@@ -26,6 +26,7 @@ import {
 
 import type { SseEventRecord } from "~/lib/history"
 import type { OpenBlock } from "~/lib/pipeline/client-sink"
+import type { OwnerRawSink } from "~/lib/pipeline/delivery/types"
 import type { RequestEnvelope } from "~/lib/pipeline/envelope"
 import type {
   //
@@ -51,20 +52,25 @@ import {
   makeSyntheticAnchorInjector,
   remapAnthropicBlockIndex,
   syntheticMessageStartFrame,
+  createGenerationWireIndexAllocator,
+  createGenerationWireState,
 } from "~/lib/anthropic/keepalive-anchor"
 import { makeReconcilingSink } from "~/lib/anthropic/live-reconcile"
 import { createRequestContext } from "~/lib/context/request"
+import { makeDeliverySseSink } from "~/lib/pipeline/client-sink"
 import {
   //
-  makeDeliverySseSink,
-  makeSseSink,
-} from "~/lib/pipeline/client-sink"
+  createDownstreamDeliverySession,
+  getDownstreamDeliverySession,
+} from "~/lib/pipeline/delivery/session"
 import {
   //
   createPipelineDriver,
   type DriverDeps,
 } from "~/lib/pipeline/driver"
 import { createFrozenHedgePolicy } from "~/lib/pipeline/generation/hedge-policy"
+import { createClientFrameEnvelope } from "~/lib/pipeline/stream/frame-envelope"
+import { StreamClientAbortError } from "~/lib/stream"
 
 import { FakeClock } from "../helpers/fake-clock"
 
@@ -216,11 +222,11 @@ const emptyDeltaFor = (ob?: OpenBlock): ClientFrame =>
     { event: "content_block_delta", data: JSON.stringify({ type: "content_block_delta", index: ob.index, delta: { type: "text_delta", text: "" } }) }
   : PING
 
-function stubSseStream(): { stream: Parameters<typeof makeSseSink>[0]; written: Array<{ data: string; event?: string }> } {
+function stubSseStream(): { stream: Parameters<typeof makeDeliverySseSink>[0]; written: Array<{ data: string; event?: string }> } {
   const written: Array<{ data: string; event?: string }> = []
   const stream = {
     writeSSE: (m: { data: string; event?: string }) => (written.push({ data: m.data, ...(m.event !== undefined && { event: m.event }) }), Promise.resolve()),
-  } as unknown as Parameters<typeof makeSseSink>[0]
+  } as unknown as Parameters<typeof makeDeliverySseSink>[0]
   return { stream, written }
 }
 
@@ -240,9 +246,9 @@ function anchorHooks(): AnchorHooks {
         return false
       }
     },
-    startFrame: anchorStartFrame(),
-    stopFrame: anchorStopFrame(),
-    deltaFrame: anchorDeltaFrame(),
+    startFrame: anchorStartFrame,
+    stopFrame: anchorStopFrame,
+    deltaFrame: anchorDeltaFrame,
     syntheticMessageStart: syntheticMessageStartFrame,
     remap: remapAnthropicBlockIndex,
   }
@@ -256,22 +262,35 @@ function anchorHooks(): AnchorHooks {
  * pump's real frames flow through the decorator. Both share ONE {@link AnchorState}.
  */
 function buildLiveStack(
-  stream: Parameters<typeof makeSseSink>[0],
+  stream: Parameters<typeof makeDeliverySseSink>[0],
   onForwarded: (r: SseEventRecord) => void,
   resolvedName: string,
   reqId: string,
-): { pumpSink: ClientSink; anchorState: AnchorState } {
-  const anchorState: AnchorState = { injected: false, messageStartForwarded: false, anchorBlockOpen: false, anchorClosed: false }
+): { pumpSink: ClientSink; anchorState: AnchorState; delivery: NonNullable<ReturnType<typeof getDownstreamDeliverySession>> } {
+  const allocator = createGenerationWireIndexAllocator()
+  const wireState = createGenerationWireState(allocator)
+  const anchorState: AnchorState = {
+    wireState,
+    injected: false,
+    messageStartForwarded: false,
+    anchorBlockOpen: false,
+    anchorClosed: false,
+  }
   const anchor = anchorHooks()
   const sinkHolder: { current: ClientSink | undefined } = { current: undefined }
   const injector = makeSyntheticAnchorInjector({ anchor, state: anchorState, getSink: () => sinkHolder.current, resolvedName, reqId })
   const inner = makeDeliverySseSink(stream, {
+    wireState,
+    legacyAnchorMirror: anchorState,
     onForwarded,
     heartbeat: { intervalSec: 15, pingFrame: emptyDeltaFor, injectAnchor: injector },
   })
   sinkHolder.current = inner
-  const pumpSink = makeReconcilingSink(inner, anchorState, anchor)
-  return { pumpSink, anchorState }
+  const delivery = getDownstreamDeliverySession(inner)
+  if (!delivery) throw new Error("test delivery sink must expose its owner")
+  void delivery.allocationPort.beginLeg("primary", { candidateId: "candidate-test", dispatchId: "dispatch-test" })
+  const pumpSink = makeReconcilingSink(inner, anchorState, anchor, delivery.allocationPort)
+  return { pumpSink, anchorState, delivery }
 }
 
 function forwardedSeq(records: Array<SseEventRecord>): Array<string> {
@@ -311,18 +330,30 @@ describe("live-reconcile collision elimination — injected prelude + live resum
       if (!request.ok) throw new Error("unexpected rejection")
       const { stream: sseStream, written } = stubSseStream()
       const forwarded: Array<SseEventRecord> = []
-      const { pumpSink, anchorState } = buildLiveStack(sseStream, (record) => forwarded.push(record), "claude-opus-4.8", `req_hedge_${hedgeEnabled}`)
+      const { pumpSink, anchorState, delivery } = buildLiveStack(sseStream, (record) => forwarded.push(record), "claude-opus-4.8", `req_hedge_${hedgeEnabled}`)
       const anchor = anchorHooks()
 
       anchorState.injected = true
       anchorState.contentAnchorInjected = true
       anchorState.messageStartForwarded = true
       anchorState.anchorBlockOpen = true
-      await pumpSink.writeSyntheticEnvelope?.(anchor.syntheticMessageStart?.("claude-opus-4.8", `req_hedge_${hedgeEnabled}`) ?? f("message_start"))
-      await pumpSink.writeAnchor?.(anchor.startFrame)
-      await pumpSink.writeKeepalive?.(anchor.deltaFrame)
+      await delivery.writeScaffold([
+        createClientFrameEnvelope(anchor.syntheticMessageStart?.("claude-opus-4.8", `req_hedge_${hedgeEnabled}`) ?? f("message_start"), {
+          sequence: 0,
+          observedAtMonotonic: 0,
+          provenance: { kind: "synthetic", syntheticKind: "synthetic-message-start" },
+        }),
+      ])
+      const allocated = await delivery.allocationPort.allocateAndWriteAnchor(({ wireIndex, envelope }) => [
+        envelope.anchor(anchor.startFrame(wireIndex)),
+        envelope.keepalive(anchor.deltaFrame(wireIndex)),
+      ])
+      if (!allocated.ok) throw new Error(`anchor allocation failed: ${allocated.reason}`)
 
-      const outcomeP = harness.driver.runResponseSink(request.upstream, request.env, pumpSink, { onUpstreamFrame: () => {} })
+      const outcomeP = harness.driver.runResponseSink(request.upstream, request.env, pumpSink, {
+        onUpstreamFrame: () => {},
+        wireAllocationPort: delivery.allocationPort,
+      })
       if (hedgeEnabled) {
         await drain()
         await clock.advance(1)
@@ -377,10 +408,8 @@ describe("live-reconcile collision elimination — injected prelude + live resum
     await clock.advance(15_000)
     await flush()
     expect(anchorState.injected).toBe(true)
-    // The second idle tick is delivery's post-scaffold re-arm; the third tick emits the next block-aware
+    // The owner re-arms immediately after the scaffold write; the second tick emits the next block-aware
     // empty text_delta@0 keepalive on the still-open anchor.
-    await clock.advance(15_000)
-    await flush()
     await clock.advance(15_000)
     await flush()
 
@@ -394,7 +423,7 @@ describe("live-reconcile collision elimination — injected prelude + live resum
       "message_start#synthetic-message-start", // fabricated envelope (no real message_start was available)
       "content_block_start@0#anchor", //          synthetic empty-text anchor block
       "content_block_delta@0#keepalive", //       anchor's first empty text_delta (resets CC's 300s)
-      "content_block_delta@0#keepalive", //       third idle-tick keepalive on the open anchor block
+      "content_block_delta@0#keepalive", //       second idle-tick keepalive on the open anchor block
       "content_block_stop@0#anchor", //           reconcile close-off (routed via writeAnchor → marked)
       "content_block_start@1", //                 real thinking block, remapped +1 — NO marker
       "content_block_delta@1", //                 real thinking_delta, remapped +1 — NO marker
@@ -464,6 +493,68 @@ describe("live-reconcile collision elimination — injected prelude + live resum
   // The early message_start streams through the reconciling sink BEFORE any idle tick (injected=false →
   // passthrough), which now records `messageStartForwarded`. When the idle tick fires, the injector must
   // open ONLY the anchor (NOT a second message_start). Before the fix the client saw TWO message_starts.
+  test("message_stop as the first terminator closes anchor@0 exactly once before forwarding it", async () => {
+    const env = makeEnv()
+    env.ctx.beginAttempt({})
+    const { stream: up, release } = makeSilentThenResume([f("message_start", { message: { id: "msg_zero" } }), f("message_stop")])
+    const driver = makeDriver()
+    const { stream: sseStream, written } = stubSseStream()
+    const forwarded: Array<SseEventRecord> = []
+    const { pumpSink } = buildLiveStack(sseStream, (record) => forwarded.push(record), "claude-opus-4.8", "req_zero")
+
+    const outcomeP = driver.runResponseSink(up, env, pumpSink, { onUpstreamFrame: () => {} })
+    await drain(30)
+    await clock.advance(15_000)
+    await flush()
+    release()
+
+    expect((await outcomeP).kind).toBe("complete")
+    expect(forwardedSeq(forwarded)).toEqual([
+      "message_start#synthetic-message-start",
+      "content_block_start@0#anchor",
+      "content_block_delta@0#keepalive",
+      "content_block_stop@0#anchor",
+      "message_stop",
+    ])
+    const types = written.map((frame) => JSON.parse(frame.data).type as string)
+    expect(types.filter((type) => type === "content_block_stop")).toHaveLength(1)
+    expect(types.indexOf("content_block_stop")).toBeLessThan(types.indexOf("message_stop"))
+  })
+
+  test("live owner client-gone close is classified as settled-abort, not stream-error", async () => {
+    const env = makeEnv()
+    env.ctx.beginAttempt({})
+    const wireState = createGenerationWireState(createGenerationWireIndexAllocator())
+    let abortClose = false
+    const rawSink: OwnerRawSink = {
+      async write() {},
+      async writeAnchor() {
+        if (abortClose) throw new StreamClientAbortError()
+      },
+      close() {},
+    }
+    const delivery = createDownstreamDeliverySession({ sink: rawSink, wireState })
+    const state: AnchorState = { wireState, injected: true, messageStartForwarded: true, anchorBlockOpen: true, anchorClosed: false }
+    await delivery.allocationPort.allocateAndWriteAnchor(({ wireIndex, envelope }) => [envelope.anchor(anchorStartFrame(wireIndex))])
+    abortClose = true
+    const decorated = makeReconcilingSink(delivery.clientSink, state, anchorHooks(), delivery.allocationPort)
+    const upstream: UpstreamStream = {
+      headers: new Headers(),
+      frames: (async function* () {
+        yield f("content_block_start", { index: 0, content_block: { type: "text", text: "" } })
+      })(),
+    }
+
+    expect(
+      (
+        await makeDriver().runResponseSink(upstream, env, decorated, {
+          onUpstreamFrame: () => {},
+          wireAllocationPort: delivery.allocationPort,
+        })
+      ).kind,
+    ).toBe("settled-abort")
+  })
+
   test("early real message_start + reasoning silence + resume → exactly ONE message_start (no double envelope)", async () => {
     const env = makeEnv()
     env.ctx.beginAttempt({})

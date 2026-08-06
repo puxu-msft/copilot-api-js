@@ -54,7 +54,7 @@ describe("translateAnthropicToResponses — forward reasoning round-trip (IMPROV
       ]),
     )
 
-    const reasoningItem = inputItems(result).find((i) => i.type === "reasoning") as ResponsesInputItem | undefined
+    const reasoningItem = inputItems(result).find((i) => i.type === "reasoning")
     expect(reasoningItem).toBeDefined()
     expect(reasoningItem?.encrypted_content).toBe(encryptedContent)
     expect(reasoningItem?.summary).toEqual([{ type: "summary_text", text: "step 1... step 2..." }])
@@ -63,7 +63,16 @@ describe("translateAnthropicToResponses — forward reasoning round-trip (IMPROV
   test("reasoning item is emitted BEFORE the text message item of the same turn (Responses' own leading-reasoning convention)", () => {
     const signature = buildSyntheticReasoningSignature("enc")
     const result = translateAnthropicToResponses(
-      payload([{ role: "user", content: "x" }, { role: "assistant", content: [{ type: "thinking", thinking: "reasoning", signature }, { type: "text", text: "answer" }] }]),
+      payload([
+        { role: "user", content: "x" },
+        {
+          role: "assistant",
+          content: [
+            { type: "thinking", thinking: "reasoning", signature },
+            { type: "text", text: "answer" },
+          ],
+        },
+      ]),
     )
     const types = inputItems(result).map((i) => i.type)
     const reasoningIdx = types.indexOf("reasoning")
@@ -75,7 +84,10 @@ describe("translateAnthropicToResponses — forward reasoning round-trip (IMPROV
   test("a bare-prefix sentinel signature (no encrypted_content payload) still reconstructs a valid reasoning item with just the summary text (Responses accepts empty encrypted_content — probe a)", () => {
     const signature = buildSyntheticReasoningSignature(undefined)
     const result = translateAnthropicToResponses(
-      payload([{ role: "user", content: "x" }, { role: "assistant", content: [{ type: "thinking", thinking: "some reasoning", signature }] }]),
+      payload([
+        { role: "user", content: "x" },
+        { role: "assistant", content: [{ type: "thinking", thinking: "some reasoning", signature }] },
+      ]),
     )
     const reasoningItem = inputItems(result).find((i) => i.type === "reasoning")
     expect(reasoningItem).toBeDefined()
@@ -83,26 +95,102 @@ describe("translateAnthropicToResponses — forward reasoning round-trip (IMPROV
     expect(reasoningItem?.summary).toEqual([{ type: "summary_text", text: "some reasoning" }])
   })
 
-  test("a thinking block with a NON-sentinel signature (foreign/real, not ours) is dropped — never synthesized into a reasoning item (R-DIRECTION-ASYMMETRY)", () => {
-    const result = translateAnthropicToResponses(
-      payload([{ role: "user", content: "x" }, { role: "assistant", content: [{ type: "thinking", thinking: "not ours", signature: "some-foreign-signature" }, { type: "text", text: "answer" }] }]),
-    )
-    expect(inputItems(result).some((i) => i.type === "reasoning")).toBe(false)
-    // The surrounding turn still lands (text block survives) — dropping the foreign thinking block is
-    // a silent-but-warned degradation, not a turn-level failure.
-    expect(inputItems(result).some((i) => i.type === "message" && i.role === "assistant")).toBe(true)
+  test("foreign Claude thinking blocks are dropped with one request-level INFO and one exact degradation report", () => {
+    const info = spyOn(consola, "info")
+    const warn = spyOn(consola, "warn")
+    const degradations: Array<unknown> = []
+
+    try {
+      const result = translateAnthropicToResponses(
+        payload([
+          { role: "user", content: "x" },
+          {
+            role: "assistant",
+            content: [
+              { type: "thinking", thinking: "", signature: "CAIS-claude-1" },
+              { type: "thinking", thinking: "", signature: "CAIS-claude-2" },
+              { type: "text", text: "answer" },
+            ],
+          },
+          { role: "user", content: "next" },
+          { role: "assistant", content: [{ type: "thinking", thinking: "", signature: "CAIS-claude-3" }] },
+        ]),
+        { reqId: "req_switch", onTranslationDegradation: (degradation) => degradations.push(degradation) },
+      )
+
+      expect(inputItems(result).some((i) => i.type === "reasoning")).toBe(false)
+      expect(inputItems(result).some((i) => i.type === "message" && i.role === "assistant")).toBe(true)
+      expect(degradations).toEqual([
+        {
+          droppedThinkingBlockCount: 3,
+          sourceSignedThinkingBlockCount: 3,
+          unsignedThinkingBlockCount: 0,
+          reason: "thinking-signature-not-portable",
+        },
+      ])
+      expect(info).toHaveBeenCalledTimes(1)
+      expect(info).toHaveBeenCalledWith(
+        "[Anthropic→Responses] dropped 3 source-signed thinking blocks during model translation (not portable) requestId=req_switch",
+      )
+      expect(warn).not.toHaveBeenCalled()
+    } finally {
+      info.mockRestore()
+      warn.mockRestore()
+    }
   })
 
-  test("a thinking block with NO signature at all is dropped, never synthesized", () => {
-    const result = translateAnthropicToResponses(
-      payload([{ role: "user", content: "x" }, { role: "assistant", content: [{ type: "thinking", thinking: "no sig", signature: "" } as ThinkingBlockParam, { type: "text", text: "answer" }] }]),
-    )
-    expect(inputItems(result).some((i) => i.type === "reasoning")).toBe(false)
+  test("unsigned thinking keeps warning severity while source-signed thinking is summarized at info", () => {
+    const info = spyOn(consola, "info")
+    const warn = spyOn(consola, "warn")
+    const degradations: Array<unknown> = []
+
+    try {
+      const result = translateAnthropicToResponses(
+        payload([
+          {
+            role: "assistant",
+            content: [
+              { type: "thinking", thinking: "no sig", signature: "" } as ThinkingBlockParam,
+              { type: "thinking", thinking: "source signed", signature: "CAIS-source" },
+              { type: "text", text: "answer" },
+            ],
+          },
+        ]),
+        { reqId: "req_mixed", onTranslationDegradation: (degradation) => degradations.push(degradation) },
+      )
+      expect(inputItems(result).some((i) => i.type === "reasoning")).toBe(false)
+      expect(degradations).toEqual([
+        {
+          droppedThinkingBlockCount: 2,
+          sourceSignedThinkingBlockCount: 1,
+          unsignedThinkingBlockCount: 1,
+          reason: "thinking-signature-not-portable",
+        },
+      ])
+      expect(info).toHaveBeenCalledTimes(1)
+      expect(info).toHaveBeenCalledWith(
+        "[Anthropic→Responses] dropped 1 source-signed thinking block during model translation (not portable) requestId=req_mixed",
+      )
+      expect(warn).toHaveBeenCalledTimes(1)
+      expect(warn).toHaveBeenCalledWith("[Anthropic→Responses] dropped 1 unsigned thinking block during model translation requestId=req_mixed")
+    } finally {
+      info.mockRestore()
+      warn.mockRestore()
+    }
   })
 
   test("redacted_thinking is STILL dropped (no plaintext/no sentinel — nothing to round-trip)", () => {
     const result = translateAnthropicToResponses(
-      payload([{ role: "user", content: "x" }, { role: "assistant", content: [{ type: "redacted_thinking", data: "opaque-blob" }, { type: "text", text: "answer" }] }]),
+      payload([
+        { role: "user", content: "x" },
+        {
+          role: "assistant",
+          content: [
+            { type: "redacted_thinking", data: "opaque-blob" },
+            { type: "text", text: "answer" },
+          ],
+        },
+      ]),
     )
     expect(inputItems(result).some((i) => i.type === "reasoning")).toBe(false)
   })
@@ -136,10 +224,70 @@ describe("translateAnthropicToResponses — server-tool request-side passthrough
     expect(result.tools).toEqual([{ type: "web_search" }])
   })
 
+  test("a forced web_search choice uses the same Responses builtin category as the translated tool", () => {
+    const result = translateAnthropicToResponses(
+      payload([{ role: "user", content: "x" }], {
+        tools: [{ name: "web_search", type: "web_search_20250305" }],
+        tool_choice: { type: "tool", name: "web_search" },
+      }),
+    )
+
+    expect(result.tools).toEqual([{ type: "web_search" }])
+    expect(result.tool_choice).toEqual({ type: "web_search" })
+  })
+
+  test("a forced choice for an unmapped typed tool is dropped with that tool instead of becoming a dangling function choice", () => {
+    const warnSpy = spyOn(consola, "warn").mockImplementation((() => undefined) as unknown as typeof consola.warn)
+    try {
+      const result = translateAnthropicToResponses(
+        payload([{ role: "user", content: "x" }], {
+          tools: [{ name: "code_exec", type: "code_execution_20250522" }],
+          tool_choice: { type: "tool", name: "code_exec" },
+        }),
+      )
+
+      expect(result.tools).toBeUndefined()
+      expect(result.tool_choice).toBeUndefined()
+    } finally {
+      warnSpy.mockRestore()
+    }
+  })
+
+  test("an any choice is dropped when every declared tool is stripped from the Responses request", () => {
+    const warnSpy = spyOn(consola, "warn").mockImplementation((() => undefined) as unknown as typeof consola.warn)
+    try {
+      const result = translateAnthropicToResponses(
+        payload([{ role: "user", content: "x" }], {
+          tools: [{ name: "code_exec", type: "code_execution_20250522" }],
+          tool_choice: { type: "any" },
+        }),
+      )
+
+      expect(result.tools).toBeUndefined()
+      expect(result.tool_choice).toBeUndefined()
+    } finally {
+      warnSpy.mockRestore()
+    }
+  })
+
+  test("a named choice with no matching declaration is dropped instead of becoming a dangling function choice", () => {
+    const result = translateAnthropicToResponses(
+      payload([{ role: "user", content: "x" }], {
+        tools: [{ name: "get_weather", input_schema: { type: "object" } }],
+        tool_choice: { type: "tool", name: "missing_tool" },
+      }),
+    )
+
+    expect(result.tools).toEqual([{ type: "function", name: "get_weather", parameters: { type: "object" } }])
+    expect(result.tool_choice).toBeUndefined()
+  })
+
   test("an unmapped server-tool type (code_execution — no probed Responses request shape yet) is STRIPPED + WARNED, never silently dropped", () => {
     const warnSpy = spyOn(consola, "warn").mockImplementation((() => undefined) as unknown as typeof consola.warn)
     try {
-      const result = translateAnthropicToResponses(payload([{ role: "user", content: "x" }], { tools: [{ name: "code_exec", type: "code_execution_20250522" }] }))
+      const result = translateAnthropicToResponses(
+        payload([{ role: "user", content: "x" }], { tools: [{ name: "code_exec", type: "code_execution_20250522" }] }),
+      )
       expect(result.tools).toBeUndefined()
       const dropLine = warnSpy.mock.calls.map((c) => String(c[0])).find((m) => m.includes("dropping native server tool"))
       expect(dropLine).toBeDefined()
@@ -179,7 +327,12 @@ describe("translateAnthropicToResponses — basic content translation (equivalen
   })
 
   test("empty string content produces NO input item", () => {
-    const result = translateAnthropicToResponses(payload([{ role: "user", content: "" }, { role: "user", content: "real" }]))
+    const result = translateAnthropicToResponses(
+      payload([
+        { role: "user", content: "" },
+        { role: "user", content: "real" },
+      ]),
+    )
     expect(inputItems(result)).toEqual([{ type: "message", role: "user", content: [{ type: "input_text", text: "real" }] }])
   })
 
@@ -187,14 +340,25 @@ describe("translateAnthropicToResponses — basic content translation (equivalen
     const result = translateAnthropicToResponses(
       payload([
         { role: "user", content: "weather?" },
-        { role: "assistant", content: [{ type: "text", text: "checking" }, { type: "tool_use", id: "toolu_1", name: "get_weather", input: { city: "SF" } }] },
+        {
+          role: "assistant",
+          content: [
+            { type: "text", text: "checking" },
+            { type: "tool_use", id: "toolu_1", name: "get_weather", input: { city: "SF" } },
+          ],
+        },
       ]),
     )
     const items = inputItems(result)
     // NO `id` field: a Responses function_call INPUT item is matched by `call_id` only; the item `id`
     // is an OUTPUT-echo field that must be `fc_`-prefixed if present. We only ever hold the tool-call id
     // (`toolu_`/`call_`) on this return leg, so fabricating `id` produces an invalid non-`fc` id upstream.
-    expect(items.find((i) => i.type === "function_call")).toEqual({ type: "function_call", call_id: "toolu_1", name: "get_weather", arguments: '{"city":"SF"}' })
+    expect(items.find((i) => i.type === "function_call")).toEqual({
+      type: "function_call",
+      call_id: "toolu_1",
+      name: "get_weather",
+      arguments: '{"city":"SF"}',
+    })
     // text + tool_use are SEPARATE items (not folded): user message, assistant text message, function_call.
     expect(items.map((i) => i.type)).toEqual(["message", "message", "function_call"])
   })
@@ -218,7 +382,9 @@ describe("translateAnthropicToResponses — basic content translation (equivalen
   })
 
   test("tool_result is_error → output prefixed with [tool_error]", () => {
-    const result = translateAnthropicToResponses(payload([{ role: "user", content: [{ type: "tool_result", tool_use_id: "t1", content: "boom", is_error: true }] }]))
+    const result = translateAnthropicToResponses(
+      payload([{ role: "user", content: [{ type: "tool_result", tool_use_id: "t1", content: "boom", is_error: true }] }]),
+    )
     expect(inputItems(result).find((i) => i.type === "function_call_output")?.output).toBe("[tool_error] boom")
   })
 
@@ -229,7 +395,17 @@ describe("translateAnthropicToResponses — basic content translation (equivalen
         payload([
           {
             role: "user",
-            content: [{ type: "tool_result", tool_use_id: "t1", content: [{ type: "text", text: "part1 " }, { type: "image", source: { type: "base64", media_type: "image/png", data: "AAA" } }, { type: "text", text: "part2" }] }],
+            content: [
+              {
+                type: "tool_result",
+                tool_use_id: "t1",
+                content: [
+                  { type: "text", text: "part1 " },
+                  { type: "image", source: { type: "base64", media_type: "image/png", data: "AAA" } },
+                  { type: "text", text: "part2" },
+                ],
+              },
+            ],
           },
         ]),
       )
@@ -241,14 +417,22 @@ describe("translateAnthropicToResponses — basic content translation (equivalen
   })
 
   test("image block: base64 → data URL input_image; url → passthrough", () => {
-    const b64 = translateAnthropicToResponses(payload([{ role: "user", content: [{ type: "image", source: { type: "base64", media_type: "image/jpeg", data: "Zm9v" } }] }]))
+    const b64 = translateAnthropicToResponses(
+      payload([{ role: "user", content: [{ type: "image", source: { type: "base64", media_type: "image/jpeg", data: "Zm9v" } }] }]),
+    )
     expect(inputItems(b64)[0]).toEqual({ type: "message", role: "user", content: [{ type: "input_image", image_url: "data:image/jpeg;base64,Zm9v" }] })
     const url = translateAnthropicToResponses(payload([{ role: "user", content: [{ type: "image", source: { type: "url", url: "https://x/i.png" } }] }]))
     expect((inputItems(url)[0] as { content: Array<{ image_url: string }> }).content[0].image_url).toBe("https://x/i.png")
   })
 
   test("tool_choice mapping: auto→auto, any→required, none→none, tool→{type:function,name}", () => {
-    const tc = (choice: MessagesPayload["tool_choice"]) => translateAnthropicToResponses(payload([{ role: "user", content: "x" }], { tool_choice: choice })).tool_choice
+    const tc = (choice: MessagesPayload["tool_choice"]) =>
+      translateAnthropicToResponses(
+        payload([{ role: "user", content: "x" }], {
+          tools: [{ name: "f", input_schema: { type: "object" } }],
+          tool_choice: choice,
+        }),
+      ).tool_choice
     expect(tc({ type: "auto" })).toBe("auto")
     expect(tc({ type: "any" })).toBe("required")
     expect(tc({ type: "none" })).toBe("none")
@@ -266,7 +450,16 @@ describe("translateAnthropicToResponses — basic content translation (equivalen
     const warnSpy = spyOn(consola, "warn").mockImplementation((() => undefined) as unknown as typeof consola.warn)
     try {
       const result = translateAnthropicToResponses(
-        payload([{ role: "user", content: "x" }, { role: "assistant", content: [{ type: "server_tool_use", id: "srv_1", name: "web_search", input: {} } as unknown as import("~/types/api/anthropic").ContentBlockParam, { type: "text", text: "answer" }] }]),
+        payload([
+          { role: "user", content: "x" },
+          {
+            role: "assistant",
+            content: [
+              { type: "server_tool_use", id: "srv_1", name: "web_search", input: {} } as unknown as import("~/types/api/anthropic").ContentBlockParam,
+              { type: "text", text: "answer" },
+            ],
+          },
+        ]),
       )
       const items = inputItems(result)
       expect(items.some((i) => i.type === "message" && i.role === "assistant")).toBe(true)
@@ -278,7 +471,16 @@ describe("translateAnthropicToResponses — basic content translation (equivalen
 
   test("envelope: instructions (system flatten) / max_output_tokens=max_tokens / temperature/top_p/stream / metadata.user_id→user; Anthropic-only top_k/stop_sequences dropped", () => {
     const result = translateAnthropicToResponses(
-      payload([{ role: "user", content: "x" }], { system: "be terse", max_tokens: 256, temperature: 0.3, top_p: 0.9, stream: true, top_k: 5, stop_sequences: ["STOP"], metadata: { user_id: "u1" } }),
+      payload([{ role: "user", content: "x" }], {
+        system: "be terse",
+        max_tokens: 256,
+        temperature: 0.3,
+        top_p: 0.9,
+        stream: true,
+        top_k: 5,
+        stop_sequences: ["STOP"],
+        metadata: { user_id: "u1" },
+      }),
     )
     expect(result.instructions).toBe("be terse")
     expect(result.max_output_tokens).toBe(256)

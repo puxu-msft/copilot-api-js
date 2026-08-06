@@ -1,5 +1,8 @@
 # Spec: 模型详情模态抽屉 + 禁用模型可见性
 
+> ⚠️ **历史文档的位置引用已过期（注记于 2026-07-28）。** 本 spec 落地时 `setModels` / `applyDisabledFilter` / `getRawModels` / `rebuildModelIndex` 都在 `src/lib/state.ts`；此后目录缓存整体迁到 **`src/lib/models/cache.ts`**（`rebuildModelIndex` 留在 state，它是对 state 自有字段的纯派生），而 `state.ts` 本身迁到 **`packages/foundation/src/state.ts`**。下面所有 `src/lib/state.ts#Lnnn` 深链因此失效。**行为与判据未变**，只是位置变了——见 [plan/2026-07-28-state-to-foundation/HANDOVER.md](../plan/2026-07-28-state-to-foundation/HANDOVER.md)。
+
+
 **Status:** **已落地**（分支 `feat/models-drawer-disabled-visibility`，commits `91055d0a..698111db`；7 实现 commit + 1 final-review fix；per-task + 整分支 subagent review 全绿，`build:ui-v4` rollup PASS）。原 Draft v2 已纳入 2 轮对抗 subagent 审查。
 **Date:** 2026-07-08
 **Scope:** ui-v4 Models 页面（前端）+ `/api/models` 内部端点（后端）

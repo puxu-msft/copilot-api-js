@@ -30,7 +30,7 @@ P1 (primitive + A + B) ──┬── P2 (C)
 8. **flaky/时序测试连跑 10–25 次** 确认确定性（反应式 mock、单例隔离）。
 9. **never-swallow-errors** —— 不吞错误；预期错误至少有注释说明。
 10. **subagent-explicit-rubric** —— 实现后派 subagent code-review，prompt 里写明裁判轴（**长远正确 + 完整，非 ROI/YAGNI**）；reviewer 的「无消费者/可删/已通过」绝对断言亲自对照代码复核。
-11. **session-closeout** —— 每 phase 收尾走五步（subagent audit → doc-sync 跨文档 grep → 归档 plan 状态注解 → 提炼教训 → 细粒度提交）。
+11. **session-closeout** —— 每 phase 收尾按 skill `session-closeout` 走完收尾（步数与内容以 skill 为准，勿在此冻结）。
 12. **test-isolation** —— 后端测试用 `useIsolatedRuntime` / DI 临时目录沙箱 `PATHS.NEGOTIATION_STATES`，绝不碰真实 `$HOME`/`~/.claude`（见 skill `test-isolation`）。
 
 ## Phase 索引

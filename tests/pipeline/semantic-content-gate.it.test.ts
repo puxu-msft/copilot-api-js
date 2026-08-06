@@ -13,7 +13,6 @@ import {
 } from "~/lib/pipeline/delivery/session"
 import { hasDeliveredSemanticContent } from "~/lib/pipeline/generation/semantic-content-gate"
 import { isClientContentFrame } from "~/lib/pipeline/request-timing"
-import { createClientFrameEnvelope } from "~/lib/pipeline/stream/frame-envelope"
 
 function createDelivery() {
   const writes: Array<{ data: string; event?: string }> = []
@@ -30,14 +29,6 @@ function createDelivery() {
   const session = getDownstreamDeliverySession(sink)
   if (!session) throw new Error("delivery sink must expose its generation-owned session")
   return { writes, sink, session }
-}
-
-function candidateFrame(frame: { event: string; data: string }) {
-  return createClientFrameEnvelope(frame, {
-    sequence: 1,
-    observedAtMonotonic: 1,
-    provenance: { kind: "candidate", candidateId: "recovery", dispatchId: "recovery-dispatch" },
-  })
 }
 
 function contentDelta(text: string) {
@@ -64,7 +55,10 @@ describe("semantic-content gate delivery integration", () => {
 
     await sink.write(contentDelta("first real content"))
 
-    expect(gateAtFirstRealCallback).toBe(true)
+    // The transport's timing callback fires before its async wire write resolves. The delivery-scoped gate
+    // is stricter: it flips only after the owner observes that successful write, never on a failed attempt.
+    expect(gateAtFirstRealCallback).toBe(false)
+    expect(hasDeliveredSemanticContent(session)).toBe(true)
   })
 
   test("primary synthetic scaffold leaves the gate open and a fresh candidate can emit the first real content", async () => {
@@ -74,7 +68,7 @@ describe("semantic-content gate delivery integration", () => {
     expect(hasDeliveredSemanticContent(session)).toBe(false)
 
     // P4/P5 will read this false gate before launching B2. This task intentionally does not launch B2.
-    await session.commitWinnerBlock("recovery", [candidateFrame(contentDelta("fresh"))])
+    await sink.write(contentDelta("fresh"))
 
     expect(hasDeliveredSemanticContent(session)).toBe(true)
     expect(writes).toContainEqual({ event: "content_block_delta", data: expect.stringContaining("fresh") })
@@ -89,11 +83,29 @@ describe("semantic-content gate delivery integration", () => {
     expect(hasDeliveredSemanticContent(session)).toBe(true)
   })
 
-  test("buffered commits flip the same delivery-scoped signal as live writes", async () => {
-    const { session } = createDelivery()
-
-    await session.commitWinnerBlock("primary", [candidateFrame(contentDelta("buffered"))])
-
+  test("owner-allocated candidate writes flip the same delivery-scoped signal", async () => {
+    const writes: Array<{ data: string; event?: string }> = []
+    const stream = {
+      writeSSE(value: { data: string | Promise<string>; event?: string }) {
+        if (typeof value.data !== "string") throw new Error("test sink expects synchronous SSE data")
+        writes.push({ data: value.data, ...(value.event !== undefined && { event: value.event }) })
+        return Promise.resolve()
+      },
+    } as unknown as Parameters<typeof makeDeliverySseSink>[0]
+    const { createGenerationWireIndexAllocator, createGenerationWireState } = await import("~/lib/anthropic/keepalive-anchor")
+    const sink = makeDeliverySseSink(stream, {
+      wireState: createGenerationWireState(createGenerationWireIndexAllocator()),
+      isRealContentFrame: (frame) => isClientContentFrame(frame, "anthropic"),
+    })
+    const session = getDownstreamDeliverySession(sink)
+    if (!session) throw new Error("delivery sink must expose its generation-owned session")
+    const leg = await session.allocationPort.beginLeg("recovery", { candidateId: "recovery", dispatchId: "recovery-dispatch" })
+    if (!leg.ok) throw new Error(`begin leg failed: ${leg.reason}`)
+    const allocated = await session.allocationPort.withAllocatedRealBlock(0, ({ mapping, envelope }) => [
+      envelope.real(mapping.remap(contentDelta("buffered"))),
+    ])
+    expect(allocated.ok).toBe(true)
     expect(hasDeliveredSemanticContent(session)).toBe(true)
+    expect(writes).toContainEqual({ event: "content_block_delta", data: expect.stringContaining("buffered") })
   })
 })

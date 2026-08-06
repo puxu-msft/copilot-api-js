@@ -38,6 +38,7 @@ import path from "node:path"
 import {
   //
   createHistorySearchUdsClient,
+  HistorySearchUdsError,
   pingHistorySearchUdsClient,
 } from "~/lib/history/search/uds-client"
 import {
@@ -190,6 +191,99 @@ describe("UDS server + client round-trip", () => {
     expect(fs.existsSync(socketPath)).toBe(true)
     await server.close()
     expect(fs.existsSync(socketPath)).toBe(false)
+  })
+})
+
+describe("strict list-search UDS contract", () => {
+  test("round-trips filters, cursor, frozen target, ordered IDs, total, and freshness attestation", async () => {
+    const socketPath = freshSocketPath()
+    let scoreSearchCalled = false
+    const server = createHistorySearchUdsServer(
+      socketPath,
+      async () => {
+        scoreSearchCalled = true
+        return []
+      },
+      undefined,
+      async (request) => {
+        expect(request).toEqual({
+          type: "list-search",
+          query: "needle",
+          filters: { operationKinds: ["generation", "responses_ws"], sessionId: "session-a", mainAgentOnly: true },
+          cursor: { startedAt: 100, operationId: "cursor-op", direction: "older", requireMatch: true },
+          limit: 3,
+          target: { committedAt: 200, operationIdsAtBoundary: ["target-a", "target-b"] },
+        })
+        return {
+          operationIds: ["op-c", "op-b", "op-a"],
+          total: 7,
+          hasOlder: true,
+          hasNewer: false,
+          attestation: {
+            committedAt: 200,
+            indexedAtBoundaryMs: ["target-a", "target-b"],
+            poison: [],
+          },
+        }
+      },
+    )
+    cleanupServers.push(server)
+    await server.listen()
+
+    const client = createHistorySearchUdsClient({ socketPath })
+    const result = await client.listSearch({
+      query: "needle",
+      filters: { operationKinds: ["generation", "responses_ws"], sessionId: "session-a", mainAgentOnly: true },
+      cursor: { startedAt: 100, operationId: "cursor-op", direction: "older", requireMatch: true },
+      limit: 3,
+      target: { committedAt: 200, operationIdsAtBoundary: ["target-a", "target-b"] },
+    })
+
+    expect(result).toEqual({
+      operationIds: ["op-c", "op-b", "op-a"],
+      total: 7,
+      hasOlder: true,
+      hasNewer: false,
+      attestation: { committedAt: 200, indexedAtBoundaryMs: ["target-a", "target-b"], poison: [] },
+    })
+    expect(scoreSearchCalled).toBe(false)
+  })
+
+  test("preserves invalid-cursor identity across the real wire", async () => {
+    const socketPath = freshSocketPath()
+    const server = createHistorySearchUdsServer(
+      socketPath,
+      async () => [],
+      undefined,
+      async () => {
+        throw Object.assign(new Error("filtered cursor"), { code: "invalid-cursor" as const })
+      },
+    )
+    cleanupServers.push(server)
+    await server.listen()
+
+    const client = createHistorySearchUdsClient({ socketPath })
+    const request = client.listSearch({
+      query: "needle",
+      filters: { operationKinds: ["generation"] },
+      cursor: { startedAt: 1, operationId: "filtered", direction: "older", requireMatch: true },
+      limit: 3,
+      target: { committedAt: 1, operationIdsAtBoundary: ["op"] },
+    })
+    await expect(request).rejects.toBeInstanceOf(HistorySearchUdsError)
+    await expect(request).rejects.toMatchObject({ code: "invalid-cursor" })
+  })
+
+  test("rejects when the connected sidecar does not support list-search instead of returning a false empty page", async () => {
+    const socketPath = freshSocketPath()
+    const server = createHistorySearchUdsServer(socketPath, async () => [])
+    cleanupServers.push(server)
+    await server.listen()
+
+    const client = createHistorySearchUdsClient({ socketPath })
+    await expect(
+      client.listSearch({ query: "needle", filters: { operationKinds: ["generation"] }, limit: 3, target: { committedAt: 1, operationIdsAtBoundary: ["op"] } }),
+    ).rejects.toThrow(/does not support list-search/)
   })
 })
 

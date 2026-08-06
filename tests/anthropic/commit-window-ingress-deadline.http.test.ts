@@ -22,14 +22,10 @@ import {
   test,
 } from "bun:test"
 
-import {
-  //
-  setModels,
-  setStateForTests,
-} from "~/lib/state"
-
 import type { TokenRuntime } from "~/lib/token"
 
+import { setModels } from "~/lib/models/cache"
+import { setStateForTests } from "~/lib/state"
 import {
   //
   installTokenRuntime,

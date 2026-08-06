@@ -99,7 +99,7 @@ export async function runHistorySearchDaemon(options: RunHistorySearchDaemonOpti
     return { lastSuccessfulTailAt, poisonedCount, lastTailError }
   }
 
-  const server: HistorySearchUdsServer = createHistorySearchUdsServer(options.socketPath, daemon.search, getStatus)
+  const server: HistorySearchUdsServer = createHistorySearchUdsServer(options.socketPath, daemon.search, getStatus, daemon.listSearch)
 
   let uncommitted = 0
   let firstUncommittedAt: number | undefined
@@ -117,12 +117,22 @@ export async function runHistorySearchDaemon(options: RunHistorySearchDaemonOpti
 
   function enqueueFlush(): void {
     clearFlushTimer()
-    if (uncommitted === 0) return
+    if (uncommitted === 0 || flushInFlight !== undefined) return
+    const batchCount = uncommitted
+    const batchStartedAt = firstUncommittedAt
     uncommitted = 0
     firstUncommittedAt = undefined
-    flushInFlight = index.flush().catch((error: unknown) => {
-      consola.error("[history-search-daemon] flush failed", error)
-    })
+    flushInFlight = daemon
+      .flush()
+      .catch((error: unknown) => {
+        uncommitted += batchCount
+        firstUncommittedAt = firstUncommittedAt === undefined ? batchStartedAt : Math.min(firstUncommittedAt, batchStartedAt ?? firstUncommittedAt)
+        consola.error("[history-search-daemon] flush failed", error)
+      })
+      .finally(() => {
+        flushInFlight = undefined
+        if (!signal.aborted && uncommitted > 0) scheduleFlush()
+      })
   }
 
   function scheduleFlush(): void {
@@ -148,8 +158,9 @@ export async function runHistorySearchDaemon(options: RunHistorySearchDaemonOpti
       lastSuccessfulTailAt = Date.now()
       lastTailError = null
       poisonedCount += result.poisoned
-      if (result.processed > 0) {
-        uncommitted += result.processed
+      const frontierAdvances = result.processed + result.poisoned
+      if (frontierAdvances > 0) {
+        uncommitted += frontierAdvances
         firstUncommittedAt ??= Date.now()
         scheduleFlush()
       }
