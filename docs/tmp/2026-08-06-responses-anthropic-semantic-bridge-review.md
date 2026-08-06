@@ -1,6 +1,6 @@
 # Responses ↔ Anthropic 语义桥规格评审记录
 
-> **状态**：已完成；协议、架构与最新 master 重基增量复核均放行
+> **状态**：协议、架构与既有重基增量复核已放行；最新 master thinking 审计增量待短复核
 >
 > **评审对象**：`docs/spec/2026-08-06-responses-anthropic-semantic-bridge.md`
 >
@@ -240,8 +240,21 @@
 - M13、mutation、守卫 17 与 AC17 继续充分：错误观测后 dispatch 增量为 0，无 recovery／continuation，原 typed error 到达 handler。
 - 无需新增验收。
 
-至此所有评审与重基增量复核均闭合，无未决 finding。
+至此该轮评审与重基增量复核均闭合，无未决 finding。
 
 ### 最终状态短复审
 
 原架构 reviewer 对 commit `11720c53` 仅复核 wrap-up 状态、最新 master 基线、重基增量转录与 finding 计数，最终 verdict：**最终状态通过**。Reviewer 隔离 worktree 保持干净。
+
+## Thinking 翻译审计增量复核
+
+规格分支再次从 `285dc571` 重基到最新 master `d00b0d82`。重基前后规格与评审记录的 SHA-256 分别保持 `26f27a04ee96d8bcbb1c0e1ea36ccaed7e88edaae2603d47be617a5990b37fd5` 与 `1fb60544362b91a6567487613b50d5c0a989299d7b5ce2f6b5ff96cf7007ebff`，证明重基本身没有改变两份文档。
+
+`d00b0d82` 新增 thinking 翻译审计与真实 GHC Responses carrier 探针。主会话初步对账认为：探针只证伪“跨模型旧 `encrypted_content` 必然 400”，而本规格没有采用该机制断言；本规格要求 carrier 按冻结的 affinity／compatibility policy 决定恢复或剥离，并把具体兼容判据留给 Phase 0 冻结。新审计还独立确认 server-tool 四格、per-item lifecycle、多 reasoning 单槽、request carrier policy 与顶层能力诊断缺口；它们是否已被本规格的通用 contract 充分覆盖，交由下述短复核裁决。
+
+### 待短复核命题
+
+1. `d00b0d82` 的实测是否推翻规格任何 F1–F9、D1–D2、Phase 0 或 AC1–AC20 命题。
+2. “本规格没有声称跨模型密文必然 400，只按 affinity／compatibility policy 裁决”是否与规格正文一致。
+3. 新审计确认的 ordered-turn、server-tool 四格、per-item reasoning／function arguments、structured output 与 context-management 缺口，是否需要新增规格验收，还是已被现有通用 contract 覆盖。
+4. 若无 BLOCKER／MAJOR，明确写“增量复核通过，可合入 master”。
