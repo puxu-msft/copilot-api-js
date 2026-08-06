@@ -270,12 +270,13 @@ export interface ConfigApplicationPlan {
   readonly generation: ConfigContentGeneration
   readonly statePatch: Readonly<ConfigStatePatch>
   readonly domainPatches: ReadonlyArray<ConfigDomainPatch>
-  readonly diagnostics: ReadonlyArray<{ level: "info" | "warn" | "error"; message: string }>
+  readonly diagnostics: ReadonlyArray<ConfigDiagnostic>
   readonly afterCommitEffects: ReadonlyArray<ConfigAfterCommitEffect>
 }
 
 export interface PrepareConfigApplicationOptions {
   readonly candidate: Config
+  readonly validationDiagnostics: ReadonlyArray<ConfigDiagnostic>
   readonly generation: ConfigContentGeneration
   readonly baseline: "current-runtime" | "config-defaults"
 }
@@ -327,16 +328,19 @@ Expected: FAIL，当前 `setAnthropicBehavior` 已执行或 cache 已更新后 g
 
 ```ts
 export async function parseUserConfigYamlRaw(): Promise<Record<string, unknown>>
-export function validateAndMergeConfig(raw: Record<string, unknown>, bundled: Config): Config
+export function validateAndMergeConfig(
+  raw: Record<string, unknown>,
+  bundled: Config,
+): { readonly config: Config; readonly diagnostics: ReadonlyArray<ConfigDiagnostic> }
 ```
 
 `parseUserConfigYamlRaw()` 不调用 `validateConfig()`；boot/reload/PUT 都在 warn-strip 前把**完整 raw top-level mapping**传给 `assertStrictGithubConfig(raw)`，让它同时检查 `github` 与顶层 `ghc_api_base_url`。Reload 读取整份内容一次，并从同一 bytes 计算 `mtime + size + sha256`，避免 parse/digest 双读 TOCTOU。三路径共享表驱动测试：非法 `github.web_base_url` 与非法顶层 `ghc_api_base_url` 均 fail-closed；mutation 把任一路径调用改成 `assertStrictGithubConfig(raw.github)` 后，顶层 URL 样本必须变红。
 
-把 `extractAndTranslateDeprecatedWithOps` 拆出纯 `prepareDeprecatedConfigMigration()`：返回 value、legacy paths 与 deprecation diagnostics，不写 consola、不修改 warned set。`prepareConfigValidation()` 调纯 migration + Zod safeParse/clean/reparse，返回 `ConfigValidationPlan`；现有 `validateConfig()` 改为兼容 wrapper（prepare 后立即 commit diagnostics），供未迁移的纯读取测试/调用点保持行为。事务路径只在配置 commit 成功后调用 `commitConfigDiagnostics()`，此时才登记 warn-once key 和输出。
+把 `extractAndTranslateDeprecatedWithOps` 拆出纯 `prepareDeprecatedConfigMigration()`：返回 value、legacy paths 与 deprecation diagnostics，不写 consola、不修改 warned set。`prepareConfigValidation()` 调纯 migration + Zod safeParse/clean/reparse，返回 `ConfigValidationPlan`；现有 `validateConfig()` 改为兼容 wrapper（prepare 后立即 commit diagnostics），供未迁移的纯读取测试/调用点保持行为。`validateAndMergeConfig()` 把 validation/migration diagnostics 与 merged config 一起返回；调用 `prepareConfigApplication({ candidate: config, validationDiagnostics: diagnostics, ... })` 将其原样带入 `ConfigApplicationPlan.diagnostics`。事务路径只在配置 commit 成功后调用 `commitConfigDiagnostics(plan.diagnostics)`，此时才登记 warn-once key 和输出。
 
 - [ ] **Step 4: 把 apply-time 计算移入 prepare**
 
-`application-plan.ts` 预计算所有 regex、model-key normalization、generation patch/cross-field checks、restart-only warnings 和 domain patch。不要让 commit 再调用可能抛错的 `compile*`/`normalize*`。现有 invalid regex 的 warn-and-skip 语义在 prepare 中保留，warning 作为 plan diagnostics 延迟到 commit 后输出。`baseline:"current-runtime"` 用于 hot reload，缺失字段保持当前值；`baseline:"config-defaults"` 用于 PUT/reset 语义，从 `CONFIG_MANAGED_DEFAULTS`、`DEFAULT_MODEL_MAPPINGS`、`DEFAULT_MODEL_TRANSLATION` 和空 disabled list 构造完整基线。两条路径都产出完整而非增量的 `statePatch`，避免 listener 比较部分对象。
+`application-plan.ts` 预计算所有 regex、model-key normalization、generation patch/cross-field checks、restart-only warnings 和 domain patch。不要让 commit 再调用可能抛错的 `compile*`/`normalize*`。现有 invalid regex 的 warn-and-skip 语义在 prepare 中保留，warning 作为带稳定 `dedupKey` 的 `ConfigDiagnostic` 合并进 `validationDiagnostics`，延迟到 commit 后登记并输出。`baseline:"current-runtime"` 用于 hot reload，缺失字段保持当前值；`baseline:"config-defaults"` 用于 PUT/reset 语义，从 `CONFIG_MANAGED_DEFAULTS`、`DEFAULT_MODEL_MAPPINGS`、`DEFAULT_MODEL_TRANSLATION` 和空 disabled list 构造完整基线。两条路径都产出完整而非增量的 `statePatch`，避免 listener 比较部分对象。
 
 逐一分类现有 `applyConfigToState()` 的非-state side effects，禁止遗漏：
 
@@ -366,7 +370,8 @@ export function validateAndMergeConfig(raw: Record<string, unknown>, bundled: Co
 
 测试：
 
-- prepare 失败所有 domain/listener/cache 不变，`consola.warn` 调用与 schema/deprecation warned-key 集也不变；同一候选修正后成功 commit 时 warning 仍会首次输出。
+- prepare 失败所有 domain/listener/cache 不变，`consola.warn` 调用与 schema/deprecation warned-key 集也不变；同一候选修正后成功 commit 时 warning 仍会首次输出，第二次成功应用同一 diagnostic 不重复。
+- `validateAndMergeConfig()` 产生的 schema/deprecation `dedupKey` 逐个存在于最终 `ConfigApplicationPlan.diagnostics`；删除这条传递接线的 mutation 必须让测试红。
 - commit 后每个 channel 最多通知一次，listener 读取的其它 domain 已是新值。
 - 同 mtime/size 但不同 digest 的修复文件会重试成功。
 - 用 barrier 构造 reload A 读/prepare 后暂停、PUT B 请求到达、A 恢复：共享队列保证 B 等 A 完成；再构造测试 seam 让 A commit 前磁盘 generation 变化，A 必须丢弃 stale plan 并重读，不能覆盖新磁盘内容。
@@ -617,7 +622,11 @@ git commit -m "feat(auth): support authority-scoped GitHub OAuth"
 **Interfaces:**
 
 ```ts
-// setup modules additionally export testable runners; citty commands only map args.
+// setup/debug modules additionally export testable runners; citty commands only map args.
+export interface RunDebugModelsOptions { readonly accountType: "individual" | "business" | "enterprise"; readonly githubToken?: string }
+export interface RunDebugUsageOptions { readonly json: boolean; readonly githubToken?: string }
+export async function runDebugModels(options: RunDebugModelsOptions): Promise<void>
+export async function runDebugUsage(options: RunDebugUsageOptions): Promise<void>
 export async function runSetupCodex(options: SetupCodexOptions): Promise<void>
 export async function runSetupClaudeCode(options: SetupClaudeCodeOptions): Promise<void>
 
@@ -647,16 +656,16 @@ export async function bootstrapTokenCommand(options: BootstrapTokenCommandOption
 
 - [ ] **Step 1: 写真实 CLI runner 入口矩阵测试**
 
-测试不得只调用 `bootstrapTokenCommand()`。通过依赖注入 seam 驱动真实导出 `runAuth`、`runLogout`、`runDebug`、`runServer`、`runSetupCodex`、`runSetupClaudeCode`；对每个 runner 记录它传给共享 bootstrap 的 policy/CLI overrides，并断言最终 effective config、endpoint snapshot、token path、proxy policy。Expected 写死，不调生产 resolver 生成。`runServer` 使用 boot dependency seam 在 bootstrap 后立即停止，不监听端口、不初始化 History；setup runners 使用 dry-run/依赖 seam，不写真实客户端配置。
+测试不得只调用 `bootstrapTokenCommand()`。通过依赖注入 seam 分别驱动真实导出 `runAuth`、`runLogout`、`runDebug`（仅 info）、`runDebugModels`、`runDebugUsage`、`runServer`、`runSetupCodex`、`runSetupClaudeCode`；对每个 runner 记录它传给共享 bootstrap 的 policy/CLI overrides，并断言最终 effective config、endpoint snapshot、token path、proxy policy。Expected 写死，不调生产 resolver 生成。`runServer` 使用 boot dependency seam 在 bootstrap 后立即停止，不监听端口、不初始化 History；setup runners 使用 dry-run/依赖 seam，不写真实客户端配置。
 
-增加 source guard：上述 6 个 CLI 模块不得直接引用 `ensurePaths`、`applyConfigToState`、`initProxy`、`installDefaultTokenRuntime` 或 `getProxyForUrl`；这些符号只允许出现在 `token-bootstrap.ts`。该 guard 与 runtime runner 测试共同证明不是“新 primitive 自己绿、真实入口仍走旧线”。
+增加 source guard：6 个物理 CLI 文件（auth/logout/debug/start/setup-codex/setup-claude-code）不得直接引用 `ensurePaths`、`applyConfigToState`、`initProxy`、`installDefaultTokenRuntime` 或 `getProxyForUrl`；这些符号只允许出现在 `token-bootstrap.ts`。该 guard 与 8 个真实 runner 测试共同证明不是“新 primitive 自己绿、真实入口仍走旧线”。
 
 - [ ] **Step 2: 写 debug 无 token 负向测试**
 
-- info：成功，`tokenExists=false`，manager construct/device/network/write 全 0。
-- models/usage：确定性非零失败并提示 `copilot-api login`，device/OAuth/network/write 全 0。
-- models/usage 的 CLI/env/current file 三正样本成功。
-- login/start/setup 无 token 仍调用 device provider。
+- `runDebug()`（info）：成功，`tokenExists=false`，manager construct/device/network/write 全 0。
+- `runDebugModels()` 与 `runDebugUsage()`：确定性非零失败并提示 `copilot-api login`，device/OAuth/network/write 全 0。
+- 两个 network runner 各自覆盖 CLI/env/current-authority file 三个成功来源（共 6 个正样本），证明 policy 接线不是只在其中一条命令生效。
+- `runAuth()`、`runServer()`、两个 setup runner 无 token 仍调用 device provider。
 
 - [ ] **Step 3: 运行测试确认重复 bootstrap 与 device fallback 造成红**
 
@@ -670,7 +679,7 @@ Expected: FAIL；当前 debug models/usage 会安装包含 DeviceAuthProvider �
 
 - [ ] **Step 5: 迁移所有 CLI 入口**
 
-删除各文件重复的 `ensurePaths/applyConfigToState/initProxy/installDefaultTokenRuntime`。Start 的 observability spool 若必须早于 config，改用只创建 app/log 目录的 `ensureAppDirectory()`，不得因此预创建 token。
+删除各文件重复的 `ensurePaths/applyConfigToState/initProxy/installDefaultTokenRuntime`。把 `debug models` 与 `debug usage` 的内联 citty callbacks 分别抽成 `runDebugModels()`、`runDebugUsage()`，command wrapper 只映射 args。把 setup 两条命令同样抽出/导出 runners。Start 的 observability spool 若必须早于 config，改用只创建 app/log 目录的 `ensureAppDirectory()`，不得因此预创建 token。
 
 - [ ] **Step 6: 明确 logout 与 debug 行为**
 
