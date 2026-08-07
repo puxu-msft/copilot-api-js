@@ -8,6 +8,7 @@ import {
 import type { DeliveryControlCapability } from "~/lib/pipeline/delivery/protocol"
 
 import { createAnthropicDeliveryProtocolAdapter } from "~/lib/pipeline/delivery/adapters/anthropic"
+import { createResponsesDeliveryProtocolAdapter } from "~/lib/pipeline/delivery/adapters/responses"
 import { createDeliveryControlCapability } from "~/lib/pipeline/delivery/control-capability"
 
 describe("delivery protocol adapters", () => {
@@ -112,6 +113,65 @@ describe("delivery protocol adapters", () => {
         cause: undefined,
       },
     })
+  })
+
+  test("classifies Responses HTTP output items as units while WS buffers to a response terminal", () => {
+    const http = createResponsesDeliveryProtocolAdapter({ transport: "http" })
+    const ws = createResponsesDeliveryProtocolAdapter({ transport: "ws" })
+    const created = { event: "response.created", data: JSON.stringify({ type: "response.created", response: { id: "resp_1" } }) }
+    const added = { event: "response.output_item.added", data: JSON.stringify({ type: "response.output_item.added", output_index: 0, item: { id: "item_1" } }) }
+    const delta = { event: "response.output_text.delta", data: JSON.stringify({ type: "response.output_text.delta", output_index: 0, item_id: "item_1", delta: "x" }) }
+    const done = { event: "response.output_item.done", data: JSON.stringify({ type: "response.output_item.done", output_index: 0, item: { id: "item_1" } }) }
+    const completed = { event: "response.completed", data: JSON.stringify({ type: "response.completed", response: { id: "resp_1", status: "completed" } }) }
+
+    expect(http.deliveryMode).toBe("unit")
+    expect(ws.deliveryMode).toBe("response-terminal")
+    expect(http.classify({ frame: created })).toEqual({ kind: "structural", structuralKind: "envelope-open", frame: created })
+    expect(http.classify({ frame: added })).toEqual({ kind: "unit-open", unit: { boundary: "output-item", key: "item_1" }, frame: added })
+    expect(http.classify({ frame: delta })).toEqual({ kind: "unit-append", unit: { boundary: "output-item", key: "item_1" }, frame: delta })
+    expect(http.classify({ frame: done })).toEqual({ kind: "unit-close", unit: { boundary: "output-item", key: "item_1" }, frame: done })
+    expect(http.classify({ frame: completed })).toEqual({
+      kind: "response-terminal",
+      terminal: { semantic: "complete", sourceFrame: completed, diagnostic: { source: "wire-frame", terminal: "response.completed" } },
+    })
+    expect(ws.classify({ frame: added })).toEqual({ kind: "response-append", frame: added })
+    expect(ws.classify({ frame: delta })).toEqual({ kind: "response-append", frame: delta })
+    expect(ws.classify({ frame: completed })).toEqual({
+      kind: "response-terminal",
+      terminal: { semantic: "complete", sourceFrame: completed, diagnostic: { source: "wire-frame", terminal: "response.completed" } },
+    })
+  })
+
+  test("maps Responses failure terminals, finishes, and error rendering", () => {
+    const adapter = createResponsesDeliveryProtocolAdapter({ transport: "http" })
+    const incomplete = { event: "response.incomplete", data: JSON.stringify({ type: "response.incomplete", response: { status: "incomplete" } }) }
+    const failed = { event: "response.failed", data: JSON.stringify({ type: "response.failed", response: { status: "failed" } }) }
+    const wireError = { event: "error", data: JSON.stringify({ type: "error", code: "server_error", message: "boom" }) }
+    const failure = new Error("transport failed")
+
+    expect(adapter.classify({ frame: incomplete })).toMatchObject({ kind: "response-terminal", terminal: { semantic: "incomplete" } })
+    expect(adapter.classify({ frame: failed })).toMatchObject({ kind: "response-terminal", terminal: { semantic: "failed" } })
+    expect(adapter.classify({ frame: wireError })).toMatchObject({ kind: "response-terminal", terminal: { semantic: "failed" } })
+    expect(adapter.classifyFinish({ kind: "complete", frames: [] })).toEqual({ kind: "natural-drain" })
+    expect(adapter.classifyFinish({ kind: "valid-terminal-without-boundary", frames: [], terminal: "refusal" })).toMatchObject({
+      kind: "valid-terminal-without-boundary",
+      terminal: { diagnostic: { source: "finish-result", terminal: "refusal" } },
+    })
+    expect(adapter.classifyFinish({ kind: "truncated", frames: [], reason: "missing response terminal" })).toMatchObject({
+      kind: "truncated",
+      error: { semantic: "truncated", detail: "missing response terminal" },
+    })
+    expect(adapter.classifyFinish({ kind: "terminal-failure", frames: [], error: failure })).toMatchObject({
+      kind: "terminal-failure",
+      error: { semantic: "terminal-failure", cause: failure },
+    })
+    expect(
+      adapter.renderTerminal({ semantic: "incomplete", sourceFrame: incomplete, diagnostic: { source: "wire-frame", terminal: "response.incomplete" } }),
+    ).toEqual([incomplete])
+    expect(adapter.renderError({ semantic: "truncated", detail: "missing response terminal", sourceFrame: null, cause: undefined })).toEqual([
+      { event: "error", data: JSON.stringify({ error: { message: "missing response terminal", type: "server_error" } }) },
+    ])
+    expect(adapter.renderDone()).toEqual([])
   })
 
   test("maps every response finish variant without consuming its frames", () => {
