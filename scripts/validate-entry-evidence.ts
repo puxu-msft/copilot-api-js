@@ -14,8 +14,15 @@ let discoverRuntimePackageClosure!: typeof import("./entry-evidence-runtime-clos
 let packageIdentity!: typeof import("./entry-evidence-runtime-closure").packageIdentity
 let runtimeImportSpecifiers!: typeof import("./entry-evidence-runtime-closure").runtimeImportSpecifiers
 
-async function loadRuntimeClosureDependency(): Promise<void> {
-  const closure = await import("./entry-evidence-runtime-closure")
+const RUNTIME_CLOSURE_HELPER_PATH = "scripts/entry-evidence-runtime-closure.ts"
+
+function trustedRuntimeClosureHelperPath(tree: string, entrySha: string, canonicalTree: string): string | undefined {
+  const helperPath = path.join(canonicalTree, RUNTIME_CLOSURE_HELPER_PATH)
+  return matchesEntryObject(tree, entrySha, canonicalTree, helperPath) ? helperPath : undefined
+}
+
+async function loadRuntimeClosureDependency(helperPath: string): Promise<void> {
+  const closure = await import(helperPath)
   bytewiseSort = closure.bytewiseSort
   discoverRuntimePackageClosure = closure.discoverRuntimePackageClosure
   packageIdentity = closure.packageIdentity
@@ -81,7 +88,7 @@ interface RuntimeDependencyFile {
   sha256: string
 }
 interface RuntimeDependencyPackage {
-  name: "saxes" | "xmlchars"
+  name: string
   version: string
   integrity: string
   files: RuntimeDependencyFile[]
@@ -140,13 +147,13 @@ function matchesEntryObject(tree: string, entrySha: string, canonicalTree: strin
 function parseRuntimeDependencyManifest(raw: string): RuntimeDependencyIntegrityManifest | undefined {
   try {
     const parsed = JSON.parse(raw) as Record<string, unknown>
-    if (!exactKeys(parsed, ["schema_version", "packages"]) || parsed.schema_version !== 1 || !Array.isArray(parsed.packages) || parsed.packages.length !== 2)
+    if (!exactKeys(parsed, ["schema_version", "packages"]) || parsed.schema_version !== 1 || !Array.isArray(parsed.packages) || parsed.packages.length === 0)
       return undefined
     const packages: RuntimeDependencyPackage[] = []
     for (const packageEntry of parsed.packages) {
       if (!packageEntry || typeof packageEntry !== "object" || Array.isArray(packageEntry)) return undefined
       const value = packageEntry as Record<string, unknown>
-      if (!exactKeys(value, ["name", "version", "integrity", "files"]) || (value.name !== "saxes" && value.name !== "xmlchars")) return undefined
+      if (!exactKeys(value, ["name", "version", "integrity", "files"]) || typeof value.name !== "string" || value.name.length === 0) return undefined
       if (typeof value.version !== "string" || typeof value.integrity !== "string" || !Array.isArray(value.files) || value.files.length === 0) return undefined
       const files: RuntimeDependencyFile[] = []
       for (const fileEntry of value.files) {
@@ -165,7 +172,8 @@ function parseRuntimeDependencyManifest(raw: string): RuntimeDependencyIntegrity
       if (JSON.stringify(files.map((file) => file.path)) !== JSON.stringify(bytewiseSort(files.map((file) => file.path)))) return undefined
       packages.push({ name: value.name, version: value.version, integrity: value.integrity, files })
     }
-    if (JSON.stringify(packages.map((entry) => entry.name)) !== JSON.stringify(["saxes", "xmlchars"])) return undefined
+    if (new Set(packages.map((entry) => entry.name)).size !== packages.length) return undefined
+    if (JSON.stringify(packages.map((entry) => entry.name)) !== JSON.stringify(bytewiseSort(packages.map((entry) => entry.name)))) return undefined
     return { schema_version: 1, packages }
   } catch {
     return undefined
@@ -195,6 +203,9 @@ async function packageClosureMatches(importer: string, manifest: RuntimeDependen
   if (closure === undefined) return false
   const observed = new Map<string, string[]>()
   for (const file of closure) observed.set(file.packageName, [...(observed.get(file.packageName) ?? []), file.relativePath])
+  const observedPackageNames = bytewiseSort([...observed.keys()])
+  const manifestPackageNames = manifest.packages.map((entry) => entry.name)
+  if (JSON.stringify(observedPackageNames) !== JSON.stringify(manifestPackageNames)) return false
   return manifest.packages.every((packageEntry) => {
     const packageFiles = closure.filter((file) => file.packageName === packageEntry.name)
     const identity = packageFiles.length === 0 ? undefined : packageIdentity(packageFiles[0].resolvedPath)
@@ -578,8 +589,16 @@ function parseRunArtifacts(
 const options = parseOptions(process.argv.slice(2))
 if (!existsSync(options.tree) || git(options.tree, ["cat-file", "-e", `${options.pointerSha}^{commit}`]) === undefined)
   fail(1, "pointer SHA does not resolve", 3)
+let canonicalTree: string
 try {
-  await loadRuntimeClosureDependency()
+  canonicalTree = realpathSync(options.tree)
+} catch {
+  fail(11, "validator provenance mismatch", 7)
+}
+const runtimeClosureHelperPath = trustedRuntimeClosureHelperPath(options.tree, options.entrySha, canonicalTree)
+if (runtimeClosureHelperPath === undefined) fail(11, "validator provenance mismatch", 7)
+try {
+  await loadRuntimeClosureDependency(runtimeClosureHelperPath)
 } catch {
   fail(11, "validator provenance mismatch", 7)
 }

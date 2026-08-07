@@ -421,6 +421,25 @@ describe("entry evidence validator C7-C9", () => {
     }
   })
 
+  test("rejects a dirty runtime-closure helper before executing it", () => {
+    const f = fixture()
+    const sentinel = path.join(f.out, "dirty-helper-executed")
+    try {
+      const helper = path.join(f.tree, "scripts/entry-evidence-runtime-closure.ts")
+      writeFileSync(
+        helper,
+        `import { writeFileSync } from "node:fs"\nwriteFileSync(${JSON.stringify(sentinel)}, "executed\\n")\n${readFileSync(helper, "utf8")}`,
+      )
+      const result = invoke(f)
+      expect(result.exitCode).toBe(7)
+      expect(error(result)).toBe("FAIL C11: validator provenance mismatch\n")
+      expect(existsSync(sentinel)).toBe(false)
+      expect(existsSync(f.receipt)).toBe(false)
+    } finally {
+      cleanup(f)
+    }
+  })
+
   test("accepts an ancestor-resolved SAX package closure", () => {
     const f = fixture({ dependencyLocation: "ancestor" })
     try {
@@ -476,6 +495,59 @@ describe("entry evidence validator C7-C9", () => {
           json(path.join(f.tree, DEPENDENCY_INTEGRITY_MANIFEST), manifest)
         },
         "bind mutated package entry",
+      )
+      const result = invoke(f)
+      expect(result.exitCode).toBe(7)
+      expect(error(result)).toBe("FAIL C11: validator provenance mismatch\n")
+      expect(existsSync(f.receipt)).toBe(false)
+    } finally {
+      cleanup(f)
+    }
+  })
+
+  test("rejects an unexpected transitive package absent from the ENTRY manifest", () => {
+    const f = fixture({ dependencyLocation: "ancestor" })
+    try {
+      const saxesRoot = path.join(f.dependencyRoot, "node_modules/saxes")
+      const unexpectedRoot = path.join(f.dependencyRoot, "node_modules/unexpected-runtime-package")
+      mkdirSync(unexpectedRoot)
+      json(path.join(unexpectedRoot, "package.json"), { name: "unexpected-runtime-package", version: "1.0.0", main: "index.js" })
+      writeFileSync(path.join(unexpectedRoot, "index.js"), "module.exports = {}\n")
+      writeFileSync(path.join(saxesRoot, "saxes.js"), `${readFileSync(path.join(saxesRoot, "saxes.js"), "utf8")}\nrequire("unexpected-runtime-package")\n`)
+      commitEntryMutation(
+        f,
+        () => {
+          const manifest = JSON.parse(readFileSync(path.join(f.tree, DEPENDENCY_INTEGRITY_MANIFEST), "utf8"))
+          manifest.packages[0].files[0].sha256 = hash(path.join(saxesRoot, "saxes.js"))
+          json(path.join(f.tree, DEPENDENCY_INTEGRITY_MANIFEST), manifest)
+        },
+        "bind package with unexpected transitive dependency",
+      )
+      const result = invoke(f)
+      expect(result.exitCode).toBe(7)
+      expect(error(result)).toBe("FAIL C11: validator provenance mismatch\n")
+      expect(existsSync(f.receipt)).toBe(false)
+    } finally {
+      cleanup(f)
+    }
+  })
+
+  test("rejects an extra manifest package absent from the observed closure", () => {
+    const f = fixture()
+    try {
+      commitEntryMutation(
+        f,
+        () => {
+          const manifest = JSON.parse(readFileSync(path.join(f.tree, DEPENDENCY_INTEGRITY_MANIFEST), "utf8"))
+          manifest.packages.push({
+            name: "unexpected-runtime-package",
+            version: "1.0.0",
+            integrity: "sha512-unexpected",
+            files: [{ path: "index.js", sha256: "0".repeat(64) }],
+          })
+          json(path.join(f.tree, DEPENDENCY_INTEGRITY_MANIFEST), manifest)
+        },
+        "add absent manifest package",
       )
       const result = invoke(f)
       expect(result.exitCode).toBe(7)

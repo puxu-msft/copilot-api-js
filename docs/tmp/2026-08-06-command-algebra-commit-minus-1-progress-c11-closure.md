@@ -31,4 +31,6 @@ status: 实现完成，待最终验证、文档同步与独立复评
 - `39fd3a31` 上 ancestor-resolution 正样本得到 rc=7/C11，复现 false-red；恢复内容身份实现后 validator 40 pass。
 - `Bun.build(..., metafile:true)` 从实际 `saxes` entry 递归枚举 saxes+xmlchars runtime graph，generator 与 validator 共用该 primitive。
 - exact mutation 从发现集合丢弃新增 `unexpected.js` 后，目标测试由绿转红（期望 rc=7，实际 rc=0）；恢复后 40 pass。
-- parser+producer+validator focused 合计 60 pass；`bun run typecheck` 绿。
+- whole-branch 复评暴露 helper 自证 bootstrap 与 observed/manifest package 单向比较；新增 sentinel 证明 dirty helper 在修复前已执行，新增第三 package 证明旧 validator 错误放行。
+- validator 现先以仅 built-ins 的 fixed-path + ENTRY blob bootstrap 验 helper，再 dynamic import；observed 与 manifest package names 先做 bytewise 精确相等，再逐包核内容。
+- parser+producer+validator focused 合计 63 pass；`bun run typecheck` 绿。
