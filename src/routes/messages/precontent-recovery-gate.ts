@@ -1,12 +1,20 @@
-import type {
-  //
-  ApiErrorType,
-} from "~/lib/error"
 import type { DownstreamDeliverySession } from "~/lib/pipeline/delivery/session"
 
+import {
+  //
+  classifyError,
+  isAbortError,
+  type ApiErrorType,
+} from "~/lib/error"
 import { hasDeliveredSemanticContent } from "~/lib/pipeline/generation/semantic-content-gate"
+import { isShutdownCausedAbort } from "~/lib/shutdown"
+import { classifyStreamError } from "~/lib/stream"
 
-import type { PostCommitAbortKind } from "./post-commit-error"
+import {
+  //
+  classifyPostCommitAbort,
+  type PostCommitAbortKind,
+} from "./post-commit-error"
 
 /** Failure classes visible at the post-commit pre-content recovery decision point. */
 export type PreContentRecoveryFailure =
@@ -14,7 +22,53 @@ export type PreContentRecoveryFailure =
   | { kind: "network-error" }
   | { kind: "abort"; abortKind: PostCommitAbortKind }
 
+export interface PreContentRecoveryFailureInput {
+  readonly error: unknown
+  readonly clientAborted: boolean
+  readonly lifecycleSignal?: AbortSignal
+}
+
 /** Retryable upstream classifications accepted by B2. Every other HTTP taxonomy is an explicit no-replay boundary. */
+export function classifyPreContentRecoveryFailure(input: PreContentRecoveryFailureInput): PreContentRecoveryFailure {
+  const { error, clientAborted, lifecycleSignal } = input
+  switch (classifyStreamError(error)) {
+    case "shutdown": {
+      return { kind: "abort", abortKind: "shutdown" }
+    }
+    case "client-abort": {
+      return { kind: "abort", abortKind: "client-abort" }
+    }
+    case "reaper-cancel": {
+      return { kind: "abort", abortKind: "reaper-cancel" }
+    }
+    case "request-deadline": {
+      return { kind: "abort", abortKind: "request-deadline" }
+    }
+    case "request-cancel": {
+      return { kind: "abort", abortKind: "request-cancel" }
+    }
+    case "dispatch-cancel": {
+      return { kind: "abort", abortKind: "dispatch-cancel" }
+    }
+    case "unknown-cancel": {
+      return { kind: "abort", abortKind: "unknown-abort" }
+    }
+    case "idle-timeout": {
+      return { kind: "abort", abortKind: "header-timeout" }
+    }
+    case "other": {
+      break
+    }
+    default: {
+      throw new Error("unreachable stream classification")
+    }
+  }
+  if (error instanceof Error && (isAbortError(error) || isShutdownCausedAbort(error)))
+    return { kind: "abort", abortKind: classifyPostCommitAbort(clientAborted, lifecycleSignal, error) }
+  const classified = classifyError(error)
+  return classified.type === "network_error" ? { kind: "network-error" } : { kind: "http-error", errorType: classified.type }
+}
+
 function isRetryablePreContentHttpError(errorType: ApiErrorType): boolean {
   switch (errorType) {
     case "server_error":

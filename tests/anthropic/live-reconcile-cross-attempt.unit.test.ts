@@ -148,19 +148,23 @@ async function injectOpenAnchor(h: ReturnType<typeof harness>): Promise<void> {
 }
 
 describe("one persistent live-reconcile sink across attempts", () => {
-  test("no hooks: the original sink carries first-attempt and fresh-attempt frames unchanged", async () => {
+  test("no hooks: persistent reconciling sink keeps primary start and drops only fresh duplicate", async () => {
     const written: Array<ClientFrame> = []
     const raw: OwnerRawSink = { write: (value) => (written.push(value), Promise.resolve()) }
-    const delivery = createDownstreamDeliverySession({ sink: raw })
-    const firstAttemptPing = frame("ping")
+    const state = anchorState()
+    const delivery = createDownstreamDeliverySession({ sink: raw, wireState: state.wireState, legacyAnchorMirror: state })
+    const supervisor = createRecoverySinkSupervisor(delivery.clientSink)
+    const persistentSink = makeReconcilingSink(supervisor.sink, state, undefined, delivery.allocationPort)
+    const primaryStart = messageStart("msg_primary_no_hooks")
     const freshMessageStart = messageStart("msg_fresh_no_hooks")
     const freshBlockStart = contentBlockStart(0)
 
-    await delivery.clientSink.write(firstAttemptPing)
-    await delivery.clientSink.write(freshMessageStart)
-    await delivery.clientSink.write(freshBlockStart)
+    await persistentSink.write(primaryStart)
+    await persistentSink.write(freshMessageStart)
+    await persistentSink.write(freshBlockStart)
 
-    expect(written).toEqual([firstAttemptPing, freshMessageStart, freshBlockStart])
+    expect(written).toEqual([primaryStart, freshBlockStart])
+    expect(state.messageStartForwarded).toBe(true)
   })
 
   test("hooks exist but no scaffold was injected: both attempts pass through and message_start is recorded", async () => {

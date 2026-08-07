@@ -48,11 +48,15 @@ function envelope(label: string): RequestEnvelope {
 function recordingPort() {
   let candidateSequence = 0
   let dispatchSequence = 0
-  const candidates = new Map<CandidateHandle, { role: CandidateRole; parentCandidate?: CandidateHandle; recoveryReason?: string }>()
+  const candidates = new Map<CandidateHandle, { role: CandidateRole; parentCandidate?: CandidateHandle; metadata?: { recoveryReason?: string } }>()
   const port: DispatchRecordingPort = {
     beginCandidate(input) {
       const handle = `candidate-${++candidateSequence}` as CandidateHandle
-      candidates.set(handle, { role: input.role, ...(input.parentCandidate && { parentCandidate: input.parentCandidate }), ...(input.recoveryReason !== undefined && { recoveryReason: input.recoveryReason }) })
+      candidates.set(handle, {
+        role: input.role,
+        ...(input.parentCandidate && { parentCandidate: input.parentCandidate }),
+        ...(input.metadata !== undefined && { metadata: input.metadata }),
+      })
       return handle
     },
     settleCandidate() {},
@@ -92,8 +96,13 @@ function streamResponse(marker: string): PhysicalTransportResponse {
 
 function candidateFactory(
   recording: DispatchRecordingPort,
-): (input: { role: CandidateRole; parentCandidate?: CandidateHandle; recoveryReason?: string; env: RequestEnvelope }) => CandidateRuntime<{ role: CandidateRole }> {
-  return ({ role, parentCandidate, recoveryReason, env }) => {
+): (input: {
+  role: CandidateRole
+  parentCandidate?: CandidateHandle
+  metadata?: { recoveryReason?: string }
+  env: RequestEnvelope
+}) => CandidateRuntime<{ role: CandidateRole }> {
+  return ({ role, parentCandidate, metadata, env }) => {
     const scheduler = createDispatchScheduler({
       prepareWire: (current) => ({ url: "https://upstream.test", headers: new Headers(), body: current.body, stream: true }),
       open: async (_wire: PreparedRequest) =>
@@ -109,7 +118,7 @@ function candidateFactory(
     return createCandidateRuntime({
       role,
       ...(parentCandidate && { parentCandidate }),
-      ...(recoveryReason !== undefined && { recoveryReason }),
+      ...(metadata !== undefined && { metadata }),
       env,
       recording,
       scheduler,
@@ -129,7 +138,7 @@ describe("pre-content recovery coordinator", () => {
     const recovery = await coordinator.runRecoveryFromPreReadyFailure("upstream-rst", envelope("recovery"))
 
     expect(recovery.role).toBe("recovery")
-    expect(recording.candidates.get(recovery.candidate)).toMatchObject({ role: "recovery", recoveryReason: "upstream-rst" })
+    expect(recording.candidates.get(recovery.candidate)).toMatchObject({ role: "recovery", metadata: { recoveryReason: "upstream-rst" } })
     expect(recording.candidates.get(recovery.candidate)).not.toHaveProperty("parentCandidate")
   })
 

@@ -57,7 +57,7 @@ export interface CandidateRuntime<TProcessor> {
 export interface CreateCandidateRuntimeInput<TProcessor> {
   readonly role: CandidateRole
   readonly parentCandidate?: CandidateHandle
-  readonly recoveryReason?: string
+  readonly metadata?: { recoveryReason?: string }
   readonly env: RequestEnvelope
   /** Fork request/response state only after the canonical candidate handle exists. */
   readonly forkEnv?: (candidate: CandidateHandle) => RequestEnvelope
@@ -71,7 +71,7 @@ export function createCandidateRuntime<TProcessor>(input: CreateCandidateRuntime
   const handle = input.recording.beginCandidate({
     role: input.role,
     ...(input.parentCandidate && { parentCandidate: input.parentCandidate }),
-    ...(input.recoveryReason !== undefined && { recoveryReason: input.recoveryReason }),
+    ...(input.metadata !== undefined && { metadata: input.metadata }),
   })
   const candidateEnv = input.forkEnv?.(handle) ?? input.env
   const controller = new AbortController()

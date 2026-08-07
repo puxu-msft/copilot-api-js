@@ -127,7 +127,6 @@ import {
 } from "~/lib/config/model-overrides"
 import {
   //
-  classifyError,
   HTTPError,
   isAbortError,
 } from "~/lib/error"
@@ -209,8 +208,8 @@ import {
 } from "./post-commit-error"
 import {
   //
+  classifyPreContentRecoveryFailure,
   shouldAttemptPreContentRecovery,
-  type PreContentRecoveryFailure,
 } from "./precontent-recovery-gate"
 import { createPreContentRecoverySinkChain } from "./precontent-recovery-sink-chain"
 import { retryMetaFeature } from "./retry-meta-feature"
@@ -783,8 +782,7 @@ async function runMessagesDriver(c: Context, args: RunMessagesDriverArgs): Promi
           await writeTerminalThenSettle(ctx, postCommitAbortFrame(kind), () => ctx?.fail(resolvedName, error))
           return
         }
-        const classifiedRecoveryError = classifyError(error)
-        const recoveryFailure: PreContentRecoveryFailure = { kind: "http-error", errorType: classifiedRecoveryError.type }
+        const recoveryFailure = classifyPreContentRecoveryFailure({ error, clientAborted: clientAbort.signal.aborted, lifecycleSignal: ctx?.lifecycleSignal })
         if (
           shouldAttemptPreContentRecovery({
             failure: recoveryFailure,
@@ -1384,6 +1382,18 @@ interface PumpAnthropicStreamingV4Options {
 /** {@link pumpAnthropicStreamingDispatch} options — the pump options plus the codec (for the translate leg). */
 type PumpAnthropicStreamingDispatchOptions = PumpAnthropicStreamingV4Options
 
+/** A recovery child reports its own failure to the primary owner; it never owns a client terminal. */
+class RecoveryAttemptFailure extends Error {
+  readonly primaryError: unknown
+  readonly recoveryError: unknown
+
+  constructor(primaryError: unknown, recoveryError: unknown) {
+    super("[Anthropic:v4] recovery attempt failed", { cause: recoveryError })
+    this.primaryError = primaryError
+    this.recoveryError = recoveryError
+  }
+}
+
 /**
  * Dispatch the streaming pump by OUTBOUND leg (RFC §3.1 二维门控). The DIRECT `/v1/messages` leg (upstream
  * IS Anthropic — render is identity) drives the byte-critical {@link pumpAnthropicStreamingV4}, UNCHANGED.
@@ -1445,7 +1455,7 @@ async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): 
     // A returned live `stream-error` means the already-ready upstream body died. The driver classifies
     // such a transport-close as the recovery's network path; only a provenance-bearing cancellation above
     // is excluded from this mount point.
-    const failure: PreContentRecoveryFailure = { kind: "network-error" }
+    const failure = classifyPreContentRecoveryFailure({ error, clientAborted: false, lifecycleSignal: env.ctx.lifecycleSignal })
     if (
       opts.precontentRecoveryAttempted
       || buffered
@@ -1462,15 +1472,26 @@ async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): 
       // runResponseSink unwound through the supervisor and suspended the heartbeat. Resume before the
       // recovery pump reads its first frame; otherwise an equally silent recovery would have no keepalive.
       opts.resumeRecoveryHeartbeat?.()
+      const recoveryFrames: Array<ClientFrame> = []
+      const recoverySink: ClientSink = {
+        write: async (frame) => {
+          recoveryFrames.push(frame)
+        },
+        // The shared supervisor owns the real stream lifetime; the child driver may only close its local buffer.
+        close() {},
+        finalize() {},
+      }
       await pumpAnthropicStreamingDispatch({
         ...opts,
         codec: opts.codec,
+        liveSink: recoverySink,
         upstream: recovered.upstream,
         env: recovered.env,
         buffered: false,
         precontentRecoveryAttempted: true,
         recoveryOriginalError: opts.recoveryOriginalError ?? error,
       })
+      for (const frame of recoveryFrames) await opts.liveSink.write(frame)
       return true
     } catch (recoveryError) {
       // Recovery is internal best-effort. Preserve the primary error on wire while retaining the rescue
@@ -1587,6 +1608,7 @@ async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): 
     }
 
     if (outcome.kind === "stream-error") {
+      if (opts.recoveryOriginalError !== undefined) throw new RecoveryAttemptFailure(opts.recoveryOriginalError, outcome.error)
       if (classifyStreamError(outcome.error) === "shutdown" || isShutdownCausedAbort(outcome.error)) {
         const shutdownError = new HTTPError(
           "Server is shutting down",
@@ -1627,7 +1649,7 @@ async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): 
       // it belongs in `inboundResponse.sseEvents`), THEN settle. Ordering is load-bearing:
       // writeSynthetic samples the frame into `forwardedSseEvents`, recordForwarded snapshots it,
       // and only then does ctx.fail() freeze `inboundResponse` — a post-fail snapshot would miss it.
-      const error = opts.recoveryOriginalError ?? outcome.error
+      const error = outcome.error
       logUpstreamStreamOutcomeError({ ...outcome, error }, { model: acc.model || model, streamState, acc, sseEvents })
       const errorMessage = error instanceof Error ? error.message : String(error)
       const errorType = anthropicStreamErrorType(error)
@@ -1687,6 +1709,8 @@ async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): 
     consola.debug(`[Stream] Completed: ${summaryParts.join(" ")}`)
 
     if (acc.streamError) {
+      if (opts.recoveryOriginalError !== undefined)
+        throw new RecoveryAttemptFailure(opts.recoveryOriginalError, new Error(`${acc.streamError.type}: ${acc.streamError.message}`))
       // H2 — a terminal upstream `error` SSE event (a clean drain, never a thrown error → outcome is
       // `complete`). When error-shaping is on, the `errorFrameCanonical` S5 rewrite already RESHAPED the
       // forwarded frame into a canonical Anthropic envelope before it reached the client (off = forwarded
@@ -1781,6 +1805,8 @@ async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): 
       )
       await sink.finalize?.()
     } else if (!acc.sawMessageStop) {
+      if (opts.recoveryOriginalError !== undefined)
+        throw new RecoveryAttemptFailure(opts.recoveryOriginalError, new Error("upstream stream truncated: closed without message_stop"))
       // Upstream truncation: a clean EOF WITHOUT the mandatory `message_stop` terminator
       // (GHC mid-stream cutoff). The driver sees a clean drain → `complete`, but the message
       // never finished. Settle as FAIL (not a silent `[ OK ]`) — preserving the accumulated
@@ -1852,14 +1878,16 @@ async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): 
       await sink.finalize?.()
     }
   } catch (error) {
-    if (await tryResponseRecovery(error)) return
+    if (opts.recoveryOriginalError !== undefined) throw error
+    const terminalError = error instanceof RecoveryAttemptFailure ? error.primaryError : error
+    if (!(error instanceof RecoveryAttemptFailure) && (await tryResponseRecovery(error))) return
     const failedCandidate = anthropicCandidateSnapshot(driver, upstream)
     if (failedCandidate.kind !== "anthropic-direct") throw error
     const { acc } = failedCandidate
     // Unexpected throw from the driver/sink (not a returned outcome): surface a synthetic error
     // frame + record it into the forwarded track, THEN settle so the persisted inboundResponse
     // includes the client-received error frame (writeSynthetic → recordForwarded → fail).
-    const msg = error instanceof Error ? error.message : String(error)
+    const msg = terminalError instanceof Error ? terminalError.message : String(terminalError)
     // §10.5 close-off (I-1): an unexpected throw is also an error terminus — balance any open anchor before
     // the synthetic error frame (idempotent + inert via the shared anchorClosed guard).
     const ownerDecision = await closeAnchorViaOwner(opts.deliverySession.allocationPort, anchorHooks, env.ctx, "terminal")
@@ -1870,13 +1898,13 @@ async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): 
         acc.model || model,
         recordForwarded,
         { usage: { input_tokens: acc.inputTokens, output_tokens: acc.outputTokens }, stop_reason: acc.stopReason || undefined },
-        { cause: error },
+        { cause: terminalError },
       )
     )
       return
     await sink.writeSynthetic?.({ event: "error", data: JSON.stringify({ type: "error", error: { type: "api_error", message: msg } }) }).catch(() => undefined)
     recordForwarded()
-    env.ctx.fail(acc.model || model, error, {
+    env.ctx.fail(acc.model || model, terminalError, {
       usage: { input_tokens: acc.inputTokens, output_tokens: acc.outputTokens },
       stop_reason: acc.stopReason || undefined,
     })

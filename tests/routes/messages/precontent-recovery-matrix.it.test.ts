@@ -16,6 +16,7 @@ import {
   test,
 } from "bun:test"
 
+import { tagTransportError } from "~/lib/error/transport-reason"
 import { setModels } from "~/lib/models/cache"
 import { setStateForTests } from "~/lib/state"
 import { StreamShutdownError } from "~/lib/stream"
@@ -100,9 +101,12 @@ describe("Task 4.3b pre-content recovery matrix", () => {
     const text = await response.text()
 
     expect(calls).toBe(2)
-    expect(frameTypesInOrder(text).filter((type) => type === "message_start").length).toBeLessThanOrEqual(2)
+    const types = frameTypesInOrder(text)
+    expect(types.filter((type) => type === "message_start")).toHaveLength(1)
+    expect(types.filter((type) => type === "message_delta")).toHaveLength(1)
+    expect(types.filter((type) => type === "message_stop")).toHaveLength(1)
     expect(dataFramesOfType(text, "error")).toHaveLength(0)
-    expect(frameTypesInOrder(text)).toContain("message_stop")
+    expect(types.indexOf("message_delta")).toBeLessThan(types.indexOf("message_stop"))
   })
 
   test("COMMIT nonretryable HTTP 418 before content keeps the primary terminal and makes no fresh dispatch", async () => {
@@ -142,6 +146,47 @@ describe("Task 4.3b pre-content recovery matrix", () => {
     expect(dataFramesOfType(text, "error")[0]?.error).toMatchObject({ type: "overloaded_error" })
   })
 
+  test.each([
+    [
+      "H2 event:error",
+      () =>
+        createSseResponse([
+          messageStartFrame({ id: "msg_recovery_h2", model: MODEL, inputTokens: 5 }),
+          `event: error\ndata: ${JSON.stringify({ type: "error", error: { type: "overloaded_error", message: "recovery H2 failure" } })}\n\n`,
+        ]),
+    ],
+    [
+      "thrown stream error",
+      () => createSseResponseThenError([messageStartFrame({ id: "msg_recovery_throw", model: MODEL, inputTokens: 5 })], new Error("recovery throw")),
+    ],
+  ])("recovery %s stays off wire and primary error is the one terminal", async (_name, recoveryResponse) => {
+    let calls = 0
+    applyFetchMock(
+      mock(() => {
+        calls += 1
+        if (calls === 1)
+          return Promise.resolve(
+            createSseResponseThenError(
+              [messageStartFrame({ id: "msg_primary_failure", model: MODEL, inputTokens: 5 })],
+              tagTransportError(new Error("primary refused stream"), "refused-stream"),
+            ),
+          )
+        return Promise.resolve(recoveryResponse())
+      }),
+    )
+
+    const { createFullTestApp } = await import("../../helpers/test-app")
+    const response = await request(createFullTestApp(), `precontent-recovery-terminal-${_name}`)
+    const text = await response.text()
+    const errors = dataFramesOfType(text, "error")
+
+    expect(calls).toBe(2)
+    expect(errors).toHaveLength(1)
+    expect(errors[0]?.error).toMatchObject({ message: "primary refused stream" })
+    expect(text).not.toContain("recovery H2 failure")
+    expect(text).not.toContain("recovery throw")
+  })
+
   test("ready live stream-error before content makes exactly one fresh dispatch and exposes one coherent turn", async () => {
     let calls = 0
     applyFetchMock(
@@ -149,7 +194,10 @@ describe("Task 4.3b pre-content recovery matrix", () => {
         calls += 1
         if (calls === 1)
           return Promise.resolve(
-            createSseResponseThenError([messageStartFrame({ id: "msg_primary", model: MODEL, inputTokens: 5 })], new Error("primary transport-close")),
+            createSseResponseThenError(
+              [messageStartFrame({ id: "msg_primary", model: MODEL, inputTokens: 5 })],
+              tagTransportError(new Error("primary refused stream"), "refused-stream"),
+            ),
           )
         return Promise.resolve(createSseResponse(completeFrames("msg_ready_recovery")))
       }),
@@ -162,8 +210,11 @@ describe("Task 4.3b pre-content recovery matrix", () => {
     const text = await response.text()
 
     expect(calls).toBe(2)
-    expect(frameTypesInOrder(text).filter((type) => type === "message_start").length).toBeLessThanOrEqual(2)
+    const types = frameTypesInOrder(text)
+    expect(types.filter((type) => type === "message_start")).toHaveLength(1)
+    expect(types.filter((type) => type === "message_delta")).toHaveLength(1)
+    expect(types.filter((type) => type === "message_stop")).toHaveLength(1)
     expect(dataFramesOfType(text, "error")).toHaveLength(0)
-    expect(frameTypesInOrder(text)).toContain("message_stop")
+    expect(types.indexOf("message_delta")).toBeLessThan(types.indexOf("message_stop"))
   })
 })

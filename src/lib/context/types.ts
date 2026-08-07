@@ -544,7 +544,7 @@ export interface RequestContext {
   setOutboundResponseTrailers(trailers: Record<string, string>): void
   addWarningMessage(warning: WarningMessage): void
   /** Begin one explicit generation candidate in the canonical History V3 topology. */
-  beginGenerationCandidate(input: { role: CandidateRole; parentCandidate?: CandidateHandle }): CandidateHandle
+  beginGenerationCandidate(input: { role: CandidateRole; parentCandidate?: CandidateHandle; metadata?: { recoveryReason?: string } }): CandidateHandle
   /** Settle one explicit candidate without relying on array position. */
   settleGenerationCandidate(candidate: CandidateHandle, input: { verdict: CandidateVerdict; reason?: string }): void
   /** Begin one physical dispatch and return its canonical branded handle. */

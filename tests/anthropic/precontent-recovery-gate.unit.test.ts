@@ -7,7 +7,14 @@ import {
 
 import type { PostCommitAbortKind } from "~/routes/messages/post-commit-error"
 
-import { shouldAttemptPreContentRecovery } from "~/routes/messages/precontent-recovery-gate"
+import { HTTPError } from "~/lib/error"
+import { tagTransportError } from "~/lib/error/transport-reason"
+import { StreamShutdownError } from "~/lib/stream"
+import {
+  //
+  classifyPreContentRecoveryFailure,
+  shouldAttemptPreContentRecovery,
+} from "~/routes/messages/precontent-recovery-gate"
 
 function deliveryWithoutContent() {
   return { hasEmittedRealClientContent: false }
@@ -60,6 +67,19 @@ describe("shouldAttemptPreContentRecovery", () => {
         }),
       ).toBe(false)
     }
+  })
+
+  test("raw errors use taxonomy and provenance rather than caller-selected failure kinds", () => {
+    const classify = (error: unknown) => classifyPreContentRecoveryFailure({ error, clientAborted: false })
+
+    expect(classify(new HTTPError("overloaded", 529, ""))).toEqual({ kind: "http-error", errorType: "server_error" })
+    expect(classify(new HTTPError("rate limited", 503, JSON.stringify({ error: { code: "rate_limited" } })))).toEqual({
+      kind: "http-error",
+      errorType: "upstream_rate_limited",
+    })
+    expect(classify(tagTransportError(new Error("h2 pre-response close"), "pre-response-close"))).toEqual({ kind: "network-error" })
+    expect(classify(new HTTPError("bad request", 418, ""))).toEqual({ kind: "http-error", errorType: "bad_request" })
+    expect(classify(new StreamShutdownError())).toEqual({ kind: "abort", abortKind: "shutdown" })
   })
 
   test("client abort is excluded without reading session or config", () => {

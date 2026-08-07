@@ -191,6 +191,15 @@ describe("createRequestContext - attempt lifecycle", () => {
     expect(ctx.currentAttempt!.wireRequest).toBe(wireReq)
   })
 
+  test("generation candidate metadata persists recoveryReason in the canonical snapshot", () => {
+    const { ctx } = makeContext()
+    const candidate = ctx.beginGenerationCandidate({ role: "recovery", metadata: { recoveryReason: "stream-error-before-content" } })
+
+    expect(ctx.modelOperationSnapshot.candidates).toContainEqual(
+      expect.objectContaining({ handle: candidate, role: "recovery", metadata: { recoveryReason: "stream-error-before-content" } }),
+    )
+  })
+
   test("markGenerationDispatchSynthetic aligns the transient and canonical upstream-request producers", () => {
     const { ctx } = makeContext()
     const candidate = ctx.beginGenerationCandidate({ role: "continuation" })

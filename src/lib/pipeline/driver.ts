@@ -285,11 +285,13 @@ export function createPipelineDriver(deps: DriverDeps): PipelineDriverWithNonStr
     runPreContentRecovery: (reason) => {
       const failure = lastPreReadyFailure
       const recovery = runPreContentRecovery(deps, generation, failure, reason)
+      // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- structural driver tests use a minimal mock context without this runtime hook
       failure?.env.ctx.trackOperationBody?.(recovery)
       return recovery
     },
     runResponseRecovery: (upstream, env, reason) => {
       const recovery = runResponseRecovery(deps, generation, upstream, env, reason)
+      // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- structural driver tests use a minimal mock context without this runtime hook
       env.ctx.trackOperationBody?.(recovery)
       return recovery
     },
@@ -599,12 +601,12 @@ function createDriverCoordinator(deps: DriverDeps, initialEnv: RequestEnvelope):
   const createCandidate = ({
     role,
     parentCandidate,
-    recoveryReason,
+    metadata,
     env,
   }: {
     role: CandidateRole
     parentCandidate?: CandidateHandle
-    recoveryReason?: string
+    metadata?: { recoveryReason?: string }
     env: RequestEnvelope
   }): CandidateRuntime<CandidateResponseSession> => {
     const retry = createSemanticRetryPolicy(deps)
@@ -621,7 +623,7 @@ function createDriverCoordinator(deps: DriverDeps, initialEnv: RequestEnvelope):
     return createCandidateRuntime({
       role,
       ...(parentCandidate !== undefined && { parentCandidate }),
-      ...(recoveryReason !== undefined && { recoveryReason }),
+      ...(metadata !== undefined && { metadata }),
       env,
       forkEnv(candidate) {
         const fork = candidateStateFactory.fork({ candidateId: String(candidate), role })
@@ -747,8 +749,7 @@ function createDriverRecordingPort(deps: DriverDeps, ctx: RequestContext): Dispa
 
   return {
     beginCandidate(input) {
-      const { recoveryReason, ...candidateInput } = input
-      const handle = explicit ? ctx.beginGenerationCandidate({ ...candidateInput, ...(recoveryReason !== undefined && { metadata: { recoveryReason } }) }) : (`compat-candidate:${++candidateSequence}` as CandidateHandle)
+      const handle = explicit ? ctx.beginGenerationCandidate(input) : (`compat-candidate:${++candidateSequence}` as CandidateHandle)
       candidateRoles.set(handle, input.role)
       if (!explicit) fallbackCandidates.add(handle)
       return handle
