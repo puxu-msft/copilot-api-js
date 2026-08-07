@@ -1,6 +1,6 @@
 # Cutover 实施计划 —— generation emission command algebra
 
-> **状态（核验于 `528c1785`）**：**三层计划全部评审放行，计划层完成**。第二层：判据证伪 9 轮、执行方走查 8 轮，最终均 0 blocker / 0 major（`docs/tmp/2026-08-04-cutover-plan-review-{criteria,executor}.md`）；第三层：判据证伪 8 轮最终 0 blocker / 0 major、执行方走查 8 轮最终 0 blocker / 0 major / 0 minor / 0 nit（`docs/tmp/2026-08-05-command-algebra-prompts-review-{criteria,executor}.md`）。放行范围含本文、`traceability.md`、`prompts/`、三个 checker 与 `d7f6c222` 结构化 evidence 能力。**实现尚未开工**；按 docs-merge-before-execute，开工仍是独立决定。
+> **计划基线（核验于 `528c1785`）**：**三层计划全部评审放行，计划层完成**。第二层：判据证伪 9 轮、执行方走查 8 轮，最终均 0 blocker / 0 major（`docs/tmp/2026-08-04-cutover-plan-review-{criteria,executor}.md`）；第三层：判据证伪 8 轮最终 0 blocker / 0 major、执行方走查 8 轮最终 0 blocker / 0 major / 0 minor / 0 nit（`docs/tmp/2026-08-05-command-algebra-prompts-review-{criteria,executor}.md`）。放行范围含本文、`traceability.md`、`prompts/`、三个 checker 与 `d7f6c222` 结构化 evidence 能力。`528c1785` 当时的“实现尚未开工”只是一条历史状态；当前执行状态的单一入口是 [`docs/tmp/2026-08-05-command-algebra-commit-minus-1-progress-impl.md`](../../tmp/2026-08-05-command-algebra-commit-minus-1-progress-impl.md)，本文不冻结会随提交立即过期的 current/final HEAD。
 >
 > **这是三层结构的第二层**（skill `large-refactor` §5）：`design.md` 回答 WHY + 契约，本文回答 HOW + 锚在哪。
 >
@@ -423,6 +423,7 @@ T0.0a、T0.0b、T0.0c 的正控会**主动改坏 runner／test**；T0.0e 的正�
 - **一律显式 pathspec**：`git add -- <精确路径>`、`git commit -F <msgfile> -- <精确路径>`。**绝不 `git add -A`／`.`／`commit -am`**——`$TREE` 虽是隔离树，但每次 merge 回主线时同样纪律适用，且养成 pathspec 习惯是本项目的硬要求。
 - **conventional commits**（`refactor:`／`test:`／`feat:`／`docs:`／`fix:`），**不加模型署名**（无 `Co-authored-by`）。
 - **每条 message 点名它对应本文哪一节**（如 `refactor: publish generation authority (cutover-plan Commit 4)`），否则 merged-state review 无法把 commit 与 plan 对账。
+- **Commit -1 一次性 traceability 例外**：Commit -1 的历史提交在发现上一条偏差前已经过多轮 mutation、逐项复评与合并态整改。禁止通过 rebase／amend 改写这些 SHA，因为那会同时使既有 review range、mutation restore 基线、报告引用与 evidence lineage 失效；本次改以 [`commit-minus-1-traceability.md`](commit-minus-1-traceability.md) 的逐 commit 映射闭合对账。该表必须与 `git rev-list 87679f35d346cad94abd32d62133b40fee79fe7a..4fe920fca820f7dcee630d76e2aab120952eb7ea` 双向精确相等、无重复／遗漏／orphan，并逐条记录原 SHA、subject、T0.0a/b/c/e／§0.4e／§0.4f／Commit -1 gate 归属、产物角色、主要路径、review coverage 与 ancillary PTY／performance／docs 的归属理由。**例外只覆盖该冻结 range；本例外自身、后续收口提交及 Commit 0～8 仍须在 message 内点名章节。**
 - **绝不 `git push`** —— user-rule `never-push--the-user-does-that` 是 `[hard]`。发布是用户的事。
 - 每个 Commit 0～8 是**一个 semantic commit**；准备期的中途状态可以先 WIP 提交再整理，但**Commit 4 不许拆**（§7.7）。
 
