@@ -592,16 +592,8 @@ function requireNonEmpty(value: string, field: string): void {
   if (value.trim().length === 0) throw new Error(`[model-operation-record] ${field} must not be empty`)
 }
 
-let captureWorkObserver: (() => void) | undefined
-
-/** Test-only observer for the object visits and sealed-arena copies that constitute canonical capture work. */
-export function setCaptureWorkObserverForTests(observer: (() => void) | undefined): void {
-  captureWorkObserver = observer
-}
-
 function freezeCapturedValue<T>(value: T, seen = new WeakSet<object>()): T {
   if (value === null || typeof value !== "object") return value
-  captureWorkObserver?.()
   const object = value as object
   if (seen.has(object)) return value
   seen.add(object)
@@ -612,15 +604,6 @@ function freezeCapturedValue<T>(value: T, seen = new WeakSet<object>()): T {
     Object.freeze(object)
   }
   return value
-}
-
-function copyCapturedArena<T>(items: ReadonlyArray<T>): ReadonlyArray<T> {
-  const copy: Array<T> = []
-  for (const item of items) {
-    captureWorkObserver?.()
-    copy.push(item)
-  }
-  return Object.freeze(copy)
 }
 
 function freezeExtensions(input: Readonly<Record<string, unknown>> | undefined): OperationExtensions | undefined {
@@ -817,7 +800,7 @@ export function createModelOperationRecorder(input: CreateModelOperationRecorder
     const dispatchSnapshots = Object.freeze(dispatches.map((dispatch) => snapshotDispatch(dispatch)))
     const record = {
       identity: snapshotIdentity(),
-      arena: Object.freeze({ payloads: copyCapturedArena(payloads), frames: copyCapturedArena(frames) }),
+      arena: Object.freeze({ payloads: Object.freeze([...payloads]), frames: Object.freeze([...frames]) }),
       ingress,
       routing,
       transforms: Object.freeze([...transforms]),
