@@ -64,6 +64,7 @@ function driver(outcome: ResponseOutcome, snapshot = candidate()): DirectRecover
     getCandidateIdentity() {
       return { candidate: "candidate-1" as never, dispatch: "dispatch-1" as never }
     },
+    discardCandidate() {},
   }
 }
 
@@ -83,6 +84,8 @@ describe("evaluateDirectRecovery", () => {
     const result = await evaluate({ kind: "complete", headers: new Headers() })
 
     expect(result).toMatchObject({ kind: "complete", frames: [{ event: "message_start", data: "collector-only" }], response: { model: "candidate-model" } })
+    result.disposition.discard()
+    expect(() => result.disposition.discard()).toThrow("already consumed")
   })
 
   test.each([
@@ -112,6 +115,7 @@ describe("evaluateDirectRecovery", () => {
         getCandidateIdentity() {
           return { candidate: "candidate-1" as never, dispatch: "dispatch-1" as never }
         },
+        discardCandidate() {},
       },
       upstream: upstream(),
       env: envWithThrowingTerminalSpies(),

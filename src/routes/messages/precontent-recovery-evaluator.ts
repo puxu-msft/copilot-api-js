@@ -19,11 +19,19 @@ export interface RecoveryAttemptSnapshot {
   readonly acc: object
 }
 
+export interface RecoveryAttemptDisposition {
+  /** Reserves this exact candidate identity for Task #4's eventual atomic publication. */
+  commit(): { readonly candidate: CandidateHandle; readonly dispatch: DispatchHandle }
+  /** Closes this candidate through the driver without selecting it as a winner. */
+  discard(): void
+}
+
 interface RecoveryAttemptBase<TSnapshot extends RecoveryAttemptSnapshot> {
   readonly primaryError: unknown
   readonly frames: ReadonlyArray<ClientFrame>
   readonly candidate: CandidateHandle
   readonly dispatch: DispatchHandle
+  readonly disposition: RecoveryAttemptDisposition
   readonly snapshot?: TSnapshot
 }
 
@@ -62,6 +70,7 @@ export interface DirectRecoveryDriver<TSnapshot extends DirectRecoverySnapshot> 
   runResponseSink(upstream: UpstreamStream, env: RequestEnvelope, sink: ClientSink, opts: { readonly responseMode: "evaluate" }): Promise<ResponseOutcome>
   getCandidateSnapshot(upstream: UpstreamStream): TSnapshot
   getCandidateIdentity(upstream: UpstreamStream): { readonly candidate: CandidateHandle; readonly dispatch: DispatchHandle }
+  discardCandidate(upstream: UpstreamStream): void
 }
 
 export interface EvaluateDirectRecoveryInput<TSnapshot extends DirectRecoverySnapshot, TResponse> {
@@ -84,7 +93,22 @@ export async function evaluateDirectRecovery<TSnapshot extends DirectRecoverySna
     },
   }
   const { candidate, dispatch } = input.driver.getCandidateIdentity(input.upstream)
-  const base = (snapshot?: TSnapshot) => ({ primaryError: input.primaryError, frames, candidate, dispatch, ...(snapshot && { snapshot }) })
+  let consumed = false
+  const consume = (): void => {
+    if (consumed) throw new Error("[recovery-evaluator] evaluation result disposition was already consumed")
+    consumed = true
+  }
+  const disposition: RecoveryAttemptDisposition = {
+    commit() {
+      consume()
+      return { candidate, dispatch }
+    },
+    discard() {
+      consume()
+      input.driver.discardCandidate(input.upstream)
+    },
+  }
+  const base = (snapshot?: TSnapshot) => ({ primaryError: input.primaryError, frames, candidate, dispatch, disposition, ...(snapshot && { snapshot }) })
 
   let outcome: ResponseOutcome
   try {

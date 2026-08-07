@@ -441,6 +441,11 @@ export function createRequestContext(opts: {
     (activeGenerationDispatch === undefined ? undefined : generationAttemptByHandle.get(activeGenerationDispatch)) ?? generationAttempts.at(-1)
   const terminalGenerationAttempt = (): GenerationAttemptCapture | undefined =>
     (terminalGenerationDispatch === undefined ? undefined : generationAttemptByHandle.get(terminalGenerationDispatch)) ?? currentGenerationAttempt()
+  const terminalAttempt = (): Attempt | undefined => {
+    const capture = terminalGenerationAttempt()
+    return capture === undefined ? _attempts.at(-1) : _attempts[capture.v2Index]
+  }
+  const terminalAttemptIndex = (): number => terminalGenerationAttempt()?.v2Index ?? Math.max(0, _attempts.length - 1)
   const selectGenerationAttempt = (handle: DispatchHandle): GenerationAttemptCapture => {
     const attempt = generationAttemptByHandle.get(handle)
     if (!attempt) throw new Error(`[request-context] unknown generation dispatch ${handle}`)
@@ -992,7 +997,7 @@ export function createRequestContext(opts: {
   function snapshot(): RequestContextSnapshot {
     const resolvedForLookup = _resolvedModel ?? undefined
     const billing = resolvedForLookup ? appState.modelIndex.get(resolvedForLookup)?.billing : undefined
-    const currentAttempt = _attempts.at(-1)
+    const currentAttempt = terminalAttempt()
     return {
       id,
       endpoint: opts.endpoint,
@@ -1204,11 +1209,7 @@ export function createRequestContext(opts: {
       return _attempts
     },
     get currentAttempt() {
-      if (activeGenerationDispatch !== undefined) {
-        const generationAttempt = generationAttemptByHandle.get(activeGenerationDispatch)
-        if (generationAttempt) return _attempts[generationAttempt.v2Index] ?? null
-      }
-      return _attempts.at(-1) ?? null
+      return terminalAttempt() ?? null
     },
     get initialSanitizationInfo() {
       return _initialSanitizationInfo
@@ -1861,7 +1862,7 @@ export function createRequestContext(opts: {
       // docstring), not a side effect of the state field.
       ctx.transition("failed")
       const entry = ctx.toHistoryEntry()
-      const finalUpstream = entry.attempts?.at(-1)?.upstreamResponse
+      const finalUpstream = entry.attempts?.[terminalAttemptIndex()]?.upstreamResponse
       publisher?.publish({
         kind: "request.failed",
         ctx: snapshotWithSummary(ctx),
@@ -1939,7 +1940,7 @@ export function createRequestContext(opts: {
       // Fed into `_index.derived.failureReason` (recompute-only projection) below.
       const failureReasonValue =
         _state === "failed" || _state === "aborted" || _state === "interrupted" ?
-          (_failureReason ?? _response?.error ?? _attempts.at(-1)?.error?.message ?? undefined)
+          (_failureReason ?? _response?.error ?? terminalAttempt()?.error?.message ?? undefined)
         : undefined
 
       // New `model` parent key (RFC §3, §2.5): `requested` = client alias (raw inbound
@@ -2031,7 +2032,7 @@ export function createRequestContext(opts: {
       // carries its FULL new legs (effectiveSource/upstreamRequest/upstreamResponse),
       // so retries preserve every wire payload + upstream response.
       if (_attempts.length > 0) {
-        const finalIdx = _attempts.length - 1
+        const finalIdx = terminalAttemptIndex()
         entry.attempts = _attempts.map((a, i) => {
           const isFinal = i === finalIdx
           // A failed attempt has no captured `response`; fall back to a response
@@ -2090,8 +2091,9 @@ export function createRequestContext(opts: {
       // exact field entry-view `resolveResponseSuccess` reads); `currentStrategy` /
       // `attemptCount` mirror the deprecated top-level fields; `failureReason` reuses the
       // entry-level projection value above. Dual-written alongside the legacy fields.
-      const finalUpstreamResponseSuccess = entry.attempts?.at(-1)?.upstreamResponse?.success
-      const derivedCurrentStrategy = _attempts.at(-1)?.strategy
+      const terminalAttemptForProjection = terminalAttempt()
+      const finalUpstreamResponseSuccess = entry.attempts?.[terminalAttemptIndex()]?.upstreamResponse?.success
+      const derivedCurrentStrategy = terminalAttemptForProjection?.strategy
       entry._index = {
         derived: {
           ...(finalUpstreamResponseSuccess !== undefined && { responseSuccess: finalUpstreamResponseSuccess }),

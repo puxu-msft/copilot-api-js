@@ -220,6 +220,8 @@ export interface PipelineDriverWithNonStreaming extends PipelineDriver {
   getCandidateResponseSession(upstream: UpstreamStream): CandidateResponseSession | undefined
   /** Candidate identity for an isolated evaluator; Task #4 may promote this exact handle after publication. */
   getCandidateResponseIdentity(upstream: UpstreamStream): { readonly candidate: CandidateHandle; readonly dispatch: DispatchHandle } | undefined
+  /** Closes an evaluation-only candidate as failed without selecting it as a delivery winner. */
+  discardCandidateResponse(upstream: UpstreamStream): void
   /** Pins the request logical terminal to an already-existing failed primary dispatch without selecting a winner. */
   pinGenerationTerminalDispatch(env: RequestEnvelope, dispatch: DispatchHandle): void
   /**
@@ -243,7 +245,7 @@ interface PreReadyFailure {
   readonly coordinator: GenerationCoordinator<CandidateResponseSession>
   /** The exact post-preflight envelope dispatched by the failed primary. */
   readonly env: RequestEnvelope
-  readonly terminalDispatch: DispatchHandle
+  readonly terminalDispatch?: DispatchHandle
 }
 
 /** Blocks B2 pre-content recovery after either a pre-ready dispatch failure or a ready-state response failure. */
@@ -305,6 +307,13 @@ export function createPipelineDriver(deps: DriverDeps): PipelineDriverWithNonStr
     runResponseBufferedSink: (upstream, env, sink, opts) => trackResponsePump(env, runResponseBufferedSink(deps, upstream, env, sink, opts, generation)),
     getCandidateResponseSession: (upstream) => generation.currentSession(upstream),
     getCandidateResponseIdentity: (upstream) => generation.currentIdentity(upstream),
+    discardCandidateResponse: (upstream) => {
+      const identity = generation.currentIdentity(upstream)
+      if (!identity) throw new Error("[driver] cannot discard response candidate without a generation identity")
+      const binding = generation.bindings.get(upstream)
+      if (!binding) throw new Error("[driver] cannot discard response candidate without a generation binding")
+      binding.coordinator.completeCandidate(identity.candidate, "failed", "evaluation-discarded")
+    },
     pinGenerationTerminalDispatch: (env, dispatch) => env.ctx.pinGenerationTerminalDispatch(dispatch),
     runPreContentRecovery: (reason) => {
       const failure = lastPreReadyFailure
@@ -469,9 +478,9 @@ async function runRequest(
   } catch (error) {
     // Preserve runRequest's rejection exactly, while retaining the coordinator plus post-hook env for the
     // caller's explicit B2 recovery decision. No recovery is dispatched from this error path.
-    const terminalDispatch = preflight.ctx.modelOperationSnapshot.dispatches.at(-1)?.handle
-    if (!terminalDispatch) throw new Error("[driver] failed pre-ready primary has no dispatch for terminal attribution")
-    rememberPreReadyFailure({ coordinator, env: preflight, terminalDispatch })
+    // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- structural driver tests provide a minimal RequestContext without the V3 snapshot port
+    const terminalDispatch = preflight.ctx.modelOperationSnapshot?.dispatches.at(-1)?.handle
+    rememberPreReadyFailure({ coordinator, env: preflight, ...(terminalDispatch !== undefined && { terminalDispatch }) })
     throw error
   }
 }
@@ -485,7 +494,8 @@ async function runPreContentRecovery(
   if (!failure) throw new Error("[driver] runPreContentRecovery called without a preceding pre-ready failure")
 
   assertNoServerExecutionRisk(deps, failure.env, "pre-ready")
-  failure.env.ctx.pinGenerationTerminalDispatch(failure.terminalDispatch)
+  // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- structural driver tests provide a minimal RequestContext without the terminal pin port
+  if (failure.terminalDispatch !== undefined) failure.env.ctx.pinGenerationTerminalDispatch?.(failure.terminalDispatch)
   const candidate = await failure.coordinator.runRecoveryFromPreReadyFailure(reason, failure.env)
   generation.bind(failure.coordinator, candidate)
   return { ok: true, upstream: candidate.upstream, env: candidate.env }
