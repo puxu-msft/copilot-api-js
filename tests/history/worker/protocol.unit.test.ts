@@ -106,6 +106,74 @@ describe("History Worker protocol", () => {
     ).toThrow(HistoryWorkerProtocolError)
   })
 
+  test("rejects malformed nested main-to-Worker payloads", () => {
+    const cases: Array<unknown> = [
+      {
+        type: "initialize",
+        protocolVersion: HISTORY_WORKER_PROTOCOL_VERSION,
+        workerGeneration: 1,
+        requestId: 1,
+        config: {},
+      },
+      {
+        type: "update-config",
+        protocolVersion: HISTORY_WORKER_PROTOCOL_VERSION,
+        workerGeneration: 1,
+        requestId: 1,
+        revision: 2,
+        config: { rawConfig: {}, maintenanceIntervalMs: -1 },
+      },
+      {
+        type: "persist-operation",
+        protocolVersion: HISTORY_WORKER_PROTOCOL_VERSION,
+        workerGeneration: 1,
+        messageId: 1,
+        envelope: { ...envelope(), publication: { ...envelope().publication, record: {} } },
+      },
+    ]
+
+    for (const value of cases) expect(() => parseMainToWorkerMessage(value)).toThrow(HistoryWorkerProtocolError)
+  })
+
+  test("accepts a valid partial Worker status update", () => {
+    expect(
+      parseWorkerToMainMessage({
+        type: "status",
+        protocolVersion: HISTORY_WORKER_PROTOCOL_VERSION,
+        workerGeneration: 1,
+        status: { ready: true, pendingEnvelopes: 2, selectedDriver: "bun:sqlite" },
+      }),
+    ).toMatchObject({ status: { ready: true, pendingEnvelopes: 2, selectedDriver: "bun:sqlite" } })
+  })
+
+  test("rejects malformed nested Worker-to-main payloads", () => {
+    const cases: Array<unknown> = [
+      {
+        type: "status",
+        protocolVersion: HISTORY_WORKER_PROTOCOL_VERSION,
+        workerGeneration: 1,
+        status: { terminalFailed: "yes", pendingEnvelopes: -7 },
+      },
+      {
+        type: "drained",
+        protocolVersion: HISTORY_WORKER_PROTOCOL_VERSION,
+        workerGeneration: 1,
+        requestId: 1,
+        result: { outcomes: { 1: "maybe" } },
+      },
+      {
+        type: "config-applied",
+        protocolVersion: HISTORY_WORKER_PROTOCOL_VERSION,
+        workerGeneration: 1,
+        requestId: 1,
+        revision: 2,
+        rawTarget: { configRevision: 2, requested: "yes", maxObjectBytes: -1 },
+      },
+    ]
+
+    for (const value of cases) expect(() => parseWorkerToMainMessage(value)).toThrow(HistoryWorkerProtocolError)
+  })
+
   test("rejects values that structured clone cannot carry", () => {
     expect(() => assertStructuredCloneSafe({ callback: () => "not cloneable" }, "test payload")).toThrow(HistoryWorkerProtocolError)
   })

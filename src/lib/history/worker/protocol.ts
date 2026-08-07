@@ -227,7 +227,7 @@ export function parseMainToWorkerMessage(value: unknown): MainToHistoryWorkerMes
   switch (message.type) {
     case "initialize": {
       assertPositiveInteger(message.requestId, "initialize.requestId")
-      assertObject(message.config, "initialize.config")
+      assertHistoryWorkerStartConfig(message.config, "initialize.config")
       break
     }
     case "persist-operation": {
@@ -238,7 +238,7 @@ export function parseMainToWorkerMessage(value: unknown): MainToHistoryWorkerMes
     case "update-config": {
       assertPositiveInteger(message.requestId, "update-config.requestId")
       assertNonNegativeInteger(message.revision, "update-config.revision")
-      assertObject(message.config, "update-config.config")
+      assertHistoryWorkerHotConfig(message.config, "update-config.config")
       break
     }
     case "stop-maintenance":
@@ -265,7 +265,10 @@ export function parseWorkerToMainMessage(value: unknown): HistoryWorkerToMainMes
     case "config-applied": {
       assertPositiveInteger(message.requestId, "config-applied.requestId")
       assertNonNegativeInteger(message.revision, "config-applied.revision")
-      assertObject(message.rawTarget, "config-applied.rawTarget")
+      assertRawTargetDescriptor(message.rawTarget, "config-applied.rawTarget")
+      if (message.rawTarget.configRevision !== message.revision) {
+        throw new HistoryWorkerProtocolError("config-applied.rawTarget.configRevision must match config-applied.revision")
+      }
       break
     }
     case "persist-result": {
@@ -276,14 +279,17 @@ export function parseWorkerToMainMessage(value: unknown): HistoryWorkerToMainMes
       break
     }
     case "status": {
-      assertObject(message.status, "status.status")
+      assertHistoryWorkerStatusPatch(message.status)
       break
     }
     case "maintenance-stopped":
-    case "drained":
     case "closed": {
       assertPositiveInteger(message.requestId, `${message.type}.requestId`)
-      if (message.type === "drained") assertObject(message.result, "drained.result")
+      break
+    }
+    case "drained": {
+      assertPositiveInteger(message.requestId, "drained.requestId")
+      assertHistoryDrainResult(message.result)
       break
     }
     case "fatal": {
@@ -306,7 +312,7 @@ function assertHistoryOperationEnvelope(value: unknown): asserts value is Histor
     )
   }
   assertObject(value.publication, "persist-operation.envelope.publication")
-  assertObject(value.publication.record, "persist-operation.envelope.publication.record")
+  assertModelOperationRecord(value.publication.record)
   assertObject(value.publication.rawAttachment, "persist-operation.envelope.publication.rawAttachment")
   assertRawTargetDescriptor(value.publication.rawAttachment.rawTarget, "persist-operation.envelope.publication.rawAttachment.rawTarget")
   if (!Array.isArray(value.publication.rawAttachment.rawCommands)) {
@@ -322,6 +328,78 @@ function assertHistoryOperationEnvelope(value: unknown): asserts value is Histor
   assertStructuredCloneSafe(value, "persist-operation.envelope")
 }
 
+function assertHistoryWorkerStartConfig(value: unknown, label: string): asserts value is HistoryWorkerStartConfig {
+  assertObject(value, label)
+  assertHistoryWorkerHotConfigFields(value, label)
+  if (typeof value.semanticDbPath !== "string" || value.semanticDbPath.length === 0) {
+    throw new HistoryWorkerProtocolError(`${label}.semanticDbPath must be a non-empty string`)
+  }
+  assertNonNegativeInteger(value.configRevision, `${label}.configRevision`)
+  assertObject(value.persistRetry, `${label}.persistRetry`)
+  assertPositiveInteger(value.persistRetry.maxAttempts, `${label}.persistRetry.maxAttempts`)
+  assertNonNegativeInteger(value.persistRetry.backoffMs, `${label}.persistRetry.backoffMs`)
+  if (value.persistRetry.maxTotalMs !== undefined) {
+    assertNonNegativeInteger(value.persistRetry.maxTotalMs, `${label}.persistRetry.maxTotalMs`)
+  }
+}
+
+function assertHistoryWorkerHotConfig(value: unknown, label: string): asserts value is HistoryWorkerHotConfig {
+  assertObject(value, label)
+  assertHistoryWorkerHotConfigFields(value, label)
+}
+
+function assertHistoryWorkerHotConfigFields(value: Record<string, unknown>, label: string): void {
+  assertHistoryWorkerRawConfig(value.rawConfig, `${label}.rawConfig`)
+  assertNonNegativeInteger(value.maintenanceIntervalMs, `${label}.maintenanceIntervalMs`)
+}
+
+function assertHistoryWorkerRawConfig(value: unknown, label: string): asserts value is HistoryWorkerRawConfig {
+  assertObject(value, label)
+  if (typeof value.enabled !== "boolean") throw new HistoryWorkerProtocolError(`${label}.enabled must be a boolean`)
+  if (typeof value.dbPath !== "string") throw new HistoryWorkerProtocolError(`${label}.dbPath must be a string`)
+  assertNonNegativeInteger(value.maxObjectBytes, `${label}.maxObjectBytes`)
+}
+
+function assertModelOperationRecord(value: unknown): asserts value is ModelOperationRecord {
+  assertObject(value, "persist-operation.envelope.publication.record")
+  assertObject(value.identity, "ModelOperationRecord.identity")
+  if (typeof value.identity.operationId !== "string" || value.identity.operationId.length === 0) {
+    throw new HistoryWorkerProtocolError("ModelOperationRecord.identity.operationId must be a non-empty string")
+  }
+  if (!isOperationKind(value.identity.kind)) {
+    throw new HistoryWorkerProtocolError(`ModelOperationRecord.identity.kind is invalid: ${safeString(value.identity.kind)}`)
+  }
+  assertFiniteNumber(value.identity.createdAt, "ModelOperationRecord.identity.createdAt")
+  assertObject(value.arena, "ModelOperationRecord.arena")
+  assertArenaNodes(value.arena.payloads, "ModelOperationRecord.arena.payloads")
+  assertArenaNodes(value.arena.frames, "ModelOperationRecord.arena.frames")
+  for (const field of ["transforms", "candidates", "dispatches", "attempts"] as const) {
+    if (!Array.isArray(value[field])) throw new HistoryWorkerProtocolError(`ModelOperationRecord.${field} must be an array`)
+  }
+  for (const field of ["ingress", "routing", "egress", "terminal"] as const) {
+    if (value[field] !== null && (typeof value[field] !== "object" || Array.isArray(value[field]))) {
+      throw new HistoryWorkerProtocolError(`ModelOperationRecord.${field} must be an object or null`)
+    }
+  }
+  assertObject(value.extensions, "ModelOperationRecord.extensions")
+  assertNonNegativeInteger(value.lastSequence, "ModelOperationRecord.lastSequence")
+}
+
+function assertArenaNodes(value: unknown, label: string): void {
+  if (!Array.isArray(value)) throw new HistoryWorkerProtocolError(`${label} must be an array`)
+  for (const [index, node] of value.entries()) {
+    assertObject(node, `${label}[${index}]`)
+    if (typeof node.handle !== "string" || node.handle.length === 0) {
+      throw new HistoryWorkerProtocolError(`${label}[${index}].handle must be a non-empty string`)
+    }
+    assertNonNegativeInteger(node.sequence, `${label}[${index}].sequence`)
+    if (node.provenance !== "source" && node.provenance !== "derived") {
+      throw new HistoryWorkerProtocolError(`${label}[${index}].provenance is invalid`)
+    }
+    assertObject(node.origin, `${label}[${index}].origin`)
+  }
+}
+
 function assertHistoryWorkerReady(value: unknown, messageGeneration: number): asserts value is HistoryWorkerReady {
   assertObject(value, "ready.ready")
   assertPositiveInteger(value.workerGeneration, "ready.ready.workerGeneration")
@@ -334,6 +412,61 @@ function assertHistoryWorkerReady(value: unknown, messageGeneration: number): as
   }
   assertNonNegativeInteger(value.configRevision, "ready.ready.configRevision")
   assertRawTargetDescriptor(value.rawTarget, "ready.ready.rawTarget")
+}
+
+function assertHistoryWorkerStatusPatch(value: unknown): asserts value is Partial<HistoryWorkerStatus> {
+  assertObject(value, "status.status")
+  const allowed = new Set([
+    "workerGeneration",
+    "threadId",
+    "selectedDriver",
+    "ready",
+    "terminalFailed",
+    "pendingEnvelopes",
+    "pendingBytes",
+    "latestDesiredRevision",
+    "publishedRevision",
+    "restartsTotal",
+    "replaysTotal",
+    "staleMessagesTotal",
+    "duplicateAcksTotal",
+    "lastError",
+  ])
+  for (const key of Object.keys(value)) {
+    if (!allowed.has(key)) throw new HistoryWorkerProtocolError(`status.status contains unknown field: ${key}`)
+  }
+  if (value.workerGeneration !== undefined) assertPositiveInteger(value.workerGeneration, "status.status.workerGeneration")
+  if (value.threadId !== undefined) assertPositiveInteger(value.threadId, "status.status.threadId")
+  if (value.selectedDriver !== undefined && value.selectedDriver !== "bun:sqlite" && value.selectedDriver !== "node:sqlite") {
+    throw new HistoryWorkerProtocolError(`status.status.selectedDriver is invalid: ${safeString(value.selectedDriver)}`)
+  }
+  for (const field of ["ready", "terminalFailed"] as const) {
+    if (value[field] !== undefined && typeof value[field] !== "boolean") throw new HistoryWorkerProtocolError(`status.status.${field} must be a boolean`)
+  }
+  for (const field of [
+    "pendingEnvelopes",
+    "pendingBytes",
+    "latestDesiredRevision",
+    "publishedRevision",
+    "restartsTotal",
+    "replaysTotal",
+    "staleMessagesTotal",
+    "duplicateAcksTotal",
+  ] as const) {
+    if (value[field] !== undefined) assertNonNegativeInteger(value[field], `status.status.${field}`)
+  }
+  if (value.lastError !== undefined && typeof value.lastError !== "string") {
+    throw new HistoryWorkerProtocolError("status.status.lastError must be a string")
+  }
+}
+
+function assertHistoryDrainResult(value: unknown): asserts value is HistoryDrainResult {
+  assertObject(value, "drained.result")
+  assertObject(value.outcomes, "drained.result.outcomes")
+  for (const [messageId, outcome] of Object.entries(value.outcomes)) {
+    if (!/^[1-9]\d*$/.test(messageId)) throw new HistoryWorkerProtocolError(`drained.result.outcomes has invalid message ID: ${messageId}`)
+    if (!isPersistenceOutcome(outcome)) throw new HistoryWorkerProtocolError(`drained.result.outcomes[${messageId}] has invalid outcome: ${String(outcome)}`)
+  }
 }
 
 function assertRawTargetDescriptor(value: unknown, label: string): asserts value is RawTargetDescriptor {
@@ -358,6 +491,23 @@ function parseBase(value: unknown, direction: string): Record<string, unknown> &
   assertPositiveInteger(value.workerGeneration, `${direction} workerGeneration`)
   if (typeof value.type !== "string" || value.type.length === 0) throw new HistoryWorkerProtocolError(`${direction} type must be a non-empty string`)
   return value as Record<string, unknown> & { type: string; workerGeneration: number }
+}
+
+function isOperationKind(value: unknown): boolean {
+  return value === "generation" || value === "count_tokens" || value === "embeddings" || value === "responses_ws"
+}
+
+function isPersistenceOutcome(value: unknown): value is HistoryPersistenceOutcome {
+  return value === "persisted" || value === "conflict" || value === "failed"
+}
+
+function safeString(value: unknown): string {
+  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean" || value === null || value === undefined) return String(value)
+  return Object.prototype.toString.call(value)
+}
+
+function assertFiniteNumber(value: unknown, label: string): asserts value is number {
+  if (typeof value !== "number" || !Number.isFinite(value)) throw new HistoryWorkerProtocolError(`${label} must be a finite number`)
 }
 
 function assertObject(value: unknown, label: string): asserts value is Record<string, unknown> {

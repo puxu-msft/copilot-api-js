@@ -13,7 +13,7 @@ status: active
 - [x] Task 0 red：协议测试因模块不存在而失败；实现后 3 pass／0 fail，typecheck、目标 lint、`diff --check` 全绿。
 - [x] 实现 runtime/history-worker/asset-url/registry 及真 Worker contract tests：12 pass／0 fail，typecheck、目标 lint、`diff --check` 全绿。
 - [x] 增加 tsdown alias 双入口并保持 `dist/{main,history-worker}.mjs` 稳定；Bun／Node probes 分别返回 `bun:sqlite`／`node:sqlite` 且 `n=7`，packaged test 自建独立临时 bundle。
-- [ ] 运行独立 review／复审并 fast-forward 合入 `master`；三项 mutation 已按目标机制红、反向恢复后绿，权威门为 17 Worker pass、6995 backend pass、0 fail，typecheck／lint／build／双 probe 全绿。
+- [ ] 修复初轮 review 的剩余 3 个 major，复审后 fast-forward 合入 `master`；nested protocol major 已修，18 protocol/runtime tests 通过。
 
 ## 在途意图
 
@@ -26,7 +26,7 @@ status: active
 - 首次全 backend 连续三次稳定为 6994 pass／1 fail：`shutdown.unit` 的自然 drain 用 30ms completion 与 100ms deadline 真实 timer 竞速，高 shard 负载下误入 Phase 3；改用既有 `FakeClock` 后具名 25／25、shutdown 50／50、全 backend 6995／6995。
 - 全 backend 随后咬出新 `setHistoryPersistenceRuntimeForTests` 未进入统一 `RESETTERS`；已登记到 injected seam 区，`resetters-complete` 和全 backend 均绿。
 - Mutation 证据：①删除 generation stale gate 后 stale counter 0≠1；②真 Worker 骨架伪报 `persisted` 后 contract 收到 persisted≠failed；③删除 tsdown Worker alias 后独立临时 build 缺 `history-worker.mjs`。三项均用冻结 exact patch 注入，reverse-apply check 后恢复，恢复测试全绿。
-- 结构扫描发现 parser 只验 nested payload 外壳；已新增 envelope protocolVersion 与 ready selectedDriver 负样本并补 fail-closed nested validators。
+- 结构扫描先补 envelope version／ready driver；初轮 reviewer 继续证实 start/hot config、status、drain、raw target、canonical record 仍可穿透。已用 malformed matrix 驱动完整 transport validators，合法 partial status 正控通过；不复制 opaque payload 业务 schema。
 
 ## 已作废的路子
 
