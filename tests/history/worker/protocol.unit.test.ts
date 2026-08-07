@@ -75,6 +75,37 @@ describe("History Worker protocol", () => {
     )
   })
 
+  test("rejects a nested envelope with the wrong protocol version", () => {
+    const invalidEnvelope = { ...envelope(), protocolVersion: HISTORY_WORKER_PROTOCOL_VERSION + 1 }
+    expect(() =>
+      parseMainToWorkerMessage({
+        type: "persist-operation",
+        protocolVersion: HISTORY_WORKER_PROTOCOL_VERSION,
+        workerGeneration: 1,
+        messageId: 1,
+        envelope: invalidEnvelope,
+      }),
+    ).toThrow(HistoryWorkerProtocolError)
+  })
+
+  test("rejects a ready response with an unknown SQLite driver", () => {
+    expect(() =>
+      parseWorkerToMainMessage({
+        type: "ready",
+        protocolVersion: HISTORY_WORKER_PROTOCOL_VERSION,
+        workerGeneration: 1,
+        requestId: 1,
+        ready: {
+          workerGeneration: 1,
+          threadId: 1,
+          selectedDriver: "sqlite-magic",
+          configRevision: 1,
+          rawTarget: { configRevision: 1, requested: false, maxObjectBytes: 1024 },
+        },
+      }),
+    ).toThrow(HistoryWorkerProtocolError)
+  })
+
   test("rejects values that structured clone cannot carry", () => {
     expect(() => assertStructuredCloneSafe({ callback: () => "not cloneable" }, "test payload")).toThrow(HistoryWorkerProtocolError)
   })

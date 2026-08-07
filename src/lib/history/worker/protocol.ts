@@ -232,8 +232,7 @@ export function parseMainToWorkerMessage(value: unknown): MainToHistoryWorkerMes
     }
     case "persist-operation": {
       assertPositiveInteger(message.messageId, "persist-operation.messageId")
-      assertObject(message.envelope, "persist-operation.envelope")
-      assertStructuredCloneSafe(message.envelope, "persist-operation.envelope")
+      assertHistoryOperationEnvelope(message.envelope)
       break
     }
     case "update-config": {
@@ -260,7 +259,7 @@ export function parseWorkerToMainMessage(value: unknown): HistoryWorkerToMainMes
   switch (message.type) {
     case "ready": {
       assertPositiveInteger(message.requestId, "ready.requestId")
-      assertObject(message.ready, "ready.ready")
+      assertHistoryWorkerReady(message.ready, message.workerGeneration)
       break
     }
     case "config-applied": {
@@ -299,18 +298,66 @@ export function parseWorkerToMainMessage(value: unknown): HistoryWorkerToMainMes
   return message as unknown as HistoryWorkerToMainMessage
 }
 
-function parseBase(value: unknown, direction: string): Record<string, unknown> & { type: string } {
+function assertHistoryOperationEnvelope(value: unknown): asserts value is HistoryOperationEnvelope {
+  assertObject(value, "persist-operation.envelope")
+  if (value.protocolVersion !== HISTORY_WORKER_PROTOCOL_VERSION) {
+    throw new HistoryWorkerProtocolError(
+      `persist-operation.envelope protocol version mismatch: expected ${HISTORY_WORKER_PROTOCOL_VERSION}, received ${String(value.protocolVersion)}`,
+    )
+  }
+  assertObject(value.publication, "persist-operation.envelope.publication")
+  assertObject(value.publication.record, "persist-operation.envelope.publication.record")
+  assertObject(value.publication.rawAttachment, "persist-operation.envelope.publication.rawAttachment")
+  assertRawTargetDescriptor(value.publication.rawAttachment.rawTarget, "persist-operation.envelope.publication.rawAttachment.rawTarget")
+  if (!Array.isArray(value.publication.rawAttachment.rawCommands)) {
+    throw new HistoryWorkerProtocolError("persist-operation.envelope.publication.rawAttachment.rawCommands must be an array")
+  }
+  for (const [index, command] of value.publication.rawAttachment.rawCommands.entries()) {
+    assertObject(command, `persist-operation raw command ${index}`)
+    assertNonNegativeInteger(command.sequence, `persist-operation raw command ${index}.sequence`)
+    if (typeof command.track !== "string" || typeof command.kind !== "string" || !(command.bytes instanceof Uint8Array)) {
+      throw new HistoryWorkerProtocolError(`persist-operation raw command ${index} has an invalid track, kind, or bytes value`)
+    }
+  }
+  assertStructuredCloneSafe(value, "persist-operation.envelope")
+}
+
+function assertHistoryWorkerReady(value: unknown, messageGeneration: number): asserts value is HistoryWorkerReady {
+  assertObject(value, "ready.ready")
+  assertPositiveInteger(value.workerGeneration, "ready.ready.workerGeneration")
+  if (value.workerGeneration !== messageGeneration) {
+    throw new HistoryWorkerProtocolError(`ready.ready.workerGeneration ${value.workerGeneration} does not match message generation ${messageGeneration}`)
+  }
+  assertPositiveInteger(value.threadId, "ready.ready.threadId")
+  if (value.selectedDriver !== "bun:sqlite" && value.selectedDriver !== "node:sqlite") {
+    throw new HistoryWorkerProtocolError(`ready.ready.selectedDriver is invalid: ${String(value.selectedDriver)}`)
+  }
+  assertNonNegativeInteger(value.configRevision, "ready.ready.configRevision")
+  assertRawTargetDescriptor(value.rawTarget, "ready.ready.rawTarget")
+}
+
+function assertRawTargetDescriptor(value: unknown, label: string): asserts value is RawTargetDescriptor {
+  assertObject(value, label)
+  assertNonNegativeInteger(value.configRevision, `${label}.configRevision`)
+  if (typeof value.requested !== "boolean") throw new HistoryWorkerProtocolError(`${label}.requested must be a boolean`)
+  if (value.dbPath !== undefined && typeof value.dbPath !== "string") throw new HistoryWorkerProtocolError(`${label}.dbPath must be a string`)
+  if (value.storeId !== undefined && typeof value.storeId !== "string") throw new HistoryWorkerProtocolError(`${label}.storeId must be a string`)
+  assertNonNegativeInteger(value.maxObjectBytes, `${label}.maxObjectBytes`)
+  if (value.workerLocalGeneration !== undefined && typeof value.workerLocalGeneration !== "string") {
+    throw new HistoryWorkerProtocolError(`${label}.workerLocalGeneration must be a string`)
+  }
+}
+
+function parseBase(value: unknown, direction: string): Record<string, unknown> & { type: string; workerGeneration: number } {
   assertObject(value, `${direction} message`)
   if (value.protocolVersion !== HISTORY_WORKER_PROTOCOL_VERSION) {
     throw new HistoryWorkerProtocolError(
       `${direction} protocol version mismatch: expected ${HISTORY_WORKER_PROTOCOL_VERSION}, received ${String(value.protocolVersion)}`,
     )
   }
-  if (!Number.isSafeInteger(value.workerGeneration) || (value.workerGeneration as number) <= 0) {
-    throw new HistoryWorkerProtocolError(`${direction} workerGeneration must be a positive safe integer`)
-  }
+  assertPositiveInteger(value.workerGeneration, `${direction} workerGeneration`)
   if (typeof value.type !== "string" || value.type.length === 0) throw new HistoryWorkerProtocolError(`${direction} type must be a non-empty string`)
-  return value as Record<string, unknown> & { type: string }
+  return value as Record<string, unknown> & { type: string; workerGeneration: number }
 }
 
 function assertObject(value: unknown, label: string): asserts value is Record<string, unknown> {
