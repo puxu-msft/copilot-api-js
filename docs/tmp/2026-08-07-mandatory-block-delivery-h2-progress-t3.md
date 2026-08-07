@@ -51,3 +51,6 @@ owner: task-3-implementer
 - Acceptance rereview Important：确认 `OpenAIStreamAccumulator.streamError` 唯一赋值点是解析 in-band wire `error`；Chat finish producer遇该值返回 `complete` natural drain，仅确认既有 failed terminal闭合，不再制造第二 terminal-failure。compatibility `sawUpstreamError` 由 failed terminal outcome派生。
 - 正式 candidate tests：wire error仅一个 failed response-terminal、零 protocol-error、messageStop/upstreamError projections均 true；显式非wire terminal-failure仍产生唯一 typed terminal-failure；正常 finish_reason／usage 与 truncated路径保持原契约。修复提交后 first-parent共17 commits。
 - 验证：Chat candidate 3／3；Task3目标套件、Chat buffered、driver、typecheck与target lint均通过。
+- Final reviewer Important：Chat in-band wire failed terminal已拥有唯一 terminus；processor仍无条件调用 `renderer.flushResponse` 完成生命周期，但 Chat route finish producer在该分支返回 `complete + frames:[]`，明确丢弃 post-terminal flush frames。正常 success／truncated保留 renderer frames，显式 nonwire terminal-failure也保留其 frames。
+- 结构怪味：`src/routes/chat-completions/handler-v4.ts:342`，类型为 protocol-specific terminus ownership泄漏；处置为本轮在 route finish producer修复，未给全局 processor／grammar加例外，保持冻结“finish.frames先分类，finish后分类”契约。
+- 正反控：wire error + nonempty flush→1 failed terminal／0 protocol-error／flush不进responseFrames；success、truncated、nonwire terminal-failure分别保留既有 frame ownership。提交后 first-parent共18 commits。

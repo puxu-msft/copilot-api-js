@@ -69,22 +69,32 @@ async function collect(
 }
 
 describe("Chat candidate delivery finish producer", () => {
-  test("wire error produces one failed terminal and finish only confirms the drain", async () => {
+  test("wire error owns the terminus and discards non-empty renderer flush frames", async () => {
+    const flushFrame = { data: JSON.stringify({ choices: [{ index: 0, delta: {}, finish_reason: "stop" }] }) }
+    let flushCalls = 0
     const session = createChatCandidateResponseSession({
       candidate: "candidate:chat-error" as CandidateHandle,
       dispatch: "dispatch:chat-error" as DispatchHandle,
       env: env(),
       responseRewrites: [],
-      renderer,
+      renderer: {
+        renderResponse: (frame) => frame,
+        flushResponse: () => {
+          flushCalls++
+          return [flushFrame]
+        },
+      },
     })
     const wireError = { event: "error", data: JSON.stringify({ error: { message: "boom", type: "server_error" } }) }
 
     await expect(collect(session, [wireError])).resolves.toEqual([wireError])
 
     const terminals = session.outcomes.filter((outcome) => outcome.kind === "response-terminal")
+    expect(flushCalls).toBe(1)
     expect(terminals).toHaveLength(1)
-    expect(terminals[0]).toMatchObject({ terminal: { semantic: "failed", sourceFrame: wireError } })
+    expect(terminals[0]).toMatchObject({ responseFrames: [], terminal: { semantic: "failed", sourceFrame: wireError } })
     expect(session.outcomes.filter((outcome) => outcome.kind === "protocol-error")).toEqual([])
+    expect(session.outcomes.some((outcome) => "frame" in outcome && outcome.frame === flushFrame)).toBe(false)
     expect(session.responseOpts.sawMessageStop?.()).toBe(true)
     expect(session.responseOpts.sawUpstreamError?.()).toBe(true)
   })

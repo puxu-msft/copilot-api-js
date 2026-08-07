@@ -342,7 +342,7 @@ export const createChatCandidateResponseSession: CandidateResponseSessionFactory
     finish(state, _renderer, rendererFrames) {
       // streamError is assigned only while consuming an in-band wire `error` frame; the adapter
       // already turned that frame into the one legal failed response terminal, so finish confirms drain.
-      if (state.acc.streamError !== undefined) return { kind: "complete", frames: rendererFrames }
+      if (state.acc.streamError !== undefined) return { kind: "complete", frames: [] }
       if (state.acc.finishReason === "")
         return { kind: "truncated", frames: rendererFrames, reason: "Upstream stream truncated before completion (no finish_reason)" }
       return { kind: "valid-terminal-without-boundary", frames: rendererFrames, terminal: state.acc.finishReason }
