@@ -478,8 +478,7 @@ async function runRequest(
   } catch (error) {
     // Preserve runRequest's rejection exactly, while retaining the coordinator plus post-hook env for the
     // caller's explicit B2 recovery decision. No recovery is dispatched from this error path.
-    // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- structural driver tests provide a minimal RequestContext without the V3 snapshot port
-    const terminalDispatch = preflight.ctx.modelOperationSnapshot?.dispatches.at(-1)?.handle
+    const terminalDispatch = preflight.ctx.modelOperationSnapshot.dispatches.at(-1)?.handle
     rememberPreReadyFailure({ coordinator, env: preflight, ...(terminalDispatch !== undefined && { terminalDispatch }) })
     throw error
   }
@@ -494,8 +493,7 @@ async function runPreContentRecovery(
   if (!failure) throw new Error("[driver] runPreContentRecovery called without a preceding pre-ready failure")
 
   assertNoServerExecutionRisk(deps, failure.env, "pre-ready")
-  // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- structural driver tests provide a minimal RequestContext without the terminal pin port
-  if (failure.terminalDispatch !== undefined) failure.env.ctx.pinGenerationTerminalDispatch?.(failure.terminalDispatch)
+  if (failure.terminalDispatch !== undefined) failure.env.ctx.pinGenerationTerminalDispatch(failure.terminalDispatch)
   const candidate = await failure.coordinator.runRecoveryFromPreReadyFailure(reason, failure.env)
   generation.bind(failure.coordinator, candidate)
   return { ok: true, upstream: candidate.upstream, env: candidate.env }

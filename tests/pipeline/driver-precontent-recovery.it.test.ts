@@ -70,6 +70,8 @@ function makeEnv(body: unknown, onRecordAttemptFailure: (input: { willRetry: boo
     setAttemptCacheControlStripped() {},
     recordFeature() {},
     addQueueWaitMs() {},
+    modelOperationSnapshot: { dispatches: [] },
+    pinGenerationTerminalDispatch() {},
     selectGenerationWinner() {},
   } as unknown as RequestContext
   return {
