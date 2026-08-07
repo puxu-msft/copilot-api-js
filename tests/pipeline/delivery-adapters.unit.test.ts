@@ -8,6 +8,7 @@ import {
 import type { DeliveryControlCapability } from "~/lib/pipeline/delivery/protocol"
 
 import { createAnthropicDeliveryProtocolAdapter } from "~/lib/pipeline/delivery/adapters/anthropic"
+import { createChatCompletionsDeliveryProtocolAdapter } from "~/lib/pipeline/delivery/adapters/chat-completions"
 import { createResponsesDeliveryProtocolAdapter } from "~/lib/pipeline/delivery/adapters/responses"
 import { createDeliveryControlCapability } from "~/lib/pipeline/delivery/control-capability"
 
@@ -172,6 +173,47 @@ describe("delivery protocol adapters", () => {
       { event: "error", data: JSON.stringify({ error: { message: "missing response terminal", type: "server_error" } }) },
     ])
     expect(adapter.renderDone()).toEqual([])
+  })
+
+  test("classifies Chat Completions frames and owns its response terminus", () => {
+    const adapter = createChatCompletionsDeliveryProtocolAdapter()
+    const delta = { data: JSON.stringify({ id: "chatcmpl_1", choices: [{ index: 0, delta: { content: "x" }, finish_reason: null }] }) }
+    const usage = { data: JSON.stringify({ id: "chatcmpl_1", choices: [], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } }) }
+    const terminal = { data: JSON.stringify({ id: "chatcmpl_1", choices: [{ index: 0, delta: {}, finish_reason: "stop" }] }) }
+    const wireError = { event: "error", data: JSON.stringify({ error: { message: "boom", type: "server_error" } }) }
+
+    expect(adapter.deliveryMode).toBe("response-terminal")
+    expect(adapter.classify({ frame: delta })).toEqual({ kind: "response-append", frame: delta })
+    expect(adapter.classify({ frame: usage })).toEqual({ kind: "structural", structuralKind: "usage", frame: usage })
+    expect(adapter.classify({ frame: terminal })).toEqual({
+      kind: "response-terminal",
+      terminal: { semantic: "complete", sourceFrame: terminal, diagnostic: { source: "wire-frame", terminal: "stop" } },
+    })
+    expect(adapter.classify({ frame: wireError })).toMatchObject({ kind: "response-terminal", terminal: { semantic: "failed" } })
+    expect(adapter.renderTerminal({ semantic: "complete", sourceFrame: terminal, diagnostic: { source: "wire-frame", terminal: "stop" } })).toEqual([terminal])
+    expect(adapter.renderError({ semantic: "truncated", detail: "missing finish_reason", sourceFrame: null, cause: undefined })).toEqual([
+      { event: "error", data: JSON.stringify({ error: { message: "missing finish_reason", type: "server_error" } }) },
+    ])
+    expect(adapter.renderDone()).toEqual([{ data: "[DONE]" }])
+  })
+
+  test("maps every Chat Completions finish variant", () => {
+    const adapter = createChatCompletionsDeliveryProtocolAdapter()
+    const failure = new Error("upstream failed")
+
+    expect(adapter.classifyFinish({ kind: "complete", frames: [] })).toEqual({ kind: "natural-drain" })
+    expect(adapter.classifyFinish({ kind: "valid-terminal-without-boundary", frames: [], terminal: "refusal" })).toMatchObject({
+      kind: "valid-terminal-without-boundary",
+      terminal: { semantic: "complete", diagnostic: { source: "finish-result", terminal: "refusal" } },
+    })
+    expect(adapter.classifyFinish({ kind: "truncated", frames: [], reason: "missing finish_reason" })).toMatchObject({
+      kind: "truncated",
+      error: { semantic: "truncated", detail: "missing finish_reason" },
+    })
+    expect(adapter.classifyFinish({ kind: "terminal-failure", frames: [], error: failure })).toMatchObject({
+      kind: "terminal-failure",
+      error: { semantic: "terminal-failure", cause: failure },
+    })
   })
 
   test("maps every response finish variant without consuming its frames", () => {

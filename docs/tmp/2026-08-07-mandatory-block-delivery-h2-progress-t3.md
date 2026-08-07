@@ -23,10 +23,11 @@ owner: task-3-implementer
 - Anthropic classification checkpoint：RED 为 1 pass／3 fail，分别命中缺失 block lifecycle、malformed fail-closed、finish mapping；GREEN 实现 delta／stop、message structure／terminal、malformed／unknown／adapter exception 与四种 finish 映射。`pwd -P && bun test tests/pipeline/delivery-adapters.unit.test.ts && bun run typecheck` 通过，4 tests passed、0 failed，TypeScript compilation 通过；renderers、control、其他协议及 production wiring 未触碰。
 - Anthropic ownership checkpoint：RED 精确命中缺失 runtime capability module；GREEN 新增 WeakSet + private class identity capability、伪造拒绝、256 UTF-8 byte finish diagnostic fail-closed、adapter-owned terminal/error/no-DONE renderers，并将 `anthropicErrorFrame` 下沉至 `src/lib/anthropic/stream-error-frame.ts` 后从 route compatibility re-export，delivery 不 import routes。`pwd -P && bun test tests/pipeline/delivery-adapters.unit.test.ts tests/anthropic/post-commit-error.unit.test.ts && bun run typecheck` 通过，adapter 与既有 builder 回归及 TypeScript compilation 全绿。
 - Responses adapter checkpoint：RED 精确命中缺失 `adapters/responses` module；GREEN 以显式 `{ transport: "http" | "ws" }` 选择 HTTP `unit` output-item lifecycle 与 WS `response-terminal` buffering，覆盖 lifecycle classes、complete／incomplete／failed／error terminal、四种 finish、adapter-owned terminal/error/no-DONE renderers并复用 `openAIStreamErrorFrame`。`pwd -P && bun test tests/pipeline/delivery-adapters.unit.test.ts && bun run typecheck` 通过，9 tests passed、0 failed，TypeScript compilation 通过。
+- Chat Completions adapter checkpoint：RED 精确命中缺失 `adapters/chat-completions` module；GREEN 实现 `response-terminal` mode 的 delta／usage／finish_reason／error classification、四种 finish、owner-only terminal/error renderers，并让 Chat adapter 独占 `renderDone() → [{data:"[DONE]"}]`，复用 `openAIStreamErrorFrame`。`pwd -P && bun test tests/pipeline/delivery-adapters.unit.test.ts && bun run typecheck` 通过，11 tests passed、0 failed，TypeScript compilation 通过。
 
 ## Pending
 
-- 实现 Chat Completions／Gemini protocol adapters；Anthropic、Responses 与 runtime-branded control capability 已完成纯基座。
+- 实现 Gemini protocol adapter；Anthropic、Responses、Chat Completions 与 runtime-branded control capability 已完成纯基座。
 - 将 candidate session 接入 adapter／grammar typed outcomes，并把 boundary classifier 降为 outcome projection。
 - 保留 compatibility projections 并修复 `withCandidateResponseOpts` rich-context 字段保持。
 - 完成 mutation controls、完整 Task 3 验证与最终单语义 squash／提交协调；Anthropic error builder 已下沉。
