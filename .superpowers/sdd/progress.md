@@ -1,15 +1,53 @@
-# retry-strategy registry — subagent-driven 进度 ledger
+# Mandatory Block Delivery + HTTP/2 Observability — SDD progress ledger
 
-Worktree: /home/xp/src/copilot-api-js/.worktrees/retry-registry  (branch feat/retry-strategy-registry)
-Plan: docs/plan/2026-07-21-retry-strategy-registry.md
-RFC:  docs/rfc/2026-07-21-retry-strategy-registry.md
-BASE (分支起点): 6b7756deda0dede3a1ff74df42c1ef2995421836
-执行:隔离 worktree + 独立分支;每 task 派 gpt-souls:implementer + 逐 task 审;golden 逐 commit gate;pathspec 提交。
+Worktree: /home/xp/src/copilot-api-js/.worktree/mandatory-block-delivery-h2-implementation
+Branch: mandatory-block-delivery-h2-implementation
+Merged-plan baseline: 6d4314817c0492019477e04a8f25b4864e39f6fb
+Plan: docs/plan/2026-08-07-mandatory-block-delivery-h2-observability/README.md
+Spec: docs/spec/2026-08-06-mandatory-block-delivery-and-h2-termination-observability.md
+Execution mode: full subagent-driven; implementation by isolated implementers, independent task review after integration, no inline product-code edits by controller.
 
-## 任务状态
-- [x] Task 1 (Commit 1): golden 预捕全 6 cell — complete (commit 12c0b532, self-verified: 真过/非空/真工厂名/有效 oracle/clean). NOTE: plan 骨架 effort-learning name 笔误(真名 "effort-learning" 非 "-retry"),Task6 doc-sync 修
-- [x] Task 2 (Commit 2): retry-registry.ts — complete (commit 33d987f0, reviewer: spec ✅ + 质量 approved, 0 Critical/Important). Minor→Task6: ① throwMissing 第3处再抽共享 util ② Task2单测 import Task1 golden 的 ANTHROPIC_16_NAMES 防漂移 ③ plan Task1 示例代码块 effort-learning-retry 笔误改 effort-learning ④ 确认 label 接到日志点
-- [x] Task 3 (Commit 3): 三 leg 委托 assembler — complete (commit 1ad16ede, reviewer: spec ✅ + 质量 approved, 0 blocker). golden 6/6 逐字节过=字节等价;attemptRef 共享经 reviewer 探针+结构双验保留. → Task4 补 attemptRef 共享回归测试(建议2);→ Task6: label 死字段删评估 + 13处 payload cast 分组类型评估(RFC §3.1 备选)
-- [x] Task 4 (Commit 4): config retry.strategies 开关 + allow+warn + attemptRef 共享回归测试 — complete (schema.ts RETRY_STRATEGY_CONFIG_KEYS 内联16键+partialRecord;state.ts retryStrategies 9处 grep -c 对账;三 build 函数接回 state.retryStrategies;config.ts warnDisabledSharedRetryStrategies;retry-strategies.it.test.ts 11 pass + config-hot-reload EXEMPT 1条 + retry-registry.unit.test.ts 新增 attemptRef 回归2条;golden 6/6 仍过;四格式 2145 pass;test:fast 4358 pass(基线4356+2);typecheck 绿;eslint --fix 后重验)
-- [x] Task 5 (Commit 5): telemetry fire 计数 + 注册集诊断 — complete (efbc0926, reviewer: spec ✅ + 质量 approved, 偏离(独立模块非并入 registry)经核实背书, 0 blocker). gpt-souls provider 抖动连挂4次全 resume 无换模型. → Task6 doc/backlog: /metrics HELP 补范围收窄说明; counter 无维度记 backlog; docs/API.md 补 retryStrategyRegistry + retry_strategy_fires_total
-- [x] Task 6 (Commit 6): 去重收口 + doc-sync — complete. import 去重 Task3 已提前完成(核实无残留);`RetrySemanticsSpec.label`/`OpenAiCcStrategiesDeps.label`/`RetryStrategyDeps.label` 死字段确认删除(8文件机械单行删);ANTHROPIC_16_NAMES/SHARED_3_NAMES 三处重复抽 tests/helpers/retry-strategy-names.ts;plan Task1 笔误修+/metrics HELP 补范围+DESIGN/API.md doc-sync+RFC状态注landed;SHARED_RETRY_STRATEGY_CONFIG_KEYS parity测试当场补做(低成本无取舍);剩2项(13处cast分组/attemptRef日志脆性/retry-fire维度)记 deferred-backlog;golden 6/6仍过;3905 pass 0 fail;test:backend 6058 pass 4 fail(History V3 pre-existing,stash验证同基线同失败);typecheck绿;eslint --fix后重验绿
+## Baseline
+
+- `git merge-base --is-ancestor 82cd9123 master`: pass; master at `6d431481` when implementation worktree was created.
+- `bun run typecheck`: pass at `6d431481`.
+- `bun run test:fast`: one load-sensitive failure at `tests/history/v3/canonical-performance.unit.test.ts:80`, `sseRatio=12.325864384601346`; isolated rerun of the same file: 3 pass, `sseRatio=6.962627217602097`. Independent debugger confirmed wall-clock ratio false-red. Candidate deterministic fix `49ff6670` is NOT integrated: reviewer found 3 accepted Important issues—copy observation mirrors rather than measures real copy, recursion guard is name-based, and `medianMs > 0` still gates. Original implementer is fixing; same reviewer must re-review.
+- Task 9 progress scaffold commit: `e43d08ec`.
+
+## Task DAG
+
+- Task 1: candidates `e722404c` + checkpoint `c5a2fbfe` NOT integrated. Spec review PASS but quality CHANGES_REQUIRED. Retry syntax and inner-BOM control are fixed and committed in `c5a2fbfe`; empty-ID remains blocked on a shared `client-sink` canonical-vs-wire seam. Spec requires dispatched parser `id` always be a string, including empty; do not “fix” by making parser ID optional. Independent debugger is locating the shared-base fix. Task remains in progress and blocks Task 12.
+- Task 2: complete and integrated as `294aa803` + `a5b6eb43` + `1e7b527a`. Final review: Spec PASS, Quality APPROVED, 0 Critical/Important/Minor. Integrated-tree verification: grammar + boundary classifier 27 pass/0 fail, typecheck pass.
+- Task 3: unblocked and in progress; readiness map complete. Responses adapter selection must include HTTP-vs-WS transport/mode, not only ClientFormat.
+- Task 4: blocked by Task 3; readiness map complete. Preserve distinction between delivery-owner serializer and raw transport serializer; eliminate manual candidate-session field loss.
+- Task 5: blocked by Task 4; frozen graph baseline complete: 6 roots/11 pumps, all 11 currently pendingLegacy. Guard must freeze root→pump pairs, cut at owner entry, and discover private sink owners without wrapper false positives.
+- Task 6: blocked by Task 5; config-contract readiness complete with 0 blocker/0 major.
+- Task 7: complete and integrated as `6b545360` + `b1873020` + `87e1eda1` + `1d24d9bf`. Final review: Spec PASS, Quality APPROVED, 0 Critical/Important, 2 non-blocking Minor. Integrated-tree verification: 57 pass/0 fail, typecheck pass, DATA callback unchanged at `src/lib/transport/http2-client.ts:1205`. Minor disposition: add `req` receiver AST mutation to downstream architecture/runtime verification; stale pre-hardening counts in the worktree-local report are not a product artifact.
+- Task 8: unblocked and in progress. Existing lease/refcount patterns are idempotent and cannot satisfy required duplicate-freeze/release fail-loud behavior; implement a closed primitive importing Task 7's unique schema, with no production wiring.
+- Task 9: candidate `e43d08ec..b8abe3d2` NOT integrated. Code review FAIL/CHANGES_REQUIRED with 2 Critical blockers + 3 Important: ensureV3Schema preempts the migration in production startup; ordinary manifest hydrate publishes missing/corrupt evidence; manifest version decoding diverges across consumers; frozen committed v1/v2 DB fixtures and three-generation consumer matrix are absent; report overstates evidence. Findings were independently confirmed from startup/store/migration/tests and returned to the original implementer. Minor disposition: remove ephemeral agent paths at Task 9 closeout; defer live `docs/history-v3-schema.md` update to frozen Task 12 doc-sync gate. Acceptance verifier may add findings but cannot erase these. Initial §6b audit: 7 commits, 0 missing progress updates.
+- Task 10: blocked by Tasks 7, 8, 9; activation graph complete. Scheduler port, H2 lease install/freeze, dispatch slots, envelope, unique persistence sink, and transaction-A consumer must land in one activation commit.
+- Task 11: blocked by Tasks 7 and 10; runtime-harness readiness complete with 0 blocker/0 major.
+- Task 12: blocked by Tasks 1-11; docs/acceptance readiness complete. Live docs remain not-implemented; Bun clean-RST backlog stays open.
+- Baseline deterministic performance fix: candidate `49ff6670` NOT integrated. Review found 3 accepted Important issues (copy observation dual-track, name-based recursion guard, wall-clock still gating); original implementer is fixing and same reviewer must re-review.
+
+## Review gates
+
+Each integrated task requires a review package from the recorded pre-task base through integrated HEAD, then independent task review with both verdicts: spec compliance and code quality. Critical/Important findings return to a subagent fixer and the same reviewer re-reviews. Task 12 additionally requires two orthogonal merged-state reviewers with `0 blocker / 0 major`.
+
+Integration identity gate: parallel `Agent` results are not assumed to preserve dispatch order. Before integrating any agent commit, read its report and verify the actual brief path, base SHA, commit SHA, and `git show --name-only`; reject any file outside that task's frozen boundary unless the brief explicitly permits it. This gate was added after one Task 1 agent correctly stopped when it received a Task 2 oracle message intended for a different parallel result.
+
+Independent-oracle findings now binding on implementation/review:
+- Task 1: leading BOM, lone CR, and remove-only-first-BOM controls.
+- Task 2: six false-green sequences and three false-red controls in `task-2-independent-oracle.md`.
+- Task 7: CAS/freeze/builder/observer ordering, deep late-mutation, cancel provenance, DATA AST; stream/session shared-error dynamic proof deferred to Tasks 8+10.
+- Task 9: eight migration/recovery/digest/GC/future-format controls in `task-9-independent-oracle.md`.
+- Task 5 guard: frozen root→pump pairs, owner-entry graph cut, private sink-owner discovery with wrapper exclusion.
+
+## Global constraints
+
+- Mandatory block/item delivery; boundaryless protocols are response-terminal.
+- No production live/cap-retreat bypass; no oversize-block spool fallback.
+- HTTP/2 DATA callback unchanged; no extra work in that callback.
+- Performance reports only, no fixed gate or zero-regression claim.
+- Never start or terminate port 4141; no push.
+- Do not update live DESIGN/API state before full implementation and merged-state verification.
