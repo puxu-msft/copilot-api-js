@@ -1,13 +1,13 @@
 ---
 slug: impl-1
-base: ac0955a27c175b6b79811c65c0c8c9a4ea0db257
-branch: resume-history-worker
-worktree: /home/xp/src/copilot-api-js/.worktree/resume-history-worker
+base: 03c3dd131e15b13ac4294fd09fc10a95ad86c04b
+branch: history-worker-batch-1a
+worktree: /home/xp/src/copilot-api-js/.worktree/history-worker-batch-1a
 plan: docs/plan/2026-08-07-history-persistence-worker.md
 agent_id: main-session-32630e1d
 session_id: 32630e1d-bf0b-4a6c-baa8-80afb3446c1e
 predecessor_session_id: 529807d9-28f0-4e56-85c8-03adaf016bb7
-status: batch-0-complete-awaiting-master-integration
+status: batch-1a-active
 ---
 
 ## Batch 0 完成项
@@ -21,16 +21,24 @@ status: batch-0-complete-awaiting-master-integration
 - [x] 第二轮 F7：pending 状态重算与 observer 通知解耦；ACK/fatal 先完成 callback 与 request settlement 再通知，每个 listener 独立隔离，初次订阅也走同一 helper；main-owned `statusObserverErrorsTotal/lastStatusObserverError` 保留诊断，30 pass／0 fail，typecheck／lint 绿。
 - [x] 按用户裁决把 `canonical-performance` 收敛为粗粒度合并安全上限：三个代表性 workload 的整次测试运行须 `<10s`，Bun test 硬 timeout `15s`，CPU／heap 明细只报告；当前正常样本约 0.4s，注入 `0ms` 上限后同一测试红，恢复后 2 pass／0 fail。撤销 `edb66c96` 引入的 production work observer、resetter 与手写 AST SCC guard——用户并未要求复杂度证明，不再维护那套无意义且可绕过的门。
 - [x] 最终 merged-state reviewer 发现真实 producer wire blocker：`ModelOperationRecord.attempts` 是 P4–P8 进程内 non-enumerable deprecated getter，canonical JSON／structured-clone wire 按设计不含该字段；协议此前误将其当必填。现以 `CanonicalModelOperationWireRecord = Omit<ModelOperationRecord, "attempts">` 明确 wire 契约、拒绝 enumerable 双份投影，并由真实 recorder→structuredClone→protocol→真 Worker 正样本验收，34 pass／0 fail。
-- [x] 闭合最终 reviewer 的 publication ACK revision 对账 major：pending start/update request 保存自身 expected revision；ready/config-applied 先核 request ID、kind、expected revision 与 raw descriptor，再 resolve。A/B config ACK 任意顺序均各自 settle waiter，只有 `revision === latestDesiredRevision` 才发布，迟到 A 不回退 B；39 pass／0 fail、typecheck／lint 绿。当前 `resume-history-worker` 已无冲突合并 `master@9922cb45` 与 feature `c3f15c2c`，复审与最终门均已通过，待安全 fast-forward 合回 `master`。
+- [x] 闭合最终 reviewer 的 publication ACK revision 对账 major：pending start/update request 保存自身 expected revision；ready/config-applied 先核 request ID、kind、expected revision 与 raw descriptor，再 resolve。A/B config ACK 任意顺序均各自 settle waiter，只有 `revision === latestDesiredRevision` 才发布，迟到 A 不回退 B；39 pass／0 fail、typecheck／lint 绿。`resume-history-worker` 已无冲突合并 `master@9922cb45` 与 feature `c3f15c2c`，复审与最终门均通过，最终 fast-forward 为 `master@03c3dd13`。
 - [x] 最终 fast 门暴露 `h2-keepalive-ping` 的 55ms wall-clock 假红：高 shard 负载下只调度一次，并非 scheduler 被 throw 停止。重复／throw 后继续／clear 停止改用事件 oracle；reviewer 指出这会丢失 cadence 判别力后，scheduler 增加窄注入 seam，独立断言精确传入 `15ms`。注入 `intervalMs * 10` 后 cadence test 收到 150≠15 而红、其余事件用例仍绿；恢复后单文件 `--rerun-each 25` 为 100 pass／0 fail，typecheck／lint 绿，原 reviewer 复审 0 blocker／major。
 - [x] 最终门：`test:fast` 提交态 4775 pass／0 fail；post-review `test:backend` 首跑非零但工具输出截断了失败项，故未据此猜因；以 `pipefail + tee` 重跑保留完整日志后 5191 pass／0 fail（16 shards，81.17s）。Worker 全套 44 pass／0 fail、typecheck／lint／build 绿，Bun／Node 构建产物 probe 均返回对应 driver 且 `n=7`。
 
+## Batch 1a 剩余项
+
+- [ ] capacity=1、FIFO、abort、close、double release、single bind、未知 operation、duplicate terminal 的红绿测试。
+- [ ] capacity 热调：调大即时放行；调小允许暂时 over-capacity，直到 `reserved < capacity` 才放行；`0 <= unacked <= reserved`。
+- [ ] `history.persistence_queue_capacity` 配置：strictly positive、默认 256、热更新专用 listener、`config.schema.json` 由生成器更新。
+- [ ] admission status primitive：capacity/reserved/unacked/waiting/estimatedBytes/overCapacity；不改 HTTP status。
+- [ ] 定向门、正负控、backend 回归、独立 review 0 blocker／major、fast-forward 合入 master。
+
 ## 在途意图
 
-- 当前只执行 Batch 0，不接 production History、admission、SQLite 持久化或 4141。
-- `runtime.ts` 只拥有 Worker transport、generation、pending envelope／RPC 与 ACK tombstone；SQLite 只在 Worker entry 的显式 probe／fixture 路径内打开。
-- `registry.ts` 必须 lazy：import 不创建 Worker、timer 或 DB。Batch 0 的 production-shaped API 必须由真实 contract tests 执行，不能只靠类型存在。
-- 执行前 reviewed-plan 三门已通过；`0deed622..master` 的受影响路径只有 kickoff 闭环 `ac0955a2`。基线 `bun run test:fast` 为 3117 pass／0 fail。
+- Batch 0 已 fast-forward 合入 `master@03c3dd13`；当前只执行 Batch 1a primitive，不接 production route、terminal bus、shutdown、overlay、SQLite persistence 或 4141。
+- `runtime.ts` 继续只拥有 Worker transport、generation、pending envelope／RPC 与 ACK tombstone；admission 独占 reservation、waiter、operation binding 与 terminal outcome 状态。
+- `registry.ts` 继续保持 lazy：Batch 1a 可增加 admission singleton，但 import 不创建 Worker、timer、DB 或 waiter；runtime 与 admission 的构造／测试注入端口保持分离。
+- Batch 1a 起点为 `master@03c3dd13`；新 worktree 的 `bun run test:fast` 基线为 4736 pass／0 fail（16 shards，24.28s）。
 - tsdown 0.22.3 的 array 多入口实测会保留源目录并破坏 `dist/main.mjs`；已按本地官方类型声明改用 object alias entry，固定两个 basename。
 - Bun 1.3.14 的 `node:worker_threads` fixture 抛错时先发 `error`，随后 `exit` code 可为 0；oracle 锁定 error 内容与 `error→exit` 顺序，不硬编码非零码。
 - 首次全 backend 连续三次稳定为 6994 pass／1 fail：`shutdown.unit` 的自然 drain 用 30ms completion 与 100ms deadline 真实 timer 竞速，高 shard 负载下误入 Phase 3；改用既有 `FakeClock` 后具名 25／25、shutdown 50／50、全 backend 6995／6995。
@@ -43,7 +51,9 @@ status: batch-0-complete-awaiting-master-integration
 
 ## 已作废的路子
 
+- Batch 1a 不复用 `HistoryPersistenceRuntime.pendingEnvelopes` 作为 admission capacity：runtime pending 与 reservation 是不同生命周期，Batch 1b/2a 才在组合层核对 `unacked === pendingEnvelopes`。
+- Batch 1a 不把 admission 接进 route 或 terminal bus；那会跨越 Batch 1b 的入口矩阵、shutdown 与 pending overlay 验收边界。
 - 不使用 Bun global `Worker` 作为生产 transport；统一 `node:worker_threads`。
 - 不让 Node 直接加载 TypeScript Worker；Node 验收走构建后的 `dist/history-worker.mjs`。
 - 不让 `postMessage` 成功冒充 persistence ACK，也不在 Batch 0 硬编码 production success。
-- 不在本批引入 admission、writer pool、无界队列或主线程 SQLite fallback。
+- Batch 0 不引入 admission、writer pool、无界队列或主线程 SQLite fallback。
