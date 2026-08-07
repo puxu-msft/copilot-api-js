@@ -5,8 +5,7 @@ import {
   test,
 } from "bun:test"
 
-import type { ModelOperationRecord } from "~/lib/context/model-operation-record"
-
+import { createModelOperationRecorder } from "~/lib/context/model-operation-record"
 import {
   //
   HISTORY_WORKER_PROTOCOL_VERSION,
@@ -17,21 +16,8 @@ import {
   type HistoryOperationEnvelope,
 } from "~/lib/history/worker/protocol"
 
-function record(operationId = "op-1"): ModelOperationRecord {
-  return {
-    identity: { operationId, kind: "generation", createdAt: 1 },
-    arena: { payloads: [], frames: [] },
-    ingress: null,
-    routing: null,
-    transforms: [],
-    candidates: [],
-    dispatches: [],
-    attempts: [],
-    egress: null,
-    terminal: { sequence: 1, outcome: "completed" },
-    extensions: {},
-    lastSequence: 1,
-  }
+function record(operationId = "op-1") {
+  return createModelOperationRecorder({ identity: { operationId, kind: "generation", createdAt: 1 } }).commitTerminal({ outcome: "completed" })
 }
 
 function envelope(): HistoryOperationEnvelope {
@@ -49,13 +35,15 @@ function envelope(): HistoryOperationEnvelope {
 
 describe("History Worker protocol", () => {
   test("accepts a production-shaped persistence envelope without losing structured-clone values", () => {
-    const message = parseMainToWorkerMessage({
-      type: "persist-operation",
-      protocolVersion: HISTORY_WORKER_PROTOCOL_VERSION,
-      workerGeneration: 2,
-      messageId: 7,
-      envelope: envelope(),
-    })
+    const message = parseMainToWorkerMessage(
+      structuredClone({
+        type: "persist-operation",
+        protocolVersion: HISTORY_WORKER_PROTOCOL_VERSION,
+        workerGeneration: 2,
+        messageId: 7,
+        envelope: envelope(),
+      }),
+    )
 
     expect(message.type).toBe("persist-operation")
     if (message.type !== "persist-operation") throw new Error("wrong message type")
@@ -137,7 +125,6 @@ describe("History Worker protocol", () => {
       ...base.publication.record,
       candidates: [candidate],
       dispatches: [dispatch],
-      attempts: [dispatch],
       lastSequence: 3,
     }
     const terminalCases = [
@@ -179,7 +166,6 @@ describe("History Worker protocol", () => {
           ...base.publication.record,
           candidates: [candidate],
           dispatches: [dispatch],
-          attempts: [dispatch],
           terminal: {
             sequence: 3,
             outcome: "completed",
@@ -201,6 +187,25 @@ describe("History Worker protocol", () => {
         envelope: validEnvelope,
       }),
     ).not.toThrow()
+  })
+
+  test("rejects an enumerable deprecated attempts projection on the canonical wire", () => {
+    const base = envelope()
+    expect(() =>
+      parseMainToWorkerMessage({
+        type: "persist-operation",
+        protocolVersion: HISTORY_WORKER_PROTOCOL_VERSION,
+        workerGeneration: 1,
+        messageId: 1,
+        envelope: {
+          ...base,
+          publication: {
+            ...base.publication,
+            record: { ...base.publication.record, attempts: [] },
+          },
+        },
+      }),
+    ).toThrow("ModelOperationRecord.attempts must not be serialized; use dispatches")
   })
 
   test("rejects malformed nested main-to-Worker payloads", () => {

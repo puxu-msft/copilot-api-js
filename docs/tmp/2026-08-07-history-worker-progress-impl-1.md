@@ -20,7 +20,8 @@ status: active
 - [x] 第二轮 F6：`HistoryWorkerStatusPatch` 只允许 Worker-owned `threadId/selectedDriver/ready/publishedRevision/lastError`；协议逐一拒绝 13 个 main-owned 字段，恶意 `terminalFailed` 帧经 protocol fatal transition 同时 settle pending envelope 与 pending drain request；复审新增的 publication 状态机约束也已闭合：revision 只能在 `[publishedRevision, latestDesiredRevision]` 内单调推进，terminal-failed 后 status 只计 stale、不得复活 ready 或覆盖 sticky fatal。33 pass／0 fail，typecheck／lint 绿。
 - [x] 第二轮 F7：pending 状态重算与 observer 通知解耦；ACK/fatal 先完成 callback 与 request settlement 再通知，每个 listener 独立隔离，初次订阅也走同一 helper；main-owned `statusObserverErrorsTotal/lastStatusObserverError` 保留诊断，30 pass／0 fail，typecheck／lint 绿。
 - [x] 按用户裁决把 `canonical-performance` 收敛为粗粒度合并安全上限：三个代表性 workload 的整次测试运行须 `<10s`，Bun test 硬 timeout `15s`，CPU／heap 明细只报告；当前正常样本约 0.4s，注入 `0ms` 上限后同一测试红，恢复后 2 pass／0 fail。撤销 `edb66c96` 引入的 production work observer、resetter 与手写 AST SCC guard——用户并未要求复杂度证明，不再维护那套无意义且可绕过的门。
-- [ ] F5–F7 和性能门全部完成后，恢复原 Batch 0 reviewer 复审至 0 blocker／major，再 fast-forward 合入 `master`。
+- [x] 最终 merged-state reviewer 发现真实 producer wire blocker：`ModelOperationRecord.attempts` 是 P4–P8 进程内 non-enumerable deprecated getter，canonical JSON／structured-clone wire 按设计不含该字段；协议此前误将其当必填。现以 `CanonicalModelOperationWireRecord = Omit<ModelOperationRecord, "attempts">` 明确 wire 契约、拒绝 enumerable 双份投影，并由真实 recorder→structuredClone→protocol→真 Worker 正样本验收，34 pass／0 fail。
+- [ ] 闭合最终 reviewer 的 publication ACK revision 对账 major，复审至 0 blocker／major；当前 `resume-history-worker` 已无冲突合并 `master@9922cb45` 与 feature `c3f15c2c`，通过最终门后合回 `master`。
 
 ## 在途意图
 

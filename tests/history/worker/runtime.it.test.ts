@@ -6,7 +6,6 @@ import {
 } from "bun:test"
 import { Worker } from "node:worker_threads"
 
-import type { ModelOperationRecord } from "~/lib/context/model-operation-record"
 import type {
   //
   HistoryOperationEnvelope,
@@ -15,6 +14,7 @@ import type {
 } from "~/lib/history/worker/protocol"
 import type { HistoryWorkerTransport } from "~/lib/history/worker/runtime"
 
+import { createModelOperationRecorder } from "~/lib/context/model-operation-record"
 import { HISTORY_WORKER_PROTOCOL_VERSION } from "~/lib/history/worker/protocol"
 import {
   //
@@ -35,21 +35,8 @@ function startConfig(): HistoryWorkerStartConfig {
   }
 }
 
-function record(operationId = "op-1"): ModelOperationRecord {
-  return {
-    identity: { operationId, kind: "generation", createdAt: 1 },
-    arena: { payloads: [], frames: [] },
-    ingress: null,
-    routing: null,
-    transforms: [],
-    candidates: [],
-    dispatches: [],
-    attempts: [],
-    egress: null,
-    terminal: { sequence: 1, outcome: "completed" },
-    extensions: {},
-    lastSequence: 1,
-  }
+function record(operationId = "op-1") {
+  return createModelOperationRecorder({ identity: { operationId, kind: "generation", createdAt: 1 } }).commitTerminal({ outcome: "completed" })
 }
 
 function envelope(operationId = "op-1"): HistoryOperationEnvelope {

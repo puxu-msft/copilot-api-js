@@ -29,8 +29,10 @@ export interface RawOperationAttachment {
   readonly rawCommands: ReadonlyArray<RawCaptureCommand>
 }
 
+export type CanonicalModelOperationWireRecord = Omit<ModelOperationRecord, "attempts">
+
 export interface ModelOperationTerminalPublication {
-  readonly record: ModelOperationRecord
+  readonly record: CanonicalModelOperationWireRecord
   readonly rawAttachment: RawOperationAttachment
 }
 
@@ -389,7 +391,9 @@ function assertModelOperationRecord(value: unknown): asserts value is ModelOpera
   assertArray(value.transforms, "ModelOperationRecord.transforms")
   assertArray(value.candidates, "ModelOperationRecord.candidates")
   assertArray(value.dispatches, "ModelOperationRecord.dispatches")
-  assertArray(value.attempts, "ModelOperationRecord.attempts")
+  if (Object.prototype.propertyIsEnumerable.call(value, "attempts")) {
+    throw new HistoryWorkerProtocolError("ModelOperationRecord.attempts must not be serialized; use dispatches")
+  }
   for (const field of ["ingress", "routing", "egress"] as const) {
     if (value[field] !== null && (typeof value[field] !== "object" || Array.isArray(value[field]))) {
       throw new HistoryWorkerProtocolError(`ModelOperationRecord.${field} must be an object or null`)
