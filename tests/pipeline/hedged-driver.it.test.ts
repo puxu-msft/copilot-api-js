@@ -205,11 +205,11 @@ describe("production driver hedged response", () => {
     const request = await harness.driver.runRequest({ body: {}, headers: new Headers() })
     if (!request.ok) throw new Error("unexpected rejection")
 
-    await expect(harness.driver.runResponseSink(request.upstream, request.env, makeArraySink().sink)).resolves.toMatchObject({
-      kind: "stream-error",
-      source: "codec-render",
-      error: renderError,
-    })
+    const outcome = await harness.driver.runResponseSink(request.upstream, request.env, makeArraySink().sink)
+    expect(outcome).toMatchObject({ kind: "stream-error", source: "codec-render", error: renderError })
+    if (outcome.kind !== "stream-error") throw new Error("expected stream-error")
+    expect(outcome.error).toBe(renderError)
+    expect((outcome.error as Error).cause).not.toBeInstanceOf(Error)
   })
 
   test("a post-boundary candidate transform failure is codec-render", async () => {
@@ -225,11 +225,11 @@ describe("production driver hedged response", () => {
     const request = await harness.driver.runRequest({ body: {}, headers: new Headers() })
     if (!request.ok) throw new Error("unexpected rejection")
 
-    await expect(harness.driver.runResponseSink(request.upstream, request.env, makeArraySink().sink)).resolves.toMatchObject({
-      kind: "stream-error",
-      source: "codec-render",
-      error: renderError,
-    })
+    const outcome = await harness.driver.runResponseSink(request.upstream, request.env, makeArraySink().sink)
+    expect(outcome).toMatchObject({ kind: "stream-error", source: "codec-render", error: renderError })
+    if (outcome.kind !== "stream-error") throw new Error("expected stream-error")
+    expect(outcome.error).toBe(renderError)
+    expect((outcome.error as Error).cause).not.toBeInstanceOf(Error)
   })
 
   test("post-boundary upstream iterator failure is upstream-transport", async () => {
