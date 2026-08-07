@@ -11,7 +11,7 @@ status: active
 ## 剩余项
 
 - [x] Task 0 red：协议测试因模块不存在而失败；实现后 3 pass／0 fail，typecheck、目标 lint、`diff --check` 全绿。
-- [ ] 实现 runtime/history-worker/asset-url/registry 及真 Worker contract tests；protocol production-shaped types 与 fail-closed parser 已闭合。
+- [x] 实现 runtime/history-worker/asset-url/registry 及真 Worker contract tests：12 pass／0 fail，typecheck、目标 lint、`diff --check` 全绿。
 - [ ] 增加 tsdown 双入口，验证 Bun／Node source 与 `dist/history-worker.mjs` probe。
 - [ ] 运行 Task 0 门禁、mutation、独立 review／复审并 fast-forward 合入 `master`。
 

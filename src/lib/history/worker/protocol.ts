@@ -194,6 +194,19 @@ export type HistoryWorkerToMainMessage =
   | ClosedMessage
   | FatalMessage
 
+export function detectHistorySqliteDriver(): HistorySqliteDriver {
+  return typeof (globalThis as { Bun?: unknown }).Bun === "undefined" ? "node:sqlite" : "bun:sqlite"
+}
+
+export function createRawTargetDescriptor(revision: number, config: HistoryWorkerRawConfig): RawTargetDescriptor {
+  return {
+    configRevision: revision,
+    requested: config.enabled,
+    ...(config.enabled && { dbPath: config.dbPath }),
+    maxObjectBytes: config.maxObjectBytes,
+  }
+}
+
 export class HistoryWorkerProtocolError extends Error {
   constructor(message: string, options?: ErrorOptions) {
     super(message, options)

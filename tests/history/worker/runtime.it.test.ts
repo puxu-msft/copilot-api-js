@@ -1,0 +1,242 @@
+import {
+  //
+  describe,
+  expect,
+  test,
+} from "bun:test"
+import { Worker } from "node:worker_threads"
+
+import type { ModelOperationRecord } from "~/lib/context/model-operation-record"
+import type {
+  //
+  HistoryOperationEnvelope,
+  HistoryPersistenceOutcome,
+  HistoryWorkerStartConfig,
+} from "~/lib/history/worker/protocol"
+import type { HistoryWorkerTransport } from "~/lib/history/worker/runtime"
+
+import { HISTORY_WORKER_PROTOCOL_VERSION } from "~/lib/history/worker/protocol"
+import {
+  //
+  HistoryPersistenceRuntimeImpl,
+  createInProcessHistoryPersistenceRuntime,
+} from "~/lib/history/worker/runtime"
+
+const workerUrl = new URL("../../../src/lib/history/worker/history-worker.ts", import.meta.url)
+const fixtureWorkerUrl = new URL("./fixtures/worker-entry.ts", import.meta.url)
+
+function startConfig(): HistoryWorkerStartConfig {
+  return {
+    semanticDbPath: ":memory:",
+    configRevision: 1,
+    rawConfig: { enabled: false, dbPath: "", maxObjectBytes: 1024 },
+    persistRetry: { maxAttempts: 1, backoffMs: 1 },
+    maintenanceIntervalMs: 60_000,
+  }
+}
+
+function record(operationId = "op-1"): ModelOperationRecord {
+  return {
+    identity: { operationId, kind: "generation", createdAt: 1 },
+    arena: { payloads: [], frames: [] },
+    ingress: null,
+    routing: null,
+    transforms: [],
+    candidates: [],
+    dispatches: [],
+    attempts: [],
+    egress: null,
+    terminal: null,
+    extensions: {},
+    lastSequence: 0,
+  }
+}
+
+function envelope(operationId = "op-1"): HistoryOperationEnvelope {
+  return {
+    protocolVersion: HISTORY_WORKER_PROTOCOL_VERSION,
+    publication: {
+      record: record(operationId),
+      rawAttachment: {
+        rawTarget: { configRevision: 1, requested: false, maxObjectBytes: 1024 },
+        rawCommands: [{ sequence: 1, track: "upstream", kind: "sse", bytes: new Uint8Array([1, 2, 3]) }],
+      },
+    },
+  }
+}
+
+async function exerciseRuntime(runtime: HistoryPersistenceRuntimeImpl): Promise<void> {
+  const ready = await runtime.start(startConfig())
+  expect(ready.configRevision).toBe(1)
+  expect(ready.threadId).toBeGreaterThan(0)
+  expect(runtime.snapshot().ready).toBe(true)
+
+  const outcome = new Promise<HistoryPersistenceOutcome>((resolve) => runtime.enqueue(envelope(), resolve))
+  expect(await outcome).toBe("failed")
+  expect(runtime.snapshot().pendingEnvelopes).toBe(0)
+
+  expect(await runtime.drain()).toEqual({ outcomes: { 1: "failed" } })
+  await runtime.shutdown()
+  expect(runtime.snapshot().ready).toBe(false)
+}
+
+describe("HistoryPersistenceRuntime contract", () => {
+  test("real source Worker executes ready, SQLite probe, failed ACK, drain, and close", async () => {
+    await exerciseRuntime(new HistoryPersistenceRuntimeImpl({ workerUrl }))
+  })
+
+  test("in-process test backend runs the same contract", async () => {
+    await exerciseRuntime(createInProcessHistoryPersistenceRuntime())
+  })
+
+  test("real Worker exposes deterministic error before exit", async () => {
+    const worker = new Worker(fixtureWorkerUrl, { workerData: { crash: true } })
+    const events: Array<string> = []
+    const error = new Promise<Error>((resolve) =>
+      worker.once("error", (value) => {
+        events.push("error")
+        resolve(value)
+      }),
+    )
+    const exit = new Promise<number>((resolve) =>
+      worker.once("exit", (code) => {
+        events.push(`exit:${code}`)
+        resolve(code)
+      }),
+    )
+
+    expect((await error).message).toContain("deterministic fixture crash")
+    const exitCode = await exit
+    expect(events).toEqual(["error", `exit:${exitCode}`])
+  })
+
+  test("real Worker can be terminated after a successful message", async () => {
+    const worker = new Worker(fixtureWorkerUrl)
+    const message = new Promise<unknown>((resolve) => worker.once("message", resolve))
+    expect(await message).toEqual({ ready: true })
+    expect(await worker.terminate()).toBeGreaterThanOrEqual(0)
+  })
+})
+
+class ControllableTransport implements HistoryWorkerTransport {
+  readonly sent: Array<unknown> = []
+  private readonly listeners = {
+    message: new Set<(value: unknown) => void>(),
+    error: new Set<(error: Error) => void>(),
+    exit: new Set<(code: number) => void>(),
+  }
+
+  send(message: unknown): void {
+    this.sent.push(message)
+    const typed = message as { type?: string; protocolVersion?: number; workerGeneration?: number; requestId?: number }
+    if (typed.type === "shutdown") {
+      queueMicrotask(() =>
+        this.emitMessage({
+          type: "closed",
+          protocolVersion: typed.protocolVersion,
+          workerGeneration: typed.workerGeneration,
+          requestId: typed.requestId,
+        }),
+      )
+    }
+  }
+
+  on(event: "message", listener: (value: unknown) => void): this
+  on(event: "error", listener: (error: Error) => void): this
+  on(event: "exit", listener: (code: number) => void): this
+  on(event: "message" | "error" | "exit", listener: ((value: unknown) => void) | ((error: Error) => void) | ((code: number) => void)): this {
+    ;(this.listeners[event] as Set<typeof listener>).add(listener)
+    return this
+  }
+
+  terminate(): Promise<number> {
+    return Promise.resolve(0)
+  }
+
+  emitMessage(value: unknown): void {
+    for (const listener of this.listeners.message) listener(value)
+  }
+
+  emitError(error: Error): void {
+    for (const listener of this.listeners.error) listener(error)
+  }
+
+  emitExit(code: number): void {
+    for (const listener of this.listeners.exit) listener(code)
+  }
+}
+
+function readyMessage(generation: number, requestId = 1): unknown {
+  return {
+    type: "ready",
+    protocolVersion: HISTORY_WORKER_PROTOCOL_VERSION,
+    workerGeneration: generation,
+    requestId,
+    ready: {
+      workerGeneration: generation,
+      threadId: 42,
+      selectedDriver: "bun:sqlite",
+      configRevision: 1,
+      rawTarget: { configRevision: 1, requested: false, maxObjectBytes: 1024 },
+    },
+  }
+}
+
+describe("HistoryPersistenceRuntime ACK state", () => {
+  test("ignores stale-generation ACKs and tombstones matching duplicate outcomes", async () => {
+    const transport = new ControllableTransport()
+    const runtime = new HistoryPersistenceRuntimeImpl({ workerFactory: () => transport })
+    const start = runtime.start(startConfig())
+    transport.emitMessage(readyMessage(1))
+    await start
+
+    let outcomes = 0
+    const messageId = runtime.enqueue(envelope(), () => outcomes++)
+    transport.emitMessage({
+      type: "persist-result",
+      protocolVersion: HISTORY_WORKER_PROTOCOL_VERSION,
+      workerGeneration: 99,
+      messageId,
+      outcome: "failed",
+    })
+    expect(runtime.snapshot().staleMessagesTotal).toBe(1)
+    expect(outcomes).toBe(0)
+
+    const ack = {
+      type: "persist-result",
+      protocolVersion: HISTORY_WORKER_PROTOCOL_VERSION,
+      workerGeneration: 1,
+      messageId,
+      outcome: "failed",
+    }
+    transport.emitMessage(ack)
+    transport.emitMessage(ack)
+    expect(outcomes).toBe(1)
+    expect(runtime.snapshot().duplicateAcksTotal).toBe(1)
+    await runtime.shutdown()
+  })
+
+  test("rejects startup when the Worker exits before ready", async () => {
+    const transport = new ControllableTransport()
+    const runtime = new HistoryPersistenceRuntimeImpl({ workerFactory: () => transport })
+    const start = runtime.start(startConfig())
+    transport.emitExit(2)
+
+    await expect(start).rejects.toThrow("exited unexpectedly with code 2")
+    expect(runtime.snapshot().terminalFailed).toBe(true)
+  })
+
+  test("surfaces transport failure and settles pending outcomes as failed", async () => {
+    const transport = new ControllableTransport()
+    const runtime = new HistoryPersistenceRuntimeImpl({ workerFactory: () => transport })
+    const start = runtime.start(startConfig())
+    transport.emitMessage(readyMessage(1))
+    await start
+
+    const outcome = new Promise<HistoryPersistenceOutcome>((resolve) => runtime.enqueue(envelope(), resolve))
+    transport.emitError(new Error("worker exploded"))
+    expect(await outcome).toBe("failed")
+    expect(runtime.snapshot().terminalFailed).toBe(true)
+    expect(runtime.snapshot().lastError).toContain("worker exploded")
+  })
+})
