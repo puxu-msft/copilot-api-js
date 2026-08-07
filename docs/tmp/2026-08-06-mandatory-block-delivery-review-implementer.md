@@ -1,6 +1,6 @@
 # Mandatory block delivery 与 HTTP/2 终止观测规格评审——实施者走查
 
-> 状态：第一轮发现已全部采纳并整改，待原 reviewer 复审
+> 状态：第二轮 `0 blocker / 2 major` 已全部采纳并整改，待原 reviewer 第三轮复审
 >
 > reviewer：独立异模型实施者视角 reviewer
 >
@@ -59,3 +59,42 @@ Reviewer 建议明确 Node 真 `node:http2` runner、Bun／Node 统一结果格�
 | I5 | C | 采纳 | `package.json` 仅有 Bun backend test scripts，无 Node matrix runner／端到端 benchmark runner。Spec §8.3 冻结真实 `node:http2` fixture、同 bundle Bun／Node 执行、runtime identity gate、A/A+A/B selector、JSONL schema 与四个独立 mutation。 |
 
 整改自审另外抓到并修复：`response-terminal` 未携带 response-level buffered frames、旧 GOAWAY 字段名残留、旧评审结论冒充当前状态、裸 symbol 名歧义、session 退役早于 History acquire 时可能丢 evidence bytes 的生命周期空窗，以及错误释放 loser dispatch evidence 会违反 richest-data-flow／canonical diagnostic History 的冲突。
+
+## 第二轮复审
+
+> 复审提交：`d1a0ad2e3261a643f23f681f2263744bceb22a0e`（基线 `2bd0b83d88d67f67a315bfc1ba331c75c28b9cff`）
+>
+> 证据：reviewer 已在隔离 worktree 核验 `pwd`、top-level、HEAD 与 status；读取本报告、spec 整改段和相邻 transport／History／route 契约，并以代码符号检索交叉验证。
+
+### I1 · 未闭合（Major）：adapter 的函数签名仍无法实施
+
+Spec §4.3 的 `DeliveryProtocolAdapter` 引用了未定义的 `DeliveryFrameClass`、`DeliveryFinishClass`、`ClientProtocolError` 与 `DeliveryControlCapability`。`classify`／`classifyFinish` 的每一种返回值、frame 所有权转移、error 的 semantic 原因与 terminal source 如何区分均未冻结。实施者仍会各自设计 union，令 grammar、owner、五个 adapter 出现第二套边界判定或把正确 finish frame 当作 error。须补齐全部 discriminated unions、每一变体的 buffer ownership／合法后继和 adapter→grammar error mapping。
+
+### I2 · 关闭
+
+§5.4～§5.5 已定义 session lease→registry→operation ref→`OperationPersistenceEnvelope` 的交接、事务 A 后释放和 shutdown 责任，并明确 loser dispatch 也持久化。这解决了先前“只有 digest 没有 bytes”与 session 退役空窗。
+
+### I3 · 关闭
+
+§6.3 已明确 schema 6、manifest 3、journal 2，规定 v1 pending journal 走 legacy digest／preparation、manifest v1／v2／v3 的读取边界和真实旧库 fixture。
+
+### I4 · 关闭
+
+§4.7 以 5 个实际 exported root 和 9 个实际 private pump 的 path-qualified symbol 冻结集合；双向 AST／call-graph guard 加 root→owner 正控，能同时防漏接与误拒正确路径。
+
+### I5 · 未闭合（Major）：Bun 子进程内的 server 不是 Node oracle
+
+§8.3 要同一 bundle 分别由 Bun、Node 执行，并由 harness 自己启动 `node:http2.createServer`。在 Bun child 中此调用走 Bun 的 Node compatibility implementation，而非真实 Node runtime。现有测试通过 `setHttp2SessionFactoryForTests()` 注入 h2c production-client path。须固定由独立 `node` child 启动 fixture，把连接信息传给 Bun／Node client child，并明确该 test-only h2c session-factory injection 是允许的 production-client seam。
+
+### 第二轮 verdict
+
+`0 blocker / 2 major`。I2、I3、I4 已关闭；I1、I5 修复后可定稿。
+
+### 主会话第二轮处置
+
+| Finding | 级别 | 处置 | 整改 |
+|---|---|---|---|
+| I1-r2 | C | 采纳 | Spec §4.3 已定义 branded `DeliveryControlCapability`、`DeliveryUnitIdentity`、`ClientProtocolError`、`DeliveryFrameInput`、闭合 `DeliveryFrameClass`／`DeliveryFinishClass`，冻结状态后继、非法输入→error semantic 映射，以及现有 `ResponseFinishResult` 四分支的逐一映射。Grammar 只消费 typed class，不再解析 wire。 |
+| I5-r2 | C | 采纳 | Spec §8.3 已改为一个独立 Node server child + Bun／Node 两个串行 client children。Server runtime identity、同一 fixture instance／manifest、fresh session、scenario token 全部可验；唯一允许 seam 是 `setHttp2SessionFactoryForTests(() => http2.connect(origin))`，仍驱动 production `http2Fetch`／pool／request／body adapter。 |
+
+跨视角更正：本轮 reviewer 对 I4 的“5 roots／9 pumps 已关闭”结论随后被事实／判据 reviewer 用 warmup `drop|fake` 与 precommit AUQ 两条直接 `stream.writeSSE` 路径证伪。该历史 verdict 保留，但不再代表当前状态；最新 spec §4.7 已扩为经 TypeScript AST 交叉验证的 6 roots／11 pumps，第三轮须按新集合复审。

@@ -51,9 +51,13 @@
 若强行 flush，未完整传输的 `response.completed` 可能被当作真实终止事件，制造假成功。当前 parser 的 EOF 丢弃行为正确，但 empty-data 空行事件仍偏离 WHATWG；实施必须保留前者并修正后者：
 
 - 只有 `data` buffer 非空且由空行终止的 event 才 dispatch；仅含 `event:`、`id:`、`retry:` 或注释的空 data event 不 dispatch。
+- Parser 维护 connection-local `lastEventIdBuffer: string` 与 `lastEventIdString: string`，不把纯数字 ID 归一化成 number。合法 `id:` 字段立即更新 buffer；值含 U+0000 时忽略该字段并保留旧 buffer；空 `id:`／无冒号的 `id` 把 buffer 重置为空字符串。
+- 每次遇到空行先把 `lastEventIdString` 设为 buffer；即使 data buffer 为空而不 dispatch，这一步也必须发生。实际 dispatch 的 `ServerSentEventMessage.id` 始终是当前 `lastEventIdString` 字符串，包括重置后的空字符串；当前 event 没有 `id:` 时继承上一次值。
+- 空行结束一次 event 后清空 data／event type／retry 临时 buffer，但不清空 last-event-ID buffer；自然 EOF 丢弃未 dispatch data／event 临时 buffer，也不额外制造 event。
+- 边界声明：`parseOwnedSse` 是上游 async iterator，不是浏览器 `EventSource`，不负责重连调度。`retry:` 继续作为实际 dispatched message 的兼容 metadata；`retry:`-only 不 dispatch、也不创建跨事件重连状态。WHATWG 对 framing、data buffer、event type 与 last-event-ID 的语义仍完整遵守。
 - 只有单换行或没有换行的 EOF pending event 必须丢弃。
 - CRLF 跨 chunk、UTF-8 多字节跨 chunk、多行 `data:` 合并必须正确。
-- 注入 EOF flush 的正向变异必须使“pending event 丢弃”测试变红；注入 empty-data dispatch 的独立变异必须使 `event:`-only／`id:`-only 测试变红。
+- 注入 EOF flush 的正向变异必须使“pending event 丢弃”测试变红；注入 empty-data dispatch、丢弃 id-only 更新、错误重置 ID 或接受 U+0000 ID 的独立变异必须各使目标测试变红。
 - 源码注释须引用规范的 EOF 规则，防止未来再次把正确行为“修坏”。
 
 ## 4. Mandatory block-level delivery
@@ -77,19 +81,21 @@
 
 现有 boolean `commitBoundaries`、`sawMessageStop` 和独立 hedge boundary classifier 被统一替换为 candidate-local、stateful `DeliveryGrammar`。
 
-Grammar 接收有序输入：
+Adapter 先分类，grammar 只接收有序 typed class；raw frame／`ResponseFinishResult` 不进入 grammar：
 
 ```ts
 type DeliveryGrammarInput =
-  | { kind: "frame"; frame: ClientFrame }
-  | { kind: "finish"; result: ResponseFinishResult }
+  | { kind: "frame"; classified: DeliveryFrameClass }
+  | { kind: "finish"; classified: DeliveryFinishClass }
 ```
 
-Grammar 产生 typed outcome；每个 outcome 对输入 frame 的所有权只转移一次：
+Adapter throw 由调用边界转换为 typed `protocol-error` class 后再送入 grammar。Grammar 产生 typed outcome；每个 outcome 对输入 frame 的所有权只转移一次：
 
 ```ts
 type DeliveryOutcome =
   | { kind: "buffer-real-frame"; frame: ClientFrame }
+  | { kind: "stage-structural-frame"; frame: ClientFrame; structuralKind: "envelope-open" | "usage" }
+  | { kind: "deliver-control-frame"; frame: ClientFrame; capability: DeliveryControlCapability }
   | { kind: "complete-unit"; unit: CompleteClientUnit }
   | { kind: "response-terminal"; terminal: ClientTerminal; responseFrames: readonly ClientFrame[] }
   | { kind: "protocol-error"; error: ClientProtocolError }
@@ -104,9 +110,14 @@ type ClientTerminal = {
   semantic: "complete" | "incomplete" | "failed"
   sourceFrame: ClientFrame | null
 }
+
+type DeliveryResult =
+  | { kind: "delivered" }
+  | { kind: "protocol-error"; error: ClientProtocolError }
+  | { kind: "client-gone"; committed: boolean }
 ```
 
-`buffer-real-frame` 把该 frame 移入 candidate-local open buffer 或 response-level buffer，owner 不得同时写出或复制进第二个队列。`complete-unit` 原子取走此前 open buffer 与本次 closing frame，返回的 `frames` 是唯一可提交序列；grammar 随即清空 open buffer。`discard-open-unit` 原子销毁对应 buffer。`response-terminal.responseFrames` 原子取走 response-level buffer，不包含 `terminal.sourceFrame`；owner 先按序提交 `responseFrames`，再仅通过 `renderTerminal(terminal)` 写 terminal source 恰好一次。Unit 模式下 `responseFrames` 必须为空。`protocol-error` 不携带也不隐式 flush 任何 buffer。
+`buffer-real-frame` 把该 frame 移入 candidate-local open buffer 或 response-level buffer，owner 不得同时写出或复制进第二个队列。`stage-structural-frame` 在 unit 模式进入 candidate-local structural staging，在 response-level 模式进入 `responseFrames`；它永不直接写 sink。Winner 选定后，unit 模式的 `envelope-open` 在首个完整 unit 提交前经 `EnvelopeReservation` CAS 提交一次；空响应则在 terminal 前提交；`usage` 只在最终 terminal 前按协议位置提交。Loser staging 全部销毁。`complete-unit` 原子取走此前 open buffer 与本次 closing frame，返回的 `frames` 是唯一可提交序列；grammar 随即清空 open buffer。`discard-open-unit` 原子销毁对应 buffer。`response-terminal.responseFrames` 原子取走 response-level buffer，不包含 `terminal.sourceFrame`；owner 先按序提交 `responseFrames`，再仅通过 `renderTerminal(terminal)` 写 terminal source 恰好一次。Unit 模式下 `responseFrames` 必须为空。`protocol-error` 不携带也不隐式 flush 任何 buffer。
 
 关键顺序：
 
@@ -121,21 +132,97 @@ type ClientTerminal = {
 
 ### 4.3 Protocol adapter 与唯一写出所有者
 
-`DeliveryProtocolAdapter` 是 grammar 与 wire codec 之间唯一的协议知识边界；`BlockDeliveryOwner` 依赖该接口，不 import route handler 或 route-specific codec：
+`DeliveryProtocolAdapter` 是 grammar 与 wire codec 之间唯一的协议知识边界；`BlockDeliveryOwner` 依赖该接口，不 import route handler 或 route-specific codec。下列 union 是闭合契约，不允许 adapter 自增未登记分类：
 
 ```ts
+declare const deliveryControlCapabilityBrand: unique symbol
+
+type DeliveryControlCapability = {
+  readonly [deliveryControlCapabilityBrand]: true
+  readonly controlKind: "keepalive" | "protocol-ping"
+}
+
+type DeliveryUnitIdentity = {
+  readonly boundary: "content-block" | "output-item"
+  readonly key: string
+}
+
+type ClientProtocolError = {
+  readonly semantic:
+    | "malformed-frame"
+    | "unexpected-frame"
+    | "nested-unit"
+    | "mismatched-unit"
+    | "terminal-with-open-unit"
+    | "finish-before-terminal"
+    | "duplicate-terminal"
+    | "post-terminal-frame"
+    | "truncated"
+    | "terminal-failure"
+    | "adapter-exception"
+  readonly detail: string
+  readonly sourceFrame: ClientFrame | null
+  readonly cause: unknown
+}
+
+type DeliveryFrameInput = {
+  readonly frame: ClientFrame
+  readonly controlCapability?: DeliveryControlCapability
+}
+
+type DeliveryFrameClass =
+  | { kind: "control"; frame: ClientFrame; capability: DeliveryControlCapability }
+  | { kind: "structural"; frame: ClientFrame; structuralKind: "envelope-open" | "usage" }
+  | { kind: "unit-open"; unit: DeliveryUnitIdentity; frame: ClientFrame }
+  | { kind: "unit-append"; unit: DeliveryUnitIdentity; frame: ClientFrame }
+  | { kind: "unit-close"; unit: DeliveryUnitIdentity; frame: ClientFrame }
+  | { kind: "response-append"; frame: ClientFrame }
+  | { kind: "response-terminal"; terminal: ClientTerminal }
+  | { kind: "protocol-error"; error: ClientProtocolError }
+
+type DeliveryFinishClass =
+  | { kind: "natural-drain" }
+  | { kind: "valid-terminal-without-boundary"; terminal: ClientTerminal }
+  | { kind: "truncated"; error: ClientProtocolError }
+  | { kind: "terminal-failure"; error: ClientProtocolError }
+
 interface DeliveryProtocolAdapter {
   readonly deliveryMode: "unit" | "response-terminal"
-  classify(frame: ClientFrame): DeliveryFrameClass
+  classify(input: DeliveryFrameInput): DeliveryFrameClass
   classifyFinish(result: ResponseFinishResult): DeliveryFinishClass
   renderTerminal(terminal: ClientTerminal): readonly ClientFrame[]
   renderError(error: ClientProtocolError): readonly ClientFrame[]
   renderDone(): readonly ClientFrame[]
-  isControlCapability(capability: DeliveryControlCapability): boolean
 }
 ```
 
-`classify` 必须识别 unit start／body／close、response terminal、protocol error 与 terminal 后非法 frame；`classifyFinish` 必须把 finish frames 与 verdict 分开，遵循 §4.2 的顺序。`renderTerminal`／`renderError`／`renderDone` 生成该协议唯一合法 terminus，且只能由 owner 调用。Terminal 已提交后任何真实 frame 都转换为 protocol error，不得追加第二 terminal。Control capability 是 owner 创建的不可伪造对象；payload、event name 或 synthetic 标签不能自行取得权限。
+Adapter 是唯一 wire→semantic classifier，grammar 只消费上述 union，不得再次解析 event name／JSON payload 或调用第二个 boundary predicate。`DeliveryUnitIdentity.key` 由 adapter 从 Anthropic block index 或 Responses item id 规范化为稳定字符串；`unit-append`／`unit-close` 必须携带与 open unit 相同的 identity，grammar 机械比较，不向 adapter 回问。
+
+Control capability 只能由 owner-private factory 创建；unique-symbol brand 提供编译期封闭，owner 内部 `WeakSet`／私有 class identity 提供运行时身份校验，factory 与校验器均不从 route／codec 模块导出。`as DeliveryControlCapability`、复制同字段对象或伪造 symbol property 都不能通过运行时校验。`classify` 只有在 input 携带通过 owner identity 校验的 capability 且 frame 是对应无结构 control 时返回 `control`；payload、event name、synthetic 标签或伪造 object 一律不能取得 bypass。Control frame 在任何非终态不改变 grammar state；terminal 后包括 control 在内的任何 frame 都产生 `post-terminal-frame`，不再写 wire。
+
+`classifyFinish` 不消费、保存或复制 `result.frames`。Processor 必须先把 `result.frames` 逐帧、恰好一次送入 `classify`，随后才把同一个 result 送入 `classifyFinish`。四个现有 `ResponseFinishResult.kind` 一一映射：`complete→natural-drain`；`valid-terminal-without-boundary→valid-terminal-without-boundary`，由协议 adapter 把其 `terminal` 字符串映射为 `sourceFrame:null` 的 `ClientTerminal.semantic` 并把原字符串保留在诊断 detail；`truncated→truncated`；`terminal-failure→terminal-failure`。后两者分别保留原 `reason`／`error` 于 `detail`／`cause`，不丢诊断信息。Grammar 不解释 `terminal` 字符串，也不重新分类 finish。
+
+状态后继固定如下：
+
+| 当前状态 | 输入 class | 动作／后继 |
+|---|---|---|
+| unit idle／open | `structural` | frame 进入 candidate-local staging；winner 后由 envelope／terminal owner 按协议位置提交，grammar state 不变 |
+| unit idle | `unit-open` | frame 入 open buffer；→ unit open |
+| unit open | 同 identity `unit-append` | frame 追加；保持 unit open |
+| unit open | 同 identity `unit-close` | 原子产生一个 `complete-unit` 并清 buffer；→ unit idle |
+| unit idle／open | `response-terminal` | 仅 idle 可提交 staged structure + terminal；open 先丢弃 open／staged buffer，再产生 `terminal-with-open-unit` error |
+| response idle／buffered | `structural`／`response-append` | frame 入 response buffer；→ response buffered |
+| response idle／buffered | `response-terminal` | 原子取走 response buffer，再提交 terminal；→ terminal |
+| 任一非终态 | `control` | owner 写 control，不改变状态 |
+| 任一非终态 | 不适用于该 mode 的 class、nested／identity mismatch | 丢弃 open／response buffer，产生对应 `ClientProtocolError`；→ error |
+| terminal | `natural-drain` finish | 确认终态闭合，不再写 wire；→ terminal-closed |
+| terminal／terminal-closed／error | 其他后续 frame／finish | 零真实内容写出；重复 terminal 或 post-terminal error 只记录一次，不生成第二 terminus |
+
+非法输入到 error semantic 的映射同样冻结：wire parse／schema 失败→`malformed-frame`；当前 mode 不接受该 frame class→`unexpected-frame`；open 状态再见 `unit-open`→`nested-unit`；idle 状态见 append／close，或 open identity 与 append／close identity 不同→`mismatched-unit`；open 状态见 response terminal→`terminal-with-open-unit`；未见合法 terminal即 natural drain→`finish-before-terminal`；terminal 状态再见 terminal→`duplicate-terminal`；terminal 状态见除唯一 `natural-drain` 外的其他 frame／finish→`post-terminal-frame`。`truncated`／`terminal-failure`／adapter throw 分别只能映射同名 semantic／`adapter-exception`。每种 error 都保留触发 frame 或 cause，不得降格成无来源字符串。
+
+Finish 后继固定如下：`natural-drain` 在尚未观察合法 terminal或仍有 open buffer 时产生 `finish-before-terminal`；在 terminal 状态时只确认闭合，不生成第二 terminal。`valid-terminal-without-boundary` 仅在无 open unit且尚无 terminal 时按 terminal 路径提交；`truncated` 与 `terminal-failure` 销毁全部未提交 buffer，分别渲染唯一 error terminus。Adapter 抛错统一转成保留 cause 的 `adapter-exception`，grammar／owner fail closed。
+
+`renderTerminal`／`renderError`／`renderDone` 生成该协议唯一合法 terminus，且只能由 owner 调用。`renderTerminal` 消费 `ClientTerminal.sourceFrame` 或生成等价 terminal，但不得两者都写；`renderDone` 仅 Chat Completions 返回 `[DONE]`，其他 adapter 返回空数组。Terminal 已提交后任何真实 frame 都转换为 protocol error，不得追加第二 terminal。
 
 协议映射固定如下：
 
@@ -151,7 +238,7 @@ Reverse leg 选择其客户端协议对应的 adapter，不建立“reverse”�
 
 ### 4.4 唯一写出所有者
 
-`BlockDeliveryOwner` 是生产代码中唯一可向客户端写真实内容或协议终止帧的组件。它负责：
+`BlockDeliveryOwner` 是生产代码中唯一可向客户端写真实内容、结构化 synthetic 内容或协议终止帧的组件。它负责：
 
 - 缓冲当前 unit；
 - 只提交 grammar 判定完整的 unit；
@@ -160,9 +247,21 @@ Reverse leg 选择其客户端协议对应的 adapter，不建立“reverse”�
 - 在首个完整 unit 提交前执行透明 retry；
 - 在已提交完整块后按既有 continuation 设计续写；每条 continuation leg 仍经过 grammar，半块仍丢弃；
 - hedge winner 选定前零客户端真实内容写入；promotion 原子接管 winner outcomes 与完整 unit buffer；
-- 禁止 route handler 调用底层 sink `write`／`writeSynthetic` 或自行追加 `[DONE]`。
+- 禁止 route handler、warmup helper 或 error-shaping helper 调用底层 sink `write`／`writeSynthetic`／`stream.writeSSE`，或自行追加 `[DONE]`。
 
-所有 production route 必须使用 mandatory owner。`runResponseSink` 不得作为生产旁路；若仍为测试原语保留，必须由架构守卫证明 production graph 不可达。
+无 upstream candidate 的本地合成完整响应使用同一 owner 的封闭入口：
+
+```ts
+runSyntheticResponse(input: {
+  adapter: DeliveryProtocolAdapter
+  frames: readonly ClientFrame[]
+  syntheticKind: "warmup-drop" | "warmup-fake" | "error-shaping-auq"
+}): Promise<DeliveryResult>
+```
+
+该入口为本地 synthetic candidate 创建 grammar／buffer，按顺序消费全部 frames，再注入 `complete` finish；只有 grammar 验证出完整、唯一 terminal 后才原子写 wire。任一畸形／缺终止序列零部分写出并返回协议错误；所有写出帧都保留 `syntheticKind` 到 forwarded／History 轨。Warmup non-streaming JSON 与 non-streaming AUQ response 不属于流式 pump，但仍须维持既有 History synthetic marker。
+
+所有 production stream route 与 synthetic response pump 必须使用 mandatory owner。`runResponseSink` 不得作为生产旁路；若仍为测试原语保留，必须由架构守卫证明 production graph 不可达。
 
 ### 4.5 Retry、hedge 与 continuation
 
@@ -190,10 +289,12 @@ Delivery 永久开启；retry 是正交策略。
 
 ### 4.7 Production entry set 与 live bypass 守卫
 
-本规格冻结以下 production pump set；实施计划必须逐行迁移并绑定一条 entry-to-owner 测试，不能用“所有 route”代替清单：
+本规格冻结以下 production stream pump set；实施计划必须逐行迁移并绑定一条 entry-to-owner 测试，不能用“所有 route”代替清单：
 
-| Exported graph root | Sink-owning symbol（path-qualified） | 当前 sink 接缝 | 目标 adapter |
+| Production graph root | Sink-owning symbol（path-qualified） | 当前 sink 接缝 | 目标 adapter／owner entry |
 |---|---|---|---|
+| `src/routes/messages/route.ts::POST / callback` | `src/lib/anthropic/warmup.ts::handleWarmupRequest` | warmup `drop|fake` 直接 `stream.writeSSE` | Anthropic／`runSyntheticResponse` |
+| `src/routes/messages/route.ts::POST / callback` | `src/routes/messages/error-shaping-glue.ts::shapePrecommitError` | precommit AUQ 直接 `stream.writeSSE` | Anthropic／`runSyntheticResponse` |
 | `src/routes/messages/handler-v4.ts::handleMessagesV4` | `src/routes/messages/handler-v4.ts::pumpAnthropicStreamingV4` | Messages direct buffered／live 分支 | Anthropic |
 | `src/routes/messages/handler-v4.ts::handleMessagesV4` | `src/routes/messages/handler-v4.ts::pumpTranslateLegStreamingV4` | Responses→Anthropic translate live | Anthropic |
 | `src/routes/responses/handler-v4.ts::handleResponsesV4` | `src/routes/responses/handler-v4.ts::pumpStreamingV4` | Responses HTTP direct buffered／live 分支 | Responses HTTP |
@@ -204,12 +305,12 @@ Delivery 永久开启；retry 是正交策略。
 | `src/routes/gemini/handler-v4.ts::handleStreamGenerateContentV4` | `src/routes/gemini/handler-v4.ts::pumpGeminiStreamingV4` | Gemini direct live | Gemini |
 | `src/routes/gemini/handler-v4.ts::handleStreamGenerateContentV4` | `src/routes/gemini/handler-v4.ts::pumpReverseGeminiStreamingV4` | reverse Gemini live | Gemini |
 
-Web-search 等能力若经上述 pump 注入帧，由该 pump 的 adapter 负责，不另建旁路；若实施调查发现独立 production stream root，必须先把该 root 加入此表和守卫 fixture，再迁移实现。非流式 render 不属于本集合。
+这里有 6 个唯一 graph roots、11 个 sink-owning pumps；Messages route callback 是一个 root，表中复用两次。`handleMessagesV4` 的 warmup edge 与 route callback 的 catch→`shapePrecommitError` edge 都属于 production graph，不能因不是 driver pump 而排除。Web-search 等能力若经上述 pump 注入帧，由该 pump 的 adapter 负责，不另建旁路；若实施调查发现独立 production stream root，必须先把该 root 加入此表和守卫 fixture，再迁移实现。非流式 render 不属于本集合。
 
-AST／调用图双向守卫以表中 5 个 exported graph root 与 9 个 pump 为冻结 roots，并且必须证明：
+AST／调用图双向守卫以表中 6 个唯一 graph roots 与 11 个 pump 为冻结集合，并且必须证明：
 
 - 每个 root 至少可达一个 `BlockDeliveryOwner` entry，防止正确路径被过严守卫误杀或永久扣留；
-- 每个 root 与 pump 都不可达 legacy `runResponseSink`、直接真实内容 `sink.write`／`writeSynthetic`、route `[DONE]` 写出和其他底层 client writer；
+- 每个 root 与 pump 都不可达 legacy `runResponseSink`、直接真实／结构化 synthetic 内容 `sink.write`／`writeSynthetic`／`stream.writeSSE`、route `[DONE]` 写出和其他底层 client writer；
 - production 目录新增 exported streaming root 或 pump-like function 时，冻结集合测试先红，要求显式 disposition；
 - helper rename、alias、re-export 或 wrapper 不能绕过 symbol-resolution／AST call-graph 守卫。
 
@@ -265,6 +366,11 @@ type BoundedObservationText = {
   truncated: boolean
 }
 
+type SnapshotScalar<T> =
+  | { availability: "observed"; value: T }
+  | { availability: "not-observed-before-snapshot" }
+  | { availability: "unavailable-at-source"; reason: BoundedObservationText }
+
 type TransportTerminationSnapshot = {
   schemaVersion: 1
   firstObservedSignal: "end" | "error" | "close-before-end" | "local-cancel"
@@ -284,9 +390,9 @@ type TransportTerminationSnapshot = {
   physicalClose: ObservationAtSnapshot
   goaway: {
     observation: ObservationAtSnapshot
-    errorCode: number | null
-    lastStreamID: number | null
-    opaqueDataLength: number | null
+    errorCode: SnapshotScalar<number>
+    lastStreamID: SnapshotScalar<number>
+    opaqueDataLength: SnapshotScalar<number>
     evidence: EvidenceCapture
   }
 }
@@ -295,6 +401,16 @@ type TransportTerminationSnapshot = {
 `code.value` 最多保留 128 UTF-8 bytes，`message.value` 与 `reason.value` 各最多保留 1,024 UTF-8 bytes；截断必须在 code point 边界完成，并保留原始 byte length 与 `truncated`。不适用的字段也以 `null`／空 `BoundedObservationText` 明确出现，禁止用字段缺席表达状态。
 
 `observed-before-snapshot` 要求对应细节字段非空；`not-observed-before-snapshot` 表示 recorder 在冻结时尚未见到该事件；`unavailable-at-source` 只表示当前 runtime／API 根本不提供该事实，不能用来代替“稍后可能发生”。Snapshot 一经 first-terminal 门冻结就永不变：GOAWAY／physical close 在 `end` 之后才到达时，该 dispatch 仍保持 `not-observed-before-snapshot`，session recorder 可为后续 dispatch 捕获 GOAWAY，但不得 late-mutate 已冻结 snapshot。
+
+`goaway.observation` 与 detail／evidence 的合法组合冻结如下：
+
+| `goaway.observation` | 标量 detail | `goaway.evidence` |
+|---|---|---|
+| `not-observed-before-snapshot` | 三个 `SnapshotScalar` 都只能是 `not-observed-before-snapshot` | 只能是 `{ availability:"not-observed-before-snapshot" }` |
+| `unavailable-at-source` | 每个标量独立为 `observed` 或 `unavailable-at-source`；不得是 `not-observed-before-snapshot` | 只能是 `unavailable-at-source`，携带有界原因 |
+| `observed-before-snapshot` | 每个标量独立为 `observed` 或 `unavailable-at-source`；不得是 `not-observed-before-snapshot` | 只能是 `captured`、`unavailable-at-capture` 或 `unavailable-at-source`；不得是 `not-observed-before-snapshot` |
+
+收到 GOAWAY 且 API 提供空 opaque bytes 时，按 `captured`、`byteLength:0` 保存空实体，不得误记为 capture failure。Capture／registry 失败才使用 `unavailable-at-capture`；API 根本不暴露 opaque bytes 才使用 `unavailable-at-source`。任何 observation 与 evidence 不匹配都在构造 snapshot 时 fail loud，不持久化自相矛盾记录。
 
 `end` 只表示 readable EOF，不表示正常完成。Bun 可能把 clean RST 暴露为 `end + rstCode=0`；在当前应用层证据不足时，snapshot 只保留上述原始字段，不增加 `cleanRst`／`endStream` 推断字段。
 
@@ -313,6 +429,8 @@ Transport 只产出同步已经成立的 observation。可序列化 snapshot 与
 
 ```ts
 type EvidenceCapture =
+  | { availability: "not-observed-before-snapshot" }
+  | { availability: "unavailable-at-source"; reason: BoundedObservationText }
   | { availability: "captured"; digest: string; byteLength: number; encoding: "binary" }
   | { availability: "unavailable-at-capture"; byteLength: number | null; reason: BoundedObservationText }
 
@@ -320,13 +438,18 @@ interface SessionEvidenceLease {
   readonly capture: Extract<EvidenceCapture, { availability: "captured" }>
   bytes(): Readonly<Uint8Array>
   register(registry: TransportEvidenceRegistry): RegisteredEvidence
-  release(): void
 }
 
 interface RegisteredEvidence {
   readonly capture: Extract<EvidenceCapture, { availability: "captured" }>
   retainForOperation(): OperationEvidenceLease
   releaseSessionRef(): void
+}
+
+interface OperationEvidenceLease {
+  readonly capture: Extract<EvidenceCapture, { availability: "captured" }>
+  bytes(): Readonly<Uint8Array>
+  release(): void
 }
 
 interface OperationPersistenceEnvelope {
@@ -336,20 +459,23 @@ interface OperationPersistenceEnvelope {
 }
 ```
 
-Session GOAWAY recorder 在收到 event 的同步栈内至多复制一次 `opaqueData`，计算 digest，创建一份 session-owned immutable `SessionEvidenceLease`；同 session dispatch snapshot 只复制 `EvidenceCapture` 标量。`bytes()` 返回只读视图，不再复制 payload。Session owner 把 lease 恰好一次注册进进程内 content-addressed registry；registry 对同 digest 校验 bytes／length／encoding 后持有唯一实体。
+Session GOAWAY recorder 在收到 event 的同步栈内至多复制一次 `opaqueData`，计算 digest，创建一份 session-owned immutable `SessionEvidenceLease`；同 session dispatch snapshot 只复制 `EvidenceCapture` 标量。`bytes()` 返回只读视图，不再复制 payload。Session lease 没有 public `release()`：创建成功后必须恰好一次 register，注册动作把 session ownership 原子转移给 `RegisteredEvidence`；此后只有 `releaseSessionRef()` 能释放该 session ref。Register 失败时 factory 内部回收 bytes，不把半注册对象交给调用方。Registry 对同 digest 校验 bytes／length／encoding 后持有唯一实体。
 
-Dispatch observation capability 在 first-write 成功的同一同步栈内对 captured digest 调用 `retainForOperation()`，把 operation ref 按 digest 去重保存在 RequestContext 的非序列化 sidecar；同一 operation 的多个 sibling dispatch 引用同一 digest 时共用一份 operation ref。若 retain 失败，capability 把该 snapshot 的 evidence 改为 `unavailable-at-capture` 并记录有界原因后仍完成 first-terminal write，绝不留下只有 digest、没有 bytes 的 captured snapshot，也不阻断 consumer 终止。Terminal seal 原子产生 `OperationPersistenceEnvelope`，把 inert canonical `record` 与所有 dispatch 引用的去重 operation refs 一次性交给 History enqueue；canonical record 本身仍只含序列化 reference。Canonical History 保留 loser dispatch，因此 loser evidence 也必须持久化；“只投影 winner／committed dispatch”仅约束 egress projection，不能裁剪 diagnostic dispatch refs。引用同一 GOAWAY 的多个 operation 各持独立 ref，因此无提交先后约束，任一个都可先执行事务 A。重复 register／retain／release、已释放后读取或 refcount 下溢必须 fail loud。
+Dispatch observation capability 在 first-write 成功的同一同步栈内对 captured digest 调用 `retainForOperation()`，把 operation ref 按 digest 去重保存在 RequestContext 的非序列化 sidecar；同一 operation 的多个 sibling dispatch 引用同一 digest 时共用一份 operation ref。`OperationEvidenceLease.bytes()` 只读且不复制，`release()` 是 operation ref 的唯一释放 API；重复 release、release 后 bytes 或 refcount 下溢必须 fail loud。若 retain 失败，capability 把该 snapshot 的 evidence 改为 `unavailable-at-capture` 并记录有界原因后仍完成 first-terminal write，绝不留下只有 digest、没有 bytes 的 captured snapshot，也不阻断 consumer 终止。Terminal seal 原子产生 `OperationPersistenceEnvelope`，把 inert canonical `record` 与所有 dispatch 引用的去重 operation refs 一次性交给 History enqueue；canonical record 本身仍只含序列化 reference。Envelope `release()` 恰好一次 release 所含每条 operation lease。
+
+Canonical History 保留 loser dispatch，因此 loser evidence 也必须持久化；“只投影 winner／committed dispatch”仅约束 egress projection，不能裁剪 diagnostic dispatch refs。引用同一 GOAWAY 的多个 operation 各持独立 ref，因此无提交先后约束，任一个都可先执行事务 A。
 
 所有退出路径固定如下：
 
 | 路径 | 唯一释放责任 |
 |---|---|
-| 无 operation 引用 | session owner 在 session 退役时释放 session ref；registry 在全部 refs 归零后释放实体 |
+| 无 operation 引用 | Session 退役触发 `RegisteredEvidence.releaseSessionRef()`；registry 在全部 session／operation refs 归零后释放实体 |
 | Recorder first-write 被拒绝、settled／sealed 或 operation 最终未引用该 dispatch | RequestContext 立即 release 对应 operation ref，snapshot 不保留 captured reference |
 | Terminal 前请求放弃或 canonical seal 失败 | RequestContext release sidecar 中全部 operation refs |
 | History 禁用、enqueue 拒绝或 persistence guard 不接管 | 调用方执行 `OperationPersistenceEnvelope.release()` |
-| History enqueue 接管成功、prepare 失败 | History owner release envelope；可重试须由已接管队列保留同一 envelope，不从已退役 session 重新 acquire |
-| 事务 A commit 成功 | History owner 立即 release envelope 中 evidence leases；持久 CAS 已接管 bytes，事务 B 不再需要进程内实体 |
+| History enqueue 接管成功、prepare／事务 A transient 失败且仍在重试预算内 | History queue 保留同一 envelope 与 operation refs，refcount 允许非零；下次重试不从已退役 session 重新 acquire |
+| Prepare／事务 A 达到 terminal failure、conflict 或被明确放弃 | History owner 执行 envelope `release()`，对应 operation refs 归零 |
+| 事务 A commit 成功 | History owner立即执行 envelope `release()`；持久 CAS 已接管 bytes，事务 B 不再需要进程内实体 |
 | Evidence digest 碰撞或 bytes／length／encoding 不匹配 | registry／History owner fail operation 并 release，不覆盖既有实体或 CAS |
 | 进程 shutdown | 先停止新 register／retain／enqueue，等待有界 History drain；drain 结束后释放全部 session refs、未接管 envelope 与 History refs，registry 断言归零；未完成 operation 明确失败 |
 
@@ -426,12 +552,12 @@ GC 可达集是所有已提交 operation manifest refs 与未完成 journal refs
 
 - database schema version 升到 `6`，新增 transport evidence CAS 表，并为 `v3_journal` 新增 `format_version INTEGER NOT NULL DEFAULT 1`；现有 row 经 migration 明确成为 journal v1，不重写 payload；
 - manifest format 升到 `3`，新增可选 `transportEvidenceRefs`；format 1／2 继续按现有逻辑 hydrate，字段缺席等同空 refs；format 3 hydrate 前验证全部 evidence；大于 3 的未来格式继续 fail loud；
-- journal v1 是旧的 compressed self-contained record，recovery 必须走冻结的 legacy manifest-v2 prepare／digest 路径，再执行不含 evidence refs 的事务 B；不得用新 manifest-v3 prepare 改写其 digest，也不需要空跑事务 A；
-- journal v2 payload 是 `{ journalFormatVersion: 2, record, transportEvidenceRefs }`，其中 `record` 仍自足，evidence refs 依赖与 journal 同事务提交的 CAS；
+- journal format 1 是旧的 compressed self-contained record；其 row digest 可能是 manifest format 1 的 `legacyV1Digest(record)`，也可能是 schema-5 writer 的 manifest format 2 digest。Recovery 必须先用两条冻结、彼此独立的 legacy digest oracle 比对 row digest；两条都不命中时 fail loud，若异常地同时命中则按 digest collision fail loud。旧 row 通过验证后，再用当前 manifest-v3 prepare 迁移提交并删除 journal；pending journal 的旧 digest 是输入完整性 oracle，不是新 operation 必须保留的 identity。不得用 manifest-v3 digest 反向替代旧 oracle，也不需要为空 evidence 执行事务 A；
+- journal format 2 payload 是 `{ journalFormatVersion: 2, record, transportEvidenceRefs }`，其中 `record` 仍自足，evidence refs 依赖与 journal 同事务提交的 CAS；
 - 新 writer 只写 journal v2／manifest v3；reader 与 recovery 至少保留 v1+v2 journal、v1+v2+v3 manifest 的向后读取能力，不做启动时全库重写；
 - evidence refs 是追加字段，旧 operation 的 canonical digest、hydrate 结果与 History API projection 不因升级改变；新 operation 的 digest 使用 manifest v3 规则，禁止拿 v2 digest 伪装等价。
 
-升级 fixture 必须从真实旧形状建立，而不是用新 schema 反向伪造：保存 schema-5／manifest-2 已提交 operation、schema-5 pending journal v1、多个 operation 共用 payload 的最小数据库 fixture。升级后分别证明旧 operation hydrate 不变、旧 pending journal 可恢复、新 journal v2 可跨 A／B crash 恢复、future manifest／journal format 被拒绝。Readonly store、search sidecar 与 summary fallback 都必须覆盖 manifest v1／v2／v3；任何消费者只支持最新格式都算迁移未完成。
+升级 fixture 必须从真实旧形状建立，而不是用新 schema 反向伪造：分别保存 manifest-v1 digest pending journal-format-1、manifest-v2 digest pending journal-format-1、schema-5／manifest-2 已提交 operation，以及多个 operation 共用 payload 的最小数据库 fixture。两份 pending fixture 的 row digest 必须由各自冻结的 legacy writer／oracle 产生，禁止从同一新 prepare 反推。升级后分别证明两种旧 pending journal 经旧 digest 验证后可迁移提交为 manifest v3、已提交旧 operation 的 hydrate／digest 不变、新 journal format 2 可跨 A／B crash 恢复、未知 future manifest／journal format 被拒绝。Readonly store、search sidecar 与 summary fallback 都必须覆盖 manifest v1／v2／v3；任何消费者只支持最新格式都算迁移未完成。
 
 ## 7. 配置迁移与失败语义
 
@@ -491,13 +617,16 @@ TypeScript AST 架构测试机械检查 DATA callback，不用正则；同时禁
 
 实施必须新增下列 test-only 资产，并加入 `package.json`：
 
-- `tests/transport/h2-termination-harness.ts`：唯一场景定义，启动真实 `node:http2.createServer`，通过 production `http2-client` 发起请求，收集 recorder snapshot 与 consumer 结果；不得用 fake stream 替代 transport；
-- `scripts/run-h2-termination-matrix.ts`：用项目已有 `tsdown` 把同一 harness bundle 为 Node ESM，随后分别执行 `bun <bundle>` 与 `node <bundle>`；任一 runtime 缺失、child 非零、场景集合不同或 JSON schema 不同都 fail；
-- `tests/transport/h2-delivery-benchmark.ts`：复用同一真实 session→stream→DATA listener→consumer 链路，只替换 test-only `DataPathStrategy`；
+- `tests/transport/h2-fixture-server.ts`：仅由独立 `node` child 执行的真实 Node `node:http2.createServer` fixture；从 orchestrator 接收 scenario manifest，在 stdout 写一行 READY JSON 后保持存活；
+- `tests/transport/h2-termination-client.ts`：唯一 client 场景定义，通过 production `http2Fetch`／pool／body adapter 发起请求，收集 recorder snapshot 与 consumer 结果；不得用 fake stream 替代 transport；
+- `scripts/run-h2-termination-matrix.ts`：用项目已有 `tsdown` 分别 bundle server 与 client；先启动唯一 `node <server-bundle>`，验证 runtime 身份与 READY，再把 h2c origin／scenario token 传给 `bun <client-bundle>` 和 `node <client-bundle>`；任一 runtime 缺失、child 非零、场景集合不同或 JSON schema 不同都 fail；
+- `tests/transport/h2-delivery-benchmark.ts`：让 Bun／Node client 复用同一独立 Node server 和同一真实 session→stream→DATA listener→consumer 链路，只替换 test-only `DataPathStrategy`；
 - `scripts/run-h2-delivery-benchmark.ts`：执行 A/A、A/B、mutation controls，保存原始 JSONL 与汇总 Markdown；
 - package scripts `test:h2-runtime-matrix` 与 `bench:h2-delivery`，前者纳入 `test:ci`，后者按需运行并作为交付报告输入，不成为固定阈值门。
 
-Harness bundle 不得把 Bun polyfill 当 Node oracle：每个 child 首行报告 `runtime.kind`、`runtime.version`、`process.execPath` 和 `http2` implementation probe；Node child 必须由 `process.release.name === "node"` 且 `process.versions.bun === undefined` 证明，Bun child必须报告 `process.versions.bun`。两者执行完全相同的场景 ID 集合，orchestrator 做集合精确相等检查。
+拓扑固定为一个 Node server child + 两个串行 client child；禁止每个 client 自启 server。Bun client 与 Node client 必须连接同一 fixture process、同一 scenario manifest，但每个 scenario 使用全新 session，防止前一 runtime 改变后一 runtime 的连接状态。Server child 必须由 `process.release.name === "node"` 且 `process.versions.bun === undefined` 证明；若 Bun child 内调用 `node:http2.createServer()`，harness 应主动 fail，而不是把 compatibility implementation 当 Node oracle。
+
+Client bundle 允许且必须使用既有 `setHttp2SessionFactoryForTests(() => http2.connect(origin))` 注入 h2c session；这是绕过 production TLS／proxy 建连、但仍驱动 production pool→`session.request`→body adapter→consumer 的唯一允许 seam。禁止替换 `http2Fetch`、伪造 `ClientHttp2Stream` 或直接触发 recorder callback。每个 client 首行报告 `runtime.kind`、`runtime.version`、`process.execPath` 和 session-factory mode；Node client 必须由 `process.release.name === "node"` 且 `process.versions.bun === undefined` 证明，Bun client 必须报告 `process.versions.bun`。两者执行完全相同的场景 ID 集合，orchestrator 做集合精确相等检查。
 
 正确性矩阵每个场景输出一行 JSONL：
 
@@ -512,7 +641,7 @@ type H2MatrixResult = {
 }
 ```
 
-Server fixture 必须通过真实 API 分别制造 normal END_STREAM、`stream.close(nonZeroRstCode)`、socket／session abrupt close、client body cancel、signal abort、GOAWAY-before-end 与 GOAWAY-after-end；若某 runtime 无法从公开 API 制造或观测某情形，该格明确输出 `unsupported-at-source` 并附有界原因，不能伪造事件或把 skip 当 pass。注入 `observer-throws`、`second-terminal` 与 late GOAWAY 变异验证 consumer 语义、first-write 和 freeze。
+独立 Node server fixture 必须通过真实 API 分别制造 normal END_STREAM、`stream.close(nonZeroRstCode)`、socket／session abrupt close、GOAWAY-before-end 与 GOAWAY-after-end；body cancel、signal abort 由 client child 通过 production consumer／AbortSignal 发起。Server 以 scenario token 把服务端实测事件与 client result 配对，并拒绝未知／复用 token。若某 client runtime 无法从公开 API 观测某情形，该格明确输出 `unsupported-at-source` 并附有界原因，不能伪造事件或把 skip 当 pass。注入 `observer-throws`、`second-terminal` 与 late GOAWAY 变异验证 consumer 语义、first-write 和 freeze。
 
 性能 harness 的 `DataPathStrategy` 只允许六个编译期 variant：`baseline`、`candidate`、`mut-clock`、`mut-object-allocation`、`mut-byte-copy`、`mut-callback`。Baseline 是实现前冻结的当前 DATA callback bundle；candidate 是新 recorder 实现。二者除 strategy module 外使用相同 harness、payload seed、chunk schedule、并发度和 runtime。A/A 随机为每个 pair 交换两个 baseline 实例顺序；A/B 随机交换 baseline／candidate 顺序。Variant 通过 orchestrator 参数选择，不读生产配置或环境开关，构建产物记录 source commit 与 strategy digest，避免测到同一实现却标成 A/B。
 
@@ -524,10 +653,12 @@ Server fixture 必须通过真实 API 分别制造 normal END_STREAM、`stream.c
 
 - 非空 `data` 且由空行终止的 event 正常 dispatch；
 - `event:`-only、`id:`-only、`retry:`-only 与 comment-only 空 data event 不 dispatch；
+- `id: alpha`-only 后的下一 data event 继承 `alpha`；空 `id:` 重置后下一 event 不继承；含 U+0000 的 `id` 被忽略并保留旧值；纯数字 ID 保持 wire string；
+- 同一 chunk 与跨 chunk 的 ID 更新／继承结果一致；一次 event 的 event type／retry 不泄漏到下一 event，而 last-event-ID 持续到显式更新／重置；
 - 单换行／无换行 EOF pending event 丢弃；
 - CRLF 与 UTF-8 跨 chunk；
 - 多行 `data:` 合并；
-- EOF-flush 与 empty-data-dispatch 两个独立变异各使目标测试变红，并核对失败来自对应机制。
+- EOF-flush、empty-data-dispatch、丢弃 id-only 更新、错误重置和接受 U+0000 ID 五个独立变异各使目标测试变红，并核对失败来自对应机制。
 
 ### 9.2 HTTP/2 body
 
@@ -544,14 +675,19 @@ Server fixture 必须通过真实 API 分别制造 normal END_STREAM、`stream.c
 - first-terminal 只冻结一次；
 - local cancel 不误记 remote reset；
 - 闭合 snapshot union 每个字段均存在，`observed` 与 detail 一致，code／message／reason 长度上界生效；
+- GOAWAY 的 `not-observed-before-snapshot`、`unavailable-at-source`、observed+`captured`、observed+`unavailable-at-capture`、observed+`unavailable-at-source` 五种合法组合逐格通过；每个标量分别覆盖 observed／source-unavailable，且与顶层 observation 一致；每种 observation 与错误 evidence／scalar 配对都使构造器变红；空 opaque bytes 产生 `captured`、`byteLength:0`；
 - Bun clean EOF／clean RST 的原始事实被诚实保留，不出现应用层推断字段；
-- runtime identity gate 能拒绝把 Bun child 冒充 Node，并以该错误 wiring 作正向变异。
+- runtime identity gate 能拒绝把 Bun child 冒充 Node，并以该错误 wiring 作正向变异；
+- 唯一 server PID／execPath 被证明是 Node；Bun／Node client result 携带同一 server instance id 与 scenario manifest digest；Bun client 自启 compatibility server、两个 client 连接不同 fixture 或绕过 `http2Fetch` 的变异分别使 harness 变红。
 
 ### 9.3 Mandatory delivery
 
-- 表 §4.7 的 5 个 graph roots／9 个 pump 逐项可达 owner、不可达底层 writer；正确集合全部通过；删除一条 root-to-owner edge 与新增未登记 streaming root 分别使守卫变红；
-- 每个 adapter 的正常完整序列、terminal 后 frame、畸形序列与 truncation 状态转移逐表验证；
-- `complete-unit.frames` 精确等于该 unit 输入序列，每个 frame 只消费一次；
+- 表 §4.7 的 6 个唯一 graph roots／11 个 pumps 逐项可达 owner、不可达底层 writer；正确集合全部通过；删除一条 root-to-owner edge 与新增未登记 streaming root 分别使守卫变红；
+- warmup drop／fake 与 precommit AUQ streaming 均通过 `runSyntheticResponse`；完整 synthetic 序列原子提交并保留 marker，删除 terminal／错序／中途抛错均零部分写出；恢复 helper 直接 `stream.writeSSE` 的变异使架构守卫变红；
+- 每个 adapter 的 `DeliveryFrameClass` 全变体与 `ResponseFinishResult` 四分支逐表验证；grammar 测试只喂 typed class，证明它不解析 wire；adapter 测试独立证明 wire→class 唯一映射；
+- 状态表每条合法后继都有正样本；terminal frame 后唯一 natural-drain finish 正常闭合且不重复 terminal；nested、identity mismatch、terminal-with-open、finish-before-terminal、duplicate／post-terminal 与 adapter exception 分别映射到冻结的 error semantic，注入错误映射会使目标测试变红；
+- `result.frames` 先逐帧消费、finish verdict 后消费，各恰好一次；`classifyFinish` 若重复消费／复制 frames 的变异必须变红；
+- `complete-unit.frames` 精确等于该 unit 输入序列，每个 frame 只消费一次；`response-terminal.responseFrames` 不含 terminal source，owner 按 response frames→单一 terminal→可选 `[DONE]` 顺序写出；
 - 完整 block／item 及时提交；
 - 半块截断零泄漏；
 - terminal／error 不携半块 flush；
@@ -574,8 +710,9 @@ Server fixture 必须通过真实 API 分别制造 normal END_STREAM、`stream.c
 - trailer per-dispatch 归属；
 - 同 session／跨 operation 的 registry retain／enqueue 次序任意、bytes 实体唯一；同 operation sibling dispatch 的同 digest ref 去重；
 - loser dispatch 的 evidence 仍随 canonical diagnostic History 持久化；只有 egress 投影裁剪到 winner；
-- first-write 拒绝、retain 失败、terminal 前放弃、History 禁用、enqueue／prepare 失败、事务 A rollback／永久失败、digest mismatch 与 shutdown 每条路径结束后 registry refcount 为零；retain 失败不阻断 consumer，snapshot 降为 unavailable；
-- 重复 register／release、release 后读取与 refcount 下溢 fail loud；
+- first-write 拒绝、retain 失败、terminal 前放弃、History 禁用、enqueue 拒绝、prepare terminal failure、事务 A terminal failure、digest mismatch 与 shutdown 每条终态路径结束后 registry refcount 为零；retain 失败不阻断 consumer，snapshot 降为 unavailable；
+- prepare／事务 A transient failure 进入重试时，同一 envelope／operation lease 保持可读且 refcount 非零；下一次重试成功后归零，达到 terminal failure 后归零；把 transient 路径提前 release 的变异必须让重试读 bytes 失败；
+- Session lease register 后不再有 public release；`releaseSessionRef()`、`OperationEvidenceLease.release()` 与 envelope `release()` 各自只释放自己的唯一 ref。重复 register／release、release 后读取与 refcount 下溢 fail loud；
 - evidence CAS insert 失败；
 - journal insert 失败；
 - 事务 A 任一句失败同时回滚 evidence 与 journal；
@@ -587,7 +724,7 @@ Server fixture 必须通过真实 API 分别制造 normal END_STREAM、`stream.c
 - GC 删除真孤儿；
 - `clearV3Store` 清 evidence；
 - evidence 缺失或 hash／length／encoding 不匹配时阻止发布损坏 entry；
-- schema-5 fixture 升级到 6 后，manifest v1／v2 hydrate 与 pending journal v1 recovery 不变；新 manifest v3／journal v2 完成 A／B crash matrix；future format 拒绝；
+- schema-5 fixture 升级到 6 后，已提交 manifest v1／v2 operation 的 hydrate／digest 不变；manifest-v1 digest 与 manifest-v2 digest 两种 pending journal-format-1 fixture 分别被对应 legacy oracle 验证后迁移提交为 manifest v3，交叉篡改／两者皆不命中时拒绝；新 manifest v3／journal format 2 完成 A／B crash matrix；future format 拒绝；
 - readonly store、search sidecar 与 summary fallback 各读 manifest v1／v2／v3。
 
 ### 9.5 全量验证
@@ -623,7 +760,7 @@ Server fixture 必须通过真实 API 分别制造 normal END_STREAM、`stream.c
 
 早期正确性／性能设计评审曾分别放行 dispatch-scoped 归属、first-terminal 时序、两事务 recovery set、mandatory owner 与 DATA 热路径方向；性能评审指出“统计不显著”不能证明非劣效，用户据此选择性能数据仅报告、不设 non-inferiority 阻断门。
 
-书面规格第一轮独立评审随后发现实施接口与验收仍有缺口：实施者走查为 `0 blocker / 5 major`，事实／判据证伪为 `0 blocker / 6 major`。本版已逐条修订，但在原两位 reviewer 对整改 diff、原 finding 与相邻契约完成复审之前，状态保持 `confirmed-not-implemented`，不得声称书面规格已经达到 `0 blocker / 0 major`。评审记录见：
+书面规格第一轮独立评审随后发现实施接口与验收仍有缺口：实施者走查为 `0 blocker / 5 major`，事实／判据证伪为 `0 blocker / 6 major`。实施者第二轮复审关闭 I2～I4，留下 I1、I5 两项 major；事实／判据第二轮关闭 F2、F6，留下 F1、F3、F4、F5 并新增旧 journal digest major。本版已逐条整改两份第二轮报告，等待原两位 reviewer 第三轮。在两位 reviewer 对最新整改 diff、原 finding 与相邻契约都完成复审之前，状态保持 `confirmed-not-implemented`，不得声称书面规格已经达到 `0 blocker / 0 major`。评审记录见：
 
 - [实施者走查](../tmp/2026-08-06-mandatory-block-delivery-review-implementer.md)；
 - [事实与判据证伪](../tmp/2026-08-06-mandatory-block-delivery-review-falsification.md)。
