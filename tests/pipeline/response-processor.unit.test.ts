@@ -154,8 +154,9 @@ describe("P2-T1 branch-local response processor", () => {
     }
   })
 
-  test("yields each finish frame exactly once before publishing the finish verdict", async () => {
+  test("classifies and yields each finish frame exactly once before classifying the finish verdict", async () => {
     const order: Array<string> = []
+    const yielded: Array<string> = []
     const closingFrames = [{ data: "closing-1" }, { data: "closing-2" }]
     const processor = createResponseProcessor({ env: envelope(), responseRewrites: [], renderResponse: (frame) => frame })
     const upstream = {
@@ -170,16 +171,20 @@ describe("P2-T1 branch-local response processor", () => {
 
     for await (const frame of processor.stream(upstream, {
       finishResponse: () => ({ kind: "complete", frames: closingFrames }),
+      onFinishFrame: (frame) => order.push(`classify:${frame.data ?? ""}`),
       onFinishResolved: () => order.push("finish"),
     })) {
-      order.push(`frame:${frame.data ?? ""}`)
+      yielded.push(frame.data ?? "")
     }
 
-    expect(order).toEqual(["frame:closing-1", "frame:closing-2", "finish"])
+    expect(order).toEqual(["classify:closing-1", "classify:closing-2", "finish"])
+    expect(yielded).toEqual(["closing-1", "closing-2"])
   })
 
-  test("does not run protocol finish after an upstream iterator error", async () => {
+  test("does not classify finish frames or verdict after an upstream iterator error", async () => {
     let finishCalls = 0
+    let frameClassifications = 0
+    let finishClassifications = 0
     const processor = createResponseProcessor({ env: envelope(), responseRewrites: [], renderResponse: (frame) => frame })
     const upstream = {
       headers: new Headers(),
@@ -191,12 +196,17 @@ describe("P2-T1 branch-local response processor", () => {
       },
     }
     const consume = async () => {
-      for await (const _frame of processor.stream(upstream, { finishResponse: () => (finishCalls++, { kind: "complete", frames: [] }) })) {
+      for await (const _frame of processor.stream(upstream, {
+        finishResponse: () => (finishCalls++, { kind: "complete", frames: [{ data: "closing" }] }),
+        onFinishFrame: () => frameClassifications++,
+        onFinishResolved: () => finishClassifications++,
+      })) {
         // drain until the upstream throw
       }
     }
 
     await expect(consume()).rejects.toThrow("transport cut")
-    expect(finishCalls).toBe(0)
+    expect({ finishCalls, frameClassifications, finishClassifications }).toEqual({ finishCalls: 0, frameClassifications: 0, finishClassifications: 0 })
   })
+
 })

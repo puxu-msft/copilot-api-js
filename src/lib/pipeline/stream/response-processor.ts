@@ -224,7 +224,10 @@ async function* processFrames(input: ProcessFramesInput): AsyncIterable<ClientFr
   // drain and before protocol finish classification so meta/closing frames cannot cross siblings.
   const rendererFrames = renderer.flushResponse(env)
   const finish = opts?.finishResponse?.(rendererFrames) ?? { kind: "complete" as const, frames: rendererFrames }
-  yield* finish.frames
+  for (const frame of finish.frames) {
+    opts?.onFinishFrame?.(frame)
+    yield frame
+  }
   opts?.onFinishResolved?.(finish)
   input.onSettled?.()
 }

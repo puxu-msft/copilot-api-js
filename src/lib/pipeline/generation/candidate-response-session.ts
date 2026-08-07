@@ -132,6 +132,36 @@ export function createCandidateResponseSession<State, Snapshot>(
     terminalSnapshot = snapshot !== null && typeof snapshot === "object" ? Object.freeze(snapshot) : snapshot
   }
 
+  const consumeFrame = (frame: ClientFrame): void => {
+    const syntheticKind = readSyntheticKind(frame)
+    const envelope = {
+      frame,
+      sequence: sequence++,
+      observedAtMonotonic: performance.now(),
+      provenance:
+        syntheticKind === undefined ?
+          ({ kind: "candidate", candidateId: String(input.candidate), dispatchId: String(input.dispatch) } as const)
+        : ({ kind: "synthetic", syntheticKind } as const),
+    }
+    let classified: ReturnType<DeliveryProtocolAdapter["classify"]>
+    try {
+      classified = adapter.classify({ frame })
+    } catch (cause) {
+      classified = {
+        kind: "protocol-error",
+        error: { semantic: "adapter-exception", detail: cause instanceof Error ? cause.message : String(cause), sourceFrame: frame, cause },
+      }
+    }
+    const next = grammar.consume({ kind: "frame", classified })
+    for (const outcome of next) {
+      outcomes.push(outcome)
+      if (outcome.kind === "complete-unit") completedBoundaryFrames.add(frame)
+      if (outcome.kind === "response-terminal") sawTerminal = true
+      if (outcome.kind === "protocol-error") sawFailure = true
+      boundary.observe(outcome, envelope)
+    }
+  }
+
   const postRender = (frame: ClientFrame): ClientFrame | undefined => {
     // The legacy mutating client.outbound hook belongs before classification and is therefore
     // candidate-local. P7-T2d still has to replace its delivery-side contract with observe-only.
@@ -148,33 +178,7 @@ export function createCandidateResponseSession<State, Snapshot>(
         input.env.ctx.captureGenerationFrameTransform?.(frame, transformed, transform)
       }
     }
-    const syntheticKind = readSyntheticKind(transformed)
-    const envelope = {
-      frame: transformed,
-      sequence: sequence++,
-      observedAtMonotonic: performance.now(),
-      provenance:
-        syntheticKind === undefined ?
-          ({ kind: "candidate", candidateId: String(input.candidate), dispatchId: String(input.dispatch) } as const)
-        : ({ kind: "synthetic", syntheticKind } as const),
-    }
-    let classified: ReturnType<DeliveryProtocolAdapter["classify"]>
-    try {
-      classified = adapter.classify({ frame: transformed })
-    } catch (cause) {
-      classified = {
-        kind: "protocol-error",
-        error: { semantic: "adapter-exception", detail: cause instanceof Error ? cause.message : String(cause), sourceFrame: transformed, cause },
-      }
-    }
-    const next = grammar.consume({ kind: "frame", classified })
-    for (const outcome of next) {
-      outcomes.push(outcome)
-      if (outcome.kind === "complete-unit") completedBoundaryFrames.add(transformed)
-      if (outcome.kind === "response-terminal") sawTerminal = true
-      if (outcome.kind === "protocol-error") sawFailure = true
-      boundary.observe(outcome, envelope)
-    }
+    consumeFrame(transformed)
     return transformed
   }
 
@@ -185,6 +189,7 @@ export function createCandidateResponseSession<State, Snapshot>(
       finish = input.finish?.(state, input.renderer, rendererFrames) ?? { kind: "complete", frames: rendererFrames }
       return finish
     },
+    onFinishFrame: consumeFrame,
     onFinishResolved: (result) => {
       const next = grammar.consume({ kind: "finish", classified: adapter.classifyFinish(result) })
       for (const outcome of next) {
