@@ -1,6 +1,6 @@
 # Mandatory block delivery 与 HTTP/2 终止观测规格评审——实施者走查
 
-> 状态：第二轮 `0 blocker / 2 major` 已全部采纳并整改，待原 reviewer 第三轮复审
+> 状态：第三轮 `0 blocker / 0 major`，实施者视角已放行
 >
 > reviewer：独立异模型实施者视角 reviewer
 >
@@ -98,3 +98,33 @@ Spec §4.3 的 `DeliveryProtocolAdapter` 引用了未定义的 `DeliveryFrameCla
 | I5-r2 | C | 采纳 | Spec §8.3 已改为一个独立 Node server child + Bun／Node 两个串行 client children。Server runtime identity、同一 fixture instance／manifest、fresh session、scenario token 全部可验；唯一允许 seam 是 `setHttp2SessionFactoryForTests(() => http2.connect(origin))`，仍驱动 production `http2Fetch`／pool／request／body adapter。 |
 
 跨视角更正：本轮 reviewer 对 I4 的“5 roots／9 pumps 已关闭”结论随后被事实／判据 reviewer 用 warmup `drop|fake` 与 precommit AUQ 两条直接 `stream.writeSSE` 路径证伪。该历史 verdict 保留，但不再代表当前状态；最新 spec §4.7 已扩为经 TypeScript AST 交叉验证的 6 roots／11 pumps，第三轮须按新集合复审。
+
+## 第三轮复审
+
+> 复审提交：`97fcadde98c118e53ca8f09604dc47162959c65e`（上一轮 `d1a0ad2e3261a643f23f681f2263744bceb22a0e`）
+>
+> 证据：reviewer 已在隔离树核验目标 SHA；读取第二轮与主会话 disposition，审阅 spec §4.2～§4.7、§5.3～§6.3、§8.3～§9.3，并以当前代码复核 warmup／AUQ 直接写 SSE、stream root／pump 及 HTTP/2 h2c factory seam。
+
+### I1-r2 · 关闭
+
+§4.2～§4.4 已闭合 adapter→grammar pipeline：grammar 只接收 typed class，所有 union、ownership、非法后继和 error semantic 均固定；`result.frames` 逐帧且恰好一次分类后才分类 finish。Structural staging、唯一 natural-drain 与 control runtime identity 均有正反验收。
+
+### I2 · 维持关闭
+
+Evidence capture 四态、scalar／evidence 合法组合、Session／Operation lease、envelope、queue retry、事务 A 后释放、loser canonical evidence 与 shutdown 均有唯一责任，不触及 DATA 热路径。
+
+### I3 · 维持关闭
+
+Pending journal format 1 的两个独立 legacy digest oracle、真实 v1／v2 fixture、v3 migration、manifest readers 与 future-format 拒绝均已规定。
+
+### I4 · 关闭（经范围更正）
+
+§4.7 已修正为 6 roots／11 pumps，纳入 warmup `drop|fake` 与 precommit AUQ；`runSyntheticResponse` 和双向 guard 能抓漏接而不误拒正确 synthetic path。
+
+### I5-r2 · 关闭
+
+独立 Node server child、同一 fixture／manifest、Bun／Node client children、runtime identity、scenario token、fresh session 与 h2c production-client seam 均可验证并有错误 wiring 变异。
+
+### 第三轮 verdict
+
+`0 blocker / 0 major`。I1～I5 均已闭合；**实施者视角可定稿**。
