@@ -5,6 +5,7 @@ import {
 } from "bun:test"
 import { readFile } from "node:fs/promises"
 import path from "node:path"
+import ts from "typescript"
 
 const repoRoot = path.resolve(import.meta.dir, "../..")
 
@@ -97,8 +98,8 @@ const CLOSE_SITES: ReadonlyArray<CloseSite> = [
   {
     name: "driver retreat write-through close-before-real",
     file: "src/lib/pipeline/driver.ts",
-    before: "if (anchor?.isContentBlockStart(toWrite))",
-    after: "const anchorShift",
+    before: "if (retreated) {",
+    after: "// Capture the FIRST message_start",
     call: 'closeAnchorViaOwner("before-real")',
   },
   {
@@ -131,6 +132,35 @@ for (const site of CLOSE_SITES) {
     expect(uniqueSlice(source, site)).toContain(site.call)
   })
 }
+
+test("retreat close-site guard binds the actual before-real call inside the retreat branch", async () => {
+  const source = await readFile(path.join(repoRoot, "src/lib/pipeline/driver.ts"), "utf8")
+  const sourceFile = ts.createSourceFile("driver.ts", source, ts.ScriptTarget.Latest, true)
+  let retreatCloseCalls = 0
+  let bufferedHelperCloseCalls = 0
+
+  const visit = (node: ts.Node, insideRetreat = false, insideBufferedHelper = false): void => {
+    const nextInsideRetreat = insideRetreat || (ts.isIfStatement(node) && node.expression.getText(sourceFile) === "retreated")
+    const nextInsideBufferedHelper =
+      insideBufferedHelper || (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.name.text === "closeAnchorBeforeReal")
+    if (
+      ts.isCallExpression(node)
+      && ts.isIdentifier(node.expression)
+      && node.expression.text === "closeAnchorViaOwner"
+      && node.arguments[0] !== undefined
+      && ts.isStringLiteral(node.arguments[0])
+      && node.arguments[0].text === "before-real"
+    ) {
+      if (nextInsideRetreat) retreatCloseCalls++
+      if (nextInsideBufferedHelper) bufferedHelperCloseCalls++
+    }
+    ts.forEachChild(node, (child) => visit(child, nextInsideRetreat, nextInsideBufferedHelper))
+  }
+  visit(sourceFile)
+
+  expect(retreatCloseCalls, "retreat write-through must close an open anchor before writing the real frame").toBe(1)
+  expect(bufferedHelperCloseCalls, "buffered close helper remains a separate close site").toBe(1)
+})
 
 test("M1 close-site registry remains the frozen 13-site population", () => {
   expect(CLOSE_SITES.map(({ name }) => name)).toHaveLength(13)

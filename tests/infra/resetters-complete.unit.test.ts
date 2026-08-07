@@ -109,6 +109,9 @@ const EXEMPT: Record<string, string> = {
   // ALREADY-registered resetV3WriterForTests.
   getV3PersistRetryConfigForTests: "read-only assertion hook — no state to reset",
   setV3CommitFailureInjectorForTests: "commit-failure injector setter — cleared by resetV3WriterForTests (registered)",
+  // This reads the existing deliverySessionTestHooks observer and does not mutate module state;
+  // setDeliverySessionTestHooksForTests owns that state and is the registered resetter.
+  recordDeliveryResponseOutcomeForTests: "read-only assertion observer — state reset by setDeliverySessionTestHooksForTests",
 }
 
 function enumerateForTestExports(dir: string): Set<string> {
