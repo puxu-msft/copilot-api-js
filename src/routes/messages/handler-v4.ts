@@ -400,6 +400,7 @@ async function evaluateDirectAnthropicRecovery(
         if (!identity) throw new Error("[Anthropic:v4] recovery evaluator candidate identity missing")
         return identity
       },
+      commitCandidate: (candidateUpstream) => driver.commitCandidateResponse(candidateUpstream),
       discardCandidate: (candidateUpstream) => driver.discardCandidateResponse(candidateUpstream),
     },
     upstream,
@@ -834,11 +835,12 @@ async function runMessagesDriver(c: Context, args: RunMessagesDriverArgs): Promi
               const evaluation = await evaluateDirectAnthropicRecovery(driver, recovered.upstream, recovered.env, error)
               // Task #3 deliberately keeps evaluator output off the real wire. Task #4 owns atomic batch
               // publication; until then the pre-ready parent takes its existing safe terminal path.
-              evaluation.disposition.discard()
+              await evaluation.disposition.discard()
               consola.debug(`[Anthropic:v4] evaluated pre-ready recovery: ${evaluation.kind}`)
             } else {
               // The direct evaluator's exhaustive accumulator contract excludes translate candidates.
-              // Keep this B2 mount fail-closed until a translate evaluator defines equivalent terminals.
+              // Task #3 must still close this unpublishable candidate; Task #4 may define its translator-specific publish contract.
+              await driver.discardCandidateResponse(recovered.upstream)
               consola.debug("[Anthropic:v4] pre-ready recovery evaluator is unavailable for a translate leg")
             }
           } catch (recoveryError) {
@@ -1504,7 +1506,7 @@ async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): 
       const evaluation = await evaluateDirectAnthropicRecovery(driver, recovered.upstream, recovered.env, opts.recoveryOriginalError ?? error)
       // Task #3 deliberately does not publish this collector. Task #4 becomes the sole owner of the
       // atomic recovery batch; until then, preserve the primary terminal's existing safe behaviour.
-      evaluation.disposition.discard()
+      await evaluation.disposition.discard()
       consola.debug(`[Anthropic:v4] evaluated ready-state recovery: ${evaluation.kind}`)
       return false
     } catch (recoveryError) {

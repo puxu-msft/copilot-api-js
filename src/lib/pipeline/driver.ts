@@ -220,8 +220,10 @@ export interface PipelineDriverWithNonStreaming extends PipelineDriver {
   getCandidateResponseSession(upstream: UpstreamStream): CandidateResponseSession | undefined
   /** Candidate identity for an isolated evaluator; Task #4 may promote this exact handle after publication. */
   getCandidateResponseIdentity(upstream: UpstreamStream): { readonly candidate: CandidateHandle; readonly dispatch: DispatchHandle } | undefined
+  /** Promotes an already atomically-published evaluation candidate as the terminal winner. */
+  commitCandidateResponse(upstream: UpstreamStream): Promise<void>
   /** Closes an evaluation-only candidate as failed without selecting it as a delivery winner. */
-  discardCandidateResponse(upstream: UpstreamStream): void
+  discardCandidateResponse(upstream: UpstreamStream): Promise<void>
   /** Pins the request logical terminal to an already-existing failed primary dispatch without selecting a winner. */
   pinGenerationTerminalDispatch(env: RequestEnvelope, dispatch: DispatchHandle): void
   /**
@@ -307,7 +309,17 @@ export function createPipelineDriver(deps: DriverDeps): PipelineDriverWithNonStr
     runResponseBufferedSink: (upstream, env, sink, opts) => trackResponsePump(env, runResponseBufferedSink(deps, upstream, env, sink, opts, generation)),
     getCandidateResponseSession: (upstream) => generation.currentSession(upstream),
     getCandidateResponseIdentity: (upstream) => generation.currentIdentity(upstream),
-    discardCandidateResponse: (upstream) => {
+    commitCandidateResponse: async (upstream) => {
+      const identity = generation.currentIdentity(upstream)
+      if (!identity) throw new Error("[driver] cannot commit response candidate without a generation identity")
+      const binding = generation.bindings.get(upstream)
+      if (!binding) throw new Error("[driver] cannot commit response candidate without a generation binding")
+      // Mirrors the normal publish path: select terminal ownership before closing the dispatch/candidate pair.
+      binding.candidate.env.ctx.selectGenerationWinner(identity.candidate, identity.dispatch)
+      binding.candidate.env.ctx.settleGenerationDispatch(identity.dispatch, { verdict: "committed" })
+      binding.coordinator.completeCandidate(identity.candidate, "winner", "evaluation-committed")
+    },
+    discardCandidateResponse: async (upstream) => {
       const identity = generation.currentIdentity(upstream)
       if (!identity) throw new Error("[driver] cannot discard response candidate without a generation identity")
       const binding = generation.bindings.get(upstream)

@@ -218,6 +218,37 @@ describe("createRequestContext - attempt lifecycle", () => {
     expect(terminal.dispatches.find((dispatch) => dispatch.handle === recoveryDispatch)?.verdict).toBe("failed")
   })
 
+  test("routes active recovery attempt fields away from a pinned primary terminal", () => {
+    const { ctx } = makeContext()
+    const primary = ctx.beginGenerationCandidate({ role: "primary" })
+    const primaryDispatch = ctx.beginGenerationDispatch({ candidate: primary, strategy: "primary" })
+    ctx.setAttemptEffectiveRequest({ model: "primary", resolvedModel: undefined, messages: [], payload: { leg: "primary" }, format: "anthropic-messages" })
+    ctx.setAttemptWireRequest({ model: "primary", messages: [], payload: { leg: "primary" }, headers: { "x-leg": "primary" }, format: "anthropic-messages" })
+    const recovery = ctx.beginGenerationCandidate({ role: "recovery", parentCandidate: primary })
+    const recoveryDispatch = ctx.beginGenerationDispatch({ candidate: recovery, strategy: "precontent-recovery" })
+    ctx.pinGenerationTerminalDispatch(primaryDispatch)
+    ctx.setAttemptEffectiveRequest({ model: "recovery", resolvedModel: undefined, messages: [], payload: { leg: "recovery" }, format: "anthropic-messages" })
+    ctx.setAttemptWireRequest({ model: "recovery", messages: [], payload: { leg: "recovery" }, headers: { "x-leg": "recovery" }, format: "anthropic-messages" })
+    ctx.setAttemptTransport("http")
+    ctx.setAttemptResponseHeaders({ "x-response-leg": "recovery" })
+    ctx.setAttemptError({ type: "network_error", status: 0, raw: new Error("recovery error"), message: "recovery error" })
+
+    const entry = ctx.toHistoryEntry()
+    expect(entry.attempts?.find((attempt) => attempt.dispatchId === primaryDispatch)?.upstreamRequest?.body).toEqual({ leg: "primary" })
+    expect(entry.attempts?.find((attempt) => attempt.dispatchId === recoveryDispatch)).toMatchObject({
+      upstreamRequest: { body: { leg: "recovery" }, headers: { "x-leg": "recovery" } },
+      transport: "http",
+      error: "recovery error",
+      responseHeaders: { "x-response-leg": "recovery" },
+    })
+    expect(ctx.modelOperationSnapshot.dispatches.find((dispatch) => dispatch.handle === primaryDispatch)?.upstreamRequest).toMatchObject({
+      metadata: { model: "primary" },
+    })
+    expect(ctx.modelOperationSnapshot.dispatches.find((dispatch) => dispatch.handle === recoveryDispatch)?.upstreamRequest).toMatchObject({
+      metadata: { model: "recovery" },
+    })
+  })
+
   test("pins abort terminal history and V3 egress to primary while a discarded evaluation recovery remains active", async () => {
     const { ctx } = makeContext()
     const primary = ctx.beginGenerationCandidate({ role: "primary" })

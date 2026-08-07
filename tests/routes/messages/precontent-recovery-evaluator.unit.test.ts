@@ -65,7 +65,8 @@ function driver(outcome: ResponseOutcome, snapshot = candidate()): DirectRecover
     getCandidateIdentity() {
       return { candidate: "candidate-1" as never, dispatch: "dispatch-1" as never }
     },
-    discardCandidate() {},
+    async commitCandidate() {},
+    async discardCandidate() {},
   }
 }
 
@@ -85,8 +86,8 @@ describe("evaluateDirectRecovery", () => {
     const result = await evaluate({ kind: "complete", headers: new Headers() })
 
     expect(result).toMatchObject({ kind: "complete", frames: [{ event: "message_start", data: "collector-only" }], response: { model: "candidate-model" } })
-    result.disposition.discard()
-    expect(() => result.disposition.discard()).toThrow("already consumed")
+    await result.disposition.discard()
+    await expect(result.disposition.discard()).rejects.toThrow("already consumed")
   })
 
   test.each([
@@ -106,29 +107,29 @@ describe("evaluateDirectRecovery", () => {
   test("does not inherit a primary repair verdict and recognizes only the candidate-local repair verdict", async () => {
     const validRecovery = await evaluate({ kind: "complete", headers: new Headers() }, candidate())
     expect(validRecovery.kind).toBe("complete")
-    validRecovery.disposition.discard()
+    await validRecovery.disposition.discard()
 
     const unrepairableRecovery = await evaluate({ kind: "complete", headers: new Headers() }, { ...candidate(), unrepairableToolInput: "WriteFile" })
     expect(unrepairableRecovery).toMatchObject({ kind: "unrepairable-tool-input", tool: "WriteFile" })
-    unrepairableRecovery.disposition.discard()
+    await unrepairableRecovery.disposition.discard()
   })
 
   test("rejects every duplicate disposition combination", async () => {
     const commitThenCommit = await evaluate({ kind: "complete", headers: new Headers() })
-    commitThenCommit.disposition.commit()
-    expect(() => commitThenCommit.disposition.commit()).toThrow("already consumed")
+    await commitThenCommit.disposition.commit()
+    await expect(commitThenCommit.disposition.commit()).rejects.toThrow("already consumed")
 
     const commitThenDiscard = await evaluate({ kind: "complete", headers: new Headers() })
-    commitThenDiscard.disposition.commit()
-    expect(() => commitThenDiscard.disposition.discard()).toThrow("already consumed")
+    await commitThenDiscard.disposition.commit()
+    await expect(commitThenDiscard.disposition.discard()).rejects.toThrow("already consumed")
 
     const discardThenCommit = await evaluate({ kind: "complete", headers: new Headers() })
-    discardThenCommit.disposition.discard()
-    expect(() => discardThenCommit.disposition.commit()).toThrow("already consumed")
+    await discardThenCommit.disposition.discard()
+    await expect(discardThenCommit.disposition.commit()).rejects.toThrow("already consumed")
 
     const discardThenDiscard = await evaluate({ kind: "complete", headers: new Headers() })
-    discardThenDiscard.disposition.discard()
-    expect(() => discardThenDiscard.disposition.discard()).toThrow("already consumed")
+    await discardThenDiscard.disposition.discard()
+    await expect(discardThenDiscard.disposition.discard()).rejects.toThrow("already consumed")
   })
 
   test("maps a candidate throw without settling the shared context", async () => {
@@ -144,7 +145,8 @@ describe("evaluateDirectRecovery", () => {
         getCandidateIdentity() {
           return { candidate: "candidate-1" as never, dispatch: "dispatch-1" as never }
         },
-        discardCandidate() {},
+        async commitCandidate() {},
+        async discardCandidate() {},
       },
       upstream: upstream(),
       env: envWithThrowingTerminalSpies(),

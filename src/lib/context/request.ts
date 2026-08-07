@@ -446,6 +446,10 @@ export function createRequestContext(opts: {
     return capture === undefined ? _attempts.at(-1) : _attempts[capture.v2Index]
   }
   const terminalAttemptIndex = (): number => terminalGenerationAttempt()?.v2Index ?? Math.max(0, _attempts.length - 1)
+  const activeAttempt = (): Attempt | undefined => {
+    const capture = currentGenerationAttempt()
+    return capture === undefined ? _attempts.at(-1) : _attempts[capture.v2Index]
+  }
   const selectGenerationAttempt = (handle: DispatchHandle): GenerationAttemptCapture => {
     const attempt = generationAttemptByHandle.get(handle)
     if (!attempt) throw new Error(`[request-context] unknown generation dispatch ${handle}`)
@@ -1491,7 +1495,7 @@ export function createRequestContext(opts: {
     },
 
     setAttemptSanitization(info: SanitizationInfo) {
-      const attempt = ctx.currentAttempt
+      const attempt = activeAttempt()
       if (attempt) {
         attempt.sanitization = info
         recordAttemptDiagnostic("request.sanitization", "info", info)
@@ -1511,7 +1515,7 @@ export function createRequestContext(opts: {
     },
 
     setAttemptEffectiveRequest(req: EffectiveRequest) {
-      const attempt = ctx.currentAttempt
+      const attempt = activeAttempt()
       if (attempt) {
         attempt.effectiveRequest = req
         const generationAttempt = currentGenerationAttempt()
@@ -1532,7 +1536,7 @@ export function createRequestContext(opts: {
     },
 
     setAttemptWireRequest(req: WireRequest) {
-      const attempt = ctx.currentAttempt
+      const attempt = activeAttempt()
       if (attempt) {
         attempt.wireRequest = req
         const generationAttempt = currentGenerationAttempt()
@@ -1556,7 +1560,7 @@ export function createRequestContext(opts: {
     },
 
     setAttemptTransport(transport: Attempt["transport"]) {
-      const attempt = ctx.currentAttempt
+      const attempt = activeAttempt()
       if (attempt) {
         attempt.transport = transport
         const generationAttempt = currentGenerationAttempt()
@@ -1612,7 +1616,7 @@ export function createRequestContext(opts: {
       // EVERY attempt (success: UpstreamStream.headers; failure: apiError.responseHeaders) —
       // unlike `response` (final attempt only via complete/fail). Small → rides the attempt
       // summary (head blob), no heavy stage.
-      const attempt = ctx.currentAttempt
+      const attempt = activeAttempt()
       if (attempt) {
         attempt.responseHeaders = headers
         recordAttemptDiagnostic("response.headers", "info", { headers })
@@ -1630,7 +1634,7 @@ export function createRequestContext(opts: {
 
     setAttemptTimingEpoch(kind, epoch, mode) {
       if (modelOperationRecorder.sealed) return
-      const attempt = ctx.currentAttempt
+      const attempt = activeAttempt()
       if (!attempt) return
       if (mode === "once" && attempt[kind] !== undefined) return
       attempt[kind] = epoch
@@ -1692,7 +1696,7 @@ export function createRequestContext(opts: {
     },
 
     setAttemptError(error: ApiError) {
-      const attempt = ctx.currentAttempt
+      const attempt = activeAttempt()
       if (attempt) {
         attempt.error = error
         attempt.durationMs = Date.now() - attempt.startTime
@@ -1716,7 +1720,7 @@ export function createRequestContext(opts: {
      * Snapshot (not alias) so a later `resetSseEvents()` / re-set can't perturb it.
      */
     commitAttemptSseEvents() {
-      const attempt = ctx.currentAttempt
+      const attempt = activeAttempt()
       if (attempt && attempt.sseEvents === undefined) attempt.sseEvents = _sseEvents ? [..._sseEvents] : undefined
     },
 

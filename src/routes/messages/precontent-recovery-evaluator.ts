@@ -20,10 +20,10 @@ export interface RecoveryAttemptSnapshot {
 }
 
 export interface RecoveryAttemptDisposition {
-  /** Reserves this exact candidate identity for Task #4's eventual atomic publication. */
-  commit(): { readonly candidate: CandidateHandle; readonly dispatch: DispatchHandle }
+  /** Promotes this exact candidate after Task #4 atomically publishes its frames. */
+  commit(): Promise<void>
   /** Closes this candidate through the driver without selecting it as a winner. */
-  discard(): void
+  discard(): Promise<void>
 }
 
 interface RecoveryAttemptBase<TSnapshot extends RecoveryAttemptSnapshot> {
@@ -70,7 +70,8 @@ export interface DirectRecoveryDriver<TSnapshot extends DirectRecoverySnapshot> 
   runResponseSink(upstream: UpstreamStream, env: RequestEnvelope, sink: ClientSink, opts: { readonly responseMode: "evaluate" }): Promise<ResponseOutcome>
   getCandidateSnapshot(upstream: UpstreamStream): TSnapshot
   getCandidateIdentity(upstream: UpstreamStream): { readonly candidate: CandidateHandle; readonly dispatch: DispatchHandle }
-  discardCandidate(upstream: UpstreamStream): void
+  commitCandidate(upstream: UpstreamStream): Promise<void>
+  discardCandidate(upstream: UpstreamStream): Promise<void>
 }
 
 export interface EvaluateDirectRecoveryInput<TSnapshot extends DirectRecoverySnapshot, TResponse> {
@@ -99,13 +100,13 @@ export async function evaluateDirectRecovery<TSnapshot extends DirectRecoverySna
     consumed = true
   }
   const disposition: RecoveryAttemptDisposition = {
-    commit() {
+    async commit() {
       consume()
-      return { candidate, dispatch }
+      await input.driver.commitCandidate(input.upstream)
     },
-    discard() {
+    async discard() {
       consume()
-      input.driver.discardCandidate(input.upstream)
+      await input.driver.discardCandidate(input.upstream)
     },
   }
   const base = (snapshot?: TSnapshot) => ({ primaryError: input.primaryError, frames, candidate, dispatch, disposition, ...(snapshot && { snapshot }) })
