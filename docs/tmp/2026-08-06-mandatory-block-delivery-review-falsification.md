@@ -1,6 +1,6 @@
 # Mandatory block delivery 与 HTTP/2 终止观测规格评审——事实与判据证伪
 
-> 状态：第三轮 `0 blocker / 4 major` 已全部采纳并整改，待原 reviewer 第四轮复审
+> 状态：第四轮 `0 blocker / 2 major` 已全部采纳并改为 ordered ledger 基座，待原 reviewer 第五轮复审
 >
 > reviewer：独立事实／判据证伪 reviewer
 >
@@ -145,3 +145,28 @@ Reviewer 机械核对整改 diff、WHATWG SSE algorithm、production stream grap
 | F5-r3 | C | 采纳 | 顶层 `unavailable-at-source` 时所有 scalar 都必须 source-unavailable；若 event 可见但部分字段不可见，顶层为 observed。 |
 | SSE-r3 | C | 采纳 | §3／§9.1 增加 `data:` 与无冒号 `data` 的空字符串 MessageEvent 正样本和错误丢弃 mutation。 |
 | FIN-r3 | C | 采纳 | `ClientTerminal` 增加有界、可序列化 diagnostic，完整保留 `valid-terminal-without-boundary.terminal` 原字符串并加 round-trip oracle。 |
+
+## 第四轮复审
+
+> 固定复审 HEAD：`0b933be2adbe15e0688cfcccc4544bcffdc918a2`（base `97fcadde98c118e53ca8f09604dc47162959c65e`）
+>
+> Verdict：`0 blocker / 2 major`。F5、SSE empty-value、finish diagnostic 已闭合；首次 GOAWAY lifecycle 与 sibling ownership 已闭合，但 repeated GOAWAY 和 fan-out exception 一致性仍未闭合。
+
+### 已闭合
+
+- 首次 GOAWAY：同步 non-admitting、无 await 快照、per-dispatch claim、晚 first-terminal、sibling 独立 ownership、transient retry 与 shutdown均已定义。
+- F5：顶层 source-unavailable 强制 scalar／evidence source-unavailable。
+- SSE empty-value：`data:`／bare `data` 正常 dispatch 空字符串，no-data 不 dispatch。
+- Finish diagnostic：原字符串载体、256-byte fail closed 与 round-trip oracle 已闭合。
+
+### Major findings
+
+1. RFC 9113 允许同 connection 多次 GOAWAY，后续 `Last-Stream-ID` MUST NOT 增加。First-claim-only 会拒绝第二 event，丢失其 evidence 与更严格边界。
+2. Fan-out 中途异常保留已安装 claims，却让尚未遍历 dispatch 无 claim，允许同一 GOAWAY 下部分 captured、部分 unavailable 的静默缺失。
+
+### 主会话第四轮处置
+
+| Finding | 级别 | 处置 | 整改方向 |
+|---|---|---|---|
+| GOAWAY-r4 | C | 采纳 | 改为 session-local 有序 GOAWAY ledger；每 event 有 sequence／完整 evidence，后续 lastStreamID 单调不增，dispatch terminal 冻结完整事件前缀。 |
+| FANOUT-r4 | C | 采纳并换共同基座 | 取消 GOAWAY 时 fan-out。每个 physical dispatch 在 `beginDispatch` 时取得 ledger lease；GOAWAY 仅原子 append 一次，所有 in-flight leases 自然共享同一前缀。Terminal 原子冻结前缀并转成 operation lease，彻底消除 partial fan-out。 |

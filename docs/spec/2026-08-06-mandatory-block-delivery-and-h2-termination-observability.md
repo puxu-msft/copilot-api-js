@@ -30,8 +30,8 @@
 1. 所有生产流式路径永久执行 mandatory block-level delivery；无可靠中途边界的协议执行更强的 response-level terminal-only delivery。
 2. retry、hedge、continuation、anchor 与 keepalive 不得绕过完整块交付。
 3. HTTP/2 DATA 热路径不增加时钟、计数、对象、callback、日志或额外字节复制。
-4. 每条 physical dispatch 保存 fixed-shape first-terminal snapshot；retry／hedge sibling 互不覆盖。
-5. GOAWAY 完整 opaque evidence 只存一次，由 History V3 内容寻址对象承载，所有 dispatch 只引用 digest。
+4. 每条 physical dispatch 保存 fixed-schema first-terminal snapshot；GOAWAY 是该 schema 内可变长、有序、不可覆盖的 event tuple；retry／hedge sibling 互不覆盖。
+5. 每个实际收到的 GOAWAY event 的完整 opaque bytes 至多捕获一次，由 History V3 内容寻址对象承载；所有 dispatch event prefix 只引用对应 digest。
 6. History journal、evidence CAS 与 operation 在崩溃恢复中不产生悬空 reference。
 7. 判据同时防 false-green 与 false-red；性能报告不把“统计不显著”冒充“无回归”。
 
@@ -375,6 +375,20 @@ type SnapshotScalar<T> =
   | { availability: "not-observed-before-snapshot" }
   | { availability: "unavailable-at-source"; reason: BoundedObservationText }
 
+type GoawayEventSnapshot = {
+  sequence: number
+  errorCode: number
+  lastStreamID: number
+  lastStreamIdOrder: "first" | "non-increasing" | "protocol-error-increase"
+  opaqueDataLength: SnapshotScalar<number>
+  evidence: EvidenceCapture
+}
+
+type GoawaySnapshot =
+  | { availability: "not-observed-before-snapshot"; events: readonly [] }
+  | { availability: "unavailable-at-source"; reason: BoundedObservationText; events: readonly [] }
+  | { availability: "observed-before-snapshot"; events: readonly [GoawayEventSnapshot, ...GoawayEventSnapshot[]] }
+
 type TransportTerminationSnapshot = {
   schemaVersion: 1
   firstObservedSignal: "end" | "error" | "close-before-end" | "local-cancel"
@@ -392,13 +406,7 @@ type TransportTerminationSnapshot = {
   }
   trailers: ObservationAtSnapshot
   physicalClose: ObservationAtSnapshot
-  goaway: {
-    observation: ObservationAtSnapshot
-    errorCode: SnapshotScalar<number>
-    lastStreamID: SnapshotScalar<number>
-    opaqueDataLength: SnapshotScalar<number>
-    evidence: EvidenceCapture
-  }
+  goaway: GoawaySnapshot
 }
 ```
 
@@ -406,15 +414,15 @@ type TransportTerminationSnapshot = {
 
 `observed-before-snapshot` 要求对应细节字段非空；`not-observed-before-snapshot` 表示 recorder 在冻结时尚未见到该事件；`unavailable-at-source` 只表示当前 runtime／API 根本不提供该事实，不能用来代替“稍后可能发生”。Snapshot 一经 first-terminal 门冻结就永不变：GOAWAY／physical close 在 `end` 之后才到达时，该 dispatch 仍保持 `not-observed-before-snapshot`，session recorder 可为后续 dispatch 捕获 GOAWAY，但不得 late-mutate 已冻结 snapshot。
 
-`goaway.observation` 与 detail／evidence 的合法组合冻结如下：
+`goaway` 的合法形状冻结如下：
 
-| `goaway.observation` | 标量 detail | `goaway.evidence` |
-|---|---|---|
-| `not-observed-before-snapshot` | 三个 `SnapshotScalar` 都只能是 `not-observed-before-snapshot` | 只能是 `{ availability:"not-observed-before-snapshot" }` |
-| `unavailable-at-source` | 三个 `SnapshotScalar` 都只能是 `unavailable-at-source`，各携带有界原因 | 只能是 `unavailable-at-source`，携带有界原因 |
-| `observed-before-snapshot` | 每个标量独立为 `observed` 或 `unavailable-at-source`；不得是 `not-observed-before-snapshot` | 只能是 `captured`、`unavailable-at-capture` 或 `unavailable-at-source`；不得是 `not-observed-before-snapshot` |
+- `not-observed-before-snapshot` 与 `unavailable-at-source` 的 `events` 必须严格为空；后者携带顶层有界原因。
+- `observed-before-snapshot.events` 必须非空，`sequence` 从 1 连续递增，每个元素对应一次实际收到的 GOAWAY frame；不得合并、覆盖或只留 latest。
+- 第一 event 的 `lastStreamIdOrder` 是 `first`；后续 `lastStreamID <= 前一 event.lastStreamID` 时为 `non-increasing`。若增加，仍完整保存该 offending event／evidence，并标 `protocol-error-increase`，随后按 RFC 9113 `PROTOCOL_ERROR` fail closed；不得静默接受、排序或丢帧。
+- 每个 event 的 `errorCode`／`lastStreamID` 是 Node `goaway` callback 已观测必填 number。`opaqueDataLength` 独立为 observed 或 source-unavailable；evidence 只能是 `captured`、`unavailable-at-capture` 或 `unavailable-at-source`。
+- API 提供空 opaque bytes 时按 `captured`、`byteLength:0` 保存空实体；capture／registry 失败使用 `unavailable-at-capture`；API 根本不暴露 bytes 使用 `unavailable-at-source`。
 
-收到 GOAWAY 且 API 提供空 opaque bytes 时，按 `captured`、`byteLength:0` 保存空实体，不得误记为 capture failure。Capture／registry 失败才使用 `unavailable-at-capture`；API 根本不暴露 opaque bytes 才使用 `unavailable-at-source`。任何 observation 与 evidence 不匹配都在构造 snapshot 时 fail loud，不持久化自相矛盾记录。
+Snapshot 冻结的是 dispatch terminal 时 ledger 的完整事件前缀；terminal 之后到达的 GOAWAY 不 late-mutate 该 snapshot，但仍追加到 session ledger，供其他尚未 terminal 的 dispatch 观察。任何 availability、sequence、order 或 evidence 组合不合法都 fail loud，不持久化自相矛盾记录。
 
 `end` 只表示 readable EOF，不表示正常完成。Bun 可能把 clean RST 暴露为 `end + rstCode=0`；在当前应用层证据不足时，snapshot 只保留上述原始字段，不增加 `cleanRst`／`endStream` 推断字段。
 
@@ -426,101 +434,120 @@ GOAWAY 是 session 级旁证，不是 stream terminal，也不自动证明某条
 
 - 每个 GOAWAY event 只同步捕获一次完整 `opaqueData`。
 - Per-dispatch snapshot 只保存有界标量与 evidence digest reference。
-- 同一 session 上多个 dispatch 共享一个 evidence CAS 对象，不复制 N 份 bytes。
-- Snapshot 只以 `goaway.observation` 表达截至冻结点的状态，不作因果归因。
+- 同一 GOAWAY event 的同一 digest 跨多个 dispatch 共享一个 evidence CAS 实体，不复制 N 份 bytes；不同 event 分别保留 sequence 与 digest，相同 bytes 可命中同一 CAS 实体但不得合并 event。
+- Dispatch snapshot 只保存 terminal 时 ledger 的有序事件前缀与 evidence digest refs，不作因果归因。
 
-Transport 只产出同步已经成立的 observation。可序列化 snapshot 与进程内 lease 分离：
+Transport 只产出同步已经成立的 observation。可序列化 snapshot 与进程内 ledger lease 分离：
 
 ```ts
 type EvidenceCapture =
-  | { availability: "not-observed-before-snapshot" }
-  | { availability: "unavailable-at-source"; reason: BoundedObservationText }
   | { availability: "captured"; digest: string; byteLength: number; encoding: "binary" }
+  | { availability: "unavailable-at-source"; reason: BoundedObservationText }
   | { availability: "unavailable-at-capture"; byteLength: number | null; reason: BoundedObservationText }
 
-interface SessionEvidenceLease {
+interface RegisteredGoawayEvidence {
   readonly capture: Extract<EvidenceCapture, { availability: "captured" }>
   bytes(): Readonly<Uint8Array>
-  register(registry: TransportEvidenceRegistry): RegisteredEvidence
-}
-
-interface RegisteredEvidence {
-  readonly capture: Extract<EvidenceCapture, { availability: "captured" }>
-  claimForDispatch(dispatch: DispatchHandle): DispatchEvidenceClaim
-  finishDispatchFanout(): void
-}
-
-interface DispatchEvidenceClaim {
-  readonly dispatch: DispatchHandle
-  readonly capture: Extract<EvidenceCapture, { availability: "captured" }>
-  transferToOperation(): OperationEvidenceLease
   release(): void
 }
 
-interface OperationEvidenceLease {
+interface SessionGoawayLedger {
+  acquireDispatchLease(dispatch: DispatchHandle): DispatchGoawayLease
+  appendObserved(input: {
+    errorCode: number
+    lastStreamID: number
+    opaqueDataLength: SnapshotScalar<number>
+    evidence: RegisteredGoawayEvidence
+  }): "appended" | "appended-protocol-error"
+  appendUnavailable(input: {
+    errorCode: number
+    lastStreamID: number
+    opaqueDataLength: SnapshotScalar<number>
+    evidence: Extract<EvidenceCapture, { availability: "unavailable-at-source" | "unavailable-at-capture" }>
+  }): "appended" | "appended-protocol-error"
+  closeSessionOwner(): void
+}
+
+interface DispatchGoawayLease {
   readonly dispatch: DispatchHandle
-  readonly capture: Extract<EvidenceCapture, { availability: "captured" }>
-  bytes(): Readonly<Uint8Array>
+  freezeAtTerminal(): {
+    snapshot: GoawaySnapshot
+    operationLease: OperationGoawayLease | null
+  }
+  release(): void
+}
+
+interface OperationGoawayLease {
+  readonly dispatch: DispatchHandle
+  readonly events: readonly GoawayEventSnapshot[]
+  evidenceBytes(digest: string): Readonly<Uint8Array> | null
   release(): void
 }
 
 interface OperationPersistenceEnvelope {
   readonly record: ModelOperationRecord
-  readonly evidenceLeases: readonly OperationEvidenceLease[]
+  readonly goawayLeases: readonly OperationGoawayLease[]
   release(): void
 }
 ```
 
-Session GOAWAY recorder 在收到 event 的同步栈内至多复制一次 `opaqueData`，计算 digest，创建并注册一份 immutable `SessionEvidenceLease`；registry 对同 digest 校验 bytes／length／encoding 后持有唯一实体，`bytes()` 返回只读视图且不复制 payload。Session lease 没有 public `release()`：register 成功即把 session ownership 原子转移给 `RegisteredEvidence`；失败时 factory 内部回收 bytes，不把半注册对象交给调用方。
+每个 physical HTTP/2 session 创建一个 `SessionGoawayLedger`。Scheduler 在 `beginDispatch()` 之后、physical `open()` 之前同步调用 `acquireDispatchLease(dispatch)`；取得 lease 后才允许 `session.request()`，因此任何可能收到该 session GOAWAY 的 dispatch 都先持有 ledger ref。Session 已 non-admitting／closed 时 acquire fail loud，不创建新 stream。Dispatch sibling 各有独立 lease，但都读取同一个 append-only event ledger；不存在 GOAWAY 到达时的 N-dispatch fan-out，也不存在 partial install。
 
-GOAWAY callback 在同一同步栈内先把 physical session 标为 non-admitting／retiring，再快照该 session 上所有“已 beginDispatch、尚未冻结 first-terminal”的 observation capabilities；标记与快照之间不得 await。它为快照中的每个 dispatch 调用一次 `claimForDispatch(dispatch)`，再调用 dispatch-scoped `tryAttachDispatchGoawayClaim(dispatch, claim)`。Attach 是 never-throw、first-claim-only，并返回 `"installed" | "rejected"`：`installed` 明确消费 claim 所有权，调用方不得再 release；`rejected` 不消费所有权，调用方必须立即 release。零 dispatch 时也必须完成 fan-out。Claim 创建中途抛错时，callback 释放本轮所有尚未安装的 claims；已经返回 `installed` 的 claims 仍由各 capability 终结。无论成功、零 dispatch 或异常，`finally` 都恰好一次调用 `finishDispatchFanout()` 释放 registry 的 session ref；该方法是严格 one-shot，重复调用或带未 disposition 的本地 claim 调用都 fail loud，不以“幂等”掩盖所有权错误。由于 JavaScript 同步栈内不发生另一 terminal callback 穿插，fan-out 完成时每条未来可能引用该 GOAWAY 的 dispatch 已持有自己的 claim；session 进入 retiring 本身不是释放条件，也没有“retire 后、first-write 前”的 bytes 空窗。标记 non-admitting 后的新 dispatch 必须被拒绝。
+每次 Node `goaway` callback 在单一同步栈内完成一次 ledger transaction：先在局部构造完整 `GoawayEventSnapshot`，并把 opaque bytes 至多复制一次、注册为 `RegisteredGoawayEvidence`；capture／registry 失败则构造 `unavailable-at-capture` event。`appendObserved` 明确消费 registered evidence 所有权：成功后调用方不得 release，ledger owner／dispatch／operation leases 延长实体生命周期；append 在发布前抛错则不消费，调用方必须 release。`appendUnavailable` 不接收 bytes 所有权。Ledger 内部校验 sequence 与 `lastStreamID` order，最后通过一次不可抛的 publish 暴露整个 event。构造／capture／注册中的可捕获错误都被转换为同 sequence 的 unavailable event 后 append，不允许“部分 dispatch 看见、部分看不见”；内存分配失败仍按 §7.2 的普通不可恢复错误终止进程路径，不虚构可继续 append。Append 后才执行其他 observer；observer 异常不回滚已发布 event，也不阻断既有 consumer。后续 GOAWAY 重复同一流程，完整保留全部 frame。
 
-每条 `DispatchEvidenceClaim` 只允许二选一终结：first-terminal slot 被该 dispatch 接受时，`transferToOperation()` 原子生成一条 dispatch-scoped `OperationEvidenceLease` 并使 claim 失效；slot 被拒、dispatch 放弃或 snapshot 不引用该 GOAWAY 时，调用 `release()`。同 digest sibling 不共用 claim 或 operation lease，因此 B 被拒只释放 B 的 ref，不能影响已接受的 A。`OperationEvidenceLease.bytes()` 只读且不复制，`release()` 是该 dispatch operation ref 的唯一释放 API；重复 transfer／release、release 后读取或 refcount 下溢必须 fail loud。
+第一次 GOAWAY 到来前，session 先同步标为 non-admitting／retiring；后续 GOAWAY 不重复切换 lifecycle，但继续 append。RFC 9113 要求后续 `lastStreamID` 不增：等于或减小正常记录；增加时 ledger 仍先原样 append offending event并返回 `appended-protocol-error`，transport 随后按 `PROTOCOL_ERROR` 关闭连接。GOAWAY 本身不取消 `streamId <= lastStreamID` 的既有 stream；每个 dispatch 的最终处理归因仍由 stream 自身 terminal 事实裁决。
 
-RequestContext sidecar 按 dispatch 保存 accepted operation leases，不按 digest 去重。Terminal seal 原子产生 `OperationPersistenceEnvelope`，把 inert canonical `record` 与全部 accepted dispatch leases 一次性交给 History enqueue；canonical record 本身仍只含可序列化 reference。Envelope `release()` 恰好一次 release 每条 lease。History 事务 A 可按 digest 去重 CAS insert，但不得用存储去重反向合并内存所有权 claims。
+`DispatchGoawayLease.freezeAtTerminal()` 在 first-terminal 同步栈内原子读取 ledger 当前完整前缀并冻结 `GoawaySnapshot`。零 event 返回 not-observed 且无 operation lease；有 event 返回 observed non-empty tuple，并把该 dispatch lease 转成 `OperationGoawayLease`。Freeze 后该 dispatch snapshot 永不 late-mutate；之后追加的 GOAWAY 只对其他尚未 terminal 的 dispatch 可见。Dispatch 在 terminal 前放弃时调用 `release()`。重复 freeze／release、freeze 后 release、release 后 freeze 都 fail loud。
 
-Canonical History 保留 loser dispatch，因此 loser evidence 也必须持久化；“只投影 winner／committed dispatch”仅约束 egress projection，不能裁剪 diagnostic dispatch refs。引用同一 GOAWAY 的多个 operation／dispatch 各持独立 ref，因此无提交先后约束，任一个都可先执行事务 A。
+Physical session 的 `close`／`error` 最终处置调用 `closeSessionOwner()`，只释放 ledger owner ref；retire／GOAWAY 不释放。已存在的 dispatch／operation leases 继续持有 ledger events 与 evidence bytes。RequestContext sidecar 按 dispatch 保存 operation leases；terminal seal 把 inert canonical record 与全部 leases转移到 `OperationPersistenceEnvelope`。Canonical History 保留 loser dispatch，只有 egress 投影裁剪到 winner。History 事务 A 按 digest 去重 CAS insert，但内存 dispatch／operation leases不按 digest 合并。
 
 所有退出路径固定如下：
 
 | 路径 | 唯一释放责任 |
 |---|---|
-| GOAWAY fan-out 完成 | `finishDispatchFanout()` 释放唯一 session ref；此后只有 dispatch claims／operation leases，session retire 不再触碰 evidence ownership |
-| Dispatch 在 fan-out 时已 frozen／abandoned，或其 first-write slot 后续被拒绝 | 只 release 该 dispatch claim；不得影响同 digest sibling |
-| Dispatch first-write 接受 captured evidence | 该 claim 原子 transfer 为该 dispatch 的 operation lease；claim 不再可 release |
-| Terminal 前请求放弃或 canonical seal 失败 | RequestContext release sidecar 中全部 dispatch operation leases |
+| Dispatch 在 physical open 前 acquire 失败 | 不创建 stream；ledger ownership 不变 |
+| Dispatch terminal 前放弃 | `DispatchGoawayLease.release()` |
+| Dispatch terminal 且 ledger 无 event | `freezeAtTerminal()` 消费 dispatch lease，返回 null operation lease |
+| Dispatch terminal 且 ledger 有 event | `freezeAtTerminal()` 原子转成该 dispatch 的 `OperationGoawayLease` |
+| Physical session close／error | `closeSessionOwner()` 恰好一次；retire／GOAWAY 不调用 |
+| Canonical seal 前失败 | RequestContext release sidecar 中全部 operation leases |
 | History 禁用、enqueue 拒绝或 persistence guard 不接管 | 调用方执行 `OperationPersistenceEnvelope.release()` |
-| History enqueue 接管成功、prepare／事务 A transient 失败且仍在重试预算内 | History queue 保留同一 envelope 与全部 dispatch leases，refcount 允许非零；下次重试不从 session 重新 acquire |
-| Prepare／事务 A 达到 terminal failure、conflict 或被明确放弃 | History owner执行 envelope `release()`，对应 dispatch refs 归零 |
-| 事务 A commit 成功 | History owner 立即执行 envelope `release()`；持久 CAS 已接管 bytes，事务 B 不再需要进程内实体 |
-| Evidence digest 碰撞或 bytes／length／encoding 不匹配 | Registry／History owner fail operation 并只释放当前持有的 claims／leases，不覆盖既有实体或误释 sibling |
-| 进程 shutdown | 先停止新 session／dispatch／enqueue，完成或释放所有未结束 fan-out 与 claims，再有界 drain History；drain 后释放未接管 envelope 与 History leases，registry 断言归零；未完成 operation 明确失败 |
+| History prepare／事务 A transient 失败且仍在重试预算内 | History queue 保留同一 envelope 与 leases，refcount 允许非零 |
+| Prepare／事务 A terminal failure、conflict 或明确放弃 | History owner 执行 envelope `release()`，operation refs 归零 |
+| 事务 A commit 成功 | History owner 立即执行 envelope `release()`；持久 CAS 已接管 bytes |
+| Evidence digest 碰撞或 bytes／length／encoding 不匹配 | Fail operation 并释放当前 envelope，不覆盖既有 CAS |
+| 进程 shutdown | 停止新 session／dispatch，关闭 session owner refs，有界 drain History，释放未接管 envelope／leases，registry 断言归零 |
 
-Transport 不执行 SQLite I/O、不等待持久化，也不把未来持久化结果回写 snapshot。持久 manifest、journal 与 snapshot 只保存可序列化 `EvidenceCapture` reference；lease 永不进入 canonical record。Registry 更新只发生在 GOAWAY capture／dispatch fan-out、termination first-write、terminal seal／History enqueue、事务 A 与 shutdown 冷路径，不在 DATA 热路径。
+Transport 不执行 SQLite I/O、不等待持久化，也不把未来持久化结果回写已冻结 snapshot。持久 manifest、journal 与 snapshot 只保存可序列化 event／evidence reference；lease 永不进入 canonical record。Registry 更新只发生在 dispatch acquire/release、GOAWAY append、terminal freeze、session close、History enqueue／事务 A 与 shutdown 冷路径，不在 DATA 热路径。
 
 ### 5.5 Dispatch 归属
 
-Scheduler 在 `beginDispatch()` 取得 handle 后、physical `open()` 前，为该 dispatch 构造独立 observation capability。Transport 不读取“当前 attempt”。
+Scheduler 在 `beginDispatch()` 取得 handle 后、physical `open()` 前，为该 dispatch 构造独立 observation capability，并从选中的 physical session ledger 取得 `DispatchGoawayLease`。Transport 不读取“当前 attempt”。只有 lease 成功安装后才允许 `session.request()`。
 
-RequestContext 提供 dispatch-scoped first-write API；snapshot 只携带 registry digest reference，不转移 lease：
+RequestContext 提供 dispatch-scoped lease 安装与 first-write API：
 
 ```ts
-tryAttachDispatchGoawayClaim(dispatch, claim): "installed" | "rejected"
-trySetDispatchTransportTermination(dispatch, snapshot): boolean
+tryInstallDispatchGoawayLease(dispatch, lease): "installed" | "rejected"
+trySetDispatchTransportTermination(
+  dispatch,
+  build: (goaway: GoawaySnapshot) => TransportTerminationSnapshot,
+): boolean
 trySetDispatchResponseTrailers(dispatch, trailers): boolean
 ```
 
-Session GOAWAY recorder 在 termination API 之前已完成 registry 注册与 in-flight dispatch claim fan-out。Capability 处理 first-terminal 时，先裁决 slot：接受则把该 dispatch claim transfer 为 operation lease，并与 snapshot 原子写入；拒绝则只 release 该 dispatch claim。没有 claim 但 snapshot 想写 captured digest 属内部错误，降为 `unavailable-at-capture` 并记录有界原因，不阻断 consumer。Terminal seal 把全部 accepted dispatch leases 转移到 `OperationPersistenceEnvelope`；egress 只投影 winner，但 canonical diagnostic dispatch 不被裁剪。这样 session retire、sibling rejection 都不能在 History enqueue 前丢失 bytes，同时 canonical record 仍保持 inert。
+Lease install 是 never-throw、first-lease-only：`installed` 明确消费所有权，调用方不得 release；`rejected` 不消费，调用方立即 release，且不得创建 physical stream。Capability 处理 first-terminal 时先裁决 slot；成功后调用已安装 lease 的 `freezeAtTerminal()`，用返回的 immutable ledger prefix 构造 snapshot，并把 optional operation lease 与 snapshot 在同一临界区写入。Slot 已占用则不 freeze、不消费 lease；该 dispatch 后续 cleanup 负责 release。缺少已安装 lease却试图打开 stream或写 termination 属内部错误，fail loud；不能把已捕获事实静默降级 unavailable。
+
+Terminal seal 把全部 dispatch operation leases 转移到 `OperationPersistenceEnvelope`；egress 只投影 winner，但 canonical diagnostic dispatch 不被裁剪。Repeated GOAWAY 只 append session ledger，不执行 request-global／dispatch-global回写。
 
 语义：
 
 - 按 handle 直接定位；
-- Claim attach first-claim-only；`installed` 消费所有权、`rejected` 不消费，禁止 ambiguous return；
+- Lease install first-lease-only；`installed` 消费所有权、`rejected` 不消费，禁止 ambiguous return；
 - Termination／trailers first-write-only；
 - unknown／settled／sealed 返回 `false`，never-throw；
 - canonical recorder 先裁决，成功后在同一同步栈内执行无抛兼容 projection；
-- retry／hedge sibling 互不覆盖；
-- egress 只投影 winner／committed dispatch，但 canonical History 保留全部 physical dispatch 及其 evidence refs。
+- retry／hedge sibling 各有独立 ledger lease，互不覆盖；
+- egress 只投影 winner／committed dispatch，但 canonical History 保留全部 physical dispatch 的完整 GOAWAY event prefix 及 evidence refs。
 
 `ModelOperationDispatch` 增加 first-class `transportTermination` 与 `responseTrailers` 槽，并由 recorder 自身实现冻结与 late-drop。现有 request-global trailer 槽仅可作为旧串行适配器；显式 generation 路径不得使用。
 
@@ -570,9 +597,9 @@ GC 可达集是所有已提交 operation manifest refs 与未完成 journal refs
 当前实现基线是 database schema version `5`、manifest format `2`、无显式 journal format 的 self-contained `ModelOperationRecord` payload。本规格实施时执行单向升级：
 
 - database schema version 升到 `6`，新增 transport evidence CAS 表，并为 `v3_journal` 新增 `format_version INTEGER NOT NULL DEFAULT 1`；现有 row 经 migration 明确成为 journal v1，不重写 payload；
-- manifest format 升到 `3`，新增可选 `transportEvidenceRefs`；format 1／2 继续按现有逻辑 hydrate，字段缺席等同空 refs；format 3 hydrate 前验证全部 evidence；大于 3 的未来格式继续 fail loud；
+- manifest format 升到 `3`，新增可选 `transportEvidenceRefs`；每个 dispatch 的 refs 必须保留 GOAWAY event `sequence→digest` 有序映射，重复 digest 仍保留各自 sequence；format 1／2 继续按现有逻辑 hydrate，字段缺席等同空 refs；format 3 hydrate 前逐 event 验证 sequence 与全部 evidence；大于 3 的未来格式继续 fail loud；
 - journal format 1 是旧的 compressed self-contained record；其 row digest 可能是 manifest format 1 的 `legacyV1Digest(record)`，也可能是 schema-5 writer 的 manifest format 2 digest。Recovery 必须先用两条冻结、彼此独立的 legacy digest oracle 比对 row digest；两条都不命中时 fail loud，若异常地同时命中则按 digest collision fail loud。旧 row 通过验证后，再用当前 manifest-v3 prepare 迁移提交并删除 journal；pending journal 的旧 digest 是输入完整性 oracle，不是新 operation 必须保留的 identity。不得用 manifest-v3 digest 反向替代旧 oracle，也不需要为空 evidence 执行事务 A；
-- journal format 2 payload 是 `{ journalFormatVersion: 2, record, transportEvidenceRefs }`，其中 `record` 仍自足，evidence refs 依赖与 journal 同事务提交的 CAS；
+- journal format 2 payload 是 `{ journalFormatVersion: 2, record, transportEvidenceRefs }`，其中 `record` 仍自足，evidence refs 保留 dispatch／event sequence 并依赖与 journal 同事务提交的 CAS；
 - 新 writer 只写 journal v2／manifest v3；reader 与 recovery 至少保留 v1+v2 journal、v1+v2+v3 manifest 的向后读取能力，不做启动时全库重写；
 - evidence refs 是追加字段，旧 operation 的 canonical digest、hydrate 结果与 History API projection 不因升级改变；新 operation 的 digest 使用 manifest v3 规则，禁止拿 v2 digest 伪装等价。
 
@@ -628,7 +655,7 @@ TypeScript AST 架构测试机械检查 DATA callback，不用正则；同时禁
 - 不以“统计不显著”声称“无回归”；
 - 若数据不确定，只写“在当前基准分辨率下未观察到可区分差异”。
 
-主指标：steady-state DATA 吞吐、p50／p99 consumer 延迟、`end→consumer EOF` 尾延迟、并发 stream 吞吐。History snapshot 序列化与 GOAWAY evidence fan-out 单独报告。
+主指标：steady-state DATA 吞吐、p50／p99 consumer 延迟、`end→consumer EOF` 尾延迟、并发 stream 吞吐。History snapshot 序列化与 GOAWAY ledger append／prefix freeze 单独报告。
 
 同一 harness 必须分别检测四种禁止变异：每 DATA chunk 增加一次 `Date.now()`、一次额外对象分配、一次 payload 字节复制、一次 callback。四种 mutation 各有独立 variant ID 和报告行，不能用一个实现同时代表对象与复制；每项都须产生方向正确且可检测的退化，并核对退化来自目标机制。任一 mutation 检测不到时，生产 A/B 数据不得支撑对应维度的性能结论。
 
@@ -660,7 +687,7 @@ type H2MatrixResult = {
 }
 ```
 
-独立 Node server fixture 必须通过真实 API 分别制造 normal END_STREAM、`stream.close(nonZeroRstCode)`、socket／session abrupt close、GOAWAY-before-end 与 GOAWAY-after-end；body cancel、signal abort 由 client child 通过 production consumer／AbortSignal 发起。Server 以 scenario token 把服务端实测事件与 client result 配对，并拒绝未知／复用 token。若某 client runtime 无法从公开 API 观测某情形，该格明确输出 `unsupported-at-source` 并附有界原因，不能伪造事件或把 skip 当 pass。注入 `observer-throws`、`second-terminal` 与 late GOAWAY 变异验证 consumer 语义、first-write 和 freeze。
+独立 Node server fixture 必须通过真实 API 分别制造 normal END_STREAM、`stream.close(nonZeroRstCode)`、socket／session abrupt close、GOAWAY-before-end、GOAWAY-after-end、双 GOAWAY `lastStreamID` 等值／递减，以及双 GOAWAY 非法递增；body cancel、signal abort 由 client child 通过 production consumer／AbortSignal 发起。Server 以 scenario token 把服务端实测事件与 client result 配对，并拒绝未知／复用 token。若某 client runtime 无法从公开 API 观测某情形，该格明确输出 `unsupported-at-source` 并附有界原因，不能伪造事件或把 skip 当 pass。注入 `observer-throws`、`second-terminal`、只保留 first／latest GOAWAY 与 late GOAWAY 变异，验证 consumer 语义、first-write、ordered ledger prefix 和 freeze。
 
 性能 harness 的 `DataPathStrategy` 只允许六个编译期 variant：`baseline`、`candidate`、`mut-clock`、`mut-object-allocation`、`mut-byte-copy`、`mut-callback`。Baseline 是实现前冻结的当前 DATA callback bundle；candidate 是新 recorder 实现。二者除 strategy module 外使用相同 harness、payload seed、chunk schedule、并发度和 runtime。A/A 随机为每个 pair 交换两个 baseline 实例顺序；A/B 随机交换 baseline／candidate 顺序。Variant 通过 orchestrator 参数选择，不读生产配置或环境开关，构建产物记录 source commit 与 strategy digest，避免测到同一实现却标成 A/B。
 
@@ -694,7 +721,7 @@ type H2MatrixResult = {
 - first-terminal 只冻结一次；
 - local cancel 不误记 remote reset；
 - 闭合 snapshot union 每个字段均存在，`observed` 与 detail 一致，code／message／reason 长度上界生效；
-- GOAWAY 的 `not-observed-before-snapshot`、`unavailable-at-source`、observed+`captured`、observed+`unavailable-at-capture`、observed+`unavailable-at-source` 五种合法组合逐格通过；顶层 source-unavailable 时三个 scalar 必须全为 source-unavailable；顶层 observed 时每个 scalar 分别覆盖 observed／source-unavailable；每种 observation 与错误 evidence／scalar 配对都使构造器变红；空 opaque bytes 产生 `captured`、`byteLength:0`；
+- `GoawaySnapshot` 的 not-observed／source-unavailable 空 tuple 与 observed non-empty tuple 三种顶层形状逐格通过；每个 event 的连续 sequence、`lastStreamIdOrder`、opaque length 与 evidence 配对均受闭合构造器验证；空 opaque bytes 产生 `captured`、`byteLength:0`，错误 availability／tuple／order 组合分别使构造器变红；
 - Bun clean EOF／clean RST 的原始事实被诚实保留，不出现应用层推断字段；
 - runtime identity gate 能拒绝把 Bun child 冒充 Node，并以该错误 wiring 作正向变异；
 - 唯一 server PID／execPath 被证明是 Node；Bun／Node client result 携带同一 server instance id 与 scenario manifest digest；Bun client 自启 compatibility server、两个 client 连接不同 fixture 或绕过 `http2Fetch` 的变异分别使 harness 变红。
@@ -727,20 +754,22 @@ type H2MatrixResult = {
 - termination first-write 与 late-drop；
 - retry／hedge sibling 归属隔离；
 - trailer per-dispatch 归属；
-- 同 session／跨 operation 的 registry fan-out／enqueue 次序任意、bytes 实体按 digest 唯一；每个 physical dispatch 拥有独立 claim／operation lease，内存 ownership 不按 digest 去重；
-- GOAWAY→session retiring→较晚 first-terminal 的确定性探针证明 bytes 仍可 transfer；non-admitting 标记先于 in-flight snapshot 且两者之间无 await，GOAWAY 后新 dispatch 被拒；fan-out 完成前不得释放 session ref，正常、零 dispatch、claim 创建中途抛错三条路径都在 `finally` 恰好释放一次；attach `installed` 消费 claim、`rejected` 不消费且由调用方释放；已安装 claim 仍可独立终结，未安装 claim 全部释放；重复 `finishDispatchFanout()`、ambiguous attach return 或带未 disposition claim 结束 fan-out 的变异分别变红；
-- 同 digest sibling A first-write accepted、B first-write rejected：B 只释放自己的 claim，A 的 lease 仍可读并进入 envelope；反转 A／B 顺序结果相同。让 sibling 共用 claim／lease 的变异必须变红；
-- loser dispatch 的 evidence 仍随 canonical diagnostic History 持久化；只有 egress 投影裁剪到 winner；
-- first-write 拒绝、claim transfer 失败、terminal 前放弃、History 禁用、enqueue 拒绝、prepare terminal failure、事务 A terminal failure、digest mismatch 与 shutdown 每条终态路径结束后 registry refcount 为零；transfer 失败不阻断 consumer，snapshot 降为 unavailable；
-- prepare／事务 A transient failure 进入重试时，同一 envelope／全部 dispatch leases 保持可读且 refcount 非零；下一次重试成功后归零，达到 terminal failure 后归零；把 transient 路径提前 release 的变异必须让重试读 bytes 失败；
-- Session lease register 后不再有 public release；`finishDispatchFanout()`、claim `transferToOperation()`／`release()`、`OperationEvidenceLease.release()` 与 envelope `release()` 各自只终结自己的唯一 ownership。重复 transfer／release、release 后读取与 refcount 下溢 fail loud；
+- 同 session／跨 operation 的 ledger append／freeze／enqueue 次序任意，bytes 实体按 event digest 唯一；每个 physical dispatch 在 open 前持有独立 `DispatchGoawayLease`，内存 ownership 不按 digest 合并；
+- 双 GOAWAY 正样本保存 sequence 1／2 的完整有序前缀；第二帧 `lastStreamID` 等于或小于第一帧通过，增加时仍保存 offending event、标 `protocol-error-increase` 并触发 `PROTOCOL_ERROR`。只留 first／latest、重排、覆盖、接受增加值的变异分别变红；
+- Dispatch A 在第一 GOAWAY 后 terminal 只冻结 `[1]`，dispatch B 在第二 GOAWAY 后 terminal 冻结 `[1,2]`；A 不 late-mutate。Repeated event 的不同 opaque evidence 分别可 hydrate，相同 bytes 仍由 CAS 去重；
+- GOAWAY event 构造／capture／registry 中途失败统一 append 同 sequence 的 unavailable event；所有当时／未来 dispatch leases 读取同一 ledger prefix，不可能出现部分 captured、部分无 event。`appendObserved` 成功消费 registered evidence，发布前失败不消费且调用方释放；ledger owner close 后，仍有 dispatch／operation lease 时 bytes 继续可读。注入“append 前发布半成品”“异常时跳过 event”“成功后调用方双 release”或“close owner 提前丢 bytes”的变异必须分别变红；
+- Session non-admitting 标记先于首个 GOAWAY append，之后新 dispatch lease／stream 被拒；已有 dispatch 晚 first-terminal 仍可 freeze 完整 prefix。Session retire 不释放 ledger owner，physical close／error 才 `closeSessionOwner()`；
+- Lease install `installed` 消费所有权、`rejected` 不消费且调用方释放；first-write 成功时 freeze 原子转为 optional operation lease，slot 已占用时不消费、由 cleanup release。缺 lease 仍 open stream、重复 freeze／release、release 后 freeze 的变异分别变红；
+- Loser dispatch 的 GOAWAY prefix 仍随 canonical diagnostic History 持久化；只有 egress 投影裁剪到 winner；
+- Terminal 前放弃、History 禁用、enqueue 拒绝、prepare terminal failure、事务 A terminal failure、digest mismatch 与 shutdown 每条终态路径结束后 ledger／registry refcount 为零；
+- Prepare／事务 A transient failure 进入重试时，同一 envelope／全部 operation leases 保持可读且 refcount 非零；下一次重试成功后归零，达到 terminal failure 后归零；把 transient 路径提前 release 的变异必须让重试读 bytes 失败；
 - evidence CAS insert 失败；
 - journal insert 失败；
 - 事务 A 任一句失败同时回滚 evidence 与 journal；
 - 事务 A 后崩溃；
 - 事务 B 中途失败；
 - journal recovery；
-- 两 operation 共享 digest；
+- 两 operation／dispatch 共享同一 event digest 时 CAS 实体唯一；同一 ledger 的两个 event 使用相同 digest 时仍保留两条有序 sequence→digest ref，hydrate 后 event 数与顺序不变；
 - GC 保留 journal／operation 可达 evidence；
 - GC 删除真孤儿；
 - `clearV3Store` 清 evidence；
@@ -781,7 +810,7 @@ type H2MatrixResult = {
 
 早期正确性／性能设计评审曾分别放行 dispatch-scoped 归属、first-terminal 时序、两事务 recovery set、mandatory owner 与 DATA 热路径方向；性能评审指出“统计不显著”不能证明非劣效，用户据此选择性能数据仅报告、不设 non-inferiority 阻断门。
 
-书面规格第一轮独立评审随后发现实施接口与验收仍有缺口：实施者走查为 `0 blocker / 5 major`，事实／判据证伪为 `0 blocker / 6 major`。实施者第二轮复审留下 I1、I5 两项 major；事实／判据第二轮留下 F1、F3、F4、F5 并新增旧 journal digest major。实施者第三轮达到 `0 blocker / 0 major`；事实／判据第三轮为 `0 blocker / 4 major`，指出 dispatch evidence claim、source-unavailable 组合、SSE empty-value data 与 finish diagnostic 缺口。本版逐条整改后，实施者第四轮再次达到 `0 blocker / 0 major`；事实／判据第四轮仍在运行。在该 reviewer 对最新整改 diff、原 finding 与相邻契约完成复审之前，状态保持 `confirmed-not-implemented`，不得声称书面规格整体已经达到 `0 blocker / 0 major`。评审记录见：
+书面规格第一轮独立评审随后发现实施接口与验收仍有缺口：实施者走查为 `0 blocker / 5 major`，事实／判据证伪为 `0 blocker / 6 major`。实施者第二轮复审留下 I1、I5 两项 major；事实／判据第二轮留下 F1、F3、F4、F5 并新增旧 journal digest major。实施者第三轮达到 `0 blocker / 0 major`；事实／判据第三轮为 `0 blocker / 4 major`。逐条整改后，实施者第四轮再次达到 `0 blocker / 0 major`；事实／判据第四轮为 `0 blocker / 2 major`，指出 repeated GOAWAY 与 partial fan-out。本文已把修复点上移为 session-local ordered GOAWAY ledger，取消 fan-out，等待两位原 reviewer 第五轮。在两位 reviewer 对这次重写及相邻契约完成复审之前，状态保持 `confirmed-not-implemented`，不得声称书面规格整体达到 `0 blocker / 0 major`。评审记录见：
 
 - [实施者走查](../tmp/2026-08-06-mandatory-block-delivery-review-implementer.md)；
 - [事实与判据证伪](../tmp/2026-08-06-mandatory-block-delivery-review-falsification.md)。
