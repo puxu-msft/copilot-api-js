@@ -29,16 +29,16 @@
 ## 未提交文件及在途意图
 
 - `.superpowers/sdd/task-8-report.md`：worktree-local 完整实施报告，已补评审整改、mutation、验证、ownership proof、结构怪味与三方向反思。
-- `src/lib/transport/http2-goaway-ledger.ts` 与对应 unit test：初版 `ec0cfb9c` 后的评审整改正在本增量 commit 收口。
-- 当前没有其他未提交产品源码或测试。
+- `src/lib/transport/http2-goaway-ledger.ts` 与对应 unit test：初版 `ec0cfb9c` 后的评审整改已由 `cb973eef` 收口。
+- 当前没有未提交产品源码或测试。
 
 ## §6b first-parent 对账
 
-从 BASE 到当前已提交 HEAD 的 first-parent lineage 为：`9b4178e3` progress checkpoint → `dcfc889a` RED 意图澄清 → `98cf30ef` test-first RED → `aef8d661` ordinary zero-event GREEN → `169beb26` ordered events → `6c33380f` ownership/refcount → `9290b6c1` shared violation → `ec0cfb9c` 最终 ledger／unavailable event／mutation 收口。每个 commit 均可从本文件对应 RED／GREEN 条目恢复意图；本轮评审整改将在下一增量 commit 闭合。
+从 BASE 到当前已提交 HEAD 的 first-parent lineage 为：`9b4178e3` progress checkpoint → `dcfc889a` RED 意图澄清 → `98cf30ef` test-first RED → `aef8d661` ordinary zero-event GREEN → `169beb26` ordered events → `6c33380f` ownership/refcount → `9290b6c1` shared violation → `ec0cfb9c` 最终 ledger／unavailable event／mutation 收口 → `cb973eef` deep immutability／defensive-copy／violation one-shot 评审整改。每个 commit 均可从本文件对应 RED／GREEN 与 mutation 条目恢复意图。
 
 ## 剩余项
 
-- Task 8 初版已提交 `ec0cfb9c`；本轮 deep immutability、defensive-copy 与 violation one-shot 评审整改待增量提交。
+- Task 8 实现与评审整改均已提交；等待两位原 reviewer 复审。
 - Task 10／11 必须补 Task 7 Minor receiver mutation gate；本 Task 按边界未改 AST guard，也未接 production wiring。
 
 ## 已作废路子
