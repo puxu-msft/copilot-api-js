@@ -220,10 +220,12 @@ export interface PipelineDriverWithNonStreaming extends PipelineDriver {
   getCandidateResponseSession(upstream: UpstreamStream): CandidateResponseSession | undefined
   /** Candidate identity for an isolated evaluator; Task #4 may promote this exact handle after publication. */
   getCandidateResponseIdentity(upstream: UpstreamStream): { readonly candidate: CandidateHandle; readonly dispatch: DispatchHandle } | undefined
-  /** Promotes an already atomically-published evaluation candidate as the terminal winner. */
-  commitCandidateResponse(upstream: UpstreamStream): Promise<void>
-  /** Closes an evaluation-only candidate as failed without selecting it as a delivery winner. */
-  discardCandidateResponse(upstream: UpstreamStream): Promise<void>
+  /** Promotes an already atomically-published, fully consumed evaluation candidate as the terminal winner. */
+  commitConsumedCandidateResponse(upstream: UpstreamStream): Promise<void>
+  /** Settles a fully consumed evaluation candidate as failed without selecting it as a delivery winner. */
+  discardConsumedCandidateResponse(upstream: UpstreamStream): Promise<void>
+  /** Disposes an evaluation candidate whose response was deliberately not consumed. */
+  disposeUnconsumedCandidateResponse(upstream: UpstreamStream): Promise<void>
   /** Pins the request logical terminal to an already-existing failed primary dispatch without selecting a winner. */
   pinGenerationTerminalDispatch(env: RequestEnvelope, dispatch: DispatchHandle): void
   /**
@@ -309,23 +311,28 @@ export function createPipelineDriver(deps: DriverDeps): PipelineDriverWithNonStr
     runResponseBufferedSink: (upstream, env, sink, opts) => trackResponsePump(env, runResponseBufferedSink(deps, upstream, env, sink, opts, generation)),
     getCandidateResponseSession: (upstream) => generation.currentSession(upstream),
     getCandidateResponseIdentity: (upstream) => generation.currentIdentity(upstream),
-    commitCandidateResponse: async (upstream) => {
-      const identity = generation.currentIdentity(upstream)
-      if (!identity) throw new Error("[driver] cannot commit response candidate without a generation identity")
+    commitConsumedCandidateResponse: async (upstream) => {
       const binding = generation.bindings.get(upstream)
-      if (!binding) throw new Error("[driver] cannot commit response candidate without a generation binding")
-      // Mirrors the normal publish path: select terminal ownership before closing the dispatch/candidate pair.
-      binding.candidate.env.ctx.selectGenerationWinner(identity.candidate, identity.dispatch)
-      binding.candidate.env.ctx.settleGenerationDispatch(identity.dispatch, { verdict: "committed" })
-      binding.coordinator.completeCandidate(identity.candidate, "winner", "evaluation-committed")
+      if (!binding) throw new Error("[driver] cannot commit consumed response candidate without a generation binding")
+      // The publish owner has already atomically written the frames. First settle the real scheduler dispatch;
+      // only then expose this binding as terminal winner, so a settlement failure cannot falsely promote it.
+      await binding.coordinator.settleConsumedReady(binding.candidate, { verdict: "committed" }, "winner", "evaluation-committed")
+      binding.candidate.env.ctx.selectGenerationWinner(binding.candidate.candidate, binding.candidate.dispatch)
     },
-    discardCandidateResponse: async (upstream) => {
-      const identity = generation.currentIdentity(upstream)
-      if (!identity) throw new Error("[driver] cannot discard response candidate without a generation identity")
+    discardConsumedCandidateResponse: async (upstream) => {
       const binding = generation.bindings.get(upstream)
-      if (!binding) throw new Error("[driver] cannot discard response candidate without a generation binding")
-      binding.candidate.env.ctx.settleGenerationDispatch(identity.dispatch, { verdict: "failed", reason: "evaluation-discarded" })
-      binding.coordinator.completeCandidate(identity.candidate, "failed", "evaluation-discarded")
+      if (!binding) throw new Error("[driver] cannot discard consumed response candidate without a generation binding")
+      await binding.coordinator.settleConsumedReady(binding.candidate, { verdict: "failed", reason: "evaluation-discarded" }, "failed", "evaluation-discarded")
+    },
+    disposeUnconsumedCandidateResponse: async (upstream) => {
+      const binding = generation.bindings.get(upstream)
+      if (!binding) throw new Error("[driver] cannot dispose unconsumed response candidate without a generation binding")
+      await binding.coordinator.disposeUnconsumedReady(
+        binding.candidate,
+        { verdict: "failed", reason: "evaluation-unconsumed-discarded" },
+        "failed",
+        "evaluation-unconsumed-discarded",
+      )
     },
     pinGenerationTerminalDispatch: (env, dispatch) => env.ctx.pinGenerationTerminalDispatch(dispatch),
     runPreContentRecovery: (reason) => {

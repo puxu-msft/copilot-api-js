@@ -70,8 +70,8 @@ export interface DirectRecoveryDriver<TSnapshot extends DirectRecoverySnapshot> 
   runResponseSink(upstream: UpstreamStream, env: RequestEnvelope, sink: ClientSink, opts: { readonly responseMode: "evaluate" }): Promise<ResponseOutcome>
   getCandidateSnapshot(upstream: UpstreamStream): TSnapshot
   getCandidateIdentity(upstream: UpstreamStream): { readonly candidate: CandidateHandle; readonly dispatch: DispatchHandle }
-  commitCandidate(upstream: UpstreamStream): Promise<void>
-  discardCandidate(upstream: UpstreamStream): Promise<void>
+  commitConsumedCandidate(upstream: UpstreamStream): Promise<void>
+  discardConsumedCandidate(upstream: UpstreamStream): Promise<void>
 }
 
 export interface EvaluateDirectRecoveryInput<TSnapshot extends DirectRecoverySnapshot, TResponse> {
@@ -102,11 +102,11 @@ export async function evaluateDirectRecovery<TSnapshot extends DirectRecoverySna
   const disposition: RecoveryAttemptDisposition = {
     async commit() {
       consume()
-      await input.driver.commitCandidate(input.upstream)
+      await input.driver.commitConsumedCandidate(input.upstream)
     },
     async discard() {
       consume()
-      await input.driver.discardCandidate(input.upstream)
+      await input.driver.discardConsumedCandidate(input.upstream)
     },
   }
   const base = (snapshot?: TSnapshot) => ({ primaryError: input.primaryError, frames, candidate, dispatch, disposition, ...(snapshot && { snapshot }) })

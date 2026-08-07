@@ -1213,7 +1213,7 @@ export function createRequestContext(opts: {
       return _attempts
     },
     get currentAttempt() {
-      return terminalAttempt() ?? null
+      return activeAttempt() ?? null
     },
     get initialSanitizationInfo() {
       return _initialSanitizationInfo
@@ -1507,7 +1507,7 @@ export function createRequestContext(opts: {
     },
 
     setAttemptCacheControlStripped(fields: ReadonlyArray<string>) {
-      const attempt = ctx.currentAttempt
+      const attempt = activeAttempt()
       if (attempt && fields.length > 0) {
         attempt.cacheControlStripped = [...fields]
         recordAttemptDiagnostic("request.cache_control_stripped", "info", { fields })
@@ -1572,11 +1572,11 @@ export function createRequestContext(opts: {
     },
 
     setAttemptResponse(response: ResponseData) {
-      const attempt = ctx.currentAttempt
+      const attempt = terminalAttempt()
       if (attempt) {
         attempt.response = response
         attempt.durationMs = Date.now() - attempt.startTime
-        const generationAttempt = currentGenerationAttempt()
+        const generationAttempt = terminalGenerationAttempt()
         if (generationAttempt && !generationAttempt.settled && !modelOperationRecorder.sealed) {
           generationAttempt.responsePayload = capturePayload(response.content, {
             stage: "upstream-response-projection",
@@ -1730,7 +1730,7 @@ export function createRequestContext(opts: {
      * 使 [RETRY] 行的 lastMs 有真值。已定稿（>0）则不覆盖。
      */
     finalizeCurrentAttemptDuration() {
-      const attempt = ctx.currentAttempt
+      const attempt = activeAttempt()
       if (attempt && attempt.durationMs === 0) {
         attempt.durationMs = Date.now() - attempt.startTime
         recordAttemptDiagnostic("timing.duration", "info", { durationMs: attempt.durationMs })
@@ -2180,7 +2180,7 @@ export function createRequestContext(opts: {
     },
 
     recordAttemptFailure(args: { willRetry: boolean; nextStrategy?: string; waitMs?: number; learning?: boolean }) {
-      const a = ctx.currentAttempt
+      const a = activeAttempt()
       const snap: AttemptSnapshot = {
         attemptIndex: a?.index ?? 0,
         ...(a?.durationMs !== undefined && { durationMs: a.durationMs }),

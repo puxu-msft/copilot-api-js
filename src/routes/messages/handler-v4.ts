@@ -400,8 +400,8 @@ async function evaluateDirectAnthropicRecovery(
         if (!identity) throw new Error("[Anthropic:v4] recovery evaluator candidate identity missing")
         return identity
       },
-      commitCandidate: (candidateUpstream) => driver.commitCandidateResponse(candidateUpstream),
-      discardCandidate: (candidateUpstream) => driver.discardCandidateResponse(candidateUpstream),
+      commitConsumedCandidate: (candidateUpstream) => driver.commitConsumedCandidateResponse(candidateUpstream),
+      discardConsumedCandidate: (candidateUpstream) => driver.discardConsumedCandidateResponse(candidateUpstream),
     },
     upstream,
     env,
@@ -840,7 +840,7 @@ async function runMessagesDriver(c: Context, args: RunMessagesDriverArgs): Promi
             } else {
               // The direct evaluator's exhaustive accumulator contract excludes translate candidates.
               // Task #3 must still close this unpublishable candidate; Task #4 may define its translator-specific publish contract.
-              await driver.discardCandidateResponse(recovered.upstream)
+              await driver.disposeUnconsumedCandidateResponse(recovered.upstream)
               consola.debug("[Anthropic:v4] pre-ready recovery evaluator is unavailable for a translate leg")
             }
           } catch (recoveryError) {

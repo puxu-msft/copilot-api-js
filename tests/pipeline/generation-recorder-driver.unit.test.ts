@@ -105,7 +105,7 @@ describe("generation recorder v4 driver integration", () => {
     await driver.runResponseSink(request.upstream, request.env, sink, { responseMode: "evaluate" })
     expect(frames).toEqual([{ data: "candidate" }])
 
-    driver.commitCandidateResponse(request.upstream)
+    await driver.commitConsumedCandidateResponse(request.upstream)
     ctx.complete({ success: true, model: "m", usage: { input_tokens: 1, output_tokens: 1 }, content: "candidate" })
     ctx.finalizeModelOperationDelivery()
     const terminal = await ctx.whenModelOperationFinalized()

@@ -231,7 +231,10 @@ describe("createRequestContext - attempt lifecycle", () => {
     ctx.setAttemptWireRequest({ model: "recovery", messages: [], payload: { leg: "recovery" }, headers: { "x-leg": "recovery" }, format: "anthropic-messages" })
     ctx.setAttemptTransport("http")
     ctx.setAttemptResponseHeaders({ "x-response-leg": "recovery" })
+    ctx.setAttemptCacheControlStripped(["tools[0].cache_control"])
     ctx.setAttemptError({ type: "network_error", status: 0, raw: new Error("recovery error"), message: "recovery error" })
+    ctx.finalizeCurrentAttemptDuration()
+    ctx.recordAttemptFailure({ willRetry: false, nextStrategy: "none" })
 
     const entry = ctx.toHistoryEntry()
     expect(entry.attempts?.find((attempt) => attempt.dispatchId === primaryDispatch)?.upstreamRequest?.body).toEqual({ leg: "primary" })
@@ -240,7 +243,9 @@ describe("createRequestContext - attempt lifecycle", () => {
       transport: "http",
       error: "recovery error",
       responseHeaders: { "x-response-leg": "recovery" },
+      effectiveSource: { pipeline: { cacheControlStripped: ["tools[0].cache_control"] } },
     })
+    expect(entry?.attempts?.find((attempt) => attempt.dispatchId === primaryDispatch)?.effectiveSource?.pipeline?.cacheControlStripped).toBeUndefined()
     expect(ctx.modelOperationSnapshot.dispatches.find((dispatch) => dispatch.handle === primaryDispatch)?.upstreamRequest).toMatchObject({
       metadata: { model: "primary" },
     })

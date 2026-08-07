@@ -27,6 +27,7 @@ import type {
   CandidateRuntime,
 } from "./candidate"
 import type { CandidateResponseSession } from "./candidate-response-session"
+import type { DispatchSettlement } from "./dispatch-scheduler"
 import type { GenerationBudget } from "./generation-budget"
 
 import {
@@ -87,6 +88,10 @@ export interface GenerationCoordinator<TProcessor> {
     hedgeEnv?: RequestEnvelope
     startHedge?: () => Promise<CoordinatedCandidate<TProcessor>>
   }): Promise<HedgeRaceResult<TProcessor>>
+  /** Settle a response pump that fully consumed the ready stream without cancelling it again. */
+  settleConsumedReady(candidate: CoordinatedCandidate<TProcessor>, input: DispatchSettlement, verdict: "winner" | "failed", reason: string): Promise<void>
+  /** Dispose a ready stream that evaluation deliberately did not consume. */
+  disposeUnconsumedReady(candidate: CoordinatedCandidate<TProcessor>, input: DispatchSettlement, verdict: "failed", reason: string): Promise<void>
   completeCandidate(candidate: CandidateHandle, verdict?: "winner" | "failed", reason?: string): void
   releaseCandidate(candidate: CandidateHandle): void
   cancel(reason: string): Promise<void>
@@ -289,6 +294,23 @@ export function createGenerationCoordinator<TProcessor>(input: CreateGenerationC
       }
       const hedgeProbe = probeCandidateResponse({ candidate: hedge, session: asCandidateResponseSession(hedge.processor), upstream: hedge.upstream })
       return raceProbePromises({ candidates: [primary, hedge], probes: [primaryProbe, hedgeProbe], runtimes, candidateReservations })
+    },
+
+    async settleConsumedReady(candidate, input, verdict, reason) {
+      await candidate.settleDispatch(input)
+      const runtime = runtimes.get(candidate.candidate)
+      runtime?.settle({ verdict, reason })
+      if (runtime) candidateReservations.get(runtime.handle)?.release()
+      if (active === runtime) active = undefined
+    },
+
+    async disposeUnconsumedReady(candidate, input, verdict, reason) {
+      const runtime = runtimes.get(candidate.candidate)
+      if (!runtime) throw new Error("[generation-coordinator] unconsumed ready candidate is not owned by this coordinator")
+      await runtime.disposeReadyWithSettlement(input)
+      runtime.settle({ verdict, reason })
+      candidateReservations.get(runtime.handle)?.release()
+      if (active === runtime) active = undefined
     },
 
     completeCandidate(candidate, verdict = "winner", reason = "generation-complete") {

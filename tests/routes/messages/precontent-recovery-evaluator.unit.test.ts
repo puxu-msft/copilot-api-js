@@ -65,8 +65,8 @@ function driver(outcome: ResponseOutcome, snapshot = candidate()): DirectRecover
     getCandidateIdentity() {
       return { candidate: "candidate-1" as never, dispatch: "dispatch-1" as never }
     },
-    async commitCandidate() {},
-    async discardCandidate() {},
+    async commitConsumedCandidate() {},
+    async discardConsumedCandidate() {},
   }
 }
 
@@ -145,8 +145,8 @@ describe("evaluateDirectRecovery", () => {
         getCandidateIdentity() {
           return { candidate: "candidate-1" as never, dispatch: "dispatch-1" as never }
         },
-        async commitCandidate() {},
-        async discardCandidate() {},
+        async commitConsumedCandidate() {},
+        async discardConsumedCandidate() {},
       },
       upstream: upstream(),
       env: envWithThrowingTerminalSpies(),

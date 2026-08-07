@@ -108,7 +108,10 @@ export function createCandidateRuntime<TProcessor>(input: CreateCandidateRuntime
             dispatchedAtMonotonic: ready.dispatchedAtMonotonic,
             upstream: ready.upstream,
             processor: input.createProcessor({ candidate: handle, dispatch: ready.dispatch, env: ready.env, upstream: ready.upstream }),
-            settleDispatch: (settlement) => input.scheduler.settle(ready.dispatch, settlement),
+            settleDispatch: async (settlement) => {
+              await input.scheduler.settle(ready.dispatch, settlement)
+              input.scheduler.assertNoActiveReadyDispatch(ready.dispatch)
+            },
           }
         } catch (error) {
           if (signal.aborted) settleCandidate({ verdict: "cancelled", reason: signal.reason instanceof Error ? signal.reason.message : "candidate cancelled" })

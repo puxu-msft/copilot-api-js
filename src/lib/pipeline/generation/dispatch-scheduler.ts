@@ -109,6 +109,8 @@ export interface DispatchScheduler {
   /** Dispose the one ready-but-unconsumed dispatch while preserving the caller's terminal settlement. */
   disposeActiveWithSettlement(input: DispatchSettlement): Promise<void>
   cancelActive(reason: string): Promise<void>
+  /** Assert a fully consumed response no longer occupies an active scheduler slot. */
+  assertNoActiveReadyDispatch(dispatch: DispatchHandle): void
   settle(dispatch: DispatchHandle, input: DispatchSettlement): Promise<void>
 }
 
@@ -333,6 +335,10 @@ export function createDispatchScheduler(input: CreateDispatchSchedulerInput): Di
           cancellationErrors.map((error) => asError(error)),
           "One or more candidate dispatches failed to quiesce",
         )
+    },
+
+    assertNoActiveReadyDispatch(dispatch) {
+      if (active.has(dispatch)) throw new Error(`[dispatch-scheduler] consumed dispatch ${dispatch} remains active`)
     },
 
     async settle(dispatch, settlement) {
