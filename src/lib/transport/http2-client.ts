@@ -1184,6 +1184,7 @@ async function runHttp2Fetch(u: URL, init: UpstreamFetchInit): Promise<Response>
     req.once("error", (err: Error) => {
       signal?.removeEventListener("abort", onPreResponseAbort)
       if (err.message.toUpperCase().includes("NGHTTP2_REFUSED_STREAM")) tagTransportError(err, "refused-stream")
+      termination.recordError(err, req.rstCode)
       rejectAfterRequestClosed(err)
     })
 
@@ -1200,9 +1201,9 @@ async function runHttp2Fetch(u: URL, init: UpstreamFetchInit): Promise<Response>
     req.once("close", () => {
       if (!headersReceived) {
         signal?.removeEventListener("abort", onPreResponseAbort)
-        rejectAfterRequestClosed(
-          tagTransportError(new Error(`[http2] upstream stream closed before any response (rstCode=${String(req.rstCode)})`), "pre-response-close"),
-        )
+        const error = tagTransportError(new Error(`[http2] upstream stream closed before any response (rstCode=${String(req.rstCode)})`), "pre-response-close")
+        termination.recordCloseBeforeEnd(error, req.rstCode)
+        rejectAfterRequestClosed(error)
       }
     })
 
