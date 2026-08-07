@@ -297,20 +297,36 @@ export function createGenerationCoordinator<TProcessor>(input: CreateGenerationC
     },
 
     async settleConsumedReady(candidate, input, verdict, reason) {
-      await candidate.settleDispatch(input)
       const runtime = runtimes.get(candidate.candidate)
-      runtime?.settle({ verdict, reason })
-      if (runtime) candidateReservations.get(runtime.handle)?.release()
-      if (active === runtime) active = undefined
+      let settlementError: unknown
+      try {
+        await candidate.settleDispatch(input)
+      } catch (error) {
+        settlementError = error
+      } finally {
+        runtime?.settle({ verdict: settlementError === undefined ? verdict : "failed", reason: settlementError === undefined ? reason : "settlement-failed" })
+        if (runtime) candidateReservations.get(runtime.handle)?.release()
+        if (active === runtime) active = undefined
+      }
+      if (settlementError !== undefined)
+        throw settlementError instanceof Error ? settlementError : new Error("Consumed ready settlement failed", { cause: settlementError })
     },
 
     async disposeUnconsumedReady(candidate, input, verdict, reason) {
       const runtime = runtimes.get(candidate.candidate)
       if (!runtime) throw new Error("[generation-coordinator] unconsumed ready candidate is not owned by this coordinator")
-      await runtime.disposeReadyWithSettlement(input)
-      runtime.settle({ verdict, reason })
-      candidateReservations.get(runtime.handle)?.release()
-      if (active === runtime) active = undefined
+      let disposalError: unknown
+      try {
+        await runtime.disposeReadyWithSettlement(input)
+      } catch (error) {
+        disposalError = error
+      } finally {
+        runtime.settle({ verdict: disposalError === undefined ? verdict : "failed", reason: disposalError === undefined ? reason : "disposal-failed" })
+        candidateReservations.get(runtime.handle)?.release()
+        if (active === runtime) active = undefined
+      }
+      if (disposalError !== undefined)
+        throw disposalError instanceof Error ? disposalError : new Error("Unconsumed ready disposal failed", { cause: disposalError })
     },
 
     completeCandidate(candidate, verdict = "winner", reason = "generation-complete") {

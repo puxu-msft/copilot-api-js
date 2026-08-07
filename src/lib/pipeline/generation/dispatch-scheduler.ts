@@ -344,9 +344,23 @@ export function createDispatchScheduler(input: CreateDispatchSchedulerInput): Di
     async settle(dispatch, settlement) {
       if (settled.has(dispatch)) return
       const owned = active.get(dispatch)
+      let quiesceError: unknown
       if (owned) {
-        await owned.lifecycle.quiesced
-        active.delete(dispatch)
+        try {
+          await owned.lifecycle.quiesced
+        } catch (error) {
+          quiesceError = error
+        } finally {
+          active.delete(dispatch)
+        }
+      }
+      if (quiesceError !== undefined) {
+        recordSettlement(dispatch, {
+          verdict: "failed",
+          reason: "settlement-quiesce-failed",
+          ...(settlement.error === undefined && { error: quiesceError }),
+        })
+        throw asError(quiesceError)
       }
       recordSettlement(dispatch, settlement)
     },

@@ -998,10 +998,10 @@ export function createRequestContext(opts: {
    * doesn't have to (and so it stays correct if the model is unregistered
    * mid-flight).
    */
-  function snapshot(): RequestContextSnapshot {
+  function snapshot(attempt = activeAttempt()): RequestContextSnapshot {
     const resolvedForLookup = _resolvedModel ?? undefined
     const billing = resolvedForLookup ? appState.modelIndex.get(resolvedForLookup)?.billing : undefined
-    const currentAttempt = terminalAttempt()
+    const currentAttempt = attempt
     return {
       id,
       endpoint: opts.endpoint,
@@ -1754,7 +1754,8 @@ export function createRequestContext(opts: {
     transition(newState: RequestState, meta?: Record<string, unknown>) {
       const previousState = _state
       _state = newState
-      publisher?.publish({ kind: "request.state_changed", ctx: snapshotWithSummary(ctx), previousState, ...(meta !== undefined && { meta }) })
+      const attempt = newState === "completed" || newState === "failed" || newState === "aborted" ? terminalAttempt() : activeAttempt()
+      publisher?.publish({ kind: "request.state_changed", ctx: snapshotWithSummary(ctx, attempt), previousState, ...(meta !== undefined && { meta }) })
     },
 
     complete(response: ResponseData) {
@@ -1783,7 +1784,7 @@ export function createRequestContext(opts: {
       // the `completed`/`failed` handler).
       ctx.transition("completed")
       const entry = ctx.toHistoryEntry()
-      publisher?.publish({ kind: "request.completed", ctx: snapshotWithSummary(ctx), entry })
+      publisher?.publish({ kind: "request.completed", ctx: snapshotWithSummary(ctx, terminalAttempt()), entry })
       onSettled?.(id)
     },
 
@@ -1869,7 +1870,7 @@ export function createRequestContext(opts: {
       const finalUpstream = entry.attempts?.[terminalAttemptIndex()]?.upstreamResponse
       publisher?.publish({
         kind: "request.failed",
-        ctx: snapshotWithSummary(ctx),
+        ctx: snapshotWithSummary(ctx, terminalAttempt()),
         entry,
         error: entry._index?.derived?.failureReason ?? _response.error ?? "Unknown error",
         ...(finalUpstream?.status !== undefined && { statusCode: finalUpstream.status }),
@@ -1904,7 +1905,7 @@ export function createRequestContext(opts: {
 
       ctx.transition("aborted")
       const entry = ctx.toHistoryEntry()
-      publisher?.publish({ kind: "request.aborted", ctx: snapshotWithSummary(ctx), entry })
+      publisher?.publish({ kind: "request.aborted", ctx: snapshotWithSummary(ctx, terminalAttempt()), entry })
       onSettled?.(id)
     },
 

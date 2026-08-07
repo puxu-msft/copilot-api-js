@@ -87,7 +87,7 @@ describe("evaluateDirectRecovery", () => {
 
     expect(result).toMatchObject({ kind: "complete", frames: [{ event: "message_start", data: "collector-only" }], response: { model: "candidate-model" } })
     await result.disposition.discard()
-    await expect(result.disposition.discard()).rejects.toThrow("already consumed")
+    await expect(result.disposition.discard()).rejects.toThrow("disposition is")
   })
 
   test.each([
@@ -117,19 +117,59 @@ describe("evaluateDirectRecovery", () => {
   test("rejects every duplicate disposition combination", async () => {
     const commitThenCommit = await evaluate({ kind: "complete", headers: new Headers() })
     await commitThenCommit.disposition.commit()
-    await expect(commitThenCommit.disposition.commit()).rejects.toThrow("already consumed")
+    await expect(commitThenCommit.disposition.commit()).rejects.toThrow("disposition is")
 
     const commitThenDiscard = await evaluate({ kind: "complete", headers: new Headers() })
     await commitThenDiscard.disposition.commit()
-    await expect(commitThenDiscard.disposition.discard()).rejects.toThrow("already consumed")
+    await expect(commitThenDiscard.disposition.discard()).rejects.toThrow("disposition is")
 
     const discardThenCommit = await evaluate({ kind: "complete", headers: new Headers() })
     await discardThenCommit.disposition.discard()
-    await expect(discardThenCommit.disposition.commit()).rejects.toThrow("already consumed")
+    await expect(discardThenCommit.disposition.commit()).rejects.toThrow("disposition is")
 
     const discardThenDiscard = await evaluate({ kind: "complete", headers: new Headers() })
     await discardThenDiscard.disposition.discard()
-    await expect(discardThenDiscard.disposition.discard()).rejects.toThrow("already consumed")
+    await expect(discardThenDiscard.disposition.discard()).rejects.toThrow("disposition is")
+  })
+
+  test("locks a commit-disposition port after settlement rejection", async () => {
+    const settlementError = new Error("quiesce rejected")
+    const result = await evaluateDirectRecovery({
+      driver: {
+        ...driver({ kind: "complete", headers: new Headers() }),
+        async commitConsumedCandidate() {
+          throw settlementError
+        },
+      },
+      upstream: upstream(),
+      env: envWithThrowingTerminalSpies(),
+      primaryError: new Error("primary"),
+      responseFromSnapshot: () => ({ model: "candidate-model" }),
+      isContentlessRefusal: () => false,
+    })
+
+    await expect(result.disposition.commit()).rejects.toBe(settlementError)
+    await expect(result.disposition.discard()).rejects.toThrow("failed-clean")
+  })
+
+  test("locks a discard-disposition port after settlement rejection", async () => {
+    const settlementError = new Error("dispose rejected")
+    const result = await evaluateDirectRecovery({
+      driver: {
+        ...driver({ kind: "complete", headers: new Headers() }),
+        async discardConsumedCandidate() {
+          throw settlementError
+        },
+      },
+      upstream: upstream(),
+      env: envWithThrowingTerminalSpies(),
+      primaryError: new Error("primary"),
+      responseFromSnapshot: () => ({ model: "candidate-model" }),
+      isContentlessRefusal: () => false,
+    })
+
+    await expect(result.disposition.discard()).rejects.toBe(settlementError)
+    await expect(result.disposition.commit()).rejects.toThrow("failed-clean")
   })
 
   test("maps a candidate throw without settling the shared context", async () => {

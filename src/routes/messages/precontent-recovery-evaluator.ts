@@ -94,19 +94,31 @@ export async function evaluateDirectRecovery<TSnapshot extends DirectRecoverySna
     },
   }
   const { candidate, dispatch } = input.driver.getCandidateIdentity(input.upstream)
-  let consumed = false
-  const consume = (): void => {
-    if (consumed) throw new Error("[recovery-evaluator] evaluation result disposition was already consumed")
-    consumed = true
+  let dispositionState: "pending" | "committing" | "discarding" | "committed" | "discarded" | "failed-clean" = "pending"
+  const beginDisposition = (next: "committing" | "discarding"): void => {
+    if (dispositionState !== "pending") throw new Error(`[recovery-evaluator] evaluation result disposition is ${dispositionState}`)
+    dispositionState = next
   }
   const disposition: RecoveryAttemptDisposition = {
     async commit() {
-      consume()
-      await input.driver.commitConsumedCandidate(input.upstream)
+      beginDisposition("committing")
+      try {
+        await input.driver.commitConsumedCandidate(input.upstream)
+        dispositionState = "committed"
+      } catch (error) {
+        dispositionState = "failed-clean"
+        throw error
+      }
     },
     async discard() {
-      consume()
-      await input.driver.discardConsumedCandidate(input.upstream)
+      beginDisposition("discarding")
+      try {
+        await input.driver.discardConsumedCandidate(input.upstream)
+        dispositionState = "discarded"
+      } catch (error) {
+        dispositionState = "failed-clean"
+        throw error
+      }
     },
   }
   const base = (snapshot?: TSnapshot) => ({ primaryError: input.primaryError, frames, candidate, dispatch, disposition, ...(snapshot && { snapshot }) })

@@ -254,6 +254,34 @@ describe("createRequestContext - attempt lifecycle", () => {
     })
   })
 
+  test("publishes active recovery attempt snapshots but terminal fail snapshots from pinned primary", () => {
+    const { ctx, events } = makeContext()
+    const primary = ctx.beginGenerationCandidate({ role: "primary" })
+    const primaryDispatch = ctx.beginGenerationDispatch({ candidate: primary, strategy: "primary" })
+    const recovery = ctx.beginGenerationCandidate({ role: "recovery", parentCandidate: primary })
+    ctx.beginGenerationDispatch({ candidate: recovery, strategy: "precontent-recovery" })
+    ctx.pinGenerationTerminalDispatch(primaryDispatch)
+    ctx.transition("streaming")
+    ctx.recordAttemptFailure({ willRetry: false, nextStrategy: "none" })
+
+    const activityEvent = events.findLast((event) => event.kind === "request.state_changed")
+    const attemptEvent = events.findLast((event) => event.kind === "request.attempt_failed")
+    expect(activityEvent?.ctx.summary).toMatchObject({
+      currentAttemptStartedAt: ctx.currentAttempt?.startTime,
+      currentStrategy: "precontent-recovery",
+    })
+    expect(attemptEvent).toMatchObject({
+      ctx: { currentAttemptStartedAt: ctx.currentAttempt?.startTime },
+      attempt: { strategy: "precontent-recovery" },
+    })
+
+    ctx.settleGenerationCandidate(recovery, { verdict: "failed", reason: "evaluation-discarded" })
+    ctx.fail("test", new Error("primary terminal"))
+    const terminalEvent = events.findLast((event) => event.kind === "request.failed")
+    expect(terminalEvent?.ctx.summary).toMatchObject({ currentStrategy: "primary" })
+    expect(terminalEvent?.entry._index?.derived?.currentStrategy).toBe("primary")
+  })
+
   test("pins abort terminal history and V3 egress to primary while a discarded evaluation recovery remains active", async () => {
     const { ctx } = makeContext()
     const primary = ctx.beginGenerationCandidate({ role: "primary" })
