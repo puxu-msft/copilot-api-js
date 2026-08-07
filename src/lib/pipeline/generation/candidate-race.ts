@@ -8,8 +8,8 @@ import type { CandidateResponseSession } from "./candidate-response-session"
 
 import {
   //
+  asResponseCodecRenderError,
   isResponseCodecRenderError,
-  ResponseCodecRenderError,
 } from "../stream/response-processor"
 
 export interface ProbeCandidate<TCandidate> {
@@ -86,7 +86,7 @@ function transformCandidateFrame(frame: ClientFrame, session: CandidateResponseS
   try {
     return session.responseOpts.onRenderedFrame ? session.responseOpts.onRenderedFrame(frame) : frame
   } catch (error) {
-    throw new ResponseCodecRenderError(error)
+    throw asResponseCodecRenderError(error)
   }
 }
 
@@ -94,7 +94,7 @@ function shouldStopAfterCandidateFrame(frame: ClientFrame, session: CandidateRes
   try {
     return session.responseOpts.stopAfterFrame?.(frame) ?? false
   } catch (error) {
-    throw new ResponseCodecRenderError(error)
+    throw asResponseCodecRenderError(error)
   }
 }
 

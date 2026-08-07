@@ -1011,9 +1011,28 @@ async function maybeRunHedgedResponseSink(
     }
 
     env.ctx.trackOperationBody(raced.loserCleanup)
-    failureSource = "downstream-sink"
-    await writeWinnerFrames(sink, raced.bufferedFrames)
-    for await (const frame of raced.liveFrames) await writeWinnerFrame(sink, frame)
+    try {
+      await writeWinnerFrames(sink, raced.bufferedFrames)
+    } catch (error) {
+      if (classifyStreamError(error) === "client-abort") return { kind: "settled-abort" }
+      return streamErrorOutcome(error, env, "downstream-sink")
+    }
+    const iterator = raced.liveFrames[Symbol.asyncIterator]()
+    for (;;) {
+      let next: IteratorResult<ClientFrame>
+      try {
+        next = await iterator.next()
+      } catch (error) {
+        return streamErrorOutcome(error, env, responseFailureSource(error))
+      }
+      if (next.done) break
+      try {
+        await writeWinnerFrame(sink, next.value)
+      } catch (error) {
+        if (classifyStreamError(error) === "client-abort") return { kind: "settled-abort" }
+        return streamErrorOutcome(error, env, "downstream-sink")
+      }
+    }
     binding.coordinator.releaseCandidate(selected.candidate)
     return { kind: "complete", headers: selected.upstream.headers, ...(selected.processor.finish && { finish: selected.processor.finish }) }
   } catch (error) {
@@ -1093,9 +1112,28 @@ function streamErrorOutcome(
   env: RequestEnvelope,
   source: ResponseFailureSource,
   truncated?: boolean,
-): { kind: "stream-error"; error: unknown; source: ResponseFailureSource; truncated?: boolean } {
+): {
+  kind: "stream-error"
+  error: unknown
+  source: ResponseFailureSource
+  diagnostics?: import("./types").ResponseFailureDiagnostics
+  truncated?: boolean
+} {
   if (source === "upstream-transport" && classifyStreamError(error) === "unknown-cancel") recordAbortProvenanceGap("post-header", env.clientFormat)
-  return { kind: "stream-error" as const, error, source, ...(truncated !== undefined && { truncated }) }
+  const diagnostics =
+    isResponseCodecRenderError(error) && (error.upstreamError !== undefined || error.flushError !== undefined) ?
+      {
+        ...(error.upstreamError !== undefined && { upstreamError: error.upstreamError }),
+        ...(error.flushError !== undefined && { flushError: error.flushError }),
+      }
+    : undefined
+  return {
+    kind: "stream-error" as const,
+    error: isResponseCodecRenderError(error) ? unwrapResponseCodecRenderError(error) : error,
+    source,
+    ...(diagnostics && { diagnostics }),
+    ...(truncated !== undefined && { truncated }),
+  }
 }
 
 /**
@@ -1197,7 +1235,7 @@ async function runResponseSink(
     // classified client-abort) settles as abort — the handler writes nothing further.
     if (classifyStreamError(error) === "client-abort") return { kind: "settled-abort" }
     if (error instanceof LiveOwnerFailureError) return ownerFailureOutcome(error.failure, "close-anchor-before-real", env)
-    if (isResponseCodecRenderError(error)) return streamErrorOutcome(unwrapResponseCodecRenderError(error), env, "codec-render")
+    if (isResponseCodecRenderError(error)) return streamErrorOutcome(error, env, "codec-render")
     // An unwrapped iterator failure came from the upstream transport. Rendering is wrapped at its source.
     return streamErrorOutcome(error, env, responseFailureSource(error))
   } finally {
@@ -1349,7 +1387,11 @@ export async function runResponseBufferedSink(
   // the SINGLE flush IS the terminal → `isTerminalFlush:true`, byte-identical to the previous inline
   // whole-response commit (R1). C1 (spec §3.3): freeze the heartbeat BEFORE snapshotting `injected` +
   // flushing so a mid-flush timer tick can't inject a second anchor start(0).
-  type FlushResult = { kind: "ok" } | { kind: "client-abort" } | { kind: "write-error"; error: unknown }
+  type FlushResult =
+    | { kind: "ok" }
+    | { kind: "client-abort" }
+    | { kind: "write-error"; error: unknown }
+    | { kind: "processing-error"; error: unknown; source: "codec-render" | "delivery-owner" }
   const flushBufferedFrames = async (
     frames: Array<ClientFrame>,
     isTerminalFlush: boolean,
@@ -1374,14 +1416,19 @@ export async function runResponseBufferedSink(
       const closeAnchorBeforeReal = async (): Promise<void> => {
         const closeOutcome = await closeAnchorViaOwner("before-real")
         if (closeOutcome?.kind === "settled-abort") throw new StreamClientAbortError()
-        if (closeOutcome?.kind === "stream-error") throw closeOutcome.error
+        if (closeOutcome?.kind === "stream-error") throw new DeliveryOwnerError(closeOutcome.error, false)
       }
       // Zero-content terminal (message_delta/stop or error before ANY real block): close the anchor here so
       // it never dangles open (symmetry with live-reconcile's terminal close-off).
       if (isTerminalFlush) await closeAnchorBeforeReal()
       // Candidate-hosted buffered-merge seam (spec §4): the reducer's transform replaces the raw buffer
       // with its (possibly compacted / repaired) frames just before write. Undefined = verbatim (R1).
-      const toFlush = transformBufferedFlush ? transformBufferedFlush(frames, mergeCtx) : frames
+      let toFlush: ReadonlyArray<ClientFrame>
+      try {
+        toFlush = transformBufferedFlush ? transformBufferedFlush(frames, mergeCtx) : frames
+      } catch (error) {
+        throw new ResponseCodecRenderError(error)
+      }
       for (const frame of toFlush) {
         // H1: the anchor already forwarded message_start ahead of the anchor block — skip the buffered
         // copy so the client sees exactly one message_start (re-sending it would corrupt the stream).
@@ -1405,8 +1452,10 @@ export async function runResponseBufferedSink(
       }
       return { kind: "ok" }
     } catch (error) {
-      // Client gone mid-flush (a `sink.write` reject) — map it so the buffered sink ALWAYS returns a
-      // ResponseOutcome, never a raw throw (mirrors runResponseSink's catch; the buffer is discarded).
+      // Only the actual sink.write boundary is downstream-sink. Buffer transforms and anchor ownership
+      // must retain their own provenance rather than being relabelled by this broad flush catch.
+      if (error instanceof ResponseCodecRenderError) return { kind: "processing-error", error: unwrapResponseCodecRenderError(error), source: "codec-render" }
+      if (error instanceof DeliveryOwnerError) return { kind: "processing-error", error: error.cause, source: "delivery-owner" }
       if (classifyStreamError(error) === "client-abort") return { kind: "client-abort" }
       return { kind: "write-error", error }
     }
@@ -1461,7 +1510,12 @@ export async function runResponseBufferedSink(
               if (closeOutcome?.kind === "stream-error") return closeOutcome
             }
             const anchorShift = allocationPort?.wireState?.allocator.anchorsOpened() ?? 0
-            await sink.write(anchor && anchorShift > 0 ? anchor.remap(toWrite, 1) : toWrite)
+            try {
+              await sink.write(anchor && anchorShift > 0 ? anchor.remap(toWrite, 1) : toWrite)
+            } catch (error) {
+              if (classifyStreamError(error) === "client-abort") return { kind: "settled-abort" }
+              return streamErrorOutcome(error, env, "downstream-sink")
+            }
             continue
           }
           // Capture the FIRST message_start (before buffering it) into the SHARED anchorState so the
@@ -1493,6 +1547,7 @@ export async function runResponseBufferedSink(
             sink.resumeHeartbeat?.()
             buffer.length = 0
             if (res.kind === "client-abort") return { kind: "settled-abort" }
+            if (res.kind === "processing-error") return streamErrorOutcome(res.error, env, res.source)
             if (res.kind === "write-error") {
               // Client gone mid-retreat-flush — the forwarded prefix is on the wire (un-retryable). Surface as a
               // retreated resolution (never-swallow the write error). The `finally` closes the sink.
@@ -1549,6 +1604,7 @@ export async function runResponseBufferedSink(
             buffer.length = 0
             committedAny = true
             if (res.kind === "client-abort") return { kind: "settled-abort" }
+            if (res.kind === "processing-error") return streamErrorOutcome(res.error, env, res.source)
             if (res.kind === "write-error") {
               // A block committed, then the client-side write failed mid-commit — the committed prefix is
               // on the wire (un-retryable). Surface as a graceful degrade (never-swallow the write error).
@@ -1575,7 +1631,7 @@ export async function runResponseBufferedSink(
       // A codec/rewrite failure never enters retry or continuation. Return it before the shared
       // truncation branches so even a codec-thrown StreamClientAbortError cannot become settled-abort.
       if (failure?.source === "codec-render") {
-        return streamErrorOutcome(unwrapResponseCodecRenderError(failure.error), env, failure.source)
+        return streamErrorOutcome(failure.error, env, failure.source)
       }
 
       // Retreated to live: the frames are already forwarded — NO retry is possible (can't unsend).
@@ -1591,7 +1647,7 @@ export async function runResponseBufferedSink(
         return (
           closeOutcome
           ?? streamErrorOutcome(
-            failure ? unwrapResponseCodecRenderError(failure.error) : new Error("upstream stream truncated: closed without message_stop"),
+            failure?.error ?? new Error("upstream stream truncated: closed without message_stop"),
             env,
             failure?.source ?? "upstream-transport",
             failure === undefined,
@@ -1629,6 +1685,7 @@ export async function runResponseBufferedSink(
         sink.close?.()
         const res = await flushBufferedFrames(buffer, true, { cause: "terminal-drain" }, candidateOpts.transformBufferedFlush)
         if (res.kind === "client-abort") return { kind: "settled-abort" }
+        if (res.kind === "processing-error") return streamErrorOutcome(res.error, env, res.source)
         if (res.kind === "write-error") {
           // Client gone mid-flush. L2 produced a COMPLETE generation (reached the terminal frame) — the
           // flush failed at the transport, NOT the retry: count it as a `success` so the hit-rate

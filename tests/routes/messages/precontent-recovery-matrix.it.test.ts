@@ -18,6 +18,7 @@ import {
 
 import { tagTransportError } from "~/lib/error/transport-reason"
 import { setModels } from "~/lib/models/cache"
+import { setDeliverySessionTestHooksForTests } from "~/lib/pipeline/delivery/session"
 import { setStateForTests } from "~/lib/state"
 import { StreamShutdownError } from "~/lib/stream"
 
@@ -245,6 +246,31 @@ describe("Task 4.3b pre-content recovery matrix", () => {
     } finally {
       setUpstreamHookForTests(undefined)
     }
+  })
+
+  test.each([
+    ["production sink write", () => setDeliverySessionTestHooksForTests({ onWrite: () => Promise.reject(new Error("production sink write rejected")) })],
+    [
+      "production delivery owner",
+      () => setDeliverySessionTestHooksForTests({ onOwnerOperation: () => Promise.reject(new Error("production owner rejected")) }),
+    ],
+  ])("%s failure never makes a fresh recovery dispatch", async (_name, injectFailure) => {
+    let calls = 0
+    applyFetchMock(
+      mock(() => {
+        calls += 1
+        return Promise.resolve(createSseResponse(completeFrames("msg_delivery_failure")))
+      }),
+    )
+    injectFailure()
+    const { createFullTestApp } = await import("../../helpers/test-app")
+    const response = await request(createFullTestApp(), `precontent-delivery-no-recovery-${_name}`)
+    const text = await response.text()
+
+    expect(calls).toBe(1)
+    // The failed production delivery can make the client wire unavailable before an error terminator
+    // is writable. Dispatch count is the recovery oracle: no fresh upstream candidate was opened.
+    expect(text).not.toContain("msg_ready_recovery")
   })
 
   test("codec-render failures never make a fresh recovery dispatch", async () => {

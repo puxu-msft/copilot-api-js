@@ -28,7 +28,7 @@ import { createPipelineDriver } from "~/lib/pipeline/driver"
 import { createCandidateResponseSession } from "~/lib/pipeline/generation/candidate-response-session"
 import { createFrozenHedgePolicy } from "~/lib/pipeline/generation/hedge-policy"
 
-function frames(label: string, signal: AbortSignal, stallPrimary: boolean): AsyncIterable<UpstreamFrame> {
+function frames(label: string, signal: AbortSignal, stallPrimary: boolean, postBoundaryError?: Error): AsyncIterable<UpstreamFrame> {
   return {
     async *[Symbol.asyncIterator]() {
       yield { event: "content_block_start", data: JSON.stringify({ type: "content_block_start", index: 0, content_block: { type: "text", text: label } }) }
@@ -39,6 +39,7 @@ function frames(label: string, signal: AbortSignal, stallPrimary: boolean): Asyn
           else signal.addEventListener("abort", () => reject(abortError()), { once: true })
         })
       }
+      if (postBoundaryError) throw postBoundaryError
       yield { event: "content_block_delta", data: JSON.stringify({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: label } }) }
       yield { event: "content_block_stop", data: JSON.stringify({ type: "content_block_stop", index: 0 }) }
       yield { event: "message_stop", data: JSON.stringify({ type: "message_stop" }) }
@@ -66,6 +67,7 @@ function driverHarness(input: {
   stallPrimary: boolean
   policy: ReturnType<typeof hedgePolicy>
   candidateOnRenderedFrame?: (frame: import("~/lib/pipeline/types").ClientFrame) => import("~/lib/pipeline/types").ClientFrame | undefined
+  postBoundaryError?: Error
 }) {
   let opens = 0
   let primaryCancelled = false
@@ -79,7 +81,11 @@ function driverHarness(input: {
       })
       return {
         kind: "stream",
-        upstream: { headers: new Headers({ "x-candidate": label }), frames: frames(label, controller.signal, input.stallPrimary), lifecycle: owner },
+        upstream: {
+          headers: new Headers({ "x-candidate": label }),
+          frames: frames(label, controller.signal, input.stallPrimary, input.postBoundaryError),
+          lifecycle: owner,
+        },
         lifecycle: owner,
       }
     },
@@ -223,6 +229,19 @@ describe("production driver hedged response", () => {
       kind: "stream-error",
       source: "codec-render",
       error: renderError,
+    })
+  })
+
+  test("post-boundary upstream iterator failure is upstream-transport", async () => {
+    const upstreamError = new Error("post-boundary upstream failure")
+    const harness = driverHarness({ stallPrimary: false, policy: hedgePolicy(true, 60_000), postBoundaryError: upstreamError })
+    const request = await harness.driver.runRequest({ body: {}, headers: new Headers() })
+    if (!request.ok) throw new Error("unexpected rejection")
+
+    await expect(harness.driver.runResponseSink(request.upstream, request.env, makeArraySink().sink)).resolves.toMatchObject({
+      kind: "stream-error",
+      source: "upstream-transport",
+      error: upstreamError,
     })
   })
 

@@ -22,7 +22,12 @@ import type {
 } from "~/lib/pipeline/types"
 
 import { createCandidateResponseSession } from "~/lib/pipeline/generation/candidate-response-session"
-import { createGenerationCoordinator } from "~/lib/pipeline/generation/coordinator"
+import {
+  //
+  createGenerationCoordinator,
+  hedgeFailureSource,
+  type HedgeRaceFailure,
+} from "~/lib/pipeline/generation/coordinator"
 import { createGenerationBudget } from "~/lib/pipeline/generation/generation-budget"
 
 function env(): RequestEnvelope {
@@ -125,6 +130,23 @@ async function collect(stream: AsyncIterable<ClientFrame>): Promise<Array<Client
 }
 
 describe("generation coordinator hedge race", () => {
+  test.each([
+    ["primary transport then hedge codec", ["upstream-transport", "codec-render"]],
+    ["hedge codec then primary transport", ["codec-render", "upstream-transport"]],
+    ["same-tick candidate order", ["codec-render", "upstream-transport"]],
+  ])("mixed hedge failures (%s) fail closed as codec-render", (_name, sources) => {
+    const failures = sources.map((source, index) => ({ error: new Error(`failure ${index}`), source })) as Array<HedgeRaceFailure>
+    expect(hedgeFailureSource(failures)).toBe("codec-render")
+  })
+
+  test("all transport hedge failures remain upstream-transport", () => {
+    const failures: Array<HedgeRaceFailure> = [
+      { error: new Error("primary transport"), source: "upstream-transport" },
+      { error: new Error("hedge transport"), source: "upstream-transport" },
+    ]
+    expect(hedgeFailureSource(failures)).toBe("upstream-transport")
+  })
+
   test("secondary first complete block wins, cancels primary, and winner processor continues", async () => {
     let releasePrimary!: () => void
     const primaryGate = new Promise<void>((resolve) => (releasePrimary = resolve))

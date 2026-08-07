@@ -179,6 +179,24 @@ describe("runResponseBufferedSink — L2 transactional buffered retry", () => {
     expect(sendCount()).toBe(0)
   })
 
+  test("buffer transform failure is codec-render rather than downstream-sink", async () => {
+    const env = makeEnv()
+    env.ctx.beginAttempt({})
+    const transformError = new Error("buffer transform failed")
+    const { driver, sendCount } = makeDriver([upstream(framesClean(completeFrames("must-not-recover")))])
+
+    const outcome = await driver.runResponseBufferedSink(upstream(framesClean(completeFrames("transform-failure"))), env, makeArraySink().sink, {
+      ...makeStopTracker(),
+      retryCap: 1,
+      transformBufferedFlush() {
+        throw transformError
+      },
+    } as RunBufferedOpts)
+
+    expect(outcome).toMatchObject({ kind: "stream-error", source: "codec-render", error: transformError })
+    expect(sendCount()).toBe(0)
+  })
+
   test("transport-close RST → re-exchange; client receives ONLY the final complete generation", async () => {
     const env = makeEnv()
     env.ctx.beginAttempt({}) // simulate runRequest's first exchange (attempt 0)
@@ -267,6 +285,23 @@ describe("runResponseBufferedSink — L2 transactional buffered retry", () => {
     expect(sendCount()).toBe(0) // retreat forfeits retry — the retry upstream is never consumed
     // The WHOLE generation reached the client (retreat flushes the buffered prefix + writes the rest live).
     expect(sinkTypes(frames)).toEqual(["message_start", "content_block_start", "content_block_delta", "content_block_stop", "message_delta", "message_stop"])
+  })
+
+  test("retreated live sink rejection is downstream-sink", async () => {
+    const env = makeEnv()
+    env.ctx.beginAttempt({})
+    const first = upstream(framesClean(completeFrames("msg_retreat_write")))
+    const { driver, sendCount } = makeDriver([upstream(framesClean(completeFrames("must-not-recover")))])
+    const { sink } = makeArraySink({ rejectAtFrame: 1 })
+
+    const outcome = await driver.runResponseBufferedSink(first, env, sink, {
+      ...makeStopTracker(),
+      retryCap: 1,
+      bufferCapBytes: 30,
+    } as RunBufferedOpts)
+
+    expect(outcome).toMatchObject({ kind: "stream-error", source: "downstream-sink" })
+    expect(sendCount()).toBe(0)
   })
 
   test("buffer cap exceeded THEN the stream RSTs → stream-error, NO retry (frames already forwarded)", async () => {

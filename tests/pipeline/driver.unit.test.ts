@@ -947,6 +947,9 @@ describe("driver.runResponse — S5 chain + S6 render", () => {
     const outcome = await driver.runResponseSink({ frames: upstreamThenThrow(), headers: new Headers() }, env, makeArraySink().sink)
 
     expect(outcome).toMatchObject({ kind: "stream-error", source: "codec-render", error: flushError })
+    if (outcome.kind !== "stream-error") throw new Error("expected stream-error")
+    expect(outcome.diagnostics).toEqual({ upstreamError: expect.any(Error), flushError })
+    expect((outcome.diagnostics?.upstreamError as Error).message).toBe("upstream failed first")
   })
 
   test("natural drain flush rewrite failure is codec-render", async () => {
@@ -975,6 +978,8 @@ describe("driver.runResponse — S5 chain + S6 render", () => {
     const outcome = await driver.runResponseSink(okStream([{ data: "buffered" }]), env, makeArraySink().sink)
 
     expect(outcome).toMatchObject({ kind: "stream-error", source: "codec-render", error: flushError })
+    if (outcome.kind !== "stream-error") throw new Error("expected stream-error")
+    expect(outcome.diagnostics).toEqual({ flushError })
   })
 
   test("flush on exception: a buffering rewrite drains in finally when upstream throws (H3 — exception-path parity)", async () => {

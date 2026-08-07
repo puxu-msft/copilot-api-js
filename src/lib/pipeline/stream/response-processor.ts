@@ -60,11 +60,15 @@ export interface CreateResponseProcessorInput {
 export class ResponseCodecRenderError extends Error {
   readonly responseFailureSource = "codec-render" as const
   readonly cause: unknown
+  readonly upstreamError?: unknown
+  readonly flushError?: unknown
 
-  constructor(cause: unknown) {
+  constructor(cause: unknown, diagnostics: { upstreamError?: unknown; flushError?: unknown } = {}) {
     super(cause instanceof Error ? cause.message : String(cause), { cause })
     this.name = "ResponseCodecRenderError"
     this.cause = cause
+    this.upstreamError = diagnostics.upstreamError
+    this.flushError = diagnostics.flushError
   }
 }
 
@@ -159,6 +163,7 @@ async function* processFrames(input: ProcessFramesInput): AsyncIterable<ClientFr
   }
   const origin = readOrigin(upstream)
   let naturalDrain = false
+  let upstreamError: unknown
 
   try {
     for await (const frame of upstream.frames) {
@@ -239,11 +244,14 @@ async function* processFrames(input: ProcessFramesInput): AsyncIterable<ClientFr
       }
     }
     naturalDrain = true
+  } catch (error) {
+    upstreamError = error
+    throw error
   } finally {
     // Preserve the historical exception-path flush: a buffering rewrite may hold frames that still
     // must be delivered before the original upstream failure reaches the driver. The flush chain,
     // capture callbacks, and its rendered frames are response processing rather than transport I/O.
-    yield* flushResponseFrames(rewrites, states, captureRewrite, captureFlush, opts, renderer, env, dispatch)
+    yield* flushResponseFrames(rewrites, states, captureRewrite, captureFlush, opts, renderer, env, dispatch, upstreamError)
     if (!naturalDrain) input.onSettled?.()
   }
 
@@ -264,6 +272,7 @@ async function* flushResponseFrames(
   renderer: CandidateResponseRenderer,
   env: RequestEnvelope,
   dispatch: DispatchHandle | undefined,
+  upstreamError: unknown,
 ): AsyncIterable<ClientFrame> {
   try {
     for (const flushed of flushChain(rewrites, states, captureRewrite, captureFlush)) {
@@ -271,11 +280,15 @@ async function* flushResponseFrames(
       else yield* renderFrames((frame, requestEnv) => renderer.renderResponse(frame, requestEnv), flushed, env, dispatch)
     }
   } catch (error) {
-    throw asResponseCodecRenderError(error)
+    const codecError = asResponseCodecRenderError(error)
+    throw new ResponseCodecRenderError(codecError.cause, {
+      ...(upstreamError !== undefined && { upstreamError }),
+      flushError: codecError.cause,
+    })
   }
 }
 
-function asResponseCodecRenderError(error: unknown): ResponseCodecRenderError {
+export function asResponseCodecRenderError(error: unknown): ResponseCodecRenderError {
   return isResponseCodecRenderError(error) ? error : new ResponseCodecRenderError(error)
 }
 

@@ -108,6 +108,11 @@ export interface HedgeRaceAggregateError extends AggregateError {
   readonly hedgeFailures: ReadonlyArray<HedgeRaceFailure>
 }
 
+/** A mixed race is fail-closed: timing must not convert a codec failure into a recoverable transport failure. */
+export function hedgeFailureSource(failures: ReadonlyArray<HedgeRaceFailure>): Extract<ResponseFailureSource, "upstream-transport" | "codec-render"> {
+  return failures.every((failure) => failure.source === "upstream-transport") ? "upstream-transport" : "codec-render"
+}
+
 export type HedgeRaceResult<TProcessor> =
   | ({ readonly kind: "winner" } & HedgeWinner<TProcessor>)
   | { readonly kind: "terminal"; readonly candidate: CoordinatedCandidate<TProcessor>; readonly bufferedFrames: ReadonlyArray<ClientFrame> }
@@ -324,9 +329,8 @@ async function raceProbePromises<TProcessor>(input: {
     }
   }
   if (firstTerminal) return { kind: "terminal", candidate: firstTerminal.candidate, bufferedFrames: firstTerminal.bufferedFrames }
-  // A mixed race must not infer origin from error messages. The first candidate failure in the
-  // deterministic probe settlement order owns the terminal source; the AggregateError retains all causes.
-  const [firstFailure] = failures
+  // Recovery must fail closed for a mixed race: Promise settlement order is scheduling, not source authority.
+  // Only an all-transport set may reach the transport recovery classifier.
   const aggregate = new AggregateError(
     failures.map((failure) => failure.error),
     "No generation candidate produced a complete client block",
@@ -335,7 +339,7 @@ async function raceProbePromises<TProcessor>(input: {
   return {
     kind: "failure",
     error: aggregate,
-    source: firstFailure.source,
+    source: hedgeFailureSource(failures),
   }
 }
 

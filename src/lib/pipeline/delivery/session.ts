@@ -56,6 +56,11 @@ export interface CreateDownstreamDeliverySessionOptions {
   readonly isRealContentFrame?: (frame: ClientFrame) => boolean
 }
 
+export interface DeliverySessionTestHooks {
+  onWrite?: (entry: DeliveryFrame) => void | Promise<void>
+  onOwnerOperation?: (operation: OwnerOperation) => void | Promise<void>
+}
+
 /** Generation-scoped delivery port consumed by the retry/competition engine. */
 export interface DownstreamDeliverySession {
   readonly identity: symbol
@@ -74,10 +79,16 @@ export interface DownstreamDeliverySession {
 const deliveryBySink = new WeakMap<ClientSink, DownstreamDeliverySession>()
 const deliveryByAllocationPort = new WeakMap<WireBlockAllocationPort, DownstreamDeliverySession>()
 let deliverySessionObserverForTests: ((session: DownstreamDeliverySession) => void) | undefined
+let deliverySessionTestHooks: DeliverySessionTestHooks | undefined
 
 /** Test-only observer for HTTP-path wiring assertions; reset through isolated-fixture RESETTERS. */
 export function setDeliverySessionObserverForTests(observer: ((session: DownstreamDeliverySession) => void) | undefined): void {
   deliverySessionObserverForTests = observer
+}
+
+/** Test-only production-path fault injection; hooks run inside the real delivery session. */
+export function setDeliverySessionTestHooksForTests(hooks: DeliverySessionTestHooks | undefined): void {
+  deliverySessionTestHooks = hooks
 }
 
 /** A non-client owner failure, tagged at the source with whether C9's commit point was crossed. */
@@ -135,6 +146,8 @@ export function createDownstreamDeliverySession(options: CreateDownstreamDeliver
     await serializer.enqueue(async () => {
       if (state !== "open" && (!allowTerminating || state !== "terminating")) return
       applyPendingFrame(entry)
+      const onWriteForTests = deliverySessionTestHooks?.onWrite
+      if (onWriteForTests) await onWriteForTests(entry)
       await writeToSink(sink, entry)
       applyWireFrame(entry)
       const writtenAt = monotonicNow()
@@ -326,6 +339,7 @@ export function createDownstreamDeliverySession(options: CreateDownstreamDeliver
     source?: LegSource,
     onCommit?: () => void,
   ): Promise<OwnerResult<true>> => {
+    await deliverySessionTestHooks?.onOwnerOperation?.(operation)
     if (specs.length === 0) {
       reservation.rollback()
       throw new Error("[delivery] allocation build produced no wire frames")
