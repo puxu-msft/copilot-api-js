@@ -432,12 +432,15 @@ export function createRequestContext(opts: {
   const generationAttemptByHandle = new Map<DispatchHandle, GenerationAttemptCapture>()
   let activeGenerationDispatch: DispatchHandle | undefined
   let selectedGenerationDispatch: DispatchHandle | undefined
+  let terminalGenerationDispatch: DispatchHandle | undefined
   let primaryGenerationCandidate: import("./model-operation-record").CandidateHandle | undefined
   const clientFrameHandles: Array<FrameNodeHandle> = []
   const clientFrameObservations: Array<OperationFrameObservation> = []
 
   const currentGenerationAttempt = (): GenerationAttemptCapture | undefined =>
     (activeGenerationDispatch === undefined ? undefined : generationAttemptByHandle.get(activeGenerationDispatch)) ?? generationAttempts.at(-1)
+  const terminalGenerationAttempt = (): GenerationAttemptCapture | undefined =>
+    (terminalGenerationDispatch === undefined ? undefined : generationAttemptByHandle.get(terminalGenerationDispatch)) ?? currentGenerationAttempt()
   const selectGenerationAttempt = (handle: DispatchHandle): GenerationAttemptCapture => {
     const attempt = generationAttemptByHandle.get(handle)
     if (!attempt) throw new Error(`[request-context] unknown generation dispatch ${handle}`)
@@ -834,7 +837,7 @@ export function createRequestContext(opts: {
     attribution?: { category?: "client" | "upstream" | "proxy" | "timeout" | "shutdown" | "reaper"; code?: string; detail?: string },
   ): void {
     if (modelOperationRecorder.sealed || pendingGenerationTerminal !== undefined) return
-    const currentAttempt = currentGenerationAttempt()
+    const currentAttempt = terminalGenerationAttempt()
     if (currentAttempt && !currentAttempt.settled)
       settleGenerationAttempt(currentAttempt, outcome === "completed" ? "committed" : "failed", `terminal:${outcome}`, error)
     pendingGenerationTerminal = {
@@ -876,7 +879,7 @@ export function createRequestContext(opts: {
   function commitGenerationObservabilityTerminal(clientPayload?: unknown): ModelOperationRecord {
     const terminal = pendingGenerationTerminal
     if (terminal === undefined) throw new Error("[request-context] generation finalizer started without a logical terminal")
-    const finalAttempt = currentGenerationAttempt()
+    const finalAttempt = terminalGenerationAttempt()
     const primaryUpstreamPayload = finalAttempt?.rawResponsePayload ?? finalAttempt?.sourceBodyPayload ?? finalAttempt?.responsePayload
     if (clientPayload !== undefined) {
       clientPayloadHandle = capturePayload(clientPayload, {
@@ -1458,6 +1461,11 @@ export function createRequestContext(opts: {
       captureFrameActionFor(attempt, inputFrames, outputFrames, transform)
     },
 
+    pinGenerationTerminalDispatch(dispatch) {
+      if (!generationAttemptByHandle.has(dispatch)) throw new Error(`[request-context] unknown generation dispatch ${dispatch}`)
+      terminalGenerationDispatch = dispatch
+    },
+
     selectGenerationWinner(candidate, dispatch) {
       const operation = modelOperationRecorder.snapshot()
       const row = operation.dispatches.find((entry) => entry.handle === dispatch)
@@ -1465,6 +1473,7 @@ export function createRequestContext(opts: {
       if (row.candidate !== candidate) throw new Error(`[request-context] dispatch ${dispatch} does not belong to candidate ${candidate}`)
       activeGenerationDispatch = dispatch
       selectedGenerationDispatch = dispatch
+      terminalGenerationDispatch = dispatch
       const generationAttempt = generationAttemptByHandle.get(dispatch)
       if (generationAttempt?.sseEvents !== undefined) ctx.setSseEvents(generationAttempt.sseEvents)
     },

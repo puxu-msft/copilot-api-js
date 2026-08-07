@@ -61,6 +61,9 @@ function driver(outcome: ResponseOutcome, snapshot = candidate()): DirectRecover
     getCandidateSnapshot() {
       return snapshot
     },
+    getCandidateIdentity() {
+      return { candidate: "candidate-1" as never, dispatch: "dispatch-1" as never }
+    },
   }
 }
 
@@ -72,7 +75,6 @@ function evaluate(outcome: ResponseOutcome, snapshot = candidate()) {
     primaryError: new Error("primary"),
     responseFromSnapshot: (value) => ({ model: value.acc.model }),
     isContentlessRefusal: () => false,
-    unrepairableToolInput: () => undefined,
   })
 }
 
@@ -107,13 +109,15 @@ describe("evaluateDirectRecovery", () => {
         getCandidateSnapshot() {
           return candidate()
         },
+        getCandidateIdentity() {
+          return { candidate: "candidate-1" as never, dispatch: "dispatch-1" as never }
+        },
       },
       upstream: upstream(),
       env: envWithThrowingTerminalSpies(),
       primaryError: new Error("primary"),
       responseFromSnapshot: () => ({ model: "unused" }),
       isContentlessRefusal: () => false,
-      unrepairableToolInput: () => undefined,
     })
 
     expect(result).toMatchObject({ kind: "unexpected-throw", recoveryError })

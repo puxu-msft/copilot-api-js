@@ -218,6 +218,10 @@ export interface PipelineDriverWithNonStreaming extends PipelineDriver {
   runResponseBufferedSink(upstream: UpstreamStream, env: RequestEnvelope, sink: ClientSink, opts: RunBufferedOpts): Promise<ResponseOutcome>
   /** Current candidate response session; follows buffered recovery to its fresh child candidate. */
   getCandidateResponseSession(upstream: UpstreamStream): CandidateResponseSession | undefined
+  /** Candidate identity for an isolated evaluator; Task #4 may promote this exact handle after publication. */
+  getCandidateResponseIdentity(upstream: UpstreamStream): { readonly candidate: CandidateHandle; readonly dispatch: DispatchHandle } | undefined
+  /** Pins the request logical terminal to an already-existing failed primary dispatch without selecting a winner. */
+  pinGenerationTerminalDispatch(env: RequestEnvelope, dispatch: DispatchHandle): void
   /**
    * Starts the one parent-less recovery candidate saved by a failed pre-ready primary dispatch.
    * Throws when no such failure is available or the final prepared wire could double-execute a server tool.
@@ -239,6 +243,7 @@ interface PreReadyFailure {
   readonly coordinator: GenerationCoordinator<CandidateResponseSession>
   /** The exact post-preflight envelope dispatched by the failed primary. */
   readonly env: RequestEnvelope
+  readonly terminalDispatch: DispatchHandle
 }
 
 /** Blocks B2 pre-content recovery after either a pre-ready dispatch failure or a ready-state response failure. */
@@ -256,6 +261,7 @@ interface DriverGenerationRuntime {
   readonly bindings: WeakMap<UpstreamStream, GenerationBinding>
   bind(coordinator: GenerationCoordinator<CandidateResponseSession>, candidate: CoordinatedCandidate<CandidateResponseSession>): GenerationBinding
   currentSession(upstream: UpstreamStream): CandidateResponseSession | undefined
+  currentIdentity(upstream: UpstreamStream): { readonly candidate: CandidateHandle; readonly dispatch: DispatchHandle } | undefined
 }
 
 function createDriverGenerationRuntime(): DriverGenerationRuntime {
@@ -273,6 +279,10 @@ function createDriverGenerationRuntime(): DriverGenerationRuntime {
       const binding = bindings.get(upstream)
       return binding ? latestByCoordinator.get(binding.coordinator) : undefined
     },
+    currentIdentity(upstream) {
+      const binding = bindings.get(upstream)
+      return binding ? { candidate: binding.candidate.candidate, dispatch: binding.candidate.dispatch } : undefined
+    },
   }
 }
 
@@ -288,9 +298,14 @@ export function createPipelineDriver(deps: DriverDeps): PipelineDriverWithNonStr
     inspectRequest: (raw, stopAfter) => inspectRequest(deps, raw, stopAfter),
     runResponseNonStreaming: (upstream, env) => deps.codec.renderResponseNonStreaming(upstream.nonStream, env),
     runResponseWhole: (response, env) => runResponseWhole(deps, response, env),
-    runResponseSink: (upstream, env, sink, opts) => trackResponsePump(env, runResponseSink(deps, upstream, env, sink, opts, generation)),
+    runResponseSink: (upstream, env, sink, opts) => {
+      const pump = runResponseSink(deps, upstream, env, sink, opts, generation)
+      return opts?.responseMode === "evaluate" ? pump : trackResponsePump(env, pump)
+    },
     runResponseBufferedSink: (upstream, env, sink, opts) => trackResponsePump(env, runResponseBufferedSink(deps, upstream, env, sink, opts, generation)),
     getCandidateResponseSession: (upstream) => generation.currentSession(upstream),
+    getCandidateResponseIdentity: (upstream) => generation.currentIdentity(upstream),
+    pinGenerationTerminalDispatch: (env, dispatch) => env.ctx.pinGenerationTerminalDispatch(dispatch),
     runPreContentRecovery: (reason) => {
       const failure = lastPreReadyFailure
       const recovery = runPreContentRecovery(deps, generation, failure, reason)
@@ -454,7 +469,9 @@ async function runRequest(
   } catch (error) {
     // Preserve runRequest's rejection exactly, while retaining the coordinator plus post-hook env for the
     // caller's explicit B2 recovery decision. No recovery is dispatched from this error path.
-    rememberPreReadyFailure({ coordinator, env: preflight })
+    const terminalDispatch = preflight.ctx.modelOperationSnapshot.dispatches.at(-1)?.handle
+    if (!terminalDispatch) throw new Error("[driver] failed pre-ready primary has no dispatch for terminal attribution")
+    rememberPreReadyFailure({ coordinator, env: preflight, terminalDispatch })
     throw error
   }
 }
@@ -468,6 +485,7 @@ async function runPreContentRecovery(
   if (!failure) throw new Error("[driver] runPreContentRecovery called without a preceding pre-ready failure")
 
   assertNoServerExecutionRisk(deps, failure.env, "pre-ready")
+  failure.env.ctx.pinGenerationTerminalDispatch(failure.terminalDispatch)
   const candidate = await failure.coordinator.runRecoveryFromPreReadyFailure(reason, failure.env)
   generation.bind(failure.coordinator, candidate)
   return { ok: true, upstream: candidate.upstream, env: candidate.env }
@@ -1194,10 +1212,11 @@ async function runResponseSink(
   opts?: RunResponseOpts,
   generation?: DriverGenerationRuntime,
 ): Promise<ResponseOutcome> {
-  const hedged = await maybeRunHedgedResponseSink(deps, upstream, env, sink, opts, generation)
+  const evaluating = opts?.responseMode === "evaluate"
+  const hedged = evaluating ? undefined : await maybeRunHedgedResponseSink(deps, upstream, env, sink, opts, generation)
   if (hedged) return hedged
   const unhedgedBinding = generation?.bindings.get(upstream)
-  if (unhedgedBinding) {
+  if (unhedgedBinding && !evaluating) {
     env.ctx.selectGenerationWinner(unhedgedBinding.candidate.candidate, unhedgedBinding.candidate.dispatch)
     const allocationPort = opts?.wireAllocationPort ?? getDownstreamDeliverySession(sink)?.allocationPort
     if (allocationPort?.wireState) {
@@ -1268,7 +1287,7 @@ async function runResponseSink(
     // An unwrapped iterator failure came from the upstream transport. Rendering is wrapped at its source.
     return streamErrorOutcome(error, env, responseFailureSource(error))
   } finally {
-    sink.close?.()
+    if (!evaluating) sink.close?.()
   }
 }
 

@@ -268,6 +268,7 @@ const createAnthropicCandidateResponseSession: CandidateResponseSessionFactory =
       ...input,
       createState: () => ({
         acc: createAnthropicStreamAccumulator(),
+        repairOutcomeStart: input.env.ctx.repairOutcomes.length,
         terminalObserver: createTerminalObserver(),
         checkRepetition: createStreamRepetitionChecker(model),
         sseEvents: [] as Array<SseEventRecord>,
@@ -328,6 +329,7 @@ const createAnthropicCandidateResponseSession: CandidateResponseSessionFactory =
       snapshot: (state) => ({
         kind: "anthropic-direct" as const,
         acc: state.acc,
+        unrepairableToolInput: input.env.ctx.repairOutcomes.slice(state.repairOutcomeStart).find((outcome) => outcome.outcome === "unrepairable")?.tool,
         terminalObserver: state.terminalObserver,
         sseEvents: state.sseEvents,
         streamState: state.streamState,
@@ -387,11 +389,16 @@ async function evaluateDirectAnthropicRecovery(
 ) {
   return evaluateDirectRecovery({
     driver: {
-      runResponseSink: (candidateUpstream, candidateEnv, collector) => driver.runResponseSink(candidateUpstream, candidateEnv, collector),
+      runResponseSink: (candidateUpstream, candidateEnv, collector, opts) => driver.runResponseSink(candidateUpstream, candidateEnv, collector, opts),
       getCandidateSnapshot: (candidateUpstream) => {
         const snapshot = anthropicCandidateSnapshot(driver, candidateUpstream)
         if (snapshot.kind !== "anthropic-direct") throw new Error("[Anthropic:v4] direct recovery evaluator received a translate candidate")
         return snapshot
+      },
+      getCandidateIdentity: (candidateUpstream) => {
+        const identity = driver.getCandidateResponseIdentity(candidateUpstream)
+        if (!identity) throw new Error("[Anthropic:v4] recovery evaluator candidate identity missing")
+        return identity
       },
     },
     upstream,
@@ -399,7 +406,6 @@ async function evaluateDirectAnthropicRecovery(
     primaryError,
     responseFromSnapshot: (snapshot) => buildAnthropicResponseData(snapshot.acc, snapshot.acc.model),
     isContentlessRefusal: (snapshot) => isContentlessRefusal(snapshot.acc.stopReason, hasClientVisibleContent(snapshot.acc.contentBlocks)),
-    unrepairableToolInput: () => env.ctx.unrepairableToolInput ?? undefined,
   })
 }
 

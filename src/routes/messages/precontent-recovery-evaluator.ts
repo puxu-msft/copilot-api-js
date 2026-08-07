@@ -1,3 +1,8 @@
+import type {
+  //
+  CandidateHandle,
+  DispatchHandle,
+} from "~/lib/context/model-operation-record"
 import type { RequestEnvelope } from "~/lib/pipeline/envelope"
 import type {
   //
@@ -17,7 +22,9 @@ export interface RecoveryAttemptSnapshot {
 interface RecoveryAttemptBase<TSnapshot extends RecoveryAttemptSnapshot> {
   readonly primaryError: unknown
   readonly frames: ReadonlyArray<ClientFrame>
-  readonly snapshot: TSnapshot
+  readonly candidate: CandidateHandle
+  readonly dispatch: DispatchHandle
+  readonly snapshot?: TSnapshot
 }
 
 interface RecoveryAttemptFailure<TSnapshot extends RecoveryAttemptSnapshot> extends RecoveryAttemptBase<TSnapshot> {
@@ -35,8 +42,8 @@ export type RecoveryAttemptEvaluationResult<TSnapshot extends RecoveryAttemptSna
   | (RecoveryAttemptBase<TSnapshot> & { readonly kind: "settled-abort" })
   | (RecoveryAttemptBase<TSnapshot> & { readonly kind: "refusal" })
   | (RecoveryAttemptBase<TSnapshot> & { readonly kind: "unrepairable-tool-input"; readonly tool: string })
-  | (RecoveryAttemptFailure<TSnapshot> & { readonly kind: "delivery-finished" })
-  | (RecoveryAttemptFailure<TSnapshot> & { readonly kind: "unexpected-throw" })
+  | (RecoveryAttemptBase<TSnapshot> & { readonly kind: "delivery-finished" })
+  | (RecoveryAttemptFailure<TSnapshot> & { readonly kind: "unexpected-throw"; readonly snapshotError?: unknown })
 
 export interface DirectRecoveryAccumulator {
   readonly model: string
@@ -48,11 +55,13 @@ export interface DirectRecoveryAccumulator {
 
 export interface DirectRecoverySnapshot extends RecoveryAttemptSnapshot {
   readonly acc: DirectRecoveryAccumulator
+  readonly unrepairableToolInput?: string
 }
 
 export interface DirectRecoveryDriver<TSnapshot extends DirectRecoverySnapshot> {
-  runResponseSink(upstream: UpstreamStream, env: RequestEnvelope, sink: ClientSink): Promise<ResponseOutcome>
+  runResponseSink(upstream: UpstreamStream, env: RequestEnvelope, sink: ClientSink, opts: { readonly responseMode: "evaluate" }): Promise<ResponseOutcome>
   getCandidateSnapshot(upstream: UpstreamStream): TSnapshot
+  getCandidateIdentity(upstream: UpstreamStream): { readonly candidate: CandidateHandle; readonly dispatch: DispatchHandle }
 }
 
 export interface EvaluateDirectRecoveryInput<TSnapshot extends DirectRecoverySnapshot, TResponse> {
@@ -62,7 +71,6 @@ export interface EvaluateDirectRecoveryInput<TSnapshot extends DirectRecoverySna
   readonly primaryError: unknown
   readonly responseFromSnapshot: (snapshot: TSnapshot) => TResponse
   readonly isContentlessRefusal: (snapshot: TSnapshot) => boolean
-  readonly unrepairableToolInput: () => string | undefined
 }
 
 /** Drives an isolated candidate into a collector that has `write` but no terminal capability. */
@@ -75,48 +83,56 @@ export async function evaluateDirectRecovery<TSnapshot extends DirectRecoverySna
       frames.push(frame)
     },
   }
-  const base = (snapshot: TSnapshot) => ({ primaryError: input.primaryError, frames, snapshot })
+  const { candidate, dispatch } = input.driver.getCandidateIdentity(input.upstream)
+  const base = (snapshot?: TSnapshot) => ({ primaryError: input.primaryError, frames, candidate, dispatch, ...(snapshot && { snapshot }) })
 
+  let outcome: ResponseOutcome
   try {
-    const outcome = await input.driver.runResponseSink(input.upstream, input.env, collector)
-    const snapshot = input.driver.getCandidateSnapshot(input.upstream)
-    switch (outcome.kind) {
-      case "complete": {
-        if (snapshot.acc.streamError)
-          return {
-            ...base(snapshot),
-            kind: "upstream-error",
-            recoveryError: new Error(`${snapshot.acc.streamError.type}: ${snapshot.acc.streamError.message}`),
-          }
-        if (input.isContentlessRefusal(snapshot)) return { ...base(snapshot), kind: "refusal" }
-        const tool = input.unrepairableToolInput()
-        if (tool !== undefined) return { ...base(snapshot), kind: "unrepairable-tool-input", tool }
-        if (!snapshot.acc.sawMessageStop)
-          return { ...base(snapshot), kind: "truncation", recoveryError: new Error("upstream stream truncated: closed without message_stop") }
-        return { ...base(snapshot), kind: "complete", response: input.responseFromSnapshot(snapshot) }
-      }
-      case "stream-error": {
+    outcome = await input.driver.runResponseSink(input.upstream, input.env, collector, { responseMode: "evaluate" })
+  } catch (recoveryError) {
+    return { ...base(), kind: "unexpected-throw", recoveryError }
+  }
+
+  let snapshot: TSnapshot
+  try {
+    snapshot = input.driver.getCandidateSnapshot(input.upstream)
+  } catch (snapshotError) {
+    return { ...base(), kind: "unexpected-throw", recoveryError: outcome, snapshotError }
+  }
+
+  switch (outcome.kind) {
+    case "complete": {
+      if (snapshot.acc.streamError)
         return {
           ...base(snapshot),
-          kind: "stream-error",
-          recoveryError: outcome.error,
-          source: outcome.source,
-          ...(outcome.diagnostics && { diagnostics: outcome.diagnostics }),
+          kind: "upstream-error",
+          recoveryError: new Error(`${snapshot.acc.streamError.type}: ${snapshot.acc.streamError.message}`),
         }
-      }
-      case "settled-abort": {
-        return { ...base(snapshot), kind: "settled-abort" }
-      }
-      case "delivery-finished": {
-        return { ...base(snapshot), kind: "delivery-finished", recoveryError: input.primaryError }
-      }
-      default: {
-        outcome satisfies never
-        throw new Error("unreachable recovery outcome")
+      if (input.isContentlessRefusal(snapshot)) return { ...base(snapshot), kind: "refusal" }
+      const tool = snapshot.unrepairableToolInput
+      if (tool !== undefined) return { ...base(snapshot), kind: "unrepairable-tool-input", tool }
+      if (!snapshot.acc.sawMessageStop)
+        return { ...base(snapshot), kind: "truncation", recoveryError: new Error("upstream stream truncated: closed without message_stop") }
+      return { ...base(snapshot), kind: "complete", response: input.responseFromSnapshot(snapshot) }
+    }
+    case "stream-error": {
+      return {
+        ...base(snapshot),
+        kind: "stream-error",
+        recoveryError: outcome.error,
+        source: outcome.source,
+        ...(outcome.diagnostics && { diagnostics: outcome.diagnostics }),
       }
     }
-  } catch (recoveryError) {
-    const snapshot = input.driver.getCandidateSnapshot(input.upstream)
-    return { ...base(snapshot), kind: "unexpected-throw", recoveryError }
+    case "settled-abort": {
+      return { ...base(snapshot), kind: "settled-abort" }
+    }
+    case "delivery-finished": {
+      return { ...base(snapshot), kind: "delivery-finished" }
+    }
+    default: {
+      outcome satisfies never
+      throw new Error("unreachable recovery outcome")
+    }
   }
 }

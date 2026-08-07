@@ -333,6 +333,8 @@ export interface WireBlockAllocationPort {
 
 /** Per-call hooks for {@link PipelineDriver.runResponse}. */
 export interface RunResponseOpts {
+  /** `publish` is the normal client-delivery path; `evaluate` is an isolated candidate-only drain. */
+  responseMode?: "publish" | "evaluate"
   /** Explicit generation owner for a decorated live sink; never register wrapper objects as owners. */
   wireAllocationPort?: WireBlockAllocationPort
   /**
