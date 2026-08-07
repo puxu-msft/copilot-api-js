@@ -6,7 +6,9 @@
 - `git merge-base --is-ancestor 1d24d9bf HEAD` 已于开工时返回 exit 0，无需 fast-forward。
 - RED checkpoint 已新增唯一测试：创建 ledger 后取得一个 dispatch lease，在无 event／无 violation 时 `freezeAtTerminal()` 必须返回 Task 7 `GoawaySnapshot` 的 ordinary zero-event 形状与 `operationLease: null`。
 - RED：`bun test /home/xp/src/copilot-api-js/.worktree/agent-a249668f4c8be26c4/tests/transport/http2-goaway-ledger.unit.test.ts` 为 0 pass、1 fail、1 error；精确失败是 `Cannot find module '~/lib/transport/http2-goaway-ledger'`。
-- GREEN：新增只满足首测的最小 `SessionGoawayLedger`／dispatch source 后，同命令为 1 pass、0 fail；`bun run --cwd /home/xp/src/copilot-api-js/.worktree/agent-a249668f4c8be26c4 typecheck` exit 0。暂未实现或测试 repeated events／refcount／violation。
+- GREEN 1：新增只满足首测的最小 `SessionGoawayLedger`／dispatch source 后，同命令为 1 pass、0 fail；typecheck exit 0。
+- RED 2：ordered-event 测试先因 `RegisteredGoawayEvidence` export 缺失而 0 pass、1 fail、1 error。
+- GREEN 2：实现 captured evidence 与 append-only events 后 targeted test 为 2 pass、0 fail；typecheck exit 0。覆盖 first／decrease／equal／increase order、same digest 不合并、visible increase 的 `appended-protocol-error` 与 violation；仍未实现 session close／refcount／duplicate release。
 - 工作树内报告 `.superpowers/sdd/task-8-report.md` 已创建并记录相同基线，但该 worktree-local 报告不纳入本 progress-only commit。
 
 ## 已完成
@@ -23,7 +25,7 @@
 
 ## 剩余项
 
-1. 下一轮逐个以 RED→GREEN 添加 ordered append、三态 freeze、first-reason-wins、ownership 与 duplicate fail-loud；当前最小骨架刻意不预实现这些行为。
+1. 下一轮逐个以 RED→GREEN 添加 zero-event violation freeze、first-reason-wins、ownership 与 duplicate fail-loud；ordered append slice 已完成。
 2. `src/lib/transport/http2-goaway-ledger.ts` 只导入 Task 7 serializable schema 与 `DispatchHandle`，最终实现 registry／session owner／dispatch lease／operation lease 的单一 refcount。
 3. 跑 targeted GREEN、typecheck、lint；随后分别做 fan-out、zero-event violation drop、close-owner early byte loss、duplicate release mutation controls。
 4. 完成报告、自审与最终精确 pathspec `feat: add in-memory ordered GOAWAY ledger` commit。
