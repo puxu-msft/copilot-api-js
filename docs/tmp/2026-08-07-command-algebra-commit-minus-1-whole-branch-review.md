@@ -8,14 +8,14 @@
 
 ## Findings 最终 disposition
 
-| Finding | 修复 commits／范围 | 独立复评结论 |
-|---|---|---|
-| Major 1：C11 runtime import scanner 漏同一行第二 import | `9ca24c18`；后续 closure 加固至 `0fe17435` | 已关闭：全 import 扫描、bootstrap、local／bare runtime closure 与 ENTRY provenance 均复评通过。 |
-| Major 2：disk/runtime/skipped aggregates 仅验 hash、可协调自洽篡改 | `9ec5da94`, `d564212e`, `baea24d7` | 已关闭：strict schema、15-run 双向语义对账及 coordinated tamper controls 通过复评。 |
-| Major 3：nested same-basename artifact 可替换 direct child | `9ec5da94`, `d564212e`, `baea24d7` | 已关闭：canonical direct parent、固定 basename、nested 负控与 symlink-OUT 正控通过复评。 |
-| Major 4：receipt-v1 缺严格 consumer／tamper oracle | `b05af54e` 至 `7cbe5fa4` | 已关闭：12-key strict parser、独立 T0.1 expected facts、pointer／manifest／receipt provenance、RFC3339 与 leap-second controls 通过复评。 |
-| Producer containment：lexical OUT 可经 symlink 落入 TREE | `198d4db5`, `0771b49b` | 已关闭：pre-write deepest-ancestor gate、post-mkdir recheck、canonical run layout及 no-replace atomic writer通过复评。 |
-| XML parser：手写 regex/entity parser 是承重协议重实现 | `eaa8099f`, `00915750`, `b71d4a1e` | 已关闭：改用直接锁定的 `saxes@6.0.0`；真实 Bun corpus、namespace／entity／skip／malformed controls与 API consumers复评通过。 |
+| Finding                                                                                              | 修复 commits／范围                          | 独立复评结论                                                                                                                                                         |
+| ---------------------------------------------------------------------------------------------------- | ------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Major 1：C11 runtime import scanner 漏同一行第二 import                                              | `9ca24c18`；后续 closure 加固至 `0fe17435`  | 已关闭：全 import 扫描、bootstrap、local／bare runtime closure 与 ENTRY provenance 均复评通过。                                                                      |
+| Major 2：disk/runtime/skipped aggregates 仅验 hash、可协调自洽篡改                                   | `9ec5da94`, `d564212e`, `baea24d7`          | 已关闭：strict schema、15-run 双向语义对账及 coordinated tamper controls 通过复评。                                                                                  |
+| Major 3：nested same-basename artifact 可替换 direct child                                           | `9ec5da94`, `d564212e`, `baea24d7`          | 已关闭：canonical direct parent、固定 basename、nested 负控与 symlink-OUT 正控通过复评。                                                                             |
+| Major 4：receipt-v1 缺严格 consumer／tamper oracle                                                   | `b05af54e` 至 `7cbe5fa4`                    | 已关闭：12-key strict parser、独立 T0.1 expected facts、pointer／manifest／receipt provenance、RFC3339 与 leap-second controls 通过复评。                            |
+| Producer containment：lexical OUT 可经 symlink 落入 TREE                                             | `198d4db5`, `0771b49b`                      | 已关闭：pre-write deepest-ancestor gate、post-mkdir recheck、canonical run layout及 no-replace atomic writer通过复评。                                               |
+| XML parser：手写 regex/entity parser 是承重协议重实现                                                | `eaa8099f`, `00915750`, `b71d4a1e`          | 已关闭：改用直接锁定的 `saxes@6.0.0`；真实 Bun corpus、namespace／entity／skip／malformed controls与 API consumers复评通过。                                         |
 | C11 SAX dependency closure：TREE-local false-red、手写 closure、自证 bootstrap、package-set 单向比较 | `fdf7c12d` 至 `0fe17435`，集成于 `4fe920fc` | 已关闭：实际 Bun resolution内容身份、metafile递归 closure、ENTRY-bound manifest／package／lock、built-in bootstrap及 observed＝manifest package population复评通过。 |
 
 ## A／B 最终裁决
@@ -27,3 +27,11 @@
 ## 当前 verdict
 
 截至 `4fe920fca820f7dcee630d76e2aab120952eb7ea`，除 A 的独立 plan amendment＋commit mapping 与 B 的五份文档修复／范围外复评外，原始评审链没有未决 blocker 或 major。A／B 完成前，本记录不批准将 Commit -1 作为最终 entry candidate；真实 T0.0f／T0.0d 仍只能在 merge 后按 frozen §0.4f 启动。
+
+## 后续复评闭环
+
+- **B 已关闭**：`389a21e1` 修正五份 durable docs，独立复评确认历史测试锚、review range 与 integration candidate 均不冒充 current/final/A。
+- **A 已关闭**：`9bd169c3` 增加 §0.5 一次性例外与 82-row mapping；首轮复评发现 artifact role 自动分类错配，`7215b890` 修正后复评为 0 blocker／0 major，SHA multiset 的正确样本绿且 missing／orphan／duplicate 三类临时副本 mutation 均红。
+- **master 同步已关闭**：`0a302e01` 合入 `master@03c3dd13` 后，独立 merged-state review 核对三处冲突与两处自动合并接缝，结论 0 blocker／0 major、可正式 merge。该同步未改 frozen 82-SHA range或五份 durable docs。
+
+因此 Commit -1 的 whole-branch findings、A、B 与 master-sync 集成 finding 全部关闭；**pre-merge A 仍不存在**，正式合入 master 的 merge result 才定义 entry candidate。

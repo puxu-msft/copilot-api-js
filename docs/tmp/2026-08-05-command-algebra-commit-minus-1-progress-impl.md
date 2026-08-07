@@ -7,7 +7,7 @@ plan: docs/rfc/2026-08-03-generation-emission-command-algebra/prompts/commit-min
 tested_code_head: 3b5ac1e41d87ab089becd55afe38f788643a4390
 reviewed_branch_head: 0fe17435f0c4f12ea28be6a1399704e6c289d70f
 integration_merge_candidate: 4fe920fca820f7dcee630d76e2aab120952eb7ea
-status: Commit -1 implementation and whole-branch remediation complete; master merge awaits the separate commit-message traceability ruling
+status: Commit -1 implementation, traceability, whole-branch remediation, and master-sync review complete; ready for formal master merge
 ---
 
 # 进度 —— generation emission command algebra Commit -1
@@ -20,7 +20,9 @@ status: Commit -1 implementation and whole-branch remediation complete; master m
 - [x] T0.0e：entry-evidence validator C1～C11、receipt v1、EV-01～EV-28 synthetic controls。
 - [x] Commit -1 集成门：focused controls、typecheck、Prettier、diff-check、完整 backend 已完成；各次证据按其 measured commit/range 记录。
 - [x] whole-branch merged-state review：原始 findings 已由截至 `0fe17435` 的不可变独立评审 package 全部关闭；该 SHA 只表示 reviewed branch coverage，不表示当前或最终 HEAD。
-- [ ] merge Commit -1 to `master`：先闭合独立的 commit-message traceability 裁决，再合入；`4fe920fc` 是 backend 已绿的 integration merge candidate，不是 entry A。
+- [x] commit-message traceability：`9bd169c3`／`7215b890` 的 §0.5 amendment 与 82-row mapping 经独立语义复评关闭。
+- [x] current-master 同步：`0a302e01` 合入 `master@03c3dd13`，typecheck、focused evidence 63/0、canonical 20× 80/0、backend 6265/0、generator zero-diff；独立 merged-state review 0 blocker／0 major。
+- [ ] formal merge Commit -1 to `master`：下一动作；merge result 才是 entry candidate，不能把 `0a302e01` 当 A。
 
 T0.0f、P、T0.0d、真实 A/P receipt 消费与 T0.1 均是正式 `master` merge 后的后续阶段；它们不属于 Commit -1 未完成项。**pre-merge A 不存在**：最终合入 `master` 的 merge 结果才定义 entry candidate，且必须在合入后重新取 SHA 与重新测量，不能把任何特性分支 HEAD 或预演 merge SHA 冻结为 A。
 
@@ -40,9 +42,9 @@ T0.0f、P、T0.0d、真实 A/P receipt 消费与 T0.1 均是正式 `master` merg
 
 ## 剩余动作与边界
 
-1. 保留 whole-branch 原始 finding 与整改 review package 的闭合结论；无需重开已关闭的代码 finding。
-2. 独立闭合 commit-message traceability 裁决后，将 Commit -1 合入 `master`；合并对象以当时的实际 main lineage 为准，不把本文任何 SHA 当作未来最终 merge SHA。
-3. 合入后才重取 `ENTRY_SHA=A` 并在 A 上重新测量；随后按冻结顺序执行 T0.0f → P → T0.0d → T0.1。
+1. 将已同步至 `master@03c3dd13` 且独立复评放行的 Commit -1 分支正式合入 `master`；合并前若 master 再前进，重新同步并重跑受影响门，不能把本文任何 SHA 当未来 merge SHA。
+2. 以正式 merge result 重取 `ENTRY_SHA=A`，并从 A 创建干净 cutover worktree。
+3. 在 A 上按冻结顺序执行 T0.0f → P → T0.0d → T0.1。
 
 ## 历史路径说明
 

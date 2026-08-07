@@ -18,7 +18,7 @@ T0.0f, P, T0.0d, real A/P receipt consumption, and T0.1 remain explicit post-`ma
 
 ## Completion and next action
 
-T0.0a/b/c/e、Commit -1 gates 与 whole-branch code findings 已关闭。剩余动作是先闭合独立的 commit-message traceability 裁决，再把 Commit -1 合入当时真实的 `master`；合入后重取并测量 `ENTRY_SHA=A`，再按 T0.0f → P → T0.0d → T0.1 继续。本文不把 branch/review/rehearsal SHA 写成 A，也不写会随提交立刻过期的自指 final HEAD。
+T0.0a/b/c/e、Commit -1 gates、whole-branch code findings、commit-message traceability 与 current-master sync review 已关闭。剩余动作是把 Commit -1 合入当时真实的 `master`；合入后重取并测量 `ENTRY_SHA=A`，再按 T0.0f → P → T0.0d → T0.1 继续。本文不把 branch/review/master-sync SHA 写成 A，也不写会随提交立刻过期的自指 final HEAD。
 
 ## Structural-smell scan and reflection
 

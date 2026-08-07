@@ -1,6 +1,6 @@
 # Commit -1 commit-to-plan traceability map
 
-> **状态：待独立语义复评。** §0.5 一次性例外已提交；本表只有在 semantic mapping 独立复评通过后才关闭该偏差。
+> **状态：独立语义复评已放行。** §0.5 一次性例外与本表已提交；reviewer 在 `7215b890` 上核完 82 行 semantic mapping，结论 A 已关闭、0 blocker／0 major。后续 `0a302e01` master 同步未改本表及其 frozen range。
 
 ## 口径
 

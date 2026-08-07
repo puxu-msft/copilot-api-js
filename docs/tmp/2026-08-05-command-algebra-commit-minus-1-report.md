@@ -16,7 +16,9 @@ Immutable independent-review coverage closes the original whole-branch findings 
 - [x] T0.0e：validator C1～C11、receipt v1、EV-01～EV-28 synthetic fixtures 和 runtime closure provenance。
 - [x] Commit -1 integrated gates：focused controls、typecheck、format/diff checks 和 backend。
 - [x] whole-branch merged-state review 与代码 finding remediation：截至上述 immutable reviewed package 全部关闭。
-- [ ] commit-message traceability 裁决；闭合后将 Commit -1 merge 到 `master`。
+- [x] commit-message traceability：§0.5 amendment 与 82-row mapping 经两轮独立语义复评关闭。
+- [x] current-master sync：`0a302e01` 的三处冲突与两处自动合并接缝经独立 merged-state review 放行。
+- [ ] formal merge Commit -1 to `master`；merge result 才定义 entry candidate A。
 
 T0.0f、P、T0.0d、真实 A/P receipt 消费与 T0.1 都是正式 `master` merge 后的独立阶段，不是 Commit -1 未完成项。**pre-merge A 不存在**：最终 merge 结果才定义 entry candidate，且必须在合入后重取和测量；任何 branch head／reviewed head／rehearsal merge 都不能预先冻结成 A。
 
@@ -45,4 +47,4 @@ T0.0f、P、T0.0d、真实 A/P receipt 消费与 T0.1 都是正式 `master` merg
 
 ## Remaining action
 
-代码 whole-branch findings 已关闭。下一步只先解决独立的 commit-message traceability 裁决，再把 Commit -1 合入当时的真实 `master` lineage；合入后重取并测量 `ENTRY_SHA=A`，然后按 T0.0f → P → T0.0d → T0.1 继续。本文不写自指的最终 HEAD，也不把 rehearsal merge candidate 当成 A。
+代码 whole-branch findings、commit-message traceability 与 current-master sync review 已关闭。下一步把 Commit -1 合入当时真实的 `master` lineage；合入后重取并测量 `ENTRY_SHA=A`，然后按 T0.0f → P → T0.0d → T0.1 继续。本文不写自指的最终 HEAD，也不把 feature/master-sync SHA 当成 A。

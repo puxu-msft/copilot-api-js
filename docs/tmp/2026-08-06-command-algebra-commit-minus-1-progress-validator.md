@@ -7,7 +7,7 @@ plan: docs/rfc/2026-08-03-generation-emission-command-algebra/prompts/commit-min
 tested_code_head: 3b5ac1e41d87ab089becd55afe38f788643a4390
 reviewed_branch_head: 0fe17435f0c4f12ea28be6a1399704e6c289d70f
 integration_merge_candidate: 4fe920fca820f7dcee630d76e2aab120952eb7ea
-status: T0.0e and whole-branch remediation complete; master merge awaits commit-message traceability ruling
+status: T0.0e, traceability, whole-branch remediation, and master-sync review complete; ready for formal master merge
 ---
 
 # 进度 —— Commit -1 T0.0e evidence validator
@@ -19,7 +19,9 @@ status: T0.0e and whole-branch remediation complete; master merge awaits commit-
 - [x] artifact C7/C8/C9/C10/C11 review fixes：unreadable/malformed artifact boundary、strict skipped identity schema、manifest/raw/entry relation、exact git-object bytes 与 runtime helper provenance 已覆盖。
 - [x] validator integration gates：typecheck、Prettier、focused validator suite 和 backend 已完成；证据按 measured commit/range 归属。
 - [x] whole-branch merged-state review：原始 findings 已由 immutable review packages 全部关闭；reviewed branch head 只锚定覆盖面。
-- [ ] merge Commit -1 to `master`：先解决独立 commit-message traceability 裁决；backend-green integration merge candidate 不是 A。
+- [x] commit-message traceability：§0.5 amendment 与 82-row mapping 经独立语义复评关闭。
+- [x] current-master sync：`0a302e01` 保留 validator 与 master 双方语义，门禁及独立 merged-state review 全绿。
+- [ ] formal merge Commit -1 to `master`：下一动作；merge result 才定义 A。
 
 T0.0f、P、T0.0d、真实 A/P receipt consumption 与 T0.1 都在正式 `master` merge 后单独启动；T0.0e 只使用 `/tmp` synthetic evidence，未读取、生成或消费真实 future A/P。**Pre-merge A 不存在**；最终 merge result 才定义 entry candidate，且合入后必须重新取 SHA 与测量。
 
@@ -31,7 +33,7 @@ T0.0f、P、T0.0d、真实 A/P receipt consumption 与 T0.1 都在正式 `master
 
 ## 集成验证与剩余动作
 
-历史集成执行树为 `/home/xp/src/copilot-api-js/.worktree/command-algebra-commit-minus-1`。协调方报告 `tested_code_head=3b5ac1e41d87ab089becd55afe38f788643a4390` 的 `bun run test:backend` 为 16 shards、`6728 pass，0 fail，6915 executed，26 skipped，36.68s`，且该点 `bun run typecheck` 为绿；此数字只属于该历史 code head。后续 closure/remediation 的每条 evidence 保持自己的 measured commit/range，不从该数字外推。代码评审 findings 已关闭；下一步是 commit-message traceability 裁决、正式 merge、重取并测量 A，再执行 T0.0f → P → T0.0d → T0.1。
+历史集成执行树为 `/home/xp/src/copilot-api-js/.worktree/command-algebra-commit-minus-1`。协调方报告 `tested_code_head=3b5ac1e41d87ab089becd55afe38f788643a4390` 的 `bun run test:backend` 为 16 shards、`6728 pass，0 fail，6915 executed，26 skipped，36.68s`，且该点 `bun run typecheck` 为绿；此数字只属于该历史 code head。后续 closure/remediation 的每条 evidence 保持自己的 measured commit/range，不从该数字外推。另有 `0a302e01` master-sync 终态的独立证据：typecheck 绿、focused evidence 63/0、canonical 20× 80/0、backend 6265/0、generator zero-diff，review 0 blocker／0 major。下一步是正式 merge、重取并测量 A，再执行 T0.0f → P → T0.0d → T0.1。
 
 ## 历史路径说明
 
