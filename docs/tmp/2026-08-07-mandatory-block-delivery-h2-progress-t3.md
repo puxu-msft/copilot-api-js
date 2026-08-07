@@ -43,3 +43,7 @@ owner: task-3-implementer
 - Task1b integration：本树只验证 adapter 接收 post-transform wire frame；跨 Task1b parsed→wire 合并接缝留给 merged-seam gate，不在当前树伪造 provenance。
 - §6b 对账：review fix 前 first-parent 13 commits；本修复提交后共 14 commits。
 - Production-shaped probes：live owner、buffered block-level、hedge 共 9 tests passed、0 failed。
+- Second review Critical C1：Responses adapter不再以 `item.id`／裸 `output_index`直接作为 grammar identity；每个 `response.output_item.added` 分配 candidate-local ordered unit token，并以 `output_index→token` 状态关联 delta／done。既有 `responses-buffered.it` committed-prefix正样本由稳定失败转为通过，`BLOCK_ZERO` 在后续 RST 前提交。
+- Second review Critical C2：待下一个 semantic commit 提交 Chat production finish producer与 route seam测试。
+- Second review验证（C1 checkpoint）：既有 Responses committed-prefix正样本通过；typecheck通过。结构怪味处置：canonical outcome与object identity compatibility projection耦合已改为ordered token。
+- §6b 对账：second-review fix前 first-parent 14 commits；C1提交后为15 commits。

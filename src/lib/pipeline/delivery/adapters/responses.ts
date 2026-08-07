@@ -15,6 +15,8 @@ import {
 
 export function createResponsesDeliveryProtocolAdapter({ transport }: { readonly transport: "http" | "ws" }): DeliveryProtocolAdapter {
   const deliveryMode = transport === "http" ? "unit" : "response-terminal"
+  const unitKeyByOutputIndex = new Map<number, string>()
+  let nextUnitKey = 0
   return {
     deliveryMode,
     classify({ frame }): DeliveryFrameClass {
@@ -27,18 +29,22 @@ export function createResponsesDeliveryProtocolAdapter({ transport }: { readonly
       if (transport === "ws") return { kind: "response-append", frame }
       if (type === "response.created" || type === "response.in_progress") return { kind: "structural", structuralKind: "envelope-open", frame }
       if (type === "response.output_item.added") {
-        const key = itemKey(payload)
-        return key ?
-            { kind: "unit-open", unit: { boundary: "output-item", key }, frame }
-          : frameFailure("malformed-frame", "response.output_item.added requires item.id, item_id, or output_index", frame, undefined)
+        const outputIndex = readOutputIndex(payload)
+        if (outputIndex === undefined) return frameFailure("malformed-frame", "response.output_item.added requires output_index", frame, undefined)
+        const key = String(nextUnitKey++)
+        unitKeyByOutputIndex.set(outputIndex, key)
+        return { kind: "unit-open", unit: { boundary: "output-item", key }, frame }
       }
       if (type === "response.output_item.done") {
-        const key = itemKey(payload)
+        const outputIndex = readOutputIndex(payload)
+        const key = outputIndex === undefined ? undefined : unitKeyByOutputIndex.get(outputIndex)
+        if (outputIndex !== undefined) unitKeyByOutputIndex.delete(outputIndex)
         return key ?
             { kind: "unit-close", unit: { boundary: "output-item", key }, frame }
-          : frameFailure("malformed-frame", "response.output_item.done requires item.id, item_id, or output_index", frame, undefined)
+          : frameFailure("malformed-frame", "response.output_item.done requires an open output_index", frame, undefined)
       }
-      const key = itemKey(payload)
+      const outputIndex = readOutputIndex(payload)
+      const key = outputIndex === undefined ? undefined : unitKeyByOutputIndex.get(outputIndex)
       if (key) return { kind: "unit-append", unit: { boundary: "output-item", key }, frame }
       if (type?.includes("usage")) return { kind: "structural", structuralKind: "usage", frame }
       return frameFailure("unexpected-frame", `unsupported Responses frame type: ${String(type)}`, frame, undefined)
@@ -86,9 +92,6 @@ function terminalClass(type: string | undefined, frame: Parameters<DeliveryProto
     : undefined
 }
 
-function itemKey(payload: Record<string, unknown>): string | undefined {
-  const item = payload.item
-  if (item && typeof item === "object" && typeof (item as { id?: unknown }).id === "string") return (item as { id: string }).id
-  if (typeof payload.item_id === "string") return payload.item_id
-  return typeof payload.output_index === "number" ? String(payload.output_index) : undefined
+function readOutputIndex(payload: Record<string, unknown>): number | undefined {
+  return typeof payload.output_index === "number" ? payload.output_index : undefined
 }
