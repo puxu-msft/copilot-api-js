@@ -18,7 +18,7 @@ owner: task-3-implementer
 ## Recovery checkpoint after adapter investigation
 
 - Adapter checkpoint 尚未进入测试编写：工作树审计为 clean，没有未提交 adapter WIP；已核对 Responses factory 现有 `transport: "http" | "ws"` 接缝、四协议 terminal/error renderer 来源与冻结 spec §4.3 映射。
-- API 恢复门再次要求只保护当前状态；`tests/pipeline/delivery-adapters.unit.test.ts` 尚不存在。下一项具体红测：import 预期的 `createAnthropicDeliveryProtocolAdapter`，对 `content_block_start` frame 断言 `unit-open` identity `{ boundary: "content-block", key: "0" }`；预期 RED 必须精确为 adapter module/export 缺失，然后再扩展剩余冻结矩阵。
+- RED checkpoint：新建 `tests/pipeline/delivery-adapters.unit.test.ts` 的单一用例，要求 `createAnthropicDeliveryProtocolAdapter` 把 `content_block_start@index=7` 分类为携带原 source frame 的 `unit-open` 与 identity `{ boundary: "content-block", key: "7" }`。`pwd -P && bun test tests/pipeline/delivery-adapters.unit.test.ts` 按预期 0 pass／1 fail，唯一错误为 `Cannot find module '~/lib/pipeline/delivery/adapters/anthropic'`，并非测试语法或断言错误。
 
 ## Pending
 
