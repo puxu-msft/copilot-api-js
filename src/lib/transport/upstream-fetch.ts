@@ -38,6 +38,8 @@ import {
   getUpstreamH2Favor,
 } from "~/lib/proxy"
 
+import type { TransportTerminationSnapshot } from "./http2-observation-types"
+
 import { http2Fetch } from "./http2-client"
 
 /** Request init accepted by {@link upstreamFetch}; the dispatcher is added internally. */
@@ -55,6 +57,8 @@ export interface UpstreamFetchInit {
   onTrailers?: (trailers: Record<string, string>) => void
   /** HTTP/2-only physical stream close notification, after all local req callbacks are detached/fired. */
   onStreamClosed?: () => void
+  /** Best-effort first consumer-terminal observation for the HTTP/2 path; never called by plain HTTP. */
+  onTermination?: (snapshot: TransportTerminationSnapshot) => void
 }
 
 type UpstreamFetchFn = (url: string | URL, init: UpstreamFetchInit) => Promise<Response>

@@ -113,6 +113,7 @@ describe("http2-client", () => {
 
   test("body cancel resolves after the owned h2 stream closes while a sibling keeps using the pooled session", async () => {
     let localStreamClosed = false
+    const snapshots: Array<import("~/lib/transport/http2-observation-types").TransportTerminationSnapshot> = []
     handler = (stream, headers) => {
       if (headers[":path"] === "/cancel") {
         stream.respond({ ":status": 200, "content-type": "text/event-stream" })
@@ -123,13 +124,21 @@ describe("http2-client", () => {
       stream.end("sibling-ok")
     }
 
-    const cancelled = await http2Fetch(`${url}/cancel`, { onStreamClosed: () => (localStreamClosed = true) })
+    const cancelled = await http2Fetch(`${url}/cancel`, {
+      onStreamClosed: () => (localStreamClosed = true),
+      onTermination: (snapshot) => snapshots.push(snapshot),
+    })
     const sibling = await http2Fetch(`${url}/sibling`, {})
     expect(await sibling.text()).toBe("sibling-ok")
 
     await cancelled.body!.cancel("test disposal")
 
     expect(localStreamClosed).toBe(true)
+    expect(snapshots).toHaveLength(1)
+    expect(snapshots[0]).toMatchObject({
+      firstObservedSignal: "local-cancel",
+      localCancel: { source: "body-cancel", reason: { value: "test disposal" } },
+    })
     // A new sibling still succeeds on the pool after the owned stream was cancelled.
     const after = await http2Fetch(`${url}/sibling`, {})
     expect(await after.text()).toBe("sibling-ok")
@@ -236,6 +245,27 @@ describe("http2-client", () => {
     expect(localStreamClosed).toBe(true)
   })
 
+  test("post-response signal abort records its own local-cancel source", async () => {
+    handler = (stream) => {
+      stream.respond({ ":status": 200 })
+      stream.write("partial")
+    }
+    const abort = new AbortController()
+    const snapshots: Array<import("~/lib/transport/http2-observation-types").TransportTerminationSnapshot> = []
+    await http2Fetch(`${url}/post-response-abort`, {
+      signal: abort.signal,
+      onTermination: (snapshot) => snapshots.push(snapshot),
+    })
+
+    abort.abort(new DOMException("post response", "AbortError"))
+    await waitUntil(() => snapshots.length === 1)
+
+    expect(snapshots[0]).toMatchObject({
+      firstObservedSignal: "local-cancel",
+      localCancel: { source: "post-response-signal-abort", reason: { value: "post response" } },
+    })
+  })
+
   // Crash-safety: a pre-response abort on an ORPHANED fetch promise (the caller
   // stopped awaiting it — e.g. its await chain settled via another route) must
   // NOT surface as a process-level unhandledRejection. Without the defensive
@@ -279,6 +309,46 @@ describe("http2-client", () => {
     const p = http2Fetch(`${url}/stall`, { method: "POST", body: "{}", signal: ac.signal })
     setTimeout(() => ac.abort(), 30)
     await expect(p).rejects.toThrow(/abort/i)
+  })
+
+  test("reports an immutable first-terminal snapshot before late physical close", async () => {
+    handler = (stream) => {
+      stream.respond({ ":status": 200 })
+      stream.end("ok")
+    }
+    const snapshots: Array<import("~/lib/transport/http2-observation-types").TransportTerminationSnapshot> = []
+
+    const res = await http2Fetch(`${url}/termination`, { onTermination: (snapshot) => snapshots.push(snapshot) })
+    expect(await res.text()).toBe("ok")
+    await new Promise((resolve) => setTimeout(resolve, 20))
+
+    expect(snapshots).toHaveLength(1)
+    expect(snapshots[0]).toMatchObject({
+      schemaVersion: 1,
+      firstObservedSignal: "end",
+      headersReceived: true,
+      physicalClose: "not-observed-before-snapshot",
+      goaway: {
+        availability: "not-observed-before-snapshot",
+        events: [],
+        protocolViolation: { availability: "none" },
+      },
+    })
+  })
+
+  test("termination observes trailers even without a separate trailers callback", async () => {
+    handler = (stream) => {
+      stream.respond({ ":status": 200 }, { waitForTrailers: true })
+      stream.on("wantTrailers", () => stream.sendTrailers({ "x-fact": "present" }))
+      stream.end("ok")
+    }
+    const snapshots: Array<import("~/lib/transport/http2-observation-types").TransportTerminationSnapshot> = []
+
+    const res = await http2Fetch(`${url}/termination-trailers`, { onTermination: (snapshot) => snapshots.push(snapshot) })
+    expect(await res.text()).toBe("ok")
+
+    expect(snapshots).toHaveLength(1)
+    expect(snapshots[0].trailers).toBe("observed-before-snapshot")
   })
 
   test("captures HTTP/2 response trailers via onTrailers (after body, before end)", async () => {

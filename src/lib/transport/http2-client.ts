@@ -49,6 +49,11 @@ import {
   withErrorSink,
   withRejectionObserver,
 } from "./crash-safety"
+import {
+  //
+  createHttp2TerminationRecorder,
+  createLocalTerminationCommitPort,
+} from "./http2-termination"
 import { connectProxiedSocket } from "./proxy-connect"
 
 /**
@@ -1022,6 +1027,11 @@ async function runHttp2Fetch(u: URL, init: UpstreamFetchInit): Promise<Response>
       return
     }
 
+    const termination = createHttp2TerminationRecorder({
+      commitPort: createLocalTerminationCommitPort(),
+      onTermination: init.onTermination,
+    })
+
     // Physical-dispatch teardown barrier. Cancelling one response owns only this h2 stream;
     // the pooled session remains available to siblings. Resolve cancellation/rejection only
     // after the stream's close event confirms teardown.
@@ -1037,6 +1047,7 @@ async function runHttp2Fetch(u: URL, init: UpstreamFetchInit): Promise<Response>
     // hand-decrementing on every distinct termination path below (global
     // constraint #3). PATH 1 (the sole path once the stream exists).
     req.once("close", () => {
+      termination.observePhysicalClose()
       entry.activeStreamCount -= 1
       maybeReclaimRetiringSession(entry)
       if (entry.activeStreamCount === 0) armIdleTimer(entry) // went idle → schedule reap
@@ -1056,6 +1067,7 @@ async function runHttp2Fetch(u: URL, init: UpstreamFetchInit): Promise<Response>
     // Pre-response abort → reject; the post-response abort (cancel the body
     // stream) is wired inside the `response` handler below.
     const onPreResponseAbort = (): void => {
+      termination.recordLocalCancel("other-local", signal?.reason, req.rstCode)
       req.close(http2.constants.NGHTTP2_CANCEL)
       rejectAfterRequestClosed(abortError(signal))
     }
@@ -1065,6 +1077,7 @@ async function runHttp2Fetch(u: URL, init: UpstreamFetchInit): Promise<Response>
 
     req.once("response", (h) => {
       headersReceived = true
+      termination.observeHeaders(req.id ?? null)
       signal?.removeEventListener("abort", onPreResponseAbort)
       if (rejectionScheduled) return
       responseResolved = true
@@ -1081,17 +1094,17 @@ async function runHttp2Fetch(u: URL, init: UpstreamFetchInit): Promise<Response>
       // a `trailers` event (after the data frames, before `end`) when the upstream
       // sends a trailing HEADERS frame. Currently rare from GHC, but the transport
       // observes them, so capture-when-present instead of silently discarding.
-      if (init.onTrailers) {
-        req.once("trailers", (t: http2.IncomingHttpHeaders) => {
-          const record: Record<string, string> = {}
-          for (const [key, value] of Object.entries(t)) {
-            if (key.startsWith(":")) continue
-            if (Array.isArray(value)) record[key] = value.join(", ")
-            else if (value !== undefined) record[key] = value
-          }
-          if (Object.keys(record).length > 0) init.onTrailers?.(record)
-        })
-      }
+      req.once("trailers", (t: http2.IncomingHttpHeaders) => {
+        termination.observeTrailers()
+        if (!init.onTrailers) return
+        const record: Record<string, string> = {}
+        for (const [key, value] of Object.entries(t)) {
+          if (key.startsWith(":")) continue
+          if (Array.isArray(value)) record[key] = value.join(", ")
+          else if (value !== undefined) record[key] = value
+        }
+        if (Object.keys(record).length > 0) init.onTrailers(record)
+      })
 
       const body = new ReadableStream<Uint8Array>({
         start(controller) {
@@ -1099,6 +1112,7 @@ async function runHttp2Fetch(u: URL, init: UpstreamFetchInit): Promise<Response>
           req.on("data", (chunk: Buffer) => controller.enqueue(new Uint8Array(chunk)))
           req.once("end", () => {
             ended = true
+            termination.recordEnd(req.rstCode)
             try {
               controller.close()
             } catch {
@@ -1117,6 +1131,7 @@ async function runHttp2Fetch(u: URL, init: UpstreamFetchInit): Promise<Response>
           // (guardSseIterable idle-timeout, missing terminal SSE event) cover
           // the residual.
           req.once("error", (err) => {
+            termination.recordError(err, req.rstCode)
             try {
               // Post-header body error (session drop / RST after response headers)
               // — a truncated body. Tag it mid-body-close so classifyError reads
@@ -1132,21 +1147,33 @@ async function runHttp2Fetch(u: URL, init: UpstreamFetchInit): Promise<Response>
           // is a truncated body — surface it as a stream error, never a clean done.
           req.once("close", () => {
             if (!ended) {
+              const error = tagTransportError(new Error(`[http2] upstream stream closed before end (rstCode=${String(req.rstCode)})`), "mid-body-close")
+              termination.recordCloseBeforeEnd(error, req.rstCode)
               try {
-                controller.error(tagTransportError(new Error(`[http2] upstream stream closed before end (rstCode=${String(req.rstCode)})`), "mid-body-close"))
+                controller.error(error)
               } catch {
                 /* already closed/errored */
               }
             }
           })
         },
-        async cancel() {
+        async cancel(reason) {
+          termination.recordLocalCancel("body-cancel", reason, req.rstCode)
           req.close(http2.constants.NGHTTP2_CANCEL)
           await requestClosed
         },
       })
 
-      if (signal) signal.addEventListener("abort", () => req.close(http2.constants.NGHTTP2_CANCEL), { once: true })
+      if (signal) {
+        signal.addEventListener(
+          "abort",
+          () => {
+            termination.recordLocalCancel("post-response-signal-abort", signal.reason, req.rstCode)
+            req.close(http2.constants.NGHTTP2_CANCEL)
+          },
+          { once: true },
+        )
+      }
 
       resolve(new Response(body, { status, headers: responseHeaders }))
     })
