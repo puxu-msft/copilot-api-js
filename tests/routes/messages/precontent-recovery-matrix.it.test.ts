@@ -193,7 +193,7 @@ describe("Task 4.3b pre-content recovery matrix", () => {
     expect(text).not.toContain("recovery throw")
   })
 
-  test("ready live stream-error before content makes exactly one fresh dispatch and exposes one coherent turn", async () => {
+  test("ready live stream-error evaluates one fresh dispatch without publishing candidate frames", async () => {
     let calls = 0
     applyFetchMock(
       mock(() => {
@@ -210,18 +210,14 @@ describe("Task 4.3b pre-content recovery matrix", () => {
     )
 
     const { createFullTestApp } = await import("../../helpers/test-app")
-    const app = createFullTestApp()
-    const response = await request(app, "precontent-ready-success")
+    const response = await request(createFullTestApp(), "precontent-ready-evaluate-only")
     expect(response.status).toBe(200)
     const text = await response.text()
 
     expect(calls).toBe(2)
-    const types = frameTypesInOrder(text)
-    expect(types.filter((type) => type === "message_start")).toHaveLength(1)
-    expect(types.filter((type) => type === "message_delta")).toHaveLength(1)
-    expect(types.filter((type) => type === "message_stop")).toHaveLength(1)
-    expect(dataFramesOfType(text, "error")).toHaveLength(0)
-    expect(types.indexOf("message_delta")).toBeLessThan(types.indexOf("message_stop"))
+    expect(text).not.toContain("msg_ready_recovery")
+    expect(dataFramesOfType(text, "error")).toHaveLength(1)
+    expect(dataFramesOfType(text, "error")[0]?.error).toMatchObject({ message: "primary refused stream" })
   })
 
   test("unexpected handler failure never makes a fresh recovery dispatch", async () => {

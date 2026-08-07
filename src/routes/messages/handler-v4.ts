@@ -207,6 +207,7 @@ import {
   classifyPostCommitAbort,
   postCommitAbortFrame,
 } from "./post-commit-error"
+import { evaluateDirectRecovery } from "./precontent-recovery-evaluator"
 import {
   //
   classifyPreContentRecoveryFailure,
@@ -372,6 +373,34 @@ function anthropicCandidateSnapshot(driver: ReturnType<typeof createPipelineDriv
   const session = driver.getCandidateResponseSession(upstream) as CandidateResponseSession<AnthropicCandidateResponseSnapshot> | undefined
   if (!session) throw new Error("[Anthropic:v4] candidate response session missing")
   return session.snapshot()
+}
+
+/**
+ * Evaluate a fresh direct-Anthropic candidate without giving it downstream or terminal authority.
+ * Both B2 mounts call this exact collector; Task #4 becomes the sole publisher of its `complete` frames.
+ */
+async function evaluateDirectAnthropicRecovery(
+  driver: ReturnType<typeof createPipelineDriver>,
+  upstream: UpstreamStream,
+  env: RequestEnvelope,
+  primaryError: unknown,
+) {
+  return evaluateDirectRecovery({
+    driver: {
+      runResponseSink: (candidateUpstream, candidateEnv, collector) => driver.runResponseSink(candidateUpstream, candidateEnv, collector),
+      getCandidateSnapshot: (candidateUpstream) => {
+        const snapshot = anthropicCandidateSnapshot(driver, candidateUpstream)
+        if (snapshot.kind !== "anthropic-direct") throw new Error("[Anthropic:v4] direct recovery evaluator received a translate candidate")
+        return snapshot
+      },
+    },
+    upstream,
+    env,
+    primaryError,
+    responseFromSnapshot: (snapshot) => buildAnthropicResponseData(snapshot.acc, snapshot.acc.model),
+    isContentlessRefusal: (snapshot) => isContentlessRefusal(snapshot.acc.stopReason, hasClientVisibleContent(snapshot.acc.contentBlocks)),
+    unrepairableToolInput: () => env.ctx.unrepairableToolInput ?? undefined,
+  })
 }
 
 export async function handleMessagesV4(c: Context): Promise<Response> {
@@ -794,28 +823,16 @@ async function runMessagesDriver(c: Context, args: RunMessagesDriverArgs): Promi
           try {
             const recovered = await driver.runPreContentRecovery("post-commit-pre-ready-failure")
             if (!recovered.ok) throw new Error("[Anthropic:v4] pre-content recovery unexpectedly rejected routing")
-            // The primary live pump suspended this same request-owned sink while it unwound. Resume BEFORE
-            // consuming the fresh upstream so its pre-content silence remains protected by the heartbeat.
-            sinkChain.sink.resumeHeartbeat?.()
-            await pumpAnthropicStreamingDispatch({
-              sink,
-              rawSink: sinkChain.rawSink,
-              liveSink: sinkChain.liveSink,
-              deliverySession: sinkChain.deliverySession,
-              buffered: false,
-              forwardedSseEvents,
-              streamStartMs,
-              driver,
-              codec,
-              upstream: recovered.upstream,
-              env: recovered.env,
-              anchorHooks,
-              anchorState,
-              resumeRecoveryHeartbeat: () => sinkChain.sink.resumeHeartbeat?.(),
-              precontentRecoveryAttempted: true,
-              recoveryOriginalError: error,
-            })
-            return
+            if (recovered.env.targetEndpoint === ENDPOINT.MESSAGES) {
+              const evaluation = await evaluateDirectAnthropicRecovery(driver, recovered.upstream, recovered.env, error)
+              // Task #3 deliberately keeps evaluator output off the real wire. Task #4 owns atomic batch
+              // publication; until then the pre-ready parent takes its existing safe terminal path.
+              consola.debug(`[Anthropic:v4] evaluated pre-ready recovery: ${evaluation.kind}`)
+            } else {
+              // The direct evaluator's exhaustive accumulator contract excludes translate candidates.
+              // Keep this B2 mount fail-closed until a translate evaluator defines equivalent terminals.
+              consola.debug("[Anthropic:v4] pre-ready recovery evaluator is unavailable for a translate leg")
+            }
           } catch (recoveryError) {
             // The failed rescue is diagnostic-only. The original upstream error remains the client-facing
             // terminal because it is the failure the caller asked us to process.
@@ -1447,6 +1464,9 @@ async function pumpAnthropicStreamingDispatch(opts: PumpAnthropicStreamingDispat
 async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): Promise<void> {
   const { sink, liveSink, buffered, forwardedSseEvents, driver, upstream, env, anchorHooks, anchorState } = opts
   const tryResponseRecovery = async (error: unknown, source: ResponseFailureSource): Promise<boolean> => {
+    // Task #3's evaluator owns only the direct Anthropic accumulator contract. Forward translate
+    // legs keep their existing terminal path until they gain an equally exhaustive evaluator.
+    if (env.targetEndpoint !== ENDPOINT.MESSAGES) return false
     // The transport rewrites a shutdown-caused abort into HTTP 529 for the normal client retry contract.
     // Inspect its original cause before taxonomy so a shutdown 529 cannot masquerade as transient upstream 529.
     if (source !== "upstream-transport") return false
@@ -1471,34 +1491,17 @@ async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): 
     try {
       const recovered = await driver.runResponseRecovery(upstream, env, "stream-error-before-content")
       if (!recovered.ok) throw new Error("[Anthropic:v4] ready-state recovery unexpectedly rejected routing")
-      // runResponseSink unwound through the supervisor and suspended the heartbeat. Resume before the
-      // recovery pump reads its first frame; otherwise an equally silent recovery would have no keepalive.
-      opts.resumeRecoveryHeartbeat?.()
-      const recoveryFrames: Array<ClientFrame> = []
-      const recoverySink: ClientSink = {
-        write: async (frame) => {
-          recoveryFrames.push(frame)
-        },
-        // The shared supervisor owns the real stream lifetime; the child driver may only close its local buffer.
-        close() {},
-        finalize() {},
-      }
-      await pumpAnthropicStreamingDispatch({
-        ...opts,
-        codec: opts.codec,
-        liveSink: recoverySink,
-        upstream: recovered.upstream,
-        env: recovered.env,
-        buffered: false,
-        precontentRecoveryAttempted: true,
-        recoveryOriginalError: opts.recoveryOriginalError ?? error,
-      })
-      for (const frame of recoveryFrames) await opts.liveSink.write(frame)
-      return true
+      // The recovery child is evaluation-only. It receives a collector with no close/finalize or owner
+      // capability, so it cannot settle the shared context or publish frames to the already-open wire.
+      const evaluation = await evaluateDirectAnthropicRecovery(driver, recovered.upstream, recovered.env, opts.recoveryOriginalError ?? error)
+      // Task #3 deliberately does not publish this collector. Task #4 becomes the sole owner of the
+      // atomic recovery batch; until then, preserve the primary terminal's existing safe behaviour.
+      consola.debug(`[Anthropic:v4] evaluated ready-state recovery: ${evaluation.kind}`)
+      return false
     } catch (recoveryError) {
       // Recovery is internal best-effort. Preserve the primary error on wire while retaining the rescue
       // failure in diagnostics for operators.
-      consola.error("[Anthropic:v4] pre-content recovery after live stream error failed", recoveryError)
+      consola.error("[Anthropic:v4] pre-content recovery evaluation failed", recoveryError)
       return false
     }
   }
