@@ -23,6 +23,7 @@
 import type { ClientFrame } from "~/lib/pipeline/types"
 
 import { streamErrorKindToAnthropicErrorType } from "~/lib/anthropic/error-shaping"
+import { anthropicErrorFrame } from "~/lib/anthropic/stream-error-frame"
 import {
   //
   type ErrorWireFormat,
@@ -95,10 +96,8 @@ export function anthropicRejectErrorFrame(status: number, reason: string): Clien
 }
 
 /** Build an Anthropic SSE `error` frame from an explicit type+message (header-wait timeout,
- *  reaper-cancel, or an unknown non-HTTP error) — not an HTTPError, so hand-built canonical. */
-export function anthropicErrorFrame(type: string, message: string): ClientFrame {
-  return { event: "error", data: JSON.stringify({ type: "error", error: { type, message } }) }
-}
+ *  reaper-cancel, or an unknown non-HTTP error) — re-exported for route compatibility. */
+export { anthropicErrorFrame } from "~/lib/anthropic/stream-error-frame"
 
 /** A POST-COMMIT abort, classified by the abort's own provenance (signal state is the fallback). */
 export type PostCommitAbortKind =

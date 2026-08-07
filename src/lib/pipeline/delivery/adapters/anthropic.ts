@@ -1,3 +1,6 @@
+import { anthropicErrorFrame } from "~/lib/anthropic/stream-error-frame"
+
+import { isDeliveryControlCapability } from "../control-capability"
 import type {
   //
   DeliveryProtocolAdapter,
@@ -7,7 +10,7 @@ import type {
 export function createAnthropicDeliveryProtocolAdapter(): DeliveryProtocolAdapter {
   return {
     deliveryMode: "unit",
-    classify({ frame }) {
+    classify({ frame, controlCapability }) {
       let data: string | undefined
       try {
         data = frame.data
@@ -26,6 +29,9 @@ export function createAnthropicDeliveryProtocolAdapter(): DeliveryProtocolAdapte
       }
 
       const payload = parsed as { type?: unknown; index?: unknown }
+      if (payload.type === "ping" && isDeliveryControlCapability(controlCapability, "protocol-ping")) {
+        return { kind: "control", frame, capability: controlCapability }
+      }
       const unit = () => {
         if (typeof payload.index !== "number") return undefined
         return { boundary: "content-block" as const, key: String(payload.index) }
@@ -65,6 +71,17 @@ export function createAnthropicDeliveryProtocolAdapter(): DeliveryProtocolAdapte
         case "complete":
           return { kind: "natural-drain" }
         case "valid-terminal-without-boundary":
+          if (new TextEncoder().encode(result.terminal).byteLength > 256) {
+            return {
+              kind: "terminal-failure",
+              error: {
+                semantic: "malformed-frame",
+                detail: "finish terminal diagnostic exceeds 256 UTF-8 bytes",
+                sourceFrame: null,
+                cause: undefined,
+              },
+            }
+          }
           return {
             kind: "valid-terminal-without-boundary",
             terminal: { semantic: "complete", sourceFrame: null, diagnostic: { source: "finish-result", terminal: result.terminal } },
@@ -86,14 +103,14 @@ export function createAnthropicDeliveryProtocolAdapter(): DeliveryProtocolAdapte
           }
       }
     },
-    renderTerminal() {
-      throw new Error("[anthropic-delivery-adapter] terminal rendering is not implemented")
+    renderTerminal(terminal) {
+      return terminal.sourceFrame ? [terminal.sourceFrame] : [{ event: "message_stop", data: JSON.stringify({ type: "message_stop" }) }]
     },
-    renderError() {
-      throw new Error("[anthropic-delivery-adapter] error rendering is not implemented")
+    renderError(error) {
+      return [anthropicErrorFrame("api_error", error.detail)]
     },
     renderDone() {
-      throw new Error("[anthropic-delivery-adapter] done rendering is not implemented")
+      return []
     },
   }
 }

@@ -5,7 +5,10 @@ import {
   test,
 } from "bun:test"
 
+import type { DeliveryControlCapability } from "~/lib/pipeline/delivery/protocol"
+
 import { createAnthropicDeliveryProtocolAdapter } from "~/lib/pipeline/delivery/adapters/anthropic"
+import { createDeliveryControlCapability } from "~/lib/pipeline/delivery/control-capability"
 
 describe("delivery protocol adapters", () => {
   test("classifies an Anthropic content block start as the matching unit open", () => {
@@ -61,6 +64,53 @@ describe("delivery protocol adapters", () => {
     expect(adapter.classify({ frame: exceptional })).toMatchObject({
       kind: "protocol-error",
       error: { semantic: "adapter-exception", sourceFrame: exceptional, cause: expect.any(Error) },
+    })
+  })
+
+  test("accepts only runtime-authenticated Anthropic control capabilities", () => {
+    const adapter = createAnthropicDeliveryProtocolAdapter()
+    const frame = { event: "ping", data: JSON.stringify({ type: "ping" }) }
+    const capability = createDeliveryControlCapability("protocol-ping")
+    const forged = { controlKind: "protocol-ping" } as DeliveryControlCapability
+
+    expect(adapter.classify({ frame, controlCapability: capability })).toEqual({ kind: "control", frame, capability })
+    expect(adapter.classify({ frame, controlCapability: forged })).toMatchObject({
+      kind: "protocol-error",
+      error: { semantic: "unexpected-frame", sourceFrame: frame },
+    })
+    expect(adapter.classify({ frame })).toMatchObject({ kind: "protocol-error", error: { semantic: "unexpected-frame" } })
+  })
+
+  test("renders Anthropic terminal and error frames without a done sentinel", () => {
+    const adapter = createAnthropicDeliveryProtocolAdapter()
+    const sourceFrame = { event: "message_stop", data: JSON.stringify({ type: "message_stop" }) }
+    const terminal = { semantic: "complete" as const, sourceFrame, diagnostic: { source: "wire-frame" as const, terminal: "message_stop" } }
+    const error = { semantic: "truncated" as const, detail: "missing terminal", sourceFrame: null, cause: undefined }
+
+    expect(adapter.renderTerminal(terminal)).toEqual([sourceFrame])
+    expect(adapter.renderError(error)).toEqual([
+      { event: "error", data: JSON.stringify({ type: "error", error: { type: "api_error", message: "missing terminal" } }) },
+    ])
+    expect(adapter.renderDone()).toEqual([])
+  })
+
+  test("fails closed when a finish terminal diagnostic exceeds 256 UTF-8 bytes", () => {
+    const adapter = createAnthropicDeliveryProtocolAdapter()
+    const valid = "界".repeat(85)
+    const oversized = "界".repeat(86)
+
+    expect(adapter.classifyFinish({ kind: "valid-terminal-without-boundary", frames: [], terminal: valid })).toMatchObject({
+      kind: "valid-terminal-without-boundary",
+      terminal: { diagnostic: { terminal: valid } },
+    })
+    expect(adapter.classifyFinish({ kind: "valid-terminal-without-boundary", frames: [], terminal: oversized })).toEqual({
+      kind: "terminal-failure",
+      error: {
+        semantic: "malformed-frame",
+        detail: "finish terminal diagnostic exceeds 256 UTF-8 bytes",
+        sourceFrame: null,
+        cause: undefined,
+      },
     })
   })
 
