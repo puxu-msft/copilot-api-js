@@ -199,7 +199,7 @@ class ThrowingTransport extends ControllableTransport {
   }
 }
 
-function readyMessage(generation: number, requestId = 1): unknown {
+function readyMessage(generation: number, requestId = 1, configRevision = 1): unknown {
   return {
     type: "ready",
     protocolVersion: HISTORY_WORKER_PROTOCOL_VERSION,
@@ -209,8 +209,8 @@ function readyMessage(generation: number, requestId = 1): unknown {
       workerGeneration: generation,
       threadId: 42,
       selectedDriver: "bun:sqlite",
-      configRevision: 1,
-      rawTarget: { configRevision: 1, requested: false, maxObjectBytes: 1024 },
+      configRevision,
+      rawTarget: { configRevision, requested: false, maxObjectBytes: 1024 },
     },
   }
 }
@@ -322,6 +322,76 @@ describe("HistoryPersistenceRuntime ACK state", () => {
     await expect(drain).rejects.toThrow("status.status contains unknown field: terminalFailed")
     expect(runtime.snapshot()).toMatchObject({ terminalFailed: true, pendingEnvelopes: 0 })
     expect(runtime.snapshot().lastError).toContain("status.status contains unknown field: terminalFailed")
+  })
+
+  test("rejects a Worker status revision that exceeds the latest desired revision", async () => {
+    const transport = new ControllableTransport()
+    const runtime = new HistoryPersistenceRuntimeImpl({ workerFactory: () => transport })
+    const start = runtime.start(startConfig())
+    transport.emitMessage(readyMessage(1))
+    await start
+
+    transport.emitMessage({
+      type: "status",
+      protocolVersion: HISTORY_WORKER_PROTOCOL_VERSION,
+      workerGeneration: 1,
+      status: { publishedRevision: 1 },
+    })
+    expect(runtime.snapshot()).toMatchObject({ terminalFailed: false, publishedRevision: 1 })
+
+    transport.emitMessage({
+      type: "status",
+      protocolVersion: HISTORY_WORKER_PROTOCOL_VERSION,
+      workerGeneration: 1,
+      status: { publishedRevision: 2 },
+    })
+    expect(runtime.snapshot()).toMatchObject({ terminalFailed: true, publishedRevision: 1 })
+    expect(runtime.snapshot().lastError).toContain("publishedRevision 2 exceeds latest desired revision 1")
+  })
+
+  test("rejects a Worker status revision that regresses the published revision", async () => {
+    const transport = new ControllableTransport()
+    const runtime = new HistoryPersistenceRuntimeImpl({ workerFactory: () => transport })
+    const config = { ...startConfig(), configRevision: 2 }
+    const start = runtime.start(config)
+    transport.emitMessage(readyMessage(1, 1, 2))
+    await start
+    const drain = runtime.drain()
+
+    transport.emitMessage({
+      type: "status",
+      protocolVersion: HISTORY_WORKER_PROTOCOL_VERSION,
+      workerGeneration: 1,
+      status: { publishedRevision: 1 },
+    })
+
+    expect(runtime.snapshot()).toMatchObject({ terminalFailed: true, publishedRevision: 2, latestDesiredRevision: 2 })
+    await expect(drain).rejects.toThrow("publishedRevision 1 regresses from 2")
+  })
+
+  test("ignores Worker status after terminal failure without changing sticky fatal state", async () => {
+    const transport = new ControllableTransport()
+    const runtime = new HistoryPersistenceRuntimeImpl({ workerFactory: () => transport })
+    const start = runtime.start(startConfig())
+    transport.emitMessage(readyMessage(1))
+    await start
+    transport.emitError(new Error("sticky fatal"))
+    const failed = runtime.snapshot()
+
+    transport.emitMessage({
+      type: "status",
+      protocolVersion: HISTORY_WORKER_PROTOCOL_VERSION,
+      workerGeneration: 1,
+      status: { ready: true, publishedRevision: 99, lastError: "forged recovery" },
+    })
+
+    expect(runtime.snapshot()).toMatchObject({
+      terminalFailed: true,
+      ready: false,
+      publishedRevision: failed.publishedRevision,
+      lastError: "sticky fatal",
+      staleMessagesTotal: failed.staleMessagesTotal + 1,
+    })
   })
 
   test("settles ACK state before isolating an outcome callback error", async () => {

@@ -247,7 +247,23 @@ export class HistoryPersistenceRuntimeImpl implements HistoryPersistenceRuntime 
         break
       }
       case "status": {
-        this.status = { ...this.status, ...message.status, workerGeneration: this.generation }
+        if (this.status.terminalFailed) {
+          this.status = { ...this.status, staleMessagesTotal: this.status.staleMessagesTotal + 1 }
+          this.publishStatus()
+          break
+        }
+        const revision = message.status.publishedRevision
+        if (revision !== undefined && revision < this.status.publishedRevision) {
+          this.failTerminal(new HistoryWorkerProtocolError(`Worker status publishedRevision ${revision} regresses from ${this.status.publishedRevision}`))
+          break
+        }
+        if (revision !== undefined && revision > this.status.latestDesiredRevision) {
+          this.failTerminal(
+            new HistoryWorkerProtocolError(`Worker status publishedRevision ${revision} exceeds latest desired revision ${this.status.latestDesiredRevision}`),
+          )
+          break
+        }
+        this.status = { ...this.status, ...message.status }
         this.publishStatus()
         break
       }

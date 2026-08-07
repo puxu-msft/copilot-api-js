@@ -17,7 +17,7 @@ status: active
 - [x] 增加 tsdown alias 双入口并保持 `dist/{main,history-worker}.mjs` 稳定；Bun／Node probes 分别返回 `bun:sqlite`／`node:sqlite` 且 `n=7`，packaged test 自建独立临时 bundle。
 - [x] 初轮 review 的 4 个 major 已全部修复。
 - [x] 第二轮 F5：强制 terminal 非空、`sequence === lastSequence`、outcome 合法、candidate/dispatch 引用存在、`committedAttempt === committedDispatch`；删除整段实现及分别删除 candidate/dispatch/alias 检查的四轮 exact-patch mutation 均让目标测试按预期变红，恢复后 protocol/runtime 26 pass／0 fail。
-- [x] 第二轮 F6：`HistoryWorkerStatusPatch` 只允许 Worker-owned `threadId/selectedDriver/ready/publishedRevision/lastError`；协议逐一拒绝 11 个 main-owned 字段，恶意 `terminalFailed` 帧经 protocol fatal transition 同时 settle pending envelope 与 pending drain request，28 pass／0 fail，typecheck／lint 绿。
+- [x] 第二轮 F6：`HistoryWorkerStatusPatch` 只允许 Worker-owned `threadId/selectedDriver/ready/publishedRevision/lastError`；协议逐一拒绝 13 个 main-owned 字段，恶意 `terminalFailed` 帧经 protocol fatal transition 同时 settle pending envelope 与 pending drain request；复审新增的 publication 状态机约束也已闭合：revision 只能在 `[publishedRevision, latestDesiredRevision]` 内单调推进，terminal-failed 后 status 只计 stale、不得复活 ready 或覆盖 sticky fatal。33 pass／0 fail，typecheck／lint 绿。
 - [x] 第二轮 F7：pending 状态重算与 observer 通知解耦；ACK/fatal 先完成 callback 与 request settlement 再通知，每个 listener 独立隔离，初次订阅也走同一 helper；main-owned `statusObserverErrorsTotal/lastStatusObserverError` 保留诊断，30 pass／0 fail，typecheck／lint 绿。
 - [ ] 稳定 `canonical-performance` 全套件负载门：复现 false-red，改用不依赖共享 runner 负载但仍能咬住真实复杂度回归的判据，跑正负 mutation 与全 backend。
 - [ ] F5–F7 和性能门全部完成后，恢复原 Batch 0 reviewer 复审至 0 blocker／major，再 fast-forward 合入 `master`。
