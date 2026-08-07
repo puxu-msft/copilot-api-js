@@ -39,6 +39,7 @@ status: batch-1a-active
 - `runtime.ts` 继续只拥有 Worker transport、generation、pending envelope／RPC 与 ACK tombstone；admission 独占 reservation、waiter、operation binding 与 terminal outcome 状态。
 - `registry.ts` 继续保持 lazy：Batch 1a 可增加 admission singleton，但 import 不创建 Worker、timer、DB 或 waiter；runtime 与 admission 的构造／测试注入端口保持分离。
 - Batch 1a 起点为 `master@03c3dd13`；新 worktree 的 `bun run test:fast` 基线为 4736 pass／0 fail（16 shards，24.28s）。
+- Red 阶段已建立三份 oracle：admission 状态机、config/state/listener、registry lazy singleton；目标命令当前 0 pass／3 fail，分别因 `admission.ts`、admission registry exports、queue-capacity state export 尚不存在而红，全部从本 worktree 解析。
 - tsdown 0.22.3 的 array 多入口实测会保留源目录并破坏 `dist/main.mjs`；已按本地官方类型声明改用 object alias entry，固定两个 basename。
 - Bun 1.3.14 的 `node:worker_threads` fixture 抛错时先发 `error`，随后 `exit` code 可为 0；oracle 锁定 error 内容与 `error→exit` 顺序，不硬编码非零码。
 - 首次全 backend 连续三次稳定为 6994 pass／1 fail：`shutdown.unit` 的自然 drain 用 30ms completion 与 100ms deadline 真实 timer 竞速，高 shard 负载下误入 Phase 3；改用既有 `FakeClock` 后具名 25／25、shutdown 50／50、全 backend 6995／6995。
