@@ -35,6 +35,8 @@ export interface CoordinatorCandidateInput {
   readonly role: CandidateRole
   readonly parentCandidate?: CandidateHandle
   readonly env: RequestEnvelope
+  /** Structured trigger retained on the recovery candidate instead of overloading retryNextStrategy. */
+  readonly recoveryReason?: string
 }
 
 export interface CoordinatedCandidate<TProcessor> extends CandidateReady<TProcessor> {
@@ -146,7 +148,7 @@ export function createGenerationCoordinator<TProcessor>(input: CreateGenerationC
       if (recoveryFromPreReadyStarted) throw new Error("[generation-coordinator] recovery from pre-ready failure already started")
       recoveryFromPreReadyStarted = true
       // The primary never became ready and has already settled itself as failed in candidate.ts, so there is no ready parent to settle here.
-      return start({ role: "recovery", env })
+      return start({ role: "recovery", env, recoveryReason: _reason })
     },
 
     async runRecovery(parent, reason, env = parent.env, retryNextStrategy = "buffered-retry") {
@@ -156,7 +158,7 @@ export function createGenerationCoordinator<TProcessor>(input: CreateGenerationC
       parentRuntime.settle({ verdict: "failed", reason })
       candidateReservations.get(parentRuntime.handle)?.release()
       if (active === parentRuntime) active = undefined
-      return start({ role: "recovery", parentCandidate: parent.candidate, env })
+      return start({ role: "recovery", parentCandidate: parent.candidate, env, recoveryReason: reason })
     },
 
     async runContinuation(parent, reason, env) {

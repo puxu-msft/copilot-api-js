@@ -47,7 +47,7 @@ export interface DispatchSettlement {
 }
 
 export interface DispatchRecordingPort {
-  beginCandidate(input: { role: CandidateRole; parentCandidate?: CandidateHandle }): CandidateHandle
+  beginCandidate(input: { role: CandidateRole; parentCandidate?: CandidateHandle; recoveryReason?: string }): CandidateHandle
   settleCandidate(candidate: CandidateHandle, input: { verdict: CandidateVerdict; reason?: string }): void
   beginDispatch(input: {
     candidate: CandidateHandle

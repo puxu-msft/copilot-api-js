@@ -30,13 +30,22 @@ import { DeliveryOwnerError } from "~/lib/pipeline/delivery/session"
 import { StreamClientAbortError } from "~/lib/stream"
 
 /** Is this rendered client frame a real `content_block_start`? (parses the JSON `type`; non-JSON → false). */
-function isContentBlockStart(frame: ClientFrame): boolean {
-  if (typeof frame.data !== "string") return false
+function clientFrameType(frame: ClientFrame): string | undefined {
+  if (typeof frame.data !== "string") return undefined
   try {
-    return (JSON.parse(frame.data) as { type?: unknown }).type === "content_block_start"
+    const type = (JSON.parse(frame.data) as { type?: unknown }).type
+    return typeof type === "string" ? type : undefined
   } catch {
-    return false // non-JSON frame (e.g. a keepalive line) — not a content_block_start
+    return undefined // non-JSON frame (e.g. a keepalive line)
   }
+}
+
+function isContentBlockStart(frame: ClientFrame): boolean {
+  return clientFrameType(frame) === "content_block_start"
+}
+
+function isMessageStart(frame: ClientFrame): boolean {
+  return clientFrameType(frame) === "message_start"
 }
 
 /**
@@ -92,7 +101,13 @@ export function reconcileLiveFrame(frame: ClientFrame, state: AnchorState, hooks
     // then fires the injector, it must know a message_start already reached the client so it does NOT
     // fabricate a SECOND one (the wire forbids two message_start). `capturedMessageStart` is buffered-path
     // only, so this live-path flag is the sole signal for the injector's dedup.
-    if (hooks.isMessageStart(frame)) state.messageStartForwarded = true
+    if (hooks.isMessageStart(frame)) {
+      // A fresh recovery attempt shares this AnchorState even when no synthetic prelude was injected.
+      // The first primary message_start already opened the client turn, so a second attempt's own
+      // message_start must not create a second logical turn.
+      if (state.messageStartForwarded) return []
+      state.messageStartForwarded = true
+    }
     return [frame]
   }
 
@@ -132,9 +147,19 @@ export class LiveOwnerFailureError extends Error {
   }
 }
 
-export function makeReconcilingSink(inner: ClientSink, state: AnchorState, hooks: ReconcileHooks, port?: WireBlockAllocationPort): ClientSink {
+export function makeReconcilingSink(inner: ClientSink, state: AnchorState, hooks: ReconcileHooks | undefined, port?: WireBlockAllocationPort): ClientSink {
   const sink: ClientSink = {
     write: async (frame: ClientFrame): Promise<void> => {
+      // `ping` mode has no anchor hooks, but fresh recovery still shares the same client turn. Preserve
+      // the first message_start and drop only the recovery attempt's duplicate; no close/remap applies.
+      if (!hooks) {
+        if (isMessageStart(frame)) {
+          if (state.messageStartForwarded) return
+          state.messageStartForwarded = true
+        }
+        await inner.write(frame)
+        return
+      }
       if (port?.wireState && (isContentBlockStart(frame) || isErrorEvent(frame) || isMessageTerminator(frame))) {
         try {
           const closed = await port.closeOpenAnchor(

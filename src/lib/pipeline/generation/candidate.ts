@@ -57,6 +57,7 @@ export interface CandidateRuntime<TProcessor> {
 export interface CreateCandidateRuntimeInput<TProcessor> {
   readonly role: CandidateRole
   readonly parentCandidate?: CandidateHandle
+  readonly recoveryReason?: string
   readonly env: RequestEnvelope
   /** Fork request/response state only after the canonical candidate handle exists. */
   readonly forkEnv?: (candidate: CandidateHandle) => RequestEnvelope
@@ -67,7 +68,11 @@ export interface CreateCandidateRuntimeInput<TProcessor> {
 
 /** Create a single-use candidate runtime. Buffered recovery is represented only as a child-candidate request. */
 export function createCandidateRuntime<TProcessor>(input: CreateCandidateRuntimeInput<TProcessor>): CandidateRuntime<TProcessor> {
-  const handle = input.recording.beginCandidate({ role: input.role, ...(input.parentCandidate && { parentCandidate: input.parentCandidate }) })
+  const handle = input.recording.beginCandidate({
+    role: input.role,
+    ...(input.parentCandidate && { parentCandidate: input.parentCandidate }),
+    ...(input.recoveryReason !== undefined && { recoveryReason: input.recoveryReason }),
+  })
   const candidateEnv = input.forkEnv?.(handle) ?? input.env
   const controller = new AbortController()
   const signal = combineAbortSignals(controller.signal, candidateEnv.ctx.operationSignal) ?? controller.signal

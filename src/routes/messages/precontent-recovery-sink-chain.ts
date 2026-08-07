@@ -27,7 +27,7 @@ function liveReconcilingSink(
   anchorState: AnchorState,
   deliverySession: DownstreamDeliverySession,
 ): ClientSink {
-  return anchorHooks ? makeReconcilingSink(sink, anchorState, anchorHooks, deliverySession.allocationPort) : sink
+  return makeReconcilingSink(sink, anchorState, anchorHooks, deliverySession.allocationPort)
 }
 
 /** Build the one request-owned raw→supervisor→rewriting sink chain. */

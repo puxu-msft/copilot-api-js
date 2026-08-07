@@ -228,6 +228,7 @@ interface GenerationBinding {
 
 interface PreReadyFailure {
   readonly coordinator: GenerationCoordinator<CandidateResponseSession>
+  /** The exact post-preflight envelope dispatched by the failed primary. */
   readonly env: RequestEnvelope
 }
 
@@ -281,8 +282,17 @@ export function createPipelineDriver(deps: DriverDeps): PipelineDriverWithNonStr
     runResponseSink: (upstream, env, sink, opts) => trackResponsePump(env, runResponseSink(deps, upstream, env, sink, opts, generation)),
     runResponseBufferedSink: (upstream, env, sink, opts) => trackResponsePump(env, runResponseBufferedSink(deps, upstream, env, sink, opts, generation)),
     getCandidateResponseSession: (upstream) => generation.currentSession(upstream),
-    runPreContentRecovery: (reason) => runPreContentRecovery(deps, generation, lastPreReadyFailure, reason),
-    runResponseRecovery: (upstream, env, reason) => runResponseRecovery(deps, generation, upstream, env, reason),
+    runPreContentRecovery: (reason) => {
+      const failure = lastPreReadyFailure
+      const recovery = runPreContentRecovery(deps, generation, failure, reason)
+      failure?.env.ctx.trackOperationBody?.(recovery)
+      return recovery
+    },
+    runResponseRecovery: (upstream, env, reason) => {
+      const recovery = runResponseRecovery(deps, generation, upstream, env, reason)
+      env.ctx.trackOperationBody?.(recovery)
+      return recovery
+    },
   }
 }
 
@@ -433,7 +443,7 @@ async function runRequest(
   } catch (error) {
     // Preserve runRequest's rejection exactly, while retaining the coordinator plus post-hook env for the
     // caller's explicit B2 recovery decision. No recovery is dispatched from this error path.
-    rememberPreReadyFailure({ coordinator, env: afterHook })
+    rememberPreReadyFailure({ coordinator, env: preflight })
     throw error
   }
 }
@@ -589,10 +599,12 @@ function createDriverCoordinator(deps: DriverDeps, initialEnv: RequestEnvelope):
   const createCandidate = ({
     role,
     parentCandidate,
+    recoveryReason,
     env,
   }: {
     role: CandidateRole
     parentCandidate?: CandidateHandle
+    recoveryReason?: string
     env: RequestEnvelope
   }): CandidateRuntime<CandidateResponseSession> => {
     const retry = createSemanticRetryPolicy(deps)
@@ -609,6 +621,7 @@ function createDriverCoordinator(deps: DriverDeps, initialEnv: RequestEnvelope):
     return createCandidateRuntime({
       role,
       ...(parentCandidate !== undefined && { parentCandidate }),
+      ...(recoveryReason !== undefined && { recoveryReason }),
       env,
       forkEnv(candidate) {
         const fork = candidateStateFactory.fork({ candidateId: String(candidate), role })
@@ -734,7 +747,8 @@ function createDriverRecordingPort(deps: DriverDeps, ctx: RequestContext): Dispa
 
   return {
     beginCandidate(input) {
-      const handle = explicit ? ctx.beginGenerationCandidate(input) : (`compat-candidate:${++candidateSequence}` as CandidateHandle)
+      const { recoveryReason, ...candidateInput } = input
+      const handle = explicit ? ctx.beginGenerationCandidate({ ...candidateInput, ...(recoveryReason !== undefined && { metadata: { recoveryReason } }) }) : (`compat-candidate:${++candidateSequence}` as CandidateHandle)
       candidateRoles.set(handle, input.role)
       if (!explicit) fallbackCandidates.add(handle)
       return handle

@@ -204,6 +204,7 @@ import {
   classifyPostCommitAbort,
   postCommitAbortFrame,
 } from "./post-commit-error"
+import { shouldAttemptPreContentRecovery, type PreContentRecoveryFailure } from "./precontent-recovery-gate"
 import { createPreContentRecoverySinkChain } from "./precontent-recovery-sink-chain"
 import { retryMetaFeature } from "./retry-meta-feature"
 import {
@@ -588,6 +589,7 @@ async function runMessagesDriver(c: Context, args: RunMessagesDriverArgs): Promi
           sink: sinkChain.sink,
           rawSink: sinkChain.rawSink,
           liveSink: sinkChain.liveSink,
+          resumeRecoveryHeartbeat: () => sinkChain.sink.resumeHeartbeat?.(),
           deliverySession: sinkChain.deliverySession,
           buffered,
           forwardedSseEvents,
@@ -774,6 +776,45 @@ async function runMessagesDriver(c: Context, args: RunMessagesDriverArgs): Promi
           await writeTerminalThenSettle(ctx, postCommitAbortFrame(kind), () => ctx?.fail(resolvedName, error))
           return
         }
+        const recoveryFailure: PreContentRecoveryFailure = error instanceof HTTPError ? { kind: "http-error" } : { kind: "network-error" }
+        if (
+          shouldAttemptPreContentRecovery({
+            failure: recoveryFailure,
+            session: sinkChain.deliverySession,
+            config: state.preContentRecovery,
+          })
+        ) {
+          try {
+            const recovered = await driver.runPreContentRecovery("post-commit-pre-ready-failure")
+            if (!recovered.ok) throw new Error("[Anthropic:v4] pre-content recovery unexpectedly rejected routing")
+            // The primary live pump suspended this same request-owned sink while it unwound. Resume BEFORE
+            // consuming the fresh upstream so its pre-content silence remains protected by the heartbeat.
+            sinkChain.sink.resumeHeartbeat?.()
+            await pumpAnthropicStreamingDispatch({
+              sink,
+              rawSink: sinkChain.rawSink,
+              liveSink: sinkChain.liveSink,
+              deliverySession: sinkChain.deliverySession,
+              buffered: false,
+              forwardedSseEvents,
+              streamStartMs,
+              driver,
+              codec,
+              upstream: recovered.upstream,
+              env: recovered.env,
+              anchorHooks,
+              anchorState,
+              resumeRecoveryHeartbeat: () => sinkChain.sink.resumeHeartbeat?.(),
+              precontentRecoveryAttempted: true,
+              recoveryOriginalError: error,
+            })
+            return
+          } catch (recoveryError) {
+            // The failed rescue is diagnostic-only. The original upstream error remains the client-facing
+            // terminal because it is the failure the caller asked us to process.
+            consola.error("[Anthropic:v4] pre-content recovery after post-commit pre-ready failure failed", recoveryError)
+          }
+        }
         if (error instanceof HTTPError) {
           // (c) upstream 4xx/5xx — the dominant POST-COMMIT divergence. The rich frame preserves
           // error.type (+ retry_after) so the client SDK still branches correctly (Q2 §4.2.5).
@@ -813,6 +854,7 @@ async function runMessagesDriver(c: Context, args: RunMessagesDriverArgs): Promi
         sink,
         rawSink: sinkChain.rawSink,
         liveSink: sinkChain.liveSink,
+        resumeRecoveryHeartbeat: () => sinkChain.sink.resumeHeartbeat?.(),
         deliverySession: sinkChain.deliverySession,
         buffered,
         forwardedSseEvents,
@@ -1302,6 +1344,8 @@ interface PumpAnthropicStreamingV4Options {
    *  and the pump's completion summary share one origin (byte-equivalence). */
   streamStartMs: number
   driver: ReturnType<typeof createPipelineDriver>
+  /** Per-request codec; recovery dispatch keeps the same translator state across attempts. */
+  codec: ReturnType<typeof createAnthropicCodec>
   upstream: UpstreamStream
   env: RequestEnvelope
   /**
@@ -1321,13 +1365,16 @@ interface PumpAnthropicStreamingV4Options {
    * `opts.anchorState`. Undefined for `ping` (the driver then self-creates an inert local).
    */
   anchorState?: AnchorState
+  /** Resumes the request-owned supervisor heartbeat immediately before a fresh live recovery consumes frames. */
+  resumeRecoveryHeartbeat?: () => void
+  /** Exactly one recovery attempt is allowed for the request; child pumps carry this guard. */
+  precontentRecoveryAttempted?: boolean
+  /** Client-facing terminal errors retain the failed primary's raw error if its recovery also fails. */
+  recoveryOriginalError?: unknown
 }
 
 /** {@link pumpAnthropicStreamingDispatch} options — the pump options plus the codec (for the translate leg). */
-interface PumpAnthropicStreamingDispatchOptions extends PumpAnthropicStreamingV4Options {
-  /** The per-request anthropic codec — the translate leg reads its `getStreamMeta` / `flushResponse`. */
-  codec: ReturnType<typeof createAnthropicCodec>
-}
+interface PumpAnthropicStreamingDispatchOptions extends PumpAnthropicStreamingV4Options {}
 
 /**
  * Dispatch the streaming pump by OUTBOUND leg (RFC §3.1 二维门控). The DIRECT `/v1/messages` leg (upstream
@@ -1380,6 +1427,43 @@ async function pumpAnthropicStreamingDispatch(opts: PumpAnthropicStreamingDispat
  */
 async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): Promise<void> {
   const { sink, liveSink, buffered, forwardedSseEvents, driver, upstream, env, anchorHooks, anchorState } = opts
+  const tryResponseRecovery = async (error: unknown): Promise<boolean> => {
+    // Abort provenance is never a deterministic upstream death. In particular, shutdown/reaper/deadline
+    // aborts may leave upstream thinking alive, so a fresh dispatch would violate never-false-kill.
+    if (error instanceof Error && isAbortError(error)) return false
+    if (
+      opts.precontentRecoveryAttempted
+      || buffered
+      || !shouldAttemptPreContentRecovery({
+        failure: { kind: "network-error" },
+        session: opts.deliverySession,
+        config: state.preContentRecovery,
+      })
+    )
+      return false
+    try {
+      const recovered = await driver.runResponseRecovery(upstream, env, "stream-error-before-content")
+      if (!recovered.ok) throw new Error("[Anthropic:v4] ready-state recovery unexpectedly rejected routing")
+      // runResponseSink unwound through the supervisor and suspended the heartbeat. Resume before the
+      // recovery pump reads its first frame; otherwise an equally silent recovery would have no keepalive.
+      opts.resumeRecoveryHeartbeat?.()
+      await pumpAnthropicStreamingDispatch({
+        ...opts,
+        codec: opts.codec,
+        upstream: recovered.upstream,
+        env: recovered.env,
+        buffered: false,
+        precontentRecoveryAttempted: true,
+        recoveryOriginalError: opts.recoveryOriginalError ?? error,
+      })
+      return true
+    } catch (recoveryError) {
+      // Recovery is internal best-effort. Preserve the primary error on wire while retaining the rescue
+      // failure in diagnostics for operators.
+      consola.error("[Anthropic:v4] pre-content recovery after live stream error failed", recoveryError)
+      return false
+    }
+  }
   const anthropicPayload = env.body as MessagesPayload
   const model = anthropicPayload.model
 
@@ -1488,13 +1572,14 @@ async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): 
     }
 
     if (outcome.kind === "stream-error") {
+      if (await tryResponseRecovery(outcome.error)) return
       // H3 — the upstream iterable (or a sink write) threw a non-abort error. Synthesize the
       // Anthropic error frame + record it into the forwarded track (the client receives it, so
       // it belongs in `inboundResponse.sseEvents`), THEN settle. Ordering is load-bearing:
       // writeSynthetic samples the frame into `forwardedSseEvents`, recordForwarded snapshots it,
       // and only then does ctx.fail() freeze `inboundResponse` — a post-fail snapshot would miss it.
-      const error = outcome.error
-      logUpstreamStreamOutcomeError(outcome, { model: acc.model || model, streamState, acc, sseEvents })
+      const error = opts.recoveryOriginalError ?? outcome.error
+      logUpstreamStreamOutcomeError({ ...outcome, error }, { model: acc.model || model, streamState, acc, sseEvents })
       const errorMessage = error instanceof Error ? error.message : String(error)
       const errorType = anthropicStreamErrorType(error)
       // §10.5 gap (whole-branch review I-1): the live pump can stream-error BEFORE the first real
@@ -1718,6 +1803,7 @@ async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): 
       await sink.finalize?.()
     }
   } catch (error) {
+    if (await tryResponseRecovery(error)) return
     const failedCandidate = anthropicCandidateSnapshot(driver, upstream)
     if (failedCandidate.kind !== "anthropic-direct") throw error
     const { acc } = failedCandidate
