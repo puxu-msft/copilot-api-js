@@ -1018,23 +1018,39 @@ async function maybeRunHedgedResponseSink(
       return streamErrorOutcome(error, env, "downstream-sink")
     }
     const iterator = raced.liveFrames[Symbol.asyncIterator]()
-    for (;;) {
-      let next: IteratorResult<ClientFrame>
-      try {
-        next = await iterator.next()
-      } catch (error) {
-        return streamErrorOutcome(error, env, responseFailureSource(error))
+    let liveDrained = false
+    try {
+      for (;;) {
+        let next: IteratorResult<ClientFrame>
+        try {
+          next = await iterator.next()
+        } catch (error) {
+          return streamErrorOutcome(error, env, responseFailureSource(error))
+        }
+        if (next.done) {
+          liveDrained = true
+          break
+        }
+        try {
+          await writeWinnerFrame(sink, next.value)
+        } catch (error) {
+          if (classifyStreamError(error) === "client-abort") return { kind: "settled-abort" }
+          return streamErrorOutcome(error, env, "downstream-sink")
+        }
       }
-      if (next.done) break
-      try {
-        await writeWinnerFrame(sink, next.value)
-      } catch (error) {
-        if (classifyStreamError(error) === "client-abort") return { kind: "settled-abort" }
-        return streamErrorOutcome(error, env, "downstream-sink")
+      binding.coordinator.releaseCandidate(selected.candidate)
+      return { kind: "complete", headers: selected.upstream.headers, ...(selected.processor.finish && { finish: selected.processor.finish }) }
+    } finally {
+      // `return()` runs the losing/live candidate's IteratorClose path on every terminal before done.
+      // A cleanup rejection is diagnostic-only and must never replace the already selected response outcome.
+      if (!liveDrained && iterator.return) {
+        try {
+          await iterator.return()
+        } catch (cleanupError) {
+          consola.warn(`[driver] hedge live iterator cleanup failed: ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`)
+        }
       }
     }
-    binding.coordinator.releaseCandidate(selected.candidate)
-    return { kind: "complete", headers: selected.upstream.headers, ...(selected.processor.finish && { finish: selected.processor.finish }) }
   } catch (error) {
     binding.coordinator.releaseCandidate(binding.candidate.candidate)
     if (classifyStreamError(error) === "client-abort") return { kind: "settled-abort" }
@@ -1127,6 +1143,8 @@ function streamErrorOutcome(
         ...(error.flushError !== undefined && { flushError: error.flushError }),
       }
     : undefined
+  // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- structural driver tests use a minimal mock context without this runtime diagnostic port
+  if (diagnostics) env.ctx.recordResponseFailureSupersession?.(diagnostics)
   return {
     kind: "stream-error" as const,
     error: isResponseCodecRenderError(error) ? unwrapResponseCodecRenderError(error) : error,

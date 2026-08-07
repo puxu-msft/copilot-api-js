@@ -528,6 +528,8 @@ export interface RequestContext {
   recordMaxTokensTruncation(diag: NonNullable<PipelineInfo["maxTokensContinuation"]>): void
   /** Persist a downstream owner failure that occurred after the first external wire write was attempted. */
   recordWirePartialDelivery(diag: NonNullable<PipelineInfo["wirePartialDelivery"]>): void
+  /** Record that a response-processing flush superseded an upstream failure on the current generation dispatch. */
+  recordResponseFailureSupersession(input: { upstreamError?: unknown; flushError?: unknown }): void
   /** Merge Responses buffered-merge diagnostics into `pipelineInfo` (independent slot — survives the gated `setPipelineInfo` full-replace calls, mirrors the existing `_streamTimeouts`/`_sendMessageNormalization` pattern). */
   recordBufferedMergeInfo(diag: BufferedMergeDiag): void
   /** Record the per-model effective timeouts for this request (merged into `pipelineInfo`, survives the gated `setPipelineInfo` full-replace calls). */

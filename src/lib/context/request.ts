@@ -1101,6 +1101,9 @@ export function createRequestContext(opts: {
       _wirePartialDeliveryInfo = diag
       recordAttemptDiagnostic("delivery.wire_partial", "error", diag)
     },
+    recordResponseFailureSupersession(input) {
+      recordAttemptDiagnostic("response.failure-supersession", "error", input)
+    },
     recordBufferedMergeInfo(diag) {
       // Mirrors recordSendMessageNormalization's real shape (request.context_updated was removed in
       // 9853e768 — pipelineInfo now reaches SQLite solely via mergedPipelineInfo() → commitTerminal's

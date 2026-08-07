@@ -191,6 +191,34 @@ describe("createRequestContext - attempt lifecycle", () => {
     expect(ctx.currentAttempt!.wireRequest).toBe(wireReq)
   })
 
+  test("records response failure supersession on the current dispatch and terminal snapshot", async () => {
+    const { ctx } = makeContext()
+    const candidate = ctx.beginGenerationCandidate({ role: "primary" })
+    const dispatch = ctx.beginGenerationDispatch({ candidate })
+    const upstreamError = new Error("upstream failure")
+    const flushError = new Error("flush failure")
+
+    ctx.recordResponseFailureSupersession({ upstreamError, flushError })
+    expect(ctx.modelOperationSnapshot.dispatches.find((entry) => entry.handle === dispatch)?.diagnostics).toContainEqual(
+      expect.objectContaining({
+        kind: "response.failure-supersession",
+        data: { upstreamError: expect.objectContaining({ message: "upstream failure" }), flushError: expect.objectContaining({ message: "flush failure" }) },
+      }),
+    )
+
+    ctx.settleGenerationDispatch(dispatch, { verdict: "failed", error: flushError })
+    ctx.settleGenerationCandidate(candidate, { verdict: "failed" })
+    ctx.fail("test", flushError)
+    ctx.finalizeModelOperationDelivery()
+    const terminal = await ctx.whenModelOperationFinalized()
+    expect(terminal.dispatches.find((entry) => entry.handle === dispatch)?.diagnostics).toContainEqual(
+      expect.objectContaining({
+        kind: "response.failure-supersession",
+        data: { upstreamError: expect.objectContaining({ message: "upstream failure" }), flushError: expect.objectContaining({ message: "flush failure" }) },
+      }),
+    )
+  })
+
   test("generation candidate metadata persists recoveryReason in the canonical snapshot", () => {
     const { ctx } = makeContext()
     const candidate = ctx.beginGenerationCandidate({ role: "recovery", metadata: { recoveryReason: "stream-error-before-content" } })
