@@ -36,6 +36,9 @@ Each integrated task requires a review package from the recorded pre-task base t
 
 Integration identity gate: parallel `Agent` results are not assumed to preserve dispatch order. Before integrating any agent commit, read its report and verify the actual brief path, base SHA, commit SHA, and `git show --name-only`; reject any file outside that task's frozen boundary unless the brief explicitly permits it. This gate was added after one Task 1 agent correctly stopped when it received a Task 2 oracle message intended for a different parallel result.
 
+Cross-task integration seam:
+- Task 1b and Task 3 may both touch `response-processor` / direct render. Task 1b owns parsed-SSE provenance → wire-only projection; Task 3 owns wire frame → typed delivery classification. Whichever integrates second must replay both task suites and verify adapter/candidate wrappers preserve the explicit projection boundary without copying parsed provenance into client frames or dropping classified outcomes. A clean three-way merge is not evidence of semantic compatibility.
+
 Independent-oracle findings now binding on implementation/review:
 - Task 1: leading BOM, lone CR, and remove-only-first-BOM controls.
 - Task 2: six false-green sequences and three false-red controls in `task-2-independent-oracle.md`.
