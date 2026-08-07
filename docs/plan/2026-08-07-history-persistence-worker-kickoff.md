@@ -1,6 +1,6 @@
 # Kickoff：History Persistence Worker 渐进实施
 
-> 状态：等待 plan review 收口提交。`REVIEWED_PLAN_COMMIT=`。该值为空时禁止开始实现；复审 PASS 后由单独闭环提交只填写实际被评审的计划提交 SHA。
+> 状态：plan review 已收口，允许按启动前硬门开始 Task 0。`REVIEWED_PLAN_COMMIT=0deed62251dc01a4dfb83e5076c02a4d4be824cc`。该 SHA 是 reviewer 明确判定 0 blocker／major 的计划提交；plan blob 与该提交不一致时禁止实施。
 
 请在独立 worktree 中执行 `docs/plan/2026-08-07-history-persistence-worker.md`，行为权威是 `docs/spec/2026-08-06-history-persistence-worker.md`。
 
