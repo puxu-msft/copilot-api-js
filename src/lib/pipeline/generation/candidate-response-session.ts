@@ -153,7 +153,10 @@ export function createCandidateResponseSession<State, Snapshot>(
     for (const outcome of next) {
       outcomes.push(outcome)
       if (outcome.kind === "complete-unit") completedBoundaryFrames.add(frame)
-      if (outcome.kind === "response-terminal") sawTerminal = true
+      if (outcome.kind === "response-terminal") {
+        sawTerminal = true
+        if (outcome.terminal.semantic === "failed") sawFailure = true
+      }
       if (outcome.kind === "protocol-error") sawFailure = true
       boundary.observe(outcome, envelope)
     }

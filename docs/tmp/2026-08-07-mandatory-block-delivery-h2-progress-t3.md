@@ -47,4 +47,7 @@ owner: task-3-implementer
 - Second review Critical C2：Chat production candidate新增 finish producer：streamError→terminal-failure，无 finishReason→truncated，有 finishReason→valid-terminal-without-boundary，并保留 renderer finish frames。真实 route-factory seam 的 finish_reason→usage→finish产生一个 successful terminal，responseFrames含两帧，兼容 projection为 messageStop true／upstreamError false。
 - Second review Minors：同步 Chat／Responses WS旧接线注释；正式测试加入同实例 capability正样本、跨 adapter实例真实 capability与结构伪造负样本。
 - Second review验证：Task3／Chat seam／Responses committed-prefix选择集通过；driver suite 46／46；typecheck、target lint、diff-check通过。结构怪味处置：Chat shared finish mapping缺producer已在route candidate层闭合，未把协议事实塞入shared helper。
-- §6b 对账：second-review fix前 first-parent 14 commits；C1 `f8be1941` 后15 commits；本提交后共16 commits。
+- §6b 对账：second-review fix前 first-parent 14 commits；C1 `f8be1941` 后15 commits；C2 `2543ec46` 后共16 commits。
+- Acceptance rereview Important：确认 `OpenAIStreamAccumulator.streamError` 唯一赋值点是解析 in-band wire `error`；Chat finish producer遇该值返回 `complete` natural drain，仅确认既有 failed terminal闭合，不再制造第二 terminal-failure。compatibility `sawUpstreamError` 由 failed terminal outcome派生。
+- 正式 candidate tests：wire error仅一个 failed response-terminal、零 protocol-error、messageStop/upstreamError projections均 true；显式非wire terminal-failure仍产生唯一 typed terminal-failure；正常 finish_reason／usage 与 truncated路径保持原契约。修复提交后 first-parent共17 commits。
+- 验证：Chat candidate 3／3；Task3目标套件、Chat buffered、driver、typecheck与target lint均通过。

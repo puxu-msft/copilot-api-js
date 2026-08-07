@@ -18,6 +18,8 @@ import type {
   UpstreamFrame,
 } from "~/lib/pipeline/types"
 
+import { createChatCompletionsDeliveryProtocolAdapter } from "~/lib/pipeline/delivery/adapters/chat-completions"
+import { createCandidateResponseSession } from "~/lib/pipeline/generation/candidate-response-session"
 import { createChatCandidateResponseSession } from "~/routes/chat-completions/handler-v4"
 
 function env(): RequestEnvelope {
@@ -67,6 +69,50 @@ async function collect(
 }
 
 describe("Chat candidate delivery finish producer", () => {
+  test("wire error produces one failed terminal and finish only confirms the drain", async () => {
+    const session = createChatCandidateResponseSession({
+      candidate: "candidate:chat-error" as CandidateHandle,
+      dispatch: "dispatch:chat-error" as DispatchHandle,
+      env: env(),
+      responseRewrites: [],
+      renderer,
+    })
+    const wireError = { event: "error", data: JSON.stringify({ error: { message: "boom", type: "server_error" } }) }
+
+    await expect(collect(session, [wireError])).resolves.toEqual([wireError])
+
+    const terminals = session.outcomes.filter((outcome) => outcome.kind === "response-terminal")
+    expect(terminals).toHaveLength(1)
+    expect(terminals[0]).toMatchObject({ terminal: { semantic: "failed", sourceFrame: wireError } })
+    expect(session.outcomes.filter((outcome) => outcome.kind === "protocol-error")).toEqual([])
+    expect(session.responseOpts.sawMessageStop?.()).toBe(true)
+    expect(session.responseOpts.sawUpstreamError?.()).toBe(true)
+  })
+
+  test("non-wire terminal failure still produces one typed failure", async () => {
+    const cause = new Error("renderer finish failed")
+    const session = createCandidateResponseSession({
+      candidate: "candidate:chat-finish-failure" as CandidateHandle,
+      dispatch: "dispatch:chat-finish-failure" as DispatchHandle,
+      env: env(),
+      responseRewrites: [],
+      renderer,
+      adapter: createChatCompletionsDeliveryProtocolAdapter(),
+      createState: () => undefined,
+      finish: () => ({ kind: "terminal-failure", frames: [], error: cause }),
+      snapshot: () => undefined,
+    })
+
+    await expect(collect(session, [])).resolves.toEqual([])
+
+    expect(session.outcomes.filter((outcome) => outcome.kind === "response-terminal")).toEqual([])
+    expect(session.outcomes).toContainEqual({
+      kind: "protocol-error",
+      error: { semantic: "terminal-failure", detail: cause.message, sourceFrame: null, cause },
+    })
+    expect(session.responseOpts.sawUpstreamError?.()).toBe(true)
+  })
+
   test("finish_reason then trailing usage commits one successful response terminal", async () => {
     const session = createChatCandidateResponseSession({
       candidate: "candidate:chat" as CandidateHandle,
