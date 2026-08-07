@@ -3,7 +3,7 @@
 ## 已闭合发现
 
 - **Important — `/home/xp/src/copilot-api-js/.worktree/agent-a0d890a338019a02a/.superpowers/sdd/task-9-sqlite-driver-research.md:168-170`：把 `node-sqlite3-wasm` 的“README 未声明 Bun”升级为“跨 Bun 物理 blocker”不成立。未声明只证明支持契约缺失；该候选是预编译 WASM+JS，缺少本机 native ABI 这一常见物理障碍，实际可加载性必须用精确版本 tarball 在 Bun 1.3.14 运行同一 UDF/trigger/file-WAL probe 裁决。即使 probe 通过，缺 authorizer 仍是独立能力缺口；即使 probe 失败，才可将该版本/平台判为运行时 blocker。来源：候选 README 与 npm `node-sqlite3-wasm@0.8.60`。
-- **Important — 同文件:26、108、118、124、132、144、152、158、164、170：反复把“未声明 Bun support／未实测 Bun”称为“物理 blocker”，混淆了证据状态与失败事实。`better-sqlite3`、`@libsql/client`、`sql.js`、`wa-sqlite`、官方 WASM 与 `node-sqlite3-wasm` 在目标 Bun+Node 环境的表格应统一标为“未验证或已探测失败”；仅已运行的 `bun:sqlite` API 缺 UDF 是当前可证 blocker，`node:sqlite` 的目标 Bun import 失败是该版本可证 blocker。每个没有原生 ABI 但未声明 Bun 的 WASM 项尤其不能凭文档沉默排除。
+- **Important — 同文件:26、108、118、124、132、144、152、158、164、170：反复把“未声明 Bun support／未实测 Bun”称为“物理 blocker”，混淆了证据状态与失败事实。`better-sqlite3`、`@libsql/client`、`sql.js`、`wa-sqlite`、官方 WASM 与 `node-sqlite3-wasm` 在目标 Bun+Node 环境的表格应统一标为“未验证或已探测失败”；仅已运行的 `bun:sqlite` API 缺 UDF 是当前可证 blocker，`node:sqlite` 的目标 Bun import 失败是该版本可证 blocker。每个没有原生 ABI但未声明 Bun 的 WASM 项尤其不能凭文档沉默排除。
 - **Important — 同文件:140-152：`wa-sqlite` 被错误归类为“公共 operation 是 async，故 sync contract 阻断”。已下载的已发布 `wa-sqlite@1.0.0` README 明示同时提供 synchronous 和 Asyncify asynchronous build，发布 tarball 含 `dist/wa-sqlite.mjs` 与 `dist/wa-sqlite-async.mjs`；作者实际 import 的 `src/sqlite-api.js` 在第15行硬编码 `const async = true`，仅说明该入口是 async wrapper，不能代表同步 dist build 不存在。该候选仍未证明 Node/Bun file VFS，故当前不可采纳，但淘汰理由必须改为“Node/Bun file VFS 与同步 variant integration 未验证”。
 - **Important — 同文件:166-170：未核验 `node-sqlite3-wasm` 的 WAL 硬约束，却以“direct filesystem persistence”近似满足 file/WAL。已发布 `0.8.60` JS VFS 只有文件读写、锁目录和 fsync imports，未见 WAL 所需 shared-memory `xShm*` 桥接；须以 `PRAGMA journal_mode=WAL` 后重开第二 connection、读写并断言实际 pragma 仍为 `wal` 的 probe 定性。若失败，它是已证 WAL blocker；若成功，报告才可继续评估 Bun runtime 和 trigger path。普通 file-open 成功不是 WAL 证据。
 - **Minor — 同文件:100-110、140-152：候选覆盖不是穷尽式的。至少应记录活跃的 `@journeyapps/wa-sqlite@2.0.1`（原 `wa-sqlite@1.0.0` 不是唯一维护线）与 `@livestore/wa-sqlite` fork；后者一手 README 声称 Node target 和 synchronous operations。两者尚无现成 Bun+file-VFS+authority 证据，未必合格，但未查即不支持“研究覆盖充分”。另可列 `@tan-yong-sheng/sqlite-vec-wasm-node`，其 metadata 声称 Node filesystem WASM VFS；同样应以同一 probe 排除或保留。
@@ -16,3 +16,14 @@
 - **最小补证：**在隔离临时目录从精确 tarball 安装/解包 `node-sqlite3-wasm@0.8.60`、`better-sqlite3@13.0.3` 与 WASM forks，分别用 `node`、`bun` 执行同一脚本：打开临时 file；`PRAGMA journal_mode=WAL`；注册零参 closure UDF；持久 trigger 两次写入并断言 `[0,1]`；尝试普通 SQL 切换而失败；重开第二 connection 后确认 `wal` 与读写；输出 runtime、package version 和异常。对 `wa-sqlite` 另须选同步 dist entry 并先证明 file VFS。已下载 tarball 未执行外部包代码，因为本轮环境拒绝未授权执行 npm 外部代码。
 
 **计数：Critical 0，Important 5，Minor 1。**
+
+## 静态整改复核（`2981ecab`、`b48b547f`）
+
+- **已闭合 — 证据等级、wa-sqlite sync build、`node-sqlite3-wasm` WAL 缺口、`better-sqlite3` 八个 prebuild、三个遗漏候选和“尚无候选被实证满足”措辞均已按要求修正。**研究没有再将文档沉默说成物理失败，remote client 与 whole-DB import/export 的排除理由仍成立。
+- **[Important] 候选报告:212-223 — manifest 把“load documented synchronous entry”当步骤1，会把“异步 WASM 初始化、但初始化后的 DB transaction 同步”的候选误判为不满足同步 transaction。应允许模块 bootstrap 被 `await`，然后在步骤5对 `BEGIN`、statement、`COMMIT` 及 wrapper 返回值逐项断言非 Promise／thenable；async driver operation 才失败。
+- **[Important] 候选报告:218 — WAL probe 先关闭第一 connection，随后才开第二 connection，不能证明 WAL shared-memory/多连接行为，且“first/new third connection reads”对象不明确。应保持 A 打开，A 设 WAL 后同时打开 B；B commit 写入、A 读到，再反向写读，并在两连接上断言 journal mode。此后才可判 xShm/WAL。
+- **Research coverage verdict：存在上述 2 个 Important 的 manifest 假阴性／假阳性风险；修正后静态研究覆盖可进入授权动态验证。**
+- **Recommendation quality verdict：可进入下一阶段，但不得据 manifest 运行结果作结论，直至修正两项。**
+- **仍需用户授权的 dynamic probes：**精确 tarball 在隔离 `/tmp` 下由 Node 24 与 Bun 1.3.14 加载并执行；不得写项目 `node_modules`，并记录 integrity、entry、JSON 输出与 error。**本轮未执行第三方包代码。**
+
+**复核计数：Critical 0，Important 2，Minor 0。**
