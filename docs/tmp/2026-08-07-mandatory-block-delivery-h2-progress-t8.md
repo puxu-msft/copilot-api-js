@@ -4,7 +4,8 @@
 
 - BASE：`1d24d9bf14d36a0e3f53b200695b49a424d33191`。
 - `git merge-base --is-ancestor 1d24d9bf HEAD` 已于开工时返回 exit 0，无需 fast-forward。
-- 当前 checkpoint 仅完成前置核对、规格阅读和执行清单；尚未写测试或生产 primitive。
+- 当前 checkpoint 仅完成前置核对、规格阅读和执行清单；`tests/transport/http2-goaway-ledger.unit.test.ts` 尚不存在，因此按恢复指令未运行测试、未写生产 primitive。
+- 下一 RED checkpoint 的首个具体测试：创建 ledger 后取得一个 dispatch lease，在无 event／无 violation 时 `freezeAtTerminal()` 必须返回 Task 7 `GoawaySnapshot` 的 ordinary zero-event 形状与 `operationLease: null`；测试应首先因 `~/lib/transport/http2-goaway-ledger` 模块不存在而 RED。
 - 工作树内报告 `.superpowers/sdd/task-8-report.md` 已创建并记录相同基线，但该 worktree-local 报告不纳入本 progress-only commit。
 
 ## 已完成
@@ -16,7 +17,7 @@
 ## 未提交文件及在途意图
 
 - `.superpowers/sdd/task-8-report.md`：worktree-local 实施证据报告，后续逐步补充 RED／GREEN、mutation、验证、ownership proof、结构怪味与三方向反思。
-- 当前没有未提交产品源码或测试文件。
+- 当前没有未提交产品源码或测试文件；本 checkpoint 只更新此 progress 文件。
 
 ## 剩余项
 
