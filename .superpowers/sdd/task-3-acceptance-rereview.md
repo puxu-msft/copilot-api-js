@@ -1,6 +1,15 @@
 # Task 3 acceptance rereview
 
-## Re-verification at `41e79a60`
+## Re-verification at `c0d52d22`
+
+**Acceptance PASS**，target `c0d52d229fd60b39b2489c2653a7e1c1137f8457`。Critical 0、Important 0、Minor 0。
+
+- **PASS——wire error + nonempty renderer flush。** `flushResponse` 恰调用一次，但 flush frame 不进入 output／outcomes；恰一个 failed `response-terminal`、零 `protocol-error`，`sawUpstreamError=true`。
+- **PASS——其他 nonempty finish frames。** success 的 flush frame 保留于 terminal `responseFrames`；truncated 与显式 nonwire terminal-failure 的 flush frame先进入 `buffer-real-frame`，随后各保持唯一 typed error semantic/cause。
+- **PASS——相邻回归。** Chat success、Responses RST complete-prefix／partial-tail、Responses identity、capability/getter/UTF-8/single-classification 均未回归。
+- 命令：`env -C /tmp/task3-c0d52d22-verify bun test <chat-candidate,responses-buffered,delivery-adapters,candidate-session>` → **35 pass、0 fail**，222 assertions。
+
+## Re-verification at `41e79a60`（superseded）
 
 **Acceptance PASS**，target `41e79a60c193de97775f9e61a9aea2e12cf405a7`。Critical 0、Important 0、Minor 0。
 
