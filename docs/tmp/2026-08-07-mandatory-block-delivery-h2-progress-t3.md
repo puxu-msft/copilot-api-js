@@ -15,6 +15,10 @@ owner: task-3-implementer
 - RED：`pwd -P && bun test tests/pipeline/response-processor.unit.test.ts`，目标测试按预期失败，实际顺序为 verdict 先于两个 closing frames。
 - GREEN：`pwd -P && bun test tests/pipeline/response-processor.unit.test.ts && bun run typecheck`，6 tests passed、0 failed，TypeScript compilation 通过。
 
+## Recovery checkpoint after adapter investigation
+
+- Adapter checkpoint 尚未进入测试编写：工作树审计为 clean，没有未提交 adapter WIP；已核对 Responses factory 现有 `transport: "http" | "ws"` 接缝、四协议 terminal/error renderer 来源与冻结 spec §4.3 映射。下一步从 `tests/pipeline/delivery-adapters.unit.test.ts` 红测开始，单独闭合纯 adapter 基座，不接 candidate session／classifier production wiring。
+
 ## Pending
 
 - 实现四个 protocol adapters 与 runtime-branded control capability。
