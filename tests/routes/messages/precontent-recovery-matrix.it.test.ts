@@ -33,6 +33,7 @@ import {
   textDeltaFrame,
 } from "../../helpers/anthropic-frames"
 import { mockModel } from "../../helpers/factories"
+import { FakeClock } from "../../helpers/fake-clock"
 import { useIsolatedRuntime } from "../../helpers/isolated-fixture"
 import { applyFetchMock } from "../../helpers/mock-fetch"
 import {
@@ -63,6 +64,10 @@ async function request(app: Awaited<ReturnType<(typeof import("../../helpers/tes
     headers: { "Content-Type": "application/json", "x-session-id": sessionId },
     body: JSON.stringify({ model: MODEL, messages: [{ role: "user", content: "recover" }], max_tokens: 64, stream: true }),
   })
+}
+
+async function drain(n = 120): Promise<void> {
+  for (let i = 0; i < n; i++) await Promise.resolve()
 }
 
 describe("Task 4.3b pre-content recovery matrix", () => {
@@ -248,13 +253,7 @@ describe("Task 4.3b pre-content recovery matrix", () => {
     }
   })
 
-  test.each([
-    ["production sink write", () => setDeliverySessionTestHooksForTests({ onWrite: () => Promise.reject(new Error("production sink write rejected")) })],
-    [
-      "production delivery owner",
-      () => setDeliverySessionTestHooksForTests({ onOwnerOperation: () => Promise.reject(new Error("production owner rejected")) }),
-    ],
-  ])("%s failure never makes a fresh recovery dispatch", async (_name, injectFailure) => {
+  test("production network-classified sink write never makes a fresh recovery dispatch", async () => {
     let calls = 0
     applyFetchMock(
       mock(() => {
@@ -262,15 +261,78 @@ describe("Task 4.3b pre-content recovery matrix", () => {
         return Promise.resolve(createSseResponse(completeFrames("msg_delivery_failure")))
       }),
     )
-    injectFailure()
+    setDeliverySessionTestHooksForTests({
+      onWrite: () => Promise.reject(tagTransportError(new Error("production sink write rejected"), "refused-stream")),
+    })
     const { createFullTestApp } = await import("../../helpers/test-app")
-    const response = await request(createFullTestApp(), `precontent-delivery-no-recovery-${_name}`)
+    const response = await request(createFullTestApp(), "precontent-delivery-sink-no-recovery")
     const text = await response.text()
 
     expect(calls).toBe(1)
     // The failed production delivery can make the client wire unavailable before an error terminator
     // is writable. Dispatch count is the recovery oracle: no fresh upstream candidate was opened.
     expect(text).not.toContain("msg_ready_recovery")
+  })
+
+  test("production delivery-owner failure at the committed anchor allocation never opens recovery", async () => {
+    const clock = new FakeClock()
+    let gateReached!: () => void
+    const gateReachedP = new Promise<void>((resolve) => (gateReached = resolve))
+    let openGate!: () => void
+    const gateOpenP = new Promise<void>((resolve) => (openGate = resolve))
+    let calls = 0
+    const ownerOperations: Array<string> = []
+    let injectOwnerFailure = true
+
+    clock.install()
+    try {
+      setStateForTests({
+        copilotToken: "test-token",
+        accountType: "individual",
+        vsCodeVersion: "1.100.0",
+        responseHeaderTimeout: 0,
+        streamIdleTimeout: 0,
+        streamCommitAfterSec: 2,
+        streamKeepalivePingSec: 2,
+        streamKeepaliveMode: "empty_text",
+        preContentRecovery: { enabled: true },
+        protectStreamingGeneration: false,
+      })
+      applyFetchMock(
+        mock(() => {
+          calls += 1
+          gateReached()
+          return gateOpenP.then(() => createSseResponse(completeFrames("msg_owner_after_anchor")))
+        }),
+      )
+      setDeliverySessionTestHooksForTests({
+        onOwnerOperation: (operation) => {
+          ownerOperations.push(operation)
+          if (injectOwnerFailure) {
+            injectOwnerFailure = false
+            return Promise.reject(tagTransportError(new Error("production owner rejected"), "refused-stream"))
+          }
+        },
+      })
+      const { createFullTestApp } = await import("../../helpers/test-app")
+      const responseP = request(createFullTestApp(), "precontent-delivery-owner-no-recovery")
+      await gateReachedP
+      await clock.advance(2_000)
+      await drain()
+      const response = await responseP
+      await clock.advance(2_500)
+      await drain()
+      expect(ownerOperations).toEqual(["allocate-anchor"])
+
+      openGate()
+      const text = await response.text()
+      expect(calls).toBe(1)
+      expect(dataFramesOfType(text, "error")[0]?.error).toMatchObject({ message: "[delivery] begin-leg cannot advance a torn wire transaction" })
+      expect(text).not.toContain("msg_owner_after_anchor")
+      expect(injectOwnerFailure).toBeFalse()
+    } finally {
+      clock.restore()
+    }
   })
 
   test("codec-render failures never make a fresh recovery dispatch", async () => {

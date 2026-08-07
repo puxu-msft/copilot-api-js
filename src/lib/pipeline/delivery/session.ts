@@ -339,7 +339,6 @@ export function createDownstreamDeliverySession(options: CreateDownstreamDeliver
     source?: LegSource,
     onCommit?: () => void,
   ): Promise<OwnerResult<true>> => {
-    await deliverySessionTestHooks?.onOwnerOperation?.(operation)
     if (specs.length === 0) {
       reservation.rollback()
       throw new Error("[delivery] allocation build produced no wire frames")
@@ -353,6 +352,8 @@ export function createDownstreamDeliverySession(options: CreateDownstreamDeliver
           reservation.commit()
           onCommit?.()
           committed = true
+          const onOwnerOperationForTests = deliverySessionTestHooks?.onOwnerOperation
+          if (onOwnerOperationForTests) await onOwnerOperationForTests(operation)
         }
         applyPendingFrame(entry)
         await writeToSink(sink, entry)
