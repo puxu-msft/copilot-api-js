@@ -1,0 +1,167 @@
+# P1 — Semantic Core, Typed Lifecycle, and Target Grammar
+
+> **状态**：未实施
+>
+> **前置**：无；与 P0 可并行。此 phase 不接 production profile，客户端 wire 必须零变化。
+
+**Goal:** 建立行为中性的 semantic bridge core：双平面 decision、typed handler factories、source lifecycle router、target Responses grammar、continuation collector、diagnostics collectors 和 compatibility error 类型。
+
+**Architecture:** Core 不 import transport、routes、state 或 concrete translators。Handlers 只作领域决定；router 管 key／phase／finalize；renderer grammar 只验证／组装目标 wire；driver integration 留 P3。
+
+### Task 1.1: 双平面 types 与 compile-time fixtures
+
+**Files:**
+- Create: `src/lib/semantic-bridge/types.ts`
+- Create: `src/lib/semantic-bridge/index.ts`
+- Create: `tests/semantic-bridge/types.typecheck.unit.test.ts`
+- Create: `docs/tmp/2026-08-07-responses-anthropic-semantic-bridge-progress-p1-core.md`
+
+**Produces:** `BridgeDecision<E>`、`PresentationDecision<E>`、`ContinuationDecision`、`BridgeEmission`、`RequestItemDecision<E>`、`SourceAffinity`。
+
+- [ ] **Step 1: 写类型正负 fixture**
+
+正样本：`presentation:degraded + continuation:carrier`；负样本：known response handler 返回 `undefined`、degraded 缺 reason／lostFields／syntheticKind、opaque handler 返回无理由 none。
+
+- [ ] **Step 2: 跑红灯**
+
+Run: `bun test tests/semantic-bridge/types.typecheck.unit.test.ts`
+Expected: FAIL，模块不存在。
+
+- [ ] **Step 3: 实现规格签名**
+
+完整复制规格 §5.4／§6 的 discriminated unions；`BridgeEmission` 明确 client/server tool call/result 与 citation，不接受 `raw:any` escape hatch。
+
+- [ ] **Step 4: 绿灯与 mutation**
+
+Run: `bun test tests/semantic-bridge/types.typecheck.unit.test.ts && bun run typecheck`
+Expected: PASS。临时把 `BridgeDecision` 改成单平面后 type fixture 必红，再反向恢复冻结 patch。
+
+- [ ] **Step 5: commit**
+
+Commit: `feat(bridge): add typed semantic decisions`
+
+### Task 1.2: typed handler factories 与 lifecycle router
+
+**Files:**
+- Create: `src/lib/semantic-bridge/lifecycle.ts`
+- Create: `tests/semantic-bridge/lifecycle-router.unit.test.ts`
+- Create: `tests/semantic-bridge/lifecycle-types.typecheck.unit.test.ts`
+
+**Produces:**
+
+```ts
+export interface BoundResponseItemHandler<E> {
+  consume(event: SemanticItemLifecycleEvent, ctx: ResponseBridgeContext): LifecycleDecision<E>
+  finalize(ctx: ResponseBridgeContext): BridgeDecision<E>
+}
+export function defineWholeItemOnDoneHandler<Whole, Lifecycle extends SemanticItemLifecycleEvent, E>(
+  spec: WholeItemOnDoneHandlerSpec<Whole, Lifecycle, E>,
+): ResponseSemanticHandler<Whole, Lifecycle, E>
+export function defineStatefulResponseHandler<Whole, Lifecycle extends SemanticItemLifecycleEvent, E, State>(
+  spec: StatefulResponseHandlerSpec<Whole, Lifecycle, E, State>,
+): ResponseSemanticHandler<Whole, Lifecycle, E>
+export function createSemanticLifecycleRouter<E>(input: {
+  resolveHandler(semanticKind: string, ctx: ResponseBridgeContext): BoundResponseItemHandler<E> | BridgeCompatibilityError
+}): SemanticLifecycleRouter<E>
+```
+
+- [ ] **Step 1: 写 router 红灯**
+
+覆盖 open→delta→close、close-only 合成 open、semantic kind 中途改变、重复 close、source flush 有 open item、unknown event。
+
+- [ ] **Step 2: 写 typed source fixture**
+
+Responses Web Search whole 包含 complete／incomplete；function progress 接 `FunctionCallArgumentsDoneEvent`；Anthropic nested delta 先提 outer event 再窄 delta；业务 callback 不接 `unknown` state/source。
+
+- [ ] **Step 3: 实现最小 router 与 factories**
+
+异构擦除只在 factory core，runtime kind guard 失败返回 `BridgeCompatibilityError`，不 cast 到业务层。
+
+- [ ] **Step 4: 运行与 mutation**
+
+Run: `bun test tests/semantic-bridge/lifecycle-router.unit.test.ts tests/semantic-bridge/lifecycle-types.typecheck.unit.test.ts`
+Expected: PASS。删除 runtime kind guard、允许重复 finalize、恢复 nested `Extract` 后各自精确变红。
+
+- [ ] **Step 5: commit**
+
+Commit: `feat(bridge): add typed lifecycle router`
+
+### Task 1.3: Target Responses lifecycle grammar
+
+**Files:**
+- Create: `src/lib/semantic-bridge/responses-grammar.ts`
+- Create: `tests/semantic-bridge/responses-grammar.unit.test.ts`
+- Extend: `tests/e2e-client/responses-nodelta.probe.it.test.ts`
+
+**Produces:** `createResponsesTargetEmitter()`，发射 message text／reasoning summary／function call／completed／incomplete 的合法偏序。
+
+- [ ] **Step 1: 在旧实现上捕获官方 SDK 失败正样本**
+
+新增 fixture：缺 message `output_item.added`、缺 reasoning `reasoning_summary_part.added`；真实 OpenAI SDK 应分别因 missing output／content 抛错。正确完整序列与零 delta 序列必须通过。
+
+- [ ] **Step 2: 写 grammar unit 红灯**
+
+断言每 output_index 的 item／part added/done exactly once，terminal event type 与 payload status 一致，多 item id/index 独立。
+
+- [ ] **Step 3: 实现 emitter**
+
+Emitter 接 semantic emissions 与 lifecycle decisions，不读取 source wire；`response.incomplete` 不能伪装成 completed。
+
+- [ ] **Step 4: 双 oracle 绿灯**
+
+Run: `bun test tests/semantic-bridge/responses-grammar.unit.test.ts tests/e2e-client/responses-nodelta.probe.it.test.ts`
+Expected: PASS。删除任一必需 added 事件或把 incomplete 改 completed 后，目标测试红。
+
+- [ ] **Step 5: commit**
+
+Commit: `feat(bridge): add Responses target grammar`
+
+### Task 1.4: Continuation envelope 与 collector
+
+**Files:**
+- Create: `src/lib/semantic-bridge/continuation.ts`
+- Create: `tests/semantic-bridge/continuation.unit.test.ts`
+
+**Produces:** `ResponsesContinuationEnvelopeV2`、versioned prefix、`ContinuationCollector`、`compareSourceAffinity()`；保留 v1 decoders。
+
+- [ ] **Step 1: 写 encode/decode／foreign／corrupt／affinity tests**
+- [ ] **Step 2: 跑红灯**
+- [ ] **Step 3: 实现 v2 envelope，不写普通日志，不裁 source fields**
+- [ ] **Step 4: 正负控制**：alias 同 resolved source 可恢复；不同 compatibilityKey 默认剥离；删 affinity 后测试红。
+- [ ] **Step 5: commit** `feat(bridge): add continuation envelope`
+
+### Task 1.5: Diagnostics collectors 与 canonical hash
+
+**Files:**
+- Create: `src/lib/semantic-bridge/diagnostics.ts`
+- Create: `tests/semantic-bridge/diagnostics.unit.test.ts`
+
+**Produces:** open→frozen `RequestBridgeDiagnosticsCollector`、candidate append-only response collector、canonical `{version,records}` hash。
+
+- [ ] **Step 1: 写 success／reject／throw freeze tests**
+- [ ] **Step 2: 写 canonical 正控**：对象 key 构造顺序不同 hash 相同；record 顺序不同 hash 不同；id 不进 hash。
+- [ ] **Step 3: 实现 append/freeze；freeze 后 append／再次 freeze fail-loud**
+- [ ] **Step 4: mutation**：把 id 纳入 hash、把 response collector改成单槽后测试红。
+- [ ] **Step 5: commit** `feat(bridge): add append-only diagnostics collectors`
+
+### Task 1.6: Compatibility error 类型
+
+**Files:**
+- Create: `src/lib/error/bridge-compatibility-error.ts`
+- Modify: `src/lib/error/index.ts`
+- Test: `tests/semantic-bridge/compatibility-error.unit.test.ts`
+
+**Produces:** class fields与规格一致；`retryable:false` readonly；`isBridgeCompatibilityError` 不靠 message string。
+
+- [ ] 写构造／序列化／type guard 红灯。
+- [ ] 实现 class 和 export。
+- [ ] mutation：删除 `retryable:false` 或用普通 Error 冒充后红。
+- [ ] Run: `bun test tests/semantic-bridge && bun run typecheck`。
+- [ ] Commit: `feat(error): add bridge compatibility error`
+
+## Phase 验收
+
+- Core 生产代码尚未被 `hub-translate`／routes import，现有 wire goldens byte-identical。
+- `bun run test:backend`、typecheck、精确 eslint 通过。
+- 架构守卫确认 `src/lib/semantic-bridge/` 不 import routes、transport、state、driver。
+- Progress 每个 commit 均更新；相位结论折回本文件。
