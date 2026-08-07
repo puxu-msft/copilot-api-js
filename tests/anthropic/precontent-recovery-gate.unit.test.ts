@@ -20,6 +20,17 @@ function deliveryWithoutContent() {
   return { hasEmittedRealClientContent: false }
 }
 
+function hedgeAggregate(
+  failures: ReadonlyArray<{ error: unknown; source: "upstream-transport" | "codec-render" }>,
+): AggregateError & { hedgeFailures: ReadonlyArray<{ error: unknown; source: "upstream-transport" | "codec-render" }> } {
+  const aggregate = new AggregateError(
+    failures.map((failure) => failure.error),
+    "No generation candidate produced a complete client block",
+  ) as AggregateError & { hedgeFailures: ReadonlyArray<{ error: unknown; source: "upstream-transport" | "codec-render" }> }
+  Object.defineProperty(aggregate, "hedgeFailures", { value: Object.freeze([...failures]), enumerable: true })
+  return aggregate
+}
+
 function abortInputWithThrowingReads(abortKind: PostCommitAbortKind) {
   return {
     failure: { kind: "abort" as const, abortKind },
@@ -80,6 +91,61 @@ describe("shouldAttemptPreContentRecovery", () => {
     expect(classify(tagTransportError(new Error("h2 pre-response close"), "pre-response-close"))).toEqual({ kind: "network-error" })
     expect(classify(new HTTPError("bad request", 418, ""))).toEqual({ kind: "http-error", errorType: "bad_request" })
     expect(classify(new StreamShutdownError())).toEqual({ kind: "abort", abortKind: "shutdown" })
+  })
+
+  test("all tagged upstream hedge members retain network-error recovery eligibility", () => {
+    const aggregate = hedgeAggregate([
+      { error: tagTransportError(new Error("h2 refused stream"), "refused-stream"), source: "upstream-transport" },
+      { error: tagTransportError(new Error("h2 pre-response close"), "pre-response-close"), source: "upstream-transport" },
+    ])
+
+    expect(classifyPreContentRecoveryFailure({ error: aggregate, clientAborted: false })).toEqual({ kind: "network-error" })
+    expect(
+      shouldAttemptPreContentRecovery({
+        failure: classifyPreContentRecoveryFailure({ error: aggregate, clientAborted: false }),
+        session: deliveryWithoutContent(),
+        config: { enabled: true },
+      }),
+    ).toBe(true)
+  })
+
+  test.each([
+    ["abort", { error: new StreamShutdownError(), source: "upstream-transport" as const }],
+    ["bad request", { error: new HTTPError("bad request", 418, ""), source: "upstream-transport" as const }],
+    ["codec", { error: new Error("codec failure"), source: "codec-render" as const }],
+  ])("mixed hedge aggregate with %s member fails closed", (_name, disqualifying) => {
+    const aggregate = hedgeAggregate([
+      { error: tagTransportError(new Error("h2 pre-response close"), "pre-response-close"), source: "upstream-transport" },
+      disqualifying,
+    ])
+
+    expect(
+      shouldAttemptPreContentRecovery({
+        failure: classifyPreContentRecoveryFailure({ error: aggregate, clientAborted: false }),
+        session: deliveryWithoutContent(),
+        config: { enabled: true },
+      }),
+    ).toBe(false)
+  })
+
+  test("empty hedge aggregate fails closed", () => {
+    const aggregate = hedgeAggregate([])
+    expect(
+      shouldAttemptPreContentRecovery({
+        failure: classifyPreContentRecoveryFailure({ error: aggregate, clientAborted: false }),
+        session: deliveryWithoutContent(),
+        config: { enabled: true },
+      }),
+    ).toBe(false)
+  })
+
+  test("recursive hedge aggregate fails closed without reclassification recursion", () => {
+    const aggregate = new AggregateError([], "recursive") as AggregateError & {
+      hedgeFailures: ReadonlyArray<{ error: unknown; source: "upstream-transport" | "codec-render" }>
+    }
+    Object.defineProperty(aggregate, "hedgeFailures", { value: Object.freeze([{ error: aggregate, source: "upstream-transport" }]), enumerable: true })
+
+    expect(classifyPreContentRecoveryFailure({ error: aggregate, clientAborted: false })).toEqual({ kind: "http-error", errorType: "bad_request" })
   })
 
   test("client abort is excluded without reading session or config", () => {

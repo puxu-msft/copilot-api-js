@@ -21,6 +21,7 @@ import type {
   UpstreamStream,
 } from "~/lib/pipeline/types"
 
+import { tagTransportError } from "~/lib/error/transport-reason"
 import { createCandidateResponseSession } from "~/lib/pipeline/generation/candidate-response-session"
 import {
   //
@@ -29,6 +30,11 @@ import {
   type HedgeRaceFailure,
 } from "~/lib/pipeline/generation/coordinator"
 import { createGenerationBudget } from "~/lib/pipeline/generation/generation-budget"
+import {
+  //
+  classifyPreContentRecoveryFailure,
+  shouldAttemptPreContentRecovery,
+} from "~/routes/messages/precontent-recovery-gate"
 
 function env(): RequestEnvelope {
   return {
@@ -238,6 +244,43 @@ describe("generation coordinator hedge race", () => {
       { error: (failure as AggregateError).errors[1], source: "upstream-transport" },
     ])
     await expect(coordinator.raceReadyCandidates([first, second])).rejects.toThrow(/already started/i)
+  })
+
+  test("all transport hedge aggregate retains every tagged member for downstream taxonomy", async () => {
+    const primary = runtime("primary", "primary", 1)
+    const secondary = runtime("hedge", "secondary", 2)
+    const taggedErrors = [
+      tagTransportError(new Error("primary refused"), "refused-stream"),
+      tagTransportError(new Error("hedge pre-response close"), "pre-response-close"),
+    ]
+    for (const [candidate, error] of [
+      [primary, taggedErrors[0]],
+      [secondary, taggedErrors[1]],
+    ] as const) {
+      candidate.ready.upstream.frames = {
+        // eslint-disable-next-line require-yield -- fault injection: fail before any frame
+        async *[Symbol.asyncIterator]() {
+          throw error
+        },
+      }
+    }
+    const coordinator = createGenerationCoordinator({
+      env: env(),
+      createCandidate: ({ role }) => (role === "primary" ? primary.runtime : secondary.runtime),
+    })
+    const first = await coordinator.runPrimary()
+    const second = await coordinator.runHedge()
+
+    const failure = await coordinator.raceReadyCandidates([first, second]).catch((error: unknown) => error)
+
+    expect((failure as AggregateError).errors).toEqual(taggedErrors)
+    expect((failure as AggregateError & { hedgeFailures?: ReadonlyArray<{ error: unknown; source: string }> }).hedgeFailures).toEqual([
+      { error: taggedErrors[0], source: "upstream-transport" },
+      { error: taggedErrors[1], source: "upstream-transport" },
+    ])
+    const recoveryFailure = classifyPreContentRecoveryFailure({ error: failure, clientAborted: false })
+    expect(recoveryFailure).toEqual({ kind: "network-error" })
+    expect(shouldAttemptPreContentRecovery({ failure: recoveryFailure, session: { hasEmittedRealClientContent: false }, config: { enabled: true } })).toBe(true)
   })
 
   test("terminal and failed candidates release shared generation capacity", async () => {

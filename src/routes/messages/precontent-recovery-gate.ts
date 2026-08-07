@@ -28,8 +28,69 @@ export interface PreContentRecoveryFailureInput {
   readonly lifecycleSignal?: AbortSignal
 }
 
+interface HedgeFailureMember {
+  readonly error: unknown
+  readonly source: "upstream-transport" | "codec-render"
+}
+
+/**
+ * Stable structural contract shared with the generation coordinator without importing its concrete
+ * AggregateError type: all candidate failures remain available on the aggregate for diagnostics.
+ */
+function readHedgeFailures(error: unknown): ReadonlyArray<HedgeFailureMember> | undefined {
+  if (typeof error !== "object" || error === null || !("hedgeFailures" in error)) return undefined
+  const failures = (error as { hedgeFailures?: unknown }).hedgeFailures
+  if (!Array.isArray(failures)) return undefined
+  if (
+    !failures.every(
+      (failure) =>
+        typeof failure === "object" && failure !== null && "error" in failure && (failure.source === "upstream-transport" || failure.source === "codec-render"),
+    )
+  )
+    return undefined
+  return failures as ReadonlyArray<HedgeFailureMember>
+}
+
 /** Retryable upstream classifications accepted by B2. Every other HTTP taxonomy is an explicit no-replay boundary. */
 export function classifyPreContentRecoveryFailure(input: PreContentRecoveryFailureInput): PreContentRecoveryFailure {
+  return classifyPreContentRecoveryFailureInner(input, new Set())
+}
+
+function classifyPreContentRecoveryFailureInner(input: PreContentRecoveryFailureInput, seen: Set<unknown>): PreContentRecoveryFailure {
+  const { error } = input
+  const hedgeFailures = readHedgeFailures(error)
+  if (hedgeFailures === undefined) return classifySinglePreContentRecoveryFailure(input)
+  if (seen.has(error)) return { kind: "http-error", errorType: "bad_request" }
+  seen.add(error)
+  return classifyHedgeAggregate(hedgeFailures, input, seen)
+}
+
+function classifyHedgeAggregate(
+  failures: ReadonlyArray<HedgeFailureMember>,
+  input: PreContentRecoveryFailureInput,
+  seen: Set<unknown>,
+): PreContentRecoveryFailure {
+  // An empty or malformed aggregation cannot prove an upstream-only retryable failure.
+  if (failures.length === 0) return { kind: "http-error", errorType: "bad_request" }
+  let firstRetryableHttp: PreContentRecoveryFailure | undefined
+  let allNetwork = true
+  for (const failure of failures) {
+    // The source gate is independent of error wording or AggregateError.errors ordering.
+    if (failure.source !== "upstream-transport") return { kind: "http-error", errorType: "bad_request" }
+    const classified = classifyPreContentRecoveryFailureInner({ ...input, error: failure.error }, seen)
+    if (classified.kind === "abort") return classified
+    if (classified.kind === "network-error") continue
+    allNetwork = false
+    if (!isRetryablePreContentHttpError(classified.errorType)) return classified
+    firstRetryableHttp ??= classified
+  }
+  if (allNetwork) return { kind: "network-error" }
+  // Every member was a B2-allowed deterministic failure. Keep an HTTP taxonomy when one exists;
+  // `AggregateError.errors` and `hedgeFailures` remain intact on the original error for diagnostics.
+  return firstRetryableHttp ?? { kind: "http-error", errorType: "bad_request" }
+}
+
+function classifySinglePreContentRecoveryFailure(input: PreContentRecoveryFailureInput): PreContentRecoveryFailure {
   const { error, clientAborted, lifecycleSignal } = input
   switch (classifyStreamError(error)) {
     case "shutdown": {
