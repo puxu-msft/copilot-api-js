@@ -18,8 +18,8 @@ import type {
   UpstreamFrame,
 } from "~/lib/pipeline/types"
 
-import { createChatCompletionsDeliveryProtocolAdapter } from "~/lib/pipeline/delivery/adapters/chat-completions"
 import { createAnthropicDeliveryProtocolAdapter } from "~/lib/pipeline/delivery/adapters/anthropic"
+import { createChatCompletionsDeliveryProtocolAdapter } from "~/lib/pipeline/delivery/adapters/chat-completions"
 import { createCandidateResponseSession } from "~/lib/pipeline/generation/candidate-response-session"
 
 function env(format: "anthropic" | "openai-cc" = "openai-cc"): RequestEnvelope {

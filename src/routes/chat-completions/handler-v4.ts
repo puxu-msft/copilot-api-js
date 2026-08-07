@@ -92,8 +92,8 @@ import {
   restoreChatCompletionsToolNames,
 } from "~/lib/openai/tool-name-sanitize"
 import { makeDeliverySseSink } from "~/lib/pipeline/client-sink"
-import { createPipelineDriver } from "~/lib/pipeline/driver"
 import { createChatCompletionsDeliveryProtocolAdapter } from "~/lib/pipeline/delivery/adapters/chat-completions"
+import { createPipelineDriver } from "~/lib/pipeline/driver"
 import {
   //
   createCandidateResponseSession,

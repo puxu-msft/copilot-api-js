@@ -5,18 +5,13 @@ import type {
   CandidateHandle,
   DispatchHandle,
 } from "~/lib/context/model-operation-record"
-import type { RequestEnvelope } from "~/lib/pipeline/envelope"
-import type { ResponseRewrite } from "~/lib/pipeline/rewrite-registry"
 import type {
+  //
   DeliveryOutcome,
   DeliveryProtocolAdapter,
 } from "~/lib/pipeline/delivery/protocol"
-
-import { createDeliveryGrammar } from "~/lib/pipeline/delivery/grammar"
-import { createAnthropicDeliveryProtocolAdapter } from "~/lib/pipeline/delivery/adapters/anthropic"
-import { createChatCompletionsDeliveryProtocolAdapter } from "~/lib/pipeline/delivery/adapters/chat-completions"
-import { createGeminiDeliveryProtocolAdapter } from "~/lib/pipeline/delivery/adapters/gemini"
-import { createResponsesDeliveryProtocolAdapter } from "~/lib/pipeline/delivery/adapters/responses"
+import type { RequestEnvelope } from "~/lib/pipeline/envelope"
+import type { ResponseRewrite } from "~/lib/pipeline/rewrite-registry"
 import type {
   //
   CandidateResponseRenderer,
@@ -26,6 +21,11 @@ import type {
   UpstreamFrame,
 } from "~/lib/pipeline/types"
 
+import { createAnthropicDeliveryProtocolAdapter } from "~/lib/pipeline/delivery/adapters/anthropic"
+import { createChatCompletionsDeliveryProtocolAdapter } from "~/lib/pipeline/delivery/adapters/chat-completions"
+import { createGeminiDeliveryProtocolAdapter } from "~/lib/pipeline/delivery/adapters/gemini"
+import { createResponsesDeliveryProtocolAdapter } from "~/lib/pipeline/delivery/adapters/responses"
+import { createDeliveryGrammar } from "~/lib/pipeline/delivery/grammar"
 import { readSyntheticKind } from "~/lib/pipeline/frame-origin"
 import { getUpstreamHook } from "~/lib/pipeline/hooks/loader"
 import {
@@ -49,7 +49,7 @@ export interface CandidateResponseSessionOptions extends RunResponseOpts {
   /** A terminal upstream DECISION that carries no `message_stop`: a contentless refusal. */
   readonly sawContentlessRefusal?: () => boolean
   readonly commitBoundaries?: (frame: ClientFrame) => boolean
-  readonly transformBufferedFlush?: (frames: readonly ClientFrame[], ctx: import("~/lib/pipeline/types").BufferedFlushContext) => readonly ClientFrame[]
+  readonly transformBufferedFlush?: (frames: ReadonlyArray<ClientFrame>, ctx: import("~/lib/pipeline/types").BufferedFlushContext) => ReadonlyArray<ClientFrame>
   readonly stopAfterFrame?: (frame: ClientFrame) => boolean
   readonly onBufferedResolve?: (outcome: import("~/lib/pipeline/types").ProtectStreamingOutcome, retries: number, meta: { vendor: string }) => void
 }
@@ -90,9 +90,9 @@ export interface CreateCandidateResponseSessionInput<State, Snapshot> {
   readonly commitBoundaries?: (state: State, frame: ClientFrame) => boolean
   readonly transformBufferedFlush?: (
     state: State,
-    frames: readonly ClientFrame[],
+    frames: ReadonlyArray<ClientFrame>,
     ctx: import("~/lib/pipeline/types").BufferedFlushContext,
-  ) => readonly ClientFrame[]
+  ) => ReadonlyArray<ClientFrame>
   readonly stopAfterFrame?: (state: State, frame: ClientFrame) => boolean
   readonly onBufferedResolve?: (
     state: State,
@@ -243,15 +243,26 @@ export function createCandidateResponseSession<State, Snapshot>(
 /** Default candidate session for stateless/mock handlers and response-only helpers. */
 function defaultAdapter(env: RequestEnvelope): DeliveryProtocolAdapter {
   switch (env.clientFormat) {
-    case "anthropic":
+    case "anthropic": {
       return createAnthropicDeliveryProtocolAdapter()
-    case "openai-cc":
+    }
+    case "openai-cc": {
       return createChatCompletionsDeliveryProtocolAdapter()
-    case "gemini":
+    }
+    case "gemini": {
       return createGeminiDeliveryProtocolAdapter()
-    case "openai-responses":
+    }
+    case "openai-responses": {
       return createResponsesDeliveryProtocolAdapter({ transport: "http" })
+    }
+    default: {
+      return assertNeverClientFormat(env.clientFormat)
+    }
   }
+}
+
+function assertNeverClientFormat(value: never): never {
+  throw new Error(`Unsupported client format: ${String(value)}`)
 }
 
 export function createDefaultCandidateResponseSession(input: {

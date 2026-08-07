@@ -81,7 +81,10 @@ function createSession(transport: "http" | "ws") {
 describe("Responses candidate session transport wiring", () => {
   test("HTTP mounts output-item commit boundaries while WS intentionally omits them", () => {
     const added = { event: "response.output_item.added", data: JSON.stringify({ type: "response.output_item.added", output_index: 0, item: { id: "item_1" } }) }
-    const delta = { event: "response.output_text.delta", data: JSON.stringify({ type: "response.output_text.delta", output_index: 0, item_id: "item_1", delta: "x" }) }
+    const delta = {
+      event: "response.output_text.delta",
+      data: JSON.stringify({ type: "response.output_text.delta", output_index: 0, item_id: "item_1", delta: "x" }),
+    }
     const done = { event: "response.output_item.done", data: JSON.stringify({ type: "response.output_item.done", output_index: 0, item: { id: "item_1" } }) }
     const http = createSession("http")
     const ws = createSession("ws")

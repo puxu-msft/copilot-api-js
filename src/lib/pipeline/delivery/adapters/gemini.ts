@@ -42,7 +42,9 @@ export function createGeminiDeliveryProtocolAdapter(): DeliveryProtocolAdapter {
     },
     renderError(error) {
       const cause = error.cause ?? new Error(error.detail)
-      const message = cause instanceof Error ? cause.message : String(cause)
+      let message = error.detail
+      if (cause instanceof Error) message = cause.message
+      else if (typeof cause === "string") message = cause
       return [
         {
           data: JSON.stringify({
@@ -68,19 +70,31 @@ function terminal(
 
 function classifyFinish(result: Parameters<DeliveryProtocolAdapter["classifyFinish"]>[0]): DeliveryFinishClass {
   switch (result.kind) {
-    case "complete":
+    case "complete": {
       return { kind: "natural-drain" }
-    case "valid-terminal-without-boundary":
-      if (new TextEncoder().encode(result.terminal).byteLength > 256) return finishFailure("malformed-frame", "finish terminal diagnostic exceeds 256 UTF-8 bytes", undefined)
+    }
+    case "valid-terminal-without-boundary": {
+      if (new TextEncoder().encode(result.terminal).byteLength > 256)
+        return finishFailure("malformed-frame", "finish terminal diagnostic exceeds 256 UTF-8 bytes", undefined)
       return {
         kind: "valid-terminal-without-boundary",
         terminal: { semantic: "complete", sourceFrame: null, diagnostic: { source: "finish-result", terminal: result.terminal } },
       }
-    case "truncated":
+    }
+    case "truncated": {
       return { kind: "truncated", error: { semantic: "truncated", detail: result.reason, sourceFrame: null, cause: undefined } }
-    case "terminal-failure":
+    }
+    case "terminal-failure": {
       return finishFailure("terminal-failure", result.error instanceof Error ? result.error.message : String(result.error), result.error)
+    }
+    default: {
+      return assertNever(result)
+    }
   }
+}
+
+function assertNever(value: never): never {
+  throw new Error(`Unexpected Gemini finish result: ${String(value)}`)
 }
 
 function protocolError(

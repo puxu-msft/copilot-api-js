@@ -1,10 +1,11 @@
 import { anthropicErrorFrame } from "~/lib/anthropic/stream-error-frame"
 
-import { isDeliveryControlCapability } from "../control-capability"
 import type {
   //
   DeliveryProtocolAdapter,
 } from "../protocol"
+
+import { isDeliveryControlCapability } from "../control-capability"
 
 /** Create the Anthropic wire classifier. Renderers land separately test-first. */
 export function createAnthropicDeliveryProtocolAdapter(): DeliveryProtocolAdapter {
@@ -39,15 +40,21 @@ export function createAnthropicDeliveryProtocolAdapter(): DeliveryProtocolAdapte
       switch (payload.type) {
         case "content_block_start": {
           const identity = unit()
-          return identity ? { kind: "unit-open", unit: identity, frame } : protocolError("malformed-frame", "content_block_start requires a numeric index", frame, undefined)
+          return identity ?
+              { kind: "unit-open", unit: identity, frame }
+            : protocolError("malformed-frame", "content_block_start requires a numeric index", frame, undefined)
         }
         case "content_block_delta": {
           const identity = unit()
-          return identity ? { kind: "unit-append", unit: identity, frame } : protocolError("malformed-frame", "content_block_delta requires a numeric index", frame, undefined)
+          return identity ?
+              { kind: "unit-append", unit: identity, frame }
+            : protocolError("malformed-frame", "content_block_delta requires a numeric index", frame, undefined)
         }
         case "content_block_stop": {
           const identity = unit()
-          return identity ? { kind: "unit-close", unit: identity, frame } : protocolError("malformed-frame", "content_block_stop requires a numeric index", frame, undefined)
+          return identity ?
+              { kind: "unit-close", unit: identity, frame }
+            : protocolError("malformed-frame", "content_block_stop requires a numeric index", frame, undefined)
         }
         case "message_start": {
           return { kind: "structural", structuralKind: "envelope-open", frame }
@@ -68,9 +75,10 @@ export function createAnthropicDeliveryProtocolAdapter(): DeliveryProtocolAdapte
     },
     classifyFinish(result) {
       switch (result.kind) {
-        case "complete":
+        case "complete": {
           return { kind: "natural-drain" }
-        case "valid-terminal-without-boundary":
+        }
+        case "valid-terminal-without-boundary": {
           if (new TextEncoder().encode(result.terminal).byteLength > 256) {
             return {
               kind: "terminal-failure",
@@ -86,12 +94,14 @@ export function createAnthropicDeliveryProtocolAdapter(): DeliveryProtocolAdapte
             kind: "valid-terminal-without-boundary",
             terminal: { semantic: "complete", sourceFrame: null, diagnostic: { source: "finish-result", terminal: result.terminal } },
           }
-        case "truncated":
+        }
+        case "truncated": {
           return {
             kind: "truncated",
             error: { semantic: "truncated", detail: result.reason, sourceFrame: null, cause: undefined },
           }
-        case "terminal-failure":
+        }
+        case "terminal-failure": {
           return {
             kind: "terminal-failure",
             error: {
@@ -101,6 +111,10 @@ export function createAnthropicDeliveryProtocolAdapter(): DeliveryProtocolAdapte
               cause: result.error,
             },
           }
+        }
+        default: {
+          return assertNever(result)
+        }
       }
     },
     renderTerminal(terminal) {
@@ -113,6 +127,10 @@ export function createAnthropicDeliveryProtocolAdapter(): DeliveryProtocolAdapte
       return []
     },
   }
+}
+
+function assertNever(value: never): never {
+  throw new Error(`Unexpected Anthropic finish result: ${String(value)}`)
 }
 
 function protocolError(

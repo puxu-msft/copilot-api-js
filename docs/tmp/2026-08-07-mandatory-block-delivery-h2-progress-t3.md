@@ -1,6 +1,6 @@
 ---
 base: 1e7b527a78d166b6e5ed0f8c6142754a79a3ca6f
-status: in-progress
+status: complete
 owner: task-3-implementer
 ---
 
@@ -28,7 +28,11 @@ owner: task-3-implementer
 - Candidate production wiring checkpoint：RED 精确命中 `session.outcomes` 缺失；GREEN 在 candidate session 安装 adapter + grammar，逐 rendered wire frame 生成 ordered typed outcomes，boundary classifier 改为只投影 `complete-unit`／successful `response-terminal`、无 JSON 解析；legacy `commitBoundaries`／`sawMessageStop`／`sawUpstreamError` 只读 grammar 派生状态。四 route factories 显式传 adapter，Responses factory 以 transport 参数选 HTTP unit／WS response-terminal；`withCandidateResponseOpts` 保留 adapter/outcomes rich context。`pwd -P && bun test tests/pipeline/delivery-adapters.unit.test.ts tests/pipeline/candidate-response-session.unit.test.ts tests/pipeline/boundary-classifier.unit.test.ts tests/pipeline/coordinator-hedge.unit.test.ts tests/responses/candidate-response-session.unit.test.ts && bun run typecheck` 通过，全部定向测试与 TypeScript compilation 全绿。
 - Finish single-consumption checkpoint：RED 证明 processor 未触发 finish-frame classification；GREEN 新增 `onFinishFrame` candidate-local seam，processor 对 `finish.frames` 按序逐帧 callback 后 yield 各一次，再发布同一 finish result；candidate seam 复用同一 `consumeFrame` 执行 adapter.classify→grammar.consume，再由 `onFinishResolved` 唯一执行 classifyFinish→consume。throwing upstream 的 finish、frame classification、verdict classification 均为 0。`pwd -P && bun test tests/pipeline/response-processor.unit.test.ts tests/pipeline/delivery-adapters.unit.test.ts tests/pipeline/candidate-response-session.unit.test.ts tests/pipeline/boundary-classifier.unit.test.ts && bun run typecheck` 通过，24 tests passed、0 failed，TypeScript compilation 通过。
 
-## Pending
+## Closeout
 
 - 四个 protocol adapters、runtime-branded control capability、candidate production wiring、typed boundary projection、compatibility projections 与 finish single-consumption 已完成。
-- 完成 mutation controls、完整 Task 3 验证与最终提交整理；Anthropic error builder 已下沉。
+- Exact mutation controls：第二 JSON classifier 使 boundary tests 2/2 红；重复 finish yield 使 processor tests 2 条红；移除 WeakSet identity 使伪造 capability gate 红。三项均在反向恢复前通过 `git apply --reverse --check`，恢复后各自定向测试转绿。
+- 完整定向验证：adapter／processor／candidate-session／boundary／hedge／Responses route candidate／buffered-merge wiring 共 37 tests passed、0 failed；`bun run typecheck` 通过；目标 ESLint 通过，仅输出 third-party `baseline-browser-mapping` 数据陈旧 warning；`git diff --check` 通过。
+- Task1b projection seam：candidate 只将最终 post-transform wire `ClientFrame` 传入 adapter；outcomes 不保存 parsed provenance，符合未来 parsed→wire projection 在 classification 之前的接缝。
+- §6b 对账：base `1e7b527a` 后 first-parent 共 12 个实现／checkpoint commits，均已逐项记录于本文件；Task 4 owner／sink／pump cutover 未提前实施。
+- 未决：Task 4 才允许删除 compatibility projections并让唯一 delivery owner 直接消费 outcomes。

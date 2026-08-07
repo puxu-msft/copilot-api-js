@@ -122,7 +122,10 @@ describe("delivery protocol adapters", () => {
     const ws = createResponsesDeliveryProtocolAdapter({ transport: "ws" })
     const created = { event: "response.created", data: JSON.stringify({ type: "response.created", response: { id: "resp_1" } }) }
     const added = { event: "response.output_item.added", data: JSON.stringify({ type: "response.output_item.added", output_index: 0, item: { id: "item_1" } }) }
-    const delta = { event: "response.output_text.delta", data: JSON.stringify({ type: "response.output_text.delta", output_index: 0, item_id: "item_1", delta: "x" }) }
+    const delta = {
+      event: "response.output_text.delta",
+      data: JSON.stringify({ type: "response.output_text.delta", output_index: 0, item_id: "item_1", delta: "x" }),
+    }
     const done = { event: "response.output_item.done", data: JSON.stringify({ type: "response.output_item.done", output_index: 0, item: { id: "item_1" } }) }
     const completed = { event: "response.completed", data: JSON.stringify({ type: "response.completed", response: { id: "resp_1", status: "completed" } }) }
 
@@ -221,10 +224,16 @@ describe("delivery protocol adapters", () => {
     const adapter = createGeminiDeliveryProtocolAdapter()
     const content = { data: JSON.stringify({ candidates: [{ index: 0, content: { role: "model", parts: [{ text: "hello" }] } }] }) }
     const terminal = {
-      data: JSON.stringify({ candidates: [{ index: 0, content: { role: "model", parts: [{ text: "done" }] }, finishReason: "STOP" }], usageMetadata: { promptTokenCount: 1 } }),
+      data: JSON.stringify({
+        candidates: [{ index: 0, content: { role: "model", parts: [{ text: "done" }] }, finishReason: "STOP" }],
+        usageMetadata: { promptTokenCount: 1 },
+      }),
     }
     const wireError = {
-      data: JSON.stringify({ candidates: [{ index: 0, content: { role: "model", parts: [{ text: "boom" }] }, finishReason: "OTHER" }], error: { code: 500, status: "INTERNAL", message: "boom" } }),
+      data: JSON.stringify({
+        candidates: [{ index: 0, content: { role: "model", parts: [{ text: "boom" }] }, finishReason: "OTHER" }],
+        error: { code: 500, status: "INTERNAL", message: "boom" },
+      }),
     }
 
     expect(adapter.deliveryMode).toBe("response-terminal")

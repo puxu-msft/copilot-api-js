@@ -208,5 +208,4 @@ describe("P2-T1 branch-local response processor", () => {
     await expect(consume()).rejects.toThrow("transport cut")
     expect({ finishCalls, frameClassifications, finishClassifications }).toEqual({ finishCalls: 0, frameClassifications: 0, finishClassifications: 0 })
   })
-
 })

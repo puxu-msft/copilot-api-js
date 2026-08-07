@@ -81,8 +81,8 @@ import { ENDPOINT } from "~/lib/models/endpoint"
 import { resolveModelTarget } from "~/lib/models/resolver"
 import { resolveStreamIdleTimeoutMs } from "~/lib/models/timeout-resolver"
 import { makeDeliverySseSink } from "~/lib/pipeline/client-sink"
-import { createPipelineDriver } from "~/lib/pipeline/driver"
 import { createGeminiDeliveryProtocolAdapter } from "~/lib/pipeline/delivery/adapters/gemini"
+import { createPipelineDriver } from "~/lib/pipeline/driver"
 import {
   //
   createCandidateResponseSession,
