@@ -72,10 +72,18 @@ function population(record: ReturnType<typeof longConversationFixture>): Record<
 
 function recursiveFunctionNames(source: string): Array<string> {
   const sourceFile = ts.createSourceFile("model-operation-record.ts", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS)
-  const functions = new Map<string, ts.FunctionDeclaration>()
+  const functions = new Map<string, ts.FunctionLikeDeclaration>()
 
   const collectFunctions = (node: ts.Node): void => {
     if (ts.isFunctionDeclaration(node) && node.name !== undefined) functions.set(node.name.text, node)
+    if (
+      ts.isVariableDeclaration(node)
+      && ts.isIdentifier(node.name)
+      && node.initializer !== undefined
+      && (ts.isArrowFunction(node.initializer) || ts.isFunctionExpression(node.initializer))
+    ) {
+      functions.set(node.name.text, node.initializer)
+    }
     ts.forEachChild(node, collectFunctions)
   }
   collectFunctions(sourceFile)
@@ -84,11 +92,11 @@ function recursiveFunctionNames(source: string): Array<string> {
   for (const [name, declaration] of functions) {
     const callees = new Set<string>()
     const collectCalls = (node: ts.Node): void => {
-      if (node !== declaration && ts.isFunctionDeclaration(node)) return
+      if (node !== declaration && (ts.isFunctionDeclaration(node) || ts.isArrowFunction(node) || ts.isFunctionExpression(node))) return
       if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && functions.has(node.expression.text)) callees.add(node.expression.text)
       ts.forEachChild(node, collectCalls)
     }
-    ts.forEachChild(declaration.body!, collectCalls)
+    if (declaration.body !== undefined) ts.forEachChild(declaration.body, collectCalls)
     calls.set(name, callees)
   }
 
