@@ -61,6 +61,7 @@ import {
   extractInputItems,
   normalizeCallIds,
 } from "~/lib/openai/responses-conversion"
+import { sanitizeResponsesWireToolNames } from "~/lib/openai/tool-name-sanitize"
 import {
   //
   translateChatCompletionsToResponses,
@@ -136,7 +137,11 @@ export function prepareViaResponsesWire(env: RequestEnvelope): PreparedRequest {
   const ccPayload = fillMaxCompletionTokens(env.body as ChatCompletionsPayload, model)
   const { payload: responsesPayload, droppedParams } = translateChatCompletionsToResponses(ccPayload)
   if (droppedParams.length > 0) recordDroppedCcParamsWarning(env.ctx, ccPayload.model, droppedParams)
-  const finalResponses = state.normalizeResponsesCallIds ? normalizeCallIds(responsesPayload) : responsesPayload
+  const normalizedResponses = state.normalizeResponsesCallIds ? normalizeCallIds(responsesPayload) : responsesPayload
+  const { payload: finalResponses, mapper } = sanitizeResponsesWireToolNames(normalizedResponses, env.requestState?.sourceToolNameMapper ?? null, {
+    sourceMapperApplied: env.clientFormat === "openai-cc",
+  })
+  env.ctx.setToolNameMapper(mapper)
   const prepared = prepareResponsesRequest(finalResponses, { resolvedModel: model })
   return {
     url: ENDPOINT.RESPONSES,

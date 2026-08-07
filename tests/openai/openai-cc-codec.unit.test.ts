@@ -28,6 +28,7 @@ import type {
   ClientFrame,
   UpstreamFrame,
 } from "~/lib/pipeline/types"
+import type { ToolNameMapper } from "~/lib/tool-name-mapper"
 import type { ChatCompletionsPayload } from "~/types/api/openai-chat-completions"
 
 import { createOpenAiCcCodec } from "~/lib/codec/openai-cc/codec"
@@ -44,17 +45,24 @@ interface CtxStub {
   addWarningMessage: (w: { code: string; message: string }) => void
   recordFeature: (f: string) => void
   featuresRecorded: Array<string>
+  toolNameMapper: ToolNameMapper | null
+  setToolNameMapper: (mapper: ToolNameMapper | null) => void
 }
 
 function makeCtxStub(): CtxStub {
   const warningMessages: Array<{ code: string; message: string }> = []
   const featuresRecorded: Array<string> = []
-  return {
+  const stub: CtxStub = {
     warningMessages,
     addWarningMessage: (w) => warningMessages.push(w),
     recordFeature: (f) => featuresRecorded.push(f),
     featuresRecorded,
+    toolNameMapper: null,
+    setToolNameMapper: (mapper) => {
+      stub.toolNameMapper = mapper
+    },
   }
+  return stub
 }
 
 function makeEnv(opts: { model?: Model; targetEndpoint?: UpstreamEndpoint; body?: unknown; ctx?: CtxStub }): RequestEnvelope {

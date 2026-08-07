@@ -540,8 +540,12 @@ async function runMessagesDriver(c: Context, args: RunMessagesDriverArgs): Promi
     if (!env.stream) {
       // Non-streaming: render the real HTTP status with the upstream-decided body.
       try {
+        // Snapshot before S6 translation: some translators mutate their input while
+        // assembling the client-format response. History's upstreamResponse must
+        // retain the actual target-protocol body, not that translated object.
+        const rawUpstreamBody = structuredClone(upstream.nonStream)
         const resp = driver.runResponseNonStreaming(upstream, env) as AnthropicMessageResponse
-        return renderNonStreamingV4(c, driver, env, resp, upstream.headers)
+        return renderNonStreamingV4(c, driver, env, resp, rawUpstreamBody, upstream.headers)
       } finally {
         detachClientAbort()
       }
@@ -932,7 +936,10 @@ function applyForwardedAnthropicResponseHeaders(c: Context, upstreamHeaders: Hea
  * Finish a non-streaming Anthropic response: verbose marker (handler-side) → the driver's
  * whole-response rewrite chain (`runResponseWhole`: recover → decode → filter+restore, the
  * same registry the streaming pump drives per-frame, A.B) → setForwardedResponse (client-facing,
- * rewritten) + complete (upstream-original `response`, order matters) → c.json.
+ * rewritten) + complete (pre-S5 client-format `response`, order matters) → c.json.
+ * The raw upstream body and sanitized wire-name provenance remain on
+ * `attempts[].upstreamResponse`; a forward leg's S6 response is already translated
+ * into Anthropic client format before this function runs.
  *
  * The marker stays out of the registry (design §3.1 — it's a verbose debug banner, not an
  * "upstream-quirk fix") and is applied BEFORE the chain. `env.body` is the post-retry env
@@ -950,6 +957,7 @@ function renderNonStreamingV4(
   driver: ReturnType<typeof createPipelineDriver>,
   env: RequestEnvelope,
   response: AnthropicMessageResponse,
+  rawUpstreamBody: unknown,
   upstreamHeaders: Headers,
 ): Response {
   const reqCtx = env.ctx
@@ -1009,7 +1017,7 @@ function renderNonStreamingV4(
         stop_reason: response.stop_reason ?? undefined,
         stopDetails: (response as { stop_details?: unknown }).stop_details,
         content: { role: "assistant", content: response.content },
-        sourceBody: response,
+        sourceBody: rawUpstreamBody,
       },
       { upstreamSucceeded: true },
     )
@@ -1052,7 +1060,7 @@ function renderNonStreamingV4(
     stop_reason: response.stop_reason ?? undefined,
     stopDetails: (response as { stop_details?: unknown }).stop_details,
     content: { role: "assistant", content: response.content },
-    sourceBody: response,
+    sourceBody: rawUpstreamBody,
     responseText: JSON.stringify(response),
   }
   if (failReason) {
@@ -1067,7 +1075,7 @@ function renderNonStreamingV4(
         stop_reason: responseData.stop_reason,
         stopDetails: responseData.stopDetails,
         content: responseData.content,
-        sourceBody: response,
+        sourceBody: rawUpstreamBody,
       },
       // Refusal + unrepairable = a COMPLETE 200 upstream body the proxy re-judged → upstreamSucceeded
       // keeps outboundResponse honest. Semantic truncation = an INCOMPLETE body → stays success:false.

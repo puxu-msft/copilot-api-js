@@ -87,6 +87,29 @@ export function logServerToolBlocks(content: Array<Record<string, unknown> & { t
 // ============================================================================
 
 /**
+ * Restore a translated Anthropic `content_block_start.tool_use.name` from the
+ * upstream sanitized name to the client's original name. Parsing failures and
+ * unrelated frames pass through byte-for-byte.
+ */
+export function restoreToolNameInStreamData(rawData: string, mapper: ToolNameMapper | null): string {
+  if (!mapper) return rawData
+  try {
+    const obj = JSON.parse(rawData) as {
+      type?: string
+      content_block?: { type?: string; name?: string }
+    } & Record<string, unknown>
+    if (obj.type !== "content_block_start" || obj.content_block?.type !== "tool_use") return rawData
+    const name = obj.content_block.name
+    if (typeof name !== "string") return rawData
+    const restored = mapper.toClient(name)
+    if (restored === name) return rawData
+    return JSON.stringify({ ...obj, content_block: { ...obj.content_block, name: restored } })
+  } catch {
+    return rawData
+  }
+}
+
+/**
  * Filters server tool blocks from the SSE stream before forwarding to the client.
  * Handles index remapping so block indices remain dense/sequential after filtering.
  *
@@ -119,13 +142,7 @@ export function createServerToolBlockFilter(toolNameMapper?: ToolNameMapper | nu
    * Only `tool_use` blocks are touched (never `server_tool_use`).
    */
   function restoreToolUseName(blockType: string, rawData: string): string {
-    if (!toolNameMapper || blockType !== "tool_use") return rawData
-    const obj = JSON.parse(rawData) as { content_block?: { name?: string } } & Record<string, unknown>
-    const name = obj.content_block?.name
-    if (typeof name !== "string") return rawData
-    const restored = toolNameMapper.toClient(name)
-    if (restored === name) return rawData
-    return JSON.stringify({ ...obj, content_block: { ...obj.content_block, name: restored } })
+    return blockType === "tool_use" ? restoreToolNameInStreamData(rawData, toolNameMapper ?? null) : rawData
   }
 
   return {
