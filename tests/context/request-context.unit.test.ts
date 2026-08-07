@@ -261,6 +261,32 @@ describe("createRequestContext - attempt lifecycle", () => {
     expect(terminal.terminal?.committedDispatch).toBe(recoveryDispatch)
   })
 
+  test("normal live selected primary remains the terminal attempt", async () => {
+    const { ctx } = makeContext()
+    const primary = ctx.beginGenerationCandidate({ role: "primary" })
+    const dispatch = ctx.beginGenerationDispatch({ candidate: primary, strategy: "primary" })
+
+    ctx.selectGenerationWinner(primary, dispatch)
+    ctx.complete({ success: true, model: "test", usage: { input_tokens: 1, output_tokens: 1 }, content: null })
+    ctx.finalizeModelOperationDelivery()
+
+    const entry = ctx.toHistoryEntry()
+    const terminal = await ctx.whenModelOperationFinalized()
+    expect(entry._index?.derived?.currentStrategy).toBe("primary")
+    expect(terminal.terminal).toMatchObject({ winnerCandidate: primary, committedDispatch: dispatch })
+  })
+
+  test("legacy no-generation terminal falls back to its last V2 attempt", () => {
+    const { ctx } = makeContext()
+    ctx.beginAttempt({ strategy: "legacy-first" })
+    ctx.beginAttempt({ strategy: "legacy-last" })
+    ctx.complete({ success: true, model: "test", usage: { input_tokens: 1, output_tokens: 1 }, content: null })
+
+    const entry = ctx.toHistoryEntry()
+    expect(ctx.currentAttempt?.strategy).toBe("legacy-last")
+    expect(entry._index?.derived?.currentStrategy).toBe("legacy-last")
+  })
+
   test("records response failure supersession on the current dispatch and terminal snapshot", async () => {
     const { ctx } = makeContext()
     const candidate = ctx.beginGenerationCandidate({ role: "primary" })
