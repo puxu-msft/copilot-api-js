@@ -1,10 +1,12 @@
-# Commit -1 final implementation report
+# Commit -1 implementation report
 
-## Integrated execution state
+## Integrated execution evidence
 
-Commit -1 T0.0a/b/c/e is complete in the integration execution tree `/home/xp/src/copilot-api-js/.worktree/command-algebra-commit-minus-1` at HEAD `3b5ac1e41d87ab089becd55afe38f788643a4390`. Earlier agent worktrees named below are historical execution locations only; they are not current state sources.
+Commit -1 T0.0a/b/c/e implementation is complete. The historical execution tree `/home/xp/src/copilot-api-js/.worktree/command-algebra-commit-minus-1` and all earlier agent worktrees are execution records only; they are not current-state sources.
 
-Final integrated evidence supplied by the coordinator: `bun run test:backend` on that HEAD ran unit/it/http in 16 shards with `6728 pass，0 fail，6915 executed，26 skipped，36.68s`. `bun run typecheck` is green. Focused canonical capture `bun test tests/history/v3/canonical-performance.unit.test.ts --rerun-each=20` is green. These numbers supersede all earlier branch-local backend counts.
+`tested_code_head=3b5ac1e41d87ab089becd55afe38f788643a4390` carries one exact historical measurement supplied by the coordinator: `bun run test:backend` ran unit/it/http in 16 shards with `6728 pass，0 fail，6915 executed，26 skipped，36.68s`; `bun run typecheck` and `bun test tests/history/v3/canonical-performance.unit.test.ts --rerun-each=20` were green at that same tested code head. These figures supersede earlier branch-local backend counts only for that measurement point; they do not describe later fixes or merge candidates.
+
+Immutable independent-review coverage closes the original whole-branch findings through `reviewed_branch_head=0fe17435f0c4f12ea28be6a1399704e6c289d70f`. The integration rehearsal produced backend-green merge candidate `4fe920fca820f7dcee630d76e2aab120952eb7ea`; neither anchor is called current/final HEAD, and neither predefines entry A.
 
 ## Plan completion
 
@@ -13,10 +15,10 @@ Final integrated evidence supplied by the coordinator: `bun run test:backend` on
 - [x] T0.0c：runner artifact transfer、producer、v1 discovery baseline、manifest atomicity，及 post-balance／reporter／collection target mutations。
 - [x] T0.0e：validator C1～C11、receipt v1、EV-01～EV-28 synthetic fixtures 和 runtime closure provenance。
 - [x] Commit -1 integrated gates：focused controls、typecheck、format/diff checks 和 backend。
-- [ ] whole-branch merged-state review。
-- [ ] 将 Commit -1 merge 到 `master`。
+- [x] whole-branch merged-state review 与代码 finding remediation：截至上述 immutable reviewed package 全部关闭。
+- [ ] commit-message traceability 裁决；闭合后将 Commit -1 merge 到 `master`。
 
-T0.0f、T0.0d、真实 A/P/P receipt 消费与 T0.1 都是 `master` merge 后的独立阶段，不是 Commit -1 未完成项；本阶段没有生成或消费真实 future A/P evidence。
+T0.0f、P、T0.0d、真实 A/P receipt 消费与 T0.1 都是正式 `master` merge 后的独立阶段，不是 Commit -1 未完成项。**pre-merge A 不存在**：最终 merge 结果才定义 entry candidate，且必须在合入后重取和测量；任何 branch head／reviewed head／rehearsal merge 都不能预先冻结成 A。
 
 ## TDD、mutation 与历史证据
 
@@ -39,8 +41,8 @@ T0.0f、T0.0d、真实 A/P/P receipt 消费与 T0.1 都是 `master` merge 后的
 
 - 更好的内部替代：复用 runner artifacts、canonical recorder 和 shared resetter，不建立第二套性能或 evidence pipeline。
 - 判据判别力：关键 gate 均有 target mutation；正确状态与错误状态分别经 exact patch green/red 验证，且 current capture gate 明确不覆盖 fixture 未变化的 metadata/extensions/headers 或 dispatch/candidate/transform copy paths。
-- 成熟第三方方案：没有为 Bun-stable JUnit shape 或 narrow recorder work count 引入 XML parser/profiler；前者没有复杂 XML 需求，后者会带回 sampling/scheduling 噪声。若将来引入 namespace/CDATA input 或新的 capture scaling axis，需重新评估。
+- 成熟第三方方案：JUnit 已改用直接依赖 `saxes@6.0.0` 处理 namespace/entity/well-formedness；narrow recorder work count 不引入 sampling profiler，以免重新带回调度噪声。新的 XML shape 或 capture scaling axis 仍须重新评估。
 
-## Current action
+## Remaining action
 
-先执行 whole-branch merged-state review，review 无 blocker/major 后 merge Commit -1 到 `master`；只有 merge 后才能开始真实 T0.0f/T0.0d/P/T0.1。
+代码 whole-branch findings 已关闭。下一步只先解决独立的 commit-message traceability 裁决，再把 Commit -1 合入当时的真实 `master` lineage；合入后重取并测量 `ENTRY_SHA=A`，然后按 T0.0f → P → T0.0d → T0.1 继续。本文不写自指的最终 HEAD，也不把 rehearsal merge candidate 当成 A。
