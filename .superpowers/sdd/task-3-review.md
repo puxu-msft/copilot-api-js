@@ -2,60 +2,59 @@
 
 ## 结论
 
-- **评审范围**：冻结范围 `1e7b527a..7e87c3c9`（14 commits），重点复核修复提交 `7e87c3c9`、原 2 个 Critical、4 项 acceptance finding、dead inputs、shared helper、Task 4 边界，以及最终 live／buffered／hedge 接缝。
-- **已读取／执行的证据**：读取更新后的 brief、readiness、report、progress、14-commit full diff、frozen spec §4.1–4.4 和最终代码；从 `7e87c3c9` 导出 `/tmp/copilot-api-js-task3-review-7e87c3c9`，运行定向 7-file suite（41 pass／0 fail）、driver suite（46 pass／0 fail）、`bun run typecheck`（通过）、owner-bound capability 跨实例 probe（pass）。另运行 Chat finish production-seam probe及既有 Responses buffered boundary 正样本，均发现失败。base 对照同一 Responses boundary test 为 1 pass／0 fail，确认是 Task 3 回归而非既有失败。
-- **总体 verdict**：**Spec FAIL；Quality CHANGES_REQUIRED；存在 blocker。**
-- **blocker 数量**：2（Critical 2 项）；Important 0；Minor 2。
+- **评审范围**：候选 `1e7b527a..2543ec46`，本轮只复核此前 C1／C2、两个 Minor、相邻同类契约和 Task 4 边界；重点提交 `f8be1941`、`2543ec46`。
+- **已读取／执行的证据**：读取原报告及两修复提交最终代码／测试；在 `2543ec46` frozen snapshot `/tmp/copilot-api-js-task3-review-2543ec46` 运行 Task 3 + Chat + driver 目标套件（88 pass／0 fail）、Responses block-level tests（2 pass／0 fail）、RST before／after boundary正反控（2 pass／0 fail）、typecheck（通过）；另运行 Responses output-index复用／跨 item token probe（1 pass）及 Chat success／truncated／terminal-failure + renderer-frames probe（1 pass）。
+- **总体 verdict**：**Spec PASS；Quality APPROVED；可集成。**
+- **blocker 数量**：0。Critical 0；Important 0；Minor 2（均为测试加固，不阻断）。
 
-## 原 Critical 复核
+## Finding 闭合
 
-| 原 finding | 当前证据 | 复核结论 |
-|---|---|---|
-| C1：finish frame 被 processor 和 consumer 重复分类 | `/tmp/copilot-api-js-task3-review-7e87c3c9/src/lib/pipeline/stream/response-processor.ts:109-116,223-247` 让 ordinary／finish frame 共用唯一 `emit→postRender` 门；driver live／buffered 在 `/tmp/copilot-api-js-task3-review-7e87c3c9/src/lib/pipeline/driver.ts:1115-1128,1370-1399` 直接消费 frame；hedge 在 `/tmp/copilot-api-js-task3-review-7e87c3c9/src/lib/pipeline/generation/candidate-race.ts:31-84` 不再重调 callback。candidate regression `:217-253` 断言 finish terminal classify 恰一次、唯一 terminal outcome、`sawUpstreamError=false`。 | **RESOLVED** |
-| C2：`classifyFinish` throw 原样 reject | `/tmp/copilot-api-js-task3-review-7e87c3c9/src/lib/pipeline/generation/candidate-response-session.ts:189-205` 捕获 throw，转换为 `terminal-failure` class 内的 `adapter-exception`，保留 `sourceFrame:null` 与原 cause；frame throw 在 `:132-160` 保留触发 frame与 cause；测试 `:255-300` 证明 finish 不 reject且产 typed outcome。 | **RESOLVED** |
+### C1：Responses committed prefix／stable ordered unit token
 
-## Acceptance finding 对账
+**RESOLVED。** `/tmp/copilot-api-js-task3-review-2543ec46/src/lib/pipeline/delivery/adapters/responses.ts:15-49,94-96` 以 adapter-local 单调 `nextUnitKey` 签发 unit token，并只用 `output_index` 在 added 时登记、delta／done时查同一 token、done后删除。它不再依赖 `item.id` 在不同事件上是否存在，也不把可复用 `output_index` 本身当永久 identity。
 
-| Finding | 证据 | 裁决 |
-|---|---|---|
-| Responses `output_index`-only added／delta／done identity 一致 | `/tmp/copilot-api-js-task3-review-7e87c3c9/src/lib/pipeline/delivery/adapters/responses.ts:28-42,88-93` 统一 `item.id → item_id → output_index`；adapter test `:126-154` 的三帧均为 key `"0"` | **PASS（primitive）**；但真实 buffered path 的已有 `item.id` fixture回归，见 Critical 1 |
-| Chat `finish_reason→usage` 合法，finish verdict 唯一 terminal | adapter `/tmp/copilot-api-js-task3-review-7e87c3c9/src/lib/pipeline/delivery/adapters/chat-completions.ts:18-28` 把 finish chunk归 `response-append`，usage归 structural；unit test `:209-220` 仅分别测 class与 finish class | **FAIL（production seam）**；默认 `complete→natural-drain` 仍使 grammar `finish-before-terminal`，见 Critical 2 |
-| 四 adapter getter throw vs JSON malformed 分流正确 | shared parser `/tmp/copilot-api-js-task3-review-7e87c3c9/src/lib/pipeline/delivery/adapters/shared.ts:10-27` 先单独读取 getter，再 JSON.parse；getter throw测试覆盖五个 mode，malformed JSON测试覆盖 Anthropic，shared implementation统一 | **PASS** |
-| 通用 control exports消失、authority owner-bound且不可伪造 | `/tmp/copilot-api-js-task3-review-7e87c3c9/src/lib/pipeline/delivery/control-capability.ts:1-5` 无生产 export；Anthropic adapter `/tmp/copilot-api-js-task3-review-7e87c3c9/src/lib/pipeline/delivery/adapters/anthropic.ts:16-40` 每实例 closure持有 private class + WeakSet；我额外验证跨 adapter 实例 capability 被拒绝 | **PASS** |
-| dead inputs删净 | `CreateCandidateResponseSessionInput` 已无 `sawMessageStop`／`sawUpstreamError`／`commitBoundaries`；route live callbacks/imports已删除。残存旧名字仅在陈旧注释和退役 helper定义中，不是活输入 | **PASS** |
-| shared helper无语义漂移 | parse与四 finish variant映射集中到 `/tmp/copilot-api-js-task3-review-7e87c3c9/src/lib/pipeline/delivery/adapters/shared.ts:29-69`；255／258-byte对五个 mode双控 | **局部 PASS**；`complete→natural-drain` 的共享语义暴露 Chat wiring缺口，见 Critical 2 |
-| Task 4边界未越界 | compatibility projections仍在 candidate session `:206-210`，driver仍消费；adapter renderers尚未成为唯一 sink owner，route terminus仍保留 | **PASS** |
+- 既有用户可见回归 `tests/responses/responses-buffered.it.test.ts:521-548` 已恢复：`BLOCK_ZERO` 在后续 RST 前提交，目标 block-level 组 2／2 绿。
+- RST 在首个 done 前会 retry、done 后会 partial-degrade且保留首块，正反控 2／2 绿。
+- output-index-only added／delta／done统一 token；同一 index close后复用会得到新 token；跨 item token单调不碰撞。独立 probe观察 `0/0`、复用后 `1/1`、另一 item `2/2`。
+- 同时 open多个 item仍由 frozen grammar 的 single-open-unit规则拒绝为 nested unit；adapter token本身不碰撞，也不会把一个 item的 close误配到另一 item。
+
+### C2：Chat 真实 finish producer
+
+**RESOLVED。** `/tmp/copilot-api-js-task3-review-2543ec46/src/routes/chat-completions/handler-v4.ts:332-370` 在真实 direct Chat candidate上按 accumulator事实产生 finish：
+
+- `streamError` → `terminal-failure`，保留 `rendererFrames` 和原 error；
+- 无 `finishReason` → `truncated`，保留 `rendererFrames`；
+- 有 `finishReason` → `valid-terminal-without-boundary`，逐字保留 reason。
+
+正式 route-candidate test `/tmp/copilot-api-js-task3-review-2543ec46/tests/chat-completions/candidate-response-session.unit.test.ts:68-88` 证明 `finish_reason→usage→finish` 产生恰一个 successful `response-terminal`，其 `responseFrames` 顺序为 finish chunk、usage，`sawMessageStop=true`、`sawUpstreamError=false`。补充 probe覆盖三 finish分支并确认 closing renderer frame不丢。对于 in-band wire error，adapter先产生 failed terminal，随后 `terminal-failure` finish按 frozen grammar记录 `post-terminal-frame` diagnostic；没有第二个 response terminal，也不写第二 terminus，符合 terminal后非-natural finish的冻结状态表。
+
+### Minor 1：陈旧接线注释
+
+**RESOLVED。** `/tmp/copilot-api-js-task3-review-2543ec46/src/routes/chat-completions/handler-v4.ts` 已把 `ccCommitBoundaries`／旧 `saw*` 叙述改为 grammar-derived terminal/error projections；`/tmp/copilot-api-js-task3-review-2543ec46/src/routes/responses/ws.ts:372-384` 同步说明 WS terminal-only grammar projection，不再把退役 predicate描述成活接线。
+
+### Minor 2：跨 adapter 实例 capability 正式 control
+
+**RESOLVED。** `/tmp/copilot-api-js-task3-review-2543ec46/tests/pipeline/delivery-adapters.unit.test.ts:72-89` 已正式断言：签发实例接受自己的 capability，兄弟实例签发的真实 capability与结构伪造对象均拒绝。authority仍是 Anthropic adapter实例私有 class + WeakSet closure，通用 production mint／validate exports未恢复。
+
+## 双向判据
+
+- **正样本**：完整 Responses item在 RST 前提交；Chat finish_reason+usage产生唯一成功 terminal；签发 adapter接受自身 capability；全部通过。
+- **负样本**：Responses首个 done前 RST可 retry、done后 RST不可 retry；Chat无 finish→truncated、stream error→terminal-failure；重复 output_index复用不沿用旧 token；兄弟 capability与伪造 capability拒绝；全部通过。
+- 目标套件、driver suite与typecheck均绿；本轮未发现 false-red。
 
 ## 事实性发现
 
-### Critical
+### Critical／Important
 
-[Critical] `/tmp/copilot-api-js-task3-review-7e87c3c9/src/lib/pipeline/generation/candidate-response-session.ts:132-160,206-210`、`/tmp/copilot-api-js-task3-review-7e87c3c9/src/lib/pipeline/stream/response-processor.ts:223-247`、`/tmp/copilot-api-js-task3-review-7e87c3c9/src/routes/responses/candidate-response-session.ts:120-150` — 把唯一 post-render/classification 门移进 processor 后，Responses HTTP 的 `commitBoundaries` projection 仍以**变换后的 frame identity**建 WeakSet，但 `responseOpts.commitBoundaries` 被 buffered driver调用时拿到同一最终 frame，本应成立；实际已有生产集成测试 `tests/responses/responses-buffered.it.test.ts:521-548` 在 `7e87c3c9` 确定性失败：item0 的完整 block未在 RST 前提交，客户端只收到 error，`BLOCK_ZERO` 丢失。相同测试在 base `1e7b527a` 为 1 pass／0 fail，故这是本任务引入的用户可见回归。根因需进一步沿 `responseFrame` 对象替换、grammar完成 frame identity和 buffered loop所见 frame identity三者取证；目前不能把 41 条定向绿当作修复完成。**修复建议**：先由 `gpt-souls:debugger` 在该既有 failing integration test上记录 added/delta/done 进入 `consumeFrame`、`completedBoundaryFrames.add` 与 `commitBoundaries(toWrite)` 的对象身份/normalized unit key，再把 compatibility projection改成由 ordered outcome和稳定 sequence/token关联，而不是脆弱的 object identity；修复必须让该 base-positive integration test恢复，并补 Task 3 定向 suite中的真实 driver/buffered正样本。
-
-[Critical] `/tmp/copilot-api-js-task3-review-7e87c3c9/src/lib/pipeline/delivery/adapters/chat-completions.ts:18-28`、`/tmp/copilot-api-js-task3-review-7e87c3c9/src/lib/pipeline/delivery/adapters/shared.ts:29-56`、`/tmp/copilot-api-js-task3-review-7e87c3c9/src/lib/pipeline/generation/candidate-response-session.ts:185-205` — Chat acceptance只修了“finish_reason不是wire terminal”，却没有让 production finish verdict成为唯一 terminal。普通 Chat candidate未定义自有 `finish()`（route `/tmp/copilot-api-js-task3-review-7e87c3c9/src/routes/chat-completions/handler-v4.ts:334-367`），因此 candidate默认返回 `{kind:"complete"}`；shared helper把它映成 `natural-drain`，grammar在尚无 terminal时产生 `discard-open-unit + protocol-error(finish-before-terminal)`。我用真实 candidate seam喂 finish_reason→usage，复现 outcomes 为 `buffer-real-frame, stage-structural-frame, discard-open-unit, protocol-error`，而不是声称的唯一 `response-terminal`，且 `sawUpstreamError=true`。现有 adapter test是假绿：它单独调用了一个 production没有生产者的 `valid-terminal-without-boundary("stop")`，没有经过 route candidate的实际 `finishResponse`。**修复建议**：Chat candidate的 finish callback必须从其 accumulator `finishReason` 产生 `valid-terminal-without-boundary`（无 finish reason则 truncated，stream error则 terminal-failure），并保留 renderer finish frames；补 route-factory/candidate integration test，断言 finish_reason→usage→finish verdict只产生一个 terminal、responseFrames含前两帧、`sawMessageStop=true`、`sawUpstreamError=false`。
-
-### Important
-
-未发现独立于上述 Critical 的 Important。
+未发现问题。
 
 ### Minor
 
-[Minor] `/tmp/copilot-api-js-task3-review-7e87c3c9/src/routes/chat-completions/handler-v4.ts:1-25,470-481,540-620`、`/tmp/copilot-api-js-task3-review-7e87c3c9/src/routes/responses/ws.ts:377` — dead inputs虽已删，注释仍声称 `ccCommitBoundaries`／`sawUpstreamError` 或 `isResponsesCommitBoundary` 是当前接线，已与代码不符。**修复建议**：本轮同步为 grammar-derived compatibility projection，避免后续维护者回接退役 predicate。
+[Minor] `/tmp/copilot-api-js-task3-review-2543ec46/tests/chat-completions/candidate-response-session.unit.test.ts:68-88` — 正式测试只固化成功 finish分支；truncated／terminal-failure 与非空 `rendererFrames` 目前仅由本轮独立 probe验证 — 预期影响：后续 finish producer改动可能让失败分支漂移而目标 suite仍绿 — 推荐把这三个分支改为 table-driven 正式回归。
 
-[Minor] `/tmp/copilot-api-js-task3-review-7e87c3c9/src/lib/pipeline/delivery/adapters/anthropic.ts:16-35` — capability authority已正确实例绑定，但正式测试只测结构伪造，没有测“另一 adapter实例签发的真实 capability”也必须拒绝；我的独立 probe为绿。**修复建议**：把跨实例正／负 control纳入正式 table，防未来把 closure提升成模块全局 WeakSet而测试仍绿。
-
-## 双向判据审计
-
-- **假绿**：41条定向测试没有运行已有 `responses-buffered.it` 的 committed-prefix正样本，漏掉 Critical 1；Chat test只拼接 adapter primitive，没有运行真实 candidate默认 finish，漏掉 Critical 2。
-- **假红控制**：相同 Responses boundary test在 base `1e7b527a`通过而在 head失败，证明不是测试本身过严；owner-bound capability的签发 adapter正样本通过、跨实例与结构伪造负样本拒绝；原两 Critical的正样本在 head均转绿。
-- **仍有效的绿证据**：定向 41／41、driver 46／46、typecheck通过，证明普通门迁移、throw typed conversion、getter error分流、shared UTF-8 validator和基础 route编译均成立，但不足以覆盖上述两个集成缝。
+[Minor] `/tmp/copilot-api-js-task3-review-2543ec46/tests/pipeline/delivery-adapters.unit.test.ts:132-160` — 正式 Responses adapter测试覆盖 output-index-only三帧，但未固化同 index close后复用及跨 item token不碰撞；本轮独立 probe已通过 — 预期影响：未来把单调 token退化为裸 output_index时，现有测试仍可能绿 — 推荐加入复用／跨 item case。
 
 ## 结构怪味
 
-- `/tmp/copilot-api-js-task3-review-7e87c3c9/src/lib/pipeline/generation/candidate-response-session.ts:119,132-160,206-210`：**canonical outcome与object-identity compatibility projection耦合**；处置：**本轮修**，已有 committed-prefix回归，不能留到 Task 4。
-- `/tmp/copilot-api-js-task3-review-7e87c3c9/src/lib/pipeline/delivery/adapters/shared.ts:29-56` + route-specific finish producers：**共享映射正确但协议完成事实未在producer端闭合**；处置：**本轮修 Chat candidate finish producer**，不要在shared helper里猜协议。
-- `/tmp/copilot-api-js-task3-review-7e87c3c9/src/routes/chat-completions/handler-v4.ts` 与 `/tmp/copilot-api-js-task3-review-7e87c3c9/src/routes/responses/ws.ts`：**注释复述旧接线**；处置：本轮同步。
-
-## 推荐修复路由
-
-Critical 1 根因尚需运行时身份追踪，建议派 `gpt-souls:debugger`；Critical 2 改法明确，可派 `gpt-souls:implementer`。修后由本 reviewer再次复评，并至少运行：Task 3 7-file suite、`tests/pipeline/driver.unit.test.ts`、目标 Chat candidate seam、`tests/responses/responses-buffered.it.test.ts` 的 block-level正样本、typecheck。
+- `/tmp/copilot-api-js-task3-review-2543ec46/src/lib/pipeline/delivery/adapters/responses.ts:17-18,30-47`：adapter-local token registry是有状态 classifier，职责与 candidate-local生命周期一致；无跨 candidate共享，**本轮无需处置**。
+- `/tmp/copilot-api-js-task3-review-2543ec46/src/routes/chat-completions/handler-v4.ts:342-346`：协议 finish producer仍在 route candidate factory，符合 Task 3 的 factory wiring边界；Task 4 owner尚未提前接管，**无越界**。
