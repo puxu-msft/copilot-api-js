@@ -93,6 +93,7 @@ import {
 } from "~/lib/openai/tool-name-sanitize"
 import { makeDeliverySseSink } from "~/lib/pipeline/client-sink"
 import { createPipelineDriver } from "~/lib/pipeline/driver"
+import { createChatCompletionsDeliveryProtocolAdapter } from "~/lib/pipeline/delivery/adapters/chat-completions"
 import {
   //
   createCandidateResponseSession,
@@ -296,6 +297,7 @@ const createChatCandidateResponseSession: CandidateResponseSessionFactory = (inp
   if (input.env.targetEndpoint === ENDPOINT.MESSAGES) {
     return createCandidateResponseSession({
       ...input,
+      adapter: createChatCompletionsDeliveryProtocolAdapter(),
       createState: () => ({
         anthropicAcc: createAnthropicStreamAccumulator(),
         diag: createUpstreamFrameDiagnostics(startedAtMs),

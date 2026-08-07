@@ -18,6 +18,8 @@ import type {
   UpstreamFrame,
 } from "~/lib/pipeline/types"
 
+import { createChatCompletionsDeliveryProtocolAdapter } from "~/lib/pipeline/delivery/adapters/chat-completions"
+import { createAnthropicDeliveryProtocolAdapter } from "~/lib/pipeline/delivery/adapters/anthropic"
 import { createCandidateResponseSession } from "~/lib/pipeline/generation/candidate-response-session"
 
 function env(format: "anthropic" | "openai-cc" = "openai-cc"): RequestEnvelope {
@@ -92,6 +94,7 @@ function createSession(id: string) {
     env: env(),
     responseRewrites: [],
     renderer: renderer(id),
+    adapter: createChatCompletionsDeliveryProtocolAdapter(),
     createState: () => state,
     onUpstreamFrame(current, frame) {
       current.upstream.push(frame.data ?? "")
@@ -164,6 +167,7 @@ describe("CandidateResponseSession", () => {
           return []
         },
       },
+      adapter: createAnthropicDeliveryProtocolAdapter(),
       createState: () => ({ transformed: 0 }),
       onRenderedFrame(state, frame) {
         state.transformed++
@@ -182,5 +186,33 @@ describe("CandidateResponseSession", () => {
 
     expect(session.boundary.result?.frame.frame.data).toContain('"index":7')
     expect(session.snapshot()).toEqual({ transformed: 4 })
+  })
+
+  test("publishes ordered grammar outcomes and derives legacy projections only from them", async () => {
+    const session = createCandidateResponseSession({
+      candidate: "candidate:typed" as CandidateHandle,
+      dispatch: "dispatch:typed" as DispatchHandle,
+      env: env("anthropic"),
+      responseRewrites: [],
+      renderer: { renderResponse: (frame) => frame, flushResponse: () => [] },
+      adapter: createAnthropicDeliveryProtocolAdapter(),
+      createState: () => undefined,
+      snapshot: () => undefined,
+    })
+
+    const frames = await collect(session, [
+      { event: "content_block_start", data: JSON.stringify({ type: "content_block_start", index: 3, content_block: { type: "text", text: "" } }) },
+      { event: "content_block_delta", data: JSON.stringify({ type: "content_block_delta", index: 3, delta: { type: "text_delta", text: "x" } }) },
+      { event: "content_block_stop", data: JSON.stringify({ type: "content_block_stop", index: 3 }) },
+      { event: "message_stop", data: JSON.stringify({ type: "message_stop" }) },
+    ])
+
+    expect(session.outcomes.map((outcome) => outcome.kind)).toEqual(["buffer-real-frame", "buffer-real-frame", "complete-unit", "response-terminal"])
+    expect(session.boundary.result?.kind).toBe("successful-boundary")
+    expect(session.responseOpts.commitBoundaries?.(frames[2])).toBe(true)
+    expect(session.responseOpts.commitBoundaries?.(frames[1])).toBe(false)
+    expect(session.responseOpts.sawMessageStop?.()).toBe(true)
+    expect(session.responseOpts.sawUpstreamError?.()).toBe(false)
+    expect(session.adapter.deliveryMode).toBe("unit")
   })
 })

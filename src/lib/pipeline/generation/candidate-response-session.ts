@@ -8,6 +8,16 @@ import type {
 import type { RequestEnvelope } from "~/lib/pipeline/envelope"
 import type { ResponseRewrite } from "~/lib/pipeline/rewrite-registry"
 import type {
+  DeliveryOutcome,
+  DeliveryProtocolAdapter,
+} from "~/lib/pipeline/delivery/protocol"
+
+import { createDeliveryGrammar } from "~/lib/pipeline/delivery/grammar"
+import { createAnthropicDeliveryProtocolAdapter } from "~/lib/pipeline/delivery/adapters/anthropic"
+import { createChatCompletionsDeliveryProtocolAdapter } from "~/lib/pipeline/delivery/adapters/chat-completions"
+import { createGeminiDeliveryProtocolAdapter } from "~/lib/pipeline/delivery/adapters/gemini"
+import { createResponsesDeliveryProtocolAdapter } from "~/lib/pipeline/delivery/adapters/responses"
+import type {
   //
   CandidateResponseRenderer,
   ClientFrame,
@@ -49,9 +59,11 @@ export interface CandidateResponseSession<Snapshot = unknown> {
   readonly candidate: CandidateHandle
   readonly dispatch: DispatchHandle
   readonly renderer: CandidateResponseRenderer
+  readonly adapter: DeliveryProtocolAdapter
   readonly processor: ResponseProcessor
   readonly responseOpts: CandidateResponseSessionOptions
   readonly boundary: CandidateBoundaryClassifier
+  readonly outcomes: ReadonlyArray<DeliveryOutcome>
   readonly finish: CandidateResponseFinish | undefined
   snapshot(): Snapshot
 }
@@ -62,6 +74,8 @@ export interface CreateCandidateResponseSessionInput<State, Snapshot> {
   readonly env: RequestEnvelope
   readonly responseRewrites: ReadonlyArray<ResponseRewrite>
   readonly renderer: CandidateResponseRenderer
+  /** Explicit for Responses transport-mode selection; other formats may omit and use their sole mode. */
+  readonly adapter?: DeliveryProtocolAdapter
   /** False only for response-only compatibility helpers whose synthetic handle is not registered in RequestContext. */
   readonly dispatchScopedCapture?: boolean
   readonly createState: () => State
@@ -101,7 +115,13 @@ export function createCandidateResponseSession<State, Snapshot>(
   input: CreateCandidateResponseSessionInput<State, Snapshot>,
 ): CandidateResponseSession<Snapshot> {
   const state = input.createState()
-  const boundary = createCandidateBoundaryClassifier(input.env.clientFormat)
+  const adapter = input.adapter ?? defaultAdapter(input.env)
+  const boundary = createCandidateBoundaryClassifier()
+  const grammar = createDeliveryGrammar({ mode: adapter.deliveryMode })
+  const outcomes: Array<DeliveryOutcome> = []
+  const completedBoundaryFrames = new WeakSet<ClientFrame>()
+  let sawTerminal = false
+  let sawFailure = false
   const identity = Symbol("candidateResponseSession")
   let sequence = 0
   let finish: CandidateResponseFinish | undefined
@@ -129,15 +149,32 @@ export function createCandidateResponseSession<State, Snapshot>(
       }
     }
     const syntheticKind = readSyntheticKind(transformed)
-    boundary.observe({
+    const envelope = {
       frame: transformed,
       sequence: sequence++,
       observedAtMonotonic: performance.now(),
       provenance:
         syntheticKind === undefined ?
-          { kind: "candidate", candidateId: String(input.candidate), dispatchId: String(input.dispatch) }
-        : { kind: "synthetic", syntheticKind },
-    })
+          ({ kind: "candidate", candidateId: String(input.candidate), dispatchId: String(input.dispatch) } as const)
+        : ({ kind: "synthetic", syntheticKind } as const),
+    }
+    let classified: ReturnType<DeliveryProtocolAdapter["classify"]>
+    try {
+      classified = adapter.classify({ frame: transformed })
+    } catch (cause) {
+      classified = {
+        kind: "protocol-error",
+        error: { semantic: "adapter-exception", detail: cause instanceof Error ? cause.message : String(cause), sourceFrame: transformed, cause },
+      }
+    }
+    const next = grammar.consume({ kind: "frame", classified })
+    for (const outcome of next) {
+      outcomes.push(outcome)
+      if (outcome.kind === "complete-unit") completedBoundaryFrames.add(transformed)
+      if (outcome.kind === "response-terminal") sawTerminal = true
+      if (outcome.kind === "protocol-error") sawFailure = true
+      boundary.observe(outcome, envelope)
+    }
     return transformed
   }
 
@@ -148,10 +185,18 @@ export function createCandidateResponseSession<State, Snapshot>(
       finish = input.finish?.(state, input.renderer, rendererFrames) ?? { kind: "complete", frames: rendererFrames }
       return finish
     },
-    ...(input.sawMessageStop && { sawMessageStop: () => input.sawMessageStop?.(state) ?? false }),
-    ...(input.sawUpstreamError && { sawUpstreamError: () => input.sawUpstreamError?.(state) ?? false }),
+    onFinishResolved: (result) => {
+      const next = grammar.consume({ kind: "finish", classified: adapter.classifyFinish(result) })
+      for (const outcome of next) {
+        outcomes.push(outcome)
+        if (outcome.kind === "response-terminal") sawTerminal = true
+        if (outcome.kind === "protocol-error") sawFailure = true
+      }
+    },
+    sawMessageStop: () => sawTerminal,
+    sawUpstreamError: () => sawFailure,
     ...(input.sawContentlessRefusal && { sawContentlessRefusal: () => input.sawContentlessRefusal?.(state) ?? false }),
-    ...(input.commitBoundaries && { commitBoundaries: (frame) => input.commitBoundaries?.(state, frame) ?? false }),
+    ...(adapter.deliveryMode === "unit" && { commitBoundaries: (frame: ClientFrame) => completedBoundaryFrames.has(frame) }),
     ...(input.transformBufferedFlush && { transformBufferedFlush: (frames, ctx) => input.transformBufferedFlush?.(state, frames, ctx) ?? frames }),
     ...(input.stopAfterFrame && { stopAfterFrame: (frame) => input.stopAfterFrame?.(state, frame) ?? false }),
     ...(input.onBufferedResolve && {
@@ -164,6 +209,7 @@ export function createCandidateResponseSession<State, Snapshot>(
     candidate: input.candidate,
     dispatch: input.dispatch,
     renderer: input.renderer,
+    adapter,
     processor: createResponseProcessor({
       env: input.env,
       ...(input.dispatchScopedCapture !== false && { dispatch: input.dispatch }),
@@ -173,6 +219,9 @@ export function createCandidateResponseSession<State, Snapshot>(
     }),
     responseOpts,
     boundary,
+    get outcomes() {
+      return Object.freeze([...outcomes])
+    },
     get finish() {
       return finish
     },
@@ -187,6 +236,19 @@ export function createCandidateResponseSession<State, Snapshot>(
 }
 
 /** Default candidate session for stateless/mock handlers and response-only helpers. */
+function defaultAdapter(env: RequestEnvelope): DeliveryProtocolAdapter {
+  switch (env.clientFormat) {
+    case "anthropic":
+      return createAnthropicDeliveryProtocolAdapter()
+    case "openai-cc":
+      return createChatCompletionsDeliveryProtocolAdapter()
+    case "gemini":
+      return createGeminiDeliveryProtocolAdapter()
+    case "openai-responses":
+      return createResponsesDeliveryProtocolAdapter({ transport: "http" })
+  }
+}
+
 export function createDefaultCandidateResponseSession(input: {
   readonly candidate: CandidateHandle
   readonly dispatch: DispatchHandle

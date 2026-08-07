@@ -154,6 +154,7 @@ import { getContinuationBuilder } from "~/lib/pipeline/continuation-request-buil
 import { classifyOwnerFailure } from "~/lib/pipeline/delivery/owner-failure"
 import { DeliveryOwnerError } from "~/lib/pipeline/delivery/session"
 import { createPipelineDriver } from "~/lib/pipeline/driver"
+import { createAnthropicDeliveryProtocolAdapter } from "~/lib/pipeline/delivery/adapters/anthropic"
 import {
   //
   createCandidateResponseSession,
@@ -257,6 +258,7 @@ const createAnthropicCandidateResponseSession: CandidateResponseSessionFactory =
   if (input.env.targetEndpoint === ENDPOINT.MESSAGES) {
     return createCandidateResponseSession({
       ...input,
+      adapter: createAnthropicDeliveryProtocolAdapter(),
       createState: () => ({
         acc: createAnthropicStreamAccumulator(),
         terminalObserver: createTerminalObserver(),

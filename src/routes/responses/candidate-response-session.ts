@@ -34,6 +34,7 @@ import {
   createResponsesStreamAccumulator,
 } from "~/lib/openai/responses-stream-accumulator"
 import { restoreResponsesStreamFrameToolNames } from "~/lib/openai/tool-name-sanitize"
+import { createResponsesDeliveryProtocolAdapter } from "~/lib/pipeline/delivery/adapters/responses"
 import { createCandidateResponseSession } from "~/lib/pipeline/generation/candidate-response-session"
 import { classifyReverseAnthropicTerminal } from "~/lib/pipeline/reverse-terminal"
 import { createUpstreamFrameDiagnostics } from "~/lib/upstream-stream-diagnostics"
@@ -64,6 +65,7 @@ export function createResponsesCandidateResponseSessionFactory(transport: "http"
     if (input.env.targetEndpoint === ENDPOINT.MESSAGES) {
       return createCandidateResponseSession({
         ...input,
+        adapter: createResponsesDeliveryProtocolAdapter({ transport }),
         createState: () => ({
           anthropicAcc: createAnthropicStreamAccumulator(),
           diag: createUpstreamFrameDiagnostics(startedAtMs),
@@ -105,6 +107,7 @@ export function createResponsesCandidateResponseSessionFactory(transport: "http"
     const fallbackResponseId = (input.env.requestState?.responsesFallbackScratch as ResponsesFallbackScratch | undefined)?.exchange?.responseId
     return createCandidateResponseSession({
       ...input,
+      adapter: createResponsesDeliveryProtocolAdapter({ transport }),
       createState: () => ({
         acc: createResponsesStreamAccumulator(),
         diag: createUpstreamFrameDiagnostics(startedAtMs),

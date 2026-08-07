@@ -1009,9 +1009,13 @@ function withCandidateResponseOpts(
       candidate: session.candidate,
       dispatch: session.dispatch,
       renderer: session.renderer,
+      adapter: session.adapter,
       processor: session.processor,
       responseOpts: mergeCandidateResponseOpts(session.responseOpts, outer),
       boundary: session.boundary,
+      get outcomes() {
+        return session.outcomes
+      },
       get finish() {
         return session.finish
       },

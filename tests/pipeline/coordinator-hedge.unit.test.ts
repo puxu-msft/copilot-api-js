@@ -21,6 +21,7 @@ import type {
   UpstreamStream,
 } from "~/lib/pipeline/types"
 
+import { createAnthropicDeliveryProtocolAdapter } from "~/lib/pipeline/delivery/adapters/anthropic"
 import { createCandidateResponseSession } from "~/lib/pipeline/generation/candidate-response-session"
 import { createGenerationCoordinator } from "~/lib/pipeline/generation/coordinator"
 import { createGenerationBudget } from "~/lib/pipeline/generation/generation-budget"
@@ -72,6 +73,7 @@ function runtime(role: CandidateRole, label: string, candidateNumber: number, ga
     env: requestEnv,
     responseRewrites: [],
     renderer: { renderResponse: (frame) => frame, flushResponse: () => [] },
+    adapter: createAnthropicDeliveryProtocolAdapter(),
     createState: () => undefined,
     snapshot: () => ({ label }),
   })

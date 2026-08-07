@@ -82,6 +82,7 @@ import { resolveModelTarget } from "~/lib/models/resolver"
 import { resolveStreamIdleTimeoutMs } from "~/lib/models/timeout-resolver"
 import { makeDeliverySseSink } from "~/lib/pipeline/client-sink"
 import { createPipelineDriver } from "~/lib/pipeline/driver"
+import { createGeminiDeliveryProtocolAdapter } from "~/lib/pipeline/delivery/adapters/gemini"
 import {
   //
   createCandidateResponseSession,
@@ -221,6 +222,7 @@ const createGeminiCandidateResponseSession: CandidateResponseSessionFactory = (i
   if (input.env.targetEndpoint === ENDPOINT.MESSAGES) {
     return createCandidateResponseSession({
       ...input,
+      adapter: createGeminiDeliveryProtocolAdapter(),
       createState: () => ({ anthropicAcc: createAnthropicStreamAccumulator(), diag: createUpstreamFrameDiagnostics(startedAtMs) }),
       onUpstreamFrame(state, frame) {
         const raw = frame as ServerSentEventMessage
