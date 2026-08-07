@@ -93,6 +93,15 @@ export interface HistoryWorkerStatus {
   readonly lastOutcomeCallbackError?: string
 }
 
+/** Fields produced by the Worker itself; all other runtime status fields remain main-owned. */
+export interface HistoryWorkerStatusPatch {
+  readonly threadId?: number
+  readonly selectedDriver?: HistorySqliteDriver
+  readonly ready?: boolean
+  readonly publishedRevision?: number
+  readonly lastError?: string
+}
+
 interface MessageBase {
   readonly protocolVersion: typeof HISTORY_WORKER_PROTOCOL_VERSION
   readonly workerGeneration: WorkerGeneration
@@ -161,7 +170,7 @@ export interface PersistResultMessage extends MessageBase {
 
 export interface StatusMessage extends MessageBase {
   readonly type: "status"
-  readonly status: Partial<HistoryWorkerStatus>
+  readonly status: HistoryWorkerStatusPatch
 }
 
 export interface MaintenanceStoppedMessage extends MessageBase {
@@ -452,55 +461,19 @@ function assertHistoryWorkerReady(value: unknown, messageGeneration: number): as
   assertRawTargetDescriptor(value.rawTarget, "ready.ready.rawTarget")
 }
 
-function assertHistoryWorkerStatusPatch(value: unknown): asserts value is Partial<HistoryWorkerStatus> {
+function assertHistoryWorkerStatusPatch(value: unknown): asserts value is HistoryWorkerStatusPatch {
   assertObject(value, "status.status")
-  const allowed = new Set([
-    "workerGeneration",
-    "threadId",
-    "selectedDriver",
-    "ready",
-    "terminalFailed",
-    "pendingEnvelopes",
-    "pendingBytes",
-    "latestDesiredRevision",
-    "publishedRevision",
-    "restartsTotal",
-    "replaysTotal",
-    "staleMessagesTotal",
-    "duplicateAcksTotal",
-    "outcomeCallbackErrorsTotal",
-    "lastError",
-    "lastOutcomeCallbackError",
-  ])
+  const allowed = new Set(["threadId", "selectedDriver", "ready", "publishedRevision", "lastError"])
   for (const key of Object.keys(value)) {
     if (!allowed.has(key)) throw new HistoryWorkerProtocolError(`status.status contains unknown field: ${key}`)
   }
-  if (value.workerGeneration !== undefined) assertPositiveInteger(value.workerGeneration, "status.status.workerGeneration")
   if (value.threadId !== undefined) assertPositiveInteger(value.threadId, "status.status.threadId")
   if (value.selectedDriver !== undefined && value.selectedDriver !== "bun:sqlite" && value.selectedDriver !== "node:sqlite") {
     throw new HistoryWorkerProtocolError(`status.status.selectedDriver is invalid: ${safeString(value.selectedDriver)}`)
   }
-  for (const field of ["ready", "terminalFailed"] as const) {
-    if (value[field] !== undefined && typeof value[field] !== "boolean") throw new HistoryWorkerProtocolError(`status.status.${field} must be a boolean`)
-  }
-  for (const field of [
-    "pendingEnvelopes",
-    "pendingBytes",
-    "latestDesiredRevision",
-    "publishedRevision",
-    "restartsTotal",
-    "replaysTotal",
-    "staleMessagesTotal",
-    "duplicateAcksTotal",
-    "outcomeCallbackErrorsTotal",
-  ] as const) {
-    if (value[field] !== undefined) assertNonNegativeInteger(value[field], `status.status.${field}`)
-  }
-  for (const field of ["lastError", "lastOutcomeCallbackError"] as const) {
-    if (value[field] !== undefined && typeof value[field] !== "string") {
-      throw new HistoryWorkerProtocolError(`status.status.${field} must be a string`)
-    }
-  }
+  if (value.ready !== undefined && typeof value.ready !== "boolean") throw new HistoryWorkerProtocolError("status.status.ready must be a boolean")
+  if (value.publishedRevision !== undefined) assertNonNegativeInteger(value.publishedRevision, "status.status.publishedRevision")
+  if (value.lastError !== undefined && typeof value.lastError !== "string") throw new HistoryWorkerProtocolError("status.status.lastError must be a string")
 }
 
 function assertHistoryDrainResult(value: unknown): asserts value is HistoryDrainResult {

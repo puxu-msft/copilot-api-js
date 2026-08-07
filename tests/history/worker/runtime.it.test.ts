@@ -297,6 +297,33 @@ describe("HistoryPersistenceRuntime ACK state", () => {
     await runtime.shutdown()
   })
 
+  test("routes a forged main-owned Worker status field through the fatal transition", async () => {
+    const transport = new ControllableTransport()
+    const runtime = new HistoryPersistenceRuntimeImpl({ workerFactory: () => transport })
+    const start = runtime.start(startConfig())
+    transport.emitMessage(readyMessage(1))
+    await start
+
+    let outcome: HistoryPersistenceOutcome | undefined
+    runtime.enqueue(envelope(), (value) => {
+      outcome = value
+    })
+    const drain = runtime.drain()
+    expect(runtime.snapshot()).toMatchObject({ terminalFailed: false, pendingEnvelopes: 1 })
+
+    transport.emitMessage({
+      type: "status",
+      protocolVersion: HISTORY_WORKER_PROTOCOL_VERSION,
+      workerGeneration: 1,
+      status: { terminalFailed: true },
+    })
+
+    expect(outcome).toBe("failed")
+    await expect(drain).rejects.toThrow("status.status contains unknown field: terminalFailed")
+    expect(runtime.snapshot()).toMatchObject({ terminalFailed: true, pendingEnvelopes: 0 })
+    expect(runtime.snapshot().lastError).toContain("status.status contains unknown field: terminalFailed")
+  })
+
   test("settles ACK state before isolating an outcome callback error", async () => {
     const transport = new ControllableTransport()
     const runtime = new HistoryPersistenceRuntimeImpl({ workerFactory: () => transport })

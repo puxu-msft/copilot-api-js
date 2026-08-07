@@ -232,15 +232,42 @@ describe("History Worker protocol", () => {
     for (const value of cases) expect(() => parseMainToWorkerMessage(value)).toThrow(HistoryWorkerProtocolError)
   })
 
-  test("accepts a valid partial Worker status update", () => {
+  test("accepts only Worker-owned fields in a partial status update", () => {
     expect(
       parseWorkerToMainMessage({
         type: "status",
         protocolVersion: HISTORY_WORKER_PROTOCOL_VERSION,
         workerGeneration: 1,
-        status: { ready: true, pendingEnvelopes: 2, selectedDriver: "bun:sqlite" },
+        status: { ready: true, selectedDriver: "bun:sqlite", threadId: 7, publishedRevision: 2, lastError: "worker warning" },
       }),
-    ).toMatchObject({ status: { ready: true, pendingEnvelopes: 2, selectedDriver: "bun:sqlite" } })
+    ).toMatchObject({ status: { ready: true, selectedDriver: "bun:sqlite", threadId: 7, publishedRevision: 2, lastError: "worker warning" } })
+  })
+
+  test("rejects main-owned fields in Worker status updates", () => {
+    const mainOwnedFields = [
+      "workerGeneration",
+      "terminalFailed",
+      "pendingEnvelopes",
+      "pendingBytes",
+      "latestDesiredRevision",
+      "restartsTotal",
+      "replaysTotal",
+      "staleMessagesTotal",
+      "duplicateAcksTotal",
+      "outcomeCallbackErrorsTotal",
+      "lastOutcomeCallbackError",
+    ]
+
+    for (const field of mainOwnedFields) {
+      expect(() =>
+        parseWorkerToMainMessage({
+          type: "status",
+          protocolVersion: HISTORY_WORKER_PROTOCOL_VERSION,
+          workerGeneration: 1,
+          status: { [field]: field === "lastOutcomeCallbackError" ? "forged" : 1 },
+        }),
+      ).toThrow(HistoryWorkerProtocolError)
+    }
   })
 
   test("rejects malformed nested Worker-to-main payloads", () => {
