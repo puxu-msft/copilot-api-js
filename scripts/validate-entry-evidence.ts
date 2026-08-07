@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 import { createHash } from "node:crypto"
-import { existsSync, readFileSync, readdirSync, realpathSync } from "node:fs"
+import { existsSync, readFileSync, readdirSync, realpathSync, statSync } from "node:fs"
 import path from "node:path"
 
 import type { DiscoveryBaseline } from "./entry-evidence-schema"
@@ -9,6 +9,25 @@ import type { JUnitIdentities } from "./parallel-test-artifacts"
 let writeReceiptAtomically!: (receiptPath: string, body: string) => void
 let parseDiscoveryBaseline!: (raw: string) => DiscoveryBaseline
 let parseJUnit!: (raw: string, tree: string) => JUnitIdentities
+let bytewiseSort!: (values: string[]) => string[]
+let discoverRuntimePackageClosure!: typeof import("./entry-evidence-runtime-closure").discoverRuntimePackageClosure
+let packageIdentity!: typeof import("./entry-evidence-runtime-closure").packageIdentity
+let runtimeImportSpecifiers!: typeof import("./entry-evidence-runtime-closure").runtimeImportSpecifiers
+
+const RUNTIME_CLOSURE_HELPER_PATH = "scripts/entry-evidence-runtime-closure.ts"
+
+function trustedRuntimeClosureHelperPath(tree: string, entrySha: string, canonicalTree: string): string | undefined {
+  const helperPath = path.join(canonicalTree, RUNTIME_CLOSURE_HELPER_PATH)
+  return matchesEntryObject(tree, entrySha, canonicalTree, helperPath) ? helperPath : undefined
+}
+
+async function loadRuntimeClosureDependency(helperPath: string): Promise<void> {
+  const closure = await import(helperPath)
+  bytewiseSort = closure.bytewiseSort
+  discoverRuntimePackageClosure = closure.discoverRuntimePackageClosure
+  packageIdentity = closure.packageIdentity
+  runtimeImportSpecifiers = closure.runtimeImportSpecifiers
+}
 
 async function loadRuntimeDependencies(): Promise<void> {
   const receipt = await import("./entry-evidence-receipt")
@@ -62,54 +81,194 @@ const RUN_KEYS = [
   "skipped",
   "verdict",
 ]
-const RUNTIME_DEPENDENCIES = [
-  { importSpecifier: "./entry-evidence-receipt", path: "scripts/entry-evidence-receipt.ts" },
-  { importSpecifier: "./entry-evidence-schema", path: "scripts/entry-evidence-schema.ts" },
-  { importSpecifier: "./parallel-test-artifacts", path: "scripts/parallel-test-artifacts.ts" },
-]
+const DEPENDENCY_INTEGRITY_MANIFEST_PATH = "scripts/entry-evidence-runtime-dependencies.json"
+const RUNTIME_EXTENSION_CANDIDATES = [".ts", ".tsx", ".js", ".mjs", ".cjs", ".json"]
+interface RuntimeDependencyFile {
+  path: string
+  sha256: string
+}
+interface RuntimeDependencyPackage {
+  name: string
+  version: string
+  integrity: string
+  files: RuntimeDependencyFile[]
+}
+interface RuntimeDependencyIntegrityManifest {
+  schema_version: 1
+  packages: RuntimeDependencyPackage[]
+}
 
-function runtimeImportSpecifiers(source: string): string[] | undefined {
+function isInside(child: string, parent: string): boolean {
+  const relative = path.relative(parent, child)
+  return relative === "" || (!relative.startsWith(`..${path.sep}`) && relative !== ".." && !path.isAbsolute(relative))
+}
+
+function existingRuntimePath(base: string): string | undefined {
+  for (const candidate of RUNTIME_EXTENSION_CANDIDATES) {
+    const file = `${base}${candidate}`
+    try {
+      if (statSync(file).isFile()) return file
+    } catch {}
+  }
+  for (const candidate of RUNTIME_EXTENSION_CANDIDATES) {
+    const file = path.join(base, `index${candidate}`)
+    try {
+      if (statSync(file).isFile()) return file
+    } catch {}
+  }
+  return undefined
+}
+
+function resolveRelativeRuntimeImport(importer: string, specifier: string, canonicalTree: string): string | undefined {
+  if (!specifier.startsWith("./") && !specifier.startsWith("../")) return undefined
+  const resolved = existingRuntimePath(path.resolve(path.dirname(importer), specifier))
+  if (resolved === undefined) return undefined
   try {
-    const scan = new Bun.Transpiler({ loader: "ts" }).scan(source)
-    const localSpecifiers: string[] = []
-    for (const imported of scan.imports) {
-      if (imported.path.startsWith("./")) localSpecifiers.push(imported.path)
-      else if (!imported.path.startsWith("node:")) return undefined
-    }
-    return localSpecifiers.sort((left, right) => Buffer.from(left).compare(Buffer.from(right)))
+    const canonical = realpathSync(resolved)
+    return isInside(canonical, canonicalTree) ? canonical : undefined
   } catch {
     return undefined
   }
 }
 
-function matchesEntryObject(tree: string, entrySha: string, runtimePath: string, entryPath: string): boolean {
-  try {
-    const canonicalTree = realpathSync(tree)
-    if (realpathSync(runtimePath) !== path.join(canonicalTree, entryPath)) return false
-  } catch {
-    return false
-  }
+function entryPathForRuntimeFile(canonicalTree: string, runtimeFile: string): string | undefined {
+  if (!isInside(runtimeFile, canonicalTree)) return undefined
+  const relative = path.relative(canonicalTree, runtimeFile).split(path.sep).join("/")
+  return relative === "" || relative.startsWith("../") ? undefined : relative
+}
+
+function matchesEntryObject(tree: string, entrySha: string, canonicalTree: string, runtimePath: string): boolean {
+  const entryPath = entryPathForRuntimeFile(canonicalTree, runtimePath)
+  if (entryPath === undefined) return false
   const entryBlob = git(tree, ["rev-parse", `${entrySha}:${entryPath}`])
   return entryBlob !== undefined && git(tree, ["hash-object", "--no-filters", runtimePath]) === entryBlob
 }
 
-function runtimeClosureMatchesEntry(tree: string, entrySha: string): boolean {
-  const runtimeValidatorPath = path.resolve(import.meta.path)
-  if (!matchesEntryObject(tree, entrySha, runtimeValidatorPath, "scripts/validate-entry-evidence.ts")) return false
-  let source: string
+function parseRuntimeDependencyManifest(raw: string): RuntimeDependencyIntegrityManifest | undefined {
   try {
-    source = readFileSync(runtimeValidatorPath, "utf8")
+    const parsed = JSON.parse(raw) as Record<string, unknown>
+    if (!exactKeys(parsed, ["schema_version", "packages"]) || parsed.schema_version !== 1 || !Array.isArray(parsed.packages) || parsed.packages.length === 0)
+      return undefined
+    const packages: RuntimeDependencyPackage[] = []
+    for (const packageEntry of parsed.packages) {
+      if (!packageEntry || typeof packageEntry !== "object" || Array.isArray(packageEntry)) return undefined
+      const value = packageEntry as Record<string, unknown>
+      if (!exactKeys(value, ["name", "version", "integrity", "files"]) || typeof value.name !== "string" || value.name.length === 0) return undefined
+      if (typeof value.version !== "string" || typeof value.integrity !== "string" || !Array.isArray(value.files) || value.files.length === 0) return undefined
+      const files: RuntimeDependencyFile[] = []
+      for (const fileEntry of value.files) {
+        if (!fileEntry || typeof fileEntry !== "object" || Array.isArray(fileEntry)) return undefined
+        const file = fileEntry as Record<string, unknown>
+        if (
+          !exactKeys(file, ["path", "sha256"]) ||
+          typeof file.path !== "string" ||
+          !/^[^/][^\\]*$/.test(file.path) ||
+          file.path.includes("..") ||
+          !isSha(file.sha256, 64)
+        )
+          return undefined
+        files.push({ path: file.path, sha256: file.sha256 })
+      }
+      if (JSON.stringify(files.map((file) => file.path)) !== JSON.stringify(bytewiseSort(files.map((file) => file.path)))) return undefined
+      packages.push({ name: value.name, version: value.version, integrity: value.integrity, files })
+    }
+    if (new Set(packages.map((entry) => entry.name)).size !== packages.length) return undefined
+    if (JSON.stringify(packages.map((entry) => entry.name)) !== JSON.stringify(bytewiseSort(packages.map((entry) => entry.name)))) return undefined
+    return { schema_version: 1, packages }
+  } catch {
+    return undefined
+  }
+}
+
+function lockfileMatches(canonicalTree: string, manifest: RuntimeDependencyIntegrityManifest): boolean {
+  const packageRaw = readUtf8(path.join(canonicalTree, "package.json"))
+  const lockRaw = readUtf8(path.join(canonicalTree, "bun.lock"))
+  if (packageRaw === undefined || lockRaw === undefined) return false
+  try {
+    const packageJson = Bun.JSONC.parse(packageRaw) as { dependencies?: Record<string, unknown> }
+    const lock = Bun.JSONC.parse(lockRaw) as { packages?: Record<string, unknown> }
+    const saxes = manifest.packages.find((entry) => entry.name === "saxes")
+    if (saxes === undefined || packageJson.dependencies?.saxes !== saxes.version || lock.packages === undefined) return false
+    return manifest.packages.every((entry) => {
+      const locked = lock.packages![entry.name]
+      return Array.isArray(locked) && locked.length === 4 && locked[0] === `${entry.name}@${entry.version}` && locked[3] === entry.integrity
+    })
   } catch {
     return false
   }
-  const imports = runtimeImportSpecifiers(source)
-  const expectedImports = RUNTIME_DEPENDENCIES.map(({ importSpecifier }) => importSpecifier).sort((left, right) =>
-    Buffer.from(left).compare(Buffer.from(right)),
+}
+
+async function packageClosureMatches(importer: string, manifest: RuntimeDependencyIntegrityManifest): Promise<boolean> {
+  const closure = await discoverRuntimePackageClosure("saxes", importer)
+  if (closure === undefined) return false
+  const observed = new Map<string, string[]>()
+  for (const file of closure) observed.set(file.packageName, [...(observed.get(file.packageName) ?? []), file.relativePath])
+  const observedPackageNames = bytewiseSort([...observed.keys()])
+  const manifestPackageNames = manifest.packages.map((entry) => entry.name)
+  if (JSON.stringify(observedPackageNames) !== JSON.stringify(manifestPackageNames)) return false
+  return manifest.packages.every((packageEntry) => {
+    const packageFiles = closure.filter((file) => file.packageName === packageEntry.name)
+    const identity = packageFiles.length === 0 ? undefined : packageIdentity(packageFiles[0].resolvedPath)
+    if (
+      identity === undefined ||
+      identity.name !== packageEntry.name ||
+      identity.version !== packageEntry.version ||
+      packageFiles.some((file) => file.packageRoot !== identity.root) ||
+      JSON.stringify(bytewiseSort(observed.get(packageEntry.name) ?? [])) !== JSON.stringify(packageEntry.files.map((file) => file.path))
+    )
+      return false
+    return packageFiles.every((file) => {
+      const expected = packageEntry.files.find((entry) => entry.path === file.relativePath)
+      return expected !== undefined && hashMatches(file.resolvedPath, expected.sha256)
+    })
+  })
+}
+
+async function runtimeClosureMatchesEntry(tree: string, entrySha: string): Promise<boolean> {
+  let canonicalTree: string
+  try {
+    canonicalTree = realpathSync(tree)
+  } catch {
+    return false
+  }
+  const validatorPath = path.join(canonicalTree, "scripts", "validate-entry-evidence.ts")
+  const manifestPath = path.join(canonicalTree, DEPENDENCY_INTEGRITY_MANIFEST_PATH)
+  if (
+    path.resolve(import.meta.path) !== validatorPath ||
+    !matchesEntryObject(tree, entrySha, canonicalTree, validatorPath) ||
+    !matchesEntryObject(tree, entrySha, canonicalTree, path.join(canonicalTree, "package.json")) ||
+    !matchesEntryObject(tree, entrySha, canonicalTree, path.join(canonicalTree, "bun.lock")) ||
+    !matchesEntryObject(tree, entrySha, canonicalTree, manifestPath)
   )
-  if (imports === undefined || JSON.stringify(imports) !== JSON.stringify(expectedImports)) return false
-  return RUNTIME_DEPENDENCIES.every(({ importSpecifier, path: entryPath }) =>
-    matchesEntryObject(tree, entrySha, path.join(path.dirname(runtimeValidatorPath), `${importSpecifier.slice(2)}.ts`), entryPath),
-  )
+    return false
+  const rawManifest = readUtf8(manifestPath)
+  const dependencyManifest = rawManifest === undefined ? undefined : parseRuntimeDependencyManifest(rawManifest)
+  if (dependencyManifest === undefined || !lockfileMatches(canonicalTree, dependencyManifest)) return false
+  const visited = new Set<string>()
+  const visitLocal = async (runtimeFile: string): Promise<boolean> => {
+    if (visited.has(runtimeFile)) return true
+    visited.add(runtimeFile)
+    if (!matchesEntryObject(tree, entrySha, canonicalTree, runtimeFile)) return false
+    const source = readUtf8(runtimeFile)
+    const imports =
+      source === undefined ? undefined : runtimeImportSpecifiers(source, runtimeFile.endsWith(".ts") || runtimeFile.endsWith(".tsx") ? "ts" : "js")
+    if (imports === undefined) return false
+    for (const specifier of imports) {
+      if (specifier.startsWith("node:")) continue
+      if (specifier.startsWith("./") || specifier.startsWith("../")) {
+        const child = resolveRelativeRuntimeImport(runtimeFile, specifier, canonicalTree)
+        if (child === undefined || !(await visitLocal(child))) return false
+      } else if (
+        specifier !== "saxes" ||
+        runtimeFile !== path.join(canonicalTree, "scripts", "parallel-test-artifacts.ts") ||
+        !(await packageClosureMatches(runtimeFile, dependencyManifest))
+      ) {
+        return false
+      }
+    }
+    return true
+  }
+  return visitLocal(validatorPath)
 }
 
 function fail(condition: number, message: string, exitCode: number): never {
@@ -430,7 +589,20 @@ function parseRunArtifacts(
 const options = parseOptions(process.argv.slice(2))
 if (!existsSync(options.tree) || git(options.tree, ["cat-file", "-e", `${options.pointerSha}^{commit}`]) === undefined)
   fail(1, "pointer SHA does not resolve", 3)
-if (!runtimeClosureMatchesEntry(options.tree, options.entrySha)) fail(11, "validator provenance mismatch", 7)
+let canonicalTree: string
+try {
+  canonicalTree = realpathSync(options.tree)
+} catch {
+  fail(11, "validator provenance mismatch", 7)
+}
+const runtimeClosureHelperPath = trustedRuntimeClosureHelperPath(options.tree, options.entrySha, canonicalTree)
+if (runtimeClosureHelperPath === undefined) fail(11, "validator provenance mismatch", 7)
+try {
+  await loadRuntimeClosureDependency(runtimeClosureHelperPath)
+} catch {
+  fail(11, "validator provenance mismatch", 7)
+}
+if (!(await runtimeClosureMatchesEntry(options.tree, options.entrySha))) fail(11, "validator provenance mismatch", 7)
 try {
   await loadRuntimeDependencies()
 } catch {
