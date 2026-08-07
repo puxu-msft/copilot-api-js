@@ -6,8 +6,10 @@ import {
 
 if (!parentPort) throw new Error("worker-entry fixture requires a parent port")
 
-if ((workerData as { crash?: boolean } | undefined)?.crash) throw new Error("deterministic fixture crash")
+const fixture = workerData as { crash?: boolean; roundtrip?: boolean } | undefined
+if (fixture?.crash) throw new Error("deterministic fixture crash")
 
+const payload = fixture?.roundtrip ? { bytes: new Uint8Array([1, 2, 3]), map: new Map([["n", 7]]) } : { ready: true }
 // Node MessagePort has no browser targetOrigin parameter.
 // eslint-disable-next-line unicorn/require-post-message-target-origin
-parentPort.postMessage({ ready: true })
+parentPort.postMessage(payload)

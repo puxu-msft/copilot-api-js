@@ -71,6 +71,13 @@ async function exerciseRuntime(runtime: HistoryPersistenceRuntimeImpl): Promise<
   expect(ready.threadId).toBeGreaterThan(0)
   expect(runtime.snapshot().ready).toBe(true)
 
+  const applied = await runtime.updateConfig(2, {
+    rawConfig: { enabled: true, dbPath: "raw-test.db", maxObjectBytes: 2048 },
+    maintenanceIntervalMs: 30_000,
+  })
+  expect(applied).toMatchObject({ configRevision: 2, requested: true, dbPath: "raw-test.db", maxObjectBytes: 2048 })
+  await runtime.stopMaintenance()
+
   const outcome = new Promise<HistoryPersistenceOutcome>((resolve) => runtime.enqueue(envelope(), resolve))
   expect(await outcome).toBe("failed")
   expect(runtime.snapshot().pendingEnvelopes).toBe(0)
@@ -108,6 +115,17 @@ describe("HistoryPersistenceRuntime contract", () => {
     expect((await error).message).toContain("deterministic fixture crash")
     const exitCode = await exit
     expect(events).toEqual(["error", `exit:${exitCode}`])
+  })
+
+  test("real Worker preserves Uint8Array and Map through structured clone", async () => {
+    const worker = new Worker(fixtureWorkerUrl, { workerData: { roundtrip: true } })
+    const message = new Promise<unknown>((resolve) => worker.once("message", resolve))
+    const value = (await message) as { bytes: unknown; map: unknown }
+    expect(value.bytes).toBeInstanceOf(Uint8Array)
+    expect(value.bytes).toEqual(new Uint8Array([1, 2, 3]))
+    expect(value.map).toBeInstanceOf(Map)
+    expect(value.map).toEqual(new Map([["n", 7]]))
+    expect(await worker.terminate()).toBeGreaterThanOrEqual(0)
   })
 
   test("real Worker can be terminated after a successful message", async () => {
@@ -214,6 +232,70 @@ describe("HistoryPersistenceRuntime ACK state", () => {
     expect(outcomes).toBe(1)
     expect(runtime.snapshot().duplicateAcksTotal).toBe(1)
     await runtime.shutdown()
+  })
+
+  test("evicts completed ACK tombstones at the configured capacity", async () => {
+    const transport = new ControllableTransport()
+    const runtime = new HistoryPersistenceRuntimeImpl({ workerFactory: () => transport, tombstoneCapacity: 1 })
+    const start = runtime.start(startConfig())
+    transport.emitMessage(readyMessage(1))
+    await start
+
+    const firstId = runtime.enqueue(envelope("op-1"), () => {})
+    transport.emitMessage({
+      type: "persist-result",
+      protocolVersion: HISTORY_WORKER_PROTOCOL_VERSION,
+      workerGeneration: 1,
+      messageId: firstId,
+      outcome: "failed",
+    })
+    const secondId = runtime.enqueue(envelope("op-2"), () => {})
+    transport.emitMessage({
+      type: "persist-result",
+      protocolVersion: HISTORY_WORKER_PROTOCOL_VERSION,
+      workerGeneration: 1,
+      messageId: secondId,
+      outcome: "failed",
+    })
+    transport.emitMessage({
+      type: "persist-result",
+      protocolVersion: HISTORY_WORKER_PROTOCOL_VERSION,
+      workerGeneration: 1,
+      messageId: firstId,
+      outcome: "failed",
+    })
+
+    expect(runtime.snapshot().terminalFailed).toBe(true)
+    expect(runtime.snapshot().lastError).toContain(`ACK for unknown History message ${firstId}`)
+  })
+
+  test("fails terminally when a duplicate ACK changes outcome", async () => {
+    const transport = new ControllableTransport()
+    const runtime = new HistoryPersistenceRuntimeImpl({ workerFactory: () => transport })
+    const start = runtime.start(startConfig())
+    transport.emitMessage(readyMessage(1))
+    await start
+
+    let outcomes = 0
+    const messageId = runtime.enqueue(envelope(), () => outcomes++)
+    transport.emitMessage({
+      type: "persist-result",
+      protocolVersion: HISTORY_WORKER_PROTOCOL_VERSION,
+      workerGeneration: 1,
+      messageId,
+      outcome: "failed",
+    })
+    transport.emitMessage({
+      type: "persist-result",
+      protocolVersion: HISTORY_WORKER_PROTOCOL_VERSION,
+      workerGeneration: 1,
+      messageId,
+      outcome: "persisted",
+    })
+
+    expect(runtime.snapshot().terminalFailed).toBe(true)
+    expect(runtime.snapshot().lastError).toContain("changed outcome from failed to persisted")
+    expect(outcomes).toBe(1)
   })
 
   test("rejects startup when the Worker exits before ready", async () => {
