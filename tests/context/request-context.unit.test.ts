@@ -195,14 +195,18 @@ describe("createRequestContext - attempt lifecycle", () => {
     const { ctx } = makeContext()
     const candidate = ctx.beginGenerationCandidate({ role: "primary" })
     const dispatch = ctx.beginGenerationDispatch({ candidate })
-    const upstreamError = new Error("upstream failure")
+    const supersededError = new Error("upstream failure")
     const flushError = new Error("flush failure")
 
-    ctx.recordResponseFailureSupersession({ upstreamError, flushError })
+    ctx.recordResponseFailureSupersession({ supersededError, supersededSource: "upstream-transport", flushError })
     expect(ctx.modelOperationSnapshot.dispatches.find((entry) => entry.handle === dispatch)?.diagnostics).toContainEqual(
       expect.objectContaining({
         kind: "response.failure-supersession",
-        data: { upstreamError: expect.objectContaining({ message: "upstream failure" }), flushError: expect.objectContaining({ message: "flush failure" }) },
+        data: {
+          supersededError: expect.objectContaining({ message: "upstream failure" }),
+          supersededSource: "upstream-transport",
+          flushError: expect.objectContaining({ message: "flush failure" }),
+        },
       }),
     )
 
@@ -214,7 +218,11 @@ describe("createRequestContext - attempt lifecycle", () => {
     expect(terminal.dispatches.find((entry) => entry.handle === dispatch)?.diagnostics).toContainEqual(
       expect.objectContaining({
         kind: "response.failure-supersession",
-        data: { upstreamError: expect.objectContaining({ message: "upstream failure" }), flushError: expect.objectContaining({ message: "flush failure" }) },
+        data: {
+          supersededError: expect.objectContaining({ message: "upstream failure" }),
+          supersededSource: "upstream-transport",
+          flushError: expect.objectContaining({ message: "flush failure" }),
+        },
       }),
     )
   })

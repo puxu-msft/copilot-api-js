@@ -327,6 +327,31 @@ describe("P6-T2 generation coordinator", () => {
     expect(opens).toEqual(["primary"])
   })
 
+  test("concurrent recovery calls atomically consume one ready parent", async () => {
+    const recording = createRecording()
+    const opens: Array<string> = []
+    const processors: Array<symbol> = []
+    const coordinator = createGenerationCoordinator({
+      env: envelope("primary"),
+      createCandidate: candidateFactory({ recording: recording.port, opens, processors }),
+    })
+    const primary = await coordinator.runPrimary()
+
+    const results = await Promise.allSettled([
+      coordinator.runRecovery(primary, "first-recovery", envelope("recovery-1")),
+      coordinator.runRecovery(primary, "second-recovery", envelope("recovery-2")),
+    ])
+
+    expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1)
+    expect(results.filter((result) => result.status === "rejected")).toHaveLength(1)
+    const rejection = results.find((result): result is PromiseRejectedResult => result.status === "rejected")
+    expect(rejection?.reason).toBeInstanceOf(Error)
+    expect((rejection?.reason as Error).message).toContain("recovery parent is already being consumed")
+    expect(opens).toEqual(["primary", "recovery-1"])
+    expect(recording.dispatches.get(primary.dispatch)?.verdict).toBe("discarded")
+    expect(recording.candidates.get(primary.candidate)?.verdict).toBe("failed")
+  })
+
   test("recovery rejects an already consumed parent without opening another candidate", async () => {
     const recording = createRecording()
     const opens: Array<string> = []

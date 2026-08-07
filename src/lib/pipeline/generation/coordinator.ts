@@ -126,6 +126,9 @@ export function createGenerationCoordinator<TProcessor>(input: CreateGenerationC
   let primaryStarted = false
   let hedgeStarted = false
   let recoveryFromPreReadyStarted = false
+  // A ready parent may be passed through independent error paths in the same microtask turn.
+  // Claim before the first await so exactly one recovery owns its discard/replace transition.
+  const recoveryParentsInProgress = new Set<CandidateHandle>()
   let raceStarted = false
   let active: CandidateRuntime<TProcessor> | undefined
   let cancelledReason: string | undefined
@@ -170,24 +173,30 @@ export function createGenerationCoordinator<TProcessor>(input: CreateGenerationC
     },
 
     async runRecovery(parent, reason, env = parent.env, retryNextStrategy = "buffered-retry") {
-      const parentRuntime = runtimes.get(parent.candidate)
-      if (!parentRuntime) throw new Error("[generation-coordinator] recovery parent is not owned by this coordinator")
-      // A failure before the pump consumes a ready upstream leaves its transport lifecycle unquiesced.
-      // Dispose it with the recovery's discarded settlement; do not use general cancellation, which
-      // would first publish cancelled and erase this recovery's terminal provenance.
-      let disposalError: unknown
+      if (recoveryParentsInProgress.has(parent.candidate)) throw new Error("[generation-coordinator] recovery parent is already being consumed")
+      recoveryParentsInProgress.add(parent.candidate)
       try {
-        await parentRuntime.disposeReadyWithSettlement({ verdict: "discarded", reason, retryNextStrategy })
-      } catch (error) {
-        disposalError = error
+        const parentRuntime = runtimes.get(parent.candidate)
+        if (!parentRuntime) throw new Error("[generation-coordinator] recovery parent is not owned by this coordinator")
+        // A failure before the pump consumes a ready upstream leaves its transport lifecycle unquiesced.
+        // Dispose it with the recovery's discarded settlement; do not use general cancellation, which
+        // would first publish cancelled and erase this recovery's terminal provenance.
+        let disposalError: unknown
+        try {
+          await parentRuntime.disposeReadyWithSettlement({ verdict: "discarded", reason, retryNextStrategy })
+        } catch (error) {
+          disposalError = error
+        } finally {
+          parentRuntime.settle({ verdict: "failed", reason })
+          candidateReservations.get(parentRuntime.handle)?.release()
+          if (active === parentRuntime) active = undefined
+        }
+        if (disposalError !== undefined)
+          throw disposalError instanceof Error ? disposalError : new Error("Ready parent disposal failed", { cause: disposalError })
+        return await start({ role: "recovery", parentCandidate: parent.candidate, env, metadata: { recoveryReason: reason } })
       } finally {
-        parentRuntime.settle({ verdict: "failed", reason })
-        candidateReservations.get(parentRuntime.handle)?.release()
-        if (active === parentRuntime) active = undefined
+        recoveryParentsInProgress.delete(parent.candidate)
       }
-      if (disposalError !== undefined)
-        throw disposalError instanceof Error ? disposalError : new Error("Ready parent disposal failed", { cause: disposalError })
-      return start({ role: "recovery", parentCandidate: parent.candidate, env, metadata: { recoveryReason: reason } })
     },
 
     async runContinuation(parent, reason, env) {

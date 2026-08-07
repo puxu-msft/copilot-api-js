@@ -245,6 +245,35 @@ describe("runResponseBufferedSink — L2 transactional buffered retry", () => {
     expect(sendCount()).toBe(0)
   })
 
+  test.each([
+    ["commit boundary", "commitBoundaries"],
+    ["terminal predicate", "sawMessageStop"],
+  ])("buffered control callback failure (%s) is codec-render rather than transport", async (_name, callback) => {
+    const env = makeEnv()
+    env.ctx.beginAttempt({})
+    const callbackError = new Error(`network-shaped ${callback} failure`)
+    const { driver, sendCount } = makeDriver([upstream(framesClean(completeFrames("must-not-recover")))])
+    const opts: RunBufferedOpts = {
+      ...makeStopTracker(),
+      retryCap: 1,
+      ...(callback === "commitBoundaries" && {
+        commitBoundaries() {
+          throw callbackError
+        },
+      }),
+      ...(callback === "sawMessageStop" && {
+        sawMessageStop() {
+          throw callbackError
+        },
+      }),
+    }
+
+    const outcome = await driver.runResponseBufferedSink(upstream(framesClean(completeFrames("callback-failure"))), env, makeArraySink().sink, opts)
+
+    expect(outcome).toMatchObject({ kind: "stream-error", source: "codec-render", error: callbackError })
+    expect(sendCount()).toBe(0)
+  })
+
   test("buffer sink write rejection remains downstream-sink after codec callbacks", async () => {
     const env = makeEnv()
     env.ctx.beginAttempt({})

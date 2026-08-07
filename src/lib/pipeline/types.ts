@@ -856,10 +856,11 @@ export interface ClientSink {
  */
 export type ResponseFailureSource = "upstream-transport" | "codec-render" | "downstream-sink" | "delivery-owner"
 
-/** Retains an upstream failure that a later codec/flush failure superseded as the client terminal. */
+/** Retains the failure that a later codec/flush failure superseded as the client terminal. */
 export interface ResponseFailureDiagnostics {
-  readonly upstreamError?: unknown
-  readonly flushError?: unknown
+  readonly supersededError: unknown
+  readonly supersededSource: Extract<ResponseFailureSource, "upstream-transport" | "codec-render">
+  readonly flushError: unknown
 }
 
 export type ResponseOutcome =

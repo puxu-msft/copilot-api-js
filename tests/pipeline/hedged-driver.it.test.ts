@@ -295,6 +295,28 @@ describe("production driver hedged response", () => {
     expect(closes).toBe(1)
   })
 
+  test("a buffered-prefix sink rejection closes the winner live iterator", async () => {
+    let closes = 0
+    const harness = driverHarness({
+      stallPrimary: true,
+      policy: hedgePolicy(true, 0),
+      onIteratorClose: () => {
+        closes++
+      },
+    })
+    const request = await harness.driver.runRequest({ body: {}, headers: new Headers() })
+    if (!request.ok) throw new Error("unexpected rejection")
+
+    const outcome = await harness.driver.runResponseSink(request.upstream, request.env, {
+      write: () => Promise.reject(new Error("buffered prefix rejected")),
+    })
+
+    expect(outcome).toMatchObject({ kind: "stream-error", source: "downstream-sink" })
+    await Promise.resolve()
+    // The losing primary and selected secondary each own an iterator; both must close.
+    expect(closes).toBe(2)
+  })
+
   test("a winner sink write failure is downstream-sink", async () => {
     const harness = driverHarness({ stallPrimary: true, policy: hedgePolicy(true, 0) })
     const request = await harness.driver.runRequest({ body: {}, headers: new Headers() })

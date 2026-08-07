@@ -1013,15 +1013,17 @@ async function maybeRunHedgedResponseSink(
     }
 
     env.ctx.trackOperationBody(raced.loserCleanup)
-    try {
-      await writeWinnerFrames(sink, raced.bufferedFrames)
-    } catch (error) {
-      if (classifyStreamError(error) === "client-abort") return { kind: "settled-abort" }
-      return streamErrorOutcome(error, env, "downstream-sink")
-    }
+    // The selected candidate has already produced this prefix. Its live iterator still owns the
+    // remaining upstream generator and must be closed if the prefix cannot reach the sink.
     const iterator = raced.liveFrames[Symbol.asyncIterator]()
     let liveDrained = false
     try {
+      try {
+        await writeWinnerFrames(sink, raced.bufferedFrames)
+      } catch (error) {
+        if (classifyStreamError(error) === "client-abort") return { kind: "settled-abort" }
+        return streamErrorOutcome(error, env, "downstream-sink")
+      }
       for (;;) {
         let next: IteratorResult<ClientFrame>
         try {
@@ -1043,8 +1045,7 @@ async function maybeRunHedgedResponseSink(
       binding.coordinator.releaseCandidate(selected.candidate)
       return { kind: "complete", headers: selected.upstream.headers, ...(selected.processor.finish && { finish: selected.processor.finish }) }
     } finally {
-      // `return()` runs the losing/live candidate's IteratorClose path on every terminal before done.
-      // A cleanup rejection is diagnostic-only and must never replace the already selected response outcome.
+      // Cleanup failure is diagnostic-only and must never replace the selected response outcome.
       if (!liveDrained && iterator.return) {
         try {
           await iterator.return()
@@ -1139,10 +1140,11 @@ function streamErrorOutcome(
 } {
   if (source === "upstream-transport" && classifyStreamError(error) === "unknown-cancel") recordAbortProvenanceGap("post-header", env.clientFormat)
   const diagnostics =
-    isResponseCodecRenderError(error) && (error.upstreamError !== undefined || error.flushError !== undefined) ?
+    isResponseCodecRenderError(error) && error.supersededError !== undefined && error.supersededSource !== undefined && error.flushError !== undefined ?
       {
-        ...(error.upstreamError !== undefined && { upstreamError: error.upstreamError }),
-        ...(error.flushError !== undefined && { flushError: error.flushError }),
+        supersededError: error.supersededError,
+        supersededSource: error.supersededSource,
+        flushError: error.flushError,
       }
     : undefined
   // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- structural driver tests use a minimal mock context without this runtime diagnostic port
@@ -1587,7 +1589,7 @@ export async function runResponseBufferedSink(
               notifyBufferedResolve?.("retreated", attempt, { vendor })
               return streamErrorOutcome(res.error, env, "downstream-sink")
             }
-          } else if (candidateOpts.commitBoundaries?.(toWrite)) {
+          } else if (codecOperation(() => candidateOpts.commitBoundaries?.(toWrite) ?? false)) {
             // Block-level commit (P0): this frame closes a block → flush the buffered frames up to and
             // including it, COMMITTING the block live. Inverts the commit point from "once at terminal
             // drain" to "at each boundary". `committedAny` closes the retry window (a committed prefix is
@@ -1620,7 +1622,7 @@ export async function runResponseBufferedSink(
             // ran before this frame reached the loop). The OLD `attempt > 0` term was dead (the per-frame
             // close-off already covers recovery-candidate blocks) and was removed;
             // `anchor-multiblock-lifecycle.it.test.ts (c′)` locks the error-terminus ordering.
-            const isErrorTerminusFlush = opts.sawUpstreamError?.() ?? false
+            const isErrorTerminusFlush = codecOperation(() => opts.sawUpstreamError?.() ?? false)
             // Continuation-retry ledger feed (spec 2026-07-22 §4.2 / persistence-async-invariants §3
             // "record signals at the committed settle point"): snapshot the frames that are ABOUT to commit
             // BEFORE `buffer` is cleared, then record their canonical blocks into the ledger ONLY on a
@@ -1647,8 +1649,9 @@ export async function runResponseBufferedSink(
             // Commit succeeded (frames are on the wire) → record the delivered blocks into the continuation
             // ledger. Done AFTER the successful flush so a write-error above never records an undelivered
             // block. A zero-content `error` boundary yields no blocks (extractor drops non-content frames).
-            if (committedFrames && opts.committedBlocksLedger && opts.extractCommittedBlocks) {
-              for (const block of opts.extractCommittedBlocks(committedFrames)) opts.committedBlocksLedger.recordCommitted(block)
+            const extractCommittedBlocks = opts.extractCommittedBlocks
+            if (committedFrames && opts.committedBlocksLedger && extractCommittedBlocks) {
+              for (const block of codecOperation(() => extractCommittedBlocks(committedFrames))) opts.committedBlocksLedger.recordCommitted(block)
             }
           }
         }
@@ -1700,7 +1703,17 @@ export async function runResponseBufferedSink(
       // also relabel the real error as "truncated" on exhaustion). The committing attempt's frames
       // live at the top-level slot, so they are NOT snapshotted per-attempt here — only a FAILED
       // (retried) attempt gets a per-attempt `sseEvents` row (D1), set in the retry branch below.
-      if (drained && (candidateOpts.sawMessageStop?.() || candidateOpts.sawUpstreamError?.() || candidateOpts.sawContentlessRefusal?.())) {
+      let reachedTerminal = false
+      if (drained) {
+        try {
+          reachedTerminal = codecOperation(
+            () => candidateOpts.sawMessageStop?.() || candidateOpts.sawUpstreamError?.() || candidateOpts.sawContentlessRefusal?.() || false,
+          )
+        } catch (error) {
+          return streamErrorOutcome(error, env, responseFailureSource(error))
+        }
+      }
+      if (reachedTerminal) {
         // Flush the buffered TAIL (everything after the last committed block boundary). On the
         // terminal-only path (`commitBoundaries===undefined`) `buffer` still holds the WHOLE
         // generation and this is the ONE flush — byte-identical to before (R1). On the block-level
@@ -1791,16 +1804,22 @@ export async function runResponseBufferedSink(
       const ledger = opts.committedBlocksLedger
       const remainingShared = cap - attempt - continuationCount
       const continuationBudget = continuationCount === 0 ? Math.max(remainingShared, 1) : remainingShared
-      const canContinue =
-        committedAny
-        && (failure ? classifyStreamError(failure.error) === "other" : true)
-        && continuation !== undefined
-        && continuation.enabled
-        && ledger !== undefined
-        && opts.extractCommittedBlocks !== undefined
-        && continuationBudget > 0
-        && !hasCompleteInteractiveToolUse(ledger.snapshot())
+      let canContinue = false
+      try {
+        canContinue =
+          committedAny
+          && (failure ? classifyStreamError(failure.error) === "other" : true)
+          && continuation !== undefined
+          && continuation.enabled
+          && ledger !== undefined
+          && opts.extractCommittedBlocks !== undefined
+          && continuationBudget > 0
+          && !codecOperation(() => hasCompleteInteractiveToolUse(ledger.snapshot()))
+      } catch (error) {
+        return streamErrorOutcome(error, env, responseFailureSource(error))
+      }
       if (canContinue) {
+        if (!continuation || !ledger) throw new Error("[driver] continuation gate admitted without required hooks")
         continuationCount++
         // Snapshot this cut leg's frames + finalize its duration BEFORE the reset (D1 — a cut leg's frames
         // survive for diagnosis), mirroring the transparent-retry bookkeeping.
@@ -1814,7 +1833,12 @@ export async function runResponseBufferedSink(
         // as a prefix (ADR D3). The synthetic turns are faithfully recorded as real wire bytes on the
         // upstreamRequest track; createDriverRecordingPort tags every continuation-role dispatch through
         // the track's side-channel extensions, never by mutating this body or the upstream-original response.
-        const continuationBody = continuation.buildRequest(continuationOriginalBody, ledger.snapshot(), continuation.message)
+        let continuationBody: unknown
+        try {
+          continuationBody = codecOperation(() => continuation.buildRequest(continuationOriginalBody, ledger.snapshot(), continuation.message))
+        } catch (error) {
+          return streamErrorOutcome(error, env, responseFailureSource(error))
+        }
         const contEnv = currentEnv.with({ body: continuationBody })
         try {
           const parent = generation?.bindings.get(current)

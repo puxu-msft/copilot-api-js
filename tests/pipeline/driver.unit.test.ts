@@ -917,10 +917,11 @@ describe("driver.runResponse — S5 chain + S6 render", () => {
     expect(outcome).toMatchObject({ kind: "stream-error", source: "codec-render", error: callbackError })
   })
 
-  test("finally flush rewrite failure replaces an upstream failure with codec-render provenance", async () => {
+  test("finally flush rewrite failure retains the superseded upstream error with its source", async () => {
     const { ctx } = makeCtx()
     const env = makeEnv(ctx)
     const flushError = new Error("flush rewrite failed")
+    const upstreamError = new Error("upstream failed first")
     const bufferingRewrite: ResponseRewrite = {
       name: "flush-throws-after-upstream-error",
       order: 100,
@@ -941,15 +942,46 @@ describe("driver.runResponse — S5 chain + S6 render", () => {
     })
     async function* upstreamThenThrow(): AsyncIterable<UpstreamFrame> {
       yield { data: "buffered" }
-      throw new Error("upstream failed first")
+      throw upstreamError
     }
 
     const outcome = await driver.runResponseSink({ frames: upstreamThenThrow(), headers: new Headers() }, env, makeArraySink().sink)
 
     expect(outcome).toMatchObject({ kind: "stream-error", source: "codec-render", error: flushError })
     if (outcome.kind !== "stream-error") throw new Error("expected stream-error")
-    expect(outcome.diagnostics).toEqual({ upstreamError: expect.any(Error), flushError })
-    expect((outcome.diagnostics?.upstreamError as Error).message).toBe("upstream failed first")
+    expect(outcome.diagnostics).toEqual({ supersededError: upstreamError, supersededSource: "upstream-transport", flushError })
+  })
+
+  test("finally flush rewrite failure retains a prior codec error as codec-render", async () => {
+    const { ctx } = makeCtx()
+    const env = makeEnv(ctx)
+    const firstCodecError = new Error("first codec failure")
+    const flushError = new Error("flush codec failure")
+    const rewrite: ResponseRewrite = {
+      name: "two-codec-failures",
+      order: 100,
+      appliesTo: () => true,
+      transform: () => {
+        throw firstCodecError
+      },
+      flush: () => {
+        throw flushError
+      },
+    }
+    const { codec } = makeCodec({ env })
+    const driver = createPipelineDriver({
+      ...BASE,
+      codec,
+      decideRoute: (e) => codec.decideRoute(e),
+      transport: makeTransport(async () => okStream()),
+      responseRewrites: [rewrite],
+    })
+
+    const outcome = await driver.runResponseSink(okStream([{ data: "frame" }]), env, makeArraySink().sink)
+
+    expect(outcome).toMatchObject({ kind: "stream-error", source: "codec-render", error: flushError })
+    if (outcome.kind !== "stream-error") throw new Error("expected stream-error")
+    expect(outcome.diagnostics).toEqual({ supersededError: firstCodecError, supersededSource: "codec-render", flushError })
   })
 
   test("natural drain flush rewrite failure is codec-render", async () => {
@@ -979,7 +1011,7 @@ describe("driver.runResponse — S5 chain + S6 render", () => {
 
     expect(outcome).toMatchObject({ kind: "stream-error", source: "codec-render", error: flushError })
     if (outcome.kind !== "stream-error") throw new Error("expected stream-error")
-    expect(outcome.diagnostics).toEqual({ flushError })
+    expect(outcome.diagnostics).toBeUndefined()
   })
 
   test("flush on exception: a buffering rewrite drains in finally when upstream throws (H3 — exception-path parity)", async () => {

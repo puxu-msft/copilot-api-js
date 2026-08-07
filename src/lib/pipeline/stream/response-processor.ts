@@ -60,14 +60,23 @@ export interface CreateResponseProcessorInput {
 export class ResponseCodecRenderError extends Error {
   readonly responseFailureSource = "codec-render" as const
   readonly cause: unknown
-  readonly upstreamError?: unknown
+  readonly supersededError?: unknown
+  readonly supersededSource?: "upstream-transport" | "codec-render"
   readonly flushError?: unknown
 
-  constructor(cause: unknown, diagnostics: { upstreamError?: unknown; flushError?: unknown } = {}) {
+  constructor(
+    cause: unknown,
+    diagnostics: {
+      supersededError?: unknown
+      supersededSource?: "upstream-transport" | "codec-render"
+      flushError?: unknown
+    } = {},
+  ) {
     super(cause instanceof Error ? cause.message : String(cause), { cause })
     this.name = "ResponseCodecRenderError"
     this.cause = cause
-    this.upstreamError = diagnostics.upstreamError
+    this.supersededError = diagnostics.supersededError
+    this.supersededSource = diagnostics.supersededSource
     this.flushError = diagnostics.flushError
   }
 }
@@ -163,7 +172,8 @@ async function* processFrames(input: ProcessFramesInput): AsyncIterable<ClientFr
   }
   const origin = readOrigin(upstream)
   let naturalDrain = false
-  let upstreamError: unknown
+  let supersededError: unknown
+  let supersededSource: "upstream-transport" | "codec-render" | undefined
 
   try {
     for await (const frame of upstream.frames) {
@@ -245,13 +255,14 @@ async function* processFrames(input: ProcessFramesInput): AsyncIterable<ClientFr
     }
     naturalDrain = true
   } catch (error) {
-    upstreamError = error
+    supersededSource = isResponseCodecRenderError(error) ? "codec-render" : "upstream-transport"
+    supersededError = isResponseCodecRenderError(error) ? error.cause : error
     throw error
   } finally {
     // Preserve the historical exception-path flush: a buffering rewrite may hold frames that still
-    // must be delivered before the original upstream failure reaches the driver. The flush chain,
+    // must be delivered before the original failure reaches the driver. The flush chain,
     // capture callbacks, and its rendered frames are response processing rather than transport I/O.
-    yield* flushResponseFrames(rewrites, states, captureRewrite, captureFlush, opts, renderer, env, dispatch, upstreamError)
+    yield* flushResponseFrames(rewrites, states, captureRewrite, captureFlush, opts, renderer, env, dispatch, supersededError, supersededSource)
     if (!naturalDrain) input.onSettled?.()
   }
 
@@ -272,7 +283,8 @@ async function* flushResponseFrames(
   renderer: CandidateResponseRenderer,
   env: RequestEnvelope,
   dispatch: DispatchHandle | undefined,
-  upstreamError: unknown,
+  supersededError: unknown,
+  supersededSource: "upstream-transport" | "codec-render" | undefined,
 ): AsyncIterable<ClientFrame> {
   try {
     for (const flushed of flushChain(rewrites, states, captureRewrite, captureFlush)) {
@@ -282,7 +294,8 @@ async function* flushResponseFrames(
   } catch (error) {
     const codecError = asResponseCodecRenderError(error)
     throw new ResponseCodecRenderError(codecError.cause, {
-      ...(upstreamError !== undefined && { upstreamError }),
+      ...(supersededError !== undefined && { supersededError }),
+      ...(supersededSource !== undefined && { supersededSource }),
       flushError: codecError.cause,
     })
   }
