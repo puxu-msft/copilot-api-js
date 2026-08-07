@@ -312,6 +312,7 @@ export function createPipelineDriver(deps: DriverDeps): PipelineDriverWithNonStr
       if (!identity) throw new Error("[driver] cannot discard response candidate without a generation identity")
       const binding = generation.bindings.get(upstream)
       if (!binding) throw new Error("[driver] cannot discard response candidate without a generation binding")
+      binding.candidate.env.ctx.settleGenerationDispatch(identity.dispatch, { verdict: "failed", reason: "evaluation-discarded" })
       binding.coordinator.completeCandidate(identity.candidate, "failed", "evaluation-discarded")
     },
     pinGenerationTerminalDispatch: (env, dispatch) => env.ctx.pinGenerationTerminalDispatch(dispatch),

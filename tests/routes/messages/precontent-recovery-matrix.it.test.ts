@@ -17,6 +17,8 @@ import {
 } from "bun:test"
 
 import { tagTransportError } from "~/lib/error/transport-reason"
+import { getHistory } from "~/lib/history"
+import { drainV3Writer } from "~/lib/history/v3/store"
 import { setModels } from "~/lib/models/cache"
 import { setDeliverySessionTestHooksForTests } from "~/lib/pipeline/delivery/session"
 import { setStateForTests } from "~/lib/state"
@@ -113,6 +115,76 @@ describe("Task 4.3b pre-content recovery matrix", () => {
     expect(types.filter((type) => type === "message_stop")).toHaveLength(1)
     expect(dataFramesOfType(text, "error")).toHaveLength(0)
     expect(types.indexOf("message_delta")).toBeLessThan(types.indexOf("message_stop"))
+  })
+
+  test("pre-ready 529 exhausts primary retry budget, evaluates recovery, and retains primary History terminal", async () => {
+    setStateForTests({ streamCommitAfterSec: 0.001, maxReactiveRetries: 0 })
+    let calls = 0
+    applyFetchMock(
+      mock(() => {
+        calls += 1
+        if (calls === 1)
+          return new Promise<Response>((resolve) => {
+            setTimeout(
+              () =>
+                resolve(
+                  new Response(JSON.stringify({ type: "error", error: { type: "overloaded_error", message: "pre-ready primary died" } }), { status: 529 }),
+                ),
+              10,
+            )
+          })
+        return Promise.resolve(createSseResponse(completeFrames("msg_pre_ready_recovery")))
+      }),
+    )
+
+    const { createFullTestApp } = await import("../../helpers/test-app")
+    const response = await request(createFullTestApp(), "precontent-pre-ready-evaluate-only")
+    const text = await response.text()
+
+    expect(calls).toBe(2)
+    expect(text).not.toContain("msg_pre_ready_recovery")
+    expect(dataFramesOfType(text, "error")[0]?.error).toMatchObject({ message: "Failed to create messages" })
+
+    await drainV3Writer()
+    const entry = getHistory({ endpoint: "anthropic-messages", sessionId: "precontent-pre-ready-evaluate-only" }).entries[0]
+    expect(entry?.attempts).toHaveLength(2)
+    expect(entry?._index?.derived?.currentStrategy).not.toBe("precontent-recovery")
+    expect(entry?.attempts?.[1]).toMatchObject({ candidateRole: "recovery", candidateVerdict: "failed", dispatchVerdict: "failed" })
+  })
+
+  test("pre-ready exhausted primary retry evaluates and discards recovery while History terminal stays on primary", async () => {
+    setStateForTests({ streamCommitAfterSec: 0.001, maxReactiveRetries: 0 })
+    let calls = 0
+    applyFetchMock(
+      mock(() => {
+        calls += 1
+        if (calls === 1)
+          return new Promise<Response>((resolve) => {
+            setTimeout(
+              () =>
+                resolve(
+                  new Response(JSON.stringify({ type: "error", error: { type: "overloaded_error", message: "pre-ready primary died" } }), { status: 529 }),
+                ),
+              10,
+            )
+          })
+        return Promise.resolve(createSseResponse(completeFrames("msg_pre_ready_recovery")))
+      }),
+    )
+
+    const { createFullTestApp } = await import("../../helpers/test-app")
+    const response = await request(createFullTestApp(), "precontent-pre-ready-evaluate-only")
+    const text = await response.text()
+
+    expect(calls).toBe(2)
+    expect(text).not.toContain("msg_pre_ready_recovery")
+    expect(dataFramesOfType(text, "error")[0]?.error).toMatchObject({ message: "Failed to create messages" })
+
+    await drainV3Writer()
+    const entry = getHistory({ endpoint: "anthropic-messages", sessionId: "precontent-pre-ready-evaluate-only" }).entries[0]
+    expect(entry?.attempts).toHaveLength(2)
+    expect(entry?._index?.derived?.currentStrategy).not.toBe("precontent-recovery")
+    expect(entry?.attempts?.[1]).toMatchObject({ candidateRole: "recovery", candidateVerdict: "failed", dispatchVerdict: "failed" })
   })
 
   test("COMMIT nonretryable HTTP 418 before content keeps the primary terminal and makes no fresh dispatch", async () => {
@@ -218,6 +290,16 @@ describe("Task 4.3b pre-content recovery matrix", () => {
     expect(text).not.toContain("msg_ready_recovery")
     expect(dataFramesOfType(text, "error")).toHaveLength(1)
     expect(dataFramesOfType(text, "error")[0]?.error).toMatchObject({ message: "primary refused stream" })
+
+    await drainV3Writer()
+    const entry = getHistory({ endpoint: "anthropic-messages", sessionId: "precontent-ready-evaluate-only" }).entries[0]
+    expect(entry?.attempts).toHaveLength(2)
+    expect(entry?._index?.derived?.failureReason).toBe("primary refused stream")
+    expect(entry?._index?.derived?.currentStrategy).not.toBe("precontent-recovery")
+    expect(entry?.attempts?.[0]?.upstreamResponse?.success).toBe(false)
+    expect(entry?.attempts?.[1]).toMatchObject({ candidateRole: "recovery", candidateVerdict: "failed", dispatchVerdict: "failed" })
+    // Candidate frames are retained on its dispatch, but the evaluation-only leg has no terminal response verdict.
+    expect(entry?.attempts?.[1]?.upstreamResponse?.success).toBe(false)
   })
 
   test("unexpected handler failure never makes a fresh recovery dispatch", async () => {
