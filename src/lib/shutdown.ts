@@ -1,7 +1,7 @@
 /**
  * Centralized graceful shutdown management.
  *
- * One termination signal starts the complete four-step shutdown sequence:
+ * One shutdown signal starts the complete four-step shutdown sequence:
  *   1. Stop accepting new work
  *   2. Wait for in-flight work to complete naturally
  *   3. Abort remaining work after the graceful deadline
@@ -751,7 +751,13 @@ interface HandleShutdownSignalOptions {
   exitFn?: (code: number) => void
 }
 
-function forcedExitCode(signal: string): number {
+type TerminationSignal = "SIGINT" | "SIGTERM"
+
+function isTerminationSignal(signal: string): signal is TerminationSignal {
+  return signal === "SIGINT" || signal === "SIGTERM"
+}
+
+function forcedExitCode(signal: TerminationSignal): number {
   return signal === "SIGTERM" ? 143 : 130
 }
 
@@ -772,6 +778,8 @@ export function handleShutdownSignal(signal: string, opts?: HandleShutdownSignal
   if (shutdownPhase === "stopped") return shutdownPromise ?? shutdownCompletion.promise
 
   if (shutdownPhase !== "idle") {
+    if (!isTerminationSignal(signal)) return shutdownPromise ?? undefined
+
     // Deliberately bypass consola → observability bus → FileSink → History. The
     // escape hatch must remain visible and must not wait for any subsystem it is
     // intended to escape from.
