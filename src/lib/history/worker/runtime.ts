@@ -119,10 +119,12 @@ export class HistoryPersistenceRuntimeImpl implements HistoryPersistenceRuntime 
       this.outcomes.set(messageId, "failed")
       this.addTombstone(messageId, "failed")
       this.invokeOutcomeCallback({ envelope, onOutcome }, "failed")
+      this.publishStatus()
       return messageId
     }
     this.pendingEnvelopes.set(messageId, { envelope, onOutcome })
     this.updatePendingStatus()
+    this.publishStatus()
     this.send({
       type: "persist-operation",
       protocolVersion: HISTORY_WORKER_PROTOCOL_VERSION,
@@ -172,7 +174,7 @@ export class HistoryPersistenceRuntimeImpl implements HistoryPersistenceRuntime 
 
   subscribe(listener: (status: HistoryWorkerStatus) => void): () => void {
     this.listeners.add(listener)
-    listener(this.status)
+    this.notifyStatusListener(listener)
     return () => this.listeners.delete(listener)
   }
 
@@ -294,6 +296,7 @@ export class HistoryPersistenceRuntimeImpl implements HistoryPersistenceRuntime 
     this.addTombstone(messageId, outcome)
     this.updatePendingStatus()
     this.invokeOutcomeCallback(pending, outcome)
+    this.publishStatus()
   }
 
   private addTombstone(messageId: HistoryMessageId, outcome: HistoryPersistenceOutcome): void {
@@ -330,6 +333,7 @@ export class HistoryPersistenceRuntimeImpl implements HistoryPersistenceRuntime 
     this.updatePendingStatus()
     for (const [, pending] of pendingEnvelopes) this.invokeOutcomeCallback(pending, "failed")
     for (const request of pendingRequests) request.reject(error)
+    this.publishStatus()
   }
 
   private invokeOutcomeCallback(pending: PendingEnvelope, outcome: HistoryPersistenceOutcome): void {
@@ -341,7 +345,6 @@ export class HistoryPersistenceRuntimeImpl implements HistoryPersistenceRuntime 
         outcomeCallbackErrorsTotal: this.status.outcomeCallbackErrorsTotal + 1,
         lastOutcomeCallbackError: error instanceof Error ? error.message : String(error),
       }
-      this.publishStatus()
     }
   }
 
@@ -349,11 +352,22 @@ export class HistoryPersistenceRuntimeImpl implements HistoryPersistenceRuntime 
     let pendingBytes = 0
     for (const pending of this.pendingEnvelopes.values()) pendingBytes += estimateEnvelopeBytes(pending.envelope)
     this.status = { ...this.status, pendingEnvelopes: this.pendingEnvelopes.size, pendingBytes }
-    this.publishStatus()
   }
 
   private publishStatus(): void {
-    for (const listener of this.listeners) listener(this.status)
+    for (const listener of this.listeners) this.notifyStatusListener(listener)
+  }
+
+  private notifyStatusListener(listener: (status: HistoryWorkerStatus) => void): void {
+    try {
+      listener(this.status)
+    } catch (error) {
+      this.status = {
+        ...this.status,
+        statusObserverErrorsTotal: this.status.statusObserverErrorsTotal + 1,
+        lastStatusObserverError: error instanceof Error ? error.message : String(error),
+      }
+    }
   }
 
   private async terminateTransport(): Promise<void> {
@@ -515,6 +529,7 @@ function emptyStatus(workerGeneration: WorkerGeneration): HistoryWorkerStatus {
     staleMessagesTotal: 0,
     duplicateAcksTotal: 0,
     outcomeCallbackErrorsTotal: 0,
+    statusObserverErrorsTotal: 0,
   }
 }
 

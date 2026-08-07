@@ -18,7 +18,7 @@ status: active
 - [x] 初轮 review 的 4 个 major 已全部修复。
 - [x] 第二轮 F5：强制 terminal 非空、`sequence === lastSequence`、outcome 合法、candidate/dispatch 引用存在、`committedAttempt === committedDispatch`；删除整段实现及分别删除 candidate/dispatch/alias 检查的四轮 exact-patch mutation 均让目标测试按预期变红，恢复后 protocol/runtime 26 pass／0 fail。
 - [x] 第二轮 F6：`HistoryWorkerStatusPatch` 只允许 Worker-owned `threadId/selectedDriver/ready/publishedRevision/lastError`；协议逐一拒绝 11 个 main-owned 字段，恶意 `terminalFailed` 帧经 protocol fatal transition 同时 settle pending envelope 与 pending drain request，28 pass／0 fail，typecheck／lint 绿。
-- [ ] 第二轮 F7：状态完整 settlement 后再通知，逐 listener 隔离异常；验收须证明首 listener 抛错不阻断后续 listener、callbacks 或 request rejection。
+- [x] 第二轮 F7：pending 状态重算与 observer 通知解耦；ACK/fatal 先完成 callback 与 request settlement 再通知，每个 listener 独立隔离，初次订阅也走同一 helper；main-owned `statusObserverErrorsTotal/lastStatusObserverError` 保留诊断，30 pass／0 fail，typecheck／lint 绿。
 - [ ] 稳定 `canonical-performance` 全套件负载门：复现 false-red，改用不依赖共享 runner 负载但仍能咬住真实复杂度回归的判据，跑正负 mutation 与全 backend。
 - [ ] F5–F7 和性能门全部完成后，恢复原 Batch 0 reviewer 复审至 0 blocker／major，再 fast-forward 合入 `master`。
 

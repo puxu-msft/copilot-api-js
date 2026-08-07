@@ -348,6 +348,55 @@ describe("HistoryPersistenceRuntime ACK state", () => {
     expect(runtime.snapshot().duplicateAcksTotal).toBe(1)
   })
 
+  test("settles callbacks and requests before isolating status observer errors", async () => {
+    const transport = new ControllableTransport()
+    const runtime = new HistoryPersistenceRuntimeImpl({ workerFactory: () => transport })
+    const start = runtime.start(startConfig())
+    transport.emitMessage(readyMessage(1))
+    await start
+
+    let firstCalls = 0
+    let secondCalls = 0
+    runtime.subscribe((status) => {
+      if (!status.terminalFailed) return
+      firstCalls++
+      throw new Error("status observer exploded")
+    })
+    runtime.subscribe((status) => {
+      if (status.terminalFailed) secondCalls++
+    })
+
+    let outcome: HistoryPersistenceOutcome | undefined
+    runtime.enqueue(envelope(), (value) => {
+      outcome = value
+    })
+    const drain = runtime.drain()
+
+    expect(() => transport.emitError(new Error("worker exploded"))).not.toThrow()
+    expect(outcome).toBe("failed")
+    await expect(drain).rejects.toThrow("worker exploded")
+    expect(firstCalls).toBe(1)
+    expect(secondCalls).toBe(1)
+    expect(runtime.snapshot()).toMatchObject({
+      terminalFailed: true,
+      pendingEnvelopes: 0,
+      lastError: "worker exploded",
+      statusObserverErrorsTotal: 1,
+      lastStatusObserverError: "status observer exploded",
+    })
+  })
+
+  test("isolates and records an initial status observer error", () => {
+    const runtime = new HistoryPersistenceRuntimeImpl()
+
+    expect(() =>
+      runtime.subscribe(() => {
+        throw new Error("initial observer exploded")
+      }),
+    ).not.toThrow()
+    expect(runtime.snapshot()).toMatchObject({ statusObserverErrorsTotal: 1, lastStatusObserverError: "initial observer exploded" })
+  })
+
   test("settles every pending envelope when the first terminal callback throws", async () => {
     const transport = new ControllableTransport()
     const runtime = new HistoryPersistenceRuntimeImpl({ workerFactory: () => transport })

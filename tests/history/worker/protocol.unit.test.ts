@@ -255,7 +255,9 @@ describe("History Worker protocol", () => {
       "staleMessagesTotal",
       "duplicateAcksTotal",
       "outcomeCallbackErrorsTotal",
+      "statusObserverErrorsTotal",
       "lastOutcomeCallbackError",
+      "lastStatusObserverError",
     ]
 
     for (const field of mainOwnedFields) {

@@ -89,8 +89,10 @@ export interface HistoryWorkerStatus {
   readonly staleMessagesTotal: number
   readonly duplicateAcksTotal: number
   readonly outcomeCallbackErrorsTotal: number
+  readonly statusObserverErrorsTotal: number
   readonly lastError?: string
   readonly lastOutcomeCallbackError?: string
+  readonly lastStatusObserverError?: string
 }
 
 /** Fields produced by the Worker itself; all other runtime status fields remain main-owned. */
