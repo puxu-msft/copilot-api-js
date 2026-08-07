@@ -614,6 +614,15 @@ function freezeCapturedValue<T>(value: T, seen = new WeakSet<object>()): T {
   return value
 }
 
+function copyCapturedArena<T>(items: ReadonlyArray<T>): ReadonlyArray<T> {
+  const copy: Array<T> = []
+  for (const item of items) {
+    captureWorkObserver?.()
+    copy.push(item)
+  }
+  return Object.freeze(copy)
+}
+
 function freezeExtensions(input: Readonly<Record<string, unknown>> | undefined): OperationExtensions | undefined {
   if (input === undefined) return undefined
   const copy = { ...input }
@@ -806,15 +815,9 @@ export function createModelOperationRecorder(input: CreateModelOperationRecorder
   function buildSnapshot(): ModelOperationRecord {
     if (finalRecord) return finalRecord
     const dispatchSnapshots = Object.freeze(dispatches.map((dispatch) => snapshotDispatch(dispatch)))
-    const snapshotPayloads = Object.freeze([...payloads])
-    const snapshotFrames = Object.freeze([...frames])
-    if (captureWorkObserver) {
-      for (const _payload of snapshotPayloads) captureWorkObserver()
-      for (const _frame of snapshotFrames) captureWorkObserver()
-    }
     const record = {
       identity: snapshotIdentity(),
-      arena: Object.freeze({ payloads: snapshotPayloads, frames: snapshotFrames }),
+      arena: Object.freeze({ payloads: copyCapturedArena(payloads), frames: copyCapturedArena(frames) }),
       ingress,
       routing,
       transforms: Object.freeze([...transforms]),

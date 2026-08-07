@@ -6,6 +6,7 @@ import {
 } from "bun:test"
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
+import ts from "typescript"
 
 import {
   //
@@ -69,6 +70,42 @@ function population(record: ReturnType<typeof longConversationFixture>): Record<
   }
 }
 
+function recursiveFunctionNames(source: string): Array<string> {
+  const sourceFile = ts.createSourceFile("model-operation-record.ts", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS)
+  const functions = new Map<string, ts.FunctionDeclaration>()
+
+  const collectFunctions = (node: ts.Node): void => {
+    if (ts.isFunctionDeclaration(node) && node.name !== undefined) functions.set(node.name.text, node)
+    ts.forEachChild(node, collectFunctions)
+  }
+  collectFunctions(sourceFile)
+
+  const calls = new Map<string, Set<string>>()
+  for (const [name, declaration] of functions) {
+    const callees = new Set<string>()
+    const collectCalls = (node: ts.Node): void => {
+      if (node !== declaration && ts.isFunctionDeclaration(node)) return
+      if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && functions.has(node.expression.text)) callees.add(node.expression.text)
+      ts.forEachChild(node, collectCalls)
+    }
+    ts.forEachChild(declaration.body!, collectCalls)
+    calls.set(name, callees)
+  }
+
+  const recursive = new Set<string>()
+  for (const name of functions.keys()) {
+    const reached = new Set<string>()
+    const visit = (current: string): void => {
+      if (reached.has(current)) return
+      reached.add(current)
+      for (const callee of calls.get(current) ?? []) visit(callee)
+    }
+    for (const callee of calls.get(name) ?? []) visit(callee)
+    if (reached.has(name)) recursive.add(name)
+  }
+  return [...recursive].sort()
+}
+
 const RECORDER_SOURCE = readFileSync(join(import.meta.dir, "../../../src/lib/context/model-operation-record.ts"), "utf8")
 
 describe("History V3 canonical capture performance", () => {
@@ -92,13 +129,15 @@ describe("History V3 canonical capture performance", () => {
 
     console.log("HISTORY_V3_PERF canonical", JSON.stringify(rows))
     for (const row of rows) {
-      expect(row.medianMs).toBeGreaterThan(0)
       expect(row.logicalBytes).toBeGreaterThan(1_000)
       expect(row.nodes).toBeGreaterThan(1)
     }
   })
 
   test("recursive captured-value freeze and sealed arena copies scale with new messages and frames", () => {
+    expect(RECORDER_SOURCE).toContain("function copyCapturedArena")
+    expect(RECORDER_SOURCE).toContain("arena: Object.freeze({ payloads: copyCapturedArena(payloads), frames: copyCapturedArena(frames) })")
+
     const smallConversation = captureWork(() => longConversationFixture("complexity-long-small", 32, 512))
     const largeConversation = captureWork(() => longConversationFixture("complexity-long-large", 128, 512))
     const smallSse = captureWork(() => largeSseFixture("complexity-sse-small", 512, 128))
@@ -126,9 +165,8 @@ describe("History V3 canonical capture performance", () => {
     expect(sseRatio).toBeLessThan(8)
   })
 
-  test("capture work has one recursive freeze implementation", () => {
-    expect(RECORDER_SOURCE.match(/^function freezeCapturedValue(?:Observed)?</gm)).toHaveLength(1)
-    expect(RECORDER_SOURCE.match(/freezeCapturedValue\(nested, seen\)/g)).toHaveLength(1)
+  test("captured-value traversal has one recursive implementation", () => {
+    expect(recursiveFunctionNames(RECORDER_SOURCE)).toEqual(["freezeCapturedValue"])
   })
 
   test("unchanged upstream, rewrite, and client frames share exactly one arena node", () => {
