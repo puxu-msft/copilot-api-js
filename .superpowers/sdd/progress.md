@@ -11,7 +11,7 @@ Execution mode: full subagent-driven; implementation by isolated implementers, i
 
 - `git merge-base --is-ancestor 82cd9123 master`: pass; master at `6d431481` when implementation worktree was created.
 - `bun run typecheck`: pass at `6d431481`.
-- `bun run test:fast`: one load-sensitive failure at `tests/history/v3/canonical-performance.unit.test.ts:80`, `sseRatio=12.325864384601346`; isolated rerun of the same file: 3 pass, `sseRatio=6.962627217602097`. Independent debugger confirmed wall-clock ratio false-red. Candidate deterministic fix `49ff6670` is NOT integrated: reviewer found 3 accepted Important issues—copy observation mirrors rather than measures real copy, recursion guard is name-based, and `medianMs > 0` still gates. Original implementer is fixing; same reviewer must re-review.
+- Initial `test:fast` exposed a load-sensitive wall-clock ratio false-red in `canonical-performance.unit.test.ts`. The deterministic replacement is complete and integrated as `30134734` + `352767f2` + `b58dc819` + `d6961943`. Third review: Spec PASS, Quality APPROVED, 0 Critical/Important/Minor. Integrated-tree verification: canonical + resetter 8 pass/0 fail, deterministic ratios 3.8515/3.9854, typecheck pass. Wall-clock is report-only; recursive freeze and actual arena-copy work are deterministic gates with scoped AST SCC controls.
 - Task 9 progress scaffold commit: `e43d08ec`.
 
 ## Task DAG
@@ -28,7 +28,7 @@ Execution mode: full subagent-driven; implementation by isolated implementers, i
 - Task 10: blocked by Tasks 7, 8, 9; activation graph complete. Scheduler port, H2 lease install/freeze, dispatch slots, envelope, unique persistence sink, and transaction-A consumer must land in one activation commit.
 - Task 11: blocked by Tasks 7 and 10; runtime-harness readiness complete with 0 blocker/0 major.
 - Task 12: blocked by Tasks 1-11; docs/acceptance readiness complete. Live docs remain not-implemented; Bun clean-RST backlog stays open.
-- Baseline deterministic performance fix: candidate `49ff6670` NOT integrated. Review found 3 accepted Important issues (copy observation dual-track, name-based recursion guard, wall-clock still gating); original implementer is fixing and same reviewer must re-review.
+- Baseline deterministic performance fix: complete and integrated; see Baseline entry above. No open review findings.
 
 ## Review gates
 
