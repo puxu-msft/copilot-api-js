@@ -1,8 +1,17 @@
 # Task 3 acceptance rereview
 
-## Verdict
+## Re-verification at `41e79a60`
 
-**Acceptance FAIL**，target `2543ec46ee06f6dca1d94b85ea6d5904d3d70151`。Critical 0、Important 1、Minor 0。
+**Acceptance PASS**，target `41e79a60c193de97775f9e61a9aea2e12cf405a7`。Critical 0、Important 0、Minor 0。
+
+- **PASS——原 Important 闭合。** Production Chat in-band error 产生恰一个 failed `response-terminal`，finish `complete→natural-drain` 只确认闭合；零 `protocol-error`／`post-terminal-frame`，`sawUpstreamError=true`。
+- **PASS——显式 terminal-failure。** 非 wire finish failure 仍产生恰一个 typed `protocol-error/terminal-failure`，无 response terminal，cause 保持原 Error。
+- **PASS——相邻契约。** Chat success `finish_reason→usage` 保留两帧并产生唯一 complete terminal；no-finish truncation、Responses RST complete-prefix／partial-tail、identity/capability/getter/UTF-8/single-classification controls 未回归。
+- 命令：`env -C /tmp/task3-41e79a60-verify bun test <chat-candidate,responses-buffered,delivery-adapters,candidate-session>` → **34 pass、0 fail**，215 assertions。
+
+## Prior verdict at `2543ec46`（superseded）
+
+此前 **Acceptance FAIL**：Critical 0、Important 1、Minor 0；该 Important 已由 `41e79a60` 修复并以上述真实 production seam 复验闭合。
 
 ## Acceptance matrix and evidence
 
