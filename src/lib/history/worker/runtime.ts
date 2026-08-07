@@ -116,8 +116,9 @@ export class HistoryPersistenceRuntimeImpl implements HistoryPersistenceRuntime 
   enqueue(envelope: HistoryOperationEnvelope, onOutcome: (outcome: HistoryPersistenceOutcome) => void): HistoryMessageId {
     const messageId = this.nextMessageId++
     if (this.status.terminalFailed || !this.transport) {
-      onOutcome("failed")
       this.outcomes.set(messageId, "failed")
+      this.addTombstone(messageId, "failed")
+      this.invokeOutcomeCallback({ envelope, onOutcome }, "failed")
       return messageId
     }
     this.pendingEnvelopes.set(messageId, { envelope, onOutcome })
@@ -291,8 +292,8 @@ export class HistoryPersistenceRuntimeImpl implements HistoryPersistenceRuntime 
     this.pendingEnvelopes.delete(messageId)
     this.outcomes.set(messageId, outcome)
     this.addTombstone(messageId, outcome)
-    pending.onOutcome(outcome)
     this.updatePendingStatus()
+    this.invokeOutcomeCallback(pending, outcome)
   }
 
   private addTombstone(messageId: HistoryMessageId, outcome: HistoryPersistenceOutcome): void {
@@ -318,15 +319,30 @@ export class HistoryPersistenceRuntimeImpl implements HistoryPersistenceRuntime 
   private failTerminal(error: Error): void {
     if (this.status.terminalFailed) return
     this.status = { ...this.status, ready: false, terminalFailed: true, lastError: error.message }
-    for (const [messageId, pending] of this.pendingEnvelopes) {
+    const pendingEnvelopes = [...this.pendingEnvelopes.entries()]
+    this.pendingEnvelopes.clear()
+    for (const [messageId] of pendingEnvelopes) {
       this.outcomes.set(messageId, "failed")
       this.addTombstone(messageId, "failed")
-      pending.onOutcome("failed")
     }
-    this.pendingEnvelopes.clear()
-    for (const request of this.pendingRequests.values()) request.reject(error)
+    const pendingRequests = [...this.pendingRequests.values()]
     this.pendingRequests.clear()
     this.updatePendingStatus()
+    for (const [, pending] of pendingEnvelopes) this.invokeOutcomeCallback(pending, "failed")
+    for (const request of pendingRequests) request.reject(error)
+  }
+
+  private invokeOutcomeCallback(pending: PendingEnvelope, outcome: HistoryPersistenceOutcome): void {
+    try {
+      pending.onOutcome(outcome)
+    } catch (error) {
+      this.status = {
+        ...this.status,
+        outcomeCallbackErrorsTotal: this.status.outcomeCallbackErrorsTotal + 1,
+        lastOutcomeCallbackError: error instanceof Error ? error.message : String(error),
+      }
+      this.publishStatus()
+    }
   }
 
   private updatePendingStatus(): void {
@@ -498,6 +514,7 @@ function emptyStatus(workerGeneration: WorkerGeneration): HistoryWorkerStatus {
     replaysTotal: 0,
     staleMessagesTotal: 0,
     duplicateAcksTotal: 0,
+    outcomeCallbackErrorsTotal: 0,
   }
 }
 

@@ -88,7 +88,9 @@ export interface HistoryWorkerStatus {
   readonly replaysTotal: number
   readonly staleMessagesTotal: number
   readonly duplicateAcksTotal: number
+  readonly outcomeCallbackErrorsTotal: number
   readonly lastError?: string
+  readonly lastOutcomeCallbackError?: string
 }
 
 interface MessageBase {
@@ -430,7 +432,9 @@ function assertHistoryWorkerStatusPatch(value: unknown): asserts value is Partia
     "replaysTotal",
     "staleMessagesTotal",
     "duplicateAcksTotal",
+    "outcomeCallbackErrorsTotal",
     "lastError",
+    "lastOutcomeCallbackError",
   ])
   for (const key of Object.keys(value)) {
     if (!allowed.has(key)) throw new HistoryWorkerProtocolError(`status.status contains unknown field: ${key}`)
@@ -452,11 +456,14 @@ function assertHistoryWorkerStatusPatch(value: unknown): asserts value is Partia
     "replaysTotal",
     "staleMessagesTotal",
     "duplicateAcksTotal",
+    "outcomeCallbackErrorsTotal",
   ] as const) {
     if (value[field] !== undefined) assertNonNegativeInteger(value[field], `status.status.${field}`)
   }
-  if (value.lastError !== undefined && typeof value.lastError !== "string") {
-    throw new HistoryWorkerProtocolError("status.status.lastError must be a string")
+  for (const field of ["lastError", "lastOutcomeCallbackError"] as const) {
+    if (value[field] !== undefined && typeof value[field] !== "string") {
+      throw new HistoryWorkerProtocolError(`status.status.${field} must be a string`)
+    }
   }
 }
 

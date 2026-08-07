@@ -297,6 +297,57 @@ describe("HistoryPersistenceRuntime ACK state", () => {
     await runtime.shutdown()
   })
 
+  test("settles ACK state before isolating an outcome callback error", async () => {
+    const transport = new ControllableTransport()
+    const runtime = new HistoryPersistenceRuntimeImpl({ workerFactory: () => transport })
+    const start = runtime.start(startConfig())
+    transport.emitMessage(readyMessage(1))
+    await start
+
+    const messageId = runtime.enqueue(envelope(), () => {
+      throw new Error("callback exploded")
+    })
+    const ack = {
+      type: "persist-result",
+      protocolVersion: HISTORY_WORKER_PROTOCOL_VERSION,
+      workerGeneration: 1,
+      messageId,
+      outcome: "failed",
+    }
+
+    expect(() => transport.emitMessage(ack)).not.toThrow()
+    expect(runtime.snapshot()).toMatchObject({ pendingEnvelopes: 0, outcomeCallbackErrorsTotal: 1, lastOutcomeCallbackError: "callback exploded" })
+    transport.emitMessage(ack)
+    expect(runtime.snapshot().duplicateAcksTotal).toBe(1)
+  })
+
+  test("settles every pending envelope when the first terminal callback throws", async () => {
+    const transport = new ControllableTransport()
+    const runtime = new HistoryPersistenceRuntimeImpl({ workerFactory: () => transport })
+    const start = runtime.start(startConfig())
+    transport.emitMessage(readyMessage(1))
+    await start
+
+    let secondCalls = 0
+    runtime.enqueue(envelope("op-1"), () => {
+      throw new Error("first callback exploded")
+    })
+    runtime.enqueue(envelope("op-2"), (outcome) => {
+      expect(outcome).toBe("failed")
+      secondCalls++
+    })
+
+    expect(() => transport.emitError(new Error("worker exploded"))).not.toThrow()
+    expect(secondCalls).toBe(1)
+    expect(runtime.snapshot()).toMatchObject({
+      terminalFailed: true,
+      pendingEnvelopes: 0,
+      lastError: "worker exploded",
+      outcomeCallbackErrorsTotal: 1,
+      lastOutcomeCallbackError: "first callback exploded",
+    })
+  })
+
   test("evicts completed ACK tombstones at the configured capacity", async () => {
     const transport = new ControllableTransport()
     const runtime = new HistoryPersistenceRuntimeImpl({ workerFactory: () => transport, tombstoneCapacity: 1 })
