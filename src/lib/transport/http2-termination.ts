@@ -13,20 +13,23 @@ const EMPTY_OBSERVATION_TEXT: BoundedObservationText = {
   truncated: false,
 }
 
-function observationText(value: unknown): string {
-  if (typeof value === "string") return value
-  if (value instanceof Error) return value.message
+function observationText(value: unknown): string | null {
   try {
-    return JSON.stringify(value)
+    if (typeof value === "string") return value
+    if (typeof value === "symbol" || typeof value === "function") return null
+    if (value instanceof Error) return value.message
+    const serialized = JSON.stringify(value)
+    return typeof serialized === "string" ? serialized : null
   } catch {
-    // Circular and otherwise non-serializable reasons still get a stable bounded diagnostic shape.
-    return Object.prototype.toString.call(value)
+    // Hostile proxies, circular objects, BigInt, and custom coercion hooks are diagnostic-only unknowns.
+    return null
   }
 }
 
 export function toBoundedObservationText(value: unknown, maximumByteLength: number): BoundedObservationText {
   if (value === null || value === undefined) return { ...EMPTY_OBSERVATION_TEXT }
   const text = observationText(value)
+  if (text === null) return { ...EMPTY_OBSERVATION_TEXT }
   const encoded = new TextEncoder().encode(text)
   if (encoded.byteLength <= maximumByteLength) {
     return { value: text, originalByteLength: encoded.byteLength, truncated: false }
@@ -106,34 +109,70 @@ interface TerminalInput {
 }
 
 function errorCode(error: unknown): unknown {
-  if (typeof error !== "object" || error === null || !("code" in error)) return null
-  return (error as { code?: unknown }).code
+  try {
+    if (typeof error !== "object" || error === null || !("code" in error)) return null
+    return (error as { code?: unknown }).code
+  } catch {
+    return null
+  }
 }
 
 function errorMessage(error: unknown): unknown {
-  if (error instanceof Error) return error.message
+  try {
+    if (error instanceof Error) return error.message
+  } catch {
+    return null
+  }
   return error
 }
 
+function freezeBoundedText(text: BoundedObservationText): BoundedObservationText {
+  return Object.freeze({ ...text })
+}
+
 function freezeSnapshot(snapshot: TransportTerminationSnapshot): TransportTerminationSnapshot {
-  Object.freeze(snapshot.error.code)
-  Object.freeze(snapshot.error.message)
-  Object.freeze(snapshot.error)
-  Object.freeze(snapshot.localCancel.reason)
-  Object.freeze(snapshot.localCancel)
-  if (snapshot.goaway.availability === "observed-before-snapshot") {
-    for (const event of snapshot.goaway.events) {
-      Object.freeze(event.opaqueDataLength)
-      if ("reason" in event.evidence) Object.freeze(event.evidence.reason)
-      Object.freeze(event.evidence)
-      Object.freeze(event)
-    }
-  }
-  if ("reason" in snapshot.goaway.protocolViolation) Object.freeze(snapshot.goaway.protocolViolation.reason)
-  Object.freeze(snapshot.goaway.protocolViolation)
-  Object.freeze(snapshot.goaway.events)
-  Object.freeze(snapshot.goaway)
-  return Object.freeze(snapshot)
+  const goaway = snapshot.goaway
+  const frozenGoaway =
+    goaway.availability === "observed-before-snapshot" ?
+      Object.freeze({
+        ...goaway,
+        events: Object.freeze(
+          goaway.events.map((event) =>
+            Object.freeze({
+              ...event,
+              opaqueDataLength: Object.freeze({
+                ...event.opaqueDataLength,
+                ...(event.opaqueDataLength.availability === "unavailable-at-source" ? { reason: freezeBoundedText(event.opaqueDataLength.reason) } : {}),
+              }),
+              evidence: Object.freeze({
+                ...event.evidence,
+                ...(event.evidence.availability === "captured" ? {} : { reason: freezeBoundedText(event.evidence.reason) }),
+              }),
+            }),
+          ) as [(typeof goaway.events)[number], ...Array<(typeof goaway.events)[number]>],
+        ),
+        protocolViolation: Object.freeze({
+          ...goaway.protocolViolation,
+          ...(goaway.protocolViolation.availability === "unattributed-protocol-error-before-callback" ?
+            { reason: freezeBoundedText(goaway.protocolViolation.reason) }
+          : {}),
+        }),
+      })
+    : Object.freeze({
+        ...goaway,
+        events: Object.freeze([]),
+        protocolViolation: Object.freeze({
+          ...goaway.protocolViolation,
+          ...(goaway.availability === "unavailable-at-source" ? { reason: freezeBoundedText(goaway.protocolViolation.reason) } : {}),
+        }),
+      })
+
+  return Object.freeze({
+    ...snapshot,
+    error: Object.freeze({ code: freezeBoundedText(snapshot.error.code), message: freezeBoundedText(snapshot.error.message) }),
+    localCancel: Object.freeze({ ...snapshot.localCancel, reason: freezeBoundedText(snapshot.localCancel.reason) }),
+    goaway: frozenGoaway,
+  }) as TransportTerminationSnapshot
 }
 
 export function createHttp2TerminationRecorder(options: RecorderOptions): Http2TerminationRecorder {

@@ -978,6 +978,110 @@ export function http2Fetch(url: string | URL, init: UpstreamFetchInit): Promise<
  * session-connect failure or a pre-flight abort — flows through one promise that
  * {@link withRejectionObserver} guards.
  */
+interface Http2TerminalStream {
+  readonly rstCode: number | null
+  once(event: "end" | "close", listener: () => void): this
+  once(event: "error", listener: (error: unknown) => void): this
+  close(code: number): void
+}
+
+interface Http2BodyController {
+  close(): void
+  error(reason: unknown): void
+}
+
+/** @internal Exported for the deterministic terminal-seam harness; production uses this exact wiring. */
+export function registerHttp2BodyTerminationHandlers(
+  req: Http2TerminalStream,
+  controller: Http2BodyController,
+  termination: ReturnType<typeof createHttp2TerminationRecorder>,
+  signal?: AbortSignal,
+): { cancel(reason: unknown): void } {
+  let ended = false
+  req.once("end", () => {
+    ended = true
+    termination.recordEnd(req.rstCode)
+    try {
+      controller.close()
+    } catch {
+      /* already closed (e.g. cancelled) */
+    }
+  })
+  req.once("error", (error) => {
+    termination.recordError(error, req.rstCode)
+    try {
+      controller.error(error instanceof Error ? tagTransportError(error, "mid-body-close") : error)
+    } catch {
+      /* already errored */
+    }
+  })
+  req.once("close", () => {
+    if (ended) return
+    const error = tagTransportError(new Error(`[http2] upstream stream closed before end (rstCode=${String(req.rstCode)})`), "mid-body-close")
+    termination.recordCloseBeforeEnd(error, req.rstCode)
+    try {
+      controller.error(error)
+    } catch {
+      /* already closed/errored */
+    }
+  })
+  signal?.addEventListener(
+    "abort",
+    () => {
+      termination.recordLocalCancel("post-response-signal-abort", signal.reason, req.rstCode)
+      req.close(http2.constants.NGHTTP2_CANCEL)
+    },
+    { once: true },
+  )
+  return {
+    cancel(reason) {
+      termination.recordLocalCancel("body-cancel", reason, req.rstCode)
+      req.close(http2.constants.NGHTTP2_CANCEL)
+    },
+  }
+}
+
+interface PreResponseTerminalState {
+  observeHeaders(streamId: number | null): void
+}
+
+/** @internal Exported for the deterministic terminal-seam harness; production uses this exact wiring. */
+export function registerHttp2PreResponseTerminationHandlers(
+  req: Http2TerminalStream,
+  signal: AbortSignal | undefined,
+  termination: ReturnType<typeof createHttp2TerminationRecorder>,
+  rejectAfterRequestClosed: (error: Error) => void,
+): PreResponseTerminalState {
+  let headersReceived = false
+  const onAbort = (): void => {
+    termination.recordLocalCancel("other-local", signal?.reason, req.rstCode)
+    req.close(http2.constants.NGHTTP2_CANCEL)
+    rejectAfterRequestClosed(abortError(signal))
+  }
+  signal?.addEventListener("abort", onAbort, { once: true })
+  req.once("error", (error) => {
+    signal?.removeEventListener("abort", onAbort)
+    const normalized = error instanceof Error ? error : new Error(String(error))
+    if (normalized.message.toUpperCase().includes("NGHTTP2_REFUSED_STREAM")) tagTransportError(normalized, "refused-stream")
+    termination.recordError(normalized, req.rstCode)
+    rejectAfterRequestClosed(normalized)
+  })
+  req.once("close", () => {
+    if (headersReceived) return
+    signal?.removeEventListener("abort", onAbort)
+    const error = tagTransportError(new Error(`[http2] upstream stream closed before any response (rstCode=${String(req.rstCode)})`), "pre-response-close")
+    termination.recordCloseBeforeEnd(error, req.rstCode)
+    rejectAfterRequestClosed(error)
+  })
+  return {
+    observeHeaders(streamId) {
+      headersReceived = true
+      termination.observeHeaders(streamId)
+      signal?.removeEventListener("abort", onAbort)
+    },
+  }
+}
+
 async function runHttp2Fetch(u: URL, init: UpstreamFetchInit): Promise<Response> {
   const signal = init.signal
   // Preflight: the composite signal can ALREADY be aborted before we get here (e.g. the
@@ -1064,21 +1168,10 @@ async function runHttp2Fetch(u: URL, init: UpstreamFetchInit): Promise<Response>
       void requestClosed.then(() => reject(error))
     }
 
-    // Pre-response abort → reject; the post-response abort (cancel the body
-    // stream) is wired inside the `response` handler below.
-    const onPreResponseAbort = (): void => {
-      termination.recordLocalCancel("other-local", signal?.reason, req.rstCode)
-      req.close(http2.constants.NGHTTP2_CANCEL)
-      rejectAfterRequestClosed(abortError(signal))
-    }
-    signal?.addEventListener("abort", onPreResponseAbort, { once: true })
-
-    let headersReceived = false
+    const preResponseTermination = registerHttp2PreResponseTerminationHandlers(req, signal, termination, rejectAfterRequestClosed)
 
     req.once("response", (h) => {
-      headersReceived = true
-      termination.observeHeaders(req.id ?? null)
-      signal?.removeEventListener("abort", onPreResponseAbort)
+      preResponseTermination.observeHeaders(req.id ?? null)
       if (rejectionScheduled) return
       responseResolved = true
 
@@ -1106,105 +1199,19 @@ async function runHttp2Fetch(u: URL, init: UpstreamFetchInit): Promise<Response>
         if (Object.keys(record).length > 0) init.onTrailers(record)
       })
 
+      let bodyTermination!: ReturnType<typeof registerHttp2BodyTerminationHandlers>
       const body = new ReadableStream<Uint8Array>({
         start(controller) {
-          let ended = false
           req.on("data", (chunk: Buffer) => controller.enqueue(new Uint8Array(chunk)))
-          req.once("end", () => {
-            ended = true
-            termination.recordEnd(req.rstCode)
-            try {
-              controller.close()
-            } catch {
-              /* already closed (e.g. cancelled) */
-            }
-          })
-          // RST_STREAM / GOAWAY / transport drop mid-body → error the stream so
-          // the consumer (guardSseIterable) sees a failure, NOT a silent
-          // truncation read as success.
-          //
-          // Bun caveat: a *clean* server RST_STREAM (`stream.close(code)`) is
-          // delivered by Bun's node:http2 as a normal `end` with rstCode=0
-          // (verified), so that exact case is undetectable here under Bun. The
-          // dominant real failure — a dropped connection — emits `close` without
-          // `end` and IS caught by the backstop below. App-layer backstops
-          // (guardSseIterable idle-timeout, missing terminal SSE event) cover
-          // the residual.
-          req.once("error", (err) => {
-            termination.recordError(err, req.rstCode)
-            try {
-              // Post-header body error (session drop / RST after response headers)
-              // — a truncated body. Tag it mid-body-close so classifyError reads
-              // the structured reason instead of node's error string (this is the
-              // OTHER real mid-body producer besides the bare-close backstop below).
-              controller.error(err instanceof Error ? tagTransportError(err, "mid-body-close") : err)
-            } catch {
-              /* already errored */
-            }
-          })
-          // Backstop: node:http2 may emit `close` (carrying a non-zero rstCode)
-          // WITHOUT an `error` on a server-initiated reset. A close before `end`
-          // is a truncated body — surface it as a stream error, never a clean done.
-          req.once("close", () => {
-            if (!ended) {
-              const error = tagTransportError(new Error(`[http2] upstream stream closed before end (rstCode=${String(req.rstCode)})`), "mid-body-close")
-              termination.recordCloseBeforeEnd(error, req.rstCode)
-              try {
-                controller.error(error)
-              } catch {
-                /* already closed/errored */
-              }
-            }
-          })
+          bodyTermination = registerHttp2BodyTerminationHandlers(req, controller, termination, signal)
         },
         async cancel(reason) {
-          termination.recordLocalCancel("body-cancel", reason, req.rstCode)
-          req.close(http2.constants.NGHTTP2_CANCEL)
+          bodyTermination.cancel(reason)
           await requestClosed
         },
       })
 
-      if (signal) {
-        signal.addEventListener(
-          "abort",
-          () => {
-            termination.recordLocalCancel("post-response-signal-abort", signal.reason, req.rstCode)
-            req.close(http2.constants.NGHTTP2_CANCEL)
-          },
-          { once: true },
-        )
-      }
-
       resolve(new Response(body, { status, headers: responseHeaders }))
-    })
-
-    // Error before headers (connect failure, RST before response) → reject. Tag a
-    // REFUSED_STREAM (node:http2 surfaces it here, pre-response) so classifyError
-    // reads the structured reason instead of matching the error string.
-    req.once("error", (err: Error) => {
-      signal?.removeEventListener("abort", onPreResponseAbort)
-      if (err.message.toUpperCase().includes("NGHTTP2_REFUSED_STREAM")) tagTransportError(err, "refused-stream")
-      termination.recordError(err, req.rstCode)
-      rejectAfterRequestClosed(err)
-    })
-
-    // Backstop (P4, empirically verified against Bun's node:http2): a whole-session
-    // teardown before any response headers arrive (e.g. the upstream session is
-    // destroyed) does NOT always reach this stream's `error` listener under Bun —
-    // it can surface as a BARE `close` (rstCode=0), with neither `response` nor
-    // `error` ever firing. Without this, the returned promise hangs forever (a
-    // genuine hang, not just an internal-counter miss — verified via a minimal
-    // reproduction: `session.destroy(err)` on the SERVER side produces a client
-    // `req` sequence of goaway → session close → stream close, with the stream's
-    // own `error` event never emitted). If headers were never received by the
-    // time `close` fires, this is a truncated pre-response failure — reject it.
-    req.once("close", () => {
-      if (!headersReceived) {
-        signal?.removeEventListener("abort", onPreResponseAbort)
-        const error = tagTransportError(new Error(`[http2] upstream stream closed before any response (rstCode=${String(req.rstCode)})`), "pre-response-close")
-        termination.recordCloseBeforeEnd(error, req.rstCode)
-        rejectAfterRequestClosed(error)
-      }
     })
 
     if (init.body !== undefined) req.write(init.body)
