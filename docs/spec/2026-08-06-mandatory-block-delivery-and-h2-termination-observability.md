@@ -50,14 +50,14 @@
 
 若强行 flush，未完整传输的 `response.completed` 可能被当作真实终止事件，制造假成功。当前 parser 的 EOF 丢弃行为正确，但 empty-data 空行事件仍偏离 WHATWG；实施必须保留前者并修正后者：
 
-- 只有 `data` buffer 非空且由空行终止的 event 才 dispatch；仅含 `event:`、`id:`、`retry:` 或注释的空 data event 不 dispatch。
+- 至少处理过一条 `data` field 且由空行终止的 event 才 dispatch；“没有 data field”与“有 empty-value data field”必须区分。按 WHATWG 算法，`data:` 或无冒号的 `data` 都向 data buffer 追加一个 LF，因此空行仍 dispatch 一个 `data === ""` 的 MessageEvent；仅含 `event:`、`id:`、`retry:` 或注释且从未出现 data field 时不 dispatch。
 - Parser 维护 connection-local `lastEventIdBuffer: string` 与 `lastEventIdString: string`，不把纯数字 ID 归一化成 number。合法 `id:` 字段立即更新 buffer；值含 U+0000 时忽略该字段并保留旧 buffer；空 `id:`／无冒号的 `id` 把 buffer 重置为空字符串。
 - 每次遇到空行先把 `lastEventIdString` 设为 buffer；即使 data buffer 为空而不 dispatch，这一步也必须发生。实际 dispatch 的 `ServerSentEventMessage.id` 始终是当前 `lastEventIdString` 字符串，包括重置后的空字符串；当前 event 没有 `id:` 时继承上一次值。
 - 空行结束一次 event 后清空 data／event type／retry 临时 buffer，但不清空 last-event-ID buffer；自然 EOF 丢弃未 dispatch data／event 临时 buffer，也不额外制造 event。
 - 边界声明：`parseOwnedSse` 是上游 async iterator，不是浏览器 `EventSource`，不负责重连调度。`retry:` 继续作为实际 dispatched message 的兼容 metadata；`retry:`-only 不 dispatch、也不创建跨事件重连状态。WHATWG 对 framing、data buffer、event type 与 last-event-ID 的语义仍完整遵守。
 - 只有单换行或没有换行的 EOF pending event 必须丢弃。
 - CRLF 跨 chunk、UTF-8 多字节跨 chunk、多行 `data:` 合并必须正确。
-- 注入 EOF flush 的正向变异必须使“pending event 丢弃”测试变红；注入 empty-data dispatch、丢弃 id-only 更新、错误重置 ID 或接受 U+0000 ID 的独立变异必须各使目标测试变红。
+- 注入 EOF flush 的正向变异必须使“pending event 丢弃”测试变红；注入 no-data dispatch、错误丢弃 empty-value data、丢弃 id-only 更新、错误重置 ID 或接受 U+0000 ID 的五个独立变异必须各使目标测试变红。连同 EOF flush 共 6 个 parser mutation。
 - 源码注释须引用规范的 EOF 规则，防止未来再次把正确行为“修坏”。
 
 ## 4. Mandatory block-level delivery
@@ -109,6 +109,10 @@ type CompleteClientUnit = {
 type ClientTerminal = {
   semantic: "complete" | "incomplete" | "failed"
   sourceFrame: ClientFrame | null
+  diagnostic: {
+    source: "wire-frame" | "finish-result"
+    terminal: string | null
+  }
 }
 
 type DeliveryResult =
@@ -200,7 +204,7 @@ Adapter 是唯一 wire→semantic classifier，grammar 只消费上述 union，�
 
 Control capability 只能由 owner-private factory 创建；unique-symbol brand 提供编译期封闭，owner 内部 `WeakSet`／私有 class identity 提供运行时身份校验，factory 与校验器均不从 route／codec 模块导出。`as DeliveryControlCapability`、复制同字段对象或伪造 symbol property 都不能通过运行时校验。`classify` 只有在 input 携带通过 owner identity 校验的 capability 且 frame 是对应无结构 control 时返回 `control`；payload、event name、synthetic 标签或伪造 object 一律不能取得 bypass。Control frame 在任何非终态不改变 grammar state；terminal 后包括 control 在内的任何 frame 都产生 `post-terminal-frame`，不再写 wire。
 
-`classifyFinish` 不消费、保存或复制 `result.frames`。Processor 必须先把 `result.frames` 逐帧、恰好一次送入 `classify`，随后才把同一个 result 送入 `classifyFinish`。四个现有 `ResponseFinishResult.kind` 一一映射：`complete→natural-drain`；`valid-terminal-without-boundary→valid-terminal-without-boundary`，由协议 adapter 把其 `terminal` 字符串映射为 `sourceFrame:null` 的 `ClientTerminal.semantic` 并把原字符串保留在诊断 detail；`truncated→truncated`；`terminal-failure→terminal-failure`。后两者分别保留原 `reason`／`error` 于 `detail`／`cause`，不丢诊断信息。Grammar 不解释 `terminal` 字符串，也不重新分类 finish。
+`classifyFinish` 不消费、保存或复制 `result.frames`。Processor 必须先把 `result.frames` 逐帧、恰好一次送入 `classify`，随后才把同一个 result 送入 `classifyFinish`。四个现有 `ResponseFinishResult.kind` 一一映射：`complete→natural-drain`；`valid-terminal-without-boundary→valid-terminal-without-boundary`，由协议 adapter 把其 `terminal` 字符串映射为 `sourceFrame:null` 的 `ClientTerminal.semantic`，并逐字保存在 `diagnostic:{source:"finish-result",terminal:原字符串}`；wire terminal 使用 `diagnostic.source:"wire-frame"`，`terminal` 保存协议 terminal type。Diagnostic `terminal` 最多 256 UTF-8 bytes，超限视为 `malformed-frame`，不得截断后改变语义。`truncated→truncated`；`terminal-failure→terminal-failure`。后两者分别保留原 `reason`／`error` 于 `detail`／`cause`，不丢诊断信息。Grammar 不解释 `terminal` 字符串，也不重新分类 finish。
 
 状态后继固定如下：
 
@@ -407,7 +411,7 @@ type TransportTerminationSnapshot = {
 | `goaway.observation` | 标量 detail | `goaway.evidence` |
 |---|---|---|
 | `not-observed-before-snapshot` | 三个 `SnapshotScalar` 都只能是 `not-observed-before-snapshot` | 只能是 `{ availability:"not-observed-before-snapshot" }` |
-| `unavailable-at-source` | 每个标量独立为 `observed` 或 `unavailable-at-source`；不得是 `not-observed-before-snapshot` | 只能是 `unavailable-at-source`，携带有界原因 |
+| `unavailable-at-source` | 三个 `SnapshotScalar` 都只能是 `unavailable-at-source`，各携带有界原因 | 只能是 `unavailable-at-source`，携带有界原因 |
 | `observed-before-snapshot` | 每个标量独立为 `observed` 或 `unavailable-at-source`；不得是 `not-observed-before-snapshot` | 只能是 `captured`、`unavailable-at-capture` 或 `unavailable-at-source`；不得是 `not-observed-before-snapshot` |
 
 收到 GOAWAY 且 API 提供空 opaque bytes 时，按 `captured`、`byteLength:0` 保存空实体，不得误记为 capture failure。Capture／registry 失败才使用 `unavailable-at-capture`；API 根本不暴露 opaque bytes 才使用 `unavailable-at-source`。任何 observation 与 evidence 不匹配都在构造 snapshot 时 fail loud，不持久化自相矛盾记录。
@@ -442,11 +446,19 @@ interface SessionEvidenceLease {
 
 interface RegisteredEvidence {
   readonly capture: Extract<EvidenceCapture, { availability: "captured" }>
-  retainForOperation(): OperationEvidenceLease
-  releaseSessionRef(): void
+  claimForDispatch(dispatch: DispatchHandle): DispatchEvidenceClaim
+  finishDispatchFanout(): void
+}
+
+interface DispatchEvidenceClaim {
+  readonly dispatch: DispatchHandle
+  readonly capture: Extract<EvidenceCapture, { availability: "captured" }>
+  transferToOperation(): OperationEvidenceLease
+  release(): void
 }
 
 interface OperationEvidenceLease {
+  readonly dispatch: DispatchHandle
   readonly capture: Extract<EvidenceCapture, { availability: "captured" }>
   bytes(): Readonly<Uint8Array>
   release(): void
@@ -459,27 +471,32 @@ interface OperationPersistenceEnvelope {
 }
 ```
 
-Session GOAWAY recorder 在收到 event 的同步栈内至多复制一次 `opaqueData`，计算 digest，创建一份 session-owned immutable `SessionEvidenceLease`；同 session dispatch snapshot 只复制 `EvidenceCapture` 标量。`bytes()` 返回只读视图，不再复制 payload。Session lease 没有 public `release()`：创建成功后必须恰好一次 register，注册动作把 session ownership 原子转移给 `RegisteredEvidence`；此后只有 `releaseSessionRef()` 能释放该 session ref。Register 失败时 factory 内部回收 bytes，不把半注册对象交给调用方。Registry 对同 digest 校验 bytes／length／encoding 后持有唯一实体。
+Session GOAWAY recorder 在收到 event 的同步栈内至多复制一次 `opaqueData`，计算 digest，创建并注册一份 immutable `SessionEvidenceLease`；registry 对同 digest 校验 bytes／length／encoding 后持有唯一实体，`bytes()` 返回只读视图且不复制 payload。Session lease 没有 public `release()`：register 成功即把 session ownership 原子转移给 `RegisteredEvidence`；失败时 factory 内部回收 bytes，不把半注册对象交给调用方。
 
-Dispatch observation capability 在 first-write 成功的同一同步栈内对 captured digest 调用 `retainForOperation()`，把 operation ref 按 digest 去重保存在 RequestContext 的非序列化 sidecar；同一 operation 的多个 sibling dispatch 引用同一 digest 时共用一份 operation ref。`OperationEvidenceLease.bytes()` 只读且不复制，`release()` 是 operation ref 的唯一释放 API；重复 release、release 后 bytes 或 refcount 下溢必须 fail loud。若 retain 失败，capability 把该 snapshot 的 evidence 改为 `unavailable-at-capture` 并记录有界原因后仍完成 first-terminal write，绝不留下只有 digest、没有 bytes 的 captured snapshot，也不阻断 consumer 终止。Terminal seal 原子产生 `OperationPersistenceEnvelope`，把 inert canonical `record` 与所有 dispatch 引用的去重 operation refs 一次性交给 History enqueue；canonical record 本身仍只含序列化 reference。Envelope `release()` 恰好一次 release 所含每条 operation lease。
+GOAWAY callback 在同一同步栈内先把 physical session 标为 non-admitting／retiring，再快照该 session 上所有“已 beginDispatch、尚未冻结 first-terminal”的 observation capabilities；标记与快照之间不得 await。它为快照中的每个 dispatch 调用一次 `claimForDispatch(dispatch)`，再调用 dispatch-scoped `tryAttachDispatchGoawayClaim(dispatch, claim)`。Attach 是 never-throw、first-claim-only，并返回 `"installed" | "rejected"`：`installed` 明确消费 claim 所有权，调用方不得再 release；`rejected` 不消费所有权，调用方必须立即 release。零 dispatch 时也必须完成 fan-out。Claim 创建中途抛错时，callback 释放本轮所有尚未安装的 claims；已经返回 `installed` 的 claims 仍由各 capability 终结。无论成功、零 dispatch 或异常，`finally` 都恰好一次调用 `finishDispatchFanout()` 释放 registry 的 session ref；该方法是严格 one-shot，重复调用或带未 disposition 的本地 claim 调用都 fail loud，不以“幂等”掩盖所有权错误。由于 JavaScript 同步栈内不发生另一 terminal callback 穿插，fan-out 完成时每条未来可能引用该 GOAWAY 的 dispatch 已持有自己的 claim；session 进入 retiring 本身不是释放条件，也没有“retire 后、first-write 前”的 bytes 空窗。标记 non-admitting 后的新 dispatch 必须被拒绝。
 
-Canonical History 保留 loser dispatch，因此 loser evidence 也必须持久化；“只投影 winner／committed dispatch”仅约束 egress projection，不能裁剪 diagnostic dispatch refs。引用同一 GOAWAY 的多个 operation 各持独立 ref，因此无提交先后约束，任一个都可先执行事务 A。
+每条 `DispatchEvidenceClaim` 只允许二选一终结：first-terminal slot 被该 dispatch 接受时，`transferToOperation()` 原子生成一条 dispatch-scoped `OperationEvidenceLease` 并使 claim 失效；slot 被拒、dispatch 放弃或 snapshot 不引用该 GOAWAY 时，调用 `release()`。同 digest sibling 不共用 claim 或 operation lease，因此 B 被拒只释放 B 的 ref，不能影响已接受的 A。`OperationEvidenceLease.bytes()` 只读且不复制，`release()` 是该 dispatch operation ref 的唯一释放 API；重复 transfer／release、release 后读取或 refcount 下溢必须 fail loud。
+
+RequestContext sidecar 按 dispatch 保存 accepted operation leases，不按 digest 去重。Terminal seal 原子产生 `OperationPersistenceEnvelope`，把 inert canonical `record` 与全部 accepted dispatch leases 一次性交给 History enqueue；canonical record 本身仍只含可序列化 reference。Envelope `release()` 恰好一次 release 每条 lease。History 事务 A 可按 digest 去重 CAS insert，但不得用存储去重反向合并内存所有权 claims。
+
+Canonical History 保留 loser dispatch，因此 loser evidence 也必须持久化；“只投影 winner／committed dispatch”仅约束 egress projection，不能裁剪 diagnostic dispatch refs。引用同一 GOAWAY 的多个 operation／dispatch 各持独立 ref，因此无提交先后约束，任一个都可先执行事务 A。
 
 所有退出路径固定如下：
 
 | 路径 | 唯一释放责任 |
 |---|---|
-| 无 operation 引用 | Session 退役触发 `RegisteredEvidence.releaseSessionRef()`；registry 在全部 session／operation refs 归零后释放实体 |
-| Recorder first-write 被拒绝、settled／sealed 或 operation 最终未引用该 dispatch | RequestContext 立即 release 对应 operation ref，snapshot 不保留 captured reference |
-| Terminal 前请求放弃或 canonical seal 失败 | RequestContext release sidecar 中全部 operation refs |
+| GOAWAY fan-out 完成 | `finishDispatchFanout()` 释放唯一 session ref；此后只有 dispatch claims／operation leases，session retire 不再触碰 evidence ownership |
+| Dispatch 在 fan-out 时已 frozen／abandoned，或其 first-write slot 后续被拒绝 | 只 release 该 dispatch claim；不得影响同 digest sibling |
+| Dispatch first-write 接受 captured evidence | 该 claim 原子 transfer 为该 dispatch 的 operation lease；claim 不再可 release |
+| Terminal 前请求放弃或 canonical seal 失败 | RequestContext release sidecar 中全部 dispatch operation leases |
 | History 禁用、enqueue 拒绝或 persistence guard 不接管 | 调用方执行 `OperationPersistenceEnvelope.release()` |
-| History enqueue 接管成功、prepare／事务 A transient 失败且仍在重试预算内 | History queue 保留同一 envelope 与 operation refs，refcount 允许非零；下次重试不从已退役 session 重新 acquire |
-| Prepare／事务 A 达到 terminal failure、conflict 或被明确放弃 | History owner 执行 envelope `release()`，对应 operation refs 归零 |
-| 事务 A commit 成功 | History owner立即执行 envelope `release()`；持久 CAS 已接管 bytes，事务 B 不再需要进程内实体 |
-| Evidence digest 碰撞或 bytes／length／encoding 不匹配 | registry／History owner fail operation 并 release，不覆盖既有实体或 CAS |
-| 进程 shutdown | 先停止新 register／retain／enqueue，等待有界 History drain；drain 结束后释放全部 session refs、未接管 envelope 与 History refs，registry 断言归零；未完成 operation 明确失败 |
+| History enqueue 接管成功、prepare／事务 A transient 失败且仍在重试预算内 | History queue 保留同一 envelope 与全部 dispatch leases，refcount 允许非零；下次重试不从 session 重新 acquire |
+| Prepare／事务 A 达到 terminal failure、conflict 或被明确放弃 | History owner执行 envelope `release()`，对应 dispatch refs 归零 |
+| 事务 A commit 成功 | History owner 立即执行 envelope `release()`；持久 CAS 已接管 bytes，事务 B 不再需要进程内实体 |
+| Evidence digest 碰撞或 bytes／length／encoding 不匹配 | Registry／History owner fail operation 并只释放当前持有的 claims／leases，不覆盖既有实体或误释 sibling |
+| 进程 shutdown | 先停止新 session／dispatch／enqueue，完成或释放所有未结束 fan-out 与 claims，再有界 drain History；drain 后释放未接管 envelope 与 History leases，registry 断言归零；未完成 operation 明确失败 |
 
-Transport 不执行 SQLite I/O、不等待持久化，也不把未来持久化结果回写 snapshot。持久 manifest、journal 与 snapshot 只保存可序列化 `EvidenceCapture` reference；lease 永不进入 canonical record。Registry 更新只发生在 GOAWAY capture、termination first-write、terminal seal／History enqueue、事务 A 与 shutdown 冷路径，不在 DATA 热路径。
+Transport 不执行 SQLite I/O、不等待持久化，也不把未来持久化结果回写 snapshot。持久 manifest、journal 与 snapshot 只保存可序列化 `EvidenceCapture` reference；lease 永不进入 canonical record。Registry 更新只发生在 GOAWAY capture／dispatch fan-out、termination first-write、terminal seal／History enqueue、事务 A 与 shutdown 冷路径，不在 DATA 热路径。
 
 ### 5.5 Dispatch 归属
 
@@ -488,16 +505,18 @@ Scheduler 在 `beginDispatch()` 取得 handle 后、physical `open()` 前，为�
 RequestContext 提供 dispatch-scoped first-write API；snapshot 只携带 registry digest reference，不转移 lease：
 
 ```ts
+tryAttachDispatchGoawayClaim(dispatch, claim): "installed" | "rejected"
 trySetDispatchTransportTermination(dispatch, snapshot): boolean
 trySetDispatchResponseTrailers(dispatch, trailers): boolean
 ```
 
-Session recorder 在调用 termination API 前已把 captured evidence 注册到 `TransportEvidenceRegistry`。Capability 对 captured snapshot 先 retain 去重的 operation ref，再原子写 canonical snapshot；写入失败就 release，retain 失败则把 evidence 降为 unavailable 后继续写终止事实。Terminal seal 把全部 dispatch 引用的 refs 转移到 `OperationPersistenceEnvelope`；egress 只投影 winner，但 canonical diagnostic dispatch 不被裁剪。这样 session 退役不能在 History enqueue 前丢失 bytes，同时 canonical record 仍保持 inert。
+Session GOAWAY recorder 在 termination API 之前已完成 registry 注册与 in-flight dispatch claim fan-out。Capability 处理 first-terminal 时，先裁决 slot：接受则把该 dispatch claim transfer 为 operation lease，并与 snapshot 原子写入；拒绝则只 release 该 dispatch claim。没有 claim 但 snapshot 想写 captured digest 属内部错误，降为 `unavailable-at-capture` 并记录有界原因，不阻断 consumer。Terminal seal 把全部 accepted dispatch leases 转移到 `OperationPersistenceEnvelope`；egress 只投影 winner，但 canonical diagnostic dispatch 不被裁剪。这样 session retire、sibling rejection 都不能在 History enqueue 前丢失 bytes，同时 canonical record 仍保持 inert。
 
 语义：
 
 - 按 handle 直接定位；
-- first-write-only；
+- Claim attach first-claim-only；`installed` 消费所有权、`rejected` 不消费，禁止 ambiguous return；
+- Termination／trailers first-write-only；
 - unknown／settled／sealed 返回 `false`，never-throw；
 - canonical recorder 先裁决，成功后在同一同步栈内执行无抛兼容 projection；
 - retry／hedge sibling 互不覆盖；
@@ -651,14 +670,14 @@ type H2MatrixResult = {
 
 ### 9.1 SSE parser
 
-- 非空 `data` 且由空行终止的 event 正常 dispatch；
-- `event:`-only、`id:`-only、`retry:`-only 与 comment-only 空 data event 不 dispatch；
+- 非空 `data` 以及 `data:`／无冒号 `data` 的 empty-value field 均由空行正常 dispatch；后两者 yield `data === ""`；
+- `event:`-only、`id:`-only、`retry:`-only 与 comment-only（即完全没有 data field）不 dispatch；
 - `id: alpha`-only 后的下一 data event 继承 `alpha`；空 `id:` 重置后下一 event 不继承；含 U+0000 的 `id` 被忽略并保留旧值；纯数字 ID 保持 wire string；
 - 同一 chunk 与跨 chunk 的 ID 更新／继承结果一致；一次 event 的 event type／retry 不泄漏到下一 event，而 last-event-ID 持续到显式更新／重置；
 - 单换行／无换行 EOF pending event 丢弃；
 - CRLF 与 UTF-8 跨 chunk；
 - 多行 `data:` 合并；
-- EOF-flush、empty-data-dispatch、丢弃 id-only 更新、错误重置和接受 U+0000 ID 五个独立变异各使目标测试变红，并核对失败来自对应机制。
+- EOF-flush、no-data dispatch、错误丢弃 empty-value data、丢弃 id-only 更新、错误重置和接受 U+0000 ID 六个独立变异各使目标测试变红，并核对失败来自对应机制。
 
 ### 9.2 HTTP/2 body
 
@@ -675,7 +694,7 @@ type H2MatrixResult = {
 - first-terminal 只冻结一次；
 - local cancel 不误记 remote reset；
 - 闭合 snapshot union 每个字段均存在，`observed` 与 detail 一致，code／message／reason 长度上界生效；
-- GOAWAY 的 `not-observed-before-snapshot`、`unavailable-at-source`、observed+`captured`、observed+`unavailable-at-capture`、observed+`unavailable-at-source` 五种合法组合逐格通过；每个标量分别覆盖 observed／source-unavailable，且与顶层 observation 一致；每种 observation 与错误 evidence／scalar 配对都使构造器变红；空 opaque bytes 产生 `captured`、`byteLength:0`；
+- GOAWAY 的 `not-observed-before-snapshot`、`unavailable-at-source`、observed+`captured`、observed+`unavailable-at-capture`、observed+`unavailable-at-source` 五种合法组合逐格通过；顶层 source-unavailable 时三个 scalar 必须全为 source-unavailable；顶层 observed 时每个 scalar 分别覆盖 observed／source-unavailable；每种 observation 与错误 evidence／scalar 配对都使构造器变红；空 opaque bytes 产生 `captured`、`byteLength:0`；
 - Bun clean EOF／clean RST 的原始事实被诚实保留，不出现应用层推断字段；
 - runtime identity gate 能拒绝把 Bun child 冒充 Node，并以该错误 wiring 作正向变异；
 - 唯一 server PID／execPath 被证明是 Node；Bun／Node client result 携带同一 server instance id 与 scenario manifest digest；Bun client 自启 compatibility server、两个 client 连接不同 fixture 或绕过 `http2Fetch` 的变异分别使 harness 变红。
@@ -684,7 +703,7 @@ type H2MatrixResult = {
 
 - 表 §4.7 的 6 个唯一 graph roots／11 个 pumps 逐项可达 owner、不可达底层 writer；正确集合全部通过；删除一条 root-to-owner edge 与新增未登记 streaming root 分别使守卫变红；
 - warmup drop／fake 与 precommit AUQ streaming 均通过 `runSyntheticResponse`；完整 synthetic 序列原子提交并保留 marker，删除 terminal／错序／中途抛错均零部分写出；恢复 helper 直接 `stream.writeSSE` 的变异使架构守卫变红；
-- 每个 adapter 的 `DeliveryFrameClass` 全变体与 `ResponseFinishResult` 四分支逐表验证；grammar 测试只喂 typed class，证明它不解析 wire；adapter 测试独立证明 wire→class 唯一映射；
+- 每个 adapter 的 `DeliveryFrameClass` 全变体与 `ResponseFinishResult` 四分支逐表验证；grammar 测试只喂 typed class，证明它不解析 wire；adapter 测试独立证明 wire→class 唯一映射；`valid-terminal-without-boundary.terminal` 原字符串逐字 round-trip 到 `ClientTerminal.diagnostic`，超 256 UTF-8 bytes 的输入 fail closed，丢失／改写 diagnostic 的变异使测试变红；
 - 状态表每条合法后继都有正样本；terminal frame 后唯一 natural-drain finish 正常闭合且不重复 terminal；nested、identity mismatch、terminal-with-open、finish-before-terminal、duplicate／post-terminal 与 adapter exception 分别映射到冻结的 error semantic，注入错误映射会使目标测试变红；
 - `result.frames` 先逐帧消费、finish verdict 后消费，各恰好一次；`classifyFinish` 若重复消费／复制 frames 的变异必须变红；
 - `complete-unit.frames` 精确等于该 unit 输入序列，每个 frame 只消费一次；`response-terminal.responseFrames` 不含 terminal source，owner 按 response frames→单一 terminal→可选 `[DONE]` 顺序写出；
@@ -708,11 +727,13 @@ type H2MatrixResult = {
 - termination first-write 与 late-drop；
 - retry／hedge sibling 归属隔离；
 - trailer per-dispatch 归属；
-- 同 session／跨 operation 的 registry retain／enqueue 次序任意、bytes 实体唯一；同 operation sibling dispatch 的同 digest ref 去重；
+- 同 session／跨 operation 的 registry fan-out／enqueue 次序任意、bytes 实体按 digest 唯一；每个 physical dispatch 拥有独立 claim／operation lease，内存 ownership 不按 digest 去重；
+- GOAWAY→session retiring→较晚 first-terminal 的确定性探针证明 bytes 仍可 transfer；non-admitting 标记先于 in-flight snapshot 且两者之间无 await，GOAWAY 后新 dispatch 被拒；fan-out 完成前不得释放 session ref，正常、零 dispatch、claim 创建中途抛错三条路径都在 `finally` 恰好释放一次；attach `installed` 消费 claim、`rejected` 不消费且由调用方释放；已安装 claim 仍可独立终结，未安装 claim 全部释放；重复 `finishDispatchFanout()`、ambiguous attach return 或带未 disposition claim 结束 fan-out 的变异分别变红；
+- 同 digest sibling A first-write accepted、B first-write rejected：B 只释放自己的 claim，A 的 lease 仍可读并进入 envelope；反转 A／B 顺序结果相同。让 sibling 共用 claim／lease 的变异必须变红；
 - loser dispatch 的 evidence 仍随 canonical diagnostic History 持久化；只有 egress 投影裁剪到 winner；
-- first-write 拒绝、retain 失败、terminal 前放弃、History 禁用、enqueue 拒绝、prepare terminal failure、事务 A terminal failure、digest mismatch 与 shutdown 每条终态路径结束后 registry refcount 为零；retain 失败不阻断 consumer，snapshot 降为 unavailable；
-- prepare／事务 A transient failure 进入重试时，同一 envelope／operation lease 保持可读且 refcount 非零；下一次重试成功后归零，达到 terminal failure 后归零；把 transient 路径提前 release 的变异必须让重试读 bytes 失败；
-- Session lease register 后不再有 public release；`releaseSessionRef()`、`OperationEvidenceLease.release()` 与 envelope `release()` 各自只释放自己的唯一 ref。重复 register／release、release 后读取与 refcount 下溢 fail loud；
+- first-write 拒绝、claim transfer 失败、terminal 前放弃、History 禁用、enqueue 拒绝、prepare terminal failure、事务 A terminal failure、digest mismatch 与 shutdown 每条终态路径结束后 registry refcount 为零；transfer 失败不阻断 consumer，snapshot 降为 unavailable；
+- prepare／事务 A transient failure 进入重试时，同一 envelope／全部 dispatch leases 保持可读且 refcount 非零；下一次重试成功后归零，达到 terminal failure 后归零；把 transient 路径提前 release 的变异必须让重试读 bytes 失败；
+- Session lease register 后不再有 public release；`finishDispatchFanout()`、claim `transferToOperation()`／`release()`、`OperationEvidenceLease.release()` 与 envelope `release()` 各自只终结自己的唯一 ownership。重复 transfer／release、release 后读取与 refcount 下溢 fail loud；
 - evidence CAS insert 失败；
 - journal insert 失败；
 - 事务 A 任一句失败同时回滚 evidence 与 journal；
@@ -760,7 +781,7 @@ type H2MatrixResult = {
 
 早期正确性／性能设计评审曾分别放行 dispatch-scoped 归属、first-terminal 时序、两事务 recovery set、mandatory owner 与 DATA 热路径方向；性能评审指出“统计不显著”不能证明非劣效，用户据此选择性能数据仅报告、不设 non-inferiority 阻断门。
 
-书面规格第一轮独立评审随后发现实施接口与验收仍有缺口：实施者走查为 `0 blocker / 5 major`，事实／判据证伪为 `0 blocker / 6 major`。实施者第二轮复审留下 I1、I5 两项 major；事实／判据第二轮留下 F1、F3、F4、F5 并新增旧 journal digest major。本版已逐条整改。实施者第三轮已达到 `0 blocker / 0 major`；事实／判据第三轮仍在运行。在事实／判据 reviewer 对最新整改 diff、原 finding 与相邻契约完成复审之前，状态保持 `confirmed-not-implemented`，不得声称书面规格整体已经达到 `0 blocker / 0 major`。评审记录见：
+书面规格第一轮独立评审随后发现实施接口与验收仍有缺口：实施者走查为 `0 blocker / 5 major`，事实／判据证伪为 `0 blocker / 6 major`。实施者第二轮复审留下 I1、I5 两项 major；事实／判据第二轮留下 F1、F3、F4、F5 并新增旧 journal digest major。实施者第三轮已达到 `0 blocker / 0 major`；事实／判据第三轮为 `0 blocker / 4 major`，指出 dispatch evidence claim、source-unavailable 组合、SSE empty-value data 与 finish diagnostic 缺口。本版已逐条整改，等待事实／判据 reviewer 第四轮。在该 reviewer 对最新整改 diff、原 finding 与相邻契约完成复审之前，状态保持 `confirmed-not-implemented`，不得声称书面规格整体已经达到 `0 blocker / 0 major`。评审记录见：
 
 - [实施者走查](../tmp/2026-08-06-mandatory-block-delivery-review-implementer.md)；
 - [事实与判据证伪](../tmp/2026-08-06-mandatory-block-delivery-review-falsification.md)。

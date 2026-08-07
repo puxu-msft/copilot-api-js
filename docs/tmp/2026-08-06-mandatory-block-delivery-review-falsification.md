@@ -1,6 +1,6 @@
 # Mandatory block delivery 与 HTTP/2 终止观测规格评审——事实与判据证伪
 
-> 状态：第二轮 `0 blocker / 5 major` 已全部采纳并整改，待原 reviewer 第三轮复审
+> 状态：第三轮 `0 blocker / 4 major` 已全部采纳并整改，待原 reviewer 第四轮复审
 >
 > reviewer：独立事实／判据证伪 reviewer
 >
@@ -115,3 +115,33 @@ Reviewer 机械核对整改 diff、WHATWG SSE algorithm、production stream grap
 | F4-r2 | C | 采纳 | §5.4 定义 `OperationEvidenceLease` 唯一 release，注册后只由 `RegisteredEvidence.releaseSessionRef()` 释放 session ownership；验收区分 transient retry-retained 与 terminal release。 |
 | F5-r2 | C | 采纳 | §5.3 把 GOAWAY evidence 改成 `not-observed-before-snapshot`／`unavailable-at-source`／`captured`／`unavailable-at-capture` 闭合 union，以字段级 `SnapshotScalar` 冻结 observation→detail 合法组合。 |
 | J1-r2 | C | 采纳 | §6.3 冻结旧 journal v1／v2 digest oracle，各自使用真实 fixture；旧 oracle 验证 pending row 完整性后迁移提交为 manifest v3，不能用 v3 digest 反向替代旧 oracle。 |
+
+## 第三轮复审
+
+> 固定复审 HEAD：`97fcadde98c118e53ca8f09604dc47162959c65e`（base `d1a0ad2e3261a643f23f681f2263744bceb22a0e`）
+>
+> Verdict：`0 blocker / 4 major`。F1 last-event-ID、F3、J1 已闭合；F4／F5 仍有 major，并新增 SSE empty-value data 与 finish diagnostic 两项 major。当前不可定稿。
+
+### 已闭合
+
+- F1 last-event-ID：更新、空值重置、U+0000、继承、跨 chunk 与 mutation 已闭合。
+- F3：6 roots／11 pumps、warmup／AUQ synthetic owner 与双向守卫已闭合。
+- J1：两条 legacy digest oracle、真实 fixture 与 v3 migration 已闭合。
+- 独立 Node server harness、F2 frame ownership、F6 四个性能 mutation 保持闭合。
+
+### Major findings
+
+1. Session ref 仍在 session retire 释放；GOAWAY 后仍在途 dispatch 可能尚未 first-write／retain，bytes 会过早丢失。
+2. 同 digest sibling 去重共用 operation ref时，一条 first-write 被拒可能误释另一条 accepted sibling 仍需要的 ref。
+3. `goaway.observation="unavailable-at-source"` 仍允许 observed scalar，形成自相矛盾状态。
+4. 缺 `data:\n\n`／无冒号 `data` 的 empty-value 正样本；错误丢弃空字符串 MessageEvent 仍可全绿。
+5. `valid-terminal-without-boundary` 要求保留原 terminal 字符串，但 `ClientTerminal`／`DeliveryFinishClass` 没有 diagnostic 载体。前两项合并为 F4 所有权 major 簇，因此 verdict 总计 4 major。
+
+### 主会话第三轮处置
+
+| Finding | 级别 | 处置 | 整改方向 |
+|---|---|---|---|
+| F4-r3 | C | 采纳 | GOAWAY 同步为当时每个 in-flight dispatch 创建独立 `DispatchEvidenceClaim` 后释放 session ref；claim 单次 transfer／release，每个 dispatch 保留独立 operation lease，仅事务 A 的持久 CAS insert 按 digest 去重。拒绝 sibling 只释放自己的 claim。 |
+| F5-r3 | C | 采纳 | 顶层 `unavailable-at-source` 时所有 scalar 都必须 source-unavailable；若 event 可见但部分字段不可见，顶层为 observed。 |
+| SSE-r3 | C | 采纳 | §3／§9.1 增加 `data:` 与无冒号 `data` 的空字符串 MessageEvent 正样本和错误丢弃 mutation。 |
+| FIN-r3 | C | 采纳 | `ClientTerminal` 增加有界、可序列化 diagnostic，完整保留 `valid-terminal-without-boundary.terminal` 原字符串并加 round-trip oracle。 |
