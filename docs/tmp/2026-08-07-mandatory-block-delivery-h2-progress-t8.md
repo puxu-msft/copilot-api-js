@@ -5,7 +5,8 @@
 - BASE：`1d24d9bf14d36a0e3f53b200695b49a424d33191`。
 - `git merge-base --is-ancestor 1d24d9bf HEAD` 已于开工时返回 exit 0，无需 fast-forward。
 - RED checkpoint 已新增唯一测试：创建 ledger 后取得一个 dispatch lease，在无 event／无 violation 时 `freezeAtTerminal()` 必须返回 Task 7 `GoawaySnapshot` 的 ordinary zero-event 形状与 `operationLease: null`。
-- `bun test /home/xp/src/copilot-api-js/.worktree/agent-a249668f4c8be26c4/tests/transport/http2-goaway-ledger.unit.test.ts` 结果为 0 pass、1 fail、1 error；精确失败是 `Cannot find module '~/lib/transport/http2-goaway-ledger'`，符合尚未实现 production module 的预期 RED。暂未运行第二个 case 或长套件。
+- RED：`bun test /home/xp/src/copilot-api-js/.worktree/agent-a249668f4c8be26c4/tests/transport/http2-goaway-ledger.unit.test.ts` 为 0 pass、1 fail、1 error；精确失败是 `Cannot find module '~/lib/transport/http2-goaway-ledger'`。
+- GREEN：新增只满足首测的最小 `SessionGoawayLedger`／dispatch source 后，同命令为 1 pass、0 fail；`bun run --cwd /home/xp/src/copilot-api-js/.worktree/agent-a249668f4c8be26c4 typecheck` exit 0。暂未实现或测试 repeated events／refcount／violation。
 - 工作树内报告 `.superpowers/sdd/task-8-report.md` 已创建并记录相同基线，但该 worktree-local 报告不纳入本 progress-only commit。
 
 ## 已完成
@@ -17,12 +18,12 @@
 ## 未提交文件及在途意图
 
 - `.superpowers/sdd/task-8-report.md`：worktree-local 实施证据报告，后续逐步补充 RED／GREEN、mutation、验证、ownership proof、结构怪味与三方向反思。
-- `tests/transport/http2-goaway-ledger.unit.test.ts`：test-first ordinary zero-event RED，纳入本 checkpoint。
-- 当前没有未提交产品源码。
+- `src/lib/transport/http2-goaway-ledger.ts`：只满足 ordinary zero-event 首测的最小骨架，纳入本 checkpoint。
+- 当前没有其他未提交产品源码或测试。
 
 ## 剩余项
 
-1. 下一轮先实现 ordinary zero-event 所需的最小 `SessionGoawayLedger`／dispatch lease，使首测 GREEN；再逐个以 RED→GREEN 添加 ordered append、三态 freeze、first-reason-wins、ownership 与 duplicate fail-loud。
+1. 下一轮逐个以 RED→GREEN 添加 ordered append、三态 freeze、first-reason-wins、ownership 与 duplicate fail-loud；当前最小骨架刻意不预实现这些行为。
 2. `src/lib/transport/http2-goaway-ledger.ts` 只导入 Task 7 serializable schema 与 `DispatchHandle`，最终实现 registry／session owner／dispatch lease／operation lease 的单一 refcount。
 3. 跑 targeted GREEN、typecheck、lint；随后分别做 fan-out、zero-event violation drop、close-owner early byte loss、duplicate release mutation controls。
 4. 完成报告、自审与最终精确 pathspec `feat: add in-memory ordered GOAWAY ledger` commit。
