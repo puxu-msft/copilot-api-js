@@ -40,7 +40,7 @@
 - 不跨 restart 比较 worker-local raw generation token；artifact identity 是 `dbPath + storeId`。
 - Batch 1b 必须同步接 shutdown Step 1 的 admission close 和全量 pending-durability overlay，不能推迟到 Batch 5。
 - Batch 3b raw authority 切换必须 pause→旧 operation/lease drain→旧 handle close→Worker open/ACK→resume，任一时刻最多一个进程内 writer。
-- Batch 6b 必须先在 async driver seam 预取 Responses fallback history，不能把同步 `translateOut/prepareWire` 偷改成返回 Promise。
+- Batch 6b 必须让 `runRequest()` 与 `inspectRequest()` 共用同一个 post-route、pre-`translateOut` async seam 预取 Responses fallback history；production、Responses WS 与 debug dry-run 都须显式注入 readonly Worker query client，禁止同步 SQLite fallback，也不能把同步 `translateOut/prepareWire` 偷改成返回 Promise。
 - 不把 History search sidecar 的独立 readonly DB owner 误判为主服务违规；Batch 6a/6c 必须保留 search target/attestation/hydration 语义。
 - 不运行会杀 4141 的 `kill`／`pkill`／`killall`；测试服务用动态端口或明确非 4141 端口并精确清理。
 

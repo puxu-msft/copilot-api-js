@@ -89,7 +89,7 @@ status: active
 - `src/routes/status/route.ts`、`src/lib/metrics-exposition.ts`：status 和 Prometheus。
 - `src/lib/shutdown.ts`、`packages/cli/src/start.ts`：startup hard gate 与 durability barrier。
 - `src/lib/history/{queries,sessions,stats}.ts`、`src/routes/history/handler.ts`：Batch 6 query RPC cutover。
-- `src/routes/responses/conversation-rebuild.ts`、`src/lib/codec/openai-responses/{codec,openai-responses-leg}.ts`、`src/lib/pipeline/{driver,types}.ts`：Batch 6a async fallback-history prefetch seam。
+- `src/routes/responses/{handler-v4,ws,conversation-rebuild}.ts`、`src/routes/debug/dry-run-pipeline.ts`、`src/lib/codec/openai-responses/{codec,openai-responses-leg}.ts`、`src/lib/pipeline/{driver,types,request-state}.ts`：Batch 6b 的 production／inspection 共用 async fallback-history prefetch seam。
 
 ---
 
@@ -831,36 +831,39 @@ Commit: `feat(history): add worker query RPC backend`
 - Modify: `src/routes/responses/handler-v4.ts`
 - Modify: `src/routes/responses/ws.ts`
 - Modify: `src/routes/responses/conversation-rebuild.ts`
+- Modify: `src/routes/debug/dry-run-pipeline.ts`
 - Modify: `src/lib/codec/openai-responses/{codec,openai-responses-leg}.ts`
 - Modify: `src/lib/pipeline/{driver,types,request-state}.ts`
 - Test: `tests/responses/fallback-history-prefetch.it.test.ts`
 - Test: `tests/responses/responses-conversation-rebuild.unit.test.ts`
+- Test: `tests/pipeline/inspect-request.unit.test.ts`
+- Test: `tests/infra/debug-dry-run-pipeline.http.test.ts`
 
 - [ ] **Step 6b.1: 写 prefetch red tests**
 
-Responses request 带 session/previous_response_id 且路由到 `/chat/completions` fallback 时，在任何同步 `translateOut/prepareWire` 前必须 await `list-session-entries` RPC；direct `/responses`、Anthropic/Gemini/CC cells 不发该 RPC。HTTP 与 Responses WS 都覆盖。
+Responses request 带 session/previous_response_id 且路由到 `/chat/completions` fallback 时，在任何同步 `translateOut/prepareWire` 前必须 await `list-session-entries` RPC；direct `/responses`、Anthropic/Gemini/CC cells 不发该 RPC。HTTP、Responses WS 与 debug dry-run／`inspectRequest` 都覆盖。Inspection 的 `parse`、`translate-inbound` stop stages 位于 route 前，断言不发 RPC；`translate`、`rewrite-in`、`prepare-wire` 会越过 route，fallback 正样本断言各发一次 RPC 并成功产出对应 inspection，不得只断言“不抛错”。
 
-- [ ] **Step 6b.2: 增加 driver async pre-translate seam**
+- [ ] **Step 6b.2: 增加共享的 driver async pre-translate seam**
 
-在 `runRequest` 的 parse＋route decision 之后、`outboundTranslateOut` 之前增加可选 `prepareRequestState(env): Promise<RequestEnvelope>`。Responses codec/handler 注册该 hook，将 RPC entries 写入 requestState 的 `responsesFallbackHistoryEntries`。不把 `OutboundLeg.translateOut` 或 `prepareWire` 改 async，不改变其他 cells。
+在 `DriverDeps` 增加可选 `prepareRequestState(env): Promise<RequestEnvelope>`，并新增单一 helper `prepareRequestStateAfterRoute(deps, env)`。`runRequest()` 与 `inspectRequest()` 都必须在 parse＋route decision 之后、`outboundTranslateOut` 之前 await 同一个 helper；不得在两条路径复制判断或预取逻辑。Responses production handler、Responses WS 与 debug dry-run 都显式注入同一个 `createResponsesFallbackHistoryPrefetch(queryClient)` callback：生产及 dry-run 使用 Batch 6a 的真实 readonly Worker query client；测试可注入实现同一接口的 controllable query client。callback 只在 Responses→`/chat/completions` fallback 且请求携带 history linkage 时调用 `list-session-entries`，将 immutable entries snapshot 写入 requestState 的 `responsesFallbackHistoryEntries`；其他 cells 与 route 前 inspection stages不发 RPC。不把 `OutboundLeg.translateOut` 或 `prepareWire` 改 async，不在 debug／inspection 路径回退同步 SQLite。
 
 - [ ] **Step 6b.3: 纯 rebuild core 消费 prefetched entries**
 
-`rebuildConversationMessages` 拆为 async fetch wrapper 与既有纯 `rebuildMessagesFromEntries`。`ResponsesFallbackScratch.ensure()` 只读 prefetched entries 并同步构造 messages；若 fallback cell 缺 prefetch，抛 wiring error，不同步读 DB，不接受 Promise。
+`rebuildConversationMessages` 拆为 async fetch wrapper 与既有纯 `rebuildMessagesFromEntries`。`ResponsesFallbackScratch.ensure()` 只读 prefetched entries 并同步构造 messages；若 fallback cell 缺 prefetch，抛 wiring error，不同步读 DB，不接受 Promise。Debug dry-run 不豁免这条 wiring gate：真实 Worker RPC 或显式注入的 controllable query client 必须先提供 snapshot。
 
-- [ ] **Step 6b.4: 重试稳定性**
+- [ ] **Step 6b.4: 重试与双入口稳定性**
 
-prefetch 每 request 一次，retry candidates 共享同一 immutable entries snapshot；不得在每 attempt 重查 History。测试在 retry 后断言 RPC count=1、rebuiltMessages 引用/字节稳定。
+prefetch 每 request／inspection 一次；retry candidates 共享同一 immutable entries snapshot，不得在每 attempt 重查 History。测试在 retry 后断言 RPC count=1、rebuiltMessages 引用/字节稳定。Driver unit test 以调用顺序 probe 同时证明 `runRequest()` 与 `inspectRequest()` 的 callback 都发生在 route decision 后、`outboundTranslateOut` 前；删除任一入口对 helper 的调用后，其对应正样本必须变红。Debug HTTP test 用可识别的 session history 证明 fallback dry-run 的 translate output 实际包含历史重建结果；direct Responses negative control 保留 RPC count=0，防止用“所有 inspection 都预取”修出 false-red。
 
 - [ ] **Step 6b.5: 门禁与提交**
 
 ```bash
-bun test tests/responses/fallback-history-prefetch.it.test.ts tests/responses/responses-conversation-rebuild.unit.test.ts tests/openai/openai-responses-codec.unit.test.ts
+bun test tests/responses/fallback-history-prefetch.it.test.ts tests/responses/responses-conversation-rebuild.unit.test.ts tests/pipeline/inspect-request.unit.test.ts tests/infra/debug-dry-run-pipeline.http.test.ts tests/openai/openai-responses-codec.unit.test.ts
 bun run typecheck
 bun run test:backend
 ```
 
-**证明：** Responses fallback 的同步翻译链已具备 Worker RPC 历史输入，不需要把 pipeline cell 接口全改 async。
+**证明：** Responses fallback 的同步翻译链与 production／inspection 两个 driver 入口都具备 Worker RPC 历史输入，不需要把 pipeline cell 接口全改 async。
 
 **不证明：** HTTP/management consumers 已切 RPC；主线程 readonly connection 仍存在。
 
