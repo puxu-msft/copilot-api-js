@@ -17,7 +17,8 @@ owner: task-3-implementer
 
 ## Recovery checkpoint after adapter investigation
 
-- Adapter checkpoint 尚未进入测试编写：工作树审计为 clean，没有未提交 adapter WIP；已核对 Responses factory 现有 `transport: "http" | "ws"` 接缝、四协议 terminal/error renderer 来源与冻结 spec §4.3 映射。下一步从 `tests/pipeline/delivery-adapters.unit.test.ts` 红测开始，单独闭合纯 adapter 基座，不接 candidate session／classifier production wiring。
+- Adapter checkpoint 尚未进入测试编写：工作树审计为 clean，没有未提交 adapter WIP；已核对 Responses factory 现有 `transport: "http" | "ws"` 接缝、四协议 terminal/error renderer 来源与冻结 spec §4.3 映射。
+- API 恢复门再次要求只保护当前状态；`tests/pipeline/delivery-adapters.unit.test.ts` 尚不存在。下一项具体红测：import 预期的 `createAnthropicDeliveryProtocolAdapter`，对 `content_block_start` frame 断言 `unit-open` identity `{ boundary: "content-block", key: "0" }`；预期 RED 必须精确为 adapter module/export 缺失，然后再扩展剩余冻结矩阵。
 
 ## Pending
 
