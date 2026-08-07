@@ -26,7 +26,6 @@ import {
   createAnthropicStreamAccumulator,
 } from "~/lib/anthropic/stream-accumulator"
 import { createResponsesBufferedMergeReducer } from "~/lib/codec/openai-responses/buffered-merge-reducer"
-import { isResponsesCommitBoundary } from "~/lib/codec/openai-responses/commit-boundaries"
 import { ENDPOINT } from "~/lib/models/endpoint"
 import {
   //
@@ -138,9 +137,6 @@ export function createResponsesCandidateResponseSessionFactory(transport: "http"
         state.bufferedMerge.observe(rendered)
         return rendered
       },
-      sawMessageStop: (state) => state.acc.status !== "",
-      sawUpstreamError: (state) => state.acc.streamError !== undefined,
-      ...(transport === "http" && { commitBoundaries: (_state: unknown, frame: ClientFrame) => isResponsesCommitBoundary(frame) }),
       ...(transport === "ws" && {
         stopAfterFrame: (_state: unknown, frame: ClientFrame) => {
           const event = parseResponsesEvent(frame)

@@ -79,7 +79,6 @@ import { HTTPError } from "~/lib/error"
 import { ENDPOINT } from "~/lib/models/endpoint"
 import { resolveModelTarget } from "~/lib/models/resolver"
 import { resolveStreamIdleTimeoutMs } from "~/lib/models/timeout-resolver"
-import { ccCommitBoundaries } from "~/lib/openai/cc-commit-boundaries"
 import {
   //
   accumulateOpenAIStreamEvent,
@@ -358,9 +357,6 @@ const createChatCandidateResponseSession: CandidateResponseSessionFactory = (inp
       }
       return { ...frame, data: restoreStreamToolNames(frame.data, mapper) }
     },
-    sawMessageStop: (state) => state.acc.finishReason !== "",
-    sawUpstreamError: (state) => state.acc.streamError !== undefined,
-    commitBoundaries: (_state, frame) => ccCommitBoundaries(frame),
     onBufferedResolve(state, outcome, retries, meta) {
       if (outcome === "success" && retries === 0) return
       recordProtectStreamingOutcome(outcome, retries, meta)

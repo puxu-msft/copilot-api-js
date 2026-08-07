@@ -2,25 +2,25 @@ import { openAIStreamErrorFrame } from "~/lib/openai/stream-error"
 
 import type {
   //
-  ClientProtocolError,
-  DeliveryFinishClass,
   DeliveryFrameClass,
   DeliveryProtocolAdapter,
 } from "../protocol"
+
+import {
+  //
+  classifyCommonFinish,
+  frameFailure,
+  parseFramePayload,
+} from "./shared"
 
 export function createResponsesDeliveryProtocolAdapter({ transport }: { readonly transport: "http" | "ws" }): DeliveryProtocolAdapter {
   const deliveryMode = transport === "http" ? "unit" : "response-terminal"
   return {
     deliveryMode,
     classify({ frame }): DeliveryFrameClass {
-      let payload: Record<string, unknown>
-      try {
-        const parsed: unknown = JSON.parse(frame.data ?? "")
-        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new TypeError("payload must be an object")
-        payload = parsed as Record<string, unknown>
-      } catch (cause) {
-        return failure("malformed-frame", "Responses frame is not valid JSON object", frame, cause)
-      }
+      const parsed = parseFramePayload(frame, "Responses")
+      if (!parsed.ok) return parsed.classified
+      const payload = parsed.payload
       const type = typeof payload.type === "string" ? payload.type : frame.event
       const terminal = terminalClass(type, frame)
       if (terminal) return terminal
@@ -30,43 +30,20 @@ export function createResponsesDeliveryProtocolAdapter({ transport }: { readonly
         const key = itemKey(payload)
         return key ?
             { kind: "unit-open", unit: { boundary: "output-item", key }, frame }
-          : failure("malformed-frame", "response.output_item.added requires item.id", frame, undefined)
+          : frameFailure("malformed-frame", "response.output_item.added requires item.id, item_id, or output_index", frame, undefined)
       }
       if (type === "response.output_item.done") {
         const key = itemKey(payload)
         return key ?
             { kind: "unit-close", unit: { boundary: "output-item", key }, frame }
-          : failure("malformed-frame", "response.output_item.done requires item.id", frame, undefined)
+          : frameFailure("malformed-frame", "response.output_item.done requires item.id, item_id, or output_index", frame, undefined)
       }
-      const key = typeof payload.item_id === "string" ? payload.item_id : undefined
+      const key = itemKey(payload)
       if (key) return { kind: "unit-append", unit: { boundary: "output-item", key }, frame }
       if (type?.includes("usage")) return { kind: "structural", structuralKind: "usage", frame }
-      return failure("unexpected-frame", `unsupported Responses frame type: ${String(type)}`, frame, undefined)
+      return frameFailure("unexpected-frame", `unsupported Responses frame type: ${String(type)}`, frame, undefined)
     },
-    classifyFinish(result): DeliveryFinishClass {
-      switch (result.kind) {
-        case "complete": {
-          return { kind: "natural-drain" }
-        }
-        case "valid-terminal-without-boundary": {
-          if (new TextEncoder().encode(result.terminal).byteLength > 256)
-            return finishFailure("malformed-frame", "finish terminal diagnostic exceeds 256 UTF-8 bytes", undefined)
-          return {
-            kind: "valid-terminal-without-boundary",
-            terminal: { semantic: "complete", sourceFrame: null, diagnostic: { source: "finish-result", terminal: result.terminal } },
-          }
-        }
-        case "truncated": {
-          return { kind: "truncated", error: { semantic: "truncated", detail: result.reason, sourceFrame: null, cause: undefined } }
-        }
-        case "terminal-failure": {
-          return finishFailure("terminal-failure", result.error instanceof Error ? result.error.message : String(result.error), result.error)
-        }
-        default: {
-          return assertNever(result)
-        }
-      }
-    },
+    classifyFinish: classifyCommonFinish,
     renderTerminal(terminal) {
       if (terminal.sourceFrame) return [terminal.sourceFrame]
       let type: "response.completed" | "response.incomplete" | "response.failed"
@@ -82,10 +59,6 @@ export function createResponsesDeliveryProtocolAdapter({ transport }: { readonly
       return []
     },
   }
-}
-
-function assertNever(value: never): never {
-  throw new Error(`Unexpected Responses finish result: ${String(value)}`)
 }
 
 function terminalClass(type: string | undefined, frame: Parameters<DeliveryProtocolAdapter["classify"]>[0]["frame"]): DeliveryFrameClass | undefined {
@@ -115,18 +88,7 @@ function terminalClass(type: string | undefined, frame: Parameters<DeliveryProto
 
 function itemKey(payload: Record<string, unknown>): string | undefined {
   const item = payload.item
-  return item && typeof item === "object" && typeof (item as { id?: unknown }).id === "string" ? (item as { id: string }).id : undefined
-}
-
-function failure(
-  semantic: ClientProtocolError["semantic"],
-  detail: string,
-  sourceFrame: ClientProtocolError["sourceFrame"],
-  cause: unknown,
-): DeliveryFrameClass {
-  return { kind: "protocol-error", error: { semantic, detail, sourceFrame, cause } }
-}
-
-function finishFailure(semantic: "malformed-frame" | "terminal-failure", detail: string, cause: unknown): DeliveryFinishClass {
-  return { kind: "terminal-failure", error: { semantic, detail, sourceFrame: null, cause } }
+  if (item && typeof item === "object" && typeof (item as { id?: unknown }).id === "string") return (item as { id: string }).id
+  if (typeof payload.item_id === "string") return payload.item_id
+  return typeof payload.output_index === "number" ? String(payload.output_index) : undefined
 }

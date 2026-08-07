@@ -4,33 +4,40 @@ import type {
   //
   DeliveryProtocolAdapter,
 } from "../protocol"
+import type { DeliveryControlCapability } from "../protocol"
 
-import { isDeliveryControlCapability } from "../control-capability"
+import {
+  //
+  classifyCommonFinish,
+  frameFailure,
+  parseFramePayload,
+} from "./shared"
 
 /** Create the Anthropic wire classifier. Renderers land separately test-first. */
-export function createAnthropicDeliveryProtocolAdapter(): DeliveryProtocolAdapter {
+export interface AnthropicDeliveryAdapter extends DeliveryProtocolAdapter {
+  readonly createProtocolPingCapability: () => DeliveryControlCapability
+}
+
+export function createAnthropicDeliveryProtocolAdapter(): AnthropicDeliveryAdapter {
+  class AdapterControlCapability {
+    readonly controlKind = "protocol-ping" as const
+  }
+  const issued = new WeakSet<object>()
+  const issue = (): DeliveryControlCapability => {
+    const capability = Object.freeze(new AdapterControlCapability())
+    issued.add(capability)
+    return capability as unknown as DeliveryControlCapability
+  }
+  const isControlCapability = (value: unknown, _kind: "protocol-ping"): value is DeliveryControlCapability =>
+    typeof value === "object" && value !== null && issued.has(value) && value instanceof AdapterControlCapability
   return {
     deliveryMode: "unit",
+    createProtocolPingCapability: issue,
     classify({ frame, controlCapability }) {
-      let data: string | undefined
-      try {
-        data = frame.data
-      } catch (cause) {
-        return protocolError("adapter-exception", "Anthropic frame access failed", frame, cause)
-      }
-
-      let parsed: unknown
-      try {
-        parsed = JSON.parse(data ?? "")
-      } catch (cause) {
-        return protocolError("malformed-frame", "Anthropic frame is not valid JSON", frame, cause)
-      }
-      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-        return protocolError("malformed-frame", "Anthropic frame payload must be an object", frame, undefined)
-      }
-
-      const payload = parsed as { type?: unknown; index?: unknown }
-      if (payload.type === "ping" && isDeliveryControlCapability(controlCapability, "protocol-ping")) {
+      const parsed = parseFramePayload(frame, "Anthropic")
+      if (!parsed.ok) return parsed.classified
+      const payload = parsed.payload as { type?: unknown; index?: unknown }
+      if (payload.type === "ping" && isControlCapability(controlCapability, "protocol-ping")) {
         return { kind: "control", frame, capability: controlCapability }
       }
       const unit = () => {
@@ -42,19 +49,19 @@ export function createAnthropicDeliveryProtocolAdapter(): DeliveryProtocolAdapte
           const identity = unit()
           return identity ?
               { kind: "unit-open", unit: identity, frame }
-            : protocolError("malformed-frame", "content_block_start requires a numeric index", frame, undefined)
+            : frameFailure("malformed-frame", "content_block_start requires a numeric index", frame, undefined)
         }
         case "content_block_delta": {
           const identity = unit()
           return identity ?
               { kind: "unit-append", unit: identity, frame }
-            : protocolError("malformed-frame", "content_block_delta requires a numeric index", frame, undefined)
+            : frameFailure("malformed-frame", "content_block_delta requires a numeric index", frame, undefined)
         }
         case "content_block_stop": {
           const identity = unit()
           return identity ?
               { kind: "unit-close", unit: identity, frame }
-            : protocolError("malformed-frame", "content_block_stop requires a numeric index", frame, undefined)
+            : frameFailure("malformed-frame", "content_block_stop requires a numeric index", frame, undefined)
         }
         case "message_start": {
           return { kind: "structural", structuralKind: "envelope-open", frame }
@@ -69,54 +76,11 @@ export function createAnthropicDeliveryProtocolAdapter(): DeliveryProtocolAdapte
           }
         }
         default: {
-          return protocolError("unexpected-frame", `unsupported Anthropic frame type: ${String(payload.type)}`, frame, undefined)
+          return frameFailure("unexpected-frame", `unsupported Anthropic frame type: ${String(payload.type)}`, frame, undefined)
         }
       }
     },
-    classifyFinish(result) {
-      switch (result.kind) {
-        case "complete": {
-          return { kind: "natural-drain" }
-        }
-        case "valid-terminal-without-boundary": {
-          if (new TextEncoder().encode(result.terminal).byteLength > 256) {
-            return {
-              kind: "terminal-failure",
-              error: {
-                semantic: "malformed-frame",
-                detail: "finish terminal diagnostic exceeds 256 UTF-8 bytes",
-                sourceFrame: null,
-                cause: undefined,
-              },
-            }
-          }
-          return {
-            kind: "valid-terminal-without-boundary",
-            terminal: { semantic: "complete", sourceFrame: null, diagnostic: { source: "finish-result", terminal: result.terminal } },
-          }
-        }
-        case "truncated": {
-          return {
-            kind: "truncated",
-            error: { semantic: "truncated", detail: result.reason, sourceFrame: null, cause: undefined },
-          }
-        }
-        case "terminal-failure": {
-          return {
-            kind: "terminal-failure",
-            error: {
-              semantic: "terminal-failure",
-              detail: result.error instanceof Error ? result.error.message : String(result.error),
-              sourceFrame: null,
-              cause: result.error,
-            },
-          }
-        }
-        default: {
-          return assertNever(result)
-        }
-      }
-    },
+    classifyFinish: classifyCommonFinish,
     renderTerminal(terminal) {
       return terminal.sourceFrame ? [terminal.sourceFrame] : [{ event: "message_stop", data: JSON.stringify({ type: "message_stop" }) }]
     },
@@ -127,17 +91,4 @@ export function createAnthropicDeliveryProtocolAdapter(): DeliveryProtocolAdapte
       return []
     },
   }
-}
-
-function assertNever(value: never): never {
-  throw new Error(`Unexpected Anthropic finish result: ${String(value)}`)
-}
-
-function protocolError(
-  semantic: "malformed-frame" | "unexpected-frame" | "adapter-exception",
-  detail: string,
-  sourceFrame: Parameters<DeliveryProtocolAdapter["classify"]>[0]["frame"],
-  cause: unknown,
-): ReturnType<DeliveryProtocolAdapter["classify"]> {
-  return { kind: "protocol-error", error: { semantic, detail, sourceFrame, cause } }
 }

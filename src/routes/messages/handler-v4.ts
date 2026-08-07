@@ -306,8 +306,6 @@ const createAnthropicCandidateResponseSession: CandidateResponseSessionFactory =
         }
         return frame
       },
-      sawMessageStop: (state) => state.acc.sawMessageStop,
-      sawUpstreamError: (state) => state.acc.streamError !== undefined,
       // A contentless refusal is a terminal upstream decision even without `message_stop` — see the
       // driver's commit gate. Kept separate from `sawUpstreamError` because that predicate also
       // drives the error-terminus flush path, which a refusal must not enter.

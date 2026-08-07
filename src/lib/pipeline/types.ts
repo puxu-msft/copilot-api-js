@@ -396,8 +396,6 @@ export interface RunResponseOpts {
    * thrown upstream errors do not invoke it.
    */
   finishResponse?: (rendererFrames: ReadonlyArray<ClientFrame>) => ResponseFinishResult
-  /** Candidate-local frame observer invoked once for each finish frame before the frame is yielded. */
-  onFinishFrame?: (frame: ClientFrame) => void
   /** Internal observer used by the sink driver to return the processor verdict without re-running finish. */
   onFinishResolved?: (result: ResponseFinishResult) => void
 }

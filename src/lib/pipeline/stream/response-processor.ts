@@ -53,6 +53,8 @@ export interface CreateResponseProcessorInput {
   readonly renderer?: CandidateResponseRenderer
   /** Response-only test adapter; production candidates pass renderer. */
   readonly renderResponse?: FormatCodec["renderResponse"]
+  /** The single post-render transformation/classification gate for every yielded client frame. */
+  readonly onRenderedFrame?: (frame: ClientFrame) => ClientFrame | undefined
   readonly onSettled?: () => void
 }
 
@@ -77,7 +79,17 @@ export function createResponseProcessor(input: CreateResponseProcessorInput): Re
     stream(upstream, opts) {
       if (consumed) throw new Error("[response-processor] processor already consumed")
       consumed = true
-      return processFrames({ env, dispatch: input.dispatch, upstream, opts, rewrites, states, renderer, onSettled: input.onSettled })
+      return processFrames({
+        env,
+        dispatch: input.dispatch,
+        upstream,
+        opts,
+        rewrites,
+        states,
+        renderer,
+        postRender: input.onRenderedFrame ?? opts?.onRenderedFrame,
+        onSettled: input.onSettled,
+      })
     },
   }
 }
@@ -90,11 +102,18 @@ interface ProcessFramesInput {
   readonly rewrites: ReadonlyArray<ResponseRewrite>
   readonly states: Array<RewriteState>
   readonly renderer: CandidateResponseRenderer
+  readonly postRender?: (frame: ClientFrame) => ClientFrame | undefined
   readonly onSettled?: () => void
 }
 
 async function* processFrames(input: ProcessFramesInput): AsyncIterable<ClientFrame> {
-  const { env, dispatch, upstream, opts, rewrites, states, renderer } = input
+  const { env, dispatch, upstream, opts, rewrites, states, renderer, postRender } = input
+  const emit = function* (frames: Iterable<ClientFrame>): Generator<ClientFrame> {
+    for (const frame of frames) {
+      const transformed = postRender ? postRender(frame) : frame
+      if (transformed) yield transformed
+    }
+  }
   const upstreamSse: Array<SseEventRecord> = []
   const streamStartMs = Date.now()
   let frameIndex = 0
@@ -203,8 +222,8 @@ async function* processFrames(input: ProcessFramesInput): AsyncIterable<ClientFr
 
       if (effectiveFrame !== undefined) {
         for (const rewritten of passThrough([effectiveFrame], rewrites, states, 0, sampleAction, captureRewrite)) {
-          if (opts?.skipRender) yield rewritten
-          else yield* renderFrames((frame, requestEnv) => renderer.renderResponse(frame, requestEnv), rewritten, env, dispatch)
+          if (opts?.skipRender) yield* emit([rewritten])
+          else yield* emit(renderFrames((frame, requestEnv) => renderer.renderResponse(frame, requestEnv), rewritten, env, dispatch))
         }
       }
       frameIndex++
@@ -212,8 +231,8 @@ async function* processFrames(input: ProcessFramesInput): AsyncIterable<ClientFr
     naturalDrain = true
   } finally {
     for (const flushed of flushChain(rewrites, states, captureRewrite, captureFlush)) {
-      if (opts?.skipRender) yield flushed
-      else yield* renderFrames((frame, requestEnv) => renderer.renderResponse(frame, requestEnv), flushed, env, dispatch)
+      if (opts?.skipRender) yield* emit([flushed])
+      else yield* emit(renderFrames((frame, requestEnv) => renderer.renderResponse(frame, requestEnv), flushed, env, dispatch))
     }
     if (!naturalDrain) input.onSettled?.()
   }
@@ -224,10 +243,7 @@ async function* processFrames(input: ProcessFramesInput): AsyncIterable<ClientFr
   // drain and before protocol finish classification so meta/closing frames cannot cross siblings.
   const rendererFrames = renderer.flushResponse(env)
   const finish = opts?.finishResponse?.(rendererFrames) ?? { kind: "complete" as const, frames: rendererFrames }
-  for (const frame of finish.frames) {
-    opts?.onFinishFrame?.(frame)
-    yield frame
-  }
+  yield* emit(finish.frames)
   opts?.onFinishResolved?.(finish)
   input.onSettled?.()
 }

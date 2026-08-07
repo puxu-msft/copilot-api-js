@@ -38,8 +38,7 @@ export async function probeCandidateResponse<TCandidate>(input: ProbeCandidate<T
       const next = await iterator.next()
       if (next.done) return { kind: "terminal", candidate, bufferedFrames }
       if (next.value.data === "[DONE]") continue
-      const transformed = session.responseOpts.onRenderedFrame ? session.responseOpts.onRenderedFrame(next.value) : next.value
-      if (!transformed) continue
+      const transformed = next.value
       bufferedFrames.push(transformed)
       if (session.boundary.result) {
         return {
@@ -76,8 +75,7 @@ function continueCandidateFrames(iterator: AsyncIterator<ClientFrame>, session: 
             const next = await iterator.next()
             if (next.done) return next
             if (next.value.data === "[DONE]") continue
-            const transformed = session.responseOpts.onRenderedFrame ? session.responseOpts.onRenderedFrame(next.value) : next.value
-            if (!transformed) continue
+            const transformed = next.value
             if (session.responseOpts.stopAfterFrame?.(transformed)) {
               await iterator.return?.()
               return { done: false, value: transformed }

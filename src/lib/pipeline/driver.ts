@@ -39,7 +39,6 @@ import {
   getDeliverySessionForAllocationPort,
   getDownstreamDeliverySession,
 } from "~/lib/pipeline/delivery/session"
-import { readSyntheticKind } from "~/lib/pipeline/frame-origin"
 import { createGenerationBudget } from "~/lib/pipeline/generation/generation-budget"
 import { classifyServerExecutionRisk } from "~/lib/pipeline/generation/hedge-policy"
 import { getUpstreamHook } from "~/lib/pipeline/hooks/loader"
@@ -863,13 +862,11 @@ function runResponse(
   env: RequestEnvelope,
   opts?: RunResponseOpts,
   generation?: DriverGenerationRuntime,
-  applyPostRender = true,
 ): AsyncIterable<ClientFrame> {
   const coordinated = generation?.bindings.get(upstream)?.candidate.processor
   if (coordinated) {
     const effectiveOpts = mergeCandidateResponseOpts(coordinated.responseOpts, opts)
-    const frames = coordinated.processor.stream(upstream, effectiveOpts)
-    return applyPostRender && !effectiveOpts.skipRender ? applyResponsePostRender(frames, effectiveOpts) : frames
+    return coordinated.processor.stream(upstream, effectiveOpts)
   }
   // Direct response-only callers (dry-run and focused processor tests) have no S4 generation.
   // This compatibility adapter still creates exactly one processor and owns no retry loop.
@@ -886,15 +883,7 @@ function runResponse(
     renderer,
   })
   const effectiveOpts = mergeCandidateResponseOpts(session.responseOpts, opts)
-  const frames = session.processor.stream(upstream, effectiveOpts)
-  return applyPostRender && !effectiveOpts.skipRender ? applyResponsePostRender(frames, effectiveOpts) : frames
-}
-
-async function* applyResponsePostRender(frames: AsyncIterable<ClientFrame>, opts: RunResponseOpts): AsyncIterable<ClientFrame> {
-  for await (const frame of frames) {
-    const transformed = opts.onRenderedFrame ? opts.onRenderedFrame(frame) : frame
-    if (transformed) yield transformed
-  }
+  return session.processor.stream(upstream, effectiveOpts)
 }
 
 function mergeCandidateResponseOpts(candidate: CandidateResponseSessionOptions | undefined, outer: RunResponseOpts | undefined): RunResponseOpts {
@@ -1124,7 +1113,7 @@ async function runResponseSink(
     }),
   }
   try {
-    for await (const frame of runResponse(deps, upstream, env, responseOpts, generation, false)) {
+    for await (const frame of runResponse(deps, upstream, env, responseOpts, generation)) {
       // Drop the `[DONE]` transport sentinel — never written to a sink (the format's
       // handler synthesizes its own trailing terminator; Anthropic emits none).
       if (frame.data === "[DONE]") continue
@@ -1132,19 +1121,11 @@ async function runResponseSink(
       // side effects); identity when the format doesn't supply one (Anthropic). Applied AFTER
       // the `[DONE]` drop so the hook never sees the sentinel. A `undefined` return SKIPS the
       // frame (Responses drops empty/unparseable frames the legacy loop never forwarded).
-      const toWrite = effectiveOpts.onRenderedFrame ? effectiveOpts.onRenderedFrame(frame) : frame
-      if (toWrite) {
-        env.ctx.captureGenerationFrameTransform?.(frame, toWrite, {
-          stage: "client-transform",
-          transformId: "client:on-rendered-frame",
-          forceDerived: toWrite !== frame || readSyntheticKind(toWrite) !== undefined,
-        })
-        await sink.write(toWrite)
-        // Early-stop after a terminal frame (Responses WS: don't read past response.completed —
-        // a trailing frame or a stalled upstream would otherwise hang to idle-timeout). The break
-        // runs the generator's `finally` (flushChain); empty for Responses, so nothing is lost.
-        if (effectiveOpts.stopAfterFrame?.(toWrite)) break
-      }
+      await sink.write(frame)
+      // Early-stop after a terminal frame (Responses WS: don't read past response.completed —
+      // a trailing frame or a stalled upstream would otherwise hang to idle-timeout). The break
+      // runs the generator's `finally` (flushChain); empty for Responses, so nothing is lost.
+      if (effectiveOpts.stopAfterFrame?.(frame)) break
     }
     return { kind: "complete", headers: upstream.headers, ...(finish && { finish }) }
   } catch (error) {
@@ -1387,15 +1368,9 @@ export async function runResponseBufferedSink(
         }),
       }
       try {
-        for await (const frame of runResponse(deps, current, currentEnv, responseOpts, generation, false)) {
+        for await (const frame of runResponse(deps, current, currentEnv, responseOpts, generation)) {
           if (frame.data === "[DONE]") continue
-          const toWrite = candidateOpts.onRenderedFrame ? candidateOpts.onRenderedFrame(frame) : frame
-          if (!toWrite) continue
-          currentEnv.ctx.captureGenerationFrameTransform?.(frame, toWrite, {
-            stage: "client-transform",
-            transformId: "client:on-rendered-frame",
-            forceDerived: toWrite !== frame || readSyntheticKind(toWrite) !== undefined,
-          })
+          const toWrite = frame
           if (retreated) {
             // Buffer cap already exceeded → live write-through for the rest (no more buffering). When an anchor
             // was injected BEFORE the retreat, the live continuation stays SEQUENTIAL (spec 2026-07-22 §3.3):

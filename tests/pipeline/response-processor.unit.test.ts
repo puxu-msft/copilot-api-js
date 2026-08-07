@@ -158,7 +158,15 @@ describe("P2-T1 branch-local response processor", () => {
     const order: Array<string> = []
     const yielded: Array<string> = []
     const closingFrames = [{ data: "closing-1" }, { data: "closing-2" }]
-    const processor = createResponseProcessor({ env: envelope(), responseRewrites: [], renderResponse: (frame) => frame })
+    const processor = createResponseProcessor({
+      env: envelope(),
+      responseRewrites: [],
+      renderResponse: (frame) => frame,
+      onRenderedFrame: (frame) => {
+        order.push(`classify:${frame.data ?? ""}`)
+        return frame
+      },
+    })
     const upstream = {
       headers: new Headers(),
       frames: {
@@ -171,7 +179,6 @@ describe("P2-T1 branch-local response processor", () => {
 
     for await (const frame of processor.stream(upstream, {
       finishResponse: () => ({ kind: "complete", frames: closingFrames }),
-      onFinishFrame: (frame) => order.push(`classify:${frame.data ?? ""}`),
       onFinishResolved: () => order.push("finish"),
     })) {
       yielded.push(frame.data ?? "")
@@ -185,7 +192,15 @@ describe("P2-T1 branch-local response processor", () => {
     let finishCalls = 0
     let frameClassifications = 0
     let finishClassifications = 0
-    const processor = createResponseProcessor({ env: envelope(), responseRewrites: [], renderResponse: (frame) => frame })
+    const processor = createResponseProcessor({
+      env: envelope(),
+      responseRewrites: [],
+      renderResponse: (frame) => frame,
+      onRenderedFrame: (frame) => {
+        frameClassifications++
+        return frame
+      },
+    })
     const upstream = {
       headers: new Headers(),
       frames: {
@@ -198,7 +213,6 @@ describe("P2-T1 branch-local response processor", () => {
     const consume = async () => {
       for await (const _frame of processor.stream(upstream, {
         finishResponse: () => (finishCalls++, { kind: "complete", frames: [{ data: "closing" }] }),
-        onFinishFrame: () => frameClassifications++,
         onFinishResolved: () => finishClassifications++,
       })) {
         // drain until the upstream throw
@@ -206,6 +220,6 @@ describe("P2-T1 branch-local response processor", () => {
     }
 
     await expect(consume()).rejects.toThrow("transport cut")
-    expect({ finishCalls, frameClassifications, finishClassifications }).toEqual({ finishCalls: 0, frameClassifications: 0, finishClassifications: 0 })
+    expect({ finishCalls, frameClassifications, finishClassifications }).toEqual({ finishCalls: 0, frameClassifications: 1, finishClassifications: 0 })
   })
 })

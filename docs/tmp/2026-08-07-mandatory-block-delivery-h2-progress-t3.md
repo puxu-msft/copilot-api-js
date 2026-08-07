@@ -34,5 +34,12 @@ owner: task-3-implementer
 - Exact mutation controls：第二 JSON classifier 使 boundary tests 2/2 红；重复 finish yield 使 processor tests 2 条红；移除 WeakSet identity 使伪造 capability gate 红。三项均在反向恢复前通过 `git apply --reverse --check`，恢复后各自定向测试转绿。
 - 完整定向验证：adapter／processor／candidate-session／boundary／hedge／Responses route candidate／buffered-merge wiring 共 37 tests passed、0 failed；`bun run typecheck` 通过；目标 ESLint 通过，仅输出 third-party `baseline-browser-mapping` 数据陈旧 warning；`git diff --check` 通过。
 - Task1b projection seam：candidate 只将最终 post-transform wire `ClientFrame` 传入 adapter；outcomes 不保存 parsed provenance，符合未来 parsed→wire projection 在 classification 之前的接缝。
-- §6b 对账：base `1e7b527a` 后 first-parent 共 12 个实现／checkpoint commits，均已逐项记录于本文件；Task 4 owner／sink／pump cutover 未提前实施。
+- §6b 初次收口快照：base `1e7b527a` 后 first-parent 共 12 个实现／checkpoint commits；后续 code-review fix 的最终计数见下方更新。
 - 未决：Task 4 才允许删除 compatibility projections并让唯一 delivery owner 直接消费 outcomes。
+- Code review Critical 修复：processor 内部成为所有普通／finish `ClientFrame` 的唯一 post-render／classification gate；driver live／buffered 与 hedge consumer 不再二次调用 `onRenderedFrame`。production seam 证明 finish terminal frame classify 一次、outcome 仅一个 terminal、`sawUpstreamError=false`。
+- Code review Critical 修复：frame／finish adapter throw 均在 candidate 边界转换为保留 cause 的 typed `adapter-exception`；finish throw 不再 reject processor。恢复 consumer reclassification 与 finish throw escape 两项 exact mutation 均使目标测试红，reverse-check 恢复后绿。
+- Acceptance findings：Responses HTTP identity 优先 `item.id → item_id → output_index`，added／delta／done 使用同 key；Chat finish_reason 作为 response buffer frame，尾随 usage 合法，finish verdict 才产生 terminal；共享 safe payload parser 令四 adapter 的 data getter throw 都归 `adapter-exception`；UTF-8 255／258 bytes 对五个 mode 全表双控。
+- Control capability authority 收进 Anthropic adapter 实例的私有 class + WeakSet closure；production 不再导出通用 mint／validate API，测试只经 adapter owner-bound capability seam。
+- Task1b integration：本树只验证 adapter 接收 post-transform wire frame；跨 Task1b parsed→wire 合并接缝留给 merged-seam gate，不在当前树伪造 provenance。
+- §6b 对账：review fix 前 first-parent 13 commits；本修复提交后共 14 commits。
+- Production-shaped probes：live owner、buffered block-level、hedge 共 9 tests passed、0 failed。

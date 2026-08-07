@@ -83,11 +83,8 @@ export interface CreateCandidateResponseSessionInput<State, Snapshot> {
   readonly onRenderedFrame?: (state: State, frame: ClientFrame) => ClientFrame | undefined
   readonly finish?: (state: State, renderer: CandidateResponseRenderer, rendererFrames: ReadonlyArray<ClientFrame>) => CandidateResponseFinish
   readonly snapshot: (state: State, renderer: CandidateResponseRenderer, finish: CandidateResponseFinish | undefined) => Snapshot
-  readonly sawMessageStop?: (state: State) => boolean
-  readonly sawUpstreamError?: (state: State) => boolean
   /** See {@link CandidateResponseSession.sawContentlessRefusal}. */
   readonly sawContentlessRefusal?: (state: State) => boolean
-  readonly commitBoundaries?: (state: State, frame: ClientFrame) => boolean
   readonly transformBufferedFlush?: (
     state: State,
     frames: ReadonlyArray<ClientFrame>,
@@ -189,9 +186,17 @@ export function createCandidateResponseSession<State, Snapshot>(
       finish = input.finish?.(state, input.renderer, rendererFrames) ?? { kind: "complete", frames: rendererFrames }
       return finish
     },
-    onFinishFrame: consumeFrame,
     onFinishResolved: (result) => {
-      const next = grammar.consume({ kind: "finish", classified: adapter.classifyFinish(result) })
+      let classified: ReturnType<DeliveryProtocolAdapter["classifyFinish"]>
+      try {
+        classified = adapter.classifyFinish(result)
+      } catch (cause) {
+        classified = {
+          kind: "terminal-failure",
+          error: { semantic: "adapter-exception", detail: cause instanceof Error ? cause.message : String(cause), sourceFrame: null, cause },
+        }
+      }
+      const next = grammar.consume({ kind: "finish", classified })
       for (const outcome of next) {
         outcomes.push(outcome)
         if (outcome.kind === "response-terminal") sawTerminal = true
@@ -220,6 +225,7 @@ export function createCandidateResponseSession<State, Snapshot>(
       ...(input.dispatchScopedCapture !== false && { dispatch: input.dispatch }),
       responseRewrites: input.responseRewrites,
       renderer: input.renderer,
+      onRenderedFrame: postRender,
       onSettled: captureTerminalSnapshot,
     }),
     responseOpts,

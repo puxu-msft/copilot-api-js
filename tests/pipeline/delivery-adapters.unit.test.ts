@@ -11,7 +11,6 @@ import { createAnthropicDeliveryProtocolAdapter } from "~/lib/pipeline/delivery/
 import { createChatCompletionsDeliveryProtocolAdapter } from "~/lib/pipeline/delivery/adapters/chat-completions"
 import { createGeminiDeliveryProtocolAdapter } from "~/lib/pipeline/delivery/adapters/gemini"
 import { createResponsesDeliveryProtocolAdapter } from "~/lib/pipeline/delivery/adapters/responses"
-import { createDeliveryControlCapability } from "~/lib/pipeline/delivery/control-capability"
 
 describe("delivery protocol adapters", () => {
   test("classifies an Anthropic content block start as the matching unit open", () => {
@@ -73,7 +72,7 @@ describe("delivery protocol adapters", () => {
   test("accepts only runtime-authenticated Anthropic control capabilities", () => {
     const adapter = createAnthropicDeliveryProtocolAdapter()
     const frame = { event: "ping", data: JSON.stringify({ type: "ping" }) }
-    const capability = createDeliveryControlCapability("protocol-ping")
+    const capability = adapter.createProtocolPingCapability()
     const forged = { controlKind: "protocol-ping" } as DeliveryControlCapability
 
     expect(adapter.classify({ frame, controlCapability: capability })).toEqual({ kind: "control", frame, capability })
@@ -97,44 +96,52 @@ describe("delivery protocol adapters", () => {
     expect(adapter.renderDone()).toEqual([])
   })
 
-  test("fails closed when a finish terminal diagnostic exceeds 256 UTF-8 bytes", () => {
-    const adapter = createAnthropicDeliveryProtocolAdapter()
+  test("all adapters accept 255-byte and reject 258-byte finish diagnostics", () => {
+    const adapters = [
+      createAnthropicDeliveryProtocolAdapter(),
+      createResponsesDeliveryProtocolAdapter({ transport: "http" }),
+      createResponsesDeliveryProtocolAdapter({ transport: "ws" }),
+      createChatCompletionsDeliveryProtocolAdapter(),
+      createGeminiDeliveryProtocolAdapter(),
+    ]
     const valid = "界".repeat(85)
     const oversized = "界".repeat(86)
 
-    expect(adapter.classifyFinish({ kind: "valid-terminal-without-boundary", frames: [], terminal: valid })).toMatchObject({
-      kind: "valid-terminal-without-boundary",
-      terminal: { diagnostic: { terminal: valid } },
-    })
-    expect(adapter.classifyFinish({ kind: "valid-terminal-without-boundary", frames: [], terminal: oversized })).toEqual({
-      kind: "terminal-failure",
-      error: {
-        semantic: "malformed-frame",
-        detail: "finish terminal diagnostic exceeds 256 UTF-8 bytes",
-        sourceFrame: null,
-        cause: undefined,
-      },
-    })
+    for (const adapter of adapters) {
+      expect(adapter.classifyFinish({ kind: "valid-terminal-without-boundary", frames: [], terminal: valid })).toMatchObject({
+        kind: "valid-terminal-without-boundary",
+        terminal: { diagnostic: { terminal: valid } },
+      })
+      expect(adapter.classifyFinish({ kind: "valid-terminal-without-boundary", frames: [], terminal: oversized })).toEqual({
+        kind: "terminal-failure",
+        error: {
+          semantic: "malformed-frame",
+          detail: "finish terminal diagnostic exceeds 256 UTF-8 bytes",
+          sourceFrame: null,
+          cause: undefined,
+        },
+      })
+    }
   })
 
   test("classifies Responses HTTP output items as units while WS buffers to a response terminal", () => {
     const http = createResponsesDeliveryProtocolAdapter({ transport: "http" })
     const ws = createResponsesDeliveryProtocolAdapter({ transport: "ws" })
     const created = { event: "response.created", data: JSON.stringify({ type: "response.created", response: { id: "resp_1" } }) }
-    const added = { event: "response.output_item.added", data: JSON.stringify({ type: "response.output_item.added", output_index: 0, item: { id: "item_1" } }) }
+    const added = { event: "response.output_item.added", data: JSON.stringify({ type: "response.output_item.added", output_index: 0, item: {} }) }
     const delta = {
       event: "response.output_text.delta",
-      data: JSON.stringify({ type: "response.output_text.delta", output_index: 0, item_id: "item_1", delta: "x" }),
+      data: JSON.stringify({ type: "response.output_text.delta", output_index: 0, delta: "x" }),
     }
-    const done = { event: "response.output_item.done", data: JSON.stringify({ type: "response.output_item.done", output_index: 0, item: { id: "item_1" } }) }
+    const done = { event: "response.output_item.done", data: JSON.stringify({ type: "response.output_item.done", output_index: 0, item: {} }) }
     const completed = { event: "response.completed", data: JSON.stringify({ type: "response.completed", response: { id: "resp_1", status: "completed" } }) }
 
     expect(http.deliveryMode).toBe("unit")
     expect(ws.deliveryMode).toBe("response-terminal")
     expect(http.classify({ frame: created })).toEqual({ kind: "structural", structuralKind: "envelope-open", frame: created })
-    expect(http.classify({ frame: added })).toEqual({ kind: "unit-open", unit: { boundary: "output-item", key: "item_1" }, frame: added })
-    expect(http.classify({ frame: delta })).toEqual({ kind: "unit-append", unit: { boundary: "output-item", key: "item_1" }, frame: delta })
-    expect(http.classify({ frame: done })).toEqual({ kind: "unit-close", unit: { boundary: "output-item", key: "item_1" }, frame: done })
+    expect(http.classify({ frame: added })).toEqual({ kind: "unit-open", unit: { boundary: "output-item", key: "0" }, frame: added })
+    expect(http.classify({ frame: delta })).toEqual({ kind: "unit-append", unit: { boundary: "output-item", key: "0" }, frame: delta })
+    expect(http.classify({ frame: done })).toEqual({ kind: "unit-close", unit: { boundary: "output-item", key: "0" }, frame: done })
     expect(http.classify({ frame: completed })).toEqual({
       kind: "response-terminal",
       terminal: { semantic: "complete", sourceFrame: completed, diagnostic: { source: "wire-frame", terminal: "response.completed" } },
@@ -183,22 +190,34 @@ describe("delivery protocol adapters", () => {
     const adapter = createChatCompletionsDeliveryProtocolAdapter()
     const delta = { data: JSON.stringify({ id: "chatcmpl_1", choices: [{ index: 0, delta: { content: "x" }, finish_reason: null }] }) }
     const usage = { data: JSON.stringify({ id: "chatcmpl_1", choices: [], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } }) }
-    const terminal = { data: JSON.stringify({ id: "chatcmpl_1", choices: [{ index: 0, delta: {}, finish_reason: "stop" }] }) }
+    const finishReason = { data: JSON.stringify({ id: "chatcmpl_1", choices: [{ index: 0, delta: {}, finish_reason: "stop" }] }) }
     const wireError = { event: "error", data: JSON.stringify({ error: { message: "boom", type: "server_error" } }) }
 
     expect(adapter.deliveryMode).toBe("response-terminal")
     expect(adapter.classify({ frame: delta })).toEqual({ kind: "response-append", frame: delta })
     expect(adapter.classify({ frame: usage })).toEqual({ kind: "structural", structuralKind: "usage", frame: usage })
-    expect(adapter.classify({ frame: terminal })).toEqual({
-      kind: "response-terminal",
-      terminal: { semantic: "complete", sourceFrame: terminal, diagnostic: { source: "wire-frame", terminal: "stop" } },
-    })
+    expect(adapter.classify({ frame: finishReason })).toEqual({ kind: "response-append", frame: finishReason })
     expect(adapter.classify({ frame: wireError })).toMatchObject({ kind: "response-terminal", terminal: { semantic: "failed" } })
-    expect(adapter.renderTerminal({ semantic: "complete", sourceFrame: terminal, diagnostic: { source: "wire-frame", terminal: "stop" } })).toEqual([terminal])
+    expect(adapter.renderTerminal({ semantic: "complete", sourceFrame: finishReason, diagnostic: { source: "wire-frame", terminal: "stop" } })).toEqual([
+      finishReason,
+    ])
     expect(adapter.renderError({ semantic: "truncated", detail: "missing finish_reason", sourceFrame: null, cause: undefined })).toEqual([
       { event: "error", data: JSON.stringify({ error: { message: "missing finish_reason", type: "server_error" } }) },
     ])
     expect(adapter.renderDone()).toEqual([{ data: "[DONE]" }])
+  })
+
+  test("buffers Chat finish_reason and trailing usage until the finish boundary", () => {
+    const adapter = createChatCompletionsDeliveryProtocolAdapter()
+    const finishReason = { data: JSON.stringify({ choices: [{ index: 0, delta: {}, finish_reason: "stop" }] }) }
+    const usage = { data: JSON.stringify({ choices: [], usage: { prompt_tokens: 1, completion_tokens: 2, total_tokens: 3 } }) }
+
+    expect(adapter.classify({ frame: finishReason })).toEqual({ kind: "response-append", frame: finishReason })
+    expect(adapter.classify({ frame: usage })).toEqual({ kind: "structural", structuralKind: "usage", frame: usage })
+    expect(adapter.classifyFinish({ kind: "valid-terminal-without-boundary", frames: [], terminal: "stop" })).toMatchObject({
+      kind: "valid-terminal-without-boundary",
+      terminal: { semantic: "complete", diagnostic: { terminal: "stop" } },
+    })
   })
 
   test("maps every Chat Completions finish variant", () => {
@@ -272,6 +291,29 @@ describe("delivery protocol adapters", () => {
         }),
       },
     ])
+  })
+
+  test("turns data getter throws into adapter-exception for every adapter", () => {
+    const cause = new Error("data getter exploded")
+    const frame = Object.defineProperty({}, "data", {
+      get() {
+        throw cause
+      },
+    }) as { data: string }
+    const adapters = [
+      createAnthropicDeliveryProtocolAdapter(),
+      createResponsesDeliveryProtocolAdapter({ transport: "http" }),
+      createResponsesDeliveryProtocolAdapter({ transport: "ws" }),
+      createChatCompletionsDeliveryProtocolAdapter(),
+      createGeminiDeliveryProtocolAdapter(),
+    ]
+
+    for (const adapter of adapters) {
+      expect(adapter.classify({ frame })).toEqual({
+        kind: "protocol-error",
+        error: { semantic: "adapter-exception", detail: expect.any(String), sourceFrame: frame, cause },
+      })
+    }
   })
 
   test("maps every response finish variant without consuming its frames", () => {
