@@ -27,11 +27,11 @@ status: batch-1a-active
 
 ## Batch 1a 剩余项
 
-- [ ] capacity=1、FIFO、abort、close、double release、single bind、未知 operation、duplicate terminal 的红绿测试。
-- [ ] capacity 热调：调大即时放行；调小允许暂时 over-capacity，直到 `reserved < capacity` 才放行；`0 <= unacked <= reserved`。
-- [ ] `history.persistence_queue_capacity` 配置：strictly positive、默认 256、热更新专用 listener、`config.schema.json` 由生成器更新。
-- [ ] admission status primitive：capacity/reserved/unacked/waiting/estimatedBytes/overCapacity；不改 HTTP status。
-- [ ] 定向门、正负控、backend 回归、独立 review 0 blocker／major、fast-forward 合入 master。
+- [x] capacity=1、FIFO、abort、close、double release、single bind、未知 operation、duplicate terminal 的红绿测试。
+- [x] capacity 热调：调大即时放行；调小允许暂时 over-capacity，直到 `reserved < capacity` 才放行；`0 <= unacked <= reserved`。
+- [x] `history.persistence_queue_capacity` 配置：strictly positive、默认 256、热更新专用 listener、`config.schema.json` 由生成器更新。
+- [x] admission status primitive：capacity/reserved/unacked/waiting/estimatedBytes/overCapacity；不改 HTTP status。
+- [ ] 正负控、fast/backend 回归、独立 review 0 blocker／major、fast-forward 合入 master。
 
 ## 在途意图
 
@@ -39,7 +39,9 @@ status: batch-1a-active
 - `runtime.ts` 继续只拥有 Worker transport、generation、pending envelope／RPC 与 ACK tombstone；admission 独占 reservation、waiter、operation binding 与 terminal outcome 状态。
 - `registry.ts` 继续保持 lazy：Batch 1a 可增加 admission singleton，但 import 不创建 Worker、timer、DB 或 waiter；runtime 与 admission 的构造／测试注入端口保持分离。
 - Batch 1a 起点为 `master@03c3dd13`；新 worktree 的 `bun run test:fast` 基线为 4736 pass／0 fail（16 shards，24.28s）。
-- Red 阶段已建立三份 oracle：admission 状态机、config/state/listener、registry lazy singleton；目标命令当前 0 pass／3 fail，分别因 `admission.ts`、admission registry exports、queue-capacity state export 尚不存在而红，全部从本 worktree 解析。
+- Red 阶段建立三份 oracle：admission 状态机、config/state/listener、registry lazy singleton；初始目标命令 0 pass／3 fail，分别因 `admission.ts`、admission registry exports、queue-capacity state export 尚不存在而红。Green 后目标 15 pass／0 fail；Worker regression 50 pass／0 fail；config regression 431 pass／0 fail；resetter/isolation 8 pass／0 fail；最终九文件目标集 489 pass／0 fail；typecheck、精确 lint、`diff --check` 绿。
+- 实现中发现 plan 已声明但 Batch 1a 测试原未覆盖的 pause 接缝：pause 前已排队 waiter 必须继续按 FIFO settle，pause 后 acquire 才冻结；先写 2s timeout 红测试，再以 waiter boundary 修复为 8 pass／0 fail。`waitForQuiescence()` 仍独立等待 reservation 清零。
+- `failBeforeTerminal` 原实现只 release、丢弃 plan 要求记录的 error；先加 snapshot red，再记录 `preTerminalFailuresTotal/lastPreTerminalError`。admission singleton 与 capacity listener 均登记到统一 `RESETTERS`，避免跨测试泄漏。
 - tsdown 0.22.3 的 array 多入口实测会保留源目录并破坏 `dist/main.mjs`；已按本地官方类型声明改用 object alias entry，固定两个 basename。
 - Bun 1.3.14 的 `node:worker_threads` fixture 抛错时先发 `error`，随后 `exit` code 可为 0；oracle 锁定 error 内容与 `error→exit` 顺序，不硬编码非零码。
 - 首次全 backend 连续三次稳定为 6994 pass／1 fail：`shutdown.unit` 的自然 drain 用 30ms completion 与 100ms deadline 真实 timer 竞速，高 shard 负载下误入 Phase 3；改用既有 `FakeClock` 后具名 25／25、shutdown 50／50、全 backend 6995／6995。

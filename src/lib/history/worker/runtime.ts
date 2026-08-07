@@ -23,6 +23,7 @@ import {
   assertStructuredCloneSafe,
   createRawTargetDescriptor,
   detectHistorySqliteDriver,
+  estimateHistoryEnvelopeBytes,
   parseMainToWorkerMessage,
   parseWorkerToMainMessage,
 } from "./protocol"
@@ -400,7 +401,7 @@ export class HistoryPersistenceRuntimeImpl implements HistoryPersistenceRuntime 
 
   private updatePendingStatus(): void {
     let pendingBytes = 0
-    for (const pending of this.pendingEnvelopes.values()) pendingBytes += estimateEnvelopeBytes(pending.envelope)
+    for (const pending of this.pendingEnvelopes.values()) pendingBytes += estimateHistoryEnvelopeBytes(pending.envelope)
     this.status = { ...this.status, pendingEnvelopes: this.pendingEnvelopes.size, pendingBytes }
   }
 
@@ -581,10 +582,4 @@ function emptyStatus(workerGeneration: WorkerGeneration): HistoryWorkerStatus {
     outcomeCallbackErrorsTotal: 0,
     statusObserverErrorsTotal: 0,
   }
-}
-
-function estimateEnvelopeBytes(envelope: HistoryOperationEnvelope): number {
-  let bytes = 0
-  for (const command of envelope.publication.rawAttachment.rawCommands) bytes += command.bytes.byteLength
-  return bytes
 }

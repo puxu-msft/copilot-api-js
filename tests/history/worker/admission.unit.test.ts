@@ -49,7 +49,15 @@ function controllableSink() {
 
 async function expectPending(promise: Promise<unknown>): Promise<void> {
   const marker = Symbol("pending")
-  expect(await Promise.race([promise.then(() => "settled", () => "settled"), Promise.resolve(marker)])).toBe(marker)
+  expect(
+    await Promise.race([
+      promise.then(
+        () => "settled",
+        () => "settled",
+      ),
+      Promise.resolve(marker),
+    ]),
+  ).toBe(marker)
 }
 
 describe("HistoryAdmissionControllerImpl", () => {
@@ -59,14 +67,15 @@ describe("HistoryAdmissionControllerImpl", () => {
     const controller = new HistoryAdmissionControllerImpl({ capacity: 1, sink, now: () => now })
 
     const first = await controller.acquire({ signal: new AbortController().signal })
-    now = 120
     const secondPromise = controller.acquire({ signal: new AbortController().signal })
     const thirdPromise = controller.acquire({ signal: new AbortController().signal })
     await expectPending(secondPromise)
     await expectPending(thirdPromise)
     expect(controller.snapshot()).toMatchObject({ capacity: 1, reserved: 1, waiting: 2, unacked: 0, overCapacity: false })
 
+    now = 120
     first.releaseBeforeBinding("fixture complete")
+    expect(() => first.releaseBeforeBinding("duplicate release")).toThrow(/already released/i)
     const second = await secondPromise
     expect(second.historyAdmissionWaitMs).toBe(20)
     await expectPending(thirdPromise)
@@ -75,7 +84,15 @@ describe("HistoryAdmissionControllerImpl", () => {
     const third = await thirdPromise
     expect(third.reservationId).not.toBe(second.reservationId)
     third.releaseBeforeBinding("fixture complete")
-    expect(controller.snapshot()).toEqual({ capacity: 1, reserved: 0, unacked: 0, waiting: 0, estimatedBytes: 0, overCapacity: false })
+    expect(controller.snapshot()).toEqual({
+      capacity: 1,
+      reserved: 0,
+      unacked: 0,
+      waiting: 0,
+      estimatedBytes: 0,
+      overCapacity: false,
+      preTerminalFailuresTotal: 0,
+    })
   })
 
   test("aborts only the waiting acquire and close rejects waiters plus future acquires", async () => {
@@ -126,7 +143,11 @@ describe("HistoryAdmissionControllerImpl", () => {
     reservation.bindOperationId("op-failed")
 
     controller.failBeforeTerminal("op-failed", new Error("context construction failed"))
-    expect(controller.snapshot().reserved).toBe(0)
+    expect(controller.snapshot()).toMatchObject({
+      reserved: 0,
+      preTerminalFailuresTotal: 1,
+      lastPreTerminalError: "context construction failed",
+    })
     expect(() => controller.failBeforeTerminal("op-failed", new Error("duplicate"))).toThrow(/unknown operation/i)
   })
 
@@ -173,6 +194,27 @@ describe("HistoryAdmissionControllerImpl", () => {
     outcomes.get(2)?.("conflict")
     await expect(large).resolves.toBe("persisted")
     await expect(small).resolves.toBe("conflict")
+  })
+
+  test("pause drains pre-pause waiters but holds later acquires until resume", async () => {
+    const { sink } = controllableSink()
+    const controller = new HistoryAdmissionControllerImpl({ capacity: 1, sink })
+    const first = await controller.acquire({ signal: new AbortController().signal })
+    const beforePause = controller.acquire({ signal: new AbortController().signal })
+    const paused = controller.pause("raw-authority-handoff")
+    const afterPause = controller.acquire({ signal: new AbortController().signal })
+    await expectPending(paused)
+
+    first.releaseBeforeBinding("done")
+    const admittedBeforePause = await beforePause
+    await expect(paused).resolves.toBeUndefined()
+    await expectPending(afterPause)
+
+    admittedBeforePause.releaseBeforeBinding("done")
+    await expectPending(afterPause)
+    controller.resume()
+    const admittedAfterPause = await afterPause
+    admittedAfterPause.releaseBeforeBinding("done")
   })
 
   test("waitForQuiescence resolves only after all reservations settle", async () => {

@@ -14,11 +14,17 @@ import {
   setHistoryAdmissionControllerForTests,
   setHistoryPersistenceRuntimeForTests,
 } from "~/lib/history/worker/registry"
-import { CONFIG_MANAGED_DEFAULTS } from "~/lib/state"
+import {
+  //
+  CONFIG_MANAGED_DEFAULTS,
+  resetConfigManagedState,
+  setHistoryConfig,
+} from "~/lib/state"
 
 afterEach(() => {
   setHistoryAdmissionControllerForTests(undefined)
   setHistoryPersistenceRuntimeForTests(undefined)
+  resetConfigManagedState()
 })
 
 test("importing the registry is lazy and does not create the runtime until requested", () => {
@@ -37,4 +43,10 @@ test("admission registry is independently lazy and uses the configured default c
   expect(peekHistoryAdmissionController()).toBe(admission)
   expect(admission.snapshot().capacity).toBe(CONFIG_MANAGED_DEFAULTS.historyPersistenceQueueCapacity)
   expect(getHistoryPersistenceRuntime()).toBe(runtime)
+})
+
+test("the lazy admission singleton follows queue-capacity hot updates", () => {
+  const admission = getHistoryAdmissionController()
+  setHistoryConfig({ historyPersistenceQueueCapacity: 19 })
+  expect(admission.snapshot().capacity).toBe(19)
 })

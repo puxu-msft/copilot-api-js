@@ -4,8 +4,10 @@ import {
   beforeEach,
   describe,
   expect,
+  spyOn,
   test,
 } from "bun:test"
+import consola from "consola"
 import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
@@ -34,6 +36,7 @@ let tmpDir: string
 let savedAppDir: string
 let savedConfigYaml: string
 let originalState = snapshotStateForTests()
+let warnSpy: ReturnType<typeof spyOn<typeof consola, "warn">>
 
 async function writeConfig(content: string): Promise<void> {
   await fs.writeFile(PATHS.CONFIG_YAML, content, "utf8")
@@ -49,9 +52,11 @@ beforeEach(async () => {
   resetConfigCache()
   resetApplyState()
   setBundledConfigForTests({})
+  warnSpy = spyOn(consola, "warn").mockImplementation(((..._args: Array<unknown>) => undefined) as unknown as typeof consola.warn)
 })
 
 afterEach(async () => {
+  warnSpy.mockRestore()
   restoreStateForTests(originalState)
   ;(PATHS as { APP_DIR: string }).APP_DIR = savedAppDir
   ;(PATHS as { CONFIG_YAML: string }).CONFIG_YAML = savedConfigYaml
@@ -67,6 +72,9 @@ describe("history.persistence_queue_capacity config", () => {
     expect(validateConfig({ history: { persistence_queue_capacity: 0 } }).history?.persistence_queue_capacity).toBeUndefined()
     expect(validateConfig({ history: { persistence_queue_capacity: -1 } }).history?.persistence_queue_capacity).toBeUndefined()
     expect(validateConfig({ history: { persistence_queue_capacity: 1.5 } }).history?.persistence_queue_capacity).toBeUndefined()
+    const warnings = warnSpy.mock.calls.filter((call) => String(call[0]).includes("persistence_queue_capacity"))
+    expect(warnings.length).toBeGreaterThan(0)
+    expect(warnings.every((call) => String(call[0]).includes("positive number"))).toBe(true)
   })
 
   test("defaults to 256 and resetConfigManagedState restores that default", () => {
