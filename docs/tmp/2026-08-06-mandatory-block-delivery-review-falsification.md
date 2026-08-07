@@ -271,3 +271,15 @@ Reviewer 原报告在命题③把 capability 变异验收写成 `:815`、在命�
 ### 第七轮 verdict
 
 **事实性发现：0 blocker / 0 major。未发现阻断性或 major 问题；事实／判据视角可定稿。**
+
+## 闭环状态复核 0/0
+
+> Closure commit：`955408a5b85cb3ce14bf4e8dc1ff3a81226f30a8`；技术冻结提交：`0e524438cfa9d7197484731b9f89fc8c263223cb`。限定复核 wrap-up artifacts，不重审技术设计。
+
+- 本报告第七轮忠实保留固定 SHA 与 `0 blocker / 0 major`。主会话行号更正有效：技术冻结 spec 的 capability mutation 在 `:856`，public-fixture／wire-oracle 规则在 `:777-784`；原判断未改变。
+- 实施者报告第七轮同样以 `0e524438cfa9d7197484731b9f89fc8c263223cb` 为目标并给出 `0 blocker / 0 major`，未用不同 SHA 或单视角冒充双放行。
+- Spec §11 准确汇总两份报告：同一固定 SHA、两位原 reviewer、均 `0/0`，并明确评审闭环只放行书面目标，不表示实现落地。
+- Spec 顶部保持 `confirmed-not-implemented` 并指向 DESIGN 活架构；closure DESIGN 仍记 `runResponseSink` live／配置门控／cap retreat 等当前态，没有未来态冒充现状。
+- 对三文件扫描 `等待.*第七轮|待.*第七轮|待原 reviewer|等待两位|未完成复审|待复审` 无命中；不存在已完成评审仍写 pending。
+
+**Verdict：0 blocker / 0 major。闭环状态产物可交付。**

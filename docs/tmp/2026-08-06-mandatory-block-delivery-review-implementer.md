@@ -226,3 +226,9 @@ Canonical record／journal 保留 dispatch event sequence 与 digest；CAS 只�
 ### 第七轮 verdict
 
 `0 blocker / 0 major`。G1、G2、G3、G4 均通过双向核验；**可定稿**。
+
+## 闭环状态复核
+
+> closure commit：`955408a5b85cb3ce14bf4e8dc1ff3a81226f30a8`；技术冻结提交：`0e524438cfa9d7197484731b9f89fc8c263223cb`。
+
+以 `git show 955408a5:<path>` 和 `git diff 0e524438..955408a5 -- <三文件>` 复核：实施者报告第七轮 `0 blocker / 0 major` 与本 reviewer 原 verdict 一致；事实／判据报告对同一 SHA 记录 `0 blocker / 0 major`。Spec §11 明确两视角同一 SHA 均为 `0/0`、闭环完成且可交用户审核，同时保留 `confirmed-not-implemented`，不把目标态冒充已实现。两份报告状态头均为第七轮放行、无 stale pending。闭环状态复核：`0 blocker / 0 major`。
