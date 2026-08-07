@@ -459,6 +459,13 @@ const FIELDS: ReadonlyArray<FieldSpec> = [
     defaultStateValue: CONFIG_MANAGED_DEFAULTS.streamCommitAfterSec,
   },
   {
+    configKey: "anthropic.precontent_recovery.enabled",
+    stateKey: "preContentRecovery",
+    sampleYamlValue: "false",
+    expectedStateValue: { enabled: false },
+    defaultStateValue: CONFIG_MANAGED_DEFAULTS.preContentRecovery,
+  },
+  {
     configKey: "anthropic.protect_streaming_generation",
     stateKey: "protectStreamingGeneration",
     sampleYamlValue: "tool_use_only",

@@ -497,6 +497,7 @@ export function makeDeliverySseSink(stream: SSEStreamingApi, opts: SseSinkOption
   const delivery = createDownstreamDeliverySession({
     sink: rawSink,
     monotonicNow: Date.now,
+    ...(opts.isRealContentFrame && { isRealContentFrame: opts.isRealContentFrame }),
     ...(wireState && { wireState }),
     ...(legacyAnchorMirror && { legacyAnchorMirror }),
     ...(recordWirePartialDelivery && { recordWirePartialDelivery }),
@@ -699,6 +700,7 @@ export function makeDeliveryWsSink(ws: WSContext, opts: WsSinkOptions = {}): Cli
   const delivery = createDownstreamDeliverySession({
     sink: rawSink,
     monotonicNow: Date.now,
+    ...(opts.isRealContentFrame && { isRealContentFrame: opts.isRealContentFrame }),
     ...(heartbeat
       && heartbeat.intervalSec > 0 && {
         heartbeat: {

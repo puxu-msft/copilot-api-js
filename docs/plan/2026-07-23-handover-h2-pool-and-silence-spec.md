@@ -1,8 +1,8 @@
 # 会话交接：h2 池事故簇 + 上游静默 spec（2026-07-23）
 
-> **状态：进行中**（B2 实施到 P4 Task 4.0 完成）。**核验基线：** master `c716d921` / 分支 `feat/upstream-silence-recovery` @ `796ef05b`（30 提交），**2026-07-28**。
-> **工作区**：隔离 worktree `.worktrees/upstream-silence-recovery`（**未合回 master**；node_modules 向上解析主树、**不是**依赖隔离）。分支上无未提交改动（除 gitignored 的 `.superpowers/sdd/progress.md` ledger）。主树有并发 peer 的未提交 WIP（`.claude/settings.json`、`docs/lifecycle.md`、`docs/memory/*` 等）——**不是本轮的，别动**。
-> **已跑门禁**（基线时刻）：`typecheck` 绿；`bun test --parallel .unit.test .it.test .http.test` = 6602 pass / 8 skip / 3 fail，**3 个失败单跑全过**（2 个 Bun worker SIGILL + 1 个负载敏感 UDS sidecar）。⚠ **`bun run test:backend` 的汇总计数不可信**（见 §0.2 末尾），取真实数请用上面那条直接命令。
+> **状态：进行中**。B2 基础设施已完成到 P4 Task 4.3a，并于 **2026-08-06** 按渐进策略 fast-forward 到 master `9d97c444`；**4.3b recovery dispatch 尚未接线，所以没有用户可观察的 B2 自动恢复行为**。
+> **工作区**：隔离 worktree `.worktrees/upstream-silence-recovery` 与 master 同为 `9d97c444`；仅剩未提交的 `.superpowers/sdd/progress.md` ledger，未进入主线。主树仍有并发 peer WIP，后续继续用隔离 worktree + 渐进合并。
+> **本阶段门禁**：typecheck、精确 lint、fast、backend 均通过；聚焦 delivery/reconcile/semantic-gate 36/36。History native 首轮因 worktree 加载主树旧构建产物而 18 fail，执行 `bun run build:history-search` 后全消失；随后一次 rate-limiter 负载时序红单跑 5/5 绿、完整重跑 0 fail。⚠ `parallel-test.ts` 汇总数会漂移，只把退出码/0 fail 当门，精确用例集合用 junit reporter。
 >
 > 交接给新会话继续。**最新实施真相在 §0.2（2026-07-28 更新）——先读它**；§0/§0.1 是 2026-07-23 的历史语境，其中「Q1 ≥125s」「B1+B2-P0 可开工」等表述已被 §0.2 supersede。**权威事实以代码 + §0.2 为准**。
 
@@ -50,7 +50,7 @@
 - ✅ **Task 0.2**（`a819834f`）——**delivery-level semantic-content gate（承载对抗审 CRITICAL 修法）**：gate 读 `hasEmittedRealClientContent`（**非** `boundary.result`——后者只在 `content_block_stop` 翻转、会漏「delta 已发 stop 未到」窗口致重复内容），翻转**复用既有** `onFirstRealContent` seam（`isClientContentFrame` 驱动、只数非-synthetic、只一次、live/buffered 共用）。主会话 + 异模型 reviewer 双重独立核实。
 - ✅ **Task 0.3**（`eff92dc0`）——`coordinator.runRecoveryFromPreReadyFailure`（镜像 runHedge、parent-less、at-most-once、**不 settle parent**：primary 已自行 settle failed；有解释注释）。
 - ✅ **Task 0.4**（`85b8c5c6` + backlog `50b09c00`）——`driver.runPreContentRecovery` + pre-ready failure ownership（存+rethrow 字节等价回归锁）+ **🔴 server-tool 双执行 gate 经异模型安全审计确认无绕过**（`classifyServerExecutionRisk` 在 dispatch 前、throw 非 continue、分类最终 target wire、`allowServerTools` 不在此路径）。
-- ✅ **Task 0.5**（`41a351fa` + fix `5d386f72` / `325e3771`）——recovery sink lifetime supervisor。**plan Task 0.5 文本写于 heartbeat 重写之前，实施按现状适配**（5 处偏离全经 reviewer code-read 确证为正当）：只抑制 `close`/`finalize`，`freezeHeartbeat`/`suspendHeartbeat`/`resumeHeartbeat` 原样转发；`settleFinal()` 为幂等 `Promise<void>`（await 异步 `session.terminate()`）；**新增 `inheritDownstreamDeliverySession`**（plan 未提、实施者从当前代码挖出的真实约束：driver 用 sink 对象身份从 WeakMap 找 generation-owned delivery）。**未接线**。异模型 reviewer 自做 5 次 mutation 独立验证；2 条 Important 已闭合——(a) `await` 假绿缺口补守卫（正样本对照：删 `await` → 2 fail 真咬）；(b) Concern 事实订正 + `makeReconcilingSink` identity 缺陷登记 backlog。
+- ✅ **Task 0.5**（`41a351fa` + fix `5d386f72` / `325e3771`）——recovery sink lifetime supervisor。**历史实现说明**：当时的底座通过 WeakMap sink 身份找 owner，故 Task 0.5 曾新增 `inheritDownstreamDeliverySession`；随后 Task 4.1′ 证明 rewriting decorator 继承 identity 会让 hedge winner 绕过 reconcile。**2026-08-06 渐进合并后的当前架构**：master 已用显式 `wireAllocationPort` 穿透 wrapper，旧 inherit API 与 allowlist 守卫已删除；supervisor 只负责跨 attempt 生命周期（close→suspend、显式 resume、`settleFinal()` 真 close/finalize）。不要按本条历史叙述复活 WeakMap identity workaround。
   - **已知 concern（P4/P5 处理）**：`ClientSink.finalize` 类型声明 `void` 但 delivery 实际返回 Promise（`await-thenable`/`no-floating-promises` 均 off，lint 不会报）——接线时收紧为 `void | Promise<void>`。
   - **supervisor 所有权守卫**：`settleFinal()` **必须放进 owner 的 `finally`**，否则 owner 中途抛出会让 generation heartbeat timer 永久存活（unref 不阻塞退出，但会持续向已死客户端写 ping）。
 

@@ -118,3 +118,16 @@
 - **V7 闭环提交时点** — ✅ 提交后机械核验通过。项目 commit `9c546408` 的 `git diff-tree --no-commit-id --name-only -r` 精确包含 7 份文档／memory/实验更新 + 2 份独立评审报告，零额外路径；全局 skill commit `f9de23f` 精确包含 `isolating-from-a-shared-git-worktree/SKILL.md` 与 `proving-where-a-command-ran/verification-log.md` 两路径。两组集合均与提交前冻结清单逐行相等。｜结论：数据不足（本轮编辑该 log，不投证实票）
 - **独立审计限制（历史时点）** — 初次记录时会话有“Do not call the AgentTool unless the user requested it”的运行时约束，故当时 §1 subagent audit 未执行；本记录没有把主会话自审冒充独立评审。
 - **限制随后解除、审计已执行并闭环** — 用户明确授权后，派两条正交独立评审：协议/doc↔code 报告 `docs/tmp/2026-08-05-websearch-closeout-review-protocol.md`（Round 1：0 blocker / 3 major；Round 2：剩 1 major；Round 3：0 blocker / 0 major，可定稿）；instruction/Git 报告 `docs/tmp/2026-08-05-websearch-closeout-review-skill.md`（Round 1：2 major，Round 2 剩 1 major，Round 3：0 blocker / 0 major，可定稿）。本轮编辑该 log，按投票规则不投证实票。
+
+## 2026-08-05 · GitHub Enterprise 鉴权主机规格（sha `75c00185`）
+
+- **V1 触发链** — ⚠️ 本轮触发原因是规格阶段完成、准备交用户审阅；主会话在最终 reviewer PASS 后主动调用本 skill，没有等用户提醒，也没有先宣告完成。但 V1 的现行断言只覆盖“上下文快满、任务没完”，本轮不属于它的适用场景，不能投证实票。｜结论：数据不足
+- **V7 闭环提交时点** — ⚠️ 机械检查再次抓到 `exp/` ignore 形态。初次 `git status --short` 只显示两份 spec，实验目录完全不可见；`git check-ignore -v` 定位 `.gitignore:27:exp/`，随后以逐文件 `git add -f` 纳入。最终门禁逐文件 `git ls-files` 列出 8/8 产物、逐路径 `status --porcelain -uall` 为空，`git diff-tree -r 75c00185` 包含两份最终收口文档。事实观察成立，但本轮追加本日志本身已编辑 `.claude/skills/session-closeout/`，按第 11 行投票规则不得投证实票。｜结论：数据不足
+- **V15 逐条落盘** — ⚠️ 负向证据，但按当前豁免规则只能记数据不足。本轮 reviewer 两次 `Server error mid-response`：派活没有给 `REPORT_FILE`，两次都没有可恢复的磁盘报告，只能 `SendMessage` 同一 agent 并把任务压到 20–40 行分段。无法证明中断前已闭合 finding，因此不投证伪票；但它再次说明“不指定报告文件时，任何已完成思考都只能赌最终 return”。｜结论：数据不足
+- **V8 正交视角** — ⚠️ 本轮是两个先后 reviewer，但第二位承担的是前一位 transcript 物理不可达后的替代复核，不是预先设计的正交视角，因此不计入 V8 分母。逐轮增量仍显著：合并态最后又抓出 debug 无 token 分支缺 oracle。｜结论：数据不足
+- **V9 鉴别力正控** — ⚠️ 规格中的每类新 gate 都写了目标 mutation，尤其合并态评审补出的 debug 三类 mutation、配置事务三类 mutation、proxy 旧预采样 mutation；实现尚未开始，均明确保留为执行期 gate，没有把“写了 mutation”冒充已实测红。事实观察成立，但本轮追加本日志本身已编辑 `.claude/skills/session-closeout/`，按第 11 行投票规则不得投证实票。｜结论：数据不足
+- **投票规则结构缺陷** — 当前第 11 行把“本轮编辑过该目录”一律判为不能投证实票，而本 skill 又要求每次使用后追加本目录内的 `verification-log.md`；两条合用会使任何按要求记录的会话都无法投证实票。该冲突需由独立的规则维护任务裁决：可选方向是明确排除“仅追加 verification-log”，或由外部记录者落票。本轮不修改 instruction text，避免在产品规格收尾中顺手改变全局流程。｜结论：待裁决
+
+## 2026-08-06 · 上游空正文 HTTP 499 有界重试（sha `d2607ec9`）
+
+- **V9 鉴别力正控** — ⚠️ **强观测但不投证实票**。本轮新增 classifier → production retry registry → driver 三层判据；先观察旧实现因 499 被分类为 `bad_request` 而三层红，再把目标机制精确变异为 `status === 498`，三层测试分别在分类结果、策略认领和 1000ms backoff／第二次 transport 调用处再次变红；反向应用冻结 patch 后三层恢复为绿。负向样本同时锁定非空 499 保持 `bad_request`、空正文 401/403 保持 `auth_expired`。本轮按本 skill 要求追加该 verification log，因而命中投票规则第 11 行“编辑过该目录”，只记录客观观测。｜结论：数据不足（正控已实际改变并验证测试形状）

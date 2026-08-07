@@ -36,9 +36,17 @@ import {
   isCellMigrated,
   resolveCellAssembly,
 } from "~/lib/pipeline/cell-assembly"
-import { state } from "~/lib/state"
+import {
+  //
+  setStateForTests,
+  state,
+} from "~/lib/state"
 
 import { mockModel } from "../helpers/factories"
+import { autoRestoreState } from "../helpers/state-fixture"
+
+// This suite mutates config-managed state in the target-wire sanitization case.
+autoRestoreState()
 
 const ALL_CLIENT_FORMATS: ReadonlyArray<ClientFormat> = ["anthropic", "openai-cc", "openai-responses", "gemini"]
 const ALL_LEGS: ReadonlyArray<UpstreamEndpoint> = [ENDPOINT.MESSAGES, ENDPOINT.CHAT_COMPLETIONS, ENDPOINT.RESPONSES, ENDPOINT.WS_RESPONSES]
@@ -212,5 +220,51 @@ describe("C1 — CellAssembly exhaustive records + L1 existence guard", () => {
     const viaStrategies = resolveCellAssembly("openai-cc", ENDPOINT.RESPONSES).buildStrategies(viaEnv)
     expect(viaStrategies.length).toBeGreaterThan(0)
     expect(RETRY_SEMANTICS["openai-cc"](viaEnv).maxRetries).toBe(state.maxReactiveRetries)
+  })
+
+  test("anthropic→Responses sanitizes translated tool + forced choice at the outbound leg", () => {
+    setStateForTests({ sanitizeToolNames: true })
+    // Live GHC rejected the translated `search.web` wire because the Anthropic
+    // sanitize rewrite is MESSAGES-gated and the Responses leg previously had
+    // no S3 rewrite. Exercise the actual S2→S3 seam here.
+    const body = {
+      model: "gpt-5.6-luna",
+      max_tokens: 64,
+      messages: [{ role: "user", content: "call search.web" }],
+      tools: [{ name: "search.web", description: "search", input_schema: { type: "object" } }],
+      tool_choice: { type: "tool", name: "search.web" },
+    }
+    const ctx = {
+      id: "req_cell_tool_name",
+      toolNameMapper: null as import("~/lib/tool-name-mapper").ToolNameMapper | null,
+      recordTranslationDegradation: () => {},
+      setToolNameMapper(next: import("~/lib/tool-name-mapper").ToolNameMapper | null) {
+        this.toolNameMapper = next
+      },
+    }
+    const makeEnv = (currentBody: unknown): RequestEnvelope => {
+      const env = {
+        clientFormat: "anthropic" as const,
+        targetEndpoint: ENDPOINT.RESPONSES,
+        model: mockModel("gpt-5.6-luna", { vendor: "OpenAI", supported_endpoints: [ENDPOINT.RESPONSES] }),
+        stream: false,
+        body: currentBody,
+        view: {},
+        prepareHints: {},
+        ctx,
+        with(patch: Partial<Pick<RequestEnvelope, "body" | "targetEndpoint" | "prepareHints" | "requestState">>) {
+          return makeEnv(patch.body ?? currentBody)
+        },
+      }
+      return env as unknown as RequestEnvelope
+    }
+
+    const cell = resolveCellAssembly("anthropic", ENDPOINT.RESPONSES)
+    let env = cell.translateOut(makeEnv(body))
+    for (const rewrite of cell.requestRewrites(env)) env = rewrite.apply(env).env
+    const translated = env.body as { tools?: Array<{ name?: string }>; tool_choice?: { name?: string } }
+
+    expect(translated.tools?.[0]?.name).toBe("search_web")
+    expect(translated.tool_choice?.name).toBe("search_web")
   })
 })

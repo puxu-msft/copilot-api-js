@@ -10,6 +10,7 @@ import type { RequestEnvelope } from "~/lib/pipeline/envelope"
 import type { RequestState } from "~/lib/pipeline/request-state"
 
 import { createCandidateStateFactory } from "~/lib/pipeline/generation/candidate-state"
+import { createToolNameMapper } from "~/lib/tool-name-mapper"
 
 function betaProbe(label: string): BetaProbe {
   let outbound: Array<string> = []
@@ -48,6 +49,7 @@ describe("P1-T2 candidate state fork contract", () => {
     const sourceHeaders = { "anthropic-beta": "seed-beta" }
     const sourceSanitization = { stats: { removed: 1 } }
     const sourcePreprocess = { strippedReadTagCount: 1, dedupedToolCallCount: 0 }
+    const sourceToolNameMapper = createToolNameMapper(["my/tool"], { allowDots: false, maxNameLength: 128 })
     const sourceState: RequestState = {
       truncateBaseline: sourceBaseline,
       resanitize: (payload) => payload,
@@ -56,6 +58,7 @@ describe("P1-T2 candidate state fork contract", () => {
       clientRequestHeaders: sourceHeaders,
       initialSanitizationInfo: sourceSanitization,
       preprocessInfo: sourcePreprocess,
+      sourceToolNameMapper,
       reverseMapperHolder: { source: true },
       responsesFallbackScratch: { source: true },
     }
@@ -92,6 +95,9 @@ describe("P1-T2 candidate state fork contract", () => {
     expect(primary.requestState?.clientAnthropicBeta).toBe("seed-beta")
     expect(primary.requestState?.initialSanitizationInfo).toEqual({ stats: { removed: 1 } })
     expect(primary.requestState?.preprocessInfo).toEqual({ strippedReadTagCount: 1, dedupedToolCallCount: 0 })
+    expect(primary.requestState?.sourceToolNameMapper).toBe(sourceToolNameMapper)
+    expect(hedge.requestState?.sourceToolNameMapper).toBe(sourceToolNameMapper)
+    expect(primary.requestState?.sourceToolNameMapper?.toClient("my_tool")).toBe("my/tool")
 
     expect(primary.requestState?.betaProbe).not.toBe(hedge.requestState?.betaProbe)
     primary.requestState?.betaProbe?.recordOutbound({ "anthropic-beta": "primary-only" })

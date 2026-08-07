@@ -11,6 +11,7 @@ import consola from "consola"
 
 import type { PipelineInfo } from "~/lib/history"
 
+import { readSyntheticKind } from "~/lib/pipeline/frame-origin"
 import { classifyStreamError } from "~/lib/stream"
 
 import type {
@@ -51,11 +52,15 @@ export interface CreateDownstreamDeliverySessionOptions {
   /** Migration-only close-side mirror; removed with AnchorState legacy fields at M5. */
   readonly legacyAnchorMirror?: { anchorClosed: boolean }
   readonly recordWirePartialDelivery?: (diag: NonNullable<PipelineInfo["wirePartialDelivery"]>) => void
+  /** Client-format semantic-content predicate, evaluated only after a successful candidate wire write. */
+  readonly isRealContentFrame?: (frame: ClientFrame) => boolean
 }
 
 /** Generation-scoped delivery port consumed by the retry/competition engine. */
 export interface DownstreamDeliverySession {
   readonly identity: symbol
+  /** Irreversible, delivery-scoped flag for real client content that completed a successful owner write. */
+  readonly hasEmittedRealClientContent: boolean
   readonly snapshot: DeliverySnapshot
   readonly clientSink: ClientSink
   readonly allocationPort: WireBlockAllocationPort
@@ -101,6 +106,7 @@ export function createDownstreamDeliverySession(options: CreateDownstreamDeliver
   const { sink } = options
   const monotonicNow = options.monotonicNow ?? performance.now.bind(performance)
   const heartbeat = options.heartbeat
+  const isRealContentFrame = options.isRealContentFrame
   const serializer = createDeliverySerializer()
   const identity = Symbol("downstreamDeliverySession")
   let state: DeliverySnapshot["state"] = "open"
@@ -122,6 +128,7 @@ export function createDownstreamDeliverySession(options: CreateDownstreamDeliver
   let scaffoldAttempted = false
   let contentScaffoldAttempted = false
   let pendingOpenBlocks: Array<DeliveredOpenBlock> = []
+  let hasEmittedRealClientContent = false
   let finalized: Promise<void> | undefined
 
   const write = async (entry: DeliveryFrame, allowTerminating = false): Promise<void> => {
@@ -231,6 +238,9 @@ export function createDownstreamDeliverySession(options: CreateDownstreamDeliver
   }
 
   const applyWireFrame = (entry: DeliveryFrame): void => {
+    if (entry.provenance.kind === "candidate" && readSyntheticKind(entry.frame) === undefined && isRealContentFrame?.(entry.frame)) {
+      hasEmittedRealClientContent = true
+    }
     const payload = parsePayload(entry.frame.data)
     if (!payload) return
     if (payload.type === "message_start") messageEnvelope = syntheticKind(entry) === "synthetic-message-start" ? "synthetic" : "real"
@@ -505,6 +515,9 @@ export function createDownstreamDeliverySession(options: CreateDownstreamDeliver
 
   const session: DownstreamDeliverySession = {
     identity,
+    get hasEmittedRealClientContent() {
+      return hasEmittedRealClientContent
+    },
     get snapshot() {
       return Object.freeze({
         state,

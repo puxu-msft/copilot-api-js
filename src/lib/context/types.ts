@@ -476,6 +476,8 @@ export interface RequestContext {
   readonly modelOperationSnapshot: ModelOperationRecord
   /** Canonical terminal record after observability finalization, otherwise null. */
   readonly modelOperationTerminalRecord: ModelOperationRecord | null
+  /** Whether canonical observability has crossed its immutable terminal seal. */
+  readonly modelOperationSealed: boolean
 
   readonly originalRequest: OriginalRequest | null
   readonly response: ResponseData | null
@@ -520,6 +522,8 @@ export interface RequestContext {
   whenModelOperationFinalized(): Promise<ModelOperationRecord>
   setToolNameMapper(mapper: ToolNameMapper | null): void
   setPipelineInfo(info: PipelineInfo): void
+  /** Persist request-side protocol degradation independently of full-replace pipeline-info writers. */
+  recordTranslationDegradation(diag: NonNullable<NonNullable<PipelineInfo["translation"]>["anthropicToResponses"]>): void
   /** Persist max_tokens terminal diagnostics independently of full-replace pipeline-info writers. */
   recordMaxTokensTruncation(diag: NonNullable<PipelineInfo["maxTokensContinuation"]>): void
   /** Persist a downstream owner failure that occurred after the first external wire write was attempted. */

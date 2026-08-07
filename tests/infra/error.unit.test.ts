@@ -138,6 +138,25 @@ describe("classifyError", () => {
     expect(result.status).toBe(403)
   })
 
+  test.each(["", "   \n\t  "])("classifies HTTPError 499 with an empty body as network_error", (body) => {
+    const headers = new Headers({ "x-github-request-id": "request-id" })
+    const error = new HTTPError("Client Closed Request", 499, body, undefined, headers)
+    const result = classifyError(error)
+
+    expect(result.type).toBe("network_error")
+    expect(result.status).toBe(499)
+    expect(result.responseHeaders).toBe(headers)
+    expect(result.raw).toBe(error)
+  })
+
+  test("keeps HTTPError 499 with a non-empty body as bad_request", () => {
+    const error = new HTTPError("Client Closed Request", 499, '{"error":"cancelled"}')
+    const result = classifyError(error)
+
+    expect(result.type).toBe("bad_request")
+    expect(result.status).toBe(499)
+  })
+
   test("classifies HTTPError 5xx as server_error", () => {
     const error = new HTTPError("Server error", 500, "")
     expect(classifyError(error).type).toBe("server_error")

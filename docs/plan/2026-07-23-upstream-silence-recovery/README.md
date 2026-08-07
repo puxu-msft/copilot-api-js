@@ -68,7 +68,7 @@ B1 与 B2-P0 可并行启动（无共享文件）；B2-P1→P6 必须串行（�
 | `coordinator.runRecoveryFromPreReadyFailure(reason, env)` | 新方法，服务 pre-ready 挂载点（无 parent 候选） | B2-P4 |
 | `driver.runPreContentRecovery(reason)` | 新方法，驱动上者，配合 driver 闭包记的 pending primary 失败状态 | B2-P4 |
 | `driver.runResponseRecovery(upstream, env, reason)` | 新方法，服务 ready-态挂载点，内部复用既有 `coordinator.runRecovery`（需给后者加一个可选 `retryNextStrategy` 覆盖参数，避免 History 标记与既有 buffered-retry 混淆） | B2-P4 |
-| `spliceFreshAttemptFrame(mode, sink, freshFrames)` | 按 keepalive mode 分支的 wire-level 拼接函数，复用 `reconcileLiveFrame` 既有判定；两挂载点共用 | B2-P4 |
+| 持久 `makeReconcilingSink(inner, anchorState, anchorHooks)` | 按当前 wire state 复用 `reconcileLiveFrame` 既有判定；在 handler 一次构造并跨首次 attempt 与 fresh attempt 复用，转发全部可选 sink 控制方法；**不得继承 delivery identity**，否则 hedge winner 写入会绕过改写 decorator | B2-P4 |
 | `precontent-recovery` verdict | History `attempts[]` 新增语义：首个 pre-content 失败 attempt 标记 `discarded`/`failed`（reason=`precontent-recovery`），fresh attempt 是新 attempt 且 winner | B2-P4/P6 |
 | B3 fail-fast 上限 | 配置键（命名待定，暂拟 `stream_precontent_failfast_sec`），**默认 0=禁用**（never-false-kill 硬约束：wall-clock 不得捕获合法思考；挂起靠 GHC 确定性 RST + B2 救援）；运维可显式设一个上限 | B3 |
 

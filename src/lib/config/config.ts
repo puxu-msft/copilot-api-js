@@ -707,6 +707,7 @@ export async function applyConfigToState(): Promise<Config> {
       if (a.stream_keepalive_escalate_sec !== undefined) setAnthropicBehavior({ streamKeepaliveEscalateSec: a.stream_keepalive_escalate_sec })
       if (a.stream_keepalive_mode !== undefined) setAnthropicBehavior({ streamKeepaliveMode: a.stream_keepalive_mode })
       if (a.stream_commit_after_sec !== undefined) setAnthropicBehavior({ streamCommitAfterSec: clampCommitWindowSec(a.stream_commit_after_sec) })
+      if (a.precontent_recovery?.enabled !== undefined) setAnthropicBehavior({ preContentRecovery: { enabled: a.precontent_recovery.enabled } })
       if (a.protect_streaming_generation !== undefined) setAnthropicBehavior({ protectStreamingGeneration: a.protect_streaming_generation })
       // Per-vendor buffered-retry cap override for Anthropic (legacy
       // protect_streaming_{max_retries,heartbeat,buffer_cap_bytes} migrate here via

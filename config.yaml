@@ -746,6 +746,11 @@ anthropic:
   # 流式延迟-commit 窗口秒数。0 = 立即 commit；默认 180。开 200 SSE 流之前，代理最多等 N 秒让上游 settle：窗口内返回/报错→转发真 HTTP 状态（客户端保留原生重试/退避/token 刷新）；超窗口仍静默（opus pre-response thinking）→ COMMIT 200 + 立即冷启动 ping，之后错误降级成富 SSE error 帧。clamp 到 240s，位于实测 ~300s pre-header 上限（undici 默认 headersTimeout）之下——commit 前一个字节都不发，故本窗口与那个上限走同一个时钟。
   stream_commit_after_sec: 180
 
+  # Recover once with a fresh dispatch only when the upstream fails before real content reaches the client. This is the B2-P0 configuration scaffold; it is intentionally not wired into request handling until the later recovery phases.
+  # 仅在上游于真实内容抵达客户端前失败时，用一次全新 dispatch 恢复。这是 B2-P0 配置骨架，故意不在后续恢复阶段前接入请求处理。
+  precontent_recovery:
+    enabled: true
+
   # Client-proxy keepalive ping cadence (seconds) for streaming. 0 = disabled; default 20. After the commit window opens the 200 SSE stream, a connection-level heartbeat (decoupled from the upstream) pings every N seconds since the last client write — whether the upstream is silent, thinking, or buffered — so a long mid-stream/buffered stall never trips Claude Code's ~60s idle watchdog. Cadence = the MINIMUM interval between pings (a real frame or ping advances the anchor); a cold-start commit fires one immediate ping, then this throttles the rest. Clamped to a large margin under 60 (empirical safe ceiling ~45s). Heartbeats do NOT reset the upstream idle-timeout (a dead upstream still fails per timeouts.stream_idle); recorded only in forwardedSseEvents.
   # 客户端-代理流式 keepalive ping cadence 秒数。0 = 禁用；默认 20。commit 窗口开 200 后，连接级心跳（与上游解耦）距上次写客户端 N 秒就发一帧 ping——无论上游静默/thinking/buffered——故长 mid-stream/buffered 停滞绝不触发 Claude Code ~60s 空闲看门狗。cadence = ping 之间的最小间隔（真帧或 ping 都推进锚点）；冷启动 commit 先发一个立即 ping，之后由它节流。clamp 到远低于 60 的大余量（实测安全上界 ~45s）。心跳不重置上游 idle-timeout；只记入 forwardedSseEvents。
   stream_keepalive_ping_sec: 20

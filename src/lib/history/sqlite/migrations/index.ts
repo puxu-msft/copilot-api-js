@@ -11,6 +11,8 @@ import type { MigrationFn } from "umzug"
 
 import type { SqliteDatabase } from "~/lib/sqlite/driver"
 
+import { SUMMARY_PROJECTION_MIGRATION_SQL } from "~/lib/history/v3/summary-schema"
+
 /**
  * A single forward schema migration.
  *
@@ -54,11 +56,11 @@ export function sqlMigration(name: string, body: (db: SqliteDatabase) => void): 
 }
 
 /**
- * INTENTIONALLY EMPTY: the floor already builds the current schema, so there is
- * nothing to migrate yet. The first real schema change lands here as
- * `001-<slug>`, preferably via `sqlMigration` (atomic) — or, if it cannot run in
- * a transaction, written individually re-entrant (SQLite has no
- * `ADD COLUMN IF NOT EXISTS`, so additive columns probe `PRAGMA table_info`
- * first; see `migrateEntriesColumns`). Array order IS apply order.
+ * Shipped forward migrations, in apply order. Keep schema-only changes atomic
+ * through `sqlMigration`; long data backfills run separately and re-entrantly.
  */
-export const MIGRATIONS: Array<HistoryMigration> = []
+export const MIGRATIONS: Array<HistoryMigration> = [
+  sqlMigration("001-operation-summary-projection", (db) => {
+    db.exec(SUMMARY_PROJECTION_MIGRATION_SQL)
+  }),
+]

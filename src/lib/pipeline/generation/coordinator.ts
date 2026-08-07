@@ -53,7 +53,18 @@ export interface CreateGenerationCoordinatorInput<TProcessor> {
 export interface GenerationCoordinator<TProcessor> {
   readonly deliveryIdentity: symbol
   runPrimary(): Promise<CoordinatedCandidate<TProcessor>>
-  runRecovery(parent: CoordinatedCandidate<TProcessor>, reason: string, env?: RequestEnvelope): Promise<CoordinatedCandidate<TProcessor>>
+  /**
+   * Starts the one parent-less recovery candidate after the primary failed before becoming ready.
+   * The failed primary settles itself, so this operation must never settle a parent; it is guarded
+   * at most once for the coordinator's shared generation budget.
+   */
+  runRecoveryFromPreReadyFailure(reason: string, env: RequestEnvelope): Promise<CoordinatedCandidate<TProcessor>>
+  runRecovery(
+    parent: CoordinatedCandidate<TProcessor>,
+    reason: string,
+    env?: RequestEnvelope,
+    retryNextStrategy?: string,
+  ): Promise<CoordinatedCandidate<TProcessor>>
   /**
    * Continuation-retry (spec 2026-07-22 §5.1, ADR D3): the append counterpart of {@link runRecovery}.
    * `runRecovery` REPLACES a failed parent whose content never reached the client (settles it
@@ -94,6 +105,7 @@ export function createGenerationCoordinator<TProcessor>(input: CreateGenerationC
   const candidateReservations = new Map<CandidateHandle, import("./generation-budget").BudgetReservation>()
   let primaryStarted = false
   let hedgeStarted = false
+  let recoveryFromPreReadyStarted = false
   let raceStarted = false
   let active: CandidateRuntime<TProcessor> | undefined
   let cancelledReason: string | undefined
@@ -130,10 +142,17 @@ export function createGenerationCoordinator<TProcessor>(input: CreateGenerationC
       return start({ role: "primary", env: input.env })
     },
 
-    async runRecovery(parent, reason, env = parent.env) {
+    runRecoveryFromPreReadyFailure(_reason, env) {
+      if (recoveryFromPreReadyStarted) throw new Error("[generation-coordinator] recovery from pre-ready failure already started")
+      recoveryFromPreReadyStarted = true
+      // The primary never became ready and has already settled itself as failed in candidate.ts, so there is no ready parent to settle here.
+      return start({ role: "recovery", env })
+    },
+
+    async runRecovery(parent, reason, env = parent.env, retryNextStrategy = "buffered-retry") {
       const parentRuntime = runtimes.get(parent.candidate)
       if (!parentRuntime) throw new Error("[generation-coordinator] recovery parent is not owned by this coordinator")
-      await parent.settleDispatch({ verdict: "discarded", reason, retryNextStrategy: "buffered-retry" })
+      await parent.settleDispatch({ verdict: "discarded", reason, retryNextStrategy })
       parentRuntime.settle({ verdict: "failed", reason })
       candidateReservations.get(parentRuntime.handle)?.release()
       if (active === parentRuntime) active = undefined

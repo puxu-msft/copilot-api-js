@@ -52,6 +52,7 @@
 import consola from "consola"
 
 import type { Model } from "~/lib/models/client"
+import type { AnthropicToResponsesTranslationDegradationReporter } from "~/lib/pipeline/translation-degradation"
 import type {
   //
   ContentBlockParam,
@@ -92,8 +93,10 @@ import {
 export interface AnthropicToResponsesOptions {
   /** The resolved upstream model — gates the `thinking` → `reasoning.effort` mapping. */
   model?: Model
-  /** The originating request id (`ctx.id`), threaded purely to TAG lossy-drop warnings for traceability. */
+  /** The originating request id (`ctx.id`), included in the one request-level degradation log. */
   reqId?: string
+  /** Structured sink for request-level protocol degradation; called at most once per translation. */
+  onTranslationDegradation?: AnthropicToResponsesTranslationDegradationReporter
 }
 
 /** Emit an `[Anthropic→Responses]` lossy-drop warning, tagged with `requestId=<reqId>` when known. */
@@ -112,7 +115,33 @@ export function translateAnthropicToResponses(payload: MessagesPayload, opts?: A
   const instructions = anthropicSystemToText(payload.system)
 
   const input: Array<ResponsesInputItem> = []
-  for (const message of payload.messages) input.push(...translateMessage(message, reqId))
+  let sourceSignedThinkingBlockCount = 0
+  let unsignedThinkingBlockCount = 0
+  for (const message of payload.messages) {
+    const translated = translateMessage(message, reqId)
+    input.push(...translated.items)
+    sourceSignedThinkingBlockCount += translated.sourceSignedThinkingBlockCount
+    unsignedThinkingBlockCount += translated.unsignedThinkingBlockCount
+  }
+
+  const droppedThinkingBlockCount = sourceSignedThinkingBlockCount + unsignedThinkingBlockCount
+  if (droppedThinkingBlockCount > 0) {
+    const degradation = {
+      droppedThinkingBlockCount,
+      sourceSignedThinkingBlockCount,
+      unsignedThinkingBlockCount,
+      reason: "thinking-signature-not-portable",
+    } as const
+    opts?.onTranslationDegradation?.(degradation)
+    if (sourceSignedThinkingBlockCount > 0) {
+      consola.info(
+        `[Anthropic→Responses] dropped ${sourceSignedThinkingBlockCount} source-signed thinking block${sourceSignedThinkingBlockCount === 1 ? "" : "s"} during model translation (not portable)${reqId ? ` requestId=${reqId}` : ""}`,
+      )
+    }
+    if (unsignedThinkingBlockCount > 0) {
+      dropWarn(`dropped ${unsignedThinkingBlockCount} unsigned thinking block${unsignedThinkingBlockCount === 1 ? "" : "s"} during model translation`, reqId)
+    }
+  }
 
   const tools = payload.tools ? translateTools(payload.tools, reqId) : undefined
   const toolChoice = payload.tool_choice ? translateToolChoice(payload.tool_choice, payload.tools, tools) : undefined
@@ -149,14 +178,23 @@ export function translateAnthropicToResponses(payload: MessagesPayload, opts?: A
  * Responses' `output[]`/`input[]` granularity is per-item, not per-turn (audit ②: no fold/split state
  * machine needed here, that machinery is CC-canonical-only).
  */
-function translateMessage(message: MessageParam, reqId: string | undefined): Array<ResponsesInputItem> {
+interface TranslatedMessage {
+  items: Array<ResponsesInputItem>
+  sourceSignedThinkingBlockCount: number
+  unsignedThinkingBlockCount: number
+}
+
+function translateMessage(message: MessageParam, reqId: string | undefined): TranslatedMessage {
   if (typeof message.content === "string") {
-    if (message.content.length === 0) return []
-    return [{ type: "message", role: message.role, content: [{ type: "input_text", text: message.content }] }]
+    const items: Array<ResponsesInputItem> =
+      message.content.length === 0 ? [] : [{ type: "message", role: message.role, content: [{ type: "input_text", text: message.content }] }]
+    return { items, sourceSignedThinkingBlockCount: 0, unsignedThinkingBlockCount: 0 }
   }
 
   const blocks = message.content
-  return message.role === "assistant" ? translateAssistantBlocks(blocks, reqId) : translateUserBlocks(blocks, reqId)
+  return message.role === "assistant" ?
+      translateAssistantBlocks(blocks, reqId)
+    : { items: translateUserBlocks(blocks, reqId), sourceSignedThinkingBlockCount: 0, unsignedThinkingBlockCount: 0 }
 }
 
 /**
@@ -168,15 +206,17 @@ function translateMessage(message: MessageParam, reqId: string | undefined): Arr
  * item precedes the message/function_call items of the same turn, mirrored from the non-streaming
  * response leg's `unshift`, `anthropic-to-responses.ts`).
  *
- * A `thinking` block with NO sentinel signature (a real, non-ours block — should never happen on this
- * leg since Responses models never emit real Anthropic signatures, but defensive nonetheless) is
- * dropped, not synthesized — mirrors the pre-Phase-5 forward drop for anything outside our own
- * round-trip contract.
+ * A `thinking` block with NO sentinel signature is a legitimate cross-model-switch artifact: the
+ * conversation may have accumulated Claude-signed thinking before the user selected a Responses model.
+ * Claude signatures are not portable Responses `encrypted_content`, so those blocks are counted and
+ * dropped without synthesis; the caller emits one request-level degradation record after the full scan.
  */
-function translateAssistantBlocks(blocks: Array<ContentBlockParam>, reqId: string | undefined): Array<ResponsesInputItem> {
+function translateAssistantBlocks(blocks: Array<ContentBlockParam>, reqId: string | undefined): TranslatedMessage {
   const items: Array<ResponsesInputItem> = []
   const reasoningItems: Array<ResponsesInputItem> = []
   const textParts: Array<string> = []
+  let sourceSignedThinkingBlockCount = 0
+  let unsignedThinkingBlockCount = 0
 
   for (const block of blocks) {
     switch (block.type) {
@@ -189,8 +229,10 @@ function translateAssistantBlocks(blocks: Array<ContentBlockParam>, reqId: strin
         break
       }
       case "thinking": {
-        const reconstructed = reconstructReasoningInputItem(block, reqId)
+        const reconstructed = reconstructReasoningInputItem(block)
         if (reconstructed) reasoningItems.push(reconstructed)
+        else if (typeof block.signature === "string" && block.signature.trim().length > 0) sourceSignedThinkingBlockCount++
+        else unsignedThinkingBlockCount++
         break
       }
       case "redacted_thinking": {
@@ -210,7 +252,7 @@ function translateAssistantBlocks(blocks: Array<ContentBlockParam>, reqId: strin
 
   if (textParts.length > 0) items.unshift({ type: "message", role: "assistant", content: [{ type: "output_text", text: textParts.join("") }] })
   items.unshift(...reasoningItems)
-  return items
+  return { items, sourceSignedThinkingBlockCount, unsignedThinkingBlockCount }
 }
 
 /**
@@ -223,11 +265,8 @@ function translateAssistantBlocks(blocks: Array<ContentBlockParam>, reqId: strin
  * still reconstructs a valid reasoning item with just the summary text, since a Responses reasoning
  * item's `encrypted_content` is optional (RFC §7.2 probe (a): the upstream accepts empty/absent too).
  */
-function reconstructReasoningInputItem(block: Extract<ContentBlockParam, { type: "thinking" }>, reqId: string | undefined): ResponsesInputItem | undefined {
-  if (!isSyntheticReasoningSignature(block.signature)) {
-    dropWarn("dropping a thinking block with a non-sentinel signature (not ours to round-trip — no synthesis)", reqId)
-    return undefined
-  }
+function reconstructReasoningInputItem(block: Extract<ContentBlockParam, { type: "thinking" }>): ResponsesInputItem | undefined {
+  if (!isSyntheticReasoningSignature(block.signature)) return undefined
   const encryptedContent = extractEncryptedReasoning(block.signature)
   return {
     type: "reasoning",

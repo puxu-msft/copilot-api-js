@@ -40,6 +40,7 @@ interface DispatchRow {
   candidate: CandidateHandle
   reason: string
   verdict?: DispatchVerdict
+  retryNextStrategy?: string
 }
 
 function createRecording() {
@@ -64,7 +65,9 @@ function createRecording() {
     recordAdmission() {},
     recordOpened() {},
     settleDispatch(handle, input) {
-      dispatches.get(handle)!.verdict = input.verdict
+      const dispatch = dispatches.get(handle)!
+      dispatch.verdict = input.verdict
+      dispatch.retryNextStrategy = input.retryNextStrategy
     },
   }
   return { port, candidates, dispatches }
@@ -186,9 +189,27 @@ describe("P6-T2 generation coordinator", () => {
     expect(recovery.role).toBe("recovery")
     expect(recording.candidates.get(recovery.candidate)?.parentCandidate).toBe(primary.candidate)
     expect(recording.candidates.get(primary.candidate)?.verdict).toBe("failed")
-    expect(recording.dispatches.get(primary.dispatch)?.verdict).toBe("discarded")
+    expect(recording.dispatches.get(primary.dispatch)).toMatchObject({ verdict: "discarded", retryNextStrategy: "buffered-retry" })
     expect(processors).toHaveLength(2)
     expect(processors[0]).not.toBe(processors[1])
+  })
+
+  test("ready-state pre-content recovery can override the History next-strategy marker", async () => {
+    const recording = createRecording()
+    const opens: Array<string> = []
+    const processors: Array<symbol> = []
+    const coordinator = createGenerationCoordinator({
+      env: envelope("primary"),
+      createCandidate: candidateFactory({ recording: recording.port, opens, processors }),
+    })
+    const primary = await coordinator.runPrimary()
+
+    await coordinator.runRecovery(primary, "transport-close", envelope("recovery"), "precontent-recovery")
+
+    expect(recording.dispatches.get(primary.dispatch)).toMatchObject({
+      verdict: "discarded",
+      retryNextStrategy: "precontent-recovery",
+    })
   })
 
   test("buffered continuation is a child candidate; parent settles `continued` (not failed) — partial delivery", async () => {

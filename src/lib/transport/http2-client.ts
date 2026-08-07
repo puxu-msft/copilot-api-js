@@ -246,9 +246,15 @@ const NOOP_PING_ACK = (): void => {}
  * `intervalMs <= 0` disables it (returns undefined). The timer is `unref`'d so it
  * never keeps the process alive at shutdown; the caller clears it on session end.
  */
-export function scheduleH2KeepalivePing(session: Pick<http2.ClientHttp2Session, "ping">, intervalMs: number): NodeJS.Timeout | undefined {
+type IntervalScheduler = (callback: () => void, delayMs: number) => NodeJS.Timeout
+
+export function scheduleH2KeepalivePing(
+  session: Pick<http2.ClientHttp2Session, "ping">,
+  intervalMs: number,
+  schedule: IntervalScheduler = (callback, delayMs) => setInterval(callback, delayMs),
+): NodeJS.Timeout | undefined {
   if (intervalMs <= 0) return undefined
-  const timer = setInterval(() => {
+  const timer = schedule(() => {
     try {
       session.ping(NOOP_PING_ACK)
     } catch {

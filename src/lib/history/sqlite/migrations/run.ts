@@ -35,7 +35,7 @@ import { HistoryMetaStorage } from "./storage"
  *
  * `migrations` defaults to the shipped `MIGRATIONS`; it is injectable so tests
  * can drive the REAL runner (logger adapter + storage construction + up()) with
- * a populated list, since the shipped list is intentionally empty.
+ * independent migration lists.
  *
  * Failure policy: RETHROW (do NOT swallow). Unlike the data-layer backfills —
  * which never-throw because a missing derived column is recoverable — schema DDL

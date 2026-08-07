@@ -45,6 +45,7 @@ import {
 } from "~/lib/shutdown"
 import { registerTerminal } from "~/lib/tui/terminal-coordinator"
 
+import { FakeClock } from "../helpers/fake-clock"
 import { createMockServer } from "../helpers/mock-server"
 import { createMockTracker } from "../helpers/mock-tracker"
 
@@ -586,13 +587,21 @@ describe("Phase 2: natural drain", () => {
   })
 
   test("completes when requests drain within gracefulWaitMs", async () => {
-    const tracker = createMockTracker([{ status: "streaming" }])
-    setTimeout(() => tracker._clearRequests(), 30)
+    const clock = new FakeClock()
+    clock.install()
+    try {
+      const tracker = createMockTracker([{ status: "streaming" }])
+      setTimeout(() => tracker._clearRequests(), 30)
 
-    await gracefulShutdown("SIGINT", createNoopDeps({ tracker }))
+      const shutdown = gracefulShutdown("SIGINT", createNoopDeps({ tracker }))
+      await clock.advance(30)
+      await shutdown
 
-    // Should NOT have aborted (drained naturally in Phase 2)
-    expect(getShutdownSignal().aborted).toBe(false)
+      // Should NOT have aborted (drained naturally in Phase 2)
+      expect(getShutdownSignal().aborted).toBe(false)
+    } finally {
+      clock.restore()
+    }
   })
 })
 

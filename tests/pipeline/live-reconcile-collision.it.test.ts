@@ -35,8 +35,11 @@ import type {
   ClientFrame,
   ClientSink,
   FormatCodec,
+  PhysicalTransport,
+  PhysicalTransportResponse,
   PreparedRequest,
   Transport,
+  UpstreamDispatchLifecycle,
   UpstreamFrame,
   UpstreamStream,
 } from "~/lib/pipeline/types"
@@ -65,6 +68,8 @@ import {
   createPipelineDriver,
   type DriverDeps,
 } from "~/lib/pipeline/driver"
+import { createFrozenHedgePolicy } from "~/lib/pipeline/generation/hedge-policy"
+import { createClientFrameEnvelope } from "~/lib/pipeline/stream/frame-envelope"
 import { StreamClientAbortError } from "~/lib/stream"
 
 import { FakeClock } from "../helpers/fake-clock"
@@ -105,9 +110,7 @@ function makeHeadThenSilentThenResume(head: Array<UpstreamFrame>, tail: Array<Up
 function makeCodec(): FormatCodec {
   return {
     format: "anthropic",
-    parse: () => {
-      throw new Error("parse not used")
-    },
+    parse: () => makeEnv(),
     translateOut: (env) => env,
     prepareWire: () => ({ url: "u", headers: new Headers(), body: {}, stream: true }) as PreparedRequest,
     renderResponse: (frame) => frame, // identity render — Anthropic bypass-direct
@@ -138,6 +141,78 @@ function makeDriver() {
   const transport: Transport = { send: () => Promise.reject(new Error("no re-exchange on the live path")) }
   const deps: DriverDeps = { codec: makeCodec(), transport, strategies: [], maxRetries: 3, maxLearningRetries: 32 }
   return createPipelineDriver(deps)
+}
+
+function hedgePolicy(enabled: boolean) {
+  return createFrozenHedgePolicy({
+    enabled,
+    thresholdMs: 0,
+    maxSecondaryCandidates: 1,
+    maxActiveCandidates: 2,
+    maxTotalCandidates: 3,
+    maxActiveDispatches: 2,
+    maxTotalDispatches: 4,
+    cleanupMarginMs: 0,
+    responseHeaderTimeoutMs: 0,
+    requestDeadlineAtMs: 0,
+    expectedHedgeCompletionMs: 1,
+  })
+}
+
+function lifecycle(controller: AbortController): UpstreamDispatchLifecycle {
+  let resolve!: () => void
+  const quiesced = new Promise<void>((done) => (resolve = done))
+  return {
+    cancel(reason) {
+      if (!controller.signal.aborted) controller.abort(new Error(reason ?? "cancelled"))
+      resolve()
+    },
+    async dispose(reason) {
+      this.cancel(reason)
+      return { quiesced: true, connectionReusable: false }
+    },
+    quiesced,
+  }
+}
+
+function makeHedgedDriver(tail: Array<UpstreamFrame>, enabled: boolean) {
+  let opens = 0
+  const transport: PhysicalTransport = {
+    async open(_wire, _env, options): Promise<PhysicalTransportResponse> {
+      const isPrimary = opens++ === 0
+      const controller = new AbortController()
+      options?.signal?.addEventListener("abort", () => controller.abort(options.signal?.reason), { once: true })
+      const owner = lifecycle(controller)
+      async function* frames(): AsyncIterable<UpstreamFrame> {
+        if (enabled && isPrimary) {
+          await new Promise<void>((_resolve, reject) => {
+            const abort = () => reject(controller.signal.reason instanceof Error ? controller.signal.reason : new Error("primary cancelled"))
+            if (controller.signal.aborted) abort()
+            else controller.signal.addEventListener("abort", abort, { once: true })
+          })
+        }
+        for (const frame of tail) yield frame
+      }
+      return { kind: "stream", upstream: { headers: new Headers(), frames: frames(), lifecycle: owner }, lifecycle: owner }
+    },
+  }
+  return {
+    driver: createPipelineDriver({
+      codec: makeCodec(),
+      transport: {
+        ...transport,
+        send: async () => {
+          throw new Error("legacy send must not run")
+        },
+      },
+      strategies: [],
+      maxRetries: 0,
+      maxLearningRetries: 0,
+      monotonicNow: () => 0,
+      hedgePolicy: hedgePolicy(enabled),
+    }),
+    opens: () => opens,
+  }
 }
 
 /** Block-aware heartbeat frame: an empty text_delta on the open anchor block, else a bare ping. */
@@ -191,7 +266,7 @@ function buildLiveStack(
   onForwarded: (r: SseEventRecord) => void,
   resolvedName: string,
   reqId: string,
-): { pumpSink: ClientSink; anchorState: AnchorState } {
+): { pumpSink: ClientSink; anchorState: AnchorState; delivery: NonNullable<ReturnType<typeof getDownstreamDeliverySession>> } {
   const allocator = createGenerationWireIndexAllocator()
   const wireState = createGenerationWireState(allocator)
   const anchorState: AnchorState = {
@@ -206,13 +281,16 @@ function buildLiveStack(
   const injector = makeSyntheticAnchorInjector({ anchor, state: anchorState, getSink: () => sinkHolder.current, resolvedName, reqId })
   const inner = makeDeliverySseSink(stream, {
     wireState,
+    legacyAnchorMirror: anchorState,
     onForwarded,
     heartbeat: { intervalSec: 15, pingFrame: emptyDeltaFor, injectAnchor: injector },
   })
   sinkHolder.current = inner
-  void getDownstreamDeliverySession(inner)?.allocationPort.beginLeg("primary", { candidateId: "candidate-test", dispatchId: "dispatch-test" })
-  const pumpSink = makeReconcilingSink(inner, anchorState, anchor)
-  return { pumpSink, anchorState }
+  const delivery = getDownstreamDeliverySession(inner)
+  if (!delivery) throw new Error("test delivery sink must expose its owner")
+  void delivery.allocationPort.beginLeg("primary", { candidateId: "candidate-test", dispatchId: "dispatch-test" })
+  const pumpSink = makeReconcilingSink(inner, anchorState, anchor, delivery.allocationPort)
+  return { pumpSink, anchorState, delivery }
 }
 
 function forwardedSeq(records: Array<SseEventRecord>): Array<string> {
@@ -236,6 +314,69 @@ describe("live-reconcile collision elimination — injected prelude + live resum
   const clock = new FakeClock()
   beforeEach(() => clock.install())
   afterEach(() => clock.restore())
+
+  for (const hedgeEnabled of [false, true]) {
+    test(`production delivery ${hedgeEnabled ? "with" : "without"} hedge routes winner frames through live reconcile`, async () => {
+      const tail = [
+        f("message_start", { message: { id: "msg_real" } }),
+        f("content_block_start", { index: 0, content_block: { type: "thinking", thinking: "" } }),
+        f("content_block_delta", { index: 0, delta: { type: "thinking_delta", thinking: "reasoning" } }),
+        f("content_block_stop", { index: 0 }),
+        f("message_delta", { delta: { stop_reason: "end_turn", stop_sequence: null }, usage: { output_tokens: 7 } }),
+        f("message_stop"),
+      ]
+      const harness = makeHedgedDriver(tail, hedgeEnabled)
+      const request = await harness.driver.runRequest({ body: {}, headers: new Headers() })
+      if (!request.ok) throw new Error("unexpected rejection")
+      const { stream: sseStream, written } = stubSseStream()
+      const forwarded: Array<SseEventRecord> = []
+      const { pumpSink, anchorState, delivery } = buildLiveStack(sseStream, (record) => forwarded.push(record), "claude-opus-4.8", `req_hedge_${hedgeEnabled}`)
+      const anchor = anchorHooks()
+
+      anchorState.injected = true
+      anchorState.contentAnchorInjected = true
+      anchorState.messageStartForwarded = true
+      anchorState.anchorBlockOpen = true
+      await delivery.writeScaffold([
+        createClientFrameEnvelope(anchor.syntheticMessageStart?.("claude-opus-4.8", `req_hedge_${hedgeEnabled}`) ?? f("message_start"), {
+          sequence: 0,
+          observedAtMonotonic: 0,
+          provenance: { kind: "synthetic", syntheticKind: "synthetic-message-start" },
+        }),
+      ])
+      const allocated = await delivery.allocationPort.allocateAndWriteAnchor(({ wireIndex, envelope }) => [
+        envelope.anchor(anchor.startFrame(wireIndex)),
+        envelope.keepalive(anchor.deltaFrame(wireIndex)),
+      ])
+      if (!allocated.ok) throw new Error(`anchor allocation failed: ${allocated.reason}`)
+
+      const outcomeP = harness.driver.runResponseSink(request.upstream, request.env, pumpSink, {
+        onUpstreamFrame: () => {},
+        wireAllocationPort: delivery.allocationPort,
+      })
+      if (hedgeEnabled) {
+        await drain()
+        await clock.advance(1)
+      }
+      const outcome = await outcomeP
+
+      expect(outcome.kind).toBe("complete")
+      expect(harness.opens()).toBe(hedgeEnabled ? 2 : 1)
+      expect(forwardedSeq(forwarded)).toEqual([
+        "message_start#synthetic-message-start",
+        "content_block_start@0#anchor",
+        "content_block_delta@0#keepalive",
+        "content_block_stop@0#anchor",
+        "content_block_start@1",
+        "content_block_delta@1",
+        "content_block_stop@1",
+        "message_delta",
+        "message_stop",
+      ])
+      expect(written.filter((entry) => JSON.parse(entry.data).type === "message_start")).toHaveLength(1)
+      expect(anchorState.anchorClosed).toBe(true)
+    })
+  }
 
   test("pre-response silence injects a synthetic prelude; the live resume reconciles (single message_start, anchor@0, real block@1)", async () => {
     const env = makeEnv()
@@ -267,7 +408,8 @@ describe("live-reconcile collision elimination — injected prelude + live resum
     await clock.advance(15_000)
     await flush()
     expect(anchorState.injected).toBe(true)
-    // Second idle tick (openBlock={0,text} now lit) → one more block-aware empty text_delta@0 keepalive.
+    // The owner re-arms immediately after the scaffold write; the second tick emits the next block-aware
+    // empty text_delta@0 keepalive on the still-open anchor.
     await clock.advance(15_000)
     await flush()
 
@@ -395,7 +537,7 @@ describe("live-reconcile collision elimination — injected prelude + live resum
     const state: AnchorState = { wireState, injected: true, messageStartForwarded: true, anchorBlockOpen: true, anchorClosed: false }
     await delivery.allocationPort.allocateAndWriteAnchor(({ wireIndex, envelope }) => [envelope.anchor(anchorStartFrame(wireIndex))])
     abortClose = true
-    const decorated = makeReconcilingSink(delivery.clientSink, state, anchorHooks())
+    const decorated = makeReconcilingSink(delivery.clientSink, state, anchorHooks(), delivery.allocationPort)
     const upstream: UpstreamStream = {
       headers: new Headers(),
       frames: (async function* () {
@@ -403,7 +545,14 @@ describe("live-reconcile collision elimination — injected prelude + live resum
       })(),
     }
 
-    expect((await makeDriver().runResponseSink(upstream, env, decorated, { onUpstreamFrame: () => {} })).kind).toBe("settled-abort")
+    expect(
+      (
+        await makeDriver().runResponseSink(upstream, env, decorated, {
+          onUpstreamFrame: () => {},
+          wireAllocationPort: delivery.allocationPort,
+        })
+      ).kind,
+    ).toBe("settled-abort")
   })
 
   test("early real message_start + reasoning silence + resume → exactly ONE message_start (no double envelope)", async () => {

@@ -30,6 +30,7 @@ interface CapturedTool {
 }
 
 let capturedTools: Array<CapturedTool> | undefined
+let capturedToolChoice: unknown
 
 /** Non-streaming upstream body containing a tool_use under the SANITIZED name. */
 function buildToolUseBody(model: string): string {
@@ -83,10 +84,12 @@ const upstreamFetchMock = mock((input: string | URL | Request, init?: RequestIni
     typeof input === "string" ? input
     : input instanceof URL ? input.href
     : input.url
-  const payload = typeof init?.body === "string" ? (JSON.parse(init.body) as { model?: string; tools?: Array<CapturedTool>; stream?: boolean }) : {}
+  const payload =
+    typeof init?.body === "string" ? (JSON.parse(init.body) as { model?: string; tools?: Array<CapturedTool>; tool_choice?: unknown; stream?: boolean }) : {}
 
   if (url.endsWith("/v1/messages")) {
     capturedTools = payload.tools
+    capturedToolChoice = payload.tool_choice
     if (payload.stream) {
       return new Response(buildToolUseStream(payload.model ?? "unknown"), { status: 200, headers: { "content-type": "text/event-stream" } })
     }
@@ -112,6 +115,7 @@ describe("POST /v1/messages — tool-name sanitization round-trip", () => {
 
   beforeEach(() => {
     capturedTools = undefined
+    capturedToolChoice = undefined
     upstreamFetchMock.mockClear()
     setStateForTests({
       copilotToken: "test-token",
@@ -189,6 +193,30 @@ describe("POST /v1/messages — tool-name sanitization round-trip", () => {
     const toolStart = starts.find((f) => (f.content_block as { type?: string } | undefined)?.type === "tool_use")
     expect((toolStart?.content_block as { name?: string } | undefined)?.name).toBe("search.web")
     expect(text).not.toContain("search_web") // the wire name never leaks to the client
+  })
+
+  test("renames a forced tool_choice name so the upstream can resolve the tool", async () => {
+    // Regression for a live-caught upstream 400 "Tool 'search.web' not found in
+    // provided tools": the tool definition was renamed to search_web but
+    // tool_choice.name still pointed at the client-original, so the forced choice
+    // referenced a tool absent from the (renamed) wire tools array.
+    const res = await app.request("/v1/messages", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: "claude-sonnet-4.6",
+        messages: [{ role: "user", content: "search the web" }],
+        max_tokens: 64,
+        stream: false,
+        tool_choice: { type: "tool", name: "search.web" },
+        tools: [{ name: "search.web", description: "search", input_schema: { type: "object", properties: { q: { type: "string" } } } }],
+      }),
+    })
+
+    expect(res.status).toBe(200)
+    // Upstream received a tool_choice whose name matches the renamed tool definition.
+    expect(capturedToolChoice).toEqual({ type: "tool", name: "search_web" })
+    expect((capturedTools ?? []).map((t) => t.name)).toContain("search_web")
   })
 
   test("with sanitize disabled, the dotted name passes through unchanged", async () => {

@@ -69,6 +69,7 @@
 - [编译错误：补符号 vs 删引用](methodology-broken-reference-supply-vs-delete.md) — 按消费者契约+独立 oracle 裁决，别反射式让它编译
 - [复用共享原语选完整版非小版](methodology-full-primitive-not-partial-else-silent-field-drop.md) — 否则静默丢字段+单测假绿；映射测须构造每个非平凡字段
 - [「别继承退化」只在目标真有对应值时成立](methodology-degradation-advice-scoped-to-target-has-equivalent.md) — 目标无对应值→诚实退化+marker
+- [阻断式 guard 的目的／false-red 成本／粒度未决时先确认](feedback-confirm-guard-purpose-before-hardening.md) — 加固前先确认 guard 守什么，不替用户把未决粒度定死
 - [守卫被合法写法绕过 / 新 oracle「一定咬得住」只是推理](methodology-relocate-invariant-when-guard-cannot-keep-up.md) — 又准备补一种等价写法时**停止补形态** → skill `reshaping-a-bypassed-guard`；**第三例新增**：信号是「几次 witness 利用同一事实」非次数、推断型判据要**加独立 intent 输入**而非换一种推断、**轴的选择本身也要交未卷入方**；[新 oracle](methodology-new-oracle-discriminating-power-is-experimental.md) 失效主形态是「相邻」非「离谱」
 - [用例名集合 diff 必须运行时枚举 / mutation control 自身要自证改到了代码](methodology-test-name-audit-must-enumerate-at-runtime.md) — grep 扫 `test("...")` 对参数化+模板名结构性失明，方法不可靠而结论碰巧对时没有任何信号；[mutation 生效](methodology-verify-the-mutation-actually-applied.md) 「没变红」有两解=测试没咬住 vs mutation 根本没生效
 - [迁 oracle 到生产构造时绝不顺手削断言](methodology-migrating-an-oracle-must-not-weaken-its-assertions.md) — 「新构造下不再产生」几乎总是驱动少了一拍；删既有断言须扫参数证性质不存在；注释与断言自相矛盾是最廉价探测器
@@ -110,6 +111,7 @@
 - [picocolors 在 bun test 塌缩成恒等](reference-picocolors-collapses-to-identity-in-bun-test.md) — 改测引用相等 + FORCE_COLOR 子进程 SGR
 - [迁移副作用旧路径仍被 eager 求值→双触发](methodology-migrate-side-effect-old-path-still-eager-evaluated.md) — driver eager 求值 deps.strategies 仍触发
 - [无疑问改进当场做 / 写设计前先核实功能没被 peer 落地或删除](feedback-slam-dunk-fixes-do-immediately.md) — 更好+无取舍+无分叉三条全中立即改；[先核实](feedback-verify-deferred-task-not-already-landed-before-designing.md) 接手第一条命令=`git log <merge-base>..master -- <路径>`，grep 不到 ≠ 没做
+- [一定规模项目按自洽批次迭代交付，不做 all-in-once](feedback-layered-iterative-delivery-not-all-at-once.md) — 每批可独立运行、验证与回滚，阶段间显式闭合
 - [绝不推荐短期止血方案](feedback-never-propose-short-term-mitigation.md) — 有根因可修就只提根因；「打开 gated feature 绕过」也禁列
 - [恢复是唯一出路而非风险取舍](feedback-recovery-is-only-path-not-risk-tradeoff.md) — 连接已死重连是唯一出路；沉没账与重试无关、别框成双计费取舍
 - [结构重构提交前跑架构守卫/全 backend](methodology-run-architecture-guards-before-structural-refactor-commit.md) — grep 源码形状/schema 完备性守卫不在直接目录

@@ -1,6 +1,6 @@
-# HANDOVER —— generation emission command algebra RFC 已定稿，实施未开工
+# HANDOVER —— generation emission command algebra Commit -1 进行中
 
-**状态**：**三层计划已全部评审放行 · T1 已裁「先补计划层再执行」· 第二层判据 9 轮 + 执行方 8 轮最终均 0 blocker / 0 major · 第三层 prompts 判据 8 轮最终 0 blocker / 0 major，执行方 8 轮最终 0 blocker / 0 major / 0 minor / 0 nit · M1 已于 2026-08-04 合入 master（`8125f123`）**。RFC 与执行派发件均定稿，cutover 实施尚未开工；按 docs-merge-before-execute，开工仍是独立决定。
+**状态**：**三层计划已全部评审放行 · M1 已于 2026-08-04 合入 master（`8125f123`）· generation emission command algebra 的 Commit -1 已在隔离 worktree 开工**。Commit -1 分支 `command-algebra-commit-minus-1` 核验时 tip `e1153578`（2026-08-06；接手时重取）；T0.0a/b/c 的 runner／producer task review 与 T0.0e validator task review 各自已完成，`test:backend`／typecheck／validator focused tests 绿。**尚未完成的是跨 task 的 Commit -1 整合验证、整相位独立 review 与合 master**；合入后才产生 entry SHA **A**，随后进入 post-merge T0.0f／T0.0d，门全绿后才开始 Commit 0。第二层判据 9 轮 + 执行方 8 轮、第三层 prompts 两视角各 8 轮均已放行。
 
 **本文件的评审情况**（别再重跑，也别当成未核验的档案）：
 - **判据证伪视角**：**12 轮**，结论「剩余项应记为已知边界而非缺陷；**无未决 blocker/major**」。报告：`docs/tmp/2026-08-03-handover-review-criteria.md`。
@@ -15,17 +15,17 @@
 
 **已知遗留 minor（评审判为不阻塞，写在这里免得被当成新发现）**：① KICKOFF:52 仍复述「21 次」这个数字，但同句自带「那是自我报告的摘要、不是独立可核验的、别当门禁已过」；② 同目录曾并存陈旧的 `kickoff.md` 与现行 `KICKOFF.md`，`ls` 时都会看到——**已给前者加 superseded 横幅**，不再依赖「README 有正确入口」这种缓解。
 
-**历史 worktree（只作 M1 取证，不是执行入口）**：`/home/xp/src/copilot-api-js/.worktrees/anchor-alloc`。正式执行按已裁图：先在独立 worktree 完成/合并 Commit -1，合入后 master SHA=A，再**显式从 `ENTRY_SHA=A` 创建新的 cutover worktree**。
-**未提交 / 未追踪**：本工作的产物已于 `6cfa0e89` 全部提交（此前两份评审报告曾是 untracked，被交接评审抓出）；主树另有并发会话的未提交改动，与本工作无关
+**当前执行 worktree**：`/home/xp/src/copilot-api-js/.worktree/command-algebra-commit-minus-1`，分支 `command-algebra-commit-minus-1`；截至 2026-08-06 tip `e1153578`，相对 base `6e9e9439` 为 18 文件／约 +3316/-42。**历史 M1 worktree** `/home/xp/src/copilot-api-js/.worktrees/anchor-alloc` 只作取证，不是当前执行入口。Commit -1 整合 review 通过后先合 master 得 **A**，再显式从 `ENTRY_SHA=A` 创建新的 cutover worktree。
+**未提交 / 未追踪**：Commit -1 worktree 当前干净；主树另有并发会话的未提交改动，与本工作无关。Commit -1 的进度与验证报告均在该分支的 `docs/tmp/2026-08-{05,06}-command-algebra-commit-minus-1-*`，尚未随分支合入 master。
 **已跑门禁**：master 上 `unit+it+http` 三档连跑 21 次全绿（6845 pass / 0 fail，代码状态 `cc909c81`），记录在 `docs/tmp/2026-08-03-baseline-run-log.md`；`bun run typecheck` 绿。
 > ⚠️ **证据等级：自我报告，非独立可核验。** 那份记录是逐次**摘要**（无时间戳、无单次耗时、无完整 stdout），形式上区分不了「真跑了 21 次」与「手写了 21 行」——判据证伪评审两轮维持此为 major，我接受。**别拿它当门禁已过的证据**；RFC §7.1 的入场条件本来就要求在**当时的 entry commit** 上重跑，那次用 `exp/inter-block-anchor-allocator/baseline-runs.sh` 保留每次的原始输出文件。
 > ⚠️ **那份记录里的「修复前」那批不是受控前后对照**：它跑在 feature `2c339784`（**6848** tests），而 21 次跑在 master `cc909c81`（**6845** tests），`git merge-base --is-ancestor cc909c81 2c339784` = **NO**，互不为祖先。**跨树观测只支持「聚合层面改善」，不得用来顶 T3 的修复 AC**——那需要同一棵树上的逆 mutation。（这条纠正本身就是同类复发：它是我在修「基准锚定分裂」那个 blocker 时新引入的。）
 
-> **接手第一步不是写代码，也不是继续评审——是等用户裁决「是否起执行」。** 按 CLAUDE.md `docs-merge-before-execute`，定稿文档合主线后，执行是**独立**决策。RFC 已在 master 上。
+> **接手第一步不是重新问是否开工，也不是重做 T0.0a/b/c/e。** 直接授权证据在源 session `046d7295-e5ce-470b-a284-c721c6ce1cb8:6910-6912`：AskUserQuestion 问“**三层计划已全部放行，现在是否开始 Commit -1 实施？**”，用户选择“**现在开始 Commit -1（推荐）**”（2026-08-05）。当前动作是核 `command-algebra-commit-minus-1` 的整合门与独立 review；通过后合 master 得 A。**不要从「代码已发生」倒推授权，也不要拿更间接的原计划授权／retry 消息替代这条直接选择。**
 
 ## 本轮做完了什么
 
-上一份交接说「形状已定，但它还只是一份设计文档，下一步是 RFC + 分相位计划」。**RFC 那一半已完成，计划那一半没有。**
+上一份交接说「形状已定，但它还只是一份设计文档，下一步是 RFC + 分相位计划」。**这两半现在都已完成并评审放行，且 Commit -1 已实质开工**：RFC 冻结 WHY，`cutover-plan.md` 冻结 HOW，`prompts/README.md` 与各 phase prompt 构成可派发的第三层；T0.0a/b/c/e 已在隔离 worktree 实现。当前下一步不是再取开工裁决，而是完成 Commit -1 整合 review／门禁并合 master 得 A。
 
 | 产物 | 位置 | 状态 |
 |---|---|---|
@@ -39,12 +39,12 @@
 
 ## 已确证的硬事实（别再重新推导）
 
-> **2026-08-04 起全部锚在 master**（merge `8125f123` 之后）。此前本表锚在未合并的 feature 树，**下面若有行号对不上，那才是事实错误，不再是「走错了树」**——那个借口随合并一起消失了。**表内行号尚未逐条按合并后的 master 复算**，引用前请自行核对。
+> **2026-08-04 起，下面这张「硬事实」表按 master 解释**（merge `8125f123` 之后）。此前它锚在未合并的 feature 树；如今若 `file:line` 对不上就是引用漂移，不能再用「走错树」解释。**历史计数快照另放在下一张「计数事实」表，并逐行保留自己的 tree／代码状态**，不要把两张表的作用域混用。表内行号尚未逐条按当前 master 复算，引用前请自行核对。
 
-| 事实 | 证据等级 | 出处 / 复算方式（tree = feature `2c339784`，除非另注） |
+| 事实 | 证据等级 | 出处 / 复算方式（当前代码真相 = master；历史事实逐项注明） |
 |---|---|---|
 | P0 / P1 / P2 / P6 均已 landed master | **实测（本轮重验）** | `git merge-base --is-ancestor <sha> master`：P0=`1bf9bf89` YES、P6=`d8f7546d` YES；P1 三原子提交与 P2 三 task 的状态注解在各自 plan 文档头部。**`docs/DESIGN.md:75` 此前只写「P1+P2 已完成」、漏了 P0／P6，已于 `88171b3b` 一并修正** |
-| M1 代码在分支上**未合并**，由本次 cutover 一并重塑（用户裁决） | 实测 | `git log master..feat/inter-block-anchor-allocator` |
+| M1 已合入 master；旧「留在分支由 cutover 重塑」裁决已被 2026-08-04 重裁取代 | 实测 | merge commit `8125f123`；`git merge-base --is-ancestor 8125f123 master` 应为 0。当前 cutover 仍在独立 worktree 执行，不等于在共享 master 主树直接改代码 |
 | `ClientSink` 声明在 `src/lib/pipeline/types.ts:747`，**不在 `delivery/` 目录内**；`delivery/types.ts` 对它只是 `import type`、非 re-export | 实测 | 这是 RFC 闭包根必须是传递闭包的成因（§7.2） |
 | `beginLeg` 只在 `allocationPort?.wireState` 为真时调用（**只有 Anthropic 有**）；`noteWinner` **不受该门控**（但仍受 optional chaining 约束——反查不到 session 时不调用） | 实测 | `driver.ts:882-888`。这是 R-14 存在的唯一理由。**「无条件」不是绝对必调用**，别按字面理解 |
 | `closeAnchorViaOwner(..., "terminal")` 生产调用点**恰 10 处** | 实测（未截断） | handler 8：`messages/handler-v4.ts:702,1464,1584,1623,1688,1808,1848,1893`；driver 2：`driver.ts:1436,1611` |
@@ -84,11 +84,11 @@
 
 ## 待办（每条带验收判据与证伪方式）
 
-### T1 —— 用户拍板：是否起执行（**当前就卡在这里**）
-- **两条路径**：(a) 直接按 RFC §7 起执行；(b) 先补三层结构的 plan + prompts 层（见 T4）再执行。
-- **验收**：记录**用户明确表态的原话 + 日期 + 所选路径**，落盘进本文件的「用户已裁决」表。裁决必须针对**执行时机**，不能拿已有的「形状 = 全量 command algebra」裁决顶替——那裁的是做什么，不是何时开始做。
-- **证伪**（三者任一即未获批准）：① 只有本文件作者的推断而无用户原话；② 用户沉默被当作默许；③ 引用的是 2026-08-03 那批**形状/范围**裁决而非执行时机裁决。
-- **不裁决的后果**：无损失，RFC 已在主线随时可起。
+### T1 —— 执行授权与当前相位（**已裁，Commit -1 进行中**）
+- **直接授权**：2026-08-05，AskUserQuestion 问“**三层计划已全部放行，现在是否开始 Commit -1 实施？**”，用户选择“**现在开始 Commit -1（推荐）**”（session `046d7295-e5ce-470b-a284-c721c6ce1cb8:6910-6912`）。因此**不要再问是否开工**，也不要把执行事实本身或更早的方案 A／merge／retry 消息冒充这条直接授权。
+- **当前完成**：Commit -1 的 T0.0a/b/c/e 已在 `command-algebra-commit-minus-1` worktree 实现，focused tests／typecheck／`test:backend` 绿；runner／producer 与 validator **各自** task review 已完成。核验时 tip `e1153578`，worktree 干净；接手须重取 tip，别把快照当永久值。
+- **当前下一门**：整合 runner／producer／validator 的 Commit -1 全相位门，做未卷入的整体 review；通过后**先合 master 得 A**。未合之前不得生成真实 A/P/15-run evidence，不得开始 post-merge T0.0f／T0.0d，更不得开始 Commit 0。
+- **证伪**（任一成立即状态写错）：① `git merge-base --is-ancestor <Commit-1-tip> master` 已为 true 却仍写“尚未合”；② progress 仍有 runner／producer／validator gate 或整体 review 未闭合却写“Commit -1 完成”；③ 在 A 尚未产生前生成或消费所谓真实 entry evidence；④ 把旧的“是否开工”分叉重新摆给用户。
 
 ### T2 —— Q1 未裁决（阻塞 Commit 5，**不**阻塞 Commit 0–4）
 - **问题**：per-command telemetry 是否需要 `command × outcome × format` 联合查询。选项 A（预组合有界 compound dimension，RFC 推荐）/ B（扩 registry 为 typed multidimensional key）/ C（只做单维 breakdown + History 明细）。
@@ -143,9 +143,10 @@ OUT=docs/tmp/<date>-entry-runs RUNS=15 MIN_TESTS=<在该 commit 上实测到的�
 - **证伪**：只做到「复现成功」就标验收完成——复现恰恰证明缺陷仍在；或因为「最近没见到」宣布已修；或只有汇总数字而无逐次记录。
 - **注意**：RFC §7.1 要求在**当时的 entry commit** 上连跑 ≥15 次，旧读数不顶替。
 
-### T4 —— 分相位计划（plan + prompts 层）未写
-- **动作**：按 skill `large-refactor` §5 的三层结构，为 RFC §7 的 Commit 0–8 各写逐 task TDD 步骤 + factory/锚点表，并出可直接粘给独立实施者的 kick-off。
-- **验收**：产出一张**双向可追溯矩阵**，覆盖 RFC 的 Commit 0–8 × R-1～R-14 × O-1～O-9 × §9.3 调查缝 × §9.4 停点。
+### T4 —— 分相位计划（plan + prompts 层）**已完成并评审放行**
+- **落地产物**：`docs/rfc/2026-08-03-generation-emission-command-algebra/cutover-plan.md`（第二层 HOW + 逐 task TDD + factory／锚点表）、`traceability.md`（双向追溯）、`prompts/README.md` + Commit -1／post-merge preflight／Commit 0～8 prompts（第三层派发件）。放行提交 `d2e6d81c`；Task population 由 checker 从 plan 定义表派生，当前数字不是 SSOT。
+- **执行状态**：授权已取得，Commit -1 已按 `prompts/README.md` 开工；当前按上方 T1 完成整合 review／门禁与 merge。下面保留的是这层文档的验收设计与历史反例，**不是仍待编写的任务，也不是要求重做已完成的 T0.0a/b/c/e**。
+- **已满足的验收形状**：双向可追溯矩阵覆盖 RFC 的 Commit -1／post-merge preflight／Commit 0～8 × R-1～R-14 × O-1～O-9 × §9.3 调查缝 × §9.4 停点。
   - **正向**（RFC → plan）：每一项**至少一个**归属 commit、一条可复跑命令、一个正样本、一个目标 mutation，且指出它在**生产入口**上的可达路径。
     ⚠️ **不得写成「恰好一个」**——RFC §10.2 里 R-1／R-2／R-5／R-12 本就是**两段式**（辅助门在早期 commit、production 硬门在 Commit 4），**R-11 更是「本 RFC 每 commit 共同门」**。要求单一归属会把这些判红，而最省事的「修法」正好是把 RFC 六轮评审建立起来的**分级压平**——那是拿判据去破坏它要保护的东西。**多归属必须显式标出每段的阶段与等级**（辅助门 / production 硬门 / 每 commit 共同门），压平即不合格。
     **等级从哪读**：§10.2 末列。14 条里 13 条可直接读出。**唯独 R-6 是 `本RFC辅助门；Commit 1／6` —— 两个 commit、一个等级、没有分段**，读不出哪一段是哪一级。**这是 RFC 的既有缺口，不是接手方该自行填的空**：自行推断撞证伪①（无 RFC 出处），两段同填「辅助门」撞上面禁止的压平。**处置是把它列成一条待 RFC 补齐的调查项，停下来问，别自己填。**

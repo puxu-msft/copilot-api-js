@@ -43,6 +43,10 @@ export interface ProtectStreamingStats {
    * attempted continuation): here continuation WAS tried but did not save.
    */
   continuationExhausted: number
+  /** Fresh pre-content recovery dispatch completed successfully. B2-P0 defines the counter; later phases emit it. */
+  precontentRecoverySuccess: number
+  /** Fresh pre-content recovery dispatch exhausted without producing a recoverable generation. */
+  precontentRecoveryExhausted: number
   /** Total retries consumed across all engagements (every leg). */
   totalRetries: number
   /**
@@ -67,6 +71,8 @@ const emptyStats = (): ProtectStreamingStats => ({
   retreated: 0,
   partialDegrade: 0,
   continuationExhausted: 0,
+  precontentRecoverySuccess: 0,
+  precontentRecoveryExhausted: 0,
   totalRetries: 0,
   retriesBeforeDegrade: 0,
   preFirstBlockRetries: 0,
@@ -77,8 +83,25 @@ const emptyStats = (): ProtectStreamingStats => ({
 let byVendor: Record<string, ProtectStreamingStats> = {}
 
 /** Map an outcome label to its counter field (camelCase remaps for the hyphenated labels). */
-const keyOf = (o: ProtectStreamingOutcome): keyof ProtectStreamingStats =>
-  o === "partial-degrade" ? "partialDegrade" : o === "continuation-exhausted" ? "continuationExhausted" : o
+const keyOf = (o: ProtectStreamingOutcome): keyof ProtectStreamingStats => {
+  switch (o) {
+    case "partial-degrade": {
+      return "partialDegrade"
+    }
+    case "continuation-exhausted": {
+      return "continuationExhausted"
+    }
+    case "precontent-recovery-success": {
+      return "precontentRecoverySuccess"
+    }
+    case "precontent-recovery-exhausted": {
+      return "precontentRecoveryExhausted"
+    }
+    default: {
+      return o
+    }
+  }
+}
 
 /**
  * Record one buffered-retry resolution under `meta.vendor`. `retries` = total re-exchanges consumed for

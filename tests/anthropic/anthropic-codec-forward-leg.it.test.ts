@@ -24,7 +24,11 @@ import type { RawHttpRequest } from "~/lib/pipeline/types"
 import { createBetaProbe } from "~/lib/anthropic/pipeline"
 import { preprocessAnthropicMessages } from "~/lib/anthropic/sanitize"
 import { createAnthropicCodec } from "~/lib/codec/anthropic/codec"
-import { withCapturingManagerAsync } from "~/lib/context/manager"
+import {
+  //
+  getRequestContextManager,
+  withCapturingManagerAsync,
+} from "~/lib/context/manager"
 import { setModels } from "~/lib/models/cache"
 import { ENDPOINT } from "~/lib/models/endpoint"
 import { createPipelineDriver } from "~/lib/pipeline/driver"
@@ -39,8 +43,11 @@ const dryRunTransport = {
 } as never
 
 /** Build the REAL anthropic codec + driver (mirrors dry-run-pipeline.ts `inspectFormatRequest`). */
-async function inspect(modelName: string, stopAfter: "translate" | "prepare-wire") {
-  const messages = [{ role: "user" as const, content: "hi" }]
+async function inspectDetailed(
+  modelName: string,
+  stopAfter: "translate" | "prepare-wire",
+  messages: Array<unknown> = [{ role: "user" as const, content: "hi" }],
+) {
   const pre = preprocessAnthropicMessages(messages as never)
   const betaProbe = createBetaProbe(undefined)
   const codec = createAnthropicCodec({
@@ -61,7 +68,14 @@ async function inspect(modelName: string, stopAfter: "translate" | "prepare-wire
     path: "/v1/messages",
     method: "POST",
   } as unknown as RawHttpRequest
-  return (await withCapturingManagerAsync(() => driver.inspectRequest(raw, stopAfter))).result
+  return withCapturingManagerAsync(async () => {
+    const inspection = await driver.inspectRequest(raw, stopAfter)
+    return { inspection, ctx: getRequestContextManager().getAll()[0] }
+  })
+}
+
+async function inspect(modelName: string, stopAfter: "translate" | "prepare-wire") {
+  return (await inspectDetailed(modelName, stopAfter)).result.inspection
 }
 
 describe("T2.4 — anthropic codec forward-leg wire delegation (dry-run inspectRequest)", () => {
@@ -121,6 +135,30 @@ describe("T2.4 — anthropic codec forward-leg wire delegation (dry-run inspectR
     const wbody = wire?.body as { input?: unknown; messages?: unknown }
     expect(Array.isArray(wbody.input)).toBe(true)
     expect(wbody.messages).toBeUndefined()
+  })
+
+  test("@responses forward leg records one structured degradation for all foreign Claude thinking blocks", async () => {
+    seedResponsesModel()
+    const { result } = await inspectDetailed("claude-r@responses", "translate", [
+      { role: "user", content: "x" },
+      {
+        role: "assistant",
+        content: [
+          { type: "thinking", thinking: "", signature: "CAIS-1" },
+          { type: "thinking", thinking: "", signature: "CAIS-2" },
+          { type: "text", text: "answer" },
+        ],
+      },
+      { role: "user", content: "next" },
+    ])
+
+    expect(result.inspection.stoppedAt).toBe("translate")
+    expect(result.ctx?.pipelineInfo?.translation?.anthropicToResponses).toEqual({
+      droppedThinkingBlockCount: 2,
+      sourceSignedThinkingBlockCount: 2,
+      unsignedThinkingBlockCount: 0,
+      reason: "thinking-signature-not-portable",
+    })
   })
 
   test("DIRECT leg (no suffix) → wire stays Anthropic-shaped at /v1/messages (zero regression)", async () => {

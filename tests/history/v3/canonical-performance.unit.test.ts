@@ -21,13 +21,13 @@ import {
   longConversationFixture,
 } from "./performance-fixtures"
 
-function median(values: number[]): number {
+function median(values: Array<number>): number {
   const sorted = [...values].sort((a, b) => a - b)
   return sorted[Math.floor(sorted.length / 2)]
 }
 
 function measured<T>(factory: () => T, repetitions = 5): { value: T; medianMs: number } {
-  const samples: number[] = []
+  const samples: Array<number> = []
   let value = factory()
   for (let index = 0; index < repetitions; index++) {
     const start = performance.now()
@@ -73,7 +73,8 @@ function population(record: ReturnType<typeof longConversationFixture>): Record<
 const RECORDER_SOURCE = readFileSync(join(import.meta.dir, "../../../src/lib/context/model-operation-record.ts"), "utf8")
 
 describe("History V3 canonical capture performance", () => {
-  test("quantifies CPU and heap for the top-three deterministic workloads", () => {
+  test("completes representative workloads within the merge safety budget and reports CPU and heap", () => {
+    const startedAt = performance.now()
     const workloads = [
       ["long-conversation", () => longConversationFixture()],
       ["high-branch", () => highBranchFixture()],
@@ -90,13 +91,15 @@ describe("History V3 canonical capture performance", () => {
         nodes: value.arena.payloads.length + value.arena.frames.length,
       }
     })
+    const totalMs = performance.now() - startedAt
 
-    console.log("HISTORY_V3_PERF canonical", JSON.stringify(rows))
+    console.log("HISTORY_V3_PERF canonical", JSON.stringify({ totalMs, rows }))
+    expect(totalMs).toBeLessThan(10_000)
     for (const row of rows) {
       expect(row.logicalBytes).toBeGreaterThan(1_000)
       expect(row.nodes).toBeGreaterThan(1)
     }
-  })
+  }, 15_000)
 
   test("recursive captured-value freeze and sealed arena copies scale with new messages and frames", () => {
     const smallConversation = captureWork(() => longConversationFixture("complexity-long-small", 32, 512))
@@ -133,7 +136,7 @@ describe("History V3 canonical capture performance", () => {
 
   test("unchanged upstream, rewrite, and client frames share exactly one arena node", () => {
     const recorder = createModelOperationRecorder({ identity: { operationId: "sharing", kind: "generation", createdAt: 1 } })
-    const handles: string[] = []
+    const handles: Array<string> = []
     for (let index = 0; index < 4_096; index++) {
       const frame = { event: "delta", data: `frame-${index}` }
       const source = recorder.registerFrame(frame, { origin: { stage: "upstream", track: "upstream" } })

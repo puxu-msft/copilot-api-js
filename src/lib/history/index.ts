@@ -13,6 +13,7 @@ export {
   getEntry,
   getHistory,
   getHistorySummaries,
+  getHistorySummariesAsync,
   getInFlightEntry,
   getSessionEntries,
   getSessionIdFromHeaders,

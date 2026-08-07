@@ -23,13 +23,10 @@ import type {
   AnchorState,
   ClientFrame,
   ClientSink,
+  WireBlockAllocationPort,
 } from "~/lib/pipeline/types"
 
-import {
-  //
-  DeliveryOwnerError,
-  getDownstreamDeliverySession,
-} from "~/lib/pipeline/delivery/session"
+import { DeliveryOwnerError } from "~/lib/pipeline/delivery/session"
 import { StreamClientAbortError } from "~/lib/stream"
 
 /** Is this rendered client frame a real `content_block_start`? (parses the JSON `type`; non-JSON → false). */
@@ -135,9 +132,8 @@ export class LiveOwnerFailureError extends Error {
   }
 }
 
-export function makeReconcilingSink(inner: ClientSink, state: AnchorState, hooks: ReconcileHooks): ClientSink {
-  const port = getDownstreamDeliverySession(inner)?.allocationPort
-  return {
+export function makeReconcilingSink(inner: ClientSink, state: AnchorState, hooks: ReconcileHooks, port?: WireBlockAllocationPort): ClientSink {
+  const sink: ClientSink = {
     write: async (frame: ClientFrame): Promise<void> => {
       if (port?.wireState && (isContentBlockStart(frame) || isErrorEvent(frame) || isMessageTerminator(frame))) {
         try {
@@ -161,6 +157,14 @@ export function makeReconcilingSink(inner: ClientSink, state: AnchorState, hooks
     writeKeepalive: inner.writeKeepalive ? (frame) => inner.writeKeepalive?.(frame) ?? Promise.resolve() : undefined,
     writeSyntheticEnvelope: inner.writeSyntheticEnvelope ? (frame) => inner.writeSyntheticEnvelope?.(frame) ?? Promise.resolve() : undefined,
     freezeHeartbeat: inner.freezeHeartbeat ? () => inner.freezeHeartbeat?.() : undefined,
+    suspendHeartbeat: inner.suspendHeartbeat ? () => inner.suspendHeartbeat?.() : undefined,
+    resumeHeartbeat: inner.resumeHeartbeat ? () => inner.resumeHeartbeat?.() : undefined,
     close: inner.close ? () => inner.close?.() : undefined,
+    finalize: inner.finalize ? () => inner.finalize?.() : undefined,
   }
+  // Deliberately do NOT inherit delivery identity. This decorator rewrites/drops/reorders frames; if the
+  // winner-aware driver resolves it as a delivery session, winner writes bypass `sink.write` and therefore
+  // bypass reconciliation. The fallback through this decorator is required for wire correctness, at the
+  // existing cost that live winner frames do not carry candidateId attribution.
+  return sink
 }
