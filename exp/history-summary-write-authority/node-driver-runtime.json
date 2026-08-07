@@ -1,0 +1,9 @@
+{
+  "runtime": "v24.16.0",
+  "importedModule": "../../packages/foundation/src/sqlite/driver.ts",
+  "memoryOpen": true,
+  "ddl": true,
+  "row": {
+    "x": "node-driver-ok"
+  }
+}

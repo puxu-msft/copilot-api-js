@@ -1,0 +1,42 @@
+{
+  "runtime": "v24.16.0",
+  "hostToggle": "JavaScript closure captured by DatabaseSync.function",
+  "attempts": {
+    "ordinarySqlCannotSetMode": {
+      "ok": false,
+      "error": "Error: wrong number of arguments to function maintenance_mode()"
+    },
+    "ordinaryWriteRejected": {
+      "ok": false,
+      "error": "Error: controlled maintenance mode required"
+    },
+    "hostToggleConnection1": {
+      "ok": true,
+      "value": 1
+    },
+    "connection1WriteAllowed": {
+      "ok": true
+    },
+    "connection2StillRejected": {
+      "ok": false,
+      "error": "Error: controlled maintenance mode required"
+    },
+    "hostClearConnection1": {
+      "ok": true,
+      "value": 0
+    },
+    "connection1RejectedAfterClear": {
+      "ok": false,
+      "error": "Error: controlled maintenance mode required"
+    }
+  },
+  "rows": {
+    "connection1": [
+      {
+        "id": 1,
+        "value": "scoped"
+      }
+    ],
+    "connection2": []
+  }
+}
