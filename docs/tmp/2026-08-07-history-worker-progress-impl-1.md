@@ -7,7 +7,7 @@ plan: docs/plan/2026-08-07-history-persistence-worker.md
 agent_id: main-session-32630e1d
 session_id: 32630e1d-bf0b-4a6c-baa8-80afb3446c1e
 predecessor_session_id: 529807d9-28f0-4e56-85c8-03adaf016bb7
-status: batch-1a-active
+status: batch-1a-review-fixes-complete-awaiting-rereview
 ---
 
 ## Batch 0 完成项
@@ -31,7 +31,7 @@ status: batch-1a-active
 - [x] capacity 热调：调大即时放行；调小允许暂时 over-capacity，直到 `reserved < capacity` 才放行；`0 <= unacked <= reserved`。
 - [x] `history.persistence_queue_capacity` 配置：strictly positive、默认 256、热更新专用 listener、`config.schema.json` 由生成器更新。
 - [x] admission status primitive：capacity/reserved/unacked/waiting/estimatedBytes/overCapacity；不改 HTTP status。
-- [ ] 正负控、fast/backend 回归、独立 review 0 blocker／major、fast-forward 合入 master。
+- [x] 正负控、fast/backend 回归与独立 review 整改已完成；待复审 0 blocker／major 后 fast-forward 合入 master。
 
 ## 在途意图
 
@@ -44,7 +44,7 @@ status: batch-1a-active
 - `failBeforeTerminal` 原实现只 release、丢弃 plan 要求记录的 error；先加 snapshot red，再记录 `preTerminalFailuresTotal/lastPreTerminalError`。admission singleton 与 capacity listener 均登记到统一 `RESETTERS`，避免跨测试泄漏。
 - 三项 exact-patch 正控均命中目标机制：acquire `<` 变 `<=` 后 capacity=1 得 `reserved=2/overCapacity=true`；schema positive 变 nonnegative 后 `0` 被接收；删除 registry capacity listener 后 singleton 保持 256≠19。每项均先 reverse-apply check 再反向恢复，恢复后 15 pass／0 fail且工作树干净。
 - 最终 fast 为 4102 pass／0 fail。backend 初跑唯一断言失败是 UDS child 负载 test 撞默认 5s，单文件 25 轮为 600 pass／0 fail；曾尝试 test timeout 15s，但在 16 shard 下仍与 `packaged-runtime` hook 一起超时，证明抬 timeout 未治根因，已完全撤回。根因是 committed LPT cache 缺这两个 spawn-heavy 文件、按 median 误分桶；官方 `parallel-test --update unit it http` 刷新 694 个 timings 后，同次 backend 为 5756 pass／0 fail（16 shards，26.80s），UDS guard 零改动。
-- 初轮 Batch 1a review 报 2 major，均采纳（C）：① sink 无 outcome 而同步 throw 时不能释放 terminal-unacked reservation；现保留 pending callback／reservation，记录 `sinkEnqueueErrorsTotal/lastSinkEnqueueError`，正常返回时保存 `messageId`，late outcome 仍是唯一释放点，同步 outcome 后 throw 不反转；② pending pause barrier 遇 close 必须 reject，不能成功 resolve；现 pause waiter 同时持 resolve/reject，close 以同一 error 拒绝所有重复 pause。两组交错测试先 4 fail，整改后 admission 12 pass／0 fail，typecheck／lint／`diff --check` 绿。两项 exact-patch 正控分别恢复旧 sink-throw release 与旧 pause-close resolve，均只让对应新增测试红；reverse-apply 恢复后 12 pass／0 fail且工作树干净。
+- 初轮 Batch 1a review 报 2 major，均采纳（C）：① sink 无 outcome 而同步 throw 时不能释放 terminal-unacked reservation；现保留 pending callback／reservation，记录 `sinkEnqueueErrorsTotal/lastSinkEnqueueError`，正常返回时保存 `messageId`，late outcome 仍是唯一释放点，同步 outcome 后 throw 不反转；② pending pause barrier 遇 close 必须 reject，不能成功 resolve；现 pause waiter 同时持 resolve/reject，close 以同一 error 拒绝所有重复 pause。两组交错测试先 4 fail，整改后 admission 12 pass／0 fail。两项 exact-patch 正控分别恢复旧 sink-throw release 与旧 pause-close resolve，均只让对应新增测试红；reverse-apply 恢复后 12 pass／0 fail且工作树干净。Post-review 目标集 493 pass／0 fail、backend 5480 pass／0 fail（16 shards，27.12s），typecheck／lint／`diff --check` 绿。
 - tsdown 0.22.3 的 array 多入口实测会保留源目录并破坏 `dist/main.mjs`；已按本地官方类型声明改用 object alias entry，固定两个 basename。
 - Bun 1.3.14 的 `node:worker_threads` fixture 抛错时先发 `error`，随后 `exit` code 可为 0；oracle 锁定 error 内容与 `error→exit` 顺序，不硬编码非零码。
 - 首次全 backend 连续三次稳定为 6994 pass／1 fail：`shutdown.unit` 的自然 drain 用 30ms completion 与 100ms deadline 真实 timer 竞速，高 shard 负载下误入 Phase 3；改用既有 `FakeClock` 后具名 25／25、shutdown 50／50、全 backend 6995／6995。
