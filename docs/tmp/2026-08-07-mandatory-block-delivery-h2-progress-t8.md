@@ -17,6 +17,8 @@
 - 四项 exact mutation 均命中目标机制并经 `git apply --reverse --check` 后恢复：fan-out 9 pass／1 fail；zero-event violation drop 8 pass／2 fail；owner close 早丢 bytes 9 pass／1 fail；duplicate operation release 9 pass／1 fail。每次恢复后最终套件 10 pass／0 fail。
 - 收口验证：targeted 10 pass／0 fail；`bun run typecheck` exit 0；目标 ESLint exit 0（仅 `baseline-browser-mapping` 既有提示）；`git diff --check` exit 0。
 - 工作树内报告 `.superpowers/sdd/task-8-report.md` 已更新完成，但按约定不纳入功能提交。Task 7 Minor receiver mutation 保留为 Task 10／11 gate，本任务未改 AST guard。
+- 独立评审整改：先以 caller nested mutation 与 public bytes mutation 得到 10 pass／4 fail；实现 schema-aware deep clone/freeze、每次读取 defensive copy 与 shared violation one-shot 后 14 pass／0 fail。
+- 整改 exact mutations：shallow nested alias 为 13 pass／1 fail；direct backing return 为 13 pass／1 fail；unconditional violation overwrite 为 12 pass／2 fail。三项均在恢复前通过 `git apply --reverse --check`，恢复后 14 pass／0 fail。
 
 ## 已完成
 
@@ -26,17 +28,17 @@
 
 ## 未提交文件及在途意图
 
-- `.superpowers/sdd/task-8-report.md`：worktree-local 实施证据报告，后续逐步补充 RED／GREEN、mutation、验证、ownership proof、结构怪味与三方向反思。
-- `src/lib/transport/http2-goaway-ledger.ts` 与对应 unit test：当前已完成 ordered append 及 owner／dispatch／operation ownership slice。
+- `.superpowers/sdd/task-8-report.md`：worktree-local 完整实施报告，已补评审整改、mutation、验证、ownership proof、结构怪味与三方向反思。
+- `src/lib/transport/http2-goaway-ledger.ts` 与对应 unit test：初版 `ec0cfb9c` 后的评审整改正在本增量 commit 收口。
 - 当前没有其他未提交产品源码或测试。
 
 ## §6b first-parent 对账
 
-从 BASE 到收口前 HEAD 的 first-parent lineage 为：`9b4178e3` progress checkpoint → `dcfc889a` RED 意图澄清 → `98cf30ef` test-first RED → `aef8d661` ordinary zero-event GREEN → `169beb26` ordered events → `6c33380f` ownership/refcount → `9290b6c1` shared violation。每个 commit 均可从本文件对应 RED／GREEN 条目恢复意图；最终收口 commit 将补齐 unavailable event、mutation 与验证证据。
+从 BASE 到当前已提交 HEAD 的 first-parent lineage 为：`9b4178e3` progress checkpoint → `dcfc889a` RED 意图澄清 → `98cf30ef` test-first RED → `aef8d661` ordinary zero-event GREEN → `169beb26` ordered events → `6c33380f` ownership/refcount → `9290b6c1` shared violation → `ec0cfb9c` 最终 ledger／unavailable event／mutation 收口。每个 commit 均可从本文件对应 RED／GREEN 条目恢复意图；本轮评审整改将在下一增量 commit 闭合。
 
 ## 剩余项
 
-- Task 8 实现、测试、mutation 与验证均完成；待提交最终收口 commit。
+- Task 8 初版已提交 `ec0cfb9c`；本轮 deep immutability、defensive-copy 与 violation one-shot 评审整改待增量提交。
 - Task 10／11 必须补 Task 7 Minor receiver mutation gate；本 Task 按边界未改 AST guard，也未接 production wiring。
 
 ## 已作废路子

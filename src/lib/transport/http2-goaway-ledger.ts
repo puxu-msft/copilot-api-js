@@ -29,6 +29,40 @@ type EvidenceEntry = {
   bytes: Uint8Array
 }
 
+function cloneBoundedText(text: BoundedObservationText): BoundedObservationText {
+  return Object.freeze({ value: text.value, originalByteLength: text.originalByteLength, truncated: text.truncated })
+}
+
+function cloneSnapshotScalar(scalar: SnapshotScalar<number>): SnapshotScalar<number> {
+  if (scalar.availability === "observed") return Object.freeze({ availability: "observed", value: scalar.value })
+  if (scalar.availability === "not-observed-before-snapshot") return Object.freeze({ availability: "not-observed-before-snapshot" })
+  return Object.freeze({ availability: "unavailable-at-source", reason: cloneBoundedText(scalar.reason) })
+}
+
+function cloneEvidenceCapture(evidence: EvidenceCapture): EvidenceCapture {
+  if (evidence.availability === "captured") {
+    return Object.freeze({ availability: "captured", digest: evidence.digest, byteLength: evidence.byteLength, encoding: evidence.encoding })
+  }
+  if (evidence.availability === "unavailable-at-source") {
+    return Object.freeze({ availability: "unavailable-at-source", reason: cloneBoundedText(evidence.reason) })
+  }
+  return Object.freeze({ availability: "unavailable-at-capture", byteLength: evidence.byteLength, reason: cloneBoundedText(evidence.reason) })
+}
+
+function cloneProtocolViolation(violation: GoawayProtocolViolation): GoawayProtocolViolation {
+  if (violation.availability === "none") return Object.freeze({ availability: "none" })
+  if (violation.availability === "visible-callback") {
+    return Object.freeze({ availability: "visible-callback", code: "PROTOCOL_ERROR", offendingSequence: violation.offendingSequence })
+  }
+  return Object.freeze({
+    availability: "unattributed-protocol-error-before-callback",
+    code: "PROTOCOL_ERROR",
+    offendingFrame: "unavailable-at-source",
+    attribution: "unattributed",
+    reason: cloneBoundedText(violation.reason),
+  })
+}
+
 export class RegisteredGoawayEvidence {
   readonly capture: CapturedEvidence
   readonly #bytes: Uint8Array
@@ -42,7 +76,7 @@ export class RegisteredGoawayEvidence {
   bytes(): Readonly<Uint8Array> {
     if (this.#state === "released") throw new Error("registered GOAWAY evidence already released")
     if (this.#state === "consumed") throw new Error("registered GOAWAY evidence already consumed")
-    return this.#bytes
+    return new Uint8Array(this.#bytes)
   }
 
   release(): void {
@@ -53,7 +87,7 @@ export class RegisteredGoawayEvidence {
   consume(): Uint8Array {
     if (this.#state !== "registered") throw new Error(`registered GOAWAY evidence already ${this.#state}`)
     this.#state = "consumed"
-    return this.#bytes
+    return new Uint8Array(this.#bytes)
   }
 }
 
@@ -117,7 +151,7 @@ export class DispatchGoawayLease implements GoawaySnapshotSource<OperationGoaway
 export class SessionGoawayLedger {
   readonly #events: Array<GoawayEventSnapshot> = []
   readonly #evidence = new Map<string, EvidenceEntry>()
-  #protocolViolation: GoawayProtocolViolation = { availability: "none" }
+  #protocolViolation: GoawayProtocolViolation = Object.freeze({ availability: "none" })
   #ownerOpen = true
   #references = 1
 
@@ -156,25 +190,30 @@ export class SessionGoawayLedger {
     let lastStreamIdOrder: GoawayEventSnapshot["lastStreamIdOrder"] = "first"
     if (previous !== undefined) lastStreamIdOrder = increased ? "protocol-error-increase" : "non-increasing"
     const event: GoawayEventSnapshot = Object.freeze({
-      ...input,
       sequence,
+      errorCode: input.errorCode,
+      lastStreamID: input.lastStreamID,
       lastStreamIdOrder,
+      opaqueDataLength: cloneSnapshotScalar(input.opaqueDataLength),
+      evidence: cloneEvidenceCapture(input.evidence),
     })
     this.#events.push(event)
     if (!increased) return "appended"
-    this.#protocolViolation = { availability: "visible-callback", code: "PROTOCOL_ERROR", offendingSequence: sequence }
+    if (this.#protocolViolation.availability === "none") {
+      this.#protocolViolation = Object.freeze({ availability: "visible-callback", code: "PROTOCOL_ERROR", offendingSequence: sequence })
+    }
     return "appended-protocol-error"
   }
 
   recordUnattributedProtocolError(reason: BoundedObservationText): "recorded" | "already-recorded" {
     if (this.#protocolViolation.availability !== "none") return "already-recorded"
-    this.#protocolViolation = {
+    this.#protocolViolation = cloneProtocolViolation({
       availability: "unattributed-protocol-error-before-callback",
       code: "PROTOCOL_ERROR",
       offendingFrame: "unavailable-at-source",
       attribution: "unattributed",
       reason,
-    }
+    })
     return "recorded"
   }
 
@@ -217,7 +256,8 @@ export class SessionGoawayLedger {
   }
 
   evidenceBytes(digest: string): Readonly<Uint8Array> | null {
-    return this.#evidence.get(digest)?.bytes ?? null
+    const bytes = this.#evidence.get(digest)?.bytes
+    return bytes ? new Uint8Array(bytes) : null
   }
 
   releaseReference(): void {

@@ -133,6 +133,71 @@ test("appends unavailable evidence without manufacturing bytes", () => {
   operationLease?.release()
 })
 
+test("deep-clones and freezes every nested serializable union at ledger ingress", () => {
+  const ledger = new SessionGoawayLedger()
+  const lease = ledger.acquireDispatchLease("dispatch:deep-immutable" as DispatchHandle)
+  const scalarReason = { value: "scalar", originalByteLength: 6, truncated: false }
+  const evidenceReason = { value: "evidence", originalByteLength: 8, truncated: false }
+  const violationReason = { value: "violation", originalByteLength: 9, truncated: false }
+  const opaqueDataLength = { availability: "unavailable-at-source" as const, reason: scalarReason }
+  const evidence = { availability: "unavailable-at-capture" as const, byteLength: null, reason: evidenceReason }
+
+  ledger.appendUnavailable({ errorCode: 2, lastStreamID: 4, opaqueDataLength, evidence })
+  ledger.recordUnattributedProtocolError(violationReason)
+  const { snapshot, operationLease } = lease.freezeAtTerminal()
+  const serialized = JSON.stringify(snapshot)
+
+  scalarReason.value = "mutated scalar"
+  evidenceReason.value = "mutated evidence"
+  violationReason.value = "mutated violation"
+
+  expect(JSON.stringify(snapshot)).toBe(serialized)
+  expect(snapshot).toEqual({
+    availability: "observed-before-snapshot",
+    events: [
+      {
+        sequence: 1,
+        errorCode: 2,
+        lastStreamID: 4,
+        lastStreamIdOrder: "first",
+        opaqueDataLength: { availability: "unavailable-at-source", reason: { value: "scalar", originalByteLength: 6, truncated: false } },
+        evidence: { availability: "unavailable-at-capture", byteLength: null, reason: { value: "evidence", originalByteLength: 8, truncated: false } },
+      },
+    ],
+    protocolViolation: {
+      availability: "unattributed-protocol-error-before-callback",
+      code: "PROTOCOL_ERROR",
+      offendingFrame: "unavailable-at-source",
+      attribution: "unattributed",
+      reason: { value: "violation", originalByteLength: 9, truncated: false },
+    },
+  })
+  expect(Object.isFrozen(snapshot.events[0]?.opaqueDataLength)).toBe(true)
+  expect(Object.isFrozen(snapshot.events[0]?.evidence)).toBe(true)
+  expect(Object.isFrozen(snapshot.protocolViolation)).toBe(true)
+  operationLease?.release()
+})
+
+test("returns defensive evidence byte copies across sibling operation leases", () => {
+  const ledger = new SessionGoawayLedger()
+  const first = ledger.acquireDispatchLease("dispatch:bytes-first" as DispatchHandle)
+  const second = ledger.acquireDispatchLease("dispatch:bytes-second" as DispatchHandle)
+  const registered = new RegisteredGoawayEvidence("immutable-bytes", new Uint8Array([4, 2]))
+  const registeredRead = registered.bytes() as Uint8Array
+  registeredRead[0] = 9
+  expect(registered.bytes()).toEqual(new Uint8Array([4, 2]))
+
+  ledger.appendObserved({ errorCode: 0, lastStreamID: 1, opaqueDataLength: { availability: "observed", value: 2 }, evidence: registered })
+  const firstOperation = first.freezeAtTerminal().operationLease
+  const secondOperation = second.freezeAtTerminal().operationLease
+  const firstRead = firstOperation?.evidenceBytes("immutable-bytes") as Uint8Array
+  firstRead[0] = 8
+  expect(secondOperation?.evidenceBytes("immutable-bytes")).toEqual(new Uint8Array([4, 2]))
+  expect(firstOperation?.evidenceBytes("immutable-bytes")).toEqual(new Uint8Array([4, 2]))
+  firstOperation?.release()
+  secondOperation?.release()
+})
+
 test("keeps evidence readable after session close until the operation lease releases the last ref", () => {
   const ledger = new SessionGoawayLedger()
   const lease = ledger.acquireDispatchLease("dispatch:ownership" as DispatchHandle)
@@ -212,6 +277,75 @@ test.each([
     },
     operationLease: null,
   })
+})
+
+test("keeps the first violation across unattributed and visible sources", () => {
+  const reason = { value: "unattributed first", originalByteLength: 18, truncated: false }
+
+  const unattributedFirst = new SessionGoawayLedger()
+  const unattributedLease = unattributedFirst.acquireDispatchLease("dispatch:unattributed-visible" as DispatchHandle)
+  unattributedFirst.appendUnavailable({
+    errorCode: 0,
+    lastStreamID: 5,
+    opaqueDataLength: { availability: "observed", value: 0 },
+    evidence: { availability: "unavailable-at-source", reason: { value: "none", originalByteLength: 4, truncated: false } },
+  })
+  unattributedFirst.recordUnattributedProtocolError(reason)
+  expect(
+    unattributedFirst.appendUnavailable({
+      errorCode: 0,
+      lastStreamID: 6,
+      opaqueDataLength: { availability: "observed", value: 0 },
+      evidence: { availability: "unavailable-at-source", reason: { value: "none", originalByteLength: 4, truncated: false } },
+    }),
+  ).toBe("appended-protocol-error")
+  const unattributedResult = unattributedLease.freezeAtTerminal()
+  expect(unattributedResult.snapshot.protocolViolation).toEqual({
+    availability: "unattributed-protocol-error-before-callback",
+    code: "PROTOCOL_ERROR",
+    offendingFrame: "unavailable-at-source",
+    attribution: "unattributed",
+    reason,
+  })
+  unattributedResult.operationLease?.release()
+
+  const visibleFirst = new SessionGoawayLedger()
+  const visibleLease = visibleFirst.acquireDispatchLease("dispatch:visible-unattributed" as DispatchHandle)
+  visibleFirst.appendUnavailable({
+    errorCode: 0,
+    lastStreamID: 5,
+    opaqueDataLength: { availability: "observed", value: 0 },
+    evidence: { availability: "unavailable-at-source", reason: { value: "none", originalByteLength: 4, truncated: false } },
+  })
+  visibleFirst.appendUnavailable({
+    errorCode: 0,
+    lastStreamID: 6,
+    opaqueDataLength: { availability: "observed", value: 0 },
+    evidence: { availability: "unavailable-at-source", reason: { value: "none", originalByteLength: 4, truncated: false } },
+  })
+  expect(visibleFirst.recordUnattributedProtocolError(reason)).toBe("already-recorded")
+  const visibleResult = visibleLease.freezeAtTerminal()
+  expect(visibleResult.snapshot.protocolViolation).toEqual({ availability: "visible-callback", code: "PROTOCOL_ERROR", offendingSequence: 2 })
+  visibleResult.operationLease?.release()
+})
+
+test("keeps the first visible offending sequence across later increases", () => {
+  const ledger = new SessionGoawayLedger()
+  const lease = ledger.acquireDispatchLease("dispatch:visible-visible" as DispatchHandle)
+  const append = (lastStreamID: number) =>
+    ledger.appendUnavailable({
+      errorCode: 0,
+      lastStreamID,
+      opaqueDataLength: { availability: "observed", value: 0 },
+      evidence: { availability: "unavailable-at-source", reason: { value: "none", originalByteLength: 4, truncated: false } },
+    })
+
+  append(5)
+  expect(append(6)).toBe("appended-protocol-error")
+  expect(append(7)).toBe("appended-protocol-error")
+  const result = lease.freezeAtTerminal()
+  expect(result.snapshot.protocolViolation).toEqual({ availability: "visible-callback", code: "PROTOCOL_ERROR", offendingSequence: 2 })
+  result.operationLease?.release()
 })
 
 test("keeps an unattributed violation on an observed event snapshot", () => {
