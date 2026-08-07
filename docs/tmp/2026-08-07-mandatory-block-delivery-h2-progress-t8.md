@@ -11,6 +11,8 @@
 - GREEN 2：实现 captured evidence 与 append-only events 后 targeted test 为 2 pass、0 fail；typecheck exit 0。覆盖 first／decrease／equal／increase order、same digest 不合并、visible increase 的 `appended-protocol-error` 与 violation。
 - RED 3：ownership tests 为 2 pass、3 fail，精确缺失 `closeSessionOwner()` 与 dispatch `release()`。
 - GREEN 3：session owner／dispatch／operation 共用单一 refcount，append 发布后消费 evidence、发布前失败不消费；session close 后 operation lease 仍读 bytes，最后 release 归零；duplicate freeze／release 与 release 后读均 fail loud。Targeted test 为 5 pass、0 fail；typecheck exit 0。
+- RED 4：shared violation tests 为 5 pass、3 fail，精确缺失 `recordUnattributedProtocolError()`。
+- GREEN 4：shared one-shot first reason wins，后到返回 `already-recorded` 且不覆盖；stream-first／session-first 双向可区分 reason；zero-event error 冻结为 `unavailable-at-source`，ordinary zero-event 保持 not-observed，observed event 保留 violation。Targeted test 为 8 pass、0 fail；typecheck exit 0。
 - 工作树内报告 `.superpowers/sdd/task-8-report.md` 已创建并记录相同基线，但该 worktree-local 报告不纳入本 progress-only commit。
 
 ## 已完成
@@ -27,8 +29,8 @@
 
 ## 剩余项
 
-1. 下一轮以 RED→GREEN 添加 zero-event violation freeze 与 shared first-reason-wins；ordered append 与 ownership slices 已完成。
-2. 补 `appendUnavailable`、剩余 validation 与 mutation controls；production module 继续只导入 Task 7 serializable schema 与 `DispatchHandle`。
+1. 核心 ordered append、ownership、zero-event 三态与 shared first-reason-wins slices 已完成。
+2. 下一轮补 `appendUnavailable`、剩余 validation 与 mutation controls；production module 继续只导入 Task 7 serializable schema 与 `DispatchHandle`。
 3. 跑 targeted GREEN、typecheck、lint；随后分别做 fan-out、zero-event violation drop、close-owner early byte loss、duplicate release mutation controls。
 4. 完成报告、自审与最终精确 pathspec `feat: add in-memory ordered GOAWAY ledger` commit。
 5. 把 Task 7 Minor receiver mutation记录为 Task 10／11 gate；本 Task 不改 AST guard。

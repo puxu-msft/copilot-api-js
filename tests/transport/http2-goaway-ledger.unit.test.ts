@@ -103,3 +103,54 @@ test("fails loud when a dispatch lease is released twice or frozen after release
   ledger.closeSessionOwner()
   expect(ledger.retainedReferenceCount).toBe(0)
 })
+
+test.each([
+  ["stream-first", "stream reason", "session reason"],
+  ["session-first", "session reason", "stream reason"],
+])("keeps the first shared unattributed violation for %s ordering", (_, firstValue, secondValue) => {
+  const ledger = new SessionGoawayLedger()
+  const lease = ledger.acquireDispatchLease(`dispatch:${firstValue}` as DispatchHandle)
+  const reason = (value: string) => ({ value, originalByteLength: value.length, truncated: false })
+
+  expect(ledger.recordUnattributedProtocolError(reason(firstValue))).toBe("recorded")
+  expect(ledger.recordUnattributedProtocolError(reason(secondValue))).toBe("already-recorded")
+  expect(lease.freezeAtTerminal()).toEqual({
+    snapshot: {
+      availability: "unavailable-at-source",
+      events: [],
+      protocolViolation: {
+        availability: "unattributed-protocol-error-before-callback",
+        code: "PROTOCOL_ERROR",
+        offendingFrame: "unavailable-at-source",
+        attribution: "unattributed",
+        reason: reason(firstValue),
+      },
+    },
+    operationLease: null,
+  })
+})
+
+test("keeps an unattributed violation on an observed event snapshot", () => {
+  const ledger = new SessionGoawayLedger()
+  const lease = ledger.acquireDispatchLease("dispatch:observed-unattributed" as DispatchHandle)
+  const reason = { value: "stream first", originalByteLength: 12, truncated: false }
+
+  ledger.appendObserved({
+    errorCode: 0,
+    lastStreamID: 3,
+    opaqueDataLength: { availability: "observed", value: 1 },
+    evidence: new RegisteredGoawayEvidence("observed-unattributed", new Uint8Array([1])),
+  })
+  ledger.recordUnattributedProtocolError(reason)
+
+  const { snapshot, operationLease } = lease.freezeAtTerminal()
+  expect(snapshot.availability).toBe("observed-before-snapshot")
+  expect(snapshot.protocolViolation).toEqual({
+    availability: "unattributed-protocol-error-before-callback",
+    code: "PROTOCOL_ERROR",
+    offendingFrame: "unavailable-at-source",
+    attribution: "unattributed",
+    reason,
+  })
+  operationLease?.release()
+})

@@ -1,5 +1,6 @@
 import type { DispatchHandle } from "~/lib/context/model-operation-record"
 import type {
+  BoundedObservationText,
   EvidenceCapture,
   GoawayEventSnapshot,
   GoawayFreezeResult,
@@ -148,6 +149,18 @@ export class SessionGoawayLedger {
     return "appended-protocol-error"
   }
 
+  recordUnattributedProtocolError(reason: BoundedObservationText): "recorded" | "already-recorded" {
+    if (this.#protocolViolation.availability !== "none") return "already-recorded"
+    this.#protocolViolation = {
+      availability: "unattributed-protocol-error-before-callback",
+      code: "PROTOCOL_ERROR",
+      offendingFrame: "unavailable-at-source",
+      attribution: "unattributed",
+      reason,
+    }
+    return "recorded"
+  }
+
   closeSessionOwner(): void {
     if (!this.#ownerOpen) throw new Error("session GOAWAY ledger owner already closed")
     this.#ownerOpen = false
@@ -156,6 +169,16 @@ export class SessionGoawayLedger {
 
   freeze(dispatch: DispatchHandle): GoawayFreezeResult<OperationGoawayLease | null> {
     if (this.#events.length === 0) {
+      if (this.#protocolViolation.availability === "unattributed-protocol-error-before-callback") {
+        return {
+          snapshot: {
+            availability: "unavailable-at-source",
+            events: [],
+            protocolViolation: this.#protocolViolation,
+          },
+          operationLease: null,
+        }
+      }
       return {
         snapshot: {
           availability: "not-observed-before-snapshot",
