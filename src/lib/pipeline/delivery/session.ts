@@ -62,6 +62,8 @@ export interface DeliverySessionTestHooks {
   onBeginLeg?: (kind: "primary" | "continuation" | "recovery") => void | Promise<void>
   /** Runs after C9 reservation commit, inside the allocation try/catch. */
   onCommittedAllocation?: (operation: "allocate-anchor" | "allocate-real-block") => void | Promise<void>
+  /** Runs after recovery-batch staging and before its C9 commit; a throw leaves the session reusable. */
+  onBeforeRecoveryBatchCommit?: () => void | Promise<void>
   /** Observes the actual driver terminal outcome on the production handler path. */
   onResponseOutcome?: (outcome: { kind: "stream-error"; source: import("../types").ResponseFailureSource }) => void
 }
@@ -342,30 +344,27 @@ export function createDownstreamDeliverySession(options: CreateDownstreamDeliver
     return ownerFailure<T>({ ok: false, reason: "session-terminating", committed: false })
   }
 
-  const writeAllocationFrames = async (
+  const writeCommittedBatch = async (
     specs: ReadonlyArray<WireWriteSpec>,
-    reservation: WireIndexReservation<number | WireBlockMapping>,
-    operation: "allocate-anchor" | "allocate-real-block",
-    source?: LegSource,
-    onCommit?: () => void,
+    operation: OwnerOperation,
+    source: LegSource | undefined,
+    commit: () => void,
   ): Promise<OwnerResult<true>> => {
-    if (specs.length === 0) {
-      reservation.rollback()
-      throw new Error("[delivery] allocation build produced no wire frames")
-    }
+    if (specs.length === 0) throw new Error("[delivery] owner build produced no wire frames")
     let committed = false
     try {
-      for (const spec of specs) {
-        const entry = frameForSpec(spec, source)
-        if (!committed) {
-          // C9 commit point: synchronously consume the index BEFORE invoking the first external write.
-          reservation.commit()
-          onCommit?.()
-          committed = true
-          const onCommittedAllocationForTests = deliverySessionTestHooks?.onCommittedAllocation
-          if (onCommittedAllocationForTests) await onCommittedAllocationForTests(operation)
-        }
+      // All frame/provenance conversion finishes before C9 and before any external wire write.
+      const entries = specs.map((spec) => frameForSpec(spec, source))
+      // C9 is the synchronous boundary immediately before the first external wire write.
+      commit()
+      committed = true
+      if (operation === "allocate-anchor" || operation === "allocate-real-block") {
+        const onCommittedAllocationForTests = deliverySessionTestHooks?.onCommittedAllocation
+        if (onCommittedAllocationForTests) await onCommittedAllocationForTests(operation)
+      }
+      for (const entry of entries) {
         applyPendingFrame(entry)
+        if (operation === "publish-recovery-batch") await deliverySessionTestHooks?.onWrite?.(entry)
         await writeToSink(sink, entry)
         applyWireFrame(entry)
         const writtenAt = monotonicNow()
@@ -375,7 +374,6 @@ export function createDownstreamDeliverySession(options: CreateDownstreamDeliver
       }
       return ownerSuccess(true)
     } catch (error) {
-      if (!committed) reservation.rollback()
       if (classifyStreamError(error) === "client-abort") {
         if (committed) recordPartialDelivery(operation, "client-gone")
         await finalizeAfterClientGone()
@@ -387,6 +385,28 @@ export function createDownstreamDeliverySession(options: CreateDownstreamDeliver
       }
       consola.error("[delivery] owner wire write failed", error)
       throw new DeliveryOwnerError(error, committed)
+    }
+  }
+
+  const writeAllocationFrames = async (
+    specs: ReadonlyArray<WireWriteSpec>,
+    reservation: WireIndexReservation<number | WireBlockMapping>,
+    operation: "allocate-anchor" | "allocate-real-block",
+    source?: LegSource,
+    onCommit?: () => void,
+  ): Promise<OwnerResult<true>> => {
+    if (specs.length === 0) {
+      reservation.rollback()
+      throw new Error("[delivery] allocation build produced no wire frames")
+    }
+    try {
+      return await writeCommittedBatch(specs, operation, source, () => {
+        reservation.commit()
+        onCommit?.()
+      })
+    } catch (error) {
+      if (error instanceof DeliveryOwnerError && !error.committed) reservation.rollback()
+      throw error
     }
   }
 
@@ -433,6 +453,22 @@ export function createDownstreamDeliverySession(options: CreateDownstreamDeliver
         })
         if (!written.ok) return written
         return ownerSuccess(reservation.value)
+      }),
+    publishRecoveryBatch: (source, build) =>
+      serializer.enqueue(async () => {
+        const unavailable = ownerUnavailable<"published">()
+        if (unavailable) return unavailable
+        let specs: ReadonlyArray<WireWriteSpec>
+        try {
+          specs = build({ envelope })
+          if (specs.length === 0) throw new Error("[delivery] recovery batch build produced no wire frames")
+          await deliverySessionTestHooks?.onBeforeRecoveryBatchCommit?.()
+        } catch (error) {
+          throw new DeliveryOwnerError(error, false)
+        }
+        const written = await writeCommittedBatch(specs, "publish-recovery-batch", source, () => {})
+        if (!written.ok) return written
+        return ownerSuccess("published" as const)
       }),
     beginLeg: (kind, source) =>
       serializer.enqueue(async () => {

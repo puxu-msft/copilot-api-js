@@ -296,6 +296,7 @@ export type OwnerFailureReason = "client-gone" | "session-terminating" | "wire-t
 export type OwnerOperation =
   | "allocate-anchor"
   | "allocate-real-block"
+  | "publish-recovery-batch"
   | "begin-leg"
   | "close-anchor-before-real"
   | "close-anchor-terminal"
@@ -324,6 +325,8 @@ export interface WireBlockAllocationPort {
     build: (ctx: { mapping: WireBlockMapping; envelope: WireEnvelopeFactory }) => ReadonlyArray<WireWriteSpec>,
   ): Promise<OwnerResult<WireBlockMapping>>
   beginLeg(kind: "primary" | "continuation" | "recovery", source: LegSource): Promise<OwnerResult<LegToken>>
+  /** Stages a completed recovery's client-shaped frames, then publishes the whole batch at one C9 point. */
+  publishRecoveryBatch(source: LegSource, build: (ctx: { envelope: WireEnvelopeFactory }) => ReadonlyArray<WireWriteSpec>): Promise<OwnerResult<"published">>
   closeOpenAnchor(
     buildStop: (index: number, envelope: WireEnvelopeFactory) => WireWriteSpec,
     mode: "before-real" | "terminal",
