@@ -4,7 +4,9 @@ base: ac0955a27c175b6b79811c65c0c8c9a4ea0db257
 branch: history-worker-batch-0
 worktree: /home/xp/src/copilot-api-js/.worktree/history-worker-batch-0
 plan: docs/plan/2026-08-07-history-persistence-worker.md
-agent_id: main-session-529807d9
+agent_id: main-session-32630e1d
+session_id: 32630e1d-bf0b-4a6c-baa8-80afb3446c1e
+predecessor_session_id: 529807d9-28f0-4e56-85c8-03adaf016bb7
 status: active
 ---
 
@@ -13,7 +15,12 @@ status: active
 - [x] Task 0 red：协议测试因模块不存在而失败；实现后 3 pass／0 fail，typecheck、目标 lint、`diff --check` 全绿。
 - [x] 实现 runtime/history-worker/asset-url/registry 及真 Worker contract tests：12 pass／0 fail，typecheck、目标 lint、`diff --check` 全绿。
 - [x] 增加 tsdown alias 双入口并保持 `dist/{main,history-worker}.mjs` 稳定；Bun／Node probes 分别返回 `bun:sqlite`／`node:sqlite` 且 `n=7`，packaged test 自建独立临时 bundle。
-- [ ] 初轮 review 的 4 个 major 已全部修复，待复审后 fast-forward 合入 `master`；最终 protocol/runtime tests 为 23 pass／0 fail。
+- [x] 初轮 review 的 4 个 major 已全部修复。
+- [x] 第二轮 F5：强制 terminal 非空、`sequence === lastSequence`、outcome 合法、candidate/dispatch 引用存在、`committedAttempt === committedDispatch`；删除整段实现及分别删除 candidate/dispatch/alias 检查的四轮 exact-patch mutation 均让目标测试按预期变红，恢复后 protocol/runtime 26 pass／0 fail。
+- [ ] 第二轮 F6：拆分 Worker-owned status patch，禁止 Worker 覆写 `terminalFailed`、pending、ACK/callback counters 等 main-owned 字段；验收须注入恶意 status 并证明 main-owned snapshot 不变。
+- [ ] 第二轮 F7：状态完整 settlement 后再通知，逐 listener 隔离异常；验收须证明首 listener 抛错不阻断后续 listener、callbacks 或 request rejection。
+- [ ] 稳定 `canonical-performance` 全套件负载门：复现 false-red，改用不依赖共享 runner 负载但仍能咬住真实复杂度回归的判据，跑正负 mutation 与全 backend。
+- [ ] F5–F7 和性能门全部完成后，恢复原 Batch 0 reviewer 复审至 0 blocker／major，再 fast-forward 合入 `master`。
 
 ## 在途意图
 

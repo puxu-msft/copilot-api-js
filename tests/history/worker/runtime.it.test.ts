@@ -46,9 +46,9 @@ function record(operationId = "op-1"): ModelOperationRecord {
     dispatches: [],
     attempts: [],
     egress: null,
-    terminal: null,
+    terminal: { sequence: 1, outcome: "completed" },
     extensions: {},
-    lastSequence: 0,
+    lastSequence: 1,
   }
 }
 

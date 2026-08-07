@@ -375,16 +375,52 @@ function assertModelOperationRecord(value: unknown): asserts value is ModelOpera
   assertObject(value.arena, "ModelOperationRecord.arena")
   assertArenaNodes(value.arena.payloads, "ModelOperationRecord.arena.payloads")
   assertArenaNodes(value.arena.frames, "ModelOperationRecord.arena.frames")
-  for (const field of ["transforms", "candidates", "dispatches", "attempts"] as const) {
-    if (!Array.isArray(value[field])) throw new HistoryWorkerProtocolError(`ModelOperationRecord.${field} must be an array`)
-  }
-  for (const field of ["ingress", "routing", "egress", "terminal"] as const) {
+  assertArray(value.transforms, "ModelOperationRecord.transforms")
+  assertArray(value.candidates, "ModelOperationRecord.candidates")
+  assertArray(value.dispatches, "ModelOperationRecord.dispatches")
+  assertArray(value.attempts, "ModelOperationRecord.attempts")
+  for (const field of ["ingress", "routing", "egress"] as const) {
     if (value[field] !== null && (typeof value[field] !== "object" || Array.isArray(value[field]))) {
       throw new HistoryWorkerProtocolError(`ModelOperationRecord.${field} must be an object or null`)
     }
   }
   assertObject(value.extensions, "ModelOperationRecord.extensions")
-  assertNonNegativeInteger(value.lastSequence, "ModelOperationRecord.lastSequence")
+  assertPositiveInteger(value.lastSequence, "ModelOperationRecord.lastSequence")
+  assertCanonicalTerminal(value.terminal, value.lastSequence, value.candidates, value.dispatches)
+}
+
+function assertCanonicalTerminal(value: unknown, lastSequence: number, candidates: ReadonlyArray<unknown>, dispatches: ReadonlyArray<unknown>): void {
+  assertObject(value, "ModelOperationRecord.terminal")
+  assertPositiveInteger(value.sequence, "ModelOperationRecord.terminal.sequence")
+  if (value.sequence !== lastSequence) {
+    throw new HistoryWorkerProtocolError("ModelOperationRecord.terminal.sequence must equal ModelOperationRecord.lastSequence")
+  }
+  if (!isTerminalOutcome(value.outcome)) {
+    throw new HistoryWorkerProtocolError(`ModelOperationRecord.terminal.outcome is invalid: ${safeString(value.outcome)}`)
+  }
+  const candidateHandles = collectHandles(candidates, "ModelOperationRecord.candidates")
+  const dispatchHandles = collectHandles(dispatches, "ModelOperationRecord.dispatches")
+  if (value.winnerCandidate !== undefined && (typeof value.winnerCandidate !== "string" || !candidateHandles.has(value.winnerCandidate))) {
+    throw new HistoryWorkerProtocolError("ModelOperationRecord.terminal.winnerCandidate must reference an existing candidate")
+  }
+  if (value.committedDispatch !== undefined && (typeof value.committedDispatch !== "string" || !dispatchHandles.has(value.committedDispatch))) {
+    throw new HistoryWorkerProtocolError("ModelOperationRecord.terminal.committedDispatch must reference an existing dispatch")
+  }
+  if (value.committedAttempt !== undefined && value.committedAttempt !== value.committedDispatch) {
+    throw new HistoryWorkerProtocolError("ModelOperationRecord.terminal.committedAttempt must alias committedDispatch")
+  }
+}
+
+function collectHandles(values: ReadonlyArray<unknown>, label: string): Set<string> {
+  const handles = new Set<string>()
+  for (const [index, value] of values.entries()) {
+    assertObject(value, `${label}[${index}]`)
+    if (typeof value.handle !== "string" || value.handle.length === 0) {
+      throw new HistoryWorkerProtocolError(`${label}[${index}].handle must be a non-empty string`)
+    }
+    handles.add(value.handle)
+  }
+  return handles
 }
 
 function assertArenaNodes(value: unknown, label: string): void {
@@ -508,6 +544,10 @@ function isPersistenceOutcome(value: unknown): value is HistoryPersistenceOutcom
   return value === "persisted" || value === "conflict" || value === "failed"
 }
 
+function isTerminalOutcome(value: unknown): boolean {
+  return value === "completed" || value === "failed" || value === "cancelled" || value === "aborted" || value === "interrupted"
+}
+
 function safeString(value: unknown): string {
   if (typeof value === "string" || typeof value === "number" || typeof value === "boolean" || value === null || value === undefined) return String(value)
   return Object.prototype.toString.call(value)
@@ -519,6 +559,10 @@ function assertFiniteNumber(value: unknown, label: string): asserts value is num
 
 function assertObject(value: unknown, label: string): asserts value is Record<string, unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) throw new HistoryWorkerProtocolError(`${label} must be an object`)
+}
+
+function assertArray(value: unknown, label: string): asserts value is ReadonlyArray<unknown> {
+  if (!Array.isArray(value)) throw new HistoryWorkerProtocolError(`${label} must be an array`)
 }
 
 function assertPositiveInteger(value: unknown, label: string): asserts value is number {

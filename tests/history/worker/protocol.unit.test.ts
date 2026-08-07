@@ -28,9 +28,9 @@ function record(operationId = "op-1"): ModelOperationRecord {
     dispatches: [],
     attempts: [],
     egress: null,
-    terminal: null,
+    terminal: { sequence: 1, outcome: "completed" },
     extensions: {},
-    lastSequence: 0,
+    lastSequence: 1,
   }
 }
 
@@ -104,6 +104,103 @@ describe("History Worker protocol", () => {
         },
       }),
     ).toThrow(HistoryWorkerProtocolError)
+  })
+
+  test("rejects persistence envelopes without a canonical terminal", () => {
+    const base = envelope()
+    const terminalCases: Array<unknown> = [null, {}, { sequence: 2, outcome: "completed" }, { sequence: 1, outcome: "maybe" }]
+    for (const terminal of terminalCases) {
+      const invalidEnvelope = {
+        ...base,
+        publication: {
+          ...base.publication,
+          record: { ...base.publication.record, terminal },
+        },
+      }
+      expect(() =>
+        parseMainToWorkerMessage({
+          type: "persist-operation",
+          protocolVersion: HISTORY_WORKER_PROTOCOL_VERSION,
+          workerGeneration: 1,
+          messageId: 1,
+          envelope: invalidEnvelope,
+        }),
+      ).toThrow(HistoryWorkerProtocolError)
+    }
+  })
+
+  test("rejects canonical terminal references that do not resolve inside the record", () => {
+    const base = envelope()
+    const candidate = { handle: "candidate-1", sequence: 1, role: "primary", dispatches: ["dispatch-1"] }
+    const dispatch = { handle: "dispatch-1", candidate: "candidate-1", sequence: 2, diagnostics: [] }
+    const recordWithTopology = {
+      ...base.publication.record,
+      candidates: [candidate],
+      dispatches: [dispatch],
+      attempts: [dispatch],
+      lastSequence: 3,
+    }
+    const terminalCases = [
+      { sequence: 3, outcome: "completed", winnerCandidate: "missing-candidate" },
+      { sequence: 3, outcome: "completed", committedDispatch: "missing-dispatch" },
+      { sequence: 3, outcome: "completed", committedDispatch: "dispatch-1", committedAttempt: "missing-dispatch" },
+      { sequence: 3, outcome: "completed", committedAttempt: "dispatch-1" },
+    ]
+
+    for (const terminal of terminalCases) {
+      const invalidEnvelope = {
+        ...base,
+        publication: {
+          ...base.publication,
+          record: { ...recordWithTopology, terminal },
+        },
+      }
+      expect(() =>
+        parseMainToWorkerMessage({
+          type: "persist-operation",
+          protocolVersion: HISTORY_WORKER_PROTOCOL_VERSION,
+          workerGeneration: 1,
+          messageId: 1,
+          envelope: invalidEnvelope,
+        }),
+      ).toThrow(HistoryWorkerProtocolError)
+    }
+  })
+
+  test("accepts canonical terminal references that resolve inside the record", () => {
+    const base = envelope()
+    const candidate = { handle: "candidate-1", sequence: 1, role: "primary", dispatches: ["dispatch-1"] }
+    const dispatch = { handle: "dispatch-1", candidate: "candidate-1", sequence: 2, diagnostics: [] }
+    const validEnvelope = {
+      ...base,
+      publication: {
+        ...base.publication,
+        record: {
+          ...base.publication.record,
+          candidates: [candidate],
+          dispatches: [dispatch],
+          attempts: [dispatch],
+          terminal: {
+            sequence: 3,
+            outcome: "completed",
+            winnerCandidate: "candidate-1",
+            committedDispatch: "dispatch-1",
+            committedAttempt: "dispatch-1",
+          },
+          lastSequence: 3,
+        },
+      },
+    }
+
+    expect(() =>
+      parseMainToWorkerMessage({
+        type: "persist-operation",
+        protocolVersion: HISTORY_WORKER_PROTOCOL_VERSION,
+        workerGeneration: 1,
+        messageId: 1,
+        envelope: validEnvelope,
+      }),
+    ).not.toThrow()
   })
 
   test("rejects malformed nested main-to-Worker payloads", () => {
