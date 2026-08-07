@@ -184,6 +184,21 @@ class ControllableTransport implements HistoryWorkerTransport {
   }
 }
 
+class ThrowingTransport extends ControllableTransport {
+  private readonly throwOnType: string
+
+  constructor(throwOnType: string) {
+    super()
+    this.throwOnType = throwOnType
+  }
+
+  override send(message: unknown): void {
+    const type = (message as { type?: unknown }).type
+    if (type === this.throwOnType) throw new Error(`send failed for ${this.throwOnType}`)
+    super.send(message)
+  }
+}
+
 function readyMessage(generation: number, requestId = 1): unknown {
   return {
     type: "ready",
@@ -199,6 +214,54 @@ function readyMessage(generation: number, requestId = 1): unknown {
     },
   }
 }
+
+describe("HistoryPersistenceRuntime synchronous send failures", () => {
+  test("rejects start and enters terminal-failed when initialize send throws", async () => {
+    const transport = new ThrowingTransport("initialize")
+    const runtime = new HistoryPersistenceRuntimeImpl({ workerFactory: () => transport })
+
+    await expect(runtime.start(startConfig())).rejects.toThrow("send failed for initialize")
+    expect(runtime.snapshot()).toMatchObject({ terminalFailed: true, pendingEnvelopes: 0 })
+  })
+
+  test("settles an envelope as failed when the in-process parser rejects send", async () => {
+    const runtime = createInProcessHistoryPersistenceRuntime()
+    await runtime.start(startConfig())
+    const invalid = envelope()
+    const invalidCommand = { ...invalid.publication.rawAttachment.rawCommands[0], sequence: -1 }
+    const invalidEnvelope = {
+      ...invalid,
+      publication: {
+        ...invalid.publication,
+        rawAttachment: { ...invalid.publication.rawAttachment, rawCommands: [invalidCommand] },
+      },
+    }
+    let calls = 0
+    let outcome: HistoryPersistenceOutcome | undefined
+
+    runtime.enqueue(invalidEnvelope, (value) => {
+      calls++
+      outcome = value
+    })
+
+    expect(outcome).toBe("failed")
+    expect(calls).toBe(1)
+    expect(runtime.snapshot()).toMatchObject({ terminalFailed: true, pendingEnvelopes: 0 })
+  })
+
+  test("rejects drain immediately after shutdown instead of registering an unsendable request", async () => {
+    const transport = new ControllableTransport()
+    const runtime = new HistoryPersistenceRuntimeImpl({ workerFactory: () => transport })
+    const start = runtime.start(startConfig())
+    transport.emitMessage(readyMessage(1))
+    await start
+    await runtime.shutdown()
+    const sentBeforeDrain = transport.sent.length
+
+    await expect(runtime.drain()).rejects.toThrow("not started")
+    expect(transport.sent).toHaveLength(sentBeforeDrain)
+  })
+})
 
 describe("HistoryPersistenceRuntime ACK state", () => {
   test("ignores stale-generation ACKs and tombstones matching duplicate outcomes", async () => {

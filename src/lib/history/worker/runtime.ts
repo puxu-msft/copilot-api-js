@@ -120,7 +120,6 @@ export class HistoryPersistenceRuntimeImpl implements HistoryPersistenceRuntime 
       this.outcomes.set(messageId, "failed")
       return messageId
     }
-    assertStructuredCloneSafe(envelope, "History operation envelope")
     this.pendingEnvelopes.set(messageId, { envelope, onOutcome })
     this.updatePendingStatus()
     this.send({
@@ -197,9 +196,14 @@ export class HistoryPersistenceRuntimeImpl implements HistoryPersistenceRuntime 
   }
 
   private send(message: MainToHistoryWorkerMessage): void {
-    if (!this.transport) throw new Error("History Worker runtime is not started")
-    assertStructuredCloneSafe(message, `History Worker message ${message.type}`)
-    this.transport.send(message)
+    try {
+      const parsed = parseMainToWorkerMessage(message)
+      assertStructuredCloneSafe(parsed, `History Worker message ${parsed.type}`)
+      if (!this.transport) throw new Error("History Worker runtime is not started")
+      this.transport.send(parsed)
+    } catch (error) {
+      this.failTerminal(error instanceof Error ? error : new Error(String(error)))
+    }
   }
 
   private handleMessage(value: unknown): void {
