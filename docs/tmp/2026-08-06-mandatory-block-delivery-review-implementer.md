@@ -1,6 +1,6 @@
 # Mandatory block delivery 与 HTTP/2 终止观测规格评审——实施者走查
 
-> 状态：第五轮 `0 blocker / 0 major`，实施者视角已放行
+> 状态：第六轮 `0 blocker / 1 major` 已采纳并整改，待原 reviewer 第七轮复审
 >
 > reviewer：独立异模型实施者视角 reviewer
 >
@@ -176,3 +176,27 @@ Canonical record／journal 保留 dispatch event sequence 与 digest；CAS 只�
 ### 第五轮 verdict
 
 `0 blocker / 0 major`。Ordered ledger、dispatch／operation leases、install／freeze／close、repeated GOAWAY 与 History sequence refs 均无未闭合实施或所有权歧义；**实施者视角可定稿**。
+
+## 第六轮复审
+
+> 目标提交：`2f706e7d4891e5018c8b7c6ab3f57a12f29a5a1f`（上一被审 `21e455989182c72c04621644f789ad895c84d768`）
+>
+> 证据：目标 SHA 已解析。报告仍处于先前未解决 index merge，故本轮以 `git show <target>:<spec>` 审阅精确目标文档；未修改 spec。
+
+### G1 · Major：unattributed protocol error 的 freeze 规则与 snapshot union 矛盾
+
+§5.3 允许 `unavailable-at-source` 且 `unattributed-protocol-error-before-callback`、events 为空，`recordUnattributedProtocolError()` 也要求生产记录该状态。但 §5.4 同时规定 `DispatchGoawayLease.freezeAtTerminal()` “零 event 返回 not-observed”。生产在 callback 前收到 `ERR_HTTP2_ERROR: Protocol error` 后 ledger 没有 event；按 freeze 文字实施会把已记录的 protocol violation 变为 `not-observed`，丢失 `PROTOCOL_ERROR`，而按 union／验收又必须保留 unattributed violation。实施者无法同时满足两者，且错误实现可因零 event 正常路径测试而绿。应把 freeze 判据改为按 ledger 状态：仅“无 event 且无 unattributed violation”才返回 not-observed；有 unattributed violation 时返回 unavailable-at-source + violation，且补该生产路径正反控制。
+
+### G2 · 其余本轮重点：关闭
+
+`InvalidGoawayCapability` 将 fixture-clamped、runtime-rejected、raw-invalid-visible 与 unsupported 分开，并禁止用 fixture 调用参数或 test scenario 因果回写生产 snapshot；clamped callback 是有效 non-increasing 正样本，runtime-rejected 保留 unattributed error 而不伪造 event。`RegisteredGoawayEvidence` 的 append 成功消费／发布前失败调用方 release，及 ordered append-only ledger、session owner close 后 leases 继续可读，均定义了单一责任并有相应变异控制。
+
+### 第六轮 verdict
+
+`0 blocker / 1 major`。G1 修复后可定稿。
+
+### 主会话第六轮处置
+
+| Finding | 级别 | 处置 | 整改方向 |
+|---|---|---|---|
+| G1-r6 | C | 采纳 | `freezeAtTerminal()` 改为按 ledger 的 event／violation 联合状态构造三种结果：仅“零 event + violation none”是 not-observed；“零 event + unattributed violation”是 unavailable-at-source 且保留 violation；有 event 是 observed prefix。纯标量 violation 不需要 evidence lease。§9.2 增加 ordinary zero-event 正样本、error-bearing zero-event 正样本及双向变异。 |

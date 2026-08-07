@@ -347,12 +347,13 @@ req.on("data", (chunk) => controller.enqueue(new Uint8Array(chunk)))
 
 固定顺序：
 
-1. 原子 check-and-set first terminal；
-2. 构造并冻结 snapshot；
-3. best-effort 调用 observer；
-4. 无论 observer 是否抛错，都继续原有 `controller.close/error`。
+1. 若本 terminal signal 同时首次暴露 session-scoped `PROTOCOL_ERROR`，先经 §5.4 的 shared one-shot recorder 登记；其他 terminal signal 无此前置动作；
+2. 原子 check-and-set first terminal；
+3. 构造并冻结 snapshot；
+4. best-effort 调用 observer；
+5. 无论 observer 是否抛错，都继续原有 `controller.close/error`。
 
-Observer 必须 never-throw；抛错 observer 的正向探针必须证明 consumer 仍按原语义终止。
+该前置步骤是 session 冷路径事实登记，不改变 first-terminal 单写责任；stream／session 两种 signal 顺序都由同一 recorder 去重。Observer 必须 never-throw；抛错 observer 的正向探针必须证明 consumer 仍按原语义终止。
 
 ### 5.3 只记录事实，不猜根因
 
@@ -400,8 +401,18 @@ type GoawayProtocolViolation =
     }
 
 type GoawaySnapshot =
-  | { availability: "not-observed-before-snapshot"; events: readonly []; protocolViolation: { availability: "none" } }
-  | { availability: "unavailable-at-source"; reason: BoundedObservationText; events: readonly []; protocolViolation: GoawayProtocolViolation }
+  | {
+      availability: "not-observed-before-snapshot"
+      events: readonly []
+      protocolViolation: { availability: "none" }
+    }
+  | {
+      availability: "unavailable-at-source"
+      events: readonly []
+      protocolViolation: Extract<GoawayProtocolViolation, {
+        availability: "unattributed-protocol-error-before-callback"
+      }>
+    }
   | {
       availability: "observed-before-snapshot"
       events: readonly [GoawayEventSnapshot, ...GoawayEventSnapshot[]]
@@ -435,7 +446,7 @@ type TransportTerminationSnapshot = {
 
 `goaway` 的合法形状冻结如下：
 
-- `not-observed-before-snapshot` 的 `events` 必须严格为空且 violation 为 none。`unavailable-at-source` 的 events 为空，violation 可为 none 或 unattributed-protocol-error-before-callback，并携带顶层有界原因。
+- `not-observed-before-snapshot` 的 `events` 必须严格为空且 violation 为 none，只表达 terminal freeze 前既无 visible GOAWAY event、也无已记录 protocol error。`unavailable-at-source` 的 events 同样为空，但 violation 必须是 `unattributed-protocol-error-before-callback`，其 `reason` 是该错误原因的唯一来源；不得用重复的顶层 reason 制造双源值，也不得用 `unavailable-at-source + violation none` 表达 ordinary zero-event 状态。
 - `observed-before-snapshot.events` 必须非空，`sequence` 从 1 连续递增，每个元素对应一次实际收到的 JS `goaway` callback；不得把 server API 调用参数冒充 wire／callback event，不得合并、覆盖或只留 latest。
 - 第一 visible event 的 `lastStreamIdOrder` 是 `first`；后续 callback 的 `lastStreamID <= 前一 event.lastStreamID` 时为 `non-increasing`。若 runtime 真的向 JS 暴露增加值，完整保存 offending event／evidence、标 `protocol-error-increase`，并将 violation 设为 visible-callback 后 fail closed。
 - 若 runtime 在第二 callback 前暴露 protocol error，只保存已经可见的 event prefix，并将生产 violation 设为 unattributed-protocol-error-before-callback，保留 transport `PROTOCOL_ERROR` 与 offending-frame unavailable-at-source；不得伪造第二 event或归因其一定来自递增 GOAWAY。
@@ -485,7 +496,7 @@ interface SessionGoawayLedger {
     opaqueDataLength: SnapshotScalar<number>
     evidence: Extract<EvidenceCapture, { availability: "unavailable-at-source" | "unavailable-at-capture" }>
   }): "appended" | "appended-protocol-error"
-  recordUnattributedProtocolError(reason: BoundedObservationText): void
+  recordUnattributedProtocolError(reason: BoundedObservationText): "recorded" | "already-recorded"
   closeSessionOwner(): void
 }
 
@@ -516,9 +527,9 @@ interface OperationPersistenceEnvelope {
 
 每次 Node `goaway` callback 在单一同步栈内完成一次 ledger transaction：先在局部构造完整 `GoawayEventSnapshot`，并把 opaque bytes 至多复制一次、注册为 `RegisteredGoawayEvidence`；capture／registry 失败则构造 `unavailable-at-capture` event。`appendObserved` 明确消费 registered evidence 所有权：成功后调用方不得 release，ledger owner／dispatch／operation leases 延长实体生命周期；append 在发布前抛错则不消费，调用方必须 release。`appendUnavailable` 不接收 bytes 所有权。Ledger 内部校验 sequence 与 `lastStreamID` order，最后通过一次不可抛的 publish 暴露整个 event。构造／capture／注册中的可捕获错误都被转换为同 sequence 的 unavailable event 后 append，不允许“部分 dispatch 看见、部分看不见”；内存分配失败仍按 §7.2 的普通不可恢复错误终止进程路径，不虚构可继续 append。Append 后才执行其他 observer；observer 异常不回滚已发布 event，也不阻断既有 consumer。后续 GOAWAY 重复同一流程，完整保留全部 frame。
 
-第一次 GOAWAY 到来前，session 先同步标为 non-admitting／retiring；后续可见 GOAWAY 不重复切换 lifecycle，但继续 append。RFC 9113 要求后续 `lastStreamID` 不增：等于或减小正常记录；JS callback 可见增加值时 ledger 先原样 append offending event并返回 `appended-protocol-error`，transport 随后按 `PROTOCOL_ERROR` 关闭连接。若 Node 在 callback 前暴露 `ERR_HTTP2_ERROR: Protocol error`，生产 session error path只能调用 `recordUnattributedProtocolError()`：保存 code／message 与 offending-frame unavailable，但 attribution 必须是 `unattributed`，不得从错误时序猜成因、不得发明 event sequence／lastStreamID／opaque bytes。受控 harness 可把“非法递增 fixture 意图 + 客户端无第二 callback + connection PROTOCOL_ERROR”判为 capability `runtime-rejected`，但这只是测试场景分类，不回写生产 snapshot 的因果归因。若 public fixture 把递增调用钳制成非递增 callback，只按实际 callback append。GOAWAY 本身不取消 `streamId <= lastStreamID` 的既有 stream；每个 dispatch 的最终处理归因仍由 stream 自身 terminal 事实裁决。
+第一次 GOAWAY 到来前，session 先同步标为 non-admitting／retiring；后续可见 GOAWAY 不重复切换 lifecycle，但继续 append。RFC 9113 要求后续 `lastStreamID` 不增：等于或减小正常记录；JS callback 可见增加值时 ledger 先原样 append offending event 并返回 `appended-protocol-error`，transport 随后按 `PROTOCOL_ERROR` 关闭连接。若 Node 在 callback 前暴露 `ERR_HTTP2_ERROR: Protocol error`，stream 与 session error path 共用同一 session-scoped one-shot recorder：最早观察该错误的一方必须先调用 `recordUnattributedProtocolError()`，再触发 `controller.error`／first-terminal freeze、session cleanup 或其他下游动作；后到的一方得到 `already-recorded` 并不得覆盖原始 reason。Recorder 保存 code／message 与 offending-frame unavailable，但 attribution 必须是 `unattributed`，不得从错误时序猜成因、不得发明 event sequence／lastStreamID／opaque bytes。该顺序保证 stream error 先于 session error 时，dispatch freeze 已能看见 violation；session error 先到时语义相同。受控 harness 可把“非法递增 fixture 意图 + 客户端无第二 callback + connection PROTOCOL_ERROR”判为 capability `runtime-rejected`，但这只是测试场景分类，不回写生产 snapshot 的因果归因。若 public fixture 把递增调用钳制成非递增 callback，只按实际 callback append。GOAWAY 本身不取消 `streamId <= lastStreamID` 的既有 stream；每个 dispatch 的最终处理归因仍由 stream 自身 terminal 事实裁决。
 
-`DispatchGoawayLease.freezeAtTerminal()` 在 first-terminal 同步栈内原子读取 ledger 当前完整前缀并冻结 `GoawaySnapshot`。零 event 返回 not-observed 且无 operation lease；有 event 返回 observed non-empty tuple，并把该 dispatch lease 转成 `OperationGoawayLease`。Freeze 后该 dispatch snapshot 永不 late-mutate；之后追加的 GOAWAY 只对其他尚未 terminal 的 dispatch 可见。Dispatch 在 terminal 前放弃时调用 `release()`。重复 freeze／release、freeze 后 release、release 后 freeze 都 fail loud。
+`DispatchGoawayLease.freezeAtTerminal()` 在 first-terminal 同步栈内原子读取 ledger 当前完整前缀与 violation，并冻结 `GoawaySnapshot`。联合状态只有三种合法结果：零 event 且 violation none 返回 `not-observed-before-snapshot`；零 event 且已有 unattributed violation 返回 `unavailable-at-source` 并逐字保留该 violation；有 event 返回 observed non-empty tuple，并保留 none／unattributed／visible violation。前两种没有 evidence bytes，均不创建 operation lease；有 event 时把该 dispatch lease 转成 `OperationGoawayLease`。Freeze 后该 dispatch snapshot 永不 late-mutate；之后追加的 GOAWAY 或后到的重复 protocol-error signal 只对其他尚未 terminal 的 dispatch 可见。Dispatch 在 terminal 前放弃时调用 `release()`。重复 freeze／release、freeze 后 release、release 后 freeze 都 fail loud。
 
 Physical session 的 `close`／`error` 最终处置调用 `closeSessionOwner()`，只释放 ledger owner ref；retire／GOAWAY 不释放。已存在的 dispatch／operation leases 继续持有 ledger events 与 evidence bytes。RequestContext sidecar 按 dispatch 保存 operation leases；terminal seal 把 inert canonical record 与全部 leases转移到 `OperationPersistenceEnvelope`。Canonical History 保留 loser dispatch，只有 egress 投影裁剪到 winner。History 事务 A 按 digest 去重 CAS insert，但内存 dispatch／operation leases不按 digest 合并。
 
@@ -528,8 +539,9 @@ Physical session 的 `close`／`error` 最终处置调用 `closeSessionOwner()`�
 |---|---|
 | Dispatch 在 physical open 前 acquire 失败 | 不创建 stream；ledger ownership 不变 |
 | Dispatch terminal 前放弃 | `DispatchGoawayLease.release()` |
-| Dispatch terminal 且 ledger 无 event | `freezeAtTerminal()` 消费 dispatch lease，返回 null operation lease |
-| Dispatch terminal 且 ledger 有 event | `freezeAtTerminal()` 原子转成该 dispatch 的 `OperationGoawayLease` |
+| Dispatch terminal，ledger 零 event 且 violation none | `freezeAtTerminal()` 消费 dispatch lease，返回 not-observed snapshot 与 null operation lease |
+| Dispatch terminal，ledger 零 event 且已有 unattributed violation | `freezeAtTerminal()` 消费 dispatch lease，返回 unavailable-at-source snapshot 与 null operation lease；violation 不得降级或丢失 |
+| Dispatch terminal 且 ledger 有 event | `freezeAtTerminal()` 原子转成该 dispatch 的 `OperationGoawayLease`，snapshot 保留完整 prefix 与当时 violation |
 | Physical session close／error | `closeSessionOwner()` 恰好一次；retire／GOAWAY 不调用 |
 | Canonical seal 前失败 | RequestContext release sidecar 中全部 operation leases |
 | History 禁用、enqueue 拒绝或 persistence guard 不接管 | 调用方执行 `OperationPersistenceEnvelope.release()` |
@@ -720,29 +732,56 @@ type GoawayCallbackObservation = {
   opaqueDataDigest: string | null
 }
 
+type InvalidGoawayProbeTokens = {
+  firstCallOpaqueDataDigest: string
+  secondCallOpaqueDataDigest: string
+}
+
+type RepeatedCallCallbackProvenance = {
+  firstCallOpaqueDataDigest: string
+  firstCallbackSequence: number
+  secondCallOpaqueDataDigest: string
+  secondCallbackSequence: number
+}
+
 type InvalidGoawayCapability =
-  | { kind: "fixture-clamped"; callbacks: readonly [GoawayCallbackObservation, ...GoawayCallbackObservation[]] }
+  | {
+      kind: "fixture-clamped"
+      probeTokens: InvalidGoawayProbeTokens
+      callbacks: readonly [GoawayCallbackObservation, GoawayCallbackObservation]
+      provenance: RepeatedCallCallbackProvenance
+    }
   | {
       kind: "runtime-rejected"
-      callbacks: readonly [GoawayCallbackObservation, ...GoawayCallbackObservation[]]
+      probeTokens: InvalidGoawayProbeTokens
+      callbacks: readonly [] | readonly [GoawayCallbackObservation]
       connectionError: "PROTOCOL_ERROR"
     }
   | {
       kind: "raw-invalid-visible"
-      callbacks: readonly [GoawayCallbackObservation, ...GoawayCallbackObservation[]]
+      probeTokens: InvalidGoawayProbeTokens
+      callbacks: readonly [GoawayCallbackObservation, GoawayCallbackObservation]
+      provenance: RepeatedCallCallbackProvenance
       wireOracleDigest: string
     }
-  | { kind: "unsupported"; reason: BoundedObservationText; attemptedOracle: string }
+  | {
+      kind: "unsupported"
+      probeTokens: InvalidGoawayProbeTokens
+      callbacks: readonly GoawayCallbackObservation[]
+      connectionError: "PROTOCOL_ERROR" | null
+      reason: BoundedObservationText
+      attemptedOracle: string
+    }
 ```
 
-每个 runtime／version 报告上述恰一结果：
+每个 runtime／version 报告上述恰一结果。Fixture 的第一次与第二次 `goaway` 调用必须分别携带 run 内唯一、彼此不同的 opaque token，client callback 保存实际 `opaqueDataDigest`；构造器先验证两个 probe token digest 不相等，且每个非 null callback digest 至多匹配一个 probe token。若两个 token 发生 digest collision，本次 run 无法建立 provenance，只能归 unsupported 并在 reason 中记录 collision，不能任选一个身份继续分类。`RepeatedCallCallbackProvenance` 只有在 first／second sequence 都存在于同一 callbacks tuple、`firstCallbackSequence < secondCallbackSequence`，且两个 callback digest 分别等于 first／second token digest 时有效：
 
-- `fixture-clamped`：公共 fixture 的第二调用最终只产生非递增 callback；记录实际 callbacks，不宣称非法 frame 到线。
-- `runtime-rejected`：第二 callback 不可见，但 connection 暴露 `PROTOCOL_ERROR`；harness 将受控场景分类为 runtime-rejected，生产 ledger 只记录 unattributed protocol error，不伪造 event。
-- `raw-invalid-visible`：只有独立帧级 oracle 证明非法递增 frame 实际到线，且 JS callback 暴露它时成立；ledger 保存 offending event并 fail closed。
-- `unsupported`：无法用可用 API／oracle 形成上述任一可判样本，明确附有界原因，不把 skip 当 pass。
+- `fixture-clamped`：callbacks 恰好是 first-token、second-token 两条有序 callback，second callback 的 `lastStreamID` 不大于 first callback；记录实际 callbacks 与 provenance，不宣称非法 frame 到线。
+- `runtime-rejected`：callbacks 只能为空 tuple，或只含一条 first-token callback，同时 connection 必须暴露 `PROTOCOL_ERROR`。Harness 将受控场景分类为 runtime-rejected，生产 ledger 只记录 unattributed protocol error，不伪造 event。重复 first-token callback、second-token callback、null 或未知 digest callback 都使来源不再唯一，必须归 unsupported。
+- `raw-invalid-visible`：callbacks 恰好是 first-token、second-token 两条有序 callback，独立帧级 oracle 证明非法递增 frame 实际到线，且 second callback 的 ID 大于 first callback；ledger 保存 offending event 并 fail closed。
+- `unsupported`：无法用可用 API／oracle 形成上述任一可判样本，明确附有界原因，不把 skip 当 pass。尤其是只有 first-token callback、second 调用无 callback 且 connection 无 `PROTOCOL_ERROR`，只有 second-token callback，存在额外／重复／null／未知 digest callback，或 token digest collision 时，必须归 unsupported；不得仅凭第二次 server 调用已执行就判 clamped。
 
-Capability 不能由 server `goaway(..., increasingId)` 的调用参数自证，必须取客户端 callback／connection error 与必要的帧级 oracle。共同硬门是：绝不允许应用观察到递增 `lastStreamID` 且 violation none；绝不为 runtime-rejected 伪造 event。注入 `observer-throws`、`second-terminal`、只保留 first／latest GOAWAY、伪造 offending event 与吞掉 protocol error 的变异，验证 consumer 语义、first-write、ordered ledger prefix 和 freeze。
+Capability 不能由 server `goaway(..., increasingId)` 的调用参数自证，必须取 callback token provenance／connection error 与必要的帧级 oracle。共同硬门是：绝不允许应用观察到递增 `lastStreamID` 且 violation none；绝不为 runtime-rejected 伪造 event；绝不把 only-first-callback 静默丢失误判为 clamped。注入 `observer-throws`、`second-terminal`、只保留 first／latest GOAWAY、伪造 offending event、吞掉 protocol error、移除第二 token callback 与伪造 provenance 的变异，验证 consumer 语义、first-write、ordered ledger prefix、capability classifier 和 freeze。
 
 经验锚点（不是跨版本常量）：2026-08-07 在 Node `v24.16.0` 的本地 loopback 中，主会话用 `setImmediate` 分隔两次 server `goaway` 调用观察到第二 ID 被钳制为第一 ID；reviewer 用同步连续调用观察到第二 callback 前 connection `PROTOCOL_ERROR`。这证明 capability 甚至不能只按 runtime version 硬编码，必须由每次 harness run 的实际 callback／error／wire evidence 裁决。
 
@@ -778,7 +817,9 @@ Capability 不能由 server `goaway(..., increasingId)` 的调用参数自证，
 - first-terminal 只冻结一次；
 - local cancel 不误记 remote reset；
 - 闭合 snapshot union 每个字段均存在，`observed` 与 detail 一致，code／message／reason 长度上界生效；
-- `GoawaySnapshot` 的 not-observed／source-unavailable 空 tuple 与 observed non-empty tuple 三种顶层形状逐格通过；每个 event 的连续 sequence、`lastStreamIdOrder`、opaque length 与 evidence 配对均受闭合构造器验证；空 opaque bytes 产生 `captured`、`byteLength:0`，错误 availability／tuple／order 组合分别使构造器变红；
+- `GoawaySnapshot` 的三种顶层形状逐格通过：零 event／violation none 只能是 not-observed；零 event／unattributed violation 只能是 source-unavailable；非空 event tuple 只能是 observed。把 error-bearing zero-event 降级成 not-observed、把 ordinary zero-event 升格成 source-unavailable、构造 source-unavailable + violation none 或 observed empty tuple 的四个独立变异分别变红，且 ordinary zero-event 正样本保持通过；
+- 每个 event 的连续 sequence、`lastStreamIdOrder`、opaque length 与 evidence 配对均受闭合构造器验证；空 opaque bytes 产生 `captured`、`byteLength:0`，错误 availability／tuple／order 组合分别使构造器变红；
+- Stream-first 顺序 `visible prefix → stream PROTOCOL_ERROR → controller.error／first-terminal freeze → session PROTOCOL_ERROR` 必须在 freeze 前保存一次 unattributed violation；session-first 顺序也保存一次，后到 signal 返回 `already-recorded` 且不得覆盖 first reason。把 stream path 的记录移到 `controller.error` 后、只在 session path 记录、或允许后到 signal 覆盖 reason 的三个变异分别变红；
 - Bun clean EOF／clean RST 的原始事实被诚实保留，不出现应用层推断字段；
 - runtime identity gate 能拒绝把 Bun child 冒充 Node，并以该错误 wiring 作正向变异；
 - 唯一 server PID／execPath 被证明是 Node；Bun／Node client result 携带同一 server instance id 与 scenario manifest digest；Bun client 自启 compatibility server、两个 client 连接不同 fixture 或绕过 `http2Fetch` 的变异分别使 harness 变红。
@@ -812,7 +853,7 @@ Capability 不能由 server `goaway(..., increasingId)` 的调用参数自证，
 - retry／hedge sibling 归属隔离；
 - trailer per-dispatch 归属；
 - 同 session／跨 operation 的 ledger append／freeze／enqueue 次序任意，bytes 实体按 event digest 唯一；每个 physical dispatch 在 open 前持有独立 `DispatchGoawayLease`，内存 ownership 不按 digest 合并；
-- 双 GOAWAY 固定正样本保存 sequence 1／2 的完整有序前缀；第二帧 `lastStreamID` 等于或小于第一帧通过。非法递增 capability probe 按 `fixture-clamped`／`runtime-rejected`／`raw-invalid-visible`／`unsupported` 闭合 union 验收实际 callbacks／connection error／wire oracle；生产 snapshot 的 pre-callback protocol error 必须保持 attribution `unattributed`，不得写测试场景因果。只留 first／latest、重排、覆盖、可见递增却 violation none、runtime-rejected 时伪造 event、把 fixture 意图写进生产 attribution、unsupported 无 attemptedOracle 的变异分别变红；
+- 双 GOAWAY 固定正样本保存 sequence 1／2 的完整有序前缀；第二帧 `lastStreamID` 等于或小于第一帧通过。非法递增 capability probe 的两次调用各携唯一且彼此不同的 opaque token，并按 `fixture-clamped`／`runtime-rejected`／`raw-invalid-visible`／`unsupported` 闭合 union 验收实际 callbacks／probe tokens／ordered repeated-call provenance／connection error／wire oracle；`fixture-clamped` 与 `raw-invalid-visible` 必须恰有 first／second 两条有序 callback，digest 分别等于 first／second token。只有 first-token callback 且无 connection error、只有 second-token callback、额外／重复 callback、token digest collision，或出现 null／未知 callback digest 的正样本都必须分类为 unsupported；零 callback + `PROTOCOL_ERROR` 和单一 first-token callback + `PROTOCOL_ERROR` 两个正确 runtime-rejected 样本必须通过。生产 snapshot 的 pre-callback protocol error 必须保持 attribution `unattributed`，不得写测试场景因果。只留 first／latest、重排、覆盖、可见递增却 violation none、runtime-rejected 时伪造 event、把 fixture 意图写进生产 attribution、unsupported 无 attemptedOracle、仅凭 attempted second call 判 clamped、伪造 first／second token digest／sequence、颠倒 callback sequence、接受额外／重复 callback、把 null／未知 digest 当作 second-token 缺席证据的变异分别变红；
 - Dispatch A 在第一 GOAWAY 后 terminal 只冻结 `[1]`，dispatch B 在第二 GOAWAY 后 terminal 冻结 `[1,2]`；A 不 late-mutate。Repeated event 的不同 opaque evidence 分别可 hydrate，相同 bytes 仍由 CAS 去重；
 - GOAWAY event 构造／capture／registry 中途失败统一 append 同 sequence 的 unavailable event；所有当时／未来 dispatch leases 读取同一 ledger prefix，不可能出现部分 captured、部分无 event。`appendObserved` 成功消费 registered evidence，发布前失败不消费且调用方释放；ledger owner close 后，仍有 dispatch／operation lease 时 bytes 继续可读。注入“append 前发布半成品”“异常时跳过 event”“成功后调用方双 release”或“close owner 提前丢 bytes”的变异必须分别变红；
 - Session non-admitting 标记先于首个 GOAWAY append，之后新 dispatch lease／stream 被拒；已有 dispatch 晚 first-terminal 仍可 freeze 完整 prefix。Session retire 不释放 ledger owner，physical close／error 才 `closeSessionOwner()`；
@@ -867,7 +908,7 @@ Capability 不能由 server `goaway(..., increasingId)` 的调用参数自证，
 
 早期正确性／性能设计评审曾分别放行 dispatch-scoped 归属、first-terminal 时序、两事务 recovery set、mandatory owner 与 DATA 热路径方向；性能评审指出“统计不显著”不能证明非劣效，用户据此选择性能数据仅报告、不设 non-inferiority 阻断门。
 
-书面规格第一轮独立评审随后发现实施接口与验收仍有缺口：实施者走查为 `0 blocker / 5 major`，事实／判据证伪为 `0 blocker / 6 major`。多轮整改后，实施者第五轮达到 `0 blocker / 0 major`；事实／判据第五轮为 `0 blocker / 1 major`，指出非法递增 GOAWAY 的固定 oracle 与真实 Node runtime capability 冲突。本文已改为每次 harness run 探测 `fixture-clamped`／`runtime-rejected`／`raw-invalid-visible`／`unsupported` 并按实际证据验收，等待两位原 reviewer 第六轮。在两位 reviewer 对最新整改及相邻契约完成复审之前，状态保持 `confirmed-not-implemented`，不得声称书面规格整体达到 `0 blocker / 0 major`。评审记录见：
+书面规格第一轮独立评审随后发现实施接口与验收仍有缺口：实施者走查为 `0 blocker / 5 major`，事实／判据证伪为 `0 blocker / 6 major`。多轮整改后，实施者第五轮达到 `0 blocker / 0 major`；事实／判据第五轮为 `0 blocker / 1 major`，指出非法递增 GOAWAY 的固定 oracle 与真实 Node runtime capability 冲突。第六轮确认四态 runtime capability 方向成立，但实施者发现 zero-event freeze 会丢 unattributed violation；事实／判据 reviewer 另发现 stream error 可早于 session error freeze，以及 `fixture-clamped` 缺少第二调用 callback provenance，结论分别为 `0 blocker / 1 major` 与 `0 blocker / 2 major`。本文已把 freeze 改成 event／violation 联合状态，要求 stream／session 共用 pre-freeze one-shot recorder，并以两次调用的不同 opaque token 证明 first／second callback 的有序 provenance，等待两位原 reviewer 第七轮。在两位 reviewer 对最新整改及相邻契约完成复审之前，状态保持 `confirmed-not-implemented`，不得声称书面规格整体达到 `0 blocker / 0 major`。评审记录见：
 
 - [实施者走查](../tmp/2026-08-06-mandatory-block-delivery-review-implementer.md)；
 - [事实与判据证伪](../tmp/2026-08-06-mandatory-block-delivery-review-falsification.md)。

@@ -1,6 +1,6 @@
 # Mandatory block delivery 与 HTTP/2 终止观测规格评审——事实与判据证伪
 
-> 状态：第五轮 `0 blocker / 1 major` 已采纳并改为 runtime capability oracle，待原 reviewer 第六轮复审
+> 状态：第六轮 `0 blocker / 2 major` 已采纳并整改，待原 reviewer 第七轮复审
 >
 > reviewer：独立事实／判据证伪 reviewer
 >
@@ -192,3 +192,37 @@ Spec 要求先保存 offending event 再 `PROTOCOL_ERROR`，但 Node v24.16.0 �
 | Finding | 级别 | 处置 | 整改方向 |
 |---|---|---|---|
 | ILLEGAL-r5 | C | 采纳 | Harness 每次 run 探测 `fixture-clamped`／`runtime-rejected`／`raw-invalid-visible`／`unsupported`。仅帧级 oracle 证实非法 frame 到线且 callback 可见时要求 ledger 保存 offending event；runtime 预拦截时保存 transport `PROTOCOL_ERROR` 与 offending-frame unavailable；clamped 时保存实际非递增 callbacks。共同反控：不得无错误地向应用暴露递增 ID。Reviewer 保留同步连续调用得到 runtime-rejected 的实测，撤回“public Node fixture 能稳定制造并向 JS 暴露非法 frame”的隐含前提；主会话 `setImmediate` 时序实测为 clamped。 |
+
+## 第六轮复审
+
+> 固定复审 HEAD：`2f706e7d4891e5018c8b7c6ab3f57a12f29a5a1f`（base `21e455989182c72c04621644f789ad895c84d768`）
+>
+> Verdict：`0 blocker / 2 major`。四态 capability 的总体方向、证据边界与 `RegisteredGoawayEvidence` ownership 均正确；剩余缺口是 production protocol-error 的事件顺序，以及 `fixture-clamped` 缺少“第二调用确实产生该 callback”的正证据。当前不可定稿。
+
+### Gate 与双视角覆盖
+
+- 机械核对：detached HEAD、status、`21e45598..2f706e7d`；逐项对照 `InvalidGoawayCapability` 四态、生产 `GoawayProtocolViolation`、raw oracle／attemptedOracle、ordered ledger ownership 与 RFC 9113 §6.8。
+- 第一人称执行：模拟同步 runtime-rejected、`setImmediate` clamped、只有第一 callback 且无 error、raw-invalid-visible、unsupported、stream error 先于 session error、terminal freeze 以及 append／close／History refs。Node v24.16.0 真探针事件顺序为 `goaway(1) → stream ERR_HTTP2_ERROR → stream close → session ERR_HTTP2_ERROR → session close`。
+
+### 已闭合
+
+- 四态 capability 按每次 run 动态裁决，禁止用 server 调用参数自证 wire；同步与 `setImmediate` 结果仅作经验锚点，不硬编码版本。
+- `raw-invalid-visible` 需要帧级 oracle，`unsupported` 带 `attemptedOracle`，共同反控禁止 visible increase + violation none。
+- 生产归因保持 `unattributed`，不把 harness fixture intent 回写生产 record，也不伪造 offending frame。
+- `RegisteredGoawayEvidence` 的 append 成功消费／发布前失败调用方 release、session close 只释放 owner ref、dispatch／operation／History leases 延长 bytes 生命周期，均未回归。
+
+### Major findings
+
+1. 生产只规定 session error path 调 `recordUnattributedProtocolError()`，但 first-terminal 会在 stream error 时同步 freeze ledger。Node v24.16.0 真探针稳定顺序是 client `goaway(1)`，随后 stream `ERR_HTTP2_ERROR`，最后才是 session `ERR_HTTP2_ERROR`。因此 dispatch 会先冻结 `violation:none`，session path 后写因 no-late-mutation 永远进不了该 dispatch History。应让 stream／session 共享 one-shot protocol-error recorder，最早观察者在 `controller.error`／first-terminal freeze 前写 ledger，后到者只去重；测试该精确顺序及 session-first 反向顺序。
+2. `fixture-clamped.callbacks` 只要求非空 tuple，未要求其中存在可归属于第二调用的 callback。若 fixture 只产生第一条合法 callback、静默丢掉第二调用且无 protocol error，现类型可仅凭 server attempted call 把它判成 clamped。第二调用应携唯一 opaque token；`fixture-clamped` 必须记录匹配该 token digest 的 callback sequence 且 ID 非递增，否则归 `unsupported`；增加“只有 first callback、无 error”不得判 clamped 的反控。
+
+### 第六轮 verdict
+
+`0 blocker / 2 major`。修复 protocol-error-before-freeze 的共享记录点与 clamped 第二-callback provenance 后，再复审方可定稿。
+
+### 主会话第六轮处置
+
+| Finding | 级别 | 处置 | 整改方向 |
+|---|---|---|---|
+| ORDER-r6 | C | 采纳 | Stream／session 的 protocol-error path 共用 ledger one-shot recorder；最早观察者必须先记录，再触发 `controller.error`／first-terminal freeze 或 session cleanup，后到者去重。§9.2／§9.4 覆盖 stream-first 与 session-first 两种顺序及错误延后记录变异。 |
+| PROVENANCE-r6 | C | 采纳 | 两次 fixture 调用使用 run 内唯一且彼此不同的 opaque token；`fixture-clamped`／`raw-invalid-visible` 必须恰有 first／second 两条有序 callback，构造器核对 `firstSequence < secondSequence`、digest 分别匹配对应 token，再比较两条 callback 的 ID。只有 first callback、只有 second callback、额外／重复 callback、token digest collision、null／未知 digest 等无法建立唯一 provenance 的形状必须是 `unsupported`；零 callback或单一 first-token callback + `PROTOCOL_ERROR` 可正确分类为 `runtime-rejected`。不得靠 attempted call 判 clamped。 |
