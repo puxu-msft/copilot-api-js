@@ -154,6 +154,30 @@ describe("P2-T1 branch-local response processor", () => {
     }
   })
 
+  test("yields each finish frame exactly once before publishing the finish verdict", async () => {
+    const order: Array<string> = []
+    const closingFrames = [{ data: "closing-1" }, { data: "closing-2" }]
+    const processor = createResponseProcessor({ env: envelope(), responseRewrites: [], renderResponse: (frame) => frame })
+    const upstream = {
+      headers: new Headers(),
+      frames: {
+        // eslint-disable-next-line require-yield
+        async *[Symbol.asyncIterator]() {
+          return
+        },
+      },
+    }
+
+    for await (const frame of processor.stream(upstream, {
+      finishResponse: () => ({ kind: "complete", frames: closingFrames }),
+      onFinishResolved: () => order.push("finish"),
+    })) {
+      order.push(`frame:${frame.data ?? ""}`)
+    }
+
+    expect(order).toEqual(["frame:closing-1", "frame:closing-2", "finish"])
+  })
+
   test("does not run protocol finish after an upstream iterator error", async () => {
     let finishCalls = 0
     const processor = createResponseProcessor({ env: envelope(), responseRewrites: [], renderResponse: (frame) => frame })
