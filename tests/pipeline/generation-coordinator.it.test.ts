@@ -320,7 +320,29 @@ describe("P6-T2 generation coordinator", () => {
       settlementError: disposeError,
       retryNextStrategy: "precontent-recovery",
     })
-    expect(recording.candidates.get(primary.candidate)?.verdict).toBeUndefined()
+    expect(recording.candidates.get(primary.candidate)?.verdict).toBe("failed")
+    await expect(coordinator.runRecovery(primary, "dispose-failed-again", envelope("recovery-again"), "precontent-recovery")).rejects.toThrow(
+      "expected exactly one active ready dispatch, found 0",
+    )
+    expect(opens).toEqual(["primary"])
+  })
+
+  test("recovery rejects an already consumed parent without opening another candidate", async () => {
+    const recording = createRecording()
+    const opens: Array<string> = []
+    const processors: Array<symbol> = []
+    const coordinator = createGenerationCoordinator({
+      env: envelope("primary"),
+      createCandidate: candidateFactory({ recording: recording.port, opens, processors }),
+    })
+    const primary = await coordinator.runPrimary()
+    await primary.settleDispatch({ verdict: "discarded", reason: "already-consumed" })
+
+    await expect(coordinator.runRecovery(primary, "already-consumed", envelope("recovery"))).rejects.toThrow(
+      "expected exactly one active ready dispatch, found 0",
+    )
+    expect(opens).toEqual(["primary"])
+    expect(recording.dispatches.get(primary.dispatch)?.verdict).toBe("discarded")
   })
 
   test("ready-state pre-content recovery can override the History next-strategy marker", async () => {

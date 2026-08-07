@@ -175,10 +175,18 @@ export function createGenerationCoordinator<TProcessor>(input: CreateGenerationC
       // A failure before the pump consumes a ready upstream leaves its transport lifecycle unquiesced.
       // Dispose it with the recovery's discarded settlement; do not use general cancellation, which
       // would first publish cancelled and erase this recovery's terminal provenance.
-      await parentRuntime.disposeReadyWithSettlement({ verdict: "discarded", reason, retryNextStrategy })
-      parentRuntime.settle({ verdict: "failed", reason })
-      candidateReservations.get(parentRuntime.handle)?.release()
-      if (active === parentRuntime) active = undefined
+      let disposalError: unknown
+      try {
+        await parentRuntime.disposeReadyWithSettlement({ verdict: "discarded", reason, retryNextStrategy })
+      } catch (error) {
+        disposalError = error
+      } finally {
+        parentRuntime.settle({ verdict: "failed", reason })
+        candidateReservations.get(parentRuntime.handle)?.release()
+        if (active === parentRuntime) active = undefined
+      }
+      if (disposalError !== undefined)
+        throw disposalError instanceof Error ? disposalError : new Error("Ready parent disposal failed", { cause: disposalError })
       return start({ role: "recovery", parentCandidate: parent.candidate, env, metadata: { recoveryReason: reason } })
     },
 

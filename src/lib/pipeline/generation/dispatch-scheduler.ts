@@ -304,7 +304,7 @@ export function createDispatchScheduler(input: CreateDispatchSchedulerInput): Di
 
     async disposeActiveWithSettlement(settlement) {
       const entries = [...active.entries()].filter(([dispatch]) => !settled.has(dispatch))
-      if (entries.length > 1) throw new Error("[dispatch-scheduler] expected one active ready dispatch")
+      if (entries.length !== 1) throw new Error(`[dispatch-scheduler] expected exactly one active ready dispatch, found ${entries.length}`)
       const results = await Promise.allSettled(entries.map(([dispatch, owned]) => disposeDispatch(dispatch, owned.lifecycle, settlement, true)))
       const errors = results.flatMap((result) => (result.status === "rejected" ? [result.reason] : []))
       if (errors.length > 0)

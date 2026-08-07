@@ -46,6 +46,7 @@ import { classifyServerExecutionRisk } from "~/lib/pipeline/generation/hedge-pol
 import { getUpstreamHook } from "~/lib/pipeline/hooks/loader"
 import {
   //
+  asResponseCodecRenderError,
   isResponseCodecRenderError,
   ResponseCodecRenderError,
   unwrapResponseCodecRenderError,
@@ -919,7 +920,7 @@ async function* applyResponsePostRender(frames: AsyncIterable<ClientFrame>, opts
       const transformed = opts.onRenderedFrame ? opts.onRenderedFrame(frame) : frame
       if (transformed) yield transformed
     } catch (error) {
-      throw new ResponseCodecRenderError(error)
+      throw asResponseCodecRenderError(error)
     }
   }
 }
@@ -1418,6 +1419,13 @@ export async function runResponseBufferedSink(
     | { kind: "client-abort" }
     | { kind: "write-error"; error: unknown }
     | { kind: "processing-error"; error: unknown; source: "codec-render" | "delivery-owner" }
+  const codecOperation = <T>(operation: () => T): T => {
+    try {
+      return operation()
+    } catch (error) {
+      throw asResponseCodecRenderError(error)
+    }
+  }
   const flushBufferedFrames = async (
     frames: Array<ClientFrame>,
     isTerminalFlush: boolean,
@@ -1449,32 +1457,29 @@ export async function runResponseBufferedSink(
       if (isTerminalFlush) await closeAnchorBeforeReal()
       // Candidate-hosted buffered-merge seam (spec §4): the reducer's transform replaces the raw buffer
       // with its (possibly compacted / repaired) frames just before write. Undefined = verbatim (R1).
-      let toFlush: ReadonlyArray<ClientFrame>
-      try {
-        toFlush = transformBufferedFlush ? transformBufferedFlush(frames, mergeCtx) : frames
-      } catch (error) {
-        throw new ResponseCodecRenderError(error)
-      }
+      const toFlush = codecOperation(() => (transformBufferedFlush ? transformBufferedFlush(frames, mergeCtx) : frames))
       for (const frame of toFlush) {
-        // H1: the anchor already forwarded message_start ahead of the anchor block — skip the buffered
-        // copy so the client sees exactly one message_start (re-sending it would corrupt the stream).
-        if (anchor && anchorState.messageStartForwarded && anchor.isMessageStart(frame)) continue
-        // Continuation stitch (spec §4.4): a continuation leg's upstream emits its OWN message_start (new
-        // id/usage) — DROP it so the client sees exactly one message_start across the whole stitched stream.
-        if (continuation && onContinuationLeg && continuation.isMessageStart(frame)) continue
-        // Close the anchor off BEFORE the first real content_block_start (sequential — never coexist).
-        if (anchor?.isContentBlockStart(frame)) await closeAnchorBeforeReal()
-        // Continuation re-index (C3): shift this leg's content_block_* by the wire-delivered block count
-        // (continuationOffset), so continuation blocks continue the client's index sequence. Inert on the
-        // primary leg (offset 0). Applied on top of any anchor remap (mutually exclusive in practice — the
-        // continuation path is anchor-dormant).
-        const anchorShift = allocationPort?.wireState?.allocator.anchorsOpened() ?? 0
-        let outFrame = anchor && anchorShift > 0 ? anchor.remap(frame, 1) : frame
-        if (continuation && continuationOffset > 0) outFrame = continuation.remap(outFrame, continuationOffset)
-        // Count every content block delivered to the client (incl. thinking) — the offset for the NEXT
-        // continuation leg (C3: wire count, not ledger length).
-        if (continuation && continuation.isContentBlockStart(frame)) wireDeliveredBlocks++
-        await sink.write(outFrame)
+        // Format callbacks are codec work: keep them outside the sink boundary so a network-shaped
+        // predicate/remap error cannot be relabelled as downstream delivery.
+        const format = codecOperation(() => {
+          if (anchor && anchorState.messageStartForwarded && anchor.isMessageStart(frame)) return { skip: true } as const
+          if (continuation && onContinuationLeg && continuation.isMessageStart(frame)) return { skip: true } as const
+          const closesAnchor = anchor?.isContentBlockStart(frame) ?? false
+          const anchorShift = allocationPort?.wireState?.allocator.anchorsOpened() ?? 0
+          let outFrame = anchor && anchorShift > 0 ? anchor.remap(frame, 1) : frame
+          if (continuation && continuationOffset > 0) outFrame = continuation.remap(outFrame, continuationOffset)
+          const continuationBlockStart = continuation?.isContentBlockStart(frame) ?? false
+          return { skip: false, closesAnchor, outFrame, continuationBlockStart } as const
+        })
+        if (format.skip) continue
+        if (format.closesAnchor) await closeAnchorBeforeReal()
+        if (format.continuationBlockStart) wireDeliveredBlocks++
+        try {
+          await sink.write(format.outFrame)
+        } catch (error) {
+          if (classifyStreamError(error) === "client-abort") throw error
+          return { kind: "write-error", error }
+        }
       }
       return { kind: "ok" }
     } catch (error) {
@@ -1519,25 +1524,26 @@ export async function runResponseBufferedSink(
                 forceDerived: toWrite !== frame || readSyntheticKind(toWrite) !== undefined,
               })
           } catch (error) {
-            throw new ResponseCodecRenderError(error)
+            throw asResponseCodecRenderError(error)
           }
           if (!toWrite) continue
           if (retreated) {
-            // Buffer cap already exceeded → live write-through for the rest (no more buffering). When an anchor
-            // was injected BEFORE the retreat, the live continuation stays SEQUENTIAL (spec 2026-07-22 §3.3):
-            // close the anchor (stop@0) before the first real content_block_start so no two blocks are ever
-            // open at once (never coexist — CLI-safe), then shift every real content_block_* by +1 and DROP a
-            // duplicate message_start (H1 — the injector already forwarded it). Inert (byte-identical to the raw
-            // forward) when no anchor was injected — `injected`/`anchorBlockOpen` stay false.
-            if (anchor && anchorState.messageStartForwarded && anchor.isMessageStart(toWrite)) continue // H1 dedup
-            if (anchor?.isContentBlockStart(toWrite)) {
+            // Keep format callbacks separate from the physical write: callback failures are codec-render,
+            // while only the actual sink write is downstream-sink.
+            const format = codecOperation(() => {
+              if (anchor && anchorState.messageStartForwarded && anchor.isMessageStart(toWrite)) return { skip: true } as const
+              const closesAnchor = anchor?.isContentBlockStart(toWrite) ?? false
+              const anchorShift = allocationPort?.wireState?.allocator.anchorsOpened() ?? 0
+              return { skip: false, closesAnchor, outFrame: anchor && anchorShift > 0 ? anchor.remap(toWrite, 1) : toWrite } as const
+            })
+            if (format.skip) continue
+            if (format.closesAnchor) {
               const closeOutcome = await closeAnchorViaOwner("before-real")
               if (closeOutcome?.kind === "settled-abort") return closeOutcome
               if (closeOutcome?.kind === "stream-error") return closeOutcome
             }
-            const anchorShift = allocationPort?.wireState?.allocator.anchorsOpened() ?? 0
             try {
-              await sink.write(anchor && anchorShift > 0 ? anchor.remap(toWrite, 1) : toWrite)
+              await sink.write(format.outFrame)
             } catch (error) {
               if (classifyStreamError(error) === "client-abort") return { kind: "settled-abort" }
               return streamErrorOutcome(error, env, "downstream-sink")
@@ -1547,7 +1553,8 @@ export async function runResponseBufferedSink(
           // Capture the FIRST message_start (before buffering it) into the SHARED anchorState so the
           // handler's unique idle injector can forward it AHEAD of the anchor block. It is STILL buffered
           // as normal — the commit flush skips the already-forwarded copy (H1 dedup below).
-          if (anchor && anchorState.capturedMessageStart === undefined && anchor.isMessageStart(toWrite)) anchorState.capturedMessageStart = toWrite
+          if (codecOperation(() => anchor && anchorState.capturedMessageStart === undefined && anchor.isMessageStart(toWrite)))
+            anchorState.capturedMessageStart = toWrite
           // 首包埋点（spec 2026-07-14 §3.2）：首帧被扣留进 buffer 的时刻（entry-level first hold，
           // 跨失败 retry；once 语义保留全局最早）。protect_streaming_generation 与 L2 共用此函数。
           if (buffer.length === 0) currentEnv.ctx.setClientTimingEpoch("bufferHoldStart", Date.now())

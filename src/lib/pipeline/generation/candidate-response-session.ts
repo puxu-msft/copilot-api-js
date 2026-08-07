@@ -20,8 +20,8 @@ import { readSyntheticKind } from "~/lib/pipeline/frame-origin"
 import { getUpstreamHook } from "~/lib/pipeline/hooks/loader"
 import {
   //
+  asResponseCodecRenderError,
   createResponseProcessor,
-  ResponseCodecRenderError,
   type ResponseProcessor,
 } from "~/lib/pipeline/stream/response-processor"
 
@@ -142,7 +142,7 @@ export function createCandidateResponseSession<State, Snapshot>(
       })
       return transformed
     } catch (error) {
-      throw new ResponseCodecRenderError(error)
+      throw asResponseCodecRenderError(error)
     }
   }
 

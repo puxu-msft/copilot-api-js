@@ -37,6 +37,7 @@ import {
   createPipelineDriver,
   type DriverDeps,
 } from "~/lib/pipeline/driver"
+import { ResponseCodecRenderError } from "~/lib/pipeline/stream/response-processor"
 import { StreamClientAbortError } from "~/lib/stream"
 
 // ── frame fixtures ──────────────────────────────────────────────────────────
@@ -179,21 +180,84 @@ describe("runResponseBufferedSink — L2 transactional buffered retry", () => {
     expect(sendCount()).toBe(0)
   })
 
-  test("buffer transform failure is codec-render rather than downstream-sink", async () => {
+  test("buffer transform preserves an already typed codec error without nesting", async () => {
     const env = makeEnv()
     env.ctx.beginAttempt({})
-    const transformError = new Error("buffer transform failed")
+    const original = new Error("buffer transform original")
+    const typed = new ResponseCodecRenderError(original)
     const { driver, sendCount } = makeDriver([upstream(framesClean(completeFrames("must-not-recover")))])
 
     const outcome = await driver.runResponseBufferedSink(upstream(framesClean(completeFrames("transform-failure"))), env, makeArraySink().sink, {
       ...makeStopTracker(),
       retryCap: 1,
       transformBufferedFlush() {
-        throw transformError
+        throw typed
       },
     } as RunBufferedOpts)
 
-    expect(outcome).toMatchObject({ kind: "stream-error", source: "codec-render", error: transformError })
+    expect(outcome).toMatchObject({ kind: "stream-error", source: "codec-render", error: original })
+    if (outcome.kind === "stream-error") expect(outcome.error).toBe(original)
+    expect(sendCount()).toBe(0)
+  })
+
+  test.each([
+    ["anchor message-start predicate", "isMessageStart"],
+    ["anchor block-start predicate", "isContentBlockStart"],
+    ["anchor remap", "remap"],
+  ])("anchor callback failure (%s) is codec-render rather than downstream-sink", async (_name, callback) => {
+    const env = makeEnv()
+    env.ctx.beginAttempt({})
+    const callbackError = new Error(`anchor ${callback} failed`)
+    const { driver, sendCount } = makeDriver([upstream(framesClean(completeFrames("must-not-recover")))])
+    const anchor = {
+      isMessageStart: () => {
+        if (callback === "isMessageStart") throw callbackError
+        return false
+      },
+      isContentBlockStart: () => {
+        if (callback === "isContentBlockStart") throw callbackError
+        return callback === "remap"
+      },
+      startFrame: () => ({ data: "start" }),
+      stopFrame: () => ({ data: "stop" }),
+      deltaFrame: () => ({ data: "delta" }),
+      remap: (frame: ClientFrame) => {
+        if (callback === "remap") throw callbackError
+        return frame
+      },
+    } satisfies RunBufferedOpts["anchor"]
+    const anchorState = { wireState: {} as never, injected: true, messageStartForwarded: true, anchorBlockOpen: true, anchorClosed: false }
+
+    const outcome = await driver.runResponseBufferedSink(upstream(framesClean(completeFrames("anchor-callback"))), env, makeArraySink().sink, {
+      ...makeStopTracker(),
+      retryCap: 1,
+      anchor,
+      anchorState,
+      ...(callback === "remap" && {
+        wireAllocationPort: {
+          wireState: { allocator: { anchorsOpened: () => 1 } },
+          closeOpenAnchor: async () => ({ ok: true, value: "none" }),
+        } as unknown as RunBufferedOpts["wireAllocationPort"],
+      }),
+    } as RunBufferedOpts)
+
+    expect(outcome).toMatchObject({ kind: "stream-error", source: "codec-render", error: callbackError })
+    expect(sendCount()).toBe(0)
+  })
+
+  test("buffer sink write rejection remains downstream-sink after codec callbacks", async () => {
+    const env = makeEnv()
+    env.ctx.beginAttempt({})
+    const sinkError = new Error("network-shaped sink failure")
+    const { driver, sendCount } = makeDriver([upstream(framesClean(completeFrames("must-not-recover")))])
+    const sink = { write: async () => Promise.reject(sinkError) }
+
+    const outcome = await driver.runResponseBufferedSink(upstream(framesClean(completeFrames("sink-failure"))), env, sink, {
+      ...makeStopTracker(),
+      retryCap: 1,
+    } as RunBufferedOpts)
+
+    expect(outcome).toMatchObject({ kind: "stream-error", source: "downstream-sink", error: sinkError })
     expect(sendCount()).toBe(0)
   })
 

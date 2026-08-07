@@ -242,6 +242,37 @@ describe("continuation-retry driver FLOW", () => {
     ])
   })
 
+  test("continuation format callback failure is codec-render, not a sink failure or retry", async () => {
+    const env = makeEnv()
+    env.ctx.beginAttempt({})
+    const initial = up([
+      f("message_start", { message: { id: "msg_1" } }),
+      f("content_block_start", { index: 0, content_block: { type: "text", text: "" } }),
+      f("content_block_delta", { index: 0, delta: { type: "text_delta", text: "First." } }),
+      f("content_block_stop", { index: 0 }),
+    ])
+    const continuation = up([
+      f("message_start", { message: { id: "msg_2" } }),
+      f("content_block_start", { index: 0, content_block: { type: "text", text: "" } }),
+      f("message_stop"),
+    ])
+    const callbackError = new Error("network-shaped continuation predicate failure")
+    const { driver, sendCount } = makeDriver([continuation])
+    const { sink } = arraySink()
+    const ledger = createCommittedBlocksLedger()
+    const opts = bufferedOpts(ledger, makeStopTracker(), {
+      ...continuationHooks,
+      isMessageStart() {
+        throw callbackError
+      },
+    })
+
+    const outcome = await driver.runResponseBufferedSink(initial, env, sink, opts)
+
+    expect(outcome).toMatchObject({ kind: "stream-error", source: "codec-render", error: callbackError })
+    expect(sendCount()).toBe(1)
+  })
+
   test("C3: thinking block delivered but excluded from ledger → continuation offset uses WIRE count, not ledger length", async () => {
     const env = makeEnv()
     env.ctx.beginAttempt({})
