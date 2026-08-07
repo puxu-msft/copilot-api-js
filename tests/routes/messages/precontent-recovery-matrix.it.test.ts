@@ -60,11 +60,15 @@ function completeFrames(id: string): Array<string> {
   ]
 }
 
-async function request(app: Awaited<ReturnType<(typeof import("../../helpers/test-app"))["createFullTestApp"]>>, sessionId: string): Promise<Response> {
+async function request(
+  app: Awaited<ReturnType<(typeof import("../../helpers/test-app"))["createFullTestApp"]>>,
+  sessionId: string,
+  model = MODEL,
+): Promise<Response> {
   return app.request("/v1/messages", {
     method: "POST",
     headers: { "Content-Type": "application/json", "x-session-id": sessionId },
-    body: JSON.stringify({ model: MODEL, messages: [{ role: "user", content: "recover" }], max_tokens: 64, stream: true }),
+    body: JSON.stringify({ model, messages: [{ role: "user", content: "recover" }], max_tokens: 64, stream: true }),
   })
 }
 
@@ -185,6 +189,61 @@ describe("Task 4.3b pre-content recovery matrix", () => {
     expect(entry?.attempts).toHaveLength(2)
     expect(entry?._index?.derived?.currentStrategy).not.toBe("precontent-recovery")
     expect(entry?.attempts?.[1]).toMatchObject({ candidateRole: "recovery", candidateVerdict: "failed", dispatchVerdict: "failed" })
+  })
+
+  test("translated pre-ready recovery disposal failure closes the unconsumed candidate and preserves primary terminal", async () => {
+    const translatedModel = "claude-opus-4.8@responses"
+    const cleanupError = new Error("translated recovery dispose rejected")
+    setStateForTests({ streamCommitAfterSec: 0.001, maxReactiveRetries: 0 })
+    setModels({ object: "list", data: [mockModel(MODEL, { vendor: "OpenAI", supported_endpoints: ["/responses"] })] })
+    let exchanges = 0
+    const { setUpstreamHookForTests } = await import("~/lib/pipeline/hooks/loader")
+    setUpstreamHookForTests({
+      async exchange(_wire, _env, next) {
+        exchanges += 1
+        const upstream = await next()
+        if (exchanges === 1) return upstream
+        return Object.assign(upstream, {
+          lifecycle: {
+            cancel() {},
+            async dispose() {
+              throw cleanupError
+            },
+            quiesced: Promise.resolve(),
+          },
+        })
+      },
+    })
+    let fetchCalls = 0
+    applyFetchMock(
+      mock(() => {
+        fetchCalls += 1
+        if (fetchCalls === 1)
+          return new Promise<Response>((resolve) => {
+            setTimeout(
+              () => resolve(new Response(JSON.stringify({ type: "error", error: { type: "overloaded_error", message: "primary rejected" } }), { status: 529 })),
+              10,
+            )
+          })
+        return Promise.resolve(createSseResponse(completeFrames("msg_translated_recovery")))
+      }),
+    )
+    try {
+      const { createFullTestApp } = await import("../../helpers/test-app")
+      const response = await request(createFullTestApp(), "precontent-translated-dispose-failure", translatedModel)
+      const text = await response.text()
+
+      expect(exchanges).toBe(2)
+      expect(fetchCalls).toBe(2)
+      expect(text).not.toContain("msg_translated_recovery")
+      expect(dataFramesOfType(text, "error")[0]?.error).toMatchObject({ message: "Failed to create responses" })
+      await drainV3Writer()
+      const entry = getHistory({ endpoint: "anthropic-messages", sessionId: "precontent-translated-dispose-failure" }).entries[0]
+      expect(entry?._index?.derived?.failureReason).toBe("Failed to create responses")
+      expect(entry?.attempts?.[1]).toMatchObject({ candidateRole: "recovery", candidateVerdict: "failed", dispatchVerdict: "failed" })
+    } finally {
+      setUpstreamHookForTests(undefined)
+    }
   })
 
   test("COMMIT nonretryable HTTP 418 before content keeps the primary terminal and makes no fresh dispatch", async () => {

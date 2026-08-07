@@ -6,13 +6,13 @@ import {
   test,
 } from "bun:test"
 
-import { createRequestContext } from "~/lib/context/request"
 import type {
   //
   PhysicalTransportResponse,
   UpstreamDispatchLifecycle,
 } from "~/lib/pipeline/types"
 
+import { createRequestContext } from "~/lib/context/request"
 import { makeArraySink } from "~/lib/pipeline/client-sink"
 import { createPipelineDriver } from "~/lib/pipeline/driver"
 import {
@@ -130,7 +130,7 @@ describe("generation recorder v4 driver integration", () => {
     const lifecycle: UpstreamDispatchLifecycle = {
       cancel() {},
       async dispose() {
-        return { quiesced: false, connectionReusable: false }
+        return { quiesced: true, connectionReusable: false }
       },
       quiesced: Promise.reject(quiesceError),
     }
@@ -143,7 +143,11 @@ describe("generation recorder v4 driver integration", () => {
           upstream: {
             headers: new Headers(),
             lifecycle,
-            frames: { async *[Symbol.asyncIterator]() { yield { data: "candidate" } } },
+            frames: {
+              async *[Symbol.asyncIterator]() {
+                yield { data: "candidate" }
+              },
+            },
           },
         }
       },
