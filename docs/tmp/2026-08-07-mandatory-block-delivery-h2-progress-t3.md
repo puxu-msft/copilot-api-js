@@ -19,6 +19,7 @@ owner: task-3-implementer
 
 - Adapter checkpoint 尚未进入测试编写：工作树审计为 clean，没有未提交 adapter WIP；已核对 Responses factory 现有 `transport: "http" | "ws"` 接缝、四协议 terminal/error renderer 来源与冻结 spec §4.3 映射。
 - RED checkpoint：新建 `tests/pipeline/delivery-adapters.unit.test.ts` 的单一用例，要求 `createAnthropicDeliveryProtocolAdapter` 把 `content_block_start@index=7` 分类为携带原 source frame 的 `unit-open` 与 identity `{ boundary: "content-block", key: "7" }`。`pwd -P && bun test tests/pipeline/delivery-adapters.unit.test.ts` 按预期 0 pass／1 fail，唯一错误为 `Cannot find module '~/lib/pipeline/delivery/adapters/anthropic'`，并非测试语法或断言错误。
+- GREEN checkpoint：新增最小 `src/lib/pipeline/delivery/adapters/anthropic.ts` constructor，仅实现上述 `content_block_start` class，未实现其他未测试 classes／renderers，也未接 production wiring。`pwd -P && bun test tests/pipeline/delivery-adapters.unit.test.ts && bun run typecheck` 通过，1 test passed、0 failed，TypeScript compilation 通过。
 
 ## Pending
 
