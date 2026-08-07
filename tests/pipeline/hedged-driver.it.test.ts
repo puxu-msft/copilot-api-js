@@ -25,6 +25,7 @@ import { createRequestContext } from "~/lib/context/request"
 import { makeArraySink } from "~/lib/pipeline/client-sink"
 import { createDownstreamDeliverySession } from "~/lib/pipeline/delivery/session"
 import { createPipelineDriver } from "~/lib/pipeline/driver"
+import { createCandidateResponseSession } from "~/lib/pipeline/generation/candidate-response-session"
 import { createFrozenHedgePolicy } from "~/lib/pipeline/generation/hedge-policy"
 
 function frames(label: string, signal: AbortSignal, stallPrimary: boolean): AsyncIterable<UpstreamFrame> {
@@ -61,7 +62,11 @@ function hedgePolicy(enabled: boolean, thresholdMs: number) {
   })
 }
 
-function driverHarness(input: { stallPrimary: boolean; policy: ReturnType<typeof hedgePolicy> }) {
+function driverHarness(input: {
+  stallPrimary: boolean
+  policy: ReturnType<typeof hedgePolicy>
+  candidateOnRenderedFrame?: (frame: import("~/lib/pipeline/types").ClientFrame) => import("~/lib/pipeline/types").ClientFrame | undefined
+}) {
   let opens = 0
   let primaryCancelled = false
   const transport: PhysicalTransport = {
@@ -87,6 +92,13 @@ function driverHarness(input: { stallPrimary: boolean; policy: ReturnType<typeof
         throw new Error("legacy send must not run")
       },
     },
+    candidateResponseSessionFactory: (factoryInput) =>
+      createCandidateResponseSession({
+        ...factoryInput,
+        createState: () => undefined,
+        ...(input.candidateOnRenderedFrame && { onRenderedFrame: (_state, frame) => input.candidateOnRenderedFrame?.(frame) }),
+        snapshot: () => ({}),
+      }),
     strategies: [],
     maxRetries: 0,
     maxLearningRetries: 0,
@@ -173,6 +185,45 @@ describe("production driver hedged response", () => {
     const winnerDispatch = request.env.ctx.modelOperationSnapshot.dispatches.find((dispatch) => String(dispatch.handle) === activeSource.dispatchId)
     expect(String(winnerDispatch?.candidate)).toBe(activeSource.candidateId)
     expect(delivery.snapshot.winnerCandidateId).toBe(activeSource.candidateId)
+  })
+
+  test("a pre-boundary candidate transform failure is codec-render", async () => {
+    const renderError = new Error("candidate pre-boundary render failure")
+    const harness = driverHarness({
+      stallPrimary: false,
+      policy: hedgePolicy(true, 60_000),
+      candidateOnRenderedFrame() {
+        throw renderError
+      },
+    })
+    const request = await harness.driver.runRequest({ body: {}, headers: new Headers() })
+    if (!request.ok) throw new Error("unexpected rejection")
+
+    await expect(harness.driver.runResponseSink(request.upstream, request.env, makeArraySink().sink)).resolves.toMatchObject({
+      kind: "stream-error",
+      source: "codec-render",
+      error: renderError,
+    })
+  })
+
+  test("a post-boundary candidate transform failure is codec-render", async () => {
+    const renderError = new Error("candidate post-boundary render failure")
+    const harness = driverHarness({
+      stallPrimary: true,
+      policy: hedgePolicy(true, 0),
+      candidateOnRenderedFrame(frame) {
+        if (frame.event === "message_stop") throw renderError
+        return frame
+      },
+    })
+    const request = await harness.driver.runRequest({ body: {}, headers: new Headers() })
+    if (!request.ok) throw new Error("unexpected rejection")
+
+    await expect(harness.driver.runResponseSink(request.upstream, request.env, makeArraySink().sink)).resolves.toMatchObject({
+      kind: "stream-error",
+      source: "codec-render",
+      error: renderError,
+    })
   })
 
   test("a winner sink write failure is downstream-sink", async () => {

@@ -1882,7 +1882,6 @@ async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): 
   } catch (error) {
     if (opts.recoveryOriginalError !== undefined) throw error
     const terminalError = error instanceof RecoveryAttemptFailure ? error.primaryError : error
-    if (!(error instanceof RecoveryAttemptFailure) && (await tryResponseRecovery(error, "upstream-transport"))) return
     const failedCandidate = anthropicCandidateSnapshot(driver, upstream)
     if (failedCandidate.kind !== "anthropic-direct") throw error
     const { acc } = failedCandidate

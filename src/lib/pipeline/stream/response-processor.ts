@@ -162,86 +162,88 @@ async function* processFrames(input: ProcessFramesInput): AsyncIterable<ClientFr
 
   try {
     for await (const frame of upstream.frames) {
-      if (frame.data !== "[DONE]") {
-        const upstreamRecord: SseEventRecord = {
-          offsetMs: Date.now() - streamStartMs,
-          type: frame.event ?? (frame.data ? "message" : "keepalive"),
-          raw: frame.data ?? "",
-          ...(origin && { synthetic: origin }),
-        }
-        upstreamSse.push(upstreamRecord)
-        if (dispatch && typeof env.ctx.captureUpstreamGenerationDispatchFrame === "function") {
-          env.ctx.captureUpstreamGenerationDispatchFrame(dispatch, frame, upstreamRecord)
-          if (upstreamSse.length === 1) env.ctx.setGenerationDispatchSseEvents(dispatch, upstreamSse)
-        } else {
-          env.ctx.captureUpstreamGenerationFrame?.(frame, upstreamRecord)
-          if (upstreamSse.length === 1) env.ctx.setSseEvents(upstreamSse)
-        }
-        const now = Date.now()
-        const recordTiming = (kind: import("~/lib/context/types").AttemptTimingKind, mode: "once" | "latest") => {
-          if (dispatch && typeof env.ctx.setGenerationDispatchTimingEpoch === "function") env.ctx.setGenerationDispatchTimingEpoch(dispatch, kind, now, mode)
-          else env.ctx.setAttemptTimingEpoch?.(kind, now, mode)
-        }
-        if (frame.event === "message_start") recordTiming("upstreamMessageStartAt", "once")
-        if (isFirstUpstreamContent(frame, env.targetEndpoint)) recordTiming("upstreamFirstTokenAt", "once")
-        if (isUpstreamContentFrame(frame, env.targetEndpoint)) recordTiming("upstreamLastTokenAt", "latest")
-        opts?.onUpstreamFrame?.(frame)
-      }
-
       try {
-        const hook = getUpstreamHook()
-        let effectiveFrame: UpstreamFrame | undefined = frame
-        if (hook?.upstream?.inbound && frame.data !== "[DONE]") {
-          const rewritten = hook.upstream.inbound(frame, env)
-          effectiveFrame = rewritten !== undefined && rewritten !== frame ? tagFrameRewritten(rewritten) : rewritten
-          if (effectiveFrame === undefined) {
-            if (dispatch && typeof env.ctx.captureGenerationDispatchFrameAction === "function")
-              env.ctx.captureGenerationDispatchFrameAction(dispatch, [frame], [], {
-                stage: "rewrite-upstream-hook",
-                transformId: "hook:rewrite-upstream-frame",
-                action: "drop",
-              })
-            else
-              env.ctx.captureGenerationFrameAction?.([frame], [], {
-                stage: "rewrite-upstream-hook",
-                transformId: "hook:rewrite-upstream-frame",
-                action: "drop",
-              })
-          } else if (effectiveFrame !== frame) {
-            if (dispatch && typeof env.ctx.captureGenerationDispatchFrameTransform === "function")
-              env.ctx.captureGenerationDispatchFrameTransform(dispatch, frame, effectiveFrame, {
-                stage: "rewrite-upstream-hook",
-                transformId: "hook:rewrite-upstream-frame",
-                forceDerived: true,
-              })
-            else
-              env.ctx.captureGenerationFrameTransform?.(frame, effectiveFrame, {
-                stage: "rewrite-upstream-hook",
-                transformId: "hook:rewrite-upstream-frame",
-                forceDerived: true,
-              })
+        if (frame.data !== "[DONE]") {
+          const upstreamRecord: SseEventRecord = {
+            offsetMs: Date.now() - streamStartMs,
+            type: frame.event ?? (frame.data ? "message" : "keepalive"),
+            raw: frame.data ?? "",
+            ...(origin && { synthetic: origin }),
           }
+          upstreamSse.push(upstreamRecord)
+          if (dispatch && typeof env.ctx.captureUpstreamGenerationDispatchFrame === "function") {
+            env.ctx.captureUpstreamGenerationDispatchFrame(dispatch, frame, upstreamRecord)
+            if (upstreamSse.length === 1) env.ctx.setGenerationDispatchSseEvents(dispatch, upstreamSse)
+          } else {
+            env.ctx.captureUpstreamGenerationFrame?.(frame, upstreamRecord)
+            if (upstreamSse.length === 1) env.ctx.setSseEvents(upstreamSse)
+          }
+          const now = Date.now()
+          const recordTiming = (kind: import("~/lib/context/types").AttemptTimingKind, mode: "once" | "latest") => {
+            if (dispatch && typeof env.ctx.setGenerationDispatchTimingEpoch === "function") env.ctx.setGenerationDispatchTimingEpoch(dispatch, kind, now, mode)
+            else env.ctx.setAttemptTimingEpoch?.(kind, now, mode)
+          }
+          if (frame.event === "message_start") recordTiming("upstreamMessageStartAt", "once")
+          if (isFirstUpstreamContent(frame, env.targetEndpoint)) recordTiming("upstreamFirstTokenAt", "once")
+          if (isUpstreamContentFrame(frame, env.targetEndpoint)) recordTiming("upstreamLastTokenAt", "latest")
+          opts?.onUpstreamFrame?.(frame)
         }
 
-        if (effectiveFrame !== undefined) {
-          for (const rewritten of passThrough([effectiveFrame], rewrites, states, 0, sampleAction, captureRewrite)) {
-            if (opts?.skipRender) yield rewritten
-            else yield* renderFrames((frame, requestEnv) => renderer.renderResponse(frame, requestEnv), rewritten, env, dispatch)
+        try {
+          const hook = getUpstreamHook()
+          let effectiveFrame: UpstreamFrame | undefined = frame
+          if (hook?.upstream?.inbound && frame.data !== "[DONE]") {
+            const rewritten = hook.upstream.inbound(frame, env)
+            effectiveFrame = rewritten !== undefined && rewritten !== frame ? tagFrameRewritten(rewritten) : rewritten
+            if (effectiveFrame === undefined) {
+              if (dispatch && typeof env.ctx.captureGenerationDispatchFrameAction === "function")
+                env.ctx.captureGenerationDispatchFrameAction(dispatch, [frame], [], {
+                  stage: "rewrite-upstream-hook",
+                  transformId: "hook:rewrite-upstream-frame",
+                  action: "drop",
+                })
+              else
+                env.ctx.captureGenerationFrameAction?.([frame], [], {
+                  stage: "rewrite-upstream-hook",
+                  transformId: "hook:rewrite-upstream-frame",
+                  action: "drop",
+                })
+            } else if (effectiveFrame !== frame) {
+              if (dispatch && typeof env.ctx.captureGenerationDispatchFrameTransform === "function")
+                env.ctx.captureGenerationDispatchFrameTransform(dispatch, frame, effectiveFrame, {
+                  stage: "rewrite-upstream-hook",
+                  transformId: "hook:rewrite-upstream-frame",
+                  forceDerived: true,
+                })
+              else
+                env.ctx.captureGenerationFrameTransform?.(frame, effectiveFrame, {
+                  stage: "rewrite-upstream-hook",
+                  transformId: "hook:rewrite-upstream-frame",
+                  forceDerived: true,
+                })
+            }
           }
+
+          if (effectiveFrame !== undefined) {
+            for (const rewritten of passThrough([effectiveFrame], rewrites, states, 0, sampleAction, captureRewrite)) {
+              if (opts?.skipRender) yield rewritten
+              else yield* renderFrames((frame, requestEnv) => renderer.renderResponse(frame, requestEnv), rewritten, env, dispatch)
+            }
+          }
+        } catch (error) {
+          throw asResponseCodecRenderError(error)
         }
+        frameIndex++
       } catch (error) {
         throw asResponseCodecRenderError(error)
       }
-      frameIndex++
     }
     naturalDrain = true
   } finally {
     // Preserve the historical exception-path flush: a buffering rewrite may hold frames that still
-    // must be delivered before the original upstream failure reaches the driver.
-    for (const flushed of flushChain(rewrites, states, captureRewrite, captureFlush)) {
-      if (opts?.skipRender) yield flushed
-      else yield* renderFrames((frame, requestEnv) => renderer.renderResponse(frame, requestEnv), flushed, env, dispatch)
-    }
+    // must be delivered before the original upstream failure reaches the driver. The flush chain,
+    // capture callbacks, and its rendered frames are response processing rather than transport I/O.
+    yield* flushResponseFrames(rewrites, states, captureRewrite, captureFlush, opts, renderer, env, dispatch)
     if (!naturalDrain) input.onSettled?.()
   }
 
@@ -253,8 +255,28 @@ async function* processFrames(input: ProcessFramesInput): AsyncIterable<ClientFr
   input.onSettled?.()
 }
 
+async function* flushResponseFrames(
+  rewrites: ReadonlyArray<ResponseRewrite>,
+  states: Array<RewriteState>,
+  captureRewrite: (name: string, frame: UpstreamFrame, action: FrameAction) => void,
+  captureFlush: (name: string, outputs: ReadonlyArray<UpstreamFrame>) => void,
+  opts: RunResponseOpts | undefined,
+  renderer: CandidateResponseRenderer,
+  env: RequestEnvelope,
+  dispatch: DispatchHandle | undefined,
+): AsyncIterable<ClientFrame> {
+  try {
+    for (const flushed of flushChain(rewrites, states, captureRewrite, captureFlush)) {
+      if (opts?.skipRender) yield flushed
+      else yield* renderFrames((frame, requestEnv) => renderer.renderResponse(frame, requestEnv), flushed, env, dispatch)
+    }
+  } catch (error) {
+    throw asResponseCodecRenderError(error)
+  }
+}
+
 function asResponseCodecRenderError(error: unknown): ResponseCodecRenderError {
-  return error instanceof ResponseCodecRenderError ? error : new ResponseCodecRenderError(error)
+  return isResponseCodecRenderError(error) ? error : new ResponseCodecRenderError(error)
 }
 
 /** The outer handler must preserve the original renderer error in its client protocol frame. */

@@ -13,7 +13,11 @@ import type {
   CandidateRole,
 } from "~/lib/context/model-operation-record"
 import type { RequestEnvelope } from "~/lib/pipeline/envelope"
-import type { ClientFrame } from "~/lib/pipeline/types"
+import type {
+  //
+  ClientFrame,
+  ResponseFailureSource,
+} from "~/lib/pipeline/types"
 
 import { withRejectionObserver } from "~/lib/transport/crash-safety"
 
@@ -95,10 +99,19 @@ export interface HedgeWinner<TProcessor> {
   readonly loserCleanup: Promise<void>
 }
 
+export interface HedgeRaceFailure {
+  readonly error: unknown
+  readonly source: Extract<ResponseFailureSource, "upstream-transport" | "codec-render">
+}
+
+export interface HedgeRaceAggregateError extends AggregateError {
+  readonly hedgeFailures: ReadonlyArray<HedgeRaceFailure>
+}
+
 export type HedgeRaceResult<TProcessor> =
   | ({ readonly kind: "winner" } & HedgeWinner<TProcessor>)
   | { readonly kind: "terminal"; readonly candidate: CoordinatedCandidate<TProcessor>; readonly bufferedFrames: ReadonlyArray<ClientFrame> }
-  | { readonly kind: "failure"; readonly error: unknown }
+  | ({ readonly kind: "failure" } & HedgeRaceFailure)
 
 /** Create a single-generation, primary-only coordinator. */
 export function createGenerationCoordinator<TProcessor>(input: CreateGenerationCoordinatorInput<TProcessor>): GenerationCoordinator<TProcessor> {
@@ -192,7 +205,7 @@ export function createGenerationCoordinator<TProcessor>(input: CreateGenerationC
           probeCandidateResponse({ candidate, session, upstream: candidate.upstream }).then((outcome) => ({ index, outcome })),
         )
       }
-      const failures: Array<unknown> = []
+      const failures: Array<HedgeRaceFailure> = []
       while (pending.size > 0) {
         // Promise.race observes the iterable in candidate order. If boundaries settle in the same
         // microtask turn, the primary/earlier candidate therefore wins deterministically.
@@ -207,9 +220,14 @@ export function createGenerationCoordinator<TProcessor>(input: CreateGenerationC
         const runtime = runtimes.get(outcome.candidate.candidate)
         runtime?.settle({ verdict: "failed", reason: outcome.kind === "failure" ? "response-failure" : "terminal-without-boundary" })
         if (runtime) candidateReservations.get(runtime.handle)?.release()
-        if (outcome.kind === "failure") failures.push(outcome.error)
+        if (outcome.kind === "failure") failures.push({ error: outcome.error, source: outcome.source })
       }
-      throw new AggregateError(failures, "No generation candidate produced a complete client block")
+      const aggregate = new AggregateError(
+        failures.map((failure) => failure.error),
+        "No generation candidate produced a complete client block",
+      ) as HedgeRaceAggregateError
+      Object.defineProperty(aggregate, "hedgeFailures", { value: Object.freeze([...failures]), enumerable: true })
+      throw aggregate
     },
 
     async racePrimaryWithDelayedHedge({ primary, delayMs, hedgeEnv, startHedge }) {
@@ -233,7 +251,7 @@ export function createGenerationCoordinator<TProcessor>(input: CreateGenerationC
           }
         }
         if (first.outcome.kind === "terminal") return { kind: "terminal", candidate: primary, bufferedFrames: first.outcome.bufferedFrames }
-        return { kind: "failure", error: first.outcome.error }
+        return { kind: "failure", error: first.outcome.error, source: first.outcome.source }
       }
 
       let hedge: CoordinatedCandidate<TProcessor>
@@ -242,7 +260,7 @@ export function createGenerationCoordinator<TProcessor>(input: CreateGenerationC
       } catch (error) {
         await runtimes.get(primary.candidate)?.cancel("hedge-start-failed")
         await primaryProbe
-        return { kind: "failure", error }
+        return { kind: "failure", error, source: "upstream-transport" }
       }
       const hedgeProbe = probeCandidateResponse({ candidate: hedge, session: asCandidateResponseSession(hedge.processor), upstream: hedge.upstream })
       return raceProbePromises({ candidates: [primary, hedge], probes: [primaryProbe, hedgeProbe], runtimes, candidateReservations })
@@ -277,7 +295,7 @@ async function raceProbePromises<TProcessor>(input: {
   candidateReservations: Map<CandidateHandle, import("./generation-budget").BudgetReservation>
 }): Promise<HedgeRaceResult<TProcessor>> {
   const pending = new Map(input.probes.map((probe, index) => [index, probe.then((outcome) => ({ index, outcome }))]))
-  const failures: Array<unknown> = []
+  const failures: Array<HedgeRaceFailure> = []
   let firstTerminal: Extract<CandidateProbeOutcome<CoordinatedCandidate<TProcessor>>, { kind: "terminal" }> | undefined
   while (pending.size > 0) {
     const settled = await Promise.race(pending.values())
@@ -297,7 +315,7 @@ async function raceProbePromises<TProcessor>(input: {
       const runtime = input.runtimes.get(outcome.candidate.candidate)
       runtime?.settle({ verdict: "failed", reason: "response-failure" })
       if (runtime) input.candidateReservations.get(runtime.handle)?.release()
-      failures.push(outcome.error)
+      failures.push({ error: outcome.error, source: outcome.source })
     } else {
       const runtime = input.runtimes.get(outcome.candidate.candidate)
       runtime?.settle({ verdict: "failed", reason: "terminal-without-boundary" })
@@ -306,7 +324,19 @@ async function raceProbePromises<TProcessor>(input: {
     }
   }
   if (firstTerminal) return { kind: "terminal", candidate: firstTerminal.candidate, bufferedFrames: firstTerminal.bufferedFrames }
-  return { kind: "failure", error: new AggregateError(failures, "No generation candidate produced a complete client block") }
+  // A mixed race must not infer origin from error messages. The first candidate failure in the
+  // deterministic probe settlement order owns the terminal source; the AggregateError retains all causes.
+  const [firstFailure] = failures
+  const aggregate = new AggregateError(
+    failures.map((failure) => failure.error),
+    "No generation candidate produced a complete client block",
+  ) as HedgeRaceAggregateError
+  Object.defineProperty(aggregate, "hedgeFailures", { value: Object.freeze([...failures]), enumerable: true })
+  return {
+    kind: "failure",
+    error: aggregate,
+    source: firstFailure.source,
+  }
 }
 
 function observeLoserCleanup<TProcessor>(

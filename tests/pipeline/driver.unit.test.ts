@@ -901,6 +901,82 @@ describe("driver.runResponse — S5 chain + S6 render", () => {
     expect(out.map((f) => f.data)).toEqual(["[x]"])
   })
 
+  test("network-shaped onUpstreamFrame failure is codec-render rather than transport", async () => {
+    const { ctx } = makeCtx()
+    const env = makeEnv(ctx)
+    const callbackError = new Error("Stream closed with error code NGHTTP2_CANCEL")
+    const { codec } = makeCodec({ env })
+    const driver = createPipelineDriver({ ...BASE, codec, decideRoute: (e) => codec.decideRoute(e), transport: makeTransport(async () => okStream()) })
+
+    const outcome = await driver.runResponseSink(okStream([{ data: "frame" }]), env, makeArraySink().sink, {
+      onUpstreamFrame() {
+        throw callbackError
+      },
+    })
+
+    expect(outcome).toMatchObject({ kind: "stream-error", source: "codec-render", error: callbackError })
+  })
+
+  test("finally flush rewrite failure replaces an upstream failure with codec-render provenance", async () => {
+    const { ctx } = makeCtx()
+    const env = makeEnv(ctx)
+    const flushError = new Error("flush rewrite failed")
+    const bufferingRewrite: ResponseRewrite = {
+      name: "flush-throws-after-upstream-error",
+      order: 100,
+      appliesTo: () => true,
+      createState: (): RewriteState => ({}),
+      transform: (): FrameAction => ({ kind: "buffer" }),
+      flush: () => {
+        throw flushError
+      },
+    }
+    const { codec } = makeCodec({ env })
+    const driver = createPipelineDriver({
+      ...BASE,
+      codec,
+      decideRoute: (e) => codec.decideRoute(e),
+      transport: makeTransport(async () => okStream()),
+      responseRewrites: [bufferingRewrite],
+    })
+    async function* upstreamThenThrow(): AsyncIterable<UpstreamFrame> {
+      yield { data: "buffered" }
+      throw new Error("upstream failed first")
+    }
+
+    const outcome = await driver.runResponseSink({ frames: upstreamThenThrow(), headers: new Headers() }, env, makeArraySink().sink)
+
+    expect(outcome).toMatchObject({ kind: "stream-error", source: "codec-render", error: flushError })
+  })
+
+  test("natural drain flush rewrite failure is codec-render", async () => {
+    const { ctx } = makeCtx()
+    const env = makeEnv(ctx)
+    const flushError = new Error("natural flush failed")
+    const bufferingRewrite: ResponseRewrite = {
+      name: "flush-throws-after-natural-drain",
+      order: 100,
+      appliesTo: () => true,
+      createState: (): RewriteState => ({}),
+      transform: (): FrameAction => ({ kind: "buffer" }),
+      flush: () => {
+        throw flushError
+      },
+    }
+    const { codec } = makeCodec({ env })
+    const driver = createPipelineDriver({
+      ...BASE,
+      codec,
+      decideRoute: (e) => codec.decideRoute(e),
+      transport: makeTransport(async () => okStream()),
+      responseRewrites: [bufferingRewrite],
+    })
+
+    const outcome = await driver.runResponseSink(okStream([{ data: "buffered" }]), env, makeArraySink().sink)
+
+    expect(outcome).toMatchObject({ kind: "stream-error", source: "codec-render", error: flushError })
+  })
+
   test("flush on exception: a buffering rewrite drains in finally when upstream throws (H3 — exception-path parity)", async () => {
     const { ctx } = makeCtx()
     const env = makeEnv(ctx)

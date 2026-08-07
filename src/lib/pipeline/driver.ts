@@ -990,7 +990,7 @@ async function maybeRunHedgedResponseSink(
     if (raced.kind === "failure") {
       binding.coordinator.releaseCandidate(binding.candidate.candidate)
       if (classifyStreamError(raced.error) === "client-abort") return { kind: "settled-abort" }
-      return streamErrorOutcome(raced.error, env, responseFailureSource(raced.error))
+      return streamErrorOutcome(raced.error, env, raced.source)
     }
 
     const selected = raced.candidate
@@ -1419,7 +1419,7 @@ export async function runResponseBufferedSink(
       const buffer: Array<ClientFrame> = []
       let bufferedBytes = 0
       let retreated = false
-      let thrown: unknown
+      let failure: { error: unknown; source: "upstream-transport" | "codec-render" } | undefined
       let drained = false
       let finish: import("./types").ResponseFinishResult | undefined
       const responseOpts: RunBufferedOpts = {
@@ -1565,9 +1565,17 @@ export async function runResponseBufferedSink(
         }
         drained = true
       } catch (error) {
-        // Client gone → settle abort, write nothing further, never retry.
-        if (classifyStreamError(error) === "client-abort") return { kind: "settled-abort" }
-        thrown = error
+        // Codec/rewrite processing owns its marker even when its cause happens to look like a client abort.
+        // Only an unwrapped transport-origin abort settles this response as client-aborted.
+        const source = responseFailureSource(error)
+        if (source === "upstream-transport" && classifyStreamError(error) === "client-abort") return { kind: "settled-abort" }
+        failure = { error, source }
+      }
+
+      // A codec/rewrite failure never enters retry or continuation. Return it before the shared
+      // truncation branches so even a codec-thrown StreamClientAbortError cannot become settled-abort.
+      if (failure?.source === "codec-render") {
+        return streamErrorOutcome(unwrapResponseCodecRenderError(failure.error), env, failure.source)
       }
 
       // Retreated to live: the frames are already forwarded — NO retry is possible (can't unsend).
@@ -1583,10 +1591,10 @@ export async function runResponseBufferedSink(
         return (
           closeOutcome
           ?? streamErrorOutcome(
-            thrown ?? new Error("upstream stream truncated: closed without message_stop"),
+            failure ? unwrapResponseCodecRenderError(failure.error) : new Error("upstream stream truncated: closed without message_stop"),
             env,
-            "upstream-transport",
-            thrown === null || thrown === undefined,
+            failure?.source ?? "upstream-transport",
+            failure === undefined,
           )
         )
       }
@@ -1637,7 +1645,7 @@ export async function runResponseBufferedSink(
       // shutdown / idle-timeout throw. `!committedAny` closes the retry window once a block was
       // committed live (P0): a committed prefix is on the wire, so re-exchanging would double-send
       // it. On the terminal-only path `committedAny` is always false → the gate is unchanged (R1).
-      const retryable = (thrown ? classifyStreamError(thrown) === "other" : true) && !committedAny
+      const retryable = (failure ? classifyStreamError(failure.error) === "other" : true) && !committedAny
       if (retryable && attempt < cap) {
         attempt++
         // D1: snapshot THIS failed attempt's upstream-original frames onto the attempt BEFORE the
@@ -1663,7 +1671,7 @@ export async function runResponseBufferedSink(
         const coordinator = parent?.coordinator ?? createDriverCoordinator(deps, currentEnv)
         const recovered =
           parent ?
-            await coordinator.runRecovery(parent.candidate, thrown ? "transport-close" : "truncated-before-terminal", currentEnv)
+            await coordinator.runRecovery(parent.candidate, failure ? "transport-close" : "truncated-before-terminal", currentEnv)
           : await coordinator.runPrimary()
         generation?.bind(coordinator, recovered)
         currentEnv.ctx.selectGenerationWinner(recovered.candidate, recovered.dispatch)
@@ -1695,7 +1703,7 @@ export async function runResponseBufferedSink(
       const continuationBudget = continuationCount === 0 ? Math.max(remainingShared, 1) : remainingShared
       const canContinue =
         committedAny
-        && (thrown ? classifyStreamError(thrown) === "other" : true)
+        && (failure ? classifyStreamError(failure.error) === "other" : true)
         && continuation !== undefined
         && continuation.enabled
         && ledger !== undefined
@@ -1772,10 +1780,10 @@ export async function runResponseBufferedSink(
       return (
         closeOutcome
         ?? streamErrorOutcome(
-          thrown ?? new Error("upstream stream truncated: closed without message_stop"),
+          failure?.error ?? new Error("upstream stream truncated: closed without message_stop"),
           env,
-          "upstream-transport",
-          thrown === null || thrown === undefined,
+          failure?.source ?? "upstream-transport",
+          failure === undefined,
         )
       )
     }

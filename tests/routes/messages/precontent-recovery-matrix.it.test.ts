@@ -218,6 +218,35 @@ describe("Task 4.3b pre-content recovery matrix", () => {
     expect(types.indexOf("message_delta")).toBeLessThan(types.indexOf("message_stop"))
   })
 
+  test("unexpected handler failure never makes a fresh recovery dispatch", async () => {
+    let calls = 0
+    applyFetchMock(
+      mock(() => {
+        calls += 1
+        return Promise.resolve(createSseResponse(completeFrames("msg_handler_failure")))
+      }),
+    )
+
+    const { setUpstreamHookForTests } = await import("~/lib/pipeline/hooks/loader")
+    setUpstreamHookForTests({
+      client: {
+        outbound() {
+          throw new Error("unexpected handler-side processing failure")
+        },
+      },
+    })
+    try {
+      const { createFullTestApp } = await import("../../helpers/test-app")
+      const response = await request(createFullTestApp(), "precontent-unexpected-no-recovery")
+      const text = await response.text()
+
+      expect(calls).toBe(1)
+      expect(dataFramesOfType(text, "error")[0]?.error).toMatchObject({ message: "unexpected handler-side processing failure" })
+    } finally {
+      setUpstreamHookForTests(undefined)
+    }
+  })
+
   test("codec-render failures never make a fresh recovery dispatch", async () => {
     let calls = 0
     applyFetchMock(

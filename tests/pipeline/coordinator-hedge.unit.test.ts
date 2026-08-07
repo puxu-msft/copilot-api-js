@@ -60,7 +60,13 @@ function upstream(label: string, gate?: Promise<void>): UpstreamStream {
   return { headers: new Headers(), frames }
 }
 
-function runtime(role: CandidateRole, label: string, candidateNumber: number, gate?: Promise<void>) {
+function runtime(
+  role: CandidateRole,
+  label: string,
+  candidateNumber: number,
+  gate?: Promise<void>,
+  onRenderedFrame?: (frame: ClientFrame) => ClientFrame | undefined,
+) {
   const candidate = `candidate:${candidateNumber}` as CandidateHandle
   const dispatch = `dispatch:${candidateNumber}` as DispatchHandle
   let cancelled = false
@@ -73,6 +79,7 @@ function runtime(role: CandidateRole, label: string, candidateNumber: number, ga
     responseRewrites: [],
     renderer: { renderResponse: (frame) => frame, flushResponse: () => [] },
     createState: () => undefined,
+    ...(onRenderedFrame && { onRenderedFrame: (_state, frame) => onRenderedFrame(frame) }),
     snapshot: () => ({ label }),
   })
   const ready = {
@@ -203,6 +210,10 @@ describe("generation coordinator hedge race", () => {
 
     expect(failure).toBeInstanceOf(AggregateError)
     expect((failure as AggregateError).errors).toHaveLength(2)
+    expect((failure as AggregateError & { hedgeFailures?: ReadonlyArray<{ error: unknown; source: string }> }).hedgeFailures).toEqual([
+      { error: (failure as AggregateError).errors[0], source: "upstream-transport" },
+      { error: (failure as AggregateError).errors[1], source: "upstream-transport" },
+    ])
     await expect(coordinator.raceReadyCandidates([first, second])).rejects.toThrow(/already started/i)
   })
 
