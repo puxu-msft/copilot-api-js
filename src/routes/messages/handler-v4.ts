@@ -50,6 +50,7 @@ import type {
   ClientSink,
   DriverRequestResult,
   OwnerOperation,
+  ResponseFailureSource,
   UpstreamStream,
 } from "~/lib/pipeline/types"
 import type {
@@ -1445,9 +1446,10 @@ async function pumpAnthropicStreamingDispatch(opts: PumpAnthropicStreamingDispat
  */
 async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): Promise<void> {
   const { sink, liveSink, buffered, forwardedSseEvents, driver, upstream, env, anchorHooks, anchorState } = opts
-  const tryResponseRecovery = async (error: unknown): Promise<boolean> => {
+  const tryResponseRecovery = async (error: unknown, source: ResponseFailureSource): Promise<boolean> => {
     // The transport rewrites a shutdown-caused abort into HTTP 529 for the normal client retry contract.
     // Inspect its original cause before taxonomy so a shutdown 529 cannot masquerade as transient upstream 529.
+    if (source !== "upstream-transport") return false
     if (error instanceof HTTPError && isShutdownCausedAbort(error.cause)) return false
     // Abort provenance is never a deterministic upstream death. In particular, shutdown/reaper/deadline
     // aborts may leave upstream thinking alive, so a fresh dispatch would violate never-false-kill.
@@ -1643,7 +1645,7 @@ async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): 
         await sink.finalize?.()
         return
       }
-      if (await tryResponseRecovery(outcome.error)) return
+      if (await tryResponseRecovery(outcome.error, outcome.source)) return
       // H3 — the upstream iterable (or a sink write) threw a non-abort error. Synthesize the
       // Anthropic error frame + record it into the forwarded track (the client receives it, so
       // it belongs in `inboundResponse.sseEvents`), THEN settle. Ordering is load-bearing:
@@ -1880,7 +1882,7 @@ async function pumpAnthropicStreamingV4(opts: PumpAnthropicStreamingV4Options): 
   } catch (error) {
     if (opts.recoveryOriginalError !== undefined) throw error
     const terminalError = error instanceof RecoveryAttemptFailure ? error.primaryError : error
-    if (!(error instanceof RecoveryAttemptFailure) && (await tryResponseRecovery(error))) return
+    if (!(error instanceof RecoveryAttemptFailure) && (await tryResponseRecovery(error, "upstream-transport"))) return
     const failedCandidate = anthropicCandidateSnapshot(driver, upstream)
     if (failedCandidate.kind !== "anthropic-direct") throw error
     const { acc } = failedCandidate

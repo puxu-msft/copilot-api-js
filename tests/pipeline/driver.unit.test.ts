@@ -1140,8 +1140,7 @@ describe("driver.runResponseSink — owns-sink wrapping shim (B1)", () => {
     const outcome = await driver.runResponseSink(okStream([{ data: "1" }, { data: "2" }, { data: "3" }]), makeEnv(ctx), sink)
 
     // The disconnect must NOT be swallowed into `complete`.
-    expect(outcome.kind).not.toBe("complete")
-    expect(outcome.kind).toBe("stream-error")
+    expect(outcome).toMatchObject({ kind: "stream-error", source: "downstream-sink" })
     // Frame 0 was written before the reject at frame 1.
     expect(sunk).toEqual([{ data: "1" }])
   })
@@ -1182,7 +1181,7 @@ describe("driver.runResponseSink — owns-sink wrapping shim (B1)", () => {
     expect(frames).toEqual([{ data: "1" }])
   })
 
-  test("stream-error carries the RAW thrown error (richest-data-flow), not a {type,message} summary", async () => {
+  test("stream-error carries the RAW upstream error and upstream-transport provenance", async () => {
     const { ctx } = makeCtx()
     const { codec } = makeCodec({ env: makeEnv(ctx) })
     const driver = createPipelineDriver({ ...BASE, codec, decideRoute: (e) => codec.decideRoute(e), transport: makeTransport(async () => okStream()) })
@@ -1194,9 +1193,7 @@ describe("driver.runResponseSink — owns-sink wrapping shim (B1)", () => {
     }
     const { sink } = makeArraySink()
     const outcome = await driver.runResponseSink({ frames: throwRaw(), headers: new Headers() }, makeEnv(ctx), sink)
-    expect(outcome.kind).toBe("stream-error")
-    // The handler is the consumer that classifies/formats/logs — it gets the SAME error object.
-    if (outcome.kind === "stream-error") expect(outcome.error).toBe(raw)
+    expect(outcome).toMatchObject({ kind: "stream-error", source: "upstream-transport", error: raw })
   })
 
   test("sink.close() runs on the abort + write-reject exits too (full leak matrix)", async () => {

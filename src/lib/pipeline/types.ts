@@ -854,9 +854,11 @@ export interface ClientSink {
  *     "client-abort"`). The downstream stream is dead, so the handler writes ZERO further
  *     bytes and settles `ctx.abort` (B0-d "abort → zero bytes").
  */
+export type ResponseFailureSource = "upstream-transport" | "codec-render" | "downstream-sink" | "delivery-owner"
+
 export type ResponseOutcome =
   | { kind: "complete"; headers: Headers; finish?: ResponseFinishResult }
-  | { kind: "stream-error"; error: unknown; truncated?: boolean }
+  | { kind: "stream-error"; error: unknown; source: ResponseFailureSource; truncated?: boolean }
   | { kind: "settled-abort" }
   | { kind: "delivery-finished" }
 

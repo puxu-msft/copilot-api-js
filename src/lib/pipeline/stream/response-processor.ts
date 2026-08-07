@@ -56,6 +56,23 @@ export interface CreateResponseProcessorInput {
   readonly onSettled?: () => void
 }
 
+/** Typed provenance wrapper: S5/S6 rendering failed after upstream frame acquisition. */
+export class ResponseCodecRenderError extends Error {
+  readonly responseFailureSource = "codec-render" as const
+  readonly cause: unknown
+
+  constructor(cause: unknown) {
+    super(cause instanceof Error ? cause.message : String(cause), { cause })
+    this.name = "ResponseCodecRenderError"
+    this.cause = cause
+  }
+}
+
+/** Works across Bun's separately transpiled test module graphs without inspecting an error message. */
+export function isResponseCodecRenderError(error: unknown): error is ResponseCodecRenderError {
+  return typeof error === "object" && error !== null && (error as { responseFailureSource?: unknown }).responseFailureSource === "codec-render"
+}
+
 /** A single-use response processor with private rewrite/translator state. */
 export interface ResponseProcessor {
   readonly identity: symbol
@@ -171,46 +188,56 @@ async function* processFrames(input: ProcessFramesInput): AsyncIterable<ClientFr
         opts?.onUpstreamFrame?.(frame)
       }
 
-      const hook = getUpstreamHook()
-      let effectiveFrame: UpstreamFrame | undefined = frame
-      if (hook?.upstream?.inbound && frame.data !== "[DONE]") {
-        const rewritten = hook.upstream.inbound(frame, env)
-        effectiveFrame = rewritten !== undefined && rewritten !== frame ? tagFrameRewritten(rewritten) : rewritten
-        if (effectiveFrame === undefined) {
-          if (dispatch && typeof env.ctx.captureGenerationDispatchFrameAction === "function")
-            env.ctx.captureGenerationDispatchFrameAction(dispatch, [frame], [], {
-              stage: "rewrite-upstream-hook",
-              transformId: "hook:rewrite-upstream-frame",
-              action: "drop",
-            })
-          else
-            env.ctx.captureGenerationFrameAction?.([frame], [], { stage: "rewrite-upstream-hook", transformId: "hook:rewrite-upstream-frame", action: "drop" })
-        } else if (effectiveFrame !== frame) {
-          if (dispatch && typeof env.ctx.captureGenerationDispatchFrameTransform === "function")
-            env.ctx.captureGenerationDispatchFrameTransform(dispatch, frame, effectiveFrame, {
-              stage: "rewrite-upstream-hook",
-              transformId: "hook:rewrite-upstream-frame",
-              forceDerived: true,
-            })
-          else
-            env.ctx.captureGenerationFrameTransform?.(frame, effectiveFrame, {
-              stage: "rewrite-upstream-hook",
-              transformId: "hook:rewrite-upstream-frame",
-              forceDerived: true,
-            })
+      try {
+        const hook = getUpstreamHook()
+        let effectiveFrame: UpstreamFrame | undefined = frame
+        if (hook?.upstream?.inbound && frame.data !== "[DONE]") {
+          const rewritten = hook.upstream.inbound(frame, env)
+          effectiveFrame = rewritten !== undefined && rewritten !== frame ? tagFrameRewritten(rewritten) : rewritten
+          if (effectiveFrame === undefined) {
+            if (dispatch && typeof env.ctx.captureGenerationDispatchFrameAction === "function")
+              env.ctx.captureGenerationDispatchFrameAction(dispatch, [frame], [], {
+                stage: "rewrite-upstream-hook",
+                transformId: "hook:rewrite-upstream-frame",
+                action: "drop",
+              })
+            else
+              env.ctx.captureGenerationFrameAction?.([frame], [], {
+                stage: "rewrite-upstream-hook",
+                transformId: "hook:rewrite-upstream-frame",
+                action: "drop",
+              })
+          } else if (effectiveFrame !== frame) {
+            if (dispatch && typeof env.ctx.captureGenerationDispatchFrameTransform === "function")
+              env.ctx.captureGenerationDispatchFrameTransform(dispatch, frame, effectiveFrame, {
+                stage: "rewrite-upstream-hook",
+                transformId: "hook:rewrite-upstream-frame",
+                forceDerived: true,
+              })
+            else
+              env.ctx.captureGenerationFrameTransform?.(frame, effectiveFrame, {
+                stage: "rewrite-upstream-hook",
+                transformId: "hook:rewrite-upstream-frame",
+                forceDerived: true,
+              })
+          }
         }
-      }
 
-      if (effectiveFrame !== undefined) {
-        for (const rewritten of passThrough([effectiveFrame], rewrites, states, 0, sampleAction, captureRewrite)) {
-          if (opts?.skipRender) yield rewritten
-          else yield* renderFrames((frame, requestEnv) => renderer.renderResponse(frame, requestEnv), rewritten, env, dispatch)
+        if (effectiveFrame !== undefined) {
+          for (const rewritten of passThrough([effectiveFrame], rewrites, states, 0, sampleAction, captureRewrite)) {
+            if (opts?.skipRender) yield rewritten
+            else yield* renderFrames((frame, requestEnv) => renderer.renderResponse(frame, requestEnv), rewritten, env, dispatch)
+          }
         }
+      } catch (error) {
+        throw asResponseCodecRenderError(error)
       }
       frameIndex++
     }
     naturalDrain = true
   } finally {
+    // Preserve the historical exception-path flush: a buffering rewrite may hold frames that still
+    // must be delivered before the original upstream failure reaches the driver.
     for (const flushed of flushChain(rewrites, states, captureRewrite, captureFlush)) {
       if (opts?.skipRender) yield flushed
       else yield* renderFrames((frame, requestEnv) => renderer.renderResponse(frame, requestEnv), flushed, env, dispatch)
@@ -219,14 +246,38 @@ async function* processFrames(input: ProcessFramesInput): AsyncIterable<ClientFr
   }
 
   // An upstream throw propagates after the `finally` flush and never reaches here. Therefore this
-  // boundary runs only after a natural drain, exactly once.
-  // Renderer flush belongs to this exact candidate instance. It runs after S5 rewrite buffers
-  // drain and before protocol finish classification so meta/closing frames cannot cross siblings.
-  const rendererFrames = renderer.flushResponse(env)
-  const finish = opts?.finishResponse?.(rendererFrames) ?? { kind: "complete" as const, frames: rendererFrames }
-  opts?.onFinishResolved?.(finish)
+  // boundary runs only after a natural drain, exactly once. Renderer flush belongs to this candidate instance.
+  const rendererFrames = renderFlush(renderer, env)
+  const finish = resolveFinish(opts, rendererFrames)
   yield* finish.frames
   input.onSettled?.()
+}
+
+function asResponseCodecRenderError(error: unknown): ResponseCodecRenderError {
+  return error instanceof ResponseCodecRenderError ? error : new ResponseCodecRenderError(error)
+}
+
+/** The outer handler must preserve the original renderer error in its client protocol frame. */
+export function unwrapResponseCodecRenderError(error: unknown): unknown {
+  return isResponseCodecRenderError(error) ? error.cause : error
+}
+
+function renderFlush(renderer: CandidateResponseRenderer, env: RequestEnvelope): ReadonlyArray<ClientFrame> {
+  try {
+    return renderer.flushResponse(env)
+  } catch (error) {
+    throw asResponseCodecRenderError(error)
+  }
+}
+
+function resolveFinish(opts: RunResponseOpts | undefined, rendererFrames: ReadonlyArray<ClientFrame>): import("../types").ResponseFinishResult {
+  try {
+    const finish = opts?.finishResponse?.(rendererFrames) ?? { kind: "complete" as const, frames: rendererFrames }
+    opts?.onFinishResolved?.(finish)
+    return finish
+  } catch (error) {
+    throw asResponseCodecRenderError(error)
+  }
 }
 
 function* renderFrames(

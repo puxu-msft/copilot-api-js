@@ -175,6 +175,18 @@ describe("production driver hedged response", () => {
     expect(delivery.snapshot.winnerCandidateId).toBe(activeSource.candidateId)
   })
 
+  test("a winner sink write failure is downstream-sink", async () => {
+    const harness = driverHarness({ stallPrimary: true, policy: hedgePolicy(true, 0) })
+    const request = await harness.driver.runRequest({ body: {}, headers: new Headers() })
+    if (!request.ok) throw new Error("unexpected rejection")
+    const { sink } = makeArraySink({ rejectAtFrame: 0 })
+
+    await expect(harness.driver.runResponseSink(request.upstream, request.env, sink)).resolves.toMatchObject({
+      kind: "stream-error",
+      source: "downstream-sink",
+    })
+  })
+
   test("a complete primary before the threshold never starts a hedge", async () => {
     const harness = driverHarness({ stallPrimary: false, policy: hedgePolicy(true, 60_000) })
     const request = await harness.driver.runRequest({ body: {}, headers: new Headers() })
