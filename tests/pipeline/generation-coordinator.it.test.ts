@@ -40,6 +40,8 @@ interface DispatchRow {
   candidate: CandidateHandle
   reason: string
   verdict?: DispatchVerdict
+  settlementReason?: string
+  settlementError?: unknown
   retryNextStrategy?: string
 }
 
@@ -67,6 +69,8 @@ function createRecording() {
     settleDispatch(handle, input) {
       const dispatch = dispatches.get(handle)!
       dispatch.verdict = input.verdict
+      dispatch.settlementReason = input.reason
+      dispatch.settlementError = input.error
       dispatch.retryNextStrategy = input.retryNextStrategy
     },
   }
@@ -194,6 +198,131 @@ describe("P6-T2 generation coordinator", () => {
     expect(processors[0]).not.toBe(processors[1])
   })
 
+  test("recovery disposes an unread ready parent with one explicit discarded settlement", async () => {
+    const recording = createRecording()
+    const opens: Array<string> = []
+    const processors: Array<symbol> = []
+    let disposeCalls = 0
+    let cancelCalls = 0
+    let resolveQuiesced!: () => void
+    const quiesced = new Promise<void>((resolve) => (resolveQuiesced = resolve))
+    const coordinator = createGenerationCoordinator({
+      env: envelope("primary"),
+      createCandidate: ({ role, parentCandidate, env }) => {
+        const scheduler = createDispatchScheduler({
+          prepareWire: (current) => ({ url: "https://upstream.test", headers: new Headers(), body: current.body, stream: true }),
+          open: async (wire) => {
+            const label = (wire.body as { label: string }).label
+            opens.push(label)
+            if (label !== "primary") return streamResponse(label)
+            const owner: UpstreamDispatchLifecycle = {
+              cancel() {
+                cancelCalls++
+                resolveQuiesced()
+              },
+              async dispose() {
+                disposeCalls++
+                return { quiesced: true, connectionReusable: false }
+              },
+              quiesced,
+            }
+            return {
+              kind: "stream",
+              lifecycle: owner,
+              upstream: { headers: new Headers({ "x-marker": label }), lifecycle: owner, frames: { async *[Symbol.asyncIterator]() {} } },
+            }
+          },
+          admission: { acquire: async () => ({ admittedAt: Date.now(), queueWaitMs: 0 }), observe: () => ({ kind: "complete" as const }), rejectAll() {} },
+          recording: recording.port,
+          decideRetry: async () => ({ kind: "fail" }),
+        })
+        return createCandidateRuntime({
+          role,
+          ...(parentCandidate && { parentCandidate }),
+          env,
+          recording: recording.port,
+          scheduler,
+          createProcessor: () => {
+            const identity = Symbol("processor")
+            processors.push(identity)
+            return { identity }
+          },
+        })
+      },
+    })
+    const primary = await coordinator.runPrimary()
+    const recovery = await coordinator.runRecovery(primary, "pre-wire-owner", envelope("recovery"), "precontent-recovery")
+
+    expect(recovery.role).toBe("recovery")
+    expect(opens).toEqual(["primary", "recovery"])
+    expect({ cancelCalls, disposeCalls }).toEqual({ cancelCalls: 1, disposeCalls: 1 })
+    expect(recording.dispatches.get(primary.dispatch)).toMatchObject({
+      verdict: "discarded",
+      settlementReason: "pre-wire-owner",
+      retryNextStrategy: "precontent-recovery",
+    })
+    expect(recording.candidates.get(primary.candidate)?.verdict).toBe("failed")
+  })
+
+  test("recovery disposal failure remains a discarded primary and rejects before opening recovery", async () => {
+    const recording = createRecording()
+    const opens: Array<string> = []
+    const processors: Array<symbol> = []
+    const disposeError = new Error("unread parent dispose failed")
+    const coordinator = createGenerationCoordinator({
+      env: envelope("primary"),
+      createCandidate: ({ role, parentCandidate, env }) => {
+        const scheduler = createDispatchScheduler({
+          prepareWire: (current) => ({ url: "https://upstream.test", headers: new Headers(), body: current.body, stream: true }),
+          open: async (wire) => {
+            const label = (wire.body as { label: string }).label
+            opens.push(label)
+            const owner: UpstreamDispatchLifecycle = {
+              cancel() {},
+              async dispose() {
+                throw disposeError
+              },
+              quiesced: Promise.resolve(),
+            }
+            return {
+              kind: "stream",
+              lifecycle: owner,
+              upstream: { headers: new Headers({ "x-marker": label }), lifecycle: owner, frames: { async *[Symbol.asyncIterator]() {} } },
+            }
+          },
+          admission: { acquire: async () => ({ admittedAt: Date.now(), queueWaitMs: 0 }), observe: () => ({ kind: "complete" as const }), rejectAll() {} },
+          recording: recording.port,
+          decideRetry: async () => ({ kind: "fail" }),
+        })
+        return createCandidateRuntime({
+          role,
+          ...(parentCandidate && { parentCandidate }),
+          env,
+          recording: recording.port,
+          scheduler,
+          createProcessor: () => {
+            const identity = Symbol("processor")
+            processors.push(identity)
+            return { identity }
+          },
+        })
+      },
+    })
+    const primary = await coordinator.runPrimary()
+
+    await expect(coordinator.runRecovery(primary, "dispose-failed", envelope("recovery"), "precontent-recovery")).rejects.toThrow(
+      "Ready dispatch disposal failed",
+    )
+    expect(opens).toEqual(["primary"])
+    expect(recording.dispatches.get(primary.dispatch)).toMatchObject({
+      verdict: "discarded",
+      settlementReason: "dispose-failed",
+      settlementError: disposeError,
+      retryNextStrategy: "precontent-recovery",
+    })
+    expect(recording.candidates.get(primary.candidate)?.verdict).toBeUndefined()
+  })
+
   test("ready-state pre-content recovery can override the History next-strategy marker", async () => {
     const recording = createRecording()
     const opens: Array<string> = []
@@ -255,6 +384,8 @@ describe("P6-T2 generation coordinator", () => {
     expect(recovery2.deliveryIdentity).toBe(deliveryIdentity)
     expect(recording.candidates.get(recovery1.candidate)?.parentCandidate).toBe(primary.candidate)
     expect(recording.candidates.get(recovery2.candidate)?.parentCandidate).toBe(recovery1.candidate)
+    expect(recording.candidates.get(primary.candidate)?.verdict).toBe("failed")
+    expect(recording.dispatches.get(primary.dispatch)?.verdict).toBe("discarded")
     expect(recording.candidates.get(recovery1.candidate)?.verdict).toBe("failed")
     expect(recording.dispatches.get(recovery1.dispatch)?.verdict).toBe("discarded")
     expect(processors).toHaveLength(3)

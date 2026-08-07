@@ -173,9 +173,9 @@ export function createGenerationCoordinator<TProcessor>(input: CreateGenerationC
       const parentRuntime = runtimes.get(parent.candidate)
       if (!parentRuntime) throw new Error("[generation-coordinator] recovery parent is not owned by this coordinator")
       // A failure before the pump consumes a ready upstream leaves its transport lifecycle unquiesced.
-      // Cancel that unread parent before settling it, otherwise settlement deadlocks the fresh recovery.
-      await parentRuntime.cancel(`recovery:${reason}`)
-      await parent.settleDispatch({ verdict: "discarded", reason, retryNextStrategy })
+      // Dispose it with the recovery's discarded settlement; do not use general cancellation, which
+      // would first publish cancelled and erase this recovery's terminal provenance.
+      await parentRuntime.disposeReadyWithSettlement({ verdict: "discarded", reason, retryNextStrategy })
       parentRuntime.settle({ verdict: "failed", reason })
       candidateReservations.get(parentRuntime.handle)?.release()
       if (active === parentRuntime) active = undefined

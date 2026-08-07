@@ -106,6 +106,8 @@ export interface ScheduledDispatch {
 
 export interface DispatchScheduler {
   run(input: { candidate: CandidateHandle; env: RequestEnvelope; signal: AbortSignal }): Promise<ScheduledDispatch>
+  /** Dispose the one ready-but-unconsumed dispatch while preserving the caller's terminal settlement. */
+  disposeActiveWithSettlement(input: DispatchSettlement): Promise<void>
   cancelActive(reason: string): Promise<void>
   settle(dispatch: DispatchHandle, input: DispatchSettlement): Promise<void>
 }
@@ -298,6 +300,18 @@ export function createDispatchScheduler(input: CreateDispatchSchedulerInput): Di
         strategy = semantic.reason
         if (semantic.waitMs) await abortableDelay(semantic.waitMs, signal)
       }
+    },
+
+    async disposeActiveWithSettlement(settlement) {
+      const entries = [...active.entries()].filter(([dispatch]) => !settled.has(dispatch))
+      if (entries.length > 1) throw new Error("[dispatch-scheduler] expected one active ready dispatch")
+      const results = await Promise.allSettled(entries.map(([dispatch, owned]) => disposeDispatch(dispatch, owned.lifecycle, settlement, true)))
+      const errors = results.flatMap((result) => (result.status === "rejected" ? [result.reason] : []))
+      if (errors.length > 0)
+        throw new AggregateError(
+          errors.map((error) => asError(error)),
+          "Ready dispatch disposal failed",
+        )
     },
 
     async cancelActive(reason) {

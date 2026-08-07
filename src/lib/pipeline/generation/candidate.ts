@@ -49,6 +49,8 @@ export interface CandidateRuntime<TProcessor> {
   readonly handle: CandidateHandle
   readonly role: CandidateRole
   run(): Promise<CandidateReady<TProcessor>>
+  /** Dispose a ready parent without changing its candidate verdict. */
+  disposeReadyWithSettlement(input: DispatchSettlement): Promise<void>
   cancel(reason: string): Promise<void>
   settle(input: { verdict: CandidateVerdict; reason?: string }): void
   recovery(reason: string): RecoveryCandidateRequest
@@ -115,6 +117,10 @@ export function createCandidateRuntime<TProcessor>(input: CreateCandidateRuntime
         }
       })()
       return runPromise
+    },
+
+    async disposeReadyWithSettlement(settlement) {
+      await input.scheduler.disposeActiveWithSettlement(settlement)
     },
 
     async cancel(reason) {

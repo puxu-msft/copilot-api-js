@@ -101,6 +101,7 @@ function runtime(
     handle: candidate,
     role,
     run: async () => ready,
+    async disposeReadyWithSettlement() {},
     async cancel() {
       cancelled = true
     },
