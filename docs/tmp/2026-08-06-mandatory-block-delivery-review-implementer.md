@@ -1,6 +1,6 @@
 # Mandatory block delivery 与 HTTP/2 终止观测规格评审——实施者走查
 
-> 状态：第四轮 `0 blocker / 0 major`，实施者视角已放行
+> 状态：第五轮 `0 blocker / 0 major`，实施者视角已放行
 >
 > reviewer：独立异模型实施者视角 reviewer
 >
@@ -154,3 +154,25 @@ Finish／wire terminal source 与原 terminal 字符串结构化保留；256-byt
 ### 第四轮 verdict
 
 `0 blocker / 0 major`。本轮重写的四项契约均已闭合；**实施者视角可定稿**。
+
+## 第五轮复审
+
+> 目标提交：`21e455989182c72c04621644f789ad895c84d768`（上一被审 `0b933be2adbe15e0688cfcccc4544bcffdc918a2`）
+>
+> 证据说明：reviewer 隔离树仍存在此前未解决 index merge，Git 拒绝 checkout；reviewer 以 `git show <target>:<spec>` 审阅精确目标文档，并结合当前 scheduler→transport→`http2Fetch` 的 reservation／`session.request` 接缝验证实施性。主会话从 reviewer return 转录本节到干净工作树。
+
+### GOAWAY ordered ledger 重写：关闭
+
+Dispatch 创建时先安装 `DispatchGoawayLease`，任何可调用 `session.request()` 的 dispatch 已持有 ledger ref。Repeated GOAWAY 以单同步 transaction 按 sequence append；first terminal 原子 freeze 完整前缀并转为 `OperationGoawayLease`。Session close 只释放 owner ref，History envelope 继续持有 bytes。
+
+### Ownership 与双向正确性：关闭
+
+`appendObserved` 成功才消费 registered evidence，失败由调用方释放；`appendUnavailable` 不接 bytes。Dispatch lease 只能 freeze／release。零 event 正确返回 null lease；已有合法 stream 在 GOAWAY 后可完成，新 acquire 被拒；`lastStreamID` 非法增加仍记录 offending event 后 fail closed。
+
+### History 有序 refs：关闭
+
+Canonical record／journal 保留 dispatch event sequence 与 digest；CAS 只去重 bytes，不合并不同 sequence event 或内存 lease；loser dispatch 保留。验收覆盖 repeated GOAWAY、非法递增、零 event、lease 误用、transient retry 与 refcount 归零。
+
+### 第五轮 verdict
+
+`0 blocker / 0 major`。Ordered ledger、dispatch／operation leases、install／freeze／close、repeated GOAWAY 与 History sequence refs 均无未闭合实施或所有权歧义；**实施者视角可定稿**。

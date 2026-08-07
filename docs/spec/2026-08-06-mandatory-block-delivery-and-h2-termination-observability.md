@@ -384,10 +384,29 @@ type GoawayEventSnapshot = {
   evidence: EvidenceCapture
 }
 
+type GoawayProtocolViolation =
+  | { availability: "none" }
+  | {
+      availability: "unattributed-protocol-error-before-callback"
+      code: "PROTOCOL_ERROR"
+      offendingFrame: "unavailable-at-source"
+      attribution: "unattributed"
+      reason: BoundedObservationText
+    }
+  | {
+      availability: "visible-callback"
+      code: "PROTOCOL_ERROR"
+      offendingSequence: number
+    }
+
 type GoawaySnapshot =
-  | { availability: "not-observed-before-snapshot"; events: readonly [] }
-  | { availability: "unavailable-at-source"; reason: BoundedObservationText; events: readonly [] }
-  | { availability: "observed-before-snapshot"; events: readonly [GoawayEventSnapshot, ...GoawayEventSnapshot[]] }
+  | { availability: "not-observed-before-snapshot"; events: readonly []; protocolViolation: { availability: "none" } }
+  | { availability: "unavailable-at-source"; reason: BoundedObservationText; events: readonly []; protocolViolation: GoawayProtocolViolation }
+  | {
+      availability: "observed-before-snapshot"
+      events: readonly [GoawayEventSnapshot, ...GoawayEventSnapshot[]]
+      protocolViolation: GoawayProtocolViolation
+    }
 
 type TransportTerminationSnapshot = {
   schemaVersion: 1
@@ -416,11 +435,12 @@ type TransportTerminationSnapshot = {
 
 `goaway` 的合法形状冻结如下：
 
-- `not-observed-before-snapshot` 与 `unavailable-at-source` 的 `events` 必须严格为空；后者携带顶层有界原因。
-- `observed-before-snapshot.events` 必须非空，`sequence` 从 1 连续递增，每个元素对应一次实际收到的 GOAWAY frame；不得合并、覆盖或只留 latest。
-- 第一 event 的 `lastStreamIdOrder` 是 `first`；后续 `lastStreamID <= 前一 event.lastStreamID` 时为 `non-increasing`。若增加，仍完整保存该 offending event／evidence，并标 `protocol-error-increase`，随后按 RFC 9113 `PROTOCOL_ERROR` fail closed；不得静默接受、排序或丢帧。
-- 每个 event 的 `errorCode`／`lastStreamID` 是 Node `goaway` callback 已观测必填 number。`opaqueDataLength` 独立为 observed 或 source-unavailable；evidence 只能是 `captured`、`unavailable-at-capture` 或 `unavailable-at-source`。
-- API 提供空 opaque bytes 时按 `captured`、`byteLength:0` 保存空实体；capture／registry 失败使用 `unavailable-at-capture`；API 根本不暴露 bytes 使用 `unavailable-at-source`。
+- `not-observed-before-snapshot` 的 `events` 必须严格为空且 violation 为 none。`unavailable-at-source` 的 events 为空，violation 可为 none 或 unattributed-protocol-error-before-callback，并携带顶层有界原因。
+- `observed-before-snapshot.events` 必须非空，`sequence` 从 1 连续递增，每个元素对应一次实际收到的 JS `goaway` callback；不得把 server API 调用参数冒充 wire／callback event，不得合并、覆盖或只留 latest。
+- 第一 visible event 的 `lastStreamIdOrder` 是 `first`；后续 callback 的 `lastStreamID <= 前一 event.lastStreamID` 时为 `non-increasing`。若 runtime 真的向 JS 暴露增加值，完整保存 offending event／evidence、标 `protocol-error-increase`，并将 violation 设为 visible-callback 后 fail closed。
+- 若 runtime 在第二 callback 前暴露 protocol error，只保存已经可见的 event prefix，并将生产 violation 设为 unattributed-protocol-error-before-callback，保留 transport `PROTOCOL_ERROR` 与 offending-frame unavailable-at-source；不得伪造第二 event或归因其一定来自递增 GOAWAY。
+- 若 fixture／runtime 把递增调用钳制为非递增 callback，按实际 callback 保存为 `non-increasing`、violation none；不得声称已测试 raw illegal wire。共同不变量：应用层绝不能观察到递增 `lastStreamID` 且 violation none。
+- 每个 visible event 的 `errorCode`／`lastStreamID` 是 Node `goaway` callback 已观测必填 number。`opaqueDataLength` 独立为 observed 或 source-unavailable；evidence 只能是 `captured`、`unavailable-at-capture` 或 `unavailable-at-source`。API 提供空 opaque bytes 时按 `captured`、`byteLength:0` 保存空实体。
 
 Snapshot 冻结的是 dispatch terminal 时 ledger 的完整事件前缀；terminal 之后到达的 GOAWAY 不 late-mutate 该 snapshot，但仍追加到 session ledger，供其他尚未 terminal 的 dispatch 观察。任何 availability、sequence、order 或 evidence 组合不合法都 fail loud，不持久化自相矛盾记录。
 
@@ -465,6 +485,7 @@ interface SessionGoawayLedger {
     opaqueDataLength: SnapshotScalar<number>
     evidence: Extract<EvidenceCapture, { availability: "unavailable-at-source" | "unavailable-at-capture" }>
   }): "appended" | "appended-protocol-error"
+  recordUnattributedProtocolError(reason: BoundedObservationText): void
   closeSessionOwner(): void
 }
 
@@ -495,7 +516,7 @@ interface OperationPersistenceEnvelope {
 
 每次 Node `goaway` callback 在单一同步栈内完成一次 ledger transaction：先在局部构造完整 `GoawayEventSnapshot`，并把 opaque bytes 至多复制一次、注册为 `RegisteredGoawayEvidence`；capture／registry 失败则构造 `unavailable-at-capture` event。`appendObserved` 明确消费 registered evidence 所有权：成功后调用方不得 release，ledger owner／dispatch／operation leases 延长实体生命周期；append 在发布前抛错则不消费，调用方必须 release。`appendUnavailable` 不接收 bytes 所有权。Ledger 内部校验 sequence 与 `lastStreamID` order，最后通过一次不可抛的 publish 暴露整个 event。构造／capture／注册中的可捕获错误都被转换为同 sequence 的 unavailable event 后 append，不允许“部分 dispatch 看见、部分看不见”；内存分配失败仍按 §7.2 的普通不可恢复错误终止进程路径，不虚构可继续 append。Append 后才执行其他 observer；observer 异常不回滚已发布 event，也不阻断既有 consumer。后续 GOAWAY 重复同一流程，完整保留全部 frame。
 
-第一次 GOAWAY 到来前，session 先同步标为 non-admitting／retiring；后续 GOAWAY 不重复切换 lifecycle，但继续 append。RFC 9113 要求后续 `lastStreamID` 不增：等于或减小正常记录；增加时 ledger 仍先原样 append offending event并返回 `appended-protocol-error`，transport 随后按 `PROTOCOL_ERROR` 关闭连接。GOAWAY 本身不取消 `streamId <= lastStreamID` 的既有 stream；每个 dispatch 的最终处理归因仍由 stream 自身 terminal 事实裁决。
+第一次 GOAWAY 到来前，session 先同步标为 non-admitting／retiring；后续可见 GOAWAY 不重复切换 lifecycle，但继续 append。RFC 9113 要求后续 `lastStreamID` 不增：等于或减小正常记录；JS callback 可见增加值时 ledger 先原样 append offending event并返回 `appended-protocol-error`，transport 随后按 `PROTOCOL_ERROR` 关闭连接。若 Node 在 callback 前暴露 `ERR_HTTP2_ERROR: Protocol error`，生产 session error path只能调用 `recordUnattributedProtocolError()`：保存 code／message 与 offending-frame unavailable，但 attribution 必须是 `unattributed`，不得从错误时序猜成因、不得发明 event sequence／lastStreamID／opaque bytes。受控 harness 可把“非法递增 fixture 意图 + 客户端无第二 callback + connection PROTOCOL_ERROR”判为 capability `runtime-rejected`，但这只是测试场景分类，不回写生产 snapshot 的因果归因。若 public fixture 把递增调用钳制成非递增 callback，只按实际 callback append。GOAWAY 本身不取消 `streamId <= lastStreamID` 的既有 stream；每个 dispatch 的最终处理归因仍由 stream 自身 terminal 事实裁决。
 
 `DispatchGoawayLease.freezeAtTerminal()` 在 first-terminal 同步栈内原子读取 ledger 当前完整前缀并冻结 `GoawaySnapshot`。零 event 返回 not-observed 且无 operation lease；有 event 返回 observed non-empty tuple，并把该 dispatch lease 转成 `OperationGoawayLease`。Freeze 后该 dispatch snapshot 永不 late-mutate；之后追加的 GOAWAY 只对其他尚未 terminal 的 dispatch 可见。Dispatch 在 terminal 前放弃时调用 `release()`。重复 freeze／release、freeze 后 release、release 后 freeze 都 fail loud。
 
@@ -687,7 +708,43 @@ type H2MatrixResult = {
 }
 ```
 
-独立 Node server fixture 必须通过真实 API 分别制造 normal END_STREAM、`stream.close(nonZeroRstCode)`、socket／session abrupt close、GOAWAY-before-end、GOAWAY-after-end、双 GOAWAY `lastStreamID` 等值／递减，以及双 GOAWAY 非法递增；body cancel、signal abort 由 client child 通过 production consumer／AbortSignal 发起。Server 以 scenario token 把服务端实测事件与 client result 配对，并拒绝未知／复用 token。若某 client runtime 无法从公开 API 观测某情形，该格明确输出 `unsupported-at-source` 并附有界原因，不能伪造事件或把 skip 当 pass。注入 `observer-throws`、`second-terminal`、只保留 first／latest GOAWAY 与 late GOAWAY 变异，验证 consumer 语义、first-write、ordered ledger prefix 和 freeze。
+独立 Node server fixture 必须通过真实 API 分别制造 normal END_STREAM、`stream.close(nonZeroRstCode)`、socket／session abrupt close、GOAWAY-before-end、GOAWAY-after-end，以及双 GOAWAY `lastStreamID` 等值／递减；body cancel、signal abort 由 client child 通过 production consumer／AbortSignal 发起。Server 以 scenario token 把服务端实测事件与 client result 配对，并拒绝未知／复用 token。
+
+“非法递增 GOAWAY”先作为 runtime capability probe，而不是固定行为测试。每次 run 输出闭合结果：
+
+```ts
+type GoawayCallbackObservation = {
+  sequence: number
+  errorCode: number
+  lastStreamID: number
+  opaqueDataDigest: string | null
+}
+
+type InvalidGoawayCapability =
+  | { kind: "fixture-clamped"; callbacks: readonly [GoawayCallbackObservation, ...GoawayCallbackObservation[]] }
+  | {
+      kind: "runtime-rejected"
+      callbacks: readonly [GoawayCallbackObservation, ...GoawayCallbackObservation[]]
+      connectionError: "PROTOCOL_ERROR"
+    }
+  | {
+      kind: "raw-invalid-visible"
+      callbacks: readonly [GoawayCallbackObservation, ...GoawayCallbackObservation[]]
+      wireOracleDigest: string
+    }
+  | { kind: "unsupported"; reason: BoundedObservationText; attemptedOracle: string }
+```
+
+每个 runtime／version 报告上述恰一结果：
+
+- `fixture-clamped`：公共 fixture 的第二调用最终只产生非递增 callback；记录实际 callbacks，不宣称非法 frame 到线。
+- `runtime-rejected`：第二 callback 不可见，但 connection 暴露 `PROTOCOL_ERROR`；harness 将受控场景分类为 runtime-rejected，生产 ledger 只记录 unattributed protocol error，不伪造 event。
+- `raw-invalid-visible`：只有独立帧级 oracle 证明非法递增 frame 实际到线，且 JS callback 暴露它时成立；ledger 保存 offending event并 fail closed。
+- `unsupported`：无法用可用 API／oracle 形成上述任一可判样本，明确附有界原因，不把 skip 当 pass。
+
+Capability 不能由 server `goaway(..., increasingId)` 的调用参数自证，必须取客户端 callback／connection error 与必要的帧级 oracle。共同硬门是：绝不允许应用观察到递增 `lastStreamID` 且 violation none；绝不为 runtime-rejected 伪造 event。注入 `observer-throws`、`second-terminal`、只保留 first／latest GOAWAY、伪造 offending event 与吞掉 protocol error 的变异，验证 consumer 语义、first-write、ordered ledger prefix 和 freeze。
+
+经验锚点（不是跨版本常量）：2026-08-07 在 Node `v24.16.0` 的本地 loopback 中，主会话用 `setImmediate` 分隔两次 server `goaway` 调用观察到第二 ID 被钳制为第一 ID；reviewer 用同步连续调用观察到第二 callback 前 connection `PROTOCOL_ERROR`。这证明 capability 甚至不能只按 runtime version 硬编码，必须由每次 harness run 的实际 callback／error／wire evidence 裁决。
 
 性能 harness 的 `DataPathStrategy` 只允许六个编译期 variant：`baseline`、`candidate`、`mut-clock`、`mut-object-allocation`、`mut-byte-copy`、`mut-callback`。Baseline 是实现前冻结的当前 DATA callback bundle；candidate 是新 recorder 实现。二者除 strategy module 外使用相同 harness、payload seed、chunk schedule、并发度和 runtime。A/A 随机为每个 pair 交换两个 baseline 实例顺序；A/B 随机交换 baseline／candidate 顺序。Variant 通过 orchestrator 参数选择，不读生产配置或环境开关，构建产物记录 source commit 与 strategy digest，避免测到同一实现却标成 A/B。
 
@@ -755,7 +812,7 @@ type H2MatrixResult = {
 - retry／hedge sibling 归属隔离；
 - trailer per-dispatch 归属；
 - 同 session／跨 operation 的 ledger append／freeze／enqueue 次序任意，bytes 实体按 event digest 唯一；每个 physical dispatch 在 open 前持有独立 `DispatchGoawayLease`，内存 ownership 不按 digest 合并；
-- 双 GOAWAY 正样本保存 sequence 1／2 的完整有序前缀；第二帧 `lastStreamID` 等于或小于第一帧通过，增加时仍保存 offending event、标 `protocol-error-increase` 并触发 `PROTOCOL_ERROR`。只留 first／latest、重排、覆盖、接受增加值的变异分别变红；
+- 双 GOAWAY 固定正样本保存 sequence 1／2 的完整有序前缀；第二帧 `lastStreamID` 等于或小于第一帧通过。非法递增 capability probe 按 `fixture-clamped`／`runtime-rejected`／`raw-invalid-visible`／`unsupported` 闭合 union 验收实际 callbacks／connection error／wire oracle；生产 snapshot 的 pre-callback protocol error 必须保持 attribution `unattributed`，不得写测试场景因果。只留 first／latest、重排、覆盖、可见递增却 violation none、runtime-rejected 时伪造 event、把 fixture 意图写进生产 attribution、unsupported 无 attemptedOracle 的变异分别变红；
 - Dispatch A 在第一 GOAWAY 后 terminal 只冻结 `[1]`，dispatch B 在第二 GOAWAY 后 terminal 冻结 `[1,2]`；A 不 late-mutate。Repeated event 的不同 opaque evidence 分别可 hydrate，相同 bytes 仍由 CAS 去重；
 - GOAWAY event 构造／capture／registry 中途失败统一 append 同 sequence 的 unavailable event；所有当时／未来 dispatch leases 读取同一 ledger prefix，不可能出现部分 captured、部分无 event。`appendObserved` 成功消费 registered evidence，发布前失败不消费且调用方释放；ledger owner close 后，仍有 dispatch／operation lease 时 bytes 继续可读。注入“append 前发布半成品”“异常时跳过 event”“成功后调用方双 release”或“close owner 提前丢 bytes”的变异必须分别变红；
 - Session non-admitting 标记先于首个 GOAWAY append，之后新 dispatch lease／stream 被拒；已有 dispatch 晚 first-terminal 仍可 freeze 完整 prefix。Session retire 不释放 ledger owner，physical close／error 才 `closeSessionOwner()`；
@@ -810,7 +867,7 @@ type H2MatrixResult = {
 
 早期正确性／性能设计评审曾分别放行 dispatch-scoped 归属、first-terminal 时序、两事务 recovery set、mandatory owner 与 DATA 热路径方向；性能评审指出“统计不显著”不能证明非劣效，用户据此选择性能数据仅报告、不设 non-inferiority 阻断门。
 
-书面规格第一轮独立评审随后发现实施接口与验收仍有缺口：实施者走查为 `0 blocker / 5 major`，事实／判据证伪为 `0 blocker / 6 major`。实施者第二轮复审留下 I1、I5 两项 major；事实／判据第二轮留下 F1、F3、F4、F5 并新增旧 journal digest major。实施者第三轮达到 `0 blocker / 0 major`；事实／判据第三轮为 `0 blocker / 4 major`。逐条整改后，实施者第四轮再次达到 `0 blocker / 0 major`；事实／判据第四轮为 `0 blocker / 2 major`，指出 repeated GOAWAY 与 partial fan-out。本文已把修复点上移为 session-local ordered GOAWAY ledger，取消 fan-out，等待两位原 reviewer 第五轮。在两位 reviewer 对这次重写及相邻契约完成复审之前，状态保持 `confirmed-not-implemented`，不得声称书面规格整体达到 `0 blocker / 0 major`。评审记录见：
+书面规格第一轮独立评审随后发现实施接口与验收仍有缺口：实施者走查为 `0 blocker / 5 major`，事实／判据证伪为 `0 blocker / 6 major`。多轮整改后，实施者第五轮达到 `0 blocker / 0 major`；事实／判据第五轮为 `0 blocker / 1 major`，指出非法递增 GOAWAY 的固定 oracle 与真实 Node runtime capability 冲突。本文已改为每次 harness run 探测 `fixture-clamped`／`runtime-rejected`／`raw-invalid-visible`／`unsupported` 并按实际证据验收，等待两位原 reviewer 第六轮。在两位 reviewer 对最新整改及相邻契约完成复审之前，状态保持 `confirmed-not-implemented`，不得声称书面规格整体达到 `0 blocker / 0 major`。评审记录见：
 
 - [实施者走查](../tmp/2026-08-06-mandatory-block-delivery-review-implementer.md)；
 - [事实与判据证伪](../tmp/2026-08-06-mandatory-block-delivery-review-falsification.md)。

@@ -1,6 +1,6 @@
 # Mandatory block delivery 与 HTTP/2 终止观测规格评审——事实与判据证伪
 
-> 状态：第四轮 `0 blocker / 2 major` 已全部采纳并改为 ordered ledger 基座，待原 reviewer 第五轮复审
+> 状态：第五轮 `0 blocker / 1 major` 已采纳并改为 runtime capability oracle，待原 reviewer 第六轮复审
 >
 > reviewer：独立事实／判据证伪 reviewer
 >
@@ -170,3 +170,25 @@ Reviewer 机械核对整改 diff、WHATWG SSE algorithm、production stream grap
 |---|---|---|---|
 | GOAWAY-r4 | C | 采纳 | 改为 session-local 有序 GOAWAY ledger；每 event 有 sequence／完整 evidence，后续 lastStreamID 单调不增，dispatch terminal 冻结完整事件前缀。 |
 | FANOUT-r4 | C | 采纳并换共同基座 | 取消 GOAWAY 时 fan-out。每个 physical dispatch 在 `beginDispatch` 时取得 ledger lease；GOAWAY 仅原子 append 一次，所有 in-flight leases 自然共享同一前缀。Terminal 原子冻结前缀并转成 operation lease，彻底消除 partial fan-out。 |
+
+## 第五轮复审
+
+> 固定复审 HEAD：`21e455989182c72c04621644f789ad895c84d768`（base `0b933be2adbe15e0688cfcccc4544bcffdc918a2`）
+>
+> Verdict：`0 blocker / 1 major`。Ordered ledger、lease ownership、repeated GOAWAY 等值／递减、prefix freeze、History refs 均闭合；剩余 major 是非法递增 GOAWAY 的真实 Node harness oracle 与规格预期冲突。
+
+### 已闭合
+
+- Session-local ordered ledger 取代 fan-out，消除 partial install。
+- Dispatch open 前 lease、append transaction、terminal prefix freeze、session close 后 bytes ownership 与 History transient retry均闭合。
+- 同 digest 两 event 保留两条 sequence→digest ref，CAS 只去重实体。
+
+### Major：非法递增 GOAWAY runtime capability
+
+Spec 要求先保存 offending event 再 `PROTOCOL_ERROR`，但 Node v24.16.0 公共 server API 的结果不稳定：reviewer 同步连续 `goaway(1)`→`goaway(3)`稳定得到客户端只见第一 event、随后 connection `PROTOCOL_ERROR`；主会话用 `setImmediate` 分隔时稳定观察到第二调用被钳制为 ID 1并正常 callback。故公共 fixture 不能作为稳定 raw-wire oracle。
+
+### 主会话第五轮处置
+
+| Finding | 级别 | 处置 | 整改方向 |
+|---|---|---|---|
+| ILLEGAL-r5 | C | 采纳 | Harness 每次 run 探测 `fixture-clamped`／`runtime-rejected`／`raw-invalid-visible`／`unsupported`。仅帧级 oracle 证实非法 frame 到线且 callback 可见时要求 ledger 保存 offending event；runtime 预拦截时保存 transport `PROTOCOL_ERROR` 与 offending-frame unavailable；clamped 时保存实际非递增 callbacks。共同反控：不得无错误地向应用暴露递增 ID。Reviewer 保留同步连续调用得到 runtime-rejected 的实测，撤回“public Node fixture 能稳定制造并向 JS 暴露非法 frame”的隐含前提；主会话 `setImmediate` 时序实测为 clamped。 |
