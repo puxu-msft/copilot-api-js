@@ -37,6 +37,7 @@ import {
   //
   DeliveryOwnerError,
   getDeliverySessionForAllocationPort,
+  recordDeliveryResponseOutcomeForTests,
   getDownstreamDeliverySession,
 } from "~/lib/pipeline/delivery/session"
 import { readSyntheticKind } from "~/lib/pipeline/frame-origin"
@@ -1145,13 +1146,15 @@ function streamErrorOutcome(
     : undefined
   // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- structural driver tests use a minimal mock context without this runtime diagnostic port
   if (diagnostics) env.ctx.recordResponseFailureSupersession?.(diagnostics)
-  return {
+  const outcome = {
     kind: "stream-error" as const,
     error: isResponseCodecRenderError(error) ? unwrapResponseCodecRenderError(error) : error,
     source,
     ...(diagnostics && { diagnostics }),
     ...(truncated !== undefined && { truncated }),
   }
+  recordDeliveryResponseOutcomeForTests(outcome)
+  return outcome
 }
 
 /**
@@ -1195,11 +1198,16 @@ async function runResponseSink(
     env.ctx.selectGenerationWinner(unhedgedBinding.candidate.candidate, unhedgedBinding.candidate.dispatch)
     const allocationPort = opts?.wireAllocationPort ?? getDownstreamDeliverySession(sink)?.allocationPort
     if (allocationPort?.wireState) {
-      const leg = await allocationPort.beginLeg("primary", {
-        candidateId: String(unhedgedBinding.candidate.candidate),
-        dispatchId: String(unhedgedBinding.candidate.dispatch),
-      })
-      if (!leg.ok) return ownerFailureOutcome(leg, "begin-leg", env)
+      try {
+        const leg = await allocationPort.beginLeg("primary", {
+          candidateId: String(unhedgedBinding.candidate.candidate),
+          dispatchId: String(unhedgedBinding.candidate.dispatch),
+        })
+        if (!leg.ok) return ownerFailureOutcome(leg, "begin-leg", env)
+      } catch (error) {
+        if (error instanceof DeliveryOwnerError) return streamErrorOutcome(error.cause, env, "delivery-owner")
+        throw error
+      }
     }
   }
   const effectiveOpts = currentCandidateResponseOpts(generation, upstream, opts) as RunResponseOpts

@@ -306,7 +306,7 @@ describe("Task 4.3b pre-content recovery matrix", () => {
         }),
       )
       setDeliverySessionTestHooksForTests({
-        onOwnerOperation: (operation) => {
+        onCommittedAllocation: (operation) => {
           ownerOperations.push(operation)
           if (injectOwnerFailure) {
             injectOwnerFailure = false
@@ -332,6 +332,47 @@ describe("Task 4.3b pre-content recovery matrix", () => {
       expect(injectOwnerFailure).toBeFalse()
     } finally {
       clock.restore()
+    }
+  })
+
+  test("production pre-wire beginLeg owner failure never opens recovery", async () => {
+    let calls = 0
+    let secondFetchStarted!: () => void
+    const secondFetchStartedP = new Promise<void>((resolve) => (secondFetchStarted = resolve))
+    const beginLegKinds: Array<string> = []
+    const outcomes: Array<{ kind: "stream-error"; source: string }> = []
+    let injectOwnerFailure = true
+    applyFetchMock(
+      mock(() => {
+        calls += 1
+        if (calls === 2) secondFetchStarted()
+        return Promise.resolve(createSseResponse(completeFrames("msg_begin_leg_owner")))
+      }),
+    )
+    setDeliverySessionTestHooksForTests({
+      onBeginLeg: (kind) => {
+        beginLegKinds.push(kind)
+        if (injectOwnerFailure) {
+          injectOwnerFailure = false
+          return Promise.reject(tagTransportError(new Error("pre-wire owner rejected"), "refused-stream"))
+        }
+      },
+      onResponseOutcome: (outcome) => outcomes.push(outcome),
+    })
+    const { createFullTestApp } = await import("../../helpers/test-app")
+    const bodyCompletedP = request(createFullTestApp(), "precontent-begin-leg-owner-no-recovery").then(async (response) => {
+      const text = await response.text()
+      return { kind: "body-complete" as const, text }
+    })
+    const winner = await Promise.race([bodyCompletedP, secondFetchStartedP.then(() => ({ kind: "second-fetch" as const }))])
+
+    expect(winner.kind).toBe("body-complete")
+    expect(calls).toBe(1)
+    expect(beginLegKinds).toEqual(["primary"])
+    expect(outcomes.map(({ kind, source }) => ({ kind, source }))).toEqual([{ kind: "stream-error", source: "delivery-owner" }])
+    if (winner.kind === "body-complete") {
+      expect(dataFramesOfType(winner.text, "error")[0]?.error).toMatchObject({ message: "pre-wire owner rejected" })
+      expect(winner.text).not.toContain("msg_begin_leg_owner")
     }
   })
 

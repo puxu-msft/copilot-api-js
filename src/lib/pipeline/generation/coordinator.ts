@@ -172,6 +172,9 @@ export function createGenerationCoordinator<TProcessor>(input: CreateGenerationC
     async runRecovery(parent, reason, env = parent.env, retryNextStrategy = "buffered-retry") {
       const parentRuntime = runtimes.get(parent.candidate)
       if (!parentRuntime) throw new Error("[generation-coordinator] recovery parent is not owned by this coordinator")
+      // A failure before the pump consumes a ready upstream leaves its transport lifecycle unquiesced.
+      // Cancel that unread parent before settling it, otherwise settlement deadlocks the fresh recovery.
+      await parentRuntime.cancel(`recovery:${reason}`)
       await parent.settleDispatch({ verdict: "discarded", reason, retryNextStrategy })
       parentRuntime.settle({ verdict: "failed", reason })
       candidateReservations.get(parentRuntime.handle)?.release()

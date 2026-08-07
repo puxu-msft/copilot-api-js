@@ -58,7 +58,12 @@ export interface CreateDownstreamDeliverySessionOptions {
 
 export interface DeliverySessionTestHooks {
   onWrite?: (entry: DeliveryFrame) => void | Promise<void>
-  onOwnerOperation?: (operation: OwnerOperation) => void | Promise<void>
+  /** Runs inside the owner before a leg is created; a throw leaves the session reusable. */
+  onBeginLeg?: (kind: "primary" | "continuation" | "recovery") => void | Promise<void>
+  /** Runs after C9 reservation commit, inside the allocation try/catch. */
+  onCommittedAllocation?: (operation: "allocate-anchor" | "allocate-real-block") => void | Promise<void>
+  /** Observes the actual driver terminal outcome on the production handler path. */
+  onResponseOutcome?: (outcome: { kind: "stream-error"; source: import("../types").ResponseFailureSource }) => void
 }
 
 /** Generation-scoped delivery port consumed by the retry/competition engine. */
@@ -89,6 +94,11 @@ export function setDeliverySessionObserverForTests(observer: ((session: Downstre
 /** Test-only production-path fault injection; hooks run inside the real delivery session. */
 export function setDeliverySessionTestHooksForTests(hooks: DeliverySessionTestHooks | undefined): void {
   deliverySessionTestHooks = hooks
+}
+
+/** Test-only outcome observer; called only from the driver's typed failure funnel. */
+export function recordDeliveryResponseOutcomeForTests(outcome: { kind: "stream-error"; source: import("../types").ResponseFailureSource }): void {
+  deliverySessionTestHooks?.onResponseOutcome?.(outcome)
 }
 
 /** A non-client owner failure, tagged at the source with whether C9's commit point was crossed. */
@@ -352,8 +362,8 @@ export function createDownstreamDeliverySession(options: CreateDownstreamDeliver
           reservation.commit()
           onCommit?.()
           committed = true
-          const onOwnerOperationForTests = deliverySessionTestHooks?.onOwnerOperation
-          if (onOwnerOperationForTests) await onOwnerOperationForTests(operation)
+          const onCommittedAllocationForTests = deliverySessionTestHooks?.onCommittedAllocation
+          if (onCommittedAllocationForTests) await onCommittedAllocationForTests(operation)
         }
         applyPendingFrame(entry)
         await writeToSink(sink, entry)
@@ -425,9 +435,17 @@ export function createDownstreamDeliverySession(options: CreateDownstreamDeliver
         return ownerSuccess(reservation.value)
       }),
     beginLeg: (kind, source) =>
-      serializer.enqueue(() => {
+      serializer.enqueue(async () => {
         const unavailable = ownerUnavailable<LegToken>()
         if (unavailable) return unavailable
+        const onBeginLegForTests = deliverySessionTestHooks?.onBeginLeg
+        if (onBeginLegForTests) {
+          try {
+            await onBeginLegForTests(kind)
+          } catch (error) {
+            throw new DeliveryOwnerError(error, false)
+          }
+        }
         const current = requireWireState()
         const token = current.allocator.beginLeg(kind, source)
         current.activeLeg = Object.freeze({
