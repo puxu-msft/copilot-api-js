@@ -27,7 +27,10 @@ export interface HistoryAdmissionStatus {
   readonly estimatedBytes: number
   readonly overCapacity: boolean
   readonly preTerminalFailuresTotal: number
+  readonly sinkEnqueueErrorsTotal: number
+  readonly unackedMessageIds: ReadonlyArray<HistoryMessageId>
   readonly lastPreTerminalError?: string
+  readonly lastSinkEnqueueError?: string
 }
 
 export interface HistoryAdmissionController {
@@ -60,7 +63,13 @@ interface ReservationRecord {
   readonly historyAdmissionWaitMs: number
   phase: ReservationPhase
   operationId?: string
+  messageId?: HistoryMessageId
   estimatedBytes: number
+}
+
+interface PauseWaiter {
+  readonly resolve: () => void
+  readonly reject: (error: Error) => void
 }
 
 export interface HistoryAdmissionControllerOptions {
@@ -75,15 +84,17 @@ export class HistoryAdmissionControllerImpl implements HistoryAdmissionControlle
   private readonly now: () => number
   private readonly waiters: Array<WaitingAcquire> = []
   private readonly operations = new Map<string, ReservationRecord>()
-  private readonly pauseWaiters = new Set<() => void>()
+  private readonly pauseWaiters = new Set<PauseWaiter>()
   private readonly quiescenceWaiters = new Set<() => void>()
   private nextReservationId = 1
   private preTerminalFailuresTotal = 0
+  private sinkEnqueueErrorsTotal = 0
   private reserved = 0
   private unacked = 0
   private estimatedBytes = 0
   private closedError: Error | undefined
   private lastPreTerminalError: string | undefined
+  private lastSinkEnqueueError: string | undefined
   private paused = false
 
   constructor(options: HistoryAdmissionControllerOptions) {
@@ -132,7 +143,7 @@ export class HistoryAdmissionControllerImpl implements HistoryAdmissionControlle
     this.unacked++
     this.estimatedBytes += record.estimatedBytes
 
-    return new Promise<HistoryPersistenceOutcome>((resolve, reject) => {
+    return new Promise<HistoryPersistenceOutcome>((resolve) => {
       const settlement = { done: false }
       const onOutcome = (outcome: HistoryPersistenceOutcome): void => {
         if (settlement.done) return
@@ -141,12 +152,12 @@ export class HistoryAdmissionControllerImpl implements HistoryAdmissionControlle
         resolve(outcome)
       }
       try {
-        this.sink.enqueue(envelope, onOutcome)
+        const messageId = this.sink.enqueue(envelope, onOutcome)
+        if (!settlement.done) record.messageId = messageId
       } catch (error) {
         if (settlement.done) return
-        settlement.done = true
-        this.releaseRecord(record)
-        reject(asError(error, "History terminal sink failed"))
+        this.sinkEnqueueErrorsTotal++
+        this.lastSinkEnqueueError = asError(error, "History terminal sink failed").message
       }
     })
   }
@@ -173,7 +184,7 @@ export class HistoryAdmissionControllerImpl implements HistoryAdmissionControlle
       for (const waiter of this.waiters) waiter.drainWhilePaused = true
     }
     if (!this.waiters.some((waiter) => waiter.drainWhilePaused)) return Promise.resolve()
-    const promise = new Promise<void>((resolve) => this.pauseWaiters.add(resolve))
+    const promise = new Promise<void>((resolve, reject) => this.pauseWaiters.add({ resolve, reject }))
     this.admitWaiters()
     return promise
   }
@@ -200,7 +211,8 @@ export class HistoryAdmissionControllerImpl implements HistoryAdmissionControlle
       waiter.signal.removeEventListener("abort", waiter.onAbort)
       waiter.reject(error)
     }
-    this.resolvePauseIfDrained()
+    for (const waiter of this.pauseWaiters) waiter.reject(error)
+    this.pauseWaiters.clear()
   }
 
   snapshot(): HistoryAdmissionStatus {
@@ -212,7 +224,12 @@ export class HistoryAdmissionControllerImpl implements HistoryAdmissionControlle
       estimatedBytes: this.estimatedBytes,
       overCapacity: this.reserved > this.capacity,
       preTerminalFailuresTotal: this.preTerminalFailuresTotal,
+      sinkEnqueueErrorsTotal: this.sinkEnqueueErrorsTotal,
+      unackedMessageIds: [...this.operations.values()]
+        .filter((record) => record.phase === "unacked" && record.messageId !== undefined)
+        .map((record) => record.messageId as HistoryMessageId),
       ...(this.lastPreTerminalError !== undefined && { lastPreTerminalError: this.lastPreTerminalError }),
+      ...(this.lastSinkEnqueueError !== undefined && { lastSinkEnqueueError: this.lastSinkEnqueueError }),
     }
   }
 
@@ -283,7 +300,7 @@ export class HistoryAdmissionControllerImpl implements HistoryAdmissionControlle
 
   private resolvePauseIfDrained(): void {
     if (this.waiters.some((waiter) => waiter.drainWhilePaused)) return
-    for (const resolve of this.pauseWaiters) resolve()
+    for (const waiter of this.pauseWaiters) waiter.resolve()
     this.pauseWaiters.clear()
   }
 }

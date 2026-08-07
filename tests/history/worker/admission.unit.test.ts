@@ -92,6 +92,8 @@ describe("HistoryAdmissionControllerImpl", () => {
       estimatedBytes: 0,
       overCapacity: false,
       preTerminalFailuresTotal: 0,
+      sinkEnqueueErrorsTotal: 0,
+      unackedMessageIds: [],
     })
   })
 
@@ -134,6 +136,69 @@ describe("HistoryAdmissionControllerImpl", () => {
     await expect(outcome).resolves.toBe("persisted")
     expect(controller.snapshot()).toMatchObject({ reserved: 0, unacked: 0, estimatedBytes: 0 })
     await expect(controller.acceptTerminal(envelope("op-1"))).rejects.toThrow(/unknown operation/i)
+  })
+
+  test("records the sink messageId and keeps an unknown-acceptance throw unacked until an outcome arrives", async () => {
+    let onOutcome: ((outcome: HistoryPersistenceOutcome) => void) | undefined
+    const sink: HistoryTerminalSink = {
+      enqueue(_value, callback) {
+        onOutcome = callback
+        throw new Error("transport acceptance unknown")
+      },
+    }
+    const controller = new HistoryAdmissionControllerImpl({ capacity: 1, sink })
+    const reservation = await controller.acquire({ signal: new AbortController().signal })
+    reservation.bindOperationId("op-throw")
+
+    const outcome = controller.acceptTerminal(envelope("op-throw", 9))
+    await expectPending(outcome)
+    expect(controller.snapshot()).toMatchObject({
+      reserved: 1,
+      unacked: 1,
+      estimatedBytes: 9,
+      unackedMessageIds: [],
+      sinkEnqueueErrorsTotal: 1,
+      lastSinkEnqueueError: "transport acceptance unknown",
+    })
+    await expect(controller.acceptTerminal(envelope("op-throw"))).rejects.toThrow(/already accepted/i)
+
+    onOutcome?.("failed")
+    await expect(outcome).resolves.toBe("failed")
+    expect(controller.snapshot()).toMatchObject({ reserved: 0, unacked: 0, estimatedBytes: 0, unackedMessageIds: [] })
+  })
+
+  test("records a returned messageId and a throw after synchronous outcome cannot reverse settlement", async () => {
+    const sink: HistoryTerminalSink = {
+      enqueue(_value, onOutcome) {
+        onOutcome("persisted")
+        throw new Error("throw after outcome")
+      },
+    }
+    const controller = new HistoryAdmissionControllerImpl({ capacity: 1, sink })
+    const reservation = await controller.acquire({ signal: new AbortController().signal })
+    reservation.bindOperationId("op-sync")
+
+    await expect(controller.acceptTerminal(envelope("op-sync"))).resolves.toBe("persisted")
+    expect(controller.snapshot()).toMatchObject({ reserved: 0, unacked: 0, sinkEnqueueErrorsTotal: 0, unackedMessageIds: [] })
+  })
+
+  test("returned messageIds are observable while outcomes remain pending", async () => {
+    let onOutcome: ((outcome: HistoryPersistenceOutcome) => void) | undefined
+    const sink: HistoryTerminalSink = {
+      enqueue(_value, callback) {
+        onOutcome = callback
+        return 41
+      },
+    }
+    const controller = new HistoryAdmissionControllerImpl({ capacity: 1, sink })
+    const reservation = await controller.acquire({ signal: new AbortController().signal })
+    reservation.bindOperationId("op-message-id")
+
+    const outcome = controller.acceptTerminal(envelope("op-message-id"))
+    expect(controller.snapshot().unackedMessageIds).toEqual([41])
+    onOutcome?.("conflict")
+    await expect(outcome).resolves.toBe("conflict")
+    expect(controller.snapshot().unackedMessageIds).toEqual([])
   })
 
   test("failBeforeTerminal releases a bound reservation exactly once", async () => {
@@ -215,6 +280,26 @@ describe("HistoryAdmissionControllerImpl", () => {
     controller.resume()
     const admittedAfterPause = await afterPause
     admittedAfterPause.releaseBeforeBinding("done")
+  })
+
+  test("close rejects pending pause barriers and resume cannot reopen admission", async () => {
+    const { sink } = controllableSink()
+    const controller = new HistoryAdmissionControllerImpl({ capacity: 1, sink })
+    const held = await controller.acquire({ signal: new AbortController().signal })
+    const beforePause = controller.acquire({ signal: new AbortController().signal })
+    const pausedA = controller.pause("raw-authority-handoff")
+    const pausedB = controller.pause("same-handoff")
+    const closed = new Error("History admission closed during handoff")
+
+    controller.close(closed)
+    await expect(beforePause).rejects.toBe(closed)
+    await expect(pausedA).rejects.toBe(closed)
+    await expect(pausedB).rejects.toBe(closed)
+    expect(() => controller.resume()).toThrow("History admission closed during handoff")
+    await expect(controller.acquire({ signal: new AbortController().signal })).rejects.toBe(closed)
+
+    held.releaseBeforeBinding("existing operation settled")
+    await controller.waitForQuiescence()
   })
 
   test("waitForQuiescence resolves only after all reservations settle", async () => {
