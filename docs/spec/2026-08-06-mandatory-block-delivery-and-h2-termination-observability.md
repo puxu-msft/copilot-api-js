@@ -781,7 +781,7 @@ type H2MatrixResult = {
 
 早期正确性／性能设计评审曾分别放行 dispatch-scoped 归属、first-terminal 时序、两事务 recovery set、mandatory owner 与 DATA 热路径方向；性能评审指出“统计不显著”不能证明非劣效，用户据此选择性能数据仅报告、不设 non-inferiority 阻断门。
 
-书面规格第一轮独立评审随后发现实施接口与验收仍有缺口：实施者走查为 `0 blocker / 5 major`，事实／判据证伪为 `0 blocker / 6 major`。实施者第二轮复审留下 I1、I5 两项 major；事实／判据第二轮留下 F1、F3、F4、F5 并新增旧 journal digest major。实施者第三轮已达到 `0 blocker / 0 major`；事实／判据第三轮为 `0 blocker / 4 major`，指出 dispatch evidence claim、source-unavailable 组合、SSE empty-value data 与 finish diagnostic 缺口。本版已逐条整改，等待事实／判据 reviewer 第四轮。在该 reviewer 对最新整改 diff、原 finding 与相邻契约完成复审之前，状态保持 `confirmed-not-implemented`，不得声称书面规格整体已经达到 `0 blocker / 0 major`。评审记录见：
+书面规格第一轮独立评审随后发现实施接口与验收仍有缺口：实施者走查为 `0 blocker / 5 major`，事实／判据证伪为 `0 blocker / 6 major`。实施者第二轮复审留下 I1、I5 两项 major；事实／判据第二轮留下 F1、F3、F4、F5 并新增旧 journal digest major。实施者第三轮达到 `0 blocker / 0 major`；事实／判据第三轮为 `0 blocker / 4 major`，指出 dispatch evidence claim、source-unavailable 组合、SSE empty-value data 与 finish diagnostic 缺口。本版逐条整改后，实施者第四轮再次达到 `0 blocker / 0 major`；事实／判据第四轮仍在运行。在该 reviewer 对最新整改 diff、原 finding 与相邻契约完成复审之前，状态保持 `confirmed-not-implemented`，不得声称书面规格整体已经达到 `0 blocker / 0 major`。评审记录见：
 
 - [实施者走查](../tmp/2026-08-06-mandatory-block-delivery-review-implementer.md)；
 - [事实与判据证伪](../tmp/2026-08-06-mandatory-block-delivery-review-falsification.md)。

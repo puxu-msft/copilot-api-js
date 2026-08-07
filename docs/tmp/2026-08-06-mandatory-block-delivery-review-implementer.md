@@ -1,6 +1,6 @@
 # Mandatory block delivery 与 HTTP/2 终止观测规格评审——实施者走查
 
-> 状态：第三轮 `0 blocker / 0 major`，实施者视角已放行
+> 状态：第四轮 `0 blocker / 0 major`，实施者视角已放行
 >
 > reviewer：独立异模型实施者视角 reviewer
 >
@@ -128,3 +128,29 @@ Pending journal format 1 的两个独立 legacy digest oracle、真实 v1／v2 f
 ### 第三轮 verdict
 
 `0 blocker / 0 major`。I1～I5 均已闭合；**实施者视角可定稿**。
+
+## 第四轮复审
+
+> 目标提交：`0b933be2adbe15e0688cfcccc4544bcffdc918a2`（上一轮 `97fcadde98c118e53ca8f09604dc47162959c65e`）
+>
+> 证据说明：reviewer 隔离树的报告路径存在未解决 index merge，Git 拒绝 checkout；reviewer 没有修改 spec，而是用 `git show <target>:<spec>` 读取目标提交的精确内容，并与当前 transport／History 接缝交叉核对。主会话从 reviewer return 转录本节到干净工作树。
+
+### DispatchEvidenceClaim／GOAWAY fan-out：关闭
+
+Session ref、dispatch claim 与 operation lease 已分开；attach 的 `installed`／`rejected` 所有权、first-terminal transfer／release、严格 one-shot fan-out、异常／零 dispatch、sibling 独立 claim 与拒绝新 dispatch均已闭合，没有 retire→attach bytes 空窗。
+
+### SSE empty-value data field：关闭
+
+“无 data field”与 `data:`／无冒号 `data` 已明确区分；后两者 dispatch `data === ""`，相反错误各有 mutation。
+
+### ClientTerminal diagnostic：关闭
+
+Finish／wire terminal source 与原 terminal 字符串结构化保留；256-byte 上限 fail closed，round-trip／丢失／改写均有验收。
+
+### GOAWAY source-unavailable scalar：关闭
+
+顶层 observation 与每个 scalar／evidence 的合法组合已冻结；source-unavailable 不再允许 observed scalar，空 opaque bytes 仍正确捕获为 zero-length。
+
+### 第四轮 verdict
+
+`0 blocker / 0 major`。本轮重写的四项契约均已闭合；**实施者视角可定稿**。
